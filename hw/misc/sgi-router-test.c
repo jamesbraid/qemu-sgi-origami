@@ -113,6 +113,8 @@ static void test_init(Object *obj)
     s->router = qdev_new(TYPE_SGI_ROUTER);
     object_property_add_child(obj, "router", OBJECT(s->router));
     object_unref(OBJECT(s->router));
+    object_property_add_alias(obj, "nic-serial", OBJECT(s->router),
+                              "nic-serial");
     object_property_add_uint64_ptr(obj, "address", &s->address,
                                     OBJ_PROP_FLAG_READWRITE);
     object_property_add_uint64_ptr(obj, "port", &s->port,
