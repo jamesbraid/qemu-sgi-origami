@@ -1284,6 +1284,45 @@ static uint8_t *sgi_hub_route_entry(SGIHubState *s, hwaddr addr)
     return NULL;
 }
 
+/* Undefined reset entries do not establish a programmed route. */
+static void sgi_hub_route_written(SGIHubState *s, hwaddr addr)
+{
+    if (addr >= HUB_NI_LOCAL_TABLE) {
+        s->ni_local_route_written |=
+            1U << ((addr - HUB_NI_LOCAL_TABLE) / NI_ROUTE_STRIDE);
+    } else {
+        s->ni_meta_route_written |=
+            1U << ((addr - HUB_NI_META_TABLE) / NI_ROUTE_STRIDE);
+    }
+    if (s->fabric) {
+        sn0_fabric_recompute(s->fabric);
+    }
+}
+
+bool sgi_hub_first_turn(const SGIHubState *s, uint32_t destination,
+                         uint8_t *turn)
+{
+    unsigned int index;
+
+    if (destination >= SN0_FABRIC_NUMBERS) {
+        return false;
+    }
+    if ((destination >> 4) == (sgi_hub_programmed_nasid(s) >> 4)) {
+        index = destination & 0xf;
+        if (!(s->ni_local_route_written & (1U << index))) {
+            return false;
+        }
+        *turn = s->ni_local_route[index];
+    } else {
+        index = destination >> 4;
+        if (!(s->ni_meta_route_written & (1U << index))) {
+            return false;
+        }
+        *turn = s->ni_meta_route[index];
+    }
+    return true;
+}
+
 static bool sgi_hub_vector_target_read(SGIHubState *target, hwaddr addr,
                                        uint64_t *value)
 {
@@ -1310,6 +1349,7 @@ static bool sgi_hub_vector_target_write(SGIHubState *target, hwaddr addr,
 
     if (route) {
         *route = value & NI_ROUTE_MASK;
+        sgi_hub_route_written(target, addr);
         return true;
     }
     /* The pure store: a remote vector write has no local write-hook effects. */
@@ -2537,6 +2577,7 @@ static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
     route = sgi_hub_route_entry(s, addr);
     if (route) {
         *route = val & NI_ROUTE_MASK;
+        sgi_hub_route_written(s, addr);
         return;
     }
     if (sgi_hub_icrb_c_entry(addr)) {
@@ -2701,6 +2742,8 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
     s->ni_diag_parms = 0;
     memset(s->ni_meta_route, 0, sizeof(s->ni_meta_route));
     memset(s->ni_local_route, 0, sizeof(s->ni_local_route));
+    s->ni_meta_route_written = 0;
+    s->ni_local_route_written = 0;
 
     /*
      * The link comes up reporting itself up, a ratified departure from the
@@ -3103,7 +3146,7 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 23,
+    .version_id = 24,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -3119,6 +3162,8 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_BOOL_V(pi_int_pend1_primary_credit, SGIHubState, 17),
         VMSTATE_UINT64_ARRAY(pi_int_mask, SGIHubState, 4),
         VMSTATE_UINT64(ni_status, SGIHubState),
+        VMSTATE_UINT32_V(ni_meta_route_written, SGIHubState, 24),
+        VMSTATE_UINT16_V(ni_local_route_written, SGIHubState, 24),
         VMSTATE_UINT64_ARRAY_V(ni_scratch, SGIHubState, 2, 14),
         VMSTATE_UINT64_V(ni_vector, SGIHubState, 15),
         VMSTATE_UINT64_V(ni_vector_data, SGIHubState, 15),
@@ -3199,6 +3244,11 @@ static int sgi_hub_post_load(void *opaque, int version_id)
     if (version_id < 16) {
         memset(s->ni_meta_route, 0, sizeof(s->ni_meta_route));
         memset(s->ni_local_route, 0, sizeof(s->ni_local_route));
+    }
+
+    if (version_id < 24) {
+        s->ni_meta_route_written = 0;
+        s->ni_local_route_written = 0;
     }
 
     for (n = 0; n < SGI_HUB_BWIN_ENTRIES; n++) {

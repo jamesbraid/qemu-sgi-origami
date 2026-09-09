@@ -8,12 +8,21 @@ mips_ss.add(when: 'CONFIG_MIPS_CPS', if_true: files('cps.c'))
 
 if 'CONFIG_TCG' in config_all_accel
 mips_ss.add(when: 'CONFIG_JAZZ', if_true: files('jazz.c'))
+# Origami's tools/build-env/qemu-build runs tools/origami model qemu-inputs
+# before configure to produce both sn0-origin*-model.c inputs and the layout.
 mips_ss.add(when: 'CONFIG_SGI_SN0',
             if_true: files('sn0.c', 'sn0-diag.c', 'sn0-fabric.c', 'sn0-firmware.c',
                            'sn0-model.c', 'sn0-model-consumer.c',
                            'sn0-origin200.c',
+                           'sn0-origin2000.c', 'sn0-origin2000-model.c',
+                           'sn0-origin2000-management-model.c',
+                           'sn0-origin2000-model-consumer.c',
+                           'sn0-fabric-routed.c',
                            'sn0-origin200-model.c'),
             if_false: files('sn0-qmp-stub.c'))
+mips_ss.add(when: ['CONFIG_SGI_SN0', 'CONFIG_TEST_DEVICES'],
+            if_true: files('sn0-origin2000-flash-test.c',
+                           'sn0-origin2000-model-test.c'))
 mips_ss.add(when: 'CONFIG_SGI_SN1', if_true: files('sn1.c'))
 mips_ss.add(when: 'CONFIG_FULOONG', if_true: files('fuloong2e.c'))
 mips_ss.add(when: 'CONFIG_MIPS_BOSTON', if_true: files('boston.c'))

@@ -1479,12 +1479,13 @@ F: configs/devices/mips*/*
 F: hw/mips/
 F: include/hw/mips/
 
-SGI Origin 200
+SGI Origin 200 and Origin 2000
 M: James Braid <jamesb@loreland.org>
 S: Maintained
 F: docs/devel/sgi-byte-order.rst
 F: docs/specs/sgi-*
 F: hw/mips/sn0*
+F: include/hw/mips/sn0*
 F: hw/1wire/
 F: hw/i2c/pcf8584.c
 F: hw/input/sgi-ioc3-kbc.c
@@ -1515,6 +1516,8 @@ F: tests/qtest/sn1-l1-test.c
 F: tests/qtest/sn1-*
 F: tests/unit/test-sgi-o2000-module-mgmt*.c
 F: tests/unit/test-sgi-router.c
+F: tests/unit/test-sn0-fabric-routed.c
+F: tests/unit/test-sn0-origin2000-management-model.c
 
 Jazz
 M: Hervé Poussineau <hpoussin@reactos.org>

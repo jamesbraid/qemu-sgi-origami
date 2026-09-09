@@ -57,10 +57,6 @@ const SN0FlashImplementation sn0_flash = {
  */
 #define SN0_PROM_BOOT_STATUS_CACHE_AS_RAM    (1U << 1)
 
-#define TYPE_SN0_NODE "sn0-node"
-
-DECLARE_INSTANCE_CHECKER(SN0NodeState, SN0_NODE, TYPE_SN0_NODE)
-
 /*
  * The phase's two execution homes, from the full 64-bit PC. The PC is
  * translated through the MMU rather than pattern-matched, because the
@@ -531,10 +527,13 @@ static void sn0_cpu_reset(void *opaque)
 void sn0_mode_bits_reset(void *opaque)
 {
     CPUMIPSState *env = &MIPS_CPU(opaque)->env;
-    SN0MachineClass *smc = SN0_MACHINE_GET_CLASS(qdev_get_machine());
+    SN0MachineState *s = SN0_MACHINE(qdev_get_machine());
+    SN0MachineClass *smc = SN0_MACHINE_GET_CLASS(s);
+    uint32_t mode_bits = s->composition ?
+        s->composition->hardware->cpu_mode_bits : smc->model->cpu_mode_bits;
 
     env->CP0_Config0 = (env->CP0_Config0 & ~(uint32_t)SN0_PROCESSOR_MODE_MASK) |
-                       (smc->model->cpu_mode_bits & SN0_PROCESSOR_MODE_MASK);
+                       (mode_bits & SN0_PROCESSOR_MODE_MASK);
 }
 
 /*
@@ -716,10 +715,26 @@ static hwaddr sn0_node_local_memory_base(
     return sn0_model_node_address(map, &map->memory, nasid, 0);
 }
 
+static const SN0ModelAddressMap *sn0_node_address_map(SN0NodeState *node)
+{
+    return node->physical ? &node->physical->map : &node->topology->map;
+}
+
+static const SN0ModelMemory *sn0_node_memory_geometry(SN0NodeState *node)
+{
+    return node->hardware ? &node->hardware->memory : &node->model->memory;
+}
+
+static unsigned int sn0_node_cpu_slots(SN0NodeState *node)
+{
+    return node->hardware ? node->hardware->cpu_slots_per_node :
+                            node->model->cpu_slots_per_node;
+}
+
 static void sn0_node_create_cpus(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
-    const SN0ModelAddressMap *map = &node->topology->map;
+    const SN0ModelAddressMap *map = sn0_node_address_map(node);
     const SN0ModelAddressSpace *spaces[SN0_MAX_ADDRESS_SPACES] = {
         &map->memory,
         &map->hub_special,
@@ -888,8 +903,8 @@ static void sn0_node_create_cpus(SN0NodeState *node)
 static void sn0_node_map_memory(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
-    const SN0ModelAddressMap *map = &node->topology->map;
-    const SN0ModelMemory *geometry = &node->model->memory;
+    const SN0ModelAddressMap *map = sn0_node_address_map(node);
+    const SN0ModelMemory *geometry = sn0_node_memory_geometry(node);
     const SN0ModelRegion *local_memory = &map->hub_local_memory;
     const SN0ModelRegion *remote_memory = &map->hub_remote_memory;
     hwaddr node_base = sn0_model_node_address(
@@ -975,7 +990,7 @@ static void sn0_node_map_memory(SN0NodeState *node)
 
 static void sn0_node_map_boot_storage(SN0NodeState *node)
 {
-    const SN0ModelAddressMap *map = &node->topology->map;
+    const SN0ModelAddressMap *map = sn0_node_address_map(node);
     const SN0ModelRegion *lboot = map->lboot;
     const SN0FlashImplementation *implementation = &sn0_flash;
     MemoryRegion *system = get_system_memory();
@@ -1079,7 +1094,7 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
         &node->backdoor_ecc_absent, -1);
     if (node->populated_banks > 0) {
         uint64_t bank_stride = ecc->size /
-            node->model->memory.architectural_banks;
+            sn0_node_memory_geometry(node)->architectural_banks;
         uint64_t size = (uint64_t)node->populated_banks * bank_stride;
 
         sn0_backdoor_configure(&node->backdoor_ecc_state, node,
@@ -1100,7 +1115,7 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
         &node->backdoor_dir_absent, -1);
     if (node->populated_banks > 0) {
         uint64_t bank_stride = directory->size /
-            node->model->memory.architectural_banks;
+            sn0_node_memory_geometry(node)->architectural_banks;
         uint64_t size = (uint64_t)node->populated_banks * bank_stride;
 
         sn0_backdoor_configure(&node->backdoor_dir_state, node,
@@ -1116,8 +1131,9 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
 
 static void sn0_node_create_hub(SN0NodeState *node)
 {
-    const SN0ModelComponent *hub = node->topology->hub;
-    const SN0ModelAddressMap *map = &node->topology->map;
+    const SN0ModelComponent *hub = node->physical ? node->physical->hub :
+                                                  node->topology->hub;
+    const SN0ModelAddressMap *map = sn0_node_address_map(node);
     unsigned int node_index = node->nasid;
     g_autofree char *xtalk_name =
         g_strdup_printf("sn0.node%u.xtalk", node_index);
@@ -1144,15 +1160,17 @@ static void sn0_node_create_hub(SN0NodeState *node)
 
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpus", node->nr_cpus);
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpu-base", node->cpu_base);
-    switch (node->instance->module_role) {
-    case SN0_MODULE_MASTER:
-        qdev_prop_set_bit(DEVICE(&node->hub), "slave-module", false);
-        break;
-    case SN0_MODULE_SLAVE:
-        qdev_prop_set_bit(DEVICE(&node->hub), "slave-module", true);
-        break;
-    default:
-        g_assert_not_reached();
+    if (node->instance) {
+        switch (node->instance->module_role) {
+        case SN0_MODULE_MASTER:
+            qdev_prop_set_bit(DEVICE(&node->hub), "slave-module", false);
+            break;
+        case SN0_MODULE_SLAVE:
+            qdev_prop_set_bit(DEVICE(&node->hub), "slave-module", true);
+            break;
+        default:
+            g_assert_not_reached();
+        }
     }
     qdev_prop_set_uint8(DEVICE(&node->hub), "ni-revision",
                         hub->revision);
@@ -1161,7 +1179,8 @@ static void sn0_node_create_hub(SN0NodeState *node)
      * hub one-wire datasheet's contract requires, never a real machine's.
      */
     qdev_prop_set_uint64(DEVICE(&node->hub), "onewire-serial",
-                         node->instance->hub_serial);
+                         node->physical ? hub->serial :
+                                          node->instance->hub_serial);
     qdev_prop_set_uint32(
         DEVICE(&node->hub), "population",
         (hub->i2c_controller ?
@@ -1233,7 +1252,7 @@ static void sn0_node_create_hub(SN0NodeState *node)
 static void sn0_node_map_xtalk_windows(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
-    const SN0ModelAddressMap *map = &node->topology->map;
+    const SN0ModelAddressMap *map = sn0_node_address_map(node);
     const SN0ModelAddressSpace *xtalk = &map->xtalk;
     const SN0ModelRegion *hub_explicit = &map->hub_registers_node;
     const SN0ModelRegion *hub_local = &map->hub_registers_local;
@@ -1529,7 +1548,13 @@ static bool sn0_get_synthesized_firmware(Object *obj, Error **errp)
 
 static void sn0_set_synthesized_firmware(Object *obj, bool value, Error **errp)
 {
-    SN0_MACHINE(obj)->synthesized_firmware = value;
+    SN0MachineState *s = SN0_MACHINE(obj);
+
+    if (value && s->composition) {
+        error_setg(errp, "Origin 2000 requires supplied firmware");
+        return;
+    }
+    s->synthesized_firmware = value;
 }
 
 static bool sn0_get_junk_uart(Object *obj, Error **errp)
@@ -1592,17 +1617,18 @@ static void sn0_node_realize(DeviceState *dev, Error **errp)
     SN0NodeState *node = SN0_NODE(dev);
     unsigned int bank;
 
-    g_assert(node->model);
+    g_assert(node->model || node->hardware);
     if (node->nr_cpus < 1 ||
-        node->nr_cpus > node->model->cpu_slots_per_node) {
+        node->nr_cpus > sn0_node_cpu_slots(node)) {
         error_setg(errp, "a node carries one to %u processors, not %u",
-                   node->model->cpu_slots_per_node, node->nr_cpus);
+                   sn0_node_cpu_slots(node), node->nr_cpus);
         return;
     }
     if (node->nr_banks_mb < 1 ||
-        node->nr_banks_mb > node->model->memory.physical_banks) {
+        node->nr_banks_mb > sn0_node_memory_geometry(node)->physical_banks) {
         error_setg(errp, "a node fills one to %u memory banks, not %u",
-                   node->model->memory.physical_banks, node->nr_banks_mb);
+                   sn0_node_memory_geometry(node)->physical_banks,
+                   node->nr_banks_mb);
         return;
     }
     if (!node->ram || !node->cpu_type) {
@@ -1666,11 +1692,13 @@ static void sn0_instance_init(Object *obj)
 {
     SN0MachineState *s = SN0_MACHINE(obj);
 
-    g_assert(SN0_MACHINE_GET_CLASS(obj)->model);
-    s->synthesized_firmware = true;
+    SN0MachineClass *smc = SN0_MACHINE_GET_CLASS(obj);
+
+    g_assert(smc->model || smc->default_composition);
+    s->composition = smc->default_composition;
+    s->synthesized_firmware = smc->model != NULL;
     s->debug_leds = true;
-    s->junk_uart_present =
-        SN0_MACHINE_GET_CLASS(obj)->model->junk_uart_default_enabled;
+    s->junk_uart_present = smc->model && smc->model->junk_uart_default_enabled;
 }
 
 static void sn0_instance_finalize(Object *obj)
@@ -1680,7 +1708,9 @@ static void sn0_instance_finalize(Object *obj)
 
     sn0_diagnostic_finalize(s);
     for (node_index = 0; node_index < s->num_nodes; node_index++) {
-        g_free(s->pci_devices[node_index]);
+        if (s->pci_devices) {
+            g_free(s->pci_devices[node_index]);
+        }
     }
     g_free(s->nodes);
     g_free(s->io_bridge);

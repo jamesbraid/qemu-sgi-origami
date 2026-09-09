@@ -222,6 +222,8 @@ typedef struct SN0NodeState {
     const SN0MachineModel *model;
     const SN0ModelNodeInstance *instance;
     const SN0ModelNodeTopology *topology;
+    const SN0ModelPhysicalNode *physical;
+    const SN0ModelHardware *hardware;
 
     /*
      * Properties. local-memory-base is where a NASID-less memory-space
@@ -290,6 +292,9 @@ typedef struct SN0NodeState {
     unsigned int mem_count;
 } SN0NodeState;
 
+#define TYPE_SN0_NODE "sn0-node"
+DECLARE_INSTANCE_CHECKER(SN0NodeState, SN0_NODE, TYPE_SN0_NODE)
+
 #define TYPE_SN0_MACHINE MACHINE_TYPE_NAME("sn0")
 
 /* The flight recorder behind diagnostic-recording (sn0-diag.c). */
@@ -305,7 +310,9 @@ struct SN0MachineState {
     MachineState parent_obj;
 
     /* The installed chassis; nodes and bridges are QOM children. */
+    const SN0ModelComposition *composition;
     unsigned int num_nodes;
+    /* Origin 2000 uses physical slot minus one, not descriptor array order. */
     SN0NodeState **nodes;
     SGIBridgeState **io_bridge;
 
@@ -367,6 +374,7 @@ struct SN0MachineClass {
     /*< public >*/
     /* Static product facts compiled from the canonical machine model. */
     const SN0MachineModel *model;
+    const SN0ModelComposition *default_composition;
 };
 
 void sn0_model_populate_node(SN0MachineState *s, unsigned int node_index);
