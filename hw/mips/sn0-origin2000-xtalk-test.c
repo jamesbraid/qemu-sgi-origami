@@ -297,9 +297,22 @@ static void xtalk_attach_test_verify(SN0XtalkAttachTest *test)
 static void xtalk_attach_test_release(SN0XtalkAttachTest *test)
 {
     SN0MachineState *sn0 = SN0_MACHINE(test);
+    MemoryRegion *outgoing = sn0->nodes[0]->hub.xtalk_io;
+    g_autofree char *owner = NULL;
 
+    g_assert(outgoing);
     sn0_origin2000_xtalk_destroy(sn0);
     drain_call_rcu();
+    /*
+     * Every Hub here is realized, so each still holds the big-window aliases
+     * it built over the face it was linked to. Teardown cannot take those
+     * back, so what they alias has to still belong to somebody: an owner with
+     * no path to the machine is one that has been freed underneath them.
+     */
+    g_assert(sn0->nodes[0]->hub.xtalk_io == outgoing);
+    owner = object_get_canonical_path(memory_region_owner(outgoing));
+    g_assert(owner);
+    g_assert(memory_region_size(outgoing) == SN0_XTALK_SIZE);
     test->released = true;
 }
 

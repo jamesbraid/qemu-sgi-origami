@@ -499,6 +499,25 @@ static void test_a_hub_asks_its_switch_mate_who_it_is(void)
 }
 
 /*
+ * A Hub's own window into crosstalk I/O space outlives the assembly that
+ * gave it one: it is an alias built at realize, and a realized Hub does not
+ * give its link back. So the window still exists after teardown, still aims
+ * where a guest points it, and has to reach nothing rather than reach into
+ * storage somebody has since freed. The identity read is the same one that
+ * answers while the machine is assembled.
+ */
+static void test_a_torn_down_big_window_reaches_nothing(void)
+{
+    QTestState *qts = attach_start_with(",teardown=on");
+
+    g_assert_true(qtest_qom_get_bool(qts, "/machine", "released"));
+    g_assert_cmphex(peer_identity(qts, 0, WIDGET_HUB_A), ==, 0);
+    g_assert_cmphex(peer_identity(qts, 0, WIDGET_HUB_B), ==, 0);
+    g_assert_false(stopped_on_error(qts));
+    qtest_quit(qts);
+}
+
+/*
  * The other Hub's processor-side face, which refuses every access and stops
  * the machine. Reaching it needs a node on the same switch, which the two
  * Hub widgets are. The no-route-to-itself check argues this face is wired by
@@ -778,6 +797,8 @@ int main(int argc, char **argv)
                    test_a_failed_attach_leaves_a_machine_to_retry);
     qtest_add_func("sn0/origin2000/xtalk-attach/attached-machine-tears-down",
                    test_an_attached_machine_can_be_torn_down);
+    qtest_add_func("sn0/origin2000/xtalk-attach/torn-down-big-window",
+                   test_a_torn_down_big_window_reaches_nothing);
     qtest_add_func("sn0/origin2000/xtalk-attach/board-dma-reaches-its-widget",
                    test_board_dma_reaches_the_widget_it_names);
     qtest_add_func("sn0/origin2000/xtalk-attach/down-destination-only-its-own",
