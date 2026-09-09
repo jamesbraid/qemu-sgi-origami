@@ -20,6 +20,7 @@
 #define SOFT_RESET      0x4018
 #define REGION_PRESENT  0x4020
 #define NODES_ABSENT    0x4028
+#define MICROLAN        0x4030
 #define ERROR_BITS      0x4040
 #define ERROR_CLEAR     0x4048
 #define ERROR_HEADER_1  0x4050
@@ -51,12 +52,86 @@
 #define HEADER_1_MASK (0x7fULL | (0x7ffULL << 8) | (0x7ffULL << 20) | \
                        (0xfULL << 32) | (1ULL << 40) | (1ULL << 44))
 
+/*
+ * The MicroLAN controller. Bit 0 is the sampled level and bit 1 completion,
+ * both the device's to publish; the sample offset, the low-pulse duration
+ * and the two phase dividers are the guest's, and the upper divider reaches
+ * bit 33.
+ */
+#define MICROLAN_RXDATA (1ULL << 0)
+#define MICROLAN_DONE   (1ULL << 1)
+#define MICROLAN_TIMING ((0xffULL << 2) | (0x3ffULL << 10) | \
+                         (0x7fULL << 20) | (0x7fULL << 27))
+
+/*
+ * Pulse lengths as the shared SGI slot decode reads them, and the model's
+ * slot delay. Every number here is QEMU's, not Bedrock's: no public source
+ * turns this register's encodings into time.
+ */
+#define MICROLAN_PULSE_RESET 0x321  /* long low: a 1-Wire reset and presence */
+#define MICROLAN_PULSE_SHORT 8      /* releases the wire: a read, or a one */
+#define MICROLAN_PULSE_ZERO  60     /* held low: a zero */
+#define MICROLAN_SLOT_NS     1000
+
+/*
+ * One write programming all six fields. The phase-1 divider is 0x66, which
+ * sets register bits 32 and 33: a controller keeping this register in a
+ * 32-bit word loses them while every other assertion here still passes.
+ */
+static uint64_t microlan_word(unsigned int pulse)
+{
+    return MICROLAN_RXDATA | MICROLAN_DONE | (0x41ULL << 2) |
+           ((uint64_t)pulse << 10) | (0x2cULL << 20) | (0x66ULL << 27);
+}
+
 static QTestState *lb_start(const char *extra)
 {
     QTestState *s = qtest_initf(MACHINE " %s", extra);
 
     qtest_sysbus_mmio_map(s, LB_PATH, 0, LB_BASE);
     return s;
+}
+
+/*
+ * QEMU starts the virtual clock disabled and vm_start() enables it, so a
+ * device timer on a machine launched with -S never fires however far the
+ * clock is stepped. Every test that waits for a slot -- or asserts that no
+ * slot is waiting -- has to run the machine, or it asserts nothing.
+ */
+static QTestState *lb_start_clock(const char *extra)
+{
+    QTestState *s = lb_start(extra);
+
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    return s;
+}
+
+/*
+ * A migration destination can still be loading when the source calls the
+ * migration complete, and cont() while it is still coming in only sets
+ * autostart and returns success (monitor/qmp-cmds.c) -- the machine starts a
+ * moment later. Sampling query-status once would therefore step the clock
+ * while it is still disabled, so ask once and then wait for it to be running.
+ */
+static void lb_wait_for_clock_running(QTestState *s)
+{
+    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    bool asked = false;
+
+    for (;;) {
+        g_autoptr(QDict) response = qtest_qmp(s, "{'execute':'query-status'}");
+        QDict *status = qdict_get_qdict(response, "return");
+
+        if (qdict_get_bool(status, "running")) {
+            return;
+        }
+        if (!asked) {
+            qtest_qmp_assert_success(s, "{'execute':'cont'}");
+            asked = true;
+        }
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
 }
 
 static void test_identity_and_permissions(void)
@@ -317,6 +392,144 @@ static void test_vector_registers(void)
     g_assert_cmpint(unlink(log), ==, 0);
 }
 
+/*
+ * The controller's model choices in one 64-bit access: a write programs all
+ * six fields, clears completion, and publishes completion and the sampled
+ * level only once the slot's virtual delay has passed. Start, completion and
+ * that delay are the model's; none is a claim about Bedrock timing.
+ *
+ * No endpoint is fitted -- which part IP45 carries is not established -- so
+ * the bus is empty and every slot reports the bare wire. A released wire
+ * samples one, a wire held low samples zero, and a reset finds no presence.
+ * The zero-sampling slot is what separates this from a controller whose
+ * sampled bit is fixed.
+ */
+static void test_microlan_slot(void)
+{
+    static const struct {
+        unsigned int pulse;
+        uint64_t data;
+    } slots[] = {
+        { MICROLAN_PULSE_SHORT, MICROLAN_RXDATA },
+        { MICROLAN_PULSE_ZERO, 0 },
+        { MICROLAN_PULSE_RESET, MICROLAN_RXDATA },
+    };
+    QTestState *s = lb_start_clock("");
+
+    for (size_t i = 0; i < ARRAY_SIZE(slots); i++) {
+        uint64_t word = microlan_word(slots[i].pulse);
+        uint64_t timing = word & MICROLAN_TIMING;
+
+        g_assert_cmphex(word & (3ULL << 32), ==, 3ULL << 32);
+        qtest_writeq(s, LB_BASE + MICROLAN, word);
+
+        /* Bits 1:0 belong to the device: the guest's copies do not stick. */
+        g_assert_cmphex(qtest_readq(s, LB_BASE + MICROLAN), ==, timing);
+        /* Polling is not a slot, and the deadline has not arrived. */
+        for (unsigned int poll = 0; poll < 4; poll++) {
+            g_assert_cmphex(qtest_readq(s, LB_BASE + MICROLAN), ==, timing);
+        }
+
+        qtest_clock_step(s, 2 * MICROLAN_SLOT_NS);
+        g_assert_cmphex(qtest_readq(s, LB_BASE + MICROLAN), ==,
+                        timing | MICROLAN_DONE | slots[i].data);
+    }
+
+    /* Bits 63:34 are reserved and store nothing. */
+    qtest_writeq(s, LB_BASE + MICROLAN, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + MICROLAN), ==, MICROLAN_TIMING);
+    qtest_quit(s);
+}
+
+/*
+ * Half a register cannot start a wire slot. The block takes one aligned
+ * eight-byte access -- the model's choice, so that QEMU cannot split a
+ * guest's write into two and run two slots -- and the whole access carries
+ * the dividers above bit 31.
+ */
+static void test_microlan_rejects_a_narrow_access(void)
+{
+    QTestState *s = lb_start_clock("");
+
+    qtest_writel(s, LB_BASE + MICROLAN, 0xffffffff);
+    qtest_writel(s, LB_BASE + MICROLAN + 4, 0xffffffff);
+    qtest_clock_step(s, 2 * MICROLAN_SLOT_NS);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + MICROLAN), ==, 0);
+
+    qtest_writeq(s, LB_BASE + MICROLAN,
+                 microlan_word(MICROLAN_PULSE_ZERO));
+    g_assert_cmphex(qtest_readq(s, LB_BASE + MICROLAN) >> 32, ==, 3);
+    qtest_quit(s);
+}
+
+/*
+ * A machine reset and the block's own soft reset both cancel a slot in
+ * flight, so completion cannot appear afterwards. Zero is the model's
+ * chosen value for the register: no public source gives a power-on state.
+ */
+static void test_microlan_reset_cancels_a_pending_slot(void)
+{
+    QTestState *s = lb_start_clock("");
+
+    qtest_writeq(s, LB_BASE + MICROLAN,
+                 microlan_word(MICROLAN_PULSE_SHORT));
+    qtest_system_reset(s);
+    qtest_clock_step(s, 20 * MICROLAN_SLOT_NS);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + MICROLAN), ==, 0);
+
+    qtest_writeq(s, LB_BASE + MICROLAN,
+                 microlan_word(MICROLAN_PULSE_SHORT));
+    qtest_writeq(s, LB_BASE + SOFT_RESET, 1);
+    qtest_clock_step(s, 20 * MICROLAN_SLOT_NS);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + MICROLAN), ==, 0);
+
+    /* The controller still works: cancelling is not wedging. */
+    qtest_writeq(s, LB_BASE + MICROLAN,
+                 microlan_word(MICROLAN_PULSE_SHORT));
+    qtest_clock_step(s, 2 * MICROLAN_SLOT_NS);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + MICROLAN) & MICROLAN_DONE, ==,
+                    MICROLAN_DONE);
+    qtest_quit(s);
+}
+
+/*
+ * What a second write during a slot does is not published, so the model
+ * refuses it rather than guessing a transaction semantics. The first slot
+ * runs to its own completion with its own timing, and the discarded write
+ * is logged. Its pulse would have sampled the other level, so a model that
+ * quietly took it would be visible here.
+ */
+static void test_microlan_write_during_a_slot_is_refused(void)
+{
+    g_autofree char *log = g_strdup_printf("%s/sn1-lb-microlan-XXXXXX.log",
+                                           g_get_tmp_dir());
+    g_autofree char *extra = NULL;
+    g_autofree char *found = NULL;
+    const uint64_t first = microlan_word(MICROLAN_PULSE_SHORT);
+    const uint64_t second = microlan_word(MICROLAN_PULSE_ZERO);
+    QTestState *s;
+    int fd = g_mkstemp(log);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    extra = g_strdup_printf("-d unimp -D %s", log);
+    s = lb_start_clock(extra);
+
+    qtest_writeq(s, LB_BASE + MICROLAN, first);
+    qtest_writeq(s, LB_BASE + MICROLAN, second);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + MICROLAN), ==,
+                    first & MICROLAN_TIMING);
+    qtest_clock_step(s, 2 * MICROLAN_SLOT_NS);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + MICROLAN), ==,
+                    (first & MICROLAN_TIMING) | MICROLAN_DONE |
+                    MICROLAN_RXDATA);
+    qtest_quit(s);
+
+    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+    g_assert_nonnull(strstr(found, "while a slot is pending"));
+    g_assert_cmpint(unlink(log), ==, 0);
+}
+
 static void wait_for_migration(QTestState *from)
 {
     int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
@@ -344,7 +557,13 @@ static void test_migration(void)
     g_autofree char *socket = NULL;
     g_autofree char *uri = NULL;
     QTestState *from, *to;
-    /* One entry per migrated field, each differing from its reset value. */
+    /*
+     * One entry per migrated field that a write can set directly, each
+     * differing from its reset value. The MicroLAN register, its pending
+     * sample and its slot deadline migrate too but cannot go in this table:
+     * writing that register starts a wire slot, so its value depends on when
+     * the clock is stepped. test_microlan_migration covers those three.
+     */
     static const struct {
         uint64_t offset;
         uint64_t written;
@@ -400,6 +619,58 @@ static void test_migration(void)
     g_assert_cmpint(rmdir(directory), ==, 0);
 }
 
+/*
+ * The stream is written with a slot in flight. The destination has to finish
+ * it once, with the level the source's wire returned rather than a level
+ * recomputed after load: the slot held the wire low and sampled zero, while
+ * a controller that dropped the pending level would fall back to the reset
+ * level and report one.
+ */
+static void test_microlan_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *directory = g_dir_make_tmp("sn1-lb-microlan-XXXXXX",
+                                                &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    const uint64_t timing = microlan_word(MICROLAN_PULSE_ZERO) &
+                            MICROLAN_TIMING;
+    QTestState *from, *to;
+    uint64_t after;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = lb_start_clock("");
+    to = lb_start("-incoming defer");
+
+    qtest_writeq(from, LB_BASE + MICROLAN,
+                 microlan_word(MICROLAN_PULSE_ZERO));
+    g_assert_cmphex(qtest_readq(from, LB_BASE + MICROLAN), ==, timing);
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
+    wait_for_migration(from);
+    lb_wait_for_clock_running(to);
+
+    /* Nothing completed in transit: the deadline is still ahead. */
+    g_assert_cmphex(qtest_readq(to, LB_BASE + MICROLAN), ==, timing);
+    qtest_clock_step(to, 2 * MICROLAN_SLOT_NS);
+    after = qtest_readq(to, LB_BASE + MICROLAN);
+    g_assert_cmphex(after, ==, timing | MICROLAN_DONE);
+
+    /* And it stays finished: no re-armed timer, no second slot. */
+    qtest_clock_step(to, 100 * MICROLAN_SLOT_NS);
+    g_assert_cmphex(qtest_readq(to, LB_BASE + MICROLAN), ==, after);
+
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(directory), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -416,6 +687,15 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-lb/scratch-reset",
                    test_scratch_aliases_and_reset);
     qtest_add_func("sn1/bedrock-lb/vector-registers", test_vector_registers);
+    qtest_add_func("sn1/bedrock-lb/microlan-slot", test_microlan_slot);
+    qtest_add_func("sn1/bedrock-lb/microlan-narrow-access",
+                   test_microlan_rejects_a_narrow_access);
+    qtest_add_func("sn1/bedrock-lb/microlan-reset",
+                   test_microlan_reset_cancels_a_pending_slot);
+    qtest_add_func("sn1/bedrock-lb/microlan-write-during-slot",
+                   test_microlan_write_during_a_slot_is_refused);
     qtest_add_func("sn1/bedrock-lb/migration", test_migration);
+    qtest_add_func("sn1/bedrock-lb/microlan-migration",
+                   test_microlan_migration);
     return g_test_run();
 }

@@ -2,7 +2,9 @@
 #ifndef HW_MISC_SGI_BEDROCK_LB_H
 #define HW_MISC_SGI_BEDROCK_LB_H
 
+#include "hw/1wire/onewire.h"
 #include "hw/core/sysbus.h"
+#include "qemu/timer.h"
 
 #define TYPE_SGI_BEDROCK_LB "sgi-bedrock-lb"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockLBState, SGI_BEDROCK_LB)
@@ -15,6 +17,16 @@ struct SGIBedrockLBState {
     qemu_irq soft_reset;
     qemu_irq error;
 
+    /*
+     * The MicroLAN wire and the controller's slot deadline. The endpoint is
+     * the machine's to hang here; which part IP45 carries is not established,
+     * so nothing is composed by default and the bus can be empty.
+     */
+    OneWireBus *microlan_bus;
+    QEMUTimer *microlan_timer;
+    /* Sampled when the slot starts, published when its deadline arrives. */
+    bool microlan_level;
+
     uint32_t manufacturer;
     uint32_t part_number;
     uint32_t revision;
@@ -26,6 +38,7 @@ struct SGIBedrockLBState {
     uint64_t io_permission;
     uint64_t region_present;
     uint64_t nodes_absent;
+    uint64_t microlan;
     uint64_t errors;
     uint64_t error_header[2];
     uint64_t error_data;
