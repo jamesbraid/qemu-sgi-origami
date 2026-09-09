@@ -17,6 +17,7 @@ struct SGIBedrockMDState {
     MemoryRegion directory_mmio;
     MemoryRegion *node_mr;
     uint64_t *directory;
+    uint64_t *page_counters;
     uint32_t directory_entries;
     uint64_t current_cell;
     uint64_t memory_config;
