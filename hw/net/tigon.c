@@ -474,27 +474,20 @@ static MemTxResult tigon_dma_read_bd(TigonState *s, uint64_t addr,
  * decode and node-qualified fabric routing, byte lanes alone skipped. On a
  * machine without the Bridge the device's own bus space is already plain.
  */
-static AddressSpace *tigon_payload_as(TigonState *s)
-{
-    AddressSpace *plain = sgi_bridge_plain_dma_as(PCI_DEVICE(s));
-
-    return plain ? plain : pci_get_address_space(PCI_DEVICE(s));
-}
-
 static MemTxResult tigon_dma_read_frame(TigonState *s, uint64_t addr,
                                         uint8_t *dst, uint32_t len)
 {
     /*
      * Ordered descriptor reads precede this; ordered status writes publish it.
      */
-    return dma_memory_read_relaxed(tigon_payload_as(s), addr, dst, len);
+    return dma_memory_read_relaxed(s->payload_as, addr, dst, len);
 }
 
 static MemTxResult tigon_dma_write_frame(TigonState *s, uint64_t addr,
                                          const uint8_t *src, uint32_t len)
 {
     /* Ordered return and producer writes publish these packet bytes. */
-    return dma_memory_write_relaxed(tigon_payload_as(s), addr, src, len);
+    return dma_memory_write_relaxed(s->payload_as, addr, src, len);
 }
 
 /*
@@ -1544,6 +1537,7 @@ static void tigon_reset_hold(Object *obj, ResetType type)
 static void tigon_realize(PCIDevice *dev, Error **errp)
 {
     TigonState *s = TIGON(dev);
+    AddressSpace *plain;
 
     if (s->sram_size == 0) {
         error_setg(errp, "tigon: sram-size must be non-zero");
@@ -1580,6 +1574,11 @@ static void tigon_realize(PCIDevice *dev, Error **errp)
     memory_region_add_subregion(&s->bar, 0, &s->reg);
     memory_region_add_subregion(&s->bar, TIGON_SRAM_WINDOW, &s->sram_win);
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar);
+
+    /* The device cannot move buses after realize, so resolve this once. */
+    plain = sgi_bridge_plain_dma_as(dev);
+    s->payload_as = plain ? plain : pci_get_address_space(dev);
+    trace_tigon_payload_dma_route(plain ? "bridge-plain" : "pci");
 
     qemu_macaddr_default_if_unset(&s->conf.macaddr);
     s->station_addr = s->conf.macaddr;

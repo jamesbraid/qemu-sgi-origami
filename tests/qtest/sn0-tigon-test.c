@@ -542,6 +542,16 @@ static QTestState *tigon_init_netdev_128m_dma_traced(int guest_fd,
                        guest_fd, logfile);
 }
 
+static QTestState *tigon_init_netdev_payload_route_traced(
+    int guest_fd, const char *logfile)
+{
+    return qtest_initf("-M origin200 "
+                       "-netdev socket,fd=%d,id=n0 "
+                       "-device tigon,addr=3,mac=" TIGON_MAC ",netdev=n0 "
+                       "-d trace:tigon_payload_dma_route -D %s",
+                       guest_fd, logfile);
+}
+
 static char *tigon_test_log_new(void)
 {
     char *logfile = NULL;
@@ -604,6 +614,18 @@ static unsigned count_tigon_dma_in_range(const char *log, uint64_t start,
             count++;
         }
         cursor += sizeof(event) - 1;
+    }
+    return count;
+}
+
+static unsigned count_log_matches(const char *log, const char *needle)
+{
+    const char *cursor = log;
+    unsigned count = 0;
+
+    while ((cursor = strstr(cursor, needle)) != NULL) {
+        count++;
+        cursor += strlen(needle);
     }
     return count;
 }
@@ -709,6 +731,9 @@ static const uint8_t test_frame[60] = {
     0x08, 0x06,                              /* ethertype ARP */
     0xde, 0xad, 0xbe, 0xef, 0x01, 0x02, 0x03, 0x04,
 };
+
+static void post_std_rx_buffer(QTestState *qts, unsigned slot, uint32_t phys,
+                               uint16_t buf_idx, uint32_t buf_len);
 
 static void test_transmit(const void *data)
 {
@@ -833,6 +858,64 @@ static void test_descriptor_dma_batches_producer_last(const void *data)
 
     qtest_quit(qts);
     close(sv[0]);
+    unlink(logfile);
+}
+
+/* The immutable payload DMA route is resolved once, not for every transfer. */
+static void test_payload_dma_route_resolved_once(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    g_autofree char *logfile = tigon_test_log_new();
+    g_autofree char *log = NULL;
+    uint8_t got[sizeof(test_frame)];
+    unsigned i;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev_payload_route_traced(sv[1], logfile);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+    go_operational(qts);
+
+    /* One doorbell drains two transmit payloads. */
+    for (i = 0; i < 2; i++) {
+        uint64_t desc = TX_RING_PHYS + (uint64_t)i * 16;
+        uint64_t payload = TX_BUF_PHYS + (uint64_t)i * 0x100;
+
+        qtest_memwrite(qts, payload, test_frame, sizeof(test_frame));
+        write_rcb_addr(qts, desc, payload);
+        qtest_writel(qts, desc + 8,
+                     ((uint32_t)sizeof(test_frame) << 16) | TI_BDFLAG_END);
+        qtest_writel(qts, desc + 12, 0);
+    }
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 2);
+    for (i = 0; i < 2; i++) {
+        g_assert_cmpint(net_recv_frame(sv[0], got, sizeof(got)), ==,
+                        sizeof(test_frame));
+        g_assert_cmpmem(got, sizeof(got), test_frame, sizeof(test_frame));
+    }
+
+    /* Two incoming packets exercise the receive payload route too. */
+    for (i = 0; i < 2; i++) {
+        post_std_rx_buffer(qts, i, RX_BUF_PHYS + (uint64_t)i * 0x100,
+                           i, 2048);
+    }
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 2);
+    net_send_frame(sv[0], test_frame, sizeof(test_frame));
+    net_send_frame(sv[0], test_frame, sizeof(test_frame));
+    for (i = 0; i < 200; i++) {
+        if (qtest_readl(qts, RETURN_PROD_PHYS) == 2) {
+            break;
+        }
+        g_usleep(5000);
+    }
+    g_assert_cmphex(qtest_readl(qts, RETURN_PROD_PHYS), ==, 2);
+
+    qtest_quit(qts);
+    close(sv[0]);
+    g_assert_true(g_file_get_contents(logfile, &log, NULL, NULL));
+    g_assert_cmpuint(count_log_matches(log, "tigon_payload_dma_route "), ==,
+                     1);
     unlink(logfile);
 }
 
@@ -2661,6 +2744,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/tigon/transmit", NULL, test_transmit);
     qtest_add_data_func("/sn0/tigon/descriptor-dma-batches-producer-last",
                         NULL, test_descriptor_dma_batches_producer_last);
+    qtest_add_data_func("/sn0/tigon/payload-dma-route-resolved-once", NULL,
+                        test_payload_dma_route_resolved_once);
     qtest_add_data_func("/sn0/tigon/transmit-payload-dma-error", NULL,
                         test_transmit_payload_dma_error);
     qtest_add_data_func("/sn0/tigon/transmit-fragment-dma-error-retry", NULL,

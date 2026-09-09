@@ -558,6 +558,7 @@ tigon_rx_ring(const char *ring, uint32_t len, uint32_t posted) "%s ring, %u byte
 tigon_irq_line(unsigned level, unsigned pending, unsigned holdoff) "line %u (pending %u holdoff %u)"
 tigon_coal_write(const char *reg, uint32_t val) "%s = %u"
 tigon_rx_doorbell(const char *ring, uint32_t prod) "%s ring producer -> %u"
+tigon_payload_dma_route(const char *route) "%s"
 
 # xframe.c
 xframe_rx_descriptor_fetch(uint64_t addr, unsigned size) "addr 0x%" PRIx64 " size %u"
