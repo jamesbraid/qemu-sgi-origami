@@ -29,4 +29,12 @@ void sn0_origin2000_xtalk_set_test_board_part(SN0MachineState *machine,
 void sn0_origin2000_xtalk_set_test_crossbow_failure(SN0MachineState *machine,
                                                     int index);
 
+/*
+ * Force one base I/O PCI function to be refused a slot, leaving the board
+ * part-built the way a function that fails inside its own realize does;
+ * -1 for none.
+ */
+void sn0_origin2000_xtalk_set_test_function_failure(SN0MachineState *machine,
+                                                    int index);
+
 #endif

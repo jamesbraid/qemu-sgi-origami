@@ -131,6 +131,9 @@ struct SN0XtalkAttachTest {
     bool refuse_board;
     /* Make the second switch refuse to realize, for the unwind past it. */
     bool refuse_crossbow;
+    /* Refuse the last PCI function, for a board that cannot be finished. */
+    bool refuse_function;
+    bool refused_again;
     /* Tear the assembly down after it attached, as a machine owner would. */
     bool teardown;
     bool released;
@@ -161,6 +164,22 @@ static bool xtalk_attach_test_get_refuse(Object *obj, Error **errp)
 static void xtalk_attach_test_set_refuse(Object *obj, bool value, Error **errp)
 {
     XTALK_ATTACH_TEST(obj)->refuse_board = value;
+}
+
+static bool xtalk_attach_test_get_refuse_function(Object *obj, Error **errp)
+{
+    return XTALK_ATTACH_TEST(obj)->refuse_function;
+}
+
+static void xtalk_attach_test_set_refuse_function(Object *obj, bool value,
+                                                  Error **errp)
+{
+    XTALK_ATTACH_TEST(obj)->refuse_function = value;
+}
+
+static bool xtalk_attach_test_get_refused_again(Object *obj, Error **errp)
+{
+    return XTALK_ATTACH_TEST(obj)->refused_again;
 }
 
 static bool xtalk_attach_test_get_refuse_crossbow(Object *obj, Error **errp)
@@ -374,6 +393,34 @@ static void xtalk_attach_test_init(MachineState *machine)
         error_free(err);
         sn0_origin2000_xtalk_set_test_crossbow_failure(sn0, -1);
     }
+    /*
+     * A board that cannot be finished. The last function the descriptor
+     * names is the one that takes the ethernet configuration; the hook
+     * refuses it a slot, which is a refusal from the PCI core rather than
+     * from inside the chip, and leaves the assembly holding exactly what a
+     * refusal from inside would leave. It cannot tell the two apart, so it
+     * treats the board as spent either way -- and the machine stays failed
+     * rather than coming up with a second board and no ethernet address.
+     */
+    if (test->refuse_function) {
+        int last = (int)SN0_MACHINE(machine)->composition
+                       ->io_boards[0].pci_count - 1;
+
+        sn0_origin2000_xtalk_set_test_function_failure(sn0, last);
+        err = NULL;
+        g_assert(!sn0_origin2000_xtalk_attach(sn0, &err));
+        g_assert(err);
+        error_free(err);
+        sn0_origin2000_xtalk_set_test_function_failure(sn0, -1);
+
+        err = NULL;
+        g_assert(!sn0_origin2000_xtalk_attach(sn0, &err));
+        g_assert(err);
+        g_assert(strstr(error_get_pretty(err), "cannot be attached again"));
+        error_free(err);
+        test->refused_again = true;
+        return;
+    }
 
     if (!sn0_origin2000_xtalk_attach(sn0, &error_fatal)) {
         return;
@@ -413,6 +460,11 @@ static void xtalk_attach_test_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_bool(oc, "refuse-crossbow",
                                    xtalk_attach_test_get_refuse_crossbow,
                                    xtalk_attach_test_set_refuse_crossbow);
+    object_class_property_add_bool(oc, "refuse-function",
+                                   xtalk_attach_test_get_refuse_function,
+                                   xtalk_attach_test_set_refuse_function);
+    object_class_property_add_bool(oc, "refused-again",
+                                   xtalk_attach_test_get_refused_again, NULL);
     object_class_property_add_bool(oc, "teardown",
                                    xtalk_attach_test_get_teardown,
                                    xtalk_attach_test_set_teardown);

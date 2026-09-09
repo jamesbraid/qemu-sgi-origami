@@ -88,9 +88,16 @@ struct SN0Origin2000XtalkState {
     SN0Origin2000XtalkSource source[ORIGIN2000_XTALK_NODES];
     SN0Origin2000XtalkDestination destination[ORIGIN2000_XTALK_NODES];
     bool attached;
+    /*
+     * A board was built far enough for a function to take host
+     * configuration, and could not be finished. Nothing gives that back,
+     * so there is no honest machine left to attach into.
+     */
+    bool spent;
 #ifdef CONFIG_SN0_XTALK_ASSEMBLY_TEST
     const char *test_board_part;
     int test_crossbow_failure;
+    int test_function_failure;
 #endif
     SN0Origin2000XtalkBoard board[ORIGIN2000_XTALK_IO_BOARDS];
     bool cleaned;
@@ -109,6 +116,22 @@ static ObjectUnparent *parent_unparent;
 static void sn0_origin2000_xtalk_arm_hooks(SN0Origin2000XtalkState *s)
 {
     s->test_crossbow_failure = -1;
+    s->test_function_failure = -1;
+}
+
+/*
+ * Which slot a function asks the chip for. The hook sends one function to a
+ * slot this chip reserves, so the PCI core refuses it through its own path
+ * and leaves behind exactly what a function that refuses leaves behind.
+ */
+static int sn0_origin2000_xtalk_function_devfn(SN0Origin2000XtalkState *s,
+                                               const SN0ModelComponent *fn,
+                                               size_t index)
+{
+    if ((int)index == s->test_function_failure) {
+        return PCI_DEVFN(SGI_BRIDGE_PINS, 0);
+    }
+    return PCI_DEVFN(fn->device, fn->function);
 }
 
 static const char *sn0_origin2000_xtalk_board_part(
@@ -137,9 +160,22 @@ void sn0_origin2000_xtalk_set_test_crossbow_failure(SN0MachineState *machine,
 {
     machine->origin2000_xtalk->test_crossbow_failure = index;
 }
+
+void sn0_origin2000_xtalk_set_test_function_failure(SN0MachineState *machine,
+                                                    int index)
+{
+    machine->origin2000_xtalk->test_function_failure = index;
+}
 #else
 static void sn0_origin2000_xtalk_arm_hooks(SN0Origin2000XtalkState *s)
 {
+}
+
+static int sn0_origin2000_xtalk_function_devfn(SN0Origin2000XtalkState *s,
+                                               const SN0ModelComponent *fn,
+                                               size_t index)
+{
+    return PCI_DEVFN(fn->device, fn->function);
 }
 
 static const char *sn0_origin2000_xtalk_board_part(
@@ -288,7 +324,8 @@ static void sn0_origin2000_xtalk_build_crossbows(SN0Origin2000XtalkState *s)
  */
 static PCIDevice *sn0_origin2000_xtalk_pci_function(
     SN0Origin2000XtalkBoard *board, const SN0ModelIoBoard *record,
-    const SN0ModelComponent *function, unsigned int scsi_index, Error **errp)
+    const SN0ModelComponent *function, unsigned int scsi_index, int devfn,
+    Error **errp)
 {
     PCIBus *bus = PCI_HOST_BRIDGE(board->bridge)->bus;
     g_autofree char *name = NULL;
@@ -297,19 +334,17 @@ static PCIDevice *sn0_origin2000_xtalk_pci_function(
     switch (function->kind) {
     case SN0_COMPONENT_ISP1040:
         name = g_strdup_printf("isp%u", scsi_index);
-        dev = pci_new(PCI_DEVFN(function->device, function->function),
-                      TYPE_QLOGIC_ISP1040);
+        dev = pci_new(devfn, TYPE_QLOGIC_ISP1040);
         object_property_add_child(board->owner, name, OBJECT(dev));
         if (!pci_realize_and_unref(dev, bus, errp)) {
-            return NULL;
+            goto refused;
         }
         pci_set_byte(dev->config + PCI_REVISION_ID, function->revision);
         qlogic_isp_handle_legacy_cmdline(DEVICE(dev));
         return dev;
 
     case SN0_COMPONENT_IOC3:
-        dev = pci_new(PCI_DEVFN(function->device, function->function),
-                      TYPE_SGI_IOC3);
+        dev = pci_new(devfn, TYPE_SGI_IOC3);
         object_property_add_child(board->owner, "ioc3", OBJECT(dev));
         qdev_prop_set_uint16(DEVICE(dev), "subsystem-id",
                              function->subsystem_id);
@@ -322,7 +357,7 @@ static PCIDevice *sn0_origin2000_xtalk_pci_function(
                             SGI_IOC3_TIMEKEEPER_NONE);
         qdev_prop_set_uint64(DEVICE(dev), "onewire-serial", function->serial);
         if (!pci_realize_and_unref(dev, bus, errp)) {
-            return NULL;
+            goto refused;
         }
         pci_set_byte(dev->config + PCI_REVISION_ID, function->revision);
         /* Board wiring, not PCI INTx: the chip drives a Bridge pin direct. */
@@ -334,6 +369,15 @@ static PCIDevice *sn0_origin2000_xtalk_pci_function(
     default:
         g_assert_not_reached();
     }
+
+refused:
+    /*
+     * Nothing to undo here. pci_realize_and_unref() hands the caller's
+     * reference back and leaves the refused device parented, but a board
+     * short of a function is always released, and releasing the chip
+     * unparents everything on the bus it carries -- this device included.
+     */
+    return NULL;
 }
 
 /*
@@ -418,14 +462,33 @@ static bool sn0_origin2000_xtalk_fit_board(SN0Origin2000XtalkState *s,
         if (board->pci[i]) {
             continue;
         }
-        board->pci[i] = sn0_origin2000_xtalk_pci_function(board, record,
-                                                          function, instance,
-                                                          errp);
+        board->pci[i] = sn0_origin2000_xtalk_pci_function(
+            board, record, function, instance,
+            sn0_origin2000_xtalk_function_devfn(s, function, i), errp);
         if (!board->pci[i]) {
             return false;
         }
     }
 
+    return true;
+}
+
+/*
+ * Whether this board is whole: the chip realized, and every function the
+ * descriptor names built behind it.
+ */
+static bool sn0_origin2000_xtalk_board_complete(SN0Origin2000XtalkBoard *board)
+{
+    size_t i;
+
+    if (!board->bridge || !DEVICE(board->bridge)->realized || !board->pci) {
+        return false;
+    }
+    for (i = 0; i < board->pci_count; i++) {
+        if (!board->pci[i]) {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -557,24 +620,31 @@ static void sn0_origin2000_xtalk_cleanup_attach(SN0Origin2000XtalkState *s,
         SN0Origin2000XtalkBoard *board = &s->board[i];
 
         /*
-         * A board whose chip realized survives a failed attach. Its
-         * functions hold host configuration the machine claimed once and
-         * cannot claim again: legacy SCSI buses take their numbers from a
-         * counter that only counts up, and an ethernet configuration is
-         * marked used the first time a device takes it. A second board
-         * would come up without the disks and without the station address
-         * the command line asked for, and nothing would say so. Nothing
-         * about the board depends on the switches, so the replacement
-         * switch is handed this same board's face.
+         * A whole board survives a failed attach. Its functions hold host
+         * configuration the machine took once and cannot take again: legacy
+         * SCSI buses draw their numbers from a counter that only counts up,
+         * and an ethernet configuration is marked used the first time a
+         * device takes it. Nothing about the board depends on the switches,
+         * so the replacement switch is handed this same board's face.
          *
-         * A chip that never realized has claimed nothing -- its functions
-         * are built on the bus it creates -- so that board is released and
-         * built again.
+         * A board with no function array never reached the loop that builds
+         * them, so it has taken nothing and is released and built again.
+         *
+         * In between is a board that started building functions and could
+         * not finish, and there is no honest way out of it. A function takes
+         * its host configuration partway through its own realize, and from
+         * out here the two halves of that realize look the same, so a board
+         * short of complete has to be assumed to have taken something.
+         * Release it and refuse to attach again, rather than build a second
+         * board that comes up quietly missing what the first one took.
          */
-        if (terminal || !board->bridge ||
-            !DEVICE(board->bridge)->realized) {
-            sn0_origin2000_xtalk_release_board(board);
+        if (!terminal && sn0_origin2000_xtalk_board_complete(board)) {
+            continue;
         }
+        if (!terminal && board->pci) {
+            s->spent = true;
+        }
+        sn0_origin2000_xtalk_release_board(board);
     }
     sn0_origin2000_xtalk_settle_releases();
     if (terminal) {
@@ -586,7 +656,7 @@ static void sn0_origin2000_xtalk_cleanup_attach(SN0Origin2000XtalkState *s,
                 destination->initialized = false;
             }
         }
-    } else {
+    } else if (!s->spent) {
         /*
          * What a retry needs back. The switches are built again rather than
          * reused: a switch keeps the endpoints it was given and refuses a
@@ -595,6 +665,10 @@ static void sn0_origin2000_xtalk_cleanup_attach(SN0Origin2000XtalkState *s,
          * left alone in the other direction -- they are storage of this
          * object's, they can be initialized once only, and nothing is
          * pointing at them now that the switches are gone.
+         *
+         * A spent assembly gets none, because nothing will attach again and
+         * a switch nobody realizes is a device left unrealized under the
+         * machine, which qdev refuses at the end of machine init.
          */
         sn0_origin2000_xtalk_build_crossbows(s);
     }
@@ -776,6 +850,13 @@ bool sn0_origin2000_xtalk_attach(SN0MachineState *machine, Error **errp)
     s = machine->origin2000_xtalk;
     if (s->attached) {
         error_setg(errp, "Origin 2000 Crosstalk is already attached");
+        return false;
+    }
+    if (s->spent) {
+        error_setg(errp, "Origin 2000 Crosstalk cannot be attached again: a "
+                         "base I/O board failed part-built, and the host "
+                         "configuration its functions took cannot be given "
+                         "back");
         return false;
     }
     model = machine->composition;
