@@ -37,6 +37,7 @@ struct SGIBedrockState {
     uint8_t inbound_device;
     uint64_t device_mask_reset;
     MemoryRegion *dma_mr;
+    MemoryRegion *node_mr;
     MemoryRegion *l1_uart_mr;
     AddressSpace dma_as;
     bool dma_as_initialized;

@@ -8,11 +8,16 @@
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockMDState, SGI_BEDROCK_MD)
 
 #define SGI_BEDROCK_MD_SIZE 0x60048
+#define SGI_BEDROCK_MD_DIRECTORY_SIZE 0x40000000
 #define SGI_BEDROCK_MD_STORAGE 14
 
 struct SGIBedrockMDState {
     SysBusDevice parent_obj;
     MemoryRegion mmio;
+    MemoryRegion directory_mmio;
+    MemoryRegion *node_mr;
+    uint64_t *directory;
+    uint32_t directory_entries;
     uint64_t current_cell;
     uint64_t memory_config;
     uint64_t refresh;
