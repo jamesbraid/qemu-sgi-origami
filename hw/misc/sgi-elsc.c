@@ -5,7 +5,7 @@
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * Checksummed ASCII command/response channel, bus-arbitration broadcaster
+ * Checksummed ASCII command/response channel, bus-arbitration grant publisher
  * and AUX serial endpoint. The protocol, vocabulary and arbitration rules
  * are specified in docs/specs/sgi-elsc.rst.
  */
@@ -1124,57 +1124,23 @@ static uint8_t elsc_signal_byte(unsigned processor_code, bool signal2)
     return signal2 ? signal1 + 8 : signal1;
 }
 
-/* One broadcast of value; an empty bus is a no-op. */
-static void elsc_broadcast(SGIElscState *s, uint8_t value)
+/* Publish one address-only grant; the grant address is not acknowledged. */
+static void elsc_publish_grant(SGIElscState *s, uint8_t value)
 {
     bool diagnostic = s->diagnostic != NULL;
 
     if (diagnostic) {
         s->diagnostic_arbitration_broadcast = true;
     }
-    if (i2c_start_transfer(s->bus, I2C_BROADCAST, false)) {
-        if (diagnostic) {
-            s->diagnostic_arbitration_broadcast = false;
-        }
-        return;
-    }
-    i2c_send(s->bus, value);
+    i2c_start_transfer(s->bus, value >> 1, value & 1);
     i2c_end_transfer(s->bus);
     if (diagnostic) {
         s->diagnostic_arbitration_broadcast = false;
     }
 }
 
-/*
- * Model choices: a gap a polling guest can observe; a held signal
- * re-presented for its whole slot, a duration no plausible poll cadence
- * can miss. The rotation is purely timer-driven -- on the bus a waiting
- * processor's own command retries are indistinguishable from its
- * answer, so no traffic ends a hold early. The real controller's
- * pacing is unobserved; see the bus arbitration section of
- * docs/specs/sgi-elsc.rst.
- */
-#define ELSC_ARB_GAP_US        50
-#define ELSC_ARB_REPRESENT_US  50
-#define ELSC_ARB_SLOT_BASE_US  (10 * 1000)
-#define ELSC_ARB_RETRY_US      20
-
-/*
- * Slot lengths vary, 10.0 to 11.6ms, as a pure function of (code,
- * revolution) -- deterministic, so record/replay and migration stay
- * exact. A metronomic ring admits a stable phase lock from a guest
- * polling loop with a commensurate period, both clocks being the one
- * virtual clock; real controller and processor oscillators are not
- * synchronized. 17 is prime and coprime to the ring's eight codes and
- * to both multipliers, so each code walks all seventeen lengths across
- * revolutions and consecutive revolutions never repeat a ring period.
- */
-static int64_t elsc_arb_slot_us(uint32_t code, uint32_t rev)
-{
-    uint32_t vary = (code * 7 + (rev % 17) * 13) % 17;
-
-    return ELSC_ARB_SLOT_BASE_US + (int64_t)vary * 100;
-}
+#define ELSC_ARB_TICK_US  1000
+#define ELSC_ARB_RETRY_US 20
 
 /*
  * Whether something waits for the given code's processor: console
@@ -1188,68 +1154,30 @@ static bool elsc_arb_signal2(SGIElscState *s, uint32_t code)
             s->txpos < s->txlen);
 }
 
-/*
- * The gap is required: firmware must see its signal absent before it
- * trusts it. The hold is required too: guest poll and rotation share
- * one deterministic virtual clock, so a one-shot presentation can
- * phase-lock with the poll and a processor then never samples its own
- * slot. Deferral is by retry -- the PCF8584 never calls
- * i2c_bus_release(), so queueing would wait forever.
- */
+/* One address-only grant is published on each eligible 1ms tick. */
 static void elsc_arb_step(void *opaque)
 {
     SGIElscState *s = opaque;
     int64_t now = qemu_clock_get_us(QEMU_CLOCK_VIRTUAL);
+    bool signal2;
 
     if (i2c_bus_busy(s->bus)) {
-        /* Never mid-transaction: hold and rotation wait out the guest. */
+        /* Never advance or publish in the middle of a guest transaction. */
         timer_mod(s->arb_timer, now + ELSC_ARB_RETRY_US);
         return;
     }
 
-    if (s->arb_held) {
-        if (now < s->arb_hold_until) {
-            /*
-             * Re-present, so a poll after other traffic still finds
-             * it -- recomputed, so signal 2 stands only while its
-             * promise does: a slot whose response was consumed or
-             * whose queue drained downgrades to signal 1.
-             */
-            bool signal2 = elsc_arb_signal2(s, s->arb_code);
+    signal2 = elsc_arb_signal2(s, s->arb_code);
+    s->arb_signal = elsc_signal_byte(s->arb_code, signal2);
+    trace_sgi_elsc_arb_step(s->cpu_base, s->arb_code, s->arb_signal,
+                            signal2);
+    elsc_publish_grant(s, s->arb_signal);
 
-            s->arb_signal = elsc_signal_byte(s->arb_code, signal2);
-            elsc_broadcast(s, s->arb_signal);
-            timer_mod(s->arb_timer, now + ELSC_ARB_REPRESENT_US);
-            return;
-        }
-        /* The slot has run its length; the next code follows a gap. */
-        s->arb_held = false;
-        s->arb_code = (s->arb_code + 1) % ELSC_SIGNAL_CODE_COUNT;
-        if (s->arb_code == 0) {
-            s->arb_rev++;
-        }
+    s->arb_code = (s->arb_code + 1) % ELSC_SIGNAL_CODE_COUNT;
+    if (s->arb_code == 0) {
+        s->arb_rev++;
     }
-
-    if (!s->arb_present) {
-        elsc_broadcast(s, 0);
-        s->arb_present = true;
-        timer_mod(s->arb_timer, now + ELSC_ARB_GAP_US);
-        return;
-    }
-
-    /* signal2 promises something waits; withheld when nothing does. */
-    {
-        bool signal2 = elsc_arb_signal2(s, s->arb_code);
-
-        s->arb_signal = elsc_signal_byte(s->arb_code, signal2);
-        trace_sgi_elsc_arb_step(s->cpu_base, s->arb_code, s->arb_signal,
-                                signal2);
-        elsc_broadcast(s, s->arb_signal);
-    }
-    s->arb_present = false;
-    s->arb_held = true;
-    s->arb_hold_until = now + elsc_arb_slot_us(s->arb_code, s->arb_rev);
-    timer_mod(s->arb_timer, now + ELSC_ARB_REPRESENT_US);
+    timer_mod(s->arb_timer, now + ELSC_ARB_TICK_US);
 }
 
 /*
@@ -1435,6 +1363,19 @@ static int elsc_post_load(void *opaque, int version_id)
 {
     SGIElscState *s = opaque;
 
+    if (version_id < 12) {
+        s->arb_present = false;
+        s->arb_held = false;
+        s->arb_hold_until = 0;
+        if (s->arbitration) {
+            timer_mod(s->arb_timer,
+                      qemu_clock_get_us(QEMU_CLOCK_VIRTUAL) +
+                      ELSC_ARB_TICK_US);
+        } else {
+            timer_del(s->arb_timer);
+        }
+    }
+
     /*
      * Reject an inconsistent stream before it can drive the bottom half. A
      * pairing the model never produces -- an action past ELSC_ACTION_SHUTDOWN,
@@ -1459,7 +1400,7 @@ static int elsc_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_elsc = {
     .name = "sgi-elsc",
-    .version_id = 11,
+    .version_id = 12,
     .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_I2C_SLAVE(parent_obj, SGIElscState),
@@ -1476,14 +1417,11 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_BOOL(in_escape, SGIElscState),
         VMSTATE_BOOL(supervisor, SGIElscState),
         VMSTATE_UINT8_V(dip_switches, SGIElscState, 3),
-        /*
-         * A version-2 or -3 stream loads with these zeroed: no hold in
-         * progress, and the rotation resumes from the pending gap.
-         */
+        /* Retained only so version 4 through 11 streams remain readable. */
         VMSTATE_BOOL_V(arb_held, SGIElscState, 4),
         VMSTATE_UINT8_V(arb_signal, SGIElscState, 4),
         VMSTATE_INT64_V(arb_hold_until, SGIElscState, 4),
-        /* An older stream restarts the slot-length sequence at zero. */
+        /* Retained only so version 5 through 11 streams remain readable. */
         VMSTATE_UINT32_V(arb_rev, SGIElscState, 5),
         /*
          * An older stream loads with no owner: a response in flight
@@ -1529,12 +1467,7 @@ static const Property sgi_elsc_properties[] = {
     DEFINE_PROP_UINT32("num-cpus", SGIElscState, num_cpus, 1),
     DEFINE_PROP_UINT32("cpu-base", SGIElscState, cpu_base, 0),
     DEFINE_PROP_UINT8("dip-switches", SGIElscState, dip_switches, 0),
-    /*
-     * The synthesized arbitration rotation, on by default. An Origin 2000
-     * module publishes real address-only grants from its module controller,
-     * onto a bus with identified participants, which the broadcast's own
-     * anonymous transfer calls assert against, so a module switches it off.
-     */
+    /* Only the master module controller publishes arbitration grants. */
     DEFINE_PROP_BOOL("arbitration", SGIElscState, arbitration, true),
     DEFINE_PROP_CHR("chardev", SGIElscState, chr),
 };
@@ -1618,10 +1551,8 @@ static void elsc_format_state(SGIElscState *s, GString *buf)
         g_string_append(buf, "  pending response: none\n");
     }
     g_string_append_printf(buf,
-                           "  arbitration rotation: code %u of %u, %s\n",
-                           s->arb_code, ELSC_SIGNAL_CODE_COUNT,
-                           s->arb_held ? "holding signal"
-                           : s->arb_present ? "showing gap" : "advancing");
+                           "  arbitration rotation: next code %u of %u\n",
+                           s->arb_code, ELSC_SIGNAL_CODE_COUNT);
     g_string_append_printf(buf,
                            "  console signal (code 0): 0x%02x = signal%d"
                            " (console input %s)\n",

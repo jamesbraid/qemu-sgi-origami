@@ -98,21 +98,20 @@ struct SGIElscState {
     /*
      * The pending response's owner: the global processor code whose
      * request framed txbuf, -1 when none. While the response is
-     * unconsumed, the owner's arbitration slot presents signal 2
+     * unconsumed, the owner's arbitration grant uses signal 2
      * (elsc_arb_step()).
      */
     int32_t resp_owner;
 
     /*
-     * The arbitration broadcast rotation, free-running from realize
+     * The arbitration grant rotation, free-running from realize
      * whether or not anything polls (elsc_arb_step()).
      */
     I2CBus *bus;
     QEMUTimer *arb_timer;
     /*
-     * Whether the rotation runs at all. An Origin 2000 module's grants are
-     * real address-only traffic from its module controller, so the
-     * synthesized broadcast is switched off there.
+     * Whether this controller publishes grants. Only the master module's
+     * controller owns the rotation.
      */
     bool arbitration;
     /*
@@ -128,12 +127,12 @@ struct SGIElscState {
      */
     uint32_t cpu_base;
     uint8_t dip_switches;
-    uint32_t arb_code;    /* which of the eight codes this cycle presents */
-    uint32_t arb_rev;    /* full rotations completed; varies the slot lengths */
-    bool arb_present;    /* the gap has been shown; the signal comes next */
-    bool arb_held;       /* the signal is on the wire, held for its processor */
-    uint8_t arb_signal;  /* the held byte, latched when the hold begins */
-    int64_t arb_hold_until;   /* virtual-clock us end of the current slot */
+    uint32_t arb_code;    /* next of the eight processor codes */
+    uint32_t arb_rev;     /* full rotations completed */
+    bool arb_present;     /* legacy pre-v12 gap state, migrated only */
+    bool arb_held;        /* legacy pre-v12 hold state, migrated only */
+    uint8_t arb_signal;   /* most recently published grant */
+    int64_t arb_hold_until;   /* legacy pre-v12 deadline, migrated only */
 
     /*
      * The AUX serial port, multiplexed with the command channel by one

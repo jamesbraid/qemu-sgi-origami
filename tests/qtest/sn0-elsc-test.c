@@ -24,6 +24,7 @@
 
 #define CTL_PIN  0x80
 #define CTL_ESO  0x40
+#define CTL_ES1  0x20
 #define CTL_STA  0x04
 #define CTL_STO  0x02
 #define CTL_ACK  0x01
@@ -268,16 +269,11 @@ static void test_read_switches_roundtrip(const void *data)
 #define ARB_SIGNAL2 0xe8
 
 #define ARB_STEP_NS       (10 * 1000)
+#define ARB_TICK_NS       (1000 * 1000)
+#define ARB_RETRY_NS      (20 * 1000)
 #define ARB_MAX_STEPS     2000
-#define ARB_HOLD_ASSERT_NS (260 * 1000)  /* past the 250us threshold */
 
-/*
- * Crossing the rotation: every position is held for a slot of at
- * least 10ms, so hunting one code's signal can take most of a round
- * (up to 88.2ms with the varying slot lengths). Scan coarsely -- a
- * step this size cannot miss a held signal -- and keep the fine step
- * where a 50us gap must not fall between samples.
- */
+/* Scan more finely than the one-millisecond publication interval. */
 #define ARB_SCAN_STEP_NS  (100 * 1000)
 
 static uint64_t read_status(QTestState *qts)
@@ -290,10 +286,51 @@ static uint64_t read_data(QTestState *qts)
     return qtest_readq(qts, HUB_LOCAL + I2C_DATA);
 }
 
+static void arb_enable_observer_at(QTestState *qts, uint64_t hub)
+{
+    qtest_writeq(qts, hub + I2C_CTRL, CTL_PIN);
+    qtest_writeq(qts, hub + I2C_DATA, 0x7f);
+    qtest_writeq(qts, hub + I2C_CTRL, CTL_PIN | CTL_ES1);
+    qtest_writeq(qts, hub + I2C_DATA, 0x1c);
+    qtest_writeq(qts, hub + I2C_CTRL, CTL_PIN);
+    g_assert_cmphex(qtest_readq(qts, hub + I2C_DATA), ==, 0x7f);
+    qtest_writeq(qts, hub + I2C_DATA, 0x09);
+    qtest_writeq(qts, hub + I2C_CTRL, CTL_PIN | CTL_ESO);
+}
+
+static void arb_enable_observer(QTestState *qts)
+{
+    arb_enable_observer_at(qts, HUB_LOCAL);
+}
+
+/* Any code's grant, either half of its signal pair. */
+static bool arb_is_signal_byte(uint64_t value)
+{
+    return value >= 0xe0 && value <= 0xef;
+}
+
+/* Every grant address is otherwise unmatched on the Origin 200 I2C bus. */
+static void test_arbitration_grant_addresses_are_unmatched(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    unsigned token;
+
+    arb_enable_observer(qts);
+    for (token = ARB_SIGNAL1; token <= ARB_SIGNAL2 + 7; token++) {
+        qtest_writeq(qts, HUB_LOCAL + I2C_DATA, token);
+        qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
+                     CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
+        g_assert_cmphex(read_status(qts) & I2C_PCF_LRB, ==, I2C_PCF_LRB);
+        qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
+                     CTL_PIN | CTL_ESO | CTL_STO);
+    }
+
+    qtest_quit(qts);
+}
+
 /*
- * Loop 1: wait for neither signal value. Its own step because skipping
- * straight to "wait for the signal" passes a model that parks a signal
- * byte and never clears it.
+ * Loop 1: wait for another processor's grant. Skipping straight to "wait for
+ * the signal" passes a model that parks code 0 and never advances.
  */
 static void arb_wait_for_absence(QTestState *qts)
 {
@@ -303,8 +340,8 @@ static void arb_wait_for_absence(QTestState *qts)
         uint64_t data = read_data(qts);
         uint64_t status = read_status(qts);
 
-        if ((status & I2C_PCF_BB) &&
-            data != ARB_SIGNAL1 && data != ARB_SIGNAL2) {
+        if ((status & I2C_PCF_BB) && arb_is_signal_byte(data) &&
+            (data & 7) != 0) {
             return;
         }
         qtest_clock_step(qts, ARB_STEP_NS);
@@ -332,22 +369,6 @@ static uint8_t arb_wait_for_signal(QTestState *qts)
     return 0;
 }
 
-/* Loop 3: step the clock in small increments, asserting the same value
- * holds and the bus stays not-busy at every step, for at least the 250us
- * threshold. A model that only pulses briefly, or that lets some other
- * value leak in mid-hold, fails here rather than in loop 1 or 2. */
-static void arb_assert_held(QTestState *qts, uint8_t value, int64_t hold_ns)
-{
-    int64_t held = 0;
-
-    while (held < hold_ns) {
-        qtest_clock_step(qts, ARB_STEP_NS);
-        held += ARB_STEP_NS;
-        g_assert_true((read_status(qts) & I2C_PCF_BB) != 0);
-        g_assert_cmphex(read_data(qts), ==, value);
-    }
-}
-
 /*
  * Firmware's three-loop wait, deliberately unsynchronised to the
  * rotation's phase -- that is what makes loop 1 a real assertion.
@@ -357,12 +378,11 @@ static void test_arbitration_three_loop_wait(const void *data)
     QTestState *qts = qtest_init("-M origin200");
     uint8_t sig;
 
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    arb_enable_observer(qts);
 
     arb_wait_for_absence(qts);
     sig = arb_wait_for_signal(qts);
     g_assert(sig == ARB_SIGNAL1 || sig == ARB_SIGNAL2);
-    arb_assert_held(qts, sig, ARB_HOLD_ASSERT_NS);
 
     qtest_quit(qts);
 }
@@ -377,16 +397,14 @@ static void test_arbitration_repeats(const void *data)
     QTestState *qts = qtest_init("-M origin200");
     uint8_t first, second;
 
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    arb_enable_observer(qts);
 
     arb_wait_for_absence(qts);
     first = arb_wait_for_signal(qts);
-    arb_assert_held(qts, first, ARB_HOLD_ASSERT_NS);
 
     arb_wait_for_absence(qts);
     second = arb_wait_for_signal(qts);
     g_assert_cmphex(second, ==, first);
-    arb_assert_held(qts, second, ARB_HOLD_ASSERT_NS);
 
     qtest_quit(qts);
 }
@@ -401,7 +419,7 @@ static void test_arbitration_visits_other_processor_codes(const void *data)
     bool saw_code_0 = false, saw_code_1 = false;
     int i;
 
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    arb_enable_observer(qts);
 
     /* Several cycles' worth of steps, with margin over model timing. */
     for (i = 0; i < ARB_MAX_STEPS && !(saw_code_0 && saw_code_1); i++) {
@@ -423,25 +441,27 @@ static void test_arbitration_visits_other_processor_codes(const void *data)
 }
 
 /*
- * The broadcast must not replace a staged address byte between the two
- * MMIO writes; advancing past the hold makes that boundary deterministic.
+ * A grant is an unmatched address phase, not a payload byte. Its completed
+ * address replaces readable S0 while START retains its staged ELSC address.
  */
-static void test_arbitration_preserves_staged_start(const void *data)
+static void test_arbitration_observes_grant_with_staged_start(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
     uint8_t req[8], resp[RESP_CAP];
     uint8_t signal;
     unsigned req_len, resp_len, i;
 
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    arb_enable_observer(qts);
+
     arb_wait_for_absence(qts);
     signal = arb_wait_for_signal(qts);
-    arb_assert_held(qts, signal, ARB_HOLD_ASSERT_NS);
 
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, ELSC_ADDR << 1);
-    qtest_clock_step(qts, 100 * 1000);
+    qtest_clock_step(qts, ARB_TICK_NS);
 
-    g_assert_cmphex(read_data(qts), ==, ELSC_ADDR << 1);
+    g_assert_true((read_status(qts) & I2C_PCF_BB) != 0);
+    g_assert_true(arb_is_signal_byte(read_data(qts)));
+    g_assert_cmpuint(read_data(qts) & 7, ==, ((signal & 7) + 1) & 7);
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
                  CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
     g_assert_cmphex(read_status(qts) & I2C_PCF_LRB, ==, 0);
@@ -471,21 +491,22 @@ static void test_arbitration_preserves_staged_start(const void *data)
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
                  CTL_PIN | CTL_ESO | CTL_STO);
     arb_wait_for_absence(qts);
-    arb_wait_for_signal(qts);
+    signal = arb_wait_for_signal(qts);
 
     /* Reset also releases an address staged without a following START. */
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, ELSC_ADDR << 1);
     qtest_system_reset(qts);
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    arb_enable_observer(qts);
     arb_wait_for_absence(qts);
-    arb_wait_for_signal(qts);
+    signal = arb_wait_for_signal(qts);
 
     /* A benign control change must not abandon the staged address. */
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, ELSC_ADDR << 1);
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
                  CTL_PIN | CTL_ESO | CTL_ACK);
-    qtest_clock_step(qts, 100 * 1000);
-    g_assert_cmphex(read_data(qts), ==, ELSC_ADDR << 1);
+    qtest_clock_step(qts, ARB_TICK_NS);
+    g_assert_true(arb_is_signal_byte(read_data(qts)));
+    g_assert_cmpuint(read_data(qts) & 7, ==, ((signal & 7) + 1) & 7);
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
                  CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
     g_assert_cmphex(read_status(qts) & I2C_PCF_LRB, ==, 0);
@@ -497,241 +518,125 @@ static void test_arbitration_preserves_staged_start(const void *data)
     qtest_quit(qts);
 }
 
-/* Any code's signal, either half of its pair. */
-static bool arb_is_signal_byte(uint64_t value)
-{
-    return value >= 0xe0 && value <= 0xef;
-}
-
-/*
- * The adversarial cadence: exactly two positions of a one-shot 350us
- * rotation (50us gap plus 300us hold), so a poll phase-locked against
- * such a rotation samples positions of one parity only and never the
- * code one past the first it observed. 256 polls cover two full rounds
- * of the held rotation with margin.
- */
-#define ARB_PHASE_LOCKED_STEP_NS  (700 * 1000)
-#define ARB_PHASE_LOCKED_POLLS    256
-
-/*
- * A processor polling at a fixed cadence must find its own signal no
- * matter how that cadence phases against the rotation -- both run on
- * the same deterministic virtual clock, so an unlucky phase repeats
- * forever rather than drifting apart as it would on hardware. A signal
- * presented as a one-shot fails this: the poll below never samples the
- * target code's slot, which is how a two-node IRIX boot left one
- * processor waiting for its signal indefinitely. The signal must be
- * held until answered for every cadence to find it.
- */
-static void test_arbitration_survives_phase_locked_poll(const void *data)
+/* A fixed seven-millisecond sampler sees all eight codes modulo eight. */
+static void test_arbitration_fixed_cadence_walks_codes(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
-    uint64_t value = 0;
-    unsigned target_code;
-    bool saw_own_signal = false;
+    uint64_t value;
+    unsigned code;
     int i;
 
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    arb_enable_observer(qts);
+    arb_wait_for_absence(qts);
+    value = arb_wait_for_signal(qts);
+    code = value & 7;
 
-    /* Sync to the rotation: catch the first presented signal. */
-    for (i = 0; i < ARB_MAX_STEPS; i++) {
+    for (i = 0; i < 8; i++) {
+        qtest_clock_step(qts, 7 * ARB_TICK_NS);
         value = read_data(qts);
-        if ((read_status(qts) & I2C_PCF_BB) && arb_is_signal_byte(value)) {
-            break;
-        }
-        qtest_clock_step(qts, ARB_STEP_NS);
-    }
-    g_assert_true(arb_is_signal_byte(value));
-    /* The low three bits of either signal byte are the processor code. */
-    target_code = ((value & 7) + 1) % 8;
-
-    /* Sample mid-window, away from the presentation instants. */
-    qtest_clock_step(qts, 150 * 1000);
-
-    for (i = 0; i < ARB_PHASE_LOCKED_POLLS; i++) {
-        value = read_data(qts);
-        if ((read_status(qts) & I2C_PCF_BB) && arb_is_signal_byte(value) &&
-            (value & 7) == target_code) {
-            saw_own_signal = true;
-            break;
-        }
-        qtest_clock_step(qts, ARB_PHASE_LOCKED_STEP_NS);
-    }
-    g_assert_true(saw_own_signal);
-
-    qtest_quit(qts);
-}
-
-/*
- * No bus traffic ends a hold: every slot runs its full length. Any
- * consume-on-traffic edge starved a waiting processor -- its neighbor's
- * dialogue stole the held slot, and its own periodic command retries,
- * indistinguishable from an answer, withdrew the signal microseconds
- * after each presentation, before its poll could sample it. The hold
- * must survive the transaction below and still be found by a later
- * poll; only the slot length may end it.
- */
-static void test_arbitration_foreign_traffic_leaves_hold(const void *data)
-{
-    QTestState *qts = qtest_init("-M origin200");
-    uint8_t req[8], resp[RESP_CAP];
-    unsigned req_len;
-    uint8_t held;
-    bool saw_same = false;
-    int i;
-
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
-    arb_wait_for_absence(qts);
-    held = arb_wait_for_signal(qts);
-
-    /* Traffic mid-hold: whoever this was, the slot must not end. */
-    req_len = build_request(req, "ver");
-    elsc_transact(qts, req, req_len, resp, sizeof(resp));
-
-    /*
-     * The owner's later poll must still find its signal, promptly
-     * re-presented; the ring advancing to code 1 is the theft.
-     */
-    for (i = 0; i < 100; i++) {
-        uint64_t value = read_data(qts);
-
-        if (read_status(qts) & I2C_PCF_BB) {
-            g_assert_cmphex(value, !=, ARB_SIGNAL1 + 1);
-            if (value == held) {
-                saw_same = true;
-                break;
-            }
-        }
-        qtest_clock_step(qts, ARB_STEP_NS);
-    }
-    g_assert_true(saw_same);
-
-    qtest_quit(qts);
-}
-
-/*
- * When a slot runs its length -- the only way a hold ends -- the next
- * code's signal appears only behind a fresh gap: the next processor's
- * trust check needs to see its signal absent before it appears.
- */
-static void test_arbitration_hold_end_gaps_before_next(const void *data)
-{
-    QTestState *qts = qtest_init("-M origin200");
-    uint64_t next_signal = 0;
-    bool saw_gap = false;
-    int i;
-
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
-    arb_wait_for_absence(qts);
-    arb_wait_for_signal(qts);
-
-    /* Fine steps across the longest slot and its end. */
-    for (i = 0; i < 1400; i++) {
-        uint64_t value = read_data(qts);
-
-        if (read_status(qts) & I2C_PCF_BB) {
-            if (value == 0) {
-                saw_gap = true;
-            } else if (saw_gap && arb_is_signal_byte(value)) {
-                next_signal = value;
-                break;
-            }
-        }
-        qtest_clock_step(qts, ARB_STEP_NS);
-    }
-    g_assert_true(saw_gap);
-    g_assert_cmphex(next_signal, ==, ARB_SIGNAL1 + 1);
-
-    qtest_quit(qts);
-}
-
-/*
- * The commensurate trap the varying slot lengths exist to break: a
- * sampler whose period exactly matches a metronomic ring reads the
- * same slot at the same phase forever -- observed live as a poll
- * returning one code on 22 consecutive traps while a passive read of
- * the same register cycled through all eight. Slot lengths vary per
- * (code, revolution), so a sampler at the old constant ring period
- * slips 5.0-7.8ms per revolution against the ring; every slot spans
- * at least 10ms, so the drifting phase cannot step over a slot and
- * visits every code within one wrap -- at most 18 samples. 64 give
- * threefold margin.
- */
-#define ARB_METRONOME_STEP_NS   (80400 * 1000)
-#define ARB_METRONOME_SAMPLES   64
-
-static void test_arbitration_defeats_ring_period_sampler(const void *data)
-{
-    QTestState *qts = qtest_init("-M origin200");
-    bool saw_code_2 = false;
-    int i;
-
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
-    arb_wait_for_absence(qts);
-    arb_wait_for_signal(qts);
-
-    /* A phase deep inside code 0's slot in every revolution. */
-    qtest_clock_step(qts, 5000 * 1000);
-
-    for (i = 0; i < ARB_METRONOME_SAMPLES; i++) {
-        uint64_t value = read_data(qts);
-
-        if ((read_status(qts) & I2C_PCF_BB) && value == 0xe2) {
-            saw_code_2 = true;
-            break;
-        }
-        qtest_clock_step(qts, ARB_METRONOME_STEP_NS);
-    }
-    g_assert_true(saw_code_2);
-
-    qtest_quit(qts);
-}
-
-/* Base slot minus the walk's 10us sampling grain, asserted held. */
-#define ARB_SLOT_HELD_ASSERT_NS  (9900 * 1000)
-
-/*
- * One revolution walked code by code: after each 50us gap the next
- * code's signal appears and stands at least the base slot. The
- * protocol is a multi-code handshake -- the accept path loops back
- * into the poll -- so a guest must be able to observe the codes in
- * sequence, not merely find its own eventually.
- */
-static void test_arbitration_walks_all_codes_full_slots(const void *data)
-{
-    QTestState *qts = qtest_init("-M origin200");
-    unsigned int code;
-    int i;
-
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
-
-    /* The rotation begins with code 0's gap; the register reads 0. */
-    g_assert_cmphex(read_data(qts), ==, 0);
-
-    for (code = 0; code < 8; code++) {
-        uint64_t value = 0;
-
-        /* Leave the gap: the next signal begins within 50us. */
-        for (i = 0; i < 200; i++) {
-            value = read_data(qts);
-            if (value != 0) {
-                break;
-            }
-            qtest_clock_step(qts, ARB_STEP_NS);
-        }
+        code = (code + 7) & 7;
+        g_assert_true((read_status(qts) & I2C_PCF_BB) != 0);
         g_assert_true(arb_is_signal_byte(value));
         g_assert_cmpuint(value & 7, ==, code);
+    }
 
-        arb_assert_held(qts, (uint8_t)value, ARB_SLOT_HELD_ASSERT_NS);
+    qtest_quit(qts);
+}
 
-        /* Step out the slot's remainder to the next gap. */
-        for (i = 0; i < 400; i++) {
-            if (read_data(qts) == 0) {
-                break;
-            }
-            qtest_clock_step(qts, ARB_STEP_NS);
-        }
-        g_assert_cmphex(read_data(qts), ==, 0);
+/* A busy tick retries without consuming a processor's turn. */
+static void test_arbitration_busy_tick_does_not_advance(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t signal;
+
+    arb_enable_observer(qts);
+    arb_wait_for_absence(qts);
+    signal = arb_wait_for_signal(qts);
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_DATA, ELSC_ADDR << 1);
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
+                 CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
+    g_assert_cmphex(read_status(qts) & I2C_PCF_LRB, ==, 0);
+    g_assert_cmphex(read_status(qts) & I2C_PCF_BB, ==, 0);
+
+    qtest_clock_step(qts, 3 * ARB_TICK_NS);
+    g_assert_cmphex(read_status(qts) & I2C_PCF_BB, ==, 0);
+
+    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
+                 CTL_PIN | CTL_ESO | CTL_STO);
+    qtest_clock_step(qts, ARB_RETRY_NS);
+    g_assert_true((read_status(qts) & I2C_PCF_BB) != 0);
+    g_assert_cmpuint(read_data(qts) & 7, ==, ((signal & 7) + 1) & 7);
+
+    qtest_clock_step(qts, ARB_TICK_NS);
+    g_assert_cmpuint(read_data(qts) & 7, ==, ((signal & 7) + 2) & 7);
+
+    qtest_quit(qts);
+}
+
+/* Each eligible millisecond tick publishes the next code with no zero gap. */
+static void test_arbitration_advances_each_millisecond(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t value;
+    unsigned code;
+    int i;
+
+    arb_enable_observer(qts);
+    arb_wait_for_absence(qts);
+    value = arb_wait_for_signal(qts);
+    code = value & 7;
+
+    for (i = 0; i < 16; i++) {
+        qtest_clock_step(qts, ARB_TICK_NS);
+        value = read_data(qts);
+        code = (code + 1) & 7;
+        g_assert_true((read_status(qts) & I2C_PCF_BB) != 0);
+        g_assert_true(arb_is_signal_byte(value));
+        g_assert_cmpuint(value & 7, ==, code);
+    }
+
+    qtest_quit(qts);
+}
+
+/* One grant stays readable until the following millisecond boundary. */
+static void test_arbitration_one_publication_per_tick(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint8_t signal;
+
+    arb_enable_observer(qts);
+    arb_wait_for_absence(qts);
+    signal = arb_wait_for_signal(qts);
+
+    qtest_clock_step(qts, ARB_TICK_NS - 1);
+    g_assert_cmphex(read_data(qts), ==, signal);
+    qtest_clock_step(qts, 1);
+    g_assert_cmpuint(read_data(qts) & 7, ==, ((signal & 7) + 1) & 7);
+
+    qtest_quit(qts);
+}
+
+/* A complete revolution publishes all eight codes in sequence. */
+static void test_arbitration_walks_all_codes(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t value;
+    unsigned code;
+    unsigned i;
+
+    arb_enable_observer(qts);
+    arb_wait_for_absence(qts);
+    value = arb_wait_for_signal(qts);
+    code = value & 7;
+
+    for (i = 0; i < 8; i++) {
+        qtest_clock_step(qts, ARB_TICK_NS);
+        value = read_data(qts);
+        code = (code + 1) & 7;
+        g_assert_true((read_status(qts) & I2C_PCF_BB) != 0);
+        g_assert_true(arb_is_signal_byte(value));
+        g_assert_cmpuint(value & 7, ==, code);
     }
 
     qtest_quit(qts);
@@ -808,7 +713,7 @@ static void test_pending_response_announces_signal2(const void *data)
     QTestState *qts = qtest_init("-M origin200");
     g_autofree char *out = NULL;
 
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    arb_enable_observer(qts);
 
     elsc_request_without_read(qts, "ver");
 
@@ -835,7 +740,7 @@ static void test_consumed_response_reverts_to_signal1(const void *data)
     uint8_t req[8], resp[RESP_CAP];
     unsigned req_len;
 
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    arb_enable_observer(qts);
 
     req_len = build_request(req, "ver");
     elsc_transact(qts, req, req_len, resp, sizeof(resp));
@@ -848,8 +753,8 @@ static void test_consumed_response_reverts_to_signal1(const void *data)
 
 /*
  * The fetch the announcement promises: after the requester's transaction
- * ended unread, the response survives -- the ELSC's own broadcasts
- * deliver finish events too and must not discard it -- and a read-only
+ * ended unread, the response survives the controller's grant publications,
+ * and a read-only
  * transaction returns the frame. Once consumed, the announcement stops.
  */
 static void test_announced_response_read_after_stop(const void *data)
@@ -858,7 +763,7 @@ static void test_announced_response_read_after_stop(const void *data)
     uint8_t resp[RESP_CAP];
     unsigned resp_len;
 
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    arb_enable_observer(qts);
 
     elsc_request_without_read(qts, "ver");
 
@@ -888,7 +793,7 @@ static void test_new_request_supersedes_pending_response(const void *data)
     uint8_t req[8], resp[RESP_CAP];
     unsigned req_len, resp_len;
 
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    arb_enable_observer(qts);
 
     elsc_request_without_read(qts, "ver");
 
@@ -1005,6 +910,28 @@ static void test_two_towers_only_master_aux_active(const void *data)
     qtest_quit(qts);
 }
 
+/* Only the master module's controller publishes processor grants. */
+static void test_two_towers_only_master_publishes_grants(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200 -m 128M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1");
+    uint64_t slave_hub = HUB_BY_NODE + NODE_STRIDE;
+
+    arb_enable_observer(qts);
+    arb_enable_observer_at(qts, slave_hub);
+    qtest_clock_step(qts, 2 * ARB_TICK_NS);
+
+    g_assert_true(arb_is_signal_byte(read_data(qts)));
+    g_assert_cmphex(qtest_readq(qts, slave_hub + I2C_DATA), ==, 0);
+
+    qtest_quit(qts);
+}
+
 /* A dark console must not also wedge the guest: "ok <count>" regardless. */
 static void test_acp_with_no_backend_still_answers(const void *data)
 {
@@ -1113,7 +1040,7 @@ static void test_get_returns_queued_console_input(const void *data)
 
     aux_write(fd, "hello");
 
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    arb_enable_observer(qts);
     /*
      * signal2 must follow from queue state, not just "get" answering; the
      * bytes must have arrived first or the scoring races their delivery.
@@ -1157,7 +1084,7 @@ static void test_escape_byte_is_not_queued(const void *data)
      */
     aux_write(fd, "AB\x14zzz\rCD");
 
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    arb_enable_observer(qts);
     /* "AB" and "CD" survive; the escaped "\x14zzz\r" is dropped, so four
      * bytes end up queued. Wait for all four before scoring the signal. */
     aux_wait_for_queued(qts, 4);
@@ -1438,7 +1365,7 @@ static void test_boot_acceptance_sequence(const void *data)
     uint8_t nvram[16];
     unsigned req_len, resp_len, i;
 
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    arb_enable_observer(qts);
 
     for (i = 0; i < ARRAY_SIZE(nvram); i++) {
         nvram[i] = firmware_style_nvram_read(qts, i);
@@ -1499,7 +1426,7 @@ static void test_info_elsc_dump_shows_queued_input(const void *data)
 
     aux_write(fd, "hello");
 
-    qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO);
+    arb_enable_observer(qts);
     aux_wait_for_queued(qts, 5);
     arb_wait_for_absence(qts);
     g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL2);
@@ -1867,7 +1794,7 @@ static void test_rst_reset_survives_last_text_byte_nack(const void *data)
  * 0x57) is answered by the ELSC instead, its first byte an ELSC response
  * length rather than the EEPROM's 0x37 marker. This drives that exact
  * sequence and reads page 7 directly (no arbitration -- the stale match also
- * wedges the bus permanently busy, which stalls the arbitration broadcast)
+ * wedges the bus permanently busy, which stalls the grant rotation)
  * and requires the EEPROM's own byte back.
  */
 static void test_rst_reset_releases_i2c_bus(const void *data)
@@ -2503,18 +2430,21 @@ int main(int argc, char **argv)
                         test_arbitration_repeats);
     qtest_add_data_func("sn0/elsc/arbitration-visits-other-processor-codes",
                         NULL, test_arbitration_visits_other_processor_codes);
-    qtest_add_data_func("sn0/elsc/arbitration-preserves-staged-start", NULL,
-                        test_arbitration_preserves_staged_start);
-    qtest_add_data_func("sn0/elsc/arbitration-survives-phase-locked-poll",
-                        NULL, test_arbitration_survives_phase_locked_poll);
-    qtest_add_data_func("sn0/elsc/arbitration-foreign-traffic-leaves-hold",
-                        NULL, test_arbitration_foreign_traffic_leaves_hold);
-    qtest_add_data_func("sn0/elsc/arbitration-hold-end-gaps-before-next",
-                        NULL, test_arbitration_hold_end_gaps_before_next);
-    qtest_add_data_func("sn0/elsc/arbitration-defeats-ring-period-sampler",
-                        NULL, test_arbitration_defeats_ring_period_sampler);
-    qtest_add_data_func("sn0/elsc/arbitration-walks-all-codes-full-slots",
-                        NULL, test_arbitration_walks_all_codes_full_slots);
+    qtest_add_data_func("sn0/elsc/arbitration-grant-addresses-are-unmatched",
+                        NULL, test_arbitration_grant_addresses_are_unmatched);
+    qtest_add_data_func("sn0/elsc/arbitration-observes-grant-with-staged-start",
+                        NULL,
+                        test_arbitration_observes_grant_with_staged_start);
+    qtest_add_data_func("sn0/elsc/arbitration-fixed-cadence-walks-codes",
+                        NULL, test_arbitration_fixed_cadence_walks_codes);
+    qtest_add_data_func("sn0/elsc/arbitration-busy-tick-does-not-advance",
+                        NULL, test_arbitration_busy_tick_does_not_advance);
+    qtest_add_data_func("sn0/elsc/arbitration-advances-each-millisecond",
+                        NULL, test_arbitration_advances_each_millisecond);
+    qtest_add_data_func("sn0/elsc/arbitration-one-publication-per-tick",
+                        NULL, test_arbitration_one_publication_per_tick);
+    qtest_add_data_func("sn0/elsc/arbitration-walks-all-codes",
+                        NULL, test_arbitration_walks_all_codes);
     qtest_add_data_func("sn0/elsc/pending-response-announces-signal2", NULL,
                         test_pending_response_announces_signal2);
     qtest_add_data_func("sn0/elsc/consumed-response-reverts-to-signal1", NULL,
@@ -2527,6 +2457,8 @@ int main(int argc, char **argv)
                         test_acp_command_writes_to_console);
     qtest_add_data_func("sn0/elsc/two-towers-only-master-aux-active", NULL,
                         test_two_towers_only_master_aux_active);
+    qtest_add_data_func("sn0/elsc/two-towers-only-master-publishes-grants",
+                        NULL, test_two_towers_only_master_publishes_grants);
     qtest_add_data_func("sn0/elsc/acp-with-no-backend-still-answers", NULL,
                         test_acp_with_no_backend_still_answers);
     qtest_add_data_func("sn0/elsc/get-returns-queued-console-input", NULL,
