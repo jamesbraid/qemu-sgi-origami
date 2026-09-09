@@ -10,6 +10,7 @@
 #include "hw/scsi/qlogic-isp.h"
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
+#include "qemu/rcu.h"
 #include "system/runstate.h"
 #include "sn0.h"
 #include "sn0-origin2000-io.h"
@@ -303,8 +304,11 @@ static bool sn0_origin2000_xtalk_build_board(SN0Origin2000XtalkState *s,
 }
 
 /*
- * A board's devices stop before the Bridge whose spaces their transfers use,
- * and the whole board stops before the proxy it sends through is released.
+ * A board's devices stop before the Bridge whose spaces their transfers use.
+ * Each is unparented as well as unrealized: the owner keeps its children by
+ * name, so one left behind makes a second attempt collide with the corpse of
+ * the first rather than build a board. Unparenting queues the release rather
+ * than performing it -- see the note on settling below.
  */
 static void sn0_origin2000_xtalk_release_board(SN0Origin2000XtalkBoard *board)
 {
@@ -313,20 +317,53 @@ static void sn0_origin2000_xtalk_release_board(SN0Origin2000XtalkBoard *board)
     for (i = board->pci_count; i > 0; i--) {
         if (board->pci[i - 1]) {
             qdev_unrealize(DEVICE(board->pci[i - 1]));
+            object_unparent(OBJECT(board->pci[i - 1]));
+            board->pci[i - 1] = NULL;
         }
     }
     g_clear_pointer(&board->pci, g_free);
     board->pci_count = 0;
     if (board->bridge) {
         qdev_unrealize(DEVICE(board->bridge));
-        /*
-         * Unparent as well as unrealize: the owner keeps the child by name,
-         * so leaving it behind makes a second attempt collide with the
-         * corpse of the first rather than build a board.
-         */
         object_unparent(OBJECT(board->bridge));
         board->bridge = NULL;
     }
+}
+
+/*
+ * The switches, given up for good. Their routes are aliases of the faces the
+ * machine attached, so a switch has to be gone before any of those faces is,
+ * and unrealizing one is not that: its routes still name the storage until it
+ * is finalized. Only terminal teardown comes here, because a switch that has
+ * been unrealized once refuses everything afterwards and cannot be attached
+ * to again.
+ */
+static void sn0_origin2000_xtalk_release_crossbows(SN0Origin2000XtalkState *s)
+{
+    size_t i;
+
+    for (i = 0; i < ARRAY_SIZE(s->crossbow); i++) {
+        if (s->crossbow[i]) {
+            qdev_unrealize(DEVICE(s->crossbow[i]));
+            object_unparent(OBJECT(s->crossbow[i]));
+            s->crossbow[i] = NULL;
+        }
+    }
+}
+
+/*
+ * Unparenting a device does not free it: leaving a bus hands its reference
+ * back through RCU, a grace period later and on another thread. So nothing
+ * unparented above is actually gone until this returns, and until it is gone
+ * its own regions still alias the faces and spaces it was wired to. Draining
+ * here is what lets the rest of teardown release those.
+ *
+ * One pass is enough because unparenting a device queues its children's
+ * releases before its own, so a subtree comes apart from the inside out.
+ */
+static void sn0_origin2000_xtalk_settle_releases(void)
+{
+    drain_call_rcu();
 }
 
 /*
@@ -336,7 +373,8 @@ static void sn0_origin2000_xtalk_release_board(SN0Origin2000XtalkBoard *board)
  * property refuses. Keeping the two halves separate also means a caller
  * that recovers from a failed attach has something to recover to.
  */
-static void sn0_origin2000_xtalk_cleanup_attach(SN0Origin2000XtalkState *s)
+static void sn0_origin2000_xtalk_cleanup_attach(SN0Origin2000XtalkState *s,
+                                                bool terminal)
 {
     size_t i;
 
@@ -370,16 +408,24 @@ static void sn0_origin2000_xtalk_cleanup_attach(SN0Origin2000XtalkState *s)
     /*
      * Devices stop before the faces they hold spaces over: the board before
      * its proxy, both switches before the Hub decoders they route packets
-     * into. An unrealized object here has nothing to undo and says so.
+     * into. The switches go first of all, because a switch's routes alias the
+     * board's own face as well as the Hub decoders, so a board released ahead
+     * of them would be freed with a route still naming it. An unrealized
+     * object here has nothing to undo and says so.
      */
+    if (terminal) {
+        sn0_origin2000_xtalk_release_crossbows(s);
+    } else {
+        for (i = 0; i < ARRAY_SIZE(s->crossbow); i++) {
+            if (s->crossbow[i]) {
+                qdev_unrealize(DEVICE(s->crossbow[i]));
+            }
+        }
+    }
     for (i = 0; i < ARRAY_SIZE(s->board); i++) {
         sn0_origin2000_xtalk_release_board(&s->board[i]);
     }
-    for (i = 0; i < ARRAY_SIZE(s->crossbow); i++) {
-        if (s->crossbow[i]) {
-            qdev_unrealize(DEVICE(s->crossbow[i]));
-        }
-    }
+    sn0_origin2000_xtalk_settle_releases();
     for (i = 0; i < ARRAY_SIZE(s->destination); i++) {
         SN0Origin2000XtalkDestination *destination = &s->destination[i];
 
@@ -409,7 +455,7 @@ static void sn0_origin2000_xtalk_cleanup(SN0Origin2000XtalkState *s)
             sgi_xbow_quiesce(s->crossbow[i]);
         }
     }
-    sn0_origin2000_xtalk_cleanup_attach(s);
+    sn0_origin2000_xtalk_cleanup_attach(s, true);
 
     for (i = 0; i < ARRAY_SIZE(s->source); i++) {
         SN0Origin2000XtalkSource *source = &s->source[i];
@@ -685,7 +731,7 @@ bool sn0_origin2000_xtalk_attach(SN0MachineState *machine, Error **errp)
     return true;
 
 unwind:
-    sn0_origin2000_xtalk_cleanup_attach(s);
+    sn0_origin2000_xtalk_cleanup_attach(s, false);
     return false;
 }
 

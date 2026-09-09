@@ -4,6 +4,7 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "hw/pci/pci_device.h"
+#include "qemu/rcu.h"
 #include "sn0.h"
 #include "sn0-origin2000-xtalk.h"
 
@@ -128,6 +129,9 @@ struct SN0XtalkAttachTest {
     bool verified;
     /* Make the board refuse to realize, to reach attach's unwind. */
     bool refuse_board;
+    /* Tear the assembly down after it attached, as a machine owner would. */
+    bool teardown;
+    bool released;
     /*
      * Where a processor finds widget zero of its own node's switch. A
      * processor addresses its own node unqualified; another node's takes
@@ -155,6 +159,22 @@ static bool xtalk_attach_test_get_refuse(Object *obj, Error **errp)
 static void xtalk_attach_test_set_refuse(Object *obj, bool value, Error **errp)
 {
     XTALK_ATTACH_TEST(obj)->refuse_board = value;
+}
+
+static bool xtalk_attach_test_get_teardown(Object *obj, Error **errp)
+{
+    return XTALK_ATTACH_TEST(obj)->teardown;
+}
+
+static void xtalk_attach_test_set_teardown(Object *obj, bool value,
+                                           Error **errp)
+{
+    XTALK_ATTACH_TEST(obj)->teardown = value;
+}
+
+static bool xtalk_attach_test_get_released(Object *obj, Error **errp)
+{
+    return XTALK_ATTACH_TEST(obj)->released;
 }
 
 /*
@@ -267,6 +287,22 @@ static void xtalk_attach_test_verify(SN0XtalkAttachTest *test)
     test->verified = true;
 }
 
+/*
+ * Terminal teardown, run where a machine owner would run it: after a
+ * successful attach, with the Hubs realized. The drain is the point of
+ * doing it here -- a bus child hands its reference back a grace period
+ * later, on another thread, so storage freed too early takes the machine
+ * down long after machine init returned and nowhere near the cause.
+ */
+static void xtalk_attach_test_release(SN0XtalkAttachTest *test)
+{
+    SN0MachineState *sn0 = SN0_MACHINE(test);
+
+    sn0_origin2000_xtalk_destroy(sn0);
+    drain_call_rcu();
+    test->released = true;
+}
+
 static void xtalk_attach_test_init(MachineState *machine)
 {
     SN0MachineState *sn0 = SN0_MACHINE(machine);
@@ -319,6 +355,9 @@ static void xtalk_attach_test_init(MachineState *machine)
                                    &test->board_revision, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(OBJECT(test), "ioc3-subsystem",
                                    &test->ioc3_subsystem, OBJ_PROP_FLAG_READ);
+    if (test->teardown) {
+        xtalk_attach_test_release(test);
+    }
 }
 
 static void xtalk_attach_test_class_init(ObjectClass *oc, const void *data)
@@ -332,6 +371,11 @@ static void xtalk_attach_test_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_bool(oc, "refuse-board",
                                    xtalk_attach_test_get_refuse,
                                    xtalk_attach_test_set_refuse);
+    object_class_property_add_bool(oc, "teardown",
+                                   xtalk_attach_test_get_teardown,
+                                   xtalk_attach_test_set_teardown);
+    object_class_property_add_bool(oc, "released",
+                                   xtalk_attach_test_get_released, NULL);
 }
 
 static const TypeInfo xtalk_attach_test_type = {

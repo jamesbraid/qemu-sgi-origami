@@ -427,6 +427,21 @@ static void test_a_failed_attach_leaves_a_machine_to_retry(void)
     qtest_quit(qts);
 }
 
+/*
+ * The machine owner's terminal teardown, run after a successful attach.
+ * Nothing exercised that before, and it took the machine down: the board's
+ * devices were released with bus children still queued for release, so the
+ * reference handed back a grace period later named storage already freed.
+ */
+static void test_an_attached_machine_can_be_torn_down(void)
+{
+    QTestState *qts = attach_start_with(",teardown=on");
+
+    g_assert_true(qtest_qom_get_bool(qts, "/machine", "verified"));
+    g_assert_true(qtest_qom_get_bool(qts, "/machine", "released"));
+    qtest_quit(qts);
+}
+
 static uint64_t hub_readq(QTestState *qts, unsigned int node,
                           uint64_t offset)
 {
@@ -761,6 +776,8 @@ int main(int argc, char **argv)
                    test_a_hub_asks_its_switch_mate_who_it_is);
     qtest_add_func("sn0/origin2000/xtalk-attach/failed-attach-can-retry",
                    test_a_failed_attach_leaves_a_machine_to_retry);
+    qtest_add_func("sn0/origin2000/xtalk-attach/attached-machine-tears-down",
+                   test_an_attached_machine_can_be_torn_down);
     qtest_add_func("sn0/origin2000/xtalk-attach/board-dma-reaches-its-widget",
                    test_board_dma_reaches_the_widget_it_names);
     qtest_add_func("sn0/origin2000/xtalk-attach/down-destination-only-its-own",
