@@ -69,6 +69,14 @@
 #define FLASH_VIEW_SIZE UINT64_C(0x1000000)
 #define FLASH_OBSERVED_OFFSET UINT64_C(0x1e0000)
 #define FLASH_INTERIOR_OFFSET UINT64_C(0x800000)
+#define FLASH_IMAGE_SIZE (16 * 1024 * 1024)
+#define BOOT_SPACE_SIZE UINT64_C(0x8000000)
+#define SECOND_READ_WINDOW UINT64_C(0x2000000)
+/* The AMD unlock words 0x555 and 0x2aa, at the bus offsets 8n. */
+#define FLASH_UNLOCK0 UINT64_C(0x2aa8)
+#define FLASH_UNLOCK1 UINT64_C(0x1550)
+#define FLASH_ERASED_TARGET UINT64_C(0x200000)
+#define FLASH_PAYLOAD_TARGET UINT64_C(0x1000)
 
 #define EXEC_STATE_PHYS UINT64_C(0x100000)
 #define EXEC_STATE_KSEG1_HI 0xa010
@@ -1768,6 +1776,176 @@ static void test_l1_has_no_identity_records_by_default(const void *data)
     qtest_quit(qts);
 }
 
+static char *create_flash_image(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc(FLASH_IMAGE_SIZE);
+    char *path = NULL;
+    int fd;
+
+    /*
+     * The part holds the supplied payload followed by erased bytes, which is
+     * the shape the harness seeds. Two payload bytes are left erased so the
+     * test can program inside the range the reset view covers.
+     */
+    memset(image, 0xff, FLASH_IMAGE_SIZE);
+    memset(image, 0, PROM_SIZE);
+    image[0] = 0x31;
+    image[PROM_CONFIG_OFFSET] = 0x62;
+    image[PROM_SIZE - 1] = 0x93;
+    image[FLASH_PAYLOAD_TARGET] = 0xff;
+    image[FLASH_PAYLOAD_TARGET + 1] = 0xff;
+
+    fd = g_file_open_tmp("sn1-boot-flash-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image, FLASH_IMAGE_SIZE), ==,
+                    (ssize_t)FLASH_IMAGE_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static QTestState *machine_start_with_flash(const char *flash,
+                                            const char *extra)
+{
+    g_autofree char *quoted_prom = g_shell_quote(prom_path);
+    g_autofree char *quoted_flash = g_shell_quote(flash);
+
+    return qtest_initf(MACHINE_ARGS " -bios %s "
+                       "-drive if=pflash,file=%s,format=raw %s",
+                       quoted_prom, quoted_flash, extra);
+}
+
+/* One 16-bit word per bus cycle, at the bus offset four times its byte. */
+static void flash_program(QTestState *qts, uint64_t selection,
+                          uint64_t offset, uint16_t word)
+{
+    qtest_writeq(qts, selection + FLASH_UNLOCK0, 0xaa);
+    qtest_writeq(qts, selection + FLASH_UNLOCK1, 0x55);
+    qtest_writeq(qts, selection + FLASH_UNLOCK0, 0xa0);
+    qtest_writeq(qts, selection + offset * 4, word);
+}
+
+static void assert_flash_everywhere(QTestState *qts, uint64_t offset,
+                                    uint16_t word)
+{
+    static const uint64_t views[] = {
+        HUB_LOCAL_BOOT, HUB_LOCAL_FLASH, PROM_RESET, HUB_LOCAL_HIGH_BOOT,
+        HUB_REMOTE_BOOT,
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(views); i++) {
+        g_assert_cmphex(qtest_readw(qts, views[i] + offset), ==, word);
+    }
+}
+
+static void test_boot_flash_backs_every_prom_view(const void *data)
+{
+    g_autofree char *flash = create_flash_image();
+    QTestState *qts = machine_start_with_flash(flash, "");
+
+    /* Every view reads the part, not the supplied payload. */
+    assert_flash_everywhere(qts, 0, 0x3100);
+    g_assert_cmphex(qtest_readb(qts, HUB_LOCAL_BOOT + PROM_SIZE - 1), ==,
+                    0x93);
+    g_assert_cmphex(qtest_readb(qts, HUB_LOCAL_FLASH + PROM_SIZE - 1), ==,
+                    0x93);
+
+    /* Both selections span the whole part, so the payload's end is erased. */
+    g_assert_cmphex(qtest_readb(qts, HUB_LOCAL_BOOT + PROM_SIZE), ==, 0xff);
+    g_assert_cmphex(qtest_readb(qts, HUB_LOCAL_FLASH + PROM_SIZE), ==, 0xff);
+
+    /*
+     * The alternate selection is a read window inside the boot space rather
+     * than a region of its own, so the space is what ends, not the window.
+     */
+    assert_flat_view_unmapped(qts, HUB_LOCAL_BOOT + BOOT_SPACE_SIZE);
+    assert_flat_view_unmapped(qts, HUB_REMOTE_BOOT + BOOT_SPACE_SIZE);
+
+    /*
+     * Commands are addressed from a boot space's base, and one part answers
+     * both spaces, so a program through either is visible through both read
+     * windows of the other.
+     */
+    flash_program(qts, HUB_LOCAL_BOOT, FLASH_ERASED_TARGET, 0x1234);
+    g_assert_cmphex(qtest_readw(qts, HUB_LOCAL_BOOT + FLASH_ERASED_TARGET),
+                    ==, 0x1234);
+    g_assert_cmphex(qtest_readw(qts, HUB_LOCAL_FLASH + FLASH_ERASED_TARGET),
+                    ==, 0x1234);
+    flash_program(qts, HUB_REMOTE_BOOT, FLASH_ERASED_TARGET + 2, 0x5678);
+    g_assert_cmphex(qtest_readw(qts, HUB_LOCAL_FLASH + FLASH_ERASED_TARGET + 2),
+                    ==, 0x5678);
+
+    /*
+     * Reads and writes decode differently within a space, so one address means
+     * two things: reading the alternate window's base gives the part's first
+     * bytes, while a command sent to it addresses a word 8 MiB in. A machine
+     * that mapped the selections as separate regions would put every write
+     * 32 MiB out and this is what would catch it.
+     */
+    flash_program(qts, HUB_LOCAL_BOOT, SECOND_READ_WINDOW / 4, 0x4321);
+    g_assert_cmphex(qtest_readw(qts, HUB_LOCAL_BOOT +
+                                SECOND_READ_WINDOW / 4), ==, 0x4321);
+    g_assert_cmphex(qtest_readb(qts, HUB_LOCAL_FLASH), ==, 0x31);
+
+    /* What a monitor writes into the first sector is what a reset fetches. */
+    flash_program(qts, HUB_LOCAL_BOOT, FLASH_PAYLOAD_TARGET, 0x9abc);
+    assert_flash_everywhere(qts, FLASH_PAYLOAD_TARGET, 0x9abc);
+
+    qtest_system_reset(qts);
+    assert_flash_everywhere(qts, FLASH_PAYLOAD_TARGET, 0x9abc);
+    g_assert_cmphex(qtest_readw(qts, HUB_LOCAL_BOOT + FLASH_ERASED_TARGET), ==,
+                    0x1234);
+
+    qtest_quit(qts);
+
+    /* The backing file keeps them across a restart. */
+    qts = machine_start_with_flash(flash, "");
+    assert_flash_everywhere(qts, FLASH_PAYLOAD_TARGET, 0x9abc);
+    g_assert_cmphex(qtest_readw(qts, HUB_LOCAL_FLASH + FLASH_ERASED_TARGET),
+                    ==, 0x1234);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(flash), ==, 0);
+}
+
+static void test_boot_flash_migration(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *directory =
+        g_dir_make_tmp("sn1-boot-flash-migration-XXXXXX", &error);
+    g_autofree char *source_flash = create_flash_image();
+    g_autofree char *destination_flash = create_flash_image();
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from;
+    QTestState *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = machine_start_with_flash(source_flash, "");
+    to = machine_start_with_flash(destination_flash, "-incoming defer");
+
+    flash_program(from, HUB_LOCAL_BOOT, FLASH_PAYLOAD_TARGET, 0x9abc);
+    g_assert_cmphex(qtest_readw(to, PROM_RESET + FLASH_PAYLOAD_TARGET), ==,
+                    0xffff);
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
+    wait_for_migration(from);
+
+    assert_flash_everywhere(to, FLASH_PAYLOAD_TARGET, 0x9abc);
+
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(socket);
+    g_assert_cmpint(g_unlink(source_flash), ==, 0);
+    g_assert_cmpint(g_unlink(destination_flash), ==, 0);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
 static void test_prom_second_stride_view(const void *data)
 {
     g_autoptr(GError) error = NULL;
@@ -2414,6 +2592,10 @@ int main(int argc, char **argv)
                         test_l1_identity_records_come_from_the_command_line);
     qtest_add_data_func("sn1/address-map/l1-identity-records-absent", NULL,
                         test_l1_has_no_identity_records_by_default);
+    qtest_add_data_func("sn1/address-map/boot-flash-backs-prom-views", NULL,
+                        test_boot_flash_backs_every_prom_view);
+    qtest_add_data_func("sn1/address-map/boot-flash-migration", NULL,
+                        test_boot_flash_migration);
     qtest_add_data_func("sn1/address-map/prom-second-stride-view", NULL,
                         test_prom_second_stride_view);
     qtest_add_data_func("sn1/address-map/prom-size-is-exact", NULL,

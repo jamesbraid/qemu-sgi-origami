@@ -18,6 +18,7 @@
 #include "hw/core/sysbus.h"
 #include "hw/mips/sn1.h"
 #include "hw/misc/sgi-bedrock.h"
+#include "hw/misc/sgi-bedrock-flash.h"
 #include "hw/misc/sgi-bedrock-pi.h"
 #include "hw/misc/sgi-ioc3.h"
 #include "hw/misc/sgi-l1.h"
@@ -271,6 +272,51 @@ static const MemoryRegionOps sn1_flash_erased_ops = {
     .impl.max_access_size = 8,
 };
 
+/*
+ * A run that supplies a flash image gets a writable part: both software
+ * selections reach it, and every bounded view reads its stored bytes, so the
+ * monitor's own rewrite of the first sector is what the next reset fetches.
+ * Without an image the machine keeps the immutable payload it had before.
+ */
+static MemoryRegion *sn1_create_boot_flash(SN1MachineState *s,
+                                           MachineState *machine)
+{
+    DriveInfo *dinfo = drive_get(IF_PFLASH, 0, 0);
+    SysBusDevice *flash;
+
+    if (!dinfo) {
+        return NULL;
+    }
+    s->boot_flash = qdev_new(TYPE_SGI_BEDROCK_FLASH);
+    object_property_add_child(OBJECT(machine), "boot-flash",
+                              OBJECT(s->boot_flash));
+    qdev_prop_set_drive_err(s->boot_flash, "drive",
+                            blk_by_legacy_dinfo(dinfo), &error_fatal);
+    flash = SYS_BUS_DEVICE(s->boot_flash);
+    sysbus_realize_and_unref(flash, &error_fatal);
+
+    /*
+     * One region per boot space, each the whole 128 MiB window rather than a
+     * 16 MiB selection: reads and writes decode differently inside it, so the
+     * alternate selection is a read window within the space and a store is
+     * addressed from the space's base. Mapping the selections separately would
+     * put every write offset 32 MiB out.
+     */
+    sysbus_mmio_map(flash, 0, SN1_HUB_LOCAL_BOOT);
+    sysbus_mmio_map(flash, 1, SN1_HUB_REMOTE_BOOT);
+    /*
+     * The execution views alias the stored bytes rather than passing through
+     * the adapter a second time: the monitor runs from them, and an
+     * access-handler mapping would put every instruction fetch on the dispatch
+     * path. Two of them sit inside a boot space, so they are overlaid above
+     * it. Aliasing rather than copying is what keeps them correct: the flush
+     * after a program or erase invalidates by RAM address, which reaches every
+     * mapping of the part's own storage but would not reach a separate region
+     * over the same bytes.
+     */
+    return SGI_BEDROCK_FLASH(s->boot_flash)->flash_mmio;
+}
+
 static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
                           Error **errp)
 {
@@ -279,6 +325,8 @@ static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
     g_autoptr(GError) local_error = NULL;
     g_autofree char *contents = NULL;
     g_autofree char *path = NULL;
+    MemoryRegion *stored;
+    MemoryRegion *carrier;
     gsize length;
 
     if (!machine->firmware) {
@@ -318,6 +366,33 @@ static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
     vmstate_register_ram_global(&s->prom);
     memcpy(memory_region_get_ram_ptr(&s->prom), contents, model->prom_size);
     memory_region_set_dirty(&s->prom, 0, model->prom_size);
+
+    stored = sn1_create_boot_flash(s, machine);
+    if (stored) {
+        /*
+         * With a part attached the views carry its stored bytes rather than
+         * the supplied payload, so a configuration the monitor has written to
+         * itself is visible where the processor executes. The generated table
+         * describes the payload carrier and is used for that carrier only.
+         */
+        memory_region_init_alias(&s->prom_reset, OBJECT(machine),
+                                 "sn1.prom.reset", stored, 0, SN1_PROM_SIZE);
+        memory_region_init_alias(&s->prom_local_high, OBJECT(machine),
+                                 "sn1.prom.local-high", stored, 0,
+                                 SN1_PROM_SIZE);
+        memory_region_add_subregion_overlap(system, SN1_PROM_RESET,
+                                            &s->prom_reset, 1);
+        /*
+         * The high local view sits inside a boot space the flash answers for,
+         * so it is overlaid above it. The remote space is left to the flash:
+         * its read decode already serves the same bytes at the same offsets,
+         * and an overlay at its base would shadow the command addresses, so a
+         * monitor could not drive the part through that space at all.
+         */
+        memory_region_add_subregion_overlap(system, SN1_HUB_LOCAL_HIGH_BOOT,
+                                            &s->prom_local_high, 1);
+        return true;
+    }
 
     s->prom_views = g_new0(MemoryRegion, model->num_prom_views);
     for (size_t i = 0; i < model->num_prom_views; i++) {
