@@ -14,4 +14,8 @@ bool sn0_origin2000_xtalk_attach(SN0MachineState *machine, Error **errp);
 void sn0_origin2000_xtalk_destroy(SN0MachineState *machine);
 bool sn0_origin2000_xtalk_test_proxies_disabled(SN0MachineState *machine);
 
+/* Test hook: force the board to refuse realization, reaching the unwind. */
+void sn0_origin2000_xtalk_set_test_board_part(SN0MachineState *machine,
+                                              const char *part);
+
 #endif
