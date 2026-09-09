@@ -3,6 +3,7 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "hw/pci/pci_device.h"
 #include "sn0.h"
 #include "sn0-origin2000-xtalk.h"
 
@@ -133,11 +134,75 @@ struct SN0XtalkAttachTest {
     uint64_t window;
     /* Each node's own widget number, one nibble apiece, for the test. */
     uint64_t widgets;
+    /* What the descriptor says about the one base I/O board. */
+    uint64_t board_widget;
+    uint64_t board_revision;
+    uint64_t ioc3_subsystem;
 };
 
 static bool xtalk_attach_test_get_verified(Object *obj, Error **errp)
 {
     return XTALK_ATTACH_TEST(obj)->verified;
+}
+
+/*
+ * The base I/O board, checked where a guest cannot look: that each function
+ * the descriptor names is real and sits at the address the record gives it,
+ * that the Bridge sends its own transfers into this board's proxy rather
+ * than a node's, and that the IOC3's interrupt goes to the Bridge pin the
+ * record picks instead of taking the ordinary PCI route.
+ */
+static void xtalk_attach_test_verify_board(SN0XtalkAttachTest *test,
+                                           Object *xtalk)
+{
+    const SN0ModelComposition *model = SN0_MACHINE(test)->composition;
+    const SN0ModelIoBoard *record = &model->io_boards[0];
+    Object *owner = object_resolve_path_component(xtalk, "baseio0");
+    unsigned int scsi_index = 0;
+    Object *bridge;
+    Object *fabric;
+    size_t i;
+
+    g_assert(owner);
+    bridge = object_resolve_path_component(owner, "bridge");
+    g_assert(bridge);
+    g_assert(DEVICE(bridge)->realized);
+
+    fabric = object_property_get_link(bridge, "fabric", &error_abort);
+    g_assert(fabric);
+    {
+        g_autofree char *owner_path = object_get_canonical_path(owner);
+        g_autofree char *fabric_path = object_get_canonical_path(fabric);
+
+        g_assert(g_str_has_prefix(fabric_path, owner_path));
+    }
+    g_assert(object_property_get_uint(bridge, "fabric-widget-shift",
+                                      &error_abort) ==
+             SGI_BRIDGE_PACKET_ADDRESS_BITS);
+    g_assert(object_property_get_uint(bridge, "fabric-base",
+                                      &error_abort) == 0);
+
+    for (i = 0; i < record->pci_count; i++) {
+        const SN0ModelComponent *function = &record->pci[i];
+        g_autofree char *name =
+            function->kind == SN0_COMPONENT_IOC3 ?
+            g_strdup("ioc3") : g_strdup_printf("isp%u", scsi_index++);
+        Object *child = object_resolve_path_component(owner, name);
+
+        g_assert(child);
+        g_assert(DEVICE(child)->realized);
+        g_assert(PCI_DEVICE(child)->devfn ==
+                 PCI_DEVFN(function->device, function->function));
+        if (function->kind != SN0_COMPONENT_IOC3) {
+            continue;
+        }
+        test->ioc3_subsystem = function->subsystem_id;
+        g_assert(qdev_get_gpio_out_connector(DEVICE(child), NULL, 0) ==
+                 qdev_get_gpio_in(DEVICE(bridge), function->irq_input));
+    }
+
+    test->board_widget = record->widget;
+    test->board_revision = record->bridge->revision;
 }
 
 static void xtalk_attach_test_verify(SN0XtalkAttachTest *test)
@@ -186,6 +251,7 @@ static void xtalk_attach_test_verify(SN0XtalkAttachTest *test)
                          (4 * attachment->node_index);
 
     }
+    xtalk_attach_test_verify_board(test, xtalk);
     test->verified = true;
 }
 
@@ -219,6 +285,12 @@ static void xtalk_attach_test_init(MachineState *machine)
                                    &test->window, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(OBJECT(test), "node-widgets",
                                    &test->widgets, OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(OBJECT(test), "board-widget",
+                                   &test->board_widget, OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(OBJECT(test), "board-revision",
+                                   &test->board_revision, OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(OBJECT(test), "ioc3-subsystem",
+                                   &test->ioc3_subsystem, OBJ_PROP_FLAG_READ);
 }
 
 static void xtalk_attach_test_class_init(ObjectClass *oc, const void *data)

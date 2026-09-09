@@ -5,6 +5,11 @@
  * a processor reads a real Crossbow's registers through its own node's
  * crosstalk window, and reads back the population the descriptor asked for.
  *
+ * A switch reports a link present because the descriptor's mask says so,
+ * which is true whether or not anything is attached on the other side. What
+ * separates the two is reading the part at the far end, so the base I/O
+ * checks here go through the board's widget slot to the chip itself.
+ *
  * Each node is read from a processor on that node. A processor addresses its
  * own node's crosstalk unqualified; reaching another node's takes routing the
  * firmware has not programmed at reset, so reading every node from one
@@ -30,6 +35,23 @@
 #define XBOW_LINK(w)    (0x0100 + ((w) - 8) * 0x40)
 #define LINK_STATUS     0x10
 #define LINK_AUX        0x38
+
+/* The I/O bridge: its register block, then the windows above it. */
+#define BRIDGE_IDENTIFICATION   0x000
+#define BRIDGE_CFG0(device)     (0x020000 + (device) * 0x1000)
+#define BRIDGE_PART             0xc002
+#define BRIDGE_MANUFACTURER     0x036
+#define ID_REVISION(v)          (((v) >> 28) & 0xf)
+
+/* A configuration read of a slot nothing occupies: all ones, not zero. */
+#define NO_CARD         0xffffffffu
+#define PCI_IDENTITY    0x00
+#define PCI_SUBSYSTEM   0x2c
+#define PCI_SLOTS       8
+
+#define ISP1040_IDENTITY  (0x1077u | (0x1020u << 16))
+#define IOC3_IDENTITY     (0x10a9u | (0x0003u << 16))
+#define IOC3_SUBSYSTEM_VENDOR 0x10a9u
 
 #define ID_PART(v)      (((v) >> 12) & 0xffff)
 #define ID_MANUFACTURER(v) (((v) >> 1) & 0x7ff)
@@ -73,6 +95,15 @@ static uint64_t xtalk_window(QTestState *qts)
     return base;
 }
 
+/* Which widget the one base I/O board occupies, from the descriptor. */
+static uint64_t board_slot(QTestState *qts)
+{
+    uint64_t widget = machine_uint(qts, "board-widget");
+
+    g_assert_cmpuint(widget, >=, 8);
+    return WIDGET_SLOT(widget);
+}
+
 /* Which widget each node occupies, straight from the descriptor. */
 static unsigned int node_widget(QTestState *qts, unsigned int node)
 {
@@ -102,6 +133,31 @@ static uint32_t switch_readl(QTestState *qts, unsigned int node,
                                     xtalk_window(qts) + offset + REG_DATA,
                                     bytes, sizeof(bytes)));
     return ldl_be_p(bytes);
+}
+
+static uint32_t board_readl(QTestState *qts, unsigned int node,
+                            uint64_t offset)
+{
+    uint8_t bytes[sizeof(uint32_t)];
+
+    g_assert_true(qtest_memread_cpu(qts, NODE_CPU(node),
+                                    xtalk_window(qts) + board_slot(qts) +
+                                    offset, bytes, sizeof(bytes)));
+    return ldl_be_p(bytes);
+}
+
+/* The register block answers one register per eight-byte slot, plus four. */
+static uint32_t board_reg_readl(QTestState *qts, unsigned int node,
+                                unsigned int offset)
+{
+    return board_readl(qts, node, offset + REG_DATA);
+}
+
+/* Whether this node's switch says the board's link is populated at all. */
+static bool board_link_present(QTestState *qts, unsigned int node)
+{
+    return switch_readl(qts, node, XBOW_LINK(WIDGET_IO) + LINK_AUX) &
+           AUX_PRESENT;
 }
 
 /* The machine's own structural checks ran during init. */
@@ -207,6 +263,81 @@ static void test_a_node_has_no_route_to_itself(void)
     qtest_quit(qts);
 }
 
+/*
+ * The board's own chip answers at its widget slot. A switch that reports the
+ * link present but routes it nowhere passes every earlier check here and
+ * fails this one, which is the whole point of reading an identity rather
+ * than a link register: the part number and maker are the chip's, and the
+ * revision is the one the descriptor fits.
+ */
+static void test_a_processor_reads_the_board(void)
+{
+    QTestState *qts = attach_start();
+    uint32_t id = board_reg_readl(qts, 0, BRIDGE_IDENTIFICATION);
+
+    g_assert_cmpuint(ID_PART(id), ==, BRIDGE_PART);
+    g_assert_cmpuint(ID_MANUFACTURER(id), ==, BRIDGE_MANUFACTURER);
+    g_assert_cmpuint(id & ID_ALWAYS_ONE, ==, ID_ALWAYS_ONE);
+    g_assert_cmpuint(ID_REVISION(id), ==,
+                     machine_uint(qts, "board-revision"));
+    qtest_quit(qts);
+}
+
+/*
+ * One board, on one of the two switches. So the two nodes whose switch
+ * carries it reach the chip and the other two reach nothing, and each
+ * node's own link register predicts which it is. Fitting the board to both
+ * switches, or to a widget the descriptor did not name, disagrees.
+ */
+static void test_only_the_nodes_sharing_its_switch_reach_the_board(void)
+{
+    QTestState *qts = attach_start();
+    unsigned int reached = 0;
+    unsigned int node;
+
+    for (node = 0; node < NODES; node++) {
+        uint32_t id = board_reg_readl(qts, node, BRIDGE_IDENTIFICATION);
+        bool answered = ID_PART(id) == BRIDGE_PART &&
+                        ID_MANUFACTURER(id) == BRIDGE_MANUFACTURER;
+
+        g_assert_cmpint(answered, ==, board_link_present(qts, node));
+        g_assert_cmpstr(runstate(qts), !=, "internal-error");
+        reached += answered;
+    }
+
+    g_assert_cmpuint(reached, ==, 2);
+    qtest_quit(qts);
+}
+
+/*
+ * The functions the descriptor fits to the board, read the way firmware
+ * finds them: through the chip's type 0 configuration window. The two SCSI
+ * controllers and the I/O controller answer at the slots the record gives
+ * them, every other slot is empty, and the I/O controller carries the
+ * board identity the record names rather than the chip's own default.
+ */
+static void test_the_board_carries_the_functions_the_descriptor_named(void)
+{
+    QTestState *qts = attach_start();
+    unsigned int slot;
+
+    g_assert_cmphex(board_readl(qts, 0, BRIDGE_CFG0(0) + PCI_IDENTITY), ==,
+                    ISP1040_IDENTITY);
+    g_assert_cmphex(board_readl(qts, 0, BRIDGE_CFG0(1) + PCI_IDENTITY), ==,
+                    ISP1040_IDENTITY);
+    g_assert_cmphex(board_readl(qts, 0, BRIDGE_CFG0(2) + PCI_IDENTITY), ==,
+                    IOC3_IDENTITY);
+    for (slot = 3; slot < PCI_SLOTS; slot++) {
+        g_assert_cmphex(board_readl(qts, 0, BRIDGE_CFG0(slot) + PCI_IDENTITY),
+                        ==, NO_CARD);
+    }
+
+    g_assert_cmphex(board_readl(qts, 0, BRIDGE_CFG0(2) + PCI_SUBSYSTEM), ==,
+                    IOC3_SUBSYSTEM_VENDOR |
+                    (uint32_t)(machine_uint(qts, "ioc3-subsystem") << 16));
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -221,6 +352,12 @@ int main(int argc, char **argv)
                    test_each_node_reads_its_own_switch);
     qtest_add_func("sn0/origin2000/xtalk-attach/no-route-to-itself",
                    test_a_node_has_no_route_to_itself);
+    qtest_add_func("sn0/origin2000/xtalk-attach/processor-reads-the-board",
+                   test_a_processor_reads_the_board);
+    qtest_add_func("sn0/origin2000/xtalk-attach/board-on-one-switch",
+                   test_only_the_nodes_sharing_its_switch_reach_the_board);
+    qtest_add_func("sn0/origin2000/xtalk-attach/board-pci-functions",
+                   test_the_board_carries_the_functions_the_descriptor_named);
 
     return g_test_run();
 }

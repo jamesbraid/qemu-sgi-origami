@@ -5,7 +5,9 @@
 #include "qapi/error.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
+#include "hw/misc/sgi-ioc3.h"
 #include "hw/misc/sgi-xbow.h"
+#include "hw/scsi/qlogic-isp.h"
 #include "qemu/error-report.h"
 #include "system/runstate.h"
 #include "sn0.h"
@@ -49,6 +51,22 @@ typedef struct SN0Origin2000XtalkDestination {
     bool initialized;
 } SN0Origin2000XtalkDestination;
 
+/*
+ * The base I/O board: one Bridge and the PCI functions the descriptor fits
+ * behind it, under an owner of their own so the board can be released as a
+ * unit. The proxy is what the chip's own transfers leave through, standing
+ * in for the switch port until the switch is realized and has one.
+ */
+typedef struct SN0Origin2000XtalkBoard {
+    Object *owner;
+    SGIBridgeState *bridge;
+    PCIDevice **pci;
+    size_t pci_count;
+    MemoryRegion packet_proxy;
+    MemoryRegion packet_alias;
+    bool bound;
+} SN0Origin2000XtalkBoard;
+
 struct SN0Origin2000XtalkState {
     Object parent_obj;
 
@@ -57,8 +75,7 @@ struct SN0Origin2000XtalkState {
     SN0Origin2000XtalkSource source[ORIGIN2000_XTALK_NODES];
     SN0Origin2000XtalkDestination destination[ORIGIN2000_XTALK_NODES];
     bool attached;
-    Object *baseio[ORIGIN2000_XTALK_IO_BOARDS];
-    MemoryRegion board_packet_proxy[ORIGIN2000_XTALK_IO_BOARDS];
+    SN0Origin2000XtalkBoard board[ORIGIN2000_XTALK_IO_BOARDS];
     bool cleaned;
 };
 
@@ -144,6 +161,161 @@ static const MemoryRegionOps sn0_origin2000_cpu_refusal_ops = {
     .impl.unaligned = true,
 };
 
+static uint32_t sn0_origin2000_ioc3_population(
+    const SN0ModelIoc3Population *population)
+{
+    return (population->ethernet ? SGI_IOC3_POPULATION_ETHERNET : 0) |
+           (population->serial_a ? SGI_IOC3_POPULATION_SERIAL_A : 0) |
+           (population->serial_b ? SGI_IOC3_POPULATION_SERIAL_B : 0) |
+           (population->keyboard_mouse ?
+            SGI_IOC3_POPULATION_KEYBOARD_MOUSE : 0) |
+           (population->parallel ? SGI_IOC3_POPULATION_PARALLEL : 0) |
+           (population->onewire_identity ?
+            SGI_IOC3_POPULATION_ONEWIRE_IDENTITY : 0);
+}
+
+/*
+ * A board's PCI function, built from the board record. The Origin 200 helpers
+ * read node-local topology and instance fields a board on a switch has no
+ * equivalent of, so using them here would mean handing them a node record
+ * that describes nothing in this chassis.
+ */
+static PCIDevice *sn0_origin2000_xtalk_pci_function(
+    SN0Origin2000XtalkBoard *board, const SN0ModelIoBoard *record,
+    const SN0ModelComponent *function, unsigned int scsi_index, Error **errp)
+{
+    PCIBus *bus = PCI_HOST_BRIDGE(board->bridge)->bus;
+    g_autofree char *name = NULL;
+    PCIDevice *dev;
+
+    switch (function->kind) {
+    case SN0_COMPONENT_ISP1040:
+        name = g_strdup_printf("isp%u", scsi_index);
+        dev = pci_new(PCI_DEVFN(function->device, function->function),
+                      TYPE_QLOGIC_ISP1040);
+        object_property_add_child(board->owner, name, OBJECT(dev));
+        if (!pci_realize_and_unref(dev, bus, errp)) {
+            return NULL;
+        }
+        pci_set_byte(dev->config + PCI_REVISION_ID, function->revision);
+        qlogic_isp_handle_legacy_cmdline(DEVICE(dev));
+        return dev;
+
+    case SN0_COMPONENT_IOC3:
+        dev = pci_new(PCI_DEVFN(function->device, function->function),
+                      TYPE_SGI_IOC3);
+        object_property_add_child(board->owner, "ioc3", OBJECT(dev));
+        qdev_prop_set_uint16(DEVICE(dev), "subsystem-id",
+                             function->subsystem_id);
+        qdev_prop_set_uint32(DEVICE(dev), "population",
+                             sn0_origin2000_ioc3_population(
+                                 &record->ioc3_population));
+        qdev_prop_set_uint8(DEVICE(dev), "timekeeper-kind",
+                            record->ioc3_population.timekeeper ?
+                            SGI_IOC3_TIMEKEEPER_M48T35 :
+                            SGI_IOC3_TIMEKEEPER_NONE);
+        qdev_prop_set_uint64(DEVICE(dev), "onewire-serial", function->serial);
+        if (!pci_realize_and_unref(dev, bus, errp)) {
+            return NULL;
+        }
+        pci_set_byte(dev->config + PCI_REVISION_ID, function->revision);
+        /* Board wiring, not PCI INTx: the chip drives a Bridge pin direct. */
+        qdev_connect_gpio_out(DEVICE(dev), 0,
+                              qdev_get_gpio_in(DEVICE(board->bridge),
+                                               function->irq_input));
+        return dev;
+
+    default:
+        g_assert_not_reached();
+    }
+}
+
+/*
+ * The board, built where the descriptor puts it. The Bridge answers a
+ * processor and a packet at one face, unlike a Hub, so the switch takes the
+ * same region for both of that widget's views.
+ */
+static bool sn0_origin2000_xtalk_build_board(SN0Origin2000XtalkState *s,
+                                             size_t index, Error **errp)
+{
+    const SN0ModelIoBoard *record =
+        &s->machine->composition->io_boards[index];
+    SN0Origin2000XtalkBoard *board = &s->board[index];
+    g_autofree char *bus_name = g_strdup_printf("pci.baseio%zu", index);
+    DeviceState *bridge = qdev_new(TYPE_SGI_BRIDGE);
+    unsigned int scsi_index = 0;
+    MemoryRegion *face;
+    size_t i;
+
+    object_property_add_child(board->owner, "bridge", OBJECT(bridge));
+    board->bridge = SGI_BRIDGE(bridge);
+    object_unref(OBJECT(bridge));
+
+    qdev_prop_set_uint32(bridge, "revision", record->bridge->revision);
+    qdev_prop_set_uint64(bridge, "onewire-serial", record->bridge->serial);
+    qdev_prop_set_string(bridge, "board-part", record->bridge->part);
+    qdev_prop_set_string(bridge, "pci-bus-name", bus_name);
+    /*
+     * A switched fabric carries the destination widget, so the chip keeps it
+     * in bits 51:48 of the address it composes rather than spending address
+     * bits on a node number the switch would not read.
+     */
+    if (!object_property_set_link(OBJECT(bridge), "fabric",
+                                  OBJECT(&board->packet_proxy), errp)) {
+        return false;
+    }
+    qdev_prop_set_uint64(bridge, "fabric-base", 0);
+    qdev_prop_set_uint32(bridge, "fabric-widget-shift",
+                         SGI_BRIDGE_PACKET_ADDRESS_BITS);
+
+    if (!sysbus_realize(SYS_BUS_DEVICE(bridge), errp)) {
+        return false;
+    }
+
+    face = sysbus_mmio_get_region(SYS_BUS_DEVICE(bridge), 0);
+    if (!sgi_xbow_attach_endpoint(s->crossbow[record->crossbow_index],
+                                  record->widget, face, face, errp)) {
+        return false;
+    }
+
+    board->pci = g_new0(PCIDevice *, record->pci_count);
+    board->pci_count = record->pci_count;
+    for (i = 0; i < record->pci_count; i++) {
+        const SN0ModelComponent *function = &record->pci[i];
+        unsigned int instance =
+            function->kind == SN0_COMPONENT_ISP1040 ? scsi_index++ : 0;
+
+        board->pci[i] = sn0_origin2000_xtalk_pci_function(board, record,
+                                                          function, instance,
+                                                          errp);
+        if (!board->pci[i]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/*
+ * A board's devices stop before the Bridge whose spaces their transfers use,
+ * and the whole board stops before the proxy it sends through is released.
+ */
+static void sn0_origin2000_xtalk_release_board(SN0Origin2000XtalkBoard *board)
+{
+    size_t i;
+
+    for (i = board->pci_count; i > 0; i--) {
+        if (board->pci[i - 1]) {
+            qdev_unrealize(DEVICE(board->pci[i - 1]));
+        }
+    }
+    g_clear_pointer(&board->pci, g_free);
+    board->pci_count = 0;
+    if (board->bridge) {
+        qdev_unrealize(DEVICE(board->bridge));
+    }
+}
+
 static void sn0_origin2000_xtalk_cleanup(SN0Origin2000XtalkState *s)
 {
     size_t i;
@@ -164,6 +336,16 @@ static void sn0_origin2000_xtalk_cleanup(SN0Origin2000XtalkState *s)
      * orders matter more than they look: an alias left behind outlives the
      * region under it.
      */
+    for (i = 0; i < ARRAY_SIZE(s->board); i++) {
+        SN0Origin2000XtalkBoard *board = &s->board[i];
+
+        if (board->bound) {
+            memory_region_del_subregion(&board->packet_proxy,
+                                        &board->packet_alias);
+            memory_region_set_enabled(&board->packet_proxy, false);
+            board->bound = false;
+        }
+    }
     for (i = 0; i < ARRAY_SIZE(s->source); i++) {
         SN0Origin2000XtalkSource *source = &s->source[i];
 
@@ -173,6 +355,19 @@ static void sn0_origin2000_xtalk_cleanup(SN0Origin2000XtalkState *s)
             memory_region_del_subregion(&s->machine->nodes[i]->xtalk,
                                         &source->cpu_alias);
             source->bound = false;
+        }
+    }
+    /*
+     * Devices stop before the faces they hold spaces over: the board before
+     * its proxy, both switches before the Hub decoders they route packets
+     * into. An unrealized object here has nothing to undo and says so.
+     */
+    for (i = 0; i < ARRAY_SIZE(s->board); i++) {
+        sn0_origin2000_xtalk_release_board(&s->board[i]);
+    }
+    for (i = 0; i < ARRAY_SIZE(s->crossbow); i++) {
+        if (s->crossbow[i]) {
+            qdev_unrealize(DEVICE(s->crossbow[i]));
         }
     }
     for (i = 0; i < ARRAY_SIZE(s->destination); i++) {
@@ -308,13 +503,14 @@ bool sn0_origin2000_xtalk_prepare(SN0MachineState *machine, Error **errp)
         g_autofree char *proxy_name =
             g_strdup_printf("baseio%zu-packet-proxy", i);
         g_autofree char *owner_name = g_strdup_printf("baseio%zu", i);
+        SN0Origin2000XtalkBoard *board = &s->board[i];
 
-        s->baseio[i] = object_new(TYPE_CONTAINER);
-        object_property_add_child(OBJECT(s), owner_name, s->baseio[i]);
-        object_unref(s->baseio[i]);
-        memory_region_init(&s->board_packet_proxy[i], s->baseio[i],
-                           proxy_name, ORIGIN2000_PACKET_SIZE);
-        memory_region_set_enabled(&s->board_packet_proxy[i], false);
+        board->owner = object_new(TYPE_CONTAINER);
+        object_property_add_child(OBJECT(s), owner_name, board->owner);
+        object_unref(board->owner);
+        memory_region_init(&board->packet_proxy, board->owner, proxy_name,
+                           ORIGIN2000_PACKET_SIZE);
+        memory_region_set_enabled(&board->packet_proxy, false);
     }
 
     return true;
@@ -353,6 +549,12 @@ bool sn0_origin2000_xtalk_attach(SN0MachineState *machine, Error **errp)
             error_setg(errp, "Origin 2000 Crosstalk node %zu is not realized",
                        i);
             return false;
+        }
+    }
+
+    for (i = 0; i < model->io_board_count; i++) {
+        if (!sn0_origin2000_xtalk_build_board(s, i, errp)) {
+            goto unwind;
         }
     }
 
@@ -422,6 +624,23 @@ bool sn0_origin2000_xtalk_attach(SN0MachineState *machine, Error **errp)
         memory_region_set_enabled(&source->packet_proxy, true);
     }
 
+    for (i = 0; i < model->io_board_count; i++) {
+        const SN0ModelIoBoard *record = &model->io_boards[i];
+        SN0Origin2000XtalkBoard *board = &s->board[i];
+        SGIXbowState *crossbow = s->crossbow[record->crossbow_index];
+        MemoryRegion *packet = sgi_xbow_packet_ingress(crossbow,
+                                                       record->widget);
+        g_autofree char *name =
+            g_strdup_printf("baseio%zu-packet-ingress", i);
+
+        memory_region_init_alias(&board->packet_alias, board->owner, name,
+                                 packet, 0, memory_region_size(packet));
+        memory_region_add_subregion(&board->packet_proxy, 0,
+                                    &board->packet_alias);
+        board->bound = true;
+        memory_region_set_enabled(&board->packet_proxy, true);
+    }
+
     s->attached = true;
     return true;
 
@@ -463,7 +682,7 @@ bool sn0_origin2000_xtalk_test_proxies_disabled(SN0MachineState *machine)
             }
         }
     }
-    return !s->board_packet_proxy[0].enabled &&
-        memory_region_size(&s->board_packet_proxy[0]) ==
+    return !s->board[0].packet_proxy.enabled &&
+        memory_region_size(&s->board[0].packet_proxy) ==
         ORIGIN2000_PACKET_SIZE;
 }
