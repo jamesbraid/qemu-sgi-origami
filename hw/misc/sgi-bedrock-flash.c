@@ -2,23 +2,28 @@
 /*
  * Origin 300 boot flash: adapts Bedrock boot-window cycles to a CFI device.
  *
- * Reads are one-to-one. Commands and programming arrive as 64-bit stores
- * carrying one 16-bit word zero-extended to 64 bits, the word at index n
- * addressed by the store at offset 8n, so a store is one two-byte cycle,
- * never two one-byte cycles. A value with anything above the word set is
- * outside that interface, so it is refused rather than masked down to fit.
+ * Reads and writes decode differently, and at one address they disagree. An
+ * ordinary read is relative to the software read address it lands in and is
+ * one-to-one within it. A command or programming store is relative to the
+ * enclosing 128 MiB boot space: it carries one 16-bit word zero-extended to
+ * 64 bits, the word at backing byte n addressed by the store at window offset
+ * 4n, so a store is one two-byte cycle, never two one-byte cycles. The second
+ * software read address is a stride into the window, not a second write base,
+ * so a read there sees backing byte zero while a store there reaches the
+ * middle of the backing. A value with anything above the word set, a narrower
+ * store, or an offset past the last backing word is outside the interface and
+ * is refused rather than guessed at.
+ *
  * Published documentation also describes a byte-write view putting byte n at
- * 8n; the firmware drives the 16-bit path modelled here, and a narrower
- * store is refused rather than guessed at. What a selection can command
- * follows from that transform and the view size; whether the hardware
- * commands the whole part through one selection is unresolved.
+ * 8n, spanning the whole window; the firmware drives the 16-bit path modelled
+ * here, which spans its first 64 MiB.
  *
  * Unknown, so not modelled: the fitted part, package count, how packages map
- * to the two selections, the chip-select equations, what an absent part
- * answers, and the decode outside the two selections. Both selections reach
- * one device so that firmware sees its own writes back through either one;
- * that is a compatibility choice, not a claim about the board. The CFI
- * device's identifiers are its defaults and name no part.
+ * to the boot spaces, the chip-select equations, what an absent part answers,
+ * and the read decode outside the mapped views. Every view reaching one
+ * device is a compatibility choice, not a claim about the board, so that
+ * firmware sees its own writes back through each of them. The CFI device's
+ * identifiers are its defaults and name no part.
  */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-bedrock-flash.h"
@@ -34,36 +39,65 @@
 #define FLASH_UNLOCK_ADDR0 0x555
 #define FLASH_UNLOCK_ADDR1 0x2aa
 
-static const char *const flash_selection_name[SGI_BEDROCK_FLASH_SELECTIONS] = {
-    "primary", "alternate"
+static const char *const flash_window_name[SGI_BEDROCK_FLASH_WINDOWS] = {
+    "local", "remote"
 };
+
+/*
+ * The read addresses this device answers for inside a boot space: the base
+ * itself, and the second software address one stride above it. Both are
+ * one-to-one over the backing.
+ */
+static bool flash_backing_read_offset(hwaddr offset, hwaddr *backing)
+{
+    if (offset < SGI_BEDROCK_FLASH_SIZE) {
+        *backing = offset;
+        return true;
+    }
+    if (offset >= SGI_BEDROCK_FLASH_SECOND_READ &&
+        offset < SGI_BEDROCK_FLASH_SECOND_READ + SGI_BEDROCK_FLASH_SIZE) {
+        *backing = offset - SGI_BEDROCK_FLASH_SECOND_READ;
+        return true;
+    }
+    return false;
+}
 
 static MemTxResult flash_read(void *opaque, hwaddr offset, uint64_t *value,
                               unsigned size, MemTxAttrs attrs)
 {
-    SGIBedrockFlashView *view = opaque;
-    SGIBedrockFlashState *s = view->adapter;
+    SGIBedrockFlashWindow *window = opaque;
+    SGIBedrockFlashState *s = window->adapter;
     uint64_t high, low;
     MemTxResult result;
+    hwaddr backing;
+
+    if (!flash_backing_read_offset(offset, &backing)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-flash: %s boot space: read at "
+                      "0x%" HWADDR_PRIx " is outside every mapped read "
+                      "address; what answers there is unknown\n",
+                      flash_window_name[window->index], offset);
+        *value = 0;
+        return MEMTX_ERROR;
+    }
 
     switch (size) {
     case 1:
     case 2:
     case 4:
-        return memory_region_dispatch_read(s->flash_mmio, offset, value,
+        return memory_region_dispatch_read(s->flash_mmio, backing, value,
                                            size_memop(size) | MO_BE, attrs);
     case 8:
         /* The flash answers at most four bytes per cycle. */
-        result = memory_region_dispatch_read(s->flash_mmio, offset, &high,
+        result = memory_region_dispatch_read(s->flash_mmio, backing, &high,
                                              MO_32 | MO_BE, attrs);
-        result |= memory_region_dispatch_read(s->flash_mmio, offset + 4, &low,
+        result |= memory_region_dispatch_read(s->flash_mmio, backing + 4, &low,
                                               MO_32 | MO_BE, attrs);
         *value = (high << 32) | (uint32_t)low;
         return result;
     default:
-        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-flash: %s selection: %u-byte "
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-flash: %s boot space: %u-byte "
                       "read at 0x%" HWADDR_PRIx " is not a supported access "
-                      "width\n", flash_selection_name[view->index], size,
+                      "width\n", flash_window_name[window->index], size,
                       offset);
         *value = 0;
         return MEMTX_ERROR;
@@ -73,15 +107,15 @@ static MemTxResult flash_read(void *opaque, hwaddr offset, uint64_t *value,
 static MemTxResult flash_write(void *opaque, hwaddr offset, uint64_t value,
                                unsigned size, MemTxAttrs attrs)
 {
-    SGIBedrockFlashView *view = opaque;
-    SGIBedrockFlashState *s = view->adapter;
+    SGIBedrockFlashWindow *window = opaque;
+    SGIBedrockFlashState *s = window->adapter;
 
     if (size != 8) {
-        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-flash: %s selection: %u-byte "
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-flash: %s boot space: %u-byte "
                       "write of 0x%" PRIx64 " at 0x%" HWADDR_PRIx " is "
                       "outside the 64-bit store the firmware uses; what the "
                       "hardware does with it is unknown\n",
-                      flash_selection_name[view->index], size, value, offset);
+                      flash_window_name[window->index], size, value, offset);
         return MEMTX_ERROR;
     }
     if (value > UINT16_MAX) {
@@ -89,15 +123,23 @@ static MemTxResult flash_write(void *opaque, hwaddr offset, uint64_t value,
          * No cycle is issued, so the flash stays wherever the sequence had
          * reached and the next read may return status rather than data.
          */
-        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-flash: %s selection: "
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-flash: %s boot space: "
                       "write of 0x%" PRIx64 " at 0x%" HWADDR_PRIx " sets bits "
                       "above the 16-bit flash word; refused without a flash "
-                      "cycle\n", flash_selection_name[view->index], value,
+                      "cycle\n", flash_window_name[window->index], value,
                       offset);
         return MEMTX_ERROR;
     }
 
-    /* The store at offset 8n carries flash word n, at flash byte 2n. */
+    if (offset >= SGI_BEDROCK_FLASH_WRITE_LIMIT) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-flash: %s boot space: "
+                      "store at 0x%" HWADDR_PRIx " is past the last backing "
+                      "word; refused without a flash cycle\n",
+                      flash_window_name[window->index], offset);
+        return MEMTX_ERROR;
+    }
+
+    /* The store at window offset 4n carries the word at backing byte n. */
     return memory_region_dispatch_write(s->flash_mmio, offset >> 2, value,
                                         MO_16 | MO_BE, attrs);
 }
@@ -175,16 +217,17 @@ static void flash_init(Object *obj)
     object_unref(OBJECT(s->flash));
     object_property_add_alias(obj, "drive", OBJECT(s->flash), "drive");
 
-    for (unsigned i = 0; i < SGI_BEDROCK_FLASH_SELECTIONS; i++) {
+    for (unsigned i = 0; i < SGI_BEDROCK_FLASH_WINDOWS; i++) {
         g_autofree char *name = g_strdup_printf("%s.%s",
                                                 TYPE_SGI_BEDROCK_FLASH,
-                                                flash_selection_name[i]);
+                                                flash_window_name[i]);
 
-        s->view[i].adapter = s;
-        s->view[i].index = i;
-        memory_region_init_io(&s->view[i].mmio, obj, &flash_ops, &s->view[i],
-                              name, SGI_BEDROCK_FLASH_SIZE);
-        sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->view[i].mmio);
+        s->window[i].adapter = s;
+        s->window[i].index = i;
+        memory_region_init_io(&s->window[i].mmio, obj, &flash_ops,
+                              &s->window[i], name,
+                              SGI_BEDROCK_FLASH_WINDOW_SIZE);
+        sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->window[i].mmio);
     }
 }
 
