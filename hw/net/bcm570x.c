@@ -159,6 +159,7 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
  */
 #define BCM570X_MAC_ADDR_0_HIGH     0x0410
 #define BCM570X_MAC_ADDR_0_LOW      0x0414
+#define BCM570X_MAC_ADDR_STRIDE     8
 #define BCM570X_HCC_MODE            0x3c00
 /*
  * How often the host-coalescing block DMAs the status block on its own, in
@@ -277,6 +278,9 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_TXBDFLAG_TCP_UDP_CKSUM 0x0001
 #define BCM570X_TXBDFLAG_IP_CKSUM   0x0002
 #define BCM570X_TXBDFLAG_END        0x0004
+#define BCM570X_TXBDFLAG_INSERT_SRC_ADDR 0x1000
+#define BCM570X_TXBDFLAG_CHOOSE_SRC_ADDR 0x6000
+#define BCM570X_TXBDFLAG_SRC_ADDR_SHIFT  13
 
 /*
  * The host coalescing block DMAs the status block to the host address the
@@ -1004,6 +1008,27 @@ static void bcm570x_tx_offload_checksum(uint8_t *frame, unsigned int len,
     net_checksum_calculate(frame, len, csum);
 }
 
+static void bcm570x_tx_replace_source(Bcm570xState *s, uint8_t *frame,
+                                      unsigned int len, uint16_t flags)
+{
+    unsigned int slot;
+    uint32_t hi, lo;
+
+    if (!(flags & BCM570X_TXBDFLAG_INSERT_SRC_ADDR) || len < 12) {
+        return;
+    }
+
+    slot = (flags & BCM570X_TXBDFLAG_CHOOSE_SRC_ADDR) >>
+           BCM570X_TXBDFLAG_SRC_ADDR_SHIFT;
+    hi = bcm570x_regfile_read(s, BCM570X_MAC_ADDR_0_HIGH +
+                              slot * BCM570X_MAC_ADDR_STRIDE);
+    lo = bcm570x_regfile_read(s, BCM570X_MAC_ADDR_0_LOW +
+                              slot * BCM570X_MAC_ADDR_STRIDE);
+    frame[6] = hi >> 8;
+    frame[7] = hi;
+    stl_be_p(frame + 8, lo);
+}
+
 /*
  * Cut one oversized TCP buffer into segments the peer will accept. The guest
  * hands down a single frame holding many segments' worth of payload; each piece
@@ -1144,6 +1169,10 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
         }
         if (flags & BCM570X_TXBDFLAG_END) {
             if (!frame_dropped && frame_len) {
+                if (frame_mss == 0) {
+                    bcm570x_tx_replace_source(s, frame, frame_len,
+                                              frame_flags);
+                }
                 bcm570x_tx_segment(s, frame, frame_len, frame_mss, frame_flags);
                 sent++;
             }

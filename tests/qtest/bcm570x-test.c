@@ -145,10 +145,18 @@
 #define BCM_HCC_RX_MAX_COAL_BDS 0x3c10u        /* receive coalescing: descriptors */
 #define BCM_MODE_CTL            0x6800u
 #define BCM_DMA_SWAP_OPTIONS    0x36u          /* the driver's MODE_CTL swap arm */
+#define BCM_MODE_HOST_SEND_BDS  (1u << 17)
 #define BCM_SRAM_SEND_RING_RCB  0x0100u
 #define BCM_TXBDFLAG_TCP_UDP_CKSUM 0x0001u
 #define BCM_TXBDFLAG_IP_CKSUM   0x0002u
 #define BCM_TXBDFLAG_END        0x0004u
+#define BCM_TXBDFLAG_INSERT_SRC_ADDR 0x1000u
+#define BCM_TXBDFLAG_CHOOSE_SRC_ADDR(n) ((n) << 13)
+#define BCM_TXBDFLAG_LEGACY_SEGMENTATION_BITS 0x7000u
+#define BCM_MAC_ADDR_0_HIGH     0x0410u
+#define BCM_MAC_ADDR_0_LOW      0x0414u
+#define BCM_MAC_ADDR_STRIDE     8u
+#define BCM_SOURCE_TX_RING_LEN  8u
 #define BCM_STATFLAG_UPDATED    0x00000001u
 #define BCM_STATUS_BLK_SIZE     0x50
 /* Status-block idx[0]: rx_producer at 0x10, tx_consumer at 0x12 (tg3 layout). */
@@ -1102,6 +1110,139 @@ static void test_transmit_round_trip(const void *data)
 }
 
 /*
+ * Source-address insertion is a per-packet send-BD attribute. Bit 12 enables
+ * replacement and bits 14:13 select one of the four programmed MAC slots; the
+ * selector alone must not rewrite the frame. Packet attributes remain the same
+ * on every fragment through the BD carrying END, so the split case keeps them
+ * on both descriptors and cuts the source field itself across their boundary.
+ */
+static void test_transmit_source_address(const void *data)
+{
+    static const uint32_t slot_regs[4][2] = {
+        { 0x00000210, 0x20304050 },
+        { 0x00000211, 0x21314151 },
+        { 0x00000212, 0x22324252 },
+        { 0x00000213, 0x23334353 },
+    };
+    static const uint8_t expected_src[4][6] = {
+        { 0x02, 0x10, 0x20, 0x30, 0x40, 0x50 },
+        { 0x02, 0x11, 0x21, 0x31, 0x41, 0x51 },
+        { 0x02, 0x12, 0x22, 0x32, 0x42, 0x52 },
+        { 0x02, 0x13, 0x23, 0x33, 0x43, 0x53 },
+    };
+    static const unsigned int selector_order[4] = { 2, 0, 3, 1 };
+    static const uint8_t sentinel_src[6] = {
+        0xde, 0xad, 0xbe, 0xef, 0x00, 0x01,
+    };
+    int sv[2];
+    Bcm b;
+    uint8_t frame[60];
+    uint8_t expected[sizeof(frame)];
+    uint8_t got[128];
+    uint8_t bd[16];
+    unsigned int i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(0x80 + i);
+    }
+    memcpy(frame + 6, sentinel_src, sizeof(sentinel_src));
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+
+    ind_reg_writel(&b, BCM_MODE_CTL,
+                   BCM_DMA_SWAP_OPTIONS | BCM_MODE_HOST_SEND_BDS);
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 0, TX_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 4,
+                   TX_RING_PHYS & 0xffffffff);
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 8,
+                   BCM_SOURCE_TX_RING_LEN << 16);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    for (i = 0; i < 4; i++) {
+        bar_writel(&b, BCM_MAC_ADDR_0_HIGH + i * BCM_MAC_ADDR_STRIDE,
+                   slot_regs[i][0]);
+        bar_writel(&b, BCM_MAC_ADDR_0_LOW + i * BCM_MAC_ADDR_STRIDE,
+                   slot_regs[i][1]);
+    }
+
+    for (i = 0; i < 4; i++) {
+        unsigned int selector = selector_order[i];
+        uint64_t buf = TX_BUF_PHYS + (uint64_t)i * 128;
+        uint16_t flags = BCM_TXBDFLAG_INSERT_SRC_ADDR |
+                         BCM_TXBDFLAG_CHOOSE_SRC_ADDR(selector) |
+                         BCM_TXBDFLAG_END;
+        size_t len;
+
+        qtest_memwrite(b.qts, buf, frame, sizeof(frame));
+        memset(bd, 0, sizeof(bd));
+        put32le(bd + 0, buf >> 32);
+        put32le(bd + 4, buf & 0xffffffff);
+        put16le(bd + 8, flags);
+        put16le(bd + 10, sizeof(frame));
+        qtest_memwrite(b.qts, TX_RING_PHYS + (uint64_t)i * sizeof(bd),
+                       bd, sizeof(bd));
+
+        bar_writel(&b, BCM_MBX_TX_PROD_LO, i + 1);
+        len = net_socket_recv_frame(sv[0], got, sizeof(got));
+        g_assert_cmpuint(len, ==, sizeof(frame));
+        memcpy(expected, frame, sizeof(expected));
+        memcpy(expected + 6, expected_src[selector],
+               sizeof(expected_src[selector]));
+        g_assert_cmpmem(got, len, expected, sizeof(expected));
+    }
+
+    /* A nonzero selector without INSERT leaves the complete frame untouched. */
+    qtest_memwrite(b.qts, TX_BUF_PHYS + 4 * 128, frame, sizeof(frame));
+    memset(bd, 0, sizeof(bd));
+    put32le(bd + 0, (TX_BUF_PHYS + 4 * 128) >> 32);
+    put32le(bd + 4, (TX_BUF_PHYS + 4 * 128) & 0xffffffff);
+    put16le(bd + 8, BCM_TXBDFLAG_CHOOSE_SRC_ADDR(3) |
+                       BCM_TXBDFLAG_END);
+    put16le(bd + 10, sizeof(frame));
+    qtest_memwrite(b.qts, TX_RING_PHYS + 4 * sizeof(bd), bd, sizeof(bd));
+    bar_writel(&b, BCM_MBX_TX_PROD_LO, 5);
+    g_assert_cmpuint(net_socket_recv_frame(sv[0], got, sizeof(got)), ==,
+                     sizeof(frame));
+    g_assert_cmpmem(got, sizeof(frame), frame, sizeof(frame));
+
+    /* Split after source bytes 0-1; both fragments carry the packet flags. */
+    qtest_memwrite(b.qts, TX_BUF_PHYS + 5 * 128, frame, 8);
+    qtest_memwrite(b.qts, TX_BUF_PHYS + 6 * 128, frame + 8,
+                   sizeof(frame) - 8);
+    memset(bd, 0, sizeof(bd));
+    put32le(bd + 0, (TX_BUF_PHYS + 5 * 128) >> 32);
+    put32le(bd + 4, (TX_BUF_PHYS + 5 * 128) & 0xffffffff);
+    put16le(bd + 8, BCM_TXBDFLAG_INSERT_SRC_ADDR |
+                       BCM_TXBDFLAG_CHOOSE_SRC_ADDR(2));
+    put16le(bd + 10, 8);
+    qtest_memwrite(b.qts, TX_RING_PHYS + 5 * sizeof(bd), bd, sizeof(bd));
+    memset(bd, 0, sizeof(bd));
+    put32le(bd + 0, (TX_BUF_PHYS + 6 * 128) >> 32);
+    put32le(bd + 4, (TX_BUF_PHYS + 6 * 128) & 0xffffffff);
+    put16le(bd + 8, BCM_TXBDFLAG_INSERT_SRC_ADDR |
+                       BCM_TXBDFLAG_CHOOSE_SRC_ADDR(2) |
+                       BCM_TXBDFLAG_END);
+    put16le(bd + 10, sizeof(frame) - 8);
+    qtest_memwrite(b.qts, TX_RING_PHYS + 6 * sizeof(bd), bd, sizeof(bd));
+    bar_writel(&b, BCM_MBX_TX_PROD_LO, 7);
+    g_assert_cmpuint(net_socket_recv_frame(sv[0], got, sizeof(got)), ==,
+                     sizeof(frame));
+    memcpy(expected, frame, sizeof(expected));
+    memcpy(expected + 6, expected_src[2], sizeof(expected_src[2]));
+    g_assert_cmpmem(got, sizeof(frame), expected, sizeof(expected));
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/*
  * Segmentation offload. The driver hands down one buffer holding several
  * segments' worth of payload and names the segment size in the descriptor; the
  * card cuts it up. Sending it whole puts a frame on the wire no peer accepts,
@@ -1142,7 +1283,7 @@ static void build_lso_frame(uint8_t *f, unsigned int payload)
 }
 
 static void lso_open(Bcm *b, int fd, uint8_t *frame, unsigned int len,
-                     unsigned int mss)
+                     unsigned int mss, uint16_t flags)
 {
     uint8_t bd[16];
 
@@ -1157,7 +1298,7 @@ static void lso_open(Bcm *b, int fd, uint8_t *frame, unsigned int len,
     memset(bd, 0, sizeof(bd));
     put32le(bd + 0, TX_BUF_PHYS >> 32);
     put32le(bd + 4, TX_BUF_PHYS & 0xffffffff);
-    put16le(bd + 8, BCM_TXBDFLAG_END);
+    put16le(bd + 8, flags | BCM_TXBDFLAG_END);
     put16le(bd + 10, (uint16_t)len);
     put16le(bd + 14, (uint16_t)mss);
     qtest_memwrite(b->qts, TX_RING_PHYS, bd, sizeof(bd));
@@ -1183,13 +1324,15 @@ static void test_transmit_segmentation(const void *data)
                              " -netdev socket,fd=%d,id=n0"
                              " -device bcm570x,addr=%02x.0,netdev=n0",
                              sv[1], BCM_SLOT));
-    lso_open(&b, sv[0], frame, LSO_HDR + payload, LSO_MSS);
+    lso_open(&b, sv[0], frame, LSO_HDR + payload, LSO_MSS,
+             BCM_TXBDFLAG_LEGACY_SEGMENTATION_BITS);
 
     for (i = 0; i < LSO_SEGMENTS; i++) {
         size_t len = net_socket_recv_frame(sv[0], got, sizeof(got));
         uint32_t seq;
 
         g_assert_cmpint(len, ==, LSO_HDR + LSO_MSS);
+        g_assert_cmpmem(got + 6, 6, frame + 6, 6);
         g_assert_cmphex(get16be_test(got + 16), ==, 20 + 20 + LSO_MSS);
         seq = ((uint32_t)got[38] << 24) | ((uint32_t)got[39] << 16) |
               ((uint32_t)got[40] << 8) | got[41];
@@ -1226,7 +1369,7 @@ static void test_transmit_no_segmentation(const void *data)
                              " -netdev socket,fd=%d,id=n0"
                              " -device bcm570x,addr=%02x.0,netdev=n0",
                              sv[1], BCM_SLOT));
-    lso_open(&b, sv[0], frame, LSO_HDR + payload, 0);
+    lso_open(&b, sv[0], frame, LSO_HDR + payload, 0, 0);
 
     len = net_socket_recv_frame(sv[0], got, sizeof(got));
     g_assert_cmpint(len, ==, LSO_HDR + payload);
@@ -3137,6 +3280,8 @@ int main(int argc, char **argv)
                         test_status_block_hostaddr_wordswap);
     qtest_add_data_func("/bcm570x/transmit-round-trip", NULL,
                         test_transmit_round_trip);
+    qtest_add_data_func("/bcm570x/transmit-source-address", NULL,
+                        test_transmit_source_address);
     qtest_add_data_func("/bcm570x/transmit-throughput", NULL,
                         test_transmit_throughput);
     qtest_add_data_func("/bcm570x/transmit-coalescing", NULL,
