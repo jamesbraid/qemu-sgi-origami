@@ -95,7 +95,10 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 
 /* Interrupt and CPU control. */
 #define TI_MHC_INTSTATE     0x00000001
+#define TI_WINBASE          0x068
 #define TI_CPU_STATE        0x140
+#define TI_CPU_PROGRAM_COUNTER 0x144
+#define TI_SRAM_WINDOW      0x800
 
 /* Mailbox doorbells and descriptor flags. */
 #define TI_MB_HOSTINTR      0x504
@@ -717,6 +720,56 @@ static void test_firmware_up_posts_event(const void *data)
     release_cpu(qts);
 
     /* Both conditions met: a firmware-up event and the interrupt. */
+    g_assert_cmphex(qtest_readl(qts, EVENT_RING_PHYS), ==,
+                    (uint32_t)TI_EV_FIRMWARE_UP << 24);
+    g_assert_cmphex(qtest_readl(qts, EV_PROD_PHYS), ==, 1);
+    g_assert_true(irq_asserted(qts));
+
+    qtest_quit(qts);
+}
+
+/*
+ * A firmware download reaches SRAM through the movable 2 KB BAR window. The
+ * mixed-width writes share one word so widening either narrow access corrupts
+ * a neighbouring byte. A second WINBASE position proves that the window is
+ * not fixed at SRAM offset zero. Only after that public upload sequence do we
+ * publish the ring set and release CPU A.
+ */
+static void test_firmware_upload_window_posts_event(const void *data)
+{
+    const uint32_t upload_base = 0x2000;
+    const uint32_t other_base = 0x2800;
+    const uint32_t upload_off = 0x20;
+    const uint64_t window = WINDOW_TIGON + TI_SRAM_WINDOW + upload_off;
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+
+    enable_dma_big_endian(qts);
+    build_gib(qts);
+
+    qtest_writel(qts, WINDOW_TIGON + TI_WINBASE, upload_base);
+    qtest_writel(qts, window, 0x11223344);
+    qtest_writeb(qts, window, 0xa5);
+    qtest_writew(qts, window + 2, 0xb6c7);
+    qtest_writel(qts, window + 4, 0xd8e9fa0b);
+
+    g_assert_cmphex(qtest_readb(qts, window), ==, 0xa5);
+    g_assert_cmphex(qtest_readw(qts, window + 2), ==, 0xb6c7);
+    g_assert_cmphex(qtest_readl(qts, window), ==, 0xa522b6c7);
+    g_assert_cmphex(qtest_readl(qts, window + 4), ==, 0xd8e9fa0b);
+
+    qtest_writel(qts, WINDOW_TIGON + TI_WINBASE, other_base);
+    g_assert_cmphex(qtest_readl(qts, window), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, window + 4), ==, 0);
+    qtest_writel(qts, window, 0x01020304);
+
+    qtest_writel(qts, WINDOW_TIGON + TI_WINBASE, upload_base);
+    g_assert_cmphex(qtest_readl(qts, window), ==, 0xa522b6c7);
+    g_assert_cmphex(qtest_readl(qts, window + 4), ==, 0xd8e9fa0b);
+
+    qtest_writel(qts, WINDOW_TIGON + TI_CPU_PROGRAM_COUNTER, upload_base);
+    publish_gib(qts);
+    release_cpu(qts);
+
     g_assert_cmphex(qtest_readl(qts, EVENT_RING_PHYS), ==,
                     (uint32_t)TI_EV_FIRMWARE_UP << 24);
     g_assert_cmphex(qtest_readl(qts, EV_PROD_PHYS), ==, 1);
@@ -2849,6 +2902,8 @@ int main(int argc, char **argv)
                         test_firmware_up_requires_gib);
     qtest_add_data_func("/sn0/tigon/firmware-up-posts-event", NULL,
                         test_firmware_up_posts_event);
+    qtest_add_data_func("/sn0/tigon/firmware-upload-window-posts-event", NULL,
+                        test_firmware_upload_window_posts_event);
     qtest_add_data_func("/sn0/tigon/transmit", NULL, test_transmit);
     qtest_add_data_func("/sn0/tigon/user-backend-reply-waits-for-transmit",
                         NULL, test_user_backend_reply_waits_for_transmit);
