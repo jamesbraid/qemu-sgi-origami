@@ -471,13 +471,23 @@ static void sn0_origin2000_xtalk_release_crossbows(SN0Origin2000XtalkState *s)
 
 /*
  * Unparenting a device does not free it: leaving a bus hands its reference
- * back through RCU, a grace period later and on another thread. So nothing
- * unparented above is actually gone until this returns, and until it is gone
- * its own regions still alias the faces and spaces it was wired to. Draining
- * here is what lets the rest of teardown release those.
+ * back through RCU, a grace period later and on another thread. Waiting for
+ * that here keeps teardown inside this call, so a release lands where the
+ * cause is rather than at an unrelated point later in the run.
+ *
+ * Nothing after the drain needs it. Every face a switch still names is held
+ * by something else -- a realized Hub makes this object retire rather than
+ * be freed, and the memory core holds a Bridge for as long as a route
+ * renders it -- and the address spaces destroyed after this are themselves
+ * released through RCU, so the drain does not bound those either. It buys
+ * a predictable point of collapse, not correctness.
  *
  * One pass is enough because unparenting a device queues its children's
  * releases before its own, so a subtree comes apart from the inside out.
+ *
+ * For a caller that is not machine init: drain_call_rcu() drops the BQL and
+ * takes it again while it waits, so whatever the lock was holding still can
+ * run underneath this.
  */
 static void sn0_origin2000_xtalk_settle_releases(void)
 {
@@ -527,10 +537,14 @@ static void sn0_origin2000_xtalk_cleanup_attach(SN0Origin2000XtalkState *s,
     /*
      * Devices stop before the faces they hold spaces over: the board before
      * its proxy, both switches before the Hub decoders they route packets
-     * into. The switches go first of all, because a switch's routes alias the
-     * board's own face as well as the Hub decoders, so a board released ahead
-     * of them would be freed with a route still naming it. An unrealized
-     * object here has nothing to undo and says so.
+     * into. The switches go first because this is the order the machine was
+     * built in, read backwards -- not because the other order is unsafe. The
+     * memory core takes a reference on a region's owner for every flat-view
+     * section that renders it and gives it back only once the topology has
+     * been re-rendered and the stale views reclaimed, which is part of the
+     * switches' own teardown. So a Bridge a Crossbow route still aliases
+     * survives its bus-reference drop whichever order the two are released
+     * in. An unrealized object here has nothing to undo and says so.
      */
     sn0_origin2000_xtalk_release_crossbows(s);
     for (i = 0; i < ARRAY_SIZE(s->board); i++) {
@@ -911,9 +925,11 @@ void sn0_origin2000_xtalk_destroy(SN0MachineState *machine)
     }
     /*
      * Retired rather than released, because a realized Hub is still pointing
-     * at faces that live in here. The name goes back so a later assembly can
-     * have it; the storage stays with the machine, disabled and reaching
-     * nothing, for as long as the Hubs that alias it.
+     * at faces that live in here: the storage stays with the machine,
+     * disabled and reaching nothing, for as long as the Hubs that alias it.
+     * Giving the name up is not the point. Retirement happens only where a
+     * Hub is realized, and preparation refuses a machine in that state, so
+     * there is no later assembly to hand the name to.
      */
     object_ref(OBJECT(s));
     object_unparent(OBJECT(s));
