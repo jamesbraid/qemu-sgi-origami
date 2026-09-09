@@ -1,7 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-bedrock-md.h"
+#include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
+#include "qapi/error.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 
@@ -186,7 +188,69 @@ static const MemoryRegionOps md_ops = {
     .impl = { .min_access_size = 8, .max_access_size = 8 },
 };
 
-static void md_cold_reset(SGIBedrockMDState *s)
+static uint64_t md_directory_mask(const SGIBedrockMDState *s)
+{
+    return s->directory_config & 1 ? UINT64_MAX : UINT32_MAX;
+}
+
+static bool md_directory_accepts(void *opaque, hwaddr offset, unsigned size,
+                                 bool is_write, MemTxAttrs attrs)
+{
+    SGIBedrockMDState *s = opaque;
+    const char *access = is_write ? "write" : "read";
+
+    if (!s->directory) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bedrock-md: directory %s without fitted "
+                      "node memory\n", access);
+        return false;
+    }
+    if (size != 8 || offset % 16 != 0) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bedrock-md: %u-byte directory %s at offset 0x%"
+                      HWADDR_PRIx " is not an aligned 64-bit directory word\n",
+                      size, access, offset);
+        return false;
+    }
+    if (offset >= (uint64_t)s->directory_entries * 16) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bedrock-md: directory %s at offset 0x%"
+                      HWADDR_PRIx " is outside fitted node memory\n",
+                      access, offset);
+        return false;
+    }
+    return true;
+}
+
+static uint64_t md_directory_read(void *opaque, hwaddr offset, unsigned size)
+{
+    SGIBedrockMDState *s = opaque;
+
+    return s->directory[offset / 16] & md_directory_mask(s);
+}
+
+static void md_directory_write(void *opaque, hwaddr offset, uint64_t value,
+                               unsigned size)
+{
+    SGIBedrockMDState *s = opaque;
+
+    s->directory[offset / 16] = value & md_directory_mask(s);
+}
+
+static const MemoryRegionOps md_directory_ops = {
+    .read = md_directory_read,
+    .write = md_directory_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = {
+        .min_access_size = 1,
+        .max_access_size = 8,
+        .unaligned = true,
+        .accepts = md_directory_accepts,
+    },
+    .impl = { .min_access_size = 8, .max_access_size = 8 },
+};
+
+static void md_reset_registers(SGIBedrockMDState *s)
 {
     s->current_cell = UINT64_MAX;
     s->memory_config = 0;
@@ -201,7 +265,7 @@ void sgi_bedrock_md_soft_reset(SGIBedrockMDState *s)
     uint64_t refresh = s->refresh & ((UINT64_C(1) << 63) | 0xfff);
     uint64_t directory_config = s->directory_config;
 
-    md_cold_reset(s);
+    md_reset_registers(s);
     s->memory_config = memory_config;
     s->refresh = refresh;
     s->directory_config = directory_config;
@@ -216,11 +280,17 @@ static void md_soft_reset_input(void *opaque, int n, int level)
 
 static void md_reset_enter(Object *obj, ResetType type)
 {
-    md_cold_reset(SGI_BEDROCK_MD(obj));
+    SGIBedrockMDState *s = SGI_BEDROCK_MD(obj);
+
+    md_reset_registers(s);
+    if (s->directory) {
+        memset(s->directory, 0,
+               s->directory_entries * sizeof(*s->directory));
+    }
 }
 
 static const VMStateDescription vmstate_md = {
-    .name = TYPE_SGI_BEDROCK_MD, .version_id = 1, .minimum_version_id = 1,
+    .name = TYPE_SGI_BEDROCK_MD, .version_id = 2, .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(current_cell, SGIBedrockMDState),
         VMSTATE_UINT64(memory_config, SGIBedrockMDState),
@@ -228,6 +298,9 @@ static const VMStateDescription vmstate_md = {
         VMSTATE_UINT64(directory_config, SGIBedrockMDState),
         VMSTATE_UINT64_ARRAY(storage, SGIBedrockMDState,
                              SGI_BEDROCK_MD_STORAGE),
+        VMSTATE_VARRAY_UINT32(directory, SGIBedrockMDState,
+                              directory_entries, 2,
+                              vmstate_info_uint64, uint64_t),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -239,8 +312,53 @@ static void md_init(Object *obj)
     memory_region_init_io(&s->mmio, obj, &md_ops, s, TYPE_SGI_BEDROCK_MD,
                           SGI_BEDROCK_MD_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
+    memory_region_init_io(&s->directory_mmio, obj, &md_directory_ops, s,
+                          TYPE_SGI_BEDROCK_MD "-directory",
+                          SGI_BEDROCK_MD_DIRECTORY_SIZE);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->directory_mmio);
     qdev_init_gpio_in_named(DEVICE(obj), md_soft_reset_input, "soft-reset", 1);
 }
+
+static void md_realize(DeviceState *dev, Error **errp)
+{
+    SGIBedrockMDState *s = SGI_BEDROCK_MD(dev);
+    uint64_t node_size;
+
+    if (!s->node_mr) {
+        return;
+    }
+    if (!memory_region_is_ram(s->node_mr)) {
+        error_setg(errp, TYPE_SGI_BEDROCK_MD
+                   " 'node-memory' must link a RAM region");
+        return;
+    }
+    node_size = memory_region_size(s->node_mr);
+    if (node_size % 128 != 0) {
+        error_setg(errp, TYPE_SGI_BEDROCK_MD
+                   " node memory size must be a multiple of 128 bytes");
+        return;
+    }
+    if (node_size > (uint64_t)SGI_BEDROCK_MD_DIRECTORY_SIZE * 8) {
+        error_setg(errp, TYPE_SGI_BEDROCK_MD
+                   " node memory exceeds the directory aperture");
+        return;
+    }
+    s->directory_entries = node_size / 128;
+    s->directory = g_new0(uint64_t, s->directory_entries);
+}
+
+static void md_unrealize(DeviceState *dev)
+{
+    SGIBedrockMDState *s = SGI_BEDROCK_MD(dev);
+
+    g_clear_pointer(&s->directory, g_free);
+    s->directory_entries = 0;
+}
+
+static const Property md_properties[] = {
+    DEFINE_PROP_LINK("node-memory", SGIBedrockMDState, node_mr,
+                     TYPE_MEMORY_REGION, MemoryRegion *),
+};
 
 static void md_class_init(ObjectClass *klass, const void *data)
 {
@@ -250,13 +368,23 @@ static void md_class_init(ObjectClass *klass, const void *data)
     dc->desc = "SGI Bedrock memory and directory interface";
     dc->vmsd = &vmstate_md;
     dc->user_creatable = true;
+    dc->realize = md_realize;
+    dc->unrealize = md_unrealize;
     rc->phases.enter = md_reset_enter;
+    device_class_set_props(dc, md_properties);
+}
+
+static void md_finalize(Object *obj)
+{
+    SGIBedrockMDState *s = SGI_BEDROCK_MD(obj);
+
+    g_clear_pointer(&s->directory, g_free);
 }
 
 static const TypeInfo md_info = {
     .name = TYPE_SGI_BEDROCK_MD, .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(SGIBedrockMDState), .instance_init = md_init,
-    .class_init = md_class_init,
+    .instance_finalize = md_finalize, .class_init = md_class_init,
 };
 
 static void md_register_types(void)

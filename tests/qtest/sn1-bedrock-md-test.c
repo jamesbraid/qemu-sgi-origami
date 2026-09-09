@@ -5,6 +5,17 @@
 
 #define BASE UINT64_C(0x78000000)
 #define MD(_x) (BASE + (_x))
+#define MD_PATH "/machine/peripheral/md"
+#define DIRECTORY_BASE UINT64_C(0x100000000)
+#define DIRECTORY(_x) (DIRECTORY_BASE + (_x))
+#define DIRECTORY_LINE_01A00000 0x0340000
+#define DIRECTORY_OTHER_LINE 0x0123450
+#define DIRECTORY_LAST_512M 0x3fffff0
+#define DIRECTORY_FIRST_ABSENT_512M 0x4000000
+#define DIRECTORY_LAST_256M 0x1fffff0
+#define DIRECTORY_FIRST_ABSENT_256M 0x2000000
+#define NODE_MEMORY_512M \
+    "-object memory-backend-ram,id=node-memory,size=512M "
 
 /*
  * Bits 58:56 are write-only in the public definition. Reading them back,
@@ -42,12 +53,59 @@ static const uint64_t policy_zero_registers[] = {
     0x40030, 0x40038, 0x40058, 0x60020, 0x60028, 0x60030, 0x60038,
 };
 
-static QTestState *start(const char *extra)
+static QTestState *start_with_memory(const char *size, const char *extra)
 {
     QTestState *s = qtest_initf("-M none -cpu R10000 "
-                                "-device sgi-bedrock-md,id=md -S %s", extra);
-    qtest_sysbus_mmio_map(s, "/machine/peripheral/md", 0, BASE);
+                                "-object memory-backend-ram,"
+                                "id=node-memory,size=%s "
+                                "-device sgi-bedrock-md,id=md,"
+                                "node-memory=/objects/node-memory/"
+                                "node-memory[0] -S %s", size, extra);
+
+    qtest_sysbus_mmio_map(s, MD_PATH, 0, BASE);
+    qtest_sysbus_mmio_map(s, MD_PATH, 1, DIRECTORY_BASE);
     return s;
+}
+
+static QTestState *start(const char *extra)
+{
+    return start_with_memory("512M", extra);
+}
+
+static QTestState *start_parent(void)
+{
+    QTestState *s = qtest_init("-M none -cpu R10000 " NODE_MEMORY_512M
+                               "-object memory-backend-ram,id=dma,size=2M "
+                               "-device sgi-bedrock,id=bedrock,"
+                               "dma-memory=/objects/dma/dma[0],"
+                               "node-memory=/objects/node-memory/"
+                               "node-memory[0] -S");
+
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/bedrock", 5,
+                          DIRECTORY_BASE);
+    return s;
+}
+
+static char *log_file_new(void)
+{
+    GError *error = NULL;
+    char *path = NULL;
+    int fd = g_file_open_tmp("sn1-md-directory-log-XXXXXX", &path, &error);
+
+    g_assert_no_error(error);
+    close(fd);
+    return path;
+}
+
+static char *log_file_take(const char *path)
+{
+    GError *error = NULL;
+    char *contents = NULL;
+
+    g_assert_true(g_file_get_contents(path, &contents, NULL, &error));
+    g_assert_no_error(error);
+    unlink(path);
+    return contents;
 }
 
 static void program_all(QTestState *s)
@@ -83,12 +141,118 @@ static void test_reset(void)
     g_assert_cmphex(qtest_readq(s, MD(0)), ==, UINT64_MAX);
 
     program_all(s);
+    qtest_writeq(s, DIRECTORY(DIRECTORY_LINE_01A00000), 0x76543210);
     qtest_system_reset(s);
     assert_storage_zero(s);
     g_assert_cmphex(qtest_readq(s, MD(0x8)), ==, 0);
     g_assert_cmphex(qtest_readq(s, MD(0x20000)), ==, 0);
     g_assert_cmphex(qtest_readq(s, MD(0x40000)), ==, 0);
     g_assert_cmphex(qtest_readq(s, MD(0)), ==, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LINE_01A00000)),
+                    ==, 0);
+    qtest_quit(s);
+}
+
+static void test_directory_storage(void)
+{
+    QTestState *s = start("");
+
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LINE_01A00000)),
+                    ==, 0);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_OTHER_LINE)), ==, 0);
+
+    qtest_writeq(s, DIRECTORY(DIRECTORY_LINE_01A00000),
+                 UINT64_C(0x89abcdef01234567));
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LINE_01A00000)),
+                    ==, UINT64_C(0x01234567));
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_OTHER_LINE)), ==, 0);
+
+    qtest_writeq(s, DIRECTORY(DIRECTORY_LINE_01A00000 + 0x10),
+                 0x76543210);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LINE_01A00000)),
+                    ==, UINT64_C(0x01234567));
+    g_assert_cmphex(qtest_readq(s,
+                               DIRECTORY(DIRECTORY_LINE_01A00000 + 0x10)),
+                    ==, 0x76543210);
+
+    qtest_writeq(s, MD(0x40000), 1);
+    qtest_writeq(s, DIRECTORY(DIRECTORY_OTHER_LINE),
+                 UINT64_C(0x89abcdef01234567));
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_OTHER_LINE)),
+                    ==, UINT64_C(0x89abcdef01234567));
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LINE_01A00000)),
+                    ==, UINT64_C(0x01234567));
+    qtest_quit(s);
+}
+
+static void test_directory_access_policy(void)
+{
+    g_autofree char *log = log_file_new();
+    g_autofree char *extra = g_strdup_printf("-d guest_errors -D %s", log);
+    g_autofree char *contents = NULL;
+    QTestState *s = start(extra);
+    uint64_t addr = DIRECTORY(DIRECTORY_LINE_01A00000);
+    uint64_t value = UINT64_C(0x1122334455667788);
+
+    qtest_writeq(s, MD(0x40000), 1);
+    qtest_writeq(s, addr, value);
+    qtest_writeb(s, addr, 0);
+    qtest_writew(s, addr, 0);
+    qtest_writel(s, addr, 0);
+    qtest_writeq(s, addr + 1, 0);
+    qtest_writeq(s, addr + 8, 0);
+    qtest_writeq(s, DIRECTORY(DIRECTORY_FIRST_ABSENT_512M), 0);
+    g_assert_cmphex(qtest_readq(s, addr), ==, value);
+    g_assert_cmphex(qtest_readb(s, addr), ==, 0);
+    g_assert_cmphex(qtest_readw(s, addr), ==, 0);
+    g_assert_cmphex(qtest_readl(s, addr), ==, 0);
+    g_assert_cmphex(qtest_readq(s, addr + 1), ==, 0);
+    g_assert_cmphex(qtest_readq(s, addr + 8), ==, 0);
+    g_assert_cmphex(qtest_readq(s,
+                               DIRECTORY(DIRECTORY_FIRST_ABSENT_512M)),
+                    ==, 0);
+
+    qtest_writeq(s, DIRECTORY(DIRECTORY_LAST_512M), 0xc001d00d);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LAST_512M)),
+                    ==, 0xc001d00d);
+    qtest_quit(s);
+
+    contents = log_file_take(log);
+    g_assert_nonnull(strstr(contents, "not an aligned 64-bit directory word"));
+    g_assert_nonnull(strstr(contents, "outside fitted node memory"));
+}
+
+static void test_directory_fitted_memory(void)
+{
+    QTestState *s = start_with_memory("256M", "");
+
+    qtest_writeq(s, DIRECTORY(DIRECTORY_LAST_256M), 0x2468ace0);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LAST_256M)),
+                    ==, 0x2468ace0);
+    qtest_writeq(s, DIRECTORY(DIRECTORY_FIRST_ABSENT_256M), UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_FIRST_ABSENT_256M)),
+                    ==, 0);
+    qtest_quit(s);
+}
+
+static void test_parent_exports_directory(void)
+{
+    QTestState *s = start_parent();
+
+    qtest_writeq(s, DIRECTORY(DIRECTORY_LINE_01A00000), 0x13579bdf);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LINE_01A00000)),
+                    ==, 0x13579bdf);
+    qtest_quit(s);
+}
+
+static void test_without_node_memory(void)
+{
+    QTestState *s = qtest_init("-M none -cpu R10000 "
+                               "-device sgi-bedrock-md,id=md -S");
+
+    qtest_sysbus_mmio_map(s, MD_PATH, 1, DIRECTORY_BASE);
+    qtest_writeq(s, DIRECTORY(0), UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(0)), ==, 0);
     qtest_quit(s);
 }
 
@@ -364,11 +528,14 @@ static void test_migration(void)
     qtest_writeq(from, MD(0x8), UINT64_MAX);
     qtest_writeq(from, MD(0x20000), UINT64_C(0x8000000000000c35));
     qtest_writeq(from, MD(0x40000), 3);
+    qtest_writeq(from, DIRECTORY(DIRECTORY_LINE_01A00000),
+                 UINT64_C(0x89abcdef01234567));
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
     migrate_wait(from);
+    migrate_wait(to);
     for (unsigned i = 0; i < ARRAY_SIZE(storage_registers); i++) {
         g_assert_cmphex(qtest_readq(to, MD(storage_registers[i].offset)), ==,
                         (UINT64_MAX ^ (UINT64_C(1) << (i + 2))) &
@@ -379,6 +546,8 @@ static void test_migration(void)
     g_assert_cmphex(qtest_readq(to, MD(0x20000)), ==,
                     UINT64_C(0x8000000000000c35));
     g_assert_cmphex(qtest_readq(to, MD(0x40000)), ==, 3);
+    g_assert_cmphex(qtest_readq(to, DIRECTORY(DIRECTORY_LINE_01A00000)),
+                    ==, UINT64_C(0x89abcdef01234567));
     qtest_quit(from);
     qtest_quit(to);
     unlink(socket);
@@ -391,6 +560,16 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-md/register-contract", test_register_contract);
     qtest_add_func("sn1/bedrock-md/access-width-policy",
                    test_access_width_policy);
+    qtest_add_func("sn1/bedrock-md/directory-storage",
+                   test_directory_storage);
+    qtest_add_func("sn1/bedrock-md/directory-access-policy",
+                   test_directory_access_policy);
+    qtest_add_func("sn1/bedrock-md/directory-fitted-memory",
+                   test_directory_fitted_memory);
+    qtest_add_func("sn1/bedrock-md/parent-directory-export",
+                   test_parent_exports_directory);
+    qtest_add_func("sn1/bedrock-md/without-node-memory",
+                   test_without_node_memory);
     qtest_add_func("sn1/bedrock-md/explicit-registers",
                    test_explicit_registers_independent);
     qtest_add_func("sn1/bedrock-md/queue-sizes", test_queue_sizes_fixed);

@@ -268,6 +268,12 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
                                   OBJECT(&s->io_registers), errp)) {
         return;
     }
+    if (s->node_mr) {
+        if (!object_property_set_link(OBJECT(&s->md), "node-memory",
+                                      OBJECT(s->node_mr), errp)) {
+            return;
+        }
+    }
     for (unsigned i = 0; i < 2; i++) {
         qdev_prop_set_uint32(DEVICE(&s->pi[i]), "interface", i);
         qdev_prop_set_uint32(DEVICE(&s->pi[i]), "processor-count",
@@ -344,6 +350,8 @@ static const Property bedrock_properties[] = {
                        device_mask_reset, UINT64_MAX),
     DEFINE_PROP_LINK("dma-memory", SGIBedrockState, dma_mr,
                      TYPE_MEMORY_REGION, MemoryRegion *),
+    DEFINE_PROP_LINK("node-memory", SGIBedrockState, node_mr,
+                     TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_LINK("l1-uart", SGIBedrockState, l1_uart_mr,
                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_UINT8("initiator-region", SGIBedrockState,
@@ -388,6 +396,8 @@ static void bedrock_init(Object *obj)
                           s, TYPE_SGI_BEDROCK "-io-registers",
                           BEDROCK_IO_REGISTERS_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->io_registers);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj),
+                     sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->md), 1));
     qdev_init_gpio_out_named(dev, s->hardware_irq, "hardware-irq",
                              ARRAY_SIZE(s->hardware_irq));
     qdev_init_gpio_out_named(dev, s->nmi, "nmi", ARRAY_SIZE(s->nmi));
