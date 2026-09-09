@@ -301,6 +301,7 @@ DECLARE_INSTANCE_CHECKER(SN0NodeState, SN0_NODE, TYPE_SN0_NODE)
 /* The flight recorder behind diagnostic-recording (sn0-diag.c). */
 typedef struct SN0DiagnosticEvent SN0DiagnosticEvent;
 typedef struct SN0DiagnosticReadCacheEntry SN0DiagnosticReadCacheEntry;
+typedef struct SN0Origin2000XtalkState SN0Origin2000XtalkState;
 
 typedef struct SN0DiagnosticSinkContext {
     void *machine;
@@ -319,6 +320,9 @@ struct SN0MachineState {
 
     /* What joins the nodes' Hubs; every Hub holds one endpoint on it. */
     SN0FabricState *fabric;
+
+    /* Descriptor-owned Crossbows and stable packet forwarding containers. */
+    SN0Origin2000XtalkState *origin2000_xtalk;
 
     /* The product reference clock every node's processors derive from. */
     Clock *cpu_refclk;
