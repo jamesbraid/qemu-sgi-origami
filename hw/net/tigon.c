@@ -18,6 +18,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
@@ -786,6 +787,19 @@ static bool tigon_frame_offloadable(const uint8_t *frame, uint32_t len)
     return eth_hdr_len + ip_len <= len;
 }
 
+static void tigon_tx_finish(TigonState *s, bool completed)
+{
+    if (completed) {
+        tigon_completion_irq(s, false);
+    }
+
+    s->defer_backend_rx = false;
+    if (s->backend_rx_deferred) {
+        s->backend_rx_deferred = false;
+        qemu_bh_schedule(s->rx_flush_bh);
+    }
+}
+
 static void tigon_tx(TigonState *s, uint32_t prod)
 {
     uint8_t frame[TIGON_MAX_FRAME_SIZE];
@@ -824,9 +838,7 @@ static void tigon_tx(TigonState *s, uint32_t prod)
             qemu_log_mask(LOG_GUEST_ERROR,
                           "tigon: transmit descriptor read at 0x%" PRIx64
                           " failed; ring walk stopped\n", desc);
-            if (completed) {
-                tigon_completion_irq(s, false);
-            }
+            tigon_tx_finish(s, completed);
             return;
         }
         len = word >> 16;
@@ -838,9 +850,7 @@ static void tigon_tx(TigonState *s, uint32_t prod)
             qemu_log_mask(LOG_GUEST_ERROR,
                           "tigon: transmit payload read at 0x%" PRIx64
                           " failed; ring walk stopped\n", buf);
-            if (completed) {
-                tigon_completion_irq(s, false);
-            }
+            tigon_tx_finish(s, completed);
             return;
         }
         walked = true;
@@ -873,11 +883,15 @@ static void tigon_tx(TigonState *s, uint32_t prod)
                 qemu_log_mask(LOG_GUEST_ERROR,
                               "tigon: transmit consumer write at 0x%" PRIx64
                               " failed; frame held\n", s->tx_considx_ptr);
-                if (completed) {
-                    tigon_completion_irq(s, false);
-                }
+                tigon_tx_finish(s, completed);
                 return;
             }
+            /*
+             * A backend may answer synchronously from qemu_send_packet().
+             * Hold that receive until the internal consumer and completion
+             * interrupt below have made this transmit whole.
+             */
+            s->defer_backend_rx = true;
             qemu_send_packet(qemu_get_queue(s->nic), frame, frame_len);
             s->tx_considx = cons;
             completed = true;
@@ -891,17 +905,13 @@ static void tigon_tx(TigonState *s, uint32_t prod)
             qemu_log_mask(LOG_GUEST_ERROR,
                           "tigon: transmit consumer write at 0x%" PRIx64
                           " failed; ring walk stopped\n", s->tx_considx_ptr);
-            if (completed) {
-                tigon_completion_irq(s, false);
-            }
+            tigon_tx_finish(s, completed);
             return;
         }
         s->tx_considx = cons;
         completed = true;
     }
-    if (completed) {
-        tigon_completion_irq(s, false);
-    }
+    tigon_tx_finish(s, completed);
 }
 
 static void tigon_reset_state(TigonState *s)
@@ -932,6 +942,11 @@ static void tigon_reset_state(TigonState *s)
     if (s->coal_timer) {
         timer_del(s->coal_timer);
     }
+    if (s->rx_flush_bh) {
+        qemu_bh_cancel(s->rx_flush_bh);
+    }
+    s->defer_backend_rx = false;
+    s->backend_rx_deferred = false;
     memset(s->gcr, 0, sizeof(s->gcr));
     memset(s->cmd_ring, 0, sizeof(s->cmd_ring));
     s->cpu_a_released = false;
@@ -1319,6 +1334,11 @@ static bool tigon_can_receive(NetClientState *nc)
 {
     TigonState *s = TIGON(qemu_get_nic_opaque(nc));
 
+    if (s->defer_backend_rx) {
+        s->backend_rx_deferred = true;
+        return false;
+    }
+
     /* Operational, and at least one standard receive buffer is posted. */
     return s->firmware_up &&
            (s->std_rx_considx != s->std_rx_prodidx ||
@@ -1522,6 +1542,14 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
     return size;
 }
 
+static void tigon_rx_flush(void *opaque)
+{
+    TigonState *s = opaque;
+
+    trace_tigon_rx_flush();
+    qemu_flush_queued_packets(qemu_get_queue(s->nic));
+}
+
 static void tigon_net_cleanup(NetClientState *nc)
 {
     TigonState *s = qemu_get_nic_opaque(nc);
@@ -1599,6 +1627,8 @@ static void tigon_realize(PCIDevice *dev, Error **errp)
     s->nic = qemu_new_nic(&tigon_net_info, &s->conf,
                           object_get_typename(OBJECT(dev)), DEVICE(dev)->id,
                           &DEVICE(dev)->mem_reentrancy_guard, s);
+    s->rx_flush_bh = qemu_bh_new_guarded(
+        tigon_rx_flush, s, &DEVICE(dev)->mem_reentrancy_guard);
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
 }
 
@@ -1606,6 +1636,7 @@ static void tigon_exit(PCIDevice *dev)
 {
     TigonState *s = TIGON(dev);
 
+    qemu_bh_delete(s->rx_flush_bh);
     qemu_del_nic(s->nic);
     timer_free(s->link_timer);
     s->link_timer = NULL;

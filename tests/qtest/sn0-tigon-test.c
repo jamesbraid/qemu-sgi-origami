@@ -1263,6 +1263,105 @@ static void post_std_rx_buffer(QTestState *qts, unsigned slot, uint32_t phys,
     qtest_writel(qts, desc + 12, (uint32_t)TI_BDTYPE_RECV_BD << 16);
 }
 
+static void test_user_backend_reply_waits_for_transmit(const void *data)
+{
+    static const uint8_t gateway_ip[4] = { 10, 0, 2, 2 };
+    static const uint8_t guest_ip[4] = { 10, 0, 2, 15 };
+    static const uint8_t arp_request[42] = {
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0x52, 0x54, 0x00, 0x12, 0x34, 0x56,
+        0x08, 0x06,
+        0x00, 0x01, 0x08, 0x00, 0x06, 0x04, 0x00, 0x01,
+        0x52, 0x54, 0x00, 0x12, 0x34, 0x56, 10, 0, 2, 15,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 10, 0, 2, 2,
+    };
+    g_autofree char *logfile = tigon_test_log_new();
+    g_autofree char *log = NULL;
+    gsize reset_start;
+    QTestState *qts = qtest_initf(
+        "-M origin200 -netdev user,id=n0 "
+        "-device tigon,id=tigon0,addr=3,mac=" TIGON_MAC ",netdev=n0 "
+        "-d trace:tigon_rx_flush -D %s", logfile);
+    uint32_t rx_flags;
+    uint8_t landed[sizeof(arp_request)];
+
+    go_operational(qts);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_RX_MAX_COAL_BD, 2);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_RX_COAL_TICKS, 1000000);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
+    g_assert_false(irq_asserted(qts));
+
+    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
+    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+
+    qtest_memwrite(qts, TX_BUF_PHYS, arp_request, sizeof(arp_request));
+    write_rcb_addr(qts, TX_RING_PHYS, TX_BUF_PHYS);
+    qtest_writel(qts, TX_RING_PHYS + 8,
+                 ((uint32_t)sizeof(arp_request) << 16) | TI_BDFLAG_END);
+    qtest_writel(qts, TX_RING_PHYS + 12, 0);
+
+    /*
+     * User networking answers the ARP request from qemu_send_packet(). The
+     * paired command observes only work completed inside this doorbell: the
+     * receive-return descriptor must still be unowned until transmit has
+     * finished publishing its consumer index and interrupt.
+     */
+    rx_flags = qtest_writel_then_readl(
+        qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1,
+        RETURN_RING_PHYS + 12);
+    g_assert_cmphex(rx_flags & TI_BDFLAG_END, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, TX_CONS_PHYS), ==, 1);
+    g_assert_true(irq_asserted(qts));
+
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+    qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(landed));
+    g_assert_cmpmem(landed, 6, tigon_mac, 6);
+    g_assert_cmphex(landed[20], ==, 0x00);
+    g_assert_cmphex(landed[21], ==, 0x02);
+    g_assert_cmpmem(landed + 28, 4, gateway_ip, 4);
+    g_assert_cmpmem(landed + 38, 4, guest_ip, 4);
+
+    /* RX is coalesced, so this interrupt can only be the TX completion. */
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
+    g_assert_false(irq_asserted(qts));
+
+    /* Prove the trace records the ordinary deferred flush above. */
+    qtest_clock_step(qts, 1);
+    g_assert_true(g_file_get_contents(logfile, &log, &reset_start, NULL));
+    g_assert_nonnull(strstr(log, "tigon_rx_flush"));
+    g_clear_pointer(&log, g_free);
+
+    /* Queue another reply, then reset before its bottom half can run. */
+    write_rcb_addr(qts, TX_RING_PHYS + 16, TX_BUF_PHYS);
+    qtest_writel(qts, TX_RING_PHYS + 24,
+                 ((uint32_t)sizeof(arp_request) << 16) | TI_BDFLAG_END);
+    qtest_writel(qts, TX_RING_PHYS + 28, 0);
+    qtest_writel_then_writel(
+        qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 2,
+        WINDOW_TIGON + TI_MISC_HOST_CTL, TI_MHC_RESET);
+    qtest_clock_step(qts, 1);
+    g_assert_false(irq_asserted(qts));
+    g_assert_true(g_file_get_contents(logfile, &log, NULL, NULL));
+    g_assert_null(strstr(log + reset_start, "tigon_rx_flush"));
+
+    /*
+     * Origin's fixed PCI bus rejects hot-unplug. Forced unrealize exercises
+     * the device teardown path after reset canceled the queued work.
+     */
+    qtest_qmp_assert_success(
+        qts, "{'execute': 'qom-set', 'arguments': {"
+             "'path': '/machine/peripheral/tigon0', "
+             "'property': 'realized', 'value': false}}");
+    qtest_clock_step(qts, 1);
+    qtest_qmp_assert_success(qts, "{'execute': 'query-status'}");
+    qtest_qmp_assert_success(
+        qts, "{'execute': 'netdev_del', 'arguments': {'id': 'n0'}}");
+
+    qtest_quit(qts);
+    unlink(logfile);
+}
+
 static const uint8_t rx_frame_ours[64] = {
     0x52, 0x54, 0x00, 0x12, 0x34, 0x56,      /* dest = our MAC */
     0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,      /* source */
@@ -2751,6 +2850,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/tigon/firmware-up-posts-event", NULL,
                         test_firmware_up_posts_event);
     qtest_add_data_func("/sn0/tigon/transmit", NULL, test_transmit);
+    qtest_add_data_func("/sn0/tigon/user-backend-reply-waits-for-transmit",
+                        NULL, test_user_backend_reply_waits_for_transmit);
     qtest_add_data_func("/sn0/tigon/descriptor-dma-batches-producer-last",
                         NULL, test_descriptor_dma_batches_producer_last);
     qtest_add_data_func("/sn0/tigon/descriptor-dma-route-used-for-traffic",
