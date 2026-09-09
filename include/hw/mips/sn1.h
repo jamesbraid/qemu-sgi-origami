@@ -25,6 +25,8 @@ struct SN1MachineState {
     MemoryRegion hub_memory;
     MemoryRegion bedrock_node;
     MemoryRegion hub_local_registers;
+    MemoryRegion board_id;
+    MemoryRegion board_id_remote;
     MemoryRegion prom;
     MemoryRegion *prom_views;
     MemoryRegion prom_flash;
