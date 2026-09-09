@@ -39,13 +39,20 @@ typedef struct SN0Origin2000XtalkSource {
 
 /*
  * What a Crossbow reaches when it addresses a Hub. The packet face is the
- * reviewed bounded decoder. The processor-side face is not: no cleared
- * contract says what a Hub answers to a general crosstalk read from another
- * node's processor, and neither RAM, the raw registers nor the packet face
- * is that answer. Rather than invent one, the face refuses every access and
- * stops the machine where a guest would otherwise consume a fabricated
- * value. Replacing it is the point at which this becomes a machine that can
- * run, not an implementation detail to tidy later.
+ * reviewed bounded decoder. The processor-side face is deliberately outside
+ * that scope rather than an unanswered question: the address-transport
+ * design's independent clearance (Origami project tree,
+ * docs/datasheets/hub-io-interface.md, "Origin 2000 address transport", and
+ * the record it names) excludes the remote Hub processor-facing decoder
+ * along with complete machine assembly, forbids substituting RAM, the packet
+ * face or a guessed register bank for it, and permits a deliberately
+ * refusing face only in a test configuration -- expressly not as a
+ * production machine's answer.
+ *
+ * So this face refuses every access and stops the machine where a guest
+ * would otherwise consume a fabricated value. Replacing it with a decoder
+ * that has a contract of its own is the point at which this becomes a
+ * machine that can run.
  */
 typedef struct SN0Origin2000XtalkDestination {
     SN0Origin2000XtalkState *owner;
