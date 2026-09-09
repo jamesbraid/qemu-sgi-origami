@@ -40,6 +40,8 @@ system_ss.add(when: 'CONFIG_SGI_O2000_MODULE_MGMT',
 system_ss.add(when: 'CONFIG_SGI_HUB', if_true: files('sgi-hub.c'))
 system_ss.add(when: 'CONFIG_SGI_IOC3', if_true: files('sgi-ioc3.c'))
 system_ss.add(when: 'CONFIG_SGI_IOMMU_NOTIFIER_TEST', if_true: files('sgi-iommu-notifier-test.c'))
+system_ss.add(when: 'CONFIG_SGI_ROUTER', if_true: files('sgi-router.c'))
+system_ss.add(when: 'CONFIG_SGI_ROUTER_TEST', if_true: files('sgi-router-test.c'))
 system_ss.add(when: 'CONFIG_SGI_XBOW', if_true: files('sgi-xbow.c'))
 system_ss.add(when: 'CONFIG_SGI_XBRIDGE_XBOW', if_true: files('sgi-xbridge-xbow.c'))
 system_ss.add(when: 'CONFIG_SGI_XTALK_TEST_TARGET', if_true: files('sgi-xtalk-test-target.c'))

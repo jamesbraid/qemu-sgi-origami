@@ -295,6 +295,15 @@ config SGI_IOC3
     select SGI_IOC3_KBC
     select SGI_IOC3_PARALLEL
 
+config SGI_ROUTER_TEST
+    bool
+    default y if TEST_DEVICES
+    depends on TEST_DEVICES
+    select SGI_ROUTER
+
+config SGI_ROUTER
+    bool
+
 config SGI_XBOW
     bool
 

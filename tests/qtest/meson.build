@@ -271,10 +271,17 @@ if not config_all_devices.has_key('CONFIG_SGI_XTALK_TEST_TARGET')
   sn0_xbow_qtests = []
 endif
 
+sn0_router_qtests = \
+  (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-router-test'] : [])
+if not config_all_devices.has_key('CONFIG_SGI_ROUTER_TEST')
+  sn0_router_qtests = []
+endif
+
 # The Origin 200 is a 64-bit machine, so its tests cannot be shared with the
 # 32-bit mips targets, where the machine does not exist.
 qtests_mips64 = \
   qtests_mips + \
+  sn0_router_qtests + \
   sn0_ohci_qtests + \
   (config_all_devices.has_key('CONFIG_SGI_L1') ?
     ['sn1-l1-test'] : []) + \
