@@ -733,6 +733,161 @@ static void test_reset_to_read_array(const void *opaque)
     qtest_quit(qtest);
 }
 
+/* Fill a fresh image with a pattern no erase or program could leave behind. */
+static char *make_patterned_image(void)
+{
+    GError *err = NULL;
+    char *path = NULL;
+    int fd = g_file_open_tmp("qtest-ro.XXXXXX", &path, &err);
+    g_autofree uint8_t *pattern = g_malloc(UNIFORM_FLASH_SIZE);
+
+    g_assert_no_error(err);
+    for (size_t i = 0; i < UNIFORM_FLASH_SIZE; ++i) {
+        pattern[i] = (uint8_t)(0x5A + i);
+    }
+    g_assert_cmpint(write(fd, pattern, UNIFORM_FLASH_SIZE), ==,
+                    UNIFORM_FLASH_SIZE);
+    close(fd);
+    return path;
+}
+
+static char *make_log_path(const char *stem)
+{
+    g_autofree char *path = g_strdup_printf("%s/%s-XXXXXX.log",
+                                            g_get_tmp_dir(), stem);
+    int fd = g_mkstemp(path);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    return g_steal_pointer(&path);
+}
+
+/*
+ * A read-only backing store makes every mutation a no-op. The device used to
+ * swallow them without a word, which reads from the guest side exactly like a
+ * chip that programmed fine, so the diagnostic is the only way to tell an
+ * ignored write from a successful one. Attempt each of the three mutations and
+ * require both the complaint and the untouched bytes.
+ */
+static void test_readonly_mutations_diagnosed(const void *opaque)
+{
+    const FlashConfig *config = opaque;
+    g_autofree char *ro_image = make_patterned_image();
+    g_autofree char *log = make_log_path("pflash-cfi02-readonly");
+    g_autofree char *found = NULL;
+    g_autofree uint8_t *before = g_malloc(UNIFORM_FLASH_SIZE);
+    g_autofree uint8_t *after = g_malloc(UNIFORM_FLASH_SIZE);
+    QTestState *qtest;
+    FILE *f;
+
+    f = fopen(ro_image, "rb");
+    g_assert_nonnull(f);
+    g_assert_cmpuint(fread(before, 1, UNIFORM_FLASH_SIZE, f), ==,
+                     UNIFORM_FLASH_SIZE);
+    fclose(f);
+
+    qtest = qtest_initf("-M musicpal"
+                        " -drive if=pflash,file=%s,format=raw,readonly=on"
+                        " -d guest_errors -D %s",
+                        ro_image, log);
+    FlashConfig explicit_config = expand_config_defaults(config);
+    explicit_config.qtest = qtest;
+    const FlashConfig *c = &explicit_config;
+
+    const uint64_t word0 = flash_read(c, 0);
+    const uint64_t word1 = flash_read(c, UNIFORM_FLASH_SECTOR_SIZE);
+
+    /* The pattern, not an erased chip: an unchanged read must mean something */
+    g_assert_cmphex(word0, !=, bank_mask(c));
+
+    /* Word program. */
+    program(c, 0, 0x1234);
+    g_assert_cmphex(flash_read(c, 0), ==, word0);
+
+    /* Sector erase, run to completion so reads return data again. */
+    sector_erase(c, 0);
+    qtest_clock_step_next(c->qtest); /* Step over the 50 us timeout. */
+    wait_for_completion(c, 0);
+    g_assert_cmphex(flash_read(c, 0), ==, word0);
+
+    /* Chip erase. */
+    chip_erase(c);
+    qtest_clock_step_next(c->qtest);
+    wait_for_completion(c, 0);
+    g_assert_cmphex(flash_read(c, 0), ==, word0);
+    g_assert_cmphex(flash_read(c, UNIFORM_FLASH_SECTOR_SIZE), ==, word1);
+
+    qtest_quit(qtest);
+
+    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+    g_assert_nonnull(strstr(found,
+                            "word program ignored: backing store is "
+                            "read-only"));
+    g_assert_nonnull(strstr(found,
+                            "sector erase ignored: backing store is "
+                            "read-only"));
+    g_assert_nonnull(strstr(found,
+                            "chip erase ignored: backing store is read-only"));
+    g_assert_cmpint(unlink(log), ==, 0);
+
+    /* The backing file itself is byte-for-byte what we wrote. */
+    f = fopen(ro_image, "rb");
+    g_assert_nonnull(f);
+    g_assert_cmpuint(fread(after, 1, UNIFORM_FLASH_SIZE, f), ==,
+                     UNIFORM_FLASH_SIZE);
+    fclose(f);
+    g_assert_cmpint(memcmp(before, after, UNIFORM_FLASH_SIZE), ==, 0);
+    g_assert_cmpint(unlink(ro_image), ==, 0);
+}
+
+/*
+ * The complaint belongs to the mutation, not to the command decoder. Query,
+ * autoselect and reset never reach a mutation, so a read-only backend must
+ * leave the log empty for them. Every message is flushed as it is written, so
+ * the log can be read back while the machine is still up: program afterwards
+ * and the same instance proves the backend really was read-only, rather than
+ * leaving the silence to be explained by a writable drive.
+ */
+static void test_readonly_queries_silent(const void *opaque)
+{
+    const FlashConfig *config = opaque;
+    g_autofree char *ro_image = make_patterned_image();
+    g_autofree char *log = make_log_path("pflash-cfi02-readonly-quiet");
+    g_autofree char *quiet = NULL;
+    g_autofree char *noisy = NULL;
+    gsize len = 0;
+    QTestState *qtest;
+
+    qtest = qtest_initf("-M musicpal"
+                        " -drive if=pflash,file=%s,format=raw,readonly=on"
+                        " -d guest_errors -D %s",
+                        ro_image, log);
+    FlashConfig explicit_config = expand_config_defaults(config);
+    explicit_config.qtest = qtest;
+    const FlashConfig *c = &explicit_config;
+
+    unlock(c);
+    flash_cmd(c, UNLOCK0_ADDR, AUTOSELECT_CMD);
+    g_assert_cmphex(flash_query(c, FLASH_ADDR(0)), ==, replicate(c, 0xBF));
+    flash_cmd(c, CFI_ADDR, CFI_CMD);
+    g_assert_cmphex(flash_query(c, FLASH_ADDR(0x10)), ==, replicate(c, 'Q'));
+    reset(c);
+    reset(c);
+
+    g_assert_true(g_file_get_contents(log, &quiet, &len, NULL));
+    g_assert_cmpuint(len, ==, 0);
+
+    program(c, 0, 0x1234);
+    g_assert_true(g_file_get_contents(log, &noisy, NULL, NULL));
+    g_assert_nonnull(strstr(noisy,
+                            "word program ignored: backing store is "
+                            "read-only"));
+
+    qtest_quit(qtest);
+    g_assert_cmpint(unlink(log), ==, 0);
+    g_assert_cmpint(unlink(ro_image), ==, 0);
+}
+
 static void cleanup(void *opaque)
 {
     unlink(image_path);
@@ -806,6 +961,10 @@ int main(int argc, char **argv)
                         &configuration[0], test_migration_in_autoselect);
     qtest_add_data_func("pflash-cfi02/reset-to-read-array",
                         &configuration[0], test_reset_to_read_array);
+    qtest_add_data_func("pflash-cfi02/readonly-mutations-diagnosed",
+                        &configuration[0], test_readonly_mutations_diagnosed);
+    qtest_add_data_func("pflash-cfi02/readonly-queries-silent",
+                        &configuration[0], test_readonly_queries_silent);
     int result = g_test_run();
     cleanup(NULL);
     return result;
