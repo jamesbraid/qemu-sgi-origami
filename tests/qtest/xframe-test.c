@@ -654,7 +654,7 @@ typedef struct {
     int host_fd;
 } XframeTx;
 
-static void xframe_tx_start(XframeTx *t)
+static void xframe_tx_start_args(XframeTx *t, const char *args)
 {
     uint64_t barsize;
     int sv[2];
@@ -664,8 +664,8 @@ static void xframe_tx_start(XframeTx *t)
     t->host_fd = sv[0];
 
     t->qs = qtest_pc_boot("-netdev socket,fd=%d,id=n0 "
-                          "-device xframe,netdev=n0,mac=" XFRAME_TEST_MAC,
-                          sv[1]);
+                          "-device xframe,netdev=n0,mac=" XFRAME_TEST_MAC
+                          " %s", sv[1], args ? args : "");
     t->dev = find_xframe(t->qs->pcibus, XFRAME_DEVICE_XENA);
     g_assert(t->dev != NULL);
 
@@ -676,6 +676,11 @@ static void xframe_tx_start(XframeTx *t)
     g_assert_cmphex(barsize, ==, XFRAME_TXP_WINDOW_SIZE);
 
     qpci_device_enable(t->dev);
+}
+
+static void xframe_tx_start(XframeTx *t)
+{
+    xframe_tx_start_args(t, NULL);
 }
 
 static void xframe_user_start(XframeTx *t)
@@ -847,6 +852,47 @@ static void test_receive_delivers_a_frame(void)
     g_assert_cmpmem(landed, sizeof(frame), frame, sizeof(frame));
 
     xframe_tx_stop(&t);
+}
+
+/*
+ * The net core asks can_receive immediately before delivering a packet.
+ * Peeking the head descriptor there and fetching the same immutable,
+ * card-owned descriptor again in receive doubles descriptor DMA traffic.
+ * Trace the actual PCI-DMA fetch boundary so this remains a performance
+ * contract rather than a timing-sensitive wall-clock benchmark.
+ */
+static void test_receive_fetches_descriptor_once(void)
+{
+    XframeTx t;
+    uint8_t frame[64] = { 0 };
+    g_autofree char *trace_path = NULL;
+    g_autofree char *trace_args = NULL;
+    g_autofree char *trace = NULL;
+    const char *p;
+    unsigned fetches = 0;
+    int fd;
+
+    memcpy(frame, xframe_station_mac, sizeof(xframe_station_mac));
+    fd = g_file_open_tmp("xframe-rx-trace-XXXXXX", &trace_path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+
+    trace_args = g_strdup_printf(
+        "-trace xframe_rx_descriptor_fetch,file=%s", trace_path);
+    xframe_tx_start_args(&t, trace_args);
+    xframe_program_rxd(&t, RX_RING_BASE, RX_BUF0, RX_BUF_CAPACITY);
+    xframe_rx_ring_arm(&t, RX_RING_BASE);
+
+    net_socket_send_frame(t.host_fd, frame, sizeof(frame));
+    g_assert_true(xframe_wait_rxd_consumed(&t, RX_RING_BASE, 5000));
+    xframe_tx_stop(&t);
+
+    g_assert_true(g_file_get_contents(trace_path, &trace, NULL, NULL));
+    for (p = trace; (p = strstr(p, "xframe_rx_descriptor_fetch")); p++) {
+        fetches++;
+    }
+    g_assert_cmpuint(fetches, ==, 1);
+    g_assert_cmpint(g_unlink(trace_path), ==, 0);
 }
 
 /*
@@ -4545,6 +4591,8 @@ int main(int argc, char **argv)
                    test_link_up_timer_respects_backend_already_down);
     qtest_add_func("xframe/receive-delivers-a-frame",
                    test_receive_delivers_a_frame);
+    qtest_add_func("xframe/receive-fetches-descriptor-once",
+                   test_receive_fetches_descriptor_once);
     qtest_add_func("xframe/receive-out-of-range-ring-pointer-is-safe",
                    test_receive_out_of_range_ring_pointer_is_safe);
     qtest_add_func("xframe/receive-filtered-frame-does-not-wedge",

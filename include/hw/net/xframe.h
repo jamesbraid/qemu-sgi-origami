@@ -98,6 +98,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(XframeState, XFRAME)
  */
 #define XFRAME_MAX_TSO_FRAME            (65535 + 14)
 
+/* Largest receive descriptor: five-buffer mode's eight 64-bit words. */
+#define XFRAME_RXD_MAX_SIZE              64
+
 struct XframeState {
     PCIDevice parent_obj;
 
@@ -210,6 +213,22 @@ struct XframeState {
      */
     uint64_t rx_page_addr;
     uint32_t rx_desc_idx;
+
+    /*
+     * can_receive's successfully fetched, card-owned head descriptor. The
+     * net core normally calls receive immediately afterwards, so retaining
+     * that immutable descriptor avoids a second PCI-DMA read. The complete
+     * location/layout key is kept alongside the bytes; this transient cache
+     * is invalidated on every input change and is deliberately not migrated.
+     */
+    uint8_t rx_desc_cache[XFRAME_RXD_MAX_SIZE];
+    uint64_t rx_desc_cache_page_addr;
+    uint64_t rx_desc_cache_addr;
+    uint64_t rx_desc_cache_prc_ctrl;
+    uint64_t rx_desc_cache_swapper;
+    uint32_t rx_desc_cache_idx;
+    uint32_t rx_desc_cache_size;
+    bool rx_desc_cache_valid;
 
     /*
      * Recovery poll for a ring the guest refills in place (see

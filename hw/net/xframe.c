@@ -39,6 +39,7 @@
 #include "net/checksum.h"
 
 #include "qapi/error.h"
+#include "trace.h"
 
 /*
  * PIF register offsets within BAR0, and the bit fields the probe/attach path
@@ -591,6 +592,11 @@ static void xframe_sched_int_cb(void *opaque)
     }
 }
 
+static void xframe_rx_cache_invalidate(XframeState *s)
+{
+    s->rx_desc_cache_valid = false;
+}
+
 /*
  * Return the register file to its reset values. Shared by cold reset and the
  * SW_RESET key path. It touches only device register state, never PCI config
@@ -601,6 +607,7 @@ static void xframe_sched_int_cb(void *opaque)
 static void xframe_soft_reset(XframeState *s)
 {
     qemu_bh_cancel(s->rx_flush_bh);
+    xframe_rx_cache_invalidate(s);
     s->defer_backend_rx = false;
     s->backend_rx_deferred = false;
     s->swapper_ctrl = 0;
@@ -1019,6 +1026,7 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
         xframe_update_irq(s);
         return;
     case XFRAME_SWAPPER_CTRL:
+        xframe_rx_cache_invalidate(s);
         s->swapper_ctrl = full;
         return;
     case XFRAME_XMSI_ADDRESS:
@@ -1234,6 +1242,7 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
         }
         return;
     case XFRAME_PRC_RXD0_0:
+        xframe_rx_cache_invalidate(s);
         s->prc_rxd0_0 = full;
         s->rx_page_addr = full;
         s->rx_desc_idx = 0;
@@ -1246,6 +1255,7 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
         qemu_flush_queued_packets(qemu_get_queue(s->nic));
         return;
     case XFRAME_PRC_CTRL_0:
+        xframe_rx_cache_invalidate(s);
         if ((full & XFRAME_RC_IN_SVC) && !(s->prc_ctrl_0 & XFRAME_RC_IN_SVC)) {
             /*
              * Arming the ring restarts the walk at its base -- the sequence
@@ -2215,6 +2225,7 @@ static void xframe_rx_advance_page(XframeState *s)
     PCIDevice *pdev = PCI_DEVICE(s);
     uint8_t raw[8];
 
+    xframe_rx_cache_invalidate(s);
     if (pci_dma_read(pdev, s->rx_page_addr + XFRAME_RXD1_PAGE_NEXT_OFF,
                      raw, sizeof(raw)) != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -2235,6 +2246,13 @@ static void xframe_rx_advance_page(XframeState *s)
  * question asked the same way, so a filtered frame's drop can never be
  * mistaken for the no-buffer case the 0 return is reserved for.
  *
+ * A successful fetch is retained while this head remains card-owned. QEMU's
+ * normal delivery path calls can_receive immediately before receive, and the
+ * ownership contract means the guest cannot rewrite that descriptor between
+ * those callbacks. A queued retry bypasses can_receive and fetches here once.
+ * Every device-side input to the address, layout, or byte order is part of the
+ * match key and its write path invalidates the cache as well.
+ *
  * Ring-index hygiene: the in-page position is reduced modulo the page's
  * descriptor count before any walk, the sgi-ioc3-eth/qlogic-isp pattern --
  * so a stuck or corrupted position can never read past the page.
@@ -2243,23 +2261,54 @@ static bool xframe_rx_head(XframeState *s, uint64_t *desc_addr,
                            uint8_t raw[XFRAME_RXD5_SIZE])
 {
     PCIDevice *pdev = PCI_DEVICE(s);
+    unsigned desc_size;
 
     if (!(s->prc_ctrl_0 & XFRAME_RC_IN_SVC)) {
+        xframe_rx_cache_invalidate(s);
         return false;
     }
 
     s->rx_desc_idx %= xframe_rxd_per_page(s);
+    desc_size = xframe_rxd_size(s);
     *desc_addr = s->rx_page_addr +
-                 (uint64_t)s->rx_desc_idx * xframe_rxd_size(s);
+                 (uint64_t)s->rx_desc_idx * desc_size;
 
-    if (pci_dma_read(pdev, *desc_addr, raw, xframe_rxd_size(s)) != MEMTX_OK) {
+    if (s->rx_desc_cache_valid &&
+        s->rx_desc_cache_page_addr == s->rx_page_addr &&
+        s->rx_desc_cache_addr == *desc_addr &&
+        s->rx_desc_cache_prc_ctrl == s->prc_ctrl_0 &&
+        s->rx_desc_cache_swapper ==
+            (s->swapper_ctrl & XFRAME_SWAPPER_CTRL_RXD_R_SE) &&
+        s->rx_desc_cache_idx == s->rx_desc_idx &&
+        s->rx_desc_cache_size == desc_size) {
+        memcpy(raw, s->rx_desc_cache, desc_size);
+        return true;
+    }
+
+    xframe_rx_cache_invalidate(s);
+
+    trace_xframe_rx_descriptor_fetch(*desc_addr, desc_size);
+    if (pci_dma_read(pdev, *desc_addr, raw, desc_size) != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "xframe: receive descriptor read at 0x%" PRIx64
                       " failed\n", *desc_addr);
         return false;
     }
 
-    return (xframe_desc_ldq(s, raw + 8, true) & XFRAME_RXD_OWN) != 0;
+    if (!(xframe_desc_ldq(s, raw + 8, true) & XFRAME_RXD_OWN)) {
+        return false;
+    }
+
+    memcpy(s->rx_desc_cache, raw, desc_size);
+    s->rx_desc_cache_page_addr = s->rx_page_addr;
+    s->rx_desc_cache_addr = *desc_addr;
+    s->rx_desc_cache_prc_ctrl = s->prc_ctrl_0;
+    s->rx_desc_cache_swapper =
+        s->swapper_ctrl & XFRAME_SWAPPER_CTRL_RXD_R_SE;
+    s->rx_desc_cache_idx = s->rx_desc_idx;
+    s->rx_desc_cache_size = desc_size;
+    s->rx_desc_cache_valid = true;
+    return true;
 }
 
 /*
@@ -2625,6 +2674,7 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
     xframe_desc_stq(s, word,
                     ((uint64_t)xcode << XFRAME_RXD_XCODE_SHIFT) | offload, true);
     pci_dma_write(pdev, desc_addr + 8, word, sizeof(word));
+    xframe_rx_cache_invalidate(s);
 
     /*
      * Count only delivered frames. A frame the receive path drops earlier for
@@ -2807,6 +2857,7 @@ static void xframe_exit(PCIDevice *dev)
 {
     XframeState *s = XFRAME(dev);
 
+    xframe_rx_cache_invalidate(s);
     qemu_bh_delete(s->rx_flush_bh);
     timer_free(s->rx_recovery_timer);
     timer_free(s->stat_timer);
@@ -2847,6 +2898,9 @@ static void xframe_exit(PCIDevice *dev)
 static int xframe_post_load(void *opaque, int version_id)
 {
     XframeState *s = opaque;
+
+    /* The cache is local prefetch state, never part of the migration stream. */
+    xframe_rx_cache_invalidate(s);
 
     /*
      * A stream older than version 3 never carried RMAC_MAX_PYLD_LEN, so it
