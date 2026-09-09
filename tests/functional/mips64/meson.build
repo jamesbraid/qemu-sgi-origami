@@ -159,6 +159,7 @@ tests_mips64_system_quick = [
   'sn0_smp',
   'mttcg_cause',
   'origin200_matrix',
+  'origin2000_cache_reset',
 ]
 
 tests_mips64_system_thorough = [
