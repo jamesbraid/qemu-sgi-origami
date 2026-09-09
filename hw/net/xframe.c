@@ -27,6 +27,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
 #include "hw/core/qdev-properties.h"
@@ -599,6 +600,9 @@ static void xframe_sched_int_cb(void *opaque)
  */
 static void xframe_soft_reset(XframeState *s)
 {
+    qemu_bh_cancel(s->rx_flush_bh);
+    s->defer_backend_rx = false;
+    s->backend_rx_deferred = false;
     s->swapper_ctrl = 0;
     s->xmsi_address = 0;
     s->sw_reset = 0;
@@ -1820,6 +1824,14 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
         int csum = 0;
 
         /*
+         * A backend may answer synchronously from qemu_send_packet(). Hold
+         * that reply in QEMU's net queue until this doorbell has published
+         * its transmit completion below. This covers every segment of one
+         * offloaded send as a single transmit operation.
+         */
+        s->defer_backend_rx = true;
+
+        /*
          * Segmentation offload is asked for in the first control word, and it
          * rebuilds and rechecksums every frame it sends -- so it runs instead
          * of the whole-buffer checksum insertion below, which would otherwise
@@ -1869,6 +1881,12 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
     if (have_first) {
         s->tx_traffic_int |= XFRAME_TX_TRAFFIC_FIFO(fifo);
         xframe_update_irq(s);
+    }
+
+    s->defer_backend_rx = false;
+    if (s->backend_rx_deferred) {
+        s->backend_rx_deferred = false;
+        qemu_bh_schedule(s->rx_flush_bh);
     }
 }
 
@@ -2355,13 +2373,27 @@ static bool xframe_can_receive(NetClientState *nc)
     XframeState *s = XFRAME(qemu_get_nic_opaque(nc));
     uint64_t desc_addr;
     uint8_t raw[XFRAME_RXD5_SIZE];
-    bool owned = xframe_rx_head(s, &desc_addr, raw);
+    bool owned;
+
+    if (s->defer_backend_rx) {
+        s->backend_rx_deferred = true;
+        return false;
+    }
+
+    owned = xframe_rx_head(s, &desc_addr, raw);
 
     if (!owned) {
         xframe_rx_arm_recovery(s);
     }
 
     return owned;
+}
+
+static void xframe_rx_flush(void *opaque)
+{
+    XframeState *s = opaque;
+
+    qemu_flush_queued_packets(qemu_get_queue(s->nic));
 }
 
 /*
@@ -2766,6 +2798,8 @@ static void xframe_realize(PCIDevice *dev, Error **errp)
     s->nic = qemu_new_nic(&xframe_net_info, &s->conf,
                           object_get_typename(OBJECT(dev)), d->id,
                           &d->mem_reentrancy_guard, s);
+    s->rx_flush_bh = qemu_bh_new_guarded(xframe_rx_flush, s,
+                                         &d->mem_reentrancy_guard);
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
 }
 
@@ -2773,6 +2807,7 @@ static void xframe_exit(PCIDevice *dev)
 {
     XframeState *s = XFRAME(dev);
 
+    qemu_bh_delete(s->rx_flush_bh);
     timer_free(s->rx_recovery_timer);
     timer_free(s->stat_timer);
     timer_free(s->link_down_timer);

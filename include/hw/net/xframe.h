@@ -274,6 +274,11 @@ struct XframeState {
     /* The netdev frontend. */
     NICConf conf;
     NICState *nic;
+    QEMUBH *rx_flush_bh;
+
+    /* Backend replies wait until the transmit completion is published. */
+    bool defer_backend_rx;
+    bool backend_rx_deferred;
 };
 
 #endif
