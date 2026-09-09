@@ -55,7 +55,6 @@ typedef struct SN0Origin2000XtalkSource {
  * machine that can run.
  */
 typedef struct SN0Origin2000XtalkDestination {
-    SN0Origin2000XtalkState *owner;
     SN0Origin2000HubIO inbound;
     MemoryRegion cpu_refusal;
     unsigned int node_index;
@@ -801,7 +800,6 @@ bool sn0_origin2000_xtalk_attach(SN0MachineState *machine, Error **errp)
             &s->destination[attachment->node_index];
         SGIXbowState *crossbow = s->crossbow[attachment->crossbow_index];
 
-        destination->owner = s;
         destination->node_index = attachment->node_index;
         destination->widget = attachment->widget;
         /*
