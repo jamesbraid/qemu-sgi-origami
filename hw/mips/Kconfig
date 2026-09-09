@@ -131,3 +131,8 @@ config SN0_HUB_OUTGOING_TEST
     bool
     default y
     depends on SGI_SN0 && TEST_DEVICES
+
+config SN0_XTALK_ASSEMBLY_TEST
+    bool
+    default y
+    depends on SGI_SN0 && TEST_DEVICES
