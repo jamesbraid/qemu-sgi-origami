@@ -856,10 +856,10 @@ static void test_ecc_migration(void)
 }
 
 /*
- * The parent composes the unit but does not re-export the ECC carrier yet,
- * so this reaches the child's own region through the parent's QOM path.
+ * A machine maps what the node controller exports, not the units inside it,
+ * so the carrier has to be reachable through the parent's own region list.
  */
-static void test_parent_child_ecc_carrier(void)
+static void test_parent_exports_ecc(void)
 {
     g_autofree char *log = log_file_new();
     g_autofree char *contents = NULL;
@@ -871,7 +871,7 @@ static void test_parent_child_ecc_carrier(void)
                                 "node-memory[0] -S "
                                 ECC_LOG_OPTIONS "%s", log);
 
-    qtest_sysbus_mmio_map(s, "/machine/peripheral/bedrock/md", 2, ECC_BASE);
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/bedrock", 6, ECC_BASE);
     qtest_writeb(s, ECC(7), 0xa5);
     g_assert_cmphex(qtest_readb(s, ECC(7)), ==, 0);
     qtest_quit(s);
@@ -918,7 +918,7 @@ int main(int argc, char **argv)
                    test_ecc_without_node_memory);
     qtest_add_func("sn1/bedrock-md/ecc-reset", test_ecc_reset);
     qtest_add_func("sn1/bedrock-md/ecc-migration", test_ecc_migration);
-    qtest_add_func("sn1/bedrock-md/parent-ecc-carrier",
-                   test_parent_child_ecc_carrier);
+    qtest_add_func("sn1/bedrock-md/parent-ecc-export",
+                   test_parent_exports_ecc);
     return g_test_run();
 }
