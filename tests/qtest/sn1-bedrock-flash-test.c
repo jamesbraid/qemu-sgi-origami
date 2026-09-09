@@ -511,19 +511,36 @@ static void check_aperture(const char *tag, uint64_t base)
     /* Both lanes of the last word, the second being the highest byte. */
     g_assert_cmphex(qtest_readb(s, PRIMARY + LAST_WORD), ==, 0x55);
     g_assert_cmphex(qtest_readb(s, PRIMARY + FLASH_SIZE - 1), ==, 0x66);
+    /* And through this boot space's own read addresses, not just the local. */
+    g_assert_cmphex(qtest_readw(s, base + 0), ==, 0x1122);
+    g_assert_cmphex(qtest_readw(s, base + SECOND_READ + LAST_WORD), ==, 0x5566);
 
-    /* One past the last backing word: refused, no cycle, nothing stored. */
-    qtest_writeq(s, base + WRITE_LIMIT, 0xaa);
+    /*
+     * One past the last backing word, sent as programming payload rather than
+     * as a bare command. A bare command there could not damage anything: at
+     * the start of a sequence the flash takes it as a failed unlock and
+     * resets. A payload can. Dispatched, the CFI device masks the offset back
+     * into its own range and this lands on the first word, clearing bits out
+     * of it. Refused, that word still reads as it was programmed.
+     */
+    qtest_writeq(s, base + UNLOCK0, 0xaa);
+    qtest_writeq(s, base + UNLOCK1, 0x55);
+    qtest_writeq(s, base + UNLOCK0, 0xa0);
+    qtest_writeq(s, base + WRITE_LIMIT, 0x0f0f);
     qtest_quit(s);
 
-    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
-    g_assert_nonnull(strstr(found, "past the last backing word"));
-    /* Three programs of four cycles each, and not one more. */
-    g_assert_cmpuint(count_lines(found, "pflash_io_write"), ==, 12);
+    image_read(image, 0, stored, sizeof(stored));
+    g_assert_cmphex(stored[0], ==, 0x11);
+    g_assert_cmphex(stored[1], ==, 0x22);
 
     image_read(image, FLASH_SIZE - 2, stored, sizeof(stored));
     g_assert_cmphex(stored[0], ==, 0x55);
     g_assert_cmphex(stored[1], ==, 0x66);
+
+    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+    g_assert_nonnull(strstr(found, "past the last backing word"));
+    /* Three programs of four cycles, three to open a fourth, and no more. */
+    g_assert_cmpuint(count_lines(found, "pflash_io_write"), ==, 15);
 
     g_assert_cmpint(unlink(log), ==, 0);
     g_assert_cmpint(unlink(image), ==, 0);
@@ -559,7 +576,7 @@ static void test_access_type_split(void)
 
     /* The read at that address starts the second view, at backing zero. */
     g_assert_cmphex(qtest_readq(s, LOCAL + SECOND_READ), ==,
-                    qtest_readq(s, PRIMARY + 0));
+                    0xfeedfacecafef00dULL);
 
     /* The store at the same address reaches the midpoint word instead. */
     flash_program(s, LOCAL, FLASH_SIZE / 2, 0x0f1e);
