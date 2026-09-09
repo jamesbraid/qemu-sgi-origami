@@ -45,6 +45,8 @@
 #define SN1_SPACE_HUB UINT64_C(0x10000000000)
 #define SN1_HUB_LOCAL_BOOT (SN1_SPACE_HUB + UINT64_C(0x18000000))
 #define SN1_HUB_LOCAL_FLASH (SN1_SPACE_HUB + UINT64_C(0x1a000000))
+#define SN1_BOARD_ID_OFFSET UINT64_C(0x4000000)
+#define SN1_BOARD_ID_VALUE UINT64_C(0x8000)
 #define SN1_HUB_LOCAL_HIGH_BOOT (SN1_SPACE_HUB + UINT64_C(0x1fc00000))
 #define SN1_HUB_REMOTE_BOOT (SN1_SPACE_HUB + UINT64_C(0x38000000))
 #define SN1_HUB_ECC (SN1_SPACE_HUB + UINT64_C(0x140000000))
@@ -624,6 +626,48 @@ static void sn1_create_pci_devices(SN1MachineState *s, MachineState *machine)
     }
 }
 
+/*
+ * The board-identification register both consumers read: OpenBSD through the
+ * remote form and the stock firmware through the local one, each taking the
+ * product code from bits 15 through 12. One stateless response serves both.
+ * Only the aligned 64-bit read is answered; everything else is refused and
+ * said out loud, because nothing establishes what the other bits or widths do.
+ */
+static MemTxResult sn1_board_id_read(void *opaque, hwaddr offset,
+                                     uint64_t *value, unsigned size,
+                                     MemTxAttrs attrs)
+{
+    if (offset != 0 || size != 8) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sn1: board identification answers only an aligned "
+                      "eight-byte read; refusing %u byte%s at offset 0x%"
+                      HWADDR_PRIx "\n", size, size == 1 ? "" : "s", offset);
+        *value = 0;
+        return MEMTX_ERROR;
+    }
+    *value = SN1_BOARD_ID_VALUE;
+    return MEMTX_OK;
+}
+
+static MemTxResult sn1_board_id_write(void *opaque, hwaddr offset,
+                                      uint64_t value, unsigned size,
+                                      MemTxAttrs attrs)
+{
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sn1: board identification is fixed; refusing a %u-byte "
+                  "write of 0x%" PRIx64 " at offset 0x%" HWADDR_PRIx "\n",
+                  size, value, offset);
+    return MEMTX_ERROR;
+}
+
+static const MemoryRegionOps sn1_board_id_ops = {
+    .read_with_attrs = sn1_board_id_read,
+    .write_with_attrs = sn1_board_id_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8 },
+    .impl = { .min_access_size = 1, .max_access_size = 8 },
+};
+
 static void sn1_map_memory(SN1MachineState *s, MachineState *machine)
 {
     const SN1MachineModel *model = &sn1_origin300_model;
@@ -641,6 +685,17 @@ static void sn1_map_memory(SN1MachineState *s, MachineState *machine)
                        model->hub_local_registers.size);
     memory_region_add_subregion(system, model->hub_local_registers.address,
                                 &s->hub_local_registers);
+
+    memory_region_init_io(&s->board_id, OBJECT(machine), &sn1_board_id_ops, s,
+                          "sn1.board-id", 8);
+    memory_region_add_subregion(&s->hub_local_registers, SN1_BOARD_ID_OFFSET,
+                                &s->board_id);
+    /* The remote form reaches the same response above the Bedrock window. */
+    memory_region_init_alias(&s->board_id_remote, OBJECT(machine),
+                             "sn1.board-id.remote", &s->board_id, 0, 8);
+    memory_region_add_subregion_overlap(system, SN1_HUB_REMOTE_REGISTERS +
+                                        SN1_BOARD_ID_OFFSET,
+                                        &s->board_id_remote, 1);
 }
 
 static void origin300_init(MachineState *machine)

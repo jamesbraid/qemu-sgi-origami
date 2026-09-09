@@ -51,6 +51,10 @@
 #define HUB_LOCAL_BOOT (SPACE_HUB + UINT64_C(0x18000000))
 #define HUB_LOCAL_FLASH (SPACE_HUB + UINT64_C(0x1a000000))
 #define HUB_DIRECTORY (SPACE_HUB + UINT64_C(0x1c0000000))
+#define BOARD_ID_LOCAL (HUB_LOCAL_REGISTERS + UINT64_C(0x4000000))
+#define BOARD_ID_REMOTE (HUB_REMOTE_REGISTERS + UINT64_C(0x4000000))
+#define BOARD_ID_UNUSED (HUB_LOCAL_REGISTERS + UINT64_C(0x5000000))
+#define BOARD_ID_VALUE UINT64_C(0x8000)
 #define HUB_LOCAL_HIGH_BOOT (SPACE_HUB + UINT64_C(0x1fc00000))
 #define HUB_REMOTE_REGISTERS (SPACE_HUB + UINT64_C(0x30000000))
 #define HUB_REMOTE_BOOT (SPACE_HUB + UINT64_C(0x38000000))
@@ -1848,6 +1852,59 @@ static void assert_flash_everywhere(QTestState *qts, uint64_t offset,
     }
 }
 
+static void test_board_identification(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-board-id-log-XXXXXX.txt", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf("-d unimp,guest_errors -D %s", quoted);
+    qts = machine_start_with(prom_path, extra);
+
+    /* Both consumers reach one response: the firmware's form and OpenBSD's. */
+    g_assert_cmphex(qtest_readq(qts, BOARD_ID_LOCAL), ==, BOARD_ID_VALUE);
+    g_assert_cmphex(qtest_readq(qts, BOARD_ID_REMOTE), ==, BOARD_ID_VALUE);
+
+    /* A write cannot change what it answers. */
+    qtest_writeq(qts, BOARD_ID_LOCAL, UINT64_C(0xdeadbeef));
+    qtest_writeq(qts, BOARD_ID_REMOTE, UINT64_C(0xfeedface));
+    g_assert_cmphex(qtest_readq(qts, BOARD_ID_LOCAL), ==, BOARD_ID_VALUE);
+    g_assert_cmphex(qtest_readq(qts, BOARD_ID_REMOTE), ==, BOARD_ID_VALUE);
+
+    /*
+     * The low 32-bit lane is where the product nibble would appear if a
+     * narrow access were served by splitting the wide one, so reading it is
+     * what tells a refusal apart from a chunked read.
+     */
+    g_assert_cmphex(qtest_readl(qts, BOARD_ID_LOCAL + 4), !=, BOARD_ID_VALUE);
+
+    /* Neither the word beside it nor the next block answers. */
+    assert_flat_view_unmapped(qts, BOARD_ID_LOCAL + 8);
+    assert_flat_view_unmapped(qts, BOARD_ID_UNUSED);
+
+    /* The response is fixed rather than stored, so reset cannot disturb it. */
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readq(qts, BOARD_ID_LOCAL), ==, BOARD_ID_VALUE);
+    g_assert_cmphex(qtest_readq(qts, BOARD_ID_REMOTE), ==, BOARD_ID_VALUE);
+
+    qtest_quit(qts);
+
+    /* Every refusal said so, with the address and the width it refused. */
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(log, "refusing a 8-byte write"));
+    g_assert_nonnull(strstr(log, "refusing 4 bytes at offset 0x4"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
 static void test_directory_backdoor_window(const void *data)
 {
     QTestState *qts = machine_start();
@@ -2655,6 +2712,8 @@ int main(int argc, char **argv)
                         test_l1_identity_records_come_from_the_command_line);
     qtest_add_data_func("sn1/address-map/l1-identity-records-absent", NULL,
                         test_l1_has_no_identity_records_by_default);
+    qtest_add_data_func("sn1/address-map/board-identification", NULL,
+                        test_board_identification);
     qtest_add_data_func("sn1/address-map/directory-backdoor-window", NULL,
                         test_directory_backdoor_window);
     qtest_add_data_func("sn1/address-map/boot-flash-backs-prom-views", NULL,
