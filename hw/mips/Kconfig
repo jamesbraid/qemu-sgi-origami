@@ -53,6 +53,7 @@ config SGI_SN0
     select SGI_O2000_MODULE_MGMT
     select SGI_IOC3
     select SGI_IOC3_ETH
+    select SGI_ROUTER
     select SGI_XBOW
     select TIGON
 

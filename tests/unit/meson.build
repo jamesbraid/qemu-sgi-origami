@@ -79,6 +79,8 @@ tests = {
                                  '../../hw/nvram/eeprom_at24c.c',
                                  'test-sgi-o2000-module-mgmt-stubs.c',
                                  qom, hwcore, migration, io, chardev, block],
+  'test-sgi-router': ['../../hw/misc/sgi-router.c', '../../hw/core/reset.c',
+                      qom, hwcore, migration, io],
   'test-logging': [],
   'test-qapi-util': [],
   'test-interval-tree': [],
