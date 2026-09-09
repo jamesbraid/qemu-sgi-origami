@@ -43,6 +43,7 @@
 #include "qemu/timer.h"
 #include "system/block-backend.h"
 #include "qemu/host-utils.h"
+#include "qemu/log.h"
 #include "qemu/module.h"
 #include "hw/core/sysbus.h"
 #include "migration/vmstate.h"
@@ -455,6 +456,10 @@ static void pflash_sector_erase(PFlashCFI02 *pfl, hwaddr offset)
         uint8_t *p = pfl->storage;
         memset(p + offset, 0xff, sector_len);
         pflash_update(pfl, offset, sector_len);
+    } else {
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: sector erase ignored: backing "
+                      "store is read-only (offset 0x%" HWADDR_PRIx ")\n",
+                      pfl->name, offset);
     }
     set_dq7(pfl, 0x00);
     ++pfl->sectors_to_erase;
@@ -592,6 +597,10 @@ static void pflash_write(void *opaque, hwaddr offset, uint64_t value,
                     stn_le_p(p, width, current & value);
                 }
                 pflash_update(pfl, offset, width);
+            } else {
+                qemu_log_mask(LOG_GUEST_ERROR, "%s: word program ignored: "
+                              "backing store is read-only (offset 0x%"
+                              HWADDR_PRIx ")\n", pfl->name, offset);
             }
             /*
              * While programming, status bit DQ7 should hold the opposite
@@ -652,6 +661,9 @@ static void pflash_write(void *opaque, hwaddr offset, uint64_t value,
             if (!pfl->ro) {
                 memset(pfl->storage, 0xff, pfl->chip_len);
                 pflash_update(pfl, 0, pfl->chip_len);
+            } else {
+                qemu_log_mask(LOG_GUEST_ERROR, "%s: chip erase ignored: "
+                              "backing store is read-only\n", pfl->name);
             }
             set_dq7(pfl, 0x00);
             /* Wait the time specified at CFI address 0x22. */
