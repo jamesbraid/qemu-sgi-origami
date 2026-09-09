@@ -539,6 +539,7 @@ ethlite_pkt_tx_size_too_big(uint64_t size) "size:0x%" PRIx64
 sgi_ioc3_eth_rx(uint32_t size, uint32_t mcr, uint32_t produce, uint32_t consume, uint64_t ring, uint64_t buf, uint32_t offset, uint32_t wire_len, uint32_t w0, uint32_t w1) "size %u mcr 0x%08x prod 0x%08x cons 0x%08x ring 0x%016" PRIx64 " buf 0x%016" PRIx64 " off %u wire_len %u w0 0x%08x w1 0x%08x"
 sgi_ioc3_eth_rx_refused(uint32_t mcr, uint32_t produce, uint32_t consume) "mcr 0x%08x prod 0x%08x cons 0x%08x"
 sgi_ioc3_eth_rx_filtered(uint32_t size) "size %u dropped by the address filter"
+sgi_ioc3_eth_rx_flush(void) "flush queued backend packets"
 sgi_ioc3_eth_tx_desc(uint32_t consume, uint32_t cmd, uint32_t bufcnt, uint64_t buf1, uint64_t buf2) "cons 0x%04x cmd 0x%08x bufcnt 0x%08x buf1 0x%016" PRIx64 " buf2 0x%016" PRIx64
 sgi_ioc3_eth_tx(uint32_t len, int loopback) "len %u loopback %d"
 sgi_ioc3_eth_irq(uint32_t status, uint32_t enable, int level) "status 0x%08x enable 0x%08x level %d"

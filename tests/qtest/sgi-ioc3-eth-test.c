@@ -1437,6 +1437,8 @@ static void test_an_fcs_failure_does_not_publish_valid(const void *data)
  */
 static void test_a_transmit_with_no_reply_raises_nothing(const void *data)
 {
+    g_autofree char *path = NULL;
+    g_autofree char *trace = NULL;
     QTestState *qts;
     uint8_t quiet[64];
     uint32_t base = RAM_SCRATCH;
@@ -1444,7 +1446,14 @@ static void test_a_transmit_with_no_reply_raises_nothing(const void *data)
     uint32_t rxbuf = RAM_SCRATCH + 0xc000;
     uint32_t status;
 
-    qts = ioc3_start(ring, rxbuf, 2);
+    path = g_strdup_printf("sgi-ioc3-rx-flush-%u-%u.trace",
+                           (unsigned int)getpid(), g_random_int());
+    qts = qtest_initf("-M pc -m 128M -display none "
+                      "-netdev user,id=n0 "
+                      "-device sgi-ioc3,addr=%02x.0,netdev=n0 "
+                      "-trace sgi_ioc3_eth_rx_flush,file=%s",
+                      IOC3_PCI_SLOT, path);
+    ioc3_bring_up(qts, ring, rxbuf, 2);
     ioc3_writel(qts, ENET_TX_RING_HI, 0);
     ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
 
@@ -1462,6 +1471,10 @@ static void test_a_transmit_with_no_reply_raises_nothing(const void *data)
     g_assert_cmphex(status & ENET_INT_TX_COMPLETE, ==, ENET_INT_TX_COMPLETE);
 
     qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
+    g_assert_null(strstr(trace, "sgi_ioc3_eth_rx_flush"));
+    g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
 int main(int argc, char **argv)
