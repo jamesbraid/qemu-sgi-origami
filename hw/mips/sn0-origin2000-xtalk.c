@@ -80,6 +80,8 @@ struct SN0Origin2000XtalkState {
     const char *test_board_part;
     SN0Origin2000XtalkBoard board[ORIGIN2000_XTALK_IO_BOARDS];
     bool cleaned;
+    /* A realized Hub still aliases an outgoing face of this object's. */
+    bool faces_kept;
 };
 
 static ObjectUnparent *parent_unparent;
@@ -461,17 +463,22 @@ static void sn0_origin2000_xtalk_cleanup(SN0Origin2000XtalkState *s)
         SN0Origin2000XtalkSource *source = &s->source[i];
 
         /*
-         * A realized Hub refuses to give this link up, and it does not have
-         * to: the face it points at is storage of this object's, which
-         * outlives the Hub because it is released at finalization. Only an
-         * unrealized Hub is unlinked, which is the teardown of a machine
-         * that never finished being built.
+         * A realized Hub will not give this link up, and taking it back would
+         * not help if it did: the big windows it built over the face at
+         * realize are aliases of that region, and they stay in the Hub's own
+         * space. So the face has to outlive the Hub rather than the other way
+         * round, and the face is storage of this object's -- note that this
+         * object can no longer be released. An unrealized Hub is the teardown
+         * of a machine that never finished being built, and unlinks cleanly.
          */
-        if (source->linked &&
-            !DEVICE(&s->machine->nodes[i]->hub)->realized) {
-            object_property_set_link(OBJECT(&s->machine->nodes[i]->hub),
-                                     "xtalk-io", NULL, &error_abort);
-            source->linked = false;
+        if (source->linked) {
+            if (DEVICE(&s->machine->nodes[i]->hub)->realized) {
+                s->faces_kept = true;
+            } else {
+                object_property_set_link(OBJECT(&s->machine->nodes[i]->hub),
+                                         "xtalk-io", NULL, &error_abort);
+                source->linked = false;
+            }
         }
         sn0_origin2000_hub_outgoing_io_destroy(&source->outgoing);
     }
@@ -744,7 +751,20 @@ void sn0_origin2000_xtalk_destroy(SN0MachineState *machine)
     }
     s = machine->origin2000_xtalk;
     sn0_origin2000_xtalk_cleanup(s);
+    if (!s->faces_kept) {
+        object_unparent(OBJECT(s));
+        return;
+    }
+    /*
+     * Retired rather than released, because a realized Hub is still pointing
+     * at faces that live in here. The name goes back so a later assembly can
+     * have it; the storage stays with the machine, disabled and reaching
+     * nothing, for as long as the Hubs that alias it.
+     */
+    object_ref(OBJECT(s));
     object_unparent(OBJECT(s));
+    object_property_add_child(OBJECT(machine), "xtalk-retired[*]", OBJECT(s));
+    object_unref(OBJECT(s));
 }
 
 void sn0_origin2000_xtalk_set_test_board_part(SN0MachineState *machine,
