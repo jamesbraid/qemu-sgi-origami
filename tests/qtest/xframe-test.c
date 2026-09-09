@@ -678,6 +678,23 @@ static void xframe_tx_start(XframeTx *t)
     qpci_device_enable(t->dev);
 }
 
+static void xframe_user_start(XframeTx *t)
+{
+    uint64_t barsize;
+
+    t->host_fd = -1;
+    t->qs = qtest_pc_boot("-netdev user,id=n0 "
+                          "-device xframe,netdev=n0,mac=" XFRAME_TEST_MAC);
+    t->dev = find_xframe(t->qs->pcibus, XFRAME_DEVICE_XENA);
+    g_assert(t->dev != NULL);
+
+    t->pif = qpci_iomap(t->dev, 0, &barsize);
+    g_assert_cmphex(barsize, ==, XFRAME_PIF_WINDOW_SIZE);
+    t->txp = qpci_iomap(t->dev, 2, &barsize);
+    g_assert_cmphex(barsize, ==, XFRAME_TXP_WINDOW_SIZE);
+    qpci_device_enable(t->dev);
+}
+
 static uint64_t sock_pif_readq(XframeTx *t, uint64_t off)
 {
     return qpci_io_readq(t->dev, t->pif, off);
@@ -692,7 +709,9 @@ static void xframe_tx_stop(XframeTx *t)
 {
     g_free(t->dev);
     qtest_shutdown(t->qs);
-    close(t->host_fd);
+    if (t->host_fd >= 0) {
+        close(t->host_fd);
+    }
 }
 
 /*
@@ -1717,6 +1736,55 @@ static void test_transmit_emits_a_frame(void)
 
     /* The card released the descriptor: ownership handed back to the host. */
     g_assert_cmphex(dma_ldq_be(t.qs->qts, par) & TXD_OWN, ==, 0);
+
+    xframe_tx_stop(&t);
+}
+
+static void test_user_backend_reply_waits_for_transmit(void)
+{
+    static const uint8_t gateway_ip[4] = { 10, 0, 2, 2 };
+    static const uint8_t guest_ip[4] = { 10, 0, 2, 15 };
+    static const uint8_t arp_request[42] = {
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0x52, 0x54, 0x00, 0x12, 0x34, 0x56,
+        0x08, 0x06,
+        0x00, 0x01, 0x08, 0x00, 0x06, 0x04, 0x00, 0x01,
+        0x52, 0x54, 0x00, 0x12, 0x34, 0x56, 10, 0, 2, 15,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 10, 0, 2, 2,
+    };
+    XframeTx t;
+    uint64_t lcr = TXDL_NUMTXD(0) | TXDL_LGC_FIRST | TXDL_LGC_LAST;
+    uint32_t rxd_control1_hi;
+    uint8_t landed[sizeof(arp_request)];
+
+    xframe_user_start(&t);
+    xframe_program_rxd(&t, RX_RING_BASE, RX_BUF0, RX_BUF_CAPACITY);
+    xframe_rx_ring_arm(&t, RX_RING_BASE);
+    xframe_program_txd(&t, TX_RAM_SCRATCH, TX_RAM_SCRATCH + 0x1000,
+                       arp_request, sizeof(arp_request));
+
+    qpci_io_writeq(t.dev, t.txp, TXP_TXDL_PAR, TX_RAM_SCRATCH);
+    qpci_io_writel(t.dev, t.txp, TXP_TXDL_LCR, (uint32_t)lcr);
+    /*
+     * The LCR high half rings the doorbell. User networking answers this ARP
+     * request synchronously, but receive must wait until the write callback
+     * returns and the transmit completion is visible. The RxD is big-endian:
+     * its bit-56 ownership byte reads as 1 through x86 qtest's readl.
+     */
+    rxd_control1_hi = qtest_writel_then_readl(
+        t.qs->qts, t.txp.addr + TXP_TXDL_LCR + 4,
+        (uint32_t)(lcr >> 32), RX_RING_BASE + 8);
+    g_assert_cmphex(rxd_control1_hi, ==, 1);
+    g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT) & TX_TRAFFIC_FIFO0, ==,
+                    TX_TRAFFIC_FIFO0);
+
+    g_assert_true(xframe_wait_rxd_consumed(&t, RX_RING_BASE, 5000));
+    qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
+    g_assert_cmpmem(landed, 6, xframe_station_mac, 6);
+    g_assert_cmphex(landed[20], ==, 0x00);
+    g_assert_cmphex(landed[21], ==, 0x02);
+    g_assert_cmpmem(landed + 28, 4, gateway_ip, 4);
+    g_assert_cmpmem(landed + 38, 4, guest_ip, 4);
 
     xframe_tx_stop(&t);
 }
@@ -4417,6 +4485,8 @@ int main(int argc, char **argv)
                    test_mac_table_strobe_via_32bit);
     qtest_add_func("xframe/transmit-emits-a-frame",
                    test_transmit_emits_a_frame);
+    qtest_add_func("xframe/user-backend-reply-waits-for-transmit",
+                   test_user_backend_reply_waits_for_transmit);
     qtest_add_func("xframe/transmit-out-of-range-pointer-is-safe",
                    test_transmit_out_of_range_pointer_is_safe);
     qtest_add_func("xframe/transmit-completion-raises-interrupt",
