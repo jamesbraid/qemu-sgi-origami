@@ -335,6 +335,7 @@ config SGI_BEDROCK_IO
 
 config SGI_BEDROCK_LB
     bool
+    select ONEWIRE
     default y if TEST_DEVICES
 
 config SGI_BEDROCK_XB

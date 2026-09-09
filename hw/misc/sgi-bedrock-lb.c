@@ -4,10 +4,12 @@
 #include "hw/misc/sgi-bedrock-lb.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/misc/sgi-onewire-slot.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
+#include "qemu/timer.h"
 
 #define LB_REVISION        0x0000
 #define LB_CPU_PERMISSION  0x4000
@@ -56,6 +58,37 @@
                                 (1ULL << 40) | (1ULL << 44))
 #define LB_ERROR_HEADER_2_MASK ((1ULL << 38) - 1)
 
+/*
+ * MicroLAN control. Bit 0 is the level sampled off the wire and bit 1 is
+ * completion; then the sample offset, the low-pulse duration and two phase
+ * dividers, the upper of which reaches bit 33. The register is therefore not
+ * a 32-bit one, and the model already takes only aligned eight-byte accesses
+ * -- which also stops QEMU splitting one guest write into two wire slots.
+ * Which transfer sizes the hardware accepts is not established: the single
+ * wide access is a choice, not a finding about the silicon.
+ */
+#define LB_MICROLAN_RXDATA       (1ULL << 0)
+#define LB_MICROLAN_DONE         (1ULL << 1)
+#define LB_MICROLAN_SAMPLE_SHIFT 2
+#define LB_MICROLAN_SAMPLE       (0xffULL << LB_MICROLAN_SAMPLE_SHIFT)
+#define LB_MICROLAN_PULSE_SHIFT  10
+#define LB_MICROLAN_PULSE        (0x3ffULL << LB_MICROLAN_PULSE_SHIFT)
+#define LB_MICROLAN_PHASE_0      (0x7fULL << 20)
+#define LB_MICROLAN_PHASE_1      (0x7fULL << 27)
+
+/* The two result bits are the device's to publish; 63:34 are reserved. */
+#define LB_MICROLAN_WRITABLE (LB_MICROLAN_SAMPLE | LB_MICROLAN_PULSE | \
+                              LB_MICROLAN_PHASE_0 | LB_MICROLAN_PHASE_1)
+
+/*
+ * Slot duration, chosen not derived. No public source turns this register's
+ * pulse and divider encodings into time or gives a completion latency, so
+ * the Hub master's one microsecond is reused rather than a second arbitrary
+ * number invented. What the delay has to be is positive, so that a slot in
+ * flight is a state a register test can see.
+ */
+#define LB_MICROLAN_SLOT_NS 1000
+
 static uint64_t lb_identity(SGIBedrockLBState *s)
 {
     return ((uint64_t)s->manufacturer << 1) |
@@ -68,6 +101,45 @@ static uint64_t lb_identity(SGIBedrockLBState *s)
 static void lb_update_irq(SGIBedrockLBState *s)
 {
     qemu_set_irq(s->error, s->errors != 0);
+}
+
+/* The slot's deadline: publish completion and what the wire sampled. */
+static void lb_microlan_slot_done(void *opaque)
+{
+    SGIBedrockLBState *s = opaque;
+
+    s->microlan |= LB_MICROLAN_DONE |
+                   (s->microlan_level ? LB_MICROLAN_RXDATA : 0);
+}
+
+static void lb_microlan_write(SGIBedrockLBState *s, uint64_t value)
+{
+    if (timer_pending(s->microlan_timer)) {
+        /*
+         * Unpublished: no source says whether hardware restarts the slot,
+         * queues the write or drops it, and picking one silently would
+         * settle a transaction semantics this model has no evidence for.
+         */
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-lb: MicroLAN write of 0x%"
+                      PRIx64 " while a slot is pending is not modelled; no "
+                      "second slot is started and the write is discarded\n",
+                      value);
+        return;
+    }
+
+    /*
+     * Starting a slot clears completion; the deadline below publishes it.
+     * The bus answers inside this write, but reporting it here would let a
+     * guest read a finished slot it never waited for. Start, completion and
+     * presence handling are the model's choices, not Bedrock's contract.
+     */
+    s->microlan = value & LB_MICROLAN_WRITABLE;
+    s->microlan_level = sgi_onewire_slot(
+        s->microlan_bus,
+        (value & LB_MICROLAN_PULSE) >> LB_MICROLAN_PULSE_SHIFT,
+        (value & LB_MICROLAN_SAMPLE) >> LB_MICROLAN_SAMPLE_SHIFT);
+    timer_mod(s->microlan_timer,
+              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + LB_MICROLAN_SLOT_NS);
 }
 
 static uint64_t lb_read(void *opaque, hwaddr offset, unsigned size)
@@ -96,6 +168,9 @@ static uint64_t lb_read(void *opaque, hwaddr offset, unsigned size)
         return s->region_present;
     case LB_NODES_ABSENT:
         return s->nodes_absent;
+    case LB_MICROLAN:
+        /* A read is not a slot: polling for completion drives nothing. */
+        return s->microlan;
     case LB_ERROR_BITS:
         return s->errors;
     case LB_ERROR_HEADER_1:
@@ -133,7 +208,6 @@ static uint64_t lb_read(void *opaque, hwaddr offset, unsigned size)
                       "sgi-bedrock-lb: read from write-only register 0x%"
                       HWADDR_PRIx "\n", offset);
         return 0;
-    case LB_MICROLAN:
     case LB_DEBUG_PINS:
     default:
         qemu_log_mask(LOG_UNIMP, "sgi-bedrock-lb: unsupported read at 0x%"
@@ -194,6 +268,9 @@ static void lb_write(void *opaque, hwaddr offset, uint64_t value,
     case LB_NODES_ABSENT:
         s->nodes_absent = value & LB_NODES_ABSENT_MASK;
         return;
+    case LB_MICROLAN:
+        lb_microlan_write(s, value);
+        return;
     case LB_ERROR_BITS:
         s->errors |= value & LB_ERROR_MASK;
         lb_update_irq(s);
@@ -243,7 +320,6 @@ static void lb_write(void *opaque, hwaddr offset, uint64_t value,
                       "sgi-bedrock-lb: write to read-only register 0x%"
                       HWADDR_PRIx "\n", offset);
         return;
-    case LB_MICROLAN:
     case LB_DEBUG_PINS:
     default:
         qemu_log_mask(LOG_UNIMP,
@@ -269,6 +345,15 @@ static void lb_reset_enter(Object *obj, ResetType type)
     s->io_permission = UINT64_MAX;
     s->region_present = 0;
     s->nodes_absent = 0;
+    /*
+     * Zero is the model's value: no public source states this register's
+     * power-on contents, so nothing here is a hardware reset state. A slot
+     * armed before the reset must not complete after it, and the endpoint's
+     * own protocol phase is reset by the endpoint, as a child of this bus.
+     */
+    s->microlan = 0;
+    timer_del(s->microlan_timer);
+    s->microlan_level = true;
     s->error_header[0] = 0;
     s->error_header[1] = 0;
     s->error_data = 0;
@@ -296,14 +381,18 @@ static int lb_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_lb = {
     .name = TYPE_SGI_BEDROCK_LB,
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .post_load = lb_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(cpu_permission, SGIBedrockLBState),
         VMSTATE_UINT64(io_permission, SGIBedrockLBState),
         VMSTATE_UINT64(region_present, SGIBedrockLBState),
         VMSTATE_UINT64(nodes_absent, SGIBedrockLBState),
+        /* The slot in flight: its register, its sample and its deadline. */
+        VMSTATE_UINT64(microlan, SGIBedrockLBState),
+        VMSTATE_BOOL(microlan_level, SGIBedrockLBState),
+        VMSTATE_TIMER_PTR(microlan_timer, SGIBedrockLBState),
         VMSTATE_UINT64(errors, SGIBedrockLBState),
         VMSTATE_UINT64_ARRAY(error_header, SGIBedrockLBState, 2),
         VMSTATE_UINT64(error_data, SGIBedrockLBState),
@@ -327,7 +416,20 @@ static void lb_realize(DeviceState *dev, Error **errp)
         s->region_size > 2 || s->request_region > 63) {
         error_setg(errp, "Bedrock local-block identity or region property "
                    "is outside its documented field");
+        return;
     }
+
+    s->microlan_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                     lb_microlan_slot_done, s);
+    /*
+     * The MicroLAN wire, with nothing on it. Which identity part IP45
+     * carries is not established -- its family, its commands and its
+     * contents are all open -- so hanging one here would publish an
+     * invented endpoint. The bus exists so a cleared endpoint can be added
+     * later without the controller's contract moving; until then a slot
+     * reports the bare wire and a reset finds no presence.
+     */
+    s->microlan_bus = onewire_create_bus(dev, "microlan");
 }
 
 static const Property lb_properties[] = {
