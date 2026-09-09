@@ -270,21 +270,18 @@ static PCIDevice *sn0_origin2000_xtalk_pci_function(
 }
 
 /*
- * The board, built where the descriptor puts it. The Bridge answers a
- * processor and a packet at one face, unlike a Hub, so the switch takes the
- * same region for both of that widget's views.
+ * The chip the board hangs off. Separate from the functions behind it
+ * because the two survive a failed attach differently: no function exists
+ * until this has realized, since they are built on the bus it creates.
  */
-static bool sn0_origin2000_xtalk_build_board(SN0Origin2000XtalkState *s,
-                                             size_t index, Error **errp)
+static bool sn0_origin2000_xtalk_build_bridge(SN0Origin2000XtalkState *s,
+                                              size_t index, Error **errp)
 {
     const SN0ModelIoBoard *record =
         &s->machine->composition->io_boards[index];
     SN0Origin2000XtalkBoard *board = &s->board[index];
     g_autofree char *bus_name = g_strdup_printf("pci.baseio%zu", index);
     DeviceState *bridge = qdev_new(TYPE_SGI_BRIDGE);
-    unsigned int scsi_index = 0;
-    MemoryRegion *face;
-    size_t i;
 
     object_property_add_child(board->owner, "bridge", OBJECT(bridge));
     board->bridge = SGI_BRIDGE(bridge);
@@ -309,23 +306,52 @@ static bool sn0_origin2000_xtalk_build_board(SN0Origin2000XtalkState *s,
     qdev_prop_set_uint32(bridge, "fabric-widget-shift",
                          SGI_BRIDGE_PACKET_ADDRESS_BITS);
 
-    if (!sysbus_realize(SYS_BUS_DEVICE(bridge), errp)) {
+    return sysbus_realize(SYS_BUS_DEVICE(bridge), errp);
+}
+
+/*
+ * The board, built where the descriptor puts it and handed to the switch it
+ * hangs off. The Bridge answers a processor and a packet at one face, unlike
+ * a Hub, so the switch takes the same region for both of that widget's
+ * views.
+ *
+ * Each step is skipped where a previous attempt already took it. A board
+ * outlives a failed attach -- see the unwind -- and a switch built to
+ * replace one that refused has to be handed the same board again.
+ */
+static bool sn0_origin2000_xtalk_fit_board(SN0Origin2000XtalkState *s,
+                                           size_t index, Error **errp)
+{
+    const SN0ModelIoBoard *record =
+        &s->machine->composition->io_boards[index];
+    SN0Origin2000XtalkBoard *board = &s->board[index];
+    unsigned int scsi_index = 0;
+    MemoryRegion *face;
+    size_t i;
+
+    if (!board->bridge &&
+        !sn0_origin2000_xtalk_build_bridge(s, index, errp)) {
         return false;
     }
 
-    face = sysbus_mmio_get_region(SYS_BUS_DEVICE(bridge), 0);
+    face = sysbus_mmio_get_region(SYS_BUS_DEVICE(board->bridge), 0);
     if (!sgi_xbow_attach_endpoint(s->crossbow[record->crossbow_index],
                                   record->widget, face, face, errp)) {
         return false;
     }
 
-    board->pci = g_new0(PCIDevice *, record->pci_count);
-    board->pci_count = record->pci_count;
+    if (!board->pci) {
+        board->pci = g_new0(PCIDevice *, record->pci_count);
+        board->pci_count = record->pci_count;
+    }
     for (i = 0; i < record->pci_count; i++) {
         const SN0ModelComponent *function = &record->pci[i];
         unsigned int instance =
             function->kind == SN0_COMPONENT_ISP1040 ? scsi_index++ : 0;
 
+        if (board->pci[i]) {
+            continue;
+        }
         board->pci[i] = sn0_origin2000_xtalk_pci_function(board, record,
                                                           function, instance,
                                                           errp);
@@ -447,7 +473,27 @@ static void sn0_origin2000_xtalk_cleanup_attach(SN0Origin2000XtalkState *s,
      */
     sn0_origin2000_xtalk_release_crossbows(s);
     for (i = 0; i < ARRAY_SIZE(s->board); i++) {
-        sn0_origin2000_xtalk_release_board(&s->board[i]);
+        SN0Origin2000XtalkBoard *board = &s->board[i];
+
+        /*
+         * A board whose chip realized survives a failed attach. Its
+         * functions hold host configuration the machine claimed once and
+         * cannot claim again: legacy SCSI buses take their numbers from a
+         * counter that only counts up, and an ethernet configuration is
+         * marked used the first time a device takes it. A second board
+         * would come up without the disks and without the station address
+         * the command line asked for, and nothing would say so. Nothing
+         * about the board depends on the switches, so the replacement
+         * switch is handed this same board's face.
+         *
+         * A chip that never realized has claimed nothing -- its functions
+         * are built on the bus it creates -- so that board is released and
+         * built again.
+         */
+        if (terminal || !board->bridge ||
+            !DEVICE(board->bridge)->realized) {
+            sn0_origin2000_xtalk_release_board(board);
+        }
     }
     sn0_origin2000_xtalk_settle_releases();
     if (terminal) {
@@ -708,7 +754,7 @@ bool sn0_origin2000_xtalk_attach(SN0MachineState *machine, Error **errp)
      * that refuses leaves an unwind with something to undo.
      */
     for (i = 0; i < model->io_board_count; i++) {
-        if (!sn0_origin2000_xtalk_build_board(s, i, errp)) {
+        if (!sn0_origin2000_xtalk_fit_board(s, i, errp)) {
             goto unwind;
         }
     }

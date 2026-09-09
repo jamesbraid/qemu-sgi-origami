@@ -126,6 +126,59 @@ static QTestState *attach_start(void)
     return attach_start_with("");
 }
 
+/* The station address the command line asks for, distinct from the default. */
+#define ASKED_MAC "52:54:00:aa:bb:cc"
+
+/*
+ * The same fixture given the two host backends a real command line brings:
+ * one legacy SCSI drive for the first adapter and one ethernet
+ * configuration for the IOC3. Both are claimed while the board is built.
+ */
+static QTestState *attach_start_backed(const char *machine_options)
+{
+    return qtest_initf("-M origin2000-xtalk-attach-test%s -m 256M "
+                       "-nodefaults -display none -serial none "
+                       "-drive if=scsi,file=null-co://,format=raw "
+                       "-nic user,id=n0,mac=" ASKED_MAC, machine_options);
+}
+
+static char *qom_string(QTestState *qts, const char *path,
+                        const char *property)
+{
+    QDict *response = qtest_qmp(qts,
+        "{ 'execute': 'qom-get', 'arguments': {"
+        "  'path': %s, 'property': %s } }", path, property);
+    char *value;
+
+    g_assert_true(qdict_haskey(response, "return"));
+    value = g_strdup(qdict_get_str(response, "return"));
+    qobject_unref(response);
+    return value;
+}
+
+/* Whether the monitor can still see the drive the command line named. */
+static bool block_backend_attached(QTestState *qts, const char *name)
+{
+    QDict *response = qtest_qmp(qts, "{ 'execute': 'query-block' }");
+    QList *devices;
+    QListEntry *entry;
+    bool found = false;
+
+    g_assert_true(qdict_haskey(response, "return"));
+    devices = qdict_get_qlist(response, "return");
+    g_assert_nonnull(devices);
+    QLIST_FOREACH_ENTRY(devices, entry) {
+        QDict *device = qobject_to(QDict, qlist_entry_obj(entry));
+
+        g_assert_nonnull(device);
+        if (g_str_equal(qdict_get_str(device, "device"), name)) {
+            found = true;
+        }
+    }
+    qobject_unref(response);
+    return found;
+}
+
 /* The machine says where its own window is, so the test cannot drift. */
 static uint64_t machine_uint(QTestState *qts, const char *property)
 {
@@ -451,6 +504,48 @@ static void test_a_failed_switch_leaves_a_machine_to_retry(void)
     g_assert_cmpuint(ID_PART(id), ==, BRIDGE_PART);
     g_assert_cmpuint(ID_MANUFACTURER(id), ==, BRIDGE_MANUFACTURER);
     g_assert_false(stopped_on_error(qts));
+    qtest_quit(qts);
+}
+
+/*
+ * What a retry must not quietly lose. A drive and an ethernet configuration
+ * are claimed once per process: the SCSI bus a legacy drive is looked up on
+ * takes its number from a counter that only counts up, and an entry is
+ * marked used the first time a device takes it. Neither can be given back,
+ * so a board that has claimed them has to survive the unwind and be handed
+ * to the switch that replaces the one that refused.
+ *
+ * Both halves are checked because they fail separately: the disk disappears
+ * from the monitor entirely, while the adapter comes up carrying its own
+ * built-in address instead -- which the guest also reads out of the
+ * board's one-wire identity, so it is not cosmetic.
+ */
+static void test_a_retried_attach_keeps_its_host_backends(void)
+{
+    QTestState *qts = attach_start_backed(",refuse-crossbow=on");
+    g_autofree char *mac = NULL;
+
+    g_assert_true(qtest_qom_get_bool(qts, "/machine", "verified"));
+    mac = qom_string(qts, "/machine/xtalk/baseio0/ioc3", "mac");
+    g_assert_cmpstr(mac, ==, ASKED_MAC);
+    g_assert_true(block_backend_attached(qts, "scsi0-hd0"));
+    qtest_quit(qts);
+}
+
+/*
+ * The control: the same command line without the refusal. Without it the
+ * check above cannot tell a retry that lost its backends from a fixture
+ * that never had them.
+ */
+static void test_an_attach_takes_the_host_backends_it_is_given(void)
+{
+    QTestState *qts = attach_start_backed("");
+    g_autofree char *mac = NULL;
+
+    g_assert_true(qtest_qom_get_bool(qts, "/machine", "verified"));
+    mac = qom_string(qts, "/machine/xtalk/baseio0/ioc3", "mac");
+    g_assert_cmpstr(mac, ==, ASKED_MAC);
+    g_assert_true(block_backend_attached(qts, "scsi0-hd0"));
     qtest_quit(qts);
 }
 
@@ -884,6 +979,10 @@ int main(int argc, char **argv)
                    test_a_failed_attach_leaves_a_machine_to_retry);
     qtest_add_func("sn0/origin2000/xtalk-attach/failed-switch-can-retry",
                    test_a_failed_switch_leaves_a_machine_to_retry);
+    qtest_add_func("sn0/origin2000/xtalk-attach/attach-takes-its-backends",
+                   test_an_attach_takes_the_host_backends_it_is_given);
+    qtest_add_func("sn0/origin2000/xtalk-attach/retry-keeps-its-backends",
+                   test_a_retried_attach_keeps_its_host_backends);
     qtest_add_func("sn0/origin2000/xtalk-attach/attached-machine-tears-down",
                    test_an_attached_machine_can_be_torn_down);
     qtest_add_func("sn0/origin2000/xtalk-attach/torn-down-big-window",
