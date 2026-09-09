@@ -737,10 +737,16 @@ static void test_firmware_up_posts_event(const void *data)
  */
 static void test_firmware_upload_window_posts_event(const void *data)
 {
+    static const uint8_t upload_pattern[][4] = {
+        { 0xa5, 0x22, 0xb6, 0xc7 },
+        { 0xd8, 0xe9, 0xfa, 0x0b },
+    };
+    static const uint8_t empty_pattern[4] = { 0 };
     const uint32_t upload_base = 0x2000;
     const uint32_t other_base = 0x2800;
     const uint32_t upload_off = 0x20;
     const uint64_t window = WINDOW_TIGON + TI_SRAM_WINDOW + upload_off;
+    uint8_t observed[4];
     QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
 
     enable_dma_big_endian(qts);
@@ -752,19 +758,29 @@ static void test_firmware_upload_window_posts_event(const void *data)
     qtest_writew(qts, window + 2, 0xb6c7);
     qtest_writel(qts, window + 4, 0xd8e9fa0b);
 
-    g_assert_cmphex(qtest_readb(qts, window), ==, 0xa5);
-    g_assert_cmphex(qtest_readw(qts, window + 2), ==, 0xb6c7);
-    g_assert_cmphex(qtest_readl(qts, window), ==, 0xa522b6c7);
-    g_assert_cmphex(qtest_readl(qts, window + 4), ==, 0xd8e9fa0b);
+    qtest_memread(qts, window, observed, sizeof(observed));
+    g_assert_cmpmem(observed, sizeof(observed), upload_pattern[0],
+                    sizeof(upload_pattern[0]));
+    qtest_memread(qts, window + 4, observed, sizeof(observed));
+    g_assert_cmpmem(observed, sizeof(observed), upload_pattern[1],
+                    sizeof(upload_pattern[1]));
 
     qtest_writel(qts, WINDOW_TIGON + TI_WINBASE, other_base);
-    g_assert_cmphex(qtest_readl(qts, window), ==, 0);
-    g_assert_cmphex(qtest_readl(qts, window + 4), ==, 0);
+    qtest_memread(qts, window, observed, sizeof(observed));
+    g_assert_cmpmem(observed, sizeof(observed), empty_pattern,
+                    sizeof(empty_pattern));
+    qtest_memread(qts, window + 4, observed, sizeof(observed));
+    g_assert_cmpmem(observed, sizeof(observed), empty_pattern,
+                    sizeof(empty_pattern));
     qtest_writel(qts, window, 0x01020304);
 
     qtest_writel(qts, WINDOW_TIGON + TI_WINBASE, upload_base);
-    g_assert_cmphex(qtest_readl(qts, window), ==, 0xa522b6c7);
-    g_assert_cmphex(qtest_readl(qts, window + 4), ==, 0xd8e9fa0b);
+    qtest_memread(qts, window, observed, sizeof(observed));
+    g_assert_cmpmem(observed, sizeof(observed), upload_pattern[0],
+                    sizeof(upload_pattern[0]));
+    qtest_memread(qts, window + 4, observed, sizeof(observed));
+    g_assert_cmpmem(observed, sizeof(observed), upload_pattern[1],
+                    sizeof(upload_pattern[1]));
 
     qtest_writel(qts, WINDOW_TIGON + TI_CPU_PROGRAM_COUNTER, upload_base);
     publish_gib(qts);
