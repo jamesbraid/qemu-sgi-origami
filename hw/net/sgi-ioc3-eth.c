@@ -93,7 +93,11 @@ static bool sgi_ioc3_eth_can_receive(NetClientState *nc)
     uint32_t mcr = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_MAC_CONTROL);
     uint32_t need = SGI_IOC3_ENET_MCR_RX_DMA_EN | SGI_IOC3_ENET_MCR_RX_EN;
 
-    if (s->defer_backend_rx || (mcr & need) != need) {
+    if (s->defer_backend_rx) {
+        s->backend_rx_deferred = true;
+        return false;
+    }
+    if ((mcr & need) != need) {
         return false;
     }
 
@@ -409,6 +413,7 @@ static void sgi_ioc3_eth_rx_flush(void *opaque)
 {
     SGIIOC3EthState *s = opaque;
 
+    trace_sgi_ioc3_eth_rx_flush();
     qemu_flush_queued_packets(qemu_get_queue(s->nic));
 }
 
@@ -424,7 +429,6 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
     uint32_t consume = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_TX_CONSUME) &
                        SGI_IOC3_ENET_TX_CONSUME_MASK;
     bool loopback = sgi_ioc3_eth_looping_back(s);
-    bool sent_to_backend = false;
     uint32_t raised = 0;
     bool completed_one = false;
 
@@ -504,7 +508,6 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
             } else {
                 s->defer_backend_rx = true;
                 qemu_send_packet(qemu_get_queue(s->nic), s->frame, len);
-                sent_to_backend = true;
             }
         }
 
@@ -529,7 +532,8 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
     sgi_ioc3_enet_update_irq(s);
 
     s->defer_backend_rx = false;
-    if (sent_to_backend) {
+    if (s->backend_rx_deferred) {
+        s->backend_rx_deferred = false;
         qemu_bh_schedule(s->rx_flush_bh);
     }
 }
@@ -744,6 +748,7 @@ static void sgi_ioc3_eth_reset_hold(Object *obj, ResetType type)
 
     qemu_bh_cancel(s->rx_flush_bh);
     s->defer_backend_rx = false;
+    s->backend_rx_deferred = false;
     sgi_ioc3_eth_reset_registers(s, false);
 }
 

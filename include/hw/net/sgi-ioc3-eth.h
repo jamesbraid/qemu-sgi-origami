@@ -171,6 +171,8 @@ struct SGIIOC3EthState {
 
     /* Backend replies wait until the transmit walk has published its state. */
     bool defer_backend_rx;
+    /* can_receive() refused ingress while backend replies were deferred. */
+    bool backend_rx_deferred;
 
     DP83840State phy;
 
