@@ -22,6 +22,7 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "qobject/qlist.h"
 #include "qobject/qnum.h"
 
 #define REG_DATA        4
@@ -468,6 +469,66 @@ static void test_an_attached_machine_can_be_torn_down(void)
     qtest_quit(qts);
 }
 
+/*
+ * How many PCI functions the monitor can see, read the way a monitor reads
+ * them: query-pci walks the PCI core's own list of host bridges, which is a
+ * file-scope list that holds no reference to what is on it.
+ */
+static size_t pci_functions_seen(QTestState *qts)
+{
+    QDict *response = qtest_qmp(qts, "{ 'execute': 'query-pci' }");
+    QList *buses;
+    QListEntry *entry;
+    size_t count = 0;
+
+    g_assert_true(qdict_haskey(response, "return"));
+    buses = qdict_get_qlist(response, "return");
+    g_assert_nonnull(buses);
+    QLIST_FOREACH_ENTRY(buses, entry) {
+        QDict *bus = qobject_to(QDict, qlist_entry_obj(entry));
+        QList *devices;
+
+        g_assert_nonnull(bus);
+        devices = qdict_get_qlist(bus, "devices");
+        g_assert_nonnull(devices);
+        count += qlist_size(devices);
+    }
+    qobject_unref(response);
+    return count;
+}
+
+/*
+ * Reading the PCI topology after the board has been given up. The chip that
+ * carried it has to have left the core's host-bridge list on the way out,
+ * because the list outlives it and the monitor walks it on demand. The board
+ * is the only PCI host this machine has, so nothing is left to report.
+ */
+static void test_the_monitor_reads_pci_after_teardown(void)
+{
+    QTestState *qts = attach_start_with(",teardown=on");
+
+    g_assert_true(qtest_qom_get_bool(qts, "/machine", "released"));
+    g_assert_cmpuint(pci_functions_seen(qts), ==, 0);
+    g_assert_false(stopped_on_error(qts));
+    qtest_quit(qts);
+}
+
+/*
+ * The same read after an attach that failed and was retried. Here the board
+ * is still fitted, so the three functions the descriptor names have to come
+ * back exactly once -- a stale entry would either double them or answer out
+ * of storage the retry released.
+ */
+static void test_the_monitor_reads_pci_after_a_retry(void)
+{
+    QTestState *qts = attach_start_with(",refuse-crossbow=on");
+
+    g_assert_true(qtest_qom_get_bool(qts, "/machine", "verified"));
+    g_assert_cmpuint(pci_functions_seen(qts), ==, 3);
+    g_assert_false(stopped_on_error(qts));
+    qtest_quit(qts);
+}
+
 static uint64_t hub_readq(QTestState *qts, unsigned int node,
                           uint64_t offset)
 {
@@ -827,6 +888,10 @@ int main(int argc, char **argv)
                    test_an_attached_machine_can_be_torn_down);
     qtest_add_func("sn0/origin2000/xtalk-attach/torn-down-big-window",
                    test_a_torn_down_big_window_reaches_nothing);
+    qtest_add_func("sn0/origin2000/xtalk-attach/torn-down-pci-topology",
+                   test_the_monitor_reads_pci_after_teardown);
+    qtest_add_func("sn0/origin2000/xtalk-attach/retried-pci-topology",
+                   test_the_monitor_reads_pci_after_a_retry);
     qtest_add_func("sn0/origin2000/xtalk-attach/board-dma-reaches-its-widget",
                    test_board_dma_reaches_the_widget_it_names);
     qtest_add_func("sn0/origin2000/xtalk-attach/down-destination-only-its-own",
