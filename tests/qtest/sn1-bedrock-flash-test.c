@@ -557,6 +557,47 @@ static void test_remote_aperture(void)
 }
 
 /*
+ * A boot space is far larger than the two software read addresses inside it,
+ * and nothing establishes what the board answers in between them. A read
+ * there has to say so and fail, rather than fold back onto the backing: an
+ * off-by-one in the bounds would do exactly that, and what came out would
+ * look like ordinary flash contents.
+ */
+static void test_unmapped_reads(void)
+{
+    g_autofree char *image = flash_image("unmapped");
+    g_autofree char *log = log_file("unmapped");
+    g_autofree char *found = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *s;
+
+    /* What a decoder folding back onto the backing would hand out. */
+    image_write_be64(image, 0, 0xfeedfacecafef00dULL);
+    image_write_be64(image, FLASH_SIZE - 8, 0x0f1e2d3c4b5a6978ULL);
+
+    extra = g_strdup_printf("-d unimp -D %s", log);
+    s = flash_start(image, "", extra);
+
+    /* The last word of each read address answers; the one past it does not. */
+    g_assert_cmphex(qtest_readq(s, PRIMARY + FLASH_SIZE - 8), ==,
+                    0x0f1e2d3c4b5a6978ULL);
+    g_assert_cmphex(qtest_readq(s, ALTERNATE + FLASH_SIZE - 8), ==,
+                    0x0f1e2d3c4b5a6978ULL);
+    g_assert_cmphex(qtest_readq(s, LOCAL + FLASH_SIZE), ==, 0);
+    g_assert_cmphex(qtest_readq(s, LOCAL + SECOND_READ + FLASH_SIZE), ==, 0);
+    g_assert_cmphex(qtest_readq(s, REMOTE + FLASH_SIZE), ==, 0);
+    g_assert_cmphex(qtest_readq(s, REMOTE + SECOND_READ + FLASH_SIZE), ==, 0);
+    qtest_quit(s);
+
+    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+    g_assert_cmpuint(count_lines(found, "outside every mapped read address"),
+                     ==, 4);
+
+    g_assert_cmpint(unlink(log), ==, 0);
+    g_assert_cmpint(unlink(image), ==, 0);
+}
+
+/*
  * One address, two meanings. At a stride into the boot space an ordinary read
  * starts the second software read address at backing byte zero, while a store
  * reaches the middle of the backing. Anything that decodes writes from the
@@ -1071,6 +1112,8 @@ int main(int argc, char **argv)
                    test_local_aperture);
     qtest_add_func("sn1/bedrock-flash/remote-aperture",
                    test_remote_aperture);
+    qtest_add_func("sn1/bedrock-flash/unmapped-reads",
+                   test_unmapped_reads);
     qtest_add_func("sn1/bedrock-flash/access-type-split",
                    test_access_type_split);
     qtest_add_func("sn1/bedrock-flash/erase-polling",
