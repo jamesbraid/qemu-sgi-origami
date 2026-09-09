@@ -10,6 +10,7 @@ typedef struct SN0MachineState SN0MachineState;
 bool sn0_origin2000_xtalk_validate(const SN0ModelComposition *model,
                                   Error **errp);
 bool sn0_origin2000_xtalk_prepare(SN0MachineState *machine, Error **errp);
+bool sn0_origin2000_xtalk_attach(SN0MachineState *machine, Error **errp);
 void sn0_origin2000_xtalk_destroy(SN0MachineState *machine);
 bool sn0_origin2000_xtalk_test_proxies_disabled(SN0MachineState *machine);
 

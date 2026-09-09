@@ -274,7 +274,8 @@ endif
 
 sn0_xtalk_assembly_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ?
-    ['sn0-origin2000-xtalk-owner-test'] : [])
+    ['sn0-origin2000-xtalk-owner-test',
+     'sn0-origin2000-xtalk-attach-test'] : [])
 if not config_all_devices.has_key('CONFIG_SN0_XTALK_ASSEMBLY_TEST')
   sn0_xtalk_assembly_qtests = []
 endif
