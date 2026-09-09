@@ -9,16 +9,21 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockMDState, SGI_BEDROCK_MD)
 
 #define SGI_BEDROCK_MD_SIZE 0x60048
 #define SGI_BEDROCK_MD_DIRECTORY_SIZE 0x40000000
+/* One eighth of the 8 GiB M-mode node space, like the directory carrier. */
+#define SGI_BEDROCK_MD_ECC_SIZE 0x40000000
 #define SGI_BEDROCK_MD_STORAGE 14
 
 struct SGIBedrockMDState {
     SysBusDevice parent_obj;
     MemoryRegion mmio;
     MemoryRegion directory_mmio;
+    MemoryRegion ecc_mmio;
     MemoryRegion *node_mr;
     uint64_t *directory;
     uint64_t *page_counters;
     uint32_t directory_entries;
+    /* Derived from fitted memory; the ECC carrier itself holds no state. */
+    uint64_t ecc_extent;
     uint64_t current_cell;
     uint64_t memory_config;
     uint64_t refresh;

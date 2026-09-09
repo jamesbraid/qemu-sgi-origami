@@ -259,6 +259,84 @@ static const MemoryRegionOps md_directory_ops = {
     .impl = { .min_access_size = 8, .max_access_size = 8 },
 };
 
+/*
+ * One ECC byte per 8 bytes of node memory. Readable contents, power-on
+ * state and error behavior are unestablished, so this approximates the
+ * hardware surface rather than modelling ECC. Width first, alignment
+ * second, bounds last, so an access that breaks more than one rule always
+ * names the same reason.
+ */
+static const char *md_ecc_refusal(const SGIBedrockMDState *s, hwaddr offset,
+                                  unsigned size)
+{
+    if (size != 1 && size != 2) {
+        return "unsupported width";
+    }
+    if (size == 2 && (offset & 1)) {
+        return "unaligned halfword";
+    }
+    if (offset >= s->ecc_extent) {
+        return "outside fitted memory";
+    }
+    return NULL;
+}
+
+static void md_ecc_log(hwaddr offset, unsigned size, bool is_write,
+                       const char *reason, int mask)
+{
+    qemu_log_mask(mask, "sgi-bedrock-md: ECC backdoor %s offset 0x%08"
+                  HWADDR_PRIx " size %u rejected: %s\n",
+                  is_write ? "write" : "read", offset, size, reason);
+}
+
+static bool md_ecc_accepts(void *opaque, hwaddr offset, unsigned size,
+                           bool is_write, MemTxAttrs attrs)
+{
+    SGIBedrockMDState *s = opaque;
+    const char *reason = md_ecc_refusal(s, offset, size);
+
+    if (reason) {
+        md_ecc_log(offset, size, is_write, reason, LOG_GUEST_ERROR);
+        return false;
+    }
+    return true;
+}
+
+/*
+ * Readback is unestablished, so answer zero and say so rather than guess.
+ * A guest read is what ends that deferral, and this reports under unimp,
+ * so a run has to ask for unimp to catch one.
+ */
+static uint64_t md_ecc_read(void *opaque, hwaddr offset, unsigned size)
+{
+    md_ecc_log(offset, size, false, "readback unestablished", LOG_UNIMP);
+    return 0;
+}
+
+/* Accepted stores complete quietly: the PROM needs them, we keep nothing. */
+static void md_ecc_write(void *opaque, hwaddr offset, uint64_t value,
+                         unsigned size)
+{
+}
+
+static const MemoryRegionOps md_ecc_ops = {
+    .read = md_ecc_read,
+    .write = md_ecc_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    /*
+     * Everything up to 8 bytes is valid enough to reach md_ecc_accepts(),
+     * which is what turns a wide or odd access into its own diagnostic
+     * instead of a generic memory-core refusal or a silent split.
+     */
+    .valid = {
+        .min_access_size = 1,
+        .max_access_size = 8,
+        .unaligned = true,
+        .accepts = md_ecc_accepts,
+    },
+    .impl = { .min_access_size = 1, .max_access_size = 2, .unaligned = true },
+};
+
 static void md_reset_registers(SGIBedrockMDState *s)
 {
     s->current_cell = UINT64_MAX;
@@ -330,6 +408,10 @@ static void md_init(Object *obj)
                           TYPE_SGI_BEDROCK_MD "-directory",
                           SGI_BEDROCK_MD_DIRECTORY_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->directory_mmio);
+    memory_region_init_io(&s->ecc_mmio, obj, &md_ecc_ops, s,
+                          TYPE_SGI_BEDROCK_MD "-ecc",
+                          SGI_BEDROCK_MD_ECC_SIZE);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->ecc_mmio);
     qdev_init_gpio_in_named(DEVICE(obj), md_soft_reset_input, "soft-reset", 1);
 }
 
@@ -358,6 +440,14 @@ static void md_realize(DeviceState *dev, Error **errp)
         return;
     }
     s->directory_entries = node_size / 128;
+    /*
+     * One ECC byte per doubleword: the 1:8 ratio the check above bounds.
+     * An unlinked node leaves this at zero, so every ECC access is refused
+     * as outside fitted memory. Reusing that reason is deliberate, because
+     * the cleared contract names four diagnostics and this adds no fifth.
+     * The directory carrier answers the same condition with its own line.
+     */
+    s->ecc_extent = node_size / 8;
     s->directory = g_new0(uint64_t, s->directory_entries);
     s->page_counters = g_new0(uint64_t, s->directory_entries);
 }
@@ -369,6 +459,7 @@ static void md_unrealize(DeviceState *dev)
     g_clear_pointer(&s->directory, g_free);
     g_clear_pointer(&s->page_counters, g_free);
     s->directory_entries = 0;
+    s->ecc_extent = 0;
 }
 
 static const Property md_properties[] = {
