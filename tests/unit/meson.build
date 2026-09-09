@@ -92,6 +92,9 @@ tests = {
   'test-sn0-origin2000-management-model': [
     '../../hw/mips/sn0-origin2000-management-model.c',
     '../../hw/mips/sn0-origin2000-model.c'],
+  'test-sn0-origin2000-xtalk-model': [
+    '../../hw/mips/sn0-origin2000-model.c',
+    '../../hw/mips/sn0-origin2000-xtalk-model.c'],
   'test-logging': [],
   'test-qapi-util': [],
   'test-interval-tree': [],
