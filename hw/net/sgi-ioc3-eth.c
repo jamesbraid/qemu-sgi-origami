@@ -740,6 +740,14 @@ static void sgi_ioc3_eth_unrealize(DeviceState *dev)
     qemu_bh_delete(s->rx_flush_bh);
     qemu_del_nic(s->nic);
     address_space_destroy(&s->dma_as);
+    /*
+     * The transceiver lives inside this object and is realized on the system
+     * bus, so it has to leave that bus here. Left on it, it comes off only
+     * when this object is finalized, and a bus hands a child's reference back
+     * through RCU -- so the release arrives a grace period after the storage
+     * it names has been freed with the rest of this object.
+     */
+    object_unparent(OBJECT(&s->phy));
 }
 
 static void sgi_ioc3_eth_reset_hold(Object *obj, ResetType type)
