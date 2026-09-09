@@ -32,7 +32,8 @@ mips_ss.add(when: 'CONFIG_SN0_HUB_OUTGOING_TEST',
             if_true: files('sn0-origin2000-outgoing-test.c'))
 mips_ss.add(when: 'CONFIG_SN0_XTALK_ASSEMBLY_TEST',
             if_true: files('sn0-origin2000-xtalk-test.c'))
-mips_ss.add(when: 'CONFIG_SGI_SN1', if_true: files('sn1.c'))
+mips_ss.add(when: 'CONFIG_SGI_SN1',
+            if_true: files('sn1.c', 'sn1-origin300-model.c'))
 mips_ss.add(when: 'CONFIG_FULOONG', if_true: files('fuloong2e.c'))
 mips_ss.add(when: 'CONFIG_MIPS_BOSTON', if_true: files('boston.c'))
 endif

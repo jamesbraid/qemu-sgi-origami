@@ -71,6 +71,7 @@
 #define PCI_COMMAND_MASTER 0x0004
 #define PCI_CLASS_REVISION 0x08
 #define PCI_BAR1 0x14
+#define PCI_SUBSYSTEM_VENDOR_ID 0x2c
 #define PCI_INTERRUPT_LINE 0x3c
 
 /* Class 0x01 mass storage, subclass 0x00 SCSI, programming interface 0. */
@@ -631,6 +632,8 @@ static void test_identity(const void *data)
     class_revision = qtest_readl(qts, IO8_SCSI_CFG + PCI_CLASS_REVISION);
     g_assert_cmphex(class_revision >> 8, ==, PCI_CLASS_SCSI);
     g_assert_cmphex(class_revision & 0xff, ==, ISP12160_REVISION);
+    g_assert_cmphex(qtest_readl(qts, IO8_SCSI_CFG + PCI_SUBSYSTEM_VENDOR_ID),
+                    ==, 0xffffffff);
     /* The adapter presents one interrupt line, on INTA. */
     g_assert_cmphex((qtest_readl(qts, IO8_SCSI_CFG + PCI_INTERRUPT_LINE) >> 8)
                     & 0xff, ==, 1);
