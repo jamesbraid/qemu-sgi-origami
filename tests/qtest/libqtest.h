@@ -657,6 +657,22 @@ uint32_t qtest_writel_then_readl_poll(QTestState *s, uint64_t write_addr,
                                     uint32_t *after_poll);
 
 /**
+ * qtest_writel_then_writel:
+ * @s: #QTestState instance to operate on.
+ * @first_addr: Guest address for the first write.
+ * @first_value: Value for the first write.
+ * @second_addr: Guest address for the second write.
+ * @second_value: Value for the second write.
+ *
+ * Performs both writes in one qtest protocol command. The server does not
+ * yield to its main loop between them, so a test can reset work queued by the
+ * first write before its bottom half runs.
+ */
+void qtest_writel_then_writel(QTestState *s, uint64_t first_addr,
+                              uint32_t first_value, uint64_t second_addr,
+                              uint32_t second_value);
+
+/**
  * qtest_writeq:
  * @s: #QTestState instance to operate on.
  * @addr: Guest address to write to.
