@@ -129,6 +129,8 @@ struct SN0XtalkAttachTest {
     bool verified;
     /* Make the board refuse to realize, to reach attach's unwind. */
     bool refuse_board;
+    /* Make the second switch refuse to realize, for the unwind past it. */
+    bool refuse_crossbow;
     /* Tear the assembly down after it attached, as a machine owner would. */
     bool teardown;
     bool released;
@@ -159,6 +161,17 @@ static bool xtalk_attach_test_get_refuse(Object *obj, Error **errp)
 static void xtalk_attach_test_set_refuse(Object *obj, bool value, Error **errp)
 {
     XTALK_ATTACH_TEST(obj)->refuse_board = value;
+}
+
+static bool xtalk_attach_test_get_refuse_crossbow(Object *obj, Error **errp)
+{
+    return XTALK_ATTACH_TEST(obj)->refuse_crossbow;
+}
+
+static void xtalk_attach_test_set_refuse_crossbow(Object *obj, bool value,
+                                                  Error **errp)
+{
+    XTALK_ATTACH_TEST(obj)->refuse_crossbow = value;
 }
 
 static bool xtalk_attach_test_get_teardown(Object *obj, Error **errp)
@@ -339,6 +352,11 @@ static void xtalk_attach_test_init(MachineState *machine)
      * machine with it. The unwind runs with realized Hubs, which is the
      * case that cannot undo preparation, so it must undo only its own work
      * and leave a machine that can be attached again.
+     *
+     * Two failure points, because they leave different amounts behind. The
+     * board is built after every Hub endpoint has been attached, so its
+     * unwind has all of those to give back. The switch fails later still,
+     * with one of the two already realized.
      */
     if (test->refuse_board) {
         sn0_origin2000_xtalk_set_test_board_part(sn0, "far too long a part");
@@ -347,6 +365,14 @@ static void xtalk_attach_test_init(MachineState *machine)
         g_assert(err);
         error_free(err);
         sn0_origin2000_xtalk_set_test_board_part(sn0, NULL);
+    }
+    if (test->refuse_crossbow) {
+        sn0_origin2000_xtalk_set_test_crossbow_failure(sn0, 1);
+        err = NULL;
+        g_assert(!sn0_origin2000_xtalk_attach(sn0, &err));
+        g_assert(err);
+        error_free(err);
+        sn0_origin2000_xtalk_set_test_crossbow_failure(sn0, -1);
     }
 
     if (!sn0_origin2000_xtalk_attach(sn0, &error_fatal)) {
@@ -384,6 +410,9 @@ static void xtalk_attach_test_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_bool(oc, "refuse-board",
                                    xtalk_attach_test_get_refuse,
                                    xtalk_attach_test_set_refuse);
+    object_class_property_add_bool(oc, "refuse-crossbow",
+                                   xtalk_attach_test_get_refuse_crossbow,
+                                   xtalk_attach_test_set_refuse_crossbow);
     object_class_property_add_bool(oc, "teardown",
                                    xtalk_attach_test_get_teardown,
                                    xtalk_attach_test_set_teardown);
