@@ -20,6 +20,7 @@ struct SN1MachineState {
     DeviceState *bedrock;
     DeviceState *l1;
     DeviceState *xbridge;
+    DeviceState *boot_flash;
 
     MemoryRegion hub_memory;
     MemoryRegion bedrock_node;
