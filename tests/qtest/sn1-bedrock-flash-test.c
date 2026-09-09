@@ -30,19 +30,37 @@
 /* CFI query values are 16 bits wide at twice the query index. */
 #define QUERY_READ(i) ((uint64_t)(i) * 2)
 
-static char *flash_image(const char *tag)
+/*
+ * A store at bus offset 4n carries the flash word at payload byte n, so the
+ * payload bytes a view can address are those whose bus offset still falls
+ * inside it -- a quarter of the view. Both numbers below are arithmetic on
+ * that transform and on the view size. Neither is a statement about the
+ * fitted part, and neither settles whether the hardware commands the whole
+ * part through one view. Widen the view or change the transform and they
+ * move with it.
+ */
+#define VIEW_COMMANDABLE_BYTES (FLASH_SIZE / 4)
+#define VIEW_LAST_COMMANDABLE_WORD (VIEW_COMMANDABLE_BYTES - 2)
+#define VIEW_LAST_COMMANDABLE_SECTOR (VIEW_COMMANDABLE_BYTES - SECTOR_SIZE)
+
+static char *sized_image(const char *tag, off_t size)
 {
     char *path = g_strdup_printf("%s/sn1-bedrock-flash-%s-XXXXXX",
                                  g_get_tmp_dir(), tag);
     int fd = g_mkstemp(path);
 
     g_assert_cmpint(fd, >=, 0);
-    g_assert_cmpint(ftruncate(fd, FLASH_SIZE), ==, 0);
+    g_assert_cmpint(ftruncate(fd, size), ==, 0);
     g_assert_cmpint(close(fd), ==, 0);
     return path;
 }
 
-static void image_write(const char *path, uint64_t offset, const void *buffer,
+static char *flash_image(const char *tag)
+{
+    return sized_image(tag, FLASH_SIZE);
+}
+
+static void image_write(const char *path, off_t offset, const void *buffer,
                         size_t length)
 {
     int fd = open(path, O_WRONLY);
@@ -52,7 +70,8 @@ static void image_write(const char *path, uint64_t offset, const void *buffer,
     g_assert_cmpint(close(fd), ==, 0);
 }
 
-static void image_write_be64(const char *path, uint64_t offset, uint64_t value)
+static void image_write_be64(const char *path, off_t offset,
+                             uint64_t value)
 {
     uint8_t bytes[8];
 
@@ -62,7 +81,7 @@ static void image_write_be64(const char *path, uint64_t offset, uint64_t value)
     image_write(path, offset, bytes, sizeof(bytes));
 }
 
-static void image_read(const char *path, uint64_t offset, void *buffer,
+static void image_read(const char *path, off_t offset, void *buffer,
                        size_t length)
 {
     int fd = open(path, O_RDONLY);
@@ -76,7 +95,7 @@ static void image_read(const char *path, uint64_t offset, void *buffer,
  * Programming only clears bits, so a sector a test means to program has to
  * start out erased. The images are otherwise left sparse.
  */
-static void image_erase_sector(const char *path, uint64_t offset)
+static void image_erase_sector(const char *path, off_t offset)
 {
     g_autofree uint8_t *erased = g_malloc(SECTOR_SIZE);
 
@@ -131,18 +150,6 @@ static void flash_erase_sector(QTestState *s, uint64_t base, uint64_t offset)
     /* The window for further sector commands, then the erase itself. */
     qtest_clock_step_next(s);
     qtest_clock_step_next(s);
-}
-
-static char *sized_image(const char *tag, uint64_t size)
-{
-    char *path = g_strdup_printf("%s/sn1-bedrock-flash-%s-XXXXXX",
-                                 g_get_tmp_dir(), tag);
-    int fd = g_mkstemp(path);
-
-    g_assert_cmpint(fd, >=, 0);
-    g_assert_cmpint(ftruncate(fd, size), ==, 0);
-    g_assert_cmpint(close(fd), ==, 0);
-    return path;
 }
 
 static void assert_qemu_rejects(const char *image, const char *message)
@@ -299,8 +306,13 @@ static void test_query_mode(void)
     image_write_be64(image, 0x28, 0xdeadbeefdeadbeefULL);
 
     s = flash_start(image, "", "");
-    /* A command at the wrong offset is not the query command. */
-    qtest_writeq(s, PRIMARY + 0x55, 0x98);
+    /*
+     * The offset the published byte-write description would put this command
+     * at: eight times the flash byte rather than eight times the flash word.
+     * It is a well-formed store at an aligned address, so the adapter
+     * forwards it, and the flash must not read it as the query command.
+     */
+    qtest_writeq(s, PRIMARY + 0x550, 0x98);
     g_assert_cmphex(qtest_readq(s, PRIMARY + 0x20), ==, 0xdeadbeefdeadbeefULL);
 
     qtest_writeq(s, PRIMARY + QUERY, 0x98);
@@ -333,6 +345,7 @@ static void test_program(void)
     QTestState *s;
 
     image_erase_sector(image, 0);
+    image_erase_sector(image, VIEW_LAST_COMMANDABLE_SECTOR);
     image_write_be64(image, SECTOR_SIZE, 0x8899aabbccddeeffULL);
 
     s = flash_start(image, "", "");
@@ -348,6 +361,18 @@ static void test_program(void)
     g_assert_cmphex(qtest_readw(s, PRIMARY + SECTOR_SIZE - 2), ==, 0x0f1e);
     /* Programming the last word of a sector does not touch the next one. */
     g_assert_cmphex(qtest_readw(s, PRIMARY + SECTOR_SIZE), ==, 0x8899);
+
+    /*
+     * The transform at both ends of the view: the lowest store addresses
+     * payload byte zero, and the highest store the view admits addresses the
+     * payload byte four times below its top. Reads are one-to-one, so
+     * finding each word back at its payload offset is what pins 4n.
+     */
+    QEMU_BUILD_BUG_ON(BYTE(2) != 8);
+    QEMU_BUILD_BUG_ON(BYTE(VIEW_LAST_COMMANDABLE_WORD) != FLASH_SIZE - 8);
+    flash_program(s, PRIMARY, VIEW_LAST_COMMANDABLE_WORD, 0x9876);
+    g_assert_cmphex(qtest_readw(s, PRIMARY + VIEW_LAST_COMMANDABLE_WORD), ==,
+                    0x9876);
     qtest_quit(s);
 
     image_read(image, 0, stored, sizeof(stored));
@@ -359,6 +384,8 @@ static void test_program(void)
     g_assert_cmphex(qtest_readw(s, PRIMARY + 0), ==, 0x1234);
     g_assert_cmphex(qtest_readw(s, PRIMARY + SECTOR_SIZE / 2), ==, 0xa55a);
     g_assert_cmphex(qtest_readw(s, PRIMARY + SECTOR_SIZE - 2), ==, 0x0f1e);
+    g_assert_cmphex(qtest_readw(s, PRIMARY + VIEW_LAST_COMMANDABLE_WORD), ==,
+                    0x9876);
     qtest_quit(s);
     g_assert_cmpint(unlink(image), ==, 0);
 }
@@ -367,24 +394,29 @@ static void test_program(void)
  * An erase clears one 64 KiB sector and leaves the sectors either side of it
  * alone, whether it is the first sector or one further up.
  *
- * Because a command address is four times the flash offset it names, a
- * 16 MiB window only reaches the first 4 MiB of the part for erase and
- * programming. Everything above that is readable but cannot be commanded
- * through this window. Sector 0x3f is the highest one this test can erase.
+ * The upper sector is the highest one this view can name, which follows from
+ * the same 4n transform the programming case pins rather than from anything
+ * about the part: its sector address has to have a bus offset inside the
+ * view. Everything above it reads one-to-one but has no bus offset here to
+ * command it with. What the hardware does about that is an open question for
+ * the address map; this test pins the transform and lets the extent follow,
+ * so a different view or transform moves it rather than leaving this number
+ * standing.
  */
 static void test_sector_erase(void)
 {
     g_autofree char *image = flash_image("erase");
-    const uint64_t high = 0x3f * SECTOR_SIZE;
+    const off_t high_sector = VIEW_LAST_COMMANDABLE_SECTOR;
     QTestState *s;
 
     image_write_be64(image, 0, 0x1111111111111111ULL);
     image_write_be64(image, SECTOR_SIZE - 8, 0x2222222222222222ULL);
     image_write_be64(image, SECTOR_SIZE, 0x3333333333333333ULL);
-    image_write_be64(image, high - 8, 0x4444444444444444ULL);
-    image_write_be64(image, high, 0x5555555555555555ULL);
-    image_write_be64(image, high + SECTOR_SIZE - 8, 0x6666666666666666ULL);
-    image_write_be64(image, high + SECTOR_SIZE, 0x7777777777777777ULL);
+    image_write_be64(image, high_sector - 8, 0x4444444444444444ULL);
+    image_write_be64(image, high_sector, 0x5555555555555555ULL);
+    image_write_be64(image, high_sector + SECTOR_SIZE - 8,
+                     0x6666666666666666ULL);
+    image_write_be64(image, high_sector + SECTOR_SIZE, 0x7777777777777777ULL);
 
     s = flash_start(image, "", "");
     flash_erase_sector(s, PRIMARY, 0);
@@ -392,16 +424,18 @@ static void test_sector_erase(void)
     g_assert_cmphex(qtest_readq(s, PRIMARY + SECTOR_SIZE - 8), ==, UINT64_MAX);
     g_assert_cmphex(qtest_readq(s, PRIMARY + SECTOR_SIZE), ==,
                     0x3333333333333333ULL);
-    g_assert_cmphex(qtest_readq(s, PRIMARY + high), ==,
+    g_assert_cmphex(qtest_readq(s, PRIMARY + high_sector), ==,
                     0x5555555555555555ULL);
 
-    flash_erase_sector(s, ALTERNATE, high);
-    g_assert_cmphex(qtest_readq(s, PRIMARY + high - 8), ==,
+    QEMU_BUILD_BUG_ON(BYTE(VIEW_LAST_COMMANDABLE_SECTOR) !=
+                      FLASH_SIZE - SECTOR_SIZE * 4);
+    flash_erase_sector(s, ALTERNATE, high_sector);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + high_sector - 8), ==,
                     0x4444444444444444ULL);
-    g_assert_cmphex(qtest_readq(s, PRIMARY + high), ==, UINT64_MAX);
-    g_assert_cmphex(qtest_readq(s, PRIMARY + high + SECTOR_SIZE - 8), ==,
+    g_assert_cmphex(qtest_readq(s, PRIMARY + high_sector), ==, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + high_sector + SECTOR_SIZE - 8), ==,
                     UINT64_MAX);
-    g_assert_cmphex(qtest_readq(s, PRIMARY + high + SECTOR_SIZE), ==,
+    g_assert_cmphex(qtest_readq(s, PRIMARY + high_sector + SECTOR_SIZE), ==,
                     0x7777777777777777ULL);
     qtest_quit(s);
     g_assert_cmpint(unlink(image), ==, 0);
@@ -490,6 +524,62 @@ static void test_cfi_cycle_width(void)
 }
 
 /*
+ * The firmware sends whole 64-bit stores. Anything narrower is outside that
+ * interface and the board's answer to it is unknown, so the adapter refuses
+ * it rather than picking a meaning: no cycle reaches the flash, and the array
+ * keeps what it had.
+ */
+static void test_narrow_writes(void)
+{
+    g_autofree char *image = flash_image("narrow");
+    g_autofree char *log = log_file("narrow");
+    g_autofree char *found = NULL;
+    g_autofree char *extra = NULL;
+    static const uint8_t expected[8] = {
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef
+    };
+    uint8_t head[8];
+    QTestState *s;
+
+    image_erase_sector(image, 0);
+    image_write_be64(image, 0, 0x0123456789abcdefULL);
+
+    extra = g_strdup_printf("-d unimp,trace:pflash_io_write,"
+                            "trace:pflash_data_write -D %s", log);
+    s = flash_start(image, "", extra);
+
+    /* Outside any command sequence: nothing should reach the flash at all. */
+    qtest_writeb(s, PRIMARY + UNLOCK0, 0xaa);
+    qtest_writew(s, PRIMARY + UNLOCK0, 0xaa);
+    qtest_writel(s, PRIMARY + UNLOCK0, 0xaa);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + 0), ==, 0x0123456789abcdefULL);
+
+    /*
+     * The one that would corrupt data: a program sequence opened with three
+     * proper stores, then its payload sent narrow. Forwarded, that clears the
+     * word; refused, the word keeps what it had. Refusing issues no cycle, so
+     * the flash is left waiting for that payload and reads status rather than
+     * the array -- the image below is where the damage would show.
+     */
+    qtest_writeq(s, PRIMARY + UNLOCK0, 0xaa);
+    qtest_writeq(s, PRIMARY + UNLOCK1, 0x55);
+    qtest_writeq(s, PRIMARY + UNLOCK0, 0xa0);
+    qtest_writew(s, PRIMARY + BYTE(0), 0x0000);
+    qtest_quit(s);
+
+    image_read(image, 0, head, sizeof(head));
+    g_assert_cmpmem(head, sizeof(head), expected, sizeof(expected));
+
+    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+    /* The three stores opening the sequence, and nothing else. */
+    g_assert_cmpuint(count_lines(found, "pflash_io_write"), ==, 3);
+    g_assert_cmpuint(count_lines(found, "data offset:"), ==, 0);
+    g_assert_cmpuint(count_lines(found, "outside the 64-bit store"), ==, 4);
+    g_assert_cmpint(unlink(log), ==, 0);
+    g_assert_cmpint(unlink(image), ==, 0);
+}
+
+/*
  * A reset returns the flash to plain array reads from wherever it was, and
  * an unfinished command sequence does not survive it: a data or erase cycle
  * arriving after the reset is a stray write, not the completion of what was
@@ -542,16 +632,16 @@ static void test_reset_states(void)
 
 /*
  * A read-only image still boots and reads, and neither programming nor
- * erasing changes a byte of it.
- *
- * The CFI device gives no failure indication for this case: the program
- * cycle simply stores nothing and the erase reports completion, so the only
- * thing this test can pin down is that the data is untouched. Reporting the
- * failure belongs to the CFI device rather than to the adapter.
+ * erasing changes a byte of it. Both attempts say so: the bytes coming back
+ * unchanged look exactly like a part that programmed what it was given, so
+ * the complaint is the only thing that separates the two.
  */
 static void test_read_only(void)
 {
     g_autofree char *image = flash_image("readonly");
+    g_autofree char *log = log_file("readonly");
+    g_autofree char *found = NULL;
+    g_autofree char *extra = NULL;
     uint8_t before[16], after[16];
     QTestState *s;
 
@@ -560,7 +650,8 @@ static void test_read_only(void)
     image_write_be64(image, SECTOR_SIZE, 0x3333333333333333ULL);
     image_read(image, 0x400, before, sizeof(before));
 
-    s = flash_start(image, ",readonly=on", "");
+    extra = g_strdup_printf("-d guest_errors -D %s", log);
+    s = flash_start(image, ",readonly=on", extra);
     g_assert_cmphex(qtest_readq(s, PRIMARY + 0x400), ==,
                     0x0123456789abcdefULL);
     g_assert_cmphex(qtest_readq(s, PRIMARY + 0), ==, UINT64_MAX);
@@ -578,8 +669,15 @@ static void test_read_only(void)
                     0x3333333333333333ULL);
     qtest_quit(s);
 
+    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+    g_assert_nonnull(strstr(found, "sgi-bedrock-flash: word program ignored: "
+                            "backing store is read-only"));
+    g_assert_nonnull(strstr(found, "sgi-bedrock-flash: sector erase ignored: "
+                            "backing store is read-only"));
+
     image_read(image, 0x400, after, sizeof(after));
     g_assert_cmpmem(after, sizeof(after), before, sizeof(before));
+    g_assert_cmpint(unlink(log), ==, 0);
     g_assert_cmpint(unlink(image), ==, 0);
 }
 
@@ -805,6 +903,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-flash/program", test_program);
     qtest_add_func("sn1/bedrock-flash/sector-erase", test_sector_erase);
     qtest_add_func("sn1/bedrock-flash/cfi-cycle-width", test_cfi_cycle_width);
+    qtest_add_func("sn1/bedrock-flash/narrow-writes", test_narrow_writes);
     qtest_add_func("sn1/bedrock-flash/reset-states", test_reset_states);
     qtest_add_func("sn1/bedrock-flash/read-only", test_read_only);
     qtest_add_func("sn1/bedrock-flash/migration-stored-bytes",
