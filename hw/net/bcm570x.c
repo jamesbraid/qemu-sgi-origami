@@ -1055,6 +1055,18 @@ static void bcm570x_defer_rx_flush(Bcm570xState *s)
     s->rx_flush_pending = true;
 }
 
+/*
+ * A failed DMA leaves the backend frame queued. Authorize one retry after the
+ * guest repairs the address and writes a receive-ready register; flushing here
+ * would immediately retry the same broken transfer without giving it a chance
+ * to do so.
+ */
+static void bcm570x_defer_failed_rx(Bcm570xState *s)
+{
+    bcm570x_defer_rx_flush(s);
+    s->rx_flush_authorized = true;
+}
+
 static void bcm570x_retry_rx_flush(Bcm570xState *s)
 {
     /*
@@ -1968,8 +1980,9 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
                             std_bd, sizeof(std_bd)) != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "bcm570x: receive descriptor %u read failed; "
-                      "frame dropped without consuming it\n", idx);
-        return size;
+                      "frame queued without consuming it\n", idx);
+        bcm570x_defer_failed_rx(s);
+        return 0;
     }
     buf_addr = ((uint64_t)bcm570x_dma_ld32(s, std_bd + BCM570X_RXBD_ADDR_HI)
                 << 32) |
@@ -1979,9 +1992,10 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
                                 framelen) != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "bcm570x: receive payload write at 0x%" PRIx64
-                      " failed; frame dropped without consuming descriptor "
+                      " failed; frame queued without consuming descriptor "
                       "%u\n", buf_addr, idx);
-        return size;
+        bcm570x_defer_failed_rx(s);
+        return 0;
     }
     csum = bcm570x_rx_offload_checksum(buf, framelen, &rx_flags);
 
@@ -2002,8 +2016,10 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
                              sizeof(ret_bd)) != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "bcm570x: receive completion %u write failed; "
-                      "descriptor not consumed\n", s->status_rx_prod);
-        return size;
+                      "frame queued and descriptor not consumed\n",
+                      s->status_rx_prod);
+        bcm570x_defer_failed_rx(s);
+        return 0;
     }
 
     if (on_jumbo) {

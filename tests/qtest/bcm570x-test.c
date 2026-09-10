@@ -3838,7 +3838,66 @@ static void test_receive_round_trip(const void *data)
     close(sv[0]);
 }
 
-/* A refused completion write leaves the posted receive slot retryable. */
+/* A refused descriptor read leaves the queued frame and slot retryable. */
+static void test_receive_descriptor_dma_error(const void *data)
+{
+    g_autofree char *logfile = NULL;
+    uint8_t frame[64], landed[sizeof(frame)] = { 0 };
+    uint8_t zero_landed[sizeof(landed)] = { 0 };
+    uint8_t ret[BCM_RXBD_SIZE], zero[BCM_RXBD_SIZE] = { 0 };
+    Bcm b;
+    unsigned int i;
+    uint32_t tag;
+    int logfd;
+    int sv[2];
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i * 5 + 3);
+    }
+    memset(frame, 0xff, 6);
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    logfd = g_file_open_tmp("bcm570x-rx-descriptor-error-XXXXXX", &logfile,
+                            NULL);
+    g_assert_cmpint(logfd, >=, 0);
+    close(logfd);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -m 16M"
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0"
+                             " -d guest_errors -D %s",
+                             sv[1], BCM_SLOT, logfile));
+    rx_open_one(&b, sv[0]);
+    bar_writel(&b, BCM_RX_STD_RCB_HI, UNMAPPED_PHYS >> 32);
+    bar_writel(&b, BCM_RX_STD_RCB_LO, UNMAPPED_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    tag = read_status_tag(&b);
+
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    wait_for_log_marker(b.qts, logfile,
+                        "bcm570x: receive descriptor 0 read failed");
+    qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
+    g_assert_cmpmem(ret, sizeof(ret), zero, sizeof(zero));
+    qtest_memread(b.qts, RX_BUF_PHYS, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed), zero_landed,
+                    sizeof(zero_landed));
+    g_assert_cmphex(read_status_tag(&b), ==, tag);
+    g_assert_false(intr_line_up(b.dev));
+
+    /* Repair only the descriptor ring; retry the already queued frame. */
+    bar_writel(&b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
+    bar_writel(&b, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 1);
+    wait_for_rx_prod(&b, 1);
+    qtest_memread(b.qts, RX_BUF_PHYS, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
+
+    bcm_close(&b);
+    close(sv[0]);
+    close(sv[1]);
+    unlink(logfile);
+}
+
+/* A refused completion write leaves the queued frame and slot retryable. */
 static void test_receive_completion_dma_error(const void *data)
 {
     int sv[2];
@@ -3879,7 +3938,7 @@ static void test_receive_completion_dma_error(const void *data)
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 0, RET_RING_PHYS >> 32);
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4,
                    RET_RING_PHYS & 0xffffffff);
-    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 1);
     wait_for_rx_prod(&b, 1);
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
     g_assert_cmphex(get16le(ret + BCM_RXBD_IDX), ==, 0);
@@ -3938,8 +3997,7 @@ static void test_receive_payload_dma_error(const void *data)
 
     net_socket_send_frame(sv[0], frame, sizeof(frame));
     wait_for_log_marker(b.qts, logfile,
-                        "bcm570x: receive payload write at 0x2000000 failed; "
-                        "frame dropped without consuming descriptor 0");
+                        "bcm570x: receive payload write at 0x2000000 failed");
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
     g_assert_cmpmem(ret, sizeof(ret), zero, sizeof(zero));
     g_assert_cmphex(read_status_tag(&b), ==, tag);
@@ -3950,7 +4008,7 @@ static void test_receive_payload_dma_error(const void *data)
     put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
     qtest_memwrite(b.qts, STD_RING_PHYS, bd, sizeof(bd));
     qtest_memset(b.qts, RX_BUF_PHYS, 0, sizeof(landed));
-    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 1);
     wait_for_rx_prod(&b, 1);
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
     g_assert_cmphex(get16le(ret + BCM_RXBD_IDX), ==, 0);
@@ -5317,6 +5375,8 @@ int main(int argc, char **argv)
                         test_tx_producer_out_of_range);
     qtest_add_data_func("/bcm570x/receive-round-trip", NULL,
                         test_receive_round_trip);
+    qtest_add_data_func("/bcm570x/receive-descriptor-dma-error", NULL,
+                        test_receive_descriptor_dma_error);
     qtest_add_data_func("/bcm570x/receive-completion-dma-error", NULL,
                         test_receive_completion_dma_error);
     qtest_add_data_func("/bcm570x/receive-payload-dma-error", NULL,
