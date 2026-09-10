@@ -233,6 +233,7 @@
 #define JUMBO_STALE_BUF_PHYS  0x00290000ULL
 #define JUMBO_BUF_SIZE        9216u
 #define UNMAPPED_PHYS         0x02000000ULL
+#define RAM_END_16M           0x01000000ULL
 #define COAL_RING_LEN         64u            /* a ring long enough for a coalescing burst */
 
 /* A ring and buffer area big enough to time a burst rather than a packet. */
@@ -4025,6 +4026,153 @@ static void test_receive_payload_dma_error(const void *data)
     unlink(logfile);
 }
 
+typedef enum RxDmaFault {
+    RX_DMA_FAULT_DESCRIPTOR,
+    RX_DMA_FAULT_PAYLOAD,
+    RX_DMA_FAULT_COMPLETION,
+} RxDmaFault;
+
+/*
+ * A retry that completes one queued frame before the next frame faults has
+ * consumed its interrupt acknowledgement. Repairing the failed DMA and
+ * rewriting a receive-ready register must not publish that second frame under
+ * the same handler; the next interrupt acknowledgement releases it exactly
+ * once.
+ */
+static void test_receive_dma_error_after_progress(const void *data)
+{
+    RxDmaFault fault = GPOINTER_TO_INT(data);
+    uint64_t std_ring = fault == RX_DMA_FAULT_DESCRIPTOR ?
+                        RAM_END_16M - BCM_RXBD_SIZE : STD_RING_PHYS;
+    uint64_t ret_ring = fault == RX_DMA_FAULT_COMPLETION ?
+                        RAM_END_16M - BCM_RXBD_SIZE : RET_RING_PHYS;
+    uint64_t first_ret = ret_ring;
+    uint64_t second_ret;
+    uint8_t first[64], second[64], got[64];
+    uint8_t ret[BCM_RXBD_SIZE];
+    uint32_t tag;
+    unsigned int i;
+    Bcm b;
+    int sv[2];
+
+    for (i = 0; i < sizeof(first); i++) {
+        first[i] = (uint8_t)(i + 0x21);
+        second[i] = (uint8_t)(i + 0x61);
+    }
+    memset(first, 0xff, 6);
+    memset(second, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -m 16M"
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+
+    bar_writel(&b, BCM_RX_STD_RCB_HI, std_ring >> 32);
+    bar_writel(&b, BCM_RX_STD_RCB_LO, std_ring & 0xffffffff);
+    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, STD_BUF_SIZE << 16);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB, ret_ring >> 32);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4,
+                   ret_ring & 0xffffffff);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+
+    write_rx_bd(&b, std_ring, 0, RX_BUF_PHYS);
+    if (fault != RX_DMA_FAULT_DESCRIPTOR) {
+        write_rx_bd(&b, std_ring, 1,
+                    fault == RX_DMA_FAULT_PAYLOAD ?
+                    UNMAPPED_PHYS : RX_BUF_PHYS + 0x100);
+    }
+    qtest_memset(b.qts, RX_BUF_PHYS, 0, 0x200);
+    qtest_memset(b.qts, ret_ring, 0, BCM_RXBD_SIZE);
+    if (fault != RX_DMA_FAULT_COMPLETION) {
+        qtest_memset(b.qts, ret_ring + BCM_RXBD_SIZE, 0, BCM_RXBD_SIZE);
+    }
+    qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 2);
+
+    net_socket_send_frame(sv[0], first, sizeof(first));
+    net_socket_send_frame(sv[0], second, sizeof(second));
+    g_usleep(100000);
+    g_assert_cmpuint(read_rx_prod(&b), ==, 0);
+
+    /* A periodic status interrupt gives the backlog one authorized drain. */
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    qtest_clock_step(b.qts, BCM_STATUS_TICK_MAX_NS);
+    g_assert_true(intr_line_up(b.dev));
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 1);
+    g_assert_false(intr_line_up(b.dev));
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    wait_for_rx_prod(&b, 1);
+
+    qtest_memread(b.qts, RX_BUF_PHYS, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), first, sizeof(first));
+    qtest_memread(b.qts, first_ret, ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_IDX), ==, 0);
+    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
+                    BCM_RXBDFLAG_END);
+    tag = read_status_tag(&b);
+    g_assert_true(intr_line_up(b.dev));
+
+    switch (fault) {
+    case RX_DMA_FAULT_DESCRIPTOR:
+        write_rx_bd(&b, STD_RING_PHYS, 0, RX_BUF_PHYS + 0x100);
+        std_ring = STD_RING_PHYS - BCM_RXBD_SIZE;
+        bar_writel(&b, BCM_RX_STD_RCB_HI, std_ring >> 32);
+        bar_writel(&b, BCM_RX_STD_RCB_LO, std_ring & 0xffffffff);
+        second_ret = RET_RING_PHYS + BCM_RXBD_SIZE;
+        break;
+    case RX_DMA_FAULT_PAYLOAD:
+        write_rx_bd(&b, STD_RING_PHYS, 1, RX_BUF_PHYS + 0x100);
+        second_ret = RET_RING_PHYS + BCM_RXBD_SIZE;
+        break;
+    case RX_DMA_FAULT_COMPLETION:
+        ret_ring = RET_RING_PHYS - BCM_RXBD_SIZE;
+        ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB, ret_ring >> 32);
+        ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4,
+                       ret_ring & 0xffffffff);
+        qtest_memset(b.qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
+        second_ret = RET_RING_PHYS;
+        break;
+    default:
+        g_assert_not_reached();
+    }
+
+    /* Repair plus a producer rewrite is not a second authorization. */
+    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 2);
+    g_usleep(100000);
+    g_assert_cmpuint(read_rx_prod(&b), ==, 1);
+    g_assert_cmphex(read_status_tag(&b), ==, tag);
+
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 1);
+    g_assert_false(intr_line_up(b.dev));
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    wait_for_rx_prod(&b, 2);
+    qtest_memread(b.qts, RX_BUF_PHYS + 0x100, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), second, sizeof(second));
+    qtest_memread(b.qts, second_ret, ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_IDX), ==, 1);
+    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
+                    BCM_RXBDFLAG_END);
+    g_assert_cmphex(read_status_tag(&b), ==, tag + 1);
+
+    /* No queued duplicate survives the successful retry. */
+    tag = read_status_tag(&b);
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 1);
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 2);
+    g_usleep(100000);
+    g_assert_cmpuint(read_rx_prod(&b), ==, 2);
+    g_assert_cmphex(read_status_tag(&b), ==, tag);
+
+    bcm_close(&b);
+    close(sv[0]);
+    close(sv[1]);
+}
+
 /*
  * Interrupt coalescing on receive. The host-coalescing block batches completed
  * receive descriptors into one status-block update and one interrupt instead of
@@ -5381,6 +5529,15 @@ int main(int argc, char **argv)
                         test_receive_completion_dma_error);
     qtest_add_data_func("/bcm570x/receive-payload-dma-error", NULL,
                         test_receive_payload_dma_error);
+    qtest_add_data_func("/bcm570x/receive-descriptor-dma-error-after-progress",
+                        GINT_TO_POINTER(RX_DMA_FAULT_DESCRIPTOR),
+                        test_receive_dma_error_after_progress);
+    qtest_add_data_func("/bcm570x/receive-payload-dma-error-after-progress",
+                        GINT_TO_POINTER(RX_DMA_FAULT_PAYLOAD),
+                        test_receive_dma_error_after_progress);
+    qtest_add_data_func("/bcm570x/receive-completion-dma-error-after-progress",
+                        GINT_TO_POINTER(RX_DMA_FAULT_COMPLETION),
+                        test_receive_dma_error_after_progress);
     qtest_add_data_func("/bcm570x/receive-ring-laps", NULL,
                         test_receive_ring_laps);
     qtest_add_data_func("/bcm570x/receive-ring-full-recovers", NULL,

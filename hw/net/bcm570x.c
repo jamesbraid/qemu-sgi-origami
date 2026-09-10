@@ -1039,15 +1039,15 @@ static void bcm570x_rx_flush(void *opaque)
 
     s->rx_flush_pending = false;
     qemu_flush_queued_packets(qemu_get_queue(s->nic));
-    if (s->rx_flush_pending && s->status_rx_prod == producer) {
-        /*
-         * The other receive ring may have made the device generally ready
-         * while the queued frame's selected ring remained empty. Preserve the
-         * acknowledgement only when the retry completed nothing; any
-         * completion consumes it so the next handler cannot be re-entered.
-         */
-        s->rx_flush_authorized = true;
-    }
+    /*
+     * The other receive ring may have made the device generally ready while
+     * the queued frame's selected ring remained empty. Preserve the
+     * acknowledgement only when the retry completed nothing; any completion
+     * consumes it so the next handler cannot be re-entered, even if a later
+     * frame in the same drain faults.
+     */
+    s->rx_flush_authorized = s->rx_flush_pending &&
+                             s->status_rx_prod == producer;
 }
 
 static void bcm570x_defer_rx_flush(Bcm570xState *s)
