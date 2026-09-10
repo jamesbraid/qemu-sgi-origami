@@ -327,6 +327,30 @@ static void test_clock_admission_while_low(Fixture *f, gconstpointer unused)
     g_assert_cmpint(event->error, ==, -ENOTSUP);
 }
 
+static void test_contender_clock_admission_while_low(Fixture *f,
+                                                     gconstpointer unused)
+{
+    int64_t start = virtual_time;
+    const I2CWireEvent *event;
+
+    stage_pair(f, start + 10, false, false);
+    advance_to(start + 10);
+    g_assert_cmphex(i2c_wire_contenders(f->bus), ==, 3);
+    g_assert_cmpint(i2c_wire_stage(f->bus, 0, start + 20,
+                                  false, true), ==, 0);
+    g_assert_cmpint(i2c_wire_stage(f->bus, 1, start + 21,
+                                  false, true), ==, 0);
+    advance_to(start + 20);
+    g_assert_false(i2c_wire_scl(f->bus));
+    advance_to(start + 21);
+    event = &g_array_index(f->events, I2CWireEvent, f->events->len - 1);
+    g_assert_cmpint(event->error, ==, 0);
+    advance_to(start + 25);
+    g_assert_false(i2c_wire_scl(f->bus));
+    advance_to(start + 29);
+    g_assert_true(i2c_wire_scl(f->bus));
+}
+
 static void test_inactive_reset(Fixture *f, gconstpointer unused)
 {
     TestSlave *a = (TestSlave *)f->a;
@@ -1578,6 +1602,8 @@ int main(int argc, char **argv)
                setup, test_independent_holds, teardown);
     g_test_add("/i2c-wire/clock-admission-low", Fixture, NULL,
                setup, test_clock_admission_while_low, teardown);
+    g_test_add("/i2c-wire/contender-clock-admission-low", Fixture, NULL,
+               setup, test_contender_clock_admission_while_low, teardown);
     g_test_add("/i2c-wire/inactive-reset", Fixture, NULL,
                setup, test_inactive_reset, teardown);
     g_test_add("/i2c-wire/migration-low", Fixture, NULL,
