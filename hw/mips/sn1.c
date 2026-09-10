@@ -596,6 +596,14 @@ static void sn1_create_bedrock(SN1MachineState *s, MachineState *machine)
      */
     memory_region_add_subregion(system, SN1_HUB_DIRECTORY,
                                 sysbus_mmio_get_region(bedrock, 5));
+    /*
+     * The ECC back door sits below the directory in the same back-door area,
+     * one byte per eight bytes of node memory. Both apertures take their
+     * extent from the memory linked above, so neither answers anything until
+     * that link is set.
+     */
+    memory_region_add_subregion(system, SN1_HUB_ECC,
+                                sysbus_mmio_get_region(bedrock, 6));
 
     for (unsigned int cpu = 0; cpu < model->cpu_count; cpu++) {
         MIPSCPU *mips_cpu = MIPS_CPU(s->cpu[cpu]);
