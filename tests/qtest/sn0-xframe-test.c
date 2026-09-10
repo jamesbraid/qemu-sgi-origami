@@ -47,6 +47,7 @@
  * puts the byte-lane path in front of the device's DMA.
  */
 #define XFRAME_SLOT             3
+#define XFRAME_IRQ_SLOT         4
 
 /* The per-slot device register: 32 bits in the low half of an 8-byte slot. */
 #define BRIDGE_DEVICE(n)        (BRIDGE_BASE + 0x200 + 8 * (n) + REG_DATA)
@@ -73,6 +74,17 @@
  * end): slot 3 is the fourth window, 0x200000 + 2 * 2 MB + 1 MB.
  */
 #define WINDOW_SLOT3            (BRIDGE_BASE + 0x700000)
+#define WINDOW_SLOT4            (BRIDGE_BASE + 0x800000)
+
+/* Bridge pin 4 routes the slot-4 INTA level to Hub interrupt 14. */
+#define BRIDGE_INT_STATUS       (BRIDGE_BASE + 0x100 + REG_DATA)
+#define BRIDGE_INT_ENABLE       (BRIDGE_BASE + 0x108 + REG_DATA)
+#define BRIDGE_INT_MODE         (BRIDGE_BASE + 0x118 + REG_DATA)
+#define BRIDGE_INT_HOST(n)      (BRIDGE_BASE + 0x130 + 8 * (n) + REG_DATA)
+#define HUB_LOCAL_WINDOW        (SPACE_XTALK + 0x01000000)
+#define PI_INT_PEND_MOD         0x90
+#define PI_INT_PEND0            0x98
+#define XFRAME_IRQ_NUMBER       14
 
 /*
  * Where each BAR is decoded in the Bridge's PCI space. The slot window points
@@ -114,6 +126,14 @@
 #define XFRAME_PIF_WINDOW_SIZE  0x4000
 
 #define ADAPTER_STATUS          0x0108
+#define GENERAL_INT_STATUS      0x0000
+#define ADAPTER_CONTROL         0x0110
+#define PIC_INT_STATUS          0x0800
+#define PIC_INT_MASK            0x0808
+#define TXPIC_INT_REG           0x0810
+#define TXPIC_INT_MASK          0x0818
+#define GPIO_INT_REG            0x0890
+#define SCHED_INT_CTRL          0x0918
 #define PIF_RD_SWAPPER_FB       0x0910
 #define PRC_RXD0_0              0x1930
 #define PRC_CTRL_0              0x1970
@@ -125,6 +145,17 @@
 
 #define RC_IN_SVC               (1ULL << 56)
 #define RX_TRAFFIC_RING0        (1ULL << 63)
+
+#define ADAPTER_EN_HIGH         (1u << 24)
+#define PIC_INT_TX_HIGH         (1u << 31)
+#define PIC_INT_GPIO_HIGH       (1u << 27)
+#define GEN_INTR_TXPIC_HIGH     (1u << 31)
+#define GPIO_INT_LINK_UP_HIGH   (1u << 29)
+#define SCHED_INT_TIMER_EN_HIGH (1u << 31)
+#define SCHED_INT_TEST_PERIOD   0x000186a0u
+#define LINK_SETTLE_STEP_NS     (700LL * 1000 * 1000)
+#define SCHED_INT_STEP_NS       (3000LL * 1000 * 1000)
+#define QUIESCENT_STEP_NS       (100LL * 1000 * 1000)
 
 /* TxP doorbell (BAR2): the list pointer at +0, the launch control at +8. */
 #define TXP_TXDL_PAR            0x00
@@ -284,6 +315,16 @@ static uint64_t win_readq(QTestState *qts, uint64_t off)
 static uint32_t win_readl(QTestState *qts, uint64_t off)
 {
     return qtest_readl(qts, WINDOW_SLOT3 + off);
+}
+
+static void irq_win_writel(QTestState *qts, uint64_t off, uint32_t val)
+{
+    qtest_writel(qts, WINDOW_SLOT4 + off, val);
+}
+
+static uint32_t irq_win_readl(QTestState *qts, uint64_t off)
+{
+    return qtest_readl(qts, WINDOW_SLOT4 + off);
 }
 
 /* Aim the slot's window at a BAR, marking the device 64-bit and swap-clear. */
@@ -549,6 +590,112 @@ static void test_receive_frame_composes_through_the_bridge(const void *data)
     close(host_fd);
 }
 
+/*
+ * Compose two independently acknowledged Xframe sources through Bridge and
+ * Hub. Clearing scheduled TXPIC must leave the slot level high for GPIO, and
+ * clearing GPIO must let the next scheduled assertion cross as a new edge.
+ */
+static void test_combined_interrupts(const void *data)
+{
+    QTestState *qts = qtest_initf(
+        "%s -device xframe,addr=%d,subsystem-vendor-id=0x10a9,mac=%s",
+        MACHINE_WITH_BRIDGE, XFRAME_IRQ_SLOT, TEST_MAC);
+    uint64_t hub_bit = 1ULL << XFRAME_IRQ_NUMBER;
+
+    qtest_writel(qts, CFG0(XFRAME_IRQ_SLOT) + PCI_BAR0, PIF_BAR_PCI);
+    qtest_writel(qts, CFG0(XFRAME_IRQ_SLOT) + PCI_BAR0_HIGH, 0);
+    qtest_writel(qts, CFG0(XFRAME_IRQ_SLOT) + PCI_COMMAND, PCI_COMMAND_MEMORY);
+    qtest_writel(qts, BRIDGE_DEVICE(XFRAME_IRQ_SLOT),
+                 DEV_MEMORY_SPACE | (PIF_BAR_PCI >> 20));
+
+    qtest_writel(qts, BRIDGE_INT_HOST(XFRAME_IRQ_SLOT), XFRAME_IRQ_NUMBER);
+    qtest_writel(qts, BRIDGE_INT_MODE, 0);
+
+    /* Open both PIC sources using the guest's 32-bit register cycles. */
+    irq_win_writel(qts, PIC_INT_MASK + 0, 0);
+    irq_win_writel(qts, PIC_INT_MASK + 4, 0);
+    irq_win_writel(qts, TXPIC_INT_MASK + 0, 0);
+    irq_win_writel(qts, TXPIC_INT_MASK + 4, 0);
+
+    irq_win_writel(qts, ADAPTER_CONTROL + 0, 0);
+    irq_win_writel(qts, ADAPTER_CONTROL + 4, ADAPTER_EN_HIGH);
+    qtest_clock_step(qts, LINK_SETTLE_STEP_NS);
+
+    irq_win_writel(qts, SCHED_INT_CTRL + 0, SCHED_INT_TEST_PERIOD);
+    irq_win_writel(qts, SCHED_INT_CTRL + 4, SCHED_INT_TIMER_EN_HIGH);
+    qtest_clock_step(qts, SCHED_INT_STEP_NS);
+
+    g_assert_cmphex(irq_win_readl(qts, GENERAL_INT_STATUS + 4) &
+                    GEN_INTR_TXPIC_HIGH, ==, GEN_INTR_TXPIC_HIGH);
+    g_assert_cmphex(irq_win_readl(qts, PIC_INT_STATUS + 4) &
+                    (PIC_INT_TX_HIGH | PIC_INT_GPIO_HIGH), ==,
+                    PIC_INT_TX_HIGH | PIC_INT_GPIO_HIGH);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) &
+                    (1u << XFRAME_IRQ_SLOT), ==, 1u << XFRAME_IRQ_SLOT);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_WINDOW + PI_INT_PEND0) &
+                    hub_bit, ==, 0);
+
+    qtest_writel(qts, BRIDGE_INT_ENABLE, 1u << XFRAME_IRQ_SLOT);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_WINDOW + PI_INT_PEND0) &
+                    hub_bit, ==, hub_bit);
+    qtest_writeq(qts, HUB_LOCAL_WINDOW + PI_INT_PEND_MOD,
+                 XFRAME_IRQ_NUMBER);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_WINDOW + PI_INT_PEND0) &
+                    hub_bit, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) &
+                    (1u << XFRAME_IRQ_SLOT), ==, 1u << XFRAME_IRQ_SLOT);
+
+    /* Neither half may consume a source that lives in the other half. */
+    irq_win_writel(qts, TXPIC_INT_REG + 0, 0);
+    g_assert_cmphex(irq_win_readl(qts, PIC_INT_STATUS + 4) &
+                    (PIC_INT_TX_HIGH | PIC_INT_GPIO_HIGH), ==,
+                    PIC_INT_TX_HIGH | PIC_INT_GPIO_HIGH);
+    irq_win_writel(qts, TXPIC_INT_REG + 4, 0);
+    g_assert_cmphex(irq_win_readl(qts, PIC_INT_STATUS + 4) &
+                    (PIC_INT_TX_HIGH | PIC_INT_GPIO_HIGH), ==,
+                    PIC_INT_GPIO_HIGH);
+    g_assert_cmphex(irq_win_readl(qts, GENERAL_INT_STATUS + 4) &
+                    GEN_INTR_TXPIC_HIGH, ==, GEN_INTR_TXPIC_HIGH);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) &
+                    (1u << XFRAME_IRQ_SLOT), ==, 1u << XFRAME_IRQ_SLOT);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_WINDOW + PI_INT_PEND0) &
+                    hub_bit, ==, 0);
+
+    g_assert_cmphex(irq_win_readl(qts, GPIO_INT_REG + 0), ==, 0);
+    g_assert_cmphex(irq_win_readl(qts, PIC_INT_STATUS + 4) &
+                    PIC_INT_GPIO_HIGH, ==, PIC_INT_GPIO_HIGH);
+    g_assert_cmphex(irq_win_readl(qts, GPIO_INT_REG + 4), ==,
+                    GPIO_INT_LINK_UP_HIGH);
+    g_assert_cmphex(irq_win_readl(qts, PIC_INT_STATUS + 4) &
+                    (PIC_INT_TX_HIGH | PIC_INT_GPIO_HIGH), ==, 0);
+    g_assert_cmphex(irq_win_readl(qts, GENERAL_INT_STATUS + 4) &
+                    GEN_INTR_TXPIC_HIGH, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) &
+                    (1u << XFRAME_IRQ_SLOT), ==, 0);
+
+    qtest_clock_step(qts, QUIESCENT_STEP_NS);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) &
+                    (1u << XFRAME_IRQ_SLOT), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_WINDOW + PI_INT_PEND0) &
+                    hub_bit, ==, 0);
+
+    qtest_clock_step(qts, SCHED_INT_STEP_NS);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) &
+                    (1u << XFRAME_IRQ_SLOT), ==, 1u << XFRAME_IRQ_SLOT);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_WINDOW + PI_INT_PEND0) &
+                    hub_bit, ==, hub_bit);
+
+    irq_win_writel(qts, TXPIC_INT_REG + 4, 0);
+    qtest_writeq(qts, HUB_LOCAL_WINDOW + PI_INT_PEND_MOD,
+                 XFRAME_IRQ_NUMBER);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) &
+                    (1u << XFRAME_IRQ_SLOT), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_WINDOW + PI_INT_PEND0) &
+                    hub_bit, ==, 0);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -565,6 +712,9 @@ int main(int argc, char **argv)
                         NULL, test_transmit_frame_composes_through_the_bridge);
     qtest_add_data_func("sn0/xframe/receive-frame-composes-through-the-bridge",
                         NULL, test_receive_frame_composes_through_the_bridge);
+    qtest_add_data_func("sn0/xframe/combined-interrupts-"
+                        "compose-through-the-bridge",
+                        NULL, test_combined_interrupts);
 
     return g_test_run();
 }
