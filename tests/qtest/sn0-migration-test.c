@@ -113,6 +113,8 @@
 #define IOC3_SLOT                2
 #define IOC3_PCI_MMIO            0x10000000u
 #define IOC3_WINDOW_OFFSET       0x600000
+#define BRIDGE_INT_STATUS         (BRIDGE_BASE + 0x100 + REG_DATA)
+#define BRIDGE_PIN_ETH            (1u << 2)
 #define IOC3_SERIAL_A            0x020178
 #define IOC3_SCRATCH             7
 #define IOC3_SCRATCH_AT(node)    (BRIDGE_BASE_FOR_NODE(node) + \
@@ -125,6 +127,12 @@
  */
 #define IOC3_REG(offset)         (BRIDGE_BASE_FOR_NODE(0) + \
                                   IOC3_WINDOW_OFFSET + (offset))
+#define IOC3_ENET_MAC_CONTROL    IOC3_REG(0x0f0)
+#define IOC3_ENET_INT_STATUS     IOC3_REG(0x0f4)
+#define IOC3_ENET_INT_ENABLE     IOC3_REG(0x0f8)
+#define IOC3_ENET_TX_RING_HI     IOC3_REG(0x128)
+#define IOC3_ENET_TX_RING_LO     IOC3_REG(0x12c)
+#define IOC3_ENET_TX_PRODUCE     IOC3_REG(0x134)
 #define IOC3_INT_STATUS          IOC3_REG(0x01c)
 #define IOC3_SDMA_RING_HI        IOC3_REG(0x0b0)
 #define IOC3_SDMA_RING_LO        IOC3_REG(0x0b4)
@@ -144,6 +152,13 @@
 #define IOC3_RX_RING_RAM         (IOC3_RING_RAM + 0x1000)
 #define IOC3_RX_TIMER_TICK_NS    62500LL
 #define PCI_COMMAND_MASTER       0x0004
+#define IOC3_MCR_TX_DMA_EN       (1u << 13)
+#define IOC3_MCR_TX_EN           (1u << 14)
+#define IOC3_ENET_INT_TX_EMPTY   (1u << 16)
+#define IOC3_ENET_INT_TX_COMPLETE (1u << 22)
+#define IOC3_TXD_INT_DONE        (1u << 12)
+#define IOC3_TXD_DATA_VALID      (1u << 16)
+#define IOC3_TXD_DATA_OFFSET     24
 
 #define DUAL_CHASSIS_TOPOLOGY \
     "-m 128M " \
@@ -154,6 +169,7 @@
     "-smp 4,sockets=2,cores=2,threads=1"
 #define MACHINE_DUAL \
     "-M origin200,synthesized-firmware=off " DUAL_CHASSIS_TOPOLOGY
+#define MACHINE_WITH_NET "-M origin200 -nic user,id=n0"
 
 /* The board identity part's one-wire register and slot widths. */
 #define BRIDGE_NIC               0x0b0
@@ -242,6 +258,21 @@ static void attach_node_ioc3(QTestState *qts, unsigned int node)
     qtest_writel(qts, BRIDGE_BASE_FOR_NODE(node) + BRIDGE_DEVICE(IOC3_SLOT) +
                        REG_DATA,
                  DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
+}
+
+static void queue_ioc3_ethernet_tx(QTestState *qts, uint32_t desc,
+                                   uint32_t produce)
+{
+    static const uint8_t frame[14] = {
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x08, 0x00,
+    };
+
+    qtest_writel(qts, desc, sizeof(frame) | IOC3_TXD_DATA_VALID |
+                 IOC3_TXD_INT_DONE);
+    qtest_writel(qts, desc + 4, sizeof(frame));
+    qtest_memwrite(qts, desc + IOC3_TXD_DATA_OFFSET, frame, sizeof(frame));
+    qtest_writel(qts, IOC3_ENET_TX_PRODUCE, produce);
 }
 
 /* The Hub's network interface, as far as renumbering a stock machine needs. */
@@ -909,6 +940,56 @@ static void test_backdoor_storage_survives_migration(const void *data)
     qtest_quit(from);
 }
 
+/*
+ * The Bridge restores its PCI pin state from the stream. Re-driving an
+ * asserted child while that restoration is still pending increments the PCI
+ * core's aggregate count, so one acknowledgement cannot deassert the pin.
+ */
+static void test_ethernet_interrupt_reasserts_after_migration(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    uint32_t desc = 0x00180000;
+    uint32_t sources = IOC3_ENET_INT_TX_EMPTY | IOC3_ENET_INT_TX_COMPLETE;
+
+    tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MACHINE_WITH_NET);
+    attach_node_ioc3(from, 0);
+    qtest_writel(from, CFG0_FOR_NODE(0, IOC3_SLOT) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(from, IOC3_ENET_MAC_CONTROL,
+                 IOC3_MCR_TX_DMA_EN | IOC3_MCR_TX_EN);
+    qtest_writel(from, IOC3_ENET_INT_ENABLE, sources);
+    qtest_writel(from, IOC3_ENET_TX_RING_HI, 0);
+    qtest_writel(from, IOC3_ENET_TX_RING_LO, desc & 0xffffc000u);
+    queue_ioc3_ethernet_tx(from, desc, 128);
+    g_assert_cmphex(qtest_readl(from, BRIDGE_INT_STATUS) & BRIDGE_PIN_ETH,
+                    ==, BRIDGE_PIN_ETH);
+
+    dest_cmdline = g_strdup_printf(MACHINE_WITH_NET " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    migrate_stopped_vm(from, uri);
+
+    g_assert_cmphex(qtest_readl(to, BRIDGE_INT_STATUS) & BRIDGE_PIN_ETH,
+                    ==, BRIDGE_PIN_ETH);
+    qtest_writel(to, IOC3_ENET_INT_STATUS, sources);
+    g_assert_cmphex(qtest_readl(to, BRIDGE_INT_STATUS) & BRIDGE_PIN_ETH,
+                    ==, 0);
+
+    queue_ioc3_ethernet_tx(to, desc + 128, 256);
+    g_assert_cmphex(qtest_readl(to, BRIDGE_INT_STATUS) & BRIDGE_PIN_ETH,
+                    ==, BRIDGE_PIN_ETH);
+
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -939,6 +1020,9 @@ int main(int argc, char **argv)
                         test_enabled_recorder_remains_wired_after_migration);
     qtest_add_data_func("sn0/migration/backdoor-storage-survives-migration",
                         NULL, test_backdoor_storage_survives_migration);
+    qtest_add_data_func("sn0/migration/ethernet-interrupt-reasserts",
+                        NULL,
+                        test_ethernet_interrupt_reasserts_after_migration);
 
     return g_test_run();
 }
