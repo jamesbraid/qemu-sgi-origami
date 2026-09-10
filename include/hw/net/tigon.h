@@ -37,6 +37,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(TigonState, TIGON)
 /* The command ring is NIC-resident at 0x700..0x7FC: 64 dwords. */
 #define TIGON_CMD_RING_CNT  64
 
+/* Compare before adding so a restored near-limit count cannot wrap. */
+static inline bool tigon_coal_count_reaches(uint32_t count,
+                                            uint32_t completed,
+                                            uint32_t threshold)
+{
+    return count >= threshold || completed >= threshold - count;
+}
+
 /* The bit-banged serial-EEPROM (24Cxx I2C slave) that holds the MAC. */
 typedef struct TigonEeprom {
     bool last_clk;      /* EE_CLK level at the previous MISC_LOCAL_CTL write */

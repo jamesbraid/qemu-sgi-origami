@@ -14,6 +14,7 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "hw/net/tigon.h"
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -48,9 +49,6 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define PCI_REV_CLASS       0x08
 #define PCI_BAR0            0x10
 #define PCI_INTR_LINE       0x3c
-
-#define PCI_COMMAND_MEMORY  0x0002
-#define PCI_COMMAND_MASTER  0x0004
 
 /* The Bridge's own per-slot device register, low half of its 8-byte slot. */
 #define REG_DATA            4
@@ -527,6 +525,21 @@ static QTestState *tigon_init_netdev(int guest_fd)
                        "-netdev socket,fd=%d,id=n0 "
                        "-device tigon,addr=3,mac=" TIGON_MAC ",netdev=n0",
                        guest_fd);
+}
+
+static QTestState *tigon_init_netdev_binary(int guest_fd, const char *binary)
+{
+    g_autofree char *saved = g_strdup(g_getenv("QTEST_QEMU_BINARY"));
+    QTestState *qts;
+
+    g_assert_true(g_setenv("QTEST_QEMU_BINARY", binary, true));
+    qts = tigon_init_netdev(guest_fd);
+    if (saved) {
+        g_assert_true(g_setenv("QTEST_QEMU_BINARY", saved, true));
+    } else {
+        g_unsetenv("QTEST_QEMU_BINARY");
+    }
+    return qts;
 }
 
 static QTestState *tigon_init_netdev_128m(int guest_fd)
@@ -1773,6 +1786,15 @@ static void test_interrupt_coalesce_by_time(const void *data)
     close(sv[0]);
 }
 
+/* A restored near-limit count must reach its threshold without wrapping. */
+static void test_interrupt_coalesce_count_does_not_wrap(const void *data)
+{
+    g_assert_false(tigon_coal_count_reaches(UINT32_MAX - 2, 1,
+                                            UINT32_MAX));
+    g_assert_true(tigon_coal_count_reaches(UINT32_MAX - 2, 3,
+                                           UINT32_MAX));
+}
+
 /*
  * TX_MAX_COAL_BD counts completed buffer descriptors, not producer-doorbell
  * writes.  A driver normally publishes several ready descriptors with one
@@ -1854,6 +1876,153 @@ static void test_transmit_coalesce_ignores_empty_doorbell(const void *data)
     g_assert_false(irq_asserted(qts));
     qtest_clock_step(qts, 600000);
     g_assert_true(irq_asserted(qts));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * Only complete frames contribute their descriptors. A completed prefix may
+ * contain multiple frames, while an unterminated tail stays at the consumer
+ * and joins the descriptors supplied by the next doorbell.
+ */
+static void test_transmit_coalesce_counts_complete_frames(const void *data)
+{
+    enum { FIRST_LEN = 24 };
+    int sv[2];
+    QTestState *qts;
+    uint8_t got[sizeof(test_frame)];
+    unsigned i;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+    go_operational(qts);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_TX_MAX_COAL_BD, 4);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_TX_COAL_TICKS, 1000000);
+
+    for (i = 0; i < 5; i++) {
+        write_rcb_addr(qts, TX_RING_PHYS + i * 16,
+                       TX_BUF_PHYS + i * 0x100);
+        qtest_writel(qts, TX_RING_PHYS + i * 16 + 12, 0);
+    }
+    qtest_memwrite(qts, TX_BUF_PHYS, test_frame, sizeof(test_frame));
+    qtest_memwrite(qts, TX_BUF_PHYS + 0x100, test_frame,
+                   sizeof(test_frame) / 2);
+    qtest_memwrite(qts, TX_BUF_PHYS + 0x200,
+                   test_frame + sizeof(test_frame) / 2,
+                   sizeof(test_frame) / 2);
+    qtest_memwrite(qts, TX_BUF_PHYS + 0x300, test_frame, FIRST_LEN);
+    qtest_memwrite(qts, TX_BUF_PHYS + 0x400, test_frame + FIRST_LEN,
+                   sizeof(test_frame) - FIRST_LEN);
+    qtest_writel(qts, TX_RING_PHYS + 8,
+                 ((uint32_t)sizeof(test_frame) << 16) | TI_BDFLAG_END);
+    qtest_writel(qts, TX_RING_PHYS + 24,
+                 (uint32_t)(sizeof(test_frame) / 2) << 16);
+    qtest_writel(qts, TX_RING_PHYS + 40,
+                 ((uint32_t)(sizeof(test_frame) / 2) << 16) |
+                 TI_BDFLAG_END);
+    qtest_writel(qts, TX_RING_PHYS + 56, (uint32_t)FIRST_LEN << 16);
+
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 4);
+    g_assert_cmpuint(net_recv_frame(sv[0], got, sizeof(got)), ==,
+                     sizeof(test_frame));
+    g_assert_cmpmem(got, sizeof(got), test_frame, sizeof(test_frame));
+    g_assert_cmpuint(net_recv_frame(sv[0], got, sizeof(got)), ==,
+                     sizeof(test_frame));
+    g_assert_cmpmem(got, sizeof(got), test_frame, sizeof(test_frame));
+    g_assert_cmphex(qtest_readl(qts, TX_CONS_PHYS), ==, 3);
+    g_assert_false(irq_asserted(qts));
+
+    qtest_writel(qts, TX_RING_PHYS + 72,
+                 ((uint32_t)(sizeof(test_frame) - FIRST_LEN) << 16) |
+                 TI_BDFLAG_END);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 5);
+    g_assert_cmpuint(net_recv_frame(sv[0], got, sizeof(got)), ==,
+                     sizeof(test_frame));
+    g_assert_cmpmem(got, sizeof(got), test_frame, sizeof(test_frame));
+    g_assert_cmphex(qtest_readl(qts, TX_CONS_PHYS), ==, 5);
+    g_assert_true(irq_asserted(qts));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/* A failed frame must not join completed frames ahead of it in the batch. */
+static void test_transmit_coalesce_stops_before_dma_error(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t got[sizeof(test_frame)];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev_128m(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+    go_operational(qts);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_TX_MAX_COAL_BD, 2);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_TX_COAL_TICKS, 1000000);
+
+    qtest_memwrite(qts, TX_BUF_PHYS, test_frame, sizeof(test_frame));
+    write_rcb_addr(qts, TX_RING_PHYS, TX_BUF_PHYS);
+    qtest_writel(qts, TX_RING_PHYS + 8,
+                 ((uint32_t)sizeof(test_frame) << 16) | TI_BDFLAG_END);
+    qtest_writel(qts, TX_RING_PHYS + 12, 0);
+    write_rcb_addr(qts, TX_RING_PHYS + 16, UNMAPPED_PAYLOAD_PHYS);
+    qtest_writel(qts, TX_RING_PHYS + 24,
+                 ((uint32_t)sizeof(test_frame) << 16) | TI_BDFLAG_END);
+    qtest_writel(qts, TX_RING_PHYS + 28, 0);
+
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 2);
+    g_assert_cmpuint(net_recv_frame(sv[0], got, sizeof(got)), ==,
+                     sizeof(test_frame));
+    g_assert_cmphex(qtest_readl(qts, TX_CONS_PHYS), ==, 1);
+    g_assert_false(irq_asserted(qts));
+
+    write_rcb_addr(qts, TX_RING_PHYS + 16, TX_BUF_PHYS);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 2);
+    g_assert_cmpuint(net_recv_frame(sv[0], got, sizeof(got)), ==,
+                     sizeof(test_frame));
+    g_assert_cmphex(qtest_readl(qts, TX_CONS_PHYS), ==, 2);
+    g_assert_true(irq_asserted(qts));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/* Reset cancels a pending TX batch and its coalescing deadline. */
+static void test_transmit_coalesce_reset(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t got[sizeof(test_frame)];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+    go_operational(qts);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_TX_MAX_COAL_BD, 2);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_TX_COAL_TICKS, 1000);
+
+    qtest_memwrite(qts, TX_BUF_PHYS, test_frame, sizeof(test_frame));
+    write_rcb_addr(qts, TX_RING_PHYS, TX_BUF_PHYS);
+    qtest_writel(qts, TX_RING_PHYS + 8,
+                 ((uint32_t)sizeof(test_frame) << 16) | TI_BDFLAG_END);
+    qtest_writel(qts, TX_RING_PHYS + 12, 0);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
+    g_assert_cmpuint(net_recv_frame(sv[0], got, sizeof(got)), ==,
+                     sizeof(test_frame));
+    g_assert_false(irq_asserted(qts));
+
+    qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
+    g_assert_false(irq_asserted(qts));
+    qtest_clock_step(qts, 2000000);
+    g_assert_false(irq_asserted(qts));
 
     qtest_quit(qts);
     close(sv[0]);
@@ -2225,6 +2394,141 @@ static void test_programmed_mac_survives_migration(const void *data)
     g_assert_cmphex(wait_return_prod(to), ==, 1);
     qtest_memread(to, RX_BUF_PHYS, landed, sizeof(landed));
     g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
+
+    qtest_quit(to);
+    qtest_quit(from);
+    close(to_sv[0]);
+    close(from_sv[0]);
+    unlink(socket);
+    g_assert_cmpint(rmdir(tmpdir), ==, 0);
+}
+
+static void write_split_tx_frame(QTestState *qts)
+{
+    qtest_memwrite(qts, TX_BUF_PHYS, test_frame, sizeof(test_frame) / 2);
+    qtest_memwrite(qts, TX_BUF_PHYS + 0x100,
+                   test_frame + sizeof(test_frame) / 2,
+                   sizeof(test_frame) / 2);
+    write_rcb_addr(qts, TX_RING_PHYS, TX_BUF_PHYS);
+    qtest_writel(qts, TX_RING_PHYS + 8,
+                 (uint32_t)(sizeof(test_frame) / 2) << 16);
+    qtest_writel(qts, TX_RING_PHYS + 12, 0);
+    write_rcb_addr(qts, TX_RING_PHYS + 16, TX_BUF_PHYS + 0x100);
+    qtest_writel(qts, TX_RING_PHYS + 24,
+                 ((uint32_t)(sizeof(test_frame) / 2) << 16) |
+                 TI_BDFLAG_END);
+    qtest_writel(qts, TX_RING_PHYS + 28, 0);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 2);
+}
+
+/*
+ * Version 3 counted completed ring walks rather than descriptors. Its partial
+ * TX count cannot be translated, so loading it must publish the completed work
+ * instead of silently changing its distance from the threshold.
+ */
+static void test_transmit_coalesce_migration_from_v3(const void *data)
+{
+    const char *old_binary = g_getenv("TIGON_QEMU_V3_BINARY");
+    g_autofree char *tmpdir = NULL;
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_args = NULL;
+    GError *err = NULL;
+    int from_sv[2], to_sv[2];
+    QTestState *from, *to;
+    uint8_t got[sizeof(test_frame)];
+
+    if (!old_binary) {
+        g_test_skip("TIGON_QEMU_V3_BINARY is not set");
+        return;
+    }
+
+    tmpdir = g_dir_make_tmp("sn0-tigon-v3-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    socket = g_build_filename(tmpdir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, from_sv), ==, 0);
+    from = tigon_init_netdev_binary(from_sv[1], old_binary);
+    close(from_sv[1]);
+    net_recv_timeout(from_sv[0], 5);
+    go_operational(from);
+    qtest_writel(from, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
+    qtest_writel(from, WINDOW_TIGON + TI_GCR_TX_MAX_COAL_BD, 4);
+    qtest_writel(from, WINDOW_TIGON + TI_GCR_TX_COAL_TICKS, 1000);
+    write_split_tx_frame(from);
+    g_assert_cmpuint(net_recv_frame(from_sv[0], got, sizeof(got)), ==,
+                     sizeof(test_frame));
+    g_assert_false(irq_asserted(from));
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, to_sv), ==, 0);
+    dest_args = g_strdup_printf(
+        "-M origin200 -netdev socket,fd=%d,id=n0 "
+        "-device tigon,addr=3,mac=" TIGON_MAC ",netdev=n0 -incoming %s",
+        to_sv[1], uri);
+    to = qtest_init(dest_args);
+    close(to_sv[1]);
+    tigon_migrate(from, uri);
+
+    g_assert_true(irq_asserted(to));
+    qtest_writel(to, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
+    g_assert_false(irq_asserted(to));
+    qtest_clock_step(to, 2000000);
+    g_assert_false(irq_asserted(to));
+
+    qtest_quit(to);
+    qtest_quit(from);
+    close(to_sv[0]);
+    close(from_sv[0]);
+    unlink(socket);
+    g_assert_cmpint(rmdir(tmpdir), ==, 0);
+}
+
+/* Current streams preserve both the descriptor count and timer deadline. */
+static void test_transmit_coalesce_migration_current(const void *data)
+{
+    g_autofree char *tmpdir = NULL;
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_args = NULL;
+    GError *err = NULL;
+    int from_sv[2], to_sv[2];
+    QTestState *from, *to;
+    uint8_t got[sizeof(test_frame)];
+
+    tmpdir = g_dir_make_tmp("sn0-tigon-current-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    socket = g_build_filename(tmpdir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, from_sv), ==, 0);
+    from = tigon_init_netdev(from_sv[1]);
+    close(from_sv[1]);
+    net_recv_timeout(from_sv[0], 5);
+    go_operational(from);
+    qtest_writel(from, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
+    qtest_writel(from, WINDOW_TIGON + TI_GCR_TX_MAX_COAL_BD, 4);
+    qtest_writel(from, WINDOW_TIGON + TI_GCR_TX_COAL_TICKS, 1000);
+    write_split_tx_frame(from);
+    g_assert_cmpuint(net_recv_frame(from_sv[0], got, sizeof(got)), ==,
+                     sizeof(test_frame));
+    g_assert_false(irq_asserted(from));
+    qtest_clock_step(from, 400000);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, to_sv), ==, 0);
+    dest_args = g_strdup_printf(
+        "-M origin200 -netdev socket,fd=%d,id=n0 "
+        "-device tigon,addr=3,mac=" TIGON_MAC ",netdev=n0 -incoming %s",
+        to_sv[1], uri);
+    to = qtest_init(dest_args);
+    close(to_sv[1]);
+    tigon_migrate(from, uri);
+
+    g_assert_false(irq_asserted(to));
+    qtest_clock_step(to, 900000);
+    g_assert_false(irq_asserted(to));
+    qtest_clock_step(to, 200000);
+    g_assert_true(irq_asserted(to));
 
     qtest_quit(to);
     qtest_quit(from);
@@ -3090,11 +3394,19 @@ int main(int argc, char **argv)
                         test_interrupt_coalesce_by_count);
     qtest_add_data_func("/sn0/tigon/interrupt-coalesce-by-time", NULL,
                         test_interrupt_coalesce_by_time);
+    qtest_add_data_func("/sn0/tigon/interrupt-coalesce-count-no-wrap", NULL,
+                        test_interrupt_coalesce_count_does_not_wrap);
     qtest_add_data_func("/sn0/tigon/transmit-coalesce-counts-batched-bds",
                         NULL,
                         test_transmit_coalesce_counts_batched_descriptors);
     qtest_add_data_func("/sn0/tigon/transmit-coalesce-ignores-empty-doorbell",
                         NULL, test_transmit_coalesce_ignores_empty_doorbell);
+    qtest_add_data_func("/sn0/tigon/transmit-coalesce-complete-frames", NULL,
+                        test_transmit_coalesce_counts_complete_frames);
+    qtest_add_data_func("/sn0/tigon/transmit-coalesce-stops-before-dma-error",
+                        NULL, test_transmit_coalesce_stops_before_dma_error);
+    qtest_add_data_func("/sn0/tigon/transmit-coalesce-reset", NULL,
+                        test_transmit_coalesce_reset);
     qtest_add_data_func("/sn0/tigon/interrupt-coalesce-directions-independent",
                         NULL,
                         test_interrupt_coalesce_directions_are_independent);
@@ -3111,6 +3423,10 @@ int main(int argc, char **argv)
                         test_reset_restores_configured_mac);
     qtest_add_data_func("/sn0/tigon/programmed-mac-survives-migration", NULL,
                         test_programmed_mac_survives_migration);
+    qtest_add_data_func("/sn0/tigon/transmit-coalesce-migration-from-v3",
+                        NULL, test_transmit_coalesce_migration_from_v3);
+    qtest_add_data_func("/sn0/tigon/transmit-coalesce-migration-current",
+                        NULL, test_transmit_coalesce_migration_current);
     qtest_add_data_func("/sn0/tigon/receive-payload-dma-error", NULL,
                         test_receive_payload_dma_error);
     qtest_add_data_func("/sn0/tigon/receive-jumbo-frame", NULL,
