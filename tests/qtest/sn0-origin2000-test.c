@@ -28,6 +28,10 @@
 #define ROUTER_META_TABLE 0x70000
 #define ROUTER_LOCAL_TABLE 0x70100
 #define MEM_PROBE UINT64_C(0x800000)
+#define XTALK_BASE UINT64_C(0x20000000000)
+#define XTALK_REG_DATA 4
+#define XTALK_ID_PART(v) (((v) >> 12) & 0xffff)
+#define XTALK_ID_ALWAYS_ONE 1
 /* Architectural Hub-special offset 0x10000000 on its QEMU carrier. */
 #define LOCAL_FLASH_VIEW UINT64_C(0x10010000000)
 #define RESET_FLASH_VIEW UINT64_C(0x1fc00000)
@@ -145,6 +149,22 @@ static QTestState *start_module(void)
                         ==, numbers[i]);
     }
     return qts;
+}
+
+/* The production machine assembles a switch behind each node's Xtalk view. */
+static void test_xtalk_switch_visible(void)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000 -smp 8,sockets=4,cores=2 -m 256M");
+    uint8_t bytes[sizeof(uint32_t)];
+    uint32_t id;
+
+    g_assert_true(qtest_memread_cpu(qts, 0, XTALK_BASE + XTALK_REG_DATA,
+                                    bytes, sizeof(bytes)));
+    id = ldl_be_p(bytes);
+    g_assert_cmpuint(XTALK_ID_PART(id), ==, 0);
+    g_assert_cmphex(id & XTALK_ID_ALWAYS_ONE, ==, XTALK_ID_ALWAYS_ONE);
+    qtest_quit(qts);
 }
 
 static void test_vectors(void)
@@ -972,6 +992,8 @@ int main(int argc, char **argv)
     }
     qtest_add_func("sn0/origin2000/remote-cpu-interrupts",
                    test_remote_cpu_interrupts);
+    qtest_add_func("sn0/origin2000/xtalk-switch-visible",
+                   test_xtalk_switch_visible);
     qtest_add_func("sn0/origin2000/mutated-reset", test_mutated_reset);
     qtest_add_func("sn0/origin2000/distinct-table-migration",
                    test_distinct_table_migration);
