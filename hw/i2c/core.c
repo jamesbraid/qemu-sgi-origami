@@ -1384,6 +1384,27 @@ static bool i2c_wire_set_deadlines(I2CWire *wire, int64_t now, bool low)
     return true;
 }
 
+/* Join the low period at the same falling edge as an existing clock. */
+static int i2c_wire_join_low_deadline(I2CWire *wire,
+                                      I2CWireMaster *joining,
+                                      int64_t *deadline)
+{
+    for (unsigned i = 0; i < wire->bus->master_count; i++) {
+        I2CWireMaster *m = &wire->masters[i];
+        int64_t low_started;
+
+        if (m == joining || !m->clock || !m->scl_low || m->deadline < 0) {
+            continue;
+        }
+        low_started = m->deadline - m->low_ns;
+        if (sadd64_overflow(low_started, joining->low_ns, deadline)) {
+            return -ERANGE;
+        }
+        return 0;
+    }
+    return -ENOTSUP;
+}
+
 static void i2c_wire_tick(void *opaque)
 {
     I2CWire *wire = opaque;
@@ -1415,11 +1436,21 @@ static void i2c_wire_tick(void *opaque)
         I2CWireMaster *m = &wire->masters[i];
 
         if (m->pending && m->staged_at <= now) {
+            bool join_low = !m->clock && m->staged_clock && !old_scl &&
+                            !m->paused;
+            int64_t join_deadline = -1;
+
             m->pending = false;
-            if (!m->clock && m->staged_clock && !old_scl && !m->paused) {
-                /* Joining a clock mid-low has no common falling edge. */
-                wire->error = -ENOTSUP;
-                continue;
+            if (join_low) {
+                if (!(old_contenders & (1ULL << i))) {
+                    wire->error = -ENOTSUP;
+                    continue;
+                }
+                wire->error = i2c_wire_join_low_deadline(wire, m,
+                                                         &join_deadline);
+                if (wire->error) {
+                    continue;
+                }
             }
             if ((old_contenders & (1ULL << i)) && wire->occupied &&
                 old_scl && !m->staged_clock) {
@@ -1439,8 +1470,13 @@ static void i2c_wire_tick(void *opaque)
                 m->clock = m->staged_clock;
                 m->paused = false;
                 /* A resumed master already holds SCL: run its high phase. */
-                m->scl_low = resume ? false : m->clock;
-                m->deadline = -1;
+                if (join_low) {
+                    m->scl_low = join_deadline > now;
+                    m->deadline = m->scl_low ? join_deadline : -1;
+                } else {
+                    m->scl_low = resume ? false : m->clock;
+                    m->deadline = -1;
+                }
             }
         }
         if (m->clock && m->deadline >= 0 && m->deadline <= now) {
