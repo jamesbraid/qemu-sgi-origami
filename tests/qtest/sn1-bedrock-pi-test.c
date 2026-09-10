@@ -941,9 +941,42 @@ static void test_cpu_enable_migration(void)
     g_assert_cmpint(rmdir(directory), ==, 0);
 }
 
+/*
+ * The processor number's slot bit comes from whichever processor issued the
+ * read, so a qtest cannot exercise it: every qtest access goes through
+ * first_cpu's address space with no issuing processor set, and the model
+ * answers slot A whatever the base is. The A-versus-B discrimination lives
+ * in a ROM test, executed by the second processor.
+ *
+ * What is checkable here is that the fallback is stable and that nothing
+ * else leaks into the register: moving the node's processor base must not
+ * change a qtest's answer, and only the interface bit may be set.
+ */
+static void test_cpu_number_fallback(void)
+{
+    static const unsigned bases[] = { 0, 2, 6 };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(bases); i++) {
+        g_autofree char *extra =
+            g_strdup_printf("-global sgi-bedrock.cpu-base=%u", bases[i]);
+        QTestState *s = start_processors(4, extra);
+
+        g_assert_cmphex(qtest_readq(s, PI(0, CPU_NUMBER)), ==, 0);
+        g_assert_cmphex(qtest_readq(s, PI(1, CPU_NUMBER)), ==, 2);
+
+        /* Reserved above bit 1, and unchanged by a reset. */
+        qtest_system_reset(s);
+        g_assert_cmphex(qtest_readq(s, PI(0, CPU_NUMBER)) & ~3ULL, ==, 0);
+        g_assert_cmphex(qtest_readq(s, PI(1, CPU_NUMBER)), ==, 2);
+        qtest_quit(s);
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("sn1/bedrock-pi/cpu-number-fallback",
+                   test_cpu_number_fallback);
     qtest_add_func("sn1/bedrock-pi/identity-storage-width",
                    test_identity_storage_and_width);
     qtest_add_func("sn1/bedrock-pi/processor-presence",

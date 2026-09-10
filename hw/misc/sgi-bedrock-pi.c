@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-bedrock-pi.h"
+#include "hw/core/cpu.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
@@ -246,6 +247,29 @@ bool sgi_bedrock_pi_io_modify(SGIBedrockPIState *s, uint64_t value,
     return true;
 }
 
+/*
+ * Bit 0 is the reading processor's slot within this interface and bit 1 is
+ * the interface itself, so a processor learns both from one read. The slot
+ * has to come from whoever issued the access: a shared value cannot tell A
+ * from B, and the firmware's rendezvous depends on the difference.
+ *
+ * With no issuing processor -- a qtest, whose accesses carry none, or an
+ * access from outside this node's processors -- the model answers slot A.
+ * That is model behaviour rather than a hardware claim: real silicon always
+ * has a requester.
+ */
+static uint64_t pi_cpu_number(SGIBedrockPIState *s)
+{
+    unsigned first = s->cpu_base + s->interface * SGI_BEDROCK_PI_PROCESSORS;
+    uint64_t slot = 0;
+
+    if (current_cpu && current_cpu->cpu_index >= first &&
+        current_cpu->cpu_index < first + SGI_BEDROCK_PI_PROCESSORS) {
+        slot = current_cpu->cpu_index - first;
+    }
+    return slot | ((uint64_t)s->interface << 1);
+}
+
 static uint64_t pi_read(void *opaque, hwaddr offset, unsigned size)
 {
     SGIBedrockPIState *s = opaque;
@@ -254,7 +278,7 @@ static uint64_t pi_read(void *opaque, hwaddr offset, unsigned size)
     case PI_CPU_PROTECT: return s->cpu_protect;
     case PI_IO_PROTECT: return s->io_protect;
     case PI_REGION_PRESENT: return s->region_present;
-    case PI_CPU_NUMBER: return s->interface << 1;
+    case PI_CPU_NUMBER: return pi_cpu_number(s);
     case PI_CACHED_ALIAS: return s->cached_alias;
     case PI_CPU_PRESENT_A:
         return s->interface * 2 < s->processor_count;
@@ -629,6 +653,7 @@ static const VMStateDescription vmstate_pi = {
 
 static const Property pi_properties[] = {
     DEFINE_PROP_UINT32("interface", SGIBedrockPIState, interface, 0),
+    DEFINE_PROP_UINT32("cpu-base", SGIBedrockPIState, cpu_base, 0),
     DEFINE_PROP_UINT32("processor-count", SGIBedrockPIState,
                        processor_count, 1),
     DEFINE_PROP_UINT32("request-region", SGIBedrockPIState, request_region, 0),
