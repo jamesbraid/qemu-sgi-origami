@@ -65,6 +65,7 @@
 #define HUB_LOCAL_HIGH_BOOT (SPACE_HUB + UINT64_C(0x1fc00000))
 #define HUB_REMOTE_REGISTERS (SPACE_HUB + UINT64_C(0x30000000))
 #define HUB_REMOTE_BOOT (SPACE_HUB + UINT64_C(0x38000000))
+#define HUB_REMOTE_FLASH (SPACE_HUB + UINT64_C(0x3a000000))
 #define L1_UART UINT64_C(0x80)
 #define L1_SCRATCH UINT64_C(0x38)
 #define L1_UART_BASE (HUB_REMOTE_REGISTERS + L1_UART)
@@ -84,8 +85,15 @@
 #define FLASH_IMAGE_SIZE (16 * 1024 * 1024)
 /* One PROM position backs half of it. */
 #define FLASH_PART_SIZE (FLASH_IMAGE_SIZE / 2)
+/*
+ * Position one's own bytes. An erased seed would read the same as nothing
+ * being mapped at all, so a read proving which part answered needs the second
+ * position to carry values position zero does not.
+ */
+#define FLASH_UPPER_FIRST 0xa5
+#define FLASH_UPPER_LAST 0x5a
+#define FLASH_UPPER_WORD UINT16_C(0xa55a)
 #define BOOT_SPACE_SIZE UINT64_C(0x8000000)
-#define SECOND_READ_WINDOW UINT64_C(0x2000000)
 /* The AMD unlock words 0x555 and 0x2aa, at the bus offsets 8n. */
 #define FLASH_UNLOCK0 UINT64_C(0x2aa8)
 #define FLASH_UNLOCK1 UINT64_C(0x1550)
@@ -1822,8 +1830,15 @@ static void create_flash_upper(const char *lower)
     g_autofree uint8_t *image = g_malloc(FLASH_PART_SIZE);
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 
-    /* A second position starts erased, as the harness seeds it. */
+    /*
+     * The harness seeds a second position erased. These sentinels stand in for
+     * a programmed one, so that a read through either second-selection window
+     * names the part that answered instead of only proving it was not erased.
+     */
     memset(image, 0xff, FLASH_PART_SIZE);
+    image[0] = FLASH_UPPER_FIRST;
+    image[1] = FLASH_UPPER_LAST;
+    image[FLASH_PART_SIZE - 1] = FLASH_UPPER_LAST;
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(write(fd, image, FLASH_PART_SIZE), ==,
                     (ssize_t)FLASH_PART_SIZE);
@@ -1858,6 +1873,15 @@ static char *create_flash_image(void)
     g_assert_cmpint(close(fd), ==, 0);
     create_flash_upper(path);
     return path;
+}
+
+/* The two positions are created together, so they are removed together. */
+static void remove_flash_image(const char *lower)
+{
+    g_autofree char *upper = flash_upper_path(lower);
+
+    g_assert_cmpint(g_unlink(upper), ==, 0);
+    g_assert_cmpint(g_unlink(lower), ==, 0);
 }
 
 static QTestState *machine_start_with_flash(const char *flash,
@@ -1896,11 +1920,28 @@ static void assert_flash_everywhere(QTestState *qts, uint64_t offset,
         HUB_LOCAL_BOOT, PROM_RESET, HUB_LOCAL_HIGH_BOOT, HUB_REMOTE_BOOT,
     };
 
+    static const uint64_t second[] = { HUB_LOCAL_FLASH, HUB_REMOTE_FLASH };
+
     for (size_t i = 0; i < ARRAY_SIZE(views); i++) {
         g_assert_cmphex(qtest_readw(qts, views[i] + offset), ==, word);
     }
-    /* And position one does not answer with position zero's word. */
-    g_assert_cmphex(qtest_readw(qts, HUB_LOCAL_FLASH + offset), !=, word);
+    /* Neither second-selection window answers with position zero's word. */
+    for (size_t i = 0; i < ARRAY_SIZE(second); i++) {
+        g_assert_cmphex(qtest_readw(qts, second[i] + offset), !=, word);
+    }
+}
+
+/*
+ * Position one answers both boot windows at their second PROM address. The
+ * remote window is asserted alongside the local one because a machine that
+ * mapped the second selection into the local space alone would pass every
+ * local check.
+ */
+static void assert_position_one(QTestState *qts, uint64_t offset,
+                                uint16_t word)
+{
+    g_assert_cmphex(qtest_readw(qts, HUB_LOCAL_FLASH + offset), ==, word);
+    g_assert_cmphex(qtest_readw(qts, HUB_REMOTE_FLASH + offset), ==, word);
 }
 
 static void test_board_identification(const void *data)
@@ -2069,16 +2110,20 @@ static void test_boot_flash_backs_every_prom_view(const void *data)
     g_autofree char *flash = create_flash_image();
     QTestState *qts = machine_start_with_flash(flash, "");
 
-    /* Every view reads the part, not the supplied payload. */
+    /* Every execution view reads position zero, not the supplied payload. */
     assert_flash_everywhere(qts, 0, 0x3100);
     g_assert_cmphex(qtest_readb(qts, HUB_LOCAL_BOOT + PROM_SIZE - 1), ==,
                     0x93);
-    g_assert_cmphex(qtest_readb(qts, HUB_LOCAL_FLASH + PROM_SIZE - 1), ==,
-                    0x93);
 
-    /* Both selections span the whole part, so the payload's end is erased. */
+    /* Both boot windows reach position one at their second PROM address. */
+    assert_position_one(qts, 0, FLASH_UPPER_WORD);
+    g_assert_cmphex(qtest_readb(qts, HUB_LOCAL_FLASH + FLASH_PART_SIZE - 1),
+                    ==, FLASH_UPPER_LAST);
+    g_assert_cmphex(qtest_readb(qts, HUB_REMOTE_FLASH + FLASH_PART_SIZE - 1),
+                    ==, FLASH_UPPER_LAST);
+
+    /* Position zero's payload ends in erased bytes inside its own part. */
     g_assert_cmphex(qtest_readb(qts, HUB_LOCAL_BOOT + PROM_SIZE), ==, 0xff);
-    g_assert_cmphex(qtest_readb(qts, HUB_LOCAL_FLASH + PROM_SIZE), ==, 0xff);
 
     /*
      * The alternate selection is a read window inside the boot space rather
@@ -2088,49 +2133,54 @@ static void test_boot_flash_backs_every_prom_view(const void *data)
     assert_flat_view_unmapped(qts, HUB_REMOTE_BOOT + BOOT_SPACE_SIZE);
 
     /*
-     * Commands are addressed from a boot space's base, and one part answers
-     * both spaces, so a program through either is visible through both read
-     * windows of the other.
+     * Commands are addressed from a position's own base, and one part answers
+     * both boot spaces, so a program through the local space is visible
+     * through the remote one. The other position keeps its own bytes.
      */
     flash_program(qts, HUB_LOCAL_BOOT, FLASH_ERASED_TARGET, 0x1234);
     g_assert_cmphex(qtest_readw(qts, HUB_LOCAL_BOOT + FLASH_ERASED_TARGET),
                     ==, 0x1234);
-    g_assert_cmphex(qtest_readw(qts, HUB_LOCAL_FLASH + FLASH_ERASED_TARGET),
+    g_assert_cmphex(qtest_readw(qts, HUB_REMOTE_BOOT + FLASH_ERASED_TARGET),
                     ==, 0x1234);
-    flash_program(qts, HUB_REMOTE_BOOT, FLASH_ERASED_TARGET + 2, 0x5678);
-    g_assert_cmphex(qtest_readw(qts, HUB_LOCAL_FLASH + FLASH_ERASED_TARGET + 2),
-                    ==, 0x5678);
+    g_assert_cmphex(qtest_readw(qts, HUB_LOCAL_FLASH + FLASH_ERASED_TARGET),
+                    ==, 0xffff);
 
     /*
-     * Reads and writes decode differently within a space, so one address means
-     * two things: reading the alternate window's base gives the part's first
-     * bytes, while a command sent to it addresses a word 8 MiB in. A machine
-     * that mapped the selections as separate regions would put every write
-     * 32 MiB out and this is what would catch it.
+     * A command sent to a second-selection window addresses position one from
+     * that window's own base, so the store compression puts it at the same
+     * offset in the other part rather than 8 MiB into a single one. That is
+     * what separates this machine from the superseded mirror. Either window
+     * drives the part, and neither disturbs position zero.
      */
-    flash_program(qts, HUB_LOCAL_BOOT, SECOND_READ_WINDOW / 4, 0x4321);
-    g_assert_cmphex(qtest_readw(qts, HUB_LOCAL_BOOT +
-                                SECOND_READ_WINDOW / 4), ==, 0x4321);
-    g_assert_cmphex(qtest_readb(qts, HUB_LOCAL_FLASH), ==, 0x31);
+    flash_program(qts, HUB_LOCAL_FLASH, FLASH_ERASED_TARGET, 0x5678);
+    assert_position_one(qts, FLASH_ERASED_TARGET, 0x5678);
+    flash_program(qts, HUB_REMOTE_FLASH, FLASH_ERASED_TARGET + 2, 0xbeef);
+    assert_position_one(qts, FLASH_ERASED_TARGET + 2, 0xbeef);
+    g_assert_cmphex(qtest_readw(qts, HUB_LOCAL_BOOT + FLASH_ERASED_TARGET),
+                    ==, 0x1234);
 
     /* What a monitor writes into the first sector is what a reset fetches. */
     flash_program(qts, HUB_LOCAL_BOOT, FLASH_PAYLOAD_TARGET, 0x9abc);
     assert_flash_everywhere(qts, FLASH_PAYLOAD_TARGET, 0x9abc);
 
+    /* A reset returns both parts to array reads without disturbing bytes. */
     qtest_system_reset(qts);
     assert_flash_everywhere(qts, FLASH_PAYLOAD_TARGET, 0x9abc);
     g_assert_cmphex(qtest_readw(qts, HUB_LOCAL_BOOT + FLASH_ERASED_TARGET), ==,
                     0x1234);
+    assert_position_one(qts, FLASH_ERASED_TARGET, 0x5678);
 
     qtest_quit(qts);
 
-    /* The backing file keeps them across a restart. */
+    /* Each position's backing file keeps its own changes across a restart. */
     qts = machine_start_with_flash(flash, "");
     assert_flash_everywhere(qts, FLASH_PAYLOAD_TARGET, 0x9abc);
-    g_assert_cmphex(qtest_readw(qts, HUB_LOCAL_FLASH + FLASH_ERASED_TARGET),
+    g_assert_cmphex(qtest_readw(qts, HUB_LOCAL_BOOT + FLASH_ERASED_TARGET),
                     ==, 0x1234);
+    assert_position_one(qts, FLASH_ERASED_TARGET, 0x5678);
+    assert_position_one(qts, FLASH_ERASED_TARGET + 2, 0xbeef);
     qtest_quit(qts);
-    g_assert_cmpint(g_unlink(flash), ==, 0);
+    remove_flash_image(flash);
 }
 
 /*
@@ -2227,8 +2277,8 @@ static void test_boot_flash_migration(const void *data)
     qtest_quit(from);
     qtest_quit(to);
     g_unlink(socket);
-    g_assert_cmpint(g_unlink(source_flash), ==, 0);
-    g_assert_cmpint(g_unlink(destination_flash), ==, 0);
+    remove_flash_image(source_flash);
+    remove_flash_image(destination_flash);
     g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
