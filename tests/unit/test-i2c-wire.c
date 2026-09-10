@@ -14,6 +14,8 @@
 
 #define TYPE_WIRE_HOST "i2c-wire-test-host"
 #define TYPE_WIRE_SLAVE "i2c-wire-test-slave"
+/* Carries no migration state, so no wire may be enabled over it. */
+#define TYPE_WIRE_MUTE "i2c-wire-test-mute"
 
 static int64_t virtual_time;
 
@@ -96,10 +98,22 @@ static void slave_wire_address(I2CSlave *slave, uint8_t address_byte)
     s->last_address = address_byte;
 }
 
+/* A wired bus refuses a slave that cannot report in when the wire loads. */
+static const VMStateDescription vmstate_test_slave = {
+    .name = "i2c-wire-test-slave",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_I2C_SLAVE(parent_obj, TestSlave),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static void slave_class_init(ObjectClass *oc, const void *data)
 {
     I2CSlaveClass *sc = I2C_SLAVE_CLASS(oc);
 
+    DEVICE_CLASS(oc)->vmsd = &vmstate_test_slave;
     sc->supports_master_ids = true;
     sc->event = slave_event;
     sc->send = slave_send;
@@ -137,7 +151,8 @@ static void setup(Fixture *f, gconstpointer unused)
     ((TestSlave *)f->a)->hold_service = I2C_WIRE_SERVICE_COUNT;
     ((TestSlave *)f->b)->hold_service = I2C_WIRE_SERVICE_COUNT;
     f->events = g_array_new(false, false, sizeof(I2CWireEvent));
-    g_assert_cmpint(i2c_bus_enable_wire(f->bus, 2, observe, f), ==, 0);
+    g_assert_cmpint(i2c_bus_enable_wire(f->bus, 2, observe, f, &error_abort),
+                    ==, 0);
     g_assert_cmpint(i2c_wire_configure(f->bus, 0, 5, 7, false), ==, 0);
     g_assert_cmpint(i2c_wire_configure(f->bus, 1, 9, 3, false), ==, 0);
 }
@@ -1489,6 +1504,37 @@ static void test_migration_rejects_mid_byte_service_hold(
     close(fd);
 }
 
+/*
+ * The attach-time refusal cannot see a slave that joined before the wire, so
+ * enabling one over a slave that carries no migration state fails too, and
+ * fails before it has changed anything about the bus.
+ */
+static void test_enable_refuses_a_mute_slave(void)
+{
+    DeviceState *host = qdev_new(TYPE_WIRE_HOST);
+    Error *err = NULL;
+    I2CBus *bus;
+
+    qdev_realize(host, NULL, &error_abort);
+    bus = i2c_init_bus(host, "i2c");
+    i2c_slave_create_simple(bus, TYPE_WIRE_MUTE, 0x20);
+
+    g_assert_cmpint(i2c_bus_enable_wire(bus, 2, NULL, NULL, &err), !=, 0);
+    g_assert_nonnull(err);
+    g_assert_nonnull(strstr(error_get_pretty(err), TYPE_WIRE_MUTE));
+    error_free(err);
+
+    /*
+     * Refused before it changed anything. A bus left holding participants it
+     * cannot use would abort the first legacy transfer anybody attempted.
+     */
+    g_assert_null(bus->wire);
+    g_assert_cmpuint(bus->master_count, ==, 0);
+
+    object_unparent(OBJECT(host));
+    object_unref(OBJECT(host));
+}
+
 int main(int argc, char **argv)
 {
     const TypeInfo host = { .name = TYPE_WIRE_HOST, .parent = TYPE_DEVICE };
@@ -1502,10 +1548,18 @@ int main(int argc, char **argv)
     qemu_init_main_loop(&error_abort);
     qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
     module_call_init(MODULE_INIT_QOM);
+    const TypeInfo mute = {
+        .name = TYPE_WIRE_MUTE, .parent = TYPE_I2C_SLAVE,
+        .instance_size = sizeof(I2CSlave),
+    };
+
     type_register_static(&host);
     type_register_static(&slave);
+    type_register_static(&mute);
     machine = object_property_add_new_container(object_get_root(), "machine");
     object_property_add_new_container(machine, "unattached");
+    g_test_add_func("/i2c-wire/enable-refuses-mute-slave",
+                    test_enable_refuses_a_mute_slave);
     g_test_add("/i2c-wire/configuration", Fixture, NULL,
                setup, test_invalid_configuration, teardown);
     g_test_add("/i2c-wire/clocks", Fixture, NULL,
