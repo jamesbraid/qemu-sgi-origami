@@ -601,6 +601,36 @@ static void test_histogram_common_rescale(Fixture *f,
     }
 }
 
+static void test_histogram_batched_rescale(Fixture *f,
+                                           gconstpointer unused)
+{
+    int64_t start = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    uint64_t ticks;
+
+    select_histogram(f, 1, 1, 0);
+    for (unsigned int i = 0; i < 0x1235; i++) {
+        sgi_router_histogram_receive(f->router, 1, true, true, true);
+    }
+    for (unsigned int i = 0x1235; i < 0x4567; i++) {
+        sgi_router_histogram_receive(f->router, 1, true, false, true);
+    }
+    for (unsigned int i = 0; i < 0x89ab; i++) {
+        sgi_router_histogram_send(f->router, 1, true);
+    }
+    ticks = UINT64_C(0x10000) + 2 * UINT64_C(0x8000) + 13;
+    qemu_clock_advance_virtual_time(start + ticks * HISTOGRAM_TICK_NS);
+    g_assert_cmphex(read_reg(f, 1, RR_HISTOGRAM(1)), ==,
+                    UINT64_C(0x800d113508ac0246));
+
+    device_cold_reset(f->dev);
+    start = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    select_histogram(f, 1, 1, 0);
+    ticks = UINT64_C(1) << 48;
+    qemu_clock_advance_virtual_time(start + ticks * HISTOGRAM_TICK_NS);
+    g_assert_cmphex(read_reg(f, 1, RR_HISTOGRAM(1)), ==,
+                    UINT64_C(0x8000) << 48);
+}
+
 static void test_routing_table_decode(Fixture *f, gconstpointer unused)
 {
     uint64_t value;
@@ -1188,6 +1218,7 @@ int main(int argc, char **argv)
     ADD_TEST("histogram-unsupported-modes",
              test_histogram_unsupported_modes);
     ADD_TEST("histogram-common-rescale", test_histogram_common_rescale);
+    ADD_TEST("histogram-batched-rescale", test_histogram_batched_rescale);
     ADD_TEST("routing-table-decode", test_routing_table_decode);
     ADD_TEST("valid-route-lookup", test_valid_route_lookup);
     ADD_TEST("next-turn-consumption", test_next_turn_consumption);
