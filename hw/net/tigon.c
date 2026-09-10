@@ -337,7 +337,6 @@ static void tigon_completion_irq(TigonState *s, bool rx,
                                                : TI_GCR_TX_MAX_COAL_BD)];
     uint32_t ticks = s->gcr[TIGON_GCR_IDX(rx ? TI_GCR_RX_COAL_TICKS
                                              : TI_GCR_TX_COAL_TICKS)];
-    uint32_t count = *coal_bds += completed_bds;
     QEMUTimer *timer = rx ? s->coal_rx_timer : s->coal_tx_timer;
 
     /*
@@ -345,10 +344,12 @@ static void tigon_completion_irq(TigonState *s, bool rx,
      * limit would hold the last completions of a transfer back for an
      * interrupt that never comes, which is a stall rather than a saving.
      */
-    if (max_bds <= 1 || ticks == 0 || count >= max_bds) {
+    if (max_bds <= 1 || ticks == 0 ||
+        tigon_coal_count_reaches(*coal_bds, completed_bds, max_bds)) {
         tigon_coal_flush(s, rx);
         return;
     }
+    *coal_bds += completed_bds;
     if (!timer_pending(timer)) {
         /* The unit the driver counts in is a microsecond. */
         timer_mod(timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
@@ -1705,6 +1706,10 @@ static int tigon_post_load(void *opaque, int version_id)
             timer_del(s->coal_rx_timer);
         }
     }
+    /* Version 3 counted completed TX ring walks, not descriptors. */
+    if (version_id < 4 && s->coal_tx_bds) {
+        tigon_coal_flush(s, false);
+    }
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->station_addr.a);
     tigon_update_irq(s);
     return 0;
@@ -1718,7 +1723,7 @@ static int tigon_post_load(void *opaque, int version_id)
  */
 static const VMStateDescription vmstate_tigon = {
     .name = "tigon",
-    .version_id = 3,
+    .version_id = 4,
     .minimum_version_id = 1,
     .post_load = tigon_post_load,
     .fields = (const VMStateField[]) {
