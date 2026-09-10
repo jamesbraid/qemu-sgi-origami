@@ -1385,24 +1385,14 @@ static bool i2c_wire_set_deadlines(I2CWire *wire, int64_t now, bool low)
 }
 
 /* Join the low period at the same falling edge as an existing clock. */
-static int i2c_wire_join_low_deadline(I2CWire *wire,
-                                      I2CWireMaster *joining,
+static int i2c_wire_join_low_deadline(I2CWireMaster *joining,
+                                      int64_t low_started,
                                       int64_t *deadline)
 {
-    for (unsigned i = 0; i < wire->bus->master_count; i++) {
-        I2CWireMaster *m = &wire->masters[i];
-        int64_t low_started;
-
-        if (m == joining || !m->clock || !m->scl_low || m->deadline < 0) {
-            continue;
-        }
-        low_started = m->deadline - m->low_ns;
-        if (sadd64_overflow(low_started, joining->low_ns, deadline)) {
-            return -ERANGE;
-        }
-        return 0;
+    if (sadd64_overflow(low_started, joining->low_ns, deadline)) {
+        return -ERANGE;
     }
-    return -ENOTSUP;
+    return 0;
 }
 
 static void i2c_wire_tick(void *opaque)
@@ -1415,7 +1405,20 @@ static void i2c_wire_tick(void *opaque)
     uint64_t lost = 0;
     uint64_t restart_attempts = 0, stop_attempts = 0;
     int old_error = wire->error;
+    int64_t low_started = 0;
+    bool running_low = false;
     BusChild *kid;
+
+    for (unsigned i = 0; i < wire->bus->master_count; i++) {
+        I2CWireMaster *m = &wire->masters[i];
+
+        if ((old_contenders & (1ULL << i)) && m->clock && m->scl_low &&
+            m->deadline >= 0) {
+            low_started = m->deadline - m->low_ns;
+            running_low = true;
+            break;
+        }
+    }
 
     QTAILQ_FOREACH(kid, &wire->bus->qbus.children, sibling) {
         I2CSlave *slave = I2C_SLAVE(kid->child);
@@ -1442,13 +1445,16 @@ static void i2c_wire_tick(void *opaque)
 
             m->pending = false;
             if (join_low) {
-                if (!(old_contenders & (1ULL << i))) {
+                int ret;
+
+                if (!(old_contenders & (1ULL << i)) || !running_low) {
                     wire->error = -ENOTSUP;
                     continue;
                 }
-                wire->error = i2c_wire_join_low_deadline(wire, m,
-                                                         &join_deadline);
-                if (wire->error) {
+                ret = i2c_wire_join_low_deadline(m, low_started,
+                                                 &join_deadline);
+                if (ret) {
+                    wire->error = ret;
                     continue;
                 }
             }
