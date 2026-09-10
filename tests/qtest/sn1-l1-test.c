@@ -1993,7 +1993,6 @@ static void test_general_actions(void)
 
         send_frame(s, request, sizeof(request), false);
     }
-    qtest_qmp_eventwait(s, "SHUTDOWN");
     console_expect(fd, PROMPT "\r\n" ENTER_CPU0);
     qtest_qmp_eventwait(s, "RESET");
     wait_running(s);
@@ -2035,6 +2034,28 @@ static void test_general_actions(void)
     qtest_qmp_eventwait(s, "RESET");
     wait_running(s);
     assert_display(s, "Powered Up");
+    qtest_quit(s);
+    close(fd);
+}
+
+/* 0x2006 power-cycles a running node without shutting down QEMU. */
+static void test_power_cycle(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, "", RTC);
+    const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x20, 0x06, 0 };
+
+    console_expect(fd, POWERING ENTER_CPU0);
+    send_frame(s, request, sizeof(request), false);
+    console_expect(fd, PROMPT "\r\n" ENTER_CPU0);
+    qtest_qmp_eventwait(s, "RESET");
+    wait_running(s);
+    console_send(fd, "\024log\r");
+    console_expect(fd, ESCAPE STAMP "L1 booting\r\n"
+                       STAMP "auto power up initiated\r\n"
+                       STAMP "power up (COMMAND)\r\n"
+                       STAMP "power down (OS)\r\n"
+                       STAMP "power up (OS)\r\n" RETURN_CPU0);
     qtest_quit(s);
     close(fd);
 }
@@ -2150,6 +2171,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/console-retarget", test_console_retarget);
     qtest_add_func("sn1/l1/general-reads", test_general_reads);
     qtest_add_func("sn1/l1/general-actions", test_general_actions);
+    qtest_add_func("sn1/l1/power-cycle", test_power_cycle);
     qtest_add_func("sn1/l1/display-requests", test_display_requests);
     qtest_add_func("sn1/l1/reboot-request", test_reboot_request);
     qtest_add_func("sn1/l1/power-down-event", test_power_down_event);
