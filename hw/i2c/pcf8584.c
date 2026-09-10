@@ -280,6 +280,7 @@ static void pcf8584_wire_event(void *opaque, const I2CWireEvent *event)
                       "no further transfers are represented\n", event->error);
         s->wire_phase = PCF8584_WIRE_IDLE;
         s->wire_active = false;
+        s->wire_grant_pending = false;
         return;
     }
     if (event->lost & (1ULL << s->wire_master)) {
@@ -298,6 +299,10 @@ static void pcf8584_wire_event(void *opaque, const I2CWireEvent *event)
                             s->wire_phase == PCF8584_WIRE_ACK)) {
         pcf8584_wire_bus_error(s);
         return;
+    }
+    if (stop && s->wire_grant_pending) {
+        s->data = s->wire_grant;
+        s->wire_grant_pending = false;
     }
 
     switch (s->wire_phase) {
@@ -918,7 +923,8 @@ static bool pcf8584_bcast_rx_wire_service(I2CSlave *dev,
  * A software-required approximation, not measured PCF8584 behaviour: the chip
  * sources guarantee passive buffering only with own address zero, while the
  * module grant protocol needs the last unmatched address readable from a
- * nonzero-address adapter, retained through STOP and idle until a later
+ * nonzero-address adapter. A timed module grant becomes readable at its STOP,
+ * once firmware can safely act on it, and remains through idle until a later
  * completed address phase replaces it. Observing is not selection -- no
  * acknowledgement, no addressed-as-slave, no PIN, no interrupt and no clock
  * hold -- and only address phases are copied here, never payload.
@@ -927,6 +933,14 @@ static void pcf8584_bcast_rx_wire_address(I2CSlave *dev, uint8_t address_byte)
 {
     PCF8584State *s = PCF8584_BCAST_RX(dev)->chip;
 
+    if (address_byte >= 0xe0 && address_byte <= 0xef &&
+        (s->control & PCF8584_CTL_ESO) && s->own_address &&
+        (address_byte >> 1) != s->own_address) {
+        s->wire_grant = address_byte;
+        s->wire_grant_pending = true;
+        return;
+    }
+    s->wire_grant_pending = false;
     pcf8584_observe_address(s, address_byte);
 }
 
@@ -989,6 +1003,8 @@ static void pcf8584_reset_hold(Object *obj, ResetType type)
     s->wire_active = false;
     s->wire_address_byte = false;
     s->wire_ack_nak = false;
+    s->wire_grant_pending = false;
+    s->wire_grant = 0;
     s->wire_free_at = 0;
     s->wire_scl = s->wire_sda = true;
     if (pcf8584_on_wire(s) && s->bus) {
@@ -1078,18 +1094,25 @@ static int pcf8584_post_load(void *opaque, int version_id)
     if (version_id < 4 && s->start_address_staged) {
         s->start_address = s->data;
     }
+    if (version_id < 5) {
+        s->wire_grant_pending = false;
+        s->wire_grant = 0;
+    }
 
     if (s->wire_phase >= PCF8584_WIRE_PHASE_COUNT ||
         s->wire_hold_release >= PCF8584_HOLD_COUNT ||
         s->wire_bit > 8 || s->wire_free_at < 0 ||
-        (s->start_pending && s->start_address_staged)) {
+        (s->start_pending && s->start_address_staged) ||
+        (s->wire_grant_pending &&
+         (s->wire_grant < 0xe0 || s->wire_grant > 0xef))) {
         return -EINVAL;
     }
     if (!pcf8584_on_wire(s)) {
         /* The untimed path drives none of this. */
         if (s->wire_phase != PCF8584_WIRE_IDLE || s->wire_active ||
             s->wire_address_byte || s->wire_bit ||
-            s->wire_hold_release != PCF8584_HOLD_NONE) {
+            s->wire_hold_release != PCF8584_HOLD_NONE ||
+            s->wire_grant_pending) {
             return -EINVAL;
         }
         return 0;
@@ -1111,7 +1134,7 @@ static int pcf8584_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_pcf8584 = {
     .name = "pcf8584",
-    .version_id = 4,
+    .version_id = 5,
     .minimum_version_id = 1,
     .post_load = pcf8584_post_load,
     .fields = (const VMStateField[]) {
@@ -1135,6 +1158,8 @@ static const VMStateDescription vmstate_pcf8584 = {
         VMSTATE_BOOL_V(wire_active, PCF8584State, 3),
         VMSTATE_BOOL_V(wire_address_byte, PCF8584State, 3),
         VMSTATE_BOOL_V(wire_ack_nak, PCF8584State, 3),
+        VMSTATE_BOOL_V(wire_grant_pending, PCF8584State, 5),
+        VMSTATE_UINT8_V(wire_grant, PCF8584State, 5),
         VMSTATE_BOOL_V(wire_scl, PCF8584State, 3),
         VMSTATE_BOOL_V(wire_sda, PCF8584State, 3),
         VMSTATE_INT64_V(wire_free_at, PCF8584State, 3),

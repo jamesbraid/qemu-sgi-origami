@@ -125,6 +125,8 @@ struct PCF8584State {
     bool wire_active;           /* this adapter owns an open transfer */
     bool wire_address_byte;     /* the byte in flight is the address */
     bool wire_ack_nak;          /* acknowledgement bit sampled on clock nine */
+    bool wire_grant_pending;    /* publish the observed module grant at STOP */
+    uint8_t wire_grant;         /* unmatched module grant awaiting STOP */
     bool wire_scl, wire_sda;    /* line levels as this adapter last saw them */
     int64_t wire_free_at;       /* earliest fresh START after the last STOP */
 };

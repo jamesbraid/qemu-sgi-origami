@@ -488,6 +488,32 @@ static void test_grant_reaches_every_adapter(Fixture *f, gconstpointer unused)
     }
 }
 
+/* A grant becomes visible only once its terminal STOP releases the bus. */
+static void test_grant_published_after_stop(Fixture *f,
+                                            gconstpointer unused)
+{
+    I2CBus *bus = sgi_o2000_module_mgmt_get_bus(f->module);
+    uint8_t old_data[SGI_O2000_ADAPTER_COUNT];
+    unsigned i, slot;
+
+    for (slot = 0; slot < SGI_O2000_ADAPTER_COUNT; slot++) {
+        old_data[slot] = f->adapter[slot]->data;
+    }
+
+    advance_to(f->module->service_deadline + 1);
+    g_assert_true(i2c_bus_busy(bus));
+    for (i = 0; i < POLL_STEPS && i2c_bus_busy(bus); i++) {
+        for (slot = 0; slot < SGI_O2000_ADAPTER_COUNT; slot++) {
+            g_assert_cmphex(f->adapter[slot]->data, ==, old_data[slot]);
+        }
+        advance_to(virtual_time + POLL_STEP_NS);
+    }
+    g_assert_false(i2c_bus_busy(bus));
+    for (slot = 0; slot < SGI_O2000_ADAPTER_COUNT; slot++) {
+        g_assert_cmphex(f->adapter[slot]->data, ==, GRANT_BASE);
+    }
+}
+
 /* Two adapters starting together: one wins, the other reports the loss. */
 static void test_arbitration_between_adapters(Fixture *f, gconstpointer unused)
 {
@@ -853,6 +879,8 @@ int main(int argc, char **argv)
                NULL, setup, test_busy_defers_without_advancing, teardown);
     g_test_add("/sgi-o2000-module-management/shared/grant-observed", Fixture,
                NULL, setup, test_grant_reaches_every_adapter, teardown);
+    g_test_add("/sgi-o2000-module-management/shared/grant-after-stop", Fixture,
+               NULL, setup, test_grant_published_after_stop, teardown);
     g_test_add("/sgi-o2000-module-management/shared/arbitration", Fixture,
                NULL, setup, test_arbitration_between_adapters, teardown);
     g_test_add("/sgi-o2000-module-management/shared/msc-version", Fixture,
