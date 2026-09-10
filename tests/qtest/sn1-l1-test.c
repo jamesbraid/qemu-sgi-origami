@@ -2060,6 +2060,46 @@ static void test_power_cycle(void)
     close(fd);
 }
 
+/* Power requests made while off neither shut down QEMU nor power down again. */
+static void test_power_requests_off(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, ",auto-power=off", RTC);
+    uint8_t reply[129];
+    const uint8_t cycle[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0x20, 0x06, 0 };
+
+    qtest_irq_intercept_out_named(s, L1, "node-power");
+    console_send(fd, "\r");
+    console_expect(fd, PROMPT);
+    g_assert_false(qtest_get_irq(s, 0));
+    g_assert_cmpuint(qtest_get_irq_raise_count(s, 0), ==, 0);
+
+    /* 0x2005 still succeeds, but changes nothing while power is off. */
+    g_assert_cmpuint(general(s, 0x2005, NULL, 0, 0, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0);
+    g_assert_false(qtest_get_irq(s, 0));
+    g_assert_cmpuint(qtest_get_irq_raise_count(s, 0), ==, 0);
+    assert_display(s, "L1 running");
+    console_send(fd, "log\r");
+    console_expect(fd, STAMP "L1 booting\r\n" PROMPT);
+
+    /* 0x2006 powers up, resets and resumes, with no power-down action. */
+    console_send(fd, "\004");
+    console_expect(fd, ENTER_CPU0);
+    send_frame(s, cycle, sizeof(cycle), false);
+    console_expect(fd, PROMPT "\r\n" ENTER_CPU0);
+    qtest_qmp_eventwait(s, "RESET");
+    wait_running(s);
+    g_assert_true(qtest_get_irq(s, 0));
+    g_assert_cmpuint(qtest_get_irq_raise_count(s, 0), ==, 1);
+    assert_display(s, "Powered Up");
+    console_send(fd, "\024log\r");
+    console_expect(fd, ESCAPE STAMP "L1 booting\r\n"
+                       STAMP "power up (OS)\r\n" RETURN_CPU0);
+    qtest_quit(s);
+    close(fd);
+}
+
 /* The two display requests write line 2 as the firmware does. */
 static void test_display_requests(void)
 {
@@ -2172,6 +2212,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/general-reads", test_general_reads);
     qtest_add_func("sn1/l1/general-actions", test_general_actions);
     qtest_add_func("sn1/l1/power-cycle", test_power_cycle);
+    qtest_add_func("sn1/l1/power-requests-off", test_power_requests_off);
     qtest_add_func("sn1/l1/display-requests", test_display_requests);
     qtest_add_func("sn1/l1/reboot-request", test_reboot_request);
     qtest_add_func("sn1/l1/power-down-event", test_power_down_event);
