@@ -68,6 +68,11 @@ static void sgi_ioc3_eth_reset_registers(SGIIOC3EthState *s, bool keep_rings)
     uint32_t tx_hi = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_TX_RING_HI);
     uint32_t tx_lo = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_TX_RING_LO);
 
+    if (s->rx_flush_bh) {
+        qemu_bh_cancel(s->rx_flush_bh);
+    }
+    s->defer_backend_rx = false;
+    s->backend_rx_deferred = false;
     memset(s->enet_reg, 0, sizeof(s->enet_reg));
     if (keep_rings) {
         sgi_ioc3_enet_set(s, SGI_IOC3_ENET_RX_RING_HI, rx_hi);
@@ -759,9 +764,6 @@ static void sgi_ioc3_eth_reset_hold(Object *obj, ResetType type)
 {
     SGIIOC3EthState *s = SGI_IOC3_ETH(obj);
 
-    qemu_bh_cancel(s->rx_flush_bh);
-    s->defer_backend_rx = false;
-    s->backend_rx_deferred = false;
     sgi_ioc3_eth_reset_registers(s, false);
 }
 
