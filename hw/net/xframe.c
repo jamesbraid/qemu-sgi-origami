@@ -166,7 +166,6 @@ static void xframe_stat_stl(XframeState *s, uint8_t *p, uint32_t val)
  * bring-up (writing TX_TRAFFIC_MASK = 0) and ack TX_TRAFFIC_INT in their ISR.
  */
 #define XFRAME_GEN_INTR_TXTRAFFIC   (1ULL << 55)
-#define XFRAME_TX_TRAFFIC_FIFO(n)   (1ULL << (63 - (n)))
 
 /*
  * GENERAL_INT_STATUS's receive-MAC aggregate bit (Linux s2io-regs.h
@@ -366,6 +365,9 @@ static void xframe_stat_stl(XframeState *s, uint8_t *p, uint32_t val)
 #define XFRAME_TRAFFIC_MEM_CMD_STROBE   (1ULL << 48)
 #define XFRAME_TTI_MEM_CMD_OFF_MASK     0x3fULL
 #define XFRAME_RTI_MEM_CMD_OFF_MASK     0x7ULL
+#define XFRAME_TRAFFIC_DATA1_AC          (1ULL << 25)
+#define XFRAME_TTI_TIMER_MASK             0x3ffffffULL
+#define XFRAME_RTI_TIMER_MASK             0x1fffffffULL
 
 /*
  * PRC_CTRL_0: RC_IN_SVC arms receive ring 0, and bits 49:48 pick the
@@ -485,6 +487,100 @@ static void xframe_update_irq(XframeState *s)
     pci_set_irq(PCI_DEVICE(s),
                 rx_pending || tx_pending || link_pending || gpio_pending ||
                 sched_pending);
+}
+
+static uint64_t xframe_traffic_bit(unsigned entry)
+{
+    return 1ULL << (63 - entry);
+}
+
+static void xframe_traffic_publish(XframeState *s, bool rx, unsigned entry)
+{
+    XframeTrafficBatch *batch = rx ? &s->rti_batch[entry] :
+                                     &s->tti_batch[entry];
+    uint64_t *status = rx ? &s->rx_traffic_int : &s->tx_traffic_int;
+    uint64_t bit = xframe_traffic_bit(entry);
+
+    batch->completions = 0;
+    timer_del(batch->timer);
+    if (*status & bit) {
+        batch->deferred = true;
+    } else {
+        *status |= bit;
+        if (rx) {
+            trace_xframe_rx_completion_irq_recompute();
+        }
+        xframe_update_irq(s);
+    }
+}
+
+static void xframe_traffic_timer_cb(void *opaque)
+{
+    XframeTrafficBatch *batch = opaque;
+
+    if (batch->completions) {
+        xframe_traffic_publish(batch->owner, batch->rx, batch->entry);
+    }
+}
+
+static void xframe_traffic_batch_reset(XframeTrafficBatch *batch)
+{
+    timer_del(batch->timer);
+    batch->completions = 0;
+    batch->deferred = false;
+}
+
+static int64_t xframe_traffic_interval_ns(uint32_t ticks)
+{
+    return ((int64_t)ticks * 64000 + 132) / 133;
+}
+
+static void xframe_traffic_complete(XframeState *s, bool rx, unsigned entry)
+{
+    XframeTrafficBatch *batch = rx ? &s->rti_batch[entry] :
+                                     &s->tti_batch[entry];
+    uint64_t data1 = rx ? s->rti_entry_data1[entry] :
+                          s->tti_entry_data1[entry];
+    uint64_t data2 = rx ? s->rti_entry_data2[entry] :
+                          s->tti_entry_data2[entry];
+    bool valid = rx ? s->rti_entry_valid[entry] :
+                      s->tti_entry_valid[entry];
+    uint32_t timer_mask = rx ? XFRAME_RTI_TIMER_MASK :
+                               XFRAME_TTI_TIMER_MASK;
+    uint32_t ticks = (data1 >> 32) & timer_mask;
+    uint32_t ceiling = data2 >> 48;
+
+    if (!valid || !(data1 & XFRAME_TRAFFIC_DATA1_AC) || ticks == 0 ||
+        ceiling <= 1) {
+        xframe_traffic_publish(s, rx, entry);
+        return;
+    }
+
+    batch->completions++;
+    if (batch->completions >= ceiling) {
+        xframe_traffic_publish(s, rx, entry);
+    } else if (!timer_pending(batch->timer)) {
+        timer_mod(batch->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                  xframe_traffic_interval_ns(ticks));
+    }
+}
+
+static void xframe_traffic_ack(XframeState *s, bool rx, uint64_t written)
+{
+    XframeTrafficBatch *batches = rx ? s->rti_batch : s->tti_batch;
+    uint64_t *status = rx ? &s->rx_traffic_int : &s->tx_traffic_int;
+    unsigned entry;
+
+    *status &= ~written;
+    for (entry = 0; entry < XFRAME_TRAFFIC_MEM_ENTRIES; entry++) {
+        uint64_t bit = xframe_traffic_bit(entry);
+
+        if ((written & bit) && !(*status & bit) && batches[entry].deferred) {
+            batches[entry].deferred = false;
+            *status |= bit;
+        }
+    }
+    xframe_update_irq(s);
 }
 
 /*
@@ -617,6 +713,8 @@ static void xframe_rx_cache_invalidate(XframeState *s)
  */
 static void xframe_soft_reset(XframeState *s)
 {
+    unsigned i;
+
     qemu_bh_cancel(s->rx_flush_bh);
     xframe_rx_cache_invalidate(s);
     s->defer_backend_rx = false;
@@ -651,6 +749,10 @@ static void xframe_soft_reset(XframeState *s)
     memset(s->rti_entry_data1, 0, sizeof(s->rti_entry_data1));
     memset(s->rti_entry_data2, 0, sizeof(s->rti_entry_data2));
     memset(s->rti_entry_valid, 0, sizeof(s->rti_entry_valid));
+    for (i = 0; i < XFRAME_TRAFFIC_MEM_ENTRIES; i++) {
+        xframe_traffic_batch_reset(&s->tti_batch[i]);
+        xframe_traffic_batch_reset(&s->rti_batch[i]);
+    }
     s->prc_rxd0_0 = 0;
     s->prc_ctrl_0 = 0;
     s->rx_traffic_int = 0;
@@ -738,6 +840,8 @@ static void xframe_traffic_mem_cmd(XframeState *s, uint64_t val, bool rx)
             entry_data1[entry] = *data1;
             entry_data2[entry] = *data2;
             entry_valid[entry] = true;
+            xframe_traffic_batch_reset(rx ? &s->rti_batch[entry] :
+                                            &s->tti_batch[entry]);
         }
         val &= ~XFRAME_TRAFFIC_MEM_CMD_STROBE;
     }
@@ -1200,8 +1304,7 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
          * carries, not the composed value, so a 32-bit half-write cannot
          * clear the untouched half's pending completions.
          */
-        s->tx_traffic_int &= ~written;
-        xframe_update_irq(s);
+        xframe_traffic_ack(s, false, written);
         return;
     case XFRAME_RX_TRAFFIC_INT:
         /*
@@ -1224,8 +1327,7 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
          * composed value: a 32-bit write to one half must not clear the other
          * half's pending bits, which its untouched current content would name.
          */
-        s->rx_traffic_int &= ~written;
-        xframe_update_irq(s);
+        xframe_traffic_ack(s, true, written);
         return;
     case XFRAME_MAC_RMAC_ERR_REG:
         /*
@@ -1974,10 +2076,9 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
      * descriptors on TX_TRAFFIC_INT. Setting device state after the send
      * keeps a synchronous loopback receive from observing a half-updated
      * doorbell, the same ordering the descriptor release above uses.
-     */
+    */
     if (have_first) {
-        s->tx_traffic_int |= XFRAME_TX_TRAFFIC_FIFO(fifo);
-        xframe_update_irq(s);
+        xframe_traffic_complete(s, false, fifo);
     }
 
     s->defer_backend_rx = false;
@@ -2290,7 +2391,6 @@ static unsigned xframe_rxd_per_page(XframeState *s)
  * RX_TRAFFIC_INT_n(0), the driver's own MSB-first bit numbering: bit 63).
  * Only ring 0 is modelled.
  */
-#define XFRAME_RX_TRAFFIC_RING0      (1ULL << 63)
 
 /*
  * Modest, arbitrary period for the recovery poll below -- not a modelled
@@ -2779,12 +2879,7 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
         xframe_rx_advance_page(s);
     }
 
-    /* A latched receive source cannot change INTx again until its ACK. */
-    if (!(s->rx_traffic_int & XFRAME_RX_TRAFFIC_RING0)) {
-        s->rx_traffic_int |= XFRAME_RX_TRAFFIC_RING0;
-        trace_xframe_rx_completion_irq_recompute();
-        xframe_update_irq(s);
-    }
+    xframe_traffic_complete(s, true, 0);
     timer_del(s->rx_recovery_timer);
 
     return size;
@@ -2889,6 +2984,7 @@ static void xframe_realize(PCIDevice *dev, Error **errp)
 {
     XframeState *s = XFRAME(dev);
     DeviceState *d = DEVICE(dev);
+    unsigned i;
 
     s->rx_recovery_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                         xframe_rx_recovery_timer_cb, s);
@@ -2899,6 +2995,19 @@ static void xframe_realize(PCIDevice *dev, Error **errp)
                                     xframe_link_up_timer_cb, s);
     s->sched_int_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
                                       xframe_sched_int_cb, s);
+    for (i = 0; i < XFRAME_TRAFFIC_MEM_ENTRIES; i++) {
+        s->tti_batch[i].owner = s;
+        s->tti_batch[i].entry = i;
+        s->tti_batch[i].timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                             xframe_traffic_timer_cb,
+                                             &s->tti_batch[i]);
+        s->rti_batch[i].owner = s;
+        s->rti_batch[i].entry = i;
+        s->rti_batch[i].rx = true;
+        s->rti_batch[i].timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                             xframe_traffic_timer_cb,
+                                             &s->rti_batch[i]);
+    }
 
     /*
      * The class-level defaults set vendor/device id (and, absent a
@@ -2947,6 +3056,7 @@ static void xframe_realize(PCIDevice *dev, Error **errp)
 static void xframe_exit(PCIDevice *dev)
 {
     XframeState *s = XFRAME(dev);
+    unsigned i;
 
     xframe_rx_cache_invalidate(s);
     qemu_bh_delete(s->rx_flush_bh);
@@ -2955,6 +3065,10 @@ static void xframe_exit(PCIDevice *dev)
     timer_free(s->link_down_timer);
     timer_free(s->link_up_timer);
     timer_free(s->sched_int_timer);
+    for (i = 0; i < XFRAME_TRAFFIC_MEM_ENTRIES; i++) {
+        timer_free(s->tti_batch[i].timer);
+        timer_free(s->rti_batch[i].timer);
+    }
     qemu_del_nic(s->nic);
 }
 
@@ -3099,9 +3213,21 @@ static int xframe_post_load(void *opaque, int version_id)
  * hw/net/sgi-ioc3-eth.c and hw/net/rtl8139.c); PCI config space is covered by
  * VMSTATE_PCI_DEVICE.
  */
+static const VMStateDescription vmstate_xframe_traffic_batch = {
+    .name = "xframe/traffic-batch",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_TIMER_PTR(timer, XframeTrafficBatch),
+        VMSTATE_UINT32(completions, XframeTrafficBatch),
+        VMSTATE_BOOL(deferred, XframeTrafficBatch),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_xframe = {
     .name = "xframe",
-    .version_id = 5,
+    .version_id = 6,
     .minimum_version_id = 1,
     .post_load = xframe_post_load,
     .fields = (const VMStateField[]) {
@@ -3156,6 +3282,14 @@ static const VMStateDescription vmstate_xframe = {
                                XFRAME_TRAFFIC_MEM_ENTRIES, 5),
         VMSTATE_BOOL_ARRAY_V(rti_entry_valid, XframeState,
                              XFRAME_TRAFFIC_MEM_ENTRIES, 5),
+        VMSTATE_STRUCT_ARRAY(tti_batch, XframeState,
+                             XFRAME_TRAFFIC_MEM_ENTRIES, 6,
+                             vmstate_xframe_traffic_batch,
+                             XframeTrafficBatch),
+        VMSTATE_STRUCT_ARRAY(rti_batch, XframeState,
+                             XFRAME_TRAFFIC_MEM_ENTRIES, 6,
+                             vmstate_xframe_traffic_batch,
+                             XframeTrafficBatch),
         VMSTATE_UINT64(prc_rxd0_0, XframeState),
         VMSTATE_UINT64(prc_ctrl_0, XframeState),
         VMSTATE_UINT64(rx_traffic_int, XframeState),

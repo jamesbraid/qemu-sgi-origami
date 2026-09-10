@@ -221,6 +221,12 @@
 #define OPENBSD_RTI_DATA1        0x0000080002051432ULL
 #define OPENBSD_RTI_DATA2        0x0040008001000200ULL
 
+#define TRAFFIC_DATA1_TIMER(n)   ((uint64_t)(n) << 32)
+#define TRAFFIC_DATA1_AC         (1ULL << 25)
+#define TRAFFIC_DATA2_COUNTS(a, b, c, d) \
+    (((uint64_t)(a) << 48) | ((uint64_t)(b) << 32) | \
+     ((uint64_t)(c) << 16) | (d))
+
 /*
  * A MAC_CFG payload for the lock test -- TMAC_EN|RMAC_EN; any non-zero value
  * proves whether the write took.
@@ -3231,11 +3237,9 @@ static void test_link_up_timer_respects_backend_already_down(void)
  * than captured. Sizes run from a sub-64-byte padded runt through a full
  * 1500-MTU frame to the device's XFRAME_MAX_FRAME jumbo maximum.
  *
- * The last two tests MEASURE the transmit- and receive-completion interrupt
- * rate: the model has no interrupt coalescing, so every frame raises its own
- * completion interrupt. Acking between frames makes each completion a fresh,
- * countable INTx assertion; the count equals the frame count -- a 1:1
- * interrupt-to-frame ratio, which quantifies the absence of coalescing.
+ * The last two tests pin the unconfigured fallback: an entry that the guest
+ * has not committed raises one completion interrupt per frame. Acking between
+ * frames makes each completion a fresh, countable INTx assertion.
  * ==========================================================================
  */
 
@@ -4513,12 +4517,101 @@ static void test_receive_frame_sizes_byte_exact(void)
     }
 }
 
+static void traffic_interrupt_commit(XframeTx *t, bool rx, unsigned entry,
+                                     uint64_t data1, uint64_t data2)
+{
+    uint64_t data1_reg = rx ? RTI_DATA1_MEM : TTI_DATA1_MEM;
+    uint64_t data2_reg = rx ? RTI_DATA2_MEM : TTI_DATA2_MEM;
+    uint64_t command_reg = rx ? RTI_COMMAND_MEM : TTI_COMMAND_MEM;
+
+    sock_pif_writeq(t, data1_reg, data1);
+    sock_pif_writeq(t, data2_reg, data2);
+    sock_pif_writeq(t, command_reg,
+                    TRAFFIC_MEM_CMD_WE | TRAFFIC_MEM_CMD_STROBE |
+                    TTI_MEM_CMD_OFF(entry));
+}
+
+/*
+ * Auto-cancel batches each FIFO and ring independently. TX's shorter timer
+ * publishes first without disturbing RX's tail; a later entry recommit proves
+ * the count ceiling, while Linux's low-utilization receive count of one stays
+ * immediate.
+ */
+static void test_traffic_interrupt_moderation(void)
+{
+    XframeTx t;
+    uint8_t frame[128];
+    uint8_t got[128];
+    size_t len;
+    unsigned i;
+
+    len = build_ipv4_frame(frame, xframe_station_mac, IPPROTO_UDP, 10, 64);
+    xframe_tx_start(&t);
+    sock_pif_writeq(&t, TX_TRAFFIC_MASK, 0);
+    sock_pif_writeq(&t, RX_TRAFFIC_MASK, 0);
+
+    traffic_interrupt_commit(&t, false, 0,
+                             TRAFFIC_DATA1_TIMER(0x100) | TRAFFIC_DATA1_AC,
+                             TRAFFIC_DATA2_COUNTS(4, 4, 4, 4));
+    traffic_interrupt_commit(&t, true, 0,
+                             TRAFFIC_DATA1_TIMER(0x1000) | TRAFFIC_DATA1_AC,
+                             TRAFFIC_DATA2_COUNTS(4, 4, 4, 4));
+
+    xframe_program_rxd(&t, TRAFFIC_RX_RING, TRAFFIC_RX_BUF,
+                       RX_BUF_CAPACITY);
+    xframe_rx_ring_arm(&t, TRAFFIC_RX_RING);
+    net_socket_send_frame(t.host_fd, frame, len);
+    g_assert_true(xframe_wait_rxd_consumed(&t, TRAFFIC_RX_RING, 5000));
+
+    memcpy(frame, traffic_remote_mac, sizeof(traffic_remote_mac));
+    g_assert_cmpuint(traffic_tx_capture(&t, frame, len, got, sizeof(got)), ==,
+                     len);
+    g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT), ==, 0);
+    g_assert_cmphex(sock_pif_readq(&t, RX_TRAFFIC_INT), ==, 0);
+
+    qtest_clock_step(t.qs->qts, 200000);
+    g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT) & TX_TRAFFIC_FIFO0,
+                    ==, TX_TRAFFIC_FIFO0);
+    g_assert_cmphex(sock_pif_readq(&t, RX_TRAFFIC_INT) & RX_TRAFFIC_RING0,
+                    ==, 0);
+    sock_pif_writeq(&t, TX_TRAFFIC_INT, TX_TRAFFIC_FIFO0);
+
+    qtest_clock_step(t.qs->qts, 2000000);
+    g_assert_cmphex(sock_pif_readq(&t, RX_TRAFFIC_INT) & RX_TRAFFIC_RING0,
+                    ==, RX_TRAFFIC_RING0);
+    sock_pif_writeq(&t, RX_TRAFFIC_INT, RX_TRAFFIC_RING0);
+
+    traffic_interrupt_commit(&t, false, 0,
+                             TRAFFIC_DATA1_TIMER(0x1000) | TRAFFIC_DATA1_AC,
+                             TRAFFIC_DATA2_COUNTS(3, 3, 3, 3));
+    for (i = 0; i < 3; i++) {
+        g_assert_cmpuint(traffic_tx_capture(&t, frame, len, got, sizeof(got)),
+                         ==, len);
+        g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT) &
+                        TX_TRAFFIC_FIFO0, ==,
+                        i == 2 ? TX_TRAFFIC_FIFO0 : 0);
+    }
+    sock_pif_writeq(&t, TX_TRAFFIC_INT, TX_TRAFFIC_FIFO0);
+
+    traffic_interrupt_commit(&t, true, 0, LINUX_RTI_DATA1,
+                             LINUX_RTI_DATA2);
+    memcpy(frame, xframe_station_mac, sizeof(xframe_station_mac));
+    xframe_program_rxd(&t, TRAFFIC_RX_RING, TRAFFIC_RX_BUF,
+                       RX_BUF_CAPACITY);
+    xframe_rx_ring_arm(&t, TRAFFIC_RX_RING);
+    net_socket_send_frame(t.host_fd, frame, len);
+    g_assert_true(xframe_wait_rxd_consumed(&t, TRAFFIC_RX_RING, 5000));
+    g_assert_cmphex(sock_pif_readq(&t, RX_TRAFFIC_INT) & RX_TRAFFIC_RING0,
+                    ==, RX_TRAFFIC_RING0);
+
+    xframe_tx_stop(&t);
+}
+
 /*
  * Transmit interrupt rate: push TRAFFIC_BURST frames back to back, acking the
  * completion after each so the next is a fresh, countable INTx assertion. The
- * model has no coalescing, so each frame raises its own transmit-completion
- * interrupt -- the raise count equals the frame count, a 1:1 ratio. A card
- * that batched completions would raise fewer.
+ * an uncommitted TTI entry, so each frame raises its own transmit-completion
+ * interrupt and the raise count equals the frame count.
  */
 static void test_transmit_interrupt_rate_is_one_per_frame(void)
 {
@@ -4557,7 +4650,7 @@ static void test_transmit_interrupt_rate_is_one_per_frame(void)
         g_assert_false(xframe_intx_asserted(t.dev));
     }
 
-    /* One transmit-completion interrupt per frame: no coalescing (1:1). */
+    /* One transmit-completion interrupt per frame before TTI is committed. */
     g_assert_cmpint(raises, ==, TRAFFIC_BURST);
 
     xframe_tx_stop(&t);
@@ -4566,10 +4659,9 @@ static void test_transmit_interrupt_rate_is_one_per_frame(void)
 /*
  * Receive interrupt rate: post a ring of TRAFFIC_BURST owned descriptors,
  * inject that many frames one at a time, and ack the receive completion after
- * each so it is a fresh, countable INTx assertion. As on transmit, the model
- * raises one receive-completion interrupt per frame -- the raise count equals
- * the frame count, a 1:1 ratio, quantifying the absence of coalescing. The
- * descriptors share one buffer: this counts completions, not landed bytes.
+ * each so it is a fresh, countable INTx assertion. As on transmit, an
+ * uncommitted RTI entry remains immediate. The descriptors share one buffer:
+ * this counts completions, not landed bytes.
  */
 static void test_receive_interrupt_rate_is_one_per_frame(void)
 {
@@ -4612,7 +4704,7 @@ static void test_receive_interrupt_rate_is_one_per_frame(void)
         g_assert_false(xframe_intx_asserted(t.dev));
     }
 
-    /* One receive-completion interrupt per frame: no coalescing (1:1). */
+    /* One receive-completion interrupt per frame before RTI is committed. */
     g_assert_cmpint(raises, ==, TRAFFIC_BURST);
 
     xframe_tx_stop(&t);
@@ -4775,6 +4867,8 @@ int main(int argc, char **argv)
                    test_transmit_frame_sizes_byte_exact);
     qtest_add_func("xframe/receive-frame-sizes-byte-exact",
                    test_receive_frame_sizes_byte_exact);
+    qtest_add_func("xframe/traffic-interrupt-moderation",
+                   test_traffic_interrupt_moderation);
     qtest_add_func("xframe/transmit-interrupt-rate-is-one-per-frame",
                    test_transmit_interrupt_rate_is_one_per_frame);
     qtest_add_func("xframe/receive-interrupt-rate-is-one-per-frame",
