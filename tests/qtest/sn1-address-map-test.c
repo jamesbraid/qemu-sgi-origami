@@ -50,6 +50,13 @@
 #define HUB_LOCAL_REGISTERS (SPACE_HUB + UINT64_C(0x10000000))
 #define HUB_LOCAL_BOOT (SPACE_HUB + UINT64_C(0x18000000))
 #define HUB_LOCAL_FLASH (SPACE_HUB + UINT64_C(0x1a000000))
+#define HUB_ECC (SPACE_HUB + UINT64_C(0x140000000))
+/*
+ * One ECC byte per eight bytes of node memory, so the machine's 512 MiB gives
+ * a 64 MiB extent inside the gigabyte the back door reserves for it.
+ */
+#define ECC_EXTENT UINT64_C(0x4000000)
+#define ECC_APERTURE UINT64_C(0x40000000)
 #define HUB_DIRECTORY (SPACE_HUB + UINT64_C(0x1c0000000))
 #define BOARD_ID_LOCAL (HUB_LOCAL_REGISTERS + UINT64_C(0x4000000))
 #define BOARD_ID_REMOTE (HUB_REMOTE_REGISTERS + UINT64_C(0x4000000))
@@ -1913,6 +1920,60 @@ static void test_board_identification(const void *data)
     g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
+/*
+ * The ECC back door answers where the contract puts it, over an extent taken
+ * from the fitted memory rather than from the aperture, and nothing answers
+ * on either side. A machine that mapped the region but left the controller's
+ * memory link unset would give a zero extent and refuse its own first byte,
+ * so the accepted access at offset zero is what proves the link.
+ */
+static void test_ecc_backdoor_window(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-ecc-log-XXXXXX.txt", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf("-d unimp,guest_errors -D %s", quoted);
+    qts = machine_start_with(prom_path, extra);
+
+    /* The first byte and the last byte of the fitted extent both answer. */
+    g_assert_cmphex(qtest_readb(qts, HUB_ECC), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, HUB_ECC + ECC_EXTENT - 1), ==, 0);
+    /* An aligned halfword is the other width the carrier takes. */
+    g_assert_cmphex(qtest_readw(qts, HUB_ECC + ECC_EXTENT - 2), ==, 0);
+
+    /*
+     * One byte past the fitted extent is refused while still inside the
+     * aperture, which is what separates the two bounds from each other.
+     */
+    qtest_readb(qts, HUB_ECC + ECC_EXTENT);
+
+    /*
+     * Neither the word below the base nor the far side of the aperture is
+     * mapped, so the region has not been stretched to fill the space.
+     */
+    assert_flat_view_unmapped(qts, HUB_ECC - 8);
+    assert_flat_view_unmapped(qts, HUB_ECC + ECC_APERTURE);
+
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    /* The accepted reads said their contents are not established. */
+    g_assert_nonnull(strstr(log, "readback unestablished"));
+    /* And the one past the extent named which bound it broke. */
+    g_assert_nonnull(strstr(log, "outside fitted memory"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
 static void test_directory_backdoor_window(const void *data)
 {
     QTestState *qts = machine_start();
@@ -2783,6 +2844,8 @@ int main(int argc, char **argv)
                         test_l1_has_no_identity_records_by_default);
     qtest_add_data_func("sn1/address-map/board-identification", NULL,
                         test_board_identification);
+    qtest_add_data_func("sn1/address-map/ecc-backdoor-window", NULL,
+                        test_ecc_backdoor_window);
     qtest_add_data_func("sn1/address-map/directory-backdoor-window", NULL,
                         test_directory_backdoor_window);
     qtest_add_data_func("sn1/address-map/boot-flash-backs-prom-views", NULL,
