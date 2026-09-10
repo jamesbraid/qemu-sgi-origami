@@ -15,6 +15,7 @@
 
 /* Crosstalk space, and the chip's window inside the console widget. */
 #define SPACE_XTALK     0x20000000000ULL
+#define HUB_LOCAL       (SPACE_XTALK + 0x01000000)
 #define CONSOLE_WIDGET  8
 #define BRIDGE_DEVICE2  0x600000
 #define BRIDGE_DEVICE3  0x700000
@@ -93,15 +94,26 @@ static void test_ioc3_attach(QTestState *qts)
 
 /*
  * The interrupt-output timer configuration at 0x2c. The interval count
- * (bits 0-15), the mode (bits 16-18) and the diagnostic bit (30) are
- * writable and read back; the pin-state readback (bit 31) and the reserved
- * field are not stored. The model keeps the configuration; it does not yet
- * drive the timer, which no guest on our path has been seen to depend on.
+ * (bits 0-15) and the normal mode (bits 16-18) are writable and read back;
+ * the pin-state readback (bit 31) and the reserved field are not stored.
+ * Diagnostic behavior remains outside the model's contract.
  */
 #define INT_OUTPUT       (IOC3_BASE + 0x2c)
-#define INT_OUT_RW_MASK  0x4007ffffu
 #define INT_OUT_DIAG     0x40000000u  /* bit 30: diagnostic mode */
 #define INT_OUT_PIN      0x80000000u  /* bit 31: read-only pin readback */
+#define INT_OUT_MODE_LOW  0x00000000u
+#define INT_OUT_MODE_HIGH 0x00040000u
+#define INT_OUT_MODE_ONE_SHOT 0x00050000u
+#define INT_OUT_MODE_PERIODIC 0x00060000u
+#define INT_OUT_MODE_SQUARE 0x00070000u
+#define INT_OUT_TICK_NS    7800LL
+
+/* A later, independent deadline exposes a stale interrupt-output timer. */
+#define PI_RT_COUNT         (HUB_LOCAL + 0x030100)
+#define PI_RT_COMPARE_A     (HUB_LOCAL + 0x000108)
+#define PI_RT_PENDING_A     (HUB_LOCAL + 0x000120)
+#define PI_RT_SENTINEL_TICKS 125ULL
+#define PI_RT_SENTINEL_NS   100000LL
 
 #define INT_SERIAL_A    (1u << 6)
 #define INT_SERIAL_B    (1u << 15)
@@ -318,15 +330,236 @@ static void test_the_interrupt_output_stores_its_configuration(const void *data)
     g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==, 0);
 
     /*
-     * The interval count, the mode and the diagnostic bit are writable and
-     * read back; the pin-state readback and the reserved field are not
-     * stored, so a write there reads back clear.
+     * A supported interval and mode read back; the pin-state readback and
+     * reserved field are not stored, so writes there read back clear.
      */
-    qtest_writel(qts, INT_OUTPUT, INT_OUT_RW_MASK);
-    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==, INT_OUT_RW_MASK);
+    qtest_writel(qts, INT_OUTPUT,
+                 INT_OUT_PIN | 0x00100000u | INT_OUT_MODE_SQUARE | 0xfffe);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==,
+                    INT_OUT_MODE_SQUARE | 0xfffe);
 
-    qtest_writel(qts, INT_OUTPUT, INT_OUT_PIN | INT_OUT_DIAG | 0x00100000u);
-    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==, INT_OUT_DIAG);
+    qtest_quit(qts);
+}
+
+static void assert_rejected_int_out_keeps_periodic(QTestState *qts,
+                                                   uint32_t rejected)
+{
+    const uint32_t accepted = INT_OUT_MODE_PERIODIC | 0x0009;
+
+    qtest_writel(qts, INT_OUTPUT, accepted);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==,
+                    accepted | INT_OUT_PIN);
+
+    qtest_writel(qts, INT_OUTPUT, rejected);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==,
+                    accepted | INT_OUT_PIN);
+
+    qtest_clock_step(qts, 3 * INT_OUT_TICK_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==, accepted);
+
+    qtest_clock_step(qts, 7 * INT_OUT_TICK_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==,
+                    accepted | INT_OUT_PIN);
+}
+
+static void test_undefined_int_out_modes_keep_periodic_output(const void *data)
+{
+    static const uint32_t undefined_modes[] = {
+        0x00010000u,
+        0x00020000u,
+        0x00030000u,
+    };
+    QTestState *qts = qtest_init("-M origin200");
+    size_t i;
+
+    sn0_ioc3_attach(qts);
+
+    for (i = 0; i < ARRAY_SIZE(undefined_modes); i++) {
+        assert_rejected_int_out_keeps_periodic(qts,
+                                               undefined_modes[i] | 0x0009);
+    }
+
+    qtest_quit(qts);
+}
+
+static void test_diagnostic_int_out_keeps_periodic_output(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    sn0_ioc3_attach(qts);
+
+    assert_rejected_int_out_keeps_periodic(
+        qts, INT_OUT_DIAG | INT_OUT_MODE_PERIODIC | 0x0009);
+
+    qtest_quit(qts);
+}
+
+static void test_unsupported_int_out_counts_keep_periodic_output(
+    const void *data)
+{
+    static const uint32_t unsupported_counts[] = {
+        0x0000,
+        0x0001,
+        0xffff,
+    };
+    QTestState *qts = qtest_init("-M origin200");
+    size_t i;
+
+    sn0_ioc3_attach(qts);
+
+    for (i = 0; i < ARRAY_SIZE(unsupported_counts); i++) {
+        assert_rejected_int_out_keeps_periodic(
+            qts, INT_OUT_MODE_PERIODIC | unsupported_counts[i]);
+    }
+
+    qtest_quit(qts);
+}
+
+static void test_fixed_interrupt_output_commands_change_the_state(
+    const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_HIGH);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==,
+                    INT_OUT_PIN);
+
+    qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_LOW);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_one_shot_interrupt_output_has_three_tick_width(
+    const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_ONE_SHOT | 0x0002);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==,
+                    INT_OUT_PIN);
+
+    qtest_clock_step(qts, 3 * INT_OUT_TICK_NS - 1);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==,
+                    INT_OUT_PIN);
+
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_periodic_interrupt_output_interval(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_PERIODIC | 0x0009);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==,
+                    INT_OUT_PIN);
+
+    qtest_clock_step(qts, 3 * INT_OUT_TICK_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==, 0);
+
+    qtest_clock_step(qts, 7 * INT_OUT_TICK_NS - 1);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==, 0);
+
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==,
+                    INT_OUT_PIN);
+
+    qtest_clock_step(qts, 3 * INT_OUT_TICK_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_square_interrupt_output_max_interval(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    const int64_t interval = 0xffffLL * INT_OUT_TICK_NS;
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_SQUARE | 0xfffe);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==, 0);
+
+    qtest_clock_step(qts, interval - 1);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==, 0);
+
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==,
+                    INT_OUT_PIN);
+
+    qtest_clock_step(qts, interval - 1);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==,
+                    INT_OUT_PIN);
+
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_fixed_command_cancels_periodic_output(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_PERIODIC | 0x0009);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==,
+                    INT_OUT_PIN);
+
+    qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_HIGH);
+    qtest_clock_step(qts, 1);
+    qtest_clock_step(qts, 20 * INT_OUT_TICK_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==,
+                    INT_OUT_PIN);
+
+    qtest_quit(qts);
+}
+
+static void test_reset_cancels_an_interrupt_output_timer(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    int64_t now;
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_ONE_SHOT | 0x0002);
+    qtest_clock_step(qts, 1);
+    qtest_clock_step(qts, INT_OUT_TICK_NS);
+
+    qtest_system_reset(qts);
+    sn0_ioc3_attach(qts);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==, 0);
+
+    /*
+     * Arm an independent timer after the old pulse deadline. The Hub timer
+     * must be the next deadline: no new IOC3 command gets a chance to hide a
+     * pre-reset timer which reset failed to delete.
+     */
+    now = qtest_clock_step(qts, 1);
+    qtest_writeq(qts, PI_RT_COUNT, 0);
+    qtest_writeq(qts, PI_RT_PENDING_A, 0);
+    qtest_writeq(qts, PI_RT_COMPARE_A, PI_RT_SENTINEL_TICKS);
+    g_assert_cmpint(qtest_clock_step_next(qts), ==,
+                    now + PI_RT_SENTINEL_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, PI_RT_PENDING_A), ==, 1);
 
     qtest_quit(qts);
 }
@@ -4866,6 +5099,25 @@ int main(int argc, char **argv)
                         test_the_arbiter_reports_idle);
     qtest_add_data_func("sn0/ioc3/interrupt-output-stores-configuration", NULL,
                         test_the_interrupt_output_stores_its_configuration);
+    qtest_add_data_func("sn0/ioc3/undefined-output-mode-keeps-periodic", NULL,
+                        test_undefined_int_out_modes_keep_periodic_output);
+    qtest_add_data_func("sn0/ioc3/diagnostic-output-keeps-periodic", NULL,
+                        test_diagnostic_int_out_keeps_periodic_output);
+    qtest_add_data_func("sn0/ioc3/unsupported-output-count-keeps-periodic",
+                        NULL,
+                        test_unsupported_int_out_counts_keep_periodic_output);
+    qtest_add_data_func("sn0/ioc3/fixed-interrupt-output-commands", NULL,
+                        test_fixed_interrupt_output_commands_change_the_state);
+    qtest_add_data_func("sn0/ioc3/one-shot-interrupt-output-width", NULL,
+                        test_one_shot_interrupt_output_has_three_tick_width);
+    qtest_add_data_func("sn0/ioc3/periodic-interrupt-output-interval", NULL,
+                        test_periodic_interrupt_output_interval);
+    qtest_add_data_func("sn0/ioc3/square-interrupt-output-max-interval", NULL,
+                        test_square_interrupt_output_max_interval);
+    qtest_add_data_func("sn0/ioc3/fixed-command-cancels-periodic-output", NULL,
+                        test_fixed_command_cancels_periodic_output);
+    qtest_add_data_func("sn0/ioc3/reset-cancels-interrupt-output-timer", NULL,
+                        test_reset_cancels_an_interrupt_output_timer);
     qtest_add_data_func("sn0/ioc3/serial-bit-ignores-acknowledgement", NULL,
                         test_a_serial_bit_ignores_an_acknowledgement);
     qtest_add_data_func("sn0/ioc3/second-interrupt-reaches-bridge-pin-3",

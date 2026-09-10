@@ -168,6 +168,89 @@ static void sgi_ioc3_onewire_slot(SGIIOC3State *s, uint32_t val)
                           (level ? SGI_IOC3_MICROLAN_LEVEL : 0);
 }
 
+static void sgi_ioc3_int_out_expire(void *opaque)
+{
+    SGIIOC3State *s = opaque;
+
+    switch (s->int_out_active & SGI_IOC3_INT_OUT_MODE) {
+    case SGI_IOC3_INT_OUT_LOW:
+        s->int_out_state = false;
+        s->int_out_pulse_end = false;
+        break;
+    case SGI_IOC3_INT_OUT_HIGH:
+        s->int_out_state = true;
+        s->int_out_pulse_end = false;
+        break;
+    case SGI_IOC3_INT_OUT_ONE_SHOT:
+        if (!s->int_out_pulse_end) {
+            s->int_out_state = true;
+            s->int_out_pulse_end = true;
+            timer_mod(s->int_out_timer,
+                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                      SGI_IOC3_INT_OUT_PULSE_TICKS *
+                      SGI_IOC3_INT_OUT_TICK_NS);
+        } else {
+            s->int_out_state = false;
+            s->int_out_pulse_end = false;
+        }
+        break;
+    case SGI_IOC3_INT_OUT_PERIODIC:
+        if (!s->int_out_pulse_end) {
+            s->int_out_state = true;
+            s->int_out_pulse_end = true;
+            timer_mod(s->int_out_timer,
+                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                      SGI_IOC3_INT_OUT_PULSE_TICKS *
+                      SGI_IOC3_INT_OUT_TICK_NS);
+        } else if ((s->int_out_active & SGI_IOC3_INT_OUT_COUNT) + 1 <=
+                   SGI_IOC3_INT_OUT_PULSE_TICKS) {
+            timer_mod(s->int_out_timer,
+                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                      SGI_IOC3_INT_OUT_PULSE_TICKS *
+                      SGI_IOC3_INT_OUT_TICK_NS);
+        } else {
+            s->int_out_state = false;
+            s->int_out_pulse_end = false;
+            timer_mod(s->int_out_timer,
+                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                      ((s->int_out_active & SGI_IOC3_INT_OUT_COUNT) + 1 -
+                       SGI_IOC3_INT_OUT_PULSE_TICKS) *
+                      SGI_IOC3_INT_OUT_TICK_NS);
+        }
+        break;
+    case SGI_IOC3_INT_OUT_SQUARE:
+        if (s->int_out_square_started) {
+            s->int_out_state = !s->int_out_state;
+        } else {
+            s->int_out_square_started = true;
+        }
+        timer_mod(s->int_out_timer,
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                  ((s->int_out_active & SGI_IOC3_INT_OUT_COUNT) + 1) *
+                  SGI_IOC3_INT_OUT_TICK_NS);
+        break;
+    }
+}
+
+static bool sgi_ioc3_int_out_command_valid(uint32_t value)
+{
+    uint32_t mode = value & SGI_IOC3_INT_OUT_MODE;
+    uint32_t count = value & SGI_IOC3_INT_OUT_COUNT;
+
+    if (value & SGI_IOC3_INT_OUT_DIAG) {
+        return false;
+    }
+    if (mode == SGI_IOC3_INT_OUT_LOW || mode == SGI_IOC3_INT_OUT_HIGH) {
+        return true;
+    }
+
+    return count >= SGI_IOC3_INT_OUT_MIN_COUNT &&
+           count <= SGI_IOC3_INT_OUT_MAX_COUNT &&
+           (mode == SGI_IOC3_INT_OUT_ONE_SHOT ||
+            mode == SGI_IOC3_INT_OUT_PERIODIC ||
+            mode == SGI_IOC3_INT_OUT_SQUARE);
+}
+
 static uint64_t sgi_ioc3_main_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIIOC3State *s = opaque;
@@ -189,7 +272,8 @@ static uint64_t sgi_ioc3_main_read(void *opaque, hwaddr addr, unsigned size)
         /* Bit 22: arbiter idle, polled by the kernel's console setup. */
         return s->chip_control | SGI_IOC3_CHIP_CTRL_ARB_IDLE;
     case SGI_IOC3_INT_OUTPUT:
-        return s->int_out;
+        return s->int_out |
+               (s->int_out_state ? SGI_IOC3_INT_OUT_STATE : 0);
     case SGI_IOC3_MICROLAN_CONTROL:
         return s->microlan_control;
     case SGI_IOC3_PIN_CONTROL_SET:
@@ -238,13 +322,24 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
         /* Stored: every guest programs the offsets already implemented. */
         s->chip_control = val & SGI_IOC3_CHIP_CTRL_MASK;
         break;
-    case SGI_IOC3_INT_OUTPUT:
-        /*
-         * Stored configuration only. The interval timer and the pin drive
-         * are not modelled; no guest on our path drives them.
-         */
-        s->int_out = val & SGI_IOC3_INT_OUT_MASK;
+    case SGI_IOC3_INT_OUTPUT: {
+        uint32_t int_out = val & SGI_IOC3_INT_OUT_MASK;
+
+        if (!sgi_ioc3_int_out_command_valid(int_out)) {
+            break;
+        }
+
+        s->int_out = int_out;
+        timer_del(s->int_out_timer);
+        s->int_out_active = s->int_out & (SGI_IOC3_INT_OUT_MODE |
+                                          SGI_IOC3_INT_OUT_COUNT);
+        s->int_out_pulse_end = false;
+        s->int_out_square_started = false;
+        /* Queue command completion after the MMIO write returns. */
+        timer_mod(s->int_out_timer,
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1);
         break;
+    }
     case SGI_IOC3_MICROLAN_CONTROL:
         sgi_ioc3_onewire_slot(s, (uint32_t)val);
         break;
@@ -1311,6 +1406,7 @@ static void sgi_ioc3_exit(PCIDevice *dev)
         }
         timer_free(s->sdma_rx_timer[i]);
     }
+    timer_del(s->int_out_timer);
     if (s->board->eth) {
         qdev_unrealize(DEVICE(&s->eth));
     }
@@ -1351,6 +1447,11 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
     s->pin_data = 0;
     s->chip_control = 0;
     s->int_out = 0;
+    s->int_out_active = 0;
+    s->int_out_state = false;
+    s->int_out_pulse_end = false;
+    s->int_out_square_started = false;
+    timer_del(s->int_out_timer);
 }
 
 static void sgi_ioc3_init(Object *obj)
@@ -1364,6 +1465,9 @@ static void sgi_ioc3_init(Object *obj)
     qdev_init_gpio_in_named(DEVICE(obj), sgi_ioc3_kbc_irq, "kbc-irq", 1);
     qdev_init_gpio_in_named(DEVICE(obj), sgi_ioc3_parallel_irq, "parallel-irq",
                             SGI_IOC3_PAR_IRQS);
+
+    s->int_out_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                    sgi_ioc3_int_out_expire, s);
 
     qbus_init(&s->ioc3_bus, sizeof(s->ioc3_bus), TYPE_SGI_IOC3_BUS,
               DEVICE(obj), "ioc3-bus");
@@ -1401,6 +1505,13 @@ static void sgi_ioc3_init(Object *obj)
     object_property_add_alias(obj, "nvram-drive", OBJECT(&s->rtc), "drive");
 }
 
+static void sgi_ioc3_finalize(Object *obj)
+{
+    SGIIOC3State *s = SGI_IOC3(obj);
+
+    timer_free(s->int_out_timer);
+}
+
 /*
  * The 16550s ride in this device's own migration stream rather than being
  * children with a stream each, so a board that fits none has to leave them
@@ -1420,13 +1531,20 @@ static int sgi_ioc3_post_load(void *opaque, int version_id)
 {
     SGIIOC3State *s = opaque;
 
+    if (version_id < 15) {
+        s->int_out_active = 0;
+        s->int_out_state = false;
+        s->int_out_pulse_end = false;
+        s->int_out_square_started = false;
+        timer_del(s->int_out_timer);
+    }
     sgi_ioc3_update_irq(s);
     return 0;
 }
 
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
-    .version_id = 14,
+    .version_id = 15,
     .minimum_version_id = 14,
     .post_load = sgi_ioc3_post_load,
     .fields = (const VMStateField[]) {
@@ -1442,6 +1560,11 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
         VMSTATE_UINT32_ARRAY(sdma_reg, SGIIOC3State, SGI_IOC3_SDMA_REGS),
         VMSTATE_UINT32(chip_control, SGIIOC3State),
         VMSTATE_UINT32(int_out, SGIIOC3State),
+        VMSTATE_UINT32_V(int_out_active, SGIIOC3State, 15),
+        VMSTATE_BOOL_V(int_out_state, SGIIOC3State, 15),
+        VMSTATE_BOOL_V(int_out_pulse_end, SGIIOC3State, 15),
+        VMSTATE_BOOL_V(int_out_square_started, SGIIOC3State, 15),
+        VMSTATE_TIMER_PTR_V(int_out_timer, SGIIOC3State, 15),
         VMSTATE_UINT8_2DARRAY(sdma_packer, SGIIOC3State,
                               SGI_IOC3_SERIAL_PORTS,
                               SGI_IOC3_SDMA_ENTRY_SIZE),
@@ -1509,6 +1632,7 @@ static const TypeInfo sgi_ioc3_types[] = {
         .parent = TYPE_PCI_DEVICE,
         .instance_size = sizeof(SGIIOC3State),
         .instance_init = sgi_ioc3_init,
+        .instance_finalize = sgi_ioc3_finalize,
         .class_init = sgi_ioc3_class_init,
         .interfaces = (const InterfaceInfo[]) {
             { INTERFACE_CONVENTIONAL_PCI_DEVICE },
