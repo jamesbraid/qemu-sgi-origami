@@ -86,6 +86,10 @@
 #define BCM_MBX_RX_STD_PROD_LO  0x026c
 #define BCM_SRAM_WINDOW_BASE    0x8000  /* SRAM through the BAR's high half */
 #define BCM_SRAM_RX_RETURN_RCB  0x0200
+#define BCM_MAC_ADDR_0_HIGH     0x0410
+#define BCM_MAC_ADDR_0_LOW      0x0414
+#define BCM_MISC_CFG            0x6804
+#define BCM_MISCCFG_RESET       0x00000001u
 
 /* Completed-descriptor layout in the return ring (public bge/tg3 map). */
 #define BCM_RXBD_SIZE           32
@@ -109,6 +113,21 @@ static void bar_writel(QTestState *qts, uint32_t off, uint32_t val)
     qtest_writel(qts, WINDOW_BCM + off, val);
 }
 
+static uint32_t bar_readl(QTestState *qts, uint32_t off)
+{
+    return qtest_readl(qts, WINDOW_BCM + off);
+}
+
+static void assert_station_bytes(QTestState *qts, const uint8_t expected[8])
+{
+    unsigned int i;
+
+    for (i = 0; i < 8; i++) {
+        g_assert_cmphex(qtest_readb(qts, WINDOW_BCM +
+                                   BCM_MAC_ADDR_0_HIGH + i), ==, expected[i]);
+    }
+}
+
 static void aim_window_at_bar(QTestState *qts)
 {
     qtest_writel(qts, CFG0(BCM_SLOT) + PCI_BAR0, ADAPTER_MMIO);
@@ -128,6 +147,46 @@ static unsigned count_lines_with(const char *log, const char *needle)
         p += strlen(needle);
     }
     return n;
+}
+
+static void test_station_address_byte_reads(const void *data)
+{
+    static const uint8_t expected[] = {
+        0x00, 0x00, 0x52, 0x54, 0x00, 0xbc, 0x57, 0x01,
+    };
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+
+    aim_window_at_bar(qts);
+
+    g_assert_cmphex(bar_readl(qts, BCM_MAC_ADDR_0_HIGH), ==, 0x00005254u);
+    g_assert_cmphex(bar_readl(qts, BCM_MAC_ADDR_0_LOW), ==, 0x00bc5701u);
+    assert_station_bytes(qts, expected);
+
+    bar_writel(qts, BCM_MAC_ADDR_0_HIGH - 4, 0x55667788);
+    bar_writel(qts, BCM_MAC_ADDR_0_LOW + 4, 0x11223344);
+    g_assert_cmphex(qtest_readb(qts, WINDOW_BCM +
+                               BCM_MAC_ADDR_0_HIGH - 1), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, WINDOW_BCM +
+                               BCM_MAC_ADDR_0_LOW + 4), ==, 0);
+    g_assert_cmphex(qtest_readw(qts, WINDOW_BCM +
+                               BCM_MAC_ADDR_0_HIGH), ==, 0);
+
+    qtest_writeb(qts, WINDOW_BCM + BCM_MAC_ADDR_0_HIGH, 0);
+    qtest_writew(qts, WINDOW_BCM + BCM_MAC_ADDR_0_LOW, 0);
+    qtest_writeb(qts, WINDOW_BCM + BCM_MAC_ADDR_0_LOW + 4, 0);
+    g_assert_cmphex(bar_readl(qts, BCM_MAC_ADDR_0_HIGH), ==, 0x00005254u);
+    g_assert_cmphex(bar_readl(qts, BCM_MAC_ADDR_0_LOW), ==, 0x00bc5701u);
+    g_assert_cmphex(bar_readl(qts, BCM_MAC_ADDR_0_HIGH - 4), ==, 0x55667788);
+    g_assert_cmphex(bar_readl(qts, BCM_MAC_ADDR_0_LOW + 4), ==, 0x11223344);
+
+    bar_writel(qts, BCM_MAC_ADDR_0_HIGH, 0x0000a1a2);
+    bar_writel(qts, BCM_MAC_ADDR_0_LOW, 0xa3a4a5a6);
+    bar_writel(qts, BCM_MISC_CFG, BCM_MISCCFG_RESET);
+    g_assert_cmphex(bar_readl(qts, BCM_MAC_ADDR_0_HIGH), ==, 0x00005254u);
+    g_assert_cmphex(bar_readl(qts, BCM_MAC_ADDR_0_LOW), ==, 0x00bc5701u);
+    assert_station_bytes(qts, expected);
+
+    qtest_quit(qts);
 }
 
 /*
@@ -416,6 +475,8 @@ int main(int argc, char **argv)
                         test_dma_rides_plain_route);
     qtest_add_data_func("/sn0/bcm570x/receive-descriptor-big-endian", NULL,
                         test_receive_descriptor_big_endian);
+    qtest_add_data_func("/sn0/bcm570x/station-address-byte-reads", NULL,
+                        test_station_address_byte_reads);
 
     return g_test_run();
 }

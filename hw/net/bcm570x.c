@@ -1582,6 +1582,11 @@ static uint64_t bcm570x_bar0_read(void *opaque, hwaddr addr, unsigned size)
 {
     Bcm570xState *s = opaque;
 
+    if (size == 1) {
+        uint32_t val = bcm570x_reg_read(s, addr & ~3);
+
+        return extract32(val, (addr & 3) * 8, 8);
+    }
     if (addr < BCM570X_PCI_CFG_ALIAS) {
         return bcm570x_config_read(PCI_DEVICE(s), addr, size);
     }
@@ -1607,10 +1612,23 @@ static void bcm570x_bar0_write(void *opaque, hwaddr addr, uint64_t val,
     bcm570x_sram_write(s, bcm570x_window_sram_off(s, addr), val);
 }
 
+static bool bcm570x_bar0_accepts(void *opaque, hwaddr addr, unsigned size,
+                                 bool is_write, MemTxAttrs attrs)
+{
+    if (size == 4) {
+        return !(addr & 3);
+    }
+
+    return size == 1 && !is_write &&
+           addr >= BCM570X_MAC_ADDR_0_HIGH &&
+           addr < BCM570X_MAC_ADDR_0_LOW + 4;
+}
+
 /*
  * The register file and the SRAM are 32-bit-accessed. impl.min/max pin the
  * width so the memory core never chops a wide access into repeated calls
- * (which would run a register's side effects twice) nor widens a narrow one.
+ * (which would run a register's side effects twice). The only narrow access
+ * the chip accepts is a read from the first station-address pair.
  *
  * The declared endianness is DEVICE_LITTLE_ENDIAN: the part is little-endian
  * native (the ISP1040 precedent for these controllers), so the register file
@@ -1625,11 +1643,12 @@ static const MemoryRegionOps bcm570x_bar0_ops = {
     .write = bcm570x_bar0_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
-        .min_access_size = 4,
+        .min_access_size = 1,
         .max_access_size = 4,
+        .accepts = bcm570x_bar0_accepts,
     },
     .impl = {
-        .min_access_size = 4,
+        .min_access_size = 1,
         .max_access_size = 4,
     },
 };
