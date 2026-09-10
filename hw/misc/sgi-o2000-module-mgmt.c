@@ -270,11 +270,35 @@ static void mgmt_message_expired(void *opaque)
     s->pending_messages = 0;
 }
 
+/*
+ * Every line this device drives goes through here, so a line it must not
+ * drive stays undriven whatever order a machine connected it in. Realize
+ * already refuses a declaration without its output and an output without
+ * its declaration, and this keeps the two from depending on that order.
+ */
+static void mgmt_drive_pulse_lines(SGIO2000ModuleMgmtState *s, bool reset,
+                                   bool nmi)
+{
+    if (s->can_reset) {
+        qemu_set_irq(s->reset_out, reset);
+    }
+    if (s->can_nmi) {
+        qemu_set_irq(s->nmi_out, nmi);
+    }
+}
+
+static void mgmt_drive_power(SGIO2000ModuleMgmtState *s)
+{
+    if (s->can_power) {
+        qemu_set_irq(s->power_out, s->power_on);
+    }
+}
+
 static void mgmt_pulse_complete(void *opaque)
 {
     SGIO2000ModuleMgmtState *s = opaque;
 
-    qemu_set_irq(s->pulse_nmi ? s->nmi_out : s->reset_out, 0);
+    mgmt_drive_pulse_lines(s, false, false);
     s->pulse_active = false;
     s->pulse_nmi = false;
     mgmt_reinitialize(s);
@@ -285,6 +309,13 @@ static void mgmt_pulse_complete(void *opaque)
 
 static bool mgmt_start_pulse(SGIO2000ModuleMgmtState *s, bool nmi)
 {
+    if (!(nmi ? s->can_nmi : s->can_reset)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-o2000-module-management: %s requested on a module "
+                      "that declares no %s path\n", nmi ? "NMI" : "reset",
+                      nmi ? "NMI" : "reset");
+        return false;
+    }
     if (s->pulse_active) {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-o2000-module-management: %s requested during a %s "
@@ -294,7 +325,7 @@ static bool mgmt_start_pulse(SGIO2000ModuleMgmtState *s, bool nmi)
     }
     s->pulse_active = true;
     s->pulse_nmi = nmi;
-    qemu_set_irq(nmi ? s->nmi_out : s->reset_out, 1);
+    mgmt_drive_pulse_lines(s, !nmi, nmi);
     s->pulse_deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + PULSE_NS;
     timer_mod_ns(s->pulse_timer, s->pulse_deadline);
     return true;
@@ -310,24 +341,32 @@ bool sgi_o2000_module_mgmt_pulse_nmi(SGIO2000ModuleMgmtState *s)
     return mgmt_start_pulse(s, true);
 }
 
-void sgi_o2000_module_mgmt_set_power(SGIO2000ModuleMgmtState *s, bool on)
+bool sgi_o2000_module_mgmt_set_power(SGIO2000ModuleMgmtState *s, bool on)
 {
+    if (!s->can_power) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-o2000-module-management: power %s requested on a "
+                      "module that declares no power path\n",
+                      on ? "up" : "down");
+        return false;
+    }
     if (!on) {
         /* Publication stops before module reset and power sequencing. */
         s->publication_enabled = false;
         s->power_on = false;
         mgmt_reinitialize(s);
-        qemu_set_irq(s->power_out, 0);
-        return;
+        mgmt_drive_power(s);
+        return true;
     }
     s->power_on = true;
-    qemu_set_irq(s->power_out, 1);
+    mgmt_drive_power(s);
     /*
      * The interface is initialised once reset is released, then publication
      * is enabled.
      */
     mgmt_reinitialize(s);
     s->publication_enabled = true;
+    return true;
 }
 
 void sgi_o2000_module_mgmt_set_controller_request(SGIO2000ModuleMgmtState *s,
@@ -408,30 +447,46 @@ DeviceState *sgi_o2000_module_mgmt_get_adapter(SGIO2000ModuleMgmtState *s,
 }
 
 /*
- * A destructive command must not be acknowledged unless it will happen. The
- * lines are required at realize, so the reachable refusal is a command that
- * arrives while a pulse is still running. No source settles that overlap, so
- * every destructive action is refused for the duration rather than each
- * being given a different answer. That is a model choice, not a fact.
+ * A destructive command must not be acknowledged unless it will happen. A
+ * module declares each action it can carry out, so an installation whose
+ * reset or power path belongs to something outside this model refuses the
+ * command instead of answering for a line that reaches nothing.
+ *
+ * A declared action is still refused while a pulse runs. No source settles
+ * that overlap, so every destructive action is refused for the duration
+ * rather than each being given a different answer. That is a model choice,
+ * not a fact.
  */
 bool sgi_o2000_module_mgmt_can_execute(SGIO2000ModuleMgmtState *s,
                                        SGIElscAction action)
 {
+    bool declared;
+
+    switch (action) {
+    case SGI_ELSC_ACTION_RESET:
+        declared = s->can_reset;
+        break;
+    case SGI_ELSC_ACTION_CYCLE:
+    case SGI_ELSC_ACTION_SHUTDOWN:
+        declared = s->can_power;
+        break;
+    default:
+        return false;
+    }
+    if (!declared) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-o2000-module-management: destructive command "
+                      "refused, this module declares no %s path\n",
+                      action == SGI_ELSC_ACTION_RESET ? "reset" : "power");
+        return false;
+    }
     if (s->pulse_active) {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-o2000-module-management: destructive command "
                       "during a %s pulse\n", s->pulse_nmi ? "NMI" : "reset");
         return false;
     }
-    switch (action) {
-    case SGI_ELSC_ACTION_RESET:
-        return s->reset_out != NULL;
-    case SGI_ELSC_ACTION_CYCLE:
-    case SGI_ELSC_ACTION_SHUTDOWN:
-        return s->power_out != NULL;
-    default:
-        return false;
-    }
+    return true;
 }
 
 static bool mgmt_elsc_can_execute(void *opaque, SGIElscAction action)
@@ -442,20 +497,30 @@ static bool mgmt_elsc_can_execute(void *opaque, SGIElscAction action)
 static void mgmt_elsc_execute(void *opaque, SGIElscAction action)
 {
     SGIO2000ModuleMgmtState *s = opaque;
+    bool done;
 
     switch (action) {
     case SGI_ELSC_ACTION_RESET:
-        sgi_o2000_module_mgmt_pulse_reset(s);
+        done = sgi_o2000_module_mgmt_pulse_reset(s);
         break;
     case SGI_ELSC_ACTION_CYCLE:
-        sgi_o2000_module_mgmt_set_power(s, false);
-        sgi_o2000_module_mgmt_set_power(s, true);
+        done = sgi_o2000_module_mgmt_set_power(s, false) &&
+               sgi_o2000_module_mgmt_set_power(s, true);
         break;
     case SGI_ELSC_ACTION_SHUTDOWN:
-        sgi_o2000_module_mgmt_set_power(s, false);
+        done = sgi_o2000_module_mgmt_set_power(s, false);
         break;
     default:
         g_assert_not_reached();
+    }
+    /*
+     * The controller only reaches this after can_execute cleared the action,
+     * so a refusal here means the two disagree.
+     */
+    if (!done) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-o2000-module-management: an acknowledged action "
+                      "did not happen\n");
     }
 }
 
@@ -535,15 +600,38 @@ static void mgmt_realize(DeviceState *dev, Error **errp)
     SGIO2000ModuleMgmtState *s = SGI_O2000_MODULE_MGMT(dev);
     unsigned i;
 
+    const struct {
+        const char *line_name;
+        const char *capability;
+        bool declared;
+        qemu_irq line;
+    } actions[] = {
+        { "reset", "can-reset", s->can_reset, s->reset_out },
+        { "nmi",   "can-nmi",   s->can_nmi,   s->nmi_out   },
+        { "power", "can-power", s->can_power, s->power_out },
+    };
+
     /*
-     * Every action the controller can acknowledge needs somewhere to happen.
-     * Refusing here turns an unwired machine into a startup error instead of
-     * a command that answers "ok" for a reset nothing carries out.
+     * A declaration and its output go together in both directions. Without
+     * the output a declared command would answer "ok" for something nothing
+     * carries out; without the declaration a connected line would be driven
+     * by a module that refuses every command that drives it. Declaring
+     * nothing and connecting nothing is a whole configuration of its own,
+     * and those commands are refused.
      */
-    if (!s->reset_out || !s->nmi_out || !s->power_out) {
-        error_setg(errp, "module management needs its reset, nmi and power "
-                   "outputs connected before realize");
-        return;
+    for (i = 0; i < ARRAY_SIZE(actions); i++) {
+        if (actions[i].declared && !actions[i].line) {
+            error_setg(errp, "module management declares %s without "
+                       "connecting its %s output",
+                       actions[i].capability, actions[i].line_name);
+            return;
+        }
+        if (!actions[i].declared && actions[i].line) {
+            error_setg(errp, "module management connects its %s output "
+                       "without declaring %s",
+                       actions[i].line_name, actions[i].capability);
+            return;
+        }
     }
 
     if (i2c_bus_enable_wire(s->bus, SGI_O2000_WIRE_MASTERS, NULL, NULL)) {
@@ -588,7 +676,7 @@ static void mgmt_realize(DeviceState *dev, Error **errp)
     mgmt_reset_state(s);
     s->power_on = true;
     s->publication_enabled = true;
-    qemu_set_irq(s->power_out, 1);
+    mgmt_drive_power(s);
     s->service_deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                           SERVICE_PERIOD_NS;
     timer_mod_ns(s->service_timer, s->service_deadline);
@@ -645,12 +733,11 @@ static void mgmt_reset_hold(Object *obj, ResetType type)
     timer_del(s->pulse_timer);
     s->pulse_active = false;
     s->pulse_nmi = false;
-    qemu_set_irq(s->reset_out, 0);
-    qemu_set_irq(s->nmi_out, 0);
+    mgmt_drive_pulse_lines(s, false, false);
     mgmt_reset_state(s);
     s->power_on = true;
     s->publication_enabled = true;
-    qemu_set_irq(s->power_out, 1);
+    mgmt_drive_power(s);
     s->service_deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                           SERVICE_PERIOD_NS;
     timer_mod_ns(s->service_timer, s->service_deadline);
@@ -675,15 +762,13 @@ static int mgmt_post_load(void *opaque, int version_id)
         timer_del(s->message_timer);
     }
     if (s->pulse_active) {
-        qemu_set_irq(s->pulse_nmi ? s->nmi_out : s->reset_out, 1);
-        qemu_set_irq(s->pulse_nmi ? s->reset_out : s->nmi_out, 0);
+        mgmt_drive_pulse_lines(s, !s->pulse_nmi, s->pulse_nmi);
         timer_mod_ns(s->pulse_timer, s->pulse_deadline);
     } else {
-        qemu_set_irq(s->reset_out, 0);
-        qemu_set_irq(s->nmi_out, 0);
+        mgmt_drive_pulse_lines(s, false, false);
         timer_del(s->pulse_timer);
     }
-    qemu_set_irq(s->power_out, s->power_on);
+    mgmt_drive_power(s);
     return 0;
 }
 
@@ -724,6 +809,9 @@ static const VMStateDescription vmstate_sgi_o2000_module_mgmt = {
 static const Property mgmt_properties[] = {
     DEFINE_PROP_UINT8("module-number", SGIO2000ModuleMgmtState,
                       module_number, 1),
+    DEFINE_PROP_BOOL("can-reset", SGIO2000ModuleMgmtState, can_reset, false),
+    DEFINE_PROP_BOOL("can-nmi", SGIO2000ModuleMgmtState, can_nmi, false),
+    DEFINE_PROP_BOOL("can-power", SGIO2000ModuleMgmtState, can_power, false),
 };
 
 static void mgmt_class_init(ObjectClass *klass, const void *data)

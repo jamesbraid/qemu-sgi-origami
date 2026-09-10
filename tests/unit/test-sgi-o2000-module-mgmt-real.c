@@ -101,6 +101,9 @@ static void setup(Fixture *f, gconstpointer options)
      */
     memset(f, 0, sizeof(*f));
     for (i = 0; i < ARRAY_SIZE(names); i++) {
+        g_autofree char *capability = g_strdup_printf("can-%s", names[i]);
+
+        qdev_prop_set_bit(dev, capability, true);
         qdev_connect_gpio_out_named(dev, names[i], 0,
                                     qemu_allocate_irq(line_handler, f, i));
     }

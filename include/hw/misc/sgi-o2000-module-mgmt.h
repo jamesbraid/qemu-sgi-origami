@@ -56,6 +56,16 @@ struct SGIO2000ModuleMgmtState {
     /* Model-derived identity written into the reserved NVRAM region. */
     uint8_t module_number;
 
+    /*
+     * Which destructive actions this installation can carry out. Each is off
+     * until a machine declares it, and realize requires the declaration and
+     * the matching output to arrive together, so an action with nowhere to
+     * happen is refused rather than answered.
+     */
+    bool can_reset;
+    bool can_nmi;
+    bool can_power;
+
     I2CBus *bus;
     DeviceState *adapters[SGI_O2000_ADAPTER_COUNT];
     SGIElscState *msc;
@@ -118,7 +128,11 @@ void sgi_o2000_module_mgmt_message_fetched(SGIO2000ModuleMgmtState *s,
                                            unsigned processor);
 void sgi_o2000_module_mgmt_set_publication(SGIO2000ModuleMgmtState *s,
                                            bool enabled);
-void sgi_o2000_module_mgmt_set_power(SGIO2000ModuleMgmtState *s, bool on);
+/*
+ * Raise or drop the module power line, answering false on a module that
+ * declares no power path.
+ */
+bool sgi_o2000_module_mgmt_set_power(SGIO2000ModuleMgmtState *s, bool on);
 /*
  * Whether a destructive controller command can be carried out now. A command
  * this answers false for must be refused rather than acknowledged.
@@ -127,7 +141,8 @@ bool sgi_o2000_module_mgmt_can_execute(SGIO2000ModuleMgmtState *s,
                                        SGIElscAction action);
 /*
  * Drive the reviewed hundred-millisecond pulse. Both refuse, and answer
- * false, while a pulse is already running: nothing settles that overlap.
+ * false, on a module that declares no path for that action, and while a
+ * pulse is already running: nothing settles that overlap.
  */
 bool sgi_o2000_module_mgmt_pulse_reset(SGIO2000ModuleMgmtState *s);
 bool sgi_o2000_module_mgmt_pulse_nmi(SGIO2000ModuleMgmtState *s);
