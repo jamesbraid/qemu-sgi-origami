@@ -8,8 +8,8 @@
  * so its own register contract, ring engines, and DMA byte order are proven
  * here with no host-bridge assumption. The device's native little-endian DMA
  * composed with the SGI Origin 200 Bridge's per-slot byte-swap correction is a
- * separate machine-level concern, validated by the IRIX boot, not by a qtest
- * (see docs/library/nic-on-bridge-conventions.md).
+ * separate machine-level concern, validated by sn0-bcm570x-test.c (see
+ * docs/library/nic-on-bridge-conventions.md).
  *
  * The card carries the SGI IRIS Release 2 Gigabit board's PCI four-tuple:
  * IRIX's tg driver registers on the raw Broadcom primary vendor/device and then,
@@ -65,6 +65,8 @@
 
 /* Register-file offsets and bits the bring-up polls exercise. */
 #define BCM_MAC_MODE            0x0400u
+#define BCM_MAC_ADDR_0_HIGH     0x0410u
+#define BCM_MAC_ADDR_0_LOW      0x0414u
 #define BCM_HCC_MODE            0x3c00u
 #define BCM_MISC_CFG            0x6804u
 #define BCM_MODE_RESET          0x00000001u
@@ -159,8 +161,6 @@
 #define BCM_TXBDFLAG_INSERT_SRC_ADDR 0x1000u
 #define BCM_TXBDFLAG_CHOOSE_SRC_ADDR(n) ((n) << 13)
 #define BCM_TXBDFLAG_LEGACY_SEGMENTATION_BITS 0x7000u
-#define BCM_MAC_ADDR_0_HIGH     0x0410u
-#define BCM_MAC_ADDR_0_LOW      0x0414u
 #define BCM_MAC_ADDR_STRIDE     8u
 #define BCM_SOURCE_TX_RING_LEN  8u
 #define BCM_STATFLAG_UPDATED    0x00000001u
@@ -297,9 +297,42 @@ static uint32_t bar_readl(Bcm *b, uint32_t off)
     return qpci_io_readl(b->dev, b->bar, off);
 }
 
+static uint8_t bar_readb(Bcm *b, uint32_t off)
+{
+    return qpci_io_readb(b->dev, b->bar, off);
+}
+
 static void bar_writel(Bcm *b, uint32_t off, uint32_t val)
 {
     qpci_io_writel(b->dev, b->bar, off, val);
+}
+
+static void assert_station_bytes(Bcm *b, const uint8_t expected[8])
+{
+    unsigned int i;
+
+    for (i = 0; i < 8; i++) {
+        g_assert_cmphex(bar_readb(b, BCM_MAC_ADDR_0_HIGH + i), ==,
+                        expected[i]);
+    }
+}
+
+static void assert_station_bytes_dev(QPCIDevice *dev, QPCIBar bar,
+                                     uint32_t high, uint32_t low)
+{
+    const uint8_t expected[] = {
+        (uint8_t)high, (uint8_t)(high >> 8),
+        (uint8_t)(high >> 16), (uint8_t)(high >> 24),
+        (uint8_t)low, (uint8_t)(low >> 8),
+        (uint8_t)(low >> 16), (uint8_t)(low >> 24),
+    };
+    unsigned int i;
+
+    for (i = 0; i < 8; i++) {
+        g_assert_cmphex(qpci_io_readb(dev, bar,
+                                     BCM_MAC_ADDR_0_HIGH + i), ==,
+                        expected[i]);
+    }
 }
 
 /* The indirect register window (config 0x78/0x80) into the register file. */
@@ -897,6 +930,9 @@ static void test_mac_address_mailbox(const void *data)
  */
 static void test_mac_address_registers(const void *data)
 {
+    static const uint8_t expected[] = {
+        0x54, 0x52, 0x00, 0x00, 0xef, 0xcd, 0xab, 0x00,
+    };
     Bcm b;
     QTestState *qts = qtest_initf(BCM_MACHINE
                                   " -netdev user,id=n0"
@@ -906,9 +942,37 @@ static void test_mac_address_registers(const void *data)
     bcm_open(&b, qts);
 
     /* MAC_ADDR_0_HIGH: the first two address bytes, in the low half. */
-    g_assert_cmphex(bar_readl(&b, 0x0410), ==, 0x00005254u);
+    g_assert_cmphex(bar_readl(&b, BCM_MAC_ADDR_0_HIGH), ==, 0x00005254u);
     /* MAC_ADDR_0_LOW: the remaining four address bytes. */
-    g_assert_cmphex(bar_readl(&b, 0x0414), ==, 0x00abcdefu);
+    g_assert_cmphex(bar_readl(&b, BCM_MAC_ADDR_0_LOW), ==, 0x00abcdefu);
+    assert_station_bytes(&b, expected);
+
+    bar_writel(&b, BCM_MAC_ADDR_0_HIGH - 4, 0x55667788);
+    bar_writel(&b, BCM_MAC_ADDR_0_LOW + 4, 0x11223344);
+    /*
+     * Only this pair permits narrow reads. Adjacent byte reads and halfword
+     * accesses remain rejected by the register file.
+     */
+    g_assert_cmphex(bar_readb(&b, BCM_MAC_ADDR_0_HIGH - 1), ==, 0);
+    g_assert_cmphex(bar_readb(&b, BCM_MAC_ADDR_0_LOW + 4), ==, 0);
+    g_assert_cmphex(qpci_io_readw(b.dev, b.bar, BCM_MAC_ADDR_0_HIGH), ==,
+                    0);
+
+    /* Narrow writes are not part of the byte-read contract. */
+    qpci_io_writeb(b.dev, b.bar, BCM_MAC_ADDR_0_HIGH, 0);
+    qpci_io_writew(b.dev, b.bar, BCM_MAC_ADDR_0_LOW, 0);
+    qpci_io_writeb(b.dev, b.bar, BCM_MAC_ADDR_0_LOW + 4, 0);
+    g_assert_cmphex(bar_readl(&b, BCM_MAC_ADDR_0_HIGH), ==, 0x00005254u);
+    g_assert_cmphex(bar_readl(&b, BCM_MAC_ADDR_0_LOW), ==, 0x00abcdefu);
+    g_assert_cmphex(bar_readl(&b, BCM_MAC_ADDR_0_HIGH - 4), ==, 0x55667788);
+    g_assert_cmphex(bar_readl(&b, BCM_MAC_ADDR_0_LOW + 4), ==, 0x11223344);
+
+    bar_writel(&b, BCM_MAC_ADDR_0_HIGH, 0x0000a1a2);
+    bar_writel(&b, BCM_MAC_ADDR_0_LOW, 0xa3a4a5a6);
+    bar_writel(&b, BCM_MISC_CFG, BCM_MISCCFG_RESET);
+    g_assert_cmphex(bar_readl(&b, BCM_MAC_ADDR_0_HIGH), ==, 0x00005254u);
+    g_assert_cmphex(bar_readl(&b, BCM_MAC_ADDR_0_LOW), ==, 0x00abcdefu);
+    assert_station_bytes(&b, expected);
 
     bcm_close(&b);
 }
@@ -5136,6 +5200,12 @@ static void test_periodic_status_survives_migration(const void *data)
  */
 static void test_state_survives_migration(const void *data)
 {
+    static const uint8_t migrated_station[] = {
+        0xa2, 0xa1, 0x00, 0x00, 0xa6, 0xa5, 0xa4, 0xa3,
+    };
+    static const uint8_t reset_station[] = {
+        0x54, 0x52, 0x00, 0x00, 0x33, 0x22, 0x11, 0x00,
+    };
     g_autofree gchar *tmpfs = NULL;
     g_autofree gchar *uri = NULL;
     g_autofree gchar *dest = NULL;
@@ -5159,6 +5229,8 @@ static void test_state_survives_migration(const void *data)
 
     /* An SRAM word reset does not touch, so its survival is unambiguous. */
     ind_mem_writel(&from, 0x0c1c, sram_sentinel);
+    bar_writel(&from, BCM_MAC_ADDR_0_HIGH, 0x0000a1a2);
+    bar_writel(&from, BCM_MAC_ADDR_0_LOW, 0xa3a4a5a6);
 
     /* Enable interrupts and leave the line asserted at the migration point. */
     bar_writel(&from, BCM_MBX_IRQ0_LO, 0);
@@ -5177,6 +5249,9 @@ static void test_state_survives_migration(const void *data)
     g_assert_cmphex(ind_reg_readl(&to, BCM_HCC_STATUSBLK_LO), ==,
                     STATUS_PHYS & 0xffffffff);
     g_assert_cmphex(ind_mem_readl(&to, 0x0c1c), ==, sram_sentinel);
+    g_assert_cmphex(bar_readl(&to, BCM_MAC_ADDR_0_HIGH), ==, 0x0000a1a2);
+    g_assert_cmphex(bar_readl(&to, BCM_MAC_ADDR_0_LOW), ==, 0xa3a4a5a6);
+    assert_station_bytes(&to, migrated_station);
 
     /* The interrupt config came across, line still asserted. */
     g_assert_true(intr_line_up(to.dev));
@@ -5188,6 +5263,11 @@ static void test_state_survives_migration(const void *data)
     g_assert_false(intr_line_up(to.dev));
     qpci_config_writel(to.dev, BCM_PCI_MISC_CTL, misc);
     g_assert_true(intr_line_up(to.dev));
+
+    bar_writel(&to, BCM_MISC_CFG, BCM_MISCCFG_RESET);
+    g_assert_cmphex(bar_readl(&to, BCM_MAC_ADDR_0_HIGH), ==, 0x00005254u);
+    g_assert_cmphex(bar_readl(&to, BCM_MAC_ADDR_0_LOW), ==, 0x00112233u);
+    assert_station_bytes(&to, reset_station);
 
     bcm_close(&to);
     bcm_close(&from);
@@ -5309,6 +5389,8 @@ static void test_dual_port_present_and_independent(const void *data)
     QPCIDevice *fn1 = qpci_device_find(bus, QPCI_DEVFN(BCM_SLOT, 1));
     uint8_t sb0[BCM_STATUS_BLK_SIZE], sb1[BCM_STATUS_BLK_SIZE];
     QPCIDevice *fns[2];
+    QPCIBar bars[2];
+    uint8_t station[2][8];
     unsigned i;
 
     g_assert_nonnull(fn0);
@@ -5324,6 +5406,8 @@ static void test_dual_port_present_and_independent(const void *data)
         g_assert_cmphex(qpci_config_readl(fns[i], PCI_SUBSYSTEM_VENDOR_ID), ==,
                         BCM_SUBSYS_VENDOR_ID |
                         ((uint32_t)BCM_SUBSYS_ID_BCM5704 << 16));
+        qpci_device_enable(fns[i]);
+        bars[i] = qpci_iomap(fns[i], 0, NULL);
     }
 
     /* Function 0 sets the PCI_HEADER_TYPE multifunction bit, so a guest
@@ -5337,6 +5421,13 @@ static void test_dual_port_present_and_independent(const void *data)
     g_assert_cmphex(ind_mem_readl_dev(fn1, 0x0c14) >> 16, ==, 0x484b);
     g_assert_cmphex(ind_mem_readl_dev(fn0, 0x0c18), !=,
                     ind_mem_readl_dev(fn1, 0x0c18));
+    for (i = 0; i < 8; i++) {
+        station[0][i] = qpci_io_readb(fn0, bars[0],
+                                     BCM_MAC_ADDR_0_HIGH + i);
+        station[1][i] = qpci_io_readb(fn1, bars[1],
+                                     BCM_MAC_ADDR_0_HIGH + i);
+    }
+    g_assert_cmpint(memcmp(station[0], station[1], sizeof(station[0])), !=, 0);
 
     /* Arm each function's engine through its own config space. */
     dual5704_arm(fn0, STATUS_PHYS);
@@ -5357,6 +5448,8 @@ static void test_dual_port_present_and_independent(const void *data)
     qtest_memread(qts, STATUS2_PHYS, sb1, sizeof(sb1));
     g_assert_cmphex(get32le(sb1) & BCM_STATFLAG_UPDATED, ==, BCM_STATFLAG_UPDATED);
 
+    qpci_iounmap(fn0, bars[0]);
+    qpci_iounmap(fn1, bars[1]);
     g_free(fn0);
     g_free(fn1);
     qpci_free_pc(bus);
@@ -5379,6 +5472,8 @@ static void test_dual_port_survives_migration(const void *data)
     QTestState *from, *to;
     QPCIBus *from_bus, *to_bus;
     QPCIDevice *from0, *from1, *to0, *to1;
+    QPCIBar to_bar0, to_bar1;
+    uint32_t configured_high[2], configured_low[2];
 
     tmpfs = g_dir_make_tmp("bcm570x-test-XXXXXX", &err);
     g_assert(tmpfs);
@@ -5393,8 +5488,16 @@ static void test_dual_port_survives_migration(const void *data)
     from1 = qpci_device_find(from_bus, QPCI_DEVFN(BCM_SLOT, 1));
     g_assert_nonnull(from0);
     g_assert_nonnull(from1);
+    configured_high[0] = ind_reg_readl_dev(from0, BCM_MAC_ADDR_0_HIGH);
+    configured_high[1] = ind_reg_readl_dev(from1, BCM_MAC_ADDR_0_HIGH);
+    configured_low[0] = ind_reg_readl_dev(from0, BCM_MAC_ADDR_0_LOW);
+    configured_low[1] = ind_reg_readl_dev(from1, BCM_MAC_ADDR_0_LOW);
     ind_mem_writel_dev(from0, 0x0c1c, 0xaaaa0000);
     ind_mem_writel_dev(from1, 0x0c1c, 0xbbbb1111);
+    ind_reg_writel_dev(from0, BCM_MAC_ADDR_0_HIGH, 0x0000a1a2);
+    ind_reg_writel_dev(from0, BCM_MAC_ADDR_0_LOW, 0xa3a4a5a6);
+    ind_reg_writel_dev(from1, BCM_MAC_ADDR_0_HIGH, 0x0000b1b2);
+    ind_reg_writel_dev(from1, BCM_MAC_ADDR_0_LOW, 0xb3b4b5b6);
 
     dest = g_strdup_printf(BCM_MACHINE
                            " -netdev user,id=n0"
@@ -5408,9 +5511,39 @@ static void test_dual_port_survives_migration(const void *data)
     g_assert_nonnull(to1);
     bcm570x_migrate(from, uri);
 
+    qpci_device_enable(to0);
+    qpci_device_enable(to1);
+    to_bar0 = qpci_iomap(to0, 0, NULL);
+    to_bar1 = qpci_iomap(to1, 0, NULL);
+
     g_assert_cmphex(ind_mem_readl_dev(to0, 0x0c1c), ==, 0xaaaa0000);
     g_assert_cmphex(ind_mem_readl_dev(to1, 0x0c1c), ==, 0xbbbb1111);
+    assert_station_bytes_dev(to0, to_bar0, 0x0000a1a2, 0xa3a4a5a6);
+    assert_station_bytes_dev(to1, to_bar1, 0x0000b1b2, 0xb3b4b5b6);
 
+    ind_reg_writel_dev(to0, BCM_MISC_CFG, BCM_MISCCFG_RESET);
+    g_assert_cmphex(ind_reg_readl_dev(to0, BCM_MAC_ADDR_0_HIGH), ==,
+                    configured_high[0]);
+    g_assert_cmphex(ind_reg_readl_dev(to0, BCM_MAC_ADDR_0_LOW), ==,
+                    configured_low[0]);
+    g_assert_cmphex(ind_reg_readl_dev(to1, BCM_MAC_ADDR_0_HIGH), ==,
+                    0x0000b1b2);
+    g_assert_cmphex(ind_reg_readl_dev(to1, BCM_MAC_ADDR_0_LOW), ==,
+                    0xb3b4b5b6);
+
+    ind_reg_writel_dev(to1, BCM_MISC_CFG, BCM_MISCCFG_RESET);
+    g_assert_cmphex(ind_reg_readl_dev(to1, BCM_MAC_ADDR_0_HIGH), ==,
+                    configured_high[1]);
+    g_assert_cmphex(ind_reg_readl_dev(to1, BCM_MAC_ADDR_0_LOW), ==,
+                    configured_low[1]);
+    assert_station_bytes_dev(to0, to_bar0,
+                             configured_high[0], configured_low[0]);
+    assert_station_bytes_dev(to1, to_bar1,
+                             configured_high[1], configured_low[1]);
+    g_assert_cmphex(configured_low[0], !=, configured_low[1]);
+
+    qpci_iounmap(to0, to_bar0);
+    qpci_iounmap(to1, to_bar1);
     g_free(from0);
     g_free(from1);
     g_free(to0);
