@@ -781,6 +781,7 @@ static uint32_t sgi_bridge_identification(SGIBridgeState *s)
  * deliberately and fails on any synchronous exception.
  */
 static void sgi_bridge_raise_host_error(SGIBridgeState *s);
+static void sgi_bridge_send_interrupt(SGIBridgeState *s, int pin, bool set);
 
 static void sgi_bridge_invalid_address(SGIBridgeState *s, hwaddr addr,
                                        bool is_write)
@@ -886,6 +887,7 @@ static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
     SGIBridgeState *s = opaque;
     const SGIBridgeReg *reg = sgi_bridge_reg(addr);
     uint32_t *held;
+    uint32_t old;
     unsigned int slot;
 
     /* An undefined address in the block posts and flags rather than faulting. */
@@ -911,6 +913,7 @@ static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
         }
         return;
     case SGI_BRIDGE_RW:
+        old = *held;
         *held = (*held & ~reg->writable) | ((uint32_t)val & reg->writable);
         if (sgi_bridge_is_device_register(addr, &slot)) {
             /* Swap on an exempt slot is not reproduced; say so. */
@@ -925,6 +928,15 @@ static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
             sgi_bridge_aim_window(s, slot);
         } else if (addr - SGI_BRIDGE_REG_DATA == BRIDGE_NIC) {
             sgi_bridge_onewire_slot(s, (uint32_t)val);
+        } else if (addr - SGI_BRIDGE_REG_DATA == BRIDGE_INT_ENABLE) {
+            uint32_t newly_enabled = (*held & ~old) & s->pin_level &
+                                     INT_DEVICE_PINS;
+
+            for (slot = 0; slot < SGI_BRIDGE_DEVICES; slot++) {
+                if (newly_enabled & (1u << slot)) {
+                    sgi_bridge_send_interrupt(s, slot, true);
+                }
+            }
         }
         return;
     }

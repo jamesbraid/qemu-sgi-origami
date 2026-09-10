@@ -1932,6 +1932,7 @@ static void test_dma_device_window_64bit_doubleword(const void *data)
  * interrupt-modify register, read back through the Hub's local window.
  */
 #define HUB_LOCAL_WINDOW        (SPACE_XTALK + 0x01000000)
+#define PI_INT_PEND_MOD         0x90
 #define PI_INT_PEND0            0x98
 #define INT_TEST_HOST_NODE      0
 #define INT_TEST_HOST_NUMBER    42
@@ -2966,6 +2967,37 @@ static void test_a_disabled_pin_edge_sends_no_packet(const void *data)
     qtest_quit(qts);
 }
 
+/* Enabling a pin that is already high must deliver its pending request. */
+static void test_enabling_an_asserted_pin_reaches_the_hub(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE
+                                 " -device sgi-bridge-dma-test,addr=3");
+
+    bridge_source_in_slot_three(qts);
+    bridge_route_pin(qts);
+
+    bridge_drive_pin(qts, 1);
+    g_assert_false(hub_pends_the_test_number(qts));
+
+    qtest_writel(qts, REG(BRIDGE_INT_ENABLE), 1u << INT_TEST_SLOT);
+    g_assert_true(hub_pends_the_test_number(qts));
+
+    qtest_writeq(qts, HUB_LOCAL_WINDOW + PI_INT_PEND_MOD,
+                 INT_TEST_HOST_NUMBER);
+    g_assert_false(hub_pends_the_test_number(qts));
+
+    /* Rewriting the same enable value must not replay the request. */
+    qtest_writel(qts, REG(BRIDGE_INT_ENABLE), 1u << INT_TEST_SLOT);
+    g_assert_false(hub_pends_the_test_number(qts));
+
+    /* A new disabled-to-enabled transition replays the held request once. */
+    qtest_writel(qts, REG(BRIDGE_INT_ENABLE), 0);
+    qtest_writel(qts, REG(BRIDGE_INT_ENABLE), 1u << INT_TEST_SLOT);
+    g_assert_true(hub_pends_the_test_number(qts));
+
+    qtest_quit(qts);
+}
+
 /*
  * With the mode bit set the falling edge sends a clearing packet, so the guest
  * need not clear the Hub bit in its own handler. Without this the Hub's pending
@@ -3313,6 +3345,8 @@ int main(int argc, char **argv)
                         test_an_enabled_pin_edge_reaches_the_hub);
     qtest_add_data_func("sn0/bridge/disabled-pin-edge-sends-no-packet", NULL,
                         test_a_disabled_pin_edge_sends_no_packet);
+    qtest_add_data_func("sn0/bridge/enabling-held-pin-reaches-hub", NULL,
+                        test_enabling_an_asserted_pin_reaches_the_hub);
     qtest_add_data_func("sn0/bridge/falling-edge-clears-hub-pending", NULL,
                         test_a_falling_edge_clears_the_hub_pending_bit);
     qtest_add_data_func("sn0/bridge/disabled-falling-edge-sends-no-clear", NULL,
