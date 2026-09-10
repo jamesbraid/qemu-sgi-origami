@@ -321,6 +321,13 @@ static void tigon_coal_tx_timer(void *opaque)
     tigon_coal_flush(opaque, false);
 }
 
+/* Compare before adding so a restored near-limit count cannot wrap. */
+static bool tigon_coal_count_reaches(uint32_t count, uint32_t completed,
+                                     uint32_t threshold)
+{
+    return count >= threshold || completed >= threshold - count;
+}
+
 /*
  * A ring completion, which is what the driver's coalescing settings govern.
  * Events are not routed here: a link change or the firmware coming up is rare
