@@ -14,7 +14,7 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
-#include "hw/net/tigon.h"
+#include "hw/pci/pci_regs.h"
 
 #include <sys/socket.h>
 #include <netinet/in.h>
