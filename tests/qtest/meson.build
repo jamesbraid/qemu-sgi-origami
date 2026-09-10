@@ -31,6 +31,7 @@ slow_qtests = {
   'sn0-ioc3-test': 240,
   # Hub's 115 cases took 212s alone and exceeded 240s in the parallel suite.
   'sn0-hub-test': 600,
+  'sn0-origin2000-xtalk-attach-test': 120,
   # Model and bridge have grown the same way: 57s and 62s measured solo on a
   # loaded workstation, and in CI they were the second and fourth most killed
   # tests over Aug 30 - Sep 3 (105 and 20 timeout kills at the 120s ceiling,
