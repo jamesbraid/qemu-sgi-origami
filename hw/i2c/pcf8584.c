@@ -217,7 +217,7 @@ static void pcf8584_wire_request_stop(PCF8584State *s)
 static void pcf8584_wire_release_hold(PCF8584State *s)
 {
     s->wire_hold_release = PCF8584_HOLD_NONE;
-    if (i2c_wire_hold(s->rx, pcf8584_now() + 1, false)) {
+    if (i2c_wire_hold_after(s->rx, 1, false)) {
         qemu_log_mask(LOG_UNIMP, "pcf8584: the shared wire refused this "
                       "adapter's clock release\n");
     }

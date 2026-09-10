@@ -269,6 +269,27 @@ static void test_start_clock_progress(Fixture *f, gconstpointer unused)
     stop_transfer(f, 0);
 }
 
+/* A progressing virtual clock must not invalidate a slave clock release. */
+static void test_addressed_release_clock_progress(Fixture *f,
+                                                  gconstpointer unused)
+{
+    I2CSlave *rx = f->adapter[1]->rx;
+
+    g_assert_true(start_transfer(f, 0, ADAPTER_OWN_ADDRESS(1), false));
+    g_assert_true(rx->wire_hold);
+    g_assert_cmpuint(f->adapter[1]->wire_hold_release, ==,
+                     PCF8584_HOLD_READ);
+
+    virtual_time_step = 2;
+    (void)read_reg(f, 1, DATA_REG);
+    virtual_time_step = 0;
+    g_assert_true(rx->wire_hold_pending);
+    advance_to(virtual_time + 1);
+    g_assert_false(rx->wire_hold);
+
+    stop_transfer(f, 0);
+}
+
 /* Send a framed request and prepare its response for register reads. */
 static void msc_begin_response(Fixture *f, unsigned a, const char *text)
 {
@@ -902,6 +923,9 @@ int main(int argc, char **argv)
 
     g_test_add("/sgi-o2000-module-management/shared/start-clock-progress",
                Fixture, NULL, setup, test_start_clock_progress, teardown);
+    g_test_add("/sgi-o2000-module-management/shared/addressed-release-progress",
+               Fixture, NULL, setup, test_addressed_release_clock_progress,
+               teardown);
     g_test_add("/sgi-o2000-module-management/shared/population", Fixture,
                NULL, setup, test_population, teardown);
     g_test_add("/sgi-o2000-module-management/nvram/defaults", Fixture, NULL,

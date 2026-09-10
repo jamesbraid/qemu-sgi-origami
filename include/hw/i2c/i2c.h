@@ -211,6 +211,7 @@ int i2c_wire_stage_at_or_after(I2CBus *bus, uint32_t master, int64_t at,
 int i2c_wire_stage_after(I2CBus *bus, uint32_t master, int64_t delay_ns,
                          bool sda, bool clock);
 int i2c_wire_hold(I2CSlave *slave, int64_t at, bool hold);
+int i2c_wire_hold_after(I2CSlave *slave, int64_t delay_ns, bool hold);
 int i2c_wire_reset_master(I2CBus *bus, uint32_t master);
 /*
  * Stop a driving master's clock generator while it goes on holding SCL low,

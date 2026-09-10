@@ -1798,11 +1798,12 @@ int i2c_wire_stage_after(I2CBus *bus, uint32_t master, int64_t delay_ns,
                                       sda, clock);
 }
 
-int i2c_wire_hold(I2CSlave *slave, int64_t at, bool hold)
+static int i2c_wire_hold_at(I2CSlave *slave, int64_t at, int64_t now,
+                            bool hold)
 {
     I2CBus *bus = I2C_BUS(qdev_get_parent_bus(DEVICE(slave)));
 
-    if (!bus->wire || at <= qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)) {
+    if (!bus->wire || at <= now) {
         return -EINVAL;
     }
     if (slave->wire_hold_pending) {
@@ -1813,6 +1814,23 @@ int i2c_wire_hold(I2CSlave *slave, int64_t at, bool hold)
     slave->wire_hold_value = hold;
     i2c_wire_schedule(bus->wire);
     return 0;
+}
+
+int i2c_wire_hold(I2CSlave *slave, int64_t at, bool hold)
+{
+    return i2c_wire_hold_at(slave, at,
+                            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), hold);
+}
+
+int i2c_wire_hold_after(I2CSlave *slave, int64_t delay_ns, bool hold)
+{
+    int64_t at;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    if (delay_ns <= 0 || sadd64_overflow(now, delay_ns, &at)) {
+        return -EINVAL;
+    }
+    return i2c_wire_hold_at(slave, at, now, hold);
 }
 
 int i2c_wire_reset_master(I2CBus *bus, uint32_t master)
