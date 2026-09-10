@@ -710,6 +710,20 @@ static void xframe_tx_start(XframeTx *t)
     xframe_tx_start_args(t, NULL);
 }
 
+static void xframe_tx_start_binary_args(XframeTx *t, const char *binary,
+                                        const char *args)
+{
+    g_autofree char *saved = g_strdup(g_getenv("QTEST_QEMU_BINARY"));
+
+    g_assert_true(g_setenv("QTEST_QEMU_BINARY", binary, true));
+    xframe_tx_start_args(t, args);
+    if (saved) {
+        g_assert_true(g_setenv("QTEST_QEMU_BINARY", saved, true));
+    } else {
+        g_unsetenv("QTEST_QEMU_BINARY");
+    }
+}
+
 static void xframe_user_start(XframeTx *t)
 {
     uint64_t barsize;
@@ -4531,6 +4545,236 @@ static void traffic_interrupt_commit(XframeTx *t, bool rx, unsigned entry,
                     TTI_MEM_CMD_OFF(entry));
 }
 
+static void xframe_migrate(QTestState *from, const char *uri)
+{
+    qtest_qmp_assert_success(from,
+        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
+
+    g_test_timer_start();
+    for (;;) {
+        QDict *ret = qtest_qmp_assert_success_ref(from,
+            "{ 'execute': 'query-migrate' }");
+        g_autofree char *status = g_strdup(qdict_get_str(ret, "status"));
+
+        qobject_unref(ret);
+        g_assert_cmpstr(status, !=, "failed");
+        if (g_str_equal(status, "completed")) {
+            break;
+        }
+        g_assert_true(g_test_timer_elapsed() < 30);
+        g_usleep(1000);
+    }
+}
+
+static char *xframe_migration_directory(void)
+{
+    g_autofree char *cwd = g_get_current_dir();
+    char *directory = g_build_filename(cwd,
+                                       ".xframe-migration-XXXXXX", NULL);
+
+    g_assert_nonnull(g_mkdtemp(directory));
+    return directory;
+}
+
+static void xframe_migration_cleanup(const char *directory,
+                                     const char *socket)
+{
+    if (g_file_test(socket, G_FILE_TEST_EXISTS)) {
+        g_assert_cmpint(g_unlink(socket), ==, 0);
+    }
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
+/*
+ * Version 5 carried the traffic-interrupt memories but not moderation state.
+ * A destination must retain an already-pending completion and its mask while
+ * reverting future completions to the source model's immediate behavior.
+ */
+static void test_traffic_migration_from_v5(void)
+{
+    const char *v5_binary = g_getenv("XFRAME_QEMU_V5_BINARY");
+    g_autofree char *directory = NULL;
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *incoming = NULL;
+    XframeTx from, to;
+    uint8_t frame[128];
+    uint8_t got[128];
+    size_t len;
+
+    if (!v5_binary) {
+        g_test_skip("XFRAME_QEMU_V5_BINARY is not set");
+        return;
+    }
+
+    len = build_ipv4_frame(frame, traffic_remote_mac, IPPROTO_UDP, 4, 60);
+    directory = xframe_migration_directory();
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    incoming = g_strdup_printf("-incoming %s", uri);
+
+    xframe_tx_start_binary_args(&from, v5_binary, NULL);
+    sock_pif_writeq(&from, TX_TRAFFIC_MASK, 0);
+    traffic_interrupt_commit(&from, false, 0,
+                             TRAFFIC_DATA1_TIMER(0x1000) |
+                             TRAFFIC_DATA1_AC,
+                             TRAFFIC_DATA2_COUNTS(4, 4, 4, 4));
+    g_assert_cmpuint(traffic_tx_capture(&from, frame, len, got, sizeof(got)),
+                     ==, len);
+    g_assert_cmphex(sock_pif_readq(&from, TX_TRAFFIC_INT) &
+                    TX_TRAFFIC_FIFO0, ==, TX_TRAFFIC_FIFO0);
+
+    xframe_tx_start_args(&to, incoming);
+    xframe_migrate(from.qs->qts, uri);
+    g_assert_cmphex(sock_pif_readq(&to, TX_TRAFFIC_MASK), ==, 0);
+    g_assert_cmphex(sock_pif_readq(&to, TX_TRAFFIC_INT) & TX_TRAFFIC_FIFO0,
+                    ==, TX_TRAFFIC_FIFO0);
+    sock_pif_writeq(&to, TX_TRAFFIC_INT, TX_TRAFFIC_FIFO0);
+
+    g_assert_cmpuint(traffic_tx_capture(&to, frame, len, got, sizeof(got)),
+                     ==, len);
+    g_assert_cmphex(sock_pif_readq(&to, TX_TRAFFIC_INT) & TX_TRAFFIC_FIFO0,
+                    ==, TX_TRAFFIC_FIFO0);
+
+    xframe_tx_stop(&to);
+    xframe_tx_stop(&from);
+    xframe_migration_cleanup(directory, socket);
+}
+
+/* A version 6 stream retains both committed memory and a partial batch. */
+static void test_traffic_migration_v6_round_trip(void)
+{
+    g_autofree char *directory = xframe_migration_directory();
+    g_autofree char *socket = g_build_filename(directory, "migration.sock",
+                                                NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *incoming = g_strdup_printf("-incoming %s", uri);
+    XframeTx from, to;
+    uint8_t frame[128];
+    uint8_t got[128];
+    size_t len;
+    unsigned i;
+
+    len = build_ipv4_frame(frame, traffic_remote_mac, IPPROTO_UDP, 4, 60);
+    xframe_tx_start(&from);
+    sock_pif_writeq(&from, TX_TRAFFIC_MASK, 0);
+    traffic_interrupt_commit(&from, false, 0,
+                             TRAFFIC_DATA1_TIMER(0x1000) |
+                             TRAFFIC_DATA1_AC,
+                             TRAFFIC_DATA2_COUNTS(4, 4, 4, 4));
+    for (i = 0; i < 2; i++) {
+        g_assert_cmpuint(traffic_tx_capture(&from, frame, len, got,
+                                            sizeof(got)), ==, len);
+    }
+    g_assert_cmphex(sock_pif_readq(&from, TX_TRAFFIC_INT), ==, 0);
+
+    xframe_tx_start_args(&to, incoming);
+    xframe_migrate(from.qs->qts, uri);
+    for (i = 0; i < 2; i++) {
+        g_assert_cmpuint(traffic_tx_capture(&to, frame, len, got,
+                                            sizeof(got)), ==, len);
+        g_assert_cmphex(sock_pif_readq(&to, TX_TRAFFIC_INT) &
+                        TX_TRAFFIC_FIFO0, ==,
+                        i == 1 ? TX_TRAFFIC_FIFO0 : 0);
+    }
+
+    xframe_tx_stop(&to);
+    xframe_tx_stop(&from);
+    xframe_migration_cleanup(directory, socket);
+}
+
+/* Independent TX and RX auto-cancel deadlines retain their remaining time. */
+static void test_traffic_migration_v6_deadlines(void)
+{
+    g_autofree char *directory = xframe_migration_directory();
+    g_autofree char *socket = g_build_filename(directory, "migration.sock",
+                                                NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *incoming = g_strdup_printf("-incoming %s", uri);
+    XframeTx from, to;
+    uint8_t frame[128];
+    uint8_t got[128];
+    size_t len;
+
+    len = build_ipv4_frame(frame, xframe_station_mac, IPPROTO_UDP, 4, 60);
+    xframe_tx_start(&from);
+    sock_pif_writeq(&from, TX_TRAFFIC_MASK, 0);
+    sock_pif_writeq(&from, RX_TRAFFIC_MASK, 0);
+    traffic_interrupt_commit(&from, false, 0,
+                             TRAFFIC_DATA1_TIMER(0x100) |
+                             TRAFFIC_DATA1_AC,
+                             TRAFFIC_DATA2_COUNTS(4, 4, 4, 4));
+    traffic_interrupt_commit(&from, true, 0,
+                             TRAFFIC_DATA1_TIMER(0x1000) |
+                             TRAFFIC_DATA1_AC,
+                             TRAFFIC_DATA2_COUNTS(4, 4, 4, 4));
+
+    xframe_program_rxd(&from, TRAFFIC_RX_RING, TRAFFIC_RX_BUF,
+                       RX_BUF_CAPACITY);
+    xframe_rx_ring_arm(&from, TRAFFIC_RX_RING);
+    net_socket_send_frame(from.host_fd, frame, len);
+    g_assert_true(xframe_wait_rxd_consumed(&from, TRAFFIC_RX_RING, 5000));
+    memcpy(frame, traffic_remote_mac, sizeof(traffic_remote_mac));
+    g_assert_cmpuint(traffic_tx_capture(&from, frame, len, got, sizeof(got)),
+                     ==, len);
+    g_assert_cmphex(sock_pif_readq(&from, TX_TRAFFIC_INT), ==, 0);
+    g_assert_cmphex(sock_pif_readq(&from, RX_TRAFFIC_INT), ==, 0);
+
+    xframe_tx_start_args(&to, incoming);
+    xframe_migrate(from.qs->qts, uri);
+    qtest_clock_step(to.qs->qts, 200000);
+    g_assert_cmphex(sock_pif_readq(&to, TX_TRAFFIC_INT) & TX_TRAFFIC_FIFO0,
+                    ==, TX_TRAFFIC_FIFO0);
+    g_assert_cmphex(sock_pif_readq(&to, RX_TRAFFIC_INT) & RX_TRAFFIC_RING0,
+                    ==, 0);
+    qtest_clock_step(to.qs->qts, 2000000);
+    g_assert_cmphex(sock_pif_readq(&to, RX_TRAFFIC_INT) & RX_TRAFFIC_RING0,
+                    ==, RX_TRAFFIC_RING0);
+
+    xframe_tx_stop(&to);
+    xframe_tx_stop(&from);
+    xframe_migration_cleanup(directory, socket);
+}
+
+/* A completion deferred behind a latched status relatches after migration. */
+static void test_traffic_migration_v6_deferred(void)
+{
+    g_autofree char *directory = xframe_migration_directory();
+    g_autofree char *socket = g_build_filename(directory, "migration.sock",
+                                                NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *incoming = g_strdup_printf("-incoming %s", uri);
+    XframeTx from, to;
+    uint8_t frame[128];
+    uint8_t got[128];
+    size_t len;
+    unsigned i;
+
+    len = build_ipv4_frame(frame, traffic_remote_mac, IPPROTO_UDP, 4, 60);
+    xframe_tx_start(&from);
+    sock_pif_writeq(&from, TX_TRAFFIC_MASK, 0);
+    traffic_interrupt_commit(&from, false, 0, TRAFFIC_DATA1_AC,
+                             TRAFFIC_DATA2_COUNTS(1, 1, 1, 1));
+    for (i = 0; i < 2; i++) {
+        g_assert_cmpuint(traffic_tx_capture(&from, frame, len, got,
+                                            sizeof(got)), ==, len);
+    }
+    g_assert_cmphex(sock_pif_readq(&from, TX_TRAFFIC_INT) & TX_TRAFFIC_FIFO0,
+                    ==, TX_TRAFFIC_FIFO0);
+
+    xframe_tx_start_args(&to, incoming);
+    xframe_migrate(from.qs->qts, uri);
+    sock_pif_writeq(&to, TX_TRAFFIC_INT, TX_TRAFFIC_FIFO0);
+    g_assert_cmphex(sock_pif_readq(&to, TX_TRAFFIC_INT) & TX_TRAFFIC_FIFO0,
+                    ==, TX_TRAFFIC_FIFO0);
+    sock_pif_writeq(&to, TX_TRAFFIC_INT, TX_TRAFFIC_FIFO0);
+    g_assert_cmphex(sock_pif_readq(&to, TX_TRAFFIC_INT), ==, 0);
+
+    xframe_tx_stop(&to);
+    xframe_tx_stop(&from);
+    xframe_migration_cleanup(directory, socket);
+}
+
 /*
  * Auto-cancel batches each FIFO and ring independently. TX's shorter timer
  * publishes first without disturbing RX's tail; a later entry recommit proves
@@ -4869,6 +5113,14 @@ int main(int argc, char **argv)
                    test_receive_frame_sizes_byte_exact);
     qtest_add_func("xframe/traffic-interrupt-moderation",
                    test_traffic_interrupt_moderation);
+    qtest_add_func("xframe/traffic-migration-from-v5",
+                   test_traffic_migration_from_v5);
+    qtest_add_func("xframe/traffic-migration-v6-round-trip",
+                   test_traffic_migration_v6_round_trip);
+    qtest_add_func("xframe/traffic-migration-v6-deadlines",
+                   test_traffic_migration_v6_deadlines);
+    qtest_add_func("xframe/traffic-migration-v6-deferred",
+                   test_traffic_migration_v6_deferred);
     qtest_add_func("xframe/transmit-interrupt-rate-is-one-per-frame",
                    test_transmit_interrupt_rate_is_one_per_frame);
     qtest_add_func("xframe/receive-interrupt-rate-is-one-per-frame",
