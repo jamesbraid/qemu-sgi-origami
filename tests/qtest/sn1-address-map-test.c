@@ -118,6 +118,7 @@
 #define DIRECTORY_LINE_1A00000 UINT64_C(0x340000)
 #define DIRECTORY_LAST_FITTED UINT64_C(0x3fffff0)
 #define DIRECTORY_FIRST_ABSENT UINT64_C(0x4000000)
+#define DIRECTORY_PROTECTION_BANK1_HIGH UINT64_C(0xf800408)
 #define DIRECTORY_APERTURE UINT64_C(0x40000000)
 
 #define EXEC_STATE_PHYS UINT64_C(0x100000)
@@ -2081,6 +2082,25 @@ static void test_directory_backdoor_window(const void *data)
     qtest_quit(qts);
 }
 
+static void test_directory_protection(const void *data)
+{
+    const uint64_t pattern = UINT64_C(0x599a599a599a599a);
+    QTestState *qts = machine_start_with(prom_path, "-m 512M");
+
+    qtest_writeq(qts, HUB_DIRECTORY + DIRECTORY_PROTECTION_BANK1_HIGH,
+                 pattern);
+    g_assert_cmphex(qtest_readq(qts,
+                               HUB_DIRECTORY +
+                               DIRECTORY_PROTECTION_BANK1_HIGH),
+                    ==, pattern);
+
+    qtest_writeq(qts, HUB_DIRECTORY + DIRECTORY_FIRST_ABSENT, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(qts,
+                               HUB_DIRECTORY + DIRECTORY_FIRST_ABSENT),
+                    ==, 0);
+    qtest_quit(qts);
+}
+
 static void test_boot_flash_backs_every_prom_view(const void *data)
 {
     g_autofree char *flash = create_flash_image();
@@ -3035,6 +3055,8 @@ int main(int argc, char **argv)
                         test_ecc_backdoor_window);
     qtest_add_data_func("sn1/address-map/directory-backdoor-window", NULL,
                         test_directory_backdoor_window);
+    qtest_add_data_func("sn1/address-map/directory-protection", NULL,
+                        test_directory_protection);
     qtest_add_data_func("sn1/address-map/boot-flash-backs-prom-views", NULL,
                         test_boot_flash_backs_every_prom_view);
     qtest_add_data_func("sn1/address-map/execution-views-refuse-commands",

@@ -17,6 +17,9 @@ enum {
 #define MD_REPLY_QUEUE UINT64_C(0x001818180c0c0c00)
 #define MD_REQUEST_QUEUE UINT64_C(0x0000000004040400)
 #define MD_COUNTER_MASK ((UINT64_C(1) << 41) - 1)
+#define MD_PROTECTION_EXTENT 0x40000000
+#define MD_PROTECTION_SELECTOR_MASK 0x7c8
+#define MD_PROTECTION_SELECTOR 0x408
 /*
  * Bits 58:56 are write-only in the public definition; reading them back
  * and resetting them to zero is model policy.
@@ -193,12 +196,33 @@ static uint64_t md_directory_mask(const SGIBedrockMDState *s)
     return s->directory_config & 1 ? UINT64_MAX : UINT32_MAX;
 }
 
+static bool md_is_protection(hwaddr offset)
+{
+    return offset < MD_PROTECTION_EXTENT &&
+           (offset & MD_PROTECTION_SELECTOR_MASK) == MD_PROTECTION_SELECTOR;
+}
+
+static unsigned md_protection_index(hwaddr offset)
+{
+    return (offset >> 11) * 4 + ((offset >> 4) & 3);
+}
+
 static bool md_directory_accepts(void *opaque, hwaddr offset, unsigned size,
                                  bool is_write, MemTxAttrs attrs)
 {
     SGIBedrockMDState *s = opaque;
     const char *access = is_write ? "write" : "read";
 
+    if (md_is_protection(offset)) {
+        if (size != 8 || offset % 8 != 0) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-bedrock-md: %u-byte protection %s at offset "
+                          "0x%" HWADDR_PRIx " is not an aligned 64-bit "
+                          "carrier word\n", size, access, offset);
+            return false;
+        }
+        return true;
+    }
     if (!s->directory) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-bedrock-md: directory %s without fitted "
@@ -227,6 +251,9 @@ static uint64_t md_directory_read(void *opaque, hwaddr offset, unsigned size)
     SGIBedrockMDState *s = opaque;
     unsigned index = offset / 16;
 
+    if (md_is_protection(offset)) {
+        return s->protection[md_protection_index(offset)];
+    }
     if (offset & 8) {
         return s->page_counters[index];
     }
@@ -239,6 +266,10 @@ static void md_directory_write(void *opaque, hwaddr offset, uint64_t value,
     SGIBedrockMDState *s = opaque;
     unsigned index = offset / 16;
 
+    if (md_is_protection(offset)) {
+        s->protection[md_protection_index(offset)] = value;
+        return;
+    }
     if (offset & 8) {
         s->page_counters[index] = value;
     } else {
@@ -376,10 +407,12 @@ static void md_reset_enter(Object *obj, ResetType type)
         memset(s->page_counters, 0,
                s->directory_entries * sizeof(*s->page_counters));
     }
+    memset(s->protection, 0,
+           s->protection_entries * sizeof(*s->protection));
 }
 
 static const VMStateDescription vmstate_md = {
-    .name = TYPE_SGI_BEDROCK_MD, .version_id = 3, .minimum_version_id = 1,
+    .name = TYPE_SGI_BEDROCK_MD, .version_id = 4, .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(current_cell, SGIBedrockMDState),
         VMSTATE_UINT64(memory_config, SGIBedrockMDState),
@@ -392,6 +425,9 @@ static const VMStateDescription vmstate_md = {
                               vmstate_info_uint64, uint64_t),
         VMSTATE_VARRAY_UINT32(page_counters, SGIBedrockMDState,
                               directory_entries, 3,
+                              vmstate_info_uint64, uint64_t),
+        VMSTATE_VARRAY_UINT32(protection, SGIBedrockMDState,
+                              protection_entries, 4,
                               vmstate_info_uint64, uint64_t),
         VMSTATE_END_OF_LIST()
     },
@@ -420,6 +456,8 @@ static void md_realize(DeviceState *dev, Error **errp)
     SGIBedrockMDState *s = SGI_BEDROCK_MD(dev);
     uint64_t node_size;
 
+    s->protection_entries = SGI_BEDROCK_MD_PROTECTION_ENTRIES;
+    s->protection = g_new0(uint64_t, s->protection_entries);
     if (!s->node_mr) {
         return;
     }
@@ -458,7 +496,9 @@ static void md_unrealize(DeviceState *dev)
 
     g_clear_pointer(&s->directory, g_free);
     g_clear_pointer(&s->page_counters, g_free);
+    g_clear_pointer(&s->protection, g_free);
     s->directory_entries = 0;
+    s->protection_entries = 0;
     s->ecc_extent = 0;
 }
 
@@ -487,6 +527,7 @@ static void md_finalize(Object *obj)
 
     g_clear_pointer(&s->directory, g_free);
     g_clear_pointer(&s->page_counters, g_free);
+    g_clear_pointer(&s->protection, g_free);
 }
 
 static const TypeInfo md_info = {
