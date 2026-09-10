@@ -191,6 +191,9 @@ struct SGIHubState {
     /* Node number preprogrammed by synthesized firmware, or zero at reset. */
     uint32_t nasid;
 
+    /* Physical processor-module slot, or zero for the Origin 200. */
+    uint32_t physical_slot;
+
     /* Whether this processor module is the Origin 200 slave chassis. */
     bool slave_module;
 

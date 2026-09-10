@@ -132,6 +132,7 @@
 #define MD_SLOT_XJMP_ID          (1ULL << 2)
 #define MD_SLOT_FLASH_READY_HIGH (1ULL << 4)
 #define MD_SLOT_MASTER_MODULE    (1ULL << 7)
+#define MD_SLOT_ID_MASK          0x7
 #define MD_SLOT_FLASH_READY     (MD_SLOT_FLASH_READY_LOW | \
                                  MD_SLOT_FLASH_READY_HIGH)
 #define IO_XTALK_TIMEOUT_MASK   0xffULL
@@ -2004,8 +2005,14 @@ static void sgi_hub_write_llp_log(SGIHubState *s, hwaddr addr,
 static uint64_t sgi_hub_read_slot_id(SGIHubState *s, hwaddr addr,
                                      unsigned arg)
 {
-    return MD_SLOT_FLASH_READY | MD_SLOT_XJMP_ID |
-           (s->slave_module ? 0 : MD_SLOT_MASTER_MODULE);
+    uint64_t value = MD_SLOT_FLASH_READY | MD_SLOT_XJMP_ID |
+                     (s->slave_module ? 0 : MD_SLOT_MASTER_MODULE);
+
+    if (s->physical_slot) {
+        value = (value & ~MD_SLOT_ID_MASK) |
+                ((8 - s->physical_slot) & MD_SLOT_ID_MASK);
+    }
+    return value;
 }
 
 static void sgi_hub_write_dimm_init(SGIHubState *s, hwaddr addr,
@@ -3348,6 +3355,7 @@ static int sgi_hub_post_load(void *opaque, int version_id)
 
 static const Property sgi_hub_properties[] = {
     DEFINE_PROP_UINT32("nasid", SGIHubState, nasid, 0),
+    DEFINE_PROP_UINT32("physical-slot", SGIHubState, physical_slot, 0),
     DEFINE_PROP_BOOL("slave-module", SGIHubState, slave_module, false),
     DEFINE_PROP_LINK("fabric", SGIHubState, fabric, TYPE_SN0_FABRIC,
                      SN0FabricState *),

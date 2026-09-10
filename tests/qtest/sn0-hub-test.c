@@ -13,6 +13,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
+#include "sn0-user-image.h"
 
 /* The Hub's special space, one uncached window up from plain memory. */
 #define SPACE_HUB       0x10000000000ULL
@@ -28,6 +29,7 @@
 #define MD_SLOT_XJMP_ID             (1ULL << 2)
 #define MD_SLOT_FLASH_READY_HIGH    (1ULL << 4)
 #define MD_SLOT_MASTER_MODULE       (1ULL << 7)
+#define MD_SLOT_ID_MASK             0x7
 
 #define PI_REGION_PRESENT   0x000018
 #define PI_PROCESSOR_NUMBER 0x000020
@@ -257,6 +259,10 @@
 #define PCI_BAR0            0x10
 #define IOC3_PCI_MMIO       0x10000000u
 
+static void pi_cpu_writeq(QTestState *qts, unsigned int cpu,
+                          uint64_t reg, uint64_t value);
+static uint64_t pi_cpu_readq(QTestState *qts, unsigned int cpu, uint64_t reg);
+
 static void sn0_hub_attach_ioc3(QTestState *qts)
 {
     qtest_writel(qts, BRIDGE_CFG0(PCI_IOC3_DEVICE) + PCI_BAR0, IOC3_PCI_MMIO);
@@ -331,6 +337,104 @@ static void test_dual_node_master_slave_sense(const void *data)
     /* Reset returns both Hubs to zero; renumber to reach node 1 again. */
     assign_node1_number(qts);
     assert_dual_node_master_slave_sense(qts);
+
+    qtest_quit(qts);
+}
+
+#define ORIGIN2000_NODE_COUNT 4
+#define ORIGIN2000_CPUS_PER_NODE 2
+#define ORIGIN2000_CPU_COUNT  8
+#define ORIGIN2000_MACHINE \
+    "-M origin2000 -smp 8,sockets=4,cores=2,threads=1 " \
+    "-m 256M -accel tcg,thread=multi"
+
+/* Each processor publishes its live Hub-local slice into node-local RAM. */
+static void build_origin2000_identity_image(SN0Image *p)
+{
+    const unsigned int entry = 0x800;
+    unsigned int branch;
+
+    branch = sn0_emit_branch(p, SN0_OPC_BEQ, 0, 0);
+    sn0_patch_branch(p, branch, entry);
+    for (unsigned int vector = SN0_VEC_TLB_REFILL;
+         vector <= SN0_VEC_GENERAL; vector += 0x80) {
+        p->pos = vector;
+        sn0_emit_park(p);
+    }
+
+    p->pos = entry;
+    sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL);
+    sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
+    sn0_emit_cpu_number(p, SN0_R_T0);
+    sn0_emit_li(p, SN0_R_K0, SN0_KSEG1(SN0_USER_MAILBOX));
+    sn0_emit_sll(p, SN0_R_T1, SN0_R_T0, 2);
+    sn0_emit_addu(p, SN0_R_K0, SN0_R_K0, SN0_R_T1);
+    sn0_emit_i(p, SN0_OPC_SW, SN0_R_K0, SN0_R_T0, 0);
+    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_ZERO, SN0_R_T2, 1);
+    sn0_emit_i(p, SN0_OPC_SW, SN0_R_K0, SN0_R_T2, 8);
+    sn0_emit_park(p);
+}
+
+static void assert_origin2000_identities(QTestState *qts)
+{
+    static const uint8_t expected_slot[ORIGIN2000_NODE_COUNT] = {
+        7, 6, 5, 4,
+    };
+
+    for (unsigned int cpu = 0; cpu < ORIGIN2000_CPU_COUNT; cpu++) {
+        unsigned int node = cpu / ORIGIN2000_CPUS_PER_NODE;
+        unsigned int slice = cpu % ORIGIN2000_CPUS_PER_NODE;
+        uint8_t bytes[4];
+        uint64_t slot;
+        uint32_t processor;
+
+        g_assert_cmpuint(sn0_wait_word(qts, cpu,
+                                      SN0_USER_MAILBOX + 8 + slice * 4,
+                                      30), ==, 1);
+        g_assert_true(qtest_memread_cpu(qts, cpu,
+                                       SN0_USER_MAILBOX + slice * 4,
+                                       bytes, sizeof(bytes)));
+        processor = ldl_be_p(bytes);
+        g_assert_cmpuint(processor, ==, slice);
+
+        slot = pi_cpu_readq(qts, cpu, MD_SLOT_ID_USTAT) & MD_SLOT_ID_MASK;
+        g_assert_cmphex(slot, ==, expected_slot[node]);
+        g_assert_cmpuint(2 * (7 - slot) + processor, ==, cpu);
+    }
+}
+
+static void test_origin2000_slot_and_processor_identity(const void *data)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
+    QTestState *qts;
+    uint8_t clear[16] = { 0 };
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    build_origin2000_identity_image(image);
+    path = sn0_image_write(image, "sn0-origin2000-hub-identity");
+    qts = qtest_initf(ORIGIN2000_MACHINE " -bios %s", path);
+    unlink(path);
+
+    assert_origin2000_identities(qts);
+    for (unsigned int node = 0; node < ORIGIN2000_NODE_COUNT; node++) {
+        pi_cpu_writeq(qts, node * ORIGIN2000_CPUS_PER_NODE,
+                      MD_SLOT_ID_USTAT, ~0ULL);
+    }
+    assert_origin2000_identities(qts);
+
+    for (unsigned int node = 0; node < ORIGIN2000_NODE_COUNT; node++) {
+        g_assert_true(qtest_memwrite_cpu(qts,
+                                        node * ORIGIN2000_CPUS_PER_NODE,
+                                        SN0_USER_MAILBOX, clear,
+                                        sizeof(clear)));
+    }
+    qtest_system_reset(qts);
+    assert_origin2000_identities(qts);
 
     qtest_quit(qts);
 }
@@ -4391,6 +4495,8 @@ int main(int argc, char **argv)
                         test_the_flash_ready_signal_reads_ready_at_both_bits);
     qtest_add_data_func("sn0/hub/dual-node-master-slave-sense", NULL,
                         test_dual_node_master_slave_sense);
+    qtest_add_data_func("sn0/hub/origin2000-slot-and-processor-identity", NULL,
+                        test_origin2000_slot_and_processor_identity);
     qtest_add_data_func("sn0/hub/crosstalk-timeouts", NULL,
                         test_the_crosstalk_timeouts);
     qtest_add_data_func("sn0/hub/io-scratch-registers", NULL,

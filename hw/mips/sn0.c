@@ -1162,6 +1162,10 @@ static void sn0_node_create_hub(SN0NodeState *node)
 
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpus", node->nr_cpus);
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpu-base", node->cpu_base);
+    if (node->physical) {
+        qdev_prop_set_uint32(DEVICE(&node->hub), "physical-slot",
+                            node->physical->slot);
+    }
     if (node->instance) {
         switch (node->instance->module_role) {
         case SN0_MODULE_MASTER:
