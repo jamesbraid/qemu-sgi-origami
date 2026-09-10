@@ -1431,6 +1431,63 @@ static void test_an_fcs_failure_does_not_publish_valid(const void *data)
     close(sv[0]);
 }
 
+static unsigned int count_trace_events(const char *trace, const char *event)
+{
+    unsigned int count = 0;
+
+    while ((trace = strstr(trace, event))) {
+        count++;
+        trace += strlen(event);
+    }
+    return count;
+}
+
+/* An asserted level stays asserted while more completed buffers arrive. */
+static void test_a_receive_burst_asserts_the_irq_once(const void *data)
+{
+    enum { BURST = 8 };
+    g_autofree char *path = NULL;
+    g_autofree char *trace = NULL;
+    QDict *response;
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[64];
+    uint32_t ring = RAM_SCRATCH + 0x8000;
+    uint32_t rxbuf = RAM_SCRATCH + 0xc000;
+    unsigned int i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = i;
+    }
+    memset(frame, 0xff, 6);
+    path = g_strdup_printf("sgi-ioc3-rx-irq-%u-%u.trace",
+                           (unsigned int)getpid(), g_random_int());
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = qtest_initf("-M pc -m 128M -display none "
+                      "-netdev socket,fd=%d,id=n0 "
+                      "-device sgi-ioc3,addr=%02x.0,netdev=n0 "
+                      "-trace file=%s",
+                      sv[1], IOC3_PCI_SLOT, path);
+    ioc3_bring_up(qts, ring, rxbuf, BURST);
+    ioc3_writel(qts, ENET_INT_ENABLE, ENET_INT_RX_TIMER);
+    response = qtest_qmp(qts, "{ 'execute': 'trace-event-set-state', "
+                              "'arguments': { 'name': 'sgi_ioc3_eth_irq', "
+                                             "'enable': true } }");
+    g_assert_true(qdict_haskey(response, "return"));
+    qobject_unref(response);
+
+    for (i = 0; i < BURST; i++) {
+        net_socket_send_frame(sv[0], frame, sizeof(frame));
+    }
+    wait_for_rx_consume(qts, BURST * RX_RING_STRIDE);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
+    g_assert_cmpuint(count_trace_events(trace, "sgi_ioc3_eth_irq"), ==, 1);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    close(sv[0]);
+}
+
 /*
  * Stands alone so it inherits no wait; the MAC control write is spelled
  * out to pin both loopback selections clear.
@@ -1498,6 +1555,8 @@ int main(int argc, char **argv)
                         NULL, test_a_payload_failure_does_not_publish_valid);
     qtest_add_data_func("sgi-ioc3-eth/fcs-failure-does-not-publish-valid",
                         NULL, test_an_fcs_failure_does_not_publish_valid);
+    qtest_add_data_func("sgi-ioc3-eth/receive-burst-asserts-irq-once", NULL,
+                        test_a_receive_burst_asserts_the_irq_once);
     qtest_add_data_func("sgi-ioc3-eth/unreadable-transmit-descriptor", NULL,
                         test_a_transmit_descriptor_that_cannot_be_read);
     qtest_add_data_func("sgi-ioc3-eth/unreadable-transmit-buffer", NULL,

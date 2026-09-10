@@ -155,6 +155,7 @@ struct SGIIOC3EthState {
 
     MemoryRegion mmio;
     qemu_irq irq;
+    bool irq_asserted;
 
     /* The parent's bus-master view, linked before realize. */
     MemoryRegion *dma_mr;

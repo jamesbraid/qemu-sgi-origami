@@ -47,9 +47,14 @@ static void sgi_ioc3_enet_update_irq(SGIIOC3EthState *s)
 {
     uint32_t status = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_INT_STATUS);
     uint32_t enable = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_INT_ENABLE);
+    bool level = (status & enable) != 0;
 
-    trace_sgi_ioc3_eth_irq(status, enable, (status & enable) != 0);
-    qemu_set_irq(s->irq, (status & enable) != 0);
+    if (level == s->irq_asserted) {
+        return;
+    }
+    trace_sgi_ioc3_eth_irq(status, enable, level);
+    qemu_set_irq(s->irq, level);
+    s->irq_asserted = level;
 }
 
 /*
@@ -769,10 +774,20 @@ static void sgi_ioc3_eth_init(Object *obj)
     object_property_add_alias(obj, "phy-addr", OBJECT(&s->phy), "addr");
 }
 
+static int sgi_ioc3_eth_post_load(void *opaque, int version_id)
+{
+    SGIIOC3EthState *s = opaque;
+
+    s->irq_asserted = (sgi_ioc3_enet_get(s, SGI_IOC3_ENET_INT_STATUS) &
+                       sgi_ioc3_enet_get(s, SGI_IOC3_ENET_INT_ENABLE)) != 0;
+    return 0;
+}
+
 static const VMStateDescription vmstate_sgi_ioc3_eth = {
     .name = "sgi-ioc3-eth",
     .version_id = 2,
     .minimum_version_id = 1,
+    .post_load = sgi_ioc3_eth_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_ARRAY(enet_reg, SGIIOC3EthState, SGI_IOC3_ENET_REGS),
         VMSTATE_UINT16(mii_data, SGIIOC3EthState),
