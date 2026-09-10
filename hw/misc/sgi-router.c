@@ -84,9 +84,14 @@
 
 #define RR_PORT_PARMS_MASK     UINT64_C(0xfffff)
 #define RR_PORT_PARMS_RESET    UINT64_C(0x1bf0)
+#define RR_PORT_HISTOGRAM_SELECT_SHIFT 18
 #define RR_PORT_ERROR_MASK     UINT64_C(0x3ffffffff)
 #define RR_RESET_MASK_MASK     UINT64_C(0x3f)
 #define RR_TABLE_MASK          UINT64_C(0xffffff)
+
+#define RR_DIAG_ABSOLUTE_HISTOGRAM (UINT64_C(1) << 19)
+#define RR_HISTOGRAM_UTILISATION   1
+#define RR_HISTOGRAM_TICK_NS       20
 
 #define RR_PROTECTION_FORCE_LOCAL  (UINT64_C(1) << 12)
 #define RR_PROTECTION_META_VALID   (UINT64_C(1) << 11)
@@ -135,6 +140,8 @@ struct SGIRouterState {
     uint64_t port_parms[SGI_ROUTER_PORTS];
     uint64_t port_errors[SGI_ROUTER_PORTS];
     uint64_t histograms[SGI_ROUTER_PORTS];
+    int64_t histogram_next_ns;
+    uint8_t histogram_phase_ns;
     uint8_t reset_masks[SGI_ROUTER_PORTS];
     bool port_working[SGI_ROUTER_PORTS];
     bool port_eight_bit[SGI_ROUTER_PORTS];
@@ -303,6 +310,104 @@ static bool sgi_router_port_register(hwaddr addr, unsigned int *port,
     return true;
 }
 
+static bool sgi_router_histogram_utilisation(SGIRouterState *s,
+                                             unsigned int port)
+{
+    return !(s->diag_parms & RR_DIAG_ABSOLUTE_HISTOGRAM) &&
+           extract64(s->port_parms[port],
+                     RR_PORT_HISTOGRAM_SELECT_SHIFT, 2) ==
+           RR_HISTOGRAM_UTILISATION;
+}
+
+static void sgi_router_histogram_unpack(uint64_t value, uint32_t buckets[4])
+{
+    unsigned int i;
+
+    for (i = 0; i < 4; i++) {
+        buckets[i] = extract64(value, 16 * i, 16);
+    }
+}
+
+static uint64_t sgi_router_histogram_pack(const uint32_t buckets[4])
+{
+    uint64_t value = 0;
+    unsigned int i;
+
+    for (i = 0; i < 4; i++) {
+        value = deposit64(value, 16 * i, 16, buckets[i]);
+    }
+    return value;
+}
+
+static void sgi_router_histogram_increment(SGIRouterState *s,
+                                           unsigned int port,
+                                           unsigned int bucket_mask)
+{
+    uint32_t buckets[4];
+    bool rescale = false;
+    unsigned int i;
+
+    sgi_router_histogram_unpack(s->histograms[port], buckets);
+    for (i = 0; i < 4; i++) {
+        if (bucket_mask & (1U << i)) {
+            buckets[i]++;
+            rescale |= buckets[i] > UINT16_MAX;
+        }
+    }
+    if (rescale) {
+        for (i = 0; i < 4; i++) {
+            buckets[i] >>= 1;
+        }
+    }
+    s->histograms[port] = sgi_router_histogram_pack(buckets);
+}
+
+static void sgi_router_histogram_add_ticks(SGIRouterState *s,
+                                           unsigned int port,
+                                           uint64_t ticks)
+{
+    uint32_t buckets[4];
+
+    sgi_router_histogram_unpack(s->histograms[port], buckets);
+    while (ticks) {
+        uint64_t until_rescale = UINT64_C(0x10000) - buckets[3];
+
+        if (ticks < until_rescale) {
+            buckets[3] += ticks;
+            break;
+        }
+        buckets[3] += until_rescale;
+        ticks -= until_rescale;
+        for (unsigned int i = 0; i < 4; i++) {
+            buckets[i] >>= 1;
+        }
+    }
+    s->histograms[port] = sgi_router_histogram_pack(buckets);
+}
+
+static void sgi_router_histogram_sync(SGIRouterState *s)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    uint64_t ticks;
+    unsigned int port;
+
+    if (!s->histogram_next_ns || now < s->histogram_next_ns) {
+        return;
+    }
+    ticks = (now - s->histogram_next_ns) / RR_HISTOGRAM_TICK_NS + 1;
+    for (port = 0; port < SGI_ROUTER_PORTS; port++) {
+        if (sgi_router_histogram_utilisation(s, port)) {
+            sgi_router_histogram_add_ticks(s, port, ticks);
+        }
+    }
+    if (ticks <= (INT64_MAX - s->histogram_next_ns) /
+                 RR_HISTOGRAM_TICK_NS) {
+        s->histogram_next_ns += ticks * RR_HISTOGRAM_TICK_NS;
+    } else {
+        s->histogram_next_ns = INT64_MAX;
+    }
+}
+
 static bool sgi_router_read(SGIRouterState *s, unsigned int arrival_port,
                             hwaddr addr, uint64_t *value)
 {
@@ -326,6 +431,7 @@ static bool sgi_router_read(SGIRouterState *s, unsigned int arrival_port,
             *value = s->port_errors[port];
             return true;
         case RR_HISTOGRAM:
+            sgi_router_histogram_sync(s);
             *value = s->histograms[port];
             return true;
         case RR_RESET_MASK:
@@ -391,16 +497,33 @@ static bool sgi_router_write(SGIRouterState *s, hwaddr addr, uint64_t value)
     if (sgi_router_port_register(addr, &port, &offset)) {
         switch (offset) {
         case RR_PORT_PARMS:
+        {
+            uint64_t old_select = extract64(s->port_parms[port], 16, 4);
+            uint64_t new_select = extract64(value, 16, 4);
+            unsigned int mode = extract64(value,
+                                           RR_PORT_HISTOGRAM_SELECT_SHIFT, 2);
+
+            sgi_router_histogram_sync(s);
             s->port_parms[port] = value & RR_PORT_PARMS_MASK;
+            if (mode != RR_HISTOGRAM_UTILISATION &&
+                old_select != new_select) {
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-router: histogram selector %u on port %u "
+                              "is not implemented\n", mode, port + 1);
+            }
             return true;
+        }
         case RR_STATUS_ERROR:
             s->port_errors[port] &= ~(value & RR_PORT_ERROR_MASK);
             return true;
         case RR_HISTOGRAM:
-            qemu_log_mask(LOG_UNIMP,
-                          "sgi-router: histogram clearing and progression "
-                          "are not implemented\n");
-            return false;
+            sgi_router_histogram_sync(s);
+            if (value == 0) {
+                s->histograms[port] = 0;
+            } else {
+                s->histograms[port] &= ~value;
+            }
+            return true;
         case RR_RESET_MASK:
             s->reset_masks[port] = value & RR_RESET_MASK_MASK;
             return true;
@@ -443,9 +566,19 @@ static bool sgi_router_write(SGIRouterState *s, hwaddr addr, uint64_t value)
         s->scratch1 = value & RR_SCRATCH1_MASK;
         return true;
     case RR_DIAG_PARMS:
+    {
+        bool absolute = value & RR_DIAG_ABSOLUTE_HISTOGRAM;
+
+        sgi_router_histogram_sync(s);
+        if (absolute && !(s->diag_parms & RR_DIAG_ABSOLUTE_HISTOGRAM)) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-router: absolute histogram mode is not "
+                          "implemented\n");
+        }
         s->diag_parms = value & RR_DIAG_MASK;
         sgi_router_changed(s);
         return true;
+    }
     case RR_NIC_ULAN:
         return sgi_router_nic_write(s, value);
     case RR_BIST_DATA:
@@ -549,6 +682,33 @@ void sgi_router_latch_port_error(SGIRouterState *s, unsigned int port,
     s->port_errors[port - 1] |= errors & RR_PORT_ERROR_MASK;
 }
 
+void sgi_router_histogram_receive(SGIRouterState *s, unsigned int port,
+                                  bool accepted, bool queue_empty,
+                                  bool output_uncontended)
+{
+    unsigned int bucket_mask = 1U << 1;
+
+    g_assert(port >= 1 && port <= SGI_ROUTER_PORTS);
+    sgi_router_histogram_sync(s);
+    if (!accepted || !sgi_router_histogram_utilisation(s, port - 1)) {
+        return;
+    }
+    if (queue_empty && output_uncontended) {
+        bucket_mask |= 1U << 0;
+    }
+    sgi_router_histogram_increment(s, port - 1, bucket_mask);
+}
+
+void sgi_router_histogram_send(SGIRouterState *s, unsigned int port,
+                               bool accepted)
+{
+    g_assert(port >= 1 && port <= SGI_ROUTER_PORTS);
+    sgi_router_histogram_sync(s);
+    if (accepted && sgi_router_histogram_utilisation(s, port - 1)) {
+        sgi_router_histogram_increment(s, port - 1, 1U << 2);
+    }
+}
+
 bool sgi_router_resolve_turn(unsigned int entry_port, uint8_t turn,
                              unsigned int *exit_port)
 {
@@ -613,6 +773,8 @@ static void sgi_router_reset_enter(Object *obj, ResetType type)
     s->scratch0 = 0;
     s->scratch1 = 0;
     s->diag_parms = 0;
+    s->histogram_next_ns = 0;
+    s->histogram_phase_ns = 0;
     timer_del(s->nic_timer);
     sgi_router_nic_idle(s);
     s->nic_ulan = RR_NIC_RESET;
@@ -634,7 +796,13 @@ static void sgi_router_reset_enter(Object *obj, ResetType type)
 
 static void sgi_router_reset_exit(Object *obj, ResetType type)
 {
-    sgi_router_changed(SGI_ROUTER(obj));
+    SGIRouterState *s = SGI_ROUTER(obj);
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    s->histogram_next_ns = now <= INT64_MAX - RR_HISTOGRAM_TICK_NS ?
+                           now + RR_HISTOGRAM_TICK_NS : INT64_MAX;
+    s->histogram_phase_ns = RR_HISTOGRAM_TICK_NS;
+    sgi_router_changed(s);
 }
 
 static bool sgi_router_array_masked(const uint64_t *values, size_t count,
@@ -655,6 +823,24 @@ static int sgi_router_pre_load(void *opaque)
     SGIRouterState *s = opaque;
 
     timer_del(s->nic_timer);
+    s->histogram_next_ns = 0;
+    s->histogram_phase_ns = 0;
+    return 0;
+}
+
+static int sgi_router_pre_save(void *opaque)
+{
+    SGIRouterState *s = opaque;
+    int64_t now;
+    int64_t phase;
+
+    sgi_router_histogram_sync(s);
+    now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    phase = s->histogram_next_ns - now;
+    if (phase < 1 || phase > RR_HISTOGRAM_TICK_NS) {
+        return -EINVAL;
+    }
+    s->histogram_phase_ns = phase;
     return 0;
 }
 
@@ -692,9 +878,13 @@ static bool sgi_router_nic_state_valid(SGIRouterState *s)
 static int sgi_router_post_load(void *opaque, int version_id)
 {
     SGIRouterState *s = opaque;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     unsigned int i;
 
-    if (!sgi_router_nic_state_valid(s) ||
+    if (s->histogram_phase_ns < 1 ||
+        s->histogram_phase_ns > RR_HISTOGRAM_TICK_NS ||
+        now > INT64_MAX - s->histogram_phase_ns ||
+        !sgi_router_nic_state_valid(s) ||
         (s->status_control & ~RR_STATUS_CONTROL_MASK) ||
         (s->local_errors & ~RR_STATUS_LOCAL_ERROR_MASK) ||
         (s->protection_config & ~RR_PROTECTION_MASK) ||
@@ -723,6 +913,7 @@ static int sgi_router_post_load(void *opaque, int version_id)
             return -EINVAL;
         }
     }
+    s->histogram_next_ns = now + s->histogram_phase_ns;
     if (s->nic_phase != ROUTER_NIC_IDLE) {
         timer_mod(s->nic_timer, s->nic_phase == ROUTER_NIC_DRIVING ?
                                s->nic_release_ns : s->nic_sample_ns);
@@ -733,8 +924,9 @@ static int sgi_router_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_router = {
     .name = "sgi-router",
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
+    .pre_save = sgi_router_pre_save,
     .pre_load = sgi_router_pre_load,
     .post_load = sgi_router_post_load,
     .fields = (const VMStateField[]) {
@@ -750,6 +942,7 @@ static const VMStateDescription vmstate_sgi_router = {
         VMSTATE_UINT64_ARRAY(port_parms, SGIRouterState, SGI_ROUTER_PORTS),
         VMSTATE_UINT64_ARRAY(port_errors, SGIRouterState, SGI_ROUTER_PORTS),
         VMSTATE_UINT64_ARRAY(histograms, SGIRouterState, SGI_ROUTER_PORTS),
+        VMSTATE_UINT8(histogram_phase_ns, SGIRouterState),
         VMSTATE_UINT8_ARRAY(reset_masks, SGIRouterState, SGI_ROUTER_PORTS),
         VMSTATE_BOOL_ARRAY(port_working, SGIRouterState, SGI_ROUTER_PORTS),
         VMSTATE_BOOL_ARRAY(port_eight_bit, SGIRouterState, SGI_ROUTER_PORTS),
