@@ -545,12 +545,29 @@ static void sgi_xbow_link_reset_expire(void *opaque)
 {
     SGIXbowLink *context = opaque;
     SGIXbowState *s = context->xbow;
+    uint8_t bit = BIT(context->link);
 
     if (s->quiesced || s->stop_on_link_reset) {
         return;
     }
-    s->link_reset_asserted &= ~BIT(context->link);
+    s->link_reset_remaining[context->link] = XBOW_TIMER_INACTIVE;
+    s->link_reset_asserted &= ~bit;
     qemu_set_irq(s->link_reset[context->link], 0);
+    if (s->link_reset_restore_alive_mask & bit) {
+        s->link_initializing &= ~bit;
+        if (s->link_reset_restore_alive & bit) {
+            s->link_alive |= bit;
+            s->link_came_up |= bit;
+            s->link_event[context->link] |= XBOW_LINK_ALIVE;
+            if (s->link_control[context->link] &
+                XBOW_LINK_EIGHT_BIT_FORCE) {
+                s->link_eight_bit |= bit;
+            }
+        }
+        s->link_reset_restore_alive &= ~bit;
+        sgi_xbow_sync_routes(s);
+        sgi_xbow_update_interrupt(s);
+    }
 }
 
 /*
@@ -558,13 +575,23 @@ static void sgi_xbow_link_reset_expire(void *opaque)
  * remote end for two core cycles, and mode arbitration is forced. The
  * force-eight-bit control deliberately survives it. What ends initialization
  * is the part no reviewed source settles -- neither the end of the pulse nor
- * a peer's reset is evidence that a link trained -- so the port stays in
- * initialization rather than inventing a training result to come out of it.
+ * a peer's reset is evidence that a link trained -- so the generic port stays
+ * in initialization. A machine may select an attached link whose reviewed
+ * compatibility policy restores only its pre-command health at pulse end.
  */
 static void sgi_xbow_start_link_reset(SGIXbowState *s, unsigned int link)
 {
-    s->link_alive &= ~BIT(link);
-    s->link_eight_bit &= ~BIT(link);
+    uint8_t bit = BIT(link);
+
+    if (s->link_reset_restore_alive_mask & bit) {
+        if (s->link_alive & bit) {
+            s->link_reset_restore_alive |= bit;
+        } else {
+            s->link_reset_restore_alive &= ~bit;
+        }
+    }
+    s->link_alive &= ~bit;
+    s->link_eight_bit &= ~bit;
     /*
      * A port with nothing on it goes to initialization failure and stays
      * there, which the specification states outright, so its reset needs no
@@ -574,19 +601,20 @@ static void sgi_xbow_start_link_reset(SGIXbowState *s, unsigned int link)
      * this chip has.
      */
     if (sgi_xbow_present(s, link)) {
-        s->link_initializing |= BIT(link);
+        s->link_initializing |= bit;
     } else {
-        s->link_initializing &= ~BIT(link);
-        s->link_came_up &= ~BIT(link);
+        s->link_initializing &= ~bit;
+        s->link_came_up &= ~bit;
     }
     sgi_xbow_sync_routes(s);
     sgi_xbow_update_interrupt(s);
 
-    s->link_reset_asserted |= BIT(link);
+    s->link_reset_asserted |= bit;
     qemu_set_irq(s->link_reset[link], 1);
     timer_mod(s->link_reset_timer[link],
               qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + XBOW_LINK_RESET_NS);
-    if (sgi_xbow_present(s, link)) {
+    if (sgi_xbow_present(s, link) &&
+        !(s->link_reset_restore_alive_mask & bit)) {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-xbow: widget %u link reset; no reviewed "
                       "completion predicate brings an attached link out of "
@@ -727,9 +755,17 @@ static MemTxResult sgi_xbow_write(void *opaque, hwaddr addr, uint64_t value,
     if (s->quiesced) {
         return MEMTX_ERROR;
     }
-    if (!sgi_xbow_decode(addr, size, &slot) ||
-        !sgi_xbow_accessible(slot, true)) {
+    if (!sgi_xbow_decode(addr, size, &slot)) {
         return sgi_xbow_refuse(s, addr, size, true);
+    }
+    if (!sgi_xbow_accessible(slot, true)) {
+        MemTxResult result = sgi_xbow_refuse(s, addr, size, true);
+
+        if (s->complete_posted_error_address_writes &&
+            (slot == XBOW_ERR_UPPER || slot == XBOW_ERR_LOWER)) {
+            return MEMTX_OK;
+        }
+        return result;
     }
     switch (slot) {
     case XBOW_CONTROL:
@@ -1074,6 +1110,7 @@ static void sgi_xbow_reset_enter(Object *obj, ResetType type)
     s->nic = XBOW_NIC_RESET;
     s->interrupt_asserted = false;
     s->link_reset_asserted = 0;
+    s->link_reset_restore_alive = 0;
     s->link_initializing = 0;
     s->link_alive = s->link_startup;
     s->link_came_up = s->link_startup;
@@ -1081,6 +1118,7 @@ static void sgi_xbow_reset_enter(Object *obj, ResetType type)
 
     for (link = 0; link < SGI_XBOW_LINKS; link++) {
         timer_del(s->link_reset_timer[link]);
+        s->link_reset_remaining[link] = XBOW_TIMER_INACTIVE;
         s->link_control[link] = XBOW_LINK_CREDIT_RESET;
         s->link_arb_upper[link] = 0;
         s->link_arb_lower[link] = 0;
@@ -1124,7 +1162,8 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
                          "widget space, no larger than 48 address bits");
         return;
     }
-    if ((s->links_present_prop | s->startup_links_alive_prop) &
+    if ((s->links_present_prop | s->startup_links_alive_prop |
+         s->link_reset_restore_alive_prop) &
         ~XBOW_WIDGET_MASK) {
         error_setg(errp, "a crossbar link mask names widgets 8 through 15, "
                          "so only bits 15:8 may be set");
@@ -1133,6 +1172,11 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
     if (s->startup_links_alive_prop & ~s->links_present_prop) {
         error_setg(errp, "a crossbar link that starts operational must also "
                          "be populated");
+        return;
+    }
+    if (s->link_reset_restore_alive_prop & ~s->links_present_prop) {
+        error_setg(errp, "a crossbar link with reset recovery must also be "
+                         "populated");
         return;
     }
     if (s->revision > 0xf || s->part > 0xffff || s->manufacturer > 0x7ff) {
@@ -1155,6 +1199,8 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
     }
     s->link_present = sgi_xbow_links_of(s->links_present_prop);
     s->link_startup = sgi_xbow_links_of(s->startup_links_alive_prop);
+    s->link_reset_restore_alive_mask =
+        sgi_xbow_links_of(s->link_reset_restore_alive_prop);
 
     memory_region_init_io(&s->regs, OBJECT(dev), &sgi_xbow_ops, s,
                           "sgi-xbow.regs", s->span);
@@ -1256,7 +1302,7 @@ void sgi_xbow_quiesce(SGIXbowState *s)
     s->quiesced = true;
     for (link = 0; link < SGI_XBOW_LINKS; link++) {
         timer_del(s->link_reset_timer[link]);
-        s->link_reset_deadline[link] = XBOW_TIMER_INACTIVE;
+        s->link_reset_remaining[link] = XBOW_TIMER_INACTIVE;
     }
     if (s->regions_initialized) {
         memory_region_transaction_begin();
@@ -1273,6 +1319,7 @@ void sgi_xbow_quiesce(SGIXbowState *s)
         }
     }
     s->link_reset_asserted = 0;
+    s->link_reset_restore_alive = 0;
 }
 
 static void sgi_xbow_unrealize(DeviceState *dev)
@@ -1290,9 +1337,9 @@ static void sgi_xbow_unrealize(DeviceState *dev)
 }
 
 /*
- * Migration carries the live mask, not the startup one: a machine whose
- * links have moved since launch keeps that state across the transfer, and
- * the routes and outputs derived from it are rebuilt here.
+ * Migration carries the live mask, not the startup one. An active reset also
+ * carries its remaining pulse duration and the health it may restore. The
+ * routes and outputs derived from that state are rebuilt here.
  */
 static int sgi_xbow_pre_save(void *opaque)
 {
@@ -1302,10 +1349,16 @@ static int sgi_xbow_pre_save(void *opaque)
     for (link = 0; link < SGI_XBOW_LINKS; link++) {
         int64_t deadline = timer_expire_time_ns(s->link_reset_timer[link]);
 
-        if (timer_pending(s->link_reset_timer[link]) && deadline < 0) {
-            return -EINVAL;
+        if (timer_pending(s->link_reset_timer[link])) {
+            int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+            if (deadline < 0) {
+                return -EINVAL;
+            }
+            s->link_reset_remaining[link] = MAX(deadline - now, 0);
+        } else {
+            s->link_reset_remaining[link] = XBOW_TIMER_INACTIVE;
         }
-        s->link_reset_deadline[link] = deadline;
     }
     return 0;
 }
@@ -1317,7 +1370,7 @@ static int sgi_xbow_pre_load(void *opaque)
 
     for (link = 0; link < SGI_XBOW_LINKS; link++) {
         timer_del(s->link_reset_timer[link]);
-        s->link_reset_deadline[link] = XBOW_TIMER_INACTIVE;
+        s->link_reset_remaining[link] = XBOW_TIMER_INACTIVE;
     }
     return s->quiesced ? -EINVAL : 0;
 }
@@ -1327,7 +1380,8 @@ static int sgi_xbow_post_load(void *opaque, int version_id)
     SGIXbowState *s = opaque;
     unsigned int link;
 
-    if (s->quiesced || (s->link_alive & ~s->link_present)) {
+    if (s->quiesced || (s->link_alive & ~s->link_present) ||
+        (s->link_reset_restore_alive & ~s->link_reset_restore_alive_mask)) {
         return -EINVAL;
     }
     /*
@@ -1339,12 +1393,16 @@ static int sgi_xbow_post_load(void *opaque, int version_id)
      * it without re-driving an edge the destination already had.
      */
     for (link = 0; link < SGI_XBOW_LINKS; link++) {
-        if (s->link_reset_deadline[link] < XBOW_TIMER_INACTIVE) {
+        if (s->link_reset_remaining[link] < XBOW_TIMER_INACTIVE) {
+            return -EINVAL;
+        }
+        if (!!(s->link_reset_asserted & BIT(link)) !=
+            (s->link_reset_remaining[link] != XBOW_TIMER_INACTIVE)) {
             return -EINVAL;
         }
         if (s->stop_on_link_reset &&
             ((s->link_reset_asserted & BIT(link)) ||
-             s->link_reset_deadline[link] != XBOW_TIMER_INACTIVE)) {
+             s->link_reset_remaining[link] != XBOW_TIMER_INACTIVE)) {
             return -EINVAL;
         }
     }
@@ -1354,9 +1412,10 @@ static int sgi_xbow_post_load(void *opaque, int version_id)
     }
     sgi_xbow_sync_routes(s);
     for (link = 0; link < SGI_XBOW_LINKS; link++) {
-        if (s->link_reset_deadline[link] != XBOW_TIMER_INACTIVE) {
+        if (s->link_reset_remaining[link] != XBOW_TIMER_INACTIVE) {
             timer_mod_ns(s->link_reset_timer[link],
-                         s->link_reset_deadline[link]);
+                         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                         s->link_reset_remaining[link]);
         }
     }
     return 0;
@@ -1364,8 +1423,8 @@ static int sgi_xbow_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_xbow = {
     .name = "sgi-xbow",
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .pre_save = sgi_xbow_pre_save,
     .pre_load = sgi_xbow_pre_load,
     .post_load = sgi_xbow_post_load,
@@ -1394,8 +1453,9 @@ static const VMStateDescription vmstate_sgi_xbow = {
         VMSTATE_UINT8(link_came_up, SGIXbowState),
         VMSTATE_UINT8(link_eight_bit, SGIXbowState),
         VMSTATE_UINT8(link_reset_asserted, SGIXbowState),
+        VMSTATE_UINT8(link_reset_restore_alive, SGIXbowState),
         VMSTATE_BOOL(interrupt_asserted, SGIXbowState),
-        VMSTATE_INT64_ARRAY(link_reset_deadline, SGIXbowState,
+        VMSTATE_INT64_ARRAY(link_reset_remaining, SGIXbowState,
                             SGI_XBOW_LINKS),
         VMSTATE_END_OF_LIST()
     }
@@ -1403,19 +1463,23 @@ static const VMStateDescription vmstate_sgi_xbow = {
 
 /*
  * A real Crossbow reports part 0 and manufacturer 0: zero is the identity.
- * Both link masks name widgets, so bit 8 is the widget at decoded identity
- * 8, matching the field the machine's generated descriptor carries.
+ * Link masks name widgets, so bit 8 is the widget at decoded identity 8,
+ * matching the field the machine's generated descriptor carries.
  */
 static const Property sgi_xbow_properties[] = {
     DEFINE_PROP_UINT64("span", SGIXbowState, span, 0),
     DEFINE_PROP_BOOL("stop-on-link-reset", SGIXbowState,
                      stop_on_link_reset, false),
+    DEFINE_PROP_BOOL("complete-posted-error-address-writes", SGIXbowState,
+                     complete_posted_error_address_writes, false),
     DEFINE_PROP_UINT32("revision", SGIXbowState, revision, 1),
     DEFINE_PROP_UINT32("part", SGIXbowState, part, 0),
     DEFINE_PROP_UINT32("manufacturer", SGIXbowState, manufacturer, 0),
     DEFINE_PROP_UINT16("links-present", SGIXbowState, links_present_prop, 0),
     DEFINE_PROP_UINT16("startup-links-alive", SGIXbowState,
                        startup_links_alive_prop, 0),
+    DEFINE_PROP_UINT16("link-reset-restore-alive", SGIXbowState,
+                       link_reset_restore_alive_prop, 0),
 };
 
 static void sgi_xbow_instance_init(Object *obj)
@@ -1431,7 +1495,7 @@ static void sgi_xbow_instance_init(Object *obj)
 
         s->link_context[link].xbow = s;
         s->link_context[link].link = link;
-        s->link_reset_deadline[link] = XBOW_TIMER_INACTIVE;
+        s->link_reset_remaining[link] = XBOW_TIMER_INACTIVE;
         s->link_reset_timer[link] = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                                  sgi_xbow_link_reset_expire,
                                                  &s->link_context[link]);
