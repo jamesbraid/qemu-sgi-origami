@@ -23,10 +23,15 @@
 #define LOCAL (HUB + 0x18000000ULL)
 #define REMOTE (HUB + 0x38000000ULL)
 
-/* One PROM stride into a boot space: the second software read address. */
+/*
+ * One PROM stride into a boot space: the second position's base. Reads and
+ * stores there reach the upper half of the backing, not a repeat of the
+ * lower half.
+ */
 #define SECOND_READ 0x02000000ULL
 #define PRIMARY LOCAL
 #define ALTERNATE (LOCAL + SECOND_READ)
+#define REMOTE_ALTERNATE (REMOTE + SECOND_READ)
 
 #define FLASH_SIZE (16 * 1024 * 1024)
 #define SECTOR_SIZE (64 * 1024)
@@ -43,21 +48,24 @@
 /* CFI query values are 16 bits wide at twice the query index. */
 #define QUERY_READ(i) ((uint64_t)(i) * 2)
 
+/* One PROM position: half the published capacity. */
+#define PART_SIZE (FLASH_SIZE / 2)
+
 /*
- * The whole backing is commandable: a store at window offset 4n reaches
- * backing byte n, and 4 * 16 MiB fits inside a 128 MiB boot space. The last
- * word begins at backing byte LAST_WORD and the first store with no backing
- * word behind it is at window offset WRITE_LIMIT.
+ * A position's whole part is commandable: a store at 4n above that position's
+ * base reaches its byte n, and 4 * 8 MiB fits between the two bases. The last
+ * word of a part begins at LAST_WORD and the first store with no backing word
+ * behind it is WRITE_LIMIT above the position's base.
  */
-#define LAST_WORD (FLASH_SIZE - 2)
-#define LAST_SECTOR (FLASH_SIZE - SECTOR_SIZE)
-#define WRITE_LIMIT (4ULL * FLASH_SIZE)
+#define LAST_WORD (PART_SIZE - 2)
+#define LAST_SECTOR (PART_SIZE - SECTOR_SIZE)
+#define WRITE_LIMIT (4ULL * PART_SIZE)
 /*
  * A sector for the erase-bounds case: far above the quarter of the backing
  * the superseded mapping could reach, and with a neighbour on each side so
  * the bounds have something either way to check.
  */
-#define HIGH_SECTOR (FLASH_SIZE - 2 * SECTOR_SIZE)
+#define HIGH_SECTOR (PART_SIZE - 2 * SECTOR_SIZE)
 
 static char *sized_image(const char *tag, off_t size)
 {
@@ -127,9 +135,20 @@ static QTestState *flash_start(const char *image, const char *options,
      * virtual-clock timer, and that clock only advances while it does.
      */
     QTestState *s = qtest_initf("-M none -cpu R10000 "
-                                "-drive if=none,id=fl,file=%s,format=raw%s "
-                                "-device sgi-bedrock-flash,id=flash,drive=fl "
-                                "%s", image, options, extra);
+                                "-blockdev driver=file,node-name=img,"
+                                "filename=%s "
+                                "-blockdev driver=raw,node-name=p0,file=img,"
+                                "offset=0,size=%llu%s "
+                                "-blockdev driver=raw,node-name=p1,file=img,"
+                                "offset=%llu,size=%llu%s "
+                                "-device sgi-bedrock-flash,id=flash,"
+                                "drive0=p0,drive1=p1 %s",
+                                image,
+                                (unsigned long long)PART_SIZE,
+                                options,
+                                (unsigned long long)PART_SIZE,
+                                (unsigned long long)PART_SIZE,
+                                options, extra);
 
     qtest_sysbus_mmio_map(s, FLASH_PATH, 0, LOCAL);
     qtest_sysbus_mmio_map(s, FLASH_PATH, 1, REMOTE);
@@ -170,14 +189,17 @@ static void flash_erase_sector(QTestState *s, uint64_t base, uint64_t offset)
 
 static void assert_qemu_rejects(const char *image, const char *message)
 {
-    g_autofree char *drive = g_strdup_printf("if=none,id=fl,file=%s,"
-                                             "format=raw", image);
+    g_autofree char *sound = sized_image("sound", PART_SIZE);
+    g_autofree char *bad = g_strdup_printf("if=none,id=p0,file=%s,"
+                                           "format=raw", image);
+    g_autofree char *good = g_strdup_printf("if=none,id=p1,file=%s,"
+                                            "format=raw", sound);
     g_autofree char *output = NULL;
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M", "none", "-accel", "qtest",
         "-cpu", "R10000", "-S",
-        "-display", "none", "-drive", drive,
-        "-device", "sgi-bedrock-flash,id=flash,drive=fl", NULL
+        "-display", "none", "-drive", bad, "-drive", good,
+        "-device", "sgi-bedrock-flash,id=flash,drive0=p0,drive1=p1", NULL
     };
     int wait_status = 0;
 
@@ -185,19 +207,20 @@ static void assert_qemu_rejects(const char *image, const char *message)
                                &output, &wait_status, NULL));
     g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
     g_assert_nonnull(strstr(output, message));
+    g_assert_cmpint(unlink(sound), ==, 0);
 }
 
 /*
- * The device takes exactly the published 16 MiB. It refuses a shorter or a
- * longer image, and refuses to come up with no image at all, rather than
- * inventing what an absent or mis-sized part would answer. Contents are its
- * own business: a run-of-the-mill image and one already carrying the result
- * of an earlier update are both accepted.
+ * Each position takes exactly its own half of the published capacity. The
+ * device refuses a shorter or a longer part, and refuses to come up with no
+ * image at all, rather than inventing what an absent or mis-sized part would
+ * answer. Contents are its own business: a run-of-the-mill image and one
+ * already carrying the result of an earlier update are both accepted.
  */
 static void test_backing_file(void)
 {
-    g_autofree char *small = sized_image("small", FLASH_SIZE / 2);
-    g_autofree char *large = sized_image("large", FLASH_SIZE + 1);
+    g_autofree char *small = sized_image("small", PART_SIZE / 2);
+    g_autofree char *large = sized_image("large", PART_SIZE + 1);
     g_autofree char *good = flash_image("good");
     g_autofree char *output = NULL;
     const char *bare[] = {
@@ -208,14 +231,15 @@ static void test_backing_file(void)
     int wait_status = 0;
     QTestState *s;
 
-    assert_qemu_rejects(small, "requires 16777216 bytes");
-    assert_qemu_rejects(large, "requires 16777216 bytes");
+    assert_qemu_rejects(small, "requires 8388608 bytes");
+    assert_qemu_rejects(large, "requires 8388608 bytes");
     assert_qemu_rejects("/nonexistent/sn1-bedrock-flash", "No such file");
 
     g_assert_true(g_spawn_sync(NULL, (char **)bare, NULL, 0, NULL, NULL, NULL,
                                &output, &wait_status, NULL));
     g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
-    g_assert_nonnull(strstr(output, "raw flash image"));
+    /* Named per position, so a half-wired machine is not a silent success. */
+    g_assert_nonnull(strstr(output, "as 'drive0'"));
 
     s = flash_start(good, "", "");
     g_assert_cmphex(qtest_readq(s, PRIMARY), ==, 0);
@@ -258,50 +282,57 @@ static void test_one_to_one_reads(void)
                     0xfeedfacecafef00dULL);
     g_assert_cmphex(qtest_readq(s, PRIMARY + 0x1f0000), ==,
                     0x0badc0debaadf00dULL);
-    g_assert_cmphex(qtest_readq(s, PRIMARY + FLASH_SIZE - 8), ==,
+    /* The backing's last word belongs to position one, not to position zero. */
+    g_assert_cmphex(qtest_readq(s, ALTERNATE + PART_SIZE - 8), ==,
                     0x0123456789abcdefULL);
-    g_assert_cmphex(qtest_readb(s, PRIMARY + FLASH_SIZE - 1), ==, 0xef);
+    g_assert_cmphex(qtest_readb(s, ALTERNATE + PART_SIZE - 1), ==, 0xef);
     qtest_quit(s);
     g_assert_cmpint(unlink(image), ==, 0);
 }
 
-/* Both software selections reach the same stored bytes. */
-static void test_selections_alias(void)
+/*
+ * The two positions are different parts. Each holds its own half of the
+ * backing and is reachable only at its own base, through either boot space.
+ * A read past a position's own 8 MiB is outside every mapped address.
+ */
+static void test_positions_are_distinct(void)
 {
-    g_autofree char *image = flash_image("alias");
+    g_autofree char *image = flash_image("positions");
     QTestState *s;
 
+    /* Distinct non-erased bytes in each half, at matching offsets. */
     image_write_be64(image, 0x10000, 0x1122334455667788ULL);
-    image_write_be64(image, 0x1e0000, 0xfeedfacecafef00dULL);
-    image_write_be64(image, 0x1f0000, 0x0badc0debaadf00dULL);
-    image_write_be64(image, FLASH_SIZE - 8, 0x0123456789abcdefULL);
-    image_erase_sector(image, 0x20000);
+    image_write_be64(image, PART_SIZE + 0x10000, 0x99aabbccddeeff00ULL);
+    image_write_be64(image, 0, 0x0f0f0f0f0f0f0f0fULL);
+    image_write_be64(image, PART_SIZE, 0xf0f0f0f0f0f0f0f0ULL);
 
     s = flash_start(image, "", "");
-    g_assert_cmphex(qtest_readq(s, ALTERNATE + 0x10000), ==,
+
+    /* Each position answers with its own bytes, not the other's. */
+    g_assert_cmphex(qtest_readq(s, PRIMARY), ==, 0x0f0f0f0f0f0f0f0fULL);
+    g_assert_cmphex(qtest_readq(s, ALTERNATE), ==, 0xf0f0f0f0f0f0f0f0ULL);
+    g_assert_cmphex(qtest_readq(s, PRIMARY + 0x10000), ==,
                     0x1122334455667788ULL);
-    g_assert_cmphex(qtest_readq(s, ALTERNATE + 0x1e0000), ==,
-                    0xfeedfacecafef00dULL);
-    g_assert_cmphex(qtest_readq(s, ALTERNATE + 0x1f0000), ==,
-                    0x0badc0debaadf00dULL);
-    g_assert_cmphex(qtest_readq(s, ALTERNATE + FLASH_SIZE - 8), ==,
-                    0x0123456789abcdefULL);
+    g_assert_cmphex(qtest_readq(s, ALTERNATE + 0x10000), ==,
+                    0x99aabbccddeeff00ULL);
 
-    /* A word programmed through one selection is readable through the other. */
-    flash_program(s, LOCAL, 0x20000, 0x0f0f);
-    g_assert_cmphex(qtest_readw(s, ALTERNATE + 0x20000), ==, 0x0f0f);
-    flash_program(s, REMOTE, 0x20002, 0x33cc);
-    g_assert_cmphex(qtest_readw(s, PRIMARY + 0x20002), ==, 0x33cc);
+    /* The remote boot space reaches the same pair at the same offsets. */
+    g_assert_cmphex(qtest_readq(s, REMOTE), ==, 0x0f0f0f0f0f0f0f0fULL);
+    g_assert_cmphex(qtest_readq(s, REMOTE_ALTERNATE), ==,
+                    0xf0f0f0f0f0f0f0f0ULL);
+    g_assert_cmphex(qtest_readq(s, REMOTE + 0x10000), ==,
+                    0x1122334455667788ULL);
+    g_assert_cmphex(qtest_readq(s, REMOTE_ALTERNATE + 0x10000), ==,
+                    0x99aabbccddeeff00ULL);
 
-    qtest_system_reset(s);
-    g_assert_cmphex(qtest_readl(s, PRIMARY + 0x20000), ==, 0x0f0f33cc);
-    g_assert_cmphex(qtest_readl(s, ALTERNATE + 0x20000), ==, 0x0f0f33cc);
-    qtest_quit(s);
+    /*
+     * A position stops at its own part. The old mirrored policy answered
+     * here from the other half; nothing does now.
+     */
+    g_assert_cmphex(qtest_readq(s, PRIMARY + PART_SIZE), ==, 0);
+    g_assert_cmphex(qtest_readq(s, REMOTE + PART_SIZE), ==, 0);
+    g_assert_cmphex(qtest_readq(s, ALTERNATE + PART_SIZE), ==, 0);
 
-    /* And it is in the image, so a fresh run reads it back. */
-    s = flash_start(image, "", "");
-    g_assert_cmphex(qtest_readl(s, PRIMARY + 0x20000), ==, 0x0f0f33cc);
-    g_assert_cmphex(qtest_readl(s, ALTERNATE + 0x20000), ==, 0x0f0f33cc);
     qtest_quit(s);
     g_assert_cmpint(unlink(image), ==, 0);
 }
@@ -320,6 +351,7 @@ static void test_query_mode(void)
     /* Array contents the query answers cannot be confused with. */
     image_write_be64(image, 0x20, 0xdeadbeefdeadbeefULL);
     image_write_be64(image, 0x28, 0xdeadbeefdeadbeefULL);
+    image_write_be64(image, PART_SIZE + 0x20, 0xfeedfacefeedfaceULL);
 
     s = flash_start(image, "", "");
     /*
@@ -338,13 +370,30 @@ static void test_query_mode(void)
     /* The AMD-compatible primary command set. */
     g_assert_cmphex(qtest_readw(s, PRIMARY + QUERY_READ(0x13)), ==, 0x0002);
     g_assert_cmphex(qtest_readw(s, PRIMARY + QUERY_READ(0x14)), ==, 0x0000);
-    /* Both selections are the same device, so both are in query mode. */
-    g_assert_cmphex(qtest_readw(s, ALTERNATE + QUERY_READ(0x10)), ==, 'Q');
+    /*
+     * The positions are separate parts with separate command state. Putting
+     * position zero in query mode leaves position one reading its own array,
+     * which is what the superseded one-device policy could not do.
+     */
+    g_assert_cmphex(qtest_readq(s, ALTERNATE + 0x20), ==,
+                    0xfeedfacefeedfaceULL);
+
+    /* The same query state is visible through the other boot space. */
+    g_assert_cmphex(qtest_readw(s, REMOTE + QUERY_READ(0x10)), ==, 'Q');
 
     flash_reset_to_array(s, LOCAL);
     g_assert_cmphex(qtest_readq(s, PRIMARY + 0x20), ==, 0xdeadbeefdeadbeefULL);
     g_assert_cmphex(qtest_readq(s, ALTERNATE + 0x20), ==,
-                    0xdeadbeefdeadbeefULL);
+                    0xfeedfacefeedfaceULL);
+
+    /* The remote window can start position one's query for local reads. */
+    qtest_writeq(s, REMOTE + SECOND_READ + QUERY, 0x98);
+    g_assert_cmphex(qtest_readw(s, ALTERNATE + QUERY_READ(0x10)), ==, 'Q');
+    g_assert_cmphex(qtest_readq(s, PRIMARY + 0x20), ==, 0xdeadbeefdeadbeefULL);
+    flash_reset_to_array(s, LOCAL + SECOND_READ);
+    g_assert_cmphex(qtest_readq(s, ALTERNATE + 0x20), ==,
+                    0xfeedfacefeedfaceULL);
+
     qtest_quit(s);
     g_assert_cmpint(unlink(image), ==, 0);
 }
@@ -362,6 +411,8 @@ static void test_program(void)
 
     image_erase_sector(image, 0);
     image_erase_sector(image, LAST_SECTOR);
+    image_erase_sector(image, PART_SIZE);
+    image_erase_sector(image, PART_SIZE + LAST_SECTOR);
     image_write_be64(image, SECTOR_SIZE, 0x8899aabbccddeeffULL);
 
     s = flash_start(image, "", "");
@@ -388,12 +439,19 @@ static void test_program(void)
     flash_program(s, LOCAL, LAST_WORD, 0x9876);
     g_assert_cmphex(qtest_readw(s, PRIMARY + LAST_WORD), ==,
                     0x9876);
+    flash_program(s, LOCAL + SECOND_READ, 0, 0x5678);
+    flash_program(s, LOCAL + SECOND_READ, LAST_WORD, 0xabcd);
+    g_assert_cmphex(qtest_readw(s, ALTERNATE), ==, 0x5678);
+    g_assert_cmphex(qtest_readw(s, ALTERNATE + LAST_WORD), ==, 0xabcd);
     qtest_quit(s);
 
     image_read(image, 0, stored, sizeof(stored));
     g_assert_cmphex(stored[0], ==, 0x12);
     g_assert_cmphex(stored[1], ==, 0x34);
     g_assert_cmphex(stored[2], ==, 0xff);
+    image_read(image, PART_SIZE, stored, sizeof(stored));
+    g_assert_cmphex(stored[0], ==, 0x56);
+    g_assert_cmphex(stored[1], ==, 0x78);
 
     s = flash_start(image, "", "");
     g_assert_cmphex(qtest_readw(s, PRIMARY + 0), ==, 0x1234);
@@ -401,6 +459,8 @@ static void test_program(void)
     g_assert_cmphex(qtest_readw(s, PRIMARY + SECTOR_SIZE - 2), ==, 0x0f1e);
     g_assert_cmphex(qtest_readw(s, PRIMARY + LAST_WORD), ==,
                     0x9876);
+    g_assert_cmphex(qtest_readw(s, ALTERNATE), ==, 0x5678);
+    g_assert_cmphex(qtest_readw(s, ALTERNATE + LAST_WORD), ==, 0xabcd);
     qtest_quit(s);
     g_assert_cmpint(unlink(image), ==, 0);
 }
@@ -409,9 +469,9 @@ static void test_program(void)
  * An erase clears one 64 KiB sector and leaves the sectors either side of it
  * alone, whether it is the first sector or one further up.
  *
- * The upper sector is the last one in the backing, reached through the other
- * boot space. Both are commandable because a store at window offset 4n has
- * the whole 16 MiB behind it inside a 128 MiB space.
+ * The higher erase covers the penultimate sector in each 8 MiB position and
+ * is issued through the remote boot space. This checks both position-relative
+ * store decoding and the shared command state across the two boot spaces.
  */
 static void test_sector_erase(void)
 {
@@ -427,6 +487,19 @@ static void test_sector_erase(void)
     image_write_be64(image, high_sector + SECTOR_SIZE - 8,
                      0x6666666666666666ULL);
     image_write_be64(image, high_sector + SECTOR_SIZE, 0x7777777777777777ULL);
+    image_write_be64(image, PART_SIZE, 0x1818181818181818ULL);
+    image_write_be64(image, PART_SIZE + SECTOR_SIZE - 8,
+                     0x2828282828282828ULL);
+    image_write_be64(image, PART_SIZE + SECTOR_SIZE,
+                     0x3838383838383838ULL);
+    image_write_be64(image, PART_SIZE + high_sector - 8,
+                     0x4848484848484848ULL);
+    image_write_be64(image, PART_SIZE + high_sector,
+                     0x5858585858585858ULL);
+    image_write_be64(image, PART_SIZE + high_sector + SECTOR_SIZE - 8,
+                     0x6868686868686868ULL);
+    image_write_be64(image, PART_SIZE + high_sector + SECTOR_SIZE,
+                     0x7878787878787878ULL);
 
     s = flash_start(image, "", "");
     flash_erase_sector(s, LOCAL, 0);
@@ -448,6 +521,23 @@ static void test_sector_erase(void)
                     UINT64_MAX);
     g_assert_cmphex(qtest_readq(s, PRIMARY + high_sector + SECTOR_SIZE), ==,
                     0x7777777777777777ULL);
+
+    flash_erase_sector(s, LOCAL + SECOND_READ, 0);
+    g_assert_cmphex(qtest_readq(s, ALTERNATE), ==, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, ALTERNATE + SECTOR_SIZE - 8), ==,
+                    UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, ALTERNATE + SECTOR_SIZE), ==,
+                    0x3838383838383838ULL);
+
+    flash_erase_sector(s, REMOTE + SECOND_READ, high_sector);
+    g_assert_cmphex(qtest_readq(s, ALTERNATE + high_sector - 8), ==,
+                    0x4848484848484848ULL);
+    g_assert_cmphex(qtest_readq(s, ALTERNATE + high_sector), ==, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s,
+                               ALTERNATE + high_sector + SECTOR_SIZE - 8),
+                    ==, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, ALTERNATE + high_sector + SECTOR_SIZE), ==,
+                    0x7878787878787878ULL);
     qtest_quit(s);
     g_assert_cmpint(unlink(image), ==, 0);
 }
@@ -474,15 +564,16 @@ static unsigned count_lines(const char *text, const char *needle)
 }
 
 /*
- * The whole 16 MiB is commandable through either boot space. Program the
- * first word, the midpoint word and the last word, and check each landed at
- * the backing offset a quarter of its window offset. The last word carries
- * two distinct bytes so a swapped final lane shows up, and its second byte is
- * the highest backing byte there is.
+ * Both parts are commandable through either boot space, so the whole 16 MiB
+ * is still covered -- as two positions rather than one flat range. For each
+ * position, program its first word, its midpoint word and its last word with
+ * the sequence issued at that position's own base, and check each landed at
+ * the part offset a quarter of its offset above that base. The last word
+ * carries two distinct bytes so a swapped final lane shows up.
  *
  * The first store with no backing word behind it must be refused before any
- * flash cycle, which is what separates an exclusive bound from an inclusive
- * one: the refused offset is exactly four times the backing size.
+ * flash cycle, and that bound is now per position: four times a part's size
+ * above the position's own base, not above the boot space.
  */
 static void check_aperture(const char *tag, uint64_t base)
 {
@@ -493,54 +584,76 @@ static void check_aperture(const char *tag, uint64_t base)
     uint8_t stored[2];
     QTestState *s;
 
-    image_erase_sector(image, 0);
-    image_erase_sector(image, FLASH_SIZE / 2);
-    image_erase_sector(image, LAST_SECTOR);
+    for (unsigned p = 0; p < 2; p++) {
+        image_erase_sector(image, p * PART_SIZE);
+        image_erase_sector(image, p * PART_SIZE + PART_SIZE / 2);
+        image_erase_sector(image, p * PART_SIZE + LAST_SECTOR);
+    }
 
     extra = g_strdup_printf("-d guest_errors,trace:pflash_io_write -D %s", log);
     s = flash_start(image, "", extra);
 
-    flash_program(s, base, 0, 0x1122);
-    flash_program(s, base, FLASH_SIZE / 2, 0x3344);
-    flash_program(s, base, LAST_WORD, 0x5566);
+    for (unsigned p = 0; p < 2; p++) {
+        uint64_t position = base + p * SECOND_READ;
+        uint64_t reads = PRIMARY + p * SECOND_READ;
+        uint16_t first = 0x1122 + p;
+        uint16_t middle = 0x3344 + p;
+        uint16_t last = 0x5566 + p;
 
-    /* Read back through the first software read address, one-to-one. */
-    g_assert_cmphex(qtest_readw(s, PRIMARY + 0), ==, 0x1122);
-    g_assert_cmphex(qtest_readw(s, PRIMARY + FLASH_SIZE / 2), ==, 0x3344);
-    g_assert_cmphex(qtest_readw(s, PRIMARY + LAST_WORD), ==, 0x5566);
-    /* Both lanes of the last word, the second being the highest byte. */
-    g_assert_cmphex(qtest_readb(s, PRIMARY + LAST_WORD), ==, 0x55);
-    g_assert_cmphex(qtest_readb(s, PRIMARY + FLASH_SIZE - 1), ==, 0x66);
-    /* And through this boot space's own read addresses, not just the local. */
-    g_assert_cmphex(qtest_readw(s, base + 0), ==, 0x1122);
-    g_assert_cmphex(qtest_readw(s, base + SECOND_READ + LAST_WORD), ==, 0x5566);
+        flash_program(s, position, 0, first);
+        flash_program(s, position, PART_SIZE / 2, middle);
+        flash_program(s, position, LAST_WORD, last);
+
+        /* Read back at this position's own base, one-to-one. */
+        g_assert_cmphex(qtest_readw(s, reads + 0), ==, first);
+        g_assert_cmphex(qtest_readw(s, reads + PART_SIZE / 2), ==, middle);
+        g_assert_cmphex(qtest_readw(s, reads + LAST_WORD), ==, last);
+        /* Both lanes of the last word, the second being the part's highest. */
+        g_assert_cmphex(qtest_readb(s, reads + LAST_WORD), ==, last >> 8);
+        g_assert_cmphex(qtest_readb(s, reads + PART_SIZE - 1), ==, last & 0xff);
+        /* And through this boot space's own read address for the position. */
+        g_assert_cmphex(qtest_readw(s, position + 0), ==, first);
+        g_assert_cmphex(qtest_readw(s, position + LAST_WORD), ==, last);
+
+    }
 
     /*
-     * One past the last backing word, sent as programming payload rather than
-     * as a bare command. A bare command there could not damage anything: at
-     * the start of a sequence the flash takes it as a failed unlock and
-     * resets. A payload can. Dispatched, the CFI device masks the offset back
-     * into its own range and this lands on the first word, clearing bits out
-     * of it. Refused, that word still reads as it was programmed.
+     * Only position one has anywhere past its last backing word. A part's
+     * store window is four times its own size, and that is exactly the
+     * stride, so position zero's window ends where position one's begins and
+     * the two abut with no gap between them.
+     *
+     * Sent as programming payload rather than as a bare command. A bare
+     * command there could not damage anything: at the start of a sequence the
+     * flash takes it as a failed unlock and resets. A payload can. Dispatched,
+     * the CFI device masks the offset back into its own range and this would
+     * land on position one's first word, clearing bits out of it. Refused,
+     * that word still reads as it was programmed.
      */
-    qtest_writeq(s, base + UNLOCK0, 0xaa);
-    qtest_writeq(s, base + UNLOCK1, 0x55);
-    qtest_writeq(s, base + UNLOCK0, 0xa0);
-    qtest_writeq(s, base + WRITE_LIMIT, 0x0f0f);
+    qtest_writeq(s, base + SECOND_READ + UNLOCK0, 0xaa);
+    qtest_writeq(s, base + SECOND_READ + UNLOCK1, 0x55);
+    qtest_writeq(s, base + SECOND_READ + UNLOCK0, 0xa0);
+    qtest_writeq(s, base + SECOND_READ + WRITE_LIMIT, 0x0f0f);
     qtest_quit(s);
 
-    image_read(image, 0, stored, sizeof(stored));
-    g_assert_cmphex(stored[0], ==, 0x11);
-    g_assert_cmphex(stored[1], ==, 0x22);
+    for (unsigned p = 0; p < 2; p++) {
+        image_read(image, p * PART_SIZE, stored, sizeof(stored));
+        g_assert_cmphex(stored[0], ==, 0x11);
+        g_assert_cmphex(stored[1], ==, 0x22 + p);
 
-    image_read(image, FLASH_SIZE - 2, stored, sizeof(stored));
-    g_assert_cmphex(stored[0], ==, 0x55);
-    g_assert_cmphex(stored[1], ==, 0x66);
+        image_read(image, p * PART_SIZE + PART_SIZE - 2, stored,
+                   sizeof(stored));
+        g_assert_cmphex(stored[0], ==, 0x55);
+        g_assert_cmphex(stored[1], ==, 0x66 + p);
+    }
 
     g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
     g_assert_nonnull(strstr(found, "past the last backing word"));
-    /* Three programs of four cycles, three to open a fourth, and no more. */
-    g_assert_cmpuint(count_lines(found, "pflash_io_write"), ==, 15);
+    /*
+     * Three programs of four cycles in each position, and three more to open
+     * the fourth that gets refused. The refused payload issues no cycle.
+     */
+    g_assert_cmpuint(count_lines(found, "pflash_io_write"), ==, 27);
 
     g_assert_cmpint(unlink(log), ==, 0);
     g_assert_cmpint(unlink(image), ==, 0);
@@ -571,62 +684,58 @@ static void test_unmapped_reads(void)
     g_autofree char *extra = NULL;
     QTestState *s;
 
-    /* What a decoder folding back onto the backing would hand out. */
-    image_write_be64(image, 0, 0xfeedfacecafef00dULL);
+    /* What a decoder folding back onto a part would hand out. */
+    image_write_be64(image, PART_SIZE - 8, 0xfeedfacecafef00dULL);
     image_write_be64(image, FLASH_SIZE - 8, 0x0f1e2d3c4b5a6978ULL);
 
     extra = g_strdup_printf("-d unimp -D %s", log);
     s = flash_start(image, "", extra);
 
-    /* The last word of each read address answers; the one past it does not. */
-    g_assert_cmphex(qtest_readq(s, PRIMARY + FLASH_SIZE - 8), ==,
+    /* The last word of each position answers; the one past it does not. */
+    g_assert_cmphex(qtest_readq(s, PRIMARY + PART_SIZE - 8), ==,
+                    0xfeedfacecafef00dULL);
+    g_assert_cmphex(qtest_readq(s, ALTERNATE + PART_SIZE - 8), ==,
                     0x0f1e2d3c4b5a6978ULL);
-    g_assert_cmphex(qtest_readq(s, ALTERNATE + FLASH_SIZE - 8), ==,
-                    0x0f1e2d3c4b5a6978ULL);
+
+    /*
+     * Reads leave a real gap between the positions, unlike stores: a part is
+     * 8 MiB of read window but 32 MiB of store window, so everything from a
+     * position's own end up to the next position's base answers nothing.
+     */
+    g_assert_cmphex(qtest_readq(s, LOCAL + PART_SIZE), ==, 0);
+    g_assert_cmphex(qtest_readq(s, LOCAL + SECOND_READ + PART_SIZE), ==, 0);
+    g_assert_cmphex(qtest_readq(s, REMOTE + PART_SIZE), ==, 0);
+    g_assert_cmphex(qtest_readq(s, REMOTE + SECOND_READ + PART_SIZE), ==, 0);
+    /* And the old whole-capacity bound is itself now inside the gap. */
     g_assert_cmphex(qtest_readq(s, LOCAL + FLASH_SIZE), ==, 0);
-    g_assert_cmphex(qtest_readq(s, LOCAL + SECOND_READ + FLASH_SIZE), ==, 0);
     g_assert_cmphex(qtest_readq(s, REMOTE + FLASH_SIZE), ==, 0);
-    g_assert_cmphex(qtest_readq(s, REMOTE + SECOND_READ + FLASH_SIZE), ==, 0);
     qtest_quit(s);
 
     g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
     g_assert_cmpuint(count_lines(found, "outside every mapped read address"),
-                     ==, 4);
+                     ==, 6);
 
     g_assert_cmpint(unlink(log), ==, 0);
     g_assert_cmpint(unlink(image), ==, 0);
 }
 
-/*
- * One address, two meanings. At a stride into the boot space an ordinary read
- * starts the second software read address at backing byte zero, while a store
- * reaches the middle of the backing. Anything that decodes writes from the
- * read address instead -- the superseded mapping, and the 4 MiB ceiling that
- * came with it -- fails here.
- */
-static void test_access_type_split(void)
+/* A store above the second position compresses relative to that position. */
+static void test_second_position_store_decode(void)
 {
     g_autofree char *image = flash_image("split");
     QTestState *s;
 
     image_erase_sector(image, 0);
-    image_erase_sector(image, FLASH_SIZE / 2);
-    image_write_be64(image, 0, 0xfeedfacecafef00dULL);
+    image_erase_sector(image, PART_SIZE);
+    image_write_be64(image, 0x200, 0xfeedfacecafef00dULL);
 
     s = flash_start(image, "", "");
 
-    /* The read at that address starts the second view, at backing zero. */
-    g_assert_cmphex(qtest_readq(s, LOCAL + SECOND_READ), ==,
+    flash_program(s, LOCAL + SECOND_READ, 0x200, 0x0f1e);
+    g_assert_cmphex(qtest_readw(s, ALTERNATE + 0x200), ==, 0x0f1e);
+    /* Position zero has independent bytes and command state. */
+    g_assert_cmphex(qtest_readq(s, PRIMARY + 0x200), ==,
                     0xfeedfacecafef00dULL);
-
-    /* The store at the same address reaches the midpoint word instead. */
-    flash_program(s, LOCAL, FLASH_SIZE / 2, 0x0f1e);
-    g_assert_cmphex(qtest_readw(s, PRIMARY + FLASH_SIZE / 2), ==, 0x0f1e);
-    /* Backing zero, which a per-view decoder would have hit, is untouched. */
-    g_assert_cmphex(qtest_readq(s, PRIMARY + 0), ==, 0xfeedfacecafef00dULL);
-    g_assert_cmphex(qtest_readq(s, ALTERNATE + 0), ==, 0xfeedfacecafef00dULL);
-    /* And the midpoint is visible through the second read address too. */
-    g_assert_cmphex(qtest_readw(s, ALTERNATE + FLASH_SIZE / 2), ==, 0x0f1e);
     qtest_quit(s);
     g_assert_cmpint(unlink(image), ==, 0);
 }
@@ -797,7 +906,9 @@ static void test_reset_states(void)
     QTestState *s;
 
     image_erase_sector(image, 0);
+    image_erase_sector(image, PART_SIZE);
     image_write_be64(image, 0x20, 0xdeadbeefdeadbeefULL);
+    image_write_be64(image, PART_SIZE + 0x20, 0xfeedfacefeedfaceULL);
     image_write_be64(image, SECTOR_SIZE, 0x3333333333333333ULL);
 
     s = flash_start(image, "", "");
@@ -807,11 +918,18 @@ static void test_reset_states(void)
     qtest_system_reset(s);
     g_assert_cmphex(qtest_readw(s, PRIMARY + 0x400), ==, 0xc3c3);
 
-    /* Query mode does not. */
+    /* Different non-array states in both positions do not survive reset. */
     flash_enter_query(s, LOCAL);
     g_assert_cmphex(qtest_readw(s, PRIMARY + QUERY_READ(0x10)), ==, 'Q');
+    qtest_writeq(s, REMOTE + SECOND_READ + UNLOCK0, 0xaa);
+    qtest_writeq(s, REMOTE + SECOND_READ + UNLOCK1, 0x55);
+    qtest_writeq(s, REMOTE + SECOND_READ + UNLOCK0, 0xa0);
     qtest_system_reset(s);
     g_assert_cmphex(qtest_readq(s, PRIMARY + 0x20), ==, 0xdeadbeefdeadbeefULL);
+    g_assert_cmphex(qtest_readq(s, ALTERNATE + 0x20), ==,
+                    0xfeedfacefeedfaceULL);
+    qtest_writeq(s, LOCAL + SECOND_READ + BYTE(0x402), 0x0f0f);
+    g_assert_cmphex(qtest_readw(s, ALTERNATE + 0x402), ==, 0xffff);
 
     /* Nor does a program sequence waiting for its data. */
     qtest_writeq(s, LOCAL + UNLOCK0, 0xaa);
@@ -857,7 +975,7 @@ static void test_read_only(void)
     image_read(image, 0x400, before, sizeof(before));
 
     extra = g_strdup_printf("-d guest_errors -D %s", log);
-    s = flash_start(image, ",readonly=on", extra);
+    s = flash_start(image, ",read-only=on", extra);
     g_assert_cmphex(qtest_readq(s, PRIMARY + 0x400), ==,
                     0x0123456789abcdefULL);
     g_assert_cmphex(qtest_readq(s, PRIMARY + 0), ==, UINT64_MAX);
@@ -876,9 +994,11 @@ static void test_read_only(void)
     qtest_quit(s);
 
     g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
-    g_assert_nonnull(strstr(found, "sgi-bedrock-flash: word program ignored: "
+    g_assert_nonnull(strstr(found, "sgi-bedrock-flash.prom0: word program "
+                            "ignored: "
                             "backing store is read-only"));
-    g_assert_nonnull(strstr(found, "sgi-bedrock-flash: sector erase ignored: "
+    g_assert_nonnull(strstr(found, "sgi-bedrock-flash.prom0: sector erase "
+                            "ignored: "
                             "backing store is read-only"));
 
     image_read(image, 0x400, after, sizeof(after));
@@ -934,8 +1054,13 @@ static void migration_start(FlashMigration *m, const char *tag)
     m->source = flash_image(tag);
     m->destination = flash_image(tag);
     image_erase_sector(m->source, 0);
+    image_erase_sector(m->source, PART_SIZE);
     image_write_be64(m->source, 0x1e0000, 0xfeedfacecafef00dULL);
+    image_write_be64(m->source, PART_SIZE + 0x1e0000,
+                     0x0123456789abcdefULL);
     image_write_be64(m->destination, 0x1e0000, 0x1111111111111111ULL);
+    image_write_be64(m->destination, PART_SIZE + 0x1e0000,
+                     0x2222222222222222ULL);
     m->from = flash_start(m->source, "", "");
     m->to = flash_start(m->destination, "", "-incoming defer");
 }
@@ -972,12 +1097,14 @@ static void test_migration_stored_bytes(void)
 
     migration_start(&m, "migrate-bytes");
     flash_program(m.from, LOCAL, 0x400, 0xc3c3);
+    flash_program(m.from, LOCAL + SECOND_READ, 0x400, 0x5a5a);
     migration_run(&m);
     g_assert_cmphex(qtest_readw(m.to, PRIMARY + 0x400), ==, 0xc3c3);
+    g_assert_cmphex(qtest_readw(m.to, ALTERNATE + 0x400), ==, 0x5a5a);
     g_assert_cmphex(qtest_readq(m.to, PRIMARY + 0x1e0000), ==,
                     0xfeedfacecafef00dULL);
     g_assert_cmphex(qtest_readq(m.to, ALTERNATE + 0x1e0000), ==,
-                    0xfeedfacecafef00dULL);
+                    0x0123456789abcdefULL);
     migration_finish(&m);
 }
 
@@ -991,6 +1118,8 @@ static void test_migration_query_mode(void)
     migration_run(&m);
     g_assert_cmphex(qtest_readw(m.to, PRIMARY + QUERY_READ(0x10)), ==, 'Q');
     g_assert_cmphex(qtest_readw(m.to, PRIMARY + QUERY_READ(0x13)), ==, 0x0002);
+    g_assert_cmphex(qtest_readq(m.to, ALTERNATE + 0x1e0000), ==,
+                    0x0123456789abcdefULL);
     flash_reset_to_array(m.to, LOCAL);
     g_assert_cmphex(qtest_readq(m.to, PRIMARY + 0x1e0000), ==,
                     0xfeedfacecafef00dULL);
@@ -1006,9 +1135,15 @@ static void test_migration_partial_command(void)
     qtest_writeq(m.from, LOCAL + UNLOCK0, 0xaa);
     qtest_writeq(m.from, LOCAL + UNLOCK1, 0x55);
     qtest_writeq(m.from, LOCAL + UNLOCK0, 0xa0);
+    flash_enter_query(m.from, LOCAL + SECOND_READ);
     migration_run(&m);
-    qtest_writeq(m.to, LOCAL + BYTE(0x600), 0x5aa5);
+    qtest_writeq(m.to, REMOTE + BYTE(0x600), 0x5aa5);
     g_assert_cmphex(qtest_readw(m.to, PRIMARY + 0x600), ==, 0x5aa5);
+    g_assert_cmphex(qtest_readw(m.to, REMOTE_ALTERNATE + QUERY_READ(0x10)),
+                    ==, 'Q');
+    flash_reset_to_array(m.to, REMOTE + SECOND_READ);
+    g_assert_cmphex(qtest_readq(m.to, ALTERNATE + 0x1e0000), ==,
+                    0x0123456789abcdefULL);
     migration_finish(&m);
 }
 
@@ -1085,7 +1220,7 @@ static void test_first_sector_rewrite(void)
                     0xfeedfacecafef00dULL);
     g_assert_cmphex(qtest_readq(s, PRIMARY + 0x1f0000), ==,
                     0x0badc0debaadf00dULL);
-    g_assert_cmphex(qtest_readq(s, PRIMARY + FLASH_SIZE - 8), ==,
+    g_assert_cmphex(qtest_readq(s, ALTERNATE + PART_SIZE - 8), ==,
                     0x0123456789abcdefULL);
     qtest_quit(s);
 
@@ -1104,7 +1239,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-flash/backing-file", test_backing_file);
     qtest_add_func("sn1/bedrock-flash/one-to-one-reads",
                    test_one_to_one_reads);
-    qtest_add_func("sn1/bedrock-flash/selections-alias", test_selections_alias);
+    qtest_add_func("sn1/bedrock-flash/positions-are-distinct",
+                   test_positions_are_distinct);
     qtest_add_func("sn1/bedrock-flash/query-mode", test_query_mode);
     qtest_add_func("sn1/bedrock-flash/program", test_program);
     qtest_add_func("sn1/bedrock-flash/sector-erase", test_sector_erase);
@@ -1114,8 +1250,8 @@ int main(int argc, char **argv)
                    test_remote_aperture);
     qtest_add_func("sn1/bedrock-flash/unmapped-reads",
                    test_unmapped_reads);
-    qtest_add_func("sn1/bedrock-flash/access-type-split",
-                   test_access_type_split);
+    qtest_add_func("sn1/bedrock-flash/second-position-store-decode",
+                   test_second_position_store_decode);
     qtest_add_func("sn1/bedrock-flash/erase-polling",
                    test_erase_polling);
     qtest_add_func("sn1/bedrock-flash/cfi-cycle-width", test_cfi_cycle_width);
