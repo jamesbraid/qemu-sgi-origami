@@ -13,6 +13,7 @@
 #include "qemu/main-loop.h"
 #include "qemu/rcu.h"
 #include "system/runstate.h"
+#include "system/system.h"
 #include "sn0.h"
 #include "sn0-origin2000-io.h"
 #include "sn0-origin2000-xtalk.h"
@@ -339,6 +340,7 @@ static PCIDevice *sn0_origin2000_xtalk_pci_function(
     PCIBus *bus = PCI_HOST_BRIDGE(board->bridge)->bus;
     g_autofree char *name = NULL;
     PCIDevice *dev;
+    Chardev *console;
 
     switch (function->kind) {
     case SN0_COMPONENT_ISP1040:
@@ -355,6 +357,10 @@ static PCIDevice *sn0_origin2000_xtalk_pci_function(
     case SN0_COMPONENT_IOC3:
         dev = pci_new(devfn, TYPE_SGI_IOC3);
         object_property_add_child(board->owner, "ioc3", OBJECT(dev));
+        console = serial_hd(SN0_IOC3_SERIAL_A_CHARDEV);
+        if (console) {
+            qdev_prop_set_chr(DEVICE(dev), "chardev-a", console);
+        }
         qdev_prop_set_uint16(DEVICE(dev), "subsystem-id",
                              function->subsystem_id);
         qdev_prop_set_uint32(DEVICE(dev), "population",
