@@ -37,14 +37,13 @@
 #define PROBE_ADDRESS       0x7e
 
 static int64_t virtual_time;
-static int64_t virtual_time_advance;
+static int64_t virtual_time_step;
 
 int64_t cpus_get_virtual_clock(void)
 {
     int64_t now = virtual_time;
 
-    virtual_time += virtual_time_advance;
-    virtual_time_advance = 0;
+    virtual_time += virtual_time_step;
     return now;
 }
 
@@ -141,7 +140,7 @@ static void setup(Fixture *f, gconstpointer unused)
      * explicitly, and leaving setup unreset keeps the freshly realized
      * complex under test.
      */
-    virtual_time_advance = 0;
+    virtual_time_step = 0;
     memset(f, 0, sizeof(*f));
     for (i = 0; i < ARRAY_SIZE(names); i++) {
         g_autofree char *capability = g_strdup_printf("can-%s", names[i]);
@@ -200,12 +199,27 @@ static void run_ticks(Fixture *f, unsigned count)
 static void test_cold_start_clock_progress(Fixture *f, gconstpointer unused)
 {
     cpus_set_virtual_clock(f->module->service_deadline);
-    virtual_time_advance = 1;
+    virtual_time_step = 1;
     f->module->service_timer->cb(f->module->service_timer->opaque);
+    virtual_time_step = 0;
     advance_to(virtual_time + GRANT_SETTLE_NS);
 
     g_assert_cmpuint(f->probe->addresses, ==, 1);
     g_assert_cmphex(f->probe->last_address, ==, GRANT_BASE);
+}
+
+static void test_relative_deadline_range(Fixture *f, gconstpointer unused)
+{
+    I2CBus *bus = sgi_o2000_module_mgmt_get_bus(f->module);
+    int64_t saved_time = virtual_time;
+
+    cpus_set_virtual_clock(1);
+    g_assert_cmpint(i2c_wire_stage_after(bus, SGI_O2000_WIRE_MASTERS - 1,
+                                         INT64_MAX, true, false), ==, -EINVAL);
+    cpus_set_virtual_clock(INT64_MAX - 1);
+    g_assert_cmpint(i2c_wire_stage_after(bus, SGI_O2000_WIRE_MASTERS - 1,
+                                         1, true, false), ==, -EINVAL);
+    cpus_set_virtual_clock(saved_time);
 }
 
 /*
@@ -902,6 +916,8 @@ int main(int argc, char **argv)
                setup, test_grant_wire_shape, teardown);
     g_test_add("/sgi-o2000-module-management/grant/cold-start-clock-progress",
                Fixture, NULL, setup, test_cold_start_clock_progress, teardown);
+    g_test_add("/sgi-o2000-module-management/wire/relative-deadline-range",
+               Fixture, NULL, setup, test_relative_deadline_range, teardown);
     g_test_add("/sgi-o2000-module-management/grant/rotation", Fixture, NULL,
                setup, test_grant_rotation, teardown);
     g_test_add("/sgi-o2000-module-management/grant/one-per-tick", Fixture,

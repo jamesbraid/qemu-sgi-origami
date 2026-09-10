@@ -176,7 +176,8 @@ int i2c_master_end_transfer(I2CBus *bus, uint32_t master);
  * inferred controller timings. One pending request per participant is allowed.
  * Requests are future virtual deadlines; all requests at one deadline settle
  * before the observer runs. True SDA releases the line. Clock enables that
- * participant's configured clock generation. No request elects a sole owner.
+ * participant's configured clock generation. i2c_wire_stage_after() derives
+ * its deadline from one internal clock sample. No request elects a sole owner.
  */
 #define I2C_WIRE_MAX_MASTERS 32
 
@@ -204,6 +205,8 @@ int i2c_wire_configure(I2CBus *bus, uint32_t master, int64_t low_ns,
                        int64_t high_ns, bool clock_after_loss);
 int i2c_wire_stage(I2CBus *bus, uint32_t master, int64_t at,
                    bool sda, bool clock);
+int i2c_wire_stage_after(I2CBus *bus, uint32_t master, int64_t delay_ns,
+                         bool sda, bool clock);
 int i2c_wire_hold(I2CSlave *slave, int64_t at, bool hold);
 int i2c_wire_reset_master(I2CBus *bus, uint32_t master);
 /*
