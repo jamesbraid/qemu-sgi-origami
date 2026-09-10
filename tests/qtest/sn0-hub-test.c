@@ -2253,6 +2253,316 @@ static void test_a_guest_can_write_the_link_enabled_bit(const void *data)
     qtest_quit(qts);
 }
 
+/* The crossbar's per-link reset, arriving on the crosstalk link. */
+static void hub_link_reset(QTestState *qts)
+{
+    qtest_set_irq_in(qts, "/machine/node0/hub", "link-reset", 0, 1);
+    qtest_set_irq_in(qts, "/machine/node0/hub", "link-reset", 0, 0);
+}
+
+/*
+ * The contract puts the link-layer transmit buffer and protocol state into
+ * reset and restarts width negotiation. This model holds none of the three,
+ * so the link register comes through the pulse untouched: its programmed
+ * fields are configuration rather than buffer or protocol state, and the
+ * one field that would show renegotiation has no established value to show.
+ */
+static void test_an_inbound_link_reset_leaves_the_link_alone(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t before;
+    uint64_t after;
+
+    /* Every writable field away from its reset, all before any is read. */
+    qtest_writeq(qts, HUB_LOCAL + IO_LINK_STATUS,
+                 (1ULL << 10) | (1ULL << 8) | 0x15);
+    before = qtest_readq(qts, HUB_LOCAL + IO_LINK_STATUS);
+    g_assert_cmphex(before & 0x3fc00000000ULL, ==, 0);
+    g_assert_cmphex(before & 0x3ff0000ULL, ==, 0);
+    g_assert_cmphex(before & (1ULL << 10), ==, 1ULL << 10);
+    g_assert_cmphex(before & (1ULL << 8), ==, 1ULL << 8);
+    g_assert_cmphex(before & 0x3fULL, ==, 0x15);
+
+    /* Nothing moves while the line is up. */
+    qtest_set_irq_in(qts, "/machine/node0/hub", "link-reset", 0, 1);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_LINK_STATUS), ==, before);
+    qtest_set_irq_in(qts, "/machine/node0/hub", "link-reset", 0, 0);
+
+    /* Nor after it drops. The whole word, so an unnamed field counts too. */
+    after = qtest_readq(qts, HUB_LOCAL + IO_LINK_STATUS);
+    g_assert_cmphex(after, ==, before);
+
+    /*
+     * Named again on this side of the pulse, because the equality above
+     * would hold just as well if both reads were wrong the same way. The
+     * enable bit is the one that matters most: a Hub reporting its
+     * crosstalk link down is the quietest way to lose a machine, and
+     * nothing establishes that a link reset unsets it.
+     */
+    g_assert_cmphex(after & (1ULL << 10), ==, 1ULL << 10);
+    g_assert_cmphex(after & 0x3fc00000000ULL, ==, 0);
+    g_assert_cmphex(after & 0x3ff0000ULL, ==, 0);
+    g_assert_cmphex(after & 0x3fULL, ==, 0x15);
+    g_assert_cmpuint((after >> 12) & 3, >=, 2);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The rest of the device, register by register. Nothing establishes that an
+ * incoming link reset clears any wider part of the I/O interface, the
+ * network interface's link is a different link entirely, and the processor
+ * interface and memory directory are further away still -- but a table's
+ * job is to catch the handler that reaches them anyway, so it covers all
+ * four blocks rather than the one the mistake seems likeliest in.
+ *
+ * Rows carrying a write are put somewhere other than their power-up value,
+ * which the test reads first and enforces, so a handler that resets a row
+ * fails as loudly as one that scribbles it. Rows without a write are
+ * read-only or computed, where only a scribble can show.
+ *
+ * Two kinds of register are deliberately absent, because a before-and-after
+ * comparison cannot use either: ones that run on their own, which is the
+ * real-time counter, and ones that act on being read, which are the
+ * vector-status and port-error clearing aliases and the junk-bus UART. A
+ * register whose write starts something is carried unwritten instead of
+ * dropped, so that its power-up value still stands against a clear.
+ */
+static const struct {
+    const char *name;
+    uint64_t offset;
+    bool writable;
+    uint64_t write;
+} hub_block[] = {
+    { "widget identification", IO_WIDGET_ID },
+    { "widget status", IO_WIDGET_STATUS },
+    { "widget control", IO_WIDGET_CONTROL, true, 5 },
+    { "link log", IO_LLP_LOG },
+    { "scratch 0", IO_SCRATCH_0, true, 0x0000000500f01abcULL },
+    { "scratch 1", IO_SCRATCH_1, true, 0x0000000200f01111ULL },
+    { "big window 0", IO_BWIN_ENTRY(0), true,
+      IO_BWIN_WIDGET(8) | IO_BWIN_SLICE(1) },
+    { "big window 1", IO_BWIN_ENTRY(1), true,
+      IO_BWIN_WIDGET(9) | IO_BWIN_SLICE(2) },
+    { "big window 2", IO_BWIN_ENTRY(2), true,
+      IO_BWIN_WIDGET(10) | IO_BWIN_SLICE(3) },
+    { "big window 3", IO_BWIN_ENTRY(3), true,
+      IO_BWIN_WIDGET(11) | IO_BWIN_SLICE(4) },
+    { "big window 4", IO_BWIN_ENTRY(4), true,
+      IO_BWIN_WIDGET(12) | IO_BWIN_SLICE(5) },
+    { "big window 5", IO_BWIN_ENTRY(5), true,
+      IO_BWIN_WIDGET(13) | IO_BWIN_SLICE(6) },
+    { "big window 6", IO_BWIN_ENTRY(6), true,
+      IO_BWIN_WIDGET(14) | IO_BWIN_SLICE(7) },
+    { "crosstalk timeout", IO_XTALK_TIMEOUT, true, 0x5a },
+    { "crosstalk prescale", IO_XTALK_PRESCALE, true, 0x123456 },
+    { "PIO deallocation", IO_PIO_DEALLOC },
+    { "request buffer deallocation", IO_CRB_DEALLOC },
+    { "I/O queue depth", IO_IOQ_FIFO_DEPTH },
+    { "request buffer management", IO_CRB_MGMT },
+    { "request buffer control", IO_CRB_CONTROL },
+    { "request buffer C", IO_ICRB_C_BASE },
+    /*
+     * The lengths carry lines but not the busy bit, so the control stores
+     * below launch nothing: a launch runs only from a busy length.
+     */
+    { "engine 0 length", BTE_LENGTH(0), true, 0x40 },
+    { "engine 0 source", BTE_SOURCE(0), true, 0x12345680ULL },
+    { "engine 0 destination", BTE_DEST(0), true, 0x23456700ULL },
+    { "engine 0 control", BTE_CONTROL(0), true, BTE_CTL_ZFILL },
+    { "engine 0 notification", BTE_NOTIFY(0), true, 0x34567800ULL },
+    { "engine 0 interrupt", BTE_INTERRUPT(0), true, BTE_INT_LEVEL(0x2a) | 1 },
+    { "engine 1 length", BTE_LENGTH(1), true, 0x50 },
+    { "engine 1 source", BTE_SOURCE(1), true, 0x45678080ULL },
+    { "engine 1 destination", BTE_DEST(1), true, 0x56789000ULL },
+    { "engine 1 control", BTE_CONTROL(1), true, BTE_CTL_NOTIFY },
+    { "engine 1 notification", BTE_NOTIFY(1), true, 0x67890080ULL },
+    { "engine 1 interrupt", BTE_INTERRUPT(1), true, BTE_INT_LEVEL(0x3b) | 2 },
+    /* Not written: the node field here moves the machine's own number. */
+    { "network status", NI_STATUS },
+    /*
+     * One bit wide and resetting set, so zero is the only value that is
+     * not its power-up value. It is the one row that cannot catch a
+     * handler which zeroes it; every other write below is non-zero, so
+     * the commonest shape of the mistake -- a blanket clear -- shows.
+     */
+    { "network protection", NI_PROTECTION, true, 0 },
+    { "network scratch 0", NI_SCRATCH_0, true, 0xfeedfacecafebeefULL },
+    { "network scratch 1", NI_SCRATCH_1, true, 0x0123456789abcdefULL },
+    { "network diagnostic parameters", NI_DIAG_PARMS, true,
+      NI_DIAG_PARMS_MASK },
+    { "network port parameters", NI_PORT_PARMS, true, 0x2a5a },
+    { "network port error", NI_PORT_ERROR },
+    { "network I/O protection", NI_IO_PROTECT, true, 0xffffffffULL },
+    /* Writing the parameters launches an operation; reading it does not. */
+    { "network vector parameters", NI_VECTOR_PARMS },
+    { "network vector", NI_VECTOR, true, 0x1234567890abcdefULL },
+    { "network vector data", NI_VECTOR_DATA, true, 0x0fedcba987654321ULL },
+    /* Only a vector operation sets this; a nonzero write is discarded. */
+    { "network vector status", NI_VECTOR_STATUS },
+    { "network vector read data", NI_VECTOR_READ_DATA, true,
+      0x5555aaaa5555aaaaULL },
+    { "region present", PI_REGION_PRESENT, true, 0x5a5a5a5a5a5a5a5aULL },
+    { "processor number", PI_PROCESSOR_NUMBER },
+    { "cached-alias size", PI_CALIAS_SIZE, true, PI_CALIAS_SIZE_4K },
+    { "error mask A", PI_ERR_MASK_A, true, PI_ERR_MASK },
+    { "error spool A", PI_ERR_SPOOL_A, true, 0x12345678 & PI_ERR_SPOOL_MASK },
+    { "error spool size", PI_ERR_SPOOL_SIZE, true, PI_ERR_SPOOL_SIZE_MASK },
+    { "real-time local control", PI_RT_LOCAL_CTRL, true,
+      PI_RT_LOCAL_CTRL_MASK },
+    { "slot identity", MD_SLOT_ID_USTAT },
+    { "directory configuration", MD_CONFIG, true, 0x0012345678abcdefULL },
+    { "directory performance counter", MD_PERF_CNT0, true, 0xabcde },
+    /*
+     * Unwritten rather than absent: every write here arms a slot timer, so
+     * a written row would be a runs-on-its-own row in disguise. Its
+     * power-up value is not zero, so the row still fails a handler that
+     * clears it -- which is the shape this block would be cleared in.
+     */
+    { "one-wire master", MD_ONEWIRE },
+};
+
+/* Both routing tables whole: a sampled entry is one a scribble hides in. */
+#define NI_META_ROUTES  32
+#define NI_LOCAL_ROUTES 16
+#define NI_ROUTES       (NI_META_ROUTES + NI_LOCAL_ROUTES)
+
+static uint64_t route_offset(unsigned int i)
+{
+    return i < NI_META_ROUTES ? NI_META_TABLE + i * 8
+                              : NI_LOCAL_TABLE + (i - NI_META_ROUTES) * 8;
+}
+
+/* Four bits per entry, so never zero: zero is the power-up value. */
+static uint64_t route_value(unsigned int i)
+{
+    return 1 + (i % 15);
+}
+
+static void test_an_inbound_link_reset_leaves_the_block_alone(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t power_up[ARRAY_SIZE(hub_block)];
+    uint64_t before[ARRAY_SIZE(hub_block)];
+    uint64_t route_before[NI_ROUTES];
+    uint64_t route_power_up[NI_ROUTES];
+    unsigned int i;
+
+    /* What every row powers up as, before anything has written one. */
+    for (i = 0; i < ARRAY_SIZE(hub_block); i++) {
+        power_up[i] = qtest_readq(qts, HUB_LOCAL + hub_block[i].offset);
+    }
+    for (i = 0; i < NI_ROUTES; i++) {
+        route_power_up[i] = qtest_readq(qts, HUB_LOCAL + route_offset(i));
+    }
+
+    for (i = 0; i < ARRAY_SIZE(hub_block); i++) {
+        if (hub_block[i].writable) {
+            qtest_writeq(qts, HUB_LOCAL + hub_block[i].offset,
+                         hub_block[i].write);
+        }
+    }
+    for (i = 0; i < NI_ROUTES; i++) {
+        qtest_writeq(qts, HUB_LOCAL + route_offset(i), route_value(i));
+    }
+
+    for (i = 0; i < ARRAY_SIZE(hub_block); i++) {
+        before[i] = qtest_readq(qts, HUB_LOCAL + hub_block[i].offset);
+        if (!hub_block[i].writable) {
+            continue;
+        }
+        /* The write took ... */
+        if (before[i] != hub_block[i].write) {
+            g_error("%s did not take its write: 0x%" PRIx64 " reads 0x%"
+                    PRIx64, hub_block[i].name, hub_block[i].write, before[i]);
+        }
+        /* ... and left the row somewhere a reset would move it away from. */
+        if (before[i] == power_up[i]) {
+            g_error("%s is written to its own power-up value 0x%" PRIx64
+                    ", so a handler resetting it would pass",
+                    hub_block[i].name, power_up[i]);
+        }
+    }
+    for (i = 0; i < NI_ROUTES; i++) {
+        route_before[i] = qtest_readq(qts, HUB_LOCAL + route_offset(i));
+        g_assert_cmphex(route_before[i], ==, route_value(i));
+        /* The same guard the named rows get, rather than an argument. */
+        if (route_before[i] == route_power_up[i]) {
+            g_error("route %u is written to its own power-up value 0x%"
+                    PRIx64 ", so a handler resetting it would pass",
+                    i, route_power_up[i]);
+        }
+    }
+
+    hub_link_reset(qts);
+
+    for (i = 0; i < ARRAY_SIZE(hub_block); i++) {
+        uint64_t after = qtest_readq(qts, HUB_LOCAL + hub_block[i].offset);
+
+        /* Named, because "a register moved" does not say which one. */
+        if (after != before[i]) {
+            g_error("%s moved across the link reset: 0x%" PRIx64
+                    " became 0x%" PRIx64,
+                    hub_block[i].name, before[i], after);
+        }
+    }
+    for (i = 0; i < NI_ROUTES; i++) {
+        uint64_t after = qtest_readq(qts, HUB_LOCAL + route_offset(i));
+
+        if (after != route_before[i]) {
+            g_error("%s route %u moved across the link reset: 0x%" PRIx64
+                    " became 0x%" PRIx64,
+                    i < NI_META_ROUTES ? "meta" : "local",
+                    i < NI_META_ROUTES ? i : i - NI_META_ROUTES,
+                    route_before[i], after);
+        }
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * The pulse arrives and says what it cannot model. The line is worth more
+ * than the silence would be: the contract establishes an effect on state
+ * this model does not represent, and a reader of the log has to be able to
+ * tell that from a line that never reached anything.
+ */
+static void test_an_inbound_link_reset_says_what_it_cannot_model(const void *d)
+{
+    g_autofree char *quiet = g_strdup_printf("%s/sn0-link-reset-down-XXXXXX",
+                                             g_get_tmp_dir());
+    g_autofree char *loud = g_strdup_printf("%s/sn0-link-reset-up-XXXXXX",
+                                            g_get_tmp_dir());
+    g_autofree char *said = NULL;
+    g_autofree char *silent = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_mkstemp(quiet);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    fd = g_mkstemp(loud);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+
+    /* The line is the rising edge's; a falling edge alone says nothing. */
+    qts = qtest_initf("-M origin200 -d unimp -D %s", quiet);
+    qtest_set_irq_in(qts, "/machine/node0/hub", "link-reset", 0, 0);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(quiet, &silent, NULL, NULL));
+    g_assert_null(strstr(silent, "inbound link reset"));
+
+    qts = qtest_initf("-M origin200 -d unimp -D %s", loud);
+    qtest_set_irq_in(qts, "/machine/node0/hub", "link-reset", 0, 1);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(loud, &said, NULL, NULL));
+    g_assert_nonnull(strstr(said, "sgi-hub: inbound link reset; nothing "
+                                  "this model holds changes"));
+
+    g_assert_cmpint(g_unlink(quiet), ==, 0);
+    g_assert_cmpint(g_unlink(loud), ==, 0);
+}
+
 static void test_the_hub_identifies_itself_on_the_crossbar(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -4155,6 +4465,14 @@ int main(int argc, char **argv)
                         test_the_link_log_serves_a_clean_link);
     qtest_add_data_func("sn0/hub/link-enabled-bit-is-writable", NULL,
                         test_a_guest_can_write_the_link_enabled_bit);
+    qtest_add_data_func("sn0/hub/inbound-link-reset-leaves-the-link-alone",
+                        NULL, test_an_inbound_link_reset_leaves_the_link_alone);
+    qtest_add_data_func("sn0/hub/inbound-link-reset-leaves-the-block-alone",
+                        NULL,
+                        test_an_inbound_link_reset_leaves_the_block_alone);
+    qtest_add_data_func("sn0/hub/inbound-link-reset-says-what-it-cannot-model",
+                        NULL,
+                        test_an_inbound_link_reset_says_what_it_cannot_model);
     qtest_add_data_func("sn0/hub/rt-counter-rate", NULL,
                         test_the_real_time_counter_runs_at_its_rate);
     qtest_add_data_func("sn0/hub/rt-counter-writable", NULL,
