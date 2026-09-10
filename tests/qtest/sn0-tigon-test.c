@@ -1786,15 +1786,6 @@ static void test_interrupt_coalesce_by_time(const void *data)
     close(sv[0]);
 }
 
-/* A restored near-limit count must reach its threshold without wrapping. */
-static void test_interrupt_coalesce_count_does_not_wrap(const void *data)
-{
-    g_assert_false(tigon_coal_count_reaches(UINT32_MAX - 2, 1,
-                                            UINT32_MAX));
-    g_assert_true(tigon_coal_count_reaches(UINT32_MAX - 2, 3,
-                                           UINT32_MAX));
-}
-
 /*
  * TX_MAX_COAL_BD counts completed buffer descriptors, not producer-doorbell
  * writes.  A driver normally publishes several ready descriptors with one
@@ -2403,22 +2394,171 @@ static void test_programmed_mac_survives_migration(const void *data)
     g_assert_cmpint(rmdir(tmpdir), ==, 0);
 }
 
-static void write_split_tx_frame(QTestState *qts)
+static void write_split_tx_frame_at(QTestState *qts, unsigned first)
 {
     qtest_memwrite(qts, TX_BUF_PHYS, test_frame, sizeof(test_frame) / 2);
     qtest_memwrite(qts, TX_BUF_PHYS + 0x100,
                    test_frame + sizeof(test_frame) / 2,
                    sizeof(test_frame) / 2);
-    write_rcb_addr(qts, TX_RING_PHYS, TX_BUF_PHYS);
-    qtest_writel(qts, TX_RING_PHYS + 8,
+    write_rcb_addr(qts, TX_RING_PHYS + first * 16, TX_BUF_PHYS);
+    qtest_writel(qts, TX_RING_PHYS + first * 16 + 8,
                  (uint32_t)(sizeof(test_frame) / 2) << 16);
-    qtest_writel(qts, TX_RING_PHYS + 12, 0);
-    write_rcb_addr(qts, TX_RING_PHYS + 16, TX_BUF_PHYS + 0x100);
-    qtest_writel(qts, TX_RING_PHYS + 24,
+    qtest_writel(qts, TX_RING_PHYS + first * 16 + 12, 0);
+    write_rcb_addr(qts, TX_RING_PHYS + (first + 1) * 16,
+                   TX_BUF_PHYS + 0x100);
+    qtest_writel(qts, TX_RING_PHYS + (first + 1) * 16 + 8,
                  ((uint32_t)(sizeof(test_frame) / 2) << 16) |
                  TI_BDFLAG_END);
-    qtest_writel(qts, TX_RING_PHYS + 28, 0);
-    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 2);
+    qtest_writel(qts, TX_RING_PHYS + (first + 1) * 16 + 12, 0);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, first + 2);
+}
+
+static void write_fragmented_tx_frame(QTestState *qts, unsigned first,
+                                      unsigned count)
+{
+    enum { FRAGMENT_LEN = 20 };
+    unsigned i;
+
+    g_assert_cmpuint(first + count, <=, 512);
+    qtest_memset(qts, TX_BUF_PHYS, 0x5a, count * FRAGMENT_LEN);
+    for (i = 0; i < count; i++) {
+        uint32_t desc = TX_RING_PHYS + (first + i) * 16;
+
+        write_rcb_addr(qts, desc, TX_BUF_PHYS + i * FRAGMENT_LEN);
+        qtest_writel(qts, desc + 8,
+                     (FRAGMENT_LEN << 16) |
+                     (i + 1 == count ? TI_BDFLAG_END : 0));
+        qtest_writel(qts, desc + 12, 0);
+    }
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, first + count);
+}
+
+/*
+ * Locate the actual adjacent RX and TX coalescing counts in a migration
+ * stream. The counts are deliberately awkward values produced through the
+ * device interfaces, and the following one-millisecond TX deadline
+ * distinguishes them from the adjacent ring indices.
+ */
+static void seed_near_limit_tx_count(const char *path)
+{
+    static const uint8_t pending_counts[] = {
+        0x00, 0x00, 0x00, 0x25,
+        0x00, 0x00, 0x00, 0x3d,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x0f, 0x42, 0x40,
+    };
+    static const uint8_t near_limit[] = { 0xff, 0xff, 0xff, 0xfd };
+    g_autofree char *stream = NULL;
+    GError *err = NULL;
+    gsize stream_len;
+    gsize match = 0;
+    unsigned matches = 0;
+    gsize i;
+
+    g_assert_true(g_file_get_contents(path, &stream, &stream_len, &err));
+    g_assert_no_error(err);
+    for (i = 0; i + sizeof(pending_counts) <= stream_len; i++) {
+        if (memcmp(stream + i, pending_counts, sizeof(pending_counts)) == 0) {
+            match = i;
+            matches++;
+        }
+    }
+    g_assert_cmpuint(matches, ==, 1);
+    memcpy(stream + match + 4, near_limit, sizeof(near_limit));
+    g_assert_true(g_file_set_contents(path, stream, stream_len, &err));
+    g_assert_no_error(err);
+}
+
+/*
+ * A restored near-limit count must flush through the device without wrapping.
+ * The interrupt must come from completing descriptors, and acknowledging it
+ * before the retained deadline proves the same flush cancelled its timer.
+ */
+static void test_interrupt_coalesce_count_does_not_wrap(const void *data)
+{
+    enum {
+        RX_PENDING = 37,
+        TX_PENDING = 61,
+        TX_COMPLETED = 3,
+    };
+    g_autofree char *tmpdir = NULL;
+    g_autofree char *stream_path = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_args = NULL;
+    GError *err = NULL;
+    int from_sv[2], to_sv[2];
+    QTestState *from, *to;
+    uint8_t got[TX_PENDING * 20];
+    unsigned attempt;
+    unsigned i;
+
+    tmpdir = g_dir_make_tmp("sn0-tigon-overflow-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    stream_path = g_build_filename(tmpdir, "migration", NULL);
+    uri = g_strdup_printf("file:%s", stream_path);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, from_sv), ==, 0);
+    from = tigon_init_netdev(from_sv[1]);
+    close(from_sv[1]);
+    net_recv_timeout(from_sv[0], 5);
+    go_operational(from);
+    qtest_writel(from, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
+
+    qtest_writel(from, WINDOW_TIGON + TI_GCR_RX_MAX_COAL_BD, UINT32_MAX);
+    qtest_writel(from, WINDOW_TIGON + TI_GCR_RX_COAL_TICKS, UINT32_MAX);
+    for (i = 0; i < RX_PENDING; i++) {
+        post_std_rx_buffer(from, i, RX_BUF_PHYS, i, 2048);
+    }
+    qtest_writel(from, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, RX_PENDING);
+    for (i = 0; i < RX_PENDING; i++) {
+        net_send_frame(from_sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+    }
+    for (attempt = 0; attempt < 200; attempt++) {
+        if (qtest_readl(from, RETURN_PROD_PHYS) == RX_PENDING) {
+            break;
+        }
+        g_usleep(5000);
+    }
+    g_assert_cmphex(qtest_readl(from, RETURN_PROD_PHYS), ==, RX_PENDING);
+
+    qtest_writel(from, WINDOW_TIGON + TI_GCR_TX_MAX_COAL_BD, UINT32_MAX);
+    qtest_writel(from, WINDOW_TIGON + TI_GCR_TX_COAL_TICKS, 1000);
+    write_fragmented_tx_frame(from, 0, TX_PENDING);
+    g_assert_cmpuint(net_recv_frame(from_sv[0], got, sizeof(got)), ==,
+                     TX_PENDING * 20);
+    g_assert_cmphex(qtest_readl(from, TX_CONS_PHYS), ==, TX_PENDING);
+    g_assert_false(irq_asserted(from));
+
+    tigon_migrate(from, uri);
+    qtest_quit(from);
+    close(from_sv[0]);
+    seed_near_limit_tx_count(stream_path);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, to_sv), ==, 0);
+    dest_args = g_strdup_printf(
+        "-M origin200 -netdev socket,fd=%d,id=n0 "
+        "-device tigon,addr=3,mac=" TIGON_MAC ",netdev=n0 -incoming %s",
+        to_sv[1], uri);
+    to = qtest_init(dest_args);
+    close(to_sv[1]);
+    net_recv_timeout(to_sv[0], 5);
+
+    g_assert_false(irq_asserted(to));
+    write_fragmented_tx_frame(to, TX_PENDING, TX_COMPLETED);
+    g_assert_cmpuint(net_recv_frame(to_sv[0], got, sizeof(got)), ==,
+                     TX_COMPLETED * 20);
+    g_assert_cmphex(qtest_readl(to, TX_CONS_PHYS), ==,
+                    TX_PENDING + TX_COMPLETED);
+    g_assert_true(irq_asserted(to));
+
+    qtest_writel(to, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
+    g_assert_false(irq_asserted(to));
+    qtest_clock_step(to, 2000000);
+    g_assert_false(irq_asserted(to));
+
+    qtest_quit(to);
+    close(to_sv[0]);
+    unlink(stream_path);
+    g_assert_cmpint(rmdir(tmpdir), ==, 0);
 }
 
 /*
@@ -2456,7 +2596,7 @@ static void test_transmit_coalesce_migration_from_v3(const void *data)
     qtest_writel(from, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
     qtest_writel(from, WINDOW_TIGON + TI_GCR_TX_MAX_COAL_BD, 4);
     qtest_writel(from, WINDOW_TIGON + TI_GCR_TX_COAL_TICKS, 1000);
-    write_split_tx_frame(from);
+    write_split_tx_frame_at(from, 0);
     g_assert_cmpuint(net_recv_frame(from_sv[0], got, sizeof(got)), ==,
                      sizeof(test_frame));
     g_assert_false(irq_asserted(from));
@@ -2484,8 +2624,63 @@ static void test_transmit_coalesce_migration_from_v3(const void *data)
     g_assert_cmpint(rmdir(tmpdir), ==, 0);
 }
 
-/* Current streams preserve both the descriptor count and timer deadline. */
-static void test_transmit_coalesce_migration_current(const void *data)
+/* A current stream retains the count accumulated before migration. */
+static void test_transmit_coalesce_count_migration_current(const void *data)
+{
+    g_autofree char *tmpdir = NULL;
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_args = NULL;
+    GError *err = NULL;
+    int from_sv[2], to_sv[2];
+    QTestState *from, *to;
+    uint8_t got[sizeof(test_frame)];
+
+    tmpdir = g_dir_make_tmp("sn0-tigon-current-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    socket = g_build_filename(tmpdir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, from_sv), ==, 0);
+    from = tigon_init_netdev(from_sv[1]);
+    close(from_sv[1]);
+    net_recv_timeout(from_sv[0], 5);
+    go_operational(from);
+    qtest_writel(from, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
+    qtest_writel(from, WINDOW_TIGON + TI_GCR_TX_MAX_COAL_BD, 4);
+    qtest_writel(from, WINDOW_TIGON + TI_GCR_TX_COAL_TICKS, 1000000);
+    write_split_tx_frame_at(from, 0);
+    g_assert_cmpuint(net_recv_frame(from_sv[0], got, sizeof(got)), ==,
+                     sizeof(test_frame));
+    g_assert_false(irq_asserted(from));
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, to_sv), ==, 0);
+    dest_args = g_strdup_printf(
+        "-M origin200 -netdev socket,fd=%d,id=n0 "
+        "-device tigon,addr=3,mac=" TIGON_MAC ",netdev=n0 -incoming %s",
+        to_sv[1], uri);
+    to = qtest_init(dest_args);
+    close(to_sv[1]);
+    tigon_migrate(from, uri);
+
+    g_assert_false(irq_asserted(to));
+    net_recv_timeout(to_sv[0], 5);
+    write_split_tx_frame_at(to, 2);
+    g_assert_cmpuint(net_recv_frame(to_sv[0], got, sizeof(got)), ==,
+                     sizeof(test_frame));
+    g_assert_cmphex(qtest_readl(to, TX_CONS_PHYS), ==, 4);
+    g_assert_true(irq_asserted(to));
+
+    qtest_quit(to);
+    qtest_quit(from);
+    close(to_sv[0]);
+    close(from_sv[0]);
+    unlink(socket);
+    g_assert_cmpint(rmdir(tmpdir), ==, 0);
+}
+
+/* A current stream retains the deadline independently of its count. */
+static void test_transmit_coalesce_deadline_migration_current(const void *data)
 {
     g_autofree char *tmpdir = NULL;
     g_autofree char *socket = NULL;
@@ -2509,7 +2704,7 @@ static void test_transmit_coalesce_migration_current(const void *data)
     qtest_writel(from, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
     qtest_writel(from, WINDOW_TIGON + TI_GCR_TX_MAX_COAL_BD, 4);
     qtest_writel(from, WINDOW_TIGON + TI_GCR_TX_COAL_TICKS, 1000);
-    write_split_tx_frame(from);
+    write_split_tx_frame_at(from, 0);
     g_assert_cmpuint(net_recv_frame(from_sv[0], got, sizeof(got)), ==,
                      sizeof(test_frame));
     g_assert_false(irq_asserted(from));
@@ -3425,8 +3620,12 @@ int main(int argc, char **argv)
                         test_programmed_mac_survives_migration);
     qtest_add_data_func("/sn0/tigon/transmit-coalesce-migration-from-v3",
                         NULL, test_transmit_coalesce_migration_from_v3);
-    qtest_add_data_func("/sn0/tigon/transmit-coalesce-migration-current",
-                        NULL, test_transmit_coalesce_migration_current);
+    qtest_add_data_func("/sn0/tigon/transmit-coalesce-count-migration-current",
+                        NULL,
+                        test_transmit_coalesce_count_migration_current);
+    qtest_add_data_func(
+        "/sn0/tigon/transmit-coalesce-deadline-migration-current", NULL,
+        test_transmit_coalesce_deadline_migration_current);
     qtest_add_data_func("/sn0/tigon/receive-payload-dma-error", NULL,
                         test_receive_payload_dma_error);
     qtest_add_data_func("/sn0/tigon/receive-jumbo-frame", NULL,
