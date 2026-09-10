@@ -181,9 +181,9 @@ static bool sgi_xbow_alive(const SGIXbowState *s, unsigned int link)
 
 static uint32_t sgi_xbow_identification(const SGIXbowState *s)
 {
-    return (s->widget_revision << XBOW_ID_REVISION_SHIFT) |
-           (s->widget_part << XBOW_ID_PART_SHIFT) |
-           (s->widget_manufacturer << XBOW_ID_MANUFACTURER_SHIFT) |
+    return (s->revision << XBOW_ID_REVISION_SHIFT) |
+           (s->part << XBOW_ID_PART_SHIFT) |
+           (s->manufacturer << XBOW_ID_MANUFACTURER_SHIFT) |
            XBOW_ID_ONE;
 }
 
@@ -1179,8 +1179,7 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
                          "populated");
         return;
     }
-    if (s->widget_revision > 0xf || s->widget_part > 0xffff ||
-        s->widget_manufacturer > 0x7ff) {
+    if (s->revision > 0xf || s->part > 0xffff || s->manufacturer > 0x7ff) {
         error_setg(errp,
                    "crossbar identity fields exceed their register widths");
         return;
@@ -1473,10 +1472,9 @@ static const Property sgi_xbow_properties[] = {
                      stop_on_link_reset, false),
     DEFINE_PROP_BOOL("complete-posted-error-address-writes", SGIXbowState,
                      complete_posted_error_address_writes, false),
-    DEFINE_PROP_UINT32("widget-revision", SGIXbowState, widget_revision, 1),
-    DEFINE_PROP_UINT32("widget-part", SGIXbowState, widget_part, 0),
-    DEFINE_PROP_UINT32("widget-manufacturer", SGIXbowState,
-                       widget_manufacturer, 0),
+    DEFINE_PROP_UINT32("revision", SGIXbowState, revision, 1),
+    DEFINE_PROP_UINT32("part", SGIXbowState, part, 0),
+    DEFINE_PROP_UINT32("manufacturer", SGIXbowState, manufacturer, 0),
     DEFINE_PROP_UINT16("links-present", SGIXbowState, links_present_prop, 0),
     DEFINE_PROP_UINT16("startup-links-alive", SGIXbowState,
                        startup_links_alive_prop, 0),
