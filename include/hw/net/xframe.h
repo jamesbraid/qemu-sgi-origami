@@ -102,6 +102,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(XframeState, XFRAME)
 /* Largest receive descriptor: five-buffer mode's eight 64-bit words. */
 #define XFRAME_RXD_MAX_SIZE              64
 
+typedef struct XframeTrafficBatch {
+    XframeState *owner;
+    QEMUTimer *timer;
+    uint32_t completions;
+    uint8_t entry;
+    bool rx;
+    bool deferred;
+} XframeTrafficBatch;
+
 struct XframeState {
     PCIDevice parent_obj;
 
@@ -195,6 +204,8 @@ struct XframeState {
     uint64_t rti_entry_data1[XFRAME_TRAFFIC_MEM_ENTRIES];
     uint64_t rti_entry_data2[XFRAME_TRAFFIC_MEM_ENTRIES];
     bool rti_entry_valid[XFRAME_TRAFFIC_MEM_ENTRIES];
+    XframeTrafficBatch tti_batch[XFRAME_TRAFFIC_MEM_ENTRIES];
+    XframeTrafficBatch rti_batch[XFRAME_TRAFFIC_MEM_ENTRIES];
 
     /*
      * Scratch for assembling one outgoing frame from a descriptor list, or the
