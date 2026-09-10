@@ -1386,24 +1386,112 @@ static void test_io_queue_registers(const void *data)
     qtest_quit(qts);
 }
 
-static void test_cpu_enable_registers_store_what_is_written(const void *data)
+static void build_cpu_enable_heartbeat_image(SN0Image *p)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    const unsigned int entry = 0x800;
+    unsigned int branch;
+    unsigned int loop;
 
-    /* The installed boot processor is enabled; the empty socket is not. */
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_A), ==, 1);
+    branch = sn0_emit_branch(p, SN0_OPC_BEQ, 0, 0);
+    sn0_patch_branch(p, branch, entry);
+    for (unsigned int vector = SN0_VEC_TLB_REFILL;
+         vector <= SN0_VEC_GENERAL; vector += 0x80) {
+        p->pos = vector;
+        sn0_emit_park(p);
+    }
+
+    p->pos = entry;
+    sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL);
+    sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
+    sn0_emit_cpu_number(p, SN0_R_S1);
+    sn0_emit_li(p, SN0_R_K0, SN0_KSEG1(SN0_USER_MAILBOX));
+    sn0_emit_sll(p, SN0_R_T0, SN0_R_S1, 3);
+    sn0_emit_addu(p, SN0_R_K0, SN0_R_K0, SN0_R_T0);
+
+    loop = p->pos;
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K0, SN0_R_T0, 0);
+    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_T0, SN0_R_T0, 1);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_T0, 0);
+    branch = sn0_emit_branch(p, SN0_OPC_BEQ, SN0_R_ZERO, SN0_R_ZERO);
+    sn0_patch_branch(p, branch, loop);
+}
+
+static uint64_t cpu_heartbeat(QTestState *qts, unsigned int cpu)
+{
+    return qtest_readq(qts, SN0_USER_MAILBOX + 8 * cpu);
+}
+
+static uint64_t wait_for_cpu_heartbeat(QTestState *qts, unsigned int cpu,
+                                       uint64_t previous)
+{
+    int64_t deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
+    uint64_t heartbeat;
+
+    do {
+        heartbeat = cpu_heartbeat(qts, cpu);
+        if (heartbeat != previous) {
+            return heartbeat;
+        }
+        g_usleep(1000);
+    } while (g_get_monotonic_time() < deadline);
+
+    return heartbeat;
+}
+
+static void test_cpu_enable_registers_control_matching_processors(
+    const void *data)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
+    QTestState *qts;
+    uint64_t stopped;
+    uint64_t running;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    build_cpu_enable_heartbeat_image(image);
+    path = sn0_image_write(image, "sn0-hub-cpu-enable");
+    qts = qtest_initf(
+        "-M origin200,synthesized-firmware=off -smp 2 -bios %s "
+        "-accel tcg,thread=multi -S -no-shutdown", path);
+    unlink(path);
+
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_A), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_B), ==, 0);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_CPU_ENABLE_A, ~0ULL);
+    qtest_writeq(qts, HUB_LOCAL + PI_CPU_ENABLE_B, 1);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_A), ==, 1);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_B), ==, 1);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    g_assert_cmphex(wait_for_cpu_heartbeat(qts, 0, 0), !=, 0);
+    g_assert_cmphex(wait_for_cpu_heartbeat(qts, 1, 0), !=, 0);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_CPU_ENABLE_A, 0);
+    running = wait_for_cpu_heartbeat(qts, 1, cpu_heartbeat(qts, 1));
+    stopped = cpu_heartbeat(qts, 0);
+    g_assert_cmphex(wait_for_cpu_heartbeat(qts, 1, running), !=, running);
+    g_assert_cmphex(cpu_heartbeat(qts, 0), ==, stopped);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_A), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_B), ==, 1);
 
     qtest_writeq(qts, HUB_LOCAL + PI_CPU_ENABLE_A, 1);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_A), ==, 1);
-    qtest_writeq(qts, HUB_LOCAL + PI_CPU_ENABLE_A, 0);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_A), ==, 0);
-
-    /* Processor B is not installed; clearing its enable must not crash. */
-    qtest_writeq(qts, HUB_LOCAL + PI_CPU_ENABLE_B, 1);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_B), ==, 1);
     qtest_writeq(qts, HUB_LOCAL + PI_CPU_ENABLE_B, 0);
+    running = wait_for_cpu_heartbeat(qts, 0, stopped);
+    stopped = cpu_heartbeat(qts, 1);
+    g_assert_cmphex(wait_for_cpu_heartbeat(qts, 0, running), !=, running);
+    g_assert_cmphex(cpu_heartbeat(qts, 1), ==, stopped);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_A), ==, 1);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_B), ==, 0);
+
+    qtest_writeq(qts, HUB_LOCAL + IO_SCRATCH_0, ~0ULL);
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_A), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_B), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_SCRATCH_0), ==, 0);
 
     qtest_quit(qts);
 }
@@ -4437,8 +4525,9 @@ int main(int argc, char **argv)
                         test_writes_the_guest_makes);
     qtest_add_data_func("sn0/hub/error-spool-masked-value", NULL,
                         test_the_error_spool_registers_hold_a_masked_value);
-    qtest_add_data_func("sn0/hub/cpu-enable-stores-what-is-written", NULL,
-                        test_cpu_enable_registers_store_what_is_written);
+    qtest_add_data_func("sn0/hub/cpu-enable-controls-matching-processors",
+                        NULL,
+                        test_cpu_enable_registers_control_matching_processors);
     qtest_add_data_func("sn0/hub/md-indicator-registers", NULL,
                         test_md_indicator_registers);
     qtest_add_data_func("sn0/hub/md-indicator-shown-by-default", NULL,
