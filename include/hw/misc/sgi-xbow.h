@@ -83,6 +83,7 @@ struct SGIXbowState {
     bool regions_initialized;
     bool quiesced;
     bool stop_on_link_reset;
+    bool complete_posted_error_address_writes;
 
     /* How much crosstalk space one widget owns, which the machine defines. */
     uint64_t span;
@@ -95,6 +96,7 @@ struct SGIXbowState {
     /* Widget masks, as the properties and the descriptor spell them. */
     uint16_t links_present_prop;
     uint16_t startup_links_alive_prop;
+    uint16_t link_reset_restore_alive_prop;
 
     /*
      * Link masks. Attachment is board wiring. The startup mask is the
@@ -104,12 +106,14 @@ struct SGIXbowState {
      */
     uint8_t link_present;
     uint8_t link_startup;
+    uint8_t link_reset_restore_alive_mask;
     uint8_t link_alive;
 
     uint8_t link_initializing;
     uint8_t link_came_up;
     uint8_t link_eight_bit;
     uint8_t link_reset_asserted;
+    uint8_t link_reset_restore_alive;
     bool interrupt_asserted;
 
     uint32_t status;
@@ -142,7 +146,7 @@ struct SGIXbowState {
 
     qemu_irq link_reset[SGI_XBOW_LINKS];
     QEMUTimer *link_reset_timer[SGI_XBOW_LINKS];
-    int64_t link_reset_deadline[SGI_XBOW_LINKS];
+    int64_t link_reset_remaining[SGI_XBOW_LINKS];
     SGIXbowLink link_context[SGI_XBOW_LINKS];
 };
 

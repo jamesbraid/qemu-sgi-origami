@@ -224,6 +224,22 @@ static uint16_t crossbow_present_mask(const SN0ModelComposition *model,
     return mask;
 }
 
+static uint16_t crossbow_io_board_mask(const SN0ModelComposition *model,
+                                       unsigned int crossbow_index)
+{
+    uint16_t mask = 0;
+    size_t i;
+
+    for (i = 0; i < model->io_board_count; i++) {
+        const SN0ModelIoBoard *board = &model->io_boards[i];
+
+        if (board->crossbow_index == crossbow_index) {
+            mask |= 1U << board->widget;
+        }
+    }
+    return mask;
+}
+
 /*
  * A processor reaching a Hub across the switch. The stop is deliberate and
  * the diagnostic is unconditional, because the alternative is answering with
@@ -314,7 +330,8 @@ static void sn0_origin2000_xtalk_build_crossbows(SN0Origin2000XtalkState *s)
         s->crossbow[i] = SGI_XBOW(crossbow);
         object_unref(OBJECT(crossbow));
         qdev_prop_set_uint64(crossbow, "span", SN0_XTALK_WIDGET_SIZE);
-        qdev_prop_set_bit(crossbow, "stop-on-link-reset", true);
+        qdev_prop_set_bit(crossbow,
+                          "complete-posted-error-address-writes", true);
         qdev_prop_set_uint32(crossbow, "revision", descriptor->revision);
         qdev_prop_set_uint32(crossbow, "part", descriptor->part);
         qdev_prop_set_uint32(crossbow, "manufacturer",
@@ -323,6 +340,8 @@ static void sn0_origin2000_xtalk_build_crossbows(SN0Origin2000XtalkState *s)
                              crossbow_present_mask(model, i));
         qdev_prop_set_uint16(crossbow, "startup-links-alive",
                              descriptor->initially_operational_links);
+        qdev_prop_set_uint16(crossbow, "link-reset-restore-alive",
+                             crossbow_io_board_mask(model, i));
     }
 }
 
