@@ -452,8 +452,8 @@ static uint8_t pcf8584_wire_read_data(PCF8584State *s)
     uint8_t val = s->data;
 
     trace_pcf8584_data_read(s->wire_master, pcf8584_current_cpu_index(),
-                            val, s->wire_grant, s->wire_grant_pending,
-                            s->status, s->wire_phase, s->wire_active,
+                            val, s->wire_grant, s->status, s->wire_phase,
+                            s->wire_active,
                             i2c_bus_busy(s->bus), s->bus->owner,
                             i2c_wire_contenders(s->bus));
 
