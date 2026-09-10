@@ -134,6 +134,10 @@
 #define IOC3_ENET_TX_RING_LO     IOC3_REG(0x12c)
 #define IOC3_ENET_TX_PRODUCE     IOC3_REG(0x134)
 #define IOC3_INT_STATUS          IOC3_REG(0x01c)
+#define IOC3_INT_OUTPUT          IOC3_REG(0x02c)
+#define IOC3_INT_OUT_PERIODIC    0x00060000u
+#define IOC3_INT_OUT_STATE       0x80000000u
+#define IOC3_INT_OUT_TICK_NS     7800LL
 #define IOC3_SDMA_RING_HI        IOC3_REG(0x0b0)
 #define IOC3_SDMA_RING_LO        IOC3_REG(0x0b4)
 #define IOC3_SDMA_A_CONTROL      IOC3_REG(0x0b8)
@@ -408,6 +412,52 @@ static void test_a_wound_receive_timer_survives_migration(const void *data)
     qtest_clock_step(to, (0x123 + 1) * IOC3_RX_TIMER_TICK_NS);
     g_assert_cmphex(qtest_readl(to, IOC3_INT_STATUS) & IOC3_SRC_A_RX_TIMER,
                     ==, IOC3_SRC_A_RX_TIMER);
+
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
+static void test_interrupt_output_phase_survives_migration(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    int64_t source_time;
+
+    tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MACHINE_WITH_BRIDGE);
+    attach_node_ioc3(from, 0);
+    qtest_writel(from, IOC3_INT_OUTPUT, IOC3_INT_OUT_PERIODIC | 0x0009);
+    qtest_clock_step(from, 1);
+    source_time = qtest_clock_step(from, IOC3_INT_OUT_TICK_NS);
+    g_assert_cmphex(qtest_readl(from, IOC3_INT_OUTPUT) & IOC3_INT_OUT_STATE,
+                    ==, IOC3_INT_OUT_STATE);
+
+    dest_cmdline = g_strdup_printf(MACHINE_WITH_BRIDGE " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    migrate_stopped_vm(from, uri);
+    qtest_clock_set(to, source_time);
+
+    g_assert_cmphex(qtest_readl(to, IOC3_INT_OUTPUT) & IOC3_INT_OUT_STATE,
+                    ==, IOC3_INT_OUT_STATE);
+    qtest_clock_step(to, 2 * IOC3_INT_OUT_TICK_NS - 1);
+    g_assert_cmphex(qtest_readl(to, IOC3_INT_OUTPUT) & IOC3_INT_OUT_STATE,
+                    ==, IOC3_INT_OUT_STATE);
+    qtest_clock_step(to, 1);
+    g_assert_cmphex(qtest_readl(to, IOC3_INT_OUTPUT) & IOC3_INT_OUT_STATE,
+                    ==, 0);
+
+    qtest_clock_step(to, 7 * IOC3_INT_OUT_TICK_NS - 1);
+    g_assert_cmphex(qtest_readl(to, IOC3_INT_OUTPUT) & IOC3_INT_OUT_STATE,
+                    ==, 0);
+    qtest_clock_step(to, 1);
+    g_assert_cmphex(qtest_readl(to, IOC3_INT_OUTPUT) & IOC3_INT_OUT_STATE,
+                    ==, IOC3_INT_OUT_STATE);
 
     qtest_quit(to);
     qtest_quit(from);
@@ -998,6 +1048,8 @@ int main(int argc, char **argv)
                         NULL, test_a_device_window_survives_migration);
     qtest_add_data_func("sn0/migration/wound-receive-timer-survives",
                         NULL, test_a_wound_receive_timer_survives_migration);
+    qtest_add_data_func("sn0/migration/interrupt-output-phase-survives",
+                        NULL, test_interrupt_output_phase_survives_migration);
     qtest_add_data_func("sn0/migration/dual-base-io-survives-migration",
                         NULL, test_dual_base_io_survives_migration);
     qtest_add_data_func("sn0/migration/network-routes-survive-migration",

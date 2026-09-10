@@ -78,12 +78,25 @@ struct SGIIOC3BusState {
 #define SGI_IOC3_CHIP_CTRL_ARB_IDLE 0x00400000u
 
 /*
- * Interrupt output timer configuration. The interval count (bits 0-15),
- * the mode (bits 16-18) and the diagnostic bit (30) are writable; the
- * pin-state readback (bit 31) and the reserved field are not stored.
+ * Interrupt output timer command fields. Supported normal interval and mode
+ * combinations are stored; diagnostic commands are rejected. The pin-state
+ * readback (bit 31) and the reserved field are not stored.
  */
 #define SGI_IOC3_INT_OUTPUT     0x2c
 #define SGI_IOC3_INT_OUT_MASK   0x4007ffffu
+#define SGI_IOC3_INT_OUT_COUNT  0x0000ffffu
+#define SGI_IOC3_INT_OUT_MODE   0x00070000u
+#define SGI_IOC3_INT_OUT_LOW    0x00000000u
+#define SGI_IOC3_INT_OUT_HIGH   0x00040000u
+#define SGI_IOC3_INT_OUT_ONE_SHOT 0x00050000u
+#define SGI_IOC3_INT_OUT_PERIODIC 0x00060000u
+#define SGI_IOC3_INT_OUT_SQUARE  0x00070000u
+#define SGI_IOC3_INT_OUT_DIAG   0x40000000u
+#define SGI_IOC3_INT_OUT_STATE  0x80000000u
+#define SGI_IOC3_INT_OUT_TICK_NS 7800
+#define SGI_IOC3_INT_OUT_PULSE_TICKS 3
+#define SGI_IOC3_INT_OUT_MIN_COUNT 2
+#define SGI_IOC3_INT_OUT_MAX_COUNT 0xfffe
 
 /* MicroLAN (one-wire) control; protocol in docs/specs/sgi-ioc3.rst. */
 #define SGI_IOC3_MICROLAN_CONTROL 0x30
@@ -400,6 +413,11 @@ struct SGIIOC3State {
 
     uint32_t chip_control;
     uint32_t int_out;
+    uint32_t int_out_active;
+    bool int_out_state;
+    bool int_out_pulse_end;
+    bool int_out_square_started;
+    QEMUTimer *int_out_timer;
 
     SGIIOC3KBCState kbc_dev;
 
