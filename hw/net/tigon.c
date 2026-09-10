@@ -329,13 +329,15 @@ static void tigon_coal_tx_timer(void *opaque)
  * The completion itself has already been written to its ring. Only the
  * interrupt is held, so a driver that polls still sees the work.
  */
-static void tigon_completion_irq(TigonState *s, bool rx)
+static void tigon_completion_irq(TigonState *s, bool rx,
+                                 uint32_t completed_bds)
 {
+    uint32_t *coal_bds = rx ? &s->coal_rx_bds : &s->coal_tx_bds;
     uint32_t max_bds = s->gcr[TIGON_GCR_IDX(rx ? TI_GCR_RX_MAX_COAL_BD
                                                : TI_GCR_TX_MAX_COAL_BD)];
     uint32_t ticks = s->gcr[TIGON_GCR_IDX(rx ? TI_GCR_RX_COAL_TICKS
                                              : TI_GCR_TX_COAL_TICKS)];
-    uint32_t count = rx ? ++s->coal_rx_bds : ++s->coal_tx_bds;
+    uint32_t count = *coal_bds += completed_bds;
     QEMUTimer *timer = rx ? s->coal_rx_timer : s->coal_tx_timer;
 
     /*
@@ -795,10 +797,10 @@ static bool tigon_frame_offloadable(const uint8_t *frame, uint32_t len)
     return eth_hdr_len + ip_len <= len;
 }
 
-static void tigon_tx_finish(TigonState *s, bool completed)
+static void tigon_tx_finish(TigonState *s, uint32_t completed_bds)
 {
-    if (completed) {
-        tigon_completion_irq(s, false);
+    if (completed_bds) {
+        tigon_completion_irq(s, false, completed_bds);
     }
 
     s->defer_backend_rx = false;
@@ -814,7 +816,8 @@ static void tigon_tx(TigonState *s, uint32_t prod)
     uint32_t frame_len = 0;
     uint16_t frame_cksum = 0;   /* checksum-offload flags across the frame */
     uint32_t cons = s->tx_considx;
-    bool completed = false;
+    uint32_t completed_bds = 0;
+    uint32_t frame_bds = 0;
     bool walked = false;
 
     if (!s->firmware_up) {
@@ -846,7 +849,7 @@ static void tigon_tx(TigonState *s, uint32_t prod)
             qemu_log_mask(LOG_GUEST_ERROR,
                           "tigon: transmit descriptor read at 0x%" PRIx64
                           " failed; ring walk stopped\n", desc);
-            tigon_tx_finish(s, completed);
+            tigon_tx_finish(s, completed_bds);
             return;
         }
         len = word >> 16;
@@ -858,10 +861,11 @@ static void tigon_tx(TigonState *s, uint32_t prod)
             qemu_log_mask(LOG_GUEST_ERROR,
                           "tigon: transmit payload read at 0x%" PRIx64
                           " failed; ring walk stopped\n", buf);
-            tigon_tx_finish(s, completed);
+            tigon_tx_finish(s, completed_bds);
             return;
         }
         walked = true;
+        frame_bds++;
         frame_len += len;
         frame_cksum |= flags & (TI_BDFLAG_TCP_UDP_CKSUM | TI_BDFLAG_IP_CKSUM);
         cons = (cons + 1) % TI_TX_RING_CNT;
@@ -891,7 +895,7 @@ static void tigon_tx(TigonState *s, uint32_t prod)
                 qemu_log_mask(LOG_GUEST_ERROR,
                               "tigon: transmit consumer write at 0x%" PRIx64
                               " failed; frame held\n", s->tx_considx_ptr);
-                tigon_tx_finish(s, completed);
+                tigon_tx_finish(s, completed_bds);
                 return;
             }
             /*
@@ -902,7 +906,8 @@ static void tigon_tx(TigonState *s, uint32_t prod)
             s->defer_backend_rx = true;
             qemu_send_packet(qemu_get_queue(s->nic), frame, frame_len);
             s->tx_considx = cons;
-            completed = true;
+            completed_bds += frame_bds;
+            frame_bds = 0;
             frame_len = 0;
             frame_cksum = 0;
         }
@@ -913,13 +918,13 @@ static void tigon_tx(TigonState *s, uint32_t prod)
             qemu_log_mask(LOG_GUEST_ERROR,
                           "tigon: transmit consumer write at 0x%" PRIx64
                           " failed; ring walk stopped\n", s->tx_considx_ptr);
-            tigon_tx_finish(s, completed);
+            tigon_tx_finish(s, completed_bds);
             return;
         }
         s->tx_considx = cons;
-        completed = true;
+        completed_bds = 1;
     }
-    tigon_tx_finish(s, completed);
+    tigon_tx_finish(s, completed_bds);
 }
 
 static void tigon_reset_state(TigonState *s)
@@ -1548,7 +1553,7 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
         s->std_rx_considx = (s->std_rx_considx + 1) % TI_STD_RX_RING_CNT;
     }
     s->return_prodidx = next_return_prod;
-    tigon_completion_irq(s, true);
+    tigon_completion_irq(s, true, 1);
 
     return size;
 }

@@ -1774,6 +1774,55 @@ static void test_interrupt_coalesce_by_time(const void *data)
 }
 
 /*
+ * TX_MAX_COAL_BD counts completed buffer descriptors, not producer-doorbell
+ * writes.  A driver normally publishes several ready descriptors with one
+ * mailbox write, so counting the whole ring walk as one completion leaves a
+ * sustained transfer waiting for the timer even after it reaches its requested
+ * interrupt threshold.
+ */
+static void test_transmit_coalesce_counts_batched_descriptors(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t got[sizeof(test_frame)];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+    go_operational(qts);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
+
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_TX_MAX_COAL_BD, 2);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_TX_COAL_TICKS, 1000000);
+
+    qtest_memwrite(qts, TX_BUF_PHYS, test_frame, sizeof(test_frame) / 2);
+    qtest_memwrite(qts, TX_BUF_PHYS + 0x100,
+                   test_frame + sizeof(test_frame) / 2,
+                   sizeof(test_frame) / 2);
+    write_rcb_addr(qts, TX_RING_PHYS, TX_BUF_PHYS);
+    qtest_writel(qts, TX_RING_PHYS + 8,
+                 (uint32_t)(sizeof(test_frame) / 2) << 16);
+    qtest_writel(qts, TX_RING_PHYS + 12, 0);
+    write_rcb_addr(qts, TX_RING_PHYS + 16, TX_BUF_PHYS + 0x100);
+    qtest_writel(qts, TX_RING_PHYS + 24,
+                 ((uint32_t)(sizeof(test_frame) / 2) << 16) |
+                 TI_BDFLAG_END);
+    qtest_writel(qts, TX_RING_PHYS + 28, 0);
+
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 2);
+
+    g_assert_cmpuint(net_recv_frame(sv[0], got, sizeof(got)), ==,
+                     sizeof(test_frame));
+    g_assert_cmpmem(got, sizeof(got), test_frame, sizeof(test_frame));
+    g_assert_cmphex(qtest_readl(qts, TX_CONS_PHYS), ==, 2);
+    g_assert_true(irq_asserted(qts));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
  * Receive and transmit have distinct coalescing tick/count registers. A long
  * receive batch must not replace a shorter transmit deadline, and publishing
  * that transmit completion must leave the receive tail pending for its own
@@ -3004,6 +3053,9 @@ int main(int argc, char **argv)
                         test_interrupt_coalesce_by_count);
     qtest_add_data_func("/sn0/tigon/interrupt-coalesce-by-time", NULL,
                         test_interrupt_coalesce_by_time);
+    qtest_add_data_func("/sn0/tigon/transmit-coalesce-counts-batched-bds",
+                        NULL,
+                        test_transmit_coalesce_counts_batched_descriptors);
     qtest_add_data_func("/sn0/tigon/interrupt-coalesce-directions-independent",
                         NULL,
                         test_interrupt_coalesce_directions_are_independent);
