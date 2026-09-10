@@ -23,7 +23,11 @@
 #include "sn0-origin2000-xtalk.h"
 
 #define ORIGIN2000_HUB_IO_BUS_ERROR 0x02400208
-#define ORIGIN2000_BUS_ERROR_MEMOP(size) (size_memop(size) | MO_BE)
+#define ORIGIN2000_HUB_IO_BUS_ERROR_WIDGET 2
+#define ORIGIN2000_HUB_IO_BUS_ERROR_XTALK \
+    (SN0_XTALK_BASE(ORIGIN2000_HUB_IO_BUS_ERROR_WIDGET) + \
+     ORIGIN2000_HUB_IO_BUS_ERROR - \
+     SN0_SMALL_WINDOW(ORIGIN2000_HUB_IO_BUS_ERROR_WIDGET))
 
 static MemTxResult origin2000_bus_error_read(void *opaque, hwaddr addr,
                                               uint64_t *data,
@@ -31,15 +35,19 @@ static MemTxResult origin2000_bus_error_read(void *opaque, hwaddr addr,
                                               MemTxAttrs attrs)
 {
     SN0NodeState *node = opaque;
+    uint8_t bytes[8] = {};
+    MemTxResult result;
 
     if (addr == 0 && size == 8) {
         *data = 0;
         sgi_hub_latch_prom_pi_error(&node->hub);
         return MEMTX_ERROR;
     }
-    return memory_region_dispatch_read(&node->xtalk,
-        ORIGIN2000_HUB_IO_BUS_ERROR + addr, data,
-        ORIGIN2000_BUS_ERROR_MEMOP(size), attrs);
+    result = address_space_read(&node->origin2000_xtalk_as,
+                                ORIGIN2000_HUB_IO_BUS_ERROR_XTALK + addr,
+                                attrs, bytes, size);
+    *data = ldn_be_p(bytes, size);
+    return result;
 }
 
 static MemTxResult origin2000_bus_error_write(void *opaque, hwaddr addr,
@@ -48,10 +56,12 @@ static MemTxResult origin2000_bus_error_write(void *opaque, hwaddr addr,
                                                MemTxAttrs attrs)
 {
     SN0NodeState *node = opaque;
+    uint8_t bytes[8];
 
-    return memory_region_dispatch_write(&node->xtalk,
-        ORIGIN2000_HUB_IO_BUS_ERROR + addr, data,
-        ORIGIN2000_BUS_ERROR_MEMOP(size), attrs);
+    stn_be_p(bytes, size, data);
+    return address_space_write(&node->origin2000_xtalk_as,
+                               ORIGIN2000_HUB_IO_BUS_ERROR_XTALK + addr,
+                               attrs, bytes, size);
 }
 
 static const MemoryRegionOps origin2000_bus_error_ops = {
@@ -60,21 +70,28 @@ static const MemoryRegionOps origin2000_bus_error_ops = {
     .endianness = DEVICE_BIG_ENDIAN,
     .valid.min_access_size = 1,
     .valid.max_access_size = 8,
+    .valid.unaligned = true,
     .impl.min_access_size = 1,
     .impl.max_access_size = 8,
+    .impl.unaligned = true,
 };
 
 static void origin2000_install_bus_error_aperture(SN0NodeState *node)
 {
     const SN0ModelAddressSpace *xtalk = &node->physical->map.xtalk;
+    g_autofree char *name = g_strdup_printf(
+        "sn0.node%u.origin2000-xtalk", node->nasid);
+
+    address_space_init(&node->origin2000_xtalk_as, &node->xtalk, name);
+    node->origin2000_xtalk_as_ready = true;
 
     for (unsigned int slice = 0; slice < node->physical->cpu_count; slice++) {
-        g_autofree char *name = g_strdup_printf(
+        g_autofree char *region_name = g_strdup_printf(
             "sn0.node%u.cpu%u.hub-io-bus-error", node->nasid, slice);
 
         memory_region_init_io(&node->origin2000_bus_error[slice],
                               OBJECT(node), &origin2000_bus_error_ops, node,
-                              name, 8);
+                              region_name, 8);
         memory_region_add_subregion_overlap(
             &node->cpu_sysmem[slice],
             xtalk->carrier_base + ORIGIN2000_HUB_IO_BUS_ERROR,
