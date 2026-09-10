@@ -19,6 +19,7 @@
 #include "system/qtest.h"
 #include "sn0.h"
 #include "sn0-origin2000-model-consumer.h"
+#include "sn0-origin2000-xtalk.h"
 
 static unsigned int origin2000_cpu_count(const SN0ModelComposition *c)
 {
@@ -423,8 +424,14 @@ void sn0_origin2000_realize_nodes(MachineState *machine)
 
 static void origin2000_init(MachineState *machine)
 {
+    SN0MachineState *s = SN0_MACHINE(machine);
+
     sn0_origin2000_prepare_nodes(machine);
+    if (!sn0_origin2000_xtalk_prepare(s, &error_fatal)) {
+        return;
+    }
     sn0_origin2000_realize_nodes(machine);
+    sn0_origin2000_xtalk_attach(s, &error_fatal);
 }
 
 static const char * const origin2000_cpu_types[] = {
