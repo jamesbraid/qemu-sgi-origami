@@ -1351,7 +1351,7 @@ static void test_user_backend_reply_waits_for_transmit(const void *data)
         "-M origin200 -netdev user,id=n0 "
         "-device tigon,id=tigon0,addr=3,mac=" TIGON_MAC ",netdev=n0 "
         "-d trace:tigon_rx_flush -D %s", logfile);
-    uint32_t rx_flags;
+    uint32_t rx_flags, after_poll;
     uint8_t landed[sizeof(arp_request)];
 
     go_operational(qts);
@@ -1376,14 +1376,14 @@ static void test_user_backend_reply_waits_for_transmit(const void *data)
      * receive-return descriptor must still be unowned until transmit has
      * finished publishing its consumer index and interrupt.
      */
-    rx_flags = qtest_writel_then_readl(
+    rx_flags = qtest_writel_then_readl_poll(
         qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1,
-        RETURN_RING_PHYS + 12);
+        RETURN_RING_PHYS + 12, &after_poll);
     g_assert_cmphex(rx_flags & TI_BDFLAG_END, ==, 0);
+    g_assert_cmphex(after_poll & TI_BDFLAG_END, ==, TI_BDFLAG_END);
     g_assert_cmphex(qtest_readl(qts, TX_CONS_PHYS), ==, 1);
     g_assert_true(irq_asserted(qts));
 
-    g_assert_cmphex(wait_return_prod(qts), ==, 1);
     qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(landed));
     g_assert_cmpmem(landed, 6, tigon_mac, 6);
     g_assert_cmphex(landed[20], ==, 0x00);
