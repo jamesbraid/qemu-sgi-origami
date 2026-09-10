@@ -366,6 +366,7 @@ static void xframe_stat_stl(XframeState *s, uint8_t *p, uint32_t val)
 #define XFRAME_TTI_MEM_CMD_OFF_MASK     0x3fULL
 #define XFRAME_RTI_MEM_CMD_OFF_MASK     0x7ULL
 #define XFRAME_TRAFFIC_DATA1_AC          (1ULL << 25)
+#define XFRAME_TRAFFIC_DATA1_CI          (1ULL << 24)
 #define XFRAME_TTI_TIMER_MASK             0x3ffffffULL
 #define XFRAME_RTI_TIMER_MASK             0x1fffffffULL
 
@@ -533,6 +534,55 @@ static void xframe_traffic_batch_reset(XframeTrafficBatch *batch)
 static int64_t xframe_traffic_interval_ns(uint32_t ticks)
 {
     return ((int64_t)ticks * 64000 + 132) / 133;
+}
+
+static uint32_t xframe_traffic_ticks(XframeState *s, bool rx, unsigned entry)
+{
+    uint64_t data1 = rx ? s->rti_entry_data1[entry] :
+                          s->tti_entry_data1[entry];
+    uint32_t mask = rx ? XFRAME_RTI_TIMER_MASK : XFRAME_TTI_TIMER_MASK;
+
+    return (data1 >> 32) & mask;
+}
+
+static void xframe_traffic_continuous_arm(XframeState *s, bool rx,
+                                          unsigned entry)
+{
+    XframeTrafficContinuous *continuous = rx ? &s->rti_continuous[entry] :
+                                               &s->tti_continuous[entry];
+    uint64_t data1 = rx ? s->rti_entry_data1[entry] :
+                          s->tti_entry_data1[entry];
+    bool valid = rx ? s->rti_entry_valid[entry] :
+                      s->tti_entry_valid[entry];
+    uint32_t ticks = xframe_traffic_ticks(s, rx, entry);
+
+    timer_del(continuous->timer);
+    continuous->deadline_ns = 0;
+    if (valid && (s->adapter_control & XFRAME_ADAPTER_EN) && ticks &&
+        (data1 & XFRAME_TRAFFIC_DATA1_CI)) {
+        continuous->deadline_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                  xframe_traffic_interval_ns(ticks);
+        timer_mod(continuous->timer, continuous->deadline_ns);
+    }
+}
+
+static void xframe_traffic_continuous_cb(void *opaque)
+{
+    XframeTrafficContinuous *continuous = opaque;
+    XframeState *s = continuous->owner;
+    uint32_t ticks = xframe_traffic_ticks(s, continuous->rx,
+                                          continuous->entry);
+    int64_t interval_ns = xframe_traffic_interval_ns(ticks);
+    int64_t now_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    uint64_t expirations = 1 + (now_ns - continuous->deadline_ns) /
+                               interval_ns;
+
+    xframe_traffic_publish(s, continuous->rx, continuous->entry);
+    if (expirations > 1) {
+        xframe_traffic_publish(s, continuous->rx, continuous->entry);
+    }
+    continuous->deadline_ns += expirations * interval_ns;
+    timer_mod(continuous->timer, continuous->deadline_ns);
 }
 
 static void xframe_traffic_complete(XframeState *s, bool rx, unsigned entry)
@@ -752,6 +802,10 @@ static void xframe_soft_reset(XframeState *s)
     for (i = 0; i < XFRAME_TRAFFIC_MEM_ENTRIES; i++) {
         xframe_traffic_batch_reset(&s->tti_batch[i]);
         xframe_traffic_batch_reset(&s->rti_batch[i]);
+        timer_del(s->tti_continuous[i].timer);
+        timer_del(s->rti_continuous[i].timer);
+        s->tti_continuous[i].deadline_ns = 0;
+        s->rti_continuous[i].deadline_ns = 0;
     }
     s->prc_rxd0_0 = 0;
     s->prc_ctrl_0 = 0;
@@ -842,6 +896,7 @@ static void xframe_traffic_mem_cmd(XframeState *s, uint64_t val, bool rx)
             entry_valid[entry] = true;
             xframe_traffic_batch_reset(rx ? &s->rti_batch[entry] :
                                             &s->tti_batch[entry]);
+            xframe_traffic_continuous_arm(s, rx, entry);
         }
         val &= ~XFRAME_TRAFFIC_MEM_CMD_STROBE;
     }
@@ -1140,6 +1195,14 @@ static uint64_t xframe_pif_read(void *opaque, hwaddr addr, unsigned size)
 static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
                                  uint64_t written, bool commit_high)
 {
+    bool adapter_enable_edge = addr == XFRAME_ADAPTER_CONTROL &&
+        (full & XFRAME_ADAPTER_EN) &&
+        !(s->adapter_control & XFRAME_ADAPTER_EN);
+    bool adapter_disable_edge = addr == XFRAME_ADAPTER_CONTROL &&
+        !(full & XFRAME_ADAPTER_EN) &&
+        (s->adapter_control & XFRAME_ADAPTER_EN);
+    unsigned i;
+
     switch (addr) {
     case XFRAME_SW_RESET:
         if (commit_high && (full >> 40) == XFRAME_SW_RESET_KEY) {
@@ -1172,13 +1235,11 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
          * LINK_DOWN -- the unstable both-bits state this model otherwise never
          * presents (see xframe_link_up_timer_cb).
          */
-        if ((full & XFRAME_ADAPTER_EN) &&
-            !(s->adapter_control & XFRAME_ADAPTER_EN)) {
+        if (adapter_enable_edge) {
             timer_mod(s->link_down_timer,
                       qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) +
                       XFRAME_LINK_UP_DELAY_MS);
-        } else if (!(full & XFRAME_ADAPTER_EN) &&
-                   (s->adapter_control & XFRAME_ADAPTER_EN)) {
+        } else if (adapter_disable_edge) {
             timer_del(s->link_down_timer);
             timer_del(s->link_up_timer);
             timer_del(s->sched_int_timer);
@@ -1188,6 +1249,17 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
             s->mac_rmac_err &= ~XFRAME_RMAC_LINK_STATE_CHANGE_INT;
         }
         s->adapter_control = full;
+        for (i = 0; i < XFRAME_TRAFFIC_MEM_ENTRIES; i++) {
+            if (adapter_enable_edge) {
+                xframe_traffic_continuous_arm(s, false, i);
+                xframe_traffic_continuous_arm(s, true, i);
+            } else if (adapter_disable_edge) {
+                timer_del(s->tti_continuous[i].timer);
+                timer_del(s->rti_continuous[i].timer);
+                s->tti_continuous[i].deadline_ns = 0;
+                s->rti_continuous[i].deadline_ns = 0;
+            }
+        }
         xframe_update_irq(s);
         return;
     case XFRAME_SWAPPER_CTRL:
@@ -3007,6 +3079,17 @@ static void xframe_realize(PCIDevice *dev, Error **errp)
         s->rti_batch[i].timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                              xframe_traffic_timer_cb,
                                              &s->rti_batch[i]);
+        s->tti_continuous[i].owner = s;
+        s->tti_continuous[i].entry = i;
+        s->tti_continuous[i].timer = timer_new_ns(
+            QEMU_CLOCK_VIRTUAL, xframe_traffic_continuous_cb,
+            &s->tti_continuous[i]);
+        s->rti_continuous[i].owner = s;
+        s->rti_continuous[i].entry = i;
+        s->rti_continuous[i].rx = true;
+        s->rti_continuous[i].timer = timer_new_ns(
+            QEMU_CLOCK_VIRTUAL, xframe_traffic_continuous_cb,
+            &s->rti_continuous[i]);
     }
 
     /*
@@ -3068,6 +3151,8 @@ static void xframe_exit(PCIDevice *dev)
     for (i = 0; i < XFRAME_TRAFFIC_MEM_ENTRIES; i++) {
         timer_free(s->tti_batch[i].timer);
         timer_free(s->rti_batch[i].timer);
+        timer_free(s->tti_continuous[i].timer);
+        timer_free(s->rti_continuous[i].timer);
     }
     qemu_del_nic(s->nic);
 }
@@ -3251,9 +3336,20 @@ static const VMStateDescription vmstate_xframe_traffic_batch = {
     }
 };
 
+static const VMStateDescription vmstate_xframe_traffic_continuous = {
+    .name = "xframe/traffic-continuous",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_TIMER_PTR(timer, XframeTrafficContinuous),
+        VMSTATE_INT64(deadline_ns, XframeTrafficContinuous),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_xframe = {
     .name = "xframe",
-    .version_id = 6,
+    .version_id = 7,
     .minimum_version_id = 1,
     .post_load = xframe_post_load,
     .fields = (const VMStateField[]) {
@@ -3316,6 +3412,14 @@ static const VMStateDescription vmstate_xframe = {
                              XFRAME_TRAFFIC_MEM_ENTRIES, 6,
                              vmstate_xframe_traffic_batch,
                              XframeTrafficBatch),
+        VMSTATE_STRUCT_ARRAY(tti_continuous, XframeState,
+                             XFRAME_TRAFFIC_MEM_ENTRIES, 7,
+                             vmstate_xframe_traffic_continuous,
+                             XframeTrafficContinuous),
+        VMSTATE_STRUCT_ARRAY(rti_continuous, XframeState,
+                             XFRAME_TRAFFIC_MEM_ENTRIES, 7,
+                             vmstate_xframe_traffic_continuous,
+                             XframeTrafficContinuous),
         VMSTATE_UINT64(prc_rxd0_0, XframeState),
         VMSTATE_UINT64(prc_ctrl_0, XframeState),
         VMSTATE_UINT64(rx_traffic_int, XframeState),

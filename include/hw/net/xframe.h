@@ -111,6 +111,14 @@ typedef struct XframeTrafficBatch {
     bool deferred;
 } XframeTrafficBatch;
 
+typedef struct XframeTrafficContinuous {
+    XframeState *owner;
+    QEMUTimer *timer;
+    int64_t deadline_ns;
+    uint8_t entry;
+    bool rx;
+} XframeTrafficContinuous;
+
 struct XframeState {
     PCIDevice parent_obj;
 
@@ -206,6 +214,8 @@ struct XframeState {
     bool rti_entry_valid[XFRAME_TRAFFIC_MEM_ENTRIES];
     XframeTrafficBatch tti_batch[XFRAME_TRAFFIC_MEM_ENTRIES];
     XframeTrafficBatch rti_batch[XFRAME_TRAFFIC_MEM_ENTRIES];
+    XframeTrafficContinuous tti_continuous[XFRAME_TRAFFIC_MEM_ENTRIES];
+    XframeTrafficContinuous rti_continuous[XFRAME_TRAFFIC_MEM_ENTRIES];
 
     /*
      * Scratch for assembling one outgoing frame from a descriptor list, or the
