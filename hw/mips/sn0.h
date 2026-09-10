@@ -277,6 +277,7 @@ typedef struct SN0NodeState {
     SN0BackdoorState backdoor_dir_state;
 
     MemoryRegion xtalk;
+    MemoryRegion origin2000_bus_error[SN0_MAX_CPUS_PER_NODE];
     MemoryRegion prom_pi_probe;
     SGIBridgeState *prom_pi_probe_bridge;
     unsigned int prom_pi_probe_device_window;
