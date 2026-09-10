@@ -37,10 +37,15 @@
 #define PROBE_ADDRESS       0x7e
 
 static int64_t virtual_time;
+static int64_t virtual_time_advance;
 
 int64_t cpus_get_virtual_clock(void)
 {
-    return virtual_time;
+    int64_t now = virtual_time;
+
+    virtual_time += virtual_time_advance;
+    virtual_time_advance = 0;
+    return now;
 }
 
 void cpus_set_virtual_clock(int64_t value)
@@ -136,6 +141,7 @@ static void setup(Fixture *f, gconstpointer unused)
      * explicitly, and leaving setup unreset keeps the freshly realized
      * complex under test.
      */
+    virtual_time_advance = 0;
     memset(f, 0, sizeof(*f));
     for (i = 0; i < ARRAY_SIZE(names); i++) {
         g_autofree char *capability = g_strdup_printf("can-%s", names[i]);
@@ -188,6 +194,18 @@ static void run_ticks(Fixture *f, unsigned count)
     while (count--) {
         run_tick(f);
     }
+}
+
+/* A clock advance while the first grant is staged must not abort it. */
+static void test_cold_start_clock_progress(Fixture *f, gconstpointer unused)
+{
+    cpus_set_virtual_clock(f->module->service_deadline);
+    virtual_time_advance = 1;
+    f->module->service_timer->cb(f->module->service_timer->opaque);
+    advance_to(virtual_time + GRANT_SETTLE_NS);
+
+    g_assert_cmpuint(f->probe->addresses, ==, 1);
+    g_assert_cmphex(f->probe->last_address, ==, GRANT_BASE);
 }
 
 /*
@@ -882,6 +900,8 @@ int main(int argc, char **argv)
 
     g_test_add("/sgi-o2000-module-management/grant/wire-shape", Fixture, NULL,
                setup, test_grant_wire_shape, teardown);
+    g_test_add("/sgi-o2000-module-management/grant/cold-start-clock-progress",
+               Fixture, NULL, setup, test_cold_start_clock_progress, teardown);
     g_test_add("/sgi-o2000-module-management/grant/rotation", Fixture, NULL,
                setup, test_grant_rotation, teardown);
     g_test_add("/sgi-o2000-module-management/grant/one-per-tick", Fixture,
