@@ -1358,21 +1358,42 @@ void qtest_writel(QTestState *s, uint64_t addr, uint32_t value)
     qtest_write(s, "writel", addr, value);
 }
 
-uint32_t qtest_writel_then_readl(QTestState *s, uint64_t write_addr,
-                                 uint32_t value, uint64_t read_addr)
+static uint32_t qtest_writel_readl(QTestState *s, uint64_t write_addr,
+                                 uint32_t value, uint64_t read_addr,
+                                 uint32_t *after_poll)
 {
     gchar **args;
     uint64_t result;
     int ret;
 
-    qtest_sendf(s, "writel_readl 0x%" PRIx64 " 0x%x 0x%" PRIx64 "\n",
+    qtest_sendf(s, "%s 0x%" PRIx64 " 0x%x 0x%" PRIx64 "\n",
+                after_poll ? "writel_readl_poll" : "writel_readl",
                 write_addr, value, read_addr);
-    args = qtest_rsp_args(s, 2);
+    args = qtest_rsp_args(s, after_poll ? 3 : 2);
+    if (after_poll) {
+        ret = qemu_strtou64(args[2], NULL, 0, &result);
+        g_assert(!ret && result <= UINT32_MAX);
+        *after_poll = result;
+    }
     ret = qemu_strtou64(args[1], NULL, 0, &result);
     g_assert(!ret && result <= UINT32_MAX);
     g_strfreev(args);
 
     return result;
+}
+
+uint32_t qtest_writel_then_readl(QTestState *s, uint64_t write_addr,
+                               uint32_t value, uint64_t read_addr)
+{
+    return qtest_writel_readl(s, write_addr, value, read_addr, NULL);
+}
+
+uint32_t qtest_writel_then_readl_poll(QTestState *s, uint64_t write_addr,
+                                    uint32_t value, uint64_t read_addr,
+                                    uint32_t *after_poll)
+{
+    g_assert_nonnull(after_poll);
+    return qtest_writel_readl(s, write_addr, value, read_addr, after_poll);
 }
 
 void qtest_writeq(QTestState *s, uint64_t addr, uint64_t value)

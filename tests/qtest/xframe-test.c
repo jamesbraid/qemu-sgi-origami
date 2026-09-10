@@ -1850,7 +1850,7 @@ static void test_user_backend_reply_waits_for_transmit(void)
     };
     XframeTx t;
     uint64_t lcr = TXDL_NUMTXD(0) | TXDL_LGC_FIRST | TXDL_LGC_LAST;
-    uint32_t rxd_control1_hi;
+    uint32_t rxd_control1_hi, after_poll;
     uint8_t landed[sizeof(arp_request)];
 
     xframe_user_start(&t);
@@ -1867,14 +1867,14 @@ static void test_user_backend_reply_waits_for_transmit(void)
      * returns and the transmit completion is visible. The RxD is big-endian:
      * its bit-56 ownership byte reads as 1 through x86 qtest's readl.
      */
-    rxd_control1_hi = qtest_writel_then_readl(
+    rxd_control1_hi = qtest_writel_then_readl_poll(
         t.qs->qts, t.txp.addr + TXP_TXDL_LCR + 4,
-        (uint32_t)(lcr >> 32), RX_RING_BASE + 8);
+        (uint32_t)(lcr >> 32), RX_RING_BASE + 8, &after_poll);
     g_assert_cmphex(rxd_control1_hi, ==, 1);
+    g_assert_cmphex(after_poll & 1, ==, 0);
     g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT) & TX_TRAFFIC_FIFO0, ==,
                     TX_TRAFFIC_FIFO0);
 
-    g_assert_true(xframe_wait_rxd_consumed(&t, RX_RING_BASE, 5000));
     qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
     g_assert_cmpmem(landed, 6, xframe_station_mac, 6);
     g_assert_cmphex(landed[20], ==, 0x00);

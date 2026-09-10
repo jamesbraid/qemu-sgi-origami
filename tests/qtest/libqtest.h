@@ -637,6 +637,26 @@ uint32_t qtest_writel_then_readl(QTestState *s, uint64_t write_addr,
                                  uint32_t value, uint64_t read_addr);
 
 /**
+ * qtest_writel_then_readl_poll:
+ * @s: #QTestState instance to operate on.
+ * @write_addr: Guest address to write to.
+ * @value: Value being written.
+ * @read_addr: Guest address to read from.
+ * @after_poll: Value read after polling, must not be NULL.
+ *
+ * Like qtest_writel_then_readl(), then performs exactly one nonblocking
+ * aio_poll() of the main AioContext and reads @read_addr again. All operations
+ * run in one command, without stepping guest instructions or advancing the
+ * virtual clock. Use a read without side effects to compare publication at
+ * the callback boundary with publication at the first AIO poll.
+ *
+ * Returns: Value read before polling.
+ */
+uint32_t qtest_writel_then_readl_poll(QTestState *s, uint64_t write_addr,
+                                    uint32_t value, uint64_t read_addr,
+                                    uint32_t *after_poll);
+
+/**
  * qtest_writeq:
  * @s: #QTestState instance to operate on.
  * @addr: Guest address to write to.

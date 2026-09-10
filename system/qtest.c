@@ -30,6 +30,7 @@
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "qemu/cutils.h"
+#include "qemu/main-loop.h"
 #include "qemu/target-info.h"
 #include "qom/object_interfaces.h"
 #include "qom/qom-qobject.h"
@@ -195,6 +196,16 @@ static void *qtest_server_send_opaque;
  * Perform a target-endian 32-bit write followed by a target-endian 32-bit
  * read in one command.  The server does not yield to the main loop between
  * the two accesses.
+ *
+ * .. code-block:: none
+ *
+ *  > writel_readl_poll WRITE_ADDR VALUE READ_ADDR
+ *  < OK BEFORE AFTER
+ *
+ * Perform writel_readl, then one nonblocking aio_poll() of the main
+ * AioContext, then read READ_ADDR again. Both observations belong to the
+ * same command. This does not step guest instructions or advance the
+ * virtual clock.
  *
  * .. code-block:: none
  *
@@ -592,7 +603,8 @@ static void qtest_process_command(CharFrontend *chr, gchar **words)
             value = cpu_inl(addr);
         }
         qtest_sendf(chr, "OK 0x%04x\n", value);
-    } else if (strcmp(words[0], "writel_readl") == 0) {
+    } else if (strcmp(words[0], "writel_readl") == 0 ||
+               strcmp(words[0], "writel_readl_poll") == 0) {
         uint64_t write_addr, value, read_addr;
         uint32_t write_data, read_data;
 
@@ -610,8 +622,18 @@ static void qtest_process_command(CharFrontend *chr, gchar **words)
                             MEMTXATTRS_UNSPECIFIED, &write_data, 4);
         address_space_read(first_cpu->as, read_addr, MEMTXATTRS_UNSPECIFIED,
                            &read_data, 4);
-        qtest_sendf(chr, "OK 0x%016" PRIx64 "\n",
-                    (uint64_t)tswap32(read_data));
+        if (strcmp(words[0], "writel_readl_poll") == 0) {
+            uint32_t after;
+
+            aio_poll(qemu_get_aio_context(), false);
+            address_space_read(first_cpu->as, read_addr,
+                               MEMTXATTRS_UNSPECIFIED, &after, 4);
+            qtest_sendf(chr, "OK 0x%08x 0x%08x\n",
+                        tswap32(read_data), tswap32(after));
+        } else {
+            qtest_sendf(chr, "OK 0x%016" PRIx64 "\n",
+                        (uint64_t)tswap32(read_data));
+        }
     } else if (strcmp(words[0], "writeb") == 0 ||
                strcmp(words[0], "writew") == 0 ||
                strcmp(words[0], "writel") == 0 ||
