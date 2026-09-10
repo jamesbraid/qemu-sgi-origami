@@ -8,8 +8,16 @@
 #define TYPE_SGI_BEDROCK_FLASH "sgi-bedrock-flash"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockFlashState, SGI_BEDROCK_FLASH)
 
-/* Published logical capacity of the boot flash. */
+/* Published logical capacity of the boot flash, across both PROM positions. */
 #define SGI_BEDROCK_FLASH_SIZE (16 * MiB)
+
+/*
+ * Two PROM positions, selected a stride apart inside each boot space. Position
+ * zero holds the lower half of the backing and position one the upper half.
+ */
+#define SGI_BEDROCK_FLASH_POSITIONS 2
+#define SGI_BEDROCK_FLASH_PART_SIZE \
+    (SGI_BEDROCK_FLASH_SIZE / SGI_BEDROCK_FLASH_POSITIONS)
 /*
  * The granularity the firmware's own rewrite erases and reprograms in. That
  * is a property of what the firmware does, not a published property of
@@ -22,11 +30,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockFlashState, SGI_BEDROCK_FLASH)
 #define SGI_BEDROCK_FLASH_SECOND_READ (32 * MiB)
 
 /*
- * A store at window offset 4n carries the word at backing byte n, so the
- * 16 MiB backing occupies the first 64 MiB of the window and this is the
- * first offset with no backing word behind it.
+ * A store at 4n from its position's base carries that part's word at byte n,
+ * so each 8 MiB part occupies the first 32 MiB above its base and this is the
+ * first offset within a position with no backing word behind it.
  */
-#define SGI_BEDROCK_FLASH_WRITE_LIMIT (4 * SGI_BEDROCK_FLASH_SIZE)
+#define SGI_BEDROCK_FLASH_WRITE_LIMIT (4 * SGI_BEDROCK_FLASH_PART_SIZE)
 
 /* The local and the remote boot space. */
 #define SGI_BEDROCK_FLASH_WINDOWS 2
@@ -40,9 +48,13 @@ typedef struct SGIBedrockFlashWindow {
 struct SGIBedrockFlashState {
     SysBusDevice parent_obj;
 
-    /* The CFI device holding every byte, command and mode of the flash. */
-    DeviceState *flash;
-    MemoryRegion *flash_mmio;
+    /*
+     * One CFI device per PROM position, each holding that part's bytes and
+     * its own command state. Both boot spaces reach the same pair, so a
+     * sequence begun through one is completable through the other.
+     */
+    DeviceState *flash[SGI_BEDROCK_FLASH_POSITIONS];
+    MemoryRegion *flash_mmio[SGI_BEDROCK_FLASH_POSITIONS];
 
     SGIBedrockFlashWindow window[SGI_BEDROCK_FLASH_WINDOWS];
 };
