@@ -1726,22 +1726,25 @@ int i2c_wire_configure(I2CBus *bus, uint32_t master, int64_t low_ns,
     return 0;
 }
 
-int i2c_wire_stage(I2CBus *bus, uint32_t master, int64_t at,
-                   bool sda, bool clock)
+static int i2c_wire_stage_check(I2CBus *bus, uint32_t master)
 {
-    I2CWireMaster *m;
-
     if (!bus->wire || master >= bus->master_count) {
         return -EINVAL;
     }
-    if (bus->wire->error) {
-        return bus->wire->error;
-    }
-    if (at <= qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)) {
+    return bus->wire->error;
+}
+
+static int i2c_wire_stage_at(I2CBus *bus, uint32_t master, int64_t at,
+                             int64_t now, bool sda, bool clock)
+{
+    I2CWireMaster *m;
+
+    if (at <= now) {
         return -EINVAL;
     }
     m = &bus->wire->masters[master];
-    if (!m->configured || MAX(m->low_ns, m->high_ns) > INT64_MAX - at) {
+    if (!m->configured ||
+        at > INT64_MAX - MAX(m->low_ns, m->high_ns)) {
         return -EINVAL;
     }
     if (m->pending) {
@@ -1753,6 +1756,38 @@ int i2c_wire_stage(I2CBus *bus, uint32_t master, int64_t at,
     m->staged_clock = clock;
     i2c_wire_schedule(bus->wire);
     return 0;
+}
+
+int i2c_wire_stage(I2CBus *bus, uint32_t master, int64_t at,
+                   bool sda, bool clock)
+{
+    int ret = i2c_wire_stage_check(bus, master);
+
+    if (ret) {
+        return ret;
+    }
+    return i2c_wire_stage_at(bus, master, at,
+                             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                             sda, clock);
+}
+
+int i2c_wire_stage_after(I2CBus *bus, uint32_t master, int64_t delay_ns,
+                         bool sda, bool clock)
+{
+    int64_t now;
+    int ret = i2c_wire_stage_check(bus, master);
+
+    if (ret) {
+        return ret;
+    }
+    if (delay_ns <= 0) {
+        return -EINVAL;
+    }
+    now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (now > INT64_MAX - delay_ns) {
+        return -EINVAL;
+    }
+    return i2c_wire_stage_at(bus, master, now + delay_ns, now, sda, clock);
 }
 
 int i2c_wire_hold(I2CSlave *slave, int64_t at, bool hold)
