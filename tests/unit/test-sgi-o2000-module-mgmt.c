@@ -21,6 +21,8 @@
 #include "io/channel-file.h"
 
 #define TYPE_MODULE_PROBE "sgi-o2000-module-test-probe"
+/* A bare slave with no migration state, to be refused by the wire. */
+#define TYPE_MODULE_MUTE "sgi-o2000-module-test-mute"
 
 /* One millisecond of service tick plus room for a grant to finish. */
 #define SERVICE_PERIOD_NS   1000000
@@ -48,6 +50,7 @@ void cpus_set_virtual_clock(int64_t value)
 
 typedef struct Probe {
     I2CSlave parent_obj;
+    /* Counters only the test reads; nothing here needs to migrate. */
     unsigned addresses, selections, writes;
     uint8_t last_address;
 } Probe;
@@ -76,10 +79,22 @@ static int probe_send(I2CSlave *slave, uint8_t data)
     return 0;
 }
 
+/* A wired bus refuses a slave that cannot report in when the wire loads. */
+static const VMStateDescription vmstate_probe = {
+    .name = "sgi-o2000-module-test-probe",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_I2C_SLAVE(parent_obj, Probe),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static void probe_class_init(ObjectClass *oc, const void *data)
 {
     I2CSlaveClass *sc = I2C_SLAVE_CLASS(oc);
 
+    DEVICE_CLASS(oc)->vmsd = &vmstate_probe;
     sc->supports_master_ids = true;
     sc->event = probe_event;
     sc->send = probe_send;
@@ -641,6 +656,22 @@ static void test_partial_capability(Fixture *f, gconstpointer unused)
     object_unref(OBJECT(dev));
 }
 
+/*
+ * The wire's load protocol counts slaves in by their migration state, so a
+ * slave carrying none would leave the count short for good and the
+ * destination's clock stopped. It is refused when it tries to join instead.
+ */
+static void test_wire_refuses_a_mute_slave(Fixture *f, gconstpointer unused)
+{
+    I2CSlave *mute = I2C_SLAVE(object_new(TYPE_MODULE_MUTE));
+    Error *err = NULL;
+
+    g_assert_false(i2c_slave_realize_and_unref(
+                       mute, sgi_o2000_module_mgmt_get_bus(f->module), &err));
+    g_assert_nonnull(err);
+    error_free(err);
+}
+
 /* A second destructive action while a pulse runs is refused, not swallowed. */
 static void test_overlapping_pulse_refused(Fixture *f, gconstpointer unused)
 {
@@ -832,6 +863,10 @@ int main(int argc, char **argv)
         .name = TYPE_MODULE_PROBE, .parent = TYPE_I2C_SLAVE,
         .instance_size = sizeof(Probe), .class_init = probe_class_init,
     };
+    const TypeInfo mute = {
+        .name = TYPE_MODULE_MUTE, .parent = TYPE_I2C_SLAVE,
+        .instance_size = sizeof(I2CSlave),
+    };
     Object *machine;
 
     g_test_init(&argc, &argv, NULL);
@@ -839,6 +874,7 @@ int main(int argc, char **argv)
     qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
     module_call_init(MODULE_INIT_QOM);
     type_register_static(&probe);
+    type_register_static(&mute);
     machine = object_property_add_new_container(object_get_root(), "machine");
     object_property_add_new_container(machine, "unattached");
     /* What a machine does, so the adapters share the machine reset tree. */
@@ -883,6 +919,9 @@ int main(int argc, char **argv)
     g_test_add("/sgi-o2000-module-management/realize/needs-power-line",
                Fixture, GUINT_TO_POINTER(2), setup,
                test_declared_action_needs_its_line, teardown);
+    g_test_add("/sgi-o2000-module-management/wire/refuses-mute-slave",
+               Fixture, NULL, setup, test_wire_refuses_a_mute_slave,
+               teardown);
     g_test_add("/sgi-o2000-module-management/realize/needs-capability",
                Fixture, NULL, setup,
                test_connected_line_needs_its_capability, teardown);

@@ -191,8 +191,15 @@ typedef struct I2CWireEvent {
 
 typedef void (*I2CWireObserver)(void *opaque, const I2CWireEvent *event);
 
+/*
+ * Every slave on a wired bus must carry I2C slave migration state, directly
+ * or through a description that embeds it. The wire finishes loading only
+ * once each slave's post-load has reported in, so one that never does leaves
+ * a destination with the wire's clock stopped. Attaching such a slave to a
+ * wired bus fails, and so does enabling a wire under one.
+ */
 int i2c_bus_enable_wire(I2CBus *bus, uint32_t count,
-                         I2CWireObserver observe, void *opaque);
+                         I2CWireObserver observe, void *opaque, Error **errp);
 int i2c_wire_configure(I2CBus *bus, uint32_t master, int64_t low_ns,
                        int64_t high_ns, bool clock_after_loss);
 int i2c_wire_stage(I2CBus *bus, uint32_t master, int64_t at,

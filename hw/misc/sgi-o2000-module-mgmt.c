@@ -634,8 +634,8 @@ static void mgmt_realize(DeviceState *dev, Error **errp)
         }
     }
 
-    if (i2c_bus_enable_wire(s->bus, SGI_O2000_WIRE_MASTERS, NULL, NULL)) {
-        error_setg(errp, "cannot enable the module management I2C wire");
+    if (i2c_bus_enable_wire(s->bus, SGI_O2000_WIRE_MASTERS, NULL, NULL,
+                            errp)) {
         return;
     }
     /*

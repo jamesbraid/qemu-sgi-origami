@@ -95,9 +95,67 @@ static void i2c_bus_reset_hold(Object *obj, ResetType type)
     bus->wire_slaves_loaded = 0;
 }
 
+/*
+ * A timed wire finishes loading only when every slave on it has restored,
+ * counted by the post-load hook that comes with the I2C slave state. A slave
+ * that does not carry that state never reports in, the count stays short,
+ * and the wire comes up on the destination with its clock stopped and
+ * nothing to say why. Refuse the pairing instead.
+ *
+ * The state need not be a slave's own top-level field. A load runs the
+ * post-load of every description it descends through, so an SMBus or PMBus
+ * device that reaches the I2C slave two or three levels down counts as much
+ * as one that names it directly. Search the whole tree rather than the
+ * device's own fields.
+ */
+#define I2C_VMSTATE_MAX_DEPTH 8
+
+static bool i2c_vmstate_carries_slave(const VMStateDescription *vmsd,
+                                      unsigned depth)
+{
+    const VMStateField *field;
+    const VMStateDescription * const *sub;
+
+    if (!vmsd || depth >= I2C_VMSTATE_MAX_DEPTH) {
+        return false;
+    }
+    if (vmsd == &vmstate_i2c_slave) {
+        return true;
+    }
+    for (field = vmsd->fields; field && field->name; field++) {
+        if (i2c_vmstate_carries_slave(field->vmsd, depth + 1)) {
+            return true;
+        }
+    }
+    for (sub = vmsd->subsections; sub && *sub; sub++) {
+        if (i2c_vmstate_carries_slave(*sub, depth + 1)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool i2c_slave_state_migrated(DeviceState *dev)
+{
+    return i2c_vmstate_carries_slave(DEVICE_GET_CLASS(dev)->vmsd, 0);
+}
+
+static bool i2c_bus_check_address(BusState *bus, DeviceState *dev,
+                                  Error **errp)
+{
+    if (I2C_BUS(bus)->wire && !i2c_slave_state_migrated(dev)) {
+        error_setg(errp, "%s carries no I2C slave migration state and cannot "
+                   "join a timed I2C wire",
+                   object_get_typename(OBJECT(dev)));
+        return false;
+    }
+    return true;
+}
+
 static void i2c_bus_class_init(ObjectClass *oc, const void *data)
 {
     RESETTABLE_CLASS(oc)->phases.hold = i2c_bus_reset_hold;
+    BUS_CLASS(oc)->check_address = i2c_bus_check_address;
 }
 
 static void i2c_bus_finalize(Object *obj)
@@ -1592,24 +1650,44 @@ publish:
 }
 
 int i2c_bus_enable_wire(I2CBus *bus, uint32_t count,
-                         I2CWireObserver observe, void *opaque)
+                         I2CWireObserver observe, void *opaque, Error **errp)
 {
     BusChild *kid;
     int ret;
 
     if (!count || count > I2C_WIRE_MAX_MASTERS) {
+        error_setg(errp, "a timed I2C wire takes 1 to %u participants",
+                   I2C_WIRE_MAX_MASTERS);
         return -EINVAL;
     }
     if (bus->wire || i2c_bus_busy(bus)) {
+        error_setg(errp, "the bus already has a wire or an open transfer");
         return -EBUSY;
+    }
+    if (bus->master_count && bus->master_count != count) {
+        error_setg(errp, "the bus already has %u participants, not %u",
+                   bus->master_count, count);
+        return -EINVAL;
+    }
+    /*
+     * Before anything is changed: the attach-time refusal cannot see a slave
+     * that was already here, and a half-enabled bus is worse than a refused
+     * one.
+     */
+    QTAILQ_FOREACH(kid, &bus->qbus.children, sibling) {
+        if (!i2c_slave_state_migrated(kid->child)) {
+            error_setg(errp, "%s is already on this bus and carries no I2C "
+                       "slave migration state",
+                       object_get_typename(OBJECT(kid->child)));
+            return -EINVAL;
+        }
     }
     if (!bus->master_count) {
         ret = i2c_bus_enable_master_ids(bus, count);
         if (ret) {
+            error_setg(errp, "cannot give the bus %u participants", count);
             return ret;
         }
-    } else if (bus->master_count != count) {
-        return -EINVAL;
     }
     bus->wire = g_new0(I2CWire, 1);
     bus->wire->bus = bus;
@@ -1621,9 +1699,7 @@ int i2c_bus_enable_wire(I2CBus *bus, uint32_t count,
         bus->wire->masters[i].deadline = -1;
     }
     QTAILQ_FOREACH(kid, &bus->qbus.children, sibling) {
-        I2CSlave *slave = I2C_SLAVE(kid->child);
-
-        slave->wire_service_kind = I2C_WIRE_SERVICE_COUNT;
+        I2C_SLAVE(kid->child)->wire_service_kind = I2C_WIRE_SERVICE_COUNT;
     }
     bus->wire->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                       i2c_wire_tick, bus->wire);
