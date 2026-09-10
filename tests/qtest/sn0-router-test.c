@@ -4,6 +4,14 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 
+#define RR_DIAG_PARMS              0x00030
+#define RR_PORT_PARMS(port)        ((uint64_t)(port) << 16)
+#define RR_HISTOGRAM(port)         (RR_PORT_PARMS(port) + 0x10)
+#define PORT_HISTOGRAM_MODE(mode)  ((uint64_t)(mode) << 18)
+#define PORT_HISTOGRAM_VC(vc)      ((uint64_t)(vc) << 16)
+#define PORT_PARMS_RESET           UINT64_C(0x1bf0)
+#define DIAG_ABSOLUTE_HISTOGRAM    (UINT64_C(1) << 19)
+
 static void set(QTestState *qts, const char *name, uint64_t value)
 {
     qtest_qmp_assert_success(qts,
@@ -39,6 +47,17 @@ static void write_reg(QTestState *qts, uint64_t addr, uint64_t value)
 static QTestState *start(const char *extra)
 {
     return qtest_initf("-M none -device sgi-router-test,id=router %s", extra);
+}
+
+static unsigned int substring_count(const char *text, const char *needle)
+{
+    unsigned int count = 0;
+
+    while ((text = strstr(text, needle))) {
+        count++;
+        text += strlen(needle);
+    }
+    return count;
 }
 
 static void test_registers(void)
@@ -111,9 +130,19 @@ static void test_links_reset(void)
     write_reg(qts, 0x20, 0x12345);
     write_reg(qts, 0x10, 0x1fffff);
     write_reg(qts, 0x70120, 0x123456);
+    write_reg(qts, RR_PORT_PARMS(1),
+              PORT_PARMS_RESET | PORT_HISTOGRAM_MODE(1) |
+              PORT_HISTOGRAM_VC(3));
+    set(qts, "port", 1);
+    set(qts, "histogram-receive", 7);
+    write_reg(qts, RR_DIAG_PARMS, DIAG_ABSOLUTE_HISTOGRAM);
     qtest_system_reset(qts);
     g_assert_cmphex(read_reg(qts, 0x20), ==, 0);
     g_assert_cmphex(read_reg(qts, 0x10), ==, 0x3f);
+    g_assert_cmphex(read_reg(qts, RR_DIAG_PARMS), ==, 0);
+    g_assert_cmphex(read_reg(qts, RR_HISTOGRAM(1)), ==, 0);
+    g_assert_cmphex(read_reg(qts, RR_PORT_PARMS(1)), ==,
+                    PORT_PARMS_RESET);
     for (unsigned int port = 1; port <= 6; port++) {
         set(qts, "port", port);
         g_assert_cmphex(get(qts, "diagnostic"), ==, 1);
@@ -121,7 +150,101 @@ static void test_links_reset(void)
         g_assert_cmphex(read_reg(qts, 0) &
                         (UINT64_C(3) << (26 + 3 * port)), ==, 0);
     }
+    write_reg(qts, RR_PORT_PARMS(1),
+              PORT_PARMS_RESET | PORT_HISTOGRAM_MODE(1));
+    qtest_clock_step(qts, 19);
+    g_assert_cmphex(read_reg(qts, RR_HISTOGRAM(1)), ==, 0);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(read_reg(qts, RR_HISTOGRAM(1)), ==,
+                    UINT64_C(1) << 48);
     qtest_quit(qts);
+}
+
+static void test_histograms(void)
+{
+    QTestState *qts = start("");
+    uint64_t before;
+
+    set(qts, "port", 1);
+    write_reg(qts, RR_PORT_PARMS(1),
+              PORT_PARMS_RESET | PORT_HISTOGRAM_MODE(1));
+    qtest_clock_step(qts, 19);
+    g_assert_cmphex(read_reg(qts, RR_HISTOGRAM(1)), ==, 0);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(read_reg(qts, RR_HISTOGRAM(1)), ==,
+                    UINT64_C(1) << 48);
+    qtest_clock_step(qts, 40);
+
+    set(qts, "histogram-receive", 6);
+    set(qts, "histogram-receive", 5);
+    set(qts, "histogram-receive", 3);
+    set(qts, "histogram-receive", 7);
+    set(qts, "histogram-send", 0);
+    set(qts, "histogram-send", 1);
+    before = UINT64_C(0x0003000100030001);
+    g_assert_cmphex(read_reg(qts, RR_HISTOGRAM(1)), ==, before);
+
+    write_reg(qts, RR_PORT_PARMS(1),
+              PORT_PARMS_RESET | PORT_HISTOGRAM_VC(2));
+    qtest_clock_step(qts, 40);
+    g_assert_cmphex(read_reg(qts, RR_HISTOGRAM(1)), ==, before);
+    write_reg(qts, RR_PORT_PARMS(1),
+              PORT_PARMS_RESET | PORT_HISTOGRAM_MODE(2) |
+              PORT_HISTOGRAM_VC(3));
+    qtest_clock_step(qts, 40);
+    g_assert_cmphex(read_reg(qts, RR_HISTOGRAM(1)), ==, before);
+    write_reg(qts, RR_PORT_PARMS(1),
+              PORT_PARMS_RESET | PORT_HISTOGRAM_MODE(3) |
+              PORT_HISTOGRAM_VC(1));
+    qtest_clock_step(qts, 40);
+    g_assert_cmphex(read_reg(qts, RR_HISTOGRAM(1)), ==, before);
+    write_reg(qts, RR_PORT_PARMS(1),
+              PORT_PARMS_RESET | PORT_HISTOGRAM_MODE(1));
+    write_reg(qts, RR_DIAG_PARMS, DIAG_ABSOLUTE_HISTOGRAM);
+    qtest_clock_step(qts, 40);
+    g_assert_cmphex(read_reg(qts, RR_HISTOGRAM(1)), ==, before);
+
+    write_reg(qts, RR_HISTOGRAM(1), UINT64_C(1) | (UINT64_C(1) << 48));
+    g_assert_cmphex(read_reg(qts, RR_HISTOGRAM(1)), ==,
+                    UINT64_C(0x0002000100030000));
+    write_reg(qts, RR_HISTOGRAM(1), 0);
+    g_assert_cmphex(read_reg(qts, RR_HISTOGRAM(1)), ==, 0);
+    qtest_quit(qts);
+}
+
+static void test_histogram_unsupported_diagnostics(void)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    int fd = g_file_open_tmp("router-histogram-log-XXXXXX", &path, NULL);
+    QTestState *qts;
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    extra = g_strdup_printf("-d unimp -D %s", path);
+    qts = start(extra);
+    write_reg(qts, RR_PORT_PARMS(1),
+              PORT_PARMS_RESET | PORT_HISTOGRAM_MODE(2));
+    write_reg(qts, RR_PORT_PARMS(1),
+              PORT_PARMS_RESET | PORT_HISTOGRAM_MODE(2));
+    write_reg(qts, RR_PORT_PARMS(1),
+              PORT_PARMS_RESET | PORT_HISTOGRAM_MODE(3));
+    write_reg(qts, RR_PORT_PARMS(1),
+              PORT_PARMS_RESET | PORT_HISTOGRAM_MODE(3));
+    write_reg(qts, RR_PORT_PARMS(1),
+              PORT_PARMS_RESET | PORT_HISTOGRAM_MODE(1));
+    write_reg(qts, RR_DIAG_PARMS, DIAG_ABSOLUTE_HISTOGRAM);
+    write_reg(qts, RR_DIAG_PARMS, DIAG_ABSOLUTE_HISTOGRAM);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(path, &log, NULL, NULL));
+    g_assert_cmpuint(substring_count(log, "histogram selector 2 on port 1"),
+                     ==, 1);
+    g_assert_cmpuint(substring_count(log, "histogram selector 3 on port 1"),
+                     ==, 1);
+    g_assert_cmpuint(substring_count(log, "absolute histogram mode"), ==, 1);
+    g_assert_cmpint(unlink(path), ==, 0);
 }
 
 static void test_migration(void)
@@ -137,7 +260,19 @@ static void test_migration(void)
         write_reg(from, 0x70000 + i * 8, 0x654300 | i);
     }
     write_reg(from, 0x10, 0x12345);
-    write_reg(from, 0x30, 0x12345);
+    write_reg(from, RR_PORT_PARMS(1),
+              PORT_PARMS_RESET | PORT_HISTOGRAM_MODE(1));
+    set(from, "port", 1);
+    set(from, "histogram-receive", 7);
+    set(from, "histogram-send", 1);
+    qtest_clock_step(from, 50);
+    g_assert_cmphex(read_reg(from, RR_HISTOGRAM(1)), ==,
+                    UINT64_C(0x0002000100010001));
+    write_reg(from, RR_PORT_PARMS(6),
+              PORT_PARMS_RESET | PORT_HISTOGRAM_MODE(2) |
+              PORT_HISTOGRAM_VC(3));
+    write_reg(from, RR_DIAG_PARMS,
+              UINT64_C(0x12345) | DIAG_ABSOLUTE_HISTOGRAM);
     for (unsigned int port = 1; port <= 6; port++) {
         write_reg(from, (port << 16) + 0x18, port);
         set(from, "port", port);
@@ -164,13 +299,26 @@ static void test_migration(void)
         g_assert_cmphex(read_reg(to, 0x70000 + i * 8), ==, 0x654300 | i);
     }
     g_assert_cmphex(read_reg(to, 0x10), ==, 0x12345);
-    g_assert_cmphex(read_reg(to, 0x30), ==, 0x12345);
+    g_assert_cmphex(read_reg(to, RR_DIAG_PARMS), ==,
+                    UINT64_C(0x12345) | DIAG_ABSOLUTE_HISTOGRAM);
+    g_assert_cmphex(read_reg(to, RR_HISTOGRAM(1)), ==,
+                    UINT64_C(0x0002000100010001));
+    g_assert_cmphex(read_reg(to, RR_PORT_PARMS(6)), ==,
+                    PORT_PARMS_RESET | PORT_HISTOGRAM_MODE(2) |
+                    PORT_HISTOGRAM_VC(3));
     for (unsigned int port = 1; port <= 6; port++) {
         g_assert_cmphex(read_reg(to, (port << 16) + 0x18), ==, port);
         set(from, "port", port);
         set(to, "port", port);
         g_assert_cmphex(read_reg(to, 0), ==, read_reg(from, 0));
     }
+    write_reg(to, RR_DIAG_PARMS, 0x12345);
+    qtest_clock_step(to, 9);
+    g_assert_cmphex(read_reg(to, RR_HISTOGRAM(1)), ==,
+                    UINT64_C(0x0002000100010001));
+    qtest_clock_step(to, 1);
+    g_assert_cmphex(read_reg(to, RR_HISTOGRAM(1)), ==,
+                    UINT64_C(0x0003000100010001));
     qtest_quit(from);
     qtest_quit(to);
     unlink(socket);
@@ -182,6 +330,9 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("sn0/router/registers", test_registers);
     qtest_add_func("sn0/router/links-reset", test_links_reset);
+    qtest_add_func("sn0/router/histograms", test_histograms);
+    qtest_add_func("sn0/router/histogram-unsupported-diagnostics",
+                   test_histogram_unsupported_diagnostics);
     qtest_add_func("sn0/router/migration", test_migration);
     return g_test_run();
 }
