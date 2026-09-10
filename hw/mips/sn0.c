@@ -564,7 +564,7 @@ static void sn0_machine_reset(MachineState *machine, ResetType type)
                 machine->kernel_filename && node_state->cpu_base + slice != 0;
 
             sgi_hub_set_cpu_enable(&node_state->hub, slice,
-                                   !direct_secondary);
+                                   !direct_secondary, true);
         }
     }
     if (s->synthesized_firmware) {
