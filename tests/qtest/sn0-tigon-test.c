@@ -123,6 +123,8 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define TI_GCR_OPMODE       0x618
 #define TI_GCR_EVENTCONS_IDX 0x628
 #define TI_GCR_RX_COAL_TICKS 0x630
+#define TI_GCR_TX_COAL_TICKS 0x634
+#define TI_GCR_TX_MAX_COAL_BD 0x63c
 #define TI_GCR_RX_MAX_COAL_BD 0x640
 #define TI_GCR_MASK_INTRS  0x664
 #define TI_GCR_RXRETURNCONS_IDX 0x680
@@ -1771,6 +1773,59 @@ static void test_interrupt_coalesce_by_time(const void *data)
     close(sv[0]);
 }
 
+/*
+ * Receive and transmit have distinct coalescing tick/count registers. A long
+ * receive batch must not replace a shorter transmit deadline, and publishing
+ * that transmit completion must leave the receive tail pending for its own
+ * deadline. Sharing one timer between the directions loses both properties.
+ */
+static void test_interrupt_coalesce_directions_are_independent(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t got[sizeof(test_frame)];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+    go_operational(qts);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
+
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_RX_MAX_COAL_BD, 100);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_RX_COAL_TICKS, 1000000);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_TX_MAX_COAL_BD, 100);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_TX_COAL_TICKS, 1000);
+
+    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
+    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+    g_assert_false(irq_asserted(qts));
+
+    qtest_memwrite(qts, TX_BUF_PHYS, test_frame, sizeof(test_frame));
+    write_rcb_addr(qts, TX_RING_PHYS, TX_BUF_PHYS);
+    qtest_writel(qts, TX_RING_PHYS + 8,
+                 ((uint32_t)sizeof(test_frame) << 16) | TI_BDFLAG_END);
+    qtest_writel(qts, TX_RING_PHYS + 12, 0);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
+    g_assert_cmpuint(net_recv_frame(sv[0], got, sizeof(got)), ==,
+                     sizeof(test_frame));
+    g_assert_false(irq_asserted(qts));
+
+    qtest_clock_step(qts, 2000000);
+    g_assert_true(irq_asserted(qts));
+
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
+    g_assert_false(irq_asserted(qts));
+    qtest_clock_step(qts, 1000000000);
+    g_assert_true(irq_asserted(qts));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 
 /*
  * The SRAM timing configuration register. The driver sets its synchronous-SRAM
@@ -2949,6 +3004,9 @@ int main(int argc, char **argv)
                         test_interrupt_coalesce_by_count);
     qtest_add_data_func("/sn0/tigon/interrupt-coalesce-by-time", NULL,
                         test_interrupt_coalesce_by_time);
+    qtest_add_data_func("/sn0/tigon/interrupt-coalesce-directions-independent",
+                        NULL,
+                        test_interrupt_coalesce_directions_are_independent);
     qtest_add_data_func("/sn0/tigon/misc-conf-reads-back", NULL,
                         test_misc_conf_reads_back);
     qtest_add_data_func("/sn0/tigon/receive-reports-checksums", NULL,

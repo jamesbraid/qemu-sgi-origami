@@ -151,7 +151,8 @@ struct TigonState {
      */
     uint32_t coal_rx_bds;
     uint32_t coal_tx_bds;
-    QEMUTimer *coal_timer;
+    QEMUTimer *coal_rx_timer;
+    QEMUTimer *coal_tx_timer;
 
     /*
      * Link negotiation is asynchronous on real hardware: the firmware answers a

@@ -300,18 +300,25 @@ static void tigon_update_irq(TigonState *s)
 /*
  * Deliver whatever has accumulated, and start counting again.
  */
-static void tigon_coal_flush(TigonState *s)
+static void tigon_coal_flush(TigonState *s, bool rx)
 {
-    s->coal_rx_bds = 0;
-    s->coal_tx_bds = 0;
-    timer_del(s->coal_timer);
+    uint32_t *count = rx ? &s->coal_rx_bds : &s->coal_tx_bds;
+    QEMUTimer *timer = rx ? s->coal_rx_timer : s->coal_tx_timer;
+
+    *count = 0;
+    timer_del(timer);
     s->irq_asserted = true;
     tigon_update_irq(s);
 }
 
-static void tigon_coal_timer(void *opaque)
+static void tigon_coal_rx_timer(void *opaque)
 {
-    tigon_coal_flush(opaque);
+    tigon_coal_flush(opaque, true);
+}
+
+static void tigon_coal_tx_timer(void *opaque)
+{
+    tigon_coal_flush(opaque, false);
 }
 
 /*
@@ -329,6 +336,7 @@ static void tigon_completion_irq(TigonState *s, bool rx)
     uint32_t ticks = s->gcr[TIGON_GCR_IDX(rx ? TI_GCR_RX_COAL_TICKS
                                              : TI_GCR_TX_COAL_TICKS)];
     uint32_t count = rx ? ++s->coal_rx_bds : ++s->coal_tx_bds;
+    QEMUTimer *timer = rx ? s->coal_rx_timer : s->coal_tx_timer;
 
     /*
      * Not asked for, or asked for without a deadline. A count with no time
@@ -336,12 +344,12 @@ static void tigon_completion_irq(TigonState *s, bool rx)
      * interrupt that never comes, which is a stall rather than a saving.
      */
     if (max_bds <= 1 || ticks == 0 || count >= max_bds) {
-        tigon_coal_flush(s);
+        tigon_coal_flush(s, rx);
         return;
     }
-    if (!timer_pending(s->coal_timer)) {
+    if (!timer_pending(timer)) {
         /* The unit the driver counts in is a microsecond. */
-        timer_mod(s->coal_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+        timer_mod(timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                   (int64_t)ticks * 1000);
     }
 }
@@ -939,8 +947,11 @@ static void tigon_reset_state(TigonState *s)
     s->mb_hostintr = 0;
     s->coal_rx_bds = 0;
     s->coal_tx_bds = 0;
-    if (s->coal_timer) {
-        timer_del(s->coal_timer);
+    if (s->coal_rx_timer) {
+        timer_del(s->coal_rx_timer);
+    }
+    if (s->coal_tx_timer) {
+        timer_del(s->coal_tx_timer);
     }
     if (s->rx_flush_bh) {
         qemu_bh_cancel(s->rx_flush_bh);
@@ -1597,7 +1608,10 @@ static void tigon_realize(PCIDevice *dev, Error **errp)
 
     s->sram = g_malloc0(s->sram_size);
     s->link_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, tigon_link_timer, s);
-    s->coal_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, tigon_coal_timer, s);
+    s->coal_rx_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                    tigon_coal_rx_timer, s);
+    s->coal_tx_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                    tigon_coal_tx_timer, s);
 
     /*
      * One 16 KB non-prefetchable memory BAR (WINDATA, SRAM_DATA and the
@@ -1640,8 +1654,10 @@ static void tigon_exit(PCIDevice *dev)
     qemu_del_nic(s->nic);
     timer_free(s->link_timer);
     s->link_timer = NULL;
-    timer_free(s->coal_timer);
-    s->coal_timer = NULL;
+    timer_free(s->coal_rx_timer);
+    s->coal_rx_timer = NULL;
+    timer_free(s->coal_tx_timer);
+    s->coal_tx_timer = NULL;
     g_free(s->sram);
     s->sram = NULL;
 }
@@ -1675,6 +1691,16 @@ static int tigon_post_load(void *opaque, int version_id)
     if (version_id < 2) {
         s->station_addr = s->conf.macaddr;
     }
+    if (version_id < 3 && timer_pending(s->coal_rx_timer)) {
+        uint64_t deadline = timer_expire_time_ns(s->coal_rx_timer);
+
+        if (s->coal_tx_bds) {
+            timer_mod(s->coal_tx_timer, deadline);
+        }
+        if (!s->coal_rx_bds) {
+            timer_del(s->coal_rx_timer);
+        }
+    }
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->station_addr.a);
     tigon_update_irq(s);
     return 0;
@@ -1688,7 +1714,7 @@ static int tigon_post_load(void *opaque, int version_id)
  */
 static const VMStateDescription vmstate_tigon = {
     .name = "tigon",
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
     .post_load = tigon_post_load,
     .fields = (const VMStateField[]) {
@@ -1731,9 +1757,10 @@ static const VMStateDescription vmstate_tigon = {
         VMSTATE_UINT32(cmd_considx, TigonState),
         VMSTATE_BOOL(irq_asserted, TigonState),
         VMSTATE_TIMER_PTR(link_timer, TigonState),
-        VMSTATE_TIMER_PTR(coal_timer, TigonState),
+        VMSTATE_TIMER_PTR(coal_rx_timer, TigonState),
         VMSTATE_UINT32(coal_rx_bds, TigonState),
         VMSTATE_UINT32(coal_tx_bds, TigonState),
+        VMSTATE_TIMER_PTR_V(coal_tx_timer, TigonState, 3),
         VMSTATE_STRUCT(eeprom, TigonState, 1, vmstate_tigon_eeprom,
                        TigonEeprom),
         VMSTATE_END_OF_LIST()
