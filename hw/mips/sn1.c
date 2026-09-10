@@ -8,6 +8,7 @@
 #include "qapi/visitor.h"
 #include "qobject/qlist.h"
 #include "qemu/datadir.h"
+#include "qemu/error-report.h"
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
@@ -356,23 +357,36 @@ static void sn1_init_prom_view(SN1PromView *view, MachineState *machine,
     view->name = name;
     view->backing = backing;
     memory_region_init_io(&view->mmio, OBJECT(machine), &sn1_prom_view_ops,
-                          view, name, SN1_PROM_SIZE);
+                          view, name, sn1_origin300_model.prom_size);
 }
 
 static MemoryRegion *sn1_create_boot_flash(SN1MachineState *s,
                                            MachineState *machine)
 {
-    DriveInfo *dinfo = drive_get(IF_PFLASH, 0, 0);
+    DriveInfo *lower = drive_get(IF_PFLASH, 0, 0);
+    DriveInfo *upper = drive_get(IF_PFLASH, 0, 1);
     SysBusDevice *flash;
 
-    if (!dinfo) {
+    if (!lower && !upper) {
         return NULL;
+    }
+    /*
+     * Two PROM positions, so two backings: the lower one holds position zero
+     * and the upper one position one. Half a pair is a mistake worth naming
+     * rather than a machine that comes up with one working position.
+     */
+    if (!lower || !upper) {
+        error_report("origin300 needs a pflash drive for each PROM position, "
+                     "the second one holding the upper half of the image");
+        exit(1);
     }
     s->boot_flash = qdev_new(TYPE_SGI_BEDROCK_FLASH);
     object_property_add_child(OBJECT(machine), "boot-flash",
                               OBJECT(s->boot_flash));
-    qdev_prop_set_drive_err(s->boot_flash, "drive",
-                            blk_by_legacy_dinfo(dinfo), &error_fatal);
+    qdev_prop_set_drive_err(s->boot_flash, "drive0",
+                            blk_by_legacy_dinfo(lower), &error_fatal);
+    qdev_prop_set_drive_err(s->boot_flash, "drive1",
+                            blk_by_legacy_dinfo(upper), &error_fatal);
     flash = SYS_BUS_DEVICE(s->boot_flash);
     sysbus_realize_and_unref(flash, &error_fatal);
 
@@ -395,7 +409,8 @@ static MemoryRegion *sn1_create_boot_flash(SN1MachineState *s,
      * mapping of the part's own storage but would not reach a separate region
      * over the same bytes.
      */
-    return SGI_BEDROCK_FLASH(s->boot_flash)->flash_mmio;
+    /* The execution views read position zero only, per the flash contract. */
+    return SGI_BEDROCK_FLASH(s->boot_flash)->flash_mmio[0];
 }
 
 static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
@@ -407,7 +422,6 @@ static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
     g_autofree char *contents = NULL;
     g_autofree char *path = NULL;
     MemoryRegion *stored;
-    MemoryRegion *carrier;
     gsize length;
 
     if (!machine->firmware) {
@@ -763,7 +777,9 @@ static void sn1_map_memory(SN1MachineState *s, MachineState *machine)
     /* The remote form reaches the same response above the Bedrock window. */
     memory_region_init_alias(&s->board_id_remote, OBJECT(machine),
                              "sn1.board-id.remote", &s->board_id, 0, 8);
-    memory_region_add_subregion_overlap(system, SN1_HUB_REMOTE_REGISTERS +
+    memory_region_add_subregion_overlap(system,
+                                        sn1_origin300_model
+                                            .hub_remote_registers_address +
                                         SN1_BOARD_ID_OFFSET,
                                         &s->board_id_remote, 1);
 }

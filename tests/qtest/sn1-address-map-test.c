@@ -82,6 +82,8 @@
 #define FLASH_OBSERVED_OFFSET UINT64_C(0x1e0000)
 #define FLASH_INTERIOR_OFFSET UINT64_C(0x800000)
 #define FLASH_IMAGE_SIZE (16 * 1024 * 1024)
+/* One PROM position backs half of it. */
+#define FLASH_PART_SIZE (FLASH_IMAGE_SIZE / 2)
 #define BOOT_SPACE_SIZE UINT64_C(0x8000000)
 #define SECOND_READ_WINDOW UINT64_C(0x2000000)
 /* The AMD unlock words 0x555 and 0x2aa, at the bus offsets 8n. */
@@ -1804,6 +1806,30 @@ static void test_l1_has_no_identity_records_by_default(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * Position one's backing, kept beside position zero's so a caller still
+ * passes one path around. The machine wants a drive for each position; a
+ * single one would leave half the flash unbacked.
+ */
+static char *flash_upper_path(const char *lower)
+{
+    return g_strdup_printf("%s.upper", lower);
+}
+
+static void create_flash_upper(const char *lower)
+{
+    g_autofree char *path = flash_upper_path(lower);
+    g_autofree uint8_t *image = g_malloc(FLASH_PART_SIZE);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+
+    /* A second position starts erased, as the harness seeds it. */
+    memset(image, 0xff, FLASH_PART_SIZE);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image, FLASH_PART_SIZE), ==,
+                    (ssize_t)FLASH_PART_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+}
+
 static char *create_flash_image(void)
 {
     g_autoptr(GError) error = NULL;
@@ -1827,21 +1853,25 @@ static char *create_flash_image(void)
     fd = g_file_open_tmp("sn1-boot-flash-XXXXXX.bin", &path, &error);
     g_assert_no_error(error);
     g_assert_cmpint(fd, >=, 0);
-    g_assert_cmpint(write(fd, image, FLASH_IMAGE_SIZE), ==,
-                    (ssize_t)FLASH_IMAGE_SIZE);
+    g_assert_cmpint(write(fd, image, FLASH_PART_SIZE), ==,
+                    (ssize_t)FLASH_PART_SIZE);
     g_assert_cmpint(close(fd), ==, 0);
+    create_flash_upper(path);
     return path;
 }
 
 static QTestState *machine_start_with_flash(const char *flash,
                                             const char *extra)
 {
-    g_autofree char *quoted_prom = g_shell_quote(prom_path);
-    g_autofree char *quoted_flash = g_shell_quote(flash);
+    g_autofree char *prom_quoted = g_shell_quote(prom_path);
+    g_autofree char *upper = flash_upper_path(flash);
+    g_autofree char *lower_quoted = g_shell_quote(flash);
+    g_autofree char *upper_quoted = g_shell_quote(upper);
 
     return qtest_initf(MACHINE_ARGS " -bios %s "
+                       "-drive if=pflash,file=%s,format=raw "
                        "-drive if=pflash,file=%s,format=raw %s",
-                       quoted_prom, quoted_flash, extra);
+                       prom_quoted, lower_quoted, upper_quoted, extra);
 }
 
 /* One 16-bit word per bus cycle, at the bus offset four times its byte. */
@@ -1854,17 +1884,23 @@ static void flash_program(QTestState *qts, uint64_t selection,
     qtest_writeq(qts, selection + offset * 4, word);
 }
 
+/*
+ * Every view onto position zero. The second selection is deliberately absent:
+ * it is position one, a different part with its own bytes, and the old
+ * contract that mirrored position zero there is superseded.
+ */
 static void assert_flash_everywhere(QTestState *qts, uint64_t offset,
                                     uint16_t word)
 {
     static const uint64_t views[] = {
-        HUB_LOCAL_BOOT, HUB_LOCAL_FLASH, PROM_RESET, HUB_LOCAL_HIGH_BOOT,
-        HUB_REMOTE_BOOT,
+        HUB_LOCAL_BOOT, PROM_RESET, HUB_LOCAL_HIGH_BOOT, HUB_REMOTE_BOOT,
     };
 
     for (size_t i = 0; i < ARRAY_SIZE(views); i++) {
         g_assert_cmphex(qtest_readw(qts, views[i] + offset), ==, word);
     }
+    /* And position one does not answer with position zero's word. */
+    g_assert_cmphex(qtest_readw(qts, HUB_LOCAL_FLASH + offset), !=, word);
 }
 
 static void test_board_identification(const void *data)
