@@ -223,6 +223,7 @@
 
 #define TRAFFIC_DATA1_TIMER(n)   ((uint64_t)(n) << 32)
 #define TRAFFIC_DATA1_AC         (1ULL << 25)
+#define TRAFFIC_DATA1_CI         (1ULL << 24)
 #define TRAFFIC_DATA2_COUNTS(a, b, c, d) \
     (((uint64_t)(a) << 48) | ((uint64_t)(b) << 32) | \
      ((uint64_t)(c) << 16) | (d))
@@ -4852,9 +4853,94 @@ static void test_traffic_interrupt_moderation(void)
 }
 
 /*
+ * Linux enables continuous interrupts on TTI entry 0. The first event is one
+ * full programmed interval after commit, repeats without traffic, and an
+ * adapter disable abandons the old phase so re-enable starts a fresh one.
+ */
+static void test_traffic_continuous_interrupt(void)
+{
+    XframeTx t;
+
+    xframe_tx_start(&t);
+    sock_pif_writeq(&t, TX_TRAFFIC_MASK, 0);
+    sock_pif_writeq(&t, ADAPTER_CONTROL, ADAPTER_EN);
+    traffic_interrupt_commit(&t, false, 0, LINUX_TTI_DATA1,
+                             LINUX_TTI_DATA2);
+    traffic_interrupt_commit(&t, true, 0,
+                             TRAFFIC_DATA1_TIMER(0x3000) |
+                             TRAFFIC_DATA1_CI,
+                             TRAFFIC_DATA2_COUNTS(1, 1, 1, 1));
+
+    qtest_clock_step(t.qs->qts, 3900000);
+    g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT), ==, 0);
+    g_assert_cmphex(sock_pif_readq(&t, RX_TRAFFIC_INT), ==, 0);
+    qtest_clock_step(t.qs->qts, 200000);
+    g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT) & TX_TRAFFIC_FIFO0,
+                    ==, TX_TRAFFIC_FIFO0);
+    g_assert_cmphex(sock_pif_readq(&t, RX_TRAFFIC_INT), ==, 0);
+    sock_pif_writeq(&t, TX_TRAFFIC_INT, TX_TRAFFIC_FIFO0);
+
+    qtest_clock_step(t.qs->qts, 2000000);
+    g_assert_cmphex(sock_pif_readq(&t, RX_TRAFFIC_INT) & RX_TRAFFIC_RING0,
+                    ==, RX_TRAFFIC_RING0);
+    sock_pif_writeq(&t, RX_TRAFFIC_INT, RX_TRAFFIC_RING0);
+    qtest_clock_step(t.qs->qts, 2000000);
+    g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT) & TX_TRAFFIC_FIFO0,
+                    ==, TX_TRAFFIC_FIFO0);
+    sock_pif_writeq(&t, TX_TRAFFIC_INT, TX_TRAFFIC_FIFO0);
+
+    sock_pif_writeq(&t, ADAPTER_CONTROL, 0);
+    qtest_clock_step(t.qs->qts, 5000000);
+    g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT), ==, 0);
+
+    sock_pif_writeq(&t, ADAPTER_CONTROL, ADAPTER_EN);
+    qtest_clock_step(t.qs->qts, 3900000);
+    g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT), ==, 0);
+    qtest_clock_step(t.qs->qts, 200000);
+    g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT) & TX_TRAFFIC_FIFO0,
+                    ==, TX_TRAFFIC_FIFO0);
+
+    xframe_tx_stop(&t);
+}
+
+/* A migrated continuous timer retains the source's partially elapsed phase. */
+static void test_traffic_continuous_migration(void)
+{
+    g_autofree char *directory = xframe_migration_directory();
+    g_autofree char *socket = g_build_filename(directory, "migration.sock",
+                                                NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *incoming = g_strdup_printf("-incoming %s", uri);
+    XframeTx from, to;
+    int64_t source_time;
+
+    xframe_tx_start(&from);
+    sock_pif_writeq(&from, TX_TRAFFIC_MASK, 0);
+    sock_pif_writeq(&from, ADAPTER_CONTROL, ADAPTER_EN);
+    traffic_interrupt_commit(&from, false, 0, LINUX_TTI_DATA1,
+                             LINUX_TTI_DATA2);
+    source_time = qtest_clock_step(from.qs->qts, 2000000);
+
+    xframe_tx_start_args(&to, incoming);
+    xframe_migrate(from.qs->qts, uri);
+    /* Qtest's explicit virtual clock is harness input, not migrated state. */
+    qtest_clock_set(to.qs->qts, source_time);
+    qtest_clock_step(to.qs->qts, 1900000);
+    g_assert_cmphex(sock_pif_readq(&to, TX_TRAFFIC_INT), ==, 0);
+    qtest_clock_step(to.qs->qts, 200000);
+    g_assert_cmphex(sock_pif_readq(&to, TX_TRAFFIC_INT) & TX_TRAFFIC_FIFO0,
+                    ==, TX_TRAFFIC_FIFO0);
+
+    xframe_tx_stop(&to);
+    xframe_tx_stop(&from);
+    xframe_migration_cleanup(directory, socket);
+}
+
+/*
  * Transmit interrupt rate: push TRAFFIC_BURST frames back to back, acking the
  * completion after each so the next is a fresh, countable INTx assertion. The
- * an uncommitted TTI entry, so each frame raises its own transmit-completion
+ * test leaves the TTI entry uncommitted, so each frame raises its own
+ * transmit-completion
  * interrupt and the raise count equals the frame count.
  */
 static void test_transmit_interrupt_rate_is_one_per_frame(void)
@@ -5121,6 +5207,10 @@ int main(int argc, char **argv)
                    test_traffic_migration_v6_deadlines);
     qtest_add_func("xframe/traffic-migration-v6-deferred",
                    test_traffic_migration_v6_deferred);
+    qtest_add_func("xframe/traffic-continuous-interrupt",
+                   test_traffic_continuous_interrupt);
+    qtest_add_func("xframe/traffic-continuous-migration",
+                   test_traffic_continuous_migration);
     qtest_add_func("xframe/transmit-interrupt-rate-is-one-per-frame",
                    test_transmit_interrupt_rate_is_one_per_frame);
     qtest_add_func("xframe/receive-interrupt-rate-is-one-per-frame",
