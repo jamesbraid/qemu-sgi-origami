@@ -334,7 +334,8 @@ qtests_mips64 = \
   (config_all_devices.has_key('CONFIG_SGI_BEDROCK') ?
     ['sn1-bedrock-pi-test', 'sn1-bedrock-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_SN1') ?
-    ['sn1-address-map-test', 'sn1-io8-scsi-test'] : []) + \
+    ['sn1-address-map-test', 'sn1-cpu-identity-test',
+     'sn1-io8-scsi-test'] : []) + \
   (config_all_devices.has_key('CONFIG_MALTA') ? ['mips64-mttcg-test',
                                                  'mips64-nmi-test',
                                                  'mips64-r10k-perf-migration-test',
