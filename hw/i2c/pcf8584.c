@@ -105,14 +105,14 @@ static int64_t pcf8584_now(void)
 /*
  * Stage one line transition. The virtual clock keeps running while an event
  * is being delivered, so a deadline derived from that event's own timestamp
- * can already have passed by the time it is requested; the floor keeps the
- * request in the future rather than losing it to that skew.
+ * can already have passed by the time it is requested. The wire applies the
+ * floor from the same clock sample it validates against.
  */
 static void pcf8584_wire_stage(PCF8584State *s, int64_t at, bool sda,
                                bool clock)
 {
-    int rc = i2c_wire_stage(s->bus, s->wire_master,
-                            MAX(at, pcf8584_now() + 1), sda, clock);
+    int rc = i2c_wire_stage_at_or_after(s->bus, s->wire_master, at, 1,
+                                        sda, clock);
 
     if (rc) {
         qemu_log_mask(LOG_UNIMP, "pcf8584: the shared wire refused a line "

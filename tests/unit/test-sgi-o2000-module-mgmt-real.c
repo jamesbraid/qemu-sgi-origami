@@ -47,10 +47,14 @@
 #define CLOCK_12MHZ_90KHZ           0x1c
 
 static int64_t virtual_time;
+static int64_t virtual_time_step;
 
 int64_t cpus_get_virtual_clock(void)
 {
-    return virtual_time;
+    int64_t now = virtual_time;
+
+    virtual_time += virtual_time_step;
+    return now;
 }
 
 void cpus_set_virtual_clock(int64_t value)
@@ -99,6 +103,7 @@ static void setup(Fixture *f, gconstpointer options)
      * sibling file drives the reset path. Adding a reset here would look
      * tidier and would delete that cover.
      */
+    virtual_time_step = 0;
     memset(f, 0, sizeof(*f));
     for (i = 0; i < ARRAY_SIZE(names); i++) {
         g_autofree char *capability = g_strdup_printf("can-%s", names[i]);
@@ -247,6 +252,21 @@ static void stop_transfer(Fixture *f, unsigned a)
         advance_to(virtual_time + POLL_STEP_NS);
     }
     g_assert_not_reached();
+}
+
+/* Clock progress during validation must not abandon a fresh START. */
+static void test_start_clock_progress(Fixture *f, gconstpointer unused)
+{
+    write_reg(f, 0, CTRL_REG, CTL_RUN);
+    write_reg(f, 0, DATA_REG, SGI_O2000_NVRAM_FIRST_ADDR << 1);
+    virtual_time_step = 1;
+    write_reg(f, 0, CTRL_REG, CTL_START);
+    virtual_time_step = 0;
+
+    g_assert_true(f->adapter[0]->wire_active);
+    g_assert_true(wait_done(f, 0));
+    g_assert_cmphex(read_reg(f, 0, CTRL_REG) & PCF8584_STS_LRB, ==, 0);
+    stop_transfer(f, 0);
 }
 
 /* Send a framed request and prepare its response for register reads. */
@@ -820,6 +840,8 @@ int main(int argc, char **argv)
     object_property_add_new_container(machine, "unattached");
     qemu_register_resettable(OBJECT(sysbus_get_default()));
 
+    g_test_add("/sgi-o2000-module-management/shared/start-clock-progress",
+               Fixture, NULL, setup, test_start_clock_progress, teardown);
     g_test_add("/sgi-o2000-module-management/shared/population", Fixture,
                NULL, setup, test_population, teardown);
     g_test_add("/sgi-o2000-module-management/nvram/defaults", Fixture, NULL,
