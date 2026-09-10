@@ -12,6 +12,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "qemu/units.h"
+#include "hw/misc/sgi-bedrock-flash.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
@@ -79,12 +80,13 @@
 #define PROM_RESET UINT64_C(0x1fc00000)
 #define PROM_SIZE UINT64_C(0x1686a8)
 #define PROM_CONFIG_OFFSET UINT64_C(0x60)
-#define FLASH_VIEW_SIZE UINT64_C(0x800000)
 #define FLASH_OBSERVED_OFFSET UINT64_C(0x1e0000)
 #define FLASH_INTERIOR_OFFSET UINT64_C(0x400000)
-#define FLASH_IMAGE_SIZE (16 * 1024 * 1024)
-/* One PROM position backs half of it. */
-#define FLASH_PART_SIZE (FLASH_IMAGE_SIZE / 2)
+/* Distinct from the -bios payload, so these reads identify their source. */
+#define FLASH_LOWER_FIRST 0x51
+#define FLASH_LOWER_CONFIG 0x72
+#define FLASH_LOWER_LAST 0xb3
+#define FLASH_LOWER_WORD UINT16_C(0x5100)
 /*
  * Position one's own bytes. An erased seed would read the same as nothing
  * being mapped at all, so a read proving which part answered needs the second
@@ -1606,8 +1608,10 @@ static void test_prom_flat_view_extents(const void *data)
     assert_flat_view_extent(qts, HUB_LOCAL_BOOT, PROM_SIZE);
     assert_flat_view_extent(qts, HUB_LOCAL_HIGH_BOOT, PROM_SIZE);
     assert_flat_view_extent(qts, HUB_REMOTE_BOOT, PROM_SIZE);
-    assert_flat_view_extent(qts, HUB_LOCAL_FLASH, FLASH_VIEW_SIZE);
-    assert_flat_view_extent(qts, HUB_REMOTE_FLASH, FLASH_VIEW_SIZE);
+    assert_flat_view_extent(qts, HUB_LOCAL_FLASH,
+                            SGI_BEDROCK_FLASH_PART_SIZE);
+    assert_flat_view_extent(qts, HUB_REMOTE_FLASH,
+                            SGI_BEDROCK_FLASH_PART_SIZE);
 
     qtest_quit(qts);
 }
@@ -1627,11 +1631,14 @@ static void assert_erased_second_position(QTestState *qts)
         g_assert_cmphex(qtest_readq(qts,
                                     views[i] + FLASH_INTERIOR_OFFSET), ==,
                         UINT64_MAX);
-        g_assert_cmphex(qtest_readq(qts, views[i] + FLASH_VIEW_SIZE - 8), ==,
+        g_assert_cmphex(qtest_readq(qts, views[i] +
+                                    SGI_BEDROCK_FLASH_PART_SIZE - 8), ==,
                         UINT64_MAX);
-        g_assert_cmphex(qtest_readb(qts, views[i] + FLASH_VIEW_SIZE - 1), ==,
+        g_assert_cmphex(qtest_readb(qts, views[i] +
+                                    SGI_BEDROCK_FLASH_PART_SIZE - 1), ==,
                         0xff);
-        assert_flat_view_unmapped(qts, views[i] + FLASH_VIEW_SIZE);
+        assert_flat_view_unmapped(qts, views[i] +
+                                  SGI_BEDROCK_FLASH_PART_SIZE);
     }
 }
 
@@ -1812,7 +1819,7 @@ static void test_l1_has_no_identity_records_by_default(const void *data)
 static char *create_flash_image(void)
 {
     g_autoptr(GError) error = NULL;
-    g_autofree uint8_t *image = g_malloc(FLASH_IMAGE_SIZE);
+    g_autofree uint8_t *image = g_malloc(SGI_BEDROCK_FLASH_SIZE);
     char *path = NULL;
     int fd;
 
@@ -1821,22 +1828,22 @@ static char *create_flash_image(void)
      * the shape the harness seeds. Two payload bytes are left erased so the
      * test can program inside the range the reset view covers.
      */
-    memset(image, 0xff, FLASH_IMAGE_SIZE);
+    memset(image, 0xff, SGI_BEDROCK_FLASH_SIZE);
     memset(image, 0, PROM_SIZE);
-    image[0] = 0x31;
-    image[PROM_CONFIG_OFFSET] = 0x62;
-    image[PROM_SIZE - 1] = 0x93;
+    image[0] = FLASH_LOWER_FIRST;
+    image[PROM_CONFIG_OFFSET] = FLASH_LOWER_CONFIG;
+    image[PROM_SIZE - 1] = FLASH_LOWER_LAST;
     image[FLASH_PAYLOAD_TARGET] = 0xff;
     image[FLASH_PAYLOAD_TARGET + 1] = 0xff;
-    image[FLASH_PART_SIZE] = FLASH_UPPER_FIRST;
-    image[FLASH_PART_SIZE + 1] = FLASH_UPPER_LAST;
-    image[FLASH_IMAGE_SIZE - 1] = FLASH_UPPER_LAST;
+    image[SGI_BEDROCK_FLASH_PART_SIZE] = FLASH_UPPER_FIRST;
+    image[SGI_BEDROCK_FLASH_PART_SIZE + 1] = FLASH_UPPER_LAST;
+    image[SGI_BEDROCK_FLASH_SIZE - 1] = FLASH_UPPER_LAST;
 
     fd = g_file_open_tmp("sn1-boot-flash-XXXXXX.bin", &path, &error);
     g_assert_no_error(error);
     g_assert_cmpint(fd, >=, 0);
-    g_assert_cmpint(write(fd, image, FLASH_IMAGE_SIZE), ==,
-                    (ssize_t)FLASH_IMAGE_SIZE);
+    g_assert_cmpint(write(fd, image, SGI_BEDROCK_FLASH_SIZE), ==,
+                    (ssize_t)SGI_BEDROCK_FLASH_SIZE);
     g_assert_cmpint(close(fd), ==, 0);
     return path;
 }
@@ -2077,19 +2084,25 @@ static void test_directory_backdoor_window(const void *data)
 static void test_boot_flash_backs_every_prom_view(const void *data)
 {
     g_autofree char *flash = create_flash_image();
+    g_autofree char *ramblocks = NULL;
     QTestState *qts = machine_start_with_flash(flash, "");
 
+    ramblocks = qtest_hmp(qts, "info ramblock");
+    g_assert_null(strstr(ramblocks, "sn1.prom"));
+
     /* Every execution view reads position zero, not the supplied payload. */
-    assert_flash_everywhere(qts, 0, 0x3100);
+    assert_flash_everywhere(qts, 0, FLASH_LOWER_WORD);
     g_assert_cmphex(qtest_readb(qts, HUB_LOCAL_BOOT + PROM_SIZE - 1), ==,
-                    0x93);
+                    FLASH_LOWER_LAST);
 
     /* Both boot windows reach position one at their second PROM address. */
     assert_position_one(qts, 0, FLASH_UPPER_WORD);
-    g_assert_cmphex(qtest_readb(qts, HUB_LOCAL_FLASH + FLASH_PART_SIZE - 1),
-                    ==, FLASH_UPPER_LAST);
-    g_assert_cmphex(qtest_readb(qts, HUB_REMOTE_FLASH + FLASH_PART_SIZE - 1),
-                    ==, FLASH_UPPER_LAST);
+    g_assert_cmphex(qtest_readb(qts, HUB_LOCAL_FLASH +
+                                SGI_BEDROCK_FLASH_PART_SIZE - 1), ==,
+                    FLASH_UPPER_LAST);
+    g_assert_cmphex(qtest_readb(qts, HUB_REMOTE_FLASH +
+                                SGI_BEDROCK_FLASH_PART_SIZE - 1), ==,
+                    FLASH_UPPER_LAST);
 
     /* Position zero's payload ends in erased bytes inside its own part. */
     g_assert_cmphex(qtest_readb(qts, HUB_LOCAL_BOOT + PROM_SIZE), ==, 0xff);
@@ -2193,11 +2206,11 @@ static void test_execution_views_refuse_commands(const void *data)
          * status or an identifier, so it never left read-array mode. That is
          * the half of the check that a dropped write alone would not prove.
          */
-        g_assert_cmphex(qtest_readw(qts, views[i]), ==, 0x3100);
+        g_assert_cmphex(qtest_readw(qts, views[i]), ==, FLASH_LOWER_WORD);
     }
 
     /* Every view still reads the part. */
-    assert_flash_everywhere(qts, 0, 0x3100);
+    assert_flash_everywhere(qts, 0, FLASH_LOWER_WORD);
 
     /* And the space the part is really driven from still programs it. */
     flash_program(qts, HUB_LOCAL_BOOT, FLASH_PAYLOAD_TARGET, 0x1234);
@@ -2296,10 +2309,12 @@ static void test_prom_second_stride_view(const void *data)
     /* Writes change neither the erased second position nor position zero. */
     qtest_writeb(qts, HUB_LOCAL_FLASH, 0x00);
     qtest_writeq(qts, HUB_LOCAL_FLASH + FLASH_OBSERVED_OFFSET, 0);
-    qtest_writeq(qts, HUB_LOCAL_FLASH + FLASH_VIEW_SIZE - 8, 0);
+    qtest_writeq(qts, HUB_LOCAL_FLASH +
+                 SGI_BEDROCK_FLASH_PART_SIZE - 8, 0);
     qtest_writeb(qts, HUB_REMOTE_FLASH, 0x00);
     qtest_writeq(qts, HUB_REMOTE_FLASH + FLASH_INTERIOR_OFFSET, 0);
-    qtest_writeb(qts, HUB_REMOTE_FLASH + FLASH_VIEW_SIZE - 1, 0);
+    qtest_writeb(qts, HUB_REMOTE_FLASH +
+                 SGI_BEDROCK_FLASH_PART_SIZE - 1, 0);
     assert_erased_second_position(qts);
     g_assert_cmphex(qtest_readb(qts, PROM_RESET), ==, 0x31);
 
@@ -2347,10 +2362,13 @@ static char *create_sized_flash_image(off_t size)
 static void test_boot_flash_image_contract(const void *data)
 {
     g_autofree char *short_path =
-        create_sized_flash_image(FLASH_IMAGE_SIZE / 2);
-    g_autofree char *long_path = create_sized_flash_image(FLASH_IMAGE_SIZE + 1);
-    g_autofree char *first = create_sized_flash_image(FLASH_IMAGE_SIZE);
-    g_autofree char *second = create_sized_flash_image(FLASH_IMAGE_SIZE);
+        create_sized_flash_image(SGI_BEDROCK_FLASH_PART_SIZE);
+    g_autofree char *long_path =
+        create_sized_flash_image(SGI_BEDROCK_FLASH_SIZE + 1);
+    g_autofree char *first =
+        create_sized_flash_image(SGI_BEDROCK_FLASH_SIZE);
+    g_autofree char *second =
+        create_sized_flash_image(SGI_BEDROCK_FLASH_SIZE);
     g_autofree char *short_drive =
         g_strdup_printf("if=pflash,file=%s,format=raw", short_path);
     g_autofree char *long_drive =
@@ -2359,6 +2377,8 @@ static void test_boot_flash_image_contract(const void *data)
         g_strdup_printf("if=pflash,file=%s,format=raw", first);
     g_autofree char *second_drive =
         g_strdup_printf("if=pflash,file=%s,format=raw", second);
+    g_autofree char *index1_drive =
+        g_strdup_printf("if=pflash,index=1,file=%s,format=raw", first);
     const char *short_args[] = {
         qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
         "-smp", "2", "-bios", prom_path, "-display", "none", "-S",
@@ -2374,6 +2394,11 @@ static void test_boot_flash_image_contract(const void *data)
         "-smp", "2", "-bios", prom_path, "-display", "none", "-S",
         "-drive", first_drive, "-drive", second_drive, NULL,
     };
+    const char *index1_args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
+        "-smp", "2", "-bios", prom_path, "-display", "none", "-S",
+        "-drive", index1_drive, NULL,
+    };
 
     g_test_message("rejecting a short pflash image");
     assert_qemu_rejects(short_args, "pflash image must be exactly 16 MiB");
@@ -2381,11 +2406,43 @@ static void test_boot_flash_image_contract(const void *data)
     assert_qemu_rejects(long_args, "pflash image must be exactly 16 MiB");
     g_test_message("rejecting two pflash images");
     assert_qemu_rejects(two_args, "accepts one 16 MiB pflash image");
+    g_test_message("rejecting an index-one-only pflash image");
+    assert_qemu_rejects(index1_args, "accepts one 16 MiB pflash image");
 
     g_assert_cmpint(g_unlink(short_path), ==, 0);
     g_assert_cmpint(g_unlink(long_path), ==, 0);
     g_assert_cmpint(g_unlink(first), ==, 0);
     g_assert_cmpint(g_unlink(second), ==, 0);
+}
+
+static void test_boot_flash_nonraw_image(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *directory = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *drive = NULL;
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
+        "-smp", "2", "-bios", prom_path, "-display", "none", "-S",
+        "-drive", NULL, NULL,
+    };
+
+    if (!have_qemu_img()) {
+        g_test_skip("QTEST_QEMU_IMG not set; cannot create non-raw pflash");
+        return;
+    }
+
+    directory = g_dir_make_tmp("sn1-nonraw-flash-XXXXXX", &error);
+    g_assert_no_error(error);
+    path = g_build_filename(directory, "flash.qcow2", NULL);
+    g_assert_true(mkimg(path, "qcow2", SGI_BEDROCK_FLASH_SIZE / MiB));
+    drive = g_strdup_printf("if=pflash,file=%s,format=qcow2", path);
+    args[13] = drive;
+
+    assert_qemu_rejects(args, "pflash image must use raw format");
+
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
 static void test_prom_size_is_exact(const void *data)
@@ -2990,6 +3047,8 @@ int main(int argc, char **argv)
                         test_prom_size_is_exact);
     qtest_add_data_func("sn1/address-map/boot-flash-image-contract", NULL,
                         test_boot_flash_image_contract);
+    qtest_add_data_func("sn1/address-map/boot-flash-nonraw-image", NULL,
+                        test_boot_flash_nonraw_image);
     qtest_add_data_func("sn1/address-map/prom-is-required", NULL,
                         test_prom_is_required);
     qtest_add_data_func("sn1/address-map/cpu-count-is-exact", NULL,
