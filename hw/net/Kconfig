@@ -76,6 +76,8 @@ config SGI_IOC3_ETH
 
 config TIGON
     bool
+    default y if PCI_DEVICES
+    depends on PCI
 
 config BCM570X
     bool
