@@ -11,8 +11,10 @@
 #include "hw/core/qdev-clock.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/mips/sn0-fabric-routed.h"
+#include "hw/misc/sgi-o2000-module-mgmt.h"
 #include "hw/misc/sgi-router.h"
 #include "system/blockdev.h"
+#include "system/system.h"
 #include "system/numa.h"
 #include "system/qtest.h"
 #include "sn0.h"
@@ -340,6 +342,61 @@ void sn0_origin2000_prepare_nodes(MachineState *machine)
     }
 }
 
+/*
+ * One management complex for the whole module: a controller, a shared NVRAM
+ * space and four adapters, one appearing in each node's Hub register window
+ * where that node's own adapter sits on an Origin 200. The descriptor names
+ * the node and offset for each, and the composition validator has already
+ * rejected any node that also asks for a private controller.
+ *
+ * No action capability is declared. Nothing in this machine receives a
+ * module reset, NMI or power line, and the module refuses those commands
+ * rather than answering for a line that reaches nothing.
+ */
+static void origin2000_build_management(SN0MachineState *s)
+{
+    const SN0ModelComposition *c = s->composition;
+    const SN0ModelModule *module = &c->modules[0];
+    const SN0ModelModuleManagement *management = module->management;
+    DeviceState *dev = qdev_new(TYPE_SGI_O2000_MODULE_MGMT);
+    Chardev *aux = serial_hd(SN0_NODE_SERIAL(0, SN0_ELSC_CHARDEV));
+    size_t i;
+
+    g_assert(management->adapter_count == SGI_O2000_ADAPTER_COUNT);
+    object_property_add_child(OBJECT(s), "module-management", OBJECT(dev));
+    qdev_prop_set_uint8(dev, "module-number", module->initial_module_number);
+    qdev_prop_set_uint8(dev, "dip-switches", s->elsc_dip_switches);
+    if (aux) {
+        qdev_prop_set_chr(dev, "chardev", aux);
+    }
+    qdev_realize_and_unref(dev, NULL, &error_fatal);
+
+    for (i = 0; i < management->adapter_count; i++) {
+        const SN0ModelPhysicalNode *physical =
+            &c->nodes[management->adapter_nodes[i]];
+        SGIHubState *hub = &s->nodes[physical->slot - 1]->hub;
+        SysBusDevice *adapter = SYS_BUS_DEVICE(
+            sgi_o2000_module_mgmt_get_adapter(SGI_O2000_MODULE_MGMT(dev), i));
+
+        /*
+         * The descriptor names adapters by their position in its node array
+         * while the machine keys nodes by physical slot, so the two indices
+         * pass through the node. They agree in the shipped composition, and
+         * a guest could not tell them apart anyway: every adapter sits at
+         * the same window offset on one shared wire, so permuting which
+         * adapter lands in which node changes nothing a guest can observe.
+         *
+         * The offset names the data register, and the control register
+         * follows it by the adapter's A0 spacing inside the same 16 bytes
+         * the composition validator bounds.
+         */
+        memory_region_add_subregion_overlap(&hub->regs,
+                                            management->adapter_offsets[i],
+                                            sysbus_mmio_get_region(adapter, 0),
+                                            1);
+    }
+}
+
 void sn0_origin2000_realize_nodes(MachineState *machine)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
@@ -359,6 +416,7 @@ void sn0_origin2000_realize_nodes(MachineState *machine)
                 CPU(node->cpu[slice]);
         }
     }
+    origin2000_build_management(s);
     sn0_fabric_build(s->fabric);
     origin2000_load_flash(machine);
 }
