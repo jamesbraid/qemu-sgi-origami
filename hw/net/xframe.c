@@ -2011,24 +2011,25 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
     PCIDevice *pdev = PCI_DEVICE(s);
     uint64_t par = s->txdl_par[fifo];
     unsigned count = ((lcr >> 56) & 0xff) + 1;   /* NUMTXD + 1, 1..256 */
+    uint64_t txd_addr[256];
+    uint64_t txd_control1[256];
     uint64_t first_control1 = 0;
     uint64_t first_control2 = 0;
     size_t frame_len = 0;
     size_t cap = XFRAME_MAX_FRAME;
     bool have_first = false;
-    unsigned i;
+    unsigned i, walked = 0;
 
     for (i = 0; i < count; i++) {
-        uint64_t txd_addr = par + (uint64_t)i * XFRAME_TXD_SIZE;
+        uint64_t addr = par + (uint64_t)i * XFRAME_TXD_SIZE;
         uint8_t raw[XFRAME_TXD_SIZE];
-        uint8_t word[8];
         uint64_t control1, bufaddr;
         unsigned seg_len;
 
-        if (pci_dma_read(pdev, txd_addr, raw, sizeof(raw)) != MEMTX_OK) {
+        if (pci_dma_read(pdev, addr, raw, sizeof(raw)) != MEMTX_OK) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "xframe: transmit descriptor read at 0x%" PRIx64
-                          " failed; list abandoned\n", txd_addr);
+                          " failed; list abandoned\n", addr);
             return;
         }
         control1 = xframe_desc_ldq(s, raw, false);
@@ -2071,20 +2072,41 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
             return;
         }
         frame_len += seg_len;
-
-        /*
-         * Give this descriptor back before the frame goes out, and give back
-         * EVERY descriptor the card walks rather than only the list's first.
-         * A driver reclaims transmit descriptors by their ownership bit, so
-         * one left owned by the card is one its ring never recovers: holding
-         * the gathered descriptors drained IRIX's xg ring after about a dozen
-         * frames and stopped it transmitting altogether.
-         */
-        xframe_desc_stq(s, word, control1 & ~XFRAME_TXD_OWN, false);
-        pci_dma_write(pdev, txd_addr, word, sizeof(word));
+        txd_addr[walked] = addr;
+        txd_control1[walked++] = control1;
 
         if ((control1 & XFRAME_TXD_GCL) || frame_len >= cap) {
             break;  /* last segment of this frame */
+        }
+    }
+
+    /*
+     * Give every walked descriptor back before the frame goes out. The first
+     * descriptor is the list's publication point, so release it last: a fault
+     * while releasing any later descriptor leaves the list owned and safe to
+     * retry. A driver reclaims transmit descriptors by their ownership bit;
+     * every write must succeed before it can be told that the list completed.
+     */
+    for (i = 1; i < walked; i++) {
+        uint8_t word[8];
+
+        xframe_desc_stq(s, word, txd_control1[i] & ~XFRAME_TXD_OWN, false);
+        if (pci_dma_write(pdev, txd_addr[i], word, sizeof(word)) != MEMTX_OK) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "xframe: transmit ownership write at 0x%" PRIx64
+                          " failed; completion not published\n", txd_addr[i]);
+            return;
+        }
+    }
+    if (walked > 0) {
+        uint8_t word[8];
+
+        xframe_desc_stq(s, word, txd_control1[0] & ~XFRAME_TXD_OWN, false);
+        if (pci_dma_write(pdev, txd_addr[0], word, sizeof(word)) != MEMTX_OK) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "xframe: transmit ownership write at 0x%" PRIx64
+                          " failed; completion not published\n", txd_addr[0]);
+            return;
         }
     }
 
@@ -2704,6 +2726,20 @@ static void xframe_rx_flush(void *opaque)
     qemu_flush_queued_packets(qemu_get_queue(s->nic));
 }
 
+static bool xframe_rx_completion_write(XframeState *s, uint64_t addr,
+                                       const uint8_t word[8])
+{
+    if (pci_dma_write(PCI_DEVICE(s), addr, word, 8) == MEMTX_OK) {
+        return true;
+    }
+
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "xframe: receive completion write at 0x%" PRIx64
+                  " failed; frame retained\n", addr);
+    xframe_rx_arm_recovery(s);
+    return false;
+}
+
 /*
  * Deposit one frame into the head-of-ring RxD: filter it, write it into the
  * posted buffer, and publish the completion -- length and status first, then
@@ -2919,7 +2955,9 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
 
         hc &= ~0xffffffffULL;   /* buffers 3 and 4 received nothing */
         xframe_desc_stq(s, word, hc, true);
-        pci_dma_write(pdev, desc_addr + 0, word, sizeof(word));
+        if (!xframe_rx_completion_write(s, desc_addr, word)) {
+            return 0;
+        }
 
         xframe_desc_stq(s, word,
                         XFRAME_RXD5_SET_SIZES(bufgot[0], bufgot[1], bufgot[2]),
@@ -2928,11 +2966,15 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
         xframe_desc_stq(s, word,
                         (uint64_t)copy_len << XFRAME_RXD_BUFSIZ_SHIFT, true);
     }
-    pci_dma_write(pdev, desc_addr + 16, word, sizeof(word));
+    if (!xframe_rx_completion_write(s, desc_addr + 16, word)) {
+        return 0;
+    }
 
     xframe_desc_stq(s, word,
                     ((uint64_t)xcode << XFRAME_RXD_XCODE_SHIFT) | offload, true);
-    pci_dma_write(pdev, desc_addr + 8, word, sizeof(word));
+    if (!xframe_rx_completion_write(s, desc_addr + 8, word)) {
+        return 0;
+    }
     xframe_rx_cache_invalidate(s);
 
     /*

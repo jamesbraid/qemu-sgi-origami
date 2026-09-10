@@ -39,6 +39,7 @@
 
 #include "qemu/osdep.h"
 #include "libqos/libqos-pc.h"
+#include "libqos/qos-intel-iommu.h"
 #include "libqtest.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_regs.h"
@@ -448,6 +449,16 @@
 #define RX_BUF_SMALL_CAPACITY    32   /* smaller than the test frames */
 
 /*
+ * VT-d gives the device distinct descriptor and payload pages. The qtest
+ * writes fixtures through their GPAs while Xframe reaches them through the
+ * IOVAs in its descriptors and ring registers.
+ */
+#define XFRAME_IOMMU_DESC_IOVA   (QVTD_IOVA & VTD_PAGE_MASK_4K)
+#define XFRAME_IOMMU_PAYLOAD_IOVA (XFRAME_IOMMU_DESC_IOVA + 0x1000)
+#define XFRAME_IOMMU_DESC_GPA    (TX_RAM_SCRATCH + 0x40000)
+#define XFRAME_IOMMU_PAYLOAD_GPA (XFRAME_IOMMU_DESC_GPA + 0x1000)
+
+/*
  * The station address the -device mac= sets, in wire order -- what the receive
  * filter matches an incoming frame's destination against.
  */
@@ -712,6 +723,48 @@ static void xframe_tx_start(XframeTx *t)
     xframe_tx_start_args(t, NULL);
 }
 
+static void xframe_iommu_map(XframeTx *t, uint64_t iova, uint64_t gpa,
+                             bool writable)
+{
+    uint64_t pte = qvtd_make_leaf_pte(gpa, QVTD_TM_LEGACY_TRANS);
+
+    if (!writable) {
+        pte &= ~VTD_SS_W;
+    }
+    qtest_writeq(t->qs->qts, qvtd_leaf_pte_addr(iova), pte);
+}
+
+static void xframe_iommu_start(XframeTx *t)
+{
+    xframe_tx_start_args(t,
+                         "-machine q35 -m 512 -device intel-iommu");
+
+    qvtd_build_translation(t->qs->qts, QVTD_TM_LEGACY_TRANS,
+                            t->dev->devfn);
+    qvtd_setup_translation_tables(t->qs->qts, XFRAME_IOMMU_PAYLOAD_IOVA,
+                                  QVTD_TM_LEGACY_TRANS);
+    xframe_iommu_map(t, XFRAME_IOMMU_DESC_IOVA,
+                     XFRAME_IOMMU_DESC_GPA, false);
+    xframe_iommu_map(t, XFRAME_IOMMU_PAYLOAD_IOVA,
+                     XFRAME_IOMMU_PAYLOAD_GPA, true);
+    qvtd_program_regs(t->qs->qts, Q35_HOST_BRIDGE_IOMMU_ADDR,
+                      QVTD_TM_LEGACY_TRANS);
+}
+
+static void xframe_iommu_make_descriptor_writable(XframeTx *t)
+{
+    uint32_t tail = 0;
+
+    xframe_iommu_map(t, XFRAME_IOMMU_DESC_IOVA,
+                     XFRAME_IOMMU_DESC_GPA, true);
+    tail = qvtd_submit_iotlb_page_inv(t->qs->qts,
+                                      Q35_HOST_BRIDGE_IOMMU_ADDR,
+                                      QVTD_DOMAIN_ID,
+                                      XFRAME_IOMMU_DESC_IOVA, 0, tail);
+    qvtd_submit_inv_wait_and_poll(t->qs->qts,
+                                  Q35_HOST_BRIDGE_IOMMU_ADDR, tail);
+}
+
 static void xframe_tx_start_binary_args(XframeTx *t, const char *binary,
                                         const char *args)
 {
@@ -893,6 +946,73 @@ static void test_receive_delivers_a_frame(void)
 
     qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
     g_assert_cmpmem(landed, sizeof(frame), frame, sizeof(frame));
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * A receive completion is published by the final control1 write that clears
+ * OWN. If VT-d rejects descriptor writes after the payload DMA succeeds, the
+ * ring must stay on that owned descriptor and retain the frame for retry.
+ */
+static void test_receive_completion_write_failure_is_retryable(void)
+{
+    XframeTx t;
+    uint8_t frame[64];
+    uint8_t landed[64];
+    uint64_t pending;
+    unsigned i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(0x80 + i);
+    }
+    memcpy(frame, xframe_station_mac, sizeof(xframe_station_mac));
+
+    xframe_iommu_start(&t);
+    sock_pif_writeq(&t, GENERAL_INT_MASK, 0);
+    sock_pif_writeq(&t, RX_TRAFFIC_MASK, 0);
+    qtest_memset(t.qs->qts, XFRAME_IOMMU_PAYLOAD_GPA, 0,
+                 sizeof(frame));
+    xframe_program_rxd(&t, XFRAME_IOMMU_DESC_GPA,
+                       XFRAME_IOMMU_PAYLOAD_IOVA, RX_BUF_CAPACITY);
+    xframe_rx_ring_arm(&t, XFRAME_IOMMU_DESC_IOVA);
+
+    net_socket_send_frame(t.host_fd, frame, sizeof(frame));
+    for (i = 0; i < 5000; i++) {
+        if (qtest_readb(t.qs->qts, XFRAME_IOMMU_PAYLOAD_GPA) == frame[0]) {
+            break;
+        }
+        g_usleep(1000);
+    }
+    g_assert_cmpuint(i, <, 5000);
+
+    qtest_memread(t.qs->qts, XFRAME_IOMMU_PAYLOAD_GPA,
+                  landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
+    g_assert_cmphex(dma_ldq_be(t.qs->qts,
+                              XFRAME_IOMMU_DESC_GPA + 8) & RXD_OWN,
+                    ==, RXD_OWN);
+    g_assert_cmphex(sock_pif_readq(&t, RX_TRAFFIC_INT), ==, 0);
+    g_assert_false(xframe_intx_asserted(t.dev));
+
+    xframe_iommu_make_descriptor_writable(&t);
+    qtest_clock_step(t.qs->qts, RX_RECOVERY_STEP_NS);
+    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+
+    g_assert_cmphex(dma_ldq_be(t.qs->qts,
+                              XFRAME_IOMMU_DESC_GPA + 8) & RXD_OWN,
+                    ==, 0);
+    g_assert_cmphex(dma_ldq_be(t.qs->qts,
+                              XFRAME_IOMMU_DESC_GPA + 16) >>
+                    RXD_BUFSIZ_SHIFT, ==, sizeof(frame));
+    pending = sock_pif_readq(&t, RX_TRAFFIC_INT);
+    g_assert_cmphex(pending, ==, RX_TRAFFIC_RING0);
+    g_assert_true(xframe_intx_asserted(t.dev));
+
+    sock_pif_writeq(&t, RX_TRAFFIC_INT, pending);
+    qtest_clock_step(t.qs->qts, RX_RECOVERY_STEP_NS);
+    g_assert_cmphex(sock_pif_readq(&t, RX_TRAFFIC_INT), ==, 0);
+    g_assert_false(xframe_intx_asserted(t.dev));
 
     xframe_tx_stop(&t);
 }
@@ -1973,6 +2093,70 @@ static void test_transmit_emits_a_frame(void)
 
     /* The card released the descriptor: ownership handed back to the host. */
     g_assert_cmphex(dma_ldq_be(t.qs->qts, par) & TXD_OWN, ==, 0);
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * The first descriptor's OWN release is the transmit publication point. If
+ * VT-d rejects that write, no packet or completion may escape. Retrying the
+ * same doorbell after restoring write permission must complete it once.
+ */
+static void test_transmit_ownership_write_failure_is_retryable(void)
+{
+    XframeTx t;
+    uint8_t frame[64];
+    uint8_t got[128];
+    uint64_t pending;
+    size_t len;
+    unsigned i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i + 1);
+    }
+    memset(frame, 0xff, 6);
+
+    xframe_iommu_start(&t);
+    sock_pif_writeq(&t, GENERAL_INT_MASK, 0);
+    sock_pif_writeq(&t, TX_TRAFFIC_MASK, 0);
+
+    qtest_memwrite(t.qs->qts, XFRAME_IOMMU_PAYLOAD_GPA,
+                   frame, sizeof(frame));
+    dma_stq_be(t.qs->qts, XFRAME_IOMMU_DESC_GPA + 0,
+               sizeof(frame) | TXD_OWN | TXD_GCF | TXD_GCL);
+    dma_stq_be(t.qs->qts, XFRAME_IOMMU_DESC_GPA + 8, 0);
+    dma_stq_be(t.qs->qts, XFRAME_IOMMU_DESC_GPA + 16,
+               XFRAME_IOMMU_PAYLOAD_IOVA);
+    dma_stq_be(t.qs->qts, XFRAME_IOMMU_DESC_GPA + 24, 0);
+
+    xframe_ring_doorbell(&t, XFRAME_IOMMU_DESC_IOVA);
+
+    g_assert_cmphex(dma_ldq_be(t.qs->qts,
+                              XFRAME_IOMMU_DESC_GPA) & TXD_OWN,
+                    ==, TXD_OWN);
+    g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT), ==, 0);
+    g_assert_false(xframe_intx_asserted(t.dev));
+    net_socket_expect_no_frame(t.host_fd);
+
+    xframe_iommu_make_descriptor_writable(&t);
+    net_socket_set_recv_timeout(t.host_fd, 5);
+    xframe_ring_doorbell(&t, XFRAME_IOMMU_DESC_IOVA);
+
+    len = net_socket_recv_frame(t.host_fd, got, sizeof(got));
+    g_assert_cmpuint(len, ==, sizeof(frame));
+    g_assert_cmpmem(got, len, frame, sizeof(frame));
+    net_socket_expect_no_frame(t.host_fd);
+
+    g_assert_cmphex(dma_ldq_be(t.qs->qts,
+                              XFRAME_IOMMU_DESC_GPA) & TXD_OWN,
+                    ==, 0);
+    pending = sock_pif_readq(&t, TX_TRAFFIC_INT);
+    g_assert_cmphex(pending, ==, TX_TRAFFIC_FIFO0);
+    g_assert_true(xframe_intx_asserted(t.dev));
+
+    sock_pif_writeq(&t, TX_TRAFFIC_INT, pending);
+    g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT), ==, 0);
+    g_assert_false(xframe_intx_asserted(t.dev));
 
     xframe_tx_stop(&t);
 }
@@ -5276,6 +5460,8 @@ int main(int argc, char **argv)
                    test_mac_table_strobe_via_32bit);
     qtest_add_func("xframe/transmit-emits-a-frame",
                    test_transmit_emits_a_frame);
+    qtest_add_func("xframe/transmit-ownership-write-failure-is-retryable",
+                   test_transmit_ownership_write_failure_is_retryable);
     qtest_add_func("xframe/user-backend-reply-waits-for-transmit",
                    test_user_backend_reply_waits_for_transmit);
     qtest_add_func("xframe/transmit-out-of-range-pointer-is-safe",
@@ -5336,6 +5522,8 @@ int main(int argc, char **argv)
                    test_link_up_timer_respects_backend_already_down);
     qtest_add_func("xframe/receive-delivers-a-frame",
                    test_receive_delivers_a_frame);
+    qtest_add_func("xframe/receive-completion-write-failure-is-retryable",
+                   test_receive_completion_write_failure_is_retryable);
     qtest_add_func("xframe/receive-fetches-descriptor-once",
                    test_receive_fetches_descriptor_once);
     qtest_add_func("xframe/receive-recomputes-pending-irq-once",
