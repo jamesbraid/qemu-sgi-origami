@@ -67,6 +67,9 @@ imx_i2c_write(const char *id, const char *reg, uint64_t ofs, uint64_t value) "%s
 pcf8584_read(uint64_t offset, uint64_t value, unsigned size) "offset: 0x%" PRIx64 " value: 0x%02" PRIx64 " size: %u"
 pcf8584_write(uint64_t offset, uint64_t value, unsigned size) "offset: 0x%" PRIx64 " value: 0x%02" PRIx64 " size: %u"
 pcf8584_start(uint8_t address, int recv, int success) "sending address: 0x%02x, recv: %d, success: %d"
+pcf8584_start_request(uint32_t master, int cpu, uint8_t grant, int grant_pending, uint8_t status, uint8_t phase, int active, int busy, uint32_t owner, uint64_t contenders) "master:%" PRIu32 " cpu:%d grant:0x%02x pending:%d status:0x%02x phase:%u active:%d busy:%d owner:%" PRIu32 " contenders:0x%" PRIx64
+pcf8584_grant_publish(uint32_t master, int cpu, uint8_t grant, uint8_t status, uint8_t phase, uint32_t owner, uint64_t contenders) "master:%" PRIu32 " cpu:%d grant:0x%02x status:0x%02x phase:%u owner:%" PRIu32 " contenders:0x%" PRIx64
+pcf8584_data_read(uint32_t master, int cpu, uint8_t value, uint8_t grant, int grant_pending, uint8_t status, uint8_t phase, int active, int busy, uint32_t owner, uint64_t contenders) "master:%" PRIu32 " cpu:%d value:0x%02x grant:0x%02x pending:%d status:0x%02x phase:%u active:%d busy:%d owner:%" PRIu32 " contenders:0x%" PRIx64
 pcf8584_send(uint8_t value, int success) "send byte: 0x%02x, success: %d"
 pcf8584_recv(uint8_t value) "recv byte: 0x%02x"
 pcf8584_nack(void) "nacking"

@@ -11,6 +11,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "hw/core/cpu.h"
 #include "hw/i2c/pcf8584.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
@@ -100,6 +101,11 @@ static bool pcf8584_on_wire(PCF8584State *s)
 static int64_t pcf8584_now(void)
 {
     return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+}
+
+static int pcf8584_current_cpu_index(void)
+{
+    return current_cpu ? current_cpu->cpu_index : -1;
 }
 
 /*
@@ -301,6 +307,11 @@ static void pcf8584_wire_event(void *opaque, const I2CWireEvent *event)
         return;
     }
     if (stop && s->wire_grant_pending) {
+        trace_pcf8584_grant_publish(s->wire_master,
+                                    pcf8584_current_cpu_index(),
+                                    s->wire_grant, s->status, s->wire_phase,
+                                    s->bus->owner,
+                                    i2c_wire_contenders(s->bus));
         s->data = s->wire_grant;
         s->wire_grant_pending = false;
     }
@@ -440,6 +451,12 @@ static uint8_t pcf8584_wire_read_data(PCF8584State *s)
 {
     uint8_t val = s->data;
 
+    trace_pcf8584_data_read(s->wire_master, pcf8584_current_cpu_index(),
+                            val, s->wire_grant, s->wire_grant_pending,
+                            s->status, s->wire_phase, s->wire_active,
+                            i2c_bus_busy(s->bus), s->bus->owner,
+                            i2c_wire_contenders(s->bus));
+
     if (s->wire_hold_release == PCF8584_HOLD_READ) {
         /* Addressed as a receiver: the read releases our own clock hold. */
         pcf8584_wire_release_hold(s);
@@ -458,6 +475,12 @@ static uint8_t pcf8584_wire_read_data(PCF8584State *s)
 
 static void pcf8584_wire_request_start(PCF8584State *s)
 {
+    trace_pcf8584_start_request(s->wire_master,
+                                pcf8584_current_cpu_index(), s->wire_grant,
+                                s->wire_grant_pending, s->status,
+                                s->wire_phase, s->wire_active,
+                                i2c_bus_busy(s->bus), s->bus->owner,
+                                i2c_wire_contenders(s->bus));
     if (s->wire_active) {
         /* Repeated start: the address byte has not been written yet. */
         s->start_pending = true;
