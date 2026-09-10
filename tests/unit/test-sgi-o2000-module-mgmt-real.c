@@ -572,6 +572,40 @@ static void test_msc_version_exchange(Fixture *f, gconstpointer unused)
 }
 
 /*
+ * For a one-byte read, firmware clears ACK before the discarded read starts
+ * the receive pipeline.  The following read consumes that NACKed byte; it
+ * must leave the adapter paused so the closing repeated START can follow.
+ */
+static void test_nacked_receive_allows_repeated_start(
+    Fixture *f, gconstpointer unused)
+{
+    uint16_t offset = SGI_O2000_NVRAM_RESERVED_PAGE *
+                      SGI_O2000_NVRAM_PAGE_BYTES +
+                      SGI_O2000_NVRAM_VALIDITY_OFFSET;
+    uint8_t address = SGI_O2000_NVRAM_FIRST_ADDR + (offset >> 8);
+    uint8_t value;
+
+    g_assert_true(start_transfer(f, 0, address, false));
+    g_assert_true(send_byte(f, 0, offset & 0xff));
+    g_assert_true(restart_transfer(f, 0, address, true));
+
+    write_reg(f, 0, CTRL_REG, CTL_NAK);
+    (void)read_reg(f, 0, DATA_REG);
+    g_assert_true(wait_done(f, 0));
+    value = read_reg(f, 0, DATA_REG);
+    g_assert_cmphex(value, ==, SGI_O2000_NVRAM_VALIDITY_VALUE);
+    g_assert_true(f->adapter[0]->wire_active);
+    g_assert_cmpuint(f->adapter[0]->wire_phase, ==, PCF8584_WIRE_PAUSED);
+
+    write_reg(f, 0, CTRL_REG, CTL_RESTART);
+    write_reg(f, 0, DATA_REG, INVALID_ADDRESS << 1);
+    g_assert_true(wait_done(f, 0));
+    g_assert_cmphex(read_reg(f, 0, CTRL_REG) & PCF8584_STS_LRB, !=, 0);
+    g_assert_cmpuint(f->adapter[0]->wire_phase, ==, PCF8584_WIRE_PAUSED);
+    stop_transfer(f, 0);
+}
+
+/*
  * A destructive command carries out its action, and is refused rather than
  * acknowledged when the controller cannot carry it out.
  */
@@ -885,6 +919,9 @@ int main(int argc, char **argv)
                NULL, setup, test_arbitration_between_adapters, teardown);
     g_test_add("/sgi-o2000-module-management/shared/msc-version", Fixture,
                NULL, setup, test_msc_version_exchange, teardown);
+    g_test_add("/sgi-o2000-module-management/shared/nacked-receive-restart",
+               Fixture, NULL, setup,
+               test_nacked_receive_allows_repeated_start, teardown);
     g_test_add("/sgi-o2000-module-management/shared/destructive-command",
                Fixture, NULL, setup, test_destructive_command, teardown);
     g_test_add("/sgi-o2000-module-management/shared/destructive-refused",

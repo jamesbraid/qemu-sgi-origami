@@ -462,9 +462,9 @@ static uint8_t pcf8584_wire_read_data(PCF8584State *s)
         pcf8584_wire_release_hold(s);
         return val;
     }
-    if (s->wire_active && s->recv &&
+    if (s->wire_active && s->recv && !s->wire_ack_nak &&
         s->wire_phase == PCF8584_WIRE_PAUSED) {
-        /* The read advances the pipeline: it clocks the next byte in. */
+        /* An acknowledged read advances the pipeline to the next byte. */
         if (!(s->control & PCF8584_CTL_ACK)) {
             trace_pcf8584_nack();
         }
