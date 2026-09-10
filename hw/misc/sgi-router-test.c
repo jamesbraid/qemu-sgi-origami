@@ -93,8 +93,18 @@ static void test_set(Object *obj, Visitor *v, const char *name,
     } else if (!strcmp(name, "histogram-receive")) {
         sgi_router_histogram_receive(SGI_ROUTER(s->router), s->port,
                                      value & 1, value & 2, value & 4);
+    } else if (!strcmp(name, "histogram-receive-repeat")) {
+        for (uint64_t count = value >> 3; count; count--) {
+            sgi_router_histogram_receive(SGI_ROUTER(s->router), s->port,
+                                         value & 1, value & 2, value & 4);
+        }
     } else if (!strcmp(name, "histogram-send")) {
         sgi_router_histogram_send(SGI_ROUTER(s->router), s->port, value & 1);
+    } else if (!strcmp(name, "histogram-send-repeat")) {
+        for (uint64_t count = value >> 1; count; count--) {
+            sgi_router_histogram_send(SGI_ROUTER(s->router), s->port,
+                                      value & 1);
+        }
     } else {
         sgi_router_latch_port_error(SGI_ROUTER(s->router), s->port, value);
     }
@@ -131,8 +141,12 @@ static void test_init(Object *obj)
     object_property_add(obj, "link", "uint64", NULL, test_set, NULL, NULL);
     object_property_add(obj, "histogram-receive", "uint64", NULL, test_set,
                         NULL, NULL);
+    object_property_add(obj, "histogram-receive-repeat", "uint64", NULL,
+                        test_set, NULL, NULL);
     object_property_add(obj, "histogram-send", "uint64", NULL, test_set,
                         NULL, NULL);
+    object_property_add(obj, "histogram-send-repeat", "uint64", NULL,
+                        test_set, NULL, NULL);
     object_property_add(obj, "port-errors", "uint64", NULL, test_set,
                          NULL, NULL);
     object_property_add(obj, "diagnostic", "uint64", test_get, NULL,

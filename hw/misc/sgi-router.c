@@ -310,8 +310,8 @@ static bool sgi_router_port_register(hwaddr addr, unsigned int *port,
     return true;
 }
 
-static bool sgi_router_histogram_utilisation(SGIRouterState *s,
-                                             unsigned int port)
+static bool sgi_router_histogram_progresses(SGIRouterState *s,
+                                            unsigned int port)
 {
     return !(s->diag_parms & RR_DIAG_ABSOLUTE_HISTOGRAM) &&
            extract64(s->port_parms[port],
@@ -401,7 +401,7 @@ static void sgi_router_histogram_sync(SGIRouterState *s)
     }
     ticks = (now - s->histogram_next_ns) / RR_HISTOGRAM_TICK_NS + 1;
     for (port = 0; port < SGI_ROUTER_PORTS; port++) {
-        if (sgi_router_histogram_utilisation(s, port)) {
+        if (sgi_router_histogram_progresses(s, port)) {
             sgi_router_histogram_add_ticks(s, port, ticks);
         }
     }
@@ -503,15 +503,15 @@ static bool sgi_router_write(SGIRouterState *s, hwaddr addr, uint64_t value)
         switch (offset) {
         case RR_PORT_PARMS:
         {
-            uint64_t old_select = extract64(s->port_parms[port], 16, 4);
-            uint64_t new_select = extract64(value, 16, 4);
+            unsigned int old_mode = extract64(
+                s->port_parms[port], RR_PORT_HISTOGRAM_SELECT_SHIFT, 2);
             unsigned int mode = extract64(value,
                                            RR_PORT_HISTOGRAM_SELECT_SHIFT, 2);
 
             sgi_router_histogram_sync(s);
             s->port_parms[port] = value & RR_PORT_PARMS_MASK;
             if (mode != RR_HISTOGRAM_UTILISATION &&
-                old_select != new_select) {
+                old_mode != mode) {
                 qemu_log_mask(LOG_UNIMP,
                               "sgi-router: histogram selector %u on port %u "
                               "is not implemented\n", mode, port + 1);
@@ -695,7 +695,7 @@ void sgi_router_histogram_receive(SGIRouterState *s, unsigned int port,
 
     g_assert(port >= 1 && port <= SGI_ROUTER_PORTS);
     sgi_router_histogram_sync(s);
-    if (!accepted || !sgi_router_histogram_utilisation(s, port - 1)) {
+    if (!accepted || !sgi_router_histogram_progresses(s, port - 1)) {
         return;
     }
     if (queue_empty && output_uncontended) {
@@ -709,7 +709,7 @@ void sgi_router_histogram_send(SGIRouterState *s, unsigned int port,
 {
     g_assert(port >= 1 && port <= SGI_ROUTER_PORTS);
     sgi_router_histogram_sync(s);
-    if (accepted && sgi_router_histogram_utilisation(s, port - 1)) {
+    if (accepted && sgi_router_histogram_progresses(s, port - 1)) {
         sgi_router_histogram_increment(s, port - 1, 1U << 2);
     }
 }

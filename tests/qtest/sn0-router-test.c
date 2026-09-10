@@ -212,6 +212,23 @@ static void test_histograms(void)
     qtest_quit(qts);
 }
 
+static void test_histogram_common_rescale(void)
+{
+    QTestState *qts = start("");
+
+    set(qts, "port", 1);
+    write_reg(qts, RR_PORT_PARMS(1),
+              PORT_PARMS_RESET | PORT_HISTOGRAM_MODE(1));
+    set(qts, "histogram-send-repeat", (UINT64_C(5) << 1) | 1);
+    set(qts, "histogram-receive-repeat", (UINT64_C(0xffff) << 3) | 7);
+    write_reg(qts, RR_HISTOGRAM(1),
+              (UINT64_C(0xffff) ^ 2) << 16);
+    set(qts, "histogram-receive", 7);
+    g_assert_cmphex(read_reg(qts, RR_HISTOGRAM(1)), ==,
+                    UINT64_C(0x0000000200018000));
+    qtest_quit(qts);
+}
+
 static void test_histogram_unsupported_diagnostics(void)
 {
     g_autofree char *path = NULL;
@@ -229,21 +246,39 @@ static void test_histogram_unsupported_diagnostics(void)
     write_reg(qts, RR_PORT_PARMS(1),
               PORT_PARMS_RESET | PORT_HISTOGRAM_MODE(2));
     write_reg(qts, RR_PORT_PARMS(1),
+              PORT_PARMS_RESET | PORT_HISTOGRAM_MODE(2) |
+              PORT_HISTOGRAM_VC(3));
+    write_reg(qts, RR_PORT_PARMS(1),
               PORT_PARMS_RESET | PORT_HISTOGRAM_MODE(3));
     write_reg(qts, RR_PORT_PARMS(1),
               PORT_PARMS_RESET | PORT_HISTOGRAM_MODE(3));
     write_reg(qts, RR_PORT_PARMS(1),
               PORT_PARMS_RESET | PORT_HISTOGRAM_MODE(1));
+    write_reg(qts, RR_PORT_PARMS(1),
+              PORT_PARMS_RESET | PORT_HISTOGRAM_MODE(2));
+    write_reg(qts, RR_PORT_PARMS(1), PORT_PARMS_RESET);
+    write_reg(qts, RR_PORT_PARMS(1),
+              PORT_PARMS_RESET | PORT_HISTOGRAM_VC(2));
+    write_reg(qts, RR_PORT_PARMS(1),
+              PORT_PARMS_RESET | PORT_HISTOGRAM_MODE(1));
     write_reg(qts, RR_DIAG_PARMS, DIAG_ABSOLUTE_HISTOGRAM);
     write_reg(qts, RR_DIAG_PARMS, DIAG_ABSOLUTE_HISTOGRAM);
+    write_reg(qts, RR_DIAG_PARMS, 0);
+    write_reg(qts, RR_DIAG_PARMS, DIAG_ABSOLUTE_HISTOGRAM);
+    qtest_system_reset(qts);
+    write_reg(qts, RR_PORT_PARMS(1),
+              PORT_PARMS_RESET | PORT_HISTOGRAM_MODE(1));
+    qtest_clock_step(qts, 20);
     qtest_quit(qts);
 
     g_assert_true(g_file_get_contents(path, &log, NULL, NULL));
     g_assert_cmpuint(substring_count(log, "histogram selector 2 on port 1"),
-                     ==, 1);
+                     ==, 2);
     g_assert_cmpuint(substring_count(log, "histogram selector 3 on port 1"),
                      ==, 1);
-    g_assert_cmpuint(substring_count(log, "absolute histogram mode"), ==, 1);
+    g_assert_cmpuint(substring_count(log, "histogram selector 0 on port 1"),
+                     ==, 1);
+    g_assert_cmpuint(substring_count(log, "absolute histogram mode"), ==, 2);
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -331,6 +366,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/router/registers", test_registers);
     qtest_add_func("sn0/router/links-reset", test_links_reset);
     qtest_add_func("sn0/router/histograms", test_histograms);
+    qtest_add_func("sn0/router/histogram-common-rescale",
+                   test_histogram_common_rescale);
     qtest_add_func("sn0/router/histogram-unsupported-diagnostics",
                    test_histogram_unsupported_diagnostics);
     qtest_add_func("sn0/router/migration", test_migration);
