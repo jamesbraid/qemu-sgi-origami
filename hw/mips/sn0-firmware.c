@@ -402,7 +402,7 @@ static uint64_t sn0_firmware_launch(SN0MachineState *s, CPUMIPSState *env)
     launch->stack_addr = env->active_tc.gpr[8];
     launch->gp_addr = env->active_tc.gpr[9];
 
-    sgi_hub_set_cpu_enable(&node->hub, slice, true);
+    sgi_hub_set_cpu_enable(&node->hub, slice, true, false);
     /*
      * async_safe_run_on_cpu(): the quiescent section keeps a peer's
      * BQL-free read of CPU state from overlapping cpu_reset().

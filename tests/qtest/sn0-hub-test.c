@@ -1449,21 +1449,14 @@ static void assert_cpu_stopped_while_peer_advances(QTestState *qts,
                                                    unsigned int stopped_cpu,
                                                    unsigned int running_cpu)
 {
-    int64_t deadline;
     uint64_t stopped;
     uint64_t running = cpu_heartbeat(qts, running_cpu);
-    bool running_advanced = false;
 
     fence_cpu(qts, stopped_cpu);
     stopped = cpu_heartbeat(qts, stopped_cpu);
-    deadline = g_get_monotonic_time() + 100 * G_TIME_SPAN_MILLISECOND;
-    do {
-        g_usleep(1000);
-        g_assert_cmphex(cpu_heartbeat(qts, stopped_cpu), ==, stopped);
-        running_advanced |= cpu_heartbeat(qts, running_cpu) != running;
-    } while (g_get_monotonic_time() < deadline);
-
-    g_assert_true(running_advanced);
+    g_assert_cmphex(wait_for_cpu_heartbeat(qts, running_cpu, running), !=,
+                    running);
+    g_assert_cmphex(cpu_heartbeat(qts, stopped_cpu), ==, stopped);
 }
 
 static void test_cpu_enable_registers_control_matching_processors(
