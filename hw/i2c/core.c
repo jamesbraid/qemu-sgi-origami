@@ -1771,8 +1771,8 @@ int i2c_wire_stage(I2CBus *bus, uint32_t master, int64_t at,
                              sda, clock);
 }
 
-int i2c_wire_stage_after(I2CBus *bus, uint32_t master, int64_t delay_ns,
-                         bool sda, bool clock)
+int i2c_wire_stage_at_or_after(I2CBus *bus, uint32_t master, int64_t at,
+                               int64_t min_delay_ns, bool sda, bool clock)
 {
     int64_t now;
     int ret = i2c_wire_stage_check(bus, master);
@@ -1780,14 +1780,22 @@ int i2c_wire_stage_after(I2CBus *bus, uint32_t master, int64_t delay_ns,
     if (ret) {
         return ret;
     }
-    if (delay_ns <= 0) {
+    if (min_delay_ns <= 0) {
         return -EINVAL;
     }
     now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    if (now > INT64_MAX - delay_ns) {
+    if (now > INT64_MAX - min_delay_ns) {
         return -EINVAL;
     }
-    return i2c_wire_stage_at(bus, master, now + delay_ns, now, sda, clock);
+    at = MAX(at, now + min_delay_ns);
+    return i2c_wire_stage_at(bus, master, at, now, sda, clock);
+}
+
+int i2c_wire_stage_after(I2CBus *bus, uint32_t master, int64_t delay_ns,
+                         bool sda, bool clock)
+{
+    return i2c_wire_stage_at_or_after(bus, master, INT64_MIN, delay_ns,
+                                      sda, clock);
 }
 
 int i2c_wire_hold(I2CSlave *slave, int64_t at, bool hold)
