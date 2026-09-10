@@ -276,6 +276,7 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
     }
     for (unsigned i = 0; i < 2; i++) {
         qdev_prop_set_uint32(DEVICE(&s->pi[i]), "interface", i);
+        qdev_prop_set_uint32(DEVICE(&s->pi[i]), "cpu-base", s->cpu_base);
         qdev_prop_set_uint32(DEVICE(&s->pi[i]), "processor-count",
                             s->processor_count);
         if (!qdev_realize(DEVICE(&s->pi[i]), sysbus_get_default(), errp)) {
@@ -342,6 +343,11 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
 static const Property bedrock_properties[] = {
     DEFINE_PROP_UINT32("processor-count", SGIBedrockState,
                        processor_count, 1),
+    /*
+     * Index of this node's first processor, so each interface can name its
+     * own pair and tell the reading processor A from B.
+     */
+    DEFINE_PROP_UINT32("cpu-base", SGIBedrockState, cpu_base, 0),
     DEFINE_PROP_UINT8("revision", SGIBedrockState, revision, 2),
     DEFINE_PROP_UINT8("local-region", SGIBedrockState, local_region, 0),
     DEFINE_PROP_UINT8("inbound-widget", SGIBedrockState, inbound_widget, 8),

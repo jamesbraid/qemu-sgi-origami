@@ -26,6 +26,7 @@ struct SGIBedrockPIState {
     qemu_irq cpu_enable_out[SGI_BEDROCK_PI_PROCESSORS];
 
     uint32_t interface;
+    uint32_t cpu_base;
     uint32_t processor_count;
     uint32_t request_region;
     uint64_t cpu_protect;
