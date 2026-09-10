@@ -44,6 +44,7 @@
 #define MCR_RX_DMA_EN     (1u << 15)
 #define MCR_RX_EN         (1u << 16)
 #define MCR_LOOPBACK      (1u << 17)
+#define MCR_RESET         (1u << 31)
 
 #define ENET_INT_RX_TIMER (1u << 0)
 #define ENET_INT_RX_THRESHOLD (1u << 1)
@@ -1534,6 +1535,80 @@ static void test_a_transmit_with_no_reply_raises_nothing(const void *data)
     g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
+/* The reset case needs a control that proves its backend reply was queued. */
+static void test_deferred_receive_delivers_without_reset(const void *data)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *trace = NULL;
+    QTestState *qts;
+    uint8_t frame[60];
+    uint32_t desc = RAM_SCRATCH;
+    uint32_t ring = RAM_SCRATCH + 0x8000;
+    uint32_t rxbuf = RAM_SCRATCH + 0xc000;
+
+    path = g_strdup_printf("sgi-ioc3-rx-deferred-%u-%u.trace",
+                           (unsigned int)getpid(), g_random_int());
+    qts = qtest_initf("-M pc -m 128M -display none "
+                      "-netdev user,id=n0 "
+                      "-device sgi-ioc3,addr=%02x.0,netdev=n0 "
+                      "-trace sgi_ioc3_eth_rx_flush,file=%s",
+                      IOC3_PCI_SLOT, path);
+    ioc3_bring_up(qts, ring, rxbuf, 2);
+    ioc3_writel(qts, ENET_TX_RING_HI, 0);
+    ioc3_writel(qts, ENET_TX_RING_LO, desc & 0xffffc000u);
+
+    build_arp_request(frame, sizeof(frame));
+    dma_stl_be(qts, desc, sizeof(frame) | TXD_DATA_VALID | TXD_INT_DONE);
+    dma_stl_be(qts, desc + 4, sizeof(frame));
+    qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
+
+    qtest_writel(qts, ENET_TX_PRODUCE, 128);
+    wait_for_rx_consume(qts, RX_RING_STRIDE);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
+    g_assert_nonnull(strstr(trace, "sgi_ioc3_eth_rx_flush"));
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
+/* Reset drops receive work queued by the transmit callback. */
+static void test_mac_reset_cancels_a_deferred_receive_flush(const void *data)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *trace = NULL;
+    QTestState *qts;
+    uint8_t frame[60];
+    uint32_t desc = RAM_SCRATCH;
+    uint32_t ring = RAM_SCRATCH + 0x8000;
+    uint32_t rxbuf = RAM_SCRATCH + 0xc000;
+
+    path = g_strdup_printf("sgi-ioc3-rx-reset-%u-%u.trace",
+                           (unsigned int)getpid(), g_random_int());
+    qts = qtest_initf("-M pc -m 128M -display none "
+                      "-netdev user,id=n0 "
+                      "-device sgi-ioc3,addr=%02x.0,netdev=n0 "
+                      "-trace sgi_ioc3_eth_rx_flush,file=%s",
+                      IOC3_PCI_SLOT, path);
+    ioc3_bring_up(qts, ring, rxbuf, 2);
+    ioc3_writel(qts, ENET_TX_RING_HI, 0);
+    ioc3_writel(qts, ENET_TX_RING_LO, desc & 0xffffc000u);
+
+    build_arp_request(frame, sizeof(frame));
+    dma_stl_be(qts, desc, sizeof(frame) | TXD_DATA_VALID | TXD_INT_DONE);
+    dma_stl_be(qts, desc + 4, sizeof(frame));
+    qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
+
+    /* Queue the backend reply and reset before the main loop can run its BH. */
+    qtest_writel_then_writel(qts, ENET_TX_PRODUCE, 128,
+                             ENET_MAC_CONTROL, MCR_RESET);
+    qtest_clock_step(qts, 1);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
+    g_assert_null(strstr(trace, "sgi_ioc3_eth_rx_flush"));
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     unsigned int i;
@@ -1543,6 +1618,11 @@ int main(int argc, char **argv)
     /* The transmit path changes at 104; the receive size at each. */
     qtest_add_data_func("sgi-ioc3-eth/no-reply-raises-nothing", NULL,
                         test_a_transmit_with_no_reply_raises_nothing);
+    qtest_add_data_func("sgi-ioc3-eth/deferred-receive-delivers-without-reset",
+                        NULL,
+                        test_deferred_receive_delivers_without_reset);
+    qtest_add_data_func("sgi-ioc3-eth/mac-reset-cancels-deferred-receive", NULL,
+                        test_mac_reset_cancels_a_deferred_receive_flush);
     qtest_add_data_func("sgi-ioc3-eth/backend-link-reaches-status", NULL,
                         test_the_backend_link_reaches_the_status_word);
     qtest_add_data_func("sgi-ioc3-eth/queued-frame-lands-after-loopback", NULL,
