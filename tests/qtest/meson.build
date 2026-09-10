@@ -114,6 +114,7 @@ qtests_i386 = \
   (slirp.found() and config_all_devices.has_key('CONFIG_SGI_IOC3') ?
     ['sgi-ioc3-eth-test'] : []) + \
   (config_all_devices.has_key('CONFIG_XFRAME_PCI') ? ['xframe-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_TIGON') ? ['tigon-test'] : []) + \
   qtests_filter + \
   (config_all_devices.has_key('CONFIG_ACPI_VMGENID') ? ['vmgenid-test'] : []) +             \
   (config_all_devices.has_key('CONFIG_AHCI_ICH9') and have_tools ? ['ahci-test'] : []) +    \

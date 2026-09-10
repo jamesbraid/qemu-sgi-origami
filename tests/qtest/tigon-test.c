@@ -1,0 +1,1067 @@
+/*
+ * Alteon Tigon 2 (the SGI "eg" gigabit board) on a generic PCI host.
+ *
+ * This is the device's contract test: it runs on a plain x86 PC PCI bus,
+ * with no Origin 200 Bridge in the path, proving the model is a general-purpose
+ * PCI card that works on any host. It owns config identity, the register
+ * contract, the firmware-mediated ring engine (transmit and receive over host
+ * DRAM), ring producer-index safety, the interrupt controls, and -- the point
+ * of running here -- the descriptor/data DMA byte order, pinned with golden
+ * fixed-byte-layout assertions rather than a self-round-trip (a round trip is
+ * self-consistent for both polarities and cannot see the swap direction).
+ *
+ * The composition of this device's native-order DMA with the Bridge's per-slot
+ * DEV_SWAP correction is a separate Origin 200 integration test that genuinely
+ * needs the Bridge; it lives in tests/qtest/sn0-tigon-test.c. See
+ * docs/library/nic-on-bridge-conventions.md.
+ *
+ * Register offsets, ring/descriptor layouts and byte-swap controls come from
+ * the reviewed docs/datasheets/tigon.md contract, restated here so the test
+ * pins them independently of the model.
+ *
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ */
+
+#include "qemu/osdep.h"
+#include "libqos/libqos-pc.h"
+#include "libqtest.h"
+#include "hw/pci/pci.h"
+#include "hw/pci/pci_regs.h"
+
+#include <sys/socket.h>
+#include <netinet/in.h>
+
+/* A fixed station address so PAR0/PAR1 and the EEPROM read are known. */
+#define TIGON_MAC       "52:54:00:12:34:56"
+static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
+
+/* The card's identity, from docs/datasheets/tigon.md. */
+#define TIGON_VENDOR_ID     0x10a9
+#define TIGON_DEVICE_ID     0x0009
+#define TIGON_CLASS_CODE    0x020000
+#define TIGON_CHIP_REV      0x6         /* Tigon 2 rev nibble */
+#define TIGON_BAR0_SIZE     0x4000
+
+/* Register offsets within BAR0 (if_tireg.h). */
+#define TI_MISC_HOST_CTL    0x040
+#define TI_MISC_LOCAL_CTL   0x044
+#define TI_CPU_STATE        0x140
+#define TI_MB_HOSTINTR      0x504
+#define TI_MB_SENDPROD_IDX  0x514
+#define TI_MB_STDRXPROD_IDX 0x51c
+#define TI_GCR_PAR0         0x600
+#define TI_GCR_PAR1         0x604
+#define TI_GCR_GENINFO_HI   0x608
+#define TI_GCR_GENINFO_LO   0x60c
+#define TI_GCR_OPMODE       0x618
+#define TI_GCR_EVENTCONS_IDX 0x628
+#define TI_GCR_RXRETURNCONS_IDX 0x680
+
+/* MISC_HOST_CTL bits. */
+#define TI_MHC_INTSTATE      0x00000001
+#define TI_MHC_CLEARINT      0x00000002
+#define TI_MHC_RESET         0x00000008
+#define TI_MHC_BYTE_SWAP_ENB 0x00000010
+#define TI_MHC_WORD_SWAP_ENB 0x00000020
+#define TI_MHC_MASK_INTS     0x00000040
+#define TI_MHC_CHIP_REV_MASK 0xf0000000
+
+/* Serial-EEPROM bit-bang lines in MISC_LOCAL_CTL. */
+#define TI_MLC_EE_CLK       0x00100000
+#define TI_MLC_EE_TXEN      0x00200000
+#define TI_MLC_EE_DOUT      0x00400000
+#define TI_MLC_EE_DIN       0x00800000
+#define TI_EE_MAC_OFFSET    0x8c
+
+/* GCR OPMODE: the descriptor/data DMA byte-swap control (if_tireg.h). */
+#define TI_OPMODE_BYTESWAP_BD   0x00000002
+#define TI_OPMODE_WORDSWAP_BD   0x00000004
+#define TI_OPMODE_BYTESWAP_DATA 0x00000010
+
+/* Ring flags, descriptor type, and the firmware-up event. */
+#define TI_RCB_FLAG_HOST_RING   0x0040
+#define TI_BDFLAG_END           0x0004
+#define TI_BDTYPE_RECV_BD       0x0002
+#define TI_EV_FIRMWARE_UP       0x01
+
+/* Ring sizes the RCBs advertise (if_tireg.h). */
+#define EVENT_RING_CNT      256
+#define RETURN_RING_CNT     2048
+#define STD_RX_RING_CNT     512
+#define TX_RING_CNT         512
+
+/*
+ * Field offsets inside the general information block (struct ti_gib): a 1 KB
+ * statistics area, then the ring control blocks, then the host-memory
+ * producer/consumer pointers. Restated from the public host-interface layout.
+ */
+#define GIB_EV_RCB          0x400
+#define GIB_TX_RCB          0x420
+#define GIB_STD_RX_RCB      0x430
+#define GIB_RETURN_RCB      0x460
+#define GIB_EV_PROD_PTR     0x470
+#define GIB_RETURN_PROD_PTR 0x478
+#define GIB_TX_CONS_PTR     0x480
+#define GIB_SIZE            0x490
+
+typedef struct {
+    QOSState *qs;
+    QPCIDevice *dev;
+    QPCIBar bar;
+    bool dma_be;                /* the DMA byte order the guest set in OPMODE */
+    /* Guest-DRAM regions, allocated at bring-up. */
+    uint64_t gib, ev_ring, ev_prod, tx_cons, ret_ring, ret_prod,
+             std_rx_ring, tx_ring, rx_buf, tx_buf;
+} TigonTest;
+
+static void save_dev(QPCIDevice *dev, int devfn, void *data)
+{
+    *(QPCIDevice **)data = dev;
+}
+
+static QPCIDevice *find_tigon(QPCIBus *bus)
+{
+    QPCIDevice *dev = NULL;
+
+    qpci_device_foreach(bus, TIGON_VENDOR_ID, TIGON_DEVICE_ID, save_dev, &dev);
+    return dev;
+}
+
+static void tigon_boot_cmd(TigonTest *t, const char *cmd)
+{
+    uint64_t barsize;
+
+    memset(t, 0, sizeof(*t));
+    t->qs = qtest_pc_boot("%s", cmd);
+    t->dev = find_tigon(t->qs->pcibus);
+    g_assert(t->dev != NULL);
+
+    t->bar = qpci_iomap(t->dev, 0, &barsize);
+    g_assert_cmphex(barsize, ==, TIGON_BAR0_SIZE);
+
+    qpci_device_enable(t->dev);
+}
+
+static void tigon_boot(TigonTest *t)
+{
+    tigon_boot_cmd(t, "-device tigon,mac=" TIGON_MAC);
+}
+
+static void tigon_stop(TigonTest *t)
+{
+    g_free(t->dev);
+    qtest_shutdown(t->qs);
+}
+
+static uint32_t reg_rd(TigonTest *t, uint64_t off)
+{
+    return qpci_io_readl(t->dev, t->bar, off);
+}
+
+static void reg_wr(TigonTest *t, uint64_t off, uint32_t val)
+{
+    qpci_io_writel(t->dev, t->bar, off, val);
+}
+
+static bool irq_pending(TigonTest *t)
+{
+    return (reg_rd(t, TI_MISC_HOST_CTL) & TI_MHC_INTSTATE) != 0;
+}
+
+/*
+ * Descriptor/GIB DMA lands in guest memory in the byte order the guest
+ * programmed through OPMODE, so read and write it explicitly by hand at that
+ * order -- never through qtest_writel, whose target-endianness correction would
+ * hide the very polarity these accessors have to reproduce for the device.
+ */
+static void dma_stl(TigonTest *t, uint64_t addr, uint32_t val)
+{
+    uint8_t b[4];
+
+    if (t->dma_be) {
+        b[0] = val >> 24; b[1] = val >> 16; b[2] = val >> 8; b[3] = val;
+    } else {
+        b[0] = val; b[1] = val >> 8; b[2] = val >> 16; b[3] = val >> 24;
+    }
+    qtest_memwrite(t->qs->qts, addr, b, 4);
+}
+
+static uint32_t dma_ldl(TigonTest *t, uint64_t addr)
+{
+    uint8_t b[4];
+
+    qtest_memread(t->qs->qts, addr, b, 4);
+    if (t->dma_be) {
+        return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
+               ((uint32_t)b[2] << 8) | b[3];
+    }
+    return b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) |
+           ((uint32_t)b[3] << 24);
+}
+
+/* A 64-bit host DMA address is two words, high then low (ti_hostaddr). */
+static void dma_st_hostaddr(TigonTest *t, uint64_t at, uint64_t addr)
+{
+    dma_stl(t, at, addr >> 32);
+    dma_stl(t, at + 4, addr & 0xffffffff);
+}
+
+/*
+ * Build the general information block and its rings in guest DRAM and program
+ * the DMA byte order the driver would on this host, but do not yet publish the
+ * GIB address or release the CPU -- so a caller can test the firmware-up
+ * preconditions in isolation.
+ */
+static void tigon_setup_rings(TigonTest *t, bool dma_be)
+{
+    QTestState *q = t->qs->qts;
+
+    t->dma_be = dma_be;
+    reg_wr(t, TI_GCR_OPMODE, dma_be ?
+           (TI_OPMODE_BYTESWAP_BD | TI_OPMODE_WORDSWAP_BD |
+            TI_OPMODE_BYTESWAP_DATA) : 0);
+
+    t->gib         = qmalloc(t->qs, GIB_SIZE);
+    t->ev_ring     = qmalloc(t->qs, EVENT_RING_CNT * 8);
+    t->ev_prod     = qmalloc(t->qs, 8);
+    t->tx_cons     = qmalloc(t->qs, 8);
+    t->ret_ring    = qmalloc(t->qs, RETURN_RING_CNT * 32);
+    t->ret_prod    = qmalloc(t->qs, 8);
+    t->std_rx_ring = qmalloc(t->qs, STD_RX_RING_CNT * 32);
+    t->tx_ring     = qmalloc(t->qs, TX_RING_CNT * 16);
+    t->rx_buf      = qmalloc(t->qs, 2048);
+    t->tx_buf      = qmalloc(t->qs, 2048);
+
+    qtest_memset(q, t->gib, 0, GIB_SIZE);
+    qtest_memset(q, t->ev_ring, 0, EVENT_RING_CNT * 8);
+    qtest_memset(q, t->ev_prod, 0, 8);
+    qtest_memset(q, t->tx_cons, 0, 8);
+    qtest_memset(q, t->ret_ring, 0, RETURN_RING_CNT * 32);
+    qtest_memset(q, t->ret_prod, 0, 8);
+    qtest_memset(q, t->std_rx_ring, 0, STD_RX_RING_CNT * 32);
+    qtest_memset(q, t->tx_ring, 0, TX_RING_CNT * 16);
+
+    /* Event ring control block and the host slot for its producer index. */
+    dma_st_hostaddr(t, t->gib + GIB_EV_RCB, t->ev_ring);
+    dma_st_hostaddr(t, t->gib + GIB_EV_PROD_PTR, t->ev_prod);
+
+    /* Tigon 2 keeps the transmit ring in host DRAM (the host-ring flag). */
+    dma_st_hostaddr(t, t->gib + GIB_TX_RCB, t->tx_ring);
+    dma_stl(t, t->gib + GIB_TX_RCB + 8,
+            ((uint32_t)TX_RING_CNT << 16) | TI_RCB_FLAG_HOST_RING);
+    dma_st_hostaddr(t, t->gib + GIB_TX_CONS_PTR, t->tx_cons);
+
+    dma_st_hostaddr(t, t->gib + GIB_STD_RX_RCB, t->std_rx_ring);
+
+    dma_st_hostaddr(t, t->gib + GIB_RETURN_RCB, t->ret_ring);
+    dma_stl(t, t->gib + GIB_RETURN_RCB + 8, (uint32_t)RETURN_RING_CNT << 16);
+    dma_st_hostaddr(t, t->gib + GIB_RETURN_PROD_PTR, t->ret_prod);
+}
+
+/* Publish the GIB address and release embedded CPU A -> firmware-up. */
+static void tigon_publish(TigonTest *t)
+{
+    /* The little-endian register view puts the low half at the lower offset. */
+    reg_wr(t, TI_GCR_GENINFO_HI, t->gib & 0xffffffff);
+    reg_wr(t, TI_GCR_GENINFO_LO, t->gib >> 32);
+    reg_wr(t, TI_CPU_STATE, 0);   /* clear the halt bit */
+}
+
+static void tigon_operational(TigonTest *t, bool dma_be)
+{
+    tigon_setup_rings(t, dma_be);
+    tigon_publish(t);
+}
+
+/* ---- config identity and the BAR ---- */
+
+static void test_config_identity(void)
+{
+    TigonTest t;
+
+    tigon_boot(&t);
+
+    g_assert_cmphex(qpci_config_readw(t.dev, PCI_VENDOR_ID), ==,
+                    TIGON_VENDOR_ID);
+    g_assert_cmphex(qpci_config_readw(t.dev, PCI_DEVICE_ID), ==,
+                    TIGON_DEVICE_ID);
+    /* Class code sits in the top three bytes of the class/revision word. */
+    g_assert_cmphex(qpci_config_readl(t.dev, PCI_CLASS_REVISION) >> 8, ==,
+                    TIGON_CLASS_CODE);
+    /* One interrupt pin, INTA. */
+    g_assert_cmphex(qpci_config_readb(t.dev, PCI_INTERRUPT_PIN), ==, 0x01);
+
+    tigon_stop(&t);
+}
+
+static void test_bar0_shape(void)
+{
+    QOSState *qs = qtest_pc_boot("-device tigon,mac=" TIGON_MAC);
+    QPCIDevice *dev = find_tigon(qs->pcibus);
+
+    g_assert(dev != NULL);
+
+    /*
+     * BAR0 is a single 32-bit, non-prefetchable memory BAR: bit 0 clear
+     * (memory), bits 2:1 clear (32-bit), bit 3 clear (non-prefetchable), and
+     * the size mask leaves the low 14 bits (16 KB) zero.
+     */
+    qpci_config_writel(dev, PCI_BASE_ADDRESS_0, 0xffffffffu);
+    g_assert_cmphex(qpci_config_readl(dev, PCI_BASE_ADDRESS_0), ==,
+                    0xffffc000u);
+
+    /* There is no second BAR. */
+    qpci_config_writel(dev, PCI_BASE_ADDRESS_1, 0xffffffffu);
+    g_assert_cmphex(qpci_config_readl(dev, PCI_BASE_ADDRESS_1), ==, 0);
+
+    g_free(dev);
+    qtest_shutdown(qs);
+}
+
+/* ---- register contract ---- */
+
+static void test_chip_rev_and_reset(void)
+{
+    TigonTest t;
+
+    tigon_boot(&t);
+
+    /* The chip-revision nibble is the driver's Tigon 1 vs 2 runtime test. */
+    g_assert_cmphex(reg_rd(&t, TI_MISC_HOST_CTL) & TI_MHC_CHIP_REV_MASK, ==,
+                    (uint32_t)TIGON_CHIP_REV << 28);
+
+    /* The RESET bit is accepted and leaves the read-only rev nibble intact. */
+    reg_wr(&t, TI_MISC_HOST_CTL, TI_MHC_RESET);
+    g_assert_cmphex(reg_rd(&t, TI_MISC_HOST_CTL) & TI_MHC_CHIP_REV_MASK, ==,
+                    (uint32_t)TIGON_CHIP_REV << 28);
+
+    tigon_stop(&t);
+}
+
+/*
+ * The register-swap bits and the descriptor-swap operating mode are ordinary
+ * read/write state: the guest programs them and reads them back unchanged. This
+ * pins that the model stores them rather than acting on them in some hidden way
+ * -- the byte-order tests pin what the descriptor-swap bit does.
+ */
+static void test_register_config_roundtrip(void)
+{
+    TigonTest t;
+
+    tigon_boot(&t);
+
+    reg_wr(&t, TI_MISC_HOST_CTL, TI_MHC_BYTE_SWAP_ENB | TI_MHC_WORD_SWAP_ENB);
+    g_assert_cmphex(reg_rd(&t, TI_MISC_HOST_CTL) &
+                    (TI_MHC_BYTE_SWAP_ENB | TI_MHC_WORD_SWAP_ENB), ==,
+                    TI_MHC_BYTE_SWAP_ENB | TI_MHC_WORD_SWAP_ENB);
+
+    reg_wr(&t, TI_GCR_OPMODE,
+           TI_OPMODE_BYTESWAP_BD | TI_OPMODE_WORDSWAP_BD |
+           TI_OPMODE_BYTESWAP_DATA);
+    g_assert_cmphex(reg_rd(&t, TI_GCR_OPMODE), ==,
+                    TI_OPMODE_BYTESWAP_BD | TI_OPMODE_WORDSWAP_BD |
+                    TI_OPMODE_BYTESWAP_DATA);
+
+    tigon_stop(&t);
+}
+
+/* ---- station address, both routes ---- */
+
+static void test_station_addr_par(void)
+{
+    TigonTest t;
+
+    tigon_boot(&t);
+
+    /* PAR0 = bytes 0-1, PAR1 = bytes 2-5, in the driver's big-endian pair. */
+    g_assert_cmphex(reg_rd(&t, TI_GCR_PAR0), ==,
+                    ((uint32_t)tigon_mac[0] << 8) | tigon_mac[1]);
+    g_assert_cmphex(reg_rd(&t, TI_GCR_PAR1), ==,
+                    ((uint32_t)tigon_mac[2] << 24) |
+                    ((uint32_t)tigon_mac[3] << 16) |
+                    ((uint32_t)tigon_mac[4] << 8) | tigon_mac[5]);
+
+    tigon_stop(&t);
+}
+
+/*
+ * The bit-banged serial EEPROM the driver reads at attach, before any firmware
+ * download. The helpers replay the exact 24Cxx I2C sequence the NetBSD "ti"
+ * driver's ti_eeprom_getbyte()/EEPROM_START()/EEPROM_STOP() macros drive.
+ */
+static uint32_t ee_read(TigonTest *t)
+{
+    return reg_rd(t, TI_MISC_LOCAL_CTL);
+}
+
+static void ee_write(TigonTest *t, uint32_t v)
+{
+    reg_wr(t, TI_MISC_LOCAL_CTL, v);
+}
+
+static void ee_setbit(TigonTest *t, uint32_t bit)
+{
+    ee_write(t, ee_read(t) | bit);
+}
+
+static void ee_clrbit(TigonTest *t, uint32_t bit)
+{
+    ee_write(t, ee_read(t) & ~bit);
+}
+
+static void ee_start(TigonTest *t)
+{
+    ee_setbit(t, TI_MLC_EE_CLK);
+    ee_setbit(t, TI_MLC_EE_DOUT);
+    ee_setbit(t, TI_MLC_EE_TXEN);
+    ee_clrbit(t, TI_MLC_EE_DOUT);
+    ee_clrbit(t, TI_MLC_EE_CLK);
+}
+
+static void ee_stop(TigonTest *t)
+{
+    ee_clrbit(t, TI_MLC_EE_TXEN);
+    ee_clrbit(t, TI_MLC_EE_DOUT);
+    ee_setbit(t, TI_MLC_EE_CLK);
+    ee_setbit(t, TI_MLC_EE_TXEN);
+    ee_setbit(t, TI_MLC_EE_DOUT);
+    ee_clrbit(t, TI_MLC_EE_TXEN);
+    ee_clrbit(t, TI_MLC_EE_CLK);
+}
+
+static void ee_putbyte(TigonTest *t, uint8_t byte)
+{
+    int i;
+
+    ee_setbit(t, TI_MLC_EE_TXEN);
+    for (i = 0x80; i; i >>= 1) {
+        if (byte & i) {
+            ee_setbit(t, TI_MLC_EE_DOUT);
+        } else {
+            ee_clrbit(t, TI_MLC_EE_DOUT);
+        }
+        ee_setbit(t, TI_MLC_EE_CLK);
+        ee_clrbit(t, TI_MLC_EE_CLK);
+    }
+    ee_clrbit(t, TI_MLC_EE_TXEN);
+    /* The ninth clock is the acknowledge; the driver reads and ignores it. */
+    ee_setbit(t, TI_MLC_EE_CLK);
+    (void)ee_read(t);
+    ee_clrbit(t, TI_MLC_EE_CLK);
+}
+
+static uint8_t ee_getbyte(TigonTest *t, uint16_t addr)
+{
+    uint8_t byte = 0;
+    int i;
+
+    ee_start(t);
+    ee_putbyte(t, 0xa0);                /* write control byte */
+    ee_putbyte(t, (addr >> 8) & 0xff);
+    ee_putbyte(t, addr & 0xff);
+    ee_stop(t);
+    ee_start(t);
+    ee_putbyte(t, 0xa1);                /* read control byte */
+
+    ee_clrbit(t, TI_MLC_EE_TXEN);
+    for (i = 0x80; i; i >>= 1) {
+        ee_setbit(t, TI_MLC_EE_CLK);
+        if (ee_read(t) & TI_MLC_EE_DIN) {
+            byte |= i;
+        }
+        ee_clrbit(t, TI_MLC_EE_CLK);
+    }
+    ee_stop(t);
+
+    return byte;
+}
+
+static void test_station_addr_eeprom(void)
+{
+    TigonTest t;
+    int i;
+
+    tigon_boot(&t);
+
+    /*
+     * The six MAC bytes sit at TI_EE_MAC_OFFSET + 2, not at TI_EE_MAC_OFFSET:
+     * the manual's stated offset is two zero pad bytes before the address.
+     */
+    for (i = 0; i < 6; i++) {
+        g_assert_cmphex(ee_getbyte(&t, TI_EE_MAC_OFFSET + 2 + i), ==,
+                        tigon_mac[i]);
+    }
+    g_assert_cmphex(ee_getbyte(&t, TI_EE_MAC_OFFSET), ==, 0);
+    g_assert_cmphex(ee_getbyte(&t, TI_EE_MAC_OFFSET + 1), ==, 0);
+
+    tigon_stop(&t);
+}
+
+/* ---- firmware-up handshake ---- */
+
+static void test_firmware_up_requires_gib(void)
+{
+    TigonTest t;
+
+    tigon_boot(&t);
+    tigon_setup_rings(&t, false);
+
+    /* Releasing the CPU with no GIB published must not post firmware-up. */
+    reg_wr(&t, TI_CPU_STATE, 0);
+    g_assert_cmphex(dma_ldl(&t, t.ev_ring), ==, 0);
+    g_assert_cmphex(dma_ldl(&t, t.ev_prod), ==, 0);
+    g_assert_false(irq_pending(&t));
+
+    tigon_stop(&t);
+}
+
+static void test_firmware_up_posts_event(void)
+{
+    TigonTest t;
+
+    tigon_boot(&t);
+    tigon_operational(&t, false);
+
+    /* Both preconditions met: a firmware-up event and the interrupt. */
+    g_assert_cmphex(dma_ldl(&t, t.ev_ring), ==,
+                    (uint32_t)TI_EV_FIRMWARE_UP << 24);
+    g_assert_cmphex(dma_ldl(&t, t.ev_prod), ==, 1);
+    g_assert_true(irq_pending(&t));
+
+    tigon_stop(&t);
+}
+
+/* ---- transmit and receive over a socket netdev ---- */
+
+static void net_recv_timeout(int fd, int seconds)
+{
+    struct timeval tv = { .tv_sec = seconds, .tv_usec = 0 };
+
+    g_assert_cmpint(setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)),
+                    ==, 0);
+}
+
+static size_t net_recv_frame(int fd, uint8_t *buf, size_t buf_size)
+{
+    uint32_t hdr;
+    size_t len;
+
+    g_assert_cmpint(recv(fd, &hdr, sizeof(hdr), 0), ==, (int)sizeof(hdr));
+    len = ntohl(hdr);
+    g_assert_cmpint(len, <=, buf_size);
+    g_assert_cmpint(recv(fd, buf, len, 0), ==, (int)len);
+    return len;
+}
+
+static void net_send_frame(int fd, const uint8_t *buf, size_t len)
+{
+    uint32_t hdr = htonl((uint32_t)len);
+
+    g_assert_cmpint(send(fd, &hdr, sizeof(hdr), 0), ==, (int)sizeof(hdr));
+    g_assert_cmpint(send(fd, buf, len, 0), ==, (int)len);
+}
+
+/* Give the main loop passes to read the socket and deliver a frame. */
+static uint32_t wait_return_prod(TigonTest *t)
+{
+    int attempt;
+
+    for (attempt = 0; attempt < 200; attempt++) {
+        if (dma_ldl(t, t->ret_prod) != 0) {
+            break;
+        }
+        g_usleep(5000);
+    }
+    return dma_ldl(t, t->ret_prod);
+}
+
+static void tigon_boot_netdev_args(TigonTest *t, int fd, const char *args)
+{
+    char *cmd = g_strdup_printf(
+        "-netdev socket,fd=%d,id=n0 "
+        "-device tigon,netdev=n0,mac=" TIGON_MAC " %s",
+        fd, args ? args : "");
+
+    tigon_boot_cmd(t, cmd);
+    g_free(cmd);
+}
+
+static void tigon_boot_netdev(TigonTest *t, int fd)
+{
+    tigon_boot_netdev_args(t, fd, NULL);
+}
+
+/* A minimal well-formed ethernet frame the test chooses byte for byte. */
+static const uint8_t test_frame[60] = {
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff,      /* broadcast dest */
+    0x52, 0x54, 0x00, 0x12, 0x34, 0x56,      /* source = our MAC */
+    0x08, 0x06,                              /* ethertype ARP */
+    0xde, 0xad, 0xbe, 0xef, 0x01, 0x02, 0x03, 0x04,
+};
+
+static void test_transmit(void)
+{
+    int sv[2];
+    TigonTest t;
+    uint8_t got[2048];
+    size_t len;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    tigon_boot_netdev(&t, sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    tigon_operational(&t, false);
+
+    /* One transmit descriptor: a single fragment marked end-of-frame. */
+    qtest_memwrite(t.qs->qts, t.tx_buf, test_frame, sizeof(test_frame));
+    dma_st_hostaddr(&t, t.tx_ring + 0, t.tx_buf);
+    dma_stl(&t, t.tx_ring + 8,
+            ((uint32_t)sizeof(test_frame) << 16) | TI_BDFLAG_END);
+    dma_stl(&t, t.tx_ring + 12, 0);
+
+    /* Ring the send doorbell: producer index 1. */
+    reg_wr(&t, TI_MB_SENDPROD_IDX, 1);
+
+    len = net_recv_frame(sv[0], got, sizeof(got));
+    g_assert_cmpint(len, ==, sizeof(test_frame));
+    g_assert_cmpmem(got, len, test_frame, sizeof(test_frame));
+
+    /* The transmit consumer index advanced in host memory. */
+    g_assert_cmphex(dma_ldl(&t, t.tx_cons), ==, 1);
+
+    tigon_stop(&t);
+    close(sv[0]);
+}
+
+static void tigon_migrate(QTestState *from, const char *uri)
+{
+    qtest_qmp_assert_success(from,
+        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
+
+    g_test_timer_start();
+    for (;;) {
+        QDict *ret = qtest_qmp_assert_success_ref(from,
+            "{ 'execute': 'query-migrate' }");
+        g_autofree char *status = g_strdup(qdict_get_str(ret, "status"));
+
+        qobject_unref(ret);
+        g_assert_cmpstr(status, !=, "failed");
+        if (g_str_equal(status, "completed")) {
+            break;
+        }
+        g_assert_true(g_test_timer_elapsed() < 30);
+        g_usleep(1000);
+    }
+}
+
+static char *tigon_migration_directory(void)
+{
+    g_autofree char *cwd = g_get_current_dir();
+    char *directory = g_build_filename(cwd,
+                                       ".tigon-migration-XXXXXX", NULL);
+
+    g_assert_nonnull(g_mkdtemp(directory));
+    return directory;
+}
+
+static void tigon_migration_cleanup(const char *directory, const char *socket)
+{
+    if (g_file_test(socket, G_FILE_TEST_EXISTS)) {
+        g_assert_cmpint(g_unlink(socket), ==, 0);
+    }
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
+/* Current migration retains an operational ring engine and guest RAM. */
+static void test_operational_ring_migration(void)
+{
+    g_autofree char *directory = tigon_migration_directory();
+    g_autofree char *socket = g_build_filename(directory, "migration.sock",
+                                                NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *incoming = g_strdup_printf("-incoming %s", uri);
+    int from_sv[2], to_sv[2];
+    TigonTest from, to;
+    uint8_t got[sizeof(test_frame)];
+    size_t len;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, from_sv), ==, 0);
+    tigon_boot_netdev(&from, from_sv[1]);
+    close(from_sv[1]);
+    tigon_operational(&from, false);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, to_sv), ==, 0);
+    tigon_boot_netdev_args(&to, to_sv[1], incoming);
+    close(to_sv[1]);
+    net_recv_timeout(to_sv[0], 5);
+    qtest_qmp_assert_success(to.qs->qts,
+        "{ 'execute': 'migrate-set-parameters', "
+        "  'arguments': { 'announce-rounds': 0 } }");
+
+    tigon_migrate(from.qs->qts, uri);
+
+    /* The ring locations live in device state; their contents live in RAM. */
+    to.dma_be = from.dma_be;
+    to.gib = from.gib;
+    to.ev_ring = from.ev_ring;
+    to.ev_prod = from.ev_prod;
+    to.tx_cons = from.tx_cons;
+    to.ret_ring = from.ret_ring;
+    to.ret_prod = from.ret_prod;
+    to.std_rx_ring = from.std_rx_ring;
+    to.tx_ring = from.tx_ring;
+    to.rx_buf = from.rx_buf;
+    to.tx_buf = from.tx_buf;
+
+    g_assert_cmphex(dma_ldl(&to, to.ev_ring), ==,
+                    (uint32_t)TI_EV_FIRMWARE_UP << 24);
+    g_assert_cmphex(dma_ldl(&to, to.ev_prod), ==, 1);
+    g_assert_cmphex(reg_rd(&to, TI_GCR_OPMODE), ==, 0);
+
+    qtest_memwrite(to.qs->qts, to.tx_buf, test_frame, sizeof(test_frame));
+    dma_st_hostaddr(&to, to.tx_ring, to.tx_buf);
+    dma_stl(&to, to.tx_ring + 8,
+            ((uint32_t)sizeof(test_frame) << 16) | TI_BDFLAG_END);
+    dma_stl(&to, to.tx_ring + 12, 0);
+    reg_wr(&to, TI_MB_SENDPROD_IDX, 1);
+
+    len = net_recv_frame(to_sv[0], got, sizeof(got));
+    g_assert_cmpuint(len, ==, sizeof(test_frame));
+    g_assert_cmpmem(got, len, test_frame, sizeof(test_frame));
+    g_assert_cmphex(dma_ldl(&to, to.tx_cons), ==, 1);
+
+    tigon_stop(&to);
+    tigon_stop(&from);
+    close(to_sv[0]);
+    close(from_sv[0]);
+    tigon_migration_cleanup(directory, socket);
+}
+
+/* A standard receive-buffer descriptor: address, index and length. */
+static void post_std_rx_buffer(TigonTest *t, unsigned slot, uint64_t phys,
+                               uint16_t idx, uint32_t bytes)
+{
+    uint64_t desc = t->std_rx_ring + (uint64_t)slot * 32;
+
+    dma_st_hostaddr(t, desc + 0, phys);
+    dma_stl(t, desc + 8, ((uint32_t)idx << 16) | (bytes & 0xffff));
+    dma_stl(t, desc + 12, (uint32_t)TI_BDTYPE_RECV_BD << 16);
+}
+
+static const uint8_t rx_frame_ours[64] = {
+    0x52, 0x54, 0x00, 0x12, 0x34, 0x56,      /* dest = our MAC */
+    0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,      /* source */
+    0x08, 0x00,                              /* ethertype IP */
+    0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+};
+
+static const uint8_t rx_frame_other[64] = {
+    0x02, 0x00, 0x00, 0x00, 0x00, 0x99,      /* dest = a different unicast */
+    0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+    0x08, 0x00,
+    0x99, 0x98, 0x97, 0x96,
+};
+
+static void test_receive(void)
+{
+    int sv[2];
+    TigonTest t;
+    uint8_t landed[64];
+    uint32_t word2;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    tigon_boot_netdev(&t, sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    tigon_operational(&t, false);
+
+    qtest_memset(t.qs->qts, t.rx_buf, 0, 2048);
+    post_std_rx_buffer(&t, 0, t.rx_buf, 0, 2048);
+    reg_wr(&t, TI_MB_STDRXPROD_IDX, 1);
+
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+
+    /* The return producer index advances once the frame is delivered. */
+    g_assert_cmphex(wait_return_prod(&t), ==, 1);
+
+    /* Return descriptor names the buffer index and the received length. */
+    word2 = dma_ldl(&t, t.ret_ring + 8);
+    g_assert_cmphex(word2 >> 16, ==, 0);
+    g_assert_cmphex(word2 & 0xffff, ==, sizeof(rx_frame_ours));
+
+    /* The frame landed in the posted buffer, byte for byte. */
+    qtest_memread(t.qs->qts, t.rx_buf, landed, sizeof(rx_frame_ours));
+    g_assert_cmpmem(landed, sizeof(rx_frame_ours),
+                    rx_frame_ours, sizeof(rx_frame_ours));
+
+    g_assert_true(irq_pending(&t));
+
+    tigon_stop(&t);
+    close(sv[0]);
+}
+
+static void test_receive_filters_other(void)
+{
+    int sv[2];
+    TigonTest t;
+    uint8_t landed[64];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    tigon_boot_netdev(&t, sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    tigon_operational(&t, false);
+
+    qtest_memset(t.qs->qts, t.rx_buf, 0, 2048);
+    post_std_rx_buffer(&t, 0, t.rx_buf, 0, 2048);
+    post_std_rx_buffer(&t, 1, t.rx_buf + 0x1000, 1, 2048);
+    reg_wr(&t, TI_MB_STDRXPROD_IDX, 2);
+
+    /*
+     * A frame for a different station, then one for us. Both are read from the
+     * backend in order; only the second may reach the ring. If the filter let
+     * the first through, the return producer would reach 2 and the buffer would
+     * hold the wrong frame.
+     */
+    net_send_frame(sv[0], rx_frame_other, sizeof(rx_frame_other));
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+
+    g_assert_cmphex(wait_return_prod(&t), ==, 1);
+
+    qtest_memread(t.qs->qts, t.rx_buf, landed, sizeof(rx_frame_ours));
+    g_assert_cmpmem(landed, sizeof(rx_frame_ours),
+                    rx_frame_ours, sizeof(rx_frame_ours));
+
+    tigon_stop(&t);
+    close(sv[0]);
+}
+
+static void test_receive_clamps_to_buffer(void)
+{
+    static const uint8_t big_frame[128] = {
+        0x52, 0x54, 0x00, 0x12, 0x34, 0x56,   /* dest = our MAC */
+        0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+        0x08, 0x00, 0xa1, 0xa2, 0xa3, 0xa4,
+    };
+    int sv[2];
+    TigonTest t;
+    uint8_t guard[64];
+    uint32_t word2;
+    int i;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    tigon_boot_netdev(&t, sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    tigon_operational(&t, false);
+
+    /* A 64-byte buffer, with the 64 bytes past it seeded to catch a spill. */
+    qtest_memset(t.qs->qts, t.rx_buf, 0, 128);
+    qtest_memset(t.qs->qts, t.rx_buf + 64, 0xa5, 64);
+    post_std_rx_buffer(&t, 0, t.rx_buf, 0, 64);
+    reg_wr(&t, TI_MB_STDRXPROD_IDX, 1);
+
+    net_send_frame(sv[0], big_frame, sizeof(big_frame));
+    g_assert_cmphex(wait_return_prod(&t), ==, 1);
+
+    /* The reported length is clamped to the buffer, not the frame. */
+    word2 = dma_ldl(&t, t.ret_ring + 8);
+    g_assert_cmphex(word2 & 0xffff, ==, 64);
+
+    /* Nothing landed past the buffer: the seeded bytes are intact. */
+    qtest_memread(t.qs->qts, t.rx_buf + 64, guard, sizeof(guard));
+    for (i = 0; i < (int)sizeof(guard); i++) {
+        g_assert_cmphex(guard[i], ==, 0xa5);
+    }
+
+    tigon_stop(&t);
+    close(sv[0]);
+}
+
+/* ---- ring producer-index safety ---- */
+
+/*
+ * A guest that writes an out-of-range producer index must not hang the
+ * emulator. The mailbox values are ring indices, so the model reduces them into
+ * range rather than looping over an index it can never reach; if the guard were
+ * missing, an index of four billion would spin. The test writes such values and
+ * then proves the machine still answers, which it could not do from inside a
+ * runaway walk.
+ */
+static void test_producer_index_safety(void)
+{
+    TigonTest t;
+
+    tigon_boot(&t);
+    tigon_operational(&t, false);
+
+    reg_wr(&t, TI_MB_SENDPROD_IDX, 0xffffffffu);
+    reg_wr(&t, TI_MB_SENDPROD_IDX, 0x40000000u);
+    reg_wr(&t, TI_MB_STDRXPROD_IDX, 0xffffffffu);
+
+    /* The walks terminated: the register file still answers. */
+    g_assert_cmphex(reg_rd(&t, TI_MISC_HOST_CTL) & TI_MHC_CHIP_REV_MASK, ==,
+                    (uint32_t)TIGON_CHIP_REV << 28);
+
+    tigon_stop(&t);
+}
+
+/* ---- interrupt controls ---- */
+
+static void test_interrupt_mask_ack(void)
+{
+    TigonTest t;
+
+    tigon_boot(&t);
+    tigon_operational(&t, false);
+    g_assert_true(irq_pending(&t));
+
+    /* The mailbox write acknowledges and holds off the current interrupt. */
+    reg_wr(&t, TI_MB_HOSTINTR, 1);
+    g_assert_false(irq_pending(&t));
+    reg_wr(&t, TI_MB_HOSTINTR, 0);
+    g_assert_false(irq_pending(&t));
+
+    tigon_stop(&t);
+
+    tigon_boot(&t);
+    tigon_operational(&t, false);
+    g_assert_true(irq_pending(&t));
+
+    /* The chip-level mask suppresses delivery without acknowledging it. */
+    reg_wr(&t, TI_MISC_HOST_CTL, TI_MHC_MASK_INTS);
+    g_assert_false(irq_pending(&t));
+    reg_wr(&t, TI_MISC_HOST_CTL, 0);
+    g_assert_true(irq_pending(&t));
+
+    /* Clear-interrupt drops the pending latch for good. */
+    reg_wr(&t, TI_MISC_HOST_CTL, TI_MHC_CLEARINT);
+    g_assert_false(irq_pending(&t));
+
+    tigon_stop(&t);
+}
+
+/* The mailbox write acknowledges independently of ring-consumer progress. */
+static void test_interrupt_hostintr_ack(void)
+{
+    TigonTest t;
+
+    tigon_boot(&t);
+    tigon_operational(&t, false);
+    g_assert_true(irq_pending(&t));
+
+    /* Advancing the consumer index alone does not acknowledge the line. */
+    reg_wr(&t, TI_GCR_EVENTCONS_IDX, 1);
+    g_assert_true(irq_pending(&t));
+
+    reg_wr(&t, TI_MB_HOSTINTR, 0);
+    g_assert_false(irq_pending(&t));
+
+    tigon_stop(&t);
+}
+
+/* ---- byte order, pinned by golden fixed-byte-layout ---- */
+
+/*
+ * The descriptor/data DMA byte order the guest programs through OPMODE. The
+ * same logical values -- the firmware-up event word 0x01000000 and the
+ * producer index 1 -- must occupy different bytes in guest memory depending on
+ * the swap bit, so we assert the exact in-memory byte pattern, not a value read
+ * back through the same order. A self-round-trip is self-consistent for both
+ * polarities and would pass either way; only pinning the raw bytes catches a
+ * wrong swap direction. This is what needs the generic host: with no Bridge in
+ * the path, what the device writes is exactly what lands in guest memory.
+ */
+static void byte_order_golden(bool dma_be)
+{
+    TigonTest t;
+    uint8_t seen[4];
+
+    tigon_boot(&t);
+    tigon_operational(&t, dma_be);
+
+    /* The event word 0x01000000: 0x01 in byte 0 big-endian, byte 3 little. */
+    qtest_memread(t.qs->qts, t.ev_ring, seen, 4);
+    if (dma_be) {
+        g_assert_cmphex(seen[0], ==, 0x01);
+        g_assert_cmphex(seen[1], ==, 0x00);
+        g_assert_cmphex(seen[2], ==, 0x00);
+        g_assert_cmphex(seen[3], ==, 0x00);
+    } else {
+        g_assert_cmphex(seen[0], ==, 0x00);
+        g_assert_cmphex(seen[1], ==, 0x00);
+        g_assert_cmphex(seen[2], ==, 0x00);
+        g_assert_cmphex(seen[3], ==, 0x01);
+    }
+
+    /* The producer index 1: 0x01 in byte 3 big-endian, byte 0 little. */
+    qtest_memread(t.qs->qts, t.ev_prod, seen, 4);
+    if (dma_be) {
+        g_assert_cmphex(seen[0], ==, 0x00);
+        g_assert_cmphex(seen[1], ==, 0x00);
+        g_assert_cmphex(seen[2], ==, 0x00);
+        g_assert_cmphex(seen[3], ==, 0x01);
+    } else {
+        g_assert_cmphex(seen[0], ==, 0x01);
+        g_assert_cmphex(seen[1], ==, 0x00);
+        g_assert_cmphex(seen[2], ==, 0x00);
+        g_assert_cmphex(seen[3], ==, 0x00);
+    }
+
+    tigon_stop(&t);
+}
+
+static void test_byte_order_little_endian(void)
+{
+    byte_order_golden(false);
+}
+
+static void test_byte_order_big_endian(void)
+{
+    byte_order_golden(true);
+}
+
+int main(int argc, char **argv)
+{
+    g_test_init(&argc, &argv, NULL);
+
+    /*
+     * A hard assert, not the usual quiet skip: proving the device is a
+     * general-purpose PCI card compiled into a generic target is the whole
+     * point of this file. A silent skip here would let a Kconfig regression
+     * that drops tigon from qemu-system-x86_64 pass as an empty green run.
+     */
+    g_assert_true(qtest_has_device("tigon"));
+
+    qtest_add_func("tigon/config-identity", test_config_identity);
+    qtest_add_func("tigon/bar0-shape", test_bar0_shape);
+    qtest_add_func("tigon/chip-rev-and-reset", test_chip_rev_and_reset);
+    qtest_add_func("tigon/register-config-roundtrip",
+                   test_register_config_roundtrip);
+    qtest_add_func("tigon/station-addr-par", test_station_addr_par);
+    qtest_add_func("tigon/station-addr-eeprom", test_station_addr_eeprom);
+    qtest_add_func("tigon/firmware-up-requires-gib",
+                   test_firmware_up_requires_gib);
+    qtest_add_func("tigon/firmware-up-posts-event",
+                   test_firmware_up_posts_event);
+    qtest_add_func("tigon/transmit", test_transmit);
+    qtest_add_func("tigon/operational-ring-migration",
+                   test_operational_ring_migration);
+    qtest_add_func("tigon/receive", test_receive);
+    qtest_add_func("tigon/receive-filters-other", test_receive_filters_other);
+    qtest_add_func("tigon/receive-clamps-to-buffer",
+                   test_receive_clamps_to_buffer);
+    qtest_add_func("tigon/producer-index-safety", test_producer_index_safety);
+    qtest_add_func("tigon/interrupt-mask-ack", test_interrupt_mask_ack);
+    qtest_add_func("tigon/interrupt-hostintr-ack",
+                   test_interrupt_hostintr_ack);
+    qtest_add_func("tigon/byte-order-little-endian",
+                   test_byte_order_little_endian);
+    qtest_add_func("tigon/byte-order-big-endian", test_byte_order_big_endian);
+
+    return g_test_run();
+}

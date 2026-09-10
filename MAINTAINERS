@@ -2407,6 +2407,7 @@ M: Jason Wang <jasowangio@gmail.com>
 S: Odd Fixes
 F: hw/net/
 F: include/hw/net/
+F: tests/qtest/tigon-test.c
 F: tests/qtest/virtio-net-test.c
 F: tests/functional/generic/test_info_usernet.py
 F: docs/system/virtio-net-failover.rst
