@@ -592,6 +592,23 @@ static void test_an_attach_takes_the_host_backends_it_is_given(void)
 }
 
 /*
+ * The machine's first serial backend belongs to port A of the IOC3 on the
+ * production BaseIO board.  Merely creating the backend would leave the
+ * firmware console silent if the board forgot to claim it before realize.
+ */
+static void test_the_board_takes_the_console_backend(void)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000-xtalk-attach-test -m 256M -nodefaults "
+        "-display none -chardev null,id=console -serial chardev:console");
+    g_autofree char *backend = NULL;
+
+    backend = qom_string(qts, "/machine/xtalk/baseio0/ioc3", "chardev-a");
+    g_assert_cmpstr(backend, ==, "console");
+    qtest_quit(qts);
+}
+
+/*
  * Terminal teardown, where a machine owner would run it: after a successful
  * attach. No machine calls it yet -- these fixtures are its only callers.
  * Nothing exercised that before, and it took the machine down: the board's
@@ -1056,6 +1073,8 @@ int main(int argc, char **argv)
                    test_a_failed_switch_leaves_a_machine_to_retry);
     qtest_add_func("sn0/origin2000/xtalk-attach/attach-takes-its-backends",
                    test_an_attach_takes_the_host_backends_it_is_given);
+    qtest_add_func("sn0/origin2000/xtalk-attach/board-takes-console",
+                   test_the_board_takes_the_console_backend);
     qtest_add_func("sn0/origin2000/xtalk-attach/retry-keeps-its-backends",
                    test_a_retried_attach_keeps_its_host_backends);
     qtest_add_func("sn0/origin2000/xtalk-attach/rebuild-takes-its-backends",
