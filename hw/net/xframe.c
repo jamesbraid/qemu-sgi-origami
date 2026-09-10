@@ -68,6 +68,12 @@
 #define XFRAME_PIF_RD_SWAPPER_FB    0x0910
 #define XFRAME_SCHED_INT_CTRL       0x0918
 #define XFRAME_XMSI_ADDRESS         0x0960
+#define XFRAME_TTI_COMMAND_MEM      0x1150
+#define XFRAME_TTI_DATA1_MEM        0x1158
+#define XFRAME_TTI_DATA2_MEM        0x1160
+#define XFRAME_RTI_COMMAND_MEM      0x19b8
+#define XFRAME_RTI_DATA1_MEM        0x19c0
+#define XFRAME_RTI_DATA2_MEM        0x19c8
 /*
  * The statistics block (public s2io: stat_cfg / stat_addr in the DCSR bank).
  * STAT_CFG's enable and one-shot sit in the top bits (s2BIT(0)/s2BIT(1), i.e.
@@ -356,6 +362,11 @@ static void xframe_stat_stl(XframeState *s, uint8_t *p, uint32_t val)
 #define XFRAME_RMAC_ADDR_CMD_STROBE   (1ULL << 48)
 #define XFRAME_RMAC_ADDR_CMD_OFF_MASK 0x3fULL
 
+#define XFRAME_TRAFFIC_MEM_CMD_WE       (1ULL << 56)
+#define XFRAME_TRAFFIC_MEM_CMD_STROBE   (1ULL << 48)
+#define XFRAME_TTI_MEM_CMD_OFF_MASK     0x3fULL
+#define XFRAME_RTI_MEM_CMD_OFF_MASK     0x7ULL
+
 /*
  * PRC_CTRL_0: RC_IN_SVC arms receive ring 0, and bits 49:48 pick the
  * descriptor buffer-count mode. Only 1-buffer mode (the value both public
@@ -628,6 +639,18 @@ static void xframe_soft_reset(XframeState *s)
     memset(s->mac_addr_mask, 0, sizeof(s->mac_addr_mask));
     memset(s->txdl_par, 0, sizeof(s->txdl_par));
     s->tx_traffic_int = 0;
+    s->tti_command = 0;
+    s->tti_data1 = 0;
+    s->tti_data2 = 0;
+    memset(s->tti_entry_data1, 0, sizeof(s->tti_entry_data1));
+    memset(s->tti_entry_data2, 0, sizeof(s->tti_entry_data2));
+    memset(s->tti_entry_valid, 0, sizeof(s->tti_entry_valid));
+    s->rti_command = 0;
+    s->rti_data1 = 0;
+    s->rti_data2 = 0;
+    memset(s->rti_entry_data1, 0, sizeof(s->rti_entry_data1));
+    memset(s->rti_entry_data2, 0, sizeof(s->rti_entry_data2));
+    memset(s->rti_entry_valid, 0, sizeof(s->rti_entry_valid));
     s->prc_rxd0_0 = 0;
     s->prc_ctrl_0 = 0;
     s->rx_traffic_int = 0;
@@ -695,6 +718,32 @@ static void xframe_rmac_addr_cmd(XframeState *s, uint64_t val)
     s->rmac_addr_cmd = val;
 }
 
+static void xframe_traffic_mem_cmd(XframeState *s, uint64_t val, bool rx)
+{
+    uint64_t mask = rx ? XFRAME_RTI_MEM_CMD_OFF_MASK :
+                         XFRAME_TTI_MEM_CMD_OFF_MASK;
+    unsigned entry = (val >> 32) & mask;
+    uint64_t *command = rx ? &s->rti_command : &s->tti_command;
+    uint64_t *data1 = rx ? &s->rti_data1 : &s->tti_data1;
+    uint64_t *data2 = rx ? &s->rti_data2 : &s->tti_data2;
+    uint64_t *entry_data1 = rx ? s->rti_entry_data1 : s->tti_entry_data1;
+    uint64_t *entry_data2 = rx ? s->rti_entry_data2 : s->tti_entry_data2;
+    bool *entry_valid = rx ? s->rti_entry_valid : s->tti_entry_valid;
+
+    if (val & XFRAME_TRAFFIC_MEM_CMD_STROBE) {
+        if (!rx && entry >= XFRAME_TRAFFIC_MEM_ENTRIES) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "xframe: invalid TTI memory entry %u\n", entry);
+        } else if (val & XFRAME_TRAFFIC_MEM_CMD_WE) {
+            entry_data1[entry] = *data1;
+            entry_data2[entry] = *data2;
+            entry_valid[entry] = true;
+        }
+        val &= ~XFRAME_TRAFFIC_MEM_CMD_STROBE;
+    }
+    *command = val;
+}
+
 /*
  * The PIF register window (BAR0). The registers are 64-bit and
  * DEVICE_LITTLE_ENDIAN -- little-endian-native parts, delivered in native
@@ -736,6 +785,18 @@ static uint64_t xframe_pif_read_reg(XframeState *s, hwaddr addr)
         return s->swapper_ctrl;
     case XFRAME_XMSI_ADDRESS:
         return s->xmsi_address;
+    case XFRAME_TTI_COMMAND_MEM:
+        return s->tti_command;
+    case XFRAME_TTI_DATA1_MEM:
+        return s->tti_data1;
+    case XFRAME_TTI_DATA2_MEM:
+        return s->tti_data2;
+    case XFRAME_RTI_COMMAND_MEM:
+        return s->rti_command;
+    case XFRAME_RTI_DATA1_MEM:
+        return s->rti_data1;
+    case XFRAME_RTI_DATA2_MEM:
+        return s->rti_data2;
     case XFRAME_MAC_CFG:
         return s->mac_cfg;
     case XFRAME_RMAC_CFG_KEY:
@@ -1031,6 +1092,32 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
         return;
     case XFRAME_XMSI_ADDRESS:
         s->xmsi_address = full;
+        return;
+    case XFRAME_TTI_DATA1_MEM:
+        s->tti_data1 = full;
+        return;
+    case XFRAME_TTI_DATA2_MEM:
+        s->tti_data2 = full;
+        return;
+    case XFRAME_TTI_COMMAND_MEM:
+        if (commit_high) {
+            xframe_traffic_mem_cmd(s, full, false);
+        } else {
+            s->tti_command = full;
+        }
+        return;
+    case XFRAME_RTI_DATA1_MEM:
+        s->rti_data1 = full;
+        return;
+    case XFRAME_RTI_DATA2_MEM:
+        s->rti_data2 = full;
+        return;
+    case XFRAME_RTI_COMMAND_MEM:
+        if (commit_high) {
+            xframe_traffic_mem_cmd(s, full, true);
+        } else {
+            s->rti_command = full;
+        }
         return;
     case XFRAME_SCHED_INT_CTRL:
         /*
@@ -3014,7 +3101,7 @@ static int xframe_post_load(void *opaque, int version_id)
  */
 static const VMStateDescription vmstate_xframe = {
     .name = "xframe",
-    .version_id = 4,
+    .version_id = 5,
     .minimum_version_id = 1,
     .post_load = xframe_post_load,
     .fields = (const VMStateField[]) {
@@ -3051,6 +3138,24 @@ static const VMStateDescription vmstate_xframe = {
                              XFRAME_MAC_TABLE_ENTRIES),
         VMSTATE_UINT64_ARRAY(txdl_par, XframeState, XFRAME_TXP_FIFOS),
         VMSTATE_UINT64_V(tx_traffic_int, XframeState, 2),
+        VMSTATE_UINT64_V(tti_command, XframeState, 5),
+        VMSTATE_UINT64_V(tti_data1, XframeState, 5),
+        VMSTATE_UINT64_V(tti_data2, XframeState, 5),
+        VMSTATE_UINT64_ARRAY_V(tti_entry_data1, XframeState,
+                               XFRAME_TRAFFIC_MEM_ENTRIES, 5),
+        VMSTATE_UINT64_ARRAY_V(tti_entry_data2, XframeState,
+                               XFRAME_TRAFFIC_MEM_ENTRIES, 5),
+        VMSTATE_BOOL_ARRAY_V(tti_entry_valid, XframeState,
+                             XFRAME_TRAFFIC_MEM_ENTRIES, 5),
+        VMSTATE_UINT64_V(rti_command, XframeState, 5),
+        VMSTATE_UINT64_V(rti_data1, XframeState, 5),
+        VMSTATE_UINT64_V(rti_data2, XframeState, 5),
+        VMSTATE_UINT64_ARRAY_V(rti_entry_data1, XframeState,
+                               XFRAME_TRAFFIC_MEM_ENTRIES, 5),
+        VMSTATE_UINT64_ARRAY_V(rti_entry_data2, XframeState,
+                               XFRAME_TRAFFIC_MEM_ENTRIES, 5),
+        VMSTATE_BOOL_ARRAY_V(rti_entry_valid, XframeState,
+                             XFRAME_TRAFFIC_MEM_ENTRIES, 5),
         VMSTATE_UINT64(prc_rxd0_0, XframeState),
         VMSTATE_UINT64(prc_ctrl_0, XframeState),
         VMSTATE_UINT64(rx_traffic_int, XframeState),

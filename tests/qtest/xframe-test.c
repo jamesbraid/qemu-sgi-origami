@@ -86,6 +86,12 @@
 #define SWAPPER_CTRL             0x0908
 #define PIF_RD_SWAPPER_FB        0x0910
 #define XMSI_ADDRESS             0x0960
+#define TTI_COMMAND_MEM          0x1150
+#define TTI_DATA1_MEM            0x1158
+#define TTI_DATA2_MEM            0x1160
+#define RTI_COMMAND_MEM          0x19b8
+#define RTI_DATA1_MEM            0x19c0
+#define RTI_DATA2_MEM            0x19c8
 #define MAC_RMAC_ERR_REG         0x2028
 #define MAC_CFG                  0x2100
 #define RMAC_CFG_KEY             0x2120
@@ -199,6 +205,21 @@
 #define RMAC_ADDR_CMD_STROBE     (1ULL << 48)           /* self-clearing */
 #define RMAC_ADDR_CMD_OFF(n)     ((uint64_t)(n) << 32)  /* table offset */
 #define RMAC_ADDR_CMD_WE         (1ULL << 56)           /* write, not read */
+
+#define TRAFFIC_MEM_CMD_WE       (1ULL << 56)
+#define TRAFFIC_MEM_CMD_STROBE   (1ULL << 48)
+#define TTI_MEM_CMD_OFF(n)       ((uint64_t)(n) << 32)
+#define RTI_MEM_CMD_OFF(n)       ((uint64_t)(n) << 32)
+
+/* Linux Xframe-I INTA and OpenBSD entry-0 programming vectors. */
+#define LINUX_TTI_DATA1          0x00002078030a1030ULL
+#define LINUX_TTI_DATA2          0x0010002000400080ULL
+#define LINUX_RTI_DATA1          0x00000fff020a1030ULL
+#define LINUX_RTI_DATA2          0x0001000200400080ULL
+#define OPENBSD_TTI_DATA1        0x000001ff02051430ULL
+#define OPENBSD_TTI_DATA2        0x0019004000800200ULL
+#define OPENBSD_RTI_DATA1        0x0000080002051432ULL
+#define OPENBSD_RTI_DATA2        0x0040008001000200ULL
 
 /*
  * A MAC_CFG payload for the lock test -- TMAC_EN|RMAC_EN; any non-zero value
@@ -1616,6 +1637,71 @@ static void test_mac_config_write_lock_spans_both_halves(void)
     pif_writel(&t, MAC_CFG + 4, (uint32_t)(payload >> 32));
 
     g_assert_cmphex(pif_readq(&t, MAC_CFG), ==, payload);
+
+    xframe_stop(&t);
+}
+
+/*
+ * TTI and RTI are indirect configuration memories. DATA1/DATA2 stage a
+ * public-driver vector; write-enable plus strobe commits the selected entry
+ * and the command completes synchronously. TTI exposes a six-bit selector
+ * even though the modelled card has eight FIFOs, so every selector beyond 7
+ * must be rejected without aliasing or disturbing the staging words.
+ */
+static void test_traffic_interrupt_memory_programming(void)
+{
+    XframeTest t;
+    unsigned entry;
+
+    xframe_start(&t);
+
+    pif_writeq(&t, TTI_DATA1_MEM, LINUX_TTI_DATA1);
+    pif_writeq(&t, TTI_DATA2_MEM, LINUX_TTI_DATA2);
+    g_assert_cmphex(pif_readq(&t, TTI_DATA1_MEM), ==, LINUX_TTI_DATA1);
+    g_assert_cmphex(pif_readq(&t, TTI_DATA2_MEM), ==, LINUX_TTI_DATA2);
+    pif_writeq(&t, TTI_COMMAND_MEM,
+               TRAFFIC_MEM_CMD_WE | TRAFFIC_MEM_CMD_STROBE |
+               TTI_MEM_CMD_OFF(0));
+    g_assert_cmphex(pif_readq(&t, TTI_COMMAND_MEM) &
+                    TRAFFIC_MEM_CMD_STROBE, ==, 0);
+
+    pif_writeq(&t, TTI_DATA1_MEM, OPENBSD_TTI_DATA1);
+    pif_writeq(&t, TTI_DATA2_MEM, OPENBSD_TTI_DATA2);
+    pif_writeq(&t, TTI_COMMAND_MEM,
+               TRAFFIC_MEM_CMD_WE | TRAFFIC_MEM_CMD_STROBE |
+               TTI_MEM_CMD_OFF(7));
+    for (entry = 8; entry < 64; entry++) {
+        pif_writeq(&t, TTI_COMMAND_MEM,
+                   TRAFFIC_MEM_CMD_WE | TRAFFIC_MEM_CMD_STROBE |
+                   TTI_MEM_CMD_OFF(entry));
+        g_assert_cmphex(pif_readq(&t, TTI_COMMAND_MEM) &
+                        TRAFFIC_MEM_CMD_STROBE, ==, 0);
+        g_assert_cmphex(pif_readq(&t, TTI_DATA1_MEM), ==,
+                        OPENBSD_TTI_DATA1);
+        g_assert_cmphex(pif_readq(&t, TTI_DATA2_MEM), ==,
+                        OPENBSD_TTI_DATA2);
+    }
+
+    pif_writeq(&t, RTI_DATA1_MEM, LINUX_RTI_DATA1);
+    pif_writeq(&t, RTI_DATA2_MEM, LINUX_RTI_DATA2);
+    pif_writeq(&t, RTI_COMMAND_MEM,
+               TRAFFIC_MEM_CMD_WE | TRAFFIC_MEM_CMD_STROBE |
+               RTI_MEM_CMD_OFF(0));
+    g_assert_cmphex(pif_readq(&t, RTI_COMMAND_MEM) &
+                    TRAFFIC_MEM_CMD_STROBE, ==, 0);
+    pif_writeq(&t, RTI_DATA1_MEM, OPENBSD_RTI_DATA1);
+    pif_writeq(&t, RTI_DATA2_MEM, OPENBSD_RTI_DATA2);
+    pif_writeq(&t, RTI_COMMAND_MEM,
+               TRAFFIC_MEM_CMD_WE | TRAFFIC_MEM_CMD_STROBE |
+               RTI_MEM_CMD_OFF(7));
+
+    pif_writeq(&t, SW_RESET, SW_RESET_KEY);
+    g_assert_cmphex(pif_readq(&t, TTI_COMMAND_MEM), ==, 0);
+    g_assert_cmphex(pif_readq(&t, TTI_DATA1_MEM), ==, 0);
+    g_assert_cmphex(pif_readq(&t, TTI_DATA2_MEM), ==, 0);
+    g_assert_cmphex(pif_readq(&t, RTI_COMMAND_MEM), ==, 0);
+    g_assert_cmphex(pif_readq(&t, RTI_DATA1_MEM), ==, 0);
+    g_assert_cmphex(pif_readq(&t, RTI_DATA2_MEM), ==, 0);
 
     xframe_stop(&t);
 }
@@ -4566,6 +4652,8 @@ int main(int argc, char **argv)
     qtest_add_func("xframe/mac-config-write-lock", test_mac_config_write_lock);
     qtest_add_func("xframe/mac-config-write-lock-spans-both-halves",
                    test_mac_config_write_lock_spans_both_halves);
+    qtest_add_func("xframe/traffic-interrupt-memory-programming",
+                   test_traffic_interrupt_memory_programming);
     qtest_add_func("xframe/factory-mac-readback", test_factory_mac_readback);
     qtest_add_func("xframe/swapper-diagnostic-32bit-halves",
                    test_swapper_diagnostic_32bit_halves);
