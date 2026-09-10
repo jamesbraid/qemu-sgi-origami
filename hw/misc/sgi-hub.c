@@ -884,17 +884,10 @@ static void sgi_hub_cpu_halt(CPUState *cs, run_on_cpu_data data)
     cpu_interrupt(cs, CPU_INTERRUPT_HALT);
 }
 
-static void sgi_hub_write_cpu_enable(SGIHubState *s, hwaddr addr,
-                                     unsigned arg, uint64_t val,
-                                     unsigned size)
+static void sgi_hub_queue_cpu_enable(SGIHubState *s, unsigned int cpu,
+                                     bool enabled)
 {
-    CPUState *cs = qemu_get_cpu(s->cpu_base + arg);
-    bool enabled = val & 1;
-
-    if (s->pi_cpu_enable[arg] == enabled) {
-        return;
-    }
-    s->pi_cpu_enable[arg] = enabled;
+    CPUState *cs = qemu_get_cpu(s->cpu_base + cpu);
 
     if (!cs) {
         return;
@@ -904,6 +897,21 @@ static void sgi_hub_write_cpu_enable(SGIHubState *s, hwaddr addr,
     } else {
         async_run_on_cpu(cs, sgi_hub_cpu_halt, RUN_ON_CPU_NULL);
     }
+}
+
+void sgi_hub_set_cpu_enable(SGIHubState *s, unsigned int cpu, bool enabled)
+{
+    s->pi_cpu_enable[cpu] = enabled;
+    sgi_hub_queue_cpu_enable(s, cpu, enabled);
+}
+
+static void sgi_hub_write_cpu_enable(SGIHubState *s, hwaddr addr,
+                                     unsigned arg, uint64_t val,
+                                     unsigned size)
+{
+    bool enabled = val & 1;
+
+    sgi_hub_set_cpu_enable(s, arg, enabled);
 }
 
 /* Wake the other processor without changing Hub state. */
@@ -2860,7 +2868,13 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
 /* Output lines move in the hold phase, after every enter phase. */
 static void sgi_hub_reset_hold(Object *obj, ResetType type)
 {
-    sgi_hub_update_irq(SGI_HUB(obj));
+    SGIHubState *s = SGI_HUB(obj);
+    unsigned int cpu;
+
+    sgi_hub_update_irq(s);
+    for (cpu = 0; cpu < s->cpus; cpu++) {
+        sgi_hub_set_cpu_enable(s, cpu, false);
+    }
 }
 
 /*

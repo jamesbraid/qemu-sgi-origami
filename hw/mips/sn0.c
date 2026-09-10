@@ -545,6 +545,7 @@ static void sn0_machine_reset(MachineState *machine, ResetType type)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
     CPUState *cs;
+    unsigned int node, slice;
 
     qemu_devices_reset(type);
 
@@ -554,6 +555,17 @@ static void sn0_machine_reset(MachineState *machine, ResetType type)
     CPU_FOREACH(cs) {
         sn0_cpu_reset(cs);
         sn0_mode_bits_reset(cs);
+    }
+    for (node = 0; node < s->num_nodes; node++) {
+        SN0NodeState *node_state = s->nodes[node];
+
+        for (slice = 0; slice < node_state->nr_cpus; slice++) {
+            bool direct_secondary = s->synthesized_firmware &&
+                machine->kernel_filename && node_state->cpu_base + slice != 0;
+
+            sgi_hub_set_cpu_enable(&node_state->hub, slice,
+                                   !direct_secondary);
+        }
     }
     if (s->synthesized_firmware) {
         sn0_assign_pci_resources(s);
