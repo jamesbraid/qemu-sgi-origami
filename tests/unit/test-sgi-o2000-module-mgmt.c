@@ -946,6 +946,65 @@ static void test_migration_pending_grant(Fixture *f, gconstpointer unused)
     close(fd);
 }
 
+/* A START waiting behind a controller grant survives the whole complex. */
+static void test_migration_waiting_start(Fixture *f, gconstpointer unused)
+{
+    g_autofree char *path = NULL;
+    int fd = g_file_open_tmp("test-o2000-module-start-XXXXXX", &path, NULL);
+    I2CBus *bus = sgi_o2000_module_mgmt_get_bus(f->module);
+    PCF8584State *adapter = PCF8584(
+        sgi_o2000_module_mgmt_get_adapter(f->module, 0));
+    QEMUFile *file;
+    unsigned attempts;
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(unlink(path), ==, 0);
+
+    pcf8584_write_register(adapter, PCF8584_A0_STRIDE,
+                           PCF8584_CTL_PIN | PCF8584_CTL_ES1, 1);
+    pcf8584_write_register(adapter, 0, 0x1c, 1);
+    pcf8584_write_register(adapter, PCF8584_A0_STRIDE, PCF8584_CTL_PIN, 1);
+    pcf8584_write_register(adapter, 0, 0x09, 1);
+    pcf8584_write_register(adapter, PCF8584_A0_STRIDE,
+                           PCF8584_CTL_PIN | PCF8584_CTL_ESO, 1);
+
+    run_tick(f);
+    g_assert_cmphex(pcf8584_read_register(adapter, PCF8584_A0_STRIDE, 1) &
+                    PCF8584_STS_BB, ==, PCF8584_STS_BB);
+    advance_to(f->module->service_deadline + 12000);
+    g_assert_true(f->module->grant_active);
+    g_assert_true(i2c_bus_busy(bus));
+    pcf8584_write_register(adapter, 0, 0xa0, 1);
+    pcf8584_write_register(adapter, PCF8584_A0_STRIDE,
+                           PCF8584_CTL_PIN | PCF8584_CTL_ESO |
+                           PCF8584_CTL_STA | PCF8584_CTL_ACK, 1);
+    g_assert_true(adapter->wire_start_waiting);
+
+    file = state_file(fd, true);
+    transfer_complex(f, file, true);
+    qemu_put_byte(file, QEMU_VM_EOF);
+    g_assert_cmpint(qemu_fclose(file), ==, 0);
+
+    qemu_devices_reset(RESET_TYPE_COLD);
+    g_assert_false(adapter->wire_start_waiting);
+    file = state_file(fd, false);
+    transfer_complex(f, file, false);
+    g_assert_cmpint(qemu_get_byte(file), ==, QEMU_VM_EOF);
+    g_assert_cmpint(qemu_fclose(file), ==, 0);
+    g_assert_true(adapter->wire_start_waiting);
+    g_assert_false(adapter->wire_active);
+
+    advance_to(virtual_time + GRANT_SETTLE_NS);
+    for (attempts = 0; attempts < 500 &&
+         (adapter->status & PCF8584_STS_PIN); attempts++) {
+        advance_to(virtual_time + 2000);
+    }
+    g_assert_true(adapter->wire_active);
+    g_assert_cmphex(adapter->status &
+                    (PCF8584_STS_PIN | PCF8584_STS_LRB), ==, 0);
+    close(fd);
+}
+
 static void test_migration_rejects_bad_state(Fixture *f, gconstpointer unused)
 {
     g_autofree char *path = NULL;
@@ -1052,6 +1111,8 @@ int main(int argc, char **argv)
                GUINT_TO_POINTER(1), setup, test_migration, teardown);
     g_test_add("/sgi-o2000-module-management/migration-pending-grant", Fixture,
                NULL, setup, test_migration_pending_grant, teardown);
+    g_test_add("/sgi-o2000-module-management/migration-waiting-start", Fixture,
+               NULL, setup, test_migration_waiting_start, teardown);
     g_test_add("/sgi-o2000-module-management/migration-rejects-bad-state",
                Fixture, NULL, setup, test_migration_rejects_bad_state,
                teardown);

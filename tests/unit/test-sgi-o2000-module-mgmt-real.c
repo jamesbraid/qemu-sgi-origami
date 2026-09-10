@@ -489,6 +489,81 @@ static void test_busy_defers_without_advancing(Fixture *f,
     g_assert_cmphex(f->adapter[0]->data, ==, GRANT_BASE + 1);
 }
 
+static int64_t request_start_during_grant(Fixture *f)
+{
+    I2CBus *bus = sgi_o2000_module_mgmt_get_bus(f->module);
+    int64_t next_grant;
+
+    run_tick(f);
+    g_assert_cmphex(read_reg(f, 0, CTRL_REG) & PCF8584_STS_BB,
+                    ==, PCF8584_STS_BB);
+
+    next_grant = f->module->service_deadline;
+    advance_to(next_grant + 6 * POLL_STEP_NS);
+    g_assert_true(f->module->grant_active);
+    g_assert_true(i2c_bus_busy(bus));
+    g_assert_cmphex(f->adapter[0]->status & PCF8584_STS_BB, ==, 0);
+
+    write_reg(f, 0, CTRL_REG, CTL_RUN);
+    write_reg(f, 0, DATA_REG, SGI_O2000_NVRAM_FIRST_ADDR << 1);
+    write_reg(f, 0, CTRL_REG, CTL_START);
+    g_assert_false(f->adapter[0]->wire_active);
+    g_assert_true(f->adapter[0]->wire_start_waiting);
+    g_assert_cmphex(i2c_wire_contenders(bus), ==,
+                    1U << SGI_O2000_ADAPTER_COUNT);
+    return next_grant;
+}
+
+/* A stale free-bus observation waits out the later controller grant. */
+static void test_start_after_free_observation_during_grant(
+    Fixture *f, gconstpointer unused)
+{
+    int64_t next_grant = request_start_during_grant(f);
+
+    advance_to(next_grant + GRANT_SETTLE_NS);
+    g_assert_true(f->adapter[0]->wire_active);
+    g_assert_true(wait_done(f, 0));
+    g_assert_cmphex(read_reg(f, 0, CTRL_REG) & PCF8584_STS_LRB, ==, 0);
+    stop_transfer(f, 0);
+}
+
+static void test_waiting_start_cancellation(Fixture *f,
+                                            gconstpointer disable)
+{
+    I2CBus *bus = sgi_o2000_module_mgmt_get_bus(f->module);
+    int64_t next_grant = request_start_during_grant(f);
+
+    write_reg(f, 0, CTRL_REG, disable ? PCF8584_CTL_PIN : CTL_STOP);
+    g_assert_false(f->adapter[0]->wire_start_waiting);
+    advance_to(next_grant + GRANT_SETTLE_NS);
+    g_assert_false(f->adapter[0]->wire_active);
+    g_assert_false(i2c_bus_busy(bus));
+}
+
+static void test_waiting_start_reset(Fixture *f, gconstpointer unused)
+{
+    request_start_during_grant(f);
+    qemu_devices_reset(RESET_TYPE_COLD);
+    g_assert_false(f->adapter[0]->wire_start_waiting);
+    g_assert_false(f->adapter[0]->wire_active);
+    g_assert_cmphex(f->adapter[0]->status, ==,
+                    PCF8584_STS_PIN | PCF8584_STS_BB);
+}
+
+static void test_waiting_start_sets_pin(Fixture *f, gconstpointer unused)
+{
+    request_start_during_grant(f);
+    write_reg(f, 0, CTRL_REG, CTL_STOP);
+
+    f->adapter[0]->status &= ~PCF8584_STS_PIN;
+    write_reg(f, 0, DATA_REG, SGI_O2000_NVRAM_FIRST_ADDR << 1);
+    write_reg(f, 0, CTRL_REG,
+              PCF8584_CTL_ESO | PCF8584_CTL_STA | PCF8584_CTL_ACK);
+    g_assert_true(f->adapter[0]->wire_start_waiting);
+    g_assert_cmphex(f->adapter[0]->status & PCF8584_STS_PIN, ==,
+                    PCF8584_STS_PIN);
+}
+
 /*
  * Every adapter sees the completed grant address in its own data register
  * without being selected by it. That retention is a software-required
@@ -935,6 +1010,19 @@ int main(int argc, char **argv)
                teardown);
     g_test_add("/sgi-o2000-module-management/shared/busy-defers", Fixture,
                NULL, setup, test_busy_defers_without_advancing, teardown);
+    g_test_add("/sgi-o2000-module-management/shared/start-during-grant",
+               Fixture, NULL, setup,
+               test_start_after_free_observation_during_grant, teardown);
+    g_test_add("/sgi-o2000-module-management/shared/waiting-start-stop",
+               Fixture, NULL, setup, test_waiting_start_cancellation,
+               teardown);
+    g_test_add("/sgi-o2000-module-management/shared/waiting-start-disable",
+               Fixture, GINT_TO_POINTER(1), setup,
+               test_waiting_start_cancellation, teardown);
+    g_test_add("/sgi-o2000-module-management/shared/waiting-start-reset",
+               Fixture, NULL, setup, test_waiting_start_reset, teardown);
+    g_test_add("/sgi-o2000-module-management/shared/waiting-start-pin",
+               Fixture, NULL, setup, test_waiting_start_sets_pin, teardown);
     g_test_add("/sgi-o2000-module-management/shared/grant-observed", Fixture,
                NULL, setup, test_grant_reaches_every_adapter, teardown);
     g_test_add("/sgi-o2000-module-management/shared/grant-after-stop", Fixture,

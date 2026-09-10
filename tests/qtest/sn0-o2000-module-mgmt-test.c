@@ -49,6 +49,9 @@
 /* One 90 kHz byte takes about 100us; poll well past that before failing. */
 #define POLL_STEP_NS    2000
 #define POLL_STEPS      400
+#define SERVICE_PERIOD_NS   1000000
+#define GRANT_SETTLE_NS     500000
+#define GRANT_BASE          0xe0
 
 #define MACHINE_ARGS "-M origin2000 -smp 8,sockets=4,cores=2 -m 256M"
 
@@ -351,6 +354,35 @@ static void test_windows_share_one_wire(void)
     qtest_quit(qts);
 }
 
+/* A START based on a stale free-bus sample waits for the grant's STOP. */
+static void test_start_waits_for_grant(void)
+{
+    QTestState *qts = start_module();
+    int64_t now;
+    int64_t next_grant;
+
+    now = qtest_clock_step(qts, SERVICE_PERIOD_NS + GRANT_SETTLE_NS);
+    g_assert_cmphex(adapter_read(qts, 0, I2C_CTRL) & STS_BB, ==, STS_BB);
+    g_assert_cmphex(adapter_read(qts, 0, I2C_DATA), ==, GRANT_BASE);
+
+    next_grant = ((now / SERVICE_PERIOD_NS) + 1) * SERVICE_PERIOD_NS;
+    qtest_clock_step(qts, next_grant + 6 * POLL_STEP_NS - now);
+    adapter_write(qts, 0, I2C_DATA, NVRAM_FIRST << 1);
+    adapter_write(qts, 0, I2C_CTRL, CTL_START);
+    g_assert_cmphex(adapter_read(qts, 0, I2C_CTRL) &
+                    (STS_PIN | STS_BB | STS_BER | STS_LAB), ==, STS_PIN);
+
+    qtest_clock_step(qts, 4 * POLL_STEP_NS);
+    g_assert_cmphex(adapter_read(qts, 0, I2C_CTRL) &
+                    (STS_PIN | STS_BB | STS_BER | STS_LAB), ==, STS_PIN);
+    qtest_clock_step(qts, GRANT_SETTLE_NS);
+    g_assert_true(wait_done(qts, 0));
+    g_assert_cmphex(adapter_read(qts, 0, I2C_CTRL) &
+                    (STS_LRB | STS_BER | STS_LAB), ==, 0);
+    stop_transfer(qts, 0);
+    qtest_quit(qts);
+}
+
 /* One logical NVRAM space, not one per node. */
 static void test_nvram_is_shared(void)
 {
@@ -495,6 +527,8 @@ int main(int argc, char **argv)
                    test_controller_answers_every_node);
     qtest_add_func("/sn0/o2000-module-management/one-wire",
                    test_windows_share_one_wire);
+    qtest_add_func("/sn0/o2000-module-management/start-waits-for-grant",
+                   test_start_waits_for_grant);
     qtest_add_func("/sn0/o2000-module-management/shared-nvram",
                    test_nvram_is_shared);
     qtest_add_func("/sn0/o2000-module-management/destructive-refused",
