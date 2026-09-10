@@ -873,21 +873,36 @@ static void sgi_hub_update_irq(SGIHubState *s)
     }
 }
 
-/*
- * Clearing the bit removes the processor: the firmware's halt routine writes
- * zero as its last act and must not return. Requested, not forced, because
- * this runs inside a memory write.
- */
+static void sgi_hub_cpu_unhalt(CPUState *cs, run_on_cpu_data data)
+{
+    cpu_reset_interrupt(cs, CPU_INTERRUPT_HALT);
+    cs->halted = 0;
+}
+
+static void sgi_hub_cpu_halt(CPUState *cs, run_on_cpu_data data)
+{
+    cpu_interrupt(cs, CPU_INTERRUPT_HALT);
+}
+
 static void sgi_hub_write_cpu_enable(SGIHubState *s, hwaddr addr,
                                      unsigned arg, uint64_t val,
                                      unsigned size)
 {
     CPUState *cs = qemu_get_cpu(s->cpu_base + arg);
+    bool enabled = val & 1;
 
-    s->pi_cpu_enable[arg] = val & 1;
+    if (s->pi_cpu_enable[arg] == enabled) {
+        return;
+    }
+    s->pi_cpu_enable[arg] = enabled;
 
-    if (!(val & 1) && cs) {
-        cpu_interrupt(cs, CPU_INTERRUPT_HALT);
+    if (!cs) {
+        return;
+    }
+    if (enabled) {
+        async_safe_run_on_cpu(cs, sgi_hub_cpu_unhalt, RUN_ON_CPU_NULL);
+    } else {
+        async_run_on_cpu(cs, sgi_hub_cpu_halt, RUN_ON_CPU_NULL);
     }
 }
 
@@ -2768,9 +2783,7 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
 
     s->pi_region_present = ~0ULL;
     s->pi_calias_size = PI_CALIAS_SIZE_RESET;
-    for (n = 0; n < SGI_HUB_PROCESSORS; n++) {
-        s->pi_cpu_enable[n] = n < s->cpus;
-    }
+    memset(s->pi_cpu_enable, 0, sizeof(s->pi_cpu_enable));
     /* The error-spool addresses survive reset: firmware's reset marker. */
     s->pi_rt_origin_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     memset(s->pi_rt_compare, 0, sizeof(s->pi_rt_compare));
