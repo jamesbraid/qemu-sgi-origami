@@ -48,7 +48,6 @@
  */
 #define SN1_SPACE_HUB UINT64_C(0x10000000000)
 #define SN1_HUB_LOCAL_BOOT (SN1_SPACE_HUB + UINT64_C(0x18000000))
-#define SN1_HUB_LOCAL_FLASH (SN1_SPACE_HUB + UINT64_C(0x1a000000))
 #define SN1_BOARD_ID_OFFSET UINT64_C(0x4000000)
 #define SN1_BOARD_ID_VALUE UINT64_C(0x8000)
 #define SN1_HUB_LOCAL_HIGH_BOOT (SN1_SPACE_HUB + UINT64_C(0x1fc00000))
@@ -57,8 +56,6 @@
 #define SN1_HUB_ECC (SN1_SPACE_HUB + UINT64_C(0x140000000))
 #define SN1_HUB_DIRECTORY (SN1_SPACE_HUB + UINT64_C(0x1c0000000))
 #define SN1_PROM_RESET UINT64_C(0x1fc00000)
-#define SN1_FLASH_VIEW_SIZE (8 * MiB)
-#define SN1_FLASH_IMAGE_SIZE (16 * MiB)
 
 #define SN1_MIPS_HARDWARE_IRQ_OFFSET 2
 
@@ -349,7 +346,7 @@ static BlockDriverState *sn1_open_flash_slice(BlockDriverState *backing,
     qdict_put_str(options, "driver", "raw");
     qdict_put_str(options, "file", bdrv_get_node_name(backing));
     qdict_put_int(options, "offset", offset);
-    qdict_put_int(options, "size", SN1_FLASH_VIEW_SIZE);
+    qdict_put_int(options, "size", SGI_BEDROCK_FLASH_PART_SIZE);
     return bdrv_open(NULL, NULL, options, flags, errp);
 }
 
@@ -380,7 +377,7 @@ static MemoryRegion *sn1_create_boot_flash(SN1MachineState *s,
         error_setg(errp, "origin300 pflash image must use raw format");
         return NULL;
     }
-    if (blk_getlength(blk) != SN1_FLASH_IMAGE_SIZE) {
+    if (blk_getlength(blk) != SGI_BEDROCK_FLASH_SIZE) {
         error_setg(errp, "origin300 pflash image must be exactly 16 MiB");
         return NULL;
     }
@@ -390,14 +387,18 @@ static MemoryRegion *sn1_create_boot_flash(SN1MachineState *s,
     if (!lower) {
         return NULL;
     }
-    upper = sn1_open_flash_slice(backing, SN1_FLASH_VIEW_SIZE, flags, errp);
+    upper = sn1_open_flash_slice(backing, SGI_BEDROCK_FLASH_PART_SIZE, flags,
+                                 errp);
     if (!upper) {
         bdrv_unref(lower);
         return NULL;
     }
 
-    blk_remove_bs(blk);
-    blk_insert_bs(blk, lower, &error_abort);
+    if (blk_replace_bs(blk, lower, errp) < 0) {
+        bdrv_unref(upper);
+        bdrv_unref(lower);
+        return NULL;
+    }
     bdrv_unref(lower);
 
     s->boot_flash = qdev_new(TYPE_SGI_BEDROCK_FLASH);
@@ -466,16 +467,12 @@ static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
         return false;
     }
 
-    if (!memory_region_init_ram_flags_nomigrate(&s->prom, OBJECT(machine),
-                                                "sn1.prom", model->prom_size, 0,
-                                                errp)) {
+    if (model->prom_second_selection.size != SGI_BEDROCK_FLASH_PART_SIZE) {
+        error_setg(errp,
+                   "origin300: second PROM selection size does not match "
+                   "the Bedrock flash part size");
         return false;
     }
-    memory_region_set_readonly(&s->prom, true);
-    /* The stock PROM bytes are part of snapshots despite being immutable. */
-    vmstate_register_ram_global(&s->prom);
-    memcpy(memory_region_get_ram_ptr(&s->prom), contents, model->prom_size);
-    memory_region_set_dirty(&s->prom, 0, model->prom_size);
 
     stored = sn1_create_boot_flash(s, machine, errp);
     if (errp && *errp) {
@@ -507,6 +504,17 @@ static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
         return true;
     }
 
+    if (!memory_region_init_ram_flags_nomigrate(&s->prom, OBJECT(machine),
+                                                "sn1.prom", model->prom_size, 0,
+                                                errp)) {
+        return false;
+    }
+    memory_region_set_readonly(&s->prom, true);
+    /* The stock PROM bytes are part of snapshots despite being immutable. */
+    vmstate_register_ram_global(&s->prom);
+    memcpy(memory_region_get_ram_ptr(&s->prom), contents, model->prom_size);
+    memory_region_set_dirty(&s->prom, 0, model->prom_size);
+
     s->prom_views = g_new0(MemoryRegion, model->num_prom_views);
     for (size_t i = 0; i < model->num_prom_views; i++) {
         const SN1ModelPromView *view = &model->prom_views[i];
@@ -522,12 +530,12 @@ static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
     /* An empty second position answers erased through both boot spaces. */
     memory_region_init_io(&s->prom_flash, OBJECT(machine),
                           &sn1_flash_erased_ops, s, "sn1.prom.flash",
-                          SN1_FLASH_VIEW_SIZE);
+                          model->prom_second_selection.size);
     memory_region_add_subregion(system, model->prom_second_selection.address,
                                 &s->prom_flash);
     memory_region_init_alias(&s->prom_flash_remote, OBJECT(machine),
                              "sn1.prom.flash-remote", &s->prom_flash, 0,
-                             SN1_FLASH_VIEW_SIZE);
+                             model->prom_second_selection.size);
     memory_region_add_subregion(system, SN1_HUB_REMOTE_FLASH,
                                 &s->prom_flash_remote);
     return true;
