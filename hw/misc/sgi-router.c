@@ -367,20 +367,25 @@ static void sgi_router_histogram_add_ticks(SGIRouterState *s,
                                            uint64_t ticks)
 {
     uint32_t buckets[4];
+    uint64_t until_rescale;
 
     sgi_router_histogram_unpack(s->histograms[port], buckets);
-    while (ticks) {
-        uint64_t until_rescale = UINT64_C(0x10000) - buckets[3];
+    until_rescale = UINT64_C(0x10000) - buckets[3];
+    if (ticks < until_rescale) {
+        buckets[3] += ticks;
+    } else {
+        uint64_t rescale_count;
 
-        if (ticks < until_rescale) {
-            buckets[3] += ticks;
-            break;
-        }
-        buckets[3] += until_rescale;
         ticks -= until_rescale;
-        for (unsigned int i = 0; i < 4; i++) {
-            buckets[i] >>= 1;
+        rescale_count = 1 + ticks / UINT64_C(0x8000);
+        for (unsigned int i = 0; i < 3; i++) {
+            if (rescale_count >= 16) {
+                buckets[i] = 0;
+            } else {
+                buckets[i] >>= rescale_count;
+            }
         }
+        buckets[3] = UINT64_C(0x8000) + ticks % UINT64_C(0x8000);
     }
     s->histograms[port] = sgi_router_histogram_pack(buckets);
 }
