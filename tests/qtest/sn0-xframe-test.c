@@ -127,12 +127,13 @@
 
 #define ADAPTER_STATUS          0x0108
 #define GENERAL_INT_STATUS      0x0000
+#define GENERAL_INT_MASK        0x0008
 #define ADAPTER_CONTROL         0x0110
 #define PIC_INT_STATUS          0x0800
 #define PIC_INT_MASK            0x0808
 #define TXPIC_INT_REG           0x0810
 #define TXPIC_INT_MASK          0x0818
-#define GPIO_INT_REG            0x0890
+#define GPIO_INT_MASK           0x0898
 #define SCHED_INT_CTRL          0x0918
 #define PIF_RD_SWAPPER_FB       0x0910
 #define PRC_RXD0_0              0x1930
@@ -612,10 +613,14 @@ static void test_combined_interrupts(const void *data)
     qtest_writel(qts, BRIDGE_INT_MODE, 0);
 
     /* Open both PIC sources using the guest's 32-bit register cycles. */
+    irq_win_writel(qts, GENERAL_INT_MASK + 0, UINT32_MAX);
+    irq_win_writel(qts, GENERAL_INT_MASK + 4, ~GEN_INTR_TXPIC_HIGH);
     irq_win_writel(qts, PIC_INT_MASK + 0, 0);
     irq_win_writel(qts, PIC_INT_MASK + 4, 0);
     irq_win_writel(qts, TXPIC_INT_MASK + 0, 0);
     irq_win_writel(qts, TXPIC_INT_MASK + 4, 0);
+    irq_win_writel(qts, GPIO_INT_MASK + 0, UINT32_MAX);
+    irq_win_writel(qts, GPIO_INT_MASK + 4, ~GPIO_INT_LINK_UP_HIGH);
 
     irq_win_writel(qts, ADAPTER_CONTROL + 0, 0);
     irq_win_writel(qts, ADAPTER_CONTROL + 4, ADAPTER_EN_HIGH);
@@ -661,11 +666,11 @@ static void test_combined_interrupts(const void *data)
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_WINDOW + PI_INT_PEND0) &
                     hub_bit, ==, 0);
 
-    g_assert_cmphex(irq_win_readl(qts, GPIO_INT_REG + 0), ==, 0);
+    /* Mask the GPIO leaf without acknowledging its open raw status. */
     g_assert_cmphex(irq_win_readl(qts, PIC_INT_STATUS + 4) &
                     PIC_INT_GPIO_HIGH, ==, PIC_INT_GPIO_HIGH);
-    g_assert_cmphex(irq_win_readl(qts, GPIO_INT_REG + 4), ==,
-                    GPIO_INT_LINK_UP_HIGH);
+    irq_win_writel(qts, GPIO_INT_MASK + 0, UINT32_MAX);
+    irq_win_writel(qts, GPIO_INT_MASK + 4, UINT32_MAX);
     g_assert_cmphex(irq_win_readl(qts, PIC_INT_STATUS + 4) &
                     (PIC_INT_TX_HIGH | PIC_INT_GPIO_HIGH), ==, 0);
     g_assert_cmphex(irq_win_readl(qts, GENERAL_INT_STATUS + 4) &

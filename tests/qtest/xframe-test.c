@@ -139,18 +139,15 @@
  * = 1ULL<<32; Linux s2BIT(31), the same bit).
  */
 #define GEN_INTR_RXMAC             (1ULL << 29)
+#define GEN_INTR_RXTRAFFIC         (1ULL << 23)
 #define RMAC_LINK_STATE_CHANGE_INT (1ULL << 32)
 
 /*
  * Per-block (second-level) interrupt masks (public OpenBSD if_xgereg.h offsets:
- * PCIXB(x) = 0x0800 + x, MACRB(x) = 0x2000 + x). These are what the drivers
- * program to select interrupt sources, and -- as the IRIX xg enable path shows
- * -- what actually gates INTx: xg unmasks here and leaves GENERAL_INT_MASK at
- * its all-ones reset, yet still takes interrupts on real hardware, so
- * GENERAL_INT_MASK gates only the GENERAL_INT_STATUS summary read, not INTx.
- * The link source rolls up through two MAC masks: MAC_RMAC_ERR_MASK (the leaf
- * link-state-change bit) and MAC_INT_MASK (the RMAC block bit); both are
- * bit-set-means-masked, and DISABLE_ALL_INTRS_64 masks everything.
+ * PCIXB(x) = 0x0800 + x, MACRB(x) = 0x2000 + x). The link source rolls up
+ * through two MAC masks: MAC_RMAC_ERR_MASK (the leaf link-state-change bit)
+ * and MAC_INT_MASK (the RMAC block bit). These masks and GENERAL_INT_MASK are
+ * active high: DISABLE_ALL_INTRS_64 masks every source.
  */
 #define PIC_INT_MASK             0x0808
 #define TX_TRAFFIC_MASK          0x08e8
@@ -183,6 +180,7 @@
 #define GPIO_INT_REG_LINK_UP     (1ULL << 61)
 #define GPIO_INT_REG_LINK_DOWN   (1ULL << 62)
 #define GPIO_INT_MASK_LINK_UP    (1ULL << 61)
+#define GPIO_INT_MASK_LINK_DOWN  (1ULL << 62)
 #define GEN_INTR_TXPIC           (1ULL << 63)
 
 /*
@@ -390,19 +388,14 @@
 #define RX_RECOVERY_STEP_NS      (20 * 1000 * 1000)
 
 /*
- * How far to step QEMU_CLOCK_VIRTUAL to cross the delay to the FIRST bring-up
- * link edge (XFRAME_LINK_UP_DELAY_MS in xframe.c, 5 ms) with comfortable
- * margin. The model presents the link as a DOWN->UP transition after the
- * adapter is enabled; this crosses to the link-DOWN edge, the first of the two.
+ * How far to step QEMU_CLOCK_VIRTUAL past the model's delayed link event.
+ * Tests do not assert the exact delay, which remains outside the contract.
  */
 #define LINK_UP_STEP_NS          (20 * 1000 * 1000)
 
 /*
- * How far to step past the link-DOWN edge to the link-UP edge that follows it
- * (XFRAME_LINK_DOWN_TO_UP_MS in xframe.c, 500 ms) with comfortable margin,
- * still short of the 2 s heartbeat. Stepped from the adapter-enable it also
- * carries the link all the way through the DOWN->UP transition and settles it
- * up -- what the tests that only care about a settled-up link step across.
+ * A larger step used by existing tests that only need the delayed link event
+ * to have settled, without making its exact timing part of their assertions.
  */
 #define LINK_SETTLE_STEP_NS      (700LL * 1000 * 1000)
 
@@ -1116,6 +1109,7 @@ static void test_receive_recomputes_pending_irq_once(void)
     trace_args = g_strdup_printf(
         "-trace xframe_rx_completion_irq_recompute,file=%s", trace_path);
     xframe_tx_start_args(&t, trace_args);
+    sock_pif_writeq(&t, GENERAL_INT_MASK, ~GEN_INTR_RXTRAFFIC);
     sock_pif_writeq(&t, RX_TRAFFIC_MASK, 0);
     xframe_program_rxd(&t, slot0, RX_BUF0, RX_BUF_CAPACITY);
     xframe_program_rxd(&t, slot1, RX_BUF1, RX_BUF_CAPACITY);
@@ -1681,11 +1675,8 @@ static void test_adapter_en_is_settable(void)
  * adapter. The model raises it a short virtual-time delay after ADAPTER_EN goes
  * 0->1 -- latched in MAC_RMAC_ERR_REG, gated by the two MAC block masks,
  * aggregated into GENERAL_INT_STATUS's receive-MAC bit, and write-1-to-cleared
- * -- observed here on the INTx line itself. Interrupts here are enabled the way
- * the drivers do it: GENERAL_INT_MASK left at 0 (the OpenBSD value) and the
- * block masks selecting the source. Without this source an idle interface
- * raises nothing, which is what makes the IRIX xg watchdog reset the device in
- * a loop.
+ * -- observed here on the INTx line itself. This test explicitly opens the
+ * GENERAL and block masks that select the source.
  */
 static void test_link_up_raises_interrupt(void)
 {
@@ -1693,10 +1684,7 @@ static void test_link_up_raises_interrupt(void)
 
     xframe_start(&t);
 
-    /*
-     * Enable the link source the way OpenBSD xge_init does: general mask 0 (its
-     * value), and the RMAC source unmasked at both MAC block masks.
-     */
+    /* Open the GENERAL and both MAC masks for the link source. */
     pif_writeq(&t, GENERAL_INT_MASK, 0);
     pif_writeq(&t, MAC_INT_MASK, MAC_TMAC_INT);
     pif_writeq(&t, MAC_RMAC_ERR_MASK, ~RMAC_LINK_STATE_CHANGE_INT);
@@ -2389,10 +2377,7 @@ static void test_transmit_completion_raises_interrupt(void)
 
     xframe_tx_start(&t);
 
-    /*
-     * Enable transmit completion the way the drivers do: general mask 0 (their
-     * value) and the transmit-traffic block mask unmasked.
-     */
+    /* Open the GENERAL and transmit-traffic masks for completion. */
     sock_pif_writeq(&t, GENERAL_INT_MASK, 0);
     sock_pif_writeq(&t, TX_TRAFFIC_MASK, 0);
     g_assert_false(xframe_intx_asserted(t.dev));
@@ -2570,15 +2555,9 @@ static void test_descriptors_honor_swapper_ctrl_little_endian(void)
 }
 
 /*
- * The MAC-block link interrupt with GENERAL_INT_MASK left at its all-ones reset
- * -- the OpenBSD xge_init enable path (MAC_INT_MASK = MAC_TMAC_INT to unmask
- * the RMAC block bit, MAC_RMAC_ERR_MASK = ~RMAC_LINK_STATE_CHANGE_INT to unmask
- * the leaf link bit), which never touches GENERAL_INT_MASK. INTx must assert
- * with GENERAL_INT_MASK all-ones, because the block masks gate the line and the
- * general mask gates nothing. This pins the gating: the general mask is not on
- * the line's path, and the summary (checked below) is the raw aggregate rather
- * than a general-mask-blanked view. (IRIX xg takes its link interrupt through
- * the PIC/GPIO block, not this MAC one -- see the PIC-path test below.)
+ * A MAC link source reaches INTx only when its leaf, block, and GENERAL
+ * aggregate masks are all open. GENERAL_INT_STATUS remains visible while the
+ * source is delivered; masked-summary visibility is intentionally not tested.
  */
 static void test_xg_enable_path_link_via_block_masks(void)
 {
@@ -2586,10 +2565,11 @@ static void test_xg_enable_path_link_via_block_masks(void)
 
     xframe_start(&t);
 
-    /* xg leaves the top-level mask exactly as reset: fully masked. */
+    /* Confirm reset starts masked, then open only the receive-MAC aggregate. */
     g_assert_cmphex(pif_readq(&t, GENERAL_INT_MASK), ==, DISABLE_ALL_INTRS_64);
+    pif_writeq(&t, GENERAL_INT_MASK, ~GEN_INTR_RXMAC);
 
-    /* Unmask the link source at the block level only, as the drivers do. */
+    /* Open the receive-MAC block and its link-state-change leaf. */
     pif_writeq(&t, MAC_INT_MASK, MAC_TMAC_INT);
     pif_writeq(&t, MAC_RMAC_ERR_MASK, ~RMAC_LINK_STATE_CHANGE_INT);
 
@@ -2601,22 +2581,11 @@ static void test_xg_enable_path_link_via_block_masks(void)
     g_assert_false(xframe_intx_asserted(t.dev));
     qtest_clock_step(t.qs->qts, LINK_SETTLE_STEP_NS);
 
-    /*
-     * INTx asserts although GENERAL_INT_MASK is all-ones: the block masks gate
-     * the line. This is the whole xg fix -- it fails before the gating change.
-     */
     g_assert_true(xframe_intx_asserted(t.dev));
     g_assert_cmphex(pif_readq(&t, MAC_RMAC_ERR_REG) &
                     RMAC_LINK_STATE_CHANGE_INT, ==, RMAC_LINK_STATE_CHANGE_INT);
 
-    /*
-     * The summary shows the source even though GENERAL_INT_MASK is all-ones:
-     * GENERAL_INT_STATUS is the raw block-pending aggregate, not gated by the
-     * general mask. The live xg diagnostic read it 379,815x and needs it
-     * non-zero to dispatch; blanking it by the all-ones general mask is the
-     * refuted "summary-visibility" model. Here the MAC link source rolls up as
-     * GEN_INTR_RXMAC.
-     */
+    /* The MAC link source rolls up as GEN_INTR_RXMAC. */
     g_assert_cmphex(pif_readq(&t, GENERAL_INT_STATUS) & GEN_INTR_RXMAC, ==,
                     GEN_INTR_RXMAC);
 
@@ -2635,247 +2604,6 @@ static void test_xg_enable_path_link_via_block_masks(void)
     /* The ISR ack -- write the bit back -- clears it and drops the line. */
     pif_writeq(&t, MAC_RMAC_ERR_REG, RMAC_LINK_STATE_CHANGE_INT);
     g_assert_false(xframe_intx_asserted(t.dev));
-
-    xframe_stop(&t);
-}
-
-/*
- * The link-state interrupt through the PIC/GPIO block -- the source IRIX xg's
- * bring-up waits on, distinct from the MAC RMAC path above. The model raises
- * the GPIO LINK_UP event on adapter-enable and rolls it up through
- * PIC_INT_STATUS's PIC_INT_GPIO into GENERAL_INT_STATUS's GEN_INTR_TXPIC (Linux
- * s2io_isr dispatches GEN_INTR_TXPIC to s2io_txpic_intr_handle, which reads
- * pic_int_status -> PIC_INT_GPIO -> gpio_int_reg -> LINK_UP). This variant
- * opens the PIC block AND the GPIO leaf, and asserts the source is gated by
- * PIC_INT_MASK's PIC_INT_GPIO bit and NOT by the GPIO leaf mask: masking the
- * leaf leaves INTx asserted. (xg's exact path, which leaves the leaf masked, is
- * the separate PIC-summary test below.)
- */
-static void test_xg_enable_path_link_via_gpio_block(void)
-{
-    XframeTest t;
-    uint64_t mac_latched;
-
-    xframe_start(&t);
-
-    /* xg leaves the top-level and MAC/traffic masks at their masked reset. */
-    g_assert_cmphex(pif_readq(&t, GENERAL_INT_MASK), ==, DISABLE_ALL_INTRS_64);
-    g_assert_cmphex(pif_readq(&t, MAC_INT_MASK), ==, DISABLE_ALL_INTRS_64);
-    g_assert_cmphex(pif_readq(&t, MAC_RMAC_ERR_MASK), ==, DISABLE_ALL_INTRS_64);
-
-    /*
-     * Open the PIC/GPIO path: the PIC block wholesale and the GPIO link-up
-     * leaf. The MAC masks stay masked -- so if the line ever asserts, it is the
-     * GPIO source doing it, not the MAC one.
-     */
-    pif_writeq(&t, PIC_INT_MASK, 0);
-    pif_writeq(&t, GPIO_INT_MASK, ~GPIO_INT_MASK_LINK_UP);
-
-    /* Idle, adapter not yet enabled: nothing to raise the line. */
-    g_assert_false(xframe_intx_asserted(t.dev));
-
-    /* Enable the adapter; the link comes up a short virtual-time later. */
-    pif_writeq(&t, ADAPTER_CONTROL, ADAPTER_EN);
-    g_assert_false(xframe_intx_asserted(t.dev));
-    qtest_clock_step(t.qs->qts, LINK_SETTLE_STEP_NS);
-
-    /*
-     * INTx asserts although GENERAL_INT_MASK and the MAC masks are all-ones:
-     * the PIC block mask gates the line.
-     */
-    g_assert_true(xframe_intx_asserted(t.dev));
-
-    /*
-     * The ISR's descent path reads, both non-destructive derived summaries:
-     * PIC_INT_STATUS shows the GPIO sub-block, and GENERAL_INT_STATUS shows the
-     * source with GENERAL_INT_MASK all-ones (the raw block-pending aggregate,
-     * so xg -- which never touches the general mask -- sees GEN_INTR_TXPIC and
-     * dispatches). Checked before the acking read of GPIO_INT_REG below, which
-     * consumes the edge.
-     */
-    g_assert_cmphex(pif_readq(&t, PIC_INT_STATUS) & PIC_INT_GPIO, ==,
-                    PIC_INT_GPIO);
-    g_assert_cmphex(pif_readq(&t, GENERAL_INT_STATUS) & GEN_INTR_TXPIC, ==,
-                    GEN_INTR_TXPIC);
-
-    /*
-     * The GPIO leaf mask does NOT gate the line: masking it leaves INTx
-     * asserted. Delivery is gated by PIC_INT_MASK's PIC_INT_GPIO bit alone --
-     * the measured xg behaviour (xg leaves the leaf masked yet takes the
-     * interrupt).
-     */
-    pif_writeq(&t, GPIO_INT_MASK, DISABLE_ALL_INTRS_64);
-    g_assert_true(xframe_intx_asserted(t.dev));
-
-    /* The PIC block mask gates it: masking the whole PIC block drops it. */
-    pif_writeq(&t, PIC_INT_MASK, DISABLE_ALL_INTRS_64);
-    g_assert_false(xframe_intx_asserted(t.dev));
-    pif_writeq(&t, PIC_INT_MASK, 0);
-    g_assert_true(xframe_intx_asserted(t.dev));
-
-    /*
-     * The ISR ack IRIX xg actually performs -- READ GPIO_INT_REG, no
-     * write-1-to-clear, no mask (the round-6 trace). The read returns the
-     * latched LINK_UP bit and consumes the self-clearing edge, dropping INTx.
-     * The MAC path latched its own link bit off the same link-up event, but the
-     * MAC masks keep it off the line -- and its read-back is non-destructive --
-     * so it stays latched: proof the two link sources are independent and this
-     * one came through the PIC/GPIO block.
-     */
-    g_assert_cmphex(pif_readq(&t, GPIO_INT_REG) & GPIO_INT_REG_LINK_UP, ==,
-                    GPIO_INT_REG_LINK_UP);
-    g_assert_false(xframe_intx_asserted(t.dev));
-    mac_latched = pif_readq(&t, MAC_RMAC_ERR_REG) & RMAC_LINK_STATE_CHANGE_INT;
-    g_assert_cmphex(mac_latched, ==, RMAC_LINK_STATE_CHANGE_INT);
-
-    xframe_stop(&t);
-}
-
-/*
- * IRIX xg's EXACT measured bring-up path, end to end -- the reproduction of
- * the live-diagnostic wall. From the trace, xg opens ONLY PIC_INT_MASK (0x808)
- * and TXPIC_INT_MASK (0x818) and leaves GENERAL_INT_MASK, the GPIO leaf
- * (GPIO_INT_MASK 0x898), every MAC mask and both traffic masks at their
- * all-ones reset. On link-up, INTx must assert (the GPIO link source is gated
- * by the PIC block mask alone, not the GPIO leaf xg never opens); its aggregate
- * bit must be visible in GENERAL_INT_STATUS despite the all-ones general mask
- * (the raw summary xg's ISR read 379,815x and got 0 from before the fix); and
- * xg's read of GPIO_INT_REG must ack the self-clearing link-up edge and drop
- * the line so it fires once per event rather than storming (the round-6 trace:
- * xg reads GPIO_INT_REG and issues no write-1-to-clear and no mask). Fails
- * before the block-mask/raw-summary change on two counts -- the leaf-gated
- * source never asserts with the leaf masked, and the summary reads 0 -- and
- * before the read-ack change on the post-read de-assert; passes after.
- */
-static void test_xg_bringup_pic_summary_serviced(void)
-{
-    XframeTest t;
-
-    xframe_start(&t);
-
-    /*
-     * Everything except the two PIC masks stays at its masked reset -- the
-     * exact mask state the live xg trace leaves.
-     */
-    g_assert_cmphex(pif_readq(&t, GENERAL_INT_MASK), ==, DISABLE_ALL_INTRS_64);
-    g_assert_cmphex(pif_readq(&t, GPIO_INT_MASK), ==, DISABLE_ALL_INTRS_64);
-    g_assert_cmphex(pif_readq(&t, MAC_INT_MASK), ==, DISABLE_ALL_INTRS_64);
-    g_assert_cmphex(pif_readq(&t, MAC_RMAC_ERR_MASK), ==, DISABLE_ALL_INTRS_64);
-
-    /* xg opens exactly these two, and nothing else. */
-    pif_writeq(&t, PIC_INT_MASK, 0);
-    pif_writeq(&t, TXPIC_INT_MASK, 0);
-
-    /* Idle, adapter not yet enabled: nothing to raise the line. */
-    g_assert_false(xframe_intx_asserted(t.dev));
-
-    /* Enable the adapter; the link comes up a short virtual-time later. */
-    pif_writeq(&t, ADAPTER_CONTROL, ADAPTER_EN);
-    g_assert_false(xframe_intx_asserted(t.dev));
-    qtest_clock_step(t.qs->qts, LINK_SETTLE_STEP_NS);
-
-    /*
-     * INTx asserts with the GPIO leaf still masked -- the whole point: the
-     * source reaches xg through the PIC block it opens, not the leaf it leaves
-     * masked.
-     */
-    g_assert_true(xframe_intx_asserted(t.dev));
-
-    /*
-     * The summary xg's ISR actually reads is non-zero and shows GEN_INTR_TXPIC,
-     * although GENERAL_INT_MASK is all-ones -- and PIC_INT_STATUS below it
-     * shows the GPIO sub-block. Both are non-destructive derived reads, checked
-     * before the acking read of GPIO_INT_REG. This raw summary is the fix that
-     * lets xg identify the source at all -- before it, this read returned 0 and
-     * xg stormed without ever dispatching.
-     */
-    g_assert_cmphex(pif_readq(&t, GENERAL_INT_STATUS), !=, 0);
-    g_assert_cmphex(pif_readq(&t, GENERAL_INT_STATUS) & GEN_INTR_TXPIC, ==,
-                    GEN_INTR_TXPIC);
-    g_assert_cmphex(pif_readq(&t, PIC_INT_STATUS) & PIC_INT_GPIO, ==,
-                    PIC_INT_GPIO);
-
-    /* The PIC block mask gates the line: masking it drops INTx. */
-    pif_writeq(&t, PIC_INT_MASK, DISABLE_ALL_INTRS_64);
-    g_assert_false(xframe_intx_asserted(t.dev));
-    pif_writeq(&t, PIC_INT_MASK, 0);
-    g_assert_true(xframe_intx_asserted(t.dev));
-
-    /*
-     * The ISR ack xg actually performs, from the round-6 trace: it READS
-     * GPIO_INT_REG (sees LINK_UP) and issues no write-1-to-clear and no mask.
-     * That read consumes the self-clearing link-up edge, de-asserting INTx and
-     * clearing the summary bit, so the source fires once per event instead of
-     * storming.
-     */
-    g_assert_cmphex(pif_readq(&t, GPIO_INT_REG) & GPIO_INT_REG_LINK_UP, ==,
-                    GPIO_INT_REG_LINK_UP);
-    g_assert_false(xframe_intx_asserted(t.dev));
-    g_assert_cmphex(pif_readq(&t, GENERAL_INT_STATUS) & GEN_INTR_TXPIC, ==, 0);
-
-    xframe_stop(&t);
-}
-
-/*
- * IRIX xg's measured ISR ack of the link-up interrupt, from the round-6 live
- * boot. On the interrupt firing, xg reads GENERAL_INT_STATUS (sees
- * GEN_INTR_TXPIC), reads TXPIC_INT_REG (0x810 -- the PCI-X transmit-error
- * sub-source, which is empty, so it walks on), reads GPIO_INT_REG (sees
- * LINK_UP) -- and then does NOT write GPIO_INT_REG back (no write-1-to-clear)
- * and does NOT mask GPIO_INT_MASK or PIC_INT_MASK. The only thing that
- * acknowledges the link-up edge is that read of GPIO_INT_REG. So the source is
- * a self-clearing edge consumed by the ISR's read: INTx must de-assert after
- * xg reads GPIO_INT_REG and stay down -- one serviced interrupt per link-up,
- * not a storm. Before this change the GPIO status stayed latched and INTx
- * stayed asserted after the read (xg re-entered ~183,869x in ~12s and never
- * transmitted); it fails here on the post-read de-assert and passes after.
- */
-static void test_xg_link_up_gpio_read_acks(void)
-{
-    XframeTest t;
-
-    xframe_start(&t);
-
-    /* xg's exact mask state: open the two PIC leaves it opens, nothing else. */
-    pif_writeq(&t, PIC_INT_MASK, 0);
-    pif_writeq(&t, TXPIC_INT_MASK, 0);
-
-    /* Enable the adapter; the link comes up a short virtual-time later. */
-    pif_writeq(&t, ADAPTER_CONTROL, ADAPTER_EN);
-    qtest_clock_step(t.qs->qts, LINK_SETTLE_STEP_NS);
-    g_assert_true(xframe_intx_asserted(t.dev));
-
-    /* xg's ISR dispatch read: the raw summary shows the PIC block source. */
-    g_assert_cmphex(pif_readq(&t, GENERAL_INT_STATUS) & GEN_INTR_TXPIC, ==,
-                    GEN_INTR_TXPIC);
-
-    /*
-     * xg reads the txpic transmit-error sub-source (0x810) while walking the
-     * PIC block. It is empty -- no PCI-X transmit error is modelled -- so this
-     * read is non-destructive and leaves the line asserted: the source is the
-     * GPIO link, not txpic.
-     */
-    g_assert_cmphex(pif_readq(&t, TXPIC_INT_REG), ==, 0);
-    g_assert_true(xframe_intx_asserted(t.dev));
-
-    /*
-     * xg's actual ack: it reads GPIO_INT_REG, sees LINK_UP, and does nothing
-     * else -- no write-1-to-clear, no mask. That read consumes the
-     * self-clearing link-up edge.
-     */
-    g_assert_cmphex(pif_readq(&t, GPIO_INT_REG) & GPIO_INT_REG_LINK_UP, ==,
-                    GPIO_INT_REG_LINK_UP);
-
-    /* INTx de-asserts after the acking read: the storm the wall was. */
-    g_assert_false(xframe_intx_asserted(t.dev));
-
-    /*
-     * And it stays down: the source is gone from the summary and the latch, so
-     * a re-dispatch finds nothing and xg does not re-enter. A genuinely new
-     * link event would latch afresh -- this only consumes the delivered edge.
-     */
-    g_assert_cmphex(pif_readq(&t, GENERAL_INT_STATUS) & GEN_INTR_TXPIC, ==, 0);
-    g_assert_cmphex(pif_readq(&t, GPIO_INT_REG) & GPIO_INT_REG_LINK_UP, ==, 0);
 
     xframe_stop(&t);
 }
@@ -2909,9 +2637,10 @@ static void test_scheduled_interrupt_feeds_watchdog(void)
 
     xframe_start(&t);
 
-    /* xg's exact mask state: open the two PIC leaves it opens, nothing else. */
+    /* Open the scheduled source at its leaf, PIC, and GENERAL levels. */
     pif_writeq(&t, PIC_INT_MASK, 0);
     pif_writeq(&t, TXPIC_INT_MASK, 0);
+    pif_writeq(&t, GENERAL_INT_MASK, ~GEN_INTR_TXPIC);
 
     /*
      * Arm the scheduled interrupt the way xg does -- write enable + a period.
@@ -2974,6 +2703,204 @@ static void test_scheduled_interrupt_feeds_watchdog(void)
 }
 
 /*
+ * GENERAL_INT_MASK is the final active-high delivery mask.  Masking it must
+ * lower INTx without consuming a pending leaf, and opening it must expose the
+ * same level again.  Use the scheduled TXPIC source so this test does not
+ * depend on the open GPIO latch and acknowledgement semantics.
+ */
+static void test_general_mask_gates_scheduled_interrupt(void)
+{
+    XframeTest t;
+
+    xframe_start(&t);
+
+    pif_writeq(&t, PIC_INT_MASK, 0);
+    pif_writeq(&t, TXPIC_INT_MASK, 0);
+
+    /* Exercise the register's two supported 32-bit halves explicitly. */
+    pif_writel(&t, GENERAL_INT_MASK + 0, UINT32_MAX);
+    pif_writel(&t, GENERAL_INT_MASK + 4, UINT32_MAX);
+
+    pif_writeq(&t, SCHED_INT_CTRL,
+               SCHED_INT_CTRL_TIMER_EN | SCHED_INT_TEST_PERIOD);
+    qtest_clock_step(t.qs->qts, SCHED_INT_STEP_NS);
+
+    g_assert_false(xframe_intx_asserted(t.dev));
+
+    pif_writel(&t, GENERAL_INT_MASK + 0, 0);
+    g_assert_false(xframe_intx_asserted(t.dev));
+    pif_writel(&t, GENERAL_INT_MASK + 4, 0);
+    g_assert_true(xframe_intx_asserted(t.dev));
+
+    pif_writel(&t, GENERAL_INT_MASK + 0, UINT32_MAX);
+    g_assert_true(xframe_intx_asserted(t.dev));
+    pif_writel(&t, GENERAL_INT_MASK + 4, UINT32_MAX);
+    g_assert_false(xframe_intx_asserted(t.dev));
+
+    pif_writel(&t, GENERAL_INT_MASK + 0, 0);
+    g_assert_false(xframe_intx_asserted(t.dev));
+    pif_writel(&t, GENERAL_INT_MASK + 4, 0);
+    g_assert_true(xframe_intx_asserted(t.dev));
+
+    pif_writel(&t, TXPIC_INT_REG + 4, 0);
+    g_assert_false(xframe_intx_asserted(t.dev));
+
+    xframe_stop(&t);
+}
+
+static void xframe_backend_link_up_with_gpio_mask(uint64_t gpio_mask,
+                                                  bool expect_irq)
+{
+    XframeTx t;
+
+    xframe_tx_start(&t);
+
+    /* Begin down and consume any model-specific raw event before unmasking. */
+    qtest_qmp_assert_success(t.qs->qts,
+                             "{'execute': 'set_link', 'arguments': "
+                             "{'name': 'n0', 'up': false}}");
+    sock_pif_readq(&t, GPIO_INT_REG);
+
+    sock_pif_writeq(&t, GENERAL_INT_MASK, ~GEN_INTR_TXPIC);
+    sock_pif_writeq(&t, PIC_INT_MASK, ~PIC_INT_GPIO);
+    sock_pif_writeq(&t, GPIO_INT_MASK, gpio_mask);
+    sock_pif_writeq(&t, ADAPTER_CONTROL, ADAPTER_EN);
+
+    qtest_qmp_assert_success(t.qs->qts,
+                             "{'execute': 'set_link', 'arguments': "
+                             "{'name': 'n0', 'up': true}}");
+    qtest_clock_step_next(t.qs->qts);
+
+    g_assert_cmpint(xframe_intx_asserted(t.dev), ==, expect_irq);
+    xframe_tx_stop(&t);
+}
+
+/* GPIO LINK_UP has its own active-high delivery mask below PIC and GENERAL. */
+static void test_gpio_link_up_mask_gates_delivery(void)
+{
+    xframe_backend_link_up_with_gpio_mask(~GPIO_INT_MASK_LINK_UP, true);
+    xframe_backend_link_up_with_gpio_mask(DISABLE_ALL_INTRS_64, false);
+}
+
+static void xframe_backend_link_down_with_gpio_mask(uint64_t gpio_mask,
+                                                    bool expect_irq)
+{
+    XframeTx t;
+
+    xframe_tx_start(&t);
+
+    sock_pif_writeq(&t, GENERAL_INT_MASK, ~GEN_INTR_TXPIC);
+    sock_pif_writeq(&t, PIC_INT_MASK, ~PIC_INT_GPIO);
+    sock_pif_writeq(&t, GPIO_INT_MASK, gpio_mask);
+
+    qtest_qmp_assert_success(t.qs->qts,
+                             "{'execute': 'set_link', 'arguments': "
+                             "{'name': 'n0', 'up': false}}");
+
+    g_assert_cmpint(xframe_intx_asserted(t.dev), ==, expect_irq);
+    xframe_tx_stop(&t);
+}
+
+/* GPIO LINK_DOWN has the same active-high leaf-mask contract as LINK_UP. */
+static void test_gpio_link_down_mask_gates_delivery(void)
+{
+    xframe_backend_link_down_with_gpio_mask(~GPIO_INT_MASK_LINK_DOWN, true);
+    xframe_backend_link_down_with_gpio_mask(DISABLE_ALL_INTRS_64, false);
+}
+
+/* A masked MAC link source retains its existing read-clear behavior. */
+static void test_masked_mac_link_latch_clears_on_read(void)
+{
+    XframeTx t;
+
+    xframe_tx_start(&t);
+
+    g_assert_cmphex(sock_pif_readq(&t, MAC_INT_MASK), ==,
+                    DISABLE_ALL_INTRS_64);
+    g_assert_cmphex(sock_pif_readq(&t, MAC_RMAC_ERR_MASK), ==,
+                    DISABLE_ALL_INTRS_64);
+
+    qtest_qmp_assert_success(t.qs->qts,
+                             "{'execute': 'set_link', 'arguments': "
+                             "{'name': 'n0', 'up': false}}");
+
+    g_assert_cmphex(sock_pif_readq(&t, MAC_RMAC_ERR_REG) &
+                    RMAC_LINK_STATE_CHANGE_INT, ==,
+                    RMAC_LINK_STATE_CHANGE_INT);
+    g_assert_cmphex(sock_pif_readq(&t, MAC_RMAC_ERR_REG) &
+                    RMAC_LINK_STATE_CHANGE_INT, ==, 0);
+
+    xframe_tx_stop(&t);
+}
+
+/* Establish and service an explicit backend UP event on the MAC path. */
+static void xframe_service_explicit_link_up(XframeTx *t)
+{
+    xframe_tx_start(t);
+
+    qtest_qmp_assert_success(t->qs->qts,
+                             "{'execute': 'set_link', 'arguments': "
+                             "{'name': 'n0', 'up': false}}");
+    sock_pif_readq(t, MAC_RMAC_ERR_REG);
+
+    sock_pif_writeq(t, GENERAL_INT_MASK,
+                    ~(GEN_INTR_RXMAC | GEN_INTR_TXPIC));
+    sock_pif_writeq(t, PIC_INT_MASK, 0);
+    sock_pif_writeq(t, TXPIC_INT_MASK, 0);
+    sock_pif_writeq(t, MAC_INT_MASK, MAC_TMAC_INT);
+    sock_pif_writeq(t, MAC_RMAC_ERR_MASK,
+                    ~RMAC_LINK_STATE_CHANGE_INT);
+    sock_pif_writeq(t, ADAPTER_CONTROL, ADAPTER_EN);
+
+    qtest_qmp_assert_success(t->qs->qts,
+                             "{'execute': 'set_link', 'arguments': "
+                             "{'name': 'n0', 'up': true}}");
+    qtest_clock_step_next(t->qs->qts);
+    g_assert_true(xframe_intx_asserted(t->dev));
+
+    sock_pif_writeq(t, MAC_RMAC_ERR_REG, RMAC_LINK_STATE_CHANGE_INT);
+    g_assert_false(xframe_intx_asserted(t->dev));
+}
+
+/* Rewriting an already-set ADAPTER_EN bit must not fabricate a link event. */
+static void test_redundant_adapter_en_does_not_relink(void)
+{
+    XframeTx t;
+
+    xframe_service_explicit_link_up(&t);
+    sock_pif_writeq(&t, ADAPTER_CONTROL, ADAPTER_EN);
+    qtest_clock_step(t.qs->qts, LINK_SETTLE_STEP_NS);
+
+    g_assert_false(xframe_intx_asserted(t.dev));
+    g_assert_cmphex(sock_pif_readq(&t, MAC_RMAC_ERR_REG) &
+                    RMAC_LINK_STATE_CHANGE_INT, ==, 0);
+
+    xframe_tx_stop(&t);
+}
+
+/* Scheduled service after a real link event must leave carrier undisturbed. */
+static void test_scheduled_interrupt_holds_carrier_steady(void)
+{
+    XframeTx t;
+    int period;
+
+    xframe_service_explicit_link_up(&t);
+    sock_pif_writeq(&t, SCHED_INT_CTRL,
+                    SCHED_INT_CTRL_TIMER_EN | SCHED_INT_TEST_PERIOD);
+
+    for (period = 0; period < 3; period++) {
+        qtest_clock_step(t.qs->qts, SCHED_INT_STEP_NS);
+        g_assert_true(xframe_intx_asserted(t.dev));
+        g_assert_cmphex(sock_pif_readq(&t, MAC_RMAC_ERR_REG) &
+                        RMAC_LINK_STATE_CHANGE_INT, ==, 0);
+        g_assert_cmphex(sock_pif_readq(&t, TXPIC_INT_REG), !=, 0);
+        g_assert_false(xframe_intx_asserted(t.dev));
+    }
+
+    xframe_tx_stop(&t);
+}
+
+/*
  * IRIX xg's ISR does not take the read-based ack above: it dispatches off
  * GENERAL_INT_STATUS's GEN_INTR_TXPIC and, instead of reading TXPIC_INT_REG,
  * WRITES it as its acknowledgement -- it never issues the read that would
@@ -3001,9 +2928,10 @@ static void test_xg_scheduled_interrupt_acks_via_write(void)
 
     xframe_start(&t);
 
-    /* xg's exact mask state: open the two PIC leaves it opens, nothing else. */
+    /* Open the scheduled source at its leaf, PIC, and GENERAL levels. */
     pif_writeq(&t, PIC_INT_MASK, 0);
     pif_writeq(&t, TXPIC_INT_MASK, 0);
+    pif_writeq(&t, GENERAL_INT_MASK, ~GEN_INTR_TXPIC);
 
     /* Arm the scheduled interrupt and step past one period, as xg does. */
     pif_writeq(&t, SCHED_INT_CTRL,
@@ -3046,362 +2974,8 @@ static void test_xg_scheduled_interrupt_acks_via_write(void)
 }
 
 /*
- * The bring-up LINK_UP is delivered exactly ONCE. The watchdog is fed by the
- * separate scheduled interrupt above, NOT by re-raising the link, so once the
- * bring-up DOWN->UP transition has been serviced the GPIO link source must stay
- * quiescent: a re-raised LINK_UP with no intervening LINK_DOWN would be a
- * spurious carrier event to a driver whose link belief is already up. After
- * servicing the bring-up UP, stepping the clock well past the point any
- * periodic link re-raise would fire must leave INTx deasserted and no link bit
- * latched. Fails while a link heartbeat re-raises LINK_UP (INTx re-asserts);
- * passes once the heartbeat is gone.
- */
-static void test_link_up_delivered_once(void)
-{
-    XframeTest t;
-
-    xframe_start(&t);
-
-    /* xg's exact mask state: open the two PIC leaves it opens, nothing else. */
-    pif_writeq(&t, PIC_INT_MASK, 0);
-    pif_writeq(&t, TXPIC_INT_MASK, 0);
-
-    /* Bring the link up and service the bring-up edge exactly as xg does. */
-    pif_writeq(&t, ADAPTER_CONTROL, ADAPTER_EN);
-    qtest_clock_step(t.qs->qts, LINK_SETTLE_STEP_NS);
-    g_assert_true(xframe_intx_asserted(t.dev));
-    g_assert_cmphex(pif_readq(&t, GPIO_INT_REG) & GPIO_INT_REG_LINK_UP, ==,
-                    GPIO_INT_REG_LINK_UP);
-    g_assert_false(xframe_intx_asserted(t.dev));
-
-    /*
-     * Step well past where a periodic link re-raise would have fired: the GPIO
-     * link source stays quiescent -- LINK_UP was delivered once, and nothing
-     * re-raises it. (No scheduled interrupt was armed here, so nothing on the
-     * PIC/TXPIC path fires either.)
-     */
-    qtest_clock_step(t.qs->qts, SCHED_INT_STEP_NS);
-    g_assert_false(xframe_intx_asserted(t.dev));
-    g_assert_cmphex(pif_readq(&t, GPIO_INT_REG) &
-                    (GPIO_INT_REG_LINK_UP | GPIO_INT_REG_LINK_DOWN), ==, 0);
-
-    xframe_stop(&t);
-}
-
-/*
- * The bring-up link edge IRIX xg gates transmit on: a genuine link DOWN->UP
- * transition, delivered as TWO separate, separately-serviced GPIO interrupts,
- * not a bare unchanging UP. The Neterion family propagates carrier and wakes
- * the transmit queue only on a link-state CHANGE (Linux s2io_link's
- * "if (link != last_link_state)" guard), so a model that only ever asserts UP
- * presents no transition to a driver whose belief is already "up" and leaves
- * transmit gated shut. On ADAPTER_EN 0->1 the model presents a link-DOWN first,
- * then the link-UP one interval later -- and the two must never arrive as both
- * GPIO link bits set at once, which s2io treats as an unstable state it clears
- * and re-waits on. Each edge is a self-clearing GPIO interrupt serviced by the
- * ISR's read of GPIO_INT_REG, exactly as the single bring-up event was. The UP
- * is then delivered ONCE and not re-raised -- the watchdog is fed by the
- * separate scheduled interrupt, not by the link. Fails before this change --
- * the model never asserts LINK_DOWN, so the first serviced edge is UP, not
- * DOWN -- and passes after.
- */
-static void test_link_down_up_transition_at_bringup(void)
-{
-    XframeTest t;
-    uint64_t gpio;
-
-    xframe_start(&t);
-
-    /* xg's exact mask state: open the two PIC leaves it opens, nothing else. */
-    pif_writeq(&t, PIC_INT_MASK, 0);
-    pif_writeq(&t, TXPIC_INT_MASK, 0);
-
-    /* Idle, adapter not yet enabled: nothing to raise the line. */
-    g_assert_false(xframe_intx_asserted(t.dev));
-
-    /*
-     * Enable the adapter. The first link edge -- a link-DOWN -- lands a short
-     * virtual-time later, after the driver's synchronous bring-up has unmasked
-     * (the same delay the one-shot used), so it is delivered, not acked away.
-     */
-    pif_writeq(&t, ADAPTER_CONTROL, ADAPTER_EN);
-    g_assert_false(xframe_intx_asserted(t.dev));
-    qtest_clock_step(t.qs->qts, LINK_UP_STEP_NS);
-
-    /*
-     * First edge: link-DOWN. It reaches INTx through the same PIC/GPIO roll-up
-     * the UP does -- the raw summary shows GEN_INTR_TXPIC and PIC_INT_STATUS
-     * the GPIO sub-block (both non-destructive derived reads, checked before
-     * the acking read of GPIO_INT_REG below).
-     */
-    g_assert_true(xframe_intx_asserted(t.dev));
-    g_assert_cmphex(pif_readq(&t, GENERAL_INT_STATUS) & GEN_INTR_TXPIC, ==,
-                    GEN_INTR_TXPIC);
-    g_assert_cmphex(pif_readq(&t, PIC_INT_STATUS) & PIC_INT_GPIO, ==,
-                    PIC_INT_GPIO);
-
-    /*
-     * The ISR's acking read returns the latched DOWN bit and NOT the UP bit --
-     * a single clean edge, never both together -- and consumes it, dropping
-     * INTx: one link-DOWN delivered and serviced.
-     */
-    gpio = pif_readq(&t, GPIO_INT_REG);
-    g_assert_cmphex(gpio & GPIO_INT_REG_LINK_DOWN, ==, GPIO_INT_REG_LINK_DOWN);
-    g_assert_cmphex(gpio & GPIO_INT_REG_LINK_UP, ==, 0);
-    g_assert_false(xframe_intx_asserted(t.dev));
-    g_assert_cmphex(pif_readq(&t, GENERAL_INT_STATUS) & GEN_INTR_TXPIC, ==, 0);
-
-    /*
-     * Second edge, one interval later: link-UP. A separate interrupt with the
-     * UP bit set and the DOWN bit clear -- the completed DOWN->UP transition,
-     * delivered and serviced independently of the DOWN above.
-     */
-    qtest_clock_step(t.qs->qts, LINK_SETTLE_STEP_NS);
-    g_assert_true(xframe_intx_asserted(t.dev));
-    gpio = pif_readq(&t, GPIO_INT_REG);
-    g_assert_cmphex(gpio & GPIO_INT_REG_LINK_UP, ==, GPIO_INT_REG_LINK_UP);
-    g_assert_cmphex(gpio & GPIO_INT_REG_LINK_DOWN, ==, 0);
-    g_assert_false(xframe_intx_asserted(t.dev));
-
-    /*
-     * The UP is delivered once: stepping well past where a periodic link
-     * re-raise would have fired leaves the GPIO source quiescent -- INTx down
-     * and no link bit latched. Nothing re-asserts LINK_UP; the watchdog is fed
-     * by the scheduled interrupt, exercised separately.
-     */
-    qtest_clock_step(t.qs->qts, SCHED_INT_STEP_NS);
-    g_assert_false(xframe_intx_asserted(t.dev));
-    gpio = pif_readq(&t, GPIO_INT_REG);
-    g_assert_cmphex(gpio & (GPIO_INT_REG_LINK_UP | GPIO_INT_REG_LINK_DOWN),
-                    ==, 0);
-
-    xframe_stop(&t);
-}
-
-/*
- * Carrier stays steady across the watchdog: a redundant ADAPTER_CONTROL write
- * that sets ADAPTER_EN while it is already set -- the idempotent re-poke IRIX
- * xg's link handler does on every serviced pass (a read-modify-OR-write that
- * never clears ADAPTER_EN first) -- must NOT re-arm the bring-up link sequence.
- * The link DOWN->UP edge arms only on a genuine ADAPTER_EN 0->1 transition, so
- * a re-poke while it is already 1 presents no fresh edge: no new GPIO link
- * event latches and INTx stays down. Were the arm keyed on the written level
- * rather than the 0->1 transition, this re-poke would re-run the DOWN->UP
- * sequence and flap carrier once per serviced pass.
- */
-static void test_xg_redundant_adapter_en_does_not_relink(void)
-{
-    XframeTest t;
-
-    xframe_start(&t);
-
-    /* xg's exact mask state: open the two PIC leaves it opens, nothing else. */
-    pif_writeq(&t, PIC_INT_MASK, 0);
-    pif_writeq(&t, TXPIC_INT_MASK, 0);
-
-    /* Bring the link up and service the bring-up edge exactly as xg does. */
-    pif_writeq(&t, ADAPTER_CONTROL, ADAPTER_EN);
-    qtest_clock_step(t.qs->qts, LINK_SETTLE_STEP_NS);
-    g_assert_true(xframe_intx_asserted(t.dev));
-    g_assert_cmphex(pif_readq(&t, GPIO_INT_REG) & GPIO_INT_REG_LINK_UP, ==,
-                    GPIO_INT_REG_LINK_UP);
-    g_assert_false(xframe_intx_asserted(t.dev));
-
-    /*
-     * The re-poke: ADAPTER_EN set again while already set. It must be a no-op
-     * for the link sequence -- no re-armed edge, no re-delivered LINK_UP.
-     */
-    pif_writeq(&t, ADAPTER_CONTROL, ADAPTER_EN);
-
-    /*
-     * Step well past both bring-up link delays: nothing re-arms, so no GPIO
-     * link event is presented and INTx stays down.
-     */
-    qtest_clock_step(t.qs->qts, SCHED_INT_STEP_NS);
-    g_assert_false(xframe_intx_asserted(t.dev));
-    g_assert_cmphex(pif_readq(&t, GPIO_INT_REG) &
-                    (GPIO_INT_REG_LINK_UP | GPIO_INT_REG_LINK_DOWN), ==, 0);
-
-    xframe_stop(&t);
-}
-
-/*
- * The MAC-block link-state-change latch (MAC_RMAC_ERR_REG bit 32) self-clears
- * on the driver's READ when that source is masked -- IRIX xg's case. xg takes
- * its link interrupt through the PIC/GPIO block and leaves the MAC link path
- * masked, yet its alarm handler still reads MAC_RMAC_ERR_REG each pass to test
- * the link-state-change bit. The bring-up link-up event latches that bit on
- * both paths; xg never write-1-to-clears it (it services the link through
- * GPIO), so a plain W1C level would read set on every pass and xg would treat
- * the settled link as changing again and again -- flapping carrier. So a read
- * of the masked source consumes the latch: the alarm handler sees the one real
- * change once, and the next pass finds nothing to act on. (When the source is
- * UNMASKED -- OpenBSD's path -- the read stays non-destructive and W1C is the
- * ack; that contract is test_link_up_raises_interrupt, kept green.)
- */
-static void test_xg_masked_mac_link_latch_self_clears_on_read(void)
-{
-    XframeTest t;
-
-    xframe_start(&t);
-
-    /* xg's mask state: the MAC link path stays masked at its all-ones reset. */
-    pif_writeq(&t, PIC_INT_MASK, 0);
-    pif_writeq(&t, TXPIC_INT_MASK, 0);
-    g_assert_cmphex(pif_readq(&t, MAC_INT_MASK), ==, DISABLE_ALL_INTRS_64);
-    g_assert_cmphex(pif_readq(&t, MAC_RMAC_ERR_MASK), ==, DISABLE_ALL_INTRS_64);
-
-    /* Bring the link up and service the GPIO bring-up edge as xg does. */
-    pif_writeq(&t, ADAPTER_CONTROL, ADAPTER_EN);
-    qtest_clock_step(t.qs->qts, LINK_SETTLE_STEP_NS);
-    g_assert_cmphex(pif_readq(&t, GPIO_INT_REG) & GPIO_INT_REG_LINK_UP, ==,
-                    GPIO_INT_REG_LINK_UP);
-
-    /*
-     * xg's alarm-handler read of MAC_RMAC_ERR_REG sees the one real link-state
-     * change (the bring-up event latched the bit on both paths).
-     */
-    g_assert_cmphex(pif_readq(&t, MAC_RMAC_ERR_REG) &
-                    RMAC_LINK_STATE_CHANGE_INT, ==, RMAC_LINK_STATE_CHANGE_INT);
-
-    /*
-     * That read consumed the latch (the source is masked, so the read is the
-     * only ack xg gives it): the next pass's read finds nothing. Before the
-     * fix the masked W1C level stayed set here and xg re-ran its link handler
-     * every scheduled pass, driving carrier down and up between passes.
-     */
-    g_assert_cmphex(pif_readq(&t, MAC_RMAC_ERR_REG) &
-                    RMAC_LINK_STATE_CHANGE_INT, ==, 0);
-
-    xframe_stop(&t);
-}
-
-/*
- * Disabling the adapter (ADAPTER_EN 1->0) must clear any link source already
- * latched but not yet acked, not just cancel the timers: xframe_update_irq
- * gates the two link sources on their own masks alone, never on ADAPTER_EN,
- * so a stale unacked latch would keep INTx asserted for a disabled adapter.
- * Left in place, a stale GPIO_INT_REG LINK_UP would also let a later
- * re-enable's fresh LINK_DOWN edge OR onto it (xframe_link_up_timer_cb clears
- * only LINK_DOWN when it sets LINK_UP, never the reverse) -- both bits
- * latched together, the unstable state this model otherwise never presents.
- */
-static void test_xg_adapter_disable_clears_pending_link_latches(void)
-{
-    XframeTest t;
-    uint64_t gpio;
-
-    xframe_start(&t);
-
-    /* xg's exact mask state: open the two PIC leaves it opens, nothing else. */
-    pif_writeq(&t, PIC_INT_MASK, 0);
-    pif_writeq(&t, TXPIC_INT_MASK, 0);
-
-    /* Bring the link all the way up, unserviced: both link latches pending. */
-    pif_writeq(&t, ADAPTER_CONTROL, ADAPTER_EN);
-    qtest_clock_step(t.qs->qts, LINK_SETTLE_STEP_NS);
-    g_assert_true(xframe_intx_asserted(t.dev));
-
-    /*
-     * Disable without acking anything. INTx must drop from this write alone
-     * -- before any register read could ack a latch -- which is only true if
-     * the falling edge itself cleared the link sources.
-     */
-    pif_writeq(&t, ADAPTER_CONTROL, 0);
-    g_assert_false(xframe_intx_asserted(t.dev));
-    gpio = pif_readq(&t, GPIO_INT_REG);
-    g_assert_cmphex(gpio & (GPIO_INT_REG_LINK_UP | GPIO_INT_REG_LINK_DOWN),
-                    ==, 0);
-    g_assert_cmphex(pif_readq(&t, MAC_RMAC_ERR_REG) &
-                    RMAC_LINK_STATE_CHANGE_INT, ==, 0);
-
-    /*
-     * Re-enable: the fresh bring-up edge presents a clean DOWN-only latch.
-     * Before the fix, the disable left LINK_UP set, and this edge would OR
-     * LINK_DOWN onto it -- both bits together instead of a clean DOWN.
-     */
-    pif_writeq(&t, ADAPTER_CONTROL, ADAPTER_EN);
-    qtest_clock_step(t.qs->qts, LINK_UP_STEP_NS);
-    g_assert_true(xframe_intx_asserted(t.dev));
-    gpio = pif_readq(&t, GPIO_INT_REG);
-    g_assert_cmphex(gpio & GPIO_INT_REG_LINK_DOWN, ==, GPIO_INT_REG_LINK_DOWN);
-    g_assert_cmphex(gpio & GPIO_INT_REG_LINK_UP, ==, 0);
-
-    xframe_stop(&t);
-}
-
-/*
- * The end-to-end carrier-steady guard: with the link up and the scheduled
- * interrupt feeding the watchdog, servicing that periodic interrupt must not
- * disturb carrier. Across several scheduled-interrupt periods -- each serviced
- * the way xg does, reading TXPIC_INT_REG for the scheduled source and
- * MAC_RMAC_ERR_REG in its alarm handler -- the scheduled interrupt keeps firing
- * and self-clearing while both link latches stay CLEAR: no GPIO link bit is
- * re-raised (the bring-up edge is delivered once), and the MAC link-change bit,
- * consumed on the first alarm read, never re-asserts. This is the flap the live
- * IRIX boot showed: before the fix the MAC link-change bit stayed latched and
- * xg re-ran its link handler on every scheduled pass, flapping carrier so its
- * transmit routine (which gates on carrier) never rang the doorbell.
- */
-static void test_xg_scheduled_interrupt_holds_carrier_steady(void)
-{
-    XframeTest t;
-    int period;
-
-    xframe_start(&t);
-
-    /* xg opens exactly the two PIC leaves; the MAC link path stays masked. */
-    pif_writeq(&t, PIC_INT_MASK, 0);
-    pif_writeq(&t, TXPIC_INT_MASK, 0);
-
-    /* Arm the scheduled interrupt (the watchdog feed) and bring the link up. */
-    pif_writeq(&t, SCHED_INT_CTRL,
-               SCHED_INT_CTRL_TIMER_EN | SCHED_INT_TEST_PERIOD);
-    pif_writeq(&t, ADAPTER_CONTROL, ADAPTER_EN);
-    qtest_clock_step(t.qs->qts, LINK_SETTLE_STEP_NS);
-
-    /* Service the bring-up link edge: the GPIO read acks it and INTx drops. */
-    g_assert_cmphex(pif_readq(&t, GPIO_INT_REG) & GPIO_INT_REG_LINK_UP, ==,
-                    GPIO_INT_REG_LINK_UP);
-    /* xg's alarm read sees the one real link-state change and consumes it. */
-    g_assert_cmphex(pif_readq(&t, MAC_RMAC_ERR_REG) &
-                    RMAC_LINK_STATE_CHANGE_INT, ==, RMAC_LINK_STATE_CHANGE_INT);
-    g_assert_false(xframe_intx_asserted(t.dev));
-
-    /*
-     * Several watchdog periods. Each pass: the scheduled interrupt fires and
-     * self-clears on the TXPIC read, while the alarm read of MAC_RMAC_ERR_REG
-     * and the GPIO read both find their link latches clear -- carrier never
-     * flaps. The MAC-latch assertion is the one that fails before the fix.
-     */
-    for (period = 0; period < 3; period++) {
-        qtest_clock_step(t.qs->qts, SCHED_INT_STEP_NS);
-
-        /* The scheduled interrupt fired, on the PIC/TXPIC path. */
-        g_assert_true(xframe_intx_asserted(t.dev));
-        g_assert_cmphex(pif_readq(&t, GENERAL_INT_STATUS) & GEN_INTR_TXPIC, ==,
-                        GEN_INTR_TXPIC);
-
-        /* No link bit is set: the watchdog feed never touches carrier. */
-        g_assert_cmphex(pif_readq(&t, GPIO_INT_REG) &
-                        (GPIO_INT_REG_LINK_UP | GPIO_INT_REG_LINK_DOWN), ==, 0);
-        g_assert_cmphex(pif_readq(&t, MAC_RMAC_ERR_REG) &
-                        RMAC_LINK_STATE_CHANGE_INT, ==, 0);
-
-        /* The scheduled source self-clears on the TXPIC read; INTx drops. */
-        g_assert_cmphex(pif_readq(&t, TXPIC_INT_REG), !=, 0);
-        g_assert_false(xframe_intx_asserted(t.dev));
-    }
-
-    xframe_stop(&t);
-}
-
-/*
- * The same xg enable path for a traffic source: GENERAL_INT_MASK left at its
- * all-ones reset, transmit completion enabled through the block mask alone
- * (TX_TRAFFIC_MASK = 0, the way OpenBSD xge_init and Linux
- * en_dis_able_nic_intrs unmask it). A rung doorbell's completion must assert
- * INTx with the general mask untouched.
+ * A transmit completion reaches INTx only when both its traffic mask and its
+ * GENERAL aggregate mask are open.
  */
 static void test_xg_enable_path_transmit_via_block_masks(void)
 {
@@ -3420,10 +2994,11 @@ static void test_xg_enable_path_transmit_via_block_masks(void)
 
     xframe_tx_start(&t);
 
-    /* Top-level mask untouched (all-ones reset); unmask transmit at block. */
+    /* Confirm reset starts masked, then open both delivery levels. */
     g_assert_cmphex(sock_pif_readq(&t, GENERAL_INT_MASK), ==,
                     DISABLE_ALL_INTRS_64);
     sock_pif_writeq(&t, TX_TRAFFIC_MASK, 0);
+    sock_pif_writeq(&t, GENERAL_INT_MASK, ~GEN_INTR_TXTRAFFIC);
     g_assert_false(xframe_intx_asserted(t.dev));
 
     xframe_program_txd(&t, par, buf, frame, sizeof(frame));
@@ -3431,7 +3006,7 @@ static void test_xg_enable_path_transmit_via_block_masks(void)
     len = net_socket_recv_frame(t.host_fd, got, sizeof(got));
     g_assert_cmpint(len, ==, sizeof(frame));
 
-    /* INTx asserts with the general mask all-ones: the block mask gates it. */
+    /* Both levels are open, so the pending completion asserts INTx. */
     g_assert_true(xframe_intx_asserted(t.dev));
     g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT) & TX_TRAFFIC_FIFO0, ==,
                     TX_TRAFFIC_FIFO0);
@@ -3444,121 +3019,6 @@ static void test_xg_enable_path_transmit_via_block_masks(void)
 
     /* The ISR ack -- write the pending bits back -- drops the line. */
     sock_pif_writeq(&t, TX_TRAFFIC_INT, TX_TRAFFIC_FIFO0);
-    g_assert_false(xframe_intx_asserted(t.dev));
-
-    xframe_tx_stop(&t);
-}
-
-/*
- * QEMU's own backend link (the netdev's own carrier, toggled here by QMP
- * `set_link` the way an operator or a management layer would), not the
- * modelled bring-up sequence exercised above: the device had no
- * link_status_changed callback at all, so a `set_link off` left GPIO_INT_REG
- * showing whatever the bring-up sequence had already latched and the guest
- * kept believing it had carrier. A `set_link off` must present LINK_DOWN
- * (clearing any latched LINK_UP), and a following `set_link on` while the
- * adapter is still enabled must re-run the bring-up DOWN->UP transition from
- * its first edge -- a driver already running needs a genuine transition to
- * notice the link is back, the same reason the bring-up sequence itself is
- * an edge and not a level (see test_link_down_up_transition_at_bringup).
- * Fails before this change -- GPIO_INT_REG keeps reporting the settled
- * bring-up LINK_UP straight through the backend going down -- and passes
- * after.
- */
-static void test_backend_link_down_presents_link_down(void)
-{
-    XframeTx t;
-    uint64_t gpio;
-
-    xframe_tx_start(&t);
-
-    /* xg's exact mask state: open the two PIC leaves it opens, nothing else. */
-    sock_pif_writeq(&t, PIC_INT_MASK, 0);
-    sock_pif_writeq(&t, TXPIC_INT_MASK, 0);
-
-    /* Bring the link up and service the bring-up edge, exactly as xg does. */
-    sock_pif_writeq(&t, ADAPTER_CONTROL, ADAPTER_EN);
-    qtest_clock_step(t.qs->qts, LINK_SETTLE_STEP_NS);
-    g_assert_cmphex(sock_pif_readq(&t, GPIO_INT_REG) & GPIO_INT_REG_LINK_UP,
-                    ==, GPIO_INT_REG_LINK_UP);
-    g_assert_false(xframe_intx_asserted(t.dev));
-
-    /*
-     * The backend goes down: LINK_DOWN must be presented, not the settled
-     * LINK_UP the bring-up sequence already delivered.
-     */
-    qtest_qmp_assert_success(t.qs->qts, "{'execute': 'set_link', 'arguments': "
-                             "{'name': 'n0', 'up': false}}");
-    g_assert_true(xframe_intx_asserted(t.dev));
-    gpio = sock_pif_readq(&t, GPIO_INT_REG);
-    g_assert_cmphex(gpio & GPIO_INT_REG_LINK_DOWN, ==, GPIO_INT_REG_LINK_DOWN);
-    g_assert_cmphex(gpio & GPIO_INT_REG_LINK_UP, ==, 0);
-    g_assert_false(xframe_intx_asserted(t.dev));
-
-    /* No spurious re-raise while the backend just stays down. */
-    qtest_clock_step(t.qs->qts, SCHED_INT_STEP_NS);
-    g_assert_false(xframe_intx_asserted(t.dev));
-    gpio = sock_pif_readq(&t, GPIO_INT_REG);
-    g_assert_cmphex(gpio & (GPIO_INT_REG_LINK_UP | GPIO_INT_REG_LINK_DOWN),
-                    ==, 0);
-
-    /*
-     * Backend recovers with the adapter still enabled: a fresh DOWN->UP
-     * transition runs, the two edges arriving one interval apart as usual.
-     */
-    qtest_qmp_assert_success(t.qs->qts, "{'execute': 'set_link', 'arguments': "
-                             "{'name': 'n0', 'up': true}}");
-    qtest_clock_step(t.qs->qts, LINK_UP_STEP_NS);
-    gpio = sock_pif_readq(&t, GPIO_INT_REG);
-    g_assert_cmphex(gpio & GPIO_INT_REG_LINK_DOWN, ==, GPIO_INT_REG_LINK_DOWN);
-    g_assert_cmphex(gpio & GPIO_INT_REG_LINK_UP, ==, 0);
-
-    qtest_clock_step(t.qs->qts, LINK_SETTLE_STEP_NS);
-    gpio = sock_pif_readq(&t, GPIO_INT_REG);
-    g_assert_cmphex(gpio & GPIO_INT_REG_LINK_UP, ==, GPIO_INT_REG_LINK_UP);
-    g_assert_cmphex(gpio & GPIO_INT_REG_LINK_DOWN, ==, 0);
-
-    xframe_tx_stop(&t);
-}
-
-/*
- * xframe_link_up_timer_cb's own guard against the backend link -- reachable
- * even though xframe_set_link_status cancels an already-armed bring-up
- * timer the moment the backend drops, because ADAPTER_CONTROL's own write
- * path arms the FIRST edge (xframe_link_down_timer_cb, which arms this one
- * in turn) without ever consulting the backend. A backend already down
- * before the guest enables the adapter is exactly that case: the bring-up
- * sequence arms and runs both one-shots regardless, and the second edge must
- * not announce LINK_UP for a backend that never came up. Fails before this
- * change -- xframe_link_up_timer_cb set LINK_UP unconditionally -- and
- * passes after.
- */
-static void test_link_up_timer_respects_backend_already_down(void)
-{
-    XframeTx t;
-    uint64_t gpio;
-
-    xframe_tx_start(&t);
-
-    sock_pif_writeq(&t, PIC_INT_MASK, 0);
-    sock_pif_writeq(&t, TXPIC_INT_MASK, 0);
-
-    /* The backend is down before the guest ever enables the adapter. */
-    qtest_qmp_assert_success(t.qs->qts, "{'execute': 'set_link', 'arguments': "
-                             "{'name': 'n0', 'up': false}}");
-
-    /* Enable the adapter and step through both bring-up edges in one go. */
-    sock_pif_writeq(&t, ADAPTER_CONTROL, ADAPTER_EN);
-    qtest_clock_step(t.qs->qts, LINK_SETTLE_STEP_NS);
-
-    /*
-     * The second edge has fired. With the backend still down, only
-     * LINK_DOWN is latched -- never a spurious LINK_UP.
-     */
-    g_assert_true(xframe_intx_asserted(t.dev));
-    gpio = sock_pif_readq(&t, GPIO_INT_REG);
-    g_assert_cmphex(gpio & GPIO_INT_REG_LINK_UP, ==, 0);
-    g_assert_cmphex(gpio & GPIO_INT_REG_LINK_DOWN, ==, GPIO_INT_REG_LINK_DOWN);
     g_assert_false(xframe_intx_asserted(t.dev));
 
     xframe_tx_stop(&t);
@@ -4916,6 +4376,52 @@ static void xframe_migration_cleanup(const char *directory,
     g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
+/* A destination derives INTx from the pending source and restored masks. */
+static void test_pending_interrupt_migration_recomputes_intx(void)
+{
+    g_autofree char *directory = xframe_migration_directory();
+    g_autofree char *socket = g_build_filename(directory, "migration.sock",
+                                                NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *incoming = g_strdup_printf("-machine q35 -incoming %s",
+                                                 uri);
+    XframeTx from, to;
+    int irq;
+
+    xframe_tx_start_args(&from, "-machine q35");
+    sock_pif_writeq(&from, GENERAL_INT_MASK, ~GEN_INTR_TXPIC);
+    sock_pif_writeq(&from, PIC_INT_MASK, 0);
+    sock_pif_writeq(&from, TXPIC_INT_MASK, 0);
+    sock_pif_writeq(&from, SCHED_INT_CTRL,
+                    SCHED_INT_CTRL_TIMER_EN | SCHED_INT_TEST_PERIOD);
+    qtest_clock_step(from.qs->qts, SCHED_INT_STEP_NS);
+    g_assert_true(xframe_intx_asserted(from.dev));
+    for (irq = 16; irq < 24; irq++) {
+        if (qtest_get_irq(from.qs->qts, irq)) {
+            break;
+        }
+    }
+    g_assert_cmpint(irq, <, 24);
+
+    xframe_tx_start_args(&to, incoming);
+    g_assert_false(qtest_get_irq(to.qs->qts, irq));
+    xframe_migrate(from.qs->qts, uri);
+
+    g_assert_cmphex(sock_pif_readq(&to, GENERAL_INT_MASK), ==,
+                    ~GEN_INTR_TXPIC);
+    g_assert_cmphex(sock_pif_readq(&to, PIC_INT_MASK), ==, 0);
+    g_assert_cmphex(sock_pif_readq(&to, TXPIC_INT_MASK), ==, 0);
+    g_assert_true(xframe_intx_asserted(to.dev));
+    g_assert_true(qtest_get_irq(to.qs->qts, irq));
+
+    qpci_io_writel(to.dev, to.pif, TXPIC_INT_REG + 4, 0);
+    g_assert_false(xframe_intx_asserted(to.dev));
+
+    xframe_tx_stop(&to);
+    xframe_tx_stop(&from);
+    xframe_migration_cleanup(directory, socket);
+}
+
 /*
  * Version 5 carried the traffic-interrupt memories but not moderation state.
  * A destination must retain an already-pending completion and its mask while
@@ -5437,8 +4943,7 @@ static void test_transmit_interrupt_rate_is_one_per_frame(void)
 
     xframe_tx_start(&t);
 
-    /* Unmask transmit completion the way the drivers do: general mask 0, the
-     * transmit-traffic block mask 0. */
+    /* Open the GENERAL and transmit-traffic masks for completion. */
     sock_pif_writeq(&t, GENERAL_INT_MASK, 0);
     sock_pif_writeq(&t, TX_TRAFFIC_MASK, 0);
     g_assert_false(xframe_intx_asserted(t.dev));
@@ -5607,34 +5112,24 @@ int main(int argc, char **argv)
                    test_descriptors_honor_swapper_ctrl_little_endian);
     qtest_add_func("xframe/xg-enable-path-link-via-block-masks",
                    test_xg_enable_path_link_via_block_masks);
-    qtest_add_func("xframe/xg-enable-path-link-via-gpio-block",
-                   test_xg_enable_path_link_via_gpio_block);
-    qtest_add_func("xframe/xg-bringup-pic-summary-serviced",
-                   test_xg_bringup_pic_summary_serviced);
-    qtest_add_func("xframe/xg-link-up-gpio-read-acks",
-                   test_xg_link_up_gpio_read_acks);
     qtest_add_func("xframe/scheduled-interrupt-feeds-watchdog",
                    test_scheduled_interrupt_feeds_watchdog);
+    qtest_add_func("xframe/gpio-link-up-mask-gates-delivery",
+                   test_gpio_link_up_mask_gates_delivery);
+    qtest_add_func("xframe/gpio-link-down-mask-gates-delivery",
+                   test_gpio_link_down_mask_gates_delivery);
+    qtest_add_func("xframe/masked-mac-link-latch-clears-on-read",
+                   test_masked_mac_link_latch_clears_on_read);
+    qtest_add_func("xframe/redundant-adapter-en-does-not-relink",
+                   test_redundant_adapter_en_does_not_relink);
+    qtest_add_func("xframe/scheduled-interrupt-holds-carrier-steady",
+                   test_scheduled_interrupt_holds_carrier_steady);
+    qtest_add_func("xframe/general-mask-gates-scheduled-interrupt",
+                   test_general_mask_gates_scheduled_interrupt);
     qtest_add_func("xframe/xg-scheduled-interrupt-acks-via-write",
                    test_xg_scheduled_interrupt_acks_via_write);
-    qtest_add_func("xframe/link-up-delivered-once",
-                   test_link_up_delivered_once);
-    qtest_add_func("xframe/link-down-up-transition-at-bringup",
-                   test_link_down_up_transition_at_bringup);
-    qtest_add_func("xframe/xg-redundant-adapter-en-does-not-relink",
-                   test_xg_redundant_adapter_en_does_not_relink);
-    qtest_add_func("xframe/xg-masked-mac-link-latch-self-clears-on-read",
-                   test_xg_masked_mac_link_latch_self_clears_on_read);
-    qtest_add_func("xframe/xg-adapter-disable-clears-pending-link-latches",
-                   test_xg_adapter_disable_clears_pending_link_latches);
-    qtest_add_func("xframe/xg-scheduled-interrupt-holds-carrier-steady",
-                   test_xg_scheduled_interrupt_holds_carrier_steady);
     qtest_add_func("xframe/xg-enable-path-transmit-via-block-masks",
                    test_xg_enable_path_transmit_via_block_masks);
-    qtest_add_func("xframe/backend-link-down-presents-link-down",
-                   test_backend_link_down_presents_link_down);
-    qtest_add_func("xframe/link-up-timer-respects-backend-already-down",
-                   test_link_up_timer_respects_backend_already_down);
     qtest_add_func("xframe/receive-delivers-a-frame",
                    test_receive_delivers_a_frame);
     qtest_add_func("xframe/receive-completion-write-failure-is-retryable",
@@ -5687,6 +5182,8 @@ int main(int argc, char **argv)
                    test_receive_frame_sizes_byte_exact);
     qtest_add_func("xframe/traffic-interrupt-moderation",
                    test_traffic_interrupt_moderation);
+    qtest_add_func("xframe/pending-interrupt-migration-recomputes-intx",
+                   test_pending_interrupt_migration_recomputes_intx);
     qtest_add_func("xframe/traffic-migration-from-v5",
                    test_traffic_migration_from_v5);
     qtest_add_func("xframe/traffic-migration-v6-round-trip",

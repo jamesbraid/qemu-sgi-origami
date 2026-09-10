@@ -142,20 +142,16 @@ struct XframeState {
     uint64_t xmsi_address;      /* MSI address / byte-swap scratch */
     uint64_t sw_reset;          /* reset-lane control (key is write-only) */
     uint64_t adapter_control;   /* ADAPTER_EN, LED, EOI, wait-int, ECC */
-    uint64_t general_int_mask;  /* GENERAL_INT_MASK: read-back only */
+    uint64_t general_int_mask;  /* active-high aggregate delivery mask */
     /*
-     * Per-block (second-level) interrupt masks. These gate the actual INTx
-     * line; GENERAL_INT_MASK above gates neither the line nor the summary read
-     * (see xframe_update_irq and the read handler). tx/rx_traffic_mask and the
-     * two MAC masks gate the sources this model raises; pic_int_mask's
-     * PIC_INT_GPIO bit gates the GPIO link source (the path IRIX xg uses);
-     * gpio_int_mask and the other PIC masks are stored for read-back but gate
-     * no modelled source. All reset to all-ones (masked).
+     * Active-high leaf and block interrupt masks. A pending source reaches
+     * INTx only after passing these levels and its GENERAL aggregate mask.
+     * All reset to all-ones (masked).
      */
     uint64_t pic_int_mask;      /* PIC_INT_MASK: gates the GPIO link source */
-    uint64_t txpic_int_mask;    /* TXPIC_INT_MASK (no modelled src) */
+    uint64_t txpic_int_mask;    /* TXPIC_INT_MASK: scheduled source leaf */
     uint64_t rxpic_int_mask;    /* RXPIC_INT_MASK (no modelled src) */
-    uint64_t gpio_int_mask;     /* GPIO_INT_MASK: read-back only */
+    uint64_t gpio_int_mask;     /* GPIO_INT_MASK: link event leaves */
     uint64_t tx_traffic_mask;   /* TX_TRAFFIC_MASK: gates TX_TRAFFIC_INT */
     uint64_t rx_traffic_mask;   /* RX_TRAFFIC_MASK: gates RX_TRAFFIC_INT */
     uint64_t mac_int_mask;      /* MAC_INT_MASK: gates the RMAC block roll-up */
@@ -275,24 +271,10 @@ struct XframeState {
     QEMUTimer *rx_recovery_timer;
 
     /*
-     * The bring-up link edge is presented as a DOWN->UP transition, not a bare
-     * unchanging UP: a driver in the Neterion family propagates carrier and
-     * wakes transmit only on a link-state CHANGE, so an initial belief of "up"
-     * needs a real edge to flip it. Two one-shots sequence that transition off
-     * the ADAPTER_EN 0->1 edge (see xframe_link_down_timer_cb /
-     * xframe_link_up_timer_cb in xframe.c). link_down_timer fires first, a
-     * short time after enable (after the driver's synchronous bring-up unmasks,
-     * so it is delivered, not acked away), latching GPIO_INT_REG LINK_DOWN; its
-     * callback then arms link_up_timer one interval later to latch LINK_UP
-     * (clearing LINK_DOWN) and the MAC-path link-state-change bit. The two are
-     * SEPARATE interrupts, never both GPIO bits at once. Both are cancelled on
-     * soft reset and on ADAPTER_EN 1->0.
-     *
-     * Both one-shots are migrated (VMSTATE_TIMER_PTR_V): a save taken between
-     * the two edges must still deliver the pending UP on the target -- or, for
-     * a save taken between ADAPTER_EN and the DOWN edge itself, still deliver
-     * the DOWN -- or a latched GPIO_INT_REG bit (migrated above) would never
-     * be cleared and the target would never complete the transition.
+     * link_up_timer presents a delayed UP event without requiring a preceding
+     * synthetic DOWN. link_down_timer remains allocated and migrated only so
+     * existing version-2-or-newer streams with that old timer pending can load
+     * without changing the VMState layout.
      */
     QEMUTimer *link_down_timer;
     QEMUTimer *link_up_timer;
