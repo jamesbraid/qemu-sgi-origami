@@ -41,8 +41,7 @@ struct SN1MachineState {
     MemoryRegion prom;
     MemoryRegion *prom_views;
     MemoryRegion prom_flash;
-    MemoryRegion prom_flash_payload;
-    MemoryRegion prom_flash_erased;
+    MemoryRegion prom_flash_remote;
 
     /* Used in place of the aliases above once a flash part is attached. */
     SN1PromView prom_view_reset;

@@ -6,7 +6,10 @@
 #include "qapi/error.h"
 #include "qapi/qapi-visit-common.h"
 #include "qapi/visitor.h"
+#include "qobject/qdict.h"
 #include "qobject/qlist.h"
+#include "block/block-global-state.h"
+#include "block/block-io.h"
 #include "qemu/datadir.h"
 #include "qemu/error-report.h"
 #include "qemu/log.h"
@@ -50,10 +53,12 @@
 #define SN1_BOARD_ID_VALUE UINT64_C(0x8000)
 #define SN1_HUB_LOCAL_HIGH_BOOT (SN1_SPACE_HUB + UINT64_C(0x1fc00000))
 #define SN1_HUB_REMOTE_BOOT (SN1_SPACE_HUB + UINT64_C(0x38000000))
+#define SN1_HUB_REMOTE_FLASH (SN1_SPACE_HUB + UINT64_C(0x3a000000))
 #define SN1_HUB_ECC (SN1_SPACE_HUB + UINT64_C(0x140000000))
 #define SN1_HUB_DIRECTORY (SN1_SPACE_HUB + UINT64_C(0x1c0000000))
 #define SN1_PROM_RESET UINT64_C(0x1fc00000)
-#define SN1_FLASH_VIEW_SIZE (16 * MiB)
+#define SN1_FLASH_VIEW_SIZE (8 * MiB)
+#define SN1_FLASH_IMAGE_SIZE (16 * MiB)
 
 #define SN1_MIPS_HARDWARE_IRQ_OFFSET 2
 
@@ -245,21 +250,6 @@ static void sn1_flash_reject_write(hwaddr offset, uint64_t value)
                   " at flash offset 0x%" HWADDR_PRIx "\n", value, offset);
 }
 
-static uint64_t sn1_flash_payload_read(void *opaque, hwaddr offset,
-                                       unsigned size)
-{
-    SN1MachineState *s = opaque;
-
-    return ldn_be_p((uint8_t *)memory_region_get_ram_ptr(&s->prom) + offset,
-                    size);
-}
-
-static void sn1_flash_payload_write(void *opaque, hwaddr offset,
-                                    uint64_t value, unsigned size)
-{
-    sn1_flash_reject_write(offset, value);
-}
-
 static uint64_t sn1_flash_erased_read(void *opaque, hwaddr offset,
                                       unsigned size)
 {
@@ -269,18 +259,8 @@ static uint64_t sn1_flash_erased_read(void *opaque, hwaddr offset,
 static void sn1_flash_erased_write(void *opaque, hwaddr offset, uint64_t value,
                                    unsigned size)
 {
-    sn1_flash_reject_write(offset + sn1_origin300_model.prom_size, value);
+    sn1_flash_reject_write(offset, value);
 }
-
-static const MemoryRegionOps sn1_flash_payload_ops = {
-    .read = sn1_flash_payload_read,
-    .write = sn1_flash_payload_write,
-    .endianness = DEVICE_BIG_ENDIAN,
-    .valid.min_access_size = 1,
-    .valid.max_access_size = 8,
-    .impl.min_access_size = 1,
-    .impl.max_access_size = 8,
-};
 
 static const MemoryRegionOps sn1_flash_erased_ops = {
     .read = sn1_flash_erased_read,
@@ -360,35 +340,80 @@ static void sn1_init_prom_view(SN1PromView *view, MachineState *machine,
                           view, name, sn1_origin300_model.prom_size);
 }
 
-static MemoryRegion *sn1_create_boot_flash(SN1MachineState *s,
-                                           MachineState *machine)
+static BlockDriverState *sn1_open_flash_slice(BlockDriverState *backing,
+                                               int64_t offset, int flags,
+                                               Error **errp)
 {
-    DriveInfo *lower = drive_get(IF_PFLASH, 0, 0);
-    DriveInfo *upper = drive_get(IF_PFLASH, 0, 1);
+    QDict *options = qdict_new();
+
+    qdict_put_str(options, "driver", "raw");
+    qdict_put_str(options, "file", bdrv_get_node_name(backing));
+    qdict_put_int(options, "offset", offset);
+    qdict_put_int(options, "size", SN1_FLASH_VIEW_SIZE);
+    return bdrv_open(NULL, NULL, options, flags, errp);
+}
+
+static MemoryRegion *sn1_create_boot_flash(SN1MachineState *s,
+                                           MachineState *machine,
+                                           Error **errp)
+{
+    DriveInfo *dinfo = drive_get(IF_PFLASH, 0, 0);
+    DriveInfo *extra = drive_get(IF_PFLASH, 0, 1);
+    BlockBackend *blk;
+    BlockDriverState *backing;
+    BlockDriverState *lower;
+    BlockDriverState *upper;
+    int flags;
     SysBusDevice *flash;
 
-    if (!lower && !upper) {
+    if (!dinfo && !extra) {
         return NULL;
     }
-    /*
-     * Two PROM positions, so two backings: the lower one holds position zero
-     * and the upper one position one. Half a pair is a mistake worth naming
-     * rather than a machine that comes up with one working position.
-     */
-    if (!lower || !upper) {
-        error_report("origin300 needs a pflash drive for each PROM position, "
-                     "the second one holding the upper half of the image");
-        exit(1);
+    if (!dinfo || extra) {
+        error_setg(errp, "origin300 accepts one 16 MiB pflash image");
+        return NULL;
     }
+
+    blk = blk_by_legacy_dinfo(dinfo);
+    backing = blk_bs(blk);
+    if (strcmp(bdrv_get_format_name(backing), "raw")) {
+        error_setg(errp, "origin300 pflash image must use raw format");
+        return NULL;
+    }
+    if (blk_getlength(blk) != SN1_FLASH_IMAGE_SIZE) {
+        error_setg(errp, "origin300 pflash image must be exactly 16 MiB");
+        return NULL;
+    }
+
+    flags = bdrv_get_flags(backing) & (BDRV_O_RDWR | BDRV_O_INACTIVE);
+    lower = sn1_open_flash_slice(backing, 0, flags, errp);
+    if (!lower) {
+        return NULL;
+    }
+    upper = sn1_open_flash_slice(backing, SN1_FLASH_VIEW_SIZE, flags, errp);
+    if (!upper) {
+        bdrv_unref(lower);
+        return NULL;
+    }
+
+    blk_remove_bs(blk);
+    blk_insert_bs(blk, lower, &error_abort);
+    bdrv_unref(lower);
+
     s->boot_flash = qdev_new(TYPE_SGI_BEDROCK_FLASH);
     object_property_add_child(OBJECT(machine), "boot-flash",
                               OBJECT(s->boot_flash));
-    qdev_prop_set_drive_err(s->boot_flash, "drive0",
-                            blk_by_legacy_dinfo(lower), &error_fatal);
-    qdev_prop_set_drive_err(s->boot_flash, "drive1",
-                            blk_by_legacy_dinfo(upper), &error_fatal);
+    if (!qdev_prop_set_drive_err(s->boot_flash, "drive0", blk, errp) ||
+        !object_property_set_str(OBJECT(s->boot_flash), "drive1",
+                                 bdrv_get_node_name(upper), errp)) {
+        bdrv_unref(upper);
+        return NULL;
+    }
+    bdrv_unref(upper);
     flash = SYS_BUS_DEVICE(s->boot_flash);
-    sysbus_realize_and_unref(flash, &error_fatal);
+    if (!sysbus_realize_and_unref(flash, errp)) {
+        return NULL;
+    }
 
     /*
      * One region per boot space, each the whole 128 MiB window rather than a
@@ -399,17 +424,7 @@ static MemoryRegion *sn1_create_boot_flash(SN1MachineState *s,
      */
     sysbus_mmio_map(flash, 0, SN1_HUB_LOCAL_BOOT);
     sysbus_mmio_map(flash, 1, SN1_HUB_REMOTE_BOOT);
-    /*
-     * The execution views alias the stored bytes rather than passing through
-     * the adapter a second time: the monitor runs from them, and an
-     * access-handler mapping would put every instruction fetch on the dispatch
-     * path. Two of them sit inside a boot space, so they are overlaid above
-     * it. Aliasing rather than copying is what keeps them correct: the flush
-     * after a program or erase invalidates by RAM address, which reaches every
-     * mapping of the part's own storage but would not reach a separate region
-     * over the same bytes.
-     */
-    /* The execution views read position zero only, per the flash contract. */
+    /* The processor executes position zero through read-only views. */
     return SGI_BEDROCK_FLASH(s->boot_flash)->flash_mmio[0];
 }
 
@@ -462,7 +477,10 @@ static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
     memcpy(memory_region_get_ram_ptr(&s->prom), contents, model->prom_size);
     memory_region_set_dirty(&s->prom, 0, model->prom_size);
 
-    stored = sn1_create_boot_flash(s, machine);
+    stored = sn1_create_boot_flash(s, machine, errp);
+    if (errp && *errp) {
+        return false;
+    }
     if (stored) {
         /*
          * With a part attached the views answer through handlers over its
@@ -501,25 +519,17 @@ static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
                                             &s->prom_views[i], 1);
     }
 
-    /*
-     * The second software PROM selection mirrors the supplied payload and
-     * reads the remainder as erased. Both halves use callbacks so that every
-     * rejected write is logged.
-     */
-    memory_region_init(&s->prom_flash, OBJECT(machine), "sn1.prom.flash",
-                       model->prom_second_selection.size);
-    memory_region_init_io(&s->prom_flash_payload, OBJECT(machine),
-                          &sn1_flash_payload_ops, s, "sn1.prom.flash-payload",
-                          model->prom_size);
-    memory_region_init_io(
-        &s->prom_flash_erased, OBJECT(machine), &sn1_flash_erased_ops, s,
-        "sn1.prom.flash-erased",
-        model->prom_second_selection.size - model->prom_size);
-    memory_region_add_subregion(&s->prom_flash, 0, &s->prom_flash_payload);
-    memory_region_add_subregion(&s->prom_flash, model->prom_size,
-                                &s->prom_flash_erased);
+    /* An empty second position answers erased through both boot spaces. */
+    memory_region_init_io(&s->prom_flash, OBJECT(machine),
+                          &sn1_flash_erased_ops, s, "sn1.prom.flash",
+                          SN1_FLASH_VIEW_SIZE);
     memory_region_add_subregion(system, model->prom_second_selection.address,
                                 &s->prom_flash);
+    memory_region_init_alias(&s->prom_flash_remote, OBJECT(machine),
+                             "sn1.prom.flash-remote", &s->prom_flash, 0,
+                             SN1_FLASH_VIEW_SIZE);
+    memory_region_add_subregion(system, SN1_HUB_REMOTE_FLASH,
+                                &s->prom_flash_remote);
     return true;
 }
 

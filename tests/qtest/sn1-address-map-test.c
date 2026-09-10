@@ -79,9 +79,9 @@
 #define PROM_RESET UINT64_C(0x1fc00000)
 #define PROM_SIZE UINT64_C(0x1686a8)
 #define PROM_CONFIG_OFFSET UINT64_C(0x60)
-#define FLASH_VIEW_SIZE UINT64_C(0x1000000)
+#define FLASH_VIEW_SIZE UINT64_C(0x800000)
 #define FLASH_OBSERVED_OFFSET UINT64_C(0x1e0000)
-#define FLASH_INTERIOR_OFFSET UINT64_C(0x800000)
+#define FLASH_INTERIOR_OFFSET UINT64_C(0x400000)
 #define FLASH_IMAGE_SIZE (16 * 1024 * 1024)
 /* One PROM position backs half of it. */
 #define FLASH_PART_SIZE (FLASH_IMAGE_SIZE / 2)
@@ -97,6 +97,8 @@
 /* The AMD unlock words 0x555 and 0x2aa, at the bus offsets 8n. */
 #define FLASH_UNLOCK0 UINT64_C(0x2aa8)
 #define FLASH_UNLOCK1 UINT64_C(0x1550)
+#define FLASH_QUERY UINT64_C(0x2a8)
+#define FLASH_QUERY_READ(i) ((uint64_t)(i) * 2)
 /*
  * The same two unlock cycles as a part sees them when the address is one byte
  * to one byte rather than four: the word addresses doubled. An execution view
@@ -1604,40 +1606,33 @@ static void test_prom_flat_view_extents(const void *data)
     assert_flat_view_extent(qts, HUB_LOCAL_BOOT, PROM_SIZE);
     assert_flat_view_extent(qts, HUB_LOCAL_HIGH_BOOT, PROM_SIZE);
     assert_flat_view_extent(qts, HUB_REMOTE_BOOT, PROM_SIZE);
-    assert_flat_view_extent(qts, HUB_LOCAL_FLASH, PROM_SIZE);
-    assert_flat_view_extent(qts, HUB_LOCAL_FLASH + PROM_SIZE,
-                            FLASH_VIEW_SIZE - PROM_SIZE);
+    assert_flat_view_extent(qts, HUB_LOCAL_FLASH, FLASH_VIEW_SIZE);
+    assert_flat_view_extent(qts, HUB_REMOTE_FLASH, FLASH_VIEW_SIZE);
 
     qtest_quit(qts);
 }
 
-static void assert_flash_view(QTestState *qts)
+static void assert_erased_second_position(QTestState *qts)
 {
-    /* The supplied payload is mirrored at the base of the flash view. */
-    g_assert_cmphex(qtest_readb(qts, HUB_LOCAL_FLASH), ==, 0x31);
-    g_assert_cmphex(qtest_readb(qts, HUB_LOCAL_FLASH + PROM_CONFIG_OFFSET),
-                    ==, 0x62);
-    g_assert_cmphex(qtest_readb(qts, HUB_LOCAL_FLASH + PROM_SIZE - 1), ==,
-                    0x93);
+    static const uint64_t views[] = { HUB_LOCAL_FLASH, HUB_REMOTE_FLASH };
 
-    /* The rest of the published capacity reads erased at every width. */
-    g_assert_cmphex(qtest_readb(qts, HUB_LOCAL_FLASH + PROM_SIZE), ==, 0xff);
-    g_assert_cmphex(qtest_readw(qts, HUB_LOCAL_FLASH + PROM_SIZE), ==,
-                    0xffff);
-    g_assert_cmphex(qtest_readl(qts, HUB_LOCAL_FLASH + PROM_SIZE), ==,
-                    0xffffffff);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_FLASH + PROM_SIZE), ==,
-                    UINT64_MAX);
-
-    /* The firmware's own eight-byte read is one erased offset among many. */
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_FLASH + FLASH_OBSERVED_OFFSET),
-                    ==, UINT64_MAX);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_FLASH + FLASH_INTERIOR_OFFSET),
-                    ==, UINT64_MAX);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_FLASH + FLASH_VIEW_SIZE - 8),
-                    ==, UINT64_MAX);
-    g_assert_cmphex(qtest_readb(qts, HUB_LOCAL_FLASH + FLASH_VIEW_SIZE - 1),
-                    ==, 0xff);
+    for (size_t i = 0; i < ARRAY_SIZE(views); i++) {
+        g_assert_cmphex(qtest_readb(qts, views[i]), ==, 0xff);
+        g_assert_cmphex(qtest_readw(qts, views[i]), ==, 0xffff);
+        g_assert_cmphex(qtest_readl(qts, views[i]), ==, 0xffffffff);
+        g_assert_cmphex(qtest_readq(qts, views[i]), ==, UINT64_MAX);
+        g_assert_cmphex(qtest_readq(qts,
+                                    views[i] + FLASH_OBSERVED_OFFSET), ==,
+                        UINT64_MAX);
+        g_assert_cmphex(qtest_readq(qts,
+                                    views[i] + FLASH_INTERIOR_OFFSET), ==,
+                        UINT64_MAX);
+        g_assert_cmphex(qtest_readq(qts, views[i] + FLASH_VIEW_SIZE - 8), ==,
+                        UINT64_MAX);
+        g_assert_cmphex(qtest_readb(qts, views[i] + FLASH_VIEW_SIZE - 1), ==,
+                        0xff);
+        assert_flat_view_unmapped(qts, views[i] + FLASH_VIEW_SIZE);
+    }
 }
 
 /*
@@ -1814,37 +1809,6 @@ static void test_l1_has_no_identity_records_by_default(const void *data)
     qtest_quit(qts);
 }
 
-/*
- * Position one's backing, kept beside position zero's so a caller still
- * passes one path around. The machine wants a drive for each position; a
- * single one would leave half the flash unbacked.
- */
-static char *flash_upper_path(const char *lower)
-{
-    return g_strdup_printf("%s.upper", lower);
-}
-
-static void create_flash_upper(const char *lower)
-{
-    g_autofree char *path = flash_upper_path(lower);
-    g_autofree uint8_t *image = g_malloc(FLASH_PART_SIZE);
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-
-    /*
-     * The harness seeds a second position erased. These sentinels stand in for
-     * a programmed one, so that a read through either second-selection window
-     * names the part that answered instead of only proving it was not erased.
-     */
-    memset(image, 0xff, FLASH_PART_SIZE);
-    image[0] = FLASH_UPPER_FIRST;
-    image[1] = FLASH_UPPER_LAST;
-    image[FLASH_PART_SIZE - 1] = FLASH_UPPER_LAST;
-    g_assert_cmpint(fd, >=, 0);
-    g_assert_cmpint(write(fd, image, FLASH_PART_SIZE), ==,
-                    (ssize_t)FLASH_PART_SIZE);
-    g_assert_cmpint(close(fd), ==, 0);
-}
-
 static char *create_flash_image(void)
 {
     g_autoptr(GError) error = NULL;
@@ -1864,38 +1828,33 @@ static char *create_flash_image(void)
     image[PROM_SIZE - 1] = 0x93;
     image[FLASH_PAYLOAD_TARGET] = 0xff;
     image[FLASH_PAYLOAD_TARGET + 1] = 0xff;
+    image[FLASH_PART_SIZE] = FLASH_UPPER_FIRST;
+    image[FLASH_PART_SIZE + 1] = FLASH_UPPER_LAST;
+    image[FLASH_IMAGE_SIZE - 1] = FLASH_UPPER_LAST;
 
     fd = g_file_open_tmp("sn1-boot-flash-XXXXXX.bin", &path, &error);
     g_assert_no_error(error);
     g_assert_cmpint(fd, >=, 0);
-    g_assert_cmpint(write(fd, image, FLASH_PART_SIZE), ==,
-                    (ssize_t)FLASH_PART_SIZE);
+    g_assert_cmpint(write(fd, image, FLASH_IMAGE_SIZE), ==,
+                    (ssize_t)FLASH_IMAGE_SIZE);
     g_assert_cmpint(close(fd), ==, 0);
-    create_flash_upper(path);
     return path;
 }
 
-/* The two positions are created together, so they are removed together. */
-static void remove_flash_image(const char *lower)
+static void remove_flash_image(const char *flash)
 {
-    g_autofree char *upper = flash_upper_path(lower);
-
-    g_assert_cmpint(g_unlink(upper), ==, 0);
-    g_assert_cmpint(g_unlink(lower), ==, 0);
+    g_assert_cmpint(g_unlink(flash), ==, 0);
 }
 
 static QTestState *machine_start_with_flash(const char *flash,
                                             const char *extra)
 {
     g_autofree char *prom_quoted = g_shell_quote(prom_path);
-    g_autofree char *upper = flash_upper_path(flash);
-    g_autofree char *lower_quoted = g_shell_quote(flash);
-    g_autofree char *upper_quoted = g_shell_quote(upper);
+    g_autofree char *flash_quoted = g_shell_quote(flash);
 
     return qtest_initf(MACHINE_ARGS " -bios %s "
-                       "-drive if=pflash,file=%s,format=raw "
                        "-drive if=pflash,file=%s,format=raw %s",
-                       prom_quoted, lower_quoted, upper_quoted, extra);
+                       prom_quoted, flash_quoted, extra);
 }
 
 /* One 16-bit word per bus cycle, at the bus offset four times its byte. */
@@ -1906,6 +1865,16 @@ static void flash_program(QTestState *qts, uint64_t selection,
     qtest_writeq(qts, selection + FLASH_UNLOCK1, 0x55);
     qtest_writeq(qts, selection + FLASH_UNLOCK0, 0xa0);
     qtest_writeq(qts, selection + offset * 4, word);
+}
+
+static void flash_reset_to_array(QTestState *qts, uint64_t selection)
+{
+    qtest_writeq(qts, selection + FLASH_UNLOCK0, 0xf0);
+}
+
+static void flash_enter_query(QTestState *qts, uint64_t selection)
+{
+    qtest_writeq(qts, selection + FLASH_QUERY, 0x98);
 }
 
 /*
@@ -2242,6 +2211,7 @@ static void test_execution_views_refuse_commands(const void *data)
     g_assert_nonnull(strstr(log,
                             "sn1.prom.local-high execution view: refusing"));
     g_assert_cmpint(g_unlink(log_path), ==, 0);
+    remove_flash_image(flash);
 }
 
 static void test_boot_flash_migration(const void *data)
@@ -2263,8 +2233,15 @@ static void test_boot_flash_migration(const void *data)
     to = machine_start_with_flash(destination_flash, "-incoming defer");
 
     flash_program(from, HUB_LOCAL_BOOT, FLASH_PAYLOAD_TARGET, 0x9abc);
+    flash_program(from, HUB_LOCAL_FLASH, FLASH_ERASED_TARGET, 0x5678);
     g_assert_cmphex(qtest_readw(to, PROM_RESET + FLASH_PAYLOAD_TARGET), ==,
                     0xffff);
+
+    /* Migrate distinct in-flight command states for both positions. */
+    qtest_writeq(from, HUB_LOCAL_BOOT + FLASH_UNLOCK0, 0xaa);
+    qtest_writeq(from, HUB_LOCAL_BOOT + FLASH_UNLOCK1, 0x55);
+    qtest_writeq(from, HUB_LOCAL_BOOT + FLASH_UNLOCK0, 0xa0);
+    flash_enter_query(from, HUB_REMOTE_FLASH);
 
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
@@ -2272,7 +2249,21 @@ static void test_boot_flash_migration(const void *data)
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
     wait_for_migration(from);
 
+    qtest_writeq(to, HUB_REMOTE_BOOT + FLASH_ERASED_TARGET * 4, 0x1234);
+    g_assert_cmphex(qtest_readw(to, HUB_LOCAL_BOOT + FLASH_ERASED_TARGET), ==,
+                    0x1234);
+    g_assert_cmphex(qtest_readw(to,
+                                HUB_LOCAL_FLASH + FLASH_QUERY_READ(0x10)), ==,
+                    'Q');
+    flash_reset_to_array(to, HUB_LOCAL_FLASH);
     assert_flash_everywhere(to, FLASH_PAYLOAD_TARGET, 0x9abc);
+    assert_position_one(to, FLASH_ERASED_TARGET, 0x5678);
+
+    qtest_system_reset(to);
+    assert_flash_everywhere(to, FLASH_PAYLOAD_TARGET, 0x9abc);
+    g_assert_cmphex(qtest_readw(to, HUB_REMOTE_BOOT + FLASH_ERASED_TARGET), ==,
+                    0x1234);
+    assert_position_one(to, FLASH_ERASED_TARGET, 0x5678);
 
     qtest_quit(from);
     qtest_quit(to);
@@ -2300,20 +2291,21 @@ static void test_prom_second_stride_view(const void *data)
     extra = g_strdup_printf("-d unimp -D %s", quoted);
     qts = machine_start_with(prom_path, extra);
 
-    assert_flash_view(qts);
+    assert_erased_second_position(qts);
 
-    /* The view ends at the published capacity. */
-    assert_flat_view_unmapped(qts, HUB_LOCAL_FLASH + FLASH_VIEW_SIZE);
-
-    /* Writes change neither the mirrored payload nor the erased padding. */
-    qtest_writeb(qts, HUB_LOCAL_FLASH, 0x31 ^ 0xff);
-    qtest_writeb(qts, HUB_LOCAL_FLASH + PROM_SIZE, 0x00);
+    /* Writes change neither the erased second position nor position zero. */
+    qtest_writeb(qts, HUB_LOCAL_FLASH, 0x00);
     qtest_writeq(qts, HUB_LOCAL_FLASH + FLASH_OBSERVED_OFFSET, 0);
-    assert_flash_view(qts);
+    qtest_writeq(qts, HUB_LOCAL_FLASH + FLASH_VIEW_SIZE - 8, 0);
+    qtest_writeb(qts, HUB_REMOTE_FLASH, 0x00);
+    qtest_writeq(qts, HUB_REMOTE_FLASH + FLASH_INTERIOR_OFFSET, 0);
+    qtest_writeb(qts, HUB_REMOTE_FLASH + FLASH_VIEW_SIZE - 1, 0);
+    assert_erased_second_position(qts);
     g_assert_cmphex(qtest_readb(qts, PROM_RESET), ==, 0x31);
 
     qtest_system_reset(qts);
-    assert_flash_view(qts);
+    assert_erased_second_position(qts);
+    g_assert_cmphex(qtest_readb(qts, PROM_RESET), ==, 0x31);
 
     /* Stopping the machine flushes the log this run has been writing. */
     qtest_quit(qts);
@@ -2321,8 +2313,10 @@ static void test_prom_second_stride_view(const void *data)
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
     g_assert_nonnull(strstr(log, "flash offset 0x0\n"));
-    g_assert_nonnull(strstr(log, "flash offset 0x1686a8\n"));
     g_assert_nonnull(strstr(log, "flash offset 0x1e0000\n"));
+    g_assert_nonnull(strstr(log, "flash offset 0x7ffff8\n"));
+    g_assert_nonnull(strstr(log, "flash offset 0x400000\n"));
+    g_assert_nonnull(strstr(log, "flash offset 0x7fffff\n"));
     g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
@@ -2335,6 +2329,63 @@ static void assert_qemu_rejects(const char *const args[], const char *message)
                               NULL, &error_output, &wait_status, NULL));
     g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
     g_assert_nonnull(strstr(error_output, message));
+}
+
+static char *create_sized_flash_image(off_t size)
+{
+    g_autoptr(GError) error = NULL;
+    char *path = NULL;
+    int fd = g_file_open_tmp("sn1-sized-flash-XXXXXX.bin", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, size), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static void test_boot_flash_image_contract(const void *data)
+{
+    g_autofree char *short_path =
+        create_sized_flash_image(FLASH_IMAGE_SIZE / 2);
+    g_autofree char *long_path = create_sized_flash_image(FLASH_IMAGE_SIZE + 1);
+    g_autofree char *first = create_sized_flash_image(FLASH_IMAGE_SIZE);
+    g_autofree char *second = create_sized_flash_image(FLASH_IMAGE_SIZE);
+    g_autofree char *short_drive =
+        g_strdup_printf("if=pflash,file=%s,format=raw", short_path);
+    g_autofree char *long_drive =
+        g_strdup_printf("if=pflash,file=%s,format=raw", long_path);
+    g_autofree char *first_drive =
+        g_strdup_printf("if=pflash,file=%s,format=raw", first);
+    g_autofree char *second_drive =
+        g_strdup_printf("if=pflash,file=%s,format=raw", second);
+    const char *short_args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
+        "-smp", "2", "-bios", prom_path, "-display", "none", "-S",
+        "-drive", short_drive, NULL,
+    };
+    const char *long_args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
+        "-smp", "2", "-bios", prom_path, "-display", "none", "-S",
+        "-drive", long_drive, NULL,
+    };
+    const char *two_args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
+        "-smp", "2", "-bios", prom_path, "-display", "none", "-S",
+        "-drive", first_drive, "-drive", second_drive, NULL,
+    };
+
+    g_test_message("rejecting a short pflash image");
+    assert_qemu_rejects(short_args, "pflash image must be exactly 16 MiB");
+    g_test_message("rejecting a long pflash image");
+    assert_qemu_rejects(long_args, "pflash image must be exactly 16 MiB");
+    g_test_message("rejecting two pflash images");
+    assert_qemu_rejects(two_args, "accepts one 16 MiB pflash image");
+
+    g_assert_cmpint(g_unlink(short_path), ==, 0);
+    g_assert_cmpint(g_unlink(long_path), ==, 0);
+    g_assert_cmpint(g_unlink(first), ==, 0);
+    g_assert_cmpint(g_unlink(second), ==, 0);
 }
 
 static void test_prom_size_is_exact(const void *data)
@@ -2756,7 +2807,6 @@ static void test_prom_migration(const void *data)
     QTestState *to;
     static const uint64_t views[] = {
         PROM_RESET, HUB_LOCAL_BOOT, HUB_LOCAL_HIGH_BOOT, HUB_REMOTE_BOOT,
-        HUB_LOCAL_FLASH,
     };
     static const struct {
         uint64_t offset;
@@ -2780,8 +2830,7 @@ static void test_prom_migration(const void *data)
                             probes[j].destination);
         }
     }
-    g_assert_cmphex(qtest_readq(to, HUB_LOCAL_FLASH + FLASH_OBSERVED_OFFSET),
-                    ==, UINT64_MAX);
+    assert_erased_second_position(to);
 
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
@@ -2796,12 +2845,7 @@ static void test_prom_migration(const void *data)
         }
     }
 
-    g_assert_cmphex(qtest_readq(to, HUB_LOCAL_FLASH + PROM_SIZE), ==,
-                    UINT64_MAX);
-    g_assert_cmphex(qtest_readq(to, HUB_LOCAL_FLASH + FLASH_OBSERVED_OFFSET),
-                    ==, UINT64_MAX);
-    g_assert_cmphex(qtest_readq(to, HUB_LOCAL_FLASH + FLASH_VIEW_SIZE - 8),
-                    ==, UINT64_MAX);
+    assert_erased_second_position(to);
 
     qtest_quit(from);
     qtest_quit(to);
@@ -2944,6 +2988,8 @@ int main(int argc, char **argv)
                         test_prom_second_stride_view);
     qtest_add_data_func("sn1/address-map/prom-size-is-exact", NULL,
                         test_prom_size_is_exact);
+    qtest_add_data_func("sn1/address-map/boot-flash-image-contract", NULL,
+                        test_boot_flash_image_contract);
     qtest_add_data_func("sn1/address-map/prom-is-required", NULL,
                         test_prom_is_required);
     qtest_add_data_func("sn1/address-map/cpu-count-is-exact", NULL,
