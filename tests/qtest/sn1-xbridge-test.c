@@ -438,6 +438,43 @@ static void test_access_errors(void)
     qtest_quit(qts);
 }
 
+static void test_undefined_registers(void)
+{
+    QTestState *qts = transport_start("");
+    static const unsigned undefined[] = { 0x78, 0x88, 0xe0, 0xf8, 0x2a0,
+                                          0x2f8 };
+    static const unsigned defined[] = { 0x70, 0x80, 0xd8, 0x168, 0x170,
+                                        0x278, 0x298 };
+    unsigned i;
+
+    reg_write(qts, 0x30, 0x000c1234);
+    reg_write(qts, 0x38, 0x8000);
+    reg_write(qts, 0x128, 0);
+    reg_write(qts, 0x108, 1U << 24);
+    /* The sanity diagnostic's provoke: a 32-bit store to a reserved slot. */
+    qtest_writel(qts, BASE + 0x7c, 0x5555);
+    g_assert_cmphex(reg_read(qts, 0x100) & (1U << 24), ==, 1U << 24);
+    g_assert_cmphex(reg_read(qts, 0x18), ==, 0x7c);
+    g_assert_cmphex(qtest_readq(qts, TARGET_C + SCRATCH), ==, 0x100);
+    /* Every reserved slot below 0x300, read or written, is one. */
+    for (i = 0; i < ARRAY_SIZE(undefined); i++) {
+        reg_write(qts, 0x110, 8);
+        qtest_readl(qts, BASE + undefined[i] + 4);
+        g_assert_cmphex(reg_read(qts, 0x100) & (1U << 24), ==, 1U << 24);
+        g_assert_cmphex(reg_read(qts, 0x18), ==, undefined[i] + 4);
+        reg_write(qts, 0x110, 8);
+        qtest_writel(qts, BASE + undefined[i] + 4, 0);
+        g_assert_cmphex(reg_read(qts, 0x100) & (1U << 24), ==, 1U << 24);
+    }
+    /* The defined slots around them are not. */
+    reg_write(qts, 0x110, 8);
+    for (i = 0; i < ARRAY_SIZE(defined); i++) {
+        reg_read(qts, defined[i]);
+        g_assert_cmphex(reg_read(qts, 0x100) & (1U << 24), ==, 0);
+    }
+    qtest_quit(qts);
+}
+
 static void test_requester_bounds(void)
 {
     if (g_test_subprocess()) {
@@ -735,6 +772,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge/upstream-requester", test_upstream_requester);
     qtest_add_func("/sn1/xbridge/migration-reset", test_migration_reset);
     qtest_add_func("/sn1/xbridge/access-errors", test_access_errors);
+    qtest_add_func("/sn1/xbridge/undefined-registers",
+                   test_undefined_registers);
     qtest_add_func("/sn1/xbridge/requester-bounds", test_requester_bounds);
     qtest_add_func("/sn1/xbridge/raw-pci-interrupts", test_raw_pci_interrupts);
     qtest_add_func("/sn1/xbridge/notifier-rejection", test_notifier_rejection);

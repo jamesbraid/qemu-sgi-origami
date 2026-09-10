@@ -284,6 +284,28 @@ static bool xbridge_deferred(hwaddr addr)
            addr >= 0xc00000;
 }
 
+/*
+ * The register file's defined slots below 0x300: the Bridge's map with the
+ * XBridge's additions. A slot outside them is an undefined address, which
+ * the firmware's sanity diagnostic provokes on purpose.
+ */
+static bool xbridge_register_defined(unsigned off)
+{
+    switch (off) {
+    case 0x00 ... 0x70:
+    case 0x80:
+    case 0x90:
+    case 0xa0:
+    case 0xb0:
+    case 0xc0 ... 0xd8:
+    case 0x100 ... 0x1f8:
+    case 0x200 ... 0x298:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static void xbridge_invalid(SGIXBridgeHeadState *s, hwaddr addr)
 {
     bool first = !(REG(s, 0x100) & (1U << 24));
@@ -512,7 +534,7 @@ static uint64_t xbridge_read(void *opaque, hwaddr addr, unsigned size)
         if (addr >= 0x11000 && addr < 0x12000) {
             return (uint32_t)s->ate[(addr - 0x11000) / 8];
         }
-        if (addr < 0x300) {
+        if (addr < 0x300 && xbridge_register_defined(addr & ~7)) {
             return REG(s, addr);
         }
     }
@@ -558,7 +580,8 @@ static void xbridge_write(void *opaque, hwaddr addr, uint64_t value,
                       HWADDR_PRIx "\n", addr);
         return;
     }
-    if (size != 4 || (addr & 7) != 4 || addr >= 0x300) {
+    if (size != 4 || (addr & 7) != 4 || addr >= 0x300 ||
+        !xbridge_register_defined(off)) {
         xbridge_invalid(s, addr);
         return;
     }
