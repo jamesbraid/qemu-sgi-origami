@@ -123,6 +123,9 @@ static void setup(Fixture *f, gconstpointer unused)
      */
     memset(f, 0, sizeof(*f));
     for (i = 0; i < ARRAY_SIZE(names); i++) {
+        g_autofree char *capability = g_strdup_printf("can-%s", names[i]);
+
+        qdev_prop_set_bit(dev, capability, true);
         qdev_connect_gpio_out_named(dev, names[i], 0,
                                     qemu_allocate_irq(line_handler, f, i));
     }
@@ -432,13 +435,13 @@ static void test_power_cycle(Fixture *f, gconstpointer unused)
     g_assert_cmpint(f->level[LINE_POWER], ==, 1);
     g_assert_cmphex(f->probe->last_address, ==, GRANT_BASE + 2);
 
-    sgi_o2000_module_mgmt_set_power(f->module, false);
+    g_assert_true(sgi_o2000_module_mgmt_set_power(f->module, false));
     g_assert_cmpint(f->level[LINE_POWER], ==, 0);
     g_assert_false(f->module->publication_enabled);
     run_ticks(f, 5);
     g_assert_cmpuint(f->probe->addresses, ==, 3);
 
-    sgi_o2000_module_mgmt_set_power(f->module, true);
+    g_assert_true(sgi_o2000_module_mgmt_set_power(f->module, true));
     g_assert_cmpint(f->level[LINE_POWER], ==, 1);
     g_assert_cmpuint(f->raises[LINE_POWER], ==, 2);
     g_assert_true(f->module->publication_enabled);
@@ -493,25 +496,148 @@ static void test_machine_reset(Fixture *f, gconstpointer unused)
     g_assert_cmphex(f->probe->last_address, ==, GRANT_BASE);
 }
 
-/* Every action needs somewhere to happen before the device will realize. */
-static void test_realize_needs_lines(Fixture *f, gconstpointer connected)
+/*
+ * Declaring an action without wiring it is the fictional sink the whole
+ * refusal exists to prevent, so it fails at realize instead of reaching a
+ * guest as an acknowledgement, and the message names the capability that
+ * was left unwired rather than whichever one the check happened to reach
+ * first.
+ */
+static void test_declared_action_needs_its_line(Fixture *f,
+                                                gconstpointer connected)
 {
     DeviceState *dev = qdev_new(TYPE_SGI_O2000_MODULE_MGMT);
     static const char *const names[] = { "reset", "nmi", "power" };
+    /* The first capability left unwired for each parametrisation. */
+    static const char *const names_missing[] = { "can-reset", "can-nmi",
+                                                 "can-power" };
     unsigned present = GPOINTER_TO_UINT(connected);
     Error *err = NULL;
     unsigned i;
 
-    for (i = 0; i < present; i++) {
-        qdev_connect_gpio_out_named(dev, names[i], 0,
-                                    qemu_allocate_irq(line_handler, f, i));
+    g_assert_cmpuint(present, <, ARRAY_SIZE(names));
+    for (i = 0; i < ARRAY_SIZE(names); i++) {
+        g_autofree char *capability = g_strdup_printf("can-%s", names[i]);
+
+        qdev_prop_set_bit(dev, capability, true);
+        if (i < present) {
+            qdev_connect_gpio_out_named(dev, names[i], 0,
+                                        qemu_allocate_irq(line_handler, f, i));
+        }
     }
     g_assert_false(qdev_realize(dev, NULL, &err));
     g_assert_nonnull(err);
+    g_assert_nonnull(strstr(error_get_pretty(err), names_missing[present]));
     error_free(err);
     if (OBJECT(dev)->parent) {
         object_unparent(OBJECT(dev));
     }
+    object_unref(OBJECT(dev));
+}
+
+/*
+ * The other direction of the same rule. A line arriving without its
+ * declaration would be driven by a module that refuses every command that
+ * drives it, so it is a build error rather than a quiet mismatch.
+ */
+static void test_connected_line_needs_its_capability(Fixture *f,
+                                                     gconstpointer unused)
+{
+    DeviceState *dev = qdev_new(TYPE_SGI_O2000_MODULE_MGMT);
+    Error *err = NULL;
+
+    qdev_connect_gpio_out_named(dev, "power", 0,
+                                qemu_allocate_irq(line_handler, f,
+                                                  LINE_POWER));
+    g_assert_false(qdev_realize(dev, NULL, &err));
+    g_assert_nonnull(err);
+    g_assert_nonnull(strstr(error_get_pretty(err), "can-power"));
+    error_free(err);
+    if (OBJECT(dev)->parent) {
+        object_unparent(OBJECT(dev));
+    }
+    object_unref(OBJECT(dev));
+}
+
+/*
+ * A module that declares nothing still builds. An installation whose reset,
+ * NMI and power paths are somebody else's is a real configuration, and every
+ * destructive command it is given is refused rather than acknowledged.
+ */
+static void test_undeclared_actions_refused(void)
+{
+    DeviceState *dev = qdev_new(TYPE_SGI_O2000_MODULE_MGMT);
+    SGIO2000ModuleMgmtState *module;
+
+    qdev_realize(dev, NULL, &error_abort);
+    module = SGI_O2000_MODULE_MGMT(dev);
+
+    g_assert_false(sgi_o2000_module_mgmt_can_execute(module,
+                                                     SGI_ELSC_ACTION_RESET));
+    g_assert_false(sgi_o2000_module_mgmt_can_execute(module,
+                                                     SGI_ELSC_ACTION_CYCLE));
+    g_assert_false(sgi_o2000_module_mgmt_can_execute(
+                       module, SGI_ELSC_ACTION_SHUTDOWN));
+    g_assert_false(sgi_o2000_module_mgmt_pulse_reset(module));
+    g_assert_false(sgi_o2000_module_mgmt_pulse_nmi(module));
+    g_assert_false(sgi_o2000_module_mgmt_set_power(module, false));
+    g_assert_false(sgi_o2000_module_mgmt_set_power(module, true));
+    /*
+     * A refused call reports that it did nothing and leaves the module as it
+     * was: no pulse to finish, the module still powered, and the scheduler
+     * still publishing.
+     */
+    g_assert_false(module->pulse_active);
+    g_assert_true(module->power_on);
+    g_assert_true(module->publication_enabled);
+
+    /* A reset cannot hand a module a capability it was not given. */
+    qemu_devices_reset(RESET_TYPE_COLD);
+    g_assert_false(sgi_o2000_module_mgmt_can_execute(module,
+                                                     SGI_ELSC_ACTION_RESET));
+    g_assert_false(sgi_o2000_module_mgmt_can_execute(module,
+                                                     SGI_ELSC_ACTION_CYCLE));
+
+    object_unparent(OBJECT(dev));
+    object_unref(OBJECT(dev));
+}
+
+/*
+ * Capabilities are answered one at a time. A module wired for reset alone
+ * accepts a reset and refuses the power commands, rather than the two
+ * travelling together because one line happens to be connected.
+ */
+static void test_partial_capability(Fixture *f, gconstpointer unused)
+{
+    DeviceState *dev = qdev_new(TYPE_SGI_O2000_MODULE_MGMT);
+    SGIO2000ModuleMgmtState *module;
+
+    qdev_prop_set_bit(dev, "can-reset", true);
+    qdev_connect_gpio_out_named(dev, "reset", 0,
+                                qemu_allocate_irq(line_handler, f,
+                                                  LINE_RESET));
+    qdev_realize(dev, NULL, &error_abort);
+    module = SGI_O2000_MODULE_MGMT(dev);
+
+    g_assert_true(sgi_o2000_module_mgmt_can_execute(module,
+                                                    SGI_ELSC_ACTION_RESET));
+    g_assert_false(sgi_o2000_module_mgmt_can_execute(module,
+                                                     SGI_ELSC_ACTION_CYCLE));
+    g_assert_false(sgi_o2000_module_mgmt_can_execute(
+                       module, SGI_ELSC_ACTION_SHUTDOWN));
+    /*
+     * No level to check on the refused line: an undeclared output cannot be
+     * connected, so the refusal is what makes it unobservable.
+     */
+    g_assert_false(sgi_o2000_module_mgmt_pulse_nmi(module));
+    g_assert_false(module->pulse_active);
+
+    g_assert_true(sgi_o2000_module_mgmt_pulse_reset(module));
+    g_assert_cmpint(f->level[LINE_RESET], ==, 1);
+    advance_to(module->pulse_deadline);
+    g_assert_cmpint(f->level[LINE_RESET], ==, 0);
+
+    object_unparent(OBJECT(dev));
     object_unref(OBJECT(dev));
 }
 
@@ -747,11 +873,19 @@ int main(int argc, char **argv)
                Fixture, NULL, setup, test_overlapping_pulse_refused, teardown);
     g_test_add("/sgi-o2000-module-management/reset/machine", Fixture, NULL,
                setup, test_machine_reset, teardown);
-    g_test_add("/sgi-o2000-module-management/realize/needs-lines", Fixture,
-               GUINT_TO_POINTER(0), setup, test_realize_needs_lines, teardown);
+    g_test_add("/sgi-o2000-module-management/action/partial-declaration",
+               Fixture, NULL, setup, test_partial_capability, teardown);
+    g_test_add_func("/sgi-o2000-module-management/action/declares-nothing",
+                    test_undeclared_actions_refused);
+    g_test_add("/sgi-o2000-module-management/realize/needs-declared-lines",
+               Fixture, GUINT_TO_POINTER(0), setup,
+               test_declared_action_needs_its_line, teardown);
     g_test_add("/sgi-o2000-module-management/realize/needs-power-line",
-               Fixture, GUINT_TO_POINTER(2), setup, test_realize_needs_lines,
-               teardown);
+               Fixture, GUINT_TO_POINTER(2), setup,
+               test_declared_action_needs_its_line, teardown);
+    g_test_add("/sgi-o2000-module-management/realize/needs-capability",
+               Fixture, NULL, setup,
+               test_connected_line_needs_its_capability, teardown);
     g_test_add("/sgi-o2000-module-management/migration", Fixture, NULL,
                setup, test_migration, teardown);
     g_test_add("/sgi-o2000-module-management/migration-mid-grant", Fixture,
