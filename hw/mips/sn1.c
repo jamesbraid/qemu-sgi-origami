@@ -297,6 +297,68 @@ static const MemoryRegionOps sn1_flash_erased_ops = {
  * monitor's own rewrite of the first sector is what the next reset fetches.
  * Without an image the machine keeps the immutable payload it had before.
  */
+/*
+ * The processor's own views of the boot flash. A read handler rather than an
+ * alias of the part's region: an alias forwards a write to its target even
+ * when the alias is marked read-only, which would let a native command
+ * sequence reach the part without passing through Bedrock's translation. A
+ * copied region is no better, because it would own an unrelated RAM block that
+ * the part's own invalidation never reaches, so an instruction translated from
+ * it could survive a program that changed the byte underneath. The dispatch
+ * cost on the firmware's fetch path is accepted for that.
+ */
+static MemTxResult sn1_prom_view_read(void *opaque, hwaddr offset,
+                                      uint64_t *value, unsigned size,
+                                      MemTxAttrs attrs)
+{
+    SN1PromView *view = opaque;
+    uint64_t high, low;
+    MemTxResult result;
+
+    if (size == 8) {
+        /* The part answers at most four bytes per cycle. */
+        result = memory_region_dispatch_read(view->backing, offset, &high,
+                                             MO_32 | MO_BE, attrs);
+        result |= memory_region_dispatch_read(view->backing, offset + 4, &low,
+                                              MO_32 | MO_BE, attrs);
+        *value = (high << 32) | (uint32_t)low;
+        return result;
+    }
+    return memory_region_dispatch_read(view->backing, offset, value,
+                                       size_memop(size) | MO_BE, attrs);
+}
+
+static MemTxResult sn1_prom_view_write(void *opaque, hwaddr offset,
+                                       uint64_t value, unsigned size,
+                                       MemTxAttrs attrs)
+{
+    SN1PromView *view = opaque;
+
+    qemu_log_mask(LOG_GUEST_ERROR, "sn1: %s execution view: refusing a %u-byte "
+                  "write of 0x%" PRIx64 " at offset 0x%" HWADDR_PRIx "; the "
+                  "boot flash takes commands through a Bedrock boot space, "
+                  "not through a view the processor executes from\n",
+                  view->name, size, value, offset);
+    return MEMTX_ERROR;
+}
+
+static const MemoryRegionOps sn1_prom_view_ops = {
+    .read_with_attrs = sn1_prom_view_read,
+    .write_with_attrs = sn1_prom_view_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8 },
+    .impl = { .min_access_size = 1, .max_access_size = 8 },
+};
+
+static void sn1_init_prom_view(SN1PromView *view, MachineState *machine,
+                               const char *name, MemoryRegion *backing)
+{
+    view->name = name;
+    view->backing = backing;
+    memory_region_init_io(&view->mmio, OBJECT(machine), &sn1_prom_view_ops,
+                          view, name, SN1_PROM_SIZE);
+}
+
 static MemoryRegion *sn1_create_boot_flash(SN1MachineState *s,
                                            MachineState *machine)
 {
@@ -389,18 +451,18 @@ static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
     stored = sn1_create_boot_flash(s, machine);
     if (stored) {
         /*
-         * With a part attached the views carry its stored bytes rather than
-         * the supplied payload, so a configuration the monitor has written to
-         * itself is visible where the processor executes. The generated table
-         * describes the payload carrier and is used for that carrier only.
+         * With a part attached the views answer through handlers over its
+         * storage: they report the bytes it holds now, including a change the
+         * monitor has just programmed, and refuse a write instead of passing
+         * it to the part as a command cycle. The generated table describes
+         * the payload carrier and is used for that carrier only.
          */
-        memory_region_init_alias(&s->prom_reset, OBJECT(machine),
-                                 "sn1.prom.reset", stored, 0, SN1_PROM_SIZE);
-        memory_region_init_alias(&s->prom_local_high, OBJECT(machine),
-                                 "sn1.prom.local-high", stored, 0,
-                                 SN1_PROM_SIZE);
+        sn1_init_prom_view(&s->prom_view_reset, machine, "sn1.prom.reset",
+                           stored);
+        sn1_init_prom_view(&s->prom_view_local_high, machine,
+                           "sn1.prom.local-high", stored);
         memory_region_add_subregion_overlap(system, SN1_PROM_RESET,
-                                            &s->prom_reset, 1);
+                                            &s->prom_view_reset.mmio, 1);
         /*
          * The high local view sits inside a boot space the flash answers for,
          * so it is overlaid above it. The remote space is left to the flash:
@@ -409,7 +471,7 @@ static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
          * monitor could not drive the part through that space at all.
          */
         memory_region_add_subregion_overlap(system, SN1_HUB_LOCAL_HIGH_BOOT,
-                                            &s->prom_local_high, 1);
+                                            &s->prom_view_local_high.mmio, 1);
         return true;
     }
 

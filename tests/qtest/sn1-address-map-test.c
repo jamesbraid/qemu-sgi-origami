@@ -80,6 +80,14 @@
 /* The AMD unlock words 0x555 and 0x2aa, at the bus offsets 8n. */
 #define FLASH_UNLOCK0 UINT64_C(0x2aa8)
 #define FLASH_UNLOCK1 UINT64_C(0x1550)
+/*
+ * The same two unlock cycles as a part sees them when the address is one byte
+ * to one byte rather than four: the word addresses doubled. An execution view
+ * decodes that way, so a sequence sent there has to use these to be the
+ * native sequence at all.
+ */
+#define FLASH_NATIVE_UNLOCK0 UINT64_C(0xaaa)
+#define FLASH_NATIVE_UNLOCK1 UINT64_C(0x554)
 #define FLASH_ERASED_TARGET UINT64_C(0x200000)
 #define FLASH_PAYLOAD_TARGET UINT64_C(0x1000)
 /*
@@ -2028,6 +2036,67 @@ static void test_boot_flash_backs_every_prom_view(const void *data)
     g_assert_cmpint(g_unlink(flash), ==, 0);
 }
 
+/*
+ * A complete native command sequence aimed at an address the processor
+ * executes from is refused, says so, and leaves the stored bytes and the
+ * part's own mode alone. This is the case a writable alias of the part's
+ * region passes by accident: an alias forwards a write to its target even
+ * when it is marked read-only, so the part would accept the sequence and
+ * stop answering with array data underneath the running firmware.
+ */
+static void test_execution_views_refuse_commands(const void *data)
+{
+    static const uint64_t views[] = { PROM_RESET, HUB_LOCAL_HIGH_BOOT };
+    g_autofree char *flash = create_flash_image();
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-exec-view-log-XXXXXX.txt", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf("-d guest_errors -D %s", quoted);
+    qts = machine_start_with_flash(flash, extra);
+
+    for (size_t i = 0; i < ARRAY_SIZE(views); i++) {
+        qtest_writew(qts, views[i] + FLASH_NATIVE_UNLOCK0, 0xaa);
+        qtest_writew(qts, views[i] + FLASH_NATIVE_UNLOCK1, 0x55);
+        qtest_writew(qts, views[i] + FLASH_NATIVE_UNLOCK0, 0xa0);
+        qtest_writew(qts, views[i] + FLASH_PAYLOAD_TARGET, 0x1234);
+
+        /* The word it aimed at is still erased. */
+        g_assert_cmphex(qtest_readw(qts, views[i] + FLASH_PAYLOAD_TARGET), ==,
+                        0xffff);
+        /*
+         * And the part still returns its first stored word rather than a
+         * status or an identifier, so it never left read-array mode. That is
+         * the half of the check that a dropped write alone would not prove.
+         */
+        g_assert_cmphex(qtest_readw(qts, views[i]), ==, 0x3100);
+    }
+
+    /* Every view still reads the part. */
+    assert_flash_everywhere(qts, 0, 0x3100);
+
+    /* And the space the part is really driven from still programs it. */
+    flash_program(qts, HUB_LOCAL_BOOT, FLASH_PAYLOAD_TARGET, 0x1234);
+    assert_flash_everywhere(qts, FLASH_PAYLOAD_TARGET, 0x1234);
+    qtest_quit(qts);
+
+    /* Each refusal named the view it came from. */
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(log, "sn1.prom.reset execution view: refusing"));
+    g_assert_nonnull(strstr(log,
+                            "sn1.prom.local-high execution view: refusing"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
 static void test_boot_flash_migration(const void *data)
 {
     g_autoptr(GError) error = NULL;
@@ -2718,6 +2787,8 @@ int main(int argc, char **argv)
                         test_directory_backdoor_window);
     qtest_add_data_func("sn1/address-map/boot-flash-backs-prom-views", NULL,
                         test_boot_flash_backs_every_prom_view);
+    qtest_add_data_func("sn1/address-map/execution-views-refuse-commands",
+                        NULL, test_execution_views_refuse_commands);
     qtest_add_data_func("sn1/address-map/boot-flash-migration", NULL,
                         test_boot_flash_migration);
     qtest_add_data_func("sn1/address-map/prom-second-stride-view", NULL,

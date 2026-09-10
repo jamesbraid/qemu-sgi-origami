@@ -10,6 +10,17 @@
 #define TYPE_SN1_MACHINE MACHINE_TYPE_NAME("origin300")
 OBJECT_DECLARE_SIMPLE_TYPE(SN1MachineState, SN1_MACHINE)
 
+/*
+ * One of the processor's views of the boot flash. It answers reads out of the
+ * part's current storage and refuses every write, so it holds no bytes of its
+ * own and adds no migration state.
+ */
+typedef struct SN1PromView {
+    MemoryRegion mmio;
+    MemoryRegion *backing;
+    const char *name;
+} SN1PromView;
+
 struct SN1MachineState {
     MachineState parent_obj;
 
@@ -32,6 +43,10 @@ struct SN1MachineState {
     MemoryRegion prom_flash;
     MemoryRegion prom_flash_payload;
     MemoryRegion prom_flash_erased;
+
+    /* Used in place of the aliases above once a flash part is attached. */
+    SN1PromView prom_view_reset;
+    SN1PromView prom_view_local_high;
 
     strList *chassis_eeprom;
     strList *board_eeprom;
