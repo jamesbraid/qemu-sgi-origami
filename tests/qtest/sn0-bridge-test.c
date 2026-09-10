@@ -3136,6 +3136,123 @@ static void test_the_interrupt_pins_fold(const void *data)
     }
 }
 
+/*
+ * The crossbar's per-link reset, arriving. Revision D drives the chip's
+ * core-logic reset from it, and IRIX rebuilds the chip afterwards rather
+ * than trusting anything it had programmed.
+ */
+#define ATE_TEST_ENTRY          5
+
+static void bridge_link_reset(QTestState *qts)
+{
+    qtest_set_irq_in(qts, "/machine/bridge", "link-reset", 0, 1);
+    qtest_set_irq_in(qts, "/machine/bridge", "link-reset", 0, 0);
+}
+
+static void test_an_inbound_link_reset_clears_the_core(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+
+    /*
+     * One register per group of the file, every one away from its reset,
+     * and a translation entry beside them. All written before any is read,
+     * so a model that reset one register and left the rest fails here
+     * rather than on whichever assertion happens to come last.
+     */
+    qtest_writel(qts, REG(BRIDGE_CONTROL), 0);
+    qtest_writel(qts, REG(BRIDGE_REQUEST_TIMEOUT), 0);
+    qtest_writel(qts, REG(BRIDGE_LINK_CONFIG), 0);
+    qtest_writel(qts, REG(BRIDGE_DIRECT_MAP), 0);
+    qtest_writel(qts, REG(BRIDGE_ARBITRATION), 0);
+    qtest_writel(qts, REG(BRIDGE_BUS_TIMEOUT), 0);
+    qtest_writel(qts, REG(BRIDGE_DEVICE(PROBE_SLOT)), 0);
+    qtest_writel(qts, REG(BRIDGE_INT_ENABLE), 0xff);
+    qtest_writel(qts, REG(BRIDGE_INT_DEVICE), 0xffffff);
+    qtest_writel(qts, REG(BRIDGE_INT_HOST(0)), 0x100);
+    qtest_writeq(qts, ATE(ATE_TEST_ENTRY), 0xa5a5000012345678ull);
+
+    /* The core goes when the line rises, not when the pulse ends. */
+    qtest_set_irq_in(qts, "/machine/bridge", "link-reset", 0, 1);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_CONTROL)), ==, CONTROL_RESET);
+    qtest_set_irq_in(qts, "/machine/bridge", "link-reset", 0, 0);
+
+    /*
+     * The two registers IRIX saves across the pulse are the two it cannot
+     * recompute, so they are exactly the ones that have to go: a model
+     * that kept either makes that save and restore pointless.
+     */
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_CONTROL)), ==, CONTROL_RESET);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_LINK_CONFIG)), ==,
+                    LINK_CONFIG_RESET);
+
+    /* And the rest, which IRIX reinitializes rather than saving. */
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_REQUEST_TIMEOUT)), ==,
+                    REQUEST_TIMEOUT_RESET);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DIRECT_MAP)), ==,
+                    DIRECT_MAP_RESET);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_ARBITRATION)), ==,
+                    ARBITRATION_RESET);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_BUS_TIMEOUT)), ==,
+                    BUS_TIMEOUT_RESET);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(PROBE_SLOT))), ==,
+                    device_reset[PROBE_SLOT]);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_ENABLE)), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_DEVICE)), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_HOST(0))), ==, 0);
+
+    /* The whole entry, the way a cold reset clears it. */
+    g_assert_cmphex(qtest_readl(qts, ATE_UPPER(ATE_TEST_ENTRY)), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, ATE_LOW(ATE_TEST_ENTRY)), ==, 0);
+
+    /* Composed on every reset, not a table row, so it is still right. */
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_IDENTIFICATION)), ==,
+                    bridge_identity(BRIDGE_REVISION));
+
+    qtest_quit(qts);
+}
+
+/*
+ * And it stops at the chip. No reviewed source says Bridge pulses its four
+ * external bus-reset outputs or that a downstream device resets, so a card
+ * keeps its own programming; and the pin it is holding stays up, because a
+ * level cleared here would never rise again and the device would go on
+ * asking without being heard.
+ */
+static void test_an_inbound_link_reset_stops_at_the_pci_side(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE
+                                 " -device sgi-bridge-dma-test,addr=3");
+
+    bridge_source_in_slot_three(qts);
+    bridge_drive_pin(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)), ==,
+                    1u << INT_TEST_SLOT);
+
+    bridge_link_reset(qts);
+
+    /* The card is untouched: its base address and its command still stand. */
+    g_assert_cmphex(qtest_readl(qts, CFG0(INT_TEST_SLOT, 0) + PCI_BAR0), ==,
+                    CARD_MMIO(INT_TEST_SLOT));
+    g_assert_cmphex(qtest_readl(qts, CFG0(INT_TEST_SLOT, 0) + PCI_COMMAND) &
+                    0xffff, ==, PCI_COMMAND_MEMORY);
+
+    /* And the pin it is still driving reads set. */
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)), ==,
+                    1u << INT_TEST_SLOT);
+
+    /*
+     * The slot's window went with the rest of the core programming, so
+     * reaching the card again takes a fresh aim -- and then the card, which
+     * never reset, is the only thing that can drop the pin.
+     */
+    qtest_writel(qts, REG(BRIDGE_DEVICE(INT_TEST_SLOT)),
+                 DEV_MEMORY_SPACE | (CARD_MMIO(INT_TEST_SLOT) >> 20));
+    bridge_drive_pin(qts, 0);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)), ==, 0);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -3286,6 +3403,11 @@ int main(int argc, char **argv)
                         test_dma_device_window_64bit_doubleword);
     qtest_add_data_func("sn0/bridge/per-pin-host-registers", NULL,
                         test_the_per_pin_host_registers);
+    qtest_add_data_func("sn0/bridge/inbound-link-reset-clears-the-core", NULL,
+                        test_an_inbound_link_reset_clears_the_core);
+    qtest_add_data_func("sn0/bridge/inbound-link-reset-stops-at-the-pci-side",
+                        NULL,
+                        test_an_inbound_link_reset_stops_at_the_pci_side);
 
     return g_test_run();
 }
