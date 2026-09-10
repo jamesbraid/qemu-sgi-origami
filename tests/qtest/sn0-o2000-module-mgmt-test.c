@@ -10,6 +10,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
 
 #define HUB_BASE        UINT64_C(0x20001000000)
 #define I2C_DATA        0x220000
@@ -385,6 +386,28 @@ static void test_destructive_commands_refused(void)
     qtest_quit(qts);
 }
 
+static bool is_running(QTestState *qts)
+{
+    g_autoptr(QDict) response = qtest_qmp(qts, "{'execute':'query-status'}");
+
+    return qdict_get_bool(qdict_get_qdict(response, "return"), "running");
+}
+
+/*
+ * A completed migration on the source does not mean the destination has
+ * started. Its virtual clock stays stopped until it does, and a stopped
+ * clock runs no timers, so the shared wire would never clock a bit.
+ */
+static void wait_until_running(QTestState *qts)
+{
+    int64_t deadline = g_get_monotonic_time() + 60 * G_TIME_SPAN_SECOND;
+
+    while (!is_running(qts)) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+}
+
 /*
  * The module's DIP switch bank belongs to the whole module, and the machine
  * setting has to reach the one controller behind the four windows. The
@@ -396,6 +419,68 @@ static void test_dip_switches_reach_the_controller(void)
 
     assert_response(qts, 2, "rsw", "ok ef");
     qtest_quit(qts);
+}
+
+static void migrate_module(QTestState *from, QTestState *to)
+{
+    g_autofree char *directory = g_dir_make_tmp("o2000-management-XXXXXX",
+                                                NULL);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    int64_t deadline = g_get_monotonic_time() + 60 * G_TIME_SPAN_SECOND;
+
+    g_assert_nonnull(directory);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
+    for (;;) {
+        g_autoptr(QDict) response = qtest_qmp(from,
+                                              "{'execute':'query-migrate'}");
+        QDict *result = qdict_get_qdict(response, "return");
+        const char *status = qdict_get_str(result, "status");
+
+        if (!strcmp(status, "completed")) {
+            break;
+        }
+        g_assert_cmpstr(status, !=, "failed");
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    unlink(socket);
+    g_assert_cmpint(rmdir(directory), ==, 0);
+}
+
+/*
+ * The complex sits on no bus and carries its own migration state. What
+ * survives is the shared store and a controller that still talks, on a
+ * destination whose adapters were never programmed by a guest.
+ *
+ * The qtest accelerator's virtual clock is the test's own counter and does
+ * not travel with the migration stream, so the destination starts at zero
+ * holding the source's absolute deadlines: the scheduler's next tick, and
+ * the bus-free time each adapter must see before a fresh START. Put the
+ * destination clock where the source left it, and everything the stream
+ * restored is due rather than far in the future.
+ */
+static void test_migration(void)
+{
+    QTestState *from = start_module();
+    QTestState *to = qtest_init(MACHINE_ARGS " -incoming defer");
+    int64_t departed;
+
+    nvram_write(from, 2, 0x321, 0x5a);
+    /* A zero step is refused, so read the clock by taking the smallest. */
+    departed = qtest_clock_step(from, 1);
+    migrate_module(from, to);
+    wait_until_running(to);
+    qtest_clock_set(to, departed);
+    g_assert_cmphex(nvram_read(to, 0, 0x321), ==, 0x5a);
+    assert_response(to, 3, "ver", "ok");
+    qtest_quit(from);
+    qtest_quit(to);
 }
 
 int main(int argc, char **argv)
@@ -416,5 +501,6 @@ int main(int argc, char **argv)
                    test_destructive_commands_refused);
     qtest_add_func("/sn0/o2000-module-management/dip-switches",
                    test_dip_switches_reach_the_controller);
+    qtest_add_func("/sn0/o2000-module-management/migration", test_migration);
     return g_test_run();
 }
