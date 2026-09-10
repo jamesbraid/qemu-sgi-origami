@@ -30,9 +30,16 @@ static void test_registers(void)
 {
     QTestState *qts = head_start();
 
+    static const uint8_t window_base[8] = { 0, 2, 4, 5, 6, 7, 8, 9 };
+    unsigned n;
+
     g_assert_cmphex(reg_read(qts, 0), ==, 0x2d002049);
     g_assert_cmphex(reg_read(qts, 8) & (1U << 5), ==, 1U << 5);
-    g_assert_cmphex(reg_read(qts, 0x200), ==, 0x18001000);
+    /* The firmware's layout: two 2 MB windows, then six of 1 MB. */
+    for (n = 0; n < 8; n++) {
+        g_assert_cmphex(reg_read(qts, 0x200 + n * 8), ==,
+                        0x18001000 | window_base[n]);
+    }
     g_assert_cmphex(reg_read(qts, 0x20), ==, 0x0f00320f);
     g_assert_cmphex(reg_read(qts, 0x80), ==, 0x20000);
     g_assert_cmphex(reg_read(qts, 0xa0), ==, 0x20008);
