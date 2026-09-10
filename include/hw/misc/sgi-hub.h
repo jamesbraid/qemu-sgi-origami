@@ -338,6 +338,7 @@ uint32_t sgi_hub_programmed_nasid(const SGIHubState *s);
 bool sgi_hub_first_turn(const SGIHubState *s, uint32_t destination,
                          uint8_t *turn);
 void sgi_hub_latch_prom_pi_error(SGIHubState *s);
+void sgi_hub_set_cpu_enable(SGIHubState *s, unsigned int cpu, bool enabled);
 
 /* The fabric's side of the interface: this endpoint's map or link state moved. */
 void sgi_hub_fabric_changed(SGIHubState *s);

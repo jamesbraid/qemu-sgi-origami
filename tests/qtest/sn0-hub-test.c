@@ -1438,6 +1438,34 @@ static uint64_t wait_for_cpu_heartbeat(QTestState *qts, unsigned int cpu,
     return heartbeat;
 }
 
+static void fence_cpu(QTestState *qts, unsigned int cpu)
+{
+    qtest_qmp_assert_success(qts,
+        "{ 'execute': 'x-query-mips-tlb', 'arguments': "
+        "{ 'cpu-index': %u } }", cpu);
+}
+
+static void assert_cpu_stopped_while_peer_advances(QTestState *qts,
+                                                   unsigned int stopped_cpu,
+                                                   unsigned int running_cpu)
+{
+    int64_t deadline;
+    uint64_t stopped;
+    uint64_t running = cpu_heartbeat(qts, running_cpu);
+    bool running_advanced = false;
+
+    fence_cpu(qts, stopped_cpu);
+    stopped = cpu_heartbeat(qts, stopped_cpu);
+    deadline = g_get_monotonic_time() + 100 * G_TIME_SPAN_MILLISECOND;
+    do {
+        g_usleep(1000);
+        g_assert_cmphex(cpu_heartbeat(qts, stopped_cpu), ==, stopped);
+        running_advanced |= cpu_heartbeat(qts, running_cpu) != running;
+    } while (g_get_monotonic_time() < deadline);
+
+    g_assert_true(running_advanced);
+}
+
 static void test_cpu_enable_registers_control_matching_processors(
     const void *data)
 {
@@ -1446,6 +1474,7 @@ static void test_cpu_enable_registers_control_matching_processors(
     QTestState *qts;
     uint64_t stopped;
     uint64_t running;
+    uint64_t reset_heartbeat[2];
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
@@ -1459,11 +1488,10 @@ static void test_cpu_enable_registers_control_matching_processors(
         "-accel tcg,thread=multi -S -no-shutdown", path);
     unlink(path);
 
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_A), ==, 0);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_B), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_A), ==, 1);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_B), ==, 1);
 
     qtest_writeq(qts, HUB_LOCAL + PI_CPU_ENABLE_A, ~0ULL);
-    qtest_writeq(qts, HUB_LOCAL + PI_CPU_ENABLE_B, 1);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_A), ==, 1);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_B), ==, 1);
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
@@ -1472,26 +1500,31 @@ static void test_cpu_enable_registers_control_matching_processors(
 
     qtest_writeq(qts, HUB_LOCAL + PI_CPU_ENABLE_A, 0);
     running = wait_for_cpu_heartbeat(qts, 1, cpu_heartbeat(qts, 1));
-    stopped = cpu_heartbeat(qts, 0);
     g_assert_cmphex(wait_for_cpu_heartbeat(qts, 1, running), !=, running);
-    g_assert_cmphex(cpu_heartbeat(qts, 0), ==, stopped);
+    assert_cpu_stopped_while_peer_advances(qts, 0, 1);
+    stopped = cpu_heartbeat(qts, 0);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_A), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_B), ==, 1);
 
     qtest_writeq(qts, HUB_LOCAL + PI_CPU_ENABLE_A, 1);
     qtest_writeq(qts, HUB_LOCAL + PI_CPU_ENABLE_B, 0);
     running = wait_for_cpu_heartbeat(qts, 0, stopped);
-    stopped = cpu_heartbeat(qts, 1);
     g_assert_cmphex(wait_for_cpu_heartbeat(qts, 0, running), !=, running);
-    g_assert_cmphex(cpu_heartbeat(qts, 1), ==, stopped);
+    assert_cpu_stopped_while_peer_advances(qts, 1, 0);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_A), ==, 1);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_B), ==, 0);
 
     qtest_writeq(qts, HUB_LOCAL + IO_SCRATCH_0, ~0ULL);
+    reset_heartbeat[0] = cpu_heartbeat(qts, 0);
+    reset_heartbeat[1] = cpu_heartbeat(qts, 1);
     qtest_system_reset(qts);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_A), ==, 0);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_B), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_A), ==, 1);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CPU_ENABLE_B), ==, 1);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_SCRATCH_0), ==, 0);
+    g_assert_cmphex(wait_for_cpu_heartbeat(qts, 0, reset_heartbeat[0]), !=,
+                    reset_heartbeat[0]);
+    g_assert_cmphex(wait_for_cpu_heartbeat(qts, 1, reset_heartbeat[1]), !=,
+                    reset_heartbeat[1]);
 
     qtest_quit(qts);
 }
