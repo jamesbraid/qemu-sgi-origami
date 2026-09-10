@@ -1564,9 +1564,14 @@ static void sgi_bridge_plain_iommu_class_init(ObjectClass *oc,
     imrc->notify_flag_changed = sgi_bridge_iommu_notify_flag_changed;
 }
 
-static void sgi_bridge_reset_hold(Object *obj, ResetType type)
+/*
+ * The chip's own core: the register file, the translation entries and the
+ * latched error bit. A cold reset and the core reset an inbound link reset
+ * drives share this, so the two cannot drift apart. The interrupt pins are
+ * not in here; their levels belong to whatever is driving them.
+ */
+static void sgi_bridge_reset_core(SGIBridgeState *s)
 {
-    SGIBridgeState *s = SGI_BRIDGE(obj);
     unsigned int i;
 
     for (i = 0; i < SGI_BRIDGE_REG_SLOTS; i++) {
@@ -1577,9 +1582,6 @@ static void sgi_bridge_reset_hold(Object *obj, ResetType type)
     s->reg[SGI_BRIDGE_SLOT(BRIDGE_IDENTIFICATION)] =
         sgi_bridge_identification(s);
 
-    s->pin_level = 0;
-    s->pci_pin_level = 0;
-    s->gpio_pin_level = 0;
     s->int_error = 0;
 
     /*
@@ -1589,6 +1591,54 @@ static void sgi_bridge_reset_hold(Object *obj, ResetType type)
     memset(s->ate_entry, 0, sizeof(s->ate_entry));
 
     sgi_bridge_aim_all_windows(s);
+}
+
+static void sgi_bridge_reset_hold(Object *obj, ResetType type)
+{
+    SGIBridgeState *s = SGI_BRIDGE(obj);
+
+    sgi_bridge_reset_core(s);
+
+    /* Every source of a pin resets too, so the levels start clear. */
+    s->pin_level = 0;
+    s->pci_pin_level = 0;
+    s->gpio_pin_level = 0;
+}
+
+/*
+ * The crossbar's per-link reset, arriving. Revision D feeds the link-layer
+ * block's received link-reset output into its core-logic reset, and IRIX
+ * treats Bridge core programming as lost across the pulse: it saves the
+ * widget control and link configuration registers, has the crossbar reset
+ * the link, restores those two and rebuilds the rest. This model answers
+ * that by taking the whole core as lost -- the register file, the
+ * translation entries and the latched error back to their power-up values,
+ * the control register's four bus-reset bits included, which this chip
+ * only stores. The bounded IRIX read does not prove the reset or retention
+ * state of any individual register, and that boundary is open, so this is
+ * a whole-core answer to whole-core evidence rather than a
+ * register-by-register account.
+ *
+ * Two things deliberately stay. The interrupt pins keep their levels: the
+ * devices holding them are not in this reset, and a level cleared here
+ * would never rise again. And nothing reaches the PCI side. No reviewed
+ * source establishes that Bridge pulses its four external bus-reset
+ * outputs or that a downstream device resets, so a card keeps everything
+ * it was programmed with.
+ */
+static void sgi_bridge_link_reset(void *opaque, int line, int level)
+{
+    SGIBridgeState *s = opaque;
+
+    if (!level) {
+        return;
+    }
+    sgi_bridge_reset_core(s);
+    qemu_log_mask(LOG_UNIMP,
+                  "sgi-bridge: inbound link reset; the core is reset once "
+                  "and released, not held until the link connection is "
+                  "determined: no reviewed source says what a core held in "
+                  "reset answers\n");
 }
 
 /*
@@ -1766,6 +1816,10 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
      */
     qdev_init_gpio_in_named_with_opaque(dev, sgi_bridge_set_wire_irq, s, NULL,
                                         SGI_BRIDGE_PINS);
+
+    /* One crosstalk link, so one line: what the crossbar drives at us. */
+    qdev_init_gpio_in_named_with_opaque(dev, sgi_bridge_link_reset, s,
+                                        "link-reset", 1);
 
     memory_region_init_io(&s->cfg0, obj, &sgi_bridge_config_ops, s,
                           "sgi-bridge.cfg0", BRIDGE_CFG0_SIZE);
