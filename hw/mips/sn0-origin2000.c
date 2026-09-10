@@ -4,6 +4,7 @@
 #include "qemu/osdep.h"
 #include "qemu/units.h"
 #include "qemu/datadir.h"
+#include "qemu/host-utils.h"
 #include "qapi/error.h"
 #include "qobject/qlist.h"
 #include "hw/core/clock.h"
@@ -20,6 +21,66 @@
 #include "sn0.h"
 #include "sn0-origin2000-model-consumer.h"
 #include "sn0-origin2000-xtalk.h"
+
+#define ORIGIN2000_HUB_IO_BUS_ERROR 0x02400208
+#define ORIGIN2000_BUS_ERROR_MEMOP(size) (size_memop(size) | MO_BE)
+
+static MemTxResult origin2000_bus_error_read(void *opaque, hwaddr addr,
+                                              uint64_t *data,
+                                              unsigned int size,
+                                              MemTxAttrs attrs)
+{
+    SN0NodeState *node = opaque;
+
+    if (addr == 0 && size == 8) {
+        *data = 0;
+        sgi_hub_latch_prom_pi_error(&node->hub);
+        return MEMTX_ERROR;
+    }
+    return memory_region_dispatch_read(&node->xtalk,
+        ORIGIN2000_HUB_IO_BUS_ERROR + addr, data,
+        ORIGIN2000_BUS_ERROR_MEMOP(size), attrs);
+}
+
+static MemTxResult origin2000_bus_error_write(void *opaque, hwaddr addr,
+                                               uint64_t data,
+                                               unsigned int size,
+                                               MemTxAttrs attrs)
+{
+    SN0NodeState *node = opaque;
+
+    return memory_region_dispatch_write(&node->xtalk,
+        ORIGIN2000_HUB_IO_BUS_ERROR + addr, data,
+        ORIGIN2000_BUS_ERROR_MEMOP(size), attrs);
+}
+
+static const MemoryRegionOps origin2000_bus_error_ops = {
+    .read_with_attrs = origin2000_bus_error_read,
+    .write_with_attrs = origin2000_bus_error_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+};
+
+static void origin2000_install_bus_error_aperture(SN0NodeState *node)
+{
+    const SN0ModelAddressSpace *xtalk = &node->physical->map.xtalk;
+
+    for (unsigned int slice = 0; slice < node->physical->cpu_count; slice++) {
+        g_autofree char *name = g_strdup_printf(
+            "sn0.node%u.cpu%u.hub-io-bus-error", node->nasid, slice);
+
+        memory_region_init_io(&node->origin2000_bus_error[slice],
+                              OBJECT(node), &origin2000_bus_error_ops, node,
+                              name, 8);
+        memory_region_add_subregion_overlap(
+            &node->cpu_sysmem[slice],
+            xtalk->carrier_base + ORIGIN2000_HUB_IO_BUS_ERROR,
+            &node->origin2000_bus_error[slice], 1);
+    }
+}
 
 static unsigned int origin2000_cpu_count(const SN0ModelComposition *c)
 {
@@ -412,6 +473,7 @@ void sn0_origin2000_realize_nodes(MachineState *machine)
         g_assert(!DEVICE(node)->realized);
         sn0_diagnostic_attach(s, i);
         sysbus_realize(SYS_BUS_DEVICE(node), &error_fatal);
+        origin2000_install_bus_error_aperture(node);
         for (slice = 0; slice < physical->cpu_count; slice++) {
             machine->possible_cpus->cpus[physical->cpu_first_id + slice].cpu =
                 CPU(node->cpu[slice]);

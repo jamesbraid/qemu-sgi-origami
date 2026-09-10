@@ -33,6 +33,13 @@
 #define MARKER_B2              0x50040
 #define MARKER                 0x5a17
 
+#define ORIGIN2000_ROM_SIZE    (1024 * 1024)
+#define ORIGIN2000_CPU         4
+#define ORIGIN2000_CAUSE       0x50000
+#define ORIGIN2000_RESULT      0x50008
+#define ORIGIN2000_MARKER      0x50010
+#define ORIGIN2000_HUB_LOCAL   0x20001000000ULL
+
 #define HUB_LOCAL              0x20001000000ULL
 #define WIDGET2_PROBE          0x20002400208ULL
 #define WIDGETA_PROBE          0x2000a400208ULL
@@ -59,6 +66,12 @@
 #define PI_STATUS_EXPECTED     (PI_STATUS_VALID | PI_STATUS_ADDRESS)
 #define CAUSE_EXCCODE_MASK     0x7c
 #define CAUSE_EXCCODE_DBE      (7 << 2)
+
+#define XTALK_BASE             0x20000000000ULL
+#define XBOW_REG_DATA          4
+#define XBOW_LINK(widget)      (0x100 + ((widget) - 8) * 0x40)
+#define XBOW_LINK_STATUS       0x10
+#define XBOW_LINK_ILLEGAL_DEST (1u << 17)
 
 static void put_insn(uint8_t *image, unsigned int at, uint32_t insn)
 {
@@ -238,6 +251,188 @@ static void wait_for_pi_status_reset(QTestState *qts)
         g_usleep(1000);
     }
     g_error("timed out waiting for PI error status reset");
+}
+
+static uint64_t cpu_readq(QTestState *qts, unsigned int cpu, uint64_t addr)
+{
+    uint8_t bytes[8];
+
+    g_assert_true(qtest_memread_cpu(qts, cpu, addr, bytes, sizeof(bytes)));
+    return ldq_be_p(bytes);
+}
+
+static void cpu_writeq(QTestState *qts, unsigned int cpu, uint64_t addr,
+                       uint64_t value)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, cpu, addr, bytes, sizeof(bytes)));
+}
+
+static uint32_t cpu_xbow_link_status(QTestState *qts, unsigned int cpu,
+                                     unsigned int widget)
+{
+    uint8_t bytes[4];
+    uint64_t addr = XTALK_BASE + XBOW_LINK(widget) +
+                    XBOW_LINK_STATUS + XBOW_REG_DATA;
+
+    g_assert_true(qtest_memread_cpu(qts, cpu, addr, bytes, sizeof(bytes)));
+    return ldl_be_p(bytes);
+}
+
+static GPtrArray *write_origin2000_probe_roms(void)
+{
+    g_autofree uint8_t *image = g_malloc0(ORIGIN2000_ROM_SIZE);
+    GPtrArray *paths = g_ptr_array_new_with_free_func(g_free);
+    uint32_t reset_words[2];
+    unsigned int at = 0;
+
+#define ROM_INSN(insn) do {                 \
+        stl_be_p(image + at, (insn));        \
+        at += sizeof(uint32_t);              \
+    } while (0)
+
+    ROM_INSN(0x3c080040); /* lui t0, 0x0040 */
+    ROM_INSN(0x35080080); /* ori t0, t0, BEV | KX */
+    ROM_INSN(0x40886000); /* mtc0 t0, Status */
+    for (unsigned int i = 0; i < 4; i++) {
+        ROM_INSN(0x00000000);
+    }
+
+    ROM_INSN(0x3c10a005); /* lui s0, uncached mailbox */
+    ROM_INSN(0x3c119200); /* lui s1, Hub special XKPHYS */
+    ROM_INSN(0x0011883c); /* dsll32 s1, s1, 0 */
+    ROM_INSN(0x3c090100); /* lui t1, Hub local base */
+    ROM_INSN(0x02298825); /* or s1, s1, t1 */
+    ROM_INSN(0xde280020); /* ld t0, PI processor number(s1) */
+    ROM_INSN(0x15000032); /* bne t0, zero, 0x100 */
+    ROM_INSN(0x00000000); /* nop */
+
+    ROM_INSN(0xfe000000); /* sd zero, cause(s0) */
+    ROM_INSN(0x240a5a17); /* addiu t2, zero, sentinel */
+    ROM_INSN(0x3c089200); /* lui t0, 0x9200 */
+    ROM_INSN(0x0008403c); /* dsll32 t0, t0, 0 */
+    ROM_INSN(0x3c090240); /* lui t1, 0x0240 */
+    ROM_INSN(0x35290208); /* ori t1, t1, 0x0208 */
+    ROM_INSN(0x01094025); /* or t0, t0, t1 */
+    ROM_INSN(0xdd0a0000); /* ld t2, 0(t0) */
+    ROM_INSN(0xfe0a0008); /* sd t2, result(s0) */
+    ROM_INSN(0x24095a17); /* addiu t1, zero, marker */
+    ROM_INSN(0xfe090010); /* sd t1, marker(s0) */
+    ROM_INSN(0x1000ffff); /* b . */
+    ROM_INSN(0x00000000); /* nop */
+
+    at = 0x100;
+    ROM_INSN(0x1000ffff); /* CPUs other than CPU 4 park here. */
+    ROM_INSN(0x00000000);
+
+    at = 0x380;
+    ROM_INSN(0x403a6800); /* dmfc0 k0, Cause */
+    ROM_INSN(0xfe1a0000); /* sd k0, cause(s0) */
+    ROM_INSN(0x403b7000); /* dmfc0 k1, EPC */
+    ROM_INSN(0x677b0004); /* daddiu k1, k1, 4 */
+    ROM_INSN(0x409b7000); /* mtc0 k1, EPC */
+    ROM_INSN(0x42000018); /* eret */
+    ROM_INSN(0x00000000); /* nop */
+
+#undef ROM_INSN
+
+    reset_words[0] = ldl_be_p(image);
+    reset_words[1] = ldl_be_p(image + 4);
+    for (unsigned int node = 0; node < 4; node++) {
+        g_autofree char *pattern = g_strdup_printf(
+            "sn0-origin2000-node%u-pi-error-XXXXXX", node);
+        GError *err = NULL;
+        char *path = NULL;
+        int fd;
+
+        stl_be_p(image, node == 2 ? reset_words[0] : 0x1000ffff);
+        stl_be_p(image + 4, node == 2 ? reset_words[1] : 0);
+        fd = g_file_open_tmp(pattern, &path, &err);
+        g_assert_no_error(err);
+        g_assert_cmpint(fd, >=, 0);
+        g_assert_cmpint(write(fd, image, ORIGIN2000_ROM_SIZE), ==,
+                        ORIGIN2000_ROM_SIZE);
+        g_assert_cmpint(close(fd), ==, 0);
+        g_ptr_array_add(paths, path);
+    }
+    return paths;
+}
+
+static void wait_for_origin2000_marker(QTestState *qts)
+{
+    int64_t deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
+
+    while (g_get_monotonic_time() < deadline) {
+        if (cpu_readq(qts, ORIGIN2000_CPU, ORIGIN2000_MARKER) == MARKER) {
+            return;
+        }
+        g_usleep(1000);
+    }
+    g_error("CPU 4 did not complete the guarded bus-error probe");
+}
+
+static void test_origin2000_probe_is_local_to_issuing_hub(const void *data)
+{
+    g_autoptr(GPtrArray) roms = write_origin2000_probe_roms();
+    uint32_t links_before[8];
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    qts = qtest_initf(
+        "-M origin2000 -smp 8,sockets=4,cores=2 -m 256M "
+        "-drive if=pflash,index=0,file=%s,format=raw "
+        "-drive if=pflash,index=1,file=%s,format=raw "
+        "-drive if=pflash,index=2,file=%s,format=raw "
+        "-drive if=pflash,index=3,file=%s,format=raw "
+        "-accel tcg,thread=multi -no-reboot -no-shutdown -S",
+        (char *)g_ptr_array_index(roms, 0),
+        (char *)g_ptr_array_index(roms, 1),
+        (char *)g_ptr_array_index(roms, 2),
+        (char *)g_ptr_array_index(roms, 3));
+    for (unsigned int node = 0; node < roms->len; node++) {
+        g_unlink(g_ptr_array_index(roms, node));
+    }
+    cpu_writeq(qts, ORIGIN2000_CPU, ORIGIN2000_CAUSE, 0);
+    cpu_writeq(qts, ORIGIN2000_CPU, ORIGIN2000_RESULT, 0);
+    cpu_writeq(qts, ORIGIN2000_CPU, ORIGIN2000_MARKER, 0);
+    for (unsigned int widget = 8; widget <= 15; widget++) {
+        links_before[widget - 8] =
+            cpu_xbow_link_status(qts, ORIGIN2000_CPU, widget);
+        g_assert_cmphex(links_before[widget - 8] & XBOW_LINK_ILLEGAL_DEST,
+                        ==, 0);
+    }
+    qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
+
+    wait_for_origin2000_marker(qts);
+    g_assert_cmphex(cpu_readq(qts, ORIGIN2000_CPU, ORIGIN2000_CAUSE) &
+                    CAUSE_EXCCODE_MASK, ==, CAUSE_EXCCODE_DBE);
+    g_assert_cmphex(cpu_readq(qts, ORIGIN2000_CPU, ORIGIN2000_RESULT), ==,
+                    MARKER);
+    g_assert_cmphex(cpu_readq(qts, ORIGIN2000_CPU,
+                              ORIGIN2000_HUB_LOCAL + PI_ERR_STATUS0_A), ==,
+                    PI_STATUS_EXPECTED);
+    g_assert_cmphex(cpu_readq(qts, ORIGIN2000_CPU,
+                              ORIGIN2000_HUB_LOCAL + PI_ERR_STATUS0_B), ==, 0);
+    g_assert_cmphex(cpu_readq(qts, 0,
+                              ORIGIN2000_HUB_LOCAL + PI_ERR_STATUS0_A), ==, 0);
+    for (unsigned int widget = 8; widget <= 15; widget++) {
+        uint32_t status = cpu_xbow_link_status(qts, ORIGIN2000_CPU, widget);
+
+        g_assert_cmphex(status, ==, links_before[widget - 8]);
+        g_assert_cmphex(status & XBOW_LINK_ILLEGAL_DEST, ==, 0);
+    }
+
+    cpu_writeq(qts, ORIGIN2000_CPU,
+               ORIGIN2000_HUB_LOCAL + PI_ERR_STATUS0_CLR_A, 0);
+    g_assert_cmphex(cpu_readq(qts, ORIGIN2000_CPU,
+                              ORIGIN2000_HUB_LOCAL + PI_ERR_STATUS0_A), ==, 0);
+    qtest_quit(qts);
 }
 
 static void migrate_stopped_vm(QTestState *from, const char *uri)
@@ -468,5 +663,7 @@ int main(int argc, char **argv)
                         test_narrow_probe_access_matches_bridge_alias);
     qtest_add_data_func("sn0/pi-error/reset-clears-both-slices", NULL,
                         test_pi_status_reset_clears_both_slices);
+    qtest_add_data_func("sn0/pi-error/origin2000-local-issuing-hub", NULL,
+                        test_origin2000_probe_is_local_to_issuing_hub);
     return g_test_run();
 }
