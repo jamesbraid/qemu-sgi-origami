@@ -1822,6 +1822,43 @@ static void test_transmit_coalesce_counts_batched_descriptors(const void *data)
     close(sv[0]);
 }
 
+/* An empty producer doorbell must not invent a completed descriptor. */
+static void test_transmit_coalesce_ignores_empty_doorbell(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t got[sizeof(test_frame)];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+    go_operational(qts);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
+
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_TX_MAX_COAL_BD, 2);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_TX_COAL_TICKS, 1000);
+
+    qtest_memwrite(qts, TX_BUF_PHYS, test_frame, sizeof(test_frame));
+    write_rcb_addr(qts, TX_RING_PHYS, TX_BUF_PHYS);
+    qtest_writel(qts, TX_RING_PHYS + 8,
+                 ((uint32_t)sizeof(test_frame) << 16) | TI_BDFLAG_END);
+    qtest_writel(qts, TX_RING_PHYS + 12, 0);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
+    g_assert_cmpuint(net_recv_frame(sv[0], got, sizeof(got)), ==,
+                     sizeof(test_frame));
+    g_assert_false(irq_asserted(qts));
+
+    qtest_clock_step(qts, 500000);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
+    g_assert_false(irq_asserted(qts));
+    qtest_clock_step(qts, 600000);
+    g_assert_true(irq_asserted(qts));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 /*
  * Receive and transmit have distinct coalescing tick/count registers. A long
  * receive batch must not replace a shorter transmit deadline, and publishing
@@ -3056,6 +3093,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/tigon/transmit-coalesce-counts-batched-bds",
                         NULL,
                         test_transmit_coalesce_counts_batched_descriptors);
+    qtest_add_data_func("/sn0/tigon/transmit-coalesce-ignores-empty-doorbell",
+                        NULL, test_transmit_coalesce_ignores_empty_doorbell);
     qtest_add_data_func("/sn0/tigon/interrupt-coalesce-directions-independent",
                         NULL,
                         test_interrupt_coalesce_directions_are_independent);

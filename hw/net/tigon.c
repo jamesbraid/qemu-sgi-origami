@@ -922,7 +922,6 @@ static void tigon_tx(TigonState *s, uint32_t prod)
             return;
         }
         s->tx_considx = cons;
-        completed_bds = 1;
     }
     tigon_tx_finish(s, completed_bds);
 }
