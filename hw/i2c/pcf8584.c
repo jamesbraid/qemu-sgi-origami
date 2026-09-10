@@ -781,7 +781,8 @@ static const MemoryRegionOps pcf8584_ops = {
 
 /*
  * The chip's slave half: catches broadcasts and directed hits on S0',
- * reported through AAS. No state of its own to migrate.
+ * reported through AAS. It adds nothing of its own to what the I2C slave
+ * underneath it already migrates.
  */
 #define TYPE_PCF8584_BCAST_RX "pcf8584-broadcast-rx"
 OBJECT_DECLARE_SIMPLE_TYPE(PCF8584BcastRxState, PCF8584_BCAST_RX)
@@ -929,10 +930,29 @@ static void pcf8584_bcast_rx_wire_address(I2CSlave *dev, uint8_t address_byte)
     pcf8584_observe_address(s, address_byte);
 }
 
+/*
+ * The endpoint carries no state of its own worth moving; what it must move
+ * is the I2C slave underneath it. A shared wire finishes loading only once
+ * every slave on the bus has restored, counted by their post-load hooks, and
+ * a slave with no migration state runs none: the count would never complete,
+ * and the wire would come up on the destination with its clock stopped.
+ */
+static const VMStateDescription vmstate_pcf8584_bcast_rx = {
+    .name = "pcf8584-broadcast-rx",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_I2C_SLAVE(parent_obj, PCF8584BcastRxState),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static void pcf8584_bcast_rx_class_init(ObjectClass *klass, const void *data)
 {
     I2CSlaveClass *sc = I2C_SLAVE_CLASS(klass);
+    DeviceClass *dc = DEVICE_CLASS(klass);
 
+    dc->vmsd = &vmstate_pcf8584_bcast_rx;
     sc->supports_master_ids = true;
     sc->match_and_add = pcf8584_bcast_rx_match_and_add;
     sc->event = pcf8584_bcast_rx_event;
