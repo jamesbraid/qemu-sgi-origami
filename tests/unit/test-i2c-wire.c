@@ -141,7 +141,7 @@ static void advance_to(int64_t time)
     g_assert_cmpint(qemu_clock_advance_virtual_time(time), ==, time);
 }
 
-static void setup(Fixture *f, gconstpointer unused)
+static void setup_masters(Fixture *f, unsigned master_count)
 {
     f->host = qdev_new(TYPE_WIRE_HOST);
     qdev_realize(f->host, NULL, &error_abort);
@@ -151,10 +151,24 @@ static void setup(Fixture *f, gconstpointer unused)
     ((TestSlave *)f->a)->hold_service = I2C_WIRE_SERVICE_COUNT;
     ((TestSlave *)f->b)->hold_service = I2C_WIRE_SERVICE_COUNT;
     f->events = g_array_new(false, false, sizeof(I2CWireEvent));
-    g_assert_cmpint(i2c_bus_enable_wire(f->bus, 2, observe, f, &error_abort),
-                    ==, 0);
+    g_assert_cmpint(i2c_bus_enable_wire(f->bus, master_count, observe, f,
+                                        &error_abort),
+                     ==, 0);
     g_assert_cmpint(i2c_wire_configure(f->bus, 0, 5, 7, false), ==, 0);
     g_assert_cmpint(i2c_wire_configure(f->bus, 1, 9, 3, false), ==, 0);
+    if (master_count == 3) {
+        g_assert_cmpint(i2c_wire_configure(f->bus, 2, 7, 4, false), ==, 0);
+    }
+}
+
+static void setup(Fixture *f, gconstpointer unused)
+{
+    setup_masters(f, 2);
+}
+
+static void setup_three(Fixture *f, gconstpointer unused)
+{
+    setup_masters(f, 3);
 }
 
 static void teardown(Fixture *f, gconstpointer unused)
@@ -349,6 +363,55 @@ static void test_contender_clock_admission_while_low(Fixture *f,
     g_assert_false(i2c_wire_scl(f->bus));
     advance_to(start + 29);
     g_assert_true(i2c_wire_scl(f->bus));
+}
+
+static void test_contender_clock_admission_at_deadline(
+    Fixture *f, gconstpointer delayed_ptr)
+{
+    int64_t start = virtual_time;
+    unsigned delayed = GPOINTER_TO_UINT(delayed_ptr);
+    unsigned first = delayed ^ 1;
+    int64_t first_low = first ? 9 : 5;
+    const I2CWireEvent *event;
+
+    stage_pair(f, start + 10, false, false);
+    advance_to(start + 10);
+    g_assert_cmpint(i2c_wire_stage(f->bus, first, start + 20,
+                                  false, true), ==, 0);
+    g_assert_cmpint(i2c_wire_stage(f->bus, delayed,
+                                  start + 20 + first_low,
+                                  false, true), ==, 0);
+    advance_to(start + 20);
+    g_assert_false(i2c_wire_scl(f->bus));
+    advance_to(start + 20 + first_low);
+    event = &g_array_index(f->events, I2CWireEvent, f->events->len - 1);
+    g_assert_cmpint(event->error, ==, 0);
+    advance_to(start + 29);
+    g_assert_true(i2c_wire_scl(f->bus));
+}
+
+static void test_contender_clock_admission_preserves_error(
+    Fixture *f, gconstpointer unused)
+{
+    int64_t start = virtual_time;
+    const I2CWireEvent *event;
+
+    g_assert_cmpint(i2c_wire_stage(f->bus, 1, start + 10,
+                                  false, false), ==, 0);
+    g_assert_cmpint(i2c_wire_stage(f->bus, 2, start + 10,
+                                  false, false), ==, 0);
+    advance_to(start + 10);
+    g_assert_cmphex(i2c_wire_contenders(f->bus), ==, 6);
+    g_assert_cmpint(i2c_wire_stage(f->bus, 1, start + 20,
+                                  false, true), ==, 0);
+    g_assert_cmpint(i2c_wire_stage(f->bus, 0, start + 21,
+                                  false, true), ==, 0);
+    g_assert_cmpint(i2c_wire_stage(f->bus, 2, start + 21,
+                                  false, true), ==, 0);
+    advance_to(start + 20);
+    advance_to(start + 21);
+    event = &g_array_index(f->events, I2CWireEvent, f->events->len - 1);
+    g_assert_cmpint(event->error, ==, -ENOTSUP);
 }
 
 static void test_inactive_reset(Fixture *f, gconstpointer unused)
@@ -1604,6 +1667,15 @@ int main(int argc, char **argv)
                setup, test_clock_admission_while_low, teardown);
     g_test_add("/i2c-wire/contender-clock-admission-low", Fixture, NULL,
                setup, test_contender_clock_admission_while_low, teardown);
+    g_test_add("/i2c-wire/contender-clock-admission-deadline", Fixture,
+               GUINT_TO_POINTER(1), setup,
+               test_contender_clock_admission_at_deadline, teardown);
+    g_test_add("/i2c-wire/contender-clock-admission-deadline-reversed",
+               Fixture, GUINT_TO_POINTER(0), setup,
+               test_contender_clock_admission_at_deadline, teardown);
+    g_test_add("/i2c-wire/contender-clock-admission-preserves-error",
+               Fixture, NULL, setup_three,
+               test_contender_clock_admission_preserves_error, teardown);
     g_test_add("/i2c-wire/inactive-reset", Fixture, NULL,
                setup, test_inactive_reset, teardown);
     g_test_add("/i2c-wire/migration-low", Fixture, NULL,
