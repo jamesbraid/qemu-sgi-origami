@@ -37,6 +37,13 @@ void sgi_router_latch_local_error(SGIRouterState *s, uint64_t errors);
 void sgi_router_latch_port_error(SGIRouterState *s, unsigned int port,
                                  uint64_t errors);
 
+/* Successful and refused micropacket operations at the fabric boundary. */
+void sgi_router_histogram_receive(SGIRouterState *s, unsigned int port,
+                                  bool accepted, bool queue_empty,
+                                  bool output_uncontended);
+void sgi_router_histogram_send(SGIRouterState *s, unsigned int port,
+                               bool accepted);
+
 /*
  * Resolve carried turns 0 to 5 and look up the outgoing next-turn nibble.
  * The fabric checks physical links and endpoint identity. It consumes next_turn

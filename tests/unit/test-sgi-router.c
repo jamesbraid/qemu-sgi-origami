@@ -65,7 +65,12 @@
 #define GLOBAL_AGE_WRAP        (UINT64_C(0xff) << 28)
 #define GLOBAL_RESET           UINT64_C(0x3fffffe0a01ffff1)
 #define PORT_PARMS_RESET       UINT64_C(0x1bf0)
+#define PORT_HISTOGRAM_MODE(mode) ((uint64_t)(mode) << 18)
+#define PORT_HISTOGRAM_VC(vc)     ((uint64_t)(vc) << 16)
+#define PORT_HISTOGRAM_FIELDS     UINT64_C(0xf0000)
 #define PORT_ERROR_MASK        UINT64_C(0x3ffffffff)
+#define DIAG_ABSOLUTE_HISTOGRAM (UINT64_C(1) << 19)
+#define HISTOGRAM_TICK_NS      20
 #define NIC_DIVIDERS_RESET     ((UINT64_C(0x31) << 27) | \
                                 (UINT64_C(0x31) << 20))
 #define NIC_DONE               (UINT64_C(1) << 1)
@@ -140,6 +145,21 @@ static void write_reg(Fixture *f, unsigned int port, uint64_t addr,
 {
     g_assert_true(access_reg(f->router, port, SN0_FABRIC_VECTOR_WRITE,
                              addr, value, NULL));
+}
+
+static void select_histogram(Fixture *f, unsigned int port,
+                             unsigned int mode, unsigned int vc)
+{
+    uint64_t parms = read_reg(f, 1, RR_PORT_PARMS(port));
+
+    write_reg(f, 1, RR_PORT_PARMS(port),
+              (parms & ~PORT_HISTOGRAM_FIELDS) |
+              PORT_HISTOGRAM_MODE(mode) | PORT_HISTOGRAM_VC(vc));
+}
+
+static uint16_t histogram_bucket(uint64_t histogram, unsigned int bucket)
+{
+    return extract64(histogram, bucket * 16, 16);
 }
 
 typedef struct Observer {
@@ -374,6 +394,213 @@ static void test_error_clear_addresses(Fixture *f, gconstpointer unused)
                     UINT64_C(0xa) << 24);
 }
 
+static void test_histogram_event_boundaries(Fixture *f,
+                                            gconstpointer unused)
+{
+    select_histogram(f, 1, 1, 0);
+
+    sgi_router_histogram_receive(f->router, 1, false, true, true);
+    sgi_router_histogram_receive(f->router, 1, true, false, true);
+    sgi_router_histogram_receive(f->router, 1, true, true, false);
+    sgi_router_histogram_receive(f->router, 1, true, true, true);
+    sgi_router_histogram_send(f->router, 1, false);
+    sgi_router_histogram_send(f->router, 1, true);
+
+    g_assert_cmphex(read_reg(f, 1, RR_HISTOGRAM(1)), ==,
+                    UINT64_C(0x0000000100030001));
+    g_assert_cmphex(read_reg(f, 1, RR_HISTOGRAM(2)), ==, 0);
+}
+
+static void test_histogram_clear(Fixture *f, gconstpointer unused)
+{
+    uint64_t before;
+    uint64_t clear = UINT64_C(0x0000000100010001);
+
+    select_histogram(f, 1, 1, 0);
+    select_histogram(f, 6, 1, 0);
+    for (unsigned int i = 0; i < 3; i++) {
+        sgi_router_histogram_receive(f->router, 1, true, i < 1, true);
+        sgi_router_histogram_send(f->router, 1, true);
+    }
+    sgi_router_histogram_receive(f->router, 6, true, true, true);
+    sgi_router_histogram_receive(f->router, 6, true, true, true);
+
+    g_assert_cmphex(read_reg(f, 1, RR_HISTOGRAM(1)), ==,
+                    UINT64_C(0x0000000300030001));
+    g_assert_cmphex(read_reg(f, 1, RR_HISTOGRAM(6)), ==,
+                    UINT64_C(0x0000000000020002));
+    write_reg(f, 1, RR_HISTOGRAM(1), 0);
+    g_assert_cmphex(read_reg(f, 1, RR_HISTOGRAM(1)), ==, 0);
+    g_assert_cmphex(read_reg(f, 1, RR_HISTOGRAM(6)), ==,
+                    UINT64_C(0x0000000000020002));
+
+    for (unsigned int i = 0; i < 5; i++) {
+        sgi_router_histogram_receive(f->router, 1, true, i < 3, true);
+    }
+    for (unsigned int i = 0; i < 7; i++) {
+        sgi_router_histogram_send(f->router, 1, true);
+    }
+    before = read_reg(f, 1, RR_HISTOGRAM(1));
+    g_assert_cmphex(before, ==, UINT64_C(0x0000000700050003));
+    write_reg(f, 1, RR_HISTOGRAM(1), clear);
+    g_assert_cmphex(read_reg(f, 1, RR_HISTOGRAM(1)), ==, before & ~clear);
+    g_assert_cmphex(read_reg(f, 1, RR_HISTOGRAM(6)), ==,
+                    UINT64_C(0x0000000000020002));
+}
+
+static void test_histogram_timebase_and_phase(Fixture *f,
+                                              gconstpointer unused)
+{
+    int64_t start = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    select_histogram(f, 1, 1, 0);
+    select_histogram(f, 6, 1, 0);
+    qemu_clock_advance_virtual_time(start + 19);
+    g_assert_cmphex(read_reg(f, 1, RR_HISTOGRAM(1)), ==, 0);
+    qemu_clock_advance_virtual_time(start + 60);
+    g_assert_cmpuint(histogram_bucket(read_reg(f, 1, RR_HISTOGRAM(1)), 3),
+                     ==, 3);
+    g_assert_cmpuint(histogram_bucket(read_reg(f, 1, RR_HISTOGRAM(6)), 3),
+                     ==, 3);
+    g_usleep(1000);
+    g_assert_cmpuint(histogram_bucket(read_reg(f, 1, RR_HISTOGRAM(1)), 3),
+                     ==, 3);
+
+    select_histogram(f, 1, 0, 0);
+    qemu_clock_advance_virtual_time(start + 75);
+    select_histogram(f, 1, 1, 0);
+    sgi_router_set_port_link(f->router, 1, false, false);
+    write_reg(f, 1, RR_DIAG_PARMS, UINT64_C(1) << 6);
+    qemu_clock_advance_virtual_time(start + 79);
+    g_assert_cmpuint(histogram_bucket(read_reg(f, 1, RR_HISTOGRAM(1)), 3),
+                     ==, 3);
+    qemu_clock_advance_virtual_time(start + 80);
+    g_assert_cmpuint(histogram_bucket(read_reg(f, 1, RR_HISTOGRAM(1)), 3),
+                     ==, 4);
+    qemu_clock_advance_virtual_time(start + 123);
+    g_assert_cmpuint(histogram_bucket(read_reg(f, 1, RR_HISTOGRAM(1)), 3),
+                     ==, 6);
+    g_assert_cmpuint(histogram_bucket(read_reg(f, 1, RR_HISTOGRAM(6)), 3),
+                     ==, 6);
+}
+
+static void test_histogram_unsupported_modes(Fixture *f,
+                                             gconstpointer unused)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    uint64_t before;
+
+    select_histogram(f, 2, 1, 0);
+    sgi_router_histogram_receive(f->router, 2, true, true, true);
+    sgi_router_histogram_send(f->router, 2, true);
+    qemu_clock_advance_virtual_time(now + 40);
+    before = read_reg(f, 1, RR_HISTOGRAM(2));
+
+    select_histogram(f, 2, 0, 2);
+    sgi_router_histogram_receive(f->router, 2, true, true, true);
+    sgi_router_histogram_send(f->router, 2, true);
+    qemu_clock_advance_virtual_time(now + 80);
+    g_assert_cmphex(read_reg(f, 1, RR_HISTOGRAM(2)), ==, before);
+    g_assert_cmphex(read_reg(f, 1, RR_PORT_PARMS(2)) &
+                    PORT_HISTOGRAM_FIELDS, ==, PORT_HISTOGRAM_VC(2));
+
+    select_histogram(f, 2, 2, 3);
+    sgi_router_histogram_receive(f->router, 2, true, true, true);
+    sgi_router_histogram_send(f->router, 2, true);
+    qemu_clock_advance_virtual_time(now + 120);
+    g_assert_cmphex(read_reg(f, 1, RR_HISTOGRAM(2)), ==, before);
+    g_assert_cmphex(read_reg(f, 1, RR_PORT_PARMS(2)) &
+                    PORT_HISTOGRAM_FIELDS, ==,
+                    PORT_HISTOGRAM_MODE(2) | PORT_HISTOGRAM_VC(3));
+
+    select_histogram(f, 2, 3, 1);
+    sgi_router_histogram_receive(f->router, 2, true, true, true);
+    sgi_router_histogram_send(f->router, 2, true);
+    qemu_clock_advance_virtual_time(now + 160);
+    g_assert_cmphex(read_reg(f, 1, RR_HISTOGRAM(2)), ==, before);
+
+    select_histogram(f, 2, 1, 1);
+    write_reg(f, 1, RR_DIAG_PARMS, DIAG_ABSOLUTE_HISTOGRAM);
+    sgi_router_histogram_receive(f->router, 2, true, true, true);
+    sgi_router_histogram_send(f->router, 2, true);
+    qemu_clock_advance_virtual_time(now + 200);
+    g_assert_cmphex(read_reg(f, 1, RR_HISTOGRAM(2)), ==, before);
+    g_assert_cmphex(read_reg(f, 1, RR_DIAG_PARMS) &
+                    DIAG_ABSOLUTE_HISTOGRAM, ==,
+                    DIAG_ABSOLUTE_HISTOGRAM);
+    write_reg(f, 1, RR_HISTOGRAM(2), 0);
+    g_assert_cmphex(read_reg(f, 1, RR_HISTOGRAM(2)), ==, 0);
+}
+
+static void test_histogram_common_rescale(Fixture *f,
+                                          gconstpointer unused)
+{
+    const uint64_t expected[] = {
+        UINT64_C(0x0004000300038000),
+        UINT64_C(0x0004000380000001),
+        UINT64_C(0x0004800000020001),
+        UINT64_C(0x8000000300020001),
+    };
+
+    for (unsigned int overflowing = 0; overflowing < 4; overflowing++) {
+        int64_t start;
+        uint64_t before;
+
+        device_cold_reset(f->dev);
+        start = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        select_histogram(f, 1, 1, 0);
+        if (overflowing != 3) {
+            qemu_clock_advance_virtual_time(start + 9 * HISTOGRAM_TICK_NS);
+        }
+
+        if (overflowing == 0) {
+            for (unsigned int i = 0; i < 0xffff; i++) {
+                sgi_router_histogram_receive(f->router, 1, true, true, true);
+            }
+            write_reg(f, 1, RR_HISTOGRAM(1),
+                      (UINT64_C(0xffff) ^ 5) << 16);
+        } else {
+            for (unsigned int i = 0; i < 3; i++) {
+                sgi_router_histogram_receive(f->router, 1, true, true, true);
+            }
+            for (unsigned int i = 3;
+                 i < (overflowing == 1 ? 0xffff : 5); i++) {
+                sgi_router_histogram_receive(f->router, 1, true, false, true);
+            }
+        }
+        for (unsigned int i = 0;
+             i < (overflowing == 2 ? 0xffff : 7); i++) {
+            sgi_router_histogram_send(f->router, 1, true);
+        }
+        if (overflowing == 3) {
+            qemu_clock_advance_virtual_time(
+                start + UINT64_C(0xffff) * HISTOGRAM_TICK_NS);
+        }
+
+        before = read_reg(f, 1, RR_HISTOGRAM(1));
+        g_assert_cmpuint(histogram_bucket(before, overflowing), ==, 0xffff);
+        switch (overflowing) {
+        case 0:
+            sgi_router_histogram_receive(f->router, 1, true, true, true);
+            break;
+        case 1:
+            sgi_router_histogram_receive(f->router, 1, true, false, true);
+            break;
+        case 2:
+            sgi_router_histogram_send(f->router, 1, true);
+            break;
+        case 3:
+            qemu_clock_advance_virtual_time(
+                start + UINT64_C(0x10000) * HISTOGRAM_TICK_NS);
+            break;
+        default:
+            g_assert_not_reached();
+        }
+        g_assert_cmphex(read_reg(f, 1, RR_HISTOGRAM(1)), ==,
+                        expected[overflowing]);
+    }
+}
+
 static void test_routing_table_decode(Fixture *f, gconstpointer unused)
 {
     uint64_t value;
@@ -516,8 +743,6 @@ static void test_unsupported_operations_fail(Fixture *f, gconstpointer unused)
 
     g_assert_false(access_reg(f->router, 1, SN0_FABRIC_VECTOR_WRITE,
                               RR_PORT_RESET, 1, NULL));
-    g_assert_false(access_reg(f->router, 1, SN0_FABRIC_VECTOR_WRITE,
-                              RR_HISTOGRAM(1), 0, NULL));
     g_assert_false(access_reg(f->router, 1, SN0_FABRIC_VECTOR_WRITE,
                               RR_NIC_ULAN, UINT64_C(1) << 10, NULL));
     g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN), ==, nic);
@@ -741,6 +966,58 @@ static int load_nic_state(Fixture *source, Fixture *target)
     return result;
 }
 
+static void test_histogram_migration(Fixture *f, gconstpointer unused)
+{
+    int64_t start = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    DeviceState *dev;
+    Fixture target;
+    uint64_t port1;
+    uint64_t port6;
+
+    select_histogram(f, 1, 1, 0);
+    select_histogram(f, 6, 1, 0);
+    for (unsigned int i = 0; i < 5; i++) {
+        sgi_router_histogram_receive(f->router, 1, true, i < 3, true);
+    }
+    for (unsigned int i = 0; i < 7; i++) {
+        sgi_router_histogram_send(f->router, 1, true);
+    }
+    sgi_router_histogram_receive(f->router, 6, true, true, true);
+    sgi_router_histogram_send(f->router, 6, true);
+    qemu_clock_advance_virtual_time(start + 50);
+    port1 = read_reg(f, 1, RR_HISTOGRAM(1));
+    port6 = read_reg(f, 1, RR_HISTOGRAM(6));
+    g_assert_cmphex(port1, ==, UINT64_C(0x0002000700050003));
+    g_assert_cmphex(port6, ==, UINT64_C(0x0002000100010001));
+    select_histogram(f, 6, 2, 3);
+    write_reg(f, 1, RR_DIAG_PARMS, DIAG_ABSOLUTE_HISTOGRAM);
+
+    dev = new_router(0xf);
+    target = (Fixture) { dev, SGI_ROUTER(dev) };
+    g_usleep(1000);
+    g_assert_cmpint(load_nic_state(f, &target), ==, 0);
+    g_assert_cmphex(read_reg(&target, 1, RR_HISTOGRAM(1)), ==, port1);
+    g_assert_cmphex(read_reg(&target, 1, RR_HISTOGRAM(6)), ==, port6);
+    g_assert_cmphex(read_reg(&target, 1, RR_PORT_PARMS(1)) &
+                    PORT_HISTOGRAM_FIELDS, ==, PORT_HISTOGRAM_MODE(1));
+    g_assert_cmphex(read_reg(&target, 1, RR_PORT_PARMS(6)) &
+                    PORT_HISTOGRAM_FIELDS, ==,
+                    PORT_HISTOGRAM_MODE(2) | PORT_HISTOGRAM_VC(3));
+    g_assert_cmphex(read_reg(&target, 1, RR_DIAG_PARMS) &
+                    DIAG_ABSOLUTE_HISTOGRAM, ==,
+                    DIAG_ABSOLUTE_HISTOGRAM);
+
+    write_reg(&target, 1, RR_DIAG_PARMS, 0);
+    qemu_clock_advance_virtual_time(start + 59);
+    g_assert_cmphex(read_reg(&target, 1, RR_HISTOGRAM(1)), ==, port1);
+    qemu_clock_advance_virtual_time(start + 60);
+    g_assert_cmpuint(
+        histogram_bucket(read_reg(&target, 1, RR_HISTOGRAM(1)), 3), ==, 3);
+
+    object_unparent(OBJECT(dev));
+    object_unref(OBJECT(dev));
+}
+
 static void test_nic_migration_config(Fixture *f, gconstpointer unused)
 {
     const uint64_t clocks[] = { 97500000, 100000000, 100000000 };
@@ -827,6 +1104,7 @@ static void test_nic_migration_invalid(Fixture *f, gconstpointer unused)
 
 static void test_cold_reset(Fixture *f, gconstpointer unused)
 {
+    int64_t reset_time;
     unsigned int exit_port;
     uint8_t next_turn;
 
@@ -836,12 +1114,23 @@ static void test_cold_reset(Fixture *f, gconstpointer unused)
     write_reg(f, 1, RR_META_TABLE(7), 0x654321);
     sgi_router_set_port_link(f->router, 3, true, true);
     sgi_router_latch_port_error(f->router, 3, 0x1234);
+    select_histogram(f, 1, 1, 3);
+    sgi_router_histogram_receive(f->router, 1, true, true, true);
+    write_reg(f, 1, RR_DIAG_PARMS, DIAG_ABSOLUTE_HISTOGRAM);
+    qemu_clock_advance_virtual_time(
+        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + HISTOGRAM_TICK_NS - 1);
     qemu_devices_reset(RESET_TYPE_COLD);
+    reset_time = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
     g_assert_cmphex(read_reg(f, 1, RR_SCRATCH_REG0), ==, 0);
     g_assert_cmphex(read_reg(f, 1, RR_PROTECTION_CONFIG), ==,
                     PROTECTION_RESET);
     g_assert_cmphex(read_reg(f, 1, RR_STATUS_ERROR(3)), ==, 0);
+    g_assert_cmphex(read_reg(f, 1, RR_HISTOGRAM(1)), ==, 0);
+    g_assert_cmphex(read_reg(f, 1, RR_PORT_PARMS(1)), ==,
+                    PORT_PARMS_RESET);
+    g_assert_cmphex(read_reg(f, 1, RR_DIAG_PARMS) &
+                    DIAG_ABSOLUTE_HISTOGRAM, ==, 0);
     g_assert_cmphex(read_reg(f, 1, RR_STATUS_REV_ID) &
                     (STATUS_PORT_WORKING(3) | STATUS_PORT_EIGHT_BIT(3)), ==, 0);
     /* Undefined table contents must not retain programmed-route validity. */
@@ -851,6 +1140,13 @@ static void test_cold_reset(Fixture *f, gconstpointer unused)
     write_reg(f, 1, RR_PROTECTION_CONFIG, UINT64_C(1) << 11);
     g_assert_false(sgi_router_route(f->router, 1, 2, 0x70,
                                     &exit_port, &next_turn));
+
+    select_histogram(f, 1, 1, 0);
+    qemu_clock_advance_virtual_time(reset_time + HISTOGRAM_TICK_NS - 1);
+    g_assert_cmphex(read_reg(f, 1, RR_HISTOGRAM(1)), ==, 0);
+    qemu_clock_advance_virtual_time(reset_time + HISTOGRAM_TICK_NS);
+    g_assert_cmphex(read_reg(f, 1, RR_HISTOGRAM(1)), ==,
+                    UINT64_C(1) << 48);
 }
 
 static void test_init_machine(void)
@@ -877,6 +1173,7 @@ int main(int argc, char **argv)
     ADD_TEST("nic-delayed-callback", test_nic_delayed_callback);
     ADD_TEST("nic-migration-config", test_nic_migration_config);
     ADD_TEST("nic-migration-invalid", test_nic_migration_invalid);
+    ADD_TEST("histogram-migration", test_histogram_migration);
     ADD_TEST("nic-slot-deadline", test_nic_slot_deadline);
     ADD_TEST("identity-and-link-state", test_identity_and_link_state);
     ADD_TEST("fabric-access-boundary", test_fabric_access_boundary);
@@ -884,6 +1181,13 @@ int main(int argc, char **argv)
     ADD_TEST("register-storage-masks", test_register_storage_masks);
     ADD_TEST("conditional-exchange", test_conditional_exchange);
     ADD_TEST("error-clear-addresses", test_error_clear_addresses);
+    ADD_TEST("histogram-event-boundaries", test_histogram_event_boundaries);
+    ADD_TEST("histogram-clear", test_histogram_clear);
+    ADD_TEST("histogram-timebase-and-phase",
+             test_histogram_timebase_and_phase);
+    ADD_TEST("histogram-unsupported-modes",
+             test_histogram_unsupported_modes);
+    ADD_TEST("histogram-common-rescale", test_histogram_common_rescale);
     ADD_TEST("routing-table-decode", test_routing_table_decode);
     ADD_TEST("valid-route-lookup", test_valid_route_lookup);
     ADD_TEST("next-turn-consumption", test_next_turn_consumption);
