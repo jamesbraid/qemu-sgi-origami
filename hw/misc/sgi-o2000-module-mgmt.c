@@ -715,6 +715,8 @@ static void mgmt_init(Object *obj)
     qdev_prop_set_bit(DEVICE(s->msc), "arbitration", false);
     i2c_slave_set_address(I2C_SLAVE(s->msc), SGI_O2000_MSC_ADDRESS);
     object_property_add_alias(obj, "chardev", OBJECT(s->msc), "chardev");
+    object_property_add_alias(obj, "dip-switches", OBJECT(s->msc),
+                              "dip-switches");
 
     qdev_init_gpio_out_named(DEVICE(obj), &s->reset_out, "reset", 1);
     qdev_init_gpio_out_named(DEVICE(obj), &s->nmi_out, "nmi", 1);
