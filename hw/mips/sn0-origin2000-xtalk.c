@@ -107,6 +107,15 @@ struct SN0Origin2000XtalkState {
 
 static ObjectUnparent *parent_unparent;
 
+static SN0NodeState *sn0_origin2000_xtalk_node(SN0MachineState *machine,
+                                               unsigned int descriptor_index)
+{
+    const SN0ModelPhysicalNode *physical =
+        &machine->composition->nodes[descriptor_index];
+
+    return machine->nodes[physical->slot - 1];
+}
+
 /*
  * Fault injection, built only where the fixture machines that drive it are.
  * The two setters below are the only way in, so an assembly built without
@@ -604,7 +613,8 @@ static void sn0_origin2000_xtalk_cleanup_attach(SN0Origin2000XtalkState *s,
             memory_region_del_subregion(&source->packet_proxy,
                                         &source->packet_alias);
             memory_region_set_enabled(&source->packet_proxy, false);
-            memory_region_del_subregion(&s->machine->nodes[i]->xtalk,
+            memory_region_del_subregion(&sn0_origin2000_xtalk_node(
+                                            s->machine, i)->xtalk,
                                         &source->cpu_alias);
             source->bound = false;
         }
@@ -717,10 +727,12 @@ static void sn0_origin2000_xtalk_cleanup(SN0Origin2000XtalkState *s)
          * of a machine that never finished being built, and unlinks cleanly.
          */
         if (source->linked) {
-            if (DEVICE(&s->machine->nodes[i]->hub)->realized) {
+            SN0NodeState *node = sn0_origin2000_xtalk_node(s->machine, i);
+
+            if (DEVICE(&node->hub)->realized) {
                 s->faces_kept = true;
             } else {
-                object_property_set_link(OBJECT(&s->machine->nodes[i]->hub),
+                object_property_set_link(OBJECT(&node->hub),
                                          "xtalk-io", NULL, &error_abort);
                 source->linked = false;
             }
@@ -782,9 +794,10 @@ bool sn0_origin2000_xtalk_prepare(SN0MachineState *machine, Error **errp)
         return false;
     }
     for (i = 0; i < model->node_count; i++) {
-        if (!machine->nodes[i] ||
-            machine->nodes[i]->physical != &model->nodes[i] ||
-            DEVICE(&machine->nodes[i]->hub)->realized) {
+        SN0NodeState *node = sn0_origin2000_xtalk_node(machine, i);
+
+        if (!node || node->physical != &model->nodes[i] ||
+            DEVICE(&node->hub)->realized) {
             error_setg(errp, "Origin 2000 Crosstalk node %zu is not prepared",
                        i);
             return false;
@@ -804,14 +817,15 @@ bool sn0_origin2000_xtalk_prepare(SN0MachineState *machine, Error **errp)
         g_autofree char *name =
             g_strdup_printf("node%zu-packet-proxy", i);
         SN0Origin2000XtalkSource *source = &s->source[i];
+        SN0NodeState *node = sn0_origin2000_xtalk_node(machine, i);
 
         memory_region_init(&source->packet_proxy, OBJECT(s), name,
                            ORIGIN2000_PACKET_SIZE);
         memory_region_set_enabled(&source->packet_proxy, false);
         if (!sn0_origin2000_hub_outgoing_io_init(
-                &source->outgoing, OBJECT(s), machine->nodes[i],
+                &source->outgoing, OBJECT(s), node,
                 &source->packet_proxy, errp) ||
-            !object_property_set_link(OBJECT(&machine->nodes[i]->hub),
+            !object_property_set_link(OBJECT(&node->hub),
                                       "xtalk-io",
                                       OBJECT(&source->outgoing.face), errp)) {
             sn0_origin2000_xtalk_destroy(machine);
@@ -873,7 +887,9 @@ bool sn0_origin2000_xtalk_attach(SN0MachineState *machine, Error **errp)
      * unwind that has nothing to undo.
      */
     for (i = 0; i < model->node_count; i++) {
-        if (!DEVICE(&machine->nodes[i]->hub)->realized) {
+        SN0NodeState *node = sn0_origin2000_xtalk_node(machine, i);
+
+        if (!DEVICE(&node->hub)->realized) {
             error_setg(errp, "Origin 2000 Crosstalk node %zu is not realized",
                        i);
             return false;
@@ -883,6 +899,8 @@ bool sn0_origin2000_xtalk_attach(SN0MachineState *machine, Error **errp)
     for (i = 0; i < model->xtalk_attachment_count; i++) {
         const SN0ModelXtalkAttachment *attachment =
             &model->xtalk_attachments[i];
+        SN0NodeState *node = sn0_origin2000_xtalk_node(
+            machine, attachment->node_index);
         SN0Origin2000XtalkDestination *destination =
             &s->destination[attachment->node_index];
         SGIXbowState *crossbow = s->crossbow[attachment->crossbow_index];
@@ -900,7 +918,7 @@ bool sn0_origin2000_xtalk_attach(SN0MachineState *machine, Error **errp)
 
             if (!sn0_origin2000_hub_io_init(
                     &destination->inbound, OBJECT(s),
-                    machine->nodes[attachment->node_index], errp)) {
+                    node, errp)) {
                 goto unwind;
             }
             memory_region_init_io(&destination->cpu_refusal, OBJECT(s),
@@ -942,6 +960,8 @@ bool sn0_origin2000_xtalk_attach(SN0MachineState *machine, Error **errp)
     for (i = 0; i < model->xtalk_attachment_count; i++) {
         const SN0ModelXtalkAttachment *attachment =
             &model->xtalk_attachments[i];
+        SN0NodeState *node = sn0_origin2000_xtalk_node(
+            machine, attachment->node_index);
         SN0Origin2000XtalkSource *source = &s->source[attachment->node_index];
         SGIXbowState *crossbow = s->crossbow[attachment->crossbow_index];
         MemoryRegion *packet = sgi_xbow_packet_ingress(crossbow,
@@ -968,8 +988,7 @@ bool sn0_origin2000_xtalk_attach(SN0MachineState *machine, Error **errp)
                                     &source->packet_alias);
         memory_region_init_alias(&source->cpu_alias, OBJECT(s), cpu_name, cpu,
                                  0, memory_region_size(cpu));
-        memory_region_add_subregion(&machine->nodes[attachment->node_index]
-                                    ->xtalk, 0, &source->cpu_alias);
+        memory_region_add_subregion(&node->xtalk, 0, &source->cpu_alias);
         source->initialized = true;
         source->bound = true;
         memory_region_set_enabled(&source->packet_proxy, true);
