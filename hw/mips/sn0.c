@@ -1675,6 +1675,16 @@ static void sn0_node_instance_init(Object *obj)
                                       NULL, NULL, 0);
 }
 
+static void sn0_node_unrealize(DeviceState *dev)
+{
+    SN0NodeState *node = SN0_NODE(dev);
+
+    if (node->origin2000_xtalk_as_ready) {
+        address_space_destroy(&node->origin2000_xtalk_as);
+        node->origin2000_xtalk_as_ready = false;
+    }
+}
+
 static const Property sn0_node_properties[] = {
     DEFINE_PROP_UINT32("nasid", SN0NodeState, nasid, 0),
     DEFINE_PROP_UINT32("cpu-base", SN0NodeState, cpu_base, 0),
@@ -1700,6 +1710,7 @@ static void sn0_node_class_init(ObjectClass *oc, const void *data)
     DeviceClass *dc = DEVICE_CLASS(oc);
 
     dc->realize = sn0_node_realize;
+    dc->unrealize = sn0_node_unrealize;
     dc->vmsd = &vmstate_sn0_flash;
     device_class_set_props(dc, sn0_node_properties);
     /* The machine wires a node's RAM, clock and Hub; -device cannot. */

@@ -39,6 +39,7 @@
 #define ORIGIN2000_RESULT      0x50008
 #define ORIGIN2000_MARKER      0x50010
 #define ORIGIN2000_HUB_LOCAL   0x20001000000ULL
+#define ORIGIN2000_XBOW_LINK   10
 
 #define HUB_LOCAL              0x20001000000ULL
 #define WIDGET2_PROBE          0x20002400208ULL
@@ -71,7 +72,9 @@
 #define XBOW_REG_DATA          4
 #define XBOW_LINK(widget)      (0x100 + ((widget) - 8) * 0x40)
 #define XBOW_LINK_STATUS       0x10
+#define XBOW_LINK_STATUS_CLR   0x28
 #define XBOW_LINK_ILLEGAL_DEST (1u << 17)
+#define XBOW_LINK_MULTIPLE_ERR (1u << 18)
 
 static void put_insn(uint8_t *image, unsigned int at, uint32_t insn)
 {
@@ -270,15 +273,42 @@ static void cpu_writeq(QTestState *qts, unsigned int cpu, uint64_t addr,
     g_assert_true(qtest_memwrite_cpu(qts, cpu, addr, bytes, sizeof(bytes)));
 }
 
-static uint32_t cpu_xbow_link_status(QTestState *qts, unsigned int cpu,
-                                     unsigned int widget)
+static uint32_t cpu_xbow_link_reg(QTestState *qts, unsigned int cpu,
+                                  unsigned int widget, unsigned int reg)
 {
     uint8_t bytes[4];
     uint64_t addr = XTALK_BASE + XBOW_LINK(widget) +
-                    XBOW_LINK_STATUS + XBOW_REG_DATA;
+                    reg + XBOW_REG_DATA;
 
     g_assert_true(qtest_memread_cpu(qts, cpu, addr, bytes, sizeof(bytes)));
     return ldl_be_p(bytes);
+}
+
+static uint32_t cpu_xbow_link_status(QTestState *qts, unsigned int cpu,
+                                     unsigned int widget)
+{
+    return cpu_xbow_link_reg(qts, cpu, widget, XBOW_LINK_STATUS);
+}
+
+static void assert_origin2000_widget2_report(QTestState *qts,
+                                             const uint32_t before[8])
+{
+    for (unsigned int widget = 8; widget <= 15; widget++) {
+        uint32_t status = cpu_xbow_link_status(qts, ORIGIN2000_CPU, widget);
+        uint32_t expected = before[widget - 8];
+
+        if (widget == ORIGIN2000_XBOW_LINK) {
+            expected |= XBOW_LINK_ILLEGAL_DEST;
+        }
+        g_assert_cmphex(status, ==, expected);
+        g_assert_cmphex(status & XBOW_LINK_MULTIPLE_ERR, ==, 0);
+    }
+    (void)cpu_xbow_link_reg(qts, ORIGIN2000_CPU, ORIGIN2000_XBOW_LINK,
+                            XBOW_LINK_STATUS_CLR);
+    for (unsigned int widget = 8; widget <= 15; widget++) {
+        g_assert_cmphex(cpu_xbow_link_status(qts, ORIGIN2000_CPU, widget),
+                        ==, before[widget - 8]);
+    }
 }
 
 static GPtrArray *write_origin2000_probe_roms(void)
@@ -376,6 +406,8 @@ static void wait_for_origin2000_marker(QTestState *qts)
 static void test_origin2000_probe_is_local_to_issuing_hub(const void *data)
 {
     g_autoptr(GPtrArray) roms = write_origin2000_probe_roms();
+    const uint8_t write_data[4] = { 0x11, 0x22, 0x33, 0x44 };
+    uint8_t read_data[4];
     uint32_t links_before[8];
     QTestState *qts;
 
@@ -406,7 +438,19 @@ static void test_origin2000_probe_is_local_to_issuing_hub(const void *data)
             cpu_xbow_link_status(qts, ORIGIN2000_CPU, widget);
         g_assert_cmphex(links_before[widget - 8] & XBOW_LINK_ILLEGAL_DEST,
                         ==, 0);
+        g_assert_cmphex(links_before[widget - 8] & XBOW_LINK_MULTIPLE_ERR,
+                        ==, 0);
     }
+
+    g_assert_true(qtest_memread_cpu(qts, ORIGIN2000_CPU, WIDGET2_PROBE,
+                                    read_data, sizeof(read_data)));
+    assert_origin2000_widget2_report(qts, links_before);
+    g_assert_true(qtest_memwrite_cpu(qts, ORIGIN2000_CPU, WIDGET2_PROBE,
+                                     write_data, sizeof(write_data)));
+    assert_origin2000_widget2_report(qts, links_before);
+    g_assert_true(qtest_memread_cpu(qts, ORIGIN2000_CPU, WIDGET2_PROBE + 1,
+                                    read_data, sizeof(read_data)));
+    assert_origin2000_widget2_report(qts, links_before);
     qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
 
     wait_for_origin2000_marker(qts);
