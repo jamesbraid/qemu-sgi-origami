@@ -9,7 +9,7 @@ mips_ss.add(when: 'CONFIG_MIPS_CPS', if_true: files('cps.c'))
 if 'CONFIG_TCG' in config_all_accel
 mips_ss.add(when: 'CONFIG_JAZZ', if_true: files('jazz.c'))
 # Origami's tools/build-env/qemu-build runs tools/origami model qemu-inputs
-# before configure to produce both sn0-origin*-model.c inputs and the layout.
+# before configure to produce the generated machine inputs and layout.
 mips_ss.add(when: 'CONFIG_SGI_SN0',
             if_true: files('sn0.c', 'sn0-diag.c', 'sn0-fabric.c', 'sn0-firmware.c',
                            'sn0-model.c', 'sn0-model-consumer.c',
