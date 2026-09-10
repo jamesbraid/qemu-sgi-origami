@@ -2076,7 +2076,7 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
      * descriptors on TX_TRAFFIC_INT. Setting device state after the send
      * keeps a synchronous loopback receive from observing a half-updated
      * doorbell, the same ordering the descriptor release above uses.
-    */
+     */
     if (have_first) {
         xframe_traffic_complete(s, false, fifo);
     }
@@ -3103,6 +3103,7 @@ static void xframe_exit(PCIDevice *dev)
 static int xframe_post_load(void *opaque, int version_id)
 {
     XframeState *s = opaque;
+    unsigned i;
 
     /* The cache is local prefetch state, never part of the migration stream. */
     xframe_rx_cache_invalidate(s);
@@ -3145,6 +3146,31 @@ static int xframe_post_load(void *opaque, int version_id)
         s->rx_traffic_mask = 0;
         s->mac_int_mask = 0;
         s->mac_rmac_err_mask = 0;
+    }
+
+    /*
+     * Version 5 saved the traffic memories before the model used them for
+     * interrupt moderation. Retaining those entries would make future
+     * completions on a version 6 destination behave differently from the
+     * immediate interrupts produced by the source.
+     */
+    if (version_id < 6) {
+        s->tti_command = 0;
+        s->tti_data1 = 0;
+        s->tti_data2 = 0;
+        s->rti_command = 0;
+        s->rti_data1 = 0;
+        s->rti_data2 = 0;
+        memset(s->tti_entry_data1, 0, sizeof(s->tti_entry_data1));
+        memset(s->tti_entry_data2, 0, sizeof(s->tti_entry_data2));
+        memset(s->tti_entry_valid, 0, sizeof(s->tti_entry_valid));
+        memset(s->rti_entry_data1, 0, sizeof(s->rti_entry_data1));
+        memset(s->rti_entry_data2, 0, sizeof(s->rti_entry_data2));
+        memset(s->rti_entry_valid, 0, sizeof(s->rti_entry_valid));
+        for (i = 0; i < XFRAME_TRAFFIC_MEM_ENTRIES; i++) {
+            xframe_traffic_batch_reset(&s->tti_batch[i]);
+            xframe_traffic_batch_reset(&s->rti_batch[i]);
+        }
     }
 
     if (s->sched_int_armed && !timer_pending(s->sched_int_timer)) {
