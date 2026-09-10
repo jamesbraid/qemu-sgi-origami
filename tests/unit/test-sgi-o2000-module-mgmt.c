@@ -861,6 +861,86 @@ static void test_migration(Fixture *f, gconstpointer mid_grant)
     close(fd);
 }
 
+/* A grant observed before STOP remains pending across migration. */
+static void test_migration_pending_grant(Fixture *f, gconstpointer unused)
+{
+    g_autofree char *path = NULL;
+    int fd = g_file_open_tmp("test-o2000-module-grant-XXXXXX", &path, NULL);
+    I2CBus *bus = sgi_o2000_module_mgmt_get_bus(f->module);
+    PCF8584State *adapters[SGI_O2000_ADAPTER_COUNT];
+    uint8_t old_data[SGI_O2000_ADAPTER_COUNT];
+    QEMUFile *file;
+    unsigned i, attempts;
+    bool all_pending = false;
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(unlink(path), ==, 0);
+
+    for (i = 0; i < SGI_O2000_ADAPTER_COUNT; i++) {
+        adapters[i] = PCF8584(
+            sgi_o2000_module_mgmt_get_adapter(f->module, i));
+        give_adapter_an_address(f, i, 0x09 + i);
+        pcf8584_write_register(adapters[i], PCF8584_A0_STRIDE,
+                               PCF8584_CTL_PIN | PCF8584_CTL_ESO, 1);
+        old_data[i] = adapters[i]->data;
+    }
+
+    advance_to(f->module->service_deadline + 1);
+    for (attempts = 0; attempts < 500; attempts++) {
+        all_pending = true;
+        for (i = 0; i < SGI_O2000_ADAPTER_COUNT; i++) {
+            all_pending &= adapters[i]->wire_grant_pending;
+        }
+        if (all_pending) {
+            break;
+        }
+        advance_to(virtual_time + 1000);
+    }
+    g_assert_true(all_pending);
+    g_assert_true(i2c_bus_busy(bus));
+    for (i = 0; i < SGI_O2000_ADAPTER_COUNT; i++) {
+        g_assert_cmphex(adapters[i]->data, ==, old_data[i]);
+        g_assert_cmphex(adapters[i]->wire_grant, ==, GRANT_BASE);
+    }
+
+    file = state_file(fd, true);
+    transfer_complex(f, file, true);
+    qemu_put_byte(file, QEMU_VM_EOF);
+    g_assert_cmpint(qemu_fclose(file), ==, 0);
+
+    qemu_devices_reset(RESET_TYPE_COLD);
+    f->probe->addresses = 0;
+    f->probe->last_address = 0;
+
+    file = state_file(fd, false);
+    transfer_complex(f, file, false);
+    g_assert_cmpint(qemu_get_byte(file), ==, QEMU_VM_EOF);
+    g_assert_cmpint(qemu_fclose(file), ==, 0);
+
+    g_assert_true(i2c_bus_busy(bus));
+    for (i = 0; i < SGI_O2000_ADAPTER_COUNT; i++) {
+        g_assert_true(adapters[i]->wire_grant_pending);
+        g_assert_cmphex(adapters[i]->wire_grant, ==, GRANT_BASE);
+        g_assert_cmphex(adapters[i]->data, ==, old_data[i]);
+    }
+
+    advance_to(virtual_time + 200000);
+    g_assert_false(i2c_bus_busy(bus));
+    for (i = 0; i < SGI_O2000_ADAPTER_COUNT; i++) {
+        g_assert_false(adapters[i]->wire_grant_pending);
+        g_assert_cmphex(adapters[i]->data, ==, GRANT_BASE);
+        adapters[i]->data = 0x5a;
+    }
+    /* A cleared pending flag must not publish the saved grant a second time. */
+    advance_to(virtual_time + 100000);
+    for (i = 0; i < SGI_O2000_ADAPTER_COUNT; i++) {
+        g_assert_false(adapters[i]->wire_grant_pending);
+        g_assert_cmphex(adapters[i]->data, ==, 0x5a);
+    }
+    g_assert_cmpuint(f->probe->addresses, ==, 0);
+    close(fd);
+}
+
 static void test_migration_rejects_bad_state(Fixture *f, gconstpointer unused)
 {
     g_autofree char *path = NULL;
@@ -965,6 +1045,8 @@ int main(int argc, char **argv)
                setup, test_migration, teardown);
     g_test_add("/sgi-o2000-module-management/migration-mid-grant", Fixture,
                GUINT_TO_POINTER(1), setup, test_migration, teardown);
+    g_test_add("/sgi-o2000-module-management/migration-pending-grant", Fixture,
+               NULL, setup, test_migration_pending_grant, teardown);
     g_test_add("/sgi-o2000-module-management/migration-rejects-bad-state",
                Fixture, NULL, setup, test_migration_rejects_bad_state,
                teardown);
