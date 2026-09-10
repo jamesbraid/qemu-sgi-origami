@@ -1146,6 +1146,14 @@ static int sgi_xbow_post_load(void *opaque, int version_id)
     if (s->link_alive & ~s->link_present) {
         return -EINVAL;
     }
+    /*
+     * Replaying the level re-drives the edge at the far end, and the
+     * endpoints act on the rising edge. Nothing is connected to these
+     * lines yet, but once a machine wires them, a migration taken inside
+     * the two-cycle pulse will reset that endpoint a second time. Whoever
+     * connects them owns the choice: replay the level as here, or restore
+     * it without re-driving an edge the destination already had.
+     */
     for (link = 0; link < SGI_XBOW_LINKS; link++) {
         qemu_set_irq(s->link_reset[link],
                      !!(s->link_reset_asserted & BIT(link)));
