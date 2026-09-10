@@ -206,7 +206,7 @@ static void l1_send_event(SGIL1State *s, uint32_t code, uint32_t number,
     l1_emit(s, payload, n + length);
 }
 
-static void l1_power_down(SGIL1State *s, uint8_t reason)
+static void l1_power_down(SGIL1State *s, uint8_t reason, bool shutdown)
 {
     const char *source = l1_reasons[reason];
 
@@ -225,7 +225,9 @@ static void l1_power_down(SGIL1State *s, uint8_t reason)
     l1_display_set(s, 1, "Powered Down");
     l1_log(s, "power down (%s)", source);
     qemu_set_irq(s->node_power_out, 0);
-    qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+    if (shutdown) {
+        qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+    }
 }
 
 static void l1_power_up(SGIL1State *s, uint8_t reason, bool restart)
@@ -568,7 +570,7 @@ static bool l1_run_line(SGIL1State *s, const char *text, bool console)
                 own_prompt = true;
             }
         } else if (argc == 2 && l1_word(argv[1], "down", "d")) {
-            l1_power_down(s, 1);
+            l1_power_down(s, 1, true);
         } else if (argc == 2 && !strcmp(argv[1], "check")) {
             l1_printf(s, "power appears %s\r\n", s->node_power ? "on" : "off");
         } else {
@@ -1104,13 +1106,13 @@ static void l1_request(SGIL1State *s)
         break;
     case 0x2005:
         l1_reply(s, channel, 0, 0, NULL, 0);
-        l1_power_down(s, 3);
+        l1_power_down(s, 3, true);
         return;
     case 0x2006:
         l1_reply(s, channel, 0, 0, NULL, 0);
         if (s->node_power) {
             s->power_down_pending = true;
-            l1_power_down(s, 3);
+            l1_power_down(s, 3, false);
         }
         l1_power_up(s, 3, true);
         return;
