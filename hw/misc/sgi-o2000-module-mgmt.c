@@ -102,8 +102,10 @@ static void mgmt_recovery_tick(SGIO2000ModuleMgmtState *s)
 static bool mgmt_stage(SGIO2000ModuleMgmtState *s, bool sda, bool clock,
                        int64_t delay_ns)
 {
+    int64_t at = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + delay_ns;
     int ret = i2c_wire_stage(s->bus, GRANT_MASTER,
-                             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + delay_ns,
+                             MAX(at,
+                                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1),
                              sda, clock);
 
     if (ret) {
