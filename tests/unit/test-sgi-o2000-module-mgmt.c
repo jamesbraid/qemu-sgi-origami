@@ -882,7 +882,8 @@ static void test_migration_pending_grant(Fixture *f, gconstpointer unused)
         give_adapter_an_address(f, i, 0x09 + i);
         pcf8584_write_register(adapters[i], PCF8584_A0_STRIDE,
                                PCF8584_CTL_PIN | PCF8584_CTL_ESO, 1);
-        old_data[i] = adapters[i]->data;
+        old_data[i] = 0x20 + i;
+        pcf8584_write_register(adapters[i], 0, old_data[i], 1);
     }
 
     advance_to(f->module->service_deadline + 1);
@@ -911,6 +912,10 @@ static void test_migration_pending_grant(Fixture *f, gconstpointer unused)
     qemu_devices_reset(RESET_TYPE_COLD);
     f->probe->addresses = 0;
     f->probe->last_address = 0;
+    for (i = 0; i < SGI_O2000_ADAPTER_COUNT; i++) {
+        g_assert_cmphex(adapters[i]->data, ==, 0);
+        g_assert_false(adapters[i]->wire_grant_pending);
+    }
 
     file = state_file(fd, false);
     transfer_complex(f, file, false);
