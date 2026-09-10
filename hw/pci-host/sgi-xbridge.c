@@ -675,8 +675,13 @@ static void xbridge_reset_hold(Object *obj, ResetType type)
     REG(s, 0x80) = 0x20000;
     REG(s, 0xa0) = 0x20008;
     REG(s, 0xc0) = 0x10000;
+    /*
+     * Window bases the specification leaves unset: firmware-sourced, the
+     * stock PROM's sanity diagnostic asserts all eight, the Bridge's layout
+     * of two 2 MB windows then six of 1 MB.
+     */
     for (i = 0; i < 8; i++) {
-        REG(s, 0x200 + i * 8) = 0x18001000;
+        REG(s, 0x200 + i * 8) = 0x18001000 | (i < 2 ? 2 * i : i + 2);
     }
 }
 
