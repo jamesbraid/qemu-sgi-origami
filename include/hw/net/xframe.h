@@ -79,6 +79,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(XframeState, XFRAME)
  * (docs/datasheets/xframe.md's register map).
  */
 #define XFRAME_TXP_FIFOS                8
+#define XFRAME_TRAFFIC_MEM_ENTRIES      8
 
 /*
  * The largest frame the transmit path assembles from a descriptor list -- the
@@ -180,6 +181,20 @@ struct XframeState {
      */
     uint64_t txdl_par[XFRAME_TXP_FIFOS];
     uint64_t tx_traffic_int;    /* TX_TRAFFIC_INT: transmit completion status */
+
+    /* Guest-programmed transmit/receive traffic interrupt memories. */
+    uint64_t tti_command;
+    uint64_t tti_data1;
+    uint64_t tti_data2;
+    uint64_t tti_entry_data1[XFRAME_TRAFFIC_MEM_ENTRIES];
+    uint64_t tti_entry_data2[XFRAME_TRAFFIC_MEM_ENTRIES];
+    bool tti_entry_valid[XFRAME_TRAFFIC_MEM_ENTRIES];
+    uint64_t rti_command;
+    uint64_t rti_data1;
+    uint64_t rti_data2;
+    uint64_t rti_entry_data1[XFRAME_TRAFFIC_MEM_ENTRIES];
+    uint64_t rti_entry_data2[XFRAME_TRAFFIC_MEM_ENTRIES];
+    bool rti_entry_valid[XFRAME_TRAFFIC_MEM_ENTRIES];
 
     /*
      * Scratch for assembling one outgoing frame from a descriptor list, or the
