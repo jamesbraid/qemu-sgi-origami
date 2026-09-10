@@ -1883,6 +1883,51 @@ static void sgi_hub_store_link_status(SGIHubState *s, unsigned arg,
                         (val & IO_LINK_WRITABLE);
 }
 
+/*
+ * The crossbar's per-link reset, arriving on the crosstalk link.
+ *
+ * The published Crossbow specification establishes three effects at this
+ * end and no others: the link-layer transmit buffer is cleared, link-layer
+ * protocol state is reset, and width negotiation restarts. This model
+ * represents none of the three, so the pulse changes nothing and says so
+ * rather than substituting an effect on state the evidence does not reach.
+ *
+ * There is no transmit buffer to empty, because every crosstalk access
+ * this model makes completes before it returns and nothing is ever queued
+ * on the link. There is no link-layer protocol state either -- no running
+ * sequence numbers, retry counters or credits -- and the link log's two counts
+ * are served as zero from a link that commits none. The one field that
+ * would show renegotiation is the link state, and it cannot move: no
+ * reviewed source gives the value it reads while negotiation runs, and
+ * none gives the predicate that ends negotiation, so both the transient
+ * code and the return from it would be invented.
+ *
+ * Nothing else in the link register moves. The maximum burst and retry
+ * counts, the null-packet timeout, the link-enable bit firmware operates
+ * for itself and the warm-reset trigger are programmed configuration,
+ * which is neither the transmit buffer nor protocol state. The contract's
+ * one datum about a link-layer control across this reset says retained:
+ * Crossbow's own force-eight-bit control survives the pulse so software
+ * can pick a mode before negotiation restarts. Unsetting the link-enable
+ * bit would be the most expensive guess available, because a Hub that
+ * reports its crosstalk link down loses the machine quietly.
+ *
+ * The wider I/O interface is not in this at all. Every non-link-layer Hub
+ * reset effect is open.
+ */
+static void sgi_hub_link_reset(void *opaque, int line, int level)
+{
+    if (!level) {
+        return;
+    }
+    qemu_log_mask(LOG_UNIMP,
+                  "sgi-hub: inbound link reset; nothing this model holds "
+                  "changes. No transmit buffer is queued and no link-layer "
+                  "protocol state is represented, and the link state cannot "
+                  "show renegotiation: no reviewed source gives its value "
+                  "while negotiation runs or the predicate that ends it\n");
+}
+
 static void sgi_hub_write_error_clear(SGIHubState *s, hwaddr addr,
                                       unsigned arg, uint64_t val,
                                       unsigned size)
@@ -2998,6 +3043,9 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     qdev_init_gpio_out_named(dev, s->bank_irq[1], "bank1",
                              SGI_HUB_PROCESSORS);
     qdev_init_gpio_out_named(dev, s->rt_irq, "rt", SGI_HUB_PROCESSORS);
+
+    /* One crosstalk link, so one line: what the crossbar drives at us. */
+    qdev_init_gpio_in_named(dev, sgi_hub_link_reset, "link-reset", 1);
 
     s->md_onewire_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                        sgi_hub_onewire_slot_done, s);
