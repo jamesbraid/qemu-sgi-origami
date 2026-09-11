@@ -72,6 +72,9 @@ struct SGIIOC3BusState {
 #define SGI_IOC3_INT_ENABLE_SET 0x20
 #define SGI_IOC3_INT_ENABLE_CLR 0x24
 
+/* The real-time output-pulse source carried on the SuperIO interrupt line. */
+#define SGI_IOC3_INT_RT_OUTPUT_PULSE (1u << 27)
+
 #define SGI_IOC3_CHIP_CONTROL   0x28
 /* Bit 22 is arbiter-idle status, polled by the kernel's console setup. */
 #define SGI_IOC3_CHIP_CTRL_MASK 0x0007ffffu

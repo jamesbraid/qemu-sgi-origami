@@ -201,8 +201,14 @@ static void sgi_ioc3_int_out_expire(void *opaque)
         break;
     case SGI_IOC3_INT_OUT_ONE_SHOT:
         if (!s->int_out_pulse_end) {
+            bool rising = !s->int_out_state;
+
             s->int_out_state = true;
             s->int_out_pulse_end = true;
+            if (rising) {
+                s->int_status |= SGI_IOC3_INT_RT_OUTPUT_PULSE;
+                sgi_ioc3_update_irq(s);
+            }
             timer_mod(s->int_out_timer,
                       qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                       SGI_IOC3_INT_OUT_PULSE_TICKS *
@@ -255,6 +261,12 @@ static bool sgi_ioc3_int_out_command_valid(uint32_t value)
         return false;
     }
     if (mode == SGI_IOC3_INT_OUT_LOW || mode == SGI_IOC3_INT_OUT_HIGH) {
+        return true;
+    }
+    /*
+     * The internal strobe preserves reset count zero and still emits a pulse.
+     */
+    if (mode == SGI_IOC3_INT_OUT_ONE_SHOT && count == 0) {
         return true;
     }
 
