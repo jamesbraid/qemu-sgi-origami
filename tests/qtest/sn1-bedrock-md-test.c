@@ -69,6 +69,17 @@
 #define ECC_LOG_OPTIONS "-d guest_errors,unimp -D "
 #define MEMORY_LOG_OPTIONS "-d guest_errors -D "
 #define MEMORY_DIAGNOSTIC "sgi-bedrock-md: memory "
+#define SELFTEST_DIAGNOSTIC "sgi-bedrock-md: unsupported self-test command"
+
+#define SELFTEST_CONTROL 0x20030
+#define SELFTEST_DATA 0x20038
+#define SELFTEST_ERROR_ADDRESS 0x20040
+#define SELFTEST_STATUS 0x20048
+#define SELFTEST_DIRECTORY_ERROR 0x40058
+#define SELFTEST_MEMORY_ERROR0 0x60020
+#define SELFTEST_INTERVAL_NS 1000
+#define SELFTEST_DONE 2
+#define SELFTEST_PASSED 1
 
 /*
  * Bits 58:56 are write-only in the public definition. Reading them back,
@@ -108,12 +119,12 @@ static const uint64_t protection_bank_bounds[8][2] = {
 };
 
 /*
- * Captured status, self-test results, migration candidates and the LED
- * banks read zero while the model generates no event. A guest write is
- * dropped, so no valid, done or passed bit can come from guest input.
+ * Captured error results, migration candidates and the LED banks read zero
+ * while the model generates no event. A guest write is dropped, so no valid
+ * or error state can come from guest input.
  */
 static const uint64_t policy_zero_registers[] = {
-    0x20, 0x28, 0x20010, 0x20018, 0x20020, 0x20028, 0x20040, 0x20048,
+    0x20, 0x28, 0x20010, 0x20018, 0x20020, 0x20028, 0x20040,
     0x40030, 0x40038, 0x40058, 0x60020, 0x60028, 0x60030, 0x60038,
 };
 
@@ -136,6 +147,25 @@ static QTestState *start_with_memory(const char *size, const char *extra)
 static QTestState *start(const char *extra)
 {
     return start_with_memory("512M", extra);
+}
+
+static void ensure_clock_running(QTestState *s)
+{
+    g_autoptr(QDict) response =
+        qtest_qmp(s, "{'execute':'query-status'}");
+    QDict *status = qdict_get_qdict(response, "return");
+
+    if (!qdict_get_bool(status, "running")) {
+        qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    }
+}
+
+static QTestState *start_clock_with_memory(const char *size, const char *extra)
+{
+    QTestState *s = start_with_memory(size, extra);
+
+    ensure_clock_running(s);
+    return s;
 }
 
 static QTestState *start_parent(void)
@@ -194,6 +224,210 @@ static uint64_t memory_bank_config(unsigned locational_bank,
     uint64_t byte = (size_code << 4) | (1 << (locational_bank & 1));
 
     return byte << shift;
+}
+
+static uint64_t memory_bank_size_config(unsigned locational_bank,
+                                        unsigned size_code)
+{
+    return (uint64_t)size_code << ((locational_bank / 2) * 8 + 4);
+}
+
+static void selftest_start(QTestState *s, unsigned locational_bank,
+                           uint64_t data)
+{
+    qtest_writeq(s, MD(SELFTEST_DATA), data);
+    qtest_writeq(s, MD(SELFTEST_CONTROL), (locational_bank << 4) | 1);
+}
+
+static void assert_selftest_result(const char *memory_size,
+                                   uint64_t memory_config,
+                                   unsigned locational_bank,
+                                   uint64_t expected_status)
+{
+    QTestState *s = start_clock_with_memory(memory_size, "");
+
+    qtest_writeq(s, MD(0x8), memory_config);
+    selftest_start(s, locational_bank, 0x5a);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, 0);
+    qtest_clock_step(s, SELFTEST_INTERVAL_NS - 1);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, 0);
+    qtest_clock_step(s, 1);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==,
+                    expected_status);
+    qtest_quit(s);
+}
+
+static void test_selftest_phases(void)
+{
+    uint64_t config = (UINT64_C(3) << 32) | memory_bank_config(3, 1);
+    QTestState *s = start_clock_with_memory("64M", "");
+
+    qtest_writeq(s, MD(0x8), config);
+    selftest_start(s, 3, 0xda);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_CONTROL)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, 0);
+    qtest_writeq(s, MD(0x8), 0);
+    qtest_clock_step(s, SELFTEST_INTERVAL_NS - 1);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, 0);
+    qtest_clock_step(s, 1);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==,
+                    SELFTEST_DONE | SELFTEST_PASSED);
+
+    qtest_writeq(s, MD(0x8), config);
+    selftest_start(s, 3, 0x5a);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, 0);
+    qtest_clock_step(s, SELFTEST_INTERVAL_NS);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==,
+                    SELFTEST_DONE | SELFTEST_PASSED);
+    qtest_quit(s);
+}
+
+static void test_selftest_negative_carriers(void)
+{
+    assert_selftest_result("64M", 0, 1, SELFTEST_DONE);
+    assert_selftest_result("64M", memory_bank_size_config(1, 1), 1,
+                           SELFTEST_DONE);
+    assert_selftest_result("64M", memory_bank_config(1, 6), 1,
+                           SELFTEST_DONE);
+    assert_selftest_result("96M", memory_bank_config(0, 1) |
+                                  memory_bank_config(1, 1), 1,
+                           SELFTEST_DONE);
+    assert_selftest_result("128M", memory_bank_config(0, 6) |
+                                   memory_bank_config(1, 1), 1,
+                           SELFTEST_DONE);
+}
+
+static void test_selftest_replacement(void)
+{
+    QTestState *s = start_clock_with_memory("64M", "");
+
+    qtest_writeq(s, MD(0x8), memory_bank_config(1, 1));
+    selftest_start(s, 1, 0xda);
+    qtest_clock_step(s, SELFTEST_INTERVAL_NS / 2);
+    qtest_writeq(s, MD(0x8), 0);
+    selftest_start(s, 1, 0x5a);
+    qtest_clock_step(s, SELFTEST_INTERVAL_NS / 2);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, 0);
+    qtest_clock_step(s, SELFTEST_INTERVAL_NS / 2 - 1);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, 0);
+    qtest_clock_step(s, 1);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, SELFTEST_DONE);
+    qtest_quit(s);
+}
+
+static void assert_selftest_cancelled(QTestState *s)
+{
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, 0);
+    qtest_clock_step(s, SELFTEST_INTERVAL_NS);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, 0);
+}
+
+static void test_selftest_cancellation(void)
+{
+    QTestState *s = start_clock_with_memory("64M", "");
+
+    qtest_writeq(s, MD(0x8), memory_bank_config(1, 1));
+    selftest_start(s, 1, 0xda);
+    qtest_clock_step(s, SELFTEST_INTERVAL_NS / 2);
+    qtest_writeq(s, MD(SELFTEST_CONTROL), 4);
+    assert_selftest_cancelled(s);
+
+    selftest_start(s, 1, 0xda);
+    qtest_clock_step(s, SELFTEST_INTERVAL_NS);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==,
+                    SELFTEST_DONE | SELFTEST_PASSED);
+    qtest_writeq(s, MD(SELFTEST_CONTROL), 4);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, 0);
+
+    selftest_start(s, 1, 0xda);
+    qtest_clock_step(s, SELFTEST_INTERVAL_NS / 2);
+    qtest_writeq(s, MD(SELFTEST_CONTROL), 2);
+    assert_selftest_cancelled(s);
+
+    selftest_start(s, 1, 0xda);
+    qtest_clock_step(s, SELFTEST_INTERVAL_NS);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==,
+                    SELFTEST_DONE | SELFTEST_PASSED);
+    qtest_writeq(s, MD(SELFTEST_CONTROL), 2);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, 0);
+
+    selftest_start(s, 1, 0xda);
+    qtest_clock_step(s, SELFTEST_INTERVAL_NS / 2);
+    qtest_set_irq_in(s, MD_PATH, "soft-reset", 0, 1);
+    assert_selftest_cancelled(s);
+
+    selftest_start(s, 1, 0xda);
+    qtest_clock_step(s, SELFTEST_INTERVAL_NS / 2);
+    qtest_system_reset(s);
+    assert_selftest_cancelled(s);
+    qtest_quit(s);
+}
+
+static void test_selftest_unsupported_writes(void)
+{
+    g_autofree char *log = log_file_new();
+    g_autofree char *extra = g_strdup_printf("-d unimp -D %s", log);
+    g_autofree char *contents = NULL;
+    QTestState *s = start_clock_with_memory("64M", extra);
+
+    qtest_writeq(s, MD(0x8), memory_bank_config(1, 1));
+    selftest_start(s, 1, 0xda);
+    qtest_clock_step(s, 400);
+    qtest_writeq(s, MD(SELFTEST_CONTROL), 3);
+    qtest_clock_step(s, 599);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, 0);
+    qtest_writeq(s, MD(SELFTEST_CONTROL), 0x100);
+    qtest_clock_step(s, 1);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==,
+                    SELFTEST_DONE | SELFTEST_PASSED);
+    qtest_writeq(s, MD(SELFTEST_CONTROL), 0x14);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==,
+                    SELFTEST_DONE | SELFTEST_PASSED);
+    qtest_quit(s);
+
+    contents = log_file_take(log);
+    g_assert_cmpuint(log_count(contents, SELFTEST_DIAGNOSTIC), ==, 3);
+}
+
+static void test_selftest_read_only_results(void)
+{
+    static const uint64_t detail[] = {
+        SELFTEST_ERROR_ADDRESS, SELFTEST_DIRECTORY_ERROR,
+        SELFTEST_MEMORY_ERROR0, SELFTEST_MEMORY_ERROR0 + 8,
+        SELFTEST_MEMORY_ERROR0 + 0x10, SELFTEST_MEMORY_ERROR0 + 0x18,
+    };
+    QTestState *s = start_clock_with_memory("64M", "");
+
+    selftest_start(s, 1, 0x1da);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_DATA)), ==, 0xda);
+    qtest_clock_step(s, SELFTEST_INTERVAL_NS);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, SELFTEST_DONE);
+    qtest_writeq(s, MD(SELFTEST_STATUS), UINT64_MAX);
+    for (unsigned i = 0; i < ARRAY_SIZE(detail); i++) {
+        qtest_writeq(s, MD(detail[i]), UINT64_MAX);
+        g_assert_cmphex(qtest_readq(s, MD(detail[i])), ==, 0);
+    }
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, SELFTEST_DONE);
+    qtest_quit(s);
+}
+
+static void test_selftest_access_width_policy(void)
+{
+    QTestState *s = start_clock_with_memory("64M", "");
+
+    qtest_writeq(s, MD(0x8), memory_bank_config(1, 1));
+    selftest_start(s, 1, 0xda);
+    qtest_clock_step(s, SELFTEST_INTERVAL_NS);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==,
+                    SELFTEST_DONE | SELFTEST_PASSED);
+    qtest_writeb(s, MD(SELFTEST_CONTROL), 4);
+    qtest_writew(s, MD(SELFTEST_CONTROL), 4);
+    qtest_writel(s, MD(SELFTEST_CONTROL), 4);
+    qtest_writeq(s, MD(SELFTEST_CONTROL) + 1, 4);
+    qtest_writel(s, MD(SELFTEST_STATUS), UINT32_MAX);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==,
+                    SELFTEST_DONE | SELFTEST_PASSED);
+    qtest_quit(s);
 }
 
 static void test_memory_banks(void)
@@ -867,8 +1101,9 @@ static void test_error_cluster_idle(void)
 
 static void test_policy_zero_ignores_writes(void)
 {
-    /* Start, stop, reset, bank and DIMM selections, and all bits at once. */
-    static const uint64_t selftest_commands[] = { 1, 2, 4, 0x70, UINT64_MAX };
+    static const uint64_t unsupported_commands[] = {
+        0, 3, 5, 6, 7, 0x12, 0x14, 0x70, UINT64_MAX,
+    };
     QTestState *s = start("");
 
     for (unsigned i = 0; i < ARRAY_SIZE(storage_registers); i++) {
@@ -878,8 +1113,8 @@ static void test_policy_zero_ignores_writes(void)
         qtest_writeq(s, MD(policy_zero_registers[i]), UINT64_MAX);
         g_assert_cmphex(qtest_readq(s, MD(policy_zero_registers[i])), ==, 0);
     }
-    for (unsigned i = 0; i < ARRAY_SIZE(selftest_commands); i++) {
-        qtest_writeq(s, MD(0x20030), selftest_commands[i]);
+    for (unsigned i = 0; i < ARRAY_SIZE(unsupported_commands); i++) {
+        qtest_writeq(s, MD(0x20030), unsupported_commands[i]);
         g_assert_cmphex(qtest_readq(s, MD(0x20030)), ==, 0);
         g_assert_cmphex(qtest_readq(s, MD(0x20040)), ==, 0);
         g_assert_cmphex(qtest_readq(s, MD(0x20048)), ==, 0);
@@ -973,6 +1208,51 @@ static void migrate_wait(QTestState *from)
     }
 }
 
+static void migrate_pair(QTestState *from, QTestState *to, const char *uri)
+{
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    migrate_wait(from);
+    migrate_wait(to);
+}
+
+static void test_selftest_migration_running(void)
+{
+    GError *error = NULL;
+    g_autofree char *directory =
+        g_dir_make_tmp("sn1-md-selftest-migration-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+    int64_t source_time;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = start_clock_with_memory("64M", "");
+    to = start_with_memory("64M", "-incoming defer");
+    qtest_clock_set(from, 0);
+    qtest_writeq(from, MD(0x8), (UINT64_C(3) << 32) |
+                                  memory_bank_config(3, 1));
+    selftest_start(from, 3, 0xda);
+    source_time = qtest_clock_step(from, 400);
+    migrate_pair(from, to, uri);
+    ensure_clock_running(to);
+    qtest_clock_set(to, source_time);
+    g_assert_cmphex(qtest_readq(to, MD(SELFTEST_STATUS)), ==, 0);
+    qtest_clock_step(to, 599);
+    g_assert_cmphex(qtest_readq(to, MD(SELFTEST_STATUS)), ==, 0);
+    qtest_clock_step(to, 1);
+    g_assert_cmphex(qtest_readq(to, MD(SELFTEST_STATUS)), ==,
+                    SELFTEST_DONE | SELFTEST_PASSED);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(directory), ==, 0);
+}
+
 static void test_migration(void)
 {
     GError *error = NULL;
@@ -985,7 +1265,7 @@ static void test_migration(void)
     g_assert_no_error(error);
     socket = g_build_filename(directory, "migration.sock", NULL);
     uri = g_strdup_printf("unix:%s", socket);
-    from = start("");
+    from = start_clock_with_memory("512M", "");
     to = start("-incoming defer");
     for (unsigned i = 0; i < ARRAY_SIZE(storage_registers); i++) {
         qtest_writeq(from, MD(storage_registers[i].offset),
@@ -995,6 +1275,10 @@ static void test_migration(void)
     qtest_writeq(from, MD(0x8), memory_bank_config(0, 4));
     qtest_writeq(from, MD(0x20000), UINT64_C(0x8000000000000c35));
     qtest_writeq(from, MD(0x40000), 3);
+    selftest_start(from, 1, UINT64_MAX);
+    qtest_clock_step(from, SELFTEST_INTERVAL_NS);
+    g_assert_cmphex(qtest_readq(from, MD(SELFTEST_STATUS)), ==,
+                    SELFTEST_DONE);
     qtest_writeq(from, DIRECTORY(DIRECTORY_LINE_01A00000),
                  UINT64_C(0x89abcdef01234567));
     qtest_writeq(from, DIRECTORY(DIRECTORY_LINE_01A00000 + 8),
@@ -1005,12 +1289,7 @@ static void test_migration(void)
                  UINT64_C(0x599a599a599a599a));
     qtest_writeq(from, DIRECTORY(PROTECTION_LAST),
                  UINT64_C(0xa55aa55aa55aa55a));
-    qtest_qmp_assert_success(to,
-        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
-    qtest_qmp_assert_success(from,
-        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
-    migrate_wait(from);
-    migrate_wait(to);
+    migrate_pair(from, to, uri);
     for (unsigned i = 0; i < ARRAY_SIZE(storage_registers); i++) {
         g_assert_cmphex(qtest_readq(to, MD(storage_registers[i].offset)), ==,
                         (UINT64_MAX ^ (UINT64_C(1) << (i + 2))) &
@@ -1022,6 +1301,8 @@ static void test_migration(void)
     g_assert_cmphex(qtest_readq(to, MD(0x20000)), ==,
                     UINT64_C(0x8000000000000c35));
     g_assert_cmphex(qtest_readq(to, MD(0x40000)), ==, 3);
+    g_assert_cmphex(qtest_readq(to, MD(SELFTEST_STATUS)), ==,
+                    SELFTEST_DONE);
     g_assert_cmphex(qtest_readq(to, DIRECTORY(DIRECTORY_LINE_01A00000)),
                     ==, UINT64_C(0x89abcdef01234567));
     g_assert_cmphex(qtest_readq(to, DIRECTORY(DIRECTORY_LINE_01A00000 + 8)),
@@ -1264,6 +1545,21 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("sn1/bedrock-md/register-contract", test_register_contract);
+    qtest_add_func("sn1/bedrock-md/selftest-phases", test_selftest_phases);
+    qtest_add_func("sn1/bedrock-md/selftest-negative-carriers",
+                   test_selftest_negative_carriers);
+    qtest_add_func("sn1/bedrock-md/selftest-replacement",
+                   test_selftest_replacement);
+    qtest_add_func("sn1/bedrock-md/selftest-cancellation",
+                   test_selftest_cancellation);
+    qtest_add_func("sn1/bedrock-md/selftest-unsupported-writes",
+                   test_selftest_unsupported_writes);
+    qtest_add_func("sn1/bedrock-md/selftest-read-only-results",
+                   test_selftest_read_only_results);
+    qtest_add_func("sn1/bedrock-md/selftest-access-width-policy",
+                   test_selftest_access_width_policy);
+    qtest_add_func("sn1/bedrock-md/selftest-migration-running",
+                   test_selftest_migration_running);
     qtest_add_func("sn1/bedrock-md/memory-banks", test_memory_banks);
     qtest_add_func("sn1/bedrock-md/directory-bank-translation",
                    test_directory_bank_translation);

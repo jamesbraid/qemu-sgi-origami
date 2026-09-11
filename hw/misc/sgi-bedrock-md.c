@@ -35,6 +35,14 @@ enum {
     (UINT64_C(0xffffffffff) << 20) | (UINT64_C(1) << 63))
 #define MD_THRESHOLD_MASK (UINT64_C(0x7fff) | (UINT64_C(7) << 32) | \
     (UINT64_C(7) << 35))
+#define MD_SELFTEST_INTERVAL_NS 1000
+#define MD_SELFTEST_COMMAND_MASK 0x71
+#define MD_SELFTEST_COMMAND_BITS 0x7
+#define MD_SELFTEST_PASSED 0x1
+#define MD_SELFTEST_DONE 0x2
+
+static void md_selftest_command(SGIBedrockMDState *s, uint64_t value);
+static void md_selftest_complete(void *opaque);
 
 static bool md_storage(hwaddr offset, unsigned *index, uint64_t *mask)
 {
@@ -127,6 +135,7 @@ static uint64_t md_read(void *opaque, hwaddr offset, unsigned size)
     case 0x8: return s->memory_config;
     case 0x60: return MD_REPLY_QUEUE;
     case 0x20000: return s->refresh;
+    case 0x20048: return s->selftest_status;
     case 0x40000: return s->directory_config;
     case 0x40050: return MD_REQUEST_QUEUE;
     }
@@ -169,8 +178,7 @@ static void md_write(void *opaque, hwaddr offset, uint64_t value,
                       "sgi-bedrock-md: request queue resize unsupported\n");
         return;
     case 0x20030:
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-bedrock-md: self-test command unsupported\n");
+        md_selftest_command(s, value);
         return;
     }
     if (md_storage(offset, &index, &mask)) {
@@ -436,15 +444,105 @@ static const MemoryRegionOps md_ecc_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 2, .unaligned = true },
 };
 
+/* Bank select maps in either direction because XOR is its own inverse. */
+static unsigned md_memory_remap_bank(const SGIBedrockMDState *s,
+                                     unsigned bank)
+{
+    return bank ^ extract64(s->memory_config, 32, 2);
+}
+
+static bool md_selftest_bank_fits(const SGIBedrockMDState *s,
+                                  unsigned software_bank)
+{
+    uint64_t dense_base = 0;
+    uint64_t raw_size;
+    unsigned locational_bank = md_memory_remap_bank(s, software_bank);
+    unsigned size_code;
+
+    if (!s->node_mr || !md_memory_bank_enabled(s, locational_bank)) {
+        return false;
+    }
+
+    for (unsigned bank = 0; bank < locational_bank; bank++) {
+        uint64_t bank_size;
+
+        if (!md_memory_bank_enabled(s, bank)) {
+            continue;
+        }
+        size_code = md_memory_size_code(s, bank);
+        if (size_code < 1 || size_code > 5) {
+            return false;
+        }
+        bank_size = md_memory_bank_size(size_code);
+        if (dense_base > UINT64_MAX - bank_size) {
+            return false;
+        }
+        dense_base += bank_size;
+    }
+
+    size_code = md_memory_size_code(s, locational_bank);
+    if (size_code < 1 || size_code > 5) {
+        return false;
+    }
+    raw_size = memory_region_size(s->node_mr);
+    return dense_base <= raw_size &&
+           md_memory_bank_size(size_code) <= raw_size - dense_base;
+}
+
+static void md_selftest_cancel(SGIBedrockMDState *s)
+{
+    timer_del(s->selftest_timer);
+    s->selftest_running = false;
+    s->selftest_selector = 0;
+    s->selftest_phase = false;
+    s->selftest_result = false;
+    s->selftest_status = 0;
+}
+
+static void md_selftest_command(SGIBedrockMDState *s, uint64_t value)
+{
+    if (value == 0x4 || value == 0x2) {
+        md_selftest_cancel(s);
+        return;
+    }
+    if ((value & MD_SELFTEST_COMMAND_BITS) != 0x1 ||
+        value & ~MD_SELFTEST_COMMAND_MASK) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-bedrock-md: unsupported self-test command "
+                      "0x%" PRIx64 "\n", value);
+        return;
+    }
+
+    s->selftest_running = true;
+    s->selftest_selector = extract64(value, 4, 3);
+    s->selftest_phase = s->storage[MD_SELFTEST_DATA] & 0x80;
+    s->selftest_result = md_selftest_bank_fits(
+        s, md_memory_remap_bank(s, s->selftest_selector));
+    s->selftest_status = 0;
+    timer_mod_ns(s->selftest_timer,
+                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                 MD_SELFTEST_INTERVAL_NS);
+}
+
+static void md_selftest_complete(void *opaque)
+{
+    SGIBedrockMDState *s = opaque;
+
+    if (!s->selftest_running) {
+        return;
+    }
+    s->selftest_running = false;
+    s->selftest_status = MD_SELFTEST_DONE |
+                         (s->selftest_result ? MD_SELFTEST_PASSED : 0);
+}
+
 static MemTxResult md_memory_translate(SGIBedrockMDState *s, hwaddr offset,
                                        unsigned size, bool is_write,
                                        hwaddr *raw_offset)
 {
     const char *access = is_write ? "write" : "read";
     unsigned software_bank = offset / MD_MEMORY_BANK_SIZE;
-    unsigned selector = extract64(s->memory_config, 32, 2);
-    /* The public header defines this XOR on the complete bank number. */
-    unsigned locational_bank = software_bank ^ selector;
+    unsigned locational_bank = md_memory_remap_bank(s, software_bank);
     unsigned size_code;
     uint64_t bank_size;
     uint64_t within = offset % MD_MEMORY_BANK_SIZE;
@@ -616,6 +714,7 @@ static const MemoryRegionOps md_memory_ops = {
 
 static void md_reset_registers(SGIBedrockMDState *s)
 {
+    md_selftest_cancel(s);
     s->current_cell = UINT64_MAX;
     s->memory_config = 0;
     s->refresh = 0;
@@ -658,7 +757,7 @@ static void md_reset_enter(Object *obj, ResetType type)
 }
 
 static const VMStateDescription vmstate_md = {
-    .name = TYPE_SGI_BEDROCK_MD, .version_id = 4, .minimum_version_id = 1,
+    .name = TYPE_SGI_BEDROCK_MD, .version_id = 5, .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(current_cell, SGIBedrockMDState),
         VMSTATE_UINT64(memory_config, SGIBedrockMDState),
@@ -675,6 +774,12 @@ static const VMStateDescription vmstate_md = {
         VMSTATE_VARRAY_UINT32(protection, SGIBedrockMDState,
                               protection_entries, 4,
                               vmstate_info_uint64, uint64_t),
+        VMSTATE_BOOL_V(selftest_running, SGIBedrockMDState, 5),
+        VMSTATE_UINT8_V(selftest_selector, SGIBedrockMDState, 5),
+        VMSTATE_BOOL_V(selftest_phase, SGIBedrockMDState, 5),
+        VMSTATE_BOOL_V(selftest_result, SGIBedrockMDState, 5),
+        VMSTATE_UINT8_V(selftest_status, SGIBedrockMDState, 5),
+        VMSTATE_TIMER_PTR_V(selftest_timer, SGIBedrockMDState, 5),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -683,6 +788,8 @@ static void md_init(Object *obj)
 {
     SGIBedrockMDState *s = SGI_BEDROCK_MD(obj);
 
+    s->selftest_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                     md_selftest_complete, s);
     memory_region_init_io(&s->mmio, obj, &md_ops, s, TYPE_SGI_BEDROCK_MD,
                           SGI_BEDROCK_MD_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
@@ -747,6 +854,7 @@ static void md_unrealize(DeviceState *dev)
 {
     SGIBedrockMDState *s = SGI_BEDROCK_MD(dev);
 
+    timer_del(s->selftest_timer);
     if (s->node_as_initialized) {
         address_space_destroy(&s->node_as);
         s->node_as_initialized = false;
@@ -782,6 +890,7 @@ static void md_finalize(Object *obj)
 {
     SGIBedrockMDState *s = SGI_BEDROCK_MD(obj);
 
+    timer_free(s->selftest_timer);
     if (s->node_as_initialized) {
         address_space_destroy(&s->node_as);
     }
