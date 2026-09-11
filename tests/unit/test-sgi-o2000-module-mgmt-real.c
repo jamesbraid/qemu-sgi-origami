@@ -16,6 +16,7 @@
 #include "qemu/config-file.h"
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
+#include "qemu/rcu.h"
 #include "qemu/timer.h"
 #include "system/cpu-timers.h"
 #include "system/reset.h"
@@ -130,6 +131,11 @@ static void teardown(Fixture *f, gconstpointer unused)
 {
     object_unparent(OBJECT(f->module));
     object_unref(OBJECT(f->module));
+    /*
+     * Child-bus finalization is deferred to RCU. Complete it before the next
+     * fixture advances the global virtual clock and walks its timer list.
+     */
+    drain_call_rcu();
     if (f->chr) {
         object_unparent(OBJECT(f->chr));
     }
