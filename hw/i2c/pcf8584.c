@@ -143,7 +143,7 @@ static bool pcf8584_wire_bit(PCF8584State *s)
 }
 
 /* A fresh START: SDA falls with both lines released, after the free time. */
-static void pcf8584_wire_begin_start(PCF8584State *s)
+static void pcf8584_wire_begin_start_at(PCF8584State *s, int64_t at)
 {
     uint8_t addr = s->start_address_staged ? s->start_address : s->data;
 
@@ -155,7 +155,12 @@ static void pcf8584_wire_begin_start(PCF8584State *s)
     s->wire_active = true;
     s->wire_phase = PCF8584_WIRE_START_SDA;
     /* Staging floors this at the present, so an elapsed free time is now. */
-    pcf8584_wire_stage(s, s->wire_free_at, false, false);
+    pcf8584_wire_stage(s, at, false, false);
+}
+
+static void pcf8584_wire_begin_start(PCF8584State *s)
+{
+    pcf8584_wire_begin_start_at(s, s->wire_free_at);
 }
 
 /*
@@ -416,7 +421,12 @@ static void pcf8584_wire_event(void *opaque, const I2CWireEvent *event)
     }
     if (stop && s->wire_start_waiting) {
         s->wire_start_waiting = false;
-        pcf8584_wire_begin_start(s);
+        /*
+         * Several adapters can have queued the same controller address.
+         * Let one lower-numbered adapter open the bus first; the peer START
+         * event returns every later adapter to this queue for the next STOP.
+         */
+        pcf8584_wire_begin_start_at(s, s->wire_free_at + s->wire_master);
     }
 }
 
