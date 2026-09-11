@@ -1981,6 +1981,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
                                size_t size)
 {
     Bcm570xState *s = qemu_get_nic_opaque(nc);
+    size_t orig_size = size;
     PCIDevice *pci = PCI_DEVICE(s);
     uint16_t ret_len =
         bcm570x_sram_read(s, BCM570X_SRAM_RX_RETURN_RCB +
@@ -1997,12 +1998,20 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
     uint64_t jumbo_base;
     bool on_jumbo = false;
 
+    if (s->has_vnet_hdr) {
+        if (size <= sizeof(struct virtio_net_hdr)) {
+            return orig_size;
+        }
+        buf += sizeof(struct virtio_net_hdr);
+        size -= sizeof(struct virtio_net_hdr);
+    }
+
     if (!bcm570x_rx_ready(s)) {
         bcm570x_defer_rx_flush(s);
         return 0;
     }
     if (!bcm570x_frame_accepted(s, buf, size)) {
-        return size;
+        return orig_size;
     }
     if (size > BCM570X_MAX_FRAME) {
         /*
@@ -2015,7 +2024,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
                       "bcm570x: received frame of %zu bytes exceeds the %u the "
                       "model carries, dropped\n",
                       size, (unsigned int)BCM570X_MAX_FRAME);
-        return size;
+        return orig_size;
     }
 
     /*
@@ -2072,7 +2081,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
                       "bcm570x: received frame of %u bytes fits neither the "
                       "%u-byte standard buffer nor the %u-byte jumbo buffer, "
                       "dropped\n", framelen, std_size, jumbo_size);
-        return size;
+        return orig_size;
     }
 
     ret_base = bcm570x_compose_hostaddr(s,
@@ -2139,7 +2148,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
     s->status_rx_prod = (s->status_rx_prod + 1) % ret_len;
 
     bcm570x_rx_coalesce(s);
-    return size;
+    return orig_size;
 }
 
 /* Tie the PHY's carrier to the netdev: a backend that goes down drops link. */
