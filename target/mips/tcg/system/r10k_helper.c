@@ -27,15 +27,24 @@
 #include "accel/tcg/cpu-loop.h"
 #include "../tcg-internal.h"
 
+static unsigned int r10k_scache_size(CPUMIPSState *env)
+{
+    if (env->cfg.scache_size == R10K_SCACHE_SIZE &&
+        extract32(env->CP0_Config0, CP0C0_R10K_SS, 3) == 3) {
+        return R10K_SCACHE_4M_SIZE;
+    }
+    return env->cfg.scache_size;
+}
+
 static unsigned int r10k_scache_sets(CPUMIPSState *env)
 {
-    return env->cfg.scache_size / R10K_SCACHE_LINE_SIZE /
+    return r10k_scache_size(env) / R10K_SCACHE_LINE_SIZE /
            R10K_SCACHE_WAYS;
 }
 
 static unsigned int r10k_scache_quad_sets(CPUMIPSState *env)
 {
-    return env->cfg.scache_size / 16 / R10K_SCACHE_WAYS;
+    return r10k_scache_size(env) / 16 / R10K_SCACHE_WAYS;
 }
 
 /*
@@ -379,7 +388,8 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
         return;
     }
     /*
-     * The CPU definition supplies the secondary-cache capacity. Its index
+     * The CPU definition supplies the default secondary-cache capacity. An
+     * R10000's reset Config input can select the larger fitted cache. Index
      * diagnostic operations use the translated physical address and address
      * bit zero selects the way.
      */

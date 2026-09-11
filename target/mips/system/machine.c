@@ -438,11 +438,18 @@ static const VMStateDescription mips_vmstate_r10k_scache = {
     }
 };
 
+static bool mips_r10k_scache_is_4m(MIPSCPU *cpu)
+{
+    return cpu->env.cfg.scache_size == R10K_SCACHE_SIZE &&
+           extract32(cpu->env.CP0_Config0, CP0C0_R10K_SS, 3) == 3;
+}
+
 static bool mips_r14k_scache_needed(void *opaque)
 {
     MIPSCPU *cpu = opaque;
 
-    return cpu->env.cfg.scache_size == R14K_SCACHE_SIZE;
+    return cpu->env.cfg.scache_size == R14K_SCACHE_SIZE ||
+           mips_r10k_scache_is_4m(cpu);
 }
 
 static const VMStateDescription mips_vmstate_r14k_scache = {
@@ -467,6 +474,37 @@ static const VMStateDescription mips_vmstate_r14k_scache = {
                                  R10K_SCACHE_QUADWORDS,
                                  R14K_SCACHE_QUADWORDS -
                                  R10K_SCACHE_QUADWORDS),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static bool mips_r10k_scache_4m_needed(void *opaque)
+{
+    return mips_r10k_scache_is_4m(opaque);
+}
+
+static const VMStateDescription mips_vmstate_r10k_scache_4m = {
+    .name = "cpu/r10k-scache-4m",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mips_r10k_scache_4m_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_SUB_ARRAY(env.r10k_scache_taglo, MIPSCPU,
+                                 R14K_SCACHE_TAGS,
+                                 R10K_SCACHE_4M_TAGS - R14K_SCACHE_TAGS),
+        VMSTATE_UINT8_SUB_ARRAY(env.r10k_scache_taghi, MIPSCPU,
+                                R14K_SCACHE_TAGS,
+                                R10K_SCACHE_4M_TAGS - R14K_SCACHE_TAGS),
+        VMSTATE_UINT8_SUB_ARRAY(env.r10k_scache_mru, MIPSCPU,
+                                R14K_SCACHE_SETS,
+                                R10K_SCACHE_4M_SETS - R14K_SCACHE_SETS),
+        VMSTATE_UINT64_SUB_ARRAY(env.r10k_scache_data, MIPSCPU,
+                                 R14K_SCACHE_DWORDS,
+                                 R10K_SCACHE_4M_DWORDS - R14K_SCACHE_DWORDS),
+        VMSTATE_UINT16_SUB_ARRAY(env.r10k_scache_ecc, MIPSCPU,
+                                 R14K_SCACHE_QUADWORDS,
+                                 R10K_SCACHE_4M_QUADWORDS -
+                                 R14K_SCACHE_QUADWORDS),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -790,6 +828,7 @@ const VMStateDescription vmstate_mips_cpu = {
         &mips_vmstate_r14k_performance,
         &mips_vmstate_r10k_scache,
         &mips_vmstate_r14k_scache,
+        &mips_vmstate_r10k_scache_4m,
         &mips_vmstate_r10k_pcache,
         &mips_vmstate_r10k_cacherr,
         &mips_vmstate_r10k_diagnostic,

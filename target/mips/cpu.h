@@ -515,6 +515,7 @@ typedef struct mips_def_t mips_def_t;
 /* External secondary-cache geometry used by R10000-family definitions. */
 #define R10K_SCACHE_SIZE       (1024 * 1024)
 #define R14K_SCACHE_SIZE       (2 * 1024 * 1024)
+#define R10K_SCACHE_4M_SIZE    (4 * 1024 * 1024)
 #define R10K_SCACHE_LINE_SIZE  128
 #define R10K_SCACHE_WAYS       2
 #define R10K_SCACHE_SETS       (R10K_SCACHE_SIZE / R10K_SCACHE_LINE_SIZE / \
@@ -527,6 +528,11 @@ typedef struct mips_def_t mips_def_t;
 #define R14K_SCACHE_TAGS       (R14K_SCACHE_SETS * R10K_SCACHE_WAYS)
 #define R14K_SCACHE_QUADWORDS  (R14K_SCACHE_SIZE / 16)
 #define R14K_SCACHE_DWORDS     (R14K_SCACHE_SIZE / 8)
+#define R10K_SCACHE_4M_SETS    (R10K_SCACHE_4M_SIZE / \
+                                R10K_SCACHE_LINE_SIZE / R10K_SCACHE_WAYS)
+#define R10K_SCACHE_4M_TAGS    (R10K_SCACHE_4M_SETS * R10K_SCACHE_WAYS)
+#define R10K_SCACHE_4M_QUADWORDS (R10K_SCACHE_4M_SIZE / 16)
+#define R10K_SCACHE_4M_DWORDS  (R10K_SCACHE_4M_SIZE / 8)
 #define R10K_SCACHE_TAGLO_MASK 0xffffcdff
 #define R10K_SCACHE_TAGHI_MASK 0x8000000f
 
@@ -1405,11 +1411,11 @@ typedef struct CPUArchState {
     int32_t CP0_DataHi;
 
     /* R10000 external secondary-cache diagnostic state. */
-    uint32_t r10k_scache_taglo[R14K_SCACHE_TAGS];
-    uint8_t r10k_scache_taghi[R14K_SCACHE_TAGS];
-    uint8_t r10k_scache_mru[R14K_SCACHE_SETS];
-    uint64_t r10k_scache_data[R14K_SCACHE_DWORDS];
-    uint16_t r10k_scache_ecc[R14K_SCACHE_QUADWORDS];
+    uint32_t r10k_scache_taglo[R10K_SCACHE_4M_TAGS];
+    uint8_t r10k_scache_taghi[R10K_SCACHE_4M_TAGS];
+    uint8_t r10k_scache_mru[R10K_SCACHE_4M_SETS];
+    uint64_t r10k_scache_data[R10K_SCACHE_4M_DWORDS];
+    uint16_t r10k_scache_ecc[R10K_SCACHE_4M_QUADWORDS];
 
     /*
      * R10000 primary-cache diagnostic state. The tag arrays keep each tag's
