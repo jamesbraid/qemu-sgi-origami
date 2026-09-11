@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-"""Check the selected Origin 2000's cache Config fields with a test ROM.
+"""Check the SN0 machines' secondary-cache geometry with test ROMs.
 
 Expectations come from Origami's reviewed origin2000-cache-configuration.md
-at 72848aa85bee4eda8e76c043d50025d62e91aa76. These reset fields do not
-establish cache data capacity, associativity, or cache-operation behavior.
+at 72848aa85bee4eda8e76c043d50025d62e91aa76. The reset test checks Config
+fields. The tag test distinguishes 1 MiB and 4 MiB secondary-cache indexing.
 """
 
 import json
@@ -24,6 +24,9 @@ SECONDARY_MASK = 0x00070000
 SECONDARY_EXPECTED = 0x00030000
 PRIMARY_MASK = 0xfc000000
 PRIMARY_EXPECTED = 0x6c000000
+TAG_A = 0x1234c5aa
+TAG_B = 0x56788944
+TAG_DONE = 0x54414753
 
 
 def insn_i(opcode, rs, rt, immediate):
@@ -58,6 +61,44 @@ def cache_reset_rom():
     ]
     image = bytearray(0x1000)
     # Leave the flash configuration area unused by the test program.
+    struct.pack_into('>I', image, 0, insn_i(0x04, 0, 0, 0xff))
+    for index, instruction in enumerate(code):
+        struct.pack_into('>I', image, 0x400 + index * 4, instruction)
+    return image
+
+
+def cache_tag_rom():
+    """Store and load way-zero tags at sets one MiB apart."""
+    code = [
+        insn_i(0x0f, 0, 9, 0xa000),   # lui t1, uncached physical zero
+        insn_i(0x0f, 0, 10, 0xa010),  # lui t2, one MiB farther
+        insn_i(0x0f, 0, 8, TAG_A >> 16),
+        insn_i(0x0d, 8, 8, TAG_A),
+        0x4088e000,                   # mtc0 t0, TagLo
+        0x4080e800,                   # mtc0 zero, TagHi
+        insn_i(0x2f, 9, 0x0b, 0),    # cache Index Store Tag (S), 0(t1)
+        insn_i(0x0f, 0, 8, TAG_B >> 16),
+        insn_i(0x0d, 8, 8, TAG_B),
+        0x4088e000,                   # mtc0 t0, TagLo
+        insn_i(0x2f, 10, 0x0b, 0),   # cache Index Store Tag (S), 0(t2)
+        0x4080e000,                   # mtc0 zero, TagLo
+        insn_i(0x2f, 9, 0x07, 0),    # cache Index Load Tag (S), 0(t1)
+        0x4008e000,                   # mfc0 t0, TagLo
+        insn_i(0x0f, 0, 12, 0xa003), # lui t4, uncached local mailbox
+        insn_i(0x2b, 12, 8, 0),      # sw t0, first tag
+        0x4080e000,                   # mtc0 zero, TagLo
+        insn_i(0x2f, 10, 0x07, 0),   # cache Index Load Tag (S), 0(t2)
+        0x4008e000,                   # mfc0 t0, TagLo
+        insn_i(0x2b, 12, 8, 4),      # sw t0, second tag
+        0x40088000,                   # mfc0 t0, Config
+        insn_i(0x2b, 12, 8, 12),     # sw t0, Config
+        insn_i(0x0f, 0, 8, TAG_DONE >> 16),
+        insn_i(0x0d, 8, 8, TAG_DONE),
+        0x0000000f,                   # sync: publish completion last
+        insn_i(0x2b, 12, 8, 8),
+        insn_i(0x04, 0, 0, -1), 0,
+    ]
+    image = bytearray(0x1000)
     struct.pack_into('>I', image, 0, insn_i(0x04, 0, 0, 0xff))
     for index, instruction in enumerate(code):
         struct.pack_into('>I', image, 0x400 + index * 4, instruction)
@@ -153,6 +194,41 @@ class Origin2000CacheReset(QemuSystemTest):
         self.vm.event_wait('RESET')
         self.assertFalse(self.vm.cmd('query-status')['running'])
         self.check_phase('reset', cpus)
+
+    def check_tag_geometry(self, machine, secondary, expected):
+        rom = self.scratch_file(f'{machine}-cache-tags.bin')
+        Path(rom).write_bytes(cache_tag_rom())
+        cpus = 8 if machine == 'origin2000' else 2
+        self.set_machine(machine)
+        self.vm.add_args('-machine', 'synthesized-firmware=off',
+                         '-accel', 'tcg,thread=single', '-cpu', 'R10000',
+                         '-m', '256M', '-smp', str(cpus), '-bios', rom,
+                         '-nodefaults')
+        self.vm.launch()
+        deadline = time.monotonic() + 30
+        words = []
+        while time.monotonic() < deadline:
+            output = self.vm.cmd('human-monitor-command',
+                                 command_line=f'xp /4wx {MAILBOX:#x}')
+            words = [int(value, 16) for value in
+                     re.findall(r'0x([0-9a-fA-F]{8})\b', output)]
+            if len(words) == 4 and words[2] == TAG_DONE:
+                break
+            time.sleep(0.05)
+        self.vm.cmd('stop')
+        self.log.info('%s cache tag observation: %s', machine,
+                      [f'{word:#010x}' for word in words])
+        self.assertEqual(len(words), 4, words)
+        self.assertEqual(words[2], TAG_DONE, words)
+        self.assertEqual(words[3] & SECONDARY_MASK, secondary, words)
+        self.assertEqual(words[:2], expected, words)
+
+    def test_origin200_one_mib_tags_alias(self):
+        self.check_tag_geometry('origin200', 0x00010000, [TAG_B, TAG_B])
+
+    def test_origin2000_four_mib_tags_do_not_alias(self):
+        self.check_tag_geometry('origin2000', SECONDARY_EXPECTED,
+                                [TAG_A, TAG_B])
 
 
 if __name__ == '__main__':

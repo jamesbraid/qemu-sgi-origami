@@ -45,6 +45,7 @@
 #define CACHE_DATA_HI       0x13579bdfu
 #define CACHE_ECC           0x2aau
 #define CACHE_UPPER_HI      0x8008
+#define R10K_4M_CACHE_HI    0xa010
 #define POLL_TRIES          20000
 #define POLL_INTERVAL_US    1000
 #define ANALYZE_SCRIPT      "scripts/analyze-migration.py"
@@ -235,7 +236,7 @@ static void write_reset_guest_image(int fd)
     g_assert_cmpint(written, ==, sizeof(image));
 }
 
-static void write_cache_guest_image(int fd)
+static void write_cache_guest_image(int fd, uint16_t cache_upper_hi)
 {
     uint8_t image[IMAGE_SIZE] = { };
     GuestImage img = { .code = image, .pos = 0 };
@@ -247,7 +248,7 @@ static void write_cache_guest_image(int fd)
 
     img.pos = CACHE_START;
     emit(&img, OPC_LUI | (R_T2 << 16) | STATE_KSEG1_HI);
-    emit(&img, OPC_LUI | (R_T1 << 16) | CACHE_UPPER_HI);
+    emit(&img, OPC_LUI | (R_T1 << 16) | cache_upper_hi);
     emit_load_u32(&img, R_T0, CACHE_TAGLO);
     emit_mtc0(&img, R_T0, CP0_TAGLO, 0);
     emit_load_u32(&img, R_T0, CACHE_TAGHI);
@@ -559,7 +560,7 @@ static void test_r14000_upper_scache_migration(void)
     fd = g_file_open_tmp("mips64-r14k-scache-XXXXXX", &image, &error);
     g_assert_no_error(error);
     g_assert_cmpint(fd, >=, 0);
-    write_cache_guest_image(fd);
+    write_cache_guest_image(fd, CACHE_UPPER_HI);
     close(fd);
     directory = g_dir_make_tmp("mips64-r14k-scache-migration-XXXXXX",
                                &error);
@@ -571,6 +572,68 @@ static void test_r14000_upper_scache_migration(void)
         "-no-reboot -no-shutdown", image);
     dest_args = g_strdup_printf(
         "-M malta -m 64M -cpu R14000 -bios %s -accel tcg "
+        "-no-reboot -no-shutdown -incoming defer", image);
+    from = qtest_init(source_args);
+    to = qtest_init(dest_args);
+    wait_for_state(from, CACHE_READY_OFF, CACHE_READY_MAGIC);
+    qtest_qmp_assert_success(from, "{'execute':'stop'}");
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
+    wait_for_migration(from);
+    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    qtest_writeq(to, STATE_PHYS + CACHE_COMMAND_OFF, 1);
+    wait_for_state(to, CACHE_DONE_OFF, CACHE_DONE_MAGIC);
+
+    g_assert_cmphex(state_word(to, CACHE_TAGLO_OFF), ==, CACHE_TAGLO);
+    g_assert_cmphex(state_word(to, CACHE_TAGHI_OFF), ==, CACHE_TAGHI);
+    g_assert_cmphex(state_word(to, CACHE_DATA_LO_OFF), ==, CACHE_DATA_LO);
+    g_assert_cmphex(state_word(to, CACHE_DATA_HI_OFF), ==, CACHE_DATA_HI);
+    g_assert_cmphex(state_word(to, CACHE_ECC_OFF), ==, CACHE_ECC);
+
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(image);
+    unlink(socket);
+    g_assert_cmpint(rmdir(directory), ==, 0);
+}
+
+static void test_r10000_four_mib_scache_migration(void)
+{
+    g_autofree char *image = NULL;
+    g_autofree char *directory = NULL;
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *source_args = NULL;
+    g_autofree char *dest_args = NULL;
+    GError *error = NULL;
+    QTestState *from, *to;
+    int fd;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    fd = g_file_open_tmp("mips64-r10k-4m-scache-XXXXXX", &image, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    write_cache_guest_image(fd, R10K_4M_CACHE_HI);
+    close(fd);
+    directory = g_dir_make_tmp("mips64-r10k-4m-scache-migration-XXXXXX",
+                               &error);
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    source_args = g_strdup_printf(
+        "-M origin2000,synthesized-firmware=off -m 256M -smp 8 "
+        "-cpu R10000 -bios %s -accel tcg,thread=single -nodefaults "
+        "-no-reboot -no-shutdown", image);
+    dest_args = g_strdup_printf(
+        "-M origin2000,synthesized-firmware=off -m 256M -smp 8 "
+        "-cpu R10000 -bios %s -accel tcg,thread=single -nodefaults "
         "-no-reboot -no-shutdown -incoming defer", image);
     from = qtest_init(source_args);
     to = qtest_init(dest_args);
@@ -653,5 +716,7 @@ int main(int argc, char **argv)
                    test_r14000_reset_values);
     qtest_add_func("mips64/r14000-scache-migration/upper-half",
                    test_r14000_upper_scache_migration);
+    qtest_add_func("mips64/r10000-scache-migration/four-mib",
+                   test_r10000_four_mib_scache_migration);
     return g_test_run();
 }
