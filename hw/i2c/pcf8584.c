@@ -1025,6 +1025,11 @@ static void pcf8584_reset_hold(Object *obj, ResetType type)
 {
     PCF8584State *s = PCF8584(obj);
 
+    /* Reset releases an untimed transfer before forgetting that it owns it. */
+    if (s->bus && !pcf8584_on_wire(s) && i2c_bus_busy(s->bus)) {
+        i2c_end_transfer(s->bus);
+    }
+
     s->own_address = 0;
     s->clock = 0;
     s->vector = 0;
