@@ -946,7 +946,7 @@ static void test_migration_pending_grant(Fixture *f, gconstpointer unused)
     close(fd);
 }
 
-/* A START waiting behind a controller grant survives the whole complex. */
+/* A START restored behind a controller grant loses when the grant stops. */
 static void test_migration_waiting_start(Fixture *f, gconstpointer unused)
 {
     g_autofree char *path = NULL;
@@ -955,7 +955,6 @@ static void test_migration_waiting_start(Fixture *f, gconstpointer unused)
     PCF8584State *adapter = PCF8584(
         sgi_o2000_module_mgmt_get_adapter(f->module, 0));
     QEMUFile *file;
-    unsigned attempts;
 
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(unlink(path), ==, 0);
@@ -995,13 +994,13 @@ static void test_migration_waiting_start(Fixture *f, gconstpointer unused)
     g_assert_false(adapter->wire_active);
 
     advance_to(virtual_time + GRANT_SETTLE_NS);
-    for (attempts = 0; attempts < 500 &&
-         (adapter->status & PCF8584_STS_PIN); attempts++) {
-        advance_to(virtual_time + 2000);
-    }
-    g_assert_true(adapter->wire_active);
-    g_assert_cmphex(adapter->status &
-                    (PCF8584_STS_PIN | PCF8584_STS_LRB), ==, 0);
+    g_assert_false(adapter->wire_active);
+    g_assert_false(adapter->wire_start_waiting);
+    g_assert_false(adapter->start_address_staged);
+    g_assert_false(adapter->wire_grant_pending);
+    g_assert_cmphex(adapter->status & PCF8584_STS_LAB, ==,
+                    PCF8584_STS_LAB);
+    g_assert_cmphex(adapter->status & PCF8584_STS_PIN, ==, 0);
     close(fd);
 }
 
