@@ -401,6 +401,7 @@ static void test_unsupported_int_out_counts_keep_periodic_output(
     static const uint32_t unsupported_counts[] = {
         0x0000,
         0x0001,
+        0x0002,
         0xffff,
     };
     QTestState *qts = qtest_init("-M origin200");
@@ -457,13 +458,13 @@ static void test_one_shot_interrupt_output_has_three_tick_width(
     qtest_quit(qts);
 }
 
-static void test_periodic_interrupt_output_interval(const void *data)
+static void test_periodic_interrupt_output_min_interval(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
 
     sn0_ioc3_attach(qts);
 
-    qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_PERIODIC | 0x0009);
+    qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_PERIODIC | 0x0003);
     qtest_clock_step(qts, 1);
     g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==,
                     INT_OUT_PIN);
@@ -471,7 +472,7 @@ static void test_periodic_interrupt_output_interval(const void *data)
     qtest_clock_step(qts, 3 * INT_OUT_TICK_NS);
     g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==, 0);
 
-    qtest_clock_step(qts, 7 * INT_OUT_TICK_NS - 1);
+    qtest_clock_step(qts, INT_OUT_TICK_NS - 1);
     g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==, 0);
 
     qtest_clock_step(qts, 1);
@@ -480,6 +481,31 @@ static void test_periodic_interrupt_output_interval(const void *data)
 
     qtest_clock_step(qts, 3 * INT_OUT_TICK_NS);
     g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_periodic_interrupt_output_max_interval(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    const int64_t interval = 0xffffLL * INT_OUT_TICK_NS;
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_PERIODIC | 0xfffe);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==,
+                    INT_OUT_PIN);
+
+    qtest_clock_step(qts, 3 * INT_OUT_TICK_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==, 0);
+
+    qtest_clock_step(qts, interval - 3 * INT_OUT_TICK_NS - 1);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==, 0);
+
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==,
+                    INT_OUT_PIN);
 
     qtest_quit(qts);
 }
@@ -5110,8 +5136,12 @@ int main(int argc, char **argv)
                         test_fixed_interrupt_output_commands_change_the_state);
     qtest_add_data_func("sn0/ioc3/one-shot-interrupt-output-width", NULL,
                         test_one_shot_interrupt_output_has_three_tick_width);
-    qtest_add_data_func("sn0/ioc3/periodic-interrupt-output-interval", NULL,
-                        test_periodic_interrupt_output_interval);
+    qtest_add_data_func("sn0/ioc3/periodic-interrupt-output-min-interval",
+                        NULL,
+                        test_periodic_interrupt_output_min_interval);
+    qtest_add_data_func("sn0/ioc3/periodic-interrupt-output-max-interval",
+                        NULL,
+                        test_periodic_interrupt_output_max_interval);
     qtest_add_data_func("sn0/ioc3/square-interrupt-output-max-interval", NULL,
                         test_square_interrupt_output_max_interval);
     qtest_add_data_func("sn0/ioc3/fixed-command-cancels-periodic-output", NULL,

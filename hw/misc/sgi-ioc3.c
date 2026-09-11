@@ -202,12 +202,6 @@ static void sgi_ioc3_int_out_expire(void *opaque)
                       qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                       SGI_IOC3_INT_OUT_PULSE_TICKS *
                       SGI_IOC3_INT_OUT_TICK_NS);
-        } else if ((s->int_out_active & SGI_IOC3_INT_OUT_COUNT) + 1 <=
-                   SGI_IOC3_INT_OUT_PULSE_TICKS) {
-            timer_mod(s->int_out_timer,
-                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                      SGI_IOC3_INT_OUT_PULSE_TICKS *
-                      SGI_IOC3_INT_OUT_TICK_NS);
         } else {
             s->int_out_state = false;
             s->int_out_pulse_end = false;
@@ -247,7 +241,8 @@ static bool sgi_ioc3_int_out_command_valid(uint32_t value)
     return count >= SGI_IOC3_INT_OUT_MIN_COUNT &&
            count <= SGI_IOC3_INT_OUT_MAX_COUNT &&
            (mode == SGI_IOC3_INT_OUT_ONE_SHOT ||
-            mode == SGI_IOC3_INT_OUT_PERIODIC ||
+            (mode == SGI_IOC3_INT_OUT_PERIODIC &&
+             count >= SGI_IOC3_INT_OUT_PULSE_TICKS) ||
             mode == SGI_IOC3_INT_OUT_SQUARE);
 }
 
