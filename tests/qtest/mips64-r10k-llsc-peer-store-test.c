@@ -1,5 +1,5 @@
 /*
- * R10000 external-intervention load-linked tests.
+ * R10000 peer-CPU store load-linked tests.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
@@ -10,7 +10,13 @@
  * block-size mode as 32 words; the R10000 CPU definition asserts that mode,
  * giving this model a 128-byte block.
  *
- * Run two R10000 CPUs on Malta so no SGI machine device participates.
+ * This diagnostic covers translated stores executed by another R10000 CPU.
+ * DMA, host writes, and stores from other CPU models are not observed by the
+ * target-specific implementation.
+ * The R4000 and R14000 cases preserve QEMU's existing same-block behavior;
+ * they are regression controls, not claims about those processors.
+ *
+ * Run two CPUs on Malta so no SGI machine device participates.
  * A breakpoint stops the victim immediately after LLD.  The host removes it,
  * lets the victim spin on an integer branch, and stops the peer after its
  * writes.  Only then does the host replace the spin branch with a NOP and
@@ -29,6 +35,7 @@
 
 #define DATA_PHYS           0x00100000
 #define DATA_KSEG0_HI       0x8010
+#define DATA_KSEG1_HI       0xa010
 #define TARGET_OFF          0x000
 #define SAME_BLOCK_OFF      0x078
 #define COMMAND_OFF         0x100
@@ -45,6 +52,7 @@
 
 #define POLL_TRIES          30000
 #define POLL_INTERVAL_US    1000
+#define NO_LINK_STORE_COUNT 128
 
 #define OPC_SPECIAL         (0x00u << 26)
 #define OPC_BEQ             (0x04u << 26)
@@ -61,17 +69,20 @@
 #define R_T0                8
 #define R_T1                9
 #define R_T2                10
+#define R_T3                11
 
 typedef struct GuestImage {
     uint8_t bytes[IMAGE_SIZE];
     unsigned int pos;
 } GuestImage;
 
-typedef enum Intervention {
-    INTERVENTION_OUTSIDE_BLOCK,
-    INTERVENTION_SAME_BLOCK,
-    INTERVENTION_ABA,
-} Intervention;
+typedef enum PeerStoreCase {
+    PEER_STORE_OUTSIDE_BLOCK,
+    PEER_STORE_SAME_BLOCK,
+    PEER_STORE_ALIAS_SAME_BLOCK,
+    PEER_STORE_ABA,
+    PEER_STORE_NO_LINK_BURST,
+} PeerStoreCase;
 
 static void emit(GuestImage *img, uint32_t insn)
 {
@@ -158,10 +169,11 @@ static void build_victim(GuestImage *img, unsigned int *after_lld)
     emit_halt(img);
 }
 
-static void build_peer(GuestImage *img, Intervention intervention,
+static void build_peer(GuestImage *img, PeerStoreCase store_case,
                        unsigned int *peer_done)
 {
     unsigned int wait;
+    unsigned int i;
 
     img->pos = PEER_OFF;
     emit_lui(img, R_T0, DATA_KSEG0_HI);
@@ -170,10 +182,21 @@ static void build_peer(GuestImage *img, Intervention intervention,
     emit_beq(img, R_T1, R_ZERO, wait);
     emit_nop(img);
 
-    if (intervention == INTERVENTION_SAME_BLOCK) {
+    if (store_case == PEER_STORE_NO_LINK_BURST) {
         emit_addiu(img, R_T2, R_ZERO, PEER_VALUE);
-        emit_sd(img, R_T2, R_T0, SAME_BLOCK_OFF);
-    } else if (intervention == INTERVENTION_ABA) {
+        for (i = 0; i < NO_LINK_STORE_COUNT; i++) {
+            emit_sd(img, R_T2, R_T0, SAME_BLOCK_OFF);
+        }
+    } else if (store_case == PEER_STORE_SAME_BLOCK ||
+        store_case == PEER_STORE_ALIAS_SAME_BLOCK) {
+        emit_addiu(img, R_T2, R_ZERO, PEER_VALUE);
+        if (store_case == PEER_STORE_ALIAS_SAME_BLOCK) {
+            emit_lui(img, R_T3, DATA_KSEG1_HI);
+            emit_sd(img, R_T2, R_T3, SAME_BLOCK_OFF);
+        } else {
+            emit_sd(img, R_T2, R_T0, SAME_BLOCK_OFF);
+        }
+    } else if (store_case == PEER_STORE_ABA) {
         emit_addiu(img, R_T2, R_ZERO, SC_VALUE);
         emit_sd(img, R_T2, R_T0, TARGET_OFF);
         emit_addiu(img, R_T2, R_ZERO, OLD_VALUE);
@@ -186,7 +209,7 @@ static void build_peer(GuestImage *img, Intervention intervention,
     emit_halt(img);
 }
 
-static char *write_image(Intervention intervention, unsigned int *after_lld,
+static char *write_image(PeerStoreCase store_case, unsigned int *after_lld,
                          unsigned int *peer_done)
 {
     g_autofree GuestImage *img = g_new0(GuestImage, 1);
@@ -194,8 +217,8 @@ static char *write_image(Intervention intervention, unsigned int *after_lld,
     int fd;
 
     build_victim(img, after_lld);
-    build_peer(img, intervention, peer_done);
-    fd = g_file_open_tmp("mips64-r10k-intervention-XXXXXX", &path, NULL);
+    build_peer(img, store_case, peer_done);
+    fd = g_file_open_tmp("mips64-r10k-peer-store-XXXXXX", &path, NULL);
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(write(fd, img->bytes, sizeof(img->bytes)), ==,
                     sizeof(img->bytes));
@@ -231,7 +254,27 @@ static void wait_for_word(QTestState *qts, uint64_t addr, uint64_t expected)
     g_assert_cmphex(qtest_readq(qts, addr), ==, expected);
 }
 
-static void run_intervention(Intervention intervention)
+static void wait_for_migration(QTestState *qts)
+{
+    int64_t deadline = g_get_monotonic_time() + 60 * G_TIME_SPAN_SECOND;
+
+    for (;;) {
+        g_autoptr(QDict) response = qtest_qmp(
+            qts, "{'execute':'query-migrate'}");
+        QDict *result = qdict_get_qdict(response, "return");
+        const char *status = qdict_get_str(result, "status");
+
+        if (!strcmp(status, "completed")) {
+            return;
+        }
+        g_assert_cmpstr(status, !=, "failed");
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(POLL_INTERVAL_US);
+    }
+}
+
+static void run_peer_store(const char *cpu, PeerStoreCase store_case,
+                           bool expect_success)
 {
     g_autofree char *image = NULL;
     unsigned int after_lld, peer_done;
@@ -243,14 +286,14 @@ static void run_intervention(Intervention intervention)
         return;
     }
 
-    image = write_image(intervention, &after_lld, &peer_done);
+    image = write_image(store_case, &after_lld, &peer_done);
     qts = qtest_initf(
-        "-M malta -m 64M -smp 2 -cpu R10000 "
+        "-M malta -m 64M -smp 2 -cpu %s "
         "-device loader,file=%s,addr=0x%" PRIx64 ",force-raw=on "
         "-device loader,addr=0x%" PRIx64 ",cpu-num=0 "
         "-device loader,addr=0x%" PRIx64 ",cpu-num=1 "
         "-accel tcg,thread=multi -no-reboot -no-shutdown -S",
-        image, CODE_PHYS, CODE_KSEG0 + VICTIM_OFF,
+        cpu, image, CODE_PHYS, CODE_KSEG0 + VICTIM_OFF,
         CODE_KSEG0 + PEER_OFF);
     unlink(image);
 
@@ -270,7 +313,8 @@ static void run_intervention(Intervention intervention)
     g_assert_cmphex(qtest_readq(qts, DATA_PHYS + PEER_DONE_OFF), ==,
                     PEER_DONE_MAGIC);
     g_assert_cmphex(qtest_readq(qts, DATA_PHYS + VICTIM_DONE_OFF), ==, 0);
-    if (intervention == INTERVENTION_SAME_BLOCK) {
+    if (store_case == PEER_STORE_SAME_BLOCK ||
+        store_case == PEER_STORE_ALIAS_SAME_BLOCK) {
         g_assert_cmphex(qtest_readq(qts, DATA_PHYS + SAME_BLOCK_OFF), ==,
                         PEER_VALUE);
     } else {
@@ -285,7 +329,7 @@ static void run_intervention(Intervention intervention)
     target = qtest_readq(qts, DATA_PHYS + TARGET_OFF);
     qtest_quit(qts);
 
-    if (intervention == INTERVENTION_OUTSIDE_BLOCK) {
+    if (expect_success) {
         if (result != 1 || target != SC_VALUE) {
             g_test_message("SCD result=0x%" PRIx64 ", target=0x%" PRIx64,
                            result, target);
@@ -298,29 +342,159 @@ static void run_intervention(Intervention intervention)
     }
 }
 
-static void test_outside_block_intervention(void)
+static void test_r10k_outside_block_peer_store(void)
 {
-    run_intervention(INTERVENTION_OUTSIDE_BLOCK);
+    run_peer_store("R10000", PEER_STORE_OUTSIDE_BLOCK, true);
 }
 
-static void test_same_block_intervention(void)
+static void test_r10k_same_block_peer_store(void)
 {
-    run_intervention(INTERVENTION_SAME_BLOCK);
+    run_peer_store("R10000", PEER_STORE_SAME_BLOCK, false);
 }
 
-static void test_target_aba_intervention(void)
+static void test_r10k_alias_same_block_peer_store(void)
 {
-    run_intervention(INTERVENTION_ABA);
+    run_peer_store("R10000", PEER_STORE_ALIAS_SAME_BLOCK, false);
+}
+
+static void test_r10k_target_aba_peer_store(void)
+{
+    run_peer_store("R10000", PEER_STORE_ABA, false);
+}
+
+static void test_r4k_normal_llsc(void)
+{
+    run_peer_store("R4000", PEER_STORE_SAME_BLOCK, true);
+}
+
+static void test_r14k_normal_llsc(void)
+{
+    run_peer_store("R14000", PEER_STORE_SAME_BLOCK, true);
+}
+
+static void test_r10k_migration_drops_link(void)
+{
+    g_autofree char *directory = NULL;
+    g_autofree char *image = NULL;
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    unsigned int after_lld, peer_done;
+    GError *error = NULL;
+    QTestState *from, *to;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    image = write_image(PEER_STORE_OUTSIDE_BLOCK, &after_lld, &peer_done);
+    directory = g_dir_make_tmp("mips64-r10k-llsc-migration-XXXXXX", &error);
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+
+    from = qtest_initf(
+        "-M malta -m 64M -cpu R10000 "
+        "-device loader,file=%s,addr=0x%" PRIx64 ",force-raw=on "
+        "-device loader,addr=0x%" PRIx64 ",cpu-num=0 "
+        "-accel tcg,thread=multi -no-reboot -no-shutdown -S",
+        image, CODE_PHYS, CODE_KSEG0 + VICTIM_OFF);
+    to = qtest_initf(
+        "-M malta -m 64M -cpu R10000 "
+        "-device loader,file=%s,addr=0x%" PRIx64 ",force-raw=on "
+        "-device loader,addr=0x%" PRIx64 ",cpu-num=0 "
+        "-accel tcg,thread=multi -no-reboot -no-shutdown -S "
+        "-incoming defer",
+        image, CODE_PHYS, CODE_KSEG0 + VICTIM_OFF);
+    unlink(image);
+
+    /* llval is not migrated, so zero keeps the value comparison eligible. */
+    qtest_writeq(from, DATA_PHYS + TARGET_OFF, 0);
+    add_breakpoint(from, 0, CODE_KSEG0 + after_lld);
+    qtest_qmp_assert_success(from, "{'execute':'cont'}");
+    qtest_qmp_eventwait(from, "STOP");
+    g_assert_cmphex(qtest_readq(from, DATA_PHYS + VICTIM_DONE_OFF), ==, 0);
+    remove_breakpoint(from, 0, CODE_KSEG0 + after_lld);
+    qtest_qmp_assert_success(from, "{'execute':'cont'}");
+    qtest_qmp_assert_success(from, "{'execute':'stop'}");
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    wait_for_migration(from);
+
+    qtest_writel(to, CODE_PHYS + after_lld, 0);
+    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    wait_for_word(to, DATA_PHYS + VICTIM_DONE_OFF, VICTIM_DONE_MAGIC);
+    g_assert_cmphex(qtest_readq(to, DATA_PHYS + SC_RESULT_OFF), ==, 0);
+    g_assert_cmphex(qtest_readq(to, DATA_PHYS + TARGET_OFF), ==, 0);
+
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(directory), ==, 0);
+}
+
+static void test_r10k_no_link_skips_slow_path(void)
+{
+    g_autofree char *image = NULL;
+    g_autofree char *trace = NULL;
+    g_autofree char *trace_path = NULL;
+    unsigned int after_lld, peer_done;
+    QTestState *qts;
+    int fd;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    image = write_image(PEER_STORE_NO_LINK_BURST, &after_lld, &peer_done);
+    fd = g_file_open_tmp("mips64-r10k-llsc-slow-path-XXXXXX", &trace_path,
+                         NULL);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    qts = qtest_initf(
+        "-M malta -m 64M -cpu R10000 "
+        "-device loader,file=%s,addr=0x%" PRIx64 ",force-raw=on "
+        "-device loader,addr=0x%" PRIx64 ",cpu-num=0 "
+        "-trace mips_r10k_llsc_peer_store_slow_path,file=%s "
+        "-accel tcg -no-reboot -no-shutdown -S",
+        image, CODE_PHYS, CODE_KSEG0 + PEER_OFF, trace_path);
+    unlink(image);
+
+    qtest_writeq(qts, DATA_PHYS + COMMAND_OFF, COMMAND_MAGIC);
+    add_breakpoint(qts, 0, CODE_KSEG0 + peer_done);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    qtest_qmp_eventwait(qts, "STOP");
+    g_assert_cmphex(qtest_readq(qts, DATA_PHYS + PEER_DONE_OFF), ==,
+                    PEER_DONE_MAGIC);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(trace_path, &trace, NULL, NULL));
+    g_assert_null(strstr(trace, "mips_r10k_llsc_peer_store_slow_path"));
+    g_assert_cmpint(g_unlink(trace_path), ==, 0);
 }
 
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
-    qtest_add_func("/r10k-llsc-intervention/outside-block-peer-write",
-                   test_outside_block_intervention);
-    qtest_add_func("/r10k-llsc-intervention/same-block-peer-write",
-                   test_same_block_intervention);
-    qtest_add_func("/r10k-llsc-intervention/target-aba-peer-write",
-                   test_target_aba_intervention);
+    qtest_add_func("/r10k-llsc-peer-store/outside-block",
+                   test_r10k_outside_block_peer_store);
+    qtest_add_func("/r10k-llsc-peer-store/same-block",
+                   test_r10k_same_block_peer_store);
+    qtest_add_func("/r10k-llsc-peer-store/alias-same-block",
+                   test_r10k_alias_same_block_peer_store);
+    qtest_add_func("/r10k-llsc-peer-store/target-aba",
+                   test_r10k_target_aba_peer_store);
+    qtest_add_func("/r10k-llsc-peer-store/r4000-normal",
+                   test_r4k_normal_llsc);
+    qtest_add_func("/r10k-llsc-peer-store/r14000-normal",
+                   test_r14k_normal_llsc);
+    qtest_add_func("/r10k-llsc-peer-store/migration-drops-link",
+                   test_r10k_migration_drops_link);
+    qtest_add_func("/r10k-llsc-peer-store/no-link-skips-slow-path",
+                   test_r10k_no_link_skips_slow_path);
     return g_test_run();
 }
