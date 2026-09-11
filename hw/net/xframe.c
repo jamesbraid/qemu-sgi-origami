@@ -38,6 +38,7 @@
 #include "migration/vmstate.h"
 #include "net/net.h"
 #include "net/checksum.h"
+#include "net/eth.h"
 #include "hw/net/net_tx_pkt.h"
 
 #include "qapi/error.h"
@@ -2716,6 +2717,8 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
     XframeState *s = XFRAME(qemu_get_nic_opaque(nc));
     PCIDevice *pdev = PCI_DEVICE(s);
     size_t orig_size = size;
+    uint8_t min_pkt[ETH_ZLEN];
+    size_t min_pktsz = sizeof(min_pkt);
     uint64_t desc_addr, control2;
     uint64_t bufaddr3[3] = { 0, 0, 0 };
     size_t bufcap[3] = { 0, 0, 0 };
@@ -2738,6 +2741,12 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
         }
         buf += sizeof(struct virtio_net_hdr);
         size -= sizeof(struct virtio_net_hdr);
+    }
+
+    /* The backend may have counted a vnet header toward Ethernet padding. */
+    if (eth_pad_short_frame(min_pkt, &min_pktsz, buf, size)) {
+        buf = min_pkt;
+        size = min_pktsz;
     }
 
     if (!xframe_rx_head(s, &desc_addr, raw)) {

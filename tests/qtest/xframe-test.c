@@ -44,6 +44,7 @@
 #include "libqtest.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_regs.h"
+#include "net/eth.h"
 #include "standard-headers/linux/virtio_net.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -4088,16 +4089,21 @@ static void test_transmit_ordinary_frame_to_non_vnet_tap(void)
     close(inject_fd);
 }
 
-static void test_receive_strips_vnet_header(void)
+static void test_receive_pads_after_vnet_header(void)
 {
     XframeTx t;
-    uint8_t packet[sizeof(struct virtio_net_hdr) + 64] = { };
+    uint8_t packet[ETH_ZLEN] = { };
     uint8_t *frame = packet + sizeof(struct virtio_net_hdr);
-    uint8_t landed[64];
+    uint8_t landed[ETH_ZLEN];
+    size_t frame_len = sizeof(packet) - sizeof(struct virtio_net_hdr);
     int tap_fd, inject_fd;
     unsigned i;
 
-    for (i = 0; i < sizeof(landed); i++) {
+    /*
+     * TAP pads this exact shape as header plus frame. Once the device removes
+     * the negotiated header, the Ethernet packet still needs its own padding.
+     */
+    for (i = 0; i < frame_len; i++) {
         frame[i] = (uint8_t)(0x80 + i);
     }
     memcpy(frame, xframe_station_mac, sizeof(xframe_station_mac));
@@ -4108,6 +4114,8 @@ static void test_receive_strips_vnet_header(void)
 
     xframe_program_rxd(&t, RX_RING_BASE, RX_BUF0, RX_BUF_CAPACITY);
     xframe_rx_ring_arm(&t, RX_RING_BASE);
+    memset(landed, 0xa5, sizeof(landed));
+    qtest_memwrite(t.qs->qts, RX_BUF0, landed, sizeof(landed));
 
     redirector_send_packet(inject_fd, packet,
                            sizeof(struct virtio_net_hdr),
@@ -4117,9 +4125,12 @@ static void test_receive_strips_vnet_header(void)
     g_assert_true(xframe_wait_rxd_consumed(&t, RX_RING_BASE, 5000));
     g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
     g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 16) >>
-                    RXD_BUFSIZ_SHIFT, ==, sizeof(landed));
+                    RXD_BUFSIZ_SHIFT, ==, ETH_ZLEN);
     qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
-    g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(landed));
+    g_assert_cmpmem(landed, frame_len, frame, frame_len);
+    for (i = frame_len; i < sizeof(landed); i++) {
+        g_assert_cmphex(landed[i], ==, 0);
+    }
 
     xframe_tx_stop(&t);
     close(tap_fd);
@@ -5631,8 +5642,8 @@ int main(int argc, char **argv)
                    test_transmit_adds_vnet_header_to_ordinary_frame);
     qtest_add_func("xframe/transmit-ordinary-frame-to-non-vnet-tap",
                    test_transmit_ordinary_frame_to_non_vnet_tap);
-    qtest_add_func("xframe/receive-strips-vnet-header",
-                   test_receive_strips_vnet_header);
+    qtest_add_func("xframe/receive-pads-after-vnet-header",
+                   test_receive_pads_after_vnet_header);
 #endif
     qtest_add_func("xframe/transmit-segments-a-send-larger-than-a-frame",
                    test_transmit_segments_a_send_larger_than_a_frame);
