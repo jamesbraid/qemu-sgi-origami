@@ -40,7 +40,6 @@ static void test_init(Object *obj)
 
 static const Property test_properties[] = {
     DEFINE_PROP_LINK("hub", SGIHubTestState, hub, TYPE_SGI_HUB, SGIHubState *),
-    DEFINE_PROP_END_OF_LIST(),
 };
 
 static void test_class_init(ObjectClass *oc, const void *data)
