@@ -407,13 +407,13 @@ static bool xframe_link_pending(XframeState *s)
  * xge uses. Linux services it the same way (s2io_txpic_intr_handle reads
  * pic_int_status for PIC_INT_GPIO, then gpio_int_reg for LINK_UP).
  *
- * The matching active-high GPIO_INT_MASK bits gate the LINK_UP and LINK_DOWN
- * leaves before PIC_INT_MASK gates their PIC_INT_GPIO roll-up.
+ * IRIX xg opens PIC_INT_MASK but leaves GPIO_INT_MASK at its all-ones reset,
+ * yet the link source reaches its ISR. Gate the source on PIC_INT_GPIO alone
+ * and retain GPIO_INT_MASK for readback.
  */
 static bool xframe_gpio_link_pending(XframeState *s)
 {
-    return ((s->gpio_int_reg & XFRAME_GPIO_INT_LINK_BITS &
-             ~s->gpio_int_mask) != 0) &&
+    return ((s->gpio_int_reg & XFRAME_GPIO_INT_LINK_BITS) != 0) &&
            !(s->pic_int_mask & XFRAME_PIC_INT_GPIO);
 }
 
@@ -434,32 +434,26 @@ static bool xframe_sched_int_pending(XframeState *s)
 }
 
 /*
- * Recompute the level-sensitive INTx line. Each source first passes its leaf
- * and block masks, then the matching active-high GENERAL aggregate mask.
- * Changing GENERAL_INT_MASK changes only delivery: it does not consume a leaf,
- * so reopening a pending aggregate may assert the line again.
+ * Recompute the level-sensitive INTx line from each source's block masks.
+ * GENERAL_INT_MASK does not gate delivery: IRIX xg leaves it at its all-ones
+ * reset while enabling interrupts through PIC_INT_MASK and TXPIC_INT_MASK.
  *
  * Four sources so far: receive completion (RX_TRAFFIC_INT gated by
  * RX_TRAFFIC_MASK), transmit completion (TX_TRAFFIC_INT gated by
  * TX_TRAFFIC_MASK), and two independent link-state paths -- the MAC-block one
  * (MAC_RMAC_ERR_REG gated by the two MAC masks, what OpenBSD xge uses) and the
- * PIC/GPIO-block one (GPIO_INT_REG gated by its matching GPIO leaf and
- * PIC_INT_MASK's PIC_INT_GPIO bit). Either fires on an idle interface -- no
- * frame need
- * arrive for the link to come up -- so a driver watchdog that resets on "no
- * interrupts" is satisfied through whichever block that driver unmasked.
+ * PIC/GPIO-block one (GPIO_INT_REG gated by PIC_INT_MASK's PIC_INT_GPIO bit).
+ * Either fires on an idle interface -- no frame need arrive for the link to
+ * come up -- so a driver watchdog that resets on "no interrupts" is satisfied
+ * through whichever block that driver unmasked.
  */
 static void xframe_update_irq(XframeState *s)
 {
-    bool rx_pending = (s->rx_traffic_int & ~s->rx_traffic_mask) != 0 &&
-                      !(s->general_int_mask & XFRAME_GEN_INTR_RXTRAFFIC);
-    bool tx_pending = (s->tx_traffic_int & ~s->tx_traffic_mask) != 0 &&
-                      !(s->general_int_mask & XFRAME_GEN_INTR_TXTRAFFIC);
-    bool link_pending = xframe_link_pending(s) &&
-                        !(s->general_int_mask & XFRAME_GEN_INTR_RXMAC);
-    bool pic_pending = (xframe_gpio_link_pending(s) ||
-                        xframe_sched_int_pending(s)) &&
-                       !(s->general_int_mask & XFRAME_GEN_INTR_TXPIC);
+    bool rx_pending = (s->rx_traffic_int & ~s->rx_traffic_mask) != 0;
+    bool tx_pending = (s->tx_traffic_int & ~s->tx_traffic_mask) != 0;
+    bool link_pending = xframe_link_pending(s);
+    bool pic_pending = xframe_gpio_link_pending(s) ||
+                       xframe_sched_int_pending(s);
 
     pci_set_irq(PCI_DEVICE(s),
                 rx_pending || tx_pending || link_pending || pic_pending);
@@ -1436,12 +1430,10 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
         return;
     case XFRAME_GENERAL_INT_MASK:
         /*
-         * Active-high final delivery mask. GENERAL_INT_STATUS keeps the
-         * model's existing derived visibility, so changing this mask only
-         * recomputes the level-sensitive INTx output.
+         * Retained for readback. IRIX xg leaves this at reset and enables the
+         * interrupt sources it uses through their block masks.
          */
         s->general_int_mask = full;
-        xframe_update_irq(s);
         return;
     case XFRAME_TX_TRAFFIC_MASK:
         /* Second-level mask: gates TX_TRAFFIC_INT -> INTx. Recompute. */
@@ -1478,9 +1470,8 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
         xframe_update_irq(s);
         return;
     case XFRAME_GPIO_INT_MASK:
-        /* Matching active-high leaf bits gate LINK_UP and LINK_DOWN. */
+        /* Retained for readback; the GPIO link source is gated at PIC. */
         s->gpio_int_mask = full;
-        xframe_update_irq(s);
         return;
     case XFRAME_TXPIC_INT_MASK:
         /*
@@ -3205,8 +3196,9 @@ static int xframe_post_load(void *opaque, int version_id)
  * masks, and the two MAC masks) and the pending TX_TRAFFIC_INT completion
  * status -- these feed xframe_update_irq, so a migrated target that lost them
  * would recompute a wrong INTx line; the PIC/GPIO-block link path IRIX xg uses
- * (gpio_int_reg, the link-state status, and its active-high gpio_int_mask,
- * beneath pic_int_mask's PIC_INT_GPIO bit); the current link-up timer and the
+ * (gpio_int_reg, the link-state status, and gpio_int_mask, retained for
+ * readback; pic_int_mask's PIC_INT_GPIO bit gates delivery); the current
+ * link-up timer and the
  * legacy link-down timer retained for existing migration streams; and the
  * scheduled interrupt that replaced the earlier
  * sustained-link heartbeat -- SCHED_INT_CTRL (the register the driver arms it
