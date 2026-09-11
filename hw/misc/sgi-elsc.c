@@ -748,10 +748,10 @@ static void elsc_request_complete(SGIElscState *s)
     /*
      * The response belongs to whoever asked: the CPU driving the bus
      * is current_cpu at the slave event, and its index is the global
-     * processor code. A monitor or qtest access carries no processor
-     * and attributes as the console processor.
+     * processor code. A monitor or qtest access carries no processor,
+     * so attribute it to slice A of this controller's module.
      */
-    s->resp_owner = current_cpu ? current_cpu->cpu_index : 0;
+    s->resp_owner = current_cpu ? current_cpu->cpu_index : s->cpu_base;
 
     if (s->rxlen < 2 || s->rxlen != (uint32_t)s->rxbuf[0] + 2 ||
         elsc_checksum(s->rxbuf, s->rxlen) != 0) {
@@ -1114,12 +1114,12 @@ static uint8_t elsc_recv(I2CSlave *i2c)
  * Three-bit code: signal2 is signal1 with bit 3 set, so eight or more
  * collides with another processor's signal1.
  */
-#define ELSC_SIGNAL_BASE       0xe0   /* 0x70 * 2 */
-#define ELSC_SIGNAL_CODE_COUNT 8      /* three-bit processor code */
+#define ELSC_SIGNAL_BASE         0xe0   /* 0x70 * 2 */
+#define ELSC_RING_POSITION_COUNT 8      /* three-bit position field */
 
-static uint8_t elsc_signal_byte(unsigned processor_code, bool signal2)
+static uint8_t elsc_signal_byte(unsigned ring_position, bool signal2)
 {
-    uint8_t signal1 = ELSC_SIGNAL_BASE + processor_code;
+    uint8_t signal1 = ELSC_SIGNAL_BASE + ring_position;
 
     return signal2 ? signal1 + 8 : signal1;
 }
@@ -1155,22 +1155,24 @@ static void elsc_publish_grant(SGIElscState *s, uint8_t value)
  * input for the console processor, or a response its requester has
  * not yet consumed.
  */
-static bool elsc_arb_signal2(SGIElscState *s, uint32_t code)
+static bool elsc_arb_signal2(SGIElscState *s, uint32_t ring_position)
 {
-    return (code == 0 && s->rx_queue_len > 0) ||
-           (s->resp_owner >= 0 && code == (uint32_t)s->resp_owner &&
+    return (ring_position == 0 && s->rx_queue_len > 0) ||
+           (s->resp_owner >= 0 &&
+            ring_position == (uint32_t)s->resp_owner &&
             s->txpos < s->txlen);
 }
 
-static bool elsc_shared_arb_signal2(SGIElscState *s, uint32_t code)
+static bool elsc_shared_arb_signal2(SGIElscState *s,
+                                    uint32_t ring_position)
 {
     SGIElscState *owner = s;
 
-    if (s->arb_peer && code >= s->arb_peer->cpu_base &&
-        code < s->arb_peer->cpu_base + s->arb_peer->num_cpus) {
+    if (s->arb_peer && ring_position >= s->arb_peer->cpu_base &&
+        ring_position < s->arb_peer->cpu_base + s->arb_peer->num_cpus) {
         owner = s->arb_peer;
     }
-    return elsc_arb_signal2(owner, code);
+    return elsc_arb_signal2(owner, ring_position);
 }
 
 /* One address-only ring position is published on each eligible 1ms tick. */
@@ -1336,7 +1338,7 @@ void sgi_elsc_share_arbitration(SGIElscState *master, SGIElscState *slave,
     assert(!slave->arbitration);
     assert(master != slave);
     assert(!master->arb_peer);
-    assert(positions > 0 && positions <= ELSC_SIGNAL_CODE_COUNT);
+    assert(positions > 0 && positions <= ELSC_RING_POSITION_COUNT);
 
     master->arb_peer = slave;
     master->arb_positions = positions;
@@ -1347,7 +1349,7 @@ static void elsc_realize(DeviceState *dev, Error **errp)
     SGIElscState *s = SGI_ELSC(dev);
 
     s->bus = I2C_BUS(qdev_get_parent_bus(dev));
-    s->arb_positions = ELSC_SIGNAL_CODE_COUNT;
+    s->arb_positions = ELSC_RING_POSITION_COUNT;
     /*
      * The cold power-on latch is set here rather than in reset because a
      * warm reset -- a guest "rst", or any system reset -- does not cycle
@@ -1399,6 +1401,16 @@ static int elsc_post_load(void *opaque, int version_id)
 {
     SGIElscState *s = opaque;
 
+    if (s->arb_code >= ELSC_RING_POSITION_COUNT) {
+        return -EINVAL;
+    }
+    if (s->arb_code >= s->arb_positions) {
+        if (version_id >= 13) {
+            return -EINVAL;
+        }
+        s->arb_code %= s->arb_positions;
+    }
+
     if (version_id < 12) {
         s->arb_present = false;
         s->arb_held = false;
@@ -1436,7 +1448,7 @@ static int elsc_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_elsc = {
     .name = "sgi-elsc",
-    .version_id = 12,
+    .version_id = 13,
     .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_I2C_SLAVE(parent_obj, SGIElscState),
@@ -1587,7 +1599,7 @@ static void elsc_format_state(SGIElscState *s, GString *buf)
         g_string_append(buf, "  pending response: none\n");
     }
     g_string_append_printf(buf,
-                           "  arbitration rotation: next code %u of %u\n",
+                           "  arbitration rotation: next position %u of %u\n",
                            s->arb_code, s->arb_positions);
     g_string_append_printf(buf,
                            "  console signal (code 0): 0x%02x = signal%d"

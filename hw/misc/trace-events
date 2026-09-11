@@ -477,6 +477,6 @@ sgi_ioc3_sdma_write_refused(uint32_t reg, uint32_t val) "reg 0x%03x <- 0x%08x re
 # sgi-elsc.c
 sgi_elsc_get(uint32_t rx_before, uint32_t rx_after, unsigned int payload) "console-input poll: rx_queue %u -> %u, payload %u byte(s)"
 sgi_elsc_acp(unsigned int len, char selector) "console-output flush: %u byte(s), processor selector '%c'"
-sgi_elsc_arb_step(uint32_t cpu_base, uint32_t code, uint8_t signal, bool signal2) "arbitration: controller at cpu-base %u presents code %u as 0x%02x (signal2=%d gates console-input get)"
+sgi_elsc_arb_step(uint32_t cpu_base, uint32_t ring_position, uint8_t signal, bool signal2) "arbitration: controller at cpu-base %u presents ring position %u as 0x%02x (signal2=%d gates console-input get)"
 sgi_elsc_rx_enqueue(uint8_t byte, uint32_t rx_queue_len) "rx_queue enqueue 0x%02x, len now %u"
 sgi_elsc_rx_dequeue(unsigned int count, uint32_t rx_queue_len) "rx_queue dequeue %u byte(s), len now %u"
