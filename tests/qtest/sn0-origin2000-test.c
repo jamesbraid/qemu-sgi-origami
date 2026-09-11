@@ -27,6 +27,7 @@
 #define ROUTER_SCRATCH1 0x28
 #define ROUTER_META_TABLE 0x70000
 #define ROUTER_LOCAL_TABLE 0x70100
+#define ROUTER_PORT_WORKING(port) (UINT64_C(1) << (26 + 3 * (port)))
 #define MEM_PROBE UINT64_C(0x800000)
 #define XTALK_BASE UINT64_C(0x20000000000)
 #define XTALK_REG_DATA 4
@@ -799,6 +800,38 @@ static void test_module_link_isolation(void)
     qtest_quit(qts);
 }
 
+static uint64_t local_router_status(QTestState *qts, unsigned int node)
+{
+    uint64_t status = vector_op(qts, node, 0, 0, 0, 0);
+
+    g_assert_cmphex(status & VECTOR_VALID, ==, VECTOR_VALID);
+    return hub_read(qts, node, NI_VECTOR_READ_DATA);
+}
+
+static void test_module_interlink_status(void)
+{
+    QTestState *qts = start_module();
+    const uint64_t attached = ROUTER_PORT_WORKING(4) |
+                              ROUTER_PORT_WORKING(5);
+    const uint64_t interlink = ROUTER_PORT_WORKING(6);
+
+    for (unsigned int node = 0; node <= 2; node += 2) {
+        g_assert_cmphex(local_router_status(qts, node) &
+                        (attached | interlink), ==, attached | interlink);
+    }
+    set_down_links(qts, "r1-r2");
+    for (unsigned int node = 0; node <= 2; node += 2) {
+        g_assert_cmphex(local_router_status(qts, node) &
+                        (attached | interlink), ==, attached);
+    }
+    set_down_links(qts, "");
+    for (unsigned int node = 0; node <= 2; node += 2) {
+        g_assert_cmphex(local_router_status(qts, node) &
+                        (attached | interlink), ==, attached | interlink);
+    }
+    qtest_quit(qts);
+}
+
 static void migrate_module(QTestState *from, QTestState *to)
 {
     g_autofree char *directory = g_dir_make_tmp("origin2000-migrate-XXXXXX",
@@ -1362,6 +1395,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/all-module-routes", test_all_module_routes);
     qtest_add_func("sn0/origin2000/module-link-isolation",
                     test_module_link_isolation);
+    qtest_add_func("sn0/origin2000/module-interlink-status",
+                   test_module_interlink_status);
     qtest_add_func("sn0/origin2000/isolated-migration",
                     test_isolated_migration);
     return g_test_run();
