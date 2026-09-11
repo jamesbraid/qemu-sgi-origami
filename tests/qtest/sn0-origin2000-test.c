@@ -61,6 +61,23 @@
 #define CROSSBOW0_PRESENT 0x0700
 
 #define BRIDGE_CONTROL 0x0020
+#define BRIDGE_DEVICE(n) (0x0200 + 8 * (n))
+#define BRIDGE_CFG0(n) (0x020000 + (n) * 0x1000)
+#define BRIDGE_DEV_SWAP_DIRECT (1u << 19)
+#define BRIDGE_DEV_MEMORY_SPACE (1u << 12)
+#define PCI_COMMAND 0x04
+#define PCI_COMMAND_MEMORY_MASTER 0x0006
+#define PCI_BAR0 0x10
+#define DMA_DEVICE 3
+#define DMA_MMIO 0x01000000u
+#define DMA_WINDOW 0x700000
+#define DMA_REG_ADDRESS 0x00
+#define DMA_REG_LENGTH 0x04
+#define DMA_REG_SEED 0x08
+#define DMA_REG_GO 0x0c
+#define DMA_REG_ADDRESS_HI 0x18
+#define DMA_LENGTH 16
+#define DMA_TARGET UINT64_C(0x02000000)
 /* Architectural Hub-special offset 0x10000000 on its QEMU carrier. */
 #define LOCAL_FLASH_VIEW UINT64_C(0x10010000000)
 #define RESET_FLASH_VIEW UINT64_C(0x1fc00000)
@@ -129,6 +146,25 @@ static void baseio_write(QTestState *qts, uint64_t offset, uint32_t value)
                                      XTALK_WIDGET_SIZE + offset +
                                      XTALK_REG_DATA,
                                      bytes, sizeof(bytes)));
+}
+
+static void baseio_window_write(QTestState *qts, uint64_t offset,
+                                uint32_t value)
+{
+    uint8_t bytes[sizeof(uint32_t)];
+
+    stl_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, 0,
+                                     XTALK_BASE +
+                                     module_nasids[0] * NODE_STRIDE +
+                                     BASEIO_WIDGET *
+                                     XTALK_WIDGET_SIZE + offset,
+                                     bytes, sizeof(bytes)));
+}
+
+static void dma_card_write(QTestState *qts, unsigned int reg, uint32_t value)
+{
+    baseio_window_write(qts, DMA_WINDOW + reg, value);
 }
 
 static void set_crossbow0_links_alive(QTestState *qts, unsigned int widgets)
@@ -222,10 +258,10 @@ static bool cpu_read(QTestState *qts, unsigned int cpu, uint64_t address,
     return true;
 }
 
-static QTestState *start_module(void)
+static QTestState *start_module_with(const char *extra)
 {
-    QTestState *qts = qtest_init("-M origin2000 -smp 8,sockets=4,cores=2 "
-                                 "-m 256M -d unimp,guest_errors");
+    QTestState *qts = qtest_initf("-M origin2000 -smp 8,sockets=4,cores=2 "
+                                  "-m 256M -d unimp,guest_errors %s", extra);
     const unsigned int numbers[] = { 0x11, 0x12, 0x21, 0x22 };
     unsigned int i;
 
@@ -236,6 +272,11 @@ static QTestState *start_module(void)
                         ==, numbers[i]);
     }
     return qts;
+}
+
+static QTestState *start_module(void)
+{
+    return start_module_with("");
 }
 
 /* The production machine assembles a switch behind each node's Xtalk view. */
@@ -651,6 +692,52 @@ static void test_bte_routes_three_distinct_endpoints(void)
     for (unsigned int node = 0; node < G_N_ELEMENTS(module_nasids); node++) {
         g_assert_cmphex(hub_read(qts, node, HUB_PI_INT_PEND0), ==,
                         node == 1 ? 1 << 20 : 0);
+    }
+    qtest_quit(qts);
+}
+
+static void test_baseio_dma_reaches_far_node(void)
+{
+    QTestState *qts = start_module_with(
+        "-device sgi-bridge-dma-test,bus=pci.baseio0,addr=3");
+    const uint64_t pci_far =
+        ((uint64_t)LOCAL_HUB_WIDGET << 60) |
+        ((uint64_t)module_nasids[3] * NODE_STRIDE) | DMA_TARGET;
+    uint8_t sentinel[DMA_LENGTH];
+    uint8_t seen[DMA_LENGTH];
+
+    program_module(qts);
+    for (unsigned int i = 0; i < sizeof(sentinel); i++) {
+        sentinel[i] = 0xa5 ^ (uint8_t)(i * 7);
+    }
+    for (unsigned int node = 0; node < G_N_ELEMENTS(module_nasids); node++) {
+        g_assert_true(qtest_memwrite_cpu(qts, 2 * node,
+                                         node_memory_address(qts, node,
+                                                             DMA_TARGET),
+                                         sentinel, sizeof(sentinel)));
+    }
+
+    baseio_window_write(qts, BRIDGE_CFG0(DMA_DEVICE) + PCI_BAR0, DMA_MMIO);
+    baseio_window_write(qts, BRIDGE_CFG0(DMA_DEVICE) + PCI_COMMAND,
+                        PCI_COMMAND_MEMORY_MASTER);
+    baseio_window_write(qts, BRIDGE_DEVICE(DMA_DEVICE) + XTALK_REG_DATA,
+                        BRIDGE_DEV_SWAP_DIRECT | BRIDGE_DEV_MEMORY_SPACE |
+                        (DMA_MMIO >> 20));
+    dma_card_write(qts, DMA_REG_ADDRESS, pci_far);
+    dma_card_write(qts, DMA_REG_ADDRESS_HI, pci_far >> 32);
+    dma_card_write(qts, DMA_REG_LENGTH, sizeof(seen));
+    dma_card_write(qts, DMA_REG_SEED, 0x61);
+    dma_card_write(qts, DMA_REG_GO, 1);
+
+    for (unsigned int node = 0; node < G_N_ELEMENTS(module_nasids); node++) {
+        g_assert_true(qtest_memread_cpu(qts, 2 * node,
+                                        node_memory_address(qts, node,
+                                                            DMA_TARGET),
+                                        seen, sizeof(seen)));
+        for (unsigned int i = 0; i < sizeof(seen); i++) {
+            g_assert_cmpuint(seen[i], ==,
+                             node == 3 ? (uint8_t)(0x61 + i) : sentinel[i]);
+        }
     }
     qtest_quit(qts);
 }
@@ -1263,6 +1350,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/bte-interrupt", test_bte_and_interrupt);
     qtest_add_func("sn0/origin2000/bte-three-distinct-endpoints",
                    test_bte_routes_three_distinct_endpoints);
+    qtest_add_func("sn0/origin2000/baseio-dma-far-node",
+                   test_baseio_dma_reaches_far_node);
     qtest_add_func("sn0/origin2000/oversize-firmware", test_oversize_firmware);
     qtest_add_func("sn0/origin2000/missing-firmware", test_missing_firmware);
     qtest_add_func("sn0/origin2000/migration", test_migration);
