@@ -168,6 +168,23 @@ static void sgi_ioc3_onewire_slot(SGIIOC3State *s, uint32_t val)
                           (level ? SGI_IOC3_MICROLAN_LEVEL : 0);
 }
 
+static bool sgi_ioc3_int_out_periodic_has_no_low_phase(uint32_t active)
+{
+    return (active & SGI_IOC3_INT_OUT_MODE) ==
+               SGI_IOC3_INT_OUT_PERIODIC &&
+           (active & SGI_IOC3_INT_OUT_COUNT) + 1 <=
+               SGI_IOC3_INT_OUT_PULSE_TICKS;
+}
+
+static void sgi_ioc3_int_out_hold_high(SGIIOC3State *s)
+{
+    s->int_out_active = SGI_IOC3_INT_OUT_HIGH;
+    s->int_out_state = true;
+    s->int_out_pulse_end = false;
+    s->int_out_square_started = false;
+    timer_del(s->int_out_timer);
+}
+
 static void sgi_ioc3_int_out_expire(void *opaque)
 {
     SGIIOC3State *s = opaque;
@@ -195,7 +212,9 @@ static void sgi_ioc3_int_out_expire(void *opaque)
         }
         break;
     case SGI_IOC3_INT_OUT_PERIODIC:
-        if (!s->int_out_pulse_end) {
+        if (sgi_ioc3_int_out_periodic_has_no_low_phase(s->int_out_active)) {
+            sgi_ioc3_int_out_hold_high(s);
+        } else if (!s->int_out_pulse_end) {
             s->int_out_state = true;
             s->int_out_pulse_end = true;
             timer_mod(s->int_out_timer,
@@ -1532,6 +1551,16 @@ static int sgi_ioc3_post_load(void *opaque, int version_id)
         s->int_out_pulse_end = false;
         s->int_out_square_started = false;
         timer_del(s->int_out_timer);
+    } else if (sgi_ioc3_int_out_periodic_has_no_low_phase(
+                   s->int_out_active) &&
+               (s->int_out_state || s->int_out_pulse_end)) {
+        /*
+         * Early version 15 streams can contain the count-two periodic mode.
+         * It has no low phase, so retain its readback and asserted level but
+         * discard the redundant timer. A not-yet-fired timer keeps its
+         * migrated deadline and makes the same conversion in its callback.
+         */
+        sgi_ioc3_int_out_hold_high(s);
     }
     sgi_ioc3_update_irq(s);
     return 0;
