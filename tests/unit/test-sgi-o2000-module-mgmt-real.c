@@ -593,10 +593,12 @@ static void test_waiting_starts_serialize(Fixture *f, gconstpointer unused)
     g_assert_false(f->adapter[1]->wire_active);
     g_assert_true(f->adapter[1]->wire_start_waiting);
     g_assert_true(wait_done(f, 0));
+    g_assert_cmphex(read_reg(f, 0, CTRL_REG) & PCF8584_STS_LRB, ==, 0);
     stop_transfer(f, 0);
 
     g_assert_true(wait_done(f, 1));
     g_assert_cmphex(read_reg(f, 1, CTRL_REG) & PCF8584_STS_LAB, ==, 0);
+    g_assert_cmphex(read_reg(f, 1, CTRL_REG) & PCF8584_STS_LRB, ==, 0);
     stop_transfer(f, 1);
 }
 
