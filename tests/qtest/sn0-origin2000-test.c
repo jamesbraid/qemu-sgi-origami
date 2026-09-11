@@ -3,6 +3,8 @@
 
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
+#include "exec/hwaddr.h"
+#include "hw/pci/pci.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
@@ -653,42 +655,45 @@ static void assert_module_memory(QTestState *qts, bool split)
 static void test_bte_routes_three_distinct_endpoints(void)
 {
     QTestState *qts = start_module();
-    const uint64_t source =
-        (uint64_t)module_nasids[3] * NODE_STRIDE + MEM_PROBE;
-    const uint64_t dest =
-        (uint64_t)module_nasids[2] * NODE_STRIDE + MEM_PROBE;
-    const uint64_t notify =
-        (uint64_t)module_nasids[1] * NODE_STRIDE + MEM_PROBE + 256;
+    const hwaddr source =
+        (hwaddr)module_nasids[3] * NODE_STRIDE + MEM_PROBE;
+    const hwaddr dest =
+        (hwaddr)module_nasids[2] * NODE_STRIDE + MEM_PROBE;
+    const hwaddr notify =
+        (hwaddr)module_nasids[1] * NODE_STRIDE + MEM_PROBE + 256;
     const uint64_t source_marker = UINT64_C(0x3132333435363738);
     const uint64_t dest_marker = UINT64_C(0xd1d2d3d4d5d6d7d8);
     const uint64_t notify_marker = UINT64_C(0xe1e2e3e4e5e6e7e8);
 
     program_module(qts);
+    node_write(qts, 2, MEM_PROBE - 8, dest_marker - 8);
     for (unsigned int offset = 0; offset < 256; offset += 8) {
         node_write(qts, 3, MEM_PROBE + offset, source_marker + offset);
         node_write(qts, 2, MEM_PROBE + offset, dest_marker + offset);
     }
+    node_write(qts, 2, MEM_PROBE + 256, dest_marker + 256);
     node_write(qts, 1, MEM_PROBE + 256, notify_marker);
 
     hub_write(qts, 0, 0x410008, source);
     hub_write(qts, 0, 0x410010, dest);
     hub_write(qts, 0, 0x410020, notify);
-    hub_write(qts, 0, 0x410000, (1 << 20) | 1);
+    hub_write(qts, 0, 0x410000, (1 << 20) | 2);
     hub_write(qts, 0, 0x410018, 1 << 4);
 
     g_assert_cmphex(hub_read(qts, 0, 0x410000), ==, 0);
-    for (unsigned int offset = 0; offset < 128; offset += 8) {
+    for (unsigned int offset = 0; offset < 256; offset += 8) {
         g_assert_cmphex(node_read(qts, 2, MEM_PROBE + offset), ==,
                         source_marker + offset);
         g_assert_cmphex(node_read(qts, 3, MEM_PROBE + offset), ==,
                         source_marker + offset);
     }
-    g_assert_cmphex(node_read(qts, 2, MEM_PROBE + 128), ==,
-                    dest_marker + 128);
+    g_assert_cmphex(node_read(qts, 2, MEM_PROBE - 8), ==, dest_marker - 8);
+    g_assert_cmphex(node_read(qts, 2, MEM_PROBE + 256), ==,
+                    dest_marker + 256);
     g_assert_cmphex(node_read(qts, 1, MEM_PROBE + 256), ==, 0);
 
     hub_write(qts, 0, 0x410028, (20 << 16) | module_nasids[1]);
-    hub_write(qts, 0, 0x410000, (1 << 20) | 1);
+    hub_write(qts, 0, 0x410000, (1 << 20) | 2);
     hub_write(qts, 0, 0x410018, 0);
     for (unsigned int node = 0; node < G_N_ELEMENTS(module_nasids); node++) {
         g_assert_cmphex(hub_read(qts, node, HUB_PI_INT_PEND0), ==,
@@ -701,9 +706,9 @@ static void test_baseio_dma_reaches_far_node(void)
 {
     QTestState *qts = start_module_with(
         "-device sgi-bridge-dma-test,bus=pci.baseio0,addr=3");
-    const uint64_t pci_far =
-        ((uint64_t)LOCAL_HUB_WIDGET << 60) |
-        ((uint64_t)module_nasids[3] * NODE_STRIDE) | DMA_TARGET;
+    const pcibus_t pci_far =
+        ((pcibus_t)LOCAL_HUB_WIDGET << 60) |
+        ((pcibus_t)module_nasids[3] * NODE_STRIDE) | DMA_TARGET;
     uint8_t sentinel[DMA_LENGTH];
     uint8_t seen[DMA_LENGTH];
 
@@ -724,8 +729,8 @@ static void test_baseio_dma_reaches_far_node(void)
     baseio_window_write(qts, BRIDGE_DEVICE(DMA_DEVICE) + XTALK_REG_DATA,
                         BRIDGE_DEV_SWAP_DIRECT | BRIDGE_DEV_MEMORY_SPACE |
                         (DMA_MMIO >> 20));
-    dma_card_write(qts, DMA_REG_ADDRESS, pci_far);
-    dma_card_write(qts, DMA_REG_ADDRESS_HI, pci_far >> 32);
+    dma_card_write(qts, DMA_REG_ADDRESS, (uint32_t)pci_far);
+    dma_card_write(qts, DMA_REG_ADDRESS_HI, (uint32_t)(pci_far >> 32));
     dma_card_write(qts, DMA_REG_LENGTH, sizeof(seen));
     dma_card_write(qts, DMA_REG_SEED, 0x61);
     dma_card_write(qts, DMA_REG_GO, 1);
@@ -795,6 +800,10 @@ static void test_module_link_isolation(void)
                         ==, VECTOR_VALID);
     }
     set_down_links(qts, "");
+    for (unsigned int node = 0; node < 4; node++) {
+        g_assert_cmphex(vector_op(qts, node, 6, 0, 0, 0) & VECTOR_VALID,
+                        ==, VECTOR_VALID);
+    }
     assert_routes(qts, all_module_routes);
     assert_module_memory(qts, false);
     qtest_quit(qts);
