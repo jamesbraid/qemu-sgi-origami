@@ -138,6 +138,11 @@
 #define IOC3_INT_OUT_PERIODIC    0x00060000u
 #define IOC3_INT_OUT_STATE       0x80000000u
 #define IOC3_INT_OUT_TICK_NS     7800LL
+#define PI_RT_COUNT              (HUB_LOCAL + 0x030100)
+#define PI_RT_COMPARE_A          (HUB_LOCAL + 0x000108)
+#define PI_RT_PENDING_A          (HUB_LOCAL + 0x000120)
+#define PI_RT_SENTINEL_TICKS     125ULL
+#define PI_RT_SENTINEL_NS        100000LL
 #define IOC3_SDMA_RING_HI        IOC3_REG(0x0b0)
 #define IOC3_SDMA_RING_LO        IOC3_REG(0x0b4)
 #define IOC3_SDMA_A_CONTROL      IOC3_REG(0x0b8)
@@ -461,6 +466,125 @@ static void test_interrupt_output_phase_survives_migration(const void *data)
 
     qtest_quit(to);
     qtest_quit(from);
+}
+
+static void assert_no_ioc3_timer_before_sentinel(QTestState *qts,
+                                                  int64_t now)
+{
+    qtest_writeq(qts, PI_RT_COUNT, 0);
+    qtest_writeq(qts, PI_RT_PENDING_A, 0);
+    qtest_writeq(qts, PI_RT_COMPARE_A, PI_RT_SENTINEL_TICKS);
+    g_assert_cmpint(qtest_clock_step_next(qts), ==,
+                    now + PI_RT_SENTINEL_NS);
+    g_assert_cmpuint(qtest_readq(qts, PI_RT_PENDING_A), ==, 1);
+}
+
+static void test_legacy_count2_before_first_expiry_migrates(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    int64_t source_time;
+
+    if (!g_getenv("QTEST_QEMU_BINARY_IOC3_V15")) {
+        g_test_skip("QTEST_QEMU_BINARY_IOC3_V15 is not set");
+        return;
+    }
+
+    tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
+    g_assert_no_error(err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init_ext("QTEST_QEMU_BINARY_IOC3_V15",
+                          MACHINE_WITH_BRIDGE, NULL, true);
+    attach_node_ioc3(from, 0);
+    qtest_writel(from, IOC3_INT_OUTPUT, IOC3_INT_OUT_PERIODIC | 0x0002);
+    source_time = qtest_clock_set(from, 0);
+    g_assert_cmphex(qtest_readl(from, IOC3_INT_OUTPUT), ==,
+                    IOC3_INT_OUT_PERIODIC | 0x0002);
+
+    dest_cmdline = g_strdup_printf(MACHINE_WITH_BRIDGE " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    migrate_stopped_vm(from, uri);
+    qtest_clock_set(to, source_time);
+
+    g_assert_cmphex(qtest_readl(to, IOC3_INT_OUTPUT), ==,
+                    IOC3_INT_OUT_PERIODIC | 0x0002);
+    source_time = qtest_clock_step(to, 1);
+    g_assert_cmphex(qtest_readl(to, IOC3_INT_OUTPUT), ==,
+                    IOC3_INT_OUT_PERIODIC | 0x0002 | IOC3_INT_OUT_STATE);
+    assert_no_ioc3_timer_before_sentinel(to, source_time);
+    g_assert_cmphex(qtest_readl(to, IOC3_INT_OUTPUT), ==,
+                    IOC3_INT_OUT_PERIODIC | 0x0002 | IOC3_INT_OUT_STATE);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
+}
+
+static void test_legacy_count2_high_migrates_onward(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *onward_uri = NULL;
+    g_autofree gchar *dest_cmdline = NULL;
+    g_autofree gchar *onward_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to, *onward;
+    int64_t source_time;
+
+    if (!g_getenv("QTEST_QEMU_BINARY_IOC3_V15")) {
+        g_test_skip("QTEST_QEMU_BINARY_IOC3_V15 is not set");
+        return;
+    }
+
+    tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
+    g_assert_no_error(err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    onward_uri = g_strdup_printf("unix:%s/onward.sock", tmpfs);
+
+    from = qtest_init_ext("QTEST_QEMU_BINARY_IOC3_V15",
+                          MACHINE_WITH_BRIDGE, NULL, true);
+    attach_node_ioc3(from, 0);
+    qtest_writel(from, IOC3_INT_OUTPUT, IOC3_INT_OUT_PERIODIC | 0x0002);
+    source_time = qtest_clock_step(from, 1);
+    g_assert_cmphex(qtest_readl(from, IOC3_INT_OUTPUT), ==,
+                    IOC3_INT_OUT_PERIODIC | 0x0002 | IOC3_INT_OUT_STATE);
+
+    dest_cmdline = g_strdup_printf(MACHINE_WITH_BRIDGE " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    migrate_stopped_vm(from, uri);
+    qtest_clock_set(to, source_time);
+
+    g_assert_cmphex(qtest_readl(to, IOC3_INT_OUTPUT), ==,
+                    IOC3_INT_OUT_PERIODIC | 0x0002 | IOC3_INT_OUT_STATE);
+    assert_no_ioc3_timer_before_sentinel(to, source_time);
+    g_assert_cmphex(qtest_readl(to, IOC3_INT_OUTPUT), ==,
+                    IOC3_INT_OUT_PERIODIC | 0x0002 | IOC3_INT_OUT_STATE);
+
+    source_time += PI_RT_SENTINEL_NS;
+    onward_cmdline = g_strdup_printf(MACHINE_WITH_BRIDGE " -incoming %s",
+                                     onward_uri);
+    onward = qtest_init(onward_cmdline);
+    migrate_stopped_vm(to, onward_uri);
+    qtest_clock_set(onward, source_time);
+
+    g_assert_cmphex(qtest_readl(onward, IOC3_INT_OUTPUT), ==,
+                    IOC3_INT_OUT_PERIODIC | 0x0002 | IOC3_INT_OUT_STATE);
+    qtest_writel(onward, IOC3_INT_OUTPUT, 0);
+    source_time = qtest_clock_step(onward, 1);
+    g_assert_cmphex(qtest_readl(onward, IOC3_INT_OUTPUT), ==, 0);
+    assert_no_ioc3_timer_before_sentinel(onward, source_time);
+    g_assert_cmphex(qtest_readl(onward, IOC3_INT_OUTPUT), ==, 0);
+
+    qtest_quit(onward);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
 }
 
 /*
@@ -1050,6 +1174,11 @@ int main(int argc, char **argv)
                         NULL, test_a_wound_receive_timer_survives_migration);
     qtest_add_data_func("sn0/migration/interrupt-output-phase-survives",
                         NULL, test_interrupt_output_phase_survives_migration);
+    qtest_add_data_func("sn0/migration/legacy-count2-before-first-expiry",
+                        NULL,
+                        test_legacy_count2_before_first_expiry_migrates);
+    qtest_add_data_func("sn0/migration/legacy-count2-high-migrates-onward",
+                        NULL, test_legacy_count2_high_migrates_onward);
     qtest_add_data_func("sn0/migration/dual-base-io-survives-migration",
                         NULL, test_dual_base_io_survives_migration);
     qtest_add_data_func("sn0/migration/network-routes-survive-migration",
