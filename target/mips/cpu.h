@@ -48,7 +48,7 @@ typedef struct MIPSCPUConfig {
     bool exception_breaks_ll_link;
     /* A load, store, SYNC, CACHE, or PREF between LL and SC breaks the link. */
     bool ll_sc_intervening_ops_break_link;
-    /* Translated peer-CPU stores invalidate a link to the same cache block. */
+    /* System-mode translated peer-CPU stores invalidate the linked block. */
     bool ll_sc_peer_store_block_breaks_link;
     /* The LLAddr register is plain scratch that the link never writes. */
     bool lladdr_is_scratch;

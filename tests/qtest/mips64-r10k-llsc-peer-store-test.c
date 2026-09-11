@@ -10,9 +10,9 @@
  * block-size mode as 32 words; the R10000 CPU definition asserts that mode,
  * giving this model a 128-byte block.
  *
- * This diagnostic covers translated stores executed by another R10000 CPU.
- * DMA, host writes, and stores from other CPU models are not observed by the
- * target-specific implementation.
+ * This diagnostic covers system-mode translated stores executed by another
+ * R10000 CPU.  User-mode execution, DMA, host writes, and stores from other
+ * CPU models are not observed by the target-specific implementation.
  * The R4000 and R14000 cases preserve QEMU's existing same-block behavior;
  * they are regression controls, not claims about those processors.
  *
@@ -34,8 +34,10 @@
 #define PEER_OFF            0x800
 
 #define DATA_PHYS           0x00100000
+#define DATA_HIGH_PHYS      UINT64_C(0x80100000)
 #define DATA_KSEG0_HI       0x8010
 #define DATA_KSEG1_HI       0xa010
+#define XKPHYS_CACHED_HI    0xa800
 #define TARGET_OFF          0x000
 #define SAME_BLOCK_OFF      0x078
 #define COMMAND_OFF         0x100
@@ -57,6 +59,7 @@
 #define OPC_SPECIAL         (0x00u << 26)
 #define OPC_BEQ             (0x04u << 26)
 #define OPC_ADDIU           (0x09u << 26)
+#define OPC_ORI             (0x0du << 26)
 #define OPC_LUI             (0x0fu << 26)
 #define OPC_LLD             (0x34u << 26)
 #define OPC_LD              (0x37u << 26)
@@ -70,6 +73,7 @@
 #define R_T1                9
 #define R_T2                10
 #define R_T3                11
+#define R_T4                12
 
 typedef struct GuestImage {
     uint8_t bytes[IMAGE_SIZE];
@@ -80,6 +84,7 @@ typedef enum PeerStoreCase {
     PEER_STORE_OUTSIDE_BLOCK,
     PEER_STORE_SAME_BLOCK,
     PEER_STORE_ALIAS_SAME_BLOCK,
+    PEER_STORE_GPA_ALIAS_SAME_BLOCK,
     PEER_STORE_ABA,
     PEER_STORE_NO_LINK_BURST,
 } PeerStoreCase;
@@ -104,6 +109,36 @@ static void emit_addiu(GuestImage *img, int rt, int rs, int16_t imm)
 static void emit_lui(GuestImage *img, int rt, uint16_t imm)
 {
     emit_i(img, OPC_LUI, R_ZERO, rt, imm);
+}
+
+static void emit_ori(GuestImage *img, int rt, int rs, uint16_t imm)
+{
+    emit_i(img, OPC_ORI, rs, rt, imm);
+}
+
+static void emit_dsll(GuestImage *img, int rd, int rt, int sa)
+{
+    emit(img, OPC_SPECIAL | (rt << 16) | (rd << 11) | (sa << 6) | 0x38);
+}
+
+static void emit_dsll32(GuestImage *img, int rd, int rt)
+{
+    emit(img, OPC_SPECIAL | (rt << 16) | (rd << 11) | 0x3c);
+}
+
+static void emit_or(GuestImage *img, int rd, int rs, int rt)
+{
+    emit(img, OPC_SPECIAL | (rs << 21) | (rt << 16) | (rd << 11) | 0x25);
+}
+
+static void emit_mfc0_status(GuestImage *img, int rt)
+{
+    emit(img, 0x40006000 | (rt << 16));
+}
+
+static void emit_mtc0_status(GuestImage *img, int rt)
+{
+    emit(img, 0x40806000 | (rt << 16));
 }
 
 static void emit_ld(GuestImage *img, int rt, int base, uint16_t off)
@@ -188,10 +223,24 @@ static void build_peer(GuestImage *img, PeerStoreCase store_case,
             emit_sd(img, R_T2, R_T0, SAME_BLOCK_OFF);
         }
     } else if (store_case == PEER_STORE_SAME_BLOCK ||
-        store_case == PEER_STORE_ALIAS_SAME_BLOCK) {
+               store_case == PEER_STORE_ALIAS_SAME_BLOCK ||
+               store_case == PEER_STORE_GPA_ALIAS_SAME_BLOCK) {
         emit_addiu(img, R_T2, R_ZERO, PEER_VALUE);
         if (store_case == PEER_STORE_ALIAS_SAME_BLOCK) {
             emit_lui(img, R_T3, DATA_KSEG1_HI);
+            emit_sd(img, R_T2, R_T3, SAME_BLOCK_OFF);
+        } else if (store_case == PEER_STORE_GPA_ALIAS_SAME_BLOCK) {
+            /* Malta maps the same RAM at GPA 0 and GPA 0x80000000. */
+            emit_mfc0_status(img, R_T3);
+            emit_ori(img, R_T3, R_T3, 0x80); /* Status.KX */
+            emit_mtc0_status(img, R_T3);
+            emit_nop(img);
+            emit_nop(img);
+            emit_lui(img, R_T3, XKPHYS_CACHED_HI);
+            emit_dsll32(img, R_T3, R_T3);
+            emit_ori(img, R_T4, R_ZERO, DATA_HIGH_PHYS >> 16);
+            emit_dsll(img, R_T4, R_T4, 16);
+            emit_or(img, R_T3, R_T3, R_T4);
             emit_sd(img, R_T2, R_T3, SAME_BLOCK_OFF);
         } else {
             emit_sd(img, R_T2, R_T0, SAME_BLOCK_OFF);
@@ -314,7 +363,8 @@ static void run_peer_store(const char *cpu, PeerStoreCase store_case,
                     PEER_DONE_MAGIC);
     g_assert_cmphex(qtest_readq(qts, DATA_PHYS + VICTIM_DONE_OFF), ==, 0);
     if (store_case == PEER_STORE_SAME_BLOCK ||
-        store_case == PEER_STORE_ALIAS_SAME_BLOCK) {
+        store_case == PEER_STORE_ALIAS_SAME_BLOCK ||
+        store_case == PEER_STORE_GPA_ALIAS_SAME_BLOCK) {
         g_assert_cmphex(qtest_readq(qts, DATA_PHYS + SAME_BLOCK_OFF), ==,
                         PEER_VALUE);
     } else {
@@ -355,6 +405,11 @@ static void test_r10k_same_block_peer_store(void)
 static void test_r10k_alias_same_block_peer_store(void)
 {
     run_peer_store("R10000", PEER_STORE_ALIAS_SAME_BLOCK, false);
+}
+
+static void test_r10k_gpa_alias_same_block_peer_store(void)
+{
+    run_peer_store("R10000", PEER_STORE_GPA_ALIAS_SAME_BLOCK, false);
 }
 
 static void test_r10k_target_aba_peer_store(void)
@@ -486,6 +541,8 @@ int main(int argc, char **argv)
                    test_r10k_same_block_peer_store);
     qtest_add_func("/r10k-llsc-peer-store/alias-same-block",
                    test_r10k_alias_same_block_peer_store);
+    qtest_add_func("/r10k-llsc-peer-store/gpa-alias-same-block",
+                   test_r10k_gpa_alias_same_block_peer_store);
     qtest_add_func("/r10k-llsc-peer-store/target-aba",
                    test_r10k_target_aba_peer_store);
     qtest_add_func("/r10k-llsc-peer-store/r4000-normal",
