@@ -11,6 +11,7 @@
 #define MEMORY_BASE UINT64_C(0x400000000)
 #define MEMORY(_x) (MEMORY_BASE + (_x))
 #define MEMORY_BANK_SIZE UINT64_C(0x40000000)
+#define DIRECTORY_BANK_SIZE UINT64_C(0x08000000)
 #define BEDROCK_BASE UINT64_C(0x70000000)
 #define BEDROCK_MD(_x) (BEDROCK_BASE + 0x780000 + (_x))
 #define DIRECTORY_LINE_01A00000 0x0340000
@@ -210,6 +211,25 @@ static void test_memory_banks(void)
     g_assert_cmphex(qtest_readq(s,
                     MEMORY(2 * MEMORY_BANK_SIZE + 0x0765430)), ==,
                     UINT64_C(0xfedcba9876543210));
+    qtest_quit(s);
+}
+
+static void test_directory_bank_translation(void)
+{
+    const uint64_t config = memory_bank_config(0, 1);
+    const uint64_t value = UINT64_C(0x89abcdef);
+    QTestState *s = start_with_memory("64M", "");
+
+    /* Selector one maps software bank one to locational bank zero. */
+    qtest_writeq(s, MD(0x8), (UINT64_C(1) << 32) | config);
+    qtest_writeq(s, DIRECTORY(DIRECTORY_BANK_SIZE + 0x20), value);
+    g_assert_cmphex(qtest_readq(s,
+                    DIRECTORY(DIRECTORY_BANK_SIZE + 0x20)), ==, value);
+
+    qtest_writeq(s, MD(0x8), config);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(0x20)), ==, value);
+    g_assert_cmphex(qtest_readq(s,
+                    DIRECTORY(DIRECTORY_BANK_SIZE + 0x20)), ==, 0);
     qtest_quit(s);
 }
 
@@ -456,6 +476,7 @@ static void test_reset(void)
     g_assert_cmphex(qtest_readq(s, MD(0)), ==, UINT64_MAX);
 
     program_all(s);
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 4));
     qtest_writeq(s, DIRECTORY(DIRECTORY_LINE_01A00000), 0x76543210);
     qtest_writeq(s, DIRECTORY(DIRECTORY_LINE_01A00000 + 8),
                  UINT64_C(0x0123456789abcdef));
@@ -534,6 +555,7 @@ static void test_directory_storage(void)
 {
     QTestState *s = start("");
 
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 4));
     g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LINE_01A00000)),
                     ==, 0);
     g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LINE_01A00000 + 8)),
@@ -600,6 +622,7 @@ static void test_directory_access_policy(void)
         UINT64_C(0x8877665544332211),
     };
 
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 4));
     qtest_writeq(s, MD(0x40000), 1);
     for (unsigned i = 0; i < ARRAY_SIZE(addr); i++) {
         qtest_writeq(s, addr[i], value[i]);
@@ -654,6 +677,7 @@ static void test_directory_fitted_memory(void)
 {
     QTestState *s = start_with_memory("256M", "");
 
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 3));
     qtest_writeq(s, DIRECTORY(DIRECTORY_LAST_256M), 0x2468ace0);
     g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LAST_256M)),
                     ==, 0x2468ace0);
@@ -671,6 +695,7 @@ static void test_parent_exports_directory(void)
 {
     QTestState *s = start_parent();
 
+    qtest_writeq(s, BEDROCK_MD(0x8), memory_bank_config(0, 4));
     qtest_writeq(s, DIRECTORY(DIRECTORY_LINE_01A00000), 0x13579bdf);
     g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LINE_01A00000)),
                     ==, 0x13579bdf);
@@ -1240,6 +1265,8 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("sn1/bedrock-md/register-contract", test_register_contract);
     qtest_add_func("sn1/bedrock-md/memory-banks", test_memory_banks);
+    qtest_add_func("sn1/bedrock-md/directory-bank-translation",
+                   test_directory_bank_translation);
     qtest_add_func("sn1/bedrock-md/memory-size-boundaries",
                    test_memory_size_boundaries);
     qtest_add_func("sn1/bedrock-md/memory-absent-banks",

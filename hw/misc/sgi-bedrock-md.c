@@ -20,6 +20,8 @@ enum {
 #define MD_PROTECTION_EXTENT 0x40000000
 #define MD_PROTECTION_SELECTOR_MASK 0x7c8
 #define MD_PROTECTION_SELECTOR 0x408
+#define MD_MEMORY_BANK_SIZE UINT64_C(0x40000000)
+#define MD_DIRECTORY_BANK_SIZE (MD_MEMORY_BANK_SIZE / 8)
 /*
  * Bits 58:56 are write-only in the public definition; reading them back
  * and resetting them to zero is model policy.
@@ -196,6 +198,25 @@ static uint64_t md_directory_mask(const SGIBedrockMDState *s)
     return s->directory_config & 1 ? UINT64_MAX : UINT32_MAX;
 }
 
+static unsigned md_memory_size_code(const SGIBedrockMDState *s,
+                                    unsigned locational_bank)
+{
+    return extract64(s->memory_config, (locational_bank / 2) * 8 + 4, 4);
+}
+
+static bool md_memory_bank_enabled(const SGIBedrockMDState *s,
+                                   unsigned locational_bank)
+{
+    return s->memory_config &
+           (UINT64_C(1) << ((locational_bank / 2) * 8 +
+                            (locational_bank & 1)));
+}
+
+static uint64_t md_memory_bank_size(unsigned size_code)
+{
+    return UINT64_C(0x2000000) << size_code;
+}
+
 static bool md_is_protection(hwaddr offset)
 {
     return offset < MD_PROTECTION_EXTENT &&
@@ -207,11 +228,56 @@ static unsigned md_protection_index(hwaddr offset)
     return (offset >> 11) * 4 + ((offset >> 4) & 3);
 }
 
+static bool md_directory_translate(const SGIBedrockMDState *s, hwaddr offset,
+                                   unsigned *index)
+{
+    unsigned software_bank = offset / MD_DIRECTORY_BANK_SIZE;
+    unsigned selector = extract64(s->memory_config, 32, 2);
+    unsigned locational_bank = software_bank ^ selector;
+    unsigned size_code;
+    uint64_t within;
+    uint64_t raw = 0;
+
+    if (!md_memory_bank_enabled(s, locational_bank)) {
+        return false;
+    }
+    size_code = md_memory_size_code(s, locational_bank);
+    if (size_code == 0 || size_code > 5) {
+        return false;
+    }
+
+    /* One 16-byte carrier slot describes one 128-byte memory line. */
+    within = ((offset % MD_DIRECTORY_BANK_SIZE) & ~UINT64_C(0xf)) << 3;
+    if (within >= md_memory_bank_size(size_code)) {
+        return false;
+    }
+
+    /* The backing arrays follow the raw RAM's dense locational-bank order. */
+    for (unsigned bank = 0; bank < locational_bank; bank++) {
+        unsigned earlier_code;
+
+        if (!md_memory_bank_enabled(s, bank)) {
+            continue;
+        }
+        earlier_code = md_memory_size_code(s, bank);
+        if (earlier_code > 5) {
+            return false;
+        }
+        if (earlier_code != 0) {
+            raw += md_memory_bank_size(earlier_code);
+        }
+    }
+    raw += within;
+    *index = raw / 128;
+    return *index < s->directory_entries;
+}
+
 static bool md_directory_accepts(void *opaque, hwaddr offset, unsigned size,
                                  bool is_write, MemTxAttrs attrs)
 {
     SGIBedrockMDState *s = opaque;
     const char *access = is_write ? "write" : "read";
+    unsigned index;
 
     if (md_is_protection(offset)) {
         if (size != 8 || offset % 8 != 0) {
@@ -236,7 +302,7 @@ static bool md_directory_accepts(void *opaque, hwaddr offset, unsigned size,
                       size, access, offset);
         return false;
     }
-    if (offset >= (uint64_t)s->directory_entries * 16) {
+    if (!md_directory_translate(s, offset, &index)) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-bedrock-md: directory %s at offset 0x%"
                       HWADDR_PRIx " is outside fitted node memory\n",
@@ -249,11 +315,12 @@ static bool md_directory_accepts(void *opaque, hwaddr offset, unsigned size,
 static uint64_t md_directory_read(void *opaque, hwaddr offset, unsigned size)
 {
     SGIBedrockMDState *s = opaque;
-    unsigned index = offset / 16;
+    unsigned index;
 
     if (md_is_protection(offset)) {
         return s->protection[md_protection_index(offset)];
     }
+    g_assert(md_directory_translate(s, offset, &index));
     if (offset & 8) {
         return s->page_counters[index];
     }
@@ -264,12 +331,13 @@ static void md_directory_write(void *opaque, hwaddr offset, uint64_t value,
                                unsigned size)
 {
     SGIBedrockMDState *s = opaque;
-    unsigned index = offset / 16;
+    unsigned index;
 
     if (md_is_protection(offset)) {
         s->protection[md_protection_index(offset)] = value;
         return;
     }
+    g_assert(md_directory_translate(s, offset, &index));
     if (offset & 8) {
         s->page_counters[index] = value;
     } else {
@@ -367,27 +435,6 @@ static const MemoryRegionOps md_ecc_ops = {
     },
     .impl = { .min_access_size = 1, .max_access_size = 2, .unaligned = true },
 };
-
-#define MD_MEMORY_BANK_SIZE UINT64_C(0x40000000)
-
-static unsigned md_memory_size_code(const SGIBedrockMDState *s,
-                                    unsigned locational_bank)
-{
-    return extract64(s->memory_config, (locational_bank / 2) * 8 + 4, 4);
-}
-
-static bool md_memory_bank_enabled(const SGIBedrockMDState *s,
-                                   unsigned locational_bank)
-{
-    return s->memory_config &
-           (UINT64_C(1) << ((locational_bank / 2) * 8 +
-                            (locational_bank & 1)));
-}
-
-static uint64_t md_memory_bank_size(unsigned size_code)
-{
-    return UINT64_C(0x2000000) << size_code;
-}
 
 static MemTxResult md_memory_translate(SGIBedrockMDState *s, hwaddr offset,
                                        unsigned size, bool is_write,
