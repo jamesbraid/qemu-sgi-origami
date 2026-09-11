@@ -1183,6 +1183,74 @@ static void test_two_towers_share_master_grant_ring(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * A system-controller reset can arrive while the other module's PCF owns an
+ * open transaction. The reset clears that PCF's registers, but it must also
+ * release the I2C core transaction or the shared grant timer sees the peer
+ * bus busy forever. Poll status before data as firmware does and require CPU
+ * 3's own grant to remain reachable after the reset.
+ */
+static void test_two_towers_reset_keeps_cpu3_grant_live(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200,synthesized-firmware=off -m 128M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1");
+    const unsigned int master_cpu = 0;
+    const unsigned int slave_cpu = 3;
+    const uint64_t explicit_zero = HUB_BY_NODE;
+    uint8_t req[16], resp[RESP_CAP];
+    unsigned int req_len, resp_len, i;
+    bool saw_cpu3_grant = false;
+
+    arb_enable_cpu_observer(qts, master_cpu, 0x1c);
+    arb_enable_cpu_observer(qts, slave_cpu, 0x1d);
+
+    /* Leave the slave module's ELSC selected when the reset arrives. */
+    cpu_writeq(qts, slave_cpu, explicit_zero + I2C_DATA, ELSC_ADDR << 1);
+    cpu_writeq(qts, slave_cpu, explicit_zero + I2C_CTRL,
+               CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
+    g_assert_cmphex(cpu_readq(qts, slave_cpu,
+                              explicit_zero + I2C_CTRL) & I2C_PCF_LRB,
+                    ==, 0);
+
+    req_len = build_request(req, "pas none");
+    resp_len = elsc_transact_at(qts, explicit_zero, req, req_len, resp,
+                                sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+
+    req_len = build_request(req, "rst");
+    resp_len = elsc_transact_at(qts, explicit_zero, req, req_len, resp,
+                                sizeof(resp));
+    g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
+    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    qtest_qmp_eventwait(qts, "RESET");
+
+    arb_enable_cpu_observer(qts, master_cpu, 0x1c);
+    arb_enable_cpu_observer(qts, slave_cpu, 0x1d);
+
+    for (i = 0; i < 8 * ARB_TICK_NS / ARB_SCAN_STEP_NS; i++) {
+        uint64_t status = cpu_readq(qts, slave_cpu,
+                                    explicit_zero + I2C_CTRL);
+        uint64_t value = cpu_readq(qts, slave_cpu,
+                                   explicit_zero + I2C_DATA);
+
+        if ((status & I2C_PCF_BB) &&
+            (value == ARB_SIGNAL1 + 3 || value == ARB_SIGNAL2 + 3)) {
+            saw_cpu3_grant = true;
+            break;
+        }
+        qtest_clock_step(qts, ARB_SCAN_STEP_NS);
+    }
+    g_assert_true(saw_cpu3_grant);
+
+    qtest_quit(qts);
+}
+
 /* A dark console must not also wedge the guest: "ok <count>" regardless. */
 static void test_acp_with_no_backend_still_answers(const void *data)
 {
@@ -2710,6 +2778,8 @@ int main(int argc, char **argv)
                         test_two_towers_only_master_aux_active);
     qtest_add_data_func("sn0/elsc/two-towers-share-master-grant-ring",
                         NULL, test_two_towers_share_master_grant_ring);
+    qtest_add_data_func("sn0/elsc/two-towers-reset-keeps-cpu3-grant-live",
+                        NULL, test_two_towers_reset_keeps_cpu3_grant_live);
     qtest_add_data_func("sn0/elsc/acp-with-no-backend-still-answers", NULL,
                         test_acp_with_no_backend_still_answers);
     qtest_add_data_func("sn0/elsc/get-returns-queued-console-input", NULL,
