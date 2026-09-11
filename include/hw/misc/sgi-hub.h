@@ -249,12 +249,9 @@ struct SGIHubState {
     uint64_t ni_return_vector;
     uint64_t ni_vector_read_data;
 
-    /*
-     * The LLP port parameters: sixteen bits of link tuning this machine
-     * stores and never acts on. The port error register beside it keeps
-     * no state at all -- it reads zero by stated modeling choice.
-     */
+    /* The LLP port parameters and traffic-driven error counters. */
     uint64_t ni_port_parms;
+    uint64_t ni_port_error;
 
     /*
      * PIO protection: region-permission storage nothing consults. The
@@ -335,6 +332,9 @@ struct SGIHubState {
 };
 
 uint32_t sgi_hub_programmed_nasid(const SGIHubState *s);
+bool sgi_hub_sends_data_error(const SGIHubState *s);
+void sgi_hub_latch_port_error(SGIHubState *s, uint64_t errors);
+void sgi_hub_record_port_check_error(SGIHubState *s);
 bool sgi_hub_first_turn(const SGIHubState *s, uint32_t destination,
                          uint8_t *turn);
 void sgi_hub_latch_prom_pi_error(SGIHubState *s);

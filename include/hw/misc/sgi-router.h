@@ -20,6 +20,16 @@ bool sgi_router_port_eight_bit_forced(SGIRouterState *s, unsigned int port);
 
 bool sgi_router_port_enabled(SGIRouterState *s, unsigned int port);
 
+typedef enum SGIRouterPortError {
+    SGI_ROUTER_PORT_SEQUENCE_ERROR,
+    SGI_ROUTER_PORT_CHECK_ERROR,
+    SGI_ROUTER_PORT_RETRY,
+} SGIRouterPortError;
+
+bool sgi_router_port_sends_data_error(SGIRouterState *s, unsigned int port);
+void sgi_router_record_port_error(SGIRouterState *s, unsigned int port,
+                                  SGIRouterPortError error);
+
 /*
  * Replace the optional host cache observer without calling it. Notifications
  * follow table, protection and diagnostic writes, reset exit and valid

@@ -13,6 +13,8 @@ typedef struct SN0RoutedLink {
     SN0FabricVertex end[2];
 } SN0RoutedLink;
 
+#define SN0_ROUTED_VECTOR_MAX_HOPS 15
+
 struct SN0RoutedFabricState {
     SN0FabricState parent_obj;
     GPtrArray *routers;
@@ -175,23 +177,74 @@ static bool sn0_routed_reply_append(uint64_t *reply, unsigned int port)
     return true;
 }
 
+static void sn0_routed_record_reply_error(SN0FabricState *f,
+                                          SN0RoutedFabricState *s,
+                                          const SN0FabricVertex *path,
+                                          unsigned int path_length,
+                                          SN0FabricVectorAccess *access)
+{
+    unsigned int i;
+
+    if (access->op != SN0_FABRIC_VECTOR_READ) {
+        return;
+    }
+    for (i = path_length; i-- > 1;) {
+        SGIRouterState *router;
+        SN0FabricVertex receiver;
+
+        if (path[i].kind != SN0_FABRIC_VERTEX_ROUTER) {
+            continue;
+        }
+        router = g_ptr_array_index(s->routers, path[i].index);
+        if (sgi_router_port_sends_data_error(router, path[i].port)) {
+            if (!sn0_routed_neighbor(f, path[i], &receiver)) {
+                continue;
+            }
+            if (receiver.kind == SN0_FABRIC_VERTEX_ROUTER) {
+                sgi_router_record_port_error(
+                    g_ptr_array_index(s->routers, receiver.index),
+                    receiver.port, SGI_ROUTER_PORT_CHECK_ERROR);
+            } else {
+                SGIHubState *hub =
+                    g_array_index(f->endpoints, SN0FabricEndpoint,
+                                  receiver.index).hub;
+
+                sgi_hub_record_port_check_error(hub);
+            }
+        }
+    }
+}
+
 static SN0FabricVectorResult
 sn0_routed_vector(SN0FabricState *f, unsigned int endpoint, uint64_t vector,
                    SN0FabricVectorAccess *access)
 {
     SN0RoutedFabricState *s = SN0_FABRIC_ROUTED(f);
+    SGIHubState *source =
+        g_array_index(f->endpoints, SN0FabricEndpoint, endpoint).hub;
     SN0FabricVertex vertex = { SN0_FABRIC_VERTEX_HUB, endpoint, 0 };
+    SN0FabricVertex path[SN0_ROUTED_VECTOR_MAX_HOPS + 2] = { vertex };
+    unsigned int path_length = 1;
     unsigned int hops = 0;
     uint64_t reply = 0;
 
     if (!sn0_routed_neighbor(f, vertex, &vertex)) {
         return SN0_FABRIC_VECTOR_NONE;
     }
+    path[path_length++] = vertex;
+    if (access->op == SN0_FABRIC_VECTOR_WRITE &&
+        sgi_hub_sends_data_error(source) &&
+        vertex.kind == SN0_FABRIC_VERTEX_ROUTER) {
+        sgi_router_record_port_error(
+            g_ptr_array_index(s->routers, vertex.index), vertex.port,
+            SGI_ROUTER_PORT_CHECK_ERROR);
+    }
     while (vector) {
         unsigned int port = vector & 0xf;
 
         if (vertex.kind != SN0_FABRIC_VERTEX_ROUTER || !port ||
-            port > SGI_ROUTER_PORTS || hops == 15) {
+            port > SGI_ROUTER_PORTS ||
+            hops == SN0_ROUTED_VECTOR_MAX_HOPS) {
             qemu_log_mask(LOG_UNIMP,
                           "sn0-fabric: refusing unsupported vector path\n");
             return SN0_FABRIC_VECTOR_NONE;
@@ -203,6 +256,7 @@ sn0_routed_vector(SN0FabricState *f, unsigned int endpoint, uint64_t vector,
         if (!sn0_routed_neighbor(f, vertex, &vertex)) {
             return SN0_FABRIC_VECTOR_NONE;
         }
+        path[path_length++] = vertex;
         vector >>= 4;
         hops++;
     }
@@ -213,6 +267,10 @@ sn0_routed_vector(SN0FabricState *f, unsigned int endpoint, uint64_t vector,
 
         access->source = sgi_hub_programmed_nasid(hub);
         access->reply_vector = reply;
+        if (performed) {
+            sn0_routed_record_reply_error(f, s, path, path_length,
+                                          access);
+        }
         return performed ? SN0_FABRIC_VECTOR_OK : SN0_FABRIC_VECTOR_ERROR;
     }
     /* A Router responder sends back through the port the request entered. */
@@ -224,6 +282,7 @@ sn0_routed_vector(SN0FabricState *f, unsigned int endpoint, uint64_t vector,
         /* Reviewed PROM 6.156 policy; not a physical Router identity. */
         access->source = 0;
         access->reply_vector = reply;
+        sn0_routed_record_reply_error(f, s, path, path_length, access);
         return SN0_FABRIC_VECTOR_OK;
     }
     qemu_log_mask(LOG_UNIMP,

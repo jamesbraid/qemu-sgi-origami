@@ -362,14 +362,15 @@
 /*
  * Diagnostic parameters: nineteen bits of link fault injection and
  * tuning -- a port-timeout reset, forced eight-bit mode, port disable,
- * deliberate data errors -- every one acting on a link this machine
- * does not model, so the bits are stored and never acted on. The
+ * deliberate data errors. The routed fabric consumes the data-error bit;
+ * the remaining controls are stored and never acted on. The
  * network-interface datasheet defines no reset value for the
  * port-timeout bit and no nonzero reset for the rest; zero at reset
  * is the model's stated choice, the port-error precedent.
  */
 #define HUB_NI_DIAG_PARMS       0x600110
 #define NI_DIAG_PARMS_MASK      0x7ffffULL
+#define NI_DIAG_SEND_DATA_ERROR (1ULL << 0)
 
 /*
  * PIO protection: region-permission storage this model never consults
@@ -388,11 +389,9 @@
  * The LLP port registers. The parameters register is sixteen bits of
  * storage -- tuning for a link this machine does not model -- whose
  * reset value carries the null-packet timeout in bits 15:10 and the
- * maximum burst in bits 9:0. The error register and its clearing alias
- * read zero as a stated modeling choice, not a hardware reset value:
- * the chip leaves the register undefined at reset, and this machine
- * has no fabric that could latch an error for either to report, so the
- * alias's read-to-clear is a no-op. The Origami project tree's
+ * maximum burst in bits 9:0. The routed fabric latches diagnostic traffic
+ * errors in the error register; its clearing alias returns and clears them.
+ * The Origami project tree's
  * network-interface datasheet (docs/datasheets/hub-network-interface.md
  * there) carries the field accounts and the choice's justification.
  */
@@ -401,6 +400,9 @@
 #define HUB_NI_PORT_ERROR_CLEAR 0x608088
 #define NI_PORT_PARMS_MASK      0xffffULL
 #define NI_PORT_PARMS_RESET     ((6ULL << 10) | 0x3f0)
+#define NI_PORT_ERROR_MASK      0x3fffffffffULL
+#define NI_PORT_CHECK_ERROR_SHIFT 8
+#define NI_PORT_ERROR_COUNT_MASK 0xffULL
 
 /*
  * Status: M mode, link-up per the product's wiring, the node field programmed
@@ -422,6 +424,28 @@
 uint32_t sgi_hub_programmed_nasid(const SGIHubState *s)
 {
     return (s->ni_status & NI_STATUS_NODE_MASK) >> NI_STATUS_NODE_SHIFT;
+}
+
+bool sgi_hub_sends_data_error(const SGIHubState *s)
+{
+    return s->ni_diag_parms & NI_DIAG_SEND_DATA_ERROR;
+}
+
+void sgi_hub_latch_port_error(SGIHubState *s, uint64_t errors)
+{
+    s->ni_port_error |= errors & NI_PORT_ERROR_MASK;
+}
+
+void sgi_hub_record_port_check_error(SGIHubState *s)
+{
+    uint64_t count = extract64(s->ni_port_error,
+                               NI_PORT_CHECK_ERROR_SHIFT, 8);
+
+    if (count != NI_PORT_ERROR_COUNT_MASK) {
+        s->ni_port_error = deposit64(s->ni_port_error,
+                                     NI_PORT_CHECK_ERROR_SHIFT, 8,
+                                     count + 1);
+    }
 }
 
 
@@ -454,6 +478,7 @@ enum {
     HUB_REG_TRACE_READ  = 1 << 3, /* in the protocol-read trace set */
     HUB_REG_TRACE_WRITE = 1 << 4, /* in the protocol-write trace set */
     HUB_REG_READ_CLEARS = 1 << 5, /* a full-width read has side effects */
+    HUB_REG_WRITE_CLEARS = 1 << 6, /* a write clears each asserted bit */
 };
 
 typedef struct SGIHubRegDef {
@@ -1374,8 +1399,10 @@ static bool sgi_hub_vector_target_read(SGIHubState *target, hwaddr addr,
         return true;
     }
     reg = sgi_hub_reg_lookup(addr);
-    if (reg && (reg->flags & HUB_REG_VECTOR) && sgi_hub_reg_peekable(reg)) {
-        *value = sgi_hub_reg_peek(target, reg);
+    if (reg && (reg->flags & HUB_REG_VECTOR) &&
+        (reg->read || sgi_hub_reg_peekable(reg))) {
+        *value = reg->read ? reg->read(target, addr, reg->arg) :
+                             sgi_hub_reg_peek(target, reg);
         return true;
     }
     return false;
@@ -2140,22 +2167,16 @@ static void sgi_hub_store_io_prot_ovrrd(SGIHubState *s, unsigned arg,
 static void sgi_hub_store_ni_port_error(SGIHubState *s, unsigned arg,
                                         uint64_t val)
 {
-    /* Stores nothing: no fabric here ever latches a count to clear. */
+    s->ni_port_error &= ~(val & NI_PORT_ERROR_MASK);
 }
 
-static void sgi_hub_write_ni_port_error(SGIHubState *s, hwaddr addr,
-                                        unsigned arg, uint64_t val,
-                                        unsigned size)
+static uint64_t sgi_hub_read_ni_port_error_clear(SGIHubState *s, hwaddr addr,
+                                                 unsigned arg)
 {
-    /*
-     * Accepted and logged: no fabric here ever latches an error for a
-     * write to clear, and the register reads zero either way.
-     */
-    qemu_log_mask(LOG_UNIMP,
-                  "sgi-hub: write of 0x%" PRIx64 " to the port error "
-                  "register 0x%" HWADDR_PRIx
-                  " (no fabric here ever latches an error to clear)\n",
-                  val, addr);
+    uint64_t value = s->ni_port_error;
+
+    s->ni_port_error = 0;
+    return value;
 }
 
 static void sgi_hub_write_ni_scratch(SGIHubState *s, hwaddr addr,
@@ -2460,25 +2481,22 @@ static const SGIHubRegDef sgi_hub_registers[] = {
      * well as plain PIO: the stock PROM's link diagnostic vector-reads
      * the remote Hub's error register, and an address-error completion there
      * counts as a phantom link error on every two-chassis boot. The
-     * error alias carries no HUB_REG_READ_CLEARS: on an always-zero
-     * register the clear is a no-op, so the read has no side effect to
-     * guard. The error register's store keeps a vector write clean --
-     * the register is writable, with nothing latched for the write to
-     * clear -- while the alias, which no source documents as writable,
-     * stores nothing and so rejects one.
+     * error register's store applies its write-one-to-clear rule. The alias
+     * returns and clears the same traffic-driven state on either a full local
+     * read or a remote vector read.
      */
     { .offset = HUB_NI_PORT_PARMS,
       .field = offsetof(SGIHubState, ni_port_parms), .width = 8,
       .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR,
       .wmask = NI_PORT_PARMS_MASK },
     { .offset = HUB_NI_PORT_ERROR,
-      .flags = HUB_REG_DIAG | HUB_REG_VECTOR,
-      .peek = sgi_hub_peek_zero,
-      .store = sgi_hub_store_ni_port_error,
-      .write = sgi_hub_write_ni_port_error },
+      .field = offsetof(SGIHubState, ni_port_error), .width = 8,
+      .flags = HUB_REG_DIAG | HUB_REG_VECTOR | HUB_REG_WRITE_CLEARS,
+      .store = sgi_hub_store_ni_port_error },
     { .offset = HUB_NI_PORT_ERROR_CLEAR,
-      .flags = HUB_REG_DIAG | HUB_REG_VECTOR,
-      .peek = sgi_hub_peek_zero },
+      .field = offsetof(SGIHubState, ni_port_error), .width = 8,
+      .flags = HUB_REG_DIAG | HUB_REG_VECTOR | HUB_REG_READ_CLEARS,
+      .read = sgi_hub_read_ni_port_error_clear },
 };
 
 static const SGIHubRegDef *sgi_hub_reg_lookup(hwaddr addr)
@@ -2707,16 +2725,18 @@ static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
 
 /*
  * A 32-bit write replaces its half; the other half comes from the shadow, or
- * zero for a register that stores nothing (interrupt modify included). The
- * merged value takes the ordinary write path, the guest's size riding along.
+ * zero for a register that stores nothing or clears asserted bits. The merged
+ * value takes the ordinary write path, the guest's size riding along.
  */
 static void sgi_hub_write_half(SGIHubState *s, hwaddr addr, uint64_t val,
                                unsigned size)
 {
     hwaddr aligned = addr & ~(hwaddr)7;
+    const SGIHubRegDef *reg = sgi_hub_reg_lookup(aligned);
     uint64_t merged = 0;
 
     if (aligned == HUB_PI_INT_MODIFY ||
+        (reg && (reg->flags & HUB_REG_WRITE_CLEARS)) ||
         !sgi_hub_diagnostic_value(s, aligned, 0, &merged)) {
         merged = 0;
     }
@@ -2826,6 +2846,7 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
     s->ni_return_vector = 0;
     s->ni_vector_read_data = 0;
     s->ni_port_parms = NI_PORT_PARMS_RESET;
+    s->ni_port_error = 0;
     s->ni_io_protect = NI_IO_PROTECT_RESET;
     s->ni_protection = NI_PROTECTION_RESET;
     s->ni_diag_parms = 0;
@@ -3260,7 +3281,7 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 24,
+    .version_id = 25,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -3285,6 +3306,7 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT64_V(ni_return_vector, SGIHubState, 15),
         VMSTATE_UINT64_V(ni_vector_read_data, SGIHubState, 15),
         VMSTATE_UINT64_V(ni_port_parms, SGIHubState, 20),
+        VMSTATE_UINT64_V(ni_port_error, SGIHubState, 25),
         VMSTATE_UINT64_V(ni_io_protect, SGIHubState, 21),
         VMSTATE_UINT64_V(ni_protection, SGIHubState, 22),
         VMSTATE_UINT64_V(ni_diag_parms, SGIHubState, 22),
@@ -3350,6 +3372,10 @@ static int sgi_hub_post_load(void *opaque, int version_id)
 {
     SGIHubState *s = opaque;
     unsigned int n;
+
+    if (s->ni_port_error & ~NI_PORT_ERROR_MASK) {
+        return -EINVAL;
+    }
 
     if (version_id < 17) {
         s->pi_int_pend1_primary_credit = false;

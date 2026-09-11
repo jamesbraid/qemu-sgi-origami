@@ -86,6 +86,10 @@
 #define RR_PORT_PARMS_RESET    UINT64_C(0x1bf0)
 #define RR_PORT_HISTOGRAM_SELECT_SHIFT 18
 #define RR_PORT_ERROR_MASK     UINT64_C(0x3ffffffff)
+#define RR_PORT_SEQUENCE_ERROR_SHIFT 0
+#define RR_PORT_CHECK_ERROR_SHIFT 8
+#define RR_PORT_RETRY_SHIFT    16
+#define RR_PORT_COUNTER_MASK   UINT64_C(0xff)
 #define RR_RESET_MASK_MASK     UINT64_C(0x3f)
 #define RR_TABLE_MASK          UINT64_C(0xffffff)
 
@@ -97,6 +101,19 @@
 #define RR_PROTECTION_META_VALID   (UINT64_C(1) << 11)
 #define RR_PROTECTION_META_SHIFT   6
 #define RR_PROTECTION_META_MASK    UINT64_C(0x1f)
+
+#define RR_RESET_ADMIN             (UINT64_C(1) << 0)
+#define RR_RESET_PORT_MASK         (UINT64_C(0x3f) << 1)
+#define RR_RESET_WARM              (UINT64_C(1) << 7)
+
+#define RR_BIST_TARGET_LOGIC       1
+#define RR_BIST_TARGET_ARRAY       2
+#define RR_BIST_TARGET_CLOCK       3
+#define RR_BIST_LOGIC_INPUT_BITS   191
+#define RR_BIST_ARRAY_INPUT_BITS   110
+#define RR_BIST_CLOCK_INPUT_BITS   1
+#define RR_BIST_LOGIC_UNLOAD_BITS  64
+#define RR_BIST_ARRAY_UNLOAD_BITS  110
 
 typedef enum RouterNICPhase {
     ROUTER_NIC_IDLE,
@@ -136,6 +153,13 @@ struct SGIRouterState {
     uint64_t diag_parms;
     uint64_t nic_ulan;
     uint64_t bist_data;
+    uint16_t bist_loaded[4];
+    uint16_t bist_unload_position;
+    uint8_t bist_count;
+    uint8_t bist_target;
+    uint8_t bist_run_target;
+    uint8_t bist_completed_target;
+    bool bist_ready;
 
     uint64_t port_parms[SGI_ROUTER_PORTS];
     uint64_t port_errors[SGI_ROUTER_PORTS];
@@ -413,6 +437,167 @@ static void sgi_router_histogram_sync(SGIRouterState *s)
     }
 }
 
+static void sgi_router_reset_state(SGIRouterState *s, bool reset_links)
+{
+    unsigned int port;
+
+    s->status_control = RR_STATUS_OUTPUTS_RESET;
+    s->local_errors = 0;
+    s->protection_config = RR_PROTECTION_RESET;
+    s->global_parms = RR_GLOBAL_RESET;
+    s->scratch0 = 0;
+    s->scratch1 = 0;
+    s->diag_parms = 0;
+    s->histogram_next_ns = 0;
+    s->histogram_phase_ns = 0;
+    timer_del(s->nic_timer);
+    sgi_router_nic_idle(s);
+    s->nic_ulan = RR_NIC_RESET;
+    s->bist_data = 0;
+    memset(s->bist_loaded, 0, sizeof(s->bist_loaded));
+    s->bist_unload_position = 0;
+    s->bist_count = 0;
+    s->bist_target = 0;
+    s->bist_run_target = 0;
+    s->bist_completed_target = 0;
+    s->bist_ready = false;
+
+    for (port = 0; port < SGI_ROUTER_PORTS; port++) {
+        s->port_parms[port] = RR_PORT_PARMS_RESET;
+        s->port_errors[port] = 0;
+        s->histograms[port] = 0;
+        s->reset_masks[port] = RR_RESET_MASK_MASK;
+        if (reset_links) {
+            s->port_working[port] = false;
+            s->port_eight_bit[port] = false;
+        }
+    }
+    memset(s->meta_table, 0, sizeof(s->meta_table));
+    memset(s->local_table, 0, sizeof(s->local_table));
+    memset(s->meta_valid, 0, sizeof(s->meta_valid));
+    memset(s->local_valid, 0, sizeof(s->local_valid));
+}
+
+static void sgi_router_reset_complete(SGIRouterState *s)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    s->histogram_next_ns = now <= INT64_MAX - RR_HISTOGRAM_TICK_NS ?
+                           now + RR_HISTOGRAM_TICK_NS : INT64_MAX;
+    s->histogram_phase_ns = RR_HISTOGRAM_TICK_NS;
+    s->bist_ready = true;
+    sgi_router_changed(s);
+}
+
+static unsigned int sgi_router_bist_input_bits(unsigned int target)
+{
+    switch (target) {
+    case RR_BIST_TARGET_LOGIC:
+        return RR_BIST_LOGIC_INPUT_BITS;
+    case RR_BIST_TARGET_ARRAY:
+        return RR_BIST_ARRAY_INPUT_BITS;
+    case RR_BIST_TARGET_CLOCK:
+        return RR_BIST_CLOCK_INPUT_BITS;
+    default:
+        return 0;
+    }
+}
+
+static unsigned int sgi_router_bist_result_bits(unsigned int target)
+{
+    switch (target) {
+    case RR_BIST_TARGET_LOGIC:
+        return RR_BIST_LOGIC_UNLOAD_BITS;
+    case RR_BIST_TARGET_ARRAY:
+        return RR_BIST_ARRAY_UNLOAD_BITS;
+    default:
+        return 0;
+    }
+}
+
+static bool sgi_router_bist_select(SGIRouterState *s, uint64_t value)
+{
+    unsigned int target = extract64(value, 6, 2);
+
+    if (!s->bist_ready || !sgi_router_bist_input_bits(target)) {
+        return false;
+    }
+    if (s->bist_target != target) {
+        s->bist_unload_position = 0;
+    }
+    s->bist_target = target;
+    s->bist_count = extract64(value, 0, 6);
+    if (s->bist_count == 0) {
+        s->bist_count = 64;
+    }
+    return true;
+}
+
+static bool sgi_router_bist_shift_load(SGIRouterState *s)
+{
+    unsigned int input_bits;
+
+    if (!s->bist_ready) {
+        return false;
+    }
+    input_bits = sgi_router_bist_input_bits(s->bist_target);
+    if (!input_bits || s->bist_loaded[s->bist_target] + s->bist_count >
+                       input_bits) {
+        return false;
+    }
+    s->bist_loaded[s->bist_target] += s->bist_count;
+    if (s->bist_target != RR_BIST_TARGET_CLOCK) {
+        s->bist_run_target = s->bist_target;
+    }
+    return true;
+}
+
+static bool sgi_router_bist_shift_unload(SGIRouterState *s)
+{
+    unsigned int result_bits;
+
+    if (!s->bist_ready || s->bist_target != s->bist_completed_target) {
+        s->bist_data = 0;
+        return true;
+    }
+    result_bits = sgi_router_bist_result_bits(s->bist_target);
+    if (!result_bits || s->bist_unload_position + s->bist_count >
+                        result_bits) {
+        s->bist_data = 0;
+        return true;
+    }
+    /*
+     * The deterministic opaque result is zero.  Raw result bit 62 presents
+     * the completed status as value 2 after firmware reverses and assembles
+     * the shifted chunks.  Keep the bit at its chunk-relative position when
+     * the result is unloaded in pieces smaller than a full word.
+     */
+    s->bist_data = 0;
+    if (s->bist_unload_position <= 62 &&
+        s->bist_unload_position + s->bist_count > 62) {
+        s->bist_data = UINT64_C(1) << (62 - s->bist_unload_position);
+    }
+    s->bist_unload_position += s->bist_count;
+    return true;
+}
+
+static void sgi_router_bist_run(SGIRouterState *s)
+{
+    unsigned int target = s->bist_run_target;
+    bool complete = s->bist_loaded[RR_BIST_TARGET_CLOCK] ==
+                    RR_BIST_CLOCK_INPUT_BITS &&
+                    ((target == RR_BIST_TARGET_LOGIC &&
+                      s->bist_loaded[target] == RR_BIST_LOGIC_INPUT_BITS) ||
+                     (target == RR_BIST_TARGET_ARRAY &&
+                      s->bist_loaded[target] == RR_BIST_ARRAY_INPUT_BITS));
+
+    sgi_router_reset_state(s, true);
+    if (complete) {
+        s->bist_completed_target = target;
+    }
+    sgi_router_reset_complete(s);
+}
+
 static bool sgi_router_read(SGIRouterState *s, unsigned int arrival_port,
                             hwaddr addr, uint64_t *value)
 {
@@ -477,7 +662,7 @@ static bool sgi_router_read(SGIRouterState *s, unsigned int arrival_port,
         *value = s->bist_data;
         return true;
     case RR_BIST_READY:
-        *value = 0;
+        *value = s->bist_ready;
         return true;
     default:
         return false;
@@ -552,10 +737,17 @@ static bool sgi_router_write(SGIRouterState *s, hwaddr addr, uint64_t value)
         s->status_control = value & RR_STATUS_CONTROL_MASK;
         return true;
     case RR_PORT_RESET:
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-router: administration, port, and warm reset "
-                      "extent is not implemented\n");
-        return false;
+        if (value & RR_RESET_WARM) {
+            sgi_router_reset_state(s, true);
+            sgi_router_reset_complete(s);
+        } else if (value & RR_RESET_ADMIN) {
+            sgi_router_reset_state(s, false);
+            sgi_router_reset_complete(s);
+        } else if (value & RR_RESET_PORT_MASK) {
+            /* There is no queued transport state in the bounded model. */
+            sgi_router_changed(s);
+        }
+        return true;
     case RR_PROTECTION_CONFIG:
         s->protection_config = value & RR_PROTECTION_MASK;
         sgi_router_changed(s);
@@ -590,14 +782,16 @@ static bool sgi_router_write(SGIRouterState *s, hwaddr addr, uint64_t value)
         s->bist_data = value;
         return true;
     case RR_BIST_READY:
-        return true;
-    case RR_BIST_COUNT_TARGET:
-    case RR_BIST_SHIFT_LOAD:
-    case RR_BIST_SHIFT_UNLOAD:
-    case RR_BIST_ENTER_RUN:
-        qemu_log_mask(LOG_UNIMP,
-                      "sgi-router: built-in self-test is not implemented\n");
         return false;
+    case RR_BIST_COUNT_TARGET:
+        return sgi_router_bist_select(s, value);
+    case RR_BIST_SHIFT_LOAD:
+        return sgi_router_bist_shift_load(s);
+    case RR_BIST_SHIFT_UNLOAD:
+        return sgi_router_bist_shift_unload(s);
+    case RR_BIST_ENTER_RUN:
+        sgi_router_bist_run(s);
+        return true;
     default:
         return false;
     }
@@ -658,6 +852,40 @@ bool sgi_router_port_enabled(SGIRouterState *s, unsigned int port)
 {
     g_assert(port >= 1 && port <= SGI_ROUTER_PORTS);
     return !(s->diag_parms & (UINT64_C(1) << (5 + port)));
+}
+
+bool sgi_router_port_sends_data_error(SGIRouterState *s, unsigned int port)
+{
+    g_assert(port >= 1 && port <= SGI_ROUTER_PORTS);
+    return s->diag_parms & (UINT64_C(1) << (port - 1));
+}
+
+void sgi_router_record_port_error(SGIRouterState *s, unsigned int port,
+                                  SGIRouterPortError error)
+{
+    unsigned int shift;
+    uint64_t count;
+
+    g_assert(port >= 1 && port <= SGI_ROUTER_PORTS);
+    switch (error) {
+    case SGI_ROUTER_PORT_SEQUENCE_ERROR:
+        shift = RR_PORT_SEQUENCE_ERROR_SHIFT;
+        break;
+    case SGI_ROUTER_PORT_CHECK_ERROR:
+        shift = RR_PORT_CHECK_ERROR_SHIFT;
+        break;
+    case SGI_ROUTER_PORT_RETRY:
+        shift = RR_PORT_RETRY_SHIFT;
+        break;
+    default:
+        g_assert_not_reached();
+    }
+
+    count = extract64(s->port_errors[port - 1], shift, 8);
+    if (count != RR_PORT_COUNTER_MASK) {
+        s->port_errors[port - 1] =
+            deposit64(s->port_errors[port - 1], shift, 8, count + 1);
+    }
 }
 
 void sgi_router_set_changed(SGIRouterState *s, void (*changed)(void *),
@@ -769,45 +997,15 @@ bool sgi_router_route(SGIRouterState *s, unsigned int entry_port,
 static void sgi_router_reset_enter(Object *obj, ResetType type)
 {
     SGIRouterState *s = SGI_ROUTER(obj);
-    unsigned int port;
 
-    s->status_control = RR_STATUS_OUTPUTS_RESET;
-    s->local_errors = 0;
-    s->protection_config = RR_PROTECTION_RESET;
-    s->global_parms = RR_GLOBAL_RESET;
-    s->scratch0 = 0;
-    s->scratch1 = 0;
-    s->diag_parms = 0;
-    s->histogram_next_ns = 0;
-    s->histogram_phase_ns = 0;
-    timer_del(s->nic_timer);
-    sgi_router_nic_idle(s);
-    s->nic_ulan = RR_NIC_RESET;
-    s->bist_data = 0;
-
-    for (port = 0; port < SGI_ROUTER_PORTS; port++) {
-        s->port_parms[port] = RR_PORT_PARMS_RESET;
-        s->port_errors[port] = 0;
-        s->histograms[port] = 0;
-        s->reset_masks[port] = RR_RESET_MASK_MASK;
-        s->port_working[port] = false;
-        s->port_eight_bit[port] = false;
-    }
-    memset(s->meta_table, 0, sizeof(s->meta_table));
-    memset(s->local_table, 0, sizeof(s->local_table));
-    memset(s->meta_valid, 0, sizeof(s->meta_valid));
-    memset(s->local_valid, 0, sizeof(s->local_valid));
+    sgi_router_reset_state(s, true);
 }
 
 static void sgi_router_reset_exit(Object *obj, ResetType type)
 {
     SGIRouterState *s = SGI_ROUTER(obj);
-    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
-    s->histogram_next_ns = now <= INT64_MAX - RR_HISTOGRAM_TICK_NS ?
-                           now + RR_HISTOGRAM_TICK_NS : INT64_MAX;
-    s->histogram_phase_ns = RR_HISTOGRAM_TICK_NS;
-    sgi_router_changed(s);
+    sgi_router_reset_complete(s);
 }
 
 static bool sgi_router_array_masked(const uint64_t *values, size_t count,
@@ -880,6 +1078,27 @@ static bool sgi_router_nic_state_valid(SGIRouterState *s)
     return true;
 }
 
+static bool sgi_router_bist_state_valid(SGIRouterState *s)
+{
+    unsigned int result_bits =
+        sgi_router_bist_result_bits(s->bist_completed_target);
+
+    return s->bist_target <= RR_BIST_TARGET_CLOCK &&
+           s->bist_run_target <= RR_BIST_TARGET_ARRAY &&
+           s->bist_completed_target <= RR_BIST_TARGET_ARRAY &&
+           s->bist_count <= 64 &&
+           s->bist_loaded[0] == 0 &&
+           s->bist_loaded[RR_BIST_TARGET_LOGIC] <=
+               RR_BIST_LOGIC_INPUT_BITS &&
+           s->bist_loaded[RR_BIST_TARGET_ARRAY] <=
+               RR_BIST_ARRAY_INPUT_BITS &&
+           s->bist_loaded[RR_BIST_TARGET_CLOCK] <=
+               RR_BIST_CLOCK_INPUT_BITS &&
+           (!s->bist_completed_target ||
+            (s->bist_ready && result_bits &&
+             s->bist_unload_position <= result_bits));
+}
+
 static int sgi_router_post_load(void *opaque, int version_id)
 {
     SGIRouterState *s = opaque;
@@ -890,6 +1109,7 @@ static int sgi_router_post_load(void *opaque, int version_id)
         s->histogram_phase_ns > RR_HISTOGRAM_TICK_NS ||
         now > INT64_MAX - s->histogram_phase_ns ||
         !sgi_router_nic_state_valid(s) ||
+        !sgi_router_bist_state_valid(s) ||
         (s->status_control & ~RR_STATUS_CONTROL_MASK) ||
         (s->local_errors & ~RR_STATUS_LOCAL_ERROR_MASK) ||
         (s->protection_config & ~RR_PROTECTION_MASK) ||
@@ -929,8 +1149,8 @@ static int sgi_router_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_router = {
     .name = "sgi-router",
-    .version_id = 3,
-    .minimum_version_id = 3,
+    .version_id = 4,
+    .minimum_version_id = 4,
     .pre_save = sgi_router_pre_save,
     .pre_load = sgi_router_pre_load,
     .post_load = sgi_router_post_load,
@@ -944,6 +1164,13 @@ static const VMStateDescription vmstate_sgi_router = {
         VMSTATE_UINT64(diag_parms, SGIRouterState),
         VMSTATE_UINT64(nic_ulan, SGIRouterState),
         VMSTATE_UINT64(bist_data, SGIRouterState),
+        VMSTATE_UINT16_ARRAY(bist_loaded, SGIRouterState, 4),
+        VMSTATE_UINT16(bist_unload_position, SGIRouterState),
+        VMSTATE_UINT8(bist_count, SGIRouterState),
+        VMSTATE_UINT8(bist_target, SGIRouterState),
+        VMSTATE_UINT8(bist_run_target, SGIRouterState),
+        VMSTATE_UINT8(bist_completed_target, SGIRouterState),
+        VMSTATE_BOOL(bist_ready, SGIRouterState),
         VMSTATE_UINT64_ARRAY(port_parms, SGIRouterState, SGI_ROUTER_PORTS),
         VMSTATE_UINT64_ARRAY(port_errors, SGIRouterState, SGI_ROUTER_PORTS),
         VMSTATE_UINT64_ARRAY(histograms, SGIRouterState, SGI_ROUTER_PORTS),
