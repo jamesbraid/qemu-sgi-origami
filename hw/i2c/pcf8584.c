@@ -280,6 +280,8 @@ static void pcf8584_wire_event(void *opaque, const I2CWireEvent *event)
     bool was_scl = s->wire_scl, was_sda = s->wire_sda;
     bool start = was_scl && event->scl && was_sda && !event->sda;
     bool stop = was_scl && event->scl && !was_sda && event->sda;
+    bool start_overtaken = stop && s->wire_start_waiting &&
+                           s->wire_grant_pending;
     bool rise = !was_scl && event->scl;
     bool fall = was_scl && !event->scl;
     int64_t now = event->time;
@@ -421,6 +423,17 @@ static void pcf8584_wire_event(void *opaque, const I2CWireEvent *event)
     }
     if (stop && s->wire_start_waiting) {
         s->wire_start_waiting = false;
+        if (start_overtaken) {
+            /*
+             * A later grant overtook this queued START.  Report arbitration
+             * loss so software repeats its grant wait instead of running the
+             * transaction in another processor's slot.
+             */
+            s->start_address_staged = false;
+            s->status |= PCF8584_STS_LAB;
+            pcf8584_complete(s, true);
+            return;
+        }
         /*
          * Several adapters can have queued the same controller address.
          * Let one lower-numbered adapter open the bus first; the peer START
