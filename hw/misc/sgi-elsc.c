@@ -1125,6 +1125,12 @@ static uint8_t elsc_signal_byte(unsigned processor_code, bool signal2)
 }
 
 /* Publish one address-only grant; the grant address is not acknowledged. */
+static void elsc_publish_grant_on(I2CBus *bus, uint8_t value)
+{
+    i2c_start_transfer(bus, value >> 1, value & 1);
+    i2c_end_transfer(bus);
+}
+
 static void elsc_publish_grant(SGIElscState *s, uint8_t value)
 {
     bool diagnostic = s->diagnostic != NULL;
@@ -1132,8 +1138,10 @@ static void elsc_publish_grant(SGIElscState *s, uint8_t value)
     if (diagnostic) {
         s->diagnostic_arbitration_broadcast = true;
     }
-    i2c_start_transfer(s->bus, value >> 1, value & 1);
-    i2c_end_transfer(s->bus);
+    elsc_publish_grant_on(s->bus, value);
+    if (s->arb_peer) {
+        elsc_publish_grant_on(s->arb_peer->bus, value);
+    }
     if (diagnostic) {
         s->diagnostic_arbitration_broadcast = false;
     }
@@ -1154,26 +1162,38 @@ static bool elsc_arb_signal2(SGIElscState *s, uint32_t code)
             s->txpos < s->txlen);
 }
 
-/* One address-only grant is published on each eligible 1ms tick. */
+static bool elsc_shared_arb_signal2(SGIElscState *s, uint32_t code)
+{
+    SGIElscState *owner = s;
+
+    if (s->arb_peer && code >= s->arb_peer->cpu_base &&
+        code < s->arb_peer->cpu_base + s->arb_peer->num_cpus) {
+        owner = s->arb_peer;
+    }
+    return elsc_arb_signal2(owner, code);
+}
+
+/* One address-only ring position is published on each eligible 1ms tick. */
 static void elsc_arb_step(void *opaque)
 {
     SGIElscState *s = opaque;
     int64_t now = qemu_clock_get_us(QEMU_CLOCK_VIRTUAL);
     bool signal2;
 
-    if (i2c_bus_busy(s->bus)) {
+    if (i2c_bus_busy(s->bus) ||
+        (s->arb_peer && i2c_bus_busy(s->arb_peer->bus))) {
         /* Never advance or publish in the middle of a guest transaction. */
         timer_mod(s->arb_timer, now + ELSC_ARB_RETRY_US);
         return;
     }
 
-    signal2 = elsc_arb_signal2(s, s->arb_code);
+    signal2 = elsc_shared_arb_signal2(s, s->arb_code);
     s->arb_signal = elsc_signal_byte(s->arb_code, signal2);
     trace_sgi_elsc_arb_step(s->cpu_base, s->arb_code, s->arb_signal,
                             signal2);
     elsc_publish_grant(s, s->arb_signal);
 
-    s->arb_code = (s->arb_code + 1) % ELSC_SIGNAL_CODE_COUNT;
+    s->arb_code = (s->arb_code + 1) % s->arb_positions;
     if (s->arb_code == 0) {
         s->arb_rev++;
     }
@@ -1307,11 +1327,27 @@ void sgi_elsc_set_module_ops(SGIElscState *s, const SGIElscModuleOps *ops,
     s->module_opaque = opaque;
 }
 
+void sgi_elsc_share_arbitration(SGIElscState *master, SGIElscState *slave,
+                                unsigned int positions)
+{
+    assert(DEVICE(master)->realized);
+    assert(DEVICE(slave)->realized);
+    assert(master->arbitration);
+    assert(!slave->arbitration);
+    assert(master != slave);
+    assert(!master->arb_peer);
+    assert(positions > 0 && positions <= ELSC_SIGNAL_CODE_COUNT);
+
+    master->arb_peer = slave;
+    master->arb_positions = positions;
+}
+
 static void elsc_realize(DeviceState *dev, Error **errp)
 {
     SGIElscState *s = SGI_ELSC(dev);
 
     s->bus = I2C_BUS(qdev_get_parent_bus(dev));
+    s->arb_positions = ELSC_SIGNAL_CODE_COUNT;
     /*
      * The cold power-on latch is set here rather than in reset because a
      * warm reset -- a guest "rst", or any system reset -- does not cycle
@@ -1552,7 +1588,7 @@ static void elsc_format_state(SGIElscState *s, GString *buf)
     }
     g_string_append_printf(buf,
                            "  arbitration rotation: next code %u of %u\n",
-                           s->arb_code, ELSC_SIGNAL_CODE_COUNT);
+                           s->arb_code, s->arb_positions);
     g_string_append_printf(buf,
                            "  console signal (code 0): 0x%02x = signal%d"
                            " (console input %s)\n",

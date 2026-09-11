@@ -108,16 +108,18 @@ struct SGIElscState {
      * whether or not anything polls (elsc_arb_step()).
      */
     I2CBus *bus;
+    /*
+     * The slave controller whose PCF observes this master's grant ring.
+     * Machine wiring owns both devices for the same lifetime.
+     */
+    SGIElscState *arb_peer;
     QEMUTimer *arb_timer;
     /*
      * Whether this controller publishes grants. Only the master module's
      * controller owns the rotation.
      */
     bool arbitration;
-    /*
-     * Hub-supplied and currently inert: the rotation always covers all
-     * eight codes and only code 0 has a real input queue.
-     */
+    /* Hub-supplied local population, used to find a grant's queue owner. */
     uint32_t num_cpus;
     /*
      * Hub-supplied: the global index of this node's slice A processor,
@@ -126,8 +128,10 @@ struct SGIElscState {
      * codes are local.
      */
     uint32_t cpu_base;
+    /* Number of positions in the ring; eight unless a machine narrows it. */
+    uint32_t arb_positions;
     uint8_t dip_switches;
-    uint32_t arb_code;    /* next of the eight processor codes */
+    uint32_t arb_code;    /* next encoded ring position */
     uint32_t arb_rev;     /* full rotations completed */
     bool arb_present;     /* legacy pre-v12 gap state, migrated only */
     bool arb_held;        /* legacy pre-v12 hold state, migrated only */
@@ -209,5 +213,9 @@ void sgi_elsc_reinitialize(SGIElscState *s);
 
 void sgi_elsc_set_module_ops(SGIElscState *s, const SGIElscModuleOps *ops,
                              void *opaque);
+
+/* Join a realized slave to its master's arbitration ring. */
+void sgi_elsc_share_arbitration(SGIElscState *master, SGIElscState *slave,
+                                unsigned int positions);
 
 #endif /* HW_MISC_SGI_ELSC_H */
