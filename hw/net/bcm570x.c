@@ -49,6 +49,8 @@
 #include "qemu/timer.h"
 #include "net/checksum.h"
 #include "hw/pci/pci_device.h"
+#include "standard-headers/linux/virtio_net.h"
+#include "hw/net/net_tx_pkt.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/net/bcm570x_phy.h"
@@ -398,6 +400,8 @@ struct Bcm570xState {
 
     NICState *nic;
     NICConf conf;
+    struct NetTxPkt *tx_pkt;
+    bool has_vnet_hdr;
     QEMUBH *rx_flush_bh;
     bool rx_flush_pending;
     bool rx_flush_authorized;
@@ -1156,6 +1160,90 @@ static void bcm570x_tx_replace_source(Bcm570xState *s, uint8_t *frame,
     stl_be_p(frame + 8, lo);
 }
 
+typedef struct Bcm570xTxLsoLayout {
+    unsigned int ihl;
+    unsigned int thl;
+    unsigned int hdr;
+    unsigned int payload;
+} Bcm570xTxLsoLayout;
+
+static bool bcm570x_tx_lso_layout(const uint8_t *frame, unsigned int len,
+                                  unsigned int mss,
+                                  Bcm570xTxLsoLayout *layout)
+{
+    unsigned int ihl, thl, hdr, payload, ip_len;
+
+    if (len < 14 + 20 + 20 || lduw_be_p(frame + 12) != 0x0800 ||
+        (frame[14] >> 4) != 4 || frame[23] != 6) {
+        return false;
+    }
+    ihl = (frame[14] & 0x0f) * 4;
+    if (ihl < 20 || 14 + ihl + 20 > len) {
+        return false;
+    }
+    ip_len = lduw_be_p(frame + 16);
+    if ((lduw_be_p(frame + 20) & (IP_OFFMASK | IP_MF)) != 0 ||
+        ip_len < ihl + 20 || 14 + ip_len != len) {
+        return false;
+    }
+    thl = (frame[14 + ihl + 12] >> 4) * 4;
+    hdr = 14 + ihl + thl;
+    if (thl < 20 || ihl + thl > ip_len || mss == 0 ||
+        hdr + mss > BCM570X_MAX_FRAME) {
+        return false;
+    }
+    payload = ip_len - ihl - thl;
+    if (payload <= mss) {
+        return false;
+    }
+
+    if (layout) {
+        layout->ihl = ihl;
+        layout->thl = thl;
+        layout->hdr = hdr;
+        layout->payload = payload;
+    }
+    return true;
+}
+
+static void bcm570x_tx_pkt_release(void *context, void *base, size_t len)
+{
+    /* The fragment points at bcm570x_tx_kick()'s frame buffer. */
+}
+
+static bool bcm570x_tx_vnet_segment(Bcm570xState *s, uint8_t *frame,
+                                    unsigned int len, unsigned int mss)
+{
+    struct virtio_net_hdr *vhdr;
+    Bcm570xTxLsoLayout layout;
+    bool sent = false;
+
+    if (!s->has_vnet_hdr ||
+        !bcm570x_tx_lso_layout(frame, len, mss, &layout)) {
+        return false;
+    }
+
+    net_tx_pkt_reset(s->tx_pkt, bcm570x_tx_pkt_release, NULL);
+    if (!net_tx_pkt_add_raw_fragment(s->tx_pkt, frame, len) ||
+        !net_tx_pkt_parse(s->tx_pkt) ||
+        !net_tx_pkt_build_vheader(s->tx_pkt, true, true, mss)) {
+        goto out;
+    }
+    vhdr = net_tx_pkt_get_vhdr(s->tx_pkt);
+    if ((vhdr->gso_type & ~VIRTIO_NET_HDR_GSO_ECN) !=
+            VIRTIO_NET_HDR_GSO_TCPV4 ||
+        vhdr->hdr_len != layout.hdr) {
+        goto out;
+    }
+
+    net_tx_pkt_update_ip_checksums(s->tx_pkt);
+    sent = net_tx_pkt_send(s->tx_pkt, qemu_get_queue(s->nic));
+
+out:
+    net_tx_pkt_reset(s->tx_pkt, bcm570x_tx_pkt_release, NULL);
+    return sent;
+}
+
 /*
  * Cut one oversized TCP buffer into segments the peer will accept. The guest
  * hands down a single frame holding many segments' worth of payload; each piece
@@ -1172,27 +1260,18 @@ static void bcm570x_tx_segment(Bcm570xState *s, uint8_t *frame,
                                unsigned int len, unsigned int mss,
                                uint16_t flags)
 {
+    Bcm570xTxLsoLayout layout;
     unsigned int ihl, thl, hdr, payload, off, ip_id;
     uint8_t seg[BCM570X_MAX_FRAME];
     uint32_t seq;
 
-    if (len < 14 + 20 + 20 || lduw_be_p(frame + 12) != 0x0800 ||
-        (frame[14] >> 4) != 4 || frame[23] != 6) {
+    if (!bcm570x_tx_lso_layout(frame, len, mss, &layout)) {
         goto send_whole;
     }
-    ihl = (frame[14] & 0x0f) * 4;
-    if (ihl < 20 || 14 + ihl + 20 > len) {
-        goto send_whole;
-    }
-    thl = (frame[14 + ihl + 12] >> 4) * 4;
-    hdr = 14 + ihl + thl;
-    if (thl < 20 || hdr > len || mss == 0 || hdr + mss > sizeof(seg)) {
-        goto send_whole;
-    }
-    payload = len - hdr;
-    if (payload <= mss) {
-        goto send_whole;
-    }
+    ihl = layout.ihl;
+    thl = layout.thl;
+    hdr = layout.hdr;
+    payload = layout.payload;
 
     seq = ldl_be_p(frame + 14 + ihl + 4);
     ip_id = lduw_be_p(frame + 18);
@@ -1328,7 +1407,10 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
                     bcm570x_tx_replace_source(s, frame, frame_len,
                                               frame_flags);
                 }
-                bcm570x_tx_segment(s, frame, frame_len, frame_mss, frame_flags);
+                if (!bcm570x_tx_vnet_segment(s, frame, frame_len, frame_mss)) {
+                    bcm570x_tx_segment(s, frame, frame_len, frame_mss,
+                                       frame_flags);
+                }
             }
             frame_len = 0;
             frame_flags = 0;
@@ -2083,6 +2165,9 @@ static void bcm570x_cleanup_net(Bcm570xState *s)
         s->rx_flush_bh = NULL;
     }
     if (s->nic) {
+        net_tx_pkt_reset(s->tx_pkt, bcm570x_tx_pkt_release, NULL);
+        net_tx_pkt_uninit(s->tx_pkt);
+        s->tx_pkt = NULL;
         qemu_del_nic(s->nic);
         s->nic = NULL;
     }
@@ -2159,6 +2244,12 @@ static void bcm570x_realize(PCIDevice *dev, Error **errp)
     s->nic = qemu_new_nic(&net_bcm570x_info, &s->conf,
                           object_get_typename(OBJECT(dev)), ds->id,
                           &ds->mem_reentrancy_guard, s);
+    s->has_vnet_hdr = qemu_has_vnet_hdr(qemu_get_queue(s->nic)->peer);
+    if (s->has_vnet_hdr) {
+        qemu_set_vnet_hdr_len(qemu_get_queue(s->nic)->peer,
+                              sizeof(struct virtio_net_hdr));
+    }
+    net_tx_pkt_init(&s->tx_pkt, 1);
     s->rx_flush_bh = qemu_bh_new_guarded(bcm570x_rx_flush, s,
                                           &ds->mem_reentrancy_guard);
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
