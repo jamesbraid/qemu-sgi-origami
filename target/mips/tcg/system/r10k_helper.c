@@ -27,7 +27,7 @@
 #include "accel/tcg/cpu-loop.h"
 #include "../tcg-internal.h"
 
-static unsigned int r10k_scache_size(CPUMIPSState *env)
+static unsigned int r10k_scache_size(const CPUMIPSState *env)
 {
     if (env->cfg.scache_size == R10K_SCACHE_SIZE &&
         extract32(env->CP0_Config0, CP0C0_R10K_SS, 3) == 3) {
@@ -36,13 +36,13 @@ static unsigned int r10k_scache_size(CPUMIPSState *env)
     return env->cfg.scache_size;
 }
 
-static unsigned int r10k_scache_sets(CPUMIPSState *env)
+static unsigned int r10k_scache_sets(const CPUMIPSState *env)
 {
     return r10k_scache_size(env) / R10K_SCACHE_LINE_SIZE /
            R10K_SCACHE_WAYS;
 }
 
-static unsigned int r10k_scache_quad_sets(CPUMIPSState *env)
+static unsigned int r10k_scache_quad_sets(const CPUMIPSState *env)
 {
     return r10k_scache_size(env) / 16 / R10K_SCACHE_WAYS;
 }

@@ -438,7 +438,7 @@ static const VMStateDescription mips_vmstate_r10k_scache = {
     }
 };
 
-static bool mips_r10k_scache_is_4m(MIPSCPU *cpu)
+static bool mips_r10k_scache_is_4m(const MIPSCPU *cpu)
 {
     return cpu->env.cfg.scache_size == R10K_SCACHE_SIZE &&
            extract32(cpu->env.CP0_Config0, CP0C0_R10K_SS, 3) == 3;
@@ -446,7 +446,7 @@ static bool mips_r10k_scache_is_4m(MIPSCPU *cpu)
 
 static bool mips_r14k_scache_needed(void *opaque)
 {
-    MIPSCPU *cpu = opaque;
+    const MIPSCPU *cpu = opaque;
 
     return cpu->env.cfg.scache_size == R14K_SCACHE_SIZE ||
            mips_r10k_scache_is_4m(cpu);
