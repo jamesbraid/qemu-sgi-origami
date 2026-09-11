@@ -34,6 +34,8 @@ slow_qtests = {
   'sn0-origin2000-xtalk-attach-test': 120,
   # Routed acceptance takes 44-60s; keep headroom under parallel CI load.
   'sn0-origin2000-test': 120,
+  # Tigon reached 60.10s in the same loaded run without a failed assertion.
+  'sn0-tigon-test': 120,
   # Model and bridge have grown the same way: 57s and 62s measured solo on a
   # loaded workstation, and in CI they were the second and fourth most killed
   # tests over Aug 30 - Sep 3 (105 and 20 timeout kills at the 120s ceiling,
