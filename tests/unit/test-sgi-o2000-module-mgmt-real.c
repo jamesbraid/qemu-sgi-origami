@@ -566,6 +566,35 @@ static void test_start_overtaken_during_bus_free_time(Fixture *f,
     stop_transfer(f, 0);
 }
 
+/* Two STARTs delayed by one grant must take the wire one at a time. */
+static void test_waiting_starts_serialize(Fixture *f, gconstpointer unused)
+{
+    int64_t next_grant;
+
+    run_tick(f);
+    next_grant = f->module->service_deadline;
+    advance_to(next_grant + 6 * POLL_STEP_NS);
+    g_assert_true(f->module->grant_active);
+
+    for (unsigned a = 0; a < 2; a++) {
+        write_reg(f, a, CTRL_REG, CTL_RUN);
+        write_reg(f, a, DATA_REG, SGI_O2000_MSC_ADDRESS << 1);
+        write_reg(f, a, CTRL_REG, CTL_START);
+        g_assert_true(f->adapter[a]->wire_start_waiting);
+    }
+
+    advance_to(next_grant + GRANT_SETTLE_NS);
+    g_assert_true(f->adapter[0]->wire_active);
+    g_assert_false(f->adapter[1]->wire_active);
+    g_assert_true(f->adapter[1]->wire_start_waiting);
+    g_assert_true(wait_done(f, 0));
+    stop_transfer(f, 0);
+
+    g_assert_true(wait_done(f, 1));
+    g_assert_cmphex(read_reg(f, 1, CTRL_REG) & PCF8584_STS_LAB, ==, 0);
+    stop_transfer(f, 1);
+}
+
 static void test_waiting_start_cancellation(Fixture *f,
                                             gconstpointer disable)
 {
@@ -1055,6 +1084,8 @@ int main(int argc, char **argv)
     g_test_add("/sgi-o2000-module-management/shared/start-overtaken-during-tbuf",
                Fixture, NULL, setup,
                test_start_overtaken_during_bus_free_time, teardown);
+    g_test_add("/sgi-o2000-module-management/shared/waiting-starts-serialize",
+               Fixture, NULL, setup, test_waiting_starts_serialize, teardown);
     g_test_add("/sgi-o2000-module-management/shared/waiting-start-stop",
                Fixture, NULL, setup, test_waiting_start_cancellation,
                teardown);
