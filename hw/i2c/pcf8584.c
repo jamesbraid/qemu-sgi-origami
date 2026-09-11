@@ -331,12 +331,16 @@ static void pcf8584_wire_event(void *opaque, const I2CWireEvent *event)
              * A peer opened the bus in the interval between the host's
              * control write and this adapter's own line transition. That is
              * the busy-START case again, which the chip sources leave
-             * undefined, so the request is dropped rather than queued.
+             * undefined. Preserve the request as the busy-START path does,
+             * including its address before a module grant replaces S0 at
+             * STOP.
              */
-            qemu_log_mask(LOG_UNIMP, "pcf8584: a peer's START overtook this "
-                          "adapter's own request\n");
+            s->start_address = s->wire_shift;
+            s->start_address_staged = true;
+            s->wire_start_waiting = true;
             s->wire_phase = PCF8584_WIRE_IDLE;
             s->wire_active = false;
+            s->wire_address_byte = false;
             i2c_wire_reset_master(s->bus, s->wire_master);
             break;
         }
