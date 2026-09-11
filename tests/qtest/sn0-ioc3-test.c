@@ -118,6 +118,7 @@ static void test_ioc3_attach(QTestState *qts)
 #define INT_SERIAL_A    (1u << 6)
 #define INT_SERIAL_B    (1u << 15)
 #define INT_KEYBOARD    (1u << 22)   /* a latched bit, for contrast */
+#define INT_RT_OUTPUT_PULSE (1u << 27)
 
 #define REG_LCR         3
 #define REG_MCR         4
@@ -454,6 +455,52 @@ static void test_one_shot_interrupt_output_has_three_tick_width(
 
     qtest_clock_step(qts, 1);
     g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_count_zero_output_pulse_interrupt(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    sn0_ioc3_attach(qts);
+
+    /* The exact internal-test strobe latches while its source is masked. */
+    qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_ONE_SHOT);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_RT_OUTPUT_PULSE, ==,
+                    INT_RT_OUTPUT_PULSE);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BRIDGE_PIN_SUPERIO,
+                    ==, 0);
+
+    /* Enabling the pending source raises the existing direct interrupt. */
+    qtest_writel(qts, INT_ENABLE_SET, INT_RT_OUTPUT_PULSE);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BRIDGE_PIN_SUPERIO,
+                    ==, BRIDGE_PIN_SUPERIO);
+
+    /* The output-pulse status is latched and cleared by writing one. */
+    qtest_writel(qts, INT_STATUS, INT_RT_OUTPUT_PULSE);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_RT_OUTPUT_PULSE, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BRIDGE_PIN_SUPERIO,
+                    ==, 0);
+
+    /* Let the first pulse fall, then reset with a second one pending. */
+    qtest_clock_step(qts, 3 * INT_OUT_TICK_NS);
+    qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_ONE_SHOT);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_RT_OUTPUT_PULSE, ==,
+                    INT_RT_OUTPUT_PULSE);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BRIDGE_PIN_SUPERIO,
+                    ==, BRIDGE_PIN_SUPERIO);
+
+    qtest_system_reset(qts);
+    sn0_ioc3_attach(qts);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_RT_OUTPUT_PULSE, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, INT_ENABLE_SET) & INT_RT_OUTPUT_PULSE, ==,
+                    0);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BRIDGE_PIN_SUPERIO,
+                    ==, 0);
 
     qtest_quit(qts);
 }
@@ -5136,6 +5183,8 @@ int main(int argc, char **argv)
                         test_fixed_interrupt_output_commands_change_the_state);
     qtest_add_data_func("sn0/ioc3/one-shot-interrupt-output-width", NULL,
                         test_one_shot_interrupt_output_has_three_tick_width);
+    qtest_add_data_func("sn0/ioc3/count-zero-output-pulse-interrupt", NULL,
+                        test_count_zero_output_pulse_interrupt);
     qtest_add_data_func("sn0/ioc3/periodic-interrupt-output-min-interval",
                         NULL,
                         test_periodic_interrupt_output_min_interval);
