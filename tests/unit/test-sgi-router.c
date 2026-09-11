@@ -294,7 +294,7 @@ static void test_reset_values(Fixture *f, gconstpointer unused)
     g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN), ==,
                     NIC_DIVIDERS_RESET | NIC_DONE);
     g_assert_cmphex(read_reg(f, 1, RR_BIST_DATA), ==, 0);
-    g_assert_cmphex(read_reg(f, 1, RR_BIST_READY), ==, 0);
+    g_assert_cmphex(read_reg(f, 1, RR_BIST_READY), ==, 1);
     for (port = 1; port <= SGI_ROUTER_PORTS; port++) {
         g_assert_cmphex(read_reg(f, 1, RR_PORT_PARMS(port)), ==,
                         PORT_PARMS_RESET);
@@ -330,8 +330,9 @@ static void test_register_storage_masks(Fixture *f, gconstpointer unused)
     g_assert_cmphex(read_reg(f, 1, RR_DIAG_PARMS), ==, UINT64_C(0xfffff));
     g_assert_cmphex(read_reg(f, 1, RR_BIST_DATA), ==,
                     UINT64_C(0xfedcba9876543210));
-    write_reg(f, 1, RR_BIST_READY, UINT64_MAX);
-    g_assert_cmphex(read_reg(f, 1, RR_BIST_READY), ==, 0);
+    g_assert_false(access_reg(f->router, 1, SN0_FABRIC_VECTOR_WRITE,
+                              RR_BIST_READY, UINT64_MAX, NULL));
+    g_assert_cmphex(read_reg(f, 1, RR_BIST_READY), ==, 1);
 
     for (port = 1; port <= SGI_ROUTER_PORTS; port++) {
         write_reg(f, 1, RR_PORT_PARMS(port), UINT64_MAX);
@@ -392,6 +393,19 @@ static void test_error_clear_addresses(Fixture *f, gconstpointer unused)
     write_reg(f, 1, RR_STATUS_REV_ID, UINT64_C(0x5) << 24);
     g_assert_cmphex(read_reg(f, 1, RR_STATUS_REV_ID) & STATUS_LOCAL_ERRORS, ==,
                     UINT64_C(0xa) << 24);
+}
+
+static void test_error_counters_saturate(Fixture *f, gconstpointer unused)
+{
+    for (unsigned int i = 0; i < 300; i++) {
+        sgi_router_record_port_error(f->router, 2,
+                                     SGI_ROUTER_PORT_SEQUENCE_ERROR);
+        sgi_router_record_port_error(f->router, 2,
+                                     SGI_ROUTER_PORT_CHECK_ERROR);
+        sgi_router_record_port_error(f->router, 2,
+                                     SGI_ROUTER_PORT_RETRY);
+    }
+    g_assert_cmphex(read_reg(f, 1, RR_STATUS_ERROR(2)), ==, 0xffffff);
 }
 
 static void test_histogram_event_boundaries(Fixture *f,
@@ -843,8 +857,8 @@ static void test_unsupported_operations_fail(Fixture *f, gconstpointer unused)
     uint64_t nic = read_reg(f, 1, RR_NIC_ULAN);
     uint64_t value;
 
-    g_assert_false(access_reg(f->router, 1, SN0_FABRIC_VECTOR_WRITE,
-                              RR_PORT_RESET, 1, NULL));
+    g_assert_true(access_reg(f->router, 1, SN0_FABRIC_VECTOR_WRITE,
+                             RR_PORT_RESET, 0, NULL));
     g_assert_false(access_reg(f->router, 1, SN0_FABRIC_VECTOR_WRITE,
                               RR_NIC_ULAN, UINT64_C(1) << 10, NULL));
     g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN), ==, nic);
@@ -852,10 +866,6 @@ static void test_unsupported_operations_fail(Fixture *f, gconstpointer unused)
                               RR_BIST_COUNT_TARGET, 1, NULL));
     g_assert_false(access_reg(f->router, 1, SN0_FABRIC_VECTOR_WRITE,
                               RR_BIST_SHIFT_LOAD, 0, NULL));
-    g_assert_false(access_reg(f->router, 1, SN0_FABRIC_VECTOR_WRITE,
-                              RR_BIST_SHIFT_UNLOAD, 0, NULL));
-    g_assert_false(access_reg(f->router, 1, SN0_FABRIC_VECTOR_WRITE,
-                              RR_BIST_ENTER_RUN, 0, NULL));
     g_assert_false(access_reg(f->router, 1, SN0_FABRIC_VECTOR_READ,
                               RR_LOCAL_TABLE(3) + 1, 0, &value));
 }
@@ -1283,6 +1293,7 @@ int main(int argc, char **argv)
     ADD_TEST("register-storage-masks", test_register_storage_masks);
     ADD_TEST("conditional-exchange", test_conditional_exchange);
     ADD_TEST("error-clear-addresses", test_error_clear_addresses);
+    ADD_TEST("error-counters-saturate", test_error_counters_saturate);
     ADD_TEST("histogram-event-boundaries", test_histogram_event_boundaries);
     ADD_TEST("histogram-clear", test_histogram_clear);
     ADD_TEST("histogram-timebase-and-phase",

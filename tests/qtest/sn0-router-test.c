@@ -5,12 +5,29 @@
 #include "qobject/qdict.h"
 
 #define RR_DIAG_PARMS              0x00030
+#define RR_PORT_RESET              0x00008
+#define RR_PROTECTION_CONFIG       0x00010
+#define RR_SCRATCH_REG0            0x00020
+#define RR_BIST_DATA               0x00050
+#define RR_BIST_READY              0x00058
+#define RR_BIST_COUNT_TARGET       0x00060
+#define RR_BIST_SHIFT_LOAD         0x00068
+#define RR_BIST_SHIFT_UNLOAD       0x00070
+#define RR_BIST_ENTER_RUN          0x00078
 #define RR_PORT_PARMS(port)        ((uint64_t)(port) << 16)
+#define RR_STATUS_ERROR(port)      (RR_PORT_PARMS(port) + 0x08)
 #define RR_HISTOGRAM(port)         (RR_PORT_PARMS(port) + 0x10)
 #define PORT_HISTOGRAM_MODE(mode)  ((uint64_t)(mode) << 18)
 #define PORT_HISTOGRAM_VC(vc)      ((uint64_t)(vc) << 16)
 #define PORT_PARMS_RESET           UINT64_C(0x1bf0)
 #define DIAG_ABSOLUTE_HISTOGRAM    (UINT64_C(1) << 19)
+#define BIST_TARGET_LOGIC          1
+#define BIST_TARGET_ARRAY          2
+#define BIST_TARGET_CLOCK          3
+#define BIST_COMPLETE_RAW          (UINT64_C(1) << 62)
+#define PORT_RESET_ADMIN           (UINT64_C(1) << 0)
+#define PORT_RESET_PORT(port)      (UINT64_C(1) << (port))
+#define PORT_RESET_WARM            (UINT64_C(1) << 7)
 
 static void set(QTestState *qts, const char *name, uint64_t value)
 {
@@ -47,6 +64,101 @@ static void write_reg(QTestState *qts, uint64_t addr, uint64_t value)
 static QTestState *start(const char *extra)
 {
     return qtest_initf("-M none -device sgi-router-test,id=router %s", extra);
+}
+
+static void bist_shift_load(QTestState *qts, unsigned int target,
+                            unsigned int count, uint64_t data)
+{
+    write_reg(qts, RR_BIST_DATA, data);
+    write_reg(qts, RR_BIST_COUNT_TARGET,
+              ((uint64_t)target << 6) | (count & 0x3f));
+    write_reg(qts, RR_BIST_SHIFT_LOAD, 0);
+}
+
+static void bist_shift_unload(QTestState *qts, unsigned int target,
+                              unsigned int count)
+{
+    write_reg(qts, RR_BIST_COUNT_TARGET,
+              ((uint64_t)target << 6) | (count & 0x3f));
+    write_reg(qts, RR_BIST_SHIFT_UNLOAD, 0);
+}
+
+static void bist_run(QTestState *qts, unsigned int target)
+{
+    bist_shift_load(qts, BIST_TARGET_CLOCK, 1, 1);
+    if (target == BIST_TARGET_LOGIC) {
+        bist_shift_load(qts, target, 64, UINT64_MAX);
+        bist_shift_load(qts, target, 64, UINT64_MAX);
+        bist_shift_load(qts, target, 63, UINT64_MAX >> 1);
+    } else {
+        bist_shift_load(qts, target, 64, UINT64_MAX);
+        bist_shift_load(qts, target, 46, (UINT64_C(1) << 46) - 1);
+    }
+    write_reg(qts, RR_BIST_ENTER_RUN, 0);
+}
+
+static void test_bist_and_programmed_resets(void)
+{
+    QTestState *qts = start("");
+    const uint64_t working = UINT64_C(1) << (26 + 3 * 3);
+    const uint64_t width = working << 1;
+
+    g_assert_cmphex(read_reg(qts, RR_BIST_READY), ==, 1);
+
+    bist_run(qts, BIST_TARGET_LOGIC);
+    g_assert_cmphex(read_reg(qts, RR_BIST_READY), ==, 1);
+    bist_shift_unload(qts, BIST_TARGET_LOGIC, 64);
+    g_assert_cmphex(read_reg(qts, RR_BIST_DATA), ==, BIST_COMPLETE_RAW);
+
+    bist_run(qts, BIST_TARGET_ARRAY);
+    bist_shift_unload(qts, BIST_TARGET_ARRAY, 64);
+    g_assert_cmphex(read_reg(qts, RR_BIST_DATA), ==, BIST_COMPLETE_RAW);
+    bist_shift_unload(qts, BIST_TARGET_ARRAY, 46);
+    g_assert_cmphex(read_reg(qts, RR_BIST_DATA), ==, 0);
+
+    /* The status bit keeps its stream position across partial unloads. */
+    bist_run(qts, BIST_TARGET_ARRAY);
+    bist_shift_unload(qts, BIST_TARGET_ARRAY, 31);
+    g_assert_cmphex(read_reg(qts, RR_BIST_DATA), ==, 0);
+    bist_shift_unload(qts, BIST_TARGET_ARRAY, 32);
+    g_assert_cmphex(read_reg(qts, RR_BIST_DATA), ==, UINT64_C(1) << 31);
+    bist_shift_unload(qts, BIST_TARGET_ARRAY, 47);
+    g_assert_cmphex(read_reg(qts, RR_BIST_DATA), ==, 0);
+
+    /* An incomplete selected chain does not acquire a completion status. */
+    bist_shift_load(qts, BIST_TARGET_CLOCK, 1, 1);
+    bist_shift_load(qts, BIST_TARGET_ARRAY, 64, UINT64_MAX);
+    write_reg(qts, RR_BIST_ENTER_RUN, 0);
+    bist_shift_unload(qts, BIST_TARGET_ARRAY, 64);
+    g_assert_cmphex(read_reg(qts, RR_BIST_DATA), ==, 0);
+
+    set(qts, "port", 3);
+    set(qts, "link", 3);
+    set(qts, "port-errors", 0x1234);
+    write_reg(qts, RR_SCRATCH_REG0, 0x1234);
+    write_reg(qts, RR_PROTECTION_CONFIG, 0x12345);
+
+    /* A selected port reset leaves all modeled administrative state alone. */
+    write_reg(qts, RR_PORT_RESET, PORT_RESET_PORT(3));
+    g_assert_cmphex(read_reg(qts, RR_SCRATCH_REG0), ==, 0x1234);
+    g_assert_cmphex(read_reg(qts, RR_STATUS_ERROR(3)), ==, 0x1234);
+    g_assert_cmphex(read_reg(qts, 0) & (working | width), ==,
+                    working | width);
+
+    /* Administrative reset clears programming while preserving link state. */
+    write_reg(qts, RR_PORT_RESET, PORT_RESET_ADMIN);
+    g_assert_cmphex(read_reg(qts, RR_SCRATCH_REG0), ==, 0);
+    g_assert_cmphex(read_reg(qts, RR_PROTECTION_CONFIG), ==, 0x3f);
+    g_assert_cmphex(read_reg(qts, RR_STATUS_ERROR(3)), ==, 0);
+    g_assert_cmphex(read_reg(qts, 0) & (working | width), ==,
+                    working | width);
+
+    write_reg(qts, RR_SCRATCH_REG0, 0x5678);
+    write_reg(qts, RR_PORT_RESET, PORT_RESET_WARM | PORT_RESET_ADMIN);
+    g_assert_cmphex(read_reg(qts, RR_SCRATCH_REG0), ==, 0);
+    g_assert_cmphex(read_reg(qts, 0) & (working | width), ==, 0);
+    g_assert_cmphex(read_reg(qts, RR_BIST_READY), ==, 1);
+    qtest_quit(qts);
 }
 
 static unsigned int substring_count(const char *text, const char *needle)
@@ -364,6 +476,8 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("sn0/router/registers", test_registers);
+    qtest_add_func("sn0/router/bist-and-programmed-resets",
+                   test_bist_and_programmed_resets);
     qtest_add_func("sn0/router/links-reset", test_links_reset);
     qtest_add_func("sn0/router/histograms", test_histograms);
     qtest_add_func("sn0/router/histogram-common-rescale",
