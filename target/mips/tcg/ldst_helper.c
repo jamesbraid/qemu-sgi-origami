@@ -25,13 +25,18 @@
 #include "exec/helper-proto.h"
 #include "accel/tcg/cpu-ldst.h"
 #include "exec/memop.h"
+#include "qemu/rcu.h"
 #include "internal.h"
+#include "trace.h"
 
 #ifndef CONFIG_USER_ONLY
 #include "accel/tcg/probe.h"
 #include "exec/tlb-flags.h"
 
 #define R10K_LLSC_BLOCK_SIZE 128
+
+/* False must mean that no R10000 CPU has a tracked link. */
+static unsigned int r10k_llsc_active_link_hint;
 
 static uint64_t r10k_llsc_ram_block(target_ulong addr,
                                     const CPUTLBEntryFull *full)
@@ -47,11 +52,15 @@ static void r10k_llsc_set_link(CPUMIPSState *env, target_ulong addr,
 {
     uint64_t block = 0;
 
-    if (env->cfg.ll_sc_external_block_breaks_link &&
+    if (env->cfg.ll_sc_peer_store_block_breaks_link &&
         !(flags & (TLB_INVALID_MASK | TLB_MMIO))) {
         block = r10k_llsc_ram_block(addr, full);
     }
     qatomic_xchg(&env->llsc_ram_block, block);
+    if (block) {
+        /* R10000 LL executes exclusively, so no peer store can miss this. */
+        qatomic_set(&r10k_llsc_active_link_hint, 1);
+    }
 }
 
 uint32_t helper_r10k_llsc_consume(CPUMIPSState *env)
@@ -59,15 +68,20 @@ uint32_t helper_r10k_llsc_consume(CPUMIPSState *env)
     return qatomic_xchg(&env->llsc_ram_block, 0) != 0;
 }
 
-void helper_r10k_llsc_note_store(CPUMIPSState *env, target_ulong addr,
-                                 uint32_t mem_idx)
+void helper_r10k_llsc_note_cpu_store(CPUMIPSState *env, target_ulong addr,
+                                     uint32_t mem_idx)
 {
     CPUTLBEntryFull *full;
     CPUState *cs;
     uint64_t block;
     void *host_unused;
+    bool any_link = false;
     int flags;
 
+    if (!qatomic_read(&r10k_llsc_active_link_hint)) {
+        return;
+    }
+    trace_mips_r10k_llsc_peer_store_slow_path(env_cpu(env)->cpu_index, addr);
     flags = probe_access_full(env, addr, 1, MMU_DATA_STORE, mem_idx, true,
                               &host_unused, &full, GETPC());
     if (flags & (TLB_INVALID_MASK | TLB_MMIO)) {
@@ -75,20 +89,28 @@ void helper_r10k_llsc_note_store(CPUMIPSState *env, target_ulong addr,
     }
 
     block = r10k_llsc_ram_block(addr, full);
+    RCU_READ_LOCK_GUARD();
     CPU_FOREACH(cs) {
         CPUMIPSState *other = cpu_env(cs);
         uint64_t linked;
 
-        if (other == env ||
-            !other->cfg.ll_sc_external_block_breaks_link) {
+        if (!other->cfg.ll_sc_peer_store_block_breaks_link) {
             continue;
         }
 
         linked = qatomic_read(&other->llsc_ram_block);
-        if (linked == block) {
-            qatomic_cmpxchg(&other->llsc_ram_block, linked, 0);
+        if (other != env && linked == block) {
+            if (qatomic_cmpxchg(&other->llsc_ram_block, linked, 0) == linked) {
+                linked = 0;
+            } else {
+                linked = qatomic_read(&other->llsc_ram_block);
+            }
+        }
+        if (linked) {
+            any_link = true;
         }
     }
+    qatomic_set(&r10k_llsc_active_link_hint, any_link);
 }
 
 /*
