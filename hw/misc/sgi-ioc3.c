@@ -362,6 +362,10 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
                                           SGI_IOC3_INT_OUT_COUNT);
         s->int_out_pulse_end = false;
         s->int_out_square_started = false;
+        if ((s->int_out_active & SGI_IOC3_INT_OUT_MODE) ==
+            SGI_IOC3_INT_OUT_ONE_SHOT) {
+            s->int_out_state = false;
+        }
         /* Queue command completion after the MMIO write returns. */
         timer_mod(s->int_out_timer,
                   qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1);

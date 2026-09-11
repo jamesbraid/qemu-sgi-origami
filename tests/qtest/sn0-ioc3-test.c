@@ -465,7 +465,13 @@ static void test_count_zero_output_pulse_interrupt(const void *data)
 
     sn0_ioc3_attach(qts);
 
-    /* The exact internal-test strobe latches while its source is masked. */
+    /* A prior command may leave the output high before the internal test. */
+    qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_HIGH);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==,
+                    INT_OUT_PIN);
+
+    /* The exact internal-test strobe still emits a new rising edge. */
     qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_ONE_SHOT);
     qtest_clock_step(qts, 1);
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_RT_OUTPUT_PULSE, ==,
