@@ -38,13 +38,20 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/iov.h"
 #include "libqos/libqos-pc.h"
 #include "libqos/qos-intel-iommu.h"
 #include "libqtest.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_regs.h"
+#include "standard-headers/linux/virtio_net.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
+#ifdef CONFIG_LINUX
+#include <net/if.h>
+#include <linux/if_tun.h>
+#include <sys/ioctl.h>
+#endif
 
 /*
  * The card is instantiated with an explicit MAC so the factory-MAC read-back
@@ -721,6 +728,54 @@ static void xframe_tx_start(XframeTx *t)
 {
     xframe_tx_start_args(t, NULL);
 }
+
+#ifdef CONFIG_LINUX
+static bool xframe_vnet_tap_start(XframeTx *t, int *tap_fd, int *inject_fd)
+{
+    struct ifreq ifr = { };
+    uint64_t barsize;
+    int mirror[2], inject[2];
+
+    *tap_fd = open("/dev/net/tun", O_RDWR);
+    if (*tap_fd < 0) {
+        g_test_skip("/dev/net/tun is unavailable");
+        return false;
+    }
+
+    ifr.ifr_flags = IFF_TAP | IFF_NO_PI | IFF_VNET_HDR;
+    if (ioctl(*tap_fd, TUNSETIFF, &ifr) < 0) {
+        close(*tap_fd);
+        *tap_fd = -1;
+        g_test_skip("creating a TAP requires CAP_NET_ADMIN");
+        return false;
+    }
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, mirror), ==, 0);
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, inject), ==, 0);
+    net_socket_set_recv_timeout(mirror[0], 5);
+    t->host_fd = mirror[0];
+    *inject_fd = inject[0];
+    t->qs = qtest_pc_boot(
+        "-netdev tap,fd=%d,id=n0 "
+        "-device xframe,netdev=n0,mac=" XFRAME_TEST_MAC " "
+        "-chardev socket,id=mirror0,fd=%d "
+        "-object filter-mirror,id=f0,netdev=n0,queue=rx,outdev=mirror0,"
+        "vnet_hdr_support=on "
+        "-chardev socket,id=inject0,fd=%d "
+        "-object filter-redirector,id=f1,netdev=n0,queue=tx,indev=inject0,"
+        "vnet_hdr_support=on",
+        *tap_fd, mirror[1], inject[1]);
+    t->dev = find_xframe(t->qs->pcibus, XFRAME_DEVICE_XENA);
+    g_assert(t->dev != NULL);
+    t->pif = qpci_iomap(t->dev, 0, &barsize);
+    g_assert_cmphex(barsize, ==, XFRAME_PIF_WINDOW_SIZE);
+    t->txp = qpci_iomap(t->dev, 2, &barsize);
+    g_assert_cmphex(barsize, ==, XFRAME_TXP_WINDOW_SIZE);
+    qpci_device_enable(t->dev);
+    qtest_qmp_assert_success(t->qs->qts, "{ 'execute': 'query-status' }");
+    return true;
+}
+#endif
 
 static void xframe_iommu_map(XframeTx *t, uint64_t iova, uint64_t gpa,
                              bool writable)
@@ -3297,6 +3352,36 @@ static bool l4_checksum_valid(const uint8_t *frame, uint8_t proto,
     return frame_csum_fold(sum) == 0;
 }
 
+static void frame_set_ipv4_tcp_checksums(uint8_t *frame, size_t payload_len)
+{
+    uint8_t pseudo[12];
+    uint8_t *ip = frame + ETH_HDR_LEN;
+    uint8_t *tcp = ip + IPV4_HDR_LEN;
+    uint16_t csum;
+    uint32_t sum;
+
+    ip[10] = 0;
+    ip[11] = 0;
+    tcp[16] = 0;
+    tcp[17] = 0;
+
+    csum = frame_csum_fold(frame_csum_add(0, ip, IPV4_HDR_LEN));
+    ip[10] = (uint8_t)(csum >> 8);
+    ip[11] = (uint8_t)csum;
+
+    memcpy(pseudo, traffic_src_ip, 4);
+    memcpy(pseudo + 4, traffic_dst_ip, 4);
+    pseudo[8] = 0;
+    pseudo[9] = IPPROTO_TCP;
+    pseudo[10] = (uint8_t)((TCP_HDR_LEN + payload_len) >> 8);
+    pseudo[11] = (uint8_t)(TCP_HDR_LEN + payload_len);
+    sum = frame_csum_add(0, pseudo, sizeof(pseudo));
+    sum = frame_csum_add(sum, tcp, TCP_HDR_LEN + payload_len);
+    csum = frame_csum_fold(sum);
+    tcp[16] = (uint8_t)(csum >> 8);
+    tcp[17] = (uint8_t)csum;
+}
+
 /*
  * Read exactly n bytes from the stream socket, looping over short reads. A
  * single recv() on a stream socket may return fewer bytes than asked once a
@@ -3313,6 +3398,47 @@ static void sock_read_full(int fd, uint8_t *buf, size_t n)
         g_assert_cmpint(r, >, 0);
         off += (size_t)r;
     }
+}
+
+static size_t mirror_recv_packet(int fd, uint8_t *buf, size_t buf_size,
+                                 uint32_t *vnet_hdr_len)
+{
+    uint8_t word[4];
+    size_t len;
+
+    sock_read_full(fd, word, sizeof(word));
+    len = ((uint32_t)word[0] << 24) | ((uint32_t)word[1] << 16) |
+          ((uint32_t)word[2] << 8) | word[3];
+    sock_read_full(fd, word, sizeof(word));
+    *vnet_hdr_len = ((uint32_t)word[0] << 24) |
+                    ((uint32_t)word[1] << 16) |
+                    ((uint32_t)word[2] << 8) | word[3];
+    g_assert_cmpuint(len, <=, buf_size);
+    sock_read_full(fd, buf, len);
+    return len;
+}
+
+static void redirector_send_packet(int fd, const uint8_t *buf, size_t len,
+                                   uint32_t vnet_hdr_len)
+{
+    uint32_t packet_len = htonl(len);
+    uint32_t header_len = htonl(vnet_hdr_len);
+    struct iovec iov[] = {
+        {
+            .iov_base = &packet_len,
+            .iov_len = sizeof(packet_len),
+        }, {
+            .iov_base = &header_len,
+            .iov_len = sizeof(header_len),
+        }, {
+            .iov_base = (void *)buf,
+            .iov_len = len,
+        },
+    };
+    size_t total = sizeof(packet_len) + sizeof(header_len) + len;
+
+    g_assert_cmpint(iov_send(fd, iov, G_N_ELEMENTS(iov), 0, total), ==,
+                    total);
 }
 
 /* The length-prefixed socket-backend frame read, robust to short reads (see
@@ -3708,9 +3834,11 @@ static void test_transmit_segments_a_large_send(void)
     XframeTx t;
     uint8_t frame[ETH_HDR_LEN + IPV4_HDR_LEN + TCP_HDR_LEN + 1736];
     uint8_t got[2048];
+    uint8_t expected[ETH_HDR_LEN + IPV4_HDR_LEN + TCP_HDR_LEN + 512];
     uint8_t rebuilt[1736];
     const size_t mss = 512;
     const size_t payload = 1736;              /* 512 + 512 + 512 + 200 */
+    const size_t hdr = ETH_HDR_LEN + IPV4_HDR_LEN + TCP_HDR_LEN;
     const size_t expect[4] = { 512, 512, 512, 200 };
     const uint8_t *sent_payload;
     const uint8_t *sent_tcp;
@@ -3721,6 +3849,7 @@ static void test_transmit_segments_a_large_send(void)
                            sizeof(frame));
     sent_tcp = frame + ETH_HDR_LEN + IPV4_HDR_LEN;
     sent_payload = sent_tcp + TCP_HDR_LEN;
+    frame[ETH_HDR_LEN + IPV4_HDR_LEN + 13] = 0x19; /* FIN|PSH|ACK */
     base_seq = ((uint32_t)sent_tcp[4] << 24) | ((uint32_t)sent_tcp[5] << 16) |
                ((uint32_t)sent_tcp[6] << 8) | sent_tcp[7];
 
@@ -3747,8 +3876,30 @@ static void test_transmit_segments_a_large_send(void)
 
         len = traffic_recv_frame(t.host_fd, got, sizeof(got));
 
-        /* One frame per segment, none of them oversized. */
+        memcpy(expected, frame, hdr);
+        memcpy(expected + hdr, sent_payload + off, seg);
+        expected[ETH_HDR_LEN + 2] = (uint8_t)((IPV4_HDR_LEN + TCP_HDR_LEN +
+                                               seg) >> 8);
+        expected[ETH_HDR_LEN + 3] =
+            (uint8_t)(IPV4_HDR_LEN + TCP_HDR_LEN + seg);
+        expected[ETH_HDR_LEN + 4] = (uint8_t)((0x1234 + i) >> 8);
+        expected[ETH_HDR_LEN + 5] = (uint8_t)(0x1234 + i);
+        expected[ETH_HDR_LEN + IPV4_HDR_LEN + 4] =
+            (uint8_t)((base_seq + off) >> 24);
+        expected[ETH_HDR_LEN + IPV4_HDR_LEN + 5] =
+            (uint8_t)((base_seq + off) >> 16);
+        expected[ETH_HDR_LEN + IPV4_HDR_LEN + 6] =
+            (uint8_t)((base_seq + off) >> 8);
+        expected[ETH_HDR_LEN + IPV4_HDR_LEN + 7] =
+            (uint8_t)(base_seq + off);
+        if (i + 1 < G_N_ELEMENTS(expect)) {
+            expected[ETH_HDR_LEN + IPV4_HDR_LEN + 13] &= ~0x09;
+        }
+        frame_set_ipv4_tcp_checksums(expected, seg);
+
+        /* Every emitted byte, including flags and checksums, is contractual. */
         g_assert_cmpuint(len, ==, want);
+        g_assert_cmpmem(got, len, expected, want);
 
         /* The IPv4 header describes THIS segment, not the whole send. */
         g_assert_cmpuint((ip[2] << 8) | ip[3], ==,
@@ -3769,6 +3920,135 @@ static void test_transmit_segments_a_large_send(void)
 
     xframe_tx_stop(&t);
 }
+
+#ifdef CONFIG_LINUX
+static uint16_t frame_ipv4_pseudo_checksum_seed(const uint8_t *frame,
+                                                size_t l4_len)
+{
+    uint8_t pseudo[12];
+    const uint8_t *ip = frame + ETH_HDR_LEN;
+    uint32_t sum;
+
+    memcpy(pseudo, ip + 12, 8);
+    pseudo[8] = 0;
+    pseudo[9] = IPPROTO_TCP;
+    pseudo[10] = (uint8_t)(l4_len >> 8);
+    pseudo[11] = (uint8_t)l4_len;
+    sum = frame_csum_add(0, pseudo, sizeof(pseudo));
+    return (uint16_t)~frame_csum_fold(sum);
+}
+
+static void test_transmit_offloads_lso_to_vnet_backend(void)
+{
+    XframeTx t;
+    const size_t mss = 512;
+    const size_t payload = 1736;
+    const size_t hdr_len = ETH_HDR_LEN + IPV4_HDR_LEN + TCP_HDR_LEN;
+    const size_t frame_len = hdr_len + payload;
+    g_autofree uint8_t *frame = g_malloc0(frame_len);
+    g_autofree uint8_t *mirrored = g_malloc0(sizeof(struct virtio_net_hdr) +
+                                             frame_len);
+    struct virtio_net_hdr *vhdr = (struct virtio_net_hdr *)mirrored;
+    const uint8_t *got = mirrored + sizeof(*vhdr);
+    uint32_t vnet_hdr_len;
+    size_t len;
+    int tap_fd, inject_fd;
+
+    build_ipv4_frame(frame, traffic_remote_mac, IPPROTO_TCP, payload,
+                     frame_len);
+    frame[ETH_HDR_LEN + IPV4_HDR_LEN + 13] = 0x19; /* FIN|PSH|ACK */
+
+    if (!xframe_vnet_tap_start(&t, &tap_fd, &inject_fd)) {
+        return;
+    }
+
+    qtest_memwrite(t.qs->qts, TRAFFIC_TX_BUF, frame, frame_len);
+    dma_stq_be(t.qs->qts, TRAFFIC_TXD_PAR,
+               (uint64_t)frame_len | TXD_OWN | TXD_GCF | TXD_GCL |
+               TXD_LSO_EN | TXD_LSO_MSS(mss));
+    dma_stq_be(t.qs->qts, TRAFFIC_TXD_PAR + 8, 0);
+    dma_stq_be(t.qs->qts, TRAFFIC_TXD_PAR + 16, TRAFFIC_TX_BUF);
+    dma_stq_be(t.qs->qts, TRAFFIC_TXD_PAR + 24, 0);
+    qpci_io_writeq(t.dev, t.txp, TXP_TXDL_PAR, TRAFFIC_TXD_PAR);
+    qpci_io_writeq(t.dev, t.txp, TXP_TXDL_LCR,
+                   TXDL_NUMTXD(0) | TXDL_LGC_FIRST | TXDL_LGC_LAST);
+
+    len = mirror_recv_packet(t.host_fd, mirrored,
+                             sizeof(struct virtio_net_hdr) + frame_len,
+                             &vnet_hdr_len);
+    g_assert_cmpuint(vnet_hdr_len, ==, sizeof(*vhdr));
+    g_assert_cmpuint(len, ==, sizeof(*vhdr) + frame_len);
+    g_assert_cmphex(vhdr->flags, ==, VIRTIO_NET_HDR_F_NEEDS_CSUM);
+    g_assert_cmphex(vhdr->gso_type, ==, VIRTIO_NET_HDR_GSO_TCPV4);
+    g_assert_cmpuint(vhdr->hdr_len, ==, hdr_len);
+    g_assert_cmpuint(vhdr->gso_size, ==, mss);
+    g_assert_cmpuint(vhdr->csum_start, ==,
+                     ETH_HDR_LEN + IPV4_HDR_LEN);
+    g_assert_cmpuint(vhdr->csum_offset, ==, 16);
+
+    g_assert_cmpmem(got, TCP_CSUM_OFF, frame, TCP_CSUM_OFF);
+    g_assert_cmphex(frame_be16(got, TCP_CSUM_OFF), ==,
+                    frame_ipv4_pseudo_checksum_seed(frame,
+                                                    TCP_HDR_LEN + payload));
+    g_assert_cmpmem(got + TCP_CSUM_OFF + 2,
+                    frame_len - TCP_CSUM_OFF - 2,
+                    frame + TCP_CSUM_OFF + 2,
+                    frame_len - TCP_CSUM_OFF - 2);
+    g_assert_cmphex(got[ETH_HDR_LEN + IPV4_HDR_LEN + 13], ==, 0x19);
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, TRAFFIC_TXD_PAR) & TXD_OWN, ==, 0);
+    net_socket_expect_no_frame(t.host_fd);
+
+    sock_pif_writeq(&t, STAT_ADDR, STAT_BLOCK_ADDR);
+    sock_pif_writeq(&t, STAT_CFG, STAT_CFG_EN | STAT_CFG_ONE_SHOT);
+    g_assert_cmpuint(dma_ldl_be(t.qs->qts,
+                                STAT_BLOCK_ADDR + STAT_TMAC_FRMS), ==, 4);
+    g_assert_cmpuint(dma_ldl_be(t.qs->qts,
+                                STAT_BLOCK_ADDR + STAT_TMAC_DATA_OCTETS), ==,
+                     payload + 4 * hdr_len);
+
+    xframe_tx_stop(&t);
+    close(tap_fd);
+    close(inject_fd);
+}
+
+static void test_receive_strips_vnet_header(void)
+{
+    XframeTx t;
+    uint8_t packet[sizeof(struct virtio_net_hdr) + 64] = { };
+    uint8_t *frame = packet + sizeof(struct virtio_net_hdr);
+    uint8_t landed[64];
+    int tap_fd, inject_fd;
+    unsigned i;
+
+    for (i = 0; i < sizeof(landed); i++) {
+        frame[i] = (uint8_t)(0x80 + i);
+    }
+    memcpy(frame, xframe_station_mac, sizeof(xframe_station_mac));
+
+    if (!xframe_vnet_tap_start(&t, &tap_fd, &inject_fd)) {
+        return;
+    }
+
+    xframe_program_rxd(&t, RX_RING_BASE, RX_BUF0, RX_BUF_CAPACITY);
+    xframe_rx_ring_arm(&t, RX_RING_BASE);
+
+    redirector_send_packet(inject_fd, packet,
+                           sizeof(struct virtio_net_hdr),
+                           sizeof(struct virtio_net_hdr));
+    redirector_send_packet(inject_fd, packet, sizeof(packet),
+                           sizeof(struct virtio_net_hdr));
+    g_assert_true(xframe_wait_rxd_consumed(&t, RX_RING_BASE, 5000));
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 16) >>
+                    RXD_BUFSIZ_SHIFT, ==, sizeof(landed));
+    qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(landed));
+
+    xframe_tx_stop(&t);
+    close(tap_fd);
+    close(inject_fd);
+}
+#endif
 
 /*
  * A segmentation-offload buffer is not a frame, and must not be clamped like
@@ -5267,6 +5547,12 @@ int main(int argc, char **argv)
                    test_transmit_completion_survives_repeated_cycles);
     qtest_add_func("xframe/transmit-segments-a-large-send",
                    test_transmit_segments_a_large_send);
+#ifdef CONFIG_LINUX
+    qtest_add_func("xframe/transmit-offloads-lso-to-vnet-backend",
+                   test_transmit_offloads_lso_to_vnet_backend);
+    qtest_add_func("xframe/receive-strips-vnet-header",
+                   test_receive_strips_vnet_header);
+#endif
     qtest_add_func("xframe/transmit-segments-a-send-larger-than-a-frame",
                    test_transmit_segments_a_send_larger_than_a_frame);
     qtest_add_func("xframe/receive-reports-checksum-results",
