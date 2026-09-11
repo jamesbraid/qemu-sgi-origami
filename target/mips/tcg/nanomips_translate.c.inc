@@ -3803,7 +3803,7 @@ static int decode_nanomips_32_48_opc(CPUMIPSState *env, DisasContext *ctx)
                         /* PAUSE - treat as NOP */
                     } else if (rt == 0 && shift == 6) {
                         /* SYNC */
-                        gen_sync(extract32(ctx->opcode, 16, 5));
+                        gen_sync(ctx, extract32(ctx->opcode, 16, 5));
                     } else {
                         /* SLL */
                         gen_shift_imm(ctx, OPC_SLL, rt, rs,

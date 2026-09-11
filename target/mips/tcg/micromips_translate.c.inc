@@ -1306,7 +1306,7 @@ static void gen_pool32axf(CPUMIPSState *env, DisasContext *ctx, int rt, int rs)
     case 0x2d:
         switch (minor) {
         case SYNC:
-            gen_sync(extract32(ctx->opcode, 16, 5));
+            gen_sync(ctx, extract32(ctx->opcode, 16, 5));
             break;
         case SYSCALL:
             generate_exception_end(ctx, EXCP_SYSCALL);

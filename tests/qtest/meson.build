@@ -343,6 +343,7 @@ qtests_mips64 = \
      'sn1-io8-scsi-test', 'sn1-xbridge-host-error-test'] : []) + \
   (config_all_devices.has_key('CONFIG_MALTA') ? ['mips64-mttcg-test',
                                                  'mips64-nmi-test',
+                                                 'mips64-r10k-llsc-test',
                                                  'mips64-r10k-perf-migration-test',
                                                  'mips64-status-re-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-mmio-branch-test',
