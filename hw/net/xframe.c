@@ -2316,6 +2316,9 @@ static uint64_t xframe_rx_offload_status(const uint8_t *frame, size_t len,
 
     /* More-fragments set or a non-zero offset: no complete transport header. */
     if (lduw_be_p(ip + 6) & 0x3fff) {
+        if (l34_len) {
+            *l34_len = ihl;
+        }
         return status | XFRAME_RXD_PROTO_IP_FRAG;
     }
 
@@ -2342,10 +2345,9 @@ static uint64_t xframe_rx_offload_status(const uint8_t *frame, size_t len,
     }
 
     /*
-     * The header-split length: the IP header plus the transport header, which
-     * five-buffer mode delivers into buffer 1. Reported for exactly the frames
-     * that carry the TCP/UDP classification bit, so the descriptor's bits and
-     * its buffer layout agree -- a reader can infer one from the other.
+     * Complete TCP/UDP frames split the IP and transport headers into buffer 1.
+     * Fragments report only the validated IP header above because no complete
+     * transport header exists.
      */
     if (l34_len) {
         *l34_len = ihl + thl;
@@ -2726,7 +2728,7 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
     size_t seg[3] = { 0, 0, 0 };
     uint64_t offload = 0;
     size_t l34 = 0;
-    bool classified;
+    bool split_headers;
     size_t eth;
     unsigned nbuf, i;
     size_t placed;
@@ -2780,13 +2782,12 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
     }
 
     /*
-     * Classify the frame once. The same parse drives both the buffer split and
-     * the reported offload status, so a descriptor's layout and its bits cannot
-     * disagree: the frame is split into buffer 1 exactly when the descriptor
-     * reports TCP or UDP.
+     * Parse the frame once. Complete TCP/UDP frames split their IP and
+     * transport headers into buffer 1; IPv4 fragments split only their IP
+     * header because their transport segment is incomplete.
      */
     offload = xframe_rx_offload_status(buf, copy_len, &l34);
-    classified = (offload & (XFRAME_RXD_PROTO_TCP | XFRAME_RXD_PROTO_UDP)) != 0;
+    split_headers = l34 > 0;
 
     if (xframe_rx_header_split(s)) {
         /*
@@ -2805,7 +2806,7 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
         bufaddr3[2] = xframe_desc_ldq(s, raw + 40, true);
 
         eth = MIN((size_t)XFRAME_ETH_HDR_LEN, copy_len);
-        if (classified && eth == XFRAME_ETH_HDR_LEN && l34 > 0 &&
+        if (split_headers && eth == XFRAME_ETH_HDR_LEN &&
             eth <= bufcap[0] && l34 <= bufcap[1] && eth + l34 <= copy_len) {
             /*
              * Header split: L2 -> buf0, L3+L4 -> buf1, payload -> buf2. The
@@ -2834,15 +2835,15 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
             seg[2] = copy_len - eth - l34;
         } else {
             /*
-             * Unclassified (no transport headers to split -- ARP), or a
-             * classified frame whose headers do not fit buffer 1. Deliver it
+             * Unclassified (no IP or transport headers to split -- ARP), or a
+             * parsed frame whose headers do not fit buffer 1. Deliver it
              * unsplit -- L2 header to buffer 0, the remainder to buffer 2 -- and
              * do NOT report offload, since reporting it would claim a placement
-             * (transport headers in buffer 1) the card did not make. IRIX never
-             * posts a buffer 1 too small for a real header, so the second case
-             * is a guest-error, not a normal path.
+             * in buffer 1 the card did not make. IRIX never posts a buffer 1
+             * too small for a real header, so the second case is a guest-error,
+             * not a normal path.
              */
-            if (classified) {
+            if (split_headers) {
                 qemu_log_mask(LOG_GUEST_ERROR,
                               "xframe: header-split receive: %zu-byte headers do "
                               "not fit buffer 1 (%zu); delivered unsplit\n",

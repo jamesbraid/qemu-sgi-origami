@@ -437,7 +437,9 @@
  * the half at 15:0, each 0xFFFF when that checksum verified).
  */
 #define RXD_PROTO_IPV4           (1ULL << 36)
+#define RXD_PROTO_IP_FRAG        (1ULL << 34)
 #define RXD_PROTO_TCP            (1ULL << 33)
+#define RXD_PROTO_UDP            (1ULL << 32)
 #define RXD_CKSUM_OK             0xffffULL
 
 /*
@@ -3336,6 +3338,24 @@ static size_t build_ipv4_frame(uint8_t *buf, const uint8_t *dst_mac,
     return total_len;
 }
 
+static void frame_set_ipv4_fragment(uint8_t *frame, size_t payload_len,
+                                    uint16_t flags_offset)
+{
+    uint8_t *ip = frame + ETH_HDR_LEN;
+    size_t ip_total = IPV4_HDR_LEN + payload_len;
+    uint16_t csum;
+
+    ip[2] = (uint8_t)(ip_total >> 8);
+    ip[3] = (uint8_t)ip_total;
+    ip[6] = (uint8_t)(flags_offset >> 8);
+    ip[7] = (uint8_t)flags_offset;
+    ip[10] = 0;
+    ip[11] = 0;
+    csum = frame_csum_fold(frame_csum_add(0, ip, IPV4_HDR_LEN));
+    ip[10] = (uint8_t)(csum >> 8);
+    ip[11] = (uint8_t)csum;
+}
+
 /* A correct IPv4 header checksum folds the header (its own field included) to
  * zero. */
 static bool ipv4_checksum_valid(const uint8_t *frame)
@@ -4383,12 +4403,114 @@ static void test_receive_five_buffer_splits_classified_headers(void)
 }
 
 /*
- * The same split at jumbo size: a 9014-byte TCP frame, the exact shape the peer
- * sends during a bulk transfer at MTU 9000 and the first frame size that
- * genuinely needs buffer 2's room (the handshake fits buffers 0 and 1). This is
- * the case the guest failed on live -- data frames retransmitted forever, never
- * acknowledged -- while the 274-byte classified test above passed, so the small
- * test alone is not sufficient coverage.
+ * IPv4 fragments still have a complete IP header even though they do not have
+ * a complete transport segment to classify or verify. Five-buffer mode must
+ * put that header in buffer 1 for every fragment, leaving each fragment's IP
+ * payload in buffer 2. Consecutive descriptors and distinct buffers make this
+ * cover both the initial fragment (which starts with the UDP header) and the
+ * later fragment without allowing one completion to hide the other's layout.
+ */
+static void test_receive_five_buffer_splits_ipv4_fragments(void)
+{
+    enum {
+        UDP_PAYLOAD_LEN = 2012,
+        FIRST_IP_PAYLOAD_LEN = 1480,
+        SECOND_IP_PAYLOAD_LEN = UDP_HDR_LEN + UDP_PAYLOAD_LEN -
+                                FIRST_IP_PAYLOAD_LEN,
+        FIRST_FRAME_LEN = ETH_HDR_LEN + IPV4_HDR_LEN + FIRST_IP_PAYLOAD_LEN,
+        SECOND_FRAME_LEN = ETH_HDR_LEN + IPV4_HDR_LEN + SECOND_IP_PAYLOAD_LEN,
+    };
+    XframeTx t;
+    uint8_t datagram[ETH_HDR_LEN + IPV4_HDR_LEN + UDP_HDR_LEN +
+                     UDP_PAYLOAD_LEN];
+    uint8_t fragments[2][FIRST_FRAME_LEN];
+    uint8_t landed[FIRST_IP_PAYLOAD_LEN];
+    const uint64_t buffers[2][3] = {
+        { RX_BUF0, RX_BUF0 + 0x1000, RX_BUF0 + 0x2000 },
+        { RX_BUF0 + 0x5000, RX_BUF0 + 0x6000, RX_BUF0 + 0x7000 },
+    };
+    const size_t frame_len[2] = { FIRST_FRAME_LEN, SECOND_FRAME_LEN };
+    const size_t ip_payload_len[2] = {
+        FIRST_IP_PAYLOAD_LEN, SECOND_IP_PAYLOAD_LEN,
+    };
+    const size_t c0 = ETH_HDR_LEN, c1 = 128, c2 = 9738;
+    uint64_t ctrl1, ctrl2, desc;
+    unsigned i;
+
+    build_ipv4_frame(datagram, xframe_station_mac, IPPROTO_UDP,
+                     UDP_PAYLOAD_LEN, sizeof(datagram));
+
+    memcpy(fragments[0], datagram, FIRST_FRAME_LEN);
+    frame_set_ipv4_fragment(fragments[0], FIRST_IP_PAYLOAD_LEN, 0x2000);
+
+    memcpy(fragments[1], datagram, ETH_HDR_LEN + IPV4_HDR_LEN);
+    memcpy(fragments[1] + ETH_HDR_LEN + IPV4_HDR_LEN,
+           datagram + ETH_HDR_LEN + IPV4_HDR_LEN + FIRST_IP_PAYLOAD_LEN,
+           SECOND_IP_PAYLOAD_LEN);
+    frame_set_ipv4_fragment(fragments[1], SECOND_IP_PAYLOAD_LEN,
+                            FIRST_IP_PAYLOAD_LEN / 8);
+
+    g_assert_cmpuint(frame_len[0], ==, 1514);
+    g_assert_cmpuint(frame_len[1], ==, 574);
+    g_assert_cmpuint(frame_be16(fragments[0], ETH_HDR_LEN + 2), ==, 1500);
+    g_assert_cmphex(frame_be16(fragments[0], ETH_HDR_LEN + 6), ==, 0x2000);
+    g_assert_cmpuint(frame_be16(fragments[1], ETH_HDR_LEN + 2), ==, 560);
+    g_assert_cmphex(frame_be16(fragments[1], ETH_HDR_LEN + 6), ==,
+                    FIRST_IP_PAYLOAD_LEN / 8);
+    g_assert_true(ipv4_checksum_valid(fragments[0]));
+    g_assert_true(ipv4_checksum_valid(fragments[1]));
+
+    xframe_tx_start(&t);
+    for (i = 0; i < 2; i++) {
+        desc = RX_RING_BASE + i * RXD5_SIZE;
+        dma_stq_be(t.qs->qts, desc + 0, 0);
+        dma_stq_be(t.qs->qts, desc + 8, RXD_OWN);
+        dma_stq_be(t.qs->qts, desc + 16, RXD5_SET_SIZES(c0, c1, c2));
+        dma_stq_be(t.qs->qts, desc + 24, buffers[i][0]);
+        dma_stq_be(t.qs->qts, desc + 32, buffers[i][1]);
+        dma_stq_be(t.qs->qts, desc + 40, buffers[i][2]);
+    }
+    sock_pif_writeq(&t, PRC_RXD0_0, RX_RING_BASE);
+    sock_pif_writeq(&t, PRC_CTRL_0, RC_IN_SVC | RC_RING_MODE_5BUF);
+
+    for (i = 0; i < 2; i++) {
+        desc = RX_RING_BASE + i * RXD5_SIZE;
+        net_socket_send_frame(t.host_fd, fragments[i], frame_len[i]);
+        g_assert_true(xframe_wait_rxd_consumed(&t, desc, 5000));
+
+        ctrl2 = dma_ldq_be(t.qs->qts, desc + 16);
+        g_assert_cmpuint(RXD5_GET_B0(ctrl2), ==, ETH_HDR_LEN);
+        g_assert_cmpuint(RXD5_GET_B1(ctrl2), ==, IPV4_HDR_LEN);
+        g_assert_cmpuint(RXD5_GET_B2(ctrl2), ==, ip_payload_len[i]);
+
+        qtest_memread(t.qs->qts, buffers[i][0], landed, ETH_HDR_LEN);
+        g_assert_cmpmem(landed, ETH_HDR_LEN, fragments[i], ETH_HDR_LEN);
+        qtest_memread(t.qs->qts, buffers[i][1], landed, IPV4_HDR_LEN);
+        g_assert_cmpmem(landed, IPV4_HDR_LEN,
+                        fragments[i] + ETH_HDR_LEN, IPV4_HDR_LEN);
+        qtest_memread(t.qs->qts, buffers[i][2], landed, ip_payload_len[i]);
+        g_assert_cmpmem(landed, ip_payload_len[i],
+                        fragments[i] + ETH_HDR_LEN + IPV4_HDR_LEN,
+                        ip_payload_len[i]);
+
+        ctrl1 = dma_ldq_be(t.qs->qts, desc + 8);
+        g_assert_cmphex(ctrl1 & RXD_PROTO_IPV4, ==, RXD_PROTO_IPV4);
+        g_assert_cmphex(ctrl1 & RXD_PROTO_IP_FRAG, ==, RXD_PROTO_IP_FRAG);
+        g_assert_cmphex(ctrl1 & (RXD_PROTO_TCP | RXD_PROTO_UDP), ==, 0);
+        g_assert_cmphex((ctrl1 >> 16) & 0xffff, ==, RXD_CKSUM_OK);
+        g_assert_cmphex(ctrl1 & 0xffff, ==, 0);
+    }
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * The classified header split at jumbo size: a 9014-byte TCP frame, the exact
+ * shape the peer sends during a bulk transfer at MTU 9000 and the first frame
+ * size that genuinely needs buffer 2's room (the handshake fits buffers 0 and
+ * 1). This is the case the guest failed on live -- data frames retransmitted
+ * forever, never acknowledged -- while a small classified frame passed, so the
+ * small test alone is not sufficient coverage.
  */
 static void test_receive_five_buffer_splits_a_jumbo_frame(void)
 {
@@ -5653,6 +5775,8 @@ int main(int argc, char **argv)
                    test_receive_five_buffer_unclassified_frame);
     qtest_add_func("xframe/receive-five-buffer-splits-classified-headers",
                    test_receive_five_buffer_splits_classified_headers);
+    qtest_add_func("xframe/receive-five-buffer-splits-ipv4-fragments",
+                   test_receive_five_buffer_splits_ipv4_fragments);
     qtest_add_func("xframe/receive-five-buffer-splits-a-jumbo-frame",
                    test_receive_five_buffer_splits_a_jumbo_frame);
     qtest_add_func("xframe/statistics-block-counts-traffic",
