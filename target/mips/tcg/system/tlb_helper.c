@@ -263,6 +263,7 @@ static bool r4k_shadow_covers_staged(CPUMIPSState *env)
     bool mi = !!((env->CP0_Config5 >> CP0C5_MI) & 1);
     uint16_t ASID = env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask;
     uint32_t MMID = mi ? env->CP0_MemoryMapID : (uint32_t)ASID;
+    bool G = env->CP0_EntryLo0 & env->CP0_EntryLo1 & 1;
     target_ulong staged;
     int i;
 
@@ -287,7 +288,7 @@ static bool r4k_shadow_covers_staged(CPUMIPSState *env)
 #if defined(TARGET_MIPS64)
         tag &= env->SEGMask;
 #endif
-        if (VPN == tag && (tlb->G || tlb_mmid == MMID)) {
+        if (VPN == tag && (G || tlb->G || tlb_mmid == MMID)) {
             return true;
         }
     }
