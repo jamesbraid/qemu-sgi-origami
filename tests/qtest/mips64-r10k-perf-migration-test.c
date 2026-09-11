@@ -31,9 +31,10 @@
 #define CACHE_DONE_OFF      0x130
 #define CACHE_TAGLO_OFF     0x138
 #define CACHE_TAGHI_OFF     0x140
-#define CACHE_DATA_LO_OFF   0x148
-#define CACHE_DATA_HI_OFF   0x150
-#define CACHE_ECC_OFF       0x158
+#define CACHE_TAG_STRIDE    0x10
+#define CACHE_DATA_LO_OFF   0x168
+#define CACHE_DATA_HI_OFF   0x170
+#define CACHE_ECC_OFF       0x178
 #define READY_MAGIC         0x1400
 #define RESET_READY_MAGIC   0x1401
 #define CACHE_READY_MAGIC   0x14ca
@@ -45,7 +46,6 @@
 #define CACHE_DATA_HI       0x13579bdfu
 #define CACHE_ECC           0x2aau
 #define CACHE_UPPER_HI      0x8008
-#define R10K_4M_CACHE_HI    0xa010
 #define POLL_TRIES          20000
 #define POLL_INTERVAL_US    1000
 #define ANALYZE_SCRIPT      "scripts/analyze-migration.py"
@@ -90,9 +90,28 @@ typedef struct {
     unsigned int pos;
 } GuestImage;
 
+typedef struct {
+    uint16_t address_hi;
+    uint32_t taglo;
+    uint32_t taghi;
+} CacheTagProbe;
+
 static const TestConfig configurations[] = {
     { "R10000", 0, 1 },
     { "R14000", 4, 5 },
+};
+
+static const CacheTagProbe r14000_cache_probe = {
+    .address_hi = CACHE_UPPER_HI,
+    .taglo = CACHE_TAGLO,
+    .taghi = CACHE_TAGHI,
+};
+
+/* Base, cpu/r14k-scache, and cpu/r10k-scache-4m VMState spans. */
+static const CacheTagProbe r10000_4m_cache_probes[] = {
+    { 0xa000, 0x1234c5aa, 0x0d },
+    { 0xa008, 0x56788944, 0x03 },
+    { 0xa010, 0x6abccd88, 0x09 },
 };
 
 static void emit(GuestImage *img, uint32_t insn)
@@ -236,11 +255,15 @@ static void write_reset_guest_image(int fd)
     g_assert_cmpint(written, ==, sizeof(image));
 }
 
-static void write_cache_guest_image(int fd, uint16_t cache_upper_hi)
+static void write_cache_guest_image(int fd, const CacheTagProbe *probes,
+                                    size_t nprobes)
 {
     uint8_t image[IMAGE_SIZE] = { };
     GuestImage img = { .code = image, .pos = 0 };
     ssize_t written;
+    size_t i;
+
+    g_assert_cmpuint(nprobes, >, 0);
 
     /* Malta overwrites offset 0x10 with its board ID, so branch past it. */
     emit_branch(&img, CACHE_START);
@@ -248,12 +271,14 @@ static void write_cache_guest_image(int fd, uint16_t cache_upper_hi)
 
     img.pos = CACHE_START;
     emit(&img, OPC_LUI | (R_T2 << 16) | STATE_KSEG1_HI);
-    emit(&img, OPC_LUI | (R_T1 << 16) | cache_upper_hi);
-    emit_load_u32(&img, R_T0, CACHE_TAGLO);
-    emit_mtc0(&img, R_T0, CP0_TAGLO, 0);
-    emit_load_u32(&img, R_T0, CACHE_TAGHI);
-    emit_mtc0(&img, R_T0, CP0_TAGHI, 0);
-    emit_cache(&img, 0x0b, R_T1, 0);
+    for (i = 0; i < nprobes; i++) {
+        emit(&img, OPC_LUI | (R_T1 << 16) | probes[i].address_hi);
+        emit_load_u32(&img, R_T0, probes[i].taglo);
+        emit_mtc0(&img, R_T0, CP0_TAGLO, 0);
+        emit_load_u32(&img, R_T0, probes[i].taghi);
+        emit_mtc0(&img, R_T0, CP0_TAGHI, 0);
+        emit_cache(&img, 0x0b, R_T1, 0);
+    }
     emit_load_u32(&img, R_T0, CACHE_DATA_LO);
     emit_mtc0(&img, R_T0, CP0_TAGLO, 0);
     emit_load_u32(&img, R_T0, CACHE_DATA_HI);
@@ -274,13 +299,18 @@ static void write_cache_guest_image(int fd, uint16_t cache_upper_hi)
     emit(&img, 0);
 
     img.pos = CACHE_READ;
-    emit_mtc0(&img, R_ZERO, CP0_TAGLO, 0);
-    emit_mtc0(&img, R_ZERO, CP0_TAGHI, 0);
-    emit_cache(&img, 0x07, R_T1, 0);
-    emit_mfc0(&img, R_T0, CP0_TAGLO, 0);
-    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CACHE_TAGLO_OFF);
-    emit_mfc0(&img, R_T0, CP0_TAGHI, 0);
-    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CACHE_TAGHI_OFF);
+    for (i = 0; i < nprobes; i++) {
+        emit(&img, OPC_LUI | (R_T1 << 16) | probes[i].address_hi);
+        emit_mtc0(&img, R_ZERO, CP0_TAGLO, 0);
+        emit_mtc0(&img, R_ZERO, CP0_TAGHI, 0);
+        emit_cache(&img, 0x07, R_T1, 0);
+        emit_mfc0(&img, R_T0, CP0_TAGLO, 0);
+        emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) |
+                   (CACHE_TAGLO_OFF + i * CACHE_TAG_STRIDE));
+        emit_mfc0(&img, R_T0, CP0_TAGHI, 0);
+        emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) |
+                   (CACHE_TAGHI_OFF + i * CACHE_TAG_STRIDE));
+    }
     emit_mtc0(&img, R_ZERO, CP0_TAGLO, 0);
     emit_mtc0(&img, R_ZERO, CP0_TAGHI, 0);
     emit_mtc0(&img, R_ZERO, CP0_ERRCTL, 0);
@@ -306,6 +336,21 @@ static void write_cache_guest_image(int fd, uint16_t cache_upper_hi)
 static uint64_t state_word(QTestState *qts, uint64_t off)
 {
     return qtest_readq(qts, STATE_PHYS + off);
+}
+
+static void assert_cache_tags(QTestState *qts, const CacheTagProbe *probes,
+                              size_t nprobes)
+{
+    size_t i;
+
+    for (i = 0; i < nprobes; i++) {
+        g_assert_cmphex(state_word(qts, CACHE_TAGLO_OFF +
+                                   i * CACHE_TAG_STRIDE), ==,
+                        probes[i].taglo);
+        g_assert_cmphex(state_word(qts, CACHE_TAGHI_OFF +
+                                   i * CACHE_TAG_STRIDE), ==,
+                        probes[i].taghi);
+    }
 }
 
 static uint64_t wait_for_change(QTestState *qts, uint64_t old)
@@ -560,7 +605,7 @@ static void test_r14000_upper_scache_migration(void)
     fd = g_file_open_tmp("mips64-r14k-scache-XXXXXX", &image, &error);
     g_assert_no_error(error);
     g_assert_cmpint(fd, >=, 0);
-    write_cache_guest_image(fd, CACHE_UPPER_HI);
+    write_cache_guest_image(fd, &r14000_cache_probe, 1);
     close(fd);
     directory = g_dir_make_tmp("mips64-r14k-scache-migration-XXXXXX",
                                &error);
@@ -587,8 +632,7 @@ static void test_r14000_upper_scache_migration(void)
     qtest_writeq(to, STATE_PHYS + CACHE_COMMAND_OFF, 1);
     wait_for_state(to, CACHE_DONE_OFF, CACHE_DONE_MAGIC);
 
-    g_assert_cmphex(state_word(to, CACHE_TAGLO_OFF), ==, CACHE_TAGLO);
-    g_assert_cmphex(state_word(to, CACHE_TAGHI_OFF), ==, CACHE_TAGHI);
+    assert_cache_tags(to, &r14000_cache_probe, 1);
     g_assert_cmphex(state_word(to, CACHE_DATA_LO_OFF), ==, CACHE_DATA_LO);
     g_assert_cmphex(state_word(to, CACHE_DATA_HI_OFF), ==, CACHE_DATA_HI);
     g_assert_cmphex(state_word(to, CACHE_ECC_OFF), ==, CACHE_ECC);
@@ -620,7 +664,8 @@ static void test_r10000_four_mib_scache_migration(void)
     fd = g_file_open_tmp("mips64-r10k-4m-scache-XXXXXX", &image, &error);
     g_assert_no_error(error);
     g_assert_cmpint(fd, >=, 0);
-    write_cache_guest_image(fd, R10K_4M_CACHE_HI);
+    write_cache_guest_image(fd, r10000_4m_cache_probes,
+                            G_N_ELEMENTS(r10000_4m_cache_probes));
     close(fd);
     directory = g_dir_make_tmp("mips64-r10k-4m-scache-migration-XXXXXX",
                                &error);
@@ -649,8 +694,8 @@ static void test_r10000_four_mib_scache_migration(void)
     qtest_writeq(to, STATE_PHYS + CACHE_COMMAND_OFF, 1);
     wait_for_state(to, CACHE_DONE_OFF, CACHE_DONE_MAGIC);
 
-    g_assert_cmphex(state_word(to, CACHE_TAGLO_OFF), ==, CACHE_TAGLO);
-    g_assert_cmphex(state_word(to, CACHE_TAGHI_OFF), ==, CACHE_TAGHI);
+    assert_cache_tags(to, r10000_4m_cache_probes,
+                      G_N_ELEMENTS(r10000_4m_cache_probes));
     g_assert_cmphex(state_word(to, CACHE_DATA_LO_OFF), ==, CACHE_DATA_LO);
     g_assert_cmphex(state_word(to, CACHE_DATA_HI_OFF), ==, CACHE_DATA_HI);
     g_assert_cmphex(state_word(to, CACHE_ECC_OFF), ==, CACHE_ECC);
