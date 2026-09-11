@@ -1209,6 +1209,13 @@ void gen_store_gpr(TCGv t, int reg)
     }
 }
 
+static void gen_break_ll_link(DisasContext *ctx)
+{
+    if (ctx->ll_sc_intervening_ops_break_link) {
+        tcg_gen_movi_tl(cpu_lladdr, 1);
+    }
+}
+
 #if defined(TARGET_MIPS64)
 void gen_load_gpr_hi(TCGv_i64 t, int reg)
 {
@@ -2092,6 +2099,8 @@ static void gen_ld(DisasContext *ctx, uint32_t opc,
     TCGv t0, t1;
     int mem_idx = ctx->mem_idx;
 
+    gen_break_ll_link(ctx);
+
     if (rt == 0 && ctx->insn_flags & (INSN_LOONGSON2E | INSN_LOONGSON2F |
                                       INSN_LOONGSON3A)) {
         /*
@@ -2237,6 +2246,8 @@ static void gen_st(DisasContext *ctx, uint32_t opc, int rt,
     TCGv t1 = tcg_temp_new();
     int mem_idx = ctx->mem_idx;
 
+    gen_break_ll_link(ctx);
+
     gen_base_offset_addr(ctx, t0, base, offset);
     gen_load_gpr(t1, rt);
     switch (opc) {
@@ -2320,6 +2331,8 @@ static void gen_st_cond(DisasContext *ctx, int rt, int base, int offset,
 static void gen_flt_ldst(DisasContext *ctx, uint32_t opc, int ft,
                          TCGv t0)
 {
+    gen_break_ll_link(ctx);
+
     /*
      * Don't do NOP if destination is zero: we must perform the actual
      * memory access.
@@ -10876,6 +10889,8 @@ static void gen_flt3_ldst(DisasContext *ctx, uint32_t opc,
 {
     TCGv t0 = tcg_temp_new();
 
+    gen_break_ll_link(ctx);
+
     gen_base_index_addr(ctx, t0, base, index);
     /*
      * Don't do NOP if destination is zero: we must perform the actual
@@ -11604,9 +11619,11 @@ void gen_ldxs(DisasContext *ctx, int base, int index, int rd)
     gen_store_gpr(t1, rd);
 }
 
-static void gen_sync(int stype)
+static void gen_sync(DisasContext *ctx, int stype)
 {
     TCGBar tcg_mo = TCG_BAR_SC;
+
+    gen_break_ll_link(ctx);
 
     switch (stype) {
     case 0x4: /* SYNC_WMB */
@@ -13606,7 +13623,7 @@ static void decode_opc_special(CPUMIPSState *env, DisasContext *ctx)
         break;
     case OPC_SYNC:
         check_insn(ctx, ISA_MIPS2);
-        gen_sync(extract32(ctx->opcode, 6, 5));
+        gen_sync(ctx, extract32(ctx->opcode, 6, 5));
         break;
 
 #if defined(TARGET_MIPS64)
@@ -15013,6 +15030,7 @@ static bool decode_opc_legacy(CPUMIPSState *env, DisasContext *ctx)
     case OPC_CACHE:
         check_cp0_enabled(ctx);
         check_insn(ctx, ISA_MIPS3 | ISA_MIPS_R1);
+        gen_break_ll_link(ctx);
         if ((ctx->hflags & MIPS_HFLAG_ITC_CACHE) ||
             (ctx->insn_flags & INSN_R10K)) {
             gen_cache_operation(ctx, rt, rs, imm);
@@ -15022,6 +15040,7 @@ static bool decode_opc_legacy(CPUMIPSState *env, DisasContext *ctx)
     case OPC_PREF:
         check_insn(ctx, ISA_MIPS4 | ISA_MIPS_R1 | INSN_R5900);
         check_mips4_enabled(ctx);
+        gen_break_ll_link(ctx);
         /* Treat as NOP. */
         break;
 
@@ -15269,6 +15288,7 @@ static bool decode_opc_legacy(CPUMIPSState *env, DisasContext *ctx)
             case OPC_PREFX:
                 check_insn(ctx, ISA_MIPS4 | ISA_MIPS_R2);
                 check_mips4_enabled(ctx);
+                gen_break_ll_link(ctx);
                 /* Treat as NOP. */
                 break;
             case OPC_ALNV_PS:
@@ -15503,6 +15523,8 @@ static void mips_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
     ctx->crcp = (env->CP0_Config5 >> CP0C5_CRCP) & 1;
     ctx->partial_lwr_preserves_upper =
         env->cfg.partial_lwr_preserves_upper;
+    ctx->ll_sc_intervening_ops_break_link =
+        env->cfg.ll_sc_intervening_ops_break_link;
     restore_cpu_state(env, ctx);
 #ifdef CONFIG_USER_ONLY
         ctx->mem_idx = MIPS_HFLAG_UM;
