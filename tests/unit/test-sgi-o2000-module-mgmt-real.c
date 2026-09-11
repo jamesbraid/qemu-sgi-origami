@@ -533,6 +533,39 @@ static void test_start_after_free_observation_during_grant(
     stop_transfer(f, 0);
 }
 
+/* A controller grant must not discard a START already waiting for tBUF. */
+static void test_start_overtaken_during_bus_free_time(Fixture *f,
+                                                      gconstpointer unused)
+{
+    I2CBus *bus = sgi_o2000_module_mgmt_get_bus(f->module);
+    int64_t next_grant;
+
+    run_tick(f);
+    g_assert_true(start_transfer(f, 1, SGI_O2000_NVRAM_FIRST_ADDR, false));
+    while (f->module->service_deadline <= virtual_time + 5 * POLL_STEP_NS) {
+        advance_to(virtual_time + POLL_STEP_NS);
+    }
+    next_grant = f->module->service_deadline;
+    advance_to(next_grant - 5 * POLL_STEP_NS);
+    stop_transfer(f, 1);
+    g_assert_false(i2c_bus_busy(bus));
+    g_assert_cmpint(virtual_time, <, next_grant);
+
+    write_reg(f, 0, DATA_REG, SGI_O2000_NVRAM_FIRST_ADDR << 1);
+    write_reg(f, 0, CTRL_REG, CTL_START);
+    g_assert_true(f->adapter[0]->wire_active);
+
+    advance_to(next_grant + POLL_STEP_NS);
+    g_assert_false(f->adapter[0]->wire_active);
+    g_assert_true(f->adapter[0]->wire_start_waiting);
+
+    advance_to(next_grant + GRANT_SETTLE_NS);
+    g_assert_true(f->adapter[0]->wire_active);
+    g_assert_true(wait_done(f, 0));
+    g_assert_cmphex(read_reg(f, 0, CTRL_REG) & PCF8584_STS_LRB, ==, 0);
+    stop_transfer(f, 0);
+}
+
 static void test_waiting_start_cancellation(Fixture *f,
                                             gconstpointer disable)
 {
@@ -1019,6 +1052,9 @@ int main(int argc, char **argv)
     g_test_add("/sgi-o2000-module-management/shared/start-during-grant",
                Fixture, NULL, setup,
                test_start_after_free_observation_during_grant, teardown);
+    g_test_add("/sgi-o2000-module-management/shared/start-overtaken-during-tbuf",
+               Fixture, NULL, setup,
+               test_start_overtaken_during_bus_free_time, teardown);
     g_test_add("/sgi-o2000-module-management/shared/waiting-start-stop",
                Fixture, NULL, setup, test_waiting_start_cancellation,
                teardown);
