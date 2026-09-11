@@ -48,6 +48,8 @@ typedef struct MIPSCPUConfig {
     bool exception_breaks_ll_link;
     /* A load, store, SYNC, CACHE, or PREF between LL and SC breaks the link. */
     bool ll_sc_intervening_ops_break_link;
+    /* External stores invalidate a link to the same secondary-cache block. */
+    bool ll_sc_external_block_breaks_link;
     /* The LLAddr register is plain scratch that the link never writes. */
     bool lladdr_is_scratch;
     /*
@@ -1257,6 +1259,7 @@ typedef struct CPUArchState {
  */
     target_ulong lladdr; /* LL virtual address compared against SC */
     target_ulong llval;
+    uint64_t llsc_ram_block;
     uint64_t llval_wp;
     uint32_t llnewval_wp;
     uint64_t CP0_LLAddr_rw_bitmask;

@@ -150,6 +150,7 @@ void helper_eret(CPUMIPSState *env)
         env->CP0_LLAddr = 1;
     }
     env->lladdr = 1;
+    qatomic_set(&env->llsc_ram_block, 0);
     trace_mips_eret(env_cpu(env)->cpu_index,
                     env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask,
                     env->active_tc.PC, env->CP0_Status,
