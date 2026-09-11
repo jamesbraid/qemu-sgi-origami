@@ -1549,6 +1549,24 @@ static void sn0_init(MachineState *machine)
     g_assert(cpu_index == machine->smp.cpus);
     g_assert(ram_offset == machine->ram_size);
 
+    /* The two-module Origin 200 has four CPU turns and one slave turn. */
+    if (node_count == 2) {
+        SGIElscState *master = NULL;
+        SGIElscState *slave = NULL;
+
+        for (node_index = 0; node_index < node_count; node_index++) {
+            if (profile->nodes[node_index].module_role == SN0_MODULE_MASTER) {
+                master = s->nodes[node_index]->hub.elsc;
+            } else if (profile->nodes[node_index].module_role ==
+                       SN0_MODULE_SLAVE) {
+                slave = s->nodes[node_index]->hub.elsc;
+            }
+        }
+        g_assert(master);
+        g_assert(slave);
+        sgi_elsc_share_arbitration(master, slave, 5);
+    }
+
     /* Every Hub has its endpoint and its aliases: the maps can be aimed. */
     sn0_fabric_build(s->fabric);
 

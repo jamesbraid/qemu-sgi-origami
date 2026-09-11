@@ -7,6 +7,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
 
@@ -21,6 +22,10 @@
 
 #define I2C_DATA        0x220000
 #define I2C_CTRL        0x220008
+
+#define NI_STATUS       0x600000
+#define NI_REGION_SIZE  (1ULL << 17)
+#define NI_NODE(n)      ((uint64_t)(n) << 8)
 
 #define CTL_PIN  0x80
 #define CTL_ESO  0x40
@@ -301,6 +306,38 @@ static void arb_enable_observer_at(QTestState *qts, uint64_t hub)
 static void arb_enable_observer(QTestState *qts)
 {
     arb_enable_observer_at(qts, HUB_LOCAL);
+}
+
+static void cpu_writeq(QTestState *qts, unsigned int cpu, uint64_t addr,
+                       uint64_t value)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, cpu, addr, bytes, sizeof(bytes)));
+}
+
+static uint64_t cpu_readq(QTestState *qts, unsigned int cpu, uint64_t addr)
+{
+    uint8_t bytes[8];
+
+    g_assert_true(qtest_memread_cpu(qts, cpu, addr, bytes, sizeof(bytes)));
+    return ldq_be_p(bytes);
+}
+
+static void arb_enable_cpu_observer(QTestState *qts, unsigned int cpu,
+                                    uint8_t clock)
+{
+    uint64_t hub = HUB_LOCAL;
+
+    cpu_writeq(qts, cpu, hub + I2C_CTRL, CTL_PIN);
+    cpu_writeq(qts, cpu, hub + I2C_DATA, 0x7f);
+    cpu_writeq(qts, cpu, hub + I2C_CTRL, CTL_PIN | CTL_ES1);
+    cpu_writeq(qts, cpu, hub + I2C_DATA, clock);
+    cpu_writeq(qts, cpu, hub + I2C_CTRL, CTL_PIN);
+    g_assert_cmphex(cpu_readq(qts, cpu, hub + I2C_DATA), ==, 0x7f);
+    cpu_writeq(qts, cpu, hub + I2C_DATA, 0x09);
+    cpu_writeq(qts, cpu, hub + I2C_CTRL, CTL_PIN | CTL_ESO);
 }
 
 /* Any code's grant, either half of its signal pair. */
@@ -910,24 +947,110 @@ static void test_two_towers_only_master_aux_active(const void *data)
     qtest_quit(qts);
 }
 
-/* Only the master module's controller publishes processor grants. */
-static void test_two_towers_only_master_publishes_grants(const void *data)
+/*
+ * The master owns one five-position ring. Before node numbering, the same
+ * explicit-zero address reaches the PCF local to each issuing module. After
+ * node 1 is numbered, that module reaches the master at explicit zero and its
+ * local PCF at explicit one. Distinct clock-register values prove which PCF
+ * each access reached while the data registers prove both see one ring.
+ */
+static void test_two_towers_share_master_grant_ring(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200 -m 128M "
+        "-M origin200,synthesized-firmware=off -m 128M "
         "-object memory-backend-ram,id=ram0,size=64M "
         "-object memory-backend-ram,id=ram1,size=64M "
         "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
         "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
         "-smp 4,sockets=2,cores=2,threads=1");
-    uint64_t slave_hub = HUB_BY_NODE + NODE_STRIDE;
+    const unsigned int master_cpu = 0;
+    const unsigned int slave_cpu = 2;
+    const uint64_t explicit_zero = HUB_BY_NODE;
+    const uint64_t explicit_one = HUB_BY_NODE + NODE_STRIDE;
+    unsigned int code;
 
-    arb_enable_observer(qts);
-    arb_enable_observer_at(qts, slave_hub);
-    qtest_clock_step(qts, 2 * ARB_TICK_NS);
+    arb_enable_cpu_observer(qts, master_cpu, 0x1c);
+    arb_enable_cpu_observer(qts, slave_cpu, 0x1d);
 
-    g_assert_true(arb_is_signal_byte(read_data(qts)));
-    g_assert_cmphex(qtest_readq(qts, slave_hub + I2C_DATA), ==, 0);
+    cpu_writeq(qts, master_cpu, explicit_zero + I2C_CTRL,
+               CTL_PIN | CTL_ES1);
+    cpu_writeq(qts, slave_cpu, explicit_zero + I2C_CTRL,
+               CTL_PIN | CTL_ES1);
+    g_assert_cmphex(cpu_readq(qts, master_cpu, explicit_zero + I2C_DATA),
+                    ==, 0x1c);
+    g_assert_cmphex(cpu_readq(qts, slave_cpu, explicit_zero + I2C_DATA),
+                    ==, 0x1d);
+    cpu_writeq(qts, master_cpu, explicit_zero + I2C_CTRL,
+               CTL_PIN | CTL_ESO);
+    cpu_writeq(qts, slave_cpu, explicit_zero + I2C_CTRL,
+               CTL_PIN | CTL_ESO);
+
+    for (code = 0; code < 6; code++) {
+        qtest_clock_step(qts, ARB_TICK_NS);
+        if (cpu_readq(qts, master_cpu, explicit_zero + I2C_DATA) ==
+                ARB_SIGNAL1 &&
+            cpu_readq(qts, slave_cpu, explicit_zero + I2C_DATA) ==
+                ARB_SIGNAL1) {
+            break;
+        }
+    }
+    g_assert_cmpuint(code, <, 6);
+
+    for (code = 1; code < 5; code++) {
+        qtest_clock_step(qts, code == 4 ? 1 : ARB_TICK_NS);
+        g_assert_cmphex(cpu_readq(qts, master_cpu,
+                                  explicit_zero + I2C_DATA),
+                        ==, ARB_SIGNAL1 + code);
+        g_assert_cmphex(cpu_readq(qts, slave_cpu,
+                                  explicit_zero + I2C_DATA),
+                        ==, ARB_SIGNAL1 + code);
+        if (code == 3) {
+            qtest_clock_step(qts, ARB_TICK_NS - 1);
+            g_assert_cmphex(cpu_readq(qts, master_cpu,
+                                      explicit_zero + I2C_DATA),
+                            ==, ARB_SIGNAL1 + 3);
+            g_assert_cmphex(cpu_readq(qts, slave_cpu,
+                                      explicit_zero + I2C_DATA),
+                            ==, ARB_SIGNAL1 + 3);
+        }
+    }
+    qtest_clock_step(qts, ARB_TICK_NS);
+    g_assert_cmphex(cpu_readq(qts, master_cpu,
+                              explicit_zero + I2C_DATA), ==, ARB_SIGNAL1);
+    g_assert_cmphex(cpu_readq(qts, slave_cpu,
+                              explicit_zero + I2C_DATA), ==, ARB_SIGNAL1);
+
+    cpu_writeq(qts, slave_cpu, HUB_LOCAL + NI_STATUS,
+               NI_REGION_SIZE | NI_NODE(1));
+
+    cpu_writeq(qts, slave_cpu, explicit_zero + I2C_CTRL,
+               CTL_PIN | CTL_ES1);
+    cpu_writeq(qts, slave_cpu, explicit_one + I2C_CTRL,
+               CTL_PIN | CTL_ES1);
+    g_assert_cmphex(cpu_readq(qts, slave_cpu, explicit_zero + I2C_DATA),
+                    ==, 0x1c);
+    g_assert_cmphex(cpu_readq(qts, slave_cpu, explicit_one + I2C_DATA),
+                    ==, 0x1d);
+    cpu_writeq(qts, slave_cpu, explicit_zero + I2C_CTRL,
+               CTL_PIN | CTL_ESO);
+    cpu_writeq(qts, slave_cpu, explicit_one + I2C_CTRL,
+               CTL_PIN | CTL_ESO);
+
+    /* A slave-local transaction must stall the one shared ring. */
+    cpu_writeq(qts, slave_cpu, explicit_one + I2C_DATA, ELSC_ADDR << 1);
+    cpu_writeq(qts, slave_cpu, explicit_one + I2C_CTRL,
+               CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
+    qtest_clock_step(qts, 3 * ARB_TICK_NS);
+    g_assert_cmphex(cpu_readq(qts, slave_cpu, explicit_zero + I2C_DATA),
+                    ==, ARB_SIGNAL1);
+
+    cpu_writeq(qts, slave_cpu, explicit_one + I2C_CTRL,
+               CTL_PIN | CTL_ESO | CTL_STO);
+    qtest_clock_step(qts, ARB_RETRY_NS);
+    g_assert_cmphex(cpu_readq(qts, slave_cpu, explicit_zero + I2C_DATA),
+                    ==, ARB_SIGNAL1 + 1);
+    g_assert_cmphex(cpu_readq(qts, slave_cpu, explicit_one + I2C_DATA),
+                    ==, ARB_SIGNAL1 + 1);
 
     qtest_quit(qts);
 }
@@ -2457,8 +2580,8 @@ int main(int argc, char **argv)
                         test_acp_command_writes_to_console);
     qtest_add_data_func("sn0/elsc/two-towers-only-master-aux-active", NULL,
                         test_two_towers_only_master_aux_active);
-    qtest_add_data_func("sn0/elsc/two-towers-only-master-publishes-grants",
-                        NULL, test_two_towers_only_master_publishes_grants);
+    qtest_add_data_func("sn0/elsc/two-towers-share-master-grant-ring",
+                        NULL, test_two_towers_share_master_grant_ring);
     qtest_add_data_func("sn0/elsc/acp-with-no-backend-still-answers", NULL,
                         test_acp_with_no_backend_still_answers);
     qtest_add_data_func("sn0/elsc/get-returns-queued-console-input", NULL,
