@@ -1302,6 +1302,90 @@ static void test_transmit_round_trip(const void *data)
     close(sv[0]);
 }
 
+static void test_user_backend_reply_waits_for_transmit(const void *data)
+{
+    static const uint8_t gateway_ip[4] = { 10, 0, 2, 2 };
+    static const uint8_t guest_ip[4] = { 10, 0, 2, 15 };
+    static const uint8_t arp_request[42] = {
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0x52, 0x54, 0x00, 0x12, 0x34, 0x56,
+        0x08, 0x06,
+        0x00, 0x01, 0x08, 0x00, 0x06, 0x04, 0x00, 0x01,
+        0x52, 0x54, 0x00, 0x12, 0x34, 0x56, 10, 0, 2, 15,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 10, 0, 2, 2,
+    };
+    uint8_t tx_bd[BCM_TXBD_SIZE] = { 0 };
+    uint8_t rx_bd[BCM_RXBD_SIZE] = { 0 };
+    uint8_t ret[BCM_RXBD_SIZE];
+    uint8_t landed[sizeof(arp_request)];
+    Bcm b;
+    uint32_t before_poll, after_poll;
+
+    bcm_open(&b, bcm_init());
+
+    bar_writel(&b, BCM_MAC_ADDR_0_HIGH, 0x00005254);
+    bar_writel(&b, BCM_MAC_ADDR_0_LOW, 0x00123456);
+
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 0, TX_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 4,
+                   TX_RING_PHYS & 0xffffffff);
+    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
+    bar_writel(&b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
+    bar_writel(&b, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, STD_BUF_SIZE << 16);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 0, RET_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4,
+                   RET_RING_PHYS & 0xffffffff);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+
+    put32le(rx_bd + 0, RX_BUF_PHYS >> 32);
+    put32le(rx_bd + 4, RX_BUF_PHYS & 0xffffffff);
+    qtest_memwrite(b.qts, STD_RING_PHYS, rx_bd, sizeof(rx_bd));
+    qtest_memset(b.qts, RX_BUF_PHYS, 0, sizeof(landed));
+    qtest_memset(b.qts, RET_RING_PHYS, 0, sizeof(ret));
+    qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 1);
+
+    bar_writel(&b, BCM_HCC_TX_MAX_COAL_BDS, 2);
+    bar_writel(&b, BCM_HCC_TX_COAL_TICKS, 1000000);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    g_assert_false(intr_line_up(b.dev));
+
+    put32le(tx_bd + 0, TX_BUF_PHYS >> 32);
+    put32le(tx_bd + 4, TX_BUF_PHYS & 0xffffffff);
+    put16le(tx_bd + 8, BCM_TXBDFLAG_END);
+    put16le(tx_bd + 10, sizeof(arp_request));
+    qtest_memwrite(b.qts, TX_RING_PHYS, tx_bd, sizeof(tx_bd));
+    qtest_memwrite(b.qts, TX_BUF_PHYS, arp_request, sizeof(arp_request));
+
+    /*
+     * User networking answers the ARP request during qemu_send_packet(). The
+     * first read observes the transmit callback boundary; the second follows
+     * exactly one AIO poll, when the deferred reply must be fully published.
+     */
+    before_poll = qtest_writel_then_readl_poll(
+        b.qts, b.bar.addr + BCM_MBX_TX_PROD_LO, 1,
+        STATUS_PHYS + BCM_STATUS_RX_PROD_OFF, &after_poll);
+    g_assert_cmphex(before_poll, ==, 0);
+    g_assert_cmphex(after_poll, ==, 0x00010001);
+    g_assert_true(intr_line_up(b.dev));
+
+    qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_IDX), ==, 0);
+    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
+                    BCM_RXBDFLAG_END);
+    qtest_memread(b.qts, RX_BUF_PHYS, landed, sizeof(landed));
+    g_assert_cmpmem(landed, 6, arp_request + 6, 6);
+    g_assert_cmphex(landed[21], ==, 0x02);
+    g_assert_cmpmem(landed + 28, 4, gateway_ip, 4);
+    g_assert_cmpmem(landed + 38, 4, guest_ip, 4);
+
+    bcm_close(&b);
+}
+
 /* A refused transmit-descriptor read must leave the doorbell retryable. */
 static void test_transmit_descriptor_dma_error(const void *data)
 {
@@ -5985,6 +6069,8 @@ int main(int argc, char **argv)
                         test_status_block_hostaddr_wordswap);
     qtest_add_data_func("/bcm570x/transmit-round-trip", NULL,
                         test_transmit_round_trip);
+    qtest_add_data_func("/bcm570x/user-backend-reply-waits-for-transmit", NULL,
+                        test_user_backend_reply_waits_for_transmit);
     qtest_add_data_func("/bcm570x/transmit-source-address", NULL,
                         test_transmit_source_address);
     qtest_add_data_func("/bcm570x/transmit-descriptor-dma-error", NULL,

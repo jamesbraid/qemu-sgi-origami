@@ -428,11 +428,13 @@ struct Bcm570xState {
     uint16_t rx_std_cons;       /* the chip's standard-ring consumer */
     uint16_t rx_jumbo_cons;     /* the chip's jumbo-ring consumer */
     bool tx_busy;               /* guards the send against netdev re-entrancy */
+    bool backend_rx_deferred;
 
     /* Interrupt state: a mask set through the 0x0204 mailbox and a pending
      * latch set when a status-block update awaits the driver. The line is the
      * conjunction of the latch with neither mask (mailbox nor MISC_CTL global)
-     * set. tx_busy is transient; the remaining state is migrated.
+     * set. tx_busy and backend_rx_deferred are transient; the remaining state
+     * is migrated.
      */
     bool irq_masked;
     bool irq_pending;
@@ -566,6 +568,7 @@ static void bcm570x_reset_rx_queue(Bcm570xState *s)
     }
     s->rx_flush_pending = false;
     s->rx_flush_authorized = false;
+    s->backend_rx_deferred = false;
 }
 
 /*
@@ -1336,6 +1339,10 @@ static void bcm570x_tx_rollback_to_frame(Bcm570xState *s,
         s->status_tx_cons = frame_start;
         bcm570x_tx_coalesce(s, completed_descs);
     }
+    if (s->backend_rx_deferred) {
+        s->backend_rx_deferred = false;
+        qemu_bh_schedule(s->rx_flush_bh);
+    }
 }
 
 static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
@@ -1454,6 +1461,11 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
 
     s->status_tx_cons = prod;
     bcm570x_tx_coalesce(s, completed_descs);
+    /* Publish transmit completion before releasing a synchronous reply. */
+    if (s->backend_rx_deferred) {
+        s->backend_rx_deferred = false;
+        qemu_bh_schedule(s->rx_flush_bh);
+    }
 }
 
 /*
@@ -1877,6 +1889,12 @@ static bool bcm570x_rx_ready(Bcm570xState *s)
 
 static bool bcm570x_can_receive(NetClientState *nc)
 {
+    Bcm570xState *s = qemu_get_nic_opaque(nc);
+
+    if (s->tx_busy) {
+        s->backend_rx_deferred = true;
+        return false;
+    }
     /*
      * Let an offered frame reach bcm570x_receive(), which returns zero and
      * records the deferred flush when the hardware is not ready. can_receive
