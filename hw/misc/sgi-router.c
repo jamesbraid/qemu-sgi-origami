@@ -1028,6 +1028,13 @@ static int sgi_router_pre_load(void *opaque)
     timer_del(s->nic_timer);
     s->histogram_next_ns = 0;
     s->histogram_phase_ns = 0;
+    memset(s->bist_loaded, 0, sizeof(s->bist_loaded));
+    s->bist_unload_position = 0;
+    s->bist_count = 0;
+    s->bist_target = 0;
+    s->bist_run_target = 0;
+    s->bist_completed_target = 0;
+    s->bist_ready = false;
     return 0;
 }
 
@@ -1150,7 +1157,7 @@ static int sgi_router_post_load(void *opaque, int version_id)
 static const VMStateDescription vmstate_sgi_router = {
     .name = "sgi-router",
     .version_id = 4,
-    .minimum_version_id = 4,
+    .minimum_version_id = 3,
     .pre_save = sgi_router_pre_save,
     .pre_load = sgi_router_pre_load,
     .post_load = sgi_router_post_load,
@@ -1164,13 +1171,13 @@ static const VMStateDescription vmstate_sgi_router = {
         VMSTATE_UINT64(diag_parms, SGIRouterState),
         VMSTATE_UINT64(nic_ulan, SGIRouterState),
         VMSTATE_UINT64(bist_data, SGIRouterState),
-        VMSTATE_UINT16_ARRAY(bist_loaded, SGIRouterState, 4),
-        VMSTATE_UINT16(bist_unload_position, SGIRouterState),
-        VMSTATE_UINT8(bist_count, SGIRouterState),
-        VMSTATE_UINT8(bist_target, SGIRouterState),
-        VMSTATE_UINT8(bist_run_target, SGIRouterState),
-        VMSTATE_UINT8(bist_completed_target, SGIRouterState),
-        VMSTATE_BOOL(bist_ready, SGIRouterState),
+        VMSTATE_UINT16_ARRAY_V(bist_loaded, SGIRouterState, 4, 4),
+        VMSTATE_UINT16_V(bist_unload_position, SGIRouterState, 4),
+        VMSTATE_UINT8_V(bist_count, SGIRouterState, 4),
+        VMSTATE_UINT8_V(bist_target, SGIRouterState, 4),
+        VMSTATE_UINT8_V(bist_run_target, SGIRouterState, 4),
+        VMSTATE_UINT8_V(bist_completed_target, SGIRouterState, 4),
+        VMSTATE_BOOL_V(bist_ready, SGIRouterState, 4),
         VMSTATE_UINT64_ARRAY(port_parms, SGIRouterState, SGI_ROUTER_PORTS),
         VMSTATE_UINT64_ARRAY(port_errors, SGIRouterState, SGI_ROUTER_PORTS),
         VMSTATE_UINT64_ARRAY(histograms, SGIRouterState, SGI_ROUTER_PORTS),
