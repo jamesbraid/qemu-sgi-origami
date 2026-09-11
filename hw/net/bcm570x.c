@@ -1064,7 +1064,14 @@ static void bcm570x_defer_rx_flush(Bcm570xState *s)
 static void bcm570x_defer_failed_rx(Bcm570xState *s)
 {
     bcm570x_defer_rx_flush(s);
-    s->rx_flush_authorized = true;
+    /*
+     * A completion already reported to the guest consumes the retry boundary.
+     * Keep the failed frame queued until that update is acknowledged instead
+     * of letting a receive-ready write publish more work under the same
+     * interrupt handler. A DMA failure with no pending update retains the
+     * repair-and-retry contract.
+     */
+    s->rx_flush_authorized = !s->irq_pending && !s->rx_flush_on_unmask;
 }
 
 static void bcm570x_retry_rx_flush(Bcm570xState *s)

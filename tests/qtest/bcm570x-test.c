@@ -4097,15 +4097,20 @@ typedef enum RxDmaFault {
 } RxDmaFault;
 
 /*
- * A retry that completes one queued frame before the next frame faults has
- * consumed its interrupt acknowledgement. Repairing the failed DMA and
- * rewriting a receive-ready register must not publish that second frame under
- * the same handler; the next interrupt acknowledgement releases it exactly
- * once.
+ * A frame arriving after a completion but before its interrupt is acknowledged
+ * must not inherit the DMA retry authorization used when no completion is
+ * pending. Repairing the failed DMA and rewriting a receive-ready register must
+ * leave that second frame queued until the pending interrupt is acknowledged.
  */
 static void test_receive_dma_error_after_progress(const void *data)
 {
     RxDmaFault fault = GPOINTER_TO_INT(data);
+    const char *fault_marker =
+        fault == RX_DMA_FAULT_DESCRIPTOR ?
+        "bcm570x: receive descriptor 1 read failed" :
+        fault == RX_DMA_FAULT_PAYLOAD ?
+        "bcm570x: receive payload write at 0x2000000 failed" :
+        "bcm570x: receive completion 1 write failed";
     uint64_t std_ring = fault == RX_DMA_FAULT_DESCRIPTOR ?
                         RAM_END_16M - BCM_RXBD_SIZE : STD_RING_PHYS;
     uint64_t ret_ring = fault == RX_DMA_FAULT_COMPLETION ?
@@ -4116,7 +4121,9 @@ static void test_receive_dma_error_after_progress(const void *data)
     uint8_t ret[BCM_RXBD_SIZE];
     uint32_t tag;
     unsigned int i;
+    g_autofree char *logfile = NULL;
     Bcm b;
+    int logfd;
     int sv[2];
 
     for (i = 0; i < sizeof(first); i++) {
@@ -4127,11 +4134,16 @@ static void test_receive_dma_error_after_progress(const void *data)
     memset(second, 0xff, 6);
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    logfd = g_file_open_tmp("bcm570x-rx-progress-error-XXXXXX", &logfile,
+                            NULL);
+    g_assert_cmpint(logfd, >=, 0);
+    close(logfd);
     bcm_open(&b, qtest_initf(BCM_MACHINE
                              " -m 16M"
                              " -netdev socket,fd=%d,id=n0"
-                             " -device bcm570x,addr=%02x.0,netdev=n0",
-                             sv[1], BCM_SLOT));
+                             " -device bcm570x,addr=%02x.0,netdev=n0"
+                             " -d guest_errors -D %s",
+                             sv[1], BCM_SLOT, logfile));
 
     bar_writel(&b, BCM_RX_STD_RCB_HI, std_ring >> 32);
     bar_writel(&b, BCM_RX_STD_RCB_LO, std_ring & 0xffffffff);
@@ -4156,20 +4168,10 @@ static void test_receive_dma_error_after_progress(const void *data)
     }
     qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
     bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 2);
-
-    net_socket_send_frame(sv[0], first, sizeof(first));
-    net_socket_send_frame(sv[0], second, sizeof(second));
-    g_usleep(100000);
-    g_assert_cmpuint(read_rx_prod(&b), ==, 0);
-
-    /* A periodic status interrupt gives the backlog one authorized drain. */
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
-    qtest_clock_step(b.qts, BCM_STATUS_TICK_MAX_NS);
-    g_assert_true(intr_line_up(b.dev));
-    bar_writel(&b, BCM_MBX_IRQ0_LO, 1);
-    g_assert_false(intr_line_up(b.dev));
-    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+
+    net_socket_send_frame(sv[0], first, sizeof(first));
     wait_for_rx_prod(&b, 1);
 
     qtest_memread(b.qts, RX_BUF_PHYS, got, sizeof(got));
@@ -4180,6 +4182,11 @@ static void test_receive_dma_error_after_progress(const void *data)
                     BCM_RXBDFLAG_END);
     tag = read_status_tag(&b);
     g_assert_true(intr_line_up(b.dev));
+
+    net_socket_send_frame(sv[0], second, sizeof(second));
+    wait_for_log_marker(b.qts, logfile, fault_marker);
+    g_assert_cmpuint(read_rx_prod(&b), ==, 1);
+    g_assert_cmphex(read_status_tag(&b), ==, tag);
 
     switch (fault) {
     case RX_DMA_FAULT_DESCRIPTOR:
@@ -4205,9 +4212,9 @@ static void test_receive_dma_error_after_progress(const void *data)
         g_assert_not_reached();
     }
 
-    /* Repair plus a producer rewrite is not a second authorization. */
+    /* Repair plus a producer rewrite cannot bypass the pending interrupt. */
     bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 2);
-    g_usleep(100000);
+    qtest_clock_step(b.qts, 1);
     g_assert_cmpuint(read_rx_prod(&b), ==, 1);
     g_assert_cmphex(read_status_tag(&b), ==, tag);
 
@@ -4235,6 +4242,7 @@ static void test_receive_dma_error_after_progress(const void *data)
     bcm_close(&b);
     close(sv[0]);
     close(sv[1]);
+    unlink(logfile);
 }
 
 /*
