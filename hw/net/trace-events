@@ -561,6 +561,7 @@ tigon_rx_doorbell(const char *ring, uint32_t prod) "%s ring producer -> %u"
 tigon_descriptor_dma_route(const char *direction, uint64_t addr, uint32_t len) "%s 0x%" PRIx64 " %u bytes"
 tigon_payload_dma_route(const char *route) "%s"
 tigon_rx_flush(void) "deferred receive flush"
+tigon_receive_iov(int iovcnt, size_t size) "%d vectors, %zu bytes"
 
 # xframe.c
 xframe_rx_descriptor_fetch(uint64_t addr, unsigned size) "addr 0x%" PRIx64 " size %u"

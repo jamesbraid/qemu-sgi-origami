@@ -519,6 +519,30 @@ static MemTxResult tigon_dma_write_frame(TigonState *s, uint64_t addr,
     return dma_memory_write_relaxed(s->payload_as, addr, src, len);
 }
 
+static MemTxResult tigon_dma_write_frame_iov(TigonState *s, uint64_t addr,
+                                             const struct iovec *iov,
+                                             int iovcnt, size_t len)
+{
+    MemTxResult result;
+    size_t written = 0;
+    int i;
+
+    for (i = 0; i < iovcnt && written < len; i++) {
+        size_t part = MIN(iov[i].iov_len, len - written);
+
+        if (!part) {
+            continue;
+        }
+        result = tigon_dma_write_frame(s, addr + written,
+                                       iov[i].iov_base, part);
+        if (result != MEMTX_OK) {
+            return result;
+        }
+        written += part;
+    }
+    return written == len ? MEMTX_OK : MEMTX_ERROR;
+}
+
 /*
  * Parse the general information block once it is complete. The RCBs and
  * producer-pointer fields are filled by the driver in host DRAM before it
@@ -1353,6 +1377,73 @@ static uint32_t tigon_rx_checksums(const uint8_t *frame, size_t len)
            tigon_ones_sum(frame + 14 + ihl, ip_len - ihl);
 }
 
+static uint16_t tigon_ones_sum_iov(const struct iovec *iov, int iovcnt,
+                                   size_t offset, size_t len)
+{
+    uint32_t sum = 0;
+    uint8_t high = 0;
+    bool have_high = false;
+    int i;
+
+    for (i = 0; i < iovcnt && len; i++) {
+        const uint8_t *p = iov[i].iov_base;
+        size_t part;
+
+        if (offset >= iov[i].iov_len) {
+            offset -= iov[i].iov_len;
+            continue;
+        }
+        p += offset;
+        part = MIN(iov[i].iov_len - offset, len);
+        offset = 0;
+        len -= part;
+        while (part--) {
+            if (!have_high) {
+                high = *p++;
+                have_high = true;
+            } else {
+                sum += ((uint32_t)high << 8) | *p++;
+                have_high = false;
+            }
+        }
+    }
+    if (have_high) {
+        sum += (uint32_t)high << 8;
+    }
+    while (sum >> 16) {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    return sum;
+}
+
+static uint32_t tigon_rx_checksums_iov(const struct iovec *iov, int iovcnt,
+                                       size_t len)
+{
+    uint8_t header[14 + 60];
+    size_t ihl, ip_len;
+
+    if (iovcnt == 1) {
+        return tigon_rx_checksums(iov[0].iov_base, len);
+    }
+    if (len < 14 + 20 ||
+        iov_to_buf(iov, iovcnt, 0, header, 14 + 20) != 14 + 20 ||
+        header[12] != 0x08 || header[13] != 0x00 ||
+        (header[14] >> 4) != 4) {
+        return 0;
+    }
+    ihl = (header[14] & 0x0f) * 4;
+    if (ihl < 20 || len < 14 + ihl ||
+        iov_to_buf(iov, iovcnt, 0, header, 14 + ihl) != 14 + ihl) {
+        return 0;
+    }
+    ip_len = ((size_t)header[16] << 8) | header[17];
+    if (ip_len < ihl || len < 14 + ip_len) {
+        return 0;
+    }
+    return ((uint32_t)tigon_ones_sum_iov(iov, iovcnt, 14, ihl) << 16) |
+           tigon_ones_sum_iov(iov, iovcnt, 14 + ihl, ip_len - ihl);
+}
+
 static bool tigon_can_receive(NetClientState *nc)
 {
     TigonState *s = TIGON(qemu_get_nic_opaque(nc));
@@ -1426,10 +1517,12 @@ static MemTxResult tigon_write_rx_return(TigonState *s, uint64_t addr,
     return tigon_dma_write_words(s, addr, words, ARRAY_SIZE(words));
 }
 
-static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
-                             size_t size)
+static ssize_t tigon_receive_packet(NetClientState *nc,
+                                    const struct iovec *iov, int iovcnt,
+                                    size_t size)
 {
     TigonState *s = TIGON(qemu_get_nic_opaque(nc));
+    uint8_t dest[6];
     uint16_t flags = 0;
     uint64_t rx_desc, buf_addr, ret_desc;
     uint32_t rx_word, next_return_prod;
@@ -1440,7 +1533,8 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
     if (!s->firmware_up) {
         return size;   /* not operational: consumed, not queued */
     }
-    if (!tigon_rx_filter(s, buf, size, &flags)) {
+    if (iov_to_buf(iov, iovcnt, 0, dest, sizeof(dest)) != sizeof(dest) ||
+        !tigon_rx_filter(s, dest, size, &flags)) {
         /*
          * Filtered frames are consumed, never returned as 0: a 0 would wedge
          * the backend's queue head behind a frame no retry can ever pass.
@@ -1521,7 +1615,8 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
      * this guards a guest that posts a short one.
      */
     landed = MIN(size, buf_len);
-    if (tigon_dma_write_frame(s, buf_addr, buf, landed) != MEMTX_OK) {
+    if (tigon_dma_write_frame_iov(s, buf_addr, iov, iovcnt,
+                                  landed) != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "tigon: receive payload write at 0x%" PRIx64
                       " failed; frame dropped\n", buf_addr);
@@ -1537,7 +1632,8 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
                                           : TI_BDTYPE_RECV_BD) << 16) |
                               flags | TI_BDFLAG_END |
                               (jumbo ? TI_BDFLAG_JUMBO_RING : 0),
-                              tigon_rx_checksums(buf, size)) != MEMTX_OK) {
+                              tigon_rx_checksums_iov(iov, iovcnt,
+                                                    size)) != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "tigon: receive return descriptor write at 0x%"
                       PRIx64 " failed; frame held\n", ret_desc);
@@ -1565,6 +1661,26 @@ static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
     return size;
 }
 
+static ssize_t tigon_receive(NetClientState *nc, const uint8_t *buf,
+                             size_t size)
+{
+    const struct iovec iov = {
+        .iov_base = (void *)buf,
+        .iov_len = size,
+    };
+
+    return tigon_receive_packet(nc, &iov, 1, size);
+}
+
+static ssize_t tigon_receive_iov(NetClientState *nc, const struct iovec *iov,
+                                 int iovcnt)
+{
+    size_t size = iov_size(iov, iovcnt);
+
+    trace_tigon_receive_iov(iovcnt, size);
+    return tigon_receive_packet(nc, iov, iovcnt, size);
+}
+
 static void tigon_rx_flush(void *opaque)
 {
     TigonState *s = opaque;
@@ -1585,6 +1701,7 @@ static NetClientInfo tigon_net_info = {
     .size = sizeof(NICState),
     .can_receive = tigon_can_receive,
     .receive = tigon_receive,
+    .receive_iov = tigon_receive_iov,
     .cleanup = tigon_net_cleanup,
 };
 
