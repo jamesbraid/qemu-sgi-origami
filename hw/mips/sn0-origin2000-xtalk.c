@@ -26,6 +26,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SN0Origin2000XtalkState,
 #define ORIGIN2000_XTALK_CROSSBOWS 2
 #define ORIGIN2000_XTALK_IO_BOARDS 1
 #define ORIGIN2000_PACKET_SIZE (1ULL << 52)
+#define HUB_WIDGET_ID 0x400000
+#define WIDGET_REGISTER_DATA 4
 
 typedef struct SN0Origin2000XtalkSource {
     SN0Origin2000HubOutgoingIO outgoing;
@@ -50,14 +52,14 @@ typedef struct SN0Origin2000XtalkSource {
  * refusing face only in a test configuration -- expressly not as a
  * production machine's answer.
  *
- * So this face refuses every access and stops the machine where a guest
- * would otherwise consume a fabricated value. Replacing it with a decoder
- * that has a contract of its own is the point at which this becomes a
- * machine that can run.
+ * The one cleared processor-side access is the common widget-identification
+ * word at short offset four. Everything else still refuses and stops the
+ * machine rather than returning a fabricated value.
  */
 typedef struct SN0Origin2000XtalkDestination {
     SN0Origin2000HubIO inbound;
     MemoryRegion cpu_refusal;
+    SGIHubState *hub;
     unsigned int node_index;
     unsigned int widget;
     bool initialized;
@@ -241,9 +243,10 @@ static uint16_t crossbow_io_board_mask(const SN0ModelComposition *model,
 }
 
 /*
- * A processor reaching a Hub across the switch. The stop is deliberate and
- * the diagnostic is unconditional, because the alternative is answering with
- * a number no hardware would have produced. The pair of stop calls is
+ * A processor reaching a Hub across the switch. The selected physical Hub's
+ * widget-identification word answers its one cleared short read. Every other
+ * access stops deliberately rather than returning a fabricated value. The
+ * pair of stop calls is
  * ordered: prepare takes the lock that request releases, so neither may be
  * called alone, and neither is safe from an unserialized callback. The
  * request is asynchronous and qtest can keep issuing accesses after it, so
@@ -257,9 +260,15 @@ static MemTxResult sn0_origin2000_cpu_refusal(void *opaque, hwaddr addr,
     SN0Origin2000XtalkDestination *destination = opaque;
 
     assert(bql_locked());
+    if (!is_write && addr == WIDGET_REGISTER_DATA && size == 4) {
+        return memory_region_dispatch_read(&destination->hub->regs,
+                                           HUB_WIDGET_ID + addr, data,
+                                           MO_32 | MO_BE, attrs);
+    }
     error_report("Origin 2000 node %u widget %u: unsupported %u-byte %s at "
                  "0x%" HWADDR_PRIx " on the processor-side Hub face, which "
-                 "has no cleared decode; stopping instead of answering",
+                 "is outside its cleared decode; stopping instead of "
+                 "answering",
                  destination->node_index, destination->widget, size,
                  is_write ? "write" : "read", addr);
     qemu_system_vmstop_request_prepare();
@@ -932,6 +941,7 @@ bool sn0_origin2000_xtalk_attach(SN0MachineState *machine, Error **errp)
 
         destination->node_index = attachment->node_index;
         destination->widget = attachment->widget;
+        destination->hub = &node->hub;
         /*
          * Built once and kept. Both of these are storage of this object's
          * that can be initialized once only, so a retry reuses what a failed

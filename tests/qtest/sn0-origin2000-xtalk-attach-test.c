@@ -104,10 +104,14 @@
 #define HUB_REGISTERS   0x1000000
 #define BIG_WINDOW      0x20000000
 #define HUB_IO_BWIN0    0x400160
+#define HUB_IO_WIDGET_ID 0x400000
 #define BWIN_IO_SPACE   (1u << 12)
 #define BWIN_WIDGET(w)  ((w) << 8)
 #define PACKET_IDENTITY 0x01600000
 #define NI_STATUS       0x600000
+#define NI_NODE_MASK    (0x1ffULL << 8)
+
+#define HUB_PART        0xc101
 
 /* The module's population: base I/O at 8, Hubs at 9 and 10, nothing at 11. */
 #define WIDGET_IO       8
@@ -727,6 +731,17 @@ static uint64_t hub_readq(QTestState *qts, unsigned int node,
     return ldq_be_p(bytes);
 }
 
+static void hub_writeq(QTestState *qts, unsigned int node, uint64_t offset,
+                       uint64_t value)
+{
+    uint8_t bytes[sizeof(uint64_t)];
+
+    stq_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, NODE_CPU(node),
+                                    xtalk_window(qts) + HUB_REGISTERS +
+                                    offset, bytes, sizeof(bytes)));
+}
+
 /*
  * What a Hub gets when it asks a widget who it is. The window entry names
  * the widget; the reply comes back through this Hub's own packet source, so
@@ -792,28 +807,79 @@ static void test_a_torn_down_big_window_reaches_nothing(void)
 }
 
 /*
- * The other Hub's processor-side face, which refuses every access and stops
- * the machine. Reaching it needs a node on the same switch, which the two
- * Hub widgets are. The no-route-to-itself check argues this face is wired by
- * the machine not stopping; this is the same claim from the other side. The
- * second access is what a paired take-and-release of the stop lock would
- * deadlock or double-release on.
+ * The other Hub's common widget-identification word. The physical Crossbow
+ * port selects the receiver; neither the requester's identity nor the node
+ * number programmed into the target may redirect it. Comparing each byte
+ * with the target's full register catches word and host-endian substitutions.
  */
-static void test_the_other_hubs_face_refuses_and_stops(void)
+static void test_a_peer_hub_answers_its_widget_id(void)
 {
     QTestState *qts = attach_start();
     unsigned int own = node_widget(qts, 0);
     unsigned int peer = own == WIDGET_HUB_A ? WIDGET_HUB_B : WIDGET_HUB_A;
+    unsigned int target = node_at_widget(qts, peer);
+    uint64_t status = hub_readq(qts, target, NI_STATUS);
+    uint32_t id = hub_readq(qts, target, HUB_IO_WIDGET_ID);
     uint8_t bytes[sizeof(uint32_t)];
+    uint8_t expected[sizeof(uint32_t)];
 
+    stl_be_p(expected, id);
+    g_assert_true(qtest_memread_cpu(qts, NODE_CPU(0),
+                                    xtalk_window(qts) + WIDGET_SLOT(peer) +
+                                    REG_DATA, bytes, sizeof(bytes)));
+    g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
+    g_assert_cmpuint(ID_PART(ldl_be_p(bytes)), ==, HUB_PART);
+    g_assert_cmpuint(ID_REVISION(ldl_be_p(bytes)), !=, 0);
+    g_assert_cmpuint(ldl_be_p(bytes) & ID_ALWAYS_ONE, ==, ID_ALWAYS_ONE);
     g_assert_false(stopped_on_error(qts));
-    qtest_memread_cpu(qts, NODE_CPU(0), xtalk_window(qts) + WIDGET_SLOT(peer),
-                      bytes, sizeof(bytes));
-    g_assert_true(stopped_on_error(qts));
-    qtest_memread_cpu(qts, NODE_CPU(0), xtalk_window(qts) + WIDGET_SLOT(peer),
-                      bytes, sizeof(bytes));
-    g_assert_true(stopped_on_error(qts));
+
+    hub_writeq(qts, target, NI_STATUS,
+               (status & ~NI_NODE_MASK) | (0x5aULL << 8));
+    memset(bytes, 0, sizeof(bytes));
+    g_assert_true(qtest_memread_cpu(qts, NODE_CPU(0),
+                                    xtalk_window(qts) + WIDGET_SLOT(peer) +
+                                    REG_DATA, bytes, sizeof(bytes)));
+    g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
+    g_assert_false(stopped_on_error(qts));
     qtest_quit(qts);
+}
+
+static void test_the_other_hubs_face_refuses_unsupported_accesses(void)
+{
+    static const struct {
+        uint64_t offset;
+        unsigned int size;
+        bool write;
+    } cases[] = {
+        { 0, 4, false },
+        { REG_DATA + 1, 4, false },
+        { REG_DATA, 1, false },
+        { REG_DATA, 2, false },
+        { REG_DATA, 8, false },
+        { REG_DATA, 4, true },
+    };
+    size_t i;
+
+    for (i = 0; i < ARRAY_SIZE(cases); i++) {
+        QTestState *qts = attach_start();
+        unsigned int own = node_widget(qts, 0);
+        unsigned int peer =
+            own == WIDGET_HUB_A ? WIDGET_HUB_B : WIDGET_HUB_A;
+        uint8_t bytes[sizeof(uint64_t)] = { 0 };
+
+        g_assert_false(stopped_on_error(qts));
+        if (cases[i].write) {
+            qtest_memwrite_cpu(qts, NODE_CPU(0),
+                               xtalk_window(qts) + WIDGET_SLOT(peer) +
+                               cases[i].offset, bytes, cases[i].size);
+        } else {
+            qtest_memread_cpu(qts, NODE_CPU(0),
+                              xtalk_window(qts) + WIDGET_SLOT(peer) +
+                              cases[i].offset, bytes, cases[i].size);
+        }
+        g_assert_true(stopped_on_error(qts));
+        qtest_quit(qts);
+    }
 }
 
 /* The switch carrying the board: base I/O at 8, the two Hubs at 9 and 10. */
@@ -1063,8 +1129,10 @@ int main(int argc, char **argv)
                    test_each_node_reads_its_own_switch);
     qtest_add_func("sn0/origin2000/xtalk-attach/no-route-to-itself",
                    test_a_node_has_no_route_to_itself);
+    qtest_add_func("sn0/origin2000/xtalk-attach/hub-widget-id",
+                   test_a_peer_hub_answers_its_widget_id);
     qtest_add_func("sn0/origin2000/xtalk-attach/hub-face-refuses",
-                   test_the_other_hubs_face_refuses_and_stops);
+                   test_the_other_hubs_face_refuses_unsupported_accesses);
     qtest_add_func("sn0/origin2000/xtalk-attach/packet-peer-identity",
                    test_a_hub_asks_its_switch_mate_who_it_is);
     qtest_add_func("sn0/origin2000/xtalk-attach/failed-attach-can-retry",
