@@ -212,6 +212,50 @@ static void serial_socket_deadline(int fd)
                     ==, 0);
 }
 
+/* Fill the backend's output queue before QEMU inherits this socket end. */
+static size_t fill_socket_send_queue(int fd)
+{
+    uint8_t filler[512];
+    size_t filled = 0;
+    int sndbuf = 1024;
+    int flags;
+
+    memset(filler, 0xa5, sizeof(filler));
+    g_assert_cmpint(setsockopt(fd, SOL_SOCKET, SO_SNDBUF,
+                              &sndbuf, sizeof(sndbuf)), ==, 0);
+    flags = fcntl(fd, F_GETFL);
+    g_assert_cmpint(flags, >=, 0);
+    g_assert_cmpint(fcntl(fd, F_SETFL, flags | O_NONBLOCK), ==, 0);
+
+    for (;;) {
+        ssize_t n = write(fd, filler, sizeof(filler));
+
+        if (n < 0) {
+            g_assert_true(errno == EAGAIN || errno == EWOULDBLOCK);
+            break;
+        }
+        g_assert_cmpint(n, >, 0);
+        filled += n;
+    }
+
+    return filled;
+}
+
+static void read_exact(int fd, uint8_t *buf, size_t len)
+{
+    size_t got = 0;
+
+    while (got < len) {
+        ssize_t n = read(fd, buf + got, len - got);
+
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        g_assert_cmpint(n, >, 0);
+        got += n;
+    }
+}
+
 /*
  * A TCP listener serial_hd(1) connects out to: the only proof chardev-b is
  * wired, since qtest_init_with_serial wires only serial_hd(0).
@@ -543,6 +587,84 @@ static void test_a_transmit_entry_sends_its_four_characters(const void *data)
     g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_TX_CONSUME)) & 0xff8, ==, 8);
 
     close(sock);
+    qtest_quit(qts);
+}
+
+/*
+ * A blocked backend must leave the entry with the engine. Advancing the ring
+ * while the 16550 is blocked overruns its small FIFO and loses the middle of
+ * this burst.
+ */
+static void test_a_blocked_backend_keeps_every_transmit_character(
+    const void *data)
+{
+    static const uint8_t out[] =
+        "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!?";
+    static const uint8_t control[4] = {
+        TX_CHARACTER, TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
+    };
+    static const uint8_t final_control[4] = {
+        TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
+        TX_CHARACTER | TX_INTERRUPT,
+    };
+    struct timeval tv = { .tv_sec = 2 };
+    uint8_t filler[512];
+    uint8_t got[sizeof(out) - 1];
+    size_t remaining;
+    size_t offset;
+    QTestState *qts;
+    int sv[2];
+
+    g_assert_cmpuint(sizeof(got) % 4, ==, 0);
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    remaining = fill_socket_send_queue(sv[1]);
+    g_assert_cmpuint(remaining, >, 0);
+
+    qts = qtest_initf(
+        "-M origin200 -chardev socket,id=ioc3-a,fd=%d "
+        "-serial chardev:ioc3-a", sv[1]);
+    g_assert_cmpint(close(sv[1]), ==, 0);
+    g_assert_cmpint(setsockopt(sv[0], SOL_SOCKET, SO_RCVTIMEO,
+                              &tv, sizeof(tv)), ==, 0);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+    enable_dma(qts, 0);
+
+    for (offset = 0; offset < sizeof(got); offset += 4) {
+        write_transmit_entry(qts, RING_TX(0), offset * 2,
+                             out + offset,
+                             offset + 4 == sizeof(got) ? final_control :
+                             control);
+    }
+    qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), sizeof(got) * 2);
+
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_TX_CONSUME)) & 0xff8,
+                    <, sizeof(got) * 2);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) &
+                    (SOURCE(0, SRC_TX_DONE) |
+                     SOURCE(0, SRC_TX_RING_EMPTY)), ==, 0);
+
+    while (remaining) {
+        size_t chunk = MIN(remaining, sizeof(filler));
+
+        read_exact(sv[0], filler, chunk);
+        remaining -= chunk;
+    }
+    read_exact(sv[0], got, sizeof(got));
+    for (offset = 0; offset < sizeof(got); offset++) {
+        g_assert_cmpuint(got[offset], ==, out[offset]);
+    }
+
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_TX_CONSUME)) & 0xff8,
+                    ==, sizeof(got) * 2);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) &
+                    (SOURCE(0, SRC_TX_DONE) |
+                     SOURCE(0, SRC_TX_RING_EMPTY)), ==,
+                    SOURCE(0, SRC_TX_DONE) |
+                    SOURCE(0, SRC_TX_RING_EMPTY));
+
+    close(sv[0]);
     qtest_quit(qts);
 }
 
@@ -1612,6 +1734,9 @@ int main(int argc, char **argv)
                         test_the_shadow_mirrors_the_port);
     qtest_add_data_func("sn0/ioc3-serial/transmit-entry-sends-four", NULL,
                         test_a_transmit_entry_sends_its_four_characters);
+    qtest_add_data_func("sn0/ioc3-serial/blocked-backend-keeps-every-character",
+                        NULL,
+                        test_a_blocked_backend_keeps_every_transmit_character);
     qtest_add_data_func("sn0/ioc3-serial/completed-transmit-raises-sources",
                         NULL,
                         test_a_completed_transmit_raises_both_its_sources);

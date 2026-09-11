@@ -403,6 +403,10 @@ struct SGIIOC3State {
     /* Re-entry guard for loopback walks; only true inside a call. */
     bool sdma_busy[SGI_IOC3_SERIAL_PORTS];
 
+    /* The serial child's holding-register level and the retained entry slot. */
+    bool sdma_tx_ready[SGI_IOC3_SERIAL_PORTS];
+    uint8_t sdma_tx_slot[SGI_IOC3_SERIAL_PORTS];
+
     /* A ring entry under construction, and its held count. */
     uint8_t sdma_packer[SGI_IOC3_SERIAL_PORTS][SGI_IOC3_SDMA_ENTRY_SIZE];
     uint8_t sdma_packed[SGI_IOC3_SERIAL_PORTS];

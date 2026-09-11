@@ -159,6 +159,7 @@
 #define IOC3_SDMA_RING_LO        IOC3_REG(0x0b4)
 #define IOC3_SDMA_A_CONTROL      IOC3_REG(0x0b8)
 #define IOC3_SDMA_A_TX_PRODUCE   IOC3_REG(0x0bc)
+#define IOC3_SDMA_A_TX_CONSUME   IOC3_REG(0x0c0)
 #define IOC3_SDMA_A_RX_PRODUCE   IOC3_REG(0x0c4)
 #define IOC3_SDMA_A_RX_CONSUME   IOC3_REG(0x0c8)
 #define IOC3_SDMA_A_RX_TIMER     IOC3_REG(0x0cc)
@@ -173,6 +174,7 @@
 #define IOC3_RX_RING_RAM         (IOC3_RING_RAM + 0x1000)
 #define IOC3_RX_TIMER_TICK_NS    62500LL
 #define PCI_COMMAND_MASTER       0x0004
+#define IOC3_TX_CHARACTER        0x40
 #define IOC3_MCR_TX_DMA_EN       (1u << 13)
 #define IOC3_MCR_TX_EN           (1u << 14)
 #define IOC3_ENET_INT_TX_EMPTY   (1u << 16)
@@ -241,6 +243,48 @@ static void migrate_stopped_vm(QTestState *from, const char *uri)
 
         g_assert(g_test_timer_elapsed() < 30);
         g_usleep(1000);
+    }
+}
+
+static size_t fill_socket_send_queue(int fd)
+{
+    uint8_t filler[512];
+    size_t filled = 0;
+    int sndbuf = 1024;
+    int flags;
+
+    memset(filler, 0xa5, sizeof(filler));
+    g_assert_cmpint(setsockopt(fd, SOL_SOCKET, SO_SNDBUF,
+                              &sndbuf, sizeof(sndbuf)), ==, 0);
+    flags = fcntl(fd, F_GETFL);
+    g_assert_cmpint(flags, >=, 0);
+    g_assert_cmpint(fcntl(fd, F_SETFL, flags | O_NONBLOCK), ==, 0);
+
+    for (;;) {
+        ssize_t n = write(fd, filler, sizeof(filler));
+
+        if (n < 0) {
+            g_assert_true(errno == EAGAIN || errno == EWOULDBLOCK);
+            break;
+        }
+        g_assert_cmpint(n, >, 0);
+        filled += n;
+    }
+    return filled;
+}
+
+static void read_exact(int fd, uint8_t *buf, size_t len)
+{
+    size_t got = 0;
+
+    while (got < len) {
+        ssize_t n = read(fd, buf + got, len - got);
+
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        g_assert_cmpint(n, >, 0);
+        got += n;
     }
 }
 
@@ -520,6 +564,79 @@ static void test_a_wound_receive_timer_survives_migration(const void *data)
     g_assert_cmphex(qtest_readl(to, IOC3_INT_STATUS) & IOC3_SRC_A_RX_TIMER,
                     ==, IOC3_SRC_A_RX_TIMER);
 
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
+/* The entry cursor and the 16550's pending bytes cross together. */
+static void test_blocked_serial_transmit_survives_migration(const void *data)
+{
+    static const uint8_t entry[8] = {
+        'm', 'i', 'g', '!',
+        IOC3_TX_CHARACTER, IOC3_TX_CHARACTER,
+        IOC3_TX_CHARACTER, IOC3_TX_CHARACTER,
+    };
+    struct timeval tv = { .tv_sec = 2 };
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest_cmdline = NULL;
+    uint8_t filler[512];
+    uint8_t got[4];
+    size_t remaining;
+    GError *err = NULL;
+    QTestState *from, *to;
+    int source_sv[2], dest_sv[2];
+
+    tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
+    g_assert_no_error(err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, source_sv), ==, 0);
+    g_assert_cmpuint(fill_socket_send_queue(source_sv[1]), >, 0);
+    from = qtest_initf(
+        MACHINE_WITH_BRIDGE " -chardev socket,id=ioc3-a,fd=%d "
+        "-serial chardev:ioc3-a", source_sv[1]);
+    g_assert_cmpint(close(source_sv[1]), ==, 0);
+
+    attach_node_ioc3(from, 0);
+    qtest_writel(from, CFG0_FOR_NODE(0, IOC3_SLOT) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writeb(from, IOC3_SERIAL_A_LCR, 0x03);
+    qtest_writeb(from, IOC3_SERIAL_A_FCR, 0x01);
+    qtest_writel(from, IOC3_SDMA_RING_HI, 0);
+    qtest_writel(from, IOC3_SDMA_RING_LO, IOC3_RING_RAM | IOC3_RING_4K);
+    qtest_writel(from, IOC3_SDMA_A_CONTROL, IOC3_SDMA_ENABLE);
+    qtest_memwrite(from, IOC3_RING_RAM, entry, sizeof(entry));
+    qtest_writel(from, IOC3_SDMA_A_TX_PRODUCE, sizeof(entry));
+    g_assert_cmphex(qtest_readl(from, IOC3_SDMA_A_TX_CONSUME) & 0xff8,
+                    ==, 0);
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, dest_sv), ==, 0);
+    remaining = fill_socket_send_queue(dest_sv[1]);
+    g_assert_cmpuint(remaining, >, 0);
+    g_assert_cmpint(setsockopt(dest_sv[0], SOL_SOCKET, SO_RCVTIMEO,
+                              &tv, sizeof(tv)), ==, 0);
+    dest_cmdline = g_strdup_printf(
+        MACHINE_WITH_BRIDGE " -chardev socket,id=ioc3-a,fd=%d "
+        "-serial chardev:ioc3-a -incoming %s", dest_sv[1], uri);
+    to = qtest_init(dest_cmdline);
+    g_assert_cmpint(close(dest_sv[1]), ==, 0);
+
+    migrate_stopped_vm(from, uri);
+    while (remaining) {
+        size_t chunk = MIN(remaining, sizeof(filler));
+
+        read_exact(dest_sv[0], filler, chunk);
+        remaining -= chunk;
+    }
+    read_exact(dest_sv[0], got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), entry, sizeof(got));
+    g_assert_cmphex(qtest_readl(to, IOC3_SDMA_A_TX_CONSUME) & 0xff8,
+                    ==, sizeof(entry));
+
+    close(dest_sv[0]);
+    close(source_sv[0]);
     qtest_quit(to);
     qtest_quit(from);
 }
@@ -1336,6 +1453,9 @@ int main(int argc, char **argv)
                         NULL, test_a_device_window_survives_migration);
     qtest_add_data_func("sn0/migration/wound-receive-timer-survives",
                         NULL, test_a_wound_receive_timer_survives_migration);
+    qtest_add_data_func("sn0/migration/blocked-serial-transmit-survives",
+                        NULL,
+                        test_blocked_serial_transmit_survives_migration);
     qtest_add_data_func("sn0/migration/interrupt-output-phase-survives",
                         NULL, test_interrupt_output_phase_survives_migration);
     qtest_add_data_func("sn0/migration/legacy-count2-before-first-expiry",
