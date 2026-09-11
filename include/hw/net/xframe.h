@@ -313,6 +313,9 @@ struct XframeState {
     /* The netdev frontend. */
     NICConf conf;
     NICState *nic;
+    /* Host-side transmit offload helper; neither field is migrated. */
+    struct NetTxPkt *tx_pkt;
+    bool has_vnet_hdr;
     QEMUBH *rx_flush_bh;
 
     /* Backend replies wait until the transmit completion is published. */

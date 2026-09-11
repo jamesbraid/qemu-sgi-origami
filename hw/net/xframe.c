@@ -34,9 +34,11 @@
 #include "hw/net/xframe.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_device.h"
+#include "standard-headers/linux/virtio_net.h"
 #include "migration/vmstate.h"
 #include "net/net.h"
 #include "net/checksum.h"
+#include "hw/net/net_tx_pkt.h"
 
 #include "qapi/error.h"
 #include "trace.h"
@@ -1889,6 +1891,53 @@ static bool xframe_tx_segment(XframeState *s, size_t frame_len, uint16_t mss)
     return true;
 }
 
+static void xframe_tx_pkt_release(void *context, void *base, size_t len)
+{
+    /* The fragment points at XframeState::tx_frame, not allocated memory. */
+}
+
+static bool xframe_tx_offload(XframeState *s, size_t frame_len, uint16_t mss)
+{
+    const uint8_t *frame = s->tx_frame;
+    struct virtio_net_hdr *vhdr;
+    size_t hdr_len, payload_len, segments;
+    bool sent = false;
+
+    if (!s->has_vnet_hdr || mss == 0 ||
+        !xframe_tx_frame_is_ipv4(frame, frame_len)) {
+        return false;
+    }
+    if (frame[XFRAME_ETH_HDR_LEN + 9] != XFRAME_IPPROTO_TCP) {
+        return false;
+    }
+
+    net_tx_pkt_reset(s->tx_pkt, xframe_tx_pkt_release, NULL);
+    if (!net_tx_pkt_add_raw_fragment(s->tx_pkt, s->tx_frame, frame_len) ||
+        !net_tx_pkt_parse(s->tx_pkt) ||
+        !net_tx_pkt_build_vheader(s->tx_pkt, true, true, mss)) {
+        goto out;
+    }
+    vhdr = net_tx_pkt_get_vhdr(s->tx_pkt);
+    hdr_len = vhdr->hdr_len;
+    if ((vhdr->gso_type & ~VIRTIO_NET_HDR_GSO_ECN) !=
+            VIRTIO_NET_HDR_GSO_TCPV4 ||
+        hdr_len >= frame_len || frame_len - hdr_len <= mss) {
+        goto out;
+    }
+    payload_len = frame_len - hdr_len;
+    net_tx_pkt_update_ip_checksums(s->tx_pkt);
+    sent = net_tx_pkt_send(s->tx_pkt, qemu_get_queue(s->nic));
+    if (sent) {
+        segments = DIV_ROUND_UP(payload_len, mss);
+        s->stat_tx_frms += segments;
+        s->stat_tx_octets += payload_len + segments * hdr_len;
+    }
+
+out:
+    net_tx_pkt_reset(s->tx_pkt, xframe_tx_pkt_release, NULL);
+    return sent;
+}
+
 /* Not gated on ADAPTER_EN: drivers enable the adapter before any doorbell. */
 static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
 {
@@ -2015,7 +2064,8 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
          * compute over a frame that never reaches the wire.
          */
         if (first_control1 & XFRAME_TXD_LSO_EN) {
-            segmented = xframe_tx_segment(s, frame_len, mss);
+            segmented = xframe_tx_offload(s, frame_len, mss) ||
+                        xframe_tx_segment(s, frame_len, mss);
         }
 
         if (!segmented) {
@@ -2644,6 +2694,7 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
 {
     XframeState *s = XFRAME(qemu_get_nic_opaque(nc));
     PCIDevice *pdev = PCI_DEVICE(s);
+    size_t orig_size = size;
     uint64_t desc_addr, control2;
     uint64_t bufaddr3[3] = { 0, 0, 0 };
     size_t bufcap[3] = { 0, 0, 0 };
@@ -2660,6 +2711,14 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
     unsigned xcode;
     uint8_t word[8];
 
+    if (s->has_vnet_hdr) {
+        if (size <= sizeof(struct virtio_net_hdr)) {
+            return orig_size;
+        }
+        buf += sizeof(struct virtio_net_hdr);
+        size -= sizeof(struct virtio_net_hdr);
+    }
+
     if (!xframe_rx_head(s, &desc_addr, raw)) {
         /*
          * The genuine no-buffer condition -- reached here, rather than only
@@ -2672,7 +2731,7 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
 
     if (!xframe_rx_filter(s, buf, size)) {
         timer_del(s->rx_recovery_timer);
-        return size;
+        return orig_size;
     }
 
     control2 = xframe_desc_ldq(s, raw + 16, true);
@@ -2880,7 +2939,7 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
     xframe_traffic_complete(s, true, 0);
     timer_del(s->rx_recovery_timer);
 
-    return size;
+    return orig_size;
 }
 
 /*
@@ -2966,6 +3025,9 @@ static void xframe_reset_hold(Object *obj, ResetType type)
      * pin low rather than however qdev left it.
      */
     xframe_soft_reset(s);
+    if (s->tx_pkt) {
+        net_tx_pkt_reset(s->tx_pkt, xframe_tx_pkt_release, NULL);
+    }
     pci_set_irq(PCI_DEVICE(s), 0);
 }
 
@@ -2973,6 +3035,7 @@ static void xframe_realize(PCIDevice *dev, Error **errp)
 {
     XframeState *s = XFRAME(dev);
     DeviceState *d = DEVICE(dev);
+    NetClientState *nc;
     unsigned i;
 
     s->rx_recovery_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
@@ -3048,6 +3111,12 @@ static void xframe_realize(PCIDevice *dev, Error **errp)
     s->nic = qemu_new_nic(&xframe_net_info, &s->conf,
                           object_get_typename(OBJECT(dev)), d->id,
                           &d->mem_reentrancy_guard, s);
+    nc = qemu_get_queue(s->nic);
+    s->has_vnet_hdr = qemu_has_vnet_hdr(nc->peer);
+    if (s->has_vnet_hdr) {
+        qemu_set_vnet_hdr_len(nc->peer, sizeof(struct virtio_net_hdr));
+    }
+    net_tx_pkt_init(&s->tx_pkt, 1);
     s->rx_flush_bh = qemu_bh_new_guarded(xframe_rx_flush, s,
                                          &d->mem_reentrancy_guard);
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
@@ -3071,6 +3140,8 @@ static void xframe_exit(PCIDevice *dev)
         timer_free(s->tti_continuous[i].timer);
         timer_free(s->rti_continuous[i].timer);
     }
+    net_tx_pkt_reset(s->tx_pkt, xframe_tx_pkt_release, NULL);
+    net_tx_pkt_uninit(s->tx_pkt);
     qemu_del_nic(s->nic);
 }
 
