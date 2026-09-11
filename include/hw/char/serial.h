@@ -55,6 +55,7 @@ struct SerialState {
        it can be reset while reading iir */
     int thr_ipending;
     qemu_irq irq;
+    qemu_irq tx_ready;
     CharFrontend chr;
     int last_break_enable;
     uint32_t baudbase;
@@ -84,5 +85,7 @@ extern const MemoryRegionOps serial_io_ops;
 
 #define TYPE_SERIAL "serial"
 OBJECT_DECLARE_SIMPLE_TYPE(SerialState, SERIAL)
+
+#define SERIAL_GPIO_TX_READY "tx-ready"
 
 #endif

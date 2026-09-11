@@ -69,6 +69,16 @@ static void sgi_ioc3_serial_irq(void *opaque, int port, int level)
     sgi_ioc3_sdma_run(s, port);
 }
 
+static void sgi_ioc3_sdma_tx_ready(void *opaque, int port, int level)
+{
+    SGIIOC3State *s = opaque;
+
+    s->sdma_tx_ready[port] = level;
+    if (level) {
+        sgi_ioc3_sdma_run(s, port);
+    }
+}
+
 /* The ethernet child's GPIO level becomes this chip's PCI interrupt pin. */
 static void sgi_ioc3_eth_irq(void *opaque, int n, int level)
 {
@@ -709,13 +719,18 @@ static void sgi_ioc3_sdma_transmit(SGIIOC3State *s, unsigned int port)
             break;
         }
 
-        for (i = 0; i < SGI_IOC3_SDMA_ENTRY_CHARS; i++) {
+        for (i = s->sdma_tx_slot[port];
+             i < SGI_IOC3_SDMA_ENTRY_CHARS; i++) {
             uint8_t control = entry[SGI_IOC3_SDMA_ENTRY_CHARS + i];
 
             switch (control & SGI_IOC3_SDMA_TX_TYPE) {
             case SGI_IOC3_SDMA_TX_NOTHING:
+                s->sdma_tx_slot[port] = i + 1;
                 continue;
             case SGI_IOC3_SDMA_TX_CHARACTER:
+                if (!s->sdma_tx_ready[port]) {
+                    return;
+                }
                 serial_io_ops.write(serial, UART_RBR_THR, entry[i], 1);
                 /* Drain per character or loopback overruns the 16-byte FIFO. */
                 sgi_ioc3_sdma_receive(s, port);
@@ -727,11 +742,14 @@ static void sgi_ioc3_sdma_transmit(SGIIOC3State *s, unsigned int port)
                 break;
             }
 
+            s->sdma_tx_slot[port] = i + 1;
+
             if (control & SGI_IOC3_SDMA_TX_INTERRUPT) {
                 sgi_ioc3_raise_serial_source(s, port, SGI_IOC3_INT_TX_DONE);
             }
         }
 
+        s->sdma_tx_slot[port] = 0;
         *consume = (*consume + SGI_IOC3_SDMA_ENTRY_SIZE) & mask;
         walked = true;
     }
@@ -775,6 +793,7 @@ static void sgi_ioc3_sdma_reset_port(SGIIOC3State *s, unsigned int port)
     s->sdma_packed[port] = 0;
     memset(s->sdma_packer[port], 0, SGI_IOC3_SDMA_ENTRY_SIZE);
     s->sdma_delivered[port] = false;
+    s->sdma_tx_slot[port] = 0;
 
     timer_del(s->sdma_rx_timer[port]);
 }
@@ -1240,6 +1259,9 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
                                     &s->serial_io[i]);
 
         serial->irq = qdev_get_gpio_in(DEVICE(dev), i);
+        qdev_connect_gpio_out_named(
+            DEVICE(serial), SERIAL_GPIO_TX_READY, 0,
+            qdev_get_gpio_in_named(DEVICE(dev), "serial-tx-ready", i));
     }
 
     memory_region_init_io(&s->main, OBJECT(dev), &sgi_ioc3_main_ops, s,
@@ -1467,6 +1489,7 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
     memset(s->sdma_reg, 0, sizeof(s->sdma_reg));
     for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
         timer_del(s->sdma_rx_timer[i]);
+        s->sdma_tx_slot[i] = 0;
         s->sdma_packed[i] = 0;
         memset(s->sdma_packer[i], 0, SGI_IOC3_SDMA_ENTRY_SIZE);
         s->sdma_delivered[i] = false;
@@ -1492,6 +1515,8 @@ static void sgi_ioc3_init(Object *obj)
 
     qdev_init_gpio_in(DEVICE(obj), sgi_ioc3_serial_irq,
                       SGI_IOC3_SERIAL_PORTS);
+    qdev_init_gpio_in_named(DEVICE(obj), sgi_ioc3_sdma_tx_ready,
+                            "serial-tx-ready", SGI_IOC3_SERIAL_PORTS);
     qdev_init_gpio_in_named(DEVICE(obj), sgi_ioc3_eth_irq, "eth-irq", 1);
     qdev_init_gpio_in_named(DEVICE(obj), sgi_ioc3_kbc_irq, "kbc-irq", 1);
     qdev_init_gpio_in_named(DEVICE(obj), sgi_ioc3_parallel_irq, "parallel-irq",
@@ -1558,9 +1583,18 @@ static bool sgi_ioc3_serial_needed(void *opaque, int version_id)
     return s->board->serial[0] || s->board->serial[1];
 }
 
+static int sgi_ioc3_pre_load(void *opaque)
+{
+    SGIIOC3State *s = opaque;
+
+    memset(s->sdma_tx_slot, 0, sizeof(s->sdma_tx_slot));
+    return 0;
+}
+
 static int sgi_ioc3_post_load(void *opaque, int version_id)
 {
     SGIIOC3State *s = opaque;
+    unsigned int i;
 
     if (version_id < 15) {
         s->int_out_active = 0;
@@ -1580,13 +1614,17 @@ static int sgi_ioc3_post_load(void *opaque, int version_id)
         sgi_ioc3_int_out_hold_high(s);
     }
     sgi_ioc3_update_irq(s);
+    for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
+        sgi_ioc3_sdma_run(s, i);
+    }
     return 0;
 }
 
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
-    .version_id = 15,
+    .version_id = 16,
     .minimum_version_id = 14,
+    .pre_load = sgi_ioc3_pre_load,
     .post_load = sgi_ioc3_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIIOC3State),
@@ -1611,6 +1649,8 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
                               SGI_IOC3_SDMA_ENTRY_SIZE),
         VMSTATE_UINT8_ARRAY(sdma_packed, SGIIOC3State,
                             SGI_IOC3_SERIAL_PORTS),
+        VMSTATE_UINT8_ARRAY_V(sdma_tx_slot, SGIIOC3State,
+                             SGI_IOC3_SERIAL_PORTS, 16),
         VMSTATE_TIMER_PTR_ARRAY(sdma_rx_timer, SGIIOC3State,
                                 SGI_IOC3_SERIAL_PORTS),
         VMSTATE_UINT32_ARRAY(ssram_word, SGIIOC3State, SGI_IOC3_SSRAM_WORDS),

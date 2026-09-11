@@ -110,6 +110,11 @@
 static void serial_receive1(void *opaque, const uint8_t *buf, int size);
 static void serial_xmit(SerialState *s);
 
+static void serial_update_tx_ready(SerialState *s)
+{
+    qemu_set_irq(s->tx_ready, !!(s->lsr & UART_LSR_THRE));
+}
+
 static inline void recv_fifo_put(SerialState *s, uint8_t chr)
 {
     /* Receive overruns do not overwrite FIFO contents. */
@@ -272,6 +277,7 @@ static void serial_xmit(SerialState *s)
                                           serial_watch_cb, s);
                 if (s->watch_tag > 0) {
                     s->tsr_retry++;
+                    serial_update_tx_ready(s);
                     return;
                 }
             }
@@ -284,6 +290,7 @@ static void serial_xmit(SerialState *s)
 
     s->last_xmit_ts = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     s->lsr |= UART_LSR_TEMT;
+    serial_update_tx_ready(s);
 }
 
 static void serial_write_fcr(SerialState *s, uint8_t val)
@@ -357,6 +364,7 @@ static void serial_ioport_write(void *opaque, hwaddr addr, uint64_t val,
             s->lsr &= ~UART_LSR_THRE;
             s->lsr &= ~UART_LSR_TEMT;
             serial_update_irq(s);
+            serial_update_tx_ready(s);
             if (s->tsr_retry == 0) {
                 serial_xmit(s);
             }
@@ -429,6 +437,7 @@ static void serial_ioport_write(void *opaque, hwaddr addr, uint64_t val,
 
         serial_write_fcr(s, val & 0xC9);
         serial_update_irq(s);
+        serial_update_tx_ready(s);
         break;
     case 3:
         {
@@ -685,6 +694,7 @@ static int serial_post_load(void *opaque, int version_id)
     /* Initialize fcr via setter to perform essential side-effects */
     serial_write_fcr(s, s->fcr_vmstate);
     serial_update_parameters(s);
+    serial_update_tx_ready(s);
     return 0;
 }
 
@@ -887,6 +897,7 @@ static void serial_reset(void *opaque)
 
     serial_update_msl(s);
     s->msr &= ~UART_MSR_ANY_DELTA;
+    serial_update_tx_ready(s);
 }
 
 static int serial_be_change(void *opaque)
@@ -968,6 +979,14 @@ static const Property serial_properties[] = {
     DEFINE_PROP_BOOL("wakeup", SerialState, wakeup, false),
 };
 
+static void serial_instance_init(Object *obj)
+{
+    SerialState *s = SERIAL(obj);
+
+    qdev_init_gpio_out_named(DEVICE(obj), &s->tx_ready,
+                             SERIAL_GPIO_TX_READY, 1);
+}
+
 static void serial_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -983,6 +1002,7 @@ static const TypeInfo serial_info = {
     .name = TYPE_SERIAL,
     .parent = TYPE_DEVICE,
     .instance_size = sizeof(SerialState),
+    .instance_init = serial_instance_init,
     .class_init = serial_class_init,
 };
 
