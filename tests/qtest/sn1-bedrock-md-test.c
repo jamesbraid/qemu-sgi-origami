@@ -8,6 +8,11 @@
 #define MD_PATH "/machine/peripheral/md"
 #define DIRECTORY_BASE UINT64_C(0x100000000)
 #define DIRECTORY(_x) (DIRECTORY_BASE + (_x))
+#define MEMORY_BASE UINT64_C(0x400000000)
+#define MEMORY(_x) (MEMORY_BASE + (_x))
+#define MEMORY_BANK_SIZE UINT64_C(0x40000000)
+#define BEDROCK_BASE UINT64_C(0x70000000)
+#define BEDROCK_MD(_x) (BEDROCK_BASE + 0x780000 + (_x))
 #define DIRECTORY_LINE_01A00000 0x0340000
 #define DIRECTORY_OTHER_LINE 0x0123450
 #define DIRECTORY_LAST_512M 0x3fffff0
@@ -61,6 +66,8 @@
 #define ECC_DIAGNOSTIC "ECC backdoor "
 
 #define ECC_LOG_OPTIONS "-d guest_errors,unimp -D "
+#define MEMORY_LOG_OPTIONS "-d guest_errors -D "
+#define MEMORY_DIAGNOSTIC "sgi-bedrock-md: memory "
 
 /*
  * Bits 58:56 are write-only in the public definition. Reading them back,
@@ -121,6 +128,7 @@ static QTestState *start_with_memory(const char *size, const char *extra)
     qtest_sysbus_mmio_map(s, MD_PATH, 0, BASE);
     qtest_sysbus_mmio_map(s, MD_PATH, 1, DIRECTORY_BASE);
     qtest_sysbus_mmio_map(s, MD_PATH, 2, ECC_BASE);
+    qtest_sysbus_mmio_map(s, MD_PATH, 3, MEMORY_BASE);
     return s;
 }
 
@@ -138,8 +146,10 @@ static QTestState *start_parent(void)
                                "node-memory=/objects/node-memory/"
                                "node-memory[0] -S");
 
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/bedrock", 0, BEDROCK_BASE);
     qtest_sysbus_mmio_map(s, "/machine/peripheral/bedrock", 5,
-                          DIRECTORY_BASE);
+                         DIRECTORY_BASE);
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/bedrock", 7, MEMORY_BASE);
     return s;
 }
 
@@ -174,6 +184,243 @@ static unsigned log_count(const char *contents, const char *needle)
         found++;
     }
     return found;
+}
+
+static uint64_t memory_bank_config(unsigned locational_bank,
+                                   unsigned size_code)
+{
+    unsigned shift = (locational_bank / 2) * 8;
+    uint64_t byte = (size_code << 4) | (1 << (locational_bank & 1));
+
+    return byte << shift;
+}
+
+static void test_memory_banks(void)
+{
+    QTestState *s = start_with_memory("192M", "");
+
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 1) |
+                              memory_bank_config(2, 2));
+    qtest_writeq(s, MEMORY(0x0123450), UINT64_C(0x0123456789abcdef));
+    qtest_writeq(s, MEMORY(2 * MEMORY_BANK_SIZE + 0x0765430),
+                 UINT64_C(0xfedcba9876543210));
+
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x0123450)), ==,
+                    UINT64_C(0x0123456789abcdef));
+    g_assert_cmphex(qtest_readq(s,
+                    MEMORY(2 * MEMORY_BANK_SIZE + 0x0765430)), ==,
+                    UINT64_C(0xfedcba9876543210));
+    qtest_quit(s);
+}
+
+static void test_memory_size_boundaries(void)
+{
+    g_autofree char *log = log_file_new();
+    g_autofree char *extra = g_strdup_printf(MEMORY_LOG_OPTIONS "%s", log);
+    g_autofree char *contents = NULL;
+    QTestState *s = start_with_memory("192M", extra);
+
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 1) |
+                              memory_bank_config(2, 2));
+    qtest_writeb(s, MEMORY(0x03ffffff), 0xa5);
+    g_assert_cmphex(qtest_readb(s, MEMORY(0x03ffffff)), ==, 0xa5);
+    qtest_writeb(s, MEMORY(0x04000000), 0x5a);
+    qtest_writeb(s, MEMORY(2 * MEMORY_BANK_SIZE + 0x07ffffff), 0x3c);
+    g_assert_cmphex(qtest_readb(s,
+                    MEMORY(2 * MEMORY_BANK_SIZE + 0x07ffffff)), ==, 0x3c);
+    qtest_writeb(s, MEMORY(2 * MEMORY_BANK_SIZE + 0x08000000), 0xc3);
+    qtest_quit(s);
+
+    contents = log_file_take(log);
+    g_assert_nonnull(strstr(contents,
+                           "memory write at offset 0x04000000 is beyond "
+                           "locational bank 0 size 0x04000000"));
+    g_assert_nonnull(strstr(contents,
+                           "memory write at offset 0x88000000 is beyond "
+                           "locational bank 2 size 0x08000000"));
+    g_assert_cmpuint(log_count(contents, MEMORY_DIAGNOSTIC), ==, 2);
+}
+
+static void test_memory_absent_banks(void)
+{
+    g_autofree char *log_disabled = log_file_new();
+    g_autofree char *log_empty = log_file_new();
+    g_autofree char *log_unsupported = log_file_new();
+    g_autofree char *extra_disabled =
+        g_strdup_printf(MEMORY_LOG_OPTIONS "%s", log_disabled);
+    g_autofree char *extra_empty =
+        g_strdup_printf(MEMORY_LOG_OPTIONS "%s", log_empty);
+    g_autofree char *extra_unsupported =
+        g_strdup_printf(MEMORY_LOG_OPTIONS "%s", log_unsupported);
+    g_autofree char *contents_disabled = NULL;
+    g_autofree char *contents_empty = NULL;
+    g_autofree char *contents_unsupported = NULL;
+    QTestState *s;
+
+    s = start_with_memory("64M", extra_disabled);
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 1));
+    qtest_writeb(s, MEMORY(MEMORY_BANK_SIZE), 0x5a);
+    qtest_quit(s);
+
+    s = start_with_memory("64M", extra_empty);
+    qtest_writeq(s, MD(0x8), 0x01);
+    qtest_readb(s, MEMORY(0));
+    qtest_quit(s);
+
+    s = start_with_memory("64M", extra_unsupported);
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 6));
+    qtest_readb(s, MEMORY(0));
+    qtest_quit(s);
+
+    contents_disabled = log_file_take(log_disabled);
+    contents_empty = log_file_take(log_empty);
+    contents_unsupported = log_file_take(log_unsupported);
+    g_assert_nonnull(strstr(contents_disabled,
+                           "memory write at offset 0x40000000 rejected: "
+                           "locational bank 1 is disabled"));
+    g_assert_nonnull(strstr(contents_empty,
+                           "memory read at offset 0x00000000 rejected: "
+                           "locational bank 0 has size code 0"));
+    g_assert_nonnull(strstr(contents_unsupported,
+                           "memory read at offset 0x00000000 rejected: "
+                           "locational bank 0 has unsupported size code 6"));
+    g_assert_cmpuint(log_count(contents_disabled, MEMORY_DIAGNOSTIC), ==, 1);
+    g_assert_cmpuint(log_count(contents_empty, MEMORY_DIAGNOSTIC), ==, 1);
+    g_assert_cmpuint(log_count(contents_unsupported, MEMORY_DIAGNOSTIC), ==, 1);
+}
+
+static void test_memory_crossing_does_not_corrupt(void)
+{
+    g_autofree char *log = log_file_new();
+    g_autofree char *extra = g_strdup_printf(MEMORY_LOG_OPTIONS "%s", log);
+    g_autofree char *contents = NULL;
+    QTestState *s = start_with_memory("128M", extra);
+
+    qtest_writeq(s, MD(0x8), 0x13);
+    qtest_writel(s, MEMORY(0x03fffffc), 0x11223344);
+    qtest_writel(s, MEMORY(MEMORY_BANK_SIZE), 0x55667788);
+    qtest_writeq(s, MEMORY(0x03fffffc), UINT64_C(0xa5a5a5a5c3c3c3c3));
+    g_assert_cmphex(qtest_readl(s, MEMORY(0x03fffffc)), ==, 0x11223344);
+    g_assert_cmphex(qtest_readl(s, MEMORY(MEMORY_BANK_SIZE)), ==, 0x55667788);
+    qtest_quit(s);
+
+    contents = log_file_take(log);
+    g_assert_nonnull(strstr(contents,
+                           "memory write at offset 0x03fffffc size 8 "
+                           "crosses locational bank 0 size 0x04000000"));
+    g_assert_cmpuint(log_count(contents, MEMORY_DIAGNOSTIC), ==, 1);
+}
+
+static void test_memory_selector_and_backing_bound(void)
+{
+    g_autofree char *log = log_file_new();
+    g_autofree char *extra = g_strdup_printf(MEMORY_LOG_OPTIONS "%s", log);
+    g_autofree char *contents = NULL;
+    QTestState *s = start_with_memory("64M", extra);
+
+    /* Selector one maps software bank one to locational bank zero. */
+    qtest_writeq(s, MD(0x8), (UINT64_C(1) << 32) | 0x13);
+    qtest_writeq(s, MEMORY(MEMORY_BANK_SIZE + 0x18),
+                 UINT64_C(0x0123456789abcdef));
+    g_assert_cmphex(qtest_readq(s, MEMORY(MEMORY_BANK_SIZE + 0x18)), ==,
+                    UINT64_C(0x0123456789abcdef));
+    qtest_writeb(s, MEMORY(0), 0xa5);
+    qtest_quit(s);
+
+    contents = log_file_take(log);
+    g_assert_nonnull(strstr(contents,
+                           "memory write at offset 0x00000000 rejected: "
+                           "locational bank 1 exceeds raw backing size "
+                           "0x04000000"));
+    g_assert_cmpuint(log_count(contents, MEMORY_DIAGNOSTIC), ==, 1);
+}
+
+static void test_memory_selector_high_bank(void)
+{
+    QTestState *s = start_with_memory("64M", "");
+
+    /* Selector three maps software bank five to locational bank six. */
+    qtest_writeq(s, MD(0x8), (UINT64_C(3) << 32) |
+                              memory_bank_config(6, 1));
+    qtest_writeq(s, MEMORY(5 * MEMORY_BANK_SIZE + 0x28),
+                 UINT64_C(0xfedcba9876543210));
+    g_assert_cmphex(qtest_readq(s, MEMORY(5 * MEMORY_BANK_SIZE + 0x28)), ==,
+                    UINT64_C(0xfedcba9876543210));
+    qtest_quit(s);
+}
+
+static void test_memory_access_widths_and_byte_order(void)
+{
+    QTestState *s = start_with_memory("64M", "");
+
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 1));
+    qtest_writeq(s, MEMORY(0x20), UINT64_C(0x0123456789abcdef));
+    g_assert_cmphex(qtest_readb(s, MEMORY(0x20)), ==, 0x01);
+    g_assert_cmphex(qtest_readw(s, MEMORY(0x20)), ==, 0x0123);
+    g_assert_cmphex(qtest_readl(s, MEMORY(0x20)), ==, 0x01234567);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x20)), ==,
+                    UINT64_C(0x0123456789abcdef));
+
+    qtest_writeb(s, MEMORY(0x28), 0xa5);
+    qtest_writew(s, MEMORY(0x2a), 0xbcde);
+    qtest_writel(s, MEMORY(0x2c), 0xf0123456);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x28)), ==,
+                    UINT64_C(0xa500bcdef0123456));
+    qtest_quit(s);
+}
+
+static void test_memory_reset_decode(void)
+{
+    g_autofree char *log = log_file_new();
+    g_autofree char *extra = g_strdup_printf(MEMORY_LOG_OPTIONS "%s", log);
+    g_autofree char *contents = NULL;
+    QTestState *s = start_with_memory("64M", extra);
+
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 1));
+    qtest_writeb(s, MEMORY(0x30), 0xa5);
+    qtest_set_irq_in(s, MD_PATH, "soft-reset", 0, 1);
+    g_assert_cmphex(qtest_readb(s, MEMORY(0x30)), ==, 0xa5);
+    qtest_system_reset(s);
+    qtest_readb(s, MEMORY(0x30));
+    qtest_quit(s);
+
+    contents = log_file_take(log);
+    g_assert_nonnull(strstr(contents,
+                           "memory read at offset 0x00000030 rejected: "
+                           "locational bank 0 is disabled"));
+    g_assert_cmpuint(log_count(contents, MEMORY_DIAGNOSTIC), ==, 1);
+}
+
+static void test_memory_without_node_memory(void)
+{
+    g_autofree char *log = log_file_new();
+    g_autofree char *contents = NULL;
+    QTestState *s = qtest_initf("-M none -cpu R10000 "
+                                "-device sgi-bedrock-md,id=md -S "
+                                MEMORY_LOG_OPTIONS "%s", log);
+
+    qtest_sysbus_mmio_map(s, MD_PATH, 0, BASE);
+    qtest_sysbus_mmio_map(s, MD_PATH, 3, MEMORY_BASE);
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 1));
+    qtest_readb(s, MEMORY(0));
+    qtest_quit(s);
+
+    contents = log_file_take(log);
+    g_assert_nonnull(strstr(contents,
+                           "memory read at offset 0x00000000 rejected: "
+                           "node memory is not linked"));
+    g_assert_cmpuint(log_count(contents, MEMORY_DIAGNOSTIC), ==, 1);
+}
+
+static void test_parent_exports_memory(void)
+{
+    QTestState *s = start_parent();
+
+    qtest_writeq(s, BEDROCK_MD(0x8), memory_bank_config(0, 1));
+    qtest_writeq(s, MEMORY(0x40), UINT64_C(0x0123456789abcdef));
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x40)), ==,
+                    UINT64_C(0x0123456789abcdef));
+    qtest_quit(s);
 }
 
 static void program_all(QTestState *s)
@@ -720,7 +967,7 @@ static void test_migration(void)
                      UINT64_MAX ^ (UINT64_C(1) << (i + 2)));
     }
     qtest_writeq(from, MD(0), 0x55aa);
-    qtest_writeq(from, MD(0x8), UINT64_MAX);
+    qtest_writeq(from, MD(0x8), memory_bank_config(0, 4));
     qtest_writeq(from, MD(0x20000), UINT64_C(0x8000000000000c35));
     qtest_writeq(from, MD(0x40000), 3);
     qtest_writeq(from, DIRECTORY(DIRECTORY_LINE_01A00000),
@@ -745,7 +992,8 @@ static void test_migration(void)
                         storage_registers[i].mask);
     }
     g_assert_cmphex(qtest_readq(to, MD(0)), ==, 0x55aa);
-    g_assert_cmphex(qtest_readq(to, MD(0x8)), ==, MEMORY_CONFIG_MASK);
+    g_assert_cmphex(qtest_readq(to, MD(0x8)), ==,
+                    memory_bank_config(0, 4));
     g_assert_cmphex(qtest_readq(to, MD(0x20000)), ==,
                     UINT64_C(0x8000000000000c35));
     g_assert_cmphex(qtest_readq(to, MD(0x40000)), ==, 3);
@@ -760,6 +1008,9 @@ static void test_migration(void)
                     ==, UINT64_C(0x599a599a599a599a));
     g_assert_cmphex(qtest_readq(to, DIRECTORY(PROTECTION_LAST)),
                     ==, UINT64_C(0xa55aa55aa55aa55a));
+    qtest_writeq(to, MEMORY(0x23450), UINT64_C(0x13579bdf2468ace0));
+    g_assert_cmphex(qtest_readq(to, MEMORY(0x23450)), ==,
+                    UINT64_C(0x13579bdf2468ace0));
     qtest_quit(from);
     qtest_quit(to);
     unlink(socket);
@@ -988,6 +1239,25 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("sn1/bedrock-md/register-contract", test_register_contract);
+    qtest_add_func("sn1/bedrock-md/memory-banks", test_memory_banks);
+    qtest_add_func("sn1/bedrock-md/memory-size-boundaries",
+                   test_memory_size_boundaries);
+    qtest_add_func("sn1/bedrock-md/memory-absent-banks",
+                   test_memory_absent_banks);
+    qtest_add_func("sn1/bedrock-md/memory-crossing-does-not-corrupt",
+                   test_memory_crossing_does_not_corrupt);
+    qtest_add_func("sn1/bedrock-md/memory-selector-and-backing-bound",
+                   test_memory_selector_and_backing_bound);
+    qtest_add_func("sn1/bedrock-md/memory-selector-high-bank",
+                   test_memory_selector_high_bank);
+    qtest_add_func("sn1/bedrock-md/memory-access-widths-and-byte-order",
+                   test_memory_access_widths_and_byte_order);
+    qtest_add_func("sn1/bedrock-md/memory-reset-decode",
+                   test_memory_reset_decode);
+    qtest_add_func("sn1/bedrock-md/memory-without-node-memory",
+                   test_memory_without_node_memory);
+    qtest_add_func("sn1/bedrock-md/parent-memory-export",
+                   test_parent_exports_memory);
     qtest_add_func("sn1/bedrock-md/access-width-policy",
                    test_access_width_policy);
     qtest_add_func("sn1/bedrock-md/directory-storage",

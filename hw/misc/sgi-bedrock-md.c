@@ -368,6 +368,205 @@ static const MemoryRegionOps md_ecc_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 2, .unaligned = true },
 };
 
+#define MD_MEMORY_BANK_SIZE UINT64_C(0x40000000)
+
+static unsigned md_memory_size_code(const SGIBedrockMDState *s,
+                                    unsigned locational_bank)
+{
+    return extract64(s->memory_config, (locational_bank / 2) * 8 + 4, 4);
+}
+
+static bool md_memory_bank_enabled(const SGIBedrockMDState *s,
+                                   unsigned locational_bank)
+{
+    return s->memory_config &
+           (UINT64_C(1) << ((locational_bank / 2) * 8 +
+                            (locational_bank & 1)));
+}
+
+static uint64_t md_memory_bank_size(unsigned size_code)
+{
+    return UINT64_C(0x2000000) << size_code;
+}
+
+static MemTxResult md_memory_translate(SGIBedrockMDState *s, hwaddr offset,
+                                       unsigned size, bool is_write,
+                                       hwaddr *raw_offset)
+{
+    const char *access = is_write ? "write" : "read";
+    unsigned software_bank = offset / MD_MEMORY_BANK_SIZE;
+    unsigned selector = extract64(s->memory_config, 32, 2);
+    /* The public header defines this XOR on the complete bank number. */
+    unsigned locational_bank = software_bank ^ selector;
+    unsigned size_code;
+    uint64_t bank_size;
+    uint64_t within = offset % MD_MEMORY_BANK_SIZE;
+    uint64_t raw = 0;
+    uint64_t raw_size;
+
+    if (!s->node_mr) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bedrock-md: memory %s at offset 0x%08"
+                      HWADDR_PRIx " rejected: node memory is not linked\n",
+                      access, offset);
+        return MEMTX_DECODE_ERROR;
+    }
+    if (!md_memory_bank_enabled(s, locational_bank)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bedrock-md: memory %s at offset 0x%08"
+                      HWADDR_PRIx " rejected: locational bank %u is "
+                      "disabled\n", access, offset, locational_bank);
+        return MEMTX_DECODE_ERROR;
+    }
+
+    size_code = md_memory_size_code(s, locational_bank);
+    if (size_code == 0) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bedrock-md: memory %s at offset 0x%08"
+                      HWADDR_PRIx " rejected: locational bank %u has size "
+                      "code 0\n", access, offset, locational_bank);
+        return MEMTX_DECODE_ERROR;
+    }
+    if (size_code > 5) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bedrock-md: memory %s at offset 0x%08"
+                      HWADDR_PRIx " rejected: locational bank %u has "
+                      "unsupported size code %u\n", access, offset,
+                      locational_bank, size_code);
+        return MEMTX_DECODE_ERROR;
+    }
+
+    bank_size = md_memory_bank_size(size_code);
+    if (within >= bank_size) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bedrock-md: memory %s at offset 0x%08"
+                      HWADDR_PRIx " is beyond locational bank %u size 0x%08"
+                      PRIx64 "\n", access, offset, locational_bank,
+                      bank_size);
+        return MEMTX_DECODE_ERROR;
+    }
+    if (size > bank_size - within) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bedrock-md: memory %s at offset 0x%08"
+                      HWADDR_PRIx " size %u crosses locational bank %u size "
+                      "0x%08" PRIx64 "\n", access, offset, size,
+                      locational_bank, bank_size);
+        return MEMTX_DECODE_ERROR;
+    }
+
+    /* The linked RAM densely packs enabled locational banks in bank order. */
+    for (unsigned bank = 0; bank < locational_bank; bank++) {
+        unsigned earlier_code;
+
+        if (!md_memory_bank_enabled(s, bank)) {
+            continue;
+        }
+        earlier_code = md_memory_size_code(s, bank);
+        if (earlier_code > 5) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-bedrock-md: memory %s at offset 0x%08"
+                          HWADDR_PRIx " rejected: locational bank %u follows "
+                          "bank %u with unsupported size code %u\n", access,
+                          offset, locational_bank, bank, earlier_code);
+            return MEMTX_DECODE_ERROR;
+        }
+        if (earlier_code != 0) {
+            raw += md_memory_bank_size(earlier_code);
+        }
+    }
+    raw += within;
+    raw_size = memory_region_size(s->node_mr);
+    if (raw >= raw_size || size > raw_size - raw) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bedrock-md: memory %s at offset 0x%08"
+                      HWADDR_PRIx " rejected: locational bank %u exceeds raw "
+                      "backing size 0x%08" PRIx64 "\n", access, offset,
+                      locational_bank, raw_size);
+        return MEMTX_DECODE_ERROR;
+    }
+
+    *raw_offset = raw;
+    return MEMTX_OK;
+}
+
+static MemTxResult md_memory_read(void *opaque, hwaddr offset, uint64_t *value,
+                                  unsigned size, MemTxAttrs attrs)
+{
+    SGIBedrockMDState *s = opaque;
+    hwaddr raw_offset;
+    MemTxResult result;
+
+    result = md_memory_translate(s, offset, size, false, &raw_offset);
+    if (result != MEMTX_OK) {
+        *value = 0;
+        return result;
+    }
+    switch (size) {
+    case 1:
+        *value = address_space_ldub(&s->node_as, raw_offset, attrs, &result);
+        break;
+    case 2:
+        *value = address_space_lduw_be(&s->node_as, raw_offset, attrs,
+                                       &result);
+        break;
+    case 4:
+        *value = address_space_ldl_be(&s->node_as, raw_offset, attrs, &result);
+        break;
+    case 8:
+        *value = address_space_ldq_be(&s->node_as, raw_offset, attrs, &result);
+        break;
+    default:
+        g_assert_not_reached();
+    }
+    return result;
+}
+
+static MemTxResult md_memory_write(void *opaque, hwaddr offset, uint64_t value,
+                                   unsigned size, MemTxAttrs attrs)
+{
+    SGIBedrockMDState *s = opaque;
+    hwaddr raw_offset;
+    MemTxResult result;
+
+    result = md_memory_translate(s, offset, size, true, &raw_offset);
+    if (result != MEMTX_OK) {
+        return result;
+    }
+    switch (size) {
+    case 1:
+        address_space_stb(&s->node_as, raw_offset, value, attrs, &result);
+        break;
+    case 2:
+        address_space_stw_be(&s->node_as, raw_offset, value, attrs, &result);
+        break;
+    case 4:
+        address_space_stl_be(&s->node_as, raw_offset, value, attrs, &result);
+        break;
+    case 8:
+        address_space_stq_be(&s->node_as, raw_offset, value, attrs, &result);
+        break;
+    default:
+        g_assert_not_reached();
+    }
+    return result;
+}
+
+static const MemoryRegionOps md_memory_ops = {
+    .read_with_attrs = md_memory_read,
+    .write_with_attrs = md_memory_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = {
+        .min_access_size = 1,
+        .max_access_size = 8,
+        .unaligned = true,
+    },
+    .impl = {
+        .min_access_size = 1,
+        .max_access_size = 8,
+        .unaligned = true,
+    },
+};
+
 static void md_reset_registers(SGIBedrockMDState *s)
 {
     s->current_cell = UINT64_MAX;
@@ -448,6 +647,10 @@ static void md_init(Object *obj)
                           TYPE_SGI_BEDROCK_MD "-ecc",
                           SGI_BEDROCK_MD_ECC_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->ecc_mmio);
+    memory_region_init_io(&s->memory_mmio, obj, &md_memory_ops, s,
+                          TYPE_SGI_BEDROCK_MD "-memory",
+                          SGI_BEDROCK_MD_MEMORY_SIZE);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->memory_mmio);
     qdev_init_gpio_in_named(DEVICE(obj), md_soft_reset_input, "soft-reset", 1);
 }
 
@@ -477,6 +680,9 @@ static void md_realize(DeviceState *dev, Error **errp)
                    " node memory exceeds the directory aperture");
         return;
     }
+    address_space_init(&s->node_as, s->node_mr,
+                       TYPE_SGI_BEDROCK_MD "-node-memory");
+    s->node_as_initialized = true;
     s->directory_entries = node_size / 128;
     /*
      * One ECC byte per doubleword: the 1:8 ratio the check above bounds.
@@ -494,6 +700,10 @@ static void md_unrealize(DeviceState *dev)
 {
     SGIBedrockMDState *s = SGI_BEDROCK_MD(dev);
 
+    if (s->node_as_initialized) {
+        address_space_destroy(&s->node_as);
+        s->node_as_initialized = false;
+    }
     g_clear_pointer(&s->directory, g_free);
     g_clear_pointer(&s->page_counters, g_free);
     g_clear_pointer(&s->protection, g_free);
@@ -525,6 +735,9 @@ static void md_finalize(Object *obj)
 {
     SGIBedrockMDState *s = SGI_BEDROCK_MD(obj);
 
+    if (s->node_as_initialized) {
+        address_space_destroy(&s->node_as);
+    }
     g_clear_pointer(&s->directory, g_free);
     g_clear_pointer(&s->page_counters, g_free);
     g_clear_pointer(&s->protection, g_free);

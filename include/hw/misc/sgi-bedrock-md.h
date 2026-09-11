@@ -11,6 +11,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockMDState, SGI_BEDROCK_MD)
 #define SGI_BEDROCK_MD_DIRECTORY_SIZE 0x40000000
 /* One eighth of the 8 GiB M-mode node space, like the directory carrier. */
 #define SGI_BEDROCK_MD_ECC_SIZE 0x40000000
+#define SGI_BEDROCK_MD_MEMORY_SIZE 0x200000000ULL
 #define SGI_BEDROCK_MD_STORAGE 14
 #define SGI_BEDROCK_MD_PROTECTION_ENTRIES (1 << 21)
 
@@ -19,7 +20,10 @@ struct SGIBedrockMDState {
     MemoryRegion mmio;
     MemoryRegion directory_mmio;
     MemoryRegion ecc_mmio;
+    MemoryRegion memory_mmio;
     MemoryRegion *node_mr;
+    AddressSpace node_as;
+    bool node_as_initialized;
     uint64_t *directory;
     uint64_t *page_counters;
     uint64_t *protection;
