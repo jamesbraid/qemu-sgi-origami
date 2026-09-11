@@ -53,8 +53,15 @@ static void xtalk_owner_test_verify(SN0XtalkOwnerTest *test)
         g_assert(object_property_get_uint(crossbow, "startup-links-alive",
                                           &error_abort) ==
                  (i ? 0x600 : 0x700));
-        g_assert(object_property_get_bool(crossbow, "stop-on-link-reset",
-                                          &error_abort));
+        g_assert(!object_property_get_bool(crossbow, "stop-on-link-reset",
+                                           &error_abort));
+        g_assert(object_property_get_bool(
+                     crossbow, "complete-posted-error-address-writes",
+                     &error_abort));
+        g_assert(object_property_get_uint(crossbow,
+                                          "link-reset-restore-alive",
+                                          &error_abort) ==
+                 (i ? 0 : 0x0100));
     }
     g_assert(object_resolve_path_component(xtalk, "baseio0"));
     g_assert(sn0_origin2000_xtalk_test_proxies_disabled(sn0));
