@@ -109,6 +109,7 @@
 #define BWIN_WIDGET(w)  ((w) << 8)
 #define PACKET_IDENTITY 0x01600000
 #define NI_STATUS       0x600000
+#define NI_SCRATCH_0    0x600100
 #define NI_NODE_MASK    (0x1ffULL << 8)
 
 #define HUB_PART        0xc101
@@ -118,6 +119,17 @@
 #define WIDGET_HUB_A    9
 #define WIDGET_HUB_B    10
 #define WIDGET_EMPTY    11
+
+typedef struct HubFacePlacement {
+    const char *options;
+    unsigned int peer_widget;
+    unsigned int empty_widget;
+} HubFacePlacement;
+
+static const HubFacePlacement hub_face_placements[] = {
+    { "", WIDGET_HUB_B, WIDGET_HUB_A },
+    { ",swap-hub-ports=on", WIDGET_HUB_A, WIDGET_HUB_B },
+};
 
 static QTestState *attach_start_with(const char *extra)
 {
@@ -812,20 +824,24 @@ static void test_a_torn_down_big_window_reaches_nothing(void)
  * number programmed into the target may redirect it. Comparing each byte
  * with the target's full register catches word and host-endian substitutions.
  */
-static void test_a_peer_hub_answers_its_widget_id(void)
+static void test_a_peer_hub_answers_its_widget_id(const void *data)
 {
-    QTestState *qts = attach_start();
+    const HubFacePlacement *placement = data;
+    QTestState *qts = attach_start_with(placement->options);
     unsigned int own = node_widget(qts, 0);
-    unsigned int peer = own == WIDGET_HUB_A ? WIDGET_HUB_B : WIDGET_HUB_A;
-    unsigned int target = node_at_widget(qts, peer);
+    unsigned int target = node_at_widget(qts, placement->peer_widget);
     uint64_t status = hub_readq(qts, target, NI_STATUS);
     uint32_t id = hub_readq(qts, target, HUB_IO_WIDGET_ID);
+    uint32_t requester_id = hub_readq(qts, 0, HUB_IO_WIDGET_ID);
     uint8_t bytes[sizeof(uint32_t)];
     uint8_t expected[sizeof(uint32_t)];
 
+    g_assert_cmpuint(own, ==, placement->empty_widget);
+    g_assert_cmphex(id, !=, requester_id);
     stl_be_p(expected, id);
     g_assert_true(qtest_memread_cpu(qts, NODE_CPU(0),
-                                    xtalk_window(qts) + WIDGET_SLOT(peer) +
+                                    xtalk_window(qts) +
+                                    WIDGET_SLOT(placement->peer_widget) +
                                     REG_DATA, bytes, sizeof(bytes)));
     g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
     g_assert_cmpuint(ID_PART(ldl_be_p(bytes)), ==, HUB_PART);
@@ -833,19 +849,85 @@ static void test_a_peer_hub_answers_its_widget_id(void)
     g_assert_cmpuint(ldl_be_p(bytes) & ID_ALWAYS_ONE, ==, ID_ALWAYS_ONE);
     g_assert_false(stopped_on_error(qts));
 
+    memset(bytes, 0xa5, sizeof(bytes));
+    g_assert_true(qtest_memread_cpu(qts, NODE_CPU(0),
+                                    xtalk_window(qts) +
+                                    WIDGET_SLOT(placement->empty_widget) +
+                                    REG_DATA, bytes, sizeof(bytes)));
+    g_assert_cmphex(ldl_be_p(bytes), ==, 0);
+    g_assert_false(stopped_on_error(qts));
+
     hub_writeq(qts, target, NI_STATUS,
                (status & ~NI_NODE_MASK) | (0x5aULL << 8));
     memset(bytes, 0, sizeof(bytes));
     g_assert_true(qtest_memread_cpu(qts, NODE_CPU(0),
-                                    xtalk_window(qts) + WIDGET_SLOT(peer) +
+                                    xtalk_window(qts) +
+                                    WIDGET_SLOT(placement->peer_widget) +
                                     REG_DATA, bytes, sizeof(bytes)));
     g_assert_cmpmem(bytes, sizeof(bytes), expected, sizeof(expected));
     g_assert_false(stopped_on_error(qts));
     qtest_quit(qts);
 }
 
-static void test_the_other_hubs_face_refuses_unsupported_accesses(void)
+typedef struct HubFaceState {
+    uint64_t scratch[NODES];
+    uint8_t ram[NODES][DMA_LEN];
+} HubFaceState;
+
+static void seed_hub_face_state(QTestState *qts, HubFaceState *state)
 {
+    unsigned int node;
+
+    for (node = 0; node < NODES; node++) {
+        unsigned int byte;
+
+        state->scratch[node] = UINT64_C(0x5a00cafe00000000) | node;
+        hub_writeq(qts, node, NI_SCRATCH_0, state->scratch[node]);
+        for (byte = 0; byte < DMA_LEN; byte++) {
+            state->ram[node][byte] = 0x80 ^ (node << 4) ^ byte;
+        }
+        g_assert_true(qtest_memwrite_cpu(qts, NODE_CPU(node), DMA_TARGET,
+                                        state->ram[node], DMA_LEN));
+    }
+}
+
+static void assert_hub_face_state(QTestState *qts,
+                                  const HubFaceState *state)
+{
+    unsigned int node;
+
+    for (node = 0; node < NODES; node++) {
+        uint8_t ram[DMA_LEN];
+
+        g_assert_cmphex(hub_readq(qts, node, NI_SCRATCH_0), ==,
+                        state->scratch[node]);
+        g_assert_true(qtest_memread_cpu(qts, NODE_CPU(node), DMA_TARGET,
+                                       ram, sizeof(ram)));
+        g_assert_cmpmem(ram, sizeof(ram), state->ram[node], DMA_LEN);
+    }
+}
+
+static void hub_face_access(QTestState *qts, unsigned int widget,
+                            uint64_t offset, unsigned int size, bool write)
+{
+    uint8_t bytes[sizeof(uint64_t)];
+
+    memset(bytes, 0x69, sizeof(bytes));
+    if (write) {
+        qtest_memwrite_cpu(qts, NODE_CPU(0),
+                           xtalk_window(qts) + WIDGET_SLOT(widget) + offset,
+                           bytes, size);
+    } else {
+        qtest_memread_cpu(qts, NODE_CPU(0),
+                          xtalk_window(qts) + WIDGET_SLOT(widget) + offset,
+                          bytes, size);
+    }
+}
+
+static void test_the_other_hubs_face_refuses_unsupported_accesses(
+    const void *data)
+{
+    const HubFacePlacement *placement = data;
     static const struct {
         uint64_t offset;
         unsigned int size;
@@ -861,23 +943,27 @@ static void test_the_other_hubs_face_refuses_unsupported_accesses(void)
     size_t i;
 
     for (i = 0; i < ARRAY_SIZE(cases); i++) {
-        QTestState *qts = attach_start();
-        unsigned int own = node_widget(qts, 0);
-        unsigned int peer =
-            own == WIDGET_HUB_A ? WIDGET_HUB_B : WIDGET_HUB_A;
-        uint8_t bytes[sizeof(uint64_t)] = { 0 };
+        QTestState *qts = attach_start_with(placement->options);
+        HubFaceState state;
 
+        g_assert_cmpuint(node_widget(qts, 0), ==, placement->empty_widget);
+        seed_hub_face_state(qts, &state);
         g_assert_false(stopped_on_error(qts));
-        if (cases[i].write) {
-            qtest_memwrite_cpu(qts, NODE_CPU(0),
-                               xtalk_window(qts) + WIDGET_SLOT(peer) +
-                               cases[i].offset, bytes, cases[i].size);
-        } else {
-            qtest_memread_cpu(qts, NODE_CPU(0),
-                              xtalk_window(qts) + WIDGET_SLOT(peer) +
-                              cases[i].offset, bytes, cases[i].size);
-        }
+
+        hub_face_access(qts, placement->empty_widget, cases[i].offset,
+                        cases[i].size, cases[i].write);
+        g_assert_false(stopped_on_error(qts));
+        assert_hub_face_state(qts, &state);
+
+        hub_face_access(qts, placement->peer_widget, cases[i].offset,
+                        cases[i].size, cases[i].write);
         g_assert_true(stopped_on_error(qts));
+        assert_hub_face_state(qts, &state);
+
+        hub_face_access(qts, placement->peer_widget, cases[i].offset,
+                        cases[i].size, cases[i].write);
+        g_assert_true(stopped_on_error(qts));
+        assert_hub_face_state(qts, &state);
         qtest_quit(qts);
     }
 }
@@ -1129,10 +1215,18 @@ int main(int argc, char **argv)
                    test_each_node_reads_its_own_switch);
     qtest_add_func("sn0/origin2000/xtalk-attach/no-route-to-itself",
                    test_a_node_has_no_route_to_itself);
-    qtest_add_func("sn0/origin2000/xtalk-attach/hub-widget-id",
-                   test_a_peer_hub_answers_its_widget_id);
-    qtest_add_func("sn0/origin2000/xtalk-attach/hub-face-refuses",
-                   test_the_other_hubs_face_refuses_unsupported_accesses);
+    qtest_add_data_func("sn0/origin2000/xtalk-attach/hub-widget-id-port10",
+                        &hub_face_placements[0],
+                        test_a_peer_hub_answers_its_widget_id);
+    qtest_add_data_func("sn0/origin2000/xtalk-attach/hub-widget-id-port9",
+                        &hub_face_placements[1],
+                        test_a_peer_hub_answers_its_widget_id);
+    qtest_add_data_func("sn0/origin2000/xtalk-attach/hub-face-refuses-port10",
+                        &hub_face_placements[0],
+                        test_the_other_hubs_face_refuses_unsupported_accesses);
+    qtest_add_data_func("sn0/origin2000/xtalk-attach/hub-face-refuses-port9",
+                        &hub_face_placements[1],
+                        test_the_other_hubs_face_refuses_unsupported_accesses);
     qtest_add_func("sn0/origin2000/xtalk-attach/packet-peer-identity",
                    test_a_hub_asks_its_switch_mate_who_it_is);
     qtest_add_func("sn0/origin2000/xtalk-attach/failed-attach-can-retry",

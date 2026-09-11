@@ -3,6 +3,7 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "hw/core/qdev-properties.h"
 #include "hw/pci/pci_device.h"
 #include "qemu/rcu.h"
 #include "sn0.h"
@@ -133,7 +134,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(SN0XtalkAttachTest, XTALK_ATTACH_TEST)
 
 struct SN0XtalkAttachTest {
     SN0MachineState parent_obj;
+    SN0ModelComposition composition;
+    SN0ModelXtalkAttachment attachments[4];
     bool verified;
+    bool swap_hub_ports;
     /* Make the board refuse to realize, to reach attach's unwind. */
     bool refuse_board;
     /* Make the second switch refuse to realize, for the unwind past it. */
@@ -157,6 +161,17 @@ struct SN0XtalkAttachTest {
     uint64_t board_revision;
     uint64_t ioc3_subsystem;
 };
+
+static bool xtalk_attach_test_get_swap_hub_ports(Object *obj, Error **errp)
+{
+    return XTALK_ATTACH_TEST(obj)->swap_hub_ports;
+}
+
+static void xtalk_attach_test_set_swap_hub_ports(Object *obj, bool value,
+                                                 Error **errp)
+{
+    XTALK_ATTACH_TEST(obj)->swap_hub_ports = value;
+}
 
 static bool xtalk_attach_test_get_verified(Object *obj, Error **errp)
 {
@@ -360,6 +375,27 @@ static void xtalk_attach_test_init(MachineState *machine)
     SN0MachineState *sn0 = SN0_MACHINE(machine);
     SN0XtalkAttachTest *test = XTALK_ATTACH_TEST(machine);
     Error *err = NULL;
+    unsigned int i;
+
+    if (test->swap_hub_ports) {
+        const SN0ModelComposition *model = sn0->composition;
+
+        g_assert(model->xtalk_attachment_count ==
+                 ARRAY_SIZE(test->attachments));
+        test->composition = *model;
+        test->composition.xtalk_attachments = test->attachments;
+        for (i = 0; i < model->xtalk_attachment_count; i++) {
+            test->attachments[i] = model->xtalk_attachments[i];
+            if (test->attachments[i].crossbow_index == 0) {
+                if (test->attachments[i].widget == 9) {
+                    test->attachments[i].widget = 10;
+                } else if (test->attachments[i].widget == 10) {
+                    test->attachments[i].widget = 9;
+                }
+            }
+        }
+        sn0->composition = &test->composition;
+    }
 
     sn0_origin2000_prepare_nodes(machine);
     if (!sn0_origin2000_xtalk_prepare(sn0, &error_fatal)) {
@@ -371,6 +407,10 @@ static void xtalk_attach_test_init(MachineState *machine)
     g_assert(strstr(error_get_pretty(err), "not realized"));
     error_free(err);
 
+    for (i = 0; i < sn0->num_nodes; i++) {
+        qdev_prop_set_uint32(DEVICE(&sn0->nodes[i]->hub), "manufacturer",
+                            0x100 + i);
+    }
     sn0_origin2000_realize_nodes(machine);
 
     /*
@@ -461,6 +501,9 @@ static void xtalk_attach_test_class_init(ObjectClass *oc, const void *data)
     mc->init = xtalk_attach_test_init;
     object_class_property_add_bool(oc, "verified",
                                    xtalk_attach_test_get_verified, NULL);
+    object_class_property_add_bool(oc, "swap-hub-ports",
+                                   xtalk_attach_test_get_swap_hub_ports,
+                                   xtalk_attach_test_set_swap_hub_ports);
     object_class_property_add_bool(oc, "refuse-board",
                                    xtalk_attach_test_get_refuse,
                                    xtalk_attach_test_set_refuse);
