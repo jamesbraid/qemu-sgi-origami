@@ -1,21 +1,21 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * Four vCPUs exercise the accelerator core on a machine that contains none of
+ * MIPS CPUs exercise the accelerator core on a machine that contains none of
  * this fork's devices.
  *
  * This is the machine-independent rung of the MTTCG ladder.  Every case runs
  * on malta, where the -smp CPUs are plain MIPS cores rather than a CPS
- * cluster, so all four come out of reset free-running at the boot vector and
+ * cluster, so they come out of reset free-running at the boot vector and
  * nothing but the accelerator stands between the guest program and the host.
  * A failure here is evidence about target/mips and accel/tcg, not about the
  * SN0 machine model.
  *
  * Each case generates its own MIPS64 program and hands it to QEMU as a raw
- * -bios image: malta copies the flash image to the reset vector, so all four
- * CPUs start executing it with no board firmware in the way.  A CPU learns
- * which of the four it is from the CPUNum field of EBase, which QEMU fills in
- * from the vCPU index at reset.  Identity deliberately does not come from a
+ * -bios image: malta copies the flash image to the reset vector, so the CPUs
+ * start executing it with no board firmware in the way.  Multi-CPU cases get
+ * each CPU's identity from the CPUNum field of EBase, which QEMU fills in from
+ * the vCPU index at reset.  Identity deliberately does not come from a
  * primitive under test, or a broken primitive makes the failure
  * unattributable.
  *
@@ -36,6 +36,8 @@
  *   tlb/asid          ASID-tagged translation must follow EntryHi.ASID swaps.
  *                     Underneath: the flush on ASID change in the EntryHi
  *                     write path.
+ *   tlb/random-global A global random write must discard an older non-global
+ *                     shadow for the same virtual page.
  *   smc/cross-cpu     A peer's store into code another vCPU is executing must
  *                     take effect and never yield a torn instruction.
  *
@@ -103,6 +105,7 @@
 #define OPC_ORI             (0x0du << 26)
 #define OPC_LUI             (0x0fu << 26)
 #define OPC_DADDIU          (0x19u << 26)
+#define OPC_LW              (0x23u << 26)
 #define OPC_SW              (0x2bu << 26)
 #define OPC_LLD             (0x34u << 26)
 #define OPC_LD              (0x37u << 26)
@@ -122,6 +125,7 @@
 #define OPC_MTC0            (OPC_CP0 | (0x04u << 21))
 #define OPC_C0              (OPC_CP0 | (0x10u << 21))
 #define OPC_TLBWI           (OPC_C0 | 0x02u)
+#define OPC_TLBWR           (OPC_C0 | 0x06u)
 #define OPC_WAIT            (OPC_C0 | 0x20u)
 /* JR.HB and JALR.HB are the same opcodes with hint 16 in bits 10:6. */
 #define HINT_HB             (16u << 6)
@@ -154,6 +158,7 @@
 #define CP0_ENTRYLO0        2
 #define CP0_ENTRYLO1        3
 #define CP0_PAGEMASK        5
+#define CP0_WIRED           6
 #define CP0_BADVADDR        8
 #define CP0_ENTRYHI         10
 #define CP0_STATUS          12
@@ -244,6 +249,11 @@ static void emit_sw(GuestImage *img, int rt, int base, uint16_t off)
     emit_immediate(img, OPC_SW, base, rt, off);
 }
 
+static void emit_lw(GuestImage *img, int rt, int base, uint16_t off)
+{
+    emit_immediate(img, OPC_LW, base, rt, off);
+}
+
 static void emit_lld(GuestImage *img, int rt, int base, uint16_t off)
 {
     emit_immediate(img, OPC_LLD, base, rt, off);
@@ -307,6 +317,11 @@ static void emit_mtc0(GuestImage *img, int rt, int rd, int sel)
 static void emit_tlbwi(GuestImage *img)
 {
     emit(img, OPC_TLBWI);
+}
+
+static void emit_tlbwr(GuestImage *img)
+{
+    emit(img, OPC_TLBWR);
 }
 
 static void emit_sync(GuestImage *img)
@@ -450,6 +465,14 @@ static void emit_halt(GuestImage *img)
     emit_nop(img);
 }
 
+static void emit_spin(GuestImage *img)
+{
+    unsigned int spin = img->pos;
+
+    emit_b(img, spin);
+    emit_nop(img);
+}
+
 static void emit_done_and_halt(GuestImage *img)
 {
     emit_li(img, R_T3, DONE_MAGIC);
@@ -512,6 +535,41 @@ static void emit_preamble(GuestImage *img)
     emit_publish(img, R_T3, ALIVE_OFF);
 }
 
+static void emit_r10k_exception_handler(GuestImage *img)
+{
+    emit_lui(img, R_K1, STATE_KSEG1_HI);
+    emit_mfc0(img, R_K0, CP0_CAUSE, 0);
+    emit_sd(img, R_K0, R_K1, EXC_CAUSE_OFF);
+    emit_mfc0(img, R_K0, CP0_BADVADDR, 0);
+    emit_sd(img, R_K0, R_K1, EXC_VADDR_OFF);
+    emit_mfc0(img, R_K0, CP0_EPC, 0);
+    emit_sd(img, R_K0, R_K1, EXC_EPC_OFF);
+    emit_li(img, R_K0, EXC_MAGIC);
+    emit_sd(img, R_K0, R_K1, EXC_MARK_OFF);
+    emit_sync(img);
+    emit_spin(img);
+}
+
+static void emit_r10k_preamble(GuestImage *img)
+{
+    /* R10000 predates EBase; this image runs on one CPU and needs no ID. */
+    emit_addiu(img, R_K0, R_ZERO, 0);
+    emit_lui(img, R_T0, STATE_KSEG1_HI);
+    emit_reg3(img, OPC_OR, R_T2, R_T0, R_ZERO);
+
+    emit_mfc0(img, R_T3, CP0_STATUS, 0);
+    emit_addiu(img, R_T4, R_ZERO, STATUS_ERL_CLEAR);
+    emit_and(img, R_T3, R_T3, R_T4);
+    emit_mtc0(img, R_T3, CP0_STATUS, 0);
+    emit_ehb(img);
+
+    emit_mtc0(img, R_ZERO, CP0_PAGEMASK, 0);
+    emit_ehb(img);
+
+    emit_li(img, R_T3, ALIVE_MAGIC);
+    emit_publish(img, R_T3, ALIVE_OFF);
+}
+
 /*
  * Write one TLB entry: virtual page (and ASID) in vreg, even-half EntryLo in
  * loreg, odd half as given, at a fixed index.  Scratches t8 and t9, so vreg
@@ -537,7 +595,27 @@ static void emit_tlb_write(GuestImage *img, int vreg, int loreg,
     emit_ehb(img);
 }
 
-static void write_guest_image(int fd, void (*build)(GuestImage *img))
+/* Write one TLB entry through Random, with the same register contract. */
+static void emit_tlb_random_write(GuestImage *img, int vreg, int loreg,
+                                  unsigned int odd_half)
+{
+    g_assert_cmpint(vreg, !=, R_T8);
+    g_assert_cmpint(loreg, !=, R_T8);
+
+    emit_mtc0(img, vreg, CP0_ENTRYHI, 0);
+    emit_ehb(img);
+    emit_mtc0(img, loreg, CP0_ENTRYLO0, 0);
+    emit_li(img, R_T8, odd_half);
+    emit_mtc0(img, R_T8, CP0_ENTRYLO1, 0);
+    emit_ehb(img);
+    emit_tlbwr(img);
+    emit_ehb(img);
+}
+
+static void write_guest_image_with_setup(int fd,
+                                         void (*exception)(GuestImage *img),
+                                         void (*preamble)(GuestImage *img),
+                                         void (*build)(GuestImage *img))
 {
     uint8_t image[IMAGE_SIZE] = { };
     GuestImage img = { .code = image, .pos = 0 };
@@ -558,15 +636,27 @@ static void write_guest_image(int fd, void (*build)(GuestImage *img))
     emit_nop(&img);
 
     img.pos = VEC_GENERAL;
-    emit_exception_handler(&img);
+    exception(&img);
     g_assert_cmpuint(img.pos, <=, CODE_START);
 
     img.pos = CODE_START;
-    emit_preamble(&img);
+    preamble(&img);
     build(&img);
 
     written = write(fd, image, sizeof(image));
     g_assert_cmpint(written, ==, sizeof(image));
+}
+
+static void write_guest_image(int fd, void (*build)(GuestImage *img))
+{
+    write_guest_image_with_setup(fd, emit_exception_handler, emit_preamble,
+                                 build);
+}
+
+static void write_r10k_guest_image(int fd, void (*build)(GuestImage *img))
+{
+    write_guest_image_with_setup(fd, emit_r10k_exception_handler,
+                                 emit_r10k_preamble, build);
 }
 
 /* ---------------------------------------------------------------- */
@@ -879,6 +969,95 @@ static void build_tlb_asid(GuestImage *img)
 }
 
 /* ---------------------------------------------------------------- */
+/* Case: tlb/random-global                                          */
+/* ---------------------------------------------------------------- */
+
+#define RG_FAULT_OFF        0x100
+#define RG_SEEN_OFF         0x120
+#define RG_INITIAL_OFF      0x140
+
+#define RG_VBASE            0x00600000
+#define RG_OTHER_VBASE      0x00800000
+#define RG_FINAL_VBASE      0x00a00000
+#define RG_OLD_PFN          0x300
+#define RG_NEW_PFN          0x302
+#define RG_OTHER_PFN        0x304
+#define RG_FINAL_PFN        0x306
+#define RG_OLD_KSEG1        0xa0300000
+#define RG_NEW_KSEG1        0xa0302000
+#define RG_OLD_PATTERN      0x1111
+#define RG_NEW_PATTERN      0x2222
+#define RG_OLD_ASID         1
+#define RG_NEW_ASID         2
+#define RG_RANDOM_INDEX     63
+#define RG_ENTRYLO_ASIDED(pfn)  (((pfn) << 6) | (3 << 3) | 0x6)
+#define RG_ENTRYLO_GLOBAL(pfn)  (((pfn) << 6) | (3 << 3) | 0x7)
+
+static void build_tlb_random_global(GuestImage *img)
+{
+    unsigned int correct;
+
+    emit_li_addr(img, R_S2, RG_OLD_KSEG1);
+    emit_li_addr(img, R_S3, RG_NEW_KSEG1);
+    emit_li(img, R_S4, RG_OLD_PATTERN);
+    emit_li(img, R_S5, RG_NEW_PATTERN);
+    emit_sw(img, R_S4, R_S2, 0);
+    emit_sw(img, R_S5, R_S3, 0);
+    emit_sync(img);
+
+    /* Restrict Random to one slot so each write displaces its predecessor. */
+    emit_addiu(img, R_T3, R_ZERO, RG_RANDOM_INDEX);
+    emit_mtc0(img, R_T3, CP0_WIRED, 0);
+    emit_ehb(img);
+
+    /* Cache an ASID 1 translation, then displace it into a shadow slot. */
+    emit_li(img, R_S1, RG_VBASE);
+    emit_li(img, R_S0, RG_ENTRYLO_ASIDED(RG_OLD_PFN));
+    emit_ori(img, R_T3, R_S1, RG_OLD_ASID);
+    emit_tlb_random_write(img, R_T3, R_S0,
+                          RG_ENTRYLO_ASIDED(RG_OLD_PFN + 1));
+    emit_lw(img, R_T7, R_S1, 0);
+    emit_sd(img, R_T7, R_T2, RG_INITIAL_OFF);
+
+    emit_li(img, R_T3, RG_OTHER_VBASE | RG_OLD_ASID);
+    emit_li(img, R_T4, RG_ENTRYLO_ASIDED(RG_OTHER_PFN));
+    emit_tlb_random_write(img, R_T3, R_T4,
+                          RG_ENTRYLO_ASIDED(RG_OTHER_PFN + 1));
+
+    /* A global entry for the same page overlaps the shadow for every ASID. */
+    emit_li(img, R_T3, RG_VBASE | RG_NEW_ASID);
+    emit_li(img, R_T4, RG_ENTRYLO_GLOBAL(RG_NEW_PFN));
+    emit_tlb_random_write(img, R_T3, R_T4,
+                          RG_ENTRYLO_GLOBAL(RG_NEW_PFN + 1));
+
+    /*
+     * Displace the global entry before reading through ASID 1.  A surviving
+     * older shadow then precedes it in QEMU's lookup order and reappears as
+     * the stale translation this test catches.
+     */
+    emit_li(img, R_T3, RG_FINAL_VBASE | RG_NEW_ASID);
+    emit_li(img, R_T4, RG_ENTRYLO_ASIDED(RG_FINAL_PFN));
+    emit_tlb_random_write(img, R_T3, R_T4,
+                          RG_ENTRYLO_ASIDED(RG_FINAL_PFN + 1));
+
+    emit_li(img, R_T3, RG_VBASE | RG_OLD_ASID);
+    emit_mtc0(img, R_T3, CP0_ENTRYHI, 0);
+    emit_ehb(img);
+    emit_lw(img, R_T7, R_S1, 0);
+    emit_sd(img, R_T7, R_T2, RG_SEEN_OFF);
+    correct = emit_beq_fwd(img, R_T7, R_S5);
+    emit_nop(img);
+    emit_li(img, R_T3, FAULT_MAGIC);
+    emit_sd(img, R_T3, R_T2, RG_FAULT_OFF);
+    emit_sync(img);
+    patch_fwd(img, correct);
+
+    emit_li(img, R_T3, DONE_MAGIC);
+    emit_publish(img, R_T3, DONE_OFF);
+    emit_spin(img);
+}
+
+/* ---------------------------------------------------------------- */
 /* Case: smc/cross-cpu                                              */
 /* ---------------------------------------------------------------- */
 
@@ -1166,11 +1345,12 @@ static bool all_cpus_done(QTestState *qts)
 /*
  * The accelerator named here wins over the -accel qtest libqtest appends,
  * because QEMU takes the first one on the command line that initialises.
- * An explicit R2 CPU is required: EBase is MIPS64R2 and malta's default 20Kc
- * is R1.  5KEc has no coherency manager, so malta builds plain CPUs rather
- * than a CPS cluster and all four run from reset.
  */
-static QTestState *boot_case(const char *accel, void (*build)(GuestImage *img))
+static QTestState *boot_cpu_case(const char *accel, const char *cpu,
+                                 int nr_cpus,
+                                 void (*writer)(int fd,
+                                                void (*build)(GuestImage *img)),
+                                 void (*build)(GuestImage *img))
 {
     g_autofree char *image = NULL;
     QTestState *qts;
@@ -1178,14 +1358,23 @@ static QTestState *boot_case(const char *accel, void (*build)(GuestImage *img))
 
     fd = g_file_open_tmp("mips64-mttcg-XXXXXX", &image, NULL);
     g_assert_cmpint(fd, >=, 0);
-    write_guest_image(fd, build);
+    writer(fd, build);
     close(fd);
 
-    qts = qtest_initf("-M malta -m 128M -smp %d -cpu 5KEc -bios %s "
+    qts = qtest_initf("-M malta -m 128M -smp %d -cpu %s -bios %s "
                       "-accel %s -no-reboot -no-shutdown",
-                      NR_CPUS, image, accel);
+                      nr_cpus, cpu, image, accel);
     unlink(image);
     return qts;
+}
+
+static QTestState *boot_case(const char *accel, void (*build)(GuestImage *img))
+{
+    /*
+     * EBase is MIPS64R2 and malta's default 20Kc is R1.  5KEc has no
+     * coherency manager, so malta builds plain CPUs rather than a CPS cluster.
+     */
+    return boot_cpu_case(accel, "5KEc", NR_CPUS, write_guest_image, build);
 }
 
 /* Poll until every CPU is done.  Returns false if the deadline expired. */
@@ -1195,6 +1384,19 @@ static bool wait_for_done(QTestState *qts)
 
     for (tries = 0; tries < POLL_TRIES; tries++) {
         if (all_cpus_done(qts)) {
+            return true;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+    return false;
+}
+
+static bool wait_for_cpu0_done(QTestState *qts)
+{
+    unsigned int tries;
+
+    for (tries = 0; tries < POLL_TRIES; tries++) {
+        if (state_word(qts, DONE_OFF) == DONE_MAGIC) {
             return true;
         }
         g_usleep(POLL_INTERVAL_US);
@@ -2166,6 +2368,44 @@ static void test_tlb_asid(const void *data)
     qtest_quit(qts);
 }
 
+static void test_tlb_random_global(const void *data)
+{
+    QTestState *qts;
+    bool done;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    qts = boot_cpu_case("tcg", "R10000", 1, write_r10k_guest_image,
+                        build_tlb_random_global);
+    done = wait_for_cpu0_done(qts);
+
+    if (!done || state_word(qts, RG_FAULT_OFF) != 0) {
+        g_test_message("alive 0x%" PRIx64 " done 0x%" PRIx64
+                       " exception 0x%" PRIx64,
+                       state_word(qts, ALIVE_OFF),
+                       state_word(qts, DONE_OFF),
+                       state_word(qts, EXC_MARK_OFF));
+        g_test_message("fault 0x%" PRIx64 " initial 0x%" PRIx64
+                       " final 0x%" PRIx64,
+                       state_word(qts, RG_FAULT_OFF),
+                       state_word(qts, RG_INITIAL_OFF),
+                       state_word(qts, RG_SEEN_OFF));
+    }
+
+    g_assert_true(done);
+    g_assert_cmphex(state_word(qts, ALIVE_OFF), ==, ALIVE_MAGIC);
+    g_assert_cmphex(state_word(qts, EXC_MARK_OFF), ==, 0);
+    g_assert_cmphex(state_word(qts, DONE_OFF), ==, DONE_MAGIC);
+    g_assert_cmphex(state_word(qts, RG_FAULT_OFF), ==, 0);
+    g_assert_cmphex(state_word(qts, RG_INITIAL_OFF), ==, RG_OLD_PATTERN);
+    g_assert_cmphex(state_word(qts, RG_SEEN_OFF), ==, RG_NEW_PATTERN);
+
+    qtest_quit(qts);
+}
+
 static void test_smc_cross_cpu(const void *data)
 {
     QTestState *qts;
@@ -2298,6 +2538,8 @@ int main(int argc, char **argv)
                         test_rendezvous_round_robin);
     qtest_add_data_func("mttcg/tlb/shootdown", NULL, test_tlb_shootdown);
     qtest_add_data_func("mttcg/tlb/asid", NULL, test_tlb_asid);
+    qtest_add_data_func("mttcg/tlb/random-global", NULL,
+                        test_tlb_random_global);
     qtest_add_data_func("mttcg/smc/cross-cpu", NULL, test_smc_cross_cpu);
     qtest_add_data_func("mttcg/ginvt/remote-invalidate", NULL,
                         test_ginvt_remote_invalidate);
