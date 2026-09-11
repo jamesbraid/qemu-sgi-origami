@@ -845,41 +845,28 @@ static const char sgi_bridge_onewire_image[NIC_ROM_SIZE] = {
 };
 
 /*
- * The two pages the identity readers take board fields out of. The check in
- * each page's last two bytes is image content, not device behaviour: a
+ * The two pages the identity readers take a part number out of. The check
+ * in each page's last two bytes is image content, not device behaviour: a
  * part's own check always covers a whole page, so a check stored inside
  * one is a software record convention. It is stored inverted, so a guest
  * shifting a page and its check through the generator lands on the fixed
  * residue every one-wire CRC-16 stream ends on.
  */
-static bool sgi_bridge_onewire_build_rom(uint8_t rom[NIC_ROM_SIZE],
-                                         const char *board_part,
-                                         const char *board_name)
+static void sgi_bridge_onewire_build_rom(uint8_t rom[NIC_ROM_SIZE],
+                                         const char *board_part)
 {
-    size_t board_name_len;
     unsigned int page;
 
     memcpy(rom, sgi_bridge_onewire_image, NIC_ROM_SIZE);
     memcpy(&rom[11], board_part, 12);
-    if (board_name) {
-        board_name_len = strlen(board_name);
-        rom[32] = ';';
-        memcpy(&rom[33], "Name:", 5);
-        memcpy(&rom[38], board_name, board_name_len);
-        rom[38 + board_name_len] = ';';
-    }
 
     for (page = 0; page < NIC_PAGES; page++) {
         uint8_t *at = &rom[page * NIC_PAGE_SIZE];
         uint16_t crc = ~onewire_crc16(0, at, NIC_PAGE_SIZE - 2);
 
-        if (board_name && (!(crc & 0xff) || !(crc >> 8))) {
-            return false;
-        }
         at[NIC_PAGE_SIZE - 2] = crc & 0xff;
         at[NIC_PAGE_SIZE - 1] = crc >> 8;
     }
-    return true;
 }
 
 /* One bit slot, reported finished inside the write the guest polls after. */
@@ -1790,8 +1777,6 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     DeviceState *part;
     const char *board_part;
     const char *board_part_error;
-    const char *board_name;
-    const unsigned char *at;
     unsigned int slot;
 
     /* Refuse property errors before the first region exists. */
@@ -1801,29 +1786,9 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "%s", board_part_error);
         return;
     }
-    board_name = s->board_name;
-    if (board_name) {
-        if (!board_name[0] || strlen(board_name) > 23) {
-            error_setg(errp, "the I/O bridge board name must be 1 to 23 "
-                       "printable ASCII characters without a semicolon");
-            return;
-        }
-        for (at = (const unsigned char *)board_name; *at; at++) {
-            if (*at < ' ' || *at > '~' || *at == ';') {
-                error_setg(errp, "the I/O bridge board name must be 1 to 23 "
-                           "printable ASCII characters without a semicolon");
-                return;
-            }
-        }
-    }
     if (s->onewire_serial & ~NIC_ROM_SERIAL_MASK) {
         error_setg(errp, "the I/O bridge one-wire serial 0x%" PRIx64
                    " does not fit in 48 bits", s->onewire_serial);
-        return;
-    }
-    if (!sgi_bridge_onewire_build_rom(rom, board_part, board_name)) {
-        error_setg(errp, "the I/O bridge board identity page check contains "
-                   "a zero byte");
         return;
     }
     if (!s->fabric) {
@@ -1854,6 +1819,7 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
      * itself, so the ordering was never the hazard.
      */
     s->onewire_bus = onewire_create_bus(dev, "onewire");
+    sgi_bridge_onewire_build_rom(rom, board_part);
     part = qdev_new(TYPE_ONEWIRE_DS2505);
     object_property_add_child(obj, "onewire-part", OBJECT(part));
     qdev_prop_set_uint8(part, "family", NIC_ROM_FAMILY);
@@ -2082,7 +2048,6 @@ static const Property sgi_bridge_properties[] = {
     DEFINE_PROP_UINT64("onewire-serial", SGIBridgeState, onewire_serial,
                        NIC_ROM_SERIAL_DEFAULT),
     DEFINE_PROP_STRING("board-part", SGIBridgeState, board_part),
-    DEFINE_PROP_STRING("board-name", SGIBridgeState, board_name),
     DEFINE_PROP_STRING("pci-bus-name", SGIBridgeState, pci_bus_name),
     /*
      * Forces slots exempt whatever their cards say, for a test or a debug

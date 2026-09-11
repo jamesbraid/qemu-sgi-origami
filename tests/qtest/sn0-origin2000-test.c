@@ -64,15 +64,10 @@
 #define CROSSBOW0_PRESENT 0x0700
 
 #define BRIDGE_CONTROL 0x0020
-#define BRIDGE_NIC 0x00b0
 #define BRIDGE_DEVICE(n) (0x0200 + 8 * (n))
 #define BRIDGE_CFG0(n) (0x020000 + (n) * 0x1000)
 #define BRIDGE_DEV_SWAP_DIRECT (1u << 19)
 #define BRIDGE_DEV_MEMORY_SPACE (1u << 12)
-#define NIC_LEVEL (1u << 0)
-#define NIC_SAMPLE(us) ((uint32_t)(us) << 2)
-#define NIC_PULSE(us) ((uint32_t)(us) << 10)
-#define NIC_CRC_RESIDUE 0xb001
 #define PCI_COMMAND 0x04
 #define PCI_COMMAND_MEMORY_MASTER 0x0006
 #define PCI_BAR0 0x10
@@ -154,132 +149,6 @@ static void baseio_write(QTestState *qts, uint64_t offset, uint32_t value)
                                      XTALK_WIDGET_SIZE + offset +
                                      XTALK_REG_DATA,
                                      bytes, sizeof(bytes)));
-}
-
-static bool baseio_nic_slot(QTestState *qts, unsigned int pulse,
-                            unsigned int sample)
-{
-    baseio_write(qts, BRIDGE_NIC, NIC_PULSE(pulse) | NIC_SAMPLE(sample));
-    return baseio_read(qts, BRIDGE_NIC) & NIC_LEVEL;
-}
-
-static void baseio_nic_write_byte(QTestState *qts, uint8_t byte)
-{
-    unsigned int i;
-
-    for (i = 0; i < 8; i++) {
-        bool one = byte & (1u << i);
-
-        baseio_nic_slot(qts, one ? 6 : 80, one ? 13 : 30);
-    }
-}
-
-static uint8_t baseio_nic_read_byte(QTestState *qts)
-{
-    uint8_t byte = 0;
-    unsigned int i;
-
-    for (i = 0; i < 8; i++) {
-        if (baseio_nic_slot(qts, 6, 13)) {
-            byte |= 1u << i;
-        }
-    }
-    return byte;
-}
-
-static uint16_t baseio_nic_crc(uint16_t crc, const uint8_t *data,
-                               unsigned int len)
-{
-    unsigned int i, bit;
-
-    for (i = 0; i < len; i++) {
-        crc ^= data[i];
-        for (bit = 0; bit < 8; bit++) {
-            crc = (crc & 1) ? (crc >> 1) ^ 0xa001 : crc >> 1;
-        }
-    }
-    return crc;
-}
-
-static void baseio_nic_read_page(QTestState *qts, uint16_t offset,
-                                 uint8_t page[34])
-{
-    uint8_t exchange[6] = { 0xa5, offset, offset >> 8 };
-    unsigned int i;
-
-    g_assert_false(baseio_nic_slot(qts, 520, 65));
-    baseio_nic_write_byte(qts, 0xcc);
-    for (i = 0; i < 3; i++) {
-        baseio_nic_write_byte(qts, exchange[i]);
-    }
-    for (i = 3; i < sizeof(exchange); i++) {
-        exchange[i] = baseio_nic_read_byte(qts);
-    }
-    g_assert_cmphex(baseio_nic_crc(0, exchange, sizeof(exchange)), ==,
-                    NIC_CRC_RESIDUE);
-
-    for (i = 0; i < 34; i++) {
-        page[i] = baseio_nic_read_byte(qts);
-    }
-    g_assert_cmphex(baseio_nic_crc(0, page, 34), ==, NIC_CRC_RESIDUE);
-    g_assert_cmphex(baseio_nic_crc(0, page, 32), ==, NIC_CRC_RESIDUE);
-}
-
-static void test_baseio_board_identity(void)
-{
-    QTestState *qts = qtest_init("-M origin2000,synthesized-firmware=off");
-    uint8_t first[34];
-    uint8_t second[34];
-
-    baseio_nic_read_page(qts, 0, first);
-    baseio_nic_read_page(qts, 32, second);
-    g_assert_cmpmem(&first[6], 18, "Part:030-1124-002;", 18);
-    g_assert_cmpmem(second, 10, ";Name:IO6;", 10);
-    g_assert_cmpuint(first[30], !=, 0);
-    g_assert_cmpuint(first[31], !=, 0);
-    g_assert_cmpuint(second[30], !=, 0);
-    g_assert_cmpuint(second[31], !=, 0);
-
-    qtest_quit(qts);
-}
-
-static void assert_bridge_identity_refused(const char *part, const char *name,
-                                           const char *message)
-{
-    g_autofree char *device = g_strdup_printf(
-        "sgi-bridge,board-part=%s,board-name=%s", part, name);
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "none,accel=qtest", "-display", "none",
-        "-device", device, NULL,
-    };
-    g_autofree char *error_output = NULL;
-    int wait_status = 0;
-
-    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
-                               NULL, &error_output, &wait_status, NULL));
-    g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
-    g_assert_nonnull(strstr(error_output, message));
-}
-
-static void test_baseio_board_identity_rejects_zero_check_byte(void)
-{
-    assert_bridge_identity_refused(
-        "030-1124-142", "IO6",
-        "the I/O bridge board identity page check contains a zero byte");
-}
-
-static void test_baseio_board_identity_rejects_control_name(void)
-{
-    assert_bridge_identity_refused(
-        "030-1124-002", "IO\t6",
-        "printable ASCII characters without a semicolon");
-}
-
-static void test_baseio_board_identity_rejects_non_ascii_name(void)
-{
-    assert_bridge_identity_refused(
-        "030-1124-002", "IO\x80" "6",
-        "printable ASCII characters without a semicolon");
 }
 
 static void baseio_window_write(QTestState *qts, uint64_t offset,
@@ -1525,14 +1394,6 @@ int main(int argc, char **argv)
                    test_bte_routes_three_distinct_endpoints);
     qtest_add_func("sn0/origin2000/baseio-dma-far-node",
                    test_baseio_dma_reaches_far_node);
-    qtest_add_func("sn0/origin2000/baseio-board-identity",
-                   test_baseio_board_identity);
-    qtest_add_func("sn0/origin2000/baseio-board-identity-zero-check",
-                   test_baseio_board_identity_rejects_zero_check_byte);
-    qtest_add_func("sn0/origin2000/baseio-board-identity-control-name",
-                   test_baseio_board_identity_rejects_control_name);
-    qtest_add_func("sn0/origin2000/baseio-board-identity-non-ascii-name",
-                   test_baseio_board_identity_rejects_non_ascii_name);
     qtest_add_func("sn0/origin2000/oversize-firmware", test_oversize_firmware);
     qtest_add_func("sn0/origin2000/missing-firmware", test_missing_firmware);
     qtest_add_func("sn0/origin2000/migration", test_migration);

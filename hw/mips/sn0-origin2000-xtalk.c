@@ -445,7 +445,6 @@ static bool sn0_origin2000_xtalk_build_bridge(SN0Origin2000XtalkState *s,
     qdev_prop_set_uint64(bridge, "onewire-serial", record->bridge->serial);
     qdev_prop_set_string(bridge, "board-part",
                          sn0_origin2000_xtalk_board_part(s, record));
-    qdev_prop_set_string(bridge, "board-name", "IO6");
     qdev_prop_set_string(bridge, "pci-bus-name", bus_name);
     /*
      * A switched fabric carries the destination widget, so the chip keeps it
