@@ -608,6 +608,53 @@ static void assert_module_memory(QTestState *qts, bool split)
     }
 }
 
+static void test_bte_routes_three_distinct_endpoints(void)
+{
+    QTestState *qts = start_module();
+    const uint64_t source =
+        (uint64_t)module_nasids[3] * NODE_STRIDE + MEM_PROBE;
+    const uint64_t dest =
+        (uint64_t)module_nasids[2] * NODE_STRIDE + MEM_PROBE;
+    const uint64_t notify =
+        (uint64_t)module_nasids[1] * NODE_STRIDE + MEM_PROBE + 256;
+    const uint64_t source_marker = UINT64_C(0x3132333435363738);
+    const uint64_t dest_marker = UINT64_C(0xd1d2d3d4d5d6d7d8);
+    const uint64_t notify_marker = UINT64_C(0xe1e2e3e4e5e6e7e8);
+
+    program_module(qts);
+    for (unsigned int offset = 0; offset < 256; offset += 8) {
+        node_write(qts, 3, MEM_PROBE + offset, source_marker + offset);
+        node_write(qts, 2, MEM_PROBE + offset, dest_marker + offset);
+    }
+    node_write(qts, 1, MEM_PROBE + 256, notify_marker);
+
+    hub_write(qts, 0, 0x410008, source);
+    hub_write(qts, 0, 0x410010, dest);
+    hub_write(qts, 0, 0x410020, notify);
+    hub_write(qts, 0, 0x410000, (1 << 20) | 1);
+    hub_write(qts, 0, 0x410018, 1 << 4);
+
+    g_assert_cmphex(hub_read(qts, 0, 0x410000), ==, 0);
+    for (unsigned int offset = 0; offset < 128; offset += 8) {
+        g_assert_cmphex(node_read(qts, 2, MEM_PROBE + offset), ==,
+                        source_marker + offset);
+        g_assert_cmphex(node_read(qts, 3, MEM_PROBE + offset), ==,
+                        source_marker + offset);
+    }
+    g_assert_cmphex(node_read(qts, 2, MEM_PROBE + 128), ==,
+                    dest_marker + 128);
+    g_assert_cmphex(node_read(qts, 1, MEM_PROBE + 256), ==, 0);
+
+    hub_write(qts, 0, 0x410028, (20 << 16) | module_nasids[1]);
+    hub_write(qts, 0, 0x410000, (1 << 20) | 1);
+    hub_write(qts, 0, 0x410018, 0);
+    for (unsigned int node = 0; node < G_N_ELEMENTS(module_nasids); node++) {
+        g_assert_cmphex(hub_read(qts, node, HUB_PI_INT_PEND0), ==,
+                        node == 1 ? 1 << 20 : 0);
+    }
+    qtest_quit(qts);
+}
+
 static void test_all_module_routes(void)
 {
     QTestState *qts = start_module();
@@ -1214,6 +1261,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/vectors", test_vectors);
     qtest_add_func("sn0/origin2000/programmed-routes", test_programmed_routes);
     qtest_add_func("sn0/origin2000/bte-interrupt", test_bte_and_interrupt);
+    qtest_add_func("sn0/origin2000/bte-three-distinct-endpoints",
+                   test_bte_routes_three_distinct_endpoints);
     qtest_add_func("sn0/origin2000/oversize-firmware", test_oversize_firmware);
     qtest_add_func("sn0/origin2000/missing-firmware", test_missing_firmware);
     qtest_add_func("sn0/origin2000/migration", test_migration);
