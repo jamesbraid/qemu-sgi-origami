@@ -536,9 +536,8 @@ static void test_waiting_start_loses_to_grant(Fixture *f,
     g_assert_cmphex(status & PCF8584_STS_PIN, ==, 0);
 }
 
-/* A START overtaken during tBUF loses at the completing grant's STOP. */
-static void test_start_overtaken_during_bus_free_time(Fixture *f,
-                                                      gconstpointer unused)
+/* A staged START owns tBUF before its lines make the bus busy. */
+static void test_start_owns_bus_free_time(Fixture *f, gconstpointer unused)
 {
     I2CBus *bus = sgi_o2000_module_mgmt_get_bus(f->module);
     int64_t next_grant;
@@ -560,16 +559,16 @@ static void test_start_overtaken_during_bus_free_time(Fixture *f,
     g_assert_true(f->adapter[0]->wire_active);
 
     advance_to(next_grant + POLL_STEP_NS);
-    g_assert_false(f->adapter[0]->wire_active);
-    g_assert_true(f->adapter[0]->wire_start_waiting);
-
-    advance_to(next_grant + GRANT_SETTLE_NS);
-    status = read_reg(f, 0, CTRL_REG);
-    g_assert_false(f->adapter[0]->wire_active);
+    g_assert_false(f->module->grant_active);
+    g_assert_true(f->adapter[0]->wire_active);
     g_assert_false(f->adapter[0]->wire_start_waiting);
-    g_assert_false(f->adapter[0]->start_address_staged);
-    g_assert_cmphex(status & PCF8584_STS_LAB, ==, PCF8584_STS_LAB);
+
+    g_assert_true(wait_done(f, 0));
+    status = read_reg(f, 0, CTRL_REG);
+    g_assert_true(f->adapter[0]->wire_active);
+    g_assert_cmphex(status & (PCF8584_STS_LAB | PCF8584_STS_LRB), ==, 0);
     g_assert_cmphex(status & PCF8584_STS_PIN, ==, 0);
+    stop_transfer(f, 0);
 }
 
 /* Two STARTs delayed by one grant must take the wire one at a time. */
@@ -1088,9 +1087,8 @@ int main(int argc, char **argv)
     g_test_add("/sgi-o2000-module-management/shared/stale-start-loses-to-grant",
                Fixture, NULL, setup, test_waiting_start_loses_to_grant,
                teardown);
-    g_test_add("/sgi-o2000-module-management/shared/start-overtaken-during-tbuf",
-               Fixture, NULL, setup,
-               test_start_overtaken_during_bus_free_time, teardown);
+    g_test_add("/sgi-o2000-module-management/shared/start-owns-tbuf", Fixture,
+               NULL, setup, test_start_owns_bus_free_time, teardown);
     g_test_add("/sgi-o2000-module-management/shared/waiting-starts-serialize",
                Fixture, NULL, setup, test_waiting_starts_serialize, teardown);
     g_test_add("/sgi-o2000-module-management/shared/waiting-start-stop",

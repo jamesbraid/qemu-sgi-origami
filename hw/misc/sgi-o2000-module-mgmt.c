@@ -226,6 +226,17 @@ static void mgmt_publish(SGIO2000ModuleMgmtState *s)
     mgmt_stage(s, false, false, 1);
 }
 
+/* A staged adapter START owns tBUF before its lines make the bus busy. */
+static bool mgmt_adapter_active(SGIO2000ModuleMgmtState *s)
+{
+    for (unsigned i = 0; i < SGI_O2000_ADAPTER_COUNT; i++) {
+        if (PCF8584(s->adapters[i])->wire_active) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void mgmt_service(void *opaque)
 {
     SGIO2000ModuleMgmtState *s = opaque;
@@ -241,6 +252,7 @@ static void mgmt_service(void *opaque)
         return;
     }
     if (s->controller_granted || s->slave_active || s->grant_active ||
+        mgmt_adapter_active(s) ||
         i2c_bus_busy(s->bus) || i2c_wire_contenders(s->bus)) {
         mgmt_recovery_tick(s);
         return;
