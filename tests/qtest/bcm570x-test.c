@@ -27,6 +27,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/iov.h"
 #include "libqtest.h"
 #include "libqos/pci-pc.h"
 #include "qapi/error.h"
@@ -34,8 +35,14 @@
 #include "qobject/qjson.h"
 #include "qobject/qlist.h"
 #include "hw/pci/pci_regs.h"
+#include "standard-headers/linux/virtio_net.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
+#ifdef CONFIG_LINUX
+#include <net/if.h>
+#include <linux/if_tun.h>
+#include <sys/ioctl.h>
+#endif
 
 /*
  * The card is placed at a free PCI slot on the PC root bus. Slots 0-2 hold the
@@ -500,6 +507,67 @@ static void net_socket_send_frame(int fd, const uint8_t *buf, size_t len)
     g_assert_cmpint(send(fd, &hdr, sizeof(hdr), 0), ==, (int)sizeof(hdr));
     g_assert_cmpint(send(fd, buf, len, 0), ==, (int)len);
 }
+
+#ifdef CONFIG_LINUX
+static void sock_read_full(int fd, uint8_t *buf, size_t len)
+{
+    size_t off = 0;
+
+    while (off < len) {
+        ssize_t got = recv(fd, buf + off, len - off, 0);
+
+        g_assert_cmpint(got, >, 0);
+        off += got;
+    }
+}
+
+static size_t mirror_recv_packet(int fd, uint8_t *buf, size_t buf_size,
+                                 uint32_t *vnet_hdr_len)
+{
+    uint32_t word;
+    size_t len;
+
+    sock_read_full(fd, (uint8_t *)&word, sizeof(word));
+    len = ntohl(word);
+    sock_read_full(fd, (uint8_t *)&word, sizeof(word));
+    *vnet_hdr_len = ntohl(word);
+    g_assert_cmpuint(len, <=, buf_size);
+    sock_read_full(fd, buf, len);
+    return len;
+}
+
+static bool bcm_vnet_tap_open(Bcm *b, int *tap_fd, int *mirror_fd)
+{
+    struct ifreq ifr = { };
+    int mirror[2];
+
+    *tap_fd = open("/dev/net/tun", O_RDWR);
+    if (*tap_fd < 0) {
+        g_test_skip("/dev/net/tun is unavailable");
+        return false;
+    }
+
+    ifr.ifr_flags = IFF_TAP | IFF_NO_PI | IFF_VNET_HDR;
+    if (ioctl(*tap_fd, TUNSETIFF, &ifr) < 0) {
+        close(*tap_fd);
+        *tap_fd = -1;
+        g_test_skip("creating a TAP requires CAP_NET_ADMIN");
+        return false;
+    }
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, mirror), ==, 0);
+    net_socket_set_recv_timeout(mirror[0], 10);
+    *mirror_fd = mirror[0];
+    bcm_open(b, qtest_initf(
+        BCM_MACHINE " -netdev tap,fd=%d,id=n0"
+        " -device bcm570x,addr=%02x.0,netdev=n0"
+        " -chardev socket,id=mirror0,fd=%d"
+        " -object filter-mirror,id=f0,netdev=n0,queue=rx,outdev=mirror0,"
+        "vnet_hdr_support=on",
+        *tap_fd, BCM_SLOT, mirror[1]));
+    return true;
+}
+#endif
 
 static void wait_for_log_marker(QTestState *qts, const char *logfile,
                                 const char *marker)
@@ -1816,7 +1884,7 @@ static void build_lso_frame(uint8_t *f, unsigned int payload)
     stw_be_p_test(f + 36, 0x0017);
     f[38] = 0x00; f[39] = 0x00; f[40] = 0x10; f[41] = 0x00;
     f[46] = 0x50;
-    f[47] = 0x18;               /* PSH and ACK */
+    f[47] = 0x19;               /* FIN, PSH and ACK */
     stw_be_p_test(f + 48, 0x2000);
     for (i = 0; i < payload; i++) {
         f[LSO_HDR + i] = (uint8_t)(i & 0xff);
@@ -1848,6 +1916,10 @@ static void lso_open(Bcm *b, int fd, uint8_t *frame, unsigned int len,
     (void)fd;
 }
 
+static uint32_t lso_csum_add(uint32_t sum, const uint8_t *buf, size_t len);
+static uint16_t lso_csum_finish(uint32_t sum);
+static uint32_t lso_tcp_pseudo_sum(const uint8_t *frame, size_t tcp_len);
+
 static void test_transmit_segmentation(const void *data)
 {
     int sv[2];
@@ -1870,26 +1942,232 @@ static void test_transmit_segmentation(const void *data)
 
     for (i = 0; i < LSO_SEGMENTS; i++) {
         size_t len = net_socket_recv_frame(sv[0], got, sizeof(got));
+        uint8_t expected[LSO_HDR + LSO_MSS];
         uint32_t seq;
 
         g_assert_cmpint(len, ==, LSO_HDR + LSO_MSS);
-        g_assert_cmpmem(got + 6, 6, frame + 6, 6);
-        g_assert_cmphex(get16be_test(got + 16), ==, 20 + 20 + LSO_MSS);
+        memcpy(expected, frame, LSO_HDR);
+        memcpy(expected + LSO_HDR, frame + LSO_HDR + i * LSO_MSS,
+               LSO_MSS);
+        stw_be_p_test(expected + 16, 20 + 20 + LSO_MSS);
+        stw_be_p_test(expected + 18, 0x1234 + i);
+        expected[38] = (0x1000 + i * LSO_MSS) >> 24;
+        expected[39] = (0x1000 + i * LSO_MSS) >> 16;
+        expected[40] = (0x1000 + i * LSO_MSS) >> 8;
+        expected[41] = 0x1000 + i * LSO_MSS;
+        if (i < LSO_SEGMENTS - 1) {
+            expected[47] &= ~0x09;
+        }
+        stw_be_p_test(expected + 24, 0);
+        stw_be_p_test(expected + 50, 0);
+        stw_be_p_test(expected + 24,
+                      lso_csum_finish(lso_csum_add(0, expected + 14, 20)));
+        stw_be_p_test(expected + 50,
+                      lso_csum_finish(lso_csum_add(
+                          lso_tcp_pseudo_sum(expected, 20 + LSO_MSS),
+                          expected + 34, 20 + LSO_MSS)));
+        g_assert_cmpmem(got, len, expected, sizeof(expected));
         seq = ((uint32_t)got[38] << 24) | ((uint32_t)got[39] << 16) |
               ((uint32_t)got[40] << 8) | got[41];
         g_assert_cmphex(seq, ==, 0x1000 + i * LSO_MSS);
-        g_assert_cmpmem(got + LSO_HDR, LSO_MSS,
-                        frame + LSO_HDR + i * LSO_MSS, LSO_MSS);
         if (i < LSO_SEGMENTS - 1) {
-            g_assert_cmphex(got[47] & 0x08, ==, 0);
+            g_assert_cmphex(got[47] & 0x09, ==, 0);
         } else {
-            g_assert_cmphex(got[47] & 0x08, ==, 0x08);
+            g_assert_cmphex(got[47] & 0x09, ==, 0x09);
         }
     }
 
     bcm_close(&b);
     close(sv[0]);
     g_free(frame);
+}
+
+static uint32_t lso_csum_add(uint32_t sum, const uint8_t *buf, size_t len)
+{
+    size_t i;
+
+    for (i = 0; i + 1 < len; i += 2) {
+        sum += ((uint32_t)buf[i] << 8) | buf[i + 1];
+    }
+    if (len & 1) {
+        sum += (uint32_t)buf[len - 1] << 8;
+    }
+    return sum;
+}
+
+static uint16_t lso_csum_finish(uint32_t sum)
+{
+    while (sum >> 16) {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    return (uint16_t)~sum;
+}
+
+static uint32_t lso_tcp_pseudo_sum(const uint8_t *frame, size_t tcp_len)
+{
+    uint8_t pseudo[12];
+
+    memcpy(pseudo, frame + 26, 8);
+    pseudo[8] = 0;
+    pseudo[9] = IPPROTO_TCP;
+    pseudo[10] = tcp_len >> 8;
+    pseudo[11] = tcp_len;
+    return lso_csum_add(0, pseudo, sizeof(pseudo));
+}
+
+#ifdef CONFIG_LINUX
+/* A vnet-capable backend receives one GSO packet, not three host copies. */
+static void test_transmit_segmentation_vnet(const void *data)
+{
+    const unsigned int payload = LSO_MSS * LSO_SEGMENTS;
+    const unsigned int frame_len = LSO_HDR + payload;
+    g_autofree uint8_t *frame = g_malloc(frame_len);
+    g_autofree uint8_t *mirrored = g_malloc(sizeof(struct virtio_net_hdr) +
+                                            frame_len);
+    struct virtio_net_hdr *vhdr = (struct virtio_net_hdr *)mirrored;
+    const uint8_t *got = mirrored + sizeof(*vhdr);
+    uint32_t vnet_hdr_len;
+    Bcm b;
+    size_t len;
+    int tap_fd, mirror_fd;
+
+    build_lso_frame(frame, payload);
+    if (!bcm_vnet_tap_open(&b, &tap_fd, &mirror_fd)) {
+        return;
+    }
+
+    lso_open(&b, mirror_fd, frame, frame_len, LSO_MSS,
+             BCM_TXBDFLAG_LEGACY_SEGMENTATION_BITS);
+    len = mirror_recv_packet(mirror_fd, mirrored,
+                             sizeof(struct virtio_net_hdr) + frame_len,
+                             &vnet_hdr_len);
+
+    g_assert_cmpuint(vnet_hdr_len, ==, sizeof(*vhdr));
+    g_assert_cmpuint(len, ==, sizeof(*vhdr) + frame_len);
+    g_assert_cmphex(vhdr->flags, ==, VIRTIO_NET_HDR_F_NEEDS_CSUM);
+    g_assert_cmphex(vhdr->gso_type, ==, VIRTIO_NET_HDR_GSO_TCPV4);
+    g_assert_cmpuint(vhdr->hdr_len, ==, LSO_HDR);
+    g_assert_cmpuint(vhdr->gso_size, ==, LSO_MSS);
+    g_assert_cmpuint(vhdr->csum_start, ==, 14 + 20);
+    g_assert_cmpuint(vhdr->csum_offset, ==, 16);
+    g_assert_cmpmem(got, 24, frame, 24);
+    g_assert_cmphex(get16be_test(got + 24), !=, 0);
+    g_assert_cmpmem(got + 26, 24, frame + 26, 24);
+    g_assert_cmphex(get16be_test(got + 50), ==,
+                    (uint16_t)~lso_csum_finish(
+                        lso_tcp_pseudo_sum(frame, 20 + payload)));
+    g_assert_cmpmem(got + 52, frame_len - 52,
+                    frame + 52, frame_len - 52);
+    g_assert_cmphex(got[47] & 0x09, ==, 0x09);
+    net_socket_expect_no_frame(mirror_fd);
+
+    bcm_close(&b);
+    close(tap_fd);
+    close(mirror_fd);
+}
+
+typedef enum VnetLsoFallbackCase {
+    VNET_LSO_FALLBACK_VLAN,
+    VNET_LSO_FALLBACK_MF,
+    VNET_LSO_FALLBACK_OFFSET,
+    VNET_LSO_FALLBACK_LENGTH,
+    VNET_LSO_FALLBACK_UDP,
+} VnetLsoFallbackCase;
+
+/* Unsupported LSO inputs retain the exact whole-frame fallback on TAP. */
+static void test_transmit_segmentation_vnet_fallback(const void *data)
+{
+    VnetLsoFallbackCase test_case = GPOINTER_TO_INT(data);
+    const unsigned int payload = LSO_MSS * LSO_SEGMENTS;
+    unsigned int frame_len = LSO_HDR + payload;
+    g_autofree uint8_t *frame = g_malloc(frame_len + 4);
+    g_autofree uint8_t *mirrored = g_malloc(sizeof(struct virtio_net_hdr) +
+                                            frame_len + 4);
+    uint32_t vnet_hdr_len;
+    Bcm b;
+    size_t len;
+    int tap_fd, mirror_fd;
+
+    build_lso_frame(frame, payload);
+    switch (test_case) {
+    case VNET_LSO_FALLBACK_VLAN:
+        memmove(frame + 16, frame + 12, frame_len - 12);
+        frame[12] = 0x81;
+        frame[13] = 0x00;
+        frame[14] = 0x00;
+        frame[15] = 0x2a;
+        frame_len += 4;
+        break;
+    case VNET_LSO_FALLBACK_MF:
+        frame[20] = 0x20;
+        break;
+    case VNET_LSO_FALLBACK_OFFSET:
+        frame[21] = 0x01;
+        break;
+    case VNET_LSO_FALLBACK_LENGTH:
+        stw_be_p_test(frame + 16, 40);
+        break;
+    case VNET_LSO_FALLBACK_UDP:
+        frame[23] = IPPROTO_UDP;
+        break;
+    default:
+        g_assert_not_reached();
+    }
+
+    if (!bcm_vnet_tap_open(&b, &tap_fd, &mirror_fd)) {
+        return;
+    }
+    lso_open(&b, mirror_fd, frame, frame_len, LSO_MSS,
+             BCM_TXBDFLAG_LEGACY_SEGMENTATION_BITS);
+    len = mirror_recv_packet(mirror_fd, mirrored,
+                             sizeof(struct virtio_net_hdr) + frame_len,
+                             &vnet_hdr_len);
+
+    g_assert_cmpuint(vnet_hdr_len, ==, sizeof(struct virtio_net_hdr));
+    g_assert_cmpuint(len, ==, frame_len);
+    g_assert_cmpmem(mirrored, frame_len, frame, frame_len);
+    net_socket_expect_no_frame(mirror_fd);
+
+    bcm_close(&b);
+    close(tap_fd);
+    close(mirror_fd);
+}
+#endif
+
+/* Tagged packets retain the pre-existing whole-frame fallback semantics. */
+static void test_transmit_segmentation_vlan_fallback(const void *data)
+{
+    const unsigned int payload = LSO_MSS * LSO_SEGMENTS;
+    const unsigned int frame_len = LSO_HDR + 4 + payload;
+    g_autofree uint8_t *frame = g_malloc(frame_len);
+    uint8_t got[2048];
+    int sv[2];
+    Bcm b;
+    size_t len;
+
+    build_lso_frame(frame, payload);
+    memmove(frame + 16, frame + 12, LSO_HDR + payload - 12);
+    frame[12] = 0x81;
+    frame[13] = 0x00;
+    frame[14] = 0x00;
+    frame[15] = 0x2a;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    lso_open(&b, sv[0], frame, frame_len, LSO_MSS,
+             BCM_TXBDFLAG_LEGACY_SEGMENTATION_BITS);
+
+    len = net_socket_recv_frame(sv[0], got, sizeof(got));
+    g_assert_cmpuint(len, ==, frame_len);
+    g_assert_cmpmem(got, len, frame, frame_len);
+    net_socket_expect_no_frame(sv[0]);
+
+    bcm_close(&b);
+    close(sv[0]);
 }
 
 /* A descriptor naming no segment size is the ordinary path, untouched. */
@@ -5654,6 +5932,27 @@ int main(int argc, char **argv)
                         test_transmit_checksum_offload);
     qtest_add_data_func("/bcm570x/transmit-segmentation", NULL,
                         test_transmit_segmentation);
+#ifdef CONFIG_LINUX
+    qtest_add_data_func("/bcm570x/transmit-segmentation-vnet", NULL,
+                        test_transmit_segmentation_vnet);
+    qtest_add_data_func("/bcm570x/transmit-segmentation-vnet-fallback/vlan",
+                        GINT_TO_POINTER(VNET_LSO_FALLBACK_VLAN),
+                        test_transmit_segmentation_vnet_fallback);
+    qtest_add_data_func("/bcm570x/transmit-segmentation-vnet-fallback/mf",
+                        GINT_TO_POINTER(VNET_LSO_FALLBACK_MF),
+                        test_transmit_segmentation_vnet_fallback);
+    qtest_add_data_func("/bcm570x/transmit-segmentation-vnet-fallback/offset",
+                        GINT_TO_POINTER(VNET_LSO_FALLBACK_OFFSET),
+                        test_transmit_segmentation_vnet_fallback);
+    qtest_add_data_func("/bcm570x/transmit-segmentation-vnet-fallback/length",
+                        GINT_TO_POINTER(VNET_LSO_FALLBACK_LENGTH),
+                        test_transmit_segmentation_vnet_fallback);
+    qtest_add_data_func("/bcm570x/transmit-segmentation-vnet-fallback/udp",
+                        GINT_TO_POINTER(VNET_LSO_FALLBACK_UDP),
+                        test_transmit_segmentation_vnet_fallback);
+#endif
+    qtest_add_data_func("/bcm570x/transmit-segmentation-vlan-fallback", NULL,
+                        test_transmit_segmentation_vlan_fallback);
     qtest_add_data_func("/bcm570x/transmit-no-segmentation", NULL,
                         test_transmit_no_segmentation);
     qtest_add_data_func("/bcm570x/transmit-checksum-bad-header", NULL,
