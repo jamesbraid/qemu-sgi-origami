@@ -1072,6 +1072,7 @@ static void migration_run(FlashMigration *m)
     qtest_qmp_assert_success(m->from,
         "{'execute': 'migrate', 'arguments': {'uri': %s}}", m->uri);
     wait_for_migration(m->from);
+    qtest_qmp_assert_success(m->to, "{'execute': 'cont'}");
 }
 
 static void migration_finish(FlashMigration *m)
