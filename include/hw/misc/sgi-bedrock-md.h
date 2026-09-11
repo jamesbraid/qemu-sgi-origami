@@ -3,6 +3,7 @@
 #define HW_MISC_SGI_BEDROCK_MD_H
 
 #include "hw/core/sysbus.h"
+#include "qemu/timer.h"
 
 #define TYPE_SGI_BEDROCK_MD "sgi-bedrock-md"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockMDState, SGI_BEDROCK_MD)
@@ -36,6 +37,12 @@ struct SGIBedrockMDState {
     uint64_t refresh;
     uint64_t directory_config;
     uint64_t storage[SGI_BEDROCK_MD_STORAGE];
+    QEMUTimer *selftest_timer;
+    bool selftest_running;
+    uint8_t selftest_selector;
+    bool selftest_phase;
+    bool selftest_result;
+    uint8_t selftest_status;
 };
 
 void sgi_bedrock_md_soft_reset(SGIBedrockMDState *s);
