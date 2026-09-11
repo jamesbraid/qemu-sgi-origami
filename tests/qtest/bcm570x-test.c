@@ -2037,6 +2037,46 @@ static uint32_t lso_tcp_pseudo_sum(const uint8_t *frame, size_t tcp_len)
 }
 
 #ifdef CONFIG_LINUX
+/* A plain frame still needs an empty vnet header on a negotiated TAP. */
+static void test_transmit_vnet_plain(const void *data)
+{
+    static const uint8_t arp[60] = {
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0x52, 0x54, 0x00, 0xbc, 0x57, 0x01,
+        0x08, 0x06,
+        0x00, 0x01, 0x08, 0x00, 0x06, 0x04, 0x00, 0x01,
+        0x52, 0x54, 0x00, 0xbc, 0x57, 0x01,
+        10, 77, 0, 2,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        10, 77, 0, 1,
+    };
+    uint8_t mirrored[sizeof(struct virtio_net_hdr) + sizeof(arp)];
+    struct virtio_net_hdr *vhdr = (struct virtio_net_hdr *)mirrored;
+    uint32_t vnet_hdr_len;
+    Bcm b;
+    size_t len;
+    int tap_fd, mirror_fd, inject_fd;
+
+    if (!bcm_vnet_tap_open(&b, &tap_fd, &mirror_fd, &inject_fd)) {
+        return;
+    }
+
+    lso_open(&b, mirror_fd, (uint8_t *)arp, sizeof(arp), 0, 0);
+    len = mirror_recv_packet(mirror_fd, mirrored, sizeof(mirrored),
+                             &vnet_hdr_len);
+
+    g_assert_cmpuint(vnet_hdr_len, ==, sizeof(*vhdr));
+    g_assert_cmpuint(len, ==, sizeof(mirrored));
+    g_assert_cmpmem(vhdr, sizeof(*vhdr), &(struct virtio_net_hdr) { },
+                    sizeof(*vhdr));
+    g_assert_cmpmem(mirrored + sizeof(*vhdr), sizeof(arp), arp, sizeof(arp));
+
+    bcm_close(&b);
+    close(tap_fd);
+    close(mirror_fd);
+    close(inject_fd);
+}
+
 /* A vnet-capable backend receives one GSO packet, not three host copies. */
 static void test_transmit_segmentation_vnet(const void *data)
 {
@@ -2146,8 +2186,12 @@ static void test_transmit_segmentation_vnet_fallback(const void *data)
                              &vnet_hdr_len);
 
     g_assert_cmpuint(vnet_hdr_len, ==, sizeof(struct virtio_net_hdr));
-    g_assert_cmpuint(len, ==, frame_len);
-    g_assert_cmpmem(mirrored, frame_len, frame, frame_len);
+    g_assert_cmpuint(len, ==, sizeof(struct virtio_net_hdr) + frame_len);
+    g_assert_cmpmem(mirrored, sizeof(struct virtio_net_hdr),
+                    &(struct virtio_net_hdr) { },
+                    sizeof(struct virtio_net_hdr));
+    g_assert_cmpmem(mirrored + sizeof(struct virtio_net_hdr), frame_len,
+                    frame, frame_len);
     net_socket_expect_no_frame(mirror_fd);
 
     bcm_close(&b);
@@ -5986,6 +6030,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("/bcm570x/transmit-segmentation", NULL,
                         test_transmit_segmentation);
 #ifdef CONFIG_LINUX
+    qtest_add_data_func("/bcm570x/transmit-vnet-plain", NULL,
+                        test_transmit_vnet_plain);
     qtest_add_data_func("/bcm570x/transmit-segmentation-vnet", NULL,
                         test_transmit_segmentation_vnet);
     qtest_add_data_func("/bcm570x/transmit-segmentation-vnet-fallback/vlan",

@@ -1244,6 +1244,27 @@ out:
     return sent;
 }
 
+static void bcm570x_send_packet(Bcm570xState *s, const uint8_t *frame,
+                                size_t len)
+{
+    struct virtio_net_hdr vhdr = { };
+    struct iovec iov[] = {
+        {
+            .iov_base = &vhdr,
+            .iov_len = sizeof(vhdr),
+        }, {
+            .iov_base = (void *)frame,
+            .iov_len = len,
+        },
+    };
+
+    if (s->has_vnet_hdr) {
+        qemu_sendv_packet(qemu_get_queue(s->nic), iov, G_N_ELEMENTS(iov));
+    } else {
+        qemu_send_packet(qemu_get_queue(s->nic), frame, len);
+    }
+}
+
 /*
  * Cut one oversized TCP buffer into segments the peer will accept. The guest
  * hands down a single frame holding many segments' worth of payload; each piece
@@ -1294,7 +1315,7 @@ static void bcm570x_tx_segment(Bcm570xState *s, uint8_t *frame,
         stw_be_p(seg + 14 + ihl + 16, 0);
         net_checksum_calculate(seg, hdr + piece, CSUM_IP | CSUM_TCP);
 
-        qemu_send_packet(qemu_get_queue(s->nic), seg, hdr + piece);
+        bcm570x_send_packet(s, seg, hdr + piece);
     }
     return;
 
@@ -1302,7 +1323,7 @@ send_whole:
     if (flags & (BCM570X_TXBDFLAG_IP_CKSUM | BCM570X_TXBDFLAG_TCP_UDP_CKSUM)) {
         bcm570x_tx_offload_checksum(frame, len, flags);
     }
-    qemu_send_packet(qemu_get_queue(s->nic), frame, len);
+    bcm570x_send_packet(s, frame, len);
 }
 
 static void bcm570x_tx_rollback_to_frame(Bcm570xState *s,
