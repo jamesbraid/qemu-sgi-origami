@@ -27,6 +27,7 @@
 #include "libqtest.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_regs.h"
+#include "hw/net/e1000_regs.h"
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -84,6 +85,11 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define TI_BDTYPE_RECV_BD       0x0002
 #define TI_EV_FIRMWARE_UP       0x01
 
+/* Intel 82574L used to originate a packet from two transmit descriptors. */
+#define E1000E_VENDOR_ID        0x8086
+#define E1000E_DEVICE_ID        0x10d3
+#define E1000E_TX_RING_LEN      0x1000
+
 /* Ring sizes the RCBs advertise (if_tireg.h). */
 #define EVENT_RING_CNT      256
 #define RETURN_RING_CNT     2048
@@ -124,6 +130,15 @@ static QPCIDevice *find_tigon(QPCIBus *bus)
     QPCIDevice *dev = NULL;
 
     qpci_device_foreach(bus, TIGON_VENDOR_ID, TIGON_DEVICE_ID, save_dev, &dev);
+    return dev;
+}
+
+static QPCIDevice *find_e1000e(QPCIBus *bus)
+{
+    QPCIDevice *dev = NULL;
+
+    qpci_device_foreach(bus, E1000E_VENDOR_ID, E1000E_DEVICE_ID,
+                        save_dev, &dev);
     return dev;
 }
 
@@ -802,6 +817,133 @@ static void test_receive(void)
     close(sv[0]);
 }
 
+/* Compare flat delivery with a two-descriptor transmit split inside IPv4. */
+static void test_receive_iov_matches_flat(void)
+{
+    static const uint8_t frame[60] = {
+        0x52, 0x54, 0x00, 0x12, 0x34, 0x56,
+        0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+        0x08, 0x00,
+        0x45, 0x00, 0x00, 0x2e, 0x12, 0x34, 0x00, 0x00,
+        0x40, 0x11, 0xab, 0xcd, 0xc0, 0x00, 0x02, 0x01,
+        0xc6, 0x33, 0x64, 0x02,
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+        0x19, 0x1a,
+    };
+    g_autofree char *trace_path = NULL;
+    g_autofree char *trace = NULL;
+    QPCIBar e1000e_bar;
+    QPCIDevice *e1000e;
+    TigonTest flat, fragmented;
+    struct e1000_tx_desc tx_desc[4] = { };
+    uint8_t flat_payload[2][sizeof(frame)];
+    uint8_t fragmented_payload[2][sizeof(frame)];
+    uint8_t flat_return[64], fragmented_return[64];
+    g_autofree char *cmd = NULL;
+    uint64_t flat_buf2, fragmented_buf2, tx_ring, tx_buf, barsize;
+    int flat_sv[2], trace_fd, attempt;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, flat_sv), ==, 0);
+    tigon_boot_netdev(&flat, flat_sv[1]);
+    close(flat_sv[1]);
+    tigon_operational(&flat, false);
+    flat_buf2 = qmalloc(flat.qs, 2048);
+    post_std_rx_buffer(&flat, 0, flat.rx_buf, 7, 2048);
+    post_std_rx_buffer(&flat, 1, flat_buf2, 8, 2048);
+    reg_wr(&flat, TI_MB_STDRXPROD_IDX, 2);
+    net_send_frame(flat_sv[0], frame, sizeof(frame));
+    net_send_frame(flat_sv[0], frame, sizeof(frame));
+    for (attempt = 0; attempt < 200 && dma_ldl(&flat, flat.ret_prod) != 2;
+         attempt++) {
+        g_usleep(5000);
+    }
+    g_assert_cmphex(dma_ldl(&flat, flat.ret_prod), ==, 2);
+    qtest_memread(flat.qs->qts, flat.rx_buf, flat_payload,
+                  sizeof(flat_payload[0]));
+    qtest_memread(flat.qs->qts, flat_buf2, flat_payload[1],
+                  sizeof(flat_payload[1]));
+    qtest_memread(flat.qs->qts, flat.ret_ring, flat_return,
+                  sizeof(flat_return));
+    g_assert_true(irq_pending(&flat));
+
+    trace_fd = g_file_open_tmp("tigon-receive-iov-XXXXXX", &trace_path, NULL);
+    g_assert_cmpint(trace_fd, >=, 0);
+    close(trace_fd);
+    cmd = g_strdup_printf(
+        "-netdev hubport,id=tigon-net,hubid=0 "
+        "-device tigon,netdev=tigon-net,mac=" TIGON_MAC " "
+        "-netdev hubport,id=e1000e-net,hubid=0 "
+        "-device e1000e,netdev=e1000e-net "
+        "-trace tigon_receive_iov -D %s", trace_path);
+    tigon_boot_cmd(&fragmented, cmd);
+    tigon_operational(&fragmented, false);
+    fragmented_buf2 = qmalloc(fragmented.qs, 2048);
+    post_std_rx_buffer(&fragmented, 0, fragmented.rx_buf, 7, 2048);
+    post_std_rx_buffer(&fragmented, 1, fragmented_buf2, 8, 2048);
+    reg_wr(&fragmented, TI_MB_STDRXPROD_IDX, 2);
+
+    e1000e = find_e1000e(fragmented.qs->pcibus);
+    g_assert_nonnull(e1000e);
+    e1000e_bar = qpci_iomap(e1000e, 0, &barsize);
+    qpci_device_enable(e1000e);
+    tx_ring = qmalloc(fragmented.qs, E1000E_TX_RING_LEN);
+    tx_buf = qmalloc(fragmented.qs, sizeof(frame));
+    qtest_memwrite(fragmented.qs->qts, tx_buf, frame, sizeof(frame));
+    tx_desc[0].buffer_addr = cpu_to_le64(tx_buf);
+    tx_desc[0].lower.data = cpu_to_le32(35);
+    tx_desc[1].buffer_addr = cpu_to_le64(tx_buf + 35);
+    tx_desc[1].lower.data = cpu_to_le32(E1000_TXD_CMD_RS |
+                                       E1000_TXD_CMD_EOP |
+                                       (sizeof(frame) - 35));
+    tx_desc[2] = tx_desc[0];
+    tx_desc[3] = tx_desc[1];
+    qtest_memwrite(fragmented.qs->qts, tx_ring, tx_desc, sizeof(tx_desc));
+    qpci_io_writel(e1000e, e1000e_bar, E1000_TDBAL, tx_ring);
+    qpci_io_writel(e1000e, e1000e_bar, E1000_TDBAH, tx_ring >> 32);
+    qpci_io_writel(e1000e, e1000e_bar, E1000_TDLEN, E1000E_TX_RING_LEN);
+    qpci_io_writel(e1000e, e1000e_bar, E1000_TDH, 0);
+    qpci_io_writel(e1000e, e1000e_bar, E1000_TDT, 0);
+    qpci_io_writel(e1000e, e1000e_bar, E1000_TCTL, E1000_TCTL_EN);
+    qpci_io_writel(e1000e, e1000e_bar, E1000_TDT, 4);
+    for (attempt = 0;
+         attempt < 200 && dma_ldl(&fragmented, fragmented.ret_prod) != 2;
+         attempt++) {
+        g_usleep(5000);
+    }
+    g_assert_cmphex(dma_ldl(&fragmented, fragmented.ret_prod), ==, 2);
+    qtest_memread(fragmented.qs->qts, fragmented.rx_buf,
+                  fragmented_payload[0], sizeof(fragmented_payload[0]));
+    qtest_memread(fragmented.qs->qts, fragmented_buf2,
+                  fragmented_payload[1], sizeof(fragmented_payload[1]));
+    qtest_memread(fragmented.qs->qts, fragmented.ret_ring,
+                  fragmented_return, sizeof(fragmented_return));
+    g_assert_true(irq_pending(&fragmented));
+    g_assert_cmpmem(fragmented_payload[0], sizeof(fragmented_payload[0]),
+                    frame, sizeof(frame));
+    g_assert_cmpmem(fragmented_payload[1], sizeof(fragmented_payload[1]),
+                    frame, sizeof(frame));
+    g_assert_cmpmem(fragmented_payload, sizeof(fragmented_payload),
+                    flat_payload, sizeof(flat_payload));
+    g_assert_cmpmem(fragmented_return, sizeof(fragmented_return),
+                    flat_return, sizeof(flat_return));
+    g_assert_cmphex(dma_ldl(&fragmented, fragmented.ret_ring + 16), ==,
+                    0x2f79a9b6);
+    g_assert_cmphex(dma_ldl(&fragmented, fragmented.ret_ring + 48), ==,
+                    0x2f79a9b6);
+    g_free(e1000e);
+    tigon_stop(&fragmented);
+    g_assert_cmpint(g_file_get_contents(trace_path, &trace, NULL, NULL), ==,
+                    true);
+    g_assert_nonnull(strstr(trace, "tigon_receive_iov "));
+    g_assert_nonnull(strstr(trace, "60 bytes"));
+
+    tigon_stop(&flat);
+    close(flat_sv[0]);
+    g_assert_cmpint(g_unlink(trace_path), ==, 0);
+}
+
 static void test_receive_filters_other(void)
 {
     int sv[2];
@@ -1052,6 +1194,8 @@ int main(int argc, char **argv)
     qtest_add_func("tigon/operational-ring-migration",
                    test_operational_ring_migration);
     qtest_add_func("tigon/receive", test_receive);
+    qtest_add_func("tigon/receive-iov-matches-flat",
+                   test_receive_iov_matches_flat);
     qtest_add_func("tigon/receive-filters-other", test_receive_filters_other);
     qtest_add_func("tigon/receive-clamps-to-buffer",
                    test_receive_clamps_to_buffer);
