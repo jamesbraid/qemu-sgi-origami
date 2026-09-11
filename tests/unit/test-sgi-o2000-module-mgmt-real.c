@@ -520,25 +520,29 @@ static int64_t request_start_during_grant(Fixture *f)
     return next_grant;
 }
 
-/* A stale free-bus observation waits out the later controller grant. */
-static void test_start_after_free_observation_during_grant(
-    Fixture *f, gconstpointer unused)
+/* A START issued under a newer grant loses instead of running out of slot. */
+static void test_waiting_start_loses_to_grant(Fixture *f,
+                                              gconstpointer unused)
 {
     int64_t next_grant = request_start_during_grant(f);
+    uint8_t status;
 
     advance_to(next_grant + GRANT_SETTLE_NS);
-    g_assert_true(f->adapter[0]->wire_active);
-    g_assert_true(wait_done(f, 0));
-    g_assert_cmphex(read_reg(f, 0, CTRL_REG) & PCF8584_STS_LRB, ==, 0);
-    stop_transfer(f, 0);
+    status = read_reg(f, 0, CTRL_REG);
+    g_assert_false(f->adapter[0]->wire_active);
+    g_assert_false(f->adapter[0]->wire_start_waiting);
+    g_assert_false(f->adapter[0]->start_address_staged);
+    g_assert_cmphex(status & PCF8584_STS_LAB, ==, PCF8584_STS_LAB);
+    g_assert_cmphex(status & PCF8584_STS_PIN, ==, 0);
 }
 
-/* A controller grant must not discard a START already waiting for tBUF. */
+/* A START overtaken during tBUF loses at the completing grant's STOP. */
 static void test_start_overtaken_during_bus_free_time(Fixture *f,
                                                       gconstpointer unused)
 {
     I2CBus *bus = sgi_o2000_module_mgmt_get_bus(f->module);
     int64_t next_grant;
+    uint8_t status;
 
     run_tick(f);
     g_assert_true(start_transfer(f, 1, SGI_O2000_NVRAM_FIRST_ADDR, false));
@@ -560,21 +564,20 @@ static void test_start_overtaken_during_bus_free_time(Fixture *f,
     g_assert_true(f->adapter[0]->wire_start_waiting);
 
     advance_to(next_grant + GRANT_SETTLE_NS);
-    g_assert_true(f->adapter[0]->wire_active);
-    g_assert_true(wait_done(f, 0));
-    g_assert_cmphex(read_reg(f, 0, CTRL_REG) & PCF8584_STS_LRB, ==, 0);
-    stop_transfer(f, 0);
+    status = read_reg(f, 0, CTRL_REG);
+    g_assert_false(f->adapter[0]->wire_active);
+    g_assert_false(f->adapter[0]->wire_start_waiting);
+    g_assert_false(f->adapter[0]->start_address_staged);
+    g_assert_cmphex(status & PCF8584_STS_LAB, ==, PCF8584_STS_LAB);
+    g_assert_cmphex(status & PCF8584_STS_PIN, ==, 0);
 }
 
 /* Two STARTs delayed by one grant must take the wire one at a time. */
 static void test_waiting_starts_serialize(Fixture *f, gconstpointer unused)
 {
-    int64_t next_grant;
+    int64_t start_at;
 
-    run_tick(f);
-    next_grant = f->module->service_deadline;
-    advance_to(next_grant + 6 * POLL_STEP_NS);
-    g_assert_true(f->module->grant_active);
+    g_assert_true(start_transfer(f, 2, SGI_O2000_NVRAM_FIRST_ADDR, false));
 
     for (unsigned a = 0; a < 2; a++) {
         write_reg(f, a, CTRL_REG, CTL_RUN);
@@ -583,7 +586,9 @@ static void test_waiting_starts_serialize(Fixture *f, gconstpointer unused)
         g_assert_true(f->adapter[a]->wire_start_waiting);
     }
 
-    advance_to(next_grant + GRANT_SETTLE_NS);
+    stop_transfer(f, 2);
+    start_at = f->adapter[0]->wire_free_at;
+    advance_to(start_at + POLL_STEP_NS);
     g_assert_true(f->adapter[0]->wire_active);
     g_assert_false(f->adapter[1]->wire_active);
     g_assert_true(f->adapter[1]->wire_start_waiting);
@@ -1078,9 +1083,9 @@ int main(int argc, char **argv)
                teardown);
     g_test_add("/sgi-o2000-module-management/shared/busy-defers", Fixture,
                NULL, setup, test_busy_defers_without_advancing, teardown);
-    g_test_add("/sgi-o2000-module-management/shared/start-during-grant",
-               Fixture, NULL, setup,
-               test_start_after_free_observation_during_grant, teardown);
+    g_test_add("/sgi-o2000-module-management/shared/stale-start-loses-to-grant",
+               Fixture, NULL, setup, test_waiting_start_loses_to_grant,
+               teardown);
     g_test_add("/sgi-o2000-module-management/shared/start-overtaken-during-tbuf",
                Fixture, NULL, setup,
                test_start_overtaken_during_bus_free_time, teardown);
