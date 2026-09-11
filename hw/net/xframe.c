@@ -409,12 +409,17 @@ static bool xframe_link_pending(XframeState *s)
  *
  * IRIX xg opens PIC_INT_MASK but leaves GPIO_INT_MASK at its all-ones reset,
  * yet the link source reaches its ISR. Gate the source on PIC_INT_GPIO alone
- * and retain GPIO_INT_MASK for readback.
+ * and retain GPIO_INT_MASK for readback. An incoming version-7 device keeps
+ * the former GPIO leaf gate until it is replaced rather than changing
+ * interrupt visibility during migration.
  */
 static bool xframe_gpio_link_pending(XframeState *s)
 {
     return ((s->gpio_int_reg & XFRAME_GPIO_INT_LINK_BITS) != 0) &&
-           !(s->pic_int_mask & XFRAME_PIC_INT_GPIO);
+           !(s->pic_int_mask & XFRAME_PIC_INT_GPIO) &&
+           (!s->legacy_interrupt_masking ||
+            ((s->gpio_int_reg & XFRAME_GPIO_INT_LINK_BITS &
+              ~s->gpio_int_mask) != 0));
 }
 
 /*
@@ -436,7 +441,9 @@ static bool xframe_sched_int_pending(XframeState *s)
 /*
  * Recompute the level-sensitive INTx line from each source's block masks.
  * GENERAL_INT_MASK does not gate delivery: IRIX xg leaves it at its all-ones
- * reset while enabling interrupts through PIC_INT_MASK and TXPIC_INT_MASK.
+ * reset while enabling interrupts through PIC_INT_MASK and TXPIC_INT_MASK. A
+ * device loaded from a version-7 stream retains the former GENERAL aggregate
+ * gates as migration compatibility state.
  *
  * Four sources so far: receive completion (RX_TRAFFIC_INT gated by
  * RX_TRAFFIC_MASK), transmit completion (TX_TRAFFIC_INT gated by
@@ -454,6 +461,13 @@ static void xframe_update_irq(XframeState *s)
     bool link_pending = xframe_link_pending(s);
     bool pic_pending = xframe_gpio_link_pending(s) ||
                        xframe_sched_int_pending(s);
+
+    if (s->legacy_interrupt_masking) {
+        rx_pending &= !(s->general_int_mask & XFRAME_GEN_INTR_RXTRAFFIC);
+        tx_pending &= !(s->general_int_mask & XFRAME_GEN_INTR_TXTRAFFIC);
+        link_pending &= !(s->general_int_mask & XFRAME_GEN_INTR_RXMAC);
+        pic_pending &= !(s->general_int_mask & XFRAME_GEN_INTR_TXPIC);
+    }
 
     pci_set_irq(PCI_DEVICE(s),
                 rx_pending || tx_pending || link_pending || pic_pending);
@@ -1431,9 +1445,11 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
     case XFRAME_GENERAL_INT_MASK:
         /*
          * Retained for readback. IRIX xg leaves this at reset and enables the
-         * interrupt sources it uses through their block masks.
+         * interrupt sources it uses through their block masks. An incoming
+         * version-7 device retains its former final aggregate gate.
          */
         s->general_int_mask = full;
+        xframe_update_irq(s);
         return;
     case XFRAME_TX_TRAFFIC_MASK:
         /* Second-level mask: gates TX_TRAFFIC_INT -> INTx. Recompute. */
@@ -1470,8 +1486,9 @@ static void xframe_pif_write_reg(XframeState *s, hwaddr addr, uint64_t full,
         xframe_update_irq(s);
         return;
     case XFRAME_GPIO_INT_MASK:
-        /* Retained for readback; the GPIO link source is gated at PIC. */
+        /* Only an incoming version-7 device retains this link-source gate. */
         s->gpio_int_mask = full;
+        xframe_update_irq(s);
         return;
     case XFRAME_TXPIC_INT_MASK:
         /*
@@ -3093,6 +3110,10 @@ static int xframe_post_load(void *opaque, int version_id)
     /* The cache is local prefetch state, never part of the migration stream. */
     xframe_rx_cache_invalidate(s);
 
+    if (version_id < 8) {
+        s->legacy_interrupt_masking = true;
+    }
+
     /*
      * A stream older than version 3 never carried RMAC_MAX_PYLD_LEN, so it
      * arrives zero -- which would read back as "accept a payload of nothing".
@@ -3225,6 +3246,12 @@ static int xframe_post_load(void *opaque, int version_id)
  * lives in NICConf, which every NIC model leaves out of its VMState (see
  * hw/net/sgi-ioc3-eth.c and hw/net/rtl8139.c); PCI config space is covered by
  * VMSTATE_PCI_DEVICE.
+ *
+ * Version 8 records whether the device was loaded from a version-7 or older
+ * stream. Those sources gated INTx through GENERAL_INT_MASK and gated GPIO
+ * link leaves through GPIO_INT_MASK. Retaining that behavior avoids changing
+ * an already-running guest's interrupt visibility during migration; a fresh
+ * version-8 device uses the readback-only behavior required by IRIX xg.
  */
 static const VMStateDescription vmstate_xframe_traffic_batch = {
     .name = "xframe/traffic-batch",
@@ -3251,7 +3278,7 @@ static const VMStateDescription vmstate_xframe_traffic_continuous = {
 
 static const VMStateDescription vmstate_xframe = {
     .name = "xframe",
-    .version_id = 7,
+    .version_id = 8,
     .minimum_version_id = 1,
     .post_load = xframe_post_load,
     .fields = (const VMStateField[]) {
@@ -3333,6 +3360,7 @@ static const VMStateDescription vmstate_xframe = {
         VMSTATE_TIMER_PTR_V(sched_int_timer, XframeState, 2),
         VMSTATE_TIMER_PTR_V(link_down_timer, XframeState, 2),
         VMSTATE_TIMER_PTR_V(link_up_timer, XframeState, 2),
+        VMSTATE_BOOL_V(legacy_interrupt_masking, XframeState, 8),
         VMSTATE_END_OF_LIST()
     }
 };
