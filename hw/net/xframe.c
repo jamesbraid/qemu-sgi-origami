@@ -1808,6 +1808,27 @@ static bool xframe_tx_frame_is_ipv4(const uint8_t *frame, size_t len)
            XFRAME_ETH_HDR_LEN + (size_t)total <= len;
 }
 
+static void xframe_send_packet(XframeState *s, const uint8_t *frame,
+                               size_t frame_len)
+{
+    struct virtio_net_hdr vhdr = { };
+    struct iovec iov[] = {
+        {
+            .iov_base = &vhdr,
+            .iov_len = sizeof(vhdr),
+        }, {
+            .iov_base = (void *)frame,
+            .iov_len = frame_len,
+        },
+    };
+
+    if (s->has_vnet_hdr) {
+        qemu_sendv_packet(qemu_get_queue(s->nic), iov, G_N_ELEMENTS(iov));
+    } else {
+        qemu_send_packet(qemu_get_queue(s->nic), frame, frame_len);
+    }
+}
+
 /*
  * Segmentation offload: send one oversized TCP buffer as a run of MSS-sized
  * frames. IRIX enables this on the adapter -- xg1's interface flags carry
@@ -1883,7 +1904,7 @@ static bool xframe_tx_segment(XframeState *s, size_t frame_len, uint16_t mss)
          * are computed here whatever the descriptor's checksum bits asked for.
          */
         net_checksum_calculate(seg, hdr_len + chunk, CSUM_IP | CSUM_TCP);
-        qemu_send_packet(qemu_get_queue(s->nic), seg, hdr_len + chunk);
+        xframe_send_packet(s, seg, hdr_len + chunk);
         s->stat_tx_frms++;
         s->stat_tx_octets += hdr_len + chunk;
     }
@@ -2050,9 +2071,9 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
         int csum = 0;
 
         /*
-         * A backend may answer synchronously from qemu_send_packet(). Hold
-         * that reply in QEMU's net queue until this doorbell has published
-         * its transmit completion below. This covers every segment of one
+         * A backend may answer synchronously from a network send. Hold that
+         * reply in QEMU's net queue until this doorbell has published its
+         * transmit completion below. This covers every segment of one
          * offloaded send as a single transmit operation.
          */
         s->defer_backend_rx = true;
@@ -2088,7 +2109,7 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
             if (csum) {
                 net_checksum_calculate(s->tx_frame, frame_len, csum);
             }
-            qemu_send_packet(qemu_get_queue(s->nic), s->tx_frame, frame_len);
+            xframe_send_packet(s, s->tx_frame, frame_len);
             s->stat_tx_frms++;
             s->stat_tx_octets += frame_len;
         }

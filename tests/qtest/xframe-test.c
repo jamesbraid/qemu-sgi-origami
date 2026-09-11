@@ -730,9 +730,11 @@ static void xframe_tx_start(XframeTx *t)
 }
 
 #ifdef CONFIG_LINUX
-static bool xframe_vnet_tap_start(XframeTx *t, int *tap_fd, int *inject_fd)
+static bool xframe_tap_start(XframeTx *t, int *tap_fd, int *inject_fd,
+                             bool vnet_hdr)
 {
     struct ifreq ifr = { };
+    const char *vnet_hdr_support = vnet_hdr ? "on" : "off";
     uint64_t barsize;
     int mirror[2], inject[2];
 
@@ -742,7 +744,10 @@ static bool xframe_vnet_tap_start(XframeTx *t, int *tap_fd, int *inject_fd)
         return false;
     }
 
-    ifr.ifr_flags = IFF_TAP | IFF_NO_PI | IFF_VNET_HDR;
+    ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
+    if (vnet_hdr) {
+        ifr.ifr_flags |= IFF_VNET_HDR;
+    }
     if (ioctl(*tap_fd, TUNSETIFF, &ifr) < 0) {
         close(*tap_fd);
         *tap_fd = -1;
@@ -760,11 +765,11 @@ static bool xframe_vnet_tap_start(XframeTx *t, int *tap_fd, int *inject_fd)
         "-device xframe,netdev=n0,mac=" XFRAME_TEST_MAC " "
         "-chardev socket,id=mirror0,fd=%d "
         "-object filter-mirror,id=f0,netdev=n0,queue=rx,outdev=mirror0,"
-        "vnet_hdr_support=on "
+        "vnet_hdr_support=%s "
         "-chardev socket,id=inject0,fd=%d "
         "-object filter-redirector,id=f1,netdev=n0,queue=tx,indev=inject0,"
-        "vnet_hdr_support=on",
-        *tap_fd, mirror[1], inject[1]);
+        "vnet_hdr_support=%s",
+        *tap_fd, mirror[1], vnet_hdr_support, inject[1], vnet_hdr_support);
     t->dev = find_xframe(t->qs->pcibus, XFRAME_DEVICE_XENA);
     g_assert(t->dev != NULL);
     t->pif = qpci_iomap(t->dev, 0, &barsize);
@@ -774,6 +779,11 @@ static bool xframe_vnet_tap_start(XframeTx *t, int *tap_fd, int *inject_fd)
     qpci_device_enable(t->dev);
     qtest_qmp_assert_success(t->qs->qts, "{ 'execute': 'query-status' }");
     return true;
+}
+
+static bool xframe_vnet_tap_start(XframeTx *t, int *tap_fd, int *inject_fd)
+{
+    return xframe_tap_start(t, tap_fd, inject_fd, true);
 }
 #endif
 
@@ -4011,6 +4021,73 @@ static void test_transmit_offloads_lso_to_vnet_backend(void)
     close(inject_fd);
 }
 
+static void test_transmit_adds_vnet_header_to_ordinary_frame(void)
+{
+    XframeTx t;
+    uint8_t frame[64];
+    uint8_t mirrored[sizeof(struct virtio_net_hdr) + sizeof(frame)];
+    const struct virtio_net_hdr empty_vhdr = { };
+    uint32_t vnet_hdr_len;
+    size_t len;
+    int tap_fd, inject_fd;
+
+    build_ipv4_frame(frame, traffic_remote_mac, IPPROTO_UDP, 10,
+                     sizeof(frame));
+
+    if (!xframe_vnet_tap_start(&t, &tap_fd, &inject_fd)) {
+        return;
+    }
+
+    xframe_program_txd(&t, TRAFFIC_TXD_PAR, TRAFFIC_TX_BUF,
+                       frame, sizeof(frame));
+    xframe_ring_doorbell(&t, TRAFFIC_TXD_PAR);
+
+    len = mirror_recv_packet(t.host_fd, mirrored, sizeof(mirrored),
+                             &vnet_hdr_len);
+    g_assert_cmpuint(vnet_hdr_len, ==, sizeof(empty_vhdr));
+    g_assert_cmpuint(len, ==, sizeof(mirrored));
+    g_assert_cmpmem(mirrored, sizeof(empty_vhdr),
+                    &empty_vhdr, sizeof(empty_vhdr));
+    g_assert_cmpmem(mirrored + sizeof(empty_vhdr), sizeof(frame),
+                    frame, sizeof(frame));
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, TRAFFIC_TXD_PAR) & TXD_OWN, ==, 0);
+    net_socket_expect_no_frame(t.host_fd);
+
+    xframe_tx_stop(&t);
+    close(tap_fd);
+    close(inject_fd);
+}
+
+static void test_transmit_ordinary_frame_to_non_vnet_tap(void)
+{
+    XframeTx t;
+    uint8_t frame[64];
+    uint8_t got[sizeof(frame)];
+    size_t len;
+    int tap_fd, inject_fd;
+
+    build_ipv4_frame(frame, traffic_remote_mac, IPPROTO_UDP, 10,
+                     sizeof(frame));
+
+    if (!xframe_tap_start(&t, &tap_fd, &inject_fd, false)) {
+        return;
+    }
+
+    xframe_program_txd(&t, TRAFFIC_TXD_PAR, TRAFFIC_TX_BUF,
+                       frame, sizeof(frame));
+    xframe_ring_doorbell(&t, TRAFFIC_TXD_PAR);
+
+    len = traffic_recv_frame(t.host_fd, got, sizeof(got));
+    g_assert_cmpuint(len, ==, sizeof(frame));
+    g_assert_cmpmem(got, len, frame, sizeof(frame));
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, TRAFFIC_TXD_PAR) & TXD_OWN, ==, 0);
+    net_socket_expect_no_frame(t.host_fd);
+
+    xframe_tx_stop(&t);
+    close(tap_fd);
+    close(inject_fd);
+}
+
 static void test_receive_strips_vnet_header(void)
 {
     XframeTx t;
@@ -5550,6 +5627,10 @@ int main(int argc, char **argv)
 #ifdef CONFIG_LINUX
     qtest_add_func("xframe/transmit-offloads-lso-to-vnet-backend",
                    test_transmit_offloads_lso_to_vnet_backend);
+    qtest_add_func("xframe/transmit-adds-vnet-header-to-ordinary-frame",
+                   test_transmit_adds_vnet_header_to_ordinary_frame);
+    qtest_add_func("xframe/transmit-ordinary-frame-to-non-vnet-tap",
+                   test_transmit_ordinary_frame_to_non_vnet_tap);
     qtest_add_func("xframe/receive-strips-vnet-header",
                    test_receive_strips_vnet_header);
 #endif
