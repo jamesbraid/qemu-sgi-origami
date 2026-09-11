@@ -178,6 +178,7 @@ static bool sgi_ioc3_int_out_periodic_has_no_low_phase(uint32_t active)
 
 static void sgi_ioc3_int_out_hold_high(SGIIOC3State *s)
 {
+    /* Keep int_out's programmed readback; active becomes internally HIGH. */
     s->int_out_active = SGI_IOC3_INT_OUT_HIGH;
     s->int_out_state = true;
     s->int_out_pulse_end = false;

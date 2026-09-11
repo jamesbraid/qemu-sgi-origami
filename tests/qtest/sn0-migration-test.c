@@ -136,6 +136,7 @@
 #define IOC3_INT_STATUS          IOC3_REG(0x01c)
 #define IOC3_INT_OUTPUT          IOC3_REG(0x02c)
 #define IOC3_INT_OUT_PERIODIC    0x00060000u
+#define IOC3_INT_OUT_COMMAND     0x0007ffffu
 #define IOC3_INT_OUT_STATE       0x80000000u
 #define IOC3_INT_OUT_TICK_NS     7800LL
 #define PI_RT_COUNT              (HUB_LOCAL + 0x030100)
@@ -479,6 +480,13 @@ static void assert_no_ioc3_timer_before_sentinel(QTestState *qts,
     g_assert_cmpuint(qtest_readq(qts, PI_RT_PENDING_A), ==, 1);
 }
 
+static void assert_legacy_count2_readback(QTestState *qts)
+{
+    g_assert_cmphex(qtest_readl(qts, IOC3_INT_OUTPUT) &
+                    IOC3_INT_OUT_COMMAND, ==,
+                    IOC3_INT_OUT_PERIODIC | 0x0002);
+}
+
 static void test_legacy_count2_before_first_expiry_migrates(const void *data)
 {
     g_autofree gchar *tmpfs = NULL;
@@ -516,6 +524,7 @@ static void test_legacy_count2_before_first_expiry_migrates(const void *data)
     source_time = qtest_clock_step(to, 1);
     g_assert_cmphex(qtest_readl(to, IOC3_INT_OUTPUT), ==,
                     IOC3_INT_OUT_PERIODIC | 0x0002 | IOC3_INT_OUT_STATE);
+    assert_legacy_count2_readback(to);
     assert_no_ioc3_timer_before_sentinel(to, source_time);
     g_assert_cmphex(qtest_readl(to, IOC3_INT_OUTPUT), ==,
                     IOC3_INT_OUT_PERIODIC | 0x0002 | IOC3_INT_OUT_STATE);
@@ -562,6 +571,7 @@ static void test_legacy_count2_high_migrates_onward(const void *data)
 
     g_assert_cmphex(qtest_readl(to, IOC3_INT_OUTPUT), ==,
                     IOC3_INT_OUT_PERIODIC | 0x0002 | IOC3_INT_OUT_STATE);
+    assert_legacy_count2_readback(to);
     assert_no_ioc3_timer_before_sentinel(to, source_time);
     g_assert_cmphex(qtest_readl(to, IOC3_INT_OUTPUT), ==,
                     IOC3_INT_OUT_PERIODIC | 0x0002 | IOC3_INT_OUT_STATE);
@@ -575,6 +585,7 @@ static void test_legacy_count2_high_migrates_onward(const void *data)
 
     g_assert_cmphex(qtest_readl(onward, IOC3_INT_OUTPUT), ==,
                     IOC3_INT_OUT_PERIODIC | 0x0002 | IOC3_INT_OUT_STATE);
+    assert_legacy_count2_readback(onward);
     qtest_writel(onward, IOC3_INT_OUTPUT, 0);
     source_time = qtest_clock_step(onward, 1);
     g_assert_cmphex(qtest_readl(onward, IOC3_INT_OUTPUT), ==, 0);
