@@ -536,10 +536,11 @@ static size_t mirror_recv_packet(int fd, uint8_t *buf, size_t buf_size,
     return len;
 }
 
-static bool bcm_vnet_tap_open(Bcm *b, int *tap_fd, int *mirror_fd)
+static bool bcm_vnet_tap_open(Bcm *b, int *tap_fd, int *mirror_fd,
+                              int *inject_fd)
 {
     struct ifreq ifr = { };
-    int mirror[2];
+    int mirror[2], inject[2];
 
     *tap_fd = open("/dev/net/tun", O_RDWR);
     if (*tap_fd < 0) {
@@ -554,8 +555,8 @@ static bool bcm_vnet_tap_open(Bcm *b, int *tap_fd, int *mirror_fd)
         g_test_skip("creating a TAP requires CAP_NET_ADMIN");
         return false;
     }
-
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, mirror), ==, 0);
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, inject), ==, 0);
     net_socket_set_recv_timeout(mirror[0], 10);
     *mirror_fd = mirror[0];
     bcm_open(b, qtest_initf(
@@ -563,9 +564,29 @@ static bool bcm_vnet_tap_open(Bcm *b, int *tap_fd, int *mirror_fd)
         " -device bcm570x,addr=%02x.0,netdev=n0"
         " -chardev socket,id=mirror0,fd=%d"
         " -object filter-mirror,id=f0,netdev=n0,queue=rx,outdev=mirror0,"
+        "vnet_hdr_support=on"
+        " -chardev socket,id=inject0,fd=%d"
+        " -object filter-redirector,id=f1,netdev=n0,queue=tx,indev=inject0,"
         "vnet_hdr_support=on",
-        *tap_fd, BCM_SLOT, mirror[1]));
+        *tap_fd, BCM_SLOT, mirror[1], inject[1]));
+    *inject_fd = inject[0];
     return true;
+}
+
+static void redirector_send_packet(int fd, const uint8_t *buf, size_t len,
+                                   uint32_t vnet_hdr_len)
+{
+    uint32_t packet_len = htonl(len);
+    uint32_t header_len = htonl(vnet_hdr_len);
+    struct iovec iov[] = {
+        { .iov_base = &packet_len, .iov_len = sizeof(packet_len) },
+        { .iov_base = &header_len, .iov_len = sizeof(header_len) },
+        { .iov_base = (void *)buf, .iov_len = len },
+    };
+    size_t total = sizeof(packet_len) + sizeof(header_len) + len;
+
+    g_assert_cmpint(iov_send(fd, iov, G_N_ELEMENTS(iov), 0, total), ==,
+                    total);
 }
 #endif
 
@@ -2029,10 +2050,10 @@ static void test_transmit_segmentation_vnet(const void *data)
     uint32_t vnet_hdr_len;
     Bcm b;
     size_t len;
-    int tap_fd, mirror_fd;
+    int tap_fd, mirror_fd, inject_fd;
 
     build_lso_frame(frame, payload);
-    if (!bcm_vnet_tap_open(&b, &tap_fd, &mirror_fd)) {
+    if (!bcm_vnet_tap_open(&b, &tap_fd, &mirror_fd, &inject_fd)) {
         return;
     }
 
@@ -2064,6 +2085,7 @@ static void test_transmit_segmentation_vnet(const void *data)
     bcm_close(&b);
     close(tap_fd);
     close(mirror_fd);
+    close(inject_fd);
 }
 
 typedef enum VnetLsoFallbackCase {
@@ -2086,7 +2108,7 @@ static void test_transmit_segmentation_vnet_fallback(const void *data)
     uint32_t vnet_hdr_len;
     Bcm b;
     size_t len;
-    int tap_fd, mirror_fd;
+    int tap_fd, mirror_fd, inject_fd;
 
     build_lso_frame(frame, payload);
     switch (test_case) {
@@ -2114,7 +2136,7 @@ static void test_transmit_segmentation_vnet_fallback(const void *data)
         g_assert_not_reached();
     }
 
-    if (!bcm_vnet_tap_open(&b, &tap_fd, &mirror_fd)) {
+    if (!bcm_vnet_tap_open(&b, &tap_fd, &mirror_fd, &inject_fd)) {
         return;
     }
     lso_open(&b, mirror_fd, frame, frame_len, LSO_MSS,
@@ -2131,6 +2153,7 @@ static void test_transmit_segmentation_vnet_fallback(const void *data)
     bcm_close(&b);
     close(tap_fd);
     close(mirror_fd);
+    close(inject_fd);
 }
 #endif
 
@@ -3170,6 +3193,36 @@ static void rx_open_one(Bcm *b, int fd)
     bar_writel(b, BCM_MBX_RX_STD_PROD_LO, 1);
     (void)fd;
 }
+
+#ifdef CONFIG_LINUX
+/* TAP's negotiated vnet header is transport metadata, not Ethernet payload. */
+static void test_receive_vnet_plain(const void *data)
+{
+    uint8_t packet[sizeof(struct virtio_net_hdr) + 64] = { };
+    uint8_t *frame = packet + sizeof(struct virtio_net_hdr);
+    uint8_t got[64];
+    Bcm b;
+    int tap_fd, mirror_fd, inject_fd;
+
+    memset(frame, 0xa5, 64);
+    memset(frame, 0xff, 6);
+    if (!bcm_vnet_tap_open(&b, &tap_fd, &mirror_fd, &inject_fd)) {
+        return;
+    }
+
+    rx_open_one(&b, tap_fd);
+    redirector_send_packet(inject_fd, packet, sizeof(packet),
+                           sizeof(struct virtio_net_hdr));
+    wait_for_rx_prod(&b, 1);
+    qtest_memread(b.qts, RX_BUF_PHYS, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), frame, 64);
+
+    bcm_close(&b);
+    close(tap_fd);
+    close(mirror_fd);
+    close(inject_fd);
+}
+#endif
 
 /* Post one jumbo-ring buffer alongside the standard ring rx_open_one set up. */
 static void rx_open_jumbo(Bcm *b)
@@ -5963,6 +6016,10 @@ int main(int argc, char **argv)
                         test_tx_producer_out_of_range);
     qtest_add_data_func("/bcm570x/receive-round-trip", NULL,
                         test_receive_round_trip);
+#ifdef CONFIG_LINUX
+    qtest_add_data_func("/bcm570x/receive-vnet-plain", NULL,
+                        test_receive_vnet_plain);
+#endif
     qtest_add_data_func("/bcm570x/receive-descriptor-dma-error", NULL,
                         test_receive_descriptor_dma_error);
     qtest_add_data_func("/bcm570x/receive-completion-dma-error", NULL,
