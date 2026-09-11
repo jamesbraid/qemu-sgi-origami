@@ -18,6 +18,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
 
@@ -76,8 +77,18 @@
 #define I2C_STS_LRB             0x08
 #define ELSC_ADDR               0x08
 #define ARB_SIGNAL_AFTER_STAGE  0xe1
+#define ARB_SIGNAL1             0xe0
 #define ARB_TICK_NS             (1000 * 1000)
 #define ARB_PARTIAL_NS          (400 * 1000)
+
+#define ELSC_VMSTATE_VERSION        13
+#define ELSC_LEGACY_VERSION         12
+#define ELSC_RXBUF_VMSTATE_SIZE     97
+#define ELSC_TXBUF_VMSTATE_SIZE     96
+#define ELSC_ARB_CODE_VMSTATE_OFFSET \
+    (1 + ELSC_RXBUF_VMSTATE_SIZE + 4 + ELSC_TXBUF_VMSTATE_SIZE + \
+     4 + 4 + 8)
+#define QEMU_VM_SECTION_FULL      4
 
 /* PCI type 0 configuration space, and the window each device sits behind. */
 #define BRIDGE_CFG0             0x020000
@@ -231,6 +242,96 @@ static void migrate_stopped_vm(QTestState *from, const char *uri)
         g_assert(g_test_timer_elapsed() < 30);
         g_usleep(1000);
     }
+}
+
+static void wait_for_incoming_complete(QTestState *qts)
+{
+    g_test_timer_start();
+    for (;;) {
+        QDict *ret = qtest_qmp_assert_success_ref(
+            qts, "{ 'execute': 'query-migrate' }");
+        const char *status = qdict_get_str(ret, "status");
+
+        if (g_str_equal(status, "completed")) {
+            qobject_unref(ret);
+            return;
+        }
+        g_assert_false(g_str_equal(status, "failed"));
+        qobject_unref(ret);
+        g_assert(g_test_timer_elapsed() < 30);
+        g_usleep(1000);
+    }
+}
+
+static void cpu_writeq(QTestState *qts, unsigned int cpu, uint64_t addr,
+                       uint64_t value)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, cpu, addr, bytes, sizeof(bytes)));
+}
+
+static uint64_t cpu_readq(QTestState *qts, unsigned int cpu, uint64_t addr)
+{
+    uint8_t bytes[8];
+
+    g_assert_true(qtest_memread_cpu(qts, cpu, addr, bytes, sizeof(bytes)));
+    return ldq_be_p(bytes);
+}
+
+static void enable_cpu_pcf_observer(QTestState *qts, unsigned int cpu)
+{
+    cpu_writeq(qts, cpu, HUB_LOCAL + I2C_CTRL, I2C_CTL_PIN);
+    cpu_writeq(qts, cpu, HUB_LOCAL + I2C_DATA, 0x7f);
+    cpu_writeq(qts, cpu, HUB_LOCAL + I2C_CTRL,
+               I2C_CTL_PIN | I2C_CTL_ES1);
+    cpu_writeq(qts, cpu, HUB_LOCAL + I2C_DATA, 0x1c);
+    cpu_writeq(qts, cpu, HUB_LOCAL + I2C_CTRL, I2C_CTL_PIN);
+    g_assert_cmphex(cpu_readq(qts, cpu, HUB_LOCAL + I2C_DATA), ==, 0x7f);
+    cpu_writeq(qts, cpu, HUB_LOCAL + I2C_DATA, 0x09);
+    cpu_writeq(qts, cpu, HUB_LOCAL + I2C_CTRL,
+               I2C_CTL_PIN | I2C_CTL_ESO);
+}
+
+static void patch_master_elsc_stream(const char *path,
+                                     uint32_t expected_version,
+                                     uint32_t version, uint32_t arb_code)
+{
+    static const char name[] = "sgi-elsc";
+    g_autofree gchar *contents = NULL;
+    GError *err = NULL;
+    gsize length, i;
+    bool found = false;
+
+    g_assert_true(g_file_get_contents(path, &contents, &length, &err));
+    g_assert_no_error(err);
+
+    for (i = 6;
+         i + sizeof(name) - 1 + 8 + ELSC_ARB_CODE_VMSTATE_OFFSET + 4 <
+             length;
+         i++) {
+        uint8_t *p = (uint8_t *)contents + i;
+        uint8_t *versionp;
+        uint8_t *datap;
+
+        if (p[-6] != QEMU_VM_SECTION_FULL ||
+            p[-1] != sizeof(name) - 1 ||
+            memcmp(p, name, sizeof(name) - 1) || ldl_be_p(p + 8) != 0) {
+            continue;
+        }
+
+        versionp = p + sizeof(name) - 1 + 4;
+        datap = versionp + 4;
+        g_assert_cmpuint(ldl_be_p(versionp), ==, expected_version);
+        stl_be_p(versionp, version);
+        stl_be_p(datap + ELSC_ARB_CODE_VMSTATE_OFFSET, arb_code);
+        found = true;
+        break;
+    }
+    g_assert_true(found);
+    g_assert_true(g_file_set_contents(path, contents, length, &err));
+    g_assert_no_error(err);
 }
 
 static QDict *query_origin_state(QTestState *qts)
@@ -741,6 +842,58 @@ static void test_staged_i2c_start_survives_migration(const void *data)
     qtest_quit(from);
 }
 
+/*
+ * Version 12 allowed all eight old rotation codes. A two-module destination
+ * has five positions, so an old code 7 must resume at position 2. The same
+ * value in the narrowed version 13 domain is a corrupt stream and must fail.
+ */
+static void test_elsc_legacy_rotation_position_migrates(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *stream = NULL;
+    g_autofree gchar *uri = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
+    g_assert_no_error(err);
+    stream = g_build_filename(tmpfs, "migration", NULL);
+    uri = g_strdup_printf("file:%s", stream);
+
+    from = qtest_init(MACHINE_DUAL);
+    enable_cpu_pcf_observer(from, 0);
+    enable_cpu_pcf_observer(from, 2);
+    migrate_stopped_vm(from, uri);
+    qtest_quit(from);
+
+    patch_master_elsc_stream(stream, ELSC_VMSTATE_VERSION,
+                             ELSC_LEGACY_VERSION, 7);
+    to = qtest_init(MACHINE_DUAL " -incoming defer");
+    qtest_qmp_assert_success(
+        to, "{ 'execute': 'migrate-incoming', "
+            "'arguments': { 'uri': %s } }", uri);
+    wait_for_incoming_complete(to);
+    qtest_clock_step(to, ARB_TICK_NS);
+    g_assert_cmphex(cpu_readq(to, 0, HUB_LOCAL + I2C_DATA), ==,
+                    ARB_SIGNAL1 + 2);
+    g_assert_cmphex(cpu_readq(to, 2, HUB_LOCAL + I2C_DATA), ==,
+                    ARB_SIGNAL1 + 2);
+    qtest_quit(to);
+
+    patch_master_elsc_stream(stream, ELSC_LEGACY_VERSION,
+                             ELSC_VMSTATE_VERSION, 7);
+    to = qtest_init(MACHINE_DUAL " -incoming defer");
+    qtest_set_expected_status(to, 1);
+    qtest_qmp_assert_success(
+        to, "{ 'execute': 'migrate-incoming', "
+            "'arguments': { 'uri': %s } }", uri);
+    qtest_wait_qemu(to);
+    qtest_quit(to);
+
+    g_assert_cmpint(g_unlink(stream), ==, 0);
+    g_assert_cmpint(g_rmdir(tmpfs), ==, 0);
+}
+
 static bool nic_slot(QTestState *qts, unsigned int pulse, unsigned int sample)
 {
     qtest_writel(qts, REG(BRIDGE_NIC), NIC_PULSE(pulse) | NIC_SAMPLE(sample));
@@ -1196,6 +1349,9 @@ int main(int argc, char **argv)
                         NULL, test_network_routes_survive_migration);
     qtest_add_data_func("sn0/migration/staged-i2c-start-survives-migration",
                         NULL, test_staged_i2c_start_survives_migration);
+    qtest_add_data_func("sn0/migration/elsc-legacy-rotation-position",
+                        NULL,
+                        test_elsc_legacy_rotation_position_migrates);
     qtest_add_data_func("sn0/migration/conversation-survives-migration",
                         NULL, test_a_conversation_survives_migration);
     qtest_add_data_func("sn0/migration/bte-state-survives-migration",
