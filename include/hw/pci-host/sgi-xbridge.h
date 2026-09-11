@@ -65,6 +65,8 @@ struct SGIXBridgeHeadState {
     uint8_t pins;
     qemu_irq pci_irq[SGI_XBRIDGE_HEAD_RAW_PCI_IRQS];
     uint32_t pci_levels;
+    /* Rebuilt from the fixed PCI population before migration state loads. */
+    uint32_t self_ordered_slots;
     MemoryRegion *target[16];
     struct XBridgeTarget {
         AddressSpace as;
