@@ -406,6 +406,8 @@ static void bedrock_init(Object *obj)
                      sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->md), 1));
     sysbus_init_mmio(SYS_BUS_DEVICE(obj),
                      sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->md), 2));
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj),
+                     sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->md), 3));
     qdev_init_gpio_out_named(dev, s->hardware_irq, "hardware-irq",
                              ARRAY_SIZE(s->hardware_irq));
     qdev_init_gpio_out_named(dev, s->nmi, "nmi", ARRAY_SIZE(s->nmi));
