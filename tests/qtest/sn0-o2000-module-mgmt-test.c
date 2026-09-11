@@ -354,8 +354,8 @@ static void test_windows_share_one_wire(void)
     qtest_quit(qts);
 }
 
-/* A START based on a stale free-bus sample waits for the grant's STOP. */
-static void test_start_waits_for_grant(void)
+/* A START issued under a newer grant loses when that grant stops. */
+static void test_start_loses_to_grant(void)
 {
     QTestState *qts = start_module();
     int64_t now;
@@ -378,7 +378,8 @@ static void test_start_waits_for_grant(void)
     qtest_clock_step(qts, GRANT_SETTLE_NS);
     g_assert_true(wait_done(qts, 0));
     g_assert_cmphex(adapter_read(qts, 0, I2C_CTRL) &
-                    (STS_LRB | STS_BER | STS_LAB), ==, 0);
+                    (STS_LRB | STS_BER | STS_LAB), ==,
+                    STS_LRB | STS_LAB);
     stop_transfer(qts, 0);
     qtest_quit(qts);
 }
@@ -527,8 +528,8 @@ int main(int argc, char **argv)
                    test_controller_answers_every_node);
     qtest_add_func("/sn0/o2000-module-management/one-wire",
                    test_windows_share_one_wire);
-    qtest_add_func("/sn0/o2000-module-management/start-waits-for-grant",
-                   test_start_waits_for_grant);
+    qtest_add_func("/sn0/o2000-module-management/start-loses-to-grant",
+                   test_start_loses_to_grant);
     qtest_add_func("/sn0/o2000-module-management/shared-nvram",
                    test_nvram_is_shared);
     qtest_add_func("/sn0/o2000-module-management/destructive-refused",
