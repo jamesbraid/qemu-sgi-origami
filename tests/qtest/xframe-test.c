@@ -4466,6 +4466,138 @@ static void test_pending_interrupt_migration_recomputes_intx(void)
 }
 
 /*
+ * Version 7 gated PIC delivery through GENERAL_INT_MASK. Keep that behavior
+ * after loading an old stream, including across a second migration between
+ * version-8 destinations.
+ */
+static void test_interrupt_masking_migration_from_v7(void)
+{
+    const char *v7_binary = g_getenv("XFRAME_QEMU_V7_BINARY");
+    g_autofree char *first_dir = NULL;
+    g_autofree char *first_socket = NULL;
+    g_autofree char *first_uri = NULL;
+    g_autofree char *first_incoming = NULL;
+    g_autofree char *second_dir = NULL;
+    g_autofree char *second_socket = NULL;
+    g_autofree char *second_uri = NULL;
+    g_autofree char *second_incoming = NULL;
+    XframeTx from, middle, to;
+
+    if (!v7_binary) {
+        g_test_skip("XFRAME_QEMU_V7_BINARY is not set");
+        return;
+    }
+
+    first_dir = xframe_migration_directory();
+    first_socket = g_build_filename(first_dir, "migration.sock", NULL);
+    first_uri = g_strdup_printf("unix:%s", first_socket);
+    first_incoming = g_strdup_printf("-machine q35 -incoming %s", first_uri);
+
+    xframe_tx_start_binary_args(&from, v7_binary, "-machine q35");
+    sock_pif_writeq(&from, PIC_INT_MASK, 0);
+    sock_pif_writeq(&from, TXPIC_INT_MASK, 0);
+    sock_pif_writeq(&from, SCHED_INT_CTRL,
+                    SCHED_INT_CTRL_TIMER_EN | SCHED_INT_TEST_PERIOD);
+    qtest_clock_step(from.qs->qts, SCHED_INT_STEP_NS);
+    g_assert_false(xframe_intx_asserted(from.dev));
+
+    xframe_tx_start_args(&middle, first_incoming);
+    xframe_migrate(from.qs->qts, first_uri);
+    g_assert_false(xframe_intx_asserted(middle.dev));
+
+    sock_pif_writeq(&middle, GENERAL_INT_MASK, ~GEN_INTR_TXPIC);
+    g_assert_true(xframe_intx_asserted(middle.dev));
+    sock_pif_writeq(&middle, GENERAL_INT_MASK, DISABLE_ALL_INTRS_64);
+    g_assert_false(xframe_intx_asserted(middle.dev));
+    g_assert_cmphex(sock_pif_readq(&middle, GENERAL_INT_STATUS) &
+                    GEN_INTR_TXPIC, ==, GEN_INTR_TXPIC);
+
+    second_dir = xframe_migration_directory();
+    second_socket = g_build_filename(second_dir, "migration.sock", NULL);
+    second_uri = g_strdup_printf("unix:%s", second_socket);
+    second_incoming = g_strdup_printf("-machine q35 -incoming %s", second_uri);
+    xframe_tx_start_args(&to, second_incoming);
+    xframe_migrate(middle.qs->qts, second_uri);
+    g_assert_false(xframe_intx_asserted(to.dev));
+    g_assert_cmphex(sock_pif_readq(&to, GENERAL_INT_STATUS) &
+                    GEN_INTR_TXPIC, ==, GEN_INTR_TXPIC);
+
+    sock_pif_writeq(&to, GENERAL_INT_MASK, ~GEN_INTR_TXPIC);
+    g_assert_true(xframe_intx_asserted(to.dev));
+    sock_pif_writeq(&to, TXPIC_INT_REG, 0);
+    g_assert_false(xframe_intx_asserted(to.dev));
+
+    /* Device reset must not discard the migrated compatibility behavior. */
+    sock_pif_writeq(&to, SW_RESET, SW_RESET_KEY);
+    sock_pif_writeq(&to, PIC_INT_MASK, 0);
+    sock_pif_writeq(&to, TXPIC_INT_MASK, 0);
+    sock_pif_writeq(&to, SCHED_INT_CTRL,
+                    SCHED_INT_CTRL_TIMER_EN | SCHED_INT_TEST_PERIOD);
+    qtest_clock_step(to.qs->qts, SCHED_INT_STEP_NS);
+    g_assert_false(xframe_intx_asserted(to.dev));
+    sock_pif_writeq(&to, GENERAL_INT_MASK, ~GEN_INTR_TXPIC);
+    g_assert_true(xframe_intx_asserted(to.dev));
+    sock_pif_writeq(&to, TXPIC_INT_REG, 0);
+    g_assert_false(xframe_intx_asserted(to.dev));
+
+    xframe_tx_stop(&to);
+    xframe_tx_stop(&middle);
+    xframe_tx_stop(&from);
+    xframe_migration_cleanup(second_dir, second_socket);
+    xframe_migration_cleanup(first_dir, first_socket);
+}
+
+/* A version-7 GPIO link source remains gated by GENERAL and GPIO after load. */
+static void test_gpio_interrupt_masking_migration_from_v7(void)
+{
+    const char *v7_binary = g_getenv("XFRAME_QEMU_V7_BINARY");
+    g_autofree char *directory = NULL;
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *incoming = NULL;
+    XframeTx from, to;
+
+    if (!v7_binary) {
+        g_test_skip("XFRAME_QEMU_V7_BINARY is not set");
+        return;
+    }
+
+    directory = xframe_migration_directory();
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    incoming = g_strdup_printf("-machine q35 -incoming %s", uri);
+
+    xframe_tx_start_binary_args(&from, v7_binary, "-machine q35");
+    qtest_qmp_assert_success(from.qs->qts,
+                             "{'execute': 'set_link', 'arguments': "
+                             "{'name': 'n0', 'up': false}}");
+    sock_pif_readq(&from, GPIO_INT_REG);
+    sock_pif_writeq(&from, PIC_INT_MASK, ~PIC_INT_GPIO);
+    sock_pif_writeq(&from, ADAPTER_CONTROL, ADAPTER_EN);
+    qtest_qmp_assert_success(from.qs->qts,
+                             "{'execute': 'set_link', 'arguments': "
+                             "{'name': 'n0', 'up': true}}");
+    qtest_clock_step_next(from.qs->qts);
+    g_assert_false(xframe_intx_asserted(from.dev));
+
+    xframe_tx_start_args(&to, incoming);
+    xframe_migrate(from.qs->qts, uri);
+    g_assert_false(xframe_intx_asserted(to.dev));
+
+    sock_pif_writeq(&to, GENERAL_INT_MASK, ~GEN_INTR_TXPIC);
+    g_assert_false(xframe_intx_asserted(to.dev));
+    sock_pif_writeq(&to, GPIO_INT_MASK, ~GPIO_INT_MASK_LINK_UP);
+    g_assert_true(xframe_intx_asserted(to.dev));
+    g_assert_cmphex(sock_pif_readq(&to, GPIO_INT_REG) &
+                    GPIO_INT_REG_LINK_UP, ==, GPIO_INT_REG_LINK_UP);
+    g_assert_false(xframe_intx_asserted(to.dev));
+
+    xframe_tx_stop(&to);
+    xframe_tx_stop(&from);
+    xframe_migration_cleanup(directory, socket);
+}
+
+/*
  * Version 5 carried the traffic-interrupt memories but not moderation state.
  * A destination must retain an already-pending completion and its mask while
  * reverting future completions to the source model's immediate behavior.
@@ -5229,6 +5361,10 @@ int main(int argc, char **argv)
                    test_traffic_interrupt_moderation);
     qtest_add_func("xframe/pending-interrupt-migration-recomputes-intx",
                    test_pending_interrupt_migration_recomputes_intx);
+    qtest_add_func("xframe/interrupt-masking-migration-from-v7",
+                   test_interrupt_masking_migration_from_v7);
+    qtest_add_func("xframe/gpio-interrupt-masking-migration-from-v7",
+                   test_gpio_interrupt_masking_migration_from_v7);
     qtest_add_func("xframe/traffic-migration-from-v5",
                    test_traffic_migration_from_v5);
     qtest_add_func("xframe/traffic-migration-v6-round-trip",
