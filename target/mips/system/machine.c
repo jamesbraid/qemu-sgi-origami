@@ -37,6 +37,7 @@ static int cpu_post_load(void *opaque, int version_id)
     restore_msa_fp_status(env);
     compute_hflags(env);
     restore_pamask(env);
+    qatomic_set(&env->llsc_ram_block, 0);
     cpu_mips_reassert_interrupt(env);
     if (env->CP0_R10K_DelayedWatch) {
         /*

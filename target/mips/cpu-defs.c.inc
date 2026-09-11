@@ -726,6 +726,7 @@ const mips_def_t mips_defs[] =
             .cache_error_is_error_level = true,
             .exception_breaks_ll_link = true,
             .ll_sc_intervening_ops_break_link = true,
+            .ll_sc_external_block_breaks_link = true,
             .lladdr_is_scratch = true,
             .fp_traps_denormal_result = true,
             .fp_cvt_l_limited_to_51_bits = true,
