@@ -1259,7 +1259,7 @@ typedef struct CPUArchState {
  */
     target_ulong lladdr; /* LL virtual address compared against SC */
     target_ulong llval;
-    uint64_t llsc_ram_block; /* RAM block tracked for peer-CPU stores */
+    uint64_t llsc_ram_block; /* R10000 peer-store link state */
     uint64_t llval_wp;
     uint32_t llnewval_wp;
     uint64_t CP0_LLAddr_rw_bitmask;

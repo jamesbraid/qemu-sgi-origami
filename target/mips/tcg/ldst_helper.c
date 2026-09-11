@@ -34,6 +34,8 @@
 #include "exec/tlb-flags.h"
 
 #define R10K_LLSC_BLOCK_SIZE 128
+/* A valid architectural link without a directly trackable RAM block. */
+#define R10K_LLSC_UNTRACKED  2
 
 /* False must mean that no R10000 CPU has a tracked link. */
 static unsigned int r10k_llsc_active_link_hint;
@@ -47,25 +49,36 @@ static uint64_t r10k_llsc_ram_block(target_ulong addr,
     return (ram_addr & ~(ram_addr_t)(R10K_LLSC_BLOCK_SIZE - 1)) | 1;
 }
 
+static bool r10k_llsc_link_is_tracked(uint64_t link)
+{
+    return (link & 1) != 0;
+}
+
 static void r10k_llsc_set_link(CPUMIPSState *env, target_ulong addr,
                                const CPUTLBEntryFull *full, int flags)
 {
-    uint64_t block = 0;
+    uint64_t block = env->cfg.ll_sc_peer_store_block_breaks_link ?
+                     R10K_LLSC_UNTRACKED : 0;
 
     if (env->cfg.ll_sc_peer_store_block_breaks_link &&
         !(flags & (TLB_INVALID_MASK | TLB_MMIO))) {
         block = r10k_llsc_ram_block(addr, full);
     }
     qatomic_xchg(&env->llsc_ram_block, block);
-    if (block) {
+    if (r10k_llsc_link_is_tracked(block)) {
         /* R10000 LL executes exclusively, so no peer store can miss this. */
         qatomic_set(&r10k_llsc_active_link_hint, 1);
     }
 }
 
-uint32_t helper_r10k_llsc_consume(CPUMIPSState *env)
+uint32_t helper_r10k_llsc_valid(CPUMIPSState *env)
 {
-    return qatomic_xchg(&env->llsc_ram_block, 0) != 0;
+    return qatomic_read(&env->llsc_ram_block) != 0;
+}
+
+void helper_r10k_llsc_clear(CPUMIPSState *env)
+{
+    qatomic_set(&env->llsc_ram_block, 0);
 }
 
 void helper_r10k_llsc_note_cpu_store(CPUMIPSState *env, target_ulong addr,
@@ -106,7 +119,7 @@ void helper_r10k_llsc_note_cpu_store(CPUMIPSState *env, target_ulong addr,
                 linked = qatomic_read(&other->llsc_ram_block);
             }
         }
-        if (linked) {
+        if (r10k_llsc_link_is_tracked(linked)) {
             any_link = true;
         }
     }

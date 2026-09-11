@@ -2336,7 +2336,7 @@ static void gen_st_cond(DisasContext *ctx, int rt, int base, int offset,
     if (ctx->ll_sc_peer_store_block_breaks_link) {
         TCGv_i32 linked = tcg_temp_new_i32();
 
-        gen_helper_r10k_llsc_consume(linked, tcg_env);
+        gen_helper_r10k_llsc_valid(linked, tcg_env);
         tcg_gen_brcondi_i32(TCG_COND_EQ, linked, 0, fail);
     }
 #endif
@@ -2352,6 +2352,9 @@ static void gen_st_cond(DisasContext *ctx, int rt, int base, int offset,
     if (ctx->ll_sc_peer_store_block_breaks_link) {
         TCGLabel *no_store = gen_new_label();
 
+#ifndef CONFIG_USER_ONLY
+        gen_helper_r10k_llsc_clear(tcg_env);
+#endif
         tcg_gen_brcondi_tl(TCG_COND_EQ, t0, 0, no_store);
         gen_r10k_llsc_note_cpu_store(ctx, addr,
                                      eva ? MIPS_HFLAG_UM : ctx->mem_idx);
@@ -2361,6 +2364,11 @@ static void gen_st_cond(DisasContext *ctx, int rt, int base, int offset,
 
     gen_set_label(fail);
     gen_store_gpr(tcg_constant_tl(0), rt);
+#ifndef CONFIG_USER_ONLY
+    if (ctx->ll_sc_peer_store_block_breaks_link) {
+        gen_helper_r10k_llsc_clear(tcg_env);
+    }
+#endif
     gen_set_label(done);
 }
 
