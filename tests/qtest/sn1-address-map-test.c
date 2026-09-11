@@ -32,6 +32,8 @@
 #define BEDROCK_LB UINT64_C(0x600000)
 #define BEDROCK_NI UINT64_C(0x680000)
 #define BEDROCK_WINDOW_SIZE UINT64_C(0x800000)
+#define BEDROCK_MD_MEMORY_CONFIG UINT64_C(0x780008)
+#define BEDROCK_MD_BANK0_512M UINT64_C(0x41)
 
 #define PI_CPU_NUMBER UINT64_C(0x20)
 #define PI_CPU_ENABLE_B UINT64_C(0x58)
@@ -2038,6 +2040,9 @@ static void test_directory_backdoor_window(const void *data)
     const uint64_t last = HUB_DIRECTORY + DIRECTORY_LAST_FITTED;
     const uint64_t absent = HUB_DIRECTORY + DIRECTORY_FIRST_ABSENT;
 
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_BANK0_512M);
+
     /*
      * The window answers at the carrier the contract names, which needs the
      * machine's memory linked to the controller for the device to realize.
@@ -2074,6 +2079,8 @@ static void test_directory_backdoor_window(const void *data)
     assert_flat_view_unmapped(qts, HUB_DIRECTORY + DIRECTORY_APERTURE);
 
     qtest_system_reset(qts);
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_BANK0_512M);
     g_assert_cmphex(qtest_readq(qts, carrier), ==, 0);
     g_assert_cmphex(qtest_readq(qts, carrier + 8), ==, 0);
     g_assert_cmphex(qtest_readq(qts, last), ==, 0);
