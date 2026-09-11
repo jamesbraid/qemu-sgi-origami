@@ -172,6 +172,8 @@
 #define NI_PORT_ERROR       0x608008
 #define NI_PORT_ERROR_CLEAR 0x608088
 #define NI_PORT_PARMS_RESET ((6ULL << 10) | 0x3f0)
+#define NI_PORT_CHECK_ERROR_SHIFT 8
+#define NI_PORT_CHECK_ERROR_MASK  (0xffULL << NI_PORT_CHECK_ERROR_SHIFT)
 #define NI_VECTOR_CLEAR     0x600380
 #define NI_META_TABLE       0x638000
 #define NI_META_TABLE_LAST  (NI_META_TABLE + 31 * 8)
@@ -188,6 +190,10 @@
 #define PIOTYPE_READ        0
 #define PIOTYPE_WRITE       1
 #define PIOTYPE_EXCHANGE    3
+
+#define RR_SCRATCH_REG1     0x00028
+#define RR_DIAG_PARMS       0x00030
+#define RR_SEND_ERROR(port) (UINT64_C(1) << ((port) - 1))
 
 /* The junk-bus UART: 16550 order at an eight-byte stride. */
 #define MD_JUNKUART_BASE     0x2200c0
@@ -2893,6 +2899,15 @@ static uint64_t vector_operation(QTestState *qts, uint64_t hub,
     return qtest_readq(qts, hub + NI_VECTOR_STATUS);
 }
 
+static void inject_port_errors(QTestState *qts, uint64_t errors)
+{
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{"
+        "'path':'/machine/peripheral/hub-errors',"
+        "'property':'port-errors','value':%llu}}",
+        (unsigned long long)errors);
+}
+
 static void test_vector_pio_reaches_the_direct_peer(const void *data)
 {
     QTestState *qts = qtest_init(
@@ -3009,6 +3024,76 @@ static void test_llp_port_registers(const void *data)
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_PORT_ERROR_CLEAR),
                     ==, 0);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_PORT_ERROR), ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_llp_port_error_clear_contract(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200 -m 128M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-object memory-backend-ram,id=ram1,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-smp 4,sockets=2,cores=2,threads=1 "
+        "-device sgi-hub-test,id=hub-errors,hub=/machine/node1/hub");
+    const uint64_t node0 = HUB_BY_NODE;
+    const uint64_t node1 = HUB_BY_NODE + NODE_STRIDE;
+    uint64_t errors = (UINT64_C(1) << 37) | (UINT64_C(1) << 34) |
+                      UINT64_C(0x12345678);
+    uint64_t status;
+
+    inject_port_errors(qts, errors);
+    g_assert_cmphex(qtest_readq(qts, node1 + NI_PORT_ERROR), ==, errors);
+
+    /* A half-width W1C write must not clear the untouched half. */
+    qtest_writel(qts, node1 + NI_PORT_ERROR, 1U << 5);
+    errors &= ~(UINT64_C(1) << 37);
+    g_assert_cmphex(qtest_readq(qts, node1 + NI_PORT_ERROR), ==, errors);
+    qtest_writel(qts, node1 + NI_PORT_ERROR + 4, 0x12340000);
+    errors &= ~UINT64_C(0x12340000);
+    g_assert_cmphex(qtest_readq(qts, node1 + NI_PORT_ERROR), ==, errors);
+
+    status = vector_operation(qts, node0, NI_PORT_ERROR_CLEAR,
+                              PIOTYPE_READ);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_READ);
+    g_assert_cmphex(qtest_readq(qts, node0 + NI_VECTOR_READ_DATA), ==,
+                    errors);
+    g_assert_cmphex(qtest_readq(qts, node1 + NI_PORT_ERROR), ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_routed_reply_error_count_saturates(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000 -smp 8,sockets=4,cores=2,threads=1 -m 256M "
+        "-device sgi-hub-test,id=hub-errors,hub=/machine/node0/hub");
+    const uint64_t node0 = HUB_BY_NODE;
+    uint64_t status;
+
+    inject_port_errors(qts, UINT64_C(0xfe) << NI_PORT_CHECK_ERROR_SHIFT);
+
+    qtest_writeq(qts, node0 + NI_VECTOR_DATA, RR_SEND_ERROR(5));
+    status = vector_operation(qts, node0, RR_DIAG_PARMS, PIOTYPE_WRITE);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_WRITE);
+
+    status = vector_operation(qts, node0, RR_SCRATCH_REG1, PIOTYPE_READ);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_READ);
+    g_assert_cmphex(qtest_readq(qts, node0 + NI_PORT_ERROR) &
+                    NI_PORT_CHECK_ERROR_MASK, ==,
+                    UINT64_C(0xff) << NI_PORT_CHECK_ERROR_SHIFT);
+
+    status = vector_operation(qts, node0, RR_SCRATCH_REG1, PIOTYPE_READ);
+    g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
+                    NVS_VALID | PIOTYPE_READ);
+    g_assert_cmphex(qtest_readq(qts, node0 + NI_PORT_ERROR) &
+                    NI_PORT_CHECK_ERROR_MASK, ==,
+                    UINT64_C(0xff) << NI_PORT_CHECK_ERROR_SHIFT);
 
     qtest_quit(qts);
 }
@@ -4624,6 +4709,10 @@ int main(int argc, char **argv)
                         test_vector_launch_with_no_fabric_stays_silent);
     qtest_add_data_func("sn0/hub/llp-port-registers", NULL,
                         test_llp_port_registers);
+    qtest_add_data_func("sn0/hub/llp-port-error-clear-contract", NULL,
+                        test_llp_port_error_clear_contract);
+    qtest_add_data_func("sn0/hub/routed-reply-error-count-saturates", NULL,
+                        test_routed_reply_error_count_saturates);
     qtest_add_data_func("sn0/hub/llp-port-registers-answer-vector-decode",
                         NULL,
                         test_llp_port_registers_answer_the_vector_decode);

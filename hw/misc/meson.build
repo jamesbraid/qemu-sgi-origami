@@ -38,6 +38,7 @@ system_ss.add(when: 'CONFIG_SGI_ELSC', if_true: files('sgi-elsc.c'))
 system_ss.add(when: 'CONFIG_SGI_O2000_MODULE_MGMT',
               if_true: files('sgi-o2000-module-mgmt.c'))
 system_ss.add(when: 'CONFIG_SGI_HUB', if_true: files('sgi-hub.c'))
+system_ss.add(when: 'CONFIG_SGI_HUB_TEST', if_true: files('sgi-hub-test.c'))
 system_ss.add(when: 'CONFIG_SGI_IOC3', if_true: files('sgi-ioc3.c'))
 system_ss.add(when: 'CONFIG_SGI_IOMMU_NOTIFIER_TEST', if_true: files('sgi-iommu-notifier-test.c'))
 system_ss.add(when: 'CONFIG_SGI_ROUTER', if_true: files('sgi-router.c'))

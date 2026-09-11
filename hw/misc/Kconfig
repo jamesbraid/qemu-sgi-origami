@@ -301,6 +301,12 @@ config SGI_ROUTER_TEST
     depends on TEST_DEVICES
     select SGI_ROUTER
 
+config SGI_HUB_TEST
+    bool
+    default y if TEST_DEVICES
+    depends on TEST_DEVICES
+    select SGI_HUB
+
 config SGI_ROUTER
     bool
     select ONEWIRE

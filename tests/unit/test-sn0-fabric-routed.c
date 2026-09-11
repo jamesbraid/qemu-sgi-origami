@@ -11,6 +11,13 @@
 #include "qemu/module.h"
 #include "system/cpu-timers.h"
 
+#define RR_DIAG_PARMS          0x00030
+#define RR_STATUS_ERROR(port)  (((uint64_t)(port) << 16) + 0x0008)
+#define RR_CHECK_COUNT(value)  extract64(value, 8, 8)
+#define RR_RETRY_COUNT(value)  extract64(value, 16, 8)
+#define NI_DIAG_SENDERROR      UINT64_C(1)
+#define NI_CHECK_COUNT(value)  extract64(value, 8, 8)
+
 /* Only the Hub endpoint is a fixture; routing uses the real Router devices. */
 bool sgi_hub_first_turn(const SGIHubState *hub, uint32_t destination,
                         uint8_t *turn)
@@ -30,9 +37,24 @@ void sgi_hub_fabric_changed(SGIHubState *hub)
 
 bool sgi_hub_vector_access(SGIHubState *hub, SN0FabricVectorAccess *access)
 {
-    g_assert_cmpint(access->op, ==, SN0_FABRIC_VECTOR_READ);
-    access->value = hub->nasid;
+    if (access->op == SN0_FABRIC_VECTOR_READ) {
+        access->value = hub->nasid;
+    }
     return true;
+}
+
+bool sgi_hub_sends_data_error(const SGIHubState *hub)
+{
+    return hub->ni_diag_parms & NI_DIAG_SENDERROR;
+}
+
+void sgi_hub_record_port_check_error(SGIHubState *hub)
+{
+    uint64_t count = NI_CHECK_COUNT(hub->ni_port_error);
+
+    if (count != 0xff) {
+        hub->ni_port_error = deposit64(hub->ni_port_error, 8, 8, count + 1);
+    }
 }
 
 int64_t cpus_get_virtual_clock(void)
@@ -54,6 +76,97 @@ static void write_router(SGIRouterState *router, uint64_t address,
     };
 
     g_assert_true(sgi_router_access(router, 1, &access));
+}
+
+static uint64_t read_router(SGIRouterState *router, uint64_t address)
+{
+    SN0FabricVectorAccess access = {
+        .op = SN0_FABRIC_VECTOR_READ,
+        .addr = address,
+    };
+
+    g_assert_true(sgi_router_access(router, 1, &access));
+    return access.value;
+}
+
+static void test_diagnostic_error_paths(void)
+{
+    SGIHubState hubs[2] = { { .nasid = 3 }, { .nasid = 7 } };
+    SN0FabricState *fabric = SN0_FABRIC(qdev_new(TYPE_SN0_FABRIC_ROUTED));
+    DeviceState *devices[] = {
+        qdev_new(TYPE_SGI_ROUTER), qdev_new(TYPE_SGI_ROUTER),
+    };
+    SGIRouterState *routers[] = {
+        SGI_ROUTER(devices[0]), SGI_ROUTER(devices[1]),
+    };
+    SN0FabricVectorAccess access = {
+        .op = SN0_FABRIC_VECTOR_WRITE,
+    };
+    uint64_t errors;
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(hubs); i++) {
+        sn0_fabric_add_endpoint(fabric, &hubs[i], i);
+        sn0_fabric_report_number(fabric, i, hubs[i].nasid);
+    }
+    for (unsigned int i = 0; i < G_N_ELEMENTS(devices); i++) {
+        qdev_realize(devices[i], NULL, &error_abort);
+        device_cold_reset(devices[i]);
+        sn0_fabric_routed_add_router(fabric, routers[i]);
+    }
+    sn0_fabric_routed_add_link(fabric, "source",
+        (SN0FabricVertex) { SN0_FABRIC_VERTEX_HUB, 0, 0 },
+        (SN0FabricVertex) { SN0_FABRIC_VERTEX_ROUTER, 0, 5 });
+    sn0_fabric_routed_add_link(fabric, "routers",
+        (SN0FabricVertex) { SN0_FABRIC_VERTEX_ROUTER, 0, 1 },
+        (SN0FabricVertex) { SN0_FABRIC_VERTEX_ROUTER, 1, 2 });
+    sn0_fabric_routed_add_link(fabric, "destination",
+        (SN0FabricVertex) { SN0_FABRIC_VERTEX_ROUTER, 1, 4 },
+        (SN0FabricVertex) { SN0_FABRIC_VERTEX_HUB, 1, 0 });
+    qdev_realize(DEVICE(fabric), NULL, &error_abort);
+    sn0_fabric_build(fabric);
+
+    /* Hub SENDERROR affects only an outbound vector-write request. */
+    hubs[0].ni_diag_parms = NI_DIAG_SENDERROR;
+    g_assert_cmpint(sn0_fabric_vector(fabric, 0, 0x41, &access), ==,
+                    SN0_FABRIC_VECTOR_OK);
+    errors = read_router(routers[0], RR_STATUS_ERROR(5));
+    g_assert_cmpuint(RR_CHECK_COUNT(errors), ==, 1);
+    g_assert_cmpuint(RR_RETRY_COUNT(errors), ==, 0);
+
+    access.op = SN0_FABRIC_VECTOR_READ;
+    g_assert_cmpint(sn0_fabric_vector(fabric, 0, 0x41, &access), ==,
+                    SN0_FABRIC_VECTOR_OK);
+    g_assert_cmpuint(RR_CHECK_COUNT(
+                         read_router(routers[0], RR_STATUS_ERROR(5))), ==, 1);
+
+    /* A Router corrupts the reply received by its immediate peer. */
+    hubs[0].ni_diag_parms = 0;
+    write_router(routers[1], RR_DIAG_PARMS, UINT64_C(1) << (2 - 1));
+    access.op = SN0_FABRIC_VECTOR_WRITE;
+    g_assert_cmpint(sn0_fabric_vector(fabric, 0, 0x41, &access), ==,
+                    SN0_FABRIC_VECTOR_OK);
+    g_assert_cmpuint(NI_CHECK_COUNT(hubs[0].ni_port_error), ==, 0);
+    access.op = SN0_FABRIC_VECTOR_READ;
+    g_assert_cmpint(sn0_fabric_vector(fabric, 0, 0x41, &access), ==,
+                    SN0_FABRIC_VECTOR_OK);
+    errors = read_router(routers[0], RR_STATUS_ERROR(1));
+    g_assert_cmpuint(RR_CHECK_COUNT(errors), ==, 1);
+    g_assert_cmpuint(RR_RETRY_COUNT(errors), ==, 0);
+    g_assert_cmpuint(NI_CHECK_COUNT(hubs[0].ni_port_error), ==, 0);
+
+    /* The Router directly connected to the Hub charges the Hub. */
+    write_router(routers[1], RR_DIAG_PARMS, 0);
+    write_router(routers[0], RR_DIAG_PARMS, UINT64_C(1) << (5 - 1));
+    g_assert_cmpint(sn0_fabric_vector(fabric, 0, 0x41, &access), ==,
+                    SN0_FABRIC_VECTOR_OK);
+    g_assert_cmpuint(NI_CHECK_COUNT(hubs[0].ni_port_error), ==, 1);
+
+    object_unparent(OBJECT(fabric));
+    object_unref(OBJECT(fabric));
+    for (unsigned int i = 0; i < G_N_ELEMENTS(devices); i++) {
+        object_unparent(OBJECT(devices[i]));
+        object_unref(OBJECT(devices[i]));
+    }
 }
 
 static void test_route_length(gconstpointer opaque)
@@ -198,6 +311,8 @@ int main(int argc, char **argv)
     object_property_add_new_container(machine, "unattached");
     g_test_add_func("/sn0-fabric-routed/vector-reply-path",
                     test_vector_reply_path);
+    g_test_add_func("/sn0-fabric-routed/diagnostic-error-paths",
+                    test_diagnostic_error_paths);
     g_test_add_data_func("/sn0-fabric-routed/fifteen-hops",
                         GUINT_TO_POINTER(15), test_route_length);
     g_test_add_data_func("/sn0-fabric-routed/sixteen-hops",
