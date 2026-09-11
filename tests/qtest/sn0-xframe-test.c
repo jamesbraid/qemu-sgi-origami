@@ -8,8 +8,7 @@
  * Origin 200 topology, at a free PCI slot behind the SGI Bridge, so the
  * composition the PC machine has no way to exercise is what is under test: the
  * Bridge's register-window byte-order correction over the device's
- * little-endian delivery, and the Bridge's DMA byte-lane path over the
- * device's native-little-endian byte-buffer DMA.
+ * little-endian delivery, and the distinct descriptor and payload DMA routes.
  *
  * The resolved contract (docs/library/nic-on-bridge-conventions.md): the
  * device declares little-endian and delivers native little-endian; the Bridge
@@ -18,10 +17,9 @@
  * 64-bit, so the slot is marked DEV_64BIT_DEVICE and a 64-bit register access
  * is served in one eight-byte cycle -- the single-cycle path the Bridge's
  * 64-bit-device fix added. Under that setting a guest 64-bit register access
- * composes to identity, and a DMA transfer carries each aligned 32-bit word
- * byte-reversed -- the same word-value correction the on-Bridge QLogic ISP
- * suite pins (tests/qtest/sn0-qlogic-isp-test.c's normalise_words), because the
- * NIC's slot is not one the board exempts from the byte swap.
+ * composes to identity. Descriptor fields still use the slot's byte-lane
+ * correction; packet payload is a byte stream and uses the Bridge's plain DMA
+ * route.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -182,6 +180,8 @@
 #define TXD_OWN                 (1ULL << 56)
 #define TXD_GCF                 (1ULL << 41)
 #define TXD_GCL                 (1ULL << 40)
+#define TXD_LSO_EN              (1ULL << 33)
+#define TXD_LSO_MSS(v)          (((uint64_t)(v) & 0x3fff) << 16)
 
 /* A 1-buffer RxD: host control, control1, control2, buffer pointer. */
 #define RXD_OWN                 (1ULL << 56)
@@ -215,6 +215,9 @@ static const uint8_t station_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 
 /* A multiple of four, so every DMA chunk is one aligned 32-bit word. */
 #define FRAME_LEN               64
+#define ETH_HDR_LEN             14
+#define IPV4_HDR_LEN            20
+#define TCP_HDR_LEN             20
 
 /*
  * The socket backend frames each packet with a four-byte network-order length,
@@ -252,9 +255,7 @@ static size_t net_socket_recv_frame(int fd, uint8_t *buf, size_t buf_size)
  * Big-endian pack/unpack of a 64-bit descriptor word in a byte buffer -- the
  * descriptor format's reset default, which the always-big-endian Origin 200
  * guest never reprograms away from (hw/net/xframe.c's ldq_be_p/stq_be_p
- * descriptor accessors). These bytes are "canonical" from the device's own
- * point of view: dma_write_canonical/dma_read_canonical below apply the
- * Bridge's separate per-word byte-lane correction on top.
+ * descriptor accessors).
  */
 static void stq_be_buf(uint8_t *b, uint64_t v)
 {
@@ -301,9 +302,10 @@ static void normalise_words(uint8_t *buf, size_t len)
 }
 
 /*
- * Guest memory as the device sees it: write canonical bytes word-reversed so a
- * device DMA-read recovers them, and read a device DMA-write back word-reversed
- * to recover the canonical bytes it wrote.
+ * Descriptor memory as the device sees it: write canonical bytes word-reversed
+ * so a device DMA-read recovers them, and read a device DMA-write back
+ * word-reversed to recover the canonical bytes it wrote. Packet payload does
+ * not use these helpers; it is copied byte-for-byte through plain DMA.
  */
 static void dma_write_canonical(QTestState *qts, uint64_t phys,
                                 const uint8_t *buf, size_t len)
@@ -408,6 +410,37 @@ static QTestState *boot_with_socket(int *host_fd)
     return qts;
 }
 
+static QTestState *boot_with_socket_traced(int *host_fd, const char *logfile)
+{
+    QTestState *qts;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 5);
+    *host_fd = sv[0];
+
+    qts = qtest_initf("%s -netdev socket,fd=%d,id=n0 "
+                      "-device xframe,addr=%d,netdev=n0,mac=%s "
+                      "-d trace:sgi_bridge_lane_swap_read,"
+                      "trace:sgi_bridge_lane_swap_write,"
+                      "trace:sgi_bridge_dma_xlate_plain -D %s",
+                      MACHINE_WITH_BRIDGE, sv[1], XFRAME_SLOT, TEST_MAC,
+                      logfile);
+    return qts;
+}
+
+static unsigned count_log_matches(const char *log, const char *needle)
+{
+    const char *cursor = log;
+    unsigned count = 0;
+
+    while ((cursor = strstr(cursor, needle)) != NULL) {
+        count++;
+        cursor += strlen(needle);
+    }
+    return count;
+}
+
 /*
  * Register composition: a big-endian guest 64-bit read of the byte-swapper
  * diagnostic returns the magic through the Bridge's register-window correction
@@ -485,34 +518,39 @@ static void test_swapper_magic_composes_via_32bit_cycles(const void *data)
 }
 
 /*
- * Transmit composition, the load-bearing DMA assertion the PC machine cannot
- * see. The guest lays a single-segment TxD list and its frame buffer in memory
- * the way the machine's DMA byte order requires (canonical bytes word-reversed
- * through dma_write_canonical), rings the doorbell through the window, and the
- * exact frame must appear on the socket backend -- proving the device DMA-read
- * the descriptor's fields (the buffer pointer among them) and the frame buffer
- * through the Bridge and reassembled the driver's bytes. The card then hands
- * the descriptor back with its ownership bit cleared; reading that
- * device-written doubleword back word-reversed must recover the control word,
- * proving the device->guest DMA write composes too.
+ * Packet bytes must take the Bridge's plain DMA route while descriptor fields
+ * retain their byte-lane correction. This machine leaves the slot's DEV_SWAP
+ * bit clear, so correction is active: a 64-byte payload on the old route was
+ * split by lane_swap_ops into sixteen 4-byte callbacks, in addition to the
+ * descriptor's eight, and landed in guest memory with each of those words
+ * reversed. Count the callbacks and compare the bytes without normalization.
  *
- * If a 64-bit descriptor field came back with its two 32-bit halves reversed,
- * that would be a device-side field-ordering issue, not a Bridge fault -- but
- * the Bridge's byte-lane path preserves each word's position and reverses only
- * the bytes within it, so a field the guest wrote word-reversed is recovered
- * whole, halves in place. This asserts that whole-field recovery.
+ * The trace log is named relative to the working directory, which is the
+ * build directory, rather than through g_file_open_tmp as the Tigon and
+ * BCM570x suites do: this project's shared /tmp is a small tmpfs that other
+ * work fills, and a short write there surfaces as an unrelated failure.
  */
-static void test_transmit_frame_composes_through_the_bridge(const void *data)
+static void test_transmit_payload_skips_lane_swap(const void *data)
 {
     int host_fd;
-    QTestState *qts = boot_with_socket(&host_fd);
+    QTestState *qts;
     uint8_t frame[FRAME_LEN];
     uint8_t got[128];
     uint8_t desc[32];
     uint8_t handback[8];
+    g_autofree char *logfile =
+        g_strdup_printf("xframe-lane-swap-%u.log", (unsigned)getpid());
+    g_autofree char *log = NULL;
     uint64_t control1;
+    unsigned lane_reads;
     size_t len;
+    int fd;
     unsigned i;
+
+    fd = open(logfile, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    qts = boot_with_socket_traced(&host_fd, logfile);
 
     bring_up(qts, TXP_BAR_PCI, true);
     qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE, 0));
@@ -522,7 +560,7 @@ static void test_transmit_frame_composes_through_the_bridge(const void *data)
         frame[i] = (uint8_t)(0x80 + i);
     }
 
-    dma_write_canonical(qts, TX_BUF_PHYS, frame, sizeof(frame));
+    qtest_memwrite(qts, TX_BUF_PHYS, frame, sizeof(frame));
 
     /* One card-owned first-and-last segment; length in control1 bits 15:0. */
     memset(desc, 0, sizeof(desc));
@@ -536,17 +574,25 @@ static void test_transmit_frame_composes_through_the_bridge(const void *data)
                TXDL_NUMTXD(0) | TXDL_LGC_FIRST | TXDL_LGC_LAST);
 
     len = net_socket_recv_frame(host_fd, got, sizeof(got));
-    g_assert_cmpint(len, ==, sizeof(frame));
-    g_assert_cmpmem(got, len, frame, sizeof(frame));
 
     /* The card released the descriptor: ownership handed back, length kept. */
     dma_read_canonical(qts, DESC_PHYS, handback, sizeof(handback));
     control1 = ldq_be_buf(handback);
-    g_assert_cmphex(control1 & TXD_OWN, ==, 0);
-    g_assert_cmphex(control1 & 0xffff, ==, FRAME_LEN);
 
     qtest_quit(qts);
     close(host_fd);
+
+    g_assert_true(g_file_get_contents(logfile, &log, NULL, NULL));
+    lane_reads = count_log_matches(log, "lane swap read");
+    g_test_message("lane-swap reads: %u total, %u descriptor",
+                   lane_reads, (unsigned)sizeof(desc) / 4);
+    g_assert_cmpuint(lane_reads, ==, sizeof(desc) / 4);
+    g_assert_cmpuint(count_log_matches(log, "DMA translate plain"), >, 0);
+    g_assert_cmpint(len, ==, sizeof(frame));
+    g_assert_cmpmem(got, len, frame, sizeof(frame));
+    g_assert_cmphex(control1 & TXD_OWN, ==, 0);
+    g_assert_cmphex(control1 & 0xffff, ==, FRAME_LEN);
+    unlink(logfile);
 }
 
 static bool wait_rx_traffic(QTestState *qts, int attempts)
@@ -564,17 +610,11 @@ static bool wait_rx_traffic(QTestState *qts, int attempts)
 }
 
 /*
- * Receive composition: the device's native-little-endian byte-buffer DMA
- * writing a whole frame into the guest, through the Bridge's byte-lane path.
- * The guest posts one card-owned RxD (laid out canonical-word-reversed so the
- * device DMA-reads its buffer pointer and capacity correctly), arms ring 0, and
- * injects a frame addressed to the station MAC. The frame the device deposits
- * must read back -- word-reversed -- as the exact bytes injected, and the
- * completion it writes (length in control2, status and cleared ownership in
- * control1) must compose the same way. This is the frame-data DMA direction the
- * transmit path does not itself pin.
+ * Receive payload is also a byte stream, but the descriptor and its completion
+ * remain word values. Verify the payload without normalization and decode the
+ * completion through the lane-corrected descriptor helper.
  */
-static void test_receive_frame_composes_through_the_bridge(const void *data)
+static void test_receive_payload_skips_lane_swap(const void *data)
 {
     int host_fd;
     QTestState *qts = boot_with_socket(&host_fd);
@@ -606,8 +646,7 @@ static void test_receive_frame_composes_through_the_bridge(const void *data)
     net_socket_send_frame(host_fd, frame, sizeof(frame));
     g_assert_true(wait_rx_traffic(qts, 5000));
 
-    /* The frame the device DMA-wrote, recovered word-reversed. */
-    dma_read_canonical(qts, RX_BUF_PHYS, landed, sizeof(landed));
+    qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(landed));
     g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
 
     /* control1: ownership handed back, status code OK. */
@@ -643,15 +682,14 @@ static uint16_t inet_checksum(const uint8_t *p, size_t len)
     return ~sum;
 }
 
-/* Compare a device-written buffer, read back over its aligned words. */
+/* Compare a device-written payload buffer, which lands byte-for-byte. */
 static void assert_dma_landed(QTestState *qts, uint64_t phys,
                               const uint8_t *want, size_t len)
 {
     uint8_t got[128];
-    size_t aligned = (len + 3) & ~(size_t)3;
 
-    g_assert_cmpuint(aligned, <=, sizeof(got));
-    dma_read_canonical(qts, phys, got, aligned);
+    g_assert_cmpuint(len, <=, sizeof(got));
+    qtest_memread(qts, phys, got, len);
     g_assert_cmpmem(got, len, want, len);
 }
 
@@ -735,6 +773,106 @@ static void test_five_buffer_receive_splits_icmp_ip_header(const void *data)
     g_assert_cmphex((control1 >> 16) & 0xffff, ==, RXD_CKSUM_OK);
     g_assert_cmphex(control1 & 0xffff, ==, 0);
 
+    qtest_quit(qts);
+    close(host_fd);
+}
+
+static size_t build_tso_frame(uint8_t *frame, size_t payload_len)
+{
+    static const uint8_t src_mac[6] = { 0x02, 0x00, 0x53, 0x47, 0x49, 0x01 };
+    uint8_t *ip = frame + ETH_HDR_LEN;
+    uint8_t *tcp = ip + IPV4_HDR_LEN;
+    uint8_t *payload = tcp + TCP_HDR_LEN;
+    size_t len = ETH_HDR_LEN + IPV4_HDR_LEN + TCP_HDR_LEN + payload_len;
+    size_t i;
+
+    memset(frame, 0, len);
+    memcpy(frame, station_mac, sizeof(station_mac));
+    memcpy(frame + 6, src_mac, sizeof(src_mac));
+    frame[12] = 0x08;
+    frame[13] = 0x00;
+
+    ip[0] = 0x45;
+    ip[2] = (IPV4_HDR_LEN + TCP_HDR_LEN + payload_len) >> 8;
+    ip[3] = IPV4_HDR_LEN + TCP_HDR_LEN + payload_len;
+    ip[4] = 0x12;
+    ip[5] = 0x34;
+    ip[8] = 64;
+    ip[9] = IPPROTO_TCP;
+    ip[12] = 192;
+    ip[14] = 2;
+    ip[15] = 1;
+    ip[16] = 192;
+    ip[18] = 2;
+    ip[19] = 2;
+
+    tcp[1] = 1;
+    tcp[3] = 2;
+    tcp[7] = 1;
+    tcp[12] = 5 << 4;
+    tcp[13] = 0x19;
+    tcp[14] = 0x40;
+    for (i = 0; i < payload_len; i++) {
+        payload[i] = 0x80 + i;
+    }
+    return len;
+}
+
+/*
+ * TSO reads the same packet buffer as ordinary transmit before splitting it.
+ * Make that common route observable with a two-segment payload: raw guest
+ * bytes must survive into both emitted segment payloads while descriptor
+ * ownership still returns through the corrected route.
+ */
+static void test_transmit_tso_payload_skips_lane_swap(const void *data)
+{
+    const size_t mss = 32;
+    const size_t payload_len = 50;
+    const size_t hdr_len = ETH_HDR_LEN + IPV4_HDR_LEN + TCP_HDR_LEN;
+    const size_t seg_len[] = { 32, 18 };
+    int host_fd;
+    QTestState *qts = boot_with_socket(&host_fd);
+    uint8_t frame[ETH_HDR_LEN + IPV4_HDR_LEN + TCP_HDR_LEN + 50];
+    uint8_t got[128];
+    uint8_t desc[32];
+    uint8_t handback[8];
+    size_t frame_len;
+    size_t payload_off = 0;
+    unsigned i;
+
+    bring_up(qts, TXP_BAR_PCI, true);
+    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE, 0));
+    frame_len = build_tso_frame(frame, payload_len);
+    qtest_memwrite(qts, TX_BUF_PHYS, frame, frame_len);
+
+    memset(desc, 0, sizeof(desc));
+    stq_be_buf(desc, (uint64_t)frame_len | TXD_OWN | TXD_GCF | TXD_GCL |
+                     TXD_LSO_EN | TXD_LSO_MSS(mss));
+    stq_be_buf(desc + 16, TX_BUF_IOVA);
+    dma_write_canonical(qts, DESC_PHYS, desc, sizeof(desc));
+
+    win_writeq(qts, TXP_TXDL_PAR, DESC_IOVA);
+    win_writeq(qts, TXP_TXDL_LCR,
+               TXDL_NUMTXD(0) | TXDL_LGC_FIRST | TXDL_LGC_LAST);
+
+    for (i = 0; i < G_N_ELEMENTS(seg_len); i++) {
+        size_t len = net_socket_recv_frame(host_fd, got, sizeof(got));
+        size_t seq_off = ETH_HDR_LEN + IPV4_HDR_LEN + 4;
+        uint32_t seq = ((uint32_t)got[seq_off] << 24) |
+                       ((uint32_t)got[seq_off + 1] << 16) |
+                       ((uint32_t)got[seq_off + 2] << 8) |
+                       got[seq_off + 3];
+
+        g_assert_cmpuint(len, ==, hdr_len + seg_len[i]);
+        g_assert_cmpmem(got + hdr_len, seg_len[i],
+                        frame + hdr_len + payload_off, seg_len[i]);
+        g_assert_cmpuint(seq, ==, 1 + payload_off);
+        payload_off += seg_len[i];
+    }
+    g_assert_cmpuint(payload_off, ==, payload_len);
+
+    dma_read_canonical(qts, DESC_PHYS, handback, sizeof(handback));
+    g_assert_cmphex(ldq_be_buf(handback) & TXD_OWN, ==, 0);
     qtest_quit(qts);
     close(host_fd);
 }
@@ -861,12 +999,14 @@ int main(int argc, char **argv)
                         NULL, test_swapper_magic_composes_through_the_bridge);
     qtest_add_data_func("sn0/xframe/swapper-magic-composes-via-32bit-cycles",
                         NULL, test_swapper_magic_composes_via_32bit_cycles);
-    qtest_add_data_func("sn0/xframe/transmit-frame-composes-through-the-bridge",
-                        NULL, test_transmit_frame_composes_through_the_bridge);
-    qtest_add_data_func("sn0/xframe/receive-frame-composes-through-the-bridge",
-                        NULL, test_receive_frame_composes_through_the_bridge);
+    qtest_add_data_func("sn0/xframe/transmit-payload-skips-lane-swap",
+                        NULL, test_transmit_payload_skips_lane_swap);
+    qtest_add_data_func("sn0/xframe/receive-payload-skips-lane-swap",
+                        NULL, test_receive_payload_skips_lane_swap);
     qtest_add_data_func("sn0/xframe/five-buffer-receive-splits-icmp-ip-header",
                         NULL, test_five_buffer_receive_splits_icmp_ip_header);
+    qtest_add_data_func("sn0/xframe/transmit-tso-payload-skips-lane-swap",
+                        NULL, test_transmit_tso_payload_skips_lane_swap);
     qtest_add_data_func("sn0/xframe/combined-interrupts-"
                         "compose-through-the-bridge",
                         NULL, test_combined_interrupts);

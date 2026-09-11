@@ -34,6 +34,7 @@
 #include "hw/net/xframe.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_device.h"
+#include "hw/pci-host/sgi-bridge.h"
 #include "standard-headers/linux/virtio_net.h"
 #include "migration/vmstate.h"
 #include "net/net.h"
@@ -1920,6 +1921,32 @@ static void xframe_tx_pkt_release(void *context, void *base, size_t len)
     /* The fragment points at XframeState::tx_frame, not allocated memory. */
 }
 
+/*
+ * Frame payload is a byte stream, so the model copies it verbatim (see the
+ * descriptor byte-order note above). The slot's own DMA route may byte-lane
+ * correct, which is right for descriptors -- the card reads those as word
+ * values -- and wrong for a verbatim copy: it would reverse each aligned
+ * 32-bit group, and cost one dispatch per word doing it. Payload therefore
+ * takes the Bridge's plain route, the same decode and node-qualified fabric
+ * routing with the byte lanes alone skipped, so its order no longer depends
+ * on what a guest programs into the Bridge's Device register. Descriptors,
+ * completions and the statistics block stay on ordered pci_dma_*, which is
+ * the publication boundary. A machine with no Bridge is already plain.
+ * docs/datasheets/xframe.md, "Frame payload takes the Bridge's plain route",
+ * records what is established here and what is still open.
+ */
+static MemTxResult xframe_dma_read_frame(XframeState *s, uint64_t addr,
+                                         uint8_t *dst, size_t len)
+{
+    return dma_memory_read_relaxed(s->payload_as, addr, dst, len);
+}
+
+static MemTxResult xframe_dma_write_frame(XframeState *s, uint64_t addr,
+                                          const uint8_t *src, size_t len)
+{
+    return dma_memory_write_relaxed(s->payload_as, addr, src, len);
+}
+
 static bool xframe_tx_offload(XframeState *s, size_t frame_len, uint16_t mss)
 {
     const uint8_t *frame = s->tx_frame;
@@ -2021,8 +2048,8 @@ static void xframe_tx_doorbell(XframeState *s, unsigned fifo, uint64_t lcr)
             seg_len = cap - frame_len;
         }
         if (seg_len > 0 &&
-            pci_dma_read(pdev, bufaddr, s->tx_frame + frame_len, seg_len)
-                != MEMTX_OK) {
+            xframe_dma_read_frame(s, bufaddr, s->tx_frame + frame_len,
+                                  seg_len) != MEMTX_OK) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "xframe: transmit buffer read at 0x%" PRIx64
                           " failed; list abandoned\n", bufaddr);
@@ -2749,7 +2776,6 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
 {
     XframeState *s = XFRAME(qemu_get_nic_opaque(nc));
     XframeRxDone done;
-    PCIDevice *pdev = PCI_DEVICE(s);
     size_t orig_size = size;
     uint8_t min_pkt[ETH_ZLEN];
     size_t min_pktsz = sizeof(min_pkt);
@@ -2931,7 +2957,8 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
             bufgot[i] = 0;
             continue;
         }
-        if (pci_dma_write(pdev, bufaddr3[i], buf + placed, seg[i]) != MEMTX_OK) {
+        if (xframe_dma_write_frame(s, bufaddr3[i], buf + placed, seg[i]) !=
+            MEMTX_OK) {
             /*
              * The descriptor itself was fine; a buffer pointer it named was
              * not. Release the descriptor and advance past it below rather
@@ -3119,6 +3146,7 @@ static void xframe_realize(PCIDevice *dev, Error **errp)
     XframeState *s = XFRAME(dev);
     DeviceState *d = DEVICE(dev);
     NetClientState *nc;
+    AddressSpace *plain;
     unsigned i;
 
     s->rx_recovery_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
@@ -3189,6 +3217,9 @@ static void xframe_realize(PCIDevice *dev, Error **errp)
                      PCI_BASE_ADDRESS_MEM_TYPE_64,
                      &s->pif_mmio);
     pci_register_bar(dev, 2, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->txp_mmio);
+
+    plain = sgi_bridge_plain_dma_as(dev);
+    s->payload_as = plain ? plain : pci_get_address_space(dev);
 
     qemu_macaddr_default_if_unset(&s->conf.macaddr);
     s->nic = qemu_new_nic(&xframe_net_info, &s->conf,
