@@ -96,6 +96,11 @@ an empty device raises the master-timeout bit in the error-interrupt
 view, whether or not it appears in the status register, because the
 SN1 consumer probes with a guarded read and then reads the view.
 
+A PCI endpoint may declare that its model already carries the guest's
+byte order. XBridge leaves DMA and PIO through that endpoint's device
+window uncorrected. The broad PCI ranges above the face have no slot
+selection, so the declaration does not apply there.
+
 Space above the face
 ====================
 
@@ -137,7 +142,8 @@ A device's 4 GB of PCI space divides by its top bits:
 
 Each target widget is a link to a memory region; the head keeps a
 plain and a byte-swapping address space for each, so byte placement
-follows the XBridge's own swap tables.
+follows the XBridge's own swap tables. A self-ordered endpoint uses the
+plain address space whatever its DMA swap control contains.
 
 Translation table
 =================

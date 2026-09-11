@@ -299,6 +299,38 @@ static void test_byte_lanes(void)
     qtest_quit(qts);
 }
 
+static void test_self_ordered_dma(void)
+{
+    static const uint8_t expected[] = { 0x40, 0x41, 0x42, 0x43,
+                                        0x44, 0x45, 0x46, 0x47 };
+    QTestState *qts = transport_start(
+        "-global sgi-bridge-dma-test.byte-lane-self-ordered=on");
+    uint8_t actual[sizeof(expected)];
+
+    reg_write(qts, 0x80, 0xa00000);
+    reg_write(qts, 0x200, 0x3010);
+    dma_fill(qts, 0x80008000, 0x40);
+    qtest_memread(qts, TARGET_A + SCRATCH, actual, sizeof(actual));
+    g_assert_cmpmem(actual, sizeof(actual), expected, sizeof(expected));
+    qtest_quit(qts);
+}
+
+static void test_self_ordered_pio(void)
+{
+    static const uint8_t expected[] = { 0xef, 0xcd, 0xab, 0x89,
+                                        0x67, 0x45, 0x23, 0x01 };
+    QTestState *qts = transport_start(
+        "-global sgi-bridge-dma-test.byte-lane-self-ordered=on");
+
+    qtest_writel(qts, BASE + 0x20014, 0x01200000);
+    reg_write(qts, 0x200, 0x481012);
+    for (unsigned i = 0; i < sizeof(expected); i++) {
+        g_assert_cmphex(qtest_readb(qts, BASE + 0x200000 + i), ==,
+                        expected[i]);
+    }
+    qtest_quit(qts);
+}
+
 static void test_upstream_requester(void)
 {
     QTestState *qts = transport_start(
@@ -769,6 +801,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge/dma-routes", test_dma_routes);
     qtest_add_func("/sn1/xbridge/interrupt-packets", test_interrupt_packets);
     qtest_add_func("/sn1/xbridge/byte-lanes", test_byte_lanes);
+    qtest_add_func("/sn1/xbridge/self-ordered-dma", test_self_ordered_dma);
+    qtest_add_func("/sn1/xbridge/self-ordered-pio", test_self_ordered_pio);
     qtest_add_func("/sn1/xbridge/upstream-requester", test_upstream_requester);
     qtest_add_func("/sn1/xbridge/migration-reset", test_migration_reset);
     qtest_add_func("/sn1/xbridge/access-errors", test_access_errors);

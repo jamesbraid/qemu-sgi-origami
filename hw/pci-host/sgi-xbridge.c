@@ -3,7 +3,9 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "hw/pci-host/sgi-xbridge.h"
+#include "hw/pci-host/sgi-bridge.h"
 #include "hw/misc/sgi-xbridge-xbow.h"
+#include "hw/core/hotplug.h"
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
@@ -126,6 +128,12 @@ static const MemoryRegionOps xbridge_swap_ops = {
     .impl.max_access_size = 4,
 };
 
+static bool xbridge_slot_needs_correction(SGIXBridgeHeadState *s,
+                                          unsigned slot)
+{
+    return !(s->self_ordered_slots & (1U << slot));
+}
+
 static uint64_t xbridge_flush_read(void *opaque, hwaddr addr, unsigned size)
 {
     return 0;
@@ -212,8 +220,9 @@ static IOMMUTLBEntry xbridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
                       "sgi-xbridge: DMA target %x is absent\n", widget);
         return entry;
     }
-    entry.target_as = swap ? &s->endpoint[widget].as :
-                             &s->endpoint[widget].swap_as;
+    entry.target_as = swap || !xbridge_slot_needs_correction(s, dma->slot) ?
+                      &s->endpoint[widget].as :
+                      &s->endpoint[widget].swap_as;
     entry.translated_addr = destination & ~entry.addr_mask;
     entry.perm = IOMMU_RW;
     return entry;
@@ -475,6 +484,7 @@ static MemTxResult xbridge_pio(SGIXBridgeHeadState *s, hwaddr addr,
     unsigned width;
     AddressSpace *as;
     MemTxResult result;
+    bool correct;
 
     if (addr < 0x600000) {
         slot = (addr - 0x200000) >> 21;
@@ -495,7 +505,9 @@ static MemTxResult xbridge_pio(SGIXBridgeHeadState *s, hwaddr addr,
     }
     base <<= 20;
     as = dev & (1U << 12) ? &s->pci_mem_as : &s->pci_io_as;
-    if (!(dev & (1U << 13))) {
+    correct = xbridge_slot_needs_correction(s, slot) &&
+              !(dev & (1U << 13));
+    if (correct) {
         offset ^= width - size;
         if (write) {
             xbridge_reverse(bytes, size);
@@ -503,7 +515,7 @@ static MemTxResult xbridge_pio(SGIXBridgeHeadState *s, hwaddr addr,
     }
     result = address_space_rw(as, base + offset, MEMTXATTRS_UNSPECIFIED,
                               bytes, size, write);
-    if (!(dev & (1U << 13)) && !write) {
+    if (correct && !write) {
         xbridge_reverse(bytes, size);
     }
     return result;
@@ -759,6 +771,7 @@ static void xbridge_realize(DeviceState *dev, Error **errp)
     PCI_HOST_BRIDGE(s)->bus = pci_register_root_bus(dev, bus_name,
         xbridge_pci_irq, xbridge_map_pci_irq, s, &s->pci_mem, &s->pci_io,
         0, RAW_PCI_IRQS + 1, TYPE_PCI_BUS);
+    qbus_set_hotplug_handler(BUS(PCI_HOST_BRIDGE(s)->bus), OBJECT(s));
     pci_setup_iommu(PCI_HOST_BRIDGE(s)->bus, &xbridge_iommu_ops, s);
     pci_bus_set_slot_reserved_mask(PCI_HOST_BRIDGE(s)->bus, ~0xffU);
 
@@ -833,6 +846,35 @@ static const VMStateDescription vmstate_xbridge = {
     }
 };
 
+static void xbridge_plug(HotplugHandler *handler, DeviceState *dev,
+                         Error **errp)
+{
+    SGIXBridgeHeadState *s = SGI_XBRIDGE_HEAD(handler);
+    Object *obj = OBJECT(dev);
+    Error *local_err = NULL;
+    bool self_ordered;
+
+    if (!object_dynamic_cast(obj, TYPE_PCI_DEVICE) ||
+        !object_property_find(obj, SGI_BRIDGE_BYTE_LANE_SELF_ORDERED)) {
+        return;
+    }
+
+    self_ordered = object_property_get_bool(
+        obj, SGI_BRIDGE_BYTE_LANE_SELF_ORDERED, &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
+        return;
+    }
+    if (self_ordered) {
+        s->self_ordered_slots |= 1U << PCI_SLOT(PCI_DEVICE(dev)->devfn);
+    }
+}
+
+static bool xbridge_is_hotpluggable_bus(HotplugHandler *handler, BusState *bus)
+{
+    return false;
+}
+
 static const Property xbridge_properties[] = {
     DEFINE_PROP_UINT8("pci-speed", SGIXBridgeHeadState, speed, 0),
 };
@@ -840,6 +882,7 @@ static const Property xbridge_properties[] = {
 static void xbridge_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
+    HotplugHandlerClass *hc = HOTPLUG_HANDLER_CLASS(oc);
     ResettableClass *rc = RESETTABLE_CLASS(oc);
 
     dc->desc = "SGI XBridge PCI head";
@@ -847,6 +890,8 @@ static void xbridge_class_init(ObjectClass *oc, const void *data)
     dc->realize = xbridge_realize;
     dc->unrealize = xbridge_unrealize;
     dc->vmsd = &vmstate_xbridge;
+    hc->plug = xbridge_plug;
+    hc->is_hotpluggable_bus = xbridge_is_hotpluggable_bus;
     rc->phases.hold = xbridge_reset_hold;
     device_class_set_props(dc, xbridge_properties);
 }
@@ -871,6 +916,10 @@ static const TypeInfo xbridge_type = {
     .instance_size = sizeof(SGIXBridgeHeadState),
     .class_init = xbridge_class_init,
     .instance_init = xbridge_init,
+    .interfaces = (const InterfaceInfo[]) {
+        { TYPE_HOTPLUG_HANDLER },
+        { },
+    },
 };
 
 /*
