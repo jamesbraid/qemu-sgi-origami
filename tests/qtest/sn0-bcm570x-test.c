@@ -84,6 +84,17 @@
 #define BCM_RX_STD_RCB_LO       0x2454
 #define BCM_RX_STD_RCB_MAXLEN   0x2458
 #define BCM_MBX_RX_STD_PROD_LO  0x026c
+/*
+ * The jumbo receive ring's control block (public bge/tg3 map; PG105 Table
+ * 341, offset 0x2448, page 438). Max_Len there is unused for jumbo rings --
+ * only Disable Ring (bit 1) and Extended RX Enable (bit 0) do anything.
+ */
+#define BCM_RX_JUMBO_RCB_HI      0x2440
+#define BCM_RX_JUMBO_RCB_LO      0x2444
+#define BCM_RX_JUMBO_RCB_MAXLEN  0x2448
+#define BCM_RX_JUMBO_RCB_NICADDR 0x244c
+#define BCM_MBX_RX_JUMBO_PROD_LO 0x0274
+#define BCM_RCB_FLAG_DISABLE_RING 0x0002u
 #define BCM_SRAM_WINDOW_BASE    0x8000  /* SRAM through the BAR's high half */
 #define BCM_SRAM_RX_RETURN_RCB  0x0200
 #define BCM_MAC_ADDR_0_HIGH     0x0410
@@ -99,7 +110,11 @@
 #define BCM_RXBDFLAG_TCP_UDP_CKSUM 0x0001u
 #define BCM_RXBDFLAG_IP_CKSUM   0x0002u
 #define BCM_RXBDFLAG_END        0x0004u
+#define BCM_RXBDFLAG_JUMBO_RING 0x0020u
 #define BCM_ETH_FCS_LEN         4
+
+/* Status-block idx[0]: rx_producer at byte offset 16 (tg3 layout). */
+#define BCM_STATUS_RX_PROD_OFF  16
 
 /* Guest-physical scratch, mirroring the eg test's low-RAM layout. */
 #define STATUS_PHYS         0x00220000u
@@ -107,6 +122,11 @@
 #define RET_RING_PHYS       0x00240000u
 #define RX_BUF_PHYS         0x00250000u
 #define STD_BUF_SIZE        1536u
+#define JUMBO_RING_PHYS     0x00260000u
+#define JUMBO_BUF_PHYS      0x00270000u
+#define JUMBO_BUF_LEN       9146u
+#define STD_MAXLEN_1518     1518u
+#define BIG_FRAME_LEN       9010u
 
 static void bar_writel(QTestState *qts, uint32_t off, uint32_t val)
 {
@@ -385,6 +405,228 @@ static void test_receive_descriptor_big_endian(const void *data)
 }
 
 /*
+ * The plain DMA route's byte-lane halfword correction (bcm570x_dma_st16:
+ * offset xor 2) lands a 16-bit status field in the other half of its
+ * 4-byte-aligned word from its nominal offset, so the receive producer
+ * reads back at BCM_STATUS_RX_PROD_OFF ^ 2, not BCM_STATUS_RX_PROD_OFF.
+ */
+static uint16_t status_rx_prod_be(QTestState *qts)
+{
+    uint8_t w[2];
+
+    qtest_memread(qts, STATUS_PHYS + (BCM_STATUS_RX_PROD_OFF ^ 2), w,
+                  sizeof(w));
+    return ((uint16_t)w[0] << 8) | w[1];
+}
+
+/*
+ * Post one receive descriptor: the buffer's host address, then the ring
+ * index and buffer length packed into the upper and lower halves of the
+ * third word, then flags in the fourth -- the layout IRIX posts jumbo
+ * buffers with. The standard ring never reads the length or flags words
+ * back, so posting them harmlessly there too keeps one helper for both
+ * rings.
+ */
+static void post_rx_descriptor(QTestState *qts, uint64_t ring_phys,
+                               unsigned int idx, uint64_t buf_phys,
+                               uint16_t buf_len, uint16_t flags)
+{
+    uint8_t bd[BCM_RXBD_SIZE];
+
+    memset(bd, 0, sizeof(bd));
+    put32be(bd + 0, IOVA(buf_phys) >> 32);
+    put32be(bd + 4, IOVA(buf_phys) & 0xffffffff);
+    put32be(bd + BCM_RXBD_IDX_LEN, ((uint32_t)idx << 16) | buf_len);
+    put32be(bd + BCM_RXBD_TYPE_FLAGS, flags);
+    qtest_memwrite(qts, ring_phys + (uint64_t)idx * BCM_RXBD_SIZE, bd,
+                  sizeof(bd));
+}
+
+/*
+ * A frame long enough to force the jumbo ring, addressed to the card, with
+ * an ethertype the checksum offload will not try to parse -- these tests
+ * check which ring a frame lands on, not the offload fields.
+ */
+static void build_big_rx_frame(uint8_t *f, size_t len)
+{
+    static const uint8_t head[] = {
+        0x52, 0x54, 0x00, 0xbc, 0x57, 0x01,     /* destination: the card */
+        0x52, 0x54, 0x00, 0x11, 0x22, 0x33,     /* source */
+        0xff, 0xff,                             /* not IPv4 */
+    };
+    size_t i;
+
+    memset(f, 0, len);
+    memcpy(f, head, sizeof(head));
+    for (i = sizeof(head); i < len; i++) {
+        f[i] = (uint8_t)i;
+    }
+}
+
+/*
+ * A dropped frame produces no completion to poll for. Pump the same
+ * clock-and-sleep cycle wait_for_completed_descriptor uses, for a fixed,
+ * generous span, then let the caller assert nothing arrived.
+ */
+static void pump_settle(QTestState *qts)
+{
+    int attempt;
+
+    for (attempt = 0; attempt < 40; attempt++) {
+        qtest_clock_step(qts, 1 * 1000 * 1000);
+        g_usleep(2000);
+    }
+}
+
+/*
+ * The jumbo RCB's own Max_Len field (offset 0x2448, bits 31-16) is unused by
+ * hardware (PG105 Table 341, page 438; page 91: "This Max_Len field is
+ * ignored in the Receive Jumbo Producer Ring"). Ring selection compares the
+ * frame only against the standard ring's Max_Len, and a frame too big for
+ * that goes to the jumbo ring whenever it is not disabled and has a host
+ * base -- exactly the state IRIX 6.5.30 leaves it in at MTU 9000: it posts
+ * the jumbo RCB's host and NIC addresses but never touches 0x2448.
+ */
+static void test_jumbo_ring_selected_by_standard_length(const void *data)
+{
+    QTestState *qts;
+    uint8_t frame[BIG_FRAME_LEN];
+    uint8_t got[BIG_FRAME_LEN];
+    uint32_t idx_len, type_flags, addr_hi, addr_lo;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
+                      "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC, sv[1]);
+    aim_window_at_bar(qts);
+
+    bar_writel(qts, BCM_HCC_STATUSBLK_ADDR_HI, IOVA(STATUS_PHYS) >> 32);
+    bar_writel(qts, BCM_HCC_STATUSBLK_ADDR_LO, IOVA(STATUS_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_RX_STD_RCB_HI, IOVA(STD_RING_PHYS) >> 32);
+    bar_writel(qts, BCM_RX_STD_RCB_LO, IOVA(STD_RING_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_RX_STD_RCB_MAXLEN, STD_MAXLEN_1518 << 16);
+    bar_writel(qts, BCM_RX_JUMBO_RCB_HI, IOVA(JUMBO_RING_PHYS) >> 32);
+    bar_writel(qts, BCM_RX_JUMBO_RCB_LO, IOVA(JUMBO_RING_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_RX_JUMBO_RCB_NICADDR, 0x00001000u);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 0,
+               IOVA(RET_RING_PHYS) >> 32);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 4,
+               IOVA(RET_RING_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 8,
+               64 << 16);
+    bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    post_rx_descriptor(qts, STD_RING_PHYS, 0, RX_BUF_PHYS, 0, 0);
+    qtest_memset(qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
+    qtest_memset(qts, STATUS_PHYS, 0, 0x50);
+    bar_writel(qts, BCM_MBX_RX_STD_PROD_LO, 1);
+
+    /* Never write 0x2448 -- it stays at its reset value of 0, like IRIX. */
+    post_rx_descriptor(qts, JUMBO_RING_PHYS, 0, JUMBO_BUF_PHYS,
+                       JUMBO_BUF_LEN, BCM_RXBDFLAG_JUMBO_RING);
+    bar_writel(qts, BCM_MBX_RX_JUMBO_PROD_LO, 1);
+    g_assert_cmphex(bar_readl(qts, BCM_MBX_RX_JUMBO_PROD_LO), ==, 1);
+    g_assert_cmphex(bar_readl(qts, BCM_RX_JUMBO_RCB_MAXLEN), ==, 0);
+
+    build_big_rx_frame(frame, sizeof(frame));
+    net_send_frame(sv[0], frame, sizeof(frame));
+    wait_for_completed_descriptor(qts);
+
+    idx_len = bd_word_be(qts, RET_RING_PHYS, BCM_RXBD_IDX_LEN);
+    type_flags = bd_word_be(qts, RET_RING_PHYS, BCM_RXBD_TYPE_FLAGS);
+    addr_hi = bd_word_be(qts, RET_RING_PHYS, 0);
+    addr_lo = bd_word_be(qts, RET_RING_PHYS, 4);
+
+    g_assert_cmphex(idx_len & 0xffff, ==, BIG_FRAME_LEN + BCM_ETH_FCS_LEN);
+    g_assert_cmphex(type_flags & 0xffff, ==,
+                    BCM_RXBDFLAG_END | BCM_RXBDFLAG_JUMBO_RING);
+    g_assert_cmphex(((uint64_t)addr_hi << 32) | addr_lo, ==,
+                    IOVA(JUMBO_BUF_PHYS));
+    g_assert_cmphex(status_rx_prod_be(qts), ==, 1);
+
+    qtest_memread(qts, JUMBO_BUF_PHYS, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), frame, sizeof(frame));
+
+    qtest_quit(qts);
+    close(sv[0]);
+    close(sv[1]);
+}
+
+/*
+ * Disable Ring (bit 1 of 0x2448) is the only thing that turns the jumbo ring
+ * off; a driver sets it "until we're actually ready to start using this
+ * ring" (OpenBSD bge, quoted in the jumbo-RCB evidence report) rather than
+ * clearing Max_Len, which hardware ignores anyway. A frame too big for the
+ * standard ring must be dropped while that bit is set, and the standard
+ * ring must keep working afterward.
+ */
+static void test_jumbo_ring_disabled_drops_oversize(const void *data)
+{
+    QTestState *qts;
+    uint8_t big[BIG_FRAME_LEN];
+    uint8_t small[100];
+    uint8_t got[100];
+    uint32_t idx_len, type_flags;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
+                      "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC, sv[1]);
+    aim_window_at_bar(qts);
+
+    bar_writel(qts, BCM_HCC_STATUSBLK_ADDR_HI, IOVA(STATUS_PHYS) >> 32);
+    bar_writel(qts, BCM_HCC_STATUSBLK_ADDR_LO, IOVA(STATUS_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_RX_STD_RCB_HI, IOVA(STD_RING_PHYS) >> 32);
+    bar_writel(qts, BCM_RX_STD_RCB_LO, IOVA(STD_RING_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_RX_STD_RCB_MAXLEN, STD_MAXLEN_1518 << 16);
+    bar_writel(qts, BCM_RX_JUMBO_RCB_HI, IOVA(JUMBO_RING_PHYS) >> 32);
+    bar_writel(qts, BCM_RX_JUMBO_RCB_LO, IOVA(JUMBO_RING_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_RX_JUMBO_RCB_NICADDR, 0x00001000u);
+    bar_writel(qts, BCM_RX_JUMBO_RCB_MAXLEN, BCM_RCB_FLAG_DISABLE_RING);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 0,
+               IOVA(RET_RING_PHYS) >> 32);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 4,
+               IOVA(RET_RING_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 8,
+               64 << 16);
+    bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    post_rx_descriptor(qts, STD_RING_PHYS, 0, RX_BUF_PHYS, 0, 0);
+    qtest_memset(qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
+    qtest_memset(qts, STATUS_PHYS, 0, 0x50);
+    bar_writel(qts, BCM_MBX_RX_STD_PROD_LO, 1);
+
+    post_rx_descriptor(qts, JUMBO_RING_PHYS, 0, JUMBO_BUF_PHYS,
+                       JUMBO_BUF_LEN, BCM_RXBDFLAG_JUMBO_RING);
+    bar_writel(qts, BCM_MBX_RX_JUMBO_PROD_LO, 1);
+    g_assert_cmphex(bar_readl(qts, BCM_MBX_RX_JUMBO_PROD_LO), ==, 1);
+
+    build_big_rx_frame(big, sizeof(big));
+    net_send_frame(sv[0], big, sizeof(big));
+    pump_settle(qts);
+
+    g_assert_cmphex(bd_word_be(qts, RET_RING_PHYS, BCM_RXBD_IDX_LEN), ==, 0);
+    g_assert_cmphex(status_rx_prod_be(qts), ==, 0);
+
+    build_big_rx_frame(small, sizeof(small));
+    net_send_frame(sv[0], small, sizeof(small));
+    wait_for_completed_descriptor(qts);
+
+    idx_len = bd_word_be(qts, RET_RING_PHYS, BCM_RXBD_IDX_LEN);
+    type_flags = bd_word_be(qts, RET_RING_PHYS, BCM_RXBD_TYPE_FLAGS);
+    g_assert_cmphex(idx_len & 0xffff, ==, sizeof(small) + BCM_ETH_FCS_LEN);
+    g_assert_cmphex(type_flags & 0xffff, ==, BCM_RXBDFLAG_END);
+    g_assert_cmphex(status_rx_prod_be(qts), ==, 1);
+
+    qtest_memread(qts, RX_BUF_PHYS, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), small, sizeof(small));
+
+    qtest_quit(qts);
+    close(sv[0]);
+    close(sv[1]);
+}
+
+/*
  * Enabling host coalescing arms the periodic status tick, and stepping the
  * clock past one tick makes the model post one status block to the programmed
  * host address -- the smallest DMA the card can be made to do. Its address is
@@ -477,6 +719,10 @@ int main(int argc, char **argv)
                         test_receive_descriptor_big_endian);
     qtest_add_data_func("/sn0/bcm570x/station-address-byte-reads", NULL,
                         test_station_address_byte_reads);
+    qtest_add_data_func("/sn0/bcm570x/jumbo-ring-selected-by-standard-length",
+                        NULL, test_jumbo_ring_selected_by_standard_length);
+    qtest_add_data_func("/sn0/bcm570x/jumbo-ring-disabled-drops-oversize",
+                        NULL, test_jumbo_ring_disabled_drops_oversize);
 
     return g_test_run();
 }

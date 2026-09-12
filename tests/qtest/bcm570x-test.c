@@ -3352,19 +3352,33 @@ static void test_receive_vnet_plain(const void *data)
 }
 #endif
 
+/*
+ * Post one jumbo-ring descriptor carrying a buffer length: the jumbo RCB's
+ * own Max_Len (0x2448) is unused by hardware (PG105 page 91, Table 341),
+ * so the model reads each buffer's size from the descriptor the driver
+ * posts, the same field IRIX fills in for its jumbo descriptors.
+ */
+static void write_jumbo_rx_bd(Bcm *b, uint64_t ring, unsigned int idx,
+                              uint64_t buffer, uint16_t buf_len)
+{
+    uint8_t bd[BCM_RXBD_SIZE] = { 0 };
+
+    put32le(bd + 0, buffer >> 32);
+    put32le(bd + 4, buffer & 0xffffffff);
+    put16le(bd + BCM_RXBD_LEN, buf_len);
+    put16le(bd + BCM_RXBD_FLAGS, BCM_RXBDFLAG_JUMBO_RING);
+    qtest_memwrite(b->qts, ring + (uint64_t)idx * BCM_RXBD_SIZE,
+                   bd, sizeof(bd));
+}
+
 /* Post one jumbo-ring buffer alongside the standard ring rx_open_one set up. */
 static void rx_open_jumbo(Bcm *b)
 {
-    uint8_t bd[BCM_RXBD_SIZE];
-
     bar_writel(b, BCM_RX_JUMBO_RCB_HI, JUMBO_RING_PHYS >> 32);
     bar_writel(b, BCM_RX_JUMBO_RCB_LO, JUMBO_RING_PHYS & 0xffffffff);
     bar_writel(b, BCM_RX_JUMBO_RCB_MAXLEN, JUMBO_BUF_SIZE << 16);
 
-    memset(bd, 0, sizeof(bd));
-    put32le(bd + 0, JUMBO_BUF_PHYS >> 32);
-    put32le(bd + 4, JUMBO_BUF_PHYS & 0xffffffff);
-    qtest_memwrite(b->qts, JUMBO_RING_PHYS, bd, sizeof(bd));
+    write_jumbo_rx_bd(b, JUMBO_RING_PHYS, 0, JUMBO_BUF_PHYS, JUMBO_BUF_SIZE);
     bar_writel(b, BCM_MBX_RX_JUMBO_PROD_LO, 1);
 }
 
@@ -3573,7 +3587,8 @@ static void test_receive_waits_for_jumbo_ring(const void *data)
                              sv[1], BCM_SLOT));
     rx_open_one(&b, sv[0]);
     rx_open_jumbo(&b);
-    write_rx_bd(&b, JUMBO_RING_PHYS, 1, JUMBO_STALE_BUF_PHYS);
+    write_jumbo_rx_bd(&b, JUMBO_RING_PHYS, 1, JUMBO_STALE_BUF_PHYS,
+                      JUMBO_BUF_SIZE);
 
     net_socket_send_frame(sv[0], first, BCM_JUMBO_FRAME_LEN);
     wait_for_rx_prod(&b, 1);
