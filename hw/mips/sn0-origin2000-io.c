@@ -178,6 +178,18 @@ static MemTxResult outgoing_read(void *opaque, hwaddr addr, uint64_t *data,
 static MemTxResult outgoing_write(void *opaque, hwaddr addr, uint64_t data,
                                   unsigned size, MemTxAttrs attrs)
 {
+    SN0Origin2000HubOutgoingIO *io = opaque;
+    unsigned int widget = addr >> SN0_XTALK_WIDGET_SHIFT;
+    uint64_t offset = addr & (SN0_XTALK_WIDGET_SIZE - 1);
+    uint8_t bytes[8];
+
+    if (io->active && widget >= 8 && widget <= 15 && size == 1) {
+        stq_be_p(bytes, data);
+        return address_space_write(io->packets,
+                                   ((uint64_t)widget << 48) |
+                                   PACKET_IO | offset,
+                                   attrs, bytes + 8 - size, size);
+    }
     qemu_log_mask(LOG_GUEST_ERROR,
                   "sn0: unsupported outgoing Hub I/O write at 0x%"
                   HWADDR_PRIx " size %u\n", addr, size);

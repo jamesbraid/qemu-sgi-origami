@@ -42,6 +42,13 @@ static uint64_t outgoing_access(QTestState *q, unsigned node, uint64_t addr,
     return qtest_readq(q, CONTROL + 32);
 }
 
+static uint64_t outgoing_write(QTestState *q, unsigned node, uint64_t addr,
+                               unsigned size, uint64_t data)
+{
+    qtest_writeq(q, CONTROL + 8, data);
+    return outgoing_access(q, node, addr, size, true);
+}
+
 static void test_cpu_encoding(void)
 {
     QTestState *q = start("");
@@ -108,6 +115,36 @@ static void test_admission(void)
     g_assert_cmpuint(qtest_readq(q, CONTROL + 40), ==, 0);
     qtest_writeq(q, CONTROL + 72, 1);
     g_assert_cmphex(outgoing_access(q, 2, addr, 8, false), !=, 0);
+    g_assert_cmpuint(qtest_readq(q, CONTROL + 40), ==, 1);
+    qtest_quit(q);
+}
+
+static void test_byte_write(void)
+{
+    const uint64_t addr = (8ULL << WIDGET_SHIFT) | 0x683883;
+    const uint64_t packet = (8ULL << 48) | (1ULL << 47) | 0x683883;
+    const uint8_t marker = 0xa5;
+    const unsigned sizes[] = { 2, 4, 8 };
+    QTestState *q = start("");
+
+    qtest_writeq(q, CONTROL + 40, 0);
+    g_assert_cmphex(outgoing_write(q, 0, addr, 1, marker), ==, 0);
+    g_assert_cmpuint(qtest_readq(q, CONTROL + 40), ==, 1);
+    g_assert_cmphex(qtest_readq(q, CONTROL + 56), ==, packet);
+    g_assert_cmpuint(qtest_readq(q, CONTROL + 64), ==, 1);
+    g_assert_cmphex(qtest_readq(q, CONTROL + 8), ==, marker);
+
+    g_assert_cmphex(outgoing_write(q, 0,
+                                  (7ULL << WIDGET_SHIFT) | 0x683883,
+                                  1, marker), !=, 0);
+    g_assert_cmphex(outgoing_write(q, 0, 1ULL << 38, 1, marker), !=, 0);
+    for (unsigned int i = 0; i < G_N_ELEMENTS(sizes); i++) {
+        g_assert_cmphex(outgoing_write(q, 0, addr, sizes[i], marker), !=, 0);
+    }
+    g_assert_cmpuint(qtest_readq(q, CONTROL + 40), ==, 1);
+
+    qtest_writeq(q, CONTROL + 112, 1);
+    g_assert_cmphex(outgoing_write(q, 0, addr, 1, marker), !=, 0);
     g_assert_cmpuint(qtest_readq(q, CONTROL + 40), ==, 1);
     qtest_quit(q);
 }
@@ -314,6 +351,7 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/sn0/hub-outgoing/cpu-encoding", test_cpu_encoding);
     qtest_add_func("/sn0/hub-outgoing/admission", test_admission);
+    qtest_add_func("/sn0/hub-outgoing/byte-write", test_byte_write);
     qtest_add_func("/sn0/hub-outgoing/cpu-windows", test_cpu_windows);
     qtest_add_func("/sn0/hub-outgoing/reset", test_reset);
     qtest_add_func("/sn0/hub-outgoing/unset", test_unset);

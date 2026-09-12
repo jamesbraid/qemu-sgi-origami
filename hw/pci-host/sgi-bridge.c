@@ -1844,6 +1844,14 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     memory_region_add_subregion(&s->widget, BRIDGE_SSRAM_BASE, &s->ssram);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->widget);
 
+    memory_region_init(&s->packet, obj, "sgi-bridge.packet",
+                       1ULL << SGI_BRIDGE_PACKET_ADDRESS_BITS);
+    memory_region_init_alias(&s->packet_io, obj, "sgi-bridge.packet-io",
+                             &s->widget, 0, memory_region_size(&s->widget));
+    memory_region_add_subregion(&s->packet,
+                                1ULL << (SGI_BRIDGE_PACKET_ADDRESS_BITS - 1),
+                                &s->packet_io);
+
     /* Interrupt packets travel the same fabric a processor's access does. */
     address_space_init(&s->fabric_as, s->fabric, "sgi-bridge.fabric");
 
@@ -1954,6 +1962,11 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     memory_region_init_io(&s->ate_low, obj, &sgi_bridge_ate_low_ops, s,
                           "sgi-bridge.ate-low", BRIDGE_ATE_LOW_SIZE);
     memory_region_add_subregion(&s->widget, BRIDGE_ATE_LOW_BASE, &s->ate_low);
+}
+
+MemoryRegion *sgi_bridge_packet_face(SGIBridgeState *s)
+{
+    return &s->packet;
 }
 
 static void sgi_bridge_unrealize(DeviceState *dev)

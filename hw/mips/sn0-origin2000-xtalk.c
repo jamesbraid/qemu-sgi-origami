@@ -489,7 +489,9 @@ static bool sn0_origin2000_xtalk_fit_board(SN0Origin2000XtalkState *s,
 
     face = sysbus_mmio_get_region(SYS_BUS_DEVICE(board->bridge), 0);
     if (!sgi_xbow_attach_endpoint(s->crossbow[record->crossbow_index],
-                                  record->widget, face, face, errp)) {
+                                  record->widget, face,
+                                  sgi_bridge_packet_face(board->bridge),
+                                  errp)) {
         return false;
     }
 

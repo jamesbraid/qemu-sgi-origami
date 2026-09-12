@@ -284,6 +284,7 @@ typedef struct SN0NodeState {
     SGIBridgeState *prom_pi_probe_bridge;
     unsigned int prom_pi_probe_device_window;
     MemoryRegion small_window[SN0_XTALK_WIDGETS];
+    MemoryRegion big_window[SN0_MAX_CPUS_PER_NODE];
     MemoryRegion mem_slot[SN0_MAX_MEMORY_BANKS][SN0_MAX_MEMORY_SLOTS];
     MemoryRegion hub_local_mem_slot[SN0_MAX_MEMORY_BANKS]
                                           [SN0_MAX_MEMORY_SLOTS];

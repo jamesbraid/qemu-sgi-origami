@@ -98,6 +98,9 @@ static MemTxResult record_read(void *opaque, hwaddr addr, uint64_t *data,
 static MemTxResult record_write(void *opaque, hwaddr addr, uint64_t data,
                                 unsigned size, MemTxAttrs attrs)
 {
+    SN0OutgoingSource *source = opaque;
+
+    source->test->data = data;
     return record_read(opaque, addr, &data, size, attrs);
 }
 
