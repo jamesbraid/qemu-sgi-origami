@@ -434,6 +434,12 @@ static bool sgi_ioc3_eth_tx_enabled(SGIIOC3EthState *s)
            (SGI_IOC3_ENET_MCR_TX_DMA_EN | SGI_IOC3_ENET_MCR_TX_EN);
 }
 
+/*
+ * Runs from the main loop, never from the MMIO write that schedules it: a
+ * synchronous qemu_flush_queued_packets() there would re-enter receive
+ * delivery before the guest's store instruction that posted a buffer, or
+ * flipped MAC_CONTROL, or left loopback, has even returned (issue #554).
+ */
 static void sgi_ioc3_eth_rx_flush(void *opaque)
 {
     SGIIOC3EthState *s = opaque;
@@ -653,9 +659,9 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
 
             dp83840_write(&s->phy, reg, s->mii_data_w);
 
-            /* Leaving loopback re-opens receive; flush what queued. */
+            /* Leaving loopback re-opens receive; defer what queued. */
             if (was_looping && !sgi_ioc3_eth_looping_back(s)) {
-                qemu_flush_queued_packets(qemu_get_queue(s->nic));
+                qemu_bh_schedule(s->rx_flush_bh);
             }
         }
 
@@ -684,7 +690,7 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
         }
         was_enabled = sgi_ioc3_eth_tx_enabled(s);
         s->enet_reg[index] = val;
-        qemu_flush_queued_packets(qemu_get_queue(s->nic));
+        qemu_bh_schedule(s->rx_flush_bh);
 
         /*
          * Enabling starts the engine (the diagnostic queues first); only
@@ -702,7 +708,7 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
             s->rx_timer_armed = true;
         }
         s->enet_reg[index] = val;
-        qemu_flush_queued_packets(qemu_get_queue(s->nic));
+        qemu_bh_schedule(s->rx_flush_bh);
         return;
 
     case SGI_IOC3_ENET_COUNTERS:
