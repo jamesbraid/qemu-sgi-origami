@@ -984,22 +984,105 @@ static void test_baseio_timekeeper_storage_reset(void)
     qtest_quit(qts);
 }
 
-static void test_baseio_timekeeper_big_window_write(void)
+static void test_baseio_timekeeper_repair_stores(void)
 {
-    const uint8_t marker = 0xa5;
-    QTestState *qts = start_module();
+    static const struct {
+        uint16_t offset;
+        uint8_t value;
+    } clock[] = {
+        { 0x7ff8, 0x80 }, { 0x7ff9, 0x00 }, { 0x7ffa, 0x00 },
+        { 0x7ffb, 0x00 }, { 0x7ffd, 0x01 }, { 0x7ffe, 0x01 },
+        { 0x7fff, 0x56 }, { 0x7ff8, 0x00 },
+    };
+    static const struct {
+        uint8_t marker;
+        uint8_t checksum;
+    } repairs[] = {
+        { 1, 0x6d },
+        { 2, 0xad },
+    };
+    for (unsigned int cpu = 0;
+         cpu < 2 * G_N_ELEMENTS(module_nasids); cpu++) {
+        QTestState *qts = start_module();
+        uint8_t marker = repairs[cpu & 1].marker;
+        uint8_t checksum = repairs[cpu & 1].checksum;
+        uint64_t window = XTALK_BASE + UINT64_C(0x20000000) +
+                          IOC3_TIMEKEEPER;
 
+        if (cpu >= 2) {
+            /* The other Crossbow reaches BaseIO through node 0's window. */
+            window += module_nasids[0] * NODE_STRIDE;
+        }
+        g_test_message("source CPU %u", cpu);
+        program_module(qts);
+        program_baseio_ioc3(qts);
+        baseio_window_writeb(qts, IOC3_TIMEKEEPER + 0x3883, 0);
+        hub_write(qts, 0, 0x400160, 0x1800);
+        g_assert_true(qtest_memwrite_cpu(qts, cpu, window + 0x3883,
+                                        &marker, 1));
+        g_assert_cmphex(baseio_window_readb(qts,
+                                            IOC3_TIMEKEEPER + 0x3883),
+                        ==, marker);
+        g_assert_true(qtest_memwrite_cpu(qts, cpu, window + 0x04bc,
+                                        &checksum, 1));
+        for (unsigned int i = 0; i < G_N_ELEMENTS(clock); i++) {
+            g_assert_true(qtest_memwrite_cpu(qts, cpu,
+                                            window + clock[i].offset,
+                                            &clock[i].value, 1));
+        }
+
+        g_assert_cmphex(baseio_window_readb(qts,
+                                            IOC3_TIMEKEEPER + 0x3883),
+                        ==, marker);
+        g_assert_cmphex(baseio_window_readb(qts,
+                                            IOC3_TIMEKEEPER + 0x04bc),
+                        ==, checksum);
+        qtest_system_reset(qts);
+        program_module(qts);
+        program_baseio_ioc3(qts);
+        g_assert_cmphex(baseio_window_readb(qts,
+                                            IOC3_TIMEKEEPER + 0x3883),
+                        ==, marker);
+        g_assert_cmphex(baseio_window_readb(qts,
+                                            IOC3_TIMEKEEPER + 0x04bc),
+                        ==, checksum);
+        qtest_quit(qts);
+    }
+}
+
+static void test_baseio_timekeeper_backing_reopen(void)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn0-origin2000-nvram-XXXXXX", &path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 0x8000), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(path);
+    extra = g_strdup_printf("-drive if=none,id=sgi-nvram0,file=%s,format=raw",
+                            quoted);
+
+    qts = start_module_with(extra);
     program_module(qts);
     program_baseio_ioc3(qts);
-    baseio_window_writeb(qts, IOC3_TIMEKEEPER + 0x3883, 0);
-    hub_write(qts, 0, 0x400160, 0x1800);
-    g_assert_true(qtest_memwrite_cpu(qts, 0,
-                                     XTALK_BASE + 0x20000000 +
-                                     IOC3_TIMEKEEPER + 0x3883,
-                                     &marker, sizeof(marker)));
-    g_assert_cmphex(baseio_window_readb(qts, IOC3_TIMEKEEPER + 0x3883),
-                    ==, marker);
+    baseio_window_writeb(qts, IOC3_TIMEKEEPER + 0x3883, 2);
+    baseio_window_writeb(qts, IOC3_TIMEKEEPER + 0x04bc, 0xad);
     qtest_quit(qts);
+
+    qts = start_module_with(extra);
+    program_module(qts);
+    program_baseio_ioc3(qts);
+    g_assert_cmphex(baseio_window_readb(qts, IOC3_TIMEKEEPER + 0x3883),
+                    ==, 2);
+    g_assert_cmphex(baseio_window_readb(qts, IOC3_TIMEKEEPER + 0x04bc),
+                    ==, 0xad);
+    qtest_quit(qts);
+
+    g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
 static void test_all_module_routes(void)
@@ -1652,8 +1735,10 @@ int main(int argc, char **argv)
                    test_baseio_dma_reaches_far_node);
     qtest_add_func("sn0/origin2000/baseio-timekeeper-storage-reset",
                    test_baseio_timekeeper_storage_reset);
-    qtest_add_func("sn0/origin2000/baseio-timekeeper-big-window-write",
-                   test_baseio_timekeeper_big_window_write);
+    qtest_add_func("sn0/origin2000/baseio-timekeeper-repair-stores",
+                   test_baseio_timekeeper_repair_stores);
+    qtest_add_func("sn0/origin2000/baseio-timekeeper-backing-reopen",
+                   test_baseio_timekeeper_backing_reopen);
     qtest_add_func("sn0/origin2000/oversize-firmware", test_oversize_firmware);
     qtest_add_func("sn0/origin2000/missing-firmware", test_missing_firmware);
     qtest_add_func("sn0/origin2000/migration", test_migration);
