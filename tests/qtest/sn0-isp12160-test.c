@@ -35,10 +35,17 @@
 #define PCI_COMMAND_IO          0x0001
 #define PCI_COMMAND_MEMORY      0x0002
 #define PCI_COMMAND_MASTER      0x0004
+#define PCI_STATUS_RESET        0x02b0
 #define PCI_CLASS_REVISION      0x08
 #define PCI_BAR0                0x10
 #define PCI_BAR1                0x14
+#define PCI_CAPABILITY_LIST     0x34
 #define PCI_INTERRUPT_LINE      0x3c
+
+#define PCI_PM_CAP              0x44
+#define PCI_PM_CAP_ID           0x01
+#define PCI_PM_CAP_VERSION_MASK 0x0007
+#define PCI_PM_CAP_VERSION_1    0x0001
 
 /* Class 0x01 mass storage, subclass 0x00 SCSI, programming interface 0. */
 #define PCI_CLASS_SCSI          0x010000
@@ -326,8 +333,11 @@ static void test_identity(const void *data)
 {
     QTestState *qts = qtest_init(MACHINE);
     uint32_t bar;
+    uint32_t pm_cap;
 
     g_assert_cmphex(qtest_readl(qts, CFG + PCI_VENDOR_ID), ==, ISP_ID_PAIR);
+    g_assert_cmphex(qtest_readl(qts, CFG + PCI_COMMAND), ==,
+                    (uint32_t)PCI_STATUS_RESET << 16);
     g_assert_cmphex(qtest_readl(qts, CFG + PCI_CLASS_REVISION) >> 8, ==,
                     PCI_CLASS_SCSI);
     g_assert_cmphex(qtest_readl(qts, CFG + PCI_CLASS_REVISION) & 0xff, ==,
@@ -335,6 +345,14 @@ static void test_identity(const void *data)
     /* The adapter presents one interrupt line, on INTA. */
     g_assert_cmphex((qtest_readl(qts, CFG + PCI_INTERRUPT_LINE) >> 8) & 0xff,
                     ==, 1);
+
+    g_assert_cmphex(qtest_readl(qts, CFG + PCI_CAPABILITY_LIST) & 0xff, ==,
+                    PCI_PM_CAP);
+    pm_cap = qtest_readl(qts, CFG + PCI_PM_CAP);
+    g_assert_cmphex(pm_cap & 0xff, ==, PCI_PM_CAP_ID);
+    g_assert_cmphex((pm_cap >> 8) & 0xff, ==, 0);
+    g_assert_cmphex((pm_cap >> 16) & PCI_PM_CAP_VERSION_MASK, ==,
+                    PCI_PM_CAP_VERSION_1);
 
     qtest_writel(qts, CFG + PCI_BAR0, 0xffffffffu);
     bar = qtest_readl(qts, CFG + PCI_BAR0);
