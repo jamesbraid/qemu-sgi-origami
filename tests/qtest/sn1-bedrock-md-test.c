@@ -919,6 +919,13 @@ static void test_directory_compatibility_storage(void)
         g_assert_cmphex(qtest_readq(s, DIRECTORY(offsets[i])), ==,
                         UINT64_C(0xa500000000000000) | i);
     }
+    qtest_writeq(s, DIRECTORY(offsets[0]),
+                 UINT64_C(0x89abcdef01234567));
+    qtest_writeq(s, MD(0x40000), 0);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(offsets[0])), ==, 0x01234567);
+    qtest_writeq(s, MD(0x40000), 1);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(offsets[0])), ==,
+                    UINT64_C(0x89abcdef01234567));
     qtest_quit(s);
 }
 
