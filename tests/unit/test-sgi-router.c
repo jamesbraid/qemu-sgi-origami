@@ -973,8 +973,8 @@ static DeviceState *new_nic_router(uint64_t clock, uint64_t serial,
 
 static void test_nic_calibration(void)
 {
-    const uint64_t clocks[] = { 97500000, 100000000, 99000000 };
-    const unsigned int phases[] = { 47, 49, 48 };
+    const uint64_t clocks[] = { 90000000, 97500000, 100000000, 99000000 };
+    const unsigned int phases[] = { 44, 47, 49, 48 };
 
     for (unsigned int i = 0; i < G_N_ELEMENTS(clocks); i++) {
         DeviceState *dev = new_nic_router(clocks[i], 0, true);
@@ -985,7 +985,7 @@ static void test_nic_calibration(void)
             uint64_t request = ((uint64_t)phases[j] << 27) |
                                ((uint64_t)phases[j] << 20) |
                                (UINT64_C(520) << 10) | (65 << 2);
-            bool supported = i == j && i < 2;
+            bool supported = i == j && i < 3;
 
             g_assert_cmpint(access_reg(f.router, 1, SN0_FABRIC_VECTOR_WRITE,
                                        RR_NIC_ULAN, request, NULL), ==,

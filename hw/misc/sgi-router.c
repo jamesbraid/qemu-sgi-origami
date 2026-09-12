@@ -183,7 +183,8 @@ static bool sgi_router_nic_calibrated(SGIRouterState *s, uint64_t value)
     unsigned int second = extract64(value, 27, 7);
 
     return first == second &&
-           ((s->nic_clock_hz == 97500000 && first == 47) ||
+           ((s->nic_clock_hz == 90000000 && first == 44) ||
+            (s->nic_clock_hz == 97500000 && first == 47) ||
             (s->nic_clock_hz == 100000000 && first == 49));
 }
 

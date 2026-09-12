@@ -26,11 +26,17 @@
 #define VECTOR_SOURCE_MASK (UINT64_C(0x7ff) << 51)
 #define ROUTER_PROTECTION 0x10
 #define ROUTER_DIAG_PARMS 0x30
+#define ROUTER_NIC_ULAN 0x38
 #define ROUTER_SCRATCH0 0x20
 #define ROUTER_SCRATCH1 0x28
 #define ROUTER_META_TABLE 0x70000
 #define ROUTER_LOCAL_TABLE 0x70100
 #define ROUTER_PORT_WORKING(port) (UINT64_C(1) << (26 + 3 * (port)))
+#define ROUTER_NIC_PHASE(value) ((uint64_t)(value) << 20 | \
+                                 (uint64_t)(value) << 27)
+#define ROUTER_NIC_RESET (ROUTER_NIC_PHASE(44) | \
+                          (UINT64_C(520) << 10) | (UINT64_C(65) << 2))
+#define ROUTER_NIC_DONE (UINT64_C(1) << 1)
 #define MEM_PROBE UINT64_C(0x800000)
 #define XTALK_BASE UINT64_C(0x20000000000)
 #define XTALK_REG_DATA 4
@@ -578,6 +584,17 @@ static void test_vectors(void)
     g_assert_cmphex(hub_read(qts, 0, NI_VECTOR_READ_DATA), ==,
                     0x123400);
     g_assert_cmphex(vector_op(qts, 0, 1, 0, 0, 0) & VECTOR_VALID, ==, 0);
+
+    /* The selected 90 MHz composition programs both divider fields to 44. */
+    for (i = 0; i < G_N_ELEMENTS(paths); i++) {
+        vector_write(qts, paths[i], ROUTER_NIC_ULAN, ROUTER_NIC_RESET);
+    }
+    qtest_clock_step(qts, 585000);
+    for (i = 0; i < G_N_ELEMENTS(paths); i++) {
+        vector_op(qts, 0, paths[i], ROUTER_NIC_ULAN, 0, 0);
+        g_assert_cmphex(hub_read(qts, 0, NI_VECTOR_READ_DATA) &
+                        ROUTER_NIC_DONE, ==, ROUTER_NIC_DONE);
+    }
     qtest_quit(qts);
 }
 
