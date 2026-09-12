@@ -1,20 +1,38 @@
 /*
- * R10000 peer-CPU store load-linked tests.
+ * R10000 store-conditional under peer-CPU stores.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * The MIPS R10000 Microprocessor User's Manual, version 2.0 of
- * January 29, 1997, page 27, requires SC to fail after an external
- * exclusive intervention or invalidate to the secondary-cache block that
- * contains the linked address.  Page 60 defines an asserted secondary-cache
- * block-size mode as 32 words; the R10000 CPU definition asserts that mode,
- * giving this model a 128-byte block.
+ * Store-conditional here is a compare-exchange: it writes only if the
+ * address still matches the preceding load-linked and the linked word still
+ * holds the value that load read.  That is what QEMU models for every
+ * load-linked and store-conditional target, and on this processor it is an
+ * approximation rather than the whole rule.
  *
- * This diagnostic covers system-mode translated stores executed by another
- * R10000 CPU.  User-mode execution, DMA, host writes, and stores from other
- * CPU models are not observed by the target-specific implementation.
- * The R4000 and R14000 cases preserve QEMU's existing same-block behavior;
- * they are regression controls, not claims about those processors.
+ * The MIPS R10000 Microprocessor User's Manual, version 2.0 of
+ * January 29, 1997, page 27, also fails the store-conditional after an
+ * external exclusive intervention or invalidate to the secondary-cache block
+ * containing the linked address; page 60 makes that block 128 bytes on this
+ * part.  So a peer write to another word of the same block, and a peer write
+ * that changes the linked word and puts the original value back, both fail on
+ * hardware and both succeed here.  QEMU's own multi-threaded design note
+ * (docs/devel/multi-thread-tcg.rst, "Synchronisation Primitives") records the
+ * same approximation and why it has been tolerable: guests present a locking
+ * interface that assumes compare-exchange semantics.
+ *
+ * Hardware gets the block rule from its coherence protocol.  This emulator has
+ * one shared host memory, no data caches and no directory, so there is no
+ * invalidate to observe; the rule can only be manufactured by inspecting every
+ * peer store, which needs the two instructions to be atomic against other
+ * threads.  Doing that through QEMU's exclusive section serialised eight
+ * processors against each other on every lock.
+ *
+ * These cases therefore assert what the model does, so that the approximation
+ * is pinned here rather than rediscovered later: a peer store inside the block
+ * succeeds, a peer write-and-restore succeeds, and a peer write that leaves a
+ * different value fails.  The R4000 and R14000 cases share the contract and are
+ * controls.  The last case is the property guests actually rely on: two
+ * processors incrementing one word never lose a count.
  *
  * Run two CPUs on Malta so no SGI machine device participates.
  * A breakpoint stops the victim immediately after LLD.  The host removes it,
@@ -34,16 +52,15 @@
 #define PEER_OFF            0x800
 
 #define DATA_PHYS           0x00100000
-#define DATA_HIGH_PHYS      UINT64_C(0x80100000)
 #define DATA_KSEG0_HI       0x8010
-#define DATA_KSEG1_HI       0xa010
-#define XKPHYS_CACHED_HI    0xa800
 #define TARGET_OFF          0x000
 #define SAME_BLOCK_OFF      0x078
 #define COMMAND_OFF         0x100
 #define PEER_DONE_OFF       0x108
 #define SC_RESULT_OFF       0x110
 #define VICTIM_DONE_OFF     0x118
+#define COUNTER_OFF         0x120
+#define COUNTER_DONE_OFF    0x128
 
 #define OLD_VALUE           UINT64_C(0x11)
 #define SC_VALUE            UINT64_C(0x22)
@@ -51,15 +68,22 @@
 #define COMMAND_MAGIC       UINT64_C(0x10)
 #define PEER_DONE_MAGIC     UINT64_C(0x20)
 #define VICTIM_DONE_MAGIC   UINT64_C(0x30)
+#define COUNTER_DONE_MAGIC  UINT64_C(0x55)
 
 #define POLL_TRIES          30000
 #define POLL_INTERVAL_US    1000
-#define NO_LINK_STORE_COUNT 128
+
+/*
+ * Enough interleaving that a lost update would show, short enough that the
+ * pair finishes well inside the poll budget above.
+ */
+#define COUNTER_ITERATIONS  2000
+#define COUNTER_CPUS        2
 
 #define OPC_SPECIAL         (0x00u << 26)
 #define OPC_BEQ             (0x04u << 26)
+#define OPC_BNE             (0x05u << 26)
 #define OPC_ADDIU           (0x09u << 26)
-#define OPC_ORI             (0x0du << 26)
 #define OPC_LUI             (0x0fu << 26)
 #define OPC_LLD             (0x34u << 26)
 #define OPC_LD              (0x37u << 26)
@@ -73,7 +97,6 @@
 #define R_T1                9
 #define R_T2                10
 #define R_T3                11
-#define R_T4                12
 
 typedef struct GuestImage {
     uint8_t bytes[IMAGE_SIZE];
@@ -83,10 +106,8 @@ typedef struct GuestImage {
 typedef enum PeerStoreCase {
     PEER_STORE_OUTSIDE_BLOCK,
     PEER_STORE_SAME_BLOCK,
-    PEER_STORE_ALIAS_SAME_BLOCK,
-    PEER_STORE_GPA_ALIAS_SAME_BLOCK,
     PEER_STORE_ABA,
-    PEER_STORE_NO_LINK_BURST,
+    PEER_STORE_TARGET_CHANGED,
 } PeerStoreCase;
 
 static void emit(GuestImage *img, uint32_t insn)
@@ -111,36 +132,6 @@ static void emit_lui(GuestImage *img, int rt, uint16_t imm)
     emit_i(img, OPC_LUI, R_ZERO, rt, imm);
 }
 
-static void emit_ori(GuestImage *img, int rt, int rs, uint16_t imm)
-{
-    emit_i(img, OPC_ORI, rs, rt, imm);
-}
-
-static void emit_dsll(GuestImage *img, int rd, int rt, int sa)
-{
-    emit(img, OPC_SPECIAL | (rt << 16) | (rd << 11) | (sa << 6) | 0x38);
-}
-
-static void emit_dsll32(GuestImage *img, int rd, int rt)
-{
-    emit(img, OPC_SPECIAL | (rt << 16) | (rd << 11) | 0x3c);
-}
-
-static void emit_or(GuestImage *img, int rd, int rs, int rt)
-{
-    emit(img, OPC_SPECIAL | (rs << 21) | (rt << 16) | (rd << 11) | 0x25);
-}
-
-static void emit_mfc0_status(GuestImage *img, int rt)
-{
-    emit(img, 0x40006000 | (rt << 16));
-}
-
-static void emit_mtc0_status(GuestImage *img, int rt)
-{
-    emit(img, 0x40806000 | (rt << 16));
-}
-
 static void emit_ld(GuestImage *img, int rt, int base, uint16_t off)
 {
     emit_i(img, OPC_LD, base, rt, off);
@@ -161,13 +152,24 @@ static void emit_scd(GuestImage *img, int rt, int base, uint16_t off)
     emit_i(img, OPC_SCD, base, rt, off);
 }
 
-static void emit_beq(GuestImage *img, int rs, int rt, unsigned int dest)
+static void emit_branch(GuestImage *img, uint32_t op, int rs, int rt,
+                        unsigned int dest)
 {
     int delta = ((int)dest - (int)img->pos - 4) / 4;
 
     g_assert_cmpint(delta, >=, INT16_MIN);
     g_assert_cmpint(delta, <=, INT16_MAX);
-    emit_i(img, OPC_BEQ, rs, rt, delta);
+    emit_i(img, op, rs, rt, delta);
+}
+
+static void emit_beq(GuestImage *img, int rs, int rt, unsigned int dest)
+{
+    emit_branch(img, OPC_BEQ, rs, rt, dest);
+}
+
+static void emit_bne(GuestImage *img, int rs, int rt, unsigned int dest)
+{
+    emit_branch(img, OPC_BNE, rs, rt, dest);
 }
 
 static void emit_nop(GuestImage *img)
@@ -208,7 +210,6 @@ static void build_peer(GuestImage *img, PeerStoreCase store_case,
                        unsigned int *peer_done)
 {
     unsigned int wait;
-    unsigned int i;
 
     img->pos = PEER_OFF;
     emit_lui(img, R_T0, DATA_KSEG0_HI);
@@ -217,34 +218,12 @@ static void build_peer(GuestImage *img, PeerStoreCase store_case,
     emit_beq(img, R_T1, R_ZERO, wait);
     emit_nop(img);
 
-    if (store_case == PEER_STORE_NO_LINK_BURST) {
+    if (store_case == PEER_STORE_SAME_BLOCK) {
         emit_addiu(img, R_T2, R_ZERO, PEER_VALUE);
-        for (i = 0; i < NO_LINK_STORE_COUNT; i++) {
-            emit_sd(img, R_T2, R_T0, SAME_BLOCK_OFF);
-        }
-    } else if (store_case == PEER_STORE_SAME_BLOCK ||
-               store_case == PEER_STORE_ALIAS_SAME_BLOCK ||
-               store_case == PEER_STORE_GPA_ALIAS_SAME_BLOCK) {
+        emit_sd(img, R_T2, R_T0, SAME_BLOCK_OFF);
+    } else if (store_case == PEER_STORE_TARGET_CHANGED) {
         emit_addiu(img, R_T2, R_ZERO, PEER_VALUE);
-        if (store_case == PEER_STORE_ALIAS_SAME_BLOCK) {
-            emit_lui(img, R_T3, DATA_KSEG1_HI);
-            emit_sd(img, R_T2, R_T3, SAME_BLOCK_OFF);
-        } else if (store_case == PEER_STORE_GPA_ALIAS_SAME_BLOCK) {
-            /* Malta maps the same RAM at GPA 0 and GPA 0x80000000. */
-            emit_mfc0_status(img, R_T3);
-            emit_ori(img, R_T3, R_T3, 0x80); /* Status.KX */
-            emit_mtc0_status(img, R_T3);
-            emit_nop(img);
-            emit_nop(img);
-            emit_lui(img, R_T3, XKPHYS_CACHED_HI);
-            emit_dsll32(img, R_T3, R_T3);
-            emit_ori(img, R_T4, R_ZERO, DATA_HIGH_PHYS >> 16);
-            emit_dsll(img, R_T4, R_T4, 16);
-            emit_or(img, R_T3, R_T3, R_T4);
-            emit_sd(img, R_T2, R_T3, SAME_BLOCK_OFF);
-        } else {
-            emit_sd(img, R_T2, R_T0, SAME_BLOCK_OFF);
-        }
+        emit_sd(img, R_T2, R_T0, TARGET_OFF);
     } else if (store_case == PEER_STORE_ABA) {
         emit_addiu(img, R_T2, R_ZERO, SC_VALUE);
         emit_sd(img, R_T2, R_T0, TARGET_OFF);
@@ -258,21 +237,66 @@ static void build_peer(GuestImage *img, PeerStoreCase store_case,
     emit_halt(img);
 }
 
-static char *write_image(PeerStoreCase store_case, unsigned int *after_lld,
-                         unsigned int *peer_done)
+/*
+ * One processor's share of the contended counter: retry the pair until the
+ * store-conditional reports success, that many times, then publish a marker
+ * of its own so the host can tell both have finished.
+ */
+static void build_counter(GuestImage *img, unsigned int entry,
+                          uint16_t done_off)
 {
-    g_autofree GuestImage *img = g_new0(GuestImage, 1);
+    unsigned int loop;
+
+    img->pos = entry;
+    emit_lui(img, R_T0, DATA_KSEG0_HI);
+    emit_addiu(img, R_T3, R_ZERO, COUNTER_ITERATIONS);
+
+    loop = img->pos;
+    emit_lld(img, R_T1, R_T0, COUNTER_OFF);
+    emit_addiu(img, R_T1, R_T1, 1);
+    emit_scd(img, R_T1, R_T0, COUNTER_OFF);
+    emit_beq(img, R_T1, R_ZERO, loop);
+    emit_nop(img);
+    emit_addiu(img, R_T3, R_T3, -1);
+    emit_bne(img, R_T3, R_ZERO, loop);
+    emit_nop(img);
+
+    emit_addiu(img, R_T2, R_ZERO, COUNTER_DONE_MAGIC);
+    emit_sd(img, R_T2, R_T0, done_off);
+    emit(img, OPC_SYNC);
+    emit_halt(img);
+}
+
+static char *write_bytes(const GuestImage *img)
+{
     char *path = NULL;
     int fd;
 
-    build_victim(img, after_lld);
-    build_peer(img, store_case, peer_done);
     fd = g_file_open_tmp("mips64-r10k-peer-store-XXXXXX", &path, NULL);
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(write(fd, img->bytes, sizeof(img->bytes)), ==,
                     sizeof(img->bytes));
     close(fd);
     return path;
+}
+
+static char *write_image(PeerStoreCase store_case, unsigned int *after_lld,
+                         unsigned int *peer_done)
+{
+    g_autofree GuestImage *img = g_new0(GuestImage, 1);
+
+    build_victim(img, after_lld);
+    build_peer(img, store_case, peer_done);
+    return write_bytes(img);
+}
+
+static char *write_counter_image(void)
+{
+    g_autofree GuestImage *img = g_new0(GuestImage, 1);
+
+    build_counter(img, VICTIM_OFF, COUNTER_DONE_OFF);
+    build_counter(img, PEER_OFF, COUNTER_DONE_OFF + 8);
+    return write_bytes(img);
 }
 
 static void add_breakpoint(QTestState *qts, unsigned int cpu, uint64_t pc)
@@ -303,37 +327,21 @@ static void wait_for_word(QTestState *qts, uint64_t addr, uint64_t expected)
     g_assert_cmphex(qtest_readq(qts, addr), ==, expected);
 }
 
-static void wait_for_migration(QTestState *qts)
-{
-    int64_t deadline = g_get_monotonic_time() + 60 * G_TIME_SPAN_SECOND;
-
-    for (;;) {
-        g_autoptr(QDict) response = qtest_qmp(
-            qts, "{'execute':'query-migrate'}");
-        QDict *result = qdict_get_qdict(response, "return");
-        const char *status = qdict_get_str(result, "status");
-
-        if (!strcmp(status, "completed")) {
-            return;
-        }
-        g_assert_cmpstr(status, !=, "failed");
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(POLL_INTERVAL_US);
-    }
-}
-
 static void run_peer_store(const char *cpu, PeerStoreCase store_case,
                            bool expect_success)
 {
     g_autofree char *image = NULL;
     unsigned int after_lld, peer_done;
-    uint64_t result, target;
+    uint64_t result, target, kept;
     QTestState *qts;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
         return;
     }
+
+    /* A failed store-conditional leaves whatever the peer wrote. */
+    kept = store_case == PEER_STORE_TARGET_CHANGED ? PEER_VALUE : OLD_VALUE;
 
     image = write_image(store_case, &after_lld, &peer_done);
     qts = qtest_initf(
@@ -362,14 +370,11 @@ static void run_peer_store(const char *cpu, PeerStoreCase store_case,
     g_assert_cmphex(qtest_readq(qts, DATA_PHYS + PEER_DONE_OFF), ==,
                     PEER_DONE_MAGIC);
     g_assert_cmphex(qtest_readq(qts, DATA_PHYS + VICTIM_DONE_OFF), ==, 0);
-    if (store_case == PEER_STORE_SAME_BLOCK ||
-        store_case == PEER_STORE_ALIAS_SAME_BLOCK ||
-        store_case == PEER_STORE_GPA_ALIAS_SAME_BLOCK) {
+    if (store_case == PEER_STORE_SAME_BLOCK) {
         g_assert_cmphex(qtest_readq(qts, DATA_PHYS + SAME_BLOCK_OFF), ==,
                         PEER_VALUE);
     } else {
-        g_assert_cmphex(qtest_readq(qts, DATA_PHYS + TARGET_OFF), ==,
-                        OLD_VALUE);
+        g_assert_cmphex(qtest_readq(qts, DATA_PHYS + TARGET_OFF), ==, kept);
     }
 
     qtest_writel(qts, CODE_PHYS + after_lld, 0);
@@ -385,7 +390,7 @@ static void run_peer_store(const char *cpu, PeerStoreCase store_case,
                            result, target);
             g_test_fail();
         }
-    } else if (result != 0 || target != OLD_VALUE) {
+    } else if (result != 0 || target != kept) {
         g_test_message("SCD result=0x%" PRIx64 ", target=0x%" PRIx64,
                        result, target);
         g_test_fail();
@@ -397,24 +402,19 @@ static void test_r10k_outside_block_peer_store(void)
     run_peer_store("R10000", PEER_STORE_OUTSIDE_BLOCK, true);
 }
 
-static void test_r10k_same_block_peer_store(void)
+static void test_r10k_same_block_peer_store_succeeds(void)
 {
-    run_peer_store("R10000", PEER_STORE_SAME_BLOCK, false);
+    run_peer_store("R10000", PEER_STORE_SAME_BLOCK, true);
 }
 
-static void test_r10k_alias_same_block_peer_store(void)
+static void test_r10k_target_aba_peer_store_succeeds(void)
 {
-    run_peer_store("R10000", PEER_STORE_ALIAS_SAME_BLOCK, false);
+    run_peer_store("R10000", PEER_STORE_ABA, true);
 }
 
-static void test_r10k_gpa_alias_same_block_peer_store(void)
+static void test_r10k_target_changed_peer_store(void)
 {
-    run_peer_store("R10000", PEER_STORE_GPA_ALIAS_SAME_BLOCK, false);
-}
-
-static void test_r10k_target_aba_peer_store(void)
-{
-    run_peer_store("R10000", PEER_STORE_ABA, false);
+    run_peer_store("R10000", PEER_STORE_TARGET_CHANGED, false);
 }
 
 static void test_r4k_normal_llsc(void)
@@ -427,109 +427,34 @@ static void test_r14k_normal_llsc(void)
     run_peer_store("R14000", PEER_STORE_SAME_BLOCK, true);
 }
 
-static void test_r10k_migration_drops_link(void)
-{
-    g_autofree char *directory = NULL;
-    g_autofree char *image = NULL;
-    g_autofree char *socket = NULL;
-    g_autofree char *uri = NULL;
-    unsigned int after_lld, peer_done;
-    GError *error = NULL;
-    QTestState *from, *to;
-
-    if (!qtest_has_accel("tcg")) {
-        g_test_skip("TCG is unavailable");
-        return;
-    }
-
-    image = write_image(PEER_STORE_OUTSIDE_BLOCK, &after_lld, &peer_done);
-    directory = g_dir_make_tmp("mips64-r10k-llsc-migration-XXXXXX", &error);
-    g_assert_no_error(error);
-    socket = g_build_filename(directory, "migration.sock", NULL);
-    uri = g_strdup_printf("unix:%s", socket);
-
-    from = qtest_initf(
-        "-M malta -m 64M -cpu R10000 "
-        "-device loader,file=%s,addr=0x%" PRIx64 ",force-raw=on "
-        "-device loader,addr=0x%" PRIx64 ",cpu-num=0 "
-        "-accel tcg,thread=multi -no-reboot -no-shutdown -S",
-        image, CODE_PHYS, CODE_KSEG0 + VICTIM_OFF);
-    to = qtest_initf(
-        "-M malta -m 64M -cpu R10000 "
-        "-device loader,file=%s,addr=0x%" PRIx64 ",force-raw=on "
-        "-device loader,addr=0x%" PRIx64 ",cpu-num=0 "
-        "-accel tcg,thread=multi -no-reboot -no-shutdown -S "
-        "-incoming defer",
-        image, CODE_PHYS, CODE_KSEG0 + VICTIM_OFF);
-    unlink(image);
-
-    /* llval is not migrated, so zero keeps the value comparison eligible. */
-    qtest_writeq(from, DATA_PHYS + TARGET_OFF, 0);
-    add_breakpoint(from, 0, CODE_KSEG0 + after_lld);
-    qtest_qmp_assert_success(from, "{'execute':'cont'}");
-    qtest_qmp_eventwait(from, "STOP");
-    g_assert_cmphex(qtest_readq(from, DATA_PHYS + VICTIM_DONE_OFF), ==, 0);
-    remove_breakpoint(from, 0, CODE_KSEG0 + after_lld);
-    qtest_qmp_assert_success(from, "{'execute':'cont'}");
-    qtest_qmp_assert_success(from, "{'execute':'stop'}");
-
-    qtest_qmp_assert_success(to,
-        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
-    qtest_qmp_assert_success(from,
-        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
-    wait_for_migration(from);
-
-    qtest_writel(to, CODE_PHYS + after_lld, 0);
-    qtest_qmp_assert_success(to, "{'execute':'cont'}");
-    wait_for_word(to, DATA_PHYS + VICTIM_DONE_OFF, VICTIM_DONE_MAGIC);
-    g_assert_cmphex(qtest_readq(to, DATA_PHYS + SC_RESULT_OFF), ==, 0);
-    g_assert_cmphex(qtest_readq(to, DATA_PHYS + TARGET_OFF), ==, 0);
-
-    qtest_quit(from);
-    qtest_quit(to);
-    unlink(socket);
-    g_assert_cmpint(rmdir(directory), ==, 0);
-}
-
-static void test_r10k_no_link_skips_slow_path(void)
+static void test_r10k_contended_counter(void)
 {
     g_autofree char *image = NULL;
-    g_autofree char *trace = NULL;
-    g_autofree char *trace_path = NULL;
-    unsigned int after_lld, peer_done;
     QTestState *qts;
-    int fd;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
         return;
     }
 
-    image = write_image(PEER_STORE_NO_LINK_BURST, &after_lld, &peer_done);
-    fd = g_file_open_tmp("mips64-r10k-llsc-slow-path-XXXXXX", &trace_path,
-                         NULL);
-    g_assert_cmpint(fd, >=, 0);
-    close(fd);
+    image = write_counter_image();
     qts = qtest_initf(
-        "-M malta -m 64M -cpu R10000 "
+        "-M malta -m 64M -smp 2 -cpu R10000 "
         "-device loader,file=%s,addr=0x%" PRIx64 ",force-raw=on "
         "-device loader,addr=0x%" PRIx64 ",cpu-num=0 "
-        "-trace mips_r10k_llsc_peer_store_slow_path,file=%s "
-        "-accel tcg -no-reboot -no-shutdown -S",
-        image, CODE_PHYS, CODE_KSEG0 + PEER_OFF, trace_path);
+        "-device loader,addr=0x%" PRIx64 ",cpu-num=1 "
+        "-accel tcg,thread=multi -no-reboot -no-shutdown -S",
+        image, CODE_PHYS, CODE_KSEG0 + VICTIM_OFF, CODE_KSEG0 + PEER_OFF);
     unlink(image);
 
-    qtest_writeq(qts, DATA_PHYS + COMMAND_OFF, COMMAND_MAGIC);
-    add_breakpoint(qts, 0, CODE_KSEG0 + peer_done);
-    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
-    qtest_qmp_eventwait(qts, "STOP");
-    g_assert_cmphex(qtest_readq(qts, DATA_PHYS + PEER_DONE_OFF), ==,
-                    PEER_DONE_MAGIC);
-    qtest_quit(qts);
+    qtest_writeq(qts, DATA_PHYS + COUNTER_OFF, 0);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    wait_for_word(qts, DATA_PHYS + COUNTER_DONE_OFF, COUNTER_DONE_MAGIC);
+    wait_for_word(qts, DATA_PHYS + COUNTER_DONE_OFF + 8, COUNTER_DONE_MAGIC);
 
-    g_assert_true(g_file_get_contents(trace_path, &trace, NULL, NULL));
-    g_assert_null(strstr(trace, "mips_r10k_llsc_peer_store_slow_path"));
-    g_assert_cmpint(g_unlink(trace_path), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, DATA_PHYS + COUNTER_OFF), ==,
+                     (uint64_t)COUNTER_CPUS * COUNTER_ITERATIONS);
+    qtest_quit(qts);
 }
 
 int main(int argc, char **argv)
@@ -537,21 +462,17 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/r10k-llsc-peer-store/outside-block",
                    test_r10k_outside_block_peer_store);
-    qtest_add_func("/r10k-llsc-peer-store/same-block",
-                   test_r10k_same_block_peer_store);
-    qtest_add_func("/r10k-llsc-peer-store/alias-same-block",
-                   test_r10k_alias_same_block_peer_store);
-    qtest_add_func("/r10k-llsc-peer-store/gpa-alias-same-block",
-                   test_r10k_gpa_alias_same_block_peer_store);
-    qtest_add_func("/r10k-llsc-peer-store/target-aba",
-                   test_r10k_target_aba_peer_store);
+    qtest_add_func("/r10k-llsc-peer-store/same-block-succeeds",
+                   test_r10k_same_block_peer_store_succeeds);
+    qtest_add_func("/r10k-llsc-peer-store/target-aba-succeeds",
+                   test_r10k_target_aba_peer_store_succeeds);
+    qtest_add_func("/r10k-llsc-peer-store/target-changed",
+                   test_r10k_target_changed_peer_store);
     qtest_add_func("/r10k-llsc-peer-store/r4000-normal",
                    test_r4k_normal_llsc);
     qtest_add_func("/r10k-llsc-peer-store/r14000-normal",
                    test_r14k_normal_llsc);
-    qtest_add_func("/r10k-llsc-peer-store/migration-drops-link",
-                   test_r10k_migration_drops_link);
-    qtest_add_func("/r10k-llsc-peer-store/no-link-skips-slow-path",
-                   test_r10k_no_link_skips_slow_path);
+    qtest_add_func("/r10k-llsc-peer-store/contended-counter",
+                   test_r10k_contended_counter);
     return g_test_run();
 }

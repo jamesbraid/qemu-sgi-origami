@@ -14,9 +14,6 @@ DEF_HELPER_3(ll, tl, env, tl, i32)
 #ifdef TARGET_MIPS64
 DEF_HELPER_3(lld, tl, env, tl, i32)
 #endif
-DEF_HELPER_1(r10k_llsc_valid, i32, env)
-DEF_HELPER_1(r10k_llsc_clear, void, env)
-DEF_HELPER_3(r10k_llsc_note_cpu_store, void, env, tl, i32)
 #endif
 
 DEF_HELPER_FLAGS_1(bitswap, TCG_CALL_NO_RWG_SE, tl, tl)

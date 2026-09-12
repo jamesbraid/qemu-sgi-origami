@@ -4,9 +4,6 @@
 mips_translate_c0(const char *instr, const char *rn, int reg, int sel) "%s %s (reg %d sel %d)"
 mips_translate_tr(const char *instr, int rt, int u, int sel, int h) "%s (reg %d u %d sel %d h %d)"
 
-# ldst_helper.c
-mips_r10k_llsc_peer_store_slow_path(int cpu, uint64_t addr) "cpu %d addr 0x%" PRIx64
-
 # op_helper.c
 mips_transaction_failed(int cpu, uint64_t vaddr, uint64_t paddr, unsigned int size, int access, uint32_t response) "cpu %d vaddr 0x%" PRIx64 " paddr 0x%" PRIx64 " size %u access %d response 0x%x"
 
