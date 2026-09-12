@@ -1963,7 +1963,9 @@ int main(int argc, char **argv)
             "link-endpoint", "link-port", "link-kind", "link-duplicate",
             "link-name", "cpu-range", "cpu-duplicate", "cpu-count",
             "memory-total", "memory-geometry", "memory-bank", "address-map",
-            "xtalk-reference",
+            "xtalk-reference", "module-serial", "module-binding",
+            "module-cross-binding", "module-rom-crc", "module-page-crc",
+            "module-rom-duplicate",
         };
 
         qtest_add_func("sn0/origin2000/reordered-model", test_reordered_model);

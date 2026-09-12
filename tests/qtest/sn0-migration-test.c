@@ -46,6 +46,10 @@
 #define FLASH_PROGRAM_TARGET    0xe0100
 
 #define HUB_LOCAL               (SPACE_XTALK + 0x01000000)
+#define HUB_ONEWIRE             (HUB_LOCAL + 0x2000a8)
+#define HUB_ONEWIRE_DONE        (1ULL << 1)
+#define HUB_ONEWIRE_RX          (1ULL << 0)
+#define HUB_ONEWIRE_RESET       ((0x31ULL << 27) | (0x0eULL << 20))
 #define NI_SCRATCH_0            0x600100
 #define NI_SCRATCH_1            0x600108
 #define NI_META_TABLE_LAST      0x6380f8
@@ -253,6 +257,84 @@ static void migrate_stopped_vm(QTestState *from, const char *uri)
         g_assert(g_test_timer_elapsed() < 30);
         g_usleep(1000);
     }
+}
+
+static bool module_onewire_slot(QTestState *qts, unsigned int pulse)
+{
+    uint64_t value;
+
+    qtest_writeq(qts, HUB_ONEWIRE,
+                 HUB_ONEWIRE_RESET | ((uint64_t)pulse << 10) | (4ULL << 2));
+    qtest_clock_step(qts, (pulse + 4) * 1000);
+    value = qtest_readq(qts, HUB_ONEWIRE);
+    g_assert_cmphex(value & HUB_ONEWIRE_DONE, ==, HUB_ONEWIRE_DONE);
+    return value & HUB_ONEWIRE_RX;
+}
+
+static void module_onewire_write_byte(QTestState *qts, uint8_t value)
+{
+    for (unsigned int bit = 0; bit < 8; bit++) {
+        module_onewire_slot(qts, ((value >> bit) & 1) ? 8 : 60);
+    }
+}
+
+static uint8_t module_onewire_read_byte(QTestState *qts)
+{
+    uint8_t value = 0;
+
+    for (unsigned int bit = 0; bit < 8; bit++) {
+        value |= module_onewire_slot(qts, 8) << bit;
+    }
+    return value;
+}
+
+static void test_module_identity_page_progress_survives_migration(
+    const void *data)
+{
+    static const uint8_t rom[8] = {
+        0x09, 0x09, 0x00, 0x00, 0x00, 0x00, 0x10, 0xc7,
+    };
+    static const uint8_t page[32] = {
+        0x01, 0x4b, 0x4f, 0x52, 0x49, 0x47, 0x41, 0x4d,
+        0x49, 0x30, 0x31, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xf9, 0x27,
+    };
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-module-identity-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init("-M origin2000");
+    dest_cmdline = g_strdup_printf("-M origin2000 -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    g_assert_false(module_onewire_slot(from, 0x321));
+    module_onewire_write_byte(from, 0x55);
+    for (unsigned int i = 0; i < sizeof(rom); i++) {
+        module_onewire_write_byte(from, rom[i]);
+    }
+    module_onewire_write_byte(from, 0xc3);
+    module_onewire_write_byte(from, 0);
+    module_onewire_write_byte(from, 0);
+    module_onewire_read_byte(from); /* command/address CRC */
+    for (unsigned int i = 0; i < 10; i++) {
+        g_assert_cmphex(module_onewire_read_byte(from), ==, page[i]);
+    }
+
+    migrate_stopped_vm(from, uri);
+    for (unsigned int i = 10; i < sizeof(page); i++) {
+        g_assert_cmphex(module_onewire_read_byte(to), ==, page[i]);
+    }
+
+    qtest_quit(to);
+    qtest_quit(from);
 }
 
 static size_t fill_socket_send_queue(int fd)
@@ -1570,6 +1652,9 @@ int main(int argc, char **argv)
                         test_ethernet_interrupt_reasserts_after_migration);
     qtest_add_data_func("sn0/migration/timekeeper-images-survive", NULL,
                         test_timekeeper_images_survive_migration);
+    qtest_add_data_func("sn0/migration/module-identity-page-progress",
+                        NULL,
+                        test_module_identity_page_progress_survives_migration);
 
     return g_test_run();
 }

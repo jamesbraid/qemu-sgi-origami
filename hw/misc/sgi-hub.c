@@ -11,6 +11,8 @@
 #include "qemu/bswap.h"
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
+#include "hw/1wire/crc.h"
+#include "hw/1wire/ds2502.h"
 #include "hw/1wire/ds2505.h"
 #include "hw/misc/sgi-hub.h"
 #include "hw/misc/sgi-elsc.h"
@@ -180,6 +182,7 @@
  * question, and a blank part states nothing.
  */
 #define MD_ONEWIRE_ROM_FAMILY      0x0b
+#define MD_MODULE_ROM_FAMILY       0x09
 #define MD_ONEWIRE_SERIAL_MASK     MAKE_64BIT_MASK(0, 48)
 #define MD_CONFIG_MASK          0x003fffffffffffffULL  /* 54-bit register */
 #define MD_CONFIG_RESET         0x001e7fbc3fffffffULL
@@ -2918,6 +2921,29 @@ static void sgi_hub_reset_exit(Object *obj, ResetType type)
     sgi_hub_calias_update(s);
 }
 
+bool sgi_hub_attach_module_identity(SGIHubState *s,
+                                    const SGIHubModuleIdentity *identity,
+                                    Error **errp)
+{
+    if (qdev_is_realized(DEVICE(s))) {
+        error_setg(errp, "cannot attach Hub module identity after realize");
+        return false;
+    }
+    if (s->has_module_identity) {
+        error_setg(errp, "Hub already has a module identity responder");
+        return false;
+    }
+    if (identity->rom[0] != MD_MODULE_ROM_FAMILY ||
+        onewire_crc8(0, identity->rom, sizeof(identity->rom)) != 0) {
+        error_setg(errp, "Hub module identity has an invalid one-wire ROM");
+        return false;
+    }
+
+    s->module_identity = *identity;
+    s->has_module_identity = true;
+    return true;
+}
+
 static void sgi_hub_realize(DeviceState *dev, Error **errp)
 {
     SGIHubState *s = SGI_HUB(dev);
@@ -3152,6 +3178,23 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
         object_property_add_child(OBJECT(dev), "onewire-part", OBJECT(part));
         qdev_prop_set_uint8(part, "family", MD_ONEWIRE_ROM_FAMILY);
         qdev_prop_set_uint64(part, "serial", s->onewire_serial);
+        if (!qdev_realize_and_unref(part, BUS(s->onewire_bus), errp)) {
+            return;
+        }
+    }
+    if (s->has_module_identity) {
+        DeviceState *part = qdev_new(TYPE_ONEWIRE_DS2502);
+        uint64_t serial = 0;
+
+        for (n = 0; n < 6; n++) {
+            serial |= (uint64_t)s->module_identity.rom[1 + n] << (8 * n);
+        }
+        object_property_add_child(OBJECT(dev), "module-identity",
+                                  OBJECT(part));
+        qdev_prop_set_uint8(part, "family", MD_MODULE_ROM_FAMILY);
+        qdev_prop_set_uint64(part, "serial", serial);
+        ds2502_set_image(part, &s->module_identity.page[0][0],
+                         sizeof(s->module_identity.page));
         if (!qdev_realize_and_unref(part, BUS(s->onewire_bus), errp)) {
             return;
         }
