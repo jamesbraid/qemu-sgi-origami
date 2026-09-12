@@ -19,6 +19,7 @@
 #include "migration/vmstate.h"
 #include "system/block-backend.h"
 #include "qom/object.h"
+#include "trace.h"
 
 /* #define DEBUG_AT24C */
 
@@ -113,6 +114,8 @@ uint8_t at24c_eeprom_recv(I2CSlave *s)
 
     ret = ee->mem[ee->cur];
 
+    trace_at24c_read(s->address, ee->cur, ret);
+
     ee->cur = (ee->cur + 1u) % ee->rsize;
     DPRINTK("Recv %02x %c\n", ret, ret);
 
@@ -136,6 +139,7 @@ int at24c_eeprom_send(I2CSlave *s, uint8_t data)
     } else {
         if (ee->writable) {
             DPRINTK("Send %02x\n", data);
+            trace_at24c_write(s->address, ee->cur, data);
             ee->mem[ee->cur] = data;
             ee->changed = true;
         } else {
