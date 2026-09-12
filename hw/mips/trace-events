@@ -4,3 +4,6 @@ malta_fpga_display(const char *text) "ASCII '%s'"
 
 # sn0-firmware.c
 sn0_firmware_widget(unsigned int node, uint8_t widget) "node %u widget %u"
+
+# sn0.c
+sn0_promdata_forward(int cpu, uint64_t node_base, uint64_t offset, unsigned int size, bool write, bool mips_uncached, bool phase_private, bool leaving_private, uint64_t pc, uint32_t result) "cpu %d node_base 0x%" PRIx64 " offset 0x%" PRIx64 " size %u write %d uncached %d private %d leaving %d pc 0x%" PRIx64 " result 0x%x"

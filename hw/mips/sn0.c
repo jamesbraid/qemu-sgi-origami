@@ -29,6 +29,7 @@
 #include "system/reset.h"
 #include "migration/vmstate.h"
 #include "trace/control.h"
+#include "trace.h"
 #include "cpu.h"
 #include "sn0.h"
 
@@ -212,6 +213,10 @@ static MemTxResult sn0_promdata_read(void *opaque, hwaddr addr, uint64_t *val,
     result = address_space_read(&address_space_memory,
                                 s->node_base + SN0_PROMDATA_PADDR + addr,
                                 attrs, bytes, size);
+    trace_sn0_promdata_forward(s->cpu->parent_obj.cpu_index, s->node_base,
+                               addr, size, false, attrs.mips_uncached,
+                               s->phase_private, s->leaving_private,
+                               s->cpu->env.active_tc.PC, result);
     *val = ldn_be_p(bytes, size);
     return result;
 }
@@ -221,6 +226,7 @@ static MemTxResult sn0_promdata_write(void *opaque, hwaddr addr, uint64_t val,
 {
     SN0PromDataState *s = opaque;
     uint8_t bytes[8];
+    MemTxResult result;
 
     if (sn0_promdata_is_private(s, attrs)) {
         stn_be_p(memory_region_get_ram_ptr(&s->data) + addr, size, val);
@@ -229,9 +235,14 @@ static MemTxResult sn0_promdata_write(void *opaque, hwaddr addr, uint64_t val,
     }
 
     stn_be_p(bytes, size, val);
-    return address_space_write(&address_space_memory,
-                               s->node_base + SN0_PROMDATA_PADDR + addr,
-                               attrs, bytes, size);
+    result = address_space_write(&address_space_memory,
+                                 s->node_base + SN0_PROMDATA_PADDR + addr,
+                                 attrs, bytes, size);
+    trace_sn0_promdata_forward(s->cpu->parent_obj.cpu_index, s->node_base,
+                               addr, size, true, attrs.mips_uncached,
+                               s->phase_private, s->leaving_private,
+                               s->cpu->env.active_tc.PC, result);
+    return result;
 }
 
 static const MemoryRegionOps sn0_promdata_ops = {

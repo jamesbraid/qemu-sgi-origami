@@ -27,6 +27,7 @@
 #include "qemu/log.h"
 #include "qemu/crc32c.h"
 #include "qemu/timer.h"
+#include "trace.h"
 #include <zlib.h>
 
 static inline target_ulong bitswap(target_ulong v)
@@ -350,6 +351,9 @@ void mips_cpu_do_transaction_failed(CPUState *cs, hwaddr physaddr,
 {
     MIPSCPUClass *mcc = MIPS_CPU_GET_CLASS(cs);
     CPUMIPSState *env = cpu_env(cs);
+
+    trace_mips_transaction_failed(cs->cpu_index, addr, physaddr, size,
+                                  access_type, response);
 
     /*
      * A failed store is not the processor's to report. The R10000 User's
