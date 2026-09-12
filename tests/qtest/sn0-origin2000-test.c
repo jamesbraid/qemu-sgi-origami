@@ -37,6 +37,8 @@
 #define ROUTER_NIC_RESET (ROUTER_NIC_PHASE(44) | \
                           (UINT64_C(520) << 10) | (UINT64_C(65) << 2))
 #define ROUTER_NIC_DONE (UINT64_C(1) << 1)
+#define ROUTER_NIC_DATA UINT64_C(1)
+#define ROUTER_STATUS_INPUT_PORT(value) (((value) >> 46) & 7)
 #define MEM_PROBE UINT64_C(0x800000)
 #define XTALK_BASE UINT64_C(0x20000000000)
 #define XTALK_REG_DATA 4
@@ -434,6 +436,97 @@ static void vector_write(QTestState *qts, uint64_t route, uint64_t address,
     g_assert_cmphex(status & VECTOR_SOURCE_MASK, ==, 0);
 }
 
+typedef struct RouterNIC {
+    QTestState *qts;
+    unsigned int source;
+    uint64_t route;
+} RouterNIC;
+
+static uint64_t router_nic_read(RouterNIC *nic)
+{
+    uint64_t status = vector_op(nic->qts, nic->source, nic->route,
+                                ROUTER_NIC_ULAN, 0, 0);
+
+    g_assert_cmphex(status & (VECTOR_VALID | 7), ==, VECTOR_VALID);
+    return hub_read(nic->qts, nic->source, NI_VECTOR_READ_DATA);
+}
+
+static bool router_nic_slot(RouterNIC *nic, unsigned int pulse,
+                            unsigned int sample)
+{
+    uint64_t request = ROUTER_NIC_PHASE(44) |
+                       ((uint64_t)pulse << 10) | ((uint64_t)sample << 2);
+    uint64_t status = vector_op(nic->qts, nic->source, nic->route,
+                                ROUTER_NIC_ULAN, 1, request);
+
+    g_assert_cmphex(status & (VECTOR_VALID | 7), ==, VECTOR_VALID | 1);
+    g_assert_cmphex(router_nic_read(nic) &
+                    (ROUTER_NIC_DONE | ROUTER_NIC_DATA), ==, 0);
+    qtest_clock_step(nic->qts, (pulse + sample) * 1000);
+    g_assert_cmphex(router_nic_read(nic) & ROUTER_NIC_DONE,
+                    ==, ROUTER_NIC_DONE);
+    return router_nic_read(nic) & ROUTER_NIC_DATA;
+}
+
+static void router_nic_write_bit(RouterNIC *nic, bool value)
+{
+    g_assert_true(router_nic_slot(nic, value ? 6 : 80,
+                                  value ? 110 : 30));
+}
+
+static bool router_nic_read_bit(RouterNIC *nic)
+{
+    return router_nic_slot(nic, 6, 13);
+}
+
+static void router_nic_write_byte(RouterNIC *nic, uint8_t value)
+{
+    for (unsigned int bit = 0; bit < 8; bit++) {
+        router_nic_write_bit(nic, (value >> bit) & 1);
+    }
+}
+
+static uint8_t router_nic_read_byte(RouterNIC *nic)
+{
+    uint8_t value = 0;
+
+    for (unsigned int bit = 0; bit < 8; bit++) {
+        value |= router_nic_read_bit(nic) << bit;
+    }
+    return value;
+}
+
+static uint8_t router_nic_crc8(const uint8_t *bytes, size_t length)
+{
+    uint8_t crc = 0;
+
+    for (size_t i = 0; i < length; i++) {
+        for (unsigned int bit = 0; bit < 8; bit++) {
+            bool carry = (crc ^ (bytes[i] >> bit)) & 1;
+
+            crc >>= 1;
+            if (carry) {
+                crc ^= 0x8c;
+            }
+        }
+    }
+    return crc;
+}
+
+static void router_nic_search(RouterNIC *nic, uint8_t rom[8])
+{
+    memset(rom, 0, 8);
+    g_assert_false(router_nic_slot(nic, 520, 65));
+    router_nic_write_byte(nic, 0xf0);
+    for (unsigned int bit = 0; bit < 64; bit++) {
+        bool value = router_nic_read_bit(nic);
+
+        g_assert_cmpint(router_nic_read_bit(nic), ==, !value);
+        rom[bit / 8] |= value << (bit % 8);
+        router_nic_write_bit(nic, value);
+    }
+}
+
 static bool cpu_read(QTestState *qts, unsigned int cpu, uint64_t address,
                       uint64_t *value)
 {
@@ -622,6 +715,57 @@ static void test_vectors(void)
         vector_op(qts, 0, paths[i], ROUTER_NIC_ULAN, 0, 0);
         g_assert_cmphex(hub_read(qts, 0, NI_VECTOR_READ_DATA) &
                         ROUTER_NIC_DONE, ==, ROUTER_NIC_DONE);
+    }
+    qtest_quit(qts);
+}
+
+static void test_router_nic_inventory(void)
+{
+    QTestState *qts = start_module();
+    RouterNIC nics[] = {
+        { qts, 0, 0 },
+        { qts, 2, 0 },
+    };
+    const unsigned int alternate_paths[][3] = {
+        { 1, 0, 4 }, { 2, 6, 6 },
+        { 3, 0, 4 }, { 0, 6, 6 },
+    };
+    uint8_t roms[2][8];
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(nics); i++) {
+        uint64_t status = vector_op(qts, nics[i].source, nics[i].route,
+                                    0, 0, 0);
+
+        g_assert_cmphex(status & VECTOR_VALID, ==, VECTOR_VALID);
+        g_assert_cmpuint(ROUTER_STATUS_INPUT_PORT(
+                             hub_read(qts, nics[i].source,
+                                      NI_VECTOR_READ_DATA)), ==, 5);
+        router_nic_search(&nics[i], roms[i]);
+        g_assert_cmphex(roms[i][0], ==, 0x0b);
+        g_assert_cmphex(router_nic_crc8(roms[i], sizeof(roms[i])), ==, 0);
+
+        /* Search ROM leaves its sole survivor selected for a memory command. */
+        router_nic_write_byte(&nics[i], 0xf0);
+        router_nic_write_byte(&nics[i], 0);
+        router_nic_write_byte(&nics[i], 0);
+        for (unsigned int byte = 0; byte < 32; byte++) {
+            g_assert_cmphex(router_nic_read_byte(&nics[i]), ==, 0xff);
+        }
+    }
+    g_assert_cmpint(memcmp(roms[0], roms[1], sizeof(roms[0])), !=, 0);
+
+    /* Each local node port and the inter-Router port reaches a responder. */
+    for (unsigned int i = 0; i < G_N_ELEMENTS(alternate_paths); i++) {
+        RouterNIC nic = { qts, alternate_paths[i][0],
+                          alternate_paths[i][1] };
+        uint64_t status = vector_op(qts, nic.source, nic.route, 0, 0, 0);
+
+        g_assert_cmphex(status & VECTOR_VALID, ==, VECTOR_VALID);
+        g_assert_cmpuint(ROUTER_STATUS_INPUT_PORT(
+                             hub_read(qts, nic.source,
+                                      NI_VECTOR_READ_DATA)), ==,
+                         alternate_paths[i][2]);
+        g_assert_false(router_nic_slot(&nic, 520, 65));
     }
     qtest_quit(qts);
 }
@@ -1727,6 +1871,8 @@ int main(int argc, char **argv)
                        test_flash_fixture_isolation);
     }
     qtest_add_func("sn0/origin2000/vectors", test_vectors);
+    qtest_add_func("sn0/origin2000/router-nic-inventory",
+                   test_router_nic_inventory);
     qtest_add_func("sn0/origin2000/programmed-routes", test_programmed_routes);
     qtest_add_func("sn0/origin2000/bte-interrupt", test_bte_and_interrupt);
     qtest_add_func("sn0/origin2000/bte-three-distinct-endpoints",
