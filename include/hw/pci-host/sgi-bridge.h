@@ -76,6 +76,8 @@ AddressSpace *sgi_bridge_plain_dma_as(PCIDevice *dev);
 #define SGI_BRIDGE_WIDGET_BITS         4
 #define SGI_BRIDGE_PACKET_ADDRESS_BITS 48
 
+MemoryRegion *sgi_bridge_packet_face(SGIBridgeState *s);
+
 /*
  * The local register block: 64 KB decoded, the first 0x300 bytes defined,
  * one register per eight-byte slot in data bits 31:0.
@@ -115,6 +117,8 @@ struct SGIBridgeState {
 
     /* The widget's crosstalk space, claimed whole, and the block inside. */
     MemoryRegion widget;
+    MemoryRegion packet;
+    MemoryRegion packet_io;
     MemoryRegion regs;
     MemoryRegion reserved_data_half;
 

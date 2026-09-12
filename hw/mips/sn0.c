@@ -1286,7 +1286,7 @@ static void sn0_node_map_xtalk_windows(SN0NodeState *node)
     const SN0ModelRegion *hub_explicit = &map->hub_registers_node;
     const SN0ModelRegion *hub_local = &map->hub_registers_local;
     unsigned int node_index = node->nasid;
-    unsigned int widget;
+    unsigned int slice, widget;
 
     g_assert(memory_region_size(&node->hub.regs) == hub_local->size);
 
@@ -1309,6 +1309,19 @@ static void sn0_node_map_xtalk_windows(SN0NodeState *node)
         system, sn0_model_node_address(map, xtalk, node->nasid,
                                        SN0_BIG_WINDOW_BASE),
         &node->hub.bwin);
+    for (slice = 0; slice < node->nr_cpus; slice++) {
+        g_autofree char *name =
+            g_strdup_printf("sn0.node%u.cpu%u.xtalk.bigwin",
+                            node_index, slice);
+
+        memory_region_init_alias(&node->big_window[slice], OBJECT(node),
+                                 name, &node->hub.bwin, 0,
+                                 memory_region_size(&node->hub.bwin));
+        memory_region_add_subregion(
+            &node->cpu_sysmem[slice],
+            xtalk->carrier_base + SN0_BIG_WINDOW_BASE,
+            &node->big_window[slice]);
+    }
     memory_region_add_subregion(
         system, sn0_model_region_address(map, xtalk, node->nasid,
                                          hub_local, 0),

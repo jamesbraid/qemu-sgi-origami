@@ -984,6 +984,24 @@ static void test_baseio_timekeeper_storage_reset(void)
     qtest_quit(qts);
 }
 
+static void test_baseio_timekeeper_big_window_write(void)
+{
+    const uint8_t marker = 0xa5;
+    QTestState *qts = start_module();
+
+    program_module(qts);
+    program_baseio_ioc3(qts);
+    baseio_window_writeb(qts, IOC3_TIMEKEEPER + 0x3883, 0);
+    hub_write(qts, 0, 0x400160, 0x1800);
+    g_assert_true(qtest_memwrite_cpu(qts, 0,
+                                     XTALK_BASE + 0x20000000 +
+                                     IOC3_TIMEKEEPER + 0x3883,
+                                     &marker, sizeof(marker)));
+    g_assert_cmphex(baseio_window_readb(qts, IOC3_TIMEKEEPER + 0x3883),
+                    ==, marker);
+    qtest_quit(qts);
+}
+
 static void test_all_module_routes(void)
 {
     QTestState *qts = start_module();
@@ -1634,6 +1652,8 @@ int main(int argc, char **argv)
                    test_baseio_dma_reaches_far_node);
     qtest_add_func("sn0/origin2000/baseio-timekeeper-storage-reset",
                    test_baseio_timekeeper_storage_reset);
+    qtest_add_func("sn0/origin2000/baseio-timekeeper-big-window-write",
+                   test_baseio_timekeeper_big_window_write);
     qtest_add_func("sn0/origin2000/oversize-firmware", test_oversize_firmware);
     qtest_add_func("sn0/origin2000/missing-firmware", test_missing_firmware);
     qtest_add_func("sn0/origin2000/migration", test_migration);

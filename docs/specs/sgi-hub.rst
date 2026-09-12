@@ -293,9 +293,9 @@ which no source gives; the floor logs the window number, since an
 offset alone does not say which of the seven was disabled, and it
 covers the big windows only -- a crossbar port with no widget is an
 unmodelled device, not a disabled window, and keeps faulting. A
-window asking for a widget's I/O space is reported and left reaching
-nothing rather than aimed at memory space; the redirection's space
-bit is settled at memory by IRIX's own programming.
+window aimed at a widget's I/O space forwards byte writes to widgets
+8-15. Wider writes and general reads remain unsupported; the outgoing
+path otherwise admits only an eight-byte widget-identity read.
 
 The block transfer engines (BTE0, BTE1) copy or zero-fill ranges of
 128-byte cache lines through the node-local memory view the machine
