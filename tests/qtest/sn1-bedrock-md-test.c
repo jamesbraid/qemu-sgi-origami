@@ -461,6 +461,8 @@ static void test_selftest_access_width_policy(void)
     g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==,
                     SELFTEST_DONE | SELFTEST_PASSED);
     qtest_quit(s);
+}
+
 static unsigned directory_walk(uint64_t base, uint64_t offsets[49])
 {
     unsigned count = 0;
