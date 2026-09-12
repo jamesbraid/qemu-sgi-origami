@@ -63,6 +63,21 @@ struct SerialState {
     guint watch_tag;
     bool wakeup;
 
+    /*
+     * Bounds how long a backend that never becomes writable can hold the
+     * transmitter. See serial_xmit_retry_timeout() in serial.c.
+     */
+    QEMUTimer *xmit_retry_timer;
+
+    /*
+     * Set once a held byte has been given up on: further bytes complete
+     * without waiting, as a wire with nothing listening would, until this
+     * watch reports the backend writable again. See
+     * serial_xmit_backend_gave_up() in serial.c.
+     */
+    bool xmit_backend_dead;
+    guint xmit_dead_watch_tag;
+
     /* Time when the last byte was successfully sent out of the tsr */
     uint64_t last_xmit_ts;
     Fifo8 recv_fifo;

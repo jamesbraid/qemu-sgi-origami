@@ -171,6 +171,8 @@ static uint64_t sdma_alias(unsigned int port, unsigned int reg)
 
 #define IER_RDI         0x01
 #define LSR_DR          0x01
+#define LSR_THRE        0x20
+#define LSR_TEMT        0x40
 
 #define MCR_DTR         0x01
 #define MCR_RTS         0x02
@@ -236,6 +238,32 @@ static size_t fill_socket_send_queue(int fd)
         }
         g_assert_cmpint(n, >, 0);
         filled += n;
+    }
+
+    return filled;
+}
+
+/*
+ * fill_socket_send_queue gives up after the first 512-byte chunk that does
+ * not fit, which can leave up to 511 bytes of real room behind: enough for
+ * a one-byte transmit to slip through and never hit backpressure at all.
+ * Top it off one byte at a time so a single subsequent write is guaranteed
+ * to see EAGAIN.
+ */
+static size_t fill_socket_send_queue_exact(int fd)
+{
+    size_t filled = fill_socket_send_queue(fd);
+    uint8_t byte = 0xa5;
+
+    for (;;) {
+        ssize_t n = write(fd, &byte, 1);
+
+        if (n < 0) {
+            g_assert_true(errno == EAGAIN || errno == EWOULDBLOCK);
+            break;
+        }
+        g_assert_cmpint(n, ==, 1);
+        filled += 1;
     }
 
     return filled;
@@ -663,6 +691,216 @@ static void test_a_blocked_backend_keeps_every_transmit_character(
                      SOURCE(0, SRC_TX_RING_EMPTY)), ==,
                     SOURCE(0, SRC_TX_DONE) |
                     SOURCE(0, SRC_TX_RING_EMPTY));
+
+    close(sv[0]);
+    qtest_quit(qts);
+}
+
+/*
+ * A backend that is connected but never reads -- the qualification harness
+ * attaches its console reader after resuming the guest (docs/notebooks or
+ * tools/origami_lib/guest.py's shell_session, opened after the "cont" in
+ * irix_network_test.py), so bytes can land before anyone is listening --
+ * gives the byte-wide UART's transmit path no fd event to wake it up: the
+ * write returns EAGAIN, a watch is armed, and nothing ever signals it.
+ * Real hardware never waits on a listener either: a 16550 clocks each byte
+ * out at the programmed baud rate whatever is on the other end of the wire.
+ * The transmitter must still go empty within bounded time.
+ */
+#define XMIT_GIVE_UP_NS (2LL * 1000 * 1000 * 1000)
+
+static void test_a_never_drained_backend_completes_the_byte_wide_write(
+    const void *data)
+{
+    QTestState *qts;
+    int sv[2];
+    size_t remaining;
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    remaining = fill_socket_send_queue_exact(sv[1]);
+    g_assert_cmpuint(remaining, >, 0);
+
+    qts = qtest_initf(
+        "-M origin200 -chardev socket,id=ioc3-a,fd=%d "
+        "-serial chardev:ioc3-a", sv[1]);
+    g_assert_cmpint(close(sv[1]), ==, 0);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+
+    /* sv[0] is never read: the console reader that has not attached yet. */
+    qtest_writeb(qts, serial_port(0) + REG_RBR, 'x');
+    g_assert_cmphex(qtest_readb(qts, serial_port(0) + REG_LSR) & LSR_TEMT,
+                    ==, 0);
+
+    qtest_clock_step(qts, XMIT_GIVE_UP_NS + 1LL * 1000 * 1000 * 1000);
+
+    g_assert_cmphex(qtest_readb(qts, serial_port(0) + REG_LSR) & LSR_TEMT,
+                    ==, LSR_TEMT);
+
+    close(sv[0]);
+    qtest_quit(qts);
+}
+
+/*
+ * Once one byte has given up waiting on a backend that never drains, the
+ * device treats it as a dead wire: further bytes must not each cost their
+ * own XMIT_GIVE_UP_NS wait, or a run of them would still stall a polling
+ * guest for minutes. They complete immediately, dropped, with no clock
+ * step at all needed between them.
+ */
+static void test_a_dead_backend_completes_further_writes_at_once(
+    const void *data)
+{
+    QTestState *qts;
+    int sv[2];
+    size_t remaining;
+    unsigned int i;
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    remaining = fill_socket_send_queue_exact(sv[1]);
+    g_assert_cmpuint(remaining, >, 0);
+
+    qts = qtest_initf(
+        "-M origin200 -chardev socket,id=ioc3-a,fd=%d "
+        "-serial chardev:ioc3-a", sv[1]);
+    g_assert_cmpint(close(sv[1]), ==, 0);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+
+    /* One held byte, given up on: this is what marks the backend dead. */
+    qtest_writeb(qts, serial_port(0) + REG_RBR, 'x');
+    g_assert_cmphex(qtest_readb(qts, serial_port(0) + REG_LSR) & LSR_TEMT,
+                    ==, 0);
+    qtest_clock_step(qts, XMIT_GIVE_UP_NS + 1LL * 1000 * 1000 * 1000);
+    g_assert_cmphex(qtest_readb(qts, serial_port(0) + REG_LSR) & LSR_TEMT,
+                    ==, LSR_TEMT);
+
+    /*
+     * No further clock step anywhere below: each write must already read
+     * back empty by the time this returns, or the model is still paying
+     * the full wait per byte.
+     */
+    for (i = 0; i < 64; i++) {
+        qtest_writeb(qts, serial_port(0) + REG_RBR, 'a' + (i % 26));
+        g_assert_cmphex(qtest_readb(qts, serial_port(0) + REG_LSR) & LSR_TEMT,
+                        ==, LSR_TEMT);
+    }
+
+    close(sv[0]);
+    qtest_quit(qts);
+}
+
+/*
+ * The dead latch lifts once the backend proves it is writable again: a
+ * byte written after that must reach the reader, not join the ones the
+ * dead latch was dropping.
+ */
+static void test_a_recovered_backend_resumes_delivery(const void *data)
+{
+    QTestState *qts;
+    int sv[2];
+    size_t remaining;
+    uint8_t filler[4096];
+    uint8_t got;
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    remaining = fill_socket_send_queue_exact(sv[1]);
+    g_assert_cmpuint(remaining, >, 0);
+
+    qts = qtest_initf(
+        "-M origin200 -chardev socket,id=ioc3-a,fd=%d "
+        "-serial chardev:ioc3-a", sv[1]);
+    g_assert_cmpint(close(sv[1]), ==, 0);
+    serial_socket_deadline(sv[0]);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+
+    /* One held byte, given up on, marks the backend dead. */
+    qtest_writeb(qts, serial_port(0) + REG_RBR, 'x');
+    qtest_clock_step(qts, XMIT_GIVE_UP_NS + 1LL * 1000 * 1000 * 1000);
+    g_assert_cmphex(qtest_readb(qts, serial_port(0) + REG_LSR) & LSR_TEMT,
+                    ==, LSR_TEMT);
+
+    /* Drain the backend: the recovery watch should see it writable again. */
+    while (remaining) {
+        size_t chunk = MIN(remaining, sizeof(filler));
+
+        read_exact(sv[0], filler, chunk);
+        remaining -= chunk;
+    }
+
+    /* A byte written now must actually reach the reader. */
+    qtest_writeb(qts, serial_port(0) + REG_RBR, 'Z');
+    read_exact(sv[0], &got, 1);
+    g_assert_cmphex(got, ==, 'Z');
+
+    close(sv[0]);
+    qtest_quit(qts);
+}
+
+/*
+ * The same backend, reached through the DMA ring PR #529 taught to wait for
+ * the UART's transmit-ready level: a hold that never expires there is the
+ * PROM base I/O diagnostic's stall, since its loopback exercise sends
+ * through this path before a console reader has ever read anything.
+ */
+static void test_a_never_drained_backend_still_advances_the_ring(
+    const void *data)
+{
+    static const uint8_t out[4] = { 'w', 'x', 'y', 'z' };
+    static const uint8_t control[4] = {
+        /*
+         * The engine's tx-ready gate follows LSR.THRE, which the UART sets
+         * again the moment a byte leaves the holding register for the shift
+         * register -- before that byte is actually delivered. The first
+         * character always slips through on that transient high, and a
+         * second character sits in the holding register behind it without
+         * its own retry ever starting; only a third character finds the
+         * gate genuinely down, so this needs all four slots filled.
+         */
+        TX_CHARACTER, TX_CHARACTER, TX_CHARACTER, TX_CHARACTER | TX_INTERRUPT,
+    };
+    QTestState *qts;
+    int sv[2];
+    size_t remaining;
+    unsigned int i;
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    remaining = fill_socket_send_queue_exact(sv[1]);
+    g_assert_cmpuint(remaining, >, 0);
+
+    qts = qtest_initf(
+        "-M origin200 -chardev socket,id=ioc3-a,fd=%d "
+        "-serial chardev:ioc3-a", sv[1]);
+    g_assert_cmpint(close(sv[1]), ==, 0);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+    enable_dma(qts, 0);
+
+    write_transmit_entry(qts, RING_TX(0), 0, out, control);
+    qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 8);
+
+    /* Backpressure: the walk has not consumed the entry yet. */
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_TX_CONSUME)) & 0xff8,
+                    <, 8);
+
+    /*
+     * Giving up on one held character only starts the next one's own
+     * retry (it was sitting in the holding register, never yet attempted),
+     * so the walk needs one give-up per character still behind the gate.
+     */
+    for (i = 0; i < 4; i++) {
+        qtest_clock_step(qts, XMIT_GIVE_UP_NS + 1LL * 1000 * 1000 * 1000);
+    }
+
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_TX_CONSUME)) & 0xff8,
+                    ==, 8);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_TX_DONE),
+                    ==, SOURCE(0, SRC_TX_DONE));
 
     close(sv[0]);
     qtest_quit(qts);
@@ -1737,6 +1975,22 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3-serial/blocked-backend-keeps-every-character",
                         NULL,
                         test_a_blocked_backend_keeps_every_transmit_character);
+    qtest_add_data_func(
+        "sn0/ioc3-serial/never-drained-backend-completes-byte-wide-write",
+        NULL,
+        test_a_never_drained_backend_completes_the_byte_wide_write);
+    qtest_add_data_func(
+        "sn0/ioc3-serial/never-drained-backend-still-advances-the-ring",
+        NULL,
+        test_a_never_drained_backend_still_advances_the_ring);
+    qtest_add_data_func(
+        "sn0/ioc3-serial/dead-backend-completes-further-writes-at-once",
+        NULL,
+        test_a_dead_backend_completes_further_writes_at_once);
+    qtest_add_data_func(
+        "sn0/ioc3-serial/recovered-backend-resumes-delivery",
+        NULL,
+        test_a_recovered_backend_resumes_delivery);
     qtest_add_data_func("sn0/ioc3-serial/completed-transmit-raises-sources",
                         NULL,
                         test_a_completed_transmit_raises_both_its_sources);
