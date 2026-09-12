@@ -162,8 +162,7 @@ static target_ulong sn1_store_transaction(MIPSCPU *cpu, MemoryRegion *mr,
 
     (void)cpu;
     if (mr == &bedrock->md.ecc_mmio) {
-        return sgi_bedrock_md_ecc_store_value(&bedrock->md, offset,
-                                               value, size);
+        return sgi_bedrock_md_ecc_store_value(offset, value, size);
     }
     return value;
 }

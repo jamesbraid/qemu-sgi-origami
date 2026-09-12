@@ -584,12 +584,12 @@ static void md_ecc_write(void *opaque, hwaddr offset, uint64_t value,
     }
 }
 
-uint64_t sgi_bedrock_md_ecc_store_value(SGIBedrockMDState *s, hwaddr offset,
-                                        uint64_t value, unsigned size)
+uint64_t sgi_bedrock_md_ecc_store_value(hwaddr offset, uint64_t value,
+                                        unsigned size)
 {
     uint64_t memory_address;
 
-    if (size != 2 || md_ecc_refusal(s, offset, size)) {
+    if (size != 2) {
         return value;
     }
 
