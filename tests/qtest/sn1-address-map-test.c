@@ -160,7 +160,6 @@
 
 #define NMI_READY_MARKER UINT64_C(0x1400)
 #define NMI_TAKEN_MARKER UINT64_C(0x4e4d)
-#define CPU_ENABLE_RACE_DONE UINT64_C(0x1d0e)
 #define CONFIG0_READY_MARKER UINT64_C(0xc0f0)
 #define CONFIG0_RESET_READBACK UINT64_C(0x6c9aa985)
 #define CONFIG0_MUTATED_READBACK UINT64_C(0x6c9aa982)
@@ -392,68 +391,6 @@ static char *create_config0_reset_prom(void)
     stl_be_p(image + 0x41c, 0x00000000); /* nop */
 
     fd = g_file_open_tmp("sn1-config0-reset-prom-XXXXXX.bin", &path, &error);
-    g_assert_no_error(error);
-    g_assert_cmpint(fd, >=, 0);
-    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
-    g_assert_cmpint(close(fd), ==, 0);
-    return path;
-}
-
-static char *create_cpu_enable_race_prom(void)
-{
-    g_autoptr(GError) error = NULL;
-    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
-    char *path = NULL;
-    int fd;
-
-    stl_be_p(image + 0x000, 0x100000ff); /* beq zero, zero, 0x400 */
-    for (unsigned int offset = 0x200; offset <= 0x380; offset += 0x80) {
-        stl_be_p(image + offset, 0x1000ffff); /* beq zero, zero, self */
-    }
-
-    /*
-     * CPU A claims a RAM word before enabling CPU B.  CPU B therefore takes
-     * the secondary path when the queued unhalt eventually reaches it.
-     */
-    stl_be_p(image + 0x400, 0x3c08a010); /* lui t0, 0xa010 */
-    stl_be_p(image + 0x404, 0xdd090000); /* ld t1, 0(t0) */
-    stl_be_p(image + 0x408, 0x15200019); /* bne t1, zero, 0x470 */
-    stl_be_p(image + 0x40c, 0x00000000); /* nop */
-    stl_be_p(image + 0x410, 0x34090001); /* ori t1, zero, 1 */
-    stl_be_p(image + 0x414, 0xfd090000); /* sd t1, 0(t0) */
-    stl_be_p(image + 0x418, 0x0000000f); /* sync */
-
-    /* Enable 64-bit kernel addressing and select the crosstalk window. */
-    stl_be_p(image + 0x41c, 0x400a6000); /* mfc0 t2, Status */
-    stl_be_p(image + 0x420, 0x354a0080); /* ori t2, t2, KX */
-    stl_be_p(image + 0x424, 0x408a6000); /* mtc0 t2, Status */
-    stl_be_p(image + 0x428, 0x000000c0); /* ehb */
-    stl_be_p(image + 0x42c, 0x3c0aba00); /* lui t2, 0xba00 */
-    stl_be_p(image + 0x430, 0x000a503c); /* dsll32 t2, t2, 0 */
-    stl_be_p(image + 0x434, 0x3c0b0100); /* lui t3, 0x0100 */
-    stl_be_p(image + 0x438, 0x014b5025); /* or t2, t2, t3 */
-
-    /*
-     * These stores share one translation block.  CPU B's exclusive unhalt
-     * cannot run until CPU A leaves that block, so the disable is guaranteed
-     * to happen before the queued unhalt callback.
-     */
-    stl_be_p(image + 0x43c, 0x340c0001); /* ori t4, zero, 1 */
-    stl_be_p(image + 0x440, 0xfd4c0058); /* sd t4, PI_CPU_ENABLE_B(t2) */
-    stl_be_p(image + 0x444, 0xfd400058); /* sd zero, PI_CPU_ENABLE_B(t2) */
-    stl_be_p(image + 0x448, 0x0000000f); /* sync */
-    stl_be_p(image + 0x44c, 0x34101d0e); /* ori s0, zero, done */
-    stl_be_p(image + 0x450, 0x658c0001); /* daddiu t4, t4, 1 */
-    stl_be_p(image + 0x454, 0x1000fffe); /* beq zero, zero, 0x450 */
-    stl_be_p(image + 0x458, 0x00000000); /* nop */
-
-    stl_be_p(image + 0x470, 0x34102b00); /* ori s0, zero, secondary */
-    stl_be_p(image + 0x474, 0x65ad0001); /* daddiu t5, t5, 1 */
-    stl_be_p(image + 0x478, 0x1000fffe); /* beq zero, zero, 0x474 */
-    stl_be_p(image + 0x47c, 0x00000000); /* nop */
-
-    fd = g_file_open_tmp("sn1-cpu-enable-race-prom-XXXXXX.bin", &path,
-                         &error);
     g_assert_no_error(error);
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
@@ -2617,11 +2554,11 @@ static void test_machine_defaults(const void *data)
     qtest_quit(qts);
 }
 
-static void test_cpu_b_follows_enable(const void *data)
+static void test_cpu_b_enable_controls_bus_eligibility(const void *data)
 {
     g_autofree char *path = NULL;
     QTestState *qts;
-    uint64_t stopped;
+    uint64_t progress;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
@@ -2632,47 +2569,19 @@ static void test_cpu_b_follows_enable(const void *data)
     qts = machine_start_with(
         path, "-accel tcg,thread=multi -no-shutdown -S");
 
-    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 0);
-    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 0);
-    run_vm_until_cpu_gpr_changes(qts, 0, "t0", 0);
-    stopped = cpu_gpr(qts, 1, "t0");
-    g_assert_cmphex(stopped, ==, 0);
-
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 0);
+    progress = run_vm_until_cpu_gpr_changes(qts, 1, "t0", 0);
     qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 1);
+    progress = run_vm_until_cpu_gpr_changes(qts, 1, "t0", progress);
     qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 0);
-    run_vm_until_cpu_gpr_changes(qts, 0, "t0", cpu_gpr(qts, 0, "t0"));
-    g_assert_cmphex(cpu_gpr(qts, 1, "t0"), ==, stopped);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 0);
+    run_vm_until_cpu_gpr_changes(qts, 1, "t0", progress);
 
-    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
-    run_vm_until_cpu_gpr_changes(qts, 1, "t0", stopped);
-    g_assert_cmphex(cpu_gpr(qts, 1, "t0"), !=, stopped);
-
-    stopped = cpu_gpr(qts, 1, "t0");
-    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
-    run_vm_until_cpu_gpr_changes(qts, 1, "t0", stopped);
-    g_assert_cmphex(cpu_gpr(qts, 1, "t0"), !=, stopped);
-
-    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
-    wait_for_cpu_gpr_change(qts, 1, "t0", cpu_gpr(qts, 1, "t0"));
-    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 0);
-    wait_for_cpu_gpr_change(qts, 0, "t0", cpu_gpr(qts, 0, "t0"));
-    stop_vm(qts);
-    stopped = cpu_gpr(qts, 1, "t0");
-    run_vm_until_cpu_gpr_changes(qts, 0, "t0", cpu_gpr(qts, 0, "t0"));
-    g_assert_cmphex(cpu_gpr(qts, 1, "t0"), ==, stopped);
-
-    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
     qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 0);
     g_assert_cmphex(cpu_gpr(qts, 1, "t0"), ==, 0);
     run_vm_until_cpu_gpr_changes(qts, 1, "t0", 0);
-    g_assert_cmphex(cpu_gpr(qts, 1, "t0"), !=, 0);
-
-    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 0);
-    qtest_system_reset(qts);
-    g_assert_cmphex(cpu_gpr(qts, 1, "t0"), ==, 0);
-    run_vm_until_cpu_gpr_changes(qts, 0, "t0", 0);
-    g_assert_cmphex(cpu_gpr(qts, 0, "t0"), !=, 0);
-    g_assert_cmphex(cpu_gpr(qts, 1, "t0"), ==, 0);
 
     qtest_quit(qts);
     g_assert_cmpint(g_unlink(path), ==, 0);
@@ -2729,33 +2638,29 @@ static void test_config0_cold_reset(const void *data)
     g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
-static void test_cpu_b_disable_overtakes_queued_unhalt(const void *data)
+static void test_cpu_b_executes_across_enable_falling_edge(const void *data)
 {
     g_autofree char *path = NULL;
     QTestState *qts;
-    uint64_t cpu_a_progress;
-    uint64_t cpu_b_stopped;
+    uint64_t cpu_b_progress;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
         return;
     }
 
-    path = create_cpu_enable_race_prom();
+    path = create_cpu_control_prom();
     qts = machine_start_with(
         path, "-accel tcg,thread=multi -no-shutdown -S");
-    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
-    wait_for_cpu_gpr(qts, 0, "s0", CPU_ENABLE_RACE_DONE);
 
-    /*
-     * Stopping drains CPU B's queued work.  Run CPU A through another
-     * observed transition afterward; CPU B must make no further progress.
-     */
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 1);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    cpu_b_progress = wait_for_cpu_gpr_change(qts, 1, "t0", 0);
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 0);
+    wait_for_cpu_gpr_change(qts, 1, "t0", cpu_b_progress);
     stop_vm(qts);
-    cpu_b_stopped = cpu_gpr(qts, 1, "t5");
-    cpu_a_progress = cpu_gpr(qts, 0, "t4");
-    run_vm_until_cpu_gpr_changes(qts, 0, "t4", cpu_a_progress);
-    g_assert_cmphex(cpu_gpr(qts, 1, "t5"), ==, cpu_b_stopped);
 
     qtest_quit(qts);
     g_assert_cmpint(g_unlink(path), ==, 0);
@@ -2977,13 +2882,14 @@ static void test_cpu_b_enabled_migration(const void *data)
 
     stopped = cpu_gpr(to, 1, "t0");
     g_assert_cmphex(stopped, !=, 0);
+    g_assert_cmphex(qtest_readq(to, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 1);
     qtest_writeq(to, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 0);
-    run_vm_until_cpu_gpr_changes(to, 0, "t0", cpu_gpr(to, 0, "t0"));
-    g_assert_cmphex(cpu_gpr(to, 1, "t0"), ==, stopped);
+    g_assert_cmphex(qtest_readq(to, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 0);
+    stopped = run_vm_until_cpu_gpr_changes(to, 1, "t0", stopped);
 
     qtest_writeq(to, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
+    g_assert_cmphex(qtest_readq(to, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 1);
     run_vm_until_cpu_gpr_changes(to, 1, "t0", stopped);
-    g_assert_cmphex(cpu_gpr(to, 1, "t0"), !=, stopped);
 
     qtest_quit(from);
     qtest_quit(to);
@@ -3086,12 +2992,12 @@ int main(int argc, char **argv)
                         test_cpu_type_is_r14000);
     qtest_add_data_func("sn1/address-map/machine-defaults", NULL,
                         test_machine_defaults);
-    qtest_add_data_func("sn1/address-map/cpu-b-follows-enable", NULL,
-                        test_cpu_b_follows_enable);
+    qtest_add_data_func("sn1/address-map/cpu-b-enable-controls-bus", NULL,
+                        test_cpu_b_enable_controls_bus_eligibility);
     qtest_add_data_func("sn1/address-map/config0-cold-reset", NULL,
                         test_config0_cold_reset);
-    qtest_add_data_func("sn1/address-map/cpu-b-disable-overtakes-unhalt", NULL,
-                        test_cpu_b_disable_overtakes_queued_unhalt);
+    qtest_add_data_func("sn1/address-map/cpu-b-executes-across-enable-fall",
+                        NULL, test_cpu_b_executes_across_enable_falling_edge);
     qtest_add_data_func("sn1/address-map/nmi-routes-to-cpu-a", &nmi_a,
                         test_nmi_routes_to_cpu);
     qtest_add_data_func("sn1/address-map/nmi-routes-to-cpu-b", &nmi_b,
