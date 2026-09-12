@@ -520,6 +520,10 @@ static void sn1_create_bedrock(SN1MachineState *s, MachineState *machine)
         qdev_prop_set_chr(s->l1, "chardev", l1_console);
     }
     sn1_set_l1_identity_records(s);
+    /* The revision every retained Origin 300 capture pairs with PROM 6.210. */
+    qdev_prop_set_int32(s->l1, "revision-major", 1);
+    qdev_prop_set_int32(s->l1, "revision-minor", 18);
+    qdev_prop_set_int32(s->l1, "revision-patch", 5);
     qdev_realize(s->l1, NULL, &error_fatal);
     object_unref(OBJECT(s->l1));
 
