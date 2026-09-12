@@ -846,7 +846,7 @@ static const VMStateDescription vmstate_xbridge = {
     }
 };
 
-static void xbridge_plug(HotplugHandler *handler, DeviceState *dev,
+static void xbridge_plug(const HotplugHandler *handler, DeviceState *dev,
                          Error **errp)
 {
     SGIXBridgeHeadState *s = SGI_XBRIDGE_HEAD(handler);
@@ -870,7 +870,7 @@ static void xbridge_plug(HotplugHandler *handler, DeviceState *dev,
     }
 }
 
-static bool xbridge_is_hotpluggable_bus(HotplugHandler *handler, BusState *bus)
+static bool xbridge_is_hotpluggable_bus(const HotplugHandler *handler, BusState *bus)
 {
     return false;
 }
