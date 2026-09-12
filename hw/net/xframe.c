@@ -2278,7 +2278,7 @@ static const MemoryRegionOps xframe_txp_ops = {
  *
  * Report a checksum verified ONLY when it actually verified against the bytes
  * that arrived. Anything this cannot vouch for -- a frame that is not IPv4, a
- * truncated one, a fragment (which carries no complete transport header), a
+ * truncated one, a fragment (whose transport segment is incomplete), a
  * transport this does not parse, or a UDP datagram whose checksum field is zero
  * and therefore means "not computed" -- leaves the corresponding half zero, and
  * a driver reading zero verifies for itself.
@@ -2310,16 +2310,21 @@ static uint64_t xframe_rx_offload_status(const uint8_t *frame, size_t len,
         return 0;
     }
 
+    /*
+     * Five-buffer receive splits along the layers reported here: an IPv4
+     * frame's IP header goes to buffer 1 whatever it carries, and a
+     * recognised TCP or UDP header follows it there.
+     */
     status |= XFRAME_RXD_PROTO_IPV4;
+    if (l34_len) {
+        *l34_len = ihl;
+    }
     if (net_raw_checksum((uint8_t *)ip, ihl) == 0) {
         status |= XFRAME_RXD_CKSUM_OK << XFRAME_RXD_L3_CKSUM_SHIFT;
     }
 
     /* More-fragments set or a non-zero offset: no complete transport header. */
     if (lduw_be_p(ip + 6) & 0x3fff) {
-        if (l34_len) {
-            *l34_len = ihl;
-        }
         return status | XFRAME_RXD_PROTO_IP_FRAG;
     }
 
@@ -2345,11 +2350,6 @@ static uint64_t xframe_rx_offload_status(const uint8_t *frame, size_t len,
         return status;
     }
 
-    /*
-     * Complete TCP/UDP frames split the IP and transport headers into buffer 1.
-     * Fragments report only the validated IP header above because no complete
-     * transport header exists.
-     */
     if (l34_len) {
         *l34_len = ihl + thl;
     }
@@ -2783,9 +2783,9 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
     }
 
     /*
-     * Parse the frame once. Complete TCP/UDP frames split their IP and
-     * transport headers into buffer 1; IPv4 fragments split only their IP
-     * header because their transport segment is incomplete.
+     * Parse the frame once. l34 is the header run that five-buffer mode puts
+     * in buffer 1: the IP header of any IPv4 frame, with the TCP or UDP header
+     * when one is recognised.
      */
     offload = xframe_rx_offload_status(buf, copy_len, &l34);
     split_headers = l34 > 0;
@@ -2836,8 +2836,8 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
             seg[2] = copy_len - eth - l34;
         } else {
             /*
-             * Unclassified (no IP or transport headers to split -- ARP), or a
-             * parsed frame whose headers do not fit buffer 1. Deliver it
+             * Not IPv4 (ARP, or a VLAN-tagged frame this model does not parse),
+             * or a parsed frame whose headers do not fit buffer 1. Deliver it
              * unsplit -- L2 header to buffer 0, the remainder to buffer 2 -- and
              * do NOT report offload, since reporting it would claim a placement
              * in buffer 1 the card did not make. IRIX never posts a buffer 1

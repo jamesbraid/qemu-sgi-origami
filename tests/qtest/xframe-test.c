@@ -4324,9 +4324,9 @@ static void test_receive_five_buffer_unclassified_frame(void)
     g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
 
     /*
-     * This frame is NOT IPv4/TCP -- it has no transport headers to split -- so
-     * the card puts the Ethernet header in buffer 0 and the whole remainder in
-     * buffer 2, leaving buffer 1 empty. A classified frame is split differently;
+     * This frame is not IPv4 at all, so the card recognises no L3 header to
+     * place: the Ethernet header goes to buffer 0 and the whole remainder to
+     * buffer 2, leaving buffer 1 empty. An IPv4 frame is split differently;
      * that is the next test.
      */
     ctrl2 = dma_ldq_be(t.qs->qts, RX_RING_BASE + 16);
@@ -4402,6 +4402,76 @@ static void test_receive_five_buffer_splits_classified_headers(void)
     g_assert_cmphex(ctrl1 & RXD_PROTO_TCP, ==, RXD_PROTO_TCP);
     g_assert_cmphex((ctrl1 >> 16) & 0xffff, ==, RXD_CKSUM_OK);   /* IP header */
     g_assert_cmphex(ctrl1 & 0xffff, ==, RXD_CKSUM_OK);           /* TCP */
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * An IPv4 frame whose TCP header the IP total length cuts short. The card
+ * cannot classify the transport, so it reports IPv4 and the L3 checksum
+ * verdict alone, and buffer 1 gets the IP header alone -- the same rule every
+ * other IPv4 frame follows, extended to a case no guest run and no manual
+ * covers. This pins the model's choice, and it is a choice: real hardware may
+ * do something else with a header it cannot parse.
+ */
+static void test_receive_five_buffer_splits_truncated_transport(void)
+{
+    XframeTx t;
+    uint8_t frame[128];
+    uint8_t landed[128];
+    const uint64_t b0 = RX_BUF0;
+    const uint64_t b1 = RX_BUF0 + 0x1000;
+    const uint64_t b2 = RX_BUF0 + 0x2000;
+    const size_t c0 = 14, c1 = 128, c2 = 4096;   /* as IRIX posts them */
+    const size_t ip_total = IPV4_HDR_LEN + 16;   /* 16 < a TCP header */
+    uint16_t csum;
+    uint64_t ctrl1, ctrl2;
+    uint8_t *ip = frame + ETH_HDR_LEN;
+    size_t len = 74;
+
+    /*
+     * A whole TCP frame, then an IP total length that stops inside the TCP
+     * header. The bytes past it are Ethernet padding as far as IP is
+     * concerned.
+     */
+    (void)build_ipv4_frame(frame, xframe_station_mac, IPPROTO_TCP, 20, len);
+    ip[2] = (uint8_t)(ip_total >> 8);
+    ip[3] = (uint8_t)ip_total;
+    ip[10] = 0x00;
+    ip[11] = 0x00;
+    csum = frame_csum_fold(frame_csum_add(0, ip, IPV4_HDR_LEN));
+    ip[10] = (uint8_t)(csum >> 8);
+    ip[11] = (uint8_t)csum;
+
+    xframe_tx_start(&t);
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 0, 0);
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 8, RXD_OWN);
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 16, RXD5_SET_SIZES(c0, c1, c2));
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 24, b0);
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 32, b1);
+    dma_stq_be(t.qs->qts, RX_RING_BASE + 40, b2);
+    sock_pif_writeq(&t, PRC_RXD0_0, RX_RING_BASE);
+    sock_pif_writeq(&t, PRC_CTRL_0, RC_IN_SVC | RC_RING_MODE_5BUF);
+
+    net_socket_send_frame(t.host_fd, frame, len);
+    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+
+    ctrl2 = dma_ldq_be(t.qs->qts, RX_RING_BASE + 16);
+    g_assert_cmpuint(RXD5_GET_B0(ctrl2), ==, c0);
+    g_assert_cmpuint(RXD5_GET_B1(ctrl2), ==, IPV4_HDR_LEN);
+    g_assert_cmpuint(RXD5_GET_B2(ctrl2), ==, len - c0 - IPV4_HDR_LEN);
+
+    qtest_memread(t.qs->qts, b1, landed, IPV4_HDR_LEN);
+    g_assert_cmpmem(landed, IPV4_HDR_LEN, ip, IPV4_HDR_LEN);
+    qtest_memread(t.qs->qts, b2, landed, len - c0 - IPV4_HDR_LEN);
+    g_assert_cmpmem(landed, len - c0 - IPV4_HDR_LEN,
+                    frame + c0 + IPV4_HDR_LEN, len - c0 - IPV4_HDR_LEN);
+
+    ctrl1 = dma_ldq_be(t.qs->qts, RX_RING_BASE + 8);
+    g_assert_cmphex(ctrl1 & (RXD_PROTO_IPV4 | RXD_PROTO_TCP | RXD_PROTO_UDP),
+                    ==, RXD_PROTO_IPV4);
+    g_assert_cmphex((ctrl1 >> 16) & 0xffff, ==, RXD_CKSUM_OK);
+    g_assert_cmphex(ctrl1 & 0xffff, ==, 0);
 
     xframe_tx_stop(&t);
 }
@@ -5834,6 +5904,8 @@ int main(int argc, char **argv)
                    test_receive_five_buffer_unclassified_frame);
     qtest_add_func("xframe/receive-five-buffer-splits-classified-headers",
                    test_receive_five_buffer_splits_classified_headers);
+    qtest_add_func("xframe/receive-five-buffer-splits-truncated-transport",
+                   test_receive_five_buffer_splits_truncated_transport);
     qtest_add_func("xframe/receive-five-buffer-splits-ipv4-fragments",
                    test_receive_five_buffer_splits_ipv4_fragments);
     qtest_add_func("xframe/receive-five-buffer-splits-a-jumbo-frame",

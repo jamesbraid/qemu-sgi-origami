@@ -114,6 +114,10 @@
 #define TX_BUF_PHYS             (TARGET_PAGE + 0x100)
 #define RX_BUF_IOVA             (PCI_TRANSLATED + 0x200)
 #define RX_BUF_PHYS             (TARGET_PAGE + 0x200)
+#define RX5_BUF1_IOVA           (PCI_TRANSLATED + 0x280)
+#define RX5_BUF1_PHYS           (TARGET_PAGE + 0x280)
+#define RX5_BUF2_IOVA           (PCI_TRANSLATED + 0x300)
+#define RX5_BUF2_PHYS           (TARGET_PAGE + 0x300)
 
 /*
  * The device's PCI identity and register offsets, restated from the xframe
@@ -177,6 +181,26 @@
 #define RXD_XCODE_MASK          0xf
 #define RXD_BUFSIZ_SHIFT        48
 #define RX_BUF_CAPACITY         128
+
+/*
+ * Five-buffer receive: PRC_CTRL ring mode 2, 64-byte descriptors whose second
+ * control word carries the buffer 0/1/2 sizes, as IRIX arms it at jumbo MTU.
+ * Classification bits in the first control word: IPv4 bit 36, fragment 34,
+ * TCP 33, UDP 32; the L3 checksum verdict in bits 31:16, L4 in 15:0.
+ */
+#define RC_RING_MODE_5BUF       (2ULL << 48)
+#define RXD5_SIZE               64
+#define RXD5_SET_SIZES(b0, b1, b2)                                          \
+    ((((uint64_t)(b0) & 0xff) << 48) | (((uint64_t)(b1) & 0xffff) << 32) |  \
+     (((uint64_t)(b2) & 0xffff) << 16))
+#define RXD5_GET_B0(c2)         (((c2) >> 48) & 0xff)
+#define RXD5_GET_B1(c2)         (((c2) >> 32) & 0xffff)
+#define RXD5_GET_B2(c2)         (((c2) >> 16) & 0xffff)
+#define RXD_PROTO_IPV4          (1ULL << 36)
+#define RXD_PROTO_IP_FRAG       (1ULL << 34)
+#define RXD_PROTO_TCP           (1ULL << 33)
+#define RXD_PROTO_UDP           (1ULL << 32)
+#define RXD_CKSUM_OK            0xffffULL
 
 #define TEST_MAC                "52:54:00:12:34:56"
 static const uint8_t station_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
@@ -592,6 +616,120 @@ static void test_receive_frame_composes_through_the_bridge(const void *data)
     close(host_fd);
 }
 
+/* The Internet checksum of a byte run, folded and complemented. */
+static uint16_t inet_checksum(const uint8_t *p, size_t len)
+{
+    uint32_t sum = 0;
+    size_t i;
+
+    for (i = 0; i + 1 < len; i += 2) {
+        sum += (uint32_t)p[i] << 8 | p[i + 1];
+    }
+    if (len & 1) {
+        sum += (uint32_t)p[len - 1] << 8;
+    }
+    while (sum >> 16) {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    return ~sum;
+}
+
+/* Compare a device-written buffer, read back over its aligned words. */
+static void assert_dma_landed(QTestState *qts, uint64_t phys,
+                              const uint8_t *want, size_t len)
+{
+    uint8_t got[128];
+    size_t aligned = (len + 3) & ~(size_t)3;
+
+    g_assert_cmpuint(aligned, <=, sizeof(got));
+    dma_read_canonical(qts, phys, got, aligned);
+    g_assert_cmpmem(got, len, want, len);
+}
+
+/*
+ * Five-buffer receive of an IPv4 frame that is neither TCP nor UDP: a 98-byte
+ * ICMP echo reply, what IRIX's own ping waits for at MTU 9000. The card
+ * recognises IPv4 and reports it, so the IP header goes to buffer 1, the
+ * layer the classification names, and the ICMP header and data follow in
+ * buffer 2. With buffer 1 left empty and the IP header in buffer 2, IRIX drops
+ * every such frame before its IP input counts it.
+ */
+static void test_five_buffer_receive_splits_icmp_ip_header(const void *data)
+{
+    int host_fd;
+    QTestState *qts = boot_with_socket(&host_fd);
+    const size_t eth = 14, ip_len = 20, frame_len = 98;
+    uint8_t frame[98];
+    uint8_t rxd[RXD5_SIZE];
+    uint8_t word[8];
+    uint8_t *ip = frame + eth, *icmp = ip + ip_len;
+    uint64_t control1, control2;
+    uint16_t sum;
+    size_t i;
+
+    memset(frame, 0, sizeof(frame));
+    memcpy(frame, station_mac, sizeof(station_mac));
+    frame[6] = 0x02; frame[11] = 0x01;             /* source MAC */
+    frame[12] = 0x08;                              /* ethertype IPv4 */
+    ip[0] = 0x45;
+    ip[3] = frame_len - eth;                       /* total length 84 */
+    ip[8] = 64;                                    /* TTL */
+    ip[9] = 1;                                     /* ICMP */
+    ip[12] = 10; ip[13] = 77; ip[14] = 0; ip[15] = 1;
+    ip[16] = 10; ip[17] = 77; ip[18] = 0; ip[19] = 2;
+    sum = inet_checksum(ip, ip_len);
+    ip[10] = sum >> 8; ip[11] = sum;
+    icmp[4] = 0x12; icmp[5] = 0x34;                /* identifier */
+    icmp[7] = 1;                                   /* sequence */
+    for (i = 8; i < frame_len - eth - ip_len; i++) {
+        icmp[i] = (uint8_t)i;
+    }
+    sum = inet_checksum(icmp, frame_len - eth - ip_len);
+    icmp[2] = sum >> 8; icmp[3] = sum;
+
+    bring_up(qts, PIF_BAR_PCI, true);
+    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE, 0));
+
+    /* Sizes 14 / 128 / 256 in the shape IRIX posts; buffers 3 and 4 unused. */
+    memset(rxd, 0, sizeof(rxd));
+    stq_be_buf(rxd + 8, RXD_OWN);
+    stq_be_buf(rxd + 16, RXD5_SET_SIZES(eth, 128, 256));
+    stq_be_buf(rxd + 24, RX_BUF_IOVA);
+    stq_be_buf(rxd + 32, RX5_BUF1_IOVA);
+    stq_be_buf(rxd + 40, RX5_BUF2_IOVA);
+    dma_write_canonical(qts, DESC_PHYS, rxd, sizeof(rxd));
+
+    win_writeq(qts, PRC_RXD0_0, DESC_IOVA);
+    win_writeq(qts, PRC_CTRL_0, RC_IN_SVC | RC_RING_MODE_5BUF);
+
+    net_socket_send_frame(host_fd, frame, sizeof(frame));
+    g_assert_true(wait_rx_traffic(qts, 5000));
+
+    dma_read_canonical(qts, DESC_PHYS + 16, word, sizeof(word));
+    control2 = ldq_be_buf(word);
+    g_assert_cmpuint(RXD5_GET_B0(control2), ==, eth);
+    g_assert_cmpuint(RXD5_GET_B1(control2), ==, ip_len);
+    g_assert_cmpuint(RXD5_GET_B2(control2), ==, frame_len - eth - ip_len);
+
+    assert_dma_landed(qts, RX_BUF_PHYS, frame, eth);
+    assert_dma_landed(qts, RX5_BUF1_PHYS, ip, ip_len);
+    assert_dma_landed(qts, RX5_BUF2_PHYS, icmp, frame_len - eth - ip_len);
+
+    /* IPv4 recognised with a good header checksum; no transport verdict. */
+    dma_read_canonical(qts, DESC_PHYS + 8, word, sizeof(word));
+    control1 = ldq_be_buf(word);
+    g_assert_cmphex(control1 & RXD_OWN, ==, 0);
+    g_assert_cmphex((control1 >> RXD_XCODE_SHIFT) & RXD_XCODE_MASK, ==, 0);
+    g_assert_cmphex(control1 & (RXD_PROTO_IPV4 | RXD_PROTO_IP_FRAG |
+                                RXD_PROTO_TCP | RXD_PROTO_UDP), ==,
+                    RXD_PROTO_IPV4);
+    g_assert_cmphex((control1 >> 16) & 0xffff, ==, RXD_CKSUM_OK);
+    g_assert_cmphex(control1 & 0xffff, ==, 0);
+
+    qtest_quit(qts);
+    close(host_fd);
+}
+
 /*
  * Compose two independently acknowledged Xframe sources through Bridge and
  * Hub. Clearing scheduled TXPIC must leave the slot level high for GPIO, and
@@ -718,6 +856,8 @@ int main(int argc, char **argv)
                         NULL, test_transmit_frame_composes_through_the_bridge);
     qtest_add_data_func("sn0/xframe/receive-frame-composes-through-the-bridge",
                         NULL, test_receive_frame_composes_through_the_bridge);
+    qtest_add_data_func("sn0/xframe/five-buffer-receive-splits-icmp-ip-header",
+                        NULL, test_five_buffer_receive_splits_icmp_ip_header);
     qtest_add_data_func("sn0/xframe/combined-interrupts-"
                         "compose-through-the-bridge",
                         NULL, test_combined_interrupts);
