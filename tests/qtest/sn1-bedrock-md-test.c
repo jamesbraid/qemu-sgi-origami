@@ -39,8 +39,8 @@
 #define ECC_BASE UINT64_C(0x10140000000)
 #define ECC(_x) (ECC_BASE + (_x))
 #define ECC_FIRST_ABSENT_BYTE_512M 0x4000007
-#define ECC_FIRST_ABSENT_HALFWORD_512M 0x4000006
-#define ECC_ADMITTED_HALFWORD 0x8000006
+#define ECC_ADMITTED_HALFWORD_LOW 0x4000006
+#define ECC_ADMITTED_HALFWORD_HIGH 0x8000006
 
 /*
  * The three diagnostics the reviewed contract spells out character for
@@ -1455,8 +1455,12 @@ static void test_ecc_carrier(void)
     qtest_writeb(s, ECC(6), 0x34);
     g_assert_cmphex(qtest_readw(s, ECC(6)), ==, 0x1234);
 
-    qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD), 0x5aa5);
-    g_assert_cmphex(qtest_readw(s, ECC(ECC_ADMITTED_HALFWORD)), ==, 0x5aa5);
+    qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD_LOW), 0x5aa5);
+    qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD_HIGH), 0x9999);
+    g_assert_cmphex(qtest_readw(s, ECC(ECC_ADMITTED_HALFWORD_LOW)), ==,
+                    0x5aa5);
+    g_assert_cmphex(qtest_readw(s, ECC(ECC_ADMITTED_HALFWORD_HIGH)), ==,
+                    0x9999);
     g_assert_cmphex(qtest_readw(s, ECC(6)), ==, 0x1234);
     qtest_quit(s);
 }
@@ -1467,17 +1471,19 @@ static void test_ecc_bank_translation(void)
 
     qtest_writeq(s, MD(0x8), (UINT64_C(1) << 32) |
                               memory_bank_config(0, 1));
-    qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD), 0x1357);
+    qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD_HIGH), 0x1357);
     qtest_writeq(s, MD(0x8), memory_bank_config(0, 1));
     g_assert_cmphex(qtest_readw(s, ECC(6)), ==, 0x1357);
-    g_assert_cmphex(qtest_readw(s, ECC(ECC_ADMITTED_HALFWORD)), ==, 0);
+    g_assert_cmphex(qtest_readw(s, ECC(ECC_ADMITTED_HALFWORD_HIGH)), ==, 0);
 
-    qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD), 0x2468);
+    qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD_HIGH), 0x2468);
     qtest_writeq(s, MD(0x8), (UINT64_C(1) << 32) |
                               memory_bank_config(0, 1));
-    g_assert_cmphex(qtest_readw(s, ECC(ECC_ADMITTED_HALFWORD)), ==, 0x1357);
+    g_assert_cmphex(qtest_readw(s, ECC(ECC_ADMITTED_HALFWORD_HIGH)), ==,
+                    0x1357);
     qtest_writeq(s, MD(0x8), memory_bank_config(0, 1));
-    g_assert_cmphex(qtest_readw(s, ECC(ECC_ADMITTED_HALFWORD)), ==, 0x2468);
+    g_assert_cmphex(qtest_readw(s, ECC(ECC_ADMITTED_HALFWORD_HIGH)), ==,
+                    0x2468);
     qtest_quit(s);
 }
 
@@ -1493,9 +1499,9 @@ static void test_ecc_validation_order(void)
     qtest_writel(s, ECC(4), 0xffffffff);
     qtest_writew(s, ECC(7), 0xffff);
     qtest_writeb(s, ECC(ECC_FIRST_ABSENT_BYTE_512M), 0xff);
-    qtest_writew(s, ECC(ECC_FIRST_ABSENT_HALFWORD_512M), 0xffff);
-    qtest_writeb(s, ECC(ECC_ADMITTED_HALFWORD), 0xff);
-    qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD + 0x10), 0xffff);
+    qtest_writeb(s, ECC(ECC_ADMITTED_HALFWORD_HIGH), 0xff);
+    qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD_LOW + 0x10), 0xffff);
+    qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD_HIGH + 0x10), 0xffff);
     qtest_writew(s, ECC(2 * DIRECTORY_BANK_SIZE + 6), 0xffff);
     qtest_writel(s, ECC(0x4000005), 0xffffffff);
     qtest_writew(s, ECC(0x4000007), 0xffff);
@@ -1507,6 +1513,9 @@ static void test_ecc_validation_order(void)
     g_assert_nonnull(strstr(contents, ECC_WRITE_ABSENT));
     g_assert_nonnull(strstr(contents,
         "sgi-bedrock-md: ECC backdoor write offset 0x08000006 size 1 "
+        "rejected: outside fitted memory"));
+    g_assert_nonnull(strstr(contents,
+        "sgi-bedrock-md: ECC backdoor write offset 0x04000016 size 2 "
         "rejected: outside fitted memory"));
     g_assert_nonnull(strstr(contents,
         "sgi-bedrock-md: ECC backdoor write offset 0x08000016 size 2 "
@@ -1562,8 +1571,12 @@ static void test_ecc_without_node_memory(void)
     qtest_sysbus_mmio_map(s, MD_PATH, 2, ECC_BASE);
     qtest_writeb(s, ECC(0), 0xff);
     g_assert_cmphex(qtest_readb(s, ECC(0)), ==, 0);
-    qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD), 0xa55a);
-    g_assert_cmphex(qtest_readw(s, ECC(ECC_ADMITTED_HALFWORD)), ==, 0xa55a);
+    qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD_LOW), 0xa55a);
+    qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD_HIGH), 0x5aa5);
+    g_assert_cmphex(qtest_readw(s, ECC(ECC_ADMITTED_HALFWORD_LOW)), ==,
+                    0xa55a);
+    g_assert_cmphex(qtest_readw(s, ECC(ECC_ADMITTED_HALFWORD_HIGH)), ==,
+                    0x5aa5);
     qtest_quit(s);
 
     contents = log_file_take(log);
@@ -1582,11 +1595,13 @@ static void test_ecc_reset(void)
 
     qtest_writeq(s, MD(0x8), memory_bank_config(0, 4));
     qtest_writew(s, ECC(6), 0xa55a);
-    qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD), 0x5aa5);
+    qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD_LOW), 0x5aa5);
+    qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD_HIGH), 0x9999);
     qtest_system_reset(s);
     qtest_writeq(s, MD(0x8), memory_bank_config(0, 4));
     g_assert_cmphex(qtest_readw(s, ECC(6)), ==, 0);
-    g_assert_cmphex(qtest_readw(s, ECC(ECC_ADMITTED_HALFWORD)), ==, 0);
+    g_assert_cmphex(qtest_readw(s, ECC(ECC_ADMITTED_HALFWORD_LOW)), ==, 0);
+    g_assert_cmphex(qtest_readw(s, ECC(ECC_ADMITTED_HALFWORD_HIGH)), ==, 0);
     qtest_quit(s);
 }
 
@@ -1605,7 +1620,8 @@ static void test_ecc_migration(void)
     to = start("-incoming defer");
     qtest_writeq(from, MD(0x8), memory_bank_config(0, 4));
     qtest_writew(from, ECC(6), 0xa55a);
-    qtest_writew(from, ECC(ECC_ADMITTED_HALFWORD), 0x5aa5);
+    qtest_writew(from, ECC(ECC_ADMITTED_HALFWORD_LOW), 0x5aa5);
+    qtest_writew(from, ECC(ECC_ADMITTED_HALFWORD_HIGH), 0x9999);
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
@@ -1613,7 +1629,10 @@ static void test_ecc_migration(void)
     migrate_wait(from);
     migrate_wait(to);
     g_assert_cmphex(qtest_readw(to, ECC(6)), ==, 0xa55a);
-    g_assert_cmphex(qtest_readw(to, ECC(ECC_ADMITTED_HALFWORD)), ==, 0x5aa5);
+    g_assert_cmphex(qtest_readw(to, ECC(ECC_ADMITTED_HALFWORD_LOW)), ==,
+                    0x5aa5);
+    g_assert_cmphex(qtest_readw(to, ECC(ECC_ADMITTED_HALFWORD_HIGH)), ==,
+                    0x9999);
     qtest_quit(from);
     qtest_quit(to);
     unlink(socket);
