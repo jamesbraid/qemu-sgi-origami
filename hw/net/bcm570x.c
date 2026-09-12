@@ -256,6 +256,14 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_RCB_HOSTADDR_HI     0x00    /* offsets within the RCB */
 #define BCM570X_RCB_HOSTADDR_LO     0x04
 #define BCM570X_RCB_MAXLEN_FLAGS    0x08
+/*
+ * Flag bits within an RCB's Max_Len/Flags word (PG105 Table 27, "Flag
+ * Fields", page 91). Only the jumbo ring's Extended RX Enable and Disable
+ * Ring bits have a modelled effect; the others (mini ring, etc.) are not
+ * used on this machine.
+ */
+#define BCM570X_RCB_FLAG_EXT_RX_ENABLE 0x0001  /* use the 64-byte jumbo BD */
+#define BCM570X_RCB_FLAG_DISABLE_RING  0x0002  /* ring not in use */
 #define BCM570X_TXBD_SIZE           16
 #define BCM570X_TXBD_ADDR_HI        0x00    /* offsets within a tx descriptor */
 #define BCM570X_TXBD_ADDR_LO        0x04
@@ -353,6 +361,16 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
  * from. Without it a jumbo frame has nowhere big enough to go, and writing one
  * into a standard-ring buffer runs off the end of what the driver set aside --
  * which corrupts whatever the guest had after it.
+ *
+ * The jumbo RCB's Max_Len/Flags word (0x2448) is not consulted for its
+ * length: the manual says Max_Len there is unused for jumbo rings, ignored
+ * by hardware in favor of the standard ring's own Max_Len (PG105 page 91,
+ * Table 341, page 438). A traced IRIX 6.5.30 boot at MTU 9000 confirms the
+ * driver leaves it at 0 and never writes it. What does matter is Disable
+ * Ring (bit 1): the ring is available only while that bit is clear and its
+ * host base is nonzero. Extended RX Enable (bit 0) asks for 64-byte
+ * descriptors this model does not parse; while set, the ring is treated the
+ * same as disabled.
  */
 #define BCM570X_MBX_RX_JUMBO_PROD_LO 0x0274
 #define BCM570X_RX_JUMBO_RCB_HADDR_HI 0x2440
@@ -1547,12 +1565,25 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
         bcm570x_regfile_write(s, off, val);
         bcm570x_tx_kick(s, val);
         return;
+    case BCM570X_RX_JUMBO_RCB_MAXLEN_FLAGS:
+        /*
+         * Max_Len (bits 31-16) is unused for the jumbo ring and never read
+         * back for it; only Disable Ring and Extended RX Enable do anything,
+         * and both are read directly out of the stored word where needed.
+         * The extended 64-byte descriptor format is not modelled -- flag it
+         * once, here at the point the guest asks for it, rather than on
+         * every frame that finds the ring unavailable because of it.
+         */
+        if (val & BCM570X_RCB_FLAG_EXT_RX_ENABLE) {
+            qemu_log_mask(LOG_UNIMP,
+                          "bcm570x: extended jumbo receive descriptors "
+                          "(0x2448 bit 0) are not modelled; the jumbo ring "
+                          "is treated as unavailable\n");
+        }
+        break;
     case BCM570X_MBX_RX_JUMBO_PROD_LO: {
         /* Posting jumbo-ring buffers; guard the index like the standard one. */
-        uint16_t jumbo_len =
-            bcm570x_regfile_read(s, BCM570X_RX_JUMBO_RCB_MAXLEN_FLAGS) >> 16;
-
-        if (jumbo_len == 0 || (val & 0xffff) >= BCM570X_RX_JUMBO_RING_LEN) {
+        if ((val & 0xffff) >= BCM570X_RX_JUMBO_RING_LEN) {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "bcm570x: receive jumbo producer %u out of range "
                           "(ring length %u)\n", val & 0xffff,
@@ -1843,6 +1874,28 @@ static uint32_t bcm570x_config_read(PCIDevice *dev, uint32_t addr, int len)
 }
 
 /*
+ * Whether the jumbo ring can take a frame at all, independent of whether one
+ * is posted: it needs a host base and must not be disabled (PG105 Table 341,
+ * page 438). Extended RX Enable asks for the 64-byte descriptor format this
+ * model does not parse, so a ring asking for it is treated the same as a
+ * disabled one -- oversize frames are dropped rather than misread as the
+ * plain 32-byte format. Max_Len (bits 31-16) plays no part in this: the
+ * manual says hardware ignores it for the jumbo ring.
+ */
+static bool bcm570x_jumbo_ring_enabled(Bcm570xState *s)
+{
+    uint32_t flags =
+        bcm570x_regfile_read(s, BCM570X_RX_JUMBO_RCB_MAXLEN_FLAGS);
+    uint64_t jumbo_base = bcm570x_compose_hostaddr(s,
+                     bcm570x_regfile_read(s, BCM570X_RX_JUMBO_RCB_HADDR_HI),
+                     bcm570x_regfile_read(s, BCM570X_RX_JUMBO_RCB_HADDR_LO));
+
+    return jumbo_base != 0 &&
+           !(flags & BCM570X_RCB_FLAG_DISABLE_RING) &&
+           !(flags & BCM570X_RCB_FLAG_EXT_RX_ENABLE);
+}
+
+/*
  * Whether the engine can take a frame: the receive rings must be set up and the
  * host-coalescing block enabled, and the host must have posted a standard-ring
  * buffer the chip has not yet used -- its producer mailbox ahead of the chip's
@@ -1876,10 +1929,9 @@ static bool bcm570x_rx_ready(Bcm570xState *s)
      */
     uint16_t jumbo_prod =
         bcm570x_regfile_read(s, BCM570X_MBX_RX_JUMBO_PROD_LO) & 0xffff;
-    uint16_t jumbo_len =
-        bcm570x_regfile_read(s, BCM570X_RX_JUMBO_RCB_MAXLEN_FLAGS) >> 16;
     bool posted = (std_len != 0 && std_prod != s->rx_std_cons) ||
-                  (jumbo_len != 0 && jumbo_prod != s->rx_jumbo_cons);
+                  (bcm570x_jumbo_ring_enabled(s) &&
+                   jumbo_prod != s->rx_jumbo_cons);
 
     return ret_len != 0 && posted &&
            (bcm570x_regfile_read(s, BCM570X_HCC_MODE) &
@@ -2033,9 +2085,10 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
     uint32_t framelen;
     uint16_t rx_flags = BCM570X_RXBDFLAG_END;
     uint32_t csum;
-    uint16_t std_size, std_prod, jumbo_size, jumbo_prod;
+    uint16_t std_size, std_prod, jumbo_prod;
     uint64_t jumbo_base;
     bool on_jumbo = false;
+    bool jumbo_enabled;
 
     if (s->has_vnet_hdr) {
         if (size <= sizeof(struct virtio_net_hdr)) {
@@ -2080,19 +2133,20 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
     }
 
     /*
-     * Pick the ring by what the frame will fit in. The control block's length
-     * field is the size of the buffer behind each descriptor, so it is the
-     * driver's statement of how much room it set aside; a frame larger than
-     * that belongs on the jumbo ring, and one too big for either is dropped
-     * rather than written past the end of somebody's buffer.
+     * Pick the ring by what the frame will fit in. The standard ring's Max_Len
+     * is the driver's statement of how much room its buffers hold; a frame
+     * larger than that goes to the jumbo ring instead, whenever the jumbo
+     * ring is enabled -- its own Max_Len plays no part (see the jumbo ring
+     * comment above). A frame too big for the standard ring while the jumbo
+     * ring is disabled or unconfigured is dropped rather than written past
+     * the end of somebody's buffer.
      */
     std_size = bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_MAXLEN_FLAGS) >> 16;
     std_prod =
         bcm570x_regfile_read(s, BCM570X_MBX_RX_STD_PROD_LO) & 0xffff;
-    jumbo_size =
-        bcm570x_regfile_read(s, BCM570X_RX_JUMBO_RCB_MAXLEN_FLAGS) >> 16;
     jumbo_prod =
         bcm570x_regfile_read(s, BCM570X_MBX_RX_JUMBO_PROD_LO) & 0xffff;
+    jumbo_enabled = bcm570x_jumbo_ring_enabled(s);
     jumbo_base = bcm570x_compose_hostaddr(s,
                      bcm570x_regfile_read(s, BCM570X_RX_JUMBO_RCB_HADDR_HI),
                      bcm570x_regfile_read(s, BCM570X_RX_JUMBO_RCB_HADDR_LO));
@@ -2106,7 +2160,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
                        bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_HADDR_HI),
                        bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_HADDR_LO));
         idx = s->rx_std_cons;
-    } else if (jumbo_size != 0 && jumbo_base != 0 && framelen <= jumbo_size) {
+    } else if (jumbo_enabled) {
         if (jumbo_prod == s->rx_jumbo_cons) {
             bcm570x_defer_rx_flush(s);
             return 0;
@@ -2117,9 +2171,10 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
         on_jumbo = true;
     } else {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "bcm570x: received frame of %u bytes fits neither the "
-                      "%u-byte standard buffer nor the %u-byte jumbo buffer, "
-                      "dropped\n", framelen, std_size, jumbo_size);
+                      "bcm570x: received frame of %u bytes exceeds the "
+                      "%u-byte standard buffer and the jumbo ring is "
+                      "disabled or unconfigured, dropped\n",
+                      framelen, std_size);
         return orig_size;
     }
 
@@ -2143,6 +2198,27 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
     buf_addr = ((uint64_t)bcm570x_dma_ld32(s, std_bd + BCM570X_RXBD_ADDR_HI)
                 << 32) |
                bcm570x_dma_ld32(s, std_bd + BCM570X_RXBD_ADDR_LO);
+
+    if (on_jumbo) {
+        /*
+         * The jumbo ring carries no ring-wide buffer size (its RCB's
+         * Max_Len is unused); the driver states each buffer's size in the
+         * descriptor it posts. A frame too big for that one descriptor is
+         * dropped, mirroring the standard path's oversize drop above: a
+         * log and a consumed-but-undelivered frame, with the descriptor
+         * left for a frame that does fit it.
+         */
+        uint16_t buf_len =
+            bcm570x_dma_ld32(s, std_bd + BCM570X_RXBD_IDX_LEN) & 0xffff;
+
+        if (framelen > buf_len) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "bcm570x: received frame of %u bytes exceeds the "
+                          "%u-byte jumbo buffer posted at descriptor %u, "
+                          "dropped\n", framelen, buf_len, idx);
+            return orig_size;
+        }
+    }
 
     if (bcm570x_frame_dma_write(pci, s, buf_addr, buf,
                                 framelen) != MEMTX_OK) {
