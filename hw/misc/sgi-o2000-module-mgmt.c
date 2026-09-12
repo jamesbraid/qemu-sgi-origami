@@ -10,6 +10,8 @@
  */
 
 #include "qemu/osdep.h"
+#include "hw/1wire/ds2502.h"
+#include "hw/misc/sgi-onewire-slot.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/i2c/pcf8584.h"
@@ -567,12 +569,33 @@ static void mgmt_elsc_console_input(void *opaque, bool pending)
     ((SGIO2000ModuleMgmtState *)opaque)->console_input_pending = pending;
 }
 
+static bool mgmt_elsc_onewire_slot(void *opaque, uint32_t pulse,
+                                   uint32_t sample)
+{
+    SGIO2000ModuleMgmtState *s = opaque;
+
+    return sgi_onewire_slot(s->onewire_bus, pulse, sample);
+}
+
 static const SGIElscModuleOps mgmt_elsc_ops = {
     .can_execute = mgmt_elsc_can_execute,
     .execute = mgmt_elsc_execute,
     .slave_active = mgmt_elsc_slave_active,
     .console_owner = mgmt_elsc_console_owner,
     .console_input = mgmt_elsc_console_input,
+    .onewire_slot = mgmt_elsc_onewire_slot,
+};
+
+static const uint8_t module_serial_image[DS2502_DATA_SIZE] = {
+    0x01, 0x4b, 0x4f, 0x52, 0x49, 0x47, 0x41, 0x4d,
+    0x49, 0x30, 0x31, 0x4f, 0x52, 0x49, 0x47, 0x41,
+    0x4d, 0x49, 0x2d, 0x4d, 0x4f, 0x44, 0x55, 0x4c,
+    0x45, 0x2d, 0x53, 0x45, 0x52, 0x49, 0x80, 0x45,
+    0x41, 0x4c, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x4d, 0x4f, 0x44, 0x55, 0x4c, 0x45, 0x49, 0x44,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0e, 0xcc,
+    [64 ... DS2502_DATA_SIZE - 1] = 0xff,
 };
 
 static DeviceState *mgmt_add_child(SGIO2000ModuleMgmtState *s,
@@ -663,6 +686,11 @@ static void mgmt_realize(DeviceState *dev, Error **errp)
     if (!qdev_realize(DEVICE(s->msc), BUS(s->bus), errp)) {
         return;
     }
+    ds2502_set_image(s->module_serial, module_serial_image,
+                     sizeof(module_serial_image));
+    if (!qdev_realize(s->module_serial, BUS(s->onewire_bus), errp)) {
+        return;
+    }
     mgmt_populate_nvram(s);
 
     for (i = 0; i < SGI_O2000_ADAPTER_COUNT; i++) {
@@ -717,6 +745,11 @@ static void mgmt_init(Object *obj)
     SGIO2000ModuleMgmtState *s = SGI_O2000_MODULE_MGMT(obj);
 
     s->bus = i2c_init_bus(DEVICE(obj), "i2c");
+    s->onewire_bus = onewire_create_bus(DEVICE(obj), "module-onewire");
+    s->module_serial = mgmt_add_child(s, "module-serial",
+                                      TYPE_ONEWIRE_DS2502);
+    qdev_prop_set_uint8(s->module_serial, "family", 0x09);
+    qdev_prop_set_uint64(s->module_serial, "serial", UINT64_C(0x4d414749524f));
     s->msc = SGI_ELSC(mgmt_add_child(s, "msc", TYPE_SGI_ELSC));
     sgi_elsc_set_module_ops(s->msc, &mgmt_elsc_ops, s);
     /*

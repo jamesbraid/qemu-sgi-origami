@@ -73,6 +73,8 @@ typedef struct SGIElscModuleOps {
     void (*console_owner)(void *opaque, unsigned processor);
     /* Queued alternate-console input is or is not waiting. */
     void (*console_input)(void *opaque, bool pending);
+    /* One bit slot on the module-owned midplane identity line. */
+    bool (*onewire_slot)(void *opaque, uint32_t pulse, uint32_t sample);
 } SGIElscModuleOps;
 
 struct SGIElscState {

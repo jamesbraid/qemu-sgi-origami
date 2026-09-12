@@ -12,6 +12,7 @@
 #include "hw/core/qdev.h"
 #include "hw/core/irq.h"
 #include "hw/i2c/i2c.h"
+#include "hw/1wire/onewire.h"
 #include "hw/misc/sgi-elsc.h"
 #include "qemu/timer.h"
 #include "qom/object.h"
@@ -69,6 +70,8 @@ struct SGIO2000ModuleMgmtState {
     I2CBus *bus;
     DeviceState *adapters[SGI_O2000_ADAPTER_COUNT];
     SGIElscState *msc;
+    OneWireBus *onewire_bus;
+    DeviceState *module_serial;
 
     qemu_irq reset_out;
     qemu_irq nmi_out;
