@@ -140,6 +140,7 @@
 #define PRC_RXD0_0              0x1930
 #define PRC_CTRL_0              0x1970
 #define RX_TRAFFIC_INT          0x08f0
+#define RX_TRAFFIC_MASK         0x08f8
 
 /* The two fixed 64-bit constants the register composition is checked on. */
 #define SWAPPER_MAGIC           0x0123456789abcdefULL
@@ -149,15 +150,20 @@
 #define RX_TRAFFIC_RING0        (1ULL << 63)
 
 #define ADAPTER_EN_HIGH         (1u << 24)
+#define RC_IN_SVC_HIGH          (1u << 24)
 #define PIC_INT_TX_HIGH         (1u << 31)
 #define PIC_INT_GPIO_HIGH       (1u << 27)
 #define GEN_INTR_TXPIC_HIGH     (1u << 31)
 #define GPIO_INT_LINK_UP_HIGH   (1u << 29)
+#define RX_TRAFFIC_RING0_HIGH   (1u << 31)
 #define SCHED_INT_TIMER_EN_HIGH (1u << 31)
 #define SCHED_INT_TEST_PERIOD   0x000186a0u
 #define LINK_SETTLE_STEP_NS     (700LL * 1000 * 1000)
 #define SCHED_INT_STEP_NS       (3000LL * 1000 * 1000)
 #define QUIESCENT_STEP_NS       (100LL * 1000 * 1000)
+
+/* A 1-buffer RxD's descriptor stride: host control, control1/2, buf ptr. */
+#define RXD_SIZE                32
 
 /* TxP doorbell (BAR2): the list pointer at +0, the launch control at +8. */
 #define TXP_TXDL_PAR            0x00
@@ -531,6 +537,27 @@ static bool wait_rx_traffic(QTestState *qts, int attempts)
 }
 
 /*
+ * Poll one RxD's ownership bit rather than RX_TRAFFIC_INT: the status bit
+ * stays set across every completion until the driver acknowledges it, so
+ * once two descriptors are in play it cannot tell which one landed.
+ */
+static bool wait_rxd_consumed(QTestState *qts, uint64_t desc_phys,
+                              int attempts)
+{
+    uint8_t word[8];
+    int i;
+
+    for (i = 0; i < attempts; i++) {
+        dma_read_canonical(qts, desc_phys + 8, word, sizeof(word));
+        if (!(ldq_be_buf(word) & RXD_OWN)) {
+            return true;
+        }
+        g_usleep(1000);
+    }
+    return false;
+}
+
+/*
  * Receive composition: the device's native-little-endian byte-buffer DMA
  * writing a whole frame into the guest, through the Bridge's byte-lane path.
  * The guest posts one card-owned RxD (laid out canonical-word-reversed so the
@@ -702,6 +729,131 @@ static void test_combined_interrupts(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * A completion that lands while an earlier one is still unacknowledged must
+ * still cross the Bridge as a fresh edge once the driver does acknowledge.
+ * On this Bridge every re-delivery to the Hub depends on the device's own
+ * line actually falling and rising again: docs/datasheets/bridge.md states
+ * "the interrupt status register must follow the device's level, and must
+ * never latch and clear on service" and that a set packet goes to the Hub
+ * only "a rising input" while enabled -- a held level sends nothing twice.
+ * The same document records that IRIX carries no software re-arm of its own
+ * here (no re-post through the Hub, no Bridge force write), so it "relies
+ * entirely on" that edge for a second completion to ever reach it.
+ *
+ * Bring the adapter up receive-only, with no RTI programmed so each frame
+ * is its own completion (as the other receive tests here already assume).
+ * Deliver frame 1; clear the Hub's pending bit the way a driver does; read
+ * RX_TRAFFIC_INT to confirm the device still reports it, since the driver
+ * has acknowledged the Hub but not yet the device; deliver frame 2 before
+ * acknowledging -- a completion landing during the handler; then
+ * acknowledge with a write-1-to-clear of exactly the bits just read. The
+ * deferred second completion must reassert RX_TRAFFIC_INT, the Bridge's
+ * INT_STATUS, and the Hub pending bit.
+ */
+static void test_receive_ack_reasserts_pending_for_deferred_frame(
+    const void *data)
+{
+    int host_fd;
+    QTestState *qts;
+    int sv[2];
+    uint8_t frame1[FRAME_LEN], frame2[FRAME_LEN];
+    uint8_t rxd[32];
+    uint64_t desc0 = DESC_PHYS;
+    uint64_t desc1 = DESC_PHYS + RXD_SIZE;
+    uint64_t buf1_iova = RX_BUF_IOVA + 0x100;
+    uint64_t hub_bit = 1ULL << XFRAME_IRQ_NUMBER;
+    uint32_t pending_low, pending_high;
+    unsigned i;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 5);
+    host_fd = sv[0];
+    qts = qtest_initf("%s -netdev socket,fd=%d,id=n0 "
+                      "-device xframe,addr=%d,netdev=n0,mac=%s",
+                      MACHINE_WITH_BRIDGE, sv[1], XFRAME_IRQ_SLOT, TEST_MAC);
+
+    qtest_writel(qts, CFG0(XFRAME_IRQ_SLOT) + PCI_BAR0, PIF_BAR_PCI);
+    qtest_writel(qts, CFG0(XFRAME_IRQ_SLOT) + PCI_BAR0_HIGH, 0);
+    qtest_writel(qts, CFG0(XFRAME_IRQ_SLOT) + PCI_COMMAND,
+                PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, BRIDGE_DEVICE(XFRAME_IRQ_SLOT),
+                DEV_MEMORY_SPACE | (PIF_BAR_PCI >> 20));
+
+    qtest_writel(qts, BRIDGE_INT_HOST(XFRAME_IRQ_SLOT), XFRAME_IRQ_NUMBER);
+    qtest_writel(qts, BRIDGE_INT_MODE, 0);
+    qtest_writel(qts, BRIDGE_INT_ENABLE, 1u << XFRAME_IRQ_SLOT);
+
+    /*
+     * Unmask receive traffic; RTI is left unprogrammed (one interrupt per
+     * frame, matching the plain receive tests above).
+     */
+    irq_win_writel(qts, RX_TRAFFIC_MASK + 0, 0);
+    irq_win_writel(qts, RX_TRAFFIC_MASK + 4, 0);
+
+    qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE, 0));
+
+    for (i = 0; i < FRAME_LEN; i++) {
+        frame1[i] = (uint8_t)(0x10 + i);
+        frame2[i] = (uint8_t)(0x50 + i);
+    }
+    memcpy(frame1, station_mac, sizeof(station_mac));
+    memcpy(frame2, station_mac, sizeof(station_mac));
+
+    /* Two card-owned RxDs, posted before the ring is armed. */
+    memset(rxd, 0, sizeof(rxd));
+    stq_be_buf(rxd + 8, RXD_OWN);
+    stq_be_buf(rxd + 16, (uint64_t)RX_BUF_CAPACITY << RXD_BUFSIZ_SHIFT);
+    stq_be_buf(rxd + 24, RX_BUF_IOVA);
+    dma_write_canonical(qts, desc0, rxd, sizeof(rxd));
+    stq_be_buf(rxd + 24, buf1_iova);
+    dma_write_canonical(qts, desc1, rxd, sizeof(rxd));
+
+    irq_win_writel(qts, PRC_RXD0_0 + 0, DESC_IOVA);
+    irq_win_writel(qts, PRC_RXD0_0 + 4, 0);
+    irq_win_writel(qts, PRC_CTRL_0 + 0, 0);
+    irq_win_writel(qts, PRC_CTRL_0 + 4, RC_IN_SVC_HIGH);
+
+    net_socket_send_frame(host_fd, frame1, sizeof(frame1));
+    g_assert_true(wait_rxd_consumed(qts, desc0, 5000));
+
+    g_assert_cmphex(irq_win_readl(qts, RX_TRAFFIC_INT + 4) &
+                    RX_TRAFFIC_RING0_HIGH, ==, RX_TRAFFIC_RING0_HIGH);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) &
+                    (1u << XFRAME_IRQ_SLOT), ==, 1u << XFRAME_IRQ_SLOT);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_WINDOW + PI_INT_PEND0) &
+                    hub_bit, ==, hub_bit);
+
+    /* Clear the Hub's pending bit the way a driver does. */
+    qtest_writeq(qts, HUB_LOCAL_WINDOW + PI_INT_PEND_MOD, XFRAME_IRQ_NUMBER);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_WINDOW + PI_INT_PEND0) &
+                    hub_bit, ==, 0);
+
+    /* The device itself still reports it: only the Hub was acknowledged. */
+    pending_low = irq_win_readl(qts, RX_TRAFFIC_INT + 0);
+    pending_high = irq_win_readl(qts, RX_TRAFFIC_INT + 4);
+    g_assert_cmphex(pending_high & RX_TRAFFIC_RING0_HIGH, ==,
+                    RX_TRAFFIC_RING0_HIGH);
+
+    /* A second completion lands during the handler, before the ack. */
+    net_socket_send_frame(host_fd, frame2, sizeof(frame2));
+    g_assert_true(wait_rxd_consumed(qts, desc1, 5000));
+
+    /* Acknowledge with a write-1-to-clear of exactly the bits just read. */
+    irq_win_writel(qts, RX_TRAFFIC_INT + 0, pending_low);
+    irq_win_writel(qts, RX_TRAFFIC_INT + 4, pending_high);
+
+    g_assert_cmphex(irq_win_readl(qts, RX_TRAFFIC_INT + 4) &
+                    RX_TRAFFIC_RING0_HIGH, ==, RX_TRAFFIC_RING0_HIGH);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) &
+                    (1u << XFRAME_IRQ_SLOT), ==, 1u << XFRAME_IRQ_SLOT);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_WINDOW + PI_INT_PEND0) &
+                    hub_bit, ==, hub_bit);
+
+    qtest_quit(qts);
+    close(host_fd);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -721,6 +873,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/xframe/combined-interrupts-"
                         "compose-through-the-bridge",
                         NULL, test_combined_interrupts);
+    qtest_add_data_func("sn0/xframe/receive-ack-reasserts-pending-"
+                        "for-deferred-frame",
+                        NULL,
+                        test_receive_ack_reasserts_pending_for_deferred_frame);
 
     return g_test_run();
 }
