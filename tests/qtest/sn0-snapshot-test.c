@@ -33,6 +33,7 @@
 
 #define PCI_COMMAND             0x04
 #define PCI_COMMAND_MEMORY      0x0002
+#define PCI_BAR0                0x10
 #define PCI_BAR1                0x14
 
 /* A 32-bit scratch register in the card's memory-mapped register file. */
@@ -45,6 +46,11 @@
 #define PROBE_WINDOW             1
 #define PROBE_WINDOW_OFFSET      0x400000
 #define WINDOW(offset)           (BRIDGE_BASE + (offset))
+#define IOC3_SLOT                2
+#define IOC3_PCI_MMIO            0x10000000u
+#define IOC3_WINDOW_OFFSET       0x600000
+#define IOC3_TIMEKEEPER          (BRIDGE_BASE + IOC3_WINDOW_OFFSET + 0x80000)
+#define TIMEKEEPER_STORAGE_SIZE  0x7ff8
 
 static void bridge_put_card_in_slot(QTestState *qts, int slot)
 {
@@ -56,6 +62,14 @@ static void bridge_aim_window_at_card(QTestState *qts, int window, int slot)
 {
     qtest_writel(qts, REG(BRIDGE_DEVICE(window)),
                 DEV_MEMORY_SPACE | (CARD_MMIO(slot) >> 20));
+}
+
+static void attach_ioc3(QTestState *qts)
+{
+    qtest_writel(qts, CFG0(IOC3_SLOT, 0) + PCI_BAR0, IOC3_PCI_MMIO);
+    qtest_writel(qts, CFG0(IOC3_SLOT, 0) + PCI_COMMAND, PCI_COMMAND_MEMORY);
+    qtest_writel(qts, REG(BRIDGE_DEVICE(IOC3_SLOT)),
+                 DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
 }
 
 /*
@@ -115,12 +129,68 @@ static void test_a_device_window_survives_savevm_loadvm(const void *data)
     qtest_quit(qts);
 }
 
+static void test_timekeeper_image_survives_savevm_loadvm(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *qcow2_path = NULL;
+    g_autofree gchar *drive_arg = NULL;
+    g_autofree gchar *cmdline = NULL;
+    g_autofree uint8_t *expected = g_malloc(TIMEKEEPER_STORAGE_SIZE);
+    g_autofree uint8_t *actual = g_malloc(TIMEKEEPER_STORAGE_SIZE);
+    GError *err = NULL;
+    QTestState *qts;
+    char *hmp_ret;
+    size_t i;
+
+    if (!have_qemu_img()) {
+        g_test_skip("QTEST_QEMU_IMG not set; cannot create snapshot storage");
+        return;
+    }
+    for (i = 0; i < TIMEKEEPER_STORAGE_SIZE; i++) {
+        expected[i] = 0xa5 ^ i ^ (i >> 8);
+    }
+
+    tmpfs = g_dir_make_tmp("sn0-timekeeper-snapshot-XXXXXX", &err);
+    g_assert(tmpfs);
+    qcow2_path = g_strdup_printf("%s/state.qcow2", tmpfs);
+    g_assert(mkimg(qcow2_path, "qcow2", 128));
+    drive_arg = g_strdup_printf(" -drive file=%s,format=qcow2,if=none",
+                                qcow2_path);
+    cmdline = g_strdup_printf(MACHINE_WITH_BRIDGE "%s", drive_arg);
+    qts = qtest_init(cmdline);
+    attach_ioc3(qts);
+    qtest_memwrite(qts, IOC3_TIMEKEEPER, expected, TIMEKEEPER_STORAGE_SIZE);
+    hmp_ret = qtest_hmp(qts, "savevm timekeeper");
+    g_free(hmp_ret);
+    qtest_quit(qts);
+
+    g_free(cmdline);
+    cmdline = g_strdup_printf(MACHINE_WITH_BRIDGE "%s -loadvm timekeeper",
+                              drive_arg);
+    qts = qtest_init(cmdline);
+    qtest_memread(qts, IOC3_TIMEKEEPER, actual, TIMEKEEPER_STORAGE_SIZE);
+    g_assert_cmpmem(actual, TIMEKEEPER_STORAGE_SIZE,
+                    expected, TIMEKEEPER_STORAGE_SIZE);
+    qtest_clock_step(qts, 1000000000LL);
+    qtest_memread(qts, IOC3_TIMEKEEPER, actual, TIMEKEEPER_STORAGE_SIZE);
+    g_assert_cmpmem(actual, TIMEKEEPER_STORAGE_SIZE,
+                    expected, TIMEKEEPER_STORAGE_SIZE);
+    qtest_system_reset(qts);
+    attach_ioc3(qts);
+    qtest_memread(qts, IOC3_TIMEKEEPER, actual, TIMEKEEPER_STORAGE_SIZE);
+    g_assert_cmpmem(actual, TIMEKEEPER_STORAGE_SIZE,
+                    expected, TIMEKEEPER_STORAGE_SIZE);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
     qtest_add_data_func("sn0/snapshot/device-window-survives-savevm-loadvm",
                         NULL, test_a_device_window_survives_savevm_loadvm);
+    qtest_add_data_func("sn0/snapshot/timekeeper-image-survives-savevm-loadvm",
+                        NULL, test_timekeeper_image_survives_savevm_loadvm);
 
     return g_test_run();
 }

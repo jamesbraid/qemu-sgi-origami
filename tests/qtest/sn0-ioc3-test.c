@@ -4194,6 +4194,8 @@ static void test_the_size_probe_survives_parity_checking(const void *data)
 
 #define RTC_CSR_READ    0x40
 #define RTC_CSR_WRITE   0x80
+#define RTC_CHECKSUM    (BYTEBUS_DEV0 + 0x04bc)
+#define RTC_LEAP_CYCLE  (BYTEBUS_DEV0 + 0x3883)
 
 /*
  * A fixed base, mid-minute, so the fields assert exactly and the minute
@@ -4230,6 +4232,24 @@ static void test_the_clock_reads_the_time_it_was_given(const void *data)
 
     qtest_writeb(qts, RTC_CONTROL, 0);
 
+    qtest_quit(qts);
+}
+
+static void test_a_fresh_clock_has_the_date_derived_factory_image(
+    const void *data)
+{
+    QTestState *qts = qtest_init(RTC_ARGS);
+
+    sn0_ioc3_attach(qts);
+    g_assert_cmphex(qtest_readb(qts, RTC_LEAP_CYCLE), ==, 1);
+    g_assert_cmphex(qtest_readb(qts, RTC_CHECKSUM), ==, 0x6d);
+    qtest_quit(qts);
+
+    qts = qtest_init("-M origin200 "
+                     "-rtc base=2024-04-11T12:30:05,clock=vm");
+    sn0_ioc3_attach(qts);
+    g_assert_cmphex(qtest_readb(qts, RTC_LEAP_CYCLE), ==, 2);
+    g_assert_cmphex(qtest_readb(qts, RTC_CHECKSUM), ==, 0xad);
     qtest_quit(qts);
 }
 
@@ -4416,6 +4436,9 @@ static void test_the_storage_persists_across_a_process_with_a_drive(
 
     qts = qtest_init(args);
     sn0_ioc3_attach(qts);
+    /* Supplying an all-zero image is data, not permission to provision it. */
+    g_assert_cmphex(qtest_readb(qts, RTC_LEAP_CYCLE), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, RTC_CHECKSUM), ==, 0);
     qtest_writeb(qts, BYTEBUS_DEV0 + 0x0100, 0xc3);
     qtest_quit(qts);
 
@@ -5279,6 +5302,8 @@ int main(int argc, char **argv)
                         test_the_size_probe_survives_parity_checking);
     qtest_add_data_func("sn0/ioc3/clock-reads-the-time-it-was-given", NULL,
                         test_the_clock_reads_the_time_it_was_given);
+    qtest_add_data_func("sn0/ioc3/clock-fresh-image-follows-date", NULL,
+                        test_a_fresh_clock_has_the_date_derived_factory_image);
     qtest_add_data_func("sn0/ioc3/clock-freeze-holds-an-instant", NULL,
                         test_the_clock_freeze_holds_an_instant);
     qtest_add_data_func("sn0/ioc3/clock-year-wraps-below-its-epoch", NULL,
