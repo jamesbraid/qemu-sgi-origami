@@ -59,46 +59,6 @@
 
 #define SN1_MIPS_HARDWARE_IRQ_OFFSET 2
 
-static const VMStateDescription vmstate_sn1_machine = {
-    .name = "sn1-machine",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .fields = (const VMStateField[]) {
-        VMSTATE_BOOL(cpu_b_enabled, SN1MachineState),
-        VMSTATE_END_OF_LIST()
-    },
-};
-
-static void sn1_cpu_unhalt(CPUState *cs, run_on_cpu_data data)
-{
-    cpu_reset_interrupt(cs, CPU_INTERRUPT_HALT);
-    cs->halted = 0;
-}
-
-static void sn1_cpu_halt(CPUState *cs, run_on_cpu_data data)
-{
-    cpu_interrupt(cs, CPU_INTERRUPT_HALT);
-}
-
-static void sn1_cpu_b_enable(void *opaque, int n, int level)
-{
-    SN1MachineState *s = opaque;
-    CPUState *cs = s->cpu[1];
-
-    BQL_LOCK_GUARD();
-    if (level && !s->cpu_b_enabled) {
-        s->cpu_b_enabled = true;
-        async_safe_run_on_cpu(cs, sn1_cpu_unhalt, RUN_ON_CPU_NULL);
-    } else if (!level && s->cpu_b_enabled) {
-        s->cpu_b_enabled = false;
-        /*
-         * Queue both edges on CPU B.  Work-list order prevents an older
-         * unhalt from clearing this newer halt request.
-         */
-        async_run_on_cpu(cs, sn1_cpu_halt, RUN_ON_CPU_NULL);
-    }
-}
-
 /*
  * The controller holds one identification record per file, in order. The
  * machine names the files and claims nothing about what is in them: no
@@ -171,21 +131,10 @@ static void sn1_set_l1_identity_records(SN1MachineState *s)
     }
 }
 
-static void sn1_machine_init(Object *obj)
-{
-    SN1MachineState *s = SN1_MACHINE(obj);
-
-    qemu_init_irq_child(obj, "cpu-b-enable", &s->cpu_b_enable,
-                        sn1_cpu_b_enable, s, 0);
-    /* Restore the tracked level before Bedrock replays its output. */
-    vmstate_register(NULL, 0, &vmstate_sn1_machine, s);
-}
-
 static void sn1_machine_finalize(Object *obj)
 {
     SN1MachineState *s = SN1_MACHINE(obj);
 
-    vmstate_unregister(NULL, &vmstate_sn1_machine, s);
     g_free(s->cpu);
     g_free(s->prom_views);
     for (size_t i = 0; i < ARRAY_SIZE(sn1_identity_records); i++) {
@@ -221,14 +170,12 @@ static target_ulong sn1_store_transaction(MIPSCPU *cpu, MemoryRegion *mr,
 
 static void sn1_machine_reset(MachineState *machine, ResetType type)
 {
-    SN1MachineState *s = SN1_MACHINE(machine);
     CPUState *cs;
 
     /* Busless MIPS CPUs are outside the registered SysBus reset tree. */
     CPU_FOREACH(cs) {
         sn1_cpu_reset(cs);
     }
-    s->cpu_b_enabled = false;
     qemu_devices_reset(type);
 }
 
@@ -246,8 +193,6 @@ static void sn1_create_cpus(SN1MachineState *s, MachineState *machine)
                                  OBJECT(get_system_memory()), &error_abort);
         qdev_connect_clock_in(cpu_dev, "clk-in", s->cpu_refclk);
         object_property_set_bool(OBJECT(cpu_dev), "big-endian", true,
-                                 &error_abort);
-        object_property_set_bool(OBJECT(cpu_dev), "start-powered-off", i != 0,
                                  &error_abort);
         cpu->store_transaction = sn1_store_transaction;
         cpu->store_transaction_opaque = s;
@@ -624,9 +569,6 @@ static void sn1_create_bedrock(SN1MachineState *s, MachineState *machine)
     object_unref(OBJECT(s->xbridge));
     bedrock = SYS_BUS_DEVICE(s->bedrock);
 
-    qdev_connect_gpio_out_named(s->bedrock, "cpu-enable", 1,
-                                &s->cpu_b_enable);
-
     memory_region_add_subregion(system, model->xtalk_address,
                                 sysbus_mmio_get_region(bedrock, 1));
     memory_region_add_subregion_overlap(system, model->bedrock_local_address,
@@ -892,7 +834,6 @@ static const TypeInfo origin300_machine_type = {
     .name = TYPE_SN1_MACHINE,
     .parent = TYPE_MACHINE,
     .instance_size = sizeof(SN1MachineState),
-    .instance_init = sn1_machine_init,
     .instance_finalize = sn1_machine_finalize,
     .class_init = origin300_class_init,
 };

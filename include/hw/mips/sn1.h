@@ -26,8 +26,6 @@ struct SN1MachineState {
 
     Clock *cpu_refclk;
     CPUState **cpu;
-    IRQState cpu_b_enable;
-    bool cpu_b_enabled;
     DeviceState *bedrock;
     DeviceState *l1;
     DeviceState *xbridge;
