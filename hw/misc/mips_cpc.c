@@ -36,8 +36,11 @@ static inline uint64_t cpc_vp_run_mask(MIPSCPCState *cpc)
 
 static void mips_cpu_reset_async_work(CPUState *cs, run_on_cpu_data data)
 {
+    MIPSCPCState *cpc = (MIPSCPCState *) data.host_ptr;
+
     cpu_reset(cs);
     cs->halted = 0;
+    cpc->vp_running |= 1ULL << cs->cpu_index;
 }
 
 static void cpc_run_vp(MIPSCPCState *cpc, uint64_t vp_run)
@@ -48,29 +51,12 @@ static void cpc_run_vp(MIPSCPCState *cpc, uint64_t vp_run)
         uint64_t i = 1ULL << cs->cpu_index;
         if (i & vp_run & ~cpc->vp_running) {
             /*
-             * cpc->vp_running is also read and written directly from
-             * cpc_read()/cpc_stop_vp(), both synchronous under this same
-             * BQL-held MMIO dispatch, so set this CPU's bit here rather
-             * than from the queued reset work below: every write to the
-             * field then happens on this thread under the BQL, and none
-             * of them races a work callback running on another thread.
-             */
-            cpc->vp_running |= i;
-
-            /*
-             * The rest of the work -- cpu_reset() and clearing cs->halted
-             * -- bulk-rewrites architectural CPU state that a live peer
-             * can read without the BQL: mips_vp_active()/mips_vpe_active()
-             * (target/mips/cpu.c), reached from cpu_handle_halt() while
-             * that peer sits inside its own cpu_exec(). Queue it with
-             * async_safe_run_on_cpu() rather than run it here: that keeps
-             * it outside the BQL but inside start_exclusive()'s quiescent
-             * section, which upstream relies on to keep that read and
-             * this reset from overlapping. Do the final bit of
-             * preparation for the work in the target CPU's own context.
+             * To avoid racing with a CPU we are just kicking off.
+             * We do the final bit of preparation for the work in
+             * the target CPUs context.
              */
             async_safe_run_on_cpu(cs, mips_cpu_reset_async_work,
-                                  RUN_ON_CPU_NULL);
+                                  RUN_ON_CPU_HOST_PTR(cpc));
         }
     }
 }
