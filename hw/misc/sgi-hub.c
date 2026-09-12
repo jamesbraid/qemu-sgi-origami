@@ -31,6 +31,7 @@
 #include "qemu/host-utils.h"
 #include "system/system.h"
 #include "system/runstate.h"
+#include "system/tcg.h"
 #include "trace.h"
 
 /* Processor interface, at the base of the window. */
@@ -959,6 +960,31 @@ static void sgi_hub_kick_peer(CPUState *peer)
     qemu_cpu_kick(peer);
 }
 
+/*
+ * The read assists hand a polling reader's local peer a slice. They exist
+ * for single-threaded round-robin execution, where one host slice serves
+ * every processor and a bounded guest poll can expire before the peer it
+ * waits for has run at all. Under multi-threaded execution that peer holds
+ * its own host thread and is already running, so the kick releases nobody
+ * and costs the peer a run-loop exit on every poll. Write-side phase
+ * changes still kick unconditionally: those are rare, and warm-reset
+ * discovery depends on them.
+ */
+static void sgi_hub_kick_polled_peer(CPUState *peer)
+{
+    /*
+     * Single-threaded round-robin TCG is the only mode that hands slices
+     * around, so it is the only one the assist can help. Asking
+     * tcg_enabled() first also keeps the accelerator query out of a build
+     * configured without TCG, where it has no definition to link against.
+     */
+    if (!tcg_enabled() || qemu_tcg_mttcg_enabled()) {
+        return;
+    }
+
+    sgi_hub_kick_peer(peer);
+}
+
 static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
 {
     unsigned int number = val & PI_INT_MODIFY_NUMBER;
@@ -998,7 +1024,7 @@ static uint64_t sgi_hub_int_pend1_read(SGIHubState *s)
         if (s->pi_int_pend1_primary_credit) {
             s->pi_int_pend1_primary_credit = false;
         } else {
-            sgi_hub_kick_peer(primary);
+            sgi_hub_kick_polled_peer(primary);
         }
         return value;
     }
@@ -1041,7 +1067,7 @@ static uint64_t sgi_hub_int_pending_read(SGIHubState *s, unsigned int bank)
     if (s->pi_int_pend_seen_valid[i][bank] &&
         s->pi_int_pend_seen[i][bank] == value) {
         for (i = 0; i < s->cpus; i++) {
-            sgi_hub_kick_peer(qemu_get_cpu(s->cpu_base + i));
+            sgi_hub_kick_polled_peer(qemu_get_cpu(s->cpu_base + i));
         }
         return value;
     }
@@ -1272,7 +1298,7 @@ static uint64_t sgi_hub_read_rt_compare(SGIHubState *s, hwaddr addr,
     CPUState *owner = qemu_get_cpu(s->cpu_base + arg);
 
     /* A progress mailbox: let the owner publish before the poll budget ends. */
-    sgi_hub_kick_peer(owner);
+    sgi_hub_kick_polled_peer(owner);
     return s->pi_rt_compare[arg];
 }
 
