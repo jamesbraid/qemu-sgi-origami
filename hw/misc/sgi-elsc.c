@@ -617,6 +617,8 @@ static void elsc_handle_nic(SGIElscState *s, const char *text, unsigned len)
     if (s->module_ops && s->module_ops->onewire_slot) {
         level = s->module_ops->onewire_slot(s->module_opaque, pulse, sample);
     }
+    trace_sgi_elsc_nic(pulse, sample, delay,
+                       s->module_ops && s->module_ops->onewire_slot, level);
     response[3] = level ? '1' : '0';
     elsc_frame_response_str(s, response);
 }

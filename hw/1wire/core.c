@@ -6,6 +6,7 @@
 #include "migration/vmstate.h"
 #include "hw/1wire/onewire.h"
 #include "hw/1wire/crc.h"
+#include "trace/trace-hw_1wire.h"
 
 struct OneWireBus { BusState parent_obj; };
 
@@ -22,6 +23,7 @@ OneWireBus *onewire_create_bus(DeviceState *parent, const char *name)
 
 /* The phase machine for one part; defined below, used by both bus entries. */
 static bool onewire_slave_slot(OneWireSlave *s, bool drive);
+static bool onewire_slave_slot_advance(OneWireSlave *s, bool drive);
 
 /* Each part answers whether it pulls the line low; the wire is the AND. */
 bool onewire_touch_bit(OneWireBus *bus, bool drive)
@@ -66,6 +68,7 @@ bool onewire_reset(OneWireBus *bus)
         onewire_slave_reset_state(ONEWIRE_SLAVE(kid->child));
         present = true;
     }
+    trace_onewire_reset(present);
     return present;
 }
 
@@ -96,6 +99,18 @@ void onewire_slave_set_identity(OneWireSlave *s, uint8_t family,
  */
 static bool onewire_slave_slot(OneWireSlave *s, bool drive)
 {
+    uint32_t phase_before = s->phase;
+    uint32_t bit_before = s->bit;
+    bool pulled;
+
+    pulled = onewire_slave_slot_advance(s, drive);
+    trace_onewire_slot(s->family, phase_before, bit_before, drive, pulled,
+                       s->phase, s->bit);
+    return pulled;
+}
+
+static bool onewire_slave_slot_advance(OneWireSlave *s, bool drive)
+{
     switch ((OneWirePhase)s->phase) {
     case ONEWIRE_ROM_COMMAND: {
         if (drive) {
@@ -119,6 +134,7 @@ static bool onewire_slave_slot(OneWireSlave *s, bool drive)
                 break;
             case 0xcc: /* Skip ROM */
                 s->phase = ONEWIRE_FUNCTION;
+                trace_onewire_selection(s->family, "skip", true);
                 break;
             case 0x3c: /* Overdrive-Skip ROM */
             case 0x69: /* Overdrive-Match ROM */
@@ -133,6 +149,7 @@ static bool onewire_slave_slot(OneWireSlave *s, bool drive)
                 s->phase = ONEWIRE_IDLE;
                 break;
             }
+            trace_onewire_rom_command(s->family, cmd, s->phase);
         }
         return false;
     }
@@ -144,6 +161,7 @@ static bool onewire_slave_slot(OneWireSlave *s, bool drive)
         if (s->bit == 64) {
             s->bit = 0;
             s->phase = ONEWIRE_FUNCTION;
+            trace_onewire_selection(s->family, "read", true);
         }
         return !bitval;
     }
@@ -154,12 +172,14 @@ static bool onewire_slave_slot(OneWireSlave *s, bool drive)
         if (drive != idbit) {
             s->phase = ONEWIRE_IDLE;
             s->bit = 0;
+            trace_onewire_selection(s->family, "match", false);
             return false;
         }
         s->bit++;
         if (s->bit == 64) {
             s->bit = 0;
             s->phase = ONEWIRE_FUNCTION;
+            trace_onewire_selection(s->family, "match", true);
         }
         return false;
     }
@@ -181,6 +201,7 @@ static bool onewire_slave_slot(OneWireSlave *s, bool drive)
             if (drive != idbit) {
                 s->phase = ONEWIRE_IDLE;
                 s->bit = 0;
+                trace_onewire_selection(s->family, "search", false);
                 return false;
             }
             break;
@@ -189,6 +210,7 @@ static bool onewire_slave_slot(OneWireSlave *s, bool drive)
         if (s->bit == 64 * 3) {
             s->bit = 0;
             s->phase = ONEWIRE_FUNCTION;
+            trace_onewire_selection(s->family, "search", true);
         }
         return pulled;
     }
@@ -205,11 +227,15 @@ static bool onewire_slave_slot(OneWireSlave *s, bool drive)
             uint8_t in = s->shift;
             uint8_t out = 0xff;
 
-            if (!k->function_byte || !k->function_byte(s, in, &out)) {
+            bool accepted = k->function_byte &&
+                            k->function_byte(s, in, &out);
+
+            if (!accepted) {
                 qemu_log_mask(LOG_UNIMP,
                               "onewire: unimplemented memory function byte "
                               "0x%02x\n", in);
             }
+            trace_onewire_byte(s->family, in, out, accepted);
             s->out = out;
             s->shift = 0;
             s->bit = 0;

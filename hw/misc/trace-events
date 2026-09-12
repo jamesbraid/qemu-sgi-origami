@@ -480,3 +480,4 @@ sgi_elsc_acp(unsigned int len, char selector) "console-output flush: %u byte(s),
 sgi_elsc_arb_step(uint32_t cpu_base, uint32_t ring_position, uint8_t signal, bool signal2) "arbitration: controller at cpu-base %u presents ring position %u as 0x%02x (signal2=%d gates console-input get)"
 sgi_elsc_rx_enqueue(uint8_t byte, uint32_t rx_queue_len) "rx_queue enqueue 0x%02x, len now %u"
 sgi_elsc_rx_dequeue(unsigned int count, uint32_t rx_queue_len) "rx_queue dequeue %u byte(s), len now %u"
+sgi_elsc_nic(uint32_t pulse, uint32_t sample, uint32_t delay, bool routed, bool level) "one-wire slot pulse=%u sample=%u delay=%u routed=%d level=%d"
