@@ -537,7 +537,7 @@ static uint64_t xbridge_read(void *opaque, hwaddr addr, unsigned size)
     }
     if (addr >= 0x200000 && addr < 0xc00000) {
         xbridge_pio(s, addr, bytes, size, false);
-        return ldn_be_p(bytes, size);
+        return ldn_le_p(bytes, size);
     }
     if (size == 4 && (addr & 7) == 4) {
         if (addr >= 0x10000 && addr < 0x11000) {
@@ -574,7 +574,7 @@ static void xbridge_write(void *opaque, hwaddr addr, uint64_t value,
         return;
     }
     if (addr >= 0x200000 && addr < 0xc00000) {
-        stn_be_p(bytes, size, value);
+        stn_le_p(bytes, size, value);
         xbridge_pio(s, addr, bytes, size, true);
         return;
     }
