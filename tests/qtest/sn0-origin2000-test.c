@@ -389,7 +389,6 @@ static void assert_asic_identities(QTestState *qts)
         g_assert_cmpuint(XTALK_ID_REVISION(hub_read(qts, node,
                                                     IO_WIDGET_ID)), ==, 1);
     }
-    g_assert_cmphex(xbow_read(qts, 0), ==, 0x20000001);
 }
 
 static void test_asic_identity_reset(void)
@@ -397,8 +396,10 @@ static void test_asic_identity_reset(void)
     QTestState *qts = start_control_module("");
 
     assert_asic_identities(qts);
+    g_assert_cmphex(xbow_read(qts, 0), ==, 0x20000001);
     qtest_system_reset(qts);
     assert_asic_identities(qts);
+    g_assert_cmphex(xbow_read(qts, 0), ==, 0x20000001);
     qtest_quit(qts);
 }
 
