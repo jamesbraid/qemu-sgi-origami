@@ -23,6 +23,7 @@
 
 #define SPACE_XTALK UINT64_C(0x20000000000)
 #define BEDROCK_LOCAL (SPACE_XTALK + UINT64_C(0x01000000))
+#define PI_CPU_ENABLE_B UINT64_C(0x58)
 #define PI_RT_COMPARE_A UINT64_C(0x108)
 #define PI_RT_COMPARE_B UINT64_C(0x110)
 
@@ -75,19 +76,21 @@ static char *create_identity_prom(void)
     stl_be_p(image + 0x428, 0x1540000d); /* bne t2, zero, 0x460 -- slot B */
     stl_be_p(image + 0x42c, 0x00000000); /* nop */
 
-    /* Slot A releases the second processor, then publishes its own mark. */
-    stl_be_p(image + 0x430, 0x340b0001); /* ori t3, zero, 1 */
-    stl_be_p(image + 0x434, 0xfd0b0058); /* sd t3, 0x58(t0) -- CPU enable B */
-    stl_be_p(image + 0x438, 0x340b000a); /* ori t3, zero, SLOT_A_MARK */
-    stl_be_p(image + 0x43c, 0xfd0b0108); /* sd t3, 0x108(t0) -- compare A */
+    /* Slot A publishes its own mark without enabling slot B first. */
+    stl_be_p(image + 0x430, 0x340b000a); /* ori t3, zero, SLOT_A_MARK */
+    stl_be_p(image + 0x434, 0xfd0b0108); /* sd t3, 0x108(t0) -- compare A */
+    stl_be_p(image + 0x438, 0x00000000); /* nop */
+    stl_be_p(image + 0x43c, 0x00000000); /* nop */
     stl_be_p(image + 0x440, 0x1000ffff); /* beq zero, zero, self */
     stl_be_p(image + 0x444, 0x00000000); /* nop */
 
-    /* Slot B publishes into its own compare and touches nothing else. */
+    /* Slot B keeps publishing so the host can observe continued execution. */
     stl_be_p(image + 0x460, 0x340b000b); /* ori t3, zero, SLOT_B_MARK */
     stl_be_p(image + 0x464, 0xfd0b0110); /* sd t3, 0x110(t0) -- compare B */
-    stl_be_p(image + 0x468, 0x1000ffff); /* beq zero, zero, self */
+    stl_be_p(image + 0x468, 0x256b0001); /* addiu t3, t3, 1 */
     stl_be_p(image + 0x46c, 0x00000000); /* nop */
+    stl_be_p(image + 0x470, 0x1000fffc); /* beq zero, zero, 0x464 */
+    stl_be_p(image + 0x474, 0x00000000); /* nop */
 
     fd = g_file_open_tmp("sn1-cpu-identity-prom-XXXXXX.bin", &path, &error);
     g_assert_no_error(error);
@@ -109,6 +112,7 @@ static void test_each_processor_knows_its_slot(void)
     QTestState *s;
     uint64_t compare_a = 0;
     uint64_t compare_b = 0;
+    uint64_t compare_b_after = 0;
 
     /* Guest code has to run, so the accelerator has to be a real one. */
     if (!qtest_has_accel("tcg")) {
@@ -136,9 +140,21 @@ static void test_each_processor_knows_its_slot(void)
         g_usleep(POLL_INTERVAL_US);
     }
 
-    /* Each processor reached its own register, and neither took the other's. */
+    /* Each processor reached its own register without a CPU_ENABLE write. */
     g_assert_cmphex(compare_a, ==, SLOT_A_MARK);
-    g_assert_cmphex(compare_b, ==, SLOT_B_MARK);
+    g_assert_cmphex(compare_b, >=, SLOT_B_MARK);
+
+    qtest_writeq(s, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 0);
+    g_usleep(10 * POLL_INTERVAL_US);
+    compare_b = qtest_readq(s, BEDROCK_LOCAL + PI_RT_COMPARE_B);
+    for (unsigned int tries = 0; tries < POLL_TRIES; tries++) {
+        compare_b_after = qtest_readq(s, BEDROCK_LOCAL + PI_RT_COMPARE_B);
+        if (compare_b_after != compare_b) {
+            break;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+    g_assert_cmphex(compare_b_after, !=, compare_b);
 
     qtest_quit(s);
     g_assert_cmpint(unlink(prom), ==, 0);
