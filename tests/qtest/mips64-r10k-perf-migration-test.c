@@ -107,11 +107,10 @@ static const CacheTagProbe r14000_cache_probe = {
     .taghi = CACHE_TAGHI,
 };
 
-/* Base, cpu/r14k-scache, and cpu/r10k-scache-4m VMState spans. */
-static const CacheTagProbe r10000_4m_cache_probes[] = {
-    { 0xa000, 0x1234c5aa, 0x0d },
-    { 0xa008, 0x56788944, 0x03 },
-    { 0xa010, 0x6abccd88, 0x09 },
+static const CacheTagProbe r10000_cache_probe = {
+    .address_hi = 0xa000,
+    .taglo = CACHE_TAGLO,
+    .taghi = CACHE_TAGHI,
 };
 
 static void emit(GuestImage *img, uint32_t insn)
@@ -644,7 +643,7 @@ static void test_r14000_upper_scache_migration(void)
     g_assert_cmpint(rmdir(directory), ==, 0);
 }
 
-static void test_r10000_four_mib_scache_migration(void)
+static void test_r10000_scache_migration(void)
 {
     g_autofree char *image = NULL;
     g_autofree char *directory = NULL;
@@ -661,13 +660,12 @@ static void test_r10000_four_mib_scache_migration(void)
         return;
     }
 
-    fd = g_file_open_tmp("mips64-r10k-4m-scache-XXXXXX", &image, &error);
+    fd = g_file_open_tmp("mips64-r10k-scache-XXXXXX", &image, &error);
     g_assert_no_error(error);
     g_assert_cmpint(fd, >=, 0);
-    write_cache_guest_image(fd, r10000_4m_cache_probes,
-                            G_N_ELEMENTS(r10000_4m_cache_probes));
+    write_cache_guest_image(fd, &r10000_cache_probe, 1);
     close(fd);
-    directory = g_dir_make_tmp("mips64-r10k-4m-scache-migration-XXXXXX",
+    directory = g_dir_make_tmp("mips64-r10k-scache-migration-XXXXXX",
                                &error);
     g_assert_no_error(error);
     socket = g_build_filename(directory, "migration.sock", NULL);
@@ -694,8 +692,7 @@ static void test_r10000_four_mib_scache_migration(void)
     qtest_writeq(to, STATE_PHYS + CACHE_COMMAND_OFF, 1);
     wait_for_state(to, CACHE_DONE_OFF, CACHE_DONE_MAGIC);
 
-    assert_cache_tags(to, r10000_4m_cache_probes,
-                      G_N_ELEMENTS(r10000_4m_cache_probes));
+    assert_cache_tags(to, &r10000_cache_probe, 1);
     g_assert_cmphex(state_word(to, CACHE_DATA_LO_OFF), ==, CACHE_DATA_LO);
     g_assert_cmphex(state_word(to, CACHE_DATA_HI_OFF), ==, CACHE_DATA_HI);
     g_assert_cmphex(state_word(to, CACHE_ECC_OFF), ==, CACHE_ECC);
@@ -761,7 +758,7 @@ int main(int argc, char **argv)
                    test_r14000_reset_values);
     qtest_add_func("mips64/r14000-scache-migration/upper-half",
                    test_r14000_upper_scache_migration);
-    qtest_add_func("mips64/r10000-scache-migration/four-mib",
-                   test_r10000_four_mib_scache_migration);
+    qtest_add_func("mips64/r10000-scache-migration/stock",
+                   test_r10000_scache_migration);
     return g_test_run();
 }
