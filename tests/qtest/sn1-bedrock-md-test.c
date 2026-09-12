@@ -20,6 +20,7 @@
 #define DIRECTORY_FIRST_ABSENT_512M 0x4000000
 #define DIRECTORY_LAST_256M 0x1fffff0
 #define DIRECTORY_FIRST_ABSENT_256M 0x2000000
+#define DIRECTORY_COMPAT_ENTRIES 74
 #define PROTECTION_FIRST 0x408
 #define PROTECTION_INTERLEAVE_3 0x438
 #define PROTECTION_NEXT_PAGE 0xc08
@@ -37,22 +38,15 @@
  */
 #define ECC_BASE UINT64_C(0x10140000000)
 #define ECC(_x) (ECC_BASE + (_x))
-#define ECC_LAST_DOUBLEWORD_512M 0x3fffff8
-#define ECC_LAST_BYTE_512M 0x3ffffff
-#define ECC_LAST_HALFWORD_512M 0x3fffffe
 #define ECC_FIRST_ABSENT_BYTE_512M 0x4000007
 #define ECC_FIRST_ABSENT_HALFWORD_512M 0x4000006
-#define ECC_LAST_BYTE_256M 0x1ffffff
-#define ECC_FIRST_ABSENT_BYTE_256M 0x2000007
+#define ECC_ADMITTED_HALFWORD 0x8000006
 
 /*
- * The four diagnostics the reviewed contract spells out character for
+ * The three diagnostics the reviewed contract spells out character for
  * character. Matching them is what separates this model from an empty
  * mapping, a full-aperture sink and an over-wide handler.
  */
-#define ECC_READ_UNESTABLISHED \
-    "sgi-bedrock-md: ECC backdoor read offset 0x00000007 size 1 " \
-    "rejected: readback unestablished"
 #define ECC_WRITE_UNALIGNED \
     "sgi-bedrock-md: ECC backdoor write offset 0x00000007 size 2 " \
     "rejected: unaligned halfword"
@@ -66,7 +60,7 @@
 /* Every diagnostic carries this, so counting it counts all of them. */
 #define ECC_DIAGNOSTIC "ECC backdoor "
 
-#define ECC_LOG_OPTIONS "-d guest_errors,unimp -D "
+#define ECC_LOG_OPTIONS "-d guest_errors -D "
 #define MEMORY_LOG_OPTIONS "-d guest_errors -D "
 #define MEMORY_DIAGNOSTIC "sgi-bedrock-md: memory "
 #define SELFTEST_DIAGNOSTIC "sgi-bedrock-md: unsupported self-test command"
@@ -442,6 +436,42 @@ static void test_selftest_access_width_policy(void)
     g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==,
                     SELFTEST_DONE | SELFTEST_PASSED);
     qtest_quit(s);
+static unsigned directory_walk(uint64_t base, uint64_t offsets[49])
+{
+    unsigned count = 0;
+
+    offsets[count++] = base;
+    for (unsigned bit = 3; bit <= 26; bit++) {
+        offsets[count++] = base | (UINT64_C(1) << bit);
+    }
+    offsets[count++] = base | UINT64_C(0x07fffff8);
+    for (unsigned bit = 3; bit <= 25; bit++) {
+        offsets[count++] = (base | UINT64_C(0x07fffff8)) ^
+                           (UINT64_C(1) << bit);
+    }
+    g_assert_cmpuint(count, ==, 49);
+    return count;
+}
+
+static unsigned directory_untranslated_walk(
+    uint64_t offsets[DIRECTORY_COMPAT_ENTRIES])
+{
+    uint64_t bank0[49], bank1[49];
+    unsigned count = 0;
+
+    directory_walk(0, bank0);
+    directory_walk(DIRECTORY_BANK_SIZE, bank1);
+    for (unsigned i = 0; i < ARRAY_SIZE(bank0); i++) {
+        if (bank0[i] >= DIRECTORY_FIRST_ABSENT_512M) {
+            offsets[count++] = bank0[i];
+        }
+    }
+    for (unsigned i = 0; i < ARRAY_SIZE(bank1); i++) {
+        offsets[count++] = bank1[i];
+    }
+    g_assert_cmphex(bank1[7], ==, DIRECTORY_BANK_SIZE + 0x200);
+    g_assert_cmpuint(count, ==, DIRECTORY_COMPAT_ENTRIES);
+    return count;
 }
 
 static void test_memory_banks(void)
@@ -712,6 +742,8 @@ static void assert_storage_zero(QTestState *s)
 
 static void test_reset(void)
 {
+    uint64_t compat_offsets[DIRECTORY_COMPAT_ENTRIES];
+    unsigned compat_count = directory_untranslated_walk(compat_offsets);
     QTestState *s = start("");
 
     program_all(s);
@@ -734,6 +766,10 @@ static void test_reset(void)
                  UINT64_C(0x599a599a599a599a));
     qtest_writeq(s, DIRECTORY(PROTECTION_LAST),
                  UINT64_C(0xa55aa55aa55aa55a));
+    for (unsigned i = 0; i < compat_count; i++) {
+        qtest_writeq(s, DIRECTORY(compat_offsets[i]),
+                     UINT64_C(0x13579bdf00000000) | i);
+    }
     qtest_system_reset(s);
     assert_storage_zero(s);
     g_assert_cmphex(qtest_readq(s, MD(0x8)), ==, 0);
@@ -749,6 +785,9 @@ static void test_reset(void)
                     ==, 0);
     g_assert_cmphex(qtest_readq(s, DIRECTORY(PROTECTION_BANK1_HIGH)), ==, 0);
     g_assert_cmphex(qtest_readq(s, DIRECTORY(PROTECTION_LAST)), ==, 0);
+    for (unsigned i = 0; i < compat_count; i++) {
+        g_assert_cmphex(qtest_readq(s, DIRECTORY(compat_offsets[i])), ==, 0);
+    }
     qtest_quit(s);
 }
 
@@ -855,6 +894,62 @@ static void test_directory_storage(void)
     qtest_quit(s);
 }
 
+static void test_directory_compatibility_storage(void)
+{
+    uint64_t offsets[DIRECTORY_COMPAT_ENTRIES];
+    unsigned count = directory_untranslated_walk(offsets);
+    QTestState *s = start("");
+
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 4));
+    qtest_writeq(s, DIRECTORY(offsets[0]),
+                 UINT64_C(0x89abcdef01234567));
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(offsets[0])), ==, 0x01234567);
+    qtest_writeq(s, DIRECTORY(offsets[1]),
+                 UINT64_C(0xfedcba9876543210));
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(offsets[1])), ==,
+                    UINT64_C(0xfedcba9876543210));
+
+    qtest_writeq(s, MD(0x40000), 1);
+    for (unsigned i = 0; i < count; i++) {
+        uint64_t value = UINT64_C(0xa500000000000000) | i;
+
+        qtest_writeq(s, DIRECTORY(offsets[i]), value);
+    }
+    for (unsigned i = 0; i < count; i++) {
+        g_assert_cmphex(qtest_readq(s, DIRECTORY(offsets[i])), ==,
+                        UINT64_C(0xa500000000000000) | i);
+    }
+    qtest_quit(s);
+}
+
+static void test_directory_compatibility_capacity(void)
+{
+    g_autofree char *log = log_file_new();
+    g_autofree char *extra = g_strdup_printf("-d guest_errors -D %s", log);
+    g_autofree char *contents = NULL;
+    uint64_t offsets[DIRECTORY_COMPAT_ENTRIES];
+    unsigned count = directory_untranslated_walk(offsets);
+    unsigned admitted = 1;
+    QTestState *s = start(extra);
+
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 4));
+    qtest_writeq(s, MD(0x40000), 1);
+    qtest_writeq(s, DIRECTORY(0x04001230), UINT64_C(0xfeedfacecafebeef));
+    for (unsigned i = 0; i < count - 1; i++) {
+        qtest_writeq(s, DIRECTORY(offsets[i]), admitted++);
+    }
+    g_assert_cmpuint(admitted, ==, DIRECTORY_COMPAT_ENTRIES);
+    qtest_writeq(s, DIRECTORY(offsets[count - 1]), UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s,
+                    DIRECTORY(offsets[count - 1])), ==, 0);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(0x04001230)), ==,
+                    UINT64_C(0xfeedfacecafebeef));
+    qtest_quit(s);
+
+    contents = log_file_take(log);
+    g_assert_nonnull(strstr(contents, "compatibility store is full"));
+}
+
 static void test_directory_access_policy(void)
 {
     g_autofree char *log = log_file_new();
@@ -884,17 +979,6 @@ static void test_directory_access_policy(void)
         g_assert_cmphex(qtest_readl(s, addr[i]), ==, 0);
         g_assert_cmphex(qtest_readq(s, addr[i] + 1), ==, 0);
     }
-    qtest_writeq(s, DIRECTORY(DIRECTORY_FIRST_ABSENT_512M),
-                 UINT64_C(0x13579bdf2468ace0));
-    g_assert_cmphex(qtest_readq(s,
-                               DIRECTORY(DIRECTORY_FIRST_ABSENT_512M)),
-                    ==, 0);
-    qtest_writeq(s, DIRECTORY(DIRECTORY_FIRST_ABSENT_512M + 8),
-                 UINT64_C(0xfedcba9876543210));
-    g_assert_cmphex(qtest_readq(s,
-                               DIRECTORY(DIRECTORY_FIRST_ABSENT_512M + 8)),
-                    ==, 0);
-
     qtest_writeq(s, DIRECTORY(DIRECTORY_LAST_512M), 0xc001d00d);
     qtest_writeq(s, DIRECTORY(DIRECTORY_LAST_512M + 8),
                  UINT64_C(0x0123456789abcdef));
@@ -918,7 +1002,6 @@ static void test_directory_access_policy(void)
 
     contents = log_file_take(log);
     g_assert_nonnull(strstr(contents, "not an aligned 64-bit carrier word"));
-    g_assert_nonnull(strstr(contents, "outside fitted node memory"));
 }
 
 static void test_directory_fitted_memory(void)
@@ -929,9 +1012,11 @@ static void test_directory_fitted_memory(void)
     qtest_writeq(s, DIRECTORY(DIRECTORY_LAST_256M), 0x2468ace0);
     g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LAST_256M)),
                     ==, 0x2468ace0);
-    qtest_writeq(s, DIRECTORY(DIRECTORY_FIRST_ABSENT_256M), UINT64_MAX);
+    qtest_writeq(s, DIRECTORY(DIRECTORY_FIRST_ABSENT_256M), 0x13579bdf);
     g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_FIRST_ABSENT_256M)),
-                    ==, 0);
+                    ==, 0x13579bdf);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LAST_256M)), ==,
+                    0x2468ace0);
     qtest_writeq(s, DIRECTORY(PROTECTION_LAST),
                  UINT64_C(0x599a599a599a599a));
     g_assert_cmphex(qtest_readq(s, DIRECTORY(PROTECTION_LAST)),
@@ -1274,6 +1359,8 @@ static void test_migration(void)
                                                 &error);
     g_autofree char *socket = NULL;
     g_autofree char *uri = NULL;
+    uint64_t compat_offsets[DIRECTORY_COMPAT_ENTRIES];
+    unsigned compat_count = directory_untranslated_walk(compat_offsets);
     QTestState *from, *to;
 
     g_assert_no_error(error);
@@ -1303,6 +1390,10 @@ static void test_migration(void)
                  UINT64_C(0x599a599a599a599a));
     qtest_writeq(from, DIRECTORY(PROTECTION_LAST),
                  UINT64_C(0xa55aa55aa55aa55a));
+    for (unsigned i = 0; i < compat_count; i++) {
+        qtest_writeq(from, DIRECTORY(compat_offsets[i]),
+                     UINT64_C(0x13579bdf00000000) | i);
+    }
     migrate_pair(from, to, uri);
     for (unsigned i = 0; i < ARRAY_SIZE(storage_registers); i++) {
         g_assert_cmphex(qtest_readq(to, MD(storage_registers[i].offset)), ==,
@@ -1328,6 +1419,10 @@ static void test_migration(void)
                     ==, UINT64_C(0x599a599a599a599a));
     g_assert_cmphex(qtest_readq(to, DIRECTORY(PROTECTION_LAST)),
                     ==, UINT64_C(0xa55aa55aa55aa55a));
+    for (unsigned i = 0; i < compat_count; i++) {
+        g_assert_cmphex(qtest_readq(to, DIRECTORY(compat_offsets[i])), ==,
+                        UINT64_C(0x13579bdf00000000) | i);
+    }
     qtest_writeq(to, MEMORY(0x23450), UINT64_C(0x13579bdf2468ace0));
     g_assert_cmphex(qtest_readq(to, MEMORY(0x23450)), ==,
                     UINT64_C(0x13579bdf2468ace0));
@@ -1337,68 +1432,49 @@ static void test_migration(void)
     g_assert_cmpint(rmdir(directory), ==, 0);
 }
 
-/*
- * One pass over the whole reviewed ECC contract: the aligned byte and
- * halfword stores the PROM posts, a read of each width, and one rejection
- * of each reason. Every pass adds exactly ECC_PASS_DIAGNOSTICS lines.
- */
-#define ECC_PASS_DIAGNOSTICS 8
-
-static void ecc_pass(QTestState *s)
-{
-    /* Accepted discard writes: first, interior and final of each width. */
-    qtest_writeb(s, ECC(0), 0xff);
-    qtest_writeb(s, ECC(7), 0xa5);
-    qtest_writeb(s, ECC(ECC_LAST_DOUBLEWORD_512M), 0x5a);
-    qtest_writeb(s, ECC(ECC_LAST_BYTE_512M), 0xc3);
-    qtest_writew(s, ECC(0), 0xffff);
-    qtest_writew(s, ECC(4), 0x1234);
-    qtest_writew(s, ECC(6), 0x5678);
-    qtest_writew(s, ECC(ECC_LAST_DOUBLEWORD_512M), 0x9abc);
-    qtest_writew(s, ECC(ECC_LAST_HALFWORD_512M), 0xdef0);
-
-    /* Reads answer zero and say the readback is unestablished. */
-    g_assert_cmphex(qtest_readb(s, ECC(7)), ==, 0);
-    g_assert_cmphex(qtest_readw(s, ECC(6)), ==, 0);
-    g_assert_cmphex(qtest_readb(s, ECC(ECC_LAST_BYTE_512M)), ==, 0);
-    g_assert_cmphex(qtest_readw(s, ECC(ECC_LAST_HALFWORD_512M)), ==, 0);
-
-    /* One rejection of each reason, all four of them contract examples. */
-    qtest_writew(s, ECC(7), 0xffff);
-    qtest_writel(s, ECC(4), 0xffffffff);
-    qtest_writeb(s, ECC(ECC_FIRST_ABSENT_BYTE_512M), 0xff);
-    qtest_writew(s, ECC(ECC_FIRST_ABSENT_HALFWORD_512M), 0xffff);
-}
-
-static void ecc_assert_log(const char *contents, unsigned passes)
-{
-    g_assert_nonnull(strstr(contents, ECC_READ_UNESTABLISHED));
-    g_assert_nonnull(strstr(contents, ECC_WRITE_UNALIGNED));
-    g_assert_nonnull(strstr(contents, ECC_WRITE_WIDTH));
-    g_assert_nonnull(strstr(contents, ECC_WRITE_ABSENT));
-    g_assert_cmpuint(log_count(contents, ECC_DIAGNOSTIC), ==,
-                     passes * ECC_PASS_DIAGNOSTICS);
-}
-
+/* Fitted ECC bytes retain state in physical doubleword order. */
 static void test_ecc_carrier(void)
 {
-    g_autofree char *log = log_file_new();
-    g_autofree char *extra = g_strdup_printf(ECC_LOG_OPTIONS "%s", log);
-    g_autofree char *contents = NULL;
-    QTestState *s = start(extra);
+    QTestState *s = start("");
 
-    ecc_pass(s);
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 4));
+    g_assert_cmphex(qtest_readw(s, ECC(6)), ==, 0);
+    qtest_writew(s, ECC(6), 0xa55a);
+    g_assert_cmphex(qtest_readw(s, ECC(6)), ==, 0xa55a);
+    g_assert_cmphex(qtest_readb(s, ECC(7)), ==, 0xa5);
+    g_assert_cmphex(qtest_readb(s, ECC(6)), ==, 0x5a);
+
+    qtest_writeb(s, ECC(7), 0x12);
+    qtest_writeb(s, ECC(6), 0x34);
+    g_assert_cmphex(qtest_readw(s, ECC(6)), ==, 0x1234);
+
+    qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD), 0x5aa5);
+    g_assert_cmphex(qtest_readw(s, ECC(ECC_ADMITTED_HALFWORD)), ==, 0x5aa5);
+    g_assert_cmphex(qtest_readw(s, ECC(6)), ==, 0x1234);
     qtest_quit(s);
-
-    contents = log_file_take(log);
-    ecc_assert_log(contents, 1);
 }
 
-/*
- * Width first, alignment second, bounds last. Each access below breaks
- * more than one rule, so a model that checked them in another order would
- * name the wrong reason.
- */
+static void test_ecc_bank_translation(void)
+{
+    QTestState *s = start_with_memory("64M", "");
+
+    qtest_writeq(s, MD(0x8), (UINT64_C(1) << 32) |
+                              memory_bank_config(0, 1));
+    qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD), 0x1357);
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 1));
+    g_assert_cmphex(qtest_readw(s, ECC(6)), ==, 0x1357);
+    g_assert_cmphex(qtest_readw(s, ECC(ECC_ADMITTED_HALFWORD)), ==, 0);
+
+    qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD), 0x2468);
+    qtest_writeq(s, MD(0x8), (UINT64_C(1) << 32) |
+                              memory_bank_config(0, 1));
+    g_assert_cmphex(qtest_readw(s, ECC(ECC_ADMITTED_HALFWORD)), ==, 0x1357);
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 1));
+    g_assert_cmphex(qtest_readw(s, ECC(ECC_ADMITTED_HALFWORD)), ==, 0x2468);
+    qtest_quit(s);
+}
+
+/* Width first, alignment second, admission last. */
 static void test_ecc_validation_order(void)
 {
     g_autofree char *log = log_file_new();
@@ -1406,45 +1482,68 @@ static void test_ecc_validation_order(void)
     g_autofree char *contents = NULL;
     QTestState *s = start(extra);
 
-    /* Too wide, unaligned and absent; then unaligned and absent. */
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 4));
+    qtest_writel(s, ECC(4), 0xffffffff);
+    qtest_writew(s, ECC(7), 0xffff);
+    qtest_writeb(s, ECC(ECC_FIRST_ABSENT_BYTE_512M), 0xff);
+    qtest_writew(s, ECC(ECC_FIRST_ABSENT_HALFWORD_512M), 0xffff);
+    qtest_writeb(s, ECC(ECC_ADMITTED_HALFWORD), 0xff);
+    qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD + 0x10), 0xffff);
+    qtest_writew(s, ECC(2 * DIRECTORY_BANK_SIZE + 6), 0xffff);
     qtest_writel(s, ECC(0x4000005), 0xffffffff);
     qtest_writew(s, ECC(0x4000007), 0xffff);
     qtest_quit(s);
 
     contents = log_file_take(log);
+    g_assert_nonnull(strstr(contents, ECC_WRITE_WIDTH));
+    g_assert_nonnull(strstr(contents, ECC_WRITE_UNALIGNED));
+    g_assert_nonnull(strstr(contents, ECC_WRITE_ABSENT));
+    g_assert_nonnull(strstr(contents,
+        "sgi-bedrock-md: ECC backdoor write offset 0x08000006 size 1 "
+        "rejected: outside fitted memory"));
+    g_assert_nonnull(strstr(contents,
+        "sgi-bedrock-md: ECC backdoor write offset 0x08000016 size 2 "
+        "rejected: outside fitted memory"));
+    g_assert_nonnull(strstr(contents,
+        "sgi-bedrock-md: ECC backdoor write offset 0x10000006 size 2 "
+        "rejected: outside fitted memory"));
     g_assert_nonnull(strstr(contents,
         "sgi-bedrock-md: ECC backdoor write offset 0x04000005 size 4 "
         "rejected: unsupported width"));
     g_assert_nonnull(strstr(contents,
         "sgi-bedrock-md: ECC backdoor write offset 0x04000007 size 2 "
         "rejected: unaligned halfword"));
-    g_assert_cmpuint(log_count(contents, ECC_DIAGNOSTIC), ==, 2);
+    g_assert_cmpuint(log_count(contents, ECC_DIAGNOSTIC), ==, 9);
 }
 
-/* The extent follows fitted memory rather than a fixed 512 MiB node. */
 static void test_ecc_fitted_memory(void)
 {
     g_autofree char *log = log_file_new();
     g_autofree char *extra = g_strdup_printf(ECC_LOG_OPTIONS "%s", log);
     g_autofree char *contents = NULL;
-    QTestState *s = start_with_memory("256M", extra);
+    QTestState *s = start_with_memory("192M", extra);
 
-    qtest_writeb(s, ECC(ECC_LAST_BYTE_256M), 0xa5);
-    qtest_writeb(s, ECC(ECC_FIRST_ABSENT_BYTE_256M), 0xa5);
-    qtest_writeb(s, ECC(ECC_LAST_BYTE_512M), 0xa5);
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 1) |
+                              memory_bank_config(2, 2));
+    qtest_writeb(s, ECC(0x007fffff), 0xa5);
+    qtest_writeb(s, ECC(2 * DIRECTORY_BANK_SIZE + 0x00ffffff), 0x5a);
+    g_assert_cmphex(qtest_readb(s, ECC(0x007fffff)), ==, 0xa5);
+    g_assert_cmphex(qtest_readb(s,
+                    ECC(2 * DIRECTORY_BANK_SIZE + 0x00ffffff)), ==, 0x5a);
+    qtest_writeb(s, ECC(DIRECTORY_BANK_SIZE + 7), 0xff);
+    qtest_writeb(s, ECC(2 * DIRECTORY_BANK_SIZE + 0x01000007), 0xff);
     qtest_quit(s);
 
     contents = log_file_take(log);
     g_assert_nonnull(strstr(contents,
-        "sgi-bedrock-md: ECC backdoor write offset 0x02000007 size 1 "
+        "sgi-bedrock-md: ECC backdoor write offset 0x08000007 size 1 "
         "rejected: outside fitted memory"));
     g_assert_nonnull(strstr(contents,
-        "sgi-bedrock-md: ECC backdoor write offset 0x03ffffff size 1 "
+        "sgi-bedrock-md: ECC backdoor write offset 0x11000007 size 1 "
         "rejected: outside fitted memory"));
     g_assert_cmpuint(log_count(contents, ECC_DIAGNOSTIC), ==, 2);
 }
 
-/* With nothing fitted the carrier answers nowhere. */
 static void test_ecc_without_node_memory(void)
 {
     g_autofree char *log = log_file_new();
@@ -1456,6 +1555,8 @@ static void test_ecc_without_node_memory(void)
     qtest_sysbus_mmio_map(s, MD_PATH, 2, ECC_BASE);
     qtest_writeb(s, ECC(0), 0xff);
     g_assert_cmphex(qtest_readb(s, ECC(0)), ==, 0);
+    qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD), 0xa55a);
+    g_assert_cmphex(qtest_readw(s, ECC(ECC_ADMITTED_HALFWORD)), ==, 0xa55a);
     qtest_quit(s);
 
     contents = log_file_take(log);
@@ -1468,37 +1569,24 @@ static void test_ecc_without_node_memory(void)
     g_assert_cmpuint(log_count(contents, ECC_DIAGNOSTIC), ==, 2);
 }
 
-/*
- * The approximation holds no state, so a reset changes nothing about it.
- * The second pass has to behave exactly like the first.
- */
 static void test_ecc_reset(void)
 {
-    g_autofree char *log = log_file_new();
-    g_autofree char *extra = g_strdup_printf(ECC_LOG_OPTIONS "%s", log);
-    g_autofree char *contents = NULL;
-    QTestState *s = start(extra);
+    QTestState *s = start("");
 
-    ecc_pass(s);
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 4));
+    qtest_writew(s, ECC(6), 0xa55a);
+    qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD), 0x5aa5);
     qtest_system_reset(s);
-    ecc_pass(s);
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 4));
+    g_assert_cmphex(qtest_readw(s, ECC(6)), ==, 0);
+    g_assert_cmphex(qtest_readw(s, ECC(ECC_ADMITTED_HALFWORD)), ==, 0);
     qtest_quit(s);
-
-    contents = log_file_take(log);
-    ecc_assert_log(contents, 2);
 }
 
-/* Nothing is migrated, so the destination answers like a fresh machine. */
 static void test_ecc_migration(void)
 {
     GError *error = NULL;
     g_autofree char *directory = g_dir_make_tmp("sn1-md-ecc-XXXXXX", &error);
-    g_autofree char *from_log = log_file_new();
-    g_autofree char *to_log = log_file_new();
-    g_autofree char *from_extra = NULL;
-    g_autofree char *to_extra = NULL;
-    g_autofree char *from_contents = NULL;
-    g_autofree char *to_contents = NULL;
     g_autofree char *socket = NULL;
     g_autofree char *uri = NULL;
     QTestState *from, *to;
@@ -1506,53 +1594,40 @@ static void test_ecc_migration(void)
     g_assert_no_error(error);
     socket = g_build_filename(directory, "migration.sock", NULL);
     uri = g_strdup_printf("unix:%s", socket);
-    from_extra = g_strdup_printf(ECC_LOG_OPTIONS "%s", from_log);
-    to_extra = g_strdup_printf(ECC_LOG_OPTIONS "%s -incoming defer", to_log);
-    from = start(from_extra);
-    to = start(to_extra);
-    ecc_pass(from);
+    from = start("");
+    to = start("-incoming defer");
+    qtest_writeq(from, MD(0x8), memory_bank_config(0, 4));
+    qtest_writew(from, ECC(6), 0xa55a);
+    qtest_writew(from, ECC(ECC_ADMITTED_HALFWORD), 0x5aa5);
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
     migrate_wait(from);
     migrate_wait(to);
-    ecc_pass(to);
+    g_assert_cmphex(qtest_readw(to, ECC(6)), ==, 0xa55a);
+    g_assert_cmphex(qtest_readw(to, ECC(ECC_ADMITTED_HALFWORD)), ==, 0x5aa5);
     qtest_quit(from);
     qtest_quit(to);
     unlink(socket);
     g_assert_cmpint(rmdir(directory), ==, 0);
-
-    from_contents = log_file_take(from_log);
-    to_contents = log_file_take(to_log);
-    ecc_assert_log(from_contents, 1);
-    ecc_assert_log(to_contents, 1);
 }
 
-/*
- * A machine maps what the node controller exports, not the units inside it,
- * so the carrier has to be reachable through the parent's own region list.
- */
 static void test_parent_exports_ecc(void)
 {
-    g_autofree char *log = log_file_new();
-    g_autofree char *contents = NULL;
-    QTestState *s = qtest_initf("-M none -cpu R10000 " NODE_MEMORY_512M
-                                "-object memory-backend-ram,id=dma,size=2M "
-                                "-device sgi-bedrock,id=bedrock,"
-                                "dma-memory=/objects/dma/dma[0],"
-                                "node-memory=/objects/node-memory/"
-                                "node-memory[0] -S "
-                                ECC_LOG_OPTIONS "%s", log);
+    QTestState *s = qtest_init("-M none -cpu R10000 " NODE_MEMORY_512M
+                               "-object memory-backend-ram,id=dma,size=2M "
+                               "-device sgi-bedrock,id=bedrock,"
+                               "dma-memory=/objects/dma/dma[0],"
+                               "node-memory=/objects/node-memory/"
+                               "node-memory[0] -S");
 
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/bedrock", 0, BEDROCK_BASE);
     qtest_sysbus_mmio_map(s, "/machine/peripheral/bedrock", 6, ECC_BASE);
-    qtest_writeb(s, ECC(7), 0xa5);
-    g_assert_cmphex(qtest_readb(s, ECC(7)), ==, 0);
+    qtest_writeq(s, BEDROCK_MD(0x8), memory_bank_config(0, 4));
+    qtest_writew(s, ECC(6), 0xa55a);
+    g_assert_cmphex(qtest_readw(s, ECC(6)), ==, 0xa55a);
     qtest_quit(s);
-
-    contents = log_file_take(log);
-    g_assert_nonnull(strstr(contents, ECC_READ_UNESTABLISHED));
-    g_assert_cmpuint(log_count(contents, ECC_DIAGNOSTIC), ==, 1);
 }
 
 int main(int argc, char **argv)
@@ -1601,6 +1676,10 @@ int main(int argc, char **argv)
                    test_access_width_policy);
     qtest_add_func("sn1/bedrock-md/directory-storage",
                    test_directory_storage);
+    qtest_add_func("sn1/bedrock-md/directory-compatibility-storage",
+                   test_directory_compatibility_storage);
+    qtest_add_func("sn1/bedrock-md/directory-compatibility-capacity",
+                   test_directory_compatibility_capacity);
     qtest_add_func("sn1/bedrock-md/protection-storage",
                    test_protection_storage);
     qtest_add_func("sn1/bedrock-md/directory-access-policy",
@@ -1625,6 +1704,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-md/migration", test_migration);
     qtest_add_func("sn1/bedrock-md/writable-masks", test_writable_masks);
     qtest_add_func("sn1/bedrock-md/ecc-carrier", test_ecc_carrier);
+    qtest_add_func("sn1/bedrock-md/ecc-bank-translation",
+                   test_ecc_bank_translation);
     qtest_add_func("sn1/bedrock-md/ecc-validation-order",
                    test_ecc_validation_order);
     qtest_add_func("sn1/bedrock-md/ecc-fitted-memory", test_ecc_fitted_memory);
