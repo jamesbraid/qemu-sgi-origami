@@ -215,6 +215,19 @@ static void test_identity(void)
     qtest_quit(qts);
 }
 
+static void test_configured_identity_survives_reset(void)
+{
+    QTestState *qts = xbow_start(
+        "-global sgi-xbow.widget-revision=5 "
+        "-global sgi-xbow.widget-part=0x1234 "
+        "-global sgi-xbow.widget-manufacturer=0x321");
+
+    g_assert_cmphex(reg_read(qts, ID), ==, 0x51234643);
+    qtest_system_reset(qts);
+    g_assert_cmphex(reg_read(qts, ID), ==, 0x51234643);
+    qtest_quit(qts);
+}
+
 static void test_reset_values(void)
 {
     QTestState *qts = xbow_start("");
@@ -1312,6 +1325,8 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
 
     qtest_add_func("/sn0/xbow/identity", test_identity);
+    qtest_add_func("/sn0/xbow/configured-identity-survives-reset",
+                   test_configured_identity_survives_reset);
     qtest_add_func("/sn0/xbow/reset-values", test_reset_values);
     qtest_add_func("/sn0/xbow/link-register-decode",
                    test_link_register_decode);

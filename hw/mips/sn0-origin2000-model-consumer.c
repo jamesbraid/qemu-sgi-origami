@@ -197,7 +197,9 @@ static bool origin2000_io_references_valid(const SN0ModelComposition *c)
         return false;
     }
     for (size_t i = 0; i < c->crossbow_count; i++) {
-        if (!c->crossbows[i].id || c->crossbows[i].module_index != 0) {
+        if (!c->crossbows[i].id || c->crossbows[i].module_index != 0 ||
+            c->crossbows[i].widget_revision > 15 ||
+            c->crossbows[i].widget_manufacturer > 0x7ff) {
             return false;
         }
     }
@@ -250,7 +252,9 @@ bool sn0_origin2000_validate(const SN0ModelComposition *c, Error **errp)
             (node->cpu_first_id & 1) ||
             (cpus & (3U << node->cpu_first_id)) ||
             node->flash.kind != SN0_FLASH_AM29F080 ||
-            node->hub->revision > 15 || (node->hub->serial >> 48) ||
+            node->hub->ni_revision > 15 ||
+            node->hub->widget_revision > 15 ||
+            (node->hub->serial >> 48) ||
             node->hub->cpu_irq_bank0 > 5 || node->hub->cpu_irq_bank1 > 5 ||
             node->hub->cpu_irq_rt > 5 ||
             !origin2000_map_valid(&node->map) ||

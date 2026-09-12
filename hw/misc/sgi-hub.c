@@ -51,7 +51,8 @@
 #define HUB_IO_WIDGET_CONTROL   0x400020
 
 /* Crosstalk ID layout; the always-one low bit is the crosstalk contract's. */
-#define IO_WIDGET_ID_REVISION   (1ULL << 28)
+#define IO_WIDGET_ID_REVISION_SHIFT 28
+#define IO_WIDGET_ID_REVISION_MAX   0xf
 #define IO_WIDGET_ID_PART       (0xc101ULL << 12)
 #define IO_WIDGET_ID_ONE        1ULL
 #define IO_WIDGET_ID_MFG_SHIFT  1
@@ -1906,7 +1907,8 @@ static void sgi_hub_write_timedout(SGIHubState *s, hwaddr addr,
 static uint64_t sgi_hub_read_widget_id(SGIHubState *s, hwaddr addr,
                                        unsigned arg)
 {
-    return IO_WIDGET_ID_REVISION | IO_WIDGET_ID_PART |
+    return ((uint64_t)s->widget_revision << IO_WIDGET_ID_REVISION_SHIFT) |
+           IO_WIDGET_ID_PART |
            ((uint64_t)s->manufacturer << IO_WIDGET_ID_MFG_SHIFT) |
            IO_WIDGET_ID_ONE;
 }
@@ -3010,6 +3012,11 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
                          "most %u", NI_STATUS_REVISION_MAX);
         return;
     }
+    if (s->widget_revision > IO_WIDGET_ID_REVISION_MAX) {
+        error_setg(errp, "the Hub widget revision is a four-bit field, so "
+                         "at most %u", IO_WIDGET_ID_REVISION_MAX);
+        return;
+    }
     if (!s->xtalk_widget_shift) {
         error_setg(errp, "the Hub needs the widget stride of the crosstalk "
                          "space its big windows translate into");
@@ -3464,6 +3471,7 @@ static const Property sgi_hub_properties[] = {
     DEFINE_PROP_UINT32("fabric-endpoint", SGIHubState, fabric_endpoint, 0),
     DEFINE_PROP_UINT32("cpus", SGIHubState, cpus, 1),
     DEFINE_PROP_UINT8("ni-revision", SGIHubState, ni_revision, 3),
+    DEFINE_PROP_UINT8("widget-revision", SGIHubState, widget_revision, 1),
     DEFINE_PROP_UINT8("elsc-dip-switches", SGIHubState,
                       elsc_dip_switches, 0),
     DEFINE_PROP_UINT32("cpu-base", SGIHubState, cpu_base, 0),

@@ -89,9 +89,9 @@ struct SGIXbowState {
     uint64_t span;
 
     /* What widget 0 answers with: revision, part number, manufacturer. */
-    uint32_t revision;
-    uint32_t part;
-    uint32_t manufacturer;
+    uint32_t widget_revision;
+    uint32_t widget_part;
+    uint32_t widget_manufacturer;
 
     /* Widget masks, as the properties and the descriptor spell them. */
     uint16_t links_present_prop;

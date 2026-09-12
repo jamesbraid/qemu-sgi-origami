@@ -1202,7 +1202,11 @@ static void sn0_node_create_hub(SN0NodeState *node)
         }
     }
     qdev_prop_set_uint8(DEVICE(&node->hub), "ni-revision",
-                        hub->revision);
+                        node->physical ? hub->ni_revision : hub->revision);
+    if (node->physical) {
+        qdev_prop_set_uint8(DEVICE(&node->hub), "widget-revision",
+                            hub->widget_revision);
+    }
     /*
      * Each PIMM record part gets its own synthetic serial: per-unit as the
      * hub one-wire datasheet's contract requires, never a real machine's.
