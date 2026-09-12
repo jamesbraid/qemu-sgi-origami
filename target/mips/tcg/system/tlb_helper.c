@@ -1784,7 +1784,6 @@ void mips_cpu_do_interrupt(CPUState *cs)
      */
     if (env->cfg.exception_breaks_ll_link) {
         env->lladdr = 1;
-        qatomic_set(&env->llsc_ram_block, 0);
     }
     if (cs->exception_index != EXCP_EXT_INTERRUPT) {
         uint32_t asid = env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask;

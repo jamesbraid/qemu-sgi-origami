@@ -25,106 +25,11 @@
 #include "exec/helper-proto.h"
 #include "accel/tcg/cpu-ldst.h"
 #include "exec/memop.h"
-#include "qemu/rcu.h"
 #include "internal.h"
-#include "trace.h"
 
 #ifndef CONFIG_USER_ONLY
 #include "accel/tcg/probe.h"
 #include "exec/tlb-flags.h"
-
-#define R10K_LLSC_BLOCK_SIZE 128
-/* A valid architectural link without a directly trackable RAM block. */
-#define R10K_LLSC_UNTRACKED  2
-
-/* False must mean that no R10000 CPU has a tracked link. */
-static unsigned int r10k_llsc_active_link_hint;
-
-static uint64_t r10k_llsc_ram_block(target_ulong addr,
-                                    const CPUTLBEntryFull *full)
-{
-    ram_addr_t ram_addr = addr + full->xlat_offset;
-
-    /* Bit zero records validity; RAM blocks are 128-byte aligned. */
-    return (ram_addr & ~(ram_addr_t)(R10K_LLSC_BLOCK_SIZE - 1)) | 1;
-}
-
-static bool r10k_llsc_link_is_tracked(uint64_t link)
-{
-    return (link & 1) != 0;
-}
-
-static void r10k_llsc_set_link(CPUMIPSState *env, target_ulong addr,
-                               const CPUTLBEntryFull *full, int flags)
-{
-    uint64_t block = env->cfg.ll_sc_peer_store_block_breaks_link ?
-                     R10K_LLSC_UNTRACKED : 0;
-
-    if (env->cfg.ll_sc_peer_store_block_breaks_link &&
-        !(flags & (TLB_INVALID_MASK | TLB_MMIO))) {
-        block = r10k_llsc_ram_block(addr, full);
-    }
-    qatomic_xchg(&env->llsc_ram_block, block);
-    if (r10k_llsc_link_is_tracked(block)) {
-        /* R10000 LL executes exclusively, so no peer store can miss this. */
-        qatomic_set(&r10k_llsc_active_link_hint, 1);
-    }
-}
-
-uint32_t helper_r10k_llsc_valid(CPUMIPSState *env)
-{
-    return qatomic_read(&env->llsc_ram_block) != 0;
-}
-
-void helper_r10k_llsc_clear(CPUMIPSState *env)
-{
-    qatomic_set(&env->llsc_ram_block, 0);
-}
-
-void helper_r10k_llsc_note_cpu_store(CPUMIPSState *env, target_ulong addr,
-                                     uint32_t mem_idx)
-{
-    CPUTLBEntryFull *full;
-    CPUState *cs;
-    uint64_t block;
-    void *host_unused;
-    bool any_link = false;
-    int flags;
-
-    if (!qatomic_read(&r10k_llsc_active_link_hint)) {
-        return;
-    }
-    trace_mips_r10k_llsc_peer_store_slow_path(env_cpu(env)->cpu_index, addr);
-    flags = probe_access_full(env, addr, 1, MMU_DATA_STORE, mem_idx, true,
-                              &host_unused, &full, GETPC());
-    if (flags & (TLB_INVALID_MASK | TLB_MMIO)) {
-        return;
-    }
-
-    block = r10k_llsc_ram_block(addr, full);
-    RCU_READ_LOCK_GUARD();
-    CPU_FOREACH(cs) {
-        CPUMIPSState *other = cpu_env(cs);
-        uint64_t linked;
-
-        if (!other->cfg.ll_sc_peer_store_block_breaks_link) {
-            continue;
-        }
-
-        linked = qatomic_read(&other->llsc_ram_block);
-        if (other != env && linked == block) {
-            if (qatomic_cmpxchg(&other->llsc_ram_block, linked, 0) == linked) {
-                linked = 0;
-            } else {
-                linked = qatomic_read(&other->llsc_ram_block);
-            }
-        }
-        if (r10k_llsc_link_is_tracked(linked)) {
-            any_link = true;
-        }
-    }
-    qatomic_set(&r10k_llsc_active_link_hint, any_link);
-}
 
 /*
  * Where LLAddr is a plain scratch register the link never touches (manual
@@ -147,7 +52,6 @@ target_ulong helper_##name(CPUMIPSState *env, target_ulong arg,               \
     flags = probe_access_full(env, arg, size, MMU_DATA_LOAD, mem_idx,         \
                               true, &host_unused, &full, ra);                 \
     assert(!(flags & TLB_INVALID_MASK));                                      \
-    r10k_llsc_set_link(env, arg, full, flags);                                \
     if (!env->cfg.lladdr_is_scratch) {                                        \
         env->CP0_LLAddr = full->phys_addr;                                    \
     }                                                                         \

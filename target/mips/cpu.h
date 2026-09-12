@@ -48,8 +48,6 @@ typedef struct MIPSCPUConfig {
     bool exception_breaks_ll_link;
     /* A load, store, SYNC, CACHE, or PREF between LL and SC breaks the link. */
     bool ll_sc_intervening_ops_break_link;
-    /* System-mode translated peer-CPU stores invalidate the linked block. */
-    bool ll_sc_peer_store_block_breaks_link;
     /* The LLAddr register is plain scratch that the link never writes. */
     bool lladdr_is_scratch;
     /*
@@ -1259,7 +1257,6 @@ typedef struct CPUArchState {
  */
     target_ulong lladdr; /* LL virtual address compared against SC */
     target_ulong llval;
-    uint64_t llsc_ram_block; /* R10000 peer-store link state */
     uint64_t llval_wp;
     uint32_t llnewval_wp;
     uint64_t CP0_LLAddr_rw_bitmask;

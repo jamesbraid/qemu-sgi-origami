@@ -1216,30 +1216,6 @@ static void gen_break_ll_link(DisasContext *ctx)
     }
 }
 
-#ifndef CONFIG_USER_ONLY
-static bool gen_r10k_llsc_serialize(DisasContext *ctx)
-{
-    if (ctx->ll_sc_peer_store_block_breaks_link &&
-        (tb_cflags(ctx->base.tb) & CF_PARALLEL)) {
-        gen_helper_exit_atomic(tcg_env);
-        ctx->base.is_jmp = DISAS_NORETURN;
-        return false;
-    }
-    return true;
-}
-
-static void gen_r10k_llsc_note_cpu_store(DisasContext *ctx, TCGv addr,
-                                         int mem_idx)
-{
-    if (ctx->ll_sc_peer_store_block_breaks_link) {
-        gen_helper_r10k_llsc_note_cpu_store(tcg_env, addr,
-                                            tcg_constant_i32(mem_idx));
-    }
-}
-#else
-#define gen_r10k_llsc_note_cpu_store(ctx, addr, mem_idx) do { } while (0)
-#endif
-
 #if defined(TARGET_MIPS64)
 void gen_load_gpr_hi(TCGv_i64 t, int reg)
 {
@@ -1996,9 +1972,6 @@ static inline void op_ld_##insn(TCGv ret, TCGv arg1, int mem_idx,          \
                                 DisasContext *ctx)                         \
 {                                                                          \
     MemOpIdx oi = make_memop_idx(memop | MO_ALIGN, mem_idx);               \
-    if (!gen_r10k_llsc_serialize(ctx)) {                                    \
-        return;                                                             \
-    }                                                                       \
     gen_helper_##insn(ret, tcg_env, arg1, tcg_constant_i32(oi));           \
 }
 #endif
@@ -2312,7 +2285,6 @@ static void gen_st(DisasContext *ctx, uint32_t opc, int rt,
         gen_helper_0e2i(swr, t1, t0, mem_idx);
         break;
     }
-    gen_r10k_llsc_note_cpu_store(ctx, t0, mem_idx);
 }
 
 
@@ -2321,27 +2293,18 @@ static void gen_st_cond(DisasContext *ctx, int rt, int base, int offset,
                         MemOp tcg_mo, bool eva)
 {
     TCGv addr, t0, val;
-    TCGLabel *fail = gen_new_label();
+    TCGLabel *l1 = gen_new_label();
     TCGLabel *done = gen_new_label();
 
-#ifndef CONFIG_USER_ONLY
-    if (!gen_r10k_llsc_serialize(ctx)) {
-        return;
-    }
-#endif
     t0 = tcg_temp_new();
     addr = tcg_temp_new();
-    gen_base_offset_addr(ctx, addr, base, offset);
-#ifndef CONFIG_USER_ONLY
-    if (ctx->ll_sc_peer_store_block_breaks_link) {
-        TCGv_i32 linked = tcg_temp_new_i32();
-
-        gen_helper_r10k_llsc_valid(linked, tcg_env);
-        tcg_gen_brcondi_i32(TCG_COND_EQ, linked, 0, fail);
-    }
-#endif
     /* compare the address against that of the preceding LL */
-    tcg_gen_brcond_tl(TCG_COND_NE, addr, cpu_lladdr, fail);
+    gen_base_offset_addr(ctx, addr, base, offset);
+    tcg_gen_brcond_tl(TCG_COND_EQ, addr, cpu_lladdr, l1);
+    gen_store_gpr(tcg_constant_tl(0), rt);
+    tcg_gen_br(done);
+
+    gen_set_label(l1);
     /* generate cmpxchg */
     val = tcg_temp_new();
     gen_load_gpr(val, rt);
@@ -2349,26 +2312,7 @@ static void gen_st_cond(DisasContext *ctx, int rt, int base, int offset,
                               eva ? MIPS_HFLAG_UM : ctx->mem_idx, tcg_mo);
     tcg_gen_setcond_tl(TCG_COND_EQ, t0, t0, cpu_llval);
     gen_store_gpr(t0, rt);
-    if (ctx->ll_sc_peer_store_block_breaks_link) {
-        TCGLabel *no_store = gen_new_label();
 
-#ifndef CONFIG_USER_ONLY
-        gen_helper_r10k_llsc_clear(tcg_env);
-#endif
-        tcg_gen_brcondi_tl(TCG_COND_EQ, t0, 0, no_store);
-        gen_r10k_llsc_note_cpu_store(ctx, addr,
-                                     eva ? MIPS_HFLAG_UM : ctx->mem_idx);
-        gen_set_label(no_store);
-    }
-    tcg_gen_br(done);
-
-    gen_set_label(fail);
-    gen_store_gpr(tcg_constant_tl(0), rt);
-#ifndef CONFIG_USER_ONLY
-    if (ctx->ll_sc_peer_store_block_breaks_link) {
-        gen_helper_r10k_llsc_clear(tcg_env);
-    }
-#endif
     gen_set_label(done);
 }
 
@@ -2397,7 +2341,6 @@ static void gen_flt_ldst(DisasContext *ctx, uint32_t opc, int ft,
             gen_load_fpr32(ctx, fp0, ft);
             tcg_gen_qemu_st_i32(fp0, t0, ctx->mem_idx, mo_endian(ctx) | MO_UL |
                                 ctx->default_tcg_memop_mask);
-            gen_r10k_llsc_note_cpu_store(ctx, t0, ctx->mem_idx);
         }
         break;
     case OPC_LDC1:
@@ -2414,7 +2357,6 @@ static void gen_flt_ldst(DisasContext *ctx, uint32_t opc, int ft,
             gen_load_fpr64(ctx, fp0, ft);
             tcg_gen_qemu_st_i64(fp0, t0, ctx->mem_idx, mo_endian(ctx) | MO_UQ |
                                 ctx->default_tcg_memop_mask);
-            gen_r10k_llsc_note_cpu_store(ctx, t0, ctx->mem_idx);
         }
         break;
     default:
@@ -10978,7 +10920,6 @@ static void gen_flt3_ldst(DisasContext *ctx, uint32_t opc,
             TCGv_i32 fp0 = tcg_temp_new_i32();
             gen_load_fpr32(ctx, fp0, fs);
             tcg_gen_qemu_st_i32(fp0, t0, ctx->mem_idx, mo_endian(ctx) | MO_UL);
-            gen_r10k_llsc_note_cpu_store(ctx, t0, ctx->mem_idx);
         }
         break;
     case OPC_SDXC1:
@@ -10988,7 +10929,6 @@ static void gen_flt3_ldst(DisasContext *ctx, uint32_t opc,
             TCGv_i64 fp0 = tcg_temp_new_i64();
             gen_load_fpr64(ctx, fp0, fs);
             tcg_gen_qemu_st_i64(fp0, t0, ctx->mem_idx, mo_endian(ctx) | MO_UQ);
-            gen_r10k_llsc_note_cpu_store(ctx, t0, ctx->mem_idx);
         }
         break;
     case OPC_SUXC1:
@@ -10998,7 +10938,6 @@ static void gen_flt3_ldst(DisasContext *ctx, uint32_t opc,
             TCGv_i64 fp0 = tcg_temp_new_i64();
             gen_load_fpr64(ctx, fp0, fs);
             tcg_gen_qemu_st_i64(fp0, t0, ctx->mem_idx, mo_endian(ctx) | MO_UQ);
-            gen_r10k_llsc_note_cpu_store(ctx, t0, ctx->mem_idx);
         }
         break;
     }
@@ -15571,8 +15510,6 @@ static void mips_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
         env->cfg.partial_lwr_preserves_upper;
     ctx->ll_sc_intervening_ops_break_link =
         env->cfg.ll_sc_intervening_ops_break_link;
-    ctx->ll_sc_peer_store_block_breaks_link =
-        env->cfg.ll_sc_peer_store_block_breaks_link;
     restore_cpu_state(env, ctx);
 #ifdef CONFIG_USER_ONLY
         ctx->mem_idx = MIPS_HFLAG_UM;
