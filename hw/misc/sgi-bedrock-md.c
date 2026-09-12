@@ -234,17 +234,28 @@ static bool md_is_protection(hwaddr offset)
            (offset & MD_PROTECTION_SELECTOR_MASK) == MD_PROTECTION_SELECTOR;
 }
 
-static unsigned md_protection_index(hwaddr offset)
+static bool md_protection_translate(const SGIBedrockMDState *s,
+                                    hwaddr offset, unsigned *index)
 {
-    return (offset >> 11) * 4 + ((offset >> 4) & 3);
-}
+    unsigned software_bank = offset / MD_DIRECTORY_BANK_SIZE;
+    uint64_t node_size;
+    uint64_t bank_base = software_bank * MD_MEMORY_BANK_SIZE;
+    uint64_t bank_size;
+    uint64_t within;
 
-static bool md_protection_fitted(const SGIBedrockMDState *s, hwaddr offset)
-{
-    uint64_t physical = ((uint64_t)(offset >> 11) << 14) |
-                        (((offset >> 4) & 3) << 7);
-
-    return s->node_mr && physical < memory_region_size(s->node_mr);
+    if (!s->node_mr) {
+        return false;
+    }
+    node_size = memory_region_size(s->node_mr);
+    if (bank_base >= node_size) {
+        return false;
+    }
+    bank_size = MIN(node_size - bank_base, MD_MEMORY_BANK_SIZE);
+    within = ((uint64_t)((offset % MD_DIRECTORY_BANK_SIZE) >> 11) << 14) |
+             (((offset >> 4) & 3) << 7);
+    within %= bank_size;
+    *index = ((bank_base + within) >> 14) * 4 + ((within >> 7) & 3);
+    return *index < s->protection_entries;
 }
 
 static bool md_directory_translate(const SGIBedrockMDState *s, hwaddr offset,
@@ -383,10 +394,10 @@ static uint64_t md_directory_read(void *opaque, hwaddr offset, unsigned size)
     unsigned index;
 
     if (md_is_protection(offset)) {
-        if (!md_protection_fitted(s, offset)) {
+        if (!md_protection_translate(s, offset, &index)) {
             return 0;
         }
-        return s->protection[md_protection_index(offset)];
+        return s->protection[index];
     }
     if (!md_directory_translate(s, offset, &index, NULL)) {
         index = md_directory_compat_get(s, offset);
@@ -406,8 +417,8 @@ static void md_directory_write(void *opaque, hwaddr offset, uint64_t value,
     unsigned index;
 
     if (md_is_protection(offset)) {
-        if (md_protection_fitted(s, offset)) {
-            s->protection[md_protection_index(offset)] = value;
+        if (md_protection_translate(s, offset, &index)) {
+            s->protection[index] = value;
         }
         return;
     }

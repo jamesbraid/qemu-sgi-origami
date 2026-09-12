@@ -31,9 +31,12 @@
 #define PROTECTION_LAST 0x3ffffc38
 #define PROTECTION_FIRST_ABSENT 0x40000408
 #define PROTECTION_MACHINE_BASE UINT64_C(0x101c0000000)
-#define PROTECTION_MACHINE_FITTED_448M \
-    (PROTECTION_MACHINE_BASE + PROTECTION_FITTED_448M)
-#define PROTECTION_UNFITTED_512M (PROTECTION_MACHINE_BASE + 0x04000408)
+#define PROTECTION_MACHINE_FIRST \
+    (PROTECTION_MACHINE_BASE + PROTECTION_FIRST)
+#define PROTECTION_MACHINE_512M_ALIAS \
+    (PROTECTION_MACHINE_BASE + 0x04000408)
+#define PROTECTION_MACHINE_BANK1_HIGH \
+    (PROTECTION_MACHINE_BASE + PROTECTION_BANK1_HIGH)
 #define DIRECTORY_UNFITTED_512M (PROTECTION_MACHINE_BASE + 0x04000000)
 #define PROM_SIZE UINT64_C(0x1686a8)
 #define NODE_MEMORY_512M \
@@ -878,17 +881,23 @@ static void test_protection_capacity_probe(void)
     g_autofree char *quoted_prom = g_shell_quote(prom);
     g_autofree char *log = log_file_new();
     g_autofree char *contents = NULL;
-    const uint64_t probe = UINT64_C(0x585a585a585a585a);
+    const uint64_t low = UINT64_C(0xa55aa55aa55aa55a);
+    const uint64_t high = UINT64_C(0x5aa55aa55aa55aa5);
+    const uint64_t absent = UINT64_C(0x599a599a599a599a);
+    const uint64_t selected_lanes = UINT64_C(0x0000ffff0000ffff);
     QTestState *s = qtest_initf("-M origin300 -cpu R14000 -smp 2 "
                                 "-m 512M -bios %s -S -d guest_errors -D %s",
                                 quoted_prom, log);
 
-    qtest_writeq(s, PROTECTION_UNFITTED_512M, probe);
-    g_assert_cmphex(qtest_readq(s, PROTECTION_UNFITTED_512M), !=, probe);
-    qtest_writeq(s, PROTECTION_MACHINE_FITTED_448M,
-                 UINT64_C(0xa55aa55aa55aa55a));
-    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_FITTED_448M), ==,
-                    UINT64_C(0xa55aa55aa55aa55a));
+    qtest_writeq(s, PROTECTION_MACHINE_FIRST, low);
+    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_FIRST), ==, low);
+    qtest_writeq(s, PROTECTION_MACHINE_512M_ALIAS, high);
+    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_FIRST), ==, high);
+    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_512M_ALIAS), ==, high);
+
+    qtest_writeq(s, PROTECTION_MACHINE_BANK1_HIGH, absent);
+    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_BANK1_HIGH) &
+                    selected_lanes, !=, absent & selected_lanes);
     qtest_writeq(s, DIRECTORY_UNFITTED_512M, UINT64_MAX);
     qtest_quit(s);
 
