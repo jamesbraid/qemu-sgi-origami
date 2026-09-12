@@ -114,22 +114,6 @@ static void isa_outl(QTestState *qts, const TestCase *test, uint16_t addr,
     }
 }
 
-static uint32_t isa_outl_inl(QTestState *qts, const TestCase *test,
-                             uint16_t addr, uint32_t value)
-{
-    uint32_t result;
-
-    if (test->isa_base == -1) {
-        qtest_outl(qts, addr, value);
-        return qtest_inl(qts, addr);
-    }
-
-    value = test->bswap ? bswap32(value) : value;
-    result = qtest_writel_then_readl(qts, test->isa_base + addr, value,
-                                     test->isa_base + addr);
-    return test->bswap ? bswap32(result) : result;
-}
-
 
 static void test_endianness(gconstpointer data)
 {
@@ -139,8 +123,8 @@ static void test_endianness(gconstpointer data)
     qts = qtest_initf("-M %s%s%s -device pc-testdev", test->machine,
                       test->superio ? " -device " : "",
                       test->superio ?: "");
-    g_assert_cmphex(isa_outl_inl(qts, test, 0xe0, 0x87654321),
-                    ==, 0x87654321);
+    isa_outl(qts, test, 0xe0, 0x87654321);
+    g_assert_cmphex(isa_inl(qts, test, 0xe0), ==, 0x87654321);
     g_assert_cmphex(isa_inw(qts, test, 0xe2), ==, 0x8765);
     g_assert_cmphex(isa_inw(qts, test, 0xe0), ==, 0x4321);
     g_assert_cmphex(isa_inb(qts, test, 0xe3), ==, 0x87);
