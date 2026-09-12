@@ -2263,6 +2263,13 @@ static void gen_st(DisasContext *ctx, uint32_t opc, int rt,
         mem_idx = MIPS_HFLAG_UM;
         /* fall through */
     case OPC_SH:
+#ifndef CONFIG_USER_ONLY
+        if (ctx->has_store_transaction) {
+            gen_helper_store_transaction(t1, tcg_env, t1, t0,
+                                         tcg_constant_i32(mem_idx),
+                                         tcg_constant_i32(2));
+        }
+#endif
         tcg_gen_qemu_st_tl(t1, t0, mem_idx, mo_endian(ctx) | MO_UW |
                            ctx->default_tcg_memop_mask);
         break;
@@ -15510,6 +15517,9 @@ static void mips_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
         env->cfg.partial_lwr_preserves_upper;
     ctx->ll_sc_intervening_ops_break_link =
         env->cfg.ll_sc_intervening_ops_break_link;
+#ifndef CONFIG_USER_ONLY
+    ctx->has_store_transaction = env_archcpu(env)->store_transaction != NULL;
+#endif
     restore_cpu_state(env, ctx);
 #ifdef CONFIG_USER_ONLY
         ctx->mem_idx = MIPS_HFLAG_UM;

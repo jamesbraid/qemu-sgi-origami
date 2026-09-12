@@ -584,6 +584,28 @@ static void md_ecc_write(void *opaque, hwaddr offset, uint64_t value,
     }
 }
 
+uint64_t sgi_bedrock_md_ecc_store_value(SGIBedrockMDState *s, hwaddr offset,
+                                        uint64_t value, unsigned size)
+{
+    uint64_t memory_address;
+
+    if (size != 2 || md_ecc_refusal(s, offset, size)) {
+        return value;
+    }
+
+    memory_address = (offset ^ 6) * 8;
+    switch (memory_address & 0x30) {
+    case 0x00:
+        return value;
+    case 0x10:
+        return value >> 48;
+    case 0x20:
+        return value >> 32;
+    default:
+        return value;
+    }
+}
+
 static const MemoryRegionOps md_ecc_ops = {
     .read = md_ecc_read,
     .write = md_ecc_write,

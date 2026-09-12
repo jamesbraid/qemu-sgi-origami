@@ -31,6 +31,24 @@
 #include "accel/tcg/probe.h"
 #include "exec/tlb-flags.h"
 
+target_ulong helper_store_transaction(CPUMIPSState *env, target_ulong value,
+                                      target_ulong addr, uint32_t mem_idx,
+                                      uint32_t size)
+{
+    CPUTLBEntryFull *full;
+    MIPSCPU *cpu = env_archcpu(env);
+    void *host_unused;
+
+    if (addr & (size - 1)) {
+        return value;
+    }
+    probe_access_full(env, addr, size, MMU_DATA_STORE, mem_idx, false,
+                      &host_unused, &full, GETPC());
+    return cpu->store_transaction(cpu, full->section->mr,
+                                  full->xlat_offset + addr, value, size,
+                                  cpu->store_transaction_opaque);
+}
+
 /*
  * Where LLAddr is a plain scratch register the link never touches (manual
  * 14.15), nothing records the physical address there; the internal link
