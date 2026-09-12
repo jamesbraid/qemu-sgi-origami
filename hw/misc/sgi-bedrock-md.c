@@ -363,8 +363,9 @@ static uint64_t md_directory_read(void *opaque, hwaddr offset, unsigned size)
         return s->protection[md_protection_index(offset)];
     }
     if (!md_directory_translate(s, offset, &index)) {
-        return s->directory_compat_values[
-            md_directory_compat_get(s, offset)];
+        index = md_directory_compat_get(s, offset);
+        return s->directory_compat_values[index] &
+               ((offset & 8) ? UINT64_MAX : md_directory_mask(s));
     }
     if (offset & 8) {
         return s->page_counters[index];
