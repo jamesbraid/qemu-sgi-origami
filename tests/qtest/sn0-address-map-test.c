@@ -306,6 +306,80 @@ static void test_flash_hub_local_is_fast(const void *data)
     qtest_quit(qts);
 }
 
+#define FLASH_CPU_IMAGE_SIZE 0x1000
+#define FLASH_CPU_HANDLER    0x380
+#define FLASH_CPU_CODE       0x400
+#define FLASH_CPU_STATE      0x00200000
+
+static void flash_cpu_emit(uint8_t *image, unsigned int *at, uint32_t insn)
+{
+    stl_be_p(image + *at, insn);
+    *at += 4;
+}
+
+static void test_flash_wide_read_in_command_mode(const void *data)
+{
+    uint8_t image[FLASH_CPU_IMAGE_SIZE] = { 0 };
+    uint8_t state[16];
+    g_autofree char *path = NULL;
+    g_autoptr(GError) error = NULL;
+    QTestState *qts;
+    unsigned int at = 0;
+    int fd;
+
+    /* Jump clear of the configuration block installed at offset 0x60. */
+    flash_cpu_emit(image, &at,
+                   0x08000000 | ((0xbfc00000 + FLASH_CPU_CODE) >> 2 &
+                                 0x03ffffff));
+    flash_cpu_emit(image, &at, 0);
+
+    at = FLASH_CPU_HANDLER;
+    flash_cpu_emit(image, &at, 0x3c1aa020); /* lui k0, 0xa020 */
+    flash_cpu_emit(image, &at, 0x341bdead); /* ori k1, zero, 0xdead */
+    flash_cpu_emit(image, &at, 0xff5b0000); /* sd k1, 0(k0) */
+    flash_cpu_emit(image, &at, 0x1000ffff); /* beq zero, zero, self */
+    flash_cpu_emit(image, &at, 0);
+
+    at = FLASH_CPU_CODE;
+    flash_cpu_emit(image, &at, 0x3c08bfc0); /* lui t0, 0xbfc0 */
+    flash_cpu_emit(image, &at, 0x65080068); /* daddiu t0, t0, 0x68 */
+    flash_cpu_emit(image, &at, 0xdd090000); /* ld t1, 0(t0) */
+    flash_cpu_emit(image, &at, 0x3c1aa020); /* lui k0, 0xa020 */
+    flash_cpu_emit(image, &at, 0xff490008); /* sd t1, 8(k0) */
+    flash_cpu_emit(image, &at, 0x341b0055); /* ori k1, zero, 0x55 */
+    flash_cpu_emit(image, &at, 0xff5b0000); /* sd k1, 0(k0) */
+    flash_cpu_emit(image, &at, 0x1000ffff); /* beq zero, zero, self */
+    flash_cpu_emit(image, &at, 0);
+
+    stq_be_p(image + CONFIG_OFFSET + FIELD_MAGIC, CONFIG_MAGIC);
+
+    fd = g_file_open_tmp("sn0-flash-wide-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    close(fd);
+    g_assert_true(g_file_set_contents(path, (const char *)image,
+                                      sizeof(image), &error));
+    g_assert_no_error(error);
+    qts = qtest_initf("-M origin200,synthesized-firmware=off -m 64M "
+                      "-cpu R10000 -bios %s -accel tcg,thread=single -S",
+                      path);
+    g_assert_cmpint(unlink(path), ==, 0);
+
+    /* Leave the shared x8 flash in its I/O path before the CPU loads it. */
+    flash_command(qts, FLASH_UNLOCK1, 0xaa);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    for (unsigned int i = 0; i < 10000; i++) {
+        qtest_memread(qts, FLASH_CPU_STATE, state, sizeof(state));
+        if (ldq_be_p(state) != 0) {
+            break;
+        }
+        g_usleep(1000);
+    }
+    qtest_quit(qts);
+
+    g_assert_cmphex(ldq_be_p(state), ==, 0x55);
+    g_assert_cmphex(ldq_be_p(state + 8), ==, CONFIG_MAGIC);
+}
+
 static void test_entry_points(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -947,6 +1021,8 @@ int main(int argc, char **argv)
                         test_boot_windows_mirror_the_flash);
     qtest_add_data_func("sn0/address-map/flash-hub-local-is-fast", NULL,
                         test_flash_hub_local_is_fast);
+    qtest_add_data_func("sn0/address-map/flash-wide-read-command-mode", NULL,
+                        test_flash_wide_read_in_command_mode);
     qtest_add_data_func("sn0/address-map/entry-points", NULL,
                         test_entry_points);
     qtest_add_data_func("sn0/address-map/flash-rejects-bare-writes", NULL,
