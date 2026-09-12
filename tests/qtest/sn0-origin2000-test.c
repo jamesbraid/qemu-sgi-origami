@@ -513,6 +513,22 @@ static uint8_t router_nic_crc8(const uint8_t *bytes, size_t length)
     return crc;
 }
 
+static uint16_t router_nic_crc16(uint16_t crc, const uint8_t *bytes,
+                                 size_t length)
+{
+    for (size_t i = 0; i < length; i++) {
+        for (unsigned int bit = 0; bit < 8; bit++) {
+            bool carry = (crc ^ (bytes[i] >> bit)) & 1;
+
+            crc >>= 1;
+            if (carry) {
+                crc ^= 0xa001;
+            }
+        }
+    }
+    return crc;
+}
+
 static void router_nic_search(RouterNIC *nic, uint8_t rom[8])
 {
     memset(rom, 0, 8);
@@ -524,6 +540,76 @@ static void router_nic_search(RouterNIC *nic, uint8_t rom[8])
         g_assert_cmpint(router_nic_read_bit(nic), ==, !value);
         rom[bit / 8] |= value << (bit % 8);
         router_nic_write_bit(nic, value);
+    }
+}
+
+static void router_nic_read_page(RouterNIC *nic, unsigned int page,
+                                 uint8_t data[32])
+{
+    g_assert_false(router_nic_slot(nic, 520, 65));
+    /* The machine has exactly one responder on each Router's local bus. */
+    router_nic_write_byte(nic, 0xcc);
+    router_nic_write_byte(nic, 0xf0);
+    router_nic_write_byte(nic, page * 32);
+    router_nic_write_byte(nic, 0);
+    for (unsigned int i = 0; i < 32; i++) {
+        data[i] = router_nic_read_byte(nic);
+    }
+}
+
+static void router_nic_check_redirects(RouterNIC *nic)
+{
+    uint8_t frame[13] = { 0xaa, 0x00, 0x01 };
+
+    g_assert_false(router_nic_slot(nic, 520, 65));
+    router_nic_write_byte(nic, 0xcc);
+    router_nic_write_byte(nic, frame[0]);
+    router_nic_write_byte(nic, frame[1]);
+    router_nic_write_byte(nic, frame[2]);
+    for (unsigned int group = 0; group < 8; group++) {
+        unsigned int start = group ? 3 : 0;
+
+        for (unsigned int i = 0; i < 8; i++) {
+            frame[3 + i] = router_nic_read_byte(nic);
+            g_assert_cmphex(frame[3 + i], ==, 0xff);
+        }
+        frame[11] = router_nic_read_byte(nic);
+        frame[12] = router_nic_read_byte(nic);
+        g_assert_cmphex(router_nic_crc16(0, frame + start, 13 - start),
+                        ==, 0xb001);
+    }
+}
+
+static void router_nic_check_record(RouterNIC *nic, const char serial[10])
+{
+    static const uint8_t page_a_template[30] = {
+        0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        'O', 'R', 'I', 'G', 'A', 'M', 'I', '-', 'R', 'O', 'U', 'T', 'E',
+        'R', '-', 'T', 'E', 'S', 'T',
+    };
+    static const uint8_t page_b_template[30] = {
+        '-', '0', '0', '0', '0', '1', 'A', '0', '0', '1',
+        0, 0, 0, 0, 0, 0,
+        'O', 'R', 'I', 'G', 'A', 'M', 'I', ' ', 'R', 'O', 'U', 'T', 'E', 'R',
+    };
+    uint8_t expected[2][32] = { { 0 }, { 0 } };
+    uint8_t actual[2][32];
+
+    memcpy(expected[0], page_a_template, sizeof(page_a_template));
+    memcpy(&expected[0][1], serial, 10);
+    memcpy(expected[1], page_b_template, sizeof(page_b_template));
+    for (unsigned int page = 0; page < 2; page++) {
+        router_nic_read_page(nic, page, actual[page]);
+        g_assert_cmpmem(actual[page], 30, expected[page], 30);
+        for (unsigned int i = 1; i < 30; i++) {
+            if ((page == 1 && i >= 10 && i < 16)) {
+                continue;
+            }
+            g_assert_true(g_ascii_isprint(actual[page][i]));
+            g_assert_cmphex(actual[page][i], !=, ':');
+            g_assert_cmphex(actual[page][i], !=, ';');
+        }
+        g_assert_cmphex(router_nic_crc16(0, actual[page], 32), ==, 0xb001);
     }
 }
 
@@ -730,6 +816,13 @@ static void test_router_nic_inventory(void)
         { 1, 0, 4 }, { 2, 6, 6 },
         { 3, 0, 4 }, { 0, 6, 6 },
     };
+    static const char record_serials[][11] = {
+        "ORTR000001", "ORTR000002",
+    };
+    static const uint8_t rom_serials[][6] = {
+        { 0x05, 0x00, 0x00, 0x00, 0x00, 0x10 },
+        { 0x06, 0x00, 0x00, 0x00, 0x00, 0x10 },
+    };
     uint8_t roms[2][8];
 
     for (unsigned int i = 0; i < G_N_ELEMENTS(nics); i++) {
@@ -742,15 +835,10 @@ static void test_router_nic_inventory(void)
                                       NI_VECTOR_READ_DATA)), ==, 5);
         router_nic_search(&nics[i], roms[i]);
         g_assert_cmphex(roms[i][0], ==, 0x0b);
+        g_assert_cmpmem(&roms[i][1], 6, rom_serials[i], 6);
         g_assert_cmphex(router_nic_crc8(roms[i], sizeof(roms[i])), ==, 0);
-
-        /* Search ROM leaves its sole survivor selected for a memory command. */
-        router_nic_write_byte(&nics[i], 0xf0);
-        router_nic_write_byte(&nics[i], 0);
-        router_nic_write_byte(&nics[i], 0);
-        for (unsigned int byte = 0; byte < 32; byte++) {
-            g_assert_cmphex(router_nic_read_byte(&nics[i]), ==, 0xff);
-        }
+        router_nic_check_redirects(&nics[i]);
+        router_nic_check_record(&nics[i], record_serials[i]);
     }
     g_assert_cmpint(memcmp(roms[0], roms[1], sizeof(roms[0])), !=, 0);
 
@@ -766,6 +854,11 @@ static void test_router_nic_inventory(void)
                                       NI_VECTOR_READ_DATA)), ==,
                          alternate_paths[i][2]);
         g_assert_false(router_nic_slot(&nic, 520, 65));
+    }
+    qtest_system_reset(qts);
+    for (unsigned int i = 0; i < G_N_ELEMENTS(nics); i++) {
+        router_nic_search(&nics[i], roms[i]);
+        router_nic_check_record(&nics[i], record_serials[i]);
     }
     qtest_quit(qts);
 }
@@ -1367,6 +1460,38 @@ static void migrate_module(QTestState *from, QTestState *to)
     g_assert_cmpint(rmdir(directory), ==, 0);
 }
 
+static void test_router_nic_inventory_migration(void)
+{
+    static const char record_serials[][11] = {
+        "ORTR000001", "ORTR000002",
+    };
+    QTestState *from = start_module();
+    QTestState *to = qtest_init("-M origin2000 -incoming defer");
+    RouterNIC nics[] = {
+        { from, 0, 0 },
+        { from, 2, 0 },
+    };
+    uint8_t rom[8];
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(nics); i++) {
+        router_nic_search(&nics[i], rom);
+        router_nic_check_record(&nics[i], record_serials[i]);
+    }
+    migrate_module(from, to);
+    for (unsigned int i = 0; i < G_N_ELEMENTS(nics); i++) {
+        nics[i].qts = to;
+        router_nic_search(&nics[i], rom);
+        router_nic_check_record(&nics[i], record_serials[i]);
+    }
+    qtest_system_reset(to);
+    for (unsigned int i = 0; i < G_N_ELEMENTS(nics); i++) {
+        router_nic_search(&nics[i], rom);
+        router_nic_check_record(&nics[i], record_serials[i]);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+}
+
 static void test_migration(void)
 {
     QTestState *from = start_module();
@@ -1873,6 +1998,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/vectors", test_vectors);
     qtest_add_func("sn0/origin2000/router-nic-inventory",
                    test_router_nic_inventory);
+    qtest_add_func("sn0/origin2000/router-nic-inventory-migration",
+                   test_router_nic_inventory_migration);
     qtest_add_func("sn0/origin2000/programmed-routes", test_programmed_routes);
     qtest_add_func("sn0/origin2000/bte-interrupt", test_bte_and_interrupt);
     qtest_add_func("sn0/origin2000/bte-three-distinct-endpoints",

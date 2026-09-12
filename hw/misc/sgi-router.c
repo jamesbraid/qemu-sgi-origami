@@ -132,6 +132,8 @@ struct SGIRouterState {
     uint64_t nic_clock_hz;
     uint64_t nic_serial;
     char *nic_image;
+    uint8_t *nic_image_data;
+    size_t nic_image_length;
     bool nic_present;
     uint8_t nic_population;
     uint8_t nic_phase;
@@ -1217,8 +1219,12 @@ static void sgi_router_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "nic-serial must fit in 48 bits");
         return;
     }
-    if (s->nic_image && !s->nic_present) {
+    if ((s->nic_image || s->nic_image_data) && !s->nic_present) {
         error_setg(errp, "nic-image requires nic-present");
+        return;
+    }
+    if (s->nic_image && s->nic_image_data) {
+        error_setg(errp, "nic-image was supplied twice");
         return;
     }
     if (s->nic_present) {
@@ -1255,6 +1261,9 @@ static void sgi_router_realize(DeviceState *dev, Error **errp)
         qdev_prop_set_uint64(s->nic, "serial", s->nic_serial);
         if (image) {
             ds2505_set_image(s->nic, (uint8_t *)image, length);
+        } else if (s->nic_image_data) {
+            ds2505_set_image(s->nic, s->nic_image_data,
+                             s->nic_image_length);
         }
         object_property_add_child(OBJECT(dev), "nic", OBJECT(s->nic));
         if (!qdev_realize_and_unref(s->nic, BUS(s->nic_bus), errp)) {
@@ -1286,7 +1295,21 @@ static void sgi_router_init(Object *obj)
 
 static void sgi_router_finalize(Object *obj)
 {
-    timer_free(SGI_ROUTER(obj)->nic_timer);
+    SGIRouterState *s = SGI_ROUTER(obj);
+
+    timer_free(s->nic_timer);
+    g_free(s->nic_image_data);
+}
+
+void sgi_router_set_nic_image(SGIRouterState *s, const uint8_t *data,
+                              size_t length)
+{
+    g_assert(!DEVICE(s)->realized);
+    g_assert(length <= DS2505_DATA_SIZE);
+
+    g_free(s->nic_image_data);
+    s->nic_image_data = g_memdup2(data, length);
+    s->nic_image_length = length;
 }
 
 static const Property sgi_router_properties[] = {

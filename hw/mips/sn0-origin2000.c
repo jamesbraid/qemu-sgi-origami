@@ -11,6 +11,7 @@
 #include "hw/core/loader.h"
 #include "hw/core/qdev-clock.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/1wire/crc.h"
 #include "hw/mips/sn0-fabric-routed.h"
 #include "hw/misc/sgi-o2000-module-mgmt.h"
 #include "hw/misc/sgi-router.h"
@@ -28,6 +29,40 @@
     (SN0_XTALK_BASE(ORIGIN2000_HUB_IO_BUS_ERROR_WIDGET) + \
      ORIGIN2000_HUB_IO_BUS_ERROR - \
      SN0_SMALL_WINDOW(ORIGIN2000_HUB_IO_BUS_ERROR_WIDGET))
+
+#define ORIGIN2000_ROUTER_NIC_PAGES 2
+
+static void origin2000_router_nic_page_crc(uint8_t page[32])
+{
+    uint16_t crc = ~onewire_crc16(0, page, 30);
+
+    page[30] = crc;
+    page[31] = crc >> 8;
+}
+
+static void origin2000_router_nic_image(const SN0ModelRouter *router,
+                                        uint8_t image[64])
+{
+    static const uint8_t page_a[30] = {
+        0x01, ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+        'O', 'R', 'I', 'G', 'A', 'M', 'I', '-', 'R', 'O', 'U', 'T', 'E',
+        'R', '-', 'T', 'E', 'S', 'T',
+    };
+    static const uint8_t page_b[30] = {
+        '-', '0', '0', '0', '0', '1', 'A', '0', '0', '1',
+        0, 0, 0, 0, 0, 0,
+        'O', 'R', 'I', 'G', 'A', 'M', 'I', ' ', 'R', 'O', 'U', 'T', 'E', 'R',
+    };
+    char serial[11];
+
+    memcpy(image, page_a, sizeof(page_a));
+    memcpy(&image[32], page_b, sizeof(page_b));
+    g_snprintf(serial, sizeof(serial), "ORTR%06u", router->slot);
+    memcpy(&image[1], serial, 10);
+    for (unsigned int page = 0; page < ORIGIN2000_ROUTER_NIC_PAGES; page++) {
+        origin2000_router_nic_page_crc(&image[page * 32]);
+    }
+}
 
 static MemTxResult origin2000_bus_error_read(void *opaque, hwaddr addr,
                                               uint64_t *data,
@@ -356,6 +391,7 @@ void sn0_origin2000_prepare_nodes(MachineState *machine)
         const SN0ModelRouter *physical = NULL;
         g_autofree char *name = g_strdup_printf("router%u", slot - 1);
         DeviceState *router = qdev_new(TYPE_SGI_ROUTER);
+        uint8_t nic_image[64];
 
         for (i = 0; i < c->router_count; i++) {
             if (c->routers[i].slot == slot) {
@@ -368,6 +404,9 @@ void sn0_origin2000_prepare_nodes(MachineState *machine)
         qdev_prop_set_uint8(router, "chip-inputs", physical->chip_inputs);
         qdev_prop_set_uint64(router, "nic-clock-hz", c->hardware->hub_clock_hz);
         qdev_prop_set_uint64(router, "nic-serial", physical->serial);
+        origin2000_router_nic_image(physical, nic_image);
+        sgi_router_set_nic_image(SGI_ROUTER(router), nic_image,
+                                 sizeof(nic_image));
         sn0_fabric_routed_add_router(s->fabric, SGI_ROUTER(router));
         qdev_realize_and_unref(router, NULL, &error_fatal);
     }
