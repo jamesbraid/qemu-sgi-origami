@@ -162,6 +162,13 @@ struct SGIIOC3EthState {
     AddressSpace dma_as;
 
     uint32_t enet_reg[SGI_IOC3_ENET_REGS];
+    /*
+     * Sources raised while the same INT_STATUS bit was already set and
+     * unacknowledged: the guest's next write-one-to-clear of that bit must
+     * turn into a real edge for this one too rather than silently clearing
+     * both (see sgi_ioc3_eth_raise_int()).
+     */
+    uint32_t int_deferred;
 
     NICConf conf;
     /* Set with mac when the address came from the default generator. */

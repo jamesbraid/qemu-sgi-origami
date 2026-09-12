@@ -137,6 +137,20 @@ static void test_ioc3_attach(QTestState *qts)
  */
 #define BRIDGE_PIN_ETH (1u << 2)
 
+/*
+ * The Bridge's interrupt-forwarding registers and the Hub's own pending
+ * register, reached the same way sn0-xframe-test.c reaches them: a slot's
+ * host-interrupt destination, the mode bit that decides whether a fall is
+ * forwarded, the per-pin enable, and the Hub's PI_INT_PEND0/PEND_MOD pair a
+ * driver reads and acknowledges.
+ */
+#define BRIDGE_INT_ENABLE (BRIDGE_BASE + 0x108 + REG_DATA)
+#define BRIDGE_INT_MODE   (BRIDGE_BASE + 0x118 + REG_DATA)
+#define BRIDGE_INT_HOST(n) (BRIDGE_BASE + 0x130 + 8 * (n) + REG_DATA)
+#define PI_INT_PEND_MOD   0x90
+#define PI_INT_PEND0      0x98
+#define IOC3_ETH_IRQ_NUMBER 12
+
 /* The MicroLAN engine and the pin block it shares a window with. */
 #define MICROLAN_CONTROL (IOC3_BASE + 0x30)
 #define MICROLAN_LEVEL   (1u << 0)
@@ -3700,6 +3714,117 @@ static void test_the_ethernet_interrupt_line_drops_when_acknowledged(
     close(sv[0]);
 }
 
+/*
+ * A completion that lands while an earlier one is still unacknowledged must
+ * still cross the Bridge as a fresh edge once the driver does acknowledge.
+ * docs/datasheets/bridge.md states the Bridge "forwards a set packet to the
+ * Hub only on a rising input and never latches its own status" and that
+ * IRIX carries no software re-arm of its own here, relying entirely on that
+ * edge. docs/datasheets/ioc3.md ("0xF4 Interrupt status") records that
+ * "IRIX and Linux write back the whole status word they read" -- a single
+ * read-then-write-back acknowledge, not a loop that drains the ring first.
+ * The receive-timer source (bit 0) is level-free: sgi_ioc3_eth_deliver()
+ * ORs it into INT_STATUS on every delivery while the timer stays armed, so
+ * two deliveries before an acknowledge set the identical bit, and a write
+ * that clears exactly the bits the driver read cannot tell the two apart.
+ *
+ * Bring the engine up receive-only, with the timer armed so every delivery
+ * raises the same bit (as the plain receive tests above already rely on).
+ * Deliver frame 1; clear the Hub's pending bit the way a driver does; read
+ * INT_STATUS to confirm the device still reports it, since only the Hub
+ * was acknowledged; deliver frame 2 before acknowledging -- a completion
+ * landing during the handler; then acknowledge with a write-one-to-clear of
+ * exactly the bits just read. The deferred second completion must reassert
+ * INT_STATUS, the Bridge's INT_STATUS, and the Hub pending bit.
+ */
+static void test_the_ethernet_receive_ack_reasserts_pending_for_deferred_frame(
+    const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame1[64] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                          0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+                          0x08, 0x00 };
+    uint8_t frame2[64] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                          0x11, 0x22, 0x33, 0x44, 0x55, 0x67,
+                          0x08, 0x00 };
+    uint32_t ring = RAM_SCRATCH;
+    uint32_t rxbuf0 = RAM_SCRATCH + 0x4000;
+    uint32_t rxbuf1 = RAM_SCRATCH + 0x8000;
+    uint64_t hub_bit = 1ULL << IOC3_ETH_IRQ_NUMBER;
+    uint32_t status_read;
+    int attempt;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = sn0_ioc3_attach_with_netdev(sv[1]);
+
+    qtest_writel(qts, BRIDGE_INT_HOST(PCI_IOC3_DEVICE), IOC3_ETH_IRQ_NUMBER);
+    qtest_writel(qts, BRIDGE_INT_MODE, 0);
+    qtest_writel(qts, BRIDGE_INT_ENABLE, BRIDGE_PIN_ETH);
+
+    qtest_writel(qts, MAC_CONTROL, MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(33));
+    qtest_writel(qts, ENET_INT_ENABLE, ENET_INT_RX_TIMER);
+    qtest_writel(qts, RX_TIMER, 0);
+    qtest_writel(qts, RX_RING_HI, 0);
+    qtest_writel(qts, RX_RING_LO, ring & 0xfffff000u);
+
+    /* Two buffers, posted and armed before either frame lands. */
+    qtest_writel(qts, ring + 0, 0);
+    qtest_writel(qts, ring + 4, rxbuf0);
+    qtest_writel(qts, ring + 8, 0);
+    qtest_writel(qts, ring + 12, rxbuf1);
+    qtest_writel(qts, RX_PRODUCE, 16 | RPIR_ARM);
+
+    net_socket_send_frame(sv[0], frame1, sizeof(frame1));
+    for (attempt = 0; attempt < 50; attempt++) {
+        if (qtest_readl(qts, RX_CONSUME) == 8) {
+            break;
+        }
+        g_usleep(10000);
+    }
+    g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
+
+    g_assert_cmphex(qtest_readl(qts, ENET_INT_STATUS) & ENET_INT_RX_TIMER,
+                    ==, ENET_INT_RX_TIMER);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BRIDGE_PIN_ETH,
+                    ==, BRIDGE_PIN_ETH);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0) & hub_bit,
+                    ==, hub_bit);
+
+    /* Clear the Hub's pending bit the way a driver does. */
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_PEND_MOD, IOC3_ETH_IRQ_NUMBER);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0) & hub_bit,
+                    ==, 0);
+
+    /* The device itself still reports it: only the Hub was acknowledged. */
+    status_read = qtest_readl(qts, ENET_INT_STATUS);
+    g_assert_cmphex(status_read & ENET_INT_RX_TIMER, ==, ENET_INT_RX_TIMER);
+
+    /* A second completion lands during the handler, before the ack. */
+    net_socket_send_frame(sv[0], frame2, sizeof(frame2));
+    for (attempt = 0; attempt < 50; attempt++) {
+        if (qtest_readl(qts, RX_CONSUME) == 16) {
+            break;
+        }
+        g_usleep(10000);
+    }
+    g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 16);
+
+    /* Acknowledge with a write-one-to-clear of exactly the bits just read. */
+    qtest_writel(qts, ENET_INT_STATUS, status_read);
+
+    g_assert_cmphex(qtest_readl(qts, ENET_INT_STATUS) & ENET_INT_RX_TIMER,
+                    ==, ENET_INT_RX_TIMER);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS) & BRIDGE_PIN_ETH,
+                    ==, BRIDGE_PIN_ETH);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0) & hub_bit,
+                    ==, hub_bit);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 /* User-mode networking answers synchronously while the doorbell is handled. */
 static QTestState *sn0_ioc3_attach_with_user_net(void)
 {
@@ -5132,6 +5257,10 @@ int main(int argc, char **argv)
                         test_the_rings_under_load_on_the_fabric);
     qtest_add_data_func("sn0/ioc3/ethernet-interrupt-line-drops-on-ack", NULL,
                         test_the_ethernet_interrupt_line_drops_when_acknowledged);
+    qtest_add_data_func(
+        "sn0/ioc3/ethernet-receive-ack-reasserts-pending-for-deferred-frame",
+        NULL,
+        test_the_ethernet_receive_ack_reasserts_pending_for_deferred_frame);
     qtest_add_data_func("sn0/ioc3/ethernet-no-reply-raises-nothing", NULL,
                         test_a_transmit_with_no_reply_raises_nothing);
     qtest_add_data_func("sn0/ioc3/ethernet-reply-after-transmit", NULL,
