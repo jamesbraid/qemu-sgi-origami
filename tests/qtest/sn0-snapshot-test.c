@@ -51,6 +51,13 @@
 #define IOC3_WINDOW_OFFSET       0x600000
 #define IOC3_TIMEKEEPER          (BRIDGE_BASE + IOC3_WINDOW_OFFSET + 0x80000)
 #define TIMEKEEPER_STORAGE_SIZE  0x7ff8
+#define TIMEKEEPER_CONTROL       (IOC3_TIMEKEEPER + 0x7ff8)
+#define TIMEKEEPER_WEEKDAY       (IOC3_TIMEKEEPER + 0x7ffc)
+#define TIMEKEEPER_DAY           (IOC3_TIMEKEEPER + 0x7ffd)
+#define TIMEKEEPER_MONTH         (IOC3_TIMEKEEPER + 0x7ffe)
+#define TIMEKEEPER_YEAR          (IOC3_TIMEKEEPER + 0x7fff)
+#define TIMEKEEPER_CSR_READ      0x40
+#define TIMEKEEPER_CSR_WRITE     0x80
 
 static void bridge_put_card_in_slot(QTestState *qts, int slot)
 {
@@ -160,6 +167,12 @@ static void test_timekeeper_image_survives_savevm_loadvm(const void *data)
     qts = qtest_init(cmdline);
     attach_ioc3(qts);
     qtest_memwrite(qts, IOC3_TIMEKEEPER, expected, TIMEKEEPER_STORAGE_SIZE);
+    qtest_writeb(qts, TIMEKEEPER_CONTROL, TIMEKEEPER_CSR_WRITE);
+    qtest_writeb(qts, TIMEKEEPER_WEEKDAY, 5);
+    qtest_writeb(qts, TIMEKEEPER_DAY, 7);
+    qtest_writeb(qts, TIMEKEEPER_MONTH, 3);
+    qtest_writeb(qts, TIMEKEEPER_YEAR, 0x40);
+    qtest_writeb(qts, TIMEKEEPER_CONTROL, 0x15);
     hmp_ret = qtest_hmp(qts, "savevm timekeeper");
     g_free(hmp_ret);
     qtest_quit(qts);
@@ -171,12 +184,20 @@ static void test_timekeeper_image_survives_savevm_loadvm(const void *data)
     qtest_memread(qts, IOC3_TIMEKEEPER, actual, TIMEKEEPER_STORAGE_SIZE);
     g_assert_cmpmem(actual, TIMEKEEPER_STORAGE_SIZE,
                     expected, TIMEKEEPER_STORAGE_SIZE);
+    g_assert_cmphex(qtest_readb(qts, TIMEKEEPER_CONTROL), ==, 0x15);
+    qtest_writeb(qts, TIMEKEEPER_CONTROL, 0x15 | TIMEKEEPER_CSR_READ);
+    g_assert_cmphex(qtest_readb(qts, TIMEKEEPER_WEEKDAY), ==, 5);
+    g_assert_cmphex(qtest_readb(qts, TIMEKEEPER_DAY), ==, 7);
+    g_assert_cmphex(qtest_readb(qts, TIMEKEEPER_MONTH), ==, 3);
+    g_assert_cmphex(qtest_readb(qts, TIMEKEEPER_YEAR), ==, 0x40);
     qtest_clock_step(qts, 1000000000LL);
     qtest_memread(qts, IOC3_TIMEKEEPER, actual, TIMEKEEPER_STORAGE_SIZE);
     g_assert_cmpmem(actual, TIMEKEEPER_STORAGE_SIZE,
                     expected, TIMEKEEPER_STORAGE_SIZE);
     qtest_system_reset(qts);
     attach_ioc3(qts);
+    g_assert_cmphex(qtest_readb(qts, TIMEKEEPER_CONTROL), ==, 0x15);
+    g_assert_cmphex(qtest_readb(qts, TIMEKEEPER_WEEKDAY), ==, 5);
     qtest_memread(qts, IOC3_TIMEKEEPER, actual, TIMEKEEPER_STORAGE_SIZE);
     g_assert_cmpmem(actual, TIMEKEEPER_STORAGE_SIZE,
                     expected, TIMEKEEPER_STORAGE_SIZE);
