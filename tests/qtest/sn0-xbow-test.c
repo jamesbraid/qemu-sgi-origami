@@ -1108,6 +1108,7 @@ static void test_migration_keeps_runtime_state(void)
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpdir);
     socket = g_strdup_printf("%s/migrate.sock", tmpdir);
 
+    g_assert_cmphex(reg_read(from, ID), ==, 0x10000001);
     reg_write(from, PACKET_TIMEOUT, 0x1234);
     reg_write(from, LINK(WIDGET_HUB_B) + LINK_CONTROL,
               LINK_CREDIT_RESET | LINK_EIGHT_BIT_FORCE);
@@ -1118,6 +1119,7 @@ static void test_migration_keeps_runtime_state(void)
     to = xbow_start(arrival);
     migrate_stopped_vm(from, uri);
 
+    g_assert_cmphex(reg_read(to, ID), ==, 0x10000001);
     g_assert_cmphex(reg_read(to, PACKET_TIMEOUT), ==, 0x1234);
     g_assert_cmphex(reg_read(to, LINK(WIDGET_HUB_B) + LINK_CONTROL), ==,
                     LINK_CREDIT_RESET | LINK_EIGHT_BIT_FORCE);
