@@ -2,6 +2,7 @@
 /* Exercise the production constructor with reordered and malformed inputs. */
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "hw/1wire/crc.h"
 #include "system/qtest.h"
 #include "sn0.h"
 
@@ -22,6 +23,28 @@ struct SN0ModelTestState {
     unsigned int adapters[4];
     SN0ModelXtalkAttachment attachments[4];
 };
+
+static void sn0_model_test_set_module_serial(Object *obj, const char *value,
+                                             Error **errp)
+{
+    SN0ModelTestState *s = SN0_MODEL_TEST(obj);
+
+    if (strlen(value) != SN0_MODEL_MODULE_SERIAL_LEN) {
+        error_setg(errp, "model-test module serial must be %u bytes",
+                   SN0_MODEL_MODULE_SERIAL_LEN);
+        return;
+    }
+    memcpy(s->module.serial, value, SN0_MODEL_MODULE_SERIAL_LEN + 1);
+    for (unsigned int i = 0; i < G_N_ELEMENTS(s->identities); i++) {
+        uint8_t *page = s->identities[i].page[0];
+        uint16_t crc;
+
+        memcpy(&page[1], value, SN0_MODEL_MODULE_SERIAL_LEN);
+        crc = ~onewire_crc16(0, page, 30);
+        page[30] = crc;
+        page[31] = crc >> 8;
+    }
+}
 
 static void sn0_model_test_set_fault(Object *obj, const char *value,
                                      Error **errp)
@@ -154,6 +177,8 @@ static void sn0_model_test_class_init(ObjectClass *oc, const void *data)
     MACHINE_CLASS(oc)->desc = "Origin 2000 descriptor test fixture";
     MACHINE_CLASS(oc)->init = sn0_model_test_machine_init;
     object_class_property_add_str(oc, "fault", NULL, sn0_model_test_set_fault);
+    object_class_property_add_str(oc, "module-serial", NULL,
+                                  sn0_model_test_set_module_serial);
 }
 
 static const TypeInfo sn0_model_test_type = {

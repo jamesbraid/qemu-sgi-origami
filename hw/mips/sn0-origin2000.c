@@ -495,6 +495,7 @@ static void origin2000_build_management(SN0MachineState *s)
     g_assert(management->adapter_count == SGI_O2000_ADAPTER_COUNT);
     object_property_add_child(OBJECT(s), "module-management", OBJECT(dev));
     qdev_prop_set_uint8(dev, "module-number", module->initial_module_number);
+    qdev_prop_set_string(dev, "model-serial", module->serial);
     qdev_prop_set_uint8(dev, "dip-switches", s->elsc_dip_switches);
     if (aux) {
         qdev_prop_set_chr(dev, "chardev", aux);

@@ -13,8 +13,15 @@
 #include "qobject/qdict.h"
 
 #define HUB_BASE        UINT64_C(0x20001000000)
+#define MD_ONEWIRE      0x2000a8
 #define I2C_DATA        0x220000
 #define I2C_CTRL        0x220008
+
+#define HUB_ONEWIRE_RXDATA   (1ULL << 0)
+#define HUB_ONEWIRE_DONE     (1ULL << 1)
+#define HUB_ONEWIRE_RESET    ((0x31ULL << 20) | (0x31ULL << 27))
+#define HUB_ONEWIRE_SHORT    8
+#define HUB_ONEWIRE_ZERO     60
 
 #define CTL_PIN         0x80
 #define CTL_ESO         0x40
@@ -45,6 +52,7 @@
 #define NVRAM_VALID_VALUE 0x37
 #define INITIAL_MODULE_NUMBER 1
 #define ADAPTER_COUNT   4
+#define MODULE_SERIAL_LEN 10
 #define RESP_CAP        96
 
 /* An address nothing on the module answers, used to resync on the way out. */
@@ -309,6 +317,50 @@ static uint8_t onewire_read_byte(QTestState *qts, unsigned node)
         value |= onewire_read_bit(qts, node) << bit;
     }
     return value;
+}
+
+static bool hub_onewire_slot(QTestState *qts, unsigned pulse)
+{
+    uint64_t value;
+
+    qtest_writeq(qts, HUB_BASE + MD_ONEWIRE,
+                 HUB_ONEWIRE_RESET | ((uint64_t)pulse << 10) |
+                 (0x04ULL << 2));
+    qtest_clock_step(qts, (pulse + 4) * 1000);
+    value = qtest_readq(qts, HUB_BASE + MD_ONEWIRE);
+    g_assert_cmphex(value & HUB_ONEWIRE_DONE, ==, HUB_ONEWIRE_DONE);
+    return value & HUB_ONEWIRE_RXDATA;
+}
+
+static void hub_onewire_write_byte(QTestState *qts, uint8_t value)
+{
+    for (unsigned bit = 0; bit < 8; bit++) {
+        hub_onewire_slot(qts, value & (1u << bit) ?
+                             HUB_ONEWIRE_SHORT : HUB_ONEWIRE_ZERO);
+    }
+}
+
+static uint8_t hub_onewire_read_byte(QTestState *qts)
+{
+    uint8_t value = 0;
+
+    for (unsigned bit = 0; bit < 8; bit++) {
+        value |= hub_onewire_slot(qts, HUB_ONEWIRE_SHORT) << bit;
+    }
+    return value;
+}
+
+static void hub_onewire_select_module(QTestState *qts)
+{
+    static const uint8_t rom[8] = {
+        0x09, 0x09, 0x00, 0x00, 0x00, 0x00, 0x10, 0xc7,
+    };
+
+    g_assert_false(hub_onewire_slot(qts, 0x321));
+    hub_onewire_write_byte(qts, 0x55);
+    for (unsigned int i = 0; i < sizeof(rom); i++) {
+        hub_onewire_write_byte(qts, rom[i]);
+    }
 }
 
 static void onewire_select(QTestState *qts, unsigned node)
@@ -646,6 +698,42 @@ static void test_module_serial_generated_crc_and_status(void)
     qtest_quit(qts);
 }
 
+static void test_module_serial_follows_generated_model(void)
+{
+    static const char *serials[] = { "KORIGAMI01", "TESTMODEL2" };
+
+    for (unsigned int serial_index = 0;
+         serial_index < G_N_ELEMENTS(serials); serial_index++) {
+        const char *serial = serials[serial_index];
+        g_autofree char *extra = g_strdup_printf(
+            " -M origin2000-model-test,module-serial=%s", serial);
+        QTestState *qts = start_module_with(extra);
+        uint8_t controller[1 + MODULE_SERIAL_LEN];
+        uint8_t hub[1 + MODULE_SERIAL_LEN];
+
+        onewire_start_read(qts, 0, 0xc3, 0);
+        (void)onewire_read_byte(qts, 0);
+        for (unsigned int i = 0; i < sizeof(controller); i++) {
+            controller[i] = onewire_read_byte(qts, 0);
+        }
+
+        hub_onewire_select_module(qts);
+        hub_onewire_write_byte(qts, 0xc3);
+        hub_onewire_write_byte(qts, 0);
+        hub_onewire_write_byte(qts, 0);
+        (void)hub_onewire_read_byte(qts);
+        for (unsigned int i = 0; i < sizeof(hub); i++) {
+            hub[i] = hub_onewire_read_byte(qts);
+        }
+
+        g_assert_cmphex(controller[0], ==, 0x01);
+        g_assert_cmpmem(&controller[1], MODULE_SERIAL_LEN,
+                        serial, MODULE_SERIAL_LEN);
+        g_assert_cmpmem(controller, sizeof(controller), hub, sizeof(hub));
+        qtest_quit(qts);
+    }
+}
+
 static void test_module_serial_reset_preserves_identity(void)
 {
     QTestState *qts = start_module();
@@ -834,6 +922,8 @@ int main(int argc, char **argv)
                    test_module_serial_memory_and_crc);
     qtest_add_func("/sn0/o2000-module-management/module-serial-crc-status",
                    test_module_serial_generated_crc_and_status);
+    qtest_add_func("/sn0/o2000-module-management/module-serial-model",
+                   test_module_serial_follows_generated_model);
     qtest_add_func("/sn0/o2000-module-management/module-serial-reset",
                    test_module_serial_reset_preserves_identity);
     qtest_add_func("/sn0/o2000-module-management/module-serial-module-number",

@@ -22,6 +22,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIO2000ModuleMgmtState, SGI_O2000_MODULE_MGMT)
 
 /* One adapter per node board on a four-node module. */
 #define SGI_O2000_ADAPTER_COUNT     4
+#define SGI_O2000_MODULE_SERIAL_LEN 10
 /* The module controller drives the wire as the participant after them. */
 #define SGI_O2000_WIRE_MASTERS      (SGI_O2000_ADAPTER_COUNT + 1)
 
@@ -56,6 +57,7 @@ struct SGIO2000ModuleMgmtState {
 
     /* Model-derived identity written into the reserved NVRAM region. */
     uint8_t module_number;
+    char *module_serial_text;
 
     /*
      * Which destructive actions this installation can carry out. Each is off
