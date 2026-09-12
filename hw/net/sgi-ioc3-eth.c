@@ -58,6 +58,23 @@ static void sgi_ioc3_enet_update_irq(SGIIOC3EthState *s)
 }
 
 /*
+ * Raise sources into INT_STATUS. A bit already set here has not been
+ * acknowledged yet, so this delivery has no bit of its own to be seen by:
+ * mark it deferred so the guest's write-one-to-clear that acknowledges the
+ * earlier completion turns into a real edge for this one too, instead of
+ * silently clearing both (docs/datasheets/bridge.md, "must never latch and
+ * clear on service").
+ */
+static void sgi_ioc3_eth_raise_int(SGIIOC3EthState *s, uint32_t sources)
+{
+    uint32_t status = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_INT_STATUS);
+
+    s->int_deferred |= status & sources;
+    sgi_ioc3_enet_set(s, SGI_IOC3_ENET_INT_STATUS, status | sources);
+    sgi_ioc3_enet_update_irq(s);
+}
+
+/*
  * The engine reset keeps the ring bases: SGI's power-on diagnostic
  * programs them once and never rewrites them across its reset.
  */
@@ -73,6 +90,7 @@ static void sgi_ioc3_eth_reset_registers(SGIIOC3EthState *s, bool keep_rings)
     }
     s->defer_backend_rx = false;
     s->backend_rx_deferred = false;
+    s->int_deferred = 0;
     memset(s->enet_reg, 0, sizeof(s->enet_reg));
     if (keep_rings) {
         sgi_ioc3_enet_set(s, SGI_IOC3_ENET_RX_RING_HI, rx_hi);
@@ -342,10 +360,7 @@ static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
              SGI_IOC3_ENET_RX_INDEX_MASK;
     sgi_ioc3_enet_set(s, SGI_IOC3_ENET_RX_CONSUME, consume);
 
-    sgi_ioc3_enet_set(s, SGI_IOC3_ENET_INT_STATUS,
-                      sgi_ioc3_enet_get(s, SGI_IOC3_ENET_INT_STATUS) |
-                      sgi_ioc3_eth_rx_sources(s, consume));
-    sgi_ioc3_enet_update_irq(s);
+    sgi_ioc3_eth_raise_int(s, sgi_ioc3_eth_rx_sources(s, consume));
 
     return size;
 }
@@ -537,9 +552,7 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
     sgi_ioc3_enet_set(s, SGI_IOC3_ENET_TX_CONSUME,
                       consume | (consume == produce ?
                                  SGI_IOC3_ENET_TX_CONSUME_IDLE : 0));
-    sgi_ioc3_enet_set(s, SGI_IOC3_ENET_INT_STATUS,
-                      sgi_ioc3_enet_get(s, SGI_IOC3_ENET_INT_STATUS) | raised);
-    sgi_ioc3_enet_update_irq(s);
+    sgi_ioc3_eth_raise_int(s, raised);
 
     s->defer_backend_rx = false;
     if (s->backend_rx_deferred) {
@@ -593,10 +606,26 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
                                  (uint32_t)val);
 
     switch (SGI_IOC3_ENET_BASE + addr) {
-    case SGI_IOC3_ENET_INT_STATUS:
-        s->enet_reg[index] &= ~(uint32_t)val;
+    case SGI_IOC3_ENET_INT_STATUS: {
+        uint32_t cleared = (uint32_t)val;
+        uint32_t deferred = s->int_deferred & cleared;
+
+        s->enet_reg[index] &= ~cleared;
+        s->int_deferred &= ~cleared;
         sgi_ioc3_enet_update_irq(s);
+        if (deferred) {
+            /*
+             * A completion landed on one of these bits after the driver's
+             * read but before this acknowledge: the line has just dropped
+             * for the cleared bits above, so restoring the deferred ones
+             * now raises it again as a real edge, rather than the guest's
+             * single write silently absorbing both completions.
+             */
+            s->enet_reg[index] |= deferred;
+            sgi_ioc3_enet_update_irq(s);
+        }
         return;
+    }
 
     case SGI_IOC3_ENET_INT_ENABLE:
         /* Enabling a set source must raise the line; OpenBSD relies on it. */
@@ -787,7 +816,7 @@ static int sgi_ioc3_eth_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_ioc3_eth = {
     .name = "sgi-ioc3-eth",
-    .version_id = 2,
+    .version_id = 3,
     .minimum_version_id = 1,
     .post_load = sgi_ioc3_eth_post_load,
     .fields = (const VMStateField[]) {
@@ -795,6 +824,7 @@ static const VMStateDescription vmstate_sgi_ioc3_eth = {
         VMSTATE_UINT16(mii_data, SGIIOC3EthState),
         VMSTATE_UINT16(mii_data_w, SGIIOC3EthState),
         VMSTATE_BOOL_V(rx_timer_armed, SGIIOC3EthState, 2),
+        VMSTATE_UINT32_V(int_deferred, SGIIOC3EthState, 3),
         VMSTATE_END_OF_LIST()
     }
 };
