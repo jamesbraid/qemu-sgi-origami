@@ -239,8 +239,16 @@ static unsigned md_protection_index(hwaddr offset)
     return (offset >> 11) * 4 + ((offset >> 4) & 3);
 }
 
+static bool md_protection_fitted(const SGIBedrockMDState *s, hwaddr offset)
+{
+    uint64_t physical = ((uint64_t)(offset >> 11) << 14) |
+                        (((offset >> 4) & 3) << 7);
+
+    return s->node_mr && physical < memory_region_size(s->node_mr);
+}
+
 static bool md_directory_translate(const SGIBedrockMDState *s, hwaddr offset,
-                                   unsigned *index)
+                                   unsigned *index, bool *configured)
 {
     unsigned software_bank = offset / MD_DIRECTORY_BANK_SIZE;
     unsigned selector = extract64(s->memory_config, 32, 2);
@@ -249,6 +257,9 @@ static bool md_directory_translate(const SGIBedrockMDState *s, hwaddr offset,
     uint64_t within;
     uint64_t raw = 0;
 
+    if (configured) {
+        *configured = false;
+    }
     if (!md_memory_bank_enabled(s, locational_bank)) {
         return false;
     }
@@ -279,6 +290,9 @@ static bool md_directory_translate(const SGIBedrockMDState *s, hwaddr offset,
         }
     }
     raw += within;
+    if (configured) {
+        *configured = true;
+    }
     *index = raw / 128;
     return *index < s->directory_entries;
 }
@@ -315,6 +329,7 @@ static bool md_directory_accepts(void *opaque, hwaddr offset, unsigned size,
 {
     SGIBedrockMDState *s = opaque;
     const char *access = is_write ? "write" : "read";
+    bool configured;
     unsigned index;
 
     if (md_is_protection(offset)) {
@@ -340,7 +355,14 @@ static bool md_directory_accepts(void *opaque, hwaddr offset, unsigned size,
                       size, access, offset);
         return false;
     }
-    if (!md_directory_translate(s, offset, &index)) {
+    if (!md_directory_translate(s, offset, &index, &configured)) {
+        if (!configured) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-bedrock-md: directory %s at offset 0x%"
+                          HWADDR_PRIx " is outside configured memory\n",
+                          access, offset);
+            return false;
+        }
         if (md_directory_compat_index(s, offset) >= 0 ||
             s->directory_compat_count <
             SGI_BEDROCK_MD_DIRECTORY_COMPAT_ENTRIES) {
@@ -361,9 +383,12 @@ static uint64_t md_directory_read(void *opaque, hwaddr offset, unsigned size)
     unsigned index;
 
     if (md_is_protection(offset)) {
+        if (!md_protection_fitted(s, offset)) {
+            return 0;
+        }
         return s->protection[md_protection_index(offset)];
     }
-    if (!md_directory_translate(s, offset, &index)) {
+    if (!md_directory_translate(s, offset, &index, NULL)) {
         index = md_directory_compat_get(s, offset);
         return s->directory_compat_values[index] &
                ((offset & 8) ? UINT64_MAX : md_directory_mask(s));
@@ -381,10 +406,12 @@ static void md_directory_write(void *opaque, hwaddr offset, uint64_t value,
     unsigned index;
 
     if (md_is_protection(offset)) {
-        s->protection[md_protection_index(offset)] = value;
+        if (md_protection_fitted(s, offset)) {
+            s->protection[md_protection_index(offset)] = value;
+        }
         return;
     }
-    if (!md_directory_translate(s, offset, &index)) {
+    if (!md_directory_translate(s, offset, &index, NULL)) {
         index = md_directory_compat_get(s, offset);
         s->directory_compat_values[index] =
             value & ((offset & 8) ? UINT64_MAX : md_directory_mask(s));

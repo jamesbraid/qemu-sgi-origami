@@ -25,9 +25,17 @@
 #define PROTECTION_INTERLEAVE_3 0x438
 #define PROTECTION_NEXT_PAGE 0xc08
 #define PROTECTION_SAMPLE_STRIDE 0x800000
+#define PROTECTION_FITTED_192M 0x01800408
+#define PROTECTION_FITTED_448M 0x03800408
 #define PROTECTION_BANK1_HIGH 0xf800408
 #define PROTECTION_LAST 0x3ffffc38
 #define PROTECTION_FIRST_ABSENT 0x40000408
+#define PROTECTION_MACHINE_BASE UINT64_C(0x101c0000000)
+#define PROTECTION_MACHINE_FITTED_448M \
+    (PROTECTION_MACHINE_BASE + PROTECTION_FITTED_448M)
+#define PROTECTION_UNFITTED_512M (PROTECTION_MACHINE_BASE + 0x04000408)
+#define DIRECTORY_UNFITTED_512M (PROTECTION_MACHINE_BASE + 0x04000000)
+#define PROM_SIZE UINT64_C(0x1686a8)
 #define NODE_MEMORY_512M \
     "-object memory-backend-ram,id=node-memory,size=512M "
 
@@ -186,6 +194,20 @@ static char *log_file_new(void)
 
     g_assert_no_error(error);
     close(fd);
+    return path;
+}
+
+static char *empty_prom_new(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    char *path = NULL;
+    int fd = g_file_open_tmp("sn1-md-prom-XXXXXX.bin", &path, &error);
+
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
     return path;
 }
 
@@ -756,15 +778,16 @@ static void test_reset(void)
     g_assert_cmphex(qtest_readq(s, MD(0)), ==, UINT64_MAX);
 
     program_all(s);
-    qtest_writeq(s, MD(0x8), memory_bank_config(0, 4));
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 5) |
+                              memory_bank_config(1, 5));
     qtest_writeq(s, DIRECTORY(DIRECTORY_LINE_01A00000), 0x76543210);
     qtest_writeq(s, DIRECTORY(DIRECTORY_LINE_01A00000 + 8),
                  UINT64_C(0x0123456789abcdef));
     qtest_writeq(s, DIRECTORY(DIRECTORY_LINE_01A00000 + 0x18),
                  UINT64_C(0xfedcba9876543210));
-    qtest_writeq(s, DIRECTORY(PROTECTION_BANK1_HIGH),
+    qtest_writeq(s, DIRECTORY(PROTECTION_FIRST),
                  UINT64_C(0x599a599a599a599a));
-    qtest_writeq(s, DIRECTORY(PROTECTION_LAST),
+    qtest_writeq(s, DIRECTORY(PROTECTION_FITTED_448M),
                  UINT64_C(0xa55aa55aa55aa55a));
     for (unsigned i = 0; i < compat_count; i++) {
         qtest_writeq(s, DIRECTORY(compat_offsets[i]),
@@ -783,8 +806,8 @@ static void test_reset(void)
     g_assert_cmphex(qtest_readq(s,
                                DIRECTORY(DIRECTORY_LINE_01A00000 + 0x18)),
                     ==, 0);
-    g_assert_cmphex(qtest_readq(s, DIRECTORY(PROTECTION_BANK1_HIGH)), ==, 0);
-    g_assert_cmphex(qtest_readq(s, DIRECTORY(PROTECTION_LAST)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(PROTECTION_FIRST)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(PROTECTION_FITTED_448M)), ==, 0);
     for (unsigned i = 0; i < compat_count; i++) {
         g_assert_cmphex(qtest_readq(s, DIRECTORY(compat_offsets[i])), ==, 0);
     }
@@ -808,8 +831,15 @@ static void test_protection_storage(void)
         qtest_writeq(s, DIRECTORY(interleave_offsets[i]), value);
     }
     for (unsigned i = 0; i < ARRAY_SIZE(interleave_offsets); i++) {
-        g_assert_cmphex(qtest_readq(s, DIRECTORY(interleave_offsets[i])),
-                        ==, UINT64_C(0x1020304050607080) + i);
+        uint64_t value = UINT64_C(0x1020304050607080) + i;
+
+        if (i < 5) {
+            g_assert_cmphex(qtest_readq(s, DIRECTORY(interleave_offsets[i])),
+                            ==, value);
+        } else {
+            g_assert_cmphex(qtest_readq(s, DIRECTORY(interleave_offsets[i])),
+                            !=, value);
+        }
     }
 
     for (unsigned bank = 0; bank < ARRAY_SIZE(protection_bank_bounds); bank++) {
@@ -832,10 +862,41 @@ static void test_protection_storage(void)
             uint64_t value = UINT64_C(0xfedcba9876543200) +
                              bank * 16 + sample;
 
-            g_assert_cmphex(qtest_readq(s, DIRECTORY(offset)), ==, value);
+            if (bank == 0 && sample >= 8) {
+                g_assert_cmphex(qtest_readq(s, DIRECTORY(offset)), ==, value);
+            } else {
+                g_assert_cmphex(qtest_readq(s, DIRECTORY(offset)), !=, value);
+            }
         }
     }
     qtest_quit(s);
+}
+
+static void test_protection_capacity_probe(void)
+{
+    g_autofree char *prom = empty_prom_new();
+    g_autofree char *quoted_prom = g_shell_quote(prom);
+    g_autofree char *log = log_file_new();
+    g_autofree char *contents = NULL;
+    const uint64_t probe = UINT64_C(0x585a585a585a585a);
+    QTestState *s = qtest_initf("-M origin300 -cpu R14000 -smp 2 "
+                                "-m 512M -bios %s -S -d guest_errors -D %s",
+                                quoted_prom, log);
+
+    qtest_writeq(s, PROTECTION_UNFITTED_512M, probe);
+    g_assert_cmphex(qtest_readq(s, PROTECTION_UNFITTED_512M), !=, probe);
+    qtest_writeq(s, PROTECTION_MACHINE_FITTED_448M,
+                 UINT64_C(0xa55aa55aa55aa55a));
+    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_FITTED_448M), ==,
+                    UINT64_C(0xa55aa55aa55aa55a));
+    qtest_writeq(s, DIRECTORY_UNFITTED_512M, UINT64_MAX);
+    qtest_quit(s);
+
+    contents = log_file_take(log);
+    g_assert_null(strstr(contents, "protection"));
+    g_assert_nonnull(strstr(contents,
+                           "directory write at offset 0x4000000"));
+    unlink(prom);
 }
 
 static void test_directory_storage(void)
@@ -900,7 +961,8 @@ static void test_directory_compatibility_storage(void)
     unsigned count = directory_untranslated_walk(offsets);
     QTestState *s = start("");
 
-    qtest_writeq(s, MD(0x8), memory_bank_config(0, 4));
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 5) |
+                              memory_bank_config(1, 5));
     qtest_writeq(s, DIRECTORY(offsets[0]),
                  UINT64_C(0x89abcdef01234567));
     g_assert_cmphex(qtest_readq(s, DIRECTORY(offsets[0])), ==, 0x01234567);
@@ -939,7 +1001,8 @@ static void test_directory_compatibility_capacity(void)
     unsigned admitted = 1;
     QTestState *s = start(extra);
 
-    qtest_writeq(s, MD(0x8), memory_bank_config(0, 4));
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 5) |
+                              memory_bank_config(1, 5));
     qtest_writeq(s, MD(0x40000), 1);
     qtest_writeq(s, DIRECTORY(0x04001230), UINT64_C(0xfeedfacecafebeef));
     for (unsigned i = 0; i < count - 1; i++) {
@@ -994,13 +1057,13 @@ static void test_directory_access_policy(void)
     g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LAST_512M + 8)),
                     ==, UINT64_C(0x0123456789abcdef));
 
-    qtest_writeq(s, DIRECTORY(PROTECTION_BANK1_HIGH),
+    qtest_writeq(s, DIRECTORY(PROTECTION_FITTED_448M),
                  UINT64_C(0x599a599a599a599a));
-    qtest_writeb(s, DIRECTORY(PROTECTION_BANK1_HIGH), 0);
-    qtest_writew(s, DIRECTORY(PROTECTION_BANK1_HIGH), 0);
-    qtest_writel(s, DIRECTORY(PROTECTION_BANK1_HIGH), 0);
-    qtest_writeq(s, DIRECTORY(PROTECTION_BANK1_HIGH + 1), 0);
-    g_assert_cmphex(qtest_readq(s, DIRECTORY(PROTECTION_BANK1_HIGH)),
+    qtest_writeb(s, DIRECTORY(PROTECTION_FITTED_448M), 0);
+    qtest_writew(s, DIRECTORY(PROTECTION_FITTED_448M), 0);
+    qtest_writel(s, DIRECTORY(PROTECTION_FITTED_448M), 0);
+    qtest_writeq(s, DIRECTORY(PROTECTION_FITTED_448M + 1), 0);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(PROTECTION_FITTED_448M)),
                     ==, UINT64_C(0x599a599a599a599a));
     qtest_writeq(s, DIRECTORY(PROTECTION_FIRST_ABSENT), UINT64_MAX);
     g_assert_cmphex(qtest_readq(s, DIRECTORY(PROTECTION_FIRST_ABSENT)),
@@ -1021,12 +1084,12 @@ static void test_directory_fitted_memory(void)
                     ==, 0x2468ace0);
     qtest_writeq(s, DIRECTORY(DIRECTORY_FIRST_ABSENT_256M), 0x13579bdf);
     g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_FIRST_ABSENT_256M)),
-                    ==, 0x13579bdf);
+                    ==, 0);
     g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LAST_256M)), ==,
                     0x2468ace0);
-    qtest_writeq(s, DIRECTORY(PROTECTION_LAST),
+    qtest_writeq(s, DIRECTORY(PROTECTION_FITTED_192M),
                  UINT64_C(0x599a599a599a599a));
-    g_assert_cmphex(qtest_readq(s, DIRECTORY(PROTECTION_LAST)),
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(PROTECTION_FITTED_192M)),
                     ==, UINT64_C(0x599a599a599a599a));
     qtest_quit(s);
 }
@@ -1039,9 +1102,9 @@ static void test_parent_exports_directory(void)
     qtest_writeq(s, DIRECTORY(DIRECTORY_LINE_01A00000), 0x13579bdf);
     g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LINE_01A00000)),
                     ==, 0x13579bdf);
-    qtest_writeq(s, DIRECTORY(PROTECTION_BANK1_HIGH),
+    qtest_writeq(s, DIRECTORY(PROTECTION_FITTED_448M),
                  UINT64_C(0x599a599a599a599a));
-    g_assert_cmphex(qtest_readq(s, DIRECTORY(PROTECTION_BANK1_HIGH)),
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(PROTECTION_FITTED_448M)),
                     ==, UINT64_C(0x599a599a599a599a));
     qtest_quit(s);
 }
@@ -1059,7 +1122,7 @@ static void test_without_node_memory(void)
     qtest_writeq(s, DIRECTORY(PROTECTION_LAST),
                  UINT64_C(0x599a599a599a599a));
     g_assert_cmphex(qtest_readq(s, DIRECTORY(PROTECTION_LAST)),
-                    ==, UINT64_C(0x599a599a599a599a));
+                    !=, UINT64_C(0x599a599a599a599a));
     qtest_quit(s);
 }
 
@@ -1380,7 +1443,8 @@ static void test_migration(void)
                      UINT64_MAX ^ (UINT64_C(1) << (i + 2)));
     }
     qtest_writeq(from, MD(0), 0x55aa);
-    qtest_writeq(from, MD(0x8), memory_bank_config(0, 4));
+    qtest_writeq(from, MD(0x8), memory_bank_config(0, 5) |
+                                 memory_bank_config(1, 5));
     qtest_writeq(from, MD(0x20000), UINT64_C(0x8000000000000c35));
     qtest_writeq(from, MD(0x40000), 3);
     selftest_start(from, 1, UINT64_MAX);
@@ -1393,9 +1457,9 @@ static void test_migration(void)
                  UINT64_C(0xfedcba9876543210));
     qtest_writeq(from, DIRECTORY(DIRECTORY_LINE_01A00000 + 0x18),
                  UINT64_C(0x0123456789abcdef));
-    qtest_writeq(from, DIRECTORY(PROTECTION_BANK1_HIGH),
+    qtest_writeq(from, DIRECTORY(PROTECTION_FIRST),
                  UINT64_C(0x599a599a599a599a));
-    qtest_writeq(from, DIRECTORY(PROTECTION_LAST),
+    qtest_writeq(from, DIRECTORY(PROTECTION_FITTED_448M),
                  UINT64_C(0xa55aa55aa55aa55a));
     for (unsigned i = 0; i < compat_count; i++) {
         qtest_writeq(from, DIRECTORY(compat_offsets[i]),
@@ -1409,7 +1473,7 @@ static void test_migration(void)
     }
     g_assert_cmphex(qtest_readq(to, MD(0)), ==, 0x55aa);
     g_assert_cmphex(qtest_readq(to, MD(0x8)), ==,
-                    memory_bank_config(0, 4));
+                    memory_bank_config(0, 5) | memory_bank_config(1, 5));
     g_assert_cmphex(qtest_readq(to, MD(0x20000)), ==,
                     UINT64_C(0x8000000000000c35));
     g_assert_cmphex(qtest_readq(to, MD(0x40000)), ==, 3);
@@ -1422,9 +1486,9 @@ static void test_migration(void)
     g_assert_cmphex(qtest_readq(to,
                                DIRECTORY(DIRECTORY_LINE_01A00000 + 0x18)),
                     ==, UINT64_C(0x0123456789abcdef));
-    g_assert_cmphex(qtest_readq(to, DIRECTORY(PROTECTION_BANK1_HIGH)),
+    g_assert_cmphex(qtest_readq(to, DIRECTORY(PROTECTION_FIRST)),
                     ==, UINT64_C(0x599a599a599a599a));
-    g_assert_cmphex(qtest_readq(to, DIRECTORY(PROTECTION_LAST)),
+    g_assert_cmphex(qtest_readq(to, DIRECTORY(PROTECTION_FITTED_448M)),
                     ==, UINT64_C(0xa55aa55aa55aa55a));
     for (unsigned i = 0; i < compat_count; i++) {
         g_assert_cmphex(qtest_readq(to, DIRECTORY(compat_offsets[i])), ==,
@@ -1708,6 +1772,8 @@ int main(int argc, char **argv)
                    test_directory_compatibility_capacity);
     qtest_add_func("sn1/bedrock-md/protection-storage",
                    test_protection_storage);
+    qtest_add_func("sn1/bedrock-md/protection-capacity-probe",
+                   test_protection_capacity_probe);
     qtest_add_func("sn1/bedrock-md/directory-access-policy",
                    test_directory_access_policy);
     qtest_add_func("sn1/bedrock-md/directory-fitted-memory",
