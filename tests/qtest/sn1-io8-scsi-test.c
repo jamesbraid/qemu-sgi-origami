@@ -320,18 +320,12 @@ static void xtalk_reg_write(QTestState *qts, unsigned int widget,
  */
 static void isp_writew(QTestState *qts, unsigned offset, uint16_t value)
 {
-    uint8_t bytes[2];
-
-    stw_le_p(bytes, value);
-    qtest_memwrite(qts, IO8_SCSI_WINDOW + offset, bytes, sizeof(bytes));
+    qtest_writew(qts, IO8_SCSI_WINDOW + offset, value);
 }
 
 static uint16_t isp_readw(QTestState *qts, unsigned offset)
 {
-    uint8_t bytes[2];
-
-    qtest_memread(qts, IO8_SCSI_WINDOW + offset, bytes, sizeof(bytes));
-    return lduw_le_p(bytes);
+    return qtest_readw(qts, IO8_SCSI_WINDOW + offset);
 }
 
 /* The order Linux uses to release a completed mailbox command. */

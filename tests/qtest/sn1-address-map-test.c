@@ -890,18 +890,12 @@ static void io8_usb_config_writel(QTestState *qts, unsigned offset,
 
 static uint32_t io8_usb_readl(QTestState *qts, unsigned offset)
 {
-    uint8_t bytes[4];
-
-    qtest_memread(qts, IO8_USB_WINDOW + offset, bytes, sizeof(bytes));
-    return ldl_le_p(bytes);
+    return qtest_readl(qts, IO8_USB_WINDOW + offset);
 }
 
 static void io8_usb_writel(QTestState *qts, unsigned offset, uint32_t value)
 {
-    uint8_t bytes[4];
-
-    stl_le_p(bytes, value);
-    qtest_memwrite(qts, IO8_USB_WINDOW + offset, bytes, sizeof(bytes));
+    qtest_writel(qts, IO8_USB_WINDOW + offset, value);
 }
 
 static uint32_t io8_ioc3_config_readl(QTestState *qts, unsigned offset)
