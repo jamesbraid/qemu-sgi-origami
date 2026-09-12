@@ -7,6 +7,7 @@
 #define CONTROL 0x40000000000ULL
 #define HUB 0x20001000000ULL
 #define BWIN 0x20020000000ULL
+#define NODE_STRIDE 0x100000000ULL
 #define PROBE 0x01600000ULL
 #define WIDGET_SHIFT 34
 #define RECORD_VALUE 0x123456789abcdef0ULL
@@ -57,7 +58,9 @@ static void test_cpu_encoding(void)
     for (node = 0; node < 4; node++) {
         qtest_writeq(q, CONTROL + 40, 0);
         cpu_write(q, node, HUB + 0x400160, 0x1800);
-        g_assert_cmphex(cpu_read(q, node, BWIN + PROBE), ==, RECORD_VALUE);
+        g_assert_cmphex(cpu_read(q, node,
+                                 BWIN + node * NODE_STRIDE + PROBE),
+                        ==, RECORD_VALUE);
         g_assert_cmpuint(qtest_readq(q, CONTROL + 40), ==, 1);
         g_assert_cmpuint(qtest_readq(q, CONTROL + 88), ==, node);
         g_assert_cmphex(qtest_readq(q, CONTROL + 56), ==,
@@ -67,12 +70,14 @@ static void test_cpu_encoding(void)
         /* Only changing the space selects the original memory plane. */
         qtest_writeq(q, CONTROL + 40, 0);
         cpu_write(q, node, HUB + 0x400160, 0x800);
-        g_assert_cmphex(cpu_read(q, node, BWIN + PROBE), ==, RECORD_VALUE);
+        g_assert_cmphex(cpu_read(q, node,
+                                 BWIN + node * NODE_STRIDE + PROBE),
+                        ==, RECORD_VALUE);
         g_assert_cmpuint(qtest_readq(q, CONTROL + 40), ==, 0);
         g_assert_cmphex(qtest_readq(q, CONTROL + 104), ==,
                         (8ULL << WIDGET_SHIFT) | PROBE);
         cpu_write(q, node, HUB + 0x400160, 0xb03);
-        cpu_read(q, node, BWIN + 0x1234);
+        cpu_read(q, node, BWIN + node * NODE_STRIDE + 0x1234);
         g_assert_cmphex(qtest_readq(q, CONTROL + 104), ==,
                         (11ULL << WIDGET_SHIFT) | (3ULL << 29) | 0x1234);
     }
@@ -217,7 +222,8 @@ static void test_peers(void)
     cpu_write(q, 0, HUB + 0x400160, 0x1a00);
     cpu_write(q, 2, HUB + 0x400160, 0x1900);
     g_assert_cmphex(cpu_read(q, 0, BWIN + PROBE), ==, second);
-    g_assert_cmphex(cpu_read(q, 2, BWIN + PROBE), ==, first);
+    g_assert_cmphex(cpu_read(q, 2, BWIN + 2 * NODE_STRIDE + PROBE),
+                    ==, first);
     cpu_write(q, 2, HUB + 0x600000, (0x23ULL << 8) | (1ULL << 18));
     second = cpu_read(q, 2, HUB + 0x600000);
     g_assert_cmphex(cpu_read(q, 0, BWIN + PROBE), ==, second);
