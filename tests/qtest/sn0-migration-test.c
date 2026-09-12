@@ -184,6 +184,13 @@
 #define IOC3_TXD_DATA_OFFSET     24
 #define IOC3_TIMEKEEPER          IOC3_REG(0x80000)
 #define TIMEKEEPER_STORAGE_SIZE  0x7ff8
+#define TIMEKEEPER_CONTROL       (IOC3_TIMEKEEPER + 0x7ff8)
+#define TIMEKEEPER_WEEKDAY       (IOC3_TIMEKEEPER + 0x7ffc)
+#define TIMEKEEPER_DAY           (IOC3_TIMEKEEPER + 0x7ffd)
+#define TIMEKEEPER_MONTH         (IOC3_TIMEKEEPER + 0x7ffe)
+#define TIMEKEEPER_YEAR          (IOC3_TIMEKEEPER + 0x7fff)
+#define TIMEKEEPER_CSR_READ      0x40
+#define TIMEKEEPER_CSR_WRITE     0x80
 
 #define DUAL_CHASSIS_TOPOLOGY \
     "-m 128M " \
@@ -1470,6 +1477,12 @@ static void migrate_timekeeper_image(uint8_t fill)
     attach_node_ioc3(from, 0);
     qtest_memwrite(from, IOC3_TIMEKEEPER, expected,
                    TIMEKEEPER_STORAGE_SIZE);
+    qtest_writeb(from, TIMEKEEPER_CONTROL, TIMEKEEPER_CSR_WRITE);
+    qtest_writeb(from, TIMEKEEPER_WEEKDAY, 5);
+    qtest_writeb(from, TIMEKEEPER_DAY, 7);
+    qtest_writeb(from, TIMEKEEPER_MONTH, 3);
+    qtest_writeb(from, TIMEKEEPER_YEAR, 0x40);
+    qtest_writeb(from, TIMEKEEPER_CONTROL, 0x15);
 
     dest_cmdline = g_strdup_printf(MACHINE " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
@@ -1479,6 +1492,12 @@ static void migrate_timekeeper_image(uint8_t fill)
     qtest_memread(to, IOC3_TIMEKEEPER, actual, TIMEKEEPER_STORAGE_SIZE);
     g_assert_cmpmem(actual, TIMEKEEPER_STORAGE_SIZE,
                     expected, TIMEKEEPER_STORAGE_SIZE);
+    g_assert_cmphex(qtest_readb(to, TIMEKEEPER_CONTROL), ==, 0x15);
+    qtest_writeb(to, TIMEKEEPER_CONTROL, 0x15 | TIMEKEEPER_CSR_READ);
+    g_assert_cmphex(qtest_readb(to, TIMEKEEPER_WEEKDAY), ==, 5);
+    g_assert_cmphex(qtest_readb(to, TIMEKEEPER_DAY), ==, 7);
+    g_assert_cmphex(qtest_readb(to, TIMEKEEPER_MONTH), ==, 3);
+    g_assert_cmphex(qtest_readb(to, TIMEKEEPER_YEAR), ==, 0x40);
 
     qtest_clock_step(to, 1000000000LL);
     qtest_memread(to, IOC3_TIMEKEEPER, actual, TIMEKEEPER_STORAGE_SIZE);
@@ -1487,6 +1506,8 @@ static void migrate_timekeeper_image(uint8_t fill)
 
     qtest_system_reset(to);
     attach_node_ioc3(to, 0);
+    g_assert_cmphex(qtest_readb(to, TIMEKEEPER_CONTROL), ==, 0x15);
+    g_assert_cmphex(qtest_readb(to, TIMEKEEPER_WEEKDAY), ==, 5);
     qtest_memread(to, IOC3_TIMEKEEPER, actual, TIMEKEEPER_STORAGE_SIZE);
     g_assert_cmpmem(actual, TIMEKEEPER_STORAGE_SIZE,
                     expected, TIMEKEEPER_STORAGE_SIZE);
