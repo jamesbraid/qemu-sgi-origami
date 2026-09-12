@@ -1,0 +1,13 @@
+# See docs/devel/tracing.rst for syntax documentation.
+
+# core.c
+onewire_reset(bool present) "present=%d"
+onewire_slot(uint8_t family, uint32_t phase_before, uint32_t bit_before, bool drive, bool pulled, uint32_t phase_after, uint32_t bit_after) "family=0x%02x phase=%u bit=%u drive=%d pulled=%d -> phase=%u bit=%u"
+onewire_rom_command(uint8_t family, uint8_t command, uint32_t phase) "family=0x%02x command=0x%02x phase=%u"
+onewire_selection(uint8_t family, const char *method, bool selected) "family=0x%02x method=%s selected=%d"
+onewire_byte(uint8_t family, uint8_t input, uint8_t output, bool accepted) "family=0x%02x input=0x%02x output=0x%02x accepted=%d"
+
+# ds2502.c
+ds2502_command(uint8_t command, bool accepted) "command=0x%02x accepted=%d"
+ds2502_header(uint8_t command, uint16_t address, uint8_t crc) "command=0x%02x address=0x%04x crc=0x%02x"
+ds2502_read(uint8_t command, uint16_t address, uint8_t unit, uint8_t value) "command=0x%02x address=0x%04x unit=%u value=0x%02x"

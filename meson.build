@@ -3641,6 +3641,7 @@ if have_system
     'backends',
     'backends/tpm',
     'ebpf',
+    'hw/1wire',
     'hw/9pfs',
     'hw/acpi',
     'hw/adc',

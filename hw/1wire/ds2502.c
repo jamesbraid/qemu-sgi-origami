@@ -6,6 +6,7 @@
 #include "hw/1wire/onewire.h"
 #include "hw/1wire/crc.h"
 #include "hw/1wire/ds2502.h"
+#include "trace/trace-hw_1wire.h"
 
 /*
  * DS2502-family add-only EPROM (docs/library/dallas-1wire-part-specs.md
@@ -182,20 +183,28 @@ static uint8_t ds2502_advance_read_status(DS2502State *d)
 
 static uint8_t ds2502_advance_stream(DS2502State *d)
 {
+    uint8_t value;
+
     if (d->finished) {
+        trace_ds2502_read(d->cmd, d->addr, d->unit, 0xff);
         return 0xff;
     }
 
     switch (d->cmd) {
     case DS2502_CMD_READ_MEMORY:
-        return ds2502_advance_read_memory(d);
+        value = ds2502_advance_read_memory(d);
+        break;
     case DS2502_CMD_READ_DATA_CRC:
-        return ds2502_advance_read_data_crc(d);
+        value = ds2502_advance_read_data_crc(d);
+        break;
     case DS2502_CMD_READ_STATUS:
-        return ds2502_advance_read_status(d);
+        value = ds2502_advance_read_status(d);
+        break;
     default:
         g_assert_not_reached();
     }
+    trace_ds2502_read(d->cmd, d->addr, d->unit, value);
+    return value;
 }
 
 /*
@@ -239,6 +248,7 @@ static bool ds2502_function_byte(OneWireSlave *s, uint8_t in, uint8_t *out)
         case DS2502_CMD_READ_MEMORY:
         case DS2502_CMD_READ_DATA_CRC:
         case DS2502_CMD_READ_STATUS:
+            trace_ds2502_command(in, true);
             d->cmd = in;
             d->hdr[0] = in;
             d->hdr_pos = 1;
@@ -247,6 +257,7 @@ static bool ds2502_function_byte(OneWireSlave *s, uint8_t in, uint8_t *out)
         case DS2502_CMD_WRITE_MEMORY:
         case DS2502_CMD_WRITE_STATUS:
         default:
+            trace_ds2502_command(in, false);
             /*
              * Add-only: writes are refused, not misread as a Read Memory
              * or Read Status. An unrecognised byte is refused the same
@@ -266,6 +277,7 @@ static bool ds2502_function_byte(OneWireSlave *s, uint8_t in, uint8_t *out)
              * the wire in the very next window, right after TA2.
              */
             *out = ds2502_header_crc(d);
+            trace_ds2502_header(d->cmd, ds2502_start_address(d), *out);
         }
         return true;
     }
@@ -297,6 +309,7 @@ static bool ds2502_function_byte(OneWireSlave *s, uint8_t in, uint8_t *out)
             d->sent_byte = ds2502_data_byte(d, d->addr);
         }
         *out = d->sent_byte;
+        trace_ds2502_read(d->cmd, d->addr, d->unit, *out);
         return true;
     }
 
