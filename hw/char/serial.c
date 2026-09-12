@@ -107,8 +107,25 @@
 
 #define MAX_XMIT_RETRY      4
 
+/*
+ * How long the transmitter waits on a backend that never becomes writable
+ * before giving up on the held byte and moving on. A real 16550 does not
+ * wait for a listener at all: it clocks each byte out at the programmed
+ * baud rate whether or not anything is on the other end of the wire, and
+ * MAX_XMIT_RETRY already gives up once qemu_chr_fe_add_watch's callback
+ * reports the same byte unwritable four times in a row. But that callback
+ * only fires when the backend's own readiness changes, so a backend that
+ * simply never becomes writable -- no client connected yet, or a client
+ * that never drains its socket -- leaves it pending forever with nothing
+ * left to invoke it again. This timer is the bound of last resort: it does
+ * not have a hardware value of its own, only the requirement that one
+ * exists, so it is set generously longer than any ordinary drain delay.
+ */
+#define XMIT_RETRY_TIMEOUT_NS (2 * NANOSECONDS_PER_SECOND)
+
 static void serial_receive1(void *opaque, const uint8_t *buf, int size);
 static void serial_xmit(SerialState *s);
+static void serial_xmit_backend_gave_up(SerialState *s);
 
 static void serial_update_tx_ready(SerialState *s)
 {
@@ -267,21 +284,31 @@ static void serial_xmit(SerialState *s)
             serial_receive1(s, &s->tsr, 1);
         } else {
             int rc = qemu_chr_fe_write(&s->chr, &s->tsr, 1);
+            bool blocked = rc == 0 || (rc == -1 && errno == EAGAIN);
 
-            if ((rc == 0 ||
-                 (rc == -1 && errno == EAGAIN)) &&
-                s->tsr_retry < MAX_XMIT_RETRY) {
+            if (blocked && s->tsr_retry < MAX_XMIT_RETRY &&
+                !s->xmit_backend_dead) {
                 assert(s->watch_tag == 0);
                 s->watch_tag =
                     qemu_chr_fe_add_watch(&s->chr, G_IO_OUT | G_IO_HUP,
                                           serial_watch_cb, s);
                 if (s->watch_tag > 0) {
+                    if (s->tsr_retry == 0) {
+                        timer_mod(s->xmit_retry_timer,
+                                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                 XMIT_RETRY_TIMEOUT_NS);
+                    }
                     s->tsr_retry++;
                     serial_update_tx_ready(s);
                     return;
                 }
             }
+
+            if (blocked) {
+                serial_xmit_backend_gave_up(s);
+            }
         }
+        timer_del(s->xmit_retry_timer);
         s->tsr_retry = 0;
 
         /* Transmit another byte if it is already available. It is only
@@ -291,6 +318,60 @@ static void serial_xmit(SerialState *s)
     s->last_xmit_ts = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     s->lsr |= UART_LSR_TEMT;
     serial_update_tx_ready(s);
+}
+
+/*
+ * The backend reported writable again after a hold gave up on it: the
+ * wire has a listener once more, so the next held byte is worth waiting
+ * on as usual.
+ */
+static gboolean serial_xmit_recovery_cb(void *do_not_use, GIOCondition cond,
+                                        void *opaque)
+{
+    SerialState *s = opaque;
+
+    s->xmit_dead_watch_tag = 0;
+    s->xmit_backend_dead = false;
+    return G_SOURCE_REMOVE;
+}
+
+/*
+ * A held byte was given up on, whether by MAX_XMIT_RETRY's own count or
+ * by serial_xmit_retry_timeout below. Nothing answered the wire, so treat
+ * it as disconnected: further bytes complete without waiting, the way a
+ * cable with nothing on the other end would, until this watch reports
+ * the backend writable again. A backend that cannot be watched at all
+ * (add_watch returns 0) stays marked dead, which is the same outcome a
+ * real dead wire has -- nothing will ever tell the model otherwise.
+ */
+static void serial_xmit_backend_gave_up(SerialState *s)
+{
+    if (s->xmit_backend_dead) {
+        return;
+    }
+    s->xmit_backend_dead = true;
+    assert(s->xmit_dead_watch_tag == 0);
+    s->xmit_dead_watch_tag =
+        qemu_chr_fe_add_watch(&s->chr, G_IO_OUT | G_IO_HUP,
+                              serial_xmit_recovery_cb, s);
+}
+
+/*
+ * The backend never became writable inside the bound. A real 16550 does
+ * not wait for a listener either, so give up on the held byte the same
+ * way an exhausted MAX_XMIT_RETRY already does, rather than leaving a
+ * polling guest -- and anything gating its own progress on the UART's
+ * transmit-ready level, such as the IOC3 serial DMA engine -- parked on a
+ * backend that will never speak up on its own.
+ */
+static void serial_xmit_retry_timeout(void *opaque)
+{
+    SerialState *s = opaque;
+
+    g_clear_handle_id(&s->watch_tag, g_source_remove);
+    serial_xmit_backend_gave_up(s);
+    s->tsr_retry = MAX_XMIT_RETRY;
+    serial_xmit(s);
 }
 
 static void serial_write_fcr(SerialState *s, uint8_t val)
@@ -681,6 +762,9 @@ static int serial_post_load(void *opaque, int version_id)
         assert(s->watch_tag == 0);
         s->watch_tag = qemu_chr_fe_add_watch(&s->chr, G_IO_OUT | G_IO_HUP,
                                              serial_watch_cb, s);
+        timer_mod(s->xmit_retry_timer,
+                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                 XMIT_RETRY_TIMEOUT_NS);
     } else {
         /* tsr_retry == 0 implies LSR.TEMT = 1 (transmitter empty).  */
         if (!(s->lsr & UART_LSR_TEMT)) {
@@ -867,6 +951,8 @@ static void serial_reset(void *opaque)
 {
     SerialState *s = opaque;
     g_clear_handle_id(&s->watch_tag, g_source_remove);
+    g_clear_handle_id(&s->xmit_dead_watch_tag, g_source_remove);
+    s->xmit_backend_dead = false;
 
     s->rbr = 0;
     s->ier = 0;
@@ -885,6 +971,7 @@ static void serial_reset(void *opaque)
     s->timeout_ipending = 0;
     timer_del(s->fifo_timeout_timer);
     timer_del(s->modem_status_poll);
+    timer_del(s->xmit_retry_timer);
 
     fifo8_reset(&s->recv_fifo);
     fifo8_reset(&s->xmit_fifo);
@@ -935,6 +1022,8 @@ static void serial_realize(DeviceState *dev, Error **errp)
     s->modem_status_poll = timer_new_ns(QEMU_CLOCK_VIRTUAL, (QEMUTimerCB *) serial_update_msl, s);
 
     s->fifo_timeout_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, (QEMUTimerCB *) fifo_timeout_int, s);
+    s->xmit_retry_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                       serial_xmit_retry_timeout, s);
     qemu_register_reset(serial_reset, s);
 
     qemu_chr_fe_set_handlers(&s->chr, serial_can_receive1, serial_receive1,
@@ -953,6 +1042,8 @@ static void serial_unrealize(DeviceState *dev)
     timer_free(s->modem_status_poll);
 
     timer_free(s->fifo_timeout_timer);
+
+    timer_free(s->xmit_retry_timer);
 
     fifo8_destroy(&s->recv_fifo);
     fifo8_destroy(&s->xmit_fifo);
