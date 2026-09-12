@@ -22,6 +22,8 @@ enum {
 #define MD_PROTECTION_SELECTOR 0x408
 #define MD_MEMORY_BANK_SIZE UINT64_C(0x40000000)
 #define MD_DIRECTORY_BANK_SIZE (MD_MEMORY_BANK_SIZE / 8)
+#define MD_ECC_BANK_SIZE (MD_MEMORY_BANK_SIZE / 8)
+#define MD_ECC_ADMITTED_HALFWORD 0x08000006
 /*
  * Bits 58:56 are write-only in the public definition; reading them back
  * and resetting them to zero is model policy.
@@ -280,6 +282,33 @@ static bool md_directory_translate(const SGIBedrockMDState *s, hwaddr offset,
     return *index < s->directory_entries;
 }
 
+static int md_directory_compat_index(const SGIBedrockMDState *s,
+                                     hwaddr offset)
+{
+    for (unsigned i = 0; i < s->directory_compat_count; i++) {
+        if (s->directory_compat_offsets[i] == offset) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static unsigned md_directory_compat_get(SGIBedrockMDState *s,
+                                        hwaddr offset)
+{
+    int index = md_directory_compat_index(s, offset);
+
+    if (index >= 0) {
+        return index;
+    }
+    g_assert(s->directory_compat_count <
+             SGI_BEDROCK_MD_DIRECTORY_COMPAT_ENTRIES);
+    index = s->directory_compat_count++;
+    s->directory_compat_offsets[index] = offset;
+    s->directory_compat_values[index] = 0;
+    return index;
+}
+
 static bool md_directory_accepts(void *opaque, hwaddr offset, unsigned size,
                                  bool is_write, MemTxAttrs attrs)
 {
@@ -311,9 +340,14 @@ static bool md_directory_accepts(void *opaque, hwaddr offset, unsigned size,
         return false;
     }
     if (!md_directory_translate(s, offset, &index)) {
+        if (md_directory_compat_index(s, offset) >= 0 ||
+            s->directory_compat_count <
+            SGI_BEDROCK_MD_DIRECTORY_COMPAT_ENTRIES) {
+            return true;
+        }
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-bedrock-md: directory %s at offset 0x%"
-                      HWADDR_PRIx " is outside fitted node memory\n",
+                      HWADDR_PRIx " rejected: compatibility store is full\n",
                       access, offset);
         return false;
     }
@@ -328,7 +362,10 @@ static uint64_t md_directory_read(void *opaque, hwaddr offset, unsigned size)
     if (md_is_protection(offset)) {
         return s->protection[md_protection_index(offset)];
     }
-    g_assert(md_directory_translate(s, offset, &index));
+    if (!md_directory_translate(s, offset, &index)) {
+        return s->directory_compat_values[
+            md_directory_compat_get(s, offset)];
+    }
     if (offset & 8) {
         return s->page_counters[index];
     }
@@ -345,7 +382,12 @@ static void md_directory_write(void *opaque, hwaddr offset, uint64_t value,
         s->protection[md_protection_index(offset)] = value;
         return;
     }
-    g_assert(md_directory_translate(s, offset, &index));
+    if (!md_directory_translate(s, offset, &index)) {
+        index = md_directory_compat_get(s, offset);
+        s->directory_compat_values[index] =
+            value & ((offset & 8) ? UINT64_MAX : md_directory_mask(s));
+        return;
+    }
     if (offset & 8) {
         s->page_counters[index] = value;
     } else {
@@ -367,31 +409,79 @@ static const MemoryRegionOps md_directory_ops = {
 };
 
 /*
- * One ECC byte per 8 bytes of node memory. Readable contents, power-on
- * state and error behavior are unestablished, so this approximates the
- * hardware surface rather than modelling ECC. Width first, alignment
- * second, bounds last, so an access that breaks more than one rule always
- * names the same reason.
+ * Fitted ECC bytes follow the same software-to-locational bank mapping as
+ * memory. The carrier packs byte addresses in reverse order within each
+ * doubleword, so undo that transform before applying the fitted bound.
  */
+static bool md_ecc_translate(const SGIBedrockMDState *s, hwaddr offset,
+                             unsigned size, unsigned *index)
+{
+    unsigned software_bank = offset / MD_ECC_BANK_SIZE;
+    unsigned selector = extract64(s->memory_config, 32, 2);
+    unsigned locational_bank = software_bank ^ selector;
+    unsigned size_code;
+    uint64_t within;
+    uint64_t raw = 0;
+
+    if (!s->ecc || !md_memory_bank_enabled(s, locational_bank)) {
+        return false;
+    }
+    size_code = md_memory_size_code(s, locational_bank);
+    if (size_code == 0 || size_code > 5) {
+        return false;
+    }
+
+    within = (offset % MD_ECC_BANK_SIZE) ^ (size == 1 ? 7 : 6);
+    if (within >= md_memory_bank_size(size_code) / 8 ||
+        size > md_memory_bank_size(size_code) / 8 - within) {
+        return false;
+    }
+
+    for (unsigned bank = 0; bank < locational_bank; bank++) {
+        unsigned earlier_code;
+
+        if (!md_memory_bank_enabled(s, bank)) {
+            continue;
+        }
+        earlier_code = md_memory_size_code(s, bank);
+        if (earlier_code > 5) {
+            return false;
+        }
+        if (earlier_code != 0) {
+            raw += md_memory_bank_size(earlier_code) / 8;
+        }
+    }
+    raw += within;
+    if (raw >= s->ecc_entries || size > s->ecc_entries - raw) {
+        return false;
+    }
+    *index = raw;
+    return true;
+}
+
 static const char *md_ecc_refusal(const SGIBedrockMDState *s, hwaddr offset,
                                   unsigned size)
 {
+    unsigned index;
+
     if (size != 1 && size != 2) {
         return "unsupported width";
     }
     if (size == 2 && (offset & 1)) {
         return "unaligned halfword";
     }
-    if (offset >= s->ecc_extent) {
-        return "outside fitted memory";
+    if (md_ecc_translate(s, offset, size, &index) ||
+        (size == 2 && offset == MD_ECC_ADMITTED_HALFWORD)) {
+        return NULL;
     }
-    return NULL;
+    return "outside fitted memory";
 }
 
 static void md_ecc_log(hwaddr offset, unsigned size, bool is_write,
-                       const char *reason, int mask)
+                       const char *reason)
 {
-    qemu_log_mask(mask, "sgi-bedrock-md: ECC backdoor %s offset 0x%08"
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-bedrock-md: ECC backdoor %s offset 0x%08"
                   HWADDR_PRIx " size %u rejected: %s\n",
                   is_write ? "write" : "read", offset, size, reason);
 }
@@ -403,38 +493,49 @@ static bool md_ecc_accepts(void *opaque, hwaddr offset, unsigned size,
     const char *reason = md_ecc_refusal(s, offset, size);
 
     if (reason) {
-        md_ecc_log(offset, size, is_write, reason, LOG_GUEST_ERROR);
+        md_ecc_log(offset, size, is_write, reason);
         return false;
     }
     return true;
 }
 
-/*
- * Readback is unestablished, so answer zero and say so rather than guess.
- * A guest read is what ends that deferral, and this reports under unimp,
- * so a run has to ask for unimp to catch one.
- */
 static uint64_t md_ecc_read(void *opaque, hwaddr offset, unsigned size)
 {
-    md_ecc_log(offset, size, false, "readback unestablished", LOG_UNIMP);
-    return 0;
+    SGIBedrockMDState *s = opaque;
+    unsigned index;
+
+    if (!md_ecc_translate(s, offset, size, &index)) {
+        g_assert(size == 2 && offset == MD_ECC_ADMITTED_HALFWORD);
+        return s->ecc_admitted_halfword;
+    }
+    if (size == 1) {
+        return s->ecc[index];
+    }
+    return lduw_be_p(&s->ecc[index]);
 }
 
-/* Accepted stores complete quietly: the PROM needs them, we keep nothing. */
 static void md_ecc_write(void *opaque, hwaddr offset, uint64_t value,
                          unsigned size)
 {
+    SGIBedrockMDState *s = opaque;
+    unsigned index;
+
+    if (!md_ecc_translate(s, offset, size, &index)) {
+        g_assert(size == 2 && offset == MD_ECC_ADMITTED_HALFWORD);
+        s->ecc_admitted_halfword = value;
+        return;
+    }
+    if (size == 1) {
+        s->ecc[index] = value;
+    } else {
+        stw_be_p(&s->ecc[index], value);
+    }
 }
 
 static const MemoryRegionOps md_ecc_ops = {
     .read = md_ecc_read,
     .write = md_ecc_write,
     .endianness = DEVICE_BIG_ENDIAN,
-    /*
-     * Everything up to 8 bytes is valid enough to reach md_ecc_accepts(),
-     * which is what turns a wide or odd access into its own diagnostic
-     * instead of a generic memory-core refusal or a silent split.
-     */
     .valid = {
         .min_access_size = 1,
         .max_access_size = 8,
@@ -751,12 +852,33 @@ static void md_reset_enter(Object *obj, ResetType type)
         memset(s->page_counters, 0,
                s->directory_entries * sizeof(*s->page_counters));
     }
+    memset(s->directory_compat_offsets, 0,
+           sizeof(s->directory_compat_offsets));
+    memset(s->directory_compat_values, 0,
+           sizeof(s->directory_compat_values));
+    s->directory_compat_count = 0;
+    if (s->ecc) {
+        memset(s->ecc, 0, s->ecc_entries * sizeof(*s->ecc));
+    }
+    s->ecc_admitted_halfword = 0;
     memset(s->protection, 0,
            s->protection_entries * sizeof(*s->protection));
 }
 
+static int md_post_load(void *opaque, int version_id)
+{
+    SGIBedrockMDState *s = opaque;
+
+    if (s->directory_compat_count >
+        SGI_BEDROCK_MD_DIRECTORY_COMPAT_ENTRIES) {
+        return -EINVAL;
+    }
+    return 0;
+}
+
 static const VMStateDescription vmstate_md = {
     .name = TYPE_SGI_BEDROCK_MD, .version_id = 5, .minimum_version_id = 1,
+    .post_load = md_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(current_cell, SGIBedrockMDState),
         VMSTATE_UINT64(memory_config, SGIBedrockMDState),
@@ -773,6 +895,14 @@ static const VMStateDescription vmstate_md = {
         VMSTATE_VARRAY_UINT32(protection, SGIBedrockMDState,
                               protection_entries, 4,
                               vmstate_info_uint64, uint64_t),
+        VMSTATE_UINT64_ARRAY_V(directory_compat_offsets, SGIBedrockMDState,
+                              SGI_BEDROCK_MD_DIRECTORY_COMPAT_ENTRIES, 5),
+        VMSTATE_UINT64_ARRAY_V(directory_compat_values, SGIBedrockMDState,
+                              SGI_BEDROCK_MD_DIRECTORY_COMPAT_ENTRIES, 5),
+        VMSTATE_UINT8_V(directory_compat_count, SGIBedrockMDState, 5),
+        VMSTATE_VARRAY_UINT32(ecc, SGIBedrockMDState, ecc_entries, 5,
+                              vmstate_info_uint8, uint8_t),
+        VMSTATE_UINT16_V(ecc_admitted_halfword, SGIBedrockMDState, 5),
         VMSTATE_BOOL_V(selftest_running, SGIBedrockMDState, 5),
         VMSTATE_UINT8_V(selftest_selector, SGIBedrockMDState, 5),
         VMSTATE_BOOL_V(selftest_phase, SGIBedrockMDState, 5),
@@ -837,16 +967,10 @@ static void md_realize(DeviceState *dev, Error **errp)
                        TYPE_SGI_BEDROCK_MD "-node-memory");
     s->node_as_initialized = true;
     s->directory_entries = node_size / 128;
-    /*
-     * One ECC byte per doubleword: the 1:8 ratio the check above bounds.
-     * An unlinked node leaves this at zero, so every ECC access is refused
-     * as outside fitted memory. Reusing that reason is deliberate, because
-     * the cleared contract names four diagnostics and this adds no fifth.
-     * The directory carrier answers the same condition with its own line.
-     */
-    s->ecc_extent = node_size / 8;
+    s->ecc_entries = node_size / 8;
     s->directory = g_new0(uint64_t, s->directory_entries);
     s->page_counters = g_new0(uint64_t, s->directory_entries);
+    s->ecc = g_new0(uint8_t, s->ecc_entries);
 }
 
 static void md_unrealize(DeviceState *dev)
@@ -861,9 +985,10 @@ static void md_unrealize(DeviceState *dev)
     g_clear_pointer(&s->directory, g_free);
     g_clear_pointer(&s->page_counters, g_free);
     g_clear_pointer(&s->protection, g_free);
+    g_clear_pointer(&s->ecc, g_free);
     s->directory_entries = 0;
     s->protection_entries = 0;
-    s->ecc_extent = 0;
+    s->ecc_entries = 0;
 }
 
 static const Property md_properties[] = {
@@ -896,6 +1021,7 @@ static void md_finalize(Object *obj)
     g_clear_pointer(&s->directory, g_free);
     g_clear_pointer(&s->page_counters, g_free);
     g_clear_pointer(&s->protection, g_free);
+    g_clear_pointer(&s->ecc, g_free);
 }
 
 static const TypeInfo md_info = {

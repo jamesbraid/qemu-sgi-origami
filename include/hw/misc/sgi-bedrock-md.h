@@ -15,6 +15,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockMDState, SGI_BEDROCK_MD)
 #define SGI_BEDROCK_MD_MEMORY_SIZE 0x200000000ULL
 #define SGI_BEDROCK_MD_STORAGE 14
 #define SGI_BEDROCK_MD_PROTECTION_ENTRIES (1 << 21)
+#define SGI_BEDROCK_MD_DIRECTORY_COMPAT_ENTRIES 74
 
 struct SGIBedrockMDState {
     SysBusDevice parent_obj;
@@ -28,10 +29,16 @@ struct SGIBedrockMDState {
     uint64_t *directory;
     uint64_t *page_counters;
     uint64_t *protection;
+    uint8_t *ecc;
     uint32_t directory_entries;
     uint32_t protection_entries;
-    /* Derived from fitted memory; the ECC carrier itself holds no state. */
-    uint64_t ecc_extent;
+    uint32_t ecc_entries;
+    uint64_t directory_compat_offsets[
+        SGI_BEDROCK_MD_DIRECTORY_COMPAT_ENTRIES];
+    uint64_t directory_compat_values[
+        SGI_BEDROCK_MD_DIRECTORY_COMPAT_ENTRIES];
+    uint8_t directory_compat_count;
+    uint16_t ecc_admitted_halfword;
     uint64_t current_cell;
     uint64_t memory_config;
     uint64_t refresh;
