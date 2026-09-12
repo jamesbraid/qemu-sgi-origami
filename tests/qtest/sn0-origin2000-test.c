@@ -78,6 +78,10 @@
 #define PCI_COMMAND 0x04
 #define PCI_COMMAND_MEMORY_MASTER 0x0006
 #define PCI_BAR0 0x10
+#define IOC3_DEVICE 2
+#define IOC3_MMIO 0x10000000u
+#define IOC3_WINDOW 0x600000
+#define IOC3_TIMEKEEPER (IOC3_WINDOW + 0x80000)
 #define DMA_DEVICE 3
 #define DMA_MMIO 0x01000000u
 #define DMA_WINDOW 0x700000
@@ -177,6 +181,30 @@ static void baseio_window_write(QTestState *qts, uint64_t offset,
                                      BASEIO_WIDGET *
                                      XTALK_WIDGET_SIZE + offset,
                                      bytes, sizeof(bytes)));
+}
+
+static uint8_t baseio_window_readb(QTestState *qts, uint64_t offset)
+{
+    uint8_t value;
+
+    g_assert_true(qtest_memread_cpu(qts, 0,
+                                    XTALK_BASE +
+                                    module_nasids[0] * NODE_STRIDE +
+                                    BASEIO_WIDGET * XTALK_WIDGET_SIZE +
+                                    offset,
+                                    &value, sizeof(value)));
+    return value;
+}
+
+static void baseio_window_writeb(QTestState *qts, uint64_t offset,
+                                 uint8_t value)
+{
+    g_assert_true(qtest_memwrite_cpu(qts, 0,
+                                     XTALK_BASE +
+                                     module_nasids[0] * NODE_STRIDE +
+                                     BASEIO_WIDGET * XTALK_WIDGET_SIZE +
+                                     offset,
+                                     &value, sizeof(value)));
 }
 
 static void dma_card_write(QTestState *qts, unsigned int reg, uint32_t value)
@@ -923,6 +951,39 @@ static void test_baseio_dma_reaches_far_node(void)
     qtest_quit(qts);
 }
 
+static void program_baseio_ioc3(QTestState *qts)
+{
+    baseio_window_write(qts, BRIDGE_CFG0(IOC3_DEVICE) + PCI_BAR0,
+                        IOC3_MMIO);
+    baseio_window_write(qts, BRIDGE_CFG0(IOC3_DEVICE) + PCI_COMMAND,
+                        PCI_COMMAND_MEMORY);
+    baseio_window_write(qts, BRIDGE_DEVICE(IOC3_DEVICE) + XTALK_REG_DATA,
+                        BRIDGE_DEV_MEMORY_SPACE | (IOC3_MMIO >> 20));
+}
+
+static void test_baseio_timekeeper_storage_reset(void)
+{
+    QTestState *qts = start_module();
+
+    program_module(qts);
+    program_baseio_ioc3(qts);
+    baseio_window_writeb(qts, IOC3_TIMEKEEPER + 0x0100, 0xc3);
+    baseio_window_writeb(qts, IOC3_TIMEKEEPER + 0x7ff7, 0x3c);
+    g_assert_cmphex(baseio_window_readb(qts, IOC3_TIMEKEEPER + 0x0100),
+                    ==, 0xc3);
+    g_assert_cmphex(baseio_window_readb(qts, IOC3_TIMEKEEPER + 0x7ff7),
+                    ==, 0x3c);
+
+    qtest_system_reset(qts);
+    program_module(qts);
+    program_baseio_ioc3(qts);
+    g_assert_cmphex(baseio_window_readb(qts, IOC3_TIMEKEEPER + 0x0100),
+                    ==, 0xc3);
+    g_assert_cmphex(baseio_window_readb(qts, IOC3_TIMEKEEPER + 0x7ff7),
+                    ==, 0x3c);
+    qtest_quit(qts);
+}
+
 static void test_all_module_routes(void)
 {
     QTestState *qts = start_module();
@@ -1571,6 +1632,8 @@ int main(int argc, char **argv)
                    test_bte_routes_three_distinct_endpoints);
     qtest_add_func("sn0/origin2000/baseio-dma-far-node",
                    test_baseio_dma_reaches_far_node);
+    qtest_add_func("sn0/origin2000/baseio-timekeeper-storage-reset",
+                   test_baseio_timekeeper_storage_reset);
     qtest_add_func("sn0/origin2000/oversize-firmware", test_oversize_firmware);
     qtest_add_func("sn0/origin2000/missing-firmware", test_missing_firmware);
     qtest_add_func("sn0/origin2000/migration", test_migration);
