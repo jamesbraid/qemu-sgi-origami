@@ -146,9 +146,7 @@ static void test_head_interrupts_reach_the_host(void)
 static void card_write(QTestState *qts, unsigned widget, unsigned reg,
                        uint32_t value)
 {
-    uint8_t bytes[4] = { value, value >> 8, value >> 16, value >> 24 };
-
-    qtest_memwrite(qts, WIDGET(widget) + 0x200000 + reg, bytes, sizeof(bytes));
+    qtest_writel(qts, WIDGET(widget) + 0x200000 + reg, value);
 }
 
 static void test_head_dma_reaches_the_host(void)
