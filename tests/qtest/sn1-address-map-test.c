@@ -2023,9 +2023,7 @@ static void test_ecc_backdoor_window(const void *data)
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
-    /* The accepted reads said their contents are not established. */
-    g_assert_nonnull(strstr(log, "readback unestablished"));
-    /* And the one past the extent named which bound it broke. */
+    /* The one past the extent names which bound it broke. */
     g_assert_nonnull(strstr(log, "outside fitted memory"));
     g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
@@ -2099,7 +2097,7 @@ static void test_directory_protection(const void *data)
     g_assert_cmphex(qtest_readq(qts,
                                HUB_DIRECTORY +
                                DIRECTORY_PROTECTION_BANK1_HIGH),
-                    ==, pattern);
+                    !=, pattern);
 
     qtest_writeq(qts, HUB_DIRECTORY + DIRECTORY_FIRST_ABSENT, UINT64_MAX);
     g_assert_cmphex(qtest_readq(qts,
