@@ -127,6 +127,9 @@
 #define JUMBO_BUF_LEN       9146u
 #define STD_MAXLEN_1518     1518u
 #define BIG_FRAME_LEN       9010u
+#define SMALL_JUMBO_BUF_LEN 2000u
+#define OVERRUN_FRAME_LEN   3000u
+#define FITTING_FRAME_LEN   1800u
 
 static void bar_writel(QTestState *qts, uint32_t off, uint32_t val)
 {
@@ -627,6 +630,91 @@ static void test_jumbo_ring_disabled_drops_oversize(const void *data)
 }
 
 /*
+ * A jumbo frame bigger than the buffer behind its own posted descriptor must
+ * not be delivered: the descriptor's length field is the driver's statement
+ * of what it set aside for that buffer, the same way the standard ring's
+ * Max_Len is. The model drops the frame without writing a completion or
+ * advancing the return-ring producer, and -- unlike the standard ring, which
+ * has no comparable per-descriptor check -- it also leaves the jumbo ring's
+ * consumer where it was rather than stepping past the descriptor: the driver
+ * never said the buffer was used, so a later frame that does fit must still
+ * be able to land in it. That is asserted here indirectly, by sending one:
+ * if the consumer had advanced anyway, the ring would look empty to it and
+ * the fitting frame would stall rather than complete.
+ */
+static void test_jumbo_frame_overruns_descriptor(const void *data)
+{
+    QTestState *qts;
+    uint8_t big[OVERRUN_FRAME_LEN];
+    uint8_t fits[FITTING_FRAME_LEN];
+    uint8_t got[FITTING_FRAME_LEN];
+    uint32_t idx_len, type_flags, addr_hi, addr_lo;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
+                      "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC, sv[1]);
+    aim_window_at_bar(qts);
+
+    bar_writel(qts, BCM_HCC_STATUSBLK_ADDR_HI, IOVA(STATUS_PHYS) >> 32);
+    bar_writel(qts, BCM_HCC_STATUSBLK_ADDR_LO, IOVA(STATUS_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_RX_STD_RCB_HI, IOVA(STD_RING_PHYS) >> 32);
+    bar_writel(qts, BCM_RX_STD_RCB_LO, IOVA(STD_RING_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_RX_STD_RCB_MAXLEN, STD_MAXLEN_1518 << 16);
+    bar_writel(qts, BCM_RX_JUMBO_RCB_HI, IOVA(JUMBO_RING_PHYS) >> 32);
+    bar_writel(qts, BCM_RX_JUMBO_RCB_LO, IOVA(JUMBO_RING_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_RX_JUMBO_RCB_NICADDR, 0x00001000u);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 0,
+               IOVA(RET_RING_PHYS) >> 32);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 4,
+               IOVA(RET_RING_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 8,
+               64 << 16);
+    bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    post_rx_descriptor(qts, STD_RING_PHYS, 0, RX_BUF_PHYS, 0, 0);
+    qtest_memset(qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
+    qtest_memset(qts, STATUS_PHYS, 0, 0x50);
+    bar_writel(qts, BCM_MBX_RX_STD_PROD_LO, 1);
+
+    /* One jumbo descriptor, its buffer far smaller than the frame to come. */
+    post_rx_descriptor(qts, JUMBO_RING_PHYS, 0, JUMBO_BUF_PHYS,
+                       SMALL_JUMBO_BUF_LEN, BCM_RXBDFLAG_JUMBO_RING);
+    bar_writel(qts, BCM_MBX_RX_JUMBO_PROD_LO, 1);
+
+    build_big_rx_frame(big, sizeof(big));
+    net_send_frame(sv[0], big, sizeof(big));
+    pump_settle(qts);
+
+    g_assert_cmphex(bd_word_be(qts, RET_RING_PHYS, BCM_RXBD_IDX_LEN), ==, 0);
+    g_assert_cmphex(status_rx_prod_be(qts), ==, 0);
+
+    /* The same descriptor, untouched, takes a frame that actually fits it. */
+    build_big_rx_frame(fits, sizeof(fits));
+    net_send_frame(sv[0], fits, sizeof(fits));
+    wait_for_completed_descriptor(qts);
+
+    idx_len = bd_word_be(qts, RET_RING_PHYS, BCM_RXBD_IDX_LEN);
+    type_flags = bd_word_be(qts, RET_RING_PHYS, BCM_RXBD_TYPE_FLAGS);
+    addr_hi = bd_word_be(qts, RET_RING_PHYS, 0);
+    addr_lo = bd_word_be(qts, RET_RING_PHYS, 4);
+
+    g_assert_cmphex(idx_len & 0xffff, ==, FITTING_FRAME_LEN + BCM_ETH_FCS_LEN);
+    g_assert_cmphex(type_flags & 0xffff, ==,
+                    BCM_RXBDFLAG_END | BCM_RXBDFLAG_JUMBO_RING);
+    g_assert_cmphex(((uint64_t)addr_hi << 32) | addr_lo, ==,
+                    IOVA(JUMBO_BUF_PHYS));
+    g_assert_cmphex(status_rx_prod_be(qts), ==, 1);
+
+    qtest_memread(qts, JUMBO_BUF_PHYS, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), fits, sizeof(fits));
+
+    qtest_quit(qts);
+    close(sv[0]);
+    close(sv[1]);
+}
+
+/*
  * Enabling host coalescing arms the periodic status tick, and stepping the
  * clock past one tick makes the model post one status block to the programmed
  * host address -- the smallest DMA the card can be made to do. Its address is
@@ -723,6 +811,8 @@ int main(int argc, char **argv)
                         NULL, test_jumbo_ring_selected_by_standard_length);
     qtest_add_data_func("/sn0/bcm570x/jumbo-ring-disabled-drops-oversize",
                         NULL, test_jumbo_ring_disabled_drops_oversize);
+    qtest_add_data_func("/sn0/bcm570x/jumbo-frame-overruns-descriptor",
+                        NULL, test_jumbo_frame_overruns_descriptor);
 
     return g_test_run();
 }
