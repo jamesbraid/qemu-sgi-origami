@@ -34,6 +34,10 @@ slow_qtests = {
   'sn0-origin2000-xtalk-attach-test': 120,
   # Routed acceptance takes 44-60s; keep headroom under parallel CI load.
   'sn0-origin2000-test': 120,
+  # The migration suite runs twenty sequential cases. Its intentional
+  # corrupt-ELSC-stream case also starts a third destination, and the added
+  # Origin 2000 responder migration brought the measured total near 60s.
+  'sn0-migration-test': 120,
   # Tigon reached 60.10s in the same loaded run without a failed assertion.
   'sn0-tigon-test': 120,
   # Model and bridge have grown the same way: 57s and 62s measured solo on a
