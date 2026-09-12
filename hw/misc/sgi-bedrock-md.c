@@ -452,11 +452,10 @@ static unsigned md_memory_remap_bank(const SGIBedrockMDState *s,
 }
 
 static bool md_selftest_bank_fits(const SGIBedrockMDState *s,
-                                  unsigned software_bank)
+                                  unsigned locational_bank)
 {
     uint64_t dense_base = 0;
     uint64_t raw_size;
-    unsigned locational_bank = md_memory_remap_bank(s, software_bank);
     unsigned size_code;
 
     if (!s->node_mr || !md_memory_bank_enabled(s, locational_bank)) {

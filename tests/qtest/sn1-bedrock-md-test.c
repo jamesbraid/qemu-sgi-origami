@@ -232,22 +232,22 @@ static uint64_t memory_bank_size_config(unsigned locational_bank,
     return (uint64_t)size_code << ((locational_bank / 2) * 8 + 4);
 }
 
-static void selftest_start(QTestState *s, unsigned locational_bank,
+static void selftest_start(QTestState *s, unsigned selector,
                            uint64_t data)
 {
     qtest_writeq(s, MD(SELFTEST_DATA), data);
-    qtest_writeq(s, MD(SELFTEST_CONTROL), (locational_bank << 4) | 1);
+    qtest_writeq(s, MD(SELFTEST_CONTROL), (selector << 4) | 1);
 }
 
 static void assert_selftest_result(const char *memory_size,
                                    uint64_t memory_config,
-                                   unsigned locational_bank,
+                                   unsigned selector,
                                    uint64_t expected_status)
 {
     QTestState *s = start_clock_with_memory(memory_size, "");
 
     qtest_writeq(s, MD(0x8), memory_config);
-    selftest_start(s, locational_bank, 0x5a);
+    selftest_start(s, selector, 0x5a);
     g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, 0);
     qtest_clock_step(s, SELFTEST_INTERVAL_NS - 1);
     g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, 0);
@@ -259,7 +259,7 @@ static void assert_selftest_result(const char *memory_size,
 
 static void test_selftest_phases(void)
 {
-    uint64_t config = (UINT64_C(3) << 32) | memory_bank_config(3, 1);
+    uint64_t config = (UINT64_C(3) << 32) | memory_bank_config(0, 1);
     QTestState *s = start_clock_with_memory("64M", "");
 
     qtest_writeq(s, MD(0x8), config);
@@ -276,6 +276,20 @@ static void test_selftest_phases(void)
     qtest_writeq(s, MD(0x8), config);
     selftest_start(s, 3, 0x5a);
     g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, 0);
+    qtest_clock_step(s, SELFTEST_INTERVAL_NS);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==,
+                    SELFTEST_DONE | SELFTEST_PASSED);
+    qtest_quit(s);
+}
+
+static void test_selftest_bank_remap(void)
+{
+    uint64_t config = (UINT64_C(3) << 32) | memory_bank_config(2, 1);
+    QTestState *s = start_clock_with_memory("64M", "");
+
+    /* Selector one maps to locational bank two; bank one is absent. */
+    qtest_writeq(s, MD(0x8), config);
+    selftest_start(s, 1, 0x5a);
     qtest_clock_step(s, SELFTEST_INTERVAL_NS);
     g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==,
                     SELFTEST_DONE | SELFTEST_PASSED);
@@ -1235,7 +1249,7 @@ static void test_selftest_migration_running(void)
     to = start_with_memory("64M", "-incoming defer");
     qtest_clock_set(from, 0);
     qtest_writeq(from, MD(0x8), (UINT64_C(3) << 32) |
-                                  memory_bank_config(3, 1));
+                                  memory_bank_config(0, 1));
     selftest_start(from, 3, 0xda);
     source_time = qtest_clock_step(from, 400);
     migrate_pair(from, to, uri);
@@ -1546,6 +1560,8 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("sn1/bedrock-md/register-contract", test_register_contract);
     qtest_add_func("sn1/bedrock-md/selftest-phases", test_selftest_phases);
+    qtest_add_func("sn1/bedrock-md/selftest-bank-remap",
+                   test_selftest_bank_remap);
     qtest_add_func("sn1/bedrock-md/selftest-negative-carriers",
                    test_selftest_negative_carriers);
     qtest_add_func("sn1/bedrock-md/selftest-replacement",
