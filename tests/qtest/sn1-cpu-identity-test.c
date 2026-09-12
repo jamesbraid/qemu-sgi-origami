@@ -144,7 +144,21 @@ static void test_each_processor_knows_its_slot(void)
     g_assert_cmphex(compare_a, ==, SLOT_A_MARK);
     g_assert_cmphex(compare_b, >=, SLOT_B_MARK);
 
+    qtest_writeq(s, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
+    g_assert_cmphex(qtest_readq(s, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 1);
+    g_usleep(10 * POLL_INTERVAL_US);
+    compare_b = qtest_readq(s, BEDROCK_LOCAL + PI_RT_COMPARE_B);
+    for (unsigned int tries = 0; tries < POLL_TRIES; tries++) {
+        compare_b_after = qtest_readq(s, BEDROCK_LOCAL + PI_RT_COMPARE_B);
+        if (compare_b_after != compare_b) {
+            break;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+    g_assert_cmphex(compare_b_after, !=, compare_b);
+
     qtest_writeq(s, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 0);
+    g_assert_cmphex(qtest_readq(s, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 0);
     g_usleep(10 * POLL_INTERVAL_US);
     compare_b = qtest_readq(s, BEDROCK_LOCAL + PI_RT_COMPARE_B);
     for (unsigned int tries = 0; tries < POLL_TRIES; tries++) {
