@@ -363,13 +363,18 @@ static void serial_xmit_backend_gave_up(SerialState *s)
  * polling guest -- and anything gating its own progress on the UART's
  * transmit-ready level, such as the IOC3 serial DMA engine -- parked on a
  * backend that will never speak up on its own.
+ *
+ * Setting tsr_retry to MAX_XMIT_RETRY and calling serial_xmit lets its
+ * own blocked check decide, exactly as an ordinary count exhaustion
+ * would: one last real write is attempted, and only a write that still
+ * blocks marks the backend dead. A write that happens to succeed right
+ * at the deadline is not punished for having taken this long.
  */
 static void serial_xmit_retry_timeout(void *opaque)
 {
     SerialState *s = opaque;
 
     g_clear_handle_id(&s->watch_tag, g_source_remove);
-    serial_xmit_backend_gave_up(s);
     s->tsr_retry = MAX_XMIT_RETRY;
     serial_xmit(s);
 }
@@ -1010,6 +1015,18 @@ static int serial_be_change(void *opaque)
         g_source_remove(s->watch_tag);
         s->watch_tag = qemu_chr_fe_add_watch(&s->chr, G_IO_OUT | G_IO_HUP,
                                              serial_watch_cb, s);
+    }
+
+    /*
+     * qemu_chr_fe_add_watch binds to the backend at call time, so a watch
+     * armed against the old one never reports on the new one. A dead
+     * latch left standing here would wait forever on a backend that no
+     * longer exists: give the new backend the same fresh try a migration
+     * destination gets.
+     */
+    if (s->xmit_backend_dead) {
+        g_clear_handle_id(&s->xmit_dead_watch_tag, g_source_remove);
+        s->xmit_backend_dead = false;
     }
 
     return 0;

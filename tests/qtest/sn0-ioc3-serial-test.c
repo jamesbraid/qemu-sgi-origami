@@ -853,13 +853,14 @@ static void test_a_never_drained_backend_still_advances_the_ring(
     static const uint8_t out[4] = { 'w', 'x', 'y', 'z' };
     static const uint8_t control[4] = {
         /*
-         * The engine's tx-ready gate follows LSR.THRE, which the UART sets
-         * again the moment a byte leaves the holding register for the shift
-         * register -- before that byte is actually delivered. The first
-         * character always slips through on that transient high, and a
-         * second character sits in the holding register behind it without
-         * its own retry ever starting; only a third character finds the
-         * gate genuinely down, so this needs all four slots filled.
+         * The engine's tx-ready signal follows LSR.THRE, which the UART
+         * sets again the moment a byte leaves the holding register for the
+         * shift register -- before that byte is actually delivered. The
+         * first character always slips through on that transient high, and
+         * a second character sits in the holding register behind it
+         * without its own retry ever starting; only a third character
+         * finds tx-ready genuinely low, so this needs all four slots
+         * filled.
          */
         TX_CHARACTER, TX_CHARACTER, TX_CHARACTER, TX_CHARACTER | TX_INTERRUPT,
     };
@@ -891,7 +892,8 @@ static void test_a_never_drained_backend_still_advances_the_ring(
     /*
      * Giving up on one held character only starts the next one's own
      * retry (it was sitting in the holding register, never yet attempted),
-     * so the walk needs one give-up per character still behind the gate.
+     * so the walk needs one give-up per character still waiting on
+     * tx-ready.
      */
     for (i = 0; i < 4; i++) {
         qtest_clock_step(qts, XMIT_GIVE_UP_NS + 1LL * 1000 * 1000 * 1000);
