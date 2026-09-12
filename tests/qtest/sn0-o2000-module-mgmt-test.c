@@ -38,6 +38,7 @@
 #define MSC_ADDRESS     0x08
 #define NVRAM_FIRST     0x50
 #define NVRAM_BYTES     2048
+#define NVRAM_MODULE_NUMBER 8
 #define ADAPTER_COUNT   4
 #define RESP_CAP        96
 
@@ -246,6 +247,71 @@ static void assert_response(QTestState *qts, unsigned node, const char *text,
                     strlen(expected));
 }
 
+static bool onewire_slot(QTestState *qts, unsigned node, unsigned pulse,
+                         unsigned sample, unsigned delay)
+{
+    g_autofree char *command = g_strdup_printf("nic %x %x %x", pulse,
+                                               sample, delay);
+    uint8_t response[RESP_CAP];
+
+    msc_command(qts, node, command, response, sizeof(response));
+    g_assert_cmpuint(response[0], ==, 4);
+    g_assert_cmpmem(&response[1], 3, "ok ", 3);
+    g_assert_true(response[4] == '0' || response[4] == '1');
+    return response[4] == '1';
+}
+
+static bool onewire_reset(QTestState *qts, unsigned node)
+{
+    return !onewire_slot(qts, node, 520, 65, 500);
+}
+
+static void onewire_write_bit(QTestState *qts, unsigned node, bool value)
+{
+    if (value) {
+        onewire_slot(qts, node, 6, 110, 0);
+    } else {
+        onewire_slot(qts, node, 80, 30, 0);
+    }
+}
+
+static bool onewire_read_bit(QTestState *qts, unsigned node)
+{
+    return onewire_slot(qts, node, 6, 13, 100);
+}
+
+static void onewire_write_byte(QTestState *qts, unsigned node, uint8_t value)
+{
+    for (unsigned bit = 0; bit < 8; bit++) {
+        onewire_write_bit(qts, node, value & (1u << bit));
+    }
+}
+
+static uint8_t onewire_read_byte(QTestState *qts, unsigned node)
+{
+    uint8_t value = 0;
+
+    for (unsigned bit = 0; bit < 8; bit++) {
+        value |= onewire_read_bit(qts, node) << bit;
+    }
+    return value;
+}
+
+static void onewire_select(QTestState *qts, unsigned node)
+{
+    g_assert_true(onewire_reset(qts, node));
+    onewire_write_byte(qts, node, 0xcc);
+}
+
+static void onewire_start_read(QTestState *qts, unsigned node, uint8_t command,
+                               uint16_t address)
+{
+    onewire_select(qts, node);
+    onewire_write_byte(qts, node, command);
+    onewire_write_byte(qts, node, address);
+    onewire_write_byte(qts, node, address >> 8);
+}
+
 static uint8_t nvram_read(QTestState *qts, unsigned node, uint16_t offset)
 {
     uint8_t address = NVRAM_FIRST + (offset >> 8);
@@ -419,6 +485,151 @@ static void test_destructive_commands_refused(void)
     qtest_quit(qts);
 }
 
+static const uint8_t module_rom[8] = {
+    0x09, 0x4f, 0x52, 0x49, 0x47, 0x41, 0x4d, 0x57,
+};
+
+static const uint8_t module_pages[64] = {
+    0x01, 0x4b, 0x4f, 0x52, 0x49, 0x47, 0x41, 0x4d,
+    0x49, 0x30, 0x31, 0x4f, 0x52, 0x49, 0x47, 0x41,
+    0x4d, 0x49, 0x2d, 0x4d, 0x4f, 0x44, 0x55, 0x4c,
+    0x45, 0x2d, 0x53, 0x45, 0x52, 0x49, 0x80, 0x45,
+    0x41, 0x4c, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x4d, 0x4f, 0x44, 0x55, 0x4c, 0x45, 0x49, 0x44,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0e, 0xcc,
+};
+
+static void read_rom(QTestState *qts, unsigned node, uint8_t rom[8])
+{
+    g_assert_true(onewire_reset(qts, node));
+    onewire_write_byte(qts, node, 0x33);
+    for (unsigned i = 0; i < 8; i++) {
+        rom[i] = onewire_read_byte(qts, node);
+    }
+}
+
+static void test_module_serial_rom_on_every_node(void)
+{
+    QTestState *qts = start_module();
+
+    for (unsigned node = 0; node < ADAPTER_COUNT; node++) {
+        uint8_t rom[8];
+
+        read_rom(qts, node, rom);
+        g_assert_cmpmem(rom, sizeof(rom), module_rom, sizeof(module_rom));
+    }
+    qtest_quit(qts);
+}
+
+static void test_module_serial_search_and_match(void)
+{
+    QTestState *qts = start_module();
+    uint8_t found[8] = { 0 };
+
+    g_assert_true(onewire_reset(qts, 0));
+    onewire_write_byte(qts, 0, 0xf0);
+    for (unsigned bit = 0; bit < 64; bit++) {
+        bool value = onewire_read_bit(qts, 0);
+        bool complement = onewire_read_bit(qts, 0);
+
+        g_assert_cmpint(value, !=, complement);
+        found[bit / 8] |= value << (bit % 8);
+        onewire_write_bit(qts, 0, value);
+    }
+    g_assert_cmpmem(found, sizeof(found), module_rom, sizeof(module_rom));
+
+    g_assert_true(onewire_reset(qts, 0));
+    onewire_write_byte(qts, 0, 0x55);
+    for (unsigned i = 0; i < sizeof(module_rom); i++) {
+        onewire_write_byte(qts, 0, module_rom[i] ^ (i == 0));
+    }
+    onewire_write_byte(qts, 0, 0xf0);
+    g_assert_cmphex(onewire_read_byte(qts, 0), ==, 0xff);
+    qtest_quit(qts);
+}
+
+static void test_module_serial_memory_and_crc(void)
+{
+    QTestState *qts = start_module();
+    uint8_t bytes[128];
+
+    onewire_start_read(qts, 1, 0xf0, 0);
+    g_assert_cmphex(onewire_read_byte(qts, 1), ==, 0x8d);
+    for (unsigned i = 0; i < sizeof(bytes); i++) {
+        bytes[i] = onewire_read_byte(qts, 1);
+    }
+    g_assert_cmpmem(bytes, sizeof(module_pages), module_pages,
+                    sizeof(module_pages));
+    for (unsigned i = sizeof(module_pages); i < sizeof(bytes); i++) {
+        g_assert_cmphex(bytes[i], ==, 0xff);
+    }
+    g_assert_cmphex(onewire_read_byte(qts, 1), ==, 0xf6);
+
+    onewire_start_read(qts, 1, 0xf0, 0x20);
+    g_assert_cmphex(onewire_read_byte(qts, 1), ==, 0x4c);
+    for (unsigned i = 0; i < 32; i++) {
+        g_assert_cmphex(onewire_read_byte(qts, 1), ==, module_pages[32 + i]);
+    }
+    qtest_quit(qts);
+}
+
+static void test_module_serial_generated_crc_and_status(void)
+{
+    static const uint8_t status[8] = {
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00,
+    };
+    QTestState *qts = start_module();
+
+    onewire_start_read(qts, 2, 0xc3, 0);
+    g_assert_cmphex(onewire_read_byte(qts, 2), ==, 0xb7);
+    for (unsigned i = 0; i < 32; i++) {
+        g_assert_cmphex(onewire_read_byte(qts, 2), ==, module_pages[i]);
+    }
+    g_assert_cmphex(onewire_read_byte(qts, 2), ==, 0xa6);
+    for (unsigned i = 32; i < 64; i++) {
+        g_assert_cmphex(onewire_read_byte(qts, 2), ==, module_pages[i]);
+    }
+    g_assert_cmphex(onewire_read_byte(qts, 2), ==, 0x4d);
+
+    onewire_start_read(qts, 2, 0xaa, 0);
+    g_assert_cmphex(onewire_read_byte(qts, 2), ==, 0x9c);
+    for (unsigned i = 0; i < sizeof(status); i++) {
+        g_assert_cmphex(onewire_read_byte(qts, 2), ==, status[i]);
+    }
+    g_assert_cmphex(onewire_read_byte(qts, 2), ==, 0xfc);
+    qtest_quit(qts);
+}
+
+static void test_module_serial_reset_preserves_identity(void)
+{
+    QTestState *qts = start_module();
+    uint8_t rom[8];
+
+    onewire_select(qts, 3);
+    onewire_write_byte(qts, 3, 0xf0);
+    qtest_system_reset(qts);
+    for (unsigned node = 0; node < ADAPTER_COUNT; node++) {
+        init_adapter(qts, node);
+    }
+    read_rom(qts, 3, rom);
+    g_assert_cmpmem(rom, sizeof(rom), module_rom, sizeof(module_rom));
+    qtest_quit(qts);
+}
+
+static void test_module_serial_ignores_mutable_module_number(void)
+{
+    QTestState *qts = start_module();
+    uint8_t before[8], after[8];
+
+    read_rom(qts, 0, before);
+    nvram_write(qts, 1, NVRAM_MODULE_NUMBER, 7);
+    g_assert_cmphex(nvram_read(qts, 2, NVRAM_MODULE_NUMBER), ==, 7);
+    read_rom(qts, 3, after);
+    g_assert_cmpmem(before, sizeof(before), after, sizeof(after));
+    qtest_quit(qts);
+}
+
 static bool is_running(QTestState *qts)
 {
     g_autoptr(QDict) response = qtest_qmp(qts, "{'execute':'query-status'}");
@@ -516,6 +727,28 @@ static void test_migration(void)
     qtest_quit(to);
 }
 
+static void test_module_serial_migration_in_progress(void)
+{
+    QTestState *from = start_module();
+    QTestState *to = qtest_init(MACHINE_ARGS " -incoming defer");
+    int64_t departed;
+
+    onewire_start_read(from, 0, 0xf0, 0);
+    g_assert_cmphex(onewire_read_byte(from, 0), ==, 0x8d);
+    for (unsigned i = 0; i < 7; i++) {
+        g_assert_cmphex(onewire_read_byte(from, 0), ==, module_pages[i]);
+    }
+    departed = qtest_clock_step(from, 1);
+    migrate_module(from, to);
+    wait_until_running(to);
+    qtest_clock_set(to, departed);
+    for (unsigned i = 7; i < sizeof(module_pages); i++) {
+        g_assert_cmphex(onewire_read_byte(to, 0), ==, module_pages[i]);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -536,6 +769,20 @@ int main(int argc, char **argv)
                    test_destructive_commands_refused);
     qtest_add_func("/sn0/o2000-module-management/dip-switches",
                    test_dip_switches_reach_the_controller);
+    qtest_add_func("/sn0/o2000-module-management/module-serial-rom",
+                   test_module_serial_rom_on_every_node);
+    qtest_add_func("/sn0/o2000-module-management/module-serial-search",
+                   test_module_serial_search_and_match);
+    qtest_add_func("/sn0/o2000-module-management/module-serial-memory",
+                   test_module_serial_memory_and_crc);
+    qtest_add_func("/sn0/o2000-module-management/module-serial-crc-status",
+                   test_module_serial_generated_crc_and_status);
+    qtest_add_func("/sn0/o2000-module-management/module-serial-reset",
+                   test_module_serial_reset_preserves_identity);
+    qtest_add_func("/sn0/o2000-module-management/module-serial-module-number",
+                   test_module_serial_ignores_mutable_module_number);
     qtest_add_func("/sn0/o2000-module-management/migration", test_migration);
+    qtest_add_func("/sn0/o2000-module-management/module-serial-migration",
+                   test_module_serial_migration_in_progress);
     return g_test_run();
 }
