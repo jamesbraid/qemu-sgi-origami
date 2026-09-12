@@ -163,6 +163,19 @@ static void lucent_ohci_instance_init(Object *obj)
     ohci->num_ports = 2;
 }
 
+static void lucent_ohci_realize(PCIDevice *dev, Error **errp)
+{
+    Error *err = NULL;
+
+    usb_ohci_realize_pci(dev, &err);
+    if (err) {
+        error_propagate(errp, err);
+        return;
+    }
+
+    pci_set_word(dev->config + PCI_STATUS, PCI_STATUS_DEVSEL_MEDIUM);
+}
+
 static void lucent_ohci_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -171,6 +184,7 @@ static void lucent_ohci_class_init(ObjectClass *klass, const void *data)
     k->vendor_id = 0x11c1;
     k->device_id = 0x5802;
     k->revision = 0x10;
+    k->realize = lucent_ohci_realize;
     /* The hardware values are unknown; these are emulator placeholders. */
     k->subsystem_vendor_id = 0xffff;
     k->subsystem_id = 0xffff;
