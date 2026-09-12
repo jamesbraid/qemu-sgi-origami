@@ -61,6 +61,8 @@ typedef struct SN0ModelComponent {
     SN0ModelComponentKind kind;
     uint8_t type;
     uint8_t revision;
+    uint8_t ni_revision;
+    uint8_t widget_revision;
     uint8_t physical_id;
     uint8_t widget;
     uint8_t device;
@@ -308,9 +310,9 @@ typedef struct SN0ModelModule {
 typedef struct SN0ModelCrossbow {
     const char *id;
     unsigned int module_index;
-    uint16_t part;
-    uint16_t manufacturer;
-    uint8_t revision;
+    uint16_t widget_part;
+    uint16_t widget_manufacturer;
+    uint8_t widget_revision;
     uint16_t initially_operational_links;
 } SN0ModelCrossbow;
 

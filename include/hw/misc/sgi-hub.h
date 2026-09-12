@@ -212,6 +212,9 @@ struct SGIHubState {
     /* Global QEMU CPU index of this node's slice A. */
     uint32_t cpu_base;
 
+    /* Revision reported in the widget identity. */
+    uint8_t widget_revision;
+
     /* Widget manufacturer: the two sources disagree, so the machine chooses. */
     uint32_t manufacturer;
 

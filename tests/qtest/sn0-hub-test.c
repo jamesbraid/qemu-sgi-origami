@@ -2983,6 +2983,24 @@ static void test_the_hub_identifies_itself_on_the_crossbar(const void *data)
     qtest_quit(qts);
 }
 
+static void test_configured_revisions_survive_reset(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200 -global sgi-hub.ni-revision=5 "
+        "-global sgi-hub.widget-revision=5");
+
+    g_assert_cmpuint((qtest_readq(qts, HUB_LOCAL + NI_STATUS) >> 4) & 0xf,
+                     ==, 5);
+    g_assert_cmpuint((qtest_readq(qts, HUB_LOCAL + IO_WIDGET_ID) >> 28) & 0xf,
+                     ==, 5);
+    qtest_system_reset(qts);
+    g_assert_cmpuint((qtest_readq(qts, HUB_LOCAL + NI_STATUS) >> 4) & 0xf,
+                     ==, 5);
+    g_assert_cmpuint((qtest_readq(qts, HUB_LOCAL + IO_WIDGET_ID) >> 28) & 0xf,
+                     ==, 5);
+    qtest_quit(qts);
+}
+
 static void test_the_widget_control_reset_values(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -4862,6 +4880,8 @@ int main(int argc, char **argv)
                         test_big_window_empty_access_is_not_chunked);
     qtest_add_data_func("sn0/hub/identifies-itself", NULL,
                         test_the_hub_identifies_itself_on_the_crossbar);
+    qtest_add_data_func("sn0/hub/configured-revisions-survive-reset", NULL,
+                        test_configured_revisions_survive_reset);
     qtest_add_data_func("sn0/hub/widget-control-reset", NULL,
                         test_the_widget_control_reset_values);
     qtest_add_data_func("sn0/hub/flash-ready-at-both-bits", NULL,

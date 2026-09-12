@@ -109,7 +109,8 @@ static const SN0ModelHardware sn0_o2000_c0_hardware = {
 
 static const SN0ModelComponent sn0_o2000_c0_n0_hub = {
     .kind = SN0_COMPONENT_HUB,
-    .revision = 0x2ULL,
+    .ni_revision = 0x3ULL,
+    .widget_revision = 0x1ULL,
     .serial = 0x100000000001ULL,
     .cpu_irq_bank0 = 0x0ULL,
     .cpu_irq_bank1 = 0x1ULL,
@@ -123,7 +124,8 @@ static const SN0ModelRegion sn0_o2000_c0_n0_lboot = {
 
 static const SN0ModelComponent sn0_o2000_c0_n1_hub = {
     .kind = SN0_COMPONENT_HUB,
-    .revision = 0x2ULL,
+    .ni_revision = 0x3ULL,
+    .widget_revision = 0x1ULL,
     .serial = 0x100000000002ULL,
     .cpu_irq_bank0 = 0x0ULL,
     .cpu_irq_bank1 = 0x1ULL,
@@ -137,7 +139,8 @@ static const SN0ModelRegion sn0_o2000_c0_n1_lboot = {
 
 static const SN0ModelComponent sn0_o2000_c0_n2_hub = {
     .kind = SN0_COMPONENT_HUB,
-    .revision = 0x2ULL,
+    .ni_revision = 0x3ULL,
+    .widget_revision = 0x1ULL,
     .serial = 0x100000000003ULL,
     .cpu_irq_bank0 = 0x0ULL,
     .cpu_irq_bank1 = 0x1ULL,
@@ -151,7 +154,8 @@ static const SN0ModelRegion sn0_o2000_c0_n2_lboot = {
 
 static const SN0ModelComponent sn0_o2000_c0_n3_hub = {
     .kind = SN0_COMPONENT_HUB,
-    .revision = 0x2ULL,
+    .ni_revision = 0x3ULL,
+    .widget_revision = 0x1ULL,
     .serial = 0x100000000004ULL,
     .cpu_irq_bank0 = 0x0ULL,
     .cpu_irq_bank1 = 0x1ULL,
@@ -628,17 +632,17 @@ static const SN0ModelCrossbow sn0_o2000_c0_crossbows[] = {
     {
         .id = "crossbow-0",
         .module_index = 0x0ULL,
-        .part = 0x0ULL,
-        .manufacturer = 0x0ULL,
-        .revision = 0x1ULL,
+        .widget_part = 0x0ULL,
+        .widget_manufacturer = 0x0ULL,
+        .widget_revision = 0x2ULL,
         .initially_operational_links = 0x700ULL,
     },
     {
         .id = "crossbow-1",
         .module_index = 0x0ULL,
-        .part = 0x0ULL,
-        .manufacturer = 0x0ULL,
-        .revision = 0x1ULL,
+        .widget_part = 0x0ULL,
+        .widget_manufacturer = 0x0ULL,
+        .widget_revision = 0x2ULL,
         .initially_operational_links = 0x600ULL,
     },
 };

@@ -13,6 +13,7 @@
 #define NODE_STRIDE UINT64_C(0x100000000)
 #define HUB_BASE UINT64_C(0x20001000000)
 #define NI_STATUS 0x600000
+#define IO_WIDGET_ID 0x400000
 #define NI_VECTOR_PARMS 0x600200
 #define NI_VECTOR 0x600208
 #define NI_VECTOR_DATA 0x600210
@@ -44,6 +45,8 @@
 #define XTALK_REG_DATA 4
 #define XTALK_WIDGET_SIZE UINT64_C(0x1000000)
 #define XTALK_ID_PART(v) (((v) >> 12) & 0xffff)
+#define XTALK_ID_REVISION(v) (((v) >> 28) & 0xf)
+#define HUB_NI_REVISION(v) (((v) >> 4) & 0xf)
 #define XTALK_ID_ALWAYS_ONE 1
 
 #define HUB_PI_INT_PEND0 0x98
@@ -375,6 +378,27 @@ static void test_processor_mode_reset_and_release(void)
         hub_write(qts, node, PI_CPU_ENABLE_B, 1);
     }
     assert_processor_mode(qts);
+    qtest_quit(qts);
+}
+
+static void assert_asic_identities(QTestState *qts)
+{
+    for (unsigned int node = 0; node < 4; node++) {
+        g_assert_cmpuint(HUB_NI_REVISION(hub_read(qts, node, NI_STATUS)),
+                         ==, 3);
+        g_assert_cmpuint(XTALK_ID_REVISION(hub_read(qts, node,
+                                                    IO_WIDGET_ID)), ==, 1);
+    }
+    g_assert_cmphex(xbow_read(qts, 0), ==, 0x20000001);
+}
+
+static void test_asic_identity_reset(void)
+{
+    QTestState *qts = start_control_module("");
+
+    assert_asic_identities(qts);
+    qtest_system_reset(qts);
+    assert_asic_identities(qts);
     qtest_quit(qts);
 }
 
@@ -1500,10 +1524,12 @@ static void test_migration(void)
     const uint64_t marker = UINT64_C(0x123456789abcdef);
     uint64_t value;
 
+    assert_asic_identities(from);
     program_remote(from);
     node_write(from, 2, MEM_PROBE, marker);
     g_assert_true(cpu_read(from, 0, target, &value));
     migrate_module(from, to);
+    assert_asic_identities(to);
     g_assert_true(cpu_read(to, 0, target, &value));
     g_assert_cmphex(value, ==, marker);
     vector_write(to, 0, ROUTER_META_TABLE + 2 * 8, UINT64_C(15) << 20);
@@ -1987,6 +2013,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/xbow-baseio-link-reset",
                    test_xbow_baseio_link_reset);
     qtest_add_func("sn0/origin2000/mutated-reset", test_mutated_reset);
+    qtest_add_func("sn0/origin2000/asic-identity-reset",
+                   test_asic_identity_reset);
     qtest_add_func("sn0/origin2000/distinct-table-migration",
                    test_distinct_table_migration);
     if (qtest_has_device("sn0-origin2000-flash-test")) {
