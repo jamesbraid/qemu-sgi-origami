@@ -13,6 +13,7 @@ struct SN0ModelTestState {
     SN0ModelComposition composition;
     SN0ModelHardware hardware;
     SN0ModelPhysicalNode nodes[4];
+    SN0ModelModuleIdentity identities[4];
     SN0ModelRouter routers[2];
     SN0ModelRoutedFabricLink links[5];
     SN0ModelModule module;
@@ -69,6 +70,19 @@ static void sn0_model_test_set_fault(Object *obj, const char *value,
         s->nodes[0].map.node_stride = UINT64_MAX;
     } else if (!strcmp(value, "xtalk-reference")) {
         s->attachments[0].node_index = 4;
+    } else if (!strcmp(value, "module-serial")) {
+        s->module.serial[0] = '\0';
+    } else if (!strcmp(value, "module-binding")) {
+        s->nodes[0].module_identity = NULL;
+    } else if (!strcmp(value, "module-cross-binding")) {
+        s->nodes[0].module_index = 1;
+    } else if (!strcmp(value, "module-rom-crc")) {
+        s->identities[0].rom[7] ^= 1;
+    } else if (!strcmp(value, "module-page-crc")) {
+        s->identities[0].page[0][30] ^= 1;
+    } else if (!strcmp(value, "module-rom-duplicate")) {
+        memcpy(s->identities[0].rom, s->identities[1].rom,
+               sizeof(s->identities[0].rom));
     } else {
         error_setg(errp, "unknown model-test fault '%s'", value);
     }
@@ -93,6 +107,8 @@ static void sn0_model_test_init(Object *obj)
     s->composition.xtalk_attachments = s->attachments;
     for (unsigned int i = 0; i < 4; i++) {
         s->nodes[i] = c->nodes[order[i]];
+        s->identities[i] = *s->nodes[i].module_identity;
+        s->nodes[i].module_identity = &s->identities[i];
         inverse[order[i]] = i;
     }
     for (unsigned int i = 0; i < 2; i++) {

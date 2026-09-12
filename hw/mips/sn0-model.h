@@ -213,6 +213,16 @@ typedef struct SN0ModelFlash {
     SN0ModelFlashKind kind;
 } SN0ModelFlash;
 
+#define SN0_MODEL_MODULE_SERIAL_LEN 10
+#define SN0_MODEL_MODULE_IDENTITY_PAGES 2
+#define SN0_MODEL_ONEWIRE_PAGE_SIZE 32
+
+typedef struct SN0ModelModuleIdentity {
+    uint8_t rom[8];
+    uint8_t page[SN0_MODEL_MODULE_IDENTITY_PAGES]
+                [SN0_MODEL_ONEWIRE_PAGE_SIZE];
+} SN0ModelModuleIdentity;
+
 typedef enum SN0ModelFabricVertexKind {
     SN0_MODEL_FABRIC_HUB,
     SN0_MODEL_FABRIC_ROUTER,
@@ -260,6 +270,7 @@ typedef struct SN0ModelPhysicalNode {
     uint64_t memory_mib;
     uint64_t bank_mib[8];
     const SN0ModelComponent *hub;
+    const SN0ModelModuleIdentity *module_identity;
     SN0ModelAddressMap map;
     SN0ModelFlash flash;
 } SN0ModelPhysicalNode;
@@ -286,6 +297,7 @@ typedef struct SN0ModelModuleManagement {
 
 typedef struct SN0ModelModule {
     const char *id;
+    char serial[SN0_MODEL_MODULE_SERIAL_LEN + 1];
     /* Selected installation identity; seed newly created MSC NVRAM only. */
     uint8_t initial_module_number;
     const SN0ModelModuleManagement *management;

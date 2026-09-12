@@ -909,6 +909,7 @@ static void test_starting_a_slot_does_not_report_it_finished(const void *data)
 #define ONEWIRE_PULSE_ZERO    60     /* writing a zero */
 #define ONEWIRE_CMD_SEARCH    0xf0
 #define ONEWIRE_FAMILY_DS2505 0x0b
+#define ONEWIRE_FAMILY_DS2502 0x09
 #define HUB_ONEWIRE_SERIAL(nasid) (0x0c0b0a090807ULL + (nasid))
 
 /* The Dallas CRC-8 over the low bytes, as the public DS2505 sheet has it. */
@@ -927,12 +928,27 @@ static uint8_t onewire_crc8(uint64_t data, unsigned int bytes)
     return crc;
 }
 
+static uint8_t onewire_crc8_bytes(const uint8_t *data, unsigned int bytes)
+{
+    uint8_t crc = 0;
+
+    for (unsigned int i = 0; i < bytes; i++) {
+        crc ^= data[i];
+        for (unsigned int bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? (crc >> 1) ^ 0x8c : crc >> 1;
+        }
+    }
+    return crc;
+}
+
 static uint64_t onewire_expected_identity(uint64_t serial)
 {
     uint64_t identity = ONEWIRE_FAMILY_DS2505 | (serial << 8);
 
     return identity | ((uint64_t)onewire_crc8(identity, 7) << 56);
 }
+
+static void onewire_write_byte(QTestState *qts, uint64_t hub, uint8_t byte);
 
 /* One bit slot: program the timing, run the slot, return the sampled bit. */
 static uint64_t onewire_slot(QTestState *qts, uint64_t hub,
@@ -981,6 +997,59 @@ static uint64_t onewire_search_identity(QTestState *qts, uint64_t hub)
         identity |= bit << i;
     }
     return identity;
+}
+
+static bool onewire_cpu_slot(QTestState *qts, unsigned int cpu,
+                             unsigned int pulse)
+{
+    uint64_t after;
+
+    pi_cpu_writeq(qts, cpu, MD_ONEWIRE,
+                  MD_ONEWIRE_RESET | ((uint64_t)pulse << 10) |
+                  (0x04ULL << 2));
+    qtest_clock_step(qts, (pulse + 4) * 1000);
+    after = pi_cpu_readq(qts, cpu, MD_ONEWIRE);
+    g_assert_cmphex(after & MD_ONEWIRE_DONE, ==, MD_ONEWIRE_DONE);
+    return after & MD_ONEWIRE_RXDATA;
+}
+
+static void onewire_cpu_write_byte(QTestState *qts, unsigned int cpu,
+                                   uint8_t byte)
+{
+    for (unsigned int i = 0; i < 8; i++) {
+        onewire_cpu_slot(qts, cpu, ((byte >> i) & 1) ?
+                         ONEWIRE_PULSE_SHORT : ONEWIRE_PULSE_ZERO);
+    }
+}
+
+static uint8_t onewire_cpu_read_byte(QTestState *qts, unsigned int cpu)
+{
+    uint8_t byte = 0;
+
+    for (unsigned int i = 0; i < 8; i++) {
+        byte |= onewire_cpu_slot(qts, cpu, ONEWIRE_PULSE_SHORT) << i;
+    }
+    return byte;
+}
+
+static void onewire_cpu_search_for_identity(QTestState *qts,
+                                            unsigned int cpu,
+                                            uint64_t identity)
+{
+    g_assert_false(onewire_cpu_slot(qts, cpu, ONEWIRE_PULSE_RESET));
+    onewire_cpu_write_byte(qts, cpu, ONEWIRE_CMD_SEARCH);
+    for (unsigned int i = 0; i < 64; i++) {
+        bool bit = onewire_cpu_slot(qts, cpu, ONEWIRE_PULSE_SHORT);
+        bool complement = onewire_cpu_slot(qts, cpu, ONEWIRE_PULSE_SHORT);
+        bool direction = (identity >> i) & 1;
+
+        g_assert_false(bit && complement);
+        if (bit != complement) {
+            g_assert_cmpint(bit, ==, direction);
+        }
+        onewire_cpu_slot(qts, cpu, direction ? ONEWIRE_PULSE_SHORT :
+                                             ONEWIRE_PULSE_ZERO);
+    }
 }
 
 /*
@@ -1804,6 +1873,110 @@ static void test_model_population_overrides_class_globals(const void *data)
     g_assert_true(hub_has_child(qts, "elsc"));
     g_assert_true(hub_has_child(qts, "onewire-part"));
     assert_hub_nvram_pages(qts, 8);
+
+    qtest_quit(qts);
+}
+
+static void test_origin2000_hubs_carry_module_identity(const void *data)
+{
+    static const uint8_t expected_pages[2][32] = {
+        { 0x01, 0x4b, 0x4f, 0x52, 0x49, 0x47, 0x41, 0x4d,
+          0x49, 0x30, 0x31, 0xff, 0xff, 0xff, 0xff, 0xff,
+          0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+          0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xf9, 0x27 },
+        { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+          0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+          0x4d, 0x4f, 0x44, 0x55, 0x4c, 0x45, 0x49, 0x44,
+          0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x4b, 0x59 },
+    };
+    static const uint64_t module_serials[ORIGIN2000_NODE_COUNT] = {
+        0x100000000009ULL, 0x10000000000aULL,
+        0x10000000000bULL, 0x10000000000cULL,
+    };
+    QTestState *qts = qtest_init("-M origin2000");
+
+    for (unsigned int node = 0; node < ORIGIN2000_NODE_COUNT; node++) {
+        unsigned int cpu = node * ORIGIN2000_CPUS_PER_NODE;
+        uint64_t module_rom = ONEWIRE_FAMILY_DS2502 |
+                              (module_serials[node] << 8);
+        uint64_t pimm_rom = onewire_expected_identity(
+            0x100000000001ULL + node);
+        g_autofree char *path =
+            g_strdup_printf("/machine/node%u/hub", node);
+        QDict *response = qtest_qmp(
+            qts, "{ 'execute': 'qom-list',"
+                 " 'arguments': { 'path': %s } }", path);
+        QList *children = qdict_get_qlist(response, "return");
+        const QListEntry *entry;
+        bool found = false;
+
+        for (entry = qlist_first(children); entry;
+             entry = qlist_next(entry)) {
+            QDict *child = qobject_to(QDict, qlist_entry_obj(entry));
+
+            if (!strcmp(qdict_get_str(child, "name"), "module-identity")) {
+                found = true;
+                break;
+            }
+        }
+        g_assert_true(found);
+        qobject_unref(response);
+
+        module_rom |= (uint64_t)onewire_crc8(module_rom, 7) << 56;
+        onewire_cpu_search_for_identity(qts, cpu, pimm_rom);
+        onewire_cpu_search_for_identity(qts, cpu, module_rom);
+        for (unsigned int page_index = 0; page_index < 2; page_index++) {
+            uint8_t request[3] = { 0xc3, page_index * 32, 0 };
+            uint8_t actual[32];
+
+            g_assert_false(onewire_cpu_slot(qts, cpu, ONEWIRE_PULSE_RESET));
+            onewire_cpu_write_byte(qts, cpu, 0x55);
+            for (unsigned int i = 0; i < 8; i++) {
+                onewire_cpu_write_byte(qts, cpu, module_rom >> (8 * i));
+            }
+            for (unsigned int i = 0; i < sizeof(request); i++) {
+                onewire_cpu_write_byte(qts, cpu, request[i]);
+            }
+            g_assert_cmphex(onewire_cpu_read_byte(qts, cpu), ==,
+                            onewire_crc8(request[0] |
+                                        ((uint64_t)request[1] << 8), 3));
+            for (unsigned int i = 0; i < sizeof(actual); i++) {
+                actual[i] = onewire_cpu_read_byte(qts, cpu);
+            }
+            g_assert_cmpmem(actual, sizeof(actual),
+                            expected_pages[page_index],
+                            sizeof(expected_pages[page_index]));
+            g_assert_cmphex(onewire_crc16(0, actual, sizeof(actual)),
+                            ==, 0xb001);
+            g_assert_cmphex(onewire_cpu_read_byte(qts, cpu), ==,
+                            onewire_crc8_bytes(actual, sizeof(actual)));
+        }
+    }
+
+    /* Reset drops a partial match while leaving the immutable image intact. */
+    {
+        uint64_t module_rom = ONEWIRE_FAMILY_DS2502 |
+                              (module_serials[0] << 8);
+        uint8_t request[3] = { 0xc3, 0, 0 };
+
+        module_rom |= (uint64_t)onewire_crc8(module_rom, 7) << 56;
+        g_assert_false(onewire_cpu_slot(qts, 0, ONEWIRE_PULSE_RESET));
+        onewire_cpu_write_byte(qts, 0, 0x55);
+        onewire_cpu_write_byte(qts, 0, module_rom);
+        onewire_cpu_write_byte(qts, 0, module_rom >> 8);
+        qtest_system_reset(qts);
+
+        onewire_cpu_search_for_identity(qts, 0, module_rom);
+        for (unsigned int i = 0; i < sizeof(request); i++) {
+            onewire_cpu_write_byte(qts, 0, request[i]);
+        }
+        g_assert_cmphex(onewire_cpu_read_byte(qts, 0), ==,
+                        onewire_crc8(request[0], sizeof(request)));
+        for (unsigned int i = 0; i < sizeof(expected_pages[0]); i++) {
+            g_assert_cmphex(onewire_cpu_read_byte(qts, 0), ==,
+                            expected_pages[0][i]);
+        }
+    }
 
     qtest_quit(qts);
 }
@@ -4841,6 +5014,8 @@ int main(int argc, char **argv)
                         NULL, test_an_extended_read_serves_a_blank_page);
     qtest_add_data_func("sn0/hub/one-wire-memory-read-ends-with-crc",
                         NULL, test_a_memory_read_ends_with_its_crc);
+    qtest_add_data_func("sn0/hub/origin2000-module-identity-present",
+                        NULL, test_origin2000_hubs_carry_module_identity);
     qtest_add_data_func("sn0/hub/pending-banks-reject-writes", NULL,
                         test_the_pending_banks_reject_writes);
     qtest_add_data_func("sn0/hub/bte-registers-reset-to-zero", NULL,

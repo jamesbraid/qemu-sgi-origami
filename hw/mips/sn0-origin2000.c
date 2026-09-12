@@ -456,6 +456,18 @@ void sn0_origin2000_prepare_nodes(MachineState *machine)
         object_property_set_link(OBJECT(&node->hub), "fabric",
                                  OBJECT(s->fabric), &error_fatal);
         qdev_prop_set_uint32(DEVICE(&node->hub), "fabric-endpoint", node_index);
+        if (physical->module_identity) {
+            SGIHubModuleIdentity identity;
+
+            memcpy(identity.rom, physical->module_identity->rom,
+                   sizeof(identity.rom));
+            memcpy(identity.page, physical->module_identity->page,
+                   sizeof(identity.page));
+            if (!sgi_hub_attach_module_identity(&node->hub, &identity,
+                                                &error_fatal)) {
+                return;
+            }
+        }
         ram_offset += physical->memory_mib * MiB;
     }
 }

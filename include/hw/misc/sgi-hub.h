@@ -8,6 +8,7 @@
 #define HW_MISC_SGI_HUB_H
 
 #include "qemu/units.h"
+#include "hw/1wire/ds2502.h"
 #include "hw/1wire/onewire.h"
 #include "hw/core/irq.h"
 #include "hw/misc/sgi-diagnostic.h"
@@ -22,6 +23,11 @@
 
 #define TYPE_SGI_HUB "sgi-hub"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIHubState, SGI_HUB)
+
+typedef struct SGIHubModuleIdentity {
+    uint8_t rom[8];
+    uint8_t page[2][DS2502_PAGE_SIZE];
+} SGIHubModuleIdentity;
 
 /*
  * The whole -serial assignment in one place: an index collision between two
@@ -314,6 +320,8 @@ struct SGIHubState {
      */
     OneWireBus *onewire_bus;
     uint64_t onewire_serial;
+    SGIHubModuleIdentity module_identity;
+    bool has_module_identity;
     bool onewire_level;    /* what the wire sampled in the slot underway */
 
     /* Bring-up UART, off by default: firmware probes it as first console. */
@@ -340,6 +348,9 @@ bool sgi_hub_first_turn(const SGIHubState *s, uint32_t destination,
 void sgi_hub_latch_prom_pi_error(SGIHubState *s);
 void sgi_hub_set_cpu_enable(SGIHubState *s, unsigned int cpu, bool enabled,
                             bool synchronous);
+bool sgi_hub_attach_module_identity(SGIHubState *s,
+                                    const SGIHubModuleIdentity *identity,
+                                    Error **errp);
 
 /* The fabric's side of the interface: this endpoint's map or link state moved. */
 void sgi_hub_fabric_changed(SGIHubState *s);
