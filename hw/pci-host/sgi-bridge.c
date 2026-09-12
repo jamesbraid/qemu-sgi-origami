@@ -1728,7 +1728,7 @@ static void sgi_bridge_link_reset(void *opaque, int line, int level)
  * of the bus. Reading it here also means a card carries its own answer into
  * whatever slot it is put in, which a mask the board computed cannot.
  */
-static void sgi_bridge_plug(HotplugHandler *handler, DeviceState *dev,
+static void sgi_bridge_plug(const HotplugHandler *handler, DeviceState *dev,
                             Error **errp)
 {
     SGIBridgeState *s = SGI_BRIDGE(handler);
@@ -1763,7 +1763,7 @@ static void sgi_bridge_plug(HotplugHandler *handler, DeviceState *dev,
  * configuration, built once at startup, never describes -- a state the real
  * machine cannot reach.
  */
-static bool sgi_bridge_is_hotpluggable_bus(HotplugHandler *handler, BusState *bus)
+static bool sgi_bridge_is_hotpluggable_bus(const HotplugHandler *handler, BusState *bus)
 {
     return false;
 }

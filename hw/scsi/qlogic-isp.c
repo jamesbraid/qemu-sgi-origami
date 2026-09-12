@@ -748,7 +748,7 @@ static void qlogic_isp_reset_target(QLogicISPState *s, int channel,
  * when that command finishes, which is why only an unplug that owns the
  * flag schedules one here.
  */
-static void qlogic_isp_channel_unplug(HotplugHandler *hotplug_dev,
+static void qlogic_isp_channel_unplug(const HotplugHandler *hotplug_dev,
                                       DeviceState *dev, Error **errp)
 {
     QLogicISPState *s = QLOGIC_ISP(hotplug_dev);
@@ -1621,7 +1621,7 @@ static const struct SCSIBusInfo qlogic_isp_scsi_info = {
  * address, and the save-state registry refuses the second device outright.
  * A bus is a channel here, so it stamps its own number into what plugs in.
  */
-static void qlogic_isp_channel_pre_plug(HotplugHandler *hotplug_dev,
+static void qlogic_isp_channel_pre_plug(const HotplugHandler *hotplug_dev,
                                         DeviceState *dev, Error **errp)
 {
     SCSIBus *bus = SCSI_BUS(qdev_get_parent_bus(dev));
