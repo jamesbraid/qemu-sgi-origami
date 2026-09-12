@@ -547,6 +547,7 @@ void sn0_origin2000_realize_nodes(MachineState *machine)
                 CPU(node->cpu[slice]);
         }
     }
+    sn0_map_cpu_big_windows(s);
     origin2000_build_management(s);
     sn0_fabric_build(s->fabric);
     origin2000_load_flash(machine);
