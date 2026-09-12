@@ -10,6 +10,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "hw/1wire/crc.h"
 #include "hw/1wire/ds2502.h"
 #include "hw/misc/sgi-onewire-slot.h"
 #include "hw/core/qdev-properties.h"
@@ -586,7 +587,7 @@ static const SGIElscModuleOps mgmt_elsc_ops = {
     .onewire_slot = mgmt_elsc_onewire_slot,
 };
 
-static const uint8_t module_serial_image[DS2502_DATA_SIZE] = {
+static const uint8_t module_serial_image_template[DS2502_DATA_SIZE] = {
     0x01, 0x4b, 0x4f, 0x52, 0x49, 0x47, 0x41, 0x4d,
     0x49, 0x30, 0x31, 0x4f, 0x52, 0x49, 0x47, 0x41,
     0x4d, 0x49, 0x2d, 0x4d, 0x4f, 0x44, 0x55, 0x4c,
@@ -597,6 +598,18 @@ static const uint8_t module_serial_image[DS2502_DATA_SIZE] = {
     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0e, 0xcc,
     [64 ... DS2502_DATA_SIZE - 1] = 0xff,
 };
+
+static void mgmt_build_module_serial_image(SGIO2000ModuleMgmtState *s,
+                                           uint8_t image[DS2502_DATA_SIZE])
+{
+    uint16_t crc;
+
+    memcpy(image, module_serial_image_template, DS2502_DATA_SIZE);
+    memcpy(&image[1], s->module_serial_text, SGI_O2000_MODULE_SERIAL_LEN);
+    crc = ~onewire_crc16(0, image, 30);
+    image[30] = crc;
+    image[31] = crc >> 8;
+}
 
 static DeviceState *mgmt_add_child(SGIO2000ModuleMgmtState *s,
                                    const char *name, const char *type)
@@ -632,6 +645,7 @@ static void mgmt_populate_nvram(SGIO2000ModuleMgmtState *s)
 static void mgmt_realize(DeviceState *dev, Error **errp)
 {
     SGIO2000ModuleMgmtState *s = SGI_O2000_MODULE_MGMT(dev);
+    uint8_t module_serial_image[DS2502_DATA_SIZE];
     unsigned i;
 
     const struct {
@@ -686,6 +700,13 @@ static void mgmt_realize(DeviceState *dev, Error **errp)
     if (!qdev_realize(DEVICE(s->msc), BUS(s->bus), errp)) {
         return;
     }
+    if (!s->module_serial_text ||
+        strlen(s->module_serial_text) != SGI_O2000_MODULE_SERIAL_LEN) {
+        error_setg(errp, "module management requires a %u-byte serial",
+                   SGI_O2000_MODULE_SERIAL_LEN);
+        return;
+    }
+    mgmt_build_module_serial_image(s, module_serial_image);
     ds2502_set_image(s->module_serial, module_serial_image,
                      sizeof(module_serial_image));
     if (!qdev_realize(s->module_serial, BUS(s->onewire_bus), errp)) {
@@ -855,6 +876,8 @@ static const VMStateDescription vmstate_sgi_o2000_module_mgmt = {
 static const Property mgmt_properties[] = {
     DEFINE_PROP_UINT8("module-number", SGIO2000ModuleMgmtState,
                       module_number, 1),
+    DEFINE_PROP_STRING("model-serial", SGIO2000ModuleMgmtState,
+                       module_serial_text),
     DEFINE_PROP_BOOL("can-reset", SGIO2000ModuleMgmtState, can_reset, false),
     DEFINE_PROP_BOOL("can-nmi", SGIO2000ModuleMgmtState, can_nmi, false),
     DEFINE_PROP_BOOL("can-power", SGIO2000ModuleMgmtState, can_power, false),
