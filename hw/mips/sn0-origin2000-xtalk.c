@@ -12,6 +12,8 @@
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
 #include "qemu/rcu.h"
+#include "system/block-backend.h"
+#include "system/blockdev.h"
 #include "system/runstate.h"
 #include "system/system.h"
 #include "sn0.h"
@@ -362,11 +364,13 @@ static void sn0_origin2000_xtalk_build_crossbows(SN0Origin2000XtalkState *s)
  */
 static PCIDevice *sn0_origin2000_xtalk_pci_function(
     SN0Origin2000XtalkBoard *board, const SN0ModelIoBoard *record,
-    const SN0ModelComponent *function, unsigned int scsi_index, int devfn,
-    Error **errp)
+    const SN0ModelComponent *function, unsigned int scsi_index,
+    unsigned int board_index, int devfn, Error **errp)
 {
     PCIBus *bus = PCI_HOST_BRIDGE(board->bridge)->bus;
     g_autofree char *name = NULL;
+    DriveInfo *dinfo;
+    BlockBackend *blk;
     PCIDevice *dev;
     Chardev *console;
 
@@ -383,6 +387,9 @@ static PCIDevice *sn0_origin2000_xtalk_pci_function(
         return dev;
 
     case SN0_COMPONENT_IOC3:
+        name = g_strdup_printf("sgi-nvram%u", board_index);
+        dinfo = drive_get(IF_MTD, 0, board_index);
+        blk = dinfo ? blk_by_legacy_dinfo(dinfo) : blk_by_name(name);
         dev = pci_new(devfn, TYPE_SGI_IOC3);
         object_property_add_child(board->owner, "ioc3", OBJECT(dev));
         console = serial_hd(SN0_IOC3_SERIAL_A_CHARDEV);
@@ -399,6 +406,9 @@ static PCIDevice *sn0_origin2000_xtalk_pci_function(
                             SGI_IOC3_TIMEKEEPER_M48T35 :
                             SGI_IOC3_TIMEKEEPER_NONE);
         qdev_prop_set_uint64(DEVICE(dev), "onewire-serial", function->serial);
+        if (blk) {
+            qdev_prop_set_drive(DEVICE(dev), "nvram-drive", blk);
+        }
         if (!pci_realize_and_unref(dev, bus, errp)) {
             goto refused;
         }
@@ -508,7 +518,7 @@ static bool sn0_origin2000_xtalk_fit_board(SN0Origin2000XtalkState *s,
             continue;
         }
         board->pci[i] = sn0_origin2000_xtalk_pci_function(
-            board, record, function, instance,
+            board, record, function, instance, index,
             sn0_origin2000_xtalk_function_devfn(s, function, i), errp);
         if (!board->pci[i]) {
             return false;
