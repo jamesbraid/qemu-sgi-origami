@@ -601,6 +601,11 @@ static void xframe_traffic_complete(XframeState *s, bool rx, unsigned entry)
     }
 }
 
+/*
+ * Publish the clear before re-latching a deferred completion: the Bridge
+ * forwards a set packet to the Hub only on a rising pin, so the line must
+ * drop and rise again for the second completion to reach the guest.
+ */
 static void xframe_traffic_ack(XframeState *s, bool rx, uint64_t written)
 {
     XframeTrafficBatch *batches = rx ? s->rti_batch : s->tti_batch;
@@ -608,6 +613,7 @@ static void xframe_traffic_ack(XframeState *s, bool rx, uint64_t written)
     unsigned entry;
 
     *status &= ~written;
+    xframe_update_irq(s);
     for (entry = 0; entry < XFRAME_TRAFFIC_MEM_ENTRIES; entry++) {
         uint64_t bit = xframe_traffic_bit(entry);
 
