@@ -620,6 +620,11 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
              * for the cleared bits above, so restoring the deferred ones
              * now raises it again as a real edge, rather than the guest's
              * single write silently absorbing both completions.
+             *
+             * This depends on "cleared" being the whole status word the
+             * driver read, so status & enable truly reaches zero above.
+             * All three public drivers write back exactly what they read
+             * here (docs/datasheets/ioc3.md, "0xF4 Interrupt status").
              */
             s->enet_reg[index] |= deferred;
             sgi_ioc3_enet_update_irq(s);
