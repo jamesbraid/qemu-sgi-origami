@@ -17,6 +17,8 @@ slow_qtests = {
   'boot-serial-test': 360,
   # Complete one-wire memory reads transfer every bit through QMP.
   'sn0-router-nic-test': 300,
+  # Complete one-wire reads plus module identity and migration exceed 120s.
+  'sn0-o2000-module-mgmt-test': 300,
   'qos-test': 120,
   'vmgenid-test': 610,
   # These SN0 device qtests run 50-59s under TCG; the 60s default leaves no

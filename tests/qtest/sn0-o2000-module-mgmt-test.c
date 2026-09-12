@@ -38,7 +38,12 @@
 #define MSC_ADDRESS     0x08
 #define NVRAM_FIRST     0x50
 #define NVRAM_BYTES     2048
-#define NVRAM_MODULE_NUMBER 8
+#define NVRAM_IDENTITY_PAGE 0x700
+#define NVRAM_VALID_MARKER (NVRAM_IDENTITY_PAGE + 0)
+#define NVRAM_MODULE_NUMBER (NVRAM_IDENTITY_PAGE + 8)
+#define NVRAM_PARTITION (NVRAM_IDENTITY_PAGE + 10)
+#define NVRAM_VALID_VALUE 0x37
+#define INITIAL_MODULE_NUMBER 1
 #define ADAPTER_COUNT   4
 #define RESP_CAP        96
 
@@ -467,6 +472,37 @@ static void test_nvram_is_shared(void)
     qtest_quit(qts);
 }
 
+static void test_initial_identity_on_every_node(void)
+{
+    QTestState *qts = start_module();
+
+    for (unsigned node = 0; node < ADAPTER_COUNT; node++) {
+        g_assert_cmphex(nvram_read(qts, node, NVRAM_VALID_MARKER), ==,
+                        NVRAM_VALID_VALUE);
+        g_assert_cmphex(nvram_read(qts, node, NVRAM_MODULE_NUMBER), ==,
+                        INITIAL_MODULE_NUMBER);
+        g_assert_cmphex(nvram_read(qts, node, NVRAM_PARTITION), ==, 0);
+    }
+    qtest_quit(qts);
+}
+
+static void test_identity_survives_reset(void)
+{
+    QTestState *qts = start_module();
+
+    nvram_write(qts, 0, NVRAM_VALID_MARKER, 0x5a);
+    nvram_write(qts, 1, NVRAM_MODULE_NUMBER, 7);
+    nvram_write(qts, 2, NVRAM_PARTITION, 3);
+    qtest_system_reset(qts);
+    for (unsigned node = 0; node < ADAPTER_COUNT; node++) {
+        init_adapter(qts, node);
+        g_assert_cmphex(nvram_read(qts, node, NVRAM_VALID_MARKER), ==, 0x5a);
+        g_assert_cmphex(nvram_read(qts, node, NVRAM_MODULE_NUMBER), ==, 7);
+        g_assert_cmphex(nvram_read(qts, node, NVRAM_PARTITION), ==, 3);
+    }
+    qtest_quit(qts);
+}
+
 /*
  * Nothing in this machine receives a module reset or a power sequence, so
  * the controller refuses those commands. Answering "ok" would tell firmware
@@ -715,13 +751,21 @@ static void test_migration(void)
     QTestState *to = qtest_init(MACHINE_ARGS " -incoming defer");
     int64_t departed;
 
-    nvram_write(from, 2, 0x321, 0x5a);
+    nvram_write(from, 0, NVRAM_VALID_MARKER, 0x5a);
+    nvram_write(from, 1, NVRAM_MODULE_NUMBER, 7);
+    nvram_write(from, 2, NVRAM_PARTITION, 3);
+    nvram_write(from, 2, 0x321, 0xa5);
     /* A zero step is refused, so read the clock by taking the smallest. */
     departed = qtest_clock_step(from, 1);
     migrate_module(from, to);
     wait_until_running(to);
     qtest_clock_set(to, departed);
-    g_assert_cmphex(nvram_read(to, 0, 0x321), ==, 0x5a);
+    for (unsigned node = 0; node < ADAPTER_COUNT; node++) {
+        g_assert_cmphex(nvram_read(to, node, NVRAM_VALID_MARKER), ==, 0x5a);
+        g_assert_cmphex(nvram_read(to, node, NVRAM_MODULE_NUMBER), ==, 7);
+        g_assert_cmphex(nvram_read(to, node, NVRAM_PARTITION), ==, 3);
+        g_assert_cmphex(nvram_read(to, node, 0x321), ==, 0xa5);
+    }
     assert_response(to, 3, "ver", "ok");
     qtest_quit(from);
     qtest_quit(to);
@@ -765,6 +809,10 @@ int main(int argc, char **argv)
                    test_start_loses_to_grant);
     qtest_add_func("/sn0/o2000-module-management/shared-nvram",
                    test_nvram_is_shared);
+    qtest_add_func("/sn0/o2000-module-management/initial-identity",
+                   test_initial_identity_on_every_node);
+    qtest_add_func("/sn0/o2000-module-management/identity-reset",
+                   test_identity_survives_reset);
     qtest_add_func("/sn0/o2000-module-management/destructive-refused",
                    test_destructive_commands_refused);
     qtest_add_func("/sn0/o2000-module-management/dip-switches",

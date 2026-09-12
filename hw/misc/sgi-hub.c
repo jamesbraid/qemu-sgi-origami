@@ -2188,6 +2188,7 @@ static void sgi_hub_write_ni_scratch(SGIHubState *s, hwaddr addr,
                                      unsigned arg, uint64_t val,
                                      unsigned size)
 {
+    trace_sgi_hub_ni_scratch_write(s->cpu_base, s->nasid, arg, val);
     s->ni_scratch[arg] = val;
     sgi_hub_kick_remote_scratch_node(s);
 }

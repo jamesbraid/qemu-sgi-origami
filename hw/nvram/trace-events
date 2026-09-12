@@ -8,6 +8,8 @@ aspeed_otp_prog_bit(int bit) "Programmed bit %d"
 # ds1225y.c
 nvram_read(uint32_t addr, uint32_t ret) "read addr %d: 0x%02x"
 nvram_write(uint32_t addr, uint32_t old, uint32_t val) "write addr %d: 0x%02x -> 0x%02x"
+at24c_read(uint8_t slave, uint16_t offset, uint8_t value) "slave 0x%02x offset 0x%03x value 0x%02x"
+at24c_write(uint8_t slave, uint16_t offset, uint8_t value) "slave 0x%02x offset 0x%03x value 0x%02x"
 
 # fw_cfg.c
 fw_cfg_select(void *s, uint16_t key_value, const char *key_name, int ret) "%p key 0x%04" PRIx16 " '%s', ret: %d"
