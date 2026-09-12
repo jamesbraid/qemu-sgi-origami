@@ -342,6 +342,27 @@ static void test_parent_identity_unchanged(void)
     lucent_ohci_close(&ohci);
 }
 
+static void test_pci_command_status(void)
+{
+    LucentOHCI ohci = { 0 };
+
+    lucent_ohci_open(&ohci, lucent_ohci_start("lucent-ohci", ""));
+
+    g_assert_cmphex(lucent_ohci_config_readl(&ohci, PCI_COMMAND), ==,
+                    0x02000000);
+    lucent_ohci_config_writew(&ohci, PCI_COMMAND,
+                              PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    g_assert_cmphex(lucent_ohci_config_readl(&ohci, PCI_COMMAND), ==,
+                    0x02000006);
+
+    qtest_qmp_assert_success(ohci.qts, "{'execute': 'system_reset'}");
+    qtest_qmp_eventwait(ohci.qts, "RESET");
+    g_assert_cmphex(lucent_ohci_config_readl(&ohci, PCI_COMMAND), ==,
+                    0x02000000);
+
+    lucent_ohci_close(&ohci);
+}
+
 static void test_dma_and_inta_reuse(void)
 {
     LucentOHCI ohci = { 0 };
@@ -516,6 +537,8 @@ int main(int argc, char **argv)
                    test_identity_and_window);
     qtest_add_func("/lucent-ohci/parent-identity-unchanged",
                    test_parent_identity_unchanged);
+    qtest_add_func("/lucent-ohci/pci-command-status",
+                   test_pci_command_status);
     qtest_add_func("/lucent-ohci/dma-and-inta-reuse",
                    test_dma_and_inta_reuse);
     qtest_add_func("/lucent-ohci/reset-reuse", test_reset_reuse);
