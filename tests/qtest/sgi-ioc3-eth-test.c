@@ -1531,7 +1531,11 @@ static void test_a_transmit_with_no_reply_raises_nothing(const void *data)
     qtest_quit(qts);
 
     g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
-    g_assert_null(strstr(trace, "sgi_ioc3_eth_rx_flush"));
+    /*
+     * Bring-up's own MAC_CONTROL and RX_PRODUCE writes each schedule one;
+     * the quiet transmit that gets no reply must not add a third.
+     */
+    g_assert_cmpuint(count_trace_events(trace, "sgi_ioc3_eth_rx_flush"), ==, 2);
     g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
@@ -1605,8 +1609,79 @@ static void test_mac_reset_cancels_a_deferred_receive_flush(const void *data)
     qtest_quit(qts);
 
     g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
-    g_assert_null(strstr(trace, "sgi_ioc3_eth_rx_flush"));
+    /*
+     * Bring-up's own MAC_CONTROL and RX_PRODUCE writes each schedule one;
+     * the reset must cancel the one TX_PRODUCE queued rather than let it
+     * also run.
+     */
+    g_assert_cmpuint(count_trace_events(trace, "sgi_ioc3_eth_rx_flush"), ==, 2);
     g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
+/*
+ * A buffer post must not synchronously re-enter receive delivery: firmware's
+ * refill-and-acknowledge cycle for the buffer it just posted has to see its
+ * own store return before anything else runs (issue #554). writel_readl_poll
+ * reads the register once inside the write's own command, before the server
+ * can yield to its main loop, and again after exactly one nonblocking poll --
+ * so "before" pins the write callback and "after" pins the deferred flush.
+ */
+static void test_rx_produce_defers_a_queued_delivery(const void *data)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *trace = NULL;
+    QTestState *qts;
+    uint8_t frame[64];
+    uint32_t ring = RAM_SCRATCH + 0x8000;
+    uint32_t rxbuf = RAM_SCRATCH + 0xc000;
+    uint32_t before_poll, after_poll;
+    int sv[2];
+    unsigned int i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i + 0x20);
+    }
+    memset(frame, 0xff, 6);
+
+    path = g_strdup_printf("sgi-ioc3-rx-produce-defer-%u-%u.trace",
+                           (unsigned int)getpid(), g_random_int());
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = qtest_initf("-M pc -m 128M -display none "
+                      "-netdev socket,fd=%d,id=n0 "
+                      "-device sgi-ioc3,addr=%02x.0,netdev=n0 "
+                      "-trace sgi_ioc3_eth_rx_flush,file=%s",
+                      sv[1], IOC3_PCI_SLOT, path);
+    /* No buffers posted yet: produce == consume, so the ring starts full. */
+    ioc3_bring_up(qts, ring, rxbuf, 0);
+
+    /* Queued because the ring has no free buffer: can_receive() is false. */
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    g_usleep(200000);
+    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
+    g_assert_cmphex(dma_ldl_be(qts, rxbuf) & RXH_VALID, ==, 0);
+
+    /* Post the one buffer the queued frame is waiting for. */
+    dma_stl_be(qts, ring, 0);
+    dma_stl_be(qts, ring + 4, rxbuf);
+
+    before_poll = qtest_writel_then_readl_poll(
+        qts, ENET_RX_PRODUCE, RX_RING_STRIDE | RPIR_ARM,
+        ENET_RX_CONSUME, &after_poll);
+    g_assert_cmphex(before_poll, ==, 0);
+    g_assert_cmphex(after_poll, ==, RX_RING_STRIDE);
+
+    g_assert_cmphex(dma_ldl_be(qts, rxbuf) & RXH_VALID, ==, RXH_VALID);
+    g_assert_cmphex(ioc3_readl(qts, ENET_INT_STATUS) & ENET_INT_RX_TIMER,
+                    ==, ENET_INT_RX_TIMER);
+
+    qtest_quit(qts);
+
+    /* The delivery ran from the bottom half, not the write that queued it. */
+    g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
+    g_assert_nonnull(strstr(trace, "sgi_ioc3_eth_rx_flush"));
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    close(sv[0]);
 }
 
 int main(int argc, char **argv)
@@ -1623,6 +1698,8 @@ int main(int argc, char **argv)
                         test_deferred_receive_delivers_without_reset);
     qtest_add_data_func("sgi-ioc3-eth/mac-reset-cancels-deferred-receive", NULL,
                         test_mac_reset_cancels_a_deferred_receive_flush);
+    qtest_add_data_func("sgi-ioc3-eth/rx-produce-defers-queued-delivery", NULL,
+                        test_rx_produce_defers_a_queued_delivery);
     qtest_add_data_func("sgi-ioc3-eth/backend-link-reaches-status", NULL,
                         test_the_backend_link_reaches_the_status_word);
     qtest_add_data_func("sgi-ioc3-eth/queued-frame-lands-after-loopback", NULL,
