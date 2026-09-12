@@ -94,15 +94,12 @@
  * and _SE (public s2io s2BIT(48)/s2BIT(49); s2BIT(n) is 1<<(63-n), so bits 15
  * and 14 of the low word). The two combinations that occur on real drivers are
  * modelled, and only those. Linux sets FE and SE together on both host
- * endiannesses and declares every field __le in place: FE+SE means each field
- * little-endian at its own offset. IRIX leaves both clear, and the block was
- * measured big-endian in place (a little-endian write is read back
- * byte-reversed here, a count of 50 arriving as 0x32000000). FE alone or SE
- * alone -- which nobody sets -- would transpose the halves of each field on the
- * hardware; that is not modelled, and the STAT_CFG enable path logs it. A
- * 64-bit field,
- * were one ever filled, follows the same selector in place (whole-64-bit
- * little- or big-endian), not a half-swap.
+ * endiannesses and declares every field __le in place: FE+SE means each 64-bit
+ * word of the block little-endian. IRIX leaves both clear, and the block was
+ * measured big-endian (a little-endian write is read back byte-reversed here, a
+ * count of 50 arriving as 0x32000000). FE alone or SE alone -- which nobody
+ * sets -- is not modelled, and the STAT_CFG enable path logs it. See
+ * xframe_stat_dma() for why the unit of byte order is the 64-bit word.
  */
 #define XFRAME_SWAPPER_CTRL_STATS_FE  (1ULL << 15)
 #define XFRAME_SWAPPER_CTRL_STATS_SE  (1ULL << 14)
@@ -110,12 +107,12 @@
 static void xframe_stat_dma(XframeState *s);
 static int64_t xframe_stat_period_ms(XframeState *s);
 
-static void xframe_stat_stl(XframeState *s, uint8_t *p, uint32_t val)
+static void xframe_stat_stq(XframeState *s, uint8_t *p, uint64_t val)
 {
     if (s->swapper_ctrl & XFRAME_SWAPPER_CTRL_STATS_SE) {
-        stl_le_p(p, val);
+        stq_le_p(p, val);
     } else {
-        stl_be_p(p, val);
+        stq_be_p(p, val);
     }
 }
 
@@ -1599,52 +1596,56 @@ static const MemoryRegionOps xframe_pif_ops = {
  * transmit packet count runs backwards (observed as netstat -in reporting
  * Opkts of 4294967284 and falling, about one step per transmit handed over).
  *
- * Offsets and the hardware span come from compiling the public s2io stat_block
- * (offsetof, both the mainline and history copies of the struct agree). The
- * card writes the hardware section, [0, 0x320); at 0x320 the driver's own
- * software tail (u8 buffer[20], then swStat) begins and the card never touches
- * it. The block is a VALUE structure -- counts, not a byte stream -- so its
- * byte order follows the guest's own SWAPPER_CTRL_STATS_SE setting, the way
- * descriptors follow their swap-enables (see xframe_stat_stl); a plain
- * little-endian write is read back byte-reversed on this big-endian guest, a
- * count of 50 arriving as 0x32000000. Each 64-bit count is split as a low
- * 32-bit field near the top of the block and a high 32-bit overflow field in
- * a later section -- the two overflow fields sit past the eight __le16
- * rmac_full_q0..q7 counters, which is why each overflow offset is 16 bytes
- * above its Tx/Rx neighbour. Only the transmit and receive frame and byte
- * counters are filled -- the rest of the block reads zero, which for counters
- * of events this model never generates (errors, pauses, discards) is also the
- * truth.
+ * The hardware span comes from compiling the public s2io stat_block (offsetof,
+ * both the mainline and history copies of the struct agree). The card writes
+ * [0, 0x320); at 0x320 the driver's own software tail (u8 buffer[20], then
+ * swStat) begins and the card never touches it.
+ *
+ * The block is a run of 64-bit words, and the swapper orders each word whole.
+ * Where the struct declares two __le32 counters side by side, they are the two
+ * halves of one word: all 24 such pairs named in the driver's
+ * ethtool_xena_stats_keys table are declared in the reverse of the order that
+ * table lists them (tmac_data_octets before tmac_frms, but "tmac_frms" before
+ * "tmac_data_octets"), which is what a little-endian declaration of a word
+ * holding the first-listed counter in its high half looks like. So the
+ * transmit word at 0x000 is frames << 32 | octets: octets first on the
+ * little-endian Linux block, frames first on the big-endian IRIX block, and
+ * the receive word at 0x060 and the overflow words at 0x218 and 0x260 follow.
+ * QEMU #558 is the big-endian case -- with the halves written as separate
+ * 32-bit fields in declaration order, IRIX read the octet counts as frame
+ * counts. See the datasheet for the guest-side dump that confirms both halves
+ * and for the one table that lists three pairs the other way round.
+ *
+ * The block is a VALUE structure -- counts, not a byte stream -- and only the
+ * transmit and receive frame and byte counters are filled. The rest reads
+ * zero, which for counters of events this model never generates (errors,
+ * pauses, discards) is also the truth.
  */
 #define XFRAME_STAT_BLOCK_SIZE          0x320
-#define XFRAME_STAT_TMAC_DATA_OCTETS    0x000
-#define XFRAME_STAT_TMAC_FRMS           0x004
-#define XFRAME_STAT_RMAC_DATA_OCTETS    0x060
-#define XFRAME_STAT_RMAC_VLD_FRMS       0x064
-#define XFRAME_STAT_TMAC_OCTETS_OFLOW   0x218
-#define XFRAME_STAT_TMAC_FRMS_OFLOW     0x21c
-#define XFRAME_STAT_RMAC_OCTETS_OFLOW   0x260
-#define XFRAME_STAT_RMAC_FRMS_OFLOW     0x264
+#define XFRAME_STAT_TMAC_FRMS_OCTETS    0x000
+#define XFRAME_STAT_RMAC_FRMS_OCTETS    0x060
+#define XFRAME_STAT_TMAC_OFLOW          0x218
+#define XFRAME_STAT_RMAC_OFLOW          0x260
+
+static uint64_t xframe_stat_pair(uint32_t high, uint32_t low)
+{
+    return (uint64_t)high << 32 | low;
+}
 
 static void xframe_stat_dma(XframeState *s)
 {
     uint8_t block[XFRAME_STAT_BLOCK_SIZE] = { 0 };
 
-    xframe_stat_stl(s, block + XFRAME_STAT_TMAC_DATA_OCTETS,
-                    (uint32_t)s->stat_tx_octets);
-    xframe_stat_stl(s, block + XFRAME_STAT_TMAC_OCTETS_OFLOW,
-                    (uint32_t)(s->stat_tx_octets >> 32));
-    xframe_stat_stl(s, block + XFRAME_STAT_TMAC_FRMS, (uint32_t)s->stat_tx_frms);
-    xframe_stat_stl(s, block + XFRAME_STAT_TMAC_FRMS_OFLOW,
-                    (uint32_t)(s->stat_tx_frms >> 32));
-    xframe_stat_stl(s, block + XFRAME_STAT_RMAC_DATA_OCTETS,
-                    (uint32_t)s->stat_rx_octets);
-    xframe_stat_stl(s, block + XFRAME_STAT_RMAC_OCTETS_OFLOW,
-                    (uint32_t)(s->stat_rx_octets >> 32));
-    xframe_stat_stl(s, block + XFRAME_STAT_RMAC_VLD_FRMS,
-                    (uint32_t)s->stat_rx_frms);
-    xframe_stat_stl(s, block + XFRAME_STAT_RMAC_FRMS_OFLOW,
-                    (uint32_t)(s->stat_rx_frms >> 32));
+    xframe_stat_stq(s, block + XFRAME_STAT_TMAC_FRMS_OCTETS,
+                    xframe_stat_pair(s->stat_tx_frms, s->stat_tx_octets));
+    xframe_stat_stq(s, block + XFRAME_STAT_TMAC_OFLOW,
+                    xframe_stat_pair(s->stat_tx_frms >> 32,
+                                     s->stat_tx_octets >> 32));
+    xframe_stat_stq(s, block + XFRAME_STAT_RMAC_FRMS_OCTETS,
+                    xframe_stat_pair(s->stat_rx_frms, s->stat_rx_octets));
+    xframe_stat_stq(s, block + XFRAME_STAT_RMAC_OFLOW,
+                    xframe_stat_pair(s->stat_rx_frms >> 32,
+                                     s->stat_rx_octets >> 32));
 
     if (pci_dma_write(PCI_DEVICE(s), s->stat_addr, block,
                       sizeof(block)) != MEMTX_OK) {

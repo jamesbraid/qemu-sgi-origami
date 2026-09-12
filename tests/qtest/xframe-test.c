@@ -365,19 +365,23 @@
 
 /*
  * The statistics block: STAT_ADDR takes the guest address, STAT_CFG's top bit
- * enables the periodic DMA (public s2io stat_cfg / stat_addr; field offsets
- * from its stat_block struct). The block's byte order follows the guest's
- * SWAPPER_CTRL_STATS_SE bit -- big-endian at reset, as these tests read it
- * with dma_ldl_be below.
+ * enables the periodic DMA (public s2io stat_cfg / stat_addr; offsets from its
+ * stat_block struct). Each frame and byte counter pair is one 64-bit word,
+ * frames in the high half, and the word's byte order follows the guest's
+ * SWAPPER_CTRL_STATS_SE bit: big-endian at reset (frames first, as most of
+ * these tests read it with dma_ldl_be), little-endian with STATS_FE|STATS_SE
+ * set (octets first, the public struct's declaration order).
  */
 #define STAT_CFG                 0x09d0
 #define STAT_ADDR                0x09d8
 #define STAT_CFG_EN              (1ULL << 63)
 #define STAT_CFG_ONE_SHOT        (1ULL << 62)
-#define STAT_TMAC_DATA_OCTETS    0x000
-#define STAT_TMAC_FRMS           0x004
-#define STAT_RMAC_DATA_OCTETS    0x060
-#define STAT_RMAC_VLD_FRMS       0x064
+#define SWAPPER_CTRL_STATS_FE    (1ULL << 15)
+#define SWAPPER_CTRL_STATS_SE    (1ULL << 14)
+#define STAT_TMAC_WORD           0x000
+#define STAT_RMAC_WORD           0x060
+#define STAT_TMAC_FRMS           STAT_TMAC_WORD          /* big-endian */
+#define STAT_TMAC_DATA_OCTETS    (STAT_TMAC_WORD + 4)    /* big-endian */
 /* The card writes the hardware section [0, 0x320); the driver's tail follows. */
 #define STAT_BLOCK_SIZE          0x320
 #define STAT_BLOCK_ADDR          (TX_RAM_SCRATCH + 0x30000)
@@ -4681,12 +4685,67 @@ static void test_statistics_block_write_span(void)
 
     /* Everything in the span is zero except the four counter words. */
     for (i = 0; i < STAT_BLOCK_SIZE; i++) {
-        bool counter = (i < STAT_TMAC_FRMS + 4) ||
-                       (i >= STAT_RMAC_DATA_OCTETS && i < STAT_RMAC_VLD_FRMS + 4);
+        bool counter = (i < STAT_TMAC_WORD + 8) ||
+                       (i >= STAT_RMAC_WORD && i < STAT_RMAC_WORD + 8);
         if (!counter) {
             g_assert_cmphex(block[i], ==, 0);
         }
     }
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * Each frame and byte counter pair is one 64-bit word with frames in the high
+ * half, byte-ordered whole by the statistics swapper. The public s2io struct
+ * declares the transmit pair tmac_data_octets then tmac_frms, __le32 each,
+ * under STATS_FE|STATS_SE; with both clear, as IRIX leaves them, the same word
+ * is big-endian and frames come first -- the order IRIX's netstat -i reads
+ * (QEMU #558: Opkts showed the byte count when octets came first). Pin both
+ * orders, for the transmit word and the receive word.
+ */
+static void test_statistics_block_word_order_follows_swapper(void)
+{
+    XframeTx t;
+    uint8_t frame[128];
+    uint8_t rx_frame[64];
+    uint8_t got[256];
+    size_t len;
+    unsigned i;
+
+    len = build_ipv4_frame(frame, traffic_remote_mac, IPPROTO_UDP, 64, 106);
+    for (i = 0; i < sizeof(rx_frame); i++) {
+        rx_frame[i] = (uint8_t)(0x80 + i);
+    }
+    memcpy(rx_frame, xframe_station_mac, sizeof(xframe_station_mac));
+
+    xframe_tx_start(&t);
+
+    for (i = 0; i < 3; i++) {
+        xframe_program_txd(&t, TX_RAM_SCRATCH, TX_RAM_SCRATCH + 0x1000,
+                           frame, len);
+        xframe_ring_doorbell(&t, TX_RAM_SCRATCH);
+        (void)traffic_recv_frame(t.host_fd, got, sizeof(got));
+    }
+    xframe_program_rxd(&t, RX_RING_BASE, RX_BUF0, RX_BUF_CAPACITY);
+    xframe_rx_ring_arm(&t, RX_RING_BASE);
+    net_socket_send_frame(t.host_fd, rx_frame, sizeof(rx_frame));
+    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+
+    sock_pif_writeq(&t, STAT_ADDR, STAT_BLOCK_ADDR);
+    sock_pif_writeq(&t, STAT_CFG, STAT_CFG_EN | STAT_CFG_ONE_SHOT);
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, STAT_BLOCK_ADDR + STAT_TMAC_WORD), ==,
+                    3ULL << 32 | (3 * len));
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, STAT_BLOCK_ADDR + STAT_RMAC_WORD), ==,
+                    1ULL << 32 | sizeof(rx_frame));
+
+    sock_pif_writeq(&t, SWAPPER_CTRL,
+                    SWAPPER_CTRL_STATS_FE | SWAPPER_CTRL_STATS_SE);
+    sock_pif_writeq(&t, STAT_CFG, STAT_CFG_EN | STAT_CFG_ONE_SHOT);
+    g_assert_cmphex(dma_ldq_le(t.qs->qts, STAT_BLOCK_ADDR + STAT_TMAC_WORD), ==,
+                    3ULL << 32 | (3 * len));
+    g_assert_cmphex(dma_ldq_le(t.qs->qts, STAT_BLOCK_ADDR + STAT_RMAC_WORD), ==,
+                    1ULL << 32 | sizeof(rx_frame));
 
     xframe_tx_stop(&t);
 }
@@ -5783,6 +5842,8 @@ int main(int argc, char **argv)
                    test_statistics_block_counts_traffic);
     qtest_add_func("xframe/statistics-block-write-span",
                    test_statistics_block_write_span);
+    qtest_add_func("xframe/statistics-block-word-order-follows-swapper",
+                   test_statistics_block_word_order_follows_swapper);
     qtest_add_func("xframe/statistics-one-shot-clears-enable",
                    test_statistics_one_shot_clears_enable);
     qtest_add_func("xframe/descriptors-honor-swapper-ctrl-little-endian",
