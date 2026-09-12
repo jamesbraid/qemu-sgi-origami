@@ -98,6 +98,14 @@ PEND_READ_FAIR = 0x58        # 4 words
 PEND_READ_STATE_WORDS = 15
 PEND_READ_ROUNDS = 8
 PEND_READ_WAIT_LIMIT = 64
+# Effectively unbounded, for the thread=multi twin. With every slice on its
+# own host thread a finite guest budget expires on host scheduling rather
+# than on the protocol, so a bounded one false-positives under load;
+# wait_for_pending_read_state's host deadline is the real timeout there.
+# load_u32's lui sign-extends bit 31 on mips64, so this loads the 64-bit
+# maximum rather than 0x00000000ffffffff -- further still from firing,
+# which is the intent.
+PEND_READ_WAIT_LIMIT_UNBOUNDED = 0xffffffff
 PEND_READ_INTERRUPT = 114            # bank 1, bit 50
 PEND_READ_UNRELATED_BANK1 = 112      # pending across every poll
 PEND_READ_UNRELATED_BANK0 = 12       # keeps bank 0 nonzero as well
@@ -797,7 +805,7 @@ def emit_pend1_bit_test(program):
     program.emit(mips_i(0x0c, R_T0, R_T0, 1))
 
 
-def build_pending_read_rendezvous():
+def build_pending_read_rendezvous(wait_limit=PEND_READ_WAIT_LIMIT):
     program = MipsProgram()
 
     # Enter the same 64-bit kernel mode selected by the real PROM.
@@ -873,7 +881,7 @@ def build_pending_read_rendezvous():
     program.emit(0x0000000f)  # sync
     program.emit(mips_i(0x3f, R_S0, R_S2, PEND_READ_SET_A))
     program.emit(0x0000000f)  # sync
-    program.emit(mips_i(0x19, R_ZERO, R_T2, PEND_READ_WAIT_LIMIT))
+    load_u32(program, R_T2, wait_limit)
     a_poll = len(program.instructions)
     emit_pend1_bit_test(program)
     cleared = program.branch(0x04, R_T0, R_ZERO)
@@ -922,7 +930,7 @@ def build_pending_read_rendezvous():
     program.emit(mips_i(0x19, R_ZERO, R_T0, 1))
     program.emit(mips_i(0x3f, R_S0, R_T0, PEND_READ_WINDOW_B))
     program.emit(0x0000000f)  # sync
-    program.emit(mips_i(0x19, R_ZERO, R_T2, PEND_READ_WAIT_LIMIT))
+    load_u32(program, R_T2, wait_limit)
     b_poll = len(program.instructions)
     emit_pend1_bit_test(program)
     set_seen = program.branch(0x05, R_T0, R_ZERO)
@@ -2054,6 +2062,62 @@ class SN0SMPMachine(QemuSystemTest):
                          0, state)
         self.assertEqual(self.read_state(hub0 + HUB_PI_INT_MASK0_B, 1)[0],
                          0, state)
+        self.assertEqual(self.read_state(hub0 + HUB_PI_INT_MASK1_B, 1)[0],
+                         PEND_READ_MASK1_B_VALUE, state)
+        for reg in (HUB_PI_INT_PEND0, HUB_PI_INT_PEND1,
+                    HUB_PI_INT_MASK0_A, HUB_PI_INT_MASK1_A,
+                    HUB_PI_INT_MASK0_B, HUB_PI_INT_MASK1_B):
+            self.assertEqual(self.read_state(hub1 + reg, 1)[0], 0, state)
+
+    def test_pending_read_rendezvous_thread_multi(self):
+        self.set_machine('origin200')
+        firmware = self.scratch_file('pending-read-rendezvous-multi.bin')
+        build_pending_read_rendezvous(
+            wait_limit=PEND_READ_WAIT_LIMIT_UNBOUNDED).write(firmware)
+
+        # The thread=multi twin of test_pending_read_schedules_local_peer.
+        # The read assist that test covers is skipped here, because every
+        # slice holds its own host thread and is already running, so the
+        # kick releases nobody. What must survive is the protocol itself:
+        # both directions of the rendezvous still complete without it.
+        #
+        # No -icount and no rr-kick-period: QEMU hard-errors combining
+        # icount with thread=multi, and the kick period names a
+        # round-robin scheduling knob this mode does not read.
+        self.vm.set_machine(
+            'origin200,synthesized-firmware=on,debug-leds=off')
+        self.vm.add_args(
+            '-accel', 'tcg,thread=multi',
+            '-m', '128M',
+            '-smp', '4,sockets=2,cores=2,threads=1',
+            '-object', 'memory-backend-ram,id=ram0,size=64M',
+            '-object', 'memory-backend-ram,id=ram1,size=64M',
+            '-numa', 'node,nodeid=0,memdev=ram0,cpus=0-1',
+            '-numa', 'node,nodeid=1,memdev=ram1,cpus=2-3',
+            '-bios', firmware)
+        self.vm.launch()
+
+        state = self.wait_for_pending_read_state()
+
+        self.assertEqual(state[PEND_READ_TIMEOUT // 8], 0, state)
+        self.assertEqual(state[PEND_READ_DONE_B // 8],
+                         PEND_READ_ROUNDS, state)
+        self.assertEqual(state[PEND_READ_DONE_A // 8],
+                         PEND_READ_ROUNDS, state)
+
+        # The fairness words are deliberately not asserted here. They count
+        # an observer's rotations while slice A is still running, which
+        # measures round-robin slice selection; with each slice on its own
+        # host thread the count names host scheduling instead.
+
+        # The device-side picture does not depend on scheduling, so it is
+        # asserted exactly as the single-threaded test asserts it.
+        hub0 = HUB_BY_NODE
+        hub1 = HUB_BY_NODE + HUB_NODE_STRIDE
+        self.assertEqual(self.read_state(hub0 + HUB_PI_INT_PEND0, 1)[0],
+                         1 << PEND_READ_UNRELATED_BANK0, state)
+        self.assertEqual(self.read_state(hub0 + HUB_PI_INT_PEND1, 1)[0],
+                         1 << (PEND_READ_UNRELATED_BANK1 - 64), state)
         self.assertEqual(self.read_state(hub0 + HUB_PI_INT_MASK1_B, 1)[0],
                          PEND_READ_MASK1_B_VALUE, state)
         for reg in (HUB_PI_INT_PEND0, HUB_PI_INT_PEND1,
