@@ -60,6 +60,9 @@ tests = {
                                  '../../hw/core/sysbus.c',
                                  '../../hw/core/qdev-fw.c',
                                  '../../hw/core/fw-path-provider.c',
+                                 '../../hw/1wire/crc.c',
+                                 '../../hw/1wire/core.c',
+                                 '../../hw/1wire/ds2502.c',
                                  '../../hw/i2c/core.c',
                                  '../../hw/i2c/pcf8584.c',
                                  '../../hw/misc/sgi-elsc.c',
@@ -72,6 +75,9 @@ tests = {
                                  '../../hw/core/sysbus.c',
                                  '../../hw/core/qdev-fw.c',
                                  '../../hw/core/fw-path-provider.c',
+                                 '../../hw/1wire/crc.c',
+                                 '../../hw/1wire/core.c',
+                                 '../../hw/1wire/ds2502.c',
                                  '../../hw/i2c/core.c',
                                  '../../hw/i2c/pcf8584.c',
                                  '../../hw/misc/sgi-elsc.c',
@@ -90,6 +96,7 @@ tests = {
                             '../../hw/1wire/crc.c', '../../hw/1wire/ds2505.c',
                             qom, hwcore, migration, io],
   'test-sn0-origin2000-management-model': [
+    '../../hw/1wire/crc.c',
     '../../hw/mips/sn0-origin2000-management-model.c',
     '../../hw/mips/sn0-origin2000-model.c'],
   'test-sn0-origin2000-xtalk-model': [
