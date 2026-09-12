@@ -182,6 +182,8 @@
 #define IOC3_TXD_INT_DONE        (1u << 12)
 #define IOC3_TXD_DATA_VALID      (1u << 16)
 #define IOC3_TXD_DATA_OFFSET     24
+#define IOC3_TIMEKEEPER          IOC3_REG(0x80000)
+#define TIMEKEEPER_STORAGE_SIZE  0x7ff8
 
 #define DUAL_CHASSIS_TOPOLOGY \
     "-m 128M " \
@@ -1445,6 +1447,60 @@ static void test_ethernet_interrupt_reasserts_after_migration(const void *data)
     qtest_quit(from);
 }
 
+static void migrate_timekeeper_image(uint8_t fill)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest_cmdline = NULL;
+    g_autofree uint8_t *expected = g_malloc(TIMEKEEPER_STORAGE_SIZE);
+    g_autofree uint8_t *actual = g_malloc(TIMEKEEPER_STORAGE_SIZE);
+    GError *err = NULL;
+    QTestState *from, *to;
+    size_t i;
+
+    for (i = 0; i < TIMEKEEPER_STORAGE_SIZE; i++) {
+        expected[i] = fill ? (uint8_t)(fill ^ i ^ (i >> 8)) : 0;
+    }
+
+    tmpfs = g_dir_make_tmp("sn0-timekeeper-migration-XXXXXX", &err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MACHINE);
+    attach_node_ioc3(from, 0);
+    qtest_memwrite(from, IOC3_TIMEKEEPER, expected,
+                   TIMEKEEPER_STORAGE_SIZE);
+
+    dest_cmdline = g_strdup_printf(MACHINE " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    migrate_stopped_vm(from, uri);
+
+    /* This is the destination's first access to the restored device. */
+    qtest_memread(to, IOC3_TIMEKEEPER, actual, TIMEKEEPER_STORAGE_SIZE);
+    g_assert_cmpmem(actual, TIMEKEEPER_STORAGE_SIZE,
+                    expected, TIMEKEEPER_STORAGE_SIZE);
+
+    qtest_clock_step(to, 1000000000LL);
+    qtest_memread(to, IOC3_TIMEKEEPER, actual, TIMEKEEPER_STORAGE_SIZE);
+    g_assert_cmpmem(actual, TIMEKEEPER_STORAGE_SIZE,
+                    expected, TIMEKEEPER_STORAGE_SIZE);
+
+    qtest_system_reset(to);
+    attach_node_ioc3(to, 0);
+    qtest_memread(to, IOC3_TIMEKEEPER, actual, TIMEKEEPER_STORAGE_SIZE);
+    g_assert_cmpmem(actual, TIMEKEEPER_STORAGE_SIZE,
+                    expected, TIMEKEEPER_STORAGE_SIZE);
+
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
+static void test_timekeeper_images_survive_migration(const void *data)
+{
+    migrate_timekeeper_image(0);
+    migrate_timekeeper_image(0xa5);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1491,6 +1547,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/migration/ethernet-interrupt-reasserts",
                         NULL,
                         test_ethernet_interrupt_reasserts_after_migration);
+    qtest_add_data_func("sn0/migration/timekeeper-images-survive", NULL,
+                        test_timekeeper_images_survive_migration);
 
     return g_test_run();
 }
