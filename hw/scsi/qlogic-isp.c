@@ -31,6 +31,10 @@ OBJECT_DECLARE_TYPE(QLogicISPState, QLogicISPClass, QLOGIC_ISP)
 
 #define QLOGIC_ISP_VENDOR_ID    0x1077
 
+#define QLOGIC_ISP12160_PCI_STATUS   0x02b0
+#define QLOGIC_ISP12160_PM_CAP       0x44
+#define QLOGIC_ISP12160_PM_VERSION   0x0001
+
 #define QLOGIC_ISP_REG_WINDOW_SIZE  0x100
 
 #define ISP_REG_ID_LOW      0x00    /* RO: chip identity, low half. */
@@ -332,6 +336,7 @@ typedef struct QLogicISPInfo {
     uint16_t cfg1_write_mask;       /* bits a bus config 1 write retains */
     bool flat_ram_transfers;        /* 0x0001/0x0003 RAM pair is in the set */
     bool missing_target_timeout;    /* absent target's status has 0x0040 */
+    bool pm_cap_v1;                 /* PCI Power Management version 1 */
     uint16_t fw_version[3];         /* about-firmware mailboxes 1, 2, 3 */
 } QLogicISPInfo;
 
@@ -2305,12 +2310,24 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
     QLogicISPState *s = QLOGIC_ISP(dev);
     const QLogicISPInfo *info = QLOGIC_ISP_GET_CLASS(s)->info;
     unsigned int i;
+    int pm_cap;
 
     /* The adapter presents one interrupt line, and it is a level. */
     dev->config[PCI_INTERRUPT_PIN] = 0x01;
 
     /* IRIX fails the slot unless Status reads medium DEVSEL at reset. */
     pci_set_word(dev->config + PCI_STATUS, PCI_STATUS_DEVSEL_MEDIUM);
+
+    if (info->pm_cap_v1) {
+        pci_set_word(dev->config + PCI_STATUS,
+                     QLOGIC_ISP12160_PCI_STATUS);
+        pm_cap = pci_pm_init(dev, QLOGIC_ISP12160_PM_CAP, errp);
+        if (pm_cap < 0) {
+            return;
+        }
+        pci_set_word(dev->config + pm_cap + PCI_PM_PMC,
+                     QLOGIC_ISP12160_PM_VERSION);
+    }
 
     /* The memory BAR is an alias of the I/O BAR: one register file. */
     memory_region_init_io(&s->io, OBJECT(s), &qlogic_isp_reg_ops, s,
@@ -2577,6 +2594,7 @@ static const QLogicISPInfo qlogic_isp_infos[] = {
       .cfg1_write_mask = ISP_BUS_CFG1_BANK1080_MASK,
       .flat_ram_transfers = false,
       .missing_target_timeout = true,
+      .pm_cap_v1 = true,
       .fw_version = { 10, 4, 0 } },
 };
 
