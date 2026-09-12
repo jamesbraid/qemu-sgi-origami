@@ -55,6 +55,7 @@ typedef struct DisasContext {
     bool crcp;
     bool partial_lwr_preserves_upper;
     bool ll_sc_intervening_ops_break_link;
+    bool has_store_transaction;
 } DisasContext;
 
 #define DISAS_STOP       DISAS_TARGET_0

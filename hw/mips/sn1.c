@@ -203,6 +203,22 @@ static void sn1_cpu_reset(void *opaque)
                                     SN1_CONFIG0_RESET_INPUT);
 }
 
+static target_ulong sn1_store_transaction(MIPSCPU *cpu, MemoryRegion *mr,
+                                          hwaddr offset,
+                                          target_ulong value, unsigned size,
+                                          void *opaque)
+{
+    SN1MachineState *s = opaque;
+    SGIBedrockState *bedrock = SGI_BEDROCK(s->bedrock);
+
+    (void)cpu;
+    if (mr == &bedrock->md.ecc_mmio) {
+        return sgi_bedrock_md_ecc_store_value(&bedrock->md, offset,
+                                               value, size);
+    }
+    return value;
+}
+
 static void sn1_machine_reset(MachineState *machine, ResetType type)
 {
     SN1MachineState *s = SN1_MACHINE(machine);
@@ -233,6 +249,8 @@ static void sn1_create_cpus(SN1MachineState *s, MachineState *machine)
                                  &error_abort);
         object_property_set_bool(OBJECT(cpu_dev), "start-powered-off", i != 0,
                                  &error_abort);
+        cpu->store_transaction = sn1_store_transaction;
+        cpu->store_transaction_opaque = s;
         qdev_realize(cpu_dev, NULL, &error_fatal);
         cpu_mips_irq_init_cpu(cpu);
         cpu_mips_clock_init(cpu);

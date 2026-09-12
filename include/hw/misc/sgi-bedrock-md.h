@@ -54,5 +54,7 @@ struct SGIBedrockMDState {
 };
 
 void sgi_bedrock_md_soft_reset(SGIBedrockMDState *s);
+uint64_t sgi_bedrock_md_ecc_store_value(SGIBedrockMDState *s, hwaddr offset,
+                                        uint64_t value, unsigned size);
 
 #endif

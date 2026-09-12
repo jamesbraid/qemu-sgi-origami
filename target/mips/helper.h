@@ -10,6 +10,7 @@ DEF_HELPER_4(swl, void, env, tl, tl, int)
 DEF_HELPER_4(swr, void, env, tl, tl, int)
 
 #ifndef CONFIG_USER_ONLY
+DEF_HELPER_5(store_transaction, tl, env, tl, tl, i32, i32)
 DEF_HELPER_3(ll, tl, env, tl, i32)
 #ifdef TARGET_MIPS64
 DEF_HELPER_3(lld, tl, env, tl, i32)

@@ -1621,6 +1621,12 @@ struct ArchCPU {
      */
     bool nmi_level;
 
+    target_ulong (*store_transaction)(MIPSCPU *cpu, MemoryRegion *mr,
+                                      hwaddr offset,
+                                      target_ulong value, unsigned size,
+                                      void *opaque);
+    void *store_transaction_opaque;
+
     /* Host debug state for the debug commands, not migrated. */
     MIPSDebugBreakpoint debug_bp[MIPS_DEBUG_BREAKPOINTS];
     bool debug_bp_skip;
