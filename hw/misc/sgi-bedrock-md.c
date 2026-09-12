@@ -23,7 +23,8 @@ enum {
 #define MD_MEMORY_BANK_SIZE UINT64_C(0x40000000)
 #define MD_DIRECTORY_BANK_SIZE (MD_MEMORY_BANK_SIZE / 8)
 #define MD_ECC_BANK_SIZE (MD_MEMORY_BANK_SIZE / 8)
-#define MD_ECC_ADMITTED_HALFWORD 0x08000006
+#define MD_ECC_ADMITTED_HALFWORD_LOW 0x04000006
+#define MD_ECC_ADMITTED_HALFWORD_HIGH 0x08000006
 /*
  * Bits 58:56 are write-only in the public definition; reading them back
  * and resetting them to zero is model policy.
@@ -472,7 +473,8 @@ static const char *md_ecc_refusal(const SGIBedrockMDState *s, hwaddr offset,
         return "unaligned halfword";
     }
     if (md_ecc_translate(s, offset, size, &index) ||
-        (size == 2 && offset == MD_ECC_ADMITTED_HALFWORD)) {
+        (size == 2 && (offset == MD_ECC_ADMITTED_HALFWORD_LOW ||
+                       offset == MD_ECC_ADMITTED_HALFWORD_HIGH))) {
         return NULL;
     }
     return "outside fitted memory";
@@ -506,7 +508,12 @@ static uint64_t md_ecc_read(void *opaque, hwaddr offset, unsigned size)
     unsigned index;
 
     if (!md_ecc_translate(s, offset, size, &index)) {
-        g_assert(size == 2 && offset == MD_ECC_ADMITTED_HALFWORD);
+        g_assert(size == 2 &&
+                 (offset == MD_ECC_ADMITTED_HALFWORD_LOW ||
+                  offset == MD_ECC_ADMITTED_HALFWORD_HIGH));
+        if (offset == MD_ECC_ADMITTED_HALFWORD_LOW) {
+            return s->ecc_admitted_halfword_low;
+        }
         return s->ecc_admitted_halfword;
     }
     if (size == 1) {
@@ -522,7 +529,13 @@ static void md_ecc_write(void *opaque, hwaddr offset, uint64_t value,
     unsigned index;
 
     if (!md_ecc_translate(s, offset, size, &index)) {
-        g_assert(size == 2 && offset == MD_ECC_ADMITTED_HALFWORD);
+        g_assert(size == 2 &&
+                 (offset == MD_ECC_ADMITTED_HALFWORD_LOW ||
+                  offset == MD_ECC_ADMITTED_HALFWORD_HIGH));
+        if (offset == MD_ECC_ADMITTED_HALFWORD_LOW) {
+            s->ecc_admitted_halfword_low = value;
+            return;
+        }
         s->ecc_admitted_halfword = value;
         return;
     }
@@ -861,6 +874,7 @@ static void md_reset_enter(Object *obj, ResetType type)
     if (s->ecc) {
         memset(s->ecc, 0, s->ecc_entries * sizeof(*s->ecc));
     }
+    s->ecc_admitted_halfword_low = 0;
     s->ecc_admitted_halfword = 0;
     memset(s->protection, 0,
            s->protection_entries * sizeof(*s->protection));
@@ -878,7 +892,7 @@ static int md_post_load(void *opaque, int version_id)
 }
 
 static const VMStateDescription vmstate_md = {
-    .name = TYPE_SGI_BEDROCK_MD, .version_id = 5, .minimum_version_id = 1,
+    .name = TYPE_SGI_BEDROCK_MD, .version_id = 6, .minimum_version_id = 1,
     .post_load = md_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(current_cell, SGIBedrockMDState),
@@ -904,6 +918,7 @@ static const VMStateDescription vmstate_md = {
         VMSTATE_VARRAY_UINT32(ecc, SGIBedrockMDState, ecc_entries, 5,
                               vmstate_info_uint8, uint8_t),
         VMSTATE_UINT16_V(ecc_admitted_halfword, SGIBedrockMDState, 5),
+        VMSTATE_UINT16_V(ecc_admitted_halfword_low, SGIBedrockMDState, 6),
         VMSTATE_BOOL_V(selftest_running, SGIBedrockMDState, 5),
         VMSTATE_UINT8_V(selftest_selector, SGIBedrockMDState, 5),
         VMSTATE_BOOL_V(selftest_phase, SGIBedrockMDState, 5),

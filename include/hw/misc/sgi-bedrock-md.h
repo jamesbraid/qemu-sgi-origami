@@ -38,6 +38,7 @@ struct SGIBedrockMDState {
     uint64_t directory_compat_values[
         SGI_BEDROCK_MD_DIRECTORY_COMPAT_ENTRIES];
     uint8_t directory_compat_count;
+    uint16_t ecc_admitted_halfword_low;
     uint16_t ecc_admitted_halfword;
     uint64_t current_cell;
     uint64_t memory_config;
