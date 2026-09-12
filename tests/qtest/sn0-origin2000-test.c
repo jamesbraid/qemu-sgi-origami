@@ -8,6 +8,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
+#include "sn0-user-image.h"
 
 #define NODE_STRIDE UINT64_C(0x100000000)
 #define HUB_BASE UINT64_C(0x20001000000)
@@ -84,7 +85,14 @@
 /* Architectural Hub-special offset 0x10000000 on its QEMU carrier. */
 #define LOCAL_FLASH_VIEW UINT64_C(0x10010000000)
 #define RESET_FLASH_VIEW UINT64_C(0x1fc00000)
+#define LOCAL_FLASH_GUEST UINT64_C(0x9000000010000000)
 #define FLASH_MODE_OFFSET 0x64
+#define PROCESSOR_MODE_BITS 0x1211a785U
+#define PROCESSOR_MODE_MASK 0x01ffffffU
+#define PI_CPU_ENABLE_A 0x000050
+#define PI_CPU_ENABLE_B 0x000058
+#define CP0_CONFIG 16
+#define MODE_REPORT_STRIDE 32
 
 static const unsigned int module_nasids[] = { 0x11, 0x12, 0x23, 0x24 };
 
@@ -182,6 +190,156 @@ static QTestState *start_control_module(const char *extra)
 {
     return qtest_initf("-M origin2000 -smp 8,sockets=4,cores=2 "
                        "-m 256M -S %s", extra);
+}
+
+static uint32_t read_config0(QTestState *qts, unsigned int cpu)
+{
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{'execute': 'human-monitor-command', 'arguments': {"
+        "'command-line': 'info registers', 'cpu-index': %u}}", cpu);
+    const char *field = strstr(qdict_get_str(response, "return"), "Config0 ");
+    uint32_t value;
+
+    g_assert_nonnull(field);
+    g_assert_cmpint(sscanf(field, "Config0 0x%x", &value), ==, 1);
+    return value;
+}
+
+static void assert_processor_mode(QTestState *qts)
+{
+    for (unsigned int cpu = 0; cpu < 8; cpu++) {
+        uint32_t config0 = read_config0(qts, cpu);
+
+        g_test_message("CPU %u: Config0 0x%08x, low 25 bits 0x%08x",
+                       cpu, config0, config0 & PROCESSOR_MODE_MASK);
+        g_assert_cmphex(config0 & PROCESSOR_MODE_MASK, ==,
+                        PROCESSOR_MODE_BITS & PROCESSOR_MODE_MASK);
+    }
+}
+
+static void build_processor_mode_image(SN0Image *p)
+{
+    const unsigned int entry = 0x800;
+    unsigned int branch;
+
+    branch = sn0_emit_branch(p, SN0_OPC_BEQ, 0, 0);
+    sn0_patch_branch(p, branch, entry);
+    stl_be_p(p->bytes + FLASH_MODE_OFFSET, PROCESSOR_MODE_BITS);
+    for (unsigned int vector = SN0_VEC_TLB_REFILL;
+         vector <= SN0_VEC_GENERAL; vector += 0x80) {
+        p->pos = vector;
+        sn0_emit_park(p);
+    }
+
+    p->pos = entry;
+    sn0_emit_mfc0(p, SN0_R_S0, CP0_CONFIG);
+    sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL);
+    sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
+    sn0_emit_cpu_number(p, SN0_R_T0);
+    sn0_emit_sll(p, SN0_R_T1, SN0_R_T0, 5);
+    sn0_emit_li(p, SN0_R_K0, SN0_KSEG1(SN0_USER_MAILBOX));
+    sn0_emit_addu(p, SN0_R_K0, SN0_R_K0, SN0_R_T1);
+    sn0_emit_i(p, SN0_OPC_SW, SN0_R_K0, SN0_R_S0, 0);
+
+    sn0_emit_li64(p, SN0_R_T0, LOCAL_FLASH_GUEST + FLASH_MODE_OFFSET);
+    sn0_emit_i(p, SN0_OPC_LW, SN0_R_T0, SN0_R_S1, 0);
+    sn0_emit_i(p, SN0_OPC_SW, SN0_R_K0, SN0_R_S1, 4);
+    sn0_emit_li(p, SN0_R_T0,
+                SN0_KSEG1(RESET_FLASH_VIEW + FLASH_MODE_OFFSET));
+    sn0_emit_i(p, SN0_OPC_LW, SN0_R_T0, SN0_R_S2, 0);
+    sn0_emit_i(p, SN0_OPC_SW, SN0_R_K0, SN0_R_S2, 8);
+
+    sn0_emit_mtc0(p, SN0_R_S1, CP0_CONFIG);
+    sn0_emit_mfc0(p, SN0_R_T0, CP0_CONFIG);
+    sn0_emit_i(p, SN0_OPC_SW, SN0_R_K0, SN0_R_T0, 12);
+    sn0_emit_i(p, SN0_OPC_ADDIU, 0, SN0_R_T0, 1);
+    sn0_emit_i(p, SN0_OPC_SW, SN0_R_K0, SN0_R_T0, 16);
+    sn0_emit_park(p);
+}
+
+static uint32_t read_processor_mode_report(QTestState *qts, unsigned int cpu,
+                                           unsigned int offset)
+{
+    uint8_t bytes[4];
+
+    g_assert_true(qtest_memread_cpu(qts, cpu,
+                                    SN0_USER_MAILBOX +
+                                    (cpu % 2) * MODE_REPORT_STRIDE + offset,
+                                    bytes, sizeof(bytes)));
+    return ldl_be_p(bytes);
+}
+
+static void assert_processor_mode_report(QTestState *qts)
+{
+    for (unsigned int cpu = 0; cpu < 8; cpu++) {
+        uint32_t before;
+        uint32_t local;
+        uint32_t reset;
+        uint32_t after;
+
+        g_assert_cmpuint(sn0_wait_word(qts, cpu,
+                                      SN0_USER_MAILBOX +
+                                      (cpu % 2) * MODE_REPORT_STRIDE + 16,
+                                      30), ==, 1);
+        before = read_processor_mode_report(qts, cpu, 0);
+        local = read_processor_mode_report(qts, cpu, 4);
+        reset = read_processor_mode_report(qts, cpu, 8);
+        after = read_processor_mode_report(qts, cpu, 12);
+        g_test_message("CPU %u: before 0x%08x, local 0x%08x, "
+                       "reset 0x%08x, after mtc0 0x%08x",
+                       cpu, before, local, reset, after);
+        g_assert_cmphex(before & PROCESSOR_MODE_MASK, ==,
+                        PROCESSOR_MODE_BITS & PROCESSOR_MODE_MASK);
+        g_assert_cmphex(local, ==, PROCESSOR_MODE_BITS);
+        g_assert_cmphex(reset, ==, PROCESSOR_MODE_BITS);
+        g_assert_cmphex(after & PROCESSOR_MODE_MASK, ==,
+                        PROCESSOR_MODE_BITS & PROCESSOR_MODE_MASK);
+    }
+}
+
+static void test_processor_mode_reset_and_release(void)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
+    QTestState *qts;
+    uint8_t clear[2 * MODE_REPORT_STRIDE] = { 0 };
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    build_processor_mode_image(image);
+    path = sn0_image_write(image, "sn0-origin2000-processor-mode");
+    qts = qtest_initf("-M origin2000 -smp 8,sockets=4,cores=2 "
+                      "-m 256M -accel tcg,thread=multi -S -bios %s", path);
+    unlink(path);
+
+    assert_processor_mode(qts);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    assert_processor_mode_report(qts);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'stop' }");
+    assert_processor_mode(qts);
+
+    for (unsigned int node = 0; node < 4; node++) {
+        g_assert_true(qtest_memwrite_cpu(qts, node * 2, SN0_USER_MAILBOX,
+                                        clear, sizeof(clear)));
+    }
+    qtest_system_reset(qts);
+    assert_processor_mode(qts);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    assert_processor_mode_report(qts);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'stop' }");
+    assert_processor_mode(qts);
+
+    for (unsigned int node = 0; node < 4; node++) {
+        hub_write(qts, node, PI_CPU_ENABLE_A, 0);
+        hub_write(qts, node, PI_CPU_ENABLE_B, 0);
+        hub_write(qts, node, PI_CPU_ENABLE_A, 1);
+        hub_write(qts, node, PI_CPU_ENABLE_B, 1);
+    }
+    assert_processor_mode(qts);
+    qtest_quit(qts);
 }
 
 static uint64_t node_memory_address(QTestState *qts, unsigned int node,
@@ -1370,6 +1528,8 @@ int main(int argc, char **argv)
     }
     qtest_add_func("sn0/origin2000/remote-cpu-interrupts",
                    test_remote_cpu_interrupts);
+    qtest_add_func("sn0/origin2000/processor-mode-reset-and-release",
+                   test_processor_mode_reset_and_release);
     qtest_add_func("sn0/origin2000/xtalk-switch-visible",
                    test_xtalk_switch_visible);
     qtest_add_func("sn0/origin2000/xbow-prom-error-writes",
