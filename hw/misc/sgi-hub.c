@@ -415,6 +415,10 @@
 #define NI_PORT_ERROR_MASK      0x3fffffffffULL
 #define NI_PORT_CHECK_ERROR_SHIFT 8
 #define NI_PORT_ERROR_COUNT_MASK 0xffULL
+#define HUB_NI_AGEING_BASE      0x600500
+#define HUB_NI_AGEING_STRIDE    8
+#define HUB_NI_AGEING_COUNT     8
+#define NI_AGEING_MASK          0xfffULL
 
 /*
  * Status: M mode, link-up per the product's wiring, the node field programmed
@@ -2891,6 +2895,38 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .field = offsetof(SGIHubState, ni_port_error), .width = 8,
       .flags = HUB_REG_DIAG | HUB_REG_VECTOR | HUB_REG_READ_CLEARS,
       .read = sgi_hub_read_ni_port_error_clear },
+    { .offset = HUB_NI_AGEING_BASE + 0 * HUB_NI_AGEING_STRIDE,
+      .field = offsetof(SGIHubState, ni_ageing[0]), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR,
+      .wmask = NI_AGEING_MASK },
+    { .offset = HUB_NI_AGEING_BASE + 1 * HUB_NI_AGEING_STRIDE,
+      .field = offsetof(SGIHubState, ni_ageing[1]), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR,
+      .wmask = NI_AGEING_MASK },
+    { .offset = HUB_NI_AGEING_BASE + 2 * HUB_NI_AGEING_STRIDE,
+      .field = offsetof(SGIHubState, ni_ageing[2]), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR,
+      .wmask = NI_AGEING_MASK },
+    { .offset = HUB_NI_AGEING_BASE + 3 * HUB_NI_AGEING_STRIDE,
+      .field = offsetof(SGIHubState, ni_ageing[3]), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR,
+      .wmask = NI_AGEING_MASK },
+    { .offset = HUB_NI_AGEING_BASE + 4 * HUB_NI_AGEING_STRIDE,
+      .field = offsetof(SGIHubState, ni_ageing[4]), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR,
+      .wmask = NI_AGEING_MASK },
+    { .offset = HUB_NI_AGEING_BASE + 5 * HUB_NI_AGEING_STRIDE,
+      .field = offsetof(SGIHubState, ni_ageing[5]), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR,
+      .wmask = NI_AGEING_MASK },
+    { .offset = HUB_NI_AGEING_BASE + 6 * HUB_NI_AGEING_STRIDE,
+      .field = offsetof(SGIHubState, ni_ageing[6]), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR,
+      .wmask = NI_AGEING_MASK },
+    { .offset = HUB_NI_AGEING_BASE + 7 * HUB_NI_AGEING_STRIDE,
+      .field = offsetof(SGIHubState, ni_ageing[7]), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR,
+      .wmask = NI_AGEING_MASK },
 };
 
 static int sgi_hub_reg_compare(const void *key, const void *element)
@@ -3343,6 +3379,7 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
     s->ni_vector_read_data = 0;
     s->ni_port_parms = NI_PORT_PARMS_RESET;
     s->ni_port_error = 0;
+    memset(s->ni_ageing, 0, sizeof(s->ni_ageing));
     s->ni_io_protect = NI_IO_PROTECT_RESET;
     s->ni_protection = NI_PROTECTION_RESET;
     s->ni_diag_parms = 0;
@@ -3826,7 +3863,7 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 26,
+    .version_id = 27,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -3852,6 +3889,8 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT64_V(ni_vector_read_data, SGIHubState, 15),
         VMSTATE_UINT64_V(ni_port_parms, SGIHubState, 20),
         VMSTATE_UINT64_V(ni_port_error, SGIHubState, 25),
+        VMSTATE_UINT64_ARRAY_V(ni_ageing, SGIHubState, HUB_NI_AGEING_COUNT,
+                               27),
         VMSTATE_UINT64_V(ni_io_protect, SGIHubState, 21),
         VMSTATE_UINT64_V(ni_protection, SGIHubState, 22),
         VMSTATE_UINT64_V(ni_diag_parms, SGIHubState, 22),

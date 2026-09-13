@@ -287,6 +287,7 @@ struct SGIHubState {
     /* The LLP port parameters and traffic-driven error counters. */
     uint64_t ni_port_parms;
     uint64_t ni_port_error;
+    uint64_t ni_ageing[8];
 
     /*
      * PIO protection: region-permission storage nothing consults. The
