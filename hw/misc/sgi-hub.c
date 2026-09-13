@@ -2381,14 +2381,14 @@ static const SGIHubRegDef sgi_hub_registers[] = {
     { .offset = HUB_IO_LINK_STATUS,
       .field = offsetof(SGIHubState, io_link_status), .width = 8,
       .flags = HUB_REG_DIAG, .store = sgi_hub_store_link_status },
+    { .offset = HUB_IO_LLP_LOG,
+      .read = sgi_hub_read_llp_log, .write = sgi_hub_write_llp_log },
     { .offset = HUB_IO_SCRATCH_0, .arg = 0,
       .field = offsetof(SGIHubState, io_scratch[0]), .width = 8,
       .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = IO_SCRATCH_MASK },
     { .offset = HUB_IO_SCRATCH_1, .arg = 1,
       .field = offsetof(SGIHubState, io_scratch[1]), .width = 8,
       .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = IO_SCRATCH_MASK },
-    { .offset = HUB_IO_LLP_LOG,
-      .read = sgi_hub_read_llp_log, .write = sgi_hub_write_llp_log },
     { .offset = HUB_IO_ERROR_CLEAR, .write = sgi_hub_write_error_clear },
     { .offset = HUB_IO_PIO_DEALLOC,
       .read = sgi_hub_read_ioq, .write = sgi_hub_write_ioq },
@@ -2505,16 +2505,26 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .read = sgi_hub_read_ni_port_error_clear },
 };
 
+static int sgi_hub_reg_compare(const void *key, const void *element)
+{
+    const SGIHubRegDef *reg = element;
+    hwaddr addr = *(const hwaddr *)key;
+
+    if (addr < reg->offset) {
+        return -1;
+    }
+    return addr > reg->offset;
+}
+
+/*
+ * The table is in offset order, which sgi_hub_realize() asserts, so a decode
+ * does not walk it. Decode runs under the BQL, so a walk here is paid by every
+ * processor waiting behind the one doing it.
+ */
 static const SGIHubRegDef *sgi_hub_reg_lookup(hwaddr addr)
 {
-    unsigned int i;
-
-    for (i = 0; i < ARRAY_SIZE(sgi_hub_registers); i++) {
-        if (sgi_hub_registers[i].offset == addr) {
-            return &sgi_hub_registers[i];
-        }
-    }
-    return NULL;
+    return bsearch(&addr, sgi_hub_registers, ARRAY_SIZE(sgi_hub_registers),
+                   sizeof(sgi_hub_registers[0]), sgi_hub_reg_compare);
 }
 
 static uint64_t sgi_hub_read_internal(void *opaque, hwaddr addr,
@@ -2952,6 +2962,12 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     SGIHubState *s = SGI_HUB(dev);
     uint32_t unknown_population;
     unsigned int n;
+
+    /* Decode binary searches the table, so an entry added out of order would
+     * silently stop being found. */
+    for (n = 1; n < ARRAY_SIZE(sgi_hub_registers); n++) {
+        assert(sgi_hub_registers[n - 1].offset < sgi_hub_registers[n].offset);
+    }
 
     if (!s->xtalk) {
         error_setg(errp, "the Hub needs the crosstalk space its big windows "
