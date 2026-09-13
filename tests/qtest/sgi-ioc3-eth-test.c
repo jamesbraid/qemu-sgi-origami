@@ -51,6 +51,14 @@
 #define ENET_INT_TX_COMPLETE  (1u << 22)
 #define RPIR_ARM          (1u << 31)
 
+/*
+ * The modelled minimum between a frame arriving and its completion, in
+ * nanoseconds: the sgi-ioc3-eth device default. Delivery is published only
+ * once this much virtual time has passed, so every wait for a completion has
+ * to advance the clock as well as give the main loop a pass.
+ */
+#define RX_ARRIVAL_LATENCY_NS  200000
+
 /* Management requests; the transceiver is at 31 on every real capture. */
 #define MII_CTL_READ      (1u << 10)
 #define MII_PHY_SHIFT     5
@@ -303,7 +311,20 @@ static void build_arp_request(uint8_t *frame, size_t len)
 static void assert_reply_landed(QTestState *qts, uint32_t rxbuf)
 {
     uint8_t landed[42];
+    int attempt;
 
+    /*
+     * The reply is delivered from a bottom half after the transmit walk and
+     * published at its arrival deadline, so give the main loop passes and
+     * advance the virtual clock rather than reading once.
+     */
+    for (attempt = 0; attempt < 200; attempt++) {
+        if (ioc3_readl(qts, ENET_RX_CONSUME) == 8) {
+            break;
+        }
+        g_usleep(1000);
+        qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
+    }
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 8);
     g_assert_cmphex(dma_ldl_be(qts, rxbuf) & RXH_VALID, ==, RXH_VALID);
 
@@ -566,6 +587,7 @@ static uint32_t receive_and_inspect(QTestState *qts, int host_fd,
             break;
         }
         g_usleep(5000);
+        qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, (slot + 1) * 8);
 
@@ -697,6 +719,7 @@ static void wait_for_rx_consume(QTestState *qts, uint32_t want)
             return;
         }
         g_usleep(1000);
+        qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, want);
 }
@@ -785,6 +808,7 @@ static void test_the_receive_ring_runs_dry_and_recovers(const void *data)
     /* It fills what it was given and then stops, however many are offered. */
     wait_for_rx_consume(qts, BUFFERS * RX_RING_STRIDE);
     g_usleep(200000);
+    qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS);
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==,
                     BUFFERS * RX_RING_STRIDE);
 
@@ -1151,7 +1175,7 @@ static void test_a_reply_after_the_walk_at_one_size(const void *data)
     /* Take the ARP answer here so it is not mistaken for the echo. */
     build_arp_request(frame, 42);
     tx_one(qts, base, 0, frame, 42);
-    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, RX_RING_STRIDE);
+    wait_for_rx_consume(qts, RX_RING_STRIDE);
     qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(landed));
     g_assert_cmphex(landed[12], ==, 0x08);
     g_assert_cmphex(landed[13], ==, 0x06);
@@ -1167,9 +1191,11 @@ static void test_a_reply_after_the_walk_at_one_size(const void *data)
         build_icmp_echo(frame, size, gw_mac);
         tx_one(qts, base, slot, frame, size);
 
-        /* The main loop runs the queued receive before this read returns. */
-        g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==,
-                        (slot + 1) * RX_RING_STRIDE);
+        /*
+         * The main loop runs the queued receive, and the completion follows
+         * its arrival deadline, so wait for the index rather than read once.
+         */
+        wait_for_rx_consume(qts, (slot + 1) * RX_RING_STRIDE);
 
         word0 = dma_ldl_be(qts, base_addr);
         word1 = dma_ldl_be(qts, base_addr + 4);
@@ -1270,6 +1296,7 @@ static void test_a_queued_frame_lands_when_phy_loopback_clears(const void *data)
     /* Refused while looping back: the index must sit still. */
     net_socket_send_frame(sv[0], frame, sizeof(frame));
     g_usleep(200000);
+    qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS);
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
 
     /* Only the flush this write triggers can deliver the queued frame. */
@@ -1684,6 +1711,71 @@ static void test_rx_produce_defers_a_queued_delivery(const void *data)
     close(sv[0]);
 }
 
+/*
+ * A frame does not complete the instant the backend hands it over. The
+ * engine writes it into the posted buffer straight away, and the three
+ * things the guest can see -- the header word's valid bit, the consume
+ * index, and the receive source -- appear only once the arrival deadline
+ * has passed on the virtual clock.
+ *
+ * Without the floor the model published a reply in the same virtual instant
+ * as the transmit that provoked it, which no wire, peer or DMA can do; see
+ * docs/datasheets/ioc3.md's arrival-latency approximation.
+ */
+static void test_a_receive_waits_for_its_arrival_deadline(const void *data)
+{
+    uint32_t rxbuf = RAM_SCRATCH + 0xc000;
+    uint8_t frame[60];
+    uint8_t landed[sizeof(frame)];
+    QTestState *qts;
+    int sv[2];
+    int attempt;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = ioc3_attach_socket(sv[1], 4);
+    ioc3_writel(qts, ENET_INT_STATUS, 0xffffffffu);
+    g_assert_cmphex(ioc3_readl(qts, ENET_INT_STATUS), ==, 0);
+
+    build_arp_request(frame, sizeof(frame));
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+
+    /*
+     * Wait for the engine to take the frame, which it shows by writing it
+     * into the buffer. Nothing here advances the virtual clock, so the
+     * arrival deadline cannot have passed.
+     */
+    for (attempt = 0; attempt < 200; attempt++) {
+        qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(landed));
+        if (memcmp(landed, frame, sizeof(frame)) == 0) {
+            break;
+        }
+        g_usleep(5000);
+    }
+    g_assert_cmpint(memcmp(landed, frame, sizeof(frame)), ==, 0);
+
+    /* The payload is there and none of the three visible halves are. */
+    g_assert_cmphex(dma_ldl_be(qts, rxbuf) & RXH_VALID, ==, 0);
+    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
+    g_assert_cmphex(ioc3_readl(qts, ENET_INT_STATUS), ==, 0);
+
+    /* Still nothing one nanosecond short of the deadline. */
+    qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS - 1);
+    g_assert_cmphex(dma_ldl_be(qts, rxbuf) & RXH_VALID, ==, 0);
+    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
+    g_assert_cmphex(ioc3_readl(qts, ENET_INT_STATUS), ==, 0);
+
+    /* And all three at once past it. */
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(dma_ldl_be(qts, rxbuf) & RXH_VALID, ==, RXH_VALID);
+    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 8);
+    g_assert_cmphex(ioc3_readl(qts, ENET_INT_STATUS) & ENET_INT_RX_TIMER,
+                    ==, ENET_INT_RX_TIMER);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 int main(int argc, char **argv)
 {
     unsigned int i;
@@ -1714,6 +1806,8 @@ int main(int argc, char **argv)
                         NULL, test_an_fcs_failure_does_not_publish_valid);
     qtest_add_data_func("sgi-ioc3-eth/receive-burst-asserts-irq-once", NULL,
                         test_a_receive_burst_asserts_the_irq_once);
+    qtest_add_data_func("sgi-ioc3-eth/receive-waits-for-arrival-deadline",
+                        NULL, test_a_receive_waits_for_its_arrival_deadline);
     qtest_add_data_func("sgi-ioc3-eth/unreadable-transmit-descriptor", NULL,
                         test_a_transmit_descriptor_that_cannot_be_read);
     qtest_add_data_func("sgi-ioc3-eth/unreadable-transmit-buffer", NULL,

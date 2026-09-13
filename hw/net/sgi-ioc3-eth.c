@@ -88,6 +88,7 @@ static void sgi_ioc3_eth_reset_registers(SGIIOC3EthState *s, bool keep_rings)
     if (s->rx_flush_bh) {
         qemu_bh_cancel(s->rx_flush_bh);
     }
+    sgi_net_rx_latency_reset(&s->rx_latency);
     s->defer_backend_rx = false;
     s->backend_rx_deferred = false;
     s->int_deferred = 0;
@@ -101,6 +102,8 @@ static void sgi_ioc3_eth_reset_registers(SGIIOC3EthState *s, bool keep_rings)
     s->mii_data = SGI_IOC3_ENET_MII_ABSENT;
     s->mii_data_w = 0;
     s->rx_timer_armed = false;
+    s->rx_consume_staged = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_CONSUME) &
+                           SGI_IOC3_ENET_RX_INDEX_MASK;
     sgi_ioc3_enet_update_irq(s);
 }
 
@@ -134,14 +137,22 @@ static bool sgi_ioc3_eth_can_receive(NetClientState *nc)
         return false;
     }
 
+    /* No room on the arrival line is the same answer as no buffer. */
+    if (sgi_net_rx_latency_full(&s->rx_latency)) {
+        return false;
+    }
+
+    /*
+     * Against the staged index, not the published one: a buffer whose
+     * completion is still held has already been used.
+     */
     return (sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_PRODUCE) &
-           SGI_IOC3_ENET_RX_INDEX_MASK) !=
-          (sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_CONSUME) &
-           SGI_IOC3_ENET_RX_INDEX_MASK);
+           SGI_IOC3_ENET_RX_INDEX_MASK) != s->rx_consume_staged;
 }
 
 static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
-                                    size_t size, bool looped);
+                                    size_t size, bool short_circuit,
+                                    bool immediate);
 
 /* Linux's ioc3_hash(): low six CRC bits, themselves bit-reversed. */
 static unsigned int sgi_ioc3_eth_mcast_hash(const uint8_t *addr)
@@ -221,7 +232,7 @@ static ssize_t sgi_ioc3_eth_receive(NetClientState *nc, const uint8_t *buf,
         return size;
     }
 
-    return sgi_ioc3_eth_deliver(s, buf, size, false);
+    return sgi_ioc3_eth_deliver(s, buf, size, false, false);
 }
 
 static uint32_t sgi_ioc3_eth_rx_sources(SGIIOC3EthState *s, uint32_t consume)
@@ -253,12 +264,43 @@ static uint32_t sgi_ioc3_eth_rx_sources(SGIIOC3EthState *s, uint32_t consume)
 }
 
 /*
+ * Publish a receive the engine has already written: the header word whose
+ * valid bit hands the buffer over, the consume index, and the receive
+ * sources. Held behind the arrival floor by sgi_net_rx_latency_hold().
+ */
+static bool sgi_ioc3_eth_rx_publish(void *opaque, const void *record)
+{
+    SGIIOC3EthState *s = opaque;
+    const SGIIOC3EthRxDone *done = record;
+
+    if (stl_be_dma(&s->dma_as, done->buf_addr, done->word0,
+                   MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-ioc3-eth: receive header at 0x%" PRIx64
+                      " cannot be written; the frame is held\n",
+                      done->buf_addr);
+        return false;
+    }
+
+    sgi_ioc3_enet_set(s, SGI_IOC3_ENET_RX_CONSUME, done->consume);
+    sgi_ioc3_eth_raise_int(s, sgi_ioc3_eth_rx_sources(s, done->consume));
+    return true;
+}
+
+/*
  * short_circuit marks a MAC-loopback frame, turned round ahead of the FCS
  * append and status vector; PHY loopback goes the whole way and gets both.
+ * immediate marks a frame the MAC turned round internally, which never
+ * crossed the wire and so carries none of the arrival latency the floor
+ * models. It is still published in order behind anything the line is holding,
+ * or the consume index it moves would pass a held one and then walk backwards
+ * when that one lands.
  */
 static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
-                                    size_t size, bool short_circuit)
+                                    size_t size, bool short_circuit,
+                                    bool immediate)
 {
+    SGIIOC3EthRxDone done;
     uint32_t consume, offset, mcr, word0, word1, lenlo, lenhi, wire_len;
     uint64_t ring_base, buf_addr;
     bool truncated = false;
@@ -273,8 +315,7 @@ static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
         truncated = true;
     }
 
-    consume = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_CONSUME) &
-             SGI_IOC3_ENET_RX_INDEX_MASK;
+    consume = s->rx_consume_staged;
     ring_base = ((uint64_t)sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_RING_HI)
                 << 32) |
                (sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_RING_LO) &
@@ -343,11 +384,6 @@ static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
         res |= stl_be_dma(&s->dma_as, buf_addr + offset + size, 0,
                           MEMTXATTRS_UNSPECIFIED);
     }
-    if (res == MEMTX_OK) {
-        /* Valid publishes the completed status and payload to the guest. */
-        res = stl_be_dma(&s->dma_as, buf_addr, word0, MEMTXATTRS_UNSPECIFIED);
-    }
-
     /* An unreachable buffer is not a delivered frame; the index stays. */
     if (res != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -358,9 +394,21 @@ static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
 
     consume = (consume + (1u << SGI_IOC3_ENET_RX_RING_SHIFT)) &
              SGI_IOC3_ENET_RX_INDEX_MASK;
-    sgi_ioc3_enet_set(s, SGI_IOC3_ENET_RX_CONSUME, consume);
+    s->rx_consume_staged = consume;
 
-    sgi_ioc3_eth_raise_int(s, sgi_ioc3_eth_rx_sources(s, consume));
+    /*
+     * The payload and its status vector are in the buffer; the valid bit,
+     * the index and the sources are what the guest sees, and those wait for
+     * the frame's arrival deadline.
+     */
+    done.buf_addr = buf_addr;
+    done.word0 = word0;
+    done.consume = consume;
+    if (immediate) {
+        sgi_net_rx_latency_no_wire(&s->rx_latency, &done);
+    } else {
+        sgi_net_rx_latency_hold(&s->rx_latency, &done);
+    }
 
     return size;
 }
@@ -535,7 +583,7 @@ static void sgi_ioc3_eth_do_tx(SGIIOC3EthState *s, uint32_t produce)
         if (len > 0) {
             if (loopback) {
                 sgi_ioc3_eth_deliver(s, s->frame, len,
-                                     sgi_ioc3_eth_mac_loopback(s));
+                                     sgi_ioc3_eth_mac_loopback(s), true);
             } else {
                 s->defer_backend_rx = true;
                 qemu_send_packet(qemu_get_queue(s->nic), s->frame, len);
@@ -711,6 +759,23 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
         qemu_bh_schedule(s->rx_flush_bh);
         return;
 
+    case SGI_IOC3_ENET_RX_CONSUME:
+        /*
+         * Moving the engine's own index abandons whatever it had in flight:
+         * the completions held behind the arrival floor name buffers the
+         * guest has just said the engine is no longer at.
+         */
+        if (s->rx_latency.count != 0) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-ioc3-eth: receive consume index rewritten with"
+                          " %u frames in flight; they are discarded\n",
+                          s->rx_latency.count);
+        }
+        sgi_net_rx_latency_reset(&s->rx_latency);
+        s->enet_reg[index] = val;
+        s->rx_consume_staged = val & SGI_IOC3_ENET_RX_INDEX_MASK;
+        return;
+
     case SGI_IOC3_ENET_COUNTERS:
     case SGI_IOC3_ENET_BUFFER_INDEX:
     case SGI_IOC3_ENET_MII_DATA_R:
@@ -777,6 +842,12 @@ static void sgi_ioc3_eth_realize(DeviceState *dev, Error **errp)
                           &dev->mem_reentrancy_guard, s);
     s->rx_flush_bh = qemu_bh_new_guarded(sgi_ioc3_eth_rx_flush, s,
                                          &dev->mem_reentrancy_guard);
+    if (!sgi_net_rx_latency_init(&s->rx_latency, s->rx_arrival_latency_us,
+                                 sizeof(SGIIOC3EthRxDone),
+                                 sgi_ioc3_eth_rx_publish,
+                                 sgi_ioc3_eth_rx_flush, s, errp)) {
+        return;
+    }
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
 
     /* The callback fires on change only; read the initial link state. */
@@ -787,6 +858,7 @@ static void sgi_ioc3_eth_unrealize(DeviceState *dev)
 {
     SGIIOC3EthState *s = SGI_IOC3_ETH(dev);
 
+    sgi_net_rx_latency_cleanup(&s->rx_latency);
     qemu_bh_delete(s->rx_flush_bh);
     qemu_del_nic(s->nic);
     address_space_destroy(&s->dma_as);
@@ -822,12 +894,17 @@ static int sgi_ioc3_eth_post_load(void *opaque, int version_id)
 
     s->irq_asserted = (sgi_ioc3_enet_get(s, SGI_IOC3_ENET_INT_STATUS) &
                        sgi_ioc3_enet_get(s, SGI_IOC3_ENET_INT_ENABLE)) != 0;
+    if (version_id < 4) {
+        /* No arrival line in the stream: the engine is where it published. */
+        s->rx_consume_staged = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_CONSUME) &
+                               SGI_IOC3_ENET_RX_INDEX_MASK;
+    }
     return 0;
 }
 
 static const VMStateDescription vmstate_sgi_ioc3_eth = {
     .name = "sgi-ioc3-eth",
-    .version_id = 3,
+    .version_id = 4,
     .minimum_version_id = 1,
     .post_load = sgi_ioc3_eth_post_load,
     .fields = (const VMStateField[]) {
@@ -836,6 +913,9 @@ static const VMStateDescription vmstate_sgi_ioc3_eth = {
         VMSTATE_UINT16(mii_data_w, SGIIOC3EthState),
         VMSTATE_BOOL_V(rx_timer_armed, SGIIOC3EthState, 2),
         VMSTATE_UINT32_V(int_deferred, SGIIOC3EthState, 3),
+        VMSTATE_UINT32_V(rx_consume_staged, SGIIOC3EthState, 4),
+        VMSTATE_STRUCT(rx_latency, SGIIOC3EthState, 4,
+                       vmstate_sgi_net_rx_latency, SGINetRxLatency),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -843,6 +923,8 @@ static const VMStateDescription vmstate_sgi_ioc3_eth = {
 static const Property sgi_ioc3_eth_properties[] = {
     DEFINE_NIC_PROPERTIES(SGIIOC3EthState, conf),
     DEFINE_PROP_BOOL("mac-generated", SGIIOC3EthState, mac_generated, false),
+    DEFINE_PROP_UINT32("rx-arrival-latency-us", SGIIOC3EthState,
+                       rx_arrival_latency_us, SGI_NET_RX_LATENCY_DEFAULT_US),
     DEFINE_PROP_LINK("dma-memory", SGIIOC3EthState, dma_mr,
                      TYPE_MEMORY_REGION, MemoryRegion *),
 };
