@@ -294,7 +294,9 @@ static bool sgi_ioc3_eth_rx_publish(void *opaque, const void *record)
  * crossed the wire and so carries none of the arrival latency the floor
  * models. It is still published in order behind anything the line is holding,
  * or the consume index it moves would pass a held one and then walk backwards
- * when that one lands.
+ * when that one lands. It also arrives from the transmit walk rather than
+ * receive(), so can_receive() never ran for it -- the line's room is checked
+ * here instead, and a full line is the overrun any other receive gets.
  */
 static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
                                     size_t size, bool short_circuit,
@@ -305,6 +307,19 @@ static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
     uint64_t ring_base, buf_addr;
     bool truncated = false;
     MemTxResult res;
+
+    /*
+     * A loopback frame reaches here without can_receive()'s gate, so the
+     * arrival line's room has to be checked here instead. No different from
+     * any other receive with nowhere to go: an overrun drops it.
+     */
+    if (immediate && sgi_net_rx_latency_full(&s->rx_latency)) {
+        trace_sgi_ioc3_eth_rx_refused(
+            sgi_ioc3_enet_get(s, SGI_IOC3_ENET_MAC_CONTROL),
+            sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_PRODUCE),
+            sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_CONSUME));
+        return size;
+    }
 
     if (size > SGI_IOC3_ENET_FRAME_MAX - 8) {
         qemu_log_mask(LOG_GUEST_ERROR,

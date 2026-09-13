@@ -1785,6 +1785,91 @@ static void test_a_receive_waits_for_its_arrival_deadline(const void *data)
     close(sv[0]);
 }
 
+/* SGI_NET_RX_LATENCY_DEPTH, hw/net/sgi-net-rx-latency.h: the line's cap. */
+#define RX_LATENCY_LINE_DEPTH 256
+
+/*
+ * MAC loopback delivers straight from the transmit walk, never through
+ * receive(), so can_receive()'s check that the arrival line has room never
+ * ran for it. Hold one backend frame to occupy the line, then loopback
+ * exactly enough frames to fill it: the last one finds the line full without
+ * ever having been asked to refuse it.
+ */
+static void test_loopback_respects_a_full_arrival_line(const void *data)
+{
+    enum { BUFFERS = 16 };
+    int sv[2];
+    QTestState *qts;
+    uint8_t seed[64];
+    uint8_t frame[64];
+    uint32_t rxbuf = RAM_SCRATCH + 0xc000;
+    uint32_t base = RAM_SCRATCH;
+    uint8_t landed[sizeof(seed)];
+    unsigned int i;
+    int attempt;
+
+    for (i = 0; i < sizeof(seed); i++) {
+        seed[i] = (uint8_t)(i + 0x30);
+        frame[i] = (uint8_t)(i + 0x60);
+    }
+    memset(seed, 0xff, 6);
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = ioc3_attach_socket(sv[1], BUFFERS);
+
+    /*
+     * One backend frame, held behind its arrival deadline: the line now
+     * holds one entry, and nothing here steps the virtual clock to let it
+     * publish. The payload lands in the posted buffer before the header's
+     * valid bit does, so polling for it proves the frame was staged without
+     * needing the clock.
+     */
+    net_socket_send_frame(sv[0], seed, sizeof(seed));
+    for (attempt = 0; attempt < 200; attempt++) {
+        qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(landed));
+        if (memcmp(landed, seed, sizeof(seed)) == 0) {
+            break;
+        }
+        g_usleep(5000);
+    }
+    g_assert_cmpint(memcmp(landed, seed, sizeof(seed)), ==, 0);
+    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
+
+    /* Now loop back: can_receive() never runs on this path. */
+    ioc3_writel(qts, ENET_MAC_CONTROL,
+               MCR_PROMISC | MCR_LOOPBACK | MCR_TX_DMA_EN | MCR_TX_EN |
+               MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(RXD_BUF_OFFSET / 2));
+    ioc3_writel(qts, ENET_TX_RING_HI, 0);
+    ioc3_writel(qts, ENET_TX_RING_LO, (base & 0xffffc000u) | TX_RING_SEL);
+
+    /*
+     * 255 loopback deliveries fill the remaining room exactly; the 256th
+     * finds the line already full. Unfixed, that is
+     * sgi_net_rx_latency_enqueue()'s "the caller already checked" assertion.
+     */
+    for (i = 0; i < RX_LATENCY_LINE_DEPTH; i++) {
+        tx_one(qts, base, i, frame, sizeof(frame));
+    }
+
+    /* Still alive: the transmit side completed all 256 regardless. */
+    g_assert_cmphex(ioc3_readl(qts, ENET_TX_CONSUME) & TX_CONSUME_MASK, ==,
+                    RX_LATENCY_LINE_DEPTH * TX_DESC_SIZE);
+
+    /*
+     * Past every held deadline, exactly the line's worth of completions
+     * publish: the seed plus 255 accepted loopback frames, not 256 of them --
+     * the 256th loopback delivery found no room and was dropped.
+     */
+    qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS);
+    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==,
+                    RX_LATENCY_LINE_DEPTH * RX_RING_STRIDE);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 int main(int argc, char **argv)
 {
     unsigned int i;
@@ -1817,6 +1902,8 @@ int main(int argc, char **argv)
                         test_a_receive_burst_asserts_the_irq_once);
     qtest_add_data_func("sgi-ioc3-eth/receive-waits-for-arrival-deadline",
                         NULL, test_a_receive_waits_for_its_arrival_deadline);
+    qtest_add_data_func("sgi-ioc3-eth/loopback-respects-a-full-arrival-line",
+                        NULL, test_loopback_respects_a_full_arrival_line);
     qtest_add_data_func("sgi-ioc3-eth/unreadable-transmit-descriptor", NULL,
                         test_a_transmit_descriptor_that_cannot_be_read);
     qtest_add_data_func("sgi-ioc3-eth/unreadable-transmit-buffer", NULL,
