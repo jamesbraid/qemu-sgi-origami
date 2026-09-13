@@ -35,6 +35,13 @@
  * this same code. A write to a register with no modelled behaviour logs
  * LOG_UNIMP and is stored so a read-back still round-trips.
  *
+ * Not modelled: the statistics block. The chip keeps MAC and host counters on
+ * chip and DMAs them to their own host address on the Statistics Ticks budget
+ * (0x3C28, 0x3C30/0x3C34); this model keeps no counters and transfers none, so
+ * those registers are stored and do nothing. Nor are the four during-interrupt
+ * coalescing registers (0x3C18-0x3C24), which the chip uses in place of the
+ * four below while the host is inside its interrupt handler.
+ *
  * Written from docs/datasheets/bcm570x.md (the reviewed register/DMA/interrupt
  * contract) and docs/library/nic-on-bridge-conventions.md (the shared byte-swap
  * and architecture convention), plus the public OpenBSD bge and in-tree QEMU
@@ -178,16 +185,6 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_RX_MODE             0x0468
 #define BCM570X_RXMODE_ENABLE       0x00000002u
 #define BCM570X_HCC_MODE            0x3c00
-/*
- * How often the host-coalescing block DMAs the status block on its own, in
- * microseconds. The part posts one whether or not traffic moved, and the IRIX
- * driver leans on that: its watchdog tears the interface down and re-runs
- * bring-up whenever a whole second passes with no interrupt, so a model that
- * only posts on traffic is torn down once a second forever. Capped below the
- * driver's one-second patience rather than trusted to the programmed value.
- */
-#define BCM570X_HCC_STATS_TICKS     0x3c28
-#define BCM570X_STATUS_TICK_MAX_NS  (250 * SCALE_MS)
 #define BCM570X_BUFMGR_MODE         0x4400
 #define BCM570X_MISC_CFG            0x6804
 
@@ -485,13 +482,17 @@ struct Bcm570xState {
     bool status_kick_done;  /* bring-up status update posted once past enable */
     uint8_t status_tag;         /* monotonic per status-block update, delivered in the block */
 
-    /* Receive interrupt coalescing: frames accepted since the last status-block
-     * DMA, and the timer that flushes a partial group so the tail of a burst is
-     * never stranded past the driver's programmed tick budget. */
+    /*
+     * Host coalescing: descriptors consumed on each ring since the last
+     * status-block update, the two timers that measure the driver's tick
+     * budgets, and whether each has run out. An expired timer reports the next
+     * event as it happens instead of holding it for a fresh budget.
+     */
     uint16_t rx_coal_pending;
     uint16_t tx_coal_pending;
+    bool rx_coal_expired;
+    bool tx_coal_expired;
     QEMUTimer tx_coal_timer;
-    QEMUTimer status_tick_timer;
     QEMUTimer coal_timer;
 
     /* The integrated copper PHY, reached through the MI registers. */
@@ -642,13 +643,14 @@ static void bcm570x_global_reset(Bcm570xState *s)
     s->status_tag = 0;
     s->rx_coal_pending = 0;
     s->tx_coal_pending = 0;
+    s->rx_coal_expired = false;
+    s->tx_coal_expired = false;
     if (s->rx_flush_bh) {
         qemu_bh_cancel(s->rx_flush_bh);
     }
     bcm570x_reset_rx_queue(s);
     timer_del(&s->coal_timer);
     timer_del(&s->tx_coal_timer);
-    timer_del(&s->status_tick_timer);
     bcm570x_sram_write(s, BCM570X_SRAM_FW_MBOX, BCM570X_FW_MAGIC);
     bcm570x_load_station_address(s);
     bcm570x_update_irq(s);
@@ -916,36 +918,66 @@ static bool bcm570x_dma_status_block(Bcm570xState *s)
 }
 
 
-static void bcm570x_arm_status_tick(Bcm570xState *s);
-
 /*
- * The coalescing block's own periodic status update. It carries whatever the
- * rings have and raises the line, which is what keeps the driver's watchdog
- * satisfied between bursts of traffic.
+ * When the host-coalescing block writes the status block, and when it does
+ * not. The guide gives four criteria and no others [57XX-PG105-R, printed
+ * page 63]: receive descriptors consumed since the last update reaching
+ * RX_MAX_COAL_BDS (0x3c10); send descriptors consumed reaching
+ * TX_MAX_COAL_BDS (0x3c14); the receive coalescing timer expiring with a frame
+ * received since the last update; or the send coalescing timer expiring with a
+ * send consumer advanced since then. A register left at zero turns its
+ * criterion off, so a guest that programs none has asked to be told nothing
+ * [printed pages 453-454].
+ *
+ * Each timer is reloaded by a status-block update whatever caused it, never by
+ * the event that is waiting, and once it has run out it stays run out. On an
+ * idle ring the next arrival is therefore reported as it lands rather than
+ * waiting out a fresh budget [printed page 453].
  */
-static void bcm570x_status_tick(void *opaque)
-{
-    Bcm570xState *s = opaque;
-
-    if (!(bcm570x_regfile_read(s, BCM570X_HCC_MODE) &
-          BCM570X_HCC_MODE_ENABLE)) {
-        return;
-    }
-    bcm570x_dma_status_block(s);
-    bcm570x_arm_status_tick(s);
-}
-
-static void bcm570x_arm_status_tick(Bcm570xState *s)
-{
-    uint32_t us = bcm570x_regfile_read(s, BCM570X_HCC_STATS_TICKS);
-    uint64_t ns = us ? (uint64_t)us * 1000 : BCM570X_STATUS_TICK_MAX_NS;
-
-    timer_mod(&s->status_tick_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-              MIN(ns, BCM570X_STATUS_TICK_MAX_NS));
-}
 
 /* The driver programs both coalescing tick budgets in microseconds. */
 #define BCM570X_COAL_TICK_NS 1000
+
+/* A status DMA the guest's address refused is retried no slower than this. */
+#define BCM570X_COAL_RETRY_MAX_NS (250 * SCALE_MS)
+
+static void bcm570x_coal_arm_one(Bcm570xState *s, QEMUTimer *timer,
+                                 unsigned int ticks_reg, bool *expired)
+{
+    uint32_t ticks = bcm570x_regfile_read(s, ticks_reg);
+
+    *expired = false;
+    if (ticks == 0) {
+        timer_del(timer);
+        return;
+    }
+    timer_mod(timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+              (int64_t)ticks * BCM570X_COAL_TICK_NS);
+}
+
+/* Both budgets restart together: one update reports every ring. */
+static void bcm570x_coal_arm(Bcm570xState *s)
+{
+    bcm570x_coal_arm_one(s, &s->coal_timer, BCM570X_HCC_RX_COAL_TICKS,
+                         &s->rx_coal_expired);
+    bcm570x_coal_arm_one(s, &s->tx_coal_timer, BCM570X_HCC_TX_COAL_TICKS,
+                         &s->tx_coal_expired);
+}
+
+/*
+ * One host update. All the ring indices are in one status block, so whichever
+ * criterion fired reports every ring and restarts every count and timer.
+ */
+static bool bcm570x_status_update(Bcm570xState *s)
+{
+    if (!bcm570x_dma_status_block(s)) {
+        return false;
+    }
+    s->rx_coal_pending = 0;
+    s->tx_coal_pending = 0;
+    bcm570x_coal_arm(s);
+    return true;
+}
 
 /* Retry later instead of spinning on an address the guest has not repaired. */
 static void bcm570x_arm_coal_retry(QEMUTimer *timer, uint32_t ticks)
@@ -954,120 +986,98 @@ static void bcm570x_arm_coal_retry(QEMUTimer *timer, uint32_t ticks)
                   BCM570X_COAL_TICK_NS;
 
     timer_mod(timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-              MIN(ns, BCM570X_STATUS_TICK_MAX_NS));
+              MIN(ns, BCM570X_COAL_RETRY_MAX_NS));
 }
 
-/*
- * Flush a coalesced receive group: report every frame accumulated since the last
- * update through one status-block DMA and interrupt, and disarm the tick timer.
- * The status block always carries the current receive producer, so one update
- * tells the driver about the whole group.
- */
 static void bcm570x_rx_coal_flush(Bcm570xState *s)
 {
-    uint32_t ticks;
-
-    if (s->rx_coal_pending == 0) {
+    if (s->rx_coal_pending == 0 || bcm570x_status_update(s)) {
         return;
     }
-    if (bcm570x_dma_status_block(s)) {
-        s->rx_coal_pending = 0;
-        timer_del(&s->coal_timer);
-        return;
-    }
-
-    ticks = bcm570x_regfile_read(s, BCM570X_HCC_RX_COAL_TICKS);
-    bcm570x_arm_coal_retry(&s->coal_timer, ticks);
+    bcm570x_arm_coal_retry(&s->coal_timer,
+                           bcm570x_regfile_read(s, BCM570X_HCC_RX_COAL_TICKS));
 }
 
-static void bcm570x_coal_timer(void *opaque)
+/*
+ * The receive budget ran out. It reports whatever arrived since the last
+ * update; with nothing to report it stays expired, and the next frame is
+ * reported as it lands.
+ */
+static void bcm570x_rx_coal_timer(void *opaque)
 {
-    bcm570x_rx_coal_flush(opaque);
+    Bcm570xState *s = opaque;
+
+    s->rx_coal_expired = true;
+    bcm570x_rx_coal_flush(s);
 }
 
-/*
- * A received frame reached its buffer. Batch its status-block update the way the
- * host-coalescing block does: raise one interrupt per RX_MAX_COAL_BDS frames
- * (0x3c10) instead of one per frame, and arm the RX_COAL_TICKS (0x3c08) timer so
- * a partial final group still flushes within the driver's tick budget. A
- * max-BDs of zero or one is the un-coalesced case the model shipped with -- one
- * update per frame -- so a driver that programs neither register is unchanged.
- */
-/*
- * The transmit side of the same arrangement. The driver programs how many
- * completed descriptors, or how long, it is prepared to wait before being told
- * about them, and reporting each one as it happens costs an interrupt per frame
- * for a saving the driver did not ask for.
- */
 static void bcm570x_tx_coal_flush(Bcm570xState *s)
 {
-    uint32_t ticks;
-
-    if (s->tx_coal_pending == 0) {
+    if (s->tx_coal_pending == 0 || bcm570x_status_update(s)) {
         return;
     }
-    if (bcm570x_dma_status_block(s)) {
-        s->tx_coal_pending = 0;
-        timer_del(&s->tx_coal_timer);
-        return;
-    }
-
-    ticks = bcm570x_regfile_read(s, BCM570X_HCC_TX_COAL_TICKS);
-    bcm570x_arm_coal_retry(&s->tx_coal_timer, ticks);
+    bcm570x_arm_coal_retry(&s->tx_coal_timer,
+                           bcm570x_regfile_read(s, BCM570X_HCC_TX_COAL_TICKS));
 }
 
 static void bcm570x_tx_coal_timer(void *opaque)
 {
-    bcm570x_tx_coal_flush(opaque);
+    Bcm570xState *s = opaque;
+
+    s->tx_coal_expired = true;
+    bcm570x_tx_coal_flush(s);
 }
 
 /*
- * Count the descriptors this doorbell completed and report the group once it
- * is as large as the driver asked for. The tick timer is what stops the tail
- * of a burst waiting for a descriptor that never comes: a count on its own
- * would hold the last few completions back for an interrupt that never
- * arrives, which is a stall wearing a saving's clothes.
+ * Count the descriptors this doorbell completed, and report them once the
+ * count criterion is met or the send budget has already run out.
+ *
+ * A doorbell that completes nothing is reported anyway, which no criterion
+ * covers: bring-up here leans on that update arriving, and the register tests
+ * provoke a status DMA with it. Recorded as a deviation in
+ * docs/datasheets/bcm570x.md.
  */
 static void bcm570x_tx_coalesce(Bcm570xState *s,
                                 unsigned int completed_descs)
 {
     uint32_t max_bds = bcm570x_regfile_read(s, BCM570X_HCC_TX_MAX_COAL_BDS);
-    uint32_t ticks = bcm570x_regfile_read(s, BCM570X_HCC_TX_COAL_TICKS);
 
     if (completed_descs == 0) {
-        /*
-         * A doorbell at the current consumer completes nothing. Bring-up still
-         * leans on the status update arriving, so report it rather than folding
-         * it into a group that may never fill.
-         */
-        bcm570x_dma_status_block(s);
+        bcm570x_status_update(s);
         return;
     }
     s->tx_coal_pending += completed_descs;
-    if (max_bds <= 1 || s->tx_coal_pending >= max_bds) {
-        bcm570x_tx_coal_flush(s);
-    } else if (ticks != 0 && !timer_pending(&s->tx_coal_timer)) {
-        timer_mod(&s->tx_coal_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                  (int64_t)ticks * BCM570X_COAL_TICK_NS);
-    } else if (ticks == 0) {
+    if ((max_bds != 0 && s->tx_coal_pending >= max_bds) ||
+        s->tx_coal_expired) {
         bcm570x_tx_coal_flush(s);
     }
 }
 
+/* A received frame filled a return-ring descriptor. */
 static void bcm570x_rx_coalesce(Bcm570xState *s)
 {
     uint32_t max_bds = bcm570x_regfile_read(s, BCM570X_HCC_RX_MAX_COAL_BDS);
-    uint32_t ticks = bcm570x_regfile_read(s, BCM570X_HCC_RX_COAL_TICKS);
 
     s->rx_coal_pending++;
-    if (max_bds <= 1 || s->rx_coal_pending >= max_bds) {
-        bcm570x_rx_coal_flush(s);
-    } else if (ticks != 0 && !timer_pending(&s->coal_timer)) {
-        timer_mod(&s->coal_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                  (int64_t)ticks * BCM570X_COAL_TICK_NS);
-    } else if (ticks == 0) {
+    if ((max_bds != 0 && s->rx_coal_pending >= max_bds) ||
+        s->rx_coal_expired) {
         bcm570x_rx_coal_flush(s);
     }
+}
+
+/*
+ * A coalescing budget was reprogrammed. A running timer keeps the value it was
+ * loaded with, since the chip reloads one only at a status-block update; one
+ * that is not running starts here, because nothing else would ever start it.
+ */
+static void bcm570x_coal_ticks_written(Bcm570xState *s, QEMUTimer *timer,
+                                       unsigned int ticks_reg, bool *expired)
+{
+    if (!(bcm570x_regfile_read(s, BCM570X_HCC_MODE) &
+          BCM570X_HCC_MODE_ENABLE) || *expired || timer_pending(timer)) {
+        return;
+    }
+    bcm570x_coal_arm_one(s, timer, ticks_reg, expired);
 }
 
 static bool bcm570x_rx_ready(Bcm570xState *s);
@@ -1556,11 +1566,25 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
         val &= ~BCM570X_MODE_RESET;
         bcm570x_regfile_write(s, off, val);
         if (val & BCM570X_HCC_MODE_ENABLE) {
-            bcm570x_arm_status_tick(s);
+            /* The budgets run from here until the first update reloads them. */
+            bcm570x_coal_arm(s);
             bcm570x_retry_rx_flush(s);
         } else {
-            timer_del(&s->status_tick_timer);
+            timer_del(&s->coal_timer);
+            timer_del(&s->tx_coal_timer);
         }
+        return;
+    case BCM570X_HCC_RX_COAL_TICKS:
+        bcm570x_regfile_write(s, off, val);
+        bcm570x_coal_ticks_written(s, &s->coal_timer,
+                                   BCM570X_HCC_RX_COAL_TICKS,
+                                   &s->rx_coal_expired);
+        return;
+    case BCM570X_HCC_TX_COAL_TICKS:
+        bcm570x_regfile_write(s, off, val);
+        bcm570x_coal_ticks_written(s, &s->tx_coal_timer,
+                                   BCM570X_HCC_TX_COAL_TICKS,
+                                   &s->tx_coal_expired);
         return;
     case BCM570X_BUFMGR_MODE:
         /*
@@ -2503,7 +2527,6 @@ static void bcm570x_exit(PCIDevice *dev)
     bcm570x_cleanup_net(s);
     timer_del(&s->coal_timer);
     timer_del(&s->tx_coal_timer);
-    timer_del(&s->status_tick_timer);
 }
 
 static void bcm570x_reset_hold(Object *obj, ResetType type)
@@ -2535,13 +2558,14 @@ static void bcm570x_reset_hold(Object *obj, ResetType type)
     s->status_tag = 0;
     s->rx_coal_pending = 0;
     s->tx_coal_pending = 0;
+    s->rx_coal_expired = false;
+    s->tx_coal_expired = false;
     if (s->rx_flush_bh) {
         qemu_bh_cancel(s->rx_flush_bh);
     }
     bcm570x_reset_rx_queue(s);
     timer_del(&s->coal_timer);
     timer_del(&s->tx_coal_timer);
-    timer_del(&s->status_tick_timer);
     bcm570x_phy_reset(&s->phy);
     bcm570x_load_station_address(s);
     bcm570x_update_irq(s);
@@ -2575,28 +2599,26 @@ static int bcm570x_post_load(void *opaque, int version_id)
      * missing timer from the restored register state so a malformed or older
      * stream cannot strand live work.
      */
-    if (s->rx_coal_pending != 0 && !timer_pending(&s->coal_timer)) {
+    if (s->rx_coal_pending != 0 && !s->rx_coal_expired &&
+        !timer_pending(&s->coal_timer)) {
         uint32_t ticks = bcm570x_regfile_read(s, BCM570X_HCC_RX_COAL_TICKS);
 
         timer_mod(&s->coal_timer, version_id < 6 ? now :
                   now + (int64_t)ticks * BCM570X_COAL_TICK_NS);
     }
-    if (s->tx_coal_pending != 0 && !timer_pending(&s->tx_coal_timer)) {
+    if (s->tx_coal_pending != 0 && !s->tx_coal_expired &&
+        !timer_pending(&s->tx_coal_timer)) {
         uint32_t ticks = bcm570x_regfile_read(s, BCM570X_HCC_TX_COAL_TICKS);
 
         timer_mod(&s->tx_coal_timer,
                   now + (int64_t)ticks * BCM570X_COAL_TICK_NS);
-    }
-    if ((bcm570x_regfile_read(s, BCM570X_HCC_MODE) &
-         BCM570X_HCC_MODE_ENABLE) && !timer_pending(&s->status_tick_timer)) {
-        bcm570x_arm_status_tick(s);
     }
     return 0;
 }
 
 static const VMStateDescription vmstate_bcm570x = {
     .name = "bcm570x",
-    .version_id = 9,
+    .version_id = 10,
     .minimum_version_id = 1,
     .post_load = bcm570x_post_load,
     .fields = (const VMStateField[]) {
@@ -2623,11 +2645,14 @@ static const VMStateDescription vmstate_bcm570x = {
         VMSTATE_UINT16_V(tx_coal_pending, Bcm570xState, 6),
         VMSTATE_TIMER_V(coal_timer, Bcm570xState, 6),
         VMSTATE_TIMER_V(tx_coal_timer, Bcm570xState, 6),
-        VMSTATE_TIMER_V(status_tick_timer, Bcm570xState, 6),
+        /* Version 6 carried a periodic status timer the chip does not have. */
+        VMSTATE_UNUSED_V(6, 8),
         VMSTATE_STRUCT(phy, Bcm570xState, 7, vmstate_bcm570x_phy,
                        Bcm570xPhyState),
         /* Version 8 carried the superseded receive-unmask latch. */
         VMSTATE_UNUSED_V(8, 1),
+        VMSTATE_BOOL_V(rx_coal_expired, Bcm570xState, 10),
+        VMSTATE_BOOL_V(tx_coal_expired, Bcm570xState, 10),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -2652,11 +2677,10 @@ static void bcm570x_init(Object *obj)
     Bcm570xState *s = BCM570X(obj);
 
     object_initialize_child(obj, "phy", &s->phy, TYPE_BCM570X_PHY);
-    timer_init_ns(&s->coal_timer, QEMU_CLOCK_VIRTUAL, bcm570x_coal_timer, s);
+    timer_init_ns(&s->coal_timer, QEMU_CLOCK_VIRTUAL, bcm570x_rx_coal_timer,
+                  s);
     timer_init_ns(&s->tx_coal_timer, QEMU_CLOCK_VIRTUAL,
                   bcm570x_tx_coal_timer, s);
-    timer_init_ns(&s->status_tick_timer, QEMU_CLOCK_VIRTUAL,
-                  bcm570x_status_tick, s);
 }
 
 static void bcm570x_class_init(ObjectClass *oc, const void *data)

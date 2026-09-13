@@ -154,8 +154,6 @@
 #define BCM_MBX_TX_PROD_LO      0x0304u
 #define BCM_HCC_STATUSBLK_HI    0x3c38u
 #define BCM_HCC_STATUSBLK_LO    0x3c3cu
-#define BCM_HCC_STATS_TICKS     0x3c28u
-#define BCM_STATUS_TICK_MAX_NS  (250 * 1000 * 1000)
 
 /*
  * The modelled minimum between a frame arriving and its completion, in
@@ -1295,6 +1293,8 @@ static void test_transmit_round_trip(const void *data)
     /* The status block's host address, and enable the coalescing block. */
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    bar_writel(&b, BCM_HCC_TX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
@@ -1388,6 +1388,7 @@ static void test_user_backend_reply_waits_for_transmit(const void *data)
     qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
     bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 1);
 
+    bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_TX_MAX_COAL_BDS, 2);
     bar_writel(&b, BCM_HCC_TX_COAL_TICKS, 1000000);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
@@ -1529,6 +1530,8 @@ static void test_transmit_payload_dma_error(const void *data)
     ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    bar_writel(&b, BCM_HCC_TX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
@@ -1624,6 +1627,8 @@ static void test_transmit_complete_then_fragment_dma_error_retry(
     ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    bar_writel(&b, BCM_HCC_TX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
@@ -1720,6 +1725,8 @@ static void test_transmit_complete_then_descriptor_dma_error_retry(
     ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    bar_writel(&b, BCM_HCC_TX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
@@ -1771,7 +1778,6 @@ static void test_transmit_complete_then_descriptor_dma_error_retry(
 static void test_transmit_partial_error_descriptor_coalescing(
     const void *data)
 {
-    const unsigned int initial_ticks = 0x10000000;
     const unsigned int retry_ticks = 50;
     g_autofree char *logfile = NULL;
     uint8_t first[60], second[60], got[sizeof(first)];
@@ -1820,7 +1826,7 @@ static void test_transmit_partial_error_descriptor_coalescing(
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
     bar_writel(&b, BCM_HCC_TX_MAX_COAL_BDS, 2);
-    bar_writel(&b, BCM_HCC_TX_COAL_TICKS, initial_ticks);
+    bar_writel(&b, BCM_HCC_TX_COAL_TICKS, retry_ticks);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
@@ -1839,7 +1845,6 @@ static void test_transmit_partial_error_descriptor_coalescing(
     g_assert_cmphex(read_status_tag(&b), ==, tag + 1);
     g_assert_true(intr_line_up(b.dev));
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
-    bar_writel(&b, BCM_HCC_TX_COAL_TICKS, retry_ticks);
 
     put32le(ring + 32, (TX_BUF_PHYS + 0x100) >> 32);
     put32le(ring + 36, (TX_BUF_PHYS + 0x100) & 0xffffffff);
@@ -1851,11 +1856,18 @@ static void test_transmit_partial_error_descriptor_coalescing(
     g_assert_cmpuint(len, ==, sizeof(second));
     g_assert_cmpmem(got, len, second, sizeof(second));
     net_socket_expect_no_frame(sv[0]);
+    /*
+     * The send budget ran out with nothing to report while the first frame's
+     * failure was being logged, and a budget that has run out stays run out
+     * until an update reloads it, so the retry's completion is reported as it
+     * happens rather than held for a fresh one.
+     */
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 2);
-    g_assert_cmphex(read_status_tag(&b), ==, tag + 1);
-    g_assert_false(intr_line_up(b.dev));
+    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 3);
+    g_assert_cmphex(read_status_tag(&b), ==, tag + 2);
+    g_assert_true(intr_line_up(b.dev));
 
+    /* One update for the group, and no clock of its own behind it. */
     qtest_clock_step(b.qts, (int64_t)retry_ticks * 1000 + 1000);
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
     g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 3);
@@ -2765,8 +2777,11 @@ static void test_transmit_coalescing_timer(const void *data)
 }
 
 /*
- * A zero tick budget means no delay, so a short transmit group must be
- * reported by the doorbell that completed it.
+ * A zero in a coalescing ticks register disables that timer: "A value of 0 in
+ * this register disables the transmit tick coalescing logic. In this case,
+ * status block updates will occur for transmit events only if the Send Max
+ * Coalesced BD value is reached" [57XX-PG105-R, printed page 453]. A short
+ * group therefore waits for the count however long the ring stays idle.
  */
 static void test_transmit_coalescing_zero_ticks(const void *data)
 {
@@ -2774,7 +2789,7 @@ static void test_transmit_coalescing_zero_ticks(const void *data)
     Bcm b;
     uint8_t frame[64];
     uint8_t got[128];
-    uint32_t before;
+    uint8_t status[BCM_STATUS_BLK_SIZE];
 
     memset(frame, 0x8d, sizeof(frame));
     memset(frame, 0xff, 6);
@@ -2785,13 +2800,21 @@ static void test_transmit_coalescing_zero_ticks(const void *data)
                              " -netdev socket,fd=%d,id=n0"
                              " -device bcm570x,addr=%02x.0,netdev=n0",
                              sv[1], BCM_SLOT));
-    txc_setup(&b, 8, 0);
+    txc_setup(&b, 2, 0);
 
-    before = read_status_tag(&b);
-    txc_post(&b, frame, sizeof(frame), 1);
+    txc_post_one_at(&b, frame, sizeof(frame), 0);
     g_assert_cmpint(net_socket_recv_frame(sv[0], got, sizeof(got)), ==,
                     sizeof(frame));
-    g_assert_cmpuint(read_status_tag(&b) - before, ==, 1);
+    /* One descriptor of the two, and no timer to give up waiting. */
+    qtest_clock_step(b.qts, 1000 * 1000 * 1000);
+    g_assert_cmpuint(read_status_tag(&b), ==, 0);
+
+    txc_post_one_at(&b, frame, sizeof(frame), 1);
+    g_assert_cmpint(net_socket_recv_frame(sv[0], got, sizeof(got)), ==,
+                    sizeof(frame));
+    g_assert_cmpuint(read_status_tag(&b), ==, 1);
+    qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
+    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 2);
 
     bcm_close(&b);
     close(sv[0]);
@@ -3362,6 +3385,13 @@ static void rx_open_one(Bcm *b, int fd)
     ind_mem_writel(b, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
     bar_writel(b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    /*
+     * One completed descriptor per update -- the guide's "for simplicity"
+     * setting [57XX-PG105-R, printed page 454]. Left at the reset value of
+     * zero the receive count criterion is off, and these tests want to be told
+     * about every frame.
+     */
+    bar_writel(b, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
@@ -3373,6 +3403,45 @@ static void rx_open_one(Bcm *b, int fd)
     qtest_memset(b->qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
     bar_writel(b, BCM_MBX_RX_STD_PROD_LO, 1);
     (void)fd;
+}
+
+/*
+ * The same plumbing with the receive coalescing registers spelled out and as
+ * many buffers posted as the test needs, so a test says exactly which update
+ * criterion it is arming -- and, with both zero, that it is arming none.
+ */
+static void rx_criteria_open(Bcm *b, unsigned int buffers,
+                             unsigned int max_bds, unsigned int ticks)
+{
+    uint8_t bd[BCM_RXBD_SIZE];
+    unsigned int i;
+
+    g_assert_cmpuint(buffers, <, COAL_RING_LEN);
+    bar_writel(b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
+    bar_writel(b, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
+    bar_writel(b, BCM_RX_STD_RCB_MAXLEN, STD_BUF_SIZE << 16);
+    ind_mem_writel(b, BCM_SRAM_RX_RETURN_RCB + 0, RET_RING_PHYS >> 32);
+    ind_mem_writel(b, BCM_SRAM_RX_RETURN_RCB + 4, RET_RING_PHYS & 0xffffffff);
+    ind_mem_writel(b, BCM_SRAM_RX_RETURN_RCB + 8, COAL_RING_LEN << 16);
+    bar_writel(b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    bar_writel(b, BCM_HCC_RX_MAX_COAL_BDS, max_bds);
+    bar_writel(b, BCM_HCC_RX_COAL_TICKS, ticks);
+    bar_writel(b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
+    bar_writel(b, BCM_MBX_IRQ0_LO, 0);
+
+    memset(bd, 0, sizeof(bd));
+    put32le(bd + 0, RX_BUF_PHYS >> 32);
+    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    for (i = 0; i < buffers; i++) {
+        qtest_memwrite(b->qts, STD_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE,
+                       bd, sizeof(bd));
+    }
+    qtest_memset(b->qts, RET_RING_PHYS, 0,
+                 (uint64_t)COAL_RING_LEN * BCM_RXBD_SIZE);
+    qtest_memset(b->qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+    bar_writel(b, BCM_MBX_RX_STD_PROD_LO, buffers);
 }
 
 #ifdef CONFIG_LINUX
@@ -4050,6 +4119,8 @@ static void test_receive_ring_full_recovers(const void *data)
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, LAP_RET_LEN << 16);
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
@@ -4197,6 +4268,8 @@ static void test_receive_mac_enable(const void *data)
     bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 8);
 
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     g_assert_cmphex(bar_readl(&b, BCM_RX_MODE) & BCM_RXMODE_ENABLE, ==, 0);
 
@@ -4301,6 +4374,8 @@ static void test_queued_receive_released_by_producer(const void *data)
 
     /* Bring-up order: interrupts enabled, engine enabled, no buffer posted. */
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
@@ -4495,6 +4570,8 @@ static void test_receive_round_trip(const void *data)
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
@@ -4694,6 +4771,8 @@ static void test_receive_payload_dma_error(const void *data)
     put32le(bd, UNMAPPED_PHYS >> 32);
     put32le(bd + 4, UNMAPPED_PHYS & 0xffffffff);
     qtest_memwrite(b.qts, STD_RING_PHYS, bd, sizeof(bd));
+    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
     bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 1);
@@ -4810,6 +4889,8 @@ static void test_receive_dma_error_after_progress(const void *data)
     qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
     bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 2);
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
@@ -4982,7 +5063,18 @@ static void test_receive_coalescing_timer(const void *data)
     uint8_t bd[BCM_RXBD_SIZE];
     unsigned int i;
     const unsigned int coal = 8;     /* larger than the burst: count never fires */
-    const unsigned int ticks = 50;   /* RX_COAL_TICKS, microseconds */
+    /*
+     * RX_COAL_TICKS in microseconds, and it has to outlast the arrival floor
+     * for a burst to coalesce at all. A completion reaches the coalescing
+     * block only at its arrival deadline, and the timer runs from the last
+     * status-block update rather than from the frame waiting to be reported,
+     * so a budget shorter than the floor is always expired by the time the
+     * first completion lands: that frame is then reported on its own and the
+     * rest wait out a reloaded budget, which is two updates and not the one
+     * group flush this case is about. Also above the worst case of the
+     * clock-stepping the wait helpers do while polling.
+     */
+    const unsigned int ticks = 20000;
     const unsigned int frames = 3;   /* only the timer can flush these */
     uint32_t tag_before;
 
@@ -5049,16 +5141,16 @@ static void test_receive_coalescing_timer(const void *data)
 }
 
 /*
- * Receive and transmit use the same zero-tick contract: a partial group is
- * posted immediately instead of waiting forever for a timer that was not
- * armed.
+ * Receive reads the same zero-tick rule off the same page: the count is then
+ * the only thing that can report a frame. The first frame is completed into
+ * the return ring and left unreported for as long as the test cares to wait.
  */
 static void test_receive_coalescing_zero_ticks(const void *data)
 {
     int sv[2];
     Bcm b;
     uint8_t frame[64];
-    uint32_t before;
+    uint8_t status[BCM_STATUS_BLK_SIZE];
 
     memset(frame, 0x41, sizeof(frame));
     memset(frame, 0xff, 6);
@@ -5068,19 +5160,217 @@ static void test_receive_coalescing_zero_ticks(const void *data)
                              " -netdev socket,fd=%d,id=n0"
                              " -device bcm570x,addr=%02x.0,netdev=n0",
                              sv[1], BCM_SLOT));
-    rx_open_one(&b, sv[0]);
-    bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, 8);
-    bar_writel(&b, BCM_HCC_RX_COAL_TICKS, 0);
+    rx_criteria_open(&b, 2, 2, 0);
 
-    before = read_status_tag(&b);
     net_socket_send_frame(sv[0], frame, sizeof(frame));
-    /*
-     * On the published producer, not the return descriptor: the descriptor is
-     * written when the frame arrives and the completion is reported only at
-     * its arrival deadline, so the return ring says nothing about the group.
-     */
+    wait_for_ret_end(&b, 0);
+    qtest_clock_step(b.qts, 1000 * 1000 * 1000);
+    g_assert_cmpuint(read_status_tag(&b), ==, 0);
+
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    wait_for_rx_prod(&b, 2);
+    g_assert_cmpuint(read_status_tag(&b), ==, 1);
+    qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
+    g_assert_cmphex(get16le(status + BCM_STATUS_RX_PROD_OFF), ==, 2);
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/*
+ * With neither receive criterion armed -- no max-BD count and no tick budget,
+ * which is where a reset leaves them -- the chip completes the frame into the
+ * return ring and tells the host nothing. Nothing else reports it either: the
+ * guide gives the status block four update criteria and no clock of its own
+ * [57XX-PG105-R, printed page 63].
+ */
+static void test_receive_without_a_criterion_is_silent(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[64];
+    uint8_t status[BCM_STATUS_BLK_SIZE];
+
+    memset(frame, 0x21, sizeof(frame));
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    rx_criteria_open(&b, 1, 0, 0);
+
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    wait_for_ret_end(&b, 0);
+
+    qtest_clock_step(b.qts, 1000 * 1000 * 1000);
+    qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
+    g_assert_cmphex(get32le(status), ==, 0);
+    g_assert_cmphex(get16le(status + BCM_STATUS_RX_PROD_OFF), ==, 0);
+    g_assert_cmpuint(read_status_tag(&b), ==, 0);
+    g_assert_false(intr_line_up(b.dev));
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/* The transmit side of the same silence. */
+static void test_transmit_without_a_criterion_is_silent(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[64];
+    uint8_t got[128];
+    uint8_t status[BCM_STATUS_BLK_SIZE];
+
+    memset(frame, 0x2f, sizeof(frame));
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    txc_setup(&b, 0, 0);
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+
+    txc_post_one_at(&b, frame, sizeof(frame), 0);
+    g_assert_cmpint(net_socket_recv_frame(sv[0], got, sizeof(got)), ==,
+                    sizeof(frame));
+
+    qtest_clock_step(b.qts, 1000 * 1000 * 1000);
+    qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
+    g_assert_cmphex(get32le(status), ==, 0);
+    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 0);
+    g_assert_cmpuint(read_status_tag(&b), ==, 0);
+    g_assert_false(intr_line_up(b.dev));
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/*
+ * A coalescing timer runs from the last status-block update, not from the
+ * event that is waiting: it "will be reset to the value of this register and
+ * will start counting down, after every status block update", and "once the
+ * counter is in the expired state, a status block update will occur if a
+ * packet had been received ... since the last status block update"
+ * [57XX-PG105-R, printed page 453]. So on an idle ring the timer is already
+ * expired when a frame arrives, and that frame is reported at once rather
+ * than held for a fresh budget -- which is the whole latency of a lone
+ * request-reply exchange.
+ */
+static void test_receive_expired_timer_reports_at_once(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[64];
+    const unsigned int ticks = 50;
+
+    memset(frame, 0x33, sizeof(frame));
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    /* A count too large to fire, so only the timer can report anything. */
+    rx_criteria_open(&b, 2, 8, ticks);
+
+    /* The budget elapses with an empty ring: nothing to report, no update. */
+    qtest_clock_step(b.qts, (int64_t)ticks * 1000 * 4);
+    g_assert_cmpuint(read_status_tag(&b), ==, 0);
+
+    /* The frame lands on an expired timer and is reported without waiting. */
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
     wait_for_rx_prod(&b, 1);
-    g_assert_cmpuint(read_status_tag(&b) - before, ==, 1);
+    g_assert_cmpuint(read_status_tag(&b), ==, 1);
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/* The transmit timer expires on the same terms. */
+static void test_transmit_expired_timer_reports_at_once(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[64];
+    uint8_t got[128];
+    const unsigned int ticks = 50;
+
+    memset(frame, 0x44, sizeof(frame));
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    txc_setup(&b, 8, ticks);
+
+    qtest_clock_step(b.qts, (int64_t)ticks * 1000 * 4);
+    g_assert_cmpuint(read_status_tag(&b), ==, 0);
+
+    txc_post_one_at(&b, frame, sizeof(frame), 0);
+    g_assert_cmpint(net_socket_recv_frame(sv[0], got, sizeof(got)), ==,
+                    sizeof(frame));
+    g_assert_cmpuint(read_status_tag(&b), ==, 1);
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/*
+ * The receive producer the driver reads out of the status block always names
+ * a completion the chip has already written: "When the controller receives a
+ * packet and writes that packet data into host memory via DMA, it will
+ * increment the Producer Index" [57XX-PG105-R, printed page 107]. A driver
+ * that trusted a producer running ahead of the ring would read a descriptor
+ * that is still zero.
+ */
+static void test_receive_producer_follows_its_completion(const void *data)
+{
+    const unsigned int frames = 3;
+    int sv[2];
+    Bcm b;
+    uint8_t frame[64];
+    uint8_t bd[BCM_RXBD_SIZE];
+    unsigned int i;
+
+    memset(frame, 0x55, sizeof(frame));
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+    rx_criteria_open(&b, frames, 1, 0);
+
+    for (i = 0; i < frames; i++) {
+        net_socket_send_frame(sv[0], frame, sizeof(frame));
+        wait_for_rx_prod(&b, i + 1);
+
+        /* The descriptor the producer just passed carries the frame... */
+        qtest_memread(b.qts, RET_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE,
+                      bd, sizeof(bd));
+        g_assert_cmphex(get16le(bd + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
+                        BCM_RXBDFLAG_END);
+        g_assert_cmphex(get16le(bd + BCM_RXBD_LEN), ==,
+                        sizeof(frame) + BCM_ETH_FCS_LEN);
+
+        /* ...and the one it points at is still untouched. */
+        qtest_memread(b.qts,
+                      RET_RING_PHYS + (uint64_t)(i + 1) * BCM_RXBD_SIZE,
+                      bd, sizeof(bd));
+        g_assert_cmphex(get16le(bd + BCM_RXBD_LEN), ==, 0);
+        g_assert_cmphex(get16le(bd + BCM_RXBD_FLAGS), ==, 0);
+    }
 
     bcm_close(&b);
     close(sv[0]);
@@ -5150,16 +5440,21 @@ static void test_receive_coalescing_status_dma_retry(const void *data)
 }
 
 /*
- * Rebuild only the status-DMA plumbing after a reset. The coalescing controls
- * stay at their reset values, so any update before the default one-second
- * periodic deadline came from work a reset failed to discard.
+ * Rebuild the status-DMA plumbing after a reset and arm both coalescing
+ * timers, with descriptor counts too high to fire. The reset left nothing for
+ * either timer to report, so an update after the budget elapses is work the
+ * reset failed to discard.
  */
-static void bcm_rearm_status_after_reset(Bcm *b)
+static void bcm_rearm_status_after_reset(Bcm *b, unsigned int ticks)
 {
     qpci_device_enable(b->dev);
     ind_mem_writel(b, BCM_SRAM_SEND_RING_RCB + 8, TX_RING_LEN << 16);
     ind_reg_writel(b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     ind_reg_writel(b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    ind_reg_writel(b, BCM_HCC_RX_MAX_COAL_BDS, 8);
+    ind_reg_writel(b, BCM_HCC_TX_MAX_COAL_BDS, 8);
+    ind_reg_writel(b, BCM_HCC_RX_COAL_TICKS, ticks);
+    ind_reg_writel(b, BCM_HCC_TX_COAL_TICKS, ticks);
     qtest_memset(b->qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
     ind_reg_writel(b, BCM_HCC_MODE, BCM_HCC_ENABLE);
 }
@@ -5193,7 +5488,7 @@ static void test_global_reset_cancels_receive_coalescing(const void *data)
     g_assert_cmpuint(read_status_tag(&b), ==, 0);
 
     bar_writel(&b, BCM_MISC_CFG, BCM_MISCCFG_RESET);
-    bcm_rearm_status_after_reset(&b);
+    bcm_rearm_status_after_reset(&b, ticks);
     /*
      * Past the arrival floor as well: the coalescing timer only starts
      * counting once the completion is reported to it.
@@ -5235,47 +5530,12 @@ static void test_system_reset_cancels_transmit_coalescing(const void *data)
 
     qtest_qmp_assert_success(b.qts, "{ 'execute': 'system_reset' }");
     qtest_qmp_eventwait(b.qts, "RESET");
-    bcm_rearm_status_after_reset(&b);
+    bcm_rearm_status_after_reset(&b, ticks);
     qtest_clock_step(b.qts, (int64_t)ticks * 1000 + 1000);
     g_assert_cmpuint(read_status_tag(&b), ==, 0);
 
     bcm_close(&b);
     close(sv[0]);
-}
-
-static void periodic_status_reset(bool system_reset)
-{
-    Bcm b;
-    const unsigned int ticks = 50;
-
-    bcm_open(&b, bcm_init());
-    bcm_arm_status(&b);
-    bar_writel(&b, BCM_HCC_STATS_TICKS, ticks);
-    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
-    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
-    qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
-
-    if (system_reset) {
-        qtest_qmp_assert_success(b.qts, "{ 'execute': 'system_reset' }");
-        qtest_qmp_eventwait(b.qts, "RESET");
-    } else {
-        bar_writel(&b, BCM_MISC_CFG, BCM_MISCCFG_RESET);
-    }
-    bcm_rearm_status_after_reset(&b);
-    qtest_clock_step(b.qts, (int64_t)ticks * 1000 + 1000);
-    g_assert_cmpuint(read_status_tag(&b), ==, 0);
-
-    bcm_close(&b);
-}
-
-static void test_global_reset_cancels_periodic_status(const void *data)
-{
-    periodic_status_reset(false);
-}
-
-static void test_system_reset_cancels_periodic_status(const void *data)
-{
-    periodic_status_reset(true);
 }
 
 /*
@@ -5328,6 +5588,8 @@ static void test_receive_frame_wordswap(const void *data)
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, (uint32_t)STATUS_PHYS);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS >> 32);
+    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
@@ -5581,9 +5843,9 @@ static void test_vmstate_versions_nested_phy(const void *data)
     root = qobject_to(QDict, root_obj);
     g_assert_false(qdict_haskey(root, "bcm570x-phy"));
     section = qdict_get_qdict(root, "bcm570x");
-    g_assert_cmpint(qdict_get_int(section, "version_id"), ==, 9);
+    g_assert_cmpint(qdict_get_int(section, "version_id"), ==, 10);
     description = qdict_get_qdict(section, "Description");
-    g_assert_cmpint(qdict_get_int(description, "version_id"), ==, 9);
+    g_assert_cmpint(qdict_get_int(description, "version_id"), ==, 10);
     fields = qdict_get_qlist(description, "Fields");
     phy = bcm570x_vmstate_field(fields, "phy");
     g_assert_nonnull(phy);
@@ -5947,48 +6209,6 @@ static void test_arrival_line_migrates_only_what_it_holds(const void *data)
 }
 
 /*
- * HCC periodic status is part of the live device state too. An idle guest must
- * keep receiving watchdog updates after migration without rewriting HCC.
- */
-static void test_periodic_status_survives_migration(const void *data)
-{
-    g_autofree gchar *tmpfs = NULL;
-    g_autofree gchar *uri = NULL;
-    g_autofree gchar *dest = NULL;
-    GError *err = NULL;
-    QTestState *from_qts, *to_qts;
-    Bcm from, to;
-    const unsigned int ticks = 50;
-
-    tmpfs = g_dir_make_tmp("bcm570x-test-XXXXXX", &err);
-    g_assert(tmpfs);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
-
-    from_qts = bcm_init();
-    bcm_open(&from, from_qts);
-    bcm_arm_status(&from);
-    bar_writel(&from, BCM_HCC_STATS_TICKS, ticks);
-    bar_writel(&from, BCM_HCC_MODE, BCM_HCC_ENABLE);
-    bar_writel(&from, BCM_RX_MODE, BCM_RXMODE_ENABLE);
-    qtest_memset(from.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
-
-    dest = g_strdup_printf(BCM_MACHINE
-                           " -netdev user,id=n0"
-                           " -device bcm570x,addr=%02x.0,netdev=n0"
-                           " -incoming %s", BCM_SLOT, uri);
-    to_qts = qtest_init(dest);
-    bcm_open(&to, to_qts);
-    bcm570x_migrate(from_qts, to_qts, uri);
-
-    g_assert_cmpuint(read_status_tag(&to), ==, 0);
-    qtest_clock_step(to.qts, (int64_t)ticks * 1000 + 1000);
-    g_assert_cmpuint(read_status_tag(&to), ==, 1);
-
-    bcm_close(&to);
-    bcm_close(&from);
-}
-
-/*
  * The device's state round-trips across a migration. On the source, a
  * register-file word (the status-block host address), an SRAM word, and an
  * asserted interrupt are established, then the machine is migrated stopped. On
@@ -6118,6 +6338,8 @@ static void test_masked_interrupt_survives_migration(const void *data)
     qtest_memwrite(from.qts, STD_RING_PHYS, bd, sizeof(bd));
     qtest_memset(from.qts, RET_RING_PHYS, 0, sizeof(ret));
     qtest_memset(from.qts, RX_BUF_PHYS, 0, sizeof(frame));
+    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    bar_writel(&from, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(&from, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&from, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
@@ -6544,16 +6766,22 @@ int main(int argc, char **argv)
                         test_receive_coalescing_timer);
     qtest_add_data_func("/bcm570x/receive-coalescing-zero-ticks", NULL,
                         test_receive_coalescing_zero_ticks);
+    qtest_add_data_func("/bcm570x/receive-without-a-criterion-is-silent", NULL,
+                        test_receive_without_a_criterion_is_silent);
+    qtest_add_data_func("/bcm570x/transmit-without-a-criterion-is-silent", NULL,
+                        test_transmit_without_a_criterion_is_silent);
+    qtest_add_data_func("/bcm570x/receive-expired-timer-reports-at-once", NULL,
+                        test_receive_expired_timer_reports_at_once);
+    qtest_add_data_func("/bcm570x/transmit-expired-timer-reports-at-once", NULL,
+                        test_transmit_expired_timer_reports_at_once);
+    qtest_add_data_func("/bcm570x/receive-producer-follows-its-completion",
+                        NULL, test_receive_producer_follows_its_completion);
     qtest_add_data_func("/bcm570x/receive-coalescing-status-dma-retry", NULL,
                         test_receive_coalescing_status_dma_retry);
     qtest_add_data_func("/bcm570x/global-reset-cancels-rx-coalescing", NULL,
                         test_global_reset_cancels_receive_coalescing);
     qtest_add_data_func("/bcm570x/system-reset-cancels-tx-coalescing", NULL,
                         test_system_reset_cancels_transmit_coalescing);
-    qtest_add_data_func("/bcm570x/global-reset-cancels-periodic-status", NULL,
-                        test_global_reset_cancels_periodic_status);
-    qtest_add_data_func("/bcm570x/system-reset-cancels-periodic-status", NULL,
-                        test_system_reset_cancels_periodic_status);
     qtest_add_data_func("/bcm570x/rx-producer-out-of-range", NULL,
                         test_rx_producer_out_of_range);
     qtest_add_data_func("/bcm570x/interrupt-mailbox", NULL,
@@ -6582,8 +6810,6 @@ int main(int argc, char **argv)
     qtest_add_data_func("/bcm570x/arrival-line-migrates-only-what-it-holds",
                         NULL,
                         test_arrival_line_migrates_only_what_it_holds);
-    qtest_add_data_func("/bcm570x/periodic-status-survives-migration", NULL,
-                        test_periodic_status_survives_migration);
     qtest_add_data_func("/bcm570x/dual-port-present-and-independent", NULL,
                         test_dual_port_present_and_independent);
     qtest_add_data_func("/bcm570x/dual-port-survives-migration", NULL,
