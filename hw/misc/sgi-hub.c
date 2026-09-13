@@ -29,7 +29,6 @@
 #include "exec/cpu-interrupt.h"
 #include "hw/core/cpu.h"
 #include "system/address-spaces.h"
-#include "system/cpus.h"
 #include "qemu/host-utils.h"
 #include "system/system.h"
 #include "system/runstate.h"
@@ -47,9 +46,6 @@
 #define HUB_PI_INT_MASK1_A      0x0000b0  /* second bank reaching processor A */
 #define HUB_PI_INT_MASK0_B      0x0000b8  /* first bank reaching processor B */
 #define HUB_PI_INT_MASK1_B      0x0000c0  /* second bank reaching processor B */
-
-/* A bounded host scheduling handoff for disabled-comparator mailboxes. */
-#define SGI_HUB_RT_HANDOFF_MS   10
 
 /* I/O interface: the Hub's own widget block on the crossbar. */
 #define HUB_IO_WIDGET_ID        0x400000
@@ -995,63 +991,6 @@ static void sgi_hub_kick_polled_peer(CPUState *peer)
     sgi_hub_kick_peer(peer);
 }
 
-typedef struct SGIHubRTHandoff {
-    SGIHubState *hub;
-    unsigned int index;
-    uint64_t generation;
-    uint64_t epoch;
-    bool wait_for_observation;
-} SGIHubRTHandoff;
-
-static void sgi_hub_cancel_rt_handoffs(SGIHubState *s)
-{
-    s->pi_rt_handoff_epoch++;
-    memset(s->pi_rt_publish_gen, 0, sizeof(s->pi_rt_publish_gen));
-    memset(s->pi_rt_observed_gen, 0, sizeof(s->pi_rt_observed_gen));
-    qemu_cond_broadcast(&s->pi_rt_handoff_cond);
-}
-
-static void sgi_hub_rt_handoff(CPUState *cpu, run_on_cpu_data data)
-{
-    SGIHubRTHandoff *handoff = data.host_ptr;
-    SGIHubState *s = handoff->hub;
-    int64_t deadline = qemu_clock_get_ms(QEMU_CLOCK_REALTIME) +
-                       SGI_HUB_RT_HANDOFF_MS;
-
-    while (s->pi_rt_handoff_epoch == handoff->epoch &&
-           ((handoff->wait_for_observation &&
-             s->pi_rt_compare[handoff->index] &&
-             s->pi_rt_observed_gen[handoff->index] < handoff->generation) ||
-            (!handoff->wait_for_observation &&
-             !s->pi_rt_compare[handoff->index] &&
-             s->pi_rt_publish_gen[handoff->index] == handoff->generation))) {
-        int64_t remaining = deadline - qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
-
-        if (remaining <= 0) {
-            break;
-        }
-        qemu_cond_timedwait_bql(&s->pi_rt_handoff_cond, remaining);
-    }
-
-    object_unref(OBJECT(s));
-    g_free(handoff);
-}
-
-static void sgi_hub_queue_rt_handoff(SGIHubState *s, unsigned int index,
-                                     uint64_t generation,
-                                     bool wait_for_observation)
-{
-    SGIHubRTHandoff *handoff = g_new0(SGIHubRTHandoff, 1);
-
-    handoff->hub = SGI_HUB(object_ref(OBJECT(s)));
-    handoff->index = index;
-    handoff->generation = generation;
-    handoff->epoch = s->pi_rt_handoff_epoch;
-    handoff->wait_for_observation = wait_for_observation;
-    async_run_on_cpu(current_cpu, sgi_hub_rt_handoff,
-                     RUN_ON_CPU_HOST_PTR(handoff));
-}
-
 static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
 {
     unsigned int number = val & PI_INT_MODIFY_NUMBER;
@@ -1363,20 +1302,10 @@ static uint64_t sgi_hub_read_rt_compare(SGIHubState *s, hwaddr addr,
                                         unsigned arg)
 {
     CPUState *owner = qemu_get_cpu(s->cpu_base + arg);
-    uint64_t value = s->pi_rt_compare[arg];
 
     /* A progress mailbox: let the owner publish before the poll budget ends. */
     sgi_hub_kick_polled_peer(owner);
-    if (value && current_cpu && owner && current_cpu != owner) {
-        s->pi_rt_observed_gen[arg] = s->pi_rt_publish_gen[arg];
-        qemu_cond_broadcast(&s->pi_rt_handoff_cond);
-    } else if (!value && tcg_enabled() && qemu_tcg_mttcg_enabled() &&
-               current_cpu && owner && current_cpu != owner &&
-               cpu_can_run(owner) && !owner->halted) {
-        sgi_hub_kick_peer(owner);
-        sgi_hub_queue_rt_handoff(s, arg, s->pi_rt_publish_gen[arg], false);
-    }
-    return value;
+    return s->pi_rt_compare[arg];
 }
 
 /* Move the origin so the counter reads what was written, and keep running. */
@@ -1938,7 +1867,6 @@ static void sgi_hub_write_rt_compare(SGIHubState *s, hwaddr addr,
                                      unsigned arg, uint64_t val,
                                      unsigned size)
 {
-    CPUState *owner;
     CPUState *other;
 
     s->pi_rt_compare[arg] = val & PI_RT_MASK;
@@ -1953,18 +1881,6 @@ static void sgi_hub_write_rt_compare(SGIHubState *s, hwaddr addr,
     other = qemu_get_cpu(s->cpu_base + (arg ^ 1));
     if (!s->pi_rt_enable[arg] && (arg ^ 1) < s->cpus) {
         sgi_hub_kick_peer(other);
-        owner = qemu_get_cpu(s->cpu_base + arg);
-        if (s->pi_rt_compare[arg] && tcg_enabled() &&
-            qemu_tcg_mttcg_enabled() && current_cpu == owner && other &&
-            cpu_can_run(other) && !other->halted) {
-            uint64_t generation = ++s->pi_rt_publish_gen[arg];
-
-            qemu_cond_broadcast(&s->pi_rt_handoff_cond);
-            sgi_hub_queue_rt_handoff(s, arg, generation, true);
-        }
-    }
-    if (!s->pi_rt_compare[arg]) {
-        qemu_cond_broadcast(&s->pi_rt_handoff_cond);
     }
 }
 
@@ -2964,7 +2880,6 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
     SGIHubState *s = SGI_HUB(obj);
     unsigned int n;
 
-    sgi_hub_cancel_rt_handoffs(s);
     s->pi_region_present = ~0ULL;
     s->pi_calias_size = PI_CALIAS_SIZE_RESET;
     memset(s->pi_cpu_enable, 0, sizeof(s->pi_cpu_enable));
@@ -3453,7 +3368,6 @@ static void sgi_hub_unrealize(DeviceState *dev)
     unsigned int endpoints = sn0_fabric_endpoint_count(s->fabric);
     unsigned int view, space, i;
 
-    sgi_hub_cancel_rt_handoffs(s);
     s->claim_ready = false;
     address_space_destroy(&s->bte_as);
     for (view = 0; view < SGI_HUB_CLAIM_VIEWS; view++) {
@@ -3572,7 +3486,6 @@ static int sgi_hub_post_load(void *opaque, int version_id)
     SGIHubState *s = opaque;
     unsigned int n;
 
-    sgi_hub_cancel_rt_handoffs(s);
     if (s->ni_port_error & ~NI_PORT_ERROR_MASK) {
         return -EINVAL;
     }
@@ -3671,17 +3584,9 @@ static void sgi_hub_init(Object *obj)
 {
     SGIHubState *s = SGI_HUB(obj);
 
-    qemu_cond_init(&s->pi_rt_handoff_cond);
     object_initialize_child(obj, "i2c", &s->i2c, TYPE_PCF8584);
     s->rt_clk = qdev_init_clock_in(DEVICE(obj), "rt-clk", NULL, NULL, 0);
     clock_set_hz(s->rt_clk, PI_RT_DEFAULT_HZ);
-}
-
-static void sgi_hub_finalize(Object *obj)
-{
-    SGIHubState *s = SGI_HUB(obj);
-
-    qemu_cond_destroy(&s->pi_rt_handoff_cond);
 }
 
 static void sgi_hub_class_init(ObjectClass *oc, const void *data)
@@ -3707,7 +3612,6 @@ static const TypeInfo sgi_hub_types[] = {
         .parent = TYPE_SYS_BUS_DEVICE,
         .instance_size = sizeof(SGIHubState),
         .instance_init = sgi_hub_init,
-        .instance_finalize = sgi_hub_finalize,
         .class_init = sgi_hub_class_init,
     },
 };
