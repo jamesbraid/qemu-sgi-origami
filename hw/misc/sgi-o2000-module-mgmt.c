@@ -244,7 +244,8 @@ static void mgmt_service(void *opaque)
 {
     SGIO2000ModuleMgmtState *s = opaque;
 
-    s->service_deadline += SERVICE_PERIOD_NS;
+    s->service_deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                          SERVICE_PERIOD_NS;
     timer_mod_ns(s->service_timer, s->service_deadline);
 
     /*
