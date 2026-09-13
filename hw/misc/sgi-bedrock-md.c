@@ -595,12 +595,12 @@ uint64_t sgi_bedrock_md_ecc_store_value(hwaddr offset, uint64_t value,
 
     memory_address = (offset ^ 6) * 8;
     switch (memory_address & 0x30) {
-    case 0x00:
-        return value;
     case 0x10:
         return value >> 48;
     case 0x20:
         return value >> 32;
+    case 0x30:
+        return value >> 16;
     default:
         return value;
     }
