@@ -959,10 +959,22 @@ static void test_programmed_routes(void)
         "{ 'execute': 'qom-set', 'arguments': { 'path': '/machine/fabric',"
         " 'property': 'down-links', 'value': '' } }");
     g_assert_true(cpu_read(qts, 0, target, &value));
-    /* Two remote physical Hubs claiming one NASID must not choose an owner. */
+    /*
+     * Two Hubs can hold one number while the nodes are being renumbered,
+     * and the programmed turns decide which of them answers: the walk ends
+     * at one Hub, and that Hub claims the number as its own. A number no
+     * Hub holds is still nobody's.
+     */
+    node_write(qts, 3, MEM_PROBE, UINT64_C(0xfedcba987654321));
     hub_write(qts, 3, NI_STATUS, NI_REGION_SIZE | (0x21 << 8));
-    g_assert_false(cpu_read(qts, 0, target, &value));
+    g_assert_true(cpu_read(qts, 0, target, &value));
+    g_assert_cmphex(value, ==, UINT64_C(0x123456789abcdef));
     hub_write(qts, 3, NI_STATUS, NI_REGION_SIZE | (0x22 << 8));
+    g_assert_true(cpu_read(qts, 0, target, &value));
+    g_assert_cmphex(value, ==, UINT64_C(0x123456789abcdef));
+    hub_write(qts, 2, NI_STATUS, NI_REGION_SIZE | (0x23 << 8));
+    g_assert_false(cpu_read(qts, 0, target, &value));
+    hub_write(qts, 2, NI_STATUS, NI_REGION_SIZE | (0x21 << 8));
     g_assert_true(cpu_read(qts, 0, target, &value));
     qtest_system_reset(qts);
     g_assert_false(cpu_read(qts, 0, target, &value));
