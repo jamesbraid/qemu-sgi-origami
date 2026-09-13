@@ -40,6 +40,18 @@ void do_raise_exception(CPUMIPSState *env,
     do_raise_exception_err(env, exception, 0, pc);
 }
 
+/*
+ * r10k_fpu.c holds the R10000 family's floating-point behaviours. The shared
+ * FP helpers reach the denormal-result and CVT.L range refusals there by a
+ * one-line delegation, and its arithmetic ABS/NEG helpers reuse update_fcr31,
+ * the shared FP result epilogue defined in fpu_helper.c.
+ */
+void update_fcr31(CPUMIPSState *env, uintptr_t pc);
+void check_denormal_result_d(CPUMIPSState *env, uint64_t ret, uintptr_t pc);
+void check_denormal_result_s(CPUMIPSState *env, uint32_t ret, uintptr_t pc);
+void check_cvt_l_result(CPUMIPSState *env, uint64_t ret, bool invalid,
+                        uintptr_t pc);
+
 #if !defined(CONFIG_USER_ONLY)
 
 void mips_cpu_do_interrupt(CPUState *cpu);

@@ -20,6 +20,7 @@ mips_ss.add(files(
   'msa_translate.c',
   'octeon_crypto.c',
   'op_helper.c',
+  'r10k_fpu.c',
   'r10k_translate.c',
   'rel6_translate.c',
   'translate.c',

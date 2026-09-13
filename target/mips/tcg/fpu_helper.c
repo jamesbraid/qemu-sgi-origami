@@ -176,18 +176,6 @@ void helper_ctc1(CPUMIPSState *env, target_ulong arg1, uint32_t fs, uint32_t rt)
     }
 }
 
-/*
- * Refuse an instruction with the Unimplemented Operation exception: a
- * Floating-Point exception whose FCSR cause field holds only the E bit,
- * which has no enable and always traps. The caller has already saved the
- * CPU state.
- */
-void helper_raise_fp_unimplemented(CPUMIPSState *env)
-{
-    SET_FP_CAUSE(env->active_fpu.fcr31, FP_UNIMPLEMENTED);
-    do_raise_exception(env, EXCP_FPE, 0);
-}
-
 static inline int ieee_to_mips_xcpt(int ieee_xcpt)
 {
     int mips_xcpt = 0;
@@ -211,7 +199,7 @@ static inline int ieee_to_mips_xcpt(int ieee_xcpt)
     return mips_xcpt;
 }
 
-static inline void update_fcr31(CPUMIPSState *env, uintptr_t pc)
+void update_fcr31(CPUMIPSState *env, uintptr_t pc)
 {
     int ieee_exception_flags = get_float_exception_flags(
                                    &env->active_fpu.fp_status);
@@ -231,42 +219,6 @@ static inline void update_fcr31(CPUMIPSState *env, uintptr_t pc)
         } else {
             UPDATE_FP_FLAGS(env->active_fpu.fcr31, mips_exception_flags);
         }
-    }
-}
-
-/*
- * Refuse a denormalized result the R10000 way: with the FSR's FS bit
- * clear "A denormalized result causes an Unimplemented Operation
- * exception" (R10000 User's Manual version 2.0, section 15.4); with it
- * set softfloat has already flushed the result to zero. The refused
- * operation is not performed, so its softfloat flags are discarded and
- * the cause field carries E alone.
- */
-static G_NORETURN void raise_unimplemented_operation(CPUMIPSState *env,
-                                                     uintptr_t pc)
-{
-    set_float_exception_flags(0, &env->active_fpu.fp_status);
-    SET_FP_CAUSE(env->active_fpu.fcr31, FP_UNIMPLEMENTED);
-    do_raise_exception(env, EXCP_FPE, pc);
-}
-
-static void check_denormal_result_d(CPUMIPSState *env, uint64_t ret,
-                                    uintptr_t pc)
-{
-    if (unlikely(env->cfg.fp_traps_denormal_result &&
-                 !(env->active_fpu.fcr31 & (1 << FCR31_FS)) &&
-                 float64_is_denormal(ret))) {
-        raise_unimplemented_operation(env, pc);
-    }
-}
-
-static void check_denormal_result_s(CPUMIPSState *env, uint32_t ret,
-                                    uintptr_t pc)
-{
-    if (unlikely(env->cfg.fp_traps_denormal_result &&
-                 !(env->active_fpu.fcr31 & (1 << FCR31_FS)) &&
-                 float32_is_denormal(ret))) {
-        raise_unimplemented_operation(env, pc);
     }
 }
 
@@ -317,23 +269,6 @@ uint64_t helper_float_cvtd_l(CPUMIPSState *env, uint64_t dt0)
     fdt2 = int64_to_float64(dt0, &env->active_fpu.fp_status);
     update_fcr31(env, GETPC());
     return fdt2;
-}
-
-/*
- * "In the R10000, the conversion allows only up to 51 bits; otherwise an
- * Unimplemented Operation exception is taken" (R10000 User's Manual
- * version 2.0, section 15.5, CVT.L.fmt errata). A NaN, an infinity or an
- * out-of-range source has no 51-bit result either and is refused the
- * same way, in place of the architectural Invalid and saturated result
- * the operating system's assist path delivers after the trap.
- */
-static void check_cvt_l_result(CPUMIPSState *env, uint64_t ret, bool invalid,
-                               uintptr_t pc)
-{
-    if (unlikely(env->cfg.fp_cvt_l_limited_to_51_bits &&
-                 (invalid || ret != (uint64_t)sextract64(ret, 0, 52)))) {
-        raise_unimplemented_operation(env, pc);
-    }
 }
 
 uint64_t helper_float_cvt_l_d(CPUMIPSState *env, uint64_t fdt0)
@@ -1081,90 +1016,6 @@ uint64_t helper_float_chs_ps(uint64_t fdt0)
     wt0 = float32_chs(fdt0 & 0XFFFFFFFF);
     wth0 = float32_chs(fdt0 >> 32);
     return ((uint64_t)wth0 << 32) | wt0;
-}
-
-/*
- * The same operations with the R10000's semantics. There ABS.fmt and
- * NEG.fmt are arithmetic — "This operation is arithmetic; a NaN operand
- * signals invalid operation" (VR10000 Instruction Set User's Manual,
- * ABS.fmt and NEG.fmt) — so a NaN operand signals Invalid, trapping when
- * the enable is set and otherwise delivering the default quiet NaN.
- */
-uint64_t helper_float_abs_d_r10k(CPUMIPSState *env, uint64_t fdt0)
-{
-    uint64_t dt2;
-
-    if (float64_is_any_nan(fdt0)) {
-        float_raise(float_flag_invalid, &env->active_fpu.fp_status);
-        dt2 = float64_default_nan(&env->active_fpu.fp_status);
-    } else {
-        dt2 = float64_abs(fdt0);
-        if ((env->active_fpu.fcr31 & (1 << FCR31_FS)) &&
-            float64_is_denormal(dt2)) {
-            /* Arithmetic, so the FS flush applies; the sign survives. */
-            dt2 &= 1ULL << 63;
-        }
-    }
-    check_denormal_result_d(env, dt2, GETPC());
-    update_fcr31(env, GETPC());
-    return dt2;
-}
-
-uint32_t helper_float_abs_s_r10k(CPUMIPSState *env, uint32_t fst0)
-{
-    uint32_t wt2;
-
-    if (float32_is_any_nan(fst0)) {
-        float_raise(float_flag_invalid, &env->active_fpu.fp_status);
-        wt2 = float32_default_nan(&env->active_fpu.fp_status);
-    } else {
-        wt2 = float32_abs(fst0);
-        if ((env->active_fpu.fcr31 & (1 << FCR31_FS)) &&
-            float32_is_denormal(wt2)) {
-            wt2 &= 1U << 31;
-        }
-    }
-    check_denormal_result_s(env, wt2, GETPC());
-    update_fcr31(env, GETPC());
-    return wt2;
-}
-
-uint64_t helper_float_chs_d_r10k(CPUMIPSState *env, uint64_t fdt0)
-{
-    uint64_t dt2;
-
-    if (float64_is_any_nan(fdt0)) {
-        float_raise(float_flag_invalid, &env->active_fpu.fp_status);
-        dt2 = float64_default_nan(&env->active_fpu.fp_status);
-    } else {
-        dt2 = float64_chs(fdt0);
-        if ((env->active_fpu.fcr31 & (1 << FCR31_FS)) &&
-            float64_is_denormal(dt2)) {
-            dt2 &= 1ULL << 63;
-        }
-    }
-    check_denormal_result_d(env, dt2, GETPC());
-    update_fcr31(env, GETPC());
-    return dt2;
-}
-
-uint32_t helper_float_chs_s_r10k(CPUMIPSState *env, uint32_t fst0)
-{
-    uint32_t wt2;
-
-    if (float32_is_any_nan(fst0)) {
-        float_raise(float_flag_invalid, &env->active_fpu.fp_status);
-        wt2 = float32_default_nan(&env->active_fpu.fp_status);
-    } else {
-        wt2 = float32_chs(fst0);
-        if ((env->active_fpu.fcr31 & (1 << FCR31_FS)) &&
-            float32_is_denormal(wt2)) {
-            wt2 &= 1U << 31;
-        }
-    }
-    check_denormal_result_s(env, wt2, GETPC());
-    update_fcr31(env, GETPC());
-    return wt2;
 }
 
 /* MIPS specific unary operations */
