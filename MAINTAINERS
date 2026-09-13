@@ -1492,6 +1492,7 @@ F: hw/input/sgi-ioc3-kbc.c
 F: hw/misc/sgi-*.c
 F: hw/net/dp83840.c
 F: hw/net/sgi-ioc3-eth.c
+F: hw/net/sgi-net-rx-latency.c
 F: hw/pci-host/sgi-bridge.c
 F: hw/pci-host/sgi-xbridge.c
 F: hw/rtc/m48t35.c
@@ -1502,6 +1503,7 @@ F: include/hw/input/sgi-ioc3-kbc.h
 F: include/hw/misc/sgi-*.h
 F: include/hw/net/dp83840.h
 F: include/hw/net/sgi-ioc3-eth.h
+F: include/hw/net/sgi-net-rx-latency.h
 F: include/hw/pci-host/sgi-bridge.h
 F: include/hw/pci-host/sgi-xbridge.h
 F: include/hw/rtc/m48t35.h
