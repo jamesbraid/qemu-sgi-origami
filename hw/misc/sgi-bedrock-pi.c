@@ -14,6 +14,8 @@
 #define PI_REGION_PRESENT    0x018
 #define PI_CPU_NUMBER        0x020
 #define PI_CACHED_ALIAS      0x028
+#define PI_RQ_TIMEOUT_MAX    0x030
+#define PI_RQ_TIMEOUT_SCALE  0x038
 #define PI_CPU_PRESENT_A     0x040
 #define PI_CPU_PRESENT_B     0x048
 #define PI_CPU_ENABLE_A      0x050
@@ -74,6 +76,8 @@
 #define PI_NACK_COMPARE_MASK ((1ULL << 20) - 1)
 #define PI_SPOOL_MASK_MASK   0x3f
 #define PI_ERR_CHECK_MASK    0x3f
+#define PI_RQ_TIMEOUT_MAX_MASK   0xff
+#define PI_RQ_TIMEOUT_SCALE_MASK 0xffffff
 
 #define PI_PASSWORD 0x53474972756c6573ULL
 #define PI_ERROR_MASK ((1ULL << 35) - 1)
@@ -304,6 +308,8 @@ static uint64_t pi_read(void *opaque, hwaddr offset, unsigned size)
     case PI_REGION_PRESENT: return s->region_present;
     case PI_CPU_NUMBER: return pi_cpu_number(s);
     case PI_CACHED_ALIAS: return s->cached_alias;
+    case PI_RQ_TIMEOUT_MAX: return s->rq_timeout_max;
+    case PI_RQ_TIMEOUT_SCALE: return s->rq_timeout_scale;
     case PI_CPU_PRESENT_A:
         return s->interface * 2 < s->processor_count;
     case PI_CPU_PRESENT_B:
@@ -402,6 +408,18 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
         return;
     case PI_CACHED_ALIAS:
         s->cached_alias = value & 0xf;
+        return;
+    /*
+     * The coherency request-buffer timeout: the maximum count a valid
+     * buffer may reach, and the scale that sets how often that count
+     * advances. The model runs no request-buffer timeout, so both are
+     * stored control words read back with their reserved bits zero.
+     */
+    case PI_RQ_TIMEOUT_MAX:
+        s->rq_timeout_max = value & PI_RQ_TIMEOUT_MAX_MASK;
+        return;
+    case PI_RQ_TIMEOUT_SCALE:
+        s->rq_timeout_scale = value & PI_RQ_TIMEOUT_SCALE_MASK;
         return;
     case PI_CPU_ENABLE_A:
         s->cpu_enable[0] = value & 1;
@@ -627,6 +645,8 @@ static void pi_reset_enter(Object *obj, ResetType type)
     s->nack_compare = 0;
     s->spool_mask = 0;
     s->err_check_enable = 0;
+    s->rq_timeout_max = 0;
+    s->rq_timeout_scale = 0;
     s->rt_base = 0;
     s->rt_base_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     memset(s->rt_compare, 0, sizeof(s->rt_compare));
@@ -676,8 +696,8 @@ static int pi_pre_save(void *opaque)
 
 static const VMStateDescription vmstate_pi = {
     .name = TYPE_SGI_BEDROCK_PI,
-    .version_id = 4,
-    .minimum_version_id = 4,
+    .version_id = 5,
+    .minimum_version_id = 5,
     .pre_save = pi_pre_save,
     .post_load = pi_post_load,
     .fields = (const VMStateField[]) {
@@ -685,6 +705,8 @@ static const VMStateDescription vmstate_pi = {
         VMSTATE_UINT64(io_protect, SGIBedrockPIState),
         VMSTATE_UINT64(region_present, SGIBedrockPIState),
         VMSTATE_UINT8(cached_alias, SGIBedrockPIState),
+        VMSTATE_UINT8(rq_timeout_max, SGIBedrockPIState),
+        VMSTATE_UINT32(rq_timeout_scale, SGIBedrockPIState),
         VMSTATE_UINT8_ARRAY(cpu_enable, SGIBedrockPIState, 2),
         VMSTATE_UINT64_ARRAY(pending, SGIBedrockPIState, 2),
         VMSTATE_UINT64_ARRAY(cc_pend, SGIBedrockPIState, 2),

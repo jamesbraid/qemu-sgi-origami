@@ -25,6 +25,8 @@
 #define REGION_PRESENT 0x18
 #define CPU_NUMBER 0x20
 #define CACHED_ALIAS 0x28
+#define RQ_TIMEOUT_MAX 0x30
+#define RQ_TIMEOUT_SCALE 0x38
 #define CPU_PRESENT_A 0x40
 #define CPU_PRESENT_B 0x48
 #define CPU_ENABLE_A 0x50
@@ -512,6 +514,7 @@ static void test_power_on_values(void)
         { ERROR_MASK_A, 0 }, { ERROR_MASK_B, 0 },
         { ERROR_STACK_A, 0 }, { ERROR_STACK_B, 0 }, { ERROR_STACK_SIZE, 0 },
         { ERR_CHECK_ENABLE, 0 },
+        { RQ_TIMEOUT_MAX, 0 }, { RQ_TIMEOUT_SCALE, 0 },
         { RT_COMPARE_A, 0 }, { RT_COMPARE_B, 0 }, { PROFILE_COMPARE, 0 },
         { RT_PENDING_A, 0 }, { RT_PENDING_B, 0 },
         { PROFILE_PENDING_A, 0 }, { PROFILE_PENDING_B, 0 },
@@ -691,6 +694,36 @@ static void test_error_capture_registers(void)
     g_assert_cmphex(qtest_readq(s, PI(0, NACK_COMPARE)), ==, 0);
     g_assert_cmphex(qtest_readq(s, PI(0, SPOOL_MASK)), ==, 0);
     g_assert_cmphex(qtest_readq(s, PI(0, ERR_CHECK_ENABLE)), ==, 0);
+    qtest_quit(s);
+}
+
+/*
+ * The request-buffer timeout controls are stored R/W registers. The model
+ * runs no request-buffer timeout, so it keeps the low eight bits of the
+ * maximum and the low 24 of the scale, reads the reserved bits back as zero,
+ * and clears both on the local reset like every register whose reset value
+ * the datasheet leaves unknown.
+ */
+static void test_request_buffer_timeout(void)
+{
+    QTestState *s = start("");
+
+    qtest_writeq(s, PI(0, RQ_TIMEOUT_MAX), UINT64_MAX);
+    qtest_writeq(s, PI(0, RQ_TIMEOUT_SCALE), UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, PI(0, RQ_TIMEOUT_MAX)), ==, 0xff);
+    g_assert_cmphex(qtest_readq(s, PI(0, RQ_TIMEOUT_SCALE)), ==, 0xffffff);
+
+    /* The firmware's own values land intact in both interfaces. */
+    qtest_writeq(s, PI(1, RQ_TIMEOUT_SCALE), 0x20000);
+    g_assert_cmphex(qtest_readq(s, PI(1, RQ_TIMEOUT_SCALE)), ==, 0x20000);
+    g_assert_cmphex(qtest_readq(s, PI(1, RQ_TIMEOUT_MAX)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, RQ_TIMEOUT_SCALE)), ==, 0xffffff);
+
+    /* The datasheet leaves the reset value unknown; the model clears it. */
+    qtest_writeq(s, NI(0x08), 4);
+    g_assert_cmphex(qtest_readq(s, PI(0, RQ_TIMEOUT_MAX)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, RQ_TIMEOUT_SCALE)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(1, RQ_TIMEOUT_SCALE)), ==, 0);
     qtest_quit(s);
 }
 
@@ -1120,6 +1153,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-pi/local-reset", test_local_reset);
     qtest_add_func("sn1/bedrock-pi/error-capture-registers",
                    test_error_capture_registers);
+    qtest_add_func("sn1/bedrock-pi/request-buffer-timeout",
+                   test_request_buffer_timeout);
     qtest_add_func("sn1/bedrock-pi/nmi", test_nmi);
     qtest_add_func("sn1/bedrock-pi/error-pending-survives-reset",
                    test_error_pending_survives_reset);
