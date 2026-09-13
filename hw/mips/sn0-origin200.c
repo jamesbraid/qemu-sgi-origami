@@ -5,8 +5,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "qapi/error.h"
-#include "sn0-origin200-model-id.h"
 #include "qemu/units.h"
 #include "sn0.h"
 
@@ -22,20 +20,6 @@ static const char * const *origin200_valid_cpu_types(SN0ModelCpuKind kind)
         return origin200_r10000_cpu_types;
     default:
         g_assert_not_reached();
-    }
-}
-
-static char *origin200_get_model_id(Object *obj, Error **errp)
-{
-    return g_strdup(ORIGAMI_ORIGIN200_MODEL_ID);
-}
-
-static void origin200_set_model_id(Object *obj, const char *value,
-                                   Error **errp)
-{
-    if (strcmp(value, ORIGAMI_ORIGIN200_MODEL_ID) != 0) {
-        error_setg(errp, "origin200 model-id mismatch: requested '%s', "
-                   "compiled '%s'", value, ORIGAMI_ORIGIN200_MODEL_ID);
     }
 }
 
@@ -56,11 +40,6 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
 
         default_cpus += node->cpu_count;
     }
-    object_class_property_add_str(oc, "model-id",
-                                  origin200_get_model_id,
-                                  origin200_set_model_id);
-    object_class_property_set_description(oc, "model-id",
-                                          "Require the compiled machine model");
     mc->desc = smc->model->description;
     mc->valid_cpu_types = origin200_valid_cpu_types(smc->model->cpu_kind);
     mc->default_ram_size = smc->model->default_ram_mib * MiB;

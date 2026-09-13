@@ -12,7 +12,6 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
-#include "hw/mips/sn0-origin200-model-id.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "qobject/qstring.h"
@@ -1960,46 +1959,9 @@ static void test_reject_uneven_no_numa_split(const void *data)
                         "MiB; use -numa for an uneven fit");
 }
 
-static void test_model_id(const void *data)
-{
-    const char *option = data;
-    QTestState *qts = qtest_initf("-M origin200%s --preconfig", option);
-    QDict *response = qtest_qmp(
-        qts, "{ 'execute': 'qom-get',"
-             " 'arguments': { 'path': '/machine', 'property': 'model-id' } }");
-
-    g_assert_cmpstr(qdict_get_str(response, "return"), ==,
-                    ORIGAMI_ORIGIN200_MODEL_ID);
-    qobject_unref(response);
-    qtest_quit(qts);
-}
-
-static void test_model_id_mismatch(void)
-{
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200,model-id=wrong",
-        "-display", "none", "-bios", "/definitely/not/a/prom", NULL
-    };
-    g_autofree char *error_output = NULL;
-    int wait_status = 0;
-
-    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
-                              NULL, &error_output, &wait_status, NULL));
-    g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
-    g_assert_nonnull(strstr(error_output, "origin200 model-id mismatch"));
-    g_assert_nonnull(strstr(error_output, "requested 'wrong'"));
-    g_assert_nonnull(strstr(error_output, ORIGAMI_ORIGIN200_MODEL_ID));
-}
-
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
-    qtest_add_data_func("sn0/model/model-id/omitted", "",
-                        test_model_id);
-    qtest_add_data_func("sn0/model/model-id/matching",
-                        ",model-id=" ORIGAMI_ORIGIN200_MODEL_ID, test_model_id);
-    qtest_add_func("sn0/model/model-id/mismatch",
-                   test_model_id_mismatch);
 
     qtest_add_data_func("sn0/model/config-graph", NULL, test_config_graph);
     qtest_add_data_func("sn0/model/baseline-device-identity", NULL,
