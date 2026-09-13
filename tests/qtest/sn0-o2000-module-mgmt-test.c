@@ -612,6 +612,47 @@ static void test_observed_grant_acquisition(void)
     qtest_quit(qts);
 }
 
+/* A refused closing address must still accept the following full-byte STOP. */
+static void test_invalid_address_stop_releases_wire(void)
+{
+    QTestState *qts = start_module();
+    uint8_t status;
+
+    wait_for_global_grant(qts, GRANT_BASE);
+    g_assert_true(start_transfer(qts, 0, NVRAM_FIRST + 7, false));
+    g_assert_true(send_byte(qts, 0, 1));
+    g_assert_true(restart_transfer(qts, 0, NVRAM_FIRST + 7, true));
+    discard_byte(qts, 0);
+    (void)take_byte(qts, 0, true);
+
+    g_assert_false(restart_transfer(qts, 0, INVALID_ADDRESS, false));
+    status = adapter_read(qts, 0, I2C_CTRL);
+    g_assert_cmphex(status & (STS_PIN | STS_BER | STS_LAB | STS_LRB | STS_BB),
+                    ==, STS_LRB);
+    for (unsigned node = 1; node < ADAPTER_COUNT; node++) {
+        g_assert_cmphex(adapter_read(qts, node, I2C_CTRL) & STS_BB, ==, 0);
+    }
+
+    /* This is the exact fresh control byte, not bits merged with old state. */
+    adapter_write(qts, 0, I2C_CTRL, 0xc2);
+    for (unsigned step = 0; step < POLL_STEPS; step++) {
+        bool free = true;
+
+        for (unsigned node = 0; node < ADAPTER_COUNT; node++) {
+            if (!(adapter_read(qts, node, I2C_CTRL) & STS_BB)) {
+                free = false;
+            }
+        }
+        if (free) {
+            wait_for_global_grant(qts, GRANT_BASE | 1);
+            qtest_quit(qts);
+            return;
+        }
+        qtest_clock_step(qts, POLL_STEP_NS);
+    }
+    g_assert_not_reached();
+}
+
 /* One logical NVRAM space, not one per node. */
 static void test_nvram_is_shared(void)
 {
@@ -1026,6 +1067,8 @@ int main(int argc, char **argv)
                    test_global_grant_rotation);
     qtest_add_func("/sn0/o2000-module-management/observed-grant-acquisition",
                    test_observed_grant_acquisition);
+    qtest_add_func("/sn0/o2000-module-management/invalid-address-stop",
+                   test_invalid_address_stop_releases_wire);
     qtest_add_func("/sn0/o2000-module-management/shared-nvram",
                    test_nvram_is_shared);
     qtest_add_func("/sn0/o2000-module-management/initial-identity",
