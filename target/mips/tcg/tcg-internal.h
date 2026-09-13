@@ -57,6 +57,18 @@ void r4k_invalidate_tlb(CPUMIPSState *env, int idx, int use_extra);
 void r4k_mips_tlb_flush_extra(CPUMIPSState *env, int first);
 uint32_t cpu_mips_get_random(CPUMIPSState *env);
 
+/*
+ * Shared R4000-style TLB internals the R10000 write and read helpers reuse
+ * from r10k_helper.c. struct r4k_tlb_t is forward-declared here because
+ * internal.h pulls this header in ahead of that type's definition.
+ */
+struct r4k_tlb_t;
+void r4k_fill_tlb(CPUMIPSState *env, int idx);
+int r4k_tlbwi_prepare(CPUMIPSState *env);
+bool r4k_shadow_covers_staged(CPUMIPSState *env);
+void r4k_tlbr_load_entrylo(CPUMIPSState *env, const struct r4k_tlb_t *tlb);
+void r4k_mmu_init(CPUMIPSState *env, const mips_def_t *def);
+
 bool mips_io_recompile_replay_branch(CPUState *cs, const TranslationBlock *tb);
 
 hwaddr cpu_mips_translate_address(CPUMIPSState *env, target_ulong address,
@@ -77,6 +89,7 @@ bool mips_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
 void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
                    uintptr_t ra);
 void r10k_invalidate_conflicts(CPUMIPSState *env, int idx);
+void r10k_mmu_init(CPUMIPSState *env, const mips_def_t *def);
 void mips_r10k_watch_fill(CPUState *cs, CPUMIPSState *env,
                           vaddr address, hwaddr physical);
 void mips_r10k_watch_changed(CPUMIPSState *env, bool watchlo_written);

@@ -765,3 +765,103 @@ target_ulong helper_mfc0_r10k_performance(CPUMIPSState *env, uint32_t sel)
     /* A counter that is counting cycles is assembled from the clock. */
     return (int32_t)cpu_mips_get_r10k_perf(env, sel);
 }
+
+/*
+ * The R10000 family's TLB writes take every entry the new one would overlap
+ * out of matching, between the old entry going and the new one landing. The
+ * shared write path prepares the index and fills the entry; only the
+ * conflict scan between them is this family's own.
+ */
+static void r10k_helper_tlbwi(CPUMIPSState *env)
+{
+    int idx = r4k_tlbwi_prepare(env);
+
+    r4k_invalidate_tlb(env, idx, 0);
+    r10k_invalidate_conflicts(env, idx);
+    r4k_fill_tlb(env, idx);
+}
+
+static void r10k_helper_tlbwr(CPUMIPSState *env)
+{
+    int r = cpu_mips_get_random(env);
+
+    r4k_invalidate_tlb(env, r, 1);
+    if (r4k_shadow_covers_staged(env)) {
+        r4k_mips_tlb_flush_extra(env, env->tlb->nb_tlb);
+    }
+    r10k_invalidate_conflicts(env, r);
+    r4k_fill_tlb(env, r);
+}
+
+/*
+ * The R10000 family's TLB read. Config5 does not exist on this processor, so
+ * its memory map identifier bit is clear and an entry is matched by its
+ * address space identifier.
+ */
+static void r10k_helper_tlbr(CPUMIPSState *env)
+{
+    uint16_t ASID = env->CP0_EntryHi & env->CP0_EntryHi_ASID_mask;
+    r4k_tlb_t *tlb;
+    int idx;
+
+    idx = (env->CP0_Index & ~0x80000000) % env->tlb->nb_tlb;
+    tlb = &env->tlb->mmu.r4k.tlb[idx];
+
+    /* If this will change the current ASID, flush qemu's TLB.  */
+    if (ASID != tlb->ASID) {
+        cpu_mips_tlb_flush(env);
+    }
+
+    r4k_mips_tlb_flush_extra(env, env->tlb->nb_tlb);
+
+    if (tlb->EHINV) {
+        /*
+         * This processor has no EHINV bit, but r10k_invalidate_conflicts()
+         * marks a conflicting entry this way to take it out of matching, so
+         * the read can still land on one. EntryHi bits 12:8 read as zero,
+         * and the bit would stick if presented, because the EntryHi write
+         * helper only clears it on a processor whose Config4 grants the
+         * feature. Once stuck, the fill helper reads it back as "write an
+         * invalid entry" and every later TLB write is silently thrown away.
+         * Present the EntryHi and EntryLo of such an entry as zeroes.
+         *
+         * The PageMask register keeps the entry's own stale mask: a
+         * read-back loads PageMask like any other read, and a guest that
+         * sets PageMask once and relies on read-backs restoring the one
+         * size it ever writes would otherwise inherit a 4 Kbyte mask for
+         * its next TLB write.
+         */
+        env->CP0_EntryHi = 0;
+        env->CP0_PageMask = tlb->PageMask;
+        env->CP0_EntryLo0 = 0;
+        env->CP0_EntryLo1 = 0;
+    } else {
+        /*
+         * The TLBR pseudocode (R10000 User's Manual version 2.0, section
+         * 14.35) reads EntryHi as the entry and-not its page mask word, so
+         * virtual page number bits a guest wrote under a large page's mask
+         * present as zeroes. The fill keeps the entry as written, and lookup
+         * masks at compare time, so only this architectural read-back needs
+         * the clearing.
+         */
+        env->CP0_EntryHi = (tlb->VPN & ~(target_ulong)tlb->PageMask) |
+                           tlb->ASID;
+        env->CP0_MemoryMapID = tlb->MMID;
+        env->CP0_PageMask = tlb->PageMask;
+        r4k_tlbr_load_entrylo(env, tlb);
+    }
+}
+
+/*
+ * The R4000-style MMU with this family's own TLB writes and reads. The
+ * lookup and the fill stay shared: their differences are a few lines apiece
+ * inside long functions, and a private copy of either would drift. Wire the
+ * shared R4000 helpers first, then replace the three the family redefines.
+ */
+void r10k_mmu_init(CPUMIPSState *env, const mips_def_t *def)
+{
+    r4k_mmu_init(env, def);
+    env->tlb->helper_tlbwi = r10k_helper_tlbwi;
+    env->tlb->helper_tlbwr = r10k_helper_tlbwr;
+    env->tlb->helper_tlbr = r10k_helper_tlbr;
+}
