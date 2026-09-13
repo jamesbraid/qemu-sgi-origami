@@ -227,6 +227,199 @@ static void test_clock_synchronization(Fixture *f, gconstpointer reversed)
     }
 }
 
+/*
+ * The same synchronised clock as above, but nothing services the wire's
+ * timer until the clock is past six of its edges. A host that runs a timer
+ * late has not moved the wire's deadlines, so each edge still lands at its
+ * own instant, and the edges after it count from there rather than from
+ * whenever the timer happened to run.
+ */
+static void test_late_timer_keeps_instants(Fixture *f, gconstpointer unused)
+{
+    static const int offsets[] = { 10, 20, 29, 32, 41, 44 };
+    int64_t start = virtual_time;
+
+    stage_pair(f, start + 10, false, false);
+    advance_to(start + 10);
+    stage_pair(f, start + 20, true, false);
+
+    cpus_set_virtual_clock(start + 45);
+    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
+
+    g_assert_cmpuint(f->events->len, ==, ARRAY_SIZE(offsets));
+    for (unsigned i = 0; i < ARRAY_SIZE(offsets); i++) {
+        const I2CWireEvent *event = &g_array_index(f->events, I2CWireEvent, i);
+
+        g_assert_cmpint(event->time, ==, start + offsets[i]);
+        g_assert_cmpint(event->scl, ==, !(i & 1));
+    }
+    advance_to(start + 53);
+    g_assert_cmpuint(f->events->len, ==, ARRAY_SIZE(offsets) + 1);
+    g_assert_cmpint(g_array_index(f->events, I2CWireEvent,
+                                  f->events->len - 1).time, ==, start + 53);
+}
+
+/*
+ * A participant with deadlines of its own, timed against the wire. It records
+ * what it saw at each of them and may hold the clock line from inside one.
+ */
+typedef struct TimedParticipant {
+    Fixture *f;
+    QEMUTimer *timer;
+    int64_t deadline[3];
+    unsigned count, done;
+    int64_t instant[3];
+    unsigned events_seen[3];
+    bool scl_seen[3];
+    bool hold_lines;
+} TimedParticipant;
+
+static int64_t participant_next(void *opaque)
+{
+    TimedParticipant *p = opaque;
+
+    return p->done < p->count ? p->deadline[p->done] : INT64_MAX;
+}
+
+static void participant_run(void *opaque, int64_t now)
+{
+    TimedParticipant *p = opaque;
+    unsigned i = p->done++;
+
+    g_assert_cmpint(now, ==, p->deadline[i]);
+    p->instant[i] = i2c_wire_now(p->f->bus);
+    p->events_seen[i] = p->f->events->len;
+    p->scl_seen[i] = i2c_wire_scl(p->f->bus);
+    if (p->hold_lines && i == 1) {
+        g_assert_cmpint(i2c_wire_hold_after(p->f->a, 5, true), ==, 0);
+    } else if (p->hold_lines && i == 2) {
+        g_assert_cmpint(i2c_wire_hold_after(p->f->a, 1, false), ==, 0);
+    }
+}
+
+/* Its own timer does nothing but bring the timeline up to date. */
+static void participant_timer(void *opaque)
+{
+    TimedParticipant *p = opaque;
+
+    i2c_wire_advance(p->f->bus);
+}
+
+static void participant_attach(TimedParticipant *p, Fixture *f)
+{
+    p->f = f;
+    p->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, participant_timer, p);
+    timer_mod(p->timer, p->deadline[0]);
+    g_assert_cmpint(i2c_wire_set_timeline(f->bus, 1, participant_next,
+                                          participant_run, p), ==, 0);
+}
+
+static void participant_detach(TimedParticipant *p)
+{
+    g_assert_cmpint(i2c_wire_clear_timeline(p->f->bus, 1, participant_run, p),
+                    ==, 0);
+    timer_free(p->timer);
+}
+
+/*
+ * One poll, long after the wire's timer and the participant's should have
+ * run, settles both in time order. The participant runs at its own instants,
+ * ahead of a wire edge due at the same one, and a hold it requests counts
+ * from its instant, not from the poll: held at 35 and released at 45, the
+ * rising edge the masters would have made at 41 waits for the release.
+ */
+static void test_participant_timeline(Fixture *f, gconstpointer unused)
+{
+    static const int offsets[] = { 10, 20, 29, 32, 45, 48 };
+    int64_t start = virtual_time;
+    TimedParticipant p = {
+        .deadline = { start + 29, start + 30, start + 44 },
+        .count = 3, .hold_lines = true,
+    };
+
+    participant_attach(&p, f);
+    stage_pair(f, start + 10, false, false);
+    advance_to(start + 10);
+    stage_pair(f, start + 20, true, false);
+
+    cpus_set_virtual_clock(start + 50);
+    i2c_wire_advance(f->bus);
+
+    g_assert_cmpuint(f->events->len, ==, ARRAY_SIZE(offsets));
+    for (unsigned i = 0; i < ARRAY_SIZE(offsets); i++) {
+        const I2CWireEvent *event = &g_array_index(f->events, I2CWireEvent, i);
+
+        g_assert_cmpint(event->time, ==, start + offsets[i]);
+        g_assert_cmpint(event->scl, ==, !(i & 1));
+    }
+    g_assert_cmpuint(p.done, ==, 3);
+    for (unsigned i = 0; i < 3; i++) {
+        g_assert_cmpint(p.instant[i], ==, p.deadline[i]);
+    }
+    /* At 29 the masters' rising edge is due too, and has not happened yet. */
+    g_assert_cmpuint(p.events_seen[0], ==, 2);
+    g_assert_false(p.scl_seen[0]);
+    g_assert_cmpuint(p.events_seen[1], ==, 3);
+    g_assert_true(p.scl_seen[1]);
+    g_assert_cmpuint(p.events_seen[2], ==, 4);
+    g_assert_false(p.scl_seen[2]);
+    /* Outside an advance the timeline's instant is the present. */
+    g_assert_cmpint(i2c_wire_now(f->bus), ==, start + 50);
+    participant_detach(&p);
+}
+
+/*
+ * The timers are only a backstop. Once a poll has settled a deadline, the
+ * participant's timer still armed for it, and any the host runs afterwards,
+ * find nothing left to do: no second run and no further edge.
+ */
+static void test_late_timer_after_advance(Fixture *f, gconstpointer unused)
+{
+    int64_t start = virtual_time;
+    TimedParticipant p = { .deadline = { start + 30 }, .count = 1 };
+    unsigned events;
+
+    participant_attach(&p, f);
+    stage_pair(f, start + 10, false, false);
+
+    cpus_set_virtual_clock(start + 35);
+    i2c_wire_advance(f->bus);
+    g_assert_cmpuint(p.done, ==, 1);
+    g_assert_cmpuint(f->events->len, ==, 1);
+    g_assert_cmpint(g_array_index(f->events, I2CWireEvent, 0).time, ==,
+                    start + 10);
+    g_assert_true(timer_pending(p.timer));
+
+    events = f->events->len;
+    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
+    g_assert_false(timer_pending(p.timer));
+    g_assert_cmpuint(p.done, ==, 1);
+    g_assert_cmpuint(f->events->len, ==, events);
+    i2c_wire_advance(f->bus);
+    g_assert_cmpuint(p.done, ==, 1);
+    g_assert_cmpuint(f->events->len, ==, events);
+    participant_detach(&p);
+}
+
+/* A timeline attaches once per participant, and only to a wired bus. */
+static void test_timeline_attachment(Fixture *f, gconstpointer unused)
+{
+    TimedParticipant p = { .count = 0 };
+
+    g_assert_cmpint(i2c_wire_set_timeline(f->bus, 2, participant_next,
+                                          participant_run, &p), ==, -EINVAL);
+    g_assert_cmpint(i2c_wire_set_timeline(f->bus, 0, NULL,
+                                          participant_run, &p), ==, -EINVAL);
+    g_assert_cmpint(i2c_wire_set_timeline(f->bus, 0, participant_next,
+                                          participant_run, &p), ==, 0);
+    g_assert_cmpint(i2c_wire_set_timeline(f->bus, 0, participant_next,
+                                          participant_run, &p), ==, -EBUSY);
+    g_assert_cmpint(i2c_wire_clear_timeline(f->bus, 0, participant_run, f),
+                    ==, -ENOENT);
+    g_assert_cmpint(i2c_wire_clear_timeline(f->bus, 0, participant_run, &p),
+                    ==, 0);
+}
+
 static void test_invalid_configuration(Fixture *f, gconstpointer unused)
 {
     g_assert_cmpint(i2c_wire_configure(f->bus, 0, 0, 7, false), ==, -EINVAL);
@@ -1653,6 +1846,14 @@ int main(int argc, char **argv)
                setup, test_clock_synchronization, teardown);
     g_test_add("/i2c-wire/clocks-reversed", Fixture, GINT_TO_POINTER(1),
                setup, test_clock_synchronization, teardown);
+    g_test_add("/i2c-wire/timeline/late-timer", Fixture, NULL,
+               setup, test_late_timer_keeps_instants, teardown);
+    g_test_add("/i2c-wire/timeline/participant", Fixture, NULL,
+               setup, test_participant_timeline, teardown);
+    g_test_add("/i2c-wire/timeline/late-timer-after-advance", Fixture, NULL,
+               setup, test_late_timer_after_advance, teardown);
+    g_test_add("/i2c-wire/timeline/attachment", Fixture, NULL,
+               setup, test_timeline_attachment, teardown);
     g_test_add("/i2c-wire/arbitration", Fixture, NULL,
                setup, test_arbitration, teardown);
     g_test_add("/i2c-wire/arbitration-reversed", Fixture,
