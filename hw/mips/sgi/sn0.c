@@ -154,6 +154,7 @@ static bool sn0_promdata_is_private(SN0PromDataState *s, MemTxAttrs attrs)
          SN0_PROM_BOOT_STATUS_CACHE_AS_RAM) &&
         sn0_promdata_pc_in_prom(s)) {
         s->phase_private = true;
+        memory_region_set_enabled(&s->copy_local, true);
     }
 
     return s->phase_private;
@@ -188,6 +189,7 @@ static void sn0_promdata_leave_private(CPUState *cs, run_on_cpu_data data)
     /* A reset since scheduling re-armed the overlay; leave it in place. */
     if (s->leaving_private) {
         memory_region_set_enabled(&s->filter, false);
+        memory_region_set_enabled(&s->copy_local, false);
     }
 }
 
@@ -268,6 +270,7 @@ static void sn0_promdata_reset(void *opaque)
     s->leaving_private = false;
     s->phase_private = false;
     memory_region_set_enabled(&s->filter, true);
+    memory_region_set_enabled(&s->copy_local, false);
 }
 
 /*
@@ -302,6 +305,9 @@ static int sn0_promdata_post_load(void *opaque, int version_id)
 
         if (s->present) {
             memory_region_set_enabled(&s->filter, !s->leaving_private);
+            memory_region_set_enabled(&s->copy_local,
+                                      s->phase_private &&
+                                      !s->leaving_private);
         }
     }
     return 0;
@@ -878,6 +884,8 @@ static void sn0_node_create_cpus(SN0NodeState *node)
             g_strdup_printf("sn0.node%u.cpu%u.promdata", node_index, slice);
         g_autofree char *promdata_filter_name = g_strdup_printf(
             "sn0.node%u.cpu%u.promdata-filter", node_index, slice);
+        g_autofree char *prom_copy_name = g_strdup_printf(
+            "sn0.node%u.cpu%u.prom-copy-local", node_index, slice);
         g_autofree char *sysmem_name =
             g_strdup_printf("sn0.node%u.cpu%u.memory", node_index, slice);
         g_autofree char *claim_name =
@@ -1006,6 +1014,18 @@ static void sn0_node_create_cpus(SN0NodeState *node)
                 map->memory.carrier_base +
                 SN0_PROMDATA_PADDR,
                 &node->promdata[slice].filter, 2);
+
+            /* Keep the RAM copy local until this CPU leaves the phase. */
+            memory_region_init_alias(&node->promdata[slice].copy_local,
+                                     OBJECT(node), prom_copy_name, system,
+                                     node_base + SN0_PROM_COPY_PADDR,
+                                     map->flash_reset.size);
+            memory_region_set_enabled(&node->promdata[slice].copy_local,
+                                      false);
+            memory_region_add_subregion_overlap(
+                &node->cpu_sysmem[slice],
+                map->memory.carrier_base + SN0_PROM_COPY_PADDR,
+                &node->promdata[slice].copy_local, 2);
         }
         object_property_add_child(OBJECT(node), name,
                                   OBJECT(node->cpu[slice]));

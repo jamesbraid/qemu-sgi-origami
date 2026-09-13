@@ -212,6 +212,7 @@ typedef struct SN0PromDataState {
     hwaddr node_base;
     MemoryRegion data;
     MemoryRegion filter;
+    MemoryRegion copy_local;
     bool present;           /* the filter was installed (real PROM boot) */
     bool leaving_private;   /* the overlay has been (or is being) disabled */
     bool phase_private;     /* the cache-as-RAM phase is latched for this CPU */
