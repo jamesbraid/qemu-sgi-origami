@@ -1192,6 +1192,73 @@ static void test_nic_write_while_sampling(Fixture *f, gconstpointer unused)
     }
 }
 
+/*
+ * A Router register reset ends the slot underway, but not a bus operation
+ * whose deadline has already passed. The responder is a separate part that
+ * a Router register reset leaves where it is, so what the next slot reads
+ * depends on whether that release happened, and it must not depend on
+ * whether the host dispatched the timer before the reset. Before the release
+ * deadline nothing has touched the bus.
+ */
+static void nic_reset_mid_slot(Fixture *f, uint64_t addr, uint64_t value)
+{
+    const uint64_t short_read = NIC_DIVIDERS_RESET |
+                                (UINT64_C(6) << 10) | (13 << 2);
+    const uint8_t family = 0x0b;
+
+    write_reg(f, 1, RR_NIC_ULAN, NIC_DIVIDERS_RESET |
+              (UINT64_C(520) << 10) | (65 << 2));
+    qemu_clock_advance_virtual_time(virtual_time + 585000);
+    for (unsigned int bit = 0; bit < 8; bit++) {
+        bool one = (0x33 >> bit) & 1; /* Read ROM. */
+        unsigned int pulse = one ? 6 : 80;
+        unsigned int sample = one ? 110 : 30;
+
+        write_reg(f, 1, RR_NIC_ULAN, NIC_DIVIDERS_RESET |
+                  ((uint64_t)pulse << 10) | ((uint64_t)sample << 2));
+        qemu_clock_advance_virtual_time(virtual_time + (pulse + sample) * 1000);
+    }
+    write_reg(f, 1, RR_NIC_ULAN, short_read);
+    qemu_clock_advance_virtual_time(virtual_time + 19000);
+    g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN) & 3, ==,
+                    NIC_DONE | (family & 1));
+
+    /* Reset one microsecond before release: family bit 1 is still next. */
+    write_reg(f, 1, RR_NIC_ULAN, short_read);
+    virtual_time += 5999;
+    write_reg(f, 1, addr, value);
+    g_assert_false(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
+    write_reg(f, 1, RR_NIC_ULAN, short_read);
+    qemu_clock_advance_virtual_time(virtual_time + 19000);
+    g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN) & 3, ==,
+                    NIC_DONE | ((family >> 1) & 1));
+
+    /* Reset after release with no dispatch: bit 2 went, so bit 3 is next. */
+    write_reg(f, 1, RR_NIC_ULAN, short_read);
+    virtual_time += 10000;
+    write_reg(f, 1, addr, value);
+    g_assert_false(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
+    write_reg(f, 1, RR_NIC_ULAN, short_read);
+    qemu_clock_advance_virtual_time(virtual_time + 19000);
+    g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN) & 3, ==,
+                    NIC_DONE | ((family >> 3) & 1));
+}
+
+static void test_nic_admin_reset_mid_slot(Fixture *f, gconstpointer unused)
+{
+    nic_reset_mid_slot(f, RR_PORT_RESET, 1);
+}
+
+static void test_nic_warm_reset_mid_slot(Fixture *f, gconstpointer unused)
+{
+    nic_reset_mid_slot(f, RR_PORT_RESET, 0x80);
+}
+
+static void test_nic_bist_run_mid_slot(Fixture *f, gconstpointer unused)
+{
+    nic_reset_mid_slot(f, RR_BIST_ENTER_RUN, 0);
+}
+
 static int load_nic_state(Fixture *source, Fixture *target)
 {
     g_autofree char *path = NULL;
@@ -1426,6 +1493,9 @@ int main(int argc, char **argv)
     ADD_TEST("nic-write-after-elapsed-slot",
              test_nic_write_after_elapsed_slot);
     ADD_TEST("nic-write-while-sampling", test_nic_write_while_sampling);
+    ADD_TEST("nic-admin-reset-mid-slot", test_nic_admin_reset_mid_slot);
+    ADD_TEST("nic-warm-reset-mid-slot", test_nic_warm_reset_mid_slot);
+    ADD_TEST("nic-bist-run-mid-slot", test_nic_bist_run_mid_slot);
     ADD_TEST("nic-migration-config", test_nic_migration_config);
     ADD_TEST("nic-migration-invalid", test_nic_migration_invalid);
     ADD_TEST("histogram-migration", test_histogram_migration);
