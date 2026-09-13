@@ -535,16 +535,75 @@ static void sn0_cpu_reset(void *opaque)
     }
 }
 
+static uint32_t sn0_board_mode_bits(SN0MachineState *s)
+{
+    SN0MachineClass *smc = SN0_MACHINE_GET_CLASS(s);
+
+    return s->composition ? s->composition->hardware->cpu_mode_bits
+                          : smc->model->cpu_mode_bits;
+}
+
 void sn0_mode_bits_reset(void *opaque)
 {
     CPUMIPSState *env = &MIPS_CPU(opaque)->env;
     SN0MachineState *s = SN0_MACHINE(qdev_get_machine());
-    SN0MachineClass *smc = SN0_MACHINE_GET_CLASS(s);
-    uint32_t mode_bits = s->composition ?
-        s->composition->hardware->cpu_mode_bits : smc->model->cpu_mode_bits;
+    uint32_t mode_bits = sn0_board_mode_bits(s);
 
     env->CP0_Config0 = (env->CP0_Config0 & ~(uint32_t)SN0_PROCESSOR_MODE_MASK) |
                        (mode_bits & SN0_PROCESSOR_MODE_MASK);
+}
+
+/* Read a big-endian field of a node's boot flash the way a processor does. */
+static uint64_t sn0_flash_field(SN0NodeState *node, hwaddr offset,
+                                unsigned int bytes)
+{
+    MemoryRegion *chip =
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(node->flash), 0);
+    uint64_t value = 0;
+    unsigned int i;
+
+    for (i = 0; i < bytes; i++) {
+        uint64_t byte = 0;
+
+        memory_region_dispatch_read(chip, (offset + i) % node->flash_size,
+                                    &byte, MO_8, MEMTXATTRS_UNSPECIFIED);
+        value = (value << 8) | (byte & 0xff);
+    }
+    return value;
+}
+
+/*
+ * A node board's boot flash records the configuration that board was
+ * provisioned for, while the processor latches its mode bits from the board
+ * itself. Firmware compares the two and stops with indicator 0xb4 before it
+ * has a console, so an image provisioned for a different board is
+ * indistinguishable from a dead machine unless something says so here.
+ */
+static void sn0_report_node_flash_mode(SN0MachineState *s)
+{
+    uint32_t board = sn0_board_mode_bits(s);
+    unsigned int node;
+
+    for (node = 0; node < s->num_nodes; node++) {
+        SN0NodeState *node_state = s->nodes[node];
+        uint32_t flash;
+
+        if (!node_state->flash ||
+            sn0_flash_field(node_state, SN0_CONFIG_OFFSET + 8, 8) !=
+            SN0_CONFIG_MAGIC) {
+            continue;
+        }
+        flash = sn0_flash_field(node_state, SN0_CONFIG_OFFSET + 4, 4);
+        if (!((flash ^ board) & SN0_PROCESSOR_MODE_MASK)) {
+            continue;
+        }
+        warn_report("node %u boot flash is provisioned for a different node "
+                    "board: it describes processor mode 0x%08x where this "
+                    "board latches 0x%08x, differing in 0x%08x. Firmware "
+                    "stops with indicator 0xb4 and no console output.",
+                    node, flash, board,
+                    (flash ^ board) & SN0_PROCESSOR_MODE_MASK);
+    }
 }
 
 /*
@@ -581,6 +640,7 @@ static void sn0_machine_reset(MachineState *machine, ResetType type)
     if (s->synthesized_firmware) {
         sn0_assign_pci_resources(s);
     }
+    sn0_report_node_flash_mode(s);
     sn0_diagnostic_machine_reset(s);
 }
 
