@@ -160,6 +160,7 @@ tests_mips64_system_quick = [
   'mttcg_cause',
   'origin200_matrix',
   'origin2000_cache_reset',
+  'origin2000_flash_mode',
 ]
 
 tests_mips64_system_thorough = [
