@@ -8,6 +8,7 @@
 #define HW_MISC_SGI_HUB_H
 
 #include "qemu/units.h"
+#include "qemu/thread.h"
 #include "hw/1wire/ds2502.h"
 #include "hw/1wire/onewire.h"
 #include "hw/core/clock.h"
@@ -245,6 +246,12 @@ struct SGIHubState {
     uint64_t pi_rt_compare[SGI_HUB_PROCESSORS];
     uint8_t pi_rt_pending[SGI_HUB_PROCESSORS];
     uint8_t pi_rt_enable[SGI_HUB_PROCESSORS];
+
+    /* Host-only MTTCG handoff state, discarded across reset and migration. */
+    QemuCond pi_rt_handoff_cond;
+    uint64_t pi_rt_publish_gen[SGI_HUB_PROCESSORS];
+    uint64_t pi_rt_observed_gen[SGI_HUB_PROCESSORS];
+    uint64_t pi_rt_handoff_epoch;
 
     /* The counter's clock control -- bit 16 resets set, see the definition. */
     uint64_t pi_rt_local_ctrl;
