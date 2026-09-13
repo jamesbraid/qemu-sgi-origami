@@ -967,9 +967,18 @@ static void test_descriptor_dma_batches_producer_last(const void *data)
     g_assert_true(rx_desc < rx_return);
     g_assert_true(rx_return < rx_prod);
 
+    /*
+     * The guest repairs the mapping and posts a buffer. Posting is what
+     * restarts placement, so the completion held since its producer write was
+     * refused lands on the next tick rather than when its retry backoff -- at
+     * least one arrival floor from the refusal -- runs out. One nanosecond of
+     * virtual time is far short of that backoff, and only enough for a timer
+     * already due to fire.
+     */
     qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
     qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
-    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, RETURN_PROD_PHYS), ==, 1);
 
     qtest_quit(qts);
     close(sv[0]);
