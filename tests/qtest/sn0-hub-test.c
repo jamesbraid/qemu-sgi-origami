@@ -1945,12 +1945,12 @@ static int trace_find(char **records, int from, const char *event,
     return -1;
 }
 
-/* The processor coordination registers, each traced in both directions. */
+/* The coordination registers whose reads the coordination event records. */
 static const uint64_t coordination_registers[] = {
     PI_PROCESSOR_NUMBER, PI_CALIAS_SIZE, PI_CPU_PRESENT_A, PI_CPU_PRESENT_B,
-    PI_CPU_ENABLE_A, PI_CPU_ENABLE_B, PI_INT_MODIFY, PI_INT_PEND0,
-    PI_INT_PEND1, PI_INT_MASK0_A, PI_INT_MASK1_A, PI_INT_MASK0_B,
-    PI_INT_MASK1_B, MD_CONFIG, MD_PERF_CNT0, IO_SCRATCH_0, IO_SCRATCH_1,
+    PI_CPU_ENABLE_A, PI_CPU_ENABLE_B, PI_INT_MODIFY, PI_INT_MASK0_A,
+    PI_INT_MASK1_A, PI_INT_MASK0_B, PI_INT_MASK1_B, MD_CONFIG, MD_PERF_CNT0,
+    IO_SCRATCH_0, IO_SCRATCH_1,
 };
 
 /*
@@ -2004,16 +2004,59 @@ static void test_coordination_registers_trace_alone(const void *data)
     g_assert_cmpuint(trace_count(records, "sgi_hub_coordination_write",
                                  "reg 0x000020 value 0x0000000000000001 "
                                  "size 8 stored 0x0000000000000000 "), ==, 1);
-    g_assert_cmpuint(trace_count(records, "sgi_hub_coordination_read",
-                                 "reg 0x000098 value 0x0000000000000020 "
-                                 "size 8 "), ==, 1);
 
+    /* Polled millions of times a boot: the pending banks trace apart. */
+    g_assert_cmpuint(trace_count(records, "sgi_hub_coordination_read",
+                                 "reg 0x000098 "), ==, 0);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_coordination_read",
+                                 "reg 0x0000a0 "), ==, 0);
     g_assert_cmpuint(trace_count(records, "sgi_hub_coordination_read",
                                  "reg 0x030100 "), ==, 0);
     g_assert_cmpuint(trace_count(records, "sgi_hub_coordination_read",
                                  "reg 0x600100 "), ==, 0);
     g_assert_cmpuint(trace_count(records, "sgi_hub_coordination_write",
                                  "reg 0x000108 "), ==, 0);
+}
+
+/*
+ * The pending-bank reads have an event of their own, carrying nothing
+ * else; a write to a bank stays with the coordination writes.
+ */
+static void test_pending_bank_reads_trace_apart(const void *data)
+{
+    g_autofree char *path = trace_file_create();
+    g_auto(GStrv) records = NULL;
+    QTestState *qts;
+
+    qts = qtest_initf("-M origin200 "
+                      "-trace enable=sgi_hub_pending_read,file=%s", path);
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 5);
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 70);
+    qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0);
+    qtest_readq(qts, HUB_LOCAL + PI_INT_PEND1);
+    qtest_readl(qts, HUB_LOCAL + PI_INT_PEND1 + 4);
+    qtest_readq(qts, HUB_LOCAL + PI_PROCESSOR_NUMBER);
+    qtest_readq(qts, HUB_LOCAL + MD_PERF_CNT0);
+    qtest_quit(qts);
+
+    records = trace_file_take(path);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_pending_read",
+                                 "cpu -1 hub_cpu_base 0 nasid 0 pc "
+                                 "0x0000000000000000 reg 0x000098 "
+                                 "value 0x0000000000000020 size 8 "
+                                 "realtime_ns "), ==, 1);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_pending_read",
+                                 "reg 0x0000a0 value 0x0000000000000040 "
+                                 "size 8 "), ==, 1);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_pending_read",
+                                 "reg 0x0000a4 value 0x0000000000000040 "
+                                 "size 4 "), ==, 1);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_pending_read",
+                                 "reg 0x000020 "), ==, 0);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_pending_read",
+                                 "reg 0x210010 "), ==, 0);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_coordination_write", ""),
+                     ==, 0);
 }
 
 /*
@@ -5516,6 +5559,8 @@ int main(int argc, char **argv)
                         test_md_indicator_suppressed);
     qtest_add_data_func("sn0/hub/coordination-registers-trace-alone", NULL,
                         test_coordination_registers_trace_alone);
+    qtest_add_data_func("sn0/hub/pending-bank-reads-trace-apart", NULL,
+                        test_pending_bank_reads_trace_apart);
     qtest_add_data_func("sn0/hub/hub-kicks-trace-their-reason", NULL,
                         test_hub_kicks_trace_their_reason);
     qtest_add_data_func("sn0/hub/pend1-credit-traces-set-and-spend", NULL,
