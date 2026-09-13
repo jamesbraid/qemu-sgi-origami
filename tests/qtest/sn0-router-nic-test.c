@@ -366,6 +366,13 @@ static void test_reset(void)
     qtest_quit(qts);
 }
 
+static bool is_running(QTestState *qts)
+{
+    g_autoptr(QDict) response = qtest_qmp(qts, "{'execute':'query-status'}");
+
+    return qdict_get_bool(qdict_get_qdict(response, "return"), "running");
+}
+
 static QTestState *migrate(NIC *nic, int64_t now)
 {
     g_autofree char *directory = g_dir_make_tmp("router-nic-migrate-XXXXXX",
@@ -391,6 +398,14 @@ static QTestState *migrate(NIC *nic, int64_t now)
             break;
         }
         g_assert_cmpstr(status, !=, "failed");
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    /*
+     * The source completes once its state is sent, which can be before the
+     * destination has loaded it; a read in between returns reset values.
+     */
+    while (!is_running(to)) {
         g_assert_cmpint(g_get_monotonic_time(), <, deadline);
         g_usleep(1000);
     }
