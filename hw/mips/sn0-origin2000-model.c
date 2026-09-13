@@ -132,11 +132,6 @@ static const SN0ModelComponent sn0_o2000_c0_n1_hub = {
     .cpu_irq_rt = 0x2ULL,
 };
 
-static const SN0ModelRegion sn0_o2000_c0_n1_lboot = {
-    .offset = 0x10000000ULL,
-    .size = 0x10000000ULL,
-};
-
 static const SN0ModelComponent sn0_o2000_c0_n2_hub = {
     .kind = SN0_COMPONENT_HUB,
     .ni_revision = 0x3ULL,
@@ -147,11 +142,6 @@ static const SN0ModelComponent sn0_o2000_c0_n2_hub = {
     .cpu_irq_rt = 0x2ULL,
 };
 
-static const SN0ModelRegion sn0_o2000_c0_n2_lboot = {
-    .offset = 0x10000000ULL,
-    .size = 0x10000000ULL,
-};
-
 static const SN0ModelComponent sn0_o2000_c0_n3_hub = {
     .kind = SN0_COMPONENT_HUB,
     .ni_revision = 0x3ULL,
@@ -160,11 +150,6 @@ static const SN0ModelComponent sn0_o2000_c0_n3_hub = {
     .cpu_irq_bank0 = 0x0ULL,
     .cpu_irq_bank1 = 0x1ULL,
     .cpu_irq_rt = 0x2ULL,
-};
-
-static const SN0ModelRegion sn0_o2000_c0_n3_lboot = {
-    .offset = 0x10000000ULL,
-    .size = 0x10000000ULL,
 };
 
 static const unsigned int sn0_o2000_c0_m0_adapters[] = {
@@ -229,6 +214,67 @@ static const SN0ModelComponent sn0_o2000_c0_io0_pci[] = {
     },
 };
 
+#define SN0_O2000_C0_MAP0 { \
+    .node_stride = 0x100000000ULL, \
+    .memory = { \
+        .selector = 0x3ULL, \
+        .carrier_base = 0x0ULL, \
+        .unmapped_base = 0x9600000000000000ULL, \
+    }, \
+    .hub_special = { \
+        .selector = 0x0ULL, \
+        .carrier_base = 0x10000000000ULL, \
+        .unmapped_base = 0x9000000000000000ULL, \
+    }, \
+    .xtalk = { \
+        .selector = 0x1ULL, \
+        .carrier_base = 0x20000000000ULL, \
+        .unmapped_base = 0x9200000000000000ULL, \
+    }, \
+    .memory_special = { \
+        .selector = 0x2ULL, \
+        .carrier_base = 0x30000000000ULL, \
+        .unmapped_base = 0x9400000000000000ULL, \
+    }, \
+    .node_memory = { \
+        .offset = 0x0ULL, \
+        .size = 0x100000000ULL, \
+    }, \
+    .hub_registers_local = { \
+        .offset = 0x1000000ULL, \
+        .size = 0x800000ULL, \
+    }, \
+    .hub_registers_node = { \
+        .offset = 0x1800000ULL, \
+        .size = 0x800000ULL, \
+    }, \
+    .hub_local_memory = { \
+        .offset = 0x0ULL, \
+        .size = 0x10000000ULL, \
+    }, \
+    .hub_remote_memory = { \
+        .offset = 0x20000000ULL, \
+        .size = 0x10000000ULL, \
+    }, \
+    .backdoor_ecc = { \
+        .offset = 0x80000000ULL, \
+        .size = 0x40000000ULL, \
+    }, \
+    .backdoor_directory = { \
+        .offset = 0xc0000000ULL, \
+        .size = 0x40000000ULL, \
+    }, \
+    .flash_reset = { \
+        .offset = 0x1fc00000ULL, \
+        .size = 0x100000ULL, \
+    }, \
+    .lboot = &sn0_o2000_c0_n0_lboot, \
+    .rboot = { \
+        .offset = 0x30000000ULL, \
+        .size = 0x10000000ULL, \
+    }, \
+        }
+
 static const SN0ModelPhysicalNode sn0_o2000_c0_nodes[] = {
     {
         .id = "node-board-1",
@@ -239,66 +285,7 @@ static const SN0ModelPhysicalNode sn0_o2000_c0_nodes[] = {
         .memory_mib = 0x40ULL,
         .bank_mib = { 0x40ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL },
         .hub = &sn0_o2000_c0_n0_hub,
-        .map = {
-            .node_stride = 0x100000000ULL,
-            .memory = {
-                .selector = 0x3ULL,
-                .carrier_base = 0x0ULL,
-                .unmapped_base = 0x9600000000000000ULL,
-            },
-            .hub_special = {
-                .selector = 0x0ULL,
-                .carrier_base = 0x10000000000ULL,
-                .unmapped_base = 0x9000000000000000ULL,
-            },
-            .xtalk = {
-                .selector = 0x1ULL,
-                .carrier_base = 0x20000000000ULL,
-                .unmapped_base = 0x9200000000000000ULL,
-            },
-            .memory_special = {
-                .selector = 0x2ULL,
-                .carrier_base = 0x30000000000ULL,
-                .unmapped_base = 0x9400000000000000ULL,
-            },
-            .node_memory = {
-                .offset = 0x0ULL,
-                .size = 0x100000000ULL,
-            },
-            .hub_registers_local = {
-                .offset = 0x1000000ULL,
-                .size = 0x800000ULL,
-            },
-            .hub_registers_node = {
-                .offset = 0x1800000ULL,
-                .size = 0x800000ULL,
-            },
-            .hub_local_memory = {
-                .offset = 0x0ULL,
-                .size = 0x10000000ULL,
-            },
-            .hub_remote_memory = {
-                .offset = 0x20000000ULL,
-                .size = 0x10000000ULL,
-            },
-            .backdoor_ecc = {
-                .offset = 0x80000000ULL,
-                .size = 0x40000000ULL,
-            },
-            .backdoor_directory = {
-                .offset = 0xc0000000ULL,
-                .size = 0x40000000ULL,
-            },
-            .flash_reset = {
-                .offset = 0x1fc00000ULL,
-                .size = 0x100000ULL,
-            },
-            .lboot = &sn0_o2000_c0_n0_lboot,
-            .rboot = {
-                .offset = 0x30000000ULL,
-                .size = 0x10000000ULL,
-            },
-        },
+        .map = SN0_O2000_C0_MAP0,
         .flash = {
             .kind = SN0_FLASH_AM29F080,
         },
@@ -313,66 +300,7 @@ static const SN0ModelPhysicalNode sn0_o2000_c0_nodes[] = {
         .memory_mib = 0x40ULL,
         .bank_mib = { 0x40ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL },
         .hub = &sn0_o2000_c0_n1_hub,
-        .map = {
-            .node_stride = 0x100000000ULL,
-            .memory = {
-                .selector = 0x3ULL,
-                .carrier_base = 0x0ULL,
-                .unmapped_base = 0x9600000000000000ULL,
-            },
-            .hub_special = {
-                .selector = 0x0ULL,
-                .carrier_base = 0x10000000000ULL,
-                .unmapped_base = 0x9000000000000000ULL,
-            },
-            .xtalk = {
-                .selector = 0x1ULL,
-                .carrier_base = 0x20000000000ULL,
-                .unmapped_base = 0x9200000000000000ULL,
-            },
-            .memory_special = {
-                .selector = 0x2ULL,
-                .carrier_base = 0x30000000000ULL,
-                .unmapped_base = 0x9400000000000000ULL,
-            },
-            .node_memory = {
-                .offset = 0x0ULL,
-                .size = 0x100000000ULL,
-            },
-            .hub_registers_local = {
-                .offset = 0x1000000ULL,
-                .size = 0x800000ULL,
-            },
-            .hub_registers_node = {
-                .offset = 0x1800000ULL,
-                .size = 0x800000ULL,
-            },
-            .hub_local_memory = {
-                .offset = 0x0ULL,
-                .size = 0x10000000ULL,
-            },
-            .hub_remote_memory = {
-                .offset = 0x20000000ULL,
-                .size = 0x10000000ULL,
-            },
-            .backdoor_ecc = {
-                .offset = 0x80000000ULL,
-                .size = 0x40000000ULL,
-            },
-            .backdoor_directory = {
-                .offset = 0xc0000000ULL,
-                .size = 0x40000000ULL,
-            },
-            .flash_reset = {
-                .offset = 0x1fc00000ULL,
-                .size = 0x100000ULL,
-            },
-            .lboot = &sn0_o2000_c0_n1_lboot,
-            .rboot = {
-                .offset = 0x30000000ULL,
-                .size = 0x10000000ULL,
-            },
-        },
+        .map = SN0_O2000_C0_MAP0,
         .flash = {
             .kind = SN0_FLASH_AM29F080,
         },
@@ -387,66 +315,7 @@ static const SN0ModelPhysicalNode sn0_o2000_c0_nodes[] = {
         .memory_mib = 0x40ULL,
         .bank_mib = { 0x40ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL },
         .hub = &sn0_o2000_c0_n2_hub,
-        .map = {
-            .node_stride = 0x100000000ULL,
-            .memory = {
-                .selector = 0x3ULL,
-                .carrier_base = 0x0ULL,
-                .unmapped_base = 0x9600000000000000ULL,
-            },
-            .hub_special = {
-                .selector = 0x0ULL,
-                .carrier_base = 0x10000000000ULL,
-                .unmapped_base = 0x9000000000000000ULL,
-            },
-            .xtalk = {
-                .selector = 0x1ULL,
-                .carrier_base = 0x20000000000ULL,
-                .unmapped_base = 0x9200000000000000ULL,
-            },
-            .memory_special = {
-                .selector = 0x2ULL,
-                .carrier_base = 0x30000000000ULL,
-                .unmapped_base = 0x9400000000000000ULL,
-            },
-            .node_memory = {
-                .offset = 0x0ULL,
-                .size = 0x100000000ULL,
-            },
-            .hub_registers_local = {
-                .offset = 0x1000000ULL,
-                .size = 0x800000ULL,
-            },
-            .hub_registers_node = {
-                .offset = 0x1800000ULL,
-                .size = 0x800000ULL,
-            },
-            .hub_local_memory = {
-                .offset = 0x0ULL,
-                .size = 0x10000000ULL,
-            },
-            .hub_remote_memory = {
-                .offset = 0x20000000ULL,
-                .size = 0x10000000ULL,
-            },
-            .backdoor_ecc = {
-                .offset = 0x80000000ULL,
-                .size = 0x40000000ULL,
-            },
-            .backdoor_directory = {
-                .offset = 0xc0000000ULL,
-                .size = 0x40000000ULL,
-            },
-            .flash_reset = {
-                .offset = 0x1fc00000ULL,
-                .size = 0x100000ULL,
-            },
-            .lboot = &sn0_o2000_c0_n2_lboot,
-            .rboot = {
-                .offset = 0x30000000ULL,
-                .size = 0x10000000ULL,
-            },
-        },
+        .map = SN0_O2000_C0_MAP0,
         .flash = {
             .kind = SN0_FLASH_AM29F080,
         },
@@ -461,66 +330,7 @@ static const SN0ModelPhysicalNode sn0_o2000_c0_nodes[] = {
         .memory_mib = 0x40ULL,
         .bank_mib = { 0x40ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL },
         .hub = &sn0_o2000_c0_n3_hub,
-        .map = {
-            .node_stride = 0x100000000ULL,
-            .memory = {
-                .selector = 0x3ULL,
-                .carrier_base = 0x0ULL,
-                .unmapped_base = 0x9600000000000000ULL,
-            },
-            .hub_special = {
-                .selector = 0x0ULL,
-                .carrier_base = 0x10000000000ULL,
-                .unmapped_base = 0x9000000000000000ULL,
-            },
-            .xtalk = {
-                .selector = 0x1ULL,
-                .carrier_base = 0x20000000000ULL,
-                .unmapped_base = 0x9200000000000000ULL,
-            },
-            .memory_special = {
-                .selector = 0x2ULL,
-                .carrier_base = 0x30000000000ULL,
-                .unmapped_base = 0x9400000000000000ULL,
-            },
-            .node_memory = {
-                .offset = 0x0ULL,
-                .size = 0x100000000ULL,
-            },
-            .hub_registers_local = {
-                .offset = 0x1000000ULL,
-                .size = 0x800000ULL,
-            },
-            .hub_registers_node = {
-                .offset = 0x1800000ULL,
-                .size = 0x800000ULL,
-            },
-            .hub_local_memory = {
-                .offset = 0x0ULL,
-                .size = 0x10000000ULL,
-            },
-            .hub_remote_memory = {
-                .offset = 0x20000000ULL,
-                .size = 0x10000000ULL,
-            },
-            .backdoor_ecc = {
-                .offset = 0x80000000ULL,
-                .size = 0x40000000ULL,
-            },
-            .backdoor_directory = {
-                .offset = 0xc0000000ULL,
-                .size = 0x40000000ULL,
-            },
-            .flash_reset = {
-                .offset = 0x1fc00000ULL,
-                .size = 0x100000ULL,
-            },
-            .lboot = &sn0_o2000_c0_n3_lboot,
-            .rboot = {
-                .offset = 0x30000000ULL,
-                .size = 0x10000000ULL,
-            },
-        },
+        .map = SN0_O2000_C0_MAP0,
         .flash = {
             .kind = SN0_FLASH_AM29F080,
         },
