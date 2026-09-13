@@ -54,6 +54,7 @@
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/net/bcm570x_phy.h"
+#include "hw/net/sgi-net-rx-latency.h"
 #include "migration/vmstate.h"
 #include "net/net.h"
 #include "qapi/error.h"
@@ -61,6 +62,14 @@
 
 #define TYPE_BCM570X "bcm570x"
 typedef struct Bcm570xState Bcm570xState;
+
+/*
+ * One receive whose buffer and return descriptor are written and whose
+ * producer index -- the only part of it the driver can see -- is still held.
+ */
+typedef struct Bcm570xRxDone {
+    uint16_t status_rx_prod;
+} Bcm570xRxDone;
 DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 
 /* Default four-tuple: the single-port SGI IRIS Release 2 board (bcm5701). */
@@ -449,6 +458,17 @@ struct Bcm570xState {
     uint16_t tx_cons;           /* the chip's send-ring consumer */
     uint16_t status_tx_cons;    /* what the status block reports (TX) */
     uint16_t status_rx_prod;    /* the return-ring producer the status reports */
+    /*
+     * Where the chip will write its next return descriptor, which runs ahead
+     * of status_rx_prod whenever the arrival line is holding a completion:
+     * the descriptor is written, but the producer the status block publishes
+     * only names it once the frame's arrival deadline passes.
+     */
+    uint16_t rx_prod_staged;
+
+    /* The modelled minimum between a frame arriving and its completion. */
+    uint32_t rx_arrival_latency_us;
+    SGINetRxLatency rx_latency;
     uint16_t rx_std_cons;       /* the chip's standard-ring consumer */
     uint16_t rx_jumbo_cons;     /* the chip's jumbo-ring consumer */
     bool tx_busy;               /* guards the send against netdev re-entrancy */
@@ -612,8 +632,10 @@ static void bcm570x_global_reset(Bcm570xState *s)
     s->tx_cons = 0;
     s->status_tx_cons = 0;
     s->status_rx_prod = 0;
+    s->rx_prod_staged = 0;
     s->rx_std_cons = 0;
     s->rx_jumbo_cons = 0;
+    sgi_net_rx_latency_reset(&s->rx_latency);
     s->irq_masked = true;
     s->irq_pending = false;
     s->status_kick_done = false;
@@ -1049,6 +1071,7 @@ static void bcm570x_rx_coalesce(Bcm570xState *s)
 }
 
 static bool bcm570x_rx_ready(Bcm570xState *s);
+static void bcm570x_retry_rx_flush(Bcm570xState *s);
 
 /*
  * Take the frames the peer still holds. The drain runs from a bottom half so
@@ -1062,6 +1085,37 @@ static void bcm570x_rx_flush(void *opaque)
 
     s->rx_flush_pending = false;
     qemu_flush_queued_packets(qemu_get_queue(s->nic));
+}
+
+/*
+ * The arrival line freed a slot. A frame refused for a full line was recorded
+ * as a deferred flush on its way out, exactly as a frame refused for a full
+ * ring is, so this goes through the same interrupt-acknowledgement rule they
+ * both wait on rather than around it. Releasing a queued frame outside that
+ * rule is a separate question about the rule itself, and not this one.
+ */
+static void bcm570x_rx_latency_drain(void *opaque)
+{
+    bcm570x_retry_rx_flush(opaque);
+}
+
+/*
+ * Publish a receive whose return descriptor is already written: move the
+ * producer the status block reports and let the coalescing block report it.
+ * Held behind the arrival floor by sgi_net_rx_latency_hold().
+ */
+static bool bcm570x_rx_publish(void *opaque, const void *record)
+{
+    Bcm570xState *s = opaque;
+    const Bcm570xRxDone *done = record;
+
+    s->status_rx_prod = done->status_rx_prod;
+    bcm570x_rx_coalesce(s);
+    /*
+     * Always published: the coalescing block owns the status-block DMA and
+     * retries a refused one itself (bcm570x_rx_coal_flush).
+     */
+    return true;
 }
 
 /*
@@ -1897,10 +1951,18 @@ static bool bcm570x_rx_ready(Bcm570xState *s)
                   (bcm570x_jumbo_ring_enabled(s) &&
                    jumbo_prod != s->rx_jumbo_cons);
 
+    if (sgi_net_rx_latency_full(&s->rx_latency)) {
+        return false;   /* no room on the arrival line */
+    }
+
+    /*
+     * Against the staged producer, not the published one: a return
+     * descriptor whose completion is still held has already been written.
+     */
     return ret_len != 0 && posted &&
            (bcm570x_regfile_read(s, BCM570X_HCC_MODE) &
             BCM570X_HCC_MODE_ENABLE) &&
-           (uint16_t)((s->status_rx_prod + 1) % ret_len) != ret_cons;
+           (uint16_t)((s->rx_prod_staged + 1) % ret_len) != ret_cons;
 }
 
 static bool bcm570x_can_receive(NetClientState *nc)
@@ -2053,6 +2115,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
     uint64_t jumbo_base;
     bool on_jumbo = false;
     bool jumbo_enabled;
+    Bcm570xRxDone done;
 
     if (s->has_vnet_hdr) {
         if (size <= sizeof(struct virtio_net_hdr)) {
@@ -2216,13 +2279,13 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
                      bcm570x_dma_ld32(s, std_bd + BCM570X_RXBD_OPAQUE));
 
     if (bcm570x_dma_write_buf(s,
-                             ret_base + (uint64_t)s->status_rx_prod *
+                             ret_base + (uint64_t)s->rx_prod_staged *
                              BCM570X_RXBD_SIZE, ret_bd,
                              sizeof(ret_bd)) != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "bcm570x: receive completion %u write failed; "
                       "frame queued and descriptor not consumed\n",
-                      s->status_rx_prod);
+                      s->rx_prod_staged);
         bcm570x_defer_rx_flush(s);
         return 0;
     }
@@ -2233,9 +2296,15 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
     } else {
         s->rx_std_cons = (s->rx_std_cons + 1) % BCM570X_RX_STD_RING_LEN;
     }
-    s->status_rx_prod = (s->status_rx_prod + 1) % ret_len;
+    s->rx_prod_staged = (s->rx_prod_staged + 1) % ret_len;
 
-    bcm570x_rx_coalesce(s);
+    /*
+     * The frame and its return descriptor are in guest memory; the producer
+     * the status block reports, and the interrupt that follows it, wait for
+     * the frame's arrival deadline.
+     */
+    done.status_rx_prod = s->rx_prod_staged;
+    sgi_net_rx_latency_hold(&s->rx_latency, &done);
     return orig_size;
 }
 
@@ -2257,6 +2326,7 @@ static NetClientInfo net_bcm570x_info = {
 
 static void bcm570x_cleanup_net(Bcm570xState *s)
 {
+    sgi_net_rx_latency_cleanup(&s->rx_latency);
     if (s->rx_flush_bh) {
         qemu_bh_delete(s->rx_flush_bh);
         s->rx_flush_bh = NULL;
@@ -2349,6 +2419,11 @@ static void bcm570x_realize(PCIDevice *dev, Error **errp)
     net_tx_pkt_init(&s->tx_pkt, 1);
     s->rx_flush_bh = qemu_bh_new_guarded(bcm570x_rx_flush, s,
                                           &ds->mem_reentrancy_guard);
+    if (!sgi_net_rx_latency_init(&s->rx_latency, s->rx_arrival_latency_us,
+                                 sizeof(Bcm570xRxDone), bcm570x_rx_publish,
+                                 bcm570x_rx_latency_drain, s, errp)) {
+        return;
+    }
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
     bcm570x_phy_set_link_down(&s->phy, qemu_get_queue(s->nic)->link_down);
 
@@ -2442,8 +2517,10 @@ static void bcm570x_reset_hold(Object *obj, ResetType type)
     s->tx_cons = 0;
     s->status_tx_cons = 0;
     s->status_rx_prod = 0;
+    s->rx_prod_staged = 0;
     s->rx_std_cons = 0;
     s->rx_jumbo_cons = 0;
+    sgi_net_rx_latency_reset(&s->rx_latency);
     s->tx_busy = false;
     s->irq_masked = true;
     s->irq_pending = false;
@@ -2479,6 +2556,10 @@ static int bcm570x_post_load(void *opaque, int version_id)
     qemu_get_queue(s->nic)->link_down = s->phy.link_down;
     if (version_id < 6) {
         s->tx_coal_pending = 0;
+    }
+    if (version_id < 9) {
+        /* No arrival line in the stream: the chip is where it published. */
+        s->rx_prod_staged = s->status_rx_prod;
     }
     bcm570x_update_irq(s);
     /*
@@ -2520,6 +2601,9 @@ static const VMStateDescription vmstate_bcm570x = {
         VMSTATE_UINT16(tx_cons, Bcm570xState),
         VMSTATE_UINT16(status_tx_cons, Bcm570xState),
         VMSTATE_UINT16(status_rx_prod, Bcm570xState),
+        VMSTATE_UINT16_V(rx_prod_staged, Bcm570xState, 9),
+        VMSTATE_STRUCT(rx_latency, Bcm570xState, 9,
+                       vmstate_sgi_net_rx_latency, SGINetRxLatency),
         VMSTATE_UINT16(rx_std_cons, Bcm570xState),
         VMSTATE_UINT16(rx_jumbo_cons, Bcm570xState),
         VMSTATE_BOOL_V(irq_masked, Bcm570xState, 2),
@@ -2551,6 +2635,8 @@ static const Property bcm570x_properties[] = {
     DEFINE_PROP_UINT16("subsystem-id", Bcm570xState, subsystem_id,
                        BCM570X_SUBSYS_ID),
     DEFINE_PROP_STRING("model", Bcm570xState, model),
+    DEFINE_PROP_UINT32("rx-arrival-latency-us", Bcm570xState,
+                       rx_arrival_latency_us, SGI_NET_RX_LATENCY_DEFAULT_US),
     DEFINE_NIC_PROPERTIES(Bcm570xState, conf),
 };
 
