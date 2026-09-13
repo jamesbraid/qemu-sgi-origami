@@ -109,6 +109,19 @@ static void write_cross_node_elf_header(uint8_t *image)
     stq_be_p(image + 0x70, ELF_CODE_OFFSET);
 }
 
+/*
+ * Wait for the guest to reach a state, not for a period of time. These
+ * processors run under TCG at whatever speed the host allows, so a budget in
+ * milliseconds measures the host rather than the model. A guest that never
+ * arrives is caught by this test's own timeout in the suite.
+ */
+static void wait_for_value(QTestState *qts, uint64_t address, uint64_t value)
+{
+    while (qtest_readq(qts, address) != value) {
+        g_usleep(1000);
+    }
+}
+
 static void write_cross_node_elf(int fd)
 {
     uint8_t image[ELF_CODE_OFFSET + ELF_CODE_SIZE] = { };
@@ -278,7 +291,6 @@ static void test_second_node_cpus_execute(const void *data)
     g_autofree char *kernel = NULL;
     QTestState *qts;
     int fd;
-    unsigned int tries;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
@@ -293,14 +305,10 @@ static void test_second_node_cpus_execute(const void *data)
     qts = start_cross_node_machine(kernel);
     unlink(kernel);
 
-    /* Both node-1 CPUs must reach their marks. */
-    for (tries = 0; tries < 2000; tries++) {
-        if (qtest_readq(qts, CPU2_MARK_ADDR) == CPU2_MARK &&
-            qtest_readq(qts, CPU3_MARK_ADDR) == CPU3_MARK) {
-            break;
-        }
-        g_usleep(1000);
-    }
+    /* Both node-1 CPUs must reach their marks, and CPU 0 its own. */
+    wait_for_value(qts, CPU2_MARK_ADDR, CPU2_MARK);
+    wait_for_value(qts, CPU3_MARK_ADDR, CPU3_MARK);
+    wait_for_value(qts, PRIMARY_RESULT, PRIMARY_MAGIC);
 
     g_assert_cmphex(qtest_readq(qts, PRIMARY_RESULT), ==, PRIMARY_MAGIC);
     g_assert_cmphex(qtest_readq(qts, CPU2_MARK_ADDR), ==, CPU2_MARK);
@@ -314,7 +322,6 @@ static void test_second_node_reads_across_fabric(const void *data)
     g_autofree char *kernel = NULL;
     QTestState *qts;
     int fd;
-    unsigned int tries;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
@@ -330,12 +337,7 @@ static void test_second_node_reads_across_fabric(const void *data)
     unlink(kernel);
 
     /* CPU 0 signals once it has cleared READY and launched CPU 2. */
-    for (tries = 0; tries < 2000; tries++) {
-        if (qtest_readq(qts, PRIMARY_DONE_SLOT) == PRIMARY_DONE_MAGIC) {
-            break;
-        }
-        g_usleep(1000);
-    }
+    wait_for_value(qts, PRIMARY_DONE_SLOT, PRIMARY_DONE_MAGIC);
     g_assert_cmphex(qtest_readq(qts, PRIMARY_DONE_SLOT), ==, PRIMARY_DONE_MAGIC);
 
     /*
@@ -351,13 +353,8 @@ static void test_second_node_reads_across_fabric(const void *data)
     qtest_writeq(qts, READY_SLOT, READY_MAGIC);
 
     /* CPU 2 stores what each NASID-qualified read returned. */
-    for (tries = 0; tries < 2000; tries++) {
-        if (qtest_readq(qts, R_NODE0_SLOT) == NODE0_DATA &&
-            qtest_readq(qts, R_NODE1_SLOT) == NODE1_DATA) {
-            break;
-        }
-        g_usleep(1000);
-    }
+    wait_for_value(qts, R_NODE0_SLOT, NODE0_DATA);
+    wait_for_value(qts, R_NODE1_SLOT, NODE1_DATA);
 
     /*
      * The running node-1 CPU reached node 0 across the fabric and its own node,
