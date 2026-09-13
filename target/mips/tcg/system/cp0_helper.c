@@ -58,18 +58,10 @@ static inline void mips_vpe_wake(MIPSCPU *c)
      * Don't set ->halted = 0 directly, let it be done via cpu_has_work
      * because there might be other conditions that state that c should
      * be sleeping.
-     *
-     * BQL_LOCK_GUARD(), not a plain bql_lock()/bql_unlock() pair: this
-     * chunk wraps helper_dvpe()/helper_evpe()/helper_dvp()/helper_evp()'s
-     * whole VPE sweep in their own BQL_LOCK_GUARD() (target/mips/tcg/
-     * system/cp0_helper.c) to make the sweep atomic, so this now runs
-     * with the BQL already held on those paths. A plain bql_lock() there
-     * would double-lock and abort on bql_lock_impl's own
-     * !bql_locked() assertion -- caught by actually running the 34Kf
-     * qtest smoke this chunk adds, not found by inspection.
      */
-    BQL_LOCK_GUARD();
+    bql_lock();
     cpu_interrupt(CPU(c), CPU_INTERRUPT_WAKE);
+    bql_unlock();
 }
 
 static inline void mips_vpe_sleep(MIPSCPU *cpu)
@@ -77,17 +69,10 @@ static inline void mips_vpe_sleep(MIPSCPU *cpu)
     CPUState *cs = CPU(cpu);
 
     /*
-     * The VPE was shut off, really go to bed. dvp/dvpe and their mtc0
-     * TCHalt sibling all walk CPU_FOREACH and can name a peer VPE here,
-     * so this runs on the requesting VPE's thread, not the target's.
-     * Request the halt through cpu_interrupt() instead of writing
-     * cs->halted directly -- the same idiom sgi_hub_set_cpu_enable() uses
-     * to stop a peer processor from a register write -- and let the
-     * target's own thread apply it at the next TB boundary. Reset any old
-     * _WAKE request under the same lock, mirroring mips_vpe_wake()'s.
+     * The VPE was shut off, really go to bed.
+     * Reset any old _WAKE requests.
      */
-    BQL_LOCK_GUARD();
-    cpu_interrupt(cs, CPU_INTERRUPT_HALT);
+    cs->halted = 1;
     cpu_reset_interrupt(cs, CPU_INTERRUPT_WAKE);
 }
 
@@ -269,17 +254,7 @@ uint32_t cpu_mips_get_random(CPUMIPSState *env)
 /* CP0 helpers */
 target_ulong helper_mfc0_mvpcontrol(CPUMIPSState *env)
 {
-    MIPSCPU *cpu;
-
-    /*
-     * cpu->mvp is per-CPU allocated (mvp_init(), target/mips/cpu.c), not a
-     * structure shared across sibling VPEs, so this reads the same memory
-     * helper_dvpe()/helper_evpe() write from another VPE's thread under
-     * BQL_LOCK_GUARD(). Guard the read to pair with it.
-     */
-    BQL_LOCK_GUARD();
-
-    cpu = env_archcpu(env);
+    MIPSCPU *cpu = env_archcpu(env);
     return cpu->mvp->CP0_MVPControl;
 }
 
@@ -307,8 +282,6 @@ target_ulong helper_mfc0_tcstatus(CPUMIPSState *env)
 
 target_ulong helper_mftc0_tcstatus(CPUMIPSState *env)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -326,8 +299,6 @@ target_ulong helper_mfc0_tcbind(CPUMIPSState *env)
 
 target_ulong helper_mftc0_tcbind(CPUMIPSState *env)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -345,8 +316,6 @@ target_ulong helper_mfc0_tcrestart(CPUMIPSState *env)
 
 target_ulong helper_mftc0_tcrestart(CPUMIPSState *env)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -364,8 +333,6 @@ target_ulong helper_mfc0_tchalt(CPUMIPSState *env)
 
 target_ulong helper_mftc0_tchalt(CPUMIPSState *env)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -383,8 +350,6 @@ target_ulong helper_mfc0_tccontext(CPUMIPSState *env)
 
 target_ulong helper_mftc0_tccontext(CPUMIPSState *env)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -402,8 +367,6 @@ target_ulong helper_mfc0_tcschedule(CPUMIPSState *env)
 
 target_ulong helper_mftc0_tcschedule(CPUMIPSState *env)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -421,8 +384,6 @@ target_ulong helper_mfc0_tcschefback(CPUMIPSState *env)
 
 target_ulong helper_mftc0_tcschefback(CPUMIPSState *env)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -440,8 +401,6 @@ target_ulong helper_mfc0_count(CPUMIPSState *env)
 
 target_ulong helper_mftc0_entryhi(CPUMIPSState *env)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -450,8 +409,6 @@ target_ulong helper_mftc0_entryhi(CPUMIPSState *env)
 
 target_ulong helper_mftc0_cause(CPUMIPSState *env)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -460,8 +417,6 @@ target_ulong helper_mftc0_cause(CPUMIPSState *env)
 
 target_ulong helper_mftc0_status(CPUMIPSState *env)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -510,8 +465,6 @@ target_ulong helper_mfc0_debug(CPUMIPSState *env)
 
 target_ulong helper_mftc0_debug(CPUMIPSState *env)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     int32_t tcstatus;
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
@@ -589,14 +542,9 @@ void helper_mtc0_index(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mtc0_mvpcontrol(CPUMIPSState *env, target_ulong arg1)
 {
-    MIPSCPU *cpu;
+    MIPSCPU *cpu = env_archcpu(env);
     uint32_t mask = 0;
     uint32_t newval;
-
-    /* Pairs with helper_mfc0_mvpcontrol()'s guard; see its comment. */
-    BQL_LOCK_GUARD();
-
-    cpu = env_archcpu(env);
 
     if (env->CP0_VPEConf0 & (1 << CP0VPEC0_MVP)) {
         mask |= (1 << CP0MVPCo_CPA) | (1 << CP0MVPCo_VPC) |
@@ -609,29 +557,13 @@ void helper_mtc0_mvpcontrol(CPUMIPSState *env, target_ulong arg1)
 
     /* TODO: Enable/disable shared TLB, enable/disable VPEs. */
 
-    /*
-     * qatomic_set(), not a plain store: mips_vpe_active() reads this
-     * field from the halt path with no BQL held -- see its comment.
-     * The BQL held here still serializes this write against every
-     * other writer (helper_dvpe()/helper_evpe()'s sweep included), so
-     * this is publish-for-the-lock-free-reader, not a substitute for
-     * the guard.
-     */
-    qatomic_set(&cpu->mvp->CP0_MVPControl, newval);
+    cpu->mvp->CP0_MVPControl = newval;
 }
 
 void helper_mtc0_vpecontrol(CPUMIPSState *env, target_ulong arg1)
 {
     uint32_t mask;
     uint32_t newval;
-
-    /*
-     * Pairs with helper_mttc0_vpecontrol()'s guard below: that function
-     * writes this same VPE's CP0_VPEControl from another VPE's thread,
-     * so this own-VPE write needs the same lock or the two can race
-     * each other.
-     */
-    BQL_LOCK_GUARD();
 
     mask = (1 << CP0VPECo_YSI) | (1 << CP0VPECo_GSI) |
            (1 << CP0VPECo_TE) | (0xff << CP0VPECo_TargTC);
@@ -649,8 +581,6 @@ void helper_mtc0_vpecontrol(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mttc0_vpecontrol(CPUMIPSState *env, target_ulong arg1)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
     uint32_t mask;
@@ -667,8 +597,6 @@ void helper_mttc0_vpecontrol(CPUMIPSState *env, target_ulong arg1)
 
 target_ulong helper_mftc0_vpecontrol(CPUMIPSState *env)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
     /* FIXME: Mask away return zero on read bits.  */
@@ -677,8 +605,6 @@ target_ulong helper_mftc0_vpecontrol(CPUMIPSState *env)
 
 target_ulong helper_mftc0_vpeconf0(CPUMIPSState *env)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -690,15 +616,6 @@ void helper_mtc0_vpeconf0(CPUMIPSState *env, target_ulong arg1)
     uint32_t mask = 0;
     uint32_t newval;
 
-    /*
-     * Pairs with helper_mttc0_vpeconf0()'s guard below: that function
-     * writes this same env's CP0_VPEConf0 from another VPE's thread, so
-     * this own-VPE write needs the same lock or the two can race each
-     * other. qatomic_set() at the end additionally publishes for
-     * mips_vpe_active()'s lock-free halt-path read -- see its comment.
-     */
-    BQL_LOCK_GUARD();
-
     if (env->CP0_VPEConf0 & (1 << CP0VPEC0_MVP)) {
         if (env->CP0_VPEConf0 & (1 << CP0VPEC0_VPA)) {
             mask |= (0xff << CP0VPEC0_XTC);
@@ -709,13 +626,11 @@ void helper_mtc0_vpeconf0(CPUMIPSState *env, target_ulong arg1)
 
     /* TODO: TC exclusive handling due to ERL/EXL. */
 
-    qatomic_set(&env->CP0_VPEConf0, newval);
+    env->CP0_VPEConf0 = newval;
 }
 
 void helper_mttc0_vpeconf0(CPUMIPSState *env, target_ulong arg1)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
     uint32_t mask = 0;
@@ -725,7 +640,7 @@ void helper_mttc0_vpeconf0(CPUMIPSState *env, target_ulong arg1)
     newval = (other->CP0_VPEConf0 & ~mask) | (arg1 & mask);
 
     /* TODO: TC exclusive handling due to ERL/EXL.  */
-    qatomic_set(&other->CP0_VPEConf0, newval);
+    other->CP0_VPEConf0 = newval;
 }
 
 void helper_mtc0_vpeconf1(CPUMIPSState *env, target_ulong arg1)
@@ -806,36 +721,19 @@ void helper_mtc0_tcstatus(CPUMIPSState *env, target_ulong arg1)
     uint32_t mask = env->CP0_TCStatus_rw_bitmask;
     uint32_t newval;
 
-    /*
-     * Pairs with helper_mttc0_tcstatus()'s guard below: that function
-     * writes this same TC's CP0_TCStatus from another VPE's thread, so
-     * this own-VPE write needs the same lock or the two can race each
-     * other. qatomic_set() additionally publishes for
-     * mips_vpe_active()'s lock-free halt-path read -- see its comment.
-     */
-    BQL_LOCK_GUARD();
-
     newval = (env->active_tc.CP0_TCStatus & ~mask) | (arg1 & mask);
 
-    qatomic_set(&env->active_tc.CP0_TCStatus, newval);
+    env->active_tc.CP0_TCStatus = newval;
     sync_c0_tcstatus(env, env->current_tc, newval);
 }
 
 void helper_mttc0_tcstatus(CPUMIPSState *env, target_ulong arg1)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
     if (other_tc == other->current_tc) {
-        /*
-         * qatomic_set(), not a plain store, only on this branch:
-         * mips_vpe_active() reads active_tc.CP0_TCStatus specifically
-         * (see its comment), never a parked TC's tcs[] copy below --
-         * that write has no lock-free reader to publish for.
-         */
-        qatomic_set(&other->active_tc.CP0_TCStatus, arg1);
+        other->active_tc.CP0_TCStatus = arg1;
     } else {
         other->tcs[other_tc].CP0_TCStatus = arg1;
     }
@@ -848,14 +746,6 @@ void helper_mtc0_tcbind(CPUMIPSState *env, target_ulong arg1)
     uint32_t mask = (1 << CP0TCBd_TBE);
     uint32_t newval;
 
-    /*
-     * Pairs with helper_mttc0_tcbind()'s guard below: that function
-     * writes this same TC's CP0_TCBind from another VPE's thread, so
-     * this own-VPE write needs the same lock or the two can race each
-     * other.
-     */
-    BQL_LOCK_GUARD();
-
     if (cpu->mvp->CP0_MVPControl & (1 << CP0MVPCo_VPC)) {
         mask |= (1 << CP0TCBd_CurVPE);
     }
@@ -865,8 +755,6 @@ void helper_mtc0_tcbind(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mttc0_tcbind(CPUMIPSState *env, target_ulong arg1)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     uint32_t mask = (1 << CP0TCBd_TBE);
     uint32_t newval;
@@ -887,14 +775,6 @@ void helper_mttc0_tcbind(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mtc0_tcrestart(CPUMIPSState *env, target_ulong arg1)
 {
-    /*
-     * Pairs with helper_mttc0_tcrestart()'s guard below: that function
-     * writes this same TC's PC/CP0_TCStatus.TDS/LLAddr/lladdr from
-     * another VPE's thread, so this own-VPE write needs the same lock
-     * or the two can race each other.
-     */
-    BQL_LOCK_GUARD();
-
     env->active_tc.PC = arg1;
     env->active_tc.CP0_TCStatus &= ~(1 << CP0TCSt_TDS);
     env->CP0_LLAddr = 0;
@@ -904,8 +784,6 @@ void helper_mtc0_tcrestart(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mttc0_tcrestart(CPUMIPSState *env, target_ulong arg1)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -928,16 +806,7 @@ void helper_mtc0_tchalt(CPUMIPSState *env, target_ulong arg1)
 {
     MIPSCPU *cpu = env_archcpu(env);
 
-    /*
-     * Pairs with helper_mttc0_tchalt()'s guard below: that function
-     * writes this same TC's CP0_TCHalt from another VPE's thread, so
-     * this own-VPE write needs the same lock or the two can race each
-     * other. qatomic_set() additionally publishes for
-     * mips_vpe_active()'s lock-free halt-path read -- see its comment.
-     */
-    BQL_LOCK_GUARD();
-
-    qatomic_set(&env->active_tc.CP0_TCHalt, arg1 & 0x1);
+    env->active_tc.CP0_TCHalt = arg1 & 0x1;
 
     /* TODO: Halt TC / Restart (if allocated+active) TC. */
     if (env->active_tc.CP0_TCHalt & 1) {
@@ -949,8 +818,6 @@ void helper_mtc0_tchalt(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mttc0_tchalt(CPUMIPSState *env, target_ulong arg1)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
     MIPSCPU *other_cpu = env_archcpu(other);
@@ -958,13 +825,7 @@ void helper_mttc0_tchalt(CPUMIPSState *env, target_ulong arg1)
     /* TODO: Halt TC / Restart (if allocated+active) TC. */
 
     if (other_tc == other->current_tc) {
-        /*
-         * qatomic_set(), not a plain store, only on this branch:
-         * mips_vpe_active() reads active_tc.CP0_TCHalt specifically
-         * (see its comment), never a parked TC's tcs[] copy below --
-         * that write has no lock-free reader to publish for.
-         */
-        qatomic_set(&other->active_tc.CP0_TCHalt, arg1);
+        other->active_tc.CP0_TCHalt = arg1;
     } else {
         other->tcs[other_tc].CP0_TCHalt = arg1;
     }
@@ -978,21 +839,11 @@ void helper_mttc0_tchalt(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mtc0_tccontext(CPUMIPSState *env, target_ulong arg1)
 {
-    /*
-     * Pairs with helper_mttc0_tccontext()'s guard below: that function
-     * writes this same TC's CP0_TCContext from another VPE's thread, so
-     * this own-VPE write needs the same lock or the two can race each
-     * other.
-     */
-    BQL_LOCK_GUARD();
-
     env->active_tc.CP0_TCContext = arg1;
 }
 
 void helper_mttc0_tccontext(CPUMIPSState *env, target_ulong arg1)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -1005,21 +856,11 @@ void helper_mttc0_tccontext(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mtc0_tcschedule(CPUMIPSState *env, target_ulong arg1)
 {
-    /*
-     * Pairs with helper_mttc0_tcschedule()'s guard below: that function
-     * writes this same TC's CP0_TCSchedule from another VPE's thread,
-     * so this own-VPE write needs the same lock or the two can race
-     * each other.
-     */
-    BQL_LOCK_GUARD();
-
     env->active_tc.CP0_TCSchedule = arg1;
 }
 
 void helper_mttc0_tcschedule(CPUMIPSState *env, target_ulong arg1)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -1032,21 +873,11 @@ void helper_mttc0_tcschedule(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mtc0_tcschefback(CPUMIPSState *env, target_ulong arg1)
 {
-    /*
-     * Pairs with helper_mttc0_tcschefback()'s guard below: that
-     * function writes this same TC's CP0_TCScheFBack from another
-     * VPE's thread, so this own-VPE write needs the same lock or the
-     * two can race each other.
-     */
-    BQL_LOCK_GUARD();
-
     env->active_tc.CP0_TCScheFBack = arg1;
 }
 
 void helper_mttc0_tcschefback(CPUMIPSState *env, target_ulong arg1)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -1313,24 +1144,6 @@ void helper_mtc0_count(CPUMIPSState *env, target_ulong arg1)
 void helper_mtc0_entryhi(CPUMIPSState *env, target_ulong arg1)
 {
     target_ulong old, val, mask;
-
-    /*
-     * Pairs with helper_mttc0_entryhi()'s guard below: that function
-     * writes this same VPE's CP0_EntryHi from another VPE's thread, so
-     * this own-VPE write needs the same lock or the two can race each
-     * other. The ASID-change flush below stays inside the guard rather
-     * than moving outside it: tlb_flush() (accel/tcg/cputlb.c) asserts
-     * it is called from the target CPU's own thread
-     * (assert_cpu_is_self()) and does its own synchronization
-     * internally (qemu_spin_lock on the TLB's own lock, qatomic_set on
-     * its stat counters) -- it never takes the BQL itself, so calling
-     * it from inside an already-held BQL_LOCK_GUARD() neither
-     * double-locks nor changes what the flush does. It only serializes
-     * the EntryHi write that decides whether to flush against a
-     * concurrent helper_mttc0_entryhi() targeting this same VPE.
-     */
-    BQL_LOCK_GUARD();
-
     mask = (TARGET_PAGE_MASK << 1) | env->CP0_EntryHi_ASID_mask;
     if (((env->CP0_Config4 >> CP0C4_IE) & 0x3) >= 2) {
         mask |= 1 << CP0EnHi_EHINV;
@@ -1365,8 +1178,6 @@ void helper_mtc0_entryhi(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mttc0_entryhi(CPUMIPSState *env, target_ulong arg1)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -1431,8 +1242,6 @@ void helper_mtc0_status(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mttc0_status(CPUMIPSState *env, target_ulong arg1)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     uint32_t mask = env->CP0_Status_rw_bitmask & ~0xf1000018;
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
@@ -1459,8 +1268,6 @@ void helper_mtc0_cause(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mttc0_cause(CPUMIPSState *env, target_ulong arg1)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -1469,8 +1276,6 @@ void helper_mttc0_cause(CPUMIPSState *env, target_ulong arg1)
 
 target_ulong helper_mftc0_epc(CPUMIPSState *env)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -1479,8 +1284,6 @@ target_ulong helper_mftc0_epc(CPUMIPSState *env)
 
 target_ulong helper_mftc0_ebase(CPUMIPSState *env)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -1489,17 +1292,7 @@ target_ulong helper_mftc0_ebase(CPUMIPSState *env)
 
 void helper_mtc0_ebase(CPUMIPSState *env, target_ulong arg1)
 {
-    target_ulong mask;
-
-    /*
-     * Pairs with helper_mttc0_ebase()'s guard below: that function
-     * writes this same VPE's CP0_EBase from another VPE's thread, so
-     * this own-VPE write needs the same lock or the two can race each
-     * other.
-     */
-    BQL_LOCK_GUARD();
-
-    mask = 0x3FFFF000 | env->CP0_EBaseWG_rw_bitmask;
+    target_ulong mask = 0x3FFFF000 | env->CP0_EBaseWG_rw_bitmask;
     if (arg1 & env->CP0_EBaseWG_rw_bitmask) {
         mask |= ~0x3FFFFFFF;
     }
@@ -1508,8 +1301,6 @@ void helper_mtc0_ebase(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mttc0_ebase(CPUMIPSState *env, target_ulong arg1)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
     target_ulong mask = 0x3FFFF000 | env->CP0_EBaseWG_rw_bitmask;
@@ -1521,8 +1312,6 @@ void helper_mttc0_ebase(CPUMIPSState *env, target_ulong arg1)
 
 target_ulong helper_mftc0_configx(CPUMIPSState *env, target_ulong idx)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
 
@@ -1697,14 +1486,6 @@ void helper_mtc0_framemask(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mtc0_debug(CPUMIPSState *env, target_ulong arg1)
 {
-    /*
-     * Pairs with helper_mttc0_debug()'s guard below: that function
-     * writes this same VPE's CP0_Debug from another VPE's thread, so
-     * this own-VPE write needs the same lock or the two can race each
-     * other.
-     */
-    BQL_LOCK_GUARD();
-
     env->CP0_Debug = (env->CP0_Debug & 0x8C03FC1F) | (arg1 & 0x13300120);
     if (arg1 & (1 << CP0DB_DM)) {
         env->hflags |= MIPS_HFLAG_DM;
@@ -1716,8 +1497,6 @@ void helper_mtc0_debug(CPUMIPSState *env, target_ulong arg1)
 
 void helper_mttc0_debug(CPUMIPSState *env, target_ulong arg1)
 {
-    BQL_LOCK_GUARD();
-
     int other_tc = env->CP0_VPEControl & (0xff << CP0VPECo_TargTC);
     uint32_t val = arg1 & ((1 << CP0DB_SSt) | (1 << CP0DB_Halt));
     CPUMIPSState *other = mips_cpu_map_tc(env, &other_tc);
@@ -1934,24 +1713,8 @@ target_ulong helper_emt(void)
 
 target_ulong helper_dvpe(CPUMIPSState *env)
 {
-    MIPSCPU *cpu;
-    target_ulong prev;
-
-    /*
-     * Sweeps every other VPE's own cpu->mvp->CP0_MVPControl (confirmed
-     * per-CPU allocated, not a structure shared across sibling VPEs, so
-     * this genuinely writes another thread's copy) -- reviewer-found
-     * unguarded. Guard the whole sweep, not each write individually: the
-     * "disable every VPE but me" semantic is one operation, and holding
-     * the lock across it makes it atomic instead of interleavable with a
-     * concurrent dvpe/evpe on another VPE. mips_vpe_sleep() already takes
-     * its own guard (target/mips/tcg/system/cp0_helper.c); nested here,
-     * it is a no-op since BQL_LOCK_GUARD() is conditional.
-     */
-    BQL_LOCK_GUARD();
-
-    cpu = env_archcpu(env);
-    prev = cpu->mvp->CP0_MVPControl;
+    MIPSCPU *cpu = env_archcpu(env);
+    target_ulong prev = cpu->mvp->CP0_MVPControl;
 
     if (env->CP0_VPEConf0 & (1 << CP0VPEC0_MVP)) {
         CPUState *cs;
@@ -1960,16 +1723,7 @@ target_ulong helper_dvpe(CPUMIPSState *env)
             MIPSCPU *other_cpu = MIPS_CPU(cs);
             /* Turn off all VPEs except the one executing the dvpe.  */
             if (&other_cpu->env != env) {
-                /*
-                 * qatomic_set(), not &=: mips_vpe_active() reads this
-                 * field from the halt path with no BQL held -- see its
-                 * comment. The RMW itself is safe plain under the BQL
-                 * this whole sweep holds; qatomic_set() is publish for
-                 * that lock-free reader, not protection for the RMW.
-                 */
-                qatomic_set(&other_cpu->mvp->CP0_MVPControl,
-                           other_cpu->mvp->CP0_MVPControl &
-                           ~(1 << CP0MVPCo_EVP));
+                other_cpu->mvp->CP0_MVPControl &= ~(1 << CP0MVPCo_EVP);
                 mips_vpe_sleep(other_cpu);
             }
         }
@@ -1979,14 +1733,8 @@ target_ulong helper_dvpe(CPUMIPSState *env)
 
 target_ulong helper_evpe(CPUMIPSState *env)
 {
-    MIPSCPU *cpu;
-    target_ulong prev;
-
-    /* Same sweep, same reasoning, as helper_dvpe() above. */
-    BQL_LOCK_GUARD();
-
-    cpu = env_archcpu(env);
-    prev = cpu->mvp->CP0_MVPControl;
+    MIPSCPU *cpu = env_archcpu(env);
+    target_ulong prev = cpu->mvp->CP0_MVPControl;
 
     if (env->CP0_VPEConf0 & (1 << CP0VPEC0_MVP)) {
         CPUState *cs;
@@ -1997,13 +1745,8 @@ target_ulong helper_evpe(CPUMIPSState *env)
             if (&other_cpu->env != env
                 /* If the VPE is WFI, don't disturb its sleep.  */
                 && !mips_vpe_is_wfi(other_cpu)) {
-                /*
-                 * Enable the VPE. qatomic_set(), not |=: see the
-                 * matching comment in helper_dvpe() above.
-                 */
-                qatomic_set(&other_cpu->mvp->CP0_MVPControl,
-                           other_cpu->mvp->CP0_MVPControl |
-                           (1 << CP0MVPCo_EVP));
+                /* Enable the VPE.  */
+                other_cpu->mvp->CP0_MVPControl |= (1 << CP0MVPCo_EVP);
                 mips_vpe_wake(other_cpu); /* And wake it up.  */
             }
         }
@@ -2014,18 +1757,7 @@ target_ulong helper_evpe(CPUMIPSState *env)
 /* R6 Multi-threading */
 target_ulong helper_dvp(CPUMIPSState *env)
 {
-    target_ulong prev;
-
-    /*
-     * The VPControl bit itself is already qatomic-paired (see the
-     * qatomic_set() below and mips_vp_active()'s qatomic_read()); the
-     * addition here is the sleep sweep, matching helper_dvpe()'s
-     * reasoning: one BQL critical section makes "halt every other VP"
-     * atomic as a whole, not just correct per individual VP.
-     */
-    BQL_LOCK_GUARD();
-
-    prev = env->CP0_VPControl;
+    target_ulong prev = env->CP0_VPControl;
 
     if (!((env->CP0_VPControl >> CP0VPCtl_DIS) & 1)) {
         CPUState *cpu;
@@ -2037,26 +1769,14 @@ target_ulong helper_dvp(CPUMIPSState *env)
                 mips_vpe_sleep(other_cpu);
             }
         }
-        /*
-         * Publish the DisableVP bit atomically: mips_vp_active() reads
-         * every VPE's CP0_VPControl from CPU_FOREACH scans that can run on
-         * any thread, so this store must be untorn and visible to their
-         * qatomic_read(), not just committed to env in program order here.
-         */
-        qatomic_set(&env->CP0_VPControl,
-                    env->CP0_VPControl | (1 << CP0VPCtl_DIS));
+        env->CP0_VPControl |= (1 << CP0VPCtl_DIS);
     }
     return prev;
 }
 
 target_ulong helper_evp(CPUMIPSState *env)
 {
-    target_ulong prev;
-
-    /* Same reasoning as helper_dvp() above. */
-    BQL_LOCK_GUARD();
-
-    prev = env->CP0_VPControl;
+    target_ulong prev = env->CP0_VPControl;
 
     if ((env->CP0_VPControl >> CP0VPCtl_DIS) & 1) {
         CPUState *cpu;
@@ -2071,9 +1791,7 @@ target_ulong helper_evp(CPUMIPSState *env)
                 mips_vpe_wake(other_cpu);
             }
         }
-        /* Publish under qatomic_set(), pairing with the store in helper_dvp. */
-        qatomic_set(&env->CP0_VPControl,
-                    env->CP0_VPControl & ~(1 << CP0VPCtl_DIS));
+        env->CP0_VPControl &= ~(1 << CP0VPCtl_DIS);
     }
     return prev;
 }

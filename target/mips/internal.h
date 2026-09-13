@@ -299,27 +299,12 @@ static inline int mips_vpe_active(const CPUMIPSState *env)
     const MIPSCPU *cpu = env_archcpu(env);
     int active = 1;
 
-    /*
-     * Called from cpu_handle_halt() on this VPE's own thread with no BQL
-     * held -- the accelerator's halt path, not a guest CP0 accessor -- so
-     * every field read below needs to be untorn against a cross-VPE
-     * writer running concurrently on another thread, not just correct
-     * for a guest that only ever reads its own state. All four have one:
-     * CP0_MVPControl.EVP (helper_dvpe()/helper_evpe()'s sweep, TSan-
-     * measured racing this exact read), CP0_VPEConf0.VPA
-     * (helper_mttc0_vpeconf0()), and TCStatus.A/TCHalt
-     * (helper_mttc0_tcstatus()/helper_mttc0_tchalt()) -- each paired
-     * with a qatomic_set() at every site that writes it, own-VPE and
-     * cross-VPE alike, so a same-field own-VPE write and a cross-VPE one
-     * can no longer race each other either.
-     */
-
     /* Check that the VPE is enabled.  */
-    if (!(qatomic_read(&cpu->mvp->CP0_MVPControl) & (1 << CP0MVPCo_EVP))) {
+    if (!(cpu->mvp->CP0_MVPControl & (1 << CP0MVPCo_EVP))) {
         active = 0;
     }
     /* Check that the VPE is activated.  */
-    if (!(qatomic_read(&env->CP0_VPEConf0) & (1 << CP0VPEC0_VPA))) {
+    if (!(env->CP0_VPEConf0 & (1 << CP0VPEC0_VPA))) {
         active = 0;
     }
 
@@ -331,11 +316,11 @@ static inline int mips_vpe_active(const CPUMIPSState *env)
      * the active one will be in a sleeping state, and we can turn off
      * the entire VPE.
      */
-    if (!(qatomic_read(&env->active_tc.CP0_TCStatus) & (1 << CP0TCSt_A))) {
+    if (!(env->active_tc.CP0_TCStatus & (1 << CP0TCSt_A))) {
         /* TC is not activated.  */
         active = 0;
     }
-    if (qatomic_read(&env->active_tc.CP0_TCHalt) & 1) {
+    if (env->active_tc.CP0_TCHalt & 1) {
         /* TC is in halt state.  */
         active = 0;
     }
@@ -352,24 +337,12 @@ static inline int mips_vp_active(const CPUMIPSState *env)
         return 1;
     }
 
-    /*
-     * Check if the virtual processor is disabled due to a DVP. Each VPE
-     * writes only its own CP0_VPControl, from its own thread (helper_dvp
-     * and helper_evp below; direct mtc0/dmtc0 writes to VPControl are
-     * ignored -- see translate.c), but this scan reads every other VPE's
-     * copy from whichever thread is asking, so pair the qatomic_set() at
-     * the two publish sites with an untorn qatomic_read() here.
-     */
+    /* Check if the virtual processor is disabled due to a DVP */
     CPU_FOREACH(cs) {
         CPUMIPSState *other_env = cpu_env(cs);
-        int32_t other_vpcontrol;
 
-        if (other_env == env) {
-            continue;
-        }
-
-        other_vpcontrol = qatomic_read(&other_env->CP0_VPControl);
-        if ((other_vpcontrol >> CP0VPCtl_DIS) & 1) {
+        if ((other_env != env) &&
+            ((other_env->CP0_VPControl >> CP0VPCtl_DIS) & 1)) {
             return 0;
         }
     }
