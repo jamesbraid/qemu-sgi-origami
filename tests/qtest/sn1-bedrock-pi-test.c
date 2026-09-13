@@ -737,25 +737,28 @@ static void test_request_buffer_timeout(void)
     qtest_quit(s);
 }
 
-/* A write to NMI A or B pulses that processor's line; the data is ignored. */
+/*
+ * A store to NMI A or B delivers no NMI: the trigger predicate is in no public
+ * source, and the stock PROM's 0x100 init store to both offsets demonstrably
+ * does not fire one (a MIPS NMI vectors to the reset vector, so a self-NMI
+ * would reset-loop the single-node PROM, which boots). The store is inert at
+ * this register and the processor's NMI line stays low; a modelled NMI arrives
+ * over that line from the L1 controller instead.
+ */
 static void test_nmi(void)
 {
     QTestState *s = start("");
 
     qtest_irq_intercept_out_named(s, BEDROCK_PATH, "nmi");
     for (unsigned pi = 0; pi < 2; pi++) {
-        qtest_writeq(s, PI(pi, NMI_A), 0);
+        qtest_writeq(s, PI(pi, NMI_A), 0x100);
         qtest_writeq(s, PI(pi, NMI_B), UINT64_MAX);
+        qtest_writeq(s, PI(pi, NMI_A), 0);
     }
     for (unsigned line = 0; line < 4; line++) {
-        g_assert_cmpuint(qtest_get_irq_raise_count(s, line), ==, 1);
+        g_assert_cmpuint(qtest_get_irq_raise_count(s, line), ==, 0);
         g_assert_false(qtest_get_irq(s, line));
     }
-    qtest_writeq(s, PI(1, NMI_A), 0);
-    g_assert_cmpuint(qtest_get_irq_raise_count(s, 2), ==, 2);
-    g_assert_cmpuint(qtest_get_irq_raise_count(s, 0), ==, 1);
-    g_assert_cmpuint(qtest_get_irq_raise_count(s, 1), ==, 1);
-    g_assert_cmpuint(qtest_get_irq_raise_count(s, 3), ==, 1);
     qtest_quit(s);
 }
 

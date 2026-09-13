@@ -165,6 +165,9 @@
 #define CONFIG0_MUTATED_READBACK UINT64_C(0x6c9aa982)
 #define POLL_TRIES 10000
 #define POLL_INTERVAL_US 1000
+/* Guest run-time to allow a mistaken NMI to vector before asserting none did. */
+#define NMI_SETTLE_TRIES 20
+#define NMI_SETTLE_INTERVAL_US 10000
 
 /*
  * The modelled minimum between a frame arriving and its completion, in
@@ -2721,11 +2724,9 @@ static void test_cpu_b_executes_across_enable_falling_edge(const void *data)
     g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
-static void test_nmi_routes_to_cpu(const void *data)
+static void test_nmi_register_write_is_inert(const void *data)
 {
     uint64_t nmi_register = *(const uint64_t *)data;
-    unsigned int target_cpu = nmi_register == PI_NMI_A ? 0 : 1;
-    unsigned int other_cpu = target_cpu ^ 1;
     g_autofree char *path = NULL;
     QTestState *qts;
 
@@ -2740,13 +2741,24 @@ static void test_nmi_routes_to_cpu(const void *data)
     qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
 
-    for (unsigned int cpu = 0; cpu < 2; cpu++) {
-        wait_for_cpu_gpr(qts, cpu, "s0", NMI_READY_MARKER);
-    }
+    /*
+     * Both processors run from reset to the ready marker. The stock PROM
+     * stores 0x100 to this register during per-node bring-up; that store must
+     * not deliver an NMI. A MIPS NMI vectors through the reset vector, which
+     * this control PROM records as the taken marker, so a delivered NMI would
+     * move the addressed processor off its ready marker. Neither processor
+     * moves: the store is inert. This is the same wiring that formerly carried
+     * the NMI to the processor, so it still exercises that path, now silent.
+     */
+    wait_for_cpu_gpr(qts, 0, "s0", NMI_READY_MARKER);
+    wait_for_cpu_gpr(qts, 1, "s0", NMI_READY_MARKER);
 
-    qtest_writeq(qts, BEDROCK_LOCAL + nmi_register, 0);
-    wait_for_cpu_gpr(qts, target_cpu, "s0", NMI_TAKEN_MARKER);
-    g_assert_cmphex(cpu_gpr(qts, other_cpu, "s0"), ==, NMI_READY_MARKER);
+    qtest_writeq(qts, BEDROCK_LOCAL + nmi_register, 0x100);
+    for (unsigned int tries = 0; tries < NMI_SETTLE_TRIES; tries++) {
+        g_assert_cmphex(cpu_gpr(qts, 0, "s0"), ==, NMI_READY_MARKER);
+        g_assert_cmphex(cpu_gpr(qts, 1, "s0"), ==, NMI_READY_MARKER);
+        g_usleep(NMI_SETTLE_INTERVAL_US);
+    }
 
     qtest_quit(qts);
     g_assert_cmpint(g_unlink(path), ==, 0);
@@ -3142,10 +3154,10 @@ int main(int argc, char **argv)
                         test_config0_cold_reset);
     qtest_add_data_func("sn1/address-map/cpu-b-executes-across-enable-fall",
                         NULL, test_cpu_b_executes_across_enable_falling_edge);
-    qtest_add_data_func("sn1/address-map/nmi-routes-to-cpu-a", &nmi_a,
-                        test_nmi_routes_to_cpu);
-    qtest_add_data_func("sn1/address-map/nmi-routes-to-cpu-b", &nmi_b,
-                        test_nmi_routes_to_cpu);
+    qtest_add_data_func("sn1/address-map/nmi-write-a-is-inert", &nmi_a,
+                        test_nmi_register_write_is_inert);
+    qtest_add_data_func("sn1/address-map/nmi-write-b-is-inert", &nmi_b,
+                        test_nmi_register_write_is_inert);
     qtest_add_data_func("sn1/address-map/prom-executes-reset-and-xkphys", NULL,
                         test_prom_executes_from_reset_and_xkphys);
     qtest_add_data_func("sn1/address-map/prom-executes-tlb-mapped-xkseg",
