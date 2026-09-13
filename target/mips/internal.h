@@ -132,6 +132,10 @@ int get_physical_address(const CPUMIPSState *env, hwaddr *physical,
 bool mips_cpu_translate_for_debug(CPUState *cpu, vaddr addr,
                                   TranslateForDebugResult *result);
 
+/* r10k_addr.c: the R10000 family's xkphys uncached-attribute window. */
+hwaddr mips_r10k_xkphys_uncached_window(CPUMIPSState *env, target_ulong address,
+                                        unsigned int cca, uint64_t *pa);
+
 typedef struct r4k_tlb_t r4k_tlb_t;
 struct r4k_tlb_t {
     target_ulong VPN;
