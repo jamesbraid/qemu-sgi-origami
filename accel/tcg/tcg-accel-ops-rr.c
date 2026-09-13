@@ -38,20 +38,11 @@
 #include "tcg-accel-ops.h"
 #include "tcg-accel-ops-rr.h"
 #include "tcg-accel-ops-icount.h"
-#include "trace.h"
 
 /* Kick all RR vCPUs */
-void rr_kick_vcpu_thread(CPUState *requested)
+void rr_kick_vcpu_thread(CPUState *unused)
 {
     CPUState *cpu;
-
-    if (trace_event_get_state_backends(TRACE_RR_KICK_REQUEST)) {
-        trace_rr_kick_request(
-            current_cpu ? current_cpu->cpu_index : -1,
-            requested ? requested->cpu_index : -1,
-            qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
-            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
-    }
 
     CPU_FOREACH(cpu) {
         tcg_kick_vcpu_thread(cpu);
@@ -95,15 +86,6 @@ static void rr_kick_next_cpu(void)
 
 static void rr_kick_thread(void *opaque)
 {
-    if (trace_event_get_state_backends(TRACE_RR_KICK_TIMER)) {
-        CPUState *cpu = qatomic_read(&rr_current_cpu);
-
-        trace_rr_kick_timer(
-            cpu ? cpu->cpu_index : -1,
-            qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
-            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
-    }
-
     timer_mod(rr_kick_vcpu_timer, rr_next_kick_time());
     rr_kick_next_cpu();
 }
@@ -299,13 +281,6 @@ static void *rr_cpu_thread_fn(void *arg)
             if (cpu_can_run(cpu)) {
                 int excp;
 
-                if (trace_event_get_state_backends(TRACE_RR_VCPU_SLICE_BEGIN)) {
-                    trace_rr_vcpu_slice_begin(
-                        cpu->cpu_index, cpu->cc->get_pc(cpu), cpu_budget,
-                        qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
-                        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
-                }
-
                 bql_unlock();
                 if (icount_enabled()) {
                     icount_prepare_for_run(cpu, cpu_budget);
@@ -315,15 +290,6 @@ static void *rr_cpu_thread_fn(void *arg)
                     icount_process_data(cpu);
                 }
                 bql_lock();
-
-                if (trace_event_get_state_backends(TRACE_RR_VCPU_SLICE_END)) {
-                    trace_rr_vcpu_slice_end(
-                        cpu->cpu_index, cpu->cc->get_pc(cpu), excp,
-                        qatomic_read(&cpu->exit_request),
-                        qatomic_read(&cpu->interrupt_request),
-                        qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
-                        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
-                }
 
                 if (excp == EXCP_DEBUG) {
                     cpu_handle_guest_debug(cpu);
