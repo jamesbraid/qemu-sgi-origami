@@ -200,10 +200,11 @@ typedef struct SN0BackdoorState {
     const char *window;         /* "ecc" or "dir", for tracing */
     uint8_t *data;
     uint32_t data_size;
-    uint64_t bank_stride;
     uint64_t bank_offset[SN0_MAX_MEMORY_BANKS];
-    uint64_t bank_span[SN0_MAX_MEMORY_BANKS];
     unsigned int populated_banks;
+    /* The fold: the bank is above the shift, the index below the mask. */
+    unsigned int bank_shift;
+    uint64_t span_mask[SN0_MAX_MEMORY_BANKS];
 } SN0BackdoorState;
 
 typedef struct SN0PromDataState {

@@ -851,6 +851,93 @@ static void check_backdoor_absent(QTestState *qts, uint64_t addr)
 }
 
 /*
+ * Narrower accesses see the same two bytes. The window takes only
+ * naturally aligned accesses, so one lies inside a single entry and
+ * either overlaps its live tail or reads zero.
+ */
+static void check_backdoor_entry_widths(QTestState *qts, uint64_t addr)
+{
+    qtest_writeq(qts, addr, 0);
+
+    qtest_writeb(qts, addr + 0, 0x11);
+    qtest_writeb(qts, addr + 5, 0x22);
+    qtest_writeb(qts, addr + 6, 0x33);
+    qtest_writeb(qts, addr + 7, 0x44);
+    g_assert_cmphex(qtest_readq(qts, addr), ==, 0x3344);
+    g_assert_cmphex(qtest_readb(qts, addr + 0), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, addr + 5), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, addr + 6), ==, 0x33);
+    g_assert_cmphex(qtest_readb(qts, addr + 7), ==, 0x44);
+
+    qtest_writew(qts, addr + 0, 0x5566);
+    qtest_writew(qts, addr + 4, 0x7788);
+    qtest_writew(qts, addr + 6, 0x99aa);
+    g_assert_cmphex(qtest_readq(qts, addr), ==, 0x99aa);
+    g_assert_cmphex(qtest_readw(qts, addr + 0), ==, 0);
+    g_assert_cmphex(qtest_readw(qts, addr + 4), ==, 0);
+    g_assert_cmphex(qtest_readw(qts, addr + 6), ==, 0x99aa);
+
+    qtest_writel(qts, addr + 0, 0xbbccddee);
+    qtest_writel(qts, addr + 4, 0x01020304);
+    g_assert_cmphex(qtest_readq(qts, addr), ==, 0x0304);
+    g_assert_cmphex(qtest_readl(qts, addr + 0), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, addr + 4), ==, 0x0304);
+}
+
+/*
+ * A read that spans entries -- the monitor, the debugger, a device copy
+ * -- sees each entry's two live bytes and zero between them, whether the
+ * memory core splits it into aligned accesses or copies the storage.
+ */
+static void check_backdoor_straddling_reads(QTestState *qts, uint64_t addr)
+{
+    static const uint8_t expect[16] = {
+        0, 0, 0, 0, 0, 0, 0x12, 0x34,
+        0, 0, 0, 0, 0, 0, 0x56, 0x78,
+    };
+    uint8_t got[16];
+    unsigned int offset, length;
+
+    qtest_writeq(qts, addr, 0xffffffffffff1234ULL);
+    qtest_writeq(qts, addr + 8, 0xffffffffffff5678ULL);
+
+    for (offset = 0; offset < sizeof(expect); offset++) {
+        for (length = 1; offset + length <= sizeof(expect); length++) {
+            memset(got, 0xee, sizeof(got));
+            qtest_memread(qts, addr + offset, got, length);
+            g_assert_cmpmem(got, length, expect + offset, length);
+        }
+    }
+}
+
+/* The fold repeats storage for a narrow access as it does for a wide one. */
+static void check_backdoor_narrow_fold(QTestState *qts, uint64_t base,
+                                       uint64_t span)
+{
+    uint64_t entry = base + 0x2000;
+
+    qtest_writeb(qts, entry + 7, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, entry + span + 7), ==, 0x5a);
+    qtest_writew(qts, entry + span + 6, 0x1234);
+    g_assert_cmphex(qtest_readw(qts, entry + 6), ==, 0x1234);
+}
+
+static void test_backdoor_entry_widths(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    check_backdoor_entry_widths(qts, BACKDOOR_DIR);
+    check_backdoor_entry_widths(qts, BACKDOOR_ECC);
+    check_backdoor_entry_widths(qts, BACKDOOR_DIR + 0x3456780);
+    check_backdoor_straddling_reads(qts, BACKDOOR_DIR + 0x4000);
+    check_backdoor_straddling_reads(qts, BACKDOOR_ECC + 16 * MiB - 8);
+    check_backdoor_narrow_fold(qts, BACKDOOR_DIR, 16 * MiB);
+    check_backdoor_narrow_fold(qts, BACKDOOR_ECC, 16 * MiB);
+
+    qtest_quit(qts);
+}
+
+/*
  * The back door is the memory address shifted right by two; firmware
  * relies on the quarter-size aliasing to size the bank.
  */
@@ -1223,6 +1310,8 @@ int main(int argc, char **argv)
                         NULL, test_backdoor_tracks_populated_banks);
     qtest_add_data_func("sn0/address-map/backdoor-tracks-bank-size", NULL,
                         test_backdoor_tracks_bank_size);
+    qtest_add_data_func("sn0/address-map/backdoor-entry-widths", NULL,
+                        test_backdoor_entry_widths);
     qtest_add_data_func("sn0/address-map/backdoor-accesses-trace", NULL,
                         test_backdoor_accesses_trace);
 
