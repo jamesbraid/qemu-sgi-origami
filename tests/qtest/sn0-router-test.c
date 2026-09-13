@@ -394,6 +394,25 @@ static void test_histogram_unsupported_diagnostics(void)
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
+static void wait_for_migration(QTestState *qts)
+{
+    int64_t deadline = g_get_monotonic_time() + 60 * G_TIME_SPAN_SECOND;
+
+    for (;;) {
+        g_autoptr(QDict) response = qtest_qmp(qts,
+                                              "{'execute':'query-migrate'}");
+        QDict *result = qdict_get_qdict(response, "return");
+        const char *status = qdict_get_str(result, "status");
+
+        if (!strcmp(status, "completed")) {
+            return;
+        }
+        g_assert_cmpstr(status, !=, "failed");
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+}
+
 static void test_migration(void)
 {
     g_autofree char *directory = g_dir_make_tmp("router-migrate-XXXXXX", NULL);
@@ -401,7 +420,6 @@ static void test_migration(void)
     g_autofree char *uri = g_strdup_printf("unix:%s", socket);
     QTestState *from = start("");
     QTestState *to = start("-incoming defer");
-    int64_t deadline = g_get_monotonic_time() + 60 * G_TIME_SPAN_SECOND;
 
     for (unsigned int i = 0; i < 48; i++) {
         write_reg(from, 0x70000 + i * 8, 0x654300 | i);
@@ -429,19 +447,9 @@ static void test_migration(void)
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
-    for (;;) {
-        g_autoptr(QDict) response = qtest_qmp(from,
-                                             "{'execute':'query-migrate'}");
-        const char *status = qdict_get_str(qdict_get_qdict(response, "return"),
-                                           "status");
-
-        if (!strcmp(status, "completed")) {
-            break;
-        }
-        g_assert_cmpstr(status, !=, "failed");
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
-    }
+    wait_for_migration(from);
+    /* The source completes when its state is sent, not when it is loaded. */
+    wait_for_migration(to);
     for (unsigned int i = 0; i < 48; i++) {
         g_assert_cmphex(read_reg(to, 0x70000 + i * 8), ==, 0x654300 | i);
     }

@@ -258,6 +258,25 @@ static void test_reset(void)
     qtest_quit(q);
 }
 
+static void wait_for_migration(QTestState *qts)
+{
+    int64_t deadline = g_get_monotonic_time() + 60 * G_TIME_SPAN_SECOND;
+
+    for (;;) {
+        g_autoptr(QDict) response = qtest_qmp(qts,
+                                              "{'execute':'query-migrate'}");
+        QDict *result = qdict_get_qdict(response, "return");
+        const char *status = qdict_get_str(result, "status");
+
+        if (!strcmp(status, "completed")) {
+            return;
+        }
+        g_assert_cmpstr(status, !=, "failed");
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+}
+
 static void test_migration(void)
 {
     g_autofree char *directory = g_dir_make_tmp("hub-packet-migrate-XXXXXX",
@@ -269,7 +288,6 @@ static void test_migration(void)
     QTestState *to = start_extra("-incoming defer");
     uint64_t irq = (1ULL << 47) | (0x17ULL << 38) | 0x01800090;
     uint64_t memory = (0x17ULL << 32) | MEMORY;
-    int64_t deadline = g_get_monotonic_time() + 60 * G_TIME_SPAN_SECOND;
 
     hub_write(from, 0, 0x600000, 0x1700);
     g_assert_cmphex(packet(from, irq, 8, true, 0x147), ==, 0);
@@ -279,18 +297,9 @@ static void test_migration(void)
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
-    for (;;) {
-        g_autoptr(QDict) response = qtest_qmp(from,
-                                            "{'execute':'query-migrate'}");
-        QDict *result = qdict_get_qdict(response, "return");
-        const char *status = qdict_get_str(result, "status");
-        if (!strcmp(status, "completed")) {
-            break;
-        }
-        g_assert_cmpstr(status, !=, "failed");
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
-    }
+    wait_for_migration(from);
+    /* The source completes when its state is sent, not when it is loaded. */
+    wait_for_migration(to);
     g_assert_cmphex(hub_read(to, 0, 0xa0), ==, 1 << 7);
     g_assert_cmphex(hub_read(to, 0, 0xb0), ==, 1 << 7);
     g_assert_cmphex(packet(to, memory, 8, false, 0), ==, 0);

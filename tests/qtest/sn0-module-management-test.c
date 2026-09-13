@@ -1022,13 +1022,31 @@ static void test_dip_switches_reach_the_controller(void)
     qtest_quit(qts);
 }
 
+static void wait_for_migration(QTestState *qts)
+{
+    int64_t deadline = g_get_monotonic_time() + 60 * G_TIME_SPAN_SECOND;
+
+    for (;;) {
+        g_autoptr(QDict) response = qtest_qmp(qts,
+                                              "{'execute':'query-migrate'}");
+        QDict *result = qdict_get_qdict(response, "return");
+        const char *status = qdict_get_str(result, "status");
+
+        if (!strcmp(status, "completed")) {
+            return;
+        }
+        g_assert_cmpstr(status, !=, "failed");
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+}
+
 static void migrate_module(QTestState *from, QTestState *to)
 {
     g_autofree char *directory = g_dir_make_tmp("o2000-management-XXXXXX",
                                                 NULL);
     g_autofree char *socket = NULL;
     g_autofree char *uri = NULL;
-    int64_t deadline = g_get_monotonic_time() + 60 * G_TIME_SPAN_SECOND;
 
     g_assert_nonnull(directory);
     socket = g_build_filename(directory, "migration.sock", NULL);
@@ -1037,19 +1055,9 @@ static void migrate_module(QTestState *from, QTestState *to)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    for (;;) {
-        g_autoptr(QDict) response = qtest_qmp(from,
-                                              "{'execute':'query-migrate'}");
-        QDict *result = qdict_get_qdict(response, "return");
-        const char *status = qdict_get_str(result, "status");
-
-        if (!strcmp(status, "completed")) {
-            break;
-        }
-        g_assert_cmpstr(status, !=, "failed");
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
-    }
+    wait_for_migration(from);
+    /* The source completes when its state is sent, not when it is loaded. */
+    wait_for_migration(to);
     unlink(socket);
     g_assert_cmpint(rmdir(directory), ==, 0);
 }
