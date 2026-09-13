@@ -29,7 +29,7 @@ import time
 # (one with its own assets/ directory), not the assets/ directory itself --
 # confirmed against tools/README.md's own description of the variable
 # ("resolves asset paths (assets/firmware/...) against `path`").
-FIRMWARE_REL = os.path.join('assets', 'firmware', '6.5-base',
+FIRMWARE_REL = os.path.join('assets', 'firmware', '6.5.30',
                             'ip27prom.payload.bin')
 
 

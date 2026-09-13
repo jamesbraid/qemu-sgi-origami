@@ -83,12 +83,12 @@ from lib_prom_diagnostics import (EXPECTED_FAILURES, EXPECTED_FAILURES_TEXT,
 # ---------------------------------------------------------------------------
 
 # Where ORIGAMI_ASSETS resolves the real firmware and boot tree, matching
-# test_prom_boot.py's FIRMWARE_REL and tools/sash-gate's RELEASES["6.5-base"]
+# test_prom_boot.py's FIRMWARE_REL and tools/sash-gate's RELEASES["6.5.30"]
 # in the project checkout: ORIGAMI_ASSETS names a CHECKOUT, not assets/
 # itself.
-FIRMWARE_REL = os.path.join('assets', 'firmware', '6.5-base',
+FIRMWARE_REL = os.path.join('assets', 'firmware', '6.5.30',
                             'ip27prom.payload.bin')
-TFTP_REL = os.path.join('assets', 'boot', '6.5-base')
+TFTP_REL = os.path.join('assets', 'boot', '6.5.30')
 
 # diag-gate's own default (tools/diag-gate's DEFAULT_TIMEOUT_SECONDS,
 # before that tool's retirement) covered both passes and the sash leg in
@@ -279,7 +279,7 @@ class PromDiagnostics(QemuSystemTest):
                     'fork': _fork_git_identity(_FORK_ROOT),
                     'qemu_binary': _file_record(self.qemu_bin),
                     'firmware': {
-                        'release': '6.5-base',
+                        'release': '6.5.30',
                         'prom': _file_record(prom),
                         'sash': _file_record(
                             os.path.join(tftp, 'sash64')),

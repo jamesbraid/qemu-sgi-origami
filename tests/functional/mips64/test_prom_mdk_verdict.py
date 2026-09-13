@@ -147,7 +147,7 @@ class ArtifactIdentityTests(unittest.TestCase):
                 self.skipTest("ORIGAMI_ASSETS is not set; the acceptance "
                               "side needs the real assets")
             prom = os.path.join(assets_root, "assets", "firmware",
-                                "6.5-base", "ip27prom.payload.bin")
+                                "6.5.30", "ip27prom.payload.bin")
             mdk = os.path.join(assets_root, "assets", "boot", "mdk",
                                "cpu.mdk")
             if not (os.path.isfile(prom) and os.path.isfile(mdk)):
