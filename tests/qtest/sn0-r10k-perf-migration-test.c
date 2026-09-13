@@ -1,7 +1,12 @@
 /*
- * R10000-family migration tests.
+ * R10000 performance-counter and secondary-cache migration tests.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * The R10000 is the only CPU this fork builds a machine for, so every case
+ * runs on the Origin 200 or Origin 2000 with the synthesized firmware off,
+ * leaving the guest fragment in sole possession of the reset vector and low
+ * memory.
  */
 
 #include "qemu/osdep.h"
@@ -11,8 +16,6 @@
 #define IMAGE_SIZE          0x1000
 #define CODE_START          0x400
 #define MAIN_LOOP           0x480
-#define RESET_CHECK         0x700
-#define RESET_LOOP          0x780
 #define CACHE_START         0x900
 #define CACHE_LOOP          0xa00
 #define CACHE_READ          0xa40
@@ -22,10 +25,6 @@
 #define STATE_KSEG1_HI      0xa010
 #define READY_OFF           0x00
 #define COUNT_OFF           0x08
-#define PHASE_OFF           0x20
-#define POWER_ON_OFF        0x40
-#define NONZERO_OFF         0x80
-#define RESET_OFF           0xc0
 #define CACHE_READY_OFF     0x120
 #define CACHE_COMMAND_OFF   0x128
 #define CACHE_DONE_OFF      0x130
@@ -36,7 +35,6 @@
 #define CACHE_DATA_HI_OFF   0x170
 #define CACHE_ECC_OFF       0x178
 #define READY_MAGIC         0x1400
-#define RESET_READY_MAGIC   0x1401
 #define CACHE_READY_MAGIC   0x14ca
 #define CACHE_DONE_MAGIC    0x14cb
 #define INITIAL_COUNT       0x12340000u
@@ -45,7 +43,6 @@
 #define CACHE_DATA_LO       0x2468ace0u
 #define CACHE_DATA_HI       0x13579bdfu
 #define CACHE_ECC           0x2aau
-#define CACHE_UPPER_HI      0x8008
 #define POLL_TRIES          20000
 #define POLL_INTERVAL_US    1000
 #define ANALYZE_SCRIPT      "scripts/analyze-migration.py"
@@ -98,13 +95,6 @@ typedef struct {
 
 static const TestConfig configurations[] = {
     { "R10000", 0, 1 },
-    { "R14000", 4, 5 },
-};
-
-static const CacheTagProbe r14000_cache_probe = {
-    .address_hi = CACHE_UPPER_HI,
-    .taglo = CACHE_TAGLO,
-    .taghi = CACHE_TAGHI,
 };
 
 static const CacheTagProbe r10000_cache_probe = {
@@ -161,7 +151,7 @@ static void write_guest_image(int fd, const TestConfig *config)
     GuestImage img = { .code = image, .pos = 0 };
     ssize_t written;
 
-    /* Malta overwrites offset 0x10 with its board ID, so branch past it. */
+    /* Branch clear of the low words so seeded board data cannot matter. */
     emit_branch(&img, CODE_START);
     emit(&img, 0);
 
@@ -193,67 +183,6 @@ static void write_guest_image(int fd, const TestConfig *config)
     g_assert_cmpint(written, ==, sizeof(image));
 }
 
-static void write_reset_guest_image(int fd)
-{
-    static const uint16_t nonzero[8] = {
-        PERF_KERNEL, 0x101, PERF_KERNEL, 0x303,
-        PERF_KERNEL, 0x505, PERF_KERNEL, 0x707,
-    };
-    uint8_t image[IMAGE_SIZE] = { };
-    GuestImage img = { .code = image, .pos = 0 };
-    ssize_t written;
-    unsigned int sel;
-
-    /* Malta overwrites offset 0x10 with its board ID, so branch past it. */
-    emit_branch(&img, CODE_START);
-    emit(&img, 0);
-
-    img.pos = CODE_START;
-    emit(&img, OPC_LUI | (R_T2 << 16) | STATE_KSEG1_HI);
-    emit(&img, OPC_LD | (R_T2 << 21) | (R_T3 << 16) | PHASE_OFF);
-    emit_bne(&img, R_T3, R_ZERO, RESET_CHECK);
-    emit(&img, 0);
-
-    for (sel = 0; sel < 8; sel++) {
-        emit_mfc0(&img, R_T0, CP0_PERFORMANCE, sel);
-        emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) |
-                   (POWER_ON_OFF + sel * 8));
-    }
-    for (sel = 0; sel < 8; sel++) {
-        emit(&img, OPC_ADDIU | (R_ZERO << 21) | (R_T0 << 16) |
-                   nonzero[sel]);
-        emit_mtc0(&img, R_T0, CP0_PERFORMANCE, sel);
-        emit_mfc0(&img, R_T0, CP0_PERFORMANCE, sel);
-        emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) |
-                   (NONZERO_OFF + sel * 8));
-    }
-    emit(&img, OPC_ADDIU | (R_ZERO << 21) | (R_T0 << 16) | 1);
-    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | PHASE_OFF);
-    emit(&img, OPC_ADDIU | (R_ZERO << 21) | (R_T0 << 16) | READY_MAGIC);
-    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | READY_OFF);
-    emit(&img, OPC_SYNC);
-    emit_branch(&img, RESET_LOOP);
-    emit(&img, 0);
-
-    img.pos = RESET_CHECK;
-    for (sel = 0; sel < 8; sel++) {
-        emit_mfc0(&img, R_T0, CP0_PERFORMANCE, sel);
-        emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) |
-                   (RESET_OFF + sel * 8));
-    }
-    emit(&img, OPC_ADDIU | (R_ZERO << 21) | (R_T0 << 16) |
-               RESET_READY_MAGIC);
-    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | READY_OFF);
-    emit(&img, OPC_SYNC);
-
-    img.pos = RESET_LOOP;
-    emit_branch(&img, RESET_LOOP);
-    emit(&img, 0);
-
-    written = write(fd, image, sizeof(image));
-    g_assert_cmpint(written, ==, sizeof(image));
-}
-
 static void write_cache_guest_image(int fd, const CacheTagProbe *probes,
                                     size_t nprobes)
 {
@@ -264,7 +193,7 @@ static void write_cache_guest_image(int fd, const CacheTagProbe *probes,
 
     g_assert_cmpuint(nprobes, >, 0);
 
-    /* Malta overwrites offset 0x10 with its board ID, so branch past it. */
+    /* Branch clear of the low words so seeded board data cannot matter. */
     emit_branch(&img, CACHE_START);
     emit(&img, 0);
 
@@ -447,22 +376,23 @@ static void test_active_counter(const void *opaque)
         return;
     }
 
-    fd = g_file_open_tmp("mips64-r10k-perf-XXXXXX", &image, &error);
+    fd = g_file_open_tmp("sn0-r10k-perf-XXXXXX", &image, &error);
     g_assert_no_error(error);
     g_assert_cmpint(fd, >=, 0);
     write_guest_image(fd, config);
     close(fd);
-    directory = g_dir_make_tmp("mips64-r10k-migration-XXXXXX", &error);
+    directory = g_dir_make_tmp("sn0-r10k-migration-XXXXXX", &error);
     g_assert_no_error(error);
     socket = g_build_filename(directory, "migration.sock", NULL);
     uri = g_strdup_printf("unix:%s", socket);
 
     source_args = g_strdup_printf(
-        "-M malta -m 64M -cpu %s -bios %s -accel tcg "
-        "-no-reboot -no-shutdown", config->cpu, image);
+        "-M origin200,synthesized-firmware=off -m 64M -cpu %s -bios %s "
+        "-accel tcg -no-reboot -no-shutdown", config->cpu, image);
     dest_args = g_strdup_printf(
-        "-M malta -m 64M -cpu %s -bios %s -accel tcg "
-        "-no-reboot -no-shutdown -incoming defer", config->cpu, image);
+        "-M origin200,synthesized-firmware=off -m 64M -cpu %s -bios %s "
+        "-accel tcg -no-reboot -no-shutdown -incoming defer",
+        config->cpu, image);
     from = qtest_init(source_args);
     to = qtest_init(dest_args);
     wait_for_ready(from);
@@ -490,23 +420,6 @@ static void test_active_counter(const void *opaque)
     g_assert_cmpint(rmdir(directory), ==, 0);
 }
 
-static uint32_t r14k_stream_counter(const char *json)
-{
-    const char *section = strstr(json, "\"cpu/r14k-performance\"");
-    const char *array;
-    const char *value;
-    char *end;
-
-    g_assert_nonnull(section);
-    array = strstr(section, "\"env.CP0_Performance\"");
-    g_assert_nonnull(array);
-    value = strstr(array, "\"0x");
-    g_assert_nonnull(value);
-    value = strstr(value + 1, "\"0x");
-    g_assert_nonnull(value);
-    return g_ascii_strtoull(value + 1, &end, 16);
-}
-
 static void test_stream_representation(const void *opaque)
 {
     const TestConfig *config = opaque;
@@ -520,7 +433,6 @@ static void test_stream_representation(const void *opaque)
     GError *error = NULL;
     QTestState *from;
     const char *python = g_getenv("PYTHON");
-    uint32_t before, stored, delta;
     int fd, state_fd, pid, wstatus;
 
     if (!python) {
@@ -528,23 +440,23 @@ static void test_stream_representation(const void *opaque)
         return;
     }
 
-    fd = g_file_open_tmp("mips64-r10k-perf-XXXXXX", &image, &error);
+    fd = g_file_open_tmp("sn0-r10k-perf-XXXXXX", &image, &error);
     g_assert_no_error(error);
     write_guest_image(fd, config);
     close(fd);
-    directory = g_dir_make_tmp("mips64-r10k-stream-XXXXXX", &error);
+    directory = g_dir_make_tmp("sn0-r10k-stream-XXXXXX", &error);
     g_assert_no_error(error);
     stream = g_build_filename(directory, "migration", NULL);
     state = g_build_filename(directory, "state.json", NULL);
     uri = g_strdup_printf("exec:cat > %s", stream);
     source_args = g_strdup_printf(
-        "-M malta -m 64M -cpu %s -bios %s -accel tcg "
-        "-no-reboot -no-shutdown", config->cpu, image);
+        "-M origin200,synthesized-firmware=off -m 64M -cpu %s -bios %s "
+        "-accel tcg -no-reboot -no-shutdown", config->cpu, image);
     from = qtest_init(source_args);
     wait_for_ready(from);
-    before = wait_for_advance(from, INITIAL_COUNT, STREAM_ADVANCE);
+    /* Let the counter advance far enough that the stream carries a value. */
+    wait_for_advance(from, INITIAL_COUNT, STREAM_ADVANCE);
     qtest_qmp_assert_success(from, "{'execute':'stop'}");
-    before = state_word(from, COUNT_OFF);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
     wait_for_migration(from);
@@ -568,78 +480,12 @@ static void test_stream_representation(const void *opaque)
     g_assert_true(g_file_get_contents(state, &json, NULL, &error));
     g_assert_no_error(error);
 
-    if (!strcmp(config->cpu, "R10000")) {
-        g_assert_null(strstr(json, "\"cpu/r14k-performance\""));
-        g_assert_null(strstr(json, "\"cpu/r14k-scache\""));
-    } else {
-        g_assert_nonnull(strstr(json, "\"cpu/r14k-scache\""));
-        stored = r14k_stream_counter(json);
-        delta = stored - before;
-        g_assert_cmpuint(delta, <, 1u << 24);
-    }
+    g_assert_null(strstr(json, "\"cpu/r14k-performance\""));
+    g_assert_null(strstr(json, "\"cpu/r14k-scache\""));
 
     unlink(image);
     unlink(stream);
     unlink(state);
-    g_assert_cmpint(rmdir(directory), ==, 0);
-}
-
-static void test_r14000_upper_scache_migration(void)
-{
-    g_autofree char *image = NULL;
-    g_autofree char *directory = NULL;
-    g_autofree char *socket = NULL;
-    g_autofree char *uri = NULL;
-    g_autofree char *source_args = NULL;
-    g_autofree char *dest_args = NULL;
-    GError *error = NULL;
-    QTestState *from, *to;
-    int fd;
-
-    if (!qtest_has_accel("tcg")) {
-        g_test_skip("TCG is unavailable");
-        return;
-    }
-
-    fd = g_file_open_tmp("mips64-r14k-scache-XXXXXX", &image, &error);
-    g_assert_no_error(error);
-    g_assert_cmpint(fd, >=, 0);
-    write_cache_guest_image(fd, &r14000_cache_probe, 1);
-    close(fd);
-    directory = g_dir_make_tmp("mips64-r14k-scache-migration-XXXXXX",
-                               &error);
-    g_assert_no_error(error);
-    socket = g_build_filename(directory, "migration.sock", NULL);
-    uri = g_strdup_printf("unix:%s", socket);
-    source_args = g_strdup_printf(
-        "-M malta -m 64M -cpu R14000 -bios %s -accel tcg "
-        "-no-reboot -no-shutdown", image);
-    dest_args = g_strdup_printf(
-        "-M malta -m 64M -cpu R14000 -bios %s -accel tcg "
-        "-no-reboot -no-shutdown -incoming defer", image);
-    from = qtest_init(source_args);
-    to = qtest_init(dest_args);
-    wait_for_state(from, CACHE_READY_OFF, CACHE_READY_MAGIC);
-    qtest_qmp_assert_success(from, "{'execute':'stop'}");
-
-    qtest_qmp_assert_success(to,
-        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
-    qtest_qmp_assert_success(from,
-        "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    wait_for_migration(from);
-    qtest_qmp_assert_success(to, "{'execute':'cont'}");
-    qtest_writeq(to, STATE_PHYS + CACHE_COMMAND_OFF, 1);
-    wait_for_state(to, CACHE_DONE_OFF, CACHE_DONE_MAGIC);
-
-    assert_cache_tags(to, &r14000_cache_probe, 1);
-    g_assert_cmphex(state_word(to, CACHE_DATA_LO_OFF), ==, CACHE_DATA_LO);
-    g_assert_cmphex(state_word(to, CACHE_DATA_HI_OFF), ==, CACHE_DATA_HI);
-    g_assert_cmphex(state_word(to, CACHE_ECC_OFF), ==, CACHE_ECC);
-
-    qtest_quit(from);
-    qtest_quit(to);
-    unlink(image);
-    unlink(socket);
     g_assert_cmpint(rmdir(directory), ==, 0);
 }
 
@@ -660,12 +506,12 @@ static void test_r10000_scache_migration(void)
         return;
     }
 
-    fd = g_file_open_tmp("mips64-r10k-scache-XXXXXX", &image, &error);
+    fd = g_file_open_tmp("sn0-r10k-scache-XXXXXX", &image, &error);
     g_assert_no_error(error);
     g_assert_cmpint(fd, >=, 0);
     write_cache_guest_image(fd, &r10000_cache_probe, 1);
     close(fd);
-    directory = g_dir_make_tmp("mips64-r10k-scache-migration-XXXXXX",
+    directory = g_dir_make_tmp("sn0-r10k-scache-migration-XXXXXX",
                                &error);
     g_assert_no_error(error);
     socket = g_build_filename(directory, "migration.sock", NULL);
@@ -704,61 +550,14 @@ static void test_r10000_scache_migration(void)
     g_assert_cmpint(rmdir(directory), ==, 0);
 }
 
-static void test_r14000_reset_values(void)
-{
-    static const uint64_t nonzero[8] = {
-        PERF_KERNEL, 0x101, PERF_KERNEL, 0x303,
-        PERF_KERNEL, 0x505, PERF_KERNEL, 0x707,
-    };
-    g_autofree char *image = NULL;
-    QTestState *qts;
-    unsigned int sel;
-    int fd;
-
-    if (!qtest_has_accel("tcg")) {
-        g_test_skip("TCG is unavailable");
-        return;
-    }
-    fd = g_file_open_tmp("mips64-r14k-perf-reset-XXXXXX", &image, NULL);
-    g_assert_cmpint(fd, >=, 0);
-    write_reset_guest_image(fd);
-    close(fd);
-    qts = qtest_initf("-M malta -m 64M -cpu R14000 -bios %s -accel tcg "
-                      "-no-shutdown", image);
-    unlink(image);
-
-    wait_for_ready(qts);
-    for (sel = 0; sel < 8; sel++) {
-        g_assert_cmphex(state_word(qts, POWER_ON_OFF + sel * 8), ==, 0);
-        g_assert_cmphex(state_word(qts, NONZERO_OFF + sel * 8), ==,
-                        nonzero[sel]);
-    }
-    qtest_writeq(qts, STATE_PHYS + READY_OFF, 0);
-    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
-    wait_for_state(qts, READY_OFF, RESET_READY_MAGIC);
-    for (sel = 0; sel < 8; sel++) {
-        g_assert_cmphex(state_word(qts, RESET_OFF + sel * 8), ==, 0);
-    }
-
-    qtest_quit(qts);
-}
-
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
-    qtest_add_data_func("mips64/r10k-perf-migration/r10000",
+    qtest_add_data_func("sn0/r10k-perf-migration/r10000",
                         &configurations[0], test_active_counter);
-    qtest_add_data_func("mips64/r10k-perf-migration/r14000",
-                        &configurations[1], test_active_counter);
-    qtest_add_data_func("mips64/r10k-perf-stream/r10000",
+    qtest_add_data_func("sn0/r10k-perf-stream/r10000",
                         &configurations[0], test_stream_representation);
-    qtest_add_data_func("mips64/r10k-perf-stream/r14000",
-                        &configurations[1], test_stream_representation);
-    qtest_add_func("mips64/r14000-perf/reset-values",
-                   test_r14000_reset_values);
-    qtest_add_func("mips64/r14000-scache-migration/upper-half",
-                   test_r14000_upper_scache_migration);
-    qtest_add_func("mips64/r10000-scache-migration/stock",
+    qtest_add_func("sn0/r10000-scache-migration/stock",
                    test_r10000_scache_migration);
     return g_test_run();
 }

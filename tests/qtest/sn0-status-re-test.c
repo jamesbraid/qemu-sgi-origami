@@ -7,17 +7,11 @@
  * rather than silent: helper_mtc0_status() logs a LOG_UNIMP line when a
  * guest sets RE on an R10000-family processor.
  *
- * Each case boots a fragment that sets RE from kernel mode and reads the
- * -d unimp log back.  On the R10000 the line must appear.  On the R4000 -
- * whose Status mask also leaves bit 25 writable, and which the bare-metal
- * ROM suite uses as its calibration model - it must not, pinning both the
- * processor gate and that other models keep today's silent behaviour.
- *
- * Malta rather than the Origin 200, for the same reason the MTTCG ladder
- * starts there: the property under test lives in target/mips, and a
- * machine that contains none of this fork's devices keeps the evidence
- * about the CPU model alone.  Malta also takes -cpu, which the R4000 leg
- * of the test needs.
+ * The case boots a fragment that sets RE from kernel mode and reads the
+ * -d unimp log back; the line must appear.  It runs on the Origin 200, the
+ * only machine this fork builds that carries the R10000, with the
+ * synthesized firmware turned off so the fragment owns the reset vector and
+ * low memory outright.
  */
 
 #include "qemu/osdep.h"
@@ -27,8 +21,8 @@
 /*
  * The image is loaded as the boot flash, so offsets are from the reset
  * vector.  Boot-exception vectors stay in flash because the fragment never
- * clears Status.BEV.  Malta patches its board ID into the word at offset
- * 0x10, so entry branches over it.
+ * clears Status.BEV.  Entry branches over the low words so it does not
+ * matter what a board seeds there.
  */
 #define IMAGE_SIZE          0x1000
 #define VEC_TLB_REFILL      0x200
@@ -202,10 +196,10 @@ static void write_guest_image(int fd)
 }
 
 /*
- * Boot the fragment on the named CPU with the unimp log captured to a
- * file, wait for the guest's report, and return the log contents.
+ * Boot the fragment on the R10000 with the unimp log captured to a file,
+ * wait for the guest's report, and return the log contents.
  */
-static char *run_fragment(const char *cpu)
+static char *run_fragment(void)
 {
     g_autofree char *image = NULL;
     g_autofree char *log_path = NULL;
@@ -215,18 +209,19 @@ static char *run_fragment(const char *cpu)
     char *log = NULL;
     int fd;
 
-    fd = g_file_open_tmp("mips64-status-re-image-XXXXXX", &image, NULL);
+    fd = g_file_open_tmp("sn0-status-re-image-XXXXXX", &image, NULL);
     g_assert_cmpint(fd, >=, 0);
     write_guest_image(fd);
     close(fd);
 
-    fd = g_file_open_tmp("mips64-status-re-log-XXXXXX", &log_path, NULL);
+    fd = g_file_open_tmp("sn0-status-re-log-XXXXXX", &log_path, NULL);
     g_assert_cmpint(fd, >=, 0);
     close(fd);
 
-    qts = qtest_initf("-M malta -m 64M -cpu %s -bios %s -accel tcg "
+    qts = qtest_initf("-M origin200,synthesized-firmware=off -m 64M "
+                      "-cpu R10000 -bios %s -accel tcg "
                       "-d unimp -D %s -no-reboot -no-shutdown",
-                      cpu, image, log_path);
+                      image, log_path);
     unlink(image);
 
     for (tries = 0; tries < POLL_TRIES; tries++) {
@@ -249,16 +244,9 @@ static char *run_fragment(const char *cpu)
 
 static void test_r10000_logs_unimp(void)
 {
-    g_autofree char *log = run_fragment("R10000");
+    g_autofree char *log = run_fragment();
 
     g_assert_nonnull(strstr(log, "Status.RE"));
-}
-
-static void test_r4000_stays_silent(void)
-{
-    g_autofree char *log = run_fragment("R4000");
-
-    g_assert_null(strstr(log, "Status.RE"));
 }
 
 int main(int argc, char **argv)
@@ -266,7 +254,6 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
 
     qtest_add_func("status-re/r10000-logs-unimp", test_r10000_logs_unimp);
-    qtest_add_func("status-re/r4000-stays-silent", test_r4000_stays_silent);
 
     return g_test_run();
 }

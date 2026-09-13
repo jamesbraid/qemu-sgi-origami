@@ -1,11 +1,13 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * Exercise the external MIPS NMI input on a neutral Malta carrier.  A tiny
- * guest records the architectural state seen at the boot exception vector,
- * returns through ErrorEPC, and acknowledges each completed entry from its
- * main loop.  This keeps the test about target/mips rather than any system
- * interrupt controller.
+ * Exercise the external MIPS NMI input of the R10000 on the Origin 200, the
+ * only machine this fork builds that carries it.  A tiny guest records the
+ * architectural state seen at the boot exception vector, returns through
+ * ErrorEPC, and acknowledges each completed entry from its main loop.  The
+ * NMI line is driven straight on the CPU, so the test stays about
+ * target/mips rather than the Hub's interrupt routing; the synthesized
+ * firmware is off so the guest owns the reset vector and low memory.
  */
 
 #include "qemu/osdep.h"
@@ -116,7 +118,7 @@ static void write_guest_image(int fd)
     GuestImage img = { .code = image, .pos = 0 };
     ssize_t written;
 
-    /* Malta overwrites offset 0x10 with its board ID, so branch past it. */
+    /* Branch clear of the low words so seeded board data cannot matter. */
     emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, CODE_START);
     emit_nop(&img);
 
@@ -126,10 +128,6 @@ static void write_guest_image(int fd)
     emit_and(&img, R_T2, R_T0, R_T1);
     emit_branch(&img, OPC_BNE, R_T2, R_ZERO, NMI_HANDLER);
     emit_nop(&img);
-    emit_lui(&img, R_T2, STATE_KSEG1_HI);
-    emit_addiu(&img, R_T3, R_ZERO, READY_MAGIC);
-    emit_sd(&img, R_T3, R_T2, READY_OFF);
-    emit(&img, OPC_SYNC);
     emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, MAIN_LOOP);
     emit_nop(&img);
 
@@ -147,6 +145,8 @@ static void write_guest_image(int fd)
 
     img.pos = MAIN_LOOP;
     emit_lui(&img, R_T2, STATE_KSEG1_HI);
+    emit_addiu(&img, R_T3, R_ZERO, READY_MAGIC);
+    emit_sd(&img, R_T3, R_T2, READY_OFF);
     emit_ld(&img, R_T3, R_T2, COUNT_OFF);
     emit_sd(&img, R_T3, R_T2, ACK_OFF);
     emit(&img, OPC_SYNC);
@@ -213,12 +213,13 @@ static void test_nmi_entry_and_retrigger(void)
     uint64_t status, error_epc;
     int fd;
 
-    fd = g_file_open_tmp("mips64-nmi-image-XXXXXX", &image, NULL);
+    fd = g_file_open_tmp("sn0-nmi-image-XXXXXX", &image, NULL);
     g_assert_cmpint(fd, >=, 0);
     write_guest_image(fd);
     close(fd);
 
-    qts = qtest_initf("-M malta -m 64M -cpu R10000 -bios %s -accel tcg "
+    qts = qtest_initf("-M origin200,synthesized-firmware=off -m 64M "
+                      "-cpu R10000 -bios %s -accel tcg "
                       "-no-reboot -no-shutdown", image);
     unlink(image);
     wait_for_state(qts, READY_OFF, READY_MAGIC);
@@ -231,7 +232,7 @@ static void test_nmi_entry_and_retrigger(void)
                     ==, STATUS_SR | STATUS_NMI | STATUS_ERL | STATUS_BEV);
     error_epc = state_word(qts, ERROREPC_OFF);
     g_assert_cmphex(error_epc, >=, 0xffffffffbfc00000ULL + MAIN_LOOP);
-    g_assert_cmphex(error_epc, <, 0xffffffffbfc00000ULL + MAIN_LOOP + 0x18);
+    g_assert_cmphex(error_epc, <, 0xffffffffbfc00000ULL + MAIN_LOOP + 0x20);
 
     /* A held assertion is one event; lowering it rearms the next edge. */
     qtest_set_irq_in(qts, cpu_path, "nmi", 0, 1);
@@ -253,11 +254,12 @@ static void test_nmi_reset_rearms(void)
     QTestState *qts;
     int fd;
 
-    fd = g_file_open_tmp("mips64-nmi-image-XXXXXX", &image, NULL);
+    fd = g_file_open_tmp("sn0-nmi-image-XXXXXX", &image, NULL);
     g_assert_cmpint(fd, >=, 0);
     write_guest_image(fd);
     close(fd);
-    qts = qtest_initf("-M malta -m 64M -cpu R10000 -bios %s -accel tcg "
+    qts = qtest_initf("-M origin200,synthesized-firmware=off -m 64M "
+                      "-cpu R10000 -bios %s -accel tcg "
                       "-no-shutdown", image);
     unlink(image);
     wait_for_state(qts, READY_OFF, READY_MAGIC);
@@ -289,20 +291,20 @@ static void test_nmi_latch_migration(void)
     QTestState *from, *to;
     int fd;
 
-    fd = g_file_open_tmp("mips64-nmi-image-XXXXXX", &image, &error);
+    fd = g_file_open_tmp("sn0-nmi-image-XXXXXX", &image, &error);
     g_assert_no_error(error);
     write_guest_image(fd);
     close(fd);
-    directory = g_dir_make_tmp("mips64-nmi-migration-XXXXXX", &error);
+    directory = g_dir_make_tmp("sn0-nmi-migration-XXXXXX", &error);
     g_assert_no_error(error);
     socket = g_build_filename(directory, "migration.sock", NULL);
     uri = g_strdup_printf("unix:%s", socket);
     source_args = g_strdup_printf(
-        "-M malta -m 64M -cpu R10000 -bios %s -accel tcg "
-        "-no-reboot -no-shutdown", image);
+        "-M origin200,synthesized-firmware=off -m 64M -cpu R10000 -bios %s "
+        "-accel tcg -no-reboot -no-shutdown", image);
     dest_args = g_strdup_printf(
-        "-M malta -m 64M -cpu R10000 -bios %s -accel tcg "
-        "-no-reboot -no-shutdown -incoming defer", image);
+        "-M origin200,synthesized-firmware=off -m 64M -cpu R10000 -bios %s "
+        "-accel tcg -no-reboot -no-shutdown -incoming defer", image);
     from = qtest_init(source_args);
     to = qtest_init(dest_args);
     unlink(image);
@@ -337,9 +339,9 @@ static void test_nmi_latch_migration(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
-    qtest_add_func("mips64/nmi/entry-and-retrigger",
+    qtest_add_func("sn0/nmi/entry-and-retrigger",
                    test_nmi_entry_and_retrigger);
-    qtest_add_func("mips64/nmi/reset-rearms", test_nmi_reset_rearms);
-    qtest_add_func("mips64/nmi/latch-migration", test_nmi_latch_migration);
+    qtest_add_func("sn0/nmi/reset-rearms", test_nmi_reset_rearms);
+    qtest_add_func("sn0/nmi/latch-migration", test_nmi_latch_migration);
     return g_test_run();
 }

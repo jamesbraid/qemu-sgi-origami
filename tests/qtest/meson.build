@@ -24,6 +24,11 @@ slow_qtests = {
   # These SN0 device qtests run 50-59s under TCG; the 60s default leaves no
   # headroom and they time out under CI load. Give them the 120s slow budget.
   'sn0-pi-error-test': 120,
+  # The MTTCG primitives run several thread=multi TCG cases, and the R10000
+  # performance test adds live migration and a stream analysis pass. Both fit
+  # under 60s unloaded but need headroom under parallel CI load.
+  'sn0-mttcg-test': 120,
+  'sn0-r10k-perf-migration-test': 120,
   # sn0-qtest-cpu-test runs four sequential TCG cases with 30s polling
   # deadlines. Allow startup and teardown headroom beyond those 120s.
   'sn0-qtest-cpu-test': 180,
@@ -348,13 +353,12 @@ qtests_mips64 = \
     ['sn1-address-map-test', 'sn1-bedrock-ecc-cpu-test',
      'sn1-cpu-identity-test',
      'sn1-io8-scsi-test', 'sn1-xbridge-host-error-test'] : []) + \
-  (config_all_devices.has_key('CONFIG_MALTA') ? ['mips64-mttcg-test',
-                                                 'mips64-nmi-test',
-                                                 'mips64-r10k-llsc-test',
-                                                 'mips64-r10k-llsc-peer-store-test',
-                                                 'mips64-r10k-perf-migration-test',
-                                                 'mips64-status-re-test'] : []) + \
-  (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-mmio-branch-test',
+  (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-mttcg-test',
+                                                   'sn0-nmi-test',
+                                                   'sn0-r10k-llsc-test',
+                                                   'sn0-r10k-perf-migration-test',
+                                                   'sn0-status-re-test',
+                                                   'sn0-mmio-branch-test',
                                                    'sn0-address-map-test',
                                                    'sn0-bridge-test',
                                                    'sn0-firmware-test',
