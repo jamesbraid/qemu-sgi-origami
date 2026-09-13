@@ -1134,6 +1134,64 @@ static void test_nic_write_after_elapsed_slot(Fixture *f, gconstpointer unused)
     g_assert_false(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
 }
 
+/*
+ * Between release and sample the slot is still outstanding. A write there,
+ * with the release applied by that write itself and no dispatch, must be
+ * refused without moving the sample deadline or the bit it samples. Then the
+ * other order: an access carries out a release and the callback, not a
+ * later access, finishes the slot at its sample deadline.
+ */
+static void test_nic_write_while_sampling(Fixture *f, gconstpointer unused)
+{
+    const uint64_t short_read = NIC_DIVIDERS_RESET |
+                                (UINT64_C(6) << 10) | (13 << 2);
+    const uint8_t family = 0x0b;
+    uint64_t value;
+
+    write_reg(f, 1, RR_NIC_ULAN, NIC_DIVIDERS_RESET |
+              (UINT64_C(520) << 10) | (65 << 2));
+    qemu_clock_advance_virtual_time(virtual_time + 585000);
+    for (unsigned int bit = 0; bit < 8; bit++) {
+        bool one = (0x33 >> bit) & 1; /* Read ROM. */
+        unsigned int pulse = one ? 6 : 80;
+        unsigned int sample = one ? 110 : 30;
+
+        write_reg(f, 1, RR_NIC_ULAN, NIC_DIVIDERS_RESET |
+                  ((uint64_t)pulse << 10) | ((uint64_t)sample << 2));
+        qemu_clock_advance_virtual_time(virtual_time + (pulse + sample) * 1000);
+    }
+
+    /* Family bit 0: refused in the sampling phase, then sampled on time. */
+    write_reg(f, 1, RR_NIC_ULAN, short_read);
+    virtual_time += 6000;
+    g_assert_false(access_reg(f->router, 1, SN0_FABRIC_VECTOR_WRITE,
+                              RR_NIC_ULAN, short_read, NULL));
+    virtual_time += 12999;
+    g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN) & NIC_DONE, ==, 0);
+    virtual_time += 1;
+    g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN) & 3, ==,
+                    NIC_DONE | (family & 1));
+
+    /* Family bit 1: a read releases the slot, the callback finishes it. */
+    write_reg(f, 1, RR_NIC_ULAN, short_read);
+    virtual_time += 6000;
+    g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN) & NIC_DONE, ==, 0);
+    virtual_time += 13000;
+    g_assert_true(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
+    g_assert_false(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
+    g_assert_true(access_reg(f->router, 1, SN0_FABRIC_VECTOR_READ,
+                             RR_NIC_ULAN, 0, &value));
+    g_assert_cmphex(value & 3, ==, NIC_DONE | ((family >> 1) & 1));
+
+    /* The rest of the byte shows no bit was skipped or repeated. */
+    for (unsigned int bit = 2; bit < 8; bit++) {
+        write_reg(f, 1, RR_NIC_ULAN, short_read);
+        qemu_clock_advance_virtual_time(virtual_time + 19000);
+        g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN) & 3, ==,
+                        NIC_DONE | ((family >> bit) & 1));
+    }
+}
+
 static int load_nic_state(Fixture *source, Fixture *target)
 {
     g_autofree char *path = NULL;
@@ -1367,6 +1425,7 @@ int main(int argc, char **argv)
              test_nic_deadline_without_dispatch);
     ADD_TEST("nic-write-after-elapsed-slot",
              test_nic_write_after_elapsed_slot);
+    ADD_TEST("nic-write-while-sampling", test_nic_write_while_sampling);
     ADD_TEST("nic-migration-config", test_nic_migration_config);
     ADD_TEST("nic-migration-invalid", test_nic_migration_invalid);
     ADD_TEST("histogram-migration", test_histogram_migration);
