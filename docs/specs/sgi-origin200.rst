@@ -38,6 +38,42 @@ the firmware's job. Device pages: :doc:`sgi-hub`, :doc:`sgi-bridge`,
 expectations as handwritten literals. Those expectations are deliberately
 independent of the generated descriptor and are not generated.
 
+Supported devices
+=================
+
+The ``origin200`` machine needs the 64-bit big-endian
+``qemu-system-mips64`` emulator. The generated descriptor selects one or
+two R10000 processors per node, each node's Hub ASIC (the per-node
+interrupt controller, real-time counter and block transfer engines), and
+the base I/O board behind the Hub's crosstalk port:
+
+-  SGI Bridge crosstalk-to-PCI host bridge, with its address
+   translation table modelled as an IOMMU
+
+-  Two QLogic ISP1040 SCSI host adapters
+
+-  SGI IOC3 multifunction I/O controller: two 16550 serial ports with
+   the chip's receive and transmit DMA rings, and the ethernet
+   interface with its DP83840 transceiver
+
+-  M48T35 timekeeper NVRAM, optionally backed by a drive so the
+   firmware environment persists
+
+-  The entry-level system controller, reached over the Hub's PCF8584
+   I2C master
+
+Serial backends map as: 0 and 1 to the IOC3's two rear ports, 2 to the
+system controller's diagnostic port, 3 to the debug UART enabled by the
+``junk-uart`` machine option. That optional bring-up component is disabled
+by default because its production population is uncertain.
+
+By default the machine synthesizes the firmware structures a kernel loaded
+with ``-kernel`` expects; booting SGI's own PROM image instead is done
+with ``-bios`` and ``synthesized-firmware=off``. The remaining
+machine-specific runtime properties are ``junk-uart``, ``debug-leds``,
+``diagnostic-recording``, and ``elsc-dip-switches``. Explicit ``-device``
+arguments can add hardware after QEMU constructs the canonical machine.
+
 No crossbar
 ===========
 
