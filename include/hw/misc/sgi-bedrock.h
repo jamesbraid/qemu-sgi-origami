@@ -18,6 +18,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockState, SGI_BEDROCK)
 struct SGIBedrockState {
     SysBusDevice parent_obj;
     MemoryRegion mmio;
+    /*
+     * A zero-based view of the register window for the vector engine, so a
+     * routed read addresses hub registers wherever mmio itself is mapped.
+     */
+    MemoryRegion hub_window;
     MemoryRegion remote_registers;
     MemoryRegion io_registers;
     SGIBedrockPIState pi[2];

@@ -41,11 +41,22 @@
 
 #define LB_PASSWORD 0x53474972756c6573ULL
 /*
- * Type, address, write id and request id; busy (bit 63) never reads set.
- * The type width is open: one bit in the union, two in the companion header.
+ * Address, write id and request id occupy the same positions in parameters
+ * and status, so the reply echoes them in place. The type width is open (one
+ * bit in the union, two in the companion header) and busy (bit 63) never reads
+ * set: the operation completes at once, so no launch is ever seen in flight.
  */
-#define LB_VECTOR_PARAMS_MASK (1ULL | (0x1fffffULL << 3) | (0xffULL << 32) | \
-                               (0x7ffULL << 40))
+#define LB_VECTOR_ADDR         (0x1fffffULL << 3)
+#define LB_VECTOR_WRITE_ID     (0xffULL << 32)
+#define LB_VECTOR_REQUEST_ID   (0x7ffULL << 40)
+/* The fields a reply echoes from the launch, in their shared positions. */
+#define LB_VECTOR_ECHO         (LB_VECTOR_ADDR | LB_VECTOR_WRITE_ID | \
+                                LB_VECTOR_REQUEST_ID)
+#define LB_VECTOR_PARAMS_MASK  (1ULL | LB_VECTOR_ECHO)
+/* Status type-or-error 2:0: 4 is an address error. Then overrun and valid. */
+#define LB_VECTOR_ADDR_ERROR   4ULL
+#define LB_VECTOR_OVERRUN      (1ULL << 62)
+#define LB_VECTOR_VALID        (1ULL << 63)
 #define LB_ERROR_MASK 0x7ffULL
 #define LB_NODES_ABSENT_MASK 0x80ff80ff80ff80ffULL
 #define LB_RTC_LOCAL_MASK (1ULL | (0x3ffULL << 4) | (0x3ffULL << 16) | \
@@ -142,6 +153,50 @@ static void lb_microlan_write(SGIBedrockLBState *s, uint64_t value)
               qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + LB_MICROLAN_SLOT_NS);
 }
 
+/*
+ * A vector launch. The engine reads or writes a register along an explicit
+ * port-by-port route (datasheet "vector operations"); the firmware drives it
+ * during NUMAlink discovery to read each hub before building KLCONFIG, and the
+ * block replies to the parameters write at once.
+ *
+ * This models the routed READ on the local route. A one-chassis node has no
+ * NUMAlink peer, so every route resolves to this node's own hub, read from the
+ * linked hub register window -- the block aliased into the local register
+ * space. Kept out of the model until a boot trace or the header settles them:
+ * the self-vs-remote route encoding (not decoded; there is no remote peer to
+ * route to), the type field's read/write polarity (discovery reads only, so a
+ * launch completes as a read), and write-transaction behavior.
+ */
+static void lb_vector_launch(SGIBedrockLBState *s)
+{
+    uint64_t reply = s->vector_params & LB_VECTOR_ECHO;
+    hwaddr addr = s->vector_params & LB_VECTOR_ADDR;
+    uint8_t buffer[8];
+
+    if (!s->hub_as_initialized) {
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-lb: vector launch with no hub "
+                      "register window linked\n");
+        return;
+    }
+    /*
+     * Software clears the status before launching; a launch over an unread
+     * reply is an overrun, not a reload.
+     */
+    if (s->vector_status & LB_VECTOR_VALID) {
+        s->vector_status |= LB_VECTOR_OVERRUN;
+        return;
+    }
+    if (address_space_read(&s->hub_as, addr, MEMTXATTRS_UNSPECIFIED,
+                           buffer, sizeof(buffer)) != MEMTX_OK) {
+        s->vector_status = reply | LB_VECTOR_VALID | LB_VECTOR_ADDR_ERROR;
+        return;
+    }
+    s->vector_read = ldq_be_p(buffer);
+    /* The self-route return path is not pinned; report none. */
+    s->vector_return = 0;
+    s->vector_status = reply | LB_VECTOR_VALID;
+}
+
 static uint64_t lb_read(void *opaque, hwaddr offset, unsigned size)
 {
     SGIBedrockLBState *s = opaque;
@@ -192,12 +247,13 @@ static uint64_t lb_read(void *opaque, hwaddr offset, unsigned size)
     case LB_VECTOR_DATA:
         return s->vector_data;
     case LB_VECTOR_STATUS:
+        return s->vector_status;
     case LB_VECTOR_RETURN:
+        return s->vector_return;
     case LB_VECTOR_READ:
-        /* No peer exists to answer a launch, so no reply is ever latched. */
-        return 0;
+        return s->vector_read;
     case LB_VECTOR_STATUS_CLEAR:
-        /* Whether a read or a write clears is open; status never sets. */
+        /* Whether a read or a write clears is open; here a write clears. */
         qemu_log_mask(LOG_UNIMP, "sgi-bedrock-lb: read of the vector "
                       "status-clear alias; read-and-clear is not modelled\n");
         return 0;
@@ -299,9 +355,7 @@ static void lb_write(void *opaque, hwaddr offset, uint64_t value,
         return;
     case LB_VECTOR_PARAMS:
         s->vector_params = value & LB_VECTOR_PARAMS_MASK;
-        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-lb: vector launch along route "
-                      "0x%" PRIx64 " has no peer to answer\n",
-                      s->vector_route);
+        lb_vector_launch(s);
         return;
     case LB_VECTOR_ROUTE:
         s->vector_route = value;
@@ -310,7 +364,11 @@ static void lb_write(void *opaque, hwaddr offset, uint64_t value,
         s->vector_data = value;
         return;
     case LB_VECTOR_STATUS_CLEAR:
-        /* Valid already reads clear: nothing latches a reply here. */
+        /*
+         * The model's chosen semantics while the header is silent on read
+         * versus write: a write clears the return status before a launch.
+         */
+        s->vector_status = 0;
         return;
     case LB_REVISION:
     case LB_VECTOR_STATUS:
@@ -375,6 +433,9 @@ static void lb_reset_enter(Object *obj, ResetType type)
     s->vector_params = 0;
     s->vector_route = 0;
     s->vector_data = 0;
+    s->vector_status = 0;
+    s->vector_return = 0;
+    s->vector_read = 0;
 }
 
 static void lb_reset_hold(Object *obj, ResetType type)
@@ -390,8 +451,8 @@ static int lb_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_lb = {
     .name = TYPE_SGI_BEDROCK_LB,
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .post_load = lb_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(cpu_permission, SGIBedrockLBState),
@@ -412,6 +473,9 @@ static const VMStateDescription vmstate_lb = {
         VMSTATE_UINT64(vector_params, SGIBedrockLBState),
         VMSTATE_UINT64(vector_route, SGIBedrockLBState),
         VMSTATE_UINT64(vector_data, SGIBedrockLBState),
+        VMSTATE_UINT64(vector_status, SGIBedrockLBState),
+        VMSTATE_UINT64(vector_return, SGIBedrockLBState),
+        VMSTATE_UINT64(vector_read, SGIBedrockLBState),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -439,6 +503,21 @@ static void lb_realize(DeviceState *dev, Error **errp)
      * reports the bare wire and a reset finds no presence.
      */
     s->microlan_bus = onewire_create_bus(dev, "microlan");
+
+    if (s->hub_registers) {
+        address_space_init(&s->hub_as, s->hub_registers,
+                           "sgi-bedrock-lb.hub-registers");
+        s->hub_as_initialized = true;
+    }
+}
+
+static void lb_finalize(Object *obj)
+{
+    SGIBedrockLBState *s = SGI_BEDROCK_LB(obj);
+
+    if (s->hub_as_initialized) {
+        address_space_destroy(&s->hub_as);
+    }
 }
 
 static const Property lb_properties[] = {
@@ -448,6 +527,8 @@ static const Property lb_properties[] = {
     DEFINE_PROP_UINT32("node-number", SGIBedrockLBState, node_number, 0),
     DEFINE_PROP_UINT32("region-size", SGIBedrockLBState, region_size, 0),
     DEFINE_PROP_UINT32("request-region", SGIBedrockLBState, request_region, 0),
+    DEFINE_PROP_LINK("hub-registers", SGIBedrockLBState, hub_registers,
+                     TYPE_MEMORY_REGION, MemoryRegion *),
 };
 
 static void lb_init(Object *obj)
@@ -456,6 +537,14 @@ static void lb_init(Object *obj)
 
     memory_region_init_io(&s->mmio, obj, &lb_ops, s, TYPE_SGI_BEDROCK_LB,
                           SGI_BEDROCK_LB_SIZE);
+    /*
+     * A vector read dispatches into the hub register window, which aliases
+     * this block, so a self-route read lands back on these registers while
+     * the launching write is still in flight. The per-device re-entrancy
+     * guard would block that nested access. The read is bounded -- one
+     * register, no further dispatch -- so opting out cannot recurse.
+     */
+    s->mmio.disable_reentrancy_guard = true;
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
     qdev_init_gpio_out_named(DEVICE(obj), &s->soft_reset, "soft-reset", 1);
     qdev_init_gpio_out_named(DEVICE(obj), &s->error, "error", 1);
@@ -480,6 +569,7 @@ static const TypeInfo lb_info = {
     .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(SGIBedrockLBState),
     .instance_init = lb_init,
+    .instance_finalize = lb_finalize,
     .class_init = lb_class_init,
 };
 
