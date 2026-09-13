@@ -2094,6 +2094,35 @@ static void test_pending_bank_reads_trace_apart(const void *data)
 }
 
 /*
+ * The counter read event is compiled in, so a diagnostic run can switch it
+ * on, and it stays silent until one does.
+ */
+static void test_rt_count_read_can_be_switched_on(const void *data)
+{
+    g_autofree char *path = trace_file_create();
+    g_autofree char *quiet = trace_file_create();
+    g_auto(GStrv) records = NULL;
+    g_auto(GStrv) silent = NULL;
+    QTestState *qts;
+
+    qts = qtest_initf("-M origin200 "
+                      "-trace enable=sgi_hub_rt_count_read,file=%s", path);
+    qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT);
+    qtest_quit(qts);
+
+    qts = qtest_initf("-M origin200 -D %s", quiet);
+    qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT);
+    qtest_quit(qts);
+
+    records = trace_file_take(path);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_rt_count_read",
+                                 "cpu -1 hub_cpu_base 0 nasid 0 "
+                                 "pc 0x0000000000000000 count 0x"), ==, 1);
+    silent = trace_file_take(quiet);
+    g_assert_cmpuint(trace_count(silent, "sgi_hub_rt_count_read", ""), ==, 0);
+}
+
+/*
  * The Hub's own run-loop kicks trace with who kicked whom and why. A modify
  * releases every processor on the node; a qtest access has no processor.
  * Reset queues enable changes too, so the register write's own is found
@@ -5641,6 +5670,8 @@ int main(int argc, char **argv)
                         test_coordination_registers_trace_alone);
     qtest_add_data_func("sn0/hub/pending-bank-reads-trace-apart", NULL,
                         test_pending_bank_reads_trace_apart);
+    qtest_add_data_func("sn0/hub/rt-count-read-can-be-switched-on", NULL,
+                        test_rt_count_read_can_be_switched_on);
     qtest_add_data_func("sn0/hub/hub-kicks-trace-their-reason", NULL,
                         test_hub_kicks_trace_their_reason);
     qtest_add_data_func("sn0/hub/pend1-credit-traces-set-and-spend", NULL,
