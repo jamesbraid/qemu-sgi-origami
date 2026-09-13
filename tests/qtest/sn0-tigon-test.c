@@ -16,6 +16,14 @@
 #include "libqtest.h"
 #include "hw/pci/pci_regs.h"
 
+/*
+ * The modelled minimum between a frame arriving and its completion, in
+ * nanoseconds: the adapters' device default. Delivery is published only once
+ * this much virtual time has passed, so every wait for a completion has to
+ * advance the clock as well as give the main loop a pass.
+ */
+#define RX_ARRIVAL_LATENCY_NS  200000
+
 #include <sys/socket.h>
 #include <netinet/in.h>
 
@@ -505,6 +513,26 @@ static uint32_t wait_return_prod(QTestState *qts)
             break;
         }
         g_usleep(5000);
+        qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
+    }
+    return qtest_readl(qts, RETURN_PROD_PHYS);
+}
+
+/*
+ * The same wait for a caller that already has completions behind it: a bare
+ * "not zero" would return the previous frame's index before this one's
+ * arrival deadline has passed.
+ */
+static uint32_t wait_return_prod_reaches(QTestState *qts, uint32_t want)
+{
+    int attempt;
+
+    for (attempt = 0; attempt < 200; attempt++) {
+        if (qtest_readl(qts, RETURN_PROD_PHYS) == want) {
+            break;
+        }
+        g_usleep(5000);
+        qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     return qtest_readl(qts, RETURN_PROD_PHYS);
 }
@@ -581,7 +609,8 @@ static char *tigon_test_log_new(void)
     return logfile;
 }
 
-static void wait_log_contains(const char *logfile, const char *needle)
+static void wait_log_contains(QTestState *qts, const char *logfile,
+                              const char *needle)
 {
     g_autofree char *log = NULL;
     int attempt;
@@ -593,6 +622,7 @@ static void wait_log_contains(const char *logfile, const char *needle)
             return;
         }
         g_usleep(5000);
+        qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
 
     g_error("log did not contain '%s'", needle);
@@ -902,7 +932,7 @@ static void test_descriptor_dma_batches_producer_last(const void *data)
     qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
     net_send_frame(sv[0], test_frame, sizeof(test_frame));
 
-    wait_log_contains(logfile,
+    wait_log_contains(qts, logfile,
                       "tigon: receive return producer write at "
                       "0x80250000 failed");
     g_assert_cmphex(qtest_readl(qts, RETURN_PROD_PHYS), ==, 0);
@@ -996,6 +1026,7 @@ static void test_descriptor_dma_route_used_for_traffic(const void *data)
             break;
         }
         g_usleep(5000);
+        qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     g_assert_cmphex(qtest_readl(qts, RETURN_PROD_PHYS), ==, 2);
 
@@ -1737,13 +1768,13 @@ static void test_interrupt_coalesce_by_count(const void *data)
 
     for (i = 0; i < 3; i++) {
         net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
-        g_assert_cmphex(wait_return_prod(qts), ==, i + 1);
+        g_assert_cmphex(wait_return_prod_reaches(qts, i + 1), ==, i + 1);
         /* Posted, but not yet worth an interrupt. */
         g_assert_false(irq_asserted(qts));
     }
 
     net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
-    g_assert_cmphex(wait_return_prod(qts), ==, 4);
+    g_assert_cmphex(wait_return_prod_reaches(qts, 4), ==, 4);
     g_assert_true(irq_asserted(qts));
 
     qtest_quit(qts);
@@ -2441,10 +2472,18 @@ static void write_fragmented_tx_frame(QTestState *qts, unsigned first,
  */
 static void seed_near_limit_tx_count(const char *path)
 {
+    /*
+     * The two counts, then the upper half of the transmit deadline that
+     * follows them. Only the upper half: the deadline is the virtual clock
+     * plus a millisecond, and waiting for the receives above runs that clock
+     * on, so its low bytes are not a fixed value. Four zero bytes still
+     * separate this from the adjacent ring indices, which the single-match
+     * assertion below checks.
+     */
     static const uint8_t pending_counts[] = {
         0x00, 0x00, 0x00, 0x25,
         0x00, 0x00, 0x00, 0x3d,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x0f, 0x42, 0x40,
+        0x00, 0x00, 0x00, 0x00,
     };
     static const uint8_t near_limit[] = { 0xff, 0xff, 0xff, 0xfd };
     g_autofree char *stream = NULL;
@@ -2517,6 +2556,7 @@ static void test_interrupt_coalesce_count_does_not_wrap(const void *data)
             break;
         }
         g_usleep(5000);
+        qtest_clock_step(from, RX_ARRIVAL_LATENCY_NS / 4);
     }
     g_assert_cmphex(qtest_readl(from, RETURN_PROD_PHYS), ==, RX_PENDING);
 
@@ -3420,7 +3460,7 @@ static void test_interrupt_irix_ack_protocol(const void *data)
     post_std_rx_buffer(qts, 1, RX_BUF_PHYS + 0x1000, 1, 2048);
     qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 2);
     net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
-    g_assert_cmphex(wait_return_prod(qts), ==, 2);
+    g_assert_cmphex(wait_return_prod_reaches(qts, 2), ==, 2);
     g_assert_true(irq_asserted(qts));
 
     /* And the same ack-with-zero protocol quiets it again. */
