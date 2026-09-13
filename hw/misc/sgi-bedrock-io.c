@@ -102,13 +102,52 @@ static SGIBedrockIOBTE *ii_bte(SGIBedrockIOState *s, hwaddr *offset)
     return NULL;
 }
 
-static void ii_bte_notify(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
+/*
+ * The engine's interrupt-address register names where its completion
+ * interrupt lands: bit 0 selects the processor interface, bits 8:1 the node
+ * and bits 22:16 the level.  The hub delivers it by setting that level in the
+ * interface's interrupt-pending register through the node's register window,
+ * offset 0x90 for interface 0 and 0x200090 for interface 1 -- the same modify
+ * register an external widget's interrupt packet reaches.  A modify write
+ * carries the level in bits 6:0 and sets it with bit 8.
+ */
+static void ii_bte_interrupt(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
+{
+    unsigned node = extract64(bte->interrupt, 1, 8);
+    unsigned level = extract64(bte->interrupt, 16, 7);
+    hwaddr offset = (bte->interrupt & 1) ? 0x200090 : 0x90;
+    uint8_t buffer[8];
+
+    if (!s->hub_as_initialized) {
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-io: BTE completion interrupt "
+                      "with no hub registers linked\n");
+        return;
+    }
+    if (node != s->node_number) {
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-io: BTE completion interrupt to "
+                      "node %u off this node is unsupported\n", node);
+        return;
+    }
+    stq_be_p(buffer, (UINT64_C(1) << 8) | level);
+    if (address_space_write(&s->hub_as, offset, MEMTXATTRS_UNSPECIFIED,
+                            buffer, sizeof(buffer)) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bedrock-io: BTE completion interrupt not delivered\n");
+    }
+}
+
+/*
+ * A finished engine reports completion the way its launch selected.  With the
+ * notify control bit it writes the final length-status word to the
+ * notification line; without it it raises the completion interrupt the
+ * interrupt-address register names.
+ */
+static void ii_bte_signal(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
 {
     uint64_t value = cpu_to_be64(bte->status);
 
     if (!(bte->control & (1 << 4))) {
-        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-io: BTE interrupt-mode "
-                      "completion is unsupported\n");
+        ii_bte_interrupt(s, bte);
         return;
     }
     if (dma_memory_write(s->dma_as, bte->notification, &value, sizeof(value),
@@ -152,7 +191,7 @@ static void ii_bte_complete(void *opaque)
         }
     }
     bte->active = false;
-    ii_bte_notify(s, bte);
+    ii_bte_signal(s, bte);
 }
 
 static uint64_t ii_read(void *opaque, hwaddr offset, unsigned size)
@@ -276,7 +315,7 @@ static void ii_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
                 if (source_overflow || destination_overflow) {
                     bte->status = (bte->status & II_BTE_LENGTH_MASK) |
                                   II_BTE_ERROR;
-                    ii_bte_notify(s, bte);
+                    ii_bte_signal(s, bte);
                     return;
                 }
             }
