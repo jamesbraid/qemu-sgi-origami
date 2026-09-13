@@ -12,6 +12,7 @@
 
 #include "hw/core/sysbus.h"
 #include "hw/net/dp83840.h"
+#include "hw/net/sgi-net-rx-latency.h"
 #include "net/net.h"
 #include "qom/object.h"
 
@@ -189,7 +190,26 @@ struct SGIIOC3EthState {
 
     /* Apart from its index: an index-only write must not disarm. */
     bool rx_timer_armed;
+
+    /*
+     * Where the engine will write next, which runs ahead of the RX_CONSUME
+     * register whenever the delay line is holding a completion: the frame is
+     * already in the guest's buffer, but the index that tells the guest so is
+     * published only once the arrival deadline passes.
+     */
+    uint32_t rx_consume_staged;
+
+    /* The modelled minimum between a frame arriving and its completion. */
+    uint32_t rx_arrival_latency_us;
+    SGINetRxLatency rx_latency;
 };
+
+/* One receive whose buffer is written and whose completion is still held. */
+typedef struct SGIIOC3EthRxDone {
+    uint64_t buf_addr;
+    uint32_t word0;
+    uint32_t consume;
+} SGIIOC3EthRxDone;
 
 bool sgi_ioc3_eth_ram_parity_enabled(SGIIOC3EthState *s);
 

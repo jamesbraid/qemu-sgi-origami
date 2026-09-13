@@ -166,6 +166,14 @@
 #define POLL_TRIES 10000
 #define POLL_INTERVAL_US 1000
 
+/*
+ * The modelled minimum between a frame arriving and its completion, in
+ * nanoseconds: the sgi-ioc3-eth device default. Delivery is published only
+ * once this much virtual time has passed, so a wait for one has to advance
+ * the clock as well as give the main loop a pass.
+ */
+#define RX_ARRIVAL_LATENCY_NS 200000
+
 #define BEDROCK_WIDGET_PART UINT64_C(0xc110)
 #define BEDROCK_WIDGET_MFG UINT64_C(0x036)
 #define XBRIDGE_XBOW_PART UINT64_C(0xd000)
@@ -1332,6 +1340,7 @@ static void test_io8_ioc3_ethernet_dma_interrupt(const void *data)
             break;
         }
         g_usleep(POLL_INTERVAL_US);
+        qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
 
     g_assert_cmphex(io8_ioc3_readl(qts, IO8_IOC3_ENET_RX_CONSUME), ==, 8);

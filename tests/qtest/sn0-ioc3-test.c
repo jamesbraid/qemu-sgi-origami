@@ -13,6 +13,14 @@
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 
+/*
+ * The modelled minimum between a frame arriving and its completion, in
+ * nanoseconds: the adapters' device default. Delivery is published only once
+ * this much virtual time has passed, so every wait for a completion has to
+ * advance the clock as well as give the main loop a pass.
+ */
+#define RX_ARRIVAL_LATENCY_NS  200000
+
 /* Crosstalk space, and the chip's window inside the console widget. */
 #define SPACE_XTALK     0x20000000000ULL
 #define HUB_LOCAL       (SPACE_XTALK + 0x01000000)
@@ -2646,6 +2654,7 @@ static void test_internal_loopback_refuses_the_wire(const void *data)
      */
     for (attempt = 0; attempt < 20; attempt++) {
         g_usleep(10000);
+        qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS);
     }
     g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 0);
     g_assert_cmphex(qtest_readl(qts, rxbuf + 0), ==, 0);
@@ -2785,6 +2794,7 @@ static void test_the_ethernet_receive_delivers_a_frame(const void *data)
             break;
         }
         g_usleep(10000);
+        qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
 
@@ -3011,6 +3021,7 @@ static uint32_t rxcsum_deliver(const uint8_t *frame, size_t size)
             break;
         }
         g_usleep(10000);
+        qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
 
@@ -3097,6 +3108,7 @@ static void sn0_ioc3_wait_for_consume(QTestState *qts)
             break;
         }
         g_usleep(10000);
+        qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
 }
 
@@ -3158,6 +3170,7 @@ static void test_address_filter_drops_foreign_unicast(const void *data)
      */
     for (attempt = 0; attempt < 20; attempt++) {
         g_usleep(10000);
+        qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS);
     }
     g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 0);
     g_assert_cmphex(qtest_readl(qts, rxbuf + 0), ==, 0);
@@ -3307,6 +3320,7 @@ static void test_multicast_hash_drops_an_unset_bit(const void *data)
 
     for (attempt = 0; attempt < 20; attempt++) {
         g_usleep(10000);
+        qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS);
     }
     g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 0);
 
@@ -3355,6 +3369,7 @@ static void sn0_ioc3_rx_one_frame(QTestState *qts, int host_fd, uint32_t ring,
             break;
         }
         g_usleep(10000);
+        qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
 
     /*
@@ -3478,6 +3493,7 @@ static void test_falling_past_the_watermark_keeps_raising(const void *data)
                 break;
             }
             g_usleep(5000);
+            qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
         }
         g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, (i + 1) * 8);
 
@@ -3526,6 +3542,7 @@ static void test_a_bare_produce_write_leaves_the_timer_armed(const void *data)
             break;
         }
         g_usleep(10000);
+        qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 16);
 
@@ -3628,6 +3645,7 @@ static void test_the_rings_under_load_on_the_fabric(const void *data)
                 break;
             }
             g_usleep(1000);
+            qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
         }
         g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, want);
     }
@@ -3782,6 +3800,7 @@ static void test_the_ethernet_receive_ack_reasserts_pending_for_deferred_frame(
             break;
         }
         g_usleep(10000);
+        qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 8);
 
@@ -3808,6 +3827,7 @@ static void test_the_ethernet_receive_ack_reasserts_pending_for_deferred_frame(
             break;
         }
         g_usleep(10000);
+        qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     g_assert_cmphex(qtest_readl(qts, RX_CONSUME), ==, 16);
 
@@ -3826,10 +3846,20 @@ static void test_the_ethernet_receive_ack_reasserts_pending_for_deferred_frame(
 }
 
 /* User-mode networking answers synchronously while the doorbell is handled. */
+/*
+ * rx-arrival-latency-us=0 on purpose. This test asserts that a synchronous
+ * backend reply is invisible at the instant the transmit doorbell write
+ * returns, which is what pins the model's rule about deferring a backend
+ * reply until the transmit walk has published its state. Under the arrival
+ * floor no virtual time has passed at that instant either, so the assertion
+ * would hold whether or not that rule existed. Taking the floor out leaves
+ * the rule as the only thing holding the reply back.
+ */
 static QTestState *sn0_ioc3_attach_with_user_net(void)
 {
-    QTestState *qts = qtest_init("-M origin200 "
-                                 "-nic user,id=n0");
+    QTestState *qts = qtest_init("-M origin200 -nic user,id=n0 "
+                                 "-global sgi-ioc3-eth."
+                                 "rx-arrival-latency-us=0");
 
     sn0_ioc3_attach(qts);
     qtest_writel(qts, CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND,
@@ -3910,6 +3940,7 @@ static void test_a_backend_reply_waits_until_after_transmit(const void *data)
             break;
         }
         g_usleep(5000);
+        qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     g_assert_cmpuint(attempt, <, 200);
 
