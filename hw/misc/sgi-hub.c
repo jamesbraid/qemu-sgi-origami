@@ -491,6 +491,7 @@ enum {
     HUB_REG_TRACE_WRITE = 1 << 4, /* in the protocol-write trace set */
     HUB_REG_READ_CLEARS = 1 << 5, /* a full-width read has side effects */
     HUB_REG_WRITE_CLEARS = 1 << 6, /* a write clears each asserted bit */
+    HUB_REG_TRACE_COORD = 1 << 7, /* in the coordination trace set */
 };
 
 typedef struct SGIHubRegDef {
@@ -2478,44 +2479,52 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .field = offsetof(SGIHubState, pi_region_present), .width = 8,
       .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = ~0ULL },
     { .offset = HUB_PI_PROCESSOR_NUMBER,
+      .flags = HUB_REG_TRACE_COORD,
       .read = sgi_hub_read_processor_number,
       .write = sgi_hub_write_processor_number },
     { .offset = HUB_PI_CALIAS_SIZE,
       .field = offsetof(SGIHubState, pi_calias_size), .width = 4,
-      .flags = HUB_REG_DIAG, .store = sgi_hub_store_pi_calias_size },
+      .flags = HUB_REG_DIAG | HUB_REG_TRACE_COORD,
+      .store = sgi_hub_store_pi_calias_size },
     { .offset = HUB_PI_CPU_PRESENT_A, .arg = 0,
+      .flags = HUB_REG_TRACE_COORD,
       .read = sgi_hub_read_cpu_present },
     { .offset = HUB_PI_CPU_PRESENT_B, .arg = 1,
+      .flags = HUB_REG_TRACE_COORD,
       .read = sgi_hub_read_cpu_present },
     { .offset = HUB_PI_CPU_ENABLE_A, .arg = 0,
       .field = offsetof(SGIHubState, pi_cpu_enable[0]), .width = 1,
-      .flags = HUB_REG_DIAG | HUB_REG_TRACE_WRITE,
+      .flags = HUB_REG_DIAG | HUB_REG_TRACE_WRITE | HUB_REG_TRACE_COORD,
       .write = sgi_hub_write_cpu_enable },
     { .offset = HUB_PI_CPU_ENABLE_B, .arg = 1,
       .field = offsetof(SGIHubState, pi_cpu_enable[1]), .width = 1,
-      .flags = HUB_REG_DIAG | HUB_REG_TRACE_WRITE,
+      .flags = HUB_REG_DIAG | HUB_REG_TRACE_WRITE | HUB_REG_TRACE_COORD,
       .write = sgi_hub_write_cpu_enable },
     { .offset = HUB_PI_INT_MODIFY,
-      .flags = HUB_REG_TRACE_WRITE,
+      .flags = HUB_REG_TRACE_WRITE | HUB_REG_TRACE_COORD,
       .read = sgi_hub_read_int_modify, .write = sgi_hub_write_int_modify },
     { .offset = HUB_PI_INT_PEND0, .arg = 0,
-      .flags = HUB_REG_TRACE_READ,
+      .flags = HUB_REG_TRACE_READ | HUB_REG_TRACE_COORD,
       .read = sgi_hub_read_int_pend, .write = sgi_hub_write_read_only },
     { .offset = HUB_PI_INT_PEND1, .arg = 1,
-      .flags = HUB_REG_TRACE_READ,
+      .flags = HUB_REG_TRACE_READ | HUB_REG_TRACE_COORD,
       .read = sgi_hub_read_int_pend, .write = sgi_hub_write_read_only },
     { .offset = HUB_PI_INT_MASK0_A, .arg = 0,
       .field = offsetof(SGIHubState, pi_int_mask[0]), .width = 8,
-      .flags = HUB_REG_DIAG, .write = sgi_hub_write_int_mask },
+      .flags = HUB_REG_DIAG | HUB_REG_TRACE_COORD,
+      .write = sgi_hub_write_int_mask },
     { .offset = HUB_PI_INT_MASK1_A, .arg = 1,
       .field = offsetof(SGIHubState, pi_int_mask[1]), .width = 8,
-      .flags = HUB_REG_DIAG, .write = sgi_hub_write_int_mask },
+      .flags = HUB_REG_DIAG | HUB_REG_TRACE_COORD,
+      .write = sgi_hub_write_int_mask },
     { .offset = HUB_PI_INT_MASK0_B, .arg = 2,
       .field = offsetof(SGIHubState, pi_int_mask[2]), .width = 8,
-      .flags = HUB_REG_DIAG, .write = sgi_hub_write_int_mask },
+      .flags = HUB_REG_DIAG | HUB_REG_TRACE_COORD,
+      .write = sgi_hub_write_int_mask },
     { .offset = HUB_PI_INT_MASK1_B, .arg = 3,
       .field = offsetof(SGIHubState, pi_int_mask[3]), .width = 8,
-      .flags = HUB_REG_DIAG, .write = sgi_hub_write_int_mask },
+      .flags = HUB_REG_DIAG | HUB_REG_TRACE_COORD,
+      .write = sgi_hub_write_int_mask },
     { .offset = HUB_PI_RT_COMPARE_A, .arg = 0,
       .field = offsetof(SGIHubState, pi_rt_compare[0]), .width = 8,
       .flags = HUB_REG_DIAG | HUB_REG_TRACE_READ | HUB_REG_TRACE_WRITE,
@@ -2600,7 +2609,8 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .write = sgi_hub_write_rt_count },
     { .offset = HUB_MD_CONFIG,
       .field = offsetof(SGIHubState, md_config), .width = 8,
-      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = MD_CONFIG_MASK },
+      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_TRACE_COORD,
+      .wmask = MD_CONFIG_MASK },
     { .offset = HUB_MD_MEM_DIMM_INIT, .write = sgi_hub_write_dimm_init },
     { .offset = HUB_MD_DIR_DIMM_INIT, .write = sgi_hub_write_dimm_init },
     { .offset = HUB_MD_ONEWIRE,
@@ -2610,7 +2620,8 @@ static const SGIHubRegDef sgi_hub_registers[] = {
     /* Storage that never counts: nothing here tracks an event to count. */
     { .offset = HUB_MD_PERF_CNT0,
       .field = offsetof(SGIHubState, md_perf_cnt0), .width = 8,
-      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = MD_PERF_CNT_MASK },
+      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_TRACE_COORD,
+      .wmask = MD_PERF_CNT_MASK },
     { .offset = HUB_MD_SLOT_ID_USTAT, .read = sgi_hub_read_slot_id },
     { .offset = HUB_MD_INDICATOR_0, .arg = 0,
       .write = sgi_hub_write_indicator },
@@ -2635,10 +2646,12 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .read = sgi_hub_read_llp_log, .write = sgi_hub_write_llp_log },
     { .offset = HUB_IO_SCRATCH_0, .arg = 0,
       .field = offsetof(SGIHubState, io_scratch[0]), .width = 8,
-      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = IO_SCRATCH_MASK },
+      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_TRACE_COORD,
+      .wmask = IO_SCRATCH_MASK },
     { .offset = HUB_IO_SCRATCH_1, .arg = 1,
       .field = offsetof(SGIHubState, io_scratch[1]), .width = 8,
-      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = IO_SCRATCH_MASK },
+      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_TRACE_COORD,
+      .wmask = IO_SCRATCH_MASK },
     { .offset = HUB_IO_ERROR_CLEAR, .write = sgi_hub_write_error_clear },
     { .offset = HUB_IO_PIO_DEALLOC,
       .read = sgi_hub_read_ioq, .write = sgi_hub_write_ioq },
@@ -2869,6 +2882,63 @@ static bool sgi_hub_diagnostic_read_value(SGIHubState *s, hwaddr addr,
 }
 
 /*
+ * The registers a node's processors coordinate through, narrow enough to
+ * trace a whole boot. A write is traced once it has landed, so anything it
+ * set off is recorded first.
+ */
+static void sgi_hub_trace_coordination_read(SGIHubState *s, hwaddr addr,
+                                            uint64_t value, unsigned int size)
+{
+    const SGIHubRegDef *reg = sgi_hub_reg_lookup(addr & ~(hwaddr)7);
+    CPUState *cpu;
+
+    if (!reg || !(reg->flags & HUB_REG_TRACE_COORD)) {
+        return;
+    }
+
+    cpu = current_cpu;
+    trace_sgi_hub_coordination_read(
+        cpu ? cpu->cpu_index : -1, s->cpu_base,
+        sgi_hub_programmed_nasid(s), cpu ? cpu->cc->get_pc(cpu) : 0,
+        addr, value, size, qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+}
+
+/*
+ * The stored value is the one the diagnostic shadow samples after a
+ * write, so interrupt modify reports the bank it named; a high-half write
+ * reaches that register shifted up, naming bank 0. The shadow samples
+ * nothing for processor number, presence or the pending banks, which no
+ * write changes, and those report zero.
+ */
+static void sgi_hub_trace_coordination_write(SGIHubState *s, hwaddr addr,
+                                             uint64_t value,
+                                             unsigned int size)
+{
+    hwaddr aligned = addr & ~(hwaddr)7;
+    const SGIHubRegDef *reg = sgi_hub_reg_lookup(aligned);
+    uint64_t delivered = value;
+    uint64_t stored = 0;
+    CPUState *cpu;
+
+    if (!reg || !(reg->flags & HUB_REG_TRACE_COORD)) {
+        return;
+    }
+
+    if (size == 4 && !(addr & 4)) {
+        delivered = value << 32;
+    }
+    sgi_hub_diagnostic_value(s, aligned, delivered, &stored);
+    cpu = current_cpu;
+    trace_sgi_hub_coordination_write(
+        cpu ? cpu->cpu_index : -1, s->cpu_base,
+        sgi_hub_programmed_nasid(s), cpu ? cpu->cc->get_pc(cpu) : 0,
+        addr, value, size, stored,
+        qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+}
+
+/*
  * A 32-bit access names half of the aligned doubleword (offset 0 is bits
  * 63:32), composed here rather than by impl.max_access_size = 8, whose
  * read-modify-write would fire read-to-clear side effects on a store. What
@@ -2901,6 +2971,9 @@ static uint64_t sgi_hub_read_sized(SGIHubState *s, hwaddr addr, unsigned size)
     /* Traced above the halving, as the guest issued it. */
     if (trace_event_get_state_backends(TRACE_SGI_HUB_PROTOCOL_READ)) {
         sgi_hub_trace_protocol_read(s, addr, value, size);
+    }
+    if (trace_event_get_state_backends(TRACE_SGI_HUB_COORDINATION_READ)) {
+        sgi_hub_trace_coordination_read(s, addr, value, size);
     }
     return value;
 }
@@ -3023,9 +3096,12 @@ static void sgi_hub_write_sized(SGIHubState *s, hwaddr addr, uint64_t val,
     }
     if (size == 4) {
         sgi_hub_write_half(s, addr, val, size);
-        return;
+    } else {
+        sgi_hub_write_internal(s, addr, val, size);
     }
-    sgi_hub_write_internal(s, addr, val, size);
+    if (trace_event_get_state_backends(TRACE_SGI_HUB_COORDINATION_WRITE)) {
+        sgi_hub_trace_coordination_write(s, addr, val, size);
+    }
 }
 
 static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
