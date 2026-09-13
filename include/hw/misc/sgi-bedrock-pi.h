@@ -33,6 +33,8 @@ struct SGIBedrockPIState {
     uint64_t io_protect;
     uint64_t region_present;
     uint8_t cached_alias;
+    uint8_t rq_timeout_max;
+    uint32_t rq_timeout_scale;
     uint8_t cpu_enable[2];
     uint64_t pending[2];
     uint64_t cc_pend[2];
