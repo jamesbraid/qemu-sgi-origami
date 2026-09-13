@@ -2874,27 +2874,6 @@ static const SGIHubRegDef sgi_hub_registers[] = {
     { .offset = HUB_NI_IO_PROT_OVRRD,
       .flags = HUB_REG_VECTOR,
       .store = sgi_hub_store_io_prot_ovrrd },
-    /*
-     * All three LLP port registers answer the remote vector decode as
-     * well as plain PIO: the stock PROM's link diagnostic vector-reads
-     * the remote Hub's error register, and an address-error completion there
-     * counts as a phantom link error on every two-chassis boot. The
-     * error register's store applies its write-one-to-clear rule. The alias
-     * returns and clears the same traffic-driven state on either a full local
-     * read or a remote vector read.
-     */
-    { .offset = HUB_NI_PORT_PARMS,
-      .field = offsetof(SGIHubState, ni_port_parms), .width = 8,
-      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR,
-      .wmask = NI_PORT_PARMS_MASK },
-    { .offset = HUB_NI_PORT_ERROR,
-      .field = offsetof(SGIHubState, ni_port_error), .width = 8,
-      .flags = HUB_REG_DIAG | HUB_REG_VECTOR | HUB_REG_WRITE_CLEARS,
-      .store = sgi_hub_store_ni_port_error },
-    { .offset = HUB_NI_PORT_ERROR_CLEAR,
-      .field = offsetof(SGIHubState, ni_port_error), .width = 8,
-      .flags = HUB_REG_DIAG | HUB_REG_VECTOR | HUB_REG_READ_CLEARS,
-      .read = sgi_hub_read_ni_port_error_clear },
     { .offset = HUB_NI_AGEING_BASE + 0 * HUB_NI_AGEING_STRIDE,
       .field = offsetof(SGIHubState, ni_ageing[0]), .width = 8,
       .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR,
@@ -2927,6 +2906,27 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .field = offsetof(SGIHubState, ni_ageing[7]), .width = 8,
       .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR,
       .wmask = NI_AGEING_MASK },
+    /*
+     * All three LLP port registers answer the remote vector decode as
+     * well as plain PIO: the stock PROM's link diagnostic vector-reads
+     * the remote Hub's error register, and an address-error completion there
+     * counts as a phantom link error on every two-chassis boot. The
+     * error register's store applies its write-one-to-clear rule. The alias
+     * returns and clears the same traffic-driven state on either a full local
+     * read or a remote vector read.
+     */
+    { .offset = HUB_NI_PORT_PARMS,
+      .field = offsetof(SGIHubState, ni_port_parms), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_VECTOR,
+      .wmask = NI_PORT_PARMS_MASK },
+    { .offset = HUB_NI_PORT_ERROR,
+      .field = offsetof(SGIHubState, ni_port_error), .width = 8,
+      .flags = HUB_REG_DIAG | HUB_REG_VECTOR | HUB_REG_WRITE_CLEARS,
+      .store = sgi_hub_store_ni_port_error },
+    { .offset = HUB_NI_PORT_ERROR_CLEAR,
+      .field = offsetof(SGIHubState, ni_port_error), .width = 8,
+      .flags = HUB_REG_DIAG | HUB_REG_VECTOR | HUB_REG_READ_CLEARS,
+      .read = sgi_hub_read_ni_port_error_clear },
 };
 
 static int sgi_hub_reg_compare(const void *key, const void *element)
