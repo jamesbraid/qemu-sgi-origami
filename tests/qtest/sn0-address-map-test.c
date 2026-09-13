@@ -850,6 +850,50 @@ static void test_backdoor_tracks_populated_banks(const void *data)
 }
 
 /*
+ * Back-door accesses trace, with the storage byte a populated access
+ * resolved to. The default machine's bank 0 spans 16 MiB, so an offset
+ * one span up names the same storage as the offset below it. The absent
+ * floor traces too, its read value left unpinned.
+ */
+static void test_backdoor_accesses_trace(const void *data)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *trace = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn0-backdoor-trace-XXXXXX", &path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+
+    qts = qtest_initf("-M origin200 -trace enable=sn0_backdoor_*,file=%s",
+                      path);
+    qtest_writeq(qts, BACKDOOR_DIR + 16 * MiB + 0x1008, 0x1234);
+    g_assert_cmphex(qtest_readq(qts, BACKDOOR_DIR + 0x1008), ==, 0x1234);
+    qtest_writeq(qts, BACKDOOR_ECC + BACKDOOR_BANK_STRIDE, BACKDOOR_PATTERN);
+    qtest_readq(qts, BACKDOOR_ECC + BACKDOOR_BANK_STRIDE);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    g_assert_nonnull(strstr(trace,
+        "sn0_backdoor_populated cpu -1 node 0 window dir "
+        "pc 0x0000000000000000 offset 0x01001008 size 8 write 1 "
+        "value 0x0000000000001234 index 0x00001008\n"));
+    g_assert_nonnull(strstr(trace,
+        "sn0_backdoor_populated cpu -1 node 0 window dir "
+        "pc 0x0000000000000000 offset 0x00001008 size 8 write 0 "
+        "value 0x0000000000001234 index 0x00001008\n"));
+    g_assert_nonnull(strstr(trace,
+        "sn0_backdoor_absent cpu -1 node 0 window ecc "
+        "pc 0x0000000000000000 offset 0x08000000 size 8 write 1 "
+        "value 0x5555555555555555\n"));
+    g_assert_nonnull(strstr(trace,
+        "sn0_backdoor_absent cpu -1 node 0 window ecc "
+        "pc 0x0000000000000000 offset 0x08000000 size 8 write 0 value "));
+}
+
+/*
  * The promdata window must hold the same bytes for every processor; a
  * NASID-derived per-processor filter disagrees on every node but zero and
  * a loaded kernel reads back as nops. A sentinel for whoever restores
@@ -1053,6 +1097,8 @@ int main(int argc, char **argv)
                         NULL, test_backdoor_tracks_populated_banks);
     qtest_add_data_func("sn0/address-map/backdoor-tracks-bank-size", NULL,
                         test_backdoor_tracks_bank_size);
+    qtest_add_data_func("sn0/address-map/backdoor-accesses-trace", NULL,
+                        test_backdoor_accesses_trace);
 
     return g_test_run();
 }
