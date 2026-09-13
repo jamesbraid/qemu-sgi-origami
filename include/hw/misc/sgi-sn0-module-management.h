@@ -96,6 +96,9 @@ struct SGISn0ModuleManagementState {
     bool grant_bit_sampled;
     bool grant_active;
     bool grant_window_extended;
+    bool grant_acquisition_pending;
+    uint32_t grant_acquisition_master;
+    int64_t grant_acquisition_deadline_ms;
     bool wire_scl;
     bool wire_sda;
     bool publication_enabled;
