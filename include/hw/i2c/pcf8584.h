@@ -17,13 +17,7 @@
 #define TYPE_PCF8584 "pcf8584"
 OBJECT_DECLARE_SIMPLE_TYPE(PCF8584State, PCF8584)
 
-typedef enum PCF8584DataReadEvent {
-    PCF8584_DATA_READ,
-    PCF8584_PUBLISHED_GRANT_READ,
-} PCF8584DataReadEvent;
-
-typedef void (*PCF8584DataRead)(void *opaque, uint32_t master, uint8_t value,
-                                PCF8584DataReadEvent event);
+typedef void (*PCF8584DataRead)(void *opaque, uint32_t master, uint8_t value);
 typedef void (*PCF8584StartRequest)(void *opaque, uint32_t master);
 
 /*
@@ -140,7 +134,6 @@ struct PCF8584State {
     bool wire_ack_nak;          /* acknowledgement bit sampled on clock nine */
     bool wire_grant_pending;    /* publish the observed module grant at STOP */
     uint8_t wire_grant;         /* unmatched module grant awaiting STOP */
-    bool wire_grant_visible;    /* data still holds the published grant */
     bool wire_start_waiting;    /* compatibility START held until bus free */
     bool wire_scl, wire_sda;    /* line levels as this adapter last saw them */
     int64_t wire_free_at;       /* earliest fresh START after the last STOP */

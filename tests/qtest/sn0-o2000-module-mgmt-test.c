@@ -570,9 +570,6 @@ static void wait_for_grant_on_adapter(QTestState *qts, unsigned node,
     g_assert_cmphex(value, ==, expected);
 }
 
-static void wait_until_running(QTestState *qts);
-static void migrate_module(QTestState *from, QTestState *to);
-
 static void observe_first_global_grant(QTestState *qts)
 {
     qtest_clock_step(qts, SERVICE_PERIOD_NS + GRANT_SETTLE_NS);
@@ -660,29 +657,6 @@ static void test_observed_grant_wrong_owner(void)
     stop_transfer(qts, 0);
     wait_for_global_grant(qts, GRANT_BASE | 1);
     qtest_quit(qts);
-}
-
-/* An ordinary data-register value must not masquerade as a grant. */
-static void test_grant_value_data_collision(void)
-{
-    QTestState *from = start_module();
-    QTestState *to = qtest_init(MACHINE_ARGS " -incoming defer");
-    int64_t departed;
-
-    qtest_clock_step(from, SERVICE_PERIOD_NS + GRANT_SETTLE_NS);
-    g_assert_cmphex(adapter_read(from, 1, I2C_DATA), ==, GRANT_BASE);
-
-    adapter_write(from, 0, I2C_DATA, GRANT_BASE);
-    g_assert_cmphex(adapter_read(from, 0, I2C_DATA), ==, GRANT_BASE);
-    departed = qtest_clock_step(from, 1);
-    migrate_module(from, to);
-    wait_until_running(to);
-    qtest_clock_set(to, departed);
-
-    qtest_clock_step(to, SERVICE_PERIOD_NS + GRANT_SETTLE_NS);
-    wait_for_grant_on_adapter(to, 1, GRANT_BASE | 1);
-    qtest_quit(from);
-    qtest_quit(to);
 }
 
 /* An absent owner cannot stop grant rotation indefinitely. */
@@ -1114,29 +1088,6 @@ static void test_observed_grant_migration(void)
     qtest_quit(to);
 }
 
-/* Migration preserves a published grant that its owner has not read yet. */
-static void test_unread_grant_migration(void)
-{
-    QTestState *from = start_module();
-    QTestState *to = qtest_init(MACHINE_ARGS " -incoming defer");
-    int64_t departed;
-
-    qtest_clock_step(from, SERVICE_PERIOD_NS + GRANT_SETTLE_NS);
-    departed = qtest_clock_step(from, 1);
-    migrate_module(from, to);
-    wait_until_running(to);
-    qtest_clock_set(to, departed);
-
-    g_assert_cmphex(adapter_read(to, 0, I2C_DATA), ==, GRANT_BASE);
-    qtest_clock_step(to, 4 * SERVICE_PERIOD_NS);
-    g_assert_cmphex(adapter_read(to, 0, I2C_DATA), ==, GRANT_BASE);
-    g_assert_true(start_transfer(to, 0, NVRAM_FIRST + 7, false));
-    stop_transfer(to, 0);
-    wait_for_global_grant(to, GRANT_BASE | 1);
-    qtest_quit(from);
-    qtest_quit(to);
-}
-
 /*
  * The complex sits on no bus and carries its own migration state. What
  * survives is the shared store and a controller that still talks, on a
@@ -1217,8 +1168,6 @@ int main(int argc, char **argv)
                    test_observed_grant_acquisition);
     qtest_add_func("/sn0/o2000-module-management/observed-grant-wrong-owner",
                    test_observed_grant_wrong_owner);
-    qtest_add_func("/sn0/o2000-module-management/grant-value-data-collision",
-                   test_grant_value_data_collision);
     qtest_add_func("/sn0/o2000-module-management/observed-grant-expiry",
                    test_observed_grant_expires);
     qtest_add_func("/sn0/o2000-module-management/observed-grant-reset",
@@ -1254,8 +1203,6 @@ int main(int argc, char **argv)
                    test_late_grant_service);
     qtest_add_func("/sn0/o2000-module-management/observed-grant-migration",
                    test_observed_grant_migration);
-    qtest_add_func("/sn0/o2000-module-management/unread-grant-migration",
-                   test_unread_grant_migration);
     qtest_add_func("/sn0/o2000-module-management/module-serial-migration",
                    test_module_serial_migration_in_progress);
     return g_test_run();
