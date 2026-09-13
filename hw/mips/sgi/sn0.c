@@ -7,6 +7,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/units.h"
+#include "qemu/host-utils.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "qobject/qlist.h"
@@ -462,20 +463,41 @@ static const MemoryRegionOps sn0_backdoor_absent_ops = {
 };
 
 /*
- * Real storage only as wide as the plainer directory format: a read
- * reveals the low sixteen bits of each eight-byte entry, the rest read
- * zero -- plain RAM would answer firmware's width probe "premium format".
- * Addresses are memory addresses shifted right by two, so only the
- * unique quarter span is stored, repeated across the window.
+ * Real storage only as wide as the plainer directory format: the low two
+ * bytes of each eight-byte entry, the rest reading zero -- plain RAM
+ * would answer firmware's width probe "premium format". Writes drop the
+ * dead bytes so a read is a plain load.
  */
-static uint8_t *sn0_backdoor_byte(SN0BackdoorState *s, hwaddr addr)
-{
-    unsigned int bank = addr / s->bank_stride;
-    uint64_t within_bank = addr % s->bank_stride;
+#define SN0_BACKDOOR_ENTRY_BYTES 8
+#define SN0_BACKDOOR_LIVE_BYTES  2
 
+/*
+ * A back-door address is a memory address shifted right by two, so a
+ * bank stores only the unique quarter of its span and the window
+ * repeats it. The fold is an address-bit truncation, not a remainder.
+ */
+static uint8_t *sn0_backdoor_entry(SN0BackdoorState *s, hwaddr addr,
+                                   unsigned size)
+{
+    unsigned int bank = addr >> s->bank_shift;
+
+    /* Naturally aligned, so the access lies inside one entry. */
+    g_assert(QEMU_IS_ALIGNED(addr, size));
     g_assert(bank < s->populated_banks);
-    return s->data + s->bank_offset[bank] +
-           within_bank % s->bank_span[bank];
+    return s->data + s->bank_offset[bank] + (addr & s->span_mask[bank]);
+}
+
+/*
+ * The bytes of this access that are stored: the tail of the entry it
+ * lies in, which is empty when the access ends before the live bytes.
+ */
+static uint64_t sn0_backdoor_live_mask(hwaddr addr, unsigned size)
+{
+    unsigned int dead = SN0_BACKDOOR_ENTRY_BYTES - SN0_BACKDOOR_LIVE_BYTES;
+    unsigned int offset = addr & (SN0_BACKDOOR_ENTRY_BYTES - 1);
+    unsigned int live = offset >= dead ? size : size - MIN(size, dead - offset);
+
+    return live ? MAKE_64BIT_MASK(0, live * 8) : 0;
 }
 
 /* The index is the stored byte the access's first byte resolved to. */
@@ -488,25 +510,31 @@ static void sn0_backdoor_trace_populated(SN0BackdoorState *s, hwaddr addr,
     trace_sn0_backdoor_populated(cpu ? cpu->cpu_index : -1, s->node,
                                  s->window, cpu ? cpu->cc->get_pc(cpu) : 0,
                                  addr, size, write, value,
-                                 sn0_backdoor_byte(s, addr) - s->data);
+                                 sn0_backdoor_entry(s, addr, size) - s->data);
 }
 
 static uint64_t sn0_backdoor_populated_read(void *opaque, hwaddr addr,
                                             unsigned size)
 {
     SN0BackdoorState *s = opaque;
-    uint64_t raw = 0;
-    unsigned int i;
+    const uint8_t *entry = sn0_backdoor_entry(s, addr, size);
+    uint64_t raw;
 
-    for (i = 0; i < size; i++) {
-        raw = (raw << 8) | *sn0_backdoor_byte(s, addr + i);
-    }
-
-    /* Only the low two bytes of each eight-byte-aligned entry are real. */
-    for (i = 0; i < size; i++) {
-        if (((addr + i) & 7) < 6) {
-            raw &= ~(0xffULL << (8 * (size - 1 - i)));
-        }
+    switch (size) {
+    case 1:
+        raw = ldub_p(entry);
+        break;
+    case 2:
+        raw = lduw_be_p(entry);
+        break;
+    case 4:
+        raw = ldl_be_p(entry);
+        break;
+    case 8:
+        raw = ldq_be_p(entry);
+        break;
+    default:
+        g_assert_not_reached();
     }
     if (trace_event_get_state_backends(TRACE_SN0_BACKDOOR_POPULATED)) {
         sn0_backdoor_trace_populated(s, addr, size, false, raw);
@@ -518,12 +546,24 @@ static void sn0_backdoor_populated_write(void *opaque, hwaddr addr,
                                          uint64_t val, unsigned size)
 {
     SN0BackdoorState *s = opaque;
-    unsigned int i;
+    uint8_t *entry = sn0_backdoor_entry(s, addr, size);
+    uint64_t stored = val & sn0_backdoor_live_mask(addr, size);
 
-    for (i = 0; i < size; i++) {
-        unsigned int shift = 8 * (size - 1 - i);
-
-        *sn0_backdoor_byte(s, addr + i) = val >> shift;
+    switch (size) {
+    case 1:
+        stb_p(entry, stored);
+        break;
+    case 2:
+        stw_be_p(entry, stored);
+        break;
+    case 4:
+        stl_be_p(entry, stored);
+        break;
+    case 8:
+        stq_be_p(entry, stored);
+        break;
+    default:
+        g_assert_not_reached();
     }
     if (trace_event_get_state_backends(TRACE_SN0_BACKDOOR_POPULATED)) {
         sn0_backdoor_trace_populated(s, addr, size, true, val);
@@ -547,12 +587,17 @@ static void sn0_backdoor_configure(SN0BackdoorState *s,
     uint64_t total = 0;
     unsigned int bank;
 
+    /* An address-bit fold needs a power of two on both sides. */
+    g_assert(is_power_of_2(bank_stride));
     s->populated_banks = node->populated_banks;
-    s->bank_stride = bank_stride;
+    s->bank_shift = ctz64(bank_stride);
     for (bank = 0; bank < node->populated_banks; bank++) {
+        uint64_t span = (uint64_t)node->bank_mb[bank] * MiB / 4;
+
+        g_assert(is_power_of_2(span) && span <= bank_stride);
         s->bank_offset[bank] = total;
-        s->bank_span[bank] = (uint64_t)node->bank_mb[bank] * MiB / 4;
-        total += s->bank_span[bank];
+        s->span_mask[bank] = span - 1;
+        total += span;
     }
     g_assert(total <= UINT32_MAX);
     s->data = g_malloc0(total);
