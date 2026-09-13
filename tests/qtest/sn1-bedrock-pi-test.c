@@ -38,6 +38,11 @@
 #define MASK_1_A 0xb0
 #define MASK_0_B 0xb8
 #define MASK_1_B 0xc0
+#define CC_PEND_SET_A 0xc8
+#define CC_PEND_SET_B 0xd0
+#define CC_PEND_CLR_A 0xd8
+#define CC_PEND_CLR_B 0xe0
+#define CC_PEND_MASK 0xe8
 #define REMAP 0xf0
 #define RT_COMPARE_A 0x108
 #define RT_COMPARE_B 0x110
@@ -271,6 +276,105 @@ static void test_pending_modify_and_reflection(void)
     qtest_quit(s);
 }
 
+/*
+ * The coherency-pending registers. The public SN1 header settles the set
+ * path: a store to a set register raises the bit for the storing processor's
+ * region, not the data written -- the model stands in this interface's
+ * request region (region 0 by default) for that source, as the protection
+ * override does. The clear register is data-bit write-one-to-clear, and both
+ * the set and clear aliases read the backing word. Each region word's
+ * masked-nonzero result drives pending 0 bit 5 (A) and bit 6 (B), which reach
+ * the processor through bank-0 mask like any other bit. Software cannot force
+ * those two bits through the pending-modify register.
+ */
+static void test_coherency_pending(void)
+{
+    QTestState *s = start("");
+
+    qtest_irq_intercept_out_named(s, BEDROCK_PATH, "hardware-irq");
+
+    /*
+     * A set store raises the source region's bit whatever data it carries:
+     * data 0x4 does not select bit 2. Both aliases read the backing word.
+     */
+    qtest_writeq(s, PI(0, CC_PEND_SET_A), 0x4);
+    qtest_writeq(s, PI(0, CC_PEND_SET_B), 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, CC_PEND_SET_A)), ==, 0x1);
+    g_assert_cmphex(qtest_readq(s, PI(0, CC_PEND_CLR_A)), ==, 0x1);
+    g_assert_cmphex(qtest_readq(s, PI(0, CC_PEND_SET_B)), ==, 0x1);
+    g_assert_cmphex(qtest_readq(s, PI(0, CC_PEND_CLR_B)), ==, 0x1);
+
+    /* A zero mask gates both results, so no bit reaches pending 0. */
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_0)), ==, 0);
+
+    /* The mask admits region 0, so both results reach pending 0. */
+    qtest_writeq(s, PI(0, CC_PEND_MASK), 0x1);
+    g_assert_cmphex(qtest_readq(s, PI(0, CC_PEND_MASK)), ==, 0x1);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_0)), ==,
+                    (1ULL << 5) | (1ULL << 6));
+
+    /* Each result reaches its processor through bank-0 mask bit 5 or 6. */
+    qtest_writeq(s, PI(0, MASK_0_A), 1ULL << 5);
+    qtest_writeq(s, PI(0, MASK_0_B), 1ULL << 6);
+    g_assert_true(qtest_get_irq(s, 0));
+    g_assert_true(qtest_get_irq(s, 5));
+
+    /* Clear is data-bit write-one-to-clear: a bit not written stays. */
+    qtest_writeq(s, PI(0, CC_PEND_CLR_A), 0x2);
+    g_assert_cmphex(qtest_readq(s, PI(0, CC_PEND_SET_A)), ==, 0x1);
+    g_assert_true(qtest_get_irq(s, 0));
+    qtest_writeq(s, PI(0, CC_PEND_CLR_A), 0x1);
+    g_assert_cmphex(qtest_readq(s, PI(0, CC_PEND_SET_A)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_0)), ==, 1ULL << 6);
+    g_assert_false(qtest_get_irq(s, 0));
+    g_assert_true(qtest_get_irq(s, 5));
+
+    /* The pending-modify register cannot set the coherency result bits. */
+    qtest_writeq(s, PI(0, PENDING_MODIFY), 0x105);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_0)), ==, 1ULL << 6);
+    g_assert_false(qtest_get_irq(s, 0));
+
+    /* Clearing B's region word drops its result and line. */
+    qtest_writeq(s, PI(0, CC_PEND_CLR_B), 0x1);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_0)), ==, 0);
+    g_assert_false(qtest_get_irq(s, 5));
+
+    /* The interfaces are independent: PI1's words do not reach PI0. */
+    qtest_writeq(s, PI(1, CC_PEND_SET_A), 0);
+    qtest_writeq(s, PI(1, CC_PEND_MASK), 0x1);
+    g_assert_cmphex(qtest_readq(s, PI(1, PENDING_0)), ==, 1ULL << 5);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_0)), ==, 0);
+
+    /* The local reset clears the region words and the mask. */
+    qtest_writeq(s, NI(0x08), 4);
+    g_assert_cmphex(qtest_readq(s, PI(0, CC_PEND_SET_A)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, CC_PEND_MASK)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(1, CC_PEND_SET_A)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(1, CC_PEND_MASK)), ==, 0);
+    qtest_quit(s);
+}
+
+/*
+ * The set path raises the storing processor's region bit, and the model
+ * takes the source region from this interface's request region. Forcing that
+ * region away from its default discriminates the region-source reading from a
+ * data-bit one: data 0x1 would select bit 0 under a data reading, but the set
+ * bit follows the forced region instead.
+ */
+static void test_coherency_pending_source_region(void)
+{
+    QTestState *s = start("-global sgi-bedrock-pi.request-region=3");
+
+    qtest_writeq(s, PI(0, CC_PEND_SET_A), 0x1);
+    g_assert_cmphex(qtest_readq(s, PI(0, CC_PEND_SET_A)), ==, 1ULL << 3);
+    qtest_writeq(s, PI(0, CC_PEND_MASK), 1ULL << 3);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_0)), ==, 1ULL << 5);
+    /* A mask over any other region leaves the result low. */
+    qtest_writeq(s, PI(0, CC_PEND_MASK), 1ULL << 2);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_0)), ==, 0);
+    qtest_quit(s);
+}
+
 static void test_masks_remap_and_isolation(void)
 {
     static const struct {
@@ -389,6 +493,7 @@ static void test_power_on_values(void)
         { REGION_PRESENT, UINT64_MAX }, { CACHED_ALIAS, 0 },
         { CPU_ENABLE_A, 0 }, { CPU_ENABLE_B, 0 },
         { PENDING_0, 0 }, { PENDING_1, 0 },
+        { CC_PEND_SET_A, 0 }, { CC_PEND_SET_B, 0 }, { CC_PEND_MASK, 0 },
         { MASK_0_A, 0 }, { MASK_1_A, 0 }, { MASK_0_B, 0 }, { MASK_1_B, 0 },
         { REMAP, 0 }, { ERROR_PENDING, 0 },
         { ERROR_MASK_A, 0 }, { ERROR_MASK_B, 0 },
@@ -987,6 +1092,10 @@ int main(int argc, char **argv)
                    test_processor_presence);
     qtest_add_func("sn1/bedrock-pi/pending-reflection",
                    test_pending_modify_and_reflection);
+    qtest_add_func("sn1/bedrock-pi/coherency-pending",
+                   test_coherency_pending);
+    qtest_add_func("sn1/bedrock-pi/coherency-pending-source-region",
+                   test_coherency_pending_source_region);
     qtest_add_func("sn1/bedrock-pi/masks-remap-isolation",
                    test_masks_remap_and_isolation);
     qtest_add_func("sn1/bedrock-pi/power-on-values", test_power_on_values);

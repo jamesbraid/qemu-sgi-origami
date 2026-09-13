@@ -27,6 +27,11 @@
 #define PI_MASK_1_A          0x0b0
 #define PI_MASK_0_B          0x0b8
 #define PI_MASK_1_B          0x0c0
+#define PI_CC_PEND_SET_A     0x0c8
+#define PI_CC_PEND_SET_B     0x0d0
+#define PI_CC_PEND_CLR_A     0x0d8
+#define PI_CC_PEND_CLR_B     0x0e0
+#define PI_CC_PEND_MASK      0x0e8
 #define PI_REMAP             0x0f0
 #define PI_RT_COMPARE_A      0x108
 #define PI_RT_COMPARE_B      0x110
@@ -73,6 +78,7 @@
 #define PI_ERROR_MEMORY_UNCORRECTABLE (1ULL << 24)
 #define PI_REFLECT_MASK ((1ULL << 54) | (1ULL << 55) | \
                          (1ULL << 62) | (1ULL << 63))
+#define PI_PENDING0_COHERENCY ((1ULL << 5) | (1ULL << 6))
 #define PI_RT_MASK ((1ULL << 55) - 1)
 #define PI_RT_HZ 1250000
 #define PI_RT_TICK_NS (NANOSECONDS_PER_SECOND / PI_RT_HZ)
@@ -143,13 +149,27 @@ static uint64_t pi_pending1(SGIBedrockPIState *s)
     return (s->pending[1] & ~PI_REFLECT_MASK) | reflected;
 }
 
+/*
+ * Bits 5 and 6 of bank 0 are the live coherency-pending results for A and B:
+ * each is set while any masked bit of its region word is, not by a store.
+ */
+static uint64_t pi_pending0(SGIBedrockPIState *s)
+{
+    uint64_t coherency =
+        ((s->cc_pend[0] & s->cc_pend_mask) ? 1ULL << 5 : 0) |
+        ((s->cc_pend[1] & s->cc_pend_mask) ? 1ULL << 6 : 0);
+
+    return (s->pending[0] & ~PI_PENDING0_COHERENCY) | coherency;
+}
+
 void sgi_bedrock_pi_recompute(SGIBedrockPIState *s)
 {
+    uint64_t pending0 = pi_pending0(s);
     uint64_t pending1 = pi_pending1(s);
 
     for (unsigned cpu = 0; cpu < 2; cpu++) {
         unsigned base = cpu * SGI_BEDROCK_PI_HW_IRQS;
-        uint64_t bank0 = s->pending[0] & s->mask[cpu][0];
+        uint64_t bank0 = pending0 & s->mask[cpu][0];
         uint64_t bank1 = pending1 & s->mask[cpu][1];
 
         qemu_set_irq(s->hardware_irq[base], !!bank0);
@@ -286,12 +306,17 @@ static uint64_t pi_read(void *opaque, hwaddr offset, unsigned size)
         return s->interface * 2 + 1 < s->processor_count;
     case PI_CPU_ENABLE_A: return s->cpu_enable[0];
     case PI_CPU_ENABLE_B: return s->cpu_enable[1];
-    case PI_PENDING_0: return s->pending[0];
+    case PI_PENDING_0: return pi_pending0(s);
     case PI_PENDING_1: return pi_pending1(s);
     case PI_MASK_0_A: return s->mask[0][0];
     case PI_MASK_1_A: return s->mask[0][1];
     case PI_MASK_0_B: return s->mask[1][0];
     case PI_MASK_1_B: return s->mask[1][1];
+    case PI_CC_PEND_SET_A:
+    case PI_CC_PEND_CLR_A: return s->cc_pend[0];
+    case PI_CC_PEND_SET_B:
+    case PI_CC_PEND_CLR_B: return s->cc_pend[1];
+    case PI_CC_PEND_MASK: return s->cc_pend_mask;
     case PI_REMAP: return s->remap;
     case PI_RT_COMPARE_A: return s->rt_compare[0];
     case PI_RT_COMPARE_B: return s->rt_compare[1];
@@ -415,6 +440,27 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
         break;
     case PI_MASK_1_B:
         s->mask[1][1] = value;
+        break;
+    /*
+     * A set store raises the storing processor's region bit, not the data
+     * written; the model stands in this interface's request region for that
+     * source, as the protection override does. The clear is data-bit
+     * write-one-to-clear.
+     */
+    case PI_CC_PEND_SET_A:
+        s->cc_pend[0] |= 1ULL << s->request_region;
+        break;
+    case PI_CC_PEND_SET_B:
+        s->cc_pend[1] |= 1ULL << s->request_region;
+        break;
+    case PI_CC_PEND_CLR_A:
+        s->cc_pend[0] &= ~value;
+        break;
+    case PI_CC_PEND_CLR_B:
+        s->cc_pend[1] &= ~value;
+        break;
+    case PI_CC_PEND_MASK:
+        s->cc_pend_mask = value;
         break;
     case PI_REMAP:
         s->remap = value & 0x1f;
@@ -557,6 +603,8 @@ static void pi_reset_enter(Object *obj, ResetType type)
 
     s->pending[0] = 0;
     s->pending[1] = 0;
+    memset(s->cc_pend, 0, sizeof(s->cc_pend));
+    s->cc_pend_mask = 0;
     memset(s->mask, 0, sizeof(s->mask));
     s->remap = 0;
     memset(s->error_mask, 0, sizeof(s->error_mask));
@@ -612,8 +660,8 @@ static int pi_pre_save(void *opaque)
 
 static const VMStateDescription vmstate_pi = {
     .name = TYPE_SGI_BEDROCK_PI,
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .pre_save = pi_pre_save,
     .post_load = pi_post_load,
     .fields = (const VMStateField[]) {
@@ -623,6 +671,8 @@ static const VMStateDescription vmstate_pi = {
         VMSTATE_UINT8(cached_alias, SGIBedrockPIState),
         VMSTATE_UINT8_ARRAY(cpu_enable, SGIBedrockPIState, 2),
         VMSTATE_UINT64_ARRAY(pending, SGIBedrockPIState, 2),
+        VMSTATE_UINT64_ARRAY(cc_pend, SGIBedrockPIState, 2),
+        VMSTATE_UINT64(cc_pend_mask, SGIBedrockPIState),
         VMSTATE_UINT64_2DARRAY(mask, SGIBedrockPIState, 2, 2),
         VMSTATE_UINT8(remap, SGIBedrockPIState),
         VMSTATE_UINT64(error_pending, SGIBedrockPIState),
