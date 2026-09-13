@@ -2046,6 +2046,94 @@ static void test_hub_kicks_trace_their_reason(const void *data)
                     modify);
 }
 
+#define PEND1_CREDIT_INTERRUPT  113
+
+/*
+ * Slice A sets interrupt 113 and records 1 in its mailbox word. Slice B
+ * polls the second pending bank until something is set and records what
+ * it read.
+ */
+static void build_pend1_credit_image(SN0Image *p)
+{
+    const unsigned int entry = 0x800;
+    unsigned int branch;
+    unsigned int to_b;
+    unsigned int loop;
+
+    branch = sn0_emit_branch(p, SN0_OPC_BEQ, 0, 0);
+    sn0_patch_branch(p, branch, entry);
+    for (unsigned int vector = SN0_VEC_TLB_REFILL;
+         vector <= SN0_VEC_GENERAL; vector += 0x80) {
+        p->pos = vector;
+        sn0_emit_park(p);
+    }
+
+    p->pos = entry;
+    sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL);
+    sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
+    sn0_emit_cpu_number(p, SN0_R_S1);
+    sn0_emit_li64(p, SN0_R_K0, SN0_HUB_LOCAL_BASE);
+    sn0_emit_li(p, SN0_R_K1, SN0_KSEG1(SN0_USER_MAILBOX));
+    to_b = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_S1, SN0_R_ZERO);
+
+    sn0_emit_li(p, SN0_R_T1, INT_MODIFY_SET | PEND1_CREDIT_INTERRUPT);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_T1, PI_INT_MODIFY);
+    sn0_emit_li(p, SN0_R_T2, 1);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_T2, 0);
+    sn0_emit_park(p);
+
+    sn0_patch_branch(p, to_b, p->pos);
+    loop = p->pos;
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K0, SN0_R_T2, PI_INT_PEND1);
+    branch = sn0_emit_branch(p, SN0_OPC_BEQ, SN0_R_T2, SN0_R_ZERO);
+    sn0_patch_branch(p, branch, loop);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_T2, 8);
+    sn0_emit_park(p);
+}
+
+/*
+ * Slice A's modify of interrupt 113 credits slice B, and B's first read
+ * of the second bank that shows the bit spends the credit. The trace
+ * names both ends; qtest's own accesses have no processor, so this needs
+ * guest code on each slice.
+ */
+static void test_pend1_credit_traces_set_and_spend(const void *data)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *image_path = NULL;
+    g_autofree char *path = NULL;
+    g_auto(GStrv) records = NULL;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    build_pend1_credit_image(image);
+    image_path = sn0_image_write(image, "sn0-hub-pend1-credit");
+    path = trace_file_create();
+    qts = qtest_initf(
+        "-M origin200,synthesized-firmware=off -smp 2 -bios %s "
+        "-accel tcg,thread=multi -S -no-shutdown "
+        "-trace enable=sgi_hub_pend1_credit,file=%s", image_path, path);
+    unlink(image_path);
+
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    g_assert_cmphex(wait_for_rendezvous_result(qts, 0), ==, 1);
+    g_assert_cmphex(wait_for_rendezvous_result(qts, 1), ==,
+                    1ULL << (PEND1_CREDIT_INTERRUPT - INT_BANK_BITS));
+    qtest_quit(qts);
+
+    records = trace_file_take(path);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_pend1_credit",
+                                 "cpu 0 hub_cpu_base 0 nasid 0 "
+                                 "credit set was 0 "), ==, 1);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_pend1_credit",
+                                 "cpu 1 hub_cpu_base 0 nasid 0 "
+                                 "credit consumed was 1 "), ==, 1);
+}
+
 /*
  * Firmware's presence probe at its own 64-bit width: the read-back separates
  * an undeclared implementation width (called twice) from a correct one.
@@ -5197,6 +5285,8 @@ int main(int argc, char **argv)
                         test_coordination_registers_trace_alone);
     qtest_add_data_func("sn0/hub/hub-kicks-trace-their-reason", NULL,
                         test_hub_kicks_trace_their_reason);
+    qtest_add_data_func("sn0/hub/pend1-credit-traces-set-and-spend", NULL,
+                        test_pend1_credit_traces_set_and_spend);
     qtest_add_data_func("sn0/hub/junk-uart-absent-by-default", NULL,
                         test_junk_uart_absent_by_default);
     qtest_add_data_func("sn0/hub/junk-uart-fitted-answers-present", NULL,
