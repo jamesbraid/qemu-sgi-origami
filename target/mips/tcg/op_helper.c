@@ -405,6 +405,7 @@ void mips_cpu_do_transaction_failed(CPUState *cs, hwaddr physaddr,
     if (access_type == MMU_INST_FETCH) {
         do_raise_exception(env, EXCP_IBE, retaddr);
     } else if (!mcc->no_data_aborts) {
+        env->CP0_BadVAddr = addr;
         do_raise_exception(env, EXCP_DBE, retaddr);
     }
 }
