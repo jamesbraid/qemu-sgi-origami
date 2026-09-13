@@ -22,7 +22,9 @@ typedef struct SGIBedrockIOBTE {
     uint64_t notification;
     uint64_t interrupt;
     bool active;
+    bool signal_pending;
     QEMUTimer *timer;
+    QEMUBH *signal_bh;
 } SGIBedrockIOBTE;
 
 struct SGIBedrockIOState {

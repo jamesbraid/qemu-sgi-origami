@@ -656,9 +656,7 @@ static void test_bte_copy_and_zero(void)
 
 static void test_bte_error_and_termination(void)
 {
-    g_autofree char *log = log_file_new();
-    g_autofree char *contents = NULL;
-    QTestState *s = io_start_logged(log, "");
+    QTestState *s = io_start("");
     uint8_t source[256], actual[256], unchanged[256];
 
     fill_pattern(source, sizeof(source), 0x93);
@@ -676,7 +674,10 @@ static void test_bte_error_and_termination(void)
 
     /*
      * Interrupt mode: a notification address is programmed but notify is
-     * clear, so completion must leave that line alone and is only logged.
+     * clear, so completion leaves that line alone and raises the completion
+     * interrupt through the node register window instead.  Delivery is
+     * deferred to a bottom half, so it lands by the next access rather than
+     * re-entering this interface from inside the launching write.
      */
     dma_writeq(s, 0x1e0000, UINT64_MAX);
     qtest_writeq(s, REG_BASE + BTE1, 2 | (1 << 20));
@@ -691,6 +692,13 @@ static void test_bte_error_and_termination(void)
     dma_read(s, 0x170000, actual, sizeof(actual));
     g_assert_cmpmem(actual, sizeof(actual), source, sizeof(source));
     g_assert_cmphex(dma_readq(s, 0x1e0000), ==, UINT64_MAX);
+    /*
+     * The deferred completion interrupt reached the node's pending-modify
+     * register through the hub window: a set (bit 8) of level zero, the
+     * engine's unprogrammed interrupt-address default.  Reading it back the
+     * crosstalk way also confirms the write was not dropped as re-entrant.
+     */
+    g_assert_cmphex(xio_readq(s, HUB_REMOTE + 0x90), ==, UINT64_C(1) << 8);
 
     qtest_writeq(s, REG_BASE + BTE0, 2 | (1 << 20));
     qtest_writeq(s, REG_BASE + BTE0 + 8, UINT64_C(0x80000000));
@@ -733,8 +741,6 @@ static void test_bte_error_and_termination(void)
      */
     qtest_readq(s, REG_BASE + BTE0 + 0x18);
     qtest_quit(s);
-    contents = log_file_take(log);
-    g_assert_nonnull(strstr(contents, "interrupt-mode completion"));
 }
 
 static void test_bte_programming_edges(void)
