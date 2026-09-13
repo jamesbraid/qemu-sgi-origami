@@ -72,7 +72,6 @@
 #define POLL_FINE_STEPS 8
 #define POLL_COARSE_NS  50000
 #define SERVICE_PERIOD_NS   1000000
-#define GRANT_ACQUISITION_MS 100
 #define GRANT_SETTLE_NS     500000
 #define GRANT_BASE          0xe0
 
@@ -552,34 +551,6 @@ static void wait_for_global_grant(QTestState *qts, uint8_t expected)
     g_assert_not_reached();
 }
 
-static void wait_for_grant_on_adapter(QTestState *qts, unsigned node,
-                                      uint8_t expected)
-{
-    uint8_t value = 0;
-
-    for (unsigned step = 0; step < 16 * POLL_STEPS; step++) {
-        uint8_t status = adapter_read(qts, node, I2C_CTRL);
-
-        g_assert_cmphex(status & (STS_BER | STS_LAB), ==, 0);
-        value = adapter_read(qts, node, I2C_DATA);
-        if ((status & STS_BB) && value == expected) {
-            return;
-        }
-        qtest_clock_step(qts, POLL_STEP_NS);
-    }
-    g_assert_cmphex(value, ==, expected);
-}
-
-static void observe_first_global_grant(QTestState *qts)
-{
-    qtest_clock_step(qts, SERVICE_PERIOD_NS + GRANT_SETTLE_NS);
-    for (unsigned node = 0; node < ADAPTER_COUNT; node++) {
-        g_assert_cmphex(adapter_read(qts, node, I2C_CTRL) & STS_BB, ==,
-                        STS_BB);
-        g_assert_cmphex(adapter_read(qts, node, I2C_DATA), ==, GRANT_BASE);
-    }
-}
-
 /*
  * The grant ring covers all eight processors through four adapters. Keep the
  * two middle Hubs between the endpoint controls, issue a real controller
@@ -616,75 +587,28 @@ static void test_global_grant_rotation(void)
     qtest_quit(qts);
 }
 
-/* A delayed owner keeps its observed grant until it can issue START. */
+/* An observed grant keeps one full service period for its owner to START. */
 static void test_observed_grant_acquisition(void)
 {
     QTestState *qts = start_module();
 
-    observe_first_global_grant(qts);
+    for (unsigned processor = 0; processor <= 2; processor++) {
+        wait_for_global_grant(qts, GRANT_BASE | processor);
+    }
 
-    /* Other vCPUs may advance virtual time while this owner is descheduled. */
-    qtest_clock_step(qts, 4 * SERVICE_PERIOD_NS);
+    qtest_clock_step(qts, SERVICE_PERIOD_NS - 50 * POLL_STEP_NS);
     for (unsigned node = 0; node < ADAPTER_COUNT; node++) {
         g_assert_cmphex(adapter_read(qts, node, I2C_CTRL) & STS_BB, ==,
                         STS_BB);
         g_assert_cmphex(adapter_read(qts, node, I2C_DATA), ==,
-                        GRANT_BASE);
+                        GRANT_BASE | 2);
     }
 
-    g_assert_true(start_transfer(qts, 0, NVRAM_FIRST + 7, false));
-    g_assert_cmphex(adapter_read(qts, 0, I2C_CTRL) &
-                    (STS_BER | STS_LAB), ==, 0);
-    stop_transfer(qts, 0);
-    wait_for_global_grant(qts, GRANT_BASE | 1);
-    qtest_quit(qts);
-}
-
-/* An initial START from another adapter does not release the owner's latch. */
-static void test_observed_grant_wrong_owner(void)
-{
-    QTestState *qts = start_module();
-
-    observe_first_global_grant(qts);
     g_assert_true(start_transfer(qts, 1, NVRAM_FIRST + 7, false));
+    g_assert_cmphex(adapter_read(qts, 1, I2C_CTRL) &
+                    (STS_BER | STS_LAB), ==, 0);
     stop_transfer(qts, 1);
-    qtest_clock_step(qts, 4 * SERVICE_PERIOD_NS);
-    /* No later grant replaced the wrong transfer's observed address. */
-    g_assert_cmphex(adapter_read(qts, 1, I2C_DATA), ==,
-                    (NVRAM_FIRST + 7) << 1);
-
-    g_assert_true(start_transfer(qts, 0, NVRAM_FIRST + 7, false));
-    stop_transfer(qts, 0);
-    wait_for_global_grant(qts, GRANT_BASE | 1);
-    qtest_quit(qts);
-}
-
-/* An absent owner cannot stop grant rotation indefinitely. */
-static void test_observed_grant_expires(void)
-{
-    QTestState *qts = start_module();
-
-    observe_first_global_grant(qts);
-    g_usleep(2 * GRANT_ACQUISITION_MS * G_TIME_SPAN_MILLISECOND);
-    qtest_clock_step(qts, SERVICE_PERIOD_NS + GRANT_SETTLE_NS);
-    wait_for_global_grant(qts, GRANT_BASE | 1);
-    qtest_quit(qts);
-}
-
-/* Reset cancels an observed grant instead of retaining a host-time hold. */
-static void test_observed_grant_reset(void)
-{
-    QTestState *qts = start_module();
-
-    observe_first_global_grant(qts);
-    qtest_system_reset(qts);
-    for (unsigned node = 0; node < ADAPTER_COUNT; node++) {
-        init_adapter(qts, node);
-    }
-    qtest_clock_step(qts, SERVICE_PERIOD_NS + GRANT_SETTLE_NS);
-    for (unsigned node = 0; node < ADAPTER_COUNT; node++) {
-        g_assert_cmphex(adapter_read(qts, node, I2C_DATA), ==, GRANT_BASE);
-    }
+    wait_for_global_grant(qts, GRANT_BASE | 3);
     qtest_quit(qts);
 }
 
@@ -1050,10 +974,9 @@ static void test_late_grant_service(void)
     QTestState *to = qtest_init(MACHINE_ARGS " -incoming defer");
     int64_t departed;
 
-    wait_for_grant_on_adapter(from, 1, GRANT_BASE);
-    wait_for_grant_on_adapter(from, 1, GRANT_BASE | 1);
-    wait_for_grant_on_adapter(from, 0, GRANT_BASE | 2);
-    wait_for_grant_on_adapter(from, 0, GRANT_BASE | 3);
+    for (unsigned processor = 0; processor <= 3; processor++) {
+        wait_for_global_grant(from, GRANT_BASE | processor);
+    }
     departed = qtest_clock_step(from, 1);
 
     /* Loading an old absolute deadline makes its first delivery late. */
@@ -1062,28 +985,6 @@ static void test_late_grant_service(void)
     wait_until_running(to);
 
     wait_for_global_grant(to, GRANT_BASE | 4);
-    qtest_quit(from);
-    qtest_quit(to);
-}
-
-/* Migration restores an observed grant with a fresh bounded host window. */
-static void test_observed_grant_migration(void)
-{
-    QTestState *from = start_module();
-    QTestState *to = qtest_init(MACHINE_ARGS " -incoming defer");
-    int64_t departed;
-
-    observe_first_global_grant(from);
-    departed = qtest_clock_step(from, 1);
-    migrate_module(from, to);
-    wait_until_running(to);
-    qtest_clock_set(to, departed);
-
-    qtest_clock_step(to, 4 * SERVICE_PERIOD_NS);
-    g_assert_cmphex(adapter_read(to, 0, I2C_DATA), ==, GRANT_BASE);
-    g_assert_true(start_transfer(to, 0, NVRAM_FIRST + 7, false));
-    stop_transfer(to, 0);
-    wait_for_global_grant(to, GRANT_BASE | 1);
     qtest_quit(from);
     qtest_quit(to);
 }
@@ -1166,12 +1067,6 @@ int main(int argc, char **argv)
                    test_global_grant_rotation);
     qtest_add_func("/sn0/o2000-module-management/observed-grant-acquisition",
                    test_observed_grant_acquisition);
-    qtest_add_func("/sn0/o2000-module-management/observed-grant-wrong-owner",
-                   test_observed_grant_wrong_owner);
-    qtest_add_func("/sn0/o2000-module-management/observed-grant-expiry",
-                   test_observed_grant_expires);
-    qtest_add_func("/sn0/o2000-module-management/observed-grant-reset",
-                   test_observed_grant_reset);
     qtest_add_func("/sn0/o2000-module-management/invalid-address-stop",
                    test_invalid_address_stop_releases_wire);
     qtest_add_func("/sn0/o2000-module-management/shared-nvram",
@@ -1201,8 +1096,6 @@ int main(int argc, char **argv)
     qtest_add_func("/sn0/o2000-module-management/migration", test_migration);
     qtest_add_func("/sn0/o2000-module-management/late-grant-service",
                    test_late_grant_service);
-    qtest_add_func("/sn0/o2000-module-management/observed-grant-migration",
-                   test_observed_grant_migration);
     qtest_add_func("/sn0/o2000-module-management/module-serial-migration",
                    test_module_serial_migration_in_progress);
     return g_test_run();

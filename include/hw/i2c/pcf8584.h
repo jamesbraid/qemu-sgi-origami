@@ -18,7 +18,6 @@
 OBJECT_DECLARE_SIMPLE_TYPE(PCF8584State, PCF8584)
 
 typedef void (*PCF8584DataRead)(void *opaque, uint32_t master, uint8_t value);
-typedef void (*PCF8584StartRequest)(void *opaque, uint32_t master);
 
 /*
  * Two addresses selected by the A0 pin, spaced eight bytes apart the way the
@@ -81,8 +80,6 @@ struct PCF8584State {
     qemu_irq irq;
     PCF8584DataRead data_read;
     void *data_read_opaque;
-    PCF8584StartRequest start_request;
-    void *start_request_opaque;
     DeviceDiagnosticSink *diagnostic;
 
     /*
@@ -149,8 +146,5 @@ void pcf8584_write_register(PCF8584State *s, hwaddr addr, uint64_t value,
                             unsigned size);
 void pcf8584_set_data_read_handler(PCF8584State *s,
                                    PCF8584DataRead handler, void *opaque);
-void pcf8584_set_start_request_handler(PCF8584State *s,
-                                      PCF8584StartRequest handler,
-                                      void *opaque);
 
 #endif /* HW_I2C_PCF8584_H */
