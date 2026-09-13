@@ -1664,6 +1664,138 @@ static void test_cpu_enable_registers_control_matching_processors(
     qtest_quit(qts);
 }
 
+/* The Hub register window as the processors reach it, uncached. */
+#define SN0_HUB_LOCAL_BASE      0x9200000001000000ULL
+#define RENDEZVOUS_VALUE        0x24
+#define RENDEZVOUS_SEEN         1
+#define RENDEZVOUS_MISSED       2
+
+/*
+ * Both processors run the comparator rendezvous the stock PROM uses, with
+ * the counter interrupts off: each posts the same value to its own
+ * comparator and reads the other's. Slice A posts first and reaches its
+ * poll late, after a delay loop of a few million instructions; slice B
+ * waits for A's post, posts its own, reads the match and withdraws at once.
+ * Each processor then records in its mailbox word whether it saw the other.
+ * B's read of the match ends its translation block with the branch that
+ * follows, as the PROM's does, so the withdrawal is always a later block.
+ */
+static void build_comparator_rendezvous_image(SN0Image *p)
+{
+    const unsigned int entry = 0x800;
+    unsigned int branch;
+    unsigned int to_b;
+    unsigned int loop;
+    unsigned int seen;
+
+    branch = sn0_emit_branch(p, SN0_OPC_BEQ, 0, 0);
+    sn0_patch_branch(p, branch, entry);
+    for (unsigned int vector = SN0_VEC_TLB_REFILL;
+         vector <= SN0_VEC_GENERAL; vector += 0x80) {
+        p->pos = vector;
+        sn0_emit_park(p);
+    }
+
+    p->pos = entry;
+    sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL);
+    sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
+    sn0_emit_cpu_number(p, SN0_R_S1);
+    sn0_emit_li64(p, SN0_R_K0, SN0_HUB_LOCAL_BASE);
+    sn0_emit_li(p, SN0_R_K1, SN0_KSEG1(SN0_USER_MAILBOX));
+    sn0_emit_li(p, SN0_R_T1, RENDEZVOUS_VALUE);
+    to_b = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_S1, SN0_R_ZERO);
+
+    /* Slice A: post, delay, then poll B's comparator a bounded time. */
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_T1, PI_RT_COMPARE_A);
+    sn0_emit_li(p, SN0_R_T0, 0x00400000);
+    loop = p->pos;
+    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_T0, SN0_R_T0, 0xffff);
+    branch = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_T0, SN0_R_ZERO);
+    sn0_patch_branch(p, branch, loop);
+    sn0_emit_li(p, SN0_R_T0, 100000);
+    loop = p->pos;
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K0, SN0_R_T2, PI_RT_COMPARE_B);
+    seen = sn0_emit_branch(p, SN0_OPC_BEQ, SN0_R_T2, SN0_R_T1);
+    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_T0, SN0_R_T0, 0xffff);
+    branch = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_T0, SN0_R_ZERO);
+    sn0_patch_branch(p, branch, loop);
+    sn0_emit_li(p, SN0_R_T2, RENDEZVOUS_MISSED);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_T2, 0);
+    sn0_emit_park(p);
+    sn0_patch_branch(p, seen, p->pos);
+    sn0_emit_li(p, SN0_R_T2, RENDEZVOUS_SEEN);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_T2, 0);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_ZERO, PI_RT_COMPARE_A);
+    sn0_emit_park(p);
+
+    /* Slice B: wait for A's post, post the match, read it and withdraw. */
+    sn0_patch_branch(p, to_b, p->pos);
+    loop = p->pos;
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K0, SN0_R_T2, PI_RT_COMPARE_A);
+    branch = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_T2, SN0_R_T1);
+    sn0_patch_branch(p, branch, loop);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_T1, PI_RT_COMPARE_B);
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K0, SN0_R_T2, PI_RT_COMPARE_A);
+    seen = sn0_emit_branch(p, SN0_OPC_BEQ, SN0_R_T2, SN0_R_T1);
+    sn0_emit_park(p);
+    sn0_patch_branch(p, seen, p->pos);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_ZERO, PI_RT_COMPARE_B);
+    sn0_emit_li(p, SN0_R_T2, RENDEZVOUS_SEEN);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_T2, 8);
+    sn0_emit_park(p);
+}
+
+static uint64_t wait_for_rendezvous_result(QTestState *qts, unsigned int cpu)
+{
+    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    uint64_t result;
+
+    do {
+        result = cpu_heartbeat(qts, cpu);
+        if (result) {
+            break;
+        }
+        g_usleep(1000);
+    } while (g_get_monotonic_time() < deadline);
+
+    return result;
+}
+
+/*
+ * A processor that reads its own posted value in the other comparator is
+ * held until the other processor has read its post back, so a partner
+ * whose host thread arrives late at its poll still sees the match. Under
+ * multi-threaded TCG the hold is the whole difference: without it slice B
+ * withdraws while A is still delaying, and A's bounded poll misses.
+ */
+static void test_a_matched_comparator_post_waits_for_its_partner(
+    const void *data)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    build_comparator_rendezvous_image(image);
+    path = sn0_image_write(image, "sn0-hub-rt-rendezvous");
+    qts = qtest_initf(
+        "-M origin200,synthesized-firmware=off -smp 2 -bios %s "
+        "-accel tcg,thread=multi -S -no-shutdown", path);
+    unlink(path);
+
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    g_assert_cmphex(wait_for_rendezvous_result(qts, 1), ==, RENDEZVOUS_SEEN);
+    g_assert_cmphex(wait_for_rendezvous_result(qts, 0), ==, RENDEZVOUS_SEEN);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_RT_COMPARE_A), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_RT_COMPARE_B), ==, 0);
+
+    qtest_quit(qts);
+}
+
 static void test_md_indicator_registers(const void *data)
 {
     /*
@@ -4895,6 +5027,9 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/hub/cpu-enable-controls-matching-processors",
                         NULL,
                         test_cpu_enable_registers_control_matching_processors);
+    qtest_add_data_func("sn0/hub/matched-comparator-post-waits-for-partner",
+                        NULL,
+                        test_a_matched_comparator_post_waits_for_its_partner);
     qtest_add_data_func("sn0/hub/md-indicator-registers", NULL,
                         test_md_indicator_registers);
     qtest_add_data_func("sn0/hub/md-indicator-shown-by-default", NULL,

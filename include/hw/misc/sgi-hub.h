@@ -246,6 +246,21 @@ struct SGIHubState {
     uint8_t pi_rt_pending[SGI_HUB_PROCESSORS];
     uint8_t pi_rt_enable[SGI_HUB_PROCESSORS];
 
+    /*
+     * The multi-threaded comparator hold, host-only and discarded across
+     * reset and migration. Per processor: whether the other has read its
+     * comparator since the value changed; how often its comparator has been
+     * written; the other's write count at its last read and at its last
+     * post hold; and its active hold, zero for none, with the hold's kind.
+     */
+    bool pi_rt_seen[SGI_HUB_PROCESSORS];
+    uint64_t pi_rt_writes[SGI_HUB_PROCESSORS];
+    uint64_t pi_rt_read_at[SGI_HUB_PROCESSORS];
+    uint64_t pi_rt_held_at[SGI_HUB_PROCESSORS];
+    uint64_t pi_rt_hold[SGI_HUB_PROCESSORS];
+    uint8_t pi_rt_hold_kind[SGI_HUB_PROCESSORS];
+    uint64_t pi_rt_hold_seq;
+
     /* The counter's clock control -- bit 16 resets set, see the definition. */
     uint64_t pi_rt_local_ctrl;
 

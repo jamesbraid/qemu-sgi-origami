@@ -184,6 +184,29 @@ primary. Only an unchanged re-read hands off -- a read whose value
 moved is an answered poll, and the reader keeps its slice to act on
 it.
 
+Under multi-threaded TCG every processor has its own host thread, so
+handing slices around helps nobody, but a descheduled thread still
+misses a short post. The comparator rendezvous is where that shows:
+each of a node's two processors posts the same value to its own
+comparator, with its counter interrupt off, and polls the other's.
+The second to arrive finds the match at once and withdraws its post
+a little later; the first, if its thread was not running across that
+window, polls on to its budget and disables its partner. So a
+processor that has posted and reads the other comparator is held at
+its next block boundary in two cases: reading its own value back
+before the other processor has read its post, until that processor
+does; and re-reading anything else with no write in between, once per
+partner write, until the partner writes again. A hold also ends when
+the partner can no longer run, or after two seconds. It is queued
+work on the reader's own thread, outside the execution loop and with
+the big lock released; it waits on that vCPU's halt condition, so a
+stop, queued work or a deliverable interrupt ends it. A Hub holds at
+most one processor at a time, and a hold changes no register value,
+only when the reader resumes. The limitation that leaves: any
+multi-threaded guest that posts a non-zero comparator with that
+comparator's interrupt off and polls its partner's can be delayed by up
+to two seconds per partner write.
+
 Memory and directory
 ====================
 

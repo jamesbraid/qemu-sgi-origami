@@ -29,6 +29,7 @@
 #include "exec/cpu-interrupt.h"
 #include "hw/core/cpu.h"
 #include "system/address-spaces.h"
+#include "system/cpus.h"
 #include "qemu/host-utils.h"
 #include "system/system.h"
 #include "system/runstate.h"
@@ -1298,14 +1299,206 @@ static uint64_t sgi_hub_rt_count(SGIHubState *s)
     return clock_ns_to_ticks(s->rt_clk, delta) & PI_RT_MASK;
 }
 
+/*
+ * How long a comparator hold may last. Nothing is held during the wait,
+ * so this only decides when a partner that never answers stops being
+ * waited for; partner lags measured on a loaded host reach tens of
+ * milliseconds.
+ */
+#define SGI_HUB_RT_HOLD_MS      2000
+
+/* What a held processor waits for. */
+typedef enum SGIHubRTHoldKind {
+    SGI_HUB_RT_HOLD_MATCH = 1,  /* the partner to read its post back */
+    SGI_HUB_RT_HOLD_POST,       /* the partner to write its comparator */
+} SGIHubRTHoldKind;
+
+typedef struct SGIHubRTHold {
+    SGIHubState *hub;
+    unsigned int slice;
+    uint64_t id;
+} SGIHubRTHold;
+
+/* This Hub's slice for the executing processor, or -1 for any other. */
+static int sgi_hub_current_slice(SGIHubState *s)
+{
+    if (!current_cpu || current_cpu->cpu_index < s->cpu_base ||
+        current_cpu->cpu_index >= s->cpu_base + s->cpus) {
+        return -1;
+    }
+    return current_cpu->cpu_index - s->cpu_base;
+}
+
+/* Whether a slice can still reach a read: enabled, running, not stopped. */
+static bool sgi_hub_slice_can_read(SGIHubState *s, unsigned int slice)
+{
+    CPUState *cs = qemu_get_cpu(s->cpu_base + slice);
+
+    return cs && s->pi_cpu_enable[slice] && !cs->halted && cpu_can_run(cs);
+}
+
+/*
+ * The event a hold waits for happened on another thread: end the hold
+ * here, under the big lock, rather than when the held thread next runs,
+ * so the partner can take its own hold at once.
+ */
+static void sgi_hub_rt_release(SGIHubState *s, unsigned int slice,
+                               SGIHubRTHoldKind kind)
+{
+    CPUState *cs = qemu_get_cpu(s->cpu_base + slice);
+
+    if (s->pi_rt_hold[slice] && s->pi_rt_hold_kind[slice] == kind) {
+        s->pi_rt_hold[slice] = 0;
+        if (cs) {
+            qemu_cpu_kick(cs);
+        }
+    }
+}
+
+static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
+{
+    SGIHubRTHold *hold = data.host_ptr;
+    SGIHubState *s = hold->hub;
+    unsigned int slice = hold->slice;
+    int64_t start = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    int64_t deadline = start + SGI_HUB_RT_HOLD_MS * SCALE_MS;
+    int64_t now;
+    const char *outcome;
+
+    for (;;) {
+        now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+        if (s->pi_rt_hold[slice] != hold->id) {
+            outcome = "answered";
+        } else if (!sgi_hub_slice_can_read(s, slice ^ 1)) {
+            outcome = "partner stopped";
+        } else if (cs->stop || cs->unplug || !cpu_work_list_empty(cs) ||
+                   cpu_has_work(cs)) {
+            outcome = "preempted";
+        } else if (now >= deadline) {
+            outcome = "timed out";
+        } else {
+            qemu_cond_timedwait_bql(cs->halt_cond,
+                                    (deadline - now) / SCALE_MS + 1);
+            continue;
+        }
+        break;
+    }
+
+    if (s->pi_rt_hold[slice] == hold->id) {
+        s->pi_rt_hold[slice] = 0;
+    }
+    trace_sgi_hub_rt_hold_end(cs->cpu_index, outcome,
+                              (now - start) / SCALE_US);
+    object_unref(OBJECT(s));
+    g_free(hold);
+}
+
+/*
+ * With its counter interrupt off, a processor's comparator is a progress
+ * mailbox. The stock PROM meets a node's two processors through the pair:
+ * each posts the same value to its own comparator and polls the other's,
+ * and the second to arrive finds the match on its first read and
+ * withdraws its post shortly after. Real processors run continuously, so
+ * the first poller always reads that post while it stands, and reaches it
+ * well inside its poll budget. Host threads do not run continuously: a
+ * poller descheduled across the post misses it, spends its budget and
+ * disables its partner.
+ *
+ * Under multi-threaded TCG, a processor that has posted a value and reads
+ * the other comparator is therefore held in two cases. Reading its own
+ * value back there, before the partner has read the post, it is held
+ * until the partner does. Re-reading anything else with no write in
+ * between, it is held once per partner write until the partner next
+ * writes. A hold also ends when the partner can no longer run, when the
+ * held processor has a stop, queued work or a deliverable interrupt, or
+ * after SGI_HUB_RT_HOLD_MS.
+ *
+ * The hold is queued work on the reader's own vCPU. It starts at the
+ * reader's next block boundary, outside the execution loop, and waits on
+ * that vCPU's halt condition with the big lock released, so it holds no
+ * RCU read-side section and every kick the vCPU honours reaches it. It
+ * never waits on another vCPU's queue, and a Hub holds at most one
+ * processor at a time. Register values are unchanged; only when the reader
+ * resumes moves.
+ */
+static void sgi_hub_rt_mailbox_read(SGIHubState *s, unsigned int owner,
+                                    uint64_t value)
+{
+    int reader = sgi_hub_current_slice(s);
+    uint64_t posted;
+    bool reread;
+    SGIHubRTHoldKind kind;
+    SGIHubRTHold *hold;
+
+    if (reader < 0 || reader == owner) {
+        return;
+    }
+
+    s->pi_rt_seen[owner] = true;
+    sgi_hub_rt_release(s, owner, SGI_HUB_RT_HOLD_MATCH);
+    reread = s->pi_rt_read_at[reader] == s->pi_rt_writes[owner];
+    s->pi_rt_read_at[reader] = s->pi_rt_writes[owner];
+
+    posted = s->pi_rt_compare[reader];
+    if (!posted || s->pi_rt_enable[0] || s->pi_rt_enable[1] ||
+        s->pi_rt_hold[owner] || !tcg_enabled() ||
+        !qemu_tcg_mttcg_enabled() || !sgi_hub_slice_can_read(s, owner)) {
+        return;
+    }
+    if (value == posted) {
+        if (s->pi_rt_seen[reader]) {
+            return;
+        }
+        kind = SGI_HUB_RT_HOLD_MATCH;
+    } else {
+        if (!reread || s->pi_rt_held_at[reader] == s->pi_rt_writes[owner]) {
+            return;
+        }
+        s->pi_rt_held_at[reader] = s->pi_rt_writes[owner];
+        kind = SGI_HUB_RT_HOLD_POST;
+    }
+
+    hold = g_new(SGIHubRTHold, 1);
+    hold->hub = SGI_HUB(object_ref(OBJECT(s)));
+    hold->slice = reader;
+    hold->id = ++s->pi_rt_hold_seq;
+    s->pi_rt_hold[reader] = hold->id;
+    s->pi_rt_hold_kind[reader] = kind;
+    trace_sgi_hub_rt_hold(current_cpu->cpu_index,
+                          kind == SGI_HUB_RT_HOLD_MATCH ? "match" : "post",
+                          posted, value);
+    async_run_on_cpu(current_cpu, sgi_hub_rt_hold, RUN_ON_CPU_HOST_PTR(hold));
+}
+
+/* Release every hold, and forget every post and read: a fresh start. */
+static void sgi_hub_rt_hold_reset(SGIHubState *s)
+{
+    unsigned int n;
+
+    for (n = 0; n < SGI_HUB_PROCESSORS; n++) {
+        CPUState *cs = qemu_get_cpu(s->cpu_base + n);
+
+        if (s->pi_rt_hold[n] && cs) {
+            qemu_cpu_kick(cs);
+        }
+        s->pi_rt_hold[n] = 0;
+        s->pi_rt_seen[n] = false;
+        s->pi_rt_writes[n] = 0;
+        s->pi_rt_read_at[n] = UINT64_MAX;
+        s->pi_rt_held_at[n] = UINT64_MAX;
+    }
+}
+
 static uint64_t sgi_hub_read_rt_compare(SGIHubState *s, hwaddr addr,
                                         unsigned arg)
 {
     CPUState *owner = qemu_get_cpu(s->cpu_base + arg);
+    uint64_t value = s->pi_rt_compare[arg];
 
     /* A progress mailbox: let the owner publish before the poll budget ends. */
     sgi_hub_kick_polled_peer(owner);
-    return s->pi_rt_compare[arg];
+    sgi_hub_rt_mailbox_read(s, arg, value);
+    return value;
 }
 
 /* Move the origin so the counter reads what was written, and keep running. */
@@ -1869,6 +2062,14 @@ static void sgi_hub_write_rt_compare(SGIHubState *s, hwaddr addr,
 {
     CPUState *other;
 
+    s->pi_rt_writes[arg]++;
+    if (s->pi_rt_compare[arg] != (val & PI_RT_MASK)) {
+        s->pi_rt_seen[arg] = false;
+        sgi_hub_rt_release(s, arg, SGI_HUB_RT_HOLD_MATCH);
+    }
+    if ((arg ^ 1) < s->cpus) {
+        sgi_hub_rt_release(s, arg ^ 1, SGI_HUB_RT_HOLD_POST);
+    }
     s->pi_rt_compare[arg] = val & PI_RT_MASK;
     sgi_hub_rt_arm(s, arg);
 
@@ -2880,6 +3081,7 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
     SGIHubState *s = SGI_HUB(obj);
     unsigned int n;
 
+    sgi_hub_rt_hold_reset(s);
     s->pi_region_present = ~0ULL;
     s->pi_calias_size = PI_CALIAS_SIZE_RESET;
     memset(s->pi_cpu_enable, 0, sizeof(s->pi_cpu_enable));
@@ -3368,6 +3570,7 @@ static void sgi_hub_unrealize(DeviceState *dev)
     unsigned int endpoints = sn0_fabric_endpoint_count(s->fabric);
     unsigned int view, space, i;
 
+    sgi_hub_rt_hold_reset(s);
     s->claim_ready = false;
     address_space_destroy(&s->bte_as);
     for (view = 0; view < SGI_HUB_CLAIM_VIEWS; view++) {
@@ -3486,6 +3689,7 @@ static int sgi_hub_post_load(void *opaque, int version_id)
     SGIHubState *s = opaque;
     unsigned int n;
 
+    sgi_hub_rt_hold_reset(s);
     if (s->ni_port_error & ~NI_PORT_ERROR_MASK) {
         return -EINVAL;
     }
