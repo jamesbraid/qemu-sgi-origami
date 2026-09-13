@@ -147,7 +147,7 @@ struct TigonState {
     uint64_t stat_tx_mcast;
     uint64_t stat_tx_bcast;
     uint32_t stat_rx_discards;
-    bool stats_dirty;           /* a counter moved since the last publish */
+    bool stats_dirty;           /* a published field moved since last publish */
     QEMUTimer *stats_timer;
     QEMUTimer *stats_live_timer;
 
