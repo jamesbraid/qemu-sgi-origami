@@ -551,6 +551,38 @@ static void wait_for_global_grant(QTestState *qts, uint8_t expected)
 }
 
 /*
+ * The next grant published to every adapter, whatever code it carries. The
+ * budget covers a whole eight-code ring, so a caller that has just missed one
+ * still sees the one after it.
+ */
+static uint8_t wait_for_next_global_grant(QTestState *qts, uint8_t previous)
+{
+    for (unsigned step = 0; step < 20 * POLL_STEPS; step++) {
+        uint8_t value = 0;
+        bool seen = true;
+
+        for (unsigned node = 0; node < ADAPTER_COUNT; node++) {
+            uint8_t status = adapter_read(qts, node, I2C_CTRL);
+            uint8_t data;
+
+            g_assert_cmphex(status & (STS_BER | STS_LAB), ==, 0);
+            data = adapter_read(qts, node, I2C_DATA);
+            if (!(status & STS_BB) || data < GRANT_BASE ||
+                data > (GRANT_BASE | 7) || (node && data != value)) {
+                seen = false;
+                break;
+            }
+            value = data;
+        }
+        if (seen && value != previous) {
+            return value;
+        }
+        qtest_clock_step(qts, POLL_STEP_NS);
+    }
+    g_assert_not_reached();
+}
+
+/*
  * The grant ring covers all eight processors through four adapters. Keep the
  * two middle Hubs between the endpoint controls, issue a real controller
  * transaction in every slot, and require the next grant to be consecutive.
@@ -1034,6 +1066,36 @@ static void migrate_module(QTestState *from, QTestState *to)
  * destination clock where the source left it, and everything the stream
  * restored is due rather than far in the future.
  */
+/*
+ * A destination that loads a service deadline older than its own clock must
+ * still publish. Whatever the controller does about the periods that went by
+ * while the state was in flight, the grants resume and the code keeps
+ * advancing by one, so a processor's turn still comes round.
+ */
+static void test_late_grant_service(void)
+{
+    QTestState *from = start_module();
+    QTestState *to = qtest_init(MACHINE_ARGS " -incoming defer");
+    int64_t departed;
+    uint8_t first, second;
+
+    for (unsigned processor = 0; processor <= 3; processor++) {
+        wait_for_global_grant(from, GRANT_BASE | processor);
+    }
+    departed = qtest_clock_step(from, 1);
+
+    /* Loading an old absolute deadline makes its first delivery late. */
+    qtest_clock_set(to, departed + INT64_C(10) * 1000 * SERVICE_PERIOD_NS);
+    migrate_module(from, to);
+    wait_until_running(to);
+
+    first = wait_for_next_global_grant(to, 0);
+    second = wait_for_next_global_grant(to, first);
+    g_assert_cmphex(second, ==, GRANT_BASE | ((first + 1) & 7));
+    qtest_quit(from);
+    qtest_quit(to);
+}
+
 static void test_migration(void)
 {
     QTestState *from = start_module();
@@ -1128,6 +1190,8 @@ int main(int argc, char **argv)
                    test_nvram_read_survives_a_mid_byte_start);
     qtest_add_func("/sn0/o2000-module-management/nvram-read-vs-second-adapter",
                    test_nvram_read_survives_a_second_adapter);
+    qtest_add_func("/sn0/o2000-module-management/late-grant-service",
+                   test_late_grant_service);
     qtest_add_func("/sn0/o2000-module-management/migration", test_migration);
     qtest_add_func("/sn0/o2000-module-management/module-serial-migration",
                    test_module_serial_migration_in_progress);
