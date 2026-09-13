@@ -63,6 +63,15 @@ void cpus_set_virtual_clock(int64_t value)
     virtual_time = value;
 }
 
+/* The device takes its serial from the machine's model; any ten bytes do. */
+static DeviceState *module_new(void)
+{
+    DeviceState *dev = qdev_new(TYPE_SGI_O2000_MODULE_MGMT);
+
+    qdev_prop_set_string(dev, "model-serial", "KORIGAMI01");
+    return dev;
+}
+
 enum { LINE_RESET, LINE_NMI, LINE_POWER };
 enum { TEST_PARTIAL = 1, TEST_CONSOLE };
 
@@ -93,7 +102,7 @@ static void init_adapter(Fixture *f, unsigned slot);
 
 static void setup(Fixture *f, gconstpointer options)
 {
-    DeviceState *dev = qdev_new(TYPE_SGI_O2000_MODULE_MGMT);
+    DeviceState *dev = module_new();
     static const char *const names[] = { "reset", "nmi", "power" };
     unsigned i;
 

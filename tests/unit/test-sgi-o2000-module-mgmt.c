@@ -105,6 +105,15 @@ static void probe_class_init(ObjectClass *oc, const void *data)
     sc->wire_address = probe_wire_address;
 }
 
+/* The device takes its serial from the machine's model; any ten bytes do. */
+static DeviceState *module_new(void)
+{
+    DeviceState *dev = qdev_new(TYPE_SGI_O2000_MODULE_MGMT);
+
+    qdev_prop_set_string(dev, "model-serial", "KORIGAMI01");
+    return dev;
+}
+
 enum { LINE_RESET, LINE_NMI, LINE_POWER };
 
 typedef struct Fixture {
@@ -131,7 +140,7 @@ static void advance_to(int64_t time)
 
 static void setup(Fixture *f, gconstpointer unused)
 {
-    DeviceState *dev = qdev_new(TYPE_SGI_O2000_MODULE_MGMT);
+    DeviceState *dev = module_new();
     static const char *const names[] = { "reset", "nmi", "power" };
     unsigned i;
 
@@ -553,7 +562,7 @@ static void test_machine_reset(Fixture *f, gconstpointer unused)
 static void test_declared_action_needs_its_line(Fixture *f,
                                                 gconstpointer connected)
 {
-    DeviceState *dev = qdev_new(TYPE_SGI_O2000_MODULE_MGMT);
+    DeviceState *dev = module_new();
     static const char *const names[] = { "reset", "nmi", "power" };
     /* The first capability left unwired for each parametrisation. */
     static const char *const names_missing[] = { "can-reset", "can-nmi",
@@ -590,7 +599,7 @@ static void test_declared_action_needs_its_line(Fixture *f,
 static void test_connected_line_needs_its_capability(Fixture *f,
                                                      gconstpointer unused)
 {
-    DeviceState *dev = qdev_new(TYPE_SGI_O2000_MODULE_MGMT);
+    DeviceState *dev = module_new();
     Error *err = NULL;
 
     qdev_connect_gpio_out_named(dev, "power", 0,
@@ -613,7 +622,7 @@ static void test_connected_line_needs_its_capability(Fixture *f,
  */
 static void test_undeclared_actions_refused(void)
 {
-    DeviceState *dev = qdev_new(TYPE_SGI_O2000_MODULE_MGMT);
+    DeviceState *dev = module_new();
     SGIO2000ModuleMgmtState *module;
 
     qdev_realize(dev, NULL, &error_abort);
@@ -656,7 +665,7 @@ static void test_undeclared_actions_refused(void)
  */
 static void test_partial_capability(Fixture *f, gconstpointer unused)
 {
-    DeviceState *dev = qdev_new(TYPE_SGI_O2000_MODULE_MGMT);
+    DeviceState *dev = module_new();
     SGIO2000ModuleMgmtState *module;
 
     qdev_prop_set_bit(dev, "can-reset", true);
