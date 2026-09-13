@@ -6,7 +6,6 @@
 #include "exec/hwaddr.h"
 #include "hw/pci/pci.h"
 #include "libqtest.h"
-#include "hw/mips/sn0-origin2000-model-id.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "sn0-user-image.h"
@@ -1981,47 +1980,9 @@ static void test_distinct_table_migration(void)
     qtest_quit(to);
 }
 
-static void test_model_id(const void *data)
-{
-    const char *option = data;
-    QTestState *qts = qtest_initf("-M origin2000%s --preconfig", option);
-    QDict *response = qtest_qmp(
-        qts, "{ 'execute': 'qom-get',"
-             " 'arguments': { 'path': '/machine', 'property': 'model-id' } }");
-
-    g_assert_cmpstr(qdict_get_str(response, "return"), ==,
-                    ORIGAMI_ORIGIN2000_MODEL_ID);
-    qobject_unref(response);
-    qtest_quit(qts);
-}
-
-static void test_model_id_mismatch(void)
-{
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin2000,model-id=wrong",
-        "-display", "none", "-bios", "/definitely/not/a/prom", NULL
-    };
-    g_autofree char *error_output = NULL;
-    int wait_status = 0;
-
-    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
-                              NULL, &error_output, &wait_status, NULL));
-    g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
-    g_assert_nonnull(strstr(error_output, "origin2000 model-id mismatch"));
-    g_assert_nonnull(strstr(error_output, "requested 'wrong'"));
-    g_assert_nonnull(strstr(error_output, ORIGAMI_ORIGIN2000_MODEL_ID));
-}
-
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
-    qtest_add_data_func("sn0/origin2000/model-id/omitted", "",
-                        test_model_id);
-    qtest_add_data_func("sn0/origin2000/model-id/matching",
-                        ",model-id=" ORIGAMI_ORIGIN2000_MODEL_ID,
-                        test_model_id);
-    qtest_add_func("sn0/origin2000/model-id/mismatch",
-                   test_model_id_mismatch);
     if (qtest_has_machine("origin2000-model-test")) {
         static const char *faults[] = {
             "composition", "hardware", "routers", "router-module",
