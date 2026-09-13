@@ -1007,6 +1007,19 @@ static void sgi_hub_kick_polled_peer(CPUState *peer, const char *reason)
     sgi_hub_kick_peer(peer, reason);
 }
 
+/* Slice B's PEND1 credit is about to be set or spent; was it held? */
+static void sgi_hub_trace_pend1_credit(SGIHubState *s, const char *what)
+{
+    if (trace_event_get_state_backends(TRACE_SGI_HUB_PEND1_CREDIT)) {
+        CPUState *cpu = current_cpu;
+
+        trace_sgi_hub_pend1_credit(cpu ? cpu->cpu_index : -1, s->cpu_base,
+                                   sgi_hub_programmed_nasid(s), what,
+                                   s->pi_int_pend1_primary_credit,
+                                   cpu ? cpu->cc->get_pc(cpu) : 0);
+    }
+}
+
 static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
 {
     unsigned int number = val & PI_INT_MODIFY_NUMBER;
@@ -1024,6 +1037,7 @@ static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
 
     /* Credit slice B a PEND1 snapshot before kicking it: the PROM's bit 113. */
     if (bank == 1 && number == 113 && primary && current_cpu == primary) {
+        sgi_hub_trace_pend1_credit(s, "set");
         s->pi_int_pend1_primary_credit = true;
     }
 
@@ -1044,6 +1058,7 @@ static uint64_t sgi_hub_int_pend1_read(SGIHubState *s)
     if (s->cpus >= 2 && primary && secondary && current_cpu == secondary &&
         (value & (1ULL << (113 - SGI_HUB_BANK_BITS)))) {
         if (s->pi_int_pend1_primary_credit) {
+            sgi_hub_trace_pend1_credit(s, "consumed");
             s->pi_int_pend1_primary_credit = false;
         } else {
             sgi_hub_kick_polled_peer(primary, "pend1-poll");
