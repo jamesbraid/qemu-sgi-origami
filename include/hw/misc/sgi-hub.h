@@ -10,6 +10,7 @@
 #include "qemu/units.h"
 #include "hw/1wire/ds2502.h"
 #include "hw/1wire/onewire.h"
+#include "hw/core/clock.h"
 #include "hw/core/irq.h"
 #include "hw/misc/sgi-diagnostic.h"
 #include "qemu/timer.h"
@@ -232,7 +233,12 @@ struct SGIHubState {
     uint64_t pi_int_pend_seen[SGI_HUB_PROCESSORS][SGI_HUB_PENDING_BANKS];
     bool pi_int_pend_seen_valid[SGI_HUB_PROCESSORS][SGI_HUB_PENDING_BANKS];
 
-    /* Virtual-clock time at which the real-time counter read zero. */
+    /*
+     * The clock the counter counts, and the virtual-clock time at which it
+     * read zero. The rate is the machine's, not this device's: the Hub clock
+     * is a separate domain because no source relates the two.
+     */
+    Clock *rt_clk;
     int64_t pi_rt_origin_ns;
 
     /* A match pends whether or not enabled; enable only gates the line. */

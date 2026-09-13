@@ -243,6 +243,7 @@ typedef struct SN0NodeState {
     uint16_t *banks_mb;
 
     Clock *cpuclk;
+    Clock *rtclk;
     MIPSCPU *cpu[SN0_MAX_CPUS_PER_NODE];
     MemoryRegion cpu_sysmem[SN0_MAX_CPUS_PER_NODE];
     MemoryRegion sysmem_alias[SN0_MAX_CPUS_PER_NODE];
@@ -329,6 +330,13 @@ struct SN0MachineState {
 
     /* The product reference clock every node's processors derive from. */
     Clock *cpu_refclk;
+
+    /*
+     * The clock every node's real-time counter counts. Separate from the
+     * processor reference because no source relates the two rates; see the
+     * Hub processor-interface datasheet.
+     */
+    Clock *rt_refclk;
 
     /* Host diagnostics only; not guest-visible and not migrated. */
     bool diagnostic_recording;

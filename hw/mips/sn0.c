@@ -1323,6 +1323,7 @@ static void sn0_node_create_hub(SN0NodeState *node)
                          ctz64(map->node_stride));
     qdev_prop_set_uint32(DEVICE(&node->hub), "claim-space-shift",
                          MIPS_UNCACHED_WINDOW_SHIFT);
+    qdev_connect_clock_in(DEVICE(&node->hub), "rt-clk", node->rtclk);
     sysbus_realize(SYS_BUS_DEVICE(&node->hub), &error_fatal);
 
     for (slice = 0; slice < node->nr_cpus; slice++) {
@@ -1562,6 +1563,8 @@ static void sn0_init(MachineState *machine)
 
     s->cpu_refclk = clock_new(OBJECT(machine), "cpu-refclk");
     clock_set_hz(s->cpu_refclk, model->cpu_clock_hz);
+    s->rt_refclk = clock_new(OBJECT(machine), "rt-refclk");
+    clock_set_hz(s->rt_refclk, model->rtc_clock_hz);
 
     /*
      * The fabric that joins the Hubs, built from the profile before any
@@ -1635,6 +1638,7 @@ static void sn0_init(MachineState *machine)
                             machine->kernel_filename));
         qdev_prop_set_array(DEVICE(node), "banks-mb", banks_mb);
         qdev_connect_clock_in(DEVICE(node), "cpu-refclk", s->cpu_refclk);
+        qdev_connect_clock_in(DEVICE(node), "rt-refclk", s->rt_refclk);
 
         /*
          * The runtime Hub state the machine owns: its programmed node number
@@ -1821,6 +1825,8 @@ static void sn0_node_instance_init(Object *obj)
     object_initialize_child(obj, "hub", &node->hub, TYPE_SGI_HUB);
     node->cpuclk = qdev_init_clock_in(DEVICE(obj), "cpu-refclk",
                                       NULL, NULL, 0);
+    node->rtclk = qdev_init_clock_in(DEVICE(obj), "rt-refclk",
+                                     NULL, NULL, 0);
 }
 
 static void sn0_node_unrealize(DeviceState *dev)
