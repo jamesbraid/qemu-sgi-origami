@@ -65,6 +65,11 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define TI_GCR_OPMODE       0x618
 #define TI_GCR_EVENTCONS_IDX 0x628
 #define TI_GCR_RXRETURNCONS_IDX 0x680
+#define TI_GCR_CMDRING      0x700
+#define TI_MB_CMDPROD_IDX   0x50c
+#define TI_CMD_RFRSH_STATS  0x11
+/* Word index of ifHCOutBroadcastPkts in the block at the GIB's own head. */
+#define STAT_HC_OUT_BROADCAST (50 * 4)
 
 /* MISC_HOST_CTL bits. */
 #define TI_MHC_INTSTATE      0x00000001
@@ -713,7 +718,18 @@ static void test_operational_ring_migration(void)
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, from_sv), ==, 0);
     tigon_boot_netdev(&from, from_sv[1]);
     close(from_sv[1]);
+    net_recv_timeout(from_sv[0], 5);
     tigon_operational(&from, false);
+
+    /* One frame before the migration, so a counter has something to keep. */
+    qtest_memwrite(from.qs->qts, from.tx_buf, test_frame, sizeof(test_frame));
+    dma_st_hostaddr(&from, from.tx_ring, from.tx_buf);
+    dma_stl(&from, from.tx_ring + 8,
+            ((uint32_t)sizeof(test_frame) << 16) | TI_BDFLAG_END);
+    dma_stl(&from, from.tx_ring + 12, 0);
+    reg_wr(&from, TI_MB_SENDPROD_IDX, 1);
+    len = net_recv_frame(from_sv[0], got, sizeof(got));
+    g_assert_cmpuint(len, ==, sizeof(test_frame));
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, to_sv), ==, 0);
     tigon_boot_netdev_args(&to, to_sv[1], incoming);
@@ -743,17 +759,29 @@ static void test_operational_ring_migration(void)
     g_assert_cmphex(dma_ldl(&to, to.ev_prod), ==, 1);
     g_assert_cmphex(reg_rd(&to, TI_GCR_OPMODE), ==, 0);
 
+    /* The consumer index crossed with the device: this is the second slot. */
     qtest_memwrite(to.qs->qts, to.tx_buf, test_frame, sizeof(test_frame));
-    dma_st_hostaddr(&to, to.tx_ring, to.tx_buf);
-    dma_stl(&to, to.tx_ring + 8,
+    dma_st_hostaddr(&to, to.tx_ring + 16, to.tx_buf);
+    dma_stl(&to, to.tx_ring + 24,
             ((uint32_t)sizeof(test_frame) << 16) | TI_BDFLAG_END);
-    dma_stl(&to, to.tx_ring + 12, 0);
-    reg_wr(&to, TI_MB_SENDPROD_IDX, 1);
+    dma_stl(&to, to.tx_ring + 28, 0);
+    reg_wr(&to, TI_MB_SENDPROD_IDX, 2);
 
     len = net_recv_frame(to_sv[0], got, sizeof(got));
     g_assert_cmpuint(len, ==, sizeof(test_frame));
     g_assert_cmpmem(got, len, test_frame, sizeof(test_frame));
-    g_assert_cmphex(dma_ldl(&to, to.tx_cons), ==, 1);
+    g_assert_cmphex(dma_ldl(&to, to.tx_cons), ==, 2);
+
+    /*
+     * The counters are device state and have to cross with it: two broadcast
+     * frames have gone out, one on each side of the migration, and the
+     * destination has to report both. A 64-bit counter is two words, most
+     * significant first.
+     */
+    reg_wr(&to, TI_GCR_CMDRING, (uint32_t)TI_CMD_RFRSH_STATS << 24);
+    reg_wr(&to, TI_MB_CMDPROD_IDX, 1);
+    g_assert_cmphex(dma_ldl(&to, to.gib + STAT_HC_OUT_BROADCAST), ==, 0);
+    g_assert_cmphex(dma_ldl(&to, to.gib + STAT_HC_OUT_BROADCAST + 4), ==, 2);
 
     tigon_stop(&to);
     tigon_stop(&from);
