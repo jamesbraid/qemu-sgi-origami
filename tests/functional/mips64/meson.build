@@ -9,6 +9,12 @@ test_mips64_timeouts = {
   # four times that for a heavily contended CI host; the previous
   # unlisted default of 90 left under half.
   'sn0_smp' : 240,
+  # Three short VM launches, twenty machine resets each: 18s for the whole
+  # script on a host at load 174 (measured 2026-09-13). Each case gives the
+  # guest 60s of its own before declaring failure, so 300 covers all three
+  # running out that budget in sequence and still reporting which one did,
+  # rather than the whole script being killed with nothing to read.
+  'sn0_port_reset' : 300,
   # One test method per origin200-matrix row whose speed column says quick
   # runs after another in this one script (test_origin200_matrix.py), each
   # budgeted up to its own cell.timeout before declaring FAIL: today the
@@ -157,6 +163,7 @@ test_mips64_timeouts = {
 
 tests_mips64_system_quick = [
   'sn0_smp',
+  'sn0_port_reset',
   'mttcg_cause',
   'origin200_matrix',
   'origin2000_cache_reset',

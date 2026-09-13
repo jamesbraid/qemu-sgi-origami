@@ -2475,12 +2475,53 @@ static void sgi_hub_store_pi_calias_size(SGIHubState *s, unsigned arg,
     sgi_hub_calias_update(s);
 }
 
+/*
+ * Ask for the reset and stop every processor, from queued work on the
+ * processor that asked for it. The work runs at that processor's next
+ * translation-block boundary, outside the execution loop, which is where
+ * a processor may be stopped.
+ */
+static void sgi_hub_request_machine_reset(CPUState *cs, run_on_cpu_data data)
+{
+    CPUState *cpu;
+
+    qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    CPU_FOREACH(cpu) {
+        cpu_pause(cpu);
+    }
+}
+
+/*
+ * A reset request only wakes the main loop, which performs the reset when
+ * it next runs, and the processors keep executing until it does. How many
+ * instructions the other processors run after this write is then host
+ * scheduling's answer, and a different one on every run. The board stops
+ * both slices of a node together.
+ *
+ * Stopping them from the requesting processor's own queued work fixes that
+ * point at the guest's write instead. Round-robin execution reaches the
+ * work before it schedules any other processor, so no other processor
+ * executes another instruction, and every one of them is already stopped
+ * when the main loop performs the reset. Multi-threaded execution cannot
+ * promise that -- the peers are running on their own host threads -- and
+ * this bounds them to their own next block boundary rather than to
+ * whenever the main loop arrives.
+ *
+ * With no processor to carry the work, as under qtest, the request is all
+ * there is to make.
+ */
 static void sgi_hub_write_port_reset(SGIHubState *s, hwaddr addr,
                                      unsigned arg, uint64_t val,
                                      unsigned size)
 {
     /* Bit 0 alone: the three writers set different companion bits. */
-    if (val & NI_PORT_RESET_LOCAL) {
+    if (!(val & NI_PORT_RESET_LOCAL)) {
+        return;
+    }
+    if (current_cpu) {
+        async_run_on_cpu(current_cpu, sgi_hub_request_machine_reset,
+                         RUN_ON_CPU_NULL);
+    } else {
         qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
     }
 }
