@@ -60,12 +60,12 @@ def failure_markers_present(log):
 
 
 # The real PROM image and the cpu.mdk this test refuses to run without.
-# The PROM digest is test_prom_sash.py's own 6.5-base entry; the cpu.mdk
+# The PROM digest is test_prom_sash.py's own 6.5.30 entry; the cpu.mdk
 # digest is the extraction record in the project checkout
 # (docs/notebooks/firmware-diags.md and the installed manifest beside the
 # mirror's extract), reproduced by tools/extract-irix mdk.
 PROM_SHA256 = (
-    "14e0d0a77b92154e3b33573f30608f241ded249db6060fba9f97bfd00b2145b2"
+    "c2c69bf33c375b43ec7ac511fab41ddf595be1b6838ae717e58a9a1273437fdd"
 )
 CPU_MDK_SHA256 = (
     "8a72e5578436b076bae72f6243940a523364ea961604d6070de7f40b408d5d89"

@@ -103,15 +103,15 @@ from lib_prom_sash import (NETBOOT_PATH, artifact_identity_problems,
 
 # The release this test's real boot drives by default -- matching
 # test_prom_boot.py's and test_prom_diagnostics.py's own default
-# (sash-gate's CLI default is also 6.5-base). lib_prom_sash.RELEASES
-# carries 6.5.30 too so the verdict logic and its unit tests keep
+# (sash-gate's CLI default is also 6.5.30). lib_prom_sash.RELEASES
+# carries 6.5-base too so the verdict logic and its unit tests keep
 # sash-gate's --release choice represented even though this one
 # QemuSystemTest method drives one release at a time.
-RELEASE = "6.5-base"
+RELEASE = "6.5.30"
 
 # Where ORIGAMI_ASSETS resolves the real firmware and boot tree, matching
 # test_prom_diagnostics.py's FIRMWARE_REL/TFTP_REL and tools/sashlib.py's
-# RELEASES["6.5-base"] in the project checkout: ORIGAMI_ASSETS names a
+# RELEASES["6.5.30"] in the project checkout: ORIGAMI_ASSETS names a
 # CHECKOUT, not assets/ itself.
 FIRMWARE_REL = os.path.join('assets', 'firmware', RELEASE,
                             'ip27prom.payload.bin')
