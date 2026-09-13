@@ -186,42 +186,17 @@ int get_physical_address(CPUMIPSState *env, hwaddr *physical,
     } else if (address < 0xC000000000000000ULL) {
         /* xkphys */
         uint64_t pa = address & 0x07FFFFFFFFFFFFFFULL;
-
-        /*
-         * The two-bit uncached attribute goes out to the system interface
-         * alongside the address, and an unmapped reference takes it from
-         * address bits 58:57. Those two bits are not part of the physical
-         * address and, for an uncached or uncached accelerated reference, are
-         * not checked for address errors; only bits 56:40 have to be zero.
-         * Any other cache algorithm keeps the narrower rule that bits 58:40
-         * must be zero.
-         *
-         * The SGI Origin address map is built on this: the four values of the
-         * attribute are how a processor says whether an uncached reference is
-         * meant for node memory, for the Hub's own registers, for a crossbar
-         * widget, or for a special memory operation.
-         */
-        hwaddr window = 0;
         unsigned int cca = (address >> 59) & 0x7;
-
-        if (env->cfg.uncached_attribute) {
-            if (cca == 2 || cca == 7) {
-                /*
-                 * The attribute is a separate signal, not address, so it has
-                 * nowhere to live in a physical address. Give it one: the
-                 * memory system sees it above the physical address, which is
-                 * what lets a machine tell an uncached reference to memory
-                 * from one to a register on the other side of the Hub.
-                 * Attribute 3 is memory and is placed at window zero, so a
-                 * plain physical address still means memory and nothing that
-                 * does not use the attribute has to know about any of this.
-                 */
-                unsigned int attr = (address >> 57) & 3;
-
-                pa &= ~(3ULL << 57);
-                window = (hwaddr)((attr + 1) & 3) << MIPS_UNCACHED_WINDOW_SHIFT;
-            }
-        }
+        /*
+         * An uncached or uncached accelerated reference carries a two-bit
+         * attribute in address bits 58:57 that is not part of the physical
+         * address. The R10000 family drives it out to the system interface,
+         * which places the reference in one of four windows above memory;
+         * the window helper returns that offset and clears the attribute
+         * bits out of pa, and returns zero for every other reference.
+         */
+        hwaddr window = mips_r10k_xkphys_uncached_window(env, address, cca,
+                                                         &pa);
 
         if (pa <= env->PAMask) {
             /* KX/SX/UX bit to check for each xkphys EVA access mode */
