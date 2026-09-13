@@ -43,6 +43,7 @@
 #include "qemu/osdep.h"
 #include "hw/core/cpu.h"
 #include "migration/vmstate.h"
+#include "monitor/hmp.h"
 #include "monitor/monitor.h"
 #include "net/net.h"
 #include "qemu/audio.h"
@@ -100,7 +101,7 @@ void memory_region_del_subregion(MemoryRegion *mr, MemoryRegion *subregion)
 }
 
 /* Reached only by "info qtree", which no test binary has. */
-int monitor_printf(Monitor *mon, const char *fmt, ...)
+int monitor_hmp_printf(MonitorHMP *mon, const char *fmt, ...)
 {
     return 0;
 }
