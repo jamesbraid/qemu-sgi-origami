@@ -2,6 +2,7 @@
 /* Controlled resolved START events, not a multi-master arbitration model. */
 #include "qemu/osdep.h"
 #include "hw/i2c/i2c.h"
+#include "hw/i2c/sgi-i2c-wire.h"
 #include "qapi/error.h"
 #include "qemu/module.h"
 #include "migration/vmstate.h"
@@ -88,7 +89,6 @@ static void slave_class_init(ObjectClass *oc, const void *data)
     sc->event = slave_event;
     sc->send = slave_send;
     sc->recv = slave_recv;
-    sc->supports_master_ids = true;
 }
 
 static void legacy_slave_class_init(ObjectClass *oc, const void *data)
@@ -100,7 +100,7 @@ static void fixture_setup(Fixture *f, gconstpointer unused)
 {
     f->host = qdev_new(TYPE_TEST_HOST);
     qdev_realize(f->host, NULL, &error_abort);
-    f->bus = i2c_init_bus(f->host, "i2c");
+    f->bus = i2c_init_bus_type(TYPE_SGI_I2C_WIRE_BUS, f->host, "i2c");
     if (unused != GINT_TO_POINTER(2)) {
         g_assert_cmpint(i2c_bus_enable_master_ids(f->bus, 4), ==, 0);
     }
@@ -293,16 +293,6 @@ static void test_legacy_unchanged(Fixture *f, gconstpointer unused)
     g_assert_false(i2c_bus_busy(f->bus));
 }
 
-static void test_legacy_rejected(Fixture *f, gconstpointer unused)
-{
-    if (g_test_subprocess()) {
-        i2c_start_transfer(f->bus, 0x20, false);
-        return;
-    }
-    g_test_trap_subprocess(NULL, 0, 0);
-    g_test_trap_assert_failed();
-}
-
 static QEMUFile *state_file(int fd, bool output)
 {
     int copy = dup(fd);
@@ -321,11 +311,9 @@ static void test_migration_general_call(Fixture *f, gconstpointer unused)
 {
     TestSlave *c = (TestSlave *)i2c_slave_create_simple(
         f->bus, TYPE_TEST_SLAVE, 0x22);
-    TestSlave *slaves[] = { f->a, f->b, c };
     g_autofree char *path = NULL;
     int fd = g_file_open_tmp("test-i2c-masters-XXXXXX", &path, NULL);
     QEMUFile *file;
-    unsigned i;
 
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(unlink(path), ==, 0);
@@ -334,12 +322,8 @@ static void test_migration_general_call(Fixture *f, gconstpointer unused)
     g_assert_cmpint(i2c_bus_start_resolved(f->bus, 3), ==, 0);
     g_assert_cmpint(i2c_master_start_transfer(f->bus, 3, 0, false), ==, 0);
     file = state_file(fd, true);
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_bus, f->bus,
+    g_assert_cmpint(vmstate_save_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
                                       NULL, &error_abort), ==, 0);
-    for (i = 0; i < ARRAY_SIZE(slaves); i++) {
-        g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_slave, slaves[i],
-                                          NULL, &error_abort), ==, 0);
-    }
     qemu_put_byte(file, QEMU_VM_EOF);
     g_assert_cmpint(qemu_fclose(file), ==, 0);
     g_assert_cmpint(i2c_master_end_transfer(f->bus, 3), ==, 0);
@@ -347,12 +331,8 @@ static void test_migration_general_call(Fixture *f, gconstpointer unused)
     g_assert_cmpint(i2c_bus_start_resolved(f->bus, 1), ==, 0);
     g_assert_cmpint(i2c_master_start_transfer(f->bus, 1, 0x22, false), ==, 0);
     file = state_file(fd, false);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_bus, f->bus, 1,
-                                      &error_abort), ==, 0);
-    for (i = 0; i < ARRAY_SIZE(slaves); i++) {
-        g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_slave, slaves[i],
-                                          1, &error_abort), ==, 0);
-    }
+    g_assert_cmpint(vmstate_load_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
+                                       1, &error_abort), ==, 0);
     g_assert_cmpint(qemu_get_byte(file), ==, QEMU_VM_EOF);
     g_assert_cmpint(qemu_fclose(file), ==, 0);
     g_assert_true(f->bus->broadcast);
@@ -381,11 +361,7 @@ static void test_migration(Fixture *f, gconstpointer unmatched)
     g_assert_cmpint(i2c_master_start_transfer(f->bus, 3,
                     unmatched ? 0x30 : 0x20, true), ==, unmatched ? 1 : 0);
     file = state_file(fd, true);
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_bus, f->bus,
-                                      NULL, &error_abort), ==, 0);
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_slave, f->a,
-                                      NULL, &error_abort), ==, 0);
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_slave, f->b,
+    g_assert_cmpint(vmstate_save_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
                                       NULL, &error_abort), ==, 0);
     qemu_put_byte(file, QEMU_VM_EOF);
     g_assert_cmpint(qemu_fclose(file), ==, 0);
@@ -393,18 +369,15 @@ static void test_migration(Fixture *f, gconstpointer unmatched)
     g_assert_cmpint(i2c_bus_start_resolved(f->bus, 1), ==, 0);
     g_assert_cmpint(i2c_master_start_transfer(f->bus, 1, 0x21, false), ==, 0);
     file = state_file(fd, false);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_bus, f->bus, 1,
-                                      &error_abort), ==, 0);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_slave, f->a, 1,
-                                      &error_abort), ==, 0);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_slave, f->b, 1,
-                                      &error_abort), ==, 0);
+    g_assert_cmpint(vmstate_load_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
+                                       1, &error_abort), ==, 0);
     g_assert_cmpint(qemu_get_byte(file), ==, QEMU_VM_EOF);
     g_assert_cmpint(qemu_fclose(file), ==, 0);
     g_assert_true(i2c_bus_busy(f->bus));
     g_assert_cmpint(i2c_master_end_transfer(f->bus, 1), ==, -EPERM);
-    g_assert_cmpuint(f->bus->requested_address, ==, unmatched ? 0x30 : 0x20);
-    g_assert_true(f->bus->master_recv);
+    g_assert_cmpuint(SGI_I2C_WIRE_BUS(f->bus)->requested_address, ==,
+                     unmatched ? 0x30 : 0x20);
+    g_assert_true(SGI_I2C_WIRE_BUS(f->bus)->master_recv);
     g_assert_cmpint(i2c_master_send(f->bus, 3, 0x11), ==, -EINVAL);
     g_assert_cmpint(i2c_master_recv(f->bus, 3, &byte), ==,
                     unmatched ? -ENXIO : 0);
@@ -421,6 +394,10 @@ int main(int argc, char **argv)
     const TypeInfo slave = {
         .name = TYPE_TEST_SLAVE, .parent = TYPE_I2C_SLAVE,
         .instance_size = sizeof(TestSlave), .class_init = slave_class_init,
+        .interfaces = (const InterfaceInfo[]) {
+            { TYPE_I2C_WIRE_ENDPOINT },
+            { }
+        },
     };
     const TypeInfo legacy = {
         .name = TYPE_LEGACY_SLAVE, .parent = TYPE_I2C_SLAVE,
@@ -457,8 +434,6 @@ int main(int argc, char **argv)
                fixture_setup, test_unaudited_slave, fixture_teardown);
     g_test_add("/i2c-masters/legacy-unchanged", Fixture, GINT_TO_POINTER(2),
                fixture_setup, test_legacy_unchanged, fixture_teardown);
-    g_test_add("/i2c-masters/legacy-rejected", Fixture, NULL,
-               fixture_setup, test_legacy_rejected, fixture_teardown);
     g_test_add("/i2c-masters/migration-general-call", Fixture, NULL,
                fixture_setup, test_migration_general_call, fixture_teardown);
     g_test_add("/i2c-masters/migration-selected", Fixture, NULL,

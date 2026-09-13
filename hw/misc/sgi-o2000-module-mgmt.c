@@ -16,6 +16,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/i2c/pcf8584.h"
+#include "hw/i2c/sgi-i2c-wire.h"
 #include "hw/misc/sgi-o2000-module-mgmt.h"
 #include "hw/nvram/eeprom_at24c.h"
 #include "migration/vmstate.h"
@@ -813,7 +814,7 @@ static void mgmt_init(Object *obj)
 {
     SGIO2000ModuleMgmtState *s = SGI_O2000_MODULE_MGMT(obj);
 
-    s->bus = i2c_init_bus(DEVICE(obj), "i2c");
+    s->bus = i2c_init_bus_type(TYPE_SGI_I2C_WIRE_BUS, DEVICE(obj), "i2c");
     s->onewire_bus = onewire_create_bus(DEVICE(obj), "module-onewire");
     s->module_serial = mgmt_add_child(s, "module-serial",
                                       TYPE_ONEWIRE_DS2502);

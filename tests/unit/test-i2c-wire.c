@@ -2,6 +2,7 @@
 /* Timed pin fixtures exercise the shared engine, not PCF register timing. */
 #include "qemu/osdep.h"
 #include "hw/i2c/i2c.h"
+#include "hw/i2c/sgi-i2c-wire.h"
 #include "qapi/error.h"
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
@@ -112,14 +113,14 @@ static const VMStateDescription vmstate_test_slave = {
 static void slave_class_init(ObjectClass *oc, const void *data)
 {
     I2CSlaveClass *sc = I2C_SLAVE_CLASS(oc);
+    I2CWireEndpointClass *ec = I2C_WIRE_ENDPOINT_CLASS(oc);
 
     DEVICE_CLASS(oc)->vmsd = &vmstate_test_slave;
-    sc->supports_master_ids = true;
     sc->event = slave_event;
     sc->send = slave_send;
     sc->recv = slave_recv;
-    sc->wire_service = slave_wire_service;
-    sc->wire_address = slave_wire_address;
+    ec->wire_service = slave_wire_service;
+    ec->wire_address = slave_wire_address;
 }
 
 typedef struct Fixture {
@@ -145,7 +146,7 @@ static void setup_masters(Fixture *f, unsigned master_count)
 {
     f->host = qdev_new(TYPE_WIRE_HOST);
     qdev_realize(f->host, NULL, &error_abort);
-    f->bus = i2c_init_bus(f->host, "i2c");
+    f->bus = i2c_init_bus_type(TYPE_SGI_I2C_WIRE_BUS, f->host, "i2c");
     f->a = i2c_slave_create_simple(f->bus, TYPE_WIRE_SLAVE, 0x20);
     f->b = i2c_slave_create_simple(f->bus, TYPE_WIRE_SLAVE, 0x21);
     ((TestSlave *)f->a)->hold_service = I2C_WIRE_SERVICE_COUNT;
@@ -886,7 +887,7 @@ static void test_address_read_service_holds_preparation(Fixture *f,
     g_assert_cmpuint(a->services[I2C_WIRE_ADDRESS_RECV], ==, 1);
     g_assert_cmpuint(a->reads_at_service[I2C_WIRE_ADDRESS_RECV], ==, 0);
     g_assert_cmpuint(a->reads, ==, 0);
-    g_assert_true(f->a->wire_hold);
+    g_assert_true(i2c_wire_slave_state(f->a)->wire_hold);
     g_assert_false(i2c_wire_scl(f->bus));
     g_assert_cmpint(i2c_wire_hold(f->a, completed + 6, false), ==, 0);
     advance_to(completed + 5);
@@ -914,7 +915,7 @@ static void test_read_ack_service_holds_preparation(Fixture *f,
     g_assert_cmpuint(a->services[I2C_WIRE_READ_ACK], ==, 1);
     g_assert_cmpuint(a->reads_at_service[I2C_WIRE_READ_ACK], ==, 1);
     g_assert_cmpuint(a->reads, ==, 1);
-    g_assert_true(f->a->wire_hold);
+    g_assert_true(i2c_wire_slave_state(f->a)->wire_hold);
     g_assert_false(i2c_wire_scl(f->bus));
     g_assert_cmpint(i2c_wire_hold(f->a, completed + 6, false), ==, 0);
     advance_to(completed + 6);
@@ -1139,6 +1140,30 @@ static QEMUFile *state_file(int fd, bool save)
     return file;
 }
 
+/*
+ * The bus subclass carries masters, wire and every slave's wire state in one
+ * section, so a wire round-trip saves and loads only that.
+ */
+static void save_wire(int fd, Fixture *f)
+{
+    QEMUFile *file = state_file(fd, true);
+
+    g_assert_cmpint(vmstate_save_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
+                                      NULL, &error_abort), ==, 0);
+    qemu_put_byte(file, QEMU_VM_EOF);
+    g_assert_cmpint(qemu_fclose(file), ==, 0);
+}
+
+static void load_wire(int fd, Fixture *f)
+{
+    QEMUFile *file = state_file(fd, false);
+
+    g_assert_cmpint(vmstate_load_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
+                                      1, &error_abort), ==, 0);
+    g_assert_cmpint(qemu_get_byte(file), ==, QEMU_VM_EOF);
+    g_assert_cmpint(qemu_fclose(file), ==, 0);
+}
+
 enum {
     WIRE_MASTER_STATE_SIZE = 4 * sizeof(uint64_t) + 9,
     WIRE_CONTENDERS_OFFSET = I2C_WIRE_MAX_MASTERS * WIRE_MASTER_STATE_SIZE,
@@ -1150,7 +1175,7 @@ enum {
 
 static off_t wire_payload_offset(int fd)
 {
-    static const char subsection[] = "i2c_bus/wire";
+    static const char subsection[] = "sgi-i2c-wire-bus/wire";
     g_autofree uint8_t *data = NULL;
     off_t size = lseek(fd, 0, SEEK_END);
 
@@ -1192,8 +1217,6 @@ static void test_migration(Fixture *f, gconstpointer held)
     g_autofree char *path = NULL;
     int fd = g_file_open_tmp("test-i2c-wire-XXXXXX", &path, NULL);
     int64_t start = virtual_time;
-    QEMUFile *file;
-    I2CSlave *slaves[] = { f->a, f->b };
     g_autoptr(GArray) expected =
         g_array_new(false, false, sizeof(I2CWireEvent));
 
@@ -1213,15 +1236,7 @@ static void test_migration(Fixture *f, gconstpointer held)
         g_assert_cmpint(i2c_wire_hold(f->b, start + 40, false), ==, 0);
     }
     advance_to(start + (held ? 35 : 22));
-    file = state_file(fd, true);
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_bus, f->bus,
-                                      NULL, &error_abort), ==, 0);
-    for (unsigned i = 0; i < ARRAY_SIZE(slaves); i++) {
-        g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_slave, slaves[i],
-                                          NULL, &error_abort), ==, 0);
-    }
-    qemu_put_byte(file, QEMU_VM_EOF);
-    g_assert_cmpint(qemu_fclose(file), ==, 0);
+    save_wire(fd, f);
     g_array_set_size(f->events, 0);
     advance_to(start + 45);
     g_array_append_vals(expected, f->events->data, f->events->len);
@@ -1232,15 +1247,7 @@ static void test_migration(Fixture *f, gconstpointer held)
     g_assert_cmphex(i2c_wire_contenders(f->bus), ==, 0);
     /* The full VM restores virtual time separately from the device stream. */
     cpus_set_virtual_clock(start + (held ? 35 : 22));
-    file = state_file(fd, false);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_bus, f->bus, 1,
-                                      &error_abort), ==, 0);
-    for (unsigned i = 0; i < ARRAY_SIZE(slaves); i++) {
-        g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_slave, slaves[i],
-                                          1, &error_abort), ==, 0);
-    }
-    g_assert_cmpint(qemu_get_byte(file), ==, QEMU_VM_EOF);
-    g_assert_cmpint(qemu_fclose(file), ==, 0);
+    load_wire(fd, f);
     g_assert_true(i2c_bus_busy(f->bus));
     g_assert_false(i2c_wire_scl(f->bus));
     g_array_set_size(f->events, 0);
@@ -1265,8 +1272,6 @@ static void test_migration_prepared_read(Fixture *f, gconstpointer unused)
     g_autofree char *path = NULL;
     int fd = g_file_open_tmp("test-i2c-wire-read-XXXXXX", &path, NULL);
     TestSlave *a = (TestSlave *)f->a;
-    I2CSlave *slaves[] = { f->a, f->b };
-    QEMUFile *file;
     int64_t saved_time;
 
     g_assert_cmpint(fd, >=, 0);
@@ -1276,29 +1281,13 @@ static void test_migration_prepared_read(Fixture *f, gconstpointer unused)
     g_assert_true(write_byte(f, 0x41, 0x41, true));
     g_assert_cmpuint(a->reads, ==, 1);
     saved_time = virtual_time;
-    file = state_file(fd, true);
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_bus, f->bus,
-                                      NULL, &error_abort), ==, 0);
-    for (unsigned i = 0; i < ARRAY_SIZE(slaves); i++) {
-        g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_slave, slaves[i],
-                                          NULL, &error_abort), ==, 0);
-    }
-    qemu_put_byte(file, QEMU_VM_EOF);
-    g_assert_cmpint(qemu_fclose(file), ==, 0);
+    save_wire(fd, f);
 
     a->value = 0x5a;
     a->reads = a->nacks = 0;
     bus_cold_reset(BUS(f->bus));
     cpus_set_virtual_clock(saved_time);
-    file = state_file(fd, false);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_bus, f->bus, 1,
-                                      &error_abort), ==, 0);
-    for (unsigned i = 0; i < ARRAY_SIZE(slaves); i++) {
-        g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_slave, slaves[i],
-                                          1, &error_abort), ==, 0);
-    }
-    g_assert_cmpint(qemu_get_byte(file), ==, QEMU_VM_EOF);
-    g_assert_cmpint(qemu_fclose(file), ==, 0);
+    load_wire(fd, f);
     g_assert_cmphex(read_byte(f, false, false), ==, 0xa5);
     g_assert_cmpuint(a->reads, ==, 0);
     g_assert_cmpuint(a->nacks, ==, 1);
@@ -1313,8 +1302,6 @@ static void test_migration_service_hold(Fixture *f, gconstpointer reverse)
     TestSlave *b = (TestSlave *)f->b;
     I2CSlave *first = reverse ? f->b : f->a;
     I2CSlave *second = reverse ? f->a : f->b;
-    I2CSlave *slaves[] = { f->a, f->b };
-    QEMUFile *file;
     int64_t completed, saved_time;
 
     g_assert_cmpint(fd, >=, 0);
@@ -1327,38 +1314,22 @@ static void test_migration_service_hold(Fixture *f, gconstpointer reverse)
     g_assert_cmpint(i2c_wire_hold(first, completed + 6, false), ==, 0);
     advance_to(completed + 6);
     g_assert_false(i2c_wire_scl(f->bus));
-    g_assert_false(first->wire_hold);
-    g_assert_cmphex(first->wire_hold_phase, ==, 0);
-    g_assert_true(second->wire_hold);
-    g_assert_cmphex(second->wire_hold_phase, !=, 0);
+    g_assert_false(i2c_wire_slave_state(first)->wire_hold);
+    g_assert_cmphex(i2c_wire_slave_state(first)->wire_hold_phase, ==, 0);
+    g_assert_true(i2c_wire_slave_state(second)->wire_hold);
+    g_assert_cmphex(i2c_wire_slave_state(second)->wire_hold_phase, !=, 0);
     g_assert_cmpint(i2c_wire_hold(second, completed + 10, false), ==, 0);
     saved_time = virtual_time;
-    file = state_file(fd, true);
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_bus, f->bus,
-                                      NULL, &error_abort), ==, 0);
-    for (unsigned i = 0; i < ARRAY_SIZE(slaves); i++) {
-        g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_slave, slaves[i],
-                                          NULL, &error_abort), ==, 0);
-    }
-    qemu_put_byte(file, QEMU_VM_EOF);
-    g_assert_cmpint(qemu_fclose(file), ==, 0);
+    save_wire(fd, f);
 
     a->services[I2C_WIRE_WRITE] = b->services[I2C_WIRE_WRITE] = 0;
     bus_cold_reset(BUS(f->bus));
     cpus_set_virtual_clock(saved_time);
-    file = state_file(fd, false);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_bus, f->bus, 1,
-                                      &error_abort), ==, 0);
-    for (unsigned i = 0; i < ARRAY_SIZE(slaves); i++) {
-        g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_slave, slaves[i],
-                                          1, &error_abort), ==, 0);
-    }
-    g_assert_cmpint(qemu_get_byte(file), ==, QEMU_VM_EOF);
-    g_assert_cmpint(qemu_fclose(file), ==, 0);
-    g_assert_false(first->wire_hold);
-    g_assert_cmphex(first->wire_hold_phase, ==, 0);
-    g_assert_true(second->wire_hold);
-    g_assert_cmphex(second->wire_hold_phase, !=, 0);
+    load_wire(fd, f);
+    g_assert_false(i2c_wire_slave_state(first)->wire_hold);
+    g_assert_cmphex(i2c_wire_slave_state(first)->wire_hold_phase, ==, 0);
+    g_assert_true(i2c_wire_slave_state(second)->wire_hold);
+    g_assert_cmphex(i2c_wire_slave_state(second)->wire_hold_phase, !=, 0);
     g_assert_false(i2c_wire_scl(f->bus));
     advance_to(completed + 10);
     g_assert_true(i2c_wire_scl(f->bus));
@@ -1372,8 +1343,6 @@ static void test_migration_deferred_read(Fixture *f, gconstpointer unused)
     g_autofree char *path = NULL;
     int fd = g_file_open_tmp("test-i2c-wire-deferred-XXXXXX", &path, NULL);
     TestSlave *a = (TestSlave *)f->a;
-    I2CSlave *slaves[] = { f->a, f->b };
-    QEMUFile *file;
     int64_t completed, saved_time;
 
     g_assert_cmpint(fd, >=, 0);
@@ -1384,33 +1353,17 @@ static void test_migration_deferred_read(Fixture *f, gconstpointer unused)
     g_assert_true(write_byte(f, 0x41, 0x41, true));
     completed = saved_time = virtual_time;
     g_assert_cmpuint(a->reads, ==, 0);
-    g_assert_true(f->a->wire_hold);
-    file = state_file(fd, true);
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_bus, f->bus,
-                                      NULL, &error_abort), ==, 0);
-    for (unsigned i = 0; i < ARRAY_SIZE(slaves); i++) {
-        g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_slave, slaves[i],
-                                          NULL, &error_abort), ==, 0);
-    }
-    qemu_put_byte(file, QEMU_VM_EOF);
-    g_assert_cmpint(qemu_fclose(file), ==, 0);
+    g_assert_true(i2c_wire_slave_state(f->a)->wire_hold);
+    save_wire(fd, f);
 
     a->reads = 0;
     a->services[I2C_WIRE_ADDRESS_RECV] = 0;
     bus_cold_reset(BUS(f->bus));
     cpus_set_virtual_clock(saved_time);
-    file = state_file(fd, false);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_bus, f->bus, 1,
-                                      &error_abort), ==, 0);
-    for (unsigned i = 0; i < ARRAY_SIZE(slaves); i++) {
-        g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_slave, slaves[i],
-                                          1, &error_abort), ==, 0);
-    }
-    g_assert_cmpint(qemu_get_byte(file), ==, QEMU_VM_EOF);
-    g_assert_cmpint(qemu_fclose(file), ==, 0);
+    load_wire(fd, f);
     g_assert_cmpuint(a->reads, ==, 0);
     g_assert_cmpuint(a->services[I2C_WIRE_ADDRESS_RECV], ==, 0);
-    g_assert_true(f->a->wire_hold);
+    g_assert_true(i2c_wire_slave_state(f->a)->wire_hold);
     g_assert_cmpint(i2c_wire_hold(f->a, completed + 6, false), ==, 0);
     advance_to(completed + 6);
     g_assert_cmpuint(a->reads, ==, 1);
@@ -1424,8 +1377,6 @@ static void test_migration_pending_service(Fixture *f, gconstpointer unused)
     g_autofree char *path = NULL;
     int fd = g_file_open_tmp("test-i2c-wire-pending-XXXXXX", &path, NULL);
     TestSlave *a = (TestSlave *)f->a;
-    I2CSlave *slaves[] = { f->a, f->b };
-    QEMUFile *file;
     int64_t saved_time;
 
     g_assert_cmpint(fd, >=, 0);
@@ -1435,34 +1386,18 @@ static void test_migration_pending_service(Fixture *f, gconstpointer unused)
     write_byte_to_ack(f, 0xa5, 0xa5);
     g_assert_cmpuint(a->writes, ==, 1);
     g_assert_cmpuint(a->services[I2C_WIRE_WRITE], ==, 0);
-    g_assert_true(f->a->wire_service_pending);
+    g_assert_true(i2c_wire_slave_state(f->a)->wire_service_pending);
     saved_time = virtual_time;
-    file = state_file(fd, true);
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_bus, f->bus,
-                                      NULL, &error_abort), ==, 0);
-    for (unsigned i = 0; i < ARRAY_SIZE(slaves); i++) {
-        g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_slave, slaves[i],
-                                          NULL, &error_abort), ==, 0);
-    }
-    qemu_put_byte(file, QEMU_VM_EOF);
-    g_assert_cmpint(qemu_fclose(file), ==, 0);
+    save_wire(fd, f);
 
     a->services[I2C_WIRE_WRITE] = 0;
     bus_cold_reset(BUS(f->bus));
     cpus_set_virtual_clock(saved_time);
-    file = state_file(fd, false);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_bus, f->bus, 1,
-                                      &error_abort), ==, 0);
-    for (unsigned i = 0; i < ARRAY_SIZE(slaves); i++) {
-        g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_slave, slaves[i],
-                                          1, &error_abort), ==, 0);
-    }
-    g_assert_cmpint(qemu_get_byte(file), ==, QEMU_VM_EOF);
-    g_assert_cmpint(qemu_fclose(file), ==, 0);
-    g_assert_true(f->a->wire_service_pending);
+    load_wire(fd, f);
+    g_assert_true(i2c_wire_slave_state(f->a)->wire_service_pending);
     g_assert_cmpuint(a->services[I2C_WIRE_WRITE], ==, 0);
     finish_ack(f);
-    g_assert_false(f->a->wire_service_pending);
+    g_assert_false(i2c_wire_slave_state(f->a)->wire_service_pending);
     g_assert_cmpuint(a->services[I2C_WIRE_WRITE], ==, 1);
     advance_to(virtual_time + 10);
     g_assert_cmpuint(a->services[I2C_WIRE_WRITE], ==, 1);
@@ -1482,26 +1417,18 @@ static void test_migration_rejects_bad_phase(Fixture *f,
     begin_bytes(f);
     g_assert_true(write_byte(f, 0x40, 0x40, true));
     write_byte_to_ack(f, 0xa5, 0xa5);
-    g_assert_true(f->a->wire_service_pending);
+    g_assert_true(i2c_wire_slave_state(f->a)->wire_service_pending);
+    i2c_wire_slave_state(f->a)->wire_service_phase++;
     file = state_file(fd, true);
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_bus, f->bus,
-                                      NULL, &error_abort), ==, 0);
-    f->a->wire_service_phase++;
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_slave, f->a,
-                                      NULL, &error_abort), ==, 0);
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_slave, f->b,
+    g_assert_cmpint(vmstate_save_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
                                       NULL, &error_abort), ==, 0);
     qemu_put_byte(file, QEMU_VM_EOF);
     g_assert_cmpint(qemu_fclose(file), ==, 0);
 
     bus_cold_reset(BUS(f->bus));
     file = state_file(fd, false);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_bus, f->bus, 1,
-                                      &error_abort), ==, 0);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_slave, f->a, 1,
-                                      &error_abort), ==, 0);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_slave, f->b, 1,
-                                      &local_err), ==, -EINVAL);
+    g_assert_cmpint(vmstate_load_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
+                                      1, &local_err), ==, -EINVAL);
     error_free(local_err);
     qemu_fclose(file);
     close(fd);
@@ -1517,25 +1444,17 @@ static void test_migration_rejects_line_mismatch(Fixture *f,
 
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(unlink(path), ==, 0);
+    i2c_wire_slave_state(f->a)->wire_hold = true;
     file = state_file(fd, true);
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_bus, f->bus,
-                                      NULL, &error_abort), ==, 0);
-    f->a->wire_hold = true;
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_slave, f->a,
-                                      NULL, &error_abort), ==, 0);
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_slave, f->b,
+    g_assert_cmpint(vmstate_save_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
                                       NULL, &error_abort), ==, 0);
     qemu_put_byte(file, QEMU_VM_EOF);
     g_assert_cmpint(qemu_fclose(file), ==, 0);
 
     bus_cold_reset(BUS(f->bus));
     file = state_file(fd, false);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_bus, f->bus, 1,
-                                      &error_abort), ==, 0);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_slave, f->a, 1,
-                                      &error_abort), ==, 0);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_slave, f->b, 1,
-                                      &local_err), ==, -EINVAL);
+    g_assert_cmpint(vmstate_load_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
+                                      1, &local_err), ==, -EINVAL);
     error_free(local_err);
     qemu_fclose(file);
     close(fd);
@@ -1551,18 +1470,18 @@ static void test_migration_rejects_idle_address(Fixture *f,
 
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(unlink(path), ==, 0);
-    f->bus->address_valid = true;
-    f->bus->requested_address = 0x20;
+    SGI_I2C_WIRE_BUS(f->bus)->address_valid = true;
+    SGI_I2C_WIRE_BUS(f->bus)->requested_address = 0x20;
     file = state_file(fd, true);
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_bus, f->bus,
+    g_assert_cmpint(vmstate_save_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
                                       NULL, &error_abort), ==, 0);
     qemu_put_byte(file, QEMU_VM_EOF);
     g_assert_cmpint(qemu_fclose(file), ==, 0);
 
     bus_cold_reset(BUS(f->bus));
     file = state_file(fd, false);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_bus, f->bus, 1,
-                                      &local_err), ==, -EINVAL);
+    g_assert_cmpint(vmstate_load_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
+                                       1, &local_err), ==, -EINVAL);
     error_free(local_err);
     qemu_fclose(file);
     close(fd);
@@ -1581,18 +1500,18 @@ static void test_migration_rejects_read_target_ack(Fixture *f,
     begin_bytes(f);
     g_assert_true(write_byte(f, 0x40, 0x40, true));
     write_byte_to_ack(f, 0xa5, 0xa5);
-    g_assert_true(f->a->wire_service_pending);
-    f->bus->master_recv = true;
+    g_assert_true(i2c_wire_slave_state(f->a)->wire_service_pending);
+    SGI_I2C_WIRE_BUS(f->bus)->master_recv = true;
     file = state_file(fd, true);
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_bus, f->bus,
+    g_assert_cmpint(vmstate_save_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
                                       NULL, &error_abort), ==, 0);
     qemu_put_byte(file, QEMU_VM_EOF);
     g_assert_cmpint(qemu_fclose(file), ==, 0);
 
     bus_cold_reset(BUS(f->bus));
     file = state_file(fd, false);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_bus, f->bus, 1,
-                                      &local_err), ==, -EINVAL);
+    g_assert_cmpint(vmstate_load_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
+                                       1, &local_err), ==, -EINVAL);
     error_free(local_err);
     qemu_fclose(file);
     close(fd);
@@ -1611,29 +1530,21 @@ static void test_migration_rejects_stale_hold_phase(Fixture *f,
     begin_bytes(f);
     g_assert_true(write_byte(f, 0x40, 0x40, true));
     write_byte_to_ack(f, 0xa5, 0xa5);
+    i2c_wire_slave_state(f->a)->wire_service_pending = false;
+    i2c_wire_slave_state(f->a)->wire_service_phase = 0;
+    i2c_wire_slave_state(f->a)->wire_service_kind = I2C_WIRE_SERVICE_COUNT;
+    i2c_wire_slave_state(f->a)->wire_hold = true;
+    i2c_wire_slave_state(f->a)->wire_hold_phase = 1;
     file = state_file(fd, true);
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_bus, f->bus,
-                                      NULL, &error_abort), ==, 0);
-    f->a->wire_service_pending = false;
-    f->a->wire_service_phase = 0;
-    f->a->wire_service_kind = I2C_WIRE_SERVICE_COUNT;
-    f->a->wire_hold = true;
-    f->a->wire_hold_phase = 1;
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_slave, f->a,
-                                      NULL, &error_abort), ==, 0);
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_slave, f->b,
+    g_assert_cmpint(vmstate_save_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
                                       NULL, &error_abort), ==, 0);
     qemu_put_byte(file, QEMU_VM_EOF);
     g_assert_cmpint(qemu_fclose(file), ==, 0);
 
     bus_cold_reset(BUS(f->bus));
     file = state_file(fd, false);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_bus, f->bus, 1,
-                                      &error_abort), ==, 0);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_slave, f->a, 1,
-                                      &error_abort), ==, 0);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_slave, f->b, 1,
-                                      &local_err), ==, -EINVAL);
+    g_assert_cmpint(vmstate_load_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
+                                      1, &local_err), ==, -EINVAL);
     error_free(local_err);
     qemu_fclose(file);
     close(fd);
@@ -1650,26 +1561,18 @@ static void test_migration_rejects_stale_service_phase(Fixture *f,
 
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(unlink(path), ==, 0);
+    i2c_wire_slave_state(f->a)->wire_service_phase = 1;
+    i2c_wire_slave_state(f->a)->wire_service_kind = I2C_WIRE_WRITE;
     file = state_file(fd, true);
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_bus, f->bus,
-                                      NULL, &error_abort), ==, 0);
-    f->a->wire_service_phase = 1;
-    f->a->wire_service_kind = I2C_WIRE_WRITE;
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_slave, f->a,
-                                      NULL, &error_abort), ==, 0);
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_slave, f->b,
+    g_assert_cmpint(vmstate_save_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
                                       NULL, &error_abort), ==, 0);
     qemu_put_byte(file, QEMU_VM_EOF);
     g_assert_cmpint(qemu_fclose(file), ==, 0);
 
     bus_cold_reset(BUS(f->bus));
     file = state_file(fd, false);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_bus, f->bus, 1,
-                                      &error_abort), ==, 0);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_slave, f->a, 1,
-                                      &error_abort), ==, 0);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_slave, f->b, 1,
-                                      &local_err), ==, -EINVAL);
+    g_assert_cmpint(vmstate_load_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
+                                      1, &local_err), ==, -EINVAL);
     error_free(local_err);
     qemu_fclose(file);
     close(fd);
@@ -1688,7 +1591,7 @@ static void test_migration_rejects_bad_byte_position(Fixture *f,
     g_assert_cmpint(unlink(path), ==, 0);
     sample_first_address_bit(f);
     file = state_file(fd, true);
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_bus, f->bus,
+    g_assert_cmpint(vmstate_save_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
                                       NULL, &error_abort), ==, 0);
     qemu_put_byte(file, QEMU_VM_EOF);
     g_assert_cmpint(qemu_fclose(file), ==, 0);
@@ -1697,8 +1600,8 @@ static void test_migration_rejects_bad_byte_position(Fixture *f,
 
     bus_cold_reset(BUS(f->bus));
     file = state_file(fd, false);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_bus, f->bus, 1,
-                                      &local_err), ==, -EINVAL);
+    g_assert_cmpint(vmstate_load_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
+                                       1, &local_err), ==, -EINVAL);
     error_free(local_err);
     qemu_fclose(file);
     close(fd);
@@ -1718,7 +1621,7 @@ static void test_migration_rejects_idle_bit_state(Fixture *f,
     g_assert_cmpint(unlink(path), ==, 0);
     sample_first_address_bit(f);
     file = state_file(fd, true);
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_bus, f->bus,
+    g_assert_cmpint(vmstate_save_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
                                       NULL, &error_abort), ==, 0);
     qemu_put_byte(file, QEMU_VM_EOF);
     g_assert_cmpint(qemu_fclose(file), ==, 0);
@@ -1731,8 +1634,8 @@ static void test_migration_rejects_idle_bit_state(Fixture *f,
 
     bus_cold_reset(BUS(f->bus));
     file = state_file(fd, false);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_bus, f->bus, 1,
-                                      &local_err), ==, -EINVAL);
+    g_assert_cmpint(vmstate_load_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
+                                       1, &local_err), ==, -EINVAL);
     error_free(local_err);
     qemu_fclose(file);
     close(fd);
@@ -1759,26 +1662,18 @@ static void test_migration_rejects_mid_byte_service_hold(
     }
     advance_to(low + 5);
     advance_to(low + 10);
+    i2c_wire_slave_state(f->a)->wire_hold = true;
+    i2c_wire_slave_state(f->a)->wire_hold_phase = 1;
     file = state_file(fd, true);
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_bus, f->bus,
-                                      NULL, &error_abort), ==, 0);
-    f->a->wire_hold = true;
-    f->a->wire_hold_phase = 1;
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_slave, f->a,
-                                      NULL, &error_abort), ==, 0);
-    g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_slave, f->b,
+    g_assert_cmpint(vmstate_save_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
                                       NULL, &error_abort), ==, 0);
     qemu_put_byte(file, QEMU_VM_EOF);
     g_assert_cmpint(qemu_fclose(file), ==, 0);
 
     bus_cold_reset(BUS(f->bus));
     file = state_file(fd, false);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_bus, f->bus, 1,
-                                      &error_abort), ==, 0);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_slave, f->a, 1,
-                                      &error_abort), ==, 0);
-    g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_slave, f->b, 1,
-                                      &local_err), ==, -EINVAL);
+    g_assert_cmpint(vmstate_load_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
+                                      1, &local_err), ==, -EINVAL);
     error_free(local_err);
     qemu_fclose(file);
     close(fd);
@@ -1796,7 +1691,7 @@ static void test_enable_refuses_a_mute_slave(void)
     I2CBus *bus;
 
     qdev_realize(host, NULL, &error_abort);
-    bus = i2c_init_bus(host, "i2c");
+    bus = i2c_init_bus_type(TYPE_SGI_I2C_WIRE_BUS, host, "i2c");
     i2c_slave_create_simple(bus, TYPE_WIRE_MUTE, 0x20);
 
     g_assert_cmpint(i2c_bus_enable_wire(bus, 2, NULL, NULL, &err), !=, 0);
@@ -1808,8 +1703,8 @@ static void test_enable_refuses_a_mute_slave(void)
      * Refused before it changed anything. A bus left holding participants it
      * cannot use would abort the first legacy transfer anybody attempted.
      */
-    g_assert_null(bus->wire);
-    g_assert_cmpuint(bus->master_count, ==, 0);
+    g_assert_null(SGI_I2C_WIRE_BUS(bus)->wire);
+    g_assert_cmpuint(SGI_I2C_WIRE_BUS(bus)->master_count, ==, 0);
 
     object_unparent(OBJECT(host));
     object_unref(OBJECT(host));
@@ -1821,6 +1716,10 @@ int main(int argc, char **argv)
     const TypeInfo slave = {
         .name = TYPE_WIRE_SLAVE, .parent = TYPE_I2C_SLAVE,
         .instance_size = sizeof(TestSlave), .class_init = slave_class_init,
+        .interfaces = (const InterfaceInfo[]) {
+            { TYPE_I2C_WIRE_ENDPOINT },
+            { }
+        },
     };
     Object *machine;
 

@@ -13,6 +13,7 @@
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "hw/i2c/i2c.h"
+#include "hw/i2c/sgi-i2c-wire.h"
 #include "hw/nvram/eeprom_at24c.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
@@ -290,7 +291,6 @@ void at24c_eeprom_class_init(ObjectClass *klass, const void *data)
 
     dc->realize = &at24c_eeprom_realize;
     dc->vmsd = &vmstate_at24c_eeprom;
-    k->supports_master_ids = true;
     k->event = &at24c_eeprom_event;
     k->recv = &at24c_eeprom_recv;
     k->send = &at24c_eeprom_send;
@@ -306,6 +306,10 @@ const TypeInfo at24c_eeprom_type = {
     .instance_size = sizeof(EEPROMState),
     .class_size = sizeof(I2CSlaveClass),
     .class_init = at24c_eeprom_class_init,
+    .interfaces = (const InterfaceInfo[]) {
+        { TYPE_I2C_WIRE_ENDPOINT },
+        { }
+    },
 };
 
 static void at24c_eeprom_register(void)

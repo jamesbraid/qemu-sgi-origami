@@ -13,6 +13,7 @@
 #include "qemu/log.h"
 #include "hw/core/cpu.h"
 #include "hw/i2c/pcf8584.h"
+#include "hw/i2c/sgi-i2c-wire.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
@@ -319,7 +320,7 @@ static void pcf8584_wire_event(void *opaque, const I2CWireEvent *event)
         trace_pcf8584_grant_publish(s->wire_master,
                                     pcf8584_current_cpu_index(),
                                     s->wire_grant, s->status, s->wire_phase,
-                                    s->bus->owner,
+                                    i2c_bus_resolved_owner(s->bus),
                                     i2c_wire_contenders(s->bus));
         s->data = s->wire_grant;
         s->wire_grant_pending = false;
@@ -488,8 +489,8 @@ static uint8_t pcf8584_wire_read_data(PCF8584State *s)
 
     trace_pcf8584_data_read(s->wire_master, pcf8584_current_cpu_index(),
                             val, s->wire_grant, s->status, s->wire_phase,
-                            s->wire_active,
-                            i2c_bus_busy(s->bus), s->bus->owner,
+                            s->wire_active, i2c_bus_busy(s->bus),
+                            i2c_bus_resolved_owner(s->bus),
                             i2c_wire_contenders(s->bus));
 
     if (s->wire_hold_release == PCF8584_HOLD_READ) {
@@ -514,7 +515,8 @@ static void pcf8584_wire_request_start(PCF8584State *s)
                                 pcf8584_current_cpu_index(), s->wire_grant,
                                 s->wire_grant_pending, s->status,
                                 s->wire_phase, s->wire_active,
-                                i2c_bus_busy(s->bus), s->bus->owner,
+                                i2c_bus_busy(s->bus),
+                                i2c_bus_resolved_owner(s->bus),
                                 i2c_wire_contenders(s->bus));
     if (s->wire_active) {
         /* Repeated start: the address byte has not been written yet. */
@@ -937,7 +939,7 @@ static void pcf8584_observe_address(PCF8584State *s, uint8_t address_byte)
 }
 
 static void pcf8584_bcast_rx_unmatched_address(I2CSlave *dev,
-                                                uint8_t address, bool recv)
+                                               uint8_t address, bool recv)
 {
     PCF8584State *s = PCF8584_BCAST_RX(dev)->chip;
     uint8_t address_byte = (address << 1) | recv;
@@ -1043,17 +1045,17 @@ static const VMStateDescription vmstate_pcf8584_bcast_rx = {
 static void pcf8584_bcast_rx_class_init(ObjectClass *klass, const void *data)
 {
     I2CSlaveClass *sc = I2C_SLAVE_CLASS(klass);
+    I2CWireEndpointClass *ec = I2C_WIRE_ENDPOINT_CLASS(klass);
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->vmsd = &vmstate_pcf8584_bcast_rx;
-    sc->supports_master_ids = true;
     sc->match_and_add = pcf8584_bcast_rx_match_and_add;
     sc->event = pcf8584_bcast_rx_event;
     sc->send = pcf8584_bcast_rx_send;
     sc->recv = pcf8584_bcast_rx_recv;
-    sc->wire_service = pcf8584_bcast_rx_wire_service;
-    sc->wire_address = pcf8584_bcast_rx_wire_address;
-    sc->unmatched_address = pcf8584_bcast_rx_unmatched_address;
+    ec->wire_service = pcf8584_bcast_rx_wire_service;
+    ec->wire_address = pcf8584_bcast_rx_wire_address;
+    ec->unmatched_address = pcf8584_bcast_rx_unmatched_address;
 }
 
 static void pcf8584_reset_hold(Object *obj, ResetType type)
@@ -1124,7 +1126,7 @@ static void pcf8584_realize(DeviceState *dev, Error **errp)
             error_setg(errp, "wire-master needs a bus link to share");
             return;
         }
-        s->bus = i2c_init_bus(dev, "i2c");
+        s->bus = i2c_init_bus_type(TYPE_SGI_I2C_WIRE_BUS, dev, "i2c");
     } else if (pcf8584_on_wire(s)) {
         /*
          * clock_after_loss is false: a loser stops contributing to the
@@ -1296,6 +1298,10 @@ static const TypeInfo pcf8584_types[] = {
         .parent        = TYPE_I2C_SLAVE,
         .instance_size = sizeof(PCF8584BcastRxState),
         .class_init    = pcf8584_bcast_rx_class_init,
+        .interfaces    = (const InterfaceInfo[]) {
+            { TYPE_I2C_WIRE_ENDPOINT },
+            { }
+        },
     },
 };
 
