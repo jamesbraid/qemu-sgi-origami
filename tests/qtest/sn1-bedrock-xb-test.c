@@ -518,6 +518,8 @@ static void test_migration(void)
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
     wait_for_migration(from);
+    /* The source completes when its state is sent, not when it is loaded. */
+    wait_for_migration(to);
     g_assert_cmphex(qtest_readq(to, XB_BASE + PARAMETERS), ==,
                     PARAMETERS_ACTIVE);
     g_assert_cmphex(qtest_readq(to, XB_BASE + SLOW_GRANT), ==, 0x89abcdef);

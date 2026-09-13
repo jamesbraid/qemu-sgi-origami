@@ -1064,6 +1064,8 @@ static void test_migration_inflight(void)
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
     migrate_wait(from);
+    /* The source completes when its state is sent, not when it is loaded. */
+    migrate_wait(to);
     qtest_qmp_assert_success(to, "{'execute':'cont'}");
     g_assert_cmphex(qtest_readq(to, REG_BASE + SCRATCH0), ==,
                     UINT64_C(0x13579bdf2468ace0));

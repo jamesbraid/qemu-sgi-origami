@@ -340,6 +340,8 @@ static void test_parent_migration(void)
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
     migrate_wait(from);
+    /* The source completes when its state is sent, not when it is loaded. */
+    migrate_wait(to);
     g_assert_cmphex(qtest_readq(to, IO_BASE + 0x150), ==,
                     UINT64_C(0x13579bdf2468ace0));
     g_assert_cmphex(qtest_readq(to, IO_BASE + 0x160), ==, 0x800);

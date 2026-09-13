@@ -405,6 +405,8 @@ static void test_migration_reset(void)
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
     wait_migration(from);
+    /* The source completes when its state is sent, not when it is loaded. */
+    wait_migration(to);
     g_assert_cmphex(reg_read(to, 0x20), ==, 0x24);
     g_assert_cmphex(reg_read(to, 0xc0), ==, 0x77);
     g_assert_cmphex(reg_read(to, 0x78), ==, 0x0f);

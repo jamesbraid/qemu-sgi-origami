@@ -630,6 +630,8 @@ static void test_migration(void)
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
     wait_for_migration(from);
+    /* The source completes when its state is sent, not when it is loaded. */
+    wait_for_migration(to);
     for (size_t i = 0; i < ARRAY_SIZE(fields); i++) {
         g_assert_cmphex(qtest_readq(to, LB_BASE + fields[i].offset), ==,
                         fields[i].expected);
@@ -677,6 +679,7 @@ static void test_microlan_migration(void)
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
     wait_for_migration(from);
+    wait_for_migration(to);
     lb_wait_for_clock_running(to);
 
     /* Nothing completed in transit: the deadline is still ahead. */

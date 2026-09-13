@@ -415,6 +415,8 @@ static void test_migration_reset(void)
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
     wait_migration(from);
+    /* The source completes when its state is sent, not when it is loaded. */
+    wait_migration(to);
     g_assert_true(qtest_get_irq(to, 0));
     card_write(to, 0x10, 0);
     g_assert_false(qtest_get_irq(to, 0));

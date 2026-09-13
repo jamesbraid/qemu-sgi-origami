@@ -250,6 +250,25 @@ static void test_peers(void)
     qtest_quit(q);
 }
 
+static void wait_for_migration(QTestState *qts)
+{
+    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+
+    for (;;) {
+        g_autoptr(QDict) response = qtest_qmp(qts,
+                                              "{'execute':'query-migrate'}");
+        QDict *result = qdict_get_qdict(response, "return");
+        const char *status = qdict_get_str(result, "status");
+
+        if (!strcmp(status, "completed")) {
+            return;
+        }
+        g_assert_cmpstr(status, !=, "failed");
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+}
+
 static void test_peer_migration(void)
 {
     g_autofree char *dir = g_dir_make_tmp("hub-outgoing-XXXXXX", NULL);
@@ -267,19 +286,9 @@ static void test_peer_migration(void)
     health(from, 0x200);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
-    g_test_timer_start();
-    for (;;) {
-        QDict *ret = qtest_qmp_assert_success_ref(from,
-            "{'execute':'query-migrate'}");
-        g_autofree char *status = g_strdup(qdict_get_str(ret, "status"));
-        qobject_unref(ret);
-        g_assert_cmpstr(status, !=, "failed");
-        if (!strcmp(status, "completed")) {
-            break;
-        }
-        g_assert_cmpfloat(g_test_timer_elapsed(), <, 30);
-        g_usleep(1000);
-    }
+    wait_for_migration(from);
+    /* The source completes when its state is sent, not when it is loaded. */
+    wait_for_migration(to);
     g_assert_cmphex(cpu_read(to, 0, HUB + 0x400160), ==, 0x1a00);
     g_assert_cmphex(cpu_read(to, 2, HUB + 0x600000), ==, identity);
     g_assert_cmphex(cpu_read(to, 0, BWIN + PROBE), ==, 0);
