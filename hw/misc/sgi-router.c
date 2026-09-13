@@ -207,9 +207,16 @@ static void sgi_router_nic_idle(SGIRouterState *s)
     s->nic_sample_ns = 0;
 }
 
-static void sgi_router_nic_tick(void *opaque)
+/*
+ * Bring the slot underway up to now: release it if its release deadline has
+ * passed, then finish it if its sample deadline has. The timer does this, but
+ * its callback needs the big lock, which firmware polling this register
+ * holds, so on a busy machine it lands milliseconds after both deadlines. An
+ * access applies what the deadlines already decided rather than waiting.
+ * Nothing moves ahead of a deadline, so polling consumes no bits.
+ */
+static void sgi_router_nic_advance(SGIRouterState *s)
 {
-    SGIRouterState *s = opaque;
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
     if (s->nic_phase == ROUTER_NIC_DRIVING && now >= s->nic_release_ns) {
@@ -231,10 +238,17 @@ static void sgi_router_nic_tick(void *opaque)
         s->nic_ulan |= RR_NIC_DONE | s->nic_candidate;
         sgi_router_nic_idle(s);
     }
-    if (s->nic_phase != ROUTER_NIC_IDLE) {
+    if (s->nic_phase == ROUTER_NIC_IDLE) {
+        timer_del(s->nic_timer);
+    } else {
         timer_mod(s->nic_timer, s->nic_phase == ROUTER_NIC_DRIVING ?
                                s->nic_release_ns : s->nic_sample_ns);
     }
+}
+
+static void sgi_router_nic_tick(void *opaque)
+{
+    sgi_router_nic_advance(opaque);
 }
 
 static bool sgi_router_nic_write(SGIRouterState *s, uint64_t value)
@@ -243,6 +257,7 @@ static bool sgi_router_nic_write(SGIRouterState *s, uint64_t value)
     unsigned int sample = extract64(value, 2, 8);
     int64_t now;
 
+    sgi_router_nic_advance(s);
     /* Reject-and-preserve is the model policy for undocumented overlap. */
     if (s->nic_phase != ROUTER_NIC_IDLE) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -659,6 +674,7 @@ static bool sgi_router_read(SGIRouterState *s, unsigned int arrival_port,
         *value = s->diag_parms;
         return true;
     case RR_NIC_ULAN:
+        sgi_router_nic_advance(s);
         *value = s->nic_ulan;
         return true;
     case RR_BIST_DATA:
