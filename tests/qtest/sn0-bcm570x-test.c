@@ -81,6 +81,8 @@
 #define BCM_HCC_MODE            0x3c00
 #define BCM_HCC_STATUSBLK_ADDR_HI 0x3c38
 #define BCM_HCC_STATUSBLK_ADDR_LO 0x3c3c
+#define BCM_HCC_RX_COAL_TICKS   0x3c08
+#define BCM_HCC_RX_MAX_COAL_BDS 0x3c10
 #define BCM_HCC_ENABLE          0x2
 #define BCM_RX_STD_RCB_HI       0x2450
 #define BCM_RX_STD_RCB_LO       0x2454
@@ -524,6 +526,8 @@ static void test_jumbo_ring_selected_by_standard_length(const void *data)
                IOVA(RET_RING_PHYS) & 0xffffffff);
     bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 8,
                64 << 16);
+    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    bar_writel(qts, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(qts, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
@@ -604,6 +608,8 @@ static void test_jumbo_ring_disabled_drops_oversize(const void *data)
                IOVA(RET_RING_PHYS) & 0xffffffff);
     bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 8,
                64 << 16);
+    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    bar_writel(qts, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(qts, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
@@ -687,6 +693,8 @@ static void test_jumbo_frame_overruns_descriptor(const void *data)
                IOVA(RET_RING_PHYS) & 0xffffffff);
     bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 8,
                64 << 16);
+    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    bar_writel(qts, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(qts, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
@@ -734,31 +742,42 @@ static void test_jumbo_frame_overruns_descriptor(const void *data)
 
 /*
  * Enabling host coalescing arms the periodic status tick, and stepping the
- * clock past one tick makes the model post one status block to the programmed
- * host address -- the smallest DMA the card can be made to do. Its address is
- * a direct-map IOVA, so on the swap route it would appear in the Bridge's
- * lane-swap trace. On the plain route it appears in the plain-translate trace
- * instead. The status block's first word checks the byte order. The model
- * writes the driver's big-endian layout, so the UPDATED flag's bytes must read
+ * one received frame under a max-coalesced count of one makes the model post
+ * one status block to the programmed host address. Its address is a direct-map
+ * IOVA, so on the swap route it would appear in the Bridge's lane-swap trace.
+ * On the plain route it appears in the plain-translate trace instead. The
+ * status block's first word checks the byte order. The model writes the
+ * driver's big-endian layout, so the UPDATED flag's bytes must read
  * 00 00 00 01 in guest memory.
+ *
+ * Pins the DMA route and the byte order, not arrival timing, so the floor is
+ * zeroed: the completion reaches the coalescing block the instant the frame
+ * lands, and the count of one reports it.
  */
 static void test_dma_rides_plain_route(const void *data)
 {
     char *logfile = NULL;
     char *log = NULL;
     char needle[64];
+    uint8_t frame[RX_FRAME_LEN];
+    uint8_t bd[BCM_RXBD_SIZE];
     uint8_t word0[4];
     QTestState *qts;
+    int sv[2];
     int fd;
 
     fd = g_file_open_tmp("bcm570x-dma-route-XXXXXX", &logfile, NULL);
     g_assert_cmpint(fd, >=, 0);
     close(fd);
 
-    qts = qtest_initf("%s -d trace:sgi_bridge_lane_swap_read,"
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
+                      "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC
+                      ",rx-arrival-latency-us=0"
+                      " -d trace:sgi_bridge_lane_swap_read,"
                       "trace:sgi_bridge_lane_swap_write,"
                       "trace:sgi_bridge_dma_xlate_plain -D %s",
-                      MACHINE_WITH_BRIDGE, logfile);
+                      sv[1], logfile);
     aim_window_at_bar(qts);
 
     /* Status block and receive rings at direct-map IOVAs. */
@@ -775,15 +794,20 @@ static void test_dma_rides_plain_route(const void *data)
                64 << 16);
 
     qtest_memset(qts, STATUS_PHYS, 0, 0x50);
+    qtest_memset(qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
+    bar_writel(qts, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(qts, BCM_RX_MODE, BCM_RXMODE_ENABLE);
+
+    memset(bd, 0, sizeof(bd));
+    put32be(bd + 0, IOVA(RX_BUF_PHYS) >> 32);
+    put32be(bd + 4, IOVA(RX_BUF_PHYS) & 0xffffffff);
+    qtest_memwrite(qts, STD_RING_PHYS, bd, sizeof(bd));
     bar_writel(qts, BCM_MBX_RX_STD_PROD_LO, 1);
-    /*
-     * Enabling host coalescing arms the periodic status tick (250 ms cap);
-     * the virtual clock only moves when stepped, so step it past one tick to
-     * make the block post.
-     */
-    qtest_clock_step(qts, 300 * 1000 * 1000);
+
+    build_rx_frame(frame);
+    net_send_frame(sv[0], frame, sizeof(frame));
+    wait_for_completed_descriptor(qts);
 
     /* Big-endian regime: the UPDATED flag lands as the driver reads it. */
     qtest_memread(qts, STATUS_PHYS, word0, sizeof(word0));
@@ -793,6 +817,8 @@ static void test_dma_rides_plain_route(const void *data)
     g_assert_cmphex(word0[3], ==, 0x01);
 
     qtest_quit(qts);
+    close(sv[0]);
+    close(sv[1]);
 
     g_assert_true(g_file_get_contents(logfile, &log, NULL, NULL));
 
@@ -816,12 +842,110 @@ static void test_dma_rides_plain_route(const void *data)
     g_free(logfile);
 }
 
+/*
+ * Poll the status block's receive producer, stepping the virtual clock the way
+ * wait_for_completed_descriptor does so a coalescing timer can expire.
+ */
+static void wait_for_status_rx_prod(QTestState *qts, uint16_t want)
+{
+    int attempt;
+
+    for (attempt = 0; attempt < 200; attempt++) {
+        if (status_rx_prod_be(qts) == want) {
+            return;
+        }
+        qtest_clock_step(qts, 1 * 1000 * 1000);
+        g_usleep(2000);
+    }
+    g_assert_cmphex(status_rx_prod_be(qts), ==, want);
+}
+
+/*
+ * What makes the chip write the status block, on the machine the card is
+ * really in. The guide gives four criteria and no others [57XX-PG105-R,
+ * printed page 63], each of them counted in buffer descriptors or measured by
+ * a coalescing timer, and a register left at zero turns its criterion off. So
+ * a frame received with neither receive criterion armed is completed into the
+ * return ring and never announced, however long the guest waits -- there is no
+ * clock of the chip's own behind the status block. Arming the count then makes
+ * the next frame post one update, whose producer names a completion already in
+ * the ring.
+ */
+static void test_status_block_update_criteria(const void *data)
+{
+    uint8_t frame[RX_FRAME_LEN];
+    uint8_t word0[4];
+    QTestState *qts;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
+                      "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC, sv[1]);
+    aim_window_at_bar(qts);
+
+    bar_writel(qts, BCM_HCC_STATUSBLK_ADDR_HI, IOVA(STATUS_PHYS) >> 32);
+    bar_writel(qts, BCM_HCC_STATUSBLK_ADDR_LO, IOVA(STATUS_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_RX_STD_RCB_HI, IOVA(STD_RING_PHYS) >> 32);
+    bar_writel(qts, BCM_RX_STD_RCB_LO, IOVA(STD_RING_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_RX_STD_RCB_MAXLEN, STD_BUF_SIZE << 16);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 0,
+               IOVA(RET_RING_PHYS) >> 32);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 4,
+               IOVA(RET_RING_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 8,
+               64 << 16);
+
+    /* Neither receive criterion armed: no descriptor count, no tick budget. */
+    bar_writel(qts, BCM_HCC_RX_MAX_COAL_BDS, 0);
+    bar_writel(qts, BCM_HCC_RX_COAL_TICKS, 0);
+    bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(qts, BCM_RX_MODE, BCM_RXMODE_ENABLE);
+
+    qtest_memset(qts, RET_RING_PHYS, 0, 2 * BCM_RXBD_SIZE);
+    qtest_memset(qts, STATUS_PHYS, 0, 0x50);
+    post_rx_descriptor(qts, STD_RING_PHYS, 0, RX_BUF_PHYS, STD_BUF_SIZE, 0);
+    bar_writel(qts, BCM_MBX_RX_STD_PROD_LO, 1);
+
+    build_rx_frame(frame);
+    net_send_frame(sv[0], frame, sizeof(frame));
+    wait_for_completed_descriptor(qts);
+
+    /* The completion is in the ring and the host has not been told. */
+    pump_settle(qts);
+    qtest_memread(qts, STATUS_PHYS, word0, sizeof(word0));
+    g_assert_cmphex(word0[0], ==, 0);
+    g_assert_cmphex(word0[1], ==, 0);
+    g_assert_cmphex(word0[2], ==, 0);
+    g_assert_cmphex(word0[3], ==, 0);
+    g_assert_cmphex(status_rx_prod_be(qts), ==, 0);
+
+    /* One completed descriptor per update, and the next frame posts one. */
+    bar_writel(qts, BCM_HCC_RX_MAX_COAL_BDS, 1);
+    post_rx_descriptor(qts, STD_RING_PHYS, 1, RX_BUF_PHYS, STD_BUF_SIZE, 0);
+    bar_writel(qts, BCM_MBX_RX_STD_PROD_LO, 2);
+    net_send_frame(sv[0], frame, sizeof(frame));
+    wait_for_status_rx_prod(qts, 2);
+
+    qtest_memread(qts, STATUS_PHYS, word0, sizeof(word0));
+    g_assert_cmphex(word0[3], ==, 0x01);
+    /* The producer names a completion already written. */
+    g_assert_cmphex(bd_word_be(qts, RET_RING_PHYS + BCM_RXBD_SIZE,
+                               BCM_RXBD_IDX_LEN) & 0xffff, ==,
+                    RX_FRAME_LEN + BCM_ETH_FCS_LEN);
+
+    qtest_quit(qts);
+    close(sv[0]);
+    close(sv[1]);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
     qtest_add_data_func("/sn0/bcm570x/dma-rides-plain-route", NULL,
                         test_dma_rides_plain_route);
+    qtest_add_data_func("/sn0/bcm570x/status-block-update-criteria", NULL,
+                        test_status_block_update_criteria);
     qtest_add_data_func("/sn0/bcm570x/receive-descriptor-big-endian", NULL,
                         test_receive_descriptor_big_endian);
     qtest_add_data_func("/sn0/bcm570x/station-address-byte-reads", NULL,
