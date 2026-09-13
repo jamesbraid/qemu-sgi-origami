@@ -77,8 +77,9 @@ static void r4k_fill_tlb(CPUMIPSState *env, int idx)
      * empties the mask on a processor that has no such register, which is
      * every processor outside the family.
      */
-    uint64_t framemask = (uint64_t)(env->CP0_Framemask &
-                                    env->CP0_Framemask_rw_bitmask) << 18;
+    uint64_t framemask = env->r10k ?
+        (uint64_t)(env->CP0_Framemask &
+                   env->r10k->CP0_Framemask_rw_bitmask) << 18 : 0;
 
     lo0 &= ~framemask;
     lo1 &= ~framemask;

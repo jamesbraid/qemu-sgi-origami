@@ -187,6 +187,11 @@ void cpu_mips_reassert_interrupt(CPUMIPSState *env);
 
 extern const VMStateDescription vmstate_mips_cpu;
 
+/* r10k_migrate.c: the R10000-family state carried behind env->r10k. */
+extern const VMStateDescription mips_vmstate_r10k;
+extern const VMStateDescription mips_vmstate_r14k_scache;
+extern const VMStateDescription mips_vmstate_r10k_scache_4m;
+
 static inline bool cpu_mips_hw_interrupts_enabled(const CPUMIPSState *env)
 {
     return (env->CP0_Status & (1 << CP0St_IE)) &&

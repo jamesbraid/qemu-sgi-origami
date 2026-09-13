@@ -791,7 +791,8 @@ void helper_mtc0_entrylo0(CPUMIPSState *env, target_ulong arg1)
  * inhibit-bit extension is enabled.
  */
 #define DMTC0_ENTRYLO_MASK(env) \
-    ((env->PAMask >> 6) | env->CP0_EntryLo_extra_rw_bitmask)
+    ((env->PAMask >> 6) | \
+     (env->r10k ? env->r10k->CP0_EntryLo_extra_rw_bitmask : 0))
 
 void helper_dmtc0_entrylo0(CPUMIPSState *env, uint64_t arg1)
 {
@@ -1114,11 +1115,17 @@ uint32_t compute_pagemask(uint32_t val)
 
 void helper_mtc0_pagemask(CPUMIPSState *env, target_ulong arg1)
 {
-    /*
-     * Drop the bits this processor's mask field does not reach before the
-     * width check, so a reserved bit can neither read back nor widen a page.
-     */
-    env->CP0_PageMask = compute_pagemask(arg1 & env->CP0_PageMask_rw_bitmask);
+    if (env->r10k) {
+        /*
+         * Drop the bits this processor's mask field does not reach before the
+         * width check, so a reserved bit can neither read back nor widen a
+         * page.
+         */
+        env->CP0_PageMask =
+            compute_pagemask(arg1 & env->r10k->CP0_PageMask_rw_bitmask);
+    } else {
+        env->CP0_PageMask = compute_pagemask(arg1);
+    }
 }
 
 void helper_mtc0_pagegrain(CPUMIPSState *env, target_ulong arg1)
@@ -1536,12 +1543,15 @@ target_ulong helper_mftc0_configx(CPUMIPSState *env, target_ulong idx)
 void helper_mtc0_config0(CPUMIPSState *env, target_ulong arg1)
 {
     /*
-     * The kseg0 algorithm in bits 2:0 is the only field software owns.
-     * Everything else is hardwired or latched from the reset mode bits, so a
-     * write preserves whichever of those bits the processor implements.
+     * The kseg0 algorithm in bits 2:0 is the only field software owns. On the
+     * R10000 family everything else is hardwired or latched from the reset
+     * mode bits, so a write preserves whichever of those bits the processor
+     * implements; every other processor keeps the MIPS32 preserve mask.
      */
-    env->CP0_Config0 = (env->CP0_Config0 & env->CP0_Config0_preserve_bitmask) |
-                       (arg1 & 0x00000007);
+    int32_t preserve = env->r10k ? env->r10k->CP0_Config0_preserve_bitmask :
+                       0x81FFFFF8;
+
+    env->CP0_Config0 = (env->CP0_Config0 & preserve) | (arg1 & 0x00000007);
 }
 
 void helper_mtc0_config2(CPUMIPSState *env, target_ulong arg1)
@@ -1678,8 +1688,8 @@ void helper_mtc0_framemask(CPUMIPSState *env, target_ulong arg1)
      * lets any processor without release 6 reach it, so leave those as they
      * were.
      */
-    if (env->CP0_Framemask_rw_bitmask) {
-        env->CP0_Framemask = arg1 & env->CP0_Framemask_rw_bitmask;
+    if (env->r10k) {
+        env->CP0_Framemask = arg1 & env->r10k->CP0_Framemask_rw_bitmask;
     } else {
         env->CP0_Framemask = arg1; /* XXX */
     }
@@ -1740,8 +1750,8 @@ void helper_mtc0_errctl(CPUMIPSState *env, target_ulong arg1)
      * belong to the other register that lives at this number, and applying them
      * to this one silently discards nearly everything written.
      */
-    if (env->CP0_ECC_rw_bitmask) {
-        env->CP0_ErrCtl = arg1 & env->CP0_ECC_rw_bitmask;
+    if (env->r10k) {
+        env->CP0_ErrCtl = arg1 & env->r10k->CP0_ECC_rw_bitmask;
         return;
     }
 
@@ -1768,7 +1778,8 @@ void helper_mtc0_taglo(CPUMIPSState *env, target_ulong arg1)
          */
         env->CP0_TagLo = arg1;
     } else {
-        env->CP0_TagLo = arg1 & env->CP0_TagLo_rw_bitmask;
+        env->CP0_TagLo = arg1 & (env->r10k ? env->r10k->CP0_TagLo_rw_bitmask :
+                                 0xFFFFFCF6);
     }
 }
 

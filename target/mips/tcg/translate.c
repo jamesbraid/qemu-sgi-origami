@@ -5774,8 +5774,7 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
             /* A 64-bit register: a word read returns its low word. */
             TCGv_i64 tmp = tcg_temp_new_i64();
 
-            tcg_gen_ld_i64(tmp, tcg_env,
-                           offsetof(CPUMIPSState, CP0_Diagnostic));
+            gen_helper_mfc0_r10k_diagnostic(tmp, tcg_env);
             gen_move_low32(arg, tmp);
         } else {
             tcg_gen_movi_tl(arg, 0);
@@ -5898,7 +5897,7 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         switch (sel) {
         case CP0_REG27__CACHERR:
             /* Read-only; loaded only by a Cache Error exception. */
-            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_CacheErr));
+            gen_helper_mfc0_r10k_cacherr(arg, tcg_env);
             register_name = "CacheErr";
             break;
         default:
@@ -7342,8 +7341,7 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
          */
         if (ctx->insn_flags & INSN_R10K) {
             /* A 64-bit register: a doubleword read returns all of it. */
-            tcg_gen_ld_tl(arg, tcg_env,
-                          offsetof(CPUMIPSState, CP0_Diagnostic));
+            gen_helper_mfc0_r10k_diagnostic(arg, tcg_env);
         } else {
             tcg_gen_movi_tl(arg, 0);
         }
@@ -7459,7 +7457,7 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         switch (sel) {
         case CP0_REG27__CACHERR:
             /* Read-only; loaded only by a Cache Error exception. */
-            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_CacheErr));
+            gen_helper_mfc0_r10k_cacherr(arg, tcg_env);
             register_name = "CacheErr";
             break;
         default:

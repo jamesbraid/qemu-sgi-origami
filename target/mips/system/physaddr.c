@@ -254,8 +254,15 @@ int get_physical_address(CPUMIPSState *env, hwaddr *physical,
             ret = TLBRET_BADADDR;
         }
     } else if (address < 0xFFFFFFFF80000000ULL) {
-        /* xkseg. Everything above the segment's bound is an address error. */
-        if (kernel_mode && KX && address <= env->xkseg_limit) {
+        /*
+         * xkseg. Everything above the segment's bound is an address error.
+         * The R10000 family ends the segment early (env->r10k->xkseg_limit);
+         * every other processor uses the generic R4000 bound.
+         */
+        target_ulong xkseg_limit = env->r10k ? env->r10k->xkseg_limit :
+                                   (0xFFFFFFFF7FFFFFFFULL & env->SEGMask);
+
+        if (kernel_mode && KX && address <= xkseg_limit) {
             ret = env->tlb->map_address(env, physical, prot,
                                         real_address, access_type, attrs);
         } else {

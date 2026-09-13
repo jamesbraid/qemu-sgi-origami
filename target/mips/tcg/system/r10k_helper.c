@@ -54,7 +54,7 @@ static unsigned int r10k_scache_quad_sets(const CPUMIPSState *env)
  */
 static void r10k_icache_invalidate(CPUMIPSState *env, unsigned int tag)
 {
-    env->r10k_icache_taglo[tag] &= ~((1 << 6) | (1 << 2));
+    env->r10k->icache_taglo[tag] &= ~((1 << 6) | (1 << 2));
 }
 
 /*
@@ -66,29 +66,29 @@ static void r10k_icache_invalidate(CPUMIPSState *env, unsigned int tag)
  */
 static void r10k_dcache_invalidate(CPUMIPSState *env, unsigned int tag)
 {
-    env->r10k_dcache_taglo[tag] &= ~((3 << 6) | (1 << 2) | (1 << 1));
-    env->r10k_dcache_taghi[tag] =
-        (env->r10k_dcache_taghi[tag] & ~(7u << 29)) | (1u << 29);
+    env->r10k->dcache_taglo[tag] &= ~((3 << 6) | (1 << 2) | (1 << 1));
+    env->r10k->dcache_taghi[tag] =
+        (env->r10k->dcache_taghi[tag] & ~(7u << 29)) | (1u << 29);
 }
 
 /* The physical address bits 39:12 a primary cache tag carries. */
 static uint64_t r10k_icache_tag_pa(CPUMIPSState *env, unsigned int tag)
 {
-    return ((uint64_t)env->r10k_icache_taghi[tag] << 24) |
-           (env->r10k_icache_taglo[tag] >> 8);
+    return ((uint64_t)env->r10k->icache_taghi[tag] << 24) |
+           (env->r10k->icache_taglo[tag] >> 8);
 }
 
 static uint64_t r10k_dcache_tag_pa(CPUMIPSState *env, unsigned int tag)
 {
-    return ((uint64_t)(env->r10k_dcache_taghi[tag] & 0xf) << 24) |
-           (env->r10k_dcache_taglo[tag] >> 8);
+    return ((uint64_t)(env->r10k->dcache_taghi[tag] & 0xf) << 24) |
+           (env->r10k->dcache_taglo[tag] >> 8);
 }
 
 /* The physical address bits 39:18 a secondary cache tag carries. */
 static uint64_t r10k_scache_tag_pa(CPUMIPSState *env, unsigned int tag)
 {
-    return ((uint64_t)env->r10k_scache_taghi[tag] << 18) |
-           (env->r10k_scache_taglo[tag] >> 14);
+    return ((uint64_t)env->r10k->scache_taghi[tag] << 18) |
+           (env->r10k->scache_taglo[tag] >> 14);
 }
 
 /*
@@ -110,7 +110,7 @@ static void r10k_scache_invalidate_subsets(CPUMIPSState *env, uint64_t block,
         for (w = 0; w < R10K_PCACHE_WAYS; w++) {
             unsigned int tag = set * R10K_PCACHE_WAYS + w;
 
-            if ((env->r10k_icache_taglo[tag] & (1 << 6)) &&
+            if ((env->r10k->icache_taglo[tag] & (1 << 6)) &&
                 r10k_icache_tag_pa(env, tag) == extract64(sub, 12, 28)) {
                 r10k_icache_invalidate(env, tag);
             }
@@ -123,7 +123,7 @@ static void r10k_scache_invalidate_subsets(CPUMIPSState *env, uint64_t block,
         for (w = 0; w < R10K_PCACHE_WAYS; w++) {
             unsigned int tag = set * R10K_PCACHE_WAYS + w;
 
-            if ((env->r10k_dcache_taglo[tag] & (3 << 6)) &&
+            if ((env->r10k->dcache_taglo[tag] & (3 << 6)) &&
                 r10k_dcache_tag_pa(env, tag) == extract64(sub, 12, 28)) {
                 r10k_dcache_invalidate(env, tag);
             }
@@ -151,13 +151,13 @@ static void r10k_scache_invalidate(CPUMIPSState *env, unsigned int set,
     r10k_scache_invalidate_subsets(env,
                                    (r10k_scache_tag_pa(env, tag) << 18) |
                                    (paddr & 0x3ff80),
-                                   extract32(env->r10k_scache_taglo[tag],
+                                   extract32(env->r10k->scache_taglo[tag],
                                              7, 2));
-    env->r10k_scache_taglo[tag] =
+    env->r10k->scache_taglo[tag] =
         (uint32_t)(extract64(paddr, 18, 18) << 14) |
         ((uint32_t)extract64(vaddr, 12, 2) << 7);
-    env->r10k_scache_taghi[tag] = extract64(paddr, 36, 4);
-    env->r10k_scache_mru[set] = way ^ 1;
+    env->r10k->scache_taghi[tag] = extract64(paddr, 36, 4);
+    env->r10k->scache_mru[set] = way ^ 1;
 }
 
 /*
@@ -247,7 +247,7 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
                 unsigned int tag = extract64(addr, 6, 8) *
                                    R10K_PCACHE_WAYS + w;
 
-                if ((env->r10k_icache_taglo[tag] & (1 << 6)) &&
+                if ((env->r10k->icache_taglo[tag] & (1 << 6)) &&
                     r10k_icache_tag_pa(env, tag) ==
                     extract64(paddr, 12, 28)) {
                     r10k_icache_invalidate(env, tag);
@@ -256,7 +256,7 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
                 unsigned int tag = extract64(addr, 5, 9) *
                                    R10K_PCACHE_WAYS + w;
 
-                if ((env->r10k_dcache_taglo[tag] & (3 << 6)) &&
+                if ((env->r10k->dcache_taglo[tag] & (3 << 6)) &&
                     r10k_dcache_tag_pa(env, tag) ==
                     extract64(paddr, 12, 28)) {
                     r10k_dcache_invalidate(env, tag);
@@ -272,15 +272,15 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
         unsigned int tag = set * R10K_PCACHE_WAYS + way;
 
         if (cache_operation == 0b010) { /* Index Store Tag (I) */
-            env->r10k_icache_taglo[tag] = env->CP0_TagLo &
+            env->r10k->icache_taglo[tag] = env->CP0_TagLo &
                 (R10K_ICACHE_TAGLO_MASK & ~R10K_PCACHE_TAGLO_LRU);
-            env->r10k_icache_taghi[tag] =
+            env->r10k->icache_taghi[tag] =
                 env->CP0_TagHi & R10K_ICACHE_TAGHI_MASK;
-            env->r10k_icache_lru[set] = extract32(env->CP0_TagLo, 3, 1);
+            env->r10k->icache_lru[set] = extract32(env->CP0_TagLo, 3, 1);
         } else { /* Index Load Tag (I) */
-            env->CP0_TagLo = env->r10k_icache_taglo[tag] |
-                (env->r10k_icache_lru[set] << 3);
-            env->CP0_TagHi = env->r10k_icache_taghi[tag];
+            env->CP0_TagLo = env->r10k->icache_taglo[tag] |
+                (env->r10k->icache_lru[set] << 3);
+            env->CP0_TagHi = env->r10k->icache_taghi[tag];
         }
         return;
     }
@@ -291,15 +291,15 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
         unsigned int tag = set * R10K_PCACHE_WAYS + way;
 
         if (cache_operation == 0b010) { /* Index Store Tag (D) */
-            env->r10k_dcache_taglo[tag] = env->CP0_TagLo &
+            env->r10k->dcache_taglo[tag] = env->CP0_TagLo &
                 (R10K_DCACHE_TAGLO_MASK & ~R10K_PCACHE_TAGLO_LRU);
-            env->r10k_dcache_taghi[tag] =
+            env->r10k->dcache_taghi[tag] =
                 env->CP0_TagHi & R10K_DCACHE_TAGHI_MASK;
-            env->r10k_dcache_lru[set] = extract32(env->CP0_TagLo, 3, 1);
+            env->r10k->dcache_lru[set] = extract32(env->CP0_TagLo, 3, 1);
         } else { /* Index Load Tag (D) */
-            env->CP0_TagLo = env->r10k_dcache_taglo[tag] |
-                (env->r10k_dcache_lru[set] << 3);
-            env->CP0_TagHi = env->r10k_dcache_taghi[tag];
+            env->CP0_TagLo = env->r10k->dcache_taglo[tag] |
+                (env->r10k->dcache_lru[set] << 3);
+            env->CP0_TagHi = env->r10k->dcache_taghi[tag];
         }
         return;
     }
@@ -311,29 +311,29 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
 
         if (cache_type == 0) {
             if (cache_operation == 0b111) { /* Index Store Data (I) */
-                env->r10k_icache_data[entry] =
+                env->r10k->icache_data[entry] =
                     (uint64_t)(env->CP0_TagHi & 0xf) << 32 |
                     (uint32_t)env->CP0_TagLo;
-                env->r10k_icache_parity[entry] = env->CP0_ErrCtl & 1;
+                env->r10k->icache_parity[entry] = env->CP0_ErrCtl & 1;
             } else { /* Index Load Data (I) */
-                uint64_t data = env->r10k_icache_data[entry];
+                uint64_t data = env->r10k->icache_data[entry];
 
                 env->CP0_TagLo = (uint32_t)data;
                 env->CP0_TagHi = data >> 32;
-                env->CP0_ErrCtl = env->r10k_icache_parity[entry];
+                env->CP0_ErrCtl = env->r10k->icache_parity[entry];
             }
         } else {
             if (cache_operation == 0b111) { /* Index Store Data (D) */
-                env->r10k_dcache_data[entry] = env->CP0_TagLo;
-                env->r10k_dcache_parity[entry] = env->CP0_ErrCtl & 0xf;
+                env->r10k->dcache_data[entry] = env->CP0_TagLo;
+                env->r10k->dcache_parity[entry] = env->CP0_ErrCtl & 0xf;
             } else { /* Index Load Data (D) */
                 /*
                  * The data-cache word format leaves TagHi "Not Used"
                  * rather than reserved, so the load fills TagLo and the
                  * parity bits and leaves TagHi alone.
                  */
-                env->CP0_TagLo = env->r10k_dcache_data[entry];
-                env->CP0_ErrCtl = env->r10k_dcache_parity[entry];
+                env->CP0_TagLo = env->r10k->dcache_data[entry];
+                env->CP0_ErrCtl = env->r10k->dcache_parity[entry];
             }
         }
         return;
@@ -349,7 +349,7 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
         unsigned int set = (paddr / R10K_SCACHE_LINE_SIZE) &
                            (r10k_scache_sets(env) - 1);
 
-        if (env->r10k_scache_taglo[set * R10K_SCACHE_WAYS + way] &
+        if (env->r10k->scache_taglo[set * R10K_SCACHE_WAYS + way] &
             (3 << 10)) {
             r10k_scache_invalidate(env, set, way, paddr, addr);
         }
@@ -373,7 +373,7 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
         for (w = 0; w < R10K_SCACHE_WAYS; w++) {
             unsigned int tag = set * R10K_SCACHE_WAYS + w;
 
-            if ((env->r10k_scache_taglo[tag] & (3 << 10)) &&
+            if ((env->r10k->scache_taglo[tag] & (3 << 10)) &&
                 r10k_scache_tag_pa(env, tag) == extract64(paddr, 18, 22)) {
                 r10k_scache_invalidate(env, set, w, paddr, addr);
                 hit = true;
@@ -406,16 +406,16 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
 
             /* TagHi's MRU bit is set-wide; its tag nibble is per-way. */
             if (cache_operation == 0b010) { /* Index Store Tag */
-                env->r10k_scache_taglo[tag] =
+                env->r10k->scache_taglo[tag] =
                     env->CP0_TagLo & R10K_SCACHE_TAGLO_MASK;
-                env->r10k_scache_taghi[tag] =
+                env->r10k->scache_taghi[tag] =
                     env->CP0_TagHi & R10K_SCACHE_TAGHI_MASK;
-                env->r10k_scache_mru[set] =
+                env->r10k->scache_mru[set] =
                     extract32(env->CP0_TagHi, 31, 1);
             } else { /* Index Load Tag */
-                env->CP0_TagLo = env->r10k_scache_taglo[tag];
-                env->CP0_TagHi = env->r10k_scache_taghi[tag] |
-                    ((uint32_t)env->r10k_scache_mru[set] << 31);
+                env->CP0_TagLo = env->r10k->scache_taglo[tag];
+                env->CP0_TagHi = env->r10k->scache_taghi[tag] |
+                    ((uint32_t)env->r10k->scache_mru[set] << 31);
             }
         } else {
             unsigned int quad_set = (paddr / 16) &
@@ -424,18 +424,18 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
             unsigned int dword = quad * 2 + extract64(paddr, 3, 1);
 
             if (cache_operation == 0b111) { /* Index Store Data */
-                env->r10k_scache_data[quad * 2] = 0;
-                env->r10k_scache_data[quad * 2 + 1] = 0;
-                env->r10k_scache_data[dword] =
+                env->r10k->scache_data[quad * 2] = 0;
+                env->r10k->scache_data[quad * 2 + 1] = 0;
+                env->r10k->scache_data[dword] =
                     (uint64_t)(uint32_t)env->CP0_TagHi << 32 |
                     (uint32_t)env->CP0_TagLo;
-                env->r10k_scache_ecc[quad] = env->CP0_ErrCtl & 0x3ff;
+                env->r10k->scache_ecc[quad] = env->CP0_ErrCtl & 0x3ff;
             } else { /* Index Load Data */
-                uint64_t data = env->r10k_scache_data[dword];
+                uint64_t data = env->r10k->scache_data[dword];
 
                 env->CP0_TagLo = (uint32_t)data;
                 env->CP0_TagHi = data >> 32;
-                env->CP0_ErrCtl = env->r10k_scache_ecc[quad];
+                env->CP0_ErrCtl = env->r10k->scache_ecc[quad];
             }
         }
     }
@@ -592,7 +592,7 @@ void mips_r10k_watch_changed(CPUMIPSState *env, bool watchlo_written)
 
     cpu_watchpoint_remove_all(cs, BP_CPU);
     if (watchlo_written) {
-        env->CP0_R10K_DelayedWatch = 0;
+        env->r10k->CP0_R10K_DelayedWatch = 0;
         cpu_reset_interrupt(cs, CPU_INTERRUPT_DWATCH);
     }
     if (env->CP0_WatchLo[0] & (CP0WL_R10K_R | CP0WL_R10K_W)) {
@@ -629,7 +629,7 @@ bool mips_debug_check_watchpoint(CPUState *cs, CPUWatchpoint *wp)
     if (env->CP0_Status & ((1 << CP0St_EXL) | (1 << CP0St_ERL))) {
         BQL_LOCK_GUARD();
 
-        env->CP0_R10K_DelayedWatch = 1;
+        env->r10k->CP0_R10K_DelayedWatch = 1;
         cpu_interrupt(cs, CPU_INTERRUPT_DWATCH);
         return false;
     }
@@ -675,16 +675,16 @@ bool mips_r10k_deliver_delayed_watch(CPUState *cs)
 {
     CPUMIPSState *env = cpu_env(cs);
 
-    if (env->CP0_R10K_DelayedWatch &&
+    if (env->r10k->CP0_R10K_DelayedWatch &&
         !(env->CP0_Status & ((1 << CP0St_EXL) | (1 << CP0St_ERL)))) {
-        env->CP0_R10K_DelayedWatch = 0;
+        env->r10k->CP0_R10K_DelayedWatch = 0;
         cpu_reset_interrupt(cs, CPU_INTERRUPT_DWATCH);
         cs->exception_index = EXCP_DWATCH;
         env->error_code = 0;
         mips_cpu_do_interrupt(cs);
         return true;
     }
-    if (!env->CP0_R10K_DelayedWatch) {
+    if (!env->r10k->CP0_R10K_DelayedWatch) {
         cpu_reset_interrupt(cs, CPU_INTERRUPT_DWATCH);
     }
     return false;
@@ -708,26 +708,44 @@ void helper_mtc0_r10k_diagnostic(CPUMIPSState *env, target_ulong arg1)
      */
     uint32_t idx, line, i;
 
-    env->CP0_Diagnostic = arg1 & env->cfg.diagnostic_rw_bitmask;
+    env->r10k->CP0_Diagnostic = arg1 & env->cfg.diagnostic_rw_bitmask;
 
-    idx = extract64(env->CP0_Diagnostic, CP0DI_BPIdx, 9);
-    switch (extract64(env->CP0_Diagnostic, CP0DI_BPOp, 2)) {
+    idx = extract64(env->r10k->CP0_Diagnostic, CP0DI_BPIdx, 9);
+    switch (extract64(env->r10k->CP0_Diagnostic, CP0DI_BPOp, 2)) {
     case 0: /* table read */
-        env->CP0_Diagnostic = deposit64(env->CP0_Diagnostic, CP0DI_BPState, 2,
-                                        env->r10k_bpt[idx]);
+        env->r10k->CP0_Diagnostic =
+            deposit64(env->r10k->CP0_Diagnostic, CP0DI_BPState, 2,
+                      env->r10k->bpt[idx]);
         break;
     case 1: /* table write */
-        env->r10k_bpt[idx] = extract64(env->CP0_Diagnostic, CP0DI_BPState, 2);
+        env->r10k->bpt[idx] =
+            extract64(env->r10k->CP0_Diagnostic, CP0DI_BPState, 2);
         break;
     case 2: /* initialize a line to all zeroes (strongly not taken) */
     case 3: /* initialize a line to all ones (strongly taken) */
         line = idx & ~(R10K_BPT_LINE - 1);
         for (i = 0; i < R10K_BPT_LINE; i++) {
-            env->r10k_bpt[line + i] =
-                (env->CP0_Diagnostic & (1 << CP0DI_BPOp)) ? 3 : 0;
+            env->r10k->bpt[line + i] =
+                (env->r10k->CP0_Diagnostic & (1 << CP0DI_BPOp)) ? 3 : 0;
         }
         break;
     }
+}
+
+/*
+ * The Diagnostic and CacheErr registers live behind env->r10k, so a
+ * generated CP0 read reaches them through these helpers rather than an
+ * offsetof into CPUMIPSState. CacheErr reads zero on every other processor,
+ * as it did while the register was a shared field.
+ */
+uint64_t helper_mfc0_r10k_diagnostic(CPUMIPSState *env)
+{
+    return env->r10k ? env->r10k->CP0_Diagnostic : 0;
+}
+
+target_ulong helper_mfc0_r10k_cacherr(CPUMIPSState *env)
+{
+    return env->r10k ? (int32_t)env->r10k->CP0_CacheErr : 0;
 }
 
 void helper_mtc0_r10k_performance(CPUMIPSState *env, target_ulong arg1,
