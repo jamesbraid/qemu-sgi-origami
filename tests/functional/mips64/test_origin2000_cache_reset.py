@@ -3,9 +3,15 @@
 
 """Check the SN0 machines' secondary-cache geometry with test ROMs.
 
-Expectations come from Origami's reviewed origin2000-cache-configuration.md
-at 72848aa85bee4eda8e76c043d50025d62e91aa76. The reset test checks Config
-fields. The tag test distinguishes 1 MiB and 4 MiB secondary-cache indexing.
+Expectations come from Origami's reviewed origin2000-cache-configuration.md.
+Both SN0 machines now select a 1 MiB secondary cache, so the reset test
+checks that Config field and the tag tests check that way-zero tags one MiB
+apart share a set.
+
+No machine selects the 4 MiB geometry any more, so nothing here covers it.
+Restoring that coverage needs a machine whose composition selects 4 MiB,
+because the size comes from the mode bits the board latches and there is no
+other way to reach it.
 """
 
 import json
@@ -21,7 +27,7 @@ MAILBOX = 0x30000
 RECORD_SIZE = 16
 DONE = 0x43414348
 SECONDARY_MASK = 0x00070000
-SECONDARY_EXPECTED = 0x00030000
+SECONDARY_EXPECTED = 0x00010000
 PRIMARY_MASK = 0xfc000000
 PRIMARY_EXPECTED = 0x6c000000
 TAG_A = 0x1234c5aa
@@ -224,11 +230,14 @@ class Origin2000CacheReset(QemuSystemTest):
         self.assertEqual(words[:2], expected, words)
 
     def test_origin200_one_mib_tags_alias(self):
-        self.check_tag_geometry('origin200', 0x00010000, [TAG_B, TAG_B])
+        self.check_tag_geometry('origin200', SECONDARY_EXPECTED,
+                                [TAG_B, TAG_B])
 
-    def test_origin2000_four_mib_tags_do_not_alias(self):
+    # Eight processors rather than two, so this also shows the size the board
+    # latches reaches every slice and not just the one the firmware enters on.
+    def test_origin2000_one_mib_tags_alias(self):
         self.check_tag_geometry('origin2000', SECONDARY_EXPECTED,
-                                [TAG_A, TAG_B])
+                                [TAG_B, TAG_B])
 
 
 if __name__ == '__main__':
