@@ -59,10 +59,14 @@ config VMXNET3_PCI
     default y if PCI_DEVICES
     depends on PCI
 
+config SGI_NET_RX_LATENCY
+    bool
+
 config XFRAME_PCI
     bool
     default y if PCI_DEVICES
     depends on PCI
+    select SGI_NET_RX_LATENCY
 
 config SMC91C111
     bool
@@ -73,16 +77,19 @@ config DP83840
 config SGI_IOC3_ETH
     bool
     select DP83840
+    select SGI_NET_RX_LATENCY
 
 config TIGON
     bool
     default y if PCI_DEVICES
     depends on PCI
+    select SGI_NET_RX_LATENCY
 
 config BCM570X
     bool
     default y if PCI_DEVICES
     depends on PCI
+    select SGI_NET_RX_LATENCY
 
 config LAN9118_PHY
     bool
