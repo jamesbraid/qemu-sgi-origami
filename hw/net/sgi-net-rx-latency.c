@@ -157,6 +157,22 @@ void sgi_net_rx_latency_hold(SGINetRxLatency *l, const void *record)
     sgi_net_rx_latency_enqueue(l, record, l->floor_ns);
 }
 
+void sgi_net_rx_latency_ready(SGINetRxLatency *l)
+{
+    SGINetRxLatencyEntry *e;
+
+    if (l->count == 0) {
+        return;
+    }
+    e = sgi_net_rx_latency_slot(l, 0);
+    if (e->backoff_ns == 0) {
+        return;         /* never refused: it is waiting on its own deadline */
+    }
+    e->backoff_ns = 0;
+    e->deadline_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    sgi_net_rx_latency_rearm(l);
+}
+
 void sgi_net_rx_latency_no_wire(SGINetRxLatency *l, const void *record)
 {
     /*

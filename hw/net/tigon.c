@@ -1168,7 +1168,12 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
         }
         s->std_rx_prodidx = val % TI_STD_RX_RING_CNT;
         trace_tigon_rx_doorbell("standard", (uint32_t)val);
-        /* A frame refused before a buffer existed can now be delivered. */
+        /*
+         * A frame refused before a buffer existed can now be delivered, and a
+         * completion the card could not write can be retried: posting a
+         * buffer is what restarts placement, not the driver's next interrupt.
+         */
+        sgi_net_rx_latency_ready(&s->rx_latency);
         qemu_flush_queued_packets(qemu_get_queue(s->nic));
         return;
     case TI_MB_CMDPROD_IDX:
@@ -1183,6 +1188,7 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
         s->jumbo_rx_prodidx = val % TI_JUMBO_RX_RING_CNT;
         trace_tigon_rx_doorbell("jumbo", (uint32_t)val);
         /* A frame too big for the standard ring can now be delivered. */
+        sgi_net_rx_latency_ready(&s->rx_latency);
         qemu_flush_queued_packets(qemu_get_queue(s->nic));
         return;
     case TI_WINDATA:

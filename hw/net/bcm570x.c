@@ -1131,6 +1131,13 @@ static void bcm570x_defer_rx_flush(Bcm570xState *s)
 
 static void bcm570x_retry_rx_flush(Bcm570xState *s)
 {
+    /*
+     * Whatever made the chip ready again -- a posted buffer, a consumer index
+     * the driver moved -- is also the moment to retry a completion the chip
+     * could not write.
+     */
+    sgi_net_rx_latency_ready(&s->rx_latency);
+
     if (s->rx_flush_pending && bcm570x_rx_ready(s)) {
         qemu_bh_schedule(s->rx_flush_bh);
     }

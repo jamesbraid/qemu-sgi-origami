@@ -756,6 +756,12 @@ static void sgi_ioc3_enet_write(void *opaque, hwaddr addr, uint64_t val,
             s->rx_timer_armed = true;
         }
         s->enet_reg[index] = val;
+        /*
+         * Posting buffers is what restarts placement: release whatever the
+         * backend is holding, and retry a completion the engine could not
+         * write, rather than leaving either to wait.
+         */
+        sgi_net_rx_latency_ready(&s->rx_latency);
         qemu_bh_schedule(s->rx_flush_bh);
         return;
 

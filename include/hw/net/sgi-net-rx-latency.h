@@ -170,6 +170,15 @@ bool sgi_net_rx_latency_full(const SGINetRxLatency *l);
 void sgi_net_rx_latency_hold(SGINetRxLatency *l, const void *record);
 
 /*
+ * The guest has made room -- posted a buffer, moved a consumer index, or
+ * otherwise done the thing a refused publish was waiting on. Retry the head
+ * at once instead of waiting out its backoff. A completion that has not yet
+ * been refused is left alone: its arrival deadline has not passed, and
+ * nothing the guest does brings a frame's arrival forward.
+ */
+void sgi_net_rx_latency_ready(SGINetRxLatency *l);
+
+/*
  * Publish a completion that carries no arrival latency: a frame the MAC
  * turned round inside itself, which never reached a wire, a peer or a
  * transceiver. It still may not overtake a completion already waiting, since
