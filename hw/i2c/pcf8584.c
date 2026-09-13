@@ -324,6 +324,7 @@ static void pcf8584_wire_event(void *opaque, const I2CWireEvent *event)
                                     i2c_wire_contenders(s->bus));
         s->data = s->wire_grant;
         s->wire_grant_pending = false;
+        s->wire_grant_visible = true;
     }
     if (stop) {
         s->wire_free_at = now + PCF8584_BUS_FREE_NS;
@@ -446,6 +447,8 @@ static void pcf8584_wire_event(void *opaque, const I2CWireEvent *event)
 
 static void pcf8584_wire_write_data(PCF8584State *s, uint8_t val)
 {
+    s->wire_grant_visible = false;
+
     if (s->wire_hold_release == PCF8584_HOLD_WRITE) {
         /* Addressed as a transmitter: the byte written releases our hold. */
         s->data = val;
@@ -494,7 +497,13 @@ static uint8_t pcf8584_wire_read_data(PCF8584State *s)
                             i2c_wire_contenders(s->bus));
 
     if (s->data_read) {
-        s->data_read(s->data_read_opaque, s->wire_master, val);
+        PCF8584DataReadEvent event = PCF8584_DATA_READ;
+
+        if (s->wire_grant_visible && !s->wire_active &&
+            !i2c_bus_busy(s->bus)) {
+            event = PCF8584_PUBLISHED_GRANT_READ;
+        }
+        s->data_read(s->data_read_opaque, s->wire_master, val, event);
     }
 
     if (s->wire_hold_release == PCF8584_HOLD_READ) {
@@ -1114,6 +1123,7 @@ static void pcf8584_reset_hold(Object *obj, ResetType type)
     s->wire_ack_nak = false;
     s->wire_grant_pending = false;
     s->wire_grant = 0;
+    s->wire_grant_visible = false;
     s->wire_start_waiting = false;
     s->wire_free_at = 0;
     s->wire_scl = s->wire_sda = true;
@@ -1250,7 +1260,7 @@ static int pcf8584_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_pcf8584 = {
     .name = "pcf8584",
-    .version_id = 6,
+    .version_id = 7,
     .minimum_version_id = 1,
     .post_load = pcf8584_post_load,
     .fields = (const VMStateField[]) {
@@ -1276,6 +1286,7 @@ static const VMStateDescription vmstate_pcf8584 = {
         VMSTATE_BOOL_V(wire_ack_nak, PCF8584State, 3),
         VMSTATE_BOOL_V(wire_grant_pending, PCF8584State, 5),
         VMSTATE_UINT8_V(wire_grant, PCF8584State, 5),
+        VMSTATE_BOOL_V(wire_grant_visible, PCF8584State, 7),
         VMSTATE_BOOL_V(wire_start_waiting, PCF8584State, 6),
         VMSTATE_BOOL_V(wire_scl, PCF8584State, 3),
         VMSTATE_BOOL_V(wire_sda, PCF8584State, 3),

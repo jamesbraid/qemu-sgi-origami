@@ -243,16 +243,19 @@ static void mgmt_publish(SGISn0ModuleManagementState *s)
     mgmt_stage(s, false, false, 1);
 }
 
-static void mgmt_data_read(void *opaque, uint32_t master, uint8_t value)
+static void mgmt_data_read(void *opaque, uint32_t master, uint8_t value,
+                           PCF8584DataReadEvent event)
 {
     SGIO2000ModuleMgmtState *s = opaque;
-    if (s->grant_window_extended || value != s->grant_byte ||
+    if (event != PCF8584_PUBLISHED_GRANT_READ ||
+        s->grant_window_extended || value != s->grant_byte ||
         master != (s->grant_byte & 7) / 2 || i2c_bus_busy(s->bus)) {
         return;
     }
     s->grant_window_extended = true;
     s->grant_acquisition_pending = true;
     s->grant_acquisition_master = master;
+    /* Host time bounds this MTTCG scheduling accommodation. */
     s->grant_acquisition_deadline_ms =
         qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + GRANT_ACQUISITION_MS;
 }
