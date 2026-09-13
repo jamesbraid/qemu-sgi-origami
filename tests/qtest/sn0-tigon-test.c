@@ -182,6 +182,49 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define TI_MB_JUMBORXPROD_IDX   0x524
 #define GIB_JUMBO_RX_RCB        0x440
 
+/*
+ * The statistics contract. The block's own head holds a 1 KB struct ti_stats,
+ * and its last field names a second host address the firmware refreshes a copy
+ * into. Both public drivers make those one address; this test gives them
+ * separate buffers, the way the IRIX guest does, so a card that filled only
+ * one of them fails here.
+ */
+#define GIB_REFRESH_STATS_PTR   0x488
+#define STATS_PHYS              0x002d0000u
+#define STATS_SIZE              0x400
+
+/* Word offsets of the fields this contract defines inside struct ti_stats. */
+#define STAT_IF_INDEX           (12 * 4)
+#define STAT_IF_MTU             (14 * 4)
+#define STAT_IF_SPEED           (15 * 4)
+#define STAT_IF_ADMIN_STATUS    (16 * 4)
+#define STAT_IF_OPER_STATUS     (17 * 4)
+#define STAT_IF_PHYS_ADDRESS    (25 * 4)
+#define STAT_HC_IN_OCTETS       (36 * 4)
+#define STAT_HC_IN_UCAST        (38 * 4)
+#define STAT_HC_IN_MULTICAST    (40 * 4)
+#define STAT_HC_IN_BROADCAST    (42 * 4)
+#define STAT_HC_OUT_OCTETS      (44 * 4)
+#define STAT_HC_OUT_UCAST       (46 * 4)
+#define STAT_HC_OUT_BROADCAST   (50 * 4)
+
+#define TI_GCR_STAT_TICKS       0x638
+#define TI_GCR_IFINDEX          0x65c
+#define TI_GCR_IFMTU            0x660
+#define TI_CMD_HOST_STATE       0x01
+#define TI_CMD_CODE_STACK_UP    0x01
+#define TI_CMD_LINK_NEGOTIATION 0x0b
+#define TI_CMD_CLR_STATS        0x0f
+#define TI_CMD_RFRSH_STATS      0x11
+#define TI_EV_STATS_UPDATED     0x04
+#define IF_STATUS_UP            1
+#define IF_STATUS_DOWN          2
+#define GIGABIT_BITS_PER_SECOND 1000000000u
+/* The model's stand-in delay between a negotiation request and the answer. */
+#define LINK_DELAY_NS           50000000
+/* How often the model rewrites the block at the information block's head. */
+#define STATS_LIVE_NS           100000000
+
 /* Write a ring control block's 64-bit host address (two words, hi then lo). */
 static void write_rcb_dma_addr(QTestState *qts, uint32_t rcb, uint64_t addr)
 {
@@ -438,6 +481,9 @@ static void build_gib(QTestState *qts)
     write_rcb_addr(qts, GIB_PHYS + GIB_EV_PROD_PTR, EV_PROD_PHYS);
     write_rcb_addr(qts, GIB_PHYS + GIB_RETURN_PROD_PTR, RETURN_PROD_PHYS);
     write_rcb_addr(qts, GIB_PHYS + GIB_TX_CONS_PTR, TX_CONS_PHYS);
+
+    qtest_memset(qts, STATS_PHYS, 0, STATS_SIZE);
+    write_rcb_addr(qts, GIB_PHYS + GIB_REFRESH_STATS_PTR, STATS_PHYS);
 }
 
 /*
@@ -3543,6 +3589,328 @@ static void test_receive_promisc_accepts_other(const void *data)
     close(sv[0]);
 }
 
+/* Post one command word into the NIC-resident ring and ring its doorbell. */
+static void post_command(QTestState *qts, unsigned slot, uint32_t word)
+{
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_CMDRING + slot * 4, word);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_CMDPROD_IDX, slot + 1);
+}
+
+/* A 64-bit counter in a published block: most significant word first. */
+static uint64_t read_stat64_at(QTestState *qts, uint32_t base, uint32_t offset)
+{
+    return ((uint64_t)qtest_readl(qts, base + offset) << 32) |
+           qtest_readl(qts, base + offset + 4);
+}
+
+static uint64_t read_stat64(QTestState *qts, uint32_t offset)
+{
+    return read_stat64_at(qts, STATS_PHYS, offset);
+}
+
+/* Queue one transmit descriptor holding a whole frame. */
+static void write_tx_frame(QTestState *qts, unsigned slot, uint32_t buf,
+                           const uint8_t *frame, size_t len)
+{
+    qtest_memwrite(qts, buf, frame, len);
+    write_rcb_addr(qts, TX_RING_PHYS + slot * 16, buf);
+    qtest_writel(qts, TX_RING_PHYS + slot * 16 + 8,
+                 ((uint32_t)len << 16) | TI_BDFLAG_END);
+    qtest_writel(qts, TX_RING_PHYS + slot * 16 + 12, 0);
+}
+
+/*
+ * The frame and octet counters the firmware maintains. Three unicast and one
+ * broadcast transmit, two unicast receives, all of sizes the test chose: the
+ * refreshed block must report each direction's frames and the octets they
+ * carried, with the broadcast frame counted apart from the unicast ones.
+ */
+static void test_statistics_traffic_counters(const void *data)
+{
+    static const unsigned tx_unicast = 3;
+    static const unsigned rx_unicast = 2;
+    uint8_t got[2048];
+    QTestState *qts;
+    unsigned i;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    for (i = 0; i < tx_unicast; i++) {
+        write_tx_frame(qts, i, TX_BUF_PHYS, test_frame_direct,
+                       sizeof(test_frame_direct));
+    }
+    write_tx_frame(qts, tx_unicast, TX_BUF_PHYS + 0x100, test_frame,
+                   sizeof(test_frame));
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, tx_unicast + 1);
+
+    for (i = 0; i < tx_unicast + 1; i++) {
+        net_recv_frame(sv[0], got, sizeof(got));
+    }
+
+    for (i = 0; i < rx_unicast; i++) {
+        post_std_rx_buffer(qts, i, RX_BUF_PHYS + i * 2048, i, 2048);
+    }
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, rx_unicast);
+    for (i = 0; i < rx_unicast; i++) {
+        net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+    }
+    g_assert_cmphex(wait_return_prod_reaches(qts, rx_unicast), ==, rx_unicast);
+
+    post_command(qts, 0, (uint32_t)TI_CMD_RFRSH_STATS << 24);
+
+    g_assert_cmpuint(read_stat64(qts, STAT_HC_OUT_UCAST), ==, tx_unicast);
+    g_assert_cmpuint(read_stat64(qts, STAT_HC_OUT_BROADCAST), ==, 1);
+    g_assert_cmpuint(read_stat64(qts, STAT_HC_OUT_OCTETS), ==,
+                     tx_unicast * sizeof(test_frame_direct) +
+                     sizeof(test_frame));
+    g_assert_cmpuint(read_stat64(qts, STAT_HC_IN_UCAST), ==, rx_unicast);
+    g_assert_cmpuint(read_stat64(qts, STAT_HC_IN_BROADCAST), ==, 0);
+    g_assert_cmpuint(read_stat64(qts, STAT_HC_IN_OCTETS), ==,
+                     rx_unicast * sizeof(rx_frame_ours));
+
+    /*
+     * The same counters reach the block's own head, which is the copy the
+     * IRIX board utility reads. A card that filled only the address the last
+     * field names reported nothing to it.
+     */
+    g_assert_cmpuint(read_stat64_at(qts, GIB_PHYS, STAT_HC_OUT_UCAST), ==,
+                     tx_unicast);
+    g_assert_cmpuint(read_stat64_at(qts, GIB_PHYS, STAT_HC_IN_UCAST), ==,
+                     rx_unicast);
+
+    /*
+     * A refresh announces itself on the event ring, the way the firmware-up
+     * event did: without it a driver that waits for the answer to its refresh
+     * request waits forever.
+     */
+    g_assert_cmphex(qtest_readl(qts, EV_PROD_PHYS), ==, 2);
+    g_assert_cmphex(qtest_readl(qts, EVENT_RING_PHYS + 8) >> 24, ==,
+                    TI_EV_STATS_UPDATED);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * The interface section: the index and MTU the host published through the
+ * register pair, the speed and operational state of the link, and the station
+ * address. Read once before the link is negotiated and once after, so a model
+ * that reported a gigabit link before there was one would fail the first read.
+ */
+static void test_statistics_interface_identity(const void *data)
+{
+    static const uint32_t host_mtu = 1500;
+    uint8_t phys_address[8];
+    QTestState *qts;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_IFINDEX, 1);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_IFMTU, host_mtu);
+
+    post_command(qts, 0, (uint32_t)TI_CMD_RFRSH_STATS << 24);
+    g_assert_cmpuint(qtest_readl(qts, STATS_PHYS + STAT_IF_SPEED), ==, 0);
+    g_assert_cmpuint(qtest_readl(qts, STATS_PHYS + STAT_IF_OPER_STATUS), ==,
+                     IF_STATUS_DOWN);
+
+    post_command(qts, 1, ((uint32_t)TI_CMD_HOST_STATE << 24) |
+                 (TI_CMD_CODE_STACK_UP << 12));
+    post_command(qts, 2, (uint32_t)TI_CMD_LINK_NEGOTIATION << 24);
+    qtest_clock_step(qts, LINK_DELAY_NS);
+
+    post_command(qts, 3, (uint32_t)TI_CMD_RFRSH_STATS << 24);
+    g_assert_cmpuint(qtest_readl(qts, STATS_PHYS + STAT_IF_INDEX), ==, 1);
+    g_assert_cmpuint(qtest_readl(qts, STATS_PHYS + STAT_IF_MTU), ==, host_mtu);
+    g_assert_cmpuint(qtest_readl(qts, STATS_PHYS + STAT_IF_SPEED), ==,
+                     GIGABIT_BITS_PER_SECOND);
+    g_assert_cmpuint(qtest_readl(qts, STATS_PHYS + STAT_IF_OPER_STATUS), ==,
+                     IF_STATUS_UP);
+    g_assert_cmpuint(qtest_readl(qts, STATS_PHYS + STAT_IF_ADMIN_STATUS), ==,
+                     IF_STATUS_UP);
+
+    /*
+     * The station address occupies the last six bytes of the eight-byte
+     * field, behind two zero bytes, the same padding the serial EEPROM puts
+     * in front of it.
+     */
+    qtest_memread(qts, STATS_PHYS + STAT_IF_PHYS_ADDRESS, phys_address,
+                  sizeof(phys_address));
+    g_assert_cmphex(phys_address[0], ==, 0);
+    g_assert_cmphex(phys_address[1], ==, 0);
+    g_assert_cmpmem(phys_address + 2, sizeof(tigon_mac),
+                    tigon_mac, sizeof(tigon_mac));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * The copy at the information block's own head stays current without the host
+ * asking for anything. The IRIX driver reads that copy and never sends a
+ * refresh command, and its own refresh period is five seconds, so a card that
+ * rewrote the head only when asked would answer a board utility with counters
+ * from before the traffic it is being asked about.
+ */
+static void test_statistics_head_stays_current(const void *data)
+{
+    uint8_t got[2048];
+    QTestState *qts;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    write_tx_frame(qts, 0, TX_BUF_PHYS, test_frame_direct,
+                   sizeof(test_frame_direct));
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
+    net_recv_frame(sv[0], got, sizeof(got));
+
+    /* No command, no refresh request, no statistics-tick period programmed. */
+    qtest_clock_step(qts, STATS_LIVE_NS * 2);
+
+    g_assert_cmpuint(read_stat64_at(qts, GIB_PHYS, STAT_HC_OUT_UCAST), ==, 1);
+    g_assert_cmpuint(read_stat64_at(qts, GIB_PHYS, STAT_HC_OUT_OCTETS), ==,
+                     sizeof(test_frame_direct));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * Byte order of the published block, on the pairing the IRIX guest actually
+ * programs: the chip's descriptor byte swap off and the Bridge slot doing the
+ * single correction. Every field has to read big-endian in guest memory, and a
+ * 64-bit counter's two words have to arrive most significant first. Written as
+ * one quantity in the chip's own order instead, each count arrives multiplied
+ * by 2^32 -- which the transparent pairing above cannot see, because there the
+ * two spellings are the same bytes.
+ */
+static void test_statistics_byte_order(const void *data)
+{
+    uint8_t seen[8];
+    QTestState *qts;
+    uint8_t got[2048];
+    int sv[2];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    aim_window_at_bar(qts);
+    qtest_writel(qts, CFG0(TIGON_SLOT) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
+    qtest_writel(qts, BRIDGE_DEVICE(TIGON_SLOT),
+                 DEV_MEMORY_SPACE | (ADAPTER_MMIO >> 20));
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_OPMODE, 0);
+
+    qtest_memset(qts, GIB_PHYS, 0, GIB_SIZE);
+    qtest_memset(qts, TX_RING_PHYS, 0, 0x800);
+    qtest_memset(qts, TX_CONS_PHYS, 0, 8);
+    qtest_memset(qts, EVENT_RING_PHYS, 0, 0x800);
+    qtest_memset(qts, EV_PROD_PHYS, 0, 8);
+    qtest_memset(qts, STATS_PHYS, 0, STATS_SIZE);
+    qtest_writeq(qts, GIB_PHYS + GIB_EV_RCB, IOVA(EVENT_RING_PHYS));
+    qtest_writeq(qts, GIB_PHYS + GIB_EV_PROD_PTR, IOVA(EV_PROD_PHYS));
+    qtest_writeq(qts, GIB_PHYS + GIB_TX_RCB, IOVA(TX_RING_PHYS));
+    qtest_writel(qts, GIB_PHYS + GIB_TX_RCB + 8,
+                 (512u << 16) | TI_RCB_FLAG_HOST_RING);
+    qtest_writeq(qts, GIB_PHYS + GIB_TX_CONS_PTR, IOVA(TX_CONS_PHYS));
+    qtest_writeq(qts, GIB_PHYS + GIB_REFRESH_STATS_PTR, IOVA(STATS_PHYS));
+
+    publish_gib_at(qts, IOVA(GIB_PHYS));
+    release_cpu(qts);
+
+    qtest_memwrite(qts, TX_BUF_DIRECT_PHYS, test_frame_direct,
+                   sizeof(test_frame_direct));
+    qtest_writeq(qts, TX_RING_PHYS + 0, IOVA(TX_BUF_DIRECT_PHYS));
+    qtest_writel(qts, TX_RING_PHYS + 8,
+                 ((uint32_t)sizeof(test_frame_direct) << 16) | TI_BDFLAG_END);
+    qtest_writel(qts, TX_RING_PHYS + 12, 0);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
+    g_assert_cmpint(net_recv_frame(sv[0], got, sizeof(got)), ==,
+                    (int)sizeof(test_frame_direct));
+
+    post_command(qts, 0, (uint32_t)TI_CMD_LINK_NEGOTIATION << 24);
+    qtest_clock_step(qts, LINK_DELAY_NS);
+    post_command(qts, 1, (uint32_t)TI_CMD_RFRSH_STATS << 24);
+
+    /* One transmitted unicast frame: the count's 1 belongs in the last byte. */
+    qtest_memread(qts, STATS_PHYS + STAT_HC_OUT_UCAST, seen, sizeof(seen));
+    g_assert_cmphex(seen[0], ==, 0x00);
+    g_assert_cmphex(seen[1], ==, 0x00);
+    g_assert_cmphex(seen[2], ==, 0x00);
+    g_assert_cmphex(seen[3], ==, 0x00);
+    g_assert_cmphex(seen[4], ==, 0x00);
+    g_assert_cmphex(seen[5], ==, 0x00);
+    g_assert_cmphex(seen[6], ==, 0x00);
+    g_assert_cmphex(seen[7], ==, 0x01);
+
+    /* A gigabit in bits a second, big-endian: 1000000000 is 0x3b9aca00. */
+    qtest_memread(qts, STATS_PHYS + STAT_IF_SPEED, seen, 4);
+    g_assert_cmphex(seen[0], ==, 0x3b);
+    g_assert_cmphex(seen[1], ==, 0x9a);
+    g_assert_cmphex(seen[2], ==, 0xca);
+    g_assert_cmphex(seen[3], ==, 0x00);
+
+    /* The station address, behind its two bytes of padding. */
+    qtest_memread(qts, STATS_PHYS + STAT_IF_PHYS_ADDRESS, seen, sizeof(seen));
+    g_assert_cmphex(seen[0], ==, 0x00);
+    g_assert_cmphex(seen[1], ==, 0x00);
+    g_assert_cmpmem(seen + 2, sizeof(tigon_mac), tigon_mac, sizeof(tigon_mac));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/* The clear command zeroes the counters the next refresh publishes. */
+static void test_statistics_clear(const void *data)
+{
+    uint8_t got[2048];
+    QTestState *qts;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    write_tx_frame(qts, 0, TX_BUF_PHYS, test_frame_direct,
+                   sizeof(test_frame_direct));
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
+    net_recv_frame(sv[0], got, sizeof(got));
+
+    post_command(qts, 0, (uint32_t)TI_CMD_RFRSH_STATS << 24);
+    g_assert_cmpuint(read_stat64(qts, STAT_HC_OUT_UCAST), ==, 1);
+
+    post_command(qts, 1, (uint32_t)TI_CMD_CLR_STATS << 24);
+    post_command(qts, 2, (uint32_t)TI_CMD_RFRSH_STATS << 24);
+    g_assert_cmpuint(read_stat64(qts, STAT_HC_OUT_UCAST), ==, 0);
+    g_assert_cmpuint(read_stat64(qts, STAT_HC_OUT_OCTETS), ==, 0);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 /*
  * A completion that arrives while the host interrupt is masked must still
  * raise the line when the driver re-enables it. The Tigon 2 driver masks by
@@ -3708,6 +4076,17 @@ int main(int argc, char **argv)
 
     qtest_add_data_func("/sn0/tigon/interrupt-reenable-preserves-completion",
                         NULL, test_interrupt_reenable_preserves_completion);
+
+    qtest_add_data_func("/sn0/tigon/statistics-traffic-counters", NULL,
+                        test_statistics_traffic_counters);
+    qtest_add_data_func("/sn0/tigon/statistics-interface-identity", NULL,
+                        test_statistics_interface_identity);
+    qtest_add_data_func("/sn0/tigon/statistics-clear", NULL,
+                        test_statistics_clear);
+    qtest_add_data_func("/sn0/tigon/statistics-byte-order", NULL,
+                        test_statistics_byte_order);
+    qtest_add_data_func("/sn0/tigon/statistics-head-stays-current", NULL,
+                        test_statistics_head_stays_current);
 
     return g_test_run();
 }
