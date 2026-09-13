@@ -1497,6 +1497,121 @@ static void migrate_module(QTestState *from, QTestState *to)
     g_assert_cmpint(rmdir(directory), ==, 0);
 }
 
+#define PI_CALIAS_SIZE 0x000028
+#define PI_CALIAS_SIZE_RESET 15
+
+static uint64_t hub_read_slice(QTestState *qts, unsigned int cpu,
+                               uint64_t offset)
+{
+    uint8_t bytes[8];
+
+    g_assert_true(qtest_memread_cpu(qts, cpu, HUB_BASE + offset,
+                                    bytes, sizeof(bytes)));
+    return ldq_be_p(bytes);
+}
+
+static void hub_write_slice(QTestState *qts, unsigned int cpu,
+                            uint64_t offset, uint64_t value)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, cpu, HUB_BASE + offset,
+                                     bytes, sizeof(bytes)));
+}
+
+/*
+ * The cached-alias size decides whether a processor's node-field-zero access
+ * stays on its own node, so a value nobody wrote moves where a copy lands.
+ * Pin the contract: the code every Hub resets to, that a write reaches that
+ * Hub and no other, that both processors of a node share one register, that
+ * a migration carries the written code across, and that a reset is the only
+ * thing besides a guest write that moves it.
+ */
+static void test_cached_alias_size(void)
+{
+    QTestState *from = qtest_init("-M origin2000 -smp 8,sockets=4,cores=2 "
+                                  "-m 256M");
+    QTestState *to;
+    unsigned int node, slice;
+
+    /* Every Hub resets to the same code, and every processor reads it. */
+    for (node = 0; node < 4; node++) {
+        for (slice = 0; slice < 2; slice++) {
+            g_assert_cmphex(hub_read_slice(from, 2 * node + slice,
+                                           PI_CALIAS_SIZE), ==,
+                            PI_CALIAS_SIZE_RESET);
+        }
+    }
+
+    /* A write reaches the writing processor's own Hub, and no other. */
+    hub_write(from, 1, PI_CALIAS_SIZE, 1);
+    for (node = 0; node < 4; node++) {
+        uint64_t expected = node == 1 ? 1 : PI_CALIAS_SIZE_RESET;
+
+        for (slice = 0; slice < 2; slice++) {
+            g_assert_cmphex(hub_read_slice(from, 2 * node + slice,
+                                           PI_CALIAS_SIZE), ==, expected);
+        }
+    }
+
+    /* One register serves both processors of a node: the other writes it. */
+    hub_write_slice(from, 3, PI_CALIAS_SIZE, 2);
+    g_assert_cmphex(hub_read_slice(from, 2, PI_CALIAS_SIZE), ==, 2);
+    g_assert_cmphex(hub_read_slice(from, 3, PI_CALIAS_SIZE), ==, 2);
+    g_assert_cmphex(hub_read_slice(from, 0, PI_CALIAS_SIZE), ==,
+                    PI_CALIAS_SIZE_RESET);
+
+    /* Four bits wide: the rest of a write is not kept. */
+    hub_write(from, 1, PI_CALIAS_SIZE, ~UINT64_C(0));
+    g_assert_cmphex(hub_read_slice(from, 2, PI_CALIAS_SIZE), ==, 0xf);
+    hub_write(from, 1, PI_CALIAS_SIZE, 1);
+
+    /* Nothing moves it while the machine runs on. */
+    qtest_clock_step(from, 100 * 1000 * 1000);
+    g_assert_cmphex(hub_read_slice(from, 2, PI_CALIAS_SIZE), ==, 1);
+
+    /* A migration carries the written code, and changes no other Hub. */
+    to = qtest_init("-M origin2000 -smp 8,sockets=4,cores=2 -m 256M "
+                    "-incoming defer");
+    migrate_module(from, to);
+    for (node = 0; node < 4; node++) {
+        uint64_t expected = node == 1 ? 1 : PI_CALIAS_SIZE_RESET;
+
+        for (slice = 0; slice < 2; slice++) {
+            g_assert_cmphex(hub_read_slice(to, 2 * node + slice,
+                                           PI_CALIAS_SIZE), ==, expected);
+        }
+    }
+
+    /*
+     * Where a dump can mislead: the code sits in the low half of the
+     * doubleword, so a 32-bit read of the register's own offset returns the
+     * high half, which is zero however the code is programmed, and only a
+     * read of the offset plus four returns it.
+     */
+    {
+        uint8_t halves[4];
+
+        g_assert_true(qtest_memread_cpu(to, 2, HUB_BASE + PI_CALIAS_SIZE,
+                                        halves, sizeof(halves)));
+        g_assert_cmphex(ldl_be_p(halves), ==, 0);
+        g_assert_true(qtest_memread_cpu(to, 2, HUB_BASE + PI_CALIAS_SIZE + 4,
+                                        halves, sizeof(halves)));
+        g_assert_cmphex(ldl_be_p(halves), ==, 1);
+    }
+
+    /* A reset puts every Hub back to the reset code. */
+    qtest_system_reset(to);
+    for (node = 0; node < 4; node++) {
+        g_assert_cmphex(hub_read_slice(to, 2 * node, PI_CALIAS_SIZE), ==,
+                        PI_CALIAS_SIZE_RESET);
+    }
+
+    qtest_quit(from);
+    qtest_quit(to);
+}
+
 static void test_router_nic_inventory_migration(void)
 {
     static const char record_serials[][11] = {
@@ -2057,6 +2172,7 @@ int main(int argc, char **argv)
                    test_baseio_timekeeper_backing_reopen);
     qtest_add_func("sn0/origin2000/oversize-firmware", test_oversize_firmware);
     qtest_add_func("sn0/origin2000/missing-firmware", test_missing_firmware);
+    qtest_add_func("sn0/origin2000/cached-alias-size", test_cached_alias_size);
     qtest_add_func("sn0/origin2000/migration", test_migration);
     qtest_add_func("sn0/origin2000/xbow-link-reset-lifecycle",
                    test_xbow_link_reset_lifecycle);
