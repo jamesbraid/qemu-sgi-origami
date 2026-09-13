@@ -62,7 +62,7 @@ static void xtalk_owner_test_verify(SN0XtalkOwnerTest *test)
         g_assert(object_property_get_uint(crossbow,
                                           "link-reset-restore-alive",
                                           &error_abort) ==
-                 (i ? 0 : 0x0100));
+                 (i ? 0x0600 : 0x0700));
     }
     g_assert(object_resolve_path_component(xtalk, "baseio0"));
     g_assert(sn0_origin2000_xtalk_test_proxies_disabled(sn0));

@@ -228,22 +228,6 @@ static uint16_t crossbow_present_mask(const SN0ModelComposition *model,
     return mask;
 }
 
-static uint16_t crossbow_io_board_mask(const SN0ModelComposition *model,
-                                       unsigned int crossbow_index)
-{
-    uint16_t mask = 0;
-    size_t i;
-
-    for (i = 0; i < model->io_board_count; i++) {
-        const SN0ModelIoBoard *board = &model->io_boards[i];
-
-        if (board->crossbow_index == crossbow_index) {
-            mask |= 1U << board->widget;
-        }
-    }
-    return mask;
-}
-
 /*
  * A processor reaching a Hub across the switch. The selected physical Hub's
  * widget-identification word answers its one cleared short read. Every other
@@ -353,8 +337,15 @@ static void sn0_origin2000_xtalk_build_crossbows(SN0Origin2000XtalkState *s)
                              crossbow_present_mask(model, i));
         qdev_prop_set_uint16(crossbow, "startup-links-alive",
                              descriptor->initially_operational_links);
+        /*
+         * Stock PROM resets populated Hub links while checking each node and
+         * expects an attached link that was alive before the reset to return
+         * to service after the pulse. The generic Crossbow keeps its
+         * conservative training contract; this assembly supplies the
+         * machine-specific compatibility policy for every populated endpoint.
+         */
         qdev_prop_set_uint16(crossbow, "link-reset-restore-alive",
-                             crossbow_io_board_mask(model, i));
+                             crossbow_present_mask(model, i));
     }
 }
 
