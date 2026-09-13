@@ -55,6 +55,14 @@
 /* One 90 kHz byte takes about 100us; poll well past that before failing. */
 #define POLL_STEP_NS    2000
 #define POLL_STEPS      400
+/*
+ * Arbitration is decided in the first microseconds after an action, so
+ * poll finely there and coarsely afterwards. A byte is about 100 us and
+ * the grant rotation about 10 ms, so a uniform fine step spends fifty
+ * round trips on every byte and still cannot outlast a grant.
+ */
+#define POLL_FINE_STEPS 8
+#define POLL_COARSE_NS  50000
 #define SERVICE_PERIOD_NS   1000000
 #define GRANT_SETTLE_NS     500000
 #define GRANT_BASE          0xe0
@@ -97,7 +105,8 @@ static bool wait_done(QTestState *qts, unsigned node)
         if (status & (STS_BER | STS_LAB)) {
             return false;
         }
-        qtest_clock_step(qts, POLL_STEP_NS);
+        qtest_clock_step(qts, i < POLL_FINE_STEPS ? POLL_STEP_NS
+                                                  : POLL_COARSE_NS);
     }
     return false;
 }
