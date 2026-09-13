@@ -609,6 +609,8 @@ static void sgi_router_bist_run(SGIRouterState *s)
                      (target == RR_BIST_TARGET_ARRAY &&
                       s->bist_loaded[target] == RR_BIST_ARRAY_INPUT_BITS));
 
+    /* Like a register reset, the run keeps a bus operation already due. */
+    sgi_router_nic_advance(s);
     sgi_router_reset_state(s, true);
     if (complete) {
         s->bist_completed_target = target;
@@ -756,6 +758,15 @@ static bool sgi_router_write(SGIRouterState *s, hwaddr addr, uint64_t value)
         s->status_control = value & RR_STATUS_CONTROL_MASK;
         return true;
     case RR_PORT_RESET:
+        if (value & (RR_RESET_WARM | RR_RESET_ADMIN)) {
+            /*
+             * The reset ends the slot underway, not a bus operation already
+             * due: the responder is not reset with this register, so an
+             * elapsed release must have happened whether or not the timer
+             * callback has run yet.
+             */
+            sgi_router_nic_advance(s);
+        }
         if (value & RR_RESET_WARM) {
             sgi_router_reset_state(s, true);
             sgi_router_reset_complete(s);
