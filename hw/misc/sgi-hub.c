@@ -18,6 +18,7 @@
 #include "hw/misc/sgi-elsc.h"
 #include "hw/misc/sgi-onewire-slot.h"
 #include "hw/nvram/eeprom_at24c.h"
+#include "hw/core/qdev-clock.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "hw/core/sysbus.h"
@@ -246,9 +247,10 @@
 #define HUB_PI_CPU_ENABLE_B     0x000058
 
 /*
- * Real-time counter: 52 bits at 1.25 MHz, derived from the virtual clock so
- * it ticks between two reads a few instructions apart, which Linux's arming
- * depends on. A write moves the origin, not the count.
+ * Real-time counter: 52 bits counting the clock the machine connects, read
+ * off the virtual clock so it ticks between two reads a few instructions
+ * apart, which Linux's arming depends on. A write moves the origin, not the
+ * count.
  */
 #define HUB_PI_RT_COUNT         0x030100
 #define HUB_PI_RT_COMPARE_A     0x000108
@@ -257,7 +259,11 @@
 #define HUB_PI_RT_PENDING_B     0x000128
 #define HUB_PI_RT_ENABLE_A      0x000140
 #define HUB_PI_RT_ENABLE_B      0x000148
-#define PI_RT_HZ                1250000ULL
+/*
+ * The rate a machine supplies when it connects nothing, which every machine
+ * in-tree overrides; the datasheet's three supports are for this number.
+ */
+#define PI_RT_DEFAULT_HZ        1250000ULL
 #define PI_RT_MASK              (((uint64_t)1 << 52) - 1)
 
 /* Clock control: bit 16 resets set; the network-clock bits read zero. */
@@ -1289,7 +1295,7 @@ static uint64_t sgi_hub_rt_count(SGIHubState *s)
     if (delta < 0) {
         return 0;
     }
-    return muldiv64(delta, PI_RT_HZ, NANOSECONDS_PER_SECOND) & PI_RT_MASK;
+    return clock_ns_to_ticks(s->rt_clk, delta) & PI_RT_MASK;
 }
 
 static uint64_t sgi_hub_read_rt_compare(SGIHubState *s, hwaddr addr,
@@ -1307,7 +1313,7 @@ static void sgi_hub_rt_set(SGIHubState *s, uint64_t val)
 {
     val &= PI_RT_MASK;
     s->pi_rt_origin_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
-                         muldiv64(val, NANOSECONDS_PER_SECOND, PI_RT_HZ);
+                         clock_ticks_to_ns(s->rt_clk, val);
 }
 
 static void sgi_hub_rt_match(SGIHubState *s, unsigned int index)
@@ -1343,7 +1349,7 @@ static void sgi_hub_rt_arm(SGIHubState *s, unsigned int index)
     }
 
     timer_mod(s->rt_timer[index], qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-              muldiv64(ticks, NANOSECONDS_PER_SECOND, PI_RT_HZ));
+              clock_ticks_to_ns(s->rt_clk, ticks));
 }
 
 /*
@@ -3579,6 +3585,8 @@ static void sgi_hub_init(Object *obj)
     SGIHubState *s = SGI_HUB(obj);
 
     object_initialize_child(obj, "i2c", &s->i2c, TYPE_PCF8584);
+    s->rt_clk = qdev_init_clock_in(DEVICE(obj), "rt-clk", NULL, NULL, 0);
+    clock_set_hz(s->rt_clk, PI_RT_DEFAULT_HZ);
 }
 
 static void sgi_hub_class_init(ObjectClass *oc, const void *data)

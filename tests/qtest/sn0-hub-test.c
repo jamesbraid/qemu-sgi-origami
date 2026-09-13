@@ -461,6 +461,35 @@ static void test_the_real_time_counter_runs_at_its_rate(const void *data)
 }
 
 /*
+ * Every node's counter, not just the one the single-node machine has. A
+ * machine that connected the clock to the first Hub alone would pass the
+ * Origin 200 check above and still leave three nodes on the device's own
+ * fallback rate. Both machines model a 90 MHz Hub, so this covers the nodes
+ * rather than a second Hub frequency.
+ */
+static void test_every_node_counter_runs_at_its_rate(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin2000");
+
+    for (unsigned int node = 0; node < ORIGIN2000_NODE_COUNT; node++) {
+        unsigned int cpu = node * ORIGIN2000_CPUS_PER_NODE;
+
+        pi_cpu_writeq(qts, cpu, PI_RT_COUNT, 0);
+        g_assert_cmpuint(pi_cpu_readq(qts, cpu, PI_RT_COUNT), ==, 0);
+    }
+
+    qtest_clock_step(qts, PI_RT_NS_PER_SEC);
+
+    for (unsigned int node = 0; node < ORIGIN2000_NODE_COUNT; node++) {
+        unsigned int cpu = node * ORIGIN2000_CPUS_PER_NODE;
+
+        g_assert_cmpuint(pi_cpu_readq(qts, cpu, PI_RT_COUNT), ==, PI_RT_HZ);
+    }
+
+    qtest_quit(qts);
+}
+
+/*
  * Linux's guard: a behind write is answered by a rewrite further out a few
  * instructions later, once set_next_event reads the counter back and sees
  * -ETIME. The rewrite must re-aim the deadline the behind write left
@@ -5014,6 +5043,8 @@ int main(int argc, char **argv)
                         test_an_inbound_link_reset_says_what_it_cannot_model);
     qtest_add_data_func("sn0/hub/rt-counter-rate", NULL,
                         test_the_real_time_counter_runs_at_its_rate);
+    qtest_add_data_func("sn0/hub/rt-counter-rate-every-node", NULL,
+                        test_every_node_counter_runs_at_its_rate);
     qtest_add_data_func("sn0/hub/rt-counter-writable", NULL,
                         test_the_real_time_counter_is_writable_and_keeps_running);
     qtest_add_data_func("sn0/hub/rt-counter-width", NULL,

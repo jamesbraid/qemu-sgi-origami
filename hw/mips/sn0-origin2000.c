@@ -375,6 +375,8 @@ void sn0_origin2000_prepare_nodes(MachineState *machine)
     s->nodes = g_new0(SN0NodeState *, s->num_nodes);
     s->cpu_refclk = clock_new(OBJECT(machine), "cpu-refclk");
     clock_set_hz(s->cpu_refclk, c->hardware->cpu_clock_hz);
+    s->rt_refclk = clock_new(OBJECT(machine), "rt-refclk");
+    clock_set_hz(s->rt_refclk, c->hardware->rtc_clock_hz);
     s->fabric = SN0_FABRIC(qdev_new(TYPE_SN0_FABRIC_ROUTED));
     object_property_add_child(OBJECT(machine), "fabric", OBJECT(s->fabric));
 
@@ -453,6 +455,7 @@ void sn0_origin2000_prepare_nodes(MachineState *machine)
         }
         qdev_prop_set_array(DEVICE(node), "banks-mb", banks);
         qdev_connect_clock_in(DEVICE(node), "cpu-refclk", s->cpu_refclk);
+        qdev_connect_clock_in(DEVICE(node), "rt-refclk", s->rt_refclk);
         object_property_set_link(OBJECT(&node->hub), "fabric",
                                  OBJECT(s->fabric), &error_fatal);
         qdev_prop_set_uint32(DEVICE(&node->hub), "fabric-endpoint", node_index);
