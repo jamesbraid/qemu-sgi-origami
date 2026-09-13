@@ -66,6 +66,7 @@ static void mgmt_reset_state(SGISn0ModuleManagementState *s)
     s->console_input_pending = false;
     s->console_processor = 0;
     s->grant_active = false;
+    s->grant_window_extended = false;
     s->grant_state = GRANT_IDLE;
     s->grant_bit = 0;
     s->grant_byte = 0;
@@ -220,6 +221,7 @@ static bool mgmt_message_for(SGISn0ModuleManagementState *s, uint8_t code)
 static void mgmt_publish(SGISn0ModuleManagementState *s)
 {
     s->processor_code = (s->processor_code + 1) % PROCESSOR_CODES;
+    s->grant_window_extended = false;
     s->grant_byte = GRANT_BASE | s->processor_code |
                     (mgmt_message_for(s, s->processor_code) ?
                      GRANT_MESSAGE_BIT : 0);
@@ -228,6 +230,23 @@ static void mgmt_publish(SGISn0ModuleManagementState *s)
     s->wire_scl = i2c_wire_scl(s->bus);
     s->wire_sda = i2c_wire_sda(s->bus);
     mgmt_stage(s, false, false, 1);
+}
+
+static void mgmt_data_read(void *opaque, uint32_t master, uint8_t value)
+{
+    SGIO2000ModuleMgmtState *s = opaque;
+    int64_t deadline;
+
+    if (s->grant_window_extended || value != s->grant_byte ||
+        master != (s->grant_byte & 7) / 2 || i2c_bus_busy(s->bus)) {
+        return;
+    }
+    s->grant_window_extended = true;
+    deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + SERVICE_PERIOD_NS;
+    if (deadline > s->service_deadline) {
+        s->service_deadline = deadline;
+        timer_mod_ns(s->service_timer, deadline);
+    }
 }
 
 /* A staged adapter START owns tBUF before its lines make the bus busy. */
@@ -765,6 +784,8 @@ static void mgmt_realize(DeviceState *dev, Error **errp)
             return;
         }
         qdev_prop_set_uint32(s->adapters[i], "wire-master", i);
+        pcf8584_set_data_read_handler(PCF8584(s->adapters[i]),
+                                      mgmt_data_read, s);
         if (!sysbus_realize(SYS_BUS_DEVICE(s->adapters[i]), errp)) {
             return;
         }
@@ -891,7 +912,7 @@ static int mgmt_post_load(void *opaque, int version_id)
 static const VMStateDescription vmstate_sgi_sn0_module_management = {
     /* Pre-rename stream name; kept for migration compatibility. */
     .name = "sgi-o2000-module-management",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .post_load = mgmt_post_load,
     .fields = (const VMStateField[]) {
@@ -907,6 +928,8 @@ static const VMStateDescription vmstate_sgi_sn0_module_management = {
         VMSTATE_UINT8(grant_state, SGISn0ModuleManagementState),
         VMSTATE_BOOL(grant_bit_sampled, SGISn0ModuleManagementState),
         VMSTATE_BOOL(grant_active, SGISn0ModuleManagementState),
+        VMSTATE_BOOL_V(grant_window_extended,
+                       SGISn0ModuleManagementState, 2),
         VMSTATE_BOOL(wire_scl, SGISn0ModuleManagementState),
         VMSTATE_BOOL(wire_sda, SGISn0ModuleManagementState),
         VMSTATE_BOOL(publication_enabled, SGISn0ModuleManagementState),
