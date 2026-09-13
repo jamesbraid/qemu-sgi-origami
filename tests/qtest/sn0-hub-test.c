@@ -40,6 +40,8 @@
 #define PI_CALIAS_SIZE_4K   1
 #define PI_CALIAS_SIZE_16M  13
 #define PI_CALIAS_SIZE_32M  14
+#define PI_CPU_PRESENT_A    0x000040
+#define PI_CPU_PRESENT_B    0x000048
 #define PI_CPU_ENABLE_A     0x000050
 #define PI_CPU_ENABLE_B     0x000058
 
@@ -1889,6 +1891,113 @@ static void test_md_indicator_suppressed(const void *data)
     g_assert_null(strstr(found, "sgi_hub_led"));
 
     g_assert_cmpint(g_unlink(log), ==, 0);
+}
+
+static char *trace_file_create(void)
+{
+    char *path = NULL;
+    int fd = g_file_open_tmp("sn0-hub-trace-XXXXXX", &path, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    return path;
+}
+
+/* The run's records, one per element; the file is removed. */
+static char **trace_file_take(const char *path)
+{
+    g_autofree char *text = NULL;
+
+    g_assert_true(g_file_get_contents(path, &text, NULL, NULL));
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    return g_strsplit(text, "\n", -1);
+}
+
+/* How many of @event's records contain @fields. */
+static unsigned int trace_count(char **records, const char *event,
+                                const char *fields)
+{
+    size_t len = strlen(event);
+    unsigned int count = 0;
+
+    for (; *records; records++) {
+        if (!strncmp(*records, event, len) && (*records)[len] == ' ' &&
+            strstr(*records, fields)) {
+            count++;
+        }
+    }
+    return count;
+}
+
+/* The processor coordination registers, each traced in both directions. */
+static const uint64_t coordination_registers[] = {
+    PI_PROCESSOR_NUMBER, PI_CALIAS_SIZE, PI_CPU_PRESENT_A, PI_CPU_PRESENT_B,
+    PI_CPU_ENABLE_A, PI_CPU_ENABLE_B, PI_INT_MODIFY, PI_INT_PEND0,
+    PI_INT_PEND1, PI_INT_MASK0_A, PI_INT_MASK1_A, PI_INT_MASK0_B,
+    PI_INT_MASK1_B, MD_CONFIG, MD_PERF_CNT0, IO_SCRATCH_0, IO_SCRATCH_1,
+};
+
+/*
+ * Only the coordination registers trace, and a write carries the stored
+ * doubleword beside the written value. The real-time counter must stay
+ * out: a boot reads it tens of millions of times.
+ */
+static void test_coordination_registers_trace_alone(const void *data)
+{
+    g_autofree char *path = trace_file_create();
+    g_auto(GStrv) records = NULL;
+    QTestState *qts;
+    unsigned int i;
+
+    qts = qtest_initf("-M origin200 "
+                      "-trace enable=sgi_hub_coordination_*,file=%s", path);
+    for (i = 0; i < G_N_ELEMENTS(coordination_registers); i++) {
+        qtest_readq(qts, HUB_LOCAL + coordination_registers[i]);
+    }
+    qtest_writeq(qts, HUB_LOCAL + IO_SCRATCH_0, ~0ULL);
+    qtest_writel(qts, HUB_LOCAL + IO_SCRATCH_1 + 4, 0x12345678);
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 5);
+    qtest_writeq(qts, HUB_LOCAL + PI_PROCESSOR_NUMBER, 1);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 1 << 5);
+    qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT);
+    qtest_readq(qts, HUB_LOCAL + NI_SCRATCH_0);
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A, 1);
+    qtest_quit(qts);
+
+    records = trace_file_take(path);
+    for (i = 0; i < G_N_ELEMENTS(coordination_registers); i++) {
+        g_autofree char *reg = g_strdup_printf(
+            "reg 0x%06" PRIx64 " ", coordination_registers[i]);
+
+        g_assert_cmpuint(trace_count(records, "sgi_hub_coordination_read",
+                                     reg), >=, 1);
+    }
+    g_assert_cmpuint(trace_count(records, "sgi_hub_coordination_write",
+                                 "cpu -1 hub_cpu_base 0 nasid 0 pc "
+                                 "0x0000000000000000 reg 0x400150 "
+                                 "value 0xffffffffffffffff size 8 "
+                                 "stored 0x0000000f00f11fff "), ==, 1);
+    /* A half write stores the merged, masked doubleword. */
+    g_assert_cmpuint(trace_count(records, "sgi_hub_coordination_write",
+                                 "reg 0x40015c value 0x0000000012345678 "
+                                 "size 4 stored 0x0000000000301678 "), ==, 1);
+    /* Interrupt modify holds nothing; the bank it names is what moved. */
+    g_assert_cmpuint(trace_count(records, "sgi_hub_coordination_write",
+                                 "reg 0x000090 value 0x0000000000000105 "
+                                 "size 8 stored 0x0000000000000020 "), ==, 1);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_coordination_write",
+                                 "reg 0x000020 value 0x0000000000000001 "
+                                 "size 8 stored 0x0000000000000000 "), ==, 1);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_coordination_read",
+                                 "reg 0x000098 value 0x0000000000000020 "
+                                 "size 8 "), ==, 1);
+
+    g_assert_cmpuint(trace_count(records, "sgi_hub_coordination_read",
+                                 "reg 0x030100 "), ==, 0);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_coordination_read",
+                                 "reg 0x600100 "), ==, 0);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_coordination_write",
+                                 "reg 0x000108 "), ==, 0);
 }
 
 /*
@@ -5038,6 +5147,8 @@ int main(int argc, char **argv)
                         test_sn00_indicator_shown_by_default);
     qtest_add_data_func("sn0/hub/md-indicator-suppressed", NULL,
                         test_md_indicator_suppressed);
+    qtest_add_data_func("sn0/hub/coordination-registers-trace-alone", NULL,
+                        test_coordination_registers_trace_alone);
     qtest_add_data_func("sn0/hub/junk-uart-absent-by-default", NULL,
                         test_junk_uart_absent_by_default);
     qtest_add_data_func("sn0/hub/junk-uart-fitted-answers-present", NULL,
