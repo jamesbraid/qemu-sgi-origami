@@ -5,6 +5,7 @@
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "system/dma.h"
 
@@ -141,20 +142,39 @@ static void ii_bte_interrupt(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
  * notify control bit it writes the final length-status word to the
  * notification line; without it it raises the completion interrupt the
  * interrupt-address register names.
+ *
+ * The interrupt lands in the node's own register window, which reaches this
+ * I/O interface again.  A launch that finishes synchronously -- a
+ * bounds-checked failure, or a zero-latency engine -- runs ii_bte_signal from
+ * inside the launching MMIO write, and a self-directed completion writes back
+ * into this device; either way QEMU's re-entrancy guard would drop the write.
+ * Deliver the interrupt from a bottom half that runs once the launching access
+ * has returned.  The notification-line write targets ordinary memory and stays
+ * synchronous.
  */
 static void ii_bte_signal(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
 {
-    uint64_t value = cpu_to_be64(bte->status);
+    uint64_t value;
 
     if (!(bte->control & (1 << 4))) {
-        ii_bte_interrupt(s, bte);
+        bte->signal_pending = true;
+        qemu_bh_schedule(bte->signal_bh);
         return;
     }
+    value = cpu_to_be64(bte->status);
     if (dma_memory_write(s->dma_as, bte->notification, &value, sizeof(value),
                          MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-bedrock-io: BTE notification write failed\n");
     }
+}
+
+static void ii_bte_signal_bh(void *opaque)
+{
+    SGIBedrockIOBTE *bte = opaque;
+
+    bte->signal_pending = false;
+    ii_bte_interrupt(bte->io, bte);
 }
 
 static void ii_bte_complete(void *opaque)
@@ -695,6 +715,7 @@ static void ii_reset_enter(Object *obj, ResetType type)
     memset(s->retained, 0, sizeof(s->retained));
     for (unsigned i = 0; i < 2; i++) {
         timer_del(s->bte[i].timer);
+        qemu_bh_cancel(s->bte[i].signal_bh);
         s->bte[i].status = 0;
         s->bte[i].source = 0;
         s->bte[i].destination = 0;
@@ -702,11 +723,12 @@ static void ii_reset_enter(Object *obj, ResetType type)
         s->bte[i].notification = 0;
         s->bte[i].interrupt = 0;
         s->bte[i].active = false;
+        s->bte[i].signal_pending = false;
     }
 }
 
 static const VMStateDescription vmstate_ii_bte = {
-    .name = "sgi-bedrock-io/bte", .version_id = 1, .minimum_version_id = 1,
+    .name = "sgi-bedrock-io/bte", .version_id = 2, .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(status, SGIBedrockIOBTE),
         VMSTATE_UINT64(source, SGIBedrockIOBTE),
@@ -715,12 +737,27 @@ static const VMStateDescription vmstate_ii_bte = {
         VMSTATE_UINT64(notification, SGIBedrockIOBTE),
         VMSTATE_UINT64(interrupt, SGIBedrockIOBTE),
         VMSTATE_BOOL(active, SGIBedrockIOBTE),
+        VMSTATE_BOOL(signal_pending, SGIBedrockIOBTE),
         VMSTATE_TIMER_PTR(timer, SGIBedrockIOBTE), VMSTATE_END_OF_LIST()
     },
 };
 
+static int ii_post_load(void *opaque, int version_id)
+{
+    SGIBedrockIOState *s = opaque;
+
+    /* A completion that had not yet delivered its interrupt resumes here. */
+    for (unsigned i = 0; i < 2; i++) {
+        if (s->bte[i].signal_pending) {
+            qemu_bh_schedule(s->bte[i].signal_bh);
+        }
+    }
+    return 0;
+}
+
 static const VMStateDescription vmstate_ii = {
-    .name = TYPE_SGI_BEDROCK_IO, .version_id = 1, .minimum_version_id = 1,
+    .name = TYPE_SGI_BEDROCK_IO, .version_id = 2, .minimum_version_id = 2,
+    .post_load = ii_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(widget_control, SGIBedrockIOState),
         VMSTATE_UINT64(local_protect, SGIBedrockIOState),
@@ -773,6 +810,8 @@ static void ii_init(Object *obj)
         s->bte[i].io = s;
         s->bte[i].timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ii_bte_complete,
                                       &s->bte[i]);
+        s->bte[i].signal_bh = qemu_bh_new_guarded(ii_bte_signal_bh, &s->bte[i],
+                                      &DEVICE(obj)->mem_reentrancy_guard);
     }
 }
 
@@ -782,6 +821,8 @@ static void ii_finalize(Object *obj)
 
     timer_free(s->bte[0].timer);
     timer_free(s->bte[1].timer);
+    qemu_bh_delete(s->bte[0].signal_bh);
+    qemu_bh_delete(s->bte[1].signal_bh);
     if (s->linked_dma_as_initialized) {
         address_space_destroy(&s->linked_dma_as);
     }
