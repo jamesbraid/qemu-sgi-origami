@@ -3944,10 +3944,8 @@ static void test_receive_ring_full_recovers(const void *data)
     g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
 
     /*
-     * Re-enable interrupts before the driver has taken any completions. The
-     * status update posted while masked asserts now, and the driver's
-     * write-0-only acknowledgement authorizes the next readiness transition
-     * to retry the queued frame.
+     * An interrupt cycle with the ring still full changes nothing: the frames
+     * are waiting on return-ring space, not on the driver's acknowledgement.
      */
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     g_assert_true(intr_line_up(b.dev));
@@ -3960,9 +3958,9 @@ static void test_receive_ring_full_recovers(const void *data)
     g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
 
     /*
-     * The driver now takes everything and says so. The earlier re-enable must
-     * authorize this readiness transition to retry immediately; there is no
-     * second interrupt acknowledgement or virtual-clock step.
+     * The driver now takes everything and says so. That consumer write is the
+     * readiness transition, and it retries immediately -- no second interrupt
+     * acknowledgement, no virtual-clock step.
      */
     for (i = 0; i < LAP_RET_LEN; i++) {
         qtest_memset(b.qts, RET_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE, 0,
@@ -3978,25 +3976,15 @@ static void test_receive_ring_full_recovers(const void *data)
     g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
 
     /*
-     * That retry consumed its authorization. Freeing the second full ring
-     * before acknowledging its interrupt must not publish another completion
-     * underneath the handler.
+     * And again for the second ring's worth. Freeing return-ring space is the
+     * whole condition; the interrupt from the first refill is still pending
+     * and unacknowledged.
      */
     for (i = 0; i < LAP_RET_LEN; i++) {
         qtest_memset(b.qts, RET_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE, 0,
                      BCM_RXBD_SIZE);
     }
     bar_writel(&b, BCM_MBX_RX_CONS0_LO, LAP_RET_LEN - 2);
-    g_usleep(100000);
-    for (i = 0; i < LAP_RET_LEN; i++) {
-        qtest_memread(b.qts, RET_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE,
-                      ret, sizeof(ret));
-        g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END,
-                        ==, 0);
-    }
-
-    /* The second acknowledgement releases the remaining queued frames. */
-    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     wait_for_rx_prod(&b, LAP_RET_LEN - 4);
 
     bcm_close(&b);
@@ -4005,11 +3993,11 @@ static void test_receive_ring_full_recovers(const void *data)
 
 /*
  * A frame that arrived before the coalescing block was enabled is still owed to
- * the guest. Enabling the block makes the rings ready; the next interrupt
- * re-enable releases queued work after the driver has cleared the old status.
- * One re-enable drains the backlog without per-frame clock advancement.
+ * the guest. Enabling the block is the last missing precondition, so it is what
+ * releases the backlog -- all of it, in one drain, with no per-frame clock
+ * advancement and no interrupt cycle in between.
  */
-static void test_receive_flush_after_enable_reenable(const void *data)
+static void test_receive_flush_after_engine_enable(const void *data)
 {
     enum { FRAMES = 4 };
     int sv[2];
@@ -4062,18 +4050,11 @@ static void test_receive_flush_after_enable_reenable(const void *data)
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
     g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
 
-    /* Initial enable does not release the backlog. */
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
 
-    /* A real status interrupt and its acknowledgement release it. */
-    qtest_clock_step(b.qts, BCM_STATUS_TICK_MAX_NS);
-    g_assert_true(intr_line_up(b.dev));
-    bar_writel(&b, BCM_MBX_IRQ0_LO, 1);
-    g_assert_false(intr_line_up(b.dev));
-    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
-
     wait_for_rx_prod(&b, FRAMES);
+    g_assert_true(intr_line_up(b.dev));
     for (i = 0; i < FRAMES; i++) {
         qtest_memread(b.qts, RET_RING_PHYS + i * BCM_RXBD_SIZE,
                       ret, sizeof(ret));
@@ -4088,20 +4069,84 @@ static void test_receive_flush_after_enable_reenable(const void *data)
 }
 
 /*
- * A receive-ready MMIO write can come from inside the guest's interrupt
- * handler. A frame held by the backend must not be published merely because
- * virtual time passes: doing so can set UPDATED underneath the handler while
- * it is draining the same status block, and the handler never returns.
+ * A frame the chip could not place waits for a buffer, not for an interrupt.
+ * The programmer's guide gives the producer mailbox as the resumption event:
+ * "When the host software updates one of these indices, the BCM57XX family is
+ * automatically signaled that a new BD is waiting for DMA" (57XX-PG105-R,
+ * Receive Producer Ring, page 124), and the RX List Initiator "activates
+ * whenever the receive producer index for any of receive Buffer Descriptor
+ * (BD) rings is written" (page 51). Drivers rely on it: OpenBSD bge refills
+ * from a timeout with no interrupt in sight, and Linux tg3 refills inside NAPI
+ * poll while its interrupt is still masked.
  *
- * The periodic status update guarantees a later interrupt even if the frame
- * was queued before any completion existed. Its mask/re-enable sequence is an
- * explicit guest-execution boundary. Queue a frame while HCC is disabled,
- * before the driver's initial interrupt enable, and prove that initial enable,
- * HCC enable, producer/consumer updates, and almost a whole status-tick
- * interval do not publish it. The first real write-1/write-0 acknowledgement
- * then releases it without a further clock delay.
+ * A false pass here is a frame delivered because something else unmasked the
+ * interrupt, so nothing in this test writes the interrupt mailbox after the
+ * frame is queued, and the producer write is the only event between the
+ * refusal and the delivery.
  */
-static void test_queued_receive_waits_for_irq_reenable(const void *data)
+static void test_queued_receive_released_by_producer(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[64], got[64];
+    uint8_t ret[BCM_RXBD_SIZE];
+
+    memset(frame, 0x7c, sizeof(frame));
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+
+    bar_writel(&b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
+    bar_writel(&b, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
+    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, STD_BUF_SIZE << 16);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB, RET_RING_PHYS >> 32);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4,
+                   RET_RING_PHYS & 0xffffffff);
+    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
+    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    write_rx_bd(&b, STD_RING_PHYS, 0, RX_BUF_PHYS);
+    qtest_memset(b.qts, RX_BUF_PHYS, 0, sizeof(frame));
+    qtest_memset(b.qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
+    qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+
+    /* Bring-up order: interrupts enabled, engine enabled, no buffer posted. */
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    g_usleep(100000);
+    g_assert_cmpuint(read_rx_prod(&b), ==, 0);
+    qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
+
+    /* The one event the guest makes: a buffer posted through the mailbox. */
+    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 1);
+
+    wait_for_rx_prod(&b, 1);
+    qtest_memread(b.qts, RX_BUF_PHYS, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), frame, sizeof(frame));
+    qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_IDX), ==, 0);
+    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
+                    BCM_RXBDFLAG_END);
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+/*
+ * The other half of the same contract: a posted buffer is not enough while the
+ * host-coalescing block is off, because the chip cannot report what it places.
+ * Queue a frame before bring-up, post a buffer, and prove the frame waits --
+ * then that enabling the block releases it, with the interrupt mailbox touched
+ * only for the driver's initial enable and never again.
+ */
+static void test_queued_receive_released_by_engine_enable(const void *data)
 {
     int sv[2];
     Bcm b;
@@ -4137,24 +4182,17 @@ static void test_queued_receive_waits_for_irq_reenable(const void *data)
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
     g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
 
-    /* Initial enable is not an acknowledgement of an interrupt. */
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 1);
-    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_MBX_RX_CONS0_LO, 0);
 
-    qtest_clock_step(b.qts, BCM_STATUS_TICK_MAX_NS - 1);
+    /* A buffer with the block off places nothing, however long it waits. */
+    g_usleep(100000);
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
     g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
     g_assert_false(intr_line_up(b.dev));
 
-    qtest_clock_step(b.qts, 1);
-    g_assert_true(intr_line_up(b.dev));
-    bar_writel(&b, BCM_MBX_IRQ0_LO, 1);
-    g_assert_false(intr_line_up(b.dev));
-    qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
-    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     wait_for_rx_prod(&b, 1);
 
     bcm_close(&b);
@@ -4571,10 +4609,11 @@ typedef enum RxDmaFault {
 } RxDmaFault;
 
 /*
- * A frame arriving after a completion but before its interrupt is acknowledged
- * must not inherit the DMA retry authorization used when no completion is
- * pending. Repairing the failed DMA and rewriting a receive-ready register must
- * leave that second frame queued until the pending interrupt is acknowledged.
+ * A failed receive DMA consumes nothing and leaves the frame at the peer. The
+ * guest repairs what faulted -- a descriptor ring, a buffer address, the return
+ * ring -- and the receive-ready write that follows retries it. A completion
+ * whose interrupt the driver has not acknowledged yet does not hold it back:
+ * the receive path is driven by posted buffers, not by the interrupt mailbox.
  */
 static void test_receive_dma_error_after_progress(const void *data)
 {
@@ -4686,15 +4725,8 @@ static void test_receive_dma_error_after_progress(const void *data)
         g_assert_not_reached();
     }
 
-    /* Repair plus a producer rewrite cannot bypass the pending interrupt. */
+    /* The repair, then the receive-ready write that retries the frame. */
     bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 2);
-    qtest_clock_step(b.qts, 1);
-    g_assert_cmpuint(read_rx_prod(&b), ==, 1);
-    g_assert_cmphex(read_status_tag(&b), ==, tag);
-
-    bar_writel(&b, BCM_MBX_IRQ0_LO, 1);
-    g_assert_false(intr_line_up(b.dev));
-    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     wait_for_rx_prod(&b, 2);
     qtest_memread(b.qts, RX_BUF_PHYS + 0x100, got, sizeof(got));
     g_assert_cmpmem(got, sizeof(got), second, sizeof(second));
@@ -4706,8 +4738,6 @@ static void test_receive_dma_error_after_progress(const void *data)
 
     /* No queued duplicate survives the successful retry. */
     tag = read_status_tag(&b);
-    bar_writel(&b, BCM_MBX_IRQ0_LO, 1);
-    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 2);
     g_usleep(100000);
     g_assert_cmpuint(read_rx_prod(&b), ==, 2);
@@ -5384,9 +5414,9 @@ static void test_vmstate_versions_nested_phy(const void *data)
     root = qobject_to(QDict, root_obj);
     g_assert_false(qdict_haskey(root, "bcm570x-phy"));
     section = qdict_get_qdict(root, "bcm570x");
-    g_assert_cmpint(qdict_get_int(section, "version_id"), ==, 8);
+    g_assert_cmpint(qdict_get_int(section, "version_id"), ==, 9);
     description = qdict_get_qdict(section, "Description");
-    g_assert_cmpint(qdict_get_int(description, "version_id"), ==, 8);
+    g_assert_cmpint(qdict_get_int(description, "version_id"), ==, 9);
     fields = qdict_get_qlist(description, "Fields");
     phy = bcm570x_vmstate_field(fields, "phy");
     g_assert_nonnull(phy);
@@ -5756,12 +5786,12 @@ static void test_state_survives_migration(const void *data)
 }
 
 /*
- * A write-one mailbox acknowledgement can precede the driver's matching
- * unmask. Preserve that half-completed handshake across migration so a frame
- * queued on the destination is released when the driver writes zero, just as
- * it would have been without the move.
+ * A write-one mailbox acknowledgement can precede the driver's matching unmask.
+ * The mask itself has to survive migration: a frame the destination places goes
+ * on raising no line until the driver writes zero. Receiving is not part of
+ * that handshake -- the posted buffer releases the frame either way.
  */
-static void test_masked_acknowledgement_survives_migration(const void *data)
+static void test_masked_interrupt_survives_migration(const void *data)
 {
     g_autofree gchar *tmpfs = NULL;
     g_autofree gchar *uri = NULL;
@@ -5823,10 +5853,10 @@ static void test_masked_acknowledgement_survives_migration(const void *data)
     g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
 
     bar_writel(&to, BCM_MBX_RX_STD_PROD_LO, 1);
-    qtest_memread(to.qts, RET_RING_PHYS, ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
-    bar_writel(&to, BCM_MBX_IRQ0_LO, 0);
     wait_for_rx_prod(&to, 1);
+    g_assert_false(intr_line_up(to.dev));
+    bar_writel(&to, BCM_MBX_IRQ0_LO, 0);
+    g_assert_true(intr_line_up(to.dev));
 
     bcm_close(&to);
     bcm_close(&from);
@@ -6186,10 +6216,12 @@ int main(int argc, char **argv)
                         test_receive_ring_laps);
     qtest_add_data_func("/bcm570x/receive-ring-full-recovers", NULL,
                         test_receive_ring_full_recovers);
-    qtest_add_data_func("/bcm570x/receive-flush-after-enable-reenable", NULL,
-                        test_receive_flush_after_enable_reenable);
-    qtest_add_data_func("/bcm570x/queued-receive-waits-for-irq-reenable", NULL,
-                        test_queued_receive_waits_for_irq_reenable);
+    qtest_add_data_func("/bcm570x/receive-flush-after-engine-enable", NULL,
+                        test_receive_flush_after_engine_enable);
+    qtest_add_data_func("/bcm570x/queued-receive-released-by-producer", NULL,
+                        test_queued_receive_released_by_producer);
+    qtest_add_data_func("/bcm570x/queued-receive-released-by-engine-enable",
+                        NULL, test_queued_receive_released_by_engine_enable);
     qtest_add_data_func("/bcm570x/receive-queue-global-reset",
                         GINT_TO_POINTER(0), test_receive_queue_reset);
     qtest_add_data_func("/bcm570x/receive-queue-system-reset",
@@ -6247,8 +6279,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("/bcm570x/state-survives-migration", NULL,
                         test_state_survives_migration);
     qtest_add_data_func(
-        "/bcm570x/masked-acknowledgement-survives-migration", NULL,
-        test_masked_acknowledgement_survives_migration);
+        "/bcm570x/masked-interrupt-survives-migration", NULL,
+        test_masked_interrupt_survives_migration);
     qtest_add_data_func("/bcm570x/migration/link-down", GINT_TO_POINTER(0),
                         test_migrated_link_controls_egress);
     qtest_add_data_func("/bcm570x/migration/link-up", GINT_TO_POINTER(1),
