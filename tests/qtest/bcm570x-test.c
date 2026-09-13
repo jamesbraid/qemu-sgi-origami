@@ -156,6 +156,14 @@
 #define BCM_HCC_STATUSBLK_LO    0x3c3cu
 #define BCM_HCC_STATS_TICKS     0x3c28u
 #define BCM_STATUS_TICK_MAX_NS  (250 * 1000 * 1000)
+
+/*
+ * The modelled minimum between a frame arriving and its completion, in
+ * nanoseconds: the device default. Delivery is published only once this much
+ * virtual time has passed, so every wait for a completion has to advance the
+ * clock as well as give the main loop a pass.
+ */
+#define RX_ARRIVAL_LATENCY_NS  200000
 #define BCM_HCC_RX_COAL_TICKS   0x3c08u        /* receive coalescing: microseconds */
 #define BCM_HCC_TX_COAL_TICKS   0x3c0cu
 #define BCM_HCC_TX_MAX_COAL_BDS 0x3c14u
@@ -625,6 +633,7 @@ static void wait_for_rx_prod(Bcm *b, uint16_t want)
             return;
         }
         g_usleep(5000);
+        qtest_clock_step(b->qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     qtest_memread(b->qts, STATUS_PHYS + BCM_STATUS_RX_PROD_OFF, idx, 2);
     g_assert_cmphex(get16le(idx), ==, want);
@@ -655,6 +664,7 @@ static void wait_for_ret_end(Bcm *b, unsigned int idx)
             return;
         }
         g_usleep(5000);
+        qtest_clock_step(b->qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     qtest_memread(b->qts, RET_RING_PHYS + (uint64_t)idx * BCM_RXBD_SIZE +
                   BCM_RXBD_FLAGS, flags, 2);
@@ -1339,7 +1349,19 @@ static void test_user_backend_reply_waits_for_transmit(const void *data)
     Bcm b;
     uint32_t before_poll, after_poll;
 
-    bcm_open(&b, bcm_init());
+    /*
+     * rx-arrival-latency-us=0 on purpose. This test asserts that a synchronous
+     * backend reply is invisible at the instant the transmit doorbell write
+     * returns, which is what pins the model's rule about deferring a backend
+     * reply until the transmit walk has published its state. Under the arrival
+     * floor no virtual time has passed at that instant either, so the assertion
+     * would hold whether or not that rule existed. Taking the floor out leaves
+     * the rule as the only thing holding the reply back.
+     */
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev user,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0,"
+                             "rx-arrival-latency-us=0", BCM_SLOT));
 
     bar_writel(&b, BCM_MAC_ADDR_0_HIGH, 0x00005254);
     bar_writel(&b, BCM_MAC_ADDR_0_LOW, 0x00123456);
@@ -3435,6 +3457,85 @@ static uint16_t read_rx_prod(Bcm *b)
 }
 
 /*
+ * A frame does not complete the instant the backend hands it over. The chip
+ * writes it into the posted buffer and fills in its return descriptor
+ * straight away, and the two things the driver can read -- the status
+ * block's receive producer and the interrupt -- appear only once the arrival
+ * deadline has passed on the virtual clock. The return descriptor is
+ * invisible until the producer names it, so this checks that it is already
+ * written while the producer still is not.
+ *
+ * Without the floor the model published a reply within tens of microseconds
+ * of the transmit that provoked it, faster than the wire alone; see
+ * docs/datasheets/bcm570x.md's arrival-latency approximation.
+ */
+static void test_receive_waits_for_its_arrival_deadline(const void *data)
+{
+    int sv[2];
+    Bcm b;
+    uint8_t frame[64];
+    uint8_t landed[64];
+    uint8_t ret[BCM_RXBD_SIZE];
+    unsigned int i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i + 0x40);
+    }
+    memset(frame, 0xff, 6);      /* broadcast: no address filter in the way */
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    bcm_open(&b, qtest_initf(BCM_MACHINE
+                             " -netdev socket,fd=%d,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0",
+                             sv[1], BCM_SLOT));
+
+    rx_open_one(&b, sv[1]);
+    qtest_memset(b.qts, RX_BUF_PHYS, 0, sizeof(frame));
+
+    /* Unmask, so the line below is a real assertion and not a mask. */
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    g_assert_false(intr_line_up(b.dev));
+
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+
+    /*
+     * Wait for the chip to take the frame, which it shows by writing it into
+     * the buffer. Nothing here advances the virtual clock, so the arrival
+     * deadline cannot have passed.
+     */
+    for (i = 0; i < 200; i++) {
+        qtest_memread(b.qts, RX_BUF_PHYS, landed, sizeof(landed));
+        if (memcmp(landed, frame, sizeof(frame)) == 0) {
+            break;
+        }
+        g_usleep(5000);
+    }
+    g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
+
+    /* The return descriptor is written; the producer and the line are not. */
+    qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
+                    BCM_RXBDFLAG_END);
+    g_assert_cmphex(read_rx_prod(&b), ==, 0);
+    g_assert_false(intr_line_up(b.dev));
+
+    /* Still nothing one nanosecond short of the deadline. */
+    qtest_clock_step(b.qts, RX_ARRIVAL_LATENCY_NS - 1);
+    g_assert_cmphex(read_rx_prod(&b), ==, 0);
+    g_assert_false(intr_line_up(b.dev));
+
+    /* And both at once past it. */
+    qtest_clock_step(b.qts, 1);
+    g_assert_cmphex(read_rx_prod(&b), ==, 1);
+    g_assert_true(intr_line_up(b.dev));
+
+    bcm_close(&b);
+    close(sv[0]);
+}
+
+
+/*
  * A frame too big for the buffer behind a standard-ring descriptor must not be
  * written into it. The buffer size is the driver's statement of what it set
  * aside; writing past it corrupts whatever the guest put next in memory, and
@@ -3896,6 +3997,7 @@ static void test_receive_ring_laps(const void *data)
                 break;
             }
             g_usleep(5000);
+            qtest_clock_step(b.qts, RX_ARRIVAL_LATENCY_NS / 4);
         }
         g_assert_true(got);
         g_assert_cmphex(get16le(ret + BCM_RXBD_LEN), ==,
@@ -3968,7 +4070,14 @@ static void test_receive_ring_full_recovers(const void *data)
     for (i = 0; i < LAP_RET_LEN * 2 + 4; i++) {
         net_socket_send_frame(sv[0], frame, sizeof(frame));
     }
-    g_usleep(200000);
+    /*
+     * Each completion waits for its own arrival deadline, so run the clock on
+     * as well as the main loop until the ring has taken everything it can.
+     */
+    for (i = 0; i < 40; i++) {
+        g_usleep(5000);
+        qtest_clock_step(b.qts, RX_ARRIVAL_LATENCY_NS);
+    }
 
     /* The last entry is still free: a full ring keeps one, so the producer
      * cannot be mistaken for the consumer. */
@@ -3986,6 +4095,7 @@ static void test_receive_ring_full_recovers(const void *data)
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     g_assert_false(intr_line_up(b.dev));
     g_usleep(100000);
+    qtest_clock_step(b.qts, RX_ARRIVAL_LATENCY_NS);
     qtest_memread(b.qts, RET_RING_PHYS +
                   (uint64_t)(LAP_RET_LEN - 1) * BCM_RXBD_SIZE,
                   ret, sizeof(ret));
@@ -3993,8 +4103,8 @@ static void test_receive_ring_full_recovers(const void *data)
 
     /*
      * The driver now takes everything and says so. That consumer write is the
-     * readiness transition, and it retries immediately -- no second interrupt
-     * acknowledgement, no virtual-clock step.
+     * readiness transition, and it retries on its own -- no second interrupt
+     * acknowledgement, only the arrival line's delay.
      */
     for (i = 0; i < LAP_RET_LEN; i++) {
         qtest_memset(b.qts, RET_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE, 0,
@@ -4926,7 +5036,12 @@ static void test_receive_coalescing_timer(const void *data)
 
     /* Advance past the tick budget; the timer flushes the held group in one
      * update. */
-    qtest_clock_step(b.qts, (int64_t)ticks * 1000 + 1000);
+    /*
+     * Past the arrival floor as well: the coalescing timer only starts
+     * counting once the completion is reported to it.
+     */
+    qtest_clock_step(b.qts,
+                     RX_ARRIVAL_LATENCY_NS + (int64_t)ticks * 1000 + 1000);
     wait_for_rx_prod(&b, frames);
     g_assert_cmpuint(read_status_tag(&b) - tag_before, ==, 1);
 
@@ -4960,7 +5075,12 @@ static void test_receive_coalescing_zero_ticks(const void *data)
 
     before = read_status_tag(&b);
     net_socket_send_frame(sv[0], frame, sizeof(frame));
-    wait_for_ret_end(&b, 0);
+    /*
+     * On the published producer, not the return descriptor: the descriptor is
+     * written when the frame arrives and the completion is reported only at
+     * its arrival deadline, so the return ring says nothing about the group.
+     */
+    wait_for_rx_prod(&b, 1);
     g_assert_cmpuint(read_status_tag(&b) - before, ==, 1);
 
     bcm_close(&b);
@@ -5015,7 +5135,12 @@ static void test_receive_coalescing_status_dma_retry(const void *data)
 
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
-    qtest_clock_step(b.qts, (int64_t)ticks * 1000 + 1000);
+    /*
+     * Past the arrival floor as well: the coalescing timer only starts
+     * counting once the completion is reported to it.
+     */
+    qtest_clock_step(b.qts,
+                     RX_ARRIVAL_LATENCY_NS + (int64_t)ticks * 1000 + 1000);
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
     g_assert_cmphex(get16le(status + BCM_STATUS_RX_PROD_OFF), ==, 1);
     g_assert_cmphex(read_status_tag(&b), ==, 1);
@@ -5070,7 +5195,12 @@ static void test_global_reset_cancels_receive_coalescing(const void *data)
 
     bar_writel(&b, BCM_MISC_CFG, BCM_MISCCFG_RESET);
     bcm_rearm_status_after_reset(&b);
-    qtest_clock_step(b.qts, (int64_t)ticks * 1000 + 1000);
+    /*
+     * Past the arrival floor as well: the coalescing timer only starts
+     * counting once the completion is reported to it.
+     */
+    qtest_clock_step(b.qts,
+                     RX_ARRIVAL_LATENCY_NS + (int64_t)ticks * 1000 + 1000);
     g_assert_cmpuint(read_status_tag(&b), ==, 0);
 
     bcm_close(&b);
@@ -5680,7 +5810,12 @@ static void test_receive_coalescing_survives_migration(const void *data)
     bcm_open(&to, to_qts);
     bcm570x_migrate(from_qts, uri);
 
-    qtest_clock_step(to.qts, (int64_t)ticks * 1000 + 1000);
+    /*
+     * Past the arrival floor as well: the coalescing timer only starts
+     * counting once the completion is reported to it.
+     */
+    qtest_clock_step(to.qts,
+                     RX_ARRIVAL_LATENCY_NS + (int64_t)ticks * 1000 + 1000);
     g_assert_cmpuint(read_status_tag(&to), ==, 1);
 
     bcm_close(&to);
@@ -6267,6 +6402,9 @@ int main(int argc, char **argv)
                         test_receive_checksum_not_ip);
     qtest_add_data_func("/bcm570x/receive-overruns-nothing", NULL,
                         test_receive_overruns_nothing);
+    qtest_add_data_func("bcm570x/receive-waits-for-arrival-deadline",
+                        NULL,
+                        test_receive_waits_for_its_arrival_deadline);
     qtest_add_data_func("/bcm570x/receive-jumbo-frame", NULL,
                         test_receive_jumbo_frame);
     qtest_add_data_func("/bcm570x/receive-waits-for-standard-ring", NULL,
