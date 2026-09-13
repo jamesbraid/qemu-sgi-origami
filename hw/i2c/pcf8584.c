@@ -789,6 +789,14 @@ static uint64_t pcf8584_read(void *opaque, hwaddr addr, unsigned size)
     uint64_t value;
     uint64_t after;
 
+    /*
+     * A host that has not run the shared wire's timer while the guest polls
+     * has not moved its deadlines either. Settle them before answering.
+     */
+    if (pcf8584_on_wire(s)) {
+        i2c_wire_advance(s->bus);
+    }
+
     if (likely(!s->diagnostic)) {
         value = pcf8584_read_internal(opaque, addr, size);
         trace_pcf8584_read(addr, value, size);
@@ -813,6 +821,10 @@ static void pcf8584_write(void *opaque, hwaddr addr, uint64_t val,
     uint64_t after;
 
     trace_pcf8584_write(addr, val, size);
+
+    if (pcf8584_on_wire(s)) {
+        i2c_wire_advance(s->bus);
+    }
 
     if (likely(!s->diagnostic)) {
         pcf8584_write_internal(opaque, addr, val, size);
