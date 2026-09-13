@@ -14,6 +14,7 @@
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
 #include "hw/misc/sgi-elsc.h"
+#include "hw/i2c/sgi-i2c-wire.h"
 #include "hw/core/cpu.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
@@ -820,7 +821,7 @@ static void elsc_deferred_action_bh(void *opaque)
      * a wire bus has no resolved owner between a stop and the next start.
      * Such a bus ends its transfer at the STOP its master drives.
      */
-    if (!s->bus->master_count && i2c_bus_busy(s->bus)) {
+    if (!i2c_bus_master_count(s->bus) && i2c_bus_busy(s->bus)) {
         i2c_end_transfer(s->bus);
     }
 
@@ -1541,7 +1542,6 @@ static void sgi_elsc_class_init(ObjectClass *klass, const void *data)
     device_class_set_props(dc, sgi_elsc_properties);
     rc->phases.hold = elsc_reset_hold;
 
-    sc->supports_master_ids = true;
     sc->event = elsc_event;
     sc->send = elsc_send;
     sc->recv = elsc_recv;
@@ -1553,6 +1553,10 @@ static const TypeInfo sgi_elsc_types[] = {
         .parent        = TYPE_I2C_SLAVE,
         .instance_size = sizeof(SGIElscState),
         .class_init    = sgi_elsc_class_init,
+        .interfaces    = (const InterfaceInfo[]) {
+            { TYPE_I2C_WIRE_ENDPOINT },
+            { }
+        },
     },
 };
 

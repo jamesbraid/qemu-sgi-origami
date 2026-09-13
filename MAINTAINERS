@@ -1488,6 +1488,7 @@ F: hw/mips/sn0*
 F: include/hw/mips/sn0*
 F: hw/1wire/
 F: hw/i2c/pcf8584.c
+F: hw/i2c/sgi-i2c-wire.c
 F: hw/input/sgi-ioc3-kbc.c
 F: hw/misc/sgi-*.c
 F: hw/net/dp83840.c
@@ -1499,6 +1500,7 @@ F: hw/rtc/m48t35.c
 F: hw/scsi/qlogic-isp.c
 F: include/hw/1wire/
 F: include/hw/i2c/pcf8584.h
+F: include/hw/i2c/sgi-i2c-wire.h
 F: include/hw/input/sgi-ioc3-kbc.h
 F: include/hw/misc/sgi-*.h
 F: include/hw/net/dp83840.h

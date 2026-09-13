@@ -8,6 +8,7 @@
 #include "hw/core/sysbus.h"
 #include "hw/i2c/i2c.h"
 #include "hw/i2c/pcf8584.h"
+#include "hw/i2c/sgi-i2c-wire.h"
 #include "hw/misc/sgi-o2000-module-mgmt.h"
 #include "qapi/error.h"
 #include "qemu/main-loop.h"
@@ -97,12 +98,12 @@ static const VMStateDescription vmstate_probe = {
 static void probe_class_init(ObjectClass *oc, const void *data)
 {
     I2CSlaveClass *sc = I2C_SLAVE_CLASS(oc);
+    I2CWireEndpointClass *ec = I2C_WIRE_ENDPOINT_CLASS(oc);
 
     DEVICE_CLASS(oc)->vmsd = &vmstate_probe;
-    sc->supports_master_ids = true;
     sc->event = probe_event;
     sc->send = probe_send;
-    sc->wire_address = probe_wire_address;
+    ec->wire_address = probe_wire_address;
 }
 
 /* The device takes its serial from the machine's model; any ten bytes do. */
@@ -759,14 +760,14 @@ static void transfer_complex(Fixture *f, QEMUFile *file, bool save)
     if (save) {
         g_assert_cmpint(vmstate_save_state(file, module_vmsd(f), f->module,
                                            NULL, &error_abort), ==, 0);
-        g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_bus, bus,
+        g_assert_cmpint(vmstate_save_state(file, &vmstate_sgi_i2c_wire_bus, bus,
                                            NULL, &error_abort), ==, 0);
     } else {
         g_assert_cmpint(vmstate_load_state(file, module_vmsd(f), f->module,
                                            module_vmsd(f)->version_id,
                                            &error_abort), ==, 0);
-        g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_bus, bus, 1,
-                                           &error_abort), ==, 0);
+        g_assert_cmpint(vmstate_load_state(file, &vmstate_sgi_i2c_wire_bus, bus,
+                                            1, &error_abort), ==, 0);
     }
     QTAILQ_FOREACH(kid, &bus->qbus.children, sibling) {
         I2CSlave *slave = I2C_SLAVE(kid->child);
@@ -1048,6 +1049,10 @@ int main(int argc, char **argv)
     const TypeInfo probe = {
         .name = TYPE_MODULE_PROBE, .parent = TYPE_I2C_SLAVE,
         .instance_size = sizeof(Probe), .class_init = probe_class_init,
+        .interfaces = (const InterfaceInfo[]) {
+            { TYPE_I2C_WIRE_ENDPOINT },
+            { }
+        },
     };
     const TypeInfo mute = {
         .name = TYPE_MODULE_MUTE, .parent = TYPE_I2C_SLAVE,

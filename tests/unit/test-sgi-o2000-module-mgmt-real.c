@@ -9,6 +9,7 @@
 #include "hw/core/sysbus.h"
 #include "hw/i2c/i2c.h"
 #include "hw/i2c/pcf8584.h"
+#include "hw/i2c/sgi-i2c-wire.h"
 #include "hw/misc/sgi-elsc.h"
 #include "hw/misc/sgi-o2000-module-mgmt.h"
 #include "qapi/error.h"
@@ -324,16 +325,16 @@ static void test_addressed_release_clock_progress(Fixture *f,
     I2CSlave *rx = f->adapter[1]->rx;
 
     g_assert_true(start_transfer(f, 0, ADAPTER_OWN_ADDRESS(1), false));
-    g_assert_true(rx->wire_hold);
+    g_assert_true(i2c_wire_slave_state(rx)->wire_hold);
     g_assert_cmpuint(f->adapter[1]->wire_hold_release, ==,
                      PCF8584_HOLD_READ);
 
     virtual_time_step = 2;
     (void)read_reg(f, 1, DATA_REG);
     virtual_time_step = 0;
-    g_assert_true(rx->wire_hold_pending);
+    g_assert_true(i2c_wire_slave_state(rx)->wire_hold_pending);
     advance_to(virtual_time + 1);
-    g_assert_false(rx->wire_hold);
+    g_assert_false(i2c_wire_slave_state(rx)->wire_hold);
 
     stop_transfer(f, 0);
 }
