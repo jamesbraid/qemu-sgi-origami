@@ -492,6 +492,7 @@ enum {
     HUB_REG_READ_CLEARS = 1 << 5, /* a full-width read has side effects */
     HUB_REG_WRITE_CLEARS = 1 << 6, /* a write clears each asserted bit */
     HUB_REG_TRACE_COORD = 1 << 7, /* in the coordination trace set */
+    HUB_REG_TRACE_PENDING = 1 << 8, /* its reads go to the pending trace */
 };
 
 typedef struct SGIHubRegDef {
@@ -2585,10 +2586,12 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .flags = HUB_REG_TRACE_WRITE | HUB_REG_TRACE_COORD,
       .read = sgi_hub_read_int_modify, .write = sgi_hub_write_int_modify },
     { .offset = HUB_PI_INT_PEND0, .arg = 0,
-      .flags = HUB_REG_TRACE_READ | HUB_REG_TRACE_COORD,
+      .flags = HUB_REG_TRACE_READ | HUB_REG_TRACE_COORD |
+               HUB_REG_TRACE_PENDING,
       .read = sgi_hub_read_int_pend, .write = sgi_hub_write_read_only },
     { .offset = HUB_PI_INT_PEND1, .arg = 1,
-      .flags = HUB_REG_TRACE_READ | HUB_REG_TRACE_COORD,
+      .flags = HUB_REG_TRACE_READ | HUB_REG_TRACE_COORD |
+               HUB_REG_TRACE_PENDING,
       .read = sgi_hub_read_int_pend, .write = sgi_hub_write_read_only },
     { .offset = HUB_PI_INT_MASK0_A, .arg = 0,
       .field = offsetof(SGIHubState, pi_int_mask[0]), .width = 8,
@@ -2964,26 +2967,53 @@ static bool sgi_hub_diagnostic_read_value(SGIHubState *s, hwaddr addr,
 
 /*
  * The registers a node's processors coordinate through, narrow enough to
- * trace a whole boot. A write is traced once it has landed, so anything it
- * set off is recorded first.
+ * trace a whole boot. The pending banks answer their own event: the
+ * processors waiting to be launched poll bank zero for the whole of a
+ * boot, tens of millions of times, and the other registers are quiet.
  */
 static void sgi_hub_trace_coordination_read(SGIHubState *s, hwaddr addr,
                                             uint64_t value, unsigned int size)
 {
     const SGIHubRegDef *reg = sgi_hub_reg_lookup(addr & ~(hwaddr)7);
+    bool pending;
     CPUState *cpu;
+    uint64_t pc;
+    int index;
 
     if (!reg || !(reg->flags & HUB_REG_TRACE_COORD)) {
         return;
     }
+    /* The event names are macro tokens, so each is tested on its own. */
+    pending = reg->flags & HUB_REG_TRACE_PENDING;
+    if (pending) {
+        if (!trace_event_get_state_backends(TRACE_SGI_HUB_PENDING_READ)) {
+            return;
+        }
+    } else if (!trace_event_get_state_backends(
+                   TRACE_SGI_HUB_COORDINATION_READ)) {
+        return;
+    }
 
     cpu = current_cpu;
-    trace_sgi_hub_coordination_read(
-        cpu ? cpu->cpu_index : -1, s->cpu_base,
-        sgi_hub_programmed_nasid(s), cpu ? cpu->cc->get_pc(cpu) : 0,
-        addr, value, size, qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
-        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    index = cpu ? cpu->cpu_index : -1;
+    pc = cpu ? cpu->cc->get_pc(cpu) : 0;
+    if (pending) {
+        trace_sgi_hub_pending_read(
+            index, s->cpu_base, sgi_hub_programmed_nasid(s), pc,
+            addr, value, size, qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    } else {
+        trace_sgi_hub_coordination_read(
+            index, s->cpu_base, sgi_hub_programmed_nasid(s), pc,
+            addr, value, size, qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
 }
+
+/*
+ * A write is traced once it has landed, so anything it set off is
+ * recorded first.
+ */
 
 /*
  * The stored value is the one the diagnostic shadow samples after a
@@ -3053,7 +3083,8 @@ static uint64_t sgi_hub_read_sized(SGIHubState *s, hwaddr addr, unsigned size)
     if (trace_event_get_state_backends(TRACE_SGI_HUB_PROTOCOL_READ)) {
         sgi_hub_trace_protocol_read(s, addr, value, size);
     }
-    if (trace_event_get_state_backends(TRACE_SGI_HUB_COORDINATION_READ)) {
+    if (trace_event_get_state_backends(TRACE_SGI_HUB_COORDINATION_READ) ||
+        trace_event_get_state_backends(TRACE_SGI_HUB_PENDING_READ)) {
         sgi_hub_trace_coordination_read(s, addr, value, size);
     }
     return value;
