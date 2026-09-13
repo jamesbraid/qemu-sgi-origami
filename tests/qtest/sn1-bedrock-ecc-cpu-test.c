@@ -118,10 +118,107 @@ static void test_cpu_halfword_stores(void)
     g_assert_cmpint(unlink(prom), ==, 0);
 }
 
+/*
+ * The stock PROM's walking-address memory test reads a positioned check word
+ * back from the very top of the fitted bank. Repeat all four residues at the
+ * last fitted 64-byte line of a 512 MiB bank. Its residue 0x30 (ECC carrier
+ * offset 0) selects source bits 31:16, the slice the first-line cases above
+ * never exercise. Physical 0x1fff_fff0 is where the PROM first read zero.
+ */
+static char *create_prom_top_line(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    char *path = NULL;
+    unsigned offset = 0x380;
+    int fd;
+
+    stl_be_p(image, 0x100000ff); /* beq zero, zero, 0x400 */
+
+    emit_load64(image, &offset, 27, UINT64_C(0x9000000000000110));
+    emit(image, &offset, 0x401a6800); /* mfc0 k0, Cause */
+    emit(image, &offset, 0xaf7a0000); /* sw k0, 0(k1) */
+    emit(image, &offset, 0x401a7000); /* mfc0 k0, EPC */
+    emit(image, &offset, 0x275a0004); /* addiu k0, k0, 4 */
+    emit(image, &offset, 0x409a7000); /* mtc0 k0, EPC */
+    emit(image, &offset, 0x42000018); /* eret */
+    emit(image, &offset, 0);          /* nop */
+
+    offset = 0x400;
+    emit(image, &offset, 0x400c6000); /* mfc0 t4, Status */
+    emit(image, &offset, 0x358c0080); /* ori t4, t4, Status.KX */
+    emit(image, &offset, 0x240dfffb); /* addiu t5, zero, ~Status.ERL */
+    emit(image, &offset, 0x018d6024); /* and t4, t4, t5 */
+    emit(image, &offset, 0x408c6000); /* mtc0 t4, Status */
+    emit(image, &offset, 0x000000c0); /* ehb */
+
+    /* t0 = xkphys view of the last fitted ECC carrier word (device 0x3fffff8). */
+    emit_load64(image, &offset, 8, UINT64_C(0x9000000143fffff8));
+    emit_load64(image, &offset, 1, UINT64_C(0x1111222233334444));
+    emit(image, &offset, 0xa5010006); /* sh at, 6(t0)  residue 0x00 -> 0x4444 */
+    emit_load64(image, &offset, 1, UINT64_C(0x5555666677778888));
+    emit(image, &offset, 0xa5010004); /* sh at, 4(t0)  residue 0x10 -> 0x5555 */
+    emit_load64(image, &offset, 1, UINT64_C(0x9999aaaabbbbcccc));
+    emit(image, &offset, 0xa5010002); /* sh at, 2(t0)  residue 0x20 -> 0xaaaa */
+    emit_load64(image, &offset, 1, UINT64_C(0xddddeeee13572468));
+    emit(image, &offset, 0xa5010000); /* sh at, 0(t0)  residue 0x30 -> 0x1357 */
+
+    emit_load64(image, &offset, 8, UINT64_C(0x9000000000000100));
+    emit(image, &offset, 0x340b0001); /* ori t3, zero, 1 */
+    emit(image, &offset, 0xfd0b0008); /* sd t3, 8(t0) */
+    emit(image, &offset, 0x1000ffff); /* beq zero, zero, self */
+    emit(image, &offset, 0);          /* nop */
+
+    fd = g_file_open_tmp("sn1-bedrock-ecc-cpu-top-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static void test_cpu_halfword_stores_top_line(void)
+{
+    g_autofree char *prom = create_prom_top_line();
+    g_autofree char *quoted = g_shell_quote(prom);
+    QTestState *s;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    s = qtest_initf("-M origin300 -cpu R14000 -smp 2 -bios %s "
+                    "-accel tcg,thread=single -no-shutdown -S", quoted);
+    qtest_writeq(s, BEDROCK_NODE0 + MD_MEMORY_CONFIG, BANK0_512M);
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+
+    for (unsigned tries = 0; tries < 200 && !qtest_readq(s, 0x108); tries++) {
+        g_usleep(10000);
+    }
+    g_assert_cmphex(qtest_readq(s, 0x108), ==, 1);
+
+    /* Each residue keeps its own positioned check word at the top fitted line. */
+    g_assert_cmphex(qtest_readw(s, HUB_ECC + 0x3fffffe), ==, 0x4444);
+    g_assert_cmphex(qtest_readw(s, HUB_ECC + 0x3fffffc), ==, 0x5555);
+    g_assert_cmphex(qtest_readw(s, HUB_ECC + 0x3fffffa), ==, 0xaaaa);
+    g_assert_cmphex(qtest_readw(s, HUB_ECC + 0x3fffff8), ==, 0x1357);
+    /* Big-endian byte view of the residue 0x30 word. */
+    g_assert_cmphex(qtest_readb(s, HUB_ECC + 0x3fffff9), ==, 0x13);
+    g_assert_cmphex(qtest_readb(s, HUB_ECC + 0x3fffff8), ==, 0x57);
+    /* The adjacent lower carrier word was never written. */
+    g_assert_cmphex(qtest_readw(s, HUB_ECC + 0x3fffff0), ==, 0);
+
+    qtest_quit(s);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("sn1/bedrock-ecc/cpu-halfword-stores",
                    test_cpu_halfword_stores);
+    qtest_add_func("sn1/bedrock-ecc/cpu-halfword-stores-top-line",
+                   test_cpu_halfword_stores_top_line);
     return g_test_run();
 }
