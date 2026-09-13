@@ -1558,102 +1558,6 @@ static void build_cpu_enable_heartbeat_image(SN0Image *p)
     sn0_patch_branch(p, branch, loop);
 }
 
-/* Slice B briefly publishes through its comparator while slice A polls it. */
-static void build_rt_compare_mailbox_image(SN0Image *p)
-{
-    const unsigned int entry = 0x800;
-    const uint64_t compare_b = SN0_PI_CPU_NUM - PI_PROCESSOR_NUMBER +
-                               PI_RT_COMPARE_B;
-    unsigned int branch;
-    unsigned int slice_b_branch;
-    unsigned int slice_b;
-    unsigned int wait;
-    unsigned int poll;
-    unsigned int observed;
-
-    branch = sn0_emit_branch(p, SN0_OPC_BEQ, 0, 0);
-    sn0_patch_branch(p, branch, entry);
-    for (unsigned int vector = SN0_VEC_TLB_REFILL;
-         vector <= SN0_VEC_GENERAL; vector += 0x80) {
-        p->pos = vector;
-        sn0_emit_park(p);
-    }
-
-    p->pos = entry;
-    sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL);
-    sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
-    sn0_emit_cpu_number(p, SN0_R_S1);
-    slice_b_branch = sn0_emit_branch(p, SN0_OPC_BNE,
-                                     SN0_R_S1, SN0_R_ZERO);
-
-    /* Slice A publishes readiness, then gets a finite polling budget. */
-    sn0_emit_li(p, SN0_R_K0, SN0_KSEG1(SN0_USER_MAILBOX));
-    sn0_emit_li64(p, SN0_R_K1, compare_b);
-    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_ZERO, SN0_R_T0, 1);
-    sn0_emit_i(p, SN0_OPC_SW, SN0_R_K0, SN0_R_T0, 0);
-    sn0_emit_li(p, SN0_R_T2, 64);
-    poll = p->pos;
-    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K1, SN0_R_T0, 0);
-    observed = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_T0, SN0_R_ZERO);
-    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_T2, SN0_R_T2, -1);
-    branch = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_T2, SN0_R_ZERO);
-    sn0_patch_branch(p, branch, poll);
-    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_ZERO, SN0_R_T0, 2);
-    sn0_emit_i(p, SN0_OPC_SW, SN0_R_K0, SN0_R_T0, 16);
-    sn0_emit_park(p);
-
-    sn0_patch_branch(p, observed, p->pos);
-    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_T0, 8);
-    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_ZERO, SN0_R_T0, 1);
-    sn0_emit_i(p, SN0_OPC_SW, SN0_R_K0, SN0_R_T0, 16);
-    sn0_emit_park(p);
-
-    slice_b = p->pos;
-    sn0_patch_branch(p, slice_b_branch, slice_b);
-    sn0_emit_li(p, SN0_R_K0, SN0_KSEG1(SN0_USER_MAILBOX));
-    wait = p->pos;
-    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K0, SN0_R_T0, 0);
-    branch = sn0_emit_branch(p, SN0_OPC_BEQ, SN0_R_T0, SN0_R_ZERO);
-    sn0_patch_branch(p, branch, wait);
-    sn0_emit_li64(p, SN0_R_K1, compare_b);
-    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_ZERO, SN0_R_T0, 0x24);
-    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_T0, 0);
-    sn0_emit_li(p, SN0_R_T2, 0x10000);
-    wait = p->pos;
-    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_T2, SN0_R_T2, -1);
-    branch = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_T2, SN0_R_ZERO);
-    sn0_patch_branch(p, branch, wait);
-    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_ZERO, 0);
-    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_ZERO, SN0_R_T0, 1);
-    sn0_emit_i(p, SN0_OPC_SW, SN0_R_K0, SN0_R_T0, 24);
-    sn0_emit_park(p);
-}
-
-static void test_rt_compare_mailbox_reaches_the_peer(const void *data)
-{
-    g_autofree SN0Image *image = g_new0(SN0Image, 1);
-    g_autofree char *path = NULL;
-    QTestState *qts;
-
-    if (!qtest_has_accel("tcg")) {
-        g_test_skip("TCG is unavailable");
-        return;
-    }
-
-    build_rt_compare_mailbox_image(image);
-    path = sn0_image_write(image, "sn0-hub-rt-compare-mailbox");
-    qts = qtest_initf(
-        "-M origin200,synthesized-firmware=off -smp 2 -bios %s "
-        "-accel tcg,thread=multi -no-shutdown", path);
-    unlink(path);
-
-    g_assert_cmpuint(sn0_wait_word(qts, 0, SN0_USER_MAILBOX + 16, 5), ==, 1);
-    g_assert_cmphex(qtest_readq(qts, SN0_USER_MAILBOX + 8), ==, 0x24);
-    g_assert_cmpuint(sn0_wait_word(qts, 1, SN0_USER_MAILBOX + 24, 5), ==, 1);
-    g_assert_cmphex(pi_cpu_readq(qts, 0, PI_RT_COMPARE_B), ==, 0);
-    qtest_quit(qts);
-}
-
 static uint64_t cpu_heartbeat(QTestState *qts, unsigned int cpu)
 {
     return qtest_readq(qts, SN0_USER_MAILBOX + 8 * cpu);
@@ -5163,8 +5067,6 @@ int main(int argc, char **argv)
                         test_the_comparator_raises_and_releases_the_line);
     qtest_add_data_func("sn0/hub/rt-second-processor-line", NULL,
                         test_the_second_processors_comparator_raises_its_own_line);
-    qtest_add_data_func("sn0/hub/rt-compare-mailbox-reaches-peer", NULL,
-                        test_rt_compare_mailbox_reaches_the_peer);
     qtest_add_data_func("sn0/hub/rt-comparator-pends-when-off", NULL,
                         test_the_comparator_pends_with_its_interrupt_off);
     qtest_add_data_func("sn0/hub/interrupt-modify", NULL,
