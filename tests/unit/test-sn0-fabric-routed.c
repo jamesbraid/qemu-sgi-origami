@@ -350,6 +350,16 @@ static void test_duplicate_number_stays_routed(void)
     /* A number no Hub holds is nobody's. */
     g_assert_cmpint(sn0_fabric_map(fabric, 0)[5], ==, SN0_FABRIC_NONE);
 
+    /*
+     * The turns decide which Hub is asked, and the asked Hub has to hold the
+     * number: take the Hub this route reaches off zero, and zero is refused
+     * even though another Hub still holds it and still answers for itself.
+     */
+    hubs[1].nasid = 2;
+    sn0_fabric_report_number(fabric, 1, 2);
+    g_assert_cmpint(sn0_fabric_map(fabric, 0)[0], ==, SN0_FABRIC_NONE);
+    g_assert_cmpint(sn0_fabric_map(fabric, 2)[0], ==, 2);
+
     object_unparent(OBJECT(fabric));
     object_unref(OBJECT(fabric));
     object_unparent(OBJECT(device));
