@@ -526,6 +526,9 @@ static void pcf8584_wire_request_start(PCF8584State *s)
         s->status |= PCF8584_STS_PIN;
         return;
     }
+    if (s->start_request) {
+        s->start_request(s->start_request_opaque, s->wire_master);
+    }
     s->status |= PCF8584_STS_PIN;
     if (i2c_bus_busy(s->bus)) {
         /*
@@ -846,6 +849,14 @@ void pcf8584_set_data_read_handler(PCF8584State *s,
 {
     s->data_read = handler;
     s->data_read_opaque = opaque;
+}
+
+void pcf8584_set_start_request_handler(PCF8584State *s,
+                                       PCF8584StartRequest handler,
+                                       void *opaque)
+{
+    s->start_request = handler;
+    s->start_request_opaque = opaque;
 }
 
 /*
