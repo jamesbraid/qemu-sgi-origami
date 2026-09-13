@@ -12,7 +12,6 @@
 #include "qapi/error.h"
 #include "hw/pci/pci_device.h"
 #include "hw/core/qdev-properties.h"
-#include "hw/qdev-core.h"
 #include "qom/object.h"
 
 #define TYPE_LUCENT_OHCI "lucent-ohci"
