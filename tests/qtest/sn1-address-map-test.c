@@ -2276,6 +2276,8 @@ static void test_boot_flash_migration(const void *data)
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
     wait_for_migration(from);
+    /* The source completes when its state is sent, not when it is loaded. */
+    wait_for_migration(to);
 
     qtest_writeq(to, HUB_REMOTE_BOOT + FLASH_ERASED_TARGET * 4, 0x1234);
     g_assert_cmphex(qtest_readw(to, HUB_LOCAL_BOOT + FLASH_ERASED_TARGET), ==,
@@ -2877,6 +2879,8 @@ static void test_prom_migration(const void *data)
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
     wait_for_migration(from);
+    /* The source completes when its state is sent, not when it is loaded. */
+    wait_for_migration(to);
 
     for (size_t i = 0; i < ARRAY_SIZE(views); i++) {
         for (size_t j = 0; j < ARRAY_SIZE(probes); j++) {
