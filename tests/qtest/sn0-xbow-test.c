@@ -218,9 +218,9 @@ static void test_identity(void)
 static void test_configured_identity_survives_reset(void)
 {
     QTestState *qts = xbow_start(
-        "-global sgi-xbow.widget-revision=5 "
-        "-global sgi-xbow.widget-part=0x1234 "
-        "-global sgi-xbow.widget-manufacturer=0x321");
+        "-global sgi-xbow.revision=5 "
+        "-global sgi-xbow.part=0x1234 "
+        "-global sgi-xbow.manufacturer=0x321");
 
     g_assert_cmphex(reg_read(qts, ID), ==, 0x51234643);
     qtest_system_reset(qts);
