@@ -618,6 +618,16 @@ static void xbridge_write(void *opaque, hwaddr addr, uint64_t value,
         break;
     case 0x38:
         break;
+    case 0x40:
+        /* Error command word: read-only; a write posts and changes nothing. */
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-xbridge: write of 0x%" PRIx64 " to the read-only "
+                      "error command word register\n", value);
+        return;
+    case 0x48:
+        /* Link configuration; writable storage, inert in XBridge mode. */
+        value &= 0x03ffffff;
+        break;
     case 0x100:
         return;
     case 0x70:
