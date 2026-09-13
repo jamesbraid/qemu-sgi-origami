@@ -28,6 +28,8 @@
 #define GRANT_MASTER            SGI_O2000_ADAPTER_COUNT
 
 #define SERVICE_PERIOD_NS       1000000     /* one-millisecond service tick */
+/* Host scheduling allowance after the owning vCPU observes its grant. */
+#define GRANT_ACQUISITION_MS    100
 /* The global pending state expires about a second after the last message. */
 #define MESSAGE_LIFETIME_NS     1000000000
 #define PULSE_NS                100000000   /* 100 ms reset and NMI pulses */
@@ -53,6 +55,13 @@ enum {
     GRANT_STOP_RELEASE,
 };
 
+static void mgmt_clear_acquisition(SGIO2000ModuleMgmtState *s)
+{
+    s->grant_acquisition_pending = false;
+    s->grant_acquisition_master = UINT32_MAX;
+    s->grant_acquisition_deadline_ms = 0;
+}
+
 static void mgmt_reset_state(SGIO2000ModuleMgmtState *s)
 {
     s->processor_code = PROCESSOR_CODES - 1;
@@ -66,6 +75,7 @@ static void mgmt_reset_state(SGIO2000ModuleMgmtState *s)
     s->console_processor = 0;
     s->grant_active = false;
     s->grant_window_extended = false;
+    mgmt_clear_acquisition(s);
     s->grant_state = GRANT_IDLE;
     s->grant_bit = 0;
     s->grant_byte = 0;
@@ -219,6 +229,7 @@ static bool mgmt_message_for(SGIO2000ModuleMgmtState *s, uint8_t code)
 
 static void mgmt_publish(SGIO2000ModuleMgmtState *s)
 {
+    mgmt_clear_acquisition(s);
     s->processor_code = (s->processor_code + 1) % PROCESSOR_CODES;
     s->grant_window_extended = false;
     s->grant_byte = GRANT_BASE | s->processor_code |
@@ -234,17 +245,25 @@ static void mgmt_publish(SGIO2000ModuleMgmtState *s)
 static void mgmt_data_read(void *opaque, uint32_t master, uint8_t value)
 {
     SGIO2000ModuleMgmtState *s = opaque;
-    int64_t deadline;
-
     if (s->grant_window_extended || value != s->grant_byte ||
         master != (s->grant_byte & 7) / 2 || i2c_bus_busy(s->bus)) {
         return;
     }
     s->grant_window_extended = true;
-    deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + SERVICE_PERIOD_NS;
-    if (deadline > s->service_deadline) {
-        s->service_deadline = deadline;
-        timer_mod_ns(s->service_timer, deadline);
+    s->grant_acquisition_pending = true;
+    s->grant_acquisition_master = master;
+    s->grant_acquisition_deadline_ms =
+        qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + GRANT_ACQUISITION_MS;
+}
+
+static void mgmt_start_request(void *opaque, uint32_t master)
+{
+    SGIO2000ModuleMgmtState *s = opaque;
+
+    if (s->grant_acquisition_pending &&
+        s->grant_acquisition_master == master) {
+        s->grant_window_extended = false;
+        mgmt_clear_acquisition(s);
     }
 }
 
@@ -273,6 +292,21 @@ static void mgmt_service(void *opaque)
      */
     if (!s->publication_enabled || s->serial_granted) {
         return;
+    }
+    if (s->grant_acquisition_pending) {
+        /* Migration starts a new bounded host scheduling window. */
+        if (!s->grant_acquisition_deadline_ms) {
+            s->grant_acquisition_deadline_ms =
+                qemu_clock_get_ms(QEMU_CLOCK_REALTIME) +
+                GRANT_ACQUISITION_MS;
+            return;
+        }
+        if (qemu_clock_get_ms(QEMU_CLOCK_REALTIME) <
+            s->grant_acquisition_deadline_ms) {
+            return;
+        }
+        s->grant_window_extended = false;
+        mgmt_clear_acquisition(s);
     }
     if (s->controller_granted || s->slave_active || s->grant_active ||
         mgmt_adapter_active(s) ||
@@ -745,6 +779,8 @@ static void mgmt_realize(DeviceState *dev, Error **errp)
         qdev_prop_set_uint32(s->adapters[i], "wire-master", i);
         pcf8584_set_data_read_handler(PCF8584(s->adapters[i]),
                                       mgmt_data_read, s);
+        pcf8584_set_start_request_handler(PCF8584(s->adapters[i]),
+                                          mgmt_start_request, s);
         if (!sysbus_realize(SYS_BUS_DEVICE(s->adapters[i]), errp)) {
             return;
         }
@@ -775,6 +811,7 @@ static void mgmt_unrealize(DeviceState *dev)
 {
     SGIO2000ModuleMgmtState *s = SGI_O2000_MODULE_MGMT(dev);
 
+    mgmt_clear_acquisition(s);
     qemu_unregister_resettable(OBJECT(s));
     i2c_wire_clear_observer(s->bus, GRANT_MASTER, mgmt_wire_event, s);
     timer_free(s->service_timer);
@@ -844,6 +881,10 @@ static int mgmt_post_load(void *opaque, int version_id)
         s->recovery_ticks > RECOVERY_TICKS) {
         return -EINVAL;
     }
+    s->grant_acquisition_pending = s->grant_window_extended;
+    s->grant_acquisition_master = s->grant_window_extended ?
+        (s->grant_byte & 7) / 2 : UINT32_MAX;
+    s->grant_acquisition_deadline_ms = 0;
     timer_mod_ns(s->service_timer, s->service_deadline);
     if (s->pending_messages) {
         timer_mod_ns(s->message_timer, s->message_deadline);
