@@ -413,9 +413,26 @@ static const MemoryRegionOps sn0_boot_mirror_ops = {
  */
 #define SN0_BACKDOOR_ABSENT_VALUE 0xa5a5a5a5a5a5a5a5ULL
 
+static void sn0_backdoor_trace_absent(const SN0BackdoorState *s, hwaddr addr,
+                                      unsigned size, bool write,
+                                      uint64_t value)
+{
+    CPUState *cpu = current_cpu;
+
+    trace_sn0_backdoor_absent(cpu ? cpu->cpu_index : -1, s->node, s->window,
+                              cpu ? cpu->cc->get_pc(cpu) : 0, addr, size,
+                              write, value);
+}
+
 static uint64_t sn0_backdoor_absent_read(void *opaque, hwaddr addr,
                                          unsigned size)
 {
+    if (trace_event_get_state_backends(TRACE_SN0_BACKDOOR_ABSENT)) {
+        /* As the guest sees it: the memory core keeps only @size bytes. */
+        sn0_backdoor_trace_absent(opaque, addr, size, false,
+                                  SN0_BACKDOOR_ABSENT_VALUE &
+                                  MAKE_64BIT_MASK(0, size * 8));
+    }
     return SN0_BACKDOOR_ABSENT_VALUE;
 }
 
@@ -423,6 +440,9 @@ static void sn0_backdoor_absent_write(void *opaque, hwaddr addr,
                                       uint64_t val, unsigned size)
 {
     /* Dropped; firmware's sizing walk runs with no fault guard here. */
+    if (trace_event_get_state_backends(TRACE_SN0_BACKDOOR_ABSENT)) {
+        sn0_backdoor_trace_absent(opaque, addr, size, true, val);
+    }
 }
 
 static const MemoryRegionOps sn0_backdoor_absent_ops = {
@@ -452,6 +472,19 @@ static uint8_t *sn0_backdoor_byte(SN0BackdoorState *s, hwaddr addr)
            within_bank % s->bank_span[bank];
 }
 
+/* The index is the stored byte the access's first byte resolved to. */
+static void sn0_backdoor_trace_populated(SN0BackdoorState *s, hwaddr addr,
+                                         unsigned size, bool write,
+                                         uint64_t value)
+{
+    CPUState *cpu = current_cpu;
+
+    trace_sn0_backdoor_populated(cpu ? cpu->cpu_index : -1, s->node,
+                                 s->window, cpu ? cpu->cc->get_pc(cpu) : 0,
+                                 addr, size, write, value,
+                                 sn0_backdoor_byte(s, addr) - s->data);
+}
+
 static uint64_t sn0_backdoor_populated_read(void *opaque, hwaddr addr,
                                             unsigned size)
 {
@@ -469,6 +502,9 @@ static uint64_t sn0_backdoor_populated_read(void *opaque, hwaddr addr,
             raw &= ~(0xffULL << (8 * (size - 1 - i)));
         }
     }
+    if (trace_event_get_state_backends(TRACE_SN0_BACKDOOR_POPULATED)) {
+        sn0_backdoor_trace_populated(s, addr, size, false, raw);
+    }
     return raw;
 }
 
@@ -482,6 +518,9 @@ static void sn0_backdoor_populated_write(void *opaque, hwaddr addr,
         unsigned int shift = 8 * (size - 1 - i);
 
         *sn0_backdoor_byte(s, addr + i) = val >> shift;
+    }
+    if (trace_event_get_state_backends(TRACE_SN0_BACKDOOR_POPULATED)) {
+        sn0_backdoor_trace_populated(s, addr, size, true, val);
     }
 }
 
@@ -1171,9 +1210,11 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
                                 &node->flash_rboot_view);
 
     /* Absent floors cover the whole windows; populated storage overlays. */
+    node->backdoor_ecc_state.node = node_index;
+    node->backdoor_ecc_state.window = "ecc";
     memory_region_init_io(&node->backdoor_ecc_absent, OBJECT(node),
-                          &sn0_backdoor_absent_ops, NULL, ecc_absent_name,
-                          ecc->size);
+                          &sn0_backdoor_absent_ops, &node->backdoor_ecc_state,
+                          ecc_absent_name, ecc->size);
     memory_region_add_subregion_overlap(
         system, hub_base + ecc->offset,
         &node->backdoor_ecc_absent, -1);
@@ -1192,9 +1233,11 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
             &node->backdoor_ecc);
     }
 
+    node->backdoor_dir_state.node = node_index;
+    node->backdoor_dir_state.window = "dir";
     memory_region_init_io(&node->backdoor_dir_absent, OBJECT(node),
-                          &sn0_backdoor_absent_ops, NULL, dir_absent_name,
-                          directory->size);
+                          &sn0_backdoor_absent_ops, &node->backdoor_dir_state,
+                          dir_absent_name, directory->size);
     memory_region_add_subregion_overlap(
         system, hub_base + directory->offset,
         &node->backdoor_dir_absent, -1);

@@ -196,6 +196,8 @@ typedef struct SN0FlashImplementation {
 #define SN0_MAX_ADDRESS_SPACES 4
 
 typedef struct SN0BackdoorState {
+    unsigned int node;          /* the window's node, for tracing */
+    const char *window;         /* "ecc" or "dir", for tracing */
     uint8_t *data;
     uint32_t data_size;
     uint64_t bank_stride;
