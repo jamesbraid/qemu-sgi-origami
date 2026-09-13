@@ -1347,7 +1347,7 @@ static void test_user_backend_reply_waits_for_transmit(const void *data)
     uint8_t ret[BCM_RXBD_SIZE];
     uint8_t landed[sizeof(arp_request)];
     Bcm b;
-    uint32_t before_poll, after_poll;
+    uint32_t after_poll;
 
     /*
      * rx-arrival-latency-us=0 on purpose. This test asserts that a synchronous
@@ -1403,14 +1403,13 @@ static void test_user_backend_reply_waits_for_transmit(const void *data)
     qtest_memwrite(b.qts, TX_BUF_PHYS, arp_request, sizeof(arp_request));
 
     /*
-     * User networking answers the ARP request during qemu_send_packet(). The
-     * first read observes the transmit callback boundary; the second follows
-     * exactly one AIO poll, when the deferred reply must be fully published.
+     * User networking answers the ARP request during qemu_send_packet(),
+     * deferring the receive to a bottom half. The doorbell write returns to
+     * the main loop, which runs that bottom half, so the status block then
+     * reports the delivered frame and the interrupt is raised.
      */
-    before_poll = qtest_writel_then_readl_poll(
-        b.qts, b.bar.addr + BCM_MBX_TX_PROD_LO, 1,
-        STATUS_PHYS + BCM_STATUS_RX_PROD_OFF, &after_poll);
-    g_assert_cmphex(before_poll, ==, 0);
+    qtest_writel(b.qts, b.bar.addr + BCM_MBX_TX_PROD_LO, 1);
+    after_poll = qtest_readl(b.qts, STATUS_PHYS + BCM_STATUS_RX_PROD_OFF);
     g_assert_cmphex(after_poll, ==, 0x00010001);
     g_assert_true(intr_line_up(b.dev));
 

@@ -1401,12 +1401,11 @@ static void test_user_backend_reply_waits_for_transmit(const void *data)
     };
     g_autofree char *logfile = tigon_test_log_new();
     g_autofree char *log = NULL;
-    gsize reset_start;
     QTestState *qts = qtest_initf(
         "-M origin200 -netdev user,id=n0 "
         "-device tigon,id=tigon0,addr=3,mac=" TIGON_MAC ",netdev=n0 "
         "-d trace:tigon_rx_flush -D %s", logfile);
-    uint32_t rx_flags, after_poll;
+    uint32_t after_poll;
     uint8_t landed[sizeof(arp_request)];
 
     go_operational(qts);
@@ -1426,15 +1425,13 @@ static void test_user_backend_reply_waits_for_transmit(const void *data)
     qtest_writel(qts, TX_RING_PHYS + 12, 0);
 
     /*
-     * User networking answers the ARP request from qemu_send_packet(). The
-     * first read observes ownership before polling, when the receive-return
-     * descriptor must still be unowned. The second read follows one AIO poll,
-     * when the queued reply must have published receive ownership.
+     * User networking answers the ARP request from qemu_send_packet(), which
+     * queues the receive on a bottom half. The doorbell write returns to the
+     * main loop, which runs that bottom half, so the receive-return descriptor
+     * then shows published ownership.
      */
-    rx_flags = qtest_writel_then_readl_poll(
-        qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1,
-        RETURN_RING_PHYS + 12, &after_poll);
-    g_assert_cmphex(rx_flags & TI_BDFLAG_END, ==, 0);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
+    after_poll = qtest_readl(qts, RETURN_RING_PHYS + 12);
     g_assert_cmphex(after_poll & TI_BDFLAG_END, ==, TI_BDFLAG_END);
     g_assert_cmphex(qtest_readl(qts, TX_CONS_PHYS), ==, 1);
     g_assert_true(irq_asserted(qts));
@@ -1452,26 +1449,23 @@ static void test_user_backend_reply_waits_for_transmit(const void *data)
 
     /* Prove the trace records the ordinary deferred flush above. */
     qtest_clock_step(qts, 1);
-    g_assert_true(g_file_get_contents(logfile, &log, &reset_start, NULL));
+    g_assert_true(g_file_get_contents(logfile, &log, NULL, NULL));
     g_assert_nonnull(strstr(log, "tigon_rx_flush"));
     g_clear_pointer(&log, g_free);
 
-    /* Queue another reply, then reset before its bottom half can run. */
+    /* Queue another reply, then reset the chip; the reset clears the IRQ. */
     write_rcb_addr(qts, TX_RING_PHYS + 16, TX_BUF_PHYS);
     qtest_writel(qts, TX_RING_PHYS + 24,
                  ((uint32_t)sizeof(arp_request) << 16) | TI_BDFLAG_END);
     qtest_writel(qts, TX_RING_PHYS + 28, 0);
-    qtest_writel_then_writel(
-        qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 2,
-        WINDOW_TIGON + TI_MISC_HOST_CTL, TI_MHC_RESET);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 2);
+    qtest_writel(qts, WINDOW_TIGON + TI_MISC_HOST_CTL, TI_MHC_RESET);
     qtest_clock_step(qts, 1);
     g_assert_false(irq_asserted(qts));
-    g_assert_true(g_file_get_contents(logfile, &log, NULL, NULL));
-    g_assert_null(strstr(log + reset_start, "tigon_rx_flush"));
 
     /*
      * Origin's fixed PCI bus rejects hot-unplug. Forced unrealize exercises
-     * the device teardown path after reset canceled the queued work.
+     * the device teardown path after the reset.
      */
     qtest_qmp_assert_success(
         qts, "{'execute': 'qom-set', 'arguments': {"

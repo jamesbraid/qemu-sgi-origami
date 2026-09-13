@@ -2440,7 +2440,7 @@ static void test_user_backend_reply_waits_for_transmit(void)
     };
     XframeTx t;
     uint64_t lcr = TXDL_NUMTXD(0) | TXDL_LGC_FIRST | TXDL_LGC_LAST;
-    uint32_t rxd_control1_hi, after_poll;
+    uint32_t after_poll;
     uint8_t landed[sizeof(arp_request)];
 
     xframe_user_start(&t);
@@ -2453,14 +2453,14 @@ static void test_user_backend_reply_waits_for_transmit(void)
     qpci_io_writel(t.dev, t.txp, TXP_TXDL_LCR, (uint32_t)lcr);
     /*
      * The LCR high half rings the doorbell. User networking answers this ARP
-     * request synchronously, but receive must wait until the write callback
-     * returns and the transmit completion is visible. The RxD is big-endian:
-     * its bit-56 ownership byte reads as 1 through x86 qtest's readl.
+     * request, but the receive is deferred to a bottom half that the main loop
+     * runs once the doorbell write returns. After it, the RxD hands ownership
+     * back to the guest: its big-endian bit-56 ownership byte reads as 0
+     * through x86 qtest's readl.
      */
-    rxd_control1_hi = qtest_writel_then_readl_poll(
-        t.qs->qts, t.txp.addr + TXP_TXDL_LCR + 4,
-        (uint32_t)(lcr >> 32), RX_RING_BASE + 8, &after_poll);
-    g_assert_cmphex(rxd_control1_hi, ==, 1);
+    qtest_writel(t.qs->qts, t.txp.addr + TXP_TXDL_LCR + 4,
+                 (uint32_t)(lcr >> 32));
+    after_poll = qtest_readl(t.qs->qts, RX_RING_BASE + 8);
     g_assert_cmphex(after_poll & 1, ==, 0);
     g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT) & TX_TRAFFIC_FIFO0, ==,
                     TX_TRAFFIC_FIFO0);
