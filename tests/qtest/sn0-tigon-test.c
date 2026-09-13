@@ -200,6 +200,7 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define STAT_IF_SPEED           (15 * 4)
 #define STAT_IF_ADMIN_STATUS    (16 * 4)
 #define STAT_IF_OPER_STATUS     (17 * 4)
+#define STAT_IF_IN_DISCARDS     (19 * 4)
 #define STAT_IF_PHYS_ADDRESS    (25 * 4)
 #define STAT_HC_IN_OCTETS       (36 * 4)
 #define STAT_HC_IN_UCAST        (38 * 4)
@@ -211,6 +212,7 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 
 #define TI_GCR_STAT_TICKS       0x638
 #define TI_GCR_IFINDEX          0x65c
+#define TI_GCR_GLINK_STAT       0x668
 #define TI_GCR_IFMTU            0x660
 #define TI_CMD_HOST_STATE       0x01
 #define TI_CMD_CODE_STACK_UP    0x01
@@ -3839,6 +3841,11 @@ static void test_statistics_head_stays_current(const void *data)
 
     go_operational(qts);
 
+    /* Let the publish the device owes from reset happen before either half. */
+    qtest_clock_step(qts, STATS_LIVE_NS * 2);
+    g_assert_cmpuint(read_stat64_at(qts, GIB_PHYS, STAT_HC_OUT_UCAST), ==, 0);
+    g_assert_cmpuint(read_stat64_at(qts, GIB_PHYS, STAT_HC_IN_UCAST), ==, 0);
+
     write_tx_frame(qts, 0, TX_BUF_PHYS, test_frame_direct,
                    sizeof(test_frame_direct));
     qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
@@ -3850,6 +3857,244 @@ static void test_statistics_head_stays_current(const void *data)
     g_assert_cmpuint(read_stat64_at(qts, GIB_PHYS, STAT_HC_OUT_UCAST), ==, 1);
     g_assert_cmpuint(read_stat64_at(qts, GIB_PHYS, STAT_HC_OUT_OCTETS), ==,
                      sizeof(test_frame_direct));
+    g_assert_cmpuint(read_stat64_at(qts, GIB_PHYS, STAT_HC_IN_UCAST), ==, 0);
+
+    /* The receive side counts in a quiet period of its own. */
+    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
+    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+    qtest_clock_step(qts, STATS_LIVE_NS * 2);
+
+    g_assert_cmpuint(read_stat64_at(qts, GIB_PHYS, STAT_HC_IN_UCAST), ==, 1);
+    g_assert_cmpuint(read_stat64_at(qts, GIB_PHYS, STAT_HC_IN_OCTETS), ==,
+                     sizeof(rx_frame_ours));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * The head's interface section stays current too, not only its counters. The
+ * IRIX driver never sends a refresh command, so a card that republished the
+ * head on a counter change alone would answer the board utility with the link
+ * still down for a whole five-second period after it came up.
+ *
+ * Each field gets its own quiet period, and nothing else changes inside it, so
+ * a missing mark shows up as one stale field rather than being carried to the
+ * head by the next change. No refresh command is posted at any point: a refresh
+ * republishes everything and hides exactly what this pins.
+ */
+static void test_statistics_head_tracks_interface_state(const void *data)
+{
+    static const uint32_t host_mtu = 1518;
+    static const uint8_t new_mac[6] = {
+        0x52, 0x54, 0x00, 0x65, 0x43, 0x21,
+    };
+    uint8_t phys_address[8];
+    QTestState *qts;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    /*
+     * Let the publish the device owes from its own reset happen first, so the
+     * register writes below are the only change in their quiet period.
+     */
+    qtest_clock_step(qts, STATS_LIVE_NS * 2);
+    g_assert_cmpuint(qtest_readl(qts, GIB_PHYS + STAT_IF_INDEX), ==, 0);
+
+    /*
+     * The index and the size are separate registers with separate marks, so
+     * they get separate quiet periods: written together, either one's mark
+     * would carry the other to the head and neither would be pinned.
+     */
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_IFINDEX, 1);
+    qtest_clock_step(qts, STATS_LIVE_NS * 2);
+    g_assert_cmpuint(qtest_readl(qts, GIB_PHYS + STAT_IF_INDEX), ==, 1);
+    g_assert_cmpuint(qtest_readl(qts, GIB_PHYS + STAT_IF_MTU), ==, 0);
+
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_IFMTU, host_mtu);
+    qtest_clock_step(qts, STATS_LIVE_NS * 2);
+    g_assert_cmpuint(qtest_readl(qts, GIB_PHYS + STAT_IF_MTU), ==, host_mtu);
+    g_assert_cmpuint(qtest_readl(qts, GIB_PHYS + STAT_IF_ADMIN_STATUS), ==,
+                     IF_STATUS_DOWN);
+    g_assert_cmpuint(qtest_readl(qts, GIB_PHYS + STAT_IF_SPEED), ==, 0);
+
+    /* The stack coming up, which only the host-state command reports. */
+    post_command(qts, 0, ((uint32_t)TI_CMD_HOST_STATE << 24) |
+                 (TI_CMD_CODE_STACK_UP << 12));
+    qtest_clock_step(qts, STATS_LIVE_NS * 2);
+    g_assert_cmpuint(qtest_readl(qts, GIB_PHYS + STAT_IF_ADMIN_STATUS), ==,
+                     IF_STATUS_UP);
+    g_assert_cmpuint(qtest_readl(qts, GIB_PHYS + STAT_IF_SPEED), ==, 0);
+
+    /* The link, which arrives later on the firmware's own timer. */
+    post_command(qts, 1, (uint32_t)TI_CMD_LINK_NEGOTIATION << 24);
+    qtest_clock_step(qts, LINK_DELAY_NS);
+    qtest_clock_step(qts, STATS_LIVE_NS * 2);
+    g_assert_cmpuint(qtest_readl(qts, GIB_PHYS + STAT_IF_SPEED), ==,
+                     GIGABIT_BITS_PER_SECOND);
+    g_assert_cmpuint(qtest_readl(qts, GIB_PHYS + STAT_IF_OPER_STATUS), ==,
+                     IF_STATUS_UP);
+
+    /*
+     * The block reads its speed and operational state out of the gigabit
+     * link-status register, whichever side last wrote it. The contract calls
+     * that register firmware-owned, so this is the model staying consistent
+     * with itself rather than a claim that a card accepts the write -- but it
+     * is the only thing that pins the register's own mark.
+     */
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_GLINK_STAT, 0);
+    qtest_clock_step(qts, STATS_LIVE_NS * 2);
+    g_assert_cmpuint(qtest_readl(qts, GIB_PHYS + STAT_IF_SPEED), ==, 0);
+    g_assert_cmpuint(qtest_readl(qts, GIB_PHYS + STAT_IF_OPER_STATUS), ==,
+                     IF_STATUS_DOWN);
+
+    /* A new station address, made active by its own command. */
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_PAR0,
+                 ((uint32_t)new_mac[0] << 8) | new_mac[1]);
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_PAR1,
+                 ((uint32_t)new_mac[2] << 24) | ((uint32_t)new_mac[3] << 16) |
+                 ((uint32_t)new_mac[4] << 8) | new_mac[5]);
+    post_command(qts, 2, (uint32_t)TI_CMD_SET_MAC_ADDR << 24);
+    qtest_clock_step(qts, STATS_LIVE_NS * 2);
+    qtest_memread(qts, GIB_PHYS + STAT_IF_PHYS_ADDRESS, phys_address,
+                  sizeof(phys_address));
+    g_assert_cmphex(phys_address[0], ==, 0);
+    g_assert_cmphex(phys_address[1], ==, 0);
+    g_assert_cmpmem(phys_address + 2, sizeof(new_mac),
+                    new_mac, sizeof(new_mac));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/* Step the live interval until the head's discard count reaches want. */
+static uint32_t wait_head_discards_reaches(QTestState *qts, uint32_t want)
+{
+    int attempt;
+
+    for (attempt = 0; attempt < 200; attempt++) {
+        if (qtest_readl(qts, GIB_PHYS + STAT_IF_IN_DISCARDS) == want) {
+            break;
+        }
+        g_usleep(5000);
+        qtest_clock_step(qts, STATS_LIVE_NS);
+    }
+    return qtest_readl(qts, GIB_PHYS + STAT_IF_IN_DISCARDS);
+}
+
+/*
+ * A frame dropped after the address filter accepted it is a published field of
+ * its own, and reaches the head on the same terms as the counters. The model
+ * has two such drops and they are marked separately, so both run here: a
+ * descriptor offering less room than a minimum-length frame, and one pointing
+ * at an address the payload write cannot reach. Neither consumes the
+ * descriptor, so the second reuses the first's slot without a new doorbell.
+ */
+static void test_statistics_head_tracks_discards(const void *data)
+{
+    QTestState *qts;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev_128m(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    /* Same quiet period as above: let reset's own publish happen first. */
+    qtest_clock_step(qts, STATS_LIVE_NS * 2);
+    g_assert_cmpuint(qtest_readl(qts, GIB_PHYS + STAT_IF_IN_DISCARDS), ==, 0);
+
+    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 8);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+    g_assert_cmpuint(wait_head_discards_reaches(qts, 1), ==, 1);
+
+    post_std_rx_buffer(qts, 0, UNMAPPED_PAYLOAD_PHYS, 0, 2048);
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+    g_assert_cmpuint(wait_head_discards_reaches(qts, 2), ==, 2);
+
+    g_assert_cmphex(qtest_readl(qts, RETURN_PROD_PHYS), ==, 0);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * A clear reaches the head on its own. The reader that needs this never sends
+ * a refresh, so a clear the host cannot see until it asks leaves the utility
+ * printing the counts the operator just cleared. No refresh command is posted
+ * after the clear here, for the same reason as above.
+ */
+static void test_statistics_clear_reaches_head(const void *data)
+{
+    uint8_t got[2048];
+    QTestState *qts;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    write_tx_frame(qts, 0, TX_BUF_PHYS, test_frame_direct,
+                   sizeof(test_frame_direct));
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
+    net_recv_frame(sv[0], got, sizeof(got));
+    qtest_clock_step(qts, STATS_LIVE_NS * 2);
+    g_assert_cmpuint(read_stat64_at(qts, GIB_PHYS, STAT_HC_OUT_UCAST), ==, 1);
+
+    post_command(qts, 0, (uint32_t)TI_CMD_CLR_STATS << 24);
+    qtest_clock_step(qts, STATS_LIVE_NS * 2);
+
+    g_assert_cmpuint(read_stat64_at(qts, GIB_PHYS, STAT_HC_OUT_UCAST), ==, 0);
+    g_assert_cmpuint(read_stat64_at(qts, GIB_PHYS, STAT_HC_OUT_OCTETS), ==, 0);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/* A chip reset zeroes the counters, the way the clear command does. */
+static void test_reset_clears_statistics(const void *data)
+{
+    uint8_t got[2048];
+    QTestState *qts;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    write_tx_frame(qts, 0, TX_BUF_PHYS, test_frame_direct,
+                   sizeof(test_frame_direct));
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
+    net_recv_frame(sv[0], got, sizeof(got));
+
+    post_command(qts, 0, (uint32_t)TI_CMD_RFRSH_STATS << 24);
+    g_assert_cmpuint(read_stat64(qts, STAT_HC_OUT_UCAST), ==, 1);
+
+    qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
+
+    /* The block is rebuilt, so the count can only be the model's own. */
+    go_operational(qts);
+    post_command(qts, 0, (uint32_t)TI_CMD_RFRSH_STATS << 24);
+    g_assert_cmpuint(read_stat64(qts, STAT_HC_OUT_UCAST), ==, 0);
+    g_assert_cmpuint(read_stat64(qts, STAT_HC_OUT_OCTETS), ==, 0);
 
     qtest_quit(qts);
     close(sv[0]);
@@ -4134,6 +4379,14 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/tigon/register-config-roundtrip", NULL,
                         test_register_config_roundtrip);
 
+    qtest_add_data_func("/sn0/tigon/statistics-head-tracks-interface-state",
+                        NULL, test_statistics_head_tracks_interface_state);
+    qtest_add_data_func("/sn0/tigon/statistics-head-tracks-discards", NULL,
+                        test_statistics_head_tracks_discards);
+    qtest_add_data_func("/sn0/tigon/statistics-clear-reaches-head", NULL,
+                        test_statistics_clear_reaches_head);
+    qtest_add_data_func("/sn0/tigon/reset-clears-statistics", NULL,
+                        test_reset_clears_statistics);
     qtest_add_data_func("/sn0/tigon/receive-promisc-accepts-other", NULL,
                         test_receive_promisc_accepts_other);
     qtest_add_data_func("/sn0/tigon/receive-promisc-disable-restores-filter",

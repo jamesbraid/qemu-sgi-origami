@@ -114,8 +114,8 @@
  * Command word fields: opcode in bits 31:24, code in 23:12, index in 11:0.
  * OpenBSD sys/dev/ic/tireg.h:856-858 spells the three out as accessors and
  * its TI_DO_CMD packs them the same way (tireg.h:906-910); Linux's struct cmd
- * is the same three bitfields in that order (acenic.h:362-372, at the
- * revision docs/datasheets/tigon.md declares).
+ * is the same three bitfields in that order (acenic.h:362-372, at the revision
+ * docs/datasheets/tigon.md declares).
  */
 #define TI_CMD_OP(word)         (((word) >> 24) & 0xff)
 #define TI_CMD_CODE(word)       (((word) >> 12) & 0xfff)
@@ -879,7 +879,12 @@ static void tigon_stats_refresh(TigonState *s)
     tigon_post_event(s, TI_EV_STATS_UPDATED, 0, 0);
 }
 
-/* The clear command zeroes the counters; the next refresh publishes zeroes. */
+/*
+ * The clear command zeroes the counters. The head still holds the old ones, so
+ * this leaves the block dirty: a host that clears and then reads the head
+ * without asking for a refresh -- which is how the IRIX board utility reads it
+ * -- has to see the zeroes.
+ */
 static void tigon_stats_clear(TigonState *s)
 {
     s->stat_rx_octets = 0;
@@ -891,7 +896,7 @@ static void tigon_stats_clear(TigonState *s)
     s->stat_tx_mcast = 0;
     s->stat_tx_bcast = 0;
     s->stat_rx_discards = 0;
-    s->stats_dirty = false;
+    s->stats_dirty = true;
 }
 
 /*
@@ -918,7 +923,15 @@ static void tigon_stats_timer(void *opaque)
     tigon_stats_arm_timer(s);
 }
 
-/* Keep the head current between the host's own refreshes. */
+/*
+ * Keep the head current between the host's own refreshes. Every write that
+ * moves a field this block publishes marks it dirty, and the set is closed:
+ * the frame and octet counters, the discard count, the station address, the
+ * host-state command's stack-up code, the link, and the three registers the
+ * block reads -- interface index, size and the gigabit link-status word. A
+ * field added to the block has to be added here too, or the head carries
+ * current counters over a stale interface section.
+ */
 static void tigon_stats_live_timer(void *opaque)
 {
     TigonState *s = opaque;
@@ -1011,6 +1024,7 @@ static void tigon_link_up(TigonState *s)
 {
     s->gcr[TIGON_GCR_IDX(TI_GCR_GLINK_STAT)] = TI_GLNK_STAT_UP;
     s->gcr[TIGON_GCR_IDX(TI_GCR_LINK_STAT)] = TI_LNK_STAT_UP;
+    s->stats_dirty = true;      /* ifSpeed and ifOperStatus follow the link */
     tigon_post_event(s, TI_EV_LINKSTAT_CHANGED, TI_EV_CODE_GIG_LINK_UP, 0);
 }
 
@@ -1035,6 +1049,7 @@ static void tigon_set_station_address(TigonState *s)
     m[3] = par1 >> 16;
     m[4] = par1 >> 8;
     m[5] = par1;
+    s->stats_dirty = true;      /* ifPhysAddress reports this address */
     qemu_format_nic_info_str(qemu_get_queue(s->nic), m);
 }
 
@@ -1069,6 +1084,7 @@ static void tigon_run_commands(TigonState *s, uint32_t prod)
             tigon_set_station_address(s);
         } else if (TI_CMD_OP(cmd) == TI_CMD_HOST_STATE) {
             s->stack_up = TI_CMD_CODE(cmd) == TI_CMD_CODE_STACK_UP;
+            s->stats_dirty = true;      /* ifAdminStatus follows it */
         } else if (TI_CMD_OP(cmd) == TI_CMD_RFRSH_STATS ||
                    TI_CMD_OP(cmd) == TI_CMD_UPDATE_GENCOM) {
             tigon_stats_refresh(s);
@@ -1534,6 +1550,16 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
         if (addr >= TI_GCR_BASE && addr <= TI_GCR_END) {
             s->gcr[TIGON_GCR_IDX(addr)] = val;
             switch (addr) {
+            case TI_GCR_IFINDEX:
+            case TI_GCR_IFMTU:
+            case TI_GCR_GLINK_STAT:
+                /*
+                 * The registers the statistics block reads. LINK_STAT is not
+                 * one: the block takes its speed and operational state from
+                 * the gigabit word alone.
+                 */
+                s->stats_dirty = true;
+                break;
             case TI_GCR_RX_COAL_TICKS:
                 trace_tigon_coal_write("rx_coal_ticks", (uint32_t)val);
                 break;
@@ -1984,6 +2010,7 @@ static ssize_t tigon_receive_packet(NetClientState *nc,
                       jumbo ? "jumbo" : "standard", buf_idx, buf_len,
                       buf_addr);
         s->stat_rx_discards++;
+        s->stats_dirty = true;
         return size;
     }
 
@@ -2000,6 +2027,7 @@ static ssize_t tigon_receive_packet(NetClientState *nc,
                       "tigon: receive payload write at 0x%" PRIx64
                       " failed; frame dropped\n", buf_addr);
         s->stat_rx_discards++;
+        s->stats_dirty = true;
         return size;
     }
     /* Post a receive-return descriptor naming the buffer and the length. */
