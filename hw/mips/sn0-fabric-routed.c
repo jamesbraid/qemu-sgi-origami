@@ -121,6 +121,19 @@ static int sn0_routed_walk(SN0FabricState *f, unsigned int source,
     return vertex.index;
 }
 
+/*
+ * Every number a Hub holds is routed for, not just a number exactly one Hub
+ * holds. Firmware numbers the nodes one at a time, so for most of bring-up
+ * several Hubs still carry the reset number zero, and a Hub that has taken
+ * its real number has to keep reaching zero: its own relocated firmware text
+ * and its exception vectors are node-field-zero addresses beyond the cached
+ * alias, and with no route for zero they fall to the claim error floor and
+ * fetch nothing. The walk ends at whichever Hub the programmed turns lead to
+ * and already refuses an endpoint whose number is not the one asked for, so
+ * a duplicate resolves the way the routes resolve it, as it does in the
+ * network. A number no Hub holds is still nobody's, and skipping it keeps
+ * the recompute short.
+ */
 static void sn0_routed_recompute(SN0FabricState *f)
 {
     SN0RoutedFabricState *s = SN0_FABRIC_ROUTED(f);
@@ -158,7 +171,7 @@ static void sn0_routed_recompute(SN0FabricState *f)
             map[number] = SN0_FABRIC_NONE;
             if (number == own) {
                 map[number] = i;
-            } else if (counts[number] == 1) {
+            } else if (counts[number] != 0) {
                 map[number] = sn0_routed_walk(f, i, number, &vector);
             }
         }

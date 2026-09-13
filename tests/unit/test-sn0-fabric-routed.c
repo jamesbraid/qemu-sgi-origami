@@ -300,6 +300,61 @@ static void test_vector_reply_path(void)
     }
 }
 
+/*
+ * Firmware numbers the nodes one at a time, so a Hub that has taken its real
+ * number sits beside Hubs still carrying the reset number zero. It has to go
+ * on reaching zero: its own firmware text and its exception vectors are
+ * node-field-zero addresses.
+ */
+static void test_duplicate_number_stays_routed(void)
+{
+    SGIHubState hubs[3] = { { .nasid = 0 }, { .nasid = 0 }, { .nasid = 0 } };
+    SN0FabricState *fabric = SN0_FABRIC(qdev_new(TYPE_SN0_FABRIC_ROUTED));
+    DeviceState *device = qdev_new(TYPE_SGI_ROUTER);
+    SGIRouterState *router = SGI_ROUTER(device);
+    unsigned int i;
+
+    for (i = 0; i < G_N_ELEMENTS(hubs); i++) {
+        sn0_fabric_add_endpoint(fabric, &hubs[i], i);
+        sn0_fabric_report_number(fabric, i, hubs[i].nasid);
+    }
+    qdev_realize(device, NULL, &error_abort);
+    device_cold_reset(device);
+    write_router(router, 0x10, UINT64_C(1) << 12);
+    /* Destination zero leaves by the port the first turn selects. */
+    write_router(router, 0x70100, 0xffff1f);
+    sn0_fabric_routed_add_router(fabric, router);
+    for (i = 0; i < G_N_ELEMENTS(hubs); i++) {
+        g_autofree char *name = g_strdup_printf("hub%u", i);
+
+        sn0_fabric_routed_add_link(fabric, name,
+            (SN0FabricVertex) { SN0_FABRIC_VERTEX_HUB, i, 0 },
+            (SN0FabricVertex) { SN0_FABRIC_VERTEX_ROUTER, 0, i + 1 });
+    }
+    qdev_realize(DEVICE(fabric), NULL, &error_abort);
+    sn0_fabric_build(fabric);
+
+    /* While every Hub carries zero, each answers for itself. */
+    for (i = 0; i < G_N_ELEMENTS(hubs); i++) {
+        g_assert_cmpint(sn0_fabric_map(fabric, i)[0], ==, i);
+    }
+
+    /* One Hub takes its real number; the other two have not yet. */
+    hubs[0].nasid = 3;
+    sn0_fabric_report_number(fabric, 0, 3);
+    g_assert_cmpint(sn0_fabric_map(fabric, 0)[0], ==, 1);
+    g_assert_cmpint(sn0_fabric_map(fabric, 0)[3], ==, 0);
+    g_assert_cmpint(sn0_fabric_map(fabric, 1)[0], ==, 1);
+    g_assert_cmpint(sn0_fabric_map(fabric, 2)[0], ==, 2);
+
+    /* A number no Hub holds is nobody's. */
+    g_assert_cmpint(sn0_fabric_map(fabric, 0)[5], ==, SN0_FABRIC_NONE);
+
+    object_unparent(OBJECT(fabric));
+    object_unref(OBJECT(fabric));
+    object_unparent(OBJECT(device));
+}
+
 int main(int argc, char **argv)
 {
     Object *machine;
@@ -313,6 +368,8 @@ int main(int argc, char **argv)
                     test_vector_reply_path);
     g_test_add_func("/sn0-fabric-routed/diagnostic-error-paths",
                     test_diagnostic_error_paths);
+    g_test_add_func("/sn0-fabric-routed/duplicate-number-stays-routed",
+                    test_duplicate_number_stays_routed);
     g_test_add_data_func("/sn0-fabric-routed/fifteen-hops",
                         GUINT_TO_POINTER(15), test_route_length);
     g_test_add_data_func("/sn0-fabric-routed/sixteen-hops",
