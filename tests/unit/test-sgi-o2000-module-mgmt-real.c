@@ -98,6 +98,34 @@ static void advance_to(int64_t time)
     g_assert_cmpint(qemu_clock_advance_virtual_time(time), ==, time);
 }
 
+/*
+ * A starved host moves the clock between the guest's polls and services no
+ * timer, the way a processor that holds the lock through its poll loop keeps
+ * the main loop from running one. The log, when there is one, records the
+ * instant each wait ended, counted from the fixture's own start.
+ */
+static bool starved;
+static GArray *poll_log;
+static int64_t poll_origin;
+
+static void poll_step(void)
+{
+    if (starved) {
+        cpus_set_virtual_clock(virtual_time + POLL_STEP_NS);
+    } else {
+        advance_to(virtual_time + POLL_STEP_NS);
+    }
+}
+
+static void poll_record(void)
+{
+    if (poll_log) {
+        int64_t at = virtual_time - poll_origin;
+
+        g_array_append_val(poll_log, at);
+    }
+}
+
 static void init_adapter(Fixture *f, unsigned slot);
 
 static void setup(Fixture *f, gconstpointer options)
@@ -194,12 +222,14 @@ static bool wait_done(Fixture *f, unsigned a)
         uint8_t status = read_reg(f, a, CTRL_REG);
 
         if (!(status & PCF8584_STS_PIN)) {
+            poll_record();
             return true;
         }
         if (status & (PCF8584_STS_BER | PCF8584_STS_LAB)) {
+            poll_record();
             return false;
         }
-        advance_to(virtual_time + POLL_STEP_NS);
+        poll_step();
     }
     return false;
 }
@@ -261,10 +291,13 @@ static void stop_transfer(Fixture *f, unsigned a)
 
     write_reg(f, a, CTRL_REG, CTL_STOP);
     for (i = 0; i < POLL_STEPS; i++) {
+        /* The firmware polls the status register for a free bus. */
+        (void)read_reg(f, a, CTRL_REG);
         if (!i2c_bus_busy(bus)) {
+            poll_record();
             return;
         }
-        advance_to(virtual_time + POLL_STEP_NS);
+        poll_step();
     }
     g_assert_not_reached();
 }
@@ -382,6 +415,104 @@ static void nvram_write(Fixture *f, unsigned a, uint16_t offset, uint8_t value)
     g_assert_true(send_byte(f, a, offset & 0xff));
     g_assert_true(send_byte(f, a, value));
     stop_transfer(f, a);
+}
+
+/*
+ * One fixture's worth of firmware traffic: a write and a read of the shared
+ * NVRAM through two different adapters, and a controller command through a
+ * third.
+ */
+static void run_polled_traffic(bool starve, GArray *log)
+{
+    Fixture f;
+    uint8_t response[96];
+
+    setup(&f, NULL);
+    starved = starve;
+    poll_log = log;
+    poll_origin = virtual_time;
+
+    nvram_write(&f, 0, 0x123, 0x5a);
+    g_assert_cmphex(nvram_read(&f, 2, 0x123), ==, 0x5a);
+    g_assert_cmpuint(msc_command(&f, 1, "ver", response, sizeof(response)),
+                     >=, 4);
+    g_assert_cmpint(memcmp(&response[1], "ok", 2), ==, 0);
+
+    starved = false;
+    poll_log = NULL;
+    teardown(&f, NULL);
+}
+
+/*
+ * A guest polling while the host services no timer sees the wire exactly as
+ * it would with every timer on time. The same traffic runs twice, polled at
+ * the same instants: once with timers serviced as the clock moves and once
+ * with none serviced at all, so only the guest's own register accesses can
+ * move the wire and its controller. Each wait must end at the same instant
+ * in both.
+ */
+static void test_starved_polls_match_serviced(void)
+{
+    g_autoptr(GArray) serviced = g_array_new(false, false, sizeof(int64_t));
+    g_autoptr(GArray) polled = g_array_new(false, false, sizeof(int64_t));
+
+    run_polled_traffic(false, serviced);
+    run_polled_traffic(true, polled);
+
+    g_assert_cmpuint(serviced->len, >, 0);
+    g_assert_cmpuint(polled->len, ==, serviced->len);
+    for (unsigned i = 0; i < serviced->len; i++) {
+        g_assert_cmpint(g_array_index(polled, int64_t, i), ==,
+                        g_array_index(serviced, int64_t, i));
+    }
+}
+
+/*
+ * A deadline the guest's poll has already run is not run again when its own
+ * timer fires late. A node polls every quarter millisecond through a reset
+ * pulse while the host services no timer, so its polls end the pulse and run
+ * the service tick after it; the pulse timer, still armed for the instant the
+ * poll already settled, and any other the host gets round to afterwards, must
+ * then find nothing left to do. A second pulse completion would reinitialise
+ * the controller and take back the grant published after the first.
+ */
+static void test_late_timer_after_poll(Fixture *f, gconstpointer unused)
+{
+    SGIO2000ModuleMgmtState *m = f->module;
+    int64_t end, service;
+    unsigned raises;
+
+    run_tick(f);
+    g_assert_true(sgi_o2000_module_mgmt_pulse_reset(m));
+    g_assert_cmpint(f->level[LINE_RESET], ==, 1);
+    raises = f->raises[LINE_RESET];
+    end = m->pulse_deadline;
+
+    while (virtual_time < end + SERVICE_PERIOD_NS + GRANT_SETTLE_NS / 2) {
+        cpus_set_virtual_clock(virtual_time + GRANT_SETTLE_NS / 2);
+        (void)read_reg(f, 0, CTRL_REG);
+    }
+
+    /* The polls ended the pulse, and the tick after it published code 0. */
+    g_assert_cmpint(f->level[LINE_RESET], ==, 0);
+    g_assert_false(m->pulse_active);
+    g_assert_true(m->publication_enabled);
+    g_assert_cmpuint(m->processor_code, ==, 0);
+    g_assert_false(m->grant_active);
+    g_assert_cmphex(f->adapter[3]->data, ==, GRANT_BASE);
+    g_assert_cmpint(m->service_deadline, >, virtual_time);
+    service = m->service_deadline;
+
+    qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
+
+    g_assert_cmpint(f->level[LINE_RESET], ==, 0);
+    g_assert_cmpuint(f->raises[LINE_RESET], ==, raises);
+    g_assert_false(m->pulse_active);
+    g_assert_cmpuint(m->processor_code, ==, 0);
+    g_assert_false(m->grant_active);
+    g_assert_cmphex(f->adapter[3]->data, ==, GRANT_BASE);
+    g_assert_cmpint(m->service_deadline, ==, service);
+    g_assert_false(i2c_bus_busy(sgi_o2000_module_mgmt_get_bus(m)));
 }
 
 /*
@@ -1084,6 +1215,10 @@ int main(int argc, char **argv)
     g_test_add("/sgi-o2000-module-management/shared/addressed-release-progress",
                Fixture, NULL, setup, test_addressed_release_clock_progress,
                teardown);
+    g_test_add_func("/sgi-o2000-module-management/timeline/starved-polls",
+                    test_starved_polls_match_serviced);
+    g_test_add("/sgi-o2000-module-management/timeline/late-timer-after-poll",
+               Fixture, NULL, setup, test_late_timer_after_poll, teardown);
     g_test_add("/sgi-o2000-module-management/shared/population", Fixture,
                NULL, setup, test_population, teardown);
     g_test_add("/sgi-o2000-module-management/nvram/defaults", Fixture, NULL,

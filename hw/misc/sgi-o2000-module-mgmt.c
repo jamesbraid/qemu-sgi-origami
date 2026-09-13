@@ -240,10 +240,12 @@ static bool mgmt_adapter_active(SGIO2000ModuleMgmtState *s)
     return false;
 }
 
-static void mgmt_service(void *opaque)
+static void mgmt_service(SGIO2000ModuleMgmtState *s)
 {
-    SGIO2000ModuleMgmtState *s = opaque;
-
+    /*
+     * Every millisecond of the timeline gets its tick, at its own instant,
+     * however late the host gets round to running it.
+     */
     s->service_deadline += SERVICE_PERIOD_NS;
     timer_mod_ns(s->service_timer, s->service_deadline);
 
@@ -277,10 +279,8 @@ static void mgmt_service(void *opaque)
     mgmt_publish(s);
 }
 
-static void mgmt_message_expired(void *opaque)
+static void mgmt_message_expired(SGIO2000ModuleMgmtState *s)
 {
-    SGIO2000ModuleMgmtState *s = opaque;
-
     s->pending_messages = 0;
 }
 
@@ -308,10 +308,8 @@ static void mgmt_drive_power(SGIO2000ModuleMgmtState *s)
     }
 }
 
-static void mgmt_pulse_complete(void *opaque)
+static void mgmt_pulse_complete(SGIO2000ModuleMgmtState *s)
 {
-    SGIO2000ModuleMgmtState *s = opaque;
-
     mgmt_drive_pulse_lines(s, false, false);
     s->pulse_active = false;
     s->pulse_nmi = false;
@@ -319,6 +317,50 @@ static void mgmt_pulse_complete(void *opaque)
     if (s->power_on) {
         s->publication_enabled = true;
     }
+}
+
+/*
+ * The controller's deadlines sit on the wire's timeline, so a node polling its
+ * adapter runs them in order with the wire's own edges, each at its own
+ * instant. A message expiry is armed a second ahead and a pulse a tenth of a
+ * second, the service tick only a millisecond, so where they share an instant
+ * the first two go first, as their timers ordinarily did.
+ */
+static int64_t mgmt_next_deadline(void *opaque)
+{
+    SGIO2000ModuleMgmtState *s = opaque;
+    int64_t next = s->service_deadline;
+
+    if (s->pending_messages) {
+        next = MIN(next, s->message_deadline);
+    }
+    if (s->pulse_active) {
+        next = MIN(next, s->pulse_deadline);
+    }
+    return next;
+}
+
+static void mgmt_run_deadlines(void *opaque, int64_t now)
+{
+    SGIO2000ModuleMgmtState *s = opaque;
+
+    if (s->pending_messages && s->message_deadline <= now) {
+        mgmt_message_expired(s);
+    }
+    if (s->pulse_active && s->pulse_deadline <= now) {
+        mgmt_pulse_complete(s);
+    }
+    if (s->service_deadline <= now) {
+        mgmt_service(s);
+    }
+}
+
+/* The timers only stand in for a node that is not polling. */
+static void mgmt_timer_expired(void *opaque)
+{
+    SGIO2000ModuleMgmtState *s = opaque;
+
+    i2c_wire_advance(s->bus);
 }
 
 static bool mgmt_start_pulse(SGIO2000ModuleMgmtState *s, bool nmi)
@@ -340,7 +382,7 @@ static bool mgmt_start_pulse(SGIO2000ModuleMgmtState *s, bool nmi)
     s->pulse_active = true;
     s->pulse_nmi = nmi;
     mgmt_drive_pulse_lines(s, !nmi, nmi);
-    s->pulse_deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + PULSE_NS;
+    s->pulse_deadline = i2c_wire_now(s->bus) + PULSE_NS;
     timer_mod_ns(s->pulse_timer, s->pulse_deadline);
     return true;
 }
@@ -426,8 +468,7 @@ void sgi_o2000_module_mgmt_set_message(SGIO2000ModuleMgmtState *s,
     }
     if (pending) {
         s->pending_messages |= 1U << processor;
-        s->message_deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                              MESSAGE_LIFETIME_NS;
+        s->message_deadline = i2c_wire_now(s->bus) + MESSAGE_LIFETIME_NS;
         timer_mod_ns(s->message_timer, s->message_deadline);
     } else {
         s->pending_messages &= ~(1U << processor);
@@ -728,11 +769,12 @@ static void mgmt_realize(DeviceState *dev, Error **errp)
         }
     }
 
-    s->service_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, mgmt_service, s);
+    s->service_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                    mgmt_timer_expired, s);
     s->message_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
-                                    mgmt_message_expired, s);
+                                    mgmt_timer_expired, s);
     s->pulse_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
-                                  mgmt_pulse_complete, s);
+                                  mgmt_timer_expired, s);
     mgmt_reset_state(s);
     s->power_on = true;
     s->publication_enabled = true;
@@ -740,6 +782,11 @@ static void mgmt_realize(DeviceState *dev, Error **errp)
     s->service_deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                           SERVICE_PERIOD_NS;
     timer_mod_ns(s->service_timer, s->service_deadline);
+    if (i2c_wire_set_timeline(s->bus, GRANT_MASTER, mgmt_next_deadline,
+                              mgmt_run_deadlines, s)) {
+        error_setg(errp, "cannot time the module controller on its wire");
+        return;
+    }
 
     /*
      * The coordinator sits on no bus, so the machine reset tree would miss it
@@ -754,6 +801,7 @@ static void mgmt_unrealize(DeviceState *dev)
     SGIO2000ModuleMgmtState *s = SGI_O2000_MODULE_MGMT(dev);
 
     qemu_unregister_resettable(OBJECT(s));
+    i2c_wire_clear_timeline(s->bus, GRANT_MASTER, mgmt_run_deadlines, s);
     i2c_wire_clear_observer(s->bus, GRANT_MASTER, mgmt_wire_event, s);
     timer_free(s->service_timer);
     timer_free(s->message_timer);
