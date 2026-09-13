@@ -401,6 +401,14 @@
 #define RX_RECOVERY_STEP_NS      (20 * 1000 * 1000)
 
 /*
+ * The modelled minimum between a frame arriving and its completion, in
+ * nanoseconds: the device default. Delivery is published only once this much
+ * virtual time has passed, so every wait for a completion has to advance the
+ * clock as well as give the main loop a pass.
+ */
+#define RX_ARRIVAL_LATENCY_NS  200000
+
+/*
  * How far to step QEMU_CLOCK_VIRTUAL past the model's delayed link event.
  * Tests do not assert the exact delay, which remains outside the contract.
  */
@@ -875,13 +883,23 @@ static void xframe_tx_start_binary_args(XframeTx *t, const char *binary,
     }
 }
 
+/*
+ * rx-arrival-latency-us=0 on purpose. This test asserts that a synchronous
+ * backend reply is invisible at the instant the transmit doorbell write
+ * returns, which is what pins the model's rule about deferring a backend
+ * reply until the transmit walk has published its state. Under the arrival
+ * floor no virtual time has passed at that instant either, so the assertion
+ * would hold whether or not that rule existed. Taking the floor out leaves
+ * the rule as the only thing holding the reply back.
+ */
 static void xframe_user_start(XframeTx *t)
 {
     uint64_t barsize;
 
     t->host_fd = -1;
     t->qs = qtest_pc_boot("-netdev user,id=n0 "
-                          "-device xframe,netdev=n0,mac=" XFRAME_TEST_MAC);
+                          "-device xframe,netdev=n0,rx-arrival-latency-us=0,"
+                          "mac=" XFRAME_TEST_MAC);
     t->dev = find_xframe(t->qs->pcibus, XFRAME_DEVICE_XENA);
     g_assert(t->dev != NULL);
 
@@ -986,6 +1004,7 @@ static bool xframe_wait_rx_traffic(XframeTx *t, int attempts)
             return true;
         }
         g_usleep(1000);
+        qtest_clock_step(t->qs->qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     return false;
 }
@@ -1005,6 +1024,7 @@ static bool xframe_wait_rxd_consumed(XframeTx *t, uint64_t desc, int attempts)
             return true;
         }
         g_usleep(1000);
+        qtest_clock_step(t->qs->qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     return false;
 }
@@ -1042,6 +1062,78 @@ static void test_receive_delivers_a_frame(void)
 
     qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
     g_assert_cmpmem(landed, sizeof(frame), frame, sizeof(frame));
+
+    xframe_tx_stop(&t);
+}
+
+/*
+ * A frame does not complete the instant the backend hands it over. The card
+ * writes it into the posted buffer and fills in the descriptor's byte counts
+ * straight away, and the three things the driver can see -- the ownership
+ * release, the traffic-interrupt status, and the line itself -- appear only
+ * once the arrival deadline has passed on the virtual clock.
+ *
+ * Without the floor the model published a reply in the same virtual instant
+ * as the transmit that provoked it: traced, zero nanoseconds between the
+ * doorbell and the completion, which no wire, peer or DMA can do. See
+ * docs/datasheets/xframe.md's arrival-latency approximation.
+ */
+static void test_receive_waits_for_its_arrival_deadline(void)
+{
+    XframeTx t;
+    uint8_t frame[64];
+    uint8_t landed[64];
+    unsigned i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(0x80 + i);
+    }
+    memcpy(frame, xframe_station_mac, sizeof(xframe_station_mac));
+
+    xframe_tx_start(&t);
+    /* Unmask, so the delivered line is a real assertion and not a mask. */
+    sock_pif_writeq(&t, GENERAL_INT_MASK, 0);
+    sock_pif_writeq(&t, RX_TRAFFIC_MASK, 0);
+    xframe_program_rxd(&t, RX_RING_BASE, RX_BUF0, RX_BUF_CAPACITY);
+    xframe_rx_ring_arm(&t, RX_RING_BASE);
+    qtest_memset(t.qs->qts, RX_BUF0, 0, sizeof(frame));
+
+    net_socket_send_frame(t.host_fd, frame, sizeof(frame));
+
+    /*
+     * Wait for the card to take the frame, which it shows by writing it into
+     * the buffer. Nothing here advances the virtual clock, so the arrival
+     * deadline cannot have passed.
+     */
+    for (i = 0; i < 5000; i++) {
+        qtest_memread(t.qs->qts, RX_BUF0, landed, sizeof(landed));
+        if (memcmp(landed, frame, sizeof(frame)) == 0) {
+            break;
+        }
+        g_usleep(1000);
+    }
+    g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
+
+    /* The byte count is written; the ownership release and the line are not. */
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 16) >>
+                    RXD_BUFSIZ_SHIFT, ==, sizeof(frame));
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN,
+                    ==, RXD_OWN);
+    g_assert_cmphex(sock_pif_readq(&t, RX_TRAFFIC_INT), ==, 0);
+    g_assert_false(xframe_intx_asserted(t.dev));
+
+    /* Still nothing one nanosecond short of the deadline. */
+    qtest_clock_step(t.qs->qts, RX_ARRIVAL_LATENCY_NS - 1);
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN,
+                    ==, RXD_OWN);
+    g_assert_cmphex(sock_pif_readq(&t, RX_TRAFFIC_INT), ==, 0);
+    g_assert_false(xframe_intx_asserted(t.dev));
+
+    /* And all three at once past it. */
+    qtest_clock_step(t.qs->qts, 1);
+    g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
+    g_assert_cmphex(sock_pif_readq(&t, RX_TRAFFIC_INT), ==, RX_TRAFFIC_RING0);
+    g_assert_true(xframe_intx_asserted(t.dev));
 
     xframe_tx_stop(&t);
 }
@@ -4247,7 +4339,12 @@ static void test_receive_reports_checksum_results(void)
     xframe_program_rxd(&t, RX_RING_BASE, RX_BUF0, RX_BUF_CAPACITY);
     xframe_rx_ring_arm(&t, RX_RING_BASE);
     net_socket_send_frame(t.host_fd, frame, len);
-    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+    /*
+     * On the descriptor, not on RX_TRAFFIC_INT: that bit is sticky across
+     * deliveries until acknowledged, so the second frame below would find it
+     * already set and read a descriptor whose arrival deadline has not passed.
+     */
+    g_assert_true(xframe_wait_rxd_consumed(&t, RX_RING_BASE, 5000));
 
     c1 = dma_ldq_be(t.qs->qts, RX_RING_BASE + 8);
     g_assert_cmphex(c1 & RXD_PROTO_IPV4, ==, RXD_PROTO_IPV4);
@@ -4261,7 +4358,7 @@ static void test_receive_reports_checksum_results(void)
     xframe_program_rxd(&t, RX_RING_BASE, RX_BUF0, RX_BUF_CAPACITY);
     xframe_rx_ring_arm(&t, RX_RING_BASE);
     net_socket_send_frame(t.host_fd, frame, len);
-    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
+    g_assert_true(xframe_wait_rxd_consumed(&t, RX_RING_BASE, 5000));
 
     c1 = dma_ldq_be(t.qs->qts, RX_RING_BASE + 8);
     g_assert_cmphex(c1 & RXD_PROTO_TCP, ==, RXD_PROTO_TCP);
@@ -5944,6 +6041,8 @@ int main(int argc, char **argv)
                    test_xg_enable_path_transmit_via_block_masks);
     qtest_add_func("xframe/receive-delivers-a-frame",
                    test_receive_delivers_a_frame);
+    qtest_add_func("xframe/receive-waits-for-arrival-deadline",
+                   test_receive_waits_for_its_arrival_deadline);
     qtest_add_func("xframe/receive-completion-write-failure-is-retryable",
                    test_receive_completion_write_failure_is_retryable);
     qtest_add_func("xframe/receive-fetches-descriptor-once",

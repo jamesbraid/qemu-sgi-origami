@@ -26,6 +26,7 @@
 #ifndef HW_NET_XFRAME_H
 #define HW_NET_XFRAME_H
 
+#include "hw/net/sgi-net-rx-latency.h"
 #include "hw/pci/pci_device.h"
 #include "net/net.h"
 #include "qom/object.h"
@@ -321,6 +322,19 @@ struct XframeState {
     /* Backend replies wait until the transmit completion is published. */
     bool defer_backend_rx;
     bool backend_rx_deferred;
+
+    /* The modelled minimum between a frame arriving and its completion. */
+    uint32_t rx_arrival_latency_us;
+    SGINetRxLatency rx_latency;
 };
+
+/*
+ * One receive whose buffers and byte counts are written and whose descriptor
+ * is still owned by the card, so the driver cannot yet see any of it.
+ */
+typedef struct XframeRxDone {
+    uint64_t desc_addr;
+    uint8_t control1[8];
+} XframeRxDone;
 
 #endif
