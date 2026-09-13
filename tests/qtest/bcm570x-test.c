@@ -5834,6 +5834,120 @@ static void test_receive_coalescing_survives_migration(const void *data)
 }
 
 /*
+ * F12: the arrival line's vmstate migrates only what it holds, not a fixed
+ * 256 slots. Drain one completion clear of the ring's start so the line's
+ * head is not still sitting at zero, hold two more behind a floor small
+ * polling drift cannot cross by accident, then migrate and confirm the
+ * destination still reports all three in order -- the one already-published
+ * completion untouched, the two held ones on their own deadline. Kept under
+ * the return ring's own length (RX_RING_LEN) throughout, so the status
+ * block's producer index -- itself a value mod that length -- never wraps
+ * and can be read as a plain count.
+ */
+static void test_arrival_line_migrates_only_what_it_holds(const void *data)
+{
+    /*
+     * Ten times the default floor: comfortably past the small drift the
+     * held frames' own polling below can add, and still well inside what
+     * wait_for_rx_prod's clock-stepping retries can cross when draining.
+     */
+    enum { FLOOR_US = 2000 };
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest = NULL;
+    GError *err = NULL;
+    QTestState *from_qts, *to_qts;
+    Bcm from, to;
+    uint8_t bd[BCM_RXBD_SIZE];
+    uint8_t frame[64];
+    int sv[2];
+    unsigned int i;
+    const unsigned int drained = 1, held = 2, total = drained + held;
+
+    memset(frame, 0x71, sizeof(frame));
+    memset(frame, 0xff, 6);
+
+    tmpfs = g_dir_make_tmp("bcm570x-test-XXXXXX", &err);
+    g_assert(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    from_qts = qtest_initf(BCM_MACHINE
+                           " -netdev socket,fd=%d,id=n0"
+                           " -device bcm570x,addr=%02x.0,netdev=n0,"
+                           "rx-arrival-latency-us=%u",
+                           sv[1], BCM_SLOT, FLOOR_US);
+    bcm_open(&from, from_qts);
+
+    bar_writel(&from, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
+    bar_writel(&from, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
+    bar_writel(&from, BCM_RX_STD_RCB_MAXLEN, STD_BUF_SIZE << 16);
+    ind_mem_writel(&from, BCM_SRAM_RX_RETURN_RCB + 0, RET_RING_PHYS >> 32);
+    ind_mem_writel(&from, BCM_SRAM_RX_RETURN_RCB + 4,
+                   RET_RING_PHYS & 0xffffffff);
+    ind_mem_writel(&from, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
+    bar_writel(&from, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
+    bar_writel(&from, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
+    /* One completion, one update: this test is not about coalescing. */
+    bar_writel(&from, BCM_HCC_RX_MAX_COAL_BDS, 1);
+    bar_writel(&from, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&from, BCM_RX_MODE, BCM_RXMODE_ENABLE);
+
+    memset(bd, 0, sizeof(bd));
+    put32le(bd + 0, RX_BUF_PHYS >> 32);
+    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    for (i = 0; i < total; i++) {
+        qtest_memwrite(from.qts, STD_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE,
+                       bd, sizeof(bd));
+    }
+    qtest_memset(from.qts, RET_RING_PHYS, 0,
+                (uint64_t)RX_RING_LEN * BCM_RXBD_SIZE);
+    qtest_memset(from.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+    bar_writel(&from, BCM_MBX_RX_STD_PROD_LO, total);
+
+    /* One lands and publishes, moving the ring's head off its start index. */
+    for (i = 0; i < drained; i++) {
+        net_socket_send_frame(sv[0], frame, sizeof(frame));
+    }
+    wait_for_rx_prod(&from, drained);
+    bar_writel(&from, BCM_MBX_RX_CONS0_LO, drained % RX_RING_LEN);
+
+    /* Two more, held behind a floor this test's own polling never reaches. */
+    for (i = 0; i < held; i++) {
+        net_socket_send_frame(sv[0], frame, sizeof(frame));
+    }
+    for (i = 0; i < held; i++) {
+        wait_for_ret_end(&from, (drained + i) % RX_RING_LEN);
+    }
+    g_assert_cmphex(read_rx_prod(&from), ==, drained);
+
+    dest = g_strdup_printf(BCM_MACHINE
+                           " -netdev user,id=n0"
+                           " -device bcm570x,addr=%02x.0,netdev=n0,"
+                           "rx-arrival-latency-us=%u"
+                           " -incoming %s", BCM_SLOT, FLOOR_US, uri);
+    to_qts = qtest_init(dest);
+    bcm_open(&to, to_qts);
+    bcm570x_migrate(from.qts, to_qts, uri);
+
+    /* The two already published travelled as ordinary device state. */
+    g_assert_cmphex(read_rx_prod(&to), ==, drained);
+
+    /*
+     * The three held ones publish together, on their own deadline -- an
+     * absolute QEMU_CLOCK_VIRTUAL value carried over from a source that was
+     * not at time zero, so the destination (which starts fresh at zero) is
+     * polled up to it rather than stepped by a single guessed amount.
+     */
+    wait_for_rx_prod(&to, total);
+
+    bcm_close(&to);
+    bcm_close(&from);
+    close(sv[0]);
+    g_rmdir(tmpfs);
+}
+
+/*
  * HCC periodic status is part of the live device state too. An idle guest must
  * keep receiving watchdog updates after migration without rewriting HCC.
  */
@@ -6466,6 +6580,9 @@ int main(int argc, char **argv)
                         test_transmit_coalescing_survives_migration);
     qtest_add_data_func("/bcm570x/receive-coalescing-survives-migration", NULL,
                         test_receive_coalescing_survives_migration);
+    qtest_add_data_func("/bcm570x/arrival-line-migrates-only-what-it-holds",
+                        NULL,
+                        test_arrival_line_migrates_only_what_it_holds);
     qtest_add_data_func("/bcm570x/periodic-status-survives-migration", NULL,
                         test_periodic_status_survives_migration);
     qtest_add_data_func("/bcm570x/dual-port-present-and-independent", NULL,

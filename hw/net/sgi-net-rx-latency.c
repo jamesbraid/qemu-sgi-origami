@@ -213,25 +213,57 @@ static const VMStateDescription vmstate_sgi_net_rx_latency_entry = {
 };
 
 /*
+ * Migrate only the entries actually held. head is meaningful purely as an
+ * offset into the physical ring, so before the count-driven varray below
+ * walks ring[0..count) a nonzero head has to be rotated out first, or the
+ * wrong physical slots -- or ones past count entirely -- would be the ones
+ * sent.
+ */
+static int sgi_net_rx_latency_pre_save(void *opaque)
+{
+    SGINetRxLatency *l = opaque;
+    g_autofree SGINetRxLatencyEntry *rotated = NULL;
+    uint32_t i;
+
+    if (l->head == 0 || l->count == 0) {
+        return 0;
+    }
+    rotated = g_new(SGINetRxLatencyEntry, l->count);
+    for (i = 0; i < l->count; i++) {
+        rotated[i] = *sgi_net_rx_latency_slot(l, i);
+    }
+    memcpy(l->ring, rotated, l->count * sizeof(SGINetRxLatencyEntry));
+    l->head = 0;
+    return 0;
+}
+
+/*
  * The held completions travel with the device rather than being dropped or
  * published early at the save point: a completion published out of its own
  * timer would run against an interrupt controller that may already have been
  * written out, and dropping it would lose a frame the guest's buffer already
  * holds. The floor, record size and callbacks are set at realize on both
  * ends and are not part of the stream.
+ *
+ * The ring only ever carries count entries at once, normalised to start at
+ * index 0 by the pre_save hook above, so only those migrate -- not a fixed
+ * 256 slots regardless of how many are actually held. Version 1 sent the
+ * whole backing array; a stream from it cannot be reread as a varray of a
+ * count it never wrote in this position, so this is a hard break, not an
+ * additive version.
  */
 const VMStateDescription vmstate_sgi_net_rx_latency = {
     .name = "sgi-net-rx-latency",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
+    .pre_save = sgi_net_rx_latency_pre_save,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(head, SGINetRxLatency),
         VMSTATE_UINT32(count, SGINetRxLatency),
         VMSTATE_TIMER_PTR(timer, SGINetRxLatency),
-        VMSTATE_STRUCT_ARRAY(ring, SGINetRxLatency,
-                             SGI_NET_RX_LATENCY_DEPTH, 1,
-                             vmstate_sgi_net_rx_latency_entry,
-                             SGINetRxLatencyEntry),
+        VMSTATE_STRUCT_VARRAY_UINT32(ring, SGINetRxLatency, count, 1,
+                                     vmstate_sgi_net_rx_latency_entry,
+                                     SGINetRxLatencyEntry),
         VMSTATE_END_OF_LIST()
     }
 };
