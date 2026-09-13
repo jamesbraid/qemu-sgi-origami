@@ -1674,9 +1674,18 @@ static void test_rx_produce_defers_a_queued_delivery(const void *data)
                            (unsigned int)getpid(), g_random_int());
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     net_socket_set_recv_timeout(sv[0], 10);
+    /*
+     * Zero floor: this pins the bottom-half deferral the arrival line's
+     * timer would otherwise stand in front of, not the arrival latency
+     * itself -- see sgi-ioc3-eth/receive-waits-for-arrival-deadline for
+     * that. The property lives on the inner sgi-ioc3-eth object, not the
+     * outer chip -device sgi-ioc3 instantiates, so it is set globally by
+     * type rather than as a -device argument.
+     */
     qts = qtest_initf("-M pc -m 128M -display none "
                       "-netdev socket,fd=%d,id=n0 "
                       "-device sgi-ioc3,addr=%02x.0,netdev=n0 "
+                      "-global sgi-ioc3-eth.rx-arrival-latency-us=0 "
                       "-trace sgi_ioc3_eth_rx_flush,file=%s",
                       sv[1], IOC3_PCI_SLOT, path);
     /* No buffers posted yet: produce == consume, so the ring starts full. */
