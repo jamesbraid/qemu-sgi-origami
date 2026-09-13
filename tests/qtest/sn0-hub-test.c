@@ -176,6 +176,10 @@
 #define NI_PORT_PARMS_RESET ((6ULL << 10) | 0x3f0)
 #define NI_PORT_CHECK_ERROR_SHIFT 8
 #define NI_PORT_CHECK_ERROR_MASK  (0xffULL << NI_PORT_CHECK_ERROR_SHIFT)
+#define NI_AGEING_BASE      0x600500
+#define NI_AGEING_STRIDE    8
+#define NI_AGEING_COUNT     8
+#define NI_AGEING_MASK      0xfffULL
 #define NI_VECTOR_CLEAR     0x600380
 #define NI_META_TABLE       0x638000
 #define NI_META_TABLE_LAST  (NI_META_TABLE + 31 * 8)
@@ -1398,6 +1402,36 @@ static void test_reset_values(const void *data)
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND1), ==, 0);
 
+    qtest_quit(qts);
+}
+
+static void test_network_ageing_controls(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    unsigned int i;
+
+    for (i = 0; i < NI_AGEING_COUNT; i++) {
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_AGEING_BASE +
+                                    i * NI_AGEING_STRIDE), ==, 0);
+    }
+
+    qtest_writeq(qts, HUB_LOCAL + NI_AGEING_BASE, ~0ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_AGEING_BASE), ==,
+                    NI_AGEING_MASK);
+    for (i = 1; i < NI_AGEING_COUNT; i++) {
+        qtest_writeq(qts, HUB_LOCAL + NI_AGEING_BASE +
+                     i * NI_AGEING_STRIDE, i);
+    }
+    for (i = 1; i < NI_AGEING_COUNT; i++) {
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_AGEING_BASE +
+                                    i * NI_AGEING_STRIDE), ==, i);
+    }
+
+    qtest_system_reset(qts);
+    for (i = 0; i < NI_AGEING_COUNT; i++) {
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_AGEING_BASE +
+                                    i * NI_AGEING_STRIDE), ==, 0);
+    }
     qtest_quit(qts);
 }
 
@@ -5804,6 +5838,8 @@ int main(int argc, char **argv)
                         test_bte_unclaimed_addresses_fail);
     qtest_add_data_func("sn0/hub/bte-zero-length-and-misalignment", NULL,
                         test_bte_zero_length_and_misalignment);
+    qtest_add_data_func("sn0/hub/network-ageing-controls", NULL,
+                        test_network_ageing_controls);
 
     return g_test_run();
 }
