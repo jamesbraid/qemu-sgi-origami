@@ -897,6 +897,44 @@ static void test_starting_a_slot_does_not_report_it_finished(const void *data)
     qtest_quit(qts);
 }
 
+/* How long this model makes a slot last. A modelling choice, not a measured
+ * hardware pulse width: no source in this tree gives one in register units.
+ */
+#define MD_ONEWIRE_SLOT_NS 1000
+
+/*
+ * A slot finishes on the clock and not before it. Pins the boundary rather
+ * than "completes eventually", because the two ways of getting this wrong
+ * both pass an eventually-complete check: reporting completion inside the
+ * write, and reporting it from a host timer callback that arrives whenever
+ * the big lock next frees up.
+ */
+static void test_a_slot_finishes_on_the_clock(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t after;
+
+    /* A read slot on the empty local bus: the wire floats, so it samples one. */
+    qtest_writeq(qts, HUB_LOCAL + MD_ONEWIRE,
+                 MD_ONEWIRE_RESET | (8ULL << 10) | (0x04ULL << 2));
+
+    qtest_clock_step(qts, MD_ONEWIRE_SLOT_NS - 1);
+    after = qtest_readq(qts, HUB_LOCAL + MD_ONEWIRE);
+    g_assert_cmphex(after & MD_ONEWIRE_DONE, ==, 0);
+    g_assert_cmphex(after & MD_ONEWIRE_RXDATA, ==, 0);
+
+    qtest_clock_step(qts, 1);
+    after = qtest_readq(qts, HUB_LOCAL + MD_ONEWIRE);
+    g_assert_cmphex(after & MD_ONEWIRE_DONE, ==, MD_ONEWIRE_DONE);
+    g_assert_cmphex(after & MD_ONEWIRE_RXDATA, ==, MD_ONEWIRE_RXDATA);
+
+    /* The timing fields the write programmed are untouched by completion. */
+    g_assert_cmphex(after & (MD_ONEWIRE_PHASE_LO | MD_ONEWIRE_PHASE_HI), ==,
+                    MD_ONEWIRE_RESET);
+
+    qtest_quit(qts);
+}
+
 /*
  * The bus carries the PIMM manufacturing-record part (the hub one-wire
  * datasheet's settled responder contract): a DS2505-compatible responder
@@ -5018,6 +5056,8 @@ int main(int argc, char **argv)
                         test_the_one_wire_master_keeps_its_wide_field);
     qtest_add_data_func("sn0/hub/one-wire-start-is-not-finish", NULL,
                         test_starting_a_slot_does_not_report_it_finished);
+    qtest_add_data_func("sn0/hub/one-wire-finishes-on-the-clock", NULL,
+                        test_a_slot_finishes_on_the_clock);
     qtest_add_data_func("sn0/hub/one-wire-reset-reports-presence", NULL,
                         test_a_bus_reset_reports_presence);
     qtest_add_data_func("sn0/hub/one-wire-search-reads-identity", NULL,

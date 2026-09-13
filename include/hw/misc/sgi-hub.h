@@ -310,8 +310,13 @@ struct SGIHubState {
 
     uint64_t md_onewire;
 
-    /* A slot must not complete inside the write that starts it. */
-    QEMUTimer *md_onewire_timer;
+    /*
+     * When the slot underway finishes. A slot must not complete inside the
+     * write that starts it, so completion is derived from this deadline when
+     * the register is read rather than delivered into it. INT64_MAX while no
+     * slot has been started.
+     */
+    int64_t md_onewire_deadline_ns;
 
     /*
      * The wire itself, and the responder on it: the PIMM manufacturing-record

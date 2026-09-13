@@ -1346,13 +1346,29 @@ static void sgi_hub_rt_arm(SGIHubState *s, unsigned int index)
               muldiv64(ticks, NANOSECONDS_PER_SECOND, PI_RT_HZ));
 }
 
-/* A slot finished; report completion and what the wire sampled. */
-static void sgi_hub_onewire_slot_done(void *opaque)
+/*
+ * Completion and the sampled level, once the slot underway has finished.
+ * Derived on the spot rather than delivered by a timer, because a timer
+ * callback needs the big lock and firmware bit-banging this bus holds it:
+ * the callback for a one-microsecond slot arrived roughly four milliseconds
+ * late under eight processors, and the guest spent about two hundred more
+ * polls of this register waiting for it. The guest-visible contract is the
+ * one the one-wire datasheet sets and is unchanged -- starting a slot clears
+ * completion, and no read before the deadline reports it finished.
+ */
+static uint64_t sgi_hub_onewire_value(SGIHubState *s, unsigned arg)
 {
-    SGIHubState *s = opaque;
+    if (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) < s->md_onewire_deadline_ns) {
+        return s->md_onewire;
+    }
+    return s->md_onewire | MD_ONEWIRE_DONE |
+           (s->onewire_level ? MD_ONEWIRE_RXDATA : 0);
+}
 
-    s->md_onewire |= MD_ONEWIRE_DONE |
-                     (s->onewire_level ? MD_ONEWIRE_RXDATA : 0);
+static uint64_t sgi_hub_read_onewire(SGIHubState *s, hwaddr addr,
+                                     unsigned arg)
+{
+    return sgi_hub_onewire_value(s, arg);
 }
 
 static void sgi_hub_rt_expire(void *opaque)
@@ -2119,16 +2135,16 @@ static void sgi_hub_write_onewire(SGIHubState *s, hwaddr addr,
                                   unsigned size)
 {
     /*
-     * Programs the timing and starts a slot; starting clears completion.
-     * The bus answers inside the write, but this master reports the answer
-     * only once the slot's own deadline arrives -- see the timer below.
+     * Programs the timing and starts a slot. Starting clears completion. The
+     * bus answers inside the write, but this master reports the answer only
+     * from the slot's own deadline -- see sgi_hub_onewire_value().
      */
     s->md_onewire = val & MD_ONEWIRE_WRITABLE;
     s->onewire_level = sgi_onewire_slot(
         s->onewire_bus, (val & MD_ONEWIRE_PULSE) >> MD_ONEWIRE_PULSE_SHIFT,
         (val & MD_ONEWIRE_SAMPLE) >> MD_ONEWIRE_SAMPLE_SHIFT);
-    timer_mod(s->md_onewire_timer,
-              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + MD_ONEWIRE_SLOT_NS);
+    s->md_onewire_deadline_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                MD_ONEWIRE_SLOT_NS;
 }
 
 static void sgi_hub_write_indicator(SGIHubState *s, hwaddr addr,
@@ -2382,7 +2398,8 @@ static const SGIHubRegDef sgi_hub_registers[] = {
     { .offset = HUB_MD_DIR_DIMM_INIT, .write = sgi_hub_write_dimm_init },
     { .offset = HUB_MD_ONEWIRE,
       .field = offsetof(SGIHubState, md_onewire), .width = 8,
-      .flags = HUB_REG_DIAG, .write = sgi_hub_write_onewire },
+      .flags = HUB_REG_DIAG, .read = sgi_hub_read_onewire,
+      .peek = sgi_hub_onewire_value, .write = sgi_hub_write_onewire },
     /* Storage that never counts: nothing here tracks an event to count. */
     { .offset = HUB_MD_PERF_CNT0,
       .field = offsetof(SGIHubState, md_perf_cnt0), .width = 8,
@@ -2918,8 +2935,8 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
     s->md_perf_cnt0 = 0;
     s->md_config = MD_CONFIG_RESET;
     s->md_onewire = MD_ONEWIRE_RESET;
-    /* A slot armed before reset must not complete after it. */
-    timer_del(s->md_onewire_timer);
+    /* A slot started before reset must not complete after it. */
+    s->md_onewire_deadline_ns = INT64_MAX;
     /* The part's own protocol state is reset by the part, as its child. */
     s->onewire_level = true;
 
@@ -3201,9 +3218,6 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     /* One crosstalk link, so one line: what the crossbar drives at us. */
     qdev_init_gpio_in_named(dev, sgi_hub_link_reset, "link-reset", 1);
 
-    s->md_onewire_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
-                                       sgi_hub_onewire_slot_done, s);
-
     /*
      * The MicroLAN wire and the PIMM record part hanging off it, hung here
      * and never again. An EPROM keeps its contents across a reset -- that is
@@ -3374,7 +3388,7 @@ static int sgi_hub_post_load(void *opaque, int version_id);
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 25,
+    .version_id = 26,
     .minimum_version_id = 1,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -3417,7 +3431,7 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT64_V(md_perf_cnt0, SGIHubState, 8),
         VMSTATE_UINT64_V(md_config, SGIHubState, 9),
         VMSTATE_UINT64_V(md_onewire, SGIHubState, 11),
-        VMSTATE_TIMER_PTR_V(md_onewire_timer, SGIHubState, 12),
+        VMSTATE_INT64_V(md_onewire_deadline_ns, SGIHubState, 26),
         VMSTATE_UINT64_ARRAY_V(pi_err_spool, SGIHubState, 2, 13),
         VMSTATE_UINT32_ARRAY_V(pi_err_mask, SGIHubState,
                               SGI_HUB_PROCESSORS, 18),
