@@ -2191,9 +2191,12 @@ static void test_rt_hold_traces_place_it_on_the_timeline(const void *data)
     g_autofree char *image_path = NULL;
     g_autofree char *path = NULL;
     g_auto(GStrv) records = NULL;
+    g_autofree char *wake = NULL;
     QTestState *qts;
     int64_t held_us = -1, start_ns = -1, end_ns = -1, virtual_ns = -1;
+    uint64_t id = 0, end_id = 0;
     int partner = -1;
+    int hold;
     int end;
 
     if (!qtest_has_accel("tcg")) {
@@ -2218,21 +2221,150 @@ static void test_rt_hold_traces_place_it_on_the_timeline(const void *data)
     g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold",
                                  "cpu 1 match hold: posted 0x24 read 0x24 "
                                  "partner_cpu 0 realtime_ns "), ==, 1);
-    g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold", " virtual_ns "),
-                     ==, 1);
+    hold = trace_find(records, 0, "sgi_hub_rt_hold", "cpu 1 match hold: ");
+    g_assert_cmpint(hold, >=, 0);
+    g_assert_nonnull(strstr(records[hold], " virtual_ns "));
+    g_assert_nonnull(strstr(records[hold], " id "));
+    g_assert_cmpint(sscanf(strstr(records[hold], " id "), " id %" SCNu64,
+                           &id), ==, 1);
     end = trace_find(records, 0, "sgi_hub_rt_hold_end", "cpu 1 hold ");
     g_assert_cmpint(end, >=, 0);
     g_assert_nonnull(strstr(records[end], " after "));
     g_assert_cmpint(sscanf(strstr(records[end], " after "),
                            " after %" SCNd64 " us partner_cpu %d "
                            "start_realtime_ns %" SCNd64
-                           " realtime_ns %" SCNd64 " virtual_ns %" SCNd64,
+                           " realtime_ns %" SCNd64 " virtual_ns %" SCNd64
+                           " id %" SCNu64,
                            &held_us, &partner, &start_ns, &end_ns,
-                           &virtual_ns), ==, 5);
+                           &virtual_ns, &end_id), ==, 6);
     g_assert_cmpint(partner, ==, 0);
     g_assert_cmpint(end_ns, >=, start_ns);
     g_assert_cmpint((end_ns - start_ns) / 1000, ==, held_us);
     g_assert_cmpint(virtual_ns, >, 0);
+    g_assert_cmpuint(end_id, ==, id);
+
+    /* Nothing answers: no release, and the last wake finds the deadline. */
+    g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold_release",
+                                 "held_cpu 1 "), ==, 0);
+    wake = g_strdup_printf("cpu 1 id %" PRIu64 " wait_ms ", id);
+    g_assert_cmpint(trace_find(records, hold, "sgi_hub_rt_hold_wake", wake),
+                    >, hold);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold_wake",
+                                 " then timed out"), ==, 1);
+}
+
+/*
+ * Slice B posts and reads slice A's comparator twice in a row, fifty
+ * times; each unanswered re-read holds B until A next writes. A writes a
+ * new value every few milliseconds, which releases the hold from A's own
+ * thread.
+ */
+static void build_answered_hold_image(SN0Image *p)
+{
+    const unsigned int entry = 0x800;
+    unsigned int branch;
+    unsigned int to_b;
+    unsigned int loop;
+    unsigned int delay;
+
+    branch = sn0_emit_branch(p, SN0_OPC_BEQ, 0, 0);
+    sn0_patch_branch(p, branch, entry);
+    for (unsigned int vector = SN0_VEC_TLB_REFILL;
+         vector <= SN0_VEC_GENERAL; vector += 0x80) {
+        p->pos = vector;
+        sn0_emit_park(p);
+    }
+
+    p->pos = entry;
+    sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL);
+    sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
+    sn0_emit_cpu_number(p, SN0_R_S1);
+    sn0_emit_li64(p, SN0_R_K0, SN0_HUB_LOCAL_BASE);
+    sn0_emit_li(p, SN0_R_K1, SN0_KSEG1(SN0_USER_MAILBOX));
+    to_b = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_S1, SN0_R_ZERO);
+
+    sn0_emit_li(p, SN0_R_T1, 0x100);
+    loop = p->pos;
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_T1, PI_RT_COMPARE_A);
+    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_T1, SN0_R_T1, 1);
+    sn0_emit_li(p, SN0_R_T0, 0x00020000);
+    delay = p->pos;
+    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_T0, SN0_R_T0, 0xffff);
+    branch = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_T0, SN0_R_ZERO);
+    sn0_patch_branch(p, branch, delay);
+    branch = sn0_emit_branch(p, SN0_OPC_BEQ, SN0_R_ZERO, SN0_R_ZERO);
+    sn0_patch_branch(p, branch, loop);
+
+    sn0_patch_branch(p, to_b, p->pos);
+    sn0_emit_li(p, SN0_R_T1, RENDEZVOUS_VALUE);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_T1, PI_RT_COMPARE_B);
+    sn0_emit_li(p, SN0_R_T0, 50);
+    loop = p->pos;
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K0, SN0_R_T2, PI_RT_COMPARE_A);
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K0, SN0_R_T2, PI_RT_COMPARE_A);
+    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_T0, SN0_R_T0, 0xffff);
+    branch = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_T0, SN0_R_ZERO);
+    sn0_patch_branch(p, branch, loop);
+    sn0_emit_li(p, SN0_R_T2, 1);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_T2, 8);
+    sn0_emit_park(p);
+}
+
+/*
+ * A release traces on the releasing thread with the hold's id, and the
+ * held processor's wake from its wait traces with the same id, both
+ * stamps and what the loop decided next.
+ */
+static void test_rt_hold_release_and_wake_trace(const void *data)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *image_path = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *release = NULL;
+    g_autofree char *held = NULL;
+    g_auto(GStrv) records = NULL;
+    QTestState *qts;
+    int64_t before_ns = -1, after_ns = -1;
+    uint64_t id = 0;
+    int wait_ms = -1;
+    int wake;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    build_answered_hold_image(image);
+    image_path = sn0_image_write(image, "sn0-hub-rt-hold-release");
+    path = trace_file_create();
+    qts = qtest_initf(
+        "-M origin200,synthesized-firmware=off -smp 2 -bios %s "
+        "-accel tcg,thread=multi -S -no-shutdown "
+        "-trace enable=sgi_hub_rt_hold*,file=%s", image_path, path);
+    unlink(image_path);
+
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    g_assert_cmphex(wait_for_rendezvous_result(qts, 1), ==, 1);
+    qtest_quit(qts);
+
+    records = trace_file_take(path);
+    wake = trace_find(records, 0, "sgi_hub_rt_hold_wake", " then answered");
+    g_assert_cmpint(wake, >=, 0);
+    g_assert_cmpint(sscanf(records[wake],
+                           "sgi_hub_rt_hold_wake cpu 1 id %" SCNu64
+                           " wait_ms %d before_realtime_ns %" SCNd64
+                           " after_realtime_ns %" SCNd64,
+                           &id, &wait_ms, &before_ns, &after_ns), ==, 4);
+    g_assert_cmpint(wait_ms, >, 0);
+    g_assert_cmpint(after_ns, >=, before_ns);
+
+    release = g_strdup_printf("cpu 0 held_cpu 1 kind post id %" PRIu64
+                              " realtime_ns ", id);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold_release", release),
+                     ==, 1);
+    held = g_strdup_printf(" id %" PRIu64, id);
+    g_assert_cmpint(trace_find(records, 0, "sgi_hub_rt_hold",
+                               held), >=, 0);
 }
 
 /*
@@ -5390,6 +5522,8 @@ int main(int argc, char **argv)
                         test_pend1_credit_traces_set_and_spend);
     qtest_add_data_func("sn0/hub/rt-hold-traces-place-it-on-the-timeline",
                         NULL, test_rt_hold_traces_place_it_on_the_timeline);
+    qtest_add_data_func("sn0/hub/rt-hold-release-and-wake-trace", NULL,
+                        test_rt_hold_release_and_wake_trace);
     qtest_add_data_func("sn0/hub/junk-uart-absent-by-default", NULL,
                         test_junk_uart_absent_by_default);
     qtest_add_data_func("sn0/hub/junk-uart-fitted-answers-present", NULL,
