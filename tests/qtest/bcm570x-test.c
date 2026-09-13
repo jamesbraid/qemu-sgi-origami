@@ -5498,14 +5498,11 @@ static void test_status_dma_error(const void *data)
 
 /* Drive a migration between two connected qtest instances and block until it
  * completes; `to` is already listening on `uri` via its -incoming. */
-static void bcm570x_migrate(QTestState *from, const char *uri)
+static void bcm570x_wait_migration(QTestState *qts)
 {
-    qtest_qmp_assert_success(from,
-        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
-
     g_test_timer_start();
     for (;;) {
-        QDict *ret = qtest_qmp_assert_success_ref(from,
+        QDict *ret = qtest_qmp_assert_success_ref(qts,
             "{ 'execute': 'query-migrate' }");
         g_autofree char *status = g_strdup(qdict_get_str(ret, "status"));
 
@@ -5517,6 +5514,19 @@ static void bcm570x_migrate(QTestState *from, const char *uri)
         g_assert(g_test_timer_elapsed() < 30);
         g_usleep(1000);
     }
+}
+
+/*
+ * The source reports completion once it has sent the stream, which can be
+ * before the destination has loaded it. A test that steps the destination's
+ * clock before then steps it under a device whose timers have not arrived.
+ */
+static void bcm570x_migrate(QTestState *from, QTestState *to, const char *uri)
+{
+    qtest_qmp_assert_success(from,
+        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
+    bcm570x_wait_migration(from);
+    bcm570x_wait_migration(to);
 }
 
 static QDict *bcm570x_vmstate_field(QList *fields, const char *name)
@@ -5618,7 +5628,7 @@ static void test_v6_phy_state_migrates(const void *data)
                            BCM_SLOT, uri);
     to_qts = qtest_init(dest);
     bcm_open(&to, to_qts);
-    bcm570x_migrate(from_qts, uri);
+    bcm570x_migrate(from_qts, to_qts, uri);
     g_assert_cmphex(mii_read(&to, BCM_PHY_ADDR, MII_ANAR), ==, advertise);
 
     bcm_close(&to);
@@ -5682,7 +5692,7 @@ static void test_migrated_link_controls_egress(const void *data)
                            dest_sv[1], BCM_SLOT, uri);
     to_qts = qtest_init(dest);
     bcm_open(&to, to_qts);
-    bcm570x_migrate(from.qts, uri);
+    bcm570x_migrate(from.qts, to_qts, uri);
 
     g_assert_cmphex(mii_read(&to, BCM_PHY_ADDR, MII_BMSR) & MII_BMSR_LINK,
                     ==, migrate_up ? MII_BMSR_LINK : 0);
@@ -5756,7 +5766,7 @@ static void test_transmit_coalescing_survives_migration(const void *data)
                            " -incoming %s", BCM_SLOT, uri);
     to_qts = qtest_init(dest);
     bcm_open(&to, to_qts);
-    bcm570x_migrate(from_qts, uri);
+    bcm570x_migrate(from_qts, to_qts, uri);
 
     g_assert_cmpuint(read_status_tag(&to), ==, 0);
     qtest_clock_step(to.qts, (int64_t)ticks * 1000 + 1000);
@@ -5808,7 +5818,7 @@ static void test_receive_coalescing_survives_migration(const void *data)
                            " -incoming %s", BCM_SLOT, uri);
     to_qts = qtest_init(dest);
     bcm_open(&to, to_qts);
-    bcm570x_migrate(from_qts, uri);
+    bcm570x_migrate(from_qts, to_qts, uri);
 
     /*
      * Past the arrival floor as well: the coalescing timer only starts
@@ -5855,7 +5865,7 @@ static void test_periodic_status_survives_migration(const void *data)
                            " -incoming %s", BCM_SLOT, uri);
     to_qts = qtest_init(dest);
     bcm_open(&to, to_qts);
-    bcm570x_migrate(from_qts, uri);
+    bcm570x_migrate(from_qts, to_qts, uri);
 
     g_assert_cmpuint(read_status_tag(&to), ==, 0);
     qtest_clock_step(to.qts, (int64_t)ticks * 1000 + 1000);
@@ -5920,7 +5930,7 @@ static void test_state_survives_migration(const void *data)
                            "mac=52:54:00:11:22:33 -incoming %s", BCM_SLOT, uri);
     to_qts = qtest_init(dest);
     bcm_open(&to, to_qts);
-    bcm570x_migrate(from_qts, uri);
+    bcm570x_migrate(from_qts, to_qts, uri);
 
     /* The register file (status-block host address) and SRAM word came across. */
     g_assert_cmphex(ind_reg_readl(&to, BCM_HCC_STATUSBLK_LO), ==,
@@ -6011,7 +6021,7 @@ static void test_masked_interrupt_survives_migration(const void *data)
                            " -incoming %s", dest_sv[1], BCM_SLOT, uri);
     to_qts = qtest_init(dest);
     bcm_open(&to, to_qts);
-    bcm570x_migrate(from.qts, uri);
+    bcm570x_migrate(from.qts, to_qts, uri);
 
     net_socket_send_frame(dest_sv[0], frame, sizeof(frame));
     g_usleep(100000);
@@ -6187,7 +6197,7 @@ static void test_dual_port_survives_migration(const void *data)
     to1 = qpci_device_find(to_bus, QPCI_DEVFN(BCM_SLOT, 1));
     g_assert_nonnull(to0);
     g_assert_nonnull(to1);
-    bcm570x_migrate(from, uri);
+    bcm570x_migrate(from, to, uri);
 
     qpci_device_enable(to0);
     qpci_device_enable(to1);
