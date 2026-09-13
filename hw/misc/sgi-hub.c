@@ -922,6 +922,18 @@ static void sgi_hub_cpu_halt(CPUState *cs, run_on_cpu_data data)
     cpu_interrupt(cs, CPU_INTERRUPT_HALT);
 }
 
+/*
+ * A run-loop exit the Hub forces on a processor, whether a bare kick or
+ * the one queued work brings: who kicked (-1 for no processor), whom, why.
+ */
+static void sgi_hub_trace_kick(CPUState *target, const char *reason)
+{
+    if (trace_event_get_state_backends(TRACE_SGI_HUB_KICK)) {
+        trace_sgi_hub_kick(current_cpu ? current_cpu->cpu_index : -1,
+                           target->cpu_index, reason);
+    }
+}
+
 static void sgi_hub_queue_cpu_enable(SGIHubState *s, unsigned int cpu,
                                      bool enabled, bool synchronous)
 {
@@ -930,6 +942,7 @@ static void sgi_hub_queue_cpu_enable(SGIHubState *s, unsigned int cpu,
     if (!cs) {
         return;
     }
+    sgi_hub_trace_kick(cs, enabled ? "cpu-enable" : "cpu-disable");
     if (synchronous) {
         run_on_cpu(cs, enabled ? sgi_hub_cpu_unhalt : sgi_hub_cpu_halt,
                    RUN_ON_CPU_NULL);
@@ -959,12 +972,13 @@ static void sgi_hub_write_cpu_enable(SGIHubState *s, hwaddr addr,
 }
 
 /* Wake the other processor without changing Hub state. */
-static void sgi_hub_kick_peer(CPUState *peer)
+static void sgi_hub_kick_peer(CPUState *peer, const char *reason)
 {
     if (!peer || peer == current_cpu) {
         return;
     }
 
+    sgi_hub_trace_kick(peer, reason);
     qemu_cpu_kick(peer);
 }
 
@@ -978,7 +992,7 @@ static void sgi_hub_kick_peer(CPUState *peer)
  * changes still kick unconditionally: those are rare, and warm-reset
  * discovery depends on them.
  */
-static void sgi_hub_kick_polled_peer(CPUState *peer)
+static void sgi_hub_kick_polled_peer(CPUState *peer, const char *reason)
 {
     /*
      * Single-threaded round-robin TCG is the only mode that hands slices
@@ -990,7 +1004,7 @@ static void sgi_hub_kick_polled_peer(CPUState *peer)
         return;
     }
 
-    sgi_hub_kick_peer(peer);
+    sgi_hub_kick_peer(peer, reason);
 }
 
 static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
@@ -1015,7 +1029,7 @@ static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
 
     /* The PROM uses pending bits as barrier mailboxes; release the pollers. */
     for (i = 0; i < s->cpus; i++) {
-        sgi_hub_kick_peer(qemu_get_cpu(s->cpu_base + i));
+        sgi_hub_kick_peer(qemu_get_cpu(s->cpu_base + i), "int-modify");
     }
 }
 
@@ -1032,7 +1046,7 @@ static uint64_t sgi_hub_int_pend1_read(SGIHubState *s)
         if (s->pi_int_pend1_primary_credit) {
             s->pi_int_pend1_primary_credit = false;
         } else {
-            sgi_hub_kick_polled_peer(primary);
+            sgi_hub_kick_polled_peer(primary, "pend1-poll");
         }
         return value;
     }
@@ -1052,7 +1066,7 @@ static void sgi_hub_kick_remote_scratch_node(SGIHubState *s)
 
     /* A remote scratch write is a discovery phase change; release the node. */
     for (i = 0; i < s->cpus; i++) {
-        sgi_hub_kick_peer(qemu_get_cpu(s->cpu_base + i));
+        sgi_hub_kick_peer(qemu_get_cpu(s->cpu_base + i), "remote-scratch");
     }
 }
 
@@ -1075,7 +1089,8 @@ static uint64_t sgi_hub_int_pending_read(SGIHubState *s, unsigned int bank)
     if (s->pi_int_pend_seen_valid[i][bank] &&
         s->pi_int_pend_seen[i][bank] == value) {
         for (i = 0; i < s->cpus; i++) {
-            sgi_hub_kick_polled_peer(qemu_get_cpu(s->cpu_base + i));
+            sgi_hub_kick_polled_peer(qemu_get_cpu(s->cpu_base + i),
+                                     "pending-reread");
         }
         return value;
     }
@@ -1351,6 +1366,7 @@ static void sgi_hub_rt_release(SGIHubState *s, unsigned int slice,
     if (s->pi_rt_hold[slice] && s->pi_rt_hold_kind[slice] == kind) {
         s->pi_rt_hold[slice] = 0;
         if (cs) {
+            sgi_hub_trace_kick(cs, "rt-hold-release");
             qemu_cpu_kick(cs);
         }
     }
@@ -1480,6 +1496,7 @@ static void sgi_hub_rt_hold_reset(SGIHubState *s)
         CPUState *cs = qemu_get_cpu(s->cpu_base + n);
 
         if (s->pi_rt_hold[n] && cs) {
+            sgi_hub_trace_kick(cs, "rt-hold-reset");
             qemu_cpu_kick(cs);
         }
         s->pi_rt_hold[n] = 0;
@@ -1497,7 +1514,7 @@ static uint64_t sgi_hub_read_rt_compare(SGIHubState *s, hwaddr addr,
     uint64_t value = s->pi_rt_compare[arg];
 
     /* A progress mailbox: let the owner publish before the poll budget ends. */
-    sgi_hub_kick_polled_peer(owner);
+    sgi_hub_kick_polled_peer(owner, "rt-compare-poll");
     sgi_hub_rt_mailbox_read(s, arg, value);
     return value;
 }
@@ -2082,7 +2099,7 @@ static void sgi_hub_write_rt_compare(SGIHubState *s, hwaddr addr,
      */
     other = qemu_get_cpu(s->cpu_base + (arg ^ 1));
     if (!s->pi_rt_enable[arg] && (arg ^ 1) < s->cpus) {
-        sgi_hub_kick_peer(other);
+        sgi_hub_kick_peer(other, "rt-compare-post");
     }
 }
 

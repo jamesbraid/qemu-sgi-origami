@@ -1929,6 +1929,22 @@ static unsigned int trace_count(char **records, const char *event,
     return count;
 }
 
+/* The index of @event's first record from @from containing @fields, or -1. */
+static int trace_find(char **records, int from, const char *event,
+                      const char *fields)
+{
+    size_t len = strlen(event);
+    int i;
+
+    for (i = 0; records[i]; i++) {
+        if (i >= from && !strncmp(records[i], event, len) &&
+            records[i][len] == ' ' && strstr(records[i], fields)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 /* The processor coordination registers, each traced in both directions. */
 static const uint64_t coordination_registers[] = {
     PI_PROCESSOR_NUMBER, PI_CALIAS_SIZE, PI_CPU_PRESENT_A, PI_CPU_PRESENT_B,
@@ -1998,6 +2014,36 @@ static void test_coordination_registers_trace_alone(const void *data)
                                  "reg 0x600100 "), ==, 0);
     g_assert_cmpuint(trace_count(records, "sgi_hub_coordination_write",
                                  "reg 0x000108 "), ==, 0);
+}
+
+/*
+ * The Hub's own run-loop kicks trace with who kicked whom and why. A modify
+ * releases every processor on the node; a qtest access has no processor.
+ * Reset queues enable changes too, so the register write's own is found
+ * after the modify's.
+ */
+static void test_hub_kicks_trace_their_reason(const void *data)
+{
+    g_autofree char *path = trace_file_create();
+    g_auto(GStrv) records = NULL;
+    QTestState *qts;
+    int modify;
+
+    qts = qtest_initf("-M origin200 -smp 2 "
+                      "-trace enable=sgi_hub_kick,file=%s", path);
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 5);
+    qtest_writeq(qts, HUB_LOCAL + PI_CPU_ENABLE_B, 0);
+    qtest_quit(qts);
+
+    records = trace_file_take(path);
+    g_assert_cmpint(trace_find(records, 0, "sgi_hub_kick",
+                               "cpu -1 target 0 reason int-modify"), >=, 0);
+    modify = trace_find(records, 0, "sgi_hub_kick",
+                        "cpu -1 target 1 reason int-modify");
+    g_assert_cmpint(modify, >=, 0);
+    g_assert_cmpint(trace_find(records, modify, "sgi_hub_kick",
+                               "cpu -1 target 1 reason cpu-disable"), >,
+                    modify);
 }
 
 /*
@@ -5149,6 +5195,8 @@ int main(int argc, char **argv)
                         test_md_indicator_suppressed);
     qtest_add_data_func("sn0/hub/coordination-registers-trace-alone", NULL,
                         test_coordination_registers_trace_alone);
+    qtest_add_data_func("sn0/hub/hub-kicks-trace-their-reason", NULL,
+                        test_hub_kicks_trace_their_reason);
     qtest_add_data_func("sn0/hub/junk-uart-absent-by-default", NULL,
                         test_junk_uart_absent_by_default);
     qtest_add_data_func("sn0/hub/junk-uart-fitted-answers-present", NULL,
