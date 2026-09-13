@@ -422,7 +422,6 @@ struct Bcm570xState {
     bool has_vnet_hdr;
     QEMUBH *rx_flush_bh;
     bool rx_flush_pending;
-    bool rx_flush_authorized;
 
     /* PCI identity, defaulting to the SGI board; overridable per instance. */
     char *model;
@@ -456,7 +455,6 @@ struct Bcm570xState {
      */
     bool irq_masked;
     bool irq_pending;
-    bool rx_flush_on_unmask;
     bool status_kick_done;  /* bring-up status update posted once past enable */
     uint8_t status_tag;         /* monotonic per status-block update, delivered in the block */
 
@@ -585,7 +583,6 @@ static void bcm570x_reset_rx_queue(Bcm570xState *s)
         nc->receive_disabled = 0;
     }
     s->rx_flush_pending = false;
-    s->rx_flush_authorized = false;
     s->backend_rx_deferred = false;
 }
 
@@ -612,7 +609,6 @@ static void bcm570x_global_reset(Bcm570xState *s)
     s->rx_jumbo_cons = 0;
     s->irq_masked = true;
     s->irq_pending = false;
-    s->rx_flush_on_unmask = false;
     s->status_kick_done = false;
     s->status_tag = 0;
     s->rx_coal_pending = 0;
@@ -1048,67 +1044,33 @@ static void bcm570x_rx_coalesce(Bcm570xState *s)
 static bool bcm570x_rx_ready(Bcm570xState *s);
 
 /*
- * Release peer-queued receive frames only after the guest re-enables
- * interrupts. Receive-ready writes can occur while its handler is still
- * draining the status block; flushing from those writes can publish UPDATED
- * underneath that handler before the guest executes again. The mailbox write
- * is the driver's explicit boundary after clearing the previous update.
- *
- * The bottom half drains without a timer or per-frame delay. Normal receive
- * traffic remains immediate, and a backlog runs until the rings fill again.
+ * Take the frames the peer still holds. The drain runs from a bottom half so
+ * nothing is delivered underneath the register write that made room: the
+ * guest resumes first, and the completion and its status update land the way
+ * an unsolicited frame would.
  */
 static void bcm570x_rx_flush(void *opaque)
 {
     Bcm570xState *s = opaque;
-    uint16_t producer = s->status_rx_prod;
 
     s->rx_flush_pending = false;
     qemu_flush_queued_packets(qemu_get_queue(s->nic));
-    /*
-     * The other receive ring may have made the device generally ready while
-     * the queued frame's selected ring remained empty. Preserve the
-     * acknowledgement only when the retry completed nothing; any completion
-     * consumes it so the next handler cannot be re-entered, even if a later
-     * frame in the same drain faults.
-     */
-    s->rx_flush_authorized = s->rx_flush_pending &&
-                             s->status_rx_prod == producer;
 }
 
+/*
+ * Hold the frame at the peer's queue head. Whatever refused it -- an empty
+ * producer ring, a full return ring, a DMA that failed on a bad address --
+ * is repaired by the guest through a receive-ready register, and that write
+ * is what retries it.
+ */
 static void bcm570x_defer_rx_flush(Bcm570xState *s)
 {
     s->rx_flush_pending = true;
 }
 
-/*
- * A failed DMA leaves the backend frame queued. Authorize one retry after the
- * guest repairs the address and writes a receive-ready register; flushing here
- * would immediately retry the same broken transfer without giving it a chance
- * to do so.
- */
-static void bcm570x_defer_failed_rx(Bcm570xState *s)
-{
-    bcm570x_defer_rx_flush(s);
-    /*
-     * A completion already reported to the guest consumes the retry boundary.
-     * Keep the failed frame queued until that update is acknowledged instead
-     * of letting a receive-ready write publish more work under the same
-     * interrupt handler. A DMA failure with no pending update retains the
-     * repair-and-retry contract.
-     */
-    s->rx_flush_authorized = !s->irq_pending && !s->rx_flush_on_unmask;
-}
-
 static void bcm570x_retry_rx_flush(Bcm570xState *s)
 {
-    /*
-     * One re-enable authorizes one retry. Keep that authorization while a
-     * ring remains full, then consume it before scheduling so another refusal
-     * during this drain must wait for the next acknowledgement.
-     */
-    if (s->rx_flush_pending && s->rx_flush_authorized &&
-        bcm570x_rx_ready(s)) {
-        s->rx_flush_authorized = false;
+    if (s->rx_flush_pending && bcm570x_rx_ready(s)) {
         qemu_bh_schedule(s->rx_flush_bh);
     }
 }
@@ -1534,28 +1496,18 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
          * posted while masked remains pending, so writing 0 to re-enable makes
          * the level reassert. The IRIX driver also uses a write-0-only runtime
          * acknowledgement; when already unmasked, retain that observed path by
-         * clearing the pending update. A write 0 from reset is only the initial
-         * enable because there was no acknowledgement to complete.
+         * clearing the pending update.
          */
         if (val & 1) {
-            s->rx_flush_on_unmask |= s->irq_pending;
             s->irq_pending = false;
             s->irq_masked = true;
         } else {
-            bool acknowledged;
-
             if (s->irq_masked) {
-                acknowledged = s->rx_flush_on_unmask;
-                s->rx_flush_on_unmask = false;
                 s->irq_masked = false;
             } else {
-                acknowledged = s->irq_pending;
                 s->irq_pending = false;
             }
-            if (acknowledged && s->rx_flush_pending) {
-                s->rx_flush_authorized = true;
-                bcm570x_retry_rx_flush(s);
-            }
+            bcm570x_retry_rx_flush(s);
         }
         bcm570x_regfile_write(s, off, val);
         bcm570x_update_irq(s);
@@ -1626,14 +1578,7 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
          * doorbell, which is past the enable.
          */
 
-        /*
-         * A newly posted buffer may release a frame the peer had queued, but
-         * only after the interrupt-mailbox re-enable. A synchronous receive
-         * would re-enter the receive path and re-DMA the status block --
-         * re-asserting its "updated" bit -- while the driver is still inside
-         * its interrupt handler, which then re-polls that bit without bound and
-         * never returns (the observed bring-up hang).
-         */
+        /* Room where there was none: take anything the peer had waiting. */
         bcm570x_retry_rx_flush(s);
         return;
     }
@@ -2192,7 +2137,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
         qemu_log_mask(LOG_GUEST_ERROR,
                       "bcm570x: receive descriptor %u read failed; "
                       "frame queued without consuming it\n", idx);
-        bcm570x_defer_failed_rx(s);
+        bcm570x_defer_rx_flush(s);
         return 0;
     }
     buf_addr = ((uint64_t)bcm570x_dma_ld32(s, std_bd + BCM570X_RXBD_ADDR_HI)
@@ -2226,7 +2171,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
                       "bcm570x: receive payload write at 0x%" PRIx64
                       " failed; frame queued without consuming descriptor "
                       "%u\n", buf_addr, idx);
-        bcm570x_defer_failed_rx(s);
+        bcm570x_defer_rx_flush(s);
         return 0;
     }
     csum = bcm570x_rx_offload_checksum(buf, framelen, &rx_flags);
@@ -2250,7 +2195,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
                       "bcm570x: receive completion %u write failed; "
                       "frame queued and descriptor not consumed\n",
                       s->status_rx_prod);
-        bcm570x_defer_failed_rx(s);
+        bcm570x_defer_rx_flush(s);
         return 0;
     }
 
@@ -2474,7 +2419,6 @@ static void bcm570x_reset_hold(Object *obj, ResetType type)
     s->tx_busy = false;
     s->irq_masked = true;
     s->irq_pending = false;
-    s->rx_flush_on_unmask = false;
     s->status_kick_done = false;
     s->status_tag = 0;
     s->rx_coal_pending = 0;
@@ -2508,9 +2452,6 @@ static int bcm570x_post_load(void *opaque, int version_id)
     if (version_id < 6) {
         s->tx_coal_pending = 0;
     }
-    if (version_id < 8) {
-        s->rx_flush_on_unmask = false;
-    }
     bcm570x_update_irq(s);
     /*
      * Version 6 carries the timers themselves. Older streams carried only the
@@ -2539,7 +2480,7 @@ static int bcm570x_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_bcm570x = {
     .name = "bcm570x",
-    .version_id = 8,
+    .version_id = 9,
     .minimum_version_id = 1,
     .post_load = bcm570x_post_load,
     .fields = (const VMStateField[]) {
@@ -2566,7 +2507,8 @@ static const VMStateDescription vmstate_bcm570x = {
         VMSTATE_TIMER_V(status_tick_timer, Bcm570xState, 6),
         VMSTATE_STRUCT(phy, Bcm570xState, 7, vmstate_bcm570x_phy,
                        Bcm570xPhyState),
-        VMSTATE_BOOL_V(rx_flush_on_unmask, Bcm570xState, 8),
+        /* Version 8 carried the superseded receive-unmask latch. */
+        VMSTATE_UNUSED_V(8, 1),
         VMSTATE_END_OF_LIST()
     }
 };
