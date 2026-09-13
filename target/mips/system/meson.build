@@ -5,5 +5,6 @@ mips_system_ss.add(files(
   'machine.c',
   'mips-qmp-cmds.c',
   'physaddr.c',
+  'r10k_migrate.c',
   'r10k_perf.c',
 ))

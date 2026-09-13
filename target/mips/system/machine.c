@@ -38,12 +38,14 @@ static int cpu_post_load(void *opaque, int version_id)
     compute_hflags(env);
     restore_pamask(env);
     cpu_mips_reassert_interrupt(env);
-    if (env->CP0_R10K_DelayedWatch) {
-        /*
-         * A postponed Watch exception crossed with us; keep the exec loop
-         * revisiting its deliverability as it did on the source.
-         */
-        cpu_interrupt(env_cpu(env), CPU_INTERRUPT_DWATCH);
+    if (env->r10k) {
+        if (env->r10k->CP0_R10K_DelayedWatch) {
+            /*
+             * A postponed Watch exception crossed with us; keep the exec loop
+             * revisiting its deliverability as it did on the source.
+             */
+            cpu_interrupt(env_cpu(env), CPU_INTERRUPT_DWATCH);
+        }
     }
     cpu_mips_r10k_perf_post_load(env);
 
@@ -409,218 +411,6 @@ static const VMStateDescription mips_vmstate_r14k_performance = {
     }
 };
 
-static bool mips_r10k_scache_needed(void *opaque)
-{
-    MIPSCPU *cpu = opaque;
-
-    return cpu->env.cfg.has_cache_diagnostics;
-}
-
-static const VMStateDescription mips_vmstate_r10k_scache = {
-    .name = "cpu/r10k-scache",
-    .version_id = 2,
-    .minimum_version_id = 1,
-    .needed = mips_r10k_scache_needed,
-    .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_SUB_ARRAY(env.r10k_scache_taglo, MIPSCPU, 0,
-                                 R10K_SCACHE_TAGS),
-        VMSTATE_UINT8_SUB_ARRAY(env.r10k_scache_taghi, MIPSCPU, 0,
-                                R10K_SCACHE_TAGS),
-        VMSTATE_UINT8_SUB_ARRAY(env.r10k_scache_mru, MIPSCPU, 0,
-                                R10K_SCACHE_SETS),
-        VMSTATE_SUB_ARRAY(env.r10k_scache_data, MIPSCPU, 0,
-                          R10K_SCACHE_DWORDS, 2,
-                          vmstate_info_uint64, uint64_t),
-        VMSTATE_SUB_ARRAY(env.r10k_scache_ecc, MIPSCPU, 0,
-                          R10K_SCACHE_QUADWORDS, 2,
-                          vmstate_info_uint16, uint16_t),
-        VMSTATE_END_OF_LIST()
-    }
-};
-
-static bool mips_r10k_scache_is_4m(const MIPSCPU *cpu)
-{
-    return cpu->env.cfg.scache_size == R10K_SCACHE_SIZE &&
-           extract32(cpu->env.CP0_Config0, CP0C0_R10K_SS, 3) == 3;
-}
-
-static bool mips_r14k_scache_needed(void *opaque)
-{
-    const MIPSCPU *cpu = opaque;
-
-    return cpu->env.cfg.scache_size == R14K_SCACHE_SIZE ||
-           mips_r10k_scache_is_4m(cpu);
-}
-
-static const VMStateDescription mips_vmstate_r14k_scache = {
-    .name = "cpu/r14k-scache",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .needed = mips_r14k_scache_needed,
-    .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_SUB_ARRAY(env.r10k_scache_taglo, MIPSCPU,
-                                 R10K_SCACHE_TAGS,
-                                 R14K_SCACHE_TAGS - R10K_SCACHE_TAGS),
-        VMSTATE_UINT8_SUB_ARRAY(env.r10k_scache_taghi, MIPSCPU,
-                                R10K_SCACHE_TAGS,
-                                R14K_SCACHE_TAGS - R10K_SCACHE_TAGS),
-        VMSTATE_UINT8_SUB_ARRAY(env.r10k_scache_mru, MIPSCPU,
-                                R10K_SCACHE_SETS,
-                                R14K_SCACHE_SETS - R10K_SCACHE_SETS),
-        VMSTATE_UINT64_SUB_ARRAY(env.r10k_scache_data, MIPSCPU,
-                                 R10K_SCACHE_DWORDS,
-                                 R14K_SCACHE_DWORDS - R10K_SCACHE_DWORDS),
-        VMSTATE_UINT16_SUB_ARRAY(env.r10k_scache_ecc, MIPSCPU,
-                                 R10K_SCACHE_QUADWORDS,
-                                 R14K_SCACHE_QUADWORDS -
-                                 R10K_SCACHE_QUADWORDS),
-        VMSTATE_END_OF_LIST()
-    }
-};
-
-static bool mips_r10k_scache_4m_needed(void *opaque)
-{
-    return mips_r10k_scache_is_4m(opaque);
-}
-
-static const VMStateDescription mips_vmstate_r10k_scache_4m = {
-    .name = "cpu/r10k-scache-4m",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .needed = mips_r10k_scache_4m_needed,
-    .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_SUB_ARRAY(env.r10k_scache_taglo, MIPSCPU,
-                                 R14K_SCACHE_TAGS,
-                                 R10K_SCACHE_4M_TAGS - R14K_SCACHE_TAGS),
-        VMSTATE_UINT8_SUB_ARRAY(env.r10k_scache_taghi, MIPSCPU,
-                                R14K_SCACHE_TAGS,
-                                R10K_SCACHE_4M_TAGS - R14K_SCACHE_TAGS),
-        VMSTATE_UINT8_SUB_ARRAY(env.r10k_scache_mru, MIPSCPU,
-                                R14K_SCACHE_SETS,
-                                R10K_SCACHE_4M_SETS - R14K_SCACHE_SETS),
-        VMSTATE_UINT64_SUB_ARRAY(env.r10k_scache_data, MIPSCPU,
-                                 R14K_SCACHE_DWORDS,
-                                 R10K_SCACHE_4M_DWORDS - R14K_SCACHE_DWORDS),
-        VMSTATE_UINT16_SUB_ARRAY(env.r10k_scache_ecc, MIPSCPU,
-                                 R14K_SCACHE_QUADWORDS,
-                                 R10K_SCACHE_4M_QUADWORDS -
-                                 R14K_SCACHE_QUADWORDS),
-        VMSTATE_END_OF_LIST()
-    }
-};
-
-/*
- * The Diagnostic register is 64 bits wide and used to be stored, and sent,
- * as its low word. The whole register travels here instead, along with the
- * branch prediction table its operation fields read and write; the word the
- * main section used to carry is now an unused slot there, so a stream from
- * before the widening still loads, at the price of resetting a register
- * that holds nothing an operating system relies on.
- */
-static bool mips_r10k_pcache_needed(void *opaque)
-{
-    MIPSCPU *cpu = opaque;
-
-    return cpu->env.cfg.has_cache_diagnostics;
-}
-
-static const VMStateDescription mips_vmstate_r10k_pcache = {
-    .name = "cpu/r10k-pcache",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .needed = mips_r10k_pcache_needed,
-    .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_ARRAY(env.r10k_icache_taglo, MIPSCPU,
-                             R10K_ICACHE_TAGS),
-        VMSTATE_UINT8_ARRAY(env.r10k_icache_taghi, MIPSCPU,
-                            R10K_ICACHE_TAGS),
-        VMSTATE_UINT8_ARRAY(env.r10k_icache_lru, MIPSCPU,
-                            R10K_ICACHE_SETS),
-        VMSTATE_UINT64_ARRAY(env.r10k_icache_data, MIPSCPU,
-                             R10K_PCACHE_WORDS),
-        VMSTATE_UINT8_ARRAY(env.r10k_icache_parity, MIPSCPU,
-                            R10K_PCACHE_WORDS),
-        VMSTATE_UINT32_ARRAY(env.r10k_dcache_taglo, MIPSCPU,
-                             R10K_DCACHE_TAGS),
-        VMSTATE_UINT32_ARRAY(env.r10k_dcache_taghi, MIPSCPU,
-                             R10K_DCACHE_TAGS),
-        VMSTATE_UINT8_ARRAY(env.r10k_dcache_lru, MIPSCPU,
-                            R10K_DCACHE_SETS),
-        VMSTATE_UINT32_ARRAY(env.r10k_dcache_data, MIPSCPU,
-                             R10K_PCACHE_WORDS),
-        VMSTATE_UINT8_ARRAY(env.r10k_dcache_parity, MIPSCPU,
-                            R10K_PCACHE_WORDS),
-        VMSTATE_END_OF_LIST()
-    }
-};
-
-/*
- * The CacheErr register is loaded by a Cache Error exception, which nothing
- * raises yet, so today this always carries zero; it travels so the register
- * keeps its contents once the cache-error delivery path can load it.
- */
-static bool mips_r10k_cacherr_needed(void *opaque)
-{
-    MIPSCPU *cpu = opaque;
-
-    return cpu->env.cfg.has_cache_diagnostics;
-}
-
-static const VMStateDescription mips_vmstate_r10k_cacherr = {
-    .name = "cpu/r10k-cacherr",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .needed = mips_r10k_cacherr_needed,
-    .fields = (const VMStateField[]) {
-        VMSTATE_INT32(env.CP0_CacheErr, MIPSCPU),
-        VMSTATE_END_OF_LIST()
-    }
-};
-
-static bool mips_r10k_diagnostic_needed(void *opaque)
-{
-    MIPSCPU *cpu = opaque;
-
-    return cpu->env.cfg.has_branch_prediction_table;
-}
-
-static const VMStateDescription mips_vmstate_r10k_diagnostic = {
-    .name = "cpu/r10k-diagnostic",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .needed = mips_r10k_diagnostic_needed,
-    .fields = (const VMStateField[]) {
-        VMSTATE_UINT64(env.CP0_Diagnostic, MIPSCPU),
-        VMSTATE_UINT8_ARRAY(env.r10k_bpt, MIPSCPU, R10K_BPT_ENTRIES),
-        VMSTATE_END_OF_LIST()
-    }
-};
-
-/*
- * The postponed Watch exception is invisible in the architectural
- * registers, so it travels on its own: a guest that referenced its watched
- * doubleword under EXL and has not yet cleared the bit is owed a Watch
- * exception on the far side.
- */
-static bool mips_r10k_watch_needed(void *opaque)
-{
-    MIPSCPU *cpu = opaque;
-
-    return cpu->env.cfg.watch_is_physical &&
-           cpu->env.CP0_R10K_DelayedWatch;
-}
-
-static const VMStateDescription mips_vmstate_r10k_watch = {
-    .name = "cpu/r10k-watch",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .needed = mips_r10k_watch_needed,
-    .fields = (const VMStateField[]) {
-        VMSTATE_UINT32(env.CP0_R10K_DelayedWatch, MIPSCPU),
-        VMSTATE_END_OF_LIST()
-    }
-};
-
 /*
  * Where the counters share IP[7] with the timer, whether the timer is
  * holding the level up decides what a performance counter write may take
@@ -704,8 +494,8 @@ static const VMStateDescription mips_vmstate_octeon_crypto = {
 
 const VMStateDescription vmstate_mips_cpu = {
     .name = "cpu",
-    .version_id = 22,
-    .minimum_version_id = 22,
+    .version_id = 23,
+    .minimum_version_id = 23,
     .pre_save = cpu_pre_save,
     .post_save = cpu_post_save,
     .post_load = cpu_post_load,
@@ -826,13 +616,9 @@ const VMStateDescription vmstate_mips_cpu = {
         &mips_vmstate_timer,
         &mips_vmstate_timer_ip7,
         &mips_vmstate_r14k_performance,
-        &mips_vmstate_r10k_scache,
+        &mips_vmstate_r10k,
         &mips_vmstate_r14k_scache,
         &mips_vmstate_r10k_scache_4m,
-        &mips_vmstate_r10k_pcache,
-        &mips_vmstate_r10k_cacherr,
-        &mips_vmstate_r10k_diagnostic,
-        &mips_vmstate_r10k_watch,
         &mips_vmstate_octeon_multiplier,
         &mips_vmstate_octeon_crypto,
         NULL
