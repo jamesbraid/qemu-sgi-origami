@@ -78,7 +78,6 @@
 #define PI_ERROR_MEMORY_UNCORRECTABLE (1ULL << 24)
 #define PI_REFLECT_MASK ((1ULL << 54) | (1ULL << 55) | \
                          (1ULL << 62) | (1ULL << 63))
-#define PI_PENDING0_COHERENCY ((1ULL << 5) | (1ULL << 6))
 #define PI_RT_MASK ((1ULL << 55) - 1)
 #define PI_RT_HZ 1250000
 #define PI_RT_TICK_NS (NANOSECONDS_PER_SECOND / PI_RT_HZ)
@@ -150,8 +149,11 @@ static uint64_t pi_pending1(SGIBedrockPIState *s)
 }
 
 /*
- * Bits 5 and 6 of bank 0 are the live coherency-pending results for A and B:
- * each is set while any masked bit of its region word is, not by a store.
+ * Bank-0 bits 5 and 6 are each the coherency-pending result for A or B --
+ * set while any masked bit of that region word is -- OR'd with the pending
+ * bit itself, so a directly-set source is not overwritten. An XBridge head
+ * routes its own error interrupt onto bit 5 or 6 through the modify register,
+ * and only bank-1's reflect bits are immune to a modify write, not these.
  */
 static uint64_t pi_pending0(SGIBedrockPIState *s)
 {
@@ -159,7 +161,7 @@ static uint64_t pi_pending0(SGIBedrockPIState *s)
         ((s->cc_pend[0] & s->cc_pend_mask) ? 1ULL << 5 : 0) |
         ((s->cc_pend[1] & s->cc_pend_mask) ? 1ULL << 6 : 0);
 
-    return (s->pending[0] & ~PI_PENDING0_COHERENCY) | coherency;
+    return s->pending[0] | coherency;
 }
 
 void sgi_bedrock_pi_recompute(SGIBedrockPIState *s)

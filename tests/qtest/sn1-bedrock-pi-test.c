@@ -284,8 +284,9 @@ static void test_pending_modify_and_reflection(void)
  * override does. The clear register is data-bit write-one-to-clear, and both
  * the set and clear aliases read the backing word. Each region word's
  * masked-nonzero result drives pending 0 bit 5 (A) and bit 6 (B), which reach
- * the processor through bank-0 mask like any other bit. Software cannot force
- * those two bits through the pending-modify register.
+ * the processor through bank-0 mask like any other bit. A modify write OR's
+ * into those two positions rather than being masked out by the result, so a
+ * directly-set source coexists with the coherency result.
  */
 static void test_coherency_pending(void)
 {
@@ -329,8 +330,19 @@ static void test_coherency_pending(void)
     g_assert_false(qtest_get_irq(s, 0));
     g_assert_true(qtest_get_irq(s, 5));
 
-    /* The pending-modify register cannot set the coherency result bits. */
+    /*
+     * A modify write reaches bit 5 or 6 like any other bank-0 bit and OR's
+     * with the coherency result rather than being suppressed by it: this is
+     * how an XBridge head lands its own error interrupt there. The set bit
+     * raises A's line alongside B's still-standing coherency result.
+     */
     qtest_writeq(s, PI(0, PENDING_MODIFY), 0x105);
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_0)), ==,
+                    (1ULL << 5) | (1ULL << 6));
+    g_assert_true(qtest_get_irq(s, 0));
+
+    /* Clearing that modify bit leaves the coherency result standing. */
+    qtest_writeq(s, PI(0, PENDING_MODIFY), 0x005);
     g_assert_cmphex(qtest_readq(s, PI(0, PENDING_0)), ==, 1ULL << 6);
     g_assert_false(qtest_get_irq(s, 0));
 
