@@ -307,7 +307,7 @@ Kernel hand-off
 ===============
 
 A ``-kernel`` file is loaded through the generic loaders: ELF first,
-then the MIPS ECOFF loader (``load_ecoff()`` in ``hw/core/loader.c``,
+then the MIPS ECOFF loader (``load_ecoff()`` in ``hw/mips/sn0-ecoff.c``,
 bounds-checked on every header field), with both answers reported on
 failure. A 32-bit ELF's entry point is sign-extended at this one call
 site -- an IRIX-shaped kernel carries a physical load address and a
