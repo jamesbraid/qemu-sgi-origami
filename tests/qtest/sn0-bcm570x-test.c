@@ -76,6 +76,8 @@
 #define IOVA(phys)          (IOVA_PREFIX | (uint32_t)(phys))
 
 /* Card registers, offsets within the BAR (public bge/tg3 map). */
+#define BCM_RX_MODE             0x0468
+#define BCM_RXMODE_ENABLE       0x2
 #define BCM_HCC_MODE            0x3c00
 #define BCM_HCC_STATUSBLK_ADDR_HI 0x3c38
 #define BCM_HCC_STATUSBLK_ADDR_LO 0x3c3c
@@ -363,6 +365,7 @@ static void test_receive_descriptor_big_endian(const void *data)
     bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 8,
                64 << 16);
     bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(qts, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     /* Post one receive buffer: the guest writes the descriptor big-endian. */
     memset(bd, 0, sizeof(bd));
@@ -518,6 +521,7 @@ static void test_jumbo_ring_selected_by_standard_length(const void *data)
     bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 8,
                64 << 16);
     bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(qts, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     post_rx_descriptor(qts, STD_RING_PHYS, 0, RX_BUF_PHYS, 0, 0);
     qtest_memset(qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
@@ -593,6 +597,7 @@ static void test_jumbo_ring_disabled_drops_oversize(const void *data)
     bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 8,
                64 << 16);
     bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(qts, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     post_rx_descriptor(qts, STD_RING_PHYS, 0, RX_BUF_PHYS, 0, 0);
     qtest_memset(qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
@@ -671,6 +676,7 @@ static void test_jumbo_frame_overruns_descriptor(const void *data)
     bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 8,
                64 << 16);
     bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(qts, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     post_rx_descriptor(qts, STD_RING_PHYS, 0, RX_BUF_PHYS, 0, 0);
     qtest_memset(qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
@@ -758,6 +764,7 @@ static void test_dma_rides_plain_route(const void *data)
 
     qtest_memset(qts, STATUS_PHYS, 0, 0x50);
     bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(qts, BCM_RX_MODE, BCM_RXMODE_ENABLE);
     bar_writel(qts, BCM_MBX_RX_STD_PROD_LO, 1);
     /*
      * Enabling host coalescing arms the periodic status tick (250 ms cap);

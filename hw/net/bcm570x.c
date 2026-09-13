@@ -161,6 +161,13 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_MAC_ADDR_0_HIGH     0x0410
 #define BCM570X_MAC_ADDR_0_LOW      0x0414
 #define BCM570X_MAC_ADDR_STRIDE     8
+/*
+ * The receive MAC's mode register. Bit 1, ENABLE, "controls whether the Receive
+ * MAC state machine is active or not" and resets to 0, so nothing is received
+ * until the driver sets it [57XX-PG105-R, printed page 391, Table 268].
+ */
+#define BCM570X_RX_MODE             0x0468
+#define BCM570X_RXMODE_ENABLE       0x00000002u
 #define BCM570X_HCC_MODE            0x3c00
 /*
  * How often the host-coalescing block DMAs the status block on its own, in
@@ -1468,6 +1475,18 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
         /* The reset bit self-clears; the rest of the write persists. */
         val &= ~BCM570X_MODE_RESET;
         break;
+    case BCM570X_RX_MODE:
+        /*
+         * Reset self-clears here too. A halt takes effect at once -- the chip
+         * finishes the frame in flight first and reads back ENABLE until it
+         * has, which a model that takes one frame at a time never needs.
+         */
+        val &= ~BCM570X_MODE_RESET;
+        bcm570x_regfile_write(s, off, val);
+        if (val & BCM570X_RXMODE_ENABLE) {
+            bcm570x_retry_rx_flush(s);
+        }
+        return;
     case BCM570X_MAC_STATUS:
         /* Write one to clear: the bits written are the ones acknowledged. */
         bcm570x_regfile_write(s, off, bcm570x_regfile_read(s, off) & ~val);
@@ -2043,6 +2062,15 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
         size -= sizeof(struct virtio_net_hdr);
     }
 
+    /*
+     * A halted receive MAC state machine is not listening, so the frame is
+     * gone rather than held: the chip has nowhere to keep one for a receiver
+     * that is off, and a back end that queues it instead hands the driver
+     * traffic from before the interface existed.
+     */
+    if (!(bcm570x_regfile_read(s, BCM570X_RX_MODE) & BCM570X_RXMODE_ENABLE)) {
+        return orig_size;
+    }
     if (!bcm570x_rx_ready(s)) {
         bcm570x_defer_rx_flush(s);
         return 0;
