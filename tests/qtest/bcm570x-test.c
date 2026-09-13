@@ -74,6 +74,8 @@
 #define BCM_MAC_MODE            0x0400u
 #define BCM_MAC_ADDR_0_HIGH     0x0410u
 #define BCM_MAC_ADDR_0_LOW      0x0414u
+#define BCM_RX_MODE             0x0468u
+#define BCM_RXMODE_ENABLE       0x00000002u
 #define BCM_HCC_MODE            0x3c00u
 #define BCM_MISC_CFG            0x6804u
 #define BCM_MODE_RESET          0x00000001u
@@ -865,6 +867,18 @@ static void test_self_clearing_reset_bits(const void *data)
     bar_writel(&b, BCM_HCC_MODE, BCM_MODE_RESET);
     g_assert_cmphex(bar_readl(&b, BCM_HCC_MODE) & BCM_MODE_RESET, ==, 0);
 
+    /*
+     * RX_MODE the same. Then the sequence the IRIX driver actually runs
+     * through it -- reset on its own, carrying no ENABLE, which leaves the
+     * receiver halted rather than restarting it.
+     */
+    bar_writel(&b, BCM_RX_MODE, BCM_MODE_RESET | BCM_RXMODE_ENABLE);
+    g_assert_cmphex(bar_readl(&b, BCM_RX_MODE) & BCM_MODE_RESET, ==, 0);
+    g_assert_cmphex(bar_readl(&b, BCM_RX_MODE) & BCM_RXMODE_ENABLE, ==,
+                    BCM_RXMODE_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_MODE_RESET);
+    g_assert_cmphex(bar_readl(&b, BCM_RX_MODE), ==, 0);
+
     bcm_close(&b);
 }
 
@@ -880,6 +894,7 @@ static void test_hcc_mode_idle_poll(const void *data)
     bcm_open(&b, bcm_init());
 
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
     g_assert_cmphex(bar_readl(&b, BCM_HCC_MODE) & BCM_HCC_ENABLE, ==,
                     BCM_HCC_ENABLE);
 
@@ -1169,6 +1184,7 @@ static void test_status_block_byte_order(const void *data)
     bcm_open(&b, bcm_init());
     bcm_arm_status(&b);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     /* A producer-0 doorbell posts the status block with UPDATED set. */
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
@@ -1215,6 +1231,7 @@ static void test_status_block_hostaddr_wordswap(const void *data)
 
     qtest_memset(b.qts, intended, 0, BCM_STATUS_BLK_SIZE);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     /* A producer-0 doorbell drives the status-block DMA. */
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
@@ -1269,6 +1286,7 @@ static void test_transmit_round_trip(const void *data)
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     /* One transmit descriptor at ring index 0, built little-endian. */
     memset(bd, 0, sizeof(bd));
@@ -1351,6 +1369,7 @@ static void test_user_backend_reply_waits_for_transmit(const void *data)
     bar_writel(&b, BCM_HCC_TX_MAX_COAL_BDS, 2);
     bar_writel(&b, BCM_HCC_TX_COAL_TICKS, 1000000);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     g_assert_false(intr_line_up(b.dev));
 
@@ -1417,6 +1436,7 @@ static void test_transmit_descriptor_dma_error(const void *data)
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
     qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 1);
     net_socket_expect_no_frame(sv[0]);
@@ -1489,6 +1509,7 @@ static void test_transmit_payload_dma_error(const void *data)
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     tag = read_status_tag(&b);
 
@@ -1583,6 +1604,7 @@ static void test_transmit_complete_then_fragment_dma_error_retry(
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     tag = read_status_tag(&b);
 
@@ -1678,6 +1700,7 @@ static void test_transmit_complete_then_descriptor_dma_error_retry(
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     tag = read_status_tag(&b);
 
@@ -1778,6 +1801,7 @@ static void test_transmit_partial_error_descriptor_coalescing(
     bar_writel(&b, BCM_HCC_TX_MAX_COAL_BDS, 2);
     bar_writel(&b, BCM_HCC_TX_COAL_TICKS, initial_ticks);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     tag = read_status_tag(&b);
 
@@ -1878,6 +1902,7 @@ static void test_transmit_source_address(const void *data)
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     for (i = 0; i < 4; i++) {
         bar_writel(&b, BCM_MAC_ADDR_0_HIGH + i * BCM_MAC_ADDR_STRIDE,
@@ -2008,6 +2033,7 @@ static void lso_open(Bcm *b, int fd, uint8_t *frame, unsigned int len,
     bar_writel(b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
     bar_writel(b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     memset(bd, 0, sizeof(bd));
     put32le(bd + 0, TX_BUF_PHYS >> 32);
@@ -2370,6 +2396,7 @@ static void txc_setup(Bcm *b, unsigned int coal, unsigned int ticks)
     bar_writel(b, BCM_HCC_TX_MAX_COAL_BDS, coal);
     bar_writel(b, BCM_HCC_TX_COAL_TICKS, ticks);
     bar_writel(b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
     qtest_memset(b->qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
 }
 
@@ -2890,6 +2917,7 @@ static size_t transmit_one(Bcm *b, int rx_fd, const uint8_t *frame,
     bar_writel(b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
     bar_writel(b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     memset(bd, 0, sizeof(bd));
     put32le(bd + 0, TX_BUF_PHYS >> 32);
@@ -3050,6 +3078,7 @@ static void test_transmit_throughput(const void *data)
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     qtest_memwrite(b.qts, BENCH_RING_PHYS, ring, BENCH_RING_LEN * 16);
     qtest_memwrite(b.qts, BENCH_BUF_PHYS, bufs,
@@ -3130,6 +3159,7 @@ static void receive_burst_cost(unsigned int coal, unsigned int frames,
     bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, coal);
     bar_writel(&b, BCM_HCC_RX_COAL_TICKS, 0x10000000);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     memset(bd, 0, sizeof(bd));
     put32le(bd + 0, RX_BUF_PHYS >> 32);
@@ -3231,6 +3261,7 @@ static void test_transmit_frame_wordswap(const void *data)
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, (uint32_t)STATUS_PHYS);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     memset(bd, 0, sizeof(bd));
     put32le(bd + 0, TX_BUF_PHYS >> 32);
@@ -3311,6 +3342,7 @@ static void rx_open_one(Bcm *b, int fd)
     bar_writel(b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
     bar_writel(b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     memset(bd, 0, sizeof(bd));
     put32le(bd + 0, RX_BUF_PHYS >> 32);
@@ -3832,6 +3864,7 @@ static void test_receive_ring_laps(const void *data)
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     /* Post standard-ring buffers, all pointing at one scratch buffer. */
     memset(bd, 0, sizeof(bd));
@@ -3917,6 +3950,7 @@ static void test_receive_ring_full_recovers(const void *data)
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     memset(bd, 0, sizeof(bd));
     put32le(bd + 0, RX_BUF_PHYS >> 32);
@@ -3992,12 +4026,24 @@ static void test_receive_ring_full_recovers(const void *data)
 }
 
 /*
- * A frame that arrived before the coalescing block was enabled is still owed to
- * the guest. Enabling the block is the last missing precondition, so it is what
- * releases the backlog -- all of it, in one drain, with no per-frame clock
- * advancement and no interrupt cycle in between.
+ * The receive MAC's ENABLE bit, and what it means for a frame that arrives
+ * while it is clear. The bit "controls whether the Receive MAC state machine is
+ * active or not" and resets to 0 [57XX-PG105-R, printed page 391, Table 268],
+ * so a halted receiver takes nothing and keeps nothing: setting the bit later
+ * must not produce frames from before it was set. That is the whole of the
+ * wedge this pins -- a back end holds what the device refuses, and IRIX was
+ * handed traffic from before the interface existed, mid-bring-up, in two of
+ * five boots.
+ *
+ * A model that simply never delivered would pass half of this, so each halted
+ * stretch is followed by a fresh frame that has to land, and the bit is cleared
+ * again afterwards to show the halt is not a one-time bring-up special case.
+ *
+ * The manual counts what a running receiver drops for want of descriptors
+ * (nicNoMoreRXBDs, printed page 110, Table 49). This model carries no
+ * statistics block, so there is no counter here to assert.
  */
-static void test_receive_flush_after_engine_enable(const void *data)
+static void test_receive_mac_enable(const void *data)
 {
     enum { FRAMES = 4 };
     int sv[2];
@@ -4019,8 +4065,7 @@ static void test_receive_flush_after_engine_enable(const void *data)
                              " -device bcm570x,addr=%02x.0,netdev=n0",
                              sv[1], BCM_SLOT));
 
-    /* Rings and buffers ready, and the doorbell rung -- everything but the
-     * coalescing block, which stays off. */
+    /* Everything ready and the doorbell rung, but the receive MAC halted. */
     bar_writel(&b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
     bar_writel(&b, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
     bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, 1518u << 16);
@@ -4042,27 +4087,58 @@ static void test_receive_flush_after_engine_enable(const void *data)
     qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
     bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 8);
 
-    /* Refused: the block is off. */
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    g_assert_cmphex(bar_readl(&b, BCM_RX_MODE) & BCM_RXMODE_ENABLE, ==, 0);
+
     for (i = 0; i < FRAMES; i++) {
         net_socket_send_frame(sv[0], frame, sizeof(frame));
     }
     g_usleep(100000);
+    g_assert_cmpuint(read_rx_prod(&b), ==, 0);
+
+    /* Starting the state machine must not produce any of them. */
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
+    g_assert_cmphex(bar_readl(&b, BCM_RX_MODE) & BCM_RXMODE_ENABLE, ==,
+                    BCM_RXMODE_ENABLE);
+    g_usleep(100000);
+    g_assert_cmpuint(read_rx_prod(&b), ==, 0);
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
     g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
 
-    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
-    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
-
-    wait_for_rx_prod(&b, FRAMES);
+    /* Running now, so a frame sent now lands. */
+    memset(frame, 0x5e, sizeof(frame));
+    memset(frame, 0xff, 6);
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    wait_for_rx_prod(&b, 1);
     g_assert_true(intr_line_up(b.dev));
-    for (i = 0; i < FRAMES; i++) {
-        qtest_memread(b.qts, RET_RING_PHYS + i * BCM_RXBD_SIZE,
-                      ret, sizeof(ret));
-        g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END,
-                        ==, BCM_RXBDFLAG_END);
-        g_assert_cmphex(get16le(ret + BCM_RXBD_LEN), ==,
-                        sizeof(frame) + BCM_ETH_FCS_LEN);
-    }
+    qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
+                    BCM_RXBDFLAG_END);
+    g_assert_cmphex(get16le(ret + BCM_RXBD_LEN), ==,
+                    sizeof(frame) + BCM_ETH_FCS_LEN);
+
+    /*
+     * Halting again takes the receiver back out, mid-life and not only at
+     * reset: what arrives while it is clear is gone when it is set again.
+     */
+    bar_writel(&b, BCM_RX_MODE, 0);
+    memset(frame, 0x7a, sizeof(frame));
+    memset(frame, 0xff, 6);
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    g_usleep(100000);
+    g_assert_cmpuint(read_rx_prod(&b), ==, 1);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
+    g_usleep(100000);
+    g_assert_cmpuint(read_rx_prod(&b), ==, 1);
+
+    memset(frame, 0x3c, sizeof(frame));
+    memset(frame, 0xff, 6);
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    wait_for_rx_prod(&b, 2);
+    qtest_memread(b.qts, RET_RING_PHYS + BCM_RXBD_SIZE, ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
+                    BCM_RXBDFLAG_END);
 
     bcm_close(&b);
     close(sv[0]);
@@ -4117,6 +4193,7 @@ static void test_queued_receive_released_by_producer(const void *data)
     /* Bring-up order: interrupts enabled, engine enabled, no buffer posted. */
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     net_socket_send_frame(sv[0], frame, sizeof(frame));
     g_usleep(100000);
@@ -4134,66 +4211,6 @@ static void test_queued_receive_released_by_producer(const void *data)
     g_assert_cmphex(get16le(ret + BCM_RXBD_IDX), ==, 0);
     g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
                     BCM_RXBDFLAG_END);
-
-    bcm_close(&b);
-    close(sv[0]);
-}
-
-/*
- * The other half of the same contract: a posted buffer is not enough while the
- * host-coalescing block is off, because the chip cannot report what it places.
- * Queue a frame before bring-up, post a buffer, and prove the frame waits --
- * then that enabling the block releases it, with the interrupt mailbox touched
- * only for the driver's initial enable and never again.
- */
-static void test_queued_receive_released_by_engine_enable(const void *data)
-{
-    int sv[2];
-    Bcm b;
-    uint8_t frame[64];
-    uint8_t bd[BCM_RXBD_SIZE] = { 0 };
-    uint8_t ret[BCM_RXBD_SIZE];
-
-    memset(frame, 0xa5, sizeof(frame));
-    memset(frame, 0xff, 6);
-
-    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    bcm_open(&b, qtest_initf(BCM_MACHINE
-                             " -netdev socket,fd=%d,id=n0"
-                             " -device bcm570x,addr=%02x.0,netdev=n0",
-                             sv[1], BCM_SLOT));
-
-    bar_writel(&b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
-    bar_writel(&b, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
-    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, STD_BUF_SIZE << 16);
-    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB, RET_RING_PHYS >> 32);
-    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4,
-                   RET_RING_PHYS & 0xffffffff);
-    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
-    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
-    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
-    put32le(bd, RX_BUF_PHYS >> 32);
-    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
-    qtest_memwrite(b.qts, STD_RING_PHYS, bd, sizeof(bd));
-    qtest_memset(b.qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
-    qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
-    net_socket_send_frame(sv[0], frame, sizeof(frame));
-    g_usleep(100000);
-    qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
-
-    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
-    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 1);
-    bar_writel(&b, BCM_MBX_RX_CONS0_LO, 0);
-
-    /* A buffer with the block off places nothing, however long it waits. */
-    g_usleep(100000);
-    qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
-    g_assert_false(intr_line_up(b.dev));
-
-    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
-    wait_for_rx_prod(&b, 1);
 
     bcm_close(&b);
     close(sv[0]);
@@ -4370,6 +4387,7 @@ static void test_receive_round_trip(const void *data)
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     /* Post one standard-ring buffer at index 0, built little-endian. */
     memset(bd, 0, sizeof(bd));
@@ -4568,6 +4586,7 @@ static void test_receive_payload_dma_error(const void *data)
     put32le(bd + 4, UNMAPPED_PHYS & 0xffffffff);
     qtest_memwrite(b.qts, STD_RING_PHYS, bd, sizeof(bd));
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
     bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 1);
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     tag = read_status_tag(&b);
@@ -4683,6 +4702,7 @@ static void test_receive_dma_error_after_progress(const void *data)
     bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 2);
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     net_socket_send_frame(sv[0], first, sizeof(first));
     wait_for_rx_prod(&b, 1);
@@ -4800,6 +4820,7 @@ static void test_receive_interrupt_coalescing(const void *data)
     bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, coal);
     bar_writel(&b, BCM_HCC_RX_COAL_TICKS, 0x10000000);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     /* Post COAL_RING_LEN worth of standard-ring buffers -- one scratch buffer is
      * enough, the payload is irrelevant here, only the interrupt count is. */
@@ -4878,6 +4899,7 @@ static void test_receive_coalescing_timer(const void *data)
     bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, coal);
     bar_writel(&b, BCM_HCC_RX_COAL_TICKS, ticks);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     memset(bd, 0, sizeof(bd));
     put32le(bd + 0, RX_BUF_PHYS >> 32);
@@ -4981,6 +5003,7 @@ static void test_receive_coalescing_status_dma_retry(const void *data)
     bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, 1);
     bar_writel(&b, BCM_HCC_RX_COAL_TICKS, ticks);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 1);
 
@@ -5100,6 +5123,7 @@ static void periodic_status_reset(bool system_reset)
     bcm_arm_status(&b);
     bar_writel(&b, BCM_HCC_STATS_TICKS, ticks);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
     qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
 
     if (system_reset) {
@@ -5176,6 +5200,7 @@ static void test_receive_frame_wordswap(const void *data)
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, (uint32_t)STATUS_PHYS);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     memset(bd, 0, sizeof(bd));
     put32le(bd + 0, RX_BUF_PHYS >> 32);
@@ -5244,6 +5269,7 @@ static void test_interrupt_mailbox(const void *data)
     bcm_open(&b, bcm_init());
     bcm_arm_status(&b);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     /* Masked out of reset: an update posts, but the line stays down. */
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
@@ -5302,6 +5328,7 @@ static void test_status_block_gated_by_hcc(const void *data)
 
     /* Enabled: the same doorbell now DMAs the status block, UPDATED set. */
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
     qtest_memread(b.qts, STATUS_PHYS, sb, sizeof(sb));
     g_assert_cmphex(get32le(sb) & BCM_STATFLAG_UPDATED, ==, BCM_STATFLAG_UPDATED);
@@ -5323,6 +5350,7 @@ static void test_status_dma_error(const void *data)
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, UNMAPPED_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, UNMAPPED_PHYS & 0xffffffff);
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
 
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
@@ -5683,6 +5711,7 @@ static void test_periodic_status_survives_migration(const void *data)
     bcm_arm_status(&from);
     bar_writel(&from, BCM_HCC_STATS_TICKS, ticks);
     bar_writel(&from, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&from, BCM_RX_MODE, BCM_RXMODE_ENABLE);
     qtest_memset(from.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
 
     dest = g_strdup_printf(BCM_MACHINE
@@ -5738,6 +5767,7 @@ static void test_state_survives_migration(const void *data)
     bcm_open(&from, from_qts);
     bcm_arm_status(&from);
     bar_writel(&from, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&from, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     /* An SRAM word reset does not touch, so its survival is unambiguous. */
     ind_mem_writel(&from, 0x0c1c, sram_sentinel);
@@ -5831,6 +5861,7 @@ static void test_masked_interrupt_survives_migration(const void *data)
     qtest_memset(from.qts, RET_RING_PHYS, 0, sizeof(ret));
     qtest_memset(from.qts, RX_BUF_PHYS, 0, sizeof(frame));
     bar_writel(&from, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&from, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     bar_writel(&from, BCM_MBX_IRQ0_LO, 0);
     bar_writel(&from, BCM_MBX_TX_PROD_LO, 0);
@@ -6216,12 +6247,10 @@ int main(int argc, char **argv)
                         test_receive_ring_laps);
     qtest_add_data_func("/bcm570x/receive-ring-full-recovers", NULL,
                         test_receive_ring_full_recovers);
-    qtest_add_data_func("/bcm570x/receive-flush-after-engine-enable", NULL,
-                        test_receive_flush_after_engine_enable);
+    qtest_add_data_func("/bcm570x/receive-mac-enable", NULL,
+                        test_receive_mac_enable);
     qtest_add_data_func("/bcm570x/queued-receive-released-by-producer", NULL,
                         test_queued_receive_released_by_producer);
-    qtest_add_data_func("/bcm570x/queued-receive-released-by-engine-enable",
-                        NULL, test_queued_receive_released_by_engine_enable);
     qtest_add_data_func("/bcm570x/receive-queue-global-reset",
                         GINT_TO_POINTER(0), test_receive_queue_reset);
     qtest_add_data_func("/bcm570x/receive-queue-system-reset",
