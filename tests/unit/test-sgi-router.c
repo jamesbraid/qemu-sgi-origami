@@ -1054,6 +1054,50 @@ static void test_nic_delayed_callback(Fixture *f, gconstpointer unused)
     }
 }
 
+/*
+ * A slot whose deadlines have passed is finished, whether or not the host has
+ * dispatched its timer. On a busy multi-threaded machine that callback waits
+ * for the big lock, which the firmware polling this register holds, so it can
+ * land milliseconds late. Every access here runs with no dispatch at all:
+ * the deadline alone must report completion and admit the next slot.
+ */
+static void test_nic_deadline_without_dispatch(Fixture *f, gconstpointer unused)
+{
+    const uint8_t family = 0x0b;
+
+    write_reg(f, 1, RR_NIC_ULAN, NIC_DIVIDERS_RESET |
+              (UINT64_C(520) << 10) | (65 << 2));
+    virtual_time += 584999;
+    g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN) & 3, ==, 0);
+    virtual_time += 1;
+    g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN) & 3, ==, NIC_DONE);
+
+    for (unsigned int bit = 0; bit < 8; bit++) {
+        bool one = (0x33 >> bit) & 1; /* Read ROM. */
+        unsigned int pulse = one ? 6 : 80;
+        unsigned int sample = one ? 110 : 30;
+
+        write_reg(f, 1, RR_NIC_ULAN, NIC_DIVIDERS_RESET |
+                  ((uint64_t)pulse << 10) | ((uint64_t)sample << 2));
+        virtual_time += (pulse + sample) * 1000;
+        g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN) & NIC_DONE, ==, NIC_DONE);
+    }
+
+    /* The family byte, least-significant bit first, one bit per slot. */
+    for (unsigned int bit = 0; bit < 8; bit++) {
+        write_reg(f, 1, RR_NIC_ULAN, NIC_DIVIDERS_RESET |
+                  (UINT64_C(6) << 10) | (13 << 2));
+        virtual_time += 18999;
+        g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN) & NIC_DONE, ==, 0);
+        virtual_time += 1;
+        g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN) & 3, ==,
+                        NIC_DONE | ((family >> bit) & 1));
+    }
+
+    /* The accesses consumed the deadlines; a late callback finds nothing. */
+    g_assert_false(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
+}
+
 static int load_nic_state(Fixture *source, Fixture *target)
 {
     g_autofree char *path = NULL;
@@ -1283,6 +1327,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-router/nic-calibration", test_nic_calibration);
     g_test_add_func("/sgi-router/nic-serial-limit", test_nic_serial_limit);
     ADD_TEST("nic-delayed-callback", test_nic_delayed_callback);
+    ADD_TEST("nic-deadline-without-dispatch",
+             test_nic_deadline_without_dispatch);
     ADD_TEST("nic-migration-config", test_nic_migration_config);
     ADD_TEST("nic-migration-invalid", test_nic_migration_invalid);
     ADD_TEST("histogram-migration", test_histogram_migration);
