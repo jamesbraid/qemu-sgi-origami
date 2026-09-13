@@ -327,11 +327,11 @@ static void sn0_origin2000_xtalk_build_crossbows(SN0Origin2000XtalkState *s)
         qdev_prop_set_uint64(crossbow, "span", SN0_XTALK_WIDGET_SIZE);
         qdev_prop_set_bit(crossbow,
                           "complete-posted-error-address-writes", true);
-        qdev_prop_set_uint32(crossbow, "widget-revision",
+        qdev_prop_set_uint32(crossbow, "revision",
                              descriptor->widget_revision);
-        qdev_prop_set_uint32(crossbow, "widget-part",
+        qdev_prop_set_uint32(crossbow, "part",
                              descriptor->widget_part);
-        qdev_prop_set_uint32(crossbow, "widget-manufacturer",
+        qdev_prop_set_uint32(crossbow, "manufacturer",
                              descriptor->widget_manufacturer);
         qdev_prop_set_uint16(crossbow, "links-present",
                              crossbow_present_mask(model, i));
