@@ -303,6 +303,14 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
         }
     }
     qdev_prop_set_uint32(DEVICE(&s->lb), "revision", s->revision);
+    /*
+     * The local block's vector engine reads a hub register for a routed read;
+     * the node's own register window is where a local route resolves.
+     */
+    if (!object_property_set_link(OBJECT(&s->lb), "hub-registers",
+                                  OBJECT(&s->hub_window), errp)) {
+        return;
+    }
     if (!qdev_realize(DEVICE(&s->io), sysbus_get_default(), errp)) {
         return;
     }
@@ -389,6 +397,14 @@ static void bedrock_init(Object *obj)
     object_initialize_child(obj, "ni", &s->ni, TYPE_SGI_BEDROCK_NI);
     object_initialize_child(obj, "xb", &s->xb, TYPE_SGI_BEDROCK_XB);
     memory_region_init(&s->mmio, obj, TYPE_SGI_BEDROCK, SGI_BEDROCK_SIZE);
+    /*
+     * The vector engine reads a hub register by its window offset. This alias
+     * is never mapped, so it presents the window at offset zero however the
+     * machine places mmio itself.
+     */
+    memory_region_init_alias(&s->hub_window, obj,
+                             TYPE_SGI_BEDROCK "-hub-window", &s->mmio, 0,
+                             SGI_BEDROCK_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj),
                      sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->io), 1));

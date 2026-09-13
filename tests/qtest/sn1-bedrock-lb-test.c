@@ -9,9 +9,17 @@
 
 #define LB_PATH "/machine/peripheral/lb"
 #define LB_BASE 0x11000000ULL
-#define MACHINE "-M none -cpu R10000 -device sgi-bedrock-lb,id=lb," \
-                "manufacturer=0x36,part-number=0x3012,revision=2," \
-                "node-number=0x5a,region-size=0,request-region=7 -S"
+#define MACHINE_BASE "-M none -cpu R10000 -device sgi-bedrock-lb,id=lb," \
+                     "manufacturer=0x36,part-number=0x3012,revision=2," \
+                     "node-number=0x5a,region-size=0,request-region=7"
+#define MACHINE MACHINE_BASE " -S"
+/*
+ * The block's own register window stands in for the node's hub window: a local
+ * vector route resolves to this node's own hub, and the window aliases the
+ * block. The link points the engine back at these registers.
+ */
+#define MACHINE_HUB MACHINE_BASE \
+                    ",hub-registers=" LB_PATH "/sgi-bedrock-lb[0] -S"
 
 #define REVISION        0x0000
 #define CPU_PERMISSION  0x4000
@@ -89,6 +97,21 @@ static QTestState *lb_start(const char *extra)
     QTestState *s = qtest_initf(MACHINE " %s", extra);
 
     qtest_sysbus_mmio_map(s, LB_PATH, 0, LB_BASE);
+    return s;
+}
+
+/*
+ * The block stands in for its own hub, mapped at zero so a register's window
+ * offset is the address the vector engine reads. The 21-bit address field
+ * cannot carry a high base, and a composed node reaches the window through a
+ * zero-based alias for the same reason.
+ */
+#define LB_HUB_BASE 0x0ULL
+static QTestState *lb_start_hub(const char *extra)
+{
+    QTestState *s = qtest_initf(MACHINE_HUB " %s", extra);
+
+    qtest_sysbus_mmio_map(s, LB_PATH, 0, LB_HUB_BASE);
     return s;
 }
 
@@ -359,9 +382,10 @@ static void test_scratch_aliases_and_reset(void)
 /*
  * The vector registers as the datasheet's checklist states them: parameters
  * keep their fields with busy reading clear, a status-clear write is
- * accepted, and route and data are plain storage. No peer can answer a
- * launch on a one-node machine, so the launch is logged as unimplemented
- * and status, return route and read data hold no reply.
+ * accepted, and route and data are plain storage. With no hub register window
+ * linked a launch cannot resolve a route, so it is logged as unimplemented and
+ * status, return route and read data hold no reply. test_vector_local_read
+ * covers a launch that does complete.
  */
 static void test_vector_registers(void)
 {
@@ -402,7 +426,8 @@ static void test_vector_registers(void)
     qtest_quit(s);
 
     g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
-    g_assert_nonnull(strstr(found, "vector launch"));
+    g_assert_nonnull(strstr(found, "vector launch with no hub register "
+                                   "window linked"));
     g_assert_null(strstr(found, "unsupported write at 0xc000"));
     g_assert_null(strstr(found, "unsupported read at 0xc020"));
     g_assert_null(strstr(found, "unsupported read at 0xc028"));
@@ -414,6 +439,57 @@ static void test_vector_registers(void)
     g_assert_nonnull(strstr(found, "write to read-only register 0xc028"));
     g_assert_nonnull(strstr(found, "write to read-only register 0xc030"));
     g_assert_cmpint(unlink(log), ==, 0);
+}
+
+/*
+ * The acceptance case NUMAlink discovery depends on: a local (self) route read
+ * returns the addressed hub register's current value with status valid,
+ * completing at once. The target is set through the normal register window
+ * first, so a fixed reply or a stuck sentinel fails, and a second probe of a
+ * different register with a different value fails a model that latches one
+ * value. Read data resets clear, so returning the real nonzero value also
+ * shows the launch ran rather than leaving the register untouched.
+ */
+static void test_vector_local_read(void)
+{
+    QTestState *s = lb_start_hub("");
+    const uint64_t write_id = 0x5aULL << 32;
+    const uint64_t request_id = 0x2abULL << 40;
+    static const struct {
+        uint64_t offset;
+        uint64_t value;
+    } probes[] = {
+        { SCRATCH(0), 0x0123456789abcdefULL },
+        { SCRATCH(1), 0xfedcba9876543210ULL },
+    };
+
+    g_assert_cmphex(qtest_readq(s, LB_HUB_BASE + VECTOR_READ), ==, 0);
+
+    for (size_t i = 0; i < ARRAY_SIZE(probes); i++) {
+        uint64_t status;
+
+        qtest_writeq(s, LB_HUB_BASE + probes[i].offset, probes[i].value);
+        /* Clear the last reply, then launch: route, then parameters last. */
+        qtest_writeq(s, LB_HUB_BASE + VECTOR_STATUS_CLEAR, UINT64_MAX);
+        qtest_writeq(s, LB_HUB_BASE + VECTOR_ROUTE, 0);
+        qtest_writeq(s, LB_HUB_BASE + VECTOR_PARAMS,
+                     probes[i].offset | write_id | request_id);
+
+        /* Completes at once, so busy reads clear. */
+        g_assert_cmphex(qtest_readq(s, LB_HUB_BASE + VECTOR_PARAMS) &
+                        (1ULL << 63), ==, 0);
+        /* Status valid, no error type, address and identifiers echoed. */
+        status = qtest_readq(s, LB_HUB_BASE + VECTOR_STATUS);
+        g_assert_cmphex(status & (1ULL << 63), ==, 1ULL << 63);
+        g_assert_cmphex(status & 7, ==, 0);
+        g_assert_cmphex(status & (0x1fffffULL << 3), ==, probes[i].offset);
+        g_assert_cmphex(status & (0xffULL << 32), ==, write_id);
+        g_assert_cmphex(status & (0x7ffULL << 40), ==, request_id);
+        /* The addressed register's current value, not a sentinel. */
+        g_assert_cmphex(qtest_readq(s, LB_HUB_BASE + VECTOR_READ), ==,
+                        probes[i].value);
+    }
+    qtest_quit(s);
 }
 
 /*
@@ -715,6 +791,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-lb/scratch-reset",
                    test_scratch_aliases_and_reset);
     qtest_add_func("sn1/bedrock-lb/vector-registers", test_vector_registers);
+    qtest_add_func("sn1/bedrock-lb/vector-local-read", test_vector_local_read);
     qtest_add_func("sn1/bedrock-lb/microlan-slot", test_microlan_slot);
     qtest_add_func("sn1/bedrock-lb/microlan-narrow-access",
                    test_microlan_rejects_a_narrow_access);

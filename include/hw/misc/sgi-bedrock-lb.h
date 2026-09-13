@@ -27,6 +27,15 @@ struct SGIBedrockLBState {
     /* Sampled when the slot starts, published when its deadline arrives. */
     bool microlan_level;
 
+    /*
+     * This node's hub register window, so the vector engine can read a hub
+     * register for a routed read. The window aliases this block, so a self
+     * route lands back on these registers.
+     */
+    MemoryRegion *hub_registers;
+    AddressSpace hub_as;
+    bool hub_as_initialized;
+
     uint32_t manufacturer;
     uint32_t part_number;
     uint32_t revision;
@@ -49,6 +58,9 @@ struct SGIBedrockLBState {
     uint64_t vector_params;
     uint64_t vector_route;
     uint64_t vector_data;
+    uint64_t vector_status;
+    uint64_t vector_return;
+    uint64_t vector_read;
 };
 
 #endif
