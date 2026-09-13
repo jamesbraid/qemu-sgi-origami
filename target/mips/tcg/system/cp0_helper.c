@@ -1172,7 +1172,7 @@ void helper_mtc0_entryhi(CPUMIPSState *env, target_ulong arg1)
     /* If the ASID changes, flush qemu's TLB.  */
     if ((old & env->CP0_EntryHi_ASID_mask) !=
         (val & env->CP0_EntryHi_ASID_mask)) {
-        cpu_mips_qemu_tlb_flush(env);
+        tlb_flush(env_cpu(env));
     }
 }
 
@@ -1492,7 +1492,6 @@ void helper_mtc0_debug(CPUMIPSState *env, target_ulong arg1)
     } else {
         env->hflags &= ~MIPS_HFLAG_DM;
     }
-    cpu_mips_reassert_interrupt(env);
 }
 
 void helper_mttc0_debug(CPUMIPSState *env, target_ulong arg1)

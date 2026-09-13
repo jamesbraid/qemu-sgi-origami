@@ -162,8 +162,6 @@ struct r4k_tlb_t {
 struct CPUMIPSTLBContext {
     uint32_t nb_tlb;
     uint32_t tlb_in_use;
-    /* No fill has reached qemu's TLB since it was last flushed. */
-    bool qemu_clean;
     int (*map_address)(CPUMIPSState *env, hwaddr *physical, int *prot,
                        target_ulong address, MMUAccessType access_type,
                        MemTxAttrs *attrs);
@@ -183,7 +181,6 @@ struct CPUMIPSTLBContext {
 void sync_c0_status(CPUMIPSState *env, CPUMIPSState *cpu, int tc);
 void cpu_mips_store_status(CPUMIPSState *env, target_ulong val);
 void cpu_mips_store_cause(CPUMIPSState *env, target_ulong val);
-void cpu_mips_reassert_interrupt(CPUMIPSState *env);
 
 extern const VMStateDescription vmstate_mips_cpu;
 
