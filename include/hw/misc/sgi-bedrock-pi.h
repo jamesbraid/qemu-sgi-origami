@@ -35,6 +35,8 @@ struct SGIBedrockPIState {
     uint8_t cached_alias;
     uint8_t cpu_enable[2];
     uint64_t pending[2];
+    uint64_t cc_pend[2];
+    uint64_t cc_pend_mask;
     uint64_t mask[2][2];
     uint8_t remap;
     uint64_t error_pending;
