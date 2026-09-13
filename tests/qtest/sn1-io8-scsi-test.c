@@ -149,14 +149,21 @@
 /* Data from the target into host memory. */
 #define ISP_REQ_CONTROL_DATA_IN 0x0020
 
+/* Data from host memory out to the target. */
+#define ISP_REQ_CONTROL_DATA_OUT 0x0040
+
 /* Bit 15 is the channel; the target and LUN below it are local to it. */
 #define ISP_DEVICE_WORD(channel, target, lun) \
     ((uint16_t)(((channel) << 15) | ((target) << 8) | (lun)))
 
 #define SCSI_TEST_UNIT_READY 0x00
 #define SCSI_READ_10 0x28
+#define SCSI_WRITE_10 0x2a
 #define SCSI_CDB6_LEN 6
 #define SCSI_CDB10_LEN 10
+
+/* A sector past the fixture's first, so the outbound test owns its medium. */
+#define SCRATCH_LBA 5
 
 /* Both disks sit at the same target number, one on each channel. */
 #define DISK_TARGET 1
@@ -598,6 +605,27 @@ static void read_sector(QTestState *qts, uint32_t handle, unsigned channel,
     qtest_memread(qts, BUF_PHYS, out, SECTOR_BYTES);
 }
 
+/*
+ * WRITE(10) of one sector composed in guest memory out to the medium. The
+ * adapter pulls the payload back across the head as a 64-bit direct
+ * transfer, which is the DMA-read direction the READ path never drives:
+ * READ has the head place the medium's bytes into memory, WRITE has it
+ * fetch the caller's bytes out of memory.
+ */
+static void write_sector(QTestState *qts, uint32_t handle, unsigned channel,
+                         uint32_t lba, const uint8_t *in, uint8_t *status)
+{
+    uint8_t cdb[SCSI_CDB10_LEN] = { SCSI_WRITE_10 };
+    const RingSeg seg = { DIRECT64(BUF_PHYS), SECTOR_BYTES };
+
+    put_lba10(cdb, lba, 1);
+    qtest_memwrite(qts, BUF_PHYS, in, SECTOR_BYTES);
+    submit_command(qts, handle, channel, DISK_TARGET, 0, cdb, sizeof(cdb),
+                   ISP_REQ_CONTROL_DATA_OUT, &seg);
+    wait_for_completion(qts);
+    take_status(qts, handle, status);
+}
+
 /* The whole first sector of one disk, as the fixture wrote it. */
 static void expect_first_sector(const uint8_t *got, unsigned disk)
 {
@@ -747,6 +775,59 @@ static void test_data_transfer_reaches_memory(const void *data)
 }
 
 /*
+ * The other direction of the same 64-bit path: a sector composed in the
+ * processor's memory and sent out to the medium, then read back. The head
+ * fetches the payload out of memory (a DMA read) where the case above had
+ * it deposit the payload into memory (a DMA write), so this is the outbound
+ * lane the READ path leaves untried. The bytes walk with a stride that
+ * shares nothing with either disk fixture and is not its own reverse within
+ * a word: because the inbound path is already shown to land the medium's
+ * bytes unreversed, a round trip that returns byte-for-byte can only mean
+ * the head pulled the stream out of memory in the same orientation. A head
+ * that word-reversed the outbound lanes, or aimed the fetch at the wrong
+ * address, would put a different sequence on the medium and read it back
+ * different. The transfer runs with bit 55 set, the same request IRIX
+ * composes, so the head leaves the byte lanes alone in both directions.
+ */
+static void test_write_transfer_from_memory(const void *data)
+{
+    DiskPair disks;
+    QTestState *qts = machine_start_with_disks(&disks);
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t sent[SECTOR_BYTES];
+    uint8_t got[SECTOR_BYTES];
+    unsigned i;
+
+    for (i = 0; i < SECTOR_BYTES; i++) {
+        sent[i] = (uint8_t)(i * 13 + 5);
+    }
+
+    init_queues(qts);
+    absorb_unit_attention(qts, 0, 0xc1);
+
+    write_sector(qts, 0xc2, 0, SCRATCH_LBA, sent, status);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_SCSI_STATUS), ==, 0);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATE_FLAGS), ==,
+                    ISP_STATE_FLAG_GOT_BUS | ISP_STATE_FLAG_GOT_TARGET |
+                    ISP_STATE_FLAG_SENT_CDB |
+                    ISP_STATE_FLAG_TRANSFERRED_DATA |
+                    ISP_STATE_FLAG_GOT_STATUS |
+                    ISP_STATE_FLAG_TRANSFER_COMPLETE);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATUS_FLAGS), ==, 0);
+    g_assert_cmpuint(get32le(status + ISP_STATUS_OFF_RESID), ==, 0);
+
+    read_sector(qts, 0xc3, 0, SCRATCH_LBA, got, status);
+    g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                    ISP_IOCB_COMPLETE);
+    g_assert_cmpmem(got, sizeof(got), sent, sizeof(sent));
+
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
+/*
  * Both channels, each carrying its own disk at the same target number.
  * The shared target number is the point: what picks the medium is the
  * channel bit of the request entry and nothing else. A machine that built
@@ -829,6 +910,8 @@ int main(int argc, char **argv)
                         test_command_reaches_memory);
     qtest_add_data_func("origin300/io8-scsi/data-transfer-reaches-memory",
                         NULL, test_data_transfer_reaches_memory);
+    qtest_add_data_func("origin300/io8-scsi/write-transfer-from-memory",
+                        NULL, test_write_transfer_from_memory);
     qtest_add_data_func("origin300/io8-scsi/channels-are-independent", NULL,
                         test_channels_are_independent);
     qtest_add_data_func("origin300/io8-scsi/completion-raises-pin", NULL,
