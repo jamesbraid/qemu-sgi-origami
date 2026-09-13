@@ -2,6 +2,7 @@
 /* Physical Origin 2000 assembly; supplied firmware owns discovery. */
 
 #include "qemu/osdep.h"
+#include "sn0-origin2000-model-id.h"
 #include "qemu/units.h"
 #include "qemu/datadir.h"
 #include "qemu/host-utils.h"
@@ -569,6 +570,20 @@ static const char * const origin2000_cpu_types[] = {
     MIPS_CPU_TYPE_NAME("R10000"), NULL,
 };
 
+static char *origin2000_get_model_id(Object *obj, Error **errp)
+{
+    return g_strdup(ORIGAMI_ORIGIN2000_MODEL_ID);
+}
+
+static void origin2000_set_model_id(Object *obj, const char *value,
+                                   Error **errp)
+{
+    if (strcmp(value, ORIGAMI_ORIGIN2000_MODEL_ID) != 0) {
+        error_setg(errp, "origin2000 model-id mismatch: requested '%s', "
+                   "compiled '%s'", value, ORIGAMI_ORIGIN2000_MODEL_ID);
+    }
+}
+
 static void origin2000_class_init(ObjectClass *klass, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(klass);
@@ -580,6 +595,11 @@ static void origin2000_class_init(ObjectClass *klass, const void *data)
         return;
     }
     smc->default_composition = c;
+    object_class_property_add_str(klass, "model-id",
+                                  origin2000_get_model_id,
+                                  origin2000_set_model_id);
+    object_class_property_set_description(klass, "model-id",
+                                          "Require the compiled machine model");
     mc->desc = "SGI Origin 2000";
     mc->init = origin2000_init;
     mc->possible_cpu_arch_ids = origin2000_possible_cpus;

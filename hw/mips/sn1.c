@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #include "qemu/osdep.h"
+#include "sn1-origin300-model-id.h"
 #include "qemu/bitops.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
@@ -803,6 +804,20 @@ static const char *sn1_cpu_type(SN1ModelCpuKind kind)
     }
 }
 
+static char *origin300_get_model_id(Object *obj, Error **errp)
+{
+    return g_strdup(ORIGAMI_ORIGIN300_MODEL_ID);
+}
+
+static void origin300_set_model_id(Object *obj, const char *value,
+                                   Error **errp)
+{
+    if (strcmp(value, ORIGAMI_ORIGIN300_MODEL_ID) != 0) {
+        error_setg(errp, "origin300 model-id mismatch: requested '%s', "
+                   "compiled '%s'", value, ORIGAMI_ORIGIN300_MODEL_ID);
+    }
+}
+
 static void origin300_class_init(ObjectClass *oc, const void *data)
 {
     static const char *valid_cpu_types[2];
@@ -810,6 +825,11 @@ static void origin300_class_init(ObjectClass *oc, const void *data)
     MachineClass *mc = MACHINE_CLASS(oc);
 
     valid_cpu_types[0] = sn1_cpu_type(model->cpu_kind);
+    object_class_property_add_str(oc, "model-id",
+                                  origin300_get_model_id,
+                                  origin300_set_model_id);
+    object_class_property_set_description(oc, "model-id",
+                                          "Require the compiled machine model");
     mc->desc = model->description;
     mc->init = origin300_init;
     mc->reset = sn1_machine_reset;

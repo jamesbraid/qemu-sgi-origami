@@ -1,0 +1,14 @@
+{
+  "compiler_revision": "23f1a6a5fcbc4cd998b7c4de0e8b13df78db787d",
+  "compiler_sha256": "a5020d5979350c3394c909e05e3cc2c1bce3f7f6cca30bae3d953eb9f2bb5147",
+  "configuration_id": "f2cd1c36fa8b5016837f8711a07a941ce620495a7c91ca20da0d211b03864108",
+  "format": 1,
+  "machine": "origin2000",
+  "outputs": {
+    "hw/mips/sn0-klconfig-layout.h": "1f89cd7fd2dc1be35b3f434974cb9ea37913db47fd62da674e0aa2c59474fa44",
+    "hw/mips/sn0-origin2000-model-id.h": "005e27e7c46b6b3660aa227ebbe7345d17caa3d1f55a3c8c413847cbac535fe2",
+    "hw/mips/sn0-origin2000-model.c": "1c8a5a3189d4238afce32963e271a2aceeee4ad85c5aebd9cedbe76fa80386e0"
+  },
+  "source_revision": "23f1a6a5fcbc4cd998b7c4de0e8b13df78db787d",
+  "source_sha256": "ac6795de292e7a22c81d93c7df2085f922ba02dc941c4bb2a1184bd88d5cbefe"
+}
