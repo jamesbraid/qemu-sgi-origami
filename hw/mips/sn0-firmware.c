@@ -23,6 +23,7 @@
 #include "exec/cpu-common.h"
 #include "cpu.h"
 #include "sn0.h"
+#include "sn0-ecoff.h"
 #include "sn0-klconfig-layout.h"
 #include "trace.h"
 
