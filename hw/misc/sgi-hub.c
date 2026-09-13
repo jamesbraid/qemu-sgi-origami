@@ -1419,8 +1419,13 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
     if (s->pi_rt_hold[slice] == hold->id) {
         s->pi_rt_hold[slice] = 0;
     }
-    trace_sgi_hub_rt_hold_end(cs->cpu_index, outcome,
-                              (now - start) / SCALE_US);
+    /* End at the clock read the loop decided on, so the length is exact. */
+    if (trace_event_get_state_backends(TRACE_SGI_HUB_RT_HOLD_END)) {
+        trace_sgi_hub_rt_hold_end(cs->cpu_index, outcome,
+                                  (now - start) / SCALE_US,
+                                  s->cpu_base + (slice ^ 1), start, now,
+                                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
     object_unref(OBJECT(s));
     g_free(hold);
 }
@@ -1496,9 +1501,13 @@ static void sgi_hub_rt_mailbox_read(SGIHubState *s, unsigned int owner,
     hold->id = ++s->pi_rt_hold_seq;
     s->pi_rt_hold[reader] = hold->id;
     s->pi_rt_hold_kind[reader] = kind;
-    trace_sgi_hub_rt_hold(current_cpu->cpu_index,
-                          kind == SGI_HUB_RT_HOLD_MATCH ? "match" : "post",
-                          posted, value);
+    if (trace_event_get_state_backends(TRACE_SGI_HUB_RT_HOLD)) {
+        trace_sgi_hub_rt_hold(current_cpu->cpu_index,
+                              kind == SGI_HUB_RT_HOLD_MATCH ? "match" : "post",
+                              posted, value, s->cpu_base + owner,
+                              qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+                              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
     async_run_on_cpu(current_cpu, sgi_hub_rt_hold, RUN_ON_CPU_HOST_PTR(hold));
 }
 
