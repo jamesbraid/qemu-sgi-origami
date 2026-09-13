@@ -31,6 +31,14 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 
+/*
+ * The modelled minimum between a frame arriving and its completion, in
+ * nanoseconds: the adapters' device default. Delivery is published only once
+ * this much virtual time has passed, so every wait for a completion has to
+ * advance the clock as well as give the main loop a pass.
+ */
+#define RX_ARRIVAL_LATENCY_NS  200000
+
 /* Crosstalk space and the Bridge's widget window inside it. */
 #define SPACE_XTALK             0x20000000000ULL
 #define BRIDGE_WIDGET           8
@@ -550,6 +558,7 @@ static bool wait_rx_traffic(QTestState *qts, int attempts)
             return true;
         }
         g_usleep(1000);
+        qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     return false;
 }

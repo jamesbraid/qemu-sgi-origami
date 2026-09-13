@@ -711,6 +711,7 @@ static void xframe_soft_reset(XframeState *s)
     unsigned i;
 
     qemu_bh_cancel(s->rx_flush_bh);
+    sgi_net_rx_latency_reset(&s->rx_latency);
     xframe_rx_cache_invalidate(s);
     s->defer_backend_rx = false;
     s->backend_rx_deferred = false;
@@ -2669,6 +2670,11 @@ static bool xframe_can_receive(NetClientState *nc)
         return false;
     }
 
+    /* No room on the arrival line is the same answer as no buffer. */
+    if (sgi_net_rx_latency_full(&s->rx_latency)) {
+        return false;
+    }
+
     owned = xframe_rx_head(s, &desc_addr, raw);
 
     if (!owned) {
@@ -2683,6 +2689,30 @@ static void xframe_rx_flush(void *opaque)
     XframeState *s = opaque;
 
     qemu_flush_queued_packets(qemu_get_queue(s->nic));
+}
+
+static bool xframe_rx_completion_write(XframeState *s, uint64_t addr,
+                                       const uint8_t word[8]);
+
+/*
+ * Publish a receive whose buffers and byte counts are already written:
+ * release the descriptor's ownership -- the driver's own signal that the
+ * frame is there -- and report the completion. Held behind the arrival floor
+ * by sgi_net_rx_latency_hold(). A failed release logs and arms the recovery
+ * poll inside xframe_rx_completion_write, and the completion stays on the
+ * line to be tried again -- the descriptor is still the card's, so nothing
+ * the guest reads has moved.
+ */
+static bool xframe_rx_publish(void *opaque, const void *record)
+{
+    XframeState *s = opaque;
+    const XframeRxDone *done = record;
+
+    if (!xframe_rx_completion_write(s, done->desc_addr + 8, done->control1)) {
+        return false;
+    }
+    xframe_traffic_complete(s, true, 0);
+    return true;
 }
 
 static bool xframe_rx_completion_write(XframeState *s, uint64_t addr,
@@ -2718,6 +2748,7 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
                               size_t size)
 {
     XframeState *s = XFRAME(qemu_get_nic_opaque(nc));
+    XframeRxDone done;
     PCIDevice *pdev = PCI_DEVICE(s);
     size_t orig_size = size;
     uint8_t min_pkt[ETH_ZLEN];
@@ -2765,6 +2796,22 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
     if (!xframe_rx_filter(s, buf, size)) {
         timer_del(s->rx_recovery_timer);
         return orig_size;
+    }
+
+    /*
+     * A queued frame is re-offered straight to receive() without another
+     * can_receive(), so the arrival line's room is checked here too. Zero is
+     * the same flow control the no-buffer case uses; the line's own drain
+     * flushes the queue when a slot frees.
+     *
+     * The line's depth is not bounded by this ring's descriptor count. A ring
+     * shorter than the line would let the walk come back round to a
+     * descriptor whose completion is still held, which no ring size a driver
+     * programs today reaches; bound the line by the ring as well if one ever
+     * does.
+     */
+    if (sgi_net_rx_latency_full(&s->rx_latency)) {
+        return 0;
     }
 
     control2 = xframe_desc_ldq(s, raw + 16, true);
@@ -2947,9 +2994,6 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
 
     xframe_desc_stq(s, word,
                     ((uint64_t)xcode << XFRAME_RXD_XCODE_SHIFT) | offload, true);
-    if (!xframe_rx_completion_write(s, desc_addr + 8, word)) {
-        return 0;
-    }
     xframe_rx_cache_invalidate(s);
 
     /*
@@ -2967,9 +3011,16 @@ static ssize_t xframe_receive(NetClientState *nc, const uint8_t *buf,
     if (s->rx_desc_idx >= xframe_rxd_per_page(s)) {
         xframe_rx_advance_page(s);
     }
-
-    xframe_traffic_complete(s, true, 0);
     timer_del(s->rx_recovery_timer);
+
+    /*
+     * The frame and its byte counts are in the guest's buffers; the
+     * descriptor's ownership release, which is the driver's only signal that
+     * any of it is there, waits for the frame's arrival deadline.
+     */
+    done.desc_addr = desc_addr;
+    memcpy(done.control1, word, sizeof(done.control1));
+    sgi_net_rx_latency_hold(&s->rx_latency, &done);
 
     return orig_size;
 }
@@ -3149,6 +3200,11 @@ static void xframe_realize(PCIDevice *dev, Error **errp)
         qemu_set_vnet_hdr_len(nc->peer, sizeof(struct virtio_net_hdr));
     }
     net_tx_pkt_init(&s->tx_pkt, 1);
+    if (!sgi_net_rx_latency_init(&s->rx_latency, s->rx_arrival_latency_us,
+                                 sizeof(XframeRxDone), xframe_rx_publish,
+                                 xframe_rx_flush, s, errp)) {
+        return;
+    }
     s->rx_flush_bh = qemu_bh_new_guarded(xframe_rx_flush, s,
                                          &d->mem_reentrancy_guard);
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
@@ -3160,6 +3216,7 @@ static void xframe_exit(PCIDevice *dev)
     unsigned i;
 
     xframe_rx_cache_invalidate(s);
+    sgi_net_rx_latency_cleanup(&s->rx_latency);
     qemu_bh_delete(s->rx_flush_bh);
     timer_free(s->rx_recovery_timer);
     timer_free(s->stat_timer);
@@ -3381,7 +3438,7 @@ static const VMStateDescription vmstate_xframe_traffic_continuous = {
 
 static const VMStateDescription vmstate_xframe = {
     .name = "xframe",
-    .version_id = 8,
+    .version_id = 9,
     .minimum_version_id = 1,
     .post_load = xframe_post_load,
     .fields = (const VMStateField[]) {
@@ -3464,6 +3521,8 @@ static const VMStateDescription vmstate_xframe = {
         VMSTATE_TIMER_PTR_V(link_down_timer, XframeState, 2),
         VMSTATE_TIMER_PTR_V(link_up_timer, XframeState, 2),
         VMSTATE_BOOL_V(legacy_interrupt_masking, XframeState, 8),
+        VMSTATE_STRUCT(rx_latency, XframeState, 9,
+                       vmstate_sgi_net_rx_latency, SGINetRxLatency),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -3483,6 +3542,8 @@ static const Property xframe_properties[] = {
     DEFINE_PROP_UINT16("subsystem-vendor-id", XframeState,
                        subsystem_vendor_id, 0),
     DEFINE_PROP_UINT16("subsystem-id", XframeState, subsystem_id, 0),
+    DEFINE_PROP_UINT32("rx-arrival-latency-us", XframeState,
+                       rx_arrival_latency_us, SGI_NET_RX_LATENCY_DEFAULT_US),
     DEFINE_NIC_PROPERTIES(XframeState, conf),
 };
 
