@@ -110,6 +110,17 @@
 #define TI_EV_LINKSTAT_CHANGED  0x06
 #define TI_EV_CODE_GIG_LINK_UP  0x01
 
+/*
+ * Command word fields: opcode in bits 31:24, code in 23:12, index in 11:0.
+ * OpenBSD sys/dev/ic/tireg.h:856-858 spells the three out as accessors and
+ * its TI_DO_CMD packs them the same way (tireg.h:906-910); Linux's struct cmd
+ * is the same three bitfields in that order (acenic.h:362-372, at the
+ * revision docs/datasheets/tigon.md declares).
+ */
+#define TI_CMD_OP(word)         (((word) >> 24) & 0xff)
+#define TI_CMD_CODE(word)       (((word) >> 12) & 0xfff)
+#define TI_CMD_IDX(word)        ((word) & 0xfff)
+
 /* Command opcode: the driver asks the firmware to negotiate the link. */
 #define TI_CMD_LINK_NEGOTIATION 0x0b
 #define TI_CMD_SET_PROMISC_MODE 0x0a
@@ -1047,25 +1058,24 @@ static void tigon_run_commands(TigonState *s, uint32_t prod)
     while (s->cmd_considx != prod) {
         uint32_t cmd = s->cmd_ring[s->cmd_considx];
 
-        trace_tigon_command(cmd >> 24, (cmd >> 12) & 0xfff, cmd & 0xfff);
-        if (s->firmware_up && (cmd >> 24) == TI_CMD_LINK_NEGOTIATION) {
+        trace_tigon_command(TI_CMD_OP(cmd), TI_CMD_CODE(cmd), TI_CMD_IDX(cmd));
+        if (s->firmware_up && TI_CMD_OP(cmd) == TI_CMD_LINK_NEGOTIATION) {
             timer_mod(s->link_timer,
                       qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                       TIGON_LINK_DELAY_NS);
-        } else if ((cmd >> 24) == TI_CMD_SET_PROMISC_MODE) {
-            s->promisc = ((cmd >> 16) & 0xff) == TI_CMD_CODE_PROMISC_ENB;
-        } else if ((cmd >> 24) == TI_CMD_SET_MAC_ADDR) {
+        } else if (TI_CMD_OP(cmd) == TI_CMD_SET_PROMISC_MODE) {
+            s->promisc = TI_CMD_CODE(cmd) == TI_CMD_CODE_PROMISC_ENB;
+        } else if (TI_CMD_OP(cmd) == TI_CMD_SET_MAC_ADDR) {
             tigon_set_station_address(s);
-        } else if ((cmd >> 24) == TI_CMD_HOST_STATE) {
-            s->stack_up = ((cmd >> 12) & 0xfff) == TI_CMD_CODE_STACK_UP;
-        } else if ((cmd >> 24) == TI_CMD_RFRSH_STATS ||
-                   (cmd >> 24) == TI_CMD_UPDATE_GENCOM) {
+        } else if (TI_CMD_OP(cmd) == TI_CMD_HOST_STATE) {
+            s->stack_up = TI_CMD_CODE(cmd) == TI_CMD_CODE_STACK_UP;
+        } else if (TI_CMD_OP(cmd) == TI_CMD_RFRSH_STATS ||
+                   TI_CMD_OP(cmd) == TI_CMD_UPDATE_GENCOM) {
             tigon_stats_refresh(s);
-        } else if ((cmd >> 24) == TI_CMD_CLR_STATS) {
+        } else if (TI_CMD_OP(cmd) == TI_CMD_CLR_STATS) {
             tigon_stats_clear(s);
-        } else if ((cmd >> 24) == TI_CMD_SET_RX_JUMBO_PROD_IDX) {
-            /* The index rides in the command word's low 12 bits. */
-            uint32_t idx = cmd & 0xfff;
+        } else if (TI_CMD_OP(cmd) == TI_CMD_SET_RX_JUMBO_PROD_IDX) {
+            uint32_t idx = TI_CMD_IDX(cmd);
 
             if (idx >= TI_JUMBO_RX_RING_CNT) {
                 qemu_log_mask(LOG_GUEST_ERROR,
@@ -1079,7 +1089,7 @@ static void tigon_run_commands(TigonState *s, uint32_t prod)
         } else if (cmd != 0) {
             qemu_log_mask(LOG_UNIMP,
                           "tigon: unhandled firmware command 0x%02x "
-                          "(word 0x%08x)\n", cmd >> 24, cmd);
+                          "(word 0x%08x)\n", TI_CMD_OP(cmd), cmd);
         }
         s->cmd_considx = (s->cmd_considx + 1) % TIGON_CMD_RING_CNT;
     }
