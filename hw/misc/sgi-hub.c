@@ -1370,8 +1370,7 @@ static uint64_t sgi_hub_read_rt_compare(SGIHubState *s, hwaddr addr,
     if (value && current_cpu && owner && current_cpu != owner) {
         s->pi_rt_observed_gen[arg] = s->pi_rt_publish_gen[arg];
         qemu_cond_broadcast(&s->pi_rt_handoff_cond);
-    } else if (!value && !s->pi_rt_enable[arg] &&
-               tcg_enabled() && qemu_tcg_mttcg_enabled() &&
+    } else if (!value && tcg_enabled() && qemu_tcg_mttcg_enabled() &&
                current_cpu && owner && current_cpu != owner &&
                cpu_can_run(owner) && !owner->halted) {
         sgi_hub_kick_peer(owner);
