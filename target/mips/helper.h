@@ -165,8 +165,8 @@ FOP_PROTO(chs)
 /*
  * The R10000's arithmetic ABS.fmt and NEG.fmt, which touch the FSR.
  * gen_farith() emits them for every target, linux-user included, so
- * their definitions stay in the common fpu_helper.c rather than moving
- * to an R10000 system file.
+ * their definitions live in r10k_fpu.c in the common source set rather
+ * than an R10000 system file.
  */
 #define FOP_PROTO(op)                                 \
 DEF_HELPER_2(float_ ## op ## _s_r10k, i32, env, i32)  \
