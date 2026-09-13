@@ -215,10 +215,11 @@ static void stop_transfer(QTestState *qts, unsigned node)
  * once a millisecond, so a transaction that loses arbitration is retried
  * rather than failed: firmware does the same.
  */
-static unsigned msc_command(QTestState *qts, unsigned node, const char *text,
-                            uint8_t *response, unsigned cap)
+static bool msc_command_once(QTestState *qts, unsigned node, const char *text,
+                             uint8_t *response, unsigned cap,
+                             unsigned *response_size)
 {
-    unsigned attempt, i, total, len = strlen(text);
+    unsigned i, total, len = strlen(text);
     uint8_t request[16], sum = 0;
 
     g_assert_cmpuint(len + 2, <=, sizeof(request));
@@ -229,31 +230,42 @@ static unsigned msc_command(QTestState *qts, unsigned node, const char *text,
     }
     request[len + 1] = (uint8_t)-(int)sum;
 
-    for (attempt = 0; attempt < 8; attempt++) {
-        if (!start_transfer(qts, node, MSC_ADDRESS, false)) {
-            stop_transfer(qts, node);
-            continue;
-        }
-        for (i = 0; i < len + 2; i++) {
-            g_assert_true(send_byte(qts, node, request[i]));
-        }
-        g_assert_true(restart_transfer(qts, node, MSC_ADDRESS, true));
-        discard_byte(qts, node);
-        response[0] = take_byte(qts, node, false);
-        total = (unsigned)response[0] + 2;
-        g_assert_cmpuint(total, <=, cap);
-        for (i = 1; i < total; i++) {
-            response[i] = take_byte(qts, node, i == total - 1);
-        }
-        g_assert_false(restart_transfer(qts, node, INVALID_ADDRESS, false));
+    if (!start_transfer(qts, node, MSC_ADDRESS, false)) {
         stop_transfer(qts, node);
+        return false;
+    }
+    for (i = 0; i < len + 2; i++) {
+        g_assert_true(send_byte(qts, node, request[i]));
+    }
+    g_assert_true(restart_transfer(qts, node, MSC_ADDRESS, true));
+    discard_byte(qts, node);
+    response[0] = take_byte(qts, node, false);
+    total = (unsigned)response[0] + 2;
+    g_assert_cmpuint(total, <=, cap);
+    for (i = 1; i < total; i++) {
+        response[i] = take_byte(qts, node, i == total - 1);
+    }
+    g_assert_false(restart_transfer(qts, node, INVALID_ADDRESS, false));
+    stop_transfer(qts, node);
 
-        sum = 0;
-        for (i = 0; i < total; i++) {
-            sum += response[i];
+    sum = 0;
+    for (i = 0; i < total; i++) {
+        sum += response[i];
+    }
+    g_assert_cmphex(sum, ==, 0);
+    *response_size = total;
+    return true;
+}
+
+static unsigned msc_command(QTestState *qts, unsigned node, const char *text,
+                            uint8_t *response, unsigned cap)
+{
+    unsigned attempt, total;
+
+    for (attempt = 0; attempt < 8; attempt++) {
+        if (msc_command_once(qts, node, text, response, cap, &total)) {
+            return total;
         }
-        g_assert_cmphex(sum, ==, 0);
-        return total;
     }
     g_assert_not_reached();
 }
@@ -513,6 +525,64 @@ static void test_start_loses_to_grant(void)
                     (STS_LRB | STS_BER | STS_LAB), ==,
                     STS_LRB | STS_LAB);
     stop_transfer(qts, 0);
+    qtest_quit(qts);
+}
+
+static void wait_for_global_grant(QTestState *qts, uint8_t expected)
+{
+    for (unsigned step = 0; step < 2 * POLL_STEPS; step++) {
+        bool seen = true;
+
+        for (unsigned node = 0; node < ADAPTER_COUNT; node++) {
+            uint8_t status = adapter_read(qts, node, I2C_CTRL);
+
+            g_assert_cmphex(status & (STS_BER | STS_LAB), ==, 0);
+            if (!(status & STS_BB) ||
+                adapter_read(qts, node, I2C_DATA) != expected) {
+                seen = false;
+            }
+        }
+        if (seen) {
+            return;
+        }
+        qtest_clock_step(qts, POLL_STEP_NS);
+    }
+    g_assert_not_reached();
+}
+
+/*
+ * The grant ring covers all eight processors through four adapters. Keep the
+ * two middle Hubs between the endpoint controls, issue a real controller
+ * transaction in every slot, and require the next grant to be consecutive.
+ * A retry here would conceal the skipped-slot failure this test is for.
+ */
+static void test_global_grant_rotation(void)
+{
+    static const unsigned adapter_by_processor[] = { 0, 0, 1, 1, 2, 2, 3, 3 };
+    QTestState *qts = start_module();
+
+    for (unsigned reset = 0; reset < 2; reset++) {
+        for (unsigned processor = 0;
+             processor < G_N_ELEMENTS(adapter_by_processor); processor++) {
+            unsigned node = adapter_by_processor[processor];
+            uint8_t response[RESP_CAP];
+            unsigned response_size;
+
+            wait_for_global_grant(qts, GRANT_BASE | processor);
+            g_assert_true(msc_command_once(qts, node, "ver", response,
+                                           sizeof(response), &response_size));
+            g_assert_cmpuint(response[0], >=, 2);
+            g_assert_cmpmem(&response[1], 2, "ok", 2);
+            g_assert_cmphex(adapter_read(qts, node, I2C_CTRL) &
+                            (STS_BER | STS_LAB), ==, 0);
+        }
+        if (!reset) {
+            qtest_system_reset(qts);
+            for (unsigned node = 0; node < ADAPTER_COUNT; node++) {
+                init_adapter(qts, node);
+            }
+        }
+    }
     qtest_quit(qts);
 }
 
@@ -904,6 +974,8 @@ int main(int argc, char **argv)
                    test_windows_share_one_wire);
     qtest_add_func("/sn0/o2000-module-management/start-loses-to-grant",
                    test_start_loses_to_grant);
+    qtest_add_func("/sn0/o2000-module-management/global-grant-rotation",
+                   test_global_grant_rotation);
     qtest_add_func("/sn0/o2000-module-management/shared-nvram",
                    test_nvram_is_shared);
     qtest_add_func("/sn0/o2000-module-management/initial-identity",
