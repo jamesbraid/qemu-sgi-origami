@@ -492,10 +492,6 @@ static uint8_t pcf8584_wire_read_data(PCF8584State *s)
                             i2c_bus_busy(s->bus), s->bus->owner,
                             i2c_wire_contenders(s->bus));
 
-    if (s->data_read) {
-        s->data_read(s->data_read_opaque, s->wire_master, val);
-    }
-
     if (s->wire_hold_release == PCF8584_HOLD_READ) {
         /* Addressed as a receiver: the read releases our own clock hold. */
         pcf8584_wire_release_hold(s);
@@ -839,13 +835,6 @@ void pcf8584_write_register(PCF8584State *s, hwaddr addr, uint64_t value,
                             unsigned size)
 {
     pcf8584_write(s, addr, value, size);
-}
-
-void pcf8584_set_data_read_handler(PCF8584State *s,
-                                   PCF8584DataRead handler, void *opaque)
-{
-    s->data_read = handler;
-    s->data_read_opaque = opaque;
 }
 
 /*

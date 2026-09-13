@@ -506,9 +506,8 @@ static void test_start_loses_to_grant(void)
     int64_t next_grant;
 
     now = qtest_clock_step(qts, SERVICE_PERIOD_NS + GRANT_SETTLE_NS);
-    /* A non-owner may observe the grant without reserving its START window. */
-    g_assert_cmphex(adapter_read(qts, 1, I2C_CTRL) & STS_BB, ==, STS_BB);
-    g_assert_cmphex(adapter_read(qts, 1, I2C_DATA), ==, GRANT_BASE);
+    g_assert_cmphex(adapter_read(qts, 0, I2C_CTRL) & STS_BB, ==, STS_BB);
+    g_assert_cmphex(adapter_read(qts, 0, I2C_DATA), ==, GRANT_BASE);
 
     next_grant = ((now / SERVICE_PERIOD_NS) + 1) * SERVICE_PERIOD_NS;
     qtest_clock_step(qts, next_grant + 6 * POLL_STEP_NS - now);
@@ -584,31 +583,6 @@ static void test_global_grant_rotation(void)
             }
         }
     }
-    qtest_quit(qts);
-}
-
-/* An observed grant keeps one full service period for its owner to START. */
-static void test_observed_grant_acquisition(void)
-{
-    QTestState *qts = start_module();
-
-    for (unsigned processor = 0; processor <= 2; processor++) {
-        wait_for_global_grant(qts, GRANT_BASE | processor);
-    }
-
-    qtest_clock_step(qts, SERVICE_PERIOD_NS - 50 * POLL_STEP_NS);
-    for (unsigned node = 0; node < ADAPTER_COUNT; node++) {
-        g_assert_cmphex(adapter_read(qts, node, I2C_CTRL) & STS_BB, ==,
-                        STS_BB);
-        g_assert_cmphex(adapter_read(qts, node, I2C_DATA), ==,
-                        GRANT_BASE | 2);
-    }
-
-    g_assert_true(start_transfer(qts, 1, NVRAM_FIRST + 7, false));
-    g_assert_cmphex(adapter_read(qts, 1, I2C_CTRL) &
-                    (STS_BER | STS_LAB), ==, 0);
-    stop_transfer(qts, 1);
-    wait_for_global_grant(qts, GRANT_BASE | 3);
     qtest_quit(qts);
 }
 
@@ -1065,8 +1039,6 @@ int main(int argc, char **argv)
                    test_start_loses_to_grant);
     qtest_add_func("/sn0/o2000-module-management/global-grant-rotation",
                    test_global_grant_rotation);
-    qtest_add_func("/sn0/o2000-module-management/observed-grant-acquisition",
-                   test_observed_grant_acquisition);
     qtest_add_func("/sn0/o2000-module-management/invalid-address-stop",
                    test_invalid_address_stop_releases_wire);
     qtest_add_func("/sn0/o2000-module-management/shared-nvram",

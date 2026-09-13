@@ -17,8 +17,6 @@
 #define TYPE_PCF8584 "pcf8584"
 OBJECT_DECLARE_SIMPLE_TYPE(PCF8584State, PCF8584)
 
-typedef void (*PCF8584DataRead)(void *opaque, uint32_t master, uint8_t value);
-
 /*
  * Two addresses selected by the A0 pin, spaced eight bytes apart the way the
  * Origin 200's Hub wires it.
@@ -78,8 +76,6 @@ struct PCF8584State {
     I2CBus *bus;
     I2CSlave *rx;               /* this adapter's own endpoint on that bus */
     qemu_irq irq;
-    PCF8584DataRead data_read;
-    void *data_read_opaque;
     DeviceDiagnosticSink *diagnostic;
 
     /*
@@ -144,7 +140,5 @@ struct PCF8584State {
 uint64_t pcf8584_read_register(PCF8584State *s, hwaddr addr, unsigned size);
 void pcf8584_write_register(PCF8584State *s, hwaddr addr, uint64_t value,
                             unsigned size);
-void pcf8584_set_data_read_handler(PCF8584State *s,
-                                   PCF8584DataRead handler, void *opaque);
 
 #endif /* HW_I2C_PCF8584_H */
