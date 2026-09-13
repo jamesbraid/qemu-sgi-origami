@@ -95,6 +95,7 @@ struct SGIO2000ModuleMgmtState {
     uint8_t grant_state;
     bool grant_bit_sampled;
     bool grant_active;
+    bool grant_window_extended;
     bool wire_scl;
     bool wire_sda;
     bool publication_enabled;
