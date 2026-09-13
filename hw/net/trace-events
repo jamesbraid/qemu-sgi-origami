@@ -569,6 +569,9 @@ tigon_descriptor_dma_route(const char *direction, uint64_t addr, uint32_t len) "
 tigon_payload_dma_route(const char *route) "%s"
 tigon_rx_flush(void) "deferred receive flush"
 tigon_receive_iov(int iovcnt, size_t size) "%d vectors, %zu bytes"
+tigon_command(uint8_t cmd, uint16_t code, uint16_t idx) "command 0x%02x code 0x%03x idx 0x%03x"
+tigon_gib(uint64_t gib, uint64_t stats_ptr) "block 0x%" PRIx64 " statistics refresh pointer 0x%" PRIx64
+tigon_stats(uint64_t addr, uint64_t rx_frames, uint64_t tx_frames, unsigned result) "publish at 0x%" PRIx64 ", rx %" PRIu64 " frames, tx %" PRIu64 " frames, result %u"
 
 # xframe.c
 xframe_rx_descriptor_fetch(uint64_t addr, unsigned size) "addr 0x%" PRIx64 " size %u"

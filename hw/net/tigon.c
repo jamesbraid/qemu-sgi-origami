@@ -693,6 +693,7 @@ static MemTxResult tigon_parse_gib(TigonState *s)
     s->return_prodidx_ptr = return_prodidx_ptr;
     s->tx_considx_ptr = tx_considx_ptr;
     s->refresh_stats_ptr = refresh_stats_ptr;
+    trace_tigon_gib(g, refresh_stats_ptr);
     return MEMTX_OK;
 }
 
@@ -829,6 +830,7 @@ static MemTxResult tigon_publish_stats(TigonState *s, uint64_t addr)
                               addr, image, sizeof(image),
                               MEMTXATTRS_UNSPECIFIED);
     trace_tigon_dma("write", addr, sizeof(image), result);
+    trace_tigon_stats(addr, s->stat_rx_ucast, s->stat_tx_ucast, result);
     return result;
 }
 
@@ -1045,6 +1047,7 @@ static void tigon_run_commands(TigonState *s, uint32_t prod)
     while (s->cmd_considx != prod) {
         uint32_t cmd = s->cmd_ring[s->cmd_considx];
 
+        trace_tigon_command(cmd >> 24, (cmd >> 12) & 0xfff, cmd & 0xfff);
         if (s->firmware_up && (cmd >> 24) == TI_CMD_LINK_NEGOTIATION) {
             timer_mod(s->link_timer,
                       qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
