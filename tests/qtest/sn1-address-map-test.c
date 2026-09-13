@@ -14,6 +14,7 @@
 #include "qemu/units.h"
 #include "hw/misc/sgi-bedrock-flash.h"
 #include "libqtest.h"
+#include "hw/mips/sn1-origin300-model-id.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include <poll.h>
@@ -2905,6 +2906,37 @@ static void test_system_reset_clears_bedrock_state(const void *data)
     qtest_quit(qts);
 }
 
+static void test_model_id(const void *data)
+{
+    const char *option = data;
+    QTestState *qts = qtest_initf("-M origin300%s --preconfig", option);
+    QDict *response = qtest_qmp(
+        qts, "{ 'execute': 'qom-get',"
+             " 'arguments': { 'path': '/machine', 'property': 'model-id' } }");
+
+    g_assert_cmpstr(qdict_get_str(response, "return"), ==,
+                    ORIGAMI_ORIGIN300_MODEL_ID);
+    qobject_unref(response);
+    qtest_quit(qts);
+}
+
+static void test_model_id_mismatch(void)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin300,model-id=wrong",
+        "-display", "none", "-bios", "/definitely/not/a/prom", NULL
+    };
+    g_autofree char *error_output = NULL;
+    int wait_status = 0;
+
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                              NULL, &error_output, &wait_status, NULL));
+    g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
+    g_assert_nonnull(strstr(error_output, "origin300 model-id mismatch"));
+    g_assert_nonnull(strstr(error_output, "requested 'wrong'"));
+    g_assert_nonnull(strstr(error_output, ORIGAMI_ORIGIN300_MODEL_ID));
+}
+
 int main(int argc, char **argv)
 {
     static const uint64_t nmi_a = PI_NMI_A;
@@ -2912,6 +2944,12 @@ int main(int argc, char **argv)
     int result;
 
     g_test_init(&argc, &argv, NULL);
+    qtest_add_data_func("sn1/address-map/model-id/omitted", "",
+                        test_model_id);
+    qtest_add_data_func("sn1/address-map/model-id/matching",
+                        ",model-id=" ORIGAMI_ORIGIN300_MODEL_ID, test_model_id);
+    qtest_add_func("sn1/address-map/model-id/mismatch",
+                   test_model_id_mismatch);
     prom_path = create_prom(0x31, 0x62, 0x93);
 
     qtest_add_data_func("sn1/address-map/ram-and-hub-alias", NULL,
