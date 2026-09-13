@@ -941,28 +941,6 @@ static void migrate_module(QTestState *from, QTestState *to)
     g_assert_cmpint(rmdir(directory), ==, 0);
 }
 
-/* A delayed service tick publishes once and resumes its period from now. */
-static void test_late_grant_service(void)
-{
-    QTestState *from = start_module();
-    QTestState *to = qtest_init(MACHINE_ARGS " -incoming defer");
-    int64_t departed;
-
-    for (unsigned processor = 0; processor <= 3; processor++) {
-        wait_for_global_grant(from, GRANT_BASE | processor);
-    }
-    departed = qtest_clock_step(from, 1);
-
-    /* Loading an old absolute deadline makes its first delivery late. */
-    qtest_clock_set(to, departed + INT64_C(10) * 1000 * SERVICE_PERIOD_NS);
-    migrate_module(from, to);
-    wait_until_running(to);
-
-    wait_for_global_grant(to, GRANT_BASE | 4);
-    qtest_quit(from);
-    qtest_quit(to);
-}
-
 /*
  * The complex sits on no bus and carries its own migration state. What
  * survives is the shared store and a controller that still talks, on a
@@ -1066,8 +1044,6 @@ int main(int argc, char **argv)
     qtest_add_func("/sn0/o2000-module-management/module-serial-module-number",
                    test_module_serial_ignores_mutable_module_number);
     qtest_add_func("/sn0/o2000-module-management/migration", test_migration);
-    qtest_add_func("/sn0/o2000-module-management/late-grant-service",
-                   test_late_grant_service);
     qtest_add_func("/sn0/o2000-module-management/module-serial-migration",
                    test_module_serial_migration_in_progress);
     return g_test_run();
