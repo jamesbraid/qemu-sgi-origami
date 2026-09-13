@@ -1,13 +1,11 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * Exercise the R10000's deterministic load-linked link breakers on a neutral
- * Malta carrier.  The processor requires SC to fail if an LL/SC sequence
- * contains another load or store, SYNC, CACHE, PREF, an exception, or ERET.
- *
- * R4000 and R14000 cases pin their existing behavior.  This matters because
- * QEMU historically keeps the link until SC sees an address or value mismatch,
- * apart from its existing exception and ERET handling.
+ * Exercise the R10000's deterministic load-linked link breakers on the
+ * Origin 200, the only machine this fork builds that carries the R10000.
+ * The processor requires SC to fail if an LL/SC sequence contains another
+ * load or store, SYNC, CACHE, PREF, an exception, or ERET.  The synthesized
+ * firmware is off so the fragment owns the reset vector and low memory.
  */
 
 #include "qemu/osdep.h"
@@ -99,17 +97,6 @@ typedef struct CPUCase {
 
 static const CPUCase cpu_cases[] = {
     { "R10000", true, 0 },
-    {
-        "R4000", false,
-        (1u << BREAK_LOAD) | (1u << BREAK_STORE) | (1u << BREAK_SYNC) |
-        (1u << BREAK_CACHE) | (1u << BREAK_PREF) |
-        (1u << BREAK_EXCEPTION),
-    },
-    {
-        "R14000", true,
-        (1u << BREAK_LOAD) | (1u << BREAK_STORE) | (1u << BREAK_SYNC) |
-        (1u << BREAK_CACHE) | (1u << BREAK_PREF),
-    },
 };
 
 static const char *const breaker_names[] = {
@@ -353,12 +340,13 @@ static void test_cpu(gconstpointer opaque)
     uint32_t wrong_value_mask = 0;
     int fd;
 
-    fd = g_file_open_tmp("mips64-r10k-llsc-image-XXXXXX", &image, NULL);
+    fd = g_file_open_tmp("sn0-r10k-llsc-image-XXXXXX", &image, NULL);
     g_assert_cmpint(fd, >=, 0);
     write_guest_image(fd, cpu_case->has_pref);
     close(fd);
 
-    qts = qtest_initf("-M malta -m 64M -cpu %s -bios %s -accel tcg "
+    qts = qtest_initf("-M origin200,synthesized-firmware=off -m 64M "
+                      "-cpu %s -bios %s -accel tcg "
                       "-no-reboot -no-shutdown", cpu_case->name, image);
     unlink(image);
     wait_for_done(qts);
@@ -395,7 +383,5 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
 
     g_test_add_data_func("/r10k-llsc/r10000", &cpu_cases[0], test_cpu);
-    g_test_add_data_func("/r10k-llsc/r4000", &cpu_cases[1], test_cpu);
-    g_test_add_data_func("/r10k-llsc/r14000", &cpu_cases[2], test_cpu);
     return g_test_run();
 }
