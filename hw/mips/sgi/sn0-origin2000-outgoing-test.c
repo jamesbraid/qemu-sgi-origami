@@ -452,10 +452,10 @@ static void outgoing_test_init(MachineState *machine)
                 }
             }
             qdev_prop_set_uint64(dev, "span", SN0_XTALK_WIDGET_SIZE);
-            qdev_prop_set_uint32(dev, "widget-revision",
+            qdev_prop_set_uint32(dev, "revision",
                                  model->widget_revision);
-            qdev_prop_set_uint32(dev, "widget-part", model->widget_part);
-            qdev_prop_set_uint32(dev, "widget-manufacturer",
+            qdev_prop_set_uint32(dev, "part", model->widget_part);
+            qdev_prop_set_uint32(dev, "manufacturer",
                                  model->widget_manufacturer);
             qdev_prop_set_uint16(dev, "links-present", present);
             qdev_prop_set_uint16(dev, "startup-links-alive",
