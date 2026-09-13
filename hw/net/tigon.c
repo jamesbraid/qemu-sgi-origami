@@ -822,10 +822,11 @@ static MemTxResult tigon_publish_stats(TigonState *s, uint64_t addr)
      * The station address sits in the last six bytes of an eight-byte field,
      * behind two zero bytes -- the same padding the serial EEPROM puts in
      * front of it -- and is published as the two words the host's own address
-     * registers already hold. A host reading the field's first six bytes
-     * instead gets two zeroes and the address short by its last two octets
-     * (observed on the IRIX guest, whose board utility prints bytes two
-     * through seven).
+     * registers already hold. The IRIX board utility prints bytes two through
+     * seven of the field, so placing the address at the field's start instead
+     * makes it print the address short by its first two octets followed by two
+     * zeroes: 0:12:34:56:0:0 for a card at 52:54:00:12:34:56, observed on run
+     * irix-20260913T170938-bf92af.
      */
     tigon_stats_put32(image, TI_STAT_IF_PHYS_ADDRESS,
                       ((uint32_t)s->station_addr.a[0] << 8) |
