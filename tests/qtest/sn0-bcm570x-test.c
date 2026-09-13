@@ -492,6 +492,9 @@ static void pump_settle(QTestState *qts)
  * that goes to the jumbo ring whenever it is not disabled and has a host
  * base -- exactly the state IRIX 6.5.30 leaves it in at MTU 9000: it posts
  * the jumbo RCB's host and NIC addresses but never touches 0x2448.
+ *
+ * Pins ring selection, not arrival timing, so the floor is zeroed: the
+ * completed descriptor is checked the instant it lands.
  */
 static void test_jumbo_ring_selected_by_standard_length(const void *data)
 {
@@ -503,7 +506,8 @@ static void test_jumbo_ring_selected_by_standard_length(const void *data)
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
-                      "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC, sv[1]);
+                      "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC
+                      ",rx-arrival-latency-us=0", sv[1]);
     aim_window_at_bar(qts);
 
     bar_writel(qts, BCM_HCC_STATUSBLK_ADDR_HI, IOVA(STATUS_PHYS) >> 32);
@@ -566,6 +570,9 @@ static void test_jumbo_ring_selected_by_standard_length(const void *data)
  * clearing Max_Len, which hardware ignores anyway. A frame too big for the
  * standard ring must be dropped while that bit is set, and the standard
  * ring must keep working afterward.
+ *
+ * Pins ring selection, not arrival timing, so the floor is zeroed: the
+ * completed descriptor is checked the instant it lands.
  */
 static void test_jumbo_ring_disabled_drops_oversize(const void *data)
 {
@@ -578,7 +585,8 @@ static void test_jumbo_ring_disabled_drops_oversize(const void *data)
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
-                      "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC, sv[1]);
+                      "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC
+                      ",rx-arrival-latency-us=0", sv[1]);
     aim_window_at_bar(qts);
 
     bar_writel(qts, BCM_HCC_STATUSBLK_ADDR_HI, IOVA(STATUS_PHYS) >> 32);
@@ -646,6 +654,9 @@ static void test_jumbo_ring_disabled_drops_oversize(const void *data)
  * be able to land in it. That is asserted here indirectly, by sending one:
  * if the consumer had advanced anyway, the ring would look empty to it and
  * the fitting frame would stall rather than complete.
+ *
+ * Pins overrun and consumer-position handling, not arrival timing, so the
+ * floor is zeroed: the completed descriptor is checked the instant it lands.
  */
 static void test_jumbo_frame_overruns_descriptor(const void *data)
 {
@@ -658,7 +669,8 @@ static void test_jumbo_frame_overruns_descriptor(const void *data)
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
-                      "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC, sv[1]);
+                      "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC
+                      ",rx-arrival-latency-us=0", sv[1]);
     aim_window_at_bar(qts);
 
     bar_writel(qts, BCM_HCC_STATUSBLK_ADDR_HI, IOVA(STATUS_PHYS) >> 32);
