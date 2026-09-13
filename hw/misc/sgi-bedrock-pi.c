@@ -60,6 +60,7 @@
 #define PI_ERROR_STATUS_0_B_CLEAR 0x458
 #define PI_ERROR_STATUS_1_B  0x460
 #define PI_ERROR_STATUS_1_B_CLEAR 0x468
+#define PI_ERR_CHECK_ENABLE  0x490
 #define PI_NACK_COUNT_A      0x4a8
 #define PI_NACK_COUNT_B      0x4b0
 #define PI_NACK_COMPARE      0x4b8
@@ -72,6 +73,7 @@
 #define PI_NACK_ENABLE       (1ULL << 20)
 #define PI_NACK_COMPARE_MASK ((1ULL << 20) - 1)
 #define PI_SPOOL_MASK_MASK   0x3f
+#define PI_ERR_CHECK_MASK    0x3f
 
 #define PI_PASSWORD 0x53474972756c6573ULL
 #define PI_ERROR_MASK ((1ULL << 35) - 1)
@@ -346,6 +348,7 @@ static uint64_t pi_read(void *opaque, hwaddr offset, unsigned size)
     case PI_ERROR_STATUS_0_B_CLEAR: return s->error_status[1][0];
     case PI_ERROR_STATUS_1_B:
     case PI_ERROR_STATUS_1_B_CLEAR: return s->error_status[1][1];
+    case PI_ERR_CHECK_ENABLE: return s->err_check_enable;
     case PI_NACK_COUNT_A: return s->nack_count[0];
     case PI_NACK_COUNT_B: return s->nack_count[1];
     case PI_NACK_COMPARE: return s->nack_compare;
@@ -557,6 +560,16 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
         s->error_status[1][0] = 0;
         s->error_status[1][1] = 0;
         return;
+    /*
+     * System-bus error checking and forwarding: six enable bits (ECC and
+     * data-quality generation, SysAD/command parity, state and data-quality
+     * checks) over reserved high bits. The model has no bus fabric to apply
+     * them to, so it stores the control word and reads the reserved bits back
+     * as zero; nothing selects checking off a modelled transaction.
+     */
+    case PI_ERR_CHECK_ENABLE:
+        s->err_check_enable = value & PI_ERR_CHECK_MASK;
+        return;
     case PI_NACK_COUNT_A:
     case PI_NACK_COUNT_B:
         s->nack_count[offset == PI_NACK_COUNT_B] = value & PI_NACK_COUNT_MASK;
@@ -613,6 +626,7 @@ static void pi_reset_enter(Object *obj, ResetType type)
     memset(s->nack_count, 0, sizeof(s->nack_count));
     s->nack_compare = 0;
     s->spool_mask = 0;
+    s->err_check_enable = 0;
     s->rt_base = 0;
     s->rt_base_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     memset(s->rt_compare, 0, sizeof(s->rt_compare));
@@ -662,8 +676,8 @@ static int pi_pre_save(void *opaque)
 
 static const VMStateDescription vmstate_pi = {
     .name = TYPE_SGI_BEDROCK_PI,
-    .version_id = 3,
-    .minimum_version_id = 3,
+    .version_id = 4,
+    .minimum_version_id = 4,
     .pre_save = pi_pre_save,
     .post_load = pi_post_load,
     .fields = (const VMStateField[]) {
@@ -685,6 +699,7 @@ static const VMStateDescription vmstate_pi = {
         VMSTATE_UINT64_ARRAY(nack_count, SGIBedrockPIState, 2),
         VMSTATE_UINT32(nack_compare, SGIBedrockPIState),
         VMSTATE_UINT8(spool_mask, SGIBedrockPIState),
+        VMSTATE_UINT8(err_check_enable, SGIBedrockPIState),
         VMSTATE_UINT64_ARRAY(spurious_header, SGIBedrockPIState, 2),
         VMSTATE_UINT64(rt_base, SGIBedrockPIState),
         VMSTATE_INT64(rt_base_ns, SGIBedrockPIState),

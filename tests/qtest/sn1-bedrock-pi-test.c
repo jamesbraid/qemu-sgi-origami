@@ -71,6 +71,7 @@
 #define ERROR_STATUS_0_B_CLEAR 0x458
 #define ERROR_STATUS_1_B 0x460
 #define ERROR_STATUS_1_B_CLEAR 0x468
+#define ERR_CHECK_ENABLE 0x490
 #define NACK_COUNT_A 0x4a8
 #define NACK_COUNT_B 0x4b0
 #define NACK_COMPARE 0x4b8
@@ -510,6 +511,7 @@ static void test_power_on_values(void)
         { REMAP, 0 }, { ERROR_PENDING, 0 },
         { ERROR_MASK_A, 0 }, { ERROR_MASK_B, 0 },
         { ERROR_STACK_A, 0 }, { ERROR_STACK_B, 0 }, { ERROR_STACK_SIZE, 0 },
+        { ERR_CHECK_ENABLE, 0 },
         { RT_COMPARE_A, 0 }, { RT_COMPARE_B, 0 }, { PROFILE_COMPARE, 0 },
         { RT_PENDING_A, 0 }, { RT_PENDING_B, 0 },
         { PROFILE_PENDING_A, 0 }, { PROFILE_PENDING_B, 0 },
@@ -658,12 +660,15 @@ static void test_error_capture_registers(void)
     qtest_writeq(s, PI(0, NACK_COUNT_B), 0x12345);
     qtest_writeq(s, PI(0, NACK_COMPARE), UINT64_MAX);
     qtest_writeq(s, PI(0, SPOOL_MASK), UINT64_MAX);
+    /* The error-check enable keeps its six control bits over reserved ones. */
+    qtest_writeq(s, PI(0, ERR_CHECK_ENABLE), UINT64_MAX);
     qtest_writeq(s, PI(0, SPURIOUS_HEADER_0), 0x8123456789abcdefULL);
     qtest_writeq(s, PI(0, SPURIOUS_HEADER_1), 0x0fedcba987654321ULL);
     g_assert_cmphex(qtest_readq(s, PI(0, NACK_COUNT_A)), ==, 0x1fffff);
     g_assert_cmphex(qtest_readq(s, PI(0, NACK_COUNT_B)), ==, 0x12345);
     g_assert_cmphex(qtest_readq(s, PI(0, NACK_COMPARE)), ==, 0xfffff);
     g_assert_cmphex(qtest_readq(s, PI(0, SPOOL_MASK)), ==, 0x3f);
+    g_assert_cmphex(qtest_readq(s, PI(0, ERR_CHECK_ENABLE)), ==, 0x3f);
     g_assert_cmphex(qtest_readq(s, PI(0, SPURIOUS_HEADER_0)), ==,
                     0x8123456789abcdefULL);
     g_assert_cmphex(qtest_readq(s, PI(0, SPURIOUS_HEADER_1)), ==,
@@ -685,6 +690,7 @@ static void test_error_capture_registers(void)
     g_assert_cmphex(qtest_readq(s, PI(0, NACK_COUNT_B)), ==, 0);
     g_assert_cmphex(qtest_readq(s, PI(0, NACK_COMPARE)), ==, 0);
     g_assert_cmphex(qtest_readq(s, PI(0, SPOOL_MASK)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, ERR_CHECK_ENABLE)), ==, 0);
     qtest_quit(s);
 }
 

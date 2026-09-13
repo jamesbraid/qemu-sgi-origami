@@ -47,6 +47,7 @@ struct SGIBedrockPIState {
     uint64_t nack_count[2];
     uint32_t nack_compare;
     uint8_t spool_mask;
+    uint8_t err_check_enable;
     uint64_t spurious_header[2];
     uint64_t rt_base;
     int64_t rt_base_ns;
