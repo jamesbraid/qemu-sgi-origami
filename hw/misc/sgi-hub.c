@@ -1651,6 +1651,34 @@ static uint64_t sgi_hub_onewire_value(SGIHubState *s, unsigned arg)
            (s->onewire_level ? MD_ONEWIRE_RXDATA : 0);
 }
 
+/* Build the two fixed pages the Hub's PIMM record exposes.  The values are
+ * synthetic, but the layout and checks are part of the guest-visible record
+ * contract: PROM and IRIX reject a page whose stored CRC does not close. */
+static void sgi_hub_onewire_build_record(SGIHubState *s, uint8_t image[64])
+{
+    char serial[11];
+    static const char part[] = "ORIGAMI-IP27-PIMM";
+    static const char revision[] = "1.0 ";
+    static const char board[] = "IP27";
+
+    memset(image, ' ', 64);
+    image[0] = 0x01;
+    g_snprintf(serial, sizeof(serial), "%010" PRIx64,
+               (uint64_t)(s->onewire_serial & MAKE_64BIT_MASK(0, 40)));
+    memcpy(&image[1], serial, sizeof(serial) - 1);
+    memcpy(&image[11], part, MIN(sizeof(part) - 1, 19));
+    memcpy(&image[32 + 6], revision, sizeof(revision) - 1);
+    memcpy(&image[32 + 16], board, sizeof(board) - 1);
+    memset(&image[32 + 10], 0, 6);
+    for (unsigned int page = 0; page < 2; page++) {
+        uint8_t *at = &image[page * 32];
+        uint16_t crc = ~onewire_crc16(0, at, 30);
+
+        at[30] = crc;
+        at[31] = crc >> 8;
+    }
+}
+
 static uint64_t sgi_hub_read_onewire(SGIHubState *s, hwaddr addr,
                                      unsigned arg)
 {
@@ -3704,18 +3732,22 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
      * children before the object itself, so the ordering was never the
      * hazard.
      *
-     * Nothing is composed here in any case. What the record should say is an
-     * open question, and a DS2505 left unprogrammed reads 0xff everywhere,
-     * which states nothing rather than inventing a serial number the
-     * firmware would parse into this machine's own.
+     * The generic Hub remains erased. Origin 2000 attaches a synthetic record
+     * after the Hub has been given its module identity, so the two
+     * compositions do not share an invented inventory payload.
      */
     s->onewire_bus = onewire_create_bus(dev, "onewire");
     if (s->onewire_kind == SGI_HUB_ONEWIRE_BLANK_DS2505) {
         DeviceState *part = qdev_new(TYPE_ONEWIRE_DS2505);
+        uint8_t image[64];
 
         object_property_add_child(OBJECT(dev), "onewire-part", OBJECT(part));
         qdev_prop_set_uint8(part, "family", MD_ONEWIRE_ROM_FAMILY);
         qdev_prop_set_uint64(part, "serial", s->onewire_serial);
+        if (s->has_module_identity) {
+            sgi_hub_onewire_build_record(s, image);
+            ds2505_set_image(part, image, sizeof(image));
+        }
         if (!qdev_realize_and_unref(part, BUS(s->onewire_bus), errp)) {
             return;
         }
