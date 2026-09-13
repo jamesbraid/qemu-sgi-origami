@@ -1368,6 +1368,11 @@ static bool sgi_hub_slice_can_read(SGIHubState *s, unsigned int slice)
     return cs && s->pi_cpu_enable[slice] && !cs->halted && cpu_can_run(cs);
 }
 
+static const char *sgi_hub_rt_hold_kind_name(SGIHubRTHoldKind kind)
+{
+    return kind == SGI_HUB_RT_HOLD_MATCH ? "match" : "post";
+}
+
 /*
  * The event a hold waits for happened on another thread: end the hold
  * here, under the big lock, rather than when the held thread next runs,
@@ -1379,6 +1384,13 @@ static void sgi_hub_rt_release(SGIHubState *s, unsigned int slice,
     CPUState *cs = qemu_get_cpu(s->cpu_base + slice);
 
     if (s->pi_rt_hold[slice] && s->pi_rt_hold_kind[slice] == kind) {
+        if (trace_event_get_state_backends(TRACE_SGI_HUB_RT_HOLD_RELEASE)) {
+            trace_sgi_hub_rt_hold_release(
+                current_cpu ? current_cpu->cpu_index : -1, s->cpu_base + slice,
+                sgi_hub_rt_hold_kind_name(kind), s->pi_rt_hold[slice],
+                qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+                qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+        }
         s->pi_rt_hold[slice] = 0;
         if (cs) {
             sgi_hub_trace_kick(cs, "rt-hold-release");
@@ -1396,6 +1408,10 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
     int64_t deadline = start + SGI_HUB_RT_HOLD_MS * SCALE_MS;
     int64_t now;
     const char *outcome;
+    bool traced_wait = false;
+    int64_t wait_start = 0;
+    int64_t wait_end = 0;
+    int wait_ms = 0;
 
     for (;;) {
         now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
@@ -1409,11 +1425,33 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
         } else if (now >= deadline) {
             outcome = "timed out";
         } else {
-            qemu_cond_timedwait_bql(cs->halt_cond,
-                                    (deadline - now) / SCALE_MS + 1);
-            continue;
+            outcome = NULL;
         }
-        break;
+
+        /*
+         * A wake is traced once the loop has decided what it means. The
+         * stamps bracket the wait, which retakes the big lock before it
+         * returns; it does not say whether it was signalled or timed out.
+         */
+        if (traced_wait) {
+            trace_sgi_hub_rt_hold_wake(cs->cpu_index, hold->id, wait_ms,
+                                       wait_start, wait_end,
+                                       outcome ? outcome : "waiting");
+        }
+        if (outcome) {
+            break;
+        }
+
+        wait_ms = (deadline - now) / SCALE_MS + 1;
+        traced_wait =
+            trace_event_get_state_backends(TRACE_SGI_HUB_RT_HOLD_WAKE);
+        if (traced_wait) {
+            wait_start = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+        }
+        qemu_cond_timedwait_bql(cs->halt_cond, wait_ms);
+        if (traced_wait) {
+            wait_end = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+        }
     }
 
     if (s->pi_rt_hold[slice] == hold->id) {
@@ -1424,7 +1462,8 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
         trace_sgi_hub_rt_hold_end(cs->cpu_index, outcome,
                                   (now - start) / SCALE_US,
                                   s->cpu_base + (slice ^ 1), start, now,
-                                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+                                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                  hold->id);
     }
     object_unref(OBJECT(s));
     g_free(hold);
@@ -1503,10 +1542,11 @@ static void sgi_hub_rt_mailbox_read(SGIHubState *s, unsigned int owner,
     s->pi_rt_hold_kind[reader] = kind;
     if (trace_event_get_state_backends(TRACE_SGI_HUB_RT_HOLD)) {
         trace_sgi_hub_rt_hold(current_cpu->cpu_index,
-                              kind == SGI_HUB_RT_HOLD_MATCH ? "match" : "post",
+                              sgi_hub_rt_hold_kind_name(kind),
                               posted, value, s->cpu_base + owner,
                               qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
-                              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+                              qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                              hold->id);
     }
     async_run_on_cpu(current_cpu, sgi_hub_rt_hold, RUN_ON_CPU_HOST_PTR(hold));
 }
