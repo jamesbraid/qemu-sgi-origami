@@ -992,6 +992,7 @@ static void tigon_reset_state(TigonState *s)
     if (s->rx_flush_bh) {
         qemu_bh_cancel(s->rx_flush_bh);
     }
+    sgi_net_rx_latency_reset(&s->rx_latency);
     s->defer_backend_rx = false;
     s->backend_rx_deferred = false;
     memset(s->gcr, 0, sizeof(s->gcr));
@@ -1453,6 +1454,11 @@ static bool tigon_can_receive(NetClientState *nc)
         return false;
     }
 
+    /* No room on the arrival line is the same answer as no buffer. */
+    if (sgi_net_rx_latency_full(&s->rx_latency)) {
+        return false;
+    }
+
     /* Operational, and at least one standard receive buffer is posted. */
     return s->firmware_up &&
            (s->std_rx_considx != s->std_rx_prodidx ||
@@ -1517,10 +1523,32 @@ static MemTxResult tigon_write_rx_return(TigonState *s, uint64_t addr,
     return tigon_dma_write_words(s, addr, words, ARRAY_SIZE(words));
 }
 
+/*
+ * Publish a receive whose descriptors are already written: the return-ring
+ * producer the driver reads, and the completion interrupt. Held behind the
+ * arrival floor by sgi_net_rx_latency_hold().
+ */
+static bool tigon_rx_publish(void *opaque, const void *record)
+{
+    TigonState *s = opaque;
+    const TigonRxDone *done = record;
+
+    if (tigon_dma_write32(s, s->return_prodidx_ptr,
+                          done->return_prodidx) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "tigon: receive return producer write at 0x%" PRIx64
+                      " failed; frame held\n", s->return_prodidx_ptr);
+        return false;
+    }
+    tigon_completion_irq(s, true, 1);
+    return true;
+}
+
 static ssize_t tigon_receive_packet(NetClientState *nc,
                                     const struct iovec *iov, int iovcnt,
                                     size_t size)
 {
+    TigonRxDone done;
     TigonState *s = TIGON(qemu_get_nic_opaque(nc));
     uint8_t dest[6];
     uint16_t flags = 0;
@@ -1551,6 +1579,14 @@ static ssize_t tigon_receive_packet(NetClientState *nc,
      * a truncated frame fails the guest's checksums and is silently lost,
      * where a held frame is retried.
      */
+    /*
+     * A queued frame is re-offered straight to receive() without another
+     * can_receive(), so the arrival line's room is checked here too. Zero is
+     * the same flow control the ring checks below use.
+     */
+    if (sgi_net_rx_latency_full(&s->rx_latency)) {
+        return 0;
+    }
     jumbo = size > TIGON_STD_FRAME_SIZE && s->jumbo_rx_ring_base != 0;
     if (jumbo && s->jumbo_rx_considx == s->jumbo_rx_prodidx) {
         return 0;      /* jumbo-configured but unprovisioned: flow control */
@@ -1641,13 +1677,6 @@ static ssize_t tigon_receive_packet(NetClientState *nc,
     }
 
     next_return_prod = (s->return_prodidx + 1) % s->return_ring_max;
-    if (tigon_dma_write32(s, s->return_prodidx_ptr,
-                          next_return_prod) != MEMTX_OK) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "tigon: receive return producer write at 0x%" PRIx64
-                      " failed; frame held\n", s->return_prodidx_ptr);
-        return 0;
-    }
 
     if (jumbo) {
         s->jumbo_rx_considx =
@@ -1656,7 +1685,14 @@ static ssize_t tigon_receive_packet(NetClientState *nc,
         s->std_rx_considx = (s->std_rx_considx + 1) % TI_STD_RX_RING_CNT;
     }
     s->return_prodidx = next_return_prod;
-    tigon_completion_irq(s, true, 1);
+
+    /*
+     * The frame and its return descriptor are in guest memory; the producer
+     * index that lets the driver look at them, and the interrupt that tells
+     * it to, wait for the frame's arrival deadline.
+     */
+    done.return_prodidx = next_return_prod;
+    sgi_net_rx_latency_hold(&s->rx_latency, &done);
 
     return size;
 }
@@ -1772,6 +1808,11 @@ static void tigon_realize(PCIDevice *dev, Error **errp)
                           &DEVICE(dev)->mem_reentrancy_guard, s);
     s->rx_flush_bh = qemu_bh_new_guarded(
         tigon_rx_flush, s, &DEVICE(dev)->mem_reentrancy_guard);
+    if (!sgi_net_rx_latency_init(&s->rx_latency, s->rx_arrival_latency_us,
+                                 sizeof(TigonRxDone), tigon_rx_publish,
+                                 tigon_rx_flush, s, errp)) {
+        return;
+    }
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->conf.macaddr.a);
 }
 
@@ -1779,6 +1820,7 @@ static void tigon_exit(PCIDevice *dev)
 {
     TigonState *s = TIGON(dev);
 
+    sgi_net_rx_latency_cleanup(&s->rx_latency);
     qemu_bh_delete(s->rx_flush_bh);
     qemu_del_nic(s->nic);
     timer_free(s->link_timer);
@@ -1847,7 +1889,7 @@ static int tigon_post_load(void *opaque, int version_id)
  */
 static const VMStateDescription vmstate_tigon = {
     .name = "tigon",
-    .version_id = 4,
+    .version_id = 5,
     .minimum_version_id = 1,
     .post_load = tigon_post_load,
     .fields = (const VMStateField[]) {
@@ -1896,6 +1938,8 @@ static const VMStateDescription vmstate_tigon = {
         VMSTATE_TIMER_PTR_V(coal_tx_timer, TigonState, 3),
         VMSTATE_STRUCT(eeprom, TigonState, 1, vmstate_tigon_eeprom,
                        TigonEeprom),
+        VMSTATE_STRUCT(rx_latency, TigonState, 5,
+                       vmstate_sgi_net_rx_latency, SGINetRxLatency),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -1912,6 +1956,8 @@ static const Property tigon_properties[] = {
     DEFINE_PROP_UINT8("port-count", TigonState, port_count, 1),
     DEFINE_PROP_STRING("media", TigonState, media),
     DEFINE_PROP_SIZE32("sram-size", TigonState, sram_size, 1 * MiB),
+    DEFINE_PROP_UINT32("rx-arrival-latency-us", TigonState,
+                       rx_arrival_latency_us, SGI_NET_RX_LATENCY_DEFAULT_US),
 };
 
 static void tigon_instance_init(Object *obj)

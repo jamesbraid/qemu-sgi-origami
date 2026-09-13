@@ -13,6 +13,7 @@
 #ifndef HW_NET_TIGON_H
 #define HW_NET_TIGON_H
 
+#include "hw/net/sgi-net-rx-latency.h"
 #include "hw/pci/pci_device.h"
 #include "net/net.h"
 #include "qemu/timer.h"
@@ -59,6 +60,10 @@ struct TigonState {
 
     NICState *nic;
     QEMUBH *rx_flush_bh;
+
+    /* The modelled minimum between a frame arriving and its completion. */
+    uint32_t rx_arrival_latency_us;
+    SGINetRxLatency rx_latency;
     NICConf conf;
     MACAddr station_addr;    /* active filter; conf holds the reset address */
     AddressSpace *descriptor_as; /* immutable, borrowed PCI DMA route */
@@ -167,5 +172,13 @@ struct TigonState {
     /* Card SRAM: the downloaded firmware lands here and is never executed. */
     uint8_t *sram;
 };
+
+/*
+ * One receive whose buffer and return descriptor are written and whose
+ * producer index -- the only part of it the driver can see -- is still held.
+ */
+typedef struct TigonRxDone {
+    uint32_t return_prodidx;
+} TigonRxDone;
 
 #endif /* HW_NET_TIGON_H */

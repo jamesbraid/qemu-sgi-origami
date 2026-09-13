@@ -48,6 +48,14 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define TI_MISC_LOCAL_CTL   0x044
 #define TI_CPU_STATE        0x140
 #define TI_MB_HOSTINTR      0x504
+
+/*
+ * The modelled minimum between a frame arriving and its completion, in
+ * nanoseconds: the device default. Delivery is published only once this much
+ * virtual time has passed, so every wait for a completion has to advance the
+ * clock as well as give the main loop a pass.
+ */
+#define RX_ARRIVAL_LATENCY_NS  200000
 #define TI_MB_SENDPROD_IDX  0x514
 #define TI_MB_STDRXPROD_IDX 0x51c
 #define TI_GCR_PAR0         0x600
@@ -586,6 +594,7 @@ static uint32_t wait_return_prod(TigonTest *t)
             break;
         }
         g_usleep(5000);
+        qtest_clock_step(t->qs->qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     return dma_ldl(t, t->ret_prod);
 }
@@ -817,6 +826,78 @@ static void test_receive(void)
     close(sv[0]);
 }
 
+/*
+ * A frame does not complete the instant the backend hands it over. The card
+ * writes it into the posted buffer and fills in its return descriptor
+ * straight away, and the two things the driver can actually read -- the
+ * return-ring producer index in host memory and the interrupt -- appear only
+ * once the arrival deadline has passed on the virtual clock. The return
+ * descriptor itself is invisible until the producer names it, so this checks
+ * that it is already written while the producer still is not.
+ *
+ * Without the floor the model published a reply in the same virtual instant
+ * as the transmit that provoked it, which no wire, peer or DMA can do; see
+ * docs/datasheets/tigon.md's arrival-latency approximation.
+ */
+static void test_receive_waits_for_its_arrival_deadline(void)
+{
+    int sv[2];
+    TigonTest t;
+    uint8_t landed[sizeof(rx_frame_ours)];
+    int attempt;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    tigon_boot_netdev(&t, sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    tigon_operational(&t, false);
+
+    /* Drop the firmware-up interrupt so the line starts quiet. */
+    reg_wr(&t, TI_MISC_HOST_CTL, TI_MHC_CLEARINT);
+    g_assert_false(irq_pending(&t));
+
+    qtest_memset(t.qs->qts, t.rx_buf, 0, 2048);
+    post_std_rx_buffer(&t, 0, t.rx_buf, 0, 2048);
+    reg_wr(&t, TI_MB_STDRXPROD_IDX, 1);
+
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+
+    /*
+     * Wait for the card to take the frame, which it shows by writing it into
+     * the buffer. Nothing here advances the virtual clock, so the arrival
+     * deadline cannot have passed.
+     */
+    for (attempt = 0; attempt < 200; attempt++) {
+        qtest_memread(t.qs->qts, t.rx_buf, landed, sizeof(landed));
+        if (memcmp(landed, rx_frame_ours, sizeof(landed)) == 0) {
+            break;
+        }
+        g_usleep(5000);
+    }
+    g_assert_cmpmem(landed, sizeof(landed),
+                    rx_frame_ours, sizeof(rx_frame_ours));
+
+    /* The return descriptor is written; the producer and the line are not. */
+    g_assert_cmphex(dma_ldl(&t, t.ret_ring + 8) & 0xffff, ==,
+                    sizeof(rx_frame_ours));
+    g_assert_cmphex(dma_ldl(&t, t.ret_prod), ==, 0);
+    g_assert_false(irq_pending(&t));
+
+    /* Still nothing one nanosecond short of the deadline. */
+    qtest_clock_step(t.qs->qts, RX_ARRIVAL_LATENCY_NS - 1);
+    g_assert_cmphex(dma_ldl(&t, t.ret_prod), ==, 0);
+    g_assert_false(irq_pending(&t));
+
+    /* And both at once past it. */
+    qtest_clock_step(t.qs->qts, 1);
+    g_assert_cmphex(dma_ldl(&t, t.ret_prod), ==, 1);
+    g_assert_true(irq_pending(&t));
+
+    tigon_stop(&t);
+    close(sv[0]);
+}
+
 /* Compare flat delivery with a two-descriptor transmit split inside IPv4. */
 static void test_receive_iov_matches_flat(void)
 {
@@ -858,6 +939,7 @@ static void test_receive_iov_matches_flat(void)
     for (attempt = 0; attempt < 200 && dma_ldl(&flat, flat.ret_prod) != 2;
          attempt++) {
         g_usleep(5000);
+        qtest_clock_step(flat.qs->qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     g_assert_cmphex(dma_ldl(&flat, flat.ret_prod), ==, 2);
     qtest_memread(flat.qs->qts, flat.rx_buf, flat_payload,
@@ -911,6 +993,7 @@ static void test_receive_iov_matches_flat(void)
          attempt < 200 && dma_ldl(&fragmented, fragmented.ret_prod) != 2;
          attempt++) {
         g_usleep(5000);
+        qtest_clock_step(fragmented.qs->qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     g_assert_cmphex(dma_ldl(&fragmented, fragmented.ret_prod), ==, 2);
     qtest_memread(fragmented.qs->qts, fragmented.rx_buf,
@@ -1194,6 +1277,8 @@ int main(int argc, char **argv)
     qtest_add_func("tigon/operational-ring-migration",
                    test_operational_ring_migration);
     qtest_add_func("tigon/receive", test_receive);
+    qtest_add_func("tigon/receive-waits-for-arrival-deadline",
+                   test_receive_waits_for_its_arrival_deadline);
     qtest_add_func("tigon/receive-iov-matches-flat",
                    test_receive_iov_matches_flat);
     qtest_add_func("tigon/receive-filters-other", test_receive_filters_other);
