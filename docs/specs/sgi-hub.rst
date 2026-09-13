@@ -275,11 +275,15 @@ between them, everything above it to 0x7ff unimplemented -- serve an
 unprogrammed part: every byte reads 0xff behind a correct check
 pair, implemented or not, and
 a redirection byte of 0xff means no redirection by the part's own
-definition, so a blank part invents nothing. What the
-manufacturing-record bytes should say is still an open question --
-the record's key names are not established -- so the part stays
-blank rather than carrying an invented record the guest would parse
-into this machine's serial number; the programming commands are not
+definition. Origin 2000 compositions attach a synthetic two-page
+record to this responder so the stock PROM can identify each node:
+page A starts with format byte 0x01, carries a ten-byte synthetic
+serial and a padded part string; page B carries the continuation,
+revision, zeroed binary fields and ``IP27`` in its board-name field.
+Each page stores the complemented CRC16 of its first 30 bytes in the
+last two bytes, low byte first. These values are emulator-owned
+fixtures, not copied manufacturing data, and the generic Origin 200
+composition remains erased. The programming commands are not
 answered.
 
 The PCF8584 is mapped as a subregion of the Hub's own register region

@@ -2730,6 +2730,52 @@ static void test_origin2000_hubs_carry_module_identity(const void *data)
         }
     }
 
+    /* Origin 2000's family-0x0b PIMM record is populated and page CRCs close. */
+    for (unsigned int node = 0; node < ORIGIN2000_NODE_COUNT; node++) {
+        unsigned int cpu = node * ORIGIN2000_CPUS_PER_NODE;
+        uint64_t pimm_rom = onewire_expected_identity(
+            0x100000000001ULL + node);
+        uint8_t expected[32];
+        uint8_t page[32];
+        uint16_t crc;
+
+        memset(expected, ' ', sizeof(expected));
+        expected[0] = 0x01;
+        g_snprintf((char *)&expected[1], 11, "%010" PRIx64,
+                   (uint64_t)((0x100000000001ULL + node) &
+                              UINT64_C(0xffffffffff)));
+        memcpy(&expected[11], "ORIGAMI-IP27-PIMM", 17);
+        crc = ~onewire_crc16(0, expected, 30);
+        expected[30] = crc;
+        expected[31] = crc >> 8;
+        onewire_cpu_search_for_identity(qts, cpu, pimm_rom);
+        onewire_cpu_write_byte(qts, cpu, ONEWIRE_CMD_READ_MEM);
+        onewire_cpu_write_byte(qts, cpu, 0);
+        onewire_cpu_write_byte(qts, cpu, 0);
+        for (unsigned int i = 0; i < sizeof(page); i++) {
+            page[i] = onewire_cpu_read_byte(qts, cpu);
+        }
+        g_assert_cmpmem(page, sizeof(page), expected, sizeof(expected));
+        g_assert_cmphex(onewire_crc16(0, page, sizeof(page)), ==, 0xb001);
+
+        memset(expected, ' ', sizeof(expected));
+        memset(&expected[10], 0, 6);
+        memcpy(&expected[6], "1.0 ", 4);
+        memcpy(&expected[16], "IP27", 4);
+        crc = ~onewire_crc16(0, expected, 30);
+        expected[30] = crc;
+        expected[31] = crc >> 8;
+        onewire_cpu_search_for_identity(qts, cpu, pimm_rom);
+        onewire_cpu_write_byte(qts, cpu, ONEWIRE_CMD_READ_MEM);
+        onewire_cpu_write_byte(qts, cpu, 32);
+        onewire_cpu_write_byte(qts, cpu, 0);
+        for (unsigned int i = 0; i < sizeof(page); i++) {
+            page[i] = onewire_cpu_read_byte(qts, cpu);
+        }
+        g_assert_cmpmem(page, sizeof(page), expected, sizeof(expected));
+        g_assert_cmphex(onewire_crc16(0, page, sizeof(page)), ==, 0xb001);
+    }
+
     qtest_quit(qts);
 }
 
