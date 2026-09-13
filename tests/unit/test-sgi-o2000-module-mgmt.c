@@ -762,7 +762,8 @@ static void transfer_complex(Fixture *f, QEMUFile *file, bool save)
         g_assert_cmpint(vmstate_save_state(file, &vmstate_i2c_bus, bus,
                                            NULL, &error_abort), ==, 0);
     } else {
-        g_assert_cmpint(vmstate_load_state(file, module_vmsd(f), f->module, 1,
+        g_assert_cmpint(vmstate_load_state(file, module_vmsd(f), f->module,
+                                           module_vmsd(f)->version_id,
                                            &error_abort), ==, 0);
         g_assert_cmpint(vmstate_load_state(file, &vmstate_i2c_bus, bus, 1,
                                            &error_abort), ==, 0);
@@ -1034,7 +1035,8 @@ static void test_migration_rejects_bad_state(Fixture *f, gconstpointer unused)
     f->module->grant_state = 0;
 
     file = state_file(fd, false);
-    g_assert_cmpint(vmstate_load_state(file, module_vmsd(f), f->module, 1,
+    g_assert_cmpint(vmstate_load_state(file, module_vmsd(f), f->module,
+                                       module_vmsd(f)->version_id,
                                        &err), ==, -EINVAL);
     error_free(err);
     qemu_fclose(file);
