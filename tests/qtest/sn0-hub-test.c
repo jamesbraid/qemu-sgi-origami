@@ -1654,6 +1654,78 @@ static void test_rt_compare_mailbox_reaches_the_peer(const void *data)
     qtest_quit(qts);
 }
 
+/* An enabled zero comparator is a deadline register, not a mailbox poll. */
+static void build_enabled_zero_compare_reads_image(SN0Image *p)
+{
+    const unsigned int entry = 0x800;
+    const uint64_t compare_b = SN0_PI_CPU_NUM - PI_PROCESSOR_NUMBER +
+                               PI_RT_COMPARE_B;
+    const uint64_t enable_b = SN0_PI_CPU_NUM - PI_PROCESSOR_NUMBER +
+                              PI_RT_ENABLE_B;
+    unsigned int branch;
+    unsigned int peer;
+    unsigned int loop;
+
+    branch = sn0_emit_branch(p, SN0_OPC_BEQ, 0, 0);
+    sn0_patch_branch(p, branch, entry);
+    for (unsigned int vector = SN0_VEC_TLB_REFILL;
+         vector <= SN0_VEC_GENERAL; vector += 0x80) {
+        p->pos = vector;
+        sn0_emit_park(p);
+    }
+
+    p->pos = entry;
+    sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL);
+    sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
+    sn0_emit_cpu_number(p, SN0_R_S1);
+    peer = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_S1, SN0_R_ZERO);
+
+    sn0_emit_li64(p, SN0_R_K0, enable_b);
+    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_ZERO, SN0_R_T0, 1);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_T0, 0);
+    sn0_emit_li64(p, SN0_R_K1, compare_b);
+    sn0_emit_li(p, SN0_R_T2, 64);
+    loop = p->pos;
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K1, SN0_R_T0, 0);
+    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_T2, SN0_R_T2, -1);
+    branch = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_T2, SN0_R_ZERO);
+    sn0_patch_branch(p, branch, loop);
+    sn0_emit_li(p, SN0_R_K0, SN0_KSEG1(SN0_USER_MAILBOX));
+    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_ZERO, SN0_R_T0, 1);
+    sn0_emit_i(p, SN0_OPC_SW, SN0_R_K0, SN0_R_T0, 0);
+    sn0_emit_park(p);
+
+    sn0_patch_branch(p, peer, p->pos);
+    sn0_emit_park(p);
+}
+
+static void test_enabled_zero_compare_read_does_not_rendezvous(const void *data)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
+    QTestState *qts;
+    int64_t started;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    build_enabled_zero_compare_reads_image(image);
+    path = sn0_image_write(image, "sn0-hub-enabled-zero-compare");
+    qts = qtest_initf(
+        "-M origin200,synthesized-firmware=off -smp 2 -bios %s "
+        "-accel tcg,thread=multi -no-shutdown", path);
+    unlink(path);
+
+    started = g_get_monotonic_time();
+    g_assert_cmpuint(sn0_wait_word(qts, 0, SN0_USER_MAILBOX, 5), ==, 1);
+    g_assert_cmpint(g_get_monotonic_time() - started, <,
+                    500 * G_TIME_SPAN_MILLISECOND);
+    g_assert_cmphex(pi_cpu_readq(qts, 0, PI_RT_COMPARE_B), ==, 0);
+    qtest_quit(qts);
+}
+
 static uint64_t cpu_heartbeat(QTestState *qts, unsigned int cpu)
 {
     return qtest_readq(qts, SN0_USER_MAILBOX + 8 * cpu);
@@ -5165,6 +5237,9 @@ int main(int argc, char **argv)
                         test_the_second_processors_comparator_raises_its_own_line);
     qtest_add_data_func("sn0/hub/rt-compare-mailbox-reaches-peer", NULL,
                         test_rt_compare_mailbox_reaches_the_peer);
+    qtest_add_data_func("sn0/hub/rt-enabled-zero-read-does-not-rendezvous",
+                        NULL,
+                        test_enabled_zero_compare_read_does_not_rendezvous);
     qtest_add_data_func("sn0/hub/rt-comparator-pends-when-off", NULL,
                         test_the_comparator_pends_with_its_interrupt_off);
     qtest_add_data_func("sn0/hub/interrupt-modify", NULL,
