@@ -177,8 +177,9 @@ int i2c_master_end_transfer(I2CBus *bus, uint32_t master);
  * Requests are future virtual deadlines; all requests at one deadline settle
  * before the observer runs. True SDA releases the line. Clock enables that
  * participant's configured clock generation. The relative and minimum-delay
- * entry points derive their deadlines from one internal clock sample. No
- * request elects a sole owner.
+ * entry points derive their deadlines from one internal clock sample, or,
+ * while the timeline advances, from the instant being settled. No request
+ * elects a sole owner.
  */
 #define I2C_WIRE_MAX_MASTERS 32
 
@@ -192,6 +193,14 @@ typedef struct I2CWireEvent {
 } I2CWireEvent;
 
 typedef void (*I2CWireObserver)(void *opaque, const I2CWireEvent *event);
+
+/*
+ * A participant with deadlines of its own reports the earliest through its
+ * deadline hook, and does everything due at an instant, leaving nothing at or
+ * before it, when its run hook is called with that instant.
+ */
+typedef int64_t (*I2CWireDeadline)(void *opaque);
+typedef void (*I2CWireRun)(void *opaque, int64_t now);
 
 /*
  * Every slave on a wired bus must carry I2C slave migration state, directly
@@ -224,6 +233,21 @@ int i2c_wire_set_observer(I2CBus *bus, uint32_t master,
                           I2CWireObserver observe, void *opaque);
 int i2c_wire_clear_observer(I2CBus *bus, uint32_t master,
                             I2CWireObserver observe, void *opaque);
+/*
+ * One timeline for the wire and the participants timed against it.
+ * i2c_wire_advance settles every deadline up to the present in time order,
+ * each at its own instant, so a device can bring the wire up to date from
+ * whatever path its guest reaches it by. The wire's timer, and a participant's
+ * own timers, need only call it: a deadline already settled is not settled
+ * again. i2c_wire_now reports the instant being settled inside an advance and
+ * the present outside one. One timeline per participant may be attached.
+ */
+int i2c_wire_set_timeline(I2CBus *bus, uint32_t master, I2CWireDeadline next,
+                          I2CWireRun run, void *opaque);
+int i2c_wire_clear_timeline(I2CBus *bus, uint32_t master, I2CWireRun run,
+                            void *opaque);
+void i2c_wire_advance(I2CBus *bus);
+int64_t i2c_wire_now(I2CBus *bus);
 bool i2c_wire_scl(I2CBus *bus);
 bool i2c_wire_sda(I2CBus *bus);
 uint64_t i2c_wire_contenders(I2CBus *bus);

@@ -35,8 +35,17 @@ struct I2CWire {
     void *opaque;
     I2CWireObserver master_observe[I2C_WIRE_MAX_MASTERS];
     void *master_opaque[I2C_WIRE_MAX_MASTERS];
+    I2CWireDeadline master_next[I2C_WIRE_MAX_MASTERS];
+    I2CWireRun master_run[I2C_WIRE_MAX_MASTERS];
+    void *master_timeline_opaque[I2C_WIRE_MAX_MASTERS];
     I2CWireMaster masters[I2C_WIRE_MAX_MASTERS];
     uint64_t contenders;
+    /*
+     * The instant being settled while the timeline advances. Neither field
+     * outlives one advance, so neither migrates.
+     */
+    int64_t now;
+    bool advancing;
     bool scl, sda, occupied, start_hold;
     bool address_byte, ack, read_valid, read_prepare_pending;
     uint8_t bits, byte;
@@ -1292,16 +1301,12 @@ static void i2c_wire_prepare_read(I2CWire *wire)
     wire->read_prepare_phase = 0;
 }
 
-static void i2c_wire_schedule(I2CWire *wire)
+/* The wire's own earliest deadline, if it has one. */
+static bool i2c_wire_next_deadline(I2CWire *wire, int64_t *deadline)
 {
     int64_t next = 0;
     bool found = false;
     BusChild *kid;
-
-    if (wire->error || wire->bus->wire_loading) {
-        timer_del(wire->timer);
-        return;
-    }
 
     QTAILQ_FOREACH(kid, &wire->bus->qbus.children, sibling) {
         I2CSlave *slave = I2C_SLAVE(kid->child);
@@ -1329,7 +1334,20 @@ static void i2c_wire_schedule(I2CWire *wire)
             }
         }
     }
-    if (!found) {
+    *deadline = next;
+    return found;
+}
+
+static void i2c_wire_schedule(I2CWire *wire)
+{
+    int64_t next;
+
+    /* An advance re-arms the timer once, when it has finished. */
+    if (wire->advancing) {
+        return;
+    }
+    if (wire->error || wire->bus->wire_loading ||
+        !i2c_wire_next_deadline(wire, &next)) {
         timer_del(wire->timer);
     } else {
         timer_mod(wire->timer, next);
@@ -1395,10 +1413,9 @@ static int i2c_wire_join_low_deadline(I2CWireMaster *joining,
     return 0;
 }
 
-static void i2c_wire_tick(void *opaque)
+/* Settle everything the wire has due at @now, which is that deadline. */
+static void i2c_wire_tick(I2CWire *wire, int64_t now)
 {
-    I2CWire *wire = opaque;
-    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     bool old_scl = wire->scl, old_sda = wire->sda;
     uint64_t old_contenders = wire->contenders;
     bool scl = true, sda;
@@ -1691,6 +1708,92 @@ publish:
     i2c_wire_schedule(wire);
 }
 
+/* The instant being settled, or the present outside an advance. */
+static int64_t i2c_wire_instant(I2CWire *wire)
+{
+    return wire->advancing ? wire->now : qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+}
+
+/*
+ * Bring the wire and every participant timed against it up to @until, one
+ * deadline at a time in time order, running each at its own instant. A host
+ * that gets round to this late has not moved any deadline, so the waveform is
+ * the one the participants asked for, not one stretched by the delay.
+ *
+ * A participant due at the same instant as the wire runs first. That is the
+ * order separate timers gave them in practice: the wire re-arms its timer
+ * microseconds before each of its deadlines, a participant's timer for the
+ * same instant was nearly always armed earlier, and QEMU runs equal deadlines
+ * in the order they were armed.
+ */
+static void i2c_wire_advance_to(I2CWire *wire, int64_t until)
+{
+    bool ran = false;
+
+    if (wire->advancing || wire->bus->wire_loading) {
+        return;
+    }
+    wire->advancing = true;
+    for (;;) {
+        int64_t wire_next = 0, next = until;
+        bool wire_due = !wire->error &&
+                        i2c_wire_next_deadline(wire, &wire_next) &&
+                        wire_next <= until;
+        uint32_t participant = UINT32_MAX;
+
+        for (uint32_t i = 0; i < wire->bus->master_count; i++) {
+            int64_t at;
+
+            if (!wire->master_run[i]) {
+                continue;
+            }
+            at = wire->master_next[i](wire->master_timeline_opaque[i]);
+            if (at < next || (at == next && participant == UINT32_MAX)) {
+                next = at;
+                participant = i;
+            }
+        }
+        if (participant != UINT32_MAX && (!wire_due || next <= wire_next)) {
+            wire->now = next;
+            wire->master_run[participant](
+                wire->master_timeline_opaque[participant], next);
+            /* A participant that leaves its own instant due never finishes. */
+            assert(!wire->master_run[participant] ||
+                   wire->master_next[participant](
+                       wire->master_timeline_opaque[participant]) > next);
+        } else if (wire_due) {
+            wire->now = wire_next;
+            i2c_wire_tick(wire, wire_next);
+        } else {
+            break;
+        }
+        ran = true;
+    }
+    wire->advancing = false;
+    if (ran) {
+        i2c_wire_schedule(wire);
+    }
+}
+
+/* The wire's timer only stands in for a guest that is not polling. */
+static void i2c_wire_timer_expired(void *opaque)
+{
+    i2c_wire_advance_to(opaque, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+}
+
+void i2c_wire_advance(I2CBus *bus)
+{
+    if (bus->wire) {
+        i2c_wire_advance_to(bus->wire, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    }
+}
+
+int64_t i2c_wire_now(I2CBus *bus)
+{
+    return bus->wire ? i2c_wire_instant(bus->wire) :
+                       qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+}
+
 int i2c_bus_enable_wire(I2CBus *bus, uint32_t count,
                          I2CWireObserver observe, void *opaque, Error **errp)
 {
@@ -1744,7 +1847,7 @@ int i2c_bus_enable_wire(I2CBus *bus, uint32_t count,
         I2C_SLAVE(kid->child)->wire_service_kind = I2C_WIRE_SERVICE_COUNT;
     }
     bus->wire->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
-                                      i2c_wire_tick, bus->wire);
+                                      i2c_wire_timer_expired, bus->wire);
     return 0;
 }
 
@@ -1808,8 +1911,7 @@ int i2c_wire_stage(I2CBus *bus, uint32_t master, int64_t at,
     if (ret) {
         return ret;
     }
-    return i2c_wire_stage_at(bus, master, at,
-                             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+    return i2c_wire_stage_at(bus, master, at, i2c_wire_instant(bus->wire),
                              sda, clock);
 }
 
@@ -1825,7 +1927,7 @@ int i2c_wire_stage_at_or_after(I2CBus *bus, uint32_t master, int64_t at,
     if (min_delay_ns <= 0) {
         return -EINVAL;
     }
-    now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    now = i2c_wire_instant(bus->wire);
     if (now > INT64_MAX - min_delay_ns) {
         return -EINVAL;
     }
@@ -1860,15 +1962,24 @@ static int i2c_wire_hold_at(I2CSlave *slave, int64_t at, int64_t now,
 
 int i2c_wire_hold(I2CSlave *slave, int64_t at, bool hold)
 {
-    return i2c_wire_hold_at(slave, at,
-                            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), hold);
+    I2CBus *bus = I2C_BUS(qdev_get_parent_bus(DEVICE(slave)));
+
+    if (!bus->wire) {
+        return -EINVAL;
+    }
+    return i2c_wire_hold_at(slave, at, i2c_wire_instant(bus->wire), hold);
 }
 
 int i2c_wire_hold_after(I2CSlave *slave, int64_t delay_ns, bool hold)
 {
+    I2CBus *bus = I2C_BUS(qdev_get_parent_bus(DEVICE(slave)));
     int64_t at;
-    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    int64_t now;
 
+    if (!bus->wire) {
+        return -EINVAL;
+    }
+    now = i2c_wire_instant(bus->wire);
     if (delay_ns <= 0 || sadd64_overflow(now, delay_ns, &at)) {
         return -EINVAL;
     }
@@ -1945,6 +2056,37 @@ int i2c_wire_clear_observer(I2CBus *bus, uint32_t master,
     }
     bus->wire->master_observe[master] = NULL;
     bus->wire->master_opaque[master] = NULL;
+    return 0;
+}
+
+int i2c_wire_set_timeline(I2CBus *bus, uint32_t master, I2CWireDeadline next,
+                          I2CWireRun run, void *opaque)
+{
+    if (!bus->wire || master >= bus->master_count || !next || !run) {
+        return -EINVAL;
+    }
+    if (bus->wire->master_run[master]) {
+        return -EBUSY;
+    }
+    bus->wire->master_next[master] = next;
+    bus->wire->master_run[master] = run;
+    bus->wire->master_timeline_opaque[master] = opaque;
+    return 0;
+}
+
+int i2c_wire_clear_timeline(I2CBus *bus, uint32_t master, I2CWireRun run,
+                            void *opaque)
+{
+    if (!bus->wire || master >= bus->master_count) {
+        return -EINVAL;
+    }
+    if (bus->wire->master_run[master] != run ||
+        bus->wire->master_timeline_opaque[master] != opaque) {
+        return -ENOENT;
+    }
+    bus->wire->master_next[master] = NULL;
+    bus->wire->master_run[master] = NULL;
+    bus->wire->master_timeline_opaque[master] = NULL;
     return 0;
 }
 
