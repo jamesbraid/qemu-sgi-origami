@@ -62,8 +62,11 @@
 #define TI_GCR_CMDCONS_IDX      0x62c
 #define TI_GCR_RX_COAL_TICKS    0x630
 #define TI_GCR_TX_COAL_TICKS    0x634
+#define TI_GCR_STAT_TICKS       0x638
 #define TI_GCR_TX_MAX_COAL_BD   0x63c
 #define TI_GCR_RX_MAX_COAL_BD   0x640
+#define TI_GCR_IFINDEX          0x65c
+#define TI_GCR_IFMTU            0x660
 #define TI_GCR_MASK_INTRS       0x664
 #define TI_GCR_GLINK_STAT       0x668
 #define TI_GCR_LINK_STAT        0x66c
@@ -103,6 +106,7 @@
 #define TI_JUMBO_RX_RING_CNT    256
 #define TI_TX_RING_CNT          512
 #define TI_EV_FIRMWARE_UP       0x01
+#define TI_EV_STATS_UPDATED     0x04
 #define TI_EV_LINKSTAT_CHANGED  0x06
 #define TI_EV_CODE_GIG_LINK_UP  0x01
 
@@ -118,6 +122,20 @@
  * ring through the command, so a card serving that guest must honour both.
  */
 #define TI_CMD_SET_RX_JUMBO_PROD_IDX 0x10
+
+/*
+ * The statistics commands. The host asks the firmware to refresh the block
+ * (both public drivers also send the general-communication update after
+ * publishing the interface index and MTU, which is the same refresh under its
+ * older name) or to zero the counters. The host-state command is how the
+ * driver tells the card its protocol stack is up, which is the one thing the
+ * card knows about the interface's administrative state.
+ */
+#define TI_CMD_HOST_STATE       0x01
+#define TI_CMD_CODE_STACK_UP    0x01
+#define TI_CMD_UPDATE_GENCOM    0x04
+#define TI_CMD_CLR_STATS        0x0f
+#define TI_CMD_RFRSH_STATS      0x11
 
 /*
  * Link status reported up as a modelled fact: gigabit, full duplex. The chip's
@@ -160,6 +178,54 @@
 #define TI_GIB_EV_PRODIDX_PTR   0x470
 #define TI_GIB_RETURN_PRODIDX_PTR 0x478
 #define TI_GIB_TX_CONSIDX_PTR   0x480
+#define TI_GIB_REFRESH_STATS_PTR 0x488
+
+/*
+ * The firmware statistics block (struct ti_stats, if_tireg.h): 1 KB of
+ * counters padded to a fixed size, laid out as the head of the general
+ * information block and refreshed by DMA into whichever host address the
+ * block's last field names. The constants below are word indices into it,
+ * counting from the block's start. The first twelve words are the RFC 1643
+ * ethernet-like counters, which this model leaves zero; the RFC 1213
+ * interfaces group and the RFC 1573 64-bit counters follow.
+ */
+#define TI_STATS_SIZE           0x400
+#define TI_STAT_IF_INDEX        12
+#define TI_STAT_IF_MTU          14
+#define TI_STAT_IF_SPEED        15
+#define TI_STAT_IF_ADMIN_STATUS 16
+#define TI_STAT_IF_OPER_STATUS  17
+#define TI_STAT_IF_IN_DISCARDS  19
+#define TI_STAT_IF_PHYS_ADDRESS 25
+#define TI_STAT_HC_IN_OCTETS    36
+#define TI_STAT_HC_IN_UCAST     38
+#define TI_STAT_HC_IN_MULTICAST 40
+#define TI_STAT_HC_IN_BROADCAST 42
+#define TI_STAT_HC_OUT_OCTETS   44
+#define TI_STAT_HC_OUT_UCAST    46
+#define TI_STAT_HC_OUT_MULTICAST 48
+#define TI_STAT_HC_OUT_BROADCAST 50
+
+/* RFC 1213 interface states, spelled out in the public register header. */
+#define TI_IF_STATUS_UP         1
+#define TI_IF_STATUS_DOWN       2
+
+/* The modelled link, in the bits a second RFC 1213's ifSpeed is counted in. */
+#define TIGON_LINK_BITS_PER_SECOND 1000000000u
+
+/* The statistics-tick register counts the chip's microseconds. */
+#define TIGON_STAT_TICK_NS      1000
+
+/*
+ * How often the model rewrites the block at the information block's own head.
+ * The firmware keeps that copy current: the IRIX driver reads it without ever
+ * asking for a refresh, and asks for its refreshed copy only every five
+ * seconds, so a card that rewrote the head on that period alone would answer
+ * the board utility with counters from before the traffic it is being asked
+ * about. This is an approximation of "always current" chosen to be cheap: a
+ * kilobyte at ten hertz, and only when a counter has moved.
+ */
+#define TIGON_STATS_LIVE_NS     100000000
 
 #define TIGON_GCR_IDX(off)      (((off) - TI_GCR_BASE) >> 2)
 
@@ -557,6 +623,7 @@ static MemTxResult tigon_parse_gib(TigonState *s)
     uint64_t ev_ring_base, ev_prodidx_ptr;
     uint64_t tx_ring_base, std_rx_ring_base, jumbo_rx_ring_base;
     uint64_t return_ring_base, return_prodidx_ptr, tx_considx_ptr;
+    uint64_t refresh_stats_ptr;
     uint32_t tx_word, ret_word, return_ring_max;
     MemTxResult result;
 
@@ -605,6 +672,11 @@ static MemTxResult tigon_parse_gib(TigonState *s)
     if (result != MEMTX_OK) {
         return result;
     }
+    result = tigon_dma_read_addr(s, g + TI_GIB_REFRESH_STATS_PTR,
+                                 &refresh_stats_ptr);
+    if (result != MEMTX_OK) {
+        return result;
+    }
 
     return_ring_max = ret_word >> 16;
     if (return_ring_max == 0) {
@@ -620,6 +692,7 @@ static MemTxResult tigon_parse_gib(TigonState *s)
     s->return_ring_max = return_ring_max;
     s->return_prodidx_ptr = return_prodidx_ptr;
     s->tx_considx_ptr = tx_considx_ptr;
+    s->refresh_stats_ptr = refresh_stats_ptr;
     return MEMTX_OK;
 }
 
@@ -655,6 +728,232 @@ static MemTxResult tigon_post_event(TigonState *s, uint8_t event,
     return MEMTX_OK;
 }
 
+static void tigon_stats_put32(uint8_t *image, unsigned word, uint32_t v,
+                              bool bigendian)
+{
+    if (bigendian) {
+        stl_be_p(image + word * 4, v);
+    } else {
+        stl_le_p(image + word * 4, v);
+    }
+}
+
+/*
+ * A 64-bit counter is two words, most significant first. The word order is
+ * fixed whichever way the host set the byte order, the same as the 64-bit
+ * host addresses in a ring control block: written as one quantity in the
+ * host's order instead, a big-endian host reads every count multiplied by
+ * 2^32 (observed on the IRIX guest, which clears the descriptor byte swap).
+ */
+static void tigon_stats_put64(uint8_t *image, unsigned word, uint64_t v,
+                              bool bigendian)
+{
+    tigon_stats_put32(image, word, v >> 32, bigendian);
+    tigon_stats_put32(image, word + 1, v, bigendian);
+}
+
+/*
+ * Assemble the statistics block and write it where the host asked for it. The
+ * block is a struct in host DRAM, so it carries the byte order the host
+ * selected for everything else the card writes there.
+ *
+ * Only the counters this model can observe are filled. The collision, framing,
+ * carrier and internal-attention counters describe events the model never
+ * generates, so leaving them zero reports what happened rather than filling in
+ * a plausible number; the same goes for the firmware's own command, event and
+ * ring bookkeeping further down the block.
+ */
+static MemTxResult tigon_publish_stats(TigonState *s, uint64_t addr)
+{
+    bool bigendian = tigon_bd_bigendian(s);
+    bool link_up = s->gcr[TIGON_GCR_IDX(TI_GCR_GLINK_STAT)] != 0;
+    uint8_t image[TI_STATS_SIZE];
+    MemTxResult result;
+
+    memset(image, 0, sizeof(image));
+    /*
+     * The interface's index and MTU are the host's own, handed to the card
+     * through the register pair and reported straight back: the card has no
+     * other source for either, and no public source says the firmware
+     * rewrites what it was given.
+     */
+    tigon_stats_put32(image, TI_STAT_IF_INDEX,
+                      s->gcr[TIGON_GCR_IDX(TI_GCR_IFINDEX)], bigendian);
+    tigon_stats_put32(image, TI_STAT_IF_MTU,
+                      s->gcr[TIGON_GCR_IDX(TI_GCR_IFMTU)], bigendian);
+    tigon_stats_put32(image, TI_STAT_IF_SPEED,
+                      link_up ? TIGON_LINK_BITS_PER_SECOND : 0, bigendian);
+    tigon_stats_put32(image, TI_STAT_IF_ADMIN_STATUS,
+                      s->stack_up ? TI_IF_STATUS_UP : TI_IF_STATUS_DOWN,
+                      bigendian);
+    tigon_stats_put32(image, TI_STAT_IF_OPER_STATUS,
+                      link_up ? TI_IF_STATUS_UP : TI_IF_STATUS_DOWN,
+                      bigendian);
+    tigon_stats_put32(image, TI_STAT_IF_IN_DISCARDS, s->stat_rx_discards,
+                      bigendian);
+    tigon_stats_put64(image, TI_STAT_HC_IN_OCTETS, s->stat_rx_octets,
+                      bigendian);
+    tigon_stats_put64(image, TI_STAT_HC_IN_UCAST, s->stat_rx_ucast, bigendian);
+    tigon_stats_put64(image, TI_STAT_HC_IN_MULTICAST, s->stat_rx_mcast,
+                      bigendian);
+    tigon_stats_put64(image, TI_STAT_HC_IN_BROADCAST, s->stat_rx_bcast,
+                      bigendian);
+    tigon_stats_put64(image, TI_STAT_HC_OUT_OCTETS, s->stat_tx_octets,
+                      bigendian);
+    tigon_stats_put64(image, TI_STAT_HC_OUT_UCAST, s->stat_tx_ucast,
+                      bigendian);
+    tigon_stats_put64(image, TI_STAT_HC_OUT_MULTICAST, s->stat_tx_mcast,
+                      bigendian);
+    tigon_stats_put64(image, TI_STAT_HC_OUT_BROADCAST, s->stat_tx_bcast,
+                      bigendian);
+    /*
+     * The station address sits in the last six bytes of an eight-byte field,
+     * behind two zero bytes -- the same padding the serial EEPROM puts in
+     * front of it -- and is published as the two words the host's own address
+     * registers already hold. A host reading the field's first six bytes
+     * instead gets two zeroes and the address short by its last two octets
+     * (observed on the IRIX guest, whose board utility prints bytes two
+     * through seven).
+     */
+    tigon_stats_put32(image, TI_STAT_IF_PHYS_ADDRESS,
+                      ((uint32_t)s->station_addr.a[0] << 8) |
+                      s->station_addr.a[1], bigendian);
+    tigon_stats_put32(image, TI_STAT_IF_PHYS_ADDRESS + 1,
+                      ((uint32_t)s->station_addr.a[2] << 24) |
+                      ((uint32_t)s->station_addr.a[3] << 16) |
+                      ((uint32_t)s->station_addr.a[4] << 8) |
+                      s->station_addr.a[5], bigendian);
+
+    result = dma_memory_write(tigon_descriptor_dma_as(s, "write", addr,
+                                                      sizeof(image)),
+                              addr, image, sizeof(image),
+                              MEMTXATTRS_UNSPECIFIED);
+    trace_tigon_dma("write", addr, sizeof(image), result);
+    return result;
+}
+
+/*
+ * Publish the counters and say so on the event ring. A refresh the host asked
+ * for is answered by the statistics-updated event, so a driver that waits for
+ * the answer gets one.
+ */
+static void tigon_stats_refresh(TigonState *s)
+{
+    if (!s->firmware_up) {
+        return;
+    }
+    /*
+     * The block goes to both places the host named. The general information
+     * block declares a statistics area at its own head, and its last field
+     * names where a refreshed copy goes. Both public drivers make those one
+     * address, so neither shows which the card fills; the IRIX guest gives
+     * them separate buffers and reads its counters out of the head, so a card
+     * that wrote only the refresh copy reported nothing to it.
+     */
+    if (s->gib_base && tigon_publish_stats(s, s->gib_base) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "tigon: statistics write at 0x%" PRIx64
+                      " failed; counters held\n", s->gib_base);
+        return;
+    }
+    if (s->refresh_stats_ptr && s->refresh_stats_ptr != s->gib_base &&
+        tigon_publish_stats(s, s->refresh_stats_ptr) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "tigon: statistics write at 0x%" PRIx64
+                      " failed; counters held\n", s->refresh_stats_ptr);
+        return;
+    }
+    tigon_post_event(s, TI_EV_STATS_UPDATED, 0, 0);
+}
+
+/* The clear command zeroes the counters; the next refresh publishes zeroes. */
+static void tigon_stats_clear(TigonState *s)
+{
+    s->stat_rx_octets = 0;
+    s->stat_rx_ucast = 0;
+    s->stat_rx_mcast = 0;
+    s->stat_rx_bcast = 0;
+    s->stat_tx_octets = 0;
+    s->stat_tx_ucast = 0;
+    s->stat_tx_mcast = 0;
+    s->stat_tx_bcast = 0;
+    s->stat_rx_discards = 0;
+    s->stats_dirty = false;
+}
+
+/*
+ * The refresh period the host programmed. Zero, the reset value, leaves the
+ * firmware refreshing only when asked.
+ */
+static void tigon_stats_arm_timer(TigonState *s)
+{
+    uint32_t ticks = s->gcr[TIGON_GCR_IDX(TI_GCR_STAT_TICKS)];
+
+    if (!ticks || !s->firmware_up) {
+        timer_del(s->stats_timer);
+        return;
+    }
+    timer_mod(s->stats_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+              (uint64_t)ticks * TIGON_STAT_TICK_NS);
+}
+
+static void tigon_stats_timer(void *opaque)
+{
+    TigonState *s = opaque;
+
+    tigon_stats_refresh(s);
+    tigon_stats_arm_timer(s);
+}
+
+/* Keep the head current between the host's own refreshes. */
+static void tigon_stats_live_timer(void *opaque)
+{
+    TigonState *s = opaque;
+
+    if (s->firmware_up && s->gib_base && s->stats_dirty &&
+        tigon_publish_stats(s, s->gib_base) == MEMTX_OK) {
+        s->stats_dirty = false;
+    }
+    timer_mod(s->stats_live_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+              TIGON_STATS_LIVE_NS);
+}
+
+/*
+ * A frame counts against the cast its destination address selects, the way
+ * RFC 1213 separates them, and its octets count whichever cast it was.
+ */
+static void tigon_count_tx(TigonState *s, const uint8_t *frame, uint32_t len)
+{
+    static const uint8_t broadcast[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+
+    if (len < sizeof(broadcast)) {
+        return;     /* too short to name a destination: not a frame */
+    }
+    s->stat_tx_octets += len;
+    s->stats_dirty = true;
+    if (memcmp(frame, broadcast, sizeof(broadcast)) == 0) {
+        s->stat_tx_bcast++;
+    } else if (frame[0] & 1) {
+        s->stat_tx_mcast++;
+    } else {
+        s->stat_tx_ucast++;
+    }
+}
+
+/* The same split on receive, from the cast the address filter already found. */
+static void tigon_count_rx(TigonState *s, uint16_t flags, uint32_t len)
+{
+    s->stat_rx_octets += len;
+    s->stats_dirty = true;
+    if ((flags & TI_BDFLAG_BCAST_PKT) == TI_BDFLAG_BCAST_PKT) {
+        s->stat_rx_bcast++;
+    } else if (flags & TI_BDFLAG_MCAST_PKT) {
+        s->stat_rx_mcast++;
+    } else {
+        s->stat_rx_ucast++;
+    }
+}
+
 /*
  * Firmware-up fires only when both the CPU has been released and the GIB
  * address has been published: the firmware-up event lands on the event ring,
@@ -676,6 +975,9 @@ static void tigon_try_firmware_up(TigonState *s)
         return;
     }
     s->firmware_up = true;
+    tigon_stats_arm_timer(s);
+    timer_mod(s->stats_live_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+              TIGON_STATS_LIVE_NS);
     /*
      * Coming up is a transition from refusing frames to accepting them, so it
      * has to re-offer anything held, exactly as posting a buffer does. A
@@ -751,6 +1053,13 @@ static void tigon_run_commands(TigonState *s, uint32_t prod)
             s->promisc = ((cmd >> 16) & 0xff) == TI_CMD_CODE_PROMISC_ENB;
         } else if ((cmd >> 24) == TI_CMD_SET_MAC_ADDR) {
             tigon_set_station_address(s);
+        } else if ((cmd >> 24) == TI_CMD_HOST_STATE) {
+            s->stack_up = ((cmd >> 12) & 0xfff) == TI_CMD_CODE_STACK_UP;
+        } else if ((cmd >> 24) == TI_CMD_RFRSH_STATS ||
+                   (cmd >> 24) == TI_CMD_UPDATE_GENCOM) {
+            tigon_stats_refresh(s);
+        } else if ((cmd >> 24) == TI_CMD_CLR_STATS) {
+            tigon_stats_clear(s);
         } else if ((cmd >> 24) == TI_CMD_SET_RX_JUMBO_PROD_IDX) {
             /* The index rides in the command word's low 12 bits. */
             uint32_t idx = cmd & 0xfff;
@@ -937,6 +1246,7 @@ static void tigon_tx(TigonState *s, uint32_t prod)
              */
             s->defer_backend_rx = true;
             qemu_send_packet(qemu_get_queue(s->nic), frame, frame_len);
+            tigon_count_tx(s, frame, frame_len);
             s->tx_considx = cons;
             completed_bds += frame_bds;
             frame_bds = 0;
@@ -989,6 +1299,12 @@ static void tigon_reset_state(TigonState *s)
     if (s->coal_tx_timer) {
         timer_del(s->coal_tx_timer);
     }
+    if (s->stats_timer) {
+        timer_del(s->stats_timer);
+    }
+    if (s->stats_live_timer) {
+        timer_del(s->stats_live_timer);
+    }
     if (s->rx_flush_bh) {
         qemu_bh_cancel(s->rx_flush_bh);
     }
@@ -1012,6 +1328,9 @@ static void tigon_reset_state(TigonState *s)
     s->return_ring_max = 0;
     s->return_prodidx_ptr = 0;
     s->tx_considx_ptr = 0;
+    s->refresh_stats_ptr = 0;
+    s->stack_up = false;
+    tigon_stats_clear(s);
     s->event_prodidx = 0;
     s->return_prodidx = 0;
     s->tx_considx = 0;
@@ -1213,6 +1532,10 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
                 break;
             case TI_GCR_TX_MAX_COAL_BD:
                 trace_tigon_coal_write("tx_max_coal_bds", (uint32_t)val);
+                break;
+            case TI_GCR_STAT_TICKS:
+                trace_tigon_coal_write("stat_ticks", (uint32_t)val);
+                tigon_stats_arm_timer(s);
                 break;
             default:
                 break;
@@ -1647,6 +1970,7 @@ static ssize_t tigon_receive_packet(NetClientState *nc,
                       "buffer; dropping the frame\n",
                       jumbo ? "jumbo" : "standard", buf_idx, buf_len,
                       buf_addr);
+        s->stat_rx_discards++;
         return size;
     }
 
@@ -1662,6 +1986,7 @@ static ssize_t tigon_receive_packet(NetClientState *nc,
         qemu_log_mask(LOG_GUEST_ERROR,
                       "tigon: receive payload write at 0x%" PRIx64
                       " failed; frame dropped\n", buf_addr);
+        s->stat_rx_discards++;
         return size;
     }
     /* Post a receive-return descriptor naming the buffer and the length. */
@@ -1681,6 +2006,8 @@ static ssize_t tigon_receive_packet(NetClientState *nc,
                       PRIx64 " failed; frame held\n", ret_desc);
         return 0;
     }
+
+    tigon_count_rx(s, flags, (uint32_t)size);
 
     next_return_prod = (s->return_prodidx + 1) % s->return_ring_max;
 
@@ -1783,6 +2110,9 @@ static void tigon_realize(PCIDevice *dev, Error **errp)
                                     tigon_coal_rx_timer, s);
     s->coal_tx_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                     tigon_coal_tx_timer, s);
+    s->stats_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, tigon_stats_timer, s);
+    s->stats_live_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                       tigon_stats_live_timer, s);
 
     /*
      * One 16 KB non-prefetchable memory BAR (WINDATA, SRAM_DATA and the
@@ -1835,6 +2165,10 @@ static void tigon_exit(PCIDevice *dev)
     s->coal_rx_timer = NULL;
     timer_free(s->coal_tx_timer);
     s->coal_tx_timer = NULL;
+    timer_free(s->stats_timer);
+    s->stats_timer = NULL;
+    timer_free(s->stats_live_timer);
+    s->stats_live_timer = NULL;
     g_free(s->sram);
     s->sram = NULL;
 }
@@ -1895,7 +2229,7 @@ static int tigon_post_load(void *opaque, int version_id)
  */
 static const VMStateDescription vmstate_tigon = {
     .name = "tigon",
-    .version_id = 5,
+    .version_id = 6,
     .minimum_version_id = 1,
     .post_load = tigon_post_load,
     .fields = (const VMStateField[]) {
@@ -1946,6 +2280,20 @@ static const VMStateDescription vmstate_tigon = {
                        TigonEeprom),
         VMSTATE_STRUCT(rx_latency, TigonState, 5,
                        vmstate_sgi_net_rx_latency, SGINetRxLatency),
+        VMSTATE_UINT64_V(refresh_stats_ptr, TigonState, 6),
+        VMSTATE_BOOL_V(stack_up, TigonState, 6),
+        VMSTATE_UINT64_V(stat_rx_octets, TigonState, 6),
+        VMSTATE_UINT64_V(stat_rx_ucast, TigonState, 6),
+        VMSTATE_UINT64_V(stat_rx_mcast, TigonState, 6),
+        VMSTATE_UINT64_V(stat_rx_bcast, TigonState, 6),
+        VMSTATE_UINT64_V(stat_tx_octets, TigonState, 6),
+        VMSTATE_UINT64_V(stat_tx_ucast, TigonState, 6),
+        VMSTATE_UINT64_V(stat_tx_mcast, TigonState, 6),
+        VMSTATE_UINT64_V(stat_tx_bcast, TigonState, 6),
+        VMSTATE_UINT32_V(stat_rx_discards, TigonState, 6),
+        VMSTATE_TIMER_PTR_V(stats_timer, TigonState, 6),
+        VMSTATE_BOOL_V(stats_dirty, TigonState, 6),
+        VMSTATE_TIMER_PTR_V(stats_live_timer, TigonState, 6),
         VMSTATE_END_OF_LIST()
     }
 };

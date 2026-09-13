@@ -130,6 +130,27 @@ struct TigonState {
     uint64_t return_prodidx_ptr;
     uint64_t tx_considx_ptr;
 
+    /*
+     * The firmware statistics block. The host names the address it wants the
+     * refreshed copy written to in the general information block's last field;
+     * these counters advance as frames pass and are published there on the
+     * host's request and on the period the statistics-tick register sets.
+     */
+    uint64_t refresh_stats_ptr;
+    bool stack_up;              /* the host said its protocol stack was up */
+    uint64_t stat_rx_octets;
+    uint64_t stat_rx_ucast;
+    uint64_t stat_rx_mcast;
+    uint64_t stat_rx_bcast;
+    uint64_t stat_tx_octets;
+    uint64_t stat_tx_ucast;
+    uint64_t stat_tx_mcast;
+    uint64_t stat_tx_bcast;
+    uint32_t stat_rx_discards;
+    bool stats_dirty;           /* a counter moved since the last publish */
+    QEMUTimer *stats_timer;
+    QEMUTimer *stats_live_timer;
+
     /* Producer/consumer positions the model itself maintains. */
     uint32_t event_prodidx;
     uint32_t return_prodidx;
