@@ -72,7 +72,6 @@
 #define PI_RT_COUNTER        0x30100
 
 #define PI_NACK_COUNT_MASK   ((1ULL << 21) - 1)
-#define PI_NACK_ENABLE       (1ULL << 20)
 #define PI_NACK_COMPARE_MASK ((1ULL << 20) - 1)
 #define PI_SPOOL_MASK_MASK   0x3f
 #define PI_ERR_CHECK_MASK    0x3f
@@ -588,13 +587,18 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
     case PI_ERR_CHECK_ENABLE:
         s->err_check_enable = value & PI_ERR_CHECK_MASK;
         return;
+    /*
+     * The negative-acknowledge counter holds a count in bits 19:0 and an
+     * enable in bit 20; its compare holds a threshold in 19:0. The model's
+     * system bus never negatively acknowledges a processor transaction, so
+     * an enabled counter has nothing to count: it holds its programmed value,
+     * never reaches the compare, and never raises the processor-nack pending
+     * bit. That is the correct result for a bus that never retries, not a
+     * missing feature, so the write is stored rather than logged unsupported.
+     */
     case PI_NACK_COUNT_A:
     case PI_NACK_COUNT_B:
         s->nack_count[offset == PI_NACK_COUNT_B] = value & PI_NACK_COUNT_MASK;
-        if (value & PI_NACK_ENABLE) {
-            qemu_log_mask(LOG_UNIMP, "sgi-bedrock-pi: negative-acknowledge "
-                          "counting is not implemented\n");
-        }
         return;
     case PI_NACK_COMPARE:
         s->nack_compare = value & PI_NACK_COMPARE_MASK;

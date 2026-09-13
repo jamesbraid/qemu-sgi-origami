@@ -680,6 +680,16 @@ static void test_error_capture_registers(void)
     g_assert_cmphex(qtest_readq(s, PI(1, SPURIOUS_HEADER_0)), ==, 0);
 
     /*
+     * The counter is enabled (bit 20) and its stored count equals the
+     * compare, the state that would raise a processor-nack on hardware. The
+     * model's bus never negatively acknowledges, so the count is stored, not
+     * reached by counting, and pending 1 bits 56 and 57 stay clear: the model
+     * does not synthesise the nack pending from a written count.
+     */
+    g_assert_cmphex(qtest_readq(s, PI(0, PENDING_1)) &
+                    ((1ULL << 56) | (1ULL << 57)), ==, 0);
+
+    /*
      * The spurious headers are "not cleared at reset" in the header's
      * words. The nack and spool-mask reset values are unknown; the model
      * reads them as zero, its choice for every unknown reset value.
