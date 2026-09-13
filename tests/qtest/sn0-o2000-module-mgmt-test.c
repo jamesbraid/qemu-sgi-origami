@@ -644,6 +644,87 @@ static void test_nvram_is_shared(void)
     qtest_quit(qts);
 }
 
+/*
+ * One adapter's open transfer must survive another adapter addressing the
+ * same part. The part keeps a single address counter, as the hardware does,
+ * so a second adapter reaching it would move the counter the first is about
+ * to read from. Firmware reads the module number out of this block on four
+ * nodes at once, and a moved counter returns whichever byte the other
+ * adapter selected instead.
+ */
+static void test_nvram_read_survives_a_second_adapter(void)
+{
+    QTestState *qts = start_module();
+    uint8_t mine;
+
+    nvram_write(qts, 0, 0x010, 0x5a);
+    nvram_write(qts, 0, 0x020, 0xa5);
+
+    /* Adapter 0 opens a read of 0x010 and stops short of taking the byte. */
+    g_assert_true(start_transfer(qts, 0, NVRAM_FIRST, false));
+    g_assert_true(send_byte(qts, 0, 0x10));
+    g_assert_true(restart_transfer(qts, 0, NVRAM_FIRST, true));
+
+    /*
+     * Adapter 1 addresses the same part while that transfer is open. The bus
+     * is not free, so its START waits rather than reaching the part, and it
+     * must leave the open read alone while it waits.
+     */
+    adapter_write(qts, 1, I2C_CTRL, CTL_RUN);
+    adapter_write(qts, 1, I2C_DATA, NVRAM_FIRST << 1);
+    adapter_write(qts, 1, I2C_CTRL, CTL_START);
+    g_assert_false(wait_done(qts, 1));
+    g_assert_cmphex(adapter_read(qts, 1, I2C_CTRL) & (STS_BER | STS_LAB),
+                    ==, 0);
+    /* Withdraw it, so ending the first transfer is not a race with it. */
+    adapter_write(qts, 1, I2C_CTRL, CTL_PIN);
+
+    discard_byte(qts, 0);
+    mine = take_byte(qts, 0, true);
+    stop_transfer(qts, 0);
+    g_assert_cmphex(mine, ==, 0x5a);
+
+    /* That node's own turn still reaches the part it was refused. */
+    nvram_write(qts, 1, 0x020, 0x5b);
+    g_assert_cmphex(nvram_read(qts, 1, 0x020), ==, 0x5b);
+    qtest_quit(qts);
+}
+
+/*
+ * The same question one level finer: a second adapter starting while the
+ * first is part way through a byte, rather than between transfers. The wire
+ * resolves arbitration edge by edge, so this is where a loser that does not
+ * notice it lost would drive the part's address counter anyway.
+ */
+static void test_nvram_read_survives_a_mid_byte_start(void)
+{
+    QTestState *qts = start_module();
+    uint8_t mine;
+
+    nvram_write(qts, 0, 0x010, 0x5a);
+    nvram_write(qts, 0, 0x020, 0xa5);
+
+    g_assert_true(start_transfer(qts, 0, NVRAM_FIRST, false));
+    g_assert_true(send_byte(qts, 0, 0x10));
+    g_assert_true(restart_transfer(qts, 0, NVRAM_FIRST, true));
+
+    /*
+     * Reading the data register clocks the byte out. Start the throwaway
+     * byte, let adapter 1 address the part part way through it, then finish.
+     */
+    (void)adapter_read(qts, 0, I2C_DATA);
+    qtest_clock_step(qts, 3 * 5556);
+    adapter_write(qts, 1, I2C_CTRL, CTL_RUN);
+    adapter_write(qts, 1, I2C_DATA, (NVRAM_FIRST << 1));
+    adapter_write(qts, 1, I2C_CTRL, CTL_START);
+    g_assert_true(wait_done(qts, 0));
+
+    mine = take_byte(qts, 0, true);
+    g_assert_cmphex(mine, ==, 0x5a);
+
+    qtest_quit(qts);
+}
+
 static void test_initial_identity_on_every_node(void)
 {
     QTestState *qts = start_module();
@@ -1043,6 +1124,10 @@ int main(int argc, char **argv)
                    test_module_serial_reset_preserves_identity);
     qtest_add_func("/sn0/o2000-module-management/module-serial-module-number",
                    test_module_serial_ignores_mutable_module_number);
+    qtest_add_func("/sn0/o2000-module-management/nvram-read-vs-mid-byte-start",
+                   test_nvram_read_survives_a_mid_byte_start);
+    qtest_add_func("/sn0/o2000-module-management/nvram-read-vs-second-adapter",
+                   test_nvram_read_survives_a_second_adapter);
     qtest_add_func("/sn0/o2000-module-management/migration", test_migration);
     qtest_add_func("/sn0/o2000-module-management/module-serial-migration",
                    test_module_serial_migration_in_progress);
