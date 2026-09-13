@@ -167,6 +167,27 @@ bool r10k_cop1_fmt_defined(uint32_t opcode);
 void gen_movcf_s_r10k(DisasContext *ctx, int fs, int fd, int cc, int tf);
 void gen_movzn_s_r10k(DisasContext *ctx, int fs, int fd, int ft, bool on_zero);
 
+/*
+ * The R10000 family's implementation-dependent coprocessor 0 registers,
+ * decoded away from the shared MFC0/MTC0/DMFC0/DMTC0 arms. The caller
+ * dispatches registers 22, 25 and 27 in here and treats R10K_CP0_UNIMP as
+ * its own cp0_unimplemented case; R10K_CP0_DONE means the selector was
+ * handled and *register_name set for the trace.
+ */
+typedef enum {
+    R10K_CP0_DONE,
+    R10K_CP0_UNIMP,
+} R10KCp0Result;
+
+R10KCp0Result gen_mfc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
+                            const char **register_name);
+R10KCp0Result gen_mtc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
+                            const char **register_name);
+R10KCp0Result gen_dmfc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
+                             const char **register_name);
+R10KCp0Result gen_dmtc0_r10k(DisasContext *ctx, TCGv arg, int reg, int sel,
+                             const char **register_name);
+
 void gen_base_offset_addr(DisasContext *ctx, TCGv addr, int base, int offset);
 void gen_base_index_addr(DisasContext *ctx, TCGv addr, int base, int index);
 void gen_move_low32(TCGv ret, TCGv_i64 arg);

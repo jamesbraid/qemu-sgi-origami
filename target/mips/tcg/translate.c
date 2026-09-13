@@ -5765,21 +5765,10 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         }
         break;
     case CP0_REGISTER_22:
-        /*
-         * Implementation dependent: the R10000 family's Diagnostic register
-         * lives here, and every other processor reads zero and ignores writes
-         * as it did before that register was modeled.
-         */
-        if (ctx->insn_flags & INSN_R10K) {
-            /* A 64-bit register: a word read returns its low word. */
-            TCGv_i64 tmp = tcg_temp_new_i64();
-
-            gen_helper_mfc0_r10k_diagnostic(tmp, tcg_env);
-            gen_move_low32(arg, tmp);
-        } else {
-            tcg_gen_movi_tl(arg, 0);
+        if (gen_mfc0_r10k(ctx, arg, reg, sel, &register_name) ==
+            R10K_CP0_UNIMP) {
+            goto cp0_unimplemented;
         }
-        register_name = "Diagnostic";
         break;
     case CP0_REGISTER_23:
         switch (sel) {
@@ -5833,53 +5822,8 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         }
         break;
     case CP0_REGISTER_25:
-        switch (sel) {
-        case CP0_REG25__PERFCTL0:
-            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[0]));
-            register_name = "Performance0";
-            break;
-        case CP0_REG25__PERFCNT0:
-            CP0_CHECK(ctx->performance_counter_pairs >= 1);
-            /* Assembled from the clock while the counter counts cycles. */
-            gen_helper_mfc0_r10k_performance(arg, tcg_env,
-                                             tcg_constant_i32(sel));
-            register_name = "Performance1";
-            break;
-        case CP0_REG25__PERFCTL1:
-            CP0_CHECK(ctx->performance_counter_pairs >= 2);
-            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[2]));
-            register_name = "Performance2";
-            break;
-        case CP0_REG25__PERFCNT1:
-            CP0_CHECK(ctx->performance_counter_pairs >= 2);
-            /* Assembled from the clock while the counter counts cycles. */
-            gen_helper_mfc0_r10k_performance(arg, tcg_env,
-                                             tcg_constant_i32(sel));
-            register_name = "Performance3";
-            break;
-        case CP0_REG25__PERFCTL2:
-            CP0_CHECK(ctx->performance_counter_pairs >= 3);
-            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[4]));
-            register_name = "Performance4";
-            break;
-        case CP0_REG25__PERFCNT2:
-            CP0_CHECK(ctx->performance_counter_pairs >= 3);
-            gen_helper_mfc0_r10k_performance(arg, tcg_env,
-                                             tcg_constant_i32(sel));
-            register_name = "Performance5";
-            break;
-        case CP0_REG25__PERFCTL3:
-            CP0_CHECK(ctx->performance_counter_pairs >= 4);
-            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[6]));
-            register_name = "Performance6";
-            break;
-        case CP0_REG25__PERFCNT3:
-            CP0_CHECK(ctx->performance_counter_pairs >= 4);
-            gen_helper_mfc0_r10k_performance(arg, tcg_env,
-                                             tcg_constant_i32(sel));
-            register_name = "Performance7";
-            break;
-        default:
+        if (gen_mfc0_r10k(ctx, arg, reg, sel, &register_name) ==
+            R10K_CP0_UNIMP) {
             goto cp0_unimplemented;
         }
         break;
@@ -5894,13 +5838,8 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         }
         break;
     case CP0_REGISTER_27:
-        switch (sel) {
-        case CP0_REG27__CACHERR:
-            /* Read-only; loaded only by a Cache Error exception. */
-            gen_helper_mfc0_r10k_cacherr(arg, tcg_env);
-            register_name = "CacheErr";
-            break;
-        default:
+        if (gen_mfc0_r10k(ctx, arg, reg, sel, &register_name) ==
+            R10K_CP0_UNIMP) {
             goto cp0_unimplemented;
         }
         break;
@@ -6556,11 +6495,10 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         }
         break;
     case CP0_REGISTER_22:
-        /* Implementation dependent; only the R10000 family has a register. */
-        if (ctx->insn_flags & INSN_R10K) {
-            gen_helper_mtc0_r10k_diagnostic(tcg_env, arg);
+        if (gen_mtc0_r10k(ctx, arg, reg, sel, &register_name) ==
+            R10K_CP0_UNIMP) {
+            goto cp0_unimplemented;
         }
-        register_name = "Diagnostic";
         break;
     case CP0_REGISTER_23:
         switch (sel) {
@@ -6628,52 +6566,11 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         }
         break;
     case CP0_REGISTER_25:
-        switch (sel) {
-        case CP0_REG25__PERFCTL0:
-            /*
-             * The R10000 family's control registers are narrower than the
-             * MIPS32 one this helper was written for, and its two must agree
-             * with each other.
-             */
-            if (ctx->performance_counter_pairs) {
-                gen_helper_mtc0_r10k_performance(tcg_env, arg,
-                                                 tcg_constant_i32(sel));
-            } else {
-                gen_helper_mtc0_performance0(tcg_env, arg);
-            }
-            register_name = "Performance0";
-            break;
-        case CP0_REG25__PERFCNT0:
-            CP0_CHECK(ctx->performance_counter_pairs >= 1);
-            gen_helper_mtc0_r10k_performance(tcg_env, arg,
-                                             tcg_constant_i32(sel));
-            register_name = "Performance";
-            break;
-        case CP0_REG25__PERFCTL1:
-        case CP0_REG25__PERFCNT1:
-            CP0_CHECK(ctx->performance_counter_pairs >= 2);
-            gen_helper_mtc0_r10k_performance(tcg_env, arg,
-                                             tcg_constant_i32(sel));
-            register_name = "Performance";
-            break;
-        case CP0_REG25__PERFCTL2:
-        case CP0_REG25__PERFCNT2:
-            CP0_CHECK(ctx->performance_counter_pairs >= 3);
-            gen_helper_mtc0_r10k_performance(tcg_env, arg,
-                                             tcg_constant_i32(sel));
-            register_name = "Performance4";
-            break;
-        case CP0_REG25__PERFCTL3:
-        case CP0_REG25__PERFCNT3:
-            CP0_CHECK(ctx->performance_counter_pairs >= 4);
-            gen_helper_mtc0_r10k_performance(tcg_env, arg,
-                                             tcg_constant_i32(sel));
-            register_name = "Performance6";
-            break;
-        default:
+        if (gen_mtc0_r10k(ctx, arg, reg, sel, &register_name) ==
+            R10K_CP0_UNIMP) {
             goto cp0_unimplemented;
         }
-       break;
+        break;
     case CP0_REGISTER_26:
         switch (sel) {
         case CP0_REG26__ERRCTL:
@@ -6686,15 +6583,11 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         }
         break;
     case CP0_REGISTER_27:
-        switch (sel) {
-        case CP0_REG27__CACHERR:
-            /* Read-only: loaded by a Cache Error exception, never by MTC0. */
-            register_name = "CacheErr";
-            break;
-        default:
+        if (gen_mtc0_r10k(ctx, arg, reg, sel, &register_name) ==
+            R10K_CP0_UNIMP) {
             goto cp0_unimplemented;
         }
-       break;
+        break;
     case CP0_REGISTER_28:
         switch (sel) {
         case CP0_REG28__TAGLO:
@@ -7334,18 +7227,10 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         }
         break;
     case CP0_REGISTER_22:
-        /*
-         * Implementation dependent: the R10000 family's Diagnostic register
-         * lives here, and every other processor reads zero and ignores writes
-         * as it did before that register was modeled.
-         */
-        if (ctx->insn_flags & INSN_R10K) {
-            /* A 64-bit register: a doubleword read returns all of it. */
-            gen_helper_mfc0_r10k_diagnostic(arg, tcg_env);
-        } else {
-            tcg_gen_movi_tl(arg, 0);
+        if (gen_dmfc0_r10k(ctx, arg, reg, sel, &register_name) ==
+            R10K_CP0_UNIMP) {
+            goto cp0_unimplemented;
         }
-        register_name = "Diagnostic";
         break;
     case CP0_REGISTER_23:
         switch (sel) {
@@ -7398,48 +7283,8 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         }
         break;
     case CP0_REGISTER_25:
-        switch (sel) {
-        case CP0_REG25__PERFCTL0:
-            CP0_CHECK(ctx->performance_counter_pairs != 4);
-            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[0]));
-            register_name = "Performance0";
-            break;
-        case CP0_REG25__PERFCNT0:
-            CP0_CHECK(ctx->performance_counter_pairs == 2);
-            /* Assembled from the clock while the counter counts cycles. */
-            gen_helper_mfc0_r10k_performance(arg, tcg_env,
-                                             tcg_constant_i32(sel));
-            register_name = "Performance1";
-            break;
-        case CP0_REG25__PERFCTL1:
-            CP0_CHECK(ctx->performance_counter_pairs == 2);
-            gen_mfc0_load32(arg, offsetof(CPUMIPSState, CP0_Performance[2]));
-            register_name = "Performance2";
-            break;
-        case CP0_REG25__PERFCNT1:
-            CP0_CHECK(ctx->performance_counter_pairs == 2);
-            /* Assembled from the clock while the counter counts cycles. */
-            gen_helper_mfc0_r10k_performance(arg, tcg_env,
-                                             tcg_constant_i32(sel));
-            register_name = "Performance3";
-            break;
-        case CP0_REG25__PERFCTL2:
-            /* gen_helper_dmfc0_performance4(arg); */
-            register_name = "Performance4";
-            goto cp0_unimplemented;
-        case CP0_REG25__PERFCNT2:
-            /* gen_helper_dmfc0_performance5(arg); */
-            register_name = "Performance5";
-            goto cp0_unimplemented;
-        case CP0_REG25__PERFCTL3:
-            /* gen_helper_dmfc0_performance6(arg); */
-            register_name = "Performance6";
-            goto cp0_unimplemented;
-        case CP0_REG25__PERFCNT3:
-            /* gen_helper_dmfc0_performance7(arg); */
-            register_name = "Performance7";
-            goto cp0_unimplemented;
-        default:
+        if (gen_dmfc0_r10k(ctx, arg, reg, sel, &register_name) ==
+            R10K_CP0_UNIMP) {
             goto cp0_unimplemented;
         }
         break;
@@ -7454,13 +7299,8 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         }
         break;
     case CP0_REGISTER_27:
-        switch (sel) {
-        case CP0_REG27__CACHERR:
-            /* Read-only; loaded only by a Cache Error exception. */
-            gen_helper_mfc0_r10k_cacherr(arg, tcg_env);
-            register_name = "CacheErr";
-            break;
-        default:
+        if (gen_dmfc0_r10k(ctx, arg, reg, sel, &register_name) ==
+            R10K_CP0_UNIMP) {
             goto cp0_unimplemented;
         }
         break;
@@ -8095,11 +7935,10 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         }
         break;
     case CP0_REGISTER_22:
-        /* Implementation dependent; only the R10000 family has a register. */
-        if (ctx->insn_flags & INSN_R10K) {
-            gen_helper_mtc0_r10k_diagnostic(tcg_env, arg);
+        if (gen_dmtc0_r10k(ctx, arg, reg, sel, &register_name) ==
+            R10K_CP0_UNIMP) {
+            goto cp0_unimplemented;
         }
-        register_name = "Diagnostic";
         break;
     case CP0_REGISTER_23:
         switch (sel) {
@@ -8165,48 +8004,8 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         }
         break;
     case CP0_REGISTER_25:
-        switch (sel) {
-        case CP0_REG25__PERFCTL0:
-            /*
-             * The R10000 family's control registers are narrower than the
-             * MIPS32 one this helper was written for, and its two must agree
-             * with each other.
-             */
-            if (ctx->performance_counter_pairs == 2) {
-                gen_helper_mtc0_r10k_performance(tcg_env, arg,
-                                                 tcg_constant_i32(sel));
-            } else if (!ctx->performance_counter_pairs) {
-                gen_helper_mtc0_performance0(tcg_env, arg);
-            } else {
-                goto cp0_unimplemented;
-            }
-            register_name = "Performance0";
-            break;
-        case CP0_REG25__PERFCNT0:
-        case CP0_REG25__PERFCTL1:
-        case CP0_REG25__PERFCNT1:
-            CP0_CHECK(ctx->performance_counter_pairs == 2);
-            gen_helper_mtc0_r10k_performance(tcg_env, arg,
-                                             tcg_constant_i32(sel));
-            register_name = "Performance";
-            break;
-        case CP0_REG25__PERFCTL2:
-            /* gen_helper_mtc0_performance4(tcg_env, arg); */
-            register_name = "Performance4";
-            goto cp0_unimplemented;
-        case CP0_REG25__PERFCNT2:
-            /* gen_helper_mtc0_performance5(tcg_env, arg); */
-            register_name = "Performance5";
-            goto cp0_unimplemented;
-        case CP0_REG25__PERFCTL3:
-            /* gen_helper_mtc0_performance6(tcg_env, arg); */
-            register_name = "Performance6";
-            goto cp0_unimplemented;
-        case CP0_REG25__PERFCNT3:
-            /* gen_helper_mtc0_performance7(tcg_env, arg); */
-            register_name = "Performance7";
-            goto cp0_unimplemented;
-        default:
+        if (gen_dmtc0_r10k(ctx, arg, reg, sel, &register_name) ==
+            R10K_CP0_UNIMP) {
             goto cp0_unimplemented;
         }
         break;
@@ -8222,12 +8021,8 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         }
         break;
     case CP0_REGISTER_27:
-        switch (sel) {
-        case CP0_REG27__CACHERR:
-            /* Read-only: loaded by a Cache Error exception, never by MTC0. */
-            register_name = "CacheErr";
-            break;
-        default:
+        if (gen_dmtc0_r10k(ctx, arg, reg, sel, &register_name) ==
+            R10K_CP0_UNIMP) {
             goto cp0_unimplemented;
         }
         break;
