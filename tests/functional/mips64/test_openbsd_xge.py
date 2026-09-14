@@ -37,6 +37,15 @@ skipTest()s before ever calling vm.launch(), the same way every other
 asset-gated test in this directory behaves when ORIGAMI_ASSETS is unset or
 incomplete.
 
+Boots through the real stock IP27 PROM's own netboot path, the same
+conversion test_openbsd_login.py and test_openbsd_net_transfer.py make:
+_drive_netboot() drives lib_prom's prom_netboot_steps() through this
+file's own _Console, ahead of _drive_login()'s existing login sequence,
+over a second SLIRP usermode network on the onboard IOC3 -- separate
+from the xframe adapter's own -netdev n1, the same split test_xframe_pci.py
+keeps. Untested by the same asset gap as everything else in this file:
+there is nothing to boot this against yet.
+
 Scope: one transfer leg, not test_openbsd_net_transfer.py's three -- this
 test's own job is proving xge(4) carries a payload correctly over this
 fork's emulated adapter, not re-proving that three-leg shape, which
@@ -61,7 +70,7 @@ import time
 from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
                        skipSlowTest)
 
-from lib_prom import resolve_asset
+from lib_prom import FIRMWARE_REL, prom_netboot_steps, resolve_asset
 
 from test_openbsd_net_transfer_verdict import summarise_pcap
 
@@ -75,6 +84,12 @@ from test_openbsd_xge_verdict import TRIPWIRES, xge_traffic_verdict
 # one every other OpenBSD test here boots.
 KERNEL_REL = os.path.join('assets', 'openbsd', 'xge', 'bsd.IP27')
 DISK_REL = os.path.join('assets', 'openbsd', 'xge', 'root.img')
+
+# The boot file this test's own SLIRP TFTP server would serve the kernel
+# under, once it exists -- see prom_netboot_steps()'s own docstring for
+# why this need not match the kernel's name on disk.
+NETBOOT_BOOTFILE = 'bsd.IP27'
+NETBOOT_STEPS = prom_netboot_steps(NETBOOT_BOOTFILE)
 
 MEMORY_MIB = 128
 ROOT_PASSWORD = "origami123"
@@ -203,6 +218,20 @@ class _Console:
         self._log.close()
 
 
+def _drive_netboot(con, budget):
+    """Answer the System Maintenance Menu and command monitor to netboot
+    the kernel, the same three-step dialogue prom_netboot_steps() builds
+    for every netboot test in this directory -- driven here through this
+    file's own _Console rather than lib_prom.drive_console(), since this
+    file's whole login/command drive is already its own console idiom
+    (see this module's own docstring)."""
+    deadline = time.monotonic() + budget
+    left = lambda cap: max(1.0, min(cap, deadline - time.monotonic()))
+    for pattern, response in NETBOOT_STEPS:
+        con.expect(pattern.encode(), left(budget), what=pattern)
+        con.send(response.rstrip("\n"))
+
+
 def _drive_login(con, budget):
     deadline = time.monotonic() + budget
     left = lambda cap: max(1.0, min(cap, deadline - time.monotonic()))
@@ -254,11 +283,12 @@ class OpenbsdXge(QemuSystemTest):
 
     def _asset_paths(self):
         assets_root = os.environ['ORIGAMI_ASSETS']
+        firmware = resolve_asset(assets_root, FIRMWARE_REL)
         kernel = resolve_asset(assets_root, KERNEL_REL)
         disk = resolve_asset(assets_root, DISK_REL)
-        if not (kernel and disk):
+        if not (firmware and kernel and disk):
             return None
-        return kernel, disk
+        return firmware, kernel, disk
 
     def _write_leg(self, con, sink, sink_port):
         src = f"{HOME}/up.bin"
@@ -332,7 +362,7 @@ class OpenbsdXge(QemuSystemTest):
                 'other asset-gated tests. Provision that kernel and a '
                 'disk with the usual guest tools at the above paths '
                 '(or point KERNEL_REL/DISK_REL there) to run this test')
-        kernel, disk = paths
+        firmware, kernel, disk = paths
 
         self.require_netdev('user')
 
@@ -344,11 +374,14 @@ class OpenbsdXge(QemuSystemTest):
         pcap_path = self.log_file('wire.pcap')
 
         vm = self.get_vm(name='openbsd_xge')
-        vm.set_machine('origin200')
+        vm.set_machine('origin200,synthesized-firmware=off,debug-leds=off')
         vm.set_console()
         vm.add_args(
             '-m', str(MEMORY_MIB), '-snapshot',
-            '-kernel', kernel,
+            '-bios', firmware,
+            '-nic', ('user,id=net0,'
+                    f'tftp={os.path.dirname(kernel)},'
+                    f'bootfile={NETBOOT_BOOTFILE}'),
             '-drive', f'if=none,id=hd0,file={disk},format=raw',
             '-device', 'scsi-hd,bus=scsi.0,scsi-id=1,drive=hd0',
             '-netdev', 'user,id=n1',
@@ -364,6 +397,7 @@ class OpenbsdXge(QemuSystemTest):
         transcript = ""
         try:
             try:
+                _drive_netboot(con, LOGIN_BUDGET_SECONDS)
                 _drive_login(con, LOGIN_BUDGET_SECONDS)
                 con.run(f"dhclient {IFACE}", "dhcp", timeout=240)
                 transfer = self._write_leg(con, sink, sink_port)
