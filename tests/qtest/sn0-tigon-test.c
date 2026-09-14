@@ -619,6 +619,15 @@ static QTestState *tigon_init_netdev_binary(int guest_fd, const char *binary)
     return qts;
 }
 
+static QTestState *tigon_init_netdev_no_arrival_floor(int guest_fd)
+{
+    return qtest_initf("-M origin200 "
+                       "-netdev socket,fd=%d,id=n0 "
+                       "-device tigon,addr=3,mac=" TIGON_MAC ",netdev=n0"
+                       ",rx-arrival-latency-us=0",
+                       guest_fd);
+}
+
 static QTestState *tigon_init_netdev_128m(int guest_fd)
 {
     return qtest_initf("-M origin200 -m 128M "
@@ -1730,6 +1739,156 @@ static void test_receive_jumbo_posted_by_command(const void *data)
 
     /* The standard buffer was left untouched. */
     g_assert_cmphex(qtest_readl(qts, RX_BUF_PHYS), ==, 0);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * Poll for a completion without advancing the virtual clock. Every qtest
+ * command runs a pass of the main loop, so the back end still gets to read
+ * its socket; what does not happen is any timer firing.
+ */
+static uint32_t return_prod_without_clock(QTestState *qts, uint32_t want)
+{
+    int attempt;
+
+    for (attempt = 0; attempt < 100; attempt++) {
+        if (qtest_readl(qts, RETURN_PROD_PHYS) >= want) {
+            break;
+        }
+        g_usleep(5000);
+    }
+    return qtest_readl(qts, RETURN_PROD_PHYS);
+}
+
+/*
+ * The discard happens at once, and this is the test that says so. Whether the
+ * frame is thrown away immediately or held for a while first is invisible to
+ * every other assertion in this file: they all step the virtual clock far
+ * enough to see a completion, which is also far enough past any plausible
+ * hold, so both dispositions end in the same state.
+ *
+ * Freezing the clock separates them. A model that holds the frame has refused
+ * it, which stops the back end reading, and nothing releases it while virtual
+ * time stands still -- so the standard frame queued behind it never arrives.
+ * A model that discards at once keeps reading and delivers that frame on the
+ * next pass of the main loop.
+ *
+ * This matters because discarding at once is an approximation with nothing
+ * behind it, and the obvious alternative is a bounded hold. One was built for
+ * this device and measured on the BCM570x, where it delivered fewer bytes;
+ * see the jumbo receive contract in the Tigon datasheet. Without this
+ * assertion nothing here would notice it coming back.
+ *
+ * The arrival floor is zeroed, because with it the success path would itself
+ * be waiting on a virtual-clock deadline and the test could not work.
+ */
+static void test_jumbo_shortage_discards_without_waiting(const void *data)
+{
+    enum { JUMBO_LEN = 4000 };
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[JUMBO_LEN], landed[sizeof(rx_frame_ours)];
+    unsigned n;
+    uint32_t word2;
+
+    memcpy(frame, rx_frame_ours, 14);
+    for (n = 14; n < JUMBO_LEN; n++) {
+        frame[n] = (uint8_t)(n * 17 + (n >> 2));
+    }
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev_no_arrival_floor(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    /* A standard buffer, and a jumbo control block with nothing posted. */
+    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
+    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+
+    net_send_frame(sv[0], frame, sizeof(frame));
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+
+    /* No qtest_clock_step anywhere: only a discard gets the second frame in. */
+    g_assert_cmphex(return_prod_without_clock(qts, 1), ==, 1);
+    word2 = qtest_readl(qts, RETURN_RING_PHYS + 8);
+    g_assert_cmphex(word2 & 0xffff, ==, sizeof(rx_frame_ours));
+    qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed), rx_frame_ours,
+                    sizeof(rx_frame_ours));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * The same command, arriving after the frame rather than before it. With no
+ * buffer posted on either ring the card refuses the frame and the back end
+ * holds it, so something has to say the card can take one again. The jumbo
+ * producer mailbox does; so must the firmware command, which is the path the
+ * IRIX eg driver uses and the one whose handler differs from the mailbox's.
+ * Without this the command's flush has no cover at all: the case that had it
+ * now posts the buffer first, so a card that never retried would still pass.
+ * What is covered is the flush.
+ */
+static void test_jumbo_command_releases_a_refused_frame(const void *data)
+{
+    enum { JUMBO_LEN = 4000 };
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[JUMBO_LEN], landed[JUMBO_LEN];
+    unsigned n;
+    uint32_t word2, word3;
+
+    memcpy(frame, rx_frame_ours, 14);
+    for (n = 14; n < JUMBO_LEN; n++) {
+        frame[n] = (uint8_t)(n * 11 + (n >> 4));
+    }
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    /*
+     * The jumbo descriptor is written into the ring but not posted, and no
+     * standard buffer is posted either. Both rings empty is what makes the
+     * card refuse rather than discard, so the frame is still there to release.
+     */
+    qtest_memset(qts, JUMBO_BUF_PHYS, 0, 16384);
+    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
+    write_rcb_addr(qts, JUMBO_RX_RING_PHYS + 0, JUMBO_BUF_PHYS);
+    qtest_writel(qts, JUMBO_RX_RING_PHYS + 8, (9u << 16) | 16222);
+    qtest_writel(qts, JUMBO_RX_RING_PHYS + 12,
+                 (uint32_t)TI_BDTYPE_RECV_JUMBO_BD << 16);
+
+    net_send_frame(sv[0], frame, sizeof(frame));
+    assert_return_prod_stays(qts, 0);
+    g_assert_cmphex(qtest_readl(qts, JUMBO_BUF_PHYS), ==, 0);
+
+    /* The only thing that changes. The jumbo mailbox is never written. */
+    qtest_writel(qts, WINDOW_TIGON + TI_GCR_CMDRING,
+                 ((uint32_t)TI_CMD_SET_RX_JUMBO_PROD_IDX << 24) | 1);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_CMDPROD_IDX, 1);
+
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+
+    g_assert_cmphex(qtest_readl(qts, RETURN_RING_PHYS + 4), ==,
+                    JUMBO_BUF_PHYS);
+    word2 = qtest_readl(qts, RETURN_RING_PHYS + 8);
+    g_assert_cmphex(word2 >> 16, ==, 9);
+    g_assert_cmphex(word2 & 0xffff, ==, JUMBO_LEN);
+    word3 = qtest_readl(qts, RETURN_RING_PHYS + 12);
+    g_assert_cmphex(word3 & TI_BDFLAG_JUMBO_RING, ==, TI_BDFLAG_JUMBO_RING);
+
+    qtest_memread(qts, JUMBO_BUF_PHYS, landed, sizeof(frame));
+    g_assert_cmpmem(landed, sizeof(frame), frame, sizeof(frame));
 
     qtest_quit(qts);
     close(sv[0]);
@@ -4441,6 +4600,11 @@ int main(int argc, char **argv)
                         test_receive_jumbo_posted_by_command);
     qtest_add_data_func("/sn0/tigon/receive-jumbo-ring-unprovisioned", NULL,
                         test_receive_jumbo_ring_unprovisioned);
+    qtest_add_data_func(
+        "/sn0/tigon/jumbo-shortage-discards-without-waiting", NULL,
+        test_jumbo_shortage_discards_without_waiting);
+    qtest_add_data_func("/sn0/tigon/jumbo-command-releases-a-refused-frame",
+                        NULL, test_jumbo_command_releases_a_refused_frame);
     qtest_add_data_func("/sn0/tigon/firmware-up-releases-a-held-frame", NULL,
                         test_firmware_up_releases_a_held_frame);
     qtest_add_data_func("/sn0/tigon/receive-accepts-multicast", NULL,
