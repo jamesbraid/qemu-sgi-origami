@@ -24,9 +24,20 @@ the same guards test_openbsd_login.py keeps.
 
 The machine matches the verified milestone boot: -M origin200 -cpu R10000
 -m 256, two 128 MiB memory backends as NUMA nodes 0-1, -smp
-4,sockets=2,cores=2,threads=1, -accel tcg,thread=multi, one user-mode NIC
-with the guest's port 22 forwarded to a host port, -snapshot so the 2 GiB
-disk stays read-only.
+4,sockets=2,cores=2,threads=1, -accel tcg,thread=multi, -snapshot so the
+2 GiB disk stays read-only -- with the kernel now loaded through the real
+PROM's own netboot path rather than -kernel directly (lib_prom's
+prom_netboot_steps(), the same conversion test_linux_kernel.py makes and
+for the same reason: the plan this test belongs to retires synthesized
+firmware). The one user-mode NIC carries both jobs the guest's single
+onboard IOC3 needs across the run: `tftp=`/`bootfile=` for the PROM's
+netboot fetch, and the same `hostfwd=` port forward as before for the
+ssh probe once multiuser is up -- one SLIRP backend, not two, since both
+are the same interface at different points in the same boot. `-no-reboot`
+is dropped: test_linux_kernel.py's own docstring covers why it does not
+survive booting the real PROM (an immediate, silently-swallowed shutdown,
+confirmed by running that exact command line with and without the flag)
+and neither test's own pass condition ever depended on it.
 
 missing_multiuser_markers() (test_linux_multiuser_verdict.py, imported
 below) judges the console transcript -- ethernet link, dhcp client, sshd,
@@ -51,8 +62,8 @@ import time
 from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
                        skipSlowTest)
 
-from lib_prom import resolve_asset
-from lib_translation_health import assert_translation_healthy
+from lib_prom import (FIRMWARE_REL, drive_console, prom_netboot_steps,
+                      resolve_asset)
 
 from test_linux_multiuser_verdict import missing_multiuser_markers
 
@@ -63,11 +74,21 @@ from test_linux_multiuser_verdict import missing_multiuser_markers
 KERNEL_REL = os.path.join('assets', 'linux-ip27-net', 'vmlinux')
 DISK_REL = os.path.join('assets', 'gentoo', 'gentoo-rootfs.img')
 
+# The boot file this test's own SLIRP TFTP server serves the kernel
+# under -- see prom_netboot_steps()'s own docstring for why this need
+# not match the kernel's name on disk.
+NETBOOT_BOOTFILE = 'vmlinux'
+NETBOOT_STEPS = prom_netboot_steps(NETBOOT_BOOTFILE)
+
 MEMORY_MIB = 256
 
-# The verified milestone boot reached a networked login in 754-845s; keep a
-# margin under the meson timeout registered for this test
-# (mips64/meson.build), the same shape test_openbsd_login.py keeps.
+# The verified milestone boot reached a networked login in 754-845s under
+# a direct -kernel load, before this test carried a real PROM boot and
+# netboot transfer in front of it; kept unchanged as a floor pending a
+# real measurement of the netbooted boot (see this module's own
+# docstring for why one could not be taken here). Still a margin under
+# the meson timeout registered for this test (mips64/meson.build), the
+# same shape test_openbsd_login.py keeps.
 BOOT_TIMEOUT_SECONDS = 1200
 
 # The guest's port 22, forwarded to this host port. A fixed high port: the
@@ -80,37 +101,14 @@ LOGIN_RE = re.compile(r"[\w.-]+ login:")
 CRASH_RE = re.compile(r"Kernel panic - not sync|Oops\[|Unable to handle kernel")
 
 
-def _boot_to_login(sock, log_path, timeout, vm=None):
-    """Read the console until the multiuser login prompt (network and
-    services up), a kernel crash, or the timeout. Every byte received is
-    accumulated into the returned transcript and appended to log_path, so a
-    run is inspectable exactly like a captured -serial file -- the same
-    shape test_openbsd_login.py's _drive_login() keeps, without any device
-    questions to answer (the disk carries a real init)."""
-    sock.settimeout(1.0)
-    deadline = time.monotonic() + timeout
-    transcript = ""
-    health_checked = False
-    with open(log_path, "a", encoding="utf-8") as log:
-        while time.monotonic() < deadline:
-            try:
-                chunk = sock.recv(4096)
-            except socket.timeout:
-                continue
-            except OSError:
-                break
-            if not chunk:
-                break
-            text = chunk.decode("utf-8", errors="replace")
-            transcript += text
-            log.write(text)
-            log.flush()
-            if vm is not None and not health_checked:
-                health_checked = True
-                assert_translation_healthy(vm)
-            if LOGIN_RE.search(transcript) or CRASH_RE.search(transcript):
-                break
-    return transcript
+def _login_reached(transcript):
+    """The netboot drive's end condition once the netboot dialogue has
+    been answered: the multiuser login prompt (network and services up)
+    or a kernel crash. xframe_pci's own _pci_probe_reached() decodes the
+    same way, for the same reason: drive_console() accumulates bytes,
+    every marker here is a str pattern."""
+    text = transcript.decode('utf-8', errors='replace')
+    return bool(LOGIN_RE.search(text) or CRASH_RE.search(text))
 
 
 def _ssh_banner(port, timeout=15):
@@ -134,14 +132,16 @@ class LinuxMultiuser(QemuSystemTest):
     verdict and its own QemuSystemTest."""
 
     def _asset_paths(self):
-        """The kernel and rootfs under ORIGAMI_ASSETS, or None if either
-        is missing -- the runner may not have assets provisioned yet."""
+        """The real PROM image, the kernel and the rootfs under
+        ORIGAMI_ASSETS, or None if any is missing -- the runner may not
+        have assets provisioned yet."""
         assets_root = os.environ['ORIGAMI_ASSETS']
+        firmware = resolve_asset(assets_root, FIRMWARE_REL)
         kernel = resolve_asset(assets_root, KERNEL_REL)
         disk = resolve_asset(assets_root, DISK_REL)
-        if not (kernel and disk):
+        if not (firmware and kernel and disk):
             return None
-        return kernel, disk
+        return firmware, kernel, disk
 
     @skipBigDataTest()
     @skipSlowTest()
@@ -151,24 +151,25 @@ class LinuxMultiuser(QemuSystemTest):
         if paths is None:
             # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
             # the case where it is unset entirely -- getting here means
-            # it IS set, so a missing kernel or disk is a provisioning
-            # failure, not an absent-assets developer run, and must fail
-            # loudly: a silent skip here would let a real multiuser-boot
-            # regression pass CI unnoticed.
+            # it IS set, so a missing PROM, kernel or disk is a
+            # provisioning failure, not an absent-assets developer run,
+            # and must fail loudly: a silent skip here would let a real
+            # multiuser-boot regression pass CI unnoticed.
             self.fail(
-                'ORIGAMI_ASSETS is set but the kernel/disk are missing '
-                f'at <ORIGAMI_ASSETS>/{KERNEL_REL} and '
+                'ORIGAMI_ASSETS is set but the PROM/kernel/disk are '
+                f'missing at <ORIGAMI_ASSETS>/{FIRMWARE_REL}, '
+                f'<ORIGAMI_ASSETS>/{KERNEL_REL} and '
                 f'<ORIGAMI_ASSETS>/{DISK_REL} -- provision them '
                 '(nightly assets) rather than silently skipping a '
                 'claimed capability')
-        kernel, disk = paths
+        firmware, kernel, disk = paths
 
         vm = self.get_vm(name='linux_multiuser')
-        vm.set_machine('origin200')
+        vm.set_machine('origin200,synthesized-firmware=off,debug-leds=off')
         vm.set_console()
         vm.add_args(
             '-cpu', 'R10000', '-m', str(MEMORY_MIB), '-snapshot',
-            '-kernel', kernel, '-no-reboot',
+            '-bios', firmware,
             '-drive', f'if=none,id=disk0,file={disk},format=raw',
             '-device', 'scsi-hd,drive=disk0,bus=scsi.0,scsi-id=0,lun=0',
             '-object', 'memory-backend-ram,id=ram0,size=128M',
@@ -177,15 +178,19 @@ class LinuxMultiuser(QemuSystemTest):
             '-numa', 'node,nodeid=1,cpus=2-3,memdev=ram1',
             '-smp', '4,sockets=2,cores=2,threads=1',
             '-accel', 'tcg,thread=multi',
-            '-nic', f'user,id=n1,hostfwd=tcp::{SSH_HOST_PORT}-:22')
+            '-nic', ('user,id=n1,'
+                    f'hostfwd=tcp::{SSH_HOST_PORT}-:22,'
+                    f'tftp={os.path.dirname(kernel)},'
+                    f'bootfile={NETBOOT_BOOTFILE}'))
         vm.launch()
 
         log_path = self.log_file('linux-multiuser.log')
         banner = ''
         missing = None
         try:
-            transcript = _boot_to_login(
-                vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS, vm=vm)
+            transcript, _reached = drive_console(
+                vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS,
+                NETBOOT_STEPS, reached_when=_login_reached, vm=vm)
             # Probe ssh only once the boot reached networked multiuser --
             # gated on the same verdict the markers use, not a separate
             # login match, so the banner is asserted exactly when the
