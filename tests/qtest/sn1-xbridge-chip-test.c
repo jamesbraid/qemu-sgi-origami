@@ -143,10 +143,25 @@ static void test_head_interrupts_reach_the_host(void)
     qtest_quit(qts);
 }
 
+/*
+ * The card's own scalar fields (address, count, seed, trigger) need
+ * value-preserving placement through the slot's PIO window regardless of
+ * what a test has bit 13 set to for its own byte-stream checks elsewhere,
+ * so clear it here for the one write and restore whatever the caller had
+ * (sn1-xbridge-test.c's card_write() carries the same reasoning).
+ */
 static void card_write(QTestState *qts, unsigned widget, unsigned reg,
                        uint32_t value)
 {
+    uint32_t dev = reg_read(qts, widget, 0x200);
+
+    if (dev & (1U << 13)) {
+        reg_write(qts, widget, 0x200, dev & ~(1U << 13));
+    }
     qtest_writel(qts, WIDGET(widget) + 0x200000 + reg, value);
+    if (dev & (1U << 13)) {
+        reg_write(qts, widget, 0x200, dev);
+    }
 }
 
 static void test_head_dma_reaches_the_host(void)

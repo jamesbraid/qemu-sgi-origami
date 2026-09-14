@@ -484,7 +484,7 @@ static MemTxResult xbridge_pio(SGIXBridgeHeadState *s, hwaddr addr,
     unsigned width;
     AddressSpace *as;
     MemTxResult result;
-    bool correct;
+    bool needs_correction, swizzle, stream;
 
     if (addr < 0x600000) {
         slot = (addr - 0x200000) >> 21;
@@ -505,17 +505,31 @@ static MemTxResult xbridge_pio(SGIXBridgeHeadState *s, hwaddr addr,
     }
     base <<= 20;
     as = dev & (1U << 12) ? &s->pci_mem_as : &s->pci_io_as;
-    correct = xbridge_slot_needs_correction(s, slot) &&
-              !(dev & (1U << 13));
-    if (correct) {
+    /*
+     * Table 111 (docs/datasheets/xbridge.md): with the device's own swap bit
+     * (bit 13) clear, a narrow access is placed by offset exclusive-or --
+     * the value crosses unchanged. Set, it is a byte stream -- the value is
+     * mirrored and the offset is not touched. The two corrections are
+     * alternatives keyed on that one bit, never both at once; conflating
+     * them (as this function used to) nets to a mirrored value on the
+     * placement path a self-ordered device does not take, which is what a
+     * live BASEIO PROM crash traced back to (OHCI's HcControl read
+     * 0xc0000000 instead of 0xc0, so usb_ohci_bus_attach never saw
+     * UsbSuspend). The big-window path (xbridge_range_rw) already applies
+     * only the placement correction and already matches this rule.
+     */
+    needs_correction = xbridge_slot_needs_correction(s, slot);
+    swizzle = needs_correction && !(dev & (1U << 13));
+    stream = needs_correction && (dev & (1U << 13));
+    if (swizzle) {
         offset ^= width - size;
-        if (write) {
-            xbridge_reverse(bytes, size);
-        }
+    }
+    if (stream && write) {
+        xbridge_reverse(bytes, size);
     }
     result = address_space_rw(as, base + offset, MEMTXATTRS_UNSPECIFIED,
                               bytes, size, write);
-    if (correct && !write) {
+    if (stream && !write) {
         xbridge_reverse(bytes, size);
     }
     return result;
