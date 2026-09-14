@@ -26,7 +26,7 @@ handling, reset, migration, and object lifetime. The canonical topology has one
 directly connected Bridge per chassis with two SCSI adapters and the
 IOC3 base I/O controller on its PCI bus, four IP29 memory banks, and
 no crossbar. The synthesized firmware
-(``hw/mips/sn0-firmware.c``) builds what a real IP27 PROM leaves
+(``hw/mips/sgi/sn0-firmware.c``) builds what a real IP27 PROM leaves
 behind for a guest -- the programmed boot flash and its configuration
 block, the ARCS call vectors and the routines behind them, and the
 KLCONFIG configuration graph -- and owns the direct ``-kernel`` and
@@ -307,7 +307,7 @@ Kernel hand-off
 ===============
 
 A ``-kernel`` file is loaded through the generic loaders: ELF first,
-then the MIPS ECOFF loader (``load_ecoff()`` in ``hw/mips/sn0-ecoff.c``,
+then the MIPS ECOFF loader (``load_ecoff()`` in ``hw/mips/sgi/sn0-ecoff.c``,
 bounds-checked on every header field), with both answers reported on
 failure. A 32-bit ELF's entry point is sign-extended at this one call
 site -- an IRIX-shaped kernel carries a physical load address and a

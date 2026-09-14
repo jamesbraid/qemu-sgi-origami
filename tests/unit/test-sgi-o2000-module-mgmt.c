@@ -8,8 +8,8 @@
 #include "hw/core/sysbus.h"
 #include "hw/i2c/i2c.h"
 #include "hw/i2c/pcf8584.h"
-#include "hw/i2c/sgi-i2c-wire.h"
-#include "hw/misc/sgi-o2000-module-mgmt.h"
+#include "hw/i2c/i2c-wire.h"
+#include "hw/misc/sgi-sn0-module-management.h"
 #include "qapi/error.h"
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
@@ -109,7 +109,7 @@ static void probe_class_init(ObjectClass *oc, const void *data)
 /* The device takes its serial from the machine's model; any ten bytes do. */
 static DeviceState *module_new(void)
 {
-    DeviceState *dev = qdev_new(TYPE_SGI_O2000_MODULE_MGMT);
+    DeviceState *dev = qdev_new(TYPE_SGI_SN0_MODULE_MANAGEMENT);
 
     qdev_prop_set_string(dev, "model-serial", "KORIGAMI01");
     return dev;
@@ -118,7 +118,7 @@ static DeviceState *module_new(void)
 enum { LINE_RESET, LINE_NMI, LINE_POWER };
 
 typedef struct Fixture {
-    SGIO2000ModuleMgmtState *module;
+    SGISn0ModuleManagementState *module;
     Probe *probe;
     int level[3];
     unsigned raises[3];
@@ -160,9 +160,9 @@ static void setup(Fixture *f, gconstpointer unused)
                                     qemu_allocate_irq(line_handler, f, i));
     }
     qdev_realize(dev, NULL, &error_abort);
-    f->module = SGI_O2000_MODULE_MGMT(dev);
+    f->module = SGI_SN0_MODULE_MANAGEMENT(dev);
     f->probe = (Probe *)i2c_slave_create_simple(
-        sgi_o2000_module_mgmt_get_bus(f->module), TYPE_MODULE_PROBE,
+        sgi_sn0_module_management_get_bus(f->module), TYPE_MODULE_PROBE,
         PROBE_ADDRESS);
 }
 
@@ -179,7 +179,7 @@ static void teardown(Fixture *f, gconstpointer unused)
 static void give_adapter_an_address(Fixture *f, unsigned slot, uint8_t address)
 {
     PCF8584State *adapter =
-        PCF8584(sgi_o2000_module_mgmt_get_adapter(f->module, slot));
+        PCF8584(sgi_sn0_module_management_get_adapter(f->module, slot));
 
     pcf8584_write_register(adapter, PCF8584_A0_STRIDE, PCF8584_CTL_PIN, 1);
     pcf8584_write_register(adapter, 0, address, 1);
@@ -188,7 +188,7 @@ static void give_adapter_an_address(Fixture *f, unsigned slot, uint8_t address)
 
 static uint8_t adapter_address(Fixture *f, unsigned slot)
 {
-    return PCF8584(sgi_o2000_module_mgmt_get_adapter(f->module, slot))
+    return PCF8584(sgi_sn0_module_management_get_adapter(f->module, slot))
         ->own_address;
 }
 
@@ -220,7 +220,7 @@ static void test_cold_start_clock_progress(Fixture *f, gconstpointer unused)
 
 static void test_relative_deadline_range(Fixture *f, gconstpointer unused)
 {
-    I2CBus *bus = sgi_o2000_module_mgmt_get_bus(f->module);
+    I2CBus *bus = sgi_sn0_module_management_get_bus(f->module);
     int64_t saved_time = virtual_time;
 
     cpus_set_virtual_clock(1);
@@ -243,11 +243,11 @@ static void test_grant_wire_shape(Fixture *f, gconstpointer unused)
     g_assert_cmphex(f->probe->last_address, ==, GRANT_BASE);
     g_assert_cmpuint(f->probe->selections, ==, 0);
     g_assert_cmpuint(f->probe->writes, ==, 0);
-    g_assert_false(i2c_bus_busy(sgi_o2000_module_mgmt_get_bus(f->module)));
+    g_assert_false(i2c_bus_busy(sgi_sn0_module_management_get_bus(f->module)));
     g_assert_cmphex(i2c_wire_contenders(
-                        sgi_o2000_module_mgmt_get_bus(f->module)), ==, 0);
-    g_assert_true(i2c_wire_scl(sgi_o2000_module_mgmt_get_bus(f->module)));
-    g_assert_true(i2c_wire_sda(sgi_o2000_module_mgmt_get_bus(f->module)));
+                        sgi_sn0_module_management_get_bus(f->module)), ==, 0);
+    g_assert_true(i2c_wire_scl(sgi_sn0_module_management_get_bus(f->module)));
+    g_assert_true(i2c_wire_sda(sgi_sn0_module_management_get_bus(f->module)));
 }
 
 /* Code zero is published first, then all eight in turn, then zero again. */
@@ -279,7 +279,7 @@ static void test_one_grant_per_tick(Fixture *f, gconstpointer unused)
  */
 static void test_failed_attempt_advances(Fixture *f, gconstpointer unused)
 {
-    I2CBus *bus = sgi_o2000_module_mgmt_get_bus(f->module);
+    I2CBus *bus = sgi_sn0_module_management_get_bus(f->module);
 
     run_tick(f);
     g_assert_cmpuint(f->module->processor_code, ==, 0);
@@ -310,27 +310,27 @@ static void test_handoff_priority(Fixture *f, gconstpointer unused)
     run_tick(f);
     g_assert_cmphex(f->probe->last_address, ==, GRANT_BASE);
 
-    sgi_o2000_module_mgmt_set_controller_request(f->module, true);
-    sgi_o2000_module_mgmt_set_serial_request(f->module, true);
+    sgi_sn0_module_management_set_controller_request(f->module, true);
+    sgi_sn0_module_management_set_serial_request(f->module, true);
     run_tick(f);
-    g_assert_true(sgi_o2000_module_mgmt_controller_granted(f->module));
-    g_assert_false(sgi_o2000_module_mgmt_serial_granted(f->module));
+    g_assert_true(sgi_sn0_module_management_controller_granted(f->module));
+    g_assert_false(sgi_sn0_module_management_serial_granted(f->module));
     g_assert_cmpuint(f->probe->addresses, ==, 1);
 
     /* Still granted: the tick neither publishes nor advances. */
     run_tick(f);
     g_assert_cmpuint(f->probe->addresses, ==, 1);
 
-    sgi_o2000_module_mgmt_release_controller(f->module);
+    sgi_sn0_module_management_release_controller(f->module);
     run_tick(f);
-    g_assert_true(sgi_o2000_module_mgmt_serial_granted(f->module));
+    g_assert_true(sgi_sn0_module_management_serial_granted(f->module));
     g_assert_cmpuint(f->probe->addresses, ==, 1);
 
     /* A serial command owning the path suppresses publication. */
     run_tick(f);
     g_assert_cmpuint(f->probe->addresses, ==, 1);
 
-    sgi_o2000_module_mgmt_release_serial(f->module);
+    sgi_sn0_module_management_release_serial(f->module);
     run_tick(f);
     g_assert_cmpuint(f->probe->addresses, ==, 2);
     g_assert_cmphex(f->probe->last_address, ==, GRANT_BASE + 1);
@@ -343,13 +343,13 @@ static void test_handoff_priority(Fixture *f, gconstpointer unused)
 static void test_pending_message_blocks_handoff(Fixture *f,
                                                 gconstpointer unused)
 {
-    sgi_o2000_module_mgmt_set_message(f->module, 1, true);
-    sgi_o2000_module_mgmt_set_controller_request(f->module, true);
-    sgi_o2000_module_mgmt_set_serial_request(f->module, true);
+    sgi_sn0_module_management_set_message(f->module, 1, true);
+    sgi_sn0_module_management_set_controller_request(f->module, true);
+    sgi_sn0_module_management_set_serial_request(f->module, true);
 
     run_tick(f);
-    g_assert_false(sgi_o2000_module_mgmt_controller_granted(f->module));
-    g_assert_false(sgi_o2000_module_mgmt_serial_granted(f->module));
+    g_assert_false(sgi_sn0_module_management_controller_granted(f->module));
+    g_assert_false(sgi_sn0_module_management_serial_granted(f->module));
     g_assert_cmphex(f->probe->last_address, ==, GRANT_BASE);
 
     run_tick(f);
@@ -357,8 +357,8 @@ static void test_pending_message_blocks_handoff(Fixture *f,
                     GRANT_BASE + 1 + GRANT_MESSAGE_BIT);
 
     /* Fetching clears that processor's indication and nobody else's. */
-    sgi_o2000_module_mgmt_set_message(f->module, 2, true);
-    sgi_o2000_module_mgmt_message_fetched(f->module, 1);
+    sgi_sn0_module_management_set_message(f->module, 2, true);
+    sgi_sn0_module_management_message_fetched(f->module, 1);
     run_tick(f);
     g_assert_cmphex(f->probe->last_address, ==,
                     GRANT_BASE + 2 + GRANT_MESSAGE_BIT);
@@ -370,7 +370,7 @@ static void test_pending_message_blocks_handoff(Fixture *f,
 /* The global pending state expires on its own about a second later. */
 static void test_message_expiry(Fixture *f, gconstpointer unused)
 {
-    sgi_o2000_module_mgmt_set_message(f->module, 3, true);
+    sgi_sn0_module_management_set_message(f->module, 3, true);
     run_ticks(f, 4);
     g_assert_cmphex(f->probe->last_address, ==,
                     GRANT_BASE + 3 + GRANT_MESSAGE_BIT);
@@ -395,15 +395,15 @@ static void test_recovery_reinitialises(Fixture *f, gconstpointer unused)
     run_ticks(f, 3);
     g_assert_cmphex(f->probe->last_address, ==, GRANT_BASE + 2);
 
-    sgi_o2000_module_mgmt_set_controller_request(f->module, true);
+    sgi_sn0_module_management_set_controller_request(f->module, true);
     run_tick(f);
-    g_assert_true(sgi_o2000_module_mgmt_controller_granted(f->module));
+    g_assert_true(sgi_sn0_module_management_controller_granted(f->module));
     /* An already granted tick decrements the recovery counter. */
     run_ticks(f, RECOVERY_TICKS - 1);
-    g_assert_true(sgi_o2000_module_mgmt_controller_granted(f->module));
+    g_assert_true(sgi_sn0_module_management_controller_granted(f->module));
     g_assert_cmpuint(f->module->recovery_ticks, ==, 1);
     run_tick(f);
-    g_assert_false(sgi_o2000_module_mgmt_controller_granted(f->module));
+    g_assert_false(sgi_sn0_module_management_controller_granted(f->module));
     g_assert_cmpuint(f->module->recovery_ticks, ==, RECOVERY_TICKS);
     g_assert_true(f->module->publication_enabled);
 
@@ -423,14 +423,14 @@ static void test_recovery_reinitialises(Fixture *f, gconstpointer unused)
 /* A serial command holding the path leaves the recovery counter alone. */
 static void test_recovery_counter_holds(Fixture *f, gconstpointer unused)
 {
-    sgi_o2000_module_mgmt_set_serial_request(f->module, true);
+    sgi_sn0_module_management_set_serial_request(f->module, true);
     run_tick(f);
-    g_assert_true(sgi_o2000_module_mgmt_serial_granted(f->module));
+    g_assert_true(sgi_sn0_module_management_serial_granted(f->module));
     run_ticks(f, 10);
     g_assert_cmpuint(f->module->recovery_ticks, ==, RECOVERY_TICKS);
 
-    sgi_o2000_module_mgmt_set_publication(f->module, false);
-    sgi_o2000_module_mgmt_release_serial(f->module);
+    sgi_sn0_module_management_set_publication(f->module, false);
+    sgi_sn0_module_management_release_serial(f->module);
     run_ticks(f, 10);
     g_assert_cmpuint(f->module->recovery_ticks, ==, RECOVERY_TICKS);
     g_assert_cmpuint(f->probe->addresses, ==, 0);
@@ -446,7 +446,7 @@ static void test_reset_pulse(Fixture *f, gconstpointer unused)
     int64_t pulse_end;
 
     run_tick(f);
-    sgi_o2000_module_mgmt_pulse_reset(f->module);
+    sgi_sn0_module_management_pulse_reset(f->module);
     pulse_end = f->module->pulse_deadline;
     g_assert_cmpint(pulse_end - virtual_time, ==, PULSE_NS);
     g_assert_cmpint(f->level[LINE_RESET], ==, 1);
@@ -470,7 +470,7 @@ static void test_nmi_pulse(Fixture *f, gconstpointer unused)
 {
     int64_t pulse_end;
 
-    sgi_o2000_module_mgmt_pulse_nmi(f->module);
+    sgi_sn0_module_management_pulse_nmi(f->module);
     pulse_end = f->module->pulse_deadline;
     g_assert_cmpint(f->level[LINE_NMI], ==, 1);
     g_assert_cmpint(f->level[LINE_RESET], ==, 0);
@@ -492,13 +492,13 @@ static void test_power_cycle(Fixture *f, gconstpointer unused)
     g_assert_cmpint(f->level[LINE_POWER], ==, 1);
     g_assert_cmphex(f->probe->last_address, ==, GRANT_BASE + 2);
 
-    g_assert_true(sgi_o2000_module_mgmt_set_power(f->module, false));
+    g_assert_true(sgi_sn0_module_management_set_power(f->module, false));
     g_assert_cmpint(f->level[LINE_POWER], ==, 0);
     g_assert_false(f->module->publication_enabled);
     run_ticks(f, 5);
     g_assert_cmpuint(f->probe->addresses, ==, 3);
 
-    g_assert_true(sgi_o2000_module_mgmt_set_power(f->module, true));
+    g_assert_true(sgi_sn0_module_management_set_power(f->module, true));
     g_assert_cmpint(f->level[LINE_POWER], ==, 1);
     g_assert_cmpuint(f->raises[LINE_POWER], ==, 2);
     g_assert_true(f->module->publication_enabled);
@@ -513,12 +513,12 @@ static void test_power_cycle(Fixture *f, gconstpointer unused)
  */
 static void test_machine_reset(Fixture *f, gconstpointer unused)
 {
-    I2CBus *bus = sgi_o2000_module_mgmt_get_bus(f->module);
+    I2CBus *bus = sgi_sn0_module_management_get_bus(f->module);
 
     run_ticks(f, 3);
-    sgi_o2000_module_mgmt_set_message(f->module, 5, true);
-    sgi_o2000_module_mgmt_set_controller_request(f->module, true);
-    sgi_o2000_module_mgmt_pulse_reset(f->module);
+    sgi_sn0_module_management_set_message(f->module, 5, true);
+    sgi_sn0_module_management_set_controller_request(f->module, true);
+    sgi_sn0_module_management_pulse_reset(f->module);
     g_assert_cmpint(f->level[LINE_RESET], ==, 1);
     g_assert_cmpuint(f->module->pending_messages, !=, 0);
     /*
@@ -624,21 +624,21 @@ static void test_connected_line_needs_its_capability(Fixture *f,
 static void test_undeclared_actions_refused(void)
 {
     DeviceState *dev = module_new();
-    SGIO2000ModuleMgmtState *module;
+    SGISn0ModuleManagementState *module;
 
     qdev_realize(dev, NULL, &error_abort);
-    module = SGI_O2000_MODULE_MGMT(dev);
+    module = SGI_SN0_MODULE_MANAGEMENT(dev);
 
-    g_assert_false(sgi_o2000_module_mgmt_can_execute(module,
+    g_assert_false(sgi_sn0_module_management_can_execute(module,
                                                      SGI_ELSC_ACTION_RESET));
-    g_assert_false(sgi_o2000_module_mgmt_can_execute(module,
+    g_assert_false(sgi_sn0_module_management_can_execute(module,
                                                      SGI_ELSC_ACTION_CYCLE));
-    g_assert_false(sgi_o2000_module_mgmt_can_execute(
+    g_assert_false(sgi_sn0_module_management_can_execute(
                        module, SGI_ELSC_ACTION_SHUTDOWN));
-    g_assert_false(sgi_o2000_module_mgmt_pulse_reset(module));
-    g_assert_false(sgi_o2000_module_mgmt_pulse_nmi(module));
-    g_assert_false(sgi_o2000_module_mgmt_set_power(module, false));
-    g_assert_false(sgi_o2000_module_mgmt_set_power(module, true));
+    g_assert_false(sgi_sn0_module_management_pulse_reset(module));
+    g_assert_false(sgi_sn0_module_management_pulse_nmi(module));
+    g_assert_false(sgi_sn0_module_management_set_power(module, false));
+    g_assert_false(sgi_sn0_module_management_set_power(module, true));
     /*
      * A refused call reports that it did nothing and leaves the module as it
      * was: no pulse to finish, the module still powered, and the scheduler
@@ -650,9 +650,9 @@ static void test_undeclared_actions_refused(void)
 
     /* A reset cannot hand a module a capability it was not given. */
     qemu_devices_reset(RESET_TYPE_COLD);
-    g_assert_false(sgi_o2000_module_mgmt_can_execute(module,
+    g_assert_false(sgi_sn0_module_management_can_execute(module,
                                                      SGI_ELSC_ACTION_RESET));
-    g_assert_false(sgi_o2000_module_mgmt_can_execute(module,
+    g_assert_false(sgi_sn0_module_management_can_execute(module,
                                                      SGI_ELSC_ACTION_CYCLE));
 
     object_unparent(OBJECT(dev));
@@ -667,29 +667,29 @@ static void test_undeclared_actions_refused(void)
 static void test_partial_capability(Fixture *f, gconstpointer unused)
 {
     DeviceState *dev = module_new();
-    SGIO2000ModuleMgmtState *module;
+    SGISn0ModuleManagementState *module;
 
     qdev_prop_set_bit(dev, "can-reset", true);
     qdev_connect_gpio_out_named(dev, "reset", 0,
                                 qemu_allocate_irq(line_handler, f,
                                                   LINE_RESET));
     qdev_realize(dev, NULL, &error_abort);
-    module = SGI_O2000_MODULE_MGMT(dev);
+    module = SGI_SN0_MODULE_MANAGEMENT(dev);
 
-    g_assert_true(sgi_o2000_module_mgmt_can_execute(module,
+    g_assert_true(sgi_sn0_module_management_can_execute(module,
                                                     SGI_ELSC_ACTION_RESET));
-    g_assert_false(sgi_o2000_module_mgmt_can_execute(module,
+    g_assert_false(sgi_sn0_module_management_can_execute(module,
                                                      SGI_ELSC_ACTION_CYCLE));
-    g_assert_false(sgi_o2000_module_mgmt_can_execute(
+    g_assert_false(sgi_sn0_module_management_can_execute(
                        module, SGI_ELSC_ACTION_SHUTDOWN));
     /*
      * No level to check on the refused line: an undeclared output cannot be
      * connected, so the refusal is what makes it unobservable.
      */
-    g_assert_false(sgi_o2000_module_mgmt_pulse_nmi(module));
+    g_assert_false(sgi_sn0_module_management_pulse_nmi(module));
     g_assert_false(module->pulse_active);
 
-    g_assert_true(sgi_o2000_module_mgmt_pulse_reset(module));
+    g_assert_true(sgi_sn0_module_management_pulse_reset(module));
     g_assert_cmpint(f->level[LINE_RESET], ==, 1);
     advance_to(module->pulse_deadline);
     g_assert_cmpint(f->level[LINE_RESET], ==, 0);
@@ -709,7 +709,7 @@ static void test_wire_refuses_a_mute_slave(Fixture *f, gconstpointer unused)
     Error *err = NULL;
 
     g_assert_false(i2c_slave_realize_and_unref(
-                       mute, sgi_o2000_module_mgmt_get_bus(f->module), &err));
+                       mute, sgi_sn0_module_management_get_bus(f->module), &err));
     g_assert_nonnull(err);
     error_free(err);
 }
@@ -717,14 +717,14 @@ static void test_wire_refuses_a_mute_slave(Fixture *f, gconstpointer unused)
 /* A second destructive action while a pulse runs is refused, not swallowed. */
 static void test_overlapping_pulse_refused(Fixture *f, gconstpointer unused)
 {
-    g_assert_true(sgi_o2000_module_mgmt_can_execute(f->module,
+    g_assert_true(sgi_sn0_module_management_can_execute(f->module,
                                                     SGI_ELSC_ACTION_RESET));
-    sgi_o2000_module_mgmt_pulse_reset(f->module);
-    g_assert_false(sgi_o2000_module_mgmt_can_execute(f->module,
+    sgi_sn0_module_management_pulse_reset(f->module);
+    g_assert_false(sgi_sn0_module_management_can_execute(f->module,
                                                      SGI_ELSC_ACTION_RESET));
     advance_to(f->module->pulse_deadline);
     g_assert_cmpint(f->level[LINE_RESET], ==, 0);
-    g_assert_true(sgi_o2000_module_mgmt_can_execute(f->module,
+    g_assert_true(sgi_sn0_module_management_can_execute(f->module,
                                                     SGI_ELSC_ACTION_RESET));
 }
 
@@ -753,7 +753,7 @@ static const VMStateDescription *module_vmsd(Fixture *f)
  */
 static void transfer_complex(Fixture *f, QEMUFile *file, bool save)
 {
-    I2CBus *bus = sgi_o2000_module_mgmt_get_bus(f->module);
+    I2CBus *bus = sgi_sn0_module_management_get_bus(f->module);
     BusChild *kid;
     unsigned i;
 
@@ -796,7 +796,7 @@ static void transfer_complex(Fixture *f, QEMUFile *file, bool save)
         }
     }
     for (i = 0; i < SGI_O2000_ADAPTER_COUNT; i++) {
-        DeviceState *adapter = sgi_o2000_module_mgmt_get_adapter(f->module, i);
+        DeviceState *adapter = sgi_sn0_module_management_get_adapter(f->module, i);
         const VMStateDescription *vmsd = DEVICE_GET_CLASS(adapter)->vmsd;
 
         if (save) {
@@ -818,7 +818,7 @@ static void test_migration(Fixture *f, gconstpointer mid_grant)
 {
     g_autofree char *path = NULL;
     int fd = g_file_open_tmp("test-o2000-module-XXXXXX", &path, NULL);
-    I2CBus *bus = sgi_o2000_module_mgmt_get_bus(f->module);
+    I2CBus *bus = sgi_sn0_module_management_get_bus(f->module);
     int64_t saved_time;
     QEMUFile *file;
 
@@ -826,7 +826,7 @@ static void test_migration(Fixture *f, gconstpointer mid_grant)
     g_assert_cmpint(unlink(path), ==, 0);
 
     run_ticks(f, 3);
-    sgi_o2000_module_mgmt_set_message(f->module, 4, true);
+    sgi_sn0_module_management_set_message(f->module, 4, true);
     if (mid_grant) {
         /* Stop inside the fourth grant, before its acknowledgement clock. */
         advance_to(f->module->service_deadline + 20000);
@@ -877,7 +877,7 @@ static void test_migration_pending_grant(Fixture *f, gconstpointer unused)
 {
     g_autofree char *path = NULL;
     int fd = g_file_open_tmp("test-o2000-module-grant-XXXXXX", &path, NULL);
-    I2CBus *bus = sgi_o2000_module_mgmt_get_bus(f->module);
+    I2CBus *bus = sgi_sn0_module_management_get_bus(f->module);
     PCF8584State *adapters[SGI_O2000_ADAPTER_COUNT];
     uint8_t old_data[SGI_O2000_ADAPTER_COUNT];
     QEMUFile *file;
@@ -889,7 +889,7 @@ static void test_migration_pending_grant(Fixture *f, gconstpointer unused)
 
     for (i = 0; i < SGI_O2000_ADAPTER_COUNT; i++) {
         adapters[i] = PCF8584(
-            sgi_o2000_module_mgmt_get_adapter(f->module, i));
+            sgi_sn0_module_management_get_adapter(f->module, i));
         give_adapter_an_address(f, i, 0x09 + i);
         pcf8584_write_register(adapters[i], PCF8584_A0_STRIDE,
                                PCF8584_CTL_PIN | PCF8584_CTL_ESO, 1);
@@ -962,9 +962,9 @@ static void test_migration_waiting_start(Fixture *f, gconstpointer unused)
 {
     g_autofree char *path = NULL;
     int fd = g_file_open_tmp("test-o2000-module-start-XXXXXX", &path, NULL);
-    I2CBus *bus = sgi_o2000_module_mgmt_get_bus(f->module);
+    I2CBus *bus = sgi_sn0_module_management_get_bus(f->module);
     PCF8584State *adapter = PCF8584(
-        sgi_o2000_module_mgmt_get_adapter(f->module, 0));
+        sgi_sn0_module_management_get_adapter(f->module, 0));
     QEMUFile *file;
 
     g_assert_cmpint(fd, >=, 0);
@@ -1071,64 +1071,64 @@ int main(int argc, char **argv)
     /* What a machine does, so the adapters share the machine reset tree. */
     qemu_register_resettable(OBJECT(sysbus_get_default()));
 
-    g_test_add("/sgi-o2000-module-management/grant/wire-shape", Fixture, NULL,
+    g_test_add("/sgi-sn0-module-management/grant/wire-shape", Fixture, NULL,
                setup, test_grant_wire_shape, teardown);
-    g_test_add("/sgi-o2000-module-management/grant/cold-start-clock-progress",
+    g_test_add("/sgi-sn0-module-management/grant/cold-start-clock-progress",
                Fixture, NULL, setup, test_cold_start_clock_progress, teardown);
-    g_test_add("/sgi-o2000-module-management/wire/relative-deadline-range",
+    g_test_add("/sgi-sn0-module-management/wire/relative-deadline-range",
                Fixture, NULL, setup, test_relative_deadline_range, teardown);
-    g_test_add("/sgi-o2000-module-management/grant/rotation", Fixture, NULL,
+    g_test_add("/sgi-sn0-module-management/grant/rotation", Fixture, NULL,
                setup, test_grant_rotation, teardown);
-    g_test_add("/sgi-o2000-module-management/grant/one-per-tick", Fixture,
+    g_test_add("/sgi-sn0-module-management/grant/one-per-tick", Fixture,
                NULL, setup, test_one_grant_per_tick, teardown);
-    g_test_add("/sgi-o2000-module-management/grant/failed-attempt", Fixture,
+    g_test_add("/sgi-sn0-module-management/grant/failed-attempt", Fixture,
                NULL, setup, test_failed_attempt_advances, teardown);
-    g_test_add("/sgi-o2000-module-management/grant/handoff-priority", Fixture,
+    g_test_add("/sgi-sn0-module-management/grant/handoff-priority", Fixture,
                NULL, setup, test_handoff_priority, teardown);
-    g_test_add("/sgi-o2000-module-management/grant/message-blocks-handoff",
+    g_test_add("/sgi-sn0-module-management/grant/message-blocks-handoff",
                Fixture, NULL, setup, test_pending_message_blocks_handoff,
                teardown);
-    g_test_add("/sgi-o2000-module-management/message/expiry", Fixture, NULL,
+    g_test_add("/sgi-sn0-module-management/message/expiry", Fixture, NULL,
                setup, test_message_expiry, teardown);
-    g_test_add("/sgi-o2000-module-management/recovery/reinitialise", Fixture,
+    g_test_add("/sgi-sn0-module-management/recovery/reinitialise", Fixture,
                NULL, setup, test_recovery_reinitialises, teardown);
-    g_test_add("/sgi-o2000-module-management/recovery/counter-holds", Fixture,
+    g_test_add("/sgi-sn0-module-management/recovery/counter-holds", Fixture,
                NULL, setup, test_recovery_counter_holds, teardown);
-    g_test_add("/sgi-o2000-module-management/action/reset-pulse", Fixture,
+    g_test_add("/sgi-sn0-module-management/action/reset-pulse", Fixture,
                NULL, setup, test_reset_pulse, teardown);
-    g_test_add("/sgi-o2000-module-management/action/nmi-pulse", Fixture, NULL,
+    g_test_add("/sgi-sn0-module-management/action/nmi-pulse", Fixture, NULL,
                setup, test_nmi_pulse, teardown);
-    g_test_add("/sgi-o2000-module-management/action/power-cycle", Fixture,
+    g_test_add("/sgi-sn0-module-management/action/power-cycle", Fixture,
                NULL, setup, test_power_cycle, teardown);
-    g_test_add("/sgi-o2000-module-management/action/overlapping-pulse",
+    g_test_add("/sgi-sn0-module-management/action/overlapping-pulse",
                Fixture, NULL, setup, test_overlapping_pulse_refused, teardown);
-    g_test_add("/sgi-o2000-module-management/reset/machine", Fixture, NULL,
+    g_test_add("/sgi-sn0-module-management/reset/machine", Fixture, NULL,
                setup, test_machine_reset, teardown);
-    g_test_add("/sgi-o2000-module-management/action/partial-declaration",
+    g_test_add("/sgi-sn0-module-management/action/partial-declaration",
                Fixture, NULL, setup, test_partial_capability, teardown);
-    g_test_add_func("/sgi-o2000-module-management/action/declares-nothing",
+    g_test_add_func("/sgi-sn0-module-management/action/declares-nothing",
                     test_undeclared_actions_refused);
-    g_test_add("/sgi-o2000-module-management/realize/needs-declared-lines",
+    g_test_add("/sgi-sn0-module-management/realize/needs-declared-lines",
                Fixture, GUINT_TO_POINTER(0), setup,
                test_declared_action_needs_its_line, teardown);
-    g_test_add("/sgi-o2000-module-management/realize/needs-power-line",
+    g_test_add("/sgi-sn0-module-management/realize/needs-power-line",
                Fixture, GUINT_TO_POINTER(2), setup,
                test_declared_action_needs_its_line, teardown);
-    g_test_add("/sgi-o2000-module-management/wire/refuses-mute-slave",
+    g_test_add("/sgi-sn0-module-management/wire/refuses-mute-slave",
                Fixture, NULL, setup, test_wire_refuses_a_mute_slave,
                teardown);
-    g_test_add("/sgi-o2000-module-management/realize/needs-capability",
+    g_test_add("/sgi-sn0-module-management/realize/needs-capability",
                Fixture, NULL, setup,
                test_connected_line_needs_its_capability, teardown);
-    g_test_add("/sgi-o2000-module-management/migration", Fixture, NULL,
+    g_test_add("/sgi-sn0-module-management/migration", Fixture, NULL,
                setup, test_migration, teardown);
-    g_test_add("/sgi-o2000-module-management/migration-mid-grant", Fixture,
+    g_test_add("/sgi-sn0-module-management/migration-mid-grant", Fixture,
                GUINT_TO_POINTER(1), setup, test_migration, teardown);
-    g_test_add("/sgi-o2000-module-management/migration-pending-grant", Fixture,
+    g_test_add("/sgi-sn0-module-management/migration-pending-grant", Fixture,
                NULL, setup, test_migration_pending_grant, teardown);
-    g_test_add("/sgi-o2000-module-management/migration-waiting-start", Fixture,
+    g_test_add("/sgi-sn0-module-management/migration-waiting-start", Fixture,
                NULL, setup, test_migration_waiting_start, teardown);
-    g_test_add("/sgi-o2000-module-management/migration-rejects-bad-state",
+    g_test_add("/sgi-sn0-module-management/migration-rejects-bad-state",
                Fixture, NULL, setup, test_migration_rejects_bad_state,
                teardown);
     return g_test_run();

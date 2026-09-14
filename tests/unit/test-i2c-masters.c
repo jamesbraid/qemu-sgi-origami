@@ -2,7 +2,7 @@
 /* Controlled resolved START events, not a multi-master arbitration model. */
 #include "qemu/osdep.h"
 #include "hw/i2c/i2c.h"
-#include "hw/i2c/sgi-i2c-wire.h"
+#include "hw/i2c/i2c-wire.h"
 #include "qapi/error.h"
 #include "qemu/module.h"
 #include "migration/vmstate.h"
@@ -100,7 +100,7 @@ static void fixture_setup(Fixture *f, gconstpointer unused)
 {
     f->host = qdev_new(TYPE_TEST_HOST);
     qdev_realize(f->host, NULL, &error_abort);
-    f->bus = i2c_init_bus_type(TYPE_SGI_I2C_WIRE_BUS, f->host, "i2c");
+    f->bus = i2c_init_bus_type(TYPE_I2C_WIRE, f->host, "i2c");
     if (unused != GINT_TO_POINTER(2)) {
         g_assert_cmpint(i2c_bus_enable_master_ids(f->bus, 4), ==, 0);
     }
@@ -375,9 +375,9 @@ static void test_migration(Fixture *f, gconstpointer unmatched)
     g_assert_cmpint(qemu_fclose(file), ==, 0);
     g_assert_true(i2c_bus_busy(f->bus));
     g_assert_cmpint(i2c_master_end_transfer(f->bus, 1), ==, -EPERM);
-    g_assert_cmpuint(SGI_I2C_WIRE_BUS(f->bus)->requested_address, ==,
+    g_assert_cmpuint(I2C_WIRE(f->bus)->requested_address, ==,
                      unmatched ? 0x30 : 0x20);
-    g_assert_true(SGI_I2C_WIRE_BUS(f->bus)->master_recv);
+    g_assert_true(I2C_WIRE(f->bus)->master_recv);
     g_assert_cmpint(i2c_master_send(f->bus, 3, 0x11), ==, -EINVAL);
     g_assert_cmpint(i2c_master_recv(f->bus, 3, &byte), ==,
                     unmatched ? -ENXIO : 0);

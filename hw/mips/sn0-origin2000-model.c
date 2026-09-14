@@ -8,7 +8,7 @@
  * It does not model link training or establish diagnostic acceptance.
  */
 #include "qemu/osdep.h"
-#include "hw/mips/sn0-model.h"
+#include "hw/mips/sgi/sn0-model.h"
 
 static const SN0ModelModuleIdentity sn0_o2000_c0_module_identity[] = {
     {

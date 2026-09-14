@@ -7,7 +7,7 @@
 #include "hw/core/qdev-properties.h"
 #include "sn0-origin2000-io.h"
 
-#define TYPE_SN0_HUB_PACKET_TEST "sn0-hub-packet-test"
+#define TYPE_SN0_HUB_PACKET_TEST "sgi-hub-packet-test"
 OBJECT_DECLARE_SIMPLE_TYPE(SN0HubPacketTest, SN0_HUB_PACKET_TEST)
 
 struct SN0HubPacketTest {

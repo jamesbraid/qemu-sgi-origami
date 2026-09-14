@@ -26,7 +26,7 @@
 #ifndef HW_NET_XFRAME_H
 #define HW_NET_XFRAME_H
 
-#include "hw/net/sgi-net-rx-latency.h"
+#include "hw/net/net-rx-latency.h"
 #include "hw/pci/pci_device.h"
 #include "net/net.h"
 #include "qom/object.h"

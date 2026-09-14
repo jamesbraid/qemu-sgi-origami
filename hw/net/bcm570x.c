@@ -61,7 +61,7 @@
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/net/bcm570x_phy.h"
-#include "hw/net/sgi-net-rx-latency.h"
+#include "hw/net/net-rx-latency.h"
 #include "migration/vmstate.h"
 #include "net/net.h"
 #include "qapi/error.h"

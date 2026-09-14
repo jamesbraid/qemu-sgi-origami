@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * A minimum arrival latency for received frames. See
- * include/hw/net/sgi-net-rx-latency.h.
+ * include/hw/net/net-rx-latency.h.
  */
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "hw/net/sgi-net-rx-latency.h"
+#include "hw/net/net-rx-latency.h"
 #include "trace.h"
 
 static SGINetRxLatencyEntry *sgi_net_rx_latency_slot(SGINetRxLatency *l,
@@ -253,6 +253,7 @@ static int sgi_net_rx_latency_pre_save(void *opaque)
  * additive version.
  */
 const VMStateDescription vmstate_sgi_net_rx_latency = {
+    /* Pre-rename stream name; kept for migration compatibility. */
     .name = "sgi-net-rx-latency",
     .version_id = 2,
     .minimum_version_id = 2,

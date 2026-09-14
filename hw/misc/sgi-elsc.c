@@ -14,7 +14,7 @@
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
 #include "hw/misc/sgi-elsc.h"
-#include "hw/i2c/sgi-i2c-wire.h"
+#include "hw/i2c/i2c-wire.h"
 #include "hw/core/cpu.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"

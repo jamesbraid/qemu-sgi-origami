@@ -6,8 +6,8 @@
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
-#ifndef HW_MISC_SGI_O2000_MODULE_MGMT_H
-#define HW_MISC_SGI_O2000_MODULE_MGMT_H
+#ifndef HW_MISC_SGI_SN0_MODULE_MANAGEMENT_H
+#define HW_MISC_SGI_SN0_MODULE_MANAGEMENT_H
 
 #include "hw/core/qdev.h"
 #include "hw/core/irq.h"
@@ -17,8 +17,8 @@
 #include "qemu/timer.h"
 #include "qom/object.h"
 
-#define TYPE_SGI_O2000_MODULE_MGMT "sgi-o2000-module-management"
-OBJECT_DECLARE_SIMPLE_TYPE(SGIO2000ModuleMgmtState, SGI_O2000_MODULE_MGMT)
+#define TYPE_SGI_SN0_MODULE_MANAGEMENT "sgi-sn0-module-management"
+OBJECT_DECLARE_SIMPLE_TYPE(SGISn0ModuleManagementState, SGI_SN0_MODULE_MANAGEMENT)
 
 /* One adapter per node board on a four-node module. */
 #define SGI_O2000_ADAPTER_COUNT     4
@@ -52,7 +52,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIO2000ModuleMgmtState, SGI_O2000_MODULE_MGMT)
 /* The logical MSC endpoint. */
 #define SGI_O2000_MSC_ADDRESS       0x08
 
-struct SGIO2000ModuleMgmtState {
+struct SGISn0ModuleManagementState {
     DeviceState parent_obj;
 
     /* Model-derived identity written into the reserved NVRAM region. */
@@ -109,8 +109,8 @@ struct SGIO2000ModuleMgmtState {
     bool pulse_nmi;
 };
 
-I2CBus *sgi_o2000_module_mgmt_get_bus(SGIO2000ModuleMgmtState *s);
-DeviceState *sgi_o2000_module_mgmt_get_adapter(SGIO2000ModuleMgmtState *s,
+I2CBus *sgi_sn0_module_management_get_bus(SGISn0ModuleManagementState *s);
+DeviceState *sgi_sn0_module_management_get_adapter(SGISn0ModuleManagementState *s,
                                                unsigned index);
 
 /*
@@ -118,38 +118,38 @@ DeviceState *sgi_o2000_module_mgmt_get_adapter(SGIO2000ModuleMgmtState *s,
  * A request stays pending until the scheduler grants it; the caller releases
  * the grant when its transaction ends.
  */
-void sgi_o2000_module_mgmt_set_controller_request(SGIO2000ModuleMgmtState *s,
+void sgi_sn0_module_management_set_controller_request(SGISn0ModuleManagementState *s,
                                                   bool pending);
-void sgi_o2000_module_mgmt_set_serial_request(SGIO2000ModuleMgmtState *s,
+void sgi_sn0_module_management_set_serial_request(SGISn0ModuleManagementState *s,
                                               bool pending);
-void sgi_o2000_module_mgmt_release_controller(SGIO2000ModuleMgmtState *s);
-void sgi_o2000_module_mgmt_release_serial(SGIO2000ModuleMgmtState *s);
-bool sgi_o2000_module_mgmt_controller_granted(SGIO2000ModuleMgmtState *s);
-bool sgi_o2000_module_mgmt_serial_granted(SGIO2000ModuleMgmtState *s);
+void sgi_sn0_module_management_release_controller(SGISn0ModuleManagementState *s);
+void sgi_sn0_module_management_release_serial(SGISn0ModuleManagementState *s);
+bool sgi_sn0_module_management_controller_granted(SGISn0ModuleManagementState *s);
+bool sgi_sn0_module_management_serial_granted(SGISn0ModuleManagementState *s);
 
-void sgi_o2000_module_mgmt_set_message(SGIO2000ModuleMgmtState *s,
+void sgi_sn0_module_management_set_message(SGISn0ModuleManagementState *s,
                                        unsigned processor, bool pending);
-void sgi_o2000_module_mgmt_message_fetched(SGIO2000ModuleMgmtState *s,
+void sgi_sn0_module_management_message_fetched(SGISn0ModuleManagementState *s,
                                            unsigned processor);
-void sgi_o2000_module_mgmt_set_publication(SGIO2000ModuleMgmtState *s,
+void sgi_sn0_module_management_set_publication(SGISn0ModuleManagementState *s,
                                            bool enabled);
 /*
  * Raise or drop the module power line, answering false on a module that
  * declares no power path.
  */
-bool sgi_o2000_module_mgmt_set_power(SGIO2000ModuleMgmtState *s, bool on);
+bool sgi_sn0_module_management_set_power(SGISn0ModuleManagementState *s, bool on);
 /*
  * Whether a destructive controller command can be carried out now. A command
  * this answers false for must be refused rather than acknowledged.
  */
-bool sgi_o2000_module_mgmt_can_execute(SGIO2000ModuleMgmtState *s,
+bool sgi_sn0_module_management_can_execute(SGISn0ModuleManagementState *s,
                                        SGIElscAction action);
 /*
  * Drive the reviewed hundred-millisecond pulse. Both refuse, and answer
  * false, on a module that declares no path for that action, and while a
  * pulse is already running: nothing settles that overlap.
  */
-bool sgi_o2000_module_mgmt_pulse_reset(SGIO2000ModuleMgmtState *s);
-bool sgi_o2000_module_mgmt_pulse_nmi(SGIO2000ModuleMgmtState *s);
+bool sgi_sn0_module_management_pulse_reset(SGISn0ModuleManagementState *s);
+bool sgi_sn0_module_management_pulse_nmi(SGISn0ModuleManagementState *s);
 
-#endif /* HW_MISC_SGI_O2000_MODULE_MGMT_H */
+#endif /* HW_MISC_SGI_SN0_MODULE_MANAGEMENT_H */

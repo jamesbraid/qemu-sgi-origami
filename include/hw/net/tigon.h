@@ -13,7 +13,7 @@
 #ifndef HW_NET_TIGON_H
 #define HW_NET_TIGON_H
 
-#include "hw/net/sgi-net-rx-latency.h"
+#include "hw/net/net-rx-latency.h"
 #include "hw/pci/pci_device.h"
 #include "net/net.h"
 #include "qemu/timer.h"

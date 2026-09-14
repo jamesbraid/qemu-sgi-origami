@@ -8,7 +8,7 @@
 #include "system/qtest.h"
 #include "sn0.h"
 
-#define TYPE_SN0_FLASH_TEST "sn0-origin2000-flash-test"
+#define TYPE_SN0_FLASH_TEST "sgi-sn0-node-flash-test"
 OBJECT_DECLARE_SIMPLE_TYPE(SN0FlashTestState, SN0_FLASH_TEST)
 
 struct SN0FlashTestState {

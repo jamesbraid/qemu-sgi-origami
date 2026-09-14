@@ -16,8 +16,8 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/i2c/pcf8584.h"
-#include "hw/i2c/sgi-i2c-wire.h"
-#include "hw/misc/sgi-o2000-module-mgmt.h"
+#include "hw/i2c/i2c-wire.h"
+#include "hw/misc/sgi-sn0-module-management.h"
 #include "hw/nvram/eeprom_at24c.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
@@ -54,7 +54,7 @@ enum {
     GRANT_STOP_RELEASE,
 };
 
-static void mgmt_reset_state(SGIO2000ModuleMgmtState *s)
+static void mgmt_reset_state(SGISn0ModuleManagementState *s)
 {
     s->processor_code = PROCESSOR_CODES - 1;
     s->pending_messages = 0;
@@ -85,25 +85,25 @@ static void mgmt_reset_state(SGIO2000ModuleMgmtState *s)
  * The endpoint loses its framing queues and keeps everything that is not a
  * queue, which is as much as the datasheet gives this path.
  */
-static void mgmt_reinitialize(SGIO2000ModuleMgmtState *s)
+static void mgmt_reinitialize(SGISn0ModuleManagementState *s)
 {
     mgmt_reset_state(s);
     if (i2c_wire_reset_master(s->bus, GRANT_MASTER) == -ENOTSUP) {
         qemu_log_mask(LOG_UNIMP,
-                      "sgi-o2000-module-management: reinitialised while "
+                      "sgi-sn0-module-management: reinitialised while "
                       "driving the shared wire\n");
     }
     sgi_elsc_reinitialize(s->msc);
 }
 
-static void mgmt_recovery_tick(SGIO2000ModuleMgmtState *s)
+static void mgmt_recovery_tick(SGISn0ModuleManagementState *s)
 {
     if (s->recovery_ticks && --s->recovery_ticks == 0) {
         mgmt_reinitialize(s);
     }
 }
 
-static bool mgmt_stage(SGIO2000ModuleMgmtState *s, bool sda, bool clock,
+static bool mgmt_stage(SGISn0ModuleManagementState *s, bool sda, bool clock,
                        int64_t delay_ns)
 {
     int ret = i2c_wire_stage_after(s->bus, GRANT_MASTER, delay_ns,
@@ -111,7 +111,7 @@ static bool mgmt_stage(SGIO2000ModuleMgmtState *s, bool sda, bool clock,
 
     if (ret) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-o2000-module-management: grant transfer refused by "
+                      "sgi-sn0-module-management: grant transfer refused by "
                       "the shared wire: %d\n", ret);
         s->grant_active = false;
         s->grant_state = GRANT_IDLE;
@@ -123,7 +123,7 @@ static bool mgmt_stage(SGIO2000ModuleMgmtState *s, bool sda, bool clock,
 
 static void mgmt_wire_event(void *opaque, const I2CWireEvent *event)
 {
-    SGIO2000ModuleMgmtState *s = opaque;
+    SGISn0ModuleManagementState *s = opaque;
     bool old_scl = s->wire_scl;
     bool old_sda = s->wire_sda;
 
@@ -151,7 +151,7 @@ static void mgmt_wire_event(void *opaque, const I2CWireEvent *event)
              * Drop the grant rather than clock a byte onto its transaction.
              */
             qemu_log_mask(LOG_UNIMP,
-                          "sgi-o2000-module-management: a peer's START "
+                          "sgi-sn0-module-management: a peer's START "
                           "overtook the controller's grant\n");
             s->grant_active = false;
             s->grant_state = GRANT_IDLE;
@@ -209,7 +209,7 @@ static void mgmt_wire_event(void *opaque, const I2CWireEvent *event)
 }
 
 /* The indication is recomputed for the code about to be published. */
-static bool mgmt_message_for(SGIO2000ModuleMgmtState *s, uint8_t code)
+static bool mgmt_message_for(SGISn0ModuleManagementState *s, uint8_t code)
 {
     if (s->pending_messages & (1U << code)) {
         return true;
@@ -217,7 +217,7 @@ static bool mgmt_message_for(SGIO2000ModuleMgmtState *s, uint8_t code)
     return s->console_input_pending && s->console_processor == code;
 }
 
-static void mgmt_publish(SGIO2000ModuleMgmtState *s)
+static void mgmt_publish(SGISn0ModuleManagementState *s)
 {
     s->processor_code = (s->processor_code + 1) % PROCESSOR_CODES;
     s->grant_byte = GRANT_BASE | s->processor_code |
@@ -231,7 +231,7 @@ static void mgmt_publish(SGIO2000ModuleMgmtState *s)
 }
 
 /* A staged adapter START owns tBUF before its lines make the bus busy. */
-static bool mgmt_adapter_active(SGIO2000ModuleMgmtState *s)
+static bool mgmt_adapter_active(SGISn0ModuleManagementState *s)
 {
     for (unsigned i = 0; i < SGI_O2000_ADAPTER_COUNT; i++) {
         if (PCF8584(s->adapters[i])->wire_active) {
@@ -241,7 +241,7 @@ static bool mgmt_adapter_active(SGIO2000ModuleMgmtState *s)
     return false;
 }
 
-static void mgmt_service(SGIO2000ModuleMgmtState *s)
+static void mgmt_service(SGISn0ModuleManagementState *s)
 {
     /*
      * Every millisecond of the timeline gets its tick, at its own instant,
@@ -280,7 +280,7 @@ static void mgmt_service(SGIO2000ModuleMgmtState *s)
     mgmt_publish(s);
 }
 
-static void mgmt_message_expired(SGIO2000ModuleMgmtState *s)
+static void mgmt_message_expired(SGISn0ModuleManagementState *s)
 {
     s->pending_messages = 0;
 }
@@ -291,7 +291,7 @@ static void mgmt_message_expired(SGIO2000ModuleMgmtState *s)
  * already refuses a declaration without its output and an output without
  * its declaration, and this keeps the two from depending on that order.
  */
-static void mgmt_drive_pulse_lines(SGIO2000ModuleMgmtState *s, bool reset,
+static void mgmt_drive_pulse_lines(SGISn0ModuleManagementState *s, bool reset,
                                    bool nmi)
 {
     if (s->can_reset) {
@@ -302,14 +302,14 @@ static void mgmt_drive_pulse_lines(SGIO2000ModuleMgmtState *s, bool reset,
     }
 }
 
-static void mgmt_drive_power(SGIO2000ModuleMgmtState *s)
+static void mgmt_drive_power(SGISn0ModuleManagementState *s)
 {
     if (s->can_power) {
         qemu_set_irq(s->power_out, s->power_on);
     }
 }
 
-static void mgmt_pulse_complete(SGIO2000ModuleMgmtState *s)
+static void mgmt_pulse_complete(SGISn0ModuleManagementState *s)
 {
     mgmt_drive_pulse_lines(s, false, false);
     s->pulse_active = false;
@@ -329,7 +329,7 @@ static void mgmt_pulse_complete(SGIO2000ModuleMgmtState *s)
  */
 static int64_t mgmt_next_deadline(void *opaque)
 {
-    SGIO2000ModuleMgmtState *s = opaque;
+    SGISn0ModuleManagementState *s = opaque;
     int64_t next = s->service_deadline;
 
     if (s->pending_messages) {
@@ -343,7 +343,7 @@ static int64_t mgmt_next_deadline(void *opaque)
 
 static void mgmt_run_deadlines(void *opaque, int64_t now)
 {
-    SGIO2000ModuleMgmtState *s = opaque;
+    SGISn0ModuleManagementState *s = opaque;
 
     if (s->pending_messages && s->message_deadline <= now) {
         mgmt_message_expired(s);
@@ -359,23 +359,23 @@ static void mgmt_run_deadlines(void *opaque, int64_t now)
 /* The timers only stand in for a node that is not polling. */
 static void mgmt_timer_expired(void *opaque)
 {
-    SGIO2000ModuleMgmtState *s = opaque;
+    SGISn0ModuleManagementState *s = opaque;
 
     i2c_wire_advance(s->bus);
 }
 
-static bool mgmt_start_pulse(SGIO2000ModuleMgmtState *s, bool nmi)
+static bool mgmt_start_pulse(SGISn0ModuleManagementState *s, bool nmi)
 {
     if (!(nmi ? s->can_nmi : s->can_reset)) {
         qemu_log_mask(LOG_UNIMP,
-                      "sgi-o2000-module-management: %s requested on a module "
+                      "sgi-sn0-module-management: %s requested on a module "
                       "that declares no %s path\n", nmi ? "NMI" : "reset",
                       nmi ? "NMI" : "reset");
         return false;
     }
     if (s->pulse_active) {
         qemu_log_mask(LOG_UNIMP,
-                      "sgi-o2000-module-management: %s requested during a %s "
+                      "sgi-sn0-module-management: %s requested during a %s "
                       "pulse\n", nmi ? "NMI" : "reset",
                       s->pulse_nmi ? "NMI" : "reset");
         return false;
@@ -388,21 +388,21 @@ static bool mgmt_start_pulse(SGIO2000ModuleMgmtState *s, bool nmi)
     return true;
 }
 
-bool sgi_o2000_module_mgmt_pulse_reset(SGIO2000ModuleMgmtState *s)
+bool sgi_sn0_module_management_pulse_reset(SGISn0ModuleManagementState *s)
 {
     return mgmt_start_pulse(s, false);
 }
 
-bool sgi_o2000_module_mgmt_pulse_nmi(SGIO2000ModuleMgmtState *s)
+bool sgi_sn0_module_management_pulse_nmi(SGISn0ModuleManagementState *s)
 {
     return mgmt_start_pulse(s, true);
 }
 
-bool sgi_o2000_module_mgmt_set_power(SGIO2000ModuleMgmtState *s, bool on)
+bool sgi_sn0_module_management_set_power(SGISn0ModuleManagementState *s, bool on)
 {
     if (!s->can_power) {
         qemu_log_mask(LOG_UNIMP,
-                      "sgi-o2000-module-management: power %s requested on a "
+                      "sgi-sn0-module-management: power %s requested on a "
                       "module that declares no power path\n",
                       on ? "up" : "down");
         return false;
@@ -426,44 +426,44 @@ bool sgi_o2000_module_mgmt_set_power(SGIO2000ModuleMgmtState *s, bool on)
     return true;
 }
 
-void sgi_o2000_module_mgmt_set_controller_request(SGIO2000ModuleMgmtState *s,
+void sgi_sn0_module_management_set_controller_request(SGISn0ModuleManagementState *s,
                                                   bool pending)
 {
     s->controller_request = pending;
 }
 
-void sgi_o2000_module_mgmt_set_serial_request(SGIO2000ModuleMgmtState *s,
+void sgi_sn0_module_management_set_serial_request(SGISn0ModuleManagementState *s,
                                               bool pending)
 {
     s->serial_request = pending;
 }
 
-void sgi_o2000_module_mgmt_release_controller(SGIO2000ModuleMgmtState *s)
+void sgi_sn0_module_management_release_controller(SGISn0ModuleManagementState *s)
 {
     s->controller_granted = false;
 }
 
-void sgi_o2000_module_mgmt_release_serial(SGIO2000ModuleMgmtState *s)
+void sgi_sn0_module_management_release_serial(SGISn0ModuleManagementState *s)
 {
     s->serial_granted = false;
 }
 
-bool sgi_o2000_module_mgmt_controller_granted(SGIO2000ModuleMgmtState *s)
+bool sgi_sn0_module_management_controller_granted(SGISn0ModuleManagementState *s)
 {
     return s->controller_granted;
 }
 
-bool sgi_o2000_module_mgmt_serial_granted(SGIO2000ModuleMgmtState *s)
+bool sgi_sn0_module_management_serial_granted(SGISn0ModuleManagementState *s)
 {
     return s->serial_granted;
 }
 
-void sgi_o2000_module_mgmt_set_message(SGIO2000ModuleMgmtState *s,
+void sgi_sn0_module_management_set_message(SGISn0ModuleManagementState *s,
                                        unsigned processor, bool pending)
 {
     if (processor >= PROCESSOR_CODES) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-o2000-module-management: message for processor %u, "
+                      "sgi-sn0-module-management: message for processor %u, "
                       "outside the eight published codes\n", processor);
         return;
     }
@@ -479,24 +479,24 @@ void sgi_o2000_module_mgmt_set_message(SGIO2000ModuleMgmtState *s,
     }
 }
 
-void sgi_o2000_module_mgmt_message_fetched(SGIO2000ModuleMgmtState *s,
+void sgi_sn0_module_management_message_fetched(SGISn0ModuleManagementState *s,
                                            unsigned processor)
 {
-    sgi_o2000_module_mgmt_set_message(s, processor, false);
+    sgi_sn0_module_management_set_message(s, processor, false);
 }
 
-void sgi_o2000_module_mgmt_set_publication(SGIO2000ModuleMgmtState *s,
+void sgi_sn0_module_management_set_publication(SGISn0ModuleManagementState *s,
                                            bool enabled)
 {
     s->publication_enabled = enabled;
 }
 
-I2CBus *sgi_o2000_module_mgmt_get_bus(SGIO2000ModuleMgmtState *s)
+I2CBus *sgi_sn0_module_management_get_bus(SGISn0ModuleManagementState *s)
 {
     return s->bus;
 }
 
-DeviceState *sgi_o2000_module_mgmt_get_adapter(SGIO2000ModuleMgmtState *s,
+DeviceState *sgi_sn0_module_management_get_adapter(SGISn0ModuleManagementState *s,
                                                unsigned index)
 {
     return index < SGI_O2000_ADAPTER_COUNT ? s->adapters[index] : NULL;
@@ -513,7 +513,7 @@ DeviceState *sgi_o2000_module_mgmt_get_adapter(SGIO2000ModuleMgmtState *s,
  * rather than each being given a different answer. That is a model choice,
  * not a fact.
  */
-bool sgi_o2000_module_mgmt_can_execute(SGIO2000ModuleMgmtState *s,
+bool sgi_sn0_module_management_can_execute(SGISn0ModuleManagementState *s,
                                        SGIElscAction action)
 {
     bool declared;
@@ -531,14 +531,14 @@ bool sgi_o2000_module_mgmt_can_execute(SGIO2000ModuleMgmtState *s,
     }
     if (!declared) {
         qemu_log_mask(LOG_UNIMP,
-                      "sgi-o2000-module-management: destructive command "
+                      "sgi-sn0-module-management: destructive command "
                       "refused, this module declares no %s path\n",
                       action == SGI_ELSC_ACTION_RESET ? "reset" : "power");
         return false;
     }
     if (s->pulse_active) {
         qemu_log_mask(LOG_UNIMP,
-                      "sgi-o2000-module-management: destructive command "
+                      "sgi-sn0-module-management: destructive command "
                       "during a %s pulse\n", s->pulse_nmi ? "NMI" : "reset");
         return false;
     }
@@ -547,24 +547,24 @@ bool sgi_o2000_module_mgmt_can_execute(SGIO2000ModuleMgmtState *s,
 
 static bool mgmt_elsc_can_execute(void *opaque, SGIElscAction action)
 {
-    return sgi_o2000_module_mgmt_can_execute(opaque, action);
+    return sgi_sn0_module_management_can_execute(opaque, action);
 }
 
 static void mgmt_elsc_execute(void *opaque, SGIElscAction action)
 {
-    SGIO2000ModuleMgmtState *s = opaque;
+    SGISn0ModuleManagementState *s = opaque;
     bool done;
 
     switch (action) {
     case SGI_ELSC_ACTION_RESET:
-        done = sgi_o2000_module_mgmt_pulse_reset(s);
+        done = sgi_sn0_module_management_pulse_reset(s);
         break;
     case SGI_ELSC_ACTION_CYCLE:
-        done = sgi_o2000_module_mgmt_set_power(s, false) &&
-               sgi_o2000_module_mgmt_set_power(s, true);
+        done = sgi_sn0_module_management_set_power(s, false) &&
+               sgi_sn0_module_management_set_power(s, true);
         break;
     case SGI_ELSC_ACTION_SHUTDOWN:
-        done = sgi_o2000_module_mgmt_set_power(s, false);
+        done = sgi_sn0_module_management_set_power(s, false);
         break;
     default:
         g_assert_not_reached();
@@ -575,14 +575,14 @@ static void mgmt_elsc_execute(void *opaque, SGIElscAction action)
      */
     if (!done) {
         qemu_log_mask(LOG_UNIMP,
-                      "sgi-o2000-module-management: an acknowledged action "
+                      "sgi-sn0-module-management: an acknowledged action "
                       "did not happen\n");
     }
 }
 
 static void mgmt_elsc_slave_active(void *opaque, bool active)
 {
-    ((SGIO2000ModuleMgmtState *)opaque)->slave_active = active;
+    ((SGISn0ModuleManagementState *)opaque)->slave_active = active;
 }
 
 /*
@@ -595,11 +595,11 @@ static void mgmt_elsc_slave_active(void *opaque, bool active)
  */
 static void mgmt_elsc_console_owner(void *opaque, unsigned processor)
 {
-    SGIO2000ModuleMgmtState *s = opaque;
+    SGISn0ModuleManagementState *s = opaque;
 
     if (processor >= PROCESSOR_CODES) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-o2000-module-management: console output from "
+                      "sgi-sn0-module-management: console output from "
                       "processor %u, outside the eight published codes\n",
                       processor);
         return;
@@ -609,13 +609,13 @@ static void mgmt_elsc_console_owner(void *opaque, unsigned processor)
 
 static void mgmt_elsc_console_input(void *opaque, bool pending)
 {
-    ((SGIO2000ModuleMgmtState *)opaque)->console_input_pending = pending;
+    ((SGISn0ModuleManagementState *)opaque)->console_input_pending = pending;
 }
 
 static bool mgmt_elsc_onewire_slot(void *opaque, uint32_t pulse,
                                    uint32_t sample)
 {
-    SGIO2000ModuleMgmtState *s = opaque;
+    SGISn0ModuleManagementState *s = opaque;
 
     return sgi_onewire_slot(s->onewire_bus, pulse, sample);
 }
@@ -641,7 +641,7 @@ static const uint8_t module_serial_image_template[DS2502_DATA_SIZE] = {
     [64 ... DS2502_DATA_SIZE - 1] = 0xff,
 };
 
-static void mgmt_build_module_serial_image(SGIO2000ModuleMgmtState *s,
+static void mgmt_build_module_serial_image(SGISn0ModuleManagementState *s,
                                            uint8_t image[DS2502_DATA_SIZE])
 {
     uint16_t crc;
@@ -653,7 +653,7 @@ static void mgmt_build_module_serial_image(SGIO2000ModuleMgmtState *s,
     image[31] = crc >> 8;
 }
 
-static DeviceState *mgmt_add_child(SGIO2000ModuleMgmtState *s,
+static DeviceState *mgmt_add_child(SGISn0ModuleManagementState *s,
                                    const char *name, const char *type)
 {
     DeviceState *child = qdev_new(type);
@@ -663,7 +663,7 @@ static DeviceState *mgmt_add_child(SGIO2000ModuleMgmtState *s,
     return child;
 }
 
-static void mgmt_populate_nvram(SGIO2000ModuleMgmtState *s)
+static void mgmt_populate_nvram(SGISn0ModuleManagementState *s)
 {
     uint8_t reserved[SGI_O2000_NVRAM_PAGE_BYTES] = { };
     unsigned page;
@@ -686,7 +686,7 @@ static void mgmt_populate_nvram(SGIO2000ModuleMgmtState *s)
 
 static void mgmt_realize(DeviceState *dev, Error **errp)
 {
-    SGIO2000ModuleMgmtState *s = SGI_O2000_MODULE_MGMT(dev);
+    SGISn0ModuleManagementState *s = SGI_SN0_MODULE_MANAGEMENT(dev);
     uint8_t module_serial_image[DS2502_DATA_SIZE];
     unsigned i;
 
@@ -799,7 +799,7 @@ static void mgmt_realize(DeviceState *dev, Error **errp)
 
 static void mgmt_unrealize(DeviceState *dev)
 {
-    SGIO2000ModuleMgmtState *s = SGI_O2000_MODULE_MGMT(dev);
+    SGISn0ModuleManagementState *s = SGI_SN0_MODULE_MANAGEMENT(dev);
 
     qemu_unregister_resettable(OBJECT(s));
     i2c_wire_clear_timeline(s->bus, GRANT_MASTER, mgmt_run_deadlines, s);
@@ -812,9 +812,9 @@ static void mgmt_unrealize(DeviceState *dev)
 
 static void mgmt_init(Object *obj)
 {
-    SGIO2000ModuleMgmtState *s = SGI_O2000_MODULE_MGMT(obj);
+    SGISn0ModuleManagementState *s = SGI_SN0_MODULE_MANAGEMENT(obj);
 
-    s->bus = i2c_init_bus_type(TYPE_SGI_I2C_WIRE_BUS, DEVICE(obj), "i2c");
+    s->bus = i2c_init_bus_type(TYPE_I2C_WIRE, DEVICE(obj), "i2c");
     s->onewire_bus = onewire_create_bus(DEVICE(obj), "module-onewire");
     s->module_serial = mgmt_add_child(s, "module-serial",
                                       TYPE_ONEWIRE_DS2502);
@@ -839,7 +839,7 @@ static void mgmt_init(Object *obj)
 
 static void mgmt_reset_hold(Object *obj, ResetType type)
 {
-    SGIO2000ModuleMgmtState *s = SGI_O2000_MODULE_MGMT(obj);
+    SGISn0ModuleManagementState *s = SGI_SN0_MODULE_MANAGEMENT(obj);
 
     /*
      * The shared bus is a child bus of this device and the adapters are on
@@ -861,7 +861,7 @@ static void mgmt_reset_hold(Object *obj, ResetType type)
 
 static int mgmt_post_load(void *opaque, int version_id)
 {
-    SGIO2000ModuleMgmtState *s = opaque;
+    SGISn0ModuleManagementState *s = opaque;
 
     if (s->grant_state > GRANT_STOP_RELEASE || s->grant_bit > 8 ||
         s->processor_code >= PROCESSOR_CODES ||
@@ -888,48 +888,49 @@ static int mgmt_post_load(void *opaque, int version_id)
     return 0;
 }
 
-static const VMStateDescription vmstate_sgi_o2000_module_mgmt = {
+static const VMStateDescription vmstate_sgi_sn0_module_management = {
+    /* Pre-rename stream name; kept for migration compatibility. */
     .name = "sgi-o2000-module-management",
     .version_id = 1,
     .minimum_version_id = 1,
     .post_load = mgmt_post_load,
     .fields = (const VMStateField[]) {
-        VMSTATE_INT64(service_deadline, SGIO2000ModuleMgmtState),
-        VMSTATE_INT64(message_deadline, SGIO2000ModuleMgmtState),
-        VMSTATE_INT64(pulse_deadline, SGIO2000ModuleMgmtState),
-        VMSTATE_UINT16(recovery_ticks, SGIO2000ModuleMgmtState),
-        VMSTATE_UINT8(processor_code, SGIO2000ModuleMgmtState),
-        VMSTATE_UINT8(pending_messages, SGIO2000ModuleMgmtState),
-        VMSTATE_UINT8(console_processor, SGIO2000ModuleMgmtState),
-        VMSTATE_UINT8(grant_byte, SGIO2000ModuleMgmtState),
-        VMSTATE_UINT8(grant_bit, SGIO2000ModuleMgmtState),
-        VMSTATE_UINT8(grant_state, SGIO2000ModuleMgmtState),
-        VMSTATE_BOOL(grant_bit_sampled, SGIO2000ModuleMgmtState),
-        VMSTATE_BOOL(grant_active, SGIO2000ModuleMgmtState),
-        VMSTATE_BOOL(wire_scl, SGIO2000ModuleMgmtState),
-        VMSTATE_BOOL(wire_sda, SGIO2000ModuleMgmtState),
-        VMSTATE_BOOL(publication_enabled, SGIO2000ModuleMgmtState),
-        VMSTATE_BOOL(controller_request, SGIO2000ModuleMgmtState),
-        VMSTATE_BOOL(controller_granted, SGIO2000ModuleMgmtState),
-        VMSTATE_BOOL(serial_request, SGIO2000ModuleMgmtState),
-        VMSTATE_BOOL(serial_granted, SGIO2000ModuleMgmtState),
-        VMSTATE_BOOL(slave_active, SGIO2000ModuleMgmtState),
-        VMSTATE_BOOL(console_input_pending, SGIO2000ModuleMgmtState),
-        VMSTATE_BOOL(power_on, SGIO2000ModuleMgmtState),
-        VMSTATE_BOOL(pulse_active, SGIO2000ModuleMgmtState),
-        VMSTATE_BOOL(pulse_nmi, SGIO2000ModuleMgmtState),
+        VMSTATE_INT64(service_deadline, SGISn0ModuleManagementState),
+        VMSTATE_INT64(message_deadline, SGISn0ModuleManagementState),
+        VMSTATE_INT64(pulse_deadline, SGISn0ModuleManagementState),
+        VMSTATE_UINT16(recovery_ticks, SGISn0ModuleManagementState),
+        VMSTATE_UINT8(processor_code, SGISn0ModuleManagementState),
+        VMSTATE_UINT8(pending_messages, SGISn0ModuleManagementState),
+        VMSTATE_UINT8(console_processor, SGISn0ModuleManagementState),
+        VMSTATE_UINT8(grant_byte, SGISn0ModuleManagementState),
+        VMSTATE_UINT8(grant_bit, SGISn0ModuleManagementState),
+        VMSTATE_UINT8(grant_state, SGISn0ModuleManagementState),
+        VMSTATE_BOOL(grant_bit_sampled, SGISn0ModuleManagementState),
+        VMSTATE_BOOL(grant_active, SGISn0ModuleManagementState),
+        VMSTATE_BOOL(wire_scl, SGISn0ModuleManagementState),
+        VMSTATE_BOOL(wire_sda, SGISn0ModuleManagementState),
+        VMSTATE_BOOL(publication_enabled, SGISn0ModuleManagementState),
+        VMSTATE_BOOL(controller_request, SGISn0ModuleManagementState),
+        VMSTATE_BOOL(controller_granted, SGISn0ModuleManagementState),
+        VMSTATE_BOOL(serial_request, SGISn0ModuleManagementState),
+        VMSTATE_BOOL(serial_granted, SGISn0ModuleManagementState),
+        VMSTATE_BOOL(slave_active, SGISn0ModuleManagementState),
+        VMSTATE_BOOL(console_input_pending, SGISn0ModuleManagementState),
+        VMSTATE_BOOL(power_on, SGISn0ModuleManagementState),
+        VMSTATE_BOOL(pulse_active, SGISn0ModuleManagementState),
+        VMSTATE_BOOL(pulse_nmi, SGISn0ModuleManagementState),
         VMSTATE_END_OF_LIST()
     },
 };
 
 static const Property mgmt_properties[] = {
-    DEFINE_PROP_UINT8("module-number", SGIO2000ModuleMgmtState,
+    DEFINE_PROP_UINT8("module-number", SGISn0ModuleManagementState,
                       module_number, 1),
-    DEFINE_PROP_STRING("model-serial", SGIO2000ModuleMgmtState,
+    DEFINE_PROP_STRING("model-serial", SGISn0ModuleManagementState,
                        module_serial_text),
-    DEFINE_PROP_BOOL("can-reset", SGIO2000ModuleMgmtState, can_reset, false),
-    DEFINE_PROP_BOOL("can-nmi", SGIO2000ModuleMgmtState, can_nmi, false),
-    DEFINE_PROP_BOOL("can-power", SGIO2000ModuleMgmtState, can_power, false),
+    DEFINE_PROP_BOOL("can-reset", SGISn0ModuleManagementState, can_reset, false),
+    DEFINE_PROP_BOOL("can-nmi", SGISn0ModuleManagementState, can_nmi, false),
+    DEFINE_PROP_BOOL("can-power", SGISn0ModuleManagementState, can_power, false),
 };
 
 static void mgmt_class_init(ObjectClass *klass, const void *data)
@@ -940,24 +941,24 @@ static void mgmt_class_init(ObjectClass *klass, const void *data)
     dc->desc = "SGI Origin 2000 shared module management";
     dc->realize = mgmt_realize;
     dc->unrealize = mgmt_unrealize;
-    dc->vmsd = &vmstate_sgi_o2000_module_mgmt;
+    dc->vmsd = &vmstate_sgi_sn0_module_management;
     device_class_set_props(dc, mgmt_properties);
     /* A machine builds this complex and wires its outputs; -device cannot. */
     dc->user_creatable = false;
     rc->phases.hold = mgmt_reset_hold;
 }
 
-static const TypeInfo sgi_o2000_module_mgmt_info = {
-    .name = TYPE_SGI_O2000_MODULE_MGMT,
+static const TypeInfo sgi_sn0_module_management_info = {
+    .name = TYPE_SGI_SN0_MODULE_MANAGEMENT,
     .parent = TYPE_DEVICE,
-    .instance_size = sizeof(SGIO2000ModuleMgmtState),
+    .instance_size = sizeof(SGISn0ModuleManagementState),
     .instance_init = mgmt_init,
     .class_init = mgmt_class_init,
 };
 
-static void sgi_o2000_module_mgmt_register_types(void)
+static void sgi_sn0_module_management_register_types(void)
 {
-    type_register_static(&sgi_o2000_module_mgmt_info);
+    type_register_static(&sgi_sn0_module_management_info);
 }
 
-type_init(sgi_o2000_module_mgmt_register_types)
+type_init(sgi_sn0_module_management_register_types)
