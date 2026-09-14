@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 #
-# Linux/IP27 userspace self-check: boot the mainline kernel with its
-# embedded userspace stub and require Linux's own dying-init exit status
+# Linux/IP27 userspace self-check: netboot the mainline kernel with its
+# embedded userspace stub through the stock PROM and require Linux's own
+# dying-init exit status
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
@@ -10,18 +11,28 @@ PROJECT checkout, into this fork's own functional-test framework, the same
 way test_prom_boot.py ports tools/boot-gate and test_diag.py ports
 tools/diag-gate. linux-usercheck boots the mainline Linux/IP27 kernel
 (assets/linux-ip27/vmlinux, built by tools/linux-userspace with an
-embedded freestanding userspace stub) directly via -kernel -- no PROM,
-no disk, no terminal device for the guest -- and requires the console
-transcript to contain Linux's own "Attempted to kill init!
-exitcode=0x0000NN00" panic line with the exact byte the embedded init
-chose: 42 << 8 = 0x2a00 at one CPU; 43 << 8 = 0x2b00 at two CPUs, after
-two affinity-pinned workers stress both CPUs; or 44 << 8 = 0x2c00 at four
-CPUs across two nodes, after a node-0 process moves and verifies a page on
-node 1. See test_linux_kernel_verdict.py's own docstring for why a plain
-literal-string match against the full 8-hex value already rejects a
-fatal-signal death (the low byte would carry a signal number instead)
-without needing any extra logic -- and for its fatal-signal fixture,
-which proves it.
+embedded freestanding userspace stub) -- no disk, no terminal device for
+the guest -- and requires the console transcript to contain Linux's own
+"Attempted to kill init! exitcode=0x0000NN00" panic line with the exact
+byte the embedded init chose: 42 << 8 = 0x2a00 at one CPU; 43 << 8 =
+0x2b00 at two CPUs, after two affinity-pinned workers stress both CPUs;
+or 44 << 8 = 0x2c00 at four CPUs across two nodes, after a node-0 process
+moves and verifies a page on node 1. See test_linux_kernel_verdict.py's
+own docstring for why a plain literal-string match against the full
+8-hex value already rejects a fatal-signal death (the low byte would
+carry a signal number instead) without needing any extra logic -- and
+for its fatal-signal fixture, which proves it.
+
+The kernel loads through the real stock IP27 PROM's own netboot path, the
+same command-monitor dialogue test_prom_sash.py drives (lib_prom's
+prom_netboot_steps(), imported below): the System Maintenance Menu's
+option 5, a stale netaddr cleared, then `boot -f bootp()/vmlinux` over
+QEMU's own SLIRP usermode networking, serving the kernel straight out of
+its ORIGAMI_ASSETS directory (no staged copy -- SLIRP's own TFTP server
+only ever reads it). This replaces a direct `-kernel` load: the plan this
+test belongs to retires synthesized firmware, so no product boots any
+other way any more, and the mainline kernel is a 64-bit ELF the PROM
+loads directly, the same as sash64.
 
 The four-CPU case is IN scope. It boots the same kernel with two 64 MiB
 nodes (-numa node0 cpus 0-1 / node1 cpus 2-3, -smp
@@ -49,21 +60,31 @@ CPU, the two memory-backends and NUMA nodes at four CPUs, and FIXED
 instruction counting (-accel tcg,thread=single -icount) at all -- shift=3
 at one and two CPUs, shift=2 at four -- deterministic machine-model
 correctness, not a host-speed gate, per that module's own comment.
-KERNEL_REL and the rest of the launch (-cpu R10000, -m, -kernel,
--no-reboot) replicate tools/linux-run's own invocation. Neither module
-is imported (SELF-CONTAINED, per this port's own brief): linux-run
-passes no -append at all -- the embedded userspace's console binds
-without one -- and no -bios, since this is a direct kernel boot, not a
-firmware boot, which is why this file (unlike test_prom_boot.py and
-test_diag.py) never touches ORIGAMI_ASSETS's firmware/ subtree.
+KERNEL_REL and the rest of the launch (-cpu R10000, -m) replicate
+tools/linux-run's own invocation; linux-run passes no -append at all, so
+neither does the boot command below -- the embedded userspace's console
+binds without one. `-no-reboot`, part of the direct-`-kernel` launch this
+ports, is dropped here: booting the real PROM (`-bios`) issues a reset
+classified as guest-initiated at machine init, before the PROM has run a
+single instruction, and `-no-reboot` turns that into an immediate
+shutdown with no console output at all -- reproduced directly by
+launching this exact command line with and without `-no-reboot`, the
+difference between a boot that runs and one that exits in well under a
+second. That reset is a QEMU-core classification of the origin200
+board's own realize-time reset chain, not guest code, and its
+correction belongs to a machine-model change, out of scope for a
+tests-only packet; it costs nothing here because the embedded userspace
+stub never asks the kernel to reboot on panic (see below), so `-kernel`'s
+own reason for carrying `-no-reboot` -- stopping a reboot loop -- never
+applied to netboot in the first place.
 
 The guest never exits on its own: init's death panics the kernel, which
-spins rather than terminating the process (linux-run's own -no-reboot
-only suppresses reboot-on-panic requests, not this), so this test polls
-the captured console transcript against missing_assertions() until it
-is satisfied or a timeout expires, then shuts the VM down hard -- the
-same shape test_prom_boot.py's own poll loop uses against QEMU's trace
-output instead of a guest console.
+spins rather than terminating the process, so this test drives the
+netboot dialogue and then keeps reading against missing_assertions()
+until it is satisfied or a timeout expires, then shuts the VM down hard.
+drive_console() (lib_prom.py) owns that loop; test_prom_sash.py's own
+docstring covers why it is the console driver every netboot test in this
+directory shares.
 
 This module's own pure verdict logic lives entirely in
 test_linux_kernel_verdict.py (imported below; it needs no qemu_test
@@ -72,39 +93,49 @@ boot.
 """
 
 import os
-import socket
-import time
 
 from qemu_test import QemuSystemTest, skipIfMissingEnv
 
-from lib_prom import resolve_asset
-from lib_translation_health import assert_translation_healthy
+from lib_prom import (FIRMWARE_REL, drive_console, prom_netboot_steps,
+                      resolve_asset)
 
 from test_linux_kernel_verdict import missing_assertions
 
 
 # Where ORIGAMI_ASSETS resolves the built kernel, matching tools/linux-run's
 # own default kernel path ("assets/linux-ip27/vmlinux", project checkout)
-# and test_prom_boot.py's own FIRMWARE_REL idiom: ORIGAMI_ASSETS names a
-# CHECKOUT, not assets/ itself.
+# and lib_prom.FIRMWARE_REL's own idiom: ORIGAMI_ASSETS names a CHECKOUT,
+# not assets/ itself.
 KERNEL_REL = os.path.join('assets', 'linux-ip27', 'vmlinux')
 
-# Per-boot FAILURE-detection budgets, not typical run time. At one and two
-# CPUs tools/linux_topology.py's own default_timeout is 90s (project
-# checkout) and a passing boot reaches its markers in a few seconds. The
-# four-CPU/two-node boot under fixed instruction counting is far slower --
-# every CPU's instructions serialize into one deterministic stream -- so
-# it takes a much larger budget; 700s matches the per-4-CPU-leg figure
-# origin200-matrix uses for the same topology, and linux_topology's own
-# default_timeout(4) of 480s proved too tight for it on a debug build.
-# The meson timeout registered for this test (mips64/meson.build) covers
-# ALL three methods below run one after another, so it carries a larger
-# margin than the usual single-BOOT_TIMEOUT-plus-a-bit this fork's other
-# functional tests keep, to stay safe even if every boot runs out its
-# budget.
-BOOT_TIMEOUT_SECONDS = 90
-FOUR_CPU_BOOT_TIMEOUT_SECONDS = 700
-POLL_INTERVAL_SECONDS = 0.5
+# The boot file this test's own SLIRP TFTP server serves the kernel under
+# -- see prom_netboot_steps()'s own docstring for why this need not match
+# the kernel's name on disk. Kept flat (no path-structuring check, unlike
+# test_prom_sash.py's NETBOOT_PATH): this port carries no assertion that
+# would tell the two apart.
+NETBOOT_BOOTFILE = 'vmlinux'
+NETBOOT_STEPS = prom_netboot_steps(NETBOOT_BOOTFILE)
+
+# Per-boot FAILURE-detection budgets, not typical run time -- real
+# measurements, not guesses: a run of this exact test against real
+# provisioned assets (podman, this worktree mounted read-write and a
+# checkout carrying assets/ mounted read-only as ORIGAMI_ASSETS) reached
+# its exit sentinel in 52s at one CPU, 58s at two, and 310s at four, on a
+# host already busy running other work. Each of these times now covers a
+# real PROM power-on self-test and netboot on top of the kernel's own
+# boot, so it is well above tools/linux_topology.py's own default_timeout
+# (90s at one and two CPUs, project checkout), which timed only a direct
+# -kernel load with no firmware in front of it. 240 at one and two CPUs
+# keeps roughly four times the measured figure, the same margin this
+# directory's own meson.build keeps for sn0_smp; 900 at four CPUs keeps
+# closer to three times, in line with the margin xframe_pci keeps over
+# its own measured boot. The meson timeout registered for this test
+# (mips64/meson.build) covers ALL three methods below run one after
+# another, so it carries a larger margin than the usual
+# single-BOOT_TIMEOUT-plus-a-bit this fork's other functional tests keep,
+# to stay safe even if every boot runs out its budget.
+BOOT_TIMEOUT_SECONDS = 240
+FOUR_CPU_BOOT_TIMEOUT_SECONDS = 900
 
 
 def cpu_qemu_args(cpus):
@@ -142,64 +173,54 @@ class LinuxKernel(QemuSystemTest):
     test_prom_boot.py keeps between its pure logic and PromBoot.
     """
 
-    def _kernel_path(self):
-        """The built kernel under ORIGAMI_ASSETS, or None if it is not
-        there -- the runner may not have it built yet (see this
-        method's caller)."""
-        return resolve_asset(os.environ['ORIGAMI_ASSETS'], KERNEL_REL)
+    def _asset_paths(self):
+        """The real PROM image and the built kernel under ORIGAMI_ASSETS,
+        or None if either is missing -- the runner may not have them
+        provisioned yet (see this method's caller)."""
+        assets_root = os.environ['ORIGAMI_ASSETS']
+        firmware = resolve_asset(assets_root, FIRMWARE_REL)
+        kernel = resolve_asset(assets_root, KERNEL_REL)
+        if not (firmware and kernel):
+            return None
+        return firmware, kernel
 
     def _boot_and_capture(self, cpus, mem_mib, name):
-        kernel = self._kernel_path()
-        if kernel is None:
+        paths = self._asset_paths()
+        if paths is None:
             # Every caller is already @skipIfMissingEnv('ORIGAMI_ASSETS'),
-            # so getting here means it IS set and the kernel is simply
-            # missing underneath it -- a provisioning failure, not an
-            # absent-assets developer run. Fail loudly: a silent skip
-            # here would let a real linux-usercheck regression pass CI
-            # unnoticed.
+            # so getting here means it IS set and the firmware or kernel
+            # is simply missing underneath it -- a provisioning failure,
+            # not an absent-assets developer run. Fail loudly: a silent
+            # skip here would let a real linux-usercheck regression pass
+            # CI unnoticed.
             self.fail(
-                'ORIGAMI_ASSETS is set but no kernel is present '
-                f'at <ORIGAMI_ASSETS>/{KERNEL_REL} -- provision it '
+                'ORIGAMI_ASSETS is set but the PROM/kernel are missing '
+                f'at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
+                f'<ORIGAMI_ASSETS>/{KERNEL_REL} -- provision them '
                 '(nightly assets) rather than silently skipping a '
                 'claimed capability')
+        firmware, kernel = paths
 
         vm = self.get_vm(name=name)
-        vm.set_machine('origin200')
+        vm.set_machine('origin200,synthesized-firmware=off,debug-leds=off')
         vm.set_console()
         vm.add_args('-cpu', 'R10000', '-m', str(mem_mib),
-                   '-kernel', kernel, '-no-reboot',
+                   '-bios', firmware,
+                   '-nic', ('user,id=net0,'
+                            f'tftp={os.path.dirname(kernel)},'
+                            f'bootfile={NETBOOT_BOOTFILE}'),
                    *cpu_qemu_args(cpus))
         vm.launch()
 
         log_path = self.log_file(f'{name}.log')
         timeout = (FOUR_CPU_BOOT_TIMEOUT_SECONDS if cpus == 4
                    else BOOT_TIMEOUT_SECONDS)
-        deadline = time.monotonic() + timeout
-        transcript = ''
-        sock = vm.console_socket
-        sock.settimeout(POLL_INTERVAL_SECONDS)
-        health_checked = False
         try:
-            with open(log_path, 'a', encoding='utf-8') as log:
-                while time.monotonic() < deadline:
-                    if not missing_assertions(transcript, cpus):
-                        break
-                    try:
-                        chunk = sock.recv(4096)
-                    except socket.timeout:
-                        chunk = b''
-                    except OSError:
-                        break
-                    if chunk:
-                        text = chunk.decode('utf-8', errors='replace')
-                        transcript += text
-                        log.write(text)
-                        log.flush()
-                        if not health_checked:
-                            health_checked = True
-                            assert_translation_healthy(vm)
-                    if vm.exitcode() is not None:
-                        break
+            transcript, _reached = drive_console(
+                vm.console_socket, log_path, timeout, NETBOOT_STEPS,
+                reached_when=lambda t: not missing_assertions(
+                    t.decode('utf-8', errors='replace'), cpus),
+                vm=vm)
         finally:
             # A VM that crashed or exited on its own has already
             # left; a graceful shutdown() against an already-dead
