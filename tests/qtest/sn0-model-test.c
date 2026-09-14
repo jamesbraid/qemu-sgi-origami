@@ -853,7 +853,7 @@ static void test_base_profile_topology(const void *data)
 {
     const BaseProfileTopologyCase *topology = data;
     static const QOMChildExpectation machine_children[] = {
-        { "node0", "child<sn0-node>" },
+        { "node0", "child<sgi-sn0-node>" },
         { "bridge", "child<sgi-bridge>" },
         { "fabric", "child<sn0-fabric-direct>" },
     };
@@ -933,8 +933,8 @@ static void test_one_active_cpu_with_two_possible_cpus(const void *data)
 static void test_dual_profile_topology(const void *data)
 {
     static const QOMChildExpectation machine_children[] = {
-        { "node0", "child<sn0-node>" },
-        { "node1", "child<sn0-node>" },
+        { "node0", "child<sgi-sn0-node>" },
+        { "node1", "child<sgi-sn0-node>" },
         { "bridge", "child<sgi-bridge>" },
         { "bridge1", "child<sgi-bridge>" },
         { "fabric", "child<sn0-fabric-direct>" },

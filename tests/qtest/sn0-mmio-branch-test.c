@@ -1247,7 +1247,7 @@ static const TestCase cases[] = {
         .stack_switch = true,
         .snippet_phys = WINDOW_PHYS, .snippet_kseg1 = WINDOW_KSEG1,
         .smp = SMP_PLAIN, .accel = ACCEL_SINGLE,
-        .extra = "-global sn0-node.promdata-fast=off",
+        .extra = "-global sgi-sn0-node.promdata-fast=off",
     }, {
         /* Reset while resident: the block unmapped, then mapped afresh. */
         .name = "mmio-branch/mmio/jr-cache-as-ram-stack-switch-reset",
@@ -1280,7 +1280,7 @@ static const TestCase cases[] = {
         .block_fetch = true,
         .snippet_phys = WINDOW_PHYS, .snippet_kseg1 = WINDOW_KSEG1,
         .smp = SMP_PLAIN, .accel = ACCEL_SINGLE,
-        .extra = "-global sn0-node.promdata-fast=off",
+        .extra = "-global sgi-sn0-node.promdata-fast=off",
     }, {
         /*
          * Both processors in the window at once, the measured failure's

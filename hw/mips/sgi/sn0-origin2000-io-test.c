@@ -167,7 +167,7 @@ static void packet_test_unrealize(DeviceState *dev)
 }
 
 static const Property packet_test_properties[] = {
-    DEFINE_PROP_LINK("node", SN0HubPacketTest, node, TYPE_SN0_NODE,
+    DEFINE_PROP_LINK("node", SN0HubPacketTest, node, TYPE_SGI_SN0_NODE,
                      SN0NodeState *),
     DEFINE_PROP_UINT64("addr", SN0HubPacketTest, base, 0x40000000000ULL),
 };
