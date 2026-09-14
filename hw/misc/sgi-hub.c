@@ -1609,9 +1609,12 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
             outcome = "answered";
         } else if (!sgi_hub_slice_can_read(s, slice ^ 1)) {
             outcome = "partner stopped";
-        } else if (cs->stop || cs->unplug || !cpu_work_list_empty(cs) ||
-                   cpu_has_work(cs)) {
-            outcome = "preempted";
+        } else if (cs->stop || cs->unplug) {
+            outcome = "preempted by a stop";
+        } else if (!cpu_work_list_empty(cs)) {
+            outcome = "preempted by queued work";
+        } else if (cpu_has_work(cs)) {
+            outcome = "preempted by an interrupt";
         } else if (now >= deadline) {
             outcome = "timed out";
         } else {
