@@ -468,14 +468,20 @@ struct Bcm570xState {
     SGINetRxLatency rx_latency;
     uint16_t rx_std_cons;       /* the chip's standard-ring consumer */
     uint16_t rx_jumbo_cons;     /* the chip's jumbo-ring consumer */
+    /*
+     * Frames discarded since this jumbo-ring shortage began, so the drought
+     * is reported at its two ends rather than once per frame. Transient:
+     * a count of a condition, not state a guest can read.
+     */
+    uint64_t rx_shortage_drops;
     bool tx_busy;               /* guards the send against netdev re-entrancy */
     bool backend_rx_deferred;
 
     /* Interrupt state: a mask set through the 0x0204 mailbox and a pending
      * latch set when a status-block update awaits the driver. The line is the
      * conjunction of the latch with neither mask (mailbox nor MISC_CTL global)
-     * set. tx_busy and backend_rx_deferred are transient; the remaining state
-     * is migrated.
+     * set. tx_busy, backend_rx_deferred, rx_flush_pending and
+     * rx_shortage_drops are transient; the remaining state is migrated.
      */
     bool irq_masked;
     bool irq_pending;
@@ -612,6 +618,7 @@ static void bcm570x_reset_rx_queue(Bcm570xState *s)
     }
     s->rx_flush_pending = false;
     s->backend_rx_deferred = false;
+    s->rx_shortage_drops = 0;
 }
 
 /*
@@ -1647,6 +1654,20 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
             return;
         }
         bcm570x_regfile_write(s, off, val);
+        /*
+         * A write that actually posts a buffer ends the shortage, so the
+         * total is reported and the next drought starts its own count. A
+         * write that moves nothing is not the end of anything: a driver whose
+         * receive handler rewrites the index having found no memory to spare
+         * would otherwise reset the count on every pass and never report.
+         */
+        if ((val & 0xffff) != s->rx_jumbo_cons && s->rx_shortage_drops != 0) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "bcm570x: jumbo ring posted again after %" PRIu64
+                          " frames discarded for want of a buffer\n",
+                          s->rx_shortage_drops);
+            s->rx_shortage_drops = 0;
+        }
         /* Room where there was none: take anything the peer had waiting. */
         bcm570x_retry_rx_flush(s);
         return;
@@ -2231,19 +2252,50 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
         if (jumbo_prod == s->rx_jumbo_cons) {
             /*
              * The jumbo ring is enabled and addressed but holds no posted
-             * descriptor. Running out of receive buffer descriptors is a
-             * counted condition, not a latched stall (PG105 page 110, Table
-             * 49, nicNoMoreRXBDs), and the receive MAC's answer to running
-             * short is to pause the link partner and then drop, counting
-             * ifInDiscards (page 281). Reaching here means bcm570x_rx_ready
-             * found a standard buffer posted, so the chip is still placing
-             * standard frames; refusing this one instead would stop the back
-             * end and strand every frame behind it.
+             * descriptor, and this frame cannot use the standard ring's: a
+             * frame "greater than the Max_Len field of Receive Standard
+             * Producer Ring will consume a BD from Receive Jumbo Producer
+             * Ring" (PG105 page 92), so a longer frame has nowhere else to
+             * go. Discard it rather than refuse it -- refusing stops the back
+             * end reading and strands every frame behind this one, standard
+             * frames included, which is the receive stall issue 553 was filed
+             * for.
+             *
+             * The manual does not say this. It never addresses a host
+             * producer ring with no descriptor at all, and the pages that
+             * come closest are about the chip's own on-chip buffer pool. The
+             * datasheet's jumbo receive contract carries the evidence, what
+             * it does not cover, and the measurement that rejected the
+             * obvious alternative.
+             *
+             * Only discard while a standard buffer is posted, which is the
+             * state bcm570x_rx_ready accepted. Without one the caller is
+             * owed the refusal, and a frame discarded here would be lost with
+             * nothing anywhere saying so. bcm570x_rx_ready already implies
+             * it, through a disjunct that is false by the time control
+             * reaches here; saying it locally is what keeps it true if
+             * another way to be ready is ever added.
              */
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "bcm570x: received frame of %u bytes exceeds the "
-                          "%u-byte standard buffer and the jumbo ring has no "
-                          "posted descriptor, dropped\n", framelen, std_size);
+            if (std_size == 0 || std_prod == s->rx_std_cons) {
+                bcm570x_defer_rx_flush(s);
+                return 0;
+            }
+            /*
+             * Reported once at each end of the shortage, never once per
+             * frame. A ring the guest has let run dry under load discards for
+             * as long as the drought lasts, and a line each turns one
+             * shortage into tens of thousands of synchronous writes inside
+             * the receive path -- which costs the guest the scheduling it
+             * needed to post the buffer that would have ended it.
+             */
+            if (s->rx_shortage_drops == 0) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "bcm570x: frame of %u bytes exceeds the %u-byte "
+                              "standard buffer and the jumbo ring has no "
+                              "posted descriptor; discarding until it is "
+                              "posted\n", framelen, std_size);
+            }
+            s->rx_shortage_drops++;
             return orig_size;
         }
         std_base = jumbo_base;
@@ -2251,6 +2303,15 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
         rx_flags |= BCM570X_RXBDFLAG_JUMBO_RING;
         on_jumbo = true;
     } else {
+        /*
+         * Still a line per frame, deliberately. The count above belongs to
+         * the empty-ring drought and its end is a producer write; this
+         * condition ends on something else entirely, and sharing one counter
+         * makes the start line name the wrong cause and the end line report
+         * a total for a drought that was not the one it describes. Rate
+         * limiting this needs its own count and its own end, which is a
+         * change with its own tests.
+         */
         qemu_log_mask(LOG_GUEST_ERROR,
                       "bcm570x: received frame of %u bytes exceeds the "
                       "%u-byte standard buffer and the jumbo ring is "
