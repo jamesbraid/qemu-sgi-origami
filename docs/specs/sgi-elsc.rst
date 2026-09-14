@@ -216,23 +216,41 @@ that hands the guest everything through the last text byte of the ack --
 not a bus STOP or NACK. Committing there is what keeps the action when a
 master NACKs the last text byte and then issues a same-address repeated
 START with no STOP: neither terminal event sees the whole ack delivered,
-yet the guest has it. The committed action then fires from a bottom half,
-which releases the I2C bus -- so the controller is not left matched and
-misrouting the next transaction -- before requesting the reset,
-power-cycle or shutdown.
+yet the guest has it. The committed action then fires, releasing the I2C
+bus -- so the controller is not left matched and misrouting the next
+transaction -- before requesting the reset, power-cycle or shutdown.
 
-The bottom half is scheduled at the transaction's next boundary -- a NACK,
-a STOP, or the next request's START -- rather than at the commit, so the
-reset never runs while the guest is still reading the frame. One path
-therefore never schedules at all: a guest that reads through the last text
-byte and then abandons the bus -- taking no checksum, sending no STOP and
-no repeated START -- commits the action but reaches no boundary, so it
-never fires. The IRIX driver cannot leave a transaction that way: every
-ELSC exchange ends with a STOP, after the datasheet's closing
-invalid-address resync step, so a committed action always reaches a
-boundary. A stream migrated in this window is handled the same way -- a
-committed action is re-armed on load only once its frame was consumed
-(txlen zero); one still open waits for the destination's boundary.
+Firing is scheduled at the transaction's next boundary -- a NACK, a STOP,
+or the next request's START -- rather than at the commit, so the reset
+never runs while the guest is still reading the frame. One path therefore
+never schedules at all: a guest that reads through the last text byte and
+then abandons the bus -- taking no checksum, sending no STOP and no
+repeated START -- commits the action but reaches no boundary, so it never
+fires. The IRIX driver cannot leave a transaction that way: every ELSC
+exchange ends with a STOP, after the datasheet's closing invalid-address
+resync step, so a committed action always reaches a boundary. A stream
+migrated in this window is handled the same way -- a committed action is
+re-armed on load only once its frame was consumed (txlen zero); one still
+open waits for the destination's boundary.
+
+Firing queues the action on the requesting processor's own work, at the
+processor's next translation-block boundary, rather than a main-loop
+bottom half: round-robin execution reaches queued work before any peer is
+scheduled again, so a bottom half's real defect -- every other processor
+free to keep executing until the main loop next runs the reset, a
+different number of instructions on every run -- does not arise. Where no
+module owns the controller (the Origin 200; see below), every processor
+is then stopped, mirroring the Hub's port-reset write
+(``sgi_hub_request_machine_reset()`` in :file:`hw/misc/sgi-hub.c`).
+Multi-threaded execution cannot promise a peer stops before its own next
+instruction -- it runs on its own host thread -- so there only the
+resulting reset, power-cycle or shutdown itself is guaranteed, not a
+bound on what a peer executed first. With no processor to queue the work
+on -- the bottom half re-armed after a migration, or a qtest access with
+no processor running guest code -- firing still uses a bottom half, which
+does not stop any processor; nothing here has settled what real hardware
+does with a peer processor's execution in that window, only that this
+model must not leave it to host scheduling.
 
 Where an Origin 2000 module complex owns this controller, the module
 decides what a reset or a power-off actually reaches, and it is asked
