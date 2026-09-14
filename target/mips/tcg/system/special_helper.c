@@ -42,6 +42,7 @@ target_ulong helper_ei(CPUMIPSState *env)
     target_ulong t0 = env->CP0_Status;
 
     env->CP0_Status = t0 | (1 << CP0St_IE);
+    cpu_mips_reassert_interrupt(env);
     return t0;
 }
 
@@ -133,6 +134,7 @@ static inline void exception_return(CPUMIPSState *env)
         exception_return_mode(env);
     }
     compute_hflags(env);
+    cpu_mips_reassert_interrupt(env);
     debug_post_eret(env);
 }
 
@@ -166,6 +168,7 @@ void helper_deret(CPUMIPSState *env)
 
     env->hflags &= ~MIPS_HFLAG_DM;
     compute_hflags(env);
+    cpu_mips_reassert_interrupt(env);
 
     mips_env_set_pc(env, env->CP0_DEPC);
 

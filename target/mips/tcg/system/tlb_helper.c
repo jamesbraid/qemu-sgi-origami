@@ -1728,6 +1728,30 @@ bool mips_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
             mips_cpu_do_interrupt(cs);
             return true;
         }
+
+        /*
+         * Nothing to deliver. Where the line cannot wake the CPU either,
+         * drop the flag: leaving it up costs the exec loop a big-lock
+         * acquire on every pass for as long as the guest keeps the
+         * interrupt masked, which for a line no guest ever lowers is
+         * forever. cpu_mips_reassert_interrupt() raises it again when
+         * this CPU unmasks; a device raises it itself when it drives a
+         * line.
+         *
+         * The caller holds the big lock, so this cannot land between a
+         * device's Cause.IP write and the assert that follows it.
+         *
+         * The three exclusions are what mips_cpu_has_work() already
+         * treats as waking on a masked line -- Config7.WII and Release 6
+         * -- plus the MT ASE, whose helper_mttc0_status() unmasks
+         * another VPE without passing through this CPU's re-assert. On
+         * those the flag stays up exactly as before.
+         */
+        if (!ase_mt_available(env) &&
+            !(env->CP0_Config7 & (1 << CP0C7_WII)) &&
+            !(env->insn_flags & ISA_MIPS_R6)) {
+            cpu_reset_interrupt(cs, CPU_INTERRUPT_HARD);
+        }
     }
     return false;
 }
