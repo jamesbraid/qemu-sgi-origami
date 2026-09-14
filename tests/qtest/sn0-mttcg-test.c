@@ -60,9 +60,14 @@
  * into, and are reached through KSEG1 so the guest never depends on cache
  * behaviour.  QEMU hands out zeroed RAM, which is what makes "still zero"
  * mean "not yet published" for the spins and starts counters at zero.
+ *
+ * Clear of physical 1 MiB as well, where this machine overlays a 32 KiB
+ * per-processor filter on RAM for the firmware's private data.  A state
+ * word there is an I/O dispatch rather than a RAM access, so every read
+ * and write of it takes the big lock -- which the cases below count.
  */
-#define STATE_PHYS          0x00100000
-#define STATE_KSEG1_HI      0xa010
+#define STATE_PHYS          0x00180000
+#define STATE_KSEG1_HI      0xa018
 
 /* Words every case publishes, so the handler and the dump are case-agnostic. */
 #define ALIVE_OFF           0x000
