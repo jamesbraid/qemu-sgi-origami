@@ -79,6 +79,8 @@
 #define HUB_IO_SCRATCH_0        0x400150
 #define HUB_IO_SCRATCH_1        0x400158
 #define IO_SCRATCH_MASK         0x0000000f00f11fffULL
+/* The bit the stock PROM's first processor sets once it has its answer. */
+#define IO_SCRATCH_PROM_ALIVE   (1ULL << 23)
 
 /*
  * Incoming crosstalk request buffers: only slots 7-14's C register, the ones
@@ -1035,6 +1037,8 @@ static void sgi_hub_kick_polled_peer(CPUState *peer, const char *reason)
     sgi_hub_kick_peer(peer, reason);
 }
 
+static void sgi_hub_rt_alive_update(SGIHubState *s);
+
 /* Slice B's PEND1 credit is about to be set or spent; was it held? */
 static void sgi_hub_trace_pend1_credit(SGIHubState *s, const char *what)
 {
@@ -1068,6 +1072,7 @@ static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
     if (bank == 1 && number == 113 && primary && current_cpu == primary) {
         sgi_hub_trace_pend1_credit(s, "set");
         s->pi_int_pend1_primary_credit = true;
+        sgi_hub_rt_alive_update(s);
     }
 
     /*
@@ -1442,8 +1447,9 @@ static uint64_t sgi_hub_rt_count(SGIHubState *s)
 
 /* What a held processor waits for. */
 typedef enum SGIHubRTHoldKind {
-    SGI_HUB_RT_HOLD_MATCH = 1,  /* the partner to read its post back */
-    SGI_HUB_RT_HOLD_POST,       /* the partner to write its comparator */
+    SGI_HUB_RT_HOLD_WITHDRAW = 1, /* the partner to read the post it clears */
+    SGI_HUB_RT_HOLD_POST,         /* the partner to write its comparator */
+    SGI_HUB_RT_HOLD_ALIVE,        /* the first processor's alive signal */
 } SGIHubRTHoldKind;
 
 typedef struct SGIHubRTHold {
@@ -1472,7 +1478,58 @@ static bool sgi_hub_slice_can_read(SGIHubState *s, unsigned int slice)
 
 static const char *sgi_hub_rt_hold_kind_name(SGIHubRTHoldKind kind)
 {
-    return kind == SGI_HUB_RT_HOLD_MATCH ? "match" : "post";
+    switch (kind) {
+    case SGI_HUB_RT_HOLD_WITHDRAW:
+        return "withdraw";
+    case SGI_HUB_RT_HOLD_ALIVE:
+        return "alive";
+    default:
+        return "post";
+    }
+}
+
+static void sgi_hub_rt_arm(SGIHubState *s, unsigned int index);
+static void sgi_hub_rt_release(SGIHubState *s, unsigned int slice,
+                               SGIHubRTHoldKind kind);
+
+/* Everything a comparator write does once it is allowed to take effect. */
+static void sgi_hub_rt_compare_apply(SGIHubState *s, unsigned int arg,
+                                     uint64_t val)
+{
+    CPUState *other = sgi_hub_cpu(s, arg ^ 1);
+
+    s->pi_rt_writes[arg]++;
+    if (s->pi_rt_compare[arg] != (val & PI_RT_MASK)) {
+        s->pi_rt_seen[arg] = false;
+    }
+    if ((arg ^ 1) < s->cpus) {
+        sgi_hub_rt_release(s, arg ^ 1, SGI_HUB_RT_HOLD_POST);
+    }
+    s->pi_rt_compare[arg] = val & PI_RT_MASK;
+    sgi_hub_rt_arm(s, arg);
+
+    /*
+     * A progress mailbox only while the slice's interrupt is disabled: the
+     * PROM arbitrates through it that way, so kick the other processor before
+     * its instruction-count timeout expires. A deadline writer has the
+     * interrupt enabled and does not kick the peer.
+     */
+    if (!s->pi_rt_enable[arg] && (arg ^ 1) < s->cpus) {
+        sgi_hub_kick_peer(other, "rt-compare-post");
+    }
+}
+
+/* Let a withheld withdrawal take effect, if one is waiting. */
+static void sgi_hub_rt_flush_withheld(SGIHubState *s, unsigned int slice)
+{
+    uint64_t val;
+
+    if (!s->pi_rt_withheld_valid[slice]) {
+        return;
+    }
+    val = s->pi_rt_withheld[slice];
+    s->pi_rt_withheld_valid[slice] = false;
+    sgi_hub_rt_compare_apply(s, slice, val);
 }
 
 /*
@@ -1499,6 +1556,37 @@ static void sgi_hub_rt_release(SGIHubState *s, unsigned int slice,
             qemu_cpu_kick(cs);
         }
     }
+}
+
+/*
+ * The first processor's alive signal, as the stock PROM gives it in traced
+ * boots: the alive bit in I/O scratch register 0, then interrupt 113 raised
+ * through interrupt modify, both from the first processor. Once both stand,
+ * the second processor has what it looks for next, so a hold waiting for
+ * the signal ends; and the signal counts as given until reset, because
+ * firmware clears the bit again much later with no rendezvous to protect.
+ */
+static void sgi_hub_rt_alive_update(SGIHubState *s)
+{
+    if (s->pi_rt_alive_seen || s->cpus < 2 ||
+        current_cpu != sgi_hub_cpu(s, 0) ||
+        !(s->io_scratch[0] & IO_SCRATCH_PROM_ALIVE) ||
+        !(s->pi_int_pend[1] & (1ULL << (113 - SGI_HUB_BANK_BITS)))) {
+        return;
+    }
+    s->pi_rt_alive_seen = true;
+    sgi_hub_rt_release(s, 1, SGI_HUB_RT_HOLD_ALIVE);
+}
+
+/*
+ * End a withdrawal hold and land the write it was withholding, whether or
+ * not a hold is still outstanding. Every caller is an access that must not
+ * see the old post any more.
+ */
+static void sgi_hub_rt_withdraw_now(SGIHubState *s, unsigned int slice)
+{
+    sgi_hub_rt_release(s, slice, SGI_HUB_RT_HOLD_WITHDRAW);
+    sgi_hub_rt_flush_withheld(s, slice);
 }
 
 static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
@@ -1559,6 +1647,11 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
     if (s->pi_rt_hold[slice] == hold->id) {
         s->pi_rt_hold[slice] = 0;
     }
+    /*
+     * However it ended, the withdrawal lands before this processor's next
+     * instruction: it cannot observe a post it has already taken back.
+     */
+    sgi_hub_rt_flush_withheld(s, slice);
     /* End at the clock read the loop decided on, so the length is exact. */
     if (trace_event_get_state_backends(TRACE_SGI_HUB_RT_HOLD_END)) {
         trace_sgi_hub_rt_hold_end(cs->cpu_index, outcome,
@@ -1582,22 +1675,33 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
  * poller descheduled across the post misses it, spends its budget and
  * disables its partner.
  *
- * Under multi-threaded TCG, a processor that has posted a value and reads
- * the other comparator is therefore held in two cases. Reading its own
- * value back there, before the partner has read the post, it is held
- * until the partner does. Re-reading anything else with no write in
- * between, it is held once per partner write until the partner next
- * writes. A hold also ends when the partner can no longer run, when the
- * held processor has a stop, queued work or a deliverable interrupt, or
- * after SGI_HUB_RT_HOLD_MS.
+ * The rendezvous has a second race after the match. The node's first
+ * processor then publishes an alive signal (sgi_hub_rt_alive_update), and
+ * the second processor's next accesses test for it; if the second gets
+ * there first it steps one exchange out of the counting handshake, and the
+ * node is lost later. A hold must come before the access that decides,
+ * because a hold lets the access complete first -- so it sits at the match
+ * read, the second processor's last rendezvous access before the test.
  *
- * The hold is queued work on the reader's own vCPU. It starts at the
- * reader's next block boundary, outside the execution loop, and waits on
- * that vCPU's halt condition with the big lock released, so it holds no
- * RCU read-side section and every kick the vCPU honours reaches it. It
- * never waits on another vCPU's queue, and a Hub holds at most one
- * processor at a time. Register values are unchanged; only when the reader
- * resumes moves.
+ * A reader is therefore held in two cases, each once per partner write. The
+ * second processor, reading its own posted value back before the first has
+ * given its alive signal since reset, is held until the signal. A processor
+ * that has posted, and re-reads anything but its own value with no partner
+ * write in between, is held until the partner next writes. The first
+ * processor is never held at its match: it is the one that must publish.
+ * What its partner needs from it after that is the post, so the hold that
+ * keeps the post standing sits at the write that takes it back
+ * (sgi_hub_rt_withhold). A hold also ends when the partner can no longer
+ * run, when the held processor has a stop, queued work or a deliverable
+ * interrupt, or after SGI_HUB_RT_HOLD_MS.
+ *
+ * The hold is queued work on the held processor's own vCPU. It starts at
+ * that processor's next block boundary, outside the execution loop, and
+ * waits on the vCPU's halt condition with the big lock released, so it
+ * holds no RCU read-side section and every kick the vCPU honours reaches
+ * it. It never waits on another vCPU's queue, and a Hub holds at most one
+ * processor at a time. Register values are unchanged; only when the held
+ * processor resumes moves.
  */
 static void sgi_hub_rt_mailbox_read(SGIHubState *s, unsigned int owner,
                                     uint64_t value)
@@ -1613,9 +1717,10 @@ static void sgi_hub_rt_mailbox_read(SGIHubState *s, unsigned int owner,
     }
 
     s->pi_rt_seen[owner] = true;
-    sgi_hub_rt_release(s, owner, SGI_HUB_RT_HOLD_MATCH);
     reread = s->pi_rt_read_at[reader] == s->pi_rt_writes[owner];
     s->pi_rt_read_at[reader] = s->pi_rt_writes[owner];
+    /* This read is the answer a withheld withdrawal was waiting for. */
+    sgi_hub_rt_withdraw_now(s, owner);
 
     posted = s->pi_rt_compare[reader];
     if (!posted || s->pi_rt_enable[0] || s->pi_rt_enable[1] ||
@@ -1623,18 +1728,22 @@ static void sgi_hub_rt_mailbox_read(SGIHubState *s, unsigned int owner,
         !qemu_tcg_mttcg_enabled() || !sgi_hub_slice_can_read(s, owner)) {
         return;
     }
+    if (s->pi_rt_held_at[reader] == s->pi_rt_writes[owner]) {
+        return;
+    }
     if (value == posted) {
-        if (s->pi_rt_seen[reader]) {
+        /* Only the second processor waits, and only before the signal. */
+        if (reader != 1 || s->pi_rt_alive_seen) {
             return;
         }
-        kind = SGI_HUB_RT_HOLD_MATCH;
+        kind = SGI_HUB_RT_HOLD_ALIVE;
     } else {
-        if (!reread || s->pi_rt_held_at[reader] == s->pi_rt_writes[owner]) {
+        if (!reread) {
             return;
         }
-        s->pi_rt_held_at[reader] = s->pi_rt_writes[owner];
         kind = SGI_HUB_RT_HOLD_POST;
     }
+    s->pi_rt_held_at[reader] = s->pi_rt_writes[owner];
 
     hold = g_new(SGIHubRTHold, 1);
     hold->hub = SGI_HUB(object_ref(OBJECT(s)));
@@ -1651,6 +1760,62 @@ static void sgi_hub_rt_mailbox_read(SGIHubState *s, unsigned int owner,
                               hold->id);
     }
     async_run_on_cpu(current_cpu, sgi_hub_rt_hold, RUN_ON_CPU_HOST_PTR(hold));
+}
+
+/*
+ * The withdrawal. A processor that clears a post the partner has not read
+ * takes the rendezvous away from a partner whose host thread was not
+ * running across it; real processors run continuously, so on hardware the
+ * partner always reads it. So the write is withheld and the processor
+ * parked until the partner reads the post, and the value lands on that
+ * read -- under the big lock, at the access that answers it -- or when the
+ * hold ends any other way. The partner sees the same values in the same
+ * order it sees today; what moves is when the withdrawal appears, which is
+ * exactly what parking the processor one instruction earlier did.
+ *
+ * Only a write of zero over a standing post qualifies. The firmware also
+ * uses these registers as progress mailboxes, stepping them through
+ * non-zero codes that nothing waits on, and holding those would park a
+ * processor for every code it posts.
+ */
+static bool sgi_hub_rt_withhold(SGIHubState *s, unsigned int arg,
+                                uint64_t val)
+{
+    SGIHubRTHold *hold;
+
+    /* A further write while one is withheld replaces the withheld value. */
+    if (s->pi_rt_withheld_valid[arg]) {
+        s->pi_rt_withheld[arg] = val;
+        return true;
+    }
+    if (sgi_hub_current_slice(s) != (int)arg || (val & PI_RT_MASK) ||
+        !s->pi_rt_compare[arg] || s->pi_rt_seen[arg] ||
+        s->pi_rt_enable[0] || s->pi_rt_enable[1] ||
+        s->pi_rt_hold[0] || s->pi_rt_hold[1] ||
+        !tcg_enabled() || !qemu_tcg_mttcg_enabled() ||
+        (arg ^ 1) >= s->cpus || !sgi_hub_slice_can_read(s, arg ^ 1)) {
+        return false;
+    }
+
+    hold = g_new(SGIHubRTHold, 1);
+    hold->hub = SGI_HUB(object_ref(OBJECT(s)));
+    hold->slice = arg;
+    hold->id = ++s->pi_rt_hold_seq;
+    s->pi_rt_withheld[arg] = val;
+    s->pi_rt_withheld_valid[arg] = true;
+    s->pi_rt_hold[arg] = hold->id;
+    s->pi_rt_hold_kind[arg] = SGI_HUB_RT_HOLD_WITHDRAW;
+    if (trace_event_get_state_backends(TRACE_SGI_HUB_RT_HOLD)) {
+        trace_sgi_hub_rt_hold(
+            current_cpu->cpu_index,
+            sgi_hub_rt_hold_kind_name(SGI_HUB_RT_HOLD_WITHDRAW),
+            s->pi_rt_compare[arg], val & PI_RT_MASK,
+            s->cpu_base + (arg ^ 1),
+            qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), hold->id);
+    }
+    async_run_on_cpu(current_cpu, sgi_hub_rt_hold, RUN_ON_CPU_HOST_PTR(hold));
+    return true;
 }
 
 /* Release every hold, and forget every post and read: a fresh start. */
@@ -1670,6 +1835,8 @@ static void sgi_hub_rt_hold_reset(SGIHubState *s)
         s->pi_rt_writes[n] = 0;
         s->pi_rt_read_at[n] = UINT64_MAX;
         s->pi_rt_held_at[n] = UINT64_MAX;
+        /* Reset writes the comparators itself, so a withheld one is moot. */
+        s->pi_rt_withheld_valid[n] = false;
     }
 }
 
@@ -1677,7 +1844,13 @@ static uint64_t sgi_hub_read_rt_compare(SGIHubState *s, hwaddr addr,
                                         unsigned arg)
 {
     CPUState *owner = sgi_hub_cpu(s, arg);
-    uint64_t value = s->pi_rt_compare[arg];
+    uint64_t value;
+
+    /* Nobody reads a post its own processor has already taken back. */
+    if (sgi_hub_current_slice(s) == (int)arg) {
+        sgi_hub_rt_withdraw_now(s, arg);
+    }
+    value = s->pi_rt_compare[arg];
 
     /* A progress mailbox: let the owner publish before the poll budget ends. */
     sgi_hub_kick_polled_peer(owner, "rt-compare-poll");
@@ -2272,29 +2445,14 @@ static void sgi_hub_write_rt_compare(SGIHubState *s, hwaddr addr,
                                      unsigned arg, uint64_t val,
                                      unsigned size)
 {
-    CPUState *other;
-
-    s->pi_rt_writes[arg]++;
-    if (s->pi_rt_compare[arg] != (val & PI_RT_MASK)) {
-        s->pi_rt_seen[arg] = false;
-        sgi_hub_rt_release(s, arg, SGI_HUB_RT_HOLD_MATCH);
+    /* Anyone else's write orders after the owner's withheld withdrawal. */
+    if (sgi_hub_current_slice(s) != (int)arg) {
+        sgi_hub_rt_withdraw_now(s, arg);
     }
-    if ((arg ^ 1) < s->cpus) {
-        sgi_hub_rt_release(s, arg ^ 1, SGI_HUB_RT_HOLD_POST);
+    if (sgi_hub_rt_withhold(s, arg, val)) {
+        return;
     }
-    s->pi_rt_compare[arg] = val & PI_RT_MASK;
-    sgi_hub_rt_arm(s, arg);
-
-    /*
-     * A progress mailbox only while the slice's interrupt is disabled: the
-     * PROM arbitrates through it that way, so kick the other processor before
-     * its instruction-count timeout expires. A deadline writer has the
-     * interrupt enabled and does not kick the peer.
-     */
-    other = sgi_hub_cpu(s, arg ^ 1);
-    if (!s->pi_rt_enable[arg] && (arg ^ 1) < s->cpus) {
-        sgi_hub_kick_peer(other, "rt-compare-post");
-    }
+    sgi_hub_rt_compare_apply(s, arg, val);
 }
 
 static void sgi_hub_write_rt_pending(SGIHubState *s, hwaddr addr,
@@ -2399,6 +2557,13 @@ static void sgi_hub_write_widget_status(SGIHubState *s, hwaddr addr,
                   "sgi-hub: write of 0x%" PRIx64 " to the widget status "
                   "register 0x%" HWADDR_PRIx " (firmware clears this at "
                   "power-on; nothing here ever sets it)\n", val, addr);
+}
+
+static void sgi_hub_store_io_scratch(SGIHubState *s, unsigned arg,
+                                     uint64_t val)
+{
+    s->io_scratch[arg] = val & IO_SCRATCH_MASK;
+    sgi_hub_rt_alive_update(s);
 }
 
 static void sgi_hub_store_widget_control(SGIHubState *s, unsigned arg,
@@ -2901,7 +3066,7 @@ static const SGIHubRegDef sgi_hub_registers[] = {
     { .offset = HUB_IO_SCRATCH_0, .arg = 0,
       .field = offsetof(SGIHubState, io_scratch[0]), .width = 8,
       .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_TRACE_COORD,
-      .wmask = IO_SCRATCH_MASK },
+      .wmask = IO_SCRATCH_MASK, .store = sgi_hub_store_io_scratch },
     { .offset = HUB_IO_SCRATCH_1, .arg = 1,
       .field = offsetof(SGIHubState, io_scratch[1]), .width = 8,
       .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_TRACE_COORD,
@@ -3590,6 +3755,7 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
     s->io_xtalk_prescale = 0;
     s->io_scratch[0] = 0;
     s->io_scratch[1] = 0;
+    s->pi_rt_alive_seen = false;
 
     /* No transfer is ever in flight, so zeroing the registers is the reset. */
     memset(s->bte_length, 0, sizeof(s->bte_length));
@@ -4058,10 +4224,28 @@ static void sgi_hub_unrealize(DeviceState *dev)
 
 static int sgi_hub_post_load(void *opaque, int version_id);
 
+/*
+ * A withheld withdrawal is a comparator write the guest has made, so the
+ * saved state must show it. The hold itself is host scheduling and is not
+ * carried; landing the value here leaves the destination the register
+ * contents a machine with no hold would have had.
+ */
+static int sgi_hub_pre_save(void *opaque)
+{
+    SGIHubState *s = opaque;
+    unsigned int n;
+
+    for (n = 0; n < SGI_HUB_PROCESSORS; n++) {
+        sgi_hub_rt_flush_withheld(s, n);
+    }
+    return 0;
+}
+
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 27,
+    .version_id = 28,
     .minimum_version_id = 1,
+    .pre_save = sgi_hub_pre_save,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(pi_region_present, SGIHubState),
@@ -4113,6 +4297,7 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT64_ARRAY_V(pi_err_status0, SGIHubState,
                               SGI_HUB_PROCESSORS, 19),
         VMSTATE_UINT64_V(pi_rt_local_ctrl, SGIHubState, 10),
+        VMSTATE_BOOL_V(pi_rt_alive_seen, SGIHubState, 28),
         /* The registers are the whole of an engine's state. */
         VMSTATE_UINT64_ARRAY_V(bte_length, SGIHubState, SGI_HUB_BTES, 17),
         VMSTATE_UINT64_ARRAY_V(bte_source, SGIHubState, SGI_HUB_BTES, 17),
@@ -4161,6 +4346,11 @@ static int sgi_hub_post_load(void *opaque, int version_id)
 
     if (version_id < 17) {
         s->pi_int_pend1_primary_credit = false;
+    }
+
+    /* An older stream cannot say; never waiting is the behaviour it had. */
+    if (version_id < 28) {
+        s->pi_rt_alive_seen = true;
     }
 
     if (version_id < 16) {

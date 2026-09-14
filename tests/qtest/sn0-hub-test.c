@@ -1756,11 +1756,30 @@ static void test_cpu_enable_registers_control_matching_processors(
 #define RENDEZVOUS_MISSED       2
 
 /*
+ * The first processor's signal that it has its answer, in the order the
+ * stock PROM gives it in traced boots: a bit in the I/O scratch register,
+ * then interrupt 113 raised through interrupt modify.
+ */
+#define RENDEZVOUS_ALIVE        0x800000
+#define RENDEZVOUS_ALIVE_IRQ    113
+#define SN0_HUB_IO_BASE         (SN0_HUB_LOCAL_BASE + 0x400000)
+
+/* Publish the alive bit and raise interrupt 113; S0 addresses the I/O block. */
+static void emit_first_processor_alive(SN0Image *p)
+{
+    sn0_emit_li(p, SN0_R_T2, RENDEZVOUS_ALIVE);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_S0, SN0_R_T2, IO_SCRATCH_0 & 0xffff);
+    sn0_emit_li(p, SN0_R_T2, INT_MODIFY_SET | RENDEZVOUS_ALIVE_IRQ);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_T2, PI_INT_MODIFY);
+}
+
+/*
  * Both processors run the comparator rendezvous the stock PROM uses, with
  * the counter interrupts off: each posts the same value to its own
  * comparator and reads the other's. Slice A posts first and reaches its
  * poll late, after a delay loop of a few million instructions; slice B
  * waits for A's post, posts its own, reads the match and withdraws at once.
+ * A, once it sees B's post, gives its alive signal before withdrawing.
  * Each processor then records in its mailbox word whether it saw the other.
  * B's read of the match ends its translation block with the branch that
  * follows, as the PROM's does, so the withdrawal is always a later block.
@@ -1786,6 +1805,7 @@ static void build_comparator_rendezvous_image(SN0Image *p)
     sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
     sn0_emit_cpu_number(p, SN0_R_S1);
     sn0_emit_li64(p, SN0_R_K0, SN0_HUB_LOCAL_BASE);
+    sn0_emit_li64(p, SN0_R_S0, SN0_HUB_IO_BASE);
     sn0_emit_li(p, SN0_R_K1, SN0_KSEG1(SN0_USER_MAILBOX));
     sn0_emit_li(p, SN0_R_T1, RENDEZVOUS_VALUE);
     to_b = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_S1, SN0_R_ZERO);
@@ -1808,10 +1828,12 @@ static void build_comparator_rendezvous_image(SN0Image *p)
     sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_T2, 0);
     sn0_emit_park(p);
     sn0_patch_branch(p, seen, p->pos);
+    emit_first_processor_alive(p);
     sn0_emit_li(p, SN0_R_T2, RENDEZVOUS_SEEN);
     sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_T2, 0);
     sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_ZERO, PI_RT_COMPARE_A);
     sn0_emit_park(p);
+    sn0_emit_nop(p);
 
     /* Slice B: wait for A's post, post the match, read it and withdraw. */
     sn0_patch_branch(p, to_b, p->pos);
@@ -2319,18 +2341,27 @@ static void test_pend1_credit_traces_set_and_spend(const void *data)
 }
 
 /*
- * Slice A posts to its comparator and parks without ever reading slice
- * B's. B waits for the post, posts the same value and reads A's
- * comparator back, which holds it: A never reads the post, so the hold
- * runs to its deadline. The branch after that read ends B's translation
- * block, so B records what it read only once the hold is over.
+ * The common start of the handshake images below: kernel mode, the
+ * processor's slice in S1, the Hub's local block in K0 and its I/O block
+ * in S0, the mailbox in K1 and the rendezvous value in T1. Slice A's code
+ * follows; the branch returned sends slice B to code the caller patches in.
+ *
+ * Mailbox words, by offset: 0 slice A's result, 8 slice B's result, 16 a
+ * marker, 24 slice B's done flag, 32 a go word the test writes, 40 a
+ * generation, 48 and 56 counts kept across a reset.
+ *
+ * In these images, running from the boot ROM, a hold starts before the
+ * held processor's next instruction -- measured, not assumed -- so nothing
+ * a processor writes after the access that holds it can tell the other
+ * processor to go on. The tests sequence the two slices from outside
+ * instead: they wait until the access is due, allow a few hundred
+ * milliseconds -- far longer than one instruction, far shorter than the
+ * two-second deadline -- and then write the go word.
  */
-static void build_unanswered_hold_image(SN0Image *p)
+static unsigned int emit_handshake_start(SN0Image *p)
 {
     const unsigned int entry = 0x800;
     unsigned int branch;
-    unsigned int to_b;
-    unsigned int loop;
 
     branch = sn0_emit_branch(p, SN0_OPC_BEQ, 0, 0);
     sn0_patch_branch(p, branch, entry);
@@ -2345,40 +2376,232 @@ static void build_unanswered_hold_image(SN0Image *p)
     sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
     sn0_emit_cpu_number(p, SN0_R_S1);
     sn0_emit_li64(p, SN0_R_K0, SN0_HUB_LOCAL_BASE);
+    sn0_emit_li64(p, SN0_R_S0, SN0_HUB_IO_BASE);
     sn0_emit_li(p, SN0_R_K1, SN0_KSEG1(SN0_USER_MAILBOX));
     sn0_emit_li(p, SN0_R_T1, RENDEZVOUS_VALUE);
-    to_b = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_S1, SN0_R_ZERO);
+    return sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_S1, SN0_R_ZERO);
+}
 
-    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_T1, PI_RT_COMPARE_A);
+/* End the translation block after an access the model may hold at. */
+static void emit_block_end(SN0Image *p)
+{
+    unsigned int branch = sn0_emit_branch(p, SN0_OPC_BEQ, SN0_R_ZERO,
+                                          SN0_R_ZERO);
+
+    sn0_patch_branch(p, branch, p->pos);
+}
+
+/* Park with a nop in the delay slot, not the first word of what follows. */
+static void emit_handshake_park(SN0Image *p)
+{
     sn0_emit_park(p);
+    sn0_emit_nop(p);
+}
 
-    sn0_patch_branch(p, to_b, p->pos);
-    loop = p->pos;
+/*
+ * Slice B's side: wait for A's post, post and read A's comparator back --
+ * the match. In a later block, read the I/O scratch register and record
+ * the value in word 8 and 1 in word 24.
+ */
+static void emit_second_processor_match(SN0Image *p)
+{
+    unsigned int loop = p->pos;
+    unsigned int branch;
+
     sn0_emit_i(p, SN0_OPC_LD, SN0_R_K0, SN0_R_T2, PI_RT_COMPARE_A);
     branch = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_T2, SN0_R_T1);
     sn0_patch_branch(p, branch, loop);
     sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_T1, PI_RT_COMPARE_B);
     sn0_emit_i(p, SN0_OPC_LD, SN0_R_K0, SN0_R_T2, PI_RT_COMPARE_A);
-    branch = sn0_emit_branch(p, SN0_OPC_BEQ, SN0_R_ZERO, SN0_R_ZERO);
-    sn0_patch_branch(p, branch, p->pos);
+    emit_block_end(p);
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_S0, SN0_R_T2, IO_SCRATCH_0 & 0xffff);
     sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_T2, 8);
-    sn0_emit_park(p);
+    sn0_emit_li(p, SN0_R_T2, 1);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_T2, 24);
+}
+
+/* Wait until the go word is non-zero; clobbers T2. */
+static void emit_wait_for_go(SN0Image *p)
+{
+    unsigned int loop = p->pos;
+    unsigned int branch;
+
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K1, SN0_R_T2, 32);
+    branch = sn0_emit_branch(p, SN0_OPC_BEQ, SN0_R_T2, SN0_R_ZERO);
+    sn0_patch_branch(p, branch, loop);
+}
+
+/* Poll a register from outside until it holds a value; 30 s at most. */
+static void wait_for_register(QTestState *qts, uint64_t addr, uint64_t value)
+{
+    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+
+    while (qtest_readq(qts, addr) != value) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+}
+
+/* Long enough for one instruction under any load, far inside the deadline. */
+#define HANDSHAKE_SETTLE_US     (300 * 1000)
+
+static QTestState *handshake_start(const SN0Image *image, const char *stem,
+                                   const char *thread, const char *trace)
+{
+    g_autofree char *image_path = sn0_image_write(image, stem);
+    QTestState *qts = qtest_initf(
+        "-M origin200,synthesized-firmware=off -smp 2 -bios %s "
+        "-accel tcg,thread=%s -S -no-shutdown "
+        "-trace enable=sgi_hub_rt_hold*,file=%s", image_path, thread, trace);
+
+    unlink(image_path);
+    return qts;
+}
+
+/* The one sgi_hub_rt_hold_end record carrying this hold's id. */
+static int trace_find_hold_end(char **records, uint64_t id)
+{
+    g_autofree char *suffix = g_strdup_printf(" id %" PRIu64, id);
+    size_t len = strlen(suffix);
+
+    for (int i = 0; records[i]; i++) {
+        size_t n = strlen(records[i]);
+
+        if (g_str_has_prefix(records[i], "sgi_hub_rt_hold_end ") &&
+            n >= len && !strcmp(records[i] + n - len, suffix)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static uint64_t trace_hold_id(char **records, int hold)
+{
+    uint64_t id = 0;
+
+    g_assert_cmpint(hold, >=, 0);
+    g_assert_nonnull(strstr(records[hold], " id "));
+    g_assert_cmpint(sscanf(strstr(records[hold], " id "), " id %" SCNu64,
+                           &id), ==, 1);
+    return id;
+}
+
+/*
+ * Slice B posts and parks. Slice A waits for that post, posts the same
+ * value and reads B's comparator back -- a match -- then records what it
+ * read once its block has ended. Nothing in this image answers a hold.
+ */
+static void build_first_match_image(SN0Image *p)
+{
+    unsigned int to_b = emit_handshake_start(p);
+    unsigned int loop = p->pos;
+    unsigned int branch;
+
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K0, SN0_R_T2, PI_RT_COMPARE_B);
+    branch = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_T2, SN0_R_T1);
+    sn0_patch_branch(p, branch, loop);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_T1, PI_RT_COMPARE_A);
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K0, SN0_R_T2, PI_RT_COMPARE_B);
+    emit_block_end(p);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_T2, 0);
+    emit_handshake_park(p);
+
+    sn0_patch_branch(p, to_b, p->pos);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_T1, PI_RT_COMPARE_B);
+    emit_handshake_park(p);
+}
+
+/*
+ * The first processor to find the match is the one that publishes what its
+ * partner waits for, so its match read parks nobody.
+ */
+static void test_first_processor_match_read_is_not_parked(const void *data)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = trace_file_create();
+    g_auto(GStrv) records = NULL;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    build_first_match_image(image);
+    qts = handshake_start(image, "sn0-hub-rt-first-match", "multi", path);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    g_assert_cmphex(wait_for_rendezvous_result(qts, 0), ==, RENDEZVOUS_VALUE);
+    qtest_quit(qts);
+
+    records = trace_file_take(path);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold", "cpu "), ==, 0);
+}
+
+/*
+ * Slice B posts first. Slice A waits for that post, posts, reads B's
+ * comparator back, gives its alive signal, marks word 16 and takes its post
+ * back -- a post B has not read. That write is what the model holds, so A
+ * sets word 0 only once the hold is over. With partner_reads, B waits for
+ * the go word, then polls A's comparator and records in word 8 whether it
+ * found the post; without, B never reads it.
+ */
+static void build_withdraw_image(SN0Image *p, bool partner_reads)
+{
+    unsigned int to_b = emit_handshake_start(p);
+    unsigned int loop = p->pos;
+    unsigned int branch;
+    unsigned int seen;
+
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K0, SN0_R_T2, PI_RT_COMPARE_B);
+    branch = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_T2, SN0_R_T1);
+    sn0_patch_branch(p, branch, loop);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_T1, PI_RT_COMPARE_A);
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K0, SN0_R_T2, PI_RT_COMPARE_B);
+    emit_first_processor_alive(p);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_T1, 16);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_ZERO, PI_RT_COMPARE_A);
+    emit_block_end(p);
+    sn0_emit_li(p, SN0_R_T2, 1);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_T2, 0);
+    emit_handshake_park(p);
+
+    sn0_patch_branch(p, to_b, p->pos);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_T1, PI_RT_COMPARE_B);
+    if (!partner_reads) {
+        emit_handshake_park(p);
+        return;
+    }
+    emit_wait_for_go(p);
+    sn0_emit_li(p, SN0_R_T0, 100000);
+    loop = p->pos;
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K0, SN0_R_T2, PI_RT_COMPARE_A);
+    seen = sn0_emit_branch(p, SN0_OPC_BEQ, SN0_R_T2, SN0_R_T1);
+    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_T0, SN0_R_T0, 0xffff);
+    branch = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_T0, SN0_R_ZERO);
+    sn0_patch_branch(p, branch, loop);
+    sn0_emit_li(p, SN0_R_T2, RENDEZVOUS_MISSED);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_T2, 8);
+    emit_handshake_park(p);
+    sn0_patch_branch(p, seen, p->pos);
+    sn0_emit_li(p, SN0_R_T2, RENDEZVOUS_SEEN);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_T2, 8);
+    emit_handshake_park(p);
 }
 
 /*
  * A hold traces with its partner and both clocks at each end, and the end
  * carries the hold's start, so its length is exact rather than rounded.
+ * Nothing answers this one, so it runs to its deadline.
  */
 static void test_rt_hold_traces_place_it_on_the_timeline(const void *data)
 {
     g_autofree SN0Image *image = g_new0(SN0Image, 1);
-    g_autofree char *image_path = NULL;
-    g_autofree char *path = NULL;
+    g_autofree char *path = trace_file_create();
     g_auto(GStrv) records = NULL;
     g_autofree char *wake = NULL;
     QTestState *qts;
     int64_t held_us = -1, start_ns = -1, end_ns = -1, virtual_ns = -1;
-    uint64_t id = 0, end_id = 0;
+    uint64_t id, end_id = 0;
     int partner = -1;
     int hold;
     int end;
@@ -2388,31 +2611,23 @@ static void test_rt_hold_traces_place_it_on_the_timeline(const void *data)
         return;
     }
 
-    build_unanswered_hold_image(image);
-    image_path = sn0_image_write(image, "sn0-hub-rt-hold-trace");
-    path = trace_file_create();
-    qts = qtest_initf(
-        "-M origin200,synthesized-firmware=off -smp 2 -bios %s "
-        "-accel tcg,thread=multi -S -no-shutdown "
-        "-trace enable=sgi_hub_rt_hold*,file=%s", image_path, path);
-    unlink(image_path);
-
+    build_withdraw_image(image, false);
+    qts = handshake_start(image, "sn0-hub-rt-hold-trace", "multi", path);
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
-    g_assert_cmphex(wait_for_rendezvous_result(qts, 1), ==, RENDEZVOUS_VALUE);
+    g_assert_cmphex(wait_for_rendezvous_result(qts, 0), ==, 1);
     qtest_quit(qts);
 
     records = trace_file_take(path);
     g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold",
-                                 "cpu 1 match hold: posted 0x24 read 0x24 "
-                                 "partner_cpu 0 realtime_ns "), ==, 1);
-    hold = trace_find(records, 0, "sgi_hub_rt_hold", "cpu 1 match hold: ");
-    g_assert_cmpint(hold, >=, 0);
+                                 "cpu 0 withdraw hold: posted 0x24 value 0x0 "
+                                 "partner_cpu 1 realtime_ns "), ==, 1);
+    hold = trace_find(records, 0, "sgi_hub_rt_hold", "cpu 0 withdraw hold: ");
     g_assert_nonnull(strstr(records[hold], " virtual_ns "));
-    g_assert_nonnull(strstr(records[hold], " id "));
-    g_assert_cmpint(sscanf(strstr(records[hold], " id "), " id %" SCNu64,
-                           &id), ==, 1);
-    end = trace_find(records, 0, "sgi_hub_rt_hold_end", "cpu 1 hold ");
-    g_assert_cmpint(end, >=, 0);
+    id = trace_hold_id(records, hold);
+    end = trace_find_hold_end(records, id);
+    g_assert_cmpint(end, >, hold);
+    g_assert_true(g_str_has_prefix(records[end],
+                                   "sgi_hub_rt_hold_end cpu 0 hold "));
     g_assert_nonnull(strstr(records[end], " after "));
     g_assert_cmpint(sscanf(strstr(records[end], " after "),
                            " after %" SCNd64 " us partner_cpu %d "
@@ -2421,7 +2636,7 @@ static void test_rt_hold_traces_place_it_on_the_timeline(const void *data)
                            " id %" SCNu64,
                            &held_us, &partner, &start_ns, &end_ns,
                            &virtual_ns, &end_id), ==, 6);
-    g_assert_cmpint(partner, ==, 0);
+    g_assert_cmpint(partner, ==, 1);
     g_assert_cmpint(end_ns, >=, start_ns);
     g_assert_cmpint((end_ns - start_ns) / 1000, ==, held_us);
     g_assert_cmpint(virtual_ns, >, 0);
@@ -2429,12 +2644,483 @@ static void test_rt_hold_traces_place_it_on_the_timeline(const void *data)
 
     /* Nothing answers: no release, and the last wake finds the deadline. */
     g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold_release",
-                                 "held_cpu 1 "), ==, 0);
-    wake = g_strdup_printf("cpu 1 id %" PRIu64 " wait_ms ", id);
+                                 "held_cpu 0 "), ==, 0);
+    wake = g_strdup_printf("cpu 0 id %" PRIu64 " wait_ms ", id);
     g_assert_cmpint(trace_find(records, hold, "sgi_hub_rt_hold_wake", wake),
                     >, hold);
     g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold_wake",
                                  " then timed out"), ==, 1);
+}
+
+/*
+ * Slice A takes its post back before slice B has read it, and that write is
+ * what parks A. B's late poll therefore still finds the post, B's read of it
+ * is what lets A go -- the partner's own access, not a timer -- and the
+ * withdrawal lands on that read.
+ */
+static void test_withdrawing_an_unread_post_waits_for_the_partner(
+    const void *data)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = trace_file_create();
+    g_autofree char *release = NULL;
+    g_auto(GStrv) records = NULL;
+    QTestState *qts;
+    uint64_t id;
+    int hold;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    build_withdraw_image(image, true);
+    qts = handshake_start(image, "sn0-hub-rt-withdraw-hold", "multi", path);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    g_assert_cmphex(wait_for_rendezvous_result(qts, 2), ==, RENDEZVOUS_VALUE);
+    g_usleep(HANDSHAKE_SETTLE_US);
+    /* A has issued its withdrawal and is parked on it. */
+    g_assert_cmphex(cpu_heartbeat(qts, 0), ==, 0);
+    qtest_writeq(qts, SN0_USER_MAILBOX + 32, 1);
+    g_assert_cmphex(wait_for_rendezvous_result(qts, 1), ==, RENDEZVOUS_SEEN);
+    g_assert_cmphex(wait_for_rendezvous_result(qts, 0), ==, 1);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_RT_COMPARE_A), ==, 0);
+    qtest_quit(qts);
+
+    records = trace_file_take(path);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold",
+                                 "cpu 0 withdraw hold: posted 0x24 value 0x0 "
+                                 "partner_cpu 1 realtime_ns "), ==, 1);
+    hold = trace_find(records, 0, "sgi_hub_rt_hold", "cpu 0 withdraw hold: ");
+    id = trace_hold_id(records, hold);
+    release = g_strdup_printf("cpu 1 held_cpu 0 kind withdraw id %" PRIu64
+                              " realtime_ns ", id);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold_release", release),
+                     ==, 1);
+    g_assert_cmpint(trace_find(records, hold, "sgi_hub_rt_hold_end",
+                               "cpu 0 hold answered after "), >, hold);
+    /* A gave its alive signal first, so B's match read held nobody. */
+    g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold", "alive hold"),
+                     ==, 0);
+}
+
+/*
+ * Slice A posts, then gives its alive signal only once the go word is
+ * written, and sets word 0. Slice B runs its side of the handshake as soon
+ * as A's post appears.
+ */
+static void build_alive_image(SN0Image *p)
+{
+    unsigned int to_b = emit_handshake_start(p);
+
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_T1, PI_RT_COMPARE_A);
+    emit_wait_for_go(p);
+    emit_first_processor_alive(p);
+    sn0_emit_li(p, SN0_R_T2, 1);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_T2, 0);
+    emit_handshake_park(p);
+
+    sn0_patch_branch(p, to_b, p->pos);
+    emit_second_processor_match(p);
+    emit_handshake_park(p);
+}
+
+/*
+ * The second processor that finds the match waits for the first
+ * processor's alive signal before running on, so the scratch register it
+ * reads next already carries the bit, whatever kept the first processor
+ * late. The first processor's raise of interrupt 113 is what lets it go.
+ */
+static void test_second_processor_match_waits_for_alive(const void *data)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = trace_file_create();
+    g_autofree char *release = NULL;
+    g_auto(GStrv) records = NULL;
+    QTestState *qts;
+    uint64_t id;
+    int hold;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    build_alive_image(image);
+    qts = handshake_start(image, "sn0-hub-rt-alive-hold", "multi", path);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_for_register(qts, HUB_LOCAL + PI_RT_COMPARE_B, RENDEZVOUS_VALUE);
+    g_usleep(HANDSHAKE_SETTLE_US);
+    /* B has had its match for all that time and has not run on. */
+    g_assert_cmphex(cpu_heartbeat(qts, 3), ==, 0);
+    qtest_writeq(qts, SN0_USER_MAILBOX + 32, 1);
+    g_assert_cmphex(wait_for_rendezvous_result(qts, 3), ==, 1);
+    g_assert_cmphex(wait_for_rendezvous_result(qts, 0), ==, 1);
+    g_assert_cmphex(cpu_heartbeat(qts, 1) & RENDEZVOUS_ALIVE, ==,
+                    RENDEZVOUS_ALIVE);
+    qtest_quit(qts);
+
+    records = trace_file_take(path);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold",
+                                 "cpu 1 alive hold: posted 0x24 value 0x24 "
+                                 "partner_cpu 0 realtime_ns "), ==, 1);
+    hold = trace_find(records, 0, "sgi_hub_rt_hold", "cpu 1 alive hold: ");
+    id = trace_hold_id(records, hold);
+    release = g_strdup_printf("cpu 0 held_cpu 1 kind alive id %" PRIu64
+                              " realtime_ns ", id);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold_release", release),
+                     ==, 1);
+    g_assert_cmpint(trace_find(records, hold, "sgi_hub_rt_hold_end",
+                               "cpu 1 hold answered after "), >, hold);
+}
+
+/* Slice A only parks; the test posts its value and disables it. */
+static void build_lone_second_image(SN0Image *p)
+{
+    unsigned int to_b = emit_handshake_start(p);
+
+    emit_handshake_park(p);
+    sn0_patch_branch(p, to_b, p->pos);
+    emit_second_processor_match(p);
+    emit_handshake_park(p);
+}
+
+/*
+ * With the first processor disabled nothing could ever give the alive
+ * signal, so the second processor's match read holds it not even until the
+ * deadline: it runs straight on and finds no bit.
+ */
+static void test_second_processor_not_held_without_a_first(const void *data)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = trace_file_create();
+    g_auto(GStrv) records = NULL;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    build_lone_second_image(image);
+    qts = handshake_start(image, "sn0-hub-rt-lone-second", "multi", path);
+    qtest_writeq(qts, HUB_LOCAL + PI_CPU_ENABLE_A, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A, RENDEZVOUS_VALUE);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    g_assert_cmphex(wait_for_rendezvous_result(qts, 3), ==, 1);
+    g_assert_cmphex(cpu_heartbeat(qts, 1), ==, 0);
+    qtest_quit(qts);
+
+    records = trace_file_take(path);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold", "cpu "), ==, 0);
+}
+
+#define SN0_HUB_NI_BASE         (SN0_HUB_LOCAL_BASE + 0x600000)
+
+/*
+ * The alive-image handshake twice, with a firmware-style local reset in
+ * between. Word 40 counts generations, and it and both counts survive the
+ * reset: B adds one to word 56 each time it records, and one to word 48
+ * when the scratch register it read carried the alive bit. A gives its
+ * signal when the go word reaches the generation's number, requests the
+ * reset only once B has recorded, and sets word 0 at the end of the second
+ * pass.
+ */
+static void build_alive_reset_image(SN0Image *p)
+{
+    unsigned int to_b = emit_handshake_start(p);
+    unsigned int loop;
+    unsigned int branch;
+    unsigned int second;
+
+    sn0_emit_li64(p, SN0_R_S2, SN0_HUB_NI_BASE);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_T1, PI_RT_COMPARE_A);
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K1, SN0_R_A0, 40);
+    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_A0, SN0_R_A1, 1);
+    loop = p->pos;
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K1, SN0_R_A2, 32);
+    branch = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_A2, SN0_R_A1);
+    sn0_patch_branch(p, branch, loop);
+    emit_first_processor_alive(p);
+    loop = p->pos;
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K1, SN0_R_A2, 56);
+    branch = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_A2, SN0_R_A1);
+    sn0_patch_branch(p, branch, loop);
+    second = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_A0, SN0_R_ZERO);
+    sn0_emit_li(p, SN0_R_A3, 1);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_A3, 40);
+    sn0_emit_li(p, SN0_R_A3, NI_PORT_RESET_WARM | NI_PORT_RESET_LOCAL);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_S2, SN0_R_A3, NI_PORT_RESET & 0xffff);
+    emit_handshake_park(p);
+    sn0_patch_branch(p, second, p->pos);
+    sn0_emit_li(p, SN0_R_A3, 1);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_A3, 0);
+    emit_handshake_park(p);
+
+    sn0_patch_branch(p, to_b, p->pos);
+    loop = p->pos;
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K0, SN0_R_T2, PI_RT_COMPARE_A);
+    branch = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_T2, SN0_R_T1);
+    sn0_patch_branch(p, branch, loop);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_T1, PI_RT_COMPARE_B);
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K0, SN0_R_T2, PI_RT_COMPARE_A);
+    emit_block_end(p);
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_S0, SN0_R_T2, IO_SCRATCH_0 & 0xffff);
+    sn0_emit_srl(p, SN0_R_A0, SN0_R_T2, 23);
+    sn0_emit_i(p, SN0_OPC_ANDI, SN0_R_A0, SN0_R_A0, 1);
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K1, SN0_R_A1, 48);
+    sn0_emit_addu(p, SN0_R_A1, SN0_R_A1, SN0_R_A0);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_A1, 48);
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K1, SN0_R_A2, 56);
+    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_A2, SN0_R_A2, 1);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_A2, 56);
+    emit_handshake_park(p);
+}
+
+/* One generation: B has its match and is parked, then A may go. */
+static void alive_reset_generation(QTestState *qts, uint64_t generation)
+{
+    wait_for_register(qts, HUB_LOCAL + PI_RT_COMPARE_B, RENDEZVOUS_VALUE);
+    g_usleep(HANDSHAKE_SETTLE_US);
+    g_assert_cmphex(qtest_readq(qts, SN0_USER_MAILBOX + 56), ==,
+                    generation - 1);
+    qtest_writeq(qts, SN0_USER_MAILBOX + 32, generation);
+}
+
+/*
+ * "Before the first processor's first alive signal" is counted from reset,
+ * and the firmware resets the machine several times in a boot: after the
+ * guest's own local reset, the second processor waits again.
+ */
+static void test_alive_wait_returns_after_firmware_reset(const void *data)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = trace_file_create();
+    g_auto(GStrv) records = NULL;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    build_alive_reset_image(image);
+    qts = handshake_start(image, "sn0-hub-rt-alive-reset", "multi", path);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    alive_reset_generation(qts, 1);
+    qtest_qmp_eventwait(qts, "RESET");
+    alive_reset_generation(qts, 2);
+    g_assert_cmphex(wait_for_rendezvous_result(qts, 0), ==, 1);
+    g_assert_cmphex(qtest_readq(qts, SN0_USER_MAILBOX + 56), ==, 2);
+    g_assert_cmphex(qtest_readq(qts, SN0_USER_MAILBOX + 48), ==, 2);
+    qtest_quit(qts);
+
+    records = trace_file_take(path);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold",
+                                 "cpu 1 alive hold: "), ==, 2);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold_release",
+                                 "cpu 0 held_cpu 1 kind alive "), ==, 2);
+}
+
+/*
+ * Slice A gives its alive signal and parks. Slice B waits for word 32, then
+ * runs its side of the handshake.
+ */
+static void build_alive_go_image(SN0Image *p)
+{
+    unsigned int to_b = emit_handshake_start(p);
+
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_T1, PI_RT_COMPARE_A);
+    emit_first_processor_alive(p);
+    sn0_emit_li(p, SN0_R_T2, 1);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_T2, 0);
+    emit_handshake_park(p);
+
+    sn0_patch_branch(p, to_b, p->pos);
+    emit_wait_for_go(p);
+    emit_second_processor_match(p);
+    emit_handshake_park(p);
+}
+
+static void wait_for_migration(QTestState *qts)
+{
+    g_test_timer_start();
+    for (;;) {
+        QDict *ret = qtest_qmp_assert_success_ref(
+            qts, "{'execute':'query-migrate'}");
+        g_autofree char *status = g_strdup(qdict_get_try_str(ret, "status"));
+
+        qobject_unref(ret);
+        g_assert_cmpstr(status, !=, "failed");
+        if (status && g_str_equal(status, "completed")) {
+            return;
+        }
+        g_assert(g_test_timer_elapsed() < 30);
+        g_usleep(1000);
+    }
+}
+
+/*
+ * The first processor gave its alive signal on the source. Whether it has
+ * cannot be read back from the registers -- firmware clears the bit again
+ * later -- so the state crosses: on the destination the second processor's
+ * match read does not wait for a signal that has already been given.
+ */
+static void test_alive_signal_survives_migration(const void *data)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *image_path = NULL;
+    g_autofree char *path = trace_file_create();
+    g_autofree char *tmpdir = NULL;
+    g_autofree char *uri = NULL;
+    g_auto(GStrv) records = NULL;
+    QTestState *from, *to;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    build_alive_go_image(image);
+    image_path = sn0_image_write(image, "sn0-hub-rt-alive-migrate");
+    tmpdir = g_dir_make_tmp("sn0-hub-migrate-XXXXXX", NULL);
+    g_assert_nonnull(tmpdir);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpdir);
+
+    from = qtest_initf(
+        "-M origin200,synthesized-firmware=off -smp 2 -bios %s "
+        "-accel tcg,thread=multi -S -no-shutdown", image_path);
+    to = qtest_initf(
+        "-M origin200,synthesized-firmware=off -smp 2 -bios %s "
+        "-accel tcg,thread=multi -S -no-shutdown -incoming %s "
+        "-trace enable=sgi_hub_rt_hold*,file=%s", image_path, uri, path);
+    unlink(image_path);
+
+    qtest_qmp_assert_success(from, "{'execute':'cont'}");
+    g_assert_cmphex(wait_for_rendezvous_result(from, 0), ==, 1);
+    qtest_qmp_assert_success(from, "{'execute':'stop'}");
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
+    wait_for_migration(from);
+    wait_for_migration(to);
+
+    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+    qtest_writeq(to, SN0_USER_MAILBOX + 32, 1);
+    g_assert_cmphex(wait_for_rendezvous_result(to, 3), ==, 1);
+    g_assert_cmphex(cpu_heartbeat(to, 1) & RENDEZVOUS_ALIVE, ==,
+                    RENDEZVOUS_ALIVE);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpdir);
+
+    records = trace_file_take(path);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold", "cpu "), ==, 0);
+}
+
+/*
+ * Round-robin execution runs one processor at a time and keeps its own
+ * slice handoff, so neither an unread withdrawal nor a match read ahead of
+ * the alive signal -- both of which hold under multi-threaded execution --
+ * parks anybody there.
+ */
+static void test_round_robin_holds_nobody(const void *data)
+{
+    const char *shape = data;
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = trace_file_create();
+    g_auto(GStrv) records = NULL;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    if (g_str_equal(shape, "withdraw")) {
+        build_withdraw_image(image, false);
+    } else {
+        build_alive_image(image);
+    }
+    qts = handshake_start(image, "sn0-hub-rt-round-robin", "single", path);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    if (!g_str_equal(shape, "withdraw")) {
+        /* Let B reach its match read ahead of the signal, as above. */
+        wait_for_register(qts, HUB_LOCAL + PI_RT_COMPARE_B, RENDEZVOUS_VALUE);
+        g_usleep(HANDSHAKE_SETTLE_US);
+        qtest_writeq(qts, SN0_USER_MAILBOX + 32, 1);
+    }
+    g_assert_cmphex(wait_for_rendezvous_result(qts, 0), ==, 1);
+    qtest_quit(qts);
+
+    records = trace_file_take(path);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold", "cpu "), ==, 0);
+}
+
+/*
+ * Slice A takes back a post slice B never reads, so A's withdrawal stays
+ * withheld for the hold's full two seconds. The hold is host scheduling and
+ * does not migrate, but the withdrawal is a write the guest has made: a
+ * migration inside that window must arrive with it landed. The source's
+ * trace shows the hold did not simply run out first.
+ */
+static void test_a_withheld_withdrawal_migrates_landed(const void *data)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *image_path = NULL;
+    g_autofree char *path = trace_file_create();
+    g_autofree char *tmpdir = NULL;
+    g_autofree char *uri = NULL;
+    g_auto(GStrv) records = NULL;
+    QTestState *from, *to;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    build_withdraw_image(image, false);
+    image_path = sn0_image_write(image, "sn0-hub-rt-withdraw-migrate");
+    tmpdir = g_dir_make_tmp("sn0-hub-migrate-XXXXXX", NULL);
+    g_assert_nonnull(tmpdir);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpdir);
+
+    from = qtest_initf(
+        "-M origin200,synthesized-firmware=off -smp 2 -bios %s "
+        "-accel tcg,thread=multi -S -no-shutdown "
+        "-trace enable=sgi_hub_rt_hold*,file=%s", image_path, path);
+    to = qtest_initf(
+        "-M origin200,synthesized-firmware=off -smp 2 -bios %s "
+        "-accel tcg,thread=multi -S -no-shutdown -incoming %s",
+        image_path, uri);
+    unlink(image_path);
+
+    qtest_qmp_assert_success(from, "{'execute':'cont'}");
+    g_assert_cmphex(wait_for_rendezvous_result(from, 2), ==,
+                    RENDEZVOUS_VALUE);
+    /* Well inside the two seconds: A executes a single store after the mark. */
+    g_usleep(200 * 1000);
+    g_assert_cmphex(cpu_heartbeat(from, 0), ==, 0);
+
+    qtest_qmp_assert_success(from, "{'execute':'stop'}");
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
+    wait_for_migration(from);
+    wait_for_migration(to);
+
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + PI_RT_COMPARE_A), ==, 0);
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL + PI_RT_COMPARE_B), ==,
+                    RENDEZVOUS_VALUE);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpdir);
+
+    records = trace_file_take(path);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold",
+                                 "cpu 0 withdraw hold: "), ==, 1);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold_wake",
+                                 " then timed out"), ==, 0);
 }
 
 /*
@@ -5757,6 +6443,24 @@ int main(int argc, char **argv)
                         test_a_modify_that_changes_nothing_kicks_nobody);
     qtest_add_data_func("sn0/hub/pend1-credit-traces-set-and-spend", NULL,
                         test_pend1_credit_traces_set_and_spend);
+    qtest_add_data_func("sn0/hub/first-processor-match-read-is-not-parked",
+                        NULL, test_first_processor_match_read_is_not_parked);
+    qtest_add_data_func("sn0/hub/withdrawing-an-unread-post-waits", NULL,
+                        test_withdrawing_an_unread_post_waits_for_the_partner);
+    qtest_add_data_func("sn0/hub/second-processor-match-waits-for-alive", NULL,
+                        test_second_processor_match_waits_for_alive);
+    qtest_add_data_func("sn0/hub/second-processor-not-held-without-a-first",
+                        NULL, test_second_processor_not_held_without_a_first);
+    qtest_add_data_func("sn0/hub/alive-wait-returns-after-firmware-reset",
+                        NULL, test_alive_wait_returns_after_firmware_reset);
+    qtest_add_data_func("sn0/hub/alive-signal-survives-migration", NULL,
+                        test_alive_signal_survives_migration);
+    qtest_add_data_func("sn0/hub/round-robin-holds-nobody/withdraw",
+                        "withdraw", test_round_robin_holds_nobody);
+    qtest_add_data_func("sn0/hub/round-robin-holds-nobody/alive", "alive",
+                        test_round_robin_holds_nobody);
+    qtest_add_data_func("sn0/hub/withheld-withdrawal-migrates-landed", NULL,
+                        test_a_withheld_withdrawal_migrates_landed);
     qtest_add_data_func("sn0/hub/rt-hold-traces-place-it-on-the-timeline",
                         NULL, test_rt_hold_traces_place_it_on_the_timeline);
     qtest_add_data_func("sn0/hub/rt-hold-release-and-wake-trace", NULL,

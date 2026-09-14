@@ -191,21 +191,50 @@ each of a node's two processors posts the same value to its own
 comparator, with its counter interrupt off, and polls the other's.
 The second to arrive finds the match at once and withdraws its post
 a little later; the first, if its thread was not running across that
-window, polls on to its budget and disables its partner. So a
-processor that has posted and reads the other comparator is held at
-its next block boundary in two cases: reading its own value back
-before the other processor has read its post, until that processor
-does; and re-reading anything else with no write in between, once per
-partner write, until the partner writes again. A hold also ends when
-the partner can no longer run, or after two seconds. It is queued
-work on the reader's own thread, outside the execution loop and with
-the big lock released; it waits on that vCPU's halt condition, so a
-stop, queued work or a deliverable interrupt ends it. A Hub holds at
-most one processor at a time, and a hold changes no register value,
-only when the reader resumes. The limitation that leaves: any
-multi-threaded guest that posts a non-zero comparator with that
-comparator's interrupt off and polls its partner's can be delayed by up
-to two seconds per partner write.
+window, polls on to its budget and disables its partner. A second race
+follows the match. The node's first processor -- slice A, in every
+traced boot -- then gives an alive signal: it sets bit 23 of I/O
+scratch register 0 and raises interrupt 113. The second processor's
+next accesses test for that signal, and if it gets there first it
+steps one exchange out of the counting handshake that follows, and
+the node is disabled much later.
+
+The model holds three things, each at the holder's next block
+boundary and never so that a register takes a value it would not
+otherwise have taken:
+
+- The second processor, reading its own posted value back from the
+  first processor's comparator before the first has given its alive
+  signal since reset, is held until the signal. It is held at the
+  match read because a hold lets the access that takes it complete:
+  holding it at the scratch read would hand it the unset bit first.
+  Whether the signal has been given is kept from reset and migrated,
+  because firmware clears the bit again much later.
+- The first processor is never held at its match; it is the one that
+  must publish. A processor that writes zero over a post the other has
+  not read is held until the other reads it, and the value it wrote
+  lands on that read. On hardware the other processor, running
+  continuously, reads the post before the write; the held processor
+  cannot read the old value back, because a read of its own comparator
+  lands the write first. Only a write of zero over a standing post is
+  held: firmware steps these registers through progress codes nothing
+  waits on.
+- A processor that has posted and re-reads anything but its own value,
+  with no write in between, is held once per partner write until the
+  partner writes again.
+
+A hold also ends when the partner can no longer run, or after two
+seconds. It is queued work on the held processor's own thread,
+outside the execution loop and with the big lock released; it waits
+on that vCPU's halt condition, so a stop, queued work or a
+deliverable interrupt ends it. A Hub holds at most one processor at a
+time, and round-robin execution holds nobody. Migration lands a
+withheld withdrawal before saving, so the destination sees what a
+machine with no hold would have had. The limitation that leaves: any
+multi-threaded guest that uses the comparators this way, with their
+interrupts off, can be delayed by up to two seconds per partner write,
+two seconds when it clears its own post, and -- on a second processor
+before an alive signal that never comes -- two seconds at its match.
 
 Memory and directory
 ====================
