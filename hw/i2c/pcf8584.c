@@ -430,9 +430,13 @@ static void pcf8584_wire_event(void *opaque, const I2CWireEvent *event)
          * Several adapters can have queued the same controller address.
          * Let one lower-numbered adapter open the bus first; the peer START
          * event returns every later adapter to this queue for the next STOP.
+         * A fresh START written inside the bus-free time goes at its end,
+         * ahead of every released one: the processor a grant just named is
+         * primed to write exactly then, and a tie would arbitrate two equal
+         * address bytes down to a real LAB for one of them.
          */
         s->wire_start_waiting = false;
-        pcf8584_wire_begin_start_at(s, s->wire_free_at + s->wire_master);
+        pcf8584_wire_begin_start_at(s, s->wire_free_at + 1 + s->wire_master);
     }
 }
 

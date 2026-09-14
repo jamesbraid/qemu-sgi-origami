@@ -685,6 +685,52 @@ static void test_waiting_start_runs_after_grant(Fixture *f,
     stop_transfer(f, 0);
 }
 
+/*
+ * The processor the overtaking grant named is primed to write START the
+ * moment that grant stops, inside the bus-free time that also releases the
+ * queued START. A fresh START is placed at the bus-free instant, so a
+ * released START placed there too would arbitrate an identical address
+ * byte down to the first differing data bit and hand one processor a LAB
+ * for a byte the firmware does not retry. The released START yields and
+ * takes the wire after the fresh transfer.
+ */
+static void test_released_start_yields_to_fresh_start(Fixture *f,
+                                                      gconstpointer unused)
+{
+    I2CBus *bus = sgi_sn0_module_management_get_bus(f->module);
+    int64_t free_at;
+
+    request_start_during_grant(f);
+    while (f->module->grant_active) {
+        advance_to(virtual_time + POLL_STEP_NS);
+    }
+    g_assert_false(i2c_bus_busy(bus));
+    g_assert_true(f->adapter[0]->wire_active);
+    free_at = f->adapter[0]->wire_free_at;
+    g_assert_cmpint(virtual_time, <, free_at);
+
+    write_reg(f, 1, CTRL_REG, CTL_RUN);
+    write_reg(f, 1, DATA_REG, SGI_O2000_NVRAM_FIRST_ADDR << 1);
+    write_reg(f, 1, CTRL_REG, CTL_START);
+    g_assert_true(f->adapter[1]->wire_active);
+
+    advance_to(free_at + POLL_STEP_NS);
+    g_assert_true(f->adapter[1]->wire_active);
+    g_assert_false(f->adapter[0]->wire_active);
+    g_assert_true(f->adapter[0]->wire_start_waiting);
+    g_assert_cmphex(read_reg(f, 0, CTRL_REG) & PCF8584_STS_LAB, ==, 0);
+
+    g_assert_true(wait_done(f, 1));
+    g_assert_cmphex(read_reg(f, 1, CTRL_REG) &
+                    (PCF8584_STS_LAB | PCF8584_STS_LRB), ==, 0);
+    stop_transfer(f, 1);
+
+    g_assert_true(wait_done(f, 0));
+    g_assert_cmphex(read_reg(f, 0, CTRL_REG) &
+                    (PCF8584_STS_LAB | PCF8584_STS_LRB), ==, 0);
+    stop_transfer(f, 0);
+}
+
 /* A staged START owns tBUF before its lines make the bus busy. */
 static void test_start_owns_bus_free_time(Fixture *f, gconstpointer unused)
 {
@@ -1240,7 +1286,10 @@ int main(int argc, char **argv)
     g_test_add("/sgi-o2000-module-management/shared/stale-start-runs-late",
                Fixture, NULL, setup, test_waiting_start_runs_after_grant,
                teardown);
-    g_test_add("/sgi-sn0-module-management/shared/start-owns-tbuf", Fixture,
+    g_test_add("/sgi-o2000-module-management/shared/released-start-yields",
+               Fixture, NULL, setup, test_released_start_yields_to_fresh_start,
+               teardown);
+    g_test_add("/sgi-o2000-module-management/shared/start-owns-tbuf", Fixture,
                NULL, setup, test_start_owns_bus_free_time, teardown);
     g_test_add("/sgi-sn0-module-management/shared/waiting-starts-serialize",
                Fixture, NULL, setup, test_waiting_starts_serialize, teardown);
