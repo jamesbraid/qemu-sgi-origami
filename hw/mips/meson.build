@@ -37,7 +37,8 @@ mips_ss.add(when: 'CONFIG_SN0_XTALK_ASSEMBLY_TEST',
 # also selected on this fork's mips64 target, so either config would do.
 mips_ss.add(when: 'CONFIG_SGI_SN0', if_true: files('sgi/sn-promdata.c'))
 mips_ss.add(when: 'CONFIG_SGI_SN1',
-            if_true: files('sgi/sn1.c', 'sn1-origin300-model.c'))
+            if_true: files('sgi/sn1.c', 'sgi/sn1-node.c',
+                           'sn1-origin300-model.c'))
 subdir('sgi')
 mips_ss.add(when: 'CONFIG_FULOONG', if_true: files('fuloong2e.c'))
 mips_ss.add(when: 'CONFIG_MIPS_BOSTON', if_true: files('boston.c'))

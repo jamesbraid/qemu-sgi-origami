@@ -8,8 +8,6 @@
 #include "qapi/visitor.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
-#include "block/block-global-state.h"
-#include "block/block-io.h"
 #include "qemu/datadir.h"
 #include "qemu/error-report.h"
 #include "qemu/log.h"
@@ -21,11 +19,8 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/mips/sn1.h"
-#include "hw/misc/sgi-bedrock.h"
 #include "hw/misc/sgi-bedrock-flash.h"
-#include "hw/misc/sgi-bedrock-pi.h"
 #include "hw/misc/sgi-ioc3.h"
-#include "hw/misc/sgi-l1.h"
 #include "hw/pci/pci.h"
 #include "hw/pci-host/sgi-xbridge.h"
 #include "migration/vmstate.h"
@@ -37,27 +32,24 @@
 #include "cpu.h"
 #include "cpu-qom.h"
 #include "sn1-model.h"
+#include "sn1-node.h"
 
 #define SN1_CONFIG0_RESET_INPUT UINT32_C(0x009aa985)
 
 /*
  * Addresses the generated model does not carry. The model owns the payload
- * views, the register windows and the node's memory; the boot spaces and the
- * two back doors below are the machine's own, so they stay here until the
- * model describes them.
+ * views, the register windows and the node's memory; the boot spaces the
+ * node's own boot flash answers for, and the machine's PROM-loading
+ * fallback below, are still decided here until the model describes them.
+ * sgi-sn1-node.c holds the ones its own regions (Bedrock's back doors, the
+ * boot flash's own two mmio spaces) use instead.
  */
 #define SN1_SPACE_HUB UINT64_C(0x10000000000)
-#define SN1_HUB_LOCAL_BOOT (SN1_SPACE_HUB + UINT64_C(0x18000000))
 #define SN1_BOARD_ID_OFFSET UINT64_C(0x4000000)
 #define SN1_BOARD_ID_VALUE UINT64_C(0x8000)
 #define SN1_HUB_LOCAL_HIGH_BOOT (SN1_SPACE_HUB + UINT64_C(0x1fc00000))
-#define SN1_HUB_REMOTE_BOOT (SN1_SPACE_HUB + UINT64_C(0x38000000))
 #define SN1_HUB_REMOTE_FLASH (SN1_SPACE_HUB + UINT64_C(0x3a000000))
-#define SN1_HUB_ECC (SN1_SPACE_HUB + UINT64_C(0x140000000))
-#define SN1_HUB_DIRECTORY (SN1_SPACE_HUB + UINT64_C(0x1c0000000))
 #define SN1_PROM_RESET UINT64_C(0x1fc00000)
-
-#define SN1_MIPS_HARDWARE_IRQ_OFFSET 2
 
 /*
  * The controller holds one identification record per file, in order. The
@@ -113,7 +105,7 @@ static void sn1_set_identity_records(Object *obj, Visitor *v,
     *slot = replacement;
 }
 
-static void sn1_set_l1_identity_records(SN1MachineState *s)
+void sn1_set_l1_identity_records(SN1MachineState *s, DeviceState *l1)
 {
     for (size_t i = 0; i < ARRAY_SIZE(sn1_identity_records); i++) {
         const SN1IdentityRecords *records = &sn1_identity_records[i];
@@ -127,7 +119,7 @@ static void sn1_set_l1_identity_records(SN1MachineState *s)
         for (; file; file = file->next) {
             qlist_append_str(files, file->value);
         }
-        qdev_prop_set_array(s->l1, records->name, files);
+        qdev_prop_set_array(l1, records->name, files);
     }
 }
 
@@ -135,7 +127,6 @@ static void sn1_machine_finalize(Object *obj)
 {
     SN1MachineState *s = SN1_MACHINE(obj);
 
-    g_free(s->cpu);
     g_free(s->prom_views);
     for (size_t i = 0; i < ARRAY_SIZE(sn1_identity_records); i++) {
         qapi_free_strList(*sn1_identity_slot(obj, (void *)
@@ -152,21 +143,6 @@ static void sn1_cpu_reset(void *opaque)
                                     SN1_CONFIG0_RESET_INPUT);
 }
 
-static target_ulong sn1_store_transaction(MIPSCPU *cpu, MemoryRegion *mr,
-                                          hwaddr offset,
-                                          target_ulong value, unsigned size,
-                                          void *opaque)
-{
-    SN1MachineState *s = opaque;
-    SGIBedrockState *bedrock = SGI_BEDROCK(s->bedrock);
-
-    (void)cpu;
-    if (mr == &bedrock->md.ecc_mmio) {
-        return sgi_bedrock_md_ecc_store_value(offset, value, size);
-    }
-    return value;
-}
-
 static void sn1_machine_reset(MachineState *machine, ResetType type)
 {
     CPUState *cs;
@@ -176,30 +152,6 @@ static void sn1_machine_reset(MachineState *machine, ResetType type)
         sn1_cpu_reset(cs);
     }
     qemu_devices_reset(type);
-}
-
-static void sn1_create_cpus(SN1MachineState *s, MachineState *machine)
-{
-    s->cpu = g_new0(CPUState *, sn1_origin300_model.cpu_count);
-    for (unsigned int i = 0; i < sn1_origin300_model.cpu_count; i++) {
-        g_autofree char *name = g_strdup_printf("cpu%u", i);
-        DeviceState *cpu_dev = qdev_new(machine->cpu_type);
-        MIPSCPU *cpu = MIPS_CPU(cpu_dev);
-
-        object_property_add_child(OBJECT(machine), name, OBJECT(cpu_dev));
-        object_unref(OBJECT(cpu_dev));
-        object_property_set_link(OBJECT(cpu_dev), "memory",
-                                 OBJECT(get_system_memory()), &error_abort);
-        qdev_connect_clock_in(cpu_dev, "clk-in", s->cpu_refclk);
-        object_property_set_bool(OBJECT(cpu_dev), "big-endian", true,
-                                 &error_abort);
-        cpu->store_transaction = sn1_store_transaction;
-        cpu->store_transaction_opaque = s;
-        qdev_realize(cpu_dev, NULL, &error_fatal);
-        cpu_mips_irq_init_cpu(cpu);
-        cpu_mips_clock_init(cpu);
-        s->cpu[i] = CPU(cpu);
-    }
 }
 
 static void sn1_flash_reject_write(hwaddr offset, uint64_t value)
@@ -299,98 +251,6 @@ static void sn1_init_prom_view(SN1PromView *view, MachineState *machine,
                           view, name, sn1_origin300_model.prom_size);
 }
 
-static BlockDriverState *sn1_open_flash_slice(BlockDriverState *backing,
-                                               int64_t offset, int flags,
-                                               Error **errp)
-{
-    QDict *options = qdict_new();
-
-    qdict_put_str(options, "driver", "raw");
-    qdict_put_str(options, "file", bdrv_get_node_name(backing));
-    qdict_put_int(options, "offset", offset);
-    qdict_put_int(options, "size", SGI_BEDROCK_FLASH_PART_SIZE);
-    return bdrv_open(NULL, NULL, options, flags, errp);
-}
-
-static MemoryRegion *sn1_create_boot_flash(SN1MachineState *s,
-                                           MachineState *machine,
-                                           Error **errp)
-{
-    DriveInfo *dinfo = drive_get(IF_PFLASH, 0, 0);
-    DriveInfo *extra = drive_get(IF_PFLASH, 0, 1);
-    BlockBackend *blk;
-    BlockDriverState *backing;
-    BlockDriverState *lower;
-    BlockDriverState *upper;
-    int flags;
-    SysBusDevice *flash;
-
-    if (!dinfo && !extra) {
-        return NULL;
-    }
-    if (!dinfo || extra) {
-        error_setg(errp, "origin300 accepts one 16 MiB pflash image");
-        return NULL;
-    }
-
-    blk = blk_by_legacy_dinfo(dinfo);
-    backing = blk_bs(blk);
-    if (strcmp(bdrv_get_format_name(backing), "raw")) {
-        error_setg(errp, "origin300 pflash image must use raw format");
-        return NULL;
-    }
-    if (blk_getlength(blk) != SGI_BEDROCK_FLASH_SIZE) {
-        error_setg(errp, "origin300 pflash image must be exactly 16 MiB");
-        return NULL;
-    }
-
-    flags = bdrv_get_flags(backing) & (BDRV_O_RDWR | BDRV_O_INACTIVE);
-    lower = sn1_open_flash_slice(backing, 0, flags, errp);
-    if (!lower) {
-        return NULL;
-    }
-    upper = sn1_open_flash_slice(backing, SGI_BEDROCK_FLASH_PART_SIZE, flags,
-                                 errp);
-    if (!upper) {
-        bdrv_unref(lower);
-        return NULL;
-    }
-
-    if (blk_replace_bs(blk, lower, errp) < 0) {
-        bdrv_unref(upper);
-        bdrv_unref(lower);
-        return NULL;
-    }
-    bdrv_unref(lower);
-
-    s->boot_flash = qdev_new(TYPE_SGI_BEDROCK_FLASH);
-    object_property_add_child(OBJECT(machine), "boot-flash",
-                              OBJECT(s->boot_flash));
-    if (!qdev_prop_set_drive_err(s->boot_flash, "drive0", blk, errp) ||
-        !object_property_set_str(OBJECT(s->boot_flash), "drive1",
-                                 bdrv_get_node_name(upper), errp)) {
-        bdrv_unref(upper);
-        return NULL;
-    }
-    bdrv_unref(upper);
-    flash = SYS_BUS_DEVICE(s->boot_flash);
-    if (!sysbus_realize_and_unref(flash, errp)) {
-        return NULL;
-    }
-
-    /*
-     * One region per boot space, each the whole 128 MiB window rather than a
-     * 16 MiB selection: reads and writes decode differently inside it, so the
-     * alternate selection is a read window within the space and a store is
-     * addressed from the space's base. Mapping the selections separately would
-     * put every write offset 32 MiB out.
-     */
-    sysbus_mmio_map(flash, 0, SN1_HUB_LOCAL_BOOT);
-    sysbus_mmio_map(flash, 1, SN1_HUB_REMOTE_BOOT);
-    /* The processor executes position zero through read-only views. */
-    return SGI_BEDROCK_FLASH(s->boot_flash)->flash_mmio[0];
-}
-
 static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
                           Error **errp)
 {
@@ -436,7 +296,7 @@ static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
         return false;
     }
 
-    stored = sn1_create_boot_flash(s, machine, errp);
+    stored = sn1_node_create_boot_flash(SN1_NODE(s->node), machine, errp);
     if (errp && *errp) {
         return false;
     }
@@ -503,117 +363,6 @@ static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
     return true;
 }
 
-static void sn1_create_bedrock(SN1MachineState *s, MachineState *machine)
-{
-    const SN1MachineModel *model = &sn1_origin300_model;
-    Chardev *l1_console = serial_hd(0);
-    MemoryRegion *system = get_system_memory();
-    MemoryRegion *l1_uart;
-    DeviceState *l1_uart_dev;
-    MemoryRegion *bedrock_widget;
-    SysBusDevice *bedrock;
-
-    s->l1 = qdev_new(TYPE_SGI_L1);
-    object_property_add_child(OBJECT(machine), "l1", OBJECT(s->l1));
-    if (l1_console) {
-        qdev_prop_set_chr(s->l1, "chardev", l1_console);
-    }
-    sn1_set_l1_identity_records(s);
-    /* The revision every retained Origin 300 capture pairs with PROM 6.210. */
-    qdev_prop_set_int32(s->l1, "revision-major", 1);
-    qdev_prop_set_int32(s->l1, "revision-minor", 18);
-    qdev_prop_set_int32(s->l1, "revision-patch", 5);
-    qdev_realize(s->l1, NULL, &error_fatal);
-    object_unref(OBJECT(s->l1));
-
-    l1_uart_dev = qdev_new(TYPE_SGI_L1_UART);
-    object_property_add_child(OBJECT(machine), "l1-uart",
-                              OBJECT(l1_uart_dev));
-    object_property_set_link(OBJECT(l1_uart_dev), "controller",
-                             OBJECT(s->l1), &error_abort);
-    sysbus_realize(SYS_BUS_DEVICE(l1_uart_dev), &error_fatal);
-    object_unref(OBJECT(l1_uart_dev));
-    l1_uart = sysbus_mmio_get_region(SYS_BUS_DEVICE(l1_uart_dev), 0);
-
-    s->bedrock = qdev_new(TYPE_SGI_BEDROCK);
-    object_property_add_child(OBJECT(machine), "bedrock", OBJECT(s->bedrock));
-    qdev_prop_set_uint32(s->bedrock, "processor-count", model->cpu_count);
-    qdev_prop_set_uint8(s->bedrock, "revision", model->bedrock_revision);
-    qdev_prop_set_uint8(s->bedrock, "local-region",
-                        model->bedrock_local_region);
-    qdev_prop_set_uint8(s->bedrock, "initiator-region",
-                        model->bedrock_initiator_region);
-    object_property_set_link(OBJECT(s->bedrock), "dma-memory", OBJECT(system),
-                             &error_abort);
-    object_property_set_link(OBJECT(s->bedrock), "node-memory",
-                             OBJECT(machine->ram), &error_abort);
-    object_property_set_link(OBJECT(s->bedrock), "l1-uart", OBJECT(l1_uart),
-                             &error_abort);
-
-    s->xbridge = qdev_new(TYPE_SGI_XBRIDGE);
-    object_property_add_child(OBJECT(machine), "xbridge", OBJECT(s->xbridge));
-    qdev_prop_set_uint8(s->xbridge, "host-port", model->xbridge_host_port);
-    bedrock_widget = sysbus_mmio_get_region(SYS_BUS_DEVICE(s->bedrock), 2);
-    object_property_set_link(OBJECT(s->xbridge), "fabric",
-                             OBJECT(bedrock_widget), &error_abort);
-    for (size_t i = 0; i < model->num_xbridge_widgets; i++) {
-        unsigned int widget = model->xbridge_widgets[i];
-        g_autofree char *property = g_strdup_printf("widget-%u", widget);
-
-        object_property_set_link(OBJECT(s->bedrock), property,
-                                 OBJECT(sgi_xbridge_widget_view(
-                                     SGI_XBRIDGE(s->xbridge), widget)),
-                                 &error_abort);
-    }
-
-    sysbus_realize(SYS_BUS_DEVICE(s->bedrock), &error_fatal);
-    object_unref(OBJECT(s->bedrock));
-    sysbus_realize(SYS_BUS_DEVICE(s->xbridge), &error_fatal);
-    object_unref(OBJECT(s->xbridge));
-    bedrock = SYS_BUS_DEVICE(s->bedrock);
-
-    memory_region_add_subregion(system, model->xtalk_address,
-                                sysbus_mmio_get_region(bedrock, 1));
-    memory_region_add_subregion_overlap(system, model->bedrock_local_address,
-                                        sysbus_mmio_get_region(bedrock, 0), 1);
-    memory_region_init_alias(&s->bedrock_node, OBJECT(machine),
-                             "sn1.bedrock.node0",
-                             sysbus_mmio_get_region(bedrock, 0), 0,
-                             model->bedrock_node.size);
-    memory_region_add_subregion_overlap(system, model->bedrock_node.address,
-                                        &s->bedrock_node, 1);
-    memory_region_add_subregion(system, model->hub_remote_registers_address,
-                                sysbus_mmio_get_region(bedrock, 3));
-    /*
-     * The directory back door is the last part of the node's address space,
-     * one word per fitted memory line. Firmware initialises it before it
-     * trusts memory, so nothing boots without it.
-     */
-    memory_region_add_subregion(system, SN1_HUB_DIRECTORY,
-                                sysbus_mmio_get_region(bedrock, 5));
-    /*
-     * The ECC back door sits below the directory in the same back-door area,
-     * one byte per eight bytes of node memory. Both apertures take their
-     * extent from the memory linked above, so neither answers anything until
-     * that link is set.
-     */
-    memory_region_add_subregion(system, SN1_HUB_ECC,
-                                sysbus_mmio_get_region(bedrock, 6));
-
-    for (unsigned int cpu = 0; cpu < model->cpu_count; cpu++) {
-        MIPSCPU *mips_cpu = MIPS_CPU(s->cpu[cpu]);
-
-        qdev_connect_gpio_out_named(
-            s->bedrock, "nmi", cpu,
-            qdev_get_gpio_in_named(DEVICE(mips_cpu), "nmi", 0));
-        for (unsigned int line = 0; line < SGI_BEDROCK_PI_HW_IRQS; line++) {
-            qdev_connect_gpio_out_named(
-                s->bedrock, "hardware-irq",
-                cpu * SGI_BEDROCK_PI_HW_IRQS + line,
-                mips_cpu->env.irq[SN1_MIPS_HARDWARE_IRQ_OFFSET + line]);
-        }
-    }
-}
 
 static void sn1_configure_ioc3(PCIDevice *ioc3, const SN1ModelPciDevice *model)
 {
@@ -667,6 +416,7 @@ static const char *sn1_pci_type(SN1ModelPciKind kind)
 static void sn1_create_pci_devices(SN1MachineState *s, MachineState *machine)
 {
     const SN1MachineModel *model = &sn1_origin300_model;
+    DeviceState *xbridge = SN1_NODE(s->node)->xbridge;
 
     for (size_t i = 0; i < model->num_pci_devices; i++) {
         const SN1ModelPciDevice *entry = &model->pci_devices[i];
@@ -681,10 +431,10 @@ static void sn1_create_pci_devices(SN1MachineState *s, MachineState *machine)
             sn1_configure_ioc3(dev, entry);
         }
         qdev_connect_gpio_out_named(
-            s->xbridge, intx, entry->device * PCI_NUM_PINS,
-            qdev_get_gpio_in_named(s->xbridge, pin, entry->interrupt_pin));
+            xbridge, intx, entry->device * PCI_NUM_PINS,
+            qdev_get_gpio_in_named(xbridge, pin, entry->interrupt_pin));
         pci_realize_and_unref(dev,
-                              sgi_xbridge_pci_bus(SGI_XBRIDGE(s->xbridge),
+                              sgi_xbridge_pci_bus(SGI_XBRIDGE(xbridge),
                                                   entry->widget),
                               &error_fatal);
         pci_set_byte(dev->config + PCI_REVISION_ID, entry->revision);
@@ -694,7 +444,7 @@ static void sn1_create_pci_devices(SN1MachineState *s, MachineState *machine)
         if (entry->kind == SN1_PCI_IOC3) {
             qdev_connect_gpio_out(
                 DEVICE(dev), 0,
-                qdev_get_gpio_in_named(s->xbridge, pin, entry->superio_pin));
+                qdev_get_gpio_in_named(xbridge, pin, entry->superio_pin));
         }
     }
 }
@@ -792,12 +542,24 @@ static void origin300_init(MachineState *machine)
     s->cpu_refclk = clock_new(OBJECT(machine), "cpu-refclk");
     clock_set_hz(s->cpu_refclk, model->cpu_clock_hz);
 
+    /*
+     * Created (but not yet realized) ahead of sn1_load_prom: a flash part
+     * is the node's own boot-flash device, parented here, while whether
+     * one is attached at all is the machine's -drive question, decided in
+     * load_prom as it always has been.
+     */
+    s->node = DEVICE(object_new(TYPE_SGI_SN1_NODE));
+    object_property_add_child(OBJECT(machine), "node0", OBJECT(s->node));
+    object_unref(OBJECT(s->node));
+    object_property_set_link(OBJECT(s->node), "ram", OBJECT(machine->ram),
+                             &error_abort);
+    qdev_connect_clock_in(s->node, "cpu-refclk", s->cpu_refclk);
+
     sn1_map_memory(s, machine);
     if (!sn1_load_prom(s, machine, &error_fatal)) {
         return;
     }
-    sn1_create_cpus(s, machine);
-    sn1_create_bedrock(s, machine);
+    sysbus_realize(SYS_BUS_DEVICE(s->node), &error_fatal);
     sn1_create_pci_devices(s, machine);
 }
 

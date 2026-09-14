@@ -25,14 +25,10 @@ struct SN1MachineState {
     MachineState parent_obj;
 
     Clock *cpu_refclk;
-    CPUState **cpu;
-    DeviceState *bedrock;
-    DeviceState *l1;
-    DeviceState *xbridge;
-    DeviceState *boot_flash;
+    /* The node's CPUs, Bedrock, L1 and boot flash; see sgi-sn1-node. */
+    DeviceState *node;
 
     MemoryRegion hub_memory;
-    MemoryRegion bedrock_node;
     MemoryRegion hub_local_registers;
     MemoryRegion board_id;
     MemoryRegion board_id_remote;
@@ -49,5 +45,13 @@ struct SN1MachineState {
     strList *board_eeprom;
     strList *spd_eeprom;
 };
+
+/*
+ * Copies the machine's own identity-record file lists onto an L1 device
+ * before it is realized. Takes the L1 explicitly because it lives on the
+ * node (sgi-sn1-node), while the file lists it reads are machine
+ * properties -- one identity per machine, one L1 per node.
+ */
+void sn1_set_l1_identity_records(SN1MachineState *s, DeviceState *l1);
 
 #endif
