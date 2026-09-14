@@ -91,6 +91,9 @@ static I2CWireSlave *ws(I2cWire *bus, I2CSlave *slave)
          */
         st->wire_service_kind = I2C_WIRE_SERVICE_COUNT;
         g_hash_table_insert(bus->slaves, slave, st);
+        /* Migration already refuses a bus with more children than this. */
+        assert(bus->slave_count < I2C_WIRE_MAX_SLAVES);
+        bus->slave_list[bus->slave_count++] = st;
     }
     return st;
 }
@@ -587,10 +590,9 @@ static bool i2c_wire_next_deadline(I2CWire *wire, int64_t *deadline)
 {
     int64_t next = 0;
     bool found = false;
-    BusChild *kid;
 
-    QTAILQ_FOREACH(kid, &base_bus(wire->bus)->qbus.children, sibling) {
-        I2CWireSlave *st = ws(wire->bus, I2C_SLAVE(kid->child));
+    for (unsigned int n = 0; n < wire->bus->slave_count; n++) {
+        I2CWireSlave *st = wire->bus->slave_list[n];
 
         if (st->wire_hold_pending) {
             if (!found || st->wire_hold_at < next) {
@@ -707,7 +709,6 @@ static void i2c_wire_tick(I2CWire *wire, int64_t now)
     int old_error = wire->error;
     int64_t low_started = 0;
     bool running_low = false;
-    BusChild *kid;
 
     for (unsigned i = 0; i < bus->master_count; i++) {
         I2CWireMaster *m = &wire->masters[i];
@@ -720,8 +721,8 @@ static void i2c_wire_tick(I2CWire *wire, int64_t now)
         }
     }
 
-    QTAILQ_FOREACH(kid, &base->qbus.children, sibling) {
-        I2CWireSlave *st = ws(bus, I2C_SLAVE(kid->child));
+    for (unsigned int n = 0; n < bus->slave_count; n++) {
+        I2CWireSlave *st = bus->slave_list[n];
 
         if (st->wire_hold_pending && st->wire_hold_at <= now) {
             st->wire_hold_pending = false;

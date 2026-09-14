@@ -105,6 +105,21 @@ struct I2cWire {
     /* Per-child wire state, keyed by the child I2CSlave pointer. */
     GHashTable *slaves;
 
+    /*
+     * The same states as a flat list, in creation order. The timeline
+     * walks below run on every register access a master makes, and
+     * reaching each state through the bus child list costs a checked cast
+     * and a hash lookup per child; this costs a load. Every child has an
+     * entry from the first reset onwards, and a child without one has no
+     * state, so neither a hold nor a deadline to find. Both walks take a
+     * minimum or fold a conjunction, so the creation order this list keeps
+     * answers the same as the bus order it replaces. Entries are never
+     * dropped: this bus is cold-plug, and a child that left would keep its
+     * state here rather than being forgotten.
+     */
+    I2CWireSlave *slave_list[I2C_WIRE_MAX_SLAVES];
+    uint32_t slave_count;
+
     /* Migration staging: per-child state serialised in child order. */
     uint32_t migrated_count;
     I2CWireSlave migrated[I2C_WIRE_MAX_SLAVES];
