@@ -36,6 +36,11 @@
  *                     write path.
  *   tlb/random-global A global random write must discard an older non-global
  *                     shadow for the same virtual page.
+ *   interrupt/masked-line-stays-off-the-lock
+ *                     A pending line the guest has masked must leave the
+ *                     execution loop lock-free.  Underneath: the flag drop in
+ *                     mips_cpu_exec_interrupt() and the re-assert every
+ *                     own-CPU unmask makes.
  *
  * ABA: QEMU lowers SC to a compare-exchange against the value LL read, so it
  * cannot tell a word that never changed from one that changed and changed
@@ -147,7 +152,9 @@
 #define CP0_PAGEMASK        5
 #define CP0_WIRED           6
 #define CP0_BADVADDR        8
+#define CP0_COUNT           9
 #define CP0_ENTRYHI         10
+#define CP0_COMPARE         11
 #define CP0_STATUS          12
 #define CP0_CAUSE           13
 #define CP0_EPC             14
@@ -1307,6 +1314,213 @@ static void test_tlb_asid(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * A pending interrupt the guest has masked, and the cost of carrying it.
+ *
+ * Status bits 15:8 are the interrupt mask, bit 0 is IE, and bits 4:1 are KSU,
+ * ERL and EXL; the guest below clears all of those and sets IE alone, which
+ * is a kernel running with every line masked.  The count/compare timer is the
+ * line it leaves standing: Compare is zero out of reset and the counter
+ * reaches it every wrap, so an IRIX whose clock comes from the Hub carries
+ * IP7 from its first wrap to shutdown without ever taking or lowering it.
+ *
+ * What is pinned: carrying that line must not put the execution loop on the
+ * big lock.  The loop is lock-free while cpu->interrupt_request is zero and
+ * acquires on every pass while it is not, so a model that leaves the flag up
+ * under a masked line pays an acquire for each pass -- and eight processors
+ * doing that do not boot.  Each pass here is an mtc0 to Status, which ends
+ * its translation block, so the loop is re-entered once per iteration and the
+ * acquisitions are countable.
+ *
+ * False pass to watch for: a phase that never re-enters the loop counts
+ * nothing whatever the model does.  The first phase runs the identical loop
+ * with the line parked ahead, so the two counts differ only by the standing
+ * line, and the case fails if the second phase does not see IP7 in Cause.
+ */
+#define MI_GO_OFF           0x100
+#define MI_CAUSE_OFF        0x120
+#define MI_STATUS_OFF       0x140
+
+/*
+ * Passes each phase makes. Large enough that the harness's own polling of
+ * the state words, which also takes the lock, stays in the noise.
+ */
+#define MI_PASSES           100000u
+
+#define STATUS_IM7          0x8000u
+#define CAUSE_IP7           0x8000u
+/* Cause bits 6:2: zero is an interrupt rather than a fault. */
+#define CAUSE_EXCCODE       0x7cu
+/* Status bits the guest drives itself: the mask, KSU, ERL, EXL and IE. */
+#define STATUS_KEEP_HI      0xffffu
+#define STATUS_KEEP_LO      0x00e0u
+
+/* A quarter of the counter's range: far enough ahead to stay unreached. */
+#define MI_COMPARE_AHEAD    0x4000u
+
+static void emit_status_passes(GuestImage *img, int status, unsigned int n)
+{
+    unsigned int loop;
+
+    emit_li(img, R_T7, n);
+    loop = img->pos;
+    emit_mtc0(img, status, CP0_STATUS, 0);
+    emit_addiu(img, R_T7, R_T7, -1);
+    emit_bne(img, R_T7, R_ZERO, loop);
+    emit_nop(img);
+}
+
+static void build_masked_interrupt(GuestImage *img)
+{
+    unsigned int spin;
+
+    /* s0: every line masked, IE set, EXL and ERL clear. */
+    emit_mfc0(img, R_T3, CP0_STATUS, 0);
+    emit_lui(img, R_T4, STATUS_KEEP_HI);
+    emit_ori(img, R_T4, R_T4, STATUS_KEEP_LO);
+    emit_and(img, R_S0, R_T3, R_T4);
+    emit_ori(img, R_S0, R_S0, 1);
+    emit_mtc0(img, R_S0, CP0_STATUS, 0);
+    emit_ehb(img);
+    emit_publish(img, R_S0, MI_STATUS_OFF);
+
+    /* Park the timer's compare ahead, so the first phase carries no line. */
+    emit_mfc0(img, R_T5, CP0_COUNT, 0);
+    emit_lui(img, R_T6, MI_COMPARE_AHEAD);
+    emit_addu(img, R_T5, R_T5, R_T6);
+    emit_mtc0(img, R_T5, CP0_COMPARE, 0);
+    emit_ehb(img);
+
+    emit_li(img, R_T3, 1);
+    emit_publish(img, R_T3, PROGRESS_OFF);
+    emit_li(img, R_T3, 1);
+    emit_wait_ge(img, R_T3, MI_GO_OFF);
+
+    emit_status_passes(img, R_S0, MI_PASSES);
+
+    emit_li(img, R_T3, 2);
+    emit_publish(img, R_T3, PROGRESS_OFF);
+    emit_li(img, R_T3, 2);
+    emit_wait_ge(img, R_T3, MI_GO_OFF);
+
+    /* Compare at the counter matches at once, and nothing lowers IP7. */
+    emit_mfc0(img, R_T5, CP0_COUNT, 0);
+    emit_mtc0(img, R_T5, CP0_COMPARE, 0);
+    emit_ehb(img);
+    spin = img->pos;
+    emit_mfc0(img, R_T6, CP0_CAUSE, 0);
+    emit_andi(img, R_T7, R_T6, CAUSE_IP7);
+    emit_beq(img, R_T7, R_ZERO, spin);
+    emit_nop(img);
+    emit_publish(img, R_T6, MI_CAUSE_OFF);
+
+    emit_status_passes(img, R_S0, MI_PASSES);
+
+    emit_li(img, R_T3, DONE_MAGIC);
+    emit_publish(img, R_T3, DONE_OFF);
+
+    /* Unmasking must deliver it here, not at the next edge on the line. */
+    emit_ori(img, R_S0, R_S0, STATUS_IM7);
+    emit_mtc0(img, R_S0, CP0_STATUS, 0);
+    emit_ehb(img);
+    emit_spin(img);
+}
+
+/* Big-lock acquisitions the profiler has counted since it was last reset. */
+static uint64_t bql_acquisitions(QTestState *qts)
+{
+    g_autofree char *report = qtest_hmp(qts, "info sync-profile 200");
+    g_auto(GStrv) lines = g_strsplit(report, "\n", -1);
+    uint64_t total = 0;
+
+    for (unsigned int i = 0; lines[i]; i++) {
+        g_auto(GStrv) split = g_strsplit_set(lines[i], " \t", -1);
+        const char *field[8];
+        unsigned int n = 0;
+
+        for (unsigned int j = 0; split[j] && n < G_N_ELEMENTS(field); j++) {
+            if (split[j][0]) {
+                field[n++] = split[j];
+            }
+        }
+        /* "BQL mutex  <object>  <call site>  <wait>  <count>  <mean>" */
+        if (n == 7 && g_str_equal(field[0], "BQL") &&
+            g_str_equal(field[1], "mutex")) {
+            total += g_ascii_strtoull(field[5], NULL, 10);
+        }
+    }
+    return total;
+}
+
+static bool wait_for_progress(QTestState *qts, uint64_t want)
+{
+    unsigned int tries;
+
+    for (tries = 0; tries < POLL_TRIES; tries++) {
+        if (state_word(qts, PROGRESS_OFF) >= want) {
+            return true;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+    return false;
+}
+
+static void test_masked_interrupt_stays_off_the_lock(const void *data)
+{
+    uint64_t clear_locks, masked_locks;
+    QTestState *qts;
+    bool done;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    qts = boot_cpu_case("tcg", "R10000", 1, write_r10k_guest_image,
+                        build_masked_interrupt);
+    g_free(qtest_hmp(qts, "sync-profile on"));
+
+    g_assert_true(wait_for_progress(qts, 1));
+    g_free(qtest_hmp(qts, "sync-profile reset"));
+    qtest_writeq(qts, STATE_PHYS + MI_GO_OFF, 1);
+    g_assert_true(wait_for_progress(qts, 2));
+    clear_locks = bql_acquisitions(qts);
+
+    g_free(qtest_hmp(qts, "sync-profile reset"));
+    qtest_writeq(qts, STATE_PHYS + MI_GO_OFF, 2);
+    done = wait_for_cpu0_done(qts);
+    masked_locks = bql_acquisitions(qts);
+
+    g_test_message("big-lock acquisitions over %u passes: %" PRIu64
+                   " with no line, %" PRIu64 " with a masked line",
+                   MI_PASSES, clear_locks, masked_locks);
+    if (!done) {
+        g_test_message("alive 0x%" PRIx64 " progress 0x%" PRIx64
+                       " exception 0x%" PRIx64,
+                       state_word(qts, ALIVE_OFF),
+                       state_word(qts, PROGRESS_OFF),
+                       state_word(qts, EXC_MARK_OFF));
+    }
+
+    g_assert_true(done);
+    g_assert_cmphex(state_word(qts, MI_STATUS_OFF) & STATUS_IM7, ==, 0);
+    g_assert_cmphex(state_word(qts, MI_CAUSE_OFF) & CAUSE_IP7, ==, CAUSE_IP7);
+    g_assert_cmpuint(masked_locks, <, clear_locks + MI_PASSES / 10);
+
+    /* The line the phases carried is still deliverable on the unmask. */
+    for (unsigned int tries = 0; tries < POLL_TRIES; tries++) {
+        if (state_word(qts, EXC_MARK_OFF) == EXC_MAGIC) {
+            break;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+    g_assert_cmphex(state_word(qts, EXC_MARK_OFF), ==, EXC_MAGIC);
+    g_assert_cmphex(state_word(qts, EXC_CAUSE_OFF) & CAUSE_IP7, ==, CAUSE_IP7);
+    g_assert_cmphex(state_word(qts, EXC_CAUSE_OFF) & CAUSE_EXCCODE, ==, 0);
+
+    qtest_quit(qts);
+}
+
 static void test_tlb_random_global(const void *data)
 {
     QTestState *qts;
@@ -1356,5 +1570,7 @@ int main(int argc, char **argv)
     qtest_add_data_func("mttcg/tlb/asid", NULL, test_tlb_asid);
     qtest_add_data_func("mttcg/tlb/random-global", NULL,
                         test_tlb_random_global);
+    qtest_add_data_func("mttcg/interrupt/masked-line-stays-off-the-lock", NULL,
+                        test_masked_interrupt_stays_off_the_lock);
     return g_test_run();
 }

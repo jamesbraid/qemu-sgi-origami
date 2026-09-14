@@ -37,6 +37,7 @@ static int cpu_post_load(void *opaque, int version_id)
     restore_msa_fp_status(env);
     compute_hflags(env);
     restore_pamask(env);
+    cpu_mips_reassert_interrupt(env);
     if (env->r10k) {
         if (env->r10k->CP0_R10K_DelayedWatch) {
             /*
