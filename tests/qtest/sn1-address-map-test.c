@@ -736,7 +736,12 @@ static void xtalk_reg_write(QTestState *qts, unsigned int widget,
     qtest_writel(qts, XTALK_WIDGET(widget) + offset + 4, value);
 }
 
-static void assert_flat_view_unmapped(QTestState *qts, uint64_t address)
+/*
+ * The region-type token ("ram", "rom", "romd", "i/o", ...) that "info
+ * mtree -f"'s flat view of the CPU's address space reports for the entry
+ * covering address, or NULL if the flat view has nothing mapped there.
+ */
+static char *flat_view_region_type_at(QTestState *qts, uint64_t address)
 {
     g_autofree char *mtree = qtest_hmp(qts, "info mtree -f");
     const char *system_view = strstr(mtree, "Root memory region: system");
@@ -756,19 +761,48 @@ static void assert_flat_view_unmapped(QTestState *qts, uint64_t address)
         const char *line_end = strchr(line, '\n');
         uint64_t start;
         uint64_t end;
+        char type[32];
 
         if (!line_end || line_end > system_view_end) {
             line_end = system_view_end;
         }
-        if (sscanf(line, " %" SCNx64 "-%" SCNx64, &start, &end) == 2 &&
+        if (sscanf(line, " %" SCNx64 "-%" SCNx64 " (prio %*d, %31[^)])",
+                   &start, &end, type) == 3 &&
             address >= start && address <= end) {
-            g_autofree char *mapping = g_strndup(line, line_end - line);
-
-            g_test_message("0x%" PRIx64 " is mapped by %s", address,
-                           mapping);
-            g_assert_not_reached();
+            return g_strdup(type);
         }
         line = line_end + (line_end < system_view_end);
+    }
+    return NULL;
+}
+
+static void assert_flat_view_unmapped(QTestState *qts, uint64_t address)
+{
+    g_autofree char *type = flat_view_region_type_at(qts, address);
+
+    if (type) {
+        g_test_message("0x%" PRIx64 " is mapped as %s", address, type);
+        g_assert_not_reached();
+    }
+}
+
+/*
+ * Every window the processor fetches firmware from must resolve to ram,
+ * rom or romd in the flat view. An i/o entry there caches no TCG
+ * translation: each instruction recompiles as its own one-instruction
+ * block, and the guest runs 100-300x slower while giving no outward sign
+ * anything is wrong.
+ */
+static void assert_flat_view_is_execution_storage(QTestState *qts,
+                                                   uint64_t address)
+{
+    g_autofree char *type = flat_view_region_type_at(qts, address);
+
+    g_assert_nonnull(type);
+    if (strcmp(type, "ram") && strcmp(type, "rom") && strcmp(type, "romd")) {
+        g_test_message("0x%" PRIx64 " resolves to a %s region, not "
+                       "ram/rom/romd", address, type);
+        g_assert_not_reached();
     }
 }
 
@@ -1555,6 +1589,22 @@ static void test_prom_flat_view_extents(const void *data)
                             SGI_BEDROCK_FLASH_PART_SIZE);
     assert_flat_view_extent(qts, HUB_REMOTE_FLASH,
                             SGI_BEDROCK_FLASH_PART_SIZE);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The reset vector and the bounded high local view are the windows the
+ * processor actually fetches firmware from without a flash part attached.
+ * A stock-PROM boot must reach them as direct storage, not as the i/o
+ * handlers a flash part overlays those same two addresses with.
+ */
+static void test_prom_execution_windows_are_not_io(const void *data)
+{
+    QTestState *qts = machine_start();
+
+    assert_flat_view_is_execution_storage(qts, PROM_RESET);
+    assert_flat_view_is_execution_storage(qts, HUB_LOCAL_HIGH_BOOT);
 
     qtest_quit(qts);
 }
@@ -2959,6 +3009,8 @@ int main(int argc, char **argv)
                         test_prom_four_read_only_views);
     qtest_add_data_func("sn1/address-map/prom-flat-view-extents", NULL,
                         test_prom_flat_view_extents);
+    qtest_add_data_func("sn1/address-map/prom-execution-windows-not-io", NULL,
+                        test_prom_execution_windows_are_not_io);
     qtest_add_data_func("sn1/address-map/l1-identity-records", NULL,
                         test_l1_identity_records_come_from_the_command_line);
     qtest_add_data_func("sn1/address-map/l1-identity-records-absent", NULL,
