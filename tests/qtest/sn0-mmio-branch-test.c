@@ -13,6 +13,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
 
 /*
  * The filter covers 32 KiB at physical 1 MiB; state words and RAM controls
@@ -45,6 +46,12 @@
 #define CACHE_AS_RAM_OFF             0x48
 #define PROBE_OFF           0x50
 #define PROBE2_OFF          0x58
+#define PROBE3_OFF          0x60
+#define PROBE4_OFF          0x68
+#define PROBE5_OFF          0x70
+#define PARKED_OFF          0x78
+#define PROCEED_OFF         0x80
+#define BLOCK_FETCH_OFF     0x88
 
 /* Markers.  Each fits an ori immediate, and RAM arrives zeroed. */
 #define MARK_ALIVE          0x1111
@@ -52,6 +59,20 @@
 #define MARK_FELL           0x3333
 #define MARK_TARGET         0x4444
 #define MARK_TRAP           0x5555
+#define MARK_RESIDENT       0x6666
+#define MARK_SWITCHED       0x7777
+#define MARK_BLOCK_FETCH    0x8888
+#define MARK_SENTINEL       0x1357
+
+/*
+ * A doubleword of the window clear of the snippet, and the PROM's real
+ * per-processor stack slot the cache-as-RAM exit moves the stack to:
+ * node-local 0x1be0000, 64 KiB per processor number.
+ */
+#define SENTINEL_KSEG0      0x80107000
+#define SENTINEL_KSEG1      0xa0107000
+#define RESIDENT_STACK_KSEG0 0x80107f00
+#define REAL_STACK_KSEG0    0x81be8000
 
 /* ROM image.  Loaded at the reset vector, so entry is offset 0. */
 #define IMAGE_SIZE          0x1000
@@ -84,6 +105,7 @@
 #define OPC_ORI             (0x0du << 26)
 #define OPC_DADDIU          (0x19u << 26)
 #define OPC_LW              (0x23u << 26)
+#define OPC_SW              (0x2bu << 26)
 #define OPC_LD              (0x37u << 26)
 #define OPC_LUI             (0x0fu << 26)
 #define OPC_SD              (0x3fu << 26)
@@ -116,6 +138,7 @@
 #define R_T9                25
 #define R_K0                26
 #define R_K1                27
+#define R_SP                29
 
 #define CP0_COUNT           9
 #define CP0_COMPARE         11
@@ -177,6 +200,11 @@ typedef struct {
     bool racing;                /* more than one processor runs the program */
     bool xkphys;                /* reach the snippet through XKPHYS */
     bool cache_as_ram;                   /* arm the filter's private-copy condition */
+    bool stack_switch;          /* park resident, then leave as the PROM does */
+    bool fast_window;           /* the resident window is RAM when cached */
+    bool block_fetch;           /* jump into the window cached while resident */
+    bool reset;                 /* reset the machine at the resident park */
+    bool migrate;               /* migrate the machine at the resident park */
     const char *smp;            /* -smp, which is what gates CF_PARALLEL */
     const char *accel;          /* the accelerator and its thread mode */
     const char *extra;          /* anything else the configuration needs */
@@ -280,6 +308,11 @@ static void emit_dmfc1(CodeBuf *buf, int rt, int fs)
 static void emit_lw(CodeBuf *buf, int rt, int base, uint16_t off)
 {
     emit_immediate(buf, OPC_LW, base, rt, off);
+}
+
+static void emit_sw(CodeBuf *buf, int rt, int base, uint16_t off)
+{
+    emit_immediate(buf, OPC_SW, base, rt, off);
 }
 
 static void emit_jr(CodeBuf *buf, int rs)
@@ -540,6 +573,12 @@ static void build_rom(uint8_t *image, const TestCase *tc)
         emit_lui(&buf, R_T7, STATUS_FPU_ON_HI);
         emit_or(&buf, R_T1, R_T1, R_T7);
         emit_mtc0(&buf, R_T1, CP0_STATUS);
+        /*
+         * The stack pointer inside the window, where the PROM's lives for
+         * the phase: the model reads the residency from it, and takes a
+         * stack elsewhere as the exit.  Nothing here pushes.
+         */
+        emit_load_addr(&buf, R_SP, RESIDENT_STACK_KSEG0);
         emit_ori(&buf, R_T7, R_ZERO, PROM_BOOT_STATUS_CACHE_AS_RAM);
         emit_dmtc1(&buf, R_T7, 0);
         /*
@@ -562,6 +601,65 @@ static void build_rom(uint8_t *image, const TestCase *tc)
         emit_sd(&buf, R_T7, R_T0, PROBE2_OFF);
     }
 
+    if (tc->stack_switch) {
+        /*
+         * Resident: a cached store lands in the private copy and a cached
+         * load returns it, while the uncached view of the same doubleword
+         * still shows the zeroed RAM beneath.  Park for the harness to
+         * read the machine's own view of the window.
+         */
+        emit_ori(&buf, R_T7, R_ZERO, MARK_SENTINEL);
+        emit_load_addr(&buf, R_T1, SENTINEL_KSEG0);
+        emit_sd(&buf, R_T7, R_T1, 0);
+        emit_ld(&buf, R_T7, R_T1, 0);
+        emit_sd(&buf, R_T7, R_T0, PROBE3_OFF);
+        emit_load_addr(&buf, R_T1, SENTINEL_KSEG1);
+        emit_ld(&buf, R_T7, R_T1, 0);
+        emit_sd(&buf, R_T7, R_T0, PROBE4_OFF);
+        emit_ori(&buf, R_T7, R_ZERO, MARK_RESIDENT);
+        emit_sd(&buf, R_T7, R_T0, PARKED_OFF);
+        emit_ld(&buf, R_T7, R_T0, PROCEED_OFF);
+        emit_beq(&buf, R_T7, R_ZERO, -2);
+        emit_nop(&buf);
+        /*
+         * The exit's stack switch: the stack pointer moves to the real
+         * per-processor slot and the first push lands there.  The
+         * sentinel must still read back through the window afterwards.
+         */
+        emit_load_addr(&buf, R_SP, REAL_STACK_KSEG0);
+        emit_sd(&buf, R_ZERO, R_SP, 0);
+        emit_load_addr(&buf, R_T1, SENTINEL_KSEG0);
+        emit_ld(&buf, R_T7, R_T1, 0);
+        emit_sd(&buf, R_T7, R_T0, PROBE5_OFF);
+        emit_sd(&buf, R_ZERO, R_T0, PROCEED_OFF);
+        emit_ori(&buf, R_T7, R_ZERO, MARK_SWITCHED);
+        emit_sd(&buf, R_T7, R_T0, PARKED_OFF);
+        emit_ld(&buf, R_T7, R_T0, PROCEED_OFF);
+        emit_beq(&buf, R_T7, R_ZERO, -2);
+        emit_nop(&buf);
+    }
+
+    if (tc->block_fetch) {
+        /*
+         * Three words stored cached over the snippet's first three, so
+         * the private copy and the RAM beneath now differ in code: the
+         * copy publishes its own marker and traps, RAM publishes
+         * "entered".  Which one a cached fetch runs is the question.
+         */
+        static const uint32_t copy_code[] = {
+            OPC_ORI | (R_T2 << 16) | MARK_BLOCK_FETCH,
+            OPC_SD | (R_T0 << 21) | (R_T2 << 16) | BLOCK_FETCH_OFF,
+            OPC_SYSCALL,
+        };
+        unsigned int w;
+
+        emit_load_addr(&buf, R_T1, tc->snippet_phys | 0x80000000);
+        for (w = 0; w < ARRAY_SIZE(copy_code); w++) {
+            emit_load_addr(&buf, R_T7, copy_code[w]);
+            emit_sw(&buf, R_T7, R_T1, 4 * w);
+        }
+    }
+
     if (tc->xkphys) {
         /* t8 = 0xa800000000000000 | snippet_phys, built in halves. */
         emit_lui(&buf, R_T8, XKPHYS_CACHED_HI);
@@ -571,6 +669,11 @@ static void build_rom(uint8_t *image, const TestCase *tc)
         if (tc->kind == BRANCH_JR) {
             emit_daddiu(&buf, R_T9, R_T8, SNIPPET_TARGET_OFF);
         }
+    } else if (tc->block_fetch) {
+        /* The cached alias: what the resident phase serves for data. */
+        emit_load_addr(&buf, R_T9, (tc->snippet_phys | 0x80000000) +
+                       SNIPPET_TARGET_OFF);
+        emit_load_addr(&buf, R_T8, tc->snippet_phys | 0x80000000);
     } else {
         if (tc->kind == BRANCH_JR) {
             emit_load_addr(&buf, R_T9,
@@ -656,11 +759,237 @@ static void assert_window_is_mmio(QTestState *qts)
     g_assert_nonnull(strstr(line, "0000000000100000-"));
 }
 
-static QTestState *start_case(const TestCase *tc)
+/*
+ * The window's line in one address space's flat view: the FlatView block
+ * that lists the space, then the range starting at the window.  Spaces
+ * with identical views share one block, so the block is found by name.
+ */
+static char *window_flat_line(const char *mtree, const char *as_name)
+{
+    g_autofree char *as_line = g_strdup_printf(" AS \"%s\"", as_name);
+    const char *hit = strstr(mtree, as_line);
+    const char *block_start, *block_end, *line;
+
+    g_assert_nonnull(hit);
+    block_start = g_strrstr_len(mtree, hit - mtree, "FlatView #");
+    g_assert_nonnull(block_start);
+    block_end = strstr(hit, "FlatView #");
+    line = block_start;
+    while ((line = strstr(line, "\n  0000000000100000-")) != NULL) {
+        const char *line_end;
+
+        if (block_end && line > block_end) {
+            break;
+        }
+        line++;
+        line_end = strchr(line, '\n');
+        return g_strndup(line, line_end ? (size_t)(line_end - line)
+                                        : strlen(line));
+    }
+    g_assert_not_reached();
+}
+
+static bool window_view_is(QTestState *qts, const char *as_name,
+                           const char *type, const char *region)
+{
+    g_autofree char *mtree = qtest_hmp(qts, "info mtree -f");
+    g_autofree char *line = window_flat_line(mtree, as_name);
+
+    g_test_message("%s: %s", as_name, line);
+    return strstr(line, type) && strstr(line, region);
+}
+
+static void assert_window_view(QTestState *qts, const char *as_name,
+                               const char *type, const char *region)
+{
+    g_assert_true(window_view_is(qts, as_name, type, region));
+}
+
+/*
+ * The model restores the filter on its own poll of the stack pointer,
+ * so after the switch the view changes a little behind the guest.
+ */
+static void wait_window_view(QTestState *qts, const char *as_name,
+                             const char *type, const char *region)
+{
+    unsigned int tries;
+
+    for (tries = 0; tries < POLL_TRIES; tries++) {
+        if (window_view_is(qts, as_name, type, region)) {
+            return;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+    g_assert_not_reached();
+}
+
+/* Migrate and block until completed or failed, as sn0-migration-test does. */
+static void migrate_and_wait(QTestState *from, const char *uri)
+{
+    qtest_qmp_assert_success(from,
+        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
+
+    g_test_timer_start();
+    for (;;) {
+        QDict *ret = qtest_qmp_assert_success_ref(from,
+            "{ 'execute': 'query-migrate' }");
+        g_autofree char *status = g_strdup(qdict_get_str(ret, "status"));
+
+        qobject_unref(ret);
+        g_assert_cmpstr(status, !=, "failed");
+        if (g_str_equal(status, "completed")) {
+            break;
+        }
+        g_assert(g_test_timer_elapsed() < 30);
+        g_usleep(1000);
+    }
+}
+
+static void wait_for_incoming_complete(QTestState *qts)
+{
+    g_test_timer_start();
+    for (;;) {
+        QDict *ret = qtest_qmp_assert_success_ref(
+            qts, "{ 'execute': 'query-migrate' }");
+        const char *status = qdict_get_str(ret, "status");
+
+        if (g_str_equal(status, "completed")) {
+            qobject_unref(ret);
+            return;
+        }
+        g_assert_false(g_str_equal(status, "failed"));
+        qobject_unref(ret);
+        g_assert(g_test_timer_elapsed() < 30);
+        g_usleep(1000);
+    }
+}
+
+/* Poll until the guest parks with this marker.  False on the deadline. */
+static bool wait_for_park(QTestState *qts, uint64_t mark)
+{
+    unsigned int tries;
+
+    for (tries = 0; tries < POLL_TRIES; tries++) {
+        if (state_word(qts, PARKED_OFF) == mark) {
+            return true;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+    return false;
+}
+
+/*
+ * Walk the guest through the resident phase and the exit's stack switch,
+ * reading the machine's own flat views at each park: while the stack is
+ * resident the cached view serves the private block as RAM only when the
+ * fast path is on, and the uncached view is the filter either way; after
+ * the switch the filter is back in the cached view, and the sentinel the
+ * resident phase stored is still there through it.  The guest's own
+ * uncached probe is the witness for the RAM beneath: the harness's reads
+ * go through the first processor's cached view and would see the block.
+ */
+static void resident_checks(QTestState *qts, const TestCase *tc)
+{
+    g_assert_true(wait_for_park(qts, MARK_RESIDENT));
+    g_assert_cmphex(state_word(qts, PROBE3_OFF), ==, MARK_SENTINEL);
+    g_assert_cmphex(state_word(qts, PROBE4_OFF), ==, 0);
+    if (tc->fast_window) {
+        assert_window_view(qts, "cpu-memory-0", "ram",
+                           "sn0.node0.cpu0.promdata");
+        assert_window_view(qts, "cpu-uncached-0", "i/o",
+                           "sn0.node0.cpu0.promdata-filter");
+    } else {
+        /* One view only: the fast path off links no uncached space. */
+        assert_window_view(qts, "cpu-memory-0", "i/o",
+                           "sn0.node0.cpu0.promdata-filter");
+    }
+}
+
+/*
+ * The accelerator named here wins over the -accel qtest libqtest
+ * appends, because QEMU takes the first one that initialises.  One
+ * processor runs, so there is one writer for every state word;
+ * -smp maxcpus is separately what decides CF_PARALLEL under MTTCG.
+ * Firmware of the machine's own is off: the supplied image is the
+ * whole program.  A case that resets the machine cannot carry
+ * -no-reboot, which turns a requested reset into a shutdown.
+ */
+static char *case_cmdline(const TestCase *tc, const char *bios,
+                          const char *tail)
+{
+    return g_strdup_printf("-M origin200,synthesized-firmware=off -m 64M %s "
+                           "-cpu R10000 -bios %s -accel %s %s %s "
+                           "-no-shutdown %s",
+                           tc->smp, bios, tc->accel,
+                           tc->extra ? tc->extra : "",
+                           tc->reset ? "" : "-no-reboot", tail);
+}
+
+/* Returns the handle to drive on: the destination's after a migration. */
+static QTestState *drive_stack_switch(QTestState *qts, const TestCase *tc,
+                                      const char *bios)
+{
+    resident_checks(qts, tc);
+
+    if (tc->reset) {
+        /*
+         * A reset unmaps the block and zeroes it; the program then runs
+         * again from the top and must arrive at the same park with the
+         * same answers, the block mapped afresh.
+         */
+        qtest_writeq(qts, STATE_PHYS + PARKED_OFF, 0);
+        qtest_writeq(qts, STATE_PHYS + PROBE3_OFF, 0);
+        qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
+        resident_checks(qts, tc);
+    }
+
+    if (tc->migrate) {
+        /*
+         * Migrated resident: the block's bytes travel as RAM, and the
+         * destination must come up with the block mapped and the exit
+         * still watched, then finish the walk like the source would.
+         */
+        g_autoptr(GError) error = NULL;
+        g_autofree char *tmpfs = g_dir_make_tmp("sn0-mmio-branch-XXXXXX",
+                                                &error);
+        g_autofree char *uri = NULL;
+        g_autofree char *sock = NULL;
+        g_autofree char *tail = NULL;
+        g_autofree char *cmdline = NULL;
+        QTestState *to;
+
+        g_assert_no_error(error);
+        sock = g_strdup_printf("%s/migrate.sock", tmpfs);
+        uri = g_strdup_printf("unix:%s", sock);
+        tail = g_strdup_printf("-incoming %s", uri);
+        cmdline = case_cmdline(tc, bios, tail);
+        to = qtest_init(cmdline);
+        migrate_and_wait(qts, uri);
+        wait_for_incoming_complete(to);
+        qtest_quit(qts);
+        qts = to;
+        /* The destination removes its listening socket once it is done. */
+        unlink(sock);
+        g_assert_cmpint(g_rmdir(tmpfs), ==, 0);
+        resident_checks(qts, tc);
+    }
+
+    qtest_writeq(qts, STATE_PHYS + PROCEED_OFF, 1);
+    g_assert_true(wait_for_park(qts, MARK_SWITCHED));
+    g_assert_cmphex(state_word(qts, PROBE5_OFF), ==, MARK_SENTINEL);
+    wait_window_view(qts, "cpu-memory-0", "i/o",
+                     "sn0.node0.cpu0.promdata-filter");
+    qtest_writeq(qts, STATE_PHYS + PROCEED_OFF, 1);
+    return qts;
+}
+
+/* The ROM file is unlinked here unless the caller asks to keep it. */
+static QTestState *start_case(const TestCase *tc, char **keep_bios)
 {
     uint8_t image[IMAGE_SIZE] = { 0 };
     uint32_t snippet[SNIPPET_MAX_WORDS];
     g_autofree char *path = NULL;
+    g_autofree char *cmdline = NULL;
     g_autoptr(GError) error = NULL;
     QTestState *qts;
     unsigned int words, i;
@@ -676,19 +1005,13 @@ static QTestState *start_case(const TestCase *tc)
                                       sizeof(image), &error));
     g_assert_no_error(error);
 
-    /*
-     * The accelerator named here wins over the -accel qtest libqtest
-     * appends, because QEMU takes the first one that initialises.  One
-     * processor runs, so there is one writer for every state word;
-     * -smp maxcpus is separately what decides CF_PARALLEL under MTTCG.
-     * Firmware of the machine's own is off: the supplied image is the
-     * whole program.
-     */
-    qts = qtest_initf("-M origin200,synthesized-firmware=off -m 64M %s "
-                      "-cpu R10000 -bios %s -accel %s %s "
-                      "-no-reboot -no-shutdown -S",
-                      tc->smp, path, tc->accel, tc->extra ? tc->extra : "");
-    g_assert_cmpint(unlink(path), ==, 0);
+    cmdline = case_cmdline(tc, path, "-S");
+    qts = qtest_init(cmdline);
+    if (keep_bios) {
+        *keep_bios = g_steal_pointer(&path);
+    } else {
+        g_assert_cmpint(unlink(path), ==, 0);
+    }
 
     if (tc->mmio) {
         assert_window_is_mmio(qts);
@@ -723,6 +1046,7 @@ static bool wait_for_trap(QTestState *qts)
 static void run_case(const void *data)
 {
     const TestCase *tc = data;
+    g_autofree char *bios = NULL;
     QTestState *qts;
     uint64_t fell, target;
     bool trapped;
@@ -732,7 +1056,13 @@ static void run_case(const void *data)
         return;
     }
 
-    qts = start_case(tc);
+    qts = start_case(tc, tc->migrate ? &bios : NULL);
+    if (tc->stack_switch) {
+        qts = drive_stack_switch(qts, tc, bios);
+        if (bios) {
+            g_assert_cmpint(unlink(bios), ==, 0);
+        }
+    }
     trapped = wait_for_trap(qts);
     if (!trapped) {
         report_state(qts);
@@ -752,6 +1082,19 @@ static void run_case(const void *data)
         g_assert_cmphex(state_word(qts, PROBE2_OFF), ==, 0);
         g_assert_cmphex(state_word(qts, PROBE_OFF), ==,
                         OPC_ORI | (R_T2 << 16) | MARK_ENTERED);
+    }
+
+    if (tc->block_fetch && tc->fast_window) {
+        /*
+         * The resident phase's stated limitation: a cached fetch from the
+         * window while the block is mapped runs the block, so the copy's
+         * own code published and the RAM snippet never did.
+         */
+        g_assert_cmphex(state_word(qts, BLOCK_FETCH_OFF), ==,
+                        MARK_BLOCK_FETCH);
+        g_assert_cmphex(state_word(qts, ENTERED_OFF), ==, 0);
+        qtest_quit(qts);
+        return;
     }
 
     /*
@@ -886,6 +1229,58 @@ static const TestCase cases[] = {
         .kind = BRANCH_JR, .mmio = true, .cache_as_ram = true,
         .snippet_phys = WINDOW_PHYS, .snippet_kseg1 = WINDOW_KSEG1,
         .smp = SMP_PLAIN, .accel = ACCEL_SINGLE,
+    }, {
+        /*
+         * The resident phase served as RAM in the cached view and as the
+         * filter in the uncached one, the filter back at the exit's stack
+         * switch, the private copy continuous across both.
+         */
+        .name = "mmio-branch/mmio/jr-cache-as-ram-stack-switch",
+        .kind = BRANCH_JR, .mmio = true, .cache_as_ram = true,
+        .stack_switch = true, .fast_window = true,
+        .snippet_phys = WINDOW_PHYS, .snippet_kseg1 = WINDOW_KSEG1,
+        .smp = SMP_PLAIN, .accel = ACCEL_SINGLE,
+    }, {
+        /* The same walk with the fast path off: the filter throughout. */
+        .name = "mmio-branch/mmio/jr-cache-as-ram-stack-switch-filter-only",
+        .kind = BRANCH_JR, .mmio = true, .cache_as_ram = true,
+        .stack_switch = true,
+        .snippet_phys = WINDOW_PHYS, .snippet_kseg1 = WINDOW_KSEG1,
+        .smp = SMP_PLAIN, .accel = ACCEL_SINGLE,
+        .extra = "-global sn0-node.promdata-fast=off",
+    }, {
+        /* Reset while resident: the block unmapped, then mapped afresh. */
+        .name = "mmio-branch/mmio/jr-cache-as-ram-stack-switch-reset",
+        .kind = BRANCH_JR, .mmio = true, .cache_as_ram = true,
+        .stack_switch = true, .fast_window = true, .reset = true,
+        .snippet_phys = WINDOW_PHYS, .snippet_kseg1 = WINDOW_KSEG1,
+        .smp = SMP_PLAIN, .accel = ACCEL_SINGLE,
+    }, {
+        /* Migrated while resident: the block and its mapping travel. */
+        .name = "mmio-branch/mmio/jr-cache-as-ram-stack-switch-migrate",
+        .kind = BRANCH_JR, .mmio = true, .cache_as_ram = true,
+        .stack_switch = true, .fast_window = true, .migrate = true,
+        .snippet_phys = WINDOW_PHYS, .snippet_kseg1 = WINDOW_KSEG1,
+        .smp = SMP_PLAIN, .accel = ACCEL_SINGLE,
+    }, {
+        /*
+         * A cached fetch from the window while the block is mapped runs
+         * the block, not the RAM beneath, and does not end the phase:
+         * the limitation the resident phase carries, pinned.
+         */
+        .name = "mmio-branch/mmio/jr-kseg0-cache-as-ram-resident",
+        .kind = BRANCH_JR, .mmio = true, .cache_as_ram = true,
+        .block_fetch = true, .fast_window = true,
+        .snippet_phys = WINDOW_PHYS, .snippet_kseg1 = WINDOW_KSEG1,
+        .smp = SMP_PLAIN, .accel = ACCEL_SINGLE,
+    }, {
+        /* The same cached fetch through the filter ends the phase. */
+        .name = "mmio-branch/mmio/jr-kseg0-cache-as-ram-resident-filter-only",
+        .kind = BRANCH_JR, .mmio = true, .cache_as_ram = true,
+        .block_fetch = true,
+        .snippet_phys = WINDOW_PHYS, .snippet_kseg1 = WINDOW_KSEG1,
+        .smp = SMP_PLAIN, .accel = ACCEL_SINGLE,
+        .extra = "-global sn0-node.promdata-fast=off",
     }, {
         /*
          * Both processors in the window at once, the measured failure's
