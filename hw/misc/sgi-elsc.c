@@ -773,10 +773,13 @@ static void elsc_request_complete(SGIElscState *s)
 }
 
 /*
- * Carry out a COMMITTED deferred action once its "ok" has been read. Runs
- * from a bottom half, scheduled at the transaction boundary that follows the
- * fetch-seam commit (elsc_fire_committed_action, from a NACK, a STOP or a
- * following request) or, after a migration, by elsc_post_load.
+ * Carry out a COMMITTED deferred action once its "ok" has been read.
+ * Scheduled at the transaction boundary that follows the fetch-seam commit
+ * (elsc_fire_committed_action, from a NACK, a STOP or a following request) --
+ * ordinarily as the requesting processor's own queued work
+ * (elsc_deferred_action_cpu), or, with no processor to queue it on, from a
+ * bottom half: the re-arm after a migration (elsc_post_load), or a qtest
+ * access with no processor running guest code.
  *
  * Every destructive action releases the I2C bus first. A response the master
  * ends by NACKing the last byte with no STOP -- it may fetch the byte in a
@@ -789,8 +792,8 @@ static void elsc_request_complete(SGIElscState *s)
  * that wedged bus alive, so it needs the release just as a reset does.
  * i2c_end_transfer walks the bus's slave list and cannot run from inside an
  * I2C callback, and the reset must not run while the guest is still reading
- * the frame, which is why the whole action is deferred to this bottom half
- * rather than run when it is committed.
+ * the frame, which is why the whole action is deferred rather than run when
+ * it is committed.
  *
  * The gate makes a stale schedule a no-op: only a committed action fires, and
  * firing clears the state, so a second scheduling -- another boundary of the
@@ -907,21 +910,72 @@ static void elsc_response_fully_read(SGIElscState *s)
 }
 
 /*
- * Schedule a COMMITTED deferred action's bottom half. Called at a transaction
- * boundary -- the master's NACK, the STOP, or a following request -- so it runs
- * after the guest has taken the whole frame, not from inside the read that
- * completed the ack. deferred_scheduled records that the bottom half is queued,
- * so a migration re-arms exactly it (elsc_post_load); it is idempotent, and the
- * bottom half's own committed-flag guard makes all but the first run a no-op.
- * Scheduled through the replay-aware helper so a reset lands at the same
- * instruction under record/replay (docs/devel/replay.rst).
+ * Run a COMMITTED action from the requesting processor's own queued work,
+ * then stop every processor -- mirroring sgi_hub_request_machine_reset() in
+ * hw/misc/sgi-hub.c for the Hub's port-reset write (#606). Queued work runs
+ * at the writer's next translation-block boundary, outside the execution
+ * loop, which is where a processor may be stopped. Round-robin execution
+ * reaches it before any peer is scheduled again, so nothing else executes
+ * past the write that committed the action; multi-threaded execution
+ * cannot promise that, since the peers run on their own host threads, and
+ * this only bounds them to their own next block boundary rather than to
+ * whenever the main loop would otherwise have performed the reset.
+ *
+ * Only the no-module-owner case pauses every processor here. Where a
+ * module decides what the action reaches (module_ops->execute -- the
+ * Origin 2000's module complex), stopping processors is that module's
+ * call, not this controller's; see "Deferred destructive actions" in
+ * docs/specs/sgi-elsc.rst.
+ */
+static void elsc_deferred_action_cpu(CPUState *cpu, run_on_cpu_data data)
+{
+    SGIElscState *s = data.host_ptr;
+    bool module_owned = s->module_ops != NULL;
+    CPUState *peer;
+
+    elsc_deferred_action_bh(s);
+
+    if (!module_owned) {
+        CPU_FOREACH(peer) {
+            cpu_pause(peer);
+        }
+    }
+}
+
+/*
+ * Fire a COMMITTED deferred action. Called at a transaction boundary -- the
+ * master's NACK, the STOP, or a following request -- so it runs after the
+ * guest has taken the whole frame, not from inside the read that completed
+ * the ack. deferred_scheduled records that firing is queued, so a migration
+ * re-arms exactly it (elsc_post_load); the action's own committed-flag guard
+ * makes all but the first run a no-op.
+ *
+ * A live transaction reaches this device through a guest access, so
+ * current_cpu names the processor that drove it: queue the action on that
+ * processor's own work (elsc_deferred_action_cpu) rather than a main-loop
+ * bottom half, so every processor the action must stop is still running
+ * when the work runs and none of them can get ahead of it. A bottom half
+ * left the moment of the reset to whenever the main loop next ran, with
+ * every other processor free to keep executing until then -- the defect
+ * this fixes (#607).
+ *
+ * Without a current processor there is no writer to queue the work on --
+ * the bottom half re-armed after a migration (elsc_post_load), or a qtest
+ * access with no processor running guest code -- so fall back to the
+ * bottom half there, scheduled through the replay-aware helper so it lands
+ * at a reproducible point under record/replay (docs/devel/replay.rst).
  */
 static void elsc_fire_committed_action(SGIElscState *s)
 {
     if (s->deferred_action != ELSC_ACTION_NONE && s->deferred_committed) {
         s->deferred_scheduled = true;
-        replay_bh_schedule_oneshot_event(qemu_get_aio_context(),
-                                         elsc_deferred_action_bh, s);
+        if (current_cpu) {
+            async_run_on_cpu(current_cpu, elsc_deferred_action_cpu,
+                             RUN_ON_CPU_HOST_PTR(s));
+        } else {
+            replay_bh_schedule_oneshot_event(qemu_get_aio_context(),
+                                             elsc_deferred_action_bh, s);
+        }
     }
 }
 
