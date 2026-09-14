@@ -2592,7 +2592,7 @@ static const QLogicISPInfo qlogic_isp_infos[] = {
       .reject_busy_mailbox = true, .a64_ram_load = true,
       .recovery_mailboxes = true, .derived_phase_flags = true,
       .cfg1_write_mask = ISP_BUS_CFG1_BANK1080_MASK,
-      .flat_ram_transfers = false,
+      .flat_ram_transfers = true,
       .missing_target_timeout = true,
       .pm_cap_v1 = true,
       .fw_version = { 10, 4, 0 } },
