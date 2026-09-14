@@ -34,6 +34,7 @@
 #include "fpu_helper.h"
 #ifndef CONFIG_USER_ONLY
 #include "semihosting/semihost.h"
+#include "system/memory.h"
 #endif
 
 const char regnames[32][3] = {
@@ -665,6 +666,18 @@ static void mips_cpu_realizefn(DeviceState *dev, Error **errp)
     }
 
     cpu_reset(cs);
+#ifndef CONFIG_USER_ONLY
+    /*
+     * With an uncached view linked, both spaces exist before the vCPU
+     * thread starts; qemu_init_vcpu() then leaves the default alone.
+     */
+    if (cpu->uncached_memory) {
+        cpu_address_space_init(cs, MIPSASIdx_CACHED, "cpu-memory",
+                               cs->memory);
+        cpu_address_space_init(cs, MIPSASIdx_UNCACHED, "cpu-uncached",
+                               cpu->uncached_memory);
+    }
+#endif
     qemu_init_vcpu(cs);
 
     mcc->parent_realize(dev, errp);
@@ -733,15 +746,27 @@ static ObjectClass *mips_cpu_class_by_name(const char *cpu_model)
 #ifndef CONFIG_USER_ONLY
 #include "hw/core/sysemu-cpu-ops.h"
 
+/* The uncached space exists only where a board linked one. */
+static int mips_asidx_from_attrs(CPUState *cs, MemTxAttrs attrs)
+{
+    return attrs.mips_uncached && MIPS_CPU(cs)->uncached_memory ?
+           MIPSASIdx_UNCACHED : MIPSASIdx_CACHED;
+}
+
 static const struct SysemuCPUOps mips_sysemu_ops = {
     .has_work = mips_cpu_has_work,
     .get_phys_addr_debug = mips_cpu_get_phys_addr_debug,
+    .asidx_from_attrs = mips_asidx_from_attrs,
     .legacy_vmsd = &vmstate_mips_cpu,
 };
 #endif
 
 static const Property mips_cpu_properties[] = {
     DEFINE_PROP_BOOL("big-endian", MIPSCPU, is_big_endian, TARGET_BIG_ENDIAN),
+#ifndef CONFIG_USER_ONLY
+    DEFINE_PROP_LINK("uncached-memory", MIPSCPU, uncached_memory,
+                     TYPE_MEMORY_REGION, MemoryRegion *),
+#endif
 };
 
 #ifdef CONFIG_TCG
@@ -836,6 +861,7 @@ static void mips_cpu_class_init(ObjectClass *c, const void *data)
 #ifndef CONFIG_USER_ONLY
     cc->sysemu_ops = &mips_sysemu_ops;
 #endif
+    cc->max_as = MIPSASIdx_MAX;
     cc->disas_set_info = mips_cpu_disas_set_info;
     cc->gdb_num_core_regs = 73;
     cc->gdb_stop_before_watchpoint = true;
