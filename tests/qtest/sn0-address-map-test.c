@@ -282,6 +282,66 @@ static void test_boot_windows_mirror_the_flash(const void *data)
 }
 
 /*
+ * The region-type token ("ram", "rom", "romd", "i/o", ...) that "info
+ * mtree -f"'s flat view of the CPU's address space reports for the entry
+ * covering address, or NULL if the flat view has nothing mapped there.
+ */
+static char *flat_view_region_type_at(QTestState *qts, uint64_t address)
+{
+    g_autofree char *mtree = qtest_hmp(qts, "info mtree -f");
+    const char *system_view = strstr(mtree, "Root memory region: system");
+    const char *system_view_end;
+    const char *line;
+
+    g_assert_nonnull(system_view);
+    system_view = strchr(system_view, '\n');
+    g_assert_nonnull(system_view);
+    system_view++;
+    system_view_end = strstr(system_view, "\nFlatView #");
+    if (!system_view_end) {
+        system_view_end = system_view + strlen(system_view);
+    }
+
+    for (line = system_view; line < system_view_end; ) {
+        const char *line_end = strchr(line, '\n');
+        uint64_t start;
+        uint64_t end;
+        char type[32];
+
+        if (!line_end || line_end > system_view_end) {
+            line_end = system_view_end;
+        }
+        if (sscanf(line, " %" SCNx64 "-%" SCNx64 " (prio %*d, %31[^)])",
+                   &start, &end, type) == 3 &&
+            address >= start && address <= end) {
+            return g_strdup(type);
+        }
+        line = line_end + (line_end < system_view_end);
+    }
+    return NULL;
+}
+
+/*
+ * Every window the processor fetches firmware from must resolve to ram,
+ * rom or romd in the flat view. An i/o entry there caches no TCG
+ * translation: each instruction recompiles as its own one-instruction
+ * block, and the guest runs 100-300x slower while giving no outward sign
+ * anything is wrong.
+ */
+static void assert_flat_view_is_execution_storage(QTestState *qts,
+                                                   uint64_t address)
+{
+    g_autofree char *type = flat_view_region_type_at(qts, address);
+
+    g_assert_nonnull(type);
+    if (strcmp(type, "ram") && strcmp(type, "rom") && strcmp(type, "romd")) {
+        g_test_message("0x%" PRIx64 " resolves to a %s region, not "
+                       "ram/rom/romd", address, type);
+        g_assert_not_reached();
+    }
+}
+
+/*
  * The PROM runs its own code through this base, and an I/O region
  * executes one instruction per block: the base must be a direct (romd)
  * view, read off the machine's own flat view rather than assumed.
@@ -289,21 +349,83 @@ static void test_boot_windows_mirror_the_flash(const void *data)
 static void test_flash_hub_local_is_fast(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
-    g_autofree char *mtree = qtest_hmp(qts, "info mtree -f");
-    const char *hit = strstr(mtree, "000001001fc00000-");
-    const char *line_end;
-    g_autofree char *line = NULL;
+    g_autofree char *type = flat_view_region_type_at(qts, FLASH_HUB_LOCAL);
 
-    g_assert_nonnull(hit);
-    line_end = strchr(hit, '\n');
-    line = g_strndup(hit, line_end ? (size_t)(line_end - hit) : strlen(hit));
-    g_assert_nonnull(strstr(line, "romd"));
+    g_assert_cmpstr(type, ==, "romd");
 
     /* The fast view still has to read the chip's real bytes at this base. */
     g_assert_cmphex(qtest_readq(qts, FLASH_HUB_LOCAL + CONFIG_OFFSET +
                                FIELD_MAGIC), ==, CONFIG_MAGIC);
 
     qtest_quit(qts);
+}
+
+/*
+ * The reset vector and the Hub-local fast alias are the two windows the
+ * default machine's processor fetches firmware from. Neither may resolve
+ * to an i/o region: a real Hub always decodes them as direct storage, and
+ * an i/o entry there would run TCG uncached, 100-300x slower, with nothing
+ * outwardly wrong to see.
+ */
+static void test_execution_windows_are_not_io(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    assert_flat_view_is_execution_storage(qts, FLASH_RESET);
+    assert_flat_view_is_execution_storage(qts, FLASH_HUB_LOCAL);
+
+    qtest_quit(qts);
+}
+
+#define ORIGIN2000_FLASH_SIZE  (1024 * 1024)
+#define ORIGIN2000_FLASH_NODES 4
+
+static char *create_origin2000_flash_image(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc(ORIGIN2000_FLASH_SIZE);
+    char *path = NULL;
+    int fd;
+
+    memset(image, 0xff, ORIGIN2000_FLASH_SIZE);
+    fd = g_file_open_tmp("sn0-origin2000-execution-flash-XXXXXX.bin",
+                        &path, &error);
+    g_assert_no_error(error);
+    close(fd);
+    g_assert_true(g_file_set_contents(path, (const char *)image,
+                                      ORIGIN2000_FLASH_SIZE, &error));
+    g_assert_no_error(error);
+    return path;
+}
+
+/*
+ * Origin 2000 always boots from four node-owned pflash images rather than
+ * synthesized firmware. The reset vector and the Hub-local fast alias must
+ * resolve to direct storage with a real part behind them too, not only in
+ * the synthesized-firmware default the rest of this file exercises.
+ */
+static void test_origin2000_execution_windows_are_not_io(const void *data)
+{
+    g_autoptr(GString) args = g_string_new("-M origin2000");
+    char *paths[ORIGIN2000_FLASH_NODES];
+    QTestState *qts;
+    unsigned int i;
+
+    for (i = 0; i < ORIGIN2000_FLASH_NODES; i++) {
+        paths[i] = create_origin2000_flash_image();
+        g_string_append_printf(args,
+            " -drive if=pflash,index=%u,file=%s,format=raw", i, paths[i]);
+    }
+
+    qts = qtest_init(args->str);
+    assert_flat_view_is_execution_storage(qts, FLASH_RESET);
+    assert_flat_view_is_execution_storage(qts, FLASH_HUB_LOCAL);
+    qtest_quit(qts);
+
+    for (i = 0; i < ORIGIN2000_FLASH_NODES; i++) {
+        g_assert_cmpint(g_unlink(paths[i]), ==, 0);
+        g_free(paths[i]);
+    }
 }
 
 #define FLASH_CPU_IMAGE_SIZE 0x1000
@@ -1065,6 +1187,10 @@ int main(int argc, char **argv)
                         test_boot_windows_mirror_the_flash);
     qtest_add_data_func("sn0/address-map/flash-hub-local-is-fast", NULL,
                         test_flash_hub_local_is_fast);
+    qtest_add_data_func("sn0/address-map/execution-windows-not-io", NULL,
+                        test_execution_windows_are_not_io);
+    qtest_add_data_func("sn0/address-map/origin2000-execution-windows-not-io",
+                        NULL, test_origin2000_execution_windows_are_not_io);
     qtest_add_data_func("sn0/address-map/flash-wide-read-command-mode", NULL,
                         test_flash_wide_read_in_command_mode);
     qtest_add_data_func("sn0/address-map/entry-points", NULL,
