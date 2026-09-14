@@ -212,6 +212,7 @@ tests_mips64_system_thorough = [
 tests_mips64_unit = [
   'lib_matrix',
   'lib_prom',
+  'lib_translation_health',
   'irix_eg_net_verdict',
   'irix_eg_perf_helpers',
   'irix_eg_perf_verdict',
