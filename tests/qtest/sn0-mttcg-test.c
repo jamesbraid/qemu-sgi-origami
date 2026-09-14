@@ -1521,6 +1521,103 @@ static void test_masked_interrupt_stays_off_the_lock(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The re-assert at ERET.  A line held off by EXL alone has had its flag
+ * dropped by the passes above; clearing EXL with ERET must deliver it at
+ * the instruction ERET returns to, not at the next edge on the line.
+ * Nothing here lowers or re-raises IP7, so a missed re-assert leaves the
+ * guest running the continuation with the interrupt never taken.
+ */
+#define UE_CAUSE_OFF        0x120
+#define UE_STATUS_OFF       0x140
+#define UE_CONT_OFF         0x160
+#define STATUS_EXL          0x2u
+#define IMAGE_KSEG1_BASE    0xbfc00000u
+
+static unsigned int ue_cont_pos;
+
+static void emit_eret(GuestImage *img)
+{
+    emit(img, 0x42000018);
+}
+
+static void build_unmask_by_eret(GuestImage *img)
+{
+    unsigned int spin;
+
+    /* s0: IM7 open, IE set, EXL set -- EXL alone holds the line off. */
+    emit_mfc0(img, R_T3, CP0_STATUS, 0);
+    emit_lui(img, R_T4, STATUS_KEEP_HI);
+    emit_ori(img, R_T4, R_T4, STATUS_KEEP_LO);
+    emit_and(img, R_S0, R_T3, R_T4);
+    emit_ori(img, R_S0, R_S0, STATUS_IM7 | STATUS_EXL | 1);
+    emit_mtc0(img, R_S0, CP0_STATUS, 0);
+    emit_ehb(img);
+    emit_publish(img, R_S0, UE_STATUS_OFF);
+
+    /* Compare at the counter matches at once; IP7 stands and EXL holds it. */
+    emit_mfc0(img, R_T5, CP0_COUNT, 0);
+    emit_mtc0(img, R_T5, CP0_COMPARE, 0);
+    emit_ehb(img);
+    spin = img->pos;
+    emit_mfc0(img, R_T6, CP0_CAUSE, 0);
+    emit_andi(img, R_T7, R_T6, CAUSE_IP7);
+    emit_beq(img, R_T7, R_ZERO, spin);
+    emit_nop(img);
+    emit_publish(img, R_T6, UE_CAUSE_OFF);
+
+    /* Passes through the loop with the line standing and masked by EXL. */
+    emit_status_passes(img, R_S0, MI_PASSES / 10);
+
+    /* EPC is the continuation: two words of address, mtc0, ehb, eret. */
+    ue_cont_pos = img->pos + 5 * 4;
+    emit_li_addr(img, R_T5, IMAGE_KSEG1_BASE + ue_cont_pos);
+    emit_mtc0(img, R_T5, CP0_EPC, 0);
+    emit_ehb(img);
+    emit_eret(img);
+    g_assert_cmpuint(img->pos, ==, ue_cont_pos);
+
+    /* Reached only if the ERET delivered nothing. */
+    emit_li(img, R_T3, 1);
+    emit_publish(img, R_T3, UE_CONT_OFF);
+    emit_done_and_halt(img);
+}
+
+static void test_unmask_by_eret_delivers(const void *data)
+{
+    QTestState *qts;
+    unsigned int tries;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    qts = boot_cpu_case("tcg", "R10000", 1, write_r10k_guest_image,
+                        build_unmask_by_eret);
+    for (tries = 0; tries < POLL_TRIES; tries++) {
+        if (state_word(qts, EXC_MARK_OFF) == EXC_MAGIC ||
+            state_word(qts, DONE_OFF) == DONE_MAGIC) {
+            break;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+
+    g_assert_cmphex(state_word(qts, UE_STATUS_OFF) &
+                    (STATUS_IM7 | STATUS_EXL | 1), ==,
+                    STATUS_IM7 | STATUS_EXL | 1);
+    g_assert_cmphex(state_word(qts, UE_CAUSE_OFF) & CAUSE_IP7, ==, CAUSE_IP7);
+    /* Taken at the instruction ERET returns to: the continuation never runs. */
+    g_assert_cmphex(state_word(qts, UE_CONT_OFF), ==, 0);
+    g_assert_cmphex(state_word(qts, EXC_MARK_OFF), ==, EXC_MAGIC);
+    g_assert_cmphex(state_word(qts, EXC_CAUSE_OFF) & CAUSE_IP7, ==, CAUSE_IP7);
+    g_assert_cmphex(state_word(qts, EXC_CAUSE_OFF) & CAUSE_EXCCODE, ==, 0);
+    g_assert_cmphex(state_word(qts, EXC_EPC_OFF), ==,
+                    0xffffffff00000000ULL | IMAGE_KSEG1_BASE | ue_cont_pos);
+
+    qtest_quit(qts);
+}
+
 static void test_tlb_random_global(const void *data)
 {
     QTestState *qts;
@@ -1572,5 +1669,7 @@ int main(int argc, char **argv)
                         test_tlb_random_global);
     qtest_add_data_func("mttcg/interrupt/masked-line-stays-off-the-lock", NULL,
                         test_masked_interrupt_stays_off_the_lock);
+    qtest_add_data_func("mttcg/interrupt/unmask-by-eret-delivers", NULL,
+                        test_unmask_by_eret_delivers);
     return g_test_run();
 }
