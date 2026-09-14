@@ -269,7 +269,7 @@ endif
 # are not present in a minimal device build.
 sn1_xbridge_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_XBRIDGE') ?
-    ['sn1-xbridge-test', 'sn1-xbridge-chip-test',
+    ['sn1-xbridge-test', 'sn1-xbridge-onewire-test', 'sn1-xbridge-chip-test',
      'sn1-xbridge-xbow-test'] : [])
 if not config_all_devices.has_key('CONFIG_SGI_XTALK_TEST_TARGET')
   sn1_xbridge_qtests = []

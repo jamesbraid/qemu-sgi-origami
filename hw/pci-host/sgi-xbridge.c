@@ -2,6 +2,10 @@
 /* XBridge PCI head, implemented from the cleared XBridge contract. */
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/bitops.h"
+#include "hw/1wire/crc.h"
+#include "hw/1wire/ds2505.h"
+#include "hw/misc/sgi-onewire-slot.h"
 #include "hw/pci-host/sgi-xbridge.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/misc/sgi-xbridge-xbow.h"
@@ -313,6 +317,81 @@ static bool xbridge_register_defined(unsigned off)
     default:
         return false;
     }
+}
+
+/*
+ * The bridge-half's own MicroLAN board-identity NIC, at the same offset and
+ * bit layout as the base Bridge chip's BRIDGE_NIC (docs/datasheets/xbridge.md,
+ * "Stock-PROM IO-8 identity access"; register layout confirmed unchanged from
+ * the Bridge datasheet's 0xb0 in the XBridge register delta table). The
+ * reviewed rev-A contract called this register inert in XBridge mode, wired
+ * only to widget 0's crossbar NIC instead; the stock IP35 PROM's own
+ * disassembly and a live BASEIO PROM struct dump instead show the IO-8 head
+ * (widget 15) needing a real response here to attach its bridge object --
+ * see the amendment in docs/datasheets/xbridge.md. This model answers only
+ * for a head a machine gives a board-part identity to (head_realize),
+ * leaving an unfit head (no board behind it, like the empty option slot at
+ * widget 14) exactly as inert as before.
+ */
+#define XBRIDGE_NIC             0x0b0
+#define XBRIDGE_NIC_LEVEL       (1u << 0)
+#define XBRIDGE_NIC_DONE        (1u << 1)
+#define XBRIDGE_NIC_SAMPLE_SHIFT 2
+#define XBRIDGE_NIC_SAMPLE_MASK (0xffu << XBRIDGE_NIC_SAMPLE_SHIFT)
+#define XBRIDGE_NIC_PULSE_SHIFT 10
+#define XBRIDGE_NIC_PULSE_MASK  (0x3ffu << XBRIDGE_NIC_PULSE_SHIFT)
+
+#define XBRIDGE_NIC_ROM_FAMILY   0x0b
+#define XBRIDGE_NIC_PAGE_SIZE    32
+#define XBRIDGE_NIC_PAGES        2
+#define XBRIDGE_NIC_ROM_SIZE     (XBRIDGE_NIC_PAGE_SIZE * XBRIDGE_NIC_PAGES)
+#define XBRIDGE_NIC_SERIAL_MASK  MAKE_64BIT_MASK(0, 48)
+
+/*
+ * SGI_XBRIDGE_NIC_PLACEHOLDER_PART/_SERIAL (sgi-xbridge.h): the identity
+ * bytes a real IP45 IO-8 board presents are not observed by anything this
+ * project holds (docs/datasheets/xbridge.md's "Origin 300 IO-8 population
+ * supplement" records the gap). Family 0x0b matches the one board-identity
+ * NIC family this project has confirmed (the Bridge's own part, OpenBSD's
+ * family-0x0b read); carrying it to the IO-8 is inferred, not observed,
+ * for this specific board.
+ */
+
+static const char xbridge_onewire_image[XBRIDGE_NIC_ROM_SIZE] = {
+    [0]  = 0x01, ' ', ' ', ' ', ' ', ';',
+    [6]  = 'P', 'a', 'r', 't', ':',
+    [11] = ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+    [23] = ';', ' ', ' ', ' ', ' ', ' ', ' ',
+    [32] = ' ', ' ', ' ', ' ', ' ', ' ',
+};
+
+static void xbridge_onewire_build_rom(uint8_t rom[XBRIDGE_NIC_ROM_SIZE],
+                                      const char *board_part)
+{
+    unsigned int page;
+
+    memcpy(rom, xbridge_onewire_image, XBRIDGE_NIC_ROM_SIZE);
+    memcpy(&rom[11], board_part, 12);
+
+    for (page = 0; page < XBRIDGE_NIC_PAGES; page++) {
+        uint8_t *at = &rom[page * XBRIDGE_NIC_PAGE_SIZE];
+        uint16_t crc = ~onewire_crc16(0, at, XBRIDGE_NIC_PAGE_SIZE - 2);
+
+        at[XBRIDGE_NIC_PAGE_SIZE - 2] = crc & 0xff;
+        at[XBRIDGE_NIC_PAGE_SIZE - 1] = crc >> 8;
+    }
+}
+
+/* One bit slot; the guest polls the write's own readback for completion. */
+static void xbridge_onewire_slot(SGIXBridgeHeadState *s, uint32_t val)
+{
+    uint32_t *held = &REG(s, XBRIDGE_NIC);
+    uint32_t pulse = (val & XBRIDGE_NIC_PULSE_MASK) >> XBRIDGE_NIC_PULSE_SHIFT;
+    uint32_t sample = (val & XBRIDGE_NIC_SAMPLE_MASK) >> XBRIDGE_NIC_SAMPLE_SHIFT;
+    bool level = sgi_onewire_slot(s->onewire_bus, pulse, sample);
+
+    *held &= ~XBRIDGE_NIC_LEVEL;
+    *held |= XBRIDGE_NIC_DONE | (level ? XBRIDGE_NIC_LEVEL : 0);
 }
 
 static void xbridge_invalid(SGIXBridgeHeadState *s, hwaddr addr)
@@ -647,6 +726,15 @@ static void xbridge_write(void *opaque, hwaddr addr, uint64_t value,
     case 0x70:
         value &= 0x00ffffff;
         break;
+    case XBRIDGE_NIC:
+        if (s->onewire_bus) {
+            xbridge_onewire_slot(s, (uint32_t)value);
+            return;
+        }
+        /* No board behind this head: same unimplemented drop as before. */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-xbridge: unimplemented write at 0x%x\n", off);
+        return;
     case 0xa0:
         value &= 0x3ff7f;
         break;
@@ -755,6 +843,35 @@ static void xbridge_realize(DeviceState *dev, Error **errp)
     if (s->speed > 3) {
         error_setg(errp, "XBridge PCI speed encoding must be at most 3");
         return;
+    }
+    if (s->board_part) {
+        const char *board_part_error =
+            sgi_bridge_board_part_error(s->board_part);
+        uint8_t rom[XBRIDGE_NIC_ROM_SIZE];
+        DeviceState *part;
+
+        if (board_part_error) {
+            error_setg(errp, "%s", board_part_error);
+            return;
+        }
+        if (s->onewire_serial & ~XBRIDGE_NIC_SERIAL_MASK) {
+            error_setg(errp, "the XBridge head one-wire serial 0x%" PRIx64
+                       " does not fit in 48 bits", s->onewire_serial);
+            return;
+        }
+        /* Composed once, like sgi-bridge.c's own part: an EPROM keeps its
+         * contents across a reset, and the bytes become the part's own
+         * migrated state once realized. */
+        s->onewire_bus = onewire_create_bus(dev, "onewire");
+        xbridge_onewire_build_rom(rom, s->board_part);
+        part = qdev_new(TYPE_ONEWIRE_DS2505);
+        object_property_add_child(OBJECT(s), "onewire-part", OBJECT(part));
+        qdev_prop_set_uint8(part, "family", XBRIDGE_NIC_ROM_FAMILY);
+        qdev_prop_set_uint64(part, "serial", s->onewire_serial);
+        ds2505_set_image(part, rom, sizeof(rom));
+        if (!qdev_realize_and_unref(part, BUS(s->onewire_bus), errp)) {
+            return;
+        }
     }
     for (i = 0; i < 16; i++) {
         struct XBridgeTarget *endpoint = &s->endpoint[i];
@@ -901,6 +1018,9 @@ static bool xbridge_is_hotpluggable_bus(const HotplugHandler *handler, BusState 
 
 static const Property xbridge_properties[] = {
     DEFINE_PROP_UINT8("pci-speed", SGIXBridgeHeadState, speed, 0),
+    DEFINE_PROP_STRING("board-part", SGIXBridgeHeadState, board_part),
+    DEFINE_PROP_UINT64("onewire-serial", SGIXBridgeHeadState, onewire_serial,
+                       SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL),
 };
 
 static void xbridge_class_init(ObjectClass *oc, const void *data)
@@ -978,6 +1098,8 @@ struct SGIXBridgeState {
     qemu_irq warm_reset_sink[SGI_XBRIDGE_EXTERNAL_PORTS];
     uint8_t host_port;
     uint8_t pci_speed[2];
+    char *board_part[2];
+    uint64_t onewire_serial[2];
 };
 
 MemoryRegion *sgi_xbridge_widget_view(SGIXBridgeState *s, unsigned widget)
@@ -1103,6 +1225,12 @@ static void chip_realize(DeviceState *dev, Error **errp)
         unsigned widget = i ? CHIP_HEAD_F : CHIP_HEAD_E;
 
         qdev_prop_set_uint8(DEVICE(&s->head[i]), "pci-speed", s->pci_speed[i]);
+        if (s->board_part[i]) {
+            qdev_prop_set_string(DEVICE(&s->head[i]), "board-part",
+                                 s->board_part[i]);
+        }
+        qdev_prop_set_uint64(DEVICE(&s->head[i]), "onewire-serial",
+                             s->onewire_serial[i]);
         if (!chip_link_host(OBJECT(&s->head[i]), s->host_port, s->fabric,
                             errp) ||
             !sysbus_realize(SYS_BUS_DEVICE(&s->head[i]), errp)) {
@@ -1146,6 +1274,17 @@ static const Property chip_properties[] = {
     DEFINE_PROP_UINT8("host-port", SGIXBridgeState, host_port, 0),
     DEFINE_PROP_UINT8("pci-speed-e", SGIXBridgeState, pci_speed[0], 1),
     DEFINE_PROP_UINT8("pci-speed-f", SGIXBridgeState, pci_speed[1], 0),
+    /*
+     * A head's own MicroLAN board-identity NIC (BRIDGE_NIC, offset 0xb0):
+     * unset leaves that head's register inert, matching a widget with no
+     * board behind it (the empty option slot at widget 14, by default).
+     */
+    DEFINE_PROP_STRING("board-part-e", SGIXBridgeState, board_part[0]),
+    DEFINE_PROP_STRING("board-part-f", SGIXBridgeState, board_part[1]),
+    DEFINE_PROP_UINT64("onewire-serial-e", SGIXBridgeState,
+                       onewire_serial[0], SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL),
+    DEFINE_PROP_UINT64("onewire-serial-f", SGIXBridgeState,
+                       onewire_serial[1], SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL),
 };
 
 /* No state of its own; the children carry theirs. */
