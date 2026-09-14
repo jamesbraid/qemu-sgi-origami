@@ -57,6 +57,17 @@ struct SGIBedrockFlashState {
     MemoryRegion *flash_mmio[SGI_BEDROCK_FLASH_POSITIONS];
 
     SGIBedrockFlashWindow window[SGI_BEDROCK_FLASH_WINDOWS];
+
+    /*
+     * Set by the machine once it has attached a cacheable execution view over
+     * a position's storage, so every store this adapter forwards to that
+     * position -- a command byte or a program -- can refresh the view's copy
+     * and invalidate any translation cached from the bytes it had before.
+     * NULL when nothing reads a position outside this adapter's own MMIO
+     * dispatch.
+     */
+    void (*programmed)(void *opaque, unsigned position);
+    void *programmed_opaque;
 };
 
 #endif
