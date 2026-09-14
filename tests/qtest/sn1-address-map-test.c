@@ -2574,10 +2574,10 @@ static void test_cpu_type_is_r14000(const void *data)
 static void test_machine_defaults(const void *data)
 {
     static const char * const cpu_paths[] = {
-        "/machine/cpu0", "/machine/cpu1",
+        "/machine/node0/cpu0", "/machine/node0/cpu1",
     };
     static const char * const clock_paths[] = {
-        "/machine/cpu0/clk-in", "/machine/cpu1/clk-in",
+        "/machine/node0/cpu0/clk-in", "/machine/node0/cpu1/clk-in",
         "/machine/cpu-refclk",
     };
     QTestState *qts = machine_start_bare("-S");
@@ -2955,6 +2955,91 @@ static void test_cpu_b_enabled_migration(const void *data)
     g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
+/*
+ * The per-CPU cache-as-RAM private window (sn-promdata.c) is new for the
+ * Origin 300 node as of the node-types step: before it, both Bedrock
+ * processors shared one system container with no window at all. It
+ * forwards instead of serving from its own buffer whenever no processor
+ * is in the PROM's cache-only phase -- true throughout a qtest run,
+ * which never executes guest code here, so the phase is never entered.
+ * A forwarded access still traces, and that trace is what tells a
+ * broken post-load apart from a working one for each processor's own
+ * window: if migration left either filter disabled or removed, that
+ * processor's access would fall straight through to the flash it
+ * overlays instead of tracing a forward, silently.
+ */
+#define PROMDATA_WINDOW_PHYS UINT64_C(0x100000)
+
+static void promdata_cpu_probe(QTestState *qts, unsigned int cpu)
+{
+    g_autofree char *command =
+        g_strdup_printf("xp/1wx 0x%" PRIx64, PROMDATA_WINDOW_PHYS);
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{ 'execute': 'human-monitor-command',"
+        "  'arguments': { 'command-line': %s, 'cpu-index': %u } }",
+        command, cpu);
+
+    g_assert(qdict_haskey(response, "return"));
+}
+
+static bool promdata_forward_traced(const char *path)
+{
+    g_autofree char *contents = NULL;
+
+    g_assert_true(g_file_get_contents(path, &contents, NULL, NULL));
+    return strstr(contents, "sn_promdata_forward") != NULL;
+}
+
+static void test_promdata_filter_survives_migration(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *directory = NULL;
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *from_trace = NULL;
+    g_autofree char *to_trace = NULL;
+    g_autofree char *from_extra = NULL;
+    g_autofree char *to_extra = NULL;
+    QTestState *from, *to;
+
+    directory = g_dir_make_tmp("sn1-promdata-migration-XXXXXX", &error);
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from_trace = g_build_filename(directory, "from.trace", NULL);
+    to_trace = g_build_filename(directory, "to.trace", NULL);
+    from_extra = g_strdup_printf("-trace enable=sn_promdata_forward,file=%s",
+                                 from_trace);
+    to_extra = g_strdup_printf(
+        "-trace enable=sn_promdata_forward,file=%s -incoming defer",
+        to_trace);
+
+    from = machine_start_with(prom_path, from_extra);
+    to = machine_start_with(prom_path, to_extra);
+
+    promdata_cpu_probe(from, 0);
+    promdata_cpu_probe(from, 1);
+    g_assert_true(promdata_forward_traced(from_trace));
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
+    wait_for_migration(from);
+    wait_for_migration(to);
+
+    promdata_cpu_probe(to, 0);
+    promdata_cpu_probe(to, 1);
+    g_assert_true(promdata_forward_traced(to_trace));
+
+    qtest_quit(from);
+    qtest_quit(to);
+    g_unlink(socket);
+    g_unlink(from_trace);
+    g_unlink(to_trace);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
 static void test_system_reset_clears_bedrock_state(const void *data)
 {
     QTestState *qts = machine_start();
@@ -3073,6 +3158,8 @@ int main(int argc, char **argv)
                         test_prom_migration);
     qtest_add_data_func("sn1/address-map/cpu-b-enabled-migration", NULL,
                         test_cpu_b_enabled_migration);
+    qtest_add_data_func("sn1/address-map/promdata-filter-survives-migration",
+                        NULL, test_promdata_filter_survives_migration);
     qtest_add_data_func("sn1/address-map/system-reset", NULL,
                         test_system_reset_clears_bedrock_state);
 
