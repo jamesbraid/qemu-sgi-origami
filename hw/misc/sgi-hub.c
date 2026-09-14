@@ -3028,6 +3028,35 @@ static const SGIHubRegDef *sgi_hub_reg_lookup(hwaddr addr)
                    sizeof(sgi_hub_registers[0]), sgi_hub_reg_compare);
 }
 
+/*
+ * Three registers carry nearly all the read traffic. A census of one
+ * eight-processor PROM boot counted 992 million reads of this window, of
+ * which 988.3 million were the counter and 1.4 million the pending banks;
+ * everything else together came to 2.4 million. The general decode walks
+ * five range checks and then binary-searches eighty-nine rows before it
+ * knows which of them it is looking at, and it does that holding the big
+ * lock while seven other processors wait for it. Answer those three here.
+ *
+ * None of them can belong to a ranged family -- sgi_hub_realize() checks
+ * that, along with each one still being the row it short-circuits.
+ */
+static bool sgi_hub_read_hot(SGIHubState *s, hwaddr addr, uint64_t *value)
+{
+    switch (addr) {
+    case HUB_PI_RT_COUNT:
+        *value = sgi_hub_read_rt_count_reg(s, addr, 0);
+        return true;
+    case HUB_PI_INT_PEND0:
+        *value = sgi_hub_read_int_pend(s, addr, 0);
+        return true;
+    case HUB_PI_INT_PEND1:
+        *value = sgi_hub_read_int_pend(s, addr, 1);
+        return true;
+    default:
+        return false;
+    }
+}
+
 static uint64_t sgi_hub_read_internal(void *opaque, hwaddr addr,
                                       unsigned size)
 {
@@ -3036,7 +3065,11 @@ static uint64_t sgi_hub_read_internal(void *opaque, hwaddr addr,
     uint8_t *route;
     unsigned int n;
     hwaddr bte_reg;
+    uint64_t hot;
 
+    if (sgi_hub_read_hot(s, addr, &hot)) {
+        return hot;
+    }
     if (sgi_hub_bwin_entry(addr, &n)) {
         return s->io_bwin[n];
     }
@@ -3395,6 +3428,40 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
                              before, after);
 }
 
+/*
+ * What sgi_hub_read_hot() takes on trust: each offset it answers is still
+ * the row it stands in for, and none of them is inside a ranged family the
+ * general decode would have claimed first. Moving a row or widening a range
+ * has to fail here, at realize, rather than by quietly answering the wrong
+ * register for the rest of a boot.
+ */
+static void sgi_hub_assert_hot_reads_match_the_table(void)
+{
+    static const struct {
+        hwaddr offset;
+        unsigned arg;
+        uint64_t (*read)(SGIHubState *s, hwaddr addr, unsigned arg);
+    } hot[] = {
+        { HUB_PI_RT_COUNT,  0, sgi_hub_read_rt_count_reg },
+        { HUB_PI_INT_PEND0, 0, sgi_hub_read_int_pend },
+        { HUB_PI_INT_PEND1, 1, sgi_hub_read_int_pend },
+    };
+    unsigned int n;
+
+    for (n = 0; n < ARRAY_SIZE(hot); n++) {
+        const SGIHubRegDef *reg = sgi_hub_reg_lookup(hot[n].offset);
+        unsigned int ranged;
+        hwaddr bte_reg;
+
+        assert(reg && reg->read == hot[n].read && reg->arg == hot[n].arg);
+        assert(!sgi_hub_bwin_entry(hot[n].offset, &ranged));
+        assert(!sgi_hub_bte_entry(hot[n].offset, &ranged, &bte_reg));
+        assert(!sgi_hub_icrb_c_entry(hot[n].offset));
+        assert(!sgi_hub_md_error_entry(hot[n].offset));
+        assert(hot[n].offset < HUB_NI_META_TABLE);
+    }
+}
+
 void sgi_hub_latch_prom_pi_error(SGIHubState *s)
 {
     unsigned int slice;
@@ -3562,6 +3629,7 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     for (n = 1; n < ARRAY_SIZE(sgi_hub_registers); n++) {
         assert(sgi_hub_registers[n - 1].offset < sgi_hub_registers[n].offset);
     }
+    sgi_hub_assert_hot_reads_match_the_table();
 
     if (!s->xtalk) {
         error_setg(errp, "the Hub needs the crosstalk space its big windows "
