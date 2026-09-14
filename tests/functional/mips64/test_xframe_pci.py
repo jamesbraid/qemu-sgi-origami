@@ -29,25 +29,41 @@ docstring for exactly how its expected text was derived and cross-checked
 against OpenBSD's own source, the real kernel binary these tests boot, and
 this fork's own xframe device model.
 
-_drive_pci_probe() below never sends the guest anything: OpenBSD's PCI bus
-scan finishes well before any interactive question is asked -- in
-REAL_LOGIN_TRANSCRIPT (test_openbsd_login_verdict.py's own real captured
-boot of this exact kernel and disk), every PCI device line appears before
-"boot device: 'unknown' unrecognized." and "root device: sd0a", the first
-point that transcript ever needs an answer. This test only needs to read
-until XFRAME_UNCLAIMED_RE matches, a TRIPWIRE fires, or the timeout runs
-out -- unlike test_openbsd_login.py's own _drive_login(), it never needs
+_pci_probe_reached() below, past the netboot dialogue itself, never sends
+the guest anything: OpenBSD's PCI bus scan finishes well before any
+interactive question is asked -- in REAL_LOGIN_TRANSCRIPT
+(test_openbsd_login_verdict.py's own real captured boot of this exact
+kernel and disk), every PCI device line appears before "boot device:
+'unknown' unrecognized." and "root device: sd0a", the first point that
+transcript ever needs an answer. This test only needs to read until
+XFRAME_UNCLAIMED_RE matches, a TRIPWIRE fires, or the timeout runs out --
+unlike test_openbsd_login.py's own _drive_login(), it never needs
 LOGIN_STEPS at all.
+
+Boots through the real stock IP27 PROM's own netboot path rather than a
+direct `-kernel` load, the same conversion test_openbsd_login.py and
+test_linux_kernel.py make and for the same reason (the plan this test
+belongs to retires synthesized firmware): lib_prom's prom_netboot_steps()
+drives the System Maintenance Menu and command monitor to `boot -f
+bootp()/bsd.IP27` over a second SLIRP usermode network on the machine's
+onboard IOC3, separate from the xframe adapter's own -netdev n1. The
+onboard controller already exists in the machine model whether or not a
+backend is attached (test_openbsd_login.py's own reference boot with
+`-nic none` already shows OpenBSD attaching it), so giving it a real
+netboot backend here changes nothing about the PCI topology OpenBSD's
+autoconfiguration reports -- the exact concern this test's own pass
+condition depends on.
 
 BOOT_TIMEOUT_SECONDS below is a real measurement, not a guess: a run of
 this exact test against real provisioned assets (podman, this worktree
 mounted read-write and a checkout carrying assets/ mounted read-only as
-ORIGAMI_ASSETS) reached XFRAME_UNCLAIMED_RE and returned PASS in about 43s
-wall-clock end to end -- including podman container startup -- on a quiet
-host. 300 gives roughly seven times that headroom for a contended host,
-the same shape of margin this directory's own meson.build keeps for
-sn0_smp ("four times" its own measured figure); the meson timeout entry
-for this test keeps the usual 60s margin over this budget.
+ORIGAMI_ASSETS) reached XFRAME_UNCLAIMED_RE and returned PASS in about
+41s wall-clock end to end -- including podman container startup and the
+real PROM boot and netboot this port added -- on a host already busy
+running other work. 300 keeps roughly the same seven-times margin over
+that as it kept over the direct-`-kernel` measurement this timeout
+predates; the meson timeout entry for this test keeps the usual 60s
+margin over this budget.
 
 Guarded the same way test_openbsd_login.py is: @skipBigDataTest() (the
 disk is 2 GiB), @skipSlowTest() (booting to firmware-plus-early-kernel is
@@ -59,14 +75,12 @@ loudly rather than skipping it, the same as test_openbsd_login.py.
 """
 
 import os
-import socket
-import time
 
 from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
                        skipSlowTest)
 
-from lib_prom import resolve_asset
-from lib_translation_health import assert_translation_healthy
+from lib_prom import (FIRMWARE_REL, drive_console, prom_netboot_steps,
+                      resolve_asset)
 
 from test_xframe_pci_verdict import (TRIPWIRES, XFRAME_UNCLAIMED_RE,
                                      xframe_pci_verdict)
@@ -77,6 +91,12 @@ from test_xframe_pci_verdict import (TRIPWIRES, XFRAME_UNCLAIMED_RE,
 # the xframe device added to the command line.
 KERNEL_REL = os.path.join('assets', 'openbsd', '6.9', 'bsd.IP27')
 DISK_REL = os.path.join('assets', 'openbsd', 'spike', 'root.img')
+
+# The boot file this test's own SLIRP TFTP server serves the kernel
+# under -- see prom_netboot_steps()'s own docstring for why this need
+# not match the kernel's name on disk.
+NETBOOT_BOOTFILE = 'bsd.IP27'
+NETBOOT_STEPS = prom_netboot_steps(NETBOOT_BOOTFILE)
 
 # Same reason test_openbsd_login.py uses it (see that file's own
 # docstring): at 128 MiB or below the guest's whole memory bank fits in
@@ -99,47 +119,19 @@ XFRAME_ARGS = (
                'netdev=n1,mac=02:00:5d:00:00:01'),
 )
 
-_TAIL_MAX = 4096
 
-
-def _drive_pci_probe(sock, log_path, timeout, vm=None):
-    """Read the console until XFRAME_UNCLAIMED_RE matches, a TRIPWIRE
-    fires, or timeout -- never sending anything (see this module's own
-    docstring for why no interactive drive is needed). Every byte
-    received is accumulated into the returned transcript and appended to
-    log_path, the same shape test_openbsd_login.py's own _drive_login()
-    keeps. Returns the transcript captured up to whichever comes first;
-    xframe_pci_verdict() is what actually decides PASS/FAIL from what was
-    captured either way.
+def _pci_probe_reached(transcript):
+    """The drive's end condition once the netboot dialogue has been
+    answered: XFRAME_UNCLAIMED_RE has matched, or a TRIPWIRE fired --
+    never sending anything beyond the netboot commands themselves (see
+    this module's own docstring for why no interactive drive is needed
+    past that point). xframe_pci_verdict() is what actually decides
+    PASS/FAIL from the transcript captured either way; this only stops
+    the read early once one of those two things is already visible.
     """
-    sock.settimeout(1.0)
-    deadline = time.monotonic() + timeout
-    transcript = ""
-    tail = ""
-    health_checked = False
-    with open(log_path, "a", encoding="utf-8") as log:
-        while time.monotonic() < deadline:
-            try:
-                chunk = sock.recv(4096)
-            except socket.timeout:
-                continue
-            except OSError:
-                break
-            if not chunk:
-                break
-            text = chunk.decode("utf-8", errors="replace")
-            transcript += text
-            log.write(text)
-            log.flush()
-            if vm is not None and not health_checked:
-                health_checked = True
-                assert_translation_healthy(vm)
-            tail = (tail + text)[-_TAIL_MAX:]
-            if XFRAME_UNCLAIMED_RE.search(tail):
-                break
-            if any(rx.search(tail) for _why, rx in TRIPWIRES):
-                break
-    return transcript
+    text = transcript.decode("utf-8", errors="replace")
+    return bool(XFRAME_UNCLAIMED_RE.search(text) or
+               any(rx.search(text) for _why, rx in TRIPWIRES))
 
 
 class XframePci(QemuSystemTest):
@@ -152,11 +144,12 @@ class XframePci(QemuSystemTest):
 
     def _asset_paths(self):
         assets_root = os.environ['ORIGAMI_ASSETS']
+        firmware = resolve_asset(assets_root, FIRMWARE_REL)
         kernel = resolve_asset(assets_root, KERNEL_REL)
         disk = resolve_asset(assets_root, DISK_REL)
-        if not (kernel and disk):
+        if not (firmware and kernel and disk):
             return None
-        return kernel, disk
+        return firmware, kernel, disk
 
     @skipBigDataTest()
     @skipSlowTest()
@@ -166,26 +159,30 @@ class XframePci(QemuSystemTest):
         if paths is None:
             # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
             # the case where it is unset entirely -- getting here means
-            # it IS set, so a missing kernel or disk is a provisioning
-            # failure, not an absent-assets developer run, and must fail
-            # loudly: a silent skip here would let a real Xframe PCI
-            # regression pass CI unnoticed.
+            # it IS set, so a missing PROM, kernel or disk is a
+            # provisioning failure, not an absent-assets developer run,
+            # and must fail loudly: a silent skip here would let a real
+            # Xframe PCI regression pass CI unnoticed.
             self.fail(
-                'ORIGAMI_ASSETS is set but the kernel/disk are missing '
-                f'at <ORIGAMI_ASSETS>/{KERNEL_REL} and '
+                'ORIGAMI_ASSETS is set but the PROM/kernel/disk are '
+                f'missing at <ORIGAMI_ASSETS>/{FIRMWARE_REL}, '
+                f'<ORIGAMI_ASSETS>/{KERNEL_REL} and '
                 f'<ORIGAMI_ASSETS>/{DISK_REL} -- provision them '
                 '(nightly assets) rather than silently skipping a '
                 'claimed capability')
-        kernel, disk = paths
+        firmware, kernel, disk = paths
 
         self.require_netdev('user')
 
         vm = self.get_vm(name='xframe_pci')
-        vm.set_machine('origin200')
+        vm.set_machine('origin200,synthesized-firmware=off,debug-leds=off')
         vm.set_console()
         vm.add_args(
             '-m', str(MEMORY_MIB), '-snapshot',
-            '-kernel', kernel,
+            '-bios', firmware,
+            '-nic', ('user,id=net0,'
+                    f'tftp={os.path.dirname(kernel)},'
+                    f'bootfile={NETBOOT_BOOTFILE}'),
             '-drive', f'if=none,id=hd0,file={disk},format=raw',
             '-device', 'scsi-hd,bus=scsi.0,scsi-id=1,drive=hd0',
             *XFRAME_ARGS)
@@ -193,8 +190,9 @@ class XframePci(QemuSystemTest):
 
         log_path = self.log_file('xframe-pci.log')
         try:
-            transcript = _drive_pci_probe(
-                vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS, vm=vm)
+            transcript, _reached = drive_console(
+                vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS,
+                NETBOOT_STEPS, reached_when=_pci_probe_reached, vm=vm)
         finally:
             # A VM that crashed or exited on its own has already left; a
             # graceful shutdown() against an already-dead process still
