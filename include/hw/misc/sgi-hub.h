@@ -278,6 +278,11 @@ struct SGIHubState {
      * comparator since the value changed; how often its comparator has been
      * written; the other's write count at its last read and at its last
      * post hold; and its active hold, zero for none, with the hold's kind.
+     *
+     * A withdrawal hold also carries the comparator value its processor
+     * wrote, which lands when the hold ends. That is a write the guest has
+     * already made, so migration lands it before saving rather than
+     * discarding it with the rest.
      */
     bool pi_rt_seen[SGI_HUB_PROCESSORS];
     uint64_t pi_rt_writes[SGI_HUB_PROCESSORS];
@@ -286,6 +291,15 @@ struct SGIHubState {
     uint64_t pi_rt_hold[SGI_HUB_PROCESSORS];
     uint8_t pi_rt_hold_kind[SGI_HUB_PROCESSORS];
     uint64_t pi_rt_hold_seq;
+    bool pi_rt_withheld_valid[SGI_HUB_PROCESSORS];
+    uint64_t pi_rt_withheld[SGI_HUB_PROCESSORS];
+
+    /*
+     * Whether the first processor has given its alive signal since reset.
+     * Unlike the hold itself it cannot be re-derived from the registers --
+     * firmware clears the alive bit again later -- so it is migrated.
+     */
+    bool pi_rt_alive_seen;
 
     /* The counter's clock control -- bit 16 resets set, see the definition. */
     uint64_t pi_rt_local_ctrl;
