@@ -1453,9 +1453,10 @@ static void test_enabled_recorder_remains_wired_after_migration(
 #define BACKDOOR_DIR_HUB        (SPACE_HUB + 0xc0000000ULL)
 
 /*
- * The back-door storage is a heap buffer, not a RAM MemoryRegion, so the
- * node's vmstate must carry it -- without that the destination reads its
- * realize-time zero fill. The low sixteen bits are the real storage.
+ * The back-door storage is the backing of a ROM device, so it crosses in
+ * the RAM stream -- if it ever stopped doing so the destination would
+ * read its realize-time zero fill. The low sixteen bits are the real
+ * storage.
  */
 static void test_backdoor_storage_survives_migration(const void *data)
 {

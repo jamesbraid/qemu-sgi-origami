@@ -198,13 +198,14 @@ typedef struct SN0FlashImplementation {
 typedef struct SN0BackdoorState {
     unsigned int node;          /* the window's node, for tracing */
     const char *window;         /* "ecc" or "dir", for tracing */
+    /* Read from RAM through the region, written through its callback. */
+    MemoryRegion storage;
     uint8_t *data;
-    uint32_t data_size;
+    uint64_t data_size;
     uint64_t bank_offset[SN0_MAX_MEMORY_BANKS];
-    unsigned int populated_banks;
-    /* The fold: the bank is above the shift, the index below the mask. */
-    unsigned int bank_shift;
-    uint64_t span_mask[SN0_MAX_MEMORY_BANKS];
+    /* One alias of the storage for each place in the window it repeats. */
+    MemoryRegion *fold;
+    unsigned int folds;
 } SN0BackdoorState;
 
 typedef struct SN0PromDataState {
@@ -274,9 +275,7 @@ typedef struct SN0NodeState {
     MemoryRegion hub_regs_node_view;
     MemoryRegion arcs_trap;
     MemoryRegion fw_text;
-    MemoryRegion backdoor_ecc;
     MemoryRegion backdoor_ecc_absent;
-    MemoryRegion backdoor_dir;
     MemoryRegion backdoor_dir_absent;
     SN0BackdoorState backdoor_ecc_state;
     SN0BackdoorState backdoor_dir_state;

@@ -938,6 +938,49 @@ static void test_backdoor_entry_widths(const void *data)
 }
 
 /*
+ * A processor's back-door read is served from the window's storage by
+ * the translation fast path, so it never reaches the memory core's
+ * access dispatch; a write still does, because that is where the format
+ * mask is applied. Watch the core's own region trace: a window that
+ * merely answered correctly would pass every other test here.
+ */
+static void test_backdoor_reads_bypass_dispatch(const void *data)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *trace = NULL;
+    g_auto(GStrv) lines = NULL;
+    QTestState *qts;
+    bool traced_write = false;
+    unsigned int i;
+    int fd;
+
+    fd = g_file_open_tmp("sn0-backdoor-dispatch-XXXXXX", &path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+
+    qts = qtest_initf("-M origin200 -trace enable=memory_region_ops_*,file=%s",
+                      path);
+    qtest_writeq(qts, BACKDOOR_DIR, 0x4321);
+    g_assert_cmphex(qtest_readq(qts, BACKDOOR_DIR) & 0xffff, ==, 0x4321);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
+    g_assert_cmpint(g_unlink(path), ==, 0);
+
+    lines = g_strsplit(trace, "\n", -1);
+    for (i = 0; lines[i] != NULL; i++) {
+        if (!strstr(lines[i], "name 'sn0.node0.backdoor.dir'")) {
+            continue;
+        }
+        g_assert_false(g_str_has_prefix(lines[i], "memory_region_ops_read"));
+        if (g_str_has_prefix(lines[i], "memory_region_ops_write")) {
+            traced_write = true;
+        }
+    }
+    g_assert_true(traced_write);
+}
+
+/*
  * The back door is the memory address shifted right by two; firmware
  * relies on the quarter-size aliasing to size the bank.
  */
@@ -1059,10 +1102,13 @@ static void test_backdoor_tracks_populated_banks(const void *data)
 }
 
 /*
- * Back-door accesses trace, with the storage byte a populated access
- * resolved to. The default machine's bank 0 spans 16 MiB, so an offset
- * one span up names the same storage as the offset below it. The absent
- * floor traces too, its read value left unpinned.
+ * A populated write traces the storage index it reached, which is also
+ * the offset the handler was given: the window's fold is memory-region
+ * aliases now, so the window offset the guest used is gone before the
+ * handler runs. The write below goes one 16 MiB span up from the entry
+ * it lands on, and the read of that entry proves the fold, while tracing
+ * nothing because it comes out of the storage directly. The absent floor
+ * still traces both ways, its read value left unpinned.
  */
 static void test_backdoor_accesses_trace(const void *data)
 {
@@ -1087,12 +1133,11 @@ static void test_backdoor_accesses_trace(const void *data)
     g_assert_cmpint(g_unlink(path), ==, 0);
     g_assert_nonnull(strstr(trace,
         "sn0_backdoor_populated cpu -1 node 0 window dir "
-        "pc 0x0000000000000000 offset 0x01001008 size 8 write 1 "
+        "pc 0x0000000000000000 offset 0x00001008 size 8 write 1 "
         "value 0x0000000000001234 index 0x00001008\n"));
-    g_assert_nonnull(strstr(trace,
-        "sn0_backdoor_populated cpu -1 node 0 window dir "
-        "pc 0x0000000000000000 offset 0x00001008 size 8 write 0 "
-        "value 0x0000000000001234 index 0x00001008\n"));
+    g_assert_null(strstr(trace, "sn0_backdoor_populated cpu -1 node 0 "
+                               "window dir pc 0x0000000000000000 "
+                               "offset 0x00001008 size 8 write 0"));
     g_assert_nonnull(strstr(trace,
         "sn0_backdoor_absent cpu -1 node 0 window ecc "
         "pc 0x0000000000000000 offset 0x08000000 size 8 write 1 "
@@ -1314,6 +1359,8 @@ int main(int argc, char **argv)
                         test_backdoor_entry_widths);
     qtest_add_data_func("sn0/address-map/backdoor-accesses-trace", NULL,
                         test_backdoor_accesses_trace);
+    qtest_add_data_func("sn0/address-map/backdoor-reads-bypass-dispatch",
+                        NULL, test_backdoor_reads_bypass_dispatch);
 
     return g_test_run();
 }
