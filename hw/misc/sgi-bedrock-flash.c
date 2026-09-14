@@ -126,6 +126,7 @@ static MemTxResult flash_write(void *opaque, hwaddr offset, uint64_t value,
     SGIBedrockFlashState *s = window->adapter;
     unsigned position;
     hwaddr within;
+    MemTxResult result;
 
     if (size != 8) {
         qemu_log_mask(LOG_UNIMP, "sgi-bedrock-flash: %s boot space: %u-byte "
@@ -158,8 +159,20 @@ static MemTxResult flash_write(void *opaque, hwaddr offset, uint64_t value,
     }
 
     /* The store at 4n above a position carries that part's word at byte n. */
-    return memory_region_dispatch_write(s->flash_mmio[position], within >> 2,
-                                        value, MO_16 | MO_BE, attrs);
+    result = memory_region_dispatch_write(s->flash_mmio[position], within >> 2,
+                                          value, MO_16 | MO_BE, attrs);
+    /*
+     * Every accepted cycle, not only ones that end up changing a stored byte:
+     * telling an unlock or a command cycle from the one that actually writes
+     * or erases would mean shadowing the CFI device's own AMD command state
+     * machine here. The notified side tells them apart itself, from the
+     * part's own dirty record, so an unlock or a command cycle that changed
+     * nothing costs it an empty check rather than a copy.
+     */
+    if (result == MEMTX_OK && s->programmed) {
+        s->programmed(s->programmed_opaque, position);
+    }
+    return result;
 }
 
 /*
