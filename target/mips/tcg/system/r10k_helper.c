@@ -424,8 +424,6 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
             unsigned int dword = quad * 2 + extract64(paddr, 3, 1);
 
             if (cache_operation == 0b111) { /* Index Store Data */
-                env->r10k->scache_data[quad * 2] = 0;
-                env->r10k->scache_data[quad * 2 + 1] = 0;
                 env->r10k->scache_data[dword] =
                     (uint64_t)(uint32_t)env->CP0_TagHi << 32 |
                     (uint32_t)env->CP0_TagLo;
