@@ -2774,6 +2774,64 @@ static void test_second_processor_match_waits_for_alive(const void *data)
                                "cpu 1 hold answered after "), >, hold);
 }
 
+/*
+ * A memory map change anywhere in the machine queues work on every
+ * processor, and the stock PROM makes dozens while a node's processors
+ * meet. The held processor runs that work before its next instruction, so
+ * the hold steps aside for it and resumes behind it: the second processor
+ * still waits for the alive signal, and its scratch read still carries the
+ * bit. A big window aimed while it is held is such a change.
+ */
+static void test_alive_hold_outlasts_a_memory_map_change(const void *data)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = trace_file_create();
+    g_autofree char *release = NULL;
+    g_autofree char *yield = NULL;
+    g_auto(GStrv) records = NULL;
+    QTestState *qts;
+    uint64_t id;
+    int hold;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    build_alive_image(image);
+    qts = handshake_start(image, "sn0-hub-rt-alive-hold-map-change", "multi",
+                          path);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_for_register(qts, HUB_LOCAL + PI_RT_COMPARE_B, RENDEZVOUS_VALUE);
+    g_usleep(HANDSHAKE_SETTLE_US);
+    g_assert_cmphex(cpu_heartbeat(qts, 3), ==, 0);
+    qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(1),
+                 IO_BWIN_WIDGET(9) | IO_BWIN_SLICE(1));
+    g_usleep(HANDSHAKE_SETTLE_US);
+    /* B has run the work the change queued on it and has not run on. */
+    g_assert_cmphex(cpu_heartbeat(qts, 3), ==, 0);
+    qtest_writeq(qts, SN0_USER_MAILBOX + 32, 1);
+    g_assert_cmphex(wait_for_rendezvous_result(qts, 3), ==, 1);
+    g_assert_cmphex(wait_for_rendezvous_result(qts, 0), ==, 1);
+    g_assert_cmphex(cpu_heartbeat(qts, 1) & RENDEZVOUS_ALIVE, ==,
+                    RENDEZVOUS_ALIVE);
+    qtest_quit(qts);
+
+    records = trace_file_take(path);
+    hold = trace_find(records, 0, "sgi_hub_rt_hold", "cpu 1 alive hold: ");
+    id = trace_hold_id(records, hold);
+    yield = g_strdup_printf("cpu 1 id %" PRIu64
+                            " yields to queued work after ", id);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold_yield", yield),
+                     >=, 1);
+    release = g_strdup_printf("cpu 0 held_cpu 1 kind alive id %" PRIu64
+                              " realtime_ns ", id);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold_release", release),
+                     ==, 1);
+    g_assert_cmpint(trace_find(records, hold, "sgi_hub_rt_hold_end",
+                               "cpu 1 hold answered after "), >, hold);
+}
+
 /* Slice A only parks; the test posts its value and disables it. */
 static void build_lone_second_image(SN0Image *p)
 {
@@ -6449,6 +6507,8 @@ int main(int argc, char **argv)
                         test_withdrawing_an_unread_post_waits_for_the_partner);
     qtest_add_data_func("sn0/hub/second-processor-match-waits-for-alive", NULL,
                         test_second_processor_match_waits_for_alive);
+    qtest_add_data_func("sn0/hub/alive-hold-outlasts-a-memory-map-change",
+                        NULL, test_alive_hold_outlasts_a_memory_map_change);
     qtest_add_data_func("sn0/hub/second-processor-not-held-without-a-first",
                         NULL, test_second_processor_not_held_without_a_first);
     qtest_add_data_func("sn0/hub/alive-wait-returns-after-firmware-reset",

@@ -226,9 +226,13 @@ otherwise have taken:
 A hold also ends when the partner can no longer run, or after two
 seconds. It is queued work on the held processor's own thread,
 outside the execution loop and with the big lock released; it waits
-on that vCPU's halt condition, so a stop, queued work or a
-deliverable interrupt ends it. A Hub holds at most one processor at a
-time, and round-robin execution holds nobody. Migration lands a
+on that vCPU's halt condition, so a stop or a deliverable interrupt
+ends it. Other work queued on that processor runs before its next
+instruction, and the hold resumes behind it; a memory map change
+anywhere in the machine queues such work on every processor, and the
+stock PROM makes dozens while a node's processors meet. A Hub holds
+at most one processor at a time, and round-robin execution holds
+nobody. Migration lands a
 withheld withdrawal before saving, so the destination sees what a
 machine with no hold would have had. The limitation that leaves: any
 multi-threaded guest that uses the comparators this way, with their

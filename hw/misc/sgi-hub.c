@@ -1456,6 +1456,7 @@ typedef struct SGIHubRTHold {
     SGIHubState *hub;
     unsigned int slice;
     uint64_t id;
+    int64_t start; /* realtime it first ran; a yield keeps the deadline */
 } SGIHubRTHold;
 
 /* This Hub's slice for the executing processor, or -1 for any other. */
@@ -1594,14 +1595,19 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
     SGIHubRTHold *hold = data.host_ptr;
     SGIHubState *s = hold->hub;
     unsigned int slice = hold->slice;
-    int64_t start = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
-    int64_t deadline = start + SGI_HUB_RT_HOLD_MS * SCALE_MS;
-    int64_t now;
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    int64_t deadline;
     const char *outcome;
+    bool yield = false;
     bool traced_wait = false;
     int64_t wait_start = 0;
     int64_t wait_end = 0;
     int wait_ms = 0;
+
+    if (!hold->start) {
+        hold->start = now;
+    }
+    deadline = hold->start + SGI_HUB_RT_HOLD_MS * SCALE_MS;
 
     for (;;) {
         now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
@@ -1611,10 +1617,18 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
             outcome = "partner stopped";
         } else if (cs->stop || cs->unplug) {
             outcome = "preempted by a stop";
-        } else if (!cpu_work_list_empty(cs)) {
-            outcome = "preempted by queued work";
         } else if (cpu_has_work(cs)) {
             outcome = "preempted by an interrupt";
+        } else if (!cpu_work_list_empty(cs)) {
+            /*
+             * Work queued on this processor runs before its next
+             * instruction, and a memory map change anywhere in the
+             * machine queues some on every processor. Step aside for it
+             * and take the hold up again behind it; the guest cannot
+             * come between.
+             */
+            outcome = NULL;
+            yield = true;
         } else if (now >= deadline) {
             outcome = "timed out";
         } else {
@@ -1629,7 +1643,17 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
         if (traced_wait) {
             trace_sgi_hub_rt_hold_wake(cs->cpu_index, hold->id, wait_ms,
                                        wait_start, wait_end,
-                                       outcome ? outcome : "waiting");
+                                       outcome ? outcome :
+                                       yield ? "yielding" : "waiting");
+        }
+        if (yield) {
+            if (trace_event_get_state_backends(TRACE_SGI_HUB_RT_HOLD_YIELD)) {
+                trace_sgi_hub_rt_hold_yield(
+                    cs->cpu_index, hold->id, (now - hold->start) / SCALE_US,
+                    now, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+            }
+            async_run_on_cpu(cs, sgi_hub_rt_hold, data);
+            return;
         }
         if (outcome) {
             break;
@@ -1658,8 +1682,8 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
     /* End at the clock read the loop decided on, so the length is exact. */
     if (trace_event_get_state_backends(TRACE_SGI_HUB_RT_HOLD_END)) {
         trace_sgi_hub_rt_hold_end(cs->cpu_index, outcome,
-                                  (now - start) / SCALE_US,
-                                  s->cpu_base + (slice ^ 1), start, now,
+                                  (now - hold->start) / SCALE_US,
+                                  s->cpu_base + (slice ^ 1), hold->start, now,
                                   qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
                                   hold->id);
     }
@@ -1695,8 +1719,11 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
  * What its partner needs from it after that is the post, so the hold that
  * keeps the post standing sits at the write that takes it back
  * (sgi_hub_rt_withhold). A hold also ends when the partner can no longer
- * run, when the held processor has a stop, queued work or a deliverable
- * interrupt, or after SGI_HUB_RT_HOLD_MS.
+ * run, when the held processor has a stop or a deliverable interrupt, or
+ * after SGI_HUB_RT_HOLD_MS. Work queued on the held processor runs and
+ * the hold resumes behind it: a memory map change anywhere in the machine
+ * queues such work on every processor, and the stock PROM makes dozens
+ * while a node's processors meet.
  *
  * The hold is queued work on the held processor's own vCPU. It starts at
  * that processor's next block boundary, outside the execution loop, and
@@ -1748,7 +1775,7 @@ static void sgi_hub_rt_mailbox_read(SGIHubState *s, unsigned int owner,
     }
     s->pi_rt_held_at[reader] = s->pi_rt_writes[owner];
 
-    hold = g_new(SGIHubRTHold, 1);
+    hold = g_new0(SGIHubRTHold, 1);
     hold->hub = SGI_HUB(object_ref(OBJECT(s)));
     hold->slice = reader;
     hold->id = ++s->pi_rt_hold_seq;
@@ -1800,7 +1827,7 @@ static bool sgi_hub_rt_withhold(SGIHubState *s, unsigned int arg,
         return false;
     }
 
-    hold = g_new(SGIHubRTHold, 1);
+    hold = g_new0(SGIHubRTHold, 1);
     hold->hub = SGI_HUB(object_ref(OBJECT(s)));
     hold->slice = arg;
     hold->id = ++s->pi_rt_hold_seq;
