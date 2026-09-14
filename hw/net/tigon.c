@@ -1943,10 +1943,16 @@ static ssize_t tigon_receive_packet(NetClientState *nc,
      * ring, which the driver posts separately and only once it has been told
      * a larger frame size. Choosing by size is what lets a guest raise its
      * frame size at all: served only from the standard ring, the card can
-     * never carry one. Once the jumbo ring is configured, an oversize frame
-     * waits for a jumbo buffer rather than being mangled into a standard one:
-     * a truncated frame fails the guest's checksums and is silently lost,
-     * where a held frame is retried.
+     * never carry one.
+     *
+     * A jumbo ring configured but holding no posted buffer discards the frame
+     * and counts an input discard rather than mangling it into a standard
+     * buffer. The two rings have independent control blocks and index pairs,
+     * so an empty jumbo ring cannot stop the standard ring being served,
+     * while parking the frame stops the back end and strands every standard
+     * frame behind it. Whether real firmware could instead retain it for a
+     * bounded refill is not settled by any public source -- see the jumbo
+     * receive contract in the Tigon datasheet.
      */
     /*
      * A queued frame is re-offered straight to receive() without another
@@ -1958,7 +1964,15 @@ static ssize_t tigon_receive_packet(NetClientState *nc,
     }
     jumbo = size > TIGON_STD_FRAME_SIZE && s->jumbo_rx_ring_base != 0;
     if (jumbo && s->jumbo_rx_considx == s->jumbo_rx_prodidx) {
-        return 0;      /* jumbo-configured but unprovisioned: flow control */
+        if (s->std_rx_considx == s->std_rx_prodidx) {
+            return 0;  /* neither ring posted: genuine flow control */
+        }
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "tigon: received frame of %zu bytes needs the jumbo "
+                      "ring, which has no posted buffer; dropping it\n", size);
+        s->stat_rx_discards++;
+        s->stats_dirty = true;
+        return size;
     }
     if (!jumbo && s->std_rx_considx == s->std_rx_prodidx) {
         return 0;      /* genuine no-buffer flow control */
