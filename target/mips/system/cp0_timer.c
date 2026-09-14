@@ -127,26 +127,32 @@ uint32_t cpu_mips_get_count(CPUMIPSState *env)
 }
 
 /*
- * A write that leaves Count at or past Compare. The manual (14.8) makes the
+ * A write that leaves Count exactly at Compare. The manual (14.8) makes the
  * comparison continuous - "Whenever their values equal, the interrupt bit
  * IP[7] in the Cause register is set" - so equality standing at the moment
- * of the write raises the interrupt at once. The expiry path must not come
- * here: at expiry the registers are also equal, but that match has just been
- * delivered, and cpu_mips_timer_update()'s zero-interval clamp correctly
- * defers the next one a full wrap - which is also the deadline both write
- * paths have already programmed for the match after this one.
+ * of the write raises the interrupt at once. Only equality: a Compare value
+ * already behind Count at the moment of the write is not a standing match
+ * and waits for the counter to wrap around to it, same as every other CPU
+ * model here and the same rule this project's Hub real-time comparator
+ * follows (docs/datasheets/hub-processor-interface.md). The expiry path
+ * must not come here: at expiry the registers are also equal, but that
+ * match has just been delivered, and cpu_mips_timer_update()'s zero-interval
+ * clamp correctly defers the next one a full wrap - which is also the
+ * deadline both write paths have already programmed for the match after
+ * this one.
  *
- * The window treats a Compare write up to half the counter space behind
- * Count as the match it just missed. That corner needs a stall between
- * adjacent instructions longer than the arming distance - unreachable on
- * silicon, routine on a loaded host - and deferring it costs the guest a
- * full counter wrap of its clock. Count writes keep strict equality.
+ * A prior revision also matched a Compare write up to half the counter
+ * space behind Count, to close an IRIX 6.5.30 lost-interrupt symptom (QEMU
+ * issue 626 has the evidence). That reading contradicted the manual's plain
+ * equality rule and this project's own R14000 datasheet, and it broke
+ * OpenBSD's mips64 clock code, which disarms the timer with a deliberately
+ * behind write (sys/arch/mips64/mips64/clock.c, cp0_startclock) and depends
+ * on that write NOT raising IP7 again.
  */
 static bool cpu_mips_write_matches(CPUMIPSState *env, uint32_t count,
-                                   uint32_t compare, uint32_t window)
+                                   uint32_t compare)
 {
-    if (!env->cfg.compare_match_is_continuous ||
-        (uint32_t)(count - compare) > window) {
+    if (!env->cfg.compare_match_is_continuous || count != compare) {
         return false;
     }
     if (env->insn_flags & ISA_MIPS_R2) {
@@ -176,7 +182,7 @@ void cpu_mips_store_count(CPUMIPSState *env, uint32_t count)
                                                              now_ns);
         /* Update timer timer */
         cpu_mips_timer_update(env, now_ns);
-        if (cpu_mips_write_matches(env, count, env->CP0_Compare, 0)) {
+        if (cpu_mips_write_matches(env, count, env->CP0_Compare)) {
             cpu_mips_update_ip7(env);
         }
     }
@@ -195,7 +201,7 @@ void cpu_mips_store_compare(CPUMIPSState *env, uint32_t value)
         /* Classify and arm against one instant, or a stall between the
          * two reads turns an imminent match into a full-wrap deferral. */
         matched = cpu_mips_write_matches(env, cpu_mips_count_at(env, now_ns),
-                                         value, UINT32_MAX >> 1);
+                                         value);
         cpu_mips_timer_update(env, now_ns);
     }
     if (matched) {

@@ -6,6 +6,8 @@
 #include "libqtest.h"
 
 #define DATA_BASE 0x20001220000ULL
+#define MACHINE_SINGLE \
+    "-M origin200 -m 128M -cpu R10000 -accel tcg,thread=multi -S"
 #define MACHINE_DUAL \
     "-M origin200,topology=origin200-dual -m 128M " \
     "-smp 4"
@@ -126,6 +128,11 @@ static void user_mtc0(UserCode *p, unsigned int rt, unsigned int rd)
     for (unsigned int i = 0; i < 4; i++) {
         user_emit(p, 0);
     }
+}
+
+static void user_mfc0(UserCode *p, unsigned int rt, unsigned int rd)
+{
+    user_emit(p, 0x40000000 | (rt << 16) | (rd << 11));
 }
 
 static unsigned int user_branch(UserCode *p, unsigned int op,
@@ -675,6 +682,69 @@ static void test_r14000_word_loads(void)
                        true);
 }
 
+/* CP0 register numbers used by the timer image below. */
+#define CP0_COUNT      9
+#define CP0_COMPARE    11
+#define CP0_CAUSE      13
+#define CAUSE_IP7      (1u << 15)
+#define TIMER_MAILBOX  (USER_PHYS + 0x1000)
+
+/*
+ * Compare = Count - 1 arms a value that is behind the live counter by
+ * construction: Count only advances between the read and the write, so the
+ * value written is never ahead of it. The manual's continuous comparator
+ * (14.8) fires on equality, not on "at or past", so this write must leave
+ * IP7 clear rather than raise it - the disarming pattern OpenBSD's mips64
+ * clock code depends on (sys/arch/mips64/mips64/clock.c, cp0_startclock).
+ */
+static void build_compare_behind_count(UserCode *p)
+{
+    user_mfc0(p, 8, CP0_COUNT);
+    user_i(p, 9, 8, 8, (uint16_t)-1); /* t0 = Count - 1 */
+    user_mtc0(p, 8, CP0_COMPARE);
+    user_mfc0(p, 9, CP0_CAUSE);
+    user_li(p, 26, 0xa0000000 | TIMER_MAILBOX);
+    user_i(p, 43, 26, 9, 0);          /* sw t1, 0(k0): the Cause word */
+    user_i(p, 9, 0, 9, 1);
+    user_i(p, 43, 26, 9, 4);          /* sw 1, 4(k0): the done flag */
+    user_park(p);
+}
+
+static void test_compare_behind_count_leaves_ip7_clear(void)
+{
+    g_autofree UserCode *image = g_new0(UserCode, 1);
+    g_autofree char *path = NULL;
+    uint8_t mailbox[8];
+    QTestState *qts;
+    int64_t deadline;
+    int fd;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    build_compare_behind_count(image);
+    fd = g_file_open_tmp("sn0-cpu-timer-XXXXXX", &path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image->bytes, sizeof(image->bytes)), ==,
+                    sizeof(image->bytes));
+    close(fd);
+    qts = qtest_initf(MACHINE_SINGLE " -bios %s", path);
+    unlink(path);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    do {
+        qtest_memread(qts, TIMER_MAILBOX, mailbox, sizeof(mailbox));
+        if (ldl_be_p(mailbox + 4)) {
+            break;
+        }
+        g_usleep(1000);
+    } while (g_get_monotonic_time() < deadline);
+    g_assert_cmpuint(ldl_be_p(mailbox + 4), ==, 1);
+    g_assert_cmphex(ldl_be_p(mailbox) & CAUSE_IP7, ==, 0);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -687,5 +757,7 @@ int main(int argc, char **argv)
     if (qtest_has_machine("malta")) {
         qtest_add_func("/sn0/qtest/r14000-word-loads", test_r14000_word_loads);
     }
+    qtest_add_func("/sn0/qtest/cpu-timer-compare-behind-count",
+                   test_compare_behind_count_leaves_ip7_clear);
     return g_test_run();
 }
