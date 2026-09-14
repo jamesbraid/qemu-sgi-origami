@@ -2272,6 +2272,27 @@ static void test_directory_protection(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * With a flash part attached, sn1_load_prom() backs the reset vector and
+ * the bounded high local view with i/o handlers instead of the direct
+ * alias a stock-PROM boot gets there. TCG caches no translation out of an
+ * i/o region, so the processor recompiles one instruction per fetch and
+ * the guest runs 100-300x slower while looking like it is still making
+ * progress. This is the live bug the execution-view fix addresses, and
+ * this test stays red until that fix lands.
+ */
+static void test_flash_prom_execution_windows_are_not_io(const void *data)
+{
+    g_autofree char *flash = create_flash_image();
+    QTestState *qts = machine_start_with_flash(flash, "");
+
+    assert_flat_view_is_execution_storage(qts, PROM_RESET);
+    assert_flat_view_is_execution_storage(qts, HUB_LOCAL_HIGH_BOOT);
+
+    qtest_quit(qts);
+    remove_flash_image(flash);
+}
+
 static void test_boot_flash_backs_every_prom_view(const void *data)
 {
     g_autofree char *flash = create_flash_image();
@@ -3454,6 +3475,14 @@ int main(int argc, char **argv)
                         NULL, test_promdata_filter_survives_migration);
     qtest_add_data_func("sn1/address-map/system-reset", NULL,
                         test_system_reset_clears_bedrock_state);
+    /*
+     * Registered last: this test's fatal assertion aborts the whole
+     * process on the current trunk, and GTest runs registered tests in
+     * one process in registration order, so anything after it here would
+     * never run while it stays red.
+     */
+    qtest_add_data_func("sn1/address-map/flash-prom-execution-windows-not-io",
+                        NULL, test_flash_prom_execution_windows_are_not_io);
 
     result = g_test_run();
     g_assert_cmpint(g_unlink(prom_path), ==, 0);
