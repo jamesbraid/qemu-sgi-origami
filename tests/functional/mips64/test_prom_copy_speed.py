@@ -38,6 +38,7 @@ from lib_prom import FIRMWARE_REL, resolve_asset
 from lib_prom_copy_speed import (COPY_BRACKET_END, COPY_BRACKET_MAX_SECONDS,
                                  COPY_BRACKET_START, copy_is_fast,
                                  record_first_seen)
+from lib_translation_health import assert_translation_healthy
 
 POLL_INTERVAL_SECONDS = 0.5
 # Long enough to let even a regressed (minutes-long) copy reach 0x3c so the
@@ -89,6 +90,7 @@ class PromCopySpeed(QemuSystemTest):
         log_path = self.log_file('prom_copy_speed.log')
         deadline = time.monotonic() + DEADLINE_SECONDS
         first_seen = {}
+        health_checked = False
         try:
             while time.monotonic() < deadline:
                 now = time.monotonic()
@@ -96,6 +98,11 @@ class PromCopySpeed(QemuSystemTest):
                     with open(log_path, encoding='utf-8',
                               errors='replace') as fobj:
                         record_first_seen(first_seen, fobj.read(), now)
+                if first_seen and not health_checked:
+                    # The first pre-copy progress code is the
+                    # firmware's first demonstrable run.
+                    health_checked = True
+                    assert_translation_healthy(vm)
                 if COPY_BRACKET_END in first_seen:
                     break
                 if vm.exitcode() is not None:

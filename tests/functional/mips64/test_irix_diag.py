@@ -220,7 +220,7 @@ if QemuSystemTest is not None:
                     vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS,
                     DRIVER_STEPS, reached_when=(
                         lambda t: len(DIAG_SUMMARY_RE.findall(t))
-                        >= DIAG_COUNT))
+                        >= DIAG_COUNT), vm=vm)
             finally:
                 vm.shutdown(hard=vm.exitcode() is not None)
             ended = _utc_now()

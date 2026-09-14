@@ -78,6 +78,7 @@ from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
                        skipSlowTest)
 
 from lib_prom import resolve_asset
+from lib_translation_health import assert_translation_healthy
 
 from test_openbsd_login_verdict import login_verdict, TRIPWIRES
 
@@ -112,7 +113,7 @@ LOGIN_STEPS = (
 _TAIL_MAX = 4096
 
 
-def _drive_login(sock, log_path, timeout):
+def _drive_login(sock, log_path, timeout, vm=None):
     """Answer the kernel's device questions, then log in, against a real
     framework console socket -- the same shape as lib_prom.py's own
     drive_console(), adapted for login_origin()'s own ordered questions
@@ -135,6 +136,7 @@ def _drive_login(sock, log_path, timeout):
     deadline = time.monotonic() + timeout
     transcript = ""
     tail = ""
+    health_checked = False
     with open(log_path, "a", encoding="utf-8") as log:
         while time.monotonic() < deadline:
             try:
@@ -149,6 +151,9 @@ def _drive_login(sock, log_path, timeout):
             transcript += text
             log.write(text)
             log.flush()
+            if vm is not None and not health_checked:
+                health_checked = True
+                assert_translation_healthy(vm)
             tail = (tail + text)[-_TAIL_MAX:]
             for rule in rules:
                 if not rule["fired"] and rule["re"].search(tail):
@@ -215,7 +220,7 @@ class OpenbsdLogin(QemuSystemTest):
         log_path = self.log_file('openbsd-login.log')
         try:
             transcript = _drive_login(
-                vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS)
+                vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS, vm=vm)
         finally:
             # A VM that crashed or exited on its own has already
             # left; a graceful shutdown() against an already-dead

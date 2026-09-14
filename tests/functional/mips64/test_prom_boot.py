@@ -40,6 +40,7 @@ from qemu_test import QemuSystemTest, skipIfMissingEnv
 from lib_matrix import Cell, machine_props, qemu_args
 from lib_prom import (FIRMWARE_REL, MARK, codes_seen, mark_reached,
                       resolve_asset)
+from lib_translation_health import assert_translation_healthy
 
 
 # The set-subset comparison's own budget: boot-gate's default (tools/
@@ -106,12 +107,21 @@ class PromBoot(QemuSystemTest):
         log_path = self.log_file('prom_boot.log')
         deadline = time.monotonic() + BOOT_TIMEOUT_SECONDS
         seen = set()
+        health_checked = False
         try:
             while time.monotonic() < deadline:
                 if os.path.exists(log_path):
                     with open(log_path, encoding='utf-8',
                              errors='replace') as fobj:
                         seen = codes_seen(fobj.read())
+                if seen and not health_checked:
+                    # The first progress code is the firmware's first
+                    # demonstrable run; catch a translation storm here
+                    # instead of spending the rest of this boot's
+                    # budget on a guest running 100 to 300 times
+                    # slower than it should.
+                    health_checked = True
+                    assert_translation_healthy(vm)
                 ok, _missing = mark_reached(seen, MARK)
                 if ok:
                     break

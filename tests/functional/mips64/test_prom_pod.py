@@ -50,6 +50,7 @@ from lib_prom import (FIRMWARE_REL, file_record, file_sha256,
                       fork_git_identity, resolve_asset, utc_now)
 from lib_prom_mdk import PROM_SHA256
 from lib_prom_pod import COMMANDS, LOCAL_POD_SWITCHES, verdict
+from lib_translation_health import assert_translation_healthy
 
 
 # Boot to the POD prompt is about two minutes under a contended host and
@@ -64,7 +65,7 @@ PAGER_RE = re.compile(rb"--More--")
 _TAIL_MAX = 8192
 
 
-def _drive_pod(sock, log_path, timeout, commands):
+def _drive_pod(sock, log_path, timeout, commands, vm=None):
     """Answer POD's own prompts and run the command list.
 
     Unlike the fixed one-shot rules the netboot tests use, POD reprints
@@ -80,6 +81,7 @@ def _drive_pod(sock, log_path, timeout, commands):
     transcript = bytearray()
     tail = b""
     reached = False
+    health_checked = False
     with open(log_path, "wb") as log:
         while time.monotonic() < deadline:
             try:
@@ -93,6 +95,9 @@ def _drive_pod(sock, log_path, timeout, commands):
             transcript += chunk
             log.write(chunk)
             log.flush()
+            if vm is not None and not health_checked:
+                health_checked = True
+                assert_translation_healthy(vm)
             tail = (tail + chunk)[-_TAIL_MAX:]
             if SWITCHES_RE.search(tail):
                 sock.sendall(b"%04x\n" % LOCAL_POD_SWITCHES)
@@ -158,7 +163,7 @@ class PromPod(QemuSystemTest):
         try:
             transcript, reached = _drive_pod(
                 vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS,
-                COMMANDS)
+                COMMANDS, vm=vm)
         finally:
             vm.shutdown(hard=vm.exitcode() is not None)
         ended = utc_now()

@@ -140,7 +140,7 @@ if QemuSystemTest is not None:
                 transcript, reached = drive_console(
                     vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS,
                     DRIVER_STEPS, reached_when=(
-                        lambda t: bool(DIAG_DONE_RE.search(t))))
+                        lambda t: bool(DIAG_DONE_RE.search(t))), vm=vm)
             finally:
                 vm.shutdown(hard=vm.exitcode() is not None)
             ended = utc_now()

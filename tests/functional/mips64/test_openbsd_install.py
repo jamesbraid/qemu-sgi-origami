@@ -113,6 +113,7 @@ from qemu_test import (
     get_qemu_img, which)
 
 from lib_prom import resolve_asset
+from lib_translation_health import assert_translation_healthy
 
 from test_openbsd_install_verdict import (
     install_verdict, CONGRATULATIONS_RE, LOCATION_OF_SETS_RE, TRIPWIRES)
@@ -308,7 +309,7 @@ _WINDOW_MAX = 300
 _TAIL_MAX = 4096
 
 
-def _drive_install(sock, log_path, timeout):
+def _drive_install(sock, log_path, timeout, vm=None):
     """Answers the installer's prompts as install-driver.py proved,
     against a real framework console socket -- the same shape
     test_openbsd_login.py's own _drive_login() and lib_prom.py's own
@@ -353,6 +354,7 @@ def _drive_install(sock, log_path, timeout):
     last_send = 0.0
     location_of_sets_seen = 0
     fallback_fired_for = None
+    health_checked = False
 
     with open(log_path, "a", encoding="utf-8") as log:
         while time.monotonic() < deadline:
@@ -373,6 +375,9 @@ def _drive_install(sock, log_path, timeout):
                 window = (window + text)[-_WINDOW_MAX:]
                 tail = (tail + text)[-_TAIL_MAX:]
                 last_byte_time = time.monotonic()
+                if vm is not None and not health_checked:
+                    health_checked = True
+                    assert_translation_healthy(vm)
                 if (CONGRATULATIONS_RE.search(tail) or
                         any(rx.search(tail) for _why, rx in TRIPWIRES)):
                     break
@@ -533,7 +538,8 @@ class OpenbsdInstall(QemuSystemTest):
         log_path = self.log_file('openbsd-install.log')
         try:
             transcript = _drive_install(
-                vm.console_socket, log_path, INSTALL_TIMEOUT_SECONDS)
+                vm.console_socket, log_path, INSTALL_TIMEOUT_SECONDS,
+                vm=vm)
         finally:
             # A VM that crashed, exited on its own (-no-reboot after
             # the installer's own post-completion reboot request), or
