@@ -34,26 +34,31 @@ typedef struct SGIHubModuleIdentity {
  * The whole -serial assignment in one place: an index collision between two
  * files is invisible at either call site. Every module carries the same set
  * of serial connectors, so the lines are node-major with a fixed stride:
- * node n owns the block [4n, 4n+4). Within a block, port A of the base I/O
+ * node n owns the block [6n, 6n+6). Within a block, port A of the base I/O
  * controller comes first (also the firmware console), then port B, then the
  * system controller's AUX port -- where firmware redirects after a failed
- * diagnostic -- then the bring-up port. One physical connector per module
- * means one backend per module, so each module's ports take their own
- * indices rather than sharing the first module's: a machine that handed
- * index 2 to two modules' controllers could not launch with that backend
- * provisioned. The four constants below are offsets within a node's block;
- * SN0_NODE_SERIAL() turns a (node, offset) pair into the -serial index, and
- * for node 0 the offset already is that index. The bring-up port has no
- * shipped connector and exists on node 0 only. The machine resolves these
- * indices and hands each Hub its own backend; the Hub never calls
- * serial_hd() itself.
+ * diagnostic -- then the bring-up port, then the two base I/O transmit
+ * records. One physical connector per module means one backend per module,
+ * so each module's ports take their own indices rather than sharing the
+ * first module's: a machine that handed index 2 to two modules' controllers
+ * could not launch with that backend provisioned. The six constants below
+ * are offsets within a node's block; SN0_NODE_SERIAL() turns a (node,
+ * offset) pair into the -serial index, and for node 0 the offset already is
+ * that index. The bring-up port has no shipped connector and exists on node
+ * 0 only. The two record lines have no connector either: they are write-only
+ * sinks taking what each serial port transmitted, so a console consumer that
+ * stops reading cannot starve the record. The machine resolves these indices
+ * and hands each Hub its own backend; the Hub never calls serial_hd()
+ * itself.
  */
-#define SN0_SERIAL_LINES_PER_NODE  4
+#define SN0_SERIAL_LINES_PER_NODE  6
 
 #define SN0_IOC3_SERIAL_A_CHARDEV  0
 #define SN0_IOC3_SERIAL_B_CHARDEV  1
 #define SN0_ELSC_CHARDEV           2
 #define SN0_JUNK_UART_CHARDEV      3
+#define SN0_IOC3_RECORD_A_CHARDEV  4
+#define SN0_IOC3_RECORD_B_CHARDEV  5
 
 #define SN0_NODE_SERIAL(node, offset) \
     ((node) * SN0_SERIAL_LINES_PER_NODE + (offset))

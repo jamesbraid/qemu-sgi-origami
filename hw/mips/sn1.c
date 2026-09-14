@@ -622,12 +622,20 @@ static void sn1_configure_ioc3(PCIDevice *ioc3, const SN1ModelPciDevice *model)
         blk_by_legacy_dinfo(nvram_dinfo) : blk_by_name("sgi-nvram0");
     Chardev *serial_a = serial_hd(1);
     Chardev *serial_b = serial_hd(2);
+    Chardev *record_a = serial_hd(3);
+    Chardev *record_b = serial_hd(4);
 
     if (serial_a) {
         qdev_prop_set_chr(DEVICE(ioc3), "chardev-a", serial_a);
     }
     if (serial_b) {
         qdev_prop_set_chr(DEVICE(ioc3), "chardev-b", serial_b);
+    }
+    if (record_a) {
+        qdev_prop_set_chr(DEVICE(ioc3), "record-a", record_a);
+    }
+    if (record_b) {
+        qdev_prop_set_chr(DEVICE(ioc3), "record-b", record_b);
     }
     if (parallel_hds[0]) {
         qdev_prop_set_chr(DEVICE(ioc3), "parallel-chardev",
