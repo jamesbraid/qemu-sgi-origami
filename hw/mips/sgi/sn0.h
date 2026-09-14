@@ -316,8 +316,8 @@ typedef struct SN0NodeState {
     unsigned int mem_count;
 } SN0NodeState;
 
-#define TYPE_SN0_NODE "sn0-node"
-DECLARE_INSTANCE_CHECKER(SN0NodeState, SN0_NODE, TYPE_SN0_NODE)
+#define TYPE_SGI_SN0_NODE "sgi-sn0-node"
+DECLARE_INSTANCE_CHECKER(SN0NodeState, SN0_NODE, TYPE_SGI_SN0_NODE)
 
 #define TYPE_SN0_MACHINE MACHINE_TYPE_NAME("sn0")
 

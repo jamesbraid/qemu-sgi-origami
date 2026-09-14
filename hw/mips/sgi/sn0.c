@@ -1891,7 +1891,7 @@ static void sn0_init(MachineState *machine)
 
     for (node_index = 0; node_index < node_count; node_index++) {
         g_autofree char *name = g_strdup_printf("node%u", node_index);
-        Object *node = object_new(TYPE_SN0_NODE);
+        Object *node = object_new(TYPE_SGI_SN0_NODE);
 
         object_property_add_child(OBJECT(machine), name, node);
         object_unref(node);
@@ -2320,7 +2320,7 @@ static const TypeInfo sn0_machine_types[] = {
         .class_init        = sn0_machine_class_init,
     },
     {
-        .name              = TYPE_SN0_NODE,
+        .name              = TYPE_SGI_SN0_NODE,
         .parent            = TYPE_SYS_BUS_DEVICE,
         .instance_size     = sizeof(SN0NodeState),
         .instance_init     = sn0_node_instance_init,

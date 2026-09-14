@@ -382,7 +382,7 @@ void sn0_origin2000_prepare_nodes(MachineState *machine)
 
     for (i = 0; i < c->node_count; i++) {
         g_autofree char *name = g_strdup_printf("node%zu", i);
-        SN0NodeState *node = SN0_NODE(object_new(TYPE_SN0_NODE));
+        SN0NodeState *node = SN0_NODE(object_new(TYPE_SGI_SN0_NODE));
 
         object_property_add_child(OBJECT(machine), name, OBJECT(node));
         object_unref(OBJECT(node));
