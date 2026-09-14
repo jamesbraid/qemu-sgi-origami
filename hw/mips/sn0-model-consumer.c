@@ -113,6 +113,8 @@ static PCIDevice *sn0_model_create_ioc3(SN0MachineState *s,
                               TYPE_SGI_IOC3);
     Chardev *ioc3_a;
     Chardev *ioc3_b;
+    Chardev *record_a;
+    Chardev *record_b;
 
     /* A child of the node that carries the board, not of the machine. */
     object_property_add_child(OBJECT(s->nodes[node_index]), "ioc3",
@@ -127,6 +129,16 @@ static PCIDevice *sn0_model_create_ioc3(SN0MachineState *s,
     }
     if (ioc3_b) {
         qdev_prop_set_chr(DEVICE(ioc3), "chardev-b", ioc3_b);
+    }
+    record_a = serial_hd(SN0_NODE_SERIAL(node_index,
+                                         SN0_IOC3_RECORD_A_CHARDEV));
+    record_b = serial_hd(SN0_NODE_SERIAL(node_index,
+                                         SN0_IOC3_RECORD_B_CHARDEV));
+    if (record_a) {
+        qdev_prop_set_chr(DEVICE(ioc3), "record-a", record_a);
+    }
+    if (record_b) {
+        qdev_prop_set_chr(DEVICE(ioc3), "record-b", record_b);
     }
     if (node_index < MAX_PARALLEL_PORTS && parallel_hds[node_index]) {
         qdev_prop_set_chr(DEVICE(ioc3), "parallel-chardev",

@@ -25,28 +25,6 @@
 #include "net/net.h"
 #include "trace.h"
 
-/* Byte-wide only; both guests place their own byte lanes -- add none here. */
-static uint64_t sgi_ioc3_serial_read(void *opaque, hwaddr addr, unsigned size)
-{
-    return serial_io_ops.read(opaque, addr, 1);
-}
-
-static void sgi_ioc3_serial_write(void *opaque, hwaddr addr, uint64_t val,
-                                  unsigned size)
-{
-    serial_io_ops.write(opaque, addr, val & 0xff, 1);
-}
-
-static const MemoryRegionOps sgi_ioc3_serial_ops = {
-    .read = sgi_ioc3_serial_read,
-    .write = sgi_ioc3_serial_write,
-    .endianness = DEVICE_LITTLE_ENDIAN,
-    .valid.min_access_size = 1,
-    .valid.max_access_size = 1,
-    .impl.min_access_size = 1,
-    .impl.max_access_size = 1,
-};
-
 static void sgi_ioc3_update_irq(SGIIOC3State *s)
 {
     qemu_set_irq(s->superio_irq, !!(s->int_status & s->int_enable));
@@ -440,6 +418,56 @@ static const MemoryRegionOps sgi_ioc3_main_ops = {
 #define UART_MSR_CTS    0x10
 #define UART_MSR_DCD    0x80
 
+#define UART_LCR_DLAB   0x80
+
+/*
+ * Every character the chip hands a port's UART to transmit, written to a
+ * backend of its own. Loopback keeps its characters inside the port.
+ */
+static void sgi_ioc3_serial_record(SGIIOC3State *s, unsigned int port,
+                                   uint8_t ch)
+{
+    if (!qemu_chr_fe_backend_connected(&s->serial_record[port])) {
+        return;
+    }
+    if (s->serial[port].mcr & UART_MCR_LOOP) {
+        return;
+    }
+    qemu_chr_fe_write_all(&s->serial_record[port], &ch, 1);
+}
+
+/* Byte-wide only; both guests place their own byte lanes -- add none here. */
+static uint64_t sgi_ioc3_serial_read(void *opaque, hwaddr addr, unsigned size)
+{
+    SGIIOC3SerialAlias *handle = opaque;
+
+    return serial_io_ops.read(&handle->chip->serial[handle->port], addr, 1);
+}
+
+static void sgi_ioc3_serial_write(void *opaque, hwaddr addr, uint64_t val,
+                                  unsigned size)
+{
+    SGIIOC3SerialAlias *handle = opaque;
+    SerialState *serial = &handle->chip->serial[handle->port];
+    bool is_thr = addr == UART_RBR_THR && !(serial->lcr & UART_LCR_DLAB);
+
+    serial_io_ops.write(serial, addr, val & 0xff, 1);
+
+    if (is_thr) {
+        sgi_ioc3_serial_record(handle->chip, handle->port, val & 0xff);
+    }
+}
+
+static const MemoryRegionOps sgi_ioc3_serial_ops = {
+    .read = sgi_ioc3_serial_read,
+    .write = sgi_ioc3_serial_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 1,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 1,
+};
+
 static bool sgi_ioc3_sdma_port_offset(hwaddr reg, unsigned int *port,
                                       hwaddr *offset)
 {
@@ -732,6 +760,7 @@ static void sgi_ioc3_sdma_transmit(SGIIOC3State *s, unsigned int port)
                     return;
                 }
                 serial_io_ops.write(serial, UART_RBR_THR, entry[i], 1);
+                sgi_ioc3_serial_record(s, port, entry[i]);
                 /* Drain per character or loopback overruns the 16-byte FIFO. */
                 sgi_ioc3_sdma_receive(s, port);
                 break;
@@ -1252,8 +1281,10 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
             return;
         }
 
+        s->serial_io_port[i].chip = s;
+        s->serial_io_port[i].port = i;
         memory_region_init_io(&s->serial_io[i], OBJECT(dev),
-                              &sgi_ioc3_serial_ops, serial,
+                              &sgi_ioc3_serial_ops, &s->serial_io_port[i],
                               sgi_ioc3_serial_name[i], 8);
         memory_region_add_subregion(&s->bar, sgi_ioc3_serial_base[i],
                                     &s->serial_io[i]);
@@ -1667,6 +1698,8 @@ static const Property sgi_ioc3_properties[] = {
                        SGI_IOC3_POPULATION_AUTO),
     DEFINE_PROP_UINT8("timekeeper-kind", SGIIOC3State, timekeeper_kind,
                       SGI_IOC3_TIMEKEEPER_NONE),
+    DEFINE_PROP_CHR("record-a", SGIIOC3State, serial_record[0]),
+    DEFINE_PROP_CHR("record-b", SGIIOC3State, serial_record[1]),
 };
 
 /*

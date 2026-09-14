@@ -1908,18 +1908,20 @@ static void test_an_unbacked_receive_ring_raises_the_pci_error(
  * slave module drops its POD console onto its own IOC3 port A, which sits on
  * -serial line 4 under the node-major stride-4 scheme (line 0 is node 0's).
  * When only node 0's controller was backed, node 1's port had no chardev and
- * this console was dark. The host sends a byte down line 4 and it must reach
- * node 1's port A: the plain 16550 pass-through path, rings left off, so this
- * proves the backend alone. serial_hd(0..3) are left empty, so a byte
- * arriving at node 1's port cannot have come from any node-0 line.
+ * this console was dark. The host sends a byte down line 6, the first line of
+ * node 1's block, and it must reach node 1's port A: the plain 16550
+ * pass-through path, rings left off, so this proves the backend alone.
+ * serial_hd(0..5) are left empty, so a byte arriving at node 1's port cannot
+ * have come from any node-0 line.
  */
-static void test_node1_ioc3_a_receives_through_serial_hd_4(const void *data)
+static void test_node1_ioc3_a_receives_through_serial_hd_6(const void *data)
 {
     uint16_t port;
     int lfd = portb_listen(&port);
     g_autofree char *args = g_strdup_printf(
         DUAL_IO_ARGS
         " -serial none -serial none -serial none -serial none "
+        "-serial none -serial none "
         "-chardev socket,id=n1a,host=127.0.0.1,port=%u,reconnect-ms=10000 "
         "-serial chardev:n1a", port);
     QTestState *qts = qtest_init(args);
@@ -1951,6 +1953,150 @@ static void test_node1_ioc3_a_receives_through_serial_hd_4(const void *data)
     close(lfd);
     qtest_quit(qts);
 }
+
+/*
+ * The transmit record: a console consumer that stops reading holds up the
+ * port's own backend and, once the transmitter's hold bound gives up, costs
+ * the socket peer those characters. The record backend is not on that path,
+ * so what the guest transmitted survives whatever the consumer does.
+ */
+#define RECORD_SERIAL_ARGS \
+    "-serial none -serial none -serial none " \
+    "-chardev file,id=ioc3-a-record,path=%s -serial chardev:ioc3-a-record"
+
+static char *record_path(const char *name)
+{
+    char *path = g_strdup_printf("sn0-ioc3-serial-%s.record", name);
+
+    g_unlink(path);
+    return path;
+}
+
+static void assert_record_is(const char *path, const uint8_t *want,
+                             size_t want_len)
+{
+    g_autofree char *got = NULL;
+    gsize got_len = 0;
+
+    g_assert_true(g_file_get_contents(path, &got, &got_len, NULL));
+    g_assert_cmpuint(got_len, ==, want_len);
+    g_assert_cmpint(memcmp(got, want, want_len), ==, 0);
+}
+
+static void test_a_stalled_consumer_keeps_the_ring_record(const void *data)
+{
+    static const uint8_t control[4] = {
+        TX_CHARACTER, TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
+    };
+    enum { CHARS = 1024 };
+    g_autofree char *path = record_path("ring");
+    uint8_t payload[CHARS];
+    QTestState *qts;
+    unsigned int i;
+    int sv[2];
+
+    for (i = 0; i < CHARS; i++) {
+        payload[i] = 'A' + (i % 26);
+    }
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    g_assert_cmpuint(fill_socket_send_queue_exact(sv[1]), >, 0);
+
+    qts = qtest_initf(
+        "-M origin200 -chardev socket,id=ioc3-a,fd=%d "
+        "-serial chardev:ioc3-a " RECORD_SERIAL_ARGS, sv[1], path);
+    g_assert_cmpint(close(sv[1]), ==, 0);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+    enable_dma(qts, 0);
+
+    for (i = 0; i < CHARS; i += 4) {
+        write_transmit_entry(qts, RING_TX(0), i * 2, payload + i, control);
+    }
+    qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), CHARS * 2);
+
+    /* Each held character costs one give-up before the next is attempted. */
+    for (i = 0; i < 8; i++) {
+        qtest_clock_step(qts, XMIT_GIVE_UP_NS + 1LL * 1000 * 1000 * 1000);
+    }
+
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_TX_CONSUME)) & 0xff8,
+                    ==, CHARS * 2);
+
+    close(sv[0]);
+    qtest_quit(qts);
+
+    assert_record_is(path, payload, CHARS);
+    g_unlink(path);
+}
+
+static void test_a_stalled_consumer_keeps_the_byte_wide_record(
+    const void *data)
+{
+    static const uint8_t want[] = { 'x', 'Z' };
+    g_autofree char *path = record_path("byte-wide");
+    QTestState *qts;
+    int sv[2];
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    g_assert_cmpuint(fill_socket_send_queue_exact(sv[1]), >, 0);
+
+    qts = qtest_initf(
+        "-M origin200 -chardev socket,id=ioc3-a,fd=%d "
+        "-serial chardev:ioc3-a " RECORD_SERIAL_ARGS, sv[1], path);
+    g_assert_cmpint(close(sv[1]), ==, 0);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+
+    /* sv[0] is never read, so the hold bound gives up on 'x'. */
+    qtest_writeb(qts, serial_port(0) + REG_RBR, 'x');
+    qtest_clock_step(qts, XMIT_GIVE_UP_NS + 1LL * 1000 * 1000 * 1000);
+    g_assert_cmphex(qtest_readb(qts, serial_port(0) + REG_LSR) & LSR_TEMT,
+                    ==, LSR_TEMT);
+
+    qtest_writeb(qts, serial_port(0) + REG_RBR, 'Z');
+
+    close(sv[0]);
+    qtest_quit(qts);
+
+    assert_record_is(path, want, sizeof(want));
+    g_unlink(path);
+}
+
+/* Loopback returns the character to the port, so no wire carried it. */
+static void test_a_loopback_character_stays_out_of_the_record(
+    const void *data)
+{
+    static const uint8_t out[4] = { 'l', 'o', 'o', 'p' };
+    static const uint8_t control[4] = {
+        TX_CHARACTER, TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
+    };
+    g_autofree char *path = record_path("loopback");
+    QTestState *qts;
+    uint8_t status[4];
+    uint8_t got[4];
+
+    qts = qtest_initf("-M origin200 " RECORD_SERIAL_ARGS
+                      " -serial none", path);
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+    set_loopback(qts, 0);
+    enable_dma(qts, 0);
+
+    write_transmit_entry(qts, RING_TX(0), 0, out, control);
+    qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 8);
+    collect_rx_chars(qts, 0, sizeof(got), got, status);
+    g_assert_cmpint(memcmp(got, out, sizeof(out)), ==, 0);
+
+    qtest_quit(qts);
+
+    assert_record_is(path, out, 0);
+    g_unlink(path);
+}
+
 
 int main(int argc, char **argv)
 {
@@ -2054,9 +2200,19 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3-serial/unbacked-receive-ring-raises-error",
                         NULL,
                         test_an_unbacked_receive_ring_raises_the_pci_error);
-    qtest_add_data_func("sn0/ioc3-serial/node1-port-a-receives-on-serial-hd-4",
+    qtest_add_data_func("sn0/ioc3-serial/node1-port-a-receives-on-serial-hd-6",
                         NULL,
-                        test_node1_ioc3_a_receives_through_serial_hd_4);
+                        test_node1_ioc3_a_receives_through_serial_hd_6);
+
+    qtest_add_data_func("sn0/ioc3-serial/stalled-consumer-keeps-ring-record",
+                        NULL,
+                        test_a_stalled_consumer_keeps_the_ring_record);
+    qtest_add_data_func(
+        "sn0/ioc3-serial/stalled-consumer-keeps-byte-wide-record", NULL,
+        test_a_stalled_consumer_keeps_the_byte_wide_record);
+    qtest_add_data_func("sn0/ioc3-serial/loopback-stays-out-of-record",
+                        NULL,
+                        test_a_loopback_character_stays_out_of_the_record);
 
     return g_test_run();
 }

@@ -373,6 +373,10 @@ struct SGIIOC3State {
 
     SerialState serial[SGI_IOC3_SERIAL_PORTS];
     MemoryRegion serial_io[SGI_IOC3_SERIAL_PORTS];
+    SGIIOC3SerialAlias serial_io_port[SGI_IOC3_SERIAL_PORTS];
+
+    /* Optional transmit record, independent of the port's own backend. */
+    CharFrontend serial_record[SGI_IOC3_SERIAL_PORTS];
 
     MemoryRegion main;
     qemu_irq superio_irq;

@@ -375,6 +375,7 @@ static PCIDevice *sn0_origin2000_xtalk_pci_function(
     BlockBackend *blk;
     PCIDevice *dev;
     Chardev *console;
+    Chardev *console_record;
 
     switch (function->kind) {
     case SN0_COMPONENT_ISP1040:
@@ -397,6 +398,10 @@ static PCIDevice *sn0_origin2000_xtalk_pci_function(
         console = serial_hd(SN0_IOC3_SERIAL_A_CHARDEV);
         if (console) {
             qdev_prop_set_chr(DEVICE(dev), "chardev-a", console);
+        }
+        console_record = serial_hd(SN0_IOC3_RECORD_A_CHARDEV);
+        if (console_record) {
+            qdev_prop_set_chr(DEVICE(dev), "record-a", console_record);
         }
         qdev_prop_set_uint16(DEVICE(dev), "subsystem-id",
                              function->subsystem_id);

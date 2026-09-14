@@ -37,6 +37,36 @@ mask, the clear alias does not.
 This line is board wiring to a Bridge pin, not the chip's PCI
 interrupt pin; the PCI pin belongs to the ethernet block.
 
+Transmit record
+===============
+
+The ``record-a`` and ``record-b`` properties take an optional second
+character device per port. Every character the chip hands that port's
+UART to transmit is written there as well as to the port's own
+backend, and nothing the port's consumer does can refuse it. A
+character sent in loopback is left out, because no wire carried it.
+
+This exists because a port's own backend can refuse bytes and the
+transmitter can then abandon them. A 16550 does not wait for a
+listener -- it clocks each character out at the programmed baud rate
+whatever is on the far end of the wire -- so the model's transmit
+hold is bounded and gives up, and a consumer that stalls past the
+bound costs that consumer those characters. A durable log taken from
+the port's backend loses them with it. The record is taken before
+that decision, so it is the account of what the guest transmitted.
+
+Point it at a backend that cannot apply backpressure of its own, a
+file being the intended case: the write is completed rather than
+watched, so a record backend that blocks would stall the transmit
+path it exists to observe. Two limits are worth stating. A guest that
+writes the transmit holding register while the transmitter is full
+has that character overwritten on the wire, here and on the part, but
+it still appears in the record; no guest on this machine does that,
+and the DMA engine cannot, because it waits for the transmit-ready
+level first. And the record follows the character the chip handed
+over, so a byte the backend later refuses and the hold bound later
+abandons is in the record and not on the wire -- which is the point.
+
 Serial DMA engines
 ==================
 
