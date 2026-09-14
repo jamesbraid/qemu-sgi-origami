@@ -1397,7 +1397,19 @@ sgi_hub_rt_reciprocal_build(SGIHubState *s, uint64_t period)
     s->rt_reciprocal_limit_ns = excess ? UINT64_MAX / excess : UINT64_MAX;
 }
 
-/* Where the counter has got to, from the clock rather than from stored state. */
+/*
+ * Where the counter has got to, from the clock rather than from stored state.
+ *
+ * The clock read is what this register costs now, and this register is most
+ * of the Hub's traffic, so it gets asked regularly whether a cheaper host
+ * time source would do. It would not. The comparator's deadline is a timer
+ * on this same virtual clock, so a second time base would fire it at a count
+ * the guest never programmed; the virtual clock stops when the machine stops
+ * and is stepped outright by the test harness, where host time means nothing;
+ * and under instruction counting it is not host time at all. Caching is wrong
+ * for the same reason a counter exists: firmware measures elapsed time by
+ * polling this register, so a held value shortens what it measures.
+ */
 static uint64_t sgi_hub_rt_count(SGIHubState *s)
 {
     int64_t delta = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->pi_rt_origin_ns;
