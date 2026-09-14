@@ -52,7 +52,6 @@
 
 #define XBRIDGE_DEVICE(n) (0x200 + (n) * 8)
 #define XBRIDGE_DEVICE_MEMORY (1U << 12)
-#define XBRIDGE_DEVICE_PIO_NO_SWAP (1U << 13)
 #define XBRIDGE_INT_STATUS 0x100
 #define XBRIDGE_INT_ENABLE 0x108
 #define XBRIDGE_INT_UPPER 0x30
@@ -91,6 +90,10 @@
 #define ISP_REG_SEMAPHORE 0x0c
 #define ISP_REG_MAILBOX_BASE 0x70
 #define ISP_MAILBOX(n) (ISP_REG_MAILBOX_BASE + (n) * 2)
+
+/* The guest's halfword address: offset ^ (4 - width), low two bits only. */
+#define GUEST_HALFWORD(natural) (((natural) & ~3u) | (((natural) & 3u) ^ 2u))
+
 #define ISP_REG_HOST_CMD 0xc0
 #define ISP_HOST_CMD_SHIFT 12
 #define ISP_HOST_CMD_SET_HOST_INT 0x5
@@ -321,18 +324,20 @@ static void xtalk_reg_write(QTestState *qts, unsigned int widget,
 }
 
 /*
- * The head's window is left unswapped, so a register's bytes reach it in
- * the order the adapter's little-endian register file expects and the
- * offset needs no correction.
+ * Every 16-bit access to the adapter goes through the window's byte-lane
+ * swizzle: the device register's swap bit is left at its reset-clear
+ * value, so a host offset lands at the PCI offset with its low two bits
+ * flipped, and the value itself is not touched. A 32-bit access is not
+ * lane-swapped and needs no correction.
  */
 static void isp_writew(QTestState *qts, unsigned offset, uint16_t value)
 {
-    qtest_writew(qts, IO8_SCSI_WINDOW + offset, value);
+    qtest_writew(qts, IO8_SCSI_WINDOW + GUEST_HALFWORD(offset), value);
 }
 
 static uint16_t isp_readw(QTestState *qts, unsigned offset)
 {
-    return qtest_readw(qts, IO8_SCSI_WINDOW + offset);
+    return qtest_readw(qts, IO8_SCSI_WINDOW + GUEST_HALFWORD(offset));
 }
 
 /* The order Linux uses to release a completed mailbox command. */
@@ -366,6 +371,8 @@ static uint16_t isp_mbox(QTestState *qts, uint16_t cmd, const uint16_t *in,
  * The aperture the adapter decodes, and the head window aimed at it. The
  * memory bar is used rather than the I/O one because the head's memory
  * space is where a slot's window can reach a 32-bit PCI address directly.
+ * The device register's swap bit is left at its reset-clear value, which
+ * is the word-invariant placement every driver on this bus assumes.
  */
 static void io8_scsi_attach(QTestState *qts)
 {
@@ -373,8 +380,7 @@ static void io8_scsi_attach(QTestState *qts)
     qtest_writel(qts, IO8_SCSI_CFG + PCI_COMMAND,
                  PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
     xtalk_reg_write(qts, IO8_WIDGET, XBRIDGE_DEVICE(IO8_SCSI_SLOT),
-                    XBRIDGE_DEVICE_MEMORY | XBRIDGE_DEVICE_PIO_NO_SWAP |
-                    (ADAPTER_MMIO >> 20));
+                    XBRIDGE_DEVICE_MEMORY | (ADAPTER_MMIO >> 20));
 }
 
 static void io8_route_interrupt(QTestState *qts, unsigned int pin,
