@@ -1667,7 +1667,7 @@ static void test_a_receive_waits_for_its_arrival_deadline(const void *data)
     close(sv[0]);
 }
 
-/* SGI_NET_RX_LATENCY_DEPTH, hw/net/sgi-net-rx-latency.h: the line's cap. */
+/* SGI_NET_RX_LATENCY_DEPTH, hw/net/net-rx-latency.h: the line's cap. */
 #define RX_LATENCY_LINE_DEPTH 256
 
 /*

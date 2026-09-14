@@ -9,9 +9,9 @@
 #include "hw/core/sysbus.h"
 #include "hw/i2c/i2c.h"
 #include "hw/i2c/pcf8584.h"
-#include "hw/i2c/sgi-i2c-wire.h"
+#include "hw/i2c/i2c-wire.h"
 #include "hw/misc/sgi-elsc.h"
-#include "hw/misc/sgi-o2000-module-mgmt.h"
+#include "hw/misc/sgi-sn0-module-management.h"
 #include "qapi/error.h"
 #include "qemu/aio.h"
 #include "qemu/config-file.h"
@@ -67,7 +67,7 @@ void cpus_set_virtual_clock(int64_t value)
 /* The device takes its serial from the machine's model; any ten bytes do. */
 static DeviceState *module_new(void)
 {
-    DeviceState *dev = qdev_new(TYPE_SGI_O2000_MODULE_MGMT);
+    DeviceState *dev = qdev_new(TYPE_SGI_SN0_MODULE_MANAGEMENT);
 
     qdev_prop_set_string(dev, "model-serial", "KORIGAMI01");
     return dev;
@@ -77,7 +77,7 @@ enum { LINE_RESET, LINE_NMI, LINE_POWER };
 enum { TEST_PARTIAL = 1, TEST_CONSOLE };
 
 typedef struct Fixture {
-    SGIO2000ModuleMgmtState *module;
+    SGISn0ModuleManagementState *module;
     Chardev *chr;
     PCF8584State *adapter[SGI_O2000_ADAPTER_COUNT];
     int level[3];
@@ -157,10 +157,10 @@ static void setup(Fixture *f, gconstpointer options)
         qdev_prop_set_chr(dev, "chardev", f->chr);
     }
     qdev_realize(dev, NULL, &error_abort);
-    f->module = SGI_O2000_MODULE_MGMT(dev);
+    f->module = SGI_SN0_MODULE_MANAGEMENT(dev);
     for (i = 0; i < SGI_O2000_ADAPTER_COUNT; i++) {
         f->adapter[i] =
-            PCF8584(sgi_o2000_module_mgmt_get_adapter(f->module, i));
+            PCF8584(sgi_sn0_module_management_get_adapter(f->module, i));
         init_adapter(f, i);
     }
 }
@@ -287,7 +287,7 @@ static uint8_t take_byte(Fixture *f, unsigned a, bool last)
 
 static void stop_transfer(Fixture *f, unsigned a)
 {
-    I2CBus *bus = sgi_o2000_module_mgmt_get_bus(f->module);
+    I2CBus *bus = sgi_sn0_module_management_get_bus(f->module);
     unsigned i;
 
     write_reg(f, a, CTRL_REG, CTL_STOP);
@@ -479,12 +479,12 @@ static void test_starved_polls_match_serviced(void)
  */
 static void test_late_timer_after_poll(Fixture *f, gconstpointer unused)
 {
-    SGIO2000ModuleMgmtState *m = f->module;
+    SGISn0ModuleManagementState *m = f->module;
     int64_t end, service;
     unsigned raises;
 
     run_tick(f);
-    g_assert_true(sgi_o2000_module_mgmt_pulse_reset(m));
+    g_assert_true(sgi_sn0_module_management_pulse_reset(m));
     g_assert_cmpint(f->level[LINE_RESET], ==, 1);
     raises = f->raises[LINE_RESET];
     end = m->pulse_deadline;
@@ -513,7 +513,7 @@ static void test_late_timer_after_poll(Fixture *f, gconstpointer unused)
     g_assert_false(m->grant_active);
     g_assert_cmphex(f->adapter[3]->data, ==, GRANT_BASE);
     g_assert_cmpint(m->service_deadline, ==, service);
-    g_assert_false(i2c_bus_busy(sgi_o2000_module_mgmt_get_bus(m)));
+    g_assert_false(i2c_bus_busy(sgi_sn0_module_management_get_bus(m)));
 }
 
 /*
@@ -523,14 +523,14 @@ static void test_late_timer_after_poll(Fixture *f, gconstpointer unused)
  */
 static void test_population(Fixture *f, gconstpointer unused)
 {
-    I2CBus *bus = sgi_o2000_module_mgmt_get_bus(f->module);
+    I2CBus *bus = sgi_sn0_module_management_get_bus(f->module);
     unsigned i;
 
     for (i = 0; i < SGI_O2000_ADAPTER_COUNT; i++) {
         g_assert_nonnull(f->adapter[i]);
         g_assert_true(f->adapter[i]->bus == bus);
     }
-    g_assert_null(sgi_o2000_module_mgmt_get_adapter(f->module,
+    g_assert_null(sgi_sn0_module_management_get_adapter(f->module,
                                                     SGI_O2000_ADAPTER_COUNT));
     g_assert_nonnull(f->module->msc);
     g_assert_cmphex(I2C_SLAVE(f->module->msc)->address, ==,
@@ -638,7 +638,7 @@ static void test_busy_defers_without_advancing(Fixture *f,
 
 static int64_t request_start_during_grant(Fixture *f)
 {
-    I2CBus *bus = sgi_o2000_module_mgmt_get_bus(f->module);
+    I2CBus *bus = sgi_sn0_module_management_get_bus(f->module);
     int64_t next_grant;
 
     run_tick(f);
@@ -680,7 +680,7 @@ static void test_waiting_start_loses_to_grant(Fixture *f,
 /* A staged START owns tBUF before its lines make the bus busy. */
 static void test_start_owns_bus_free_time(Fixture *f, gconstpointer unused)
 {
-    I2CBus *bus = sgi_o2000_module_mgmt_get_bus(f->module);
+    I2CBus *bus = sgi_sn0_module_management_get_bus(f->module);
     int64_t next_grant;
     uint8_t status;
 
@@ -745,7 +745,7 @@ static void test_waiting_starts_serialize(Fixture *f, gconstpointer unused)
 static void test_waiting_start_cancellation(Fixture *f,
                                             gconstpointer disable)
 {
-    I2CBus *bus = sgi_o2000_module_mgmt_get_bus(f->module);
+    I2CBus *bus = sgi_sn0_module_management_get_bus(f->module);
     int64_t next_grant = request_start_during_grant(f);
 
     write_reg(f, 0, CTRL_REG, disable ? PCF8584_CTL_PIN : CTL_STOP);
@@ -803,7 +803,7 @@ static void test_grant_reaches_every_adapter(Fixture *f, gconstpointer unused)
 static void test_grant_published_after_stop(Fixture *f,
                                             gconstpointer unused)
 {
-    I2CBus *bus = sgi_o2000_module_mgmt_get_bus(f->module);
+    I2CBus *bus = sgi_sn0_module_management_get_bus(f->module);
     uint8_t old_data[SGI_O2000_ADAPTER_COUNT];
     unsigned i, slot;
 
@@ -1045,7 +1045,7 @@ static void test_destructive_command_refused(Fixture *f, gconstpointer unused)
     g_assert_cmpint(memcmp(&response[1], "ok", 2), ==, 0);
 
     /* A pulse is running, so the controller cannot start another action. */
-    g_assert_true(sgi_o2000_module_mgmt_pulse_reset(f->module));
+    g_assert_true(sgi_sn0_module_management_pulse_reset(f->module));
     g_assert_cmpuint(f->raises[LINE_RESET], ==, 1);
 
     total = msc_command(f, 0, "rst", response, sizeof(response));
@@ -1211,68 +1211,68 @@ int main(int argc, char **argv)
     object_property_add_new_container(machine, "unattached");
     qemu_register_resettable(OBJECT(sysbus_get_default()));
 
-    g_test_add("/sgi-o2000-module-management/shared/start-clock-progress",
+    g_test_add("/sgi-sn0-module-management/shared/start-clock-progress",
                Fixture, NULL, setup, test_start_clock_progress, teardown);
-    g_test_add("/sgi-o2000-module-management/shared/addressed-release-progress",
+    g_test_add("/sgi-sn0-module-management/shared/addressed-release-progress",
                Fixture, NULL, setup, test_addressed_release_clock_progress,
                teardown);
-    g_test_add_func("/sgi-o2000-module-management/timeline/starved-polls",
+    g_test_add_func("/sgi-sn0-module-management/timeline/starved-polls",
                     test_starved_polls_match_serviced);
-    g_test_add("/sgi-o2000-module-management/timeline/late-timer-after-poll",
+    g_test_add("/sgi-sn0-module-management/timeline/late-timer-after-poll",
                Fixture, NULL, setup, test_late_timer_after_poll, teardown);
-    g_test_add("/sgi-o2000-module-management/shared/population", Fixture,
+    g_test_add("/sgi-sn0-module-management/shared/population", Fixture,
                NULL, setup, test_population, teardown);
-    g_test_add("/sgi-o2000-module-management/nvram/defaults", Fixture, NULL,
+    g_test_add("/sgi-sn0-module-management/nvram/defaults", Fixture, NULL,
                setup, test_nvram_defaults, teardown);
-    g_test_add("/sgi-o2000-module-management/nvram/shared-and-persistent",
+    g_test_add("/sgi-sn0-module-management/nvram/shared-and-persistent",
                Fixture, NULL, setup, test_nvram_shared_and_persistent,
                teardown);
-    g_test_add("/sgi-o2000-module-management/shared/busy-defers", Fixture,
+    g_test_add("/sgi-sn0-module-management/shared/busy-defers", Fixture,
                NULL, setup, test_busy_defers_without_advancing, teardown);
-    g_test_add("/sgi-o2000-module-management/shared/stale-start-loses-to-grant",
+    g_test_add("/sgi-sn0-module-management/shared/stale-start-loses-to-grant",
                Fixture, NULL, setup, test_waiting_start_loses_to_grant,
                teardown);
-    g_test_add("/sgi-o2000-module-management/shared/start-owns-tbuf", Fixture,
+    g_test_add("/sgi-sn0-module-management/shared/start-owns-tbuf", Fixture,
                NULL, setup, test_start_owns_bus_free_time, teardown);
-    g_test_add("/sgi-o2000-module-management/shared/waiting-starts-serialize",
+    g_test_add("/sgi-sn0-module-management/shared/waiting-starts-serialize",
                Fixture, NULL, setup, test_waiting_starts_serialize, teardown);
-    g_test_add("/sgi-o2000-module-management/shared/waiting-start-stop",
+    g_test_add("/sgi-sn0-module-management/shared/waiting-start-stop",
                Fixture, NULL, setup, test_waiting_start_cancellation,
                teardown);
-    g_test_add("/sgi-o2000-module-management/shared/waiting-start-disable",
+    g_test_add("/sgi-sn0-module-management/shared/waiting-start-disable",
                Fixture, GINT_TO_POINTER(1), setup,
                test_waiting_start_cancellation, teardown);
-    g_test_add("/sgi-o2000-module-management/shared/waiting-start-reset",
+    g_test_add("/sgi-sn0-module-management/shared/waiting-start-reset",
                Fixture, NULL, setup, test_waiting_start_reset, teardown);
-    g_test_add("/sgi-o2000-module-management/shared/waiting-start-pin",
+    g_test_add("/sgi-sn0-module-management/shared/waiting-start-pin",
                Fixture, NULL, setup, test_waiting_start_sets_pin, teardown);
-    g_test_add("/sgi-o2000-module-management/shared/grant-observed", Fixture,
+    g_test_add("/sgi-sn0-module-management/shared/grant-observed", Fixture,
                NULL, setup, test_grant_reaches_every_adapter, teardown);
-    g_test_add("/sgi-o2000-module-management/shared/grant-after-stop", Fixture,
+    g_test_add("/sgi-sn0-module-management/shared/grant-after-stop", Fixture,
                NULL, setup, test_grant_published_after_stop, teardown);
-    g_test_add("/sgi-o2000-module-management/shared/arbitration", Fixture,
+    g_test_add("/sgi-sn0-module-management/shared/arbitration", Fixture,
                NULL, setup, test_arbitration_between_adapters, teardown);
-    g_test_add("/sgi-o2000-module-management/shared/msc-version", Fixture,
+    g_test_add("/sgi-sn0-module-management/shared/msc-version", Fixture,
                NULL, setup, test_msc_version_exchange, teardown);
-    g_test_add("/sgi-o2000-module-management/shared/nacked-receive-restart",
+    g_test_add("/sgi-sn0-module-management/shared/nacked-receive-restart",
                Fixture, NULL, setup,
                test_nacked_receive_allows_repeated_start, teardown);
-    g_test_add("/sgi-o2000-module-management/shared/destructive-command",
+    g_test_add("/sgi-sn0-module-management/shared/destructive-command",
                Fixture, NULL, setup, test_destructive_command, teardown);
-    g_test_add("/sgi-o2000-module-management/shared/destructive-refused",
+    g_test_add("/sgi-sn0-module-management/shared/destructive-refused",
                Fixture, NULL, setup, test_destructive_command_refused,
                teardown);
-    g_test_add("/sgi-o2000-module-management/shared/closing-resync",
+    g_test_add("/sgi-sn0-module-management/shared/closing-resync",
                Fixture, NULL, setup, test_closing_resync_is_terminal,
                teardown);
-    g_test_add("/sgi-o2000-module-management/reinitialize/committed", Fixture,
+    g_test_add("/sgi-sn0-module-management/reinitialize/committed", Fixture,
                NULL, setup, test_reinitialize_committed, teardown);
-    g_test_add("/sgi-o2000-module-management/reinitialize/unread", Fixture,
+    g_test_add("/sgi-sn0-module-management/reinitialize/unread", Fixture,
                NULL, setup, test_reinitialize_uncommitted, teardown);
-    g_test_add("/sgi-o2000-module-management/reinitialize/partial", Fixture,
+    g_test_add("/sgi-sn0-module-management/reinitialize/partial", Fixture,
                GINT_TO_POINTER(TEST_PARTIAL), setup,
                test_reinitialize_uncommitted, teardown);
-    g_test_add("/sgi-o2000-module-management/reinitialize/queues", Fixture,
+    g_test_add("/sgi-sn0-module-management/reinitialize/queues", Fixture,
                GINT_TO_POINTER(TEST_CONSOLE), setup, test_reinitialize_queues,
                teardown);
     return g_test_run();

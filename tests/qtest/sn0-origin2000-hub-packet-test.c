@@ -12,8 +12,8 @@
 static QTestState *start_extra(const char *extra)
 {
     return qtest_initf("-M origin2000 "
-                      "-device sn0-hub-packet-test,node=/machine/node0 "
-                      "-device sn0-hub-packet-test,node=/machine/node1,"
+                      "-device sgi-hub-packet-test,node=/machine/node0 "
+                      "-device sgi-hub-packet-test,node=/machine/node1,"
                       "addr=0x40000001000 %s", extra);
 }
 

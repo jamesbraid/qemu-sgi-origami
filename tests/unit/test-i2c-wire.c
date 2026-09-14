@@ -2,7 +2,7 @@
 /* Timed pin fixtures exercise the shared engine, not PCF register timing. */
 #include "qemu/osdep.h"
 #include "hw/i2c/i2c.h"
-#include "hw/i2c/sgi-i2c-wire.h"
+#include "hw/i2c/i2c-wire.h"
 #include "qapi/error.h"
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
@@ -146,7 +146,7 @@ static void setup_masters(Fixture *f, unsigned master_count)
 {
     f->host = qdev_new(TYPE_WIRE_HOST);
     qdev_realize(f->host, NULL, &error_abort);
-    f->bus = i2c_init_bus_type(TYPE_SGI_I2C_WIRE_BUS, f->host, "i2c");
+    f->bus = i2c_init_bus_type(TYPE_I2C_WIRE, f->host, "i2c");
     f->a = i2c_slave_create_simple(f->bus, TYPE_WIRE_SLAVE, 0x20);
     f->b = i2c_slave_create_simple(f->bus, TYPE_WIRE_SLAVE, 0x21);
     ((TestSlave *)f->a)->hold_service = I2C_WIRE_SERVICE_COUNT;
@@ -1470,8 +1470,8 @@ static void test_migration_rejects_idle_address(Fixture *f,
 
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(unlink(path), ==, 0);
-    SGI_I2C_WIRE_BUS(f->bus)->address_valid = true;
-    SGI_I2C_WIRE_BUS(f->bus)->requested_address = 0x20;
+    I2C_WIRE(f->bus)->address_valid = true;
+    I2C_WIRE(f->bus)->requested_address = 0x20;
     file = state_file(fd, true);
     g_assert_cmpint(vmstate_save_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
                                       NULL, &error_abort), ==, 0);
@@ -1501,7 +1501,7 @@ static void test_migration_rejects_read_target_ack(Fixture *f,
     g_assert_true(write_byte(f, 0x40, 0x40, true));
     write_byte_to_ack(f, 0xa5, 0xa5);
     g_assert_true(i2c_wire_slave_state(f->a)->wire_service_pending);
-    SGI_I2C_WIRE_BUS(f->bus)->master_recv = true;
+    I2C_WIRE(f->bus)->master_recv = true;
     file = state_file(fd, true);
     g_assert_cmpint(vmstate_save_state(file, &vmstate_sgi_i2c_wire_bus, f->bus,
                                       NULL, &error_abort), ==, 0);
@@ -1691,7 +1691,7 @@ static void test_enable_refuses_a_mute_slave(void)
     I2CBus *bus;
 
     qdev_realize(host, NULL, &error_abort);
-    bus = i2c_init_bus_type(TYPE_SGI_I2C_WIRE_BUS, host, "i2c");
+    bus = i2c_init_bus_type(TYPE_I2C_WIRE, host, "i2c");
     i2c_slave_create_simple(bus, TYPE_WIRE_MUTE, 0x20);
 
     g_assert_cmpint(i2c_bus_enable_wire(bus, 2, NULL, NULL, &err), !=, 0);
@@ -1703,8 +1703,8 @@ static void test_enable_refuses_a_mute_slave(void)
      * Refused before it changed anything. A bus left holding participants it
      * cannot use would abort the first legacy transfer anybody attempted.
      */
-    g_assert_null(SGI_I2C_WIRE_BUS(bus)->wire);
-    g_assert_cmpuint(SGI_I2C_WIRE_BUS(bus)->master_count, ==, 0);
+    g_assert_null(I2C_WIRE(bus)->wire);
+    g_assert_cmpuint(I2C_WIRE(bus)->master_count, ==, 0);
 
     object_unparent(OBJECT(host));
     object_unref(OBJECT(host));

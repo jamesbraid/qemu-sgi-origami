@@ -1707,7 +1707,7 @@ static void test_flash_fixture_isolation(void)
 
     for (unsigned int i = 0; i < G_N_ELEMENTS(cases); i++) {
         g_autofree char *device = g_strdup_printf(
-            "sn0-origin2000-flash-test,node=%u,word=0", cases[i].node);
+            "sgi-sn0-node-flash-test,node=%u,word=0", cases[i].node);
         const char *args[] = {
             qtest_qemu_binary(NULL), "-M", cases[i].machine,
             "-display", "none", "-S", "-nodefaults", "-qmp", "stdio",
@@ -1729,7 +1729,7 @@ static void test_local_flash_words(gconstpointer data)
                     "-d unimp,guest_errors", (const char *)data);
     /* Mapping fixtures only: these words do not define CPU reset modes. */
     for (unsigned int node = 0; node < G_N_ELEMENTS(words); node++) {
-        g_string_append_printf(args, " -device sn0-origin2000-flash-test,"
+        g_string_append_printf(args, " -device sgi-sn0-node-flash-test,"
                                "node=%u,word=%u", node, words[node]);
     }
     qts = qtest_init(args->str);
@@ -2030,7 +2030,7 @@ int main(int argc, char **argv)
                    test_asic_identity_reset);
     qtest_add_func("sn0/origin2000/distinct-table-migration",
                    test_distinct_table_migration);
-    if (qtest_has_device("sn0-origin2000-flash-test")) {
+    if (qtest_has_device("sgi-sn0-node-flash-test")) {
         qtest_add_data_func("sn0/origin2000/local-flash-words", "origin2000",
                             test_local_flash_words);
         qtest_add_data_func("sn0/origin2000/reordered-flash-words",

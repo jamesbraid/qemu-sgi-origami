@@ -546,7 +546,7 @@ bcm2838_genet_tx_request(unsigned int ring_idx, uint32_t prod_idx, uint32_t cons
 bcm2838_genet_tx(unsigned int ring_idx, uint64_t desc_idx, uint32_t desc_status, uint64_t data_addr) "ring %u, descriptor %" PRIu64 ": 0x%08x, data @ 0x%08" PRIx64
 bcm2838_genet_rx_dma_ring_active(unsigned int ring, const char *ring_state) "ring %u is %s"
 
-# sgi-net-rx-latency.c
+# net-rx-latency.c
 #
 # The arrival delay line: when a staged receive was held and when its
 # completion was published, so a lost reply can be placed against the floor.

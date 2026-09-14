@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "hw/mips/sn0-origin2000-xtalk.h"
+#include "hw/mips/sgi/sn0-origin2000-xtalk.h"
 
 typedef struct Fixture {
     SN0ModelComposition model;

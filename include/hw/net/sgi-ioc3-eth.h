@@ -12,7 +12,7 @@
 
 #include "hw/core/sysbus.h"
 #include "hw/net/dp83840.h"
-#include "hw/net/sgi-net-rx-latency.h"
+#include "hw/net/net-rx-latency.h"
 #include "net/net.h"
 #include "qom/object.h"
 

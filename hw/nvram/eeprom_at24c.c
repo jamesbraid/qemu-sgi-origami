@@ -13,7 +13,7 @@
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "hw/i2c/i2c.h"
-#include "hw/i2c/sgi-i2c-wire.h"
+#include "hw/i2c/i2c-wire.h"
 #include "hw/nvram/eeprom_at24c.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"

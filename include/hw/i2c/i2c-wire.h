@@ -8,8 +8,8 @@
  * all off the shared file.
  */
 
-#ifndef HW_I2C_SGI_I2C_WIRE_H
-#define HW_I2C_SGI_I2C_WIRE_H
+#ifndef HW_I2C_I2C_WIRE_H
+#define HW_I2C_I2C_WIRE_H
 
 #include "hw/i2c/i2c.h"
 #include "qom/object.h"
@@ -79,8 +79,8 @@ typedef struct I2CWireSlave {
     bool wire_service_pending;
 } I2CWireSlave;
 
-#define TYPE_SGI_I2C_WIRE_BUS "sgi-i2c-wire-bus"
-OBJECT_DECLARE_SIMPLE_TYPE(SgiI2cWireBus, SGI_I2C_WIRE_BUS)
+#define TYPE_I2C_WIRE "i2c-wire"
+OBJECT_DECLARE_SIMPLE_TYPE(I2cWire, I2C_WIRE)
 
 /* At most this many participants and this many slaves on one wire. */
 #define I2C_WIRE_MAX_MASTERS 32
@@ -88,7 +88,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SgiI2cWireBus, SGI_I2C_WIRE_BUS)
 
 typedef struct I2CWire I2CWire;
 
-struct SgiI2cWireBus {
+struct I2cWire {
     I2CBus parent_obj;
 
     /* Opt-in configuration: stable participant IDs are 0..master_count-1. */
@@ -113,7 +113,7 @@ struct SgiI2cWireBus {
 /*
  * The runtime per-slave wire state for a slave attached to a wire bus. Created
  * on first use; the entry lives until the bus is finalised. The slave must be
- * a child of a TYPE_SGI_I2C_WIRE_BUS.
+ * a child of a TYPE_I2C_WIRE.
  */
 I2CWireSlave *i2c_wire_slave_state(I2CSlave *slave);
 

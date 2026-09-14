@@ -13,7 +13,7 @@
 #include "qemu/log.h"
 #include "hw/core/cpu.h"
 #include "hw/i2c/pcf8584.h"
-#include "hw/i2c/sgi-i2c-wire.h"
+#include "hw/i2c/i2c-wire.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
@@ -1126,7 +1126,7 @@ static void pcf8584_realize(DeviceState *dev, Error **errp)
             error_setg(errp, "wire-master needs a bus link to share");
             return;
         }
-        s->bus = i2c_init_bus_type(TYPE_SGI_I2C_WIRE_BUS, dev, "i2c");
+        s->bus = i2c_init_bus_type(TYPE_I2C_WIRE, dev, "i2c");
     } else if (pcf8584_on_wire(s)) {
         /*
          * clock_after_loss is false: a loser stops contributing to the

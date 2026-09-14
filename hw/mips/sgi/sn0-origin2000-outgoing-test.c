@@ -17,7 +17,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SN0OutgoingTest, OUTGOING_TEST)
 #define TEST_CONTROL 0x40000000000ULL
 #define TEST_VALUE 0x123456789abcdef0ULL
 
-#define TYPE_OUTGOING_LIFETIME "sn0-outgoing-lifetime-test"
+#define TYPE_OUTGOING_LIFETIME "sgi-hub-outgoing-lifetime-test"
 OBJECT_DECLARE_SIMPLE_TYPE(SN0OutgoingLifetime, OUTGOING_LIFETIME)
 
 struct SN0OutgoingLifetime {

@@ -13,7 +13,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/1wire/crc.h"
 #include "hw/mips/sn0-fabric-routed.h"
-#include "hw/misc/sgi-o2000-module-mgmt.h"
+#include "hw/misc/sgi-sn0-module-management.h"
 #include "hw/misc/sgi-router.h"
 #include "system/blockdev.h"
 #include "system/system.h"
@@ -491,7 +491,7 @@ static void origin2000_build_management(SN0MachineState *s)
     const SN0ModelComposition *c = s->composition;
     const SN0ModelModule *module = &c->modules[0];
     const SN0ModelModuleManagement *management = module->management;
-    DeviceState *dev = qdev_new(TYPE_SGI_O2000_MODULE_MGMT);
+    DeviceState *dev = qdev_new(TYPE_SGI_SN0_MODULE_MANAGEMENT);
     Chardev *aux = serial_hd(SN0_NODE_SERIAL(0, SN0_ELSC_CHARDEV));
     size_t i;
 
@@ -510,7 +510,7 @@ static void origin2000_build_management(SN0MachineState *s)
             &c->nodes[management->adapter_nodes[i]];
         SGIHubState *hub = &s->nodes[physical->slot - 1]->hub;
         SysBusDevice *adapter = SYS_BUS_DEVICE(
-            sgi_o2000_module_mgmt_get_adapter(SGI_O2000_MODULE_MGMT(dev), i));
+            sgi_sn0_module_management_get_adapter(SGI_SN0_MODULE_MANAGEMENT(dev), i));
 
         /*
          * The descriptor names adapters by their position in its node array

@@ -12,7 +12,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/i2c/i2c.h"
-#include "hw/i2c/sgi-i2c-wire.h"
+#include "hw/i2c/i2c-wire.h"
 #include "hw/core/resettable.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
@@ -32,7 +32,7 @@ typedef struct I2CWireMaster {
 } I2CWireMaster;
 
 struct I2CWire {
-    SgiI2cWireBus *bus;
+    I2cWire *bus;
     QEMUTimer *timer;
     I2CWireObserver observe;
     void *opaque;
@@ -58,11 +58,11 @@ struct I2CWire {
 
 static void i2c_wire_schedule(I2CWire *wire);
 static bool i2c_wire_slave_sda(const I2CWire *wire, bool scl);
-static int sgi_wire_finish_load(SgiI2cWireBus *bus);
+static int i2c_wire_finish_load(I2cWire *bus);
 static int i2c_wire_queue_service(I2CWire *wire, I2CSlave *slave,
                                   enum i2c_wire_service service);
 
-static inline I2CBus *base_bus(SgiI2cWireBus *bus)
+static inline I2CBus *base_bus(I2cWire *bus)
 {
     return &bus->parent_obj;
 }
@@ -78,7 +78,7 @@ static void i2c_clear_nodes(I2CNodeList *nodes)
 }
 
 /* The runtime wire state for one child slave, created on first use. */
-static I2CWireSlave *ws(SgiI2cWireBus *bus, I2CSlave *slave)
+static I2CWireSlave *ws(I2cWire *bus, I2CSlave *slave)
 {
     I2CWireSlave *st = g_hash_table_lookup(bus->slaves, slave);
 
@@ -97,7 +97,7 @@ static I2CWireSlave *ws(SgiI2cWireBus *bus, I2CSlave *slave)
 
 I2CWireSlave *i2c_wire_slave_state(I2CSlave *slave)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(qdev_get_parent_bus(DEVICE(slave)));
+    I2cWire *bus = I2C_WIRE(qdev_get_parent_bus(DEVICE(slave)));
 
     return ws(bus, slave);
 }
@@ -115,7 +115,7 @@ static I2CWireEndpointClass *wire_endpoint(I2CSlave *slave)
     return I2C_WIRE_ENDPOINT_GET_CLASS(slave);
 }
 
-static uint32_t i2c_wire_slave_count(SgiI2cWireBus *bus)
+static uint32_t i2c_wire_slave_count(I2cWire *bus)
 {
     BusChild *kid;
     uint32_t count = 0;
@@ -126,7 +126,7 @@ static uint32_t i2c_wire_slave_count(SgiI2cWireBus *bus)
     return count;
 }
 
-static bool slave_selected(SgiI2cWireBus *bus, I2CSlave *slave)
+static bool slave_selected(I2cWire *bus, I2CSlave *slave)
 {
     I2CNode *node;
 
@@ -142,7 +142,7 @@ static bool slave_selected(SgiI2cWireBus *bus, I2CSlave *slave)
 
 static void sgi_i2c_wire_bus_reset_hold(Object *obj, ResetType type)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(obj);
+    I2cWire *bus = I2C_WIRE(obj);
     I2CBus *base = base_bus(bus);
     I2CWire *wire = bus->wire;
     BusChild *kid;
@@ -232,7 +232,7 @@ static bool i2c_slave_state_migrated(DeviceState *dev)
 static bool sgi_i2c_wire_bus_check_address(BusState *bus, DeviceState *dev,
                                            Error **errp)
 {
-    if (SGI_I2C_WIRE_BUS(bus)->wire && !i2c_slave_state_migrated(dev)) {
+    if (I2C_WIRE(bus)->wire && !i2c_slave_state_migrated(dev)) {
         error_setg(errp, "%s carries no I2C slave migration state and cannot "
                    "join a timed I2C wire",
                    object_get_typename(OBJECT(dev)));
@@ -243,7 +243,7 @@ static bool sgi_i2c_wire_bus_check_address(BusState *bus, DeviceState *dev,
 
 static int sgi_wire_bus_busy(I2CBus *base)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
 
     if (bus->wire) {
         return bus->wire->occupied;
@@ -280,7 +280,7 @@ static void sgi_wire_unmatched_address(I2CBus *base, uint8_t address, bool recv)
 
 static int sgi_wire_slave_loaded(I2CBus *base, I2CSlave *slave)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
     I2CNode *node;
 
     if (bus->master_count) {
@@ -299,7 +299,7 @@ static int sgi_wire_slave_loaded(I2CBus *base, I2CSlave *slave)
 
 int i2c_bus_enable_master_ids(I2CBus *base, uint32_t count)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
 
     if (!count) {
         return -EINVAL;
@@ -315,7 +315,7 @@ int i2c_bus_enable_master_ids(I2CBus *base, uint32_t count)
 
 int i2c_bus_start_resolved(I2CBus *base, uint32_t master)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
 
     if (bus->wire) {
         return -ENOTSUP;
@@ -332,13 +332,13 @@ int i2c_bus_start_resolved(I2CBus *base, uint32_t master)
     return 0;
 }
 
-static bool i2c_master_owns(SgiI2cWireBus *bus, uint32_t master)
+static bool i2c_master_owns(I2cWire *bus, uint32_t master)
 {
     return !bus->wire && bus->master_count && master < bus->master_count &&
            bus->owner == master;
 }
 
-static int i2c_resolved_start_transfer(SgiI2cWireBus *bus, uint8_t address,
+static int i2c_resolved_start_transfer(I2cWire *bus, uint8_t address,
                                        bool recv)
 {
     I2CBus *base = base_bus(bus);
@@ -390,7 +390,7 @@ static int i2c_resolved_start_transfer(SgiI2cWireBus *bus, uint8_t address,
 int i2c_master_start_transfer(I2CBus *base, uint32_t master,
                               uint8_t address, bool recv)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
 
     if (!i2c_master_owns(bus, master)) {
         return -EPERM;
@@ -398,7 +398,7 @@ int i2c_master_start_transfer(I2CBus *base, uint32_t master,
     return i2c_resolved_start_transfer(bus, address, recv);
 }
 
-static int i2c_resolved_send(SgiI2cWireBus *bus, uint8_t data, I2CWire *wire)
+static int i2c_resolved_send(I2cWire *bus, uint8_t data, I2CWire *wire)
 {
     I2CBus *base = base_bus(bus);
     I2CNode *node;
@@ -433,7 +433,7 @@ static int i2c_resolved_send(SgiI2cWireBus *bus, uint8_t data, I2CWire *wire)
 
 int i2c_master_send(I2CBus *base, uint32_t master, uint8_t data)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
 
     if (!i2c_master_owns(bus, master)) {
         return -EPERM;
@@ -443,7 +443,7 @@ int i2c_master_send(I2CBus *base, uint32_t master, uint8_t data)
 
 int i2c_master_recv(I2CBus *base, uint32_t master, uint8_t *data)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
 
     if (!i2c_master_owns(bus, master)) {
         return -EPERM;
@@ -460,7 +460,7 @@ int i2c_master_recv(I2CBus *base, uint32_t master, uint8_t *data)
 
 int i2c_master_nack(I2CBus *base, uint32_t master)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
 
     if (!i2c_master_owns(bus, master)) {
         return -EPERM;
@@ -477,7 +477,7 @@ int i2c_master_nack(I2CBus *base, uint32_t master)
 
 int i2c_master_end_transfer(I2CBus *base, uint32_t master)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
 
     if (!i2c_master_owns(bus, master)) {
         return -EPERM;
@@ -697,7 +697,7 @@ static int i2c_wire_join_low_deadline(I2CWireMaster *joining,
 /* Settle everything the wire has due at @now, which is that deadline. */
 static void i2c_wire_tick(I2CWire *wire, int64_t now)
 {
-    SgiI2cWireBus *bus = wire->bus;
+    I2cWire *bus = wire->bus;
     I2CBus *base = base_bus(bus);
     bool old_scl = wire->scl, old_sda = wire->sda;
     uint64_t old_contenders = wire->contenders;
@@ -1066,7 +1066,7 @@ static void i2c_wire_timer_expired(void *opaque)
 
 void i2c_wire_advance(I2CBus *base)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
 
     if (bus->wire) {
         i2c_wire_advance_to(bus->wire, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
@@ -1075,7 +1075,7 @@ void i2c_wire_advance(I2CBus *base)
 
 int64_t i2c_wire_now(I2CBus *base)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
 
     return bus->wire ? i2c_wire_instant(bus->wire) :
                        qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
@@ -1084,7 +1084,7 @@ int64_t i2c_wire_now(I2CBus *base)
 int i2c_bus_enable_wire(I2CBus *base, uint32_t count,
                          I2CWireObserver observe, void *opaque, Error **errp)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
     BusChild *kid;
     int ret;
 
@@ -1143,7 +1143,7 @@ int i2c_bus_enable_wire(I2CBus *base, uint32_t count,
 int i2c_wire_configure(I2CBus *base, uint32_t master, int64_t low_ns,
                        int64_t high_ns, bool clock_after_loss)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
     I2CWireMaster *m;
 
     if (!bus->wire || master >= bus->master_count || low_ns <= 0 ||
@@ -1161,7 +1161,7 @@ int i2c_wire_configure(I2CBus *base, uint32_t master, int64_t low_ns,
     return 0;
 }
 
-static int i2c_wire_stage_check(SgiI2cWireBus *bus, uint32_t master)
+static int i2c_wire_stage_check(I2cWire *bus, uint32_t master)
 {
     if (!bus->wire || master >= bus->master_count) {
         return -EINVAL;
@@ -1169,7 +1169,7 @@ static int i2c_wire_stage_check(SgiI2cWireBus *bus, uint32_t master)
     return bus->wire->error;
 }
 
-static int i2c_wire_stage_at(SgiI2cWireBus *bus, uint32_t master, int64_t at,
+static int i2c_wire_stage_at(I2cWire *bus, uint32_t master, int64_t at,
                              int64_t now, bool sda, bool clock)
 {
     I2CWireMaster *m;
@@ -1196,7 +1196,7 @@ static int i2c_wire_stage_at(SgiI2cWireBus *bus, uint32_t master, int64_t at,
 int i2c_wire_stage(I2CBus *base, uint32_t master, int64_t at,
                    bool sda, bool clock)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
     int ret = i2c_wire_stage_check(bus, master);
 
     if (ret) {
@@ -1209,7 +1209,7 @@ int i2c_wire_stage(I2CBus *base, uint32_t master, int64_t at,
 int i2c_wire_stage_at_or_after(I2CBus *base, uint32_t master, int64_t at,
                                int64_t min_delay_ns, bool sda, bool clock)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
     int64_t now;
     int ret = i2c_wire_stage_check(bus, master);
 
@@ -1237,7 +1237,7 @@ int i2c_wire_stage_after(I2CBus *base, uint32_t master, int64_t delay_ns,
 static int i2c_wire_hold_at(I2CSlave *slave, int64_t at, int64_t now,
                             bool hold)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(qdev_get_parent_bus(DEVICE(slave)));
+    I2cWire *bus = I2C_WIRE(qdev_get_parent_bus(DEVICE(slave)));
     I2CWireSlave *st;
 
     if (!bus->wire || at <= now) {
@@ -1256,7 +1256,7 @@ static int i2c_wire_hold_at(I2CSlave *slave, int64_t at, int64_t now,
 
 int i2c_wire_hold(I2CSlave *slave, int64_t at, bool hold)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(qdev_get_parent_bus(DEVICE(slave)));
+    I2cWire *bus = I2C_WIRE(qdev_get_parent_bus(DEVICE(slave)));
 
     if (!bus->wire) {
         return -EINVAL;
@@ -1266,7 +1266,7 @@ int i2c_wire_hold(I2CSlave *slave, int64_t at, bool hold)
 
 int i2c_wire_hold_after(I2CSlave *slave, int64_t delay_ns, bool hold)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(qdev_get_parent_bus(DEVICE(slave)));
+    I2cWire *bus = I2C_WIRE(qdev_get_parent_bus(DEVICE(slave)));
     int64_t at;
     int64_t now;
 
@@ -1282,7 +1282,7 @@ int i2c_wire_hold_after(I2CSlave *slave, int64_t delay_ns, bool hold)
 
 int i2c_wire_reset_master(I2CBus *base, uint32_t master)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
     I2CWireMaster *m;
 
     if (!bus->wire || master >= bus->master_count) {
@@ -1303,7 +1303,7 @@ int i2c_wire_reset_master(I2CBus *base, uint32_t master)
 
 int i2c_wire_pause_master(I2CBus *base, uint32_t master)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
     I2CWireMaster *m;
 
     if (!bus->wire || master >= bus->master_count) {
@@ -1329,7 +1329,7 @@ int i2c_wire_pause_master(I2CBus *base, uint32_t master)
 int i2c_wire_set_observer(I2CBus *base, uint32_t master,
                           I2CWireObserver observe, void *opaque)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
 
     if (!bus->wire || master >= bus->master_count || !observe) {
         return -EINVAL;
@@ -1345,7 +1345,7 @@ int i2c_wire_set_observer(I2CBus *base, uint32_t master,
 int i2c_wire_clear_observer(I2CBus *base, uint32_t master,
                             I2CWireObserver observe, void *opaque)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
 
     if (!bus->wire || master >= bus->master_count) {
         return -EINVAL;
@@ -1362,7 +1362,7 @@ int i2c_wire_clear_observer(I2CBus *base, uint32_t master,
 int i2c_wire_set_timeline(I2CBus *base, uint32_t master, I2CWireDeadline next,
                           I2CWireRun run, void *opaque)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
 
     if (!bus->wire || master >= bus->master_count || !next || !run) {
         return -EINVAL;
@@ -1379,7 +1379,7 @@ int i2c_wire_set_timeline(I2CBus *base, uint32_t master, I2CWireDeadline next,
 int i2c_wire_clear_timeline(I2CBus *base, uint32_t master, I2CWireRun run,
                             void *opaque)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
 
     if (!bus->wire || master >= bus->master_count) {
         return -EINVAL;
@@ -1396,39 +1396,39 @@ int i2c_wire_clear_timeline(I2CBus *base, uint32_t master, I2CWireRun run,
 
 bool i2c_wire_scl(I2CBus *base)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
 
     return bus->wire && bus->wire->scl;
 }
 
 bool i2c_wire_sda(I2CBus *base)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
 
     return bus->wire && bus->wire->sda;
 }
 
 uint64_t i2c_wire_contenders(I2CBus *base)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(base);
+    I2cWire *bus = I2C_WIRE(base);
 
     return bus->wire ? bus->wire->contenders : 0;
 }
 
 uint32_t i2c_bus_master_count(I2CBus *base)
 {
-    SgiI2cWireBus *bus =
-        (SgiI2cWireBus *)object_dynamic_cast(OBJECT(base),
-                                             TYPE_SGI_I2C_WIRE_BUS);
+    I2cWire *bus =
+        (I2cWire *)object_dynamic_cast(OBJECT(base),
+                                             TYPE_I2C_WIRE);
 
     return bus ? bus->master_count : 0;
 }
 
 uint32_t i2c_bus_resolved_owner(I2CBus *base)
 {
-    SgiI2cWireBus *bus =
-        (SgiI2cWireBus *)object_dynamic_cast(OBJECT(base),
-                                             TYPE_SGI_I2C_WIRE_BUS);
+    I2cWire *bus =
+        (I2cWire *)object_dynamic_cast(OBJECT(base),
+                                             TYPE_I2C_WIRE);
 
     return bus ? bus->owner : UINT32_MAX;
 }
@@ -1460,7 +1460,7 @@ static const VMStateDescription vmstate_i2c_wire_master = {
 static int i2c_wire_post_load(void *opaque, int version_id)
 {
     I2CWire *wire = opaque;
-    SgiI2cWireBus *bus = wire->bus;
+    I2cWire *bus = wire->bus;
     uint64_t members = (1ULL << bus->master_count) - 1;
 
     if (wire->bits > 9 || wire->error > 0 ||
@@ -1529,16 +1529,17 @@ static const VMStateDescription vmstate_i2c_wire_state = {
 
 static bool i2c_wire_needed(void *opaque)
 {
-    return ((SgiI2cWireBus *)opaque)->wire != NULL;
+    return ((I2cWire *)opaque)->wire != NULL;
 }
 
 static const VMStateDescription vmstate_sgi_wire = {
+    /* Pre-rename stream name; kept for migration compatibility. */
     .name = "sgi-i2c-wire-bus/wire",
     .version_id = 1,
     .minimum_version_id = 1,
     .needed = i2c_wire_needed,
     .fields = (const VMStateField[]) {
-        VMSTATE_STRUCT_POINTER(wire, SgiI2cWireBus, vmstate_i2c_wire_state,
+        VMSTATE_STRUCT_POINTER(wire, I2cWire, vmstate_i2c_wire_state,
                                I2CWire),
         VMSTATE_END_OF_LIST()
     },
@@ -1546,12 +1547,12 @@ static const VMStateDescription vmstate_sgi_wire = {
 
 static bool i2c_masters_needed(void *opaque)
 {
-    return ((SgiI2cWireBus *)opaque)->master_count != 0;
+    return ((I2cWire *)opaque)->master_count != 0;
 }
 
 static int i2c_masters_post_load(void *opaque, int version_id)
 {
-    SgiI2cWireBus *bus = opaque;
+    I2cWire *bus = opaque;
 
     bus->masters_loaded = true;
     base_bus(bus)->broadcast = bus->address_valid && !bus->master_recv &&
@@ -1565,22 +1566,23 @@ static int i2c_masters_post_load(void *opaque, int version_id)
 }
 
 static const VMStateDescription vmstate_sgi_masters = {
+    /* Pre-rename stream name; kept for migration compatibility. */
     .name = "sgi-i2c-wire-bus/masters",
     .version_id = 1,
     .minimum_version_id = 1,
     .needed = i2c_masters_needed,
     .post_load = i2c_masters_post_load,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT32_EQUAL(master_count, SgiI2cWireBus),
-        VMSTATE_UINT32(owner, SgiI2cWireBus),
-        VMSTATE_UINT8(requested_address, SgiI2cWireBus),
-        VMSTATE_BOOL(master_recv, SgiI2cWireBus),
-        VMSTATE_BOOL(address_valid, SgiI2cWireBus),
+        VMSTATE_UINT32_EQUAL(master_count, I2cWire),
+        VMSTATE_UINT32(owner, I2cWire),
+        VMSTATE_UINT8(requested_address, I2cWire),
+        VMSTATE_BOOL(master_recv, I2cWire),
+        VMSTATE_BOOL(address_valid, I2cWire),
         VMSTATE_END_OF_LIST()
     },
 };
 
-static bool i2c_wire_service_state_valid(SgiI2cWireBus *bus, I2CSlave *slave)
+static bool i2c_wire_service_state_valid(I2cWire *bus, I2CSlave *slave)
 {
     I2CWire *wire = bus->wire;
     I2CWireSlave *st = ws(bus, slave);
@@ -1624,7 +1626,7 @@ static bool i2c_wire_service_state_valid(SgiI2cWireBus *bus, I2CSlave *slave)
     return false;
 }
 
-static int sgi_wire_finish_load(SgiI2cWireBus *bus)
+static int i2c_wire_finish_load(I2cWire *bus)
 {
     I2CBus *base = base_bus(bus);
     I2CWire *wire = bus->wire;
@@ -1674,12 +1676,12 @@ static int sgi_wire_finish_load(SgiI2cWireBus *bus)
 
 static bool i2c_slaves_needed(void *opaque)
 {
-    return ((SgiI2cWireBus *)opaque)->master_count != 0;
+    return ((I2cWire *)opaque)->master_count != 0;
 }
 
 static int i2c_slaves_pre_save(void *opaque)
 {
-    SgiI2cWireBus *bus = opaque;
+    I2cWire *bus = opaque;
     BusChild *kid;
     uint32_t n = 0;
 
@@ -1702,7 +1704,7 @@ static int i2c_slaves_pre_save(void *opaque)
 
 static int i2c_slaves_post_load(void *opaque, int version_id)
 {
-    SgiI2cWireBus *bus = opaque;
+    I2cWire *bus = opaque;
     I2CBus *base = base_bus(bus);
     BusChild *kid;
     uint32_t n = 0;
@@ -1728,10 +1730,11 @@ static int i2c_slaves_post_load(void *opaque, int version_id)
             QLIST_INSERT_HEAD(&base->current_devs, node, next);
         }
     }
-    return sgi_wire_finish_load(bus);
+    return i2c_wire_finish_load(bus);
 }
 
 static const VMStateDescription vmstate_i2c_wire_slave = {
+    /* Pre-rename stream name; kept for migration compatibility. */
     .name = "sgi-i2c-wire-slave",
     .version_id = 1,
     .minimum_version_id = 1,
@@ -1750,6 +1753,7 @@ static const VMStateDescription vmstate_i2c_wire_slave = {
 };
 
 static const VMStateDescription vmstate_sgi_slaves = {
+    /* Pre-rename stream name; kept for migration compatibility. */
     .name = "sgi-i2c-wire-bus/slaves",
     .version_id = 1,
     .minimum_version_id = 1,
@@ -1757,8 +1761,8 @@ static const VMStateDescription vmstate_sgi_slaves = {
     .pre_save = i2c_slaves_pre_save,
     .post_load = i2c_slaves_post_load,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT32(migrated_count, SgiI2cWireBus),
-        VMSTATE_STRUCT_ARRAY(migrated, SgiI2cWireBus, I2C_WIRE_MAX_SLAVES, 0,
+        VMSTATE_UINT32(migrated_count, I2cWire),
+        VMSTATE_STRUCT_ARRAY(migrated, I2cWire, I2C_WIRE_MAX_SLAVES, 0,
                              vmstate_i2c_wire_slave, I2CWireSlave),
         VMSTATE_END_OF_LIST()
     },
@@ -1766,7 +1770,7 @@ static const VMStateDescription vmstate_sgi_slaves = {
 
 static int sgi_wire_bus_pre_load(void *opaque)
 {
-    SgiI2cWireBus *bus = opaque;
+    I2cWire *bus = opaque;
 
     bus->masters_loaded = false;
     bus->wire_loaded = false;
@@ -1784,7 +1788,7 @@ static int sgi_wire_bus_pre_load(void *opaque)
 
 static int sgi_wire_bus_post_load(void *opaque, int version_id)
 {
-    SgiI2cWireBus *bus = opaque;
+    I2cWire *bus = opaque;
 
     if ((bus->master_count && !bus->masters_loaded) ||
         (bus->wire && !bus->wire_loaded)) {
@@ -1794,6 +1798,7 @@ static int sgi_wire_bus_post_load(void *opaque, int version_id)
 }
 
 const VMStateDescription vmstate_sgi_i2c_wire_bus = {
+    /* Pre-rename stream name; kept for migration compatibility. */
     .name = "sgi-i2c-wire-bus",
     .version_id = 1,
     .minimum_version_id = 1,
@@ -1814,7 +1819,7 @@ const VMStateDescription vmstate_sgi_i2c_wire_bus = {
 
 static void sgi_i2c_wire_bus_init(Object *obj)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(obj);
+    I2cWire *bus = I2C_WIRE(obj);
 
     bus->owner = UINT32_MAX;
     bus->slaves = g_hash_table_new_full(NULL, NULL, NULL, g_free);
@@ -1823,7 +1828,7 @@ static void sgi_i2c_wire_bus_init(Object *obj)
 
 static void sgi_i2c_wire_bus_finalize(Object *obj)
 {
-    SgiI2cWireBus *bus = SGI_I2C_WIRE_BUS(obj);
+    I2cWire *bus = I2C_WIRE(obj);
 
     vmstate_unregister(NULL, &vmstate_sgi_i2c_wire_bus, bus);
     if (bus->wire) {
@@ -1848,9 +1853,9 @@ static void sgi_i2c_wire_bus_class_init(ObjectClass *oc, const void *data)
 
 static const TypeInfo sgi_i2c_wire_types[] = {
     {
-        .name = TYPE_SGI_I2C_WIRE_BUS,
+        .name = TYPE_I2C_WIRE,
         .parent = TYPE_I2C_BUS,
-        .instance_size = sizeof(SgiI2cWireBus),
+        .instance_size = sizeof(I2cWire),
         .instance_init = sgi_i2c_wire_bus_init,
         .instance_finalize = sgi_i2c_wire_bus_finalize,
         .class_init = sgi_i2c_wire_bus_class_init,
