@@ -26,18 +26,21 @@ test_mips64_timeouts = {
   # flagged) per reset rather than a register poke. Same reasoning as
   # sn0_elsc_reset's budget for the same shape of exercise.
   'sn1_l1_reset' : 300,
-  # One test method per origin200-matrix row whose speed column says quick
-  # runs after another in this one script (test_origin200_matrix.py), each
-  # budgeted up to its own cell.timeout before declaring FAIL: today the
-  # asset-free smoke cell (120s), plus VM launch/shutdown overhead and room
-  # for a second quick cell.
+  # One test method per origin200-matrix row whose speed column says quick,
+  # in this one script (test_origin200_matrix.py). The synthesized-firmware
+  # axis is gone, so the manifest's one quick row now boots the real PROM
+  # too (prom_full_boot_mttcg, 180s budget): measured PASS in under 20s
+  # end to end (2026-09-14, a host already busy with other work), so 300
+  # keeps well over that plus VM launch/shutdown overhead and room for a
+  # second quick cell.
   'origin200_matrix' : 300,
   # The thorough rows of the same manifest, in test_origin200_matrix_thorough
-  # .py: the three real firmware-boot cells (700s each -- 4-CPU, two-node,
-  # mttcg), worst case all three running out their own budget in sequence,
-  # plus VM launch/shutdown overhead. Matches linux_kernel's own reasoning
-  # below for the same one-script, several-budgets-in-sequence shape.
-  'origin200_matrix_thorough' : 2500,
+  # .py: two real firmware-boot cells (700s each -- 4-CPU and two-node;
+  # prom_full_boot_mttcg moved to the quick list above), worst case both
+  # running out their own budget in sequence, plus VM launch/shutdown
+  # overhead. Matches linux_kernel's own reasoning below for the same
+  # one-script, several-budgets-in-sequence shape.
+  'origin200_matrix_thorough' : 1800,
   'prom_boot' : 700,
   'prom_copy_speed' : 320,
   'prom_diagnostics' : 1800,

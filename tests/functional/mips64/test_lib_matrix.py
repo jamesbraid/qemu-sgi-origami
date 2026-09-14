@@ -24,20 +24,19 @@ STARTER_MANIFEST = Path(__file__).parent / 'origin200-matrix'
 
 # The field order parse_matrix() expects, matching the Cell dataclass.
 FIELDS = ('id', 'guest', 'scenario', 'cpus', 'nodes', 'mem', 'accel',
-          'firmware', 'speed', 'timeout', 'attempts', 'min_passes',
+          'speed', 'timeout', 'attempts', 'min_passes',
           'expect', 'xfail_mark', 'xfail_signature')
 
 # A known-good row, as field/value pairs, so each test can override just
-# the field it cares about rather than restating all fifteen.
+# the field it cares about rather than restating all fourteen.
 BASE_ROW = {
-    'id': 'firmware_smoke',
+    'id': 'sample_cell',
     'guest': 'prom',
-    'scenario': 'smoke',
+    'scenario': 'full_boot',
     'cpus': '1',
     'nodes': '1',
     'mem': '64M',
     'accel': 'wallclock',
-    'firmware': 'synth',
     'speed': 'quick',
     'timeout': '120',
     'attempts': '1',
@@ -69,30 +68,22 @@ class _ManifestTest(unittest.TestCase):
 
 class StarterManifestTest(unittest.TestCase):
 
-    def test_parses_the_smoke_cell(self):
-        cells = parse_matrix(STARTER_MANIFEST)
-        by_id = {cell.id: cell for cell in cells}
-
-        cell = by_id['firmware_smoke']
-        self.assertIsInstance(cell, Cell)
-        self.assertEqual(cell.cpus, 1)
-        self.assertEqual(cell.speed, 'quick')
-        self.assertEqual(cell.timeout, 120)
-        self.assertEqual(cell.expect, 'pass')
-
     def test_parses_the_config_cells(self):
-        # The three real firmware-boot cells this task adds: one chassis,
-        # two chassis, and mttcg -- each expect=pass (never xfail: a
-        # config that does not boot must fail red) and firmware=prom (needs
-        # the provisioned PROM, so it skips rather than xfails when absent).
-        # One chassis tops out at 2 CPUs (the Hub's cpu_slots_per_node in
-        # the origin200 model): the model itself refuses more, so this
-        # cell's population matches the mttcg cell's and differs only in
-        # accelerator regime.
+        # The three real firmware-boot cells the manifest carries: one
+        # chassis, two chassis, and mttcg -- every cell boots the real
+        # PROM now that the synthesized-firmware axis is gone (needs the
+        # provisioned PROM, so it skips rather than xfails when absent),
+        # and each is expect=pass, never xfail: a config that does not
+        # boot must fail red. One chassis tops out at 2 CPUs (the Hub's
+        # cpu_slots_per_node in the origin200 model): the model itself
+        # refuses more, so this cell's population matches the mttcg
+        # cell's and differs only in accelerator regime. mttcg is the
+        # cheapest of the three, so it is the manifest's one quick cell;
+        # the other two stay thorough.
         cells = parse_matrix(STARTER_MANIFEST)
         by_id = {cell.id: cell for cell in cells}
 
-        self.assertEqual(len(cells), 4)
+        self.assertEqual(len(cells), 3)
 
         one_node = by_id['prom_full_boot_1node']
         self.assertEqual(
@@ -114,11 +105,14 @@ class StarterManifestTest(unittest.TestCase):
             (mttcg.scenario, mttcg.cpus, mttcg.nodes, mttcg.accel),
             ('full_boot', 2, 1, 'mttcg'))
 
-        for cell in (one_node, two_node, mttcg):
-            self.assertEqual(cell.guest, 'prom')
-            self.assertEqual(cell.firmware, 'prom')
+        for cell in (one_node, two_node):
             self.assertEqual(cell.speed, 'thorough')
             self.assertEqual(cell.timeout, 700)
+        self.assertEqual(mttcg.speed, 'quick')
+        self.assertEqual(mttcg.timeout, 180)
+
+        for cell in (one_node, two_node, mttcg):
+            self.assertEqual(cell.guest, 'prom')
             self.assertEqual(cell.expect, 'pass')
             self.assertEqual(cell.xfail_mark, '')
             self.assertEqual(cell.xfail_signature, '')
@@ -172,12 +166,6 @@ class ParseMatrixTest(_ManifestTest):
 
     def test_rejects_bad_expect(self):
         manifest = self.write_manifest(make_row(expect='maybe'))
-
-        with self.assertRaises(MatrixError):
-            parse_matrix(manifest)
-
-    def test_rejects_bad_firmware(self):
-        manifest = self.write_manifest(make_row(firmware='prm'))
 
         with self.assertRaises(MatrixError):
             parse_matrix(manifest)
@@ -247,7 +235,7 @@ class RowApiTest(_ManifestTest):
         # other field still read.
         self.assertEqual(peek_row(make_row(id='a b')), (None, 'quick'))
         self.assertEqual(peek_row(make_row(speed='fast')),
-                         ('firmware_smoke', None))
+                         ('sample_cell', None))
 
     def test_peek_row_validates_nothing_else(self):
         # A row parse_row() rejects (bad guest) still peeks: the peek
@@ -255,7 +243,7 @@ class RowApiTest(_ManifestTest):
         # parse_row().
         row = make_row(guest='solaris')
 
-        self.assertEqual(peek_row(row), ('firmware_smoke', 'quick'))
+        self.assertEqual(peek_row(row), ('sample_cell', 'quick'))
         with self.assertRaises(MatrixError):
             parse_row('matrix', 1, row)
 
@@ -263,14 +251,13 @@ class RowApiTest(_ManifestTest):
 # A known-good Cell, typed rather than string-valued, so each test can
 # override just the field it cares about.
 BASE_CELL = Cell(
-    id='firmware_smoke',
+    id='sample_cell',
     guest='prom',
-    scenario='smoke',
+    scenario='full_boot',
     cpus=1,
     nodes=1,
     mem='64M',
     accel='wallclock',
-    firmware='synth',
     speed='quick',
     timeout=120,
     attempts=1,
@@ -288,13 +275,11 @@ def make_cell(**overrides):
 class QemuArgsTest(unittest.TestCase):
     """The per-cell QEMU command-line builder."""
 
-    def test_machine_props_prom(self):
-        synth_cell = make_cell(firmware='synth')
-        self.assertEqual(machine_props(synth_cell),
-                         'origin200,synthesized-firmware=on,debug-leds=on')
-
-        prom_cell = make_cell(firmware='prom')
-        self.assertEqual(machine_props(prom_cell),
+    def test_machine_props_is_fixed_to_the_real_prom(self):
+        # Every cell boots the real PROM now that the
+        # synthesized-firmware axis is gone -- machine_props() no
+        # longer reads anything from the cell it is given.
+        self.assertEqual(machine_props(make_cell()),
                          'origin200,synthesized-firmware=off,debug-leds=on')
 
     def test_icount_regime(self):
@@ -387,8 +372,9 @@ class PromArgsTest(unittest.TestCase):
              '-d', 'trace:sgi_hub_led'])
 
     def test_prom_args_without_firmware(self):
-        # A firmware=synth cell never resolves an image, so the caller
-        # passes None straight through -- must contribute no args at all.
+        # resolve_asset() returns None when the image is not
+        # provisioned under ORIGAMI_ASSETS, and the caller passes that
+        # straight through -- must contribute no args at all.
         self.assertEqual(prom_args(None), [])
 
 
@@ -557,22 +543,16 @@ class PassConditionTest(unittest.TestCase):
 
         self.assertIs(pass_condition_met('full_boot', text), True)
 
-    def test_pass_condition_met_smoke_passes_on_first_code(self):
-        # The smoke scenario keeps its original, weaker behaviour: any
-        # single progress code is enough, not the whole mark.
+    def test_pass_condition_met_ignores_the_scenario_argument(self):
+        # The 'smoke' scenario's weaker condition (any single progress
+        # code) went with the synthesized-firmware axis that was its
+        # only reason to exist -- every scenario name now takes the
+        # same full-mark path, the argument is kept only for call-site
+        # compatibility.
         text = _trace_line(sorted(MARK)[0])
 
-        self.assertIs(pass_condition_met('smoke', text), True)
-
-    def test_pass_condition_met_smoke_fails_with_no_code(self):
-        self.assertIs(pass_condition_met('smoke', ''), False)
-
-    def test_pass_condition_met_smoke_ignores_failure_kind(self):
-        # Matches first_progress_code()'s own kind filter: a FAILURE line
-        # must not score as a smoke pass.
-        text = _trace_line('0x81', kind='FAILURE')
-
         self.assertIs(pass_condition_met('smoke', text), False)
+        self.assertIs(pass_condition_met('anything', ''), False)
 
 
 if __name__ == '__main__':

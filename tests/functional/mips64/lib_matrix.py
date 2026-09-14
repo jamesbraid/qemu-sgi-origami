@@ -7,13 +7,11 @@ comments and blank lines are ignored, and each row's pipe-separated
 fields follow the exact order of the Cell dataclass below.
 parse_matrix() turns a manifest into Cell records; machine_props() and
 qemu_args() turn a Cell into the -M value and the rest of the QEMU
-command line; prom_args() supplies the -bios and trace arguments a
-firmware=prom cell's -M string demands (lib_prom.resolve_asset finds
-the image; a firmware=synth cell needs neither);
-pass_condition_met() decides whether a captured boot
-log satisfies a cell's pass condition (the firmware progress mark for
-a real boot, a first progress code for the asset-free smoke scenario);
-verdict() turns a cell and its recorded AttemptResults into a
+command line; prom_args() supplies the -bios and trace arguments every
+cell's real PROM boot needs (lib_prom.resolve_asset finds the image);
+pass_condition_met() decides whether a captured boot log satisfies the
+recorded firmware progress mark; verdict() turns a cell and its
+recorded AttemptResults into a
 pass/fail/xfail/xpass/error outcome. Later stages of this subsystem
 (the generic test body and the meson projection) build on all of
 these.
@@ -23,7 +21,7 @@ import re
 from dataclasses import dataclass, fields
 from pathlib import Path
 
-from lib_prom import MARK, codes_seen, first_progress_code, mark_reached
+from lib_prom import MARK, codes_seen, mark_reached
 
 
 class MatrixError(Exception):
@@ -39,7 +37,6 @@ class Cell:
     nodes: int
     mem: str
     accel: str
-    firmware: str
     speed: str
     timeout: int
     attempts: int
@@ -58,7 +55,6 @@ _ID_RE = re.compile(r'^[a-z0-9_]+$')
 _VALID_GUESTS = {'prom', 'linux', 'openbsd', 'irix'}
 _VALID_SPEEDS = {'quick', 'thorough'}
 _VALID_ACCELS = {'icount', 'mttcg', 'wallclock', 'roundrobin'}
-_VALID_FIRMWARE = {'synth', 'prom'}
 _VALID_EXPECTS = {'pass', 'xfail'}
 
 
@@ -158,9 +154,6 @@ def _validate(path, lineno, cell):
     if cell.accel not in _VALID_ACCELS:
         raise MatrixError(
             f'{path}:{lineno}: unknown accel {cell.accel!r}')
-    if cell.firmware not in _VALID_FIRMWARE:
-        raise MatrixError(
-            f'{path}:{lineno}: unknown firmware {cell.firmware!r}')
     if cell.expect not in _VALID_EXPECTS:
         raise MatrixError(
             f'{path}:{lineno}: unknown expect {cell.expect!r}')
@@ -200,10 +193,16 @@ ROUND_ROBIN_KICK_PERIOD_NS = 100000
 _MEM_RE = re.compile(r'^(\d+)([A-Za-z]*)$')
 
 
-def machine_props(cell):
-    """Build the -M origin200,... machine property string for a cell."""
-    synthesized = 'on' if cell.firmware == 'synth' else 'off'
-    return f'origin200,synthesized-firmware={synthesized},debug-leds=on'
+def machine_props(_cell):
+    """Build the -M origin200,... machine property string for a cell.
+
+    Every cell in the manifest boots the real PROM now that the
+    synthesized-firmware axis is gone, so this is fixed rather than
+    read from the cell -- kept as a function, taking the cell it no
+    longer reads, so a caller building the machine string from a cell
+    still has one name to call regardless of what varies later.
+    """
+    return 'origin200,synthesized-firmware=off,debug-leds=on'
 
 
 def qemu_args(cell):
@@ -244,15 +243,17 @@ def qemu_args(cell):
 
 
 def prom_args(firmware_path):
-    """The -bios/-d args a firmware=prom cell needs to run the real PROM.
+    """The -bios/-d args every cell needs to run the real PROM.
 
     Given a resolved path, returns ['-bios', firmware_path,
     '-d', 'trace:sgi_hub_led'] -- both parts matter: -bios hands the
     machine the real firmware, and the trace event is what emits the
-    progress codes first_progress_code() reads. Given a falsy path
-    (None, for a firmware=synth cell that never resolves one), returns
-    [] -- callers can call this unconditionally rather than guarding it
-    with an if. Matches test_prom_boot.py's own vm.add_args() call.
+    progress codes pass_condition_met() reads. Given a falsy path (the
+    image is not provisioned under ORIGAMI_ASSETS), returns [] -- callers
+    can call this unconditionally rather than guarding it with an if, and
+    let the missing -bios show up as a boot that never emits a progress
+    code rather than a KeyError building the argv. Matches
+    test_prom_boot.py's own vm.add_args() call.
     """
     if not firmware_path:
         return []
@@ -315,28 +316,22 @@ def verdict(cell, attempts):
     return 'fail'
 
 
-def pass_condition_met(scenario, log_text):
-    """Whether log_text (a captured boot log) satisfies scenario's pass
-    condition. Pure text-in, bool-out -- unit-testable without a boot.
-
-    The 'smoke' scenario is the asset-free harness self-test: it keeps
-    the weaker signal it always has, any progress code appearing at all
-    (lib_prom.first_progress_code) -- it exists to prove the harness
-    end-to-end against a machine that has no firmware image to run and
-    so has no code path that could ever write a progress indicator. The
-    framework glue additionally accepts a QMP-confirmed running VM with
-    no code at all, which needs a live VM and so stays the caller's job,
-    not this function's.
-
-    Every other scenario is a real firmware boot, and passes only when
-    the recorded firmware-boot progress mark (lib_prom.MARK) is a SUBSET
-    of the codes seen in log_text -- lib_prom's own
+def pass_condition_met(_scenario, log_text):
+    """Whether log_text (a captured boot log) satisfies the pass
+    condition: the recorded firmware-boot progress mark (lib_prom.MARK)
+    is a SUBSET of the codes seen in log_text -- lib_prom's own
     mark_reached(codes_seen(log_text), MARK). A boot that wedges after
     an early code never reaches the mark and so never satisfies this;
-    the timeout path stays the caller's job too.
+    the timeout path stays the caller's job. Pure text-in, bool-out --
+    unit-testable without a boot.
+
+    `scenario` used to select a second, weaker condition (a 'smoke'
+    scenario, any progress code at all, for cells with no firmware
+    image to run) -- gone with the synthesized-firmware axis that was
+    its only use, so every cell now takes this one path regardless of
+    what its scenario names. Kept as a parameter for call-site
+    compatibility with what scores a cell's log.
     """
-    if scenario == 'smoke':
-        return first_progress_code(log_text) is not None
     reached, _missing = mark_reached(codes_seen(log_text), MARK)
     return reached
 
