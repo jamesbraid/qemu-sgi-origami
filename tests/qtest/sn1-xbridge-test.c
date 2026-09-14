@@ -169,9 +169,38 @@ static QTestState *transport_start(const char *extra)
     return qts;
 }
 
+/*
+ * The card's own scalar fields (address, count, seed, trigger) need
+ * value-preserving placement through the slot's PIO window regardless of
+ * what a test has bit 13 set to for its own byte-stream checks elsewhere,
+ * so clear it here for the one write and restore whatever the caller had.
+ */
 static void card_write(QTestState *qts, unsigned reg, uint32_t value)
 {
+    uint32_t dev = reg_read(qts, 0x200);
+
+    if (dev & (1U << 13)) {
+        reg_write(qts, 0x200, dev & ~(1U << 13));
+    }
     qtest_writel(qts, BASE + 0x200000 + reg, value);
+    if (dev & (1U << 13)) {
+        reg_write(qts, 0x200, dev);
+    }
+}
+
+static uint32_t card_read(QTestState *qts, unsigned reg)
+{
+    uint32_t dev = reg_read(qts, 0x200);
+    uint32_t value;
+
+    if (dev & (1U << 13)) {
+        reg_write(qts, 0x200, dev & ~(1U << 13));
+    }
+    value = qtest_readl(qts, BASE + 0x200000 + reg);
+    if (dev & (1U << 13)) {
+        reg_write(qts, 0x200, dev);
+    }
+    return value;
 }
 
 static void dma_fill(QTestState *qts, uint64_t address, uint8_t seed)
@@ -180,7 +209,7 @@ static void dma_fill(QTestState *qts, uint64_t address, uint8_t seed)
     card_write(qts, 0x18, address >> 32);
     card_write(qts, 4, 8);
     card_write(qts, 8, seed);
-    g_assert_cmphex(qtest_readl(qts, BASE + 0x200004), ==, 8);
+    g_assert_cmphex(card_read(qts, 4), ==, 8);
     card_write(qts, 0xc, 1);
 }
 
@@ -289,11 +318,11 @@ static void test_byte_lanes(void)
     qtest_writel(qts, BASE + 0x20014, 0x01200000);
     reg_write(qts, 0x200, 0x481012);
     qtest_writeq(qts, BASE + 0x200008, 0x1122334455667788ULL);
-    g_assert_cmphex(qtest_readb(qts, BASE + 0x200008), ==, 0x88);
-    g_assert_cmphex(qtest_readb(qts, BASE + 0x20000f), ==, 0x11);
-    reg_write(qts, 0x200, 0x483012);
     g_assert_cmphex(qtest_readb(qts, BASE + 0x200008), ==, 0x11);
     g_assert_cmphex(qtest_readb(qts, BASE + 0x20000f), ==, 0x88);
+    reg_write(qts, 0x200, 0x483012);
+    g_assert_cmphex(qtest_readb(qts, BASE + 0x200008), ==, 0x88);
+    g_assert_cmphex(qtest_readb(qts, BASE + 0x20000f), ==, 0x11);
     qtest_quit(qts);
 }
 
@@ -670,14 +699,37 @@ static void test_page_boundaries(void)
     qtest_quit(qts);
 }
 
+/*
+ * Slot 1's own scalar fields, same reasoning as card_write()/card_read():
+ * value-preserving placement for configuration, regardless of what the
+ * test has slot 1's own bit 13 set to.
+ */
 static void tx_write(QTestState *qts, unsigned reg, uint32_t value)
 {
+    uint32_t dev = reg_read(qts, 0x208);
+
+    if (dev & (1U << 13)) {
+        reg_write(qts, 0x208, dev & ~(1U << 13));
+    }
     qtest_writel(qts, BASE + 0x400000 + reg, value);
+    if (dev & (1U << 13)) {
+        reg_write(qts, 0x208, dev);
+    }
 }
 
 static uint32_t tx_read(QTestState *qts, unsigned reg)
 {
-    return qtest_readl(qts, BASE + 0x400000 + reg);
+    uint32_t dev = reg_read(qts, 0x208);
+    uint32_t value;
+
+    if (dev & (1U << 13)) {
+        reg_write(qts, 0x208, dev & ~(1U << 13));
+    }
+    value = qtest_readl(qts, BASE + 0x400000 + reg);
+    if (dev & (1U << 13)) {
+        reg_write(qts, 0x208, dev);
+    }
+    return value;
 }
 
 static uint32_t tx_run(QTestState *qts, uint32_t address)
@@ -745,10 +797,18 @@ static void test_space_above_face(void)
 {
     QTestState *qts = transport_start("");
 
-    /* The card's length register through the 32-bit alias, value kept. */
+    /*
+     * The card's length register through the 32-bit alias, value kept.
+     * Read back through the direct PIO window with its own bit 13 clear,
+     * so that window's placement correction also nets to value-preserved
+     * (a full-width access) rather than the byte-stream mirror
+     * transport_start's shared bit-13-set default would apply here.
+     */
     qtest_writel(qts, BASE + MEM32 + 0x01000004, 0x10);
     g_assert_cmphex(qtest_readl(qts, BASE + MEM32 + 0x01000004), ==, 0x10);
+    reg_write(qts, 0x200, 0x81010);
     g_assert_cmphex(qtest_readl(qts, BASE + 0x200004), ==, 0x10);
+    reg_write(qts, 0x200, 0x83010);
     /* Its wide scratch through the 64-bit alias, read back the same way. */
     qtest_writel(qts, BASE + 0x20014, 0x01200000);
     qtest_writeq(qts, BASE + MEM64 + 0x01200008, 0x1122334455667788ULL);

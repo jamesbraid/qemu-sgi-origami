@@ -246,7 +246,16 @@
 #define XBRIDGE_ATE0 0x10000
 #define XBRIDGE_DEVICE(n) (0x200 + (n) * 8)
 #define XBRIDGE_DEVICE_MEMORY (1U << 12)
-#define XBRIDGE_DEVICE_PIO_NO_SWAP (1U << 13)
+/*
+ * docs/datasheets/xbridge.md, "device 0 to 7": bit 13 is PIO swap, reset
+ * clear. Clear places a narrow access by offset exclusive-or with the
+ * value preserved (Tables 109 to 111); set makes it a plain byte stream,
+ * mirrored. An ordinary register (IOC3, the OHCI's own BAR-mapped
+ * registers) wants the former, so these devices are left at the reset
+ * default rather than setting the bit -- the flag this file used to set
+ * here for that purpose was named backwards from the datasheet's own bit
+ * and set the mirror instead.
+ */
 #define XBRIDGE_HOST_PORT 0xa
 #define XBRIDGE_ATE_VALID 1
 #define XBRIDGE_ATE_NO_SWAP (1U << 5)
@@ -976,8 +985,7 @@ static void io8_ioc3_attach(QTestState *qts)
     io8_ioc3_config_writel(qts, 0x04, 0x0006);
     xtalk_reg_write(qts, IO8_IOC3_WIDGET,
                     XBRIDGE_DEVICE(IO8_IOC3_SLOT),
-                    XBRIDGE_DEVICE_MEMORY | XBRIDGE_DEVICE_PIO_NO_SWAP |
-                    (IO8_IOC3_BAR >> 20));
+                    XBRIDGE_DEVICE_MEMORY | (IO8_IOC3_BAR >> 20));
 }
 
 static void io8_route_interrupt(QTestState *qts, unsigned int pin,
@@ -1031,8 +1039,7 @@ static void test_io8_usb_attachment(const void *data)
     io8_usb_config_writel(qts, 0x10, IO8_USB_BAR);
     io8_usb_config_writel(qts, 4, 6);
     xtalk_reg_write(qts, IO8_USB_WIDGET, XBRIDGE_DEVICE(IO8_USB_SLOT),
-                    XBRIDGE_DEVICE_MEMORY | XBRIDGE_DEVICE_PIO_NO_SWAP |
-                    (IO8_USB_BAR >> 20));
+                    XBRIDGE_DEVICE_MEMORY | (IO8_USB_BAR >> 20));
     g_assert_cmphex(io8_usb_readl(qts, 0), ==, 0x10);
     g_assert_cmphex(io8_usb_readl(qts, OHCI_HC_RH_DESCRIPTOR_A) & 0xff, ==,
                     2);
@@ -1109,8 +1116,7 @@ static void test_io8_usb_rejects_invalid_ate_dma(const void *data)
     io8_usb_config_writel(qts, 0x10, IO8_USB_BAR);
     io8_usb_config_writel(qts, 4, 6);
     xtalk_reg_write(qts, IO8_USB_WIDGET, XBRIDGE_DEVICE(IO8_USB_SLOT),
-                    XBRIDGE_DEVICE_MEMORY | XBRIDGE_DEVICE_PIO_NO_SWAP |
-                    (IO8_USB_BAR >> 20));
+                    XBRIDGE_DEVICE_MEMORY | (IO8_USB_BAR >> 20));
     qtest_writeq(qts, XTALK_WIDGET(IO8_USB_WIDGET) + XBRIDGE_ATE0,
                  IO8_USB_HCCA_PHYS |
                  ((uint64_t)XBRIDGE_HOST_PORT << 8) |
