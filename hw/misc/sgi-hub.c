@@ -1324,13 +1324,62 @@ static void sgi_hub_bte_write(SGIHubState *s, unsigned int engine,
     }
 }
 
+/*
+ * clock_ns_to_ticks() divides a 128-bit product by the period, which the
+ * compiler turns into a call to the 128-by-64 division helper. Every period
+ * this machine sets is a whole number of nanoseconds, and for those the
+ * division is by a 64-bit number, which an exact reciprocal replaces with a
+ * single multiply.
+ *
+ * With k nanoseconds per tick and m = floor(2^64 / k) + 1, write m*k as
+ * 2^64 + excess. Then n*m / 2^64 = n/k + n*excess/(k * 2^64), so for
+ * n = qk + r the multiply answers q whenever r + n*excess/2^64 < k, and
+ * r is at most k-1, so n*excess <= 2^64 is enough. The limit below is that
+ * bound; beyond it the exact division still answers.
+ *
+ * A period below two nanoseconds per tick has no representable reciprocal
+ * -- m would be 2^64 -- and one that is not a whole number of nanoseconds
+ * is not this division at all. Both keep clock_ns_to_ticks().
+ */
+/* Out of line so the read above keeps inlining into its callers. */
+static __attribute__((noinline)) void
+sgi_hub_rt_reciprocal_build(SGIHubState *s, uint64_t period)
+{
+    uint64_t ns_per_tick = period >> 32;
+    uint64_t excess;
+
+    s->rt_period = period;
+    s->rt_reciprocal = 0;
+    s->rt_reciprocal_limit_ns = 0;
+    if ((uint32_t)period != 0 || ns_per_tick < 2) {
+        return;
+    }
+
+    s->rt_reciprocal = UINT64_MAX / ns_per_tick + 1;
+    /* Truncation is the point: this is m * k - 2^64. */
+    excess = s->rt_reciprocal * ns_per_tick;
+    s->rt_reciprocal_limit_ns = excess ? UINT64_MAX / excess : UINT64_MAX;
+}
+
 /* Where the counter has got to, from the clock rather than from stored state. */
 static uint64_t sgi_hub_rt_count(SGIHubState *s)
 {
     int64_t delta = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->pi_rt_origin_ns;
+    uint64_t period = clock_get(s->rt_clk);
+    uint64_t low;
+    uint64_t ticks;
 
     if (delta < 0) {
         return 0;
+    }
+    /* This clock carries no change callback, so notice the period here. */
+    if (unlikely(period != s->rt_period)) {
+        sgi_hub_rt_reciprocal_build(s, period);
+    }
+    if (likely(s->rt_reciprocal &&
+               (uint64_t)delta <= s->rt_reciprocal_limit_ns)) {
+        mulu64(&low, &ticks, (uint64_t)delta, s->rt_reciprocal);
+        return ticks & PI_RT_MASK;
     }
     return clock_ns_to_ticks(s->rt_clk, delta) & PI_RT_MASK;
 }
