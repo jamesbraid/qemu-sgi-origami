@@ -249,7 +249,8 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
     }
     qdev_prop_set_uint8(DEVICE(&s->io), "revision", s->revision);
     qdev_prop_set_uint8(DEVICE(&s->io), "local-region", s->local_region);
-    qdev_prop_set_uint8(DEVICE(&s->io), "inbound-widget", s->inbound_widget);
+    qdev_prop_set_uint16(DEVICE(&s->io), "inbound-widget-mask",
+                         s->inbound_widget_mask);
     qdev_prop_set_uint8(DEVICE(&s->io), "inbound-device", s->inbound_device);
     qdev_prop_set_uint64(DEVICE(&s->io), "device-mask-reset",
                          s->device_mask_reset);
@@ -358,7 +359,8 @@ static const Property bedrock_properties[] = {
     DEFINE_PROP_UINT32("cpu-base", SGIBedrockState, cpu_base, 0),
     DEFINE_PROP_UINT8("revision", SGIBedrockState, revision, 2),
     DEFINE_PROP_UINT8("local-region", SGIBedrockState, local_region, 0),
-    DEFINE_PROP_UINT8("inbound-widget", SGIBedrockState, inbound_widget, 8),
+    DEFINE_PROP_UINT16("inbound-widget-mask", SGIBedrockState,
+                       inbound_widget_mask, (1U << 0xe) | (1U << 0xf)),
     DEFINE_PROP_UINT8("inbound-device", SGIBedrockState, inbound_device, 0),
     DEFINE_PROP_UINT64("device-mask-reset", SGIBedrockState,
                        device_mask_reset, UINT64_MAX),

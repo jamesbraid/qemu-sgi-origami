@@ -72,6 +72,16 @@
 #define BTE0           0x10000
 #define BTE1           0x20000
 
+/*
+ * The default inbound-widget-mask names the two widget numbers an XBridge
+ * presents to its host port (hw/pci-host/sgi-xbridge.c CHIP_HEAD_E/F), the
+ * only real inbound sources a Bedrock+XBridge machine has.  Widget 8, the
+ * device's old fixed default, names nothing any such machine ever wires up.
+ */
+#define IN_WIDGET_E (UINT64_C(1) << 0xe)
+#define IN_WIDGET_F (UINT64_C(1) << 0xf)
+#define IN_WIDGET_LEGACY_UNUSED (UINT64_C(1) << 8)
+
 static QTestState *io_start_machine(const char *machine, const char *extra)
 {
     QTestState *s = qtest_initf("%s %s", machine, extra);
@@ -252,7 +262,8 @@ static void test_inbound_register_access(void)
     qtest_writeb(s, IN_BASE + XIO_REGISTER + HUB_REMOTE + 0x97, 0xee);
     g_assert_cmphex(xio_readq(s, HUB_REMOTE + 0x90), ==, 0xaabbccee);
 
-    qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX & ~(1 << 8));
+    qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX & ~(IN_WIDGET_E |
+                                                          IN_WIDGET_F));
     xio_writeq(s, HUB_REMOTE + 0x90, 0x777);
     g_assert_cmphex(xio_readq(s, HUB_REMOTE + 0x90), ==, 0);
     qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX);
@@ -278,9 +289,9 @@ static void test_inbound_register_access(void)
     qtest_quit(s);
 
     s = io_start("-global sgi-bedrock-io.device-mask-reset="
-                 "0xfffffffffffffffe");
+                 "0xfefeffffffffffff");
     xio_writeq(s, HUB_REMOTE | 0x90, 0x123);
-    qtest_writeq(s, REG_BASE + DEVICE_MASK, 1);
+    qtest_writeq(s, REG_BASE + DEVICE_MASK, UINT64_C(1) << 48);
     g_assert_cmphex(xio_readq(s, HUB_REMOTE | 0x90), ==, 0);
     qtest_quit(s);
 
@@ -486,7 +497,8 @@ static void test_inbound_protection(void)
     dma_writeq(s, 0x190000, UINT64_C(0x0123456789abcdef));
     g_assert_cmphex(dma_readq(s, 0x190000), ==,
                     UINT64_C(0x0123456789abcdef));
-    qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX & ~(1 << 8));
+    qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX & ~(IN_WIDGET_E |
+                                                          IN_WIDGET_F));
     dma_writeq(s, 0x190000, UINT64_C(0xfedcba9876543210));
     qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX);
     g_assert_cmphex(dma_readq(s, 0x190000), ==,
@@ -496,12 +508,82 @@ static void test_inbound_protection(void)
     assert_ram_filled(s, 0x190000, 0x77, 16);
     qtest_quit(s);
 
+    /*
+     * Clear both configured candidates' device-0 bits (widget 0xe at bit
+     * 48, widget 0xf at bit 56); restoring only one after the refused
+     * write must not retroactively land it.
+     */
     s = io_start("-global sgi-bedrock-io.device-mask-reset="
-                 "0xfffffffffffffffe");
+                 "0xfefeffffffffffff");
     dma_writeq(s, 0x190000, UINT64_MAX);
-    qtest_writeq(s, REG_BASE + DEVICE_MASK, 1);
+    qtest_writeq(s, REG_BASE + DEVICE_MASK, UINT64_C(1) << 48);
     g_assert_cmphex(dma_readq(s, 0x190000), ==, 0);
     qtest_quit(s);
+}
+
+/*
+ * The shared inbound window cannot tell which of the two real widgets (the
+ * XBridge's two heads, 0xe and 0xf) sent a given request, so it must accept
+ * one as long as either is permitted; only refusing both is a refusal.
+ * This is also the regression case for the defect this mask replaces: the
+ * device used to gate every inbound access on widget 8 alone, a widget
+ * nothing in an XBridge machine is wired to, so the first guest write that
+ * cleared bit 8 silently broke every inbound DMA and interrupt packet.
+ */
+static void test_inbound_source_widgets(void)
+{
+    QTestState *s = io_start("");
+
+    dma_writeq(s, 0x191000, UINT64_C(0x1111111111111111));
+    g_assert_cmphex(dma_readq(s, 0x191000), ==,
+                    UINT64_C(0x1111111111111111));
+
+    /* Widget 8 was the old fixed default; it names no real source now. */
+    qtest_writeq(s, REG_BASE + IN_ACCESS,
+                UINT64_MAX & ~IN_WIDGET_LEGACY_UNUSED);
+    dma_writeq(s, 0x191000, UINT64_C(0x2222222222222222));
+    g_assert_cmphex(dma_readq(s, 0x191000), ==,
+                    UINT64_C(0x2222222222222222));
+
+    /* Either head alone still gets through. */
+    qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX & ~IN_WIDGET_E);
+    dma_writeq(s, 0x191000, UINT64_C(0x3333333333333333));
+    g_assert_cmphex(dma_readq(s, 0x191000), ==,
+                    UINT64_C(0x3333333333333333));
+
+    qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX & ~IN_WIDGET_F);
+    dma_writeq(s, 0x191000, UINT64_C(0x4444444444444444));
+    g_assert_cmphex(dma_readq(s, 0x191000), ==,
+                    UINT64_C(0x4444444444444444));
+
+    /*
+     * Only refusing both heads refuses the access -- and, while it does,
+     * refuses the read back too, so restore access before checking that
+     * the write never landed.
+     */
+    qtest_writeq(s, REG_BASE + IN_ACCESS,
+                UINT64_MAX & ~(IN_WIDGET_E | IN_WIDGET_F));
+    dma_writeq(s, 0x191000, UINT64_C(0x5555555555555555));
+    qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX);
+    g_assert_cmphex(dma_readq(s, 0x191000), ==,
+                    UINT64_C(0x4444444444444444));
+    qtest_quit(s);
+}
+
+/* A refusal that reaches every configured candidate widget is never silent. */
+static void test_inbound_refusal_is_logged(void)
+{
+    g_autofree char *log = log_file_new();
+    g_autofree char *contents = NULL;
+    QTestState *s = io_start_logged(log, "");
+
+    qtest_writeq(s, REG_BASE + IN_ACCESS,
+                UINT64_MAX & ~(IN_WIDGET_E | IN_WIDGET_F));
+    dma_writeq(s, 0x192000, UINT64_C(0x6666666666666666));
+    qtest_quit(s);
+    contents = log_file_take(log);
+    g_assert_nonnull(strstr(contents, "sgi-bedrock-io: inbound write"));
+    g_assert_nonnull(strstr(contents, "refused for every widget in mask"));
 }
 
 static QTestState *io_start_loopback(const char *machine, const char *extra)
@@ -551,7 +633,8 @@ static void test_pio_target_answers_through_inbound(void)
                     UINT64_C(0xfedcba9876543210));
 
     /* Neither path escapes the inbound access check. */
-    qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX & ~(1 << 8));
+    qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX & ~(IN_WIDGET_E |
+                                                          IN_WIDGET_F));
     qtest_writeq(s, PIO_MEMORY_FORM(0x2008), UINT64_MAX);
     qtest_writeq(s, PIO_REGISTER_FORM(HUB_REMOTE + 0xa0), UINT64_MAX);
     qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX);
@@ -1108,6 +1191,10 @@ int main(int argc, char **argv)
                    test_pio_translation_and_protection);
     qtest_add_func("sn1/bedrock-io/inbound-protection",
                    test_inbound_protection);
+    qtest_add_func("sn1/bedrock-io/inbound-source-widgets",
+                   test_inbound_source_widgets);
+    qtest_add_func("sn1/bedrock-io/inbound-refusal-is-logged",
+                   test_inbound_refusal_is_logged);
     qtest_add_func("sn1/bedrock-io/inbound-register-access",
                    test_inbound_register_access);
     qtest_add_func("sn1/bedrock-io/pio-target-answers-through-inbound",

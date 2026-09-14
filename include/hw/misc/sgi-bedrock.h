@@ -39,7 +39,7 @@ struct SGIBedrockState {
     uint32_t cpu_base;
     uint8_t revision;
     uint8_t local_region;
-    uint8_t inbound_widget;
+    uint16_t inbound_widget_mask;
     uint8_t inbound_device;
     uint64_t device_mask_reset;
     MemoryRegion *dma_mr;

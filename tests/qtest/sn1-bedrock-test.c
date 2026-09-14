@@ -20,6 +20,12 @@
      (pi) * UINT64_C(0x200000) + 0x90)
 #define L1_PATH "/machine/peripheral/l1c"
 #define IO_BASE (BASE + UINT64_C(0x400000))
+/*
+ * The shared inbound window's default widget mask names the two widget
+ * numbers an XBridge presents to its host port (0xe and 0xf), not widget 8.
+ */
+#define IN_WIDGET_E (UINT64_C(1) << 0xe)
+#define IN_WIDGET_F (UINT64_C(1) << 0xf)
 #define LB_BASE (BASE + UINT64_C(0x600000))
 #define XB_BASE (BASE + UINT64_C(0x700000))
 #define MD_BASE (BASE + UINT64_C(0x780000))
@@ -535,7 +541,7 @@ static void test_parent_widget_interrupt_write(void)
     qtest_writeq(s, BASE + 0xa8, 1ULL << 7);
     qtest_writeq(s, BASE + 0x2000b0, 1ULL << 10);
 
-    qtest_writeq(s, IO_BASE + 0x118, UINT64_MAX ^ (1ULL << 8));
+    qtest_writeq(s, IO_BASE + 0x118, UINT64_MAX ^ (IN_WIDGET_E | IN_WIDGET_F));
     qtest_writeq(s, HUB_INTERRUPT_SEND(0, 0), 0x107);
     g_assert_cmphex(qtest_readq(s, BASE + 0x98), ==, 0);
     qtest_writeq(s, IO_BASE + 0x118, UINT64_MAX);

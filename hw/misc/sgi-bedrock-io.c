@@ -556,16 +556,36 @@ static MemTxResult ii_inbound_register(SGIBedrockIOState *s, hwaddr address,
                               MEMTXATTRS_UNSPECIFIED, buffer, size);
 }
 
+/*
+ * The access-control test alone, without the logging sgi_bedrock_io_inbound_rw
+ * gives its own refusal: ii_inbound_read/write probe several candidate
+ * source widgets before settling on one, and a probe that fails is not
+ * itself a refused access.
+ */
+static bool ii_inbound_permitted(SGIBedrockIOState *s, unsigned widget,
+                                 unsigned device)
+{
+    if (widget > 15 || device > 7 ||
+        !(s->inbound_access & (UINT64_C(1) << widget))) {
+        return false;
+    }
+    if (widget >= 8 &&
+        !(s->device_mask & (UINT64_C(1) << ((widget - 8) * 8 + device)))) {
+        return false;
+    }
+    return true;
+}
+
 MemTxResult sgi_bedrock_io_inbound_rw(SGIBedrockIOState *s, unsigned widget,
                                       unsigned device, hwaddr address,
                                       void *buffer, size_t size, bool write)
 {
-    if (widget > 15 || device > 7 ||
-        !(s->inbound_access & (UINT64_C(1) << widget))) {
-        return MEMTX_ACCESS_ERROR;
-    }
-    if (widget >= 8 &&
-        !(s->device_mask & (UINT64_C(1) << ((widget - 8) * 8 + device)))) {
+    if (!ii_inbound_permitted(s, widget, device)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-io: inbound %s from "
+                      "widget %u device %u at 0x%" HWADDR_PRIx " refused "
+                      "(inbound-access=0x%" PRIx64 " device-mask=0x%" PRIx64
+                      ")\n", write ? "write" : "read", widget, device,
+                      address, s->inbound_access, s->device_mask);
         return MEMTX_ACCESS_ERROR;
     }
     if (address & II_XIO_REGISTER) {
@@ -587,16 +607,46 @@ void sgi_bedrock_io_disable_device(SGIBedrockIOState *s, unsigned widget,
     }
 }
 
+/*
+ * The shared inbound window carries no field naming which crosstalk widget
+ * actually sent a given request: every widget an XBridge (or another
+ * crosstalk device) can present to its host port lands on the same
+ * MemoryRegion.  Stand in for that missing source ID by trying each widget
+ * inbound-widget-mask names, in ascending order, and using the first one the
+ * programmed inbound-access mask (and, for a device widget, the device mask)
+ * actually admits.  Only when none of them do is the access refused; that
+ * refusal, not a candidate that simply did not match, is what gets logged.
+ */
+static bool ii_inbound_pick_widget(SGIBedrockIOState *s, unsigned *widget)
+{
+    for (unsigned candidate = 0; candidate < 16; candidate++) {
+        if ((s->inbound_widget_mask & (1U << candidate)) &&
+            ii_inbound_permitted(s, candidate, s->inbound_device)) {
+            *widget = candidate;
+            return true;
+        }
+    }
+    return false;
+}
+
 static MemTxResult ii_inbound_read(void *opaque, hwaddr offset, uint64_t *value,
                                    unsigned size, MemTxAttrs attrs)
 {
     SGIBedrockIOState *s = opaque;
     uint8_t buffer[8] = { 0 };
     MemTxResult result;
+    unsigned widget;
 
-    result = sgi_bedrock_io_inbound_rw(s, s->inbound_widget,
-                                       s->inbound_device, offset, buffer,
-                                       size, false);
+    if (!ii_inbound_pick_widget(s, &widget)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-io: inbound read at 0x%"
+                      HWADDR_PRIx " refused for every widget in mask 0x%x "
+                      "(inbound-access=0x%" PRIx64 " device-mask=0x%" PRIx64
+                      ")\n", offset, s->inbound_widget_mask,
+                      s->inbound_access, s->device_mask);
+        return MEMTX_ACCESS_ERROR;
+    }
+    result = sgi_bedrock_io_inbound_rw(s, widget, s->inbound_device, offset,
+                                       buffer, size, false);
     if (result != MEMTX_OK) {
         return result;
     }
@@ -622,6 +672,7 @@ static MemTxResult ii_inbound_write(void *opaque, hwaddr offset, uint64_t value,
 {
     SGIBedrockIOState *s = opaque;
     uint8_t buffer[8];
+    unsigned widget;
 
     switch (size) {
     case 1:
@@ -639,9 +690,16 @@ static MemTxResult ii_inbound_write(void *opaque, hwaddr offset, uint64_t value,
     default:
         return MEMTX_DECODE_ERROR;
     }
-    return sgi_bedrock_io_inbound_rw(s, s->inbound_widget,
-                                     s->inbound_device, offset, buffer,
-                                     size, true);
+    if (!ii_inbound_pick_widget(s, &widget)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-io: inbound write at 0x%"
+                      HWADDR_PRIx " refused for every widget in mask 0x%x "
+                      "(inbound-access=0x%" PRIx64 " device-mask=0x%" PRIx64
+                      ")\n", offset, s->inbound_widget_mask,
+                      s->inbound_access, s->device_mask);
+        return MEMTX_ACCESS_ERROR;
+    }
+    return sgi_bedrock_io_inbound_rw(s, widget, s->inbound_device, offset,
+                                     buffer, size, true);
 }
 
 static MemTxResult ii_pio_read(void *opaque, hwaddr offset, uint64_t *value,
@@ -840,7 +898,14 @@ static const Property ii_properties[] = {
     DEFINE_PROP_UINT8("local-region", SGIBedrockIOState, local_region, 0),
     DEFINE_PROP_UINT8("node-number", SGIBedrockIOState, node_number, 0),
     DEFINE_PROP_UINT8("revision", SGIBedrockIOState, revision, 1),
-    DEFINE_PROP_UINT8("inbound-widget", SGIBedrockIOState, inbound_widget, 8),
+    /*
+     * Default to the two widget numbers an XBridge presents to its host
+     * port (0xe and 0xf: hw/pci-host/sgi-xbridge.c CHIP_HEAD_E/F, matching
+     * every populated SN1 xbridge_widgets list to date).  Nothing in a
+     * Bedrock+XBridge machine is ever wired to widget 8.
+     */
+    DEFINE_PROP_UINT16("inbound-widget-mask", SGIBedrockIOState,
+                       inbound_widget_mask, (1U << 0xe) | (1U << 0xf)),
     DEFINE_PROP_UINT8("inbound-device", SGIBedrockIOState, inbound_device, 0),
     DEFINE_PROP_UINT64("device-mask-reset", SGIBedrockIOState,
                        device_mask_reset, UINT64_MAX),
@@ -896,10 +961,6 @@ static void ii_realize(DeviceState *dev, Error **errp)
     }
     if (s->revision >= 16) {
         error_setg(errp, "revision must fit four bits");
-        return;
-    }
-    if (s->inbound_widget >= 16) {
-        error_setg(errp, "inbound-widget must be below 16");
         return;
     }
     if (s->inbound_device >= 8) {
