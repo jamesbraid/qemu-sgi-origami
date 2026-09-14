@@ -1055,6 +1055,25 @@ static void tigon_set_station_address(TigonState *s)
 }
 
 /*
+ * A shortage ends when a write actually posts a buffer. A write that moves
+ * nothing is not the end of one: a driver whose receive handler rewrites the
+ * index having found no memory to spare would otherwise reset the count on
+ * every pass and never report the drought at all.
+ */
+static void tigon_report_rx_shortage_end(TigonState *s)
+{
+    if (s->jumbo_rx_prodidx == s->jumbo_rx_considx ||
+        s->rx_shortage_drops == 0) {
+        return;
+    }
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "tigon: jumbo ring posted again after %" PRIu64
+                  " frames discarded for want of a buffer\n",
+                  s->rx_shortage_drops);
+    s->rx_shortage_drops = 0;
+}
+
+/*
  * Command doorbell. The firmware drains the NIC-resident command ring and
  * advances the command consumer index the driver polls after posting a
  * command; without that advance the driver's post-command wait never returns.
@@ -1101,7 +1120,14 @@ static void tigon_run_commands(TigonState *s, uint32_t prod)
             }
             s->jumbo_rx_prodidx = idx % TI_JUMBO_RX_RING_CNT;
             trace_tigon_rx_doorbell("jumbo-command", idx);
-            /* A frame too big for the standard ring can now be delivered. */
+            tigon_report_rx_shortage_end(s);
+            /*
+             * The same release the mailbox performs. These two are the only
+             * ways to post this ring and the IRIX eg driver uses the command,
+             * so a completion refused for a full arrival line has to come
+             * back either way; this path was not making that call.
+             */
+            sgi_net_rx_latency_ready(&s->rx_latency);
             qemu_flush_queued_packets(qemu_get_queue(s->nic));
         } else if (cmd != 0) {
             qemu_log_mask(LOG_UNIMP,
@@ -1368,6 +1394,7 @@ static void tigon_reset_state(TigonState *s)
     s->std_rx_prodidx = 0;
     s->jumbo_rx_considx = 0;
     s->jumbo_rx_prodidx = 0;
+    s->rx_shortage_drops = 0;
     s->cmd_considx = 0;
     s->irq_asserted = false;
     memset(&s->eeprom, 0, sizeof(s->eeprom));
@@ -1536,6 +1563,7 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
         }
         s->jumbo_rx_prodidx = val % TI_JUMBO_RX_RING_CNT;
         trace_tigon_rx_doorbell("jumbo", (uint32_t)val);
+        tigon_report_rx_shortage_end(s);
         /* A frame too big for the standard ring can now be delivered. */
         sgi_net_rx_latency_ready(&s->rx_latency);
         qemu_flush_queued_packets(qemu_get_queue(s->nic));
@@ -1950,9 +1978,17 @@ static ssize_t tigon_receive_packet(NetClientState *nc,
      * buffer. The two rings have independent control blocks and index pairs,
      * so an empty jumbo ring cannot stop the standard ring being served,
      * while parking the frame stops the back end and strands every standard
-     * frame behind it. Whether real firmware could instead retain it for a
-     * bounded refill is not settled by any public source -- see the jumbo
-     * receive contract in the Tigon datasheet.
+     * frame behind it.
+     *
+     * Both halves of the disposition are the model's, not evidence: no public
+     * source says whether real firmware discards at once or retains the frame
+     * for a bounded refill, nor which of its counters moves. ifInDiscards is
+     * RFC 1213's count of inbound packets discarded with no error found, one
+     * reason for which is freeing buffer space, and is where this model
+     * already counts its other receive drops. One bounded hold was built for
+     * this device too, and the one that was measured -- on the BCM570x, not
+     * here -- delivered fewer bytes than discarding at once; the Tigon
+     * datasheet carries that as the stated limitation.
      */
     /*
      * A queued frame is re-offered straight to receive() without another
@@ -1967,9 +2003,19 @@ static ssize_t tigon_receive_packet(NetClientState *nc,
         if (s->std_rx_considx == s->std_rx_prodidx) {
             return 0;  /* neither ring posted: genuine flow control */
         }
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "tigon: received frame of %zu bytes needs the jumbo "
-                      "ring, which has no posted buffer; dropping it\n", size);
+        /*
+         * Reported once at each end of the shortage, never once per frame: a
+         * ring left dry under load discards for as long as the drought lasts,
+         * and a line each would spend the guest's own scheduling inside the
+         * receive path rather than letting it post the buffer that ends this.
+         */
+        if (s->rx_shortage_drops == 0) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "tigon: frame of %zu bytes needs the jumbo ring, "
+                          "which has no posted buffer; discarding until it "
+                          "is posted\n", size);
+        }
+        s->rx_shortage_drops++;
         s->stat_rx_discards++;
         s->stats_dirty = true;
         return size;

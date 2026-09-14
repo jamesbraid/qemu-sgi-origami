@@ -165,6 +165,13 @@ struct TigonState {
     bool defer_backend_rx;
     bool backend_rx_deferred;
 
+    /*
+     * Frames discarded since this jumbo-ring shortage began, so the drought
+     * is reported at its two ends rather than once per frame. A count of a
+     * condition, not state a guest can read.
+     */
+    uint64_t rx_shortage_drops;
+
     /* Internal pending-interrupt latch. */
     bool irq_asserted;
     /* Last level traced, so the trace records edges rather than calls. */
