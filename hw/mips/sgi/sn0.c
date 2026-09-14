@@ -274,20 +274,6 @@ static void sn0_promdata_reset(void *opaque)
     memory_region_set_enabled(&s->copy_local, false);
 }
 
-/*
- * A raw buffer, not a RAM region, so the memory core does not migrate it;
- * both ends derive data_size from the same configuration at realize.
- */
-static const VMStateDescription vmstate_sn0_backdoor = {
-    .name = "sn0-backdoor",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .fields = (const VMStateField[]) {
-        VMSTATE_VBUFFER_UINT32(data, SN0BackdoorState, 0, NULL, data_size),
-        VMSTATE_END_OF_LIST()
-    }
-};
-
 static bool sn0_promdata_needed(void *opaque)
 {
     SN0NodeState *node = opaque;
@@ -340,20 +326,15 @@ static const VMStateDescription vmstate_sn0_promdata = {
 
 /*
  * Named "sn0-flash" for wire compatibility: the pflash device migrates
- * its own state, so this carries only the back doors and promdata. The
- * unused field keeps old streams loading; their legacy flash state is
- * discarded rather than translated.
+ * its own state and the back doors migrate with their RAM blocks, so
+ * this carries only promdata. Version 4 drops the back-door buffers and
+ * refuses an older stream rather than translating one.
  */
 static const VMStateDescription vmstate_sn0_flash = {
     .name = "sn0-flash",
-    .version_id = 3,
-    .minimum_version_id = 1,
+    .version_id = 4,
+    .minimum_version_id = 4,
     .fields = (const VMStateField[]) {
-        VMSTATE_UNUSED_V(1, 4),
-        VMSTATE_STRUCT(backdoor_ecc_state, SN0NodeState, 2,
-                       vmstate_sn0_backdoor, SN0BackdoorState),
-        VMSTATE_STRUCT(backdoor_dir_state, SN0NodeState, 2,
-                       vmstate_sn0_backdoor, SN0BackdoorState),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {
@@ -472,19 +453,16 @@ static const MemoryRegionOps sn0_backdoor_absent_ops = {
 #define SN0_BACKDOOR_LIVE_BYTES  2
 
 /*
- * A back-door address is a memory address shifted right by two, so a
- * bank stores only the unique quarter of its span and the window
- * repeats it. The fold is an address-bit truncation, not a remainder.
+ * The aliases below fold the window, so an offset the memory core hands
+ * a handler is already an index into the storage. Naturally aligned, so
+ * the access lies inside one entry.
  */
 static uint8_t *sn0_backdoor_entry(SN0BackdoorState *s, hwaddr addr,
                                    unsigned size)
 {
-    unsigned int bank = addr >> s->bank_shift;
-
-    /* Naturally aligned, so the access lies inside one entry. */
     g_assert(QEMU_IS_ALIGNED(addr, size));
-    g_assert(bank < s->populated_banks);
-    return s->data + s->bank_offset[bank] + (addr & s->span_mask[bank]);
+    g_assert(addr + size <= s->data_size);
+    return s->data + addr;
 }
 
 /*
@@ -500,7 +478,11 @@ static uint64_t sn0_backdoor_live_mask(hwaddr addr, unsigned size)
     return live ? MAKE_64BIT_MASK(0, live * 8) : 0;
 }
 
-/* The index is the stored byte the access's first byte resolved to. */
+/*
+ * The offset and the storage index are now one number: the aliases fold
+ * the window, so the window offset the guest used is gone by the time a
+ * handler runs. Only a write reaches one.
+ */
 static void sn0_backdoor_trace_populated(SN0BackdoorState *s, hwaddr addr,
                                          unsigned size, bool write,
                                          uint64_t value)
@@ -509,10 +491,14 @@ static void sn0_backdoor_trace_populated(SN0BackdoorState *s, hwaddr addr,
 
     trace_sn0_backdoor_populated(cpu ? cpu->cpu_index : -1, s->node,
                                  s->window, cpu ? cpu->cc->get_pc(cpu) : 0,
-                                 addr, size, write, value,
-                                 sn0_backdoor_entry(s, addr, size) - s->data);
+                                 addr, size, write, value, addr);
 }
 
+/*
+ * Only a path that cannot take a host pointer arrives here -- the
+ * monitor, the debugger, a qtest. A processor's load is served from the
+ * storage by the translation fast path and never enters the memory core.
+ */
 static uint64_t sn0_backdoor_populated_read(void *opaque, hwaddr addr,
                                             unsigned size)
 {
@@ -565,6 +551,7 @@ static void sn0_backdoor_populated_write(void *opaque, hwaddr addr,
     default:
         g_assert_not_reached();
     }
+    memory_region_flush_rom_device(&s->storage, addr, size);
     if (trace_event_get_state_backends(TRACE_SN0_BACKDOOR_POPULATED)) {
         sn0_backdoor_trace_populated(s, addr, size, true, val);
     }
@@ -580,28 +567,51 @@ static const MemoryRegionOps sn0_backdoor_populated_ops = {
     .impl.max_access_size = 8,
 };
 
-static void sn0_backdoor_configure(SN0BackdoorState *s,
-                                   const SN0NodeState *node,
-                                   uint64_t bank_stride)
+/*
+ * One window's storage, as a ROM device so a processor's read comes out
+ * of it with no dispatch and no lock while a write still traps here.
+ * The window repeats each bank's storage across the bank stride, and an
+ * alias per repeat leaves that fold to the memory core.
+ */
+static void sn0_backdoor_configure(SN0BackdoorState *s, SN0NodeState *node,
+                                   MemoryRegion *window, hwaddr base,
+                                   uint64_t bank_stride, const char *name)
 {
+    unsigned int bank, repeat, next = 0;
     uint64_t total = 0;
-    unsigned int bank;
 
     /* An address-bit fold needs a power of two on both sides. */
     g_assert(is_power_of_2(bank_stride));
-    s->populated_banks = node->populated_banks;
-    s->bank_shift = ctz64(bank_stride);
     for (bank = 0; bank < node->populated_banks; bank++) {
         uint64_t span = (uint64_t)node->bank_mb[bank] * MiB / 4;
 
         g_assert(is_power_of_2(span) && span <= bank_stride);
         s->bank_offset[bank] = total;
-        s->span_mask[bank] = span - 1;
+        s->folds += bank_stride / span;
         total += span;
     }
-    g_assert(total <= UINT32_MAX);
-    s->data = g_malloc0(total);
+    memory_region_init_rom_device(&s->storage, OBJECT(node),
+                                  &sn0_backdoor_populated_ops, s, name,
+                                  total, &error_fatal);
+    s->data = memory_region_get_ram_ptr(&s->storage);
     s->data_size = total;
+
+    s->fold = g_new0(MemoryRegion, s->folds);
+    for (bank = 0; bank < node->populated_banks; bank++) {
+        uint64_t span = (uint64_t)node->bank_mb[bank] * MiB / 4;
+
+        for (repeat = 0; repeat < bank_stride / span; repeat++) {
+            g_autofree char *fold_name =
+                g_strdup_printf("%s.bank%u.fold%u", name, bank, repeat);
+
+            memory_region_init_alias(&s->fold[next], OBJECT(node), fold_name,
+                                     &s->storage, s->bank_offset[bank], span);
+            memory_region_add_subregion(window,
+                                        base + bank * bank_stride +
+                                        repeat * span, &s->fold[next]);
+            next++;
+        }
+    }
 }
 
 /*
@@ -1185,6 +1195,7 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
     const SN0ModelRegion *flash_rboot = &map->rboot;
     const SN0ModelRegion *ecc = &map->backdoor_ecc;
     const SN0ModelRegion *directory = &map->backdoor_directory;
+    const SN0ModelMemory *geometry = sn0_node_memory_geometry(node);
     hwaddr node_base = sn0_model_node_address(
         map, &map->memory, node->nasid, 0);
     hwaddr hub_base = sn0_model_node_address(
@@ -1284,18 +1295,10 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
         system, hub_base + ecc->offset,
         &node->backdoor_ecc_absent, -1);
     if (node->populated_banks > 0) {
-        uint64_t bank_stride = ecc->size /
-            sn0_node_memory_geometry(node)->architectural_banks;
-        uint64_t size = (uint64_t)node->populated_banks * bank_stride;
-
-        sn0_backdoor_configure(&node->backdoor_ecc_state, node,
-                               bank_stride);
-        memory_region_init_io(&node->backdoor_ecc, OBJECT(node),
-                              &sn0_backdoor_populated_ops,
-                              &node->backdoor_ecc_state, ecc_name, size);
-        memory_region_add_subregion(
-            system, hub_base + ecc->offset,
-            &node->backdoor_ecc);
+        sn0_backdoor_configure(&node->backdoor_ecc_state, node, system,
+                               hub_base + ecc->offset,
+                               ecc->size / geometry->architectural_banks,
+                               ecc_name);
     }
 
     node->backdoor_dir_state.node = node_index;
@@ -1307,18 +1310,10 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
         system, hub_base + directory->offset,
         &node->backdoor_dir_absent, -1);
     if (node->populated_banks > 0) {
-        uint64_t bank_stride = directory->size /
-            sn0_node_memory_geometry(node)->architectural_banks;
-        uint64_t size = (uint64_t)node->populated_banks * bank_stride;
-
-        sn0_backdoor_configure(&node->backdoor_dir_state, node,
-                               bank_stride);
-        memory_region_init_io(&node->backdoor_dir, OBJECT(node),
-                              &sn0_backdoor_populated_ops,
-                              &node->backdoor_dir_state, dir_name, size);
-        memory_region_add_subregion(
-            system, hub_base + directory->offset,
-            &node->backdoor_dir);
+        sn0_backdoor_configure(&node->backdoor_dir_state, node, system,
+                               hub_base + directory->offset,
+                               directory->size / geometry->architectural_banks,
+                               dir_name);
     }
 }
 
