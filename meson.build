@@ -3666,6 +3666,7 @@ if have_system
     'hw/isa',
     'hw/mem',
     'hw/mips',
+    'hw/mips/sgi',
     'hw/misc',
     'hw/misc/macio',
     'hw/net',
