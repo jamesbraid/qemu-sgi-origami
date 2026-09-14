@@ -2201,6 +2201,35 @@ static void test_hub_kicks_trace_their_reason(const void *data)
                     modify);
 }
 
+/*
+ * A modify that leaves the bank as it found it has released nobody: every
+ * processor polling that bank reads back what it read last time. Outside
+ * round-robin, where a kick is how the slice gets handed on, such a write
+ * does not kick. The first write of each pair moves a bit and must kick,
+ * so a model that stopped kicking altogether fails here too.
+ */
+static void test_a_modify_that_changes_nothing_kicks_nobody(const void *data)
+{
+    g_autofree char *path = trace_file_create();
+    g_auto(GStrv) records = NULL;
+    QTestState *qts;
+
+    qts = qtest_initf("-M origin200 -smp 2 "
+                      "-trace enable=sgi_hub_kick,file=%s", path);
+    /* Set 5, then set it again; clear 5, then clear it again. */
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 5);
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 5);
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, 5);
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, 5);
+    /* And the bit is still where the four writes should have left it. */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 0);
+    qtest_quit(qts);
+
+    records = trace_file_take(path);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_kick",
+                                 "reason int-modify"), ==, 4);
+}
+
 #define PEND1_CREDIT_INTERRUPT  113
 
 /*
@@ -5723,6 +5752,9 @@ int main(int argc, char **argv)
                         test_rt_count_read_can_be_switched_on);
     qtest_add_data_func("sn0/hub/hub-kicks-trace-their-reason", NULL,
                         test_hub_kicks_trace_their_reason);
+    qtest_add_data_func("sn0/hub/modify-that-changes-nothing-kicks-nobody",
+                        NULL,
+                        test_a_modify_that_changes_nothing_kicks_nobody);
     qtest_add_data_func("sn0/hub/pend1-credit-traces-set-and-spend", NULL,
                         test_pend1_credit_traces_set_and_spend);
     qtest_add_data_func("sn0/hub/rt-hold-traces-place-it-on-the-timeline",

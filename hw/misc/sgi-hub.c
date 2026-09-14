@@ -939,10 +939,25 @@ static void sgi_hub_trace_kick(CPUState *target, const char *reason)
     }
 }
 
+/*
+ * This node's processor for a slice. qemu_get_cpu() walks the machine's
+ * whole processor list, and the parked-poller paths below ask for one on
+ * every poll, so the answer is kept. A slice not yet created resolves on a
+ * later call rather than being remembered as absent.
+ */
+static CPUState *sgi_hub_cpu(SGIHubState *s, unsigned int slice)
+{
+    assert(slice < SGI_HUB_PROCESSORS);
+    if (unlikely(!s->cpu[slice])) {
+        s->cpu[slice] = qemu_get_cpu(s->cpu_base + slice);
+    }
+    return s->cpu[slice];
+}
+
 static void sgi_hub_queue_cpu_enable(SGIHubState *s, unsigned int cpu,
                                      bool enabled, bool synchronous)
 {
-    CPUState *cs = qemu_get_cpu(s->cpu_base + cpu);
+    CPUState *cs = sgi_hub_cpu(s, cpu);
 
     if (!cs) {
         return;
@@ -997,15 +1012,23 @@ static void sgi_hub_kick_peer(CPUState *peer, const char *reason)
  * changes still kick unconditionally: those are rare, and warm-reset
  * discovery depends on them.
  */
+/*
+ * Single-threaded round-robin TCG is the only mode that hands slices
+ * around, so it is the only one the assist can help. Asking tcg_enabled()
+ * first also keeps the accelerator query out of a build configured
+ * without TCG, where it has no definition to link against.
+ *
+ * Callers with more than one peer to kick ask this before their loop, so a
+ * suppressed assist does not resolve processors it will not kick.
+ */
+static bool sgi_hub_polled_kicks_land(void)
+{
+    return tcg_enabled() && !qemu_tcg_mttcg_enabled();
+}
+
 static void sgi_hub_kick_polled_peer(CPUState *peer, const char *reason)
 {
-    /*
-     * Single-threaded round-robin TCG is the only mode that hands slices
-     * around, so it is the only one the assist can help. Asking
-     * tcg_enabled() first also keeps the accelerator query out of a build
-     * configured without TCG, where it has no definition to link against.
-     */
-    if (!tcg_enabled() || qemu_tcg_mttcg_enabled()) {
+    if (!sgi_hub_polled_kicks_land()) {
         return;
     }
 
@@ -1030,8 +1053,9 @@ static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
     unsigned int number = val & PI_INT_MODIFY_NUMBER;
     unsigned int bank = number / SGI_HUB_BANK_BITS;
     unsigned int i;
-    CPUState *primary = qemu_get_cpu(s->cpu_base);
+    CPUState *primary = sgi_hub_cpu(s, 0);
     uint64_t bit = 1ULL << (number % SGI_HUB_BANK_BITS);
+    uint64_t before = s->pi_int_pend[bank];
 
     if (val & PI_INT_MODIFY_SET) {
         s->pi_int_pend[bank] |= bit;
@@ -1046,9 +1070,20 @@ static void sgi_hub_int_modify(SGIHubState *s, uint64_t val)
         s->pi_int_pend1_primary_credit = true;
     }
 
-    /* The PROM uses pending bits as barrier mailboxes; release the pollers. */
-    for (i = 0; i < s->cpus; i++) {
-        sgi_hub_kick_peer(qemu_get_cpu(s->cpu_base + i), "int-modify");
+    /*
+     * The PROM uses pending bits as barrier mailboxes; release the pollers.
+     * A write that set a bit already set, or cleared one already clear,
+     * has released nobody: every poller on this bank reads back what it
+     * read last time. Where the kick can hand a slice on -- round-robin --
+     * it still goes out either way, because there the yield is the point
+     * and warm-reset discovery depends on it. Everywhere else the target
+     * is running on its own thread, so the kick costs it a run-loop exit
+     * and buys a poll it was about to make anyway.
+     */
+    if (s->pi_int_pend[bank] != before || sgi_hub_polled_kicks_land()) {
+        for (i = 0; i < s->cpus; i++) {
+            sgi_hub_kick_peer(sgi_hub_cpu(s, i), "int-modify");
+        }
     }
 }
 
@@ -1056,8 +1091,8 @@ static uint64_t sgi_hub_int_pending_read(SGIHubState *s, unsigned int bank);
 
 static uint64_t sgi_hub_int_pend1_read(SGIHubState *s)
 {
-    CPUState *primary = qemu_get_cpu(s->cpu_base);
-    CPUState *secondary = qemu_get_cpu(s->cpu_base + 1);
+    CPUState *primary = sgi_hub_cpu(s, 0);
+    CPUState *secondary = sgi_hub_cpu(s, 1);
     uint64_t value = s->pi_int_pend[1];
 
     if (s->cpus >= 2 && primary && secondary && current_cpu == secondary &&
@@ -1086,7 +1121,7 @@ static void sgi_hub_kick_remote_scratch_node(SGIHubState *s)
 
     /* A remote scratch write is a discovery phase change; release the node. */
     for (i = 0; i < s->cpus; i++) {
-        sgi_hub_kick_peer(qemu_get_cpu(s->cpu_base + i), "remote-scratch");
+        sgi_hub_kick_peer(sgi_hub_cpu(s, i), "remote-scratch");
     }
 }
 
@@ -1108,9 +1143,10 @@ static uint64_t sgi_hub_int_pending_read(SGIHubState *s, unsigned int bank)
     i = current_cpu->cpu_index - s->cpu_base;
     if (s->pi_int_pend_seen_valid[i][bank] &&
         s->pi_int_pend_seen[i][bank] == value) {
-        for (i = 0; i < s->cpus; i++) {
-            sgi_hub_kick_polled_peer(qemu_get_cpu(s->cpu_base + i),
-                                     "pending-reread");
+        if (sgi_hub_polled_kicks_land()) {
+            for (i = 0; i < s->cpus; i++) {
+                sgi_hub_kick_polled_peer(sgi_hub_cpu(s, i), "pending-reread");
+            }
         }
         return value;
     }
@@ -1417,7 +1453,7 @@ static int sgi_hub_current_slice(SGIHubState *s)
 /* Whether a slice can still reach a read: enabled, running, not stopped. */
 static bool sgi_hub_slice_can_read(SGIHubState *s, unsigned int slice)
 {
-    CPUState *cs = qemu_get_cpu(s->cpu_base + slice);
+    CPUState *cs = sgi_hub_cpu(s, slice);
 
     return cs && s->pi_cpu_enable[slice] && !cs->halted && cpu_can_run(cs);
 }
@@ -1435,7 +1471,7 @@ static const char *sgi_hub_rt_hold_kind_name(SGIHubRTHoldKind kind)
 static void sgi_hub_rt_release(SGIHubState *s, unsigned int slice,
                                SGIHubRTHoldKind kind)
 {
-    CPUState *cs = qemu_get_cpu(s->cpu_base + slice);
+    CPUState *cs = sgi_hub_cpu(s, slice);
 
     if (s->pi_rt_hold[slice] && s->pi_rt_hold_kind[slice] == kind) {
         if (trace_event_get_state_backends(TRACE_SGI_HUB_RT_HOLD_RELEASE)) {
@@ -1611,7 +1647,7 @@ static void sgi_hub_rt_hold_reset(SGIHubState *s)
     unsigned int n;
 
     for (n = 0; n < SGI_HUB_PROCESSORS; n++) {
-        CPUState *cs = qemu_get_cpu(s->cpu_base + n);
+        CPUState *cs = sgi_hub_cpu(s, n);
 
         if (s->pi_rt_hold[n] && cs) {
             sgi_hub_trace_kick(cs, "rt-hold-reset");
@@ -1628,7 +1664,7 @@ static void sgi_hub_rt_hold_reset(SGIHubState *s)
 static uint64_t sgi_hub_read_rt_compare(SGIHubState *s, hwaddr addr,
                                         unsigned arg)
 {
-    CPUState *owner = qemu_get_cpu(s->cpu_base + arg);
+    CPUState *owner = sgi_hub_cpu(s, arg);
     uint64_t value = s->pi_rt_compare[arg];
 
     /* A progress mailbox: let the owner publish before the poll budget ends. */
@@ -2243,7 +2279,7 @@ static void sgi_hub_write_rt_compare(SGIHubState *s, hwaddr addr,
      * its instruction-count timeout expires. A deadline writer has the
      * interrupt enabled and does not kick the peer.
      */
-    other = qemu_get_cpu(s->cpu_base + (arg ^ 1));
+    other = sgi_hub_cpu(s, arg ^ 1);
     if (!s->pi_rt_enable[arg] && (arg ^ 1) < s->cpus) {
         sgi_hub_kick_peer(other, "rt-compare-post");
     }
