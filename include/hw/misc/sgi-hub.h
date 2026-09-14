@@ -246,6 +246,17 @@ struct SGIHubState {
     Clock *rt_clk;
     int64_t pi_rt_origin_ns;
 
+    /*
+     * The counter's reciprocal: the clock period it was computed for, the
+     * multiplier that turns the counter's division into one multiply, and
+     * the largest elapsed time the multiplier is exact over. Derived from
+     * the clock and rebuilt whenever the period changes, so they are
+     * neither reset state nor migrated state.
+     */
+    uint64_t rt_period;
+    uint64_t rt_reciprocal;
+    uint64_t rt_reciprocal_limit_ns;
+
     /* A match pends whether or not enabled; enable only gates the line. */
     uint64_t pi_rt_compare[SGI_HUB_PROCESSORS];
     uint8_t pi_rt_pending[SGI_HUB_PROCESSORS];

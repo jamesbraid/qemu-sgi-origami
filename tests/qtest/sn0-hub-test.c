@@ -223,6 +223,7 @@
 /* The counter's rate and width; a nanosecond divides by the rate exactly. */
 #define PI_RT_HZ            1250000ULL
 #define PI_RT_NS_PER_SEC    1000000000LL
+#define PI_RT_NS_PER_TICK   (PI_RT_NS_PER_SEC / PI_RT_HZ)
 #define PI_RT_MASK          ((((uint64_t)1) << 52) - 1)
 
 /* Interrupt modify: the set bit, and the bank split at number 64. */
@@ -462,6 +463,54 @@ static void test_the_real_time_counter_runs_at_its_rate(const void *data)
 
     qtest_clock_step(qts, PI_RT_NS_PER_SEC);
     g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT), ==, PI_RT_HZ);
+
+    qtest_quit(qts);
+}
+
+/*
+ * One second from zero is the same tick count under any arithmetic that gets
+ * the rate right. Counting from far out is not. A write puts the counter's
+ * origin that many ticks in the past without any virtual time passing, so
+ * these cases reach elapsed times that cross 2^32 nanoseconds, cross 2^32
+ * ticks, and run out to the 52-bit wrap -- the range where a conversion that
+ * is only approximately right drifts by a tick -- while the clock itself
+ * moves a second at most. Stepping the clock that far instead would make the
+ * machine's timers fire for every interval in between and never return.
+ *
+ * Each expected value comes from the 800 ns the counter's period is, not from
+ * the model, and every start is a value the register itself must read back,
+ * so a conversion wrong in either direction fails here.
+ */
+static void test_the_real_time_counter_converts_long_elapsed_times(
+    const void *data)
+{
+    static const uint64_t starts[] = {
+        0,
+        1,
+        4294967295ULL,          /* the last tick below 2^32 */
+        4294967296ULL,          /* 2^32 ticks, 3.4e12 ns back */
+        1250000000000ULL,       /* a million seconds of counting */
+        60000000000000ULL,      /* 4.8e16 ns back */
+        60050000000000ULL,      /* just past 4.8e16 ns back */
+        PI_RT_MASK / 2,
+        PI_RT_MASK - 2,         /* 3.6e18 ns back, and about to wrap */
+    };
+    static const uint64_t steps_ns[] = { 799, 800, 1000000, 999999999 };
+    QTestState *qts = qtest_init("-M origin200");
+
+    for (unsigned int n = 0; n < ARRAY_SIZE(starts); n++) {
+        for (unsigned int m = 0; m < ARRAY_SIZE(steps_ns); m++) {
+            uint64_t expected = (starts[n] + steps_ns[m] / PI_RT_NS_PER_TICK) &
+                                PI_RT_MASK;
+
+            qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, starts[n]);
+            g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT), ==,
+                             starts[n]);
+            qtest_clock_step(qts, steps_ns[m]);
+            g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT), ==,
+                             expected);
+        }
+    }
 
     qtest_quit(qts);
 }
@@ -5820,6 +5869,8 @@ int main(int argc, char **argv)
                         test_an_inbound_link_reset_says_what_it_cannot_model);
     qtest_add_data_func("sn0/hub/rt-counter-rate", NULL,
                         test_the_real_time_counter_runs_at_its_rate);
+    qtest_add_data_func("sn0/hub/rt-counter-long-elapsed-times", NULL,
+                        test_the_real_time_counter_converts_long_elapsed_times);
     qtest_add_data_func("sn0/hub/rt-counter-rate-every-node", NULL,
                         test_every_node_counter_runs_at_its_rate);
     qtest_add_data_func("sn0/hub/rt-counter-writable", NULL,
