@@ -11,6 +11,7 @@
 #include "hw/1wire/ds2502.h"
 #include "hw/1wire/onewire.h"
 #include "hw/core/clock.h"
+#include "hw/core/cpu.h"
 #include "hw/core/irq.h"
 #include "hw/misc/sgi-diagnostic.h"
 #include "qemu/timer.h"
@@ -217,6 +218,15 @@ struct SGIHubState {
 
     /* Global QEMU CPU index of this node's slice A. */
     uint32_t cpu_base;
+
+    /*
+     * This node's processors. qemu_get_cpu() walks the machine's whole
+     * processor list, and the polled reads ask for them on every poll,
+     * so they are resolved once and kept. Derived from the machine's
+     * topology, which outlives the device, so neither reset state nor
+     * migration state.
+     */
+    CPUState *cpu[SGI_HUB_PROCESSORS];
 
     /* Revision reported in the widget identity. */
     uint8_t widget_revision;
