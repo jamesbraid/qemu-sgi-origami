@@ -1,5 +1,4 @@
-# id | guest | scenario | cpus | nodes | mem | accel | firmware | speed | timeout | attempts | min_passes | expect | xfail_mark | xfail_signature
-firmware_smoke | prom | smoke | 1 | 1 | 64M | wallclock | synth | quick | 120 | 1 | 1 | pass |  |
-prom_full_boot_1node | prom | full_boot | 2 | 1 | 64M | wallclock | prom | thorough | 700 | 1 | 1 | pass |  |
-prom_full_boot_2node | prom | full_boot | 4 | 2 | 128M | wallclock | prom | thorough | 700 | 1 | 1 | pass |  |
-prom_full_boot_mttcg | prom | full_boot | 2 | 1 | 64M | mttcg | prom | thorough | 700 | 1 | 1 | pass |  |
+# id | guest | scenario | cpus | nodes | mem | accel | speed | timeout | attempts | min_passes | expect | xfail_mark | xfail_signature
+prom_full_boot_mttcg | prom | full_boot | 2 | 1 | 64M | mttcg | quick | 180 | 1 | 1 | pass |  |
+prom_full_boot_1node | prom | full_boot | 2 | 1 | 64M | wallclock | thorough | 700 | 1 | 1 | pass |  |
+prom_full_boot_2node | prom | full_boot | 4 | 2 | 128M | wallclock | thorough | 700 | 1 | 1 | pass |  |

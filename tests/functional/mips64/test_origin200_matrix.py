@@ -23,7 +23,7 @@ from qemu_test import QemuSystemTest
 from lib_matrix import (AttemptResult, MatrixError, machine_props,
                         matrix_rows, parse_row, pass_condition_met,
                         peek_row, prom_args, qemu_args, verdict)
-from lib_prom import FIRMWARE_REL, first_progress_code, resolve_asset
+from lib_prom import FIRMWARE_REL, resolve_asset
 
 
 MATRIX_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -46,38 +46,33 @@ def _boot_one_attempt(test, cell, attempt_index):
     vm.set_machine(machine_props(cell))
     vm.add_args(*qemu_args(cell))
 
-    if cell.firmware == 'prom':
-        # machine_props() already set synthesized-firmware=off for this
-        # cell -- it wants the real PROM. Resolve it the same way
-        # test_prom_boot.py does (ORIGAMI_ASSETS names a checkout, not
-        # the assets/ directory itself) and skip if it is not
-        # provisioned, rather than launching a machine with no
-        # firmware at all. firmware=synth cells never take this branch:
-        # no -bios, no trace, no skip.
-        assets_root = os.environ.get('ORIGAMI_ASSETS')
-        if not assets_root:
-            # No decorator covers this cell test -- it runs for both
-            # firmware=prom and firmware=synth rows, and only the prom
-            # rows ever touch ORIGAMI_ASSETS at all -- so the unset
-            # case is handled here rather than by @skipIfMissingEnv.
-            # A developer with no assets provisioned gets the usual
-            # skip.
-            test.skipTest(
-                'ORIGAMI_ASSETS is not set -- point it at a checkout '
-                'with the real PROM image extracted (tools/extract-irix '
-                'prom) to run this test')
-        firmware_path = resolve_asset(assets_root, FIRMWARE_REL)
-        if firmware_path is None:
-            # ORIGAMI_ASSETS IS set, so a missing firmware image is a
-            # provisioning failure, not an absent-assets developer run,
-            # and must fail loudly: a silent skip here would let a
-            # real firmware-boot regression pass CI unnoticed.
-            test.fail(
-                'ORIGAMI_ASSETS is set but no firmware is present '
-                f'at <ORIGAMI_ASSETS>/{FIRMWARE_REL} -- provision it '
-                '(nightly assets) rather than silently skipping a '
-                'claimed capability')
-        vm.add_args(*prom_args(firmware_path))
+    # Every cell boots the real PROM now that the synthesized-firmware
+    # axis is gone. Resolve it the same way test_prom_boot.py does
+    # (ORIGAMI_ASSETS names a checkout, not the assets/ directory
+    # itself) and skip if it is not provisioned, rather than launching
+    # a machine with no firmware at all.
+    assets_root = os.environ.get('ORIGAMI_ASSETS')
+    if not assets_root:
+        # No decorator covers this cell test -- every row needs
+        # ORIGAMI_ASSETS now, so the unset case is handled here rather
+        # than by @skipIfMissingEnv. A developer with no assets
+        # provisioned gets the usual skip.
+        test.skipTest(
+            'ORIGAMI_ASSETS is not set -- point it at a checkout '
+            'with the real PROM image extracted (tools/extract-irix '
+            'prom) to run this test')
+    firmware_path = resolve_asset(assets_root, FIRMWARE_REL)
+    if firmware_path is None:
+        # ORIGAMI_ASSETS IS set, so a missing firmware image is a
+        # provisioning failure, not an absent-assets developer run,
+        # and must fail loudly: a silent skip here would let a
+        # real firmware-boot regression pass CI unnoticed.
+        test.fail(
+            'ORIGAMI_ASSETS is set but no firmware is present '
+            f'at <ORIGAMI_ASSETS>/{FIRMWARE_REL} -- provision it '
+            '(nightly assets) rather than silently skipping a '
+            'claimed capability')
+    vm.add_args(*prom_args(firmware_path))
 
     try:
         vm.launch()
@@ -103,20 +98,11 @@ def _boot_one_attempt(test, cell, attempt_index):
 def _wait_for_pass(test, vm, cell, log_path):
     """Poll for cell's pass condition for up to cell.timeout seconds.
 
-    lib_matrix.pass_condition_met() decides from the log text alone: for
-    the 'smoke' scenario, any progress code at all (first_progress_code,
-    over the QEMU process's own captured log, where the sgi_hub_led
-    trace event lands); for every other scenario -- a real firmware
-    boot -- only the full recorded firmware-boot progress mark. The
-    'smoke' scenario additionally accepts the VM simply being confirmed
-    alive and QMP-running with no code at all, checked here rather than
-    in that pure helper since it needs a live VM: it exists to prove the
-    harness end-to-end -- enumerate, boot, pass condition, verdict --
-    against a machine that has no firmware image to run and so has no
-    code path that could ever write a progress indicator. A real
-    firmware or IRIX cell's scenario is never 'smoke', so this fallback
-    never weakens their pass condition -- a boot that wedges after an
-    early code does not reach the mark, and times out instead.
+    lib_matrix.pass_condition_met() decides from the log text alone: the
+    full recorded firmware-boot progress mark (over the QEMU process's
+    own captured log, where the sgi_hub_led trace event lands) must be a
+    subset of what was seen. A boot that wedges after an early code does
+    not reach the mark, and times out instead.
     """
     deadline = time.monotonic() + cell.timeout
     while time.monotonic() < deadline:
@@ -130,18 +116,8 @@ def _wait_for_pass(test, vm, cell, log_path):
             with open(log_path, encoding='utf-8', errors='replace') as fobj:
                 log_text = fobj.read()
             if pass_condition_met(cell.scenario, log_text):
-                signature = (f'progress:{first_progress_code(log_text)}'
-                            if cell.scenario == 'smoke' else 'progress-mark')
-                return AttemptResult(reached_pass=True, signature=signature)
-
-        if cell.scenario == 'smoke':
-            try:
-                status = vm.cmd('query-status')
-            except Exception:  # pylint: disable=broad-except
-                status = None
-            if status is not None and status.get('running'):
                 return AttemptResult(reached_pass=True,
-                                     signature='qmp-running')
+                                     signature='progress-mark')
 
         time.sleep(POLL_INTERVAL_SECONDS)
 
