@@ -3765,20 +3765,17 @@ static void test_receive_waits_for_standard_ring(const void *data)
 
 /*
  * The inverse case is not the same contract. A jumbo frame still cannot
- * borrow a posted standard descriptor, but an empty jumbo ring does not park
- * it either: running out of receive buffer descriptors is a counted
- * condition rather than a latched stall (nicNoMoreRXBDs, "Number of times
- * NIC ran out of the Receive Buffer Descriptors", updated by the Receive
- * List Placement state machine [57XX-PG105-R, printed page 110, Table 49]),
- * and the receive MAC's documented answer to running short of buffers is to
- * pause the link partner and then drop, counting ifInDiscards [printed page
- * 281]. The chip has nowhere to keep a frame it cannot place.
+ * borrow a posted standard descriptor -- a frame "greater than the Max_Len
+ * field of Receive Standard Producer Ring will consume a BD from Receive
+ * Jumbo Producer Ring" [57XX-PG105-R, printed page 92] -- but an empty jumbo
+ * ring does not park it either, because parking it would stop the back end
+ * and strand the standard-size frames behind it.
  *
- * What that buys is the standard ring: a card that parked the oversize frame
- * would stop the back end and strand the standard-size frames behind it,
- * which is the receive stall this test exists to keep out. The last step
- * proves the frame was discarded rather than parked -- posting a jumbo
- * buffer afterwards brings nothing back.
+ * What the manual does not say is what becomes of the frame itself: it never
+ * addresses a host producer ring with no descriptor at all. The discard the
+ * last step pins is the model's own approximation, and the datasheet's jumbo
+ * receive contract carries the evidence, the limitation, and the measurement
+ * that rejected holding the frame briefly instead.
  */
 static void test_receive_drops_oversize_with_empty_jumbo_ring(const void *data)
 {

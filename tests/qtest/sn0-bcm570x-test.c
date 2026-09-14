@@ -670,23 +670,18 @@ static void wait_for_rx_producer(QTestState *qts, uint16_t want)
 /*
  * The jumbo ring enabled and addressed but carrying no posted buffer. An
  * over-length frame arriving in that state has no descriptor to go to, and
- * the chip discards it: running out of receive buffer descriptors is a
- * counted condition, not a latched stall -- nicNoMoreRXBDs, "Number of times
- * NIC ran out of the Receive Buffer Descriptors", updated by the Receive
- * List Placement state machine [57XX-PG105-R, printed page 110, Table 49] --
- * and the receive MAC's own answer to running short of buffers is to pause
- * the link partner and then drop: "As soon as PAUSE frame is transmitted,
- * any incoming packet can be dropped, and the ifInDiscard counter in
- * statistics will increase", with the Low Water Mark Maximum Receive Frames
- * register bounding how many more good frames follow before "it will drop
- * subsequent incoming frames" [printed page 281]. Nothing in the manual
- * gives the chip anywhere to keep a frame it cannot place.
+ * cannot take the standard ring's: a frame "greater than the Max_Len field
+ * of Receive Standard Producer Ring will consume a BD from Receive Jumbo
+ * Producer Ring" [57XX-PG105-R, printed page 92]. The standard ring keeps
+ * being served all the same, which is the step that fails if the model
+ * parks the frame instead: the back end stops reading and the standard
+ * frame behind it never arrives.
  *
- * So the standard ring keeps being served while the jumbo ring is empty.
- * Holding the frame instead stops the back end reading, and the standard
- * frame behind it never arrives -- the stall this contract exists to
- * prevent. The last step proves the frame was discarded rather than parked:
- * posting a jumbo buffer afterwards brings nothing back.
+ * The manual says nothing about what becomes of the frame itself -- the
+ * pages that look like they answer it are about the chip's own on-chip
+ * buffer pool, not a host ring -- so the discard the last step pins is the
+ * model's approximation. jumbo-shortage-discards-without-waiting is what
+ * separates it from a bounded hold; this case steps the clock, so it cannot.
  *
  * Pins the empty-ring disposition, not arrival timing, so the floor is
  * zeroed: each completion is checked the instant it lands.
@@ -1078,6 +1073,100 @@ static void test_status_block_update_criteria(const void *data)
     close(sv[1]);
 }
 
+/*
+ * Poll for a completion without advancing the virtual clock. Every qtest
+ * command runs a pass of the main loop, so the back end still gets to read
+ * its socket; what does not happen is any timer firing.
+ */
+static uint16_t rx_producer_without_clock(QTestState *qts, uint16_t want)
+{
+    int attempt;
+
+    for (attempt = 0; attempt < 100; attempt++) {
+        if (status_rx_prod_be(qts) >= want) {
+            break;
+        }
+        g_usleep(5000);
+    }
+    return status_rx_prod_be(qts);
+}
+
+/*
+ * The discard happens at once, and this is the test that says so. Whether
+ * the frame is thrown away immediately or held for a while first is invisible
+ * to every other assertion here: a test that steps the clock far enough to
+ * see a completion has also stepped it past any plausible hold, so both
+ * dispositions end in the same state.
+ *
+ * Freezing the clock separates them. A model that holds the frame has
+ * refused it, which stops the back end reading, and nothing releases it while
+ * virtual time stands still -- so the standard frame queued behind it never
+ * arrives. A model that discards at once keeps reading and delivers that
+ * frame on the next pass of the main loop.
+ *
+ * This matters because the discard is an approximation with no manual behind
+ * it, and the obvious alternative is a bounded hold. That alternative was
+ * built and measured and delivered fewer bytes; see the jumbo receive
+ * contract in the BCM570x datasheet. Without this assertion nothing in the
+ * suite would notice it coming back.
+ */
+static void test_jumbo_shortage_discards_without_waiting(const void *data)
+{
+    QTestState *qts;
+    uint8_t big[BIG_FRAME_LEN];
+    uint8_t small[100];
+    uint8_t got[100];
+    int sv[2];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
+                      "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC
+                      ",rx-arrival-latency-us=0", sv[1]);
+    aim_window_at_bar(qts);
+
+    bar_writel(qts, BCM_HCC_STATUSBLK_ADDR_HI, IOVA(STATUS_PHYS) >> 32);
+    bar_writel(qts, BCM_HCC_STATUSBLK_ADDR_LO, IOVA(STATUS_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_RX_STD_RCB_HI, IOVA(STD_RING_PHYS) >> 32);
+    bar_writel(qts, BCM_RX_STD_RCB_LO, IOVA(STD_RING_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_RX_STD_RCB_MAXLEN, STD_MAXLEN_1518 << 16);
+    /* Addresses only, like IRIX: 0x2448 stays at its reset value of 0. */
+    bar_writel(qts, BCM_RX_JUMBO_RCB_HI, IOVA(JUMBO_RING_PHYS) >> 32);
+    bar_writel(qts, BCM_RX_JUMBO_RCB_LO, IOVA(JUMBO_RING_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_RX_JUMBO_RCB_NICADDR, 0x00001000u);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 0,
+               IOVA(RET_RING_PHYS) >> 32);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 4,
+               IOVA(RET_RING_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 8,
+               64 << 16);
+    bar_writel(qts, BCM_HCC_RX_MAX_COAL_BDS, 1);
+    bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(qts, BCM_RX_MODE, BCM_RXMODE_ENABLE);
+
+    post_rx_descriptor(qts, STD_RING_PHYS, 0, RX_BUF_PHYS, 0, 0);
+    qtest_memset(qts, RX_BUF_PHYS, 0, STD_BUF_SIZE);
+    qtest_memset(qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
+    qtest_memset(qts, STATUS_PHYS, 0, 0x50);
+    bar_writel(qts, BCM_MBX_RX_STD_PROD_LO, 1);
+
+    /* The jumbo producer mailbox is never written: the ring stays empty. */
+    build_big_rx_frame(big, sizeof(big));
+    net_send_frame(sv[0], big, sizeof(big));
+    build_big_rx_frame(small, sizeof(small));
+    net_send_frame(sv[0], small, sizeof(small));
+
+    /* No qtest_clock_step anywhere: only a discard gets the second frame in. */
+    g_assert_cmphex(rx_producer_without_clock(qts, 1), ==, 1);
+    qtest_memread(qts, RX_BUF_PHYS, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), small, sizeof(small));
+    g_assert_cmphex(bd_word_be(qts, RET_RING_PHYS, BCM_RXBD_IDX_LEN) & 0xffff,
+                    ==, sizeof(small) + BCM_ETH_FCS_LEN);
+
+    qtest_quit(qts);
+    close(sv[0]);
+    close(sv[1]);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1099,6 +1188,9 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "/sn0/bcm570x/jumbo-ring-unprovisioned-drops-oversize", NULL,
         test_jumbo_ring_unprovisioned_drops_oversize);
+    qtest_add_data_func(
+        "/sn0/bcm570x/jumbo-shortage-discards-without-waiting", NULL,
+        test_jumbo_shortage_discards_without_waiting);
 
     return g_test_run();
 }
