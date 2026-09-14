@@ -206,18 +206,28 @@ typedef struct SN0BackdoorState {
     /* One alias of the storage for each place in the window it repeats. */
     MemoryRegion *fold;
     unsigned int folds;
+    uint64_t writes;            /* through the callback, for tracing */
 } SN0BackdoorState;
+
+struct SN0NodeState;
 
 typedef struct SN0PromDataState {
     MIPSCPU *cpu;
+    const struct SN0NodeState *node;
     const SN0ModelAddressMap *map;
     hwaddr node_base;
     MemoryRegion data;
     MemoryRegion filter;
+    MemoryRegion filter_uncached;   /* the filter, in the uncached space */
     MemoryRegion copy_local;
     bool present;           /* the filter was installed (real PROM boot) */
+    bool fast_allowed;      /* data may serve cached accesses as RAM */
     bool leaving_private;   /* the overlay has been (or is being) disabled */
     bool phase_private;     /* the cache-as-RAM phase is latched for this CPU */
+    bool fast;              /* data is mapped above the filter */
+    /* Through the filter, for tracing only. */
+    uint64_t private_reads;
+    uint64_t private_writes;
 } SN0PromDataState;
 
 typedef struct SN0NodeState {
@@ -244,6 +254,7 @@ typedef struct SN0NodeState {
     uint64_t ram_start;
     uint64_t local_memory_base;
     bool promdata_filter;
+    bool promdata_fast;
     uint32_t nr_banks_mb;
     uint16_t *banks_mb;
 
@@ -252,11 +263,16 @@ typedef struct SN0NodeState {
     MIPSCPU *cpu[SN0_MAX_CPUS_PER_NODE];
     MemoryRegion cpu_sysmem[SN0_MAX_CPUS_PER_NODE];
     MemoryRegion sysmem_alias[SN0_MAX_CPUS_PER_NODE];
+    /* The uncached view: the cached one, less the private window. */
+    MemoryRegion cpu_uncached[SN0_MAX_CPUS_PER_NODE];
+    MemoryRegion cpu_uncached_alias[SN0_MAX_CPUS_PER_NODE];
     MemoryRegion claim_view[SN0_MAX_CPUS_PER_NODE];
     MemoryRegion local_space[SN0_MAX_CPUS_PER_NODE]
                                   [SN0_MAX_ADDRESS_SPACES];
     MemoryRegion hub_private[SN0_MAX_CPUS_PER_NODE][2];
     SN0PromDataState promdata[SN0_MAX_CPUS_PER_NODE];
+    /* Samples the mapped processors' stack pointers for the exit. */
+    QEMUTimer *promdata_poll;
     SGIHubState hub;
 
     /*
