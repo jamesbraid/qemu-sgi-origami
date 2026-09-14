@@ -17,15 +17,6 @@
 #define TYPE_PCF8584 "pcf8584"
 OBJECT_DECLARE_SIMPLE_TYPE(PCF8584State, PCF8584)
 
-typedef enum PCF8584DataReadEvent {
-    PCF8584_DATA_READ,
-    PCF8584_PUBLISHED_GRANT_READ,
-} PCF8584DataReadEvent;
-
-typedef void (*PCF8584DataRead)(void *opaque, uint32_t master, uint8_t value,
-                                PCF8584DataReadEvent event);
-typedef void (*PCF8584StartRequest)(void *opaque, uint32_t master);
-
 /*
  * Two addresses selected by the A0 pin, spaced eight bytes apart the way the
  * Origin 200's Hub wires it.
@@ -85,10 +76,6 @@ struct PCF8584State {
     I2CBus *bus;
     I2CSlave *rx;               /* this adapter's own endpoint on that bus */
     qemu_irq irq;
-    PCF8584DataRead data_read;
-    void *data_read_opaque;
-    PCF8584StartRequest start_request;
-    void *start_request_opaque;
     DeviceDiagnosticSink *diagnostic;
 
     /*
@@ -140,7 +127,6 @@ struct PCF8584State {
     bool wire_ack_nak;          /* acknowledgement bit sampled on clock nine */
     bool wire_grant_pending;    /* publish the observed module grant at STOP */
     uint8_t wire_grant;         /* unmatched module grant awaiting STOP */
-    bool wire_grant_visible;    /* data still holds the published grant */
     bool wire_start_waiting;    /* compatibility START held until bus free */
     bool wire_scl, wire_sda;    /* line levels as this adapter last saw them */
     int64_t wire_free_at;       /* earliest fresh START after the last STOP */
@@ -154,10 +140,5 @@ struct PCF8584State {
 uint64_t pcf8584_read_register(PCF8584State *s, hwaddr addr, unsigned size);
 void pcf8584_write_register(PCF8584State *s, hwaddr addr, uint64_t value,
                             unsigned size);
-void pcf8584_set_data_read_handler(PCF8584State *s,
-                                   PCF8584DataRead handler, void *opaque);
-void pcf8584_set_start_request_handler(PCF8584State *s,
-                                      PCF8584StartRequest handler,
-                                      void *opaque);
 
 #endif /* HW_I2C_PCF8584_H */

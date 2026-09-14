@@ -618,6 +618,30 @@ static void test_global_grant_rotation(void)
     qtest_quit(qts);
 }
 
+/*
+ * An adapter that reads the grant it owns and starts nothing must not keep
+ * that grant on the wire past the next service tick. Firmware polls the data
+ * register on every processor, including for codes it has no transfer for,
+ * so a controller that waits for the reader's START freezes the ring.
+ * Waiting for code 0 reads it through adapter 0, its owner. A hold timed in
+ * host time passes here only if the host stalls that long between the read
+ * and the clock step.
+ */
+static void test_read_grant_keeps_rotating(void)
+{
+    QTestState *qts = start_module();
+
+    wait_for_global_grant(qts, GRANT_BASE);
+    qtest_clock_step(qts, SERVICE_PERIOD_NS + GRANT_SETTLE_NS);
+    for (unsigned node = 0; node < ADAPTER_COUNT; node++) {
+        g_assert_cmphex(adapter_read(qts, node, I2C_CTRL) & STS_BB, ==,
+                        STS_BB);
+        g_assert_cmphex(adapter_read(qts, node, I2C_DATA), ==,
+                        GRANT_BASE | 1);
+    }
+    qtest_quit(qts);
+}
+
 /* A refused closing address must still accept the following full-byte STOP. */
 static void test_invalid_address_stop_releases_wire(void)
 {
@@ -1168,6 +1192,8 @@ int main(int argc, char **argv)
                    test_start_loses_to_grant);
     qtest_add_func("/sn0/o2000-module-management/global-grant-rotation",
                    test_global_grant_rotation);
+    qtest_add_func("/sn0/o2000-module-management/read-grant-keeps-rotating",
+                   test_read_grant_keeps_rotating);
     qtest_add_func("/sn0/o2000-module-management/invalid-address-stop",
                    test_invalid_address_stop_releases_wire);
     qtest_add_func("/sn0/o2000-module-management/shared-nvram",

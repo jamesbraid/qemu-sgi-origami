@@ -29,8 +29,6 @@
 #define GRANT_MASTER            SGI_O2000_ADAPTER_COUNT
 
 #define SERVICE_PERIOD_NS       1000000     /* one-millisecond service tick */
-/* Host scheduling allowance after the owning vCPU observes its grant. */
-#define GRANT_ACQUISITION_MS    100
 /* The global pending state expires about a second after the last message. */
 #define MESSAGE_LIFETIME_NS     1000000000
 #define PULSE_NS                100000000   /* 100 ms reset and NMI pulses */
@@ -56,13 +54,6 @@ enum {
     GRANT_STOP_RELEASE,
 };
 
-static void mgmt_clear_acquisition(SGISn0ModuleManagementState *s)
-{
-    s->grant_acquisition_pending = false;
-    s->grant_acquisition_master = UINT32_MAX;
-    s->grant_acquisition_deadline_ms = 0;
-}
-
 static void mgmt_reset_state(SGISn0ModuleManagementState *s)
 {
     s->processor_code = PROCESSOR_CODES - 1;
@@ -75,8 +66,6 @@ static void mgmt_reset_state(SGISn0ModuleManagementState *s)
     s->console_input_pending = false;
     s->console_processor = 0;
     s->grant_active = false;
-    s->grant_window_extended = false;
-    mgmt_clear_acquisition(s);
     s->grant_state = GRANT_IDLE;
     s->grant_bit = 0;
     s->grant_byte = 0;
@@ -230,9 +219,7 @@ static bool mgmt_message_for(SGISn0ModuleManagementState *s, uint8_t code)
 
 static void mgmt_publish(SGISn0ModuleManagementState *s)
 {
-    mgmt_clear_acquisition(s);
     s->processor_code = (s->processor_code + 1) % PROCESSOR_CODES;
-    s->grant_window_extended = false;
     s->grant_byte = GRANT_BASE | s->processor_code |
                     (mgmt_message_for(s, s->processor_code) ?
                      GRANT_MESSAGE_BIT : 0);
@@ -241,34 +228,6 @@ static void mgmt_publish(SGISn0ModuleManagementState *s)
     s->wire_scl = i2c_wire_scl(s->bus);
     s->wire_sda = i2c_wire_sda(s->bus);
     mgmt_stage(s, false, false, 1);
-}
-
-static void mgmt_data_read(void *opaque, uint32_t master, uint8_t value,
-                           PCF8584DataReadEvent event)
-{
-    SGIO2000ModuleMgmtState *s = opaque;
-    if (event != PCF8584_PUBLISHED_GRANT_READ ||
-        s->grant_window_extended || value != s->grant_byte ||
-        master != (s->grant_byte & 7) / 2 || i2c_bus_busy(s->bus)) {
-        return;
-    }
-    s->grant_window_extended = true;
-    s->grant_acquisition_pending = true;
-    s->grant_acquisition_master = master;
-    /* Host time bounds this MTTCG scheduling accommodation. */
-    s->grant_acquisition_deadline_ms =
-        qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + GRANT_ACQUISITION_MS;
-}
-
-static void mgmt_start_request(void *opaque, uint32_t master)
-{
-    SGIO2000ModuleMgmtState *s = opaque;
-
-    if (s->grant_acquisition_pending &&
-        s->grant_acquisition_master == master) {
-        s->grant_window_extended = false;
-        mgmt_clear_acquisition(s);
-    }
 }
 
 /* A staged adapter START owns tBUF before its lines make the bus busy. */
@@ -297,21 +256,6 @@ static void mgmt_service(SGISn0ModuleManagementState *s)
      */
     if (!s->publication_enabled || s->serial_granted) {
         return;
-    }
-    if (s->grant_acquisition_pending) {
-        /* Migration starts a new bounded host scheduling window. */
-        if (!s->grant_acquisition_deadline_ms) {
-            s->grant_acquisition_deadline_ms =
-                qemu_clock_get_ms(QEMU_CLOCK_REALTIME) +
-                GRANT_ACQUISITION_MS;
-            return;
-        }
-        if (qemu_clock_get_ms(QEMU_CLOCK_REALTIME) <
-            s->grant_acquisition_deadline_ms) {
-            return;
-        }
-        s->grant_window_extended = false;
-        mgmt_clear_acquisition(s);
     }
     if (s->controller_granted || s->slave_active || s->grant_active ||
         mgmt_adapter_active(s) ||
@@ -821,10 +765,6 @@ static void mgmt_realize(DeviceState *dev, Error **errp)
             return;
         }
         qdev_prop_set_uint32(s->adapters[i], "wire-master", i);
-        pcf8584_set_data_read_handler(PCF8584(s->adapters[i]),
-                                      mgmt_data_read, s);
-        pcf8584_set_start_request_handler(PCF8584(s->adapters[i]),
-                                          mgmt_start_request, s);
         if (!sysbus_realize(SYS_BUS_DEVICE(s->adapters[i]), errp)) {
             return;
         }
@@ -861,7 +801,6 @@ static void mgmt_unrealize(DeviceState *dev)
 {
     SGISn0ModuleManagementState *s = SGI_SN0_MODULE_MANAGEMENT(dev);
 
-    mgmt_clear_acquisition(s);
     qemu_unregister_resettable(OBJECT(s));
     i2c_wire_clear_timeline(s->bus, GRANT_MASTER, mgmt_run_deadlines, s);
     i2c_wire_clear_observer(s->bus, GRANT_MASTER, mgmt_wire_event, s);
@@ -932,10 +871,6 @@ static int mgmt_post_load(void *opaque, int version_id)
         s->recovery_ticks > RECOVERY_TICKS) {
         return -EINVAL;
     }
-    s->grant_acquisition_pending = s->grant_window_extended;
-    s->grant_acquisition_master = s->grant_window_extended ?
-        (s->grant_byte & 7) / 2 : UINT32_MAX;
-    s->grant_acquisition_deadline_ms = 0;
     timer_mod_ns(s->service_timer, s->service_deadline);
     if (s->pending_messages) {
         timer_mod_ns(s->message_timer, s->message_deadline);
@@ -956,7 +891,7 @@ static int mgmt_post_load(void *opaque, int version_id)
 static const VMStateDescription vmstate_sgi_sn0_module_management = {
     /* Pre-rename stream name; kept for migration compatibility. */
     .name = "sgi-o2000-module-management",
-    .version_id = 2,
+    .version_id = 1,
     .minimum_version_id = 1,
     .post_load = mgmt_post_load,
     .fields = (const VMStateField[]) {
@@ -972,8 +907,6 @@ static const VMStateDescription vmstate_sgi_sn0_module_management = {
         VMSTATE_UINT8(grant_state, SGISn0ModuleManagementState),
         VMSTATE_BOOL(grant_bit_sampled, SGISn0ModuleManagementState),
         VMSTATE_BOOL(grant_active, SGISn0ModuleManagementState),
-        VMSTATE_BOOL_V(grant_window_extended,
-                       SGISn0ModuleManagementState, 2),
         VMSTATE_BOOL(wire_scl, SGISn0ModuleManagementState),
         VMSTATE_BOOL(wire_sda, SGISn0ModuleManagementState),
         VMSTATE_BOOL(publication_enabled, SGISn0ModuleManagementState),
