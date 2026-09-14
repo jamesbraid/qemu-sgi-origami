@@ -3764,22 +3764,38 @@ static void test_receive_waits_for_standard_ring(const void *data)
 }
 
 /*
- * The inverse case has the same contract. A jumbo frame cannot borrow a
- * posted standard descriptor while its own selected ring is empty.
+ * The inverse case is not the same contract. A jumbo frame still cannot
+ * borrow a posted standard descriptor, but an empty jumbo ring does not park
+ * it either: running out of receive buffer descriptors is a counted
+ * condition rather than a latched stall (nicNoMoreRXBDs, "Number of times
+ * NIC ran out of the Receive Buffer Descriptors", updated by the Receive
+ * List Placement state machine [57XX-PG105-R, printed page 110, Table 49]),
+ * and the receive MAC's documented answer to running short of buffers is to
+ * pause the link partner and then drop, counting ifInDiscards [printed page
+ * 281]. The chip has nowhere to keep a frame it cannot place.
+ *
+ * What that buys is the standard ring: a card that parked the oversize frame
+ * would stop the back end and strand the standard-size frames behind it,
+ * which is the receive stall this test exists to keep out. The last step
+ * proves the frame was discarded rather than parked -- posting a jumbo
+ * buffer afterwards brings nothing back.
  */
-static void test_receive_waits_for_jumbo_ring(const void *data)
+static void test_receive_drops_oversize_with_empty_jumbo_ring(const void *data)
 {
     int sv[2];
     Bcm b;
     g_autofree uint8_t *first = g_malloc(BCM_JUMBO_FRAME_LEN);
     g_autofree uint8_t *second = g_malloc(BCM_JUMBO_FRAME_LEN);
     g_autofree uint8_t *got = g_malloc(BCM_JUMBO_FRAME_LEN);
+    uint8_t small[64], small_got[64];
     uint8_t ret[BCM_RXBD_SIZE];
 
     memset(first, 0x53, BCM_JUMBO_FRAME_LEN);
     memset(second, 0x64, BCM_JUMBO_FRAME_LEN);
+    memset(small, 0x75, sizeof(small));
     memset(first, 0xff, 6);
     memset(second, 0xff, 6);
+    memset(small, 0xff, 6);
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     bcm_open(&b, qtest_initf(BCM_MACHINE
@@ -3795,9 +3811,11 @@ static void test_receive_waits_for_jumbo_ring(const void *data)
     wait_for_rx_prod(&b, 1);
     bar_writel(&b, BCM_MBX_RX_CONS0_LO, 1);
 
+    /* The jumbo ring is now empty; the standard ring still holds its buffer. */
     qtest_memset(b.qts, RET_RING_PHYS + BCM_RXBD_SIZE, 0, BCM_RXBD_SIZE);
     qtest_memset(b.qts, JUMBO_STALE_BUF_PHYS, 0xa5,
                  BCM_JUMBO_FRAME_LEN);
+    qtest_memset(b.qts, RX_BUF_PHYS, 0xa5, sizeof(small));
     net_socket_send_frame(sv[0], second, BCM_JUMBO_FRAME_LEN);
     g_usleep(100000);
 
@@ -3807,27 +3825,30 @@ static void test_receive_waits_for_jumbo_ring(const void *data)
     g_assert_cmpmem(got, BCM_JUMBO_FRAME_LEN,
                     first, BCM_JUMBO_FRAME_LEN);
 
-    /*
-     * Re-enable while only the standard ring can take a frame. Retrying the
-     * queued jumbo makes no progress and must preserve this authorization for
-     * the jumbo producer that actually makes its selected ring ready.
-     */
+    /* Acknowledge the first frame's update, so the next one stands alone. */
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     g_assert_true(intr_line_up(b.dev));
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     g_assert_false(intr_line_up(b.dev));
-    g_usleep(100000);
-    g_assert_cmpuint(read_rx_prod(&b), ==, 1);
-    bar_writel(&b, BCM_MBX_RX_JUMBO_PROD_LO, 2);
+
+    /* The receiver is not latched: the frame behind the dropped one arrives. */
+    net_socket_send_frame(sv[0], small, sizeof(small));
     wait_for_rx_prod(&b, 2);
+    qtest_memread(b.qts, RX_BUF_PHYS, small_got, sizeof(small_got));
+    g_assert_cmpmem(small_got, sizeof(small_got), small, sizeof(small));
+    qtest_memread(b.qts, RET_RING_PHYS + BCM_RXBD_SIZE, ret, sizeof(ret));
+    g_assert_cmphex(get16le(ret + BCM_RXBD_LEN), ==,
+                    sizeof(small) + BCM_ETH_FCS_LEN);
+    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) &
+                    BCM_RXBDFLAG_JUMBO_RING, ==, 0);
+
+    /* Posting a jumbo buffer brings nothing back: that frame is gone. */
+    bar_writel(&b, BCM_MBX_RX_JUMBO_PROD_LO, 2);
+    g_usleep(100000);
+    g_assert_cmpuint(read_rx_prod(&b), ==, 2);
     qtest_memread(b.qts, JUMBO_STALE_BUF_PHYS, got, BCM_JUMBO_FRAME_LEN);
     g_assert_cmpmem(got, BCM_JUMBO_FRAME_LEN,
-                    second, BCM_JUMBO_FRAME_LEN);
-    qtest_memread(b.qts, RET_RING_PHYS + BCM_RXBD_SIZE, ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_IDX), ==, 1);
-    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) &
-                    BCM_RXBDFLAG_JUMBO_RING, ==,
-                    BCM_RXBDFLAG_JUMBO_RING);
+                    first, BCM_JUMBO_FRAME_LEN);
 
     bcm_close(&b);
     close(sv[0]);
@@ -6754,8 +6775,9 @@ int main(int argc, char **argv)
                         test_receive_jumbo_frame);
     qtest_add_data_func("/bcm570x/receive-waits-for-standard-ring", NULL,
                         test_receive_waits_for_standard_ring);
-    qtest_add_data_func("/bcm570x/receive-waits-for-jumbo-ring", NULL,
-                        test_receive_waits_for_jumbo_ring);
+    qtest_add_data_func("/bcm570x/receive-drops-oversize-with-empty-jumbo-ring",
+                        NULL,
+                        test_receive_drops_oversize_with_empty_jumbo_ring);
     qtest_add_data_func("/bcm570x/receive-oversize-dropped", NULL,
                         test_receive_oversize_dropped);
     qtest_add_data_func("/bcm570x/receive-frame-wordswap", NULL,
