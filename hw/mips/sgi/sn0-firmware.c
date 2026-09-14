@@ -24,7 +24,7 @@
 #include "cpu.h"
 #include "sn0.h"
 #include "sn0-ecoff.h"
-#include "sn0-klconfig-layout.h"
+#include "hw/mips/sn0-klconfig-layout.h"
 #include "trace.h"
 
 static hwaddr sn0_firmware_node_base(const SN0ModelNodeTopology *topology,

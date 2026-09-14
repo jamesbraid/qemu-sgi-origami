@@ -36,7 +36,7 @@ system_ss.add(when: 'CONFIG_MCHP_PFSOC_SYSREG', if_true: files('mchp_pfsoc_sysre
 system_ss.add(when: 'CONFIG_SGI_BRIDGE_DMA_TEST', if_true: files('sgi-bridge-dma-test.c'))
 system_ss.add(when: 'CONFIG_SGI_ELSC', if_true: files('sgi-elsc.c'))
 system_ss.add(when: 'CONFIG_SGI_O2000_MODULE_MGMT',
-              if_true: files('sgi-o2000-module-mgmt.c'))
+              if_true: files('sgi-sn0-module-management.c'))
 system_ss.add(when: 'CONFIG_SGI_HUB', if_true: files('sgi-hub.c'))
 system_ss.add(when: 'CONFIG_SGI_HUB_TEST', if_true: files('sgi-hub-test.c'))
 system_ss.add(when: 'CONFIG_SGI_IOC3', if_true: files('sgi-ioc3.c'))
