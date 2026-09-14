@@ -52,6 +52,7 @@ from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
                        skipSlowTest)
 
 from lib_prom import resolve_asset
+from lib_translation_health import assert_translation_healthy
 
 from test_linux_multiuser_verdict import missing_multiuser_markers
 
@@ -79,7 +80,7 @@ LOGIN_RE = re.compile(r"[\w.-]+ login:")
 CRASH_RE = re.compile(r"Kernel panic - not sync|Oops\[|Unable to handle kernel")
 
 
-def _boot_to_login(sock, log_path, timeout):
+def _boot_to_login(sock, log_path, timeout, vm=None):
     """Read the console until the multiuser login prompt (network and
     services up), a kernel crash, or the timeout. Every byte received is
     accumulated into the returned transcript and appended to log_path, so a
@@ -89,6 +90,7 @@ def _boot_to_login(sock, log_path, timeout):
     sock.settimeout(1.0)
     deadline = time.monotonic() + timeout
     transcript = ""
+    health_checked = False
     with open(log_path, "a", encoding="utf-8") as log:
         while time.monotonic() < deadline:
             try:
@@ -103,6 +105,9 @@ def _boot_to_login(sock, log_path, timeout):
             transcript += text
             log.write(text)
             log.flush()
+            if vm is not None and not health_checked:
+                health_checked = True
+                assert_translation_healthy(vm)
             if LOGIN_RE.search(transcript) or CRASH_RE.search(transcript):
                 break
     return transcript
@@ -180,7 +185,7 @@ class LinuxMultiuser(QemuSystemTest):
         missing = None
         try:
             transcript = _boot_to_login(
-                vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS)
+                vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS, vm=vm)
             # Probe ssh only once the boot reached networked multiuser --
             # gated on the same verdict the markers use, not a separate
             # login match, so the banner is asserted exactly when the

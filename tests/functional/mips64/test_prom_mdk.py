@@ -144,7 +144,7 @@ class PromMdk(QemuSystemTest):
         try:
             transcript, reached = drive_console(
                 vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS,
-                DRIVER_STEPS, until=DRIVER_UNTIL_RE)
+                DRIVER_STEPS, until=DRIVER_UNTIL_RE, vm=vm)
         finally:
             vm.shutdown(hard=vm.exitcode() is not None)
         ended = utc_now()

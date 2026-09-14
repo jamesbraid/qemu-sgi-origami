@@ -375,7 +375,7 @@ class IrixMiniroot(QemuSystemTest):
         try:
             transcript, reached = drive_console(
                 vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS,
-                DRIVER_STEPS, until=DRIVER_UNTIL_RE)
+                DRIVER_STEPS, until=DRIVER_UNTIL_RE, vm=vm)
         finally:
             # A VM that crashed or exited on its own has already left; a
             # graceful shutdown() against an already-dead process still

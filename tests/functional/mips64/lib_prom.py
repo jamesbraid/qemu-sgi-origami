@@ -22,6 +22,8 @@ import socket
 import subprocess
 import time
 
+from lib_translation_health import assert_translation_healthy
+
 
 # Where ORIGAMI_ASSETS resolves the real firmware image, matching
 # tools/containerlib.py's resolve_assets_root() and tools/pod-console's
@@ -154,7 +156,7 @@ _TAIL_MAX = 8192
 
 
 def drive_console(sock, log_path, timeout, steps, until=None,
-                  reached_when=None):
+                  reached_when=None, vm=None):
     """Answer a guest's prompts from a rule table and drive it to an end
     condition, over the framework's console socket.
 
@@ -175,6 +177,14 @@ def drive_console(sock, log_path, timeout, steps, until=None,
     over the whole run can name the last one). Returns (transcript,
     reached) -- reached is True once the end condition was met, False if
     the timeout, a closed socket, or a socket error ended the loop first.
+
+    When `vm` is given (the QEMUMachine this socket belongs to), the
+    first byte received is treated as the guest having demonstrably run,
+    and triggers one translation-health sample
+    (lib_translation_health.assert_translation_healthy) -- so a caller
+    driving a boot through here gets a fast, named failure on a
+    translation storm instead of quietly spending its whole timeout on a
+    guest running 100 to 300 times slower than it should.
     """
     rules = [
         {"re": re.compile(pattern.encode()), "response": response.encode(),
@@ -186,6 +196,7 @@ def drive_console(sock, log_path, timeout, steps, until=None,
     transcript = bytearray()
     tail = b""
     reached = False
+    health_checked = False
     with open(log_path, "wb") as log:
         while time.monotonic() < deadline:
             try:
@@ -199,6 +210,9 @@ def drive_console(sock, log_path, timeout, steps, until=None,
             transcript += chunk
             log.write(chunk)
             log.flush()
+            if vm is not None and not health_checked:
+                health_checked = True
+                assert_translation_healthy(vm)
             tail = (tail + chunk)[-_TAIL_MAX:]
             for rule in rules:
                 if not rule["fired"] and rule["re"].search(tail):

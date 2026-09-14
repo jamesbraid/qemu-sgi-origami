@@ -78,6 +78,7 @@ import time
 from qemu_test import QemuSystemTest, skipIfMissingEnv
 
 from lib_prom import resolve_asset
+from lib_translation_health import assert_translation_healthy
 
 from test_linux_kernel_verdict import missing_assertions
 
@@ -177,6 +178,7 @@ class LinuxKernel(QemuSystemTest):
         transcript = ''
         sock = vm.console_socket
         sock.settimeout(POLL_INTERVAL_SECONDS)
+        health_checked = False
         try:
             with open(log_path, 'a', encoding='utf-8') as log:
                 while time.monotonic() < deadline:
@@ -193,6 +195,9 @@ class LinuxKernel(QemuSystemTest):
                         transcript += text
                         log.write(text)
                         log.flush()
+                        if not health_checked:
+                            health_checked = True
+                            assert_translation_healthy(vm)
                     if vm.exitcode() is not None:
                         break
         finally:

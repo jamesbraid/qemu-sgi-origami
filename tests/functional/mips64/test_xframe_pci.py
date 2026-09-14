@@ -66,6 +66,7 @@ from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
                        skipSlowTest)
 
 from lib_prom import resolve_asset
+from lib_translation_health import assert_translation_healthy
 
 from test_xframe_pci_verdict import (TRIPWIRES, XFRAME_UNCLAIMED_RE,
                                      xframe_pci_verdict)
@@ -101,7 +102,7 @@ XFRAME_ARGS = (
 _TAIL_MAX = 4096
 
 
-def _drive_pci_probe(sock, log_path, timeout):
+def _drive_pci_probe(sock, log_path, timeout, vm=None):
     """Read the console until XFRAME_UNCLAIMED_RE matches, a TRIPWIRE
     fires, or timeout -- never sending anything (see this module's own
     docstring for why no interactive drive is needed). Every byte
@@ -115,6 +116,7 @@ def _drive_pci_probe(sock, log_path, timeout):
     deadline = time.monotonic() + timeout
     transcript = ""
     tail = ""
+    health_checked = False
     with open(log_path, "a", encoding="utf-8") as log:
         while time.monotonic() < deadline:
             try:
@@ -129,6 +131,9 @@ def _drive_pci_probe(sock, log_path, timeout):
             transcript += text
             log.write(text)
             log.flush()
+            if vm is not None and not health_checked:
+                health_checked = True
+                assert_translation_healthy(vm)
             tail = (tail + text)[-_TAIL_MAX:]
             if XFRAME_UNCLAIMED_RE.search(tail):
                 break
@@ -189,7 +194,7 @@ class XframePci(QemuSystemTest):
         log_path = self.log_file('xframe-pci.log')
         try:
             transcript = _drive_pci_probe(
-                vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS)
+                vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS, vm=vm)
         finally:
             # A VM that crashed or exited on its own has already left; a
             # graceful shutdown() against an already-dead process still

@@ -128,7 +128,7 @@ class PromMdkMemory(QemuSystemTest):
             transcript, reached = drive_console(
                 vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS,
                 DRIVER_STEPS,
-                reached_when=reached_all_completions)
+                reached_when=reached_all_completions, vm=vm)
         finally:
             vm.shutdown(hard=vm.exitcode() is not None)
         ended = utc_now()
