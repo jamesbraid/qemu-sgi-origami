@@ -125,15 +125,17 @@ test_mips64_timeouts = {
   # meson timeout.
   'openbsd_login' : 900,
   # Three test methods (one, two, and four CPUs) run one after another in
-  # this one script. The one- and two-CPU boots are each budgeted up to
-  # BOOT_TIMEOUT_SECONDS=90s in test_linux_kernel.py before declaring FAIL;
-  # the four-CPU/two-node boot up to FOUR_CPU_BOOT_TIMEOUT_SECONDS=700s
-  # (fixed instruction counting serializes all four CPUs, so it is far
-  # slower). 1000s covers all three running out their own budget in
-  # sequence plus VM launch/shutdown overhead, rather than the usual
+  # this one script, each now netbooting the kernel through the real PROM
+  # rather than a direct -kernel load. The one- and two-CPU boots are each
+  # budgeted up to BOOT_TIMEOUT_SECONDS=240s in test_linux_kernel.py
+  # before declaring FAIL; the four-CPU/two-node boot up to
+  # FOUR_CPU_BOOT_TIMEOUT_SECONDS=900s (fixed instruction counting
+  # serializes all four CPUs, so it is far slower). 1500s covers all
+  # three running out their own budget in sequence plus VM
+  # launch/shutdown overhead, rather than the usual
   # single-BOOT_TIMEOUT-plus-a-bit margin this fork's single-test-method
   # files keep.
-  'linux_kernel' : 1000,
+  'linux_kernel' : 1500,
   # test_linux_multiuser.py boots the networked Gentoo disk to a multiuser
   # login and probes the ssh service. BOOT_TIMEOUT_SECONDS=1200 there (the
   # verified milestone boot reached a networked login in 754-845s); 1320
