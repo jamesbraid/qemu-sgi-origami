@@ -149,6 +149,34 @@ def mark_reached(seen, mark):
     return not missing, missing
 
 
+def prom_netboot_steps(bootfile, args=''):
+    """The three console steps that take the stock PROM from the System
+    Maintenance Menu to a running netbooted image: select option 5 (the
+    command monitor), clear a stale leased address left over from an
+    earlier boot, and issue the boot command itself. Every netboot test
+    in this directory drives this same dialogue against a real IP27 or
+    IP35 PROM (test_prom_sash.py's own DRIVER_STEPS is this dialogue for
+    sash64, written out by hand); this is that dialogue, generalized to
+    any boot file and any kernel arguments, for a caller to prepend to
+    its own driver steps or feed to drive_console() directly.
+
+    `bootfile` is the path SLIRP's tftp= root should serve it under,
+    exactly as it is typed into the boot command (`boot -f
+    bootp()/<bootfile>`) -- not necessarily the boot file's own name on
+    disk. `args`, when given, are appended to that same command line: the
+    PROM hands them to the loaded image as its kernel arguments, the
+    netboot equivalent of QEMU's own `-append`.
+    """
+    command = f'boot -f bootp()/{bootfile}'
+    if args:
+        command += f' {args}'
+    return (
+        (r"Option\?", "5\n"),
+        (r">>", "unsetenv netaddr\n"),
+        (r">>", f"{command}\n"),
+    )
+
+
 # How much of the received stream a driver rule is matched against: the
 # tail since the last rule fired, capped so a chatty guest cannot grow it
 # without bound.

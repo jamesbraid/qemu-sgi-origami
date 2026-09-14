@@ -26,7 +26,7 @@ import threading
 import unittest
 
 from lib_prom import (AssetMismatch, FIRMWARE_REL, drive_console,
-                      file_sha256, resolve_asset)
+                      file_sha256, prom_netboot_steps, resolve_asset)
 
 STEPS = (
     (r"Option\?", "5\n"),
@@ -167,6 +167,28 @@ class DriveConsoleTest(unittest.TestCase):
         self.assertFalse(reached)
         self.assertIn("crash", transcript)
         self.assertEqual(guest.answers, [b"5\n"])
+
+
+class PromNetbootStepsTest(unittest.TestCase):
+    """prom_netboot_steps() builds the same three-step dialogue every
+    netboot test drives by hand today: this module's own STEPS (above)
+    is that literal dialogue for sash64, so the two must agree exactly."""
+
+    def test_matches_the_hand_written_sash_dialogue(self):
+        self.assertEqual(prom_netboot_steps("boot/sash64"), STEPS)
+
+    def test_appends_kernel_arguments_to_the_boot_command(self):
+        steps = prom_netboot_steps("vmlinux", args="console=ttyS0")
+        self.assertEqual(steps[-1],
+                         (r">>", "boot -f bootp()/vmlinux console=ttyS0\n"))
+        # The first two steps -- select the command monitor, clear a
+        # stale leased address -- do not depend on the boot file or its
+        # arguments.
+        self.assertEqual(steps[:-1], STEPS[:-1])
+
+    def test_no_arguments_means_a_bare_boot_command(self):
+        steps = prom_netboot_steps("vmlinux")
+        self.assertEqual(steps[-1], (r">>", "boot -f bootp()/vmlinux\n"))
 
 
 class ResolveAssetTest(unittest.TestCase):
