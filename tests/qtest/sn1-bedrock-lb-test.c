@@ -218,6 +218,30 @@ static void test_permissive_reset(void)
     qtest_quit(s);
 }
 
+/*
+ * No source we may read states either register's power-on contents (see the
+ * local block datasheet). Reading zero at power-on and after the block's own
+ * soft reset is the model's choice, asserted as such -- not a hardware fact.
+ * The maximum-count field this pins at zero is the one the stock PROM's own
+ * real-time conversion divides by, so this reset value is known to make that
+ * conversion come out about eighty times short (jamesb/qemu#581); a source
+ * that settles the real reset value replaces this test's expectation along
+ * with the datasheet entry it backs.
+ */
+static void test_rtc_reset(void)
+{
+    QTestState *s = lb_start("");
+
+    g_assert_cmphex(qtest_readq(s, LB_BASE + RTC_LOCAL), ==, 0);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + RTC_FILTER), ==, 0);
+    qtest_writeq(s, LB_BASE + RTC_LOCAL, RTC_LOCAL_MASK);
+    qtest_writeq(s, LB_BASE + RTC_FILTER, RTC_FILTER_MASK);
+    qtest_writeq(s, LB_BASE + SOFT_RESET, 1);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + RTC_LOCAL), ==, 0);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + RTC_FILTER), ==, 0);
+    qtest_quit(s);
+}
+
 static void test_storage_masks_and_error(void)
 {
     QTestState *s = lb_start("");
@@ -680,6 +704,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-lb/identity-write-logged",
                    test_identity_write_logged);
     qtest_add_func("sn1/bedrock-lb/permissive-reset", test_permissive_reset);
+    qtest_add_func("sn1/bedrock-lb/rtc-reset", test_rtc_reset);
     qtest_add_func("sn1/bedrock-lb/storage-masks-error",
                    test_storage_masks_and_error);
     qtest_add_func("sn1/bedrock-lb/byte-order-width",

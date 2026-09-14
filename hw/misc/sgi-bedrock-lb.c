@@ -358,6 +358,15 @@ static void lb_reset_enter(Object *obj, ResetType type)
     s->error_header[1] = 0;
     s->error_data = 0;
     s->debug_select = 0;
+    /*
+     * Zero is the model's value here too: no source we may read states
+     * either register's power-on contents. The local block's maximum-count
+     * field feeds the PROM's own real-time conversion, so a wrong reset
+     * value here does not misbehave loudly -- it just makes every duration
+     * the firmware derives from the counter come out short. See the local
+     * block datasheet for what is and is not established about these two
+     * registers.
+     */
     s->rtc_local = 0;
     s->rtc_filter = 0;
     s->scratch[0] = 0;
