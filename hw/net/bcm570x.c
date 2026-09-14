@@ -2229,8 +2229,22 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
         idx = s->rx_std_cons;
     } else if (jumbo_enabled) {
         if (jumbo_prod == s->rx_jumbo_cons) {
-            bcm570x_defer_rx_flush(s);
-            return 0;
+            /*
+             * The jumbo ring is enabled and addressed but holds no posted
+             * descriptor. Running out of receive buffer descriptors is a
+             * counted condition, not a latched stall (PG105 page 110, Table
+             * 49, nicNoMoreRXBDs), and the receive MAC's answer to running
+             * short is to pause the link partner and then drop, counting
+             * ifInDiscards (page 281). Reaching here means bcm570x_rx_ready
+             * found a standard buffer posted, so the chip is still placing
+             * standard frames; refusing this one instead would stop the back
+             * end and strand every frame behind it.
+             */
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "bcm570x: received frame of %u bytes exceeds the "
+                          "%u-byte standard buffer and the jumbo ring has no "
+                          "posted descriptor, dropped\n", framelen, std_size);
+            return orig_size;
         }
         std_base = jumbo_base;
         idx = s->rx_jumbo_cons;

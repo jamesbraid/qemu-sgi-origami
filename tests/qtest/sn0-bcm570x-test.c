@@ -649,6 +649,146 @@ static void test_jumbo_ring_disabled_drops_oversize(const void *data)
 }
 
 /*
+ * Wait for the status block's receive producer to reach a value. Unlike
+ * wait_for_completed_descriptor this follows the ring past its first slot,
+ * so a test can check a second frame's arrival.
+ */
+static void wait_for_rx_producer(QTestState *qts, uint16_t want)
+{
+    int attempt;
+
+    for (attempt = 0; attempt < 200; attempt++) {
+        if (status_rx_prod_be(qts) >= want) {
+            return;
+        }
+        qtest_clock_step(qts, 1 * 1000 * 1000);
+        g_usleep(2000);
+    }
+    g_assert_cmphex(status_rx_prod_be(qts), ==, want);
+}
+
+/*
+ * The jumbo ring enabled and addressed but carrying no posted buffer. An
+ * over-length frame arriving in that state has no descriptor to go to, and
+ * the chip discards it: running out of receive buffer descriptors is a
+ * counted condition, not a latched stall -- nicNoMoreRXBDs, "Number of times
+ * NIC ran out of the Receive Buffer Descriptors", updated by the Receive
+ * List Placement state machine [57XX-PG105-R, printed page 110, Table 49] --
+ * and the receive MAC's own answer to running short of buffers is to pause
+ * the link partner and then drop: "As soon as PAUSE frame is transmitted,
+ * any incoming packet can be dropped, and the ifInDiscard counter in
+ * statistics will increase", with the Low Water Mark Maximum Receive Frames
+ * register bounding how many more good frames follow before "it will drop
+ * subsequent incoming frames" [printed page 281]. Nothing in the manual
+ * gives the chip anywhere to keep a frame it cannot place.
+ *
+ * So the standard ring keeps being served while the jumbo ring is empty.
+ * Holding the frame instead stops the back end reading, and the standard
+ * frame behind it never arrives -- the stall this contract exists to
+ * prevent. The last step proves the frame was discarded rather than parked:
+ * posting a jumbo buffer afterwards brings nothing back.
+ *
+ * Pins the empty-ring disposition, not arrival timing, so the floor is
+ * zeroed: each completion is checked the instant it lands.
+ */
+static void test_jumbo_ring_unprovisioned_drops_oversize(const void *data)
+{
+    QTestState *qts;
+    uint8_t big[BIG_FRAME_LEN];
+    uint8_t small[100];
+    uint8_t got[100];
+    uint8_t jumbo_got[BIG_FRAME_LEN];
+    uint8_t zeros[BIG_FRAME_LEN];
+    uint32_t idx_len, type_flags;
+    int sv[2];
+
+    memset(zeros, 0, sizeof(zeros));
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
+                      "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC
+                      ",rx-arrival-latency-us=0", sv[1]);
+    aim_window_at_bar(qts);
+
+    bar_writel(qts, BCM_HCC_STATUSBLK_ADDR_HI, IOVA(STATUS_PHYS) >> 32);
+    bar_writel(qts, BCM_HCC_STATUSBLK_ADDR_LO, IOVA(STATUS_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_RX_STD_RCB_HI, IOVA(STD_RING_PHYS) >> 32);
+    bar_writel(qts, BCM_RX_STD_RCB_LO, IOVA(STD_RING_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_RX_STD_RCB_MAXLEN, STD_MAXLEN_1518 << 16);
+    /* Addresses only, like IRIX: 0x2448 stays at its reset value of 0. */
+    bar_writel(qts, BCM_RX_JUMBO_RCB_HI, IOVA(JUMBO_RING_PHYS) >> 32);
+    bar_writel(qts, BCM_RX_JUMBO_RCB_LO, IOVA(JUMBO_RING_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_RX_JUMBO_RCB_NICADDR, 0x00001000u);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 0,
+               IOVA(RET_RING_PHYS) >> 32);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 4,
+               IOVA(RET_RING_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 8,
+               64 << 16);
+    /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
+    bar_writel(qts, BCM_HCC_RX_MAX_COAL_BDS, 1);
+    bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(qts, BCM_RX_MODE, BCM_RXMODE_ENABLE);
+
+    /* Two standard buffers, so the ring outlives the frame that is dropped. */
+    post_rx_descriptor(qts, STD_RING_PHYS, 0, RX_BUF_PHYS, 0, 0);
+    post_rx_descriptor(qts, STD_RING_PHYS, 1, RX_BUF_PHYS + STD_BUF_SIZE, 0, 0);
+    qtest_memset(qts, RX_BUF_PHYS, 0, 2 * STD_BUF_SIZE);
+    qtest_memset(qts, RET_RING_PHYS, 0, 2 * BCM_RXBD_SIZE);
+    qtest_memset(qts, STATUS_PHYS, 0, 0x50);
+    qtest_memset(qts, JUMBO_BUF_PHYS, 0, BIG_FRAME_LEN);
+    bar_writel(qts, BCM_MBX_RX_STD_PROD_LO, 2);
+
+    /* The jumbo producer mailbox is never written: the ring stays empty. */
+    g_assert_cmphex(bar_readl(qts, BCM_MBX_RX_JUMBO_PROD_LO), ==, 0);
+    g_assert_cmphex(bar_readl(qts, BCM_RX_JUMBO_RCB_MAXLEN), ==, 0);
+
+    build_big_rx_frame(big, sizeof(big));
+    net_send_frame(sv[0], big, sizeof(big));
+    pump_settle(qts);
+
+    /* No completion, no producer movement, and neither buffer written. */
+    g_assert_cmphex(bd_word_be(qts, RET_RING_PHYS, BCM_RXBD_IDX_LEN), ==, 0);
+    g_assert_cmphex(status_rx_prod_be(qts), ==, 0);
+    qtest_memread(qts, RX_BUF_PHYS, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), zeros, sizeof(got));
+
+    /* The receiver is not latched: the frame behind it still arrives. */
+    build_big_rx_frame(small, sizeof(small));
+    net_send_frame(sv[0], small, sizeof(small));
+    wait_for_rx_producer(qts, 1);
+
+    idx_len = bd_word_be(qts, RET_RING_PHYS, BCM_RXBD_IDX_LEN);
+    type_flags = bd_word_be(qts, RET_RING_PHYS, BCM_RXBD_TYPE_FLAGS);
+    g_assert_cmphex(idx_len & 0xffff, ==, sizeof(small) + BCM_ETH_FCS_LEN);
+    g_assert_cmphex(idx_len >> 16, ==, 0);
+    g_assert_cmphex(type_flags & 0xffff, ==, BCM_RXBDFLAG_END);
+    g_assert_cmphex(status_rx_prod_be(qts), ==, 1);
+    qtest_memread(qts, RX_BUF_PHYS, got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), small, sizeof(small));
+
+    /*
+     * Posting a jumbo buffer now brings nothing back. A model that parked
+     * the oversize frame would complete it here, minutes of guest time after
+     * the wire carried it.
+     */
+    post_rx_descriptor(qts, JUMBO_RING_PHYS, 0, JUMBO_BUF_PHYS,
+                       JUMBO_BUF_LEN, BCM_RXBDFLAG_JUMBO_RING);
+    bar_writel(qts, BCM_MBX_RX_JUMBO_PROD_LO, 1);
+    pump_settle(qts);
+
+    g_assert_cmphex(status_rx_prod_be(qts), ==, 1);
+    g_assert_cmphex(bd_word_be(qts, RET_RING_PHYS + BCM_RXBD_SIZE,
+                               BCM_RXBD_IDX_LEN), ==, 0);
+    qtest_memread(qts, JUMBO_BUF_PHYS, jumbo_got, sizeof(jumbo_got));
+    g_assert_cmpmem(jumbo_got, sizeof(jumbo_got), zeros, sizeof(zeros));
+
+    qtest_quit(qts);
+    close(sv[0]);
+    close(sv[1]);
+}
+
+/*
  * A jumbo frame bigger than the buffer behind its own posted descriptor must
  * not be delivered: the descriptor's length field is the driver's statement
  * of what it set aside for that buffer, the same way the standard ring's
@@ -956,6 +1096,9 @@ int main(int argc, char **argv)
                         NULL, test_jumbo_ring_disabled_drops_oversize);
     qtest_add_data_func("/sn0/bcm570x/jumbo-frame-overruns-descriptor",
                         NULL, test_jumbo_frame_overruns_descriptor);
+    qtest_add_data_func(
+        "/sn0/bcm570x/jumbo-ring-unprovisioned-drops-oversize", NULL,
+        test_jumbo_ring_unprovisioned_drops_oversize);
 
     return g_test_run();
 }
