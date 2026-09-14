@@ -54,7 +54,7 @@ enum {
     GRANT_STOP_RELEASE,
 };
 
-static void mgmt_reset_state(SGISn0ModuleManagementState *s)
+static void mgmt_reset_state(SN0ModuleManagementState *s)
 {
     s->processor_code = PROCESSOR_CODES - 1;
     s->pending_messages = 0;
@@ -85,7 +85,7 @@ static void mgmt_reset_state(SGISn0ModuleManagementState *s)
  * The endpoint loses its framing queues and keeps everything that is not a
  * queue, which is as much as the datasheet gives this path.
  */
-static void mgmt_reinitialize(SGISn0ModuleManagementState *s)
+static void mgmt_reinitialize(SN0ModuleManagementState *s)
 {
     mgmt_reset_state(s);
     if (i2c_wire_reset_master(s->bus, GRANT_MASTER) == -ENOTSUP) {
@@ -96,14 +96,14 @@ static void mgmt_reinitialize(SGISn0ModuleManagementState *s)
     sgi_elsc_reinitialize(s->msc);
 }
 
-static void mgmt_recovery_tick(SGISn0ModuleManagementState *s)
+static void mgmt_recovery_tick(SN0ModuleManagementState *s)
 {
     if (s->recovery_ticks && --s->recovery_ticks == 0) {
         mgmt_reinitialize(s);
     }
 }
 
-static bool mgmt_stage(SGISn0ModuleManagementState *s, bool sda, bool clock,
+static bool mgmt_stage(SN0ModuleManagementState *s, bool sda, bool clock,
                        int64_t delay_ns)
 {
     int ret = i2c_wire_stage_after(s->bus, GRANT_MASTER, delay_ns,
@@ -123,7 +123,7 @@ static bool mgmt_stage(SGISn0ModuleManagementState *s, bool sda, bool clock,
 
 static void mgmt_wire_event(void *opaque, const I2CWireEvent *event)
 {
-    SGISn0ModuleManagementState *s = opaque;
+    SN0ModuleManagementState *s = opaque;
     bool old_scl = s->wire_scl;
     bool old_sda = s->wire_sda;
 
@@ -209,7 +209,7 @@ static void mgmt_wire_event(void *opaque, const I2CWireEvent *event)
 }
 
 /* The indication is recomputed for the code about to be published. */
-static bool mgmt_message_for(SGISn0ModuleManagementState *s, uint8_t code)
+static bool mgmt_message_for(SN0ModuleManagementState *s, uint8_t code)
 {
     if (s->pending_messages & (1U << code)) {
         return true;
@@ -217,7 +217,7 @@ static bool mgmt_message_for(SGISn0ModuleManagementState *s, uint8_t code)
     return s->console_input_pending && s->console_processor == code;
 }
 
-static void mgmt_publish(SGISn0ModuleManagementState *s)
+static void mgmt_publish(SN0ModuleManagementState *s)
 {
     s->processor_code = (s->processor_code + 1) % PROCESSOR_CODES;
     s->grant_byte = GRANT_BASE | s->processor_code |
@@ -231,7 +231,7 @@ static void mgmt_publish(SGISn0ModuleManagementState *s)
 }
 
 /* A staged adapter START owns tBUF before its lines make the bus busy. */
-static bool mgmt_adapter_active(SGISn0ModuleManagementState *s)
+static bool mgmt_adapter_active(SN0ModuleManagementState *s)
 {
     for (unsigned i = 0; i < SGI_O2000_ADAPTER_COUNT; i++) {
         if (PCF8584(s->adapters[i])->wire_active) {
@@ -241,7 +241,7 @@ static bool mgmt_adapter_active(SGISn0ModuleManagementState *s)
     return false;
 }
 
-static void mgmt_service(SGISn0ModuleManagementState *s)
+static void mgmt_service(SN0ModuleManagementState *s)
 {
     /*
      * Every millisecond of the timeline gets its tick, at its own instant,
@@ -280,7 +280,7 @@ static void mgmt_service(SGISn0ModuleManagementState *s)
     mgmt_publish(s);
 }
 
-static void mgmt_message_expired(SGISn0ModuleManagementState *s)
+static void mgmt_message_expired(SN0ModuleManagementState *s)
 {
     s->pending_messages = 0;
 }
@@ -291,7 +291,7 @@ static void mgmt_message_expired(SGISn0ModuleManagementState *s)
  * already refuses a declaration without its output and an output without
  * its declaration, and this keeps the two from depending on that order.
  */
-static void mgmt_drive_pulse_lines(SGISn0ModuleManagementState *s, bool reset,
+static void mgmt_drive_pulse_lines(SN0ModuleManagementState *s, bool reset,
                                    bool nmi)
 {
     if (s->can_reset) {
@@ -302,14 +302,14 @@ static void mgmt_drive_pulse_lines(SGISn0ModuleManagementState *s, bool reset,
     }
 }
 
-static void mgmt_drive_power(SGISn0ModuleManagementState *s)
+static void mgmt_drive_power(SN0ModuleManagementState *s)
 {
     if (s->can_power) {
         qemu_set_irq(s->power_out, s->power_on);
     }
 }
 
-static void mgmt_pulse_complete(SGISn0ModuleManagementState *s)
+static void mgmt_pulse_complete(SN0ModuleManagementState *s)
 {
     mgmt_drive_pulse_lines(s, false, false);
     s->pulse_active = false;
@@ -329,7 +329,7 @@ static void mgmt_pulse_complete(SGISn0ModuleManagementState *s)
  */
 static int64_t mgmt_next_deadline(void *opaque)
 {
-    SGISn0ModuleManagementState *s = opaque;
+    SN0ModuleManagementState *s = opaque;
     int64_t next = s->service_deadline;
 
     if (s->pending_messages) {
@@ -343,7 +343,7 @@ static int64_t mgmt_next_deadline(void *opaque)
 
 static void mgmt_run_deadlines(void *opaque, int64_t now)
 {
-    SGISn0ModuleManagementState *s = opaque;
+    SN0ModuleManagementState *s = opaque;
 
     if (s->pending_messages && s->message_deadline <= now) {
         mgmt_message_expired(s);
@@ -359,12 +359,12 @@ static void mgmt_run_deadlines(void *opaque, int64_t now)
 /* The timers only stand in for a node that is not polling. */
 static void mgmt_timer_expired(void *opaque)
 {
-    SGISn0ModuleManagementState *s = opaque;
+    SN0ModuleManagementState *s = opaque;
 
     i2c_wire_advance(s->bus);
 }
 
-static bool mgmt_start_pulse(SGISn0ModuleManagementState *s, bool nmi)
+static bool mgmt_start_pulse(SN0ModuleManagementState *s, bool nmi)
 {
     if (!(nmi ? s->can_nmi : s->can_reset)) {
         qemu_log_mask(LOG_UNIMP,
@@ -388,17 +388,17 @@ static bool mgmt_start_pulse(SGISn0ModuleManagementState *s, bool nmi)
     return true;
 }
 
-bool sgi_sn0_module_management_pulse_reset(SGISn0ModuleManagementState *s)
+bool sgi_sn0_module_management_pulse_reset(SN0ModuleManagementState *s)
 {
     return mgmt_start_pulse(s, false);
 }
 
-bool sgi_sn0_module_management_pulse_nmi(SGISn0ModuleManagementState *s)
+bool sgi_sn0_module_management_pulse_nmi(SN0ModuleManagementState *s)
 {
     return mgmt_start_pulse(s, true);
 }
 
-bool sgi_sn0_module_management_set_power(SGISn0ModuleManagementState *s, bool on)
+bool sgi_sn0_module_management_set_power(SN0ModuleManagementState *s, bool on)
 {
     if (!s->can_power) {
         qemu_log_mask(LOG_UNIMP,
@@ -426,39 +426,39 @@ bool sgi_sn0_module_management_set_power(SGISn0ModuleManagementState *s, bool on
     return true;
 }
 
-void sgi_sn0_module_management_set_controller_request(SGISn0ModuleManagementState *s,
-                                                  bool pending)
+void sgi_sn0_module_management_set_controller_request(
+    SN0ModuleManagementState *s, bool pending)
 {
     s->controller_request = pending;
 }
 
-void sgi_sn0_module_management_set_serial_request(SGISn0ModuleManagementState *s,
+void sgi_sn0_module_management_set_serial_request(SN0ModuleManagementState *s,
                                               bool pending)
 {
     s->serial_request = pending;
 }
 
-void sgi_sn0_module_management_release_controller(SGISn0ModuleManagementState *s)
+void sgi_sn0_module_management_release_controller(SN0ModuleManagementState *s)
 {
     s->controller_granted = false;
 }
 
-void sgi_sn0_module_management_release_serial(SGISn0ModuleManagementState *s)
+void sgi_sn0_module_management_release_serial(SN0ModuleManagementState *s)
 {
     s->serial_granted = false;
 }
 
-bool sgi_sn0_module_management_controller_granted(SGISn0ModuleManagementState *s)
+bool sgi_sn0_module_management_controller_granted(SN0ModuleManagementState *s)
 {
     return s->controller_granted;
 }
 
-bool sgi_sn0_module_management_serial_granted(SGISn0ModuleManagementState *s)
+bool sgi_sn0_module_management_serial_granted(SN0ModuleManagementState *s)
 {
     return s->serial_granted;
 }
 
-void sgi_sn0_module_management_set_message(SGISn0ModuleManagementState *s,
+void sgi_sn0_module_management_set_message(SN0ModuleManagementState *s,
                                        unsigned processor, bool pending)
 {
     if (processor >= PROCESSOR_CODES) {
@@ -479,24 +479,24 @@ void sgi_sn0_module_management_set_message(SGISn0ModuleManagementState *s,
     }
 }
 
-void sgi_sn0_module_management_message_fetched(SGISn0ModuleManagementState *s,
+void sgi_sn0_module_management_message_fetched(SN0ModuleManagementState *s,
                                            unsigned processor)
 {
     sgi_sn0_module_management_set_message(s, processor, false);
 }
 
-void sgi_sn0_module_management_set_publication(SGISn0ModuleManagementState *s,
+void sgi_sn0_module_management_set_publication(SN0ModuleManagementState *s,
                                            bool enabled)
 {
     s->publication_enabled = enabled;
 }
 
-I2CBus *sgi_sn0_module_management_get_bus(SGISn0ModuleManagementState *s)
+I2CBus *sgi_sn0_module_management_get_bus(SN0ModuleManagementState *s)
 {
     return s->bus;
 }
 
-DeviceState *sgi_sn0_module_management_get_adapter(SGISn0ModuleManagementState *s,
+DeviceState *sgi_sn0_module_management_get_adapter(SN0ModuleManagementState *s,
                                                unsigned index)
 {
     return index < SGI_O2000_ADAPTER_COUNT ? s->adapters[index] : NULL;
@@ -513,7 +513,7 @@ DeviceState *sgi_sn0_module_management_get_adapter(SGISn0ModuleManagementState *
  * rather than each being given a different answer. That is a model choice,
  * not a fact.
  */
-bool sgi_sn0_module_management_can_execute(SGISn0ModuleManagementState *s,
+bool sgi_sn0_module_management_can_execute(SN0ModuleManagementState *s,
                                        SGIElscAction action)
 {
     bool declared;
@@ -552,7 +552,7 @@ static bool mgmt_elsc_can_execute(void *opaque, SGIElscAction action)
 
 static void mgmt_elsc_execute(void *opaque, SGIElscAction action)
 {
-    SGISn0ModuleManagementState *s = opaque;
+    SN0ModuleManagementState *s = opaque;
     bool done;
 
     switch (action) {
@@ -582,7 +582,7 @@ static void mgmt_elsc_execute(void *opaque, SGIElscAction action)
 
 static void mgmt_elsc_slave_active(void *opaque, bool active)
 {
-    ((SGISn0ModuleManagementState *)opaque)->slave_active = active;
+    ((SN0ModuleManagementState *)opaque)->slave_active = active;
 }
 
 /*
@@ -595,7 +595,7 @@ static void mgmt_elsc_slave_active(void *opaque, bool active)
  */
 static void mgmt_elsc_console_owner(void *opaque, unsigned processor)
 {
-    SGISn0ModuleManagementState *s = opaque;
+    SN0ModuleManagementState *s = opaque;
 
     if (processor >= PROCESSOR_CODES) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -609,13 +609,13 @@ static void mgmt_elsc_console_owner(void *opaque, unsigned processor)
 
 static void mgmt_elsc_console_input(void *opaque, bool pending)
 {
-    ((SGISn0ModuleManagementState *)opaque)->console_input_pending = pending;
+    ((SN0ModuleManagementState *)opaque)->console_input_pending = pending;
 }
 
 static bool mgmt_elsc_onewire_slot(void *opaque, uint32_t pulse,
                                    uint32_t sample)
 {
-    SGISn0ModuleManagementState *s = opaque;
+    SN0ModuleManagementState *s = opaque;
 
     return sgi_onewire_slot(s->onewire_bus, pulse, sample);
 }
@@ -641,7 +641,7 @@ static const uint8_t module_serial_image_template[DS2502_DATA_SIZE] = {
     [64 ... DS2502_DATA_SIZE - 1] = 0xff,
 };
 
-static void mgmt_build_module_serial_image(SGISn0ModuleManagementState *s,
+static void mgmt_build_module_serial_image(SN0ModuleManagementState *s,
                                            uint8_t image[DS2502_DATA_SIZE])
 {
     uint16_t crc;
@@ -653,7 +653,7 @@ static void mgmt_build_module_serial_image(SGISn0ModuleManagementState *s,
     image[31] = crc >> 8;
 }
 
-static DeviceState *mgmt_add_child(SGISn0ModuleManagementState *s,
+static DeviceState *mgmt_add_child(SN0ModuleManagementState *s,
                                    const char *name, const char *type)
 {
     DeviceState *child = qdev_new(type);
@@ -663,7 +663,7 @@ static DeviceState *mgmt_add_child(SGISn0ModuleManagementState *s,
     return child;
 }
 
-static void mgmt_populate_nvram(SGISn0ModuleManagementState *s)
+static void mgmt_populate_nvram(SN0ModuleManagementState *s)
 {
     uint8_t reserved[SGI_O2000_NVRAM_PAGE_BYTES] = { };
     unsigned page;
@@ -686,7 +686,7 @@ static void mgmt_populate_nvram(SGISn0ModuleManagementState *s)
 
 static void mgmt_realize(DeviceState *dev, Error **errp)
 {
-    SGISn0ModuleManagementState *s = SGI_SN0_MODULE_MANAGEMENT(dev);
+    SN0ModuleManagementState *s = SGI_SN0_MODULE_MANAGEMENT(dev);
     uint8_t module_serial_image[DS2502_DATA_SIZE];
     unsigned i;
 
@@ -799,7 +799,7 @@ static void mgmt_realize(DeviceState *dev, Error **errp)
 
 static void mgmt_unrealize(DeviceState *dev)
 {
-    SGISn0ModuleManagementState *s = SGI_SN0_MODULE_MANAGEMENT(dev);
+    SN0ModuleManagementState *s = SGI_SN0_MODULE_MANAGEMENT(dev);
 
     qemu_unregister_resettable(OBJECT(s));
     i2c_wire_clear_timeline(s->bus, GRANT_MASTER, mgmt_run_deadlines, s);
@@ -812,7 +812,7 @@ static void mgmt_unrealize(DeviceState *dev)
 
 static void mgmt_init(Object *obj)
 {
-    SGISn0ModuleManagementState *s = SGI_SN0_MODULE_MANAGEMENT(obj);
+    SN0ModuleManagementState *s = SGI_SN0_MODULE_MANAGEMENT(obj);
 
     s->bus = i2c_init_bus_type(TYPE_I2C_WIRE, DEVICE(obj), "i2c");
     s->onewire_bus = onewire_create_bus(DEVICE(obj), "module-onewire");
@@ -839,7 +839,7 @@ static void mgmt_init(Object *obj)
 
 static void mgmt_reset_hold(Object *obj, ResetType type)
 {
-    SGISn0ModuleManagementState *s = SGI_SN0_MODULE_MANAGEMENT(obj);
+    SN0ModuleManagementState *s = SGI_SN0_MODULE_MANAGEMENT(obj);
 
     /*
      * The shared bus is a child bus of this device and the adapters are on
@@ -861,7 +861,7 @@ static void mgmt_reset_hold(Object *obj, ResetType type)
 
 static int mgmt_post_load(void *opaque, int version_id)
 {
-    SGISn0ModuleManagementState *s = opaque;
+    SN0ModuleManagementState *s = opaque;
 
     if (s->grant_state > GRANT_STOP_RELEASE || s->grant_bit > 8 ||
         s->processor_code >= PROCESSOR_CODES ||
@@ -895,42 +895,42 @@ static const VMStateDescription vmstate_sgi_sn0_module_management = {
     .minimum_version_id = 1,
     .post_load = mgmt_post_load,
     .fields = (const VMStateField[]) {
-        VMSTATE_INT64(service_deadline, SGISn0ModuleManagementState),
-        VMSTATE_INT64(message_deadline, SGISn0ModuleManagementState),
-        VMSTATE_INT64(pulse_deadline, SGISn0ModuleManagementState),
-        VMSTATE_UINT16(recovery_ticks, SGISn0ModuleManagementState),
-        VMSTATE_UINT8(processor_code, SGISn0ModuleManagementState),
-        VMSTATE_UINT8(pending_messages, SGISn0ModuleManagementState),
-        VMSTATE_UINT8(console_processor, SGISn0ModuleManagementState),
-        VMSTATE_UINT8(grant_byte, SGISn0ModuleManagementState),
-        VMSTATE_UINT8(grant_bit, SGISn0ModuleManagementState),
-        VMSTATE_UINT8(grant_state, SGISn0ModuleManagementState),
-        VMSTATE_BOOL(grant_bit_sampled, SGISn0ModuleManagementState),
-        VMSTATE_BOOL(grant_active, SGISn0ModuleManagementState),
-        VMSTATE_BOOL(wire_scl, SGISn0ModuleManagementState),
-        VMSTATE_BOOL(wire_sda, SGISn0ModuleManagementState),
-        VMSTATE_BOOL(publication_enabled, SGISn0ModuleManagementState),
-        VMSTATE_BOOL(controller_request, SGISn0ModuleManagementState),
-        VMSTATE_BOOL(controller_granted, SGISn0ModuleManagementState),
-        VMSTATE_BOOL(serial_request, SGISn0ModuleManagementState),
-        VMSTATE_BOOL(serial_granted, SGISn0ModuleManagementState),
-        VMSTATE_BOOL(slave_active, SGISn0ModuleManagementState),
-        VMSTATE_BOOL(console_input_pending, SGISn0ModuleManagementState),
-        VMSTATE_BOOL(power_on, SGISn0ModuleManagementState),
-        VMSTATE_BOOL(pulse_active, SGISn0ModuleManagementState),
-        VMSTATE_BOOL(pulse_nmi, SGISn0ModuleManagementState),
+        VMSTATE_INT64(service_deadline, SN0ModuleManagementState),
+        VMSTATE_INT64(message_deadline, SN0ModuleManagementState),
+        VMSTATE_INT64(pulse_deadline, SN0ModuleManagementState),
+        VMSTATE_UINT16(recovery_ticks, SN0ModuleManagementState),
+        VMSTATE_UINT8(processor_code, SN0ModuleManagementState),
+        VMSTATE_UINT8(pending_messages, SN0ModuleManagementState),
+        VMSTATE_UINT8(console_processor, SN0ModuleManagementState),
+        VMSTATE_UINT8(grant_byte, SN0ModuleManagementState),
+        VMSTATE_UINT8(grant_bit, SN0ModuleManagementState),
+        VMSTATE_UINT8(grant_state, SN0ModuleManagementState),
+        VMSTATE_BOOL(grant_bit_sampled, SN0ModuleManagementState),
+        VMSTATE_BOOL(grant_active, SN0ModuleManagementState),
+        VMSTATE_BOOL(wire_scl, SN0ModuleManagementState),
+        VMSTATE_BOOL(wire_sda, SN0ModuleManagementState),
+        VMSTATE_BOOL(publication_enabled, SN0ModuleManagementState),
+        VMSTATE_BOOL(controller_request, SN0ModuleManagementState),
+        VMSTATE_BOOL(controller_granted, SN0ModuleManagementState),
+        VMSTATE_BOOL(serial_request, SN0ModuleManagementState),
+        VMSTATE_BOOL(serial_granted, SN0ModuleManagementState),
+        VMSTATE_BOOL(slave_active, SN0ModuleManagementState),
+        VMSTATE_BOOL(console_input_pending, SN0ModuleManagementState),
+        VMSTATE_BOOL(power_on, SN0ModuleManagementState),
+        VMSTATE_BOOL(pulse_active, SN0ModuleManagementState),
+        VMSTATE_BOOL(pulse_nmi, SN0ModuleManagementState),
         VMSTATE_END_OF_LIST()
     },
 };
 
 static const Property mgmt_properties[] = {
-    DEFINE_PROP_UINT8("module-number", SGISn0ModuleManagementState,
+    DEFINE_PROP_UINT8("module-number", SN0ModuleManagementState,
                       module_number, 1),
-    DEFINE_PROP_STRING("model-serial", SGISn0ModuleManagementState,
+    DEFINE_PROP_STRING("model-serial", SN0ModuleManagementState,
                        module_serial_text),
-    DEFINE_PROP_BOOL("can-reset", SGISn0ModuleManagementState, can_reset, false),
-    DEFINE_PROP_BOOL("can-nmi", SGISn0ModuleManagementState, can_nmi, false),
-    DEFINE_PROP_BOOL("can-power", SGISn0ModuleManagementState, can_power, false),
+    DEFINE_PROP_BOOL("can-reset", SN0ModuleManagementState, can_reset, false),
+    DEFINE_PROP_BOOL("can-nmi", SN0ModuleManagementState, can_nmi, false),
+    DEFINE_PROP_BOOL("can-power", SN0ModuleManagementState, can_power, false),
 };
 
 static void mgmt_class_init(ObjectClass *klass, const void *data)
@@ -951,7 +951,7 @@ static void mgmt_class_init(ObjectClass *klass, const void *data)
 static const TypeInfo sgi_sn0_module_management_info = {
     .name = TYPE_SGI_SN0_MODULE_MANAGEMENT,
     .parent = TYPE_DEVICE,
-    .instance_size = sizeof(SGISn0ModuleManagementState),
+    .instance_size = sizeof(SN0ModuleManagementState),
     .instance_init = mgmt_init,
     .class_init = mgmt_class_init,
 };

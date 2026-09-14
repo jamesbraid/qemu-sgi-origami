@@ -118,7 +118,7 @@ static DeviceState *module_new(void)
 enum { LINE_RESET, LINE_NMI, LINE_POWER };
 
 typedef struct Fixture {
-    SGISn0ModuleManagementState *module;
+    SN0ModuleManagementState *module;
     Probe *probe;
     int level[3];
     unsigned raises[3];
@@ -624,7 +624,7 @@ static void test_connected_line_needs_its_capability(Fixture *f,
 static void test_undeclared_actions_refused(void)
 {
     DeviceState *dev = module_new();
-    SGISn0ModuleManagementState *module;
+    SN0ModuleManagementState *module;
 
     qdev_realize(dev, NULL, &error_abort);
     module = SGI_SN0_MODULE_MANAGEMENT(dev);
@@ -667,7 +667,7 @@ static void test_undeclared_actions_refused(void)
 static void test_partial_capability(Fixture *f, gconstpointer unused)
 {
     DeviceState *dev = module_new();
-    SGISn0ModuleManagementState *module;
+    SN0ModuleManagementState *module;
 
     qdev_prop_set_bit(dev, "can-reset", true);
     qdev_connect_gpio_out_named(dev, "reset", 0,

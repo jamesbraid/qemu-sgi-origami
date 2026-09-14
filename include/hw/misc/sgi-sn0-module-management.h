@@ -18,7 +18,7 @@
 #include "qom/object.h"
 
 #define TYPE_SGI_SN0_MODULE_MANAGEMENT "sgi-sn0-module-management"
-OBJECT_DECLARE_SIMPLE_TYPE(SGISn0ModuleManagementState, SGI_SN0_MODULE_MANAGEMENT)
+OBJECT_DECLARE_SIMPLE_TYPE(SN0ModuleManagementState, SGI_SN0_MODULE_MANAGEMENT)
 
 /* One adapter per node board on a four-node module. */
 #define SGI_O2000_ADAPTER_COUNT     4
@@ -52,7 +52,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGISn0ModuleManagementState, SGI_SN0_MODULE_MANAGEMEN
 /* The logical MSC endpoint. */
 #define SGI_O2000_MSC_ADDRESS       0x08
 
-struct SGISn0ModuleManagementState {
+struct SN0ModuleManagementState {
     DeviceState parent_obj;
 
     /* Model-derived identity written into the reserved NVRAM region. */
@@ -109,8 +109,8 @@ struct SGISn0ModuleManagementState {
     bool pulse_nmi;
 };
 
-I2CBus *sgi_sn0_module_management_get_bus(SGISn0ModuleManagementState *s);
-DeviceState *sgi_sn0_module_management_get_adapter(SGISn0ModuleManagementState *s,
+I2CBus *sgi_sn0_module_management_get_bus(SN0ModuleManagementState *s);
+DeviceState *sgi_sn0_module_management_get_adapter(SN0ModuleManagementState *s,
                                                unsigned index);
 
 /*
@@ -118,38 +118,38 @@ DeviceState *sgi_sn0_module_management_get_adapter(SGISn0ModuleManagementState *
  * A request stays pending until the scheduler grants it; the caller releases
  * the grant when its transaction ends.
  */
-void sgi_sn0_module_management_set_controller_request(SGISn0ModuleManagementState *s,
-                                                  bool pending);
-void sgi_sn0_module_management_set_serial_request(SGISn0ModuleManagementState *s,
+void sgi_sn0_module_management_set_controller_request(
+    SN0ModuleManagementState *s, bool pending);
+void sgi_sn0_module_management_set_serial_request(SN0ModuleManagementState *s,
                                               bool pending);
-void sgi_sn0_module_management_release_controller(SGISn0ModuleManagementState *s);
-void sgi_sn0_module_management_release_serial(SGISn0ModuleManagementState *s);
-bool sgi_sn0_module_management_controller_granted(SGISn0ModuleManagementState *s);
-bool sgi_sn0_module_management_serial_granted(SGISn0ModuleManagementState *s);
+void sgi_sn0_module_management_release_controller(SN0ModuleManagementState *s);
+void sgi_sn0_module_management_release_serial(SN0ModuleManagementState *s);
+bool sgi_sn0_module_management_controller_granted(SN0ModuleManagementState *s);
+bool sgi_sn0_module_management_serial_granted(SN0ModuleManagementState *s);
 
-void sgi_sn0_module_management_set_message(SGISn0ModuleManagementState *s,
+void sgi_sn0_module_management_set_message(SN0ModuleManagementState *s,
                                        unsigned processor, bool pending);
-void sgi_sn0_module_management_message_fetched(SGISn0ModuleManagementState *s,
+void sgi_sn0_module_management_message_fetched(SN0ModuleManagementState *s,
                                            unsigned processor);
-void sgi_sn0_module_management_set_publication(SGISn0ModuleManagementState *s,
+void sgi_sn0_module_management_set_publication(SN0ModuleManagementState *s,
                                            bool enabled);
 /*
  * Raise or drop the module power line, answering false on a module that
  * declares no power path.
  */
-bool sgi_sn0_module_management_set_power(SGISn0ModuleManagementState *s, bool on);
+bool sgi_sn0_module_management_set_power(SN0ModuleManagementState *s, bool on);
 /*
  * Whether a destructive controller command can be carried out now. A command
  * this answers false for must be refused rather than acknowledged.
  */
-bool sgi_sn0_module_management_can_execute(SGISn0ModuleManagementState *s,
+bool sgi_sn0_module_management_can_execute(SN0ModuleManagementState *s,
                                        SGIElscAction action);
 /*
  * Drive the reviewed hundred-millisecond pulse. Both refuse, and answer
  * false, on a module that declares no path for that action, and while a
  * pulse is already running: nothing settles that overlap.
  */
-bool sgi_sn0_module_management_pulse_reset(SGISn0ModuleManagementState *s);
-bool sgi_sn0_module_management_pulse_nmi(SGISn0ModuleManagementState *s);
+bool sgi_sn0_module_management_pulse_reset(SN0ModuleManagementState *s);
+bool sgi_sn0_module_management_pulse_nmi(SN0ModuleManagementState *s);
 
 #endif /* HW_MISC_SGI_SN0_MODULE_MANAGEMENT_H */
