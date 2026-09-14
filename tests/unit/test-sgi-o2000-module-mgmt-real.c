@@ -77,7 +77,7 @@ enum { LINE_RESET, LINE_NMI, LINE_POWER };
 enum { TEST_PARTIAL = 1, TEST_CONSOLE };
 
 typedef struct Fixture {
-    SGISn0ModuleManagementState *module;
+    SN0ModuleManagementState *module;
     Chardev *chr;
     PCF8584State *adapter[SGI_O2000_ADAPTER_COUNT];
     int level[3];
@@ -479,7 +479,7 @@ static void test_starved_polls_match_serviced(void)
  */
 static void test_late_timer_after_poll(Fixture *f, gconstpointer unused)
 {
-    SGISn0ModuleManagementState *m = f->module;
+    SN0ModuleManagementState *m = f->module;
     int64_t end, service;
     unsigned raises;
 
