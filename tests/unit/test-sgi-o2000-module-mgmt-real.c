@@ -661,20 +661,28 @@ static int64_t request_start_during_grant(Fixture *f)
     return next_grant;
 }
 
-/* A START issued under a newer grant loses instead of running out of slot. */
-static void test_waiting_start_loses_to_grant(Fixture *f,
-                                              gconstpointer unused)
+/*
+ * A START issued under a newer grant runs at that grant's STOP, out of its
+ * slot but unrefused. The PROM does not retry a byte the adapter reports as
+ * lost, so a refusal here loses the byte for good.
+ */
+static void test_waiting_start_runs_after_grant(Fixture *f,
+                                                gconstpointer unused)
 {
     int64_t next_grant = request_start_during_grant(f);
     uint8_t status;
 
     advance_to(next_grant + GRANT_SETTLE_NS);
-    status = read_reg(f, 0, CTRL_REG);
-    g_assert_false(f->adapter[0]->wire_active);
+    g_assert_false(f->module->grant_active);
+    g_assert_true(f->adapter[0]->wire_active);
     g_assert_false(f->adapter[0]->wire_start_waiting);
     g_assert_false(f->adapter[0]->start_address_staged);
-    g_assert_cmphex(status & PCF8584_STS_LAB, ==, PCF8584_STS_LAB);
+    g_assert_true(wait_done(f, 0));
+    status = read_reg(f, 0, CTRL_REG);
+    g_assert_cmphex(status & (PCF8584_STS_LAB | PCF8584_STS_LRB |
+                              PCF8584_STS_BER), ==, 0);
     g_assert_cmphex(status & PCF8584_STS_PIN, ==, 0);
+    stop_transfer(f, 0);
 }
 
 /* A staged START owns tBUF before its lines make the bus busy. */
@@ -1229,8 +1237,8 @@ int main(int argc, char **argv)
                teardown);
     g_test_add("/sgi-sn0-module-management/shared/busy-defers", Fixture,
                NULL, setup, test_busy_defers_without_advancing, teardown);
-    g_test_add("/sgi-sn0-module-management/shared/stale-start-loses-to-grant",
-               Fixture, NULL, setup, test_waiting_start_loses_to_grant,
+    g_test_add("/sgi-o2000-module-management/shared/stale-start-runs-late",
+               Fixture, NULL, setup, test_waiting_start_runs_after_grant,
                teardown);
     g_test_add("/sgi-sn0-module-management/shared/start-owns-tbuf", Fixture,
                NULL, setup, test_start_owns_bus_free_time, teardown);

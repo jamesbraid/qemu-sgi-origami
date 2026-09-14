@@ -498,36 +498,6 @@ static void test_windows_share_one_wire(void)
     qtest_quit(qts);
 }
 
-/* A START issued under a newer grant loses when that grant stops. */
-static void test_start_loses_to_grant(void)
-{
-    QTestState *qts = start_module();
-    int64_t now;
-    int64_t next_grant;
-
-    now = qtest_clock_step(qts, SERVICE_PERIOD_NS + GRANT_SETTLE_NS);
-    g_assert_cmphex(adapter_read(qts, 0, I2C_CTRL) & STS_BB, ==, STS_BB);
-    g_assert_cmphex(adapter_read(qts, 0, I2C_DATA), ==, GRANT_BASE);
-
-    next_grant = ((now / SERVICE_PERIOD_NS) + 1) * SERVICE_PERIOD_NS;
-    qtest_clock_step(qts, next_grant + 6 * POLL_STEP_NS - now);
-    adapter_write(qts, 0, I2C_DATA, NVRAM_FIRST << 1);
-    adapter_write(qts, 0, I2C_CTRL, CTL_START);
-    g_assert_cmphex(adapter_read(qts, 0, I2C_CTRL) &
-                    (STS_PIN | STS_BB | STS_BER | STS_LAB), ==, STS_PIN);
-
-    qtest_clock_step(qts, 4 * POLL_STEP_NS);
-    g_assert_cmphex(adapter_read(qts, 0, I2C_CTRL) &
-                    (STS_PIN | STS_BB | STS_BER | STS_LAB), ==, STS_PIN);
-    qtest_clock_step(qts, GRANT_SETTLE_NS);
-    g_assert_true(wait_done(qts, 0));
-    g_assert_cmphex(adapter_read(qts, 0, I2C_CTRL) &
-                    (STS_LRB | STS_BER | STS_LAB), ==,
-                    STS_LRB | STS_LAB);
-    stop_transfer(qts, 0);
-    qtest_quit(qts);
-}
-
 static void wait_for_global_grant(QTestState *qts, uint8_t expected)
 {
     for (unsigned step = 0; step < 2 * POLL_STEPS; step++) {
@@ -580,6 +550,56 @@ static uint8_t wait_for_next_global_grant(QTestState *qts, uint8_t previous)
         qtest_clock_step(qts, POLL_STEP_NS);
     }
     g_assert_not_reached();
+}
+
+/*
+ * Firmware polls for its grant, then writes START. A processor that loses
+ * host time between the two writes START while the controller is already
+ * publishing the next grant. The adapter must hold that START until the
+ * grant's STOP and then run it. Answering it with a lost arbitration is
+ * fatal here: the PROM reads the controller block one byte per transaction
+ * and does not come back for a byte it was refused, and when that byte is
+ * the module number the node boots on a stale one and the nodes disagree.
+ */
+static void test_late_start_still_reads_the_module_number(void)
+{
+    QTestState *qts = start_module();
+    int64_t now;
+    int64_t next_grant;
+
+    now = qtest_clock_step(qts, SERVICE_PERIOD_NS + GRANT_SETTLE_NS);
+    g_assert_cmphex(adapter_read(qts, 0, I2C_CTRL) & STS_BB, ==, STS_BB);
+    g_assert_cmphex(adapter_read(qts, 0, I2C_DATA), ==, GRANT_BASE);
+
+    /* Twelve microseconds into the next grant's address phase. */
+    next_grant = ((now / SERVICE_PERIOD_NS) + 1) * SERVICE_PERIOD_NS;
+    qtest_clock_step(qts, next_grant + 6 * POLL_STEP_NS - now);
+    g_assert_cmphex(adapter_read(qts, 0, I2C_CTRL) & STS_BB, ==, 0);
+    adapter_write(qts, 0, I2C_DATA, (NVRAM_FIRST + 7) << 1);
+    adapter_write(qts, 0, I2C_CTRL, CTL_START);
+    g_assert_cmphex(adapter_read(qts, 0, I2C_CTRL) &
+                    (STS_PIN | STS_BB | STS_BER | STS_LAB), ==, STS_PIN);
+
+    qtest_clock_step(qts, 4 * POLL_STEP_NS);
+    g_assert_cmphex(adapter_read(qts, 0, I2C_CTRL) &
+                    (STS_PIN | STS_BB | STS_BER | STS_LAB), ==, STS_PIN);
+
+    /* The grant stops; the held START opens the bus and the part answers. */
+    g_assert_true(wait_done(qts, 0));
+    g_assert_cmphex(adapter_read(qts, 0, I2C_CTRL) &
+                    (STS_LRB | STS_BER | STS_LAB | STS_BB), ==, 0);
+    g_assert_true(send_byte(qts, 0, NVRAM_MODULE_NUMBER & 0xff));
+    g_assert_true(restart_transfer(qts, 0, NVRAM_FIRST + 7, true));
+    discard_byte(qts, 0);
+    g_assert_cmphex(take_byte(qts, 0, true), ==, INITIAL_MODULE_NUMBER);
+    g_assert_false(restart_transfer(qts, 0, INVALID_ADDRESS, false));
+    stop_transfer(qts, 0);
+
+    /* The late transfer deferred the ring: no code rolled back or skipped. */
+    g_assert_cmphex(wait_for_next_global_grant(qts,
+                                               adapter_read(qts, 0, I2C_DATA)),
+                    ==, GRANT_BASE | 2);
+    qtest_quit(qts);
 }
 
 /*
@@ -1188,8 +1208,8 @@ int main(int argc, char **argv)
                    test_controller_answers_every_node);
     qtest_add_func("/sn0/o2000-module-management/one-wire",
                    test_windows_share_one_wire);
-    qtest_add_func("/sn0/o2000-module-management/start-loses-to-grant",
-                   test_start_loses_to_grant);
+    qtest_add_func("/sn0/o2000-module-management/late-start-reads-module",
+                   test_late_start_still_reads_the_module_number);
     qtest_add_func("/sn0/o2000-module-management/global-grant-rotation",
                    test_global_grant_rotation);
     qtest_add_func("/sn0/o2000-module-management/read-grant-keeps-rotating",

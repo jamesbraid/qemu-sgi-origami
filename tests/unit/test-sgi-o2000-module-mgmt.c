@@ -957,7 +957,7 @@ static void test_migration_pending_grant(Fixture *f, gconstpointer unused)
     close(fd);
 }
 
-/* A START restored behind a controller grant loses when the grant stops. */
+/* A START restored behind a controller grant runs when the grant stops. */
 static void test_migration_waiting_start(Fixture *f, gconstpointer unused)
 {
     g_autofree char *path = NULL;
@@ -1005,12 +1005,11 @@ static void test_migration_waiting_start(Fixture *f, gconstpointer unused)
     g_assert_false(adapter->wire_active);
 
     advance_to(virtual_time + GRANT_SETTLE_NS);
-    g_assert_false(adapter->wire_active);
+    g_assert_true(adapter->wire_active);
     g_assert_false(adapter->wire_start_waiting);
     g_assert_false(adapter->start_address_staged);
     g_assert_false(adapter->wire_grant_pending);
-    g_assert_cmphex(adapter->status & PCF8584_STS_LAB, ==,
-                    PCF8584_STS_LAB);
+    g_assert_cmphex(adapter->status & PCF8584_STS_LAB, ==, 0);
     g_assert_cmphex(adapter->status & PCF8584_STS_PIN, ==, 0);
     close(fd);
 }
