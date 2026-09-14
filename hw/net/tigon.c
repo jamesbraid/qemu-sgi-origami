@@ -1073,6 +1073,20 @@ static void tigon_report_rx_shortage_end(TigonState *s)
     s->rx_shortage_drops = 0;
 }
 
+/* The same, for the standard ring's own drought. */
+static void tigon_report_std_shortage_end(TigonState *s)
+{
+    if (s->std_rx_prodidx == s->std_rx_considx ||
+        s->std_shortage_drops == 0) {
+        return;
+    }
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "tigon: standard ring posted again after %" PRIu64
+                  " frames discarded for want of a buffer\n",
+                  s->std_shortage_drops);
+    s->std_shortage_drops = 0;
+}
+
 /*
  * Command doorbell. The firmware drains the NIC-resident command ring and
  * advances the command consumer index the driver polls after posting a
@@ -1395,6 +1409,7 @@ static void tigon_reset_state(TigonState *s)
     s->jumbo_rx_considx = 0;
     s->jumbo_rx_prodidx = 0;
     s->rx_shortage_drops = 0;
+    s->std_shortage_drops = 0;
     s->cmd_considx = 0;
     s->irq_asserted = false;
     memset(&s->eeprom, 0, sizeof(s->eeprom));
@@ -1544,6 +1559,7 @@ static void tigon_reg_write(void *opaque, hwaddr addr, uint64_t val,
         }
         s->std_rx_prodidx = val % TI_STD_RX_RING_CNT;
         trace_tigon_rx_doorbell("standard", (uint32_t)val);
+        tigon_report_std_shortage_end(s);
         /*
          * A frame refused before a buffer existed can now be delivered, and a
          * completion the card could not write can be retried: posting a
@@ -1973,12 +1989,11 @@ static ssize_t tigon_receive_packet(NetClientState *nc,
      * frame size at all: served only from the standard ring, the card can
      * never carry one.
      *
-     * A jumbo ring configured but holding no posted buffer discards the frame
-     * and counts an input discard rather than mangling it into a standard
-     * buffer. The two rings have independent control blocks and index pairs,
-     * so an empty jumbo ring cannot stop the standard ring being served,
-     * while parking the frame stops the back end and strands every standard
-     * frame behind it.
+     * Either ring configured but holding no posted buffer discards the frame
+     * and counts an input discard rather than mangling it into the other
+     * ring's buffer. The two rings have independent control blocks and index
+     * pairs, so a shortage on one cannot stop the other being served, while
+     * parking the frame stops the back end and strands every frame behind it.
      *
      * Both halves of the disposition are the model's, not evidence: no public
      * source says whether real firmware discards at once or retains the frame
@@ -2016,12 +2031,33 @@ static ssize_t tigon_receive_packet(NetClientState *nc,
                           "is posted\n", size);
         }
         s->rx_shortage_drops++;
+        trace_tigon_rx_shortage_drop("jumbo", (uint32_t)size);
         s->stat_rx_discards++;
         s->stats_dirty = true;
         return size;
     }
     if (!jumbo && s->std_rx_considx == s->std_rx_prodidx) {
-        return 0;      /* genuine no-buffer flow control */
+        /*
+         * The mirror, and the same disposition. The jumbo ring counts as
+         * posted only if it could carry a frame at all, the condition size
+         * selection applies above: a doorbell rung before the ring's control
+         * block is published names buffers the card cannot reach.
+         */
+        if (s->jumbo_rx_ring_base == 0 ||
+            s->jumbo_rx_considx == s->jumbo_rx_prodidx) {
+            return 0;  /* neither ring posted: genuine flow control */
+        }
+        if (s->std_shortage_drops == 0) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "tigon: frame of %zu bytes needs the standard ring, "
+                          "which has no posted buffer; discarding until it "
+                          "is posted\n", size);
+        }
+        s->std_shortage_drops++;
+        trace_tigon_rx_shortage_drop("standard", (uint32_t)size);
+        s->stat_rx_discards++;
+        s->stats_dirty = true;
+        return size;
     }
     /*
      * Which ring carried the frame is not visible from a throughput figure,

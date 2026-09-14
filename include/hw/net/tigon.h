@@ -171,6 +171,7 @@ struct TigonState {
      * condition, not state a guest can read.
      */
     uint64_t rx_shortage_drops;
+    uint64_t std_shortage_drops;        /* the same, for the standard ring */
 
     /* Internal pending-interrupt latch. */
     bool irq_asserted;

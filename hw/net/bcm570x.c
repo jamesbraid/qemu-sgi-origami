@@ -70,6 +70,7 @@
 #include "net/net.h"
 #include "qapi/error.h"
 #include "qom/object.h"
+#include "trace.h"
 
 #define TYPE_BCM570X "bcm570x"
 typedef struct Bcm570xState Bcm570xState;
@@ -489,6 +490,7 @@ struct Bcm570xState {
      * a count of a condition, not state a guest can read.
      */
     uint64_t rx_shortage_drops;
+    uint64_t rx_std_shortage_drops;     /* the same, for the standard ring */
     bool tx_busy;               /* guards the send against netdev re-entrancy */
     bool backend_rx_deferred;
 
@@ -496,7 +498,7 @@ struct Bcm570xState {
      * latch set when a status-block update awaits the driver. The line is the
      * conjunction of the latch with neither mask (mailbox nor MISC_CTL global)
      * set. tx_busy, backend_rx_deferred, rx_flush_pending and
-     * rx_shortage_drops are transient; the remaining state is migrated.
+     * both shortage counts are transient; the remaining state is migrated.
      */
     bool irq_masked;
     bool irq_pending;
@@ -648,6 +650,7 @@ static void bcm570x_reset_rx_queue(Bcm570xState *s)
     s->rx_flush_pending = false;
     s->backend_rx_deferred = false;
     s->rx_shortage_drops = 0;
+    s->rx_std_shortage_drops = 0;
 }
 
 /*
@@ -1713,6 +1716,13 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
                           BCM570X_RX_STD_RING_LEN);
             return;
         }
+        if ((val & 0xffff) != s->rx_std_cons && s->rx_std_shortage_drops != 0) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "bcm570x: standard ring posted again after %" PRIu64
+                          " frames discarded for want of a buffer\n",
+                          s->rx_std_shortage_drops);
+            s->rx_std_shortage_drops = 0;
+        }
         bcm570x_regfile_write(s, off, val);
         /*
          * Bring-up completes with the driver enabling the engines, unmasking
@@ -2270,8 +2280,39 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
 
     if (framelen <= std_size) {
         if (std_prod == s->rx_std_cons) {
-            bcm570x_defer_rx_flush(s);
-            return 0;
+            /*
+             * The mirror of the jumbo shortage above, and the same
+             * disposition. This frame fits a standard buffer and none is
+             * posted; it cannot take a jumbo one, because the ring a frame
+             * uses is chosen by its length against the standard ring's
+             * Max_Len (PG105 page 92) and nothing there sends a short frame
+             * the other way. Discard rather than refuse: refusing stops the
+             * back end reading and strands the frames behind it that the
+             * jumbo ring can carry.
+             *
+             * The manual does not settle this either -- see the receive
+             * shortage contract in the BCM570x datasheet, which carries what
+             * was measured against the alternative on this ring.
+             *
+             * Only discard while a jumbo buffer is posted, the state
+             * bcm570x_rx_ready accepted. Without one the caller is owed the
+             * refusal. rx_ready already implies it through a disjunct that is
+             * false by the time control reaches here; saying it locally keeps
+             * it true if another way to be ready is ever added.
+             */
+            if (!jumbo_enabled || jumbo_prod == s->rx_jumbo_cons) {
+                bcm570x_defer_rx_flush(s);
+                return 0;
+            }
+            if (s->rx_std_shortage_drops == 0) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "bcm570x: frame of %u bytes has no posted "
+                              "standard descriptor; discarding until one is "
+                              "posted\n", framelen);
+            }
+            s->rx_std_shortage_drops++;
+            trace_bcm570x_rx_shortage_drop("standard", framelen);
+            return orig_size;
         }
         std_base = bcm570x_compose_hostaddr(s,
                        bcm570x_regfile_read(s, BCM570X_RX_STD_RCB_HADDR_HI),
@@ -2326,6 +2367,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
             }
             s->rx_shortage_drops++;
             bcm570x_stats_bump_no_more_rxbds(s);
+            trace_bcm570x_rx_shortage_drop("jumbo", framelen);
             return orig_size;
         }
         std_base = jumbo_base;
