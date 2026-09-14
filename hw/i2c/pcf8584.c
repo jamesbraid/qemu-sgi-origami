@@ -215,7 +215,7 @@ static void pcf8584_wire_request_stop(PCF8584State *s)
                       "byte is unsupported\n");
         return;
     }
-    trace_pcf8584_stop();
+    trace_pcf8584_stop(s->wire_master);
     s->start_pending = false;
     s->wire_phase = PCF8584_WIRE_STOP_SCL;
     pcf8584_wire_stage(s, pcf8584_now() + 1, false, true);
@@ -254,14 +254,14 @@ static void pcf8584_wire_byte_done(PCF8584State *s)
     bool nacked = s->wire_ack_nak;
 
     if (s->wire_address_byte) {
-        trace_pcf8584_start(s->cur_addr7, s->recv, !nacked);
+        trace_pcf8584_start(s->wire_master, s->cur_addr7, s->recv, !nacked);
     } else if (s->recv) {
         /* This adapter drove clock nine, so nothing was received on it. */
         s->data = s->wire_recv_byte;
         nacked = false;
-        trace_pcf8584_recv(s->data);
+        trace_pcf8584_recv(s->wire_master, s->data);
     } else {
-        trace_pcf8584_send(s->wire_shift, !nacked);
+        trace_pcf8584_send(s->wire_master, s->wire_shift, !nacked);
     }
     /*
      * Between bytes the chip keeps SCL low and waits for its host rather
@@ -502,7 +502,7 @@ static uint8_t pcf8584_wire_read_data(PCF8584State *s)
         s->wire_phase == PCF8584_WIRE_PAUSED) {
         /* An acknowledged read advances the pipeline to the next byte. */
         if (!(s->control & PCF8584_CTL_ACK)) {
-            trace_pcf8584_nack();
+            trace_pcf8584_nack(s->wire_master);
         }
         pcf8584_wire_next_byte(s, 0);
     }
@@ -544,7 +544,7 @@ static void pcf8584_wire_request_start(PCF8584State *s)
 
 static void pcf8584_stop(PCF8584State *s)
 {
-    trace_pcf8584_stop();
+    trace_pcf8584_stop(s->wire_master);
     if (s->transfer) {
         i2c_end_transfer(s->bus);
     }
@@ -587,7 +587,7 @@ static void pcf8584_start(PCF8584State *s, uint8_t addr)
         i2c_end_transfer(s->bus);
     }
     s->transfer = rc == 0;
-    trace_pcf8584_start(addr7, recv, rc == 0);
+    trace_pcf8584_start(s->wire_master, addr7, recv, rc == 0);
 
     if (rc) {
         /* Normal: firmware probes an invalid address in order to be refused. */
@@ -638,7 +638,7 @@ static void pcf8584_write_data(PCF8584State *s, uint8_t val)
          */
         rc = -1;
     }
-    trace_pcf8584_send(val, rc == 0);
+    trace_pcf8584_send(s->wire_master, val, rc == 0);
     s->data = val;
     pcf8584_complete(s, rc != 0);
 }
@@ -656,11 +656,11 @@ static uint8_t pcf8584_read_data(PCF8584State *s)
         /* Held byte first, then fetch: fetch-first is off by one all packet. */
         if (!(s->control & PCF8584_CTL_ACK)) {
             /* ACK cleared means the driver wants this to be the last byte. */
-            trace_pcf8584_nack();
+            trace_pcf8584_nack(s->wire_master);
             i2c_nack(s->bus);
         }
         s->data = i2c_recv(s->bus);
-        trace_pcf8584_recv(s->data);
+        trace_pcf8584_recv(s->wire_master, s->data);
         pcf8584_complete(s, false);
     }
 
