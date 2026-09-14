@@ -1500,6 +1500,21 @@ struct ArchCPU {
 
     /* Properties */
     bool is_big_endian;
+    /*
+     * Where an uncached or uncached-accelerated reference resolves when a
+     * board links one: a second address space, selected by the
+     * mips_uncached attribute, so the cached and uncached views of one
+     * physical address can differ the way they do behind a cache used as
+     * RAM. Unlinked, every reference resolves in the one space as before.
+     */
+    MemoryRegion *uncached_memory;
+};
+
+/* Address-space indices: cached references first, uncached ones second. */
+enum {
+    MIPSASIdx_CACHED = 0,
+    MIPSASIdx_UNCACHED = 1,
+    MIPSASIdx_MAX = MIPSASIdx_UNCACHED,
 };
 
 /**
