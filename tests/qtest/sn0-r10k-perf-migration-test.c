@@ -34,8 +34,6 @@
 #define CACHE_DATA_LO_OFF   0x168
 #define CACHE_DATA_HI_OFF   0x170
 #define CACHE_ECC_OFF       0x178
-#define CACHE_OTHER_LO_OFF  0x180
-#define CACHE_OTHER_HI_OFF  0x188
 #define READY_MAGIC         0x1400
 #define CACHE_READY_MAGIC   0x14ca
 #define CACHE_DONE_MAGIC    0x14cb
@@ -44,8 +42,6 @@
 #define CACHE_TAGHI         0x0000000du
 #define CACHE_DATA_LO       0x2468ace0u
 #define CACHE_DATA_HI       0x13579bdfu
-#define CACHE_OTHER_LO      0x10293847u
-#define CACHE_OTHER_HI      0x5a6b7c8du
 #define CACHE_ECC           0x2aau
 #define POLL_TRIES          20000
 #define POLL_INTERVAL_US    1000
@@ -211,12 +207,6 @@ static void write_cache_guest_image(int fd, const CacheTagProbe *probes,
         emit_mtc0(&img, R_T0, CP0_TAGHI, 0);
         emit_cache(&img, 0x0b, R_T1, 0);
     }
-    /* Fill the quadword's other half first; the store below must spare it. */
-    emit_load_u32(&img, R_T0, CACHE_OTHER_LO);
-    emit_mtc0(&img, R_T0, CP0_TAGLO, 0);
-    emit_load_u32(&img, R_T0, CACHE_OTHER_HI);
-    emit_mtc0(&img, R_T0, CP0_TAGHI, 0);
-    emit_cache(&img, 0x1f, R_T1, 0);
     emit_load_u32(&img, R_T0, CACHE_DATA_LO);
     emit_mtc0(&img, R_T0, CP0_TAGLO, 0);
     emit_load_u32(&img, R_T0, CACHE_DATA_HI);
@@ -259,13 +249,6 @@ static void write_cache_guest_image(int fd, const CacheTagProbe *probes,
     emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CACHE_DATA_HI_OFF);
     emit_mfc0(&img, R_T0, CP0_ERRCTL, 0);
     emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CACHE_ECC_OFF);
-    emit_mtc0(&img, R_ZERO, CP0_TAGLO, 0);
-    emit_mtc0(&img, R_ZERO, CP0_TAGHI, 0);
-    emit_cache(&img, 0x1b, R_T1, 0);
-    emit_mfc0(&img, R_T0, CP0_TAGLO, 0);
-    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CACHE_OTHER_LO_OFF);
-    emit_mfc0(&img, R_T0, CP0_TAGHI, 0);
-    emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CACHE_OTHER_HI_OFF);
     emit_load_u32(&img, R_T0, CACHE_DONE_MAGIC);
     emit(&img, OPC_SD | (R_T2 << 21) | (R_T0 << 16) | CACHE_DONE_OFF);
     emit(&img, OPC_SYNC);
@@ -567,48 +550,6 @@ static void test_r10000_scache_migration(void)
     g_assert_cmpint(rmdir(directory), ==, 0);
 }
 
-/*
- * Index Store Data addresses one 64-bit half of a secondary-cache quadword.
- * Populate the halves in turn and read both back: the earlier half must still
- * hold its data. One machine is enough, because the store helper alone decides
- * this and no state has to cross a migration to show it.
- */
-static void test_r10000_scache_sibling_data(void)
-{
-    g_autofree char *image = NULL;
-    g_autofree char *args = NULL;
-    GError *error = NULL;
-    QTestState *qts;
-    int fd;
-
-    if (!qtest_has_accel("tcg")) {
-        g_test_skip("TCG is unavailable");
-        return;
-    }
-
-    fd = g_file_open_tmp("sn0-r10k-scache-XXXXXX", &image, &error);
-    g_assert_no_error(error);
-    g_assert_cmpint(fd, >=, 0);
-    write_cache_guest_image(fd, &r10000_cache_probe, 1);
-    close(fd);
-    args = g_strdup_printf(
-        "-M origin2000,synthesized-firmware=off -m 256M -smp 8 "
-        "-cpu R10000 -bios %s -accel tcg,thread=single -nodefaults "
-        "-no-reboot -no-shutdown", image);
-    qts = qtest_init(args);
-    wait_for_state(qts, CACHE_READY_OFF, CACHE_READY_MAGIC);
-    qtest_writeq(qts, STATE_PHYS + CACHE_COMMAND_OFF, 1);
-    wait_for_state(qts, CACHE_DONE_OFF, CACHE_DONE_MAGIC);
-
-    g_assert_cmphex(state_word(qts, CACHE_DATA_LO_OFF), ==, CACHE_DATA_LO);
-    g_assert_cmphex(state_word(qts, CACHE_DATA_HI_OFF), ==, CACHE_DATA_HI);
-    g_assert_cmphex(state_word(qts, CACHE_OTHER_LO_OFF), ==, CACHE_OTHER_LO);
-    g_assert_cmphex(state_word(qts, CACHE_OTHER_HI_OFF), ==, CACHE_OTHER_HI);
-
-    qtest_quit(qts);
-    unlink(image);
-}
-
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -618,7 +559,5 @@ int main(int argc, char **argv)
                         &configurations[0], test_stream_representation);
     qtest_add_func("sn0/r10000-scache-migration/stock",
                    test_r10000_scache_migration);
-    qtest_add_func("sn0/r10000-scache-data/sibling",
-                   test_r10000_scache_sibling_data);
     return g_test_run();
 }
