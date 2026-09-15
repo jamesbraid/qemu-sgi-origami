@@ -316,6 +316,14 @@ static void test_eeprom(void)
                                       sizeof(board), &error));
     g_assert_no_error(error);
     s = start_files(spd_path, board_path, "", "", "");
+    {
+        const uint8_t unavailable[] = { 0x30, 0xff, 0xff, 0xff, 0x98, 0 };
+
+        g_assert_cmpuint(eeprom_format(s, 0, reply), ==,
+                         sizeof(unavailable));
+        g_assert_cmpmem(reply, sizeof(unavailable), unavailable,
+                        sizeof(unavailable));
+    }
     g_assert_cmpuint(eeprom_read(s, 0, 4, 0, 0, reply), ==, 11);
     g_assert_cmphex(reply[10], ==, 128);
     for (unsigned i = 0; i < 2; i++) {
@@ -521,6 +529,16 @@ static void test_selected_board(void)
     g_assert_no_error(error);
     s = start_selected(path, "", "");
     expect_format(s, 0, all_ok, G_N_ELEMENTS(all_ok));
+    {
+        const uint8_t missing[] = { 0x30, 0xff, 0xff, 0xff, 0x9c, 0 };
+        const uint8_t absent[] = { 0x30, 0xff, 0xff, 0xff, 0x98, 0 };
+
+        g_assert_cmpuint(general(s, 7, NULL, 0, 0, reply), ==,
+                         sizeof(missing));
+        g_assert_cmpmem(reply, sizeof(missing), missing, sizeof(missing));
+        g_assert_cmpuint(eeprom_format(s, 6, reply), ==, sizeof(absent));
+        g_assert_cmpmem(reply, sizeof(absent), absent, sizeof(absent));
+    }
     g_assert_cmpuint(eeprom_read(s, 0, 3, 0, 8, reply), ==,
                      sizeof(iua_reply));
     g_assert_cmpmem(reply, sizeof(iua_reply), iua_reply,
