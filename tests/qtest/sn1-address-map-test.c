@@ -162,6 +162,7 @@
 #define NMI_READY_MARKER UINT64_C(0x1400)
 #define NMI_TAKEN_MARKER UINT64_C(0x4e4d)
 #define CONFIG0_READY_MARKER UINT64_C(0xc0f0)
+#define CPU_NUMBER_READY_MARKER UINT64_C(0x600d)
 #define CONFIG0_RESET_READBACK UINT64_C(0x6c9aa985)
 #define CONFIG0_MUTATED_READBACK UINT64_C(0x6c9aa982)
 #define POLL_TRIES 10000
@@ -349,6 +350,38 @@ static char *create_cpu_control_prom(void)
     stl_be_p(image + 0x404, 0x1000fffe); /* beq zero, zero, 0x400 */
 
     fd = g_file_open_tmp("sn1-cpu-control-prom-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static char *create_cpu_number_prom(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    char *path = NULL;
+    int fd;
+
+    stl_be_p(image + 0x000, 0x100000ff); /* branch to 0x400 */
+    for (unsigned int offset = 0x200; offset <= 0x380; offset += 0x80) {
+        stl_be_p(image + offset, 0x1000ffff); /* park fault vectors */
+    }
+    stl_be_p(image + 0x400, 0x400a6000); /* mfc0 t2, Status */
+    stl_be_p(image + 0x404, 0x354a0080); /* enable KX */
+    stl_be_p(image + 0x408, 0x408a6000); /* mtc0 t2, Status */
+    stl_be_p(image + 0x40c, 0x000000c0); /* ehb */
+    stl_be_p(image + 0x410, 0x3c029200); /* upper local window */
+    stl_be_p(image + 0x414, 0x3c030100); /* CPU-number offset */
+    stl_be_p(image + 0x418, 0x34630020);
+    stl_be_p(image + 0x41c, 0x0002103c);
+    stl_be_p(image + 0x420, 0x00431025);
+    stl_be_p(image + 0x424, 0xdc530000); /* ld s3, 0(v0) */
+    stl_be_p(image + 0x428, 0x34150000 | CPU_NUMBER_READY_MARKER);
+    stl_be_p(image + 0x42c, 0x1000ffff); /* park */
+
+    fd = g_file_open_tmp("sn1-cpu-number-prom-XXXXXX.bin", &path, &error);
     g_assert_no_error(error);
     g_assert_cmpint(fd, >=, 0);
     g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
@@ -2741,6 +2774,27 @@ static void test_cpu_b_enable_controls_bus_eligibility(const void *data)
     g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
+static void test_cpu_number_read_is_per_cpu(const void *data)
+{
+    g_autofree char *path = NULL;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    path = create_cpu_number_prom();
+    qts = machine_start_with(path, "-accel tcg,thread=multi -no-shutdown -S");
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_for_cpu_gpr(qts, 0, "s5", CPU_NUMBER_READY_MARKER);
+    wait_for_cpu_gpr(qts, 1, "s5", CPU_NUMBER_READY_MARKER);
+    stop_vm(qts);
+    g_assert_cmphex(cpu_gpr(qts, 0, "s3"), ==, 0);
+    g_assert_cmphex(cpu_gpr(qts, 1, "s3"), ==, 1);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
 static void test_config0_cold_reset(const void *data)
 {
     g_autofree char *path = NULL;
@@ -3316,6 +3370,8 @@ int main(int argc, char **argv)
                         test_cpu_type_is_r14000);
     qtest_add_data_func("sn1/address-map/machine-defaults", NULL,
                         test_machine_defaults);
+    qtest_add_data_func("sn1/address-map/cpu-number-read-is-per-cpu", NULL,
+                        test_cpu_number_read_is_per_cpu);
     qtest_add_data_func("sn1/address-map/cpu-b-enable-controls-bus", NULL,
                         test_cpu_b_enable_controls_bus_eligibility);
     qtest_add_data_func("sn1/address-map/config0-cold-reset", NULL,
