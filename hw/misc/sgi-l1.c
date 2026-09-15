@@ -492,15 +492,9 @@ static void l1_eeprom(SGIL1State *s, uint8_t channel, const uint8_t *args)
         l1_reply(s, channel, -104, 0, NULL, 0);
         return;
     }
-    if (area == 4) {
-        uint8_t sum = 0;
-        for (unsigned i = 0; i < 64; i++) {
-            sum += record->data[i];
-        }
-        if (sum) {
-            l1_reply(s, channel, -107, 0, NULL, 0);
-            return;
-        }
+    if (record->invalid) {
+        l1_reply(s, channel, -107, 0, NULL, 0);
+        return;
     }
     /* An offset at or past the area is out of range. */
     if (offset >= record->length) {
@@ -1423,6 +1417,18 @@ static void l1_reset_enter(Object *obj, ResetType type)
     l1_boot(SGI_L1(obj));
 }
 
+static bool l1_record_invalid(const SGIL1EEPROM *record, unsigned area)
+{
+    uint8_t sum = 0;
+    /* Raw area files have no common header or encoded EEPROM capacity. */
+    size_t checked = area == 2 ? MIN(record->length, 64) : record->length;
+
+    for (size_t i = 0; i < checked; i++) {
+        sum += record->data[i];
+    }
+    return sum != 0;
+}
+
 static int l1_post_load(void *opaque, int version_id)
 {
     SGIL1State *s = opaque;
@@ -1442,6 +1448,12 @@ static int l1_post_load(void *opaque, int version_id)
         if (s->records[i].length && s->records[i].length < 64) {
             return -EINVAL;
         }
+    }
+    for (unsigned i = 0; i < 48; i++) {
+        SGIL1EEPROM *record = &s->records[i];
+
+        record->invalid = record->length &&
+                          l1_record_invalid(record, i / 16);
     }
     for (unsigned i = 0; i < SGI_L1_LOG_ENTRIES; i++) {
         s->log_text[i][SGI_L1_LOG_TEXT - 1] = 0;
@@ -1585,6 +1597,7 @@ static void l1_realize(DeviceState *dev, Error **errp)
             }
             record->length = length;
             record->data = (uint8_t *)data;
+            record->invalid = l1_record_invalid(record, area);
         }
     }
     s->pending_rack = s->rack;
