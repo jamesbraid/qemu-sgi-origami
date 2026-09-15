@@ -18,6 +18,7 @@
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci/pci.h"
 #include "sn0-model.h"
+#include "sn-promdata.h"
 
 /* Fixed storage capacities; each product supplies its active geometry. */
 #define SN0_MAX_MEMORY_BANKS 8
@@ -209,27 +210,6 @@ typedef struct SN0BackdoorState {
     uint64_t writes;            /* through the callback, for tracing */
 } SN0BackdoorState;
 
-struct SN0NodeState;
-
-typedef struct SN0PromDataState {
-    MIPSCPU *cpu;
-    const struct SN0NodeState *node;
-    const SN0ModelAddressMap *map;
-    hwaddr node_base;
-    MemoryRegion data;
-    MemoryRegion filter;
-    MemoryRegion filter_uncached;   /* the filter, in the uncached space */
-    MemoryRegion copy_local;
-    bool present;           /* the filter was installed (real PROM boot) */
-    bool fast_allowed;      /* data may serve cached accesses as RAM */
-    bool leaving_private;   /* the overlay has been (or is being) disabled */
-    bool phase_private;     /* the cache-as-RAM phase is latched for this CPU */
-    bool fast;              /* data is mapped above the filter */
-    /* Through the filter, for tracing only. */
-    uint64_t private_reads;
-    uint64_t private_writes;
-} SN0PromDataState;
-
 typedef struct SN0NodeState {
     SysBusDevice parent_obj;
 
@@ -270,9 +250,9 @@ typedef struct SN0NodeState {
     MemoryRegion local_space[SN0_MAX_CPUS_PER_NODE]
                                   [SN0_MAX_ADDRESS_SPACES];
     MemoryRegion hub_private[SN0_MAX_CPUS_PER_NODE][2];
-    SN0PromDataState promdata[SN0_MAX_CPUS_PER_NODE];
+    SNPromDataState promdata[SN0_MAX_CPUS_PER_NODE];
     /* Samples the mapped processors' stack pointers for the exit. */
-    QEMUTimer *promdata_poll;
+    SNPromDataPoll promdata_poll;
     SGIHubState hub;
 
     /*
