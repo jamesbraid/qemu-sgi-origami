@@ -79,16 +79,11 @@ class PromBoot(QemuSystemTest):
                 '(nightly assets) rather than silently skipping a '
                 'claimed capability')
 
-        # A single CPU, single node -- the smallest cell that boots the
-        # real firmware -- built via lib_matrix's own Cell/machine_props/
-        # qemu_args rather than hand-writing -m/-smp/-accel, the same
-        # reuse the brief for this test calls for. firmware='prom' makes
-        # machine_props() emit synthesized-firmware=off, debug-leds=on --
-        # the real firmware, indicator writes decoded -- matching
-        # boot-gate's own machine string exactly.
+        # A single CPU and node use lib_matrix's real-PROM machine
+        # properties and QEMU arguments rather than duplicating them here.
         cell = Cell(id='prom_boot', guest='prom', scenario='full_boot',
                    cpus=1, nodes=1, mem='64M', accel='wallclock',
-                   firmware='prom', speed='thorough',
+                   speed='thorough',
                    timeout=BOOT_TIMEOUT_SECONDS, attempts=1,
                    min_passes=1, expect='pass', xfail_mark='',
                    xfail_signature='')
