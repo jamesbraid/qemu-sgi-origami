@@ -251,6 +251,16 @@ static void sn1_init_prom_view(SN1PromView *view, MachineState *machine,
                           view, name, sn1_origin300_model.prom_size);
 }
 
+/* Match the loaded CPU-module image to this machine's reset configuration. */
+static void sn1_apply_cpu_config(uint8_t *payload)
+{
+    stl_be_p(payload + 0x64, UINT32_C(0x549aa985));
+    stl_be_p(payload + 0x74, UINT32_C(500000000));
+    stl_be_p(payload + 0x90, 1);
+    stl_be_p(payload + 0x94, UINT32_C(0x9c));
+    stl_be_p(payload + 0x98, 1);
+}
+
 static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
                           Error **errp)
 {
@@ -308,6 +318,7 @@ static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
          * it to the part as a command cycle. The generated table describes
          * the payload carrier and is used for that carrier only.
          */
+        sn1_apply_cpu_config(memory_region_get_ram_ptr(stored));
         sn1_init_prom_view(&s->prom_view_reset, machine, "sn1.prom.reset",
                            stored);
         sn1_init_prom_view(&s->prom_view_local_high, machine,
@@ -335,6 +346,7 @@ static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
     /* The stock PROM bytes are part of snapshots despite being immutable. */
     vmstate_register_ram_global(&s->prom);
     memcpy(memory_region_get_ram_ptr(&s->prom), contents, model->prom_size);
+    sn1_apply_cpu_config(memory_region_get_ram_ptr(&s->prom));
     memory_region_set_dirty(&s->prom, 0, model->prom_size);
 
     s->prom_views = g_new0(MemoryRegion, model->num_prom_views);
