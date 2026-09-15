@@ -12,8 +12,7 @@
 #include "qemu/bswap.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "libqtest.h"
-
-#include <elf.h>
+#include "sn0-user-image.h"
 
 /* Crosstalk space, and the bridge's own widget window inside it. */
 #define SPACE_XTALK     0x20000000000ULL
@@ -213,81 +212,41 @@ static uint32_t bridge_identity(uint32_t revision)
            ID_ALWAYS_ONE;
 }
 
-static char *write_reserved_store_guest(void)
+/*
+ * Runs from the reset vector now rather than a directly loaded kernel, so
+ * it sets kernel mode (with KX, for the xkphys forms below) itself instead
+ * of inheriting it from a firmware handoff.
+ */
+static void build_reserved_store_image(SN0Image *p)
 {
-    static const uint32_t code[] = {
-        0x3c089200,             /* lui t0, 0x9200 */
-        0x00000000,             /* nop */
-        0x0008403c,             /* dsll32 t0, t0, 0 */
-        0x3c090800,             /* lui t1, 0x0800 */
-        0x3529019c,             /* ori t1, t1, 0x019c */
-        0x01094025,             /* or t0, t0, t1 */
-        0xad000000,             /* sw zero, 0(t0) */
-        0x3c089600,             /* lui t0, 0x9600 */
-        0x0008403c,             /* dsll32 t0, t0, 0 */
-        0x3c090003,             /* lui t1, 0x0003 */
-        0x01094025,             /* or t0, t0, t1 */
-        0x3c095a17,             /* lui t1, 0x5a17 */
-        0x3529c0de,             /* ori t1, t1, 0xc0de */
-        0xad090000,             /* sw t1, 0(t0) */
-        0x1000ffff,             /* b . */
-        0x00000000,             /* nop */
-    };
-    uint8_t image[0x1000 + sizeof(code)] = { 0 };
-    const uint64_t entry = 0x8000000000020000ULL;
-    GError *err = NULL;
-    char *path = NULL;
-    int fd;
-    size_t i;
+    sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL);
+    sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
 
-    fd = g_file_open_tmp("sn0-bridge-guest-XXXXXX", &path, &err);
-    g_assert_no_error(err);
-    g_assert_cmpint(fd, >=, 0);
+    /* Widget 8 (the bridge) + 0x19c, a reserved data-half register. */
+    sn0_emit_li64(p, SN0_R_T0, UINT64_C(0x9200000000000000) | 0x0800019c);
+    sn0_emit_i(p, SN0_OPC_SW, SN0_R_T0, SN0_R_ZERO, 0);
 
-    image[0] = ELFMAG0;
-    image[1] = ELFMAG1;
-    image[2] = ELFMAG2;
-    image[3] = ELFMAG3;
-    image[EI_CLASS] = ELFCLASS64;
-    image[EI_DATA] = ELFDATA2MSB;
-    image[EI_VERSION] = EV_CURRENT;
-    stw_be_p(image + 16, ET_EXEC);
-    stw_be_p(image + 18, EM_MIPS);
-    stl_be_p(image + 20, EV_CURRENT);
-    stq_be_p(image + 24, entry);
-    stq_be_p(image + 32, 64);
-    stw_be_p(image + 52, 64);
-    stw_be_p(image + 54, 56);
-    stw_be_p(image + 56, 1);
-
-    stl_be_p(image + 64, PT_LOAD);
-    stl_be_p(image + 68, PF_R | PF_X);
-    stq_be_p(image + 72, 0x1000);
-    stq_be_p(image + 80, entry);
-    stq_be_p(image + 88, entry);
-    stq_be_p(image + 96, sizeof(code));
-    stq_be_p(image + 104, sizeof(code));
-    stq_be_p(image + 112, 0x1000);
-
-    for (i = 0; i < ARRAY_SIZE(code); i++) {
-        stl_be_p(image + 0x1000 + i * sizeof(code[0]), code[i]);
-    }
-
-    g_assert_cmpint(write(fd, image, sizeof(image)), ==,
-                    (ssize_t)sizeof(image));
-    g_assert_cmpint(close(fd), ==, 0);
-    return path;
+    sn0_emit_li64(p, SN0_R_T0,
+                  UINT64_C(0x9600000000000000) | GUEST_MARKER_ADDR);
+    sn0_emit_li(p, SN0_R_T1, GUEST_MARKER);
+    sn0_emit_i(p, SN0_OPC_SW, SN0_R_T0, SN0_R_T1, 0);
+    sn0_emit_park(p);
 }
 
 static void test_reserved_data_half_store_completes(const void *data)
 {
-    g_autofree char *kernel = write_reserved_store_guest();
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
     QTestState *qts;
     uint32_t marker = 0;
 
+    build_reserved_store_image(image);
+    path = sn0_image_write(image, "sn0-bridge-guest");
+
     g_assert_true(g_setenv("QTEST_QEMU_ARGS", "-accel tcg", true));
-    qts = qtest_initf(MACHINE_WITH_BRIDGE " -smp 1 -kernel %s", kernel);
+    qts = qtest_initf(MACHINE_WITH_BRIDGE " -smp 1 -bios %s", path);
     g_unsetenv("QTEST_QEMU_ARGS");
+    unlink(path);
 
     g_test_timer_start();
     while (marker != GUEST_MARKER && g_test_timer_elapsed() < 1) {
@@ -297,7 +256,6 @@ static void test_reserved_data_half_store_completes(const void *data)
 
     g_assert_cmphex(marker, ==, GUEST_MARKER);
     qtest_quit(qts);
-    g_unlink(kernel);
 }
 
 static void test_identity(const void *data)
@@ -370,22 +328,8 @@ static void test_reset_state(const void *data)
     qtest_quit(qts);
 }
 
-/*
- * Slots firmware assigns after every reset, so their registers never show
- * the raw reset value. These are independent expected values for the
- * compiled product model.
- */
+/* The slot an IOC3-class device sits in on a base I/O board. */
 #define IOC3_SLOT 2
-#define SCSI0_SLOT 0
-#define SCSI1_SLOT 1
-
-/*
- * Firmware's BAR placement, restated as the sum of its two named parts so
- * a change to either announces itself.
- */
-#define IOC3_PCI_MEM ((8 << 24) + 0x600000)
-#define SCSI0_PCI_MEM ((8 << 24) + 0x200000)
-#define SCSI1_PCI_MEM ((8 << 24) + 0x400000)
 
 static void test_each_slot_resets_to_its_own_window(const void *data)
 {
@@ -394,88 +338,16 @@ static void test_each_slot_resets_to_its_own_window(const void *data)
 
     /*
      * Three bits set, not two -- memory-or-I/O select is the third. All
-     * eight rows, because a hand-written table is where one goes missing;
-     * firmware-assigned slots are asserted by the reassignment tests.
+     * eight rows, because a hand-written table is where one goes missing.
+     * Every slot, including the ones a stock PROM's own PCI enumeration
+     * goes on to program: nothing in this model does that enumeration on
+     * a guest's behalf, so what a fresh machine shows here is the bare
+     * reset value across the board.
      */
     for (n = 0; n < BRIDGE_DEVICES; n++) {
-        if (n == IOC3_SLOT || n == SCSI0_SLOT || n == SCSI1_SLOT) {
-            continue;
-        }
         g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(n))), ==,
                         device_reset[n]);
     }
-
-    qtest_quit(qts);
-}
-
-static void test_ioc3_slot_is_reassigned_after_reset(const void *data)
-{
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
-
-    /*
-     * Firmware's masked read-modify-write leaves the reset bits standing;
-     * a whole-register overwrite passes a base-only check.
-     */
-    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(IOC3_SLOT))), ==,
-                    DEV_ERROR_LOCK | DEV_PAGE_CROSS_CHECK | DEV_MEMORY_SPACE |
-                    (IOC3_PCI_MEM >> 20)); /* base is PCI address bits 31:20 */
-
-    qtest_quit(qts);
-}
-
-/*
- * Both adapters together: a loop assigning one slot's address to both only
- * disagrees with itself. Window and BAR both, per slot.
- */
-static void test_scsi_slots_are_reassigned_after_reset(const void *data)
-{
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
-
-    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(SCSI0_SLOT))), ==,
-                    DEV_ERROR_LOCK | DEV_PAGE_CROSS_CHECK | DEV_MEMORY_SPACE |
-                    (SCSI0_PCI_MEM >> 20));
-    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(SCSI1_SLOT))), ==,
-                    DEV_ERROR_LOCK | DEV_PAGE_CROSS_CHECK | DEV_MEMORY_SPACE |
-                    (SCSI1_PCI_MEM >> 20));
-
-    g_assert_cmphex(qtest_readl(qts, CFG0(SCSI0_SLOT, 0) + PCI_BAR1), ==,
-                    SCSI0_PCI_MEM);
-    g_assert_cmphex(qtest_readl(qts, CFG0(SCSI1_SLOT, 0) + PCI_BAR1), ==,
-                    SCSI1_PCI_MEM);
-
-    /* Same whole-word-then-mask shape as the IOC3 command readback above. */
-    g_assert_cmphex(qtest_readl(qts, CFG0(SCSI0_SLOT, 0) + PCI_COMMAND) &
-                    0xffff, ==,
-                    PCI_COMMAND_IO | PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
-    g_assert_cmphex(qtest_readl(qts, CFG0(SCSI1_SLOT, 0) + PCI_COMMAND) &
-                    0xffff, ==,
-                    PCI_COMMAND_IO | PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
-
-    qtest_quit(qts);
-}
-
-/*
- * The assignment must recur on every reset -- observed on a second,
- * monitor-issued one, both writes checked.
- */
-static void test_ioc3_slot_survives_a_later_reset(const void *data)
-{
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
-
-    qtest_system_reset(qts);
-
-    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(IOC3_SLOT))), ==,
-                    DEV_ERROR_LOCK | DEV_PAGE_CROSS_CHECK | DEV_MEMORY_SPACE |
-                    (IOC3_PCI_MEM >> 20));
-    g_assert_cmphex(qtest_readl(qts, CFG0(IOC3_SLOT, 0) + PCI_BAR0), ==,
-                    IOC3_PCI_MEM);
-    /*
-     * A full-word read, deliberately: a 16-bit config-space access lands
-     * on the other half's byte lanes without the offset correction, so
-     * reading the dword and masking sidesteps the question.
-     */
-    g_assert_cmphex(qtest_readl(qts, CFG0(IOC3_SLOT, 0) + PCI_COMMAND) &
-                    0xffff, ==, PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
 
     qtest_quit(qts);
 }
@@ -545,10 +417,7 @@ static void test_a_device_window_base_survives(const void *data)
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(0))) &
                     DEV_WINDOW_BASE, ==, 0x123u);
 
-    /*
-     * Checked against an empty slot: firmware aims slot 1's own window at
-     * boot, so it no longer holds the bare reset value.
-     */
+    /* An untouched slot is unaffected by the write above. */
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(EMPTY_SLOT))), ==,
                     device_reset[EMPTY_SLOT]);
 
@@ -1737,6 +1606,10 @@ static void test_dma_direct_window_reaches_the_second_node(const void *data)
     uint8_t seen[DMA64_LEN], node0[DMA64_LEN];
     unsigned int i;
 
+    /* No PROM ran to assign node 1 its number; this DMA needs it claimed. */
+    sn0_program_nasid(qts, 0, 0);
+    sn0_program_nasid(qts, 2, 1);
+
     bridge_start_the_transfer_source(qts);
     bridge_source_with_swap(qts, DEV_SWAP_DIRECT);
 
@@ -1777,6 +1650,10 @@ static void test_dma_direct_window_reads_the_second_node(const void *data)
                                  " -device sgi-bridge-dma-test,addr=6,bus=pci");
     uint8_t pattern[DMA64_LEN], seen[DMA64_LEN];
     unsigned int i;
+
+    /* No PROM ran to assign node 1 its number; this DMA needs it claimed. */
+    sn0_program_nasid(qts, 0, 0);
+    sn0_program_nasid(qts, 2, 1);
 
     bridge_start_the_transfer_source(qts);
     bridge_source_with_swap(qts, DEV_SWAP_DIRECT);
@@ -3297,12 +3174,6 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/bridge/reset-state", NULL, test_reset_state);
     qtest_add_data_func("sn0/bridge/each-slot-resets-to-its-own-window", NULL,
                         test_each_slot_resets_to_its_own_window);
-    qtest_add_data_func("sn0/bridge/ioc3-slot-reassigned-after-reset", NULL,
-                        test_ioc3_slot_is_reassigned_after_reset);
-    qtest_add_data_func("sn0/bridge/scsi-slots-reassigned-after-reset", NULL,
-                        test_scsi_slots_are_reassigned_after_reset);
-    qtest_add_data_func("sn0/bridge/ioc3-slot-survives-a-later-reset", NULL,
-                        test_ioc3_slot_survives_a_later_reset);
     qtest_add_data_func("sn0/bridge/field-widths", NULL,
                         test_fields_are_the_width_they_should_be);
     qtest_add_data_func("sn0/bridge/device-window-base", NULL,
