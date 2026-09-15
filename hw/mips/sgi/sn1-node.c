@@ -153,6 +153,19 @@ static target_ulong sn1_node_store_transaction(MIPSCPU *cpu, MemoryRegion *mr,
     return value;
 }
 
+static unsigned sn1_cpu_slot(const SN1MachineModel *model, unsigned logical)
+{
+    for (unsigned physical = 0; physical < 4; physical++) {
+        if (model->cpu_population_mask & (1U << physical)) {
+            if (logical == 0) {
+                return physical;
+            }
+            logical--;
+        }
+    }
+    g_assert_not_reached();
+}
+
 static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
 {
     MemoryRegion *system = get_system_memory();
@@ -258,6 +271,8 @@ static void sn1_node_create_bedrock(SN1NodeState *node,
     object_property_add_child(OBJECT(node), "bedrock",
                               OBJECT(node->bedrock));
     qdev_prop_set_uint32(node->bedrock, "processor-count", model->cpu_count);
+    qdev_prop_set_uint32(node->bedrock, "processor-mask",
+                        model->cpu_population_mask);
     qdev_prop_set_uint8(node->bedrock, "revision", model->bedrock_revision);
     qdev_prop_set_uint8(node->bedrock, "local-region",
                         model->bedrock_local_region);
@@ -314,6 +329,25 @@ static void sn1_node_create_bedrock(SN1NodeState *node,
                              SGI_BEDROCK_SIZE);
     memory_region_add_subregion(&SN1_MACHINE(machine)->hub_local_registers, 0,
                                 &node->hub_local_register_block);
+    /* OpenBSD expects local PI accesses to select the requester's interface. */
+    if (sn1_cpu_slot(model, 1) == 2) {
+        SGIBedrockState *bedrock_state = SGI_BEDROCK(node->bedrock);
+        MemoryRegion *pi1 = sysbus_mmio_get_region(
+            SYS_BUS_DEVICE(&bedrock_state->pi[1]), 0);
+
+        memory_region_init_alias(&node->cpu_c_local_pi_xtalk, OBJECT(node),
+                                 "sn1.cpu-c.local-pi-xtalk", pi1, 0,
+                                 SGI_BEDROCK_PI_SIZE);
+        memory_region_add_subregion_overlap(&node->cpu_sysmem[1],
+                                            model->bedrock_local_address,
+                                            &node->cpu_c_local_pi_xtalk, 1);
+        memory_region_init_alias(&node->cpu_c_local_pi_hub, OBJECT(node),
+                                 "sn1.cpu-c.local-pi-hub", pi1, 0,
+                                 SGI_BEDROCK_PI_SIZE);
+        memory_region_add_subregion_overlap(&node->cpu_sysmem[1],
+                                            model->hub_local_registers.address,
+                                            &node->cpu_c_local_pi_hub, 1);
+    }
     memory_region_add_subregion(system, model->hub_remote_registers_address,
                                 sysbus_mmio_get_region(bedrock, 3));
     /* Preserve the remote L1 UART decoder between the register aliases. */
@@ -351,14 +385,15 @@ static void sn1_node_create_bedrock(SN1NodeState *node,
 
     for (unsigned int cpu = 0; cpu < model->cpu_count; cpu++) {
         MIPSCPU *mips_cpu = node->cpu[cpu];
+        unsigned physical = sn1_cpu_slot(model, cpu);
 
         qdev_connect_gpio_out_named(
-            node->bedrock, "nmi", cpu,
+            node->bedrock, "nmi", physical,
             qdev_get_gpio_in_named(DEVICE(mips_cpu), "nmi", 0));
         for (unsigned int line = 0; line < SGI_BEDROCK_PI_HW_IRQS; line++) {
             qdev_connect_gpio_out_named(
                 node->bedrock, "hardware-irq",
-                cpu * SGI_BEDROCK_PI_HW_IRQS + line,
+                physical * SGI_BEDROCK_PI_HW_IRQS + line,
                 mips_cpu->env.irq[SN1_MIPS_HARDWARE_IRQ_OFFSET + line]);
         }
     }

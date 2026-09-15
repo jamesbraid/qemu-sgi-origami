@@ -68,6 +68,7 @@ const SN1MachineModel sn1_origin300_model = {
     .description = "SGI Origin 300 (IP45)",
     .cpu_kind = SN1_CPU_R14000,
     .cpu_count = 2,
+    .cpu_population_mask = 0x5,
     .cpu_clock_hz = 0x1dcd6500ULL,
     .ram_size = 0x20000000ULL,
     .ram_address = 0x0ULL,
