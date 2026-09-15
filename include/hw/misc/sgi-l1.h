@@ -19,6 +19,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIL1UARTState, SGI_L1_UART)
 typedef struct SGIL1EEPROM {
     uint32_t length;
     uint8_t *data;
+    bool invalid;
 } SGIL1EEPROM;
 
 /* The controller: what the L1 keeps on its own side of the link. */

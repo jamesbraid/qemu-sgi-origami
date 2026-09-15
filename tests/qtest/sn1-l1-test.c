@@ -197,15 +197,18 @@ static void test_reset(void)
 }
 
 static QTestState *start_files(const char *spd, const char *board,
+                               const char *io8, const char *chassis,
                                const char *extra)
 {
     QTestState *s = qtest_initf(
         "-M none -cpu R10000 -S %s -device '{\"driver\":\"sgi-l1\","
-        "\"id\":\"l1c\",\"spd-eeprom\":[\"%s\"],\"board-eeprom\":[\"%s\"]}' "
+        "\"id\":\"l1c\",\"spd-eeprom\":[\"%s\"],"
+        "\"board-eeprom\":[\"%s\",\"%s\"],"
+        "\"chassis-eeprom\":[\"%s\"]}' "
         /* JSON devices are created after key=value ones; keep the order. */
         "-device '{\"driver\":\"sgi-l1-uart\",\"id\":\"l1\","
         "\"controller\":\"l1c\"}'",
-        extra, spd, board);
+        extra, spd, board, io8, chassis);
     qtest_sysbus_mmio_map(s, PATH, 0, BASE);
     return s;
 }
@@ -240,14 +243,15 @@ static void test_eeprom(void)
     spd[0] = 64;
     spd[63] = 192;
     memset(spd + 64, 0x37, 64);
-    memset(board, 0x83, sizeof(board));
+    memset(board, 0x83, sizeof(board) - 1);
+    board[sizeof(board) - 1] = 0xd0;
     g_assert_true(g_file_set_contents(spd_path, (char *)spd,
                                       sizeof(spd), &error));
     g_assert_no_error(error);
     g_assert_true(g_file_set_contents(board_path, (char *)board,
                                       sizeof(board), &error));
     g_assert_no_error(error);
-    s = start_files(spd_path, board_path, "");
+    s = start_files(spd_path, board_path, "", "", "");
     g_assert_cmpuint(eeprom_read(s, 0, 4, 0, 0, reply), ==, 11);
     g_assert_cmphex(reply[10], ==, 128);
     for (unsigned i = 0; i < 2; i++) {
@@ -304,12 +308,73 @@ static void test_eeprom(void)
     g_assert_true(g_file_set_contents(spd_path, (char *)spd,
                                       sizeof(spd), &error));
     g_assert_no_error(error);
-    s = start_files(spd_path, board_path, "");
+    s = start_files(spd_path, board_path, "", "", "");
     g_assert_cmpuint(eeprom_read(s, 0, 4, 0, 0, reply), ==, 6);
     g_assert_cmphex(reply[4], ==, 0x95);
     qtest_quit(s);
     unlink(spd_path);
     unlink(board_path);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_board_area_validity(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-l1-board-area-XXXXXX",
+                                        &error);
+    g_autofree char *node_path = NULL, *io8_path = NULL;
+    g_autofree char *chassis_path = NULL;
+    uint8_t node[] = { 0x10, 0xf0 };
+    uint8_t io8[] = { 0x23, 0xdd };
+    uint8_t chassis[] = { 0x46, 0xba };
+    uint8_t reply[131];
+    QTestState *s;
+
+    g_assert_no_error(error);
+    node_path = g_build_filename(dir, "node.bin", NULL);
+    io8_path = g_build_filename(dir, "io8.bin", NULL);
+    chassis_path = g_build_filename(dir, "chassis.bin", NULL);
+    g_assert_true(g_file_set_contents(node_path, (char *)node,
+                                      sizeof(node), &error));
+    g_assert_no_error(error);
+    g_assert_true(g_file_set_contents(io8_path, (char *)io8,
+                                      sizeof(io8), &error));
+    g_assert_no_error(error);
+    g_assert_true(g_file_set_contents(chassis_path, (char *)chassis,
+                                      sizeof(chassis), &error));
+    g_assert_no_error(error);
+
+    s = start_files("", node_path, io8_path, chassis_path, "");
+    g_assert_cmpuint(eeprom_read(s, 0, 2, 0, 2, reply), ==, 14);
+    g_assert_cmpmem(reply + 12, 2, node, 2);
+    g_assert_cmpuint(eeprom_read(s, 1, 2, 0, 2, reply), ==, 14);
+    g_assert_cmpmem(reply + 12, 2, io8, 2);
+    g_assert_cmpuint(eeprom_read(s, 0, 1, 0, 2, reply), ==, 14);
+    g_assert_cmpmem(reply + 12, 2, chassis, 2);
+    qtest_quit(s);
+
+    node[1] = 0xf1;
+    chassis[1] = 0xbb;
+    g_assert_true(g_file_set_contents(node_path, (char *)node,
+                                      sizeof(node), &error));
+    g_assert_no_error(error);
+    g_assert_true(g_file_set_contents(chassis_path, (char *)chassis,
+                                      sizeof(chassis), &error));
+    g_assert_no_error(error);
+    s = start_files("", node_path, io8_path, chassis_path, "");
+    g_assert_cmpuint(eeprom_read(s, 0, 2, 0, 0, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x95);
+    g_assert_cmpuint(eeprom_read(s, 0, 2, 2, 1, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x95);
+    g_assert_cmpuint(eeprom_read(s, 0, 1, 2, 1, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x95);
+    g_assert_cmpuint(eeprom_read(s, 1, 2, 0, 2, reply), ==, 14);
+    g_assert_cmpmem(reply + 12, 2, io8, 2);
+    qtest_quit(s);
+
+    unlink(node_path);
+    unlink(io8_path);
+    unlink(chassis_path);
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
@@ -384,8 +449,8 @@ static void test_eeprom_migration(void)
     g_autofree char *source = NULL, *destination = NULL;
     QTestState *from, *to;
     uint8_t reply[131];
-    const uint8_t source_bytes[] = { 0xa5, 0x7e, 0x7d };
-    const uint8_t destination_bytes[] = { 0x33, 0x44 };
+    const uint8_t source_bytes[] = { 0xa5, 0x7e, 0xdd };
+    const uint8_t destination_bytes[] = { 0x33, 0xce };
     g_assert_no_error(error);
     socket = g_build_filename(dir, "migration.sock", NULL);
     uri = g_strdup_printf("unix:%s", socket);
@@ -397,10 +462,10 @@ static void test_eeprom_migration(void)
     g_assert_true(g_file_set_contents(destination, (char *)destination_bytes,
                                       sizeof(destination_bytes), &error));
     g_assert_no_error(error);
-    from = start_files("", source, "");
-    to = start_files("", destination, "-incoming defer");
-    g_assert_cmpuint(eeprom_read(to, 0, 2, 0, 64, reply), ==, 14);
-    g_assert_cmpmem(reply + 12, 2, destination_bytes, 2);
+    from = start_files("", source, "", "", "");
+    to = start_files("", destination, "", "", "-incoming defer");
+    g_assert_cmpuint(eeprom_read(to, 0, 2, 0, 64, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x95);
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
@@ -2191,6 +2256,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/errors", test_errors);
     qtest_add_func("sn1/l1/reset", test_reset);
     qtest_add_func("sn1/l1/eeprom", test_eeprom);
+    qtest_add_func("sn1/l1/board-area-validity", test_board_area_validity);
     qtest_add_func("sn1/l1/migration", test_migration);
     qtest_add_func("sn1/l1/eeprom-migration", test_eeprom_migration);
     qtest_add_func("sn1/l1/console", test_console);
