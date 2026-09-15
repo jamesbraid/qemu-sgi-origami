@@ -359,6 +359,7 @@ qtests_mips64 = \
   (config_all_devices.has_key('CONFIG_SGI_SN1') ?
     ['sn1-address-map-test', 'sn1-bedrock-ecc-cpu-test',
      'sn1-cpu-identity-test',
+     'sn1-io8-mac-test',
      'sn1-io8-scsi-test', 'sn1-io8-ioc3-test',
      'sn1-xbridge-host-error-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-mttcg-test',
