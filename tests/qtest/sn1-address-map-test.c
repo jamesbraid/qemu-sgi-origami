@@ -24,6 +24,7 @@
 #define SPACE_HUB UINT64_C(0x10000000000)
 #define SPACE_XTALK UINT64_C(0x20000000000)
 #define SPACE_MEMORY_SPECIAL UINT64_C(0x30000000000)
+#define HUB_LOCAL_REGISTERS (SPACE_HUB + UINT64_C(0x10000000))
 
 #define BEDROCK_LOCAL (SPACE_XTALK + UINT64_C(0x01000000))
 #define BEDROCK_NODE0 (SPACE_XTALK + UINT64_C(0x01800000))
@@ -831,8 +832,11 @@ static void test_ram_and_hub_alias(const void *data)
     g_assert_cmphex(qtest_readq(qts, 0x2000), ==,
                     UINT64_C(0xfedcba9876543210));
 
-    /* The local uncached alias is exactly 256 MiB. */
-    assert_flat_view_unmapped(qts, SPACE_HUB + 256 * MiB);
+    /* The 256 MiB boundary starts the local register block, not more RAM. */
+    qtest_writeq(qts, 256 * MiB + PI_CPU_NUMBER,
+                 UINT64_C(0xdeadbeefcafef00d));
+    g_assert_cmphex(qtest_readq(qts, SPACE_HUB + 256 * MiB + PI_CPU_NUMBER),
+                    ==, 0);
     /* Node memory ends at the selected 512 MiB population. */
     assert_flat_view_unmapped(qts, 512 * MiB);
     /* Memory-special has no mapping in this skeleton. */
@@ -863,6 +867,19 @@ static void test_bedrock_register_aliases(const void *data)
                                 BEDROCK_LOCAL + BEDROCK_WINDOW_SIZE - 8);
     check_access_has_no_storage(qts,
                                 BEDROCK_NODE0 + BEDROCK_WINDOW_SIZE - 8);
+
+    qtest_quit(qts);
+}
+
+static void test_hub_local_reaches_bedrock(const void *data)
+{
+    QTestState *qts = machine_start();
+    const uint64_t scratch = UINT64_C(0x1234abcd5678ef90);
+
+    qtest_writeq(qts, HUB_LOCAL_REGISTERS + BEDROCK_LB + LB_SCRATCH2,
+                 scratch);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + BEDROCK_LB +
+                                LB_SCRATCH2), ==, scratch);
 
     qtest_quit(qts);
 }
@@ -3084,6 +3101,8 @@ int main(int argc, char **argv)
                         test_ram_and_hub_alias);
     qtest_add_data_func("sn1/address-map/bedrock-register-aliases", NULL,
                         test_bedrock_register_aliases);
+    qtest_add_data_func("sn1/address-map/hub-local-reaches-bedrock", NULL,
+                        test_hub_local_reaches_bedrock);
     qtest_add_data_func("sn1/address-map/crosstalk-big-window", NULL,
                         test_crosstalk_big_window_routes);
     qtest_add_data_func("sn1/address-map/xbridge-topology", NULL,
