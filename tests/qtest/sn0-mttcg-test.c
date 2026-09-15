@@ -1234,9 +1234,17 @@ static void build_masked_interrupt(GuestImage *img)
     emit_li(img, R_T3, 2);
     emit_wait_ge(img, R_T3, MI_GO_OFF);
 
-    /* Compare at the counter matches at once, and nothing lowers IP7. */
-    emit_mfc0(img, R_T5, CP0_COUNT, 0);
-    emit_mtc0(img, R_T5, CP0_COMPARE, 0);
+    /*
+     * Count written equal to the standing Compare matches at once and
+     * nothing lowers IP7. Writing Compare equal to a just-read Count would
+     * race the counter instead -- Count keeps advancing between the read
+     * and the write, so by the time the write lands it is normally already
+     * behind, and the comparator is equality only -- so this arms the
+     * match from the deterministic side, the same direction the CP0 timer
+     * ROM pins.
+     */
+    emit_mfc0(img, R_T5, CP0_COMPARE, 0);
+    emit_mtc0(img, R_T5, CP0_COUNT, 0);
     emit_ehb(img);
     spin = img->pos;
     emit_mfc0(img, R_T6, CP0_CAUSE, 0);
@@ -1386,9 +1394,13 @@ static void build_unmask_by_eret(GuestImage *img)
     emit_ehb(img);
     emit_publish(img, R_S0, UE_STATUS_OFF);
 
-    /* Compare at the counter matches at once; IP7 stands and EXL holds it. */
-    emit_mfc0(img, R_T5, CP0_COUNT, 0);
-    emit_mtc0(img, R_T5, CP0_COMPARE, 0);
+    /*
+     * Count written equal to the standing Compare matches at once; IP7
+     * stands and EXL holds it. See build_masked_interrupt() for why this
+     * arms from Compare into Count rather than the other way round.
+     */
+    emit_mfc0(img, R_T5, CP0_COMPARE, 0);
+    emit_mtc0(img, R_T5, CP0_COUNT, 0);
     emit_ehb(img);
     spin = img->pos;
     emit_mfc0(img, R_T6, CP0_CAUSE, 0);
