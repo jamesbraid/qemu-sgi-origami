@@ -5,6 +5,7 @@
  */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-l1.h"
+#include "hw/core/cpu.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
@@ -206,6 +207,23 @@ static void l1_send_event(SGIL1State *s, uint32_t code, uint32_t number,
     l1_emit(s, payload, n + length);
 }
 
+/*
+ * Ask for the shutdown and stop every processor, from queued work on the
+ * processor that asked for it -- mirroring sgi_hub_request_machine_reset()
+ * in hw/misc/sgi-hub.c and elsc_deferred_action_cpu() in hw/misc/sgi-elsc.c.
+ * The work runs at that processor's next translation-block boundary,
+ * outside the execution loop, which is where a processor may be stopped.
+ */
+static void l1_power_down_cpu(CPUState *cpu, run_on_cpu_data data)
+{
+    CPUState *peer;
+
+    qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+    CPU_FOREACH(peer) {
+        cpu_pause(peer);
+    }
+}
+
 static void l1_power_down(SGIL1State *s, uint8_t reason, bool shutdown)
 {
     const char *source = l1_reasons[reason];
@@ -226,7 +244,36 @@ static void l1_power_down(SGIL1State *s, uint8_t reason, bool shutdown)
     l1_log(s, "power down (%s)", source);
     qemu_set_irq(s->node_power_out, 0);
     if (shutdown) {
-        qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+        /*
+         * A synchronous shutdown request only wakes the main loop, which
+         * carries it out whenever it next runs; nothing stops a peer
+         * processor from executing meanwhile. current_cpu names the
+         * processor whose own guest write reached this MMIO handler (an
+         * L1 protocol frame or an operator's "pwr d" over the L1 console),
+         * so queuing the request on that processor's own work stops every
+         * processor no later than the writer's own next translation-block
+         * boundary, before any peer is scheduled again in round robin.
+         * Without a processor to queue it on -- the L1 console callback
+         * runs on the main thread, not a vCPU thread, and can reach this
+         * with current_cpu unset -- the request is all there is to make.
+         */
+        if (current_cpu) {
+            async_run_on_cpu(current_cpu, l1_power_down_cpu,
+                             RUN_ON_CPU_NULL);
+        } else {
+            qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
+        }
+    }
+}
+
+/* See l1_power_down_cpu(); the reset counterpart for a power-up restart. */
+static void l1_power_up_cpu(CPUState *cpu, run_on_cpu_data data)
+{
+    CPUState *peer;
+
+    qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    CPU_FOREACH(peer) {
+        cpu_pause(peer);
     }
 }
 
@@ -245,7 +292,12 @@ static void l1_power_up(SGIL1State *s, uint8_t reason, bool restart)
     qemu_set_irq(s->node_power_out, 1);
     if (restart) {
         s->power_up_pending = true;
-        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+        /* See l1_power_down()'s comment: same reasoning, the reset case. */
+        if (current_cpu) {
+            async_run_on_cpu(current_cpu, l1_power_up_cpu, RUN_ON_CPU_NULL);
+        } else {
+            qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+        }
     }
     if (!returning) {
         /* From the locked prompt the L1 prints a fresh prompt line first. */
@@ -253,6 +305,17 @@ static void l1_power_up(SGIL1State *s, uint8_t reason, bool restart)
         l1_printf(s, "\r\n");
     }
     l1_mode_message(s, returning);
+}
+
+/* See l1_power_down_cpu(); the plain-reset counterpart. */
+static void l1_node_reset_cpu(CPUState *cpu, run_on_cpu_data data)
+{
+    CPUState *peer;
+
+    qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    CPU_FOREACH(peer) {
+        cpu_pause(peer);
+    }
 }
 
 static void l1_node_reset(SGIL1State *s, uint8_t reason)
@@ -265,7 +328,12 @@ static void l1_node_reset(SGIL1State *s, uint8_t reason)
     l1_log(s, "reset (%s)", l1_reasons[reason]);
     /* The hold time is not modeled: the line pulses. */
     qemu_irq_pulse(s->node_reset_out);
-    qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    /* See l1_power_down()'s comment: same reasoning, the plain-reset case. */
+    if (current_cpu) {
+        async_run_on_cpu(current_cpu, l1_node_reset_cpu, RUN_ON_CPU_NULL);
+    } else {
+        qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+    }
 }
 
 /* The machine resumes only once the reset that power-up asked for has run. */
