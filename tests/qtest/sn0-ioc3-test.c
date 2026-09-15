@@ -12,6 +12,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
+#include "sn0-user-image.h"
 
 /*
  * The modelled minimum between a frame arriving and its completion, in
@@ -4559,6 +4560,7 @@ static void test_each_node_has_its_own_onewire_identity(const void *data)
     uint8_t bytes[8];
     unsigned int i;
 
+    sn0_program_nasid(qts, 1);
     sn0_ioc3_attach_node(qts, 0);
     sn0_ioc3_attach_node(qts, NODE_STRIDE);
     /* Each node's engine needs routing onto its pin before it answers. */
@@ -4605,6 +4607,7 @@ static void test_each_node_has_its_own_storage(const void *data)
         "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
         "-smp 4,sockets=2,cores=2,threads=1");
 
+    sn0_program_nasid(qts, 1);
     sn0_ioc3_attach_node(qts, 0);
     sn0_ioc3_attach_node(qts, NODE_STRIDE);
 
