@@ -424,6 +424,12 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
             unsigned int dword = quad * 2 + extract64(paddr, 3, 1);
 
             if (cache_operation == 0b111) { /* Index Store Data */
+                /*
+                 * The data array is one quadword wide and is written
+                 * whole: the doubleword not named by the address is
+                 * padded with zeroes so the stored check bits cover a
+                 * known quadword.
+                 */
                 env->r10k->scache_data[quad * 2] = 0;
                 env->r10k->scache_data[quad * 2 + 1] = 0;
                 env->r10k->scache_data[dword] =
