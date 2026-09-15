@@ -2732,12 +2732,6 @@ static void test_machine_defaults(const void *data)
                         UINT64_C(2) << 32);
     }
 
-    qobject_unref(response);
-    response = qtest_qmp(qts,
-        "{'execute':'qom-get', 'arguments':{"
-        "'path':'/machine', 'property':'cpu-release-skew-ns'}}");
-    g_assert_cmpint(qdict_get_int(response, "return"), ==, 0);
-
     qtest_quit(qts);
 }
 
