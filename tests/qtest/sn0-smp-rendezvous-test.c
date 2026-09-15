@@ -124,8 +124,7 @@ static void seed_nodes(QTestState *qts)
                                      zero, sizeof(zero)));
     g_assert_true(qtest_memwrite_cpu(qts, 2, SN0_NODE_ID_PHYS,
                                      two, sizeof(two)));
-    sn0_program_nasid(qts, 0, 0);
-    sn0_program_nasid(qts, 2, 1);
+    sn0_program_nasid(qts, 1);
 }
 
 static uint64_t wait_word(QTestState *qts, uint64_t addr, unsigned int seconds)

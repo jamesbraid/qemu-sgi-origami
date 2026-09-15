@@ -43,37 +43,39 @@
     "-smp 4,sockets=2,cores=2,threads=1"
 
 /*
- * The Hub network-interface status register, position-independent form:
- * offset 0x60_0000 from the crosstalk I/O base reached with the node field
- * zero, which lands on whichever Hub the reading processor is physically
- * attached to (docs/datasheets/hub-network-interface.md, "Status, revision
- * and identity", in the Origami project tree). Bits 16:8 are this Hub's
- * own node number, reset to zero, "Writable, because firmware assigns it".
- * Bit 17, region size, resets to one (fine regions) and is not this
- * helper's to change.
- *
- * On real hardware the PROM programs every Hub's node number during boot,
- * before anything addresses another node. A qtest that reads or writes a
- * peer node's registers has no PROM to do that for it, so it must program
- * both Hubs itself first, the same way: this is that one shared helper.
- * It writes through the CPU that is about to need the number, using the
- * qtest per-CPU backdoor, so the write lands the way that processor's own
- * local access would.
+ * The Hub network-interface status register's node-number field, bits
+ * 16:8 at offset 0x60_0000, resets to zero on every Hub
+ * (docs/datasheets/hub-network-interface.md, "Status, revision and
+ * identity", in the Origami project tree): "Writable, because firmware
+ * assigns it." After a reset no Hub has a number, so none can be named
+ * by an ordinary, node-qualified address -- the same datasheet's
+ * "Vector routing" section covers exactly this: a vector operation
+ * reaches a small subset of a directly-connected peer's registers by
+ * describing the route rather than the destination, route 0x0 being
+ * that peer, and "it is how the firmware discovers the fabric, elects
+ * a master, assigns node numbers and programs the routing tables."
+ * This shared helper does the same thing: a vector-routed write of the
+ * target field into the direct peer's status register, issued from the
+ * local Hub, the way the PROM's elected master assigns every other
+ * node's number before ordinary addressing works at all.
  */
 #define SN0_HUB_LOCAL             UINT64_C(0x20001000000)
 #define SN0_NI_STATUS             0x600000
 #define SN0_NI_STATUS_REGION_SIZE (UINT64_C(1) << 17)
 #define SN0_NI_STATUS_NODE_SHIFT  8
+#define SN0_NI_VECTOR_PARMS       0x600200
+#define SN0_NI_VECTOR             0x600208
+#define SN0_NI_VECTOR_DATA        0x600210
+#define SN0_PIOTYPE_WRITE         1
 
-static inline void sn0_program_nasid(QTestState *qts, unsigned int cpu,
-                                     unsigned int nasid)
+static inline void sn0_program_nasid(QTestState *qts, unsigned int nasid)
 {
-    uint8_t bytes[8];
-
-    stq_be_p(bytes, SN0_NI_STATUS_REGION_SIZE |
-                    ((uint64_t)nasid << SN0_NI_STATUS_NODE_SHIFT));
-    g_assert_true(qtest_memwrite_cpu(qts, cpu, SN0_HUB_LOCAL + SN0_NI_STATUS,
-                                     bytes, sizeof(bytes)));
+    qtest_writeq(qts, SN0_HUB_LOCAL + SN0_NI_VECTOR, 0);
+    qtest_writeq(qts, SN0_HUB_LOCAL + SN0_NI_VECTOR_DATA,
+                SN0_NI_STATUS_REGION_SIZE |
+                ((uint64_t)nasid << SN0_NI_STATUS_NODE_SHIFT));
+    qtest_writeq(qts, SN0_HUB_LOCAL + SN0_NI_VECTOR_PARMS,
+                SN0_NI_STATUS | SN0_PIOTYPE_WRITE);
 }
 
 #define SN0_R_ZERO  0

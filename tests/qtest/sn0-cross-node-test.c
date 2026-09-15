@@ -198,8 +198,7 @@ static void seed_nodes(QTestState *qts)
                                      zero, sizeof(zero)));
     g_assert_true(qtest_memwrite_cpu(qts, 2, SN0_NODE_ID_PHYS,
                                      one, sizeof(one)));
-    sn0_program_nasid(qts, 0, 0);
-    sn0_program_nasid(qts, 2, 1);
+    sn0_program_nasid(qts, 1);
 }
 
 static void test_second_node_cpus_execute(const void *data)

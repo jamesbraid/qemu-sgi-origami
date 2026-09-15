@@ -1607,8 +1607,7 @@ static void test_dma_direct_window_reaches_the_second_node(const void *data)
     unsigned int i;
 
     /* No PROM ran to assign node 1 its number; this DMA needs it claimed. */
-    sn0_program_nasid(qts, 0, 0);
-    sn0_program_nasid(qts, 2, 1);
+    sn0_program_nasid(qts, 1);
 
     bridge_start_the_transfer_source(qts);
     bridge_source_with_swap(qts, DEV_SWAP_DIRECT);
@@ -1652,8 +1651,7 @@ static void test_dma_direct_window_reads_the_second_node(const void *data)
     unsigned int i;
 
     /* No PROM ran to assign node 1 its number; this DMA needs it claimed. */
-    sn0_program_nasid(qts, 0, 0);
-    sn0_program_nasid(qts, 2, 1);
+    sn0_program_nasid(qts, 1);
 
     bridge_start_the_transfer_source(qts);
     bridge_source_with_swap(qts, DEV_SWAP_DIRECT);
