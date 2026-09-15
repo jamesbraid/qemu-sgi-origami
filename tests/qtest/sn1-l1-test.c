@@ -1627,6 +1627,29 @@ static void expect_raw_reply(QTestState *s, const uint8_t *expected,
     g_assert_cmpmem(actual, length, expected, length);
 }
 
+static void expect_raw_hex_reply(QTestState *s, const char *hex)
+{
+    uint8_t expected[131];
+    size_t length = 0;
+
+    for (const char *p = hex; *p; ) {
+        int high, low;
+
+        if (*p == ' ') {
+            p++;
+            continue;
+        }
+        high = g_ascii_xdigit_value(p[0]);
+        low = g_ascii_xdigit_value(p[1]);
+        g_assert_cmpint(high, >=, 0);
+        g_assert_cmpint(low, >=, 0);
+        g_assert_cmpuint(length, <, sizeof(expected));
+        expected[length++] = high << 4 | low;
+        p += 2;
+    }
+    expect_raw_reply(s, expected, length);
+}
+
 static void test_debug_set(void)
 {
     int fd;
@@ -1688,7 +1711,6 @@ static void test_debug_set(void)
 static void test_debug_task3(void)
 {
     QTestState *s = start();
-    uint8_t reply[131];
     const uint8_t accepted[] = {
         0x7e, 0x30, 0, 0, 0, 0, 1, 1,
         'd', 'e', 'b', 'u', 'g', ' ', 's', 'w', 'i', 't', 'c', 'h', 'e', 's',
@@ -1701,6 +1723,16 @@ static void test_debug_task3(void)
         ' ', 'n', 'o', 't', ' ', 'f', 'o', 'u', 'n', 'd', '.', '\n', 0,
         0x42, 0xac, 0x7e,
     };
+    const char *wildcard =
+        "7e 30 ff ff ff ff 01 01 49 4e 46 4f 3a 20 77 69 "
+        "6c 64 63 61 72 64 20 64 65 62 75 67 20 69 73 20 "
+        "75 6e 73 75 70 70 6f 72 74 65 64 20 77 69 74 68 "
+        "6f 75 74 20 63 6f 6e 6e 65 63 74 65 64 20 6d 6f "
+        "64 75 6c 65 73 2e 0a 00 f4 6e 7e";
+    const char *peer =
+        "7e 30 ff ff ff ff 01 01 49 4e 46 4f 3a 20 70 65 "
+        "65 72 20 64 65 62 75 67 20 69 73 20 75 6e 73 "
+        "75 70 70 6f 72 74 65 64 2e 0a 00 f6 65 7e";
 
     send_task3(s, "debug 269");
     expect_raw_reply(s, accepted, sizeof(accepted));
@@ -1710,19 +1742,10 @@ static void test_debug_task3(void)
     expect_debug_switches(s, 1, 0x0d);
 
     send_task3(s, "* debug 0");
-    g_assert_cmpuint(receive(s, reply), >, 8);
-    g_assert_cmphex(reply[4], ==, 0xff);
-    g_assert_cmphex(reply[5], ==, 1);
-    g_assert_cmphex(reply[6], ==, 1);
-    g_assert_nonnull(strstr((char *)reply + 7,
-                            "wildcard debug is unsupported"));
+    expect_raw_hex_reply(s, wildcard);
     expect_debug_switches(s, 1, 0x0d);
     send_task3(s, "ctc debug 0");
-    g_assert_cmpuint(receive(s, reply), >, 8);
-    g_assert_cmphex(reply[4], ==, 0xff);
-    g_assert_cmphex(reply[5], ==, 1);
-    g_assert_cmphex(reply[6], ==, 1);
-    g_assert_nonnull(strstr((char *)reply + 7, "peer debug is unsupported"));
+    expect_raw_hex_reply(s, peer);
     expect_debug_switches(s, 1, 0x0d);
     qtest_quit(s);
 }
