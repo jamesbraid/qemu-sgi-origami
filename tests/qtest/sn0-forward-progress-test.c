@@ -33,8 +33,8 @@
  *   number of its own passes.  Underneath: the re-assert every own-CPU
  *   unmask makes, and the comparator's immediate match.  Only starts the
  *   guest can stamp itself are bounded: unmasking a line it has seen
- *   pending, writing a Compare at or behind Count, raising its own Hub
- *   line.  A raise from a timer or a peer is checked for arrival only,
+ *   pending, writing Count to match a standing Compare, raising its own
+ *   Hub line.  A raise from a timer or a peer is checked for arrival only,
  *   because the guest cannot see that instant without taking it, and a
  *   pass count from there would be measuring the host.
  *
@@ -44,7 +44,8 @@
  *   either covered or fails by name.  The trigger both field failures
  *   shared: the counter's 32-bit wrap against a Compare the guest never
  *   wrote, parked to happen at once rather than 47.7 s after reset.  Taken
- *   masked, then unmasked, then open, then a Compare written behind Count.
+ *   masked, then unmasked, then open, then Count written to match a
+ *   standing Compare.
  *
  * steady-state/<phase>
  *   On a two-processor Origin 200, the ways a running kernel spends its
@@ -119,8 +120,6 @@
 
 /* Count parks 4096 ticks short of the wrap: tens of microseconds here. */
 #define COUNT_PARK          0xfffff000u
-/* How far behind Count a stale Compare is written. */
-#define COMPARE_BEHIND      0x1000
 
 #define STATUS_IE           0x0001u
 #define STATUS_IM2          0x0400u
@@ -362,21 +361,41 @@ static void arm_count_park(SN0Image *p)
 }
 
 /*
- * The wrap again after an acknowledge has moved Compare: park Count first,
- * then put Compare back at its reset value.  The other order would write a
- * Compare a little behind Count, which this comparator takes as a match.
+ * The wrap again after an acknowledge has moved Compare: put Compare back
+ * at its reset value first, then park Count. Compare is already settled
+ * by the time the Count write runs, so that write's own reschedule -- the
+ * store's literal Count argument against the Compare field, no fresh
+ * clock sample of anything else -- needs nothing from a later instruction
+ * to land on time.
+ *
+ * The other order raced the wrap. Parking Count first leaves only
+ * COUNT_PARK's fixed 4096-tick gap for the Compare write that follows to
+ * land before Count crosses zero; that write is a second instruction under
+ * the same big lock seven other vCPUs are contending for, easily delayed
+ * past the gap under load. Missing it used to cost nothing: the
+ * half-counter window still called a Compare landing just past the wrap a
+ * match. Equality-only matching has no such margin, so a late write there
+ * now waits out a full wrap instead of the few ticks this phase intends.
  */
 static void arm_count_park_compare_reset(SN0Image *p)
 {
-    arm_count_park(p);
     sn0_emit_mtc0(p, SN0_R_ZERO, CP0_COMPARE);
+    arm_count_park(p);
 }
 
-static void arm_compare_behind(SN0Image *p)
+/*
+ * Count written equal to the standing Compare matches at once. Reading
+ * Count and writing it into Compare would race the counter instead --
+ * Count keeps advancing between the read and the write, so by the time
+ * the write lands it is normally already behind, and the comparator is
+ * equality only. Arming from the other side is deterministic: Compare
+ * only changes when this code changes it, so the value read back is
+ * exactly the value the Count write compares against.
+ */
+static void arm_count_from_compare(SN0Image *p)
 {
-    sn0_emit_mfc0(p, R_T5, CP0_COUNT);
-    sn0_emit_i(p, SN0_OPC_ADDIU, R_T5, R_T5, (uint16_t)-COMPARE_BEHIND);
-    sn0_emit_mtc0(p, R_T5, CP0_COMPARE);
+    sn0_emit_mfc0(p, R_T5, CP0_COMPARE);
+    sn0_emit_mtc0(p, R_T5, CP0_COUNT);
 }
 
 /* Raise this slice's own bank 0 line. */
@@ -488,9 +507,9 @@ static void build_count_wrap(SN0Image *p)
     emit_deliver_wait(p, R_S6, arm_count_park_compare_reset);
     emit_finished(p);
 
-    /* 5: a Compare written behind Count matches at once. */
+    /* 5: Count written to match a standing Compare matches at once. */
     emit_wait_go(p, 5);
-    emit_deliver_wait(p, R_S6, arm_compare_behind);
+    emit_deliver_wait(p, R_S6, arm_count_from_compare);
     emit_finished(p);
 
     sn0_emit_park(p);
@@ -938,7 +957,7 @@ static void test_count_wrap(const void *data)
                    "big-lock acquisitions %" PRIu64 " with no line, %"
                    PRIu64 " with the wrapped line standing masked, %"
                    PRIu64 " unmasking it, %" PRIu64 " wrapping open, %"
-                   PRIu64 " writing Compare behind Count; passes waited "
+                   PRIu64 " writing Count to match Compare; passes waited "
                    "%" PRIu64 ", %" PRIu64 " and %" PRIu64,
                    recipe->machine, r.cpus, r.views, PASSES, clear, masked,
                    unmask, open, behind, waited_unmask, waited_open,
