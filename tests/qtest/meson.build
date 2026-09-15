@@ -396,6 +396,9 @@ qtests_mips64 = \
                                                    'sn0-syscall-trace-test',
                                                    'sn0-debug-breakpoint-test',
                                                    'sn0-tlb-query-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_SN0') and
+   config_all_devices.has_key('CONFIG_SGI_SN1') ?
+    ['sn-promdata-window-test'] : []) + \
   sn0_xbow_qtests + \
   sn0_xbow_transport_qtests + \
   sn1_xbridge_qtests + \

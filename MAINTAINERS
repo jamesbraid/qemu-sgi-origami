@@ -1519,6 +1519,7 @@ F: tests/qtest/sgi-ioc3-eth-test.c
 F: tests/qtest/sn0-*
 F: tests/qtest/sn1-l1-test.c
 F: tests/qtest/sn1-*
+F: tests/qtest/sn-promdata-window-test.c
 F: tests/unit/test-sgi-o2000-module-mgmt*.c
 F: tests/unit/test-sgi-router.c
 F: tests/unit/test-sn0-fabric-routed.c
