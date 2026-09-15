@@ -39,6 +39,8 @@
 #define SN1_HUB_ECC (SN1_SPACE_HUB + UINT64_C(0x140000000))
 #define SN1_HUB_DIRECTORY (SN1_SPACE_HUB + UINT64_C(0x1c0000000))
 #define SN1_PROM_RESET UINT64_C(0x1fc00000)
+#define SN1_HUB_REMOTE_PI_SIZE UINT64_C(0x80)
+#define SN1_HUB_REMOTE_UART_END (SN1_HUB_REMOTE_PI_SIZE + SGI_L1_SIZE)
 
 #define SN1_MIPS_HARDWARE_IRQ_OFFSET 2
 
@@ -310,6 +312,23 @@ static void sn1_node_create_bedrock(SN1NodeState *node,
                                 &node->hub_local_register_block);
     memory_region_add_subregion(system, model->hub_remote_registers_address,
                                 sysbus_mmio_get_region(bedrock, 3));
+    /* Preserve the remote L1 UART decoder between the register aliases. */
+    memory_region_init_alias(&node->hub_remote_register_head, OBJECT(node),
+                             "sn1.hub.remote-register-head",
+                             sysbus_mmio_get_region(bedrock, 0), 0,
+                             SN1_HUB_REMOTE_PI_SIZE);
+    memory_region_add_subregion_overlap(
+        system, model->hub_remote_registers_address,
+        &node->hub_remote_register_head, 1);
+    memory_region_init_alias(&node->hub_remote_register_tail, OBJECT(node),
+                             "sn1.hub.remote-register-tail",
+                             sysbus_mmio_get_region(bedrock, 0),
+                             SN1_HUB_REMOTE_UART_END,
+                             SGI_BEDROCK_SIZE - SN1_HUB_REMOTE_UART_END);
+    memory_region_add_subregion_overlap(
+        system, model->hub_remote_registers_address +
+                SN1_HUB_REMOTE_UART_END,
+        &node->hub_remote_register_tail, 1);
     /*
      * The directory back door is the last part of the node's address space,
      * one word per fitted memory line. Firmware initialises it before it
