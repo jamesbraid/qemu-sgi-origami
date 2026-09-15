@@ -147,6 +147,30 @@ static void test_frames(void)
     qtest_quit(s);
 }
 
+static void test_output_escape_startup(void)
+{
+    QTestState *s = qtest_init(
+        "-M none -cpu R10000 -S -device '{\"driver\":\"sgi-l1\","
+        "\"id\":\"l1c\",\"brick-serial\":\"A\\r\\u0011\\u0013B\"}' "
+        "-device '{\"driver\":\"sgi-l1-uart\",\"id\":\"l1\","
+        "\"controller\":\"l1c\"}'");
+    const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 4, 0 };
+    const uint8_t wire[] = {
+        0x7e, 0x30, 0, 0, 0, 0, 1, 1, 'A',
+        0x7d, 0x2d, 0x11, 0x13, 'B', 0, 0x42, 0x84, 0x7e
+    };
+
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    send_frame(s, request, sizeof(request), false);
+    expect_raw_reply(s, wire, sizeof(wire));
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    qtest_system_reset(s);
+    send_frame(s, request, sizeof(request), false);
+    expect_raw_reply(s, wire, sizeof(wire));
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
+    qtest_quit(s);
+}
+
 static void test_identity(void)
 {
     QTestState *s = start();
@@ -2815,6 +2839,8 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("sn1/l1/uart", test_uart);
     qtest_add_func("sn1/l1/frames", test_frames);
+    qtest_add_func("sn1/l1/output-escape-startup",
+                   test_output_escape_startup);
     qtest_add_func("sn1/l1/identity", test_identity);
     qtest_add_func("sn1/l1/errors", test_errors);
     qtest_add_func("sn1/l1/reset", test_reset);

@@ -397,7 +397,8 @@ static void l1_emit(SGIL1State *s, const uint8_t *payload, unsigned length)
     for (unsigned i = 0; i < length + 2; i++) {
         uint8_t byte = i < length ? payload[i] :
                        i == length ? crc : crc >> 8;
-        if (byte == 0x7e || byte == 0x7d) {
+        /* Selected serial-multiplex startup escapes CR, but not XON/XOFF. */
+        if (byte == 0x7e || byte == 0x7d || byte == 0x0d) {
             encoded[n++] = 0x7d;
             byte ^= 0x20;
         }
