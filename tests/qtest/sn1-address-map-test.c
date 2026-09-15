@@ -917,6 +917,27 @@ static void test_bedrock_register_aliases(const void *data)
     qtest_quit(qts);
 }
 
+static void test_origin300_cpu_c_initial_enable(const void *data)
+{
+    QTestState *qts = machine_start();
+
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + 0x50), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + BEDROCK_PI1 +
+                                0x50), ==, 1);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + BEDROCK_PI1 +
+                                PI_CPU_ENABLE_B), ==, 0);
+
+    /* The initial model policy must not override later register writes. */
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_PI1 + 0x50, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + BEDROCK_PI1 +
+                                0x50), ==, 0);
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_PI1 + 0x50, 1);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + BEDROCK_PI1 +
+                                0x50), ==, 1);
+    qtest_quit(qts);
+}
+
 static void test_hub_local_reaches_bedrock(const void *data)
 {
     QTestState *qts = machine_start();
@@ -2864,7 +2885,7 @@ static void test_cpu_c_enable_controls_bus_eligibility(const void *data)
     qts = machine_start_with(
         path, "-accel tcg,thread=multi -no-shutdown -S");
 
-    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_C), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_C), ==, 1);
     progress = run_vm_until_cpu_gpr_changes(qts, 1, "t0", 0);
     qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_C, 1);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_C), ==, 1);
@@ -3203,7 +3224,7 @@ static void test_prom_migration(const void *data)
     g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
-static void test_cpu_c_enabled_migration(const void *data)
+static void test_cpu_c_enable_migration(const void *data)
 {
     g_autoptr(GError) error = NULL;
     g_autofree char *directory = NULL;
@@ -3229,7 +3250,7 @@ static void test_cpu_c_enabled_migration(const void *data)
     to = machine_start_with(
         path, "-accel tcg,thread=multi -no-shutdown -S -incoming defer");
 
-    qtest_writeq(from, BEDROCK_LOCAL + PI_CPU_ENABLE_C, 1);
+    qtest_writeq(from, BEDROCK_LOCAL + PI_CPU_ENABLE_C, 0);
     run_vm_until_cpu_gpr_changes(from, 1, "t0", 0);
     g_assert_cmphex(cpu_gpr(from, 1, "t0"), !=, 0);
 
@@ -3244,8 +3265,7 @@ static void test_cpu_c_enabled_migration(const void *data)
 
     stopped = cpu_gpr(to, 1, "t0");
     g_assert_cmphex(stopped, !=, 0);
-    g_assert_cmphex(qtest_readq(to, BEDROCK_LOCAL + PI_CPU_ENABLE_C), ==, 1);
-    qtest_writeq(to, BEDROCK_LOCAL + PI_CPU_ENABLE_C, 0);
+    /* Incoming register state overrides the destination's initial grant. */
     g_assert_cmphex(qtest_readq(to, BEDROCK_LOCAL + PI_CPU_ENABLE_C), ==, 0);
     stopped = run_vm_until_cpu_gpr_changes(to, 1, "t0", stopped);
 
@@ -3435,6 +3455,8 @@ int main(int argc, char **argv)
                         test_ram_and_hub_alias);
     qtest_add_data_func("sn1/address-map/bedrock-register-aliases", NULL,
                         test_bedrock_register_aliases);
+    qtest_add_data_func("sn1/address-map/origin300-cpu-c-initial-enable", NULL,
+                        test_origin300_cpu_c_initial_enable);
     qtest_add_data_func("sn1/address-map/hub-local-reaches-bedrock", NULL,
                         test_hub_local_reaches_bedrock);
     qtest_add_data_func("sn1/address-map/hub-remote-reaches-bedrock-tail", NULL,
@@ -3541,8 +3563,8 @@ int main(int argc, char **argv)
                         test_prom_executes_from_tlb_mapped_xkseg);
     qtest_add_data_func("sn1/address-map/prom-migration", NULL,
                         test_prom_migration);
-    qtest_add_data_func("sn1/address-map/cpu-c-enabled-migration", NULL,
-                        test_cpu_c_enabled_migration);
+    qtest_add_data_func("sn1/address-map/cpu-c-enable-migration", NULL,
+                        test_cpu_c_enable_migration);
     qtest_add_data_func("sn1/address-map/promdata-ram-copy-home", NULL,
                         test_promdata_ram_copy_is_execution_home);
     qtest_add_data_func("sn1/address-map/promdata-filter-survives-migration",

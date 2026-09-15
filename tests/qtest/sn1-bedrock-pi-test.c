@@ -4,6 +4,7 @@
  * machine's R10000 supplies an address space only; no CPU executes.
  */
 #include "qemu/osdep.h"
+#include <gio/gio.h>
 #include "libqtest.h"
 #include "qobject/qdict.h"
 
@@ -222,6 +223,32 @@ static void test_invalid_processor_masks(void)
         g_assert_nonnull(strstr(error_output,
             "Bedrock processor mask must select exactly 2 of four slots"));
     }
+}
+
+static void test_initial_enable_rejects_empty_slot(void)
+{
+    const char *const args[] = {
+        qtest_qemu_binary(NULL), "-M", "none", "-cpu", "R10000",
+        "-object", "memory-backend-ram,id=bedrock-dma,size=2M",
+        "-device", "sgi-bedrock,processor-count=2,processor-mask=5,"
+                   "cpu-enable-initial-mask=2,"
+                   "dma-memory=/objects/bedrock-dma/bedrock-dma[0]",
+        "-display", "none", "-accel", "qtest",
+        "-S", "-monitor", "stdio", NULL,
+    };
+    g_autoptr(GError) error = NULL;
+    g_autofree char *error_output = NULL;
+    g_autoptr(GSubprocess) proc = g_subprocess_newv(args,
+        G_SUBPROCESS_FLAGS_STDIN_PIPE | G_SUBPROCESS_FLAGS_STDOUT_PIPE |
+        G_SUBPROCESS_FLAGS_STDERR_PIPE, &error);
+
+    g_assert_no_error(error);
+    g_assert_true(g_subprocess_communicate_utf8(proc, "quit\n", NULL,
+                                                NULL, &error_output, &error));
+    g_assert_no_error(error);
+    g_assert_false(g_subprocess_get_successful(proc));
+    g_assert_nonnull(strstr(error_output,
+        "Bedrock initial CPU enable mask selects an empty slot"));
 }
 
 static void test_sparse_irq_and_nmi_slots(void)
@@ -1221,6 +1248,8 @@ int main(int argc, char **argv)
                    test_sparse_processor_presence);
     qtest_add_func("sn1/bedrock-pi/invalid-processor-masks",
                    test_invalid_processor_masks);
+    qtest_add_func("sn1/bedrock-pi/initial-enable-rejects-empty-slot",
+                   test_initial_enable_rejects_empty_slot);
     qtest_add_func("sn1/bedrock-pi/sparse-irq-and-nmi-slots",
                    test_sparse_irq_and_nmi_slots);
     qtest_add_func("sn1/bedrock-pi/pending-reflection",
