@@ -309,6 +309,40 @@ class QemuArgsTest(unittest.TestCase):
         self.assertIn('-accel tcg,thread=single', joined)
         self.assertNotIn('-icount', args)
 
+    def test_wallclock_regime_pins_the_kick_period_above_one_cpu(self):
+        # A stock-PROM boot with more than one CPU under single-threaded
+        # round-robin TCG needs the same scheduler pin every multi-CPU
+        # rendezvous qtest in test_sn0_smp.py already carries and every
+        # real-firmware launcher in tools/origami_lib already sets
+        # (sash.py's DEFAULT_RR_KICK_PERIOD_NS): QEMU's 100 millisecond
+        # default is documented there as "the negative control" for a
+        # cross-CPU rendezvous with a real-time deadline, which is exactly
+        # what the stock PROM's discovery and rendezvous protocol is.
+        args = qemu_args(make_cell(accel='wallclock', cpus=4, nodes=1))
+        joined = ' '.join(args)
+
+        self.assertIn(
+            '-accel tcg,thread=single,rr-kick-period-ns=100000', joined)
+
+    def test_wallclock_regime_single_cpu_skips_the_kick_period(self):
+        # A lone CPU has no round-robin peer to starve, matching
+        # tools/origami_lib/launch.py's own cpus > 1 guard: pinning a
+        # period here would change nothing but the command line.
+        args = qemu_args(make_cell(accel='wallclock', cpus=1, nodes=1))
+        joined = ' '.join(args)
+
+        self.assertIn('-accel tcg,thread=single', joined)
+        self.assertNotIn('rr-kick-period-ns', joined)
+
+    def test_roundrobin_regime_pins_the_kick_period_above_one_cpu(self):
+        # roundrobin is wallclock's other name for the same regime (see
+        # _ACCEL_ARGS's own comment); it needs the identical pin.
+        args = qemu_args(make_cell(accel='roundrobin', cpus=2, nodes=1))
+        joined = ' '.join(args)
+
+        self.assertIn(
+            '-accel tcg,thread=single,rr-kick-period-ns=100000', joined)
+
     def test_single_node_no_numa(self):
         args = qemu_args(make_cell(cpus=1, nodes=1))
         joined = ' '.join(args)

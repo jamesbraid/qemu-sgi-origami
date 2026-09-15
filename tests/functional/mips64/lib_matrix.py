@@ -184,6 +184,19 @@ _ACCEL_ARGS = {
     'roundrobin': ['-accel', 'tcg,thread=single'],
 }
 
+# Regimes that run single-threaded round-robin TCG and so need the kick
+# period pinned once more than one CPU shares that one thread.
+_ROUND_ROBIN_ACCELS = {'wallclock', 'roundrobin'}
+
+# QEMU's own default (100 ms) is documented in test_sn0_smp.py as the
+# negative control for a cross-CPU rendezvous with a real-time deadline --
+# exactly the shape of the stock PROM's discovery and rendezvous protocol.
+# Every launcher that boots the real PROM at more than one CPU under this
+# regime already pins this same value (tools/origami_lib/sash.py's
+# DEFAULT_RR_KICK_PERIOD_NS); a matrix cell that boots the real PROM at
+# more than one CPU needs it too, or it inherits the negative control.
+ROUND_ROBIN_KICK_PERIOD_NS = 100000
+
 _MEM_RE = re.compile(r'^(\d+)([A-Za-z]*)$')
 
 
@@ -195,10 +208,13 @@ def machine_props(cell):
 
 def qemu_args(cell):
     """Build the QEMU args that follow -M for a cell: accelerator (plus
-    icount, for the icount regime), -m, -smp, and, for a multi-node
+    icount, for the icount regime, or the round-robin kick period, for
+    wallclock/roundrobin above one CPU), -m, -smp, and, for a multi-node
     cell, one memory-backend-ram object and one -numa node per node.
     """
     args = list(_ACCEL_ARGS[cell.accel])
+    if cell.accel in _ROUND_ROBIN_ACCELS and cell.cpus > 1:
+        args[1] += f',rr-kick-period-ns={ROUND_ROBIN_KICK_PERIOD_NS}'
     args += ['-m', cell.mem]
 
     if cell.nodes == 1:
