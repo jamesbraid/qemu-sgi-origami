@@ -361,7 +361,7 @@ void sn0_origin2000_prepare_nodes(MachineState *machine)
                    "Origin 2000 cannot combine -bios with node pflash drives");
     }
     /* Register tests deliberately construct the machine without vendor bits. */
-    if (machine->kernel_filename || s->synthesized_firmware ||
+    if (machine->kernel_filename ||
         (!machine->firmware && !flash_count && !qtest_enabled())) {
         error_setg(&error_fatal, "Origin 2000 requires supplied firmware");
     }

@@ -427,64 +427,7 @@ void sn0_mode_bits_reset(void *opaque)
                        (mode_bits & SN0_PROCESSOR_MODE_MASK);
 }
 
-/* Read a big-endian field of a node's boot flash the way a processor does. */
-static uint64_t sn0_flash_field(SN0NodeState *node, hwaddr offset,
-                                unsigned int bytes)
-{
-    MemoryRegion *chip =
-        sysbus_mmio_get_region(SYS_BUS_DEVICE(node->flash), 0);
-    uint64_t value = 0;
-    unsigned int i;
-
-    for (i = 0; i < bytes; i++) {
-        uint64_t byte = 0;
-
-        memory_region_dispatch_read(chip, (offset + i) % node->flash_size,
-                                    &byte, MO_8, MEMTXATTRS_UNSPECIFIED);
-        value = (value << 8) | (byte & 0xff);
-    }
-    return value;
-}
-
-/*
- * A node board's boot flash records the configuration that board was
- * provisioned for, while the processor latches its mode bits from the board
- * itself. Firmware compares the two and stops with indicator 0xb4 before it
- * has a console, so an image provisioned for a different board is
- * indistinguishable from a dead machine unless something says so here.
- */
-static void sn0_report_node_flash_mode(SN0MachineState *s)
-{
-    uint32_t board = sn0_board_mode_bits(s);
-    unsigned int node;
-
-    for (node = 0; node < s->num_nodes; node++) {
-        SN0NodeState *node_state = s->nodes[node];
-        uint32_t flash;
-
-        if (!node_state->flash ||
-            sn0_flash_field(node_state, SN0_CONFIG_OFFSET + 8, 8) !=
-            SN0_CONFIG_MAGIC) {
-            continue;
-        }
-        flash = sn0_flash_field(node_state, SN0_CONFIG_OFFSET + 4, 4);
-        if (!((flash ^ board) & SN0_PROCESSOR_MODE_MASK)) {
-            continue;
-        }
-        warn_report("node %u boot flash is provisioned for a different node "
-                    "board: it describes processor mode 0x%08x where this "
-                    "board latches 0x%08x, differing in 0x%08x. Firmware "
-                    "stops with indicator 0xb4 and no console output.",
-                    node, flash, board,
-                    (flash ^ board) & SN0_PROCESSOR_MODE_MASK);
-    }
-}
-
-/*
- * After every device's reset: the firmware window and mode-bits writes
- * must follow the Hub's and the CPUs' resets, the PCI reassignment the
- * devices clearing their registers.
- */
+/* The mode-bits write must follow the CPUs' own resets. */
 static void sn0_machine_reset(MachineState *machine, ResetType type)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
@@ -509,7 +452,6 @@ static void sn0_machine_reset(MachineState *machine, ResetType type)
             sgi_hub_set_cpu_enable(&node_state->hub, slice, true, true);
         }
     }
-    sn0_report_node_flash_mode(s);
 }
 
 /*
@@ -787,11 +729,6 @@ static void sn0_node_create_cpus(SN0NodeState *node)
 
         node->cpu[slice] = MIPS_CPU(qdev_new(node->cpu_type));
 
-        /*
-         * The cache-only phase exists only under a real PROM; for a
-         * directly loaded kernel the filter would be pure forwarding, and
-         * an I/O region cannot back translated code, so leave it off.
-         */
         if (node->promdata_filter) {
             sn_promdata_init(&node->promdata[slice], OBJECT(node),
                              node->cpu[slice], &node->promdata_poll,
@@ -1533,7 +1470,6 @@ static void sn0_init(MachineState *machine)
         object_property_set_link(OBJECT(node), "ram", OBJECT(machine->ram),
                                  &error_abort);
         qdev_prop_set_uint64(DEVICE(node), "ram-start", ram_offset);
-        qdev_prop_set_bit(DEVICE(node), "promdata-filter", true);
         qdev_prop_set_array(DEVICE(node), "banks-mb", banks_mb);
         qdev_connect_clock_in(DEVICE(node), "cpu-refclk", s->cpu_refclk);
         qdev_connect_clock_in(DEVICE(node), "rt-refclk", s->rt_refclk);
@@ -1549,8 +1485,7 @@ static void sn0_init(MachineState *machine)
          * any shipped chassis; keeping it on the model's console node avoids
          * character-backend collisions.
          */
-        qdev_prop_set_uint32(DEVICE(&node->hub), "nasid",
-                             s->synthesized_firmware ? node_model->nasid : 0);
+        qdev_prop_set_uint32(DEVICE(&node->hub), "nasid", 0);
         qdev_prop_set_uint8(DEVICE(&node->hub), "elsc-dip-switches",
                             s->elsc_dip_switches);
         if (node_model->module_role == SN0_MODULE_MASTER) {
@@ -1606,22 +1541,6 @@ static void sn0_init(MachineState *machine)
     }
 
     sn0_load_flash(machine);
-}
-
-static bool sn0_get_synthesized_firmware(Object *obj, Error **errp)
-{
-    return SN0_MACHINE(obj)->synthesized_firmware;
-}
-
-static void sn0_set_synthesized_firmware(Object *obj, bool value, Error **errp)
-{
-    SN0MachineState *s = SN0_MACHINE(obj);
-
-    if (value && s->composition) {
-        error_setg(errp, "Origin 2000 requires supplied firmware");
-        return;
-    }
-    s->synthesized_firmware = value;
 }
 
 static bool sn0_get_junk_uart(Object *obj, Error **errp)
@@ -1761,7 +1680,6 @@ static void sn0_instance_init(Object *obj)
 
     g_assert(smc->model || smc->default_composition);
     s->composition = smc->default_composition;
-    s->synthesized_firmware = smc->model != NULL;
     s->debug_leds = true;
     s->junk_uart_present = smc->model && smc->model->junk_uart_default_enabled;
 }
@@ -1796,14 +1714,6 @@ static void sn0_machine_class_init(ObjectClass *oc, const void *data)
     mc->possible_cpu_arch_ids = sn0_possible_cpu_arch_ids;
     mc->cpu_index_to_instance_props = sn0_cpu_index_to_props;
     mc->get_default_cpu_node_id = sn0_get_default_cpu_node_id;
-
-    object_class_property_add_bool(oc, "synthesized-firmware",
-                                   sn0_get_synthesized_firmware,
-                                   sn0_set_synthesized_firmware);
-    object_class_property_set_description(oc, "synthesized-firmware",
-        "Present firmware of the machine's own: the structures in low memory, "
-        "the call vector and the routines behind it. Turn it off to run a real "
-        "firmware image with nothing of ours in its way.");
 
     object_class_property_add_bool(oc, "junk-uart",
                                    sn0_get_junk_uart, sn0_set_junk_uart);
