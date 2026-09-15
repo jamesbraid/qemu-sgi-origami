@@ -19,7 +19,10 @@
 #define MACHINE_ARGS "-M origin300 -cpu R14000 -smp 2"
 
 #define SPACE_XTALK UINT64_C(0x20000000000)
+#define SPACE_HUB UINT64_C(0x10000000000)
 #define XTALK_WIDGET(w) (SPACE_XTALK + (uint64_t)(w) * UINT64_C(0x1000000))
+#define HUB_LOCAL_IO (SPACE_HUB + UINT64_C(0x10000000) + 0x400000)
+#define IO_INBOUND_ACCESS 0x118
 
 /* The machine refuses any other length, so the fixture matches it. */
 #define PROM_SIZE UINT64_C(0x1686a8)
@@ -780,6 +783,52 @@ static void test_data_transfer_reaches_memory(const void *data)
     disks_remove(&disks);
 }
 
+typedef struct InboundMaskCase {
+    uint64_t denied_widget;
+    bool permitted;
+} InboundMaskCase;
+
+/* The shared inbound window lacks the DMA requester's widget number. */
+static void test_scsi_dma_with_inbound_mask(const void *data)
+{
+    const InboundMaskCase *mask_case = data;
+    const uint8_t cdb[SCSI_CDB10_LEN] = { SCSI_READ_10, 0, 0, 0, 0, 0,
+                                         0, 0, 1, 0 };
+    const RingSeg seg = { DIRECT64(BUF_PHYS), SECTOR_BYTES };
+    DiskPair disks;
+    QTestState *qts = machine_start_with_disks(&disks);
+    uint8_t status[ISP_QUEUE_ENTRY_SIZE];
+    uint8_t sector[SECTOR_BYTES];
+    uint8_t sentinel[SECTOR_BYTES];
+
+    init_queues(qts);
+    absorb_unit_attention(qts, 0, 0xd1);
+    qtest_memset(qts, BUF_PHYS, BUFFER_SENTINEL, SECTOR_BYTES);
+    memset(sentinel, BUFFER_SENTINEL, sizeof(sentinel));
+    qtest_writeq(qts, HUB_LOCAL_IO + IO_INBOUND_ACCESS,
+                 UINT64_MAX & ~mask_case->denied_widget);
+
+    submit_command(qts, 0xd2, 0, DISK_TARGET, 0, cdb, sizeof(cdb),
+                   ISP_REQ_CONTROL_DATA_IN, &seg);
+    if (mask_case->permitted) {
+        wait_for_completion(qts);
+        take_status(qts, 0xd2, status);
+        g_assert_cmphex(get16le(status + ISP_STATUS_OFF_COMPLETION), ==,
+                        ISP_IOCB_COMPLETE);
+        qtest_memread(qts, BUF_PHYS, sector, sizeof(sector));
+        expect_first_sector(sector, 0);
+    } else {
+        qtest_clock_step(qts, 100 * STATUS_STEP_NS);
+        g_assert_cmpuint(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==,
+                         ring.resp_next);
+        qtest_memread(qts, BUF_PHYS, sector, sizeof(sector));
+        g_assert_cmpmem(sector, sizeof(sector), sentinel, sizeof(sentinel));
+    }
+
+    qtest_quit(qts);
+    disks_remove(&disks);
+}
+
 /*
  * The other direction of the same 64-bit path: a sector composed in the
  * processor's memory and sent out to the medium, then read back. The head
@@ -904,6 +953,11 @@ static void test_completion_raises_head_f_pin(const void *data)
 
 int main(int argc, char **argv)
 {
+    static const InboundMaskCase inbound_masks[] = {
+        { UINT64_C(1) << 15, false },
+        { UINT64_C(1) << 14, false },
+        { 0, true },
+    };
     int result;
 
     g_test_init(&argc, &argv, NULL);
@@ -916,6 +970,12 @@ int main(int argc, char **argv)
                         test_command_reaches_memory);
     qtest_add_data_func("origin300/io8-scsi/data-transfer-reaches-memory",
                         NULL, test_data_transfer_reaches_memory);
+    qtest_add_data_func("origin300/io8-scsi/inbound-deny-15-allow-14",
+                        &inbound_masks[0], test_scsi_dma_with_inbound_mask);
+    qtest_add_data_func("origin300/io8-scsi/inbound-allow-15-deny-14",
+                        &inbound_masks[1], test_scsi_dma_with_inbound_mask);
+    qtest_add_data_func("origin300/io8-scsi/inbound-allow-both",
+                        &inbound_masks[2], test_scsi_dma_with_inbound_mask);
     qtest_add_data_func("origin300/io8-scsi/write-transfer-from-memory",
                         NULL, test_write_transfer_from_memory);
     qtest_add_data_func("origin300/io8-scsi/channels-are-independent", NULL,
