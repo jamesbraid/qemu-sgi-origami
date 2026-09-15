@@ -176,15 +176,7 @@ DECLARE_INSTANCE_CHECKER(SN0NodeState, SN0_NODE, TYPE_SGI_SN0_NODE)
 
 #define TYPE_SN0_MACHINE MACHINE_TYPE_NAME("sn0")
 
-/* The flight recorder behind diagnostic-recording (sn0-diag.c). */
-typedef struct SN0DiagnosticEvent SN0DiagnosticEvent;
-typedef struct SN0DiagnosticReadCacheEntry SN0DiagnosticReadCacheEntry;
 typedef struct SN0Origin2000XtalkState SN0Origin2000XtalkState;
-
-typedef struct SN0DiagnosticSinkContext {
-    void *machine;
-    uint32_t node;
-} SN0DiagnosticSinkContext;
 
 struct SN0MachineState {
     MachineState parent_obj;
@@ -211,19 +203,6 @@ struct SN0MachineState {
      * Hub processor-interface datasheet.
      */
     Clock *rt_refclk;
-
-    /* Host diagnostics only; not guest-visible and not migrated. */
-    bool diagnostic_recording;
-    uint64_t diagnostic_query_sequence;
-    SN0DiagnosticEvent *diagnostic_events;
-    uint32_t diagnostic_event_head;
-    uint32_t diagnostic_event_count;
-    uint64_t diagnostic_event_next_sequence;
-    uint64_t diagnostic_event_dropped;
-    SN0DiagnosticReadCacheEntry *diagnostic_read_cache;
-    uint16_t *diagnostic_read_cache_next;
-    DeviceDiagnosticSink *diagnostic_sink;
-    SN0DiagnosticSinkContext *diagnostic_sink_context;
 
     /* Widget 0: a second view of the bridge needs its own alias storage. */
     MemoryRegion *widget0;
@@ -271,8 +250,8 @@ struct SN0MachineClass {
 };
 
 void sn0_model_populate_node(SN0MachineState *s, unsigned int node_index);
-void sn0_model_configure_diagnostic(SN0MachineState *s,
-                                    unsigned int node_index);
+void sn0_model_configure_junk_uart(SN0MachineState *s,
+                                   unsigned int node_index);
 
 /* Call once in order; set optional node links between these two phases. */
 void sn0_origin2000_prepare_nodes(MachineState *machine);
@@ -280,10 +259,6 @@ void sn0_origin2000_realize_nodes(MachineState *machine);
 void sn0_map_cpu_big_windows(SN0MachineState *s);
 
 extern const SN0FlashImplementation sn0_flash;
-
-void sn0_diagnostic_attach(SN0MachineState *s, unsigned int node_index);
-void sn0_diagnostic_machine_reset(SN0MachineState *s);
-void sn0_diagnostic_finalize(SN0MachineState *s);
 
 /* Reapplied on every processor reset. */
 void sn0_mode_bits_reset(void *opaque);

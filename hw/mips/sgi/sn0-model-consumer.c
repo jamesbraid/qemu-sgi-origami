@@ -60,8 +60,8 @@ static const MemoryRegionOps sn0_prom_pi_probe_ops = {
     .impl.max_access_size = 8,
 };
 
-void sn0_model_configure_diagnostic(SN0MachineState *s,
-                                    unsigned int node_index)
+void sn0_model_configure_junk_uart(SN0MachineState *s,
+                                   unsigned int node_index)
 {
     const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(s)->model;
     SN0NodeState *node = s->nodes[node_index];

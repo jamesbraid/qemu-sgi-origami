@@ -2,8 +2,7 @@
 /*
  * SGI SN0 (IP27) family mechanics and node device.
  * Origin 200 supplies a compiled topology to the generic model consumer.
- * -bios and pflash fill a node's boot flash here; diagnostics live in
- * sn0-diag.c.
+ * -bios and pflash fill a node's boot flash here.
  */
 
 #include "qemu/osdep.h"
@@ -511,7 +510,6 @@ static void sn0_machine_reset(MachineState *machine, ResetType type)
         }
     }
     sn0_report_node_flash_mode(s);
-    sn0_diagnostic_machine_reset(s);
 }
 
 /*
@@ -647,7 +645,6 @@ static int64_t sn0_get_default_cpu_node_id(const MachineState *machine,
     g_assert_not_reached();
 }
 
-/*
 static const SN0ModelAddressMap *sn0_node_address_map(SN0NodeState *node)
 {
     return node->physical ? &node->physical->map : &node->topology->map;
@@ -1568,8 +1565,7 @@ static void sn0_init(MachineState *machine)
                                  OBJECT(s->fabric), &error_fatal);
         qdev_prop_set_uint32(DEVICE(&node->hub), "fabric-endpoint",
                              node_index);
-        sn0_model_configure_diagnostic(s, node_index);
-        sn0_diagnostic_attach(s, node_index);
+        sn0_model_configure_junk_uart(s, node_index);
 
         sysbus_realize(SYS_BUS_DEVICE(node), &error_fatal);
 
@@ -1646,21 +1642,6 @@ static bool sn0_get_debug_leds(Object *obj, Error **errp)
 static void sn0_set_debug_leds(Object *obj, bool value, Error **errp)
 {
     SN0_MACHINE(obj)->debug_leds = value;
-}
-
-static bool sn0_get_diagnostic_recording(Object *obj, Error **errp)
-{
-    return SN0_MACHINE(obj)->diagnostic_recording;
-}
-
-static void sn0_set_diagnostic_recording(Object *obj, bool value, Error **errp)
-{
-    if (phase_check(PHASE_MACHINE_CREATED)) {
-        error_setg(errp, "diagnostic-recording cannot change after machine "
-                         "creation");
-        return;
-    }
-    SN0_MACHINE(obj)->diagnostic_recording = value;
 }
 
 static void sn0_get_elsc_dip_switches(Object *obj, Visitor *v,
@@ -1790,7 +1771,6 @@ static void sn0_instance_finalize(Object *obj)
     SN0MachineState *s = SN0_MACHINE(obj);
     unsigned int node_index;
 
-    sn0_diagnostic_finalize(s);
     for (node_index = 0; node_index < s->num_nodes; node_index++) {
         if (s->pci_devices) {
             g_free(s->pci_devices[node_index]);
@@ -1849,14 +1829,6 @@ static void sn0_machine_class_init(ObjectClass *oc, const void *data)
         "and turning it off buys a quieter stderr and nothing else. The "
         "codes go to the log destination, meaning stderr unless -D names a "
         "file.");
-
-    object_class_property_add_bool(oc, "diagnostic-recording",
-                                   sn0_get_diagnostic_recording,
-                                   sn0_set_diagnostic_recording);
-    object_class_property_set_description(oc, "diagnostic-recording",
-        "Record recent Hub and system-controller transitions for "
-        "x-query-origin-state. Off by default; the state snapshot remains "
-        "available when recording is disabled.");
 
     object_class_property_add(oc, "elsc-dip-switches", "uint8",
                               sn0_get_elsc_dip_switches,

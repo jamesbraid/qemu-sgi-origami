@@ -404,7 +404,6 @@ qtests_mips64 = \
                                                    'sn0-migration-test',
                                                    'sn0-snapshot-test',
                                                    'sn0-ds1685-test',
-                                                   'sn0-debug-test',
                                                    'sn0-fabric-test',
                                                    'sn0-qtest-cpu-test',
                                                    'sn0-cpu-registers-test',

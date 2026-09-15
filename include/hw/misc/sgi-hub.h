@@ -13,7 +13,6 @@
 #include "hw/core/clock.h"
 #include "hw/core/cpu.h"
 #include "hw/core/irq.h"
-#include "hw/misc/sgi-diagnostic.h"
 #include "qemu/timer.h"
 #include "hw/core/sysbus.h"
 #include "hw/char/serial-mm.h"
@@ -122,7 +121,6 @@ struct SGIHubState {
     SysBusDevice parent_obj;
 
     MemoryRegion regs;
-    DeviceDiagnosticSink *diagnostic;
 
     /*
      * The PCF8584 mapped over this window's I2C addresses (Origami project
