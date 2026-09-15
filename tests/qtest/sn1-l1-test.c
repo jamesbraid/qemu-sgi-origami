@@ -2183,6 +2183,28 @@ static void test_general_reads(void)
     qtest_quit(s);
 }
 
+/* A synthetic board serial must survive either local task-6 route unchanged. */
+static void test_brick_serial(void)
+{
+    QTestState *s = qtest_init("-M none -cpu R10000 -S "
+                               "-device sgi-l1,id=l1c,rack=1,bay=1,"
+                               "brick-serial=T4ST42" UART);
+    uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 4, 0 };
+    const uint32_t addresses[] = { 0x0ffff006, 0x00041006 };
+    /* RFC 1662 reflected FCS: 0xffff seed, complement, low byte first. */
+    const uint8_t wire[] = { 0x7e, 0x30, 0, 0, 0, 0, 1, 1,
+                             'T', '4', 'S', 'T', '4', '2', 0,
+                             0x0c, 0x73, 0x7e };
+
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    for (unsigned i = 0; i < G_N_ELEMENTS(addresses); i++) {
+        set_destination(request, addresses[i]);
+        send_frame(s, request, sizeof(request), false);
+        expect_wire(s, wire, sizeof(wire));
+    }
+    qtest_quit(s);
+}
+
 /* Action and setting requests answer the fieldless success, or their error. */
 static void test_general_actions(void)
 {
@@ -2490,6 +2512,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/request-log", test_request_log);
     qtest_add_func("sn1/l1/console-retarget", test_console_retarget);
     qtest_add_func("sn1/l1/general-reads", test_general_reads);
+    qtest_add_func("sn1/l1/brick-serial", test_brick_serial);
     qtest_add_func("sn1/l1/general-actions", test_general_actions);
     qtest_add_func("sn1/l1/power-cycle", test_power_cycle);
     qtest_add_func("sn1/l1/power-requests-off", test_power_requests_off);
