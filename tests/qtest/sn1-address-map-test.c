@@ -1922,9 +1922,8 @@ static void test_l1_identity_records_come_from_the_command_line(
     g_autofree char *spd_path = NULL;
     g_autofree char *extra = NULL;
     /*
-     * Synthetic bytes owned by this test. The controller's presence-detect
-     * area rejects a record whose first 64 bytes do not sum to zero, so the
-     * fixture satisfies that and says nothing else.
+     * Synthetic bytes owned by this test. The raw chassis and board areas
+     * each sum to zero; SPD byte 63 equals the sum of bytes 0 to 62.
      */
     uint8_t chassis[24], board[40], spd[128] = { 0 };
     uint8_t reply[131];
@@ -1933,8 +1932,10 @@ static void test_l1_identity_records_come_from_the_command_line(
     g_assert_no_error(error);
     memset(chassis, 0xc1, sizeof(chassis));
     memset(board, 0xb2, sizeof(board));
+    chassis[sizeof(chassis) - 1] = 0xa9;
+    board[sizeof(board) - 1] = 0xe2;
     spd[0] = 64;
-    spd[63] = 192;
+    spd[63] = 64;
     memset(spd + 64, 0x5d, 64);
     chassis_path = write_record(directory, "chassis.bin", chassis,
                                 sizeof(chassis));
