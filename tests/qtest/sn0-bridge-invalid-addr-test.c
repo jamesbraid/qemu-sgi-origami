@@ -3,8 +3,8 @@
  * external-SSRAM window completes reads (an unguarded probe loop sizes
  * it), and an undefined register-window access posts and latches the
  * invalid-address error instead of bus-erroring. "Posts, not faults" is
- * only visible to an executing processor, so those checks run a -kernel
- * fragment and watch for a RAM marker.
+ * only visible to an executing processor, so those checks run a hand-
+ * built reset-vector fragment and watch for a RAM marker.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -12,8 +12,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
-
-#include <elf.h>
+#include "sn0-user-image.h"
 
 #define SPACE_XTALK     0x20000000000ULL
 #define BRIDGE_WIDGET   8
@@ -85,93 +84,50 @@
 
 /*
  * The diagnostic's two accesses; the marker lands only if both returned,
- * so a bus-erroring model times this out.
+ * so a bus-erroring model times this out. Runs from the reset vector now
+ * rather than a directly loaded kernel, so it sets kernel mode (with KX,
+ * for the xkphys forms below) itself instead of inheriting it from a
+ * firmware handoff.
  */
-static char *write_invalid_access_guest(void)
+static void build_invalid_access_image(SN0Image *p)
 {
-    static const uint32_t code[] = {
-        0x3c089200,             /* lui    t0, 0x9200                        */
-        0x0008403c,             /* dsll32 t0, t0, 0                         */
-        0x3c09080a,             /* lui    t1, 0x080a                        */
-        0x35293100,             /* ori    t1, t1, 0x3100 -> widget 8 SSRAM  */
-        0x01094025,             /* or     t0, t0, t1                        */
-        0x8d0a0000,             /* lw     t2, 0(t0)   -- SSRAM read         */
-        0x3c089200,             /* lui    t0, 0x9200                        */
-        0x0008403c,             /* dsll32 t0, t0, 0                         */
-        0x3c090800,             /* lui    t1, 0x0800                        */
-        0x3529007c,             /* ori    t1, t1, 0x007c -> widget 8 + 0x7c */
-        0x01094025,             /* or     t0, t0, t1                        */
-        0x3c0adead,             /* lui    t2, 0xdead                        */
-        0x354abeef,             /* ori    t2, t2, 0xbeef -> 0xdeadbeef      */
-        0xad0a0000,             /* sw     t2, 0(t0)   -- undefined-slot store */
-        0x3c089600,             /* lui    t0, 0x9600                        */
-        0x0008403c,             /* dsll32 t0, t0, 0                         */
-        0x3c090003,             /* lui    t1, 0x0003                        */
-        0x01094025,             /* or     t0, t0, t1  -> phys 0x30000        */
-        0x3c095a17,             /* lui    t1, 0x5a17                        */
-        0x3529c0de,             /* ori    t1, t1, 0xc0de                    */
-        0xad090000,             /* sw     t1, 0(t0)   -- both posted        */
-        0x1000ffff,             /* b      .                                 */
-        0x00000000,             /* nop                                      */
-    };
-    uint8_t image[0x1000 + sizeof(code)] = { 0 };
-    const uint64_t entry = 0x8000000000020000ULL;
-    GError *err = NULL;
-    char *path = NULL;
-    int fd;
-    size_t i;
+    sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL);
+    sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
 
-    fd = g_file_open_tmp("sn0-bridge-invalid-guest-XXXXXX", &path, &err);
-    g_assert_no_error(err);
-    g_assert_cmpint(fd, >=, 0);
+    /* widget 8's SSRAM window. */
+    sn0_emit_li64(p, SN0_R_T0, UINT64_C(0x9200000000000000) | 0x080a3100);
+    sn0_emit_i(p, SN0_OPC_LW, SN0_R_T0, SN0_R_T2, 0);
 
-    image[0] = ELFMAG0;
-    image[1] = ELFMAG1;
-    image[2] = ELFMAG2;
-    image[3] = ELFMAG3;
-    image[EI_CLASS] = ELFCLASS64;
-    image[EI_DATA] = ELFDATA2MSB;
-    image[EI_VERSION] = EV_CURRENT;
-    stw_be_p(image + 16, ET_EXEC);
-    stw_be_p(image + 18, EM_MIPS);
-    stl_be_p(image + 20, EV_CURRENT);
-    stq_be_p(image + 24, entry);
-    stq_be_p(image + 32, 64);
-    stw_be_p(image + 52, 64);
-    stw_be_p(image + 54, 56);
-    stw_be_p(image + 56, 1);
+    /* widget 8 + 0x7c, an undefined register slot. */
+    sn0_emit_li64(p, SN0_R_T0, UINT64_C(0x9200000000000000) | 0x0800007c);
+    sn0_emit_li(p, SN0_R_T2, 0xdeadbeef);
+    sn0_emit_i(p, SN0_OPC_SW, SN0_R_T0, SN0_R_T2, 0);
 
-    stl_be_p(image + 64, PT_LOAD);
-    stl_be_p(image + 68, PF_R | PF_X);
-    stq_be_p(image + 72, 0x1000);
-    stq_be_p(image + 80, entry);
-    stq_be_p(image + 88, entry);
-    stq_be_p(image + 96, sizeof(code));
-    stq_be_p(image + 104, sizeof(code));
-    stq_be_p(image + 112, 0x1000);
-
-    for (i = 0; i < ARRAY_SIZE(code); i++) {
-        stl_be_p(image + 0x1000 + i * sizeof(code[0]), code[i]);
-    }
-
-    g_assert_cmpint(write(fd, image, sizeof(image)), ==, (ssize_t)sizeof(image));
-    g_assert_cmpint(close(fd), ==, 0);
-    return path;
+    sn0_emit_li64(p, SN0_R_T0,
+                  UINT64_C(0x9600000000000000) | GUEST_MARKER_ADDR);
+    sn0_emit_li(p, SN0_R_T1, GUEST_MARKER);
+    sn0_emit_i(p, SN0_OPC_SW, SN0_R_T0, SN0_R_T1, 0);
+    sn0_emit_park(p);
 }
 
 static void test_ssram_and_undefined_slot_post(const void *data)
 {
-    g_autofree char *kernel = write_invalid_access_guest();
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
     QTestState *qts;
     uint32_t marker = 0;
+
+    build_invalid_access_image(image);
+    path = sn0_image_write(image, "sn0-bridge-invalid-guest");
 
     /*
      * A real instruction: a qtest read cannot tell refused from returned.
      * Reverting either fix makes this time out.
      */
     g_assert_true(g_setenv("QTEST_QEMU_ARGS", "-accel tcg", true));
-    qts = qtest_initf("-M origin200 -smp 1 -kernel %s", kernel);
+    qts = qtest_initf("-M origin200 -smp 1 -bios %s", path);
     g_unsetenv("QTEST_QEMU_ARGS");
+    unlink(path);
 
     g_test_timer_start();
     while (marker != GUEST_MARKER && g_test_timer_elapsed() < 1) {
@@ -181,7 +137,6 @@ static void test_ssram_and_undefined_slot_post(const void *data)
 
     g_assert_cmphex(marker, ==, GUEST_MARKER);
     qtest_quit(qts);
-    g_unlink(kernel);
 }
 
 static void test_invalid_address_latches_status(const void *data)
