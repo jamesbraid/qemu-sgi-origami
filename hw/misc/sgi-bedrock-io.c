@@ -556,12 +556,7 @@ static MemTxResult ii_inbound_register(SGIBedrockIOState *s, hwaddr address,
                               MEMTXATTRS_UNSPECIFIED, buffer, size);
 }
 
-/*
- * The access-control test alone, without the logging sgi_bedrock_io_inbound_rw
- * gives its own refusal: ii_inbound_read/write probe several candidate
- * source widgets before settling on one, and a probe that fails is not
- * itself a refused access.
- */
+/* The shared window must check every possible source before forwarding. */
 static bool ii_inbound_permitted(SGIBedrockIOState *s, unsigned widget,
                                  unsigned device)
 {
@@ -607,26 +602,24 @@ void sgi_bedrock_io_disable_device(SGIBedrockIOState *s, unsigned widget,
     }
 }
 
-/*
- * The shared inbound window carries no field naming which crosstalk widget
- * actually sent a given request: every widget an XBridge (or another
- * crosstalk device) can present to its host port lands on the same
- * MemoryRegion.  Stand in for that missing source ID by trying each widget
- * inbound-widget-mask names, in ascending order, and using the first one the
- * programmed inbound-access mask (and, for a device widget, the device mask)
- * actually admits.  Only when none of them do is the access refused; that
- * refusal, not a candidate that simply did not match, is what gets logged.
- */
+/* With no source ID on the shared window, a denied candidate must block it. */
 static bool ii_inbound_pick_widget(SGIBedrockIOState *s, unsigned *widget)
 {
+    bool found = false;
+
     for (unsigned candidate = 0; candidate < 16; candidate++) {
-        if ((s->inbound_widget_mask & (1U << candidate)) &&
-            ii_inbound_permitted(s, candidate, s->inbound_device)) {
+        if (!(s->inbound_widget_mask & (1U << candidate))) {
+            continue;
+        }
+        if (!ii_inbound_permitted(s, candidate, s->inbound_device)) {
+            return false;
+        }
+        if (!found) {
             *widget = candidate;
-            return true;
+            found = true;
         }
     }
-    return false;
+    return found;
 }
 
 static MemTxResult ii_inbound_read(void *opaque, hwaddr offset, uint64_t *value,
@@ -639,7 +632,7 @@ static MemTxResult ii_inbound_read(void *opaque, hwaddr offset, uint64_t *value,
 
     if (!ii_inbound_pick_widget(s, &widget)) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-io: inbound read at 0x%"
-                      HWADDR_PRIx " refused for every widget in mask 0x%x "
+                      HWADDR_PRIx " refused for widget mask 0x%x "
                       "(inbound-access=0x%" PRIx64 " device-mask=0x%" PRIx64
                       ")\n", offset, s->inbound_widget_mask,
                       s->inbound_access, s->device_mask);
@@ -692,7 +685,7 @@ static MemTxResult ii_inbound_write(void *opaque, hwaddr offset, uint64_t value,
     }
     if (!ii_inbound_pick_widget(s, &widget)) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-io: inbound write at 0x%"
-                      HWADDR_PRIx " refused for every widget in mask 0x%x "
+                      HWADDR_PRIx " refused for widget mask 0x%x "
                       "(inbound-access=0x%" PRIx64 " device-mask=0x%" PRIx64
                       ")\n", offset, s->inbound_widget_mask,
                       s->inbound_access, s->device_mask);
