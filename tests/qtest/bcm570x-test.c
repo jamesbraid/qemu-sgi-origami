@@ -4261,8 +4261,9 @@ static void test_receive_ring_full_recovers(const void *data)
  * again afterwards to show the halt is not a one-time bring-up special case.
  *
  * The manual counts what a running receiver drops for want of descriptors
- * (nicNoMoreRXBDs, printed page 110, Table 49). This model carries no
- * statistics block, so there is no counter here to assert.
+ * (nicNoMoreRXBDs, printed page 110, Table 49), but a halted receiver is a
+ * different condition -- nothing is placed anywhere to run short of -- so
+ * that counter does not apply here and there is no other one to assert.
  */
 static void test_receive_mac_enable(const void *data)
 {
