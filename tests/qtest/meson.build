@@ -327,6 +327,13 @@ if not config_all_devices.has_key('CONFIG_SGI_XBOW_TRANSPORT_TEST')
   sn0_xbow_transport_qtests = []
 endif
 
+# The crosstalk board base class has no machine of its own yet; its qtest
+# builds a Crossbow and a test board straight from their device types under
+# -M none, so it needs only its own test fixture guard, not SGI_SN0/SGI_SN1.
+sgi_xtalk_board_qtests = \
+  (config_all_devices.has_key('CONFIG_SGI_XTALK_BOARD_TEST') ?
+    ['sgi-xtalk-board-test'] : [])
+
 # The Origin 200 is a 64-bit machine, so its tests cannot be shared with the
 # 32-bit mips targets, where the machine does not exist.
 qtests_mips64 = \
@@ -404,7 +411,8 @@ qtests_mips64 = \
   sn0_xbow_transport_qtests + \
   sn1_xbridge_qtests + \
   sn0_hub_packet_qtests + sn0_hub_outgoing_qtests + \
-  sn0_xtalk_assembly_qtests
+  sn0_xtalk_assembly_qtests + \
+  sgi_xtalk_board_qtests
 
 qtests_mips64el = qtests_mips
 

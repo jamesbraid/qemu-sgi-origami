@@ -70,6 +70,17 @@ config SGI_SN1
     select SGI_XBRIDGE
     select USB_OHCI_PCI
 
+config SGI_XTALK_BOARD
+    bool
+    select SGI_XBOW
+
+config SGI_XTALK_BOARD_TEST
+    bool
+    default y if TEST_DEVICES
+    depends on TEST_DEVICES
+    select SGI_XTALK_BOARD
+    select SGI_XTALK_TEST_TARGET
+
 config FULOONG
     bool
     default y
