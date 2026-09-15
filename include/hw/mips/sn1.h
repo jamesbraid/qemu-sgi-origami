@@ -40,6 +40,9 @@ struct SN1MachineState {
     SN1PromView prom_view_reset;
     SN1PromView prom_view_local_high;
 
+    /* Test-only perturbation of the model's back-to-back CPU release. */
+    uint64_t cpu_release_skew_ns;
+
     strList *chassis_eeprom;
     strList *board_eeprom;
     strList *spd_eeprom;

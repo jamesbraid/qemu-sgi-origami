@@ -285,6 +285,7 @@ static void sn1_machine_reset(MachineState *machine, ResetType type)
 {
     SN1MachineState *s = SN1_MACHINE(machine);
     CPUState *cs;
+    bool released_one = false;
 
     /* Busless MIPS CPUs are outside the registered SysBus reset tree. */
     CPU_FOREACH(cs) {
@@ -293,6 +294,18 @@ static void sn1_machine_reset(MachineState *machine, ResetType type)
     qemu_devices_reset(type);
     if (s->node && SN1_NODE(s->node)->boot_flash) {
         sn1_refresh_prom_views(s, true);
+    }
+
+    /* Every CPU exists now. Release them back-to-back while holding BQL. */
+    CPU_FOREACH(cs) {
+        if (released_one && s->cpu_release_skew_ns) {
+            bql_unlock();
+            g_usleep(DIV_ROUND_UP(s->cpu_release_skew_ns, 1000));
+            bql_lock();
+        }
+        cs->halted = false;
+        qemu_cpu_kick(cs);
+        released_one = true;
     }
 }
 
@@ -653,6 +666,26 @@ static const char *sn1_cpu_type(SN1ModelCpuKind kind)
     }
 }
 
+static void sn1_get_cpu_release_skew_ns(Object *obj, Visitor *v,
+                                        const char *name, void *opaque,
+                                        Error **errp)
+{
+    uint64_t value = SN1_MACHINE(obj)->cpu_release_skew_ns;
+
+    visit_type_uint64(v, name, &value, errp);
+}
+
+static void sn1_set_cpu_release_skew_ns(Object *obj, Visitor *v,
+                                        const char *name, void *opaque,
+                                        Error **errp)
+{
+    uint64_t value;
+
+    if (visit_type_uint64(v, name, &value, errp)) {
+        SN1_MACHINE(obj)->cpu_release_skew_ns = value;
+    }
+}
+
 static void origin300_class_init(ObjectClass *oc, const void *data)
 {
     static const char *valid_cpu_types[2];
@@ -681,6 +714,15 @@ static void origin300_class_init(ObjectClass *oc, const void *data)
         object_class_property_set_description(oc, records->name,
                                               records->description);
     }
+
+    object_class_property_add(oc, "cpu-release-skew-ns", "uint64",
+                              sn1_get_cpu_release_skew_ns,
+                              sn1_set_cpu_release_skew_ns, NULL, NULL);
+    object_class_property_set_description(oc, "cpu-release-skew-ns",
+        "Test-only: delay between CPU releases by reopening BQL. Zero "
+        "(the default) releases them back-to-back. vCPU scheduling can "
+        "still skew first fetch; neither setting claims physical "
+        "reset-edge timing.");
 }
 
 static const TypeInfo origin300_machine_type = {

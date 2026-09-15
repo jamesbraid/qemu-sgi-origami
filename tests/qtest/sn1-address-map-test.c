@@ -2683,6 +2683,11 @@ static void test_machine_defaults(const void *data)
             "'path':%s, 'property':'type'}}", cpu_paths[i]);
         g_assert_cmpstr(qdict_get_str(response, "return"), ==,
                         "R14000-mips64-cpu");
+        qobject_unref(response);
+        response = qtest_qmp(qts,
+            "{'execute':'qom-get', 'arguments':{"
+            "'path':%s, 'property':'start-powered-off'}}", cpu_paths[i]);
+        g_assert_true(qdict_get_bool(response, "return"));
     }
 
     for (size_t i = 0; i < ARRAY_SIZE(clock_paths); i++) {
@@ -2693,6 +2698,12 @@ static void test_machine_defaults(const void *data)
         g_assert_cmpint(qdict_get_int(response, "return"), ==,
                         UINT64_C(2) << 32);
     }
+
+    qobject_unref(response);
+    response = qtest_qmp(qts,
+        "{'execute':'qom-get', 'arguments':{"
+        "'path':'/machine', 'property':'cpu-release-skew-ns'}}");
+    g_assert_cmpint(qdict_get_int(response, "return"), ==, 0);
 
     qtest_quit(qts);
 }
