@@ -61,18 +61,6 @@ typedef struct SN0FlashImplementation {
 #define SN0_BIG_WINDOW_BASE      0x20000000
 
 /*
- * The Hub's widget-1 window: the lower half resolves to the reading
- * processor's own node, the upper half names one. The cached
- * compatibility segment reaches node-local physical zero.
- */
-#define SN0_COMPAT_CACHED 0xffffffff80000000ull
-
-/* Outside the flash, which belongs to whatever image was put there. */
-#define SN0_FW_TEXT_LOCAL       0x1fd01000
-#define SN0_FW_TEXT_SIZE        0x1000
-#define SN0_FW_BOOTLOADER       0x000       /* offset within that region */
-
-/*
  * The board's boot flash records the configuration it was provisioned
  * for at this offset; sn0_report_node_flash_mode() compares it against
  * the processor mode bits the board itself latches. Present in every
@@ -116,10 +104,8 @@ typedef struct SN0NodeState {
     const SN0ModelHardware *hardware;
 
     /*
-     * Properties. local-memory-base is where a NASID-less memory-space
-     * address lands -- node 0's window once synthesized firmware hands a
-     * directly loaded kernel control; promdata-filter installs the
-     * PROM's cache-as-RAM overlay.
+     * Properties. promdata-filter installs the PROM's cache-as-RAM
+     * overlay; every stock-PROM boot wants it.
      */
     uint32_t nasid;
     uint32_t cpu_base;
@@ -127,7 +113,6 @@ typedef struct SN0NodeState {
     char *cpu_type;
     MemoryRegion *ram;
     uint64_t ram_start;
-    uint64_t local_memory_base;
     bool promdata_filter;
     bool promdata_fast;
     uint32_t nr_banks_mb;
@@ -164,7 +149,6 @@ typedef struct SN0NodeState {
     MemoryRegion flash_rboot_view;
     MemoryRegion flash_hub_fast;
     MemoryRegion hub_regs_node_view;
-    MemoryRegion fw_text;
     MemoryRegion backdoor_ecc_absent;
     MemoryRegion backdoor_dir_absent;
     SN0BackdoorState backdoor_ecc_state;
@@ -301,10 +285,7 @@ void sn0_diagnostic_attach(SN0MachineState *s, unsigned int node_index);
 void sn0_diagnostic_machine_reset(SN0MachineState *s);
 void sn0_diagnostic_finalize(SN0MachineState *s);
 
-/* Reapplied on every processor reset and by the firmware launch path. */
+/* Reapplied on every processor reset. */
 void sn0_mode_bits_reset(void *opaque);
-
-/* The direct kernel and sash loader (sn0-firmware.c). */
-void sn0_firmware_init(MachineState *machine);
 
 #endif /* HW_MIPS_SN0_H */

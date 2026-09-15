@@ -444,10 +444,6 @@ void sn0_origin2000_prepare_nodes(MachineState *machine)
         object_property_set_link(OBJECT(node), "ram", OBJECT(machine->ram),
                                  &error_fatal);
         qdev_prop_set_uint64(DEVICE(node), "ram-start", ram_offset);
-        qdev_prop_set_uint64(DEVICE(node), "local-memory-base",
-                             sn0_model_node_address(&physical->map,
-                                                      &physical->map.memory,
-                                                      node_index, 0));
         for (bank = 0; bank < SN0_MAX_MEMORY_BANKS; bank++) {
             if (physical->bank_mib[bank]) {
                 qlist_append_int(banks, physical->bank_mib[bank]);

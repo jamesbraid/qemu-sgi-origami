@@ -11,8 +11,7 @@ mips_ss.add(when: 'CONFIG_JAZZ', if_true: files('jazz.c'))
 # These generated model inputs are tracked QEMU sources. Origami exports them
 # explicitly; qemu-build does not regenerate them during configure.
 mips_ss.add(when: 'CONFIG_SGI_SN0',
-            if_true: files('sgi/sn0.c', 'sgi/sn0-diag.c', 'sgi/sn0-ecoff.c', 'sgi/sn0-fabric.c',
-                           'sgi/sn0-firmware.c',
+            if_true: files('sgi/sn0.c', 'sgi/sn0-diag.c', 'sgi/sn0-fabric.c',
                            'sgi/sn0-model.c', 'sgi/sn0-model-consumer.c',
                            'sgi/sn0-origin200.c',
                            'sgi/sn0-origin2000.c', 'sn0-origin2000-model.c',
