@@ -144,10 +144,13 @@ uint32_t cpu_mips_get_count(CPUMIPSState *env)
  * A prior revision also matched a Compare write up to half the counter
  * space behind Count, to close an IRIX 6.5.30 lost-interrupt symptom (QEMU
  * issue 626 has the evidence). That reading contradicted the manual's plain
- * equality rule and this project's own R14000 datasheet, and it broke
- * OpenBSD's mips64 clock code, which disarms the timer with a deliberately
- * behind write (sys/arch/mips64/mips64/clock.c, cp0_startclock) and depends
- * on that write NOT raising IP7 again.
+ * equality rule and this project's own R14000 datasheet. It also falls
+ * inside OpenBSD's own disarming write: OpenBSD's mips64 clock code disarms
+ * the timer with a deliberately behind write, one tick behind Count
+ * (sys/arch/mips64/mips64/clock.c, cp0_startclock), which the window's match
+ * condition would reassert as IP7 immediately instead of leaving quiet -
+ * a mechanism read from the window's own match condition and the published
+ * OpenBSD source, not confirmed here by a recorded OpenBSD boot.
  */
 static bool cpu_mips_write_matches(CPUMIPSState *env, uint32_t count,
                                    uint32_t compare)
