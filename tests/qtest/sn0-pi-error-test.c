@@ -11,16 +11,7 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
-
-#include <elf.h>
-
-#define ELF_OFFSET             0x1000
-#define IMAGE_SIZE             0x20200
-#define KSEG_BASE              0xffffffff80000000ULL
-#define VECTOR_OFFSET          0x180
-#define PRIMARY_OFFSET         0x20000
-#define SECONDARY_OFFSET       0x20100
-#define LAUNCH_SLAVE           0xffffffffbfc00038ULL
+#include "sn0-user-image.h"
 
 #define CAUSE_A                0x50000
 #define CAUSE_B                0x50008
@@ -76,12 +67,26 @@
 #define XBOW_LINK_ILLEGAL_DEST (1u << 17)
 #define XBOW_LINK_MULTIPLE_ERR (1u << 18)
 
-static void put_insn(uint8_t *image, unsigned int at, uint32_t insn)
+/*
+ * The probe runs from the reset vector now rather than a directly loaded
+ * kernel. Three things changed from the launch_slave-era image, none of
+ * them the probe sequence itself: the general exception handler moves to
+ * its boot-time (BEV=1) vector, since the BEV=0 one it used to sit at was
+ * only reachable after a firmware handoff that no longer happens; slice B
+ * runs from reset alongside slice A rather than being launched by it, so
+ * it waits on LAUNCH_B itself instead of being held off by never having
+ * started; and slice A parks after its own probe instead of launching B,
+ * since B no longer needs launching.
+ */
+#define IMG_PRIMARY   0x800
+#define IMG_SECONDARY 0x1000
+
+static void put_insn(SN0Image *p, unsigned int at, uint32_t insn)
 {
-    stl_be_p(image + ELF_OFFSET + at, insn);
+    stl_be_p(p->bytes + at, insn);
 }
 
-static void put_probe(uint8_t *image, unsigned int at, uint32_t cause,
+static void put_probe(SN0Image *p, unsigned int at, uint32_t cause,
                       uint32_t marker)
 {
     static const uint32_t probe[] = {
@@ -101,129 +106,91 @@ static void put_probe(uint8_t *image, unsigned int at, uint32_t cause,
     unsigned int i;
 
     for (i = 0; i < ARRAY_SIZE(probe); i++) {
-        put_insn(image, at + i * 4, probe[i]);
+        put_insn(p, at + i * 4, probe[i]);
     }
-    put_insn(image, at, 0x3c108000 | (cause >> 16));
-    put_insn(image, at + 4, 0x36100000 | (cause & 0xffff));
-    put_insn(image, at + 32, 0x3c088000 | (marker >> 16));
-    put_insn(image, at + 36, 0x35080000 | (marker & 0xffff));
+    put_insn(p, at, 0x3c108000 | (cause >> 16));
+    put_insn(p, at + 4, 0x36100000 | (cause & 0xffff));
+    put_insn(p, at + 32, 0x3c088000 | (marker >> 16));
+    put_insn(p, at + 36, 0x35080000 | (marker & 0xffff));
 }
 
-static char *write_probe_guest(void)
+static void build_probe_image(SN0Image *p)
 {
-    uint8_t image[ELF_OFFSET + IMAGE_SIZE] = { 0 };
-    GError *err = NULL;
-    char *path = NULL;
-    int fd;
+    unsigned int at = sn0_emit_branch(p, SN0_OPC_BEQ, 0, 0);
 
-    memcpy(image, ELFMAG, SELFMAG);
-    image[EI_CLASS] = ELFCLASS64;
-    image[EI_DATA] = ELFDATA2MSB;
-    image[EI_VERSION] = EV_CURRENT;
-    stw_be_p(image + 16, ET_EXEC);
-    stw_be_p(image + 18, EM_MIPS);
-    stl_be_p(image + 20, EV_CURRENT);
-    stq_be_p(image + 24, KSEG_BASE + PRIMARY_OFFSET);
-    stq_be_p(image + 32, 64);
-    stw_be_p(image + 52, 64);
-    stw_be_p(image + 54, 56);
-    stw_be_p(image + 56, 3);
-
-    stl_be_p(image + 64, PT_LOAD);
-    stl_be_p(image + 68, PF_R | PF_X);
-    stq_be_p(image + 72, ELF_OFFSET + VECTOR_OFFSET);
-    stq_be_p(image + 80, KSEG_BASE + VECTOR_OFFSET);
-    stq_be_p(image + 88, KSEG_BASE + VECTOR_OFFSET);
-    stq_be_p(image + 96, 0x1c);
-    stq_be_p(image + 104, 0x1c);
-    stq_be_p(image + 112, 4);
-
-    stl_be_p(image + 120, PT_LOAD);
-    stl_be_p(image + 124, PF_R | PF_X);
-    stq_be_p(image + 128, ELF_OFFSET + PRIMARY_OFFSET);
-    stq_be_p(image + 136, KSEG_BASE + PRIMARY_OFFSET);
-    stq_be_p(image + 144, KSEG_BASE + PRIMARY_OFFSET);
-    stq_be_p(image + 152, 0x200);
-    stq_be_p(image + 160, 0x200);
-    stq_be_p(image + 168, 4);
-
-    /* Processor B's private low-memory view uses the next 64 KiB backing. */
-    stl_be_p(image + 176, PT_LOAD);
-    stl_be_p(image + 180, PF_R | PF_X);
-    stq_be_p(image + 184, ELF_OFFSET + VECTOR_OFFSET);
-    stq_be_p(image + 192, KSEG_BASE + 0x10000 + VECTOR_OFFSET);
-    stq_be_p(image + 200, KSEG_BASE + 0x10000 + VECTOR_OFFSET);
-    stq_be_p(image + 208, 0x1c);
-    stq_be_p(image + 216, 0x1c);
-    stq_be_p(image + 224, 4);
+    sn0_patch_branch(p, at, IMG_PRIMARY - 0x44);
+    p->pos = SN0_VEC_TLB_REFILL;
+    sn0_emit_park(p);
+    p->pos = SN0_VEC_XTLB_REFILL;
+    sn0_emit_park(p);
 
     /* General exception handler: save Cause, skip the probe, and return. */
-    put_insn(image, VECTOR_OFFSET + 0x00, 0x403a6800); /* dmfc0 k0, Cause */
-    put_insn(image, VECTOR_OFFSET + 0x04, 0xfe1a0000); /* sd k0, 0(s0) */
-    put_insn(image, VECTOR_OFFSET + 0x08, 0x403b7000); /* dmfc0 k1, EPC */
-    put_insn(image, VECTOR_OFFSET + 0x0c, 0x677b0004); /* daddiu k1, k1, 4 */
-    put_insn(image, VECTOR_OFFSET + 0x10, 0x409b7000); /* mtc0 k1, EPC */
-    put_insn(image, VECTOR_OFFSET + 0x14, 0x42000018); /* eret */
-    put_insn(image, VECTOR_OFFSET + 0x18, 0x00000000); /* nop */
+    p->pos = SN0_VEC_GENERAL;
+    put_insn(p, p->pos + 0x00, 0x403a6800); /* dmfc0 k0, Cause */
+    put_insn(p, p->pos + 0x04, 0xfe1a0000); /* sd k0, 0(s0) */
+    put_insn(p, p->pos + 0x08, 0x403b7000); /* dmfc0 k1, EPC */
+    put_insn(p, p->pos + 0x0c, 0x677b0004); /* daddiu k1, k1, 4 */
+    put_insn(p, p->pos + 0x10, 0x409b7000); /* mtc0 k1, EPC */
+    put_insn(p, p->pos + 0x14, 0x42000018); /* eret */
+    put_insn(p, p->pos + 0x18, 0x00000000); /* nop */
 
-    /* Both 32-bit halves must still complete through the Bridge. */
-    put_insn(image, PRIMARY_OFFSET + 0x00, 0x3c108005);
-    put_insn(image, PRIMARY_OFFSET + 0x04, 0x36100000);
-    put_insn(image, PRIMARY_OFFSET + 0x08, 0x3c089200);
-    put_insn(image, PRIMARY_OFFSET + 0x0c, 0x0008403c);
-    put_insn(image, PRIMARY_OFFSET + 0x10, 0x3c090240);
-    put_insn(image, PRIMARY_OFFSET + 0x14, 0x35290208);
-    put_insn(image, PRIMARY_OFFSET + 0x18, 0x01094025);
-    put_insn(image, PRIMARY_OFFSET + 0x1c, 0x8d0a0000); /* lw t2, 0(t0) */
-    put_insn(image, PRIMARY_OFFSET + 0x20, 0x8d0b0004); /* lw t3, 4(t0) */
-    put_insn(image, PRIMARY_OFFSET + 0x24, 0x3c088005);
-    put_insn(image, PRIMARY_OFFSET + 0x28, 0x35080028);
-    put_insn(image, PRIMARY_OFFSET + 0x2c, 0x24095a17);
-    put_insn(image, PRIMARY_OFFSET + 0x30, 0xfd090000);
-    put_insn(image, PRIMARY_OFFSET + 0x34, 0x3c088005);
-    put_insn(image, PRIMARY_OFFSET + 0x38, 0x35080020);
-    put_insn(image, PRIMARY_OFFSET + 0x3c, 0xdd090000);
-    put_insn(image, PRIMARY_OFFSET + 0x40, 0x1120fffe);
-    put_insn(image, PRIMARY_OFFSET + 0x44, 0x00000000);
+    /*
+     * Identity dispatch: one node, so the Hub-local slice number is all
+     * of it. Slice A falls through into its own body below; slice B
+     * skips it for its own body, placed after.
+     */
+    p->pos = IMG_PRIMARY - 0x44;
+    sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL);
+    sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
+    sn0_emit_cpu_number(p, SN0_R_S1);
+    at = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_S1, SN0_R_ZERO);
+    sn0_patch_branch(p, at, IMG_SECONDARY);
+    g_assert_cmpuint(p->pos, ==, IMG_PRIMARY);
 
-    put_probe(image, PRIMARY_OFFSET + 0x48, CAUSE_A, MARKER_A);
-    /* Let the test inspect A before it permits processor B to run. */
-    put_insn(image, PRIMARY_OFFSET + 0x78, 0x3c088005);
-    put_insn(image, PRIMARY_OFFSET + 0x7c, 0x35080030);
-    put_insn(image, PRIMARY_OFFSET + 0x80, 0xdd090000);
-    put_insn(image, PRIMARY_OFFSET + 0x84, 0x1120fffe);
-    put_insn(image, PRIMARY_OFFSET + 0x88, 0x00000000);
+    /* Slice A: both 32-bit halves must still complete through the Bridge. */
+    put_insn(p, IMG_PRIMARY + 0x00, 0x3c108005);
+    put_insn(p, IMG_PRIMARY + 0x04, 0x36100000);
+    put_insn(p, IMG_PRIMARY + 0x08, 0x3c089200);
+    put_insn(p, IMG_PRIMARY + 0x0c, 0x0008403c);
+    put_insn(p, IMG_PRIMARY + 0x10, 0x3c090240);
+    put_insn(p, IMG_PRIMARY + 0x14, 0x35290208);
+    put_insn(p, IMG_PRIMARY + 0x18, 0x01094025);
+    put_insn(p, IMG_PRIMARY + 0x1c, 0x8d0a0000); /* lw t2, 0(t0) */
+    put_insn(p, IMG_PRIMARY + 0x20, 0x8d0b0004); /* lw t3, 4(t0) */
+    put_insn(p, IMG_PRIMARY + 0x24, 0x3c088005);
+    put_insn(p, IMG_PRIMARY + 0x28, 0x35080028);
+    put_insn(p, IMG_PRIMARY + 0x2c, 0x24095a17);
+    put_insn(p, IMG_PRIMARY + 0x30, 0xfd090000);
+    put_insn(p, IMG_PRIMARY + 0x34, 0x3c088005);
+    put_insn(p, IMG_PRIMARY + 0x38, 0x35080020);
+    put_insn(p, IMG_PRIMARY + 0x3c, 0xdd090000);
+    put_insn(p, IMG_PRIMARY + 0x40, 0x1120fffe);
+    put_insn(p, IMG_PRIMARY + 0x44, 0x00000000);
 
-    put_insn(image, PRIMARY_OFFSET + 0x8c, 0x24040000); /* a0 = node 0 */
-    put_insn(image, PRIMARY_OFFSET + 0x90, 0x24050001); /* a1 = CPU 1 */
-    put_insn(image, PRIMARY_OFFSET + 0x94,
-             0x3c060000 | ((SECONDARY_OFFSET >> 16) + 0x8000));
-    put_insn(image, PRIMARY_OFFSET + 0x98,
-             0x34c60000 | (SECONDARY_OFFSET & 0xffff));
-    put_insn(image, PRIMARY_OFFSET + 0x9c, 0x3c19bfc0); /* t9 = launch */
-    put_insn(image, PRIMARY_OFFSET + 0xa0, 0x37390038);
-    put_insn(image, PRIMARY_OFFSET + 0xa4, 0x0320f809); /* jalr ra, t9 */
-    put_insn(image, PRIMARY_OFFSET + 0xa8, 0x00000000);
-    put_insn(image, PRIMARY_OFFSET + 0xac, 0x1000ffff); /* b . */
-    put_insn(image, PRIMARY_OFFSET + 0xb0, 0x00000000);
+    put_probe(p, IMG_PRIMARY + 0x48, CAUSE_A, MARKER_A);
+    p->pos = IMG_PRIMARY + 0x78;
+    sn0_emit_park(p);
 
-    put_probe(image, SECONDARY_OFFSET, CAUSE_B, MARKER_B);
-    put_insn(image, SECONDARY_OFFSET + 0x30, 0x3c088005);
-    put_insn(image, SECONDARY_OFFSET + 0x34, 0x35080038);
-    put_insn(image, SECONDARY_OFFSET + 0x38, 0xdd090000);
-    put_insn(image, SECONDARY_OFFSET + 0x3c, 0x1120fffe);
-    put_insn(image, SECONDARY_OFFSET + 0x40, 0x00000000);
-    put_probe(image, SECONDARY_OFFSET + 0x48, CAUSE_B, MARKER_B2);
-    put_insn(image, SECONDARY_OFFSET + 0x78, 0x1000ffff); /* b . */
-    put_insn(image, SECONDARY_OFFSET + 0x7c, 0x00000000);
+    /*
+     * Slice B: wait for LAUNCH_B (once its own, now that nothing launches
+     * it), then the original slice-B body unchanged.
+     */
+    p->pos = IMG_SECONDARY;
+    put_insn(p, IMG_SECONDARY + 0x00, 0x3c088005);
+    put_insn(p, IMG_SECONDARY + 0x04, 0x35080030); /* -> LAUNCH_B */
+    put_insn(p, IMG_SECONDARY + 0x08, 0xdd090000);
+    put_insn(p, IMG_SECONDARY + 0x0c, 0x1120fffe);
+    put_insn(p, IMG_SECONDARY + 0x10, 0x00000000);
 
-    fd = g_file_open_tmp("sn0-pi-error-XXXXXX", &path, &err);
-    g_assert_no_error(err);
-    g_assert_cmpint(fd, >=, 0);
-    g_assert_cmpint(write(fd, image, sizeof(image)), ==,
-                    (ssize_t)sizeof(image));
-    g_assert_cmpint(close(fd), ==, 0);
-    return path;
+    put_probe(p, IMG_SECONDARY + 0x14, CAUSE_B, MARKER_B);
+    put_insn(p, IMG_SECONDARY + 0x44, 0x3c088005);
+    put_insn(p, IMG_SECONDARY + 0x48, 0x35080038);
+    put_insn(p, IMG_SECONDARY + 0x4c, 0xdd090000);
+    put_insn(p, IMG_SECONDARY + 0x50, 0x1120fffe);
+    put_insn(p, IMG_SECONDARY + 0x54, 0x00000000);
+    put_probe(p, IMG_SECONDARY + 0x5c, CAUSE_B, MARKER_B2);
+    p->pos = IMG_SECONDARY + 0x8c;
+    sn0_emit_park(p);
 }
 
 static void wait_for_marker(QTestState *qts, uint64_t addr)
@@ -500,7 +467,8 @@ static void migrate_stopped_vm(QTestState *from, const char *uri)
 
 static void test_prom_probe_latches_the_issuing_slice(const void *data)
 {
-    g_autofree char *kernel = write_probe_guest();
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
     QTestState *qts;
 
     if (!qtest_has_accel("tcg")) {
@@ -508,10 +476,12 @@ static void test_prom_probe_latches_the_issuing_slice(const void *data)
         return;
     }
 
+    build_probe_image(image);
+    path = sn0_image_write(image, "sn0-pi-error");
     qts = qtest_initf("-M origin200 -m 64M -smp 2 "
-                      "-kernel %s -accel tcg,thread=multi "
-                      "-no-reboot -no-shutdown -S", kernel);
-    g_unlink(kernel);
+                      "-bios %s -accel tcg,thread=multi "
+                      "-no-reboot -no-shutdown -S", path);
+    unlink(path);
     qtest_writeq(qts, START_A, 0);
     qtest_writeq(qts, LAUNCH_B, 0);
     qtest_writeq(qts, REPROBE_B, 0);
@@ -608,7 +578,8 @@ static void test_narrow_probe_access_matches_bridge_alias(const void *data)
 
 static void test_pi_status_survives_migration(const void *data)
 {
-    g_autofree char *kernel = write_probe_guest();
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
     g_autofree char *tmpdir = NULL;
     g_autofree char *uri = NULL;
     g_autofree char *dest_args = NULL;
@@ -620,14 +591,17 @@ static void test_pi_status_survives_migration(const void *data)
         return;
     }
 
+    build_probe_image(image);
+    path = sn0_image_write(image, "sn0-pi-error-migration");
+
     tmpdir = g_dir_make_tmp("sn0-pi-error-migration-XXXXXX", &err);
     g_assert_no_error(err);
     g_assert_nonnull(tmpdir);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpdir);
 
     from = qtest_initf("-M origin200 -m 64M -smp 2 "
-                       "-kernel %s -accel tcg,thread=multi "
-                       "-no-reboot -no-shutdown -S", kernel);
+                       "-bios %s -accel tcg,thread=multi "
+                       "-no-reboot -no-shutdown -S", path);
     qtest_writeq(from, START_A, 0);
     qtest_writeq(from, LAUNCH_B, 0);
     qtest_writeq(from, REPROBE_B, 0);
@@ -644,9 +618,9 @@ static void test_pi_status_survives_migration(const void *data)
                     PI_STATUS_EXPECTED);
 
     dest_args = g_strdup_printf(
-        "-M origin200 -m 64M -smp 2 -kernel %s "
+        "-M origin200 -m 64M -smp 2 -bios %s "
         "-accel tcg,thread=multi -no-reboot -no-shutdown -incoming %s",
-        kernel, uri);
+        path, uri);
     to = qtest_init(dest_args);
     migrate_stopped_vm(from, uri);
 
@@ -657,12 +631,13 @@ static void test_pi_status_survives_migration(const void *data)
 
     qtest_quit(to);
     qtest_quit(from);
-    g_unlink(kernel);
+    unlink(path);
 }
 
 static void test_pi_status_reset_clears_both_slices(const void *data)
 {
-    g_autofree char *kernel = write_probe_guest();
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
     QTestState *qts;
 
     if (!qtest_has_accel("tcg")) {
@@ -670,9 +645,12 @@ static void test_pi_status_reset_clears_both_slices(const void *data)
         return;
     }
 
+    build_probe_image(image);
+    path = sn0_image_write(image, "sn0-pi-error-reset");
     qts = qtest_initf("-M origin200 -m 64M -smp 2 "
-                      "-kernel %s -accel tcg,thread=multi "
-                      "-S", kernel);
+                      "-bios %s -accel tcg,thread=multi "
+                      "-S", path);
+    unlink(path);
     qtest_writeq(qts, START_A, 0);
     qtest_writeq(qts, LAUNCH_B, 0);
     qtest_writeq(qts, REPROBE_B, 0);
@@ -693,7 +671,6 @@ static void test_pi_status_reset_clears_both_slices(const void *data)
     wait_for_pi_status_reset(qts);
 
     qtest_quit(qts);
-    g_unlink(kernel);
 }
 
 int main(int argc, char **argv)
