@@ -35,12 +35,16 @@
  * this same code. A write to a register with no modelled behaviour logs
  * LOG_UNIMP and is stored so a read-back still round-trips.
  *
- * Not modelled: the statistics block. The chip keeps MAC and host counters on
- * chip and DMAs them to their own host address on the Statistics Ticks budget
- * (0x3C28, 0x3C30/0x3C34); this model keeps no counters and transfers none, so
- * those registers are stored and do nothing. Nor are the four during-interrupt
- * coalescing registers (0x3C18-0x3C24), which the chip uses in place of the
- * four below while the host is inside its interrupt handler.
+ * Not modelled: the statistics block's DMA to host memory, on the Statistics
+ * Ticks budget (0x3C28, 0x3C30/0x3C34); those registers are stored and do
+ * nothing. One counter inside the block itself is modelled where it lives:
+ * the receive descriptor-shortage count (`nicNoMoreRXBDs`, PG105 page 110) at
+ * on-chip SRAM 0x0898, reachable through the BAR0 and indirect memory windows
+ * like any other SRAM offset, bumped when the receive path below discards a
+ * frame for an empty jumbo ring. Every other counter in the block stays
+ * unmodelled. Nor are the four during-interrupt coalescing registers
+ * (0x3C18-0x3C24), which the chip uses in place of the four below while the
+ * host is inside its interrupt handler.
  *
  * Written from docs/datasheets/bcm570x.md (the reviewed register/DMA/interrupt
  * contract) and docs/library/nic-on-bridge-conventions.md (the shared byte-swap
@@ -391,6 +395,17 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_RX_JUMBO_RCB_MAXLEN_FLAGS 0x2448
 #define BCM570X_RX_JUMBO_RING_LEN   256u
 #define BCM570X_SRAM_RX_RETURN_RCB  0x0200
+/*
+ * The one counter this model keeps in the on-chip statistics memory (SRAM
+ * 0x0300-0x0AFF): `nicNoMoreRXBDs`, "Number of times NIC ran out of the
+ * Receive Buffer Descriptors", updated by the Receive List Placement state
+ * machine (PG105 page 110, Table 49) at its documented offset within the
+ * block (PG105 page 114, Table 54). The block's slots are each a full 8
+ * bytes; only the low 32 bits at this offset are counted; the high word and
+ * every other counter in the block stay generic store-and-log state, as
+ * before. Bumped on the jumbo-ring-empty discard below.
+ */
+#define BCM570X_SRAM_STATS_NO_MORE_RXBDS 0x0898
 #define BCM570X_RXBD_SIZE           32
 #define BCM570X_RXBD_ADDR_HI        0x00    /* offsets within an rx descriptor */
 #define BCM570X_RXBD_ADDR_LO        0x04
@@ -535,6 +550,20 @@ static void bcm570x_sram_write(Bcm570xState *s, uint32_t off, uint32_t val)
         val = ~val;
     }
     s->sram[off >> 2] = val;
+}
+
+/*
+ * Count a frame the receive path discarded for want of a posted descriptor,
+ * at the SRAM offset PG105 documents for `nicNoMoreRXBDs` (see
+ * BCM570X_SRAM_STATS_NO_MORE_RXBDS). A plain read-increment-write through the
+ * same SRAM backing store every other on-chip location uses, so it round-trips
+ * through the BAR0 and indirect memory windows identically.
+ */
+static void bcm570x_stats_bump_no_more_rxbds(Bcm570xState *s)
+{
+    uint32_t off = BCM570X_SRAM_STATS_NO_MORE_RXBDS;
+
+    bcm570x_sram_write(s, off, bcm570x_sram_read(s, off) + 1);
 }
 
 /* The chip id MISC_CTL[31:16] presents, from which the driver reads the part. */
@@ -2296,6 +2325,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
                               "posted\n", framelen, std_size);
             }
             s->rx_shortage_drops++;
+            bcm570x_stats_bump_no_more_rxbds(s);
             return orig_size;
         }
         std_base = jumbo_base;

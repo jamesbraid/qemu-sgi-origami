@@ -101,6 +101,8 @@
 #define BCM_RCB_FLAG_DISABLE_RING 0x0002u
 #define BCM_SRAM_WINDOW_BASE    0x8000  /* SRAM through the BAR's high half */
 #define BCM_SRAM_RX_RETURN_RCB  0x0200
+/* nicNoMoreRXBDs, PG105 page 110 Table 49 / page 114 Table 54. */
+#define BCM_SRAM_STATS_NO_MORE_RXBDS 0x0898
 #define BCM_MAC_ADDR_0_HIGH     0x0410
 #define BCM_MAC_ADDR_0_LOW      0x0414
 #define BCM_MISC_CFG            0x6804
@@ -685,6 +687,11 @@ static void wait_for_rx_producer(QTestState *qts, uint16_t want)
  *
  * Pins the empty-ring disposition, not arrival timing, so the floor is
  * zeroed: each completion is checked the instant it lands.
+ *
+ * The manual also says the chip counts this rather than latching it
+ * (`nicNoMoreRXBDs`, PG105 page 110); the test reads that counter through the
+ * Bridge before and after the dropped frame and asserts it moved by exactly
+ * one, then holds through the delivered frame and the belated jumbo post.
  */
 static void test_jumbo_ring_unprovisioned_drops_oversize(const void *data)
 {
@@ -737,6 +744,8 @@ static void test_jumbo_ring_unprovisioned_drops_oversize(const void *data)
     /* The jumbo producer mailbox is never written: the ring stays empty. */
     g_assert_cmphex(bar_readl(qts, BCM_MBX_RX_JUMBO_PROD_LO), ==, 0);
     g_assert_cmphex(bar_readl(qts, BCM_RX_JUMBO_RCB_MAXLEN), ==, 0);
+    g_assert_cmphex(bar_readl(qts, BCM_SRAM_WINDOW_BASE +
+                               BCM_SRAM_STATS_NO_MORE_RXBDS), ==, 0);
 
     build_big_rx_frame(big, sizeof(big));
     net_send_frame(sv[0], big, sizeof(big));
@@ -747,6 +756,14 @@ static void test_jumbo_ring_unprovisioned_drops_oversize(const void *data)
     g_assert_cmphex(status_rx_prod_be(qts), ==, 0);
     qtest_memread(qts, RX_BUF_PHYS, got, sizeof(got));
     g_assert_cmpmem(got, sizeof(got), zeros, sizeof(got));
+
+    /*
+     * The chip counts this rather than latching it (PG105 page 110): one
+     * frame dropped for want of a posted jumbo descriptor, one count, read
+     * back across the Origin 200 Bridge like any other register.
+     */
+    g_assert_cmphex(bar_readl(qts, BCM_SRAM_WINDOW_BASE +
+                               BCM_SRAM_STATS_NO_MORE_RXBDS), ==, 1);
 
     /* The receiver is not latched: the frame behind it still arrives. */
     build_big_rx_frame(small, sizeof(small));
@@ -777,6 +794,10 @@ static void test_jumbo_ring_unprovisioned_drops_oversize(const void *data)
                                BCM_RXBD_IDX_LEN), ==, 0);
     qtest_memread(qts, JUMBO_BUF_PHYS, jumbo_got, sizeof(jumbo_got));
     g_assert_cmpmem(jumbo_got, sizeof(jumbo_got), zeros, sizeof(zeros));
+
+    /* Neither the delivered frame nor the late post is this condition. */
+    g_assert_cmphex(bar_readl(qts, BCM_SRAM_WINDOW_BASE +
+                               BCM_SRAM_STATS_NO_MORE_RXBDS), ==, 1);
 
     qtest_quit(qts);
     close(sv[0]);
