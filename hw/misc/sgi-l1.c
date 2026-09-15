@@ -532,6 +532,19 @@ static void l1_invalid(SGIL1State *s, const char *command)
               "try \"help %s\"\r\n", command, command);
 }
 
+static bool l1_debug_value(const char *text, unsigned int *value)
+{
+    const char *end;
+    int error;
+
+    if (!strcmp(text, "0x")) {
+        *value = 0;
+        return true;
+    }
+    error = qemu_strtoui(text, &end, 0, value);
+    return end != text && !*end && (error == 0 || error == -ERANGE);
+}
+
 static bool l1_select(SGIL1State *s, const char *word)
 {
     unsigned subchannel;
@@ -575,7 +588,7 @@ static bool l1_run_line(SGIL1State *s, const char *text, bool console)
     char *p;
     bool own_prompt = false;
     bool found = true;
-    unsigned long debug_value;
+    unsigned int debug_value;
 
     pstrcpy(line, sizeof(line), text);
     pstrcpy(original, sizeof(original), text);
@@ -651,11 +664,17 @@ static bool l1_run_line(SGIL1State *s, const char *text, bool console)
         } else {
             l1_invalid(s, "l1dbg");
         }
-    } else if (!strcmp(argv[0], "debug") && argc == 2 &&
-               !qemu_strtoul(argv[1], NULL, 16, &debug_value) &&
-               debug_value <= 0xffff) {
-        s->debug_switches = debug_value;
-        l1_printf(s, "debug switches set to 0x%04lx\r\n", debug_value);
+    } else if (!strcmp(argv[0], "debug")) {
+        if (argc == 1) {
+            l1_printf(s, "debug switches set to 0x%04x\r\n",
+                      s->debug_switches);
+        } else if (argc == 2 && l1_debug_value(argv[1], &debug_value)) {
+            s->debug_switches = debug_value & 0xffff;
+            l1_printf(s, "debug switches set to 0x%04x\r\n",
+                      s->debug_switches);
+        } else {
+            l1_invalid(s, "debug");
+        }
     } else if (l1_word(argv[0], "version", "ver")) {
         l1_version(s);
     } else if (!strcmp(argv[0], "l1")) {

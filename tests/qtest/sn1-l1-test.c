@@ -1551,27 +1551,71 @@ static void test_settings_queries(void)
     qtest_quit(s);
 }
 
+static void expect_debug_switches(QTestState *s, uint8_t high, uint8_t low)
+{
+    uint8_t reply[131];
+    const uint8_t expected[] = { 0x30, 0, 0, 0, 0, 1,
+                                 0, 0, 0, high, low };
+
+    g_assert_cmpuint(general(s, 1, NULL, 0, 0, reply), ==,
+                     sizeof(expected));
+    g_assert_cmpmem(reply, sizeof(expected), expected, sizeof(expected));
+}
+
 static void test_debug_set(void)
 {
     int fd;
     QTestState *s = console_start(&fd, ",auto-power=off", "");
-    const uint8_t expected[] = { 0x30, 0, 0, 0, 0, 1,
-                                 0, 0, 0, 1, 0x0d };
-    uint8_t reply[131];
+    static const struct {
+        const char *command;
+        const char *response;
+        uint8_t high;
+        uint8_t low;
+    } writes[] = {
+        { "debug 269\r", "debug switches set to 0x010d\r\n" PROMPT,
+          0x01, 0x0d },
+        { "debug 040\r", "debug switches set to 0x0020\r\n" PROMPT,
+          0x00, 0x20 },
+        { "debug +0x010d\r", "debug switches set to 0x010d\r\n" PROMPT,
+          0x01, 0x0d },
+        { "debug -1\r", "debug switches set to 0xffff\r\n" PROMPT,
+          0xff, 0xff },
+        { "debug 65536\r", "debug switches set to 0x0000\r\n" PROMPT,
+          0x00, 0x00 },
+        { "debug 0x\r", "debug switches set to 0x0000\r\n" PROMPT,
+          0x00, 0x00 },
+        { "debug 4294967296\r", "debug switches set to 0xffff\r\n"
+          PROMPT, 0xff, 0xff },
+        { "debug 0x010d\r", "debug switches set to 0x010d\r\n" PROMPT,
+          0x01, 0x0d },
+    };
+    static const char *bad[] = {
+        "debug nope\r", "debug 0x10junk\r", "debug 09\r",
+        "debug 4294967296junk\r", "debug 0x10 extra\r",
+    };
 
     console_send(fd, "\r");
     console_expect(fd, PROMPT);
-    console_send(fd, "debug 0x010d\r");
+    console_send(fd, "debug\r");
+    console_expect(fd, "debug switches set to 0x0000\r\n" PROMPT);
+    expect_debug_switches(s, 0, 0);
+    for (size_t i = 0; i < ARRAY_SIZE(writes); i++) {
+        console_send(fd, writes[i].command);
+        console_expect(fd, writes[i].response);
+        expect_debug_switches(s, writes[i].high, writes[i].low);
+    }
+    for (size_t i = 0; i < ARRAY_SIZE(bad); i++) {
+        console_send(fd, bad[i]);
+        console_expect(fd, "ERROR: invalid arguments for 'debug' command, "
+                       "try \"help debug\"\r\n" PROMPT);
+        expect_debug_switches(s, 1, 0x0d);
+    }
+    console_send(fd, "debug\r");
     console_expect(fd, "debug switches set to 0x010d\r\n" PROMPT);
-    g_assert_cmpuint(general(s, 1, NULL, 0, 0, reply), ==,
-                     sizeof(expected));
-    g_assert_cmpmem(reply, sizeof(expected), expected, sizeof(expected));
 
     /* Node reset retention is inferred by the reviewed L1 contract. */
     qtest_system_reset(s);
-    g_assert_cmpuint(general(s, 1, NULL, 0, 0, reply), ==,
-                     sizeof(expected));
-    g_assert_cmpmem(reply, sizeof(expected), expected, sizeof(expected));
+    expect_debug_switches(s, 1, 0x0d);
     qtest_quit(s);
     close(fd);
 }
