@@ -39,6 +39,11 @@ mips_ss.add(when: 'CONFIG_SGI_SN0', if_true: files('sgi/sn-promdata.c'))
 mips_ss.add(when: 'CONFIG_SGI_SN1',
             if_true: files('sgi/sn1.c', 'sgi/sn1-node.c',
                            'sn1-origin300-model.c'))
+# The crosstalk board base class: shared by SN0 and SN1 I/O boards, so it
+# selects on its own Kconfig symbol rather than either machine's.
+mips_ss.add(when: 'CONFIG_SGI_XTALK_BOARD', if_true: files('sgi/xtalk-board.c'))
+mips_ss.add(when: 'CONFIG_SGI_XTALK_BOARD_TEST',
+            if_true: files('sgi/xtalk-test-board.c'))
 subdir('sgi')
 mips_ss.add(when: 'CONFIG_FULOONG', if_true: files('fuloong2e.c'))
 mips_ss.add(when: 'CONFIG_MIPS_BOSTON', if_true: files('boston.c'))
