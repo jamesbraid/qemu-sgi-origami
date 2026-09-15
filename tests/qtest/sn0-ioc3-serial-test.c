@@ -13,6 +13,7 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "sn0-user-image.h"
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -1929,6 +1930,9 @@ static void test_node1_ioc3_a_receives_through_serial_hd_6(const void *data)
     const uint64_t node1 = SN0_NODE_STRIDE;
     const uint64_t serial_a = node1 + SERIAL_A;
     const uint8_t sent = 'N';
+
+    /* No PROM ran to assign node 1 its number; this Bridge needs it claimed. */
+    sn0_program_nasid(qts, 1);
 
     /* Bring up node 1's controller and its port A, ring DMA left off. */
     sn0_ioc3_attach_node(qts, node1);

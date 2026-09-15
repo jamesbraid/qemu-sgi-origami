@@ -26,6 +26,7 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "sn0-user-image.h"
 
 /* This file's own copies, the way every sn0-*-test.c stands alone. */
 #define SPACE_XTALK         0x20000000000ULL
@@ -219,6 +220,7 @@ static void test_direct_adapter_map_is_own_plus_peer(const void *data)
 {
     QTestState *qts = qtest_init(MACHINE_DUAL);
     uint64_t value;
+    sn0_program_nasid(qts, 1);
 
     qtest_writeq(qts, MEM_PROBE, MEM_PLANT_NODE0);
     qtest_writeq(qts, NODE_STRIDE + MEM_PROBE, MEM_PLANT_NODE1);
@@ -272,6 +274,7 @@ static void test_bte_resolves_by_programmed_number(const void *data)
     const uint64_t far = FAR_NUMBER * NODE_STRIDE;
     const uint64_t hub1 = HUB_BY_NODE + node1;
     const uint64_t hub_far = HUB_BY_NODE + far;
+    sn0_program_nasid(qts, 1);
 
     memset_line(qts, 0x01500000, 0xaa);
     memset_line(qts, node1 + 0x01500000, 0xbb);
@@ -334,6 +337,7 @@ static void test_bte_completion_interrupt_goes_by_number(const void *data)
     QTestState *qts = qtest_init(MACHINE_DUAL);
     const uint64_t hub0 = HUB_BY_NODE;
     const uint64_t hub1 = HUB_BY_NODE + NODE_STRIDE;
+    sn0_program_nasid(qts, 1);
 
     memset_line(qts, 0x01500000, 0xaa);
     qtest_writeq(qts, hub0 + BTE_LENGTH(0), BTE_BUSY | 1);
@@ -380,6 +384,7 @@ static void test_bridge_interrupt_reaches_the_peer_hub(const void *data)
                                  " -device sgi-bridge-dma-test,addr=3,bus=pci.1");
     const uint64_t hub0 = HUB_BY_NODE;
     const uint64_t hub1 = HUB_BY_NODE + NODE_STRIDE;
+    sn0_program_nasid(qts, 1);
 
     bridge_card_in_slot(qts, 1, 3, 0);
     qtest_writel(qts, REG(1, BRIDGE_INT_HOST(3)), (0u << 8) | 42);
@@ -421,6 +426,7 @@ static void test_bridge_dma_reaches_the_peer_node(const void *data)
     const uint64_t sys = 0x00bc4000ULL;
     uint8_t seen[16];
     unsigned int i;
+    sn0_program_nasid(qts, 1);
 
     bridge_card_in_slot(qts, 1, 6, DEV_SWAP_DIRECT);
     qtest_writel(qts, REG(1, BRIDGE_DIRECT_MAP), 0);
@@ -500,6 +506,7 @@ static void test_direct_adapter_migration(const void *data)
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpdir);
 
     from = qtest_init(MACHINE_DUAL " -S");
+    sn0_program_nasid(from, 1);
     qtest_writeq(from, NODE_STRIDE + MEM_PROBE, MEM_PLANT_NODE1);
     qtest_writeq(from, NODE_STRIDE + HUB_LOCAL + NI_SCRATCH_0,
                  0x0123456789abcdefULL);
@@ -533,6 +540,10 @@ static void test_link_status_follows_the_fabric(const void *data)
 {
     QTestState *qts = qtest_init(MACHINE_DUAL);
     uint64_t hub1 = HUB_BY_NODE + NODE_STRIDE;
+
+    sn0_program_nasid(qts, 1);
+    /* That numbering is itself a vector op; clear its latched completion. */
+    qtest_readq(qts, HUB_BY_NODE + NI_VECTOR_CLEAR);
 
     g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + NI_STATUS) &
                     NI_STATUS_LINK_UP, ==, NI_STATUS_LINK_UP);

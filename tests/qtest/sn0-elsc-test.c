@@ -10,6 +10,7 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "sn0-user-image.h"
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -22,10 +23,6 @@
 
 #define I2C_DATA        0x220000
 #define I2C_CTRL        0x220008
-
-#define NI_STATUS       0x600000
-#define NI_REGION_SIZE  (1ULL << 17)
-#define NI_NODE(n)      ((uint64_t)(n) << 8)
 
 #define CTL_PIN  0x80
 #define CTL_ESO  0x40
@@ -255,6 +252,9 @@ static void test_read_switches_roundtrip(const void *data)
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 5);
     g_assert(memcmp(&resp[1], "ok ef", 5) == 0);
+
+    /* Node 1's own Hub must know its number before anything can name it. */
+    sn0_program_nasid(qts, 1);
 
     resp_len = elsc_transact_at(qts, HUB_BY_NODE + NODE_STRIDE, req, req_len,
                                 resp, sizeof(resp));
@@ -1032,6 +1032,8 @@ static void test_two_towers_only_master_aux_active(const void *data)
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert(memcmp(&resp[1], "ok 2", 4) == 0);
 
+    sn0_program_nasid(qts, 1);
+
     req_len = build_request(req, "acp 0 n1");
     resp_len = elsc_transact_at(qts, HUB_BY_NODE + NODE_STRIDE, req,
                                 req_len, resp, sizeof(resp));
@@ -1088,8 +1090,7 @@ static void test_two_towers_share_master_grant_ring(const void *data)
     assert_shared_five_position_ring(qts, master_cpu, explicit_zero,
                                      slave_cpu, explicit_zero);
 
-    cpu_writeq(qts, slave_cpu, HUB_LOCAL + NI_STATUS,
-               NI_REGION_SIZE | NI_NODE(1));
+    sn0_program_nasid(qts, 1);
 
     cpu_writeq(qts, slave_cpu, explicit_zero + I2C_CTRL,
                CTL_PIN | CTL_ES1);
@@ -1169,8 +1170,7 @@ static void test_two_towers_share_master_grant_ring(const void *data)
     assert_shared_five_position_ring(qts, master_cpu, explicit_zero,
                                      slave_cpu, explicit_zero);
 
-    cpu_writeq(qts, slave_cpu, HUB_LOCAL + NI_STATUS,
-               NI_REGION_SIZE | NI_NODE(1));
+    sn0_program_nasid(qts, 1);
     cpu_writeq(qts, slave_cpu, explicit_zero + I2C_CTRL,
                CTL_PIN | CTL_ES1);
     cpu_writeq(qts, slave_cpu, explicit_one + I2C_CTRL,
