@@ -575,6 +575,7 @@ static bool l1_run_line(SGIL1State *s, const char *text, bool console)
     char *p;
     bool own_prompt = false;
     bool found = true;
+    unsigned long debug_value;
 
     pstrcpy(line, sizeof(line), text);
     pstrcpy(original, sizeof(original), text);
@@ -650,6 +651,11 @@ static bool l1_run_line(SGIL1State *s, const char *text, bool console)
         } else {
             l1_invalid(s, "l1dbg");
         }
+    } else if (!strcmp(argv[0], "debug") && argc == 2 &&
+               !qemu_strtoul(argv[1], NULL, 16, &debug_value) &&
+               debug_value <= 0xffff) {
+        s->debug_switches = debug_value;
+        l1_printf(s, "debug switches set to 0x%04lx\r\n", debug_value);
     } else if (l1_word(argv[0], "version", "ver")) {
         l1_version(s);
     } else if (!strcmp(argv[0], "l1")) {

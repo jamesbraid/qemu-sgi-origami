@@ -1551,6 +1551,31 @@ static void test_settings_queries(void)
     qtest_quit(s);
 }
 
+static void test_debug_set(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, ",auto-power=off", "");
+    const uint8_t expected[] = { 0x30, 0, 0, 0, 0, 1,
+                                 0, 0, 0, 1, 0x0d };
+    uint8_t reply[131];
+
+    console_send(fd, "\r");
+    console_expect(fd, PROMPT);
+    console_send(fd, "debug 0x010d\r");
+    console_expect(fd, "debug switches set to 0x010d\r\n" PROMPT);
+    g_assert_cmpuint(general(s, 1, NULL, 0, 0, reply), ==,
+                     sizeof(expected));
+    g_assert_cmpmem(reply, sizeof(expected), expected, sizeof(expected));
+
+    /* Node reset retention is inferred by the reviewed L1 contract. */
+    qtest_system_reset(s);
+    g_assert_cmpuint(general(s, 1, NULL, 0, 0, reply), ==,
+                     sizeof(expected));
+    g_assert_cmpmem(reply, sizeof(expected), expected, sizeof(expected));
+    qtest_quit(s);
+    close(fd);
+}
+
 static void test_uart_interrupts(void)
 {
     QTestState *s = start();
@@ -2298,6 +2323,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/power-down-event", test_power_down_event);
     qtest_add_func("sn1/l1/task-commands", test_task_commands);
     qtest_add_func("sn1/l1/settings-queries", test_settings_queries);
+    qtest_add_func("sn1/l1/debug-set", test_debug_set);
     qtest_add_func("sn1/l1/uart-interrupts", test_uart_interrupts);
     qtest_add_func("sn1/l1/uart-irq-migration", test_uart_irq_migration);
     qtest_add_func("sn1/l1/node-position", test_node_position);
