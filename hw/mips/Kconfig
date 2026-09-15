@@ -81,6 +81,46 @@ config SGI_XTALK_BOARD_TEST
     select SGI_XTALK_BOARD
     select SGI_XTALK_TEST_TARGET
 
+# The four board classes. No product machine builds any of them yet -- the
+# machine wiring that replaces the xtalk assembly with these is a later
+# step -- so each is a plain symbol the qtest-only config below selects,
+# the way SGI_XTALK_BOARD_TEST selects the base class's own test board.
+config SGI_IP29_IO
+    bool
+    select SGI_XTALK_BOARD
+    select SGI_BRIDGE
+    select QLOGIC_ISP_SCSI_PCI
+    select SGI_IOC3
+
+config SGI_BASEIO
+    bool
+    select SGI_XTALK_BOARD
+    select SGI_BRIDGE
+    select QLOGIC_ISP_SCSI_PCI
+    select SGI_IOC3
+
+config SGI_IO8
+    bool
+    select SGI_XTALK_BOARD
+    select SGI_XBRIDGE
+    select QLOGIC_ISP_SCSI_PCI
+    select SGI_IOC3
+    select USB_OHCI_PCI
+
+config SGI_PCI_EXPANSION
+    bool
+    select SGI_XTALK_BOARD
+    select SGI_BRIDGE
+
+config SGI_BOARD_TEST
+    bool
+    default y if TEST_DEVICES
+    depends on TEST_DEVICES
+    select SGI_IP29_IO
+    select SGI_BASEIO
+    select SGI_IO8
+    select SGI_PCI_EXPANSION
+
 config FULOONG
     bool
     default y
