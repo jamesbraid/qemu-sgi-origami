@@ -40,6 +40,7 @@
 #define PI_CPU_NUMBER UINT64_C(0x20)
 #define PI_CPU_PRESENT_A UINT64_C(0x40)
 #define PI_CPU_PRESENT_B UINT64_C(0x48)
+#define PI_CPU_ENABLE_A UINT64_C(0x50)
 #define PI_CPU_ENABLE_B UINT64_C(0x58)
 #define PI_CPU_ENABLE_C (BEDROCK_PI1 + UINT64_C(0x50))
 #define PI_NMI_A UINT64_C(0x70)
@@ -384,9 +385,10 @@ static char *create_cpu_number_prom(void)
     stl_be_p(image + 0x420, 0x00431025);
     stl_be_p(image + 0x424, 0xdc530000); /* ld s3, 0(v0) */
     stl_be_p(image + 0x428, 0xdc540078); /* ld s4, pending 0 */
-    stl_be_p(image + 0x42c, 0x34150000 | CPU_NUMBER_READY_MARKER);
-    stl_be_p(image + 0x430, 0x1000ffff); /* park */
-    stl_be_p(image + 0x434, 0x00000000);
+    stl_be_p(image + 0x42c, 0xdc560030); /* ld s6, CPU_ENABLE_A(v0) */
+    stl_be_p(image + 0x430, 0x34150000 | CPU_NUMBER_READY_MARKER);
+    stl_be_p(image + 0x434, 0x1000ffff); /* park */
+    stl_be_p(image + 0x438, 0x00000000);
 
     fd = g_file_open_tmp("sn1-cpu-number-prom-XXXXXX.bin", &path, &error);
     g_assert_no_error(error);
@@ -2933,6 +2935,33 @@ static void test_cpu_number_read_is_per_cpu(const void *data)
     g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
+static void test_cpu_enable_read_is_per_cpu(const void *data)
+{
+    g_autofree char *path = NULL;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    path = create_cpu_number_prom();
+    qts = machine_start_with(path, "-accel tcg,thread=multi -no-shutdown -S");
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + PI_CPU_ENABLE_A), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + PI_CPU_ENABLE_C), ==, 1);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_for_cpu_gpr(qts, 0, "s5", CPU_NUMBER_READY_MARKER);
+    wait_for_cpu_gpr(qts, 1, "s5", CPU_NUMBER_READY_MARKER);
+    stop_vm(qts);
+
+    /* Register routing is checked here, not enforcement of bus grants. */
+    g_assert_cmphex(cpu_gpr(qts, 0, "s6"), ==, 0);
+    g_assert_cmphex(cpu_gpr(qts, 1, "s6"), ==, 1);
+
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
 static void test_config0_cold_reset(const void *data)
 {
     g_autofree char *path = NULL;
@@ -3541,6 +3570,8 @@ int main(int argc, char **argv)
                         test_machine_defaults);
     qtest_add_data_func("sn1/address-map/cpu-number-read-is-per-cpu", NULL,
                         test_cpu_number_read_is_per_cpu);
+    qtest_add_data_func("sn1/address-map/cpu-enable-read-is-per-cpu", NULL,
+                        test_cpu_enable_read_is_per_cpu);
     qtest_add_data_func("sn1/address-map/cpu-c-enable-controls-bus", NULL,
                         test_cpu_c_enable_controls_bus_eligibility);
     qtest_add_data_func("sn1/address-map/config0-cold-reset", NULL,
