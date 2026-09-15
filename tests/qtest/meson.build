@@ -347,7 +347,7 @@ qtests_mips64 = \
   sn0_router_qtests + \
   sn0_ohci_qtests + \
   (config_all_devices.has_key('CONFIG_SGI_L1') ?
-    ['sn1-l1-test'] : []) + \
+    ['sn1-l1-test', 'sgi-l1-usb-software-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_BEDROCK_MD') ?
     ['sn1-bedrock-md-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_BEDROCK_NI') ?
