@@ -61,15 +61,6 @@ typedef struct SN0FlashImplementation {
 #define SN0_BIG_WINDOW_BASE      0x20000000
 
 /*
- * The board's boot flash records the configuration it was provisioned
- * for at this offset; sn0_report_node_flash_mode() compares it against
- * the processor mode bits the board itself latches. Present in every
- * IP27 PROM image, stock or otherwise -- not synthesized content.
- */
-#define SN0_CONFIG_OFFSET   0x60
-#define SN0_CONFIG_MAGIC    0x69703237636f6e66ULL  /* "ip27conf" */
-
-/*
  * The R10000 latches bits 24:0 from the mode bits driven at reset and
  * hardwires the rest; not software-writable, so a write must not stick.
  */
@@ -218,9 +209,6 @@ struct SN0MachineState {
 
     /* On by default: the only output while firmware picks a console. */
     bool debug_leds;
-
-    /* Whether this machine presents firmware of its own. */
-    bool synthesized_firmware;
 
     /* Physical switch mask returned through each node's ELSC. */
     uint8_t elsc_dip_switches;
