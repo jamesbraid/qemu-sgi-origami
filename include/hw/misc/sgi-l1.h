@@ -22,6 +22,16 @@ typedef struct SGIL1EEPROM {
     bool invalid;
 } SGIL1EEPROM;
 
+typedef struct SGIL1SelectedEEPROM {
+    bool present;
+    uint8_t kind;
+    uint32_t capacity;
+    uint8_t *image;
+    uint32_t start[5];
+    uint32_t length[5];
+    uint8_t status[5];
+} SGIL1SelectedEEPROM;
+
 /* The controller: what the L1 keeps on its own side of the link. */
 struct SGIL1State {
     DeviceState parent_obj;
@@ -57,10 +67,15 @@ struct SGIL1State {
     char **chassis_files;
     char **board_files;
     char **spd_files;
+    char **board_record_files;
+    char **spd_record_files;
     uint32_t chassis_count;
     uint32_t board_count;
     uint32_t spd_count;
+    uint32_t board_record_count;
+    uint32_t spd_record_count;
     SGIL1EEPROM records[48];
+    SGIL1SelectedEEPROM selected[6];
     uint32_t rack;
     uint32_t bay;
     uint32_t pending_rack;

@@ -456,6 +456,90 @@ static bool l1_arguments(const uint8_t *p, unsigned length, unsigned count)
     return offset == length;
 }
 
+static void l1_selected_read(SGIL1State *s, uint8_t channel,
+                             unsigned component, uint32_t area,
+                             uint32_t offset, uint32_t requested)
+{
+    SGIL1SelectedEEPROM *record = &s->selected[component];
+    uint8_t fields[122];
+    uint32_t length;
+
+    if (area > 4) {
+        l1_reply(s, channel, -105, 0, NULL, 0);
+        return;
+    }
+    if ((record->kind == 1 && area == 4) ||
+        (record->kind == 2 && area != 4)) {
+        l1_reply(s, channel, -104, 0, NULL, 0);
+        return;
+    }
+    if (record->status[area]) {
+        l1_reply(s, channel, -107, 0, NULL, 0);
+        return;
+    }
+    if (offset >= record->length[area]) {
+        l1_reply(s, channel, -105, 0, NULL, 0);
+        return;
+    }
+    length = MIN(requested, record->length[area] - offset);
+    fields[0] = 0;
+    stl_be_p(fields + 1, record->length[area] - offset - length);
+    if (!requested) {
+        l1_reply(s, channel, 0, 1, fields, 5);
+        return;
+    }
+    if (length > 116) {
+        /* The selected serializer counts the field it cannot fit. */
+        l1_reply(s, channel, 0, 2, fields, 5);
+        return;
+    }
+    fields[5] = 0x80 | length;
+    memcpy(fields + 6, record->image + record->start[area] + offset,
+           length);
+    l1_reply(s, channel, 0, 2, fields, 6 + length);
+}
+
+static void l1_selected_format(SGIL1State *s, uint8_t channel,
+                               uint32_t component)
+{
+    uint8_t fields[45];
+    SGIL1SelectedEEPROM *record;
+    uint32_t values[9];
+    unsigned count;
+
+    if ((component & 0xff) >= 6 ||
+        !s->selected[component & 0xff].present) {
+        l1_reply(s, channel, -104, 0, NULL, 0);
+        return;
+    }
+    if (component >= 6) {
+        l1_reply(s, channel, -105, 0, NULL, 0);
+        return;
+    }
+    record = &s->selected[component];
+    values[0] = record->kind;
+    if (record->kind == 1) {
+        values[1] = record->length[1];
+        values[2] = record->length[2];
+        values[3] = record->length[3];
+        values[4] = record->length[0];
+        values[5] = record->status[1];
+        values[6] = record->status[2];
+        values[7] = record->status[3];
+        values[8] = record->status[0];
+        count = 9;
+    } else {
+        values[1] = record->length[4];
+        values[2] = record->status[4];
+        count = 3;
+    }
+    for (unsigned i = 0; i < count; i++) {
+        fields[i * 5] = 0;
+        stl_be_p(fields + i * 5 + 1, values[i]);
+    }
+    l1_reply(s, channel, 0, count, fields, count * 5);
+}
+
 static void l1_eeprom(SGIL1State *s, uint8_t channel, const uint8_t *args)
 {
     uint32_t component = ldl_be_p(args + 1);
@@ -468,6 +552,10 @@ static void l1_eeprom(SGIL1State *s, uint8_t channel, const uint8_t *args)
 
     if (args[0] || args[5] || args[10] || args[15]) {
         l1_reply(s, channel, -100, 0, NULL, 0);
+        return;
+    }
+    if (component < 6 && s->selected[component].present) {
+        l1_selected_read(s, channel, component, area, offset, requested);
         return;
     }
     /* The selected IP45 six-entry bound precedes area and offset checks. */
@@ -1133,9 +1221,8 @@ static void l1_request(SGIL1State *s)
             error = -100;
             break;
         }
-        /* No component carries a format record in this model. */
-        error = -104;
-        break;
+        l1_selected_format(s, channel, ldl_be_p(args + 1));
+        return;
     case 0x1001:
     case 0x1006:
     case 0x1008:
@@ -1479,6 +1566,112 @@ static bool l1_record_invalid(const SGIL1EEPROM *record, unsigned area)
     return sum != 0;
 }
 
+static bool l1_checksum_ok(const uint8_t *data, unsigned length)
+{
+    uint8_t sum = 0;
+
+    for (unsigned i = 0; i < length; i++) {
+        sum += data[i];
+    }
+    return sum == 0;
+}
+
+static void l1_selected_board_area(SGIL1SelectedEEPROM *record,
+                                   unsigned area, unsigned header_byte)
+{
+    uint32_t start = record->image[header_byte] * 8;
+    uint32_t length;
+    const uint8_t *prefix;
+
+    if (!start || start + 8 > record->capacity) {
+        return;
+    }
+    prefix = record->image + start;
+    if (area == 3) {
+        length = prefix[0] ? prefix[1] * 8 :
+                 ROUND_UP(prefix[2] + 5, 8);
+    } else {
+        length = prefix[1] * 8;
+    }
+    if (!length || start + length >= record->capacity) {
+        return;
+    }
+    if (!l1_checksum_ok(prefix, length)) {
+        record->status[area] = 3;
+        return;
+    }
+    record->start[area] = start;
+    record->length[area] = length;
+    record->status[area] = 0;
+}
+
+static void l1_selected_board_scan(SGIL1SelectedEEPROM *record)
+{
+    memset(record->status, 1, 4);
+    record->length[0] = 8;
+    if (!l1_checksum_ok(record->image, 8)) {
+        record->status[0] = 3;
+        return;
+    }
+    record->status[0] = 0;
+    l1_selected_board_area(record, 1, 2);
+    l1_selected_board_area(record, 2, 3);
+    l1_selected_board_area(record, 3, 1);
+}
+
+static void l1_selected_spd_scan(SGIL1SelectedEEPROM *record)
+{
+    uint8_t sum = 0;
+
+    for (unsigned i = 0; i < 63; i++) {
+        sum += record->image[i];
+    }
+    if (record->image[63] != sum) {
+        record->status[4] = 3;
+        g_clear_pointer(&record->image, g_free);
+        record->capacity = 0;
+        return;
+    }
+    record->length[4] = 160;
+}
+
+static bool l1_selected_valid(const SGIL1SelectedEEPROM *record,
+                              unsigned component)
+{
+    if (!record->present) {
+        return !record->kind && !record->capacity && !record->image;
+    }
+    if (record->kind != (component < 2 ? 1 : 2) ||
+        record->capacity > 65535 ||
+        !!record->capacity != !!record->image) {
+        return false;
+    }
+    if (record->kind == 1 && record->capacity < 8) {
+        return false;
+    }
+    if (record->kind == 2 && record->capacity &&
+        record->capacity != 160) {
+        return false;
+    }
+    for (unsigned area = 0; area < 5; area++) {
+        if (record->status[area] > 4 ||
+            record->start[area] > record->capacity ||
+            record->length[area] > record->capacity - record->start[area]) {
+            return false;
+        }
+        if (record->status[area] && record->length[area] &&
+            !(record->kind == 1 && area == 0 &&
+              record->status[0] == 3 && record->length[0] == 8)) {
+            return false;
+        }
+    }
+    if (record->kind == 2 &&
+        ((record->status[4] == 0) != (record->length[4] == 160))) {
+        return false;
+    }
+    return true;
+}
+
 static int l1_post_load(void *opaque, int version_id)
 {
     SGIL1State *s = opaque;
@@ -1504,6 +1697,17 @@ static int l1_post_load(void *opaque, int version_id)
 
         record->invalid = record->length &&
                           l1_record_invalid(record, i / 16);
+    }
+    for (unsigned component = 0; component < 6; component++) {
+        if (!l1_selected_valid(&s->selected[component], component)) {
+            return -EINVAL;
+        }
+        if (s->selected[component].present &&
+            (s->records[component].length ||
+             s->records[16 + component].length ||
+             s->records[32 + component].length)) {
+            return -EINVAL;
+        }
     }
     for (unsigned i = 0; i < SGI_L1_LOG_ENTRIES; i++) {
         s->log_text[i][SGI_L1_LOG_TEXT - 1] = 0;
@@ -1537,15 +1741,49 @@ static const VMStateDescription vmstate_l1_record = {
     },
 };
 
-/* Version 7 carries the settings the general task reads and writes. */
+static int l1_selected_pre_load(void *opaque)
+{
+    SGIL1SelectedEEPROM *record = opaque;
+
+    g_clear_pointer(&record->image, g_free);
+    return 0;
+}
+
+static bool l1_selected_size_valid(void *opaque, int version_id)
+{
+    return ((SGIL1SelectedEEPROM *)opaque)->capacity <= 65535;
+}
+
+static const VMStateDescription vmstate_l1_selected = {
+    .name = "sgi-l1/selected-eeprom",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .pre_load = l1_selected_pre_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(present, SGIL1SelectedEEPROM),
+        VMSTATE_UINT8(kind, SGIL1SelectedEEPROM),
+        VMSTATE_UINT32(capacity, SGIL1SelectedEEPROM),
+        VMSTATE_VALIDATE("selected-record-size", l1_selected_size_valid),
+        VMSTATE_VBUFFER_ALLOC_UINT32(image, SGIL1SelectedEEPROM, 0,
+                                     NULL, capacity),
+        VMSTATE_UINT32_ARRAY(start, SGIL1SelectedEEPROM, 5),
+        VMSTATE_UINT32_ARRAY(length, SGIL1SelectedEEPROM, 5),
+        VMSTATE_UINT8_ARRAY(status, SGIL1SelectedEEPROM, 5),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+/* Version 8 also carries the selected record cache. */
 static const VMStateDescription vmstate_l1 = {
     .name = TYPE_SGI_L1,
-    .version_id = 7,
-    .minimum_version_id = 7,
+    .version_id = 8,
+    .minimum_version_id = 8,
     .post_load = l1_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_STRUCT_ARRAY(records, SGIL1State, 48, 0,
                              vmstate_l1_record, SGIL1EEPROM),
+        VMSTATE_STRUCT_ARRAY(selected, SGIL1State, 6, 0,
+                             vmstate_l1_selected, SGIL1SelectedEEPROM),
         VMSTATE_BOOL(node_power, SGIL1State),
         VMSTATE_BOOL(power_up_pending, SGIL1State),
         VMSTATE_BOOL(console_mode, SGIL1State),
@@ -1650,6 +1888,58 @@ static void l1_realize(DeviceState *dev, Error **errp)
             record->invalid = l1_record_invalid(record, area);
         }
     }
+    if (s->board_record_count > 6 || s->spd_record_count > 6) {
+        error_setg(errp, "L1 selected EEPROM has more than six components");
+        return;
+    }
+    for (unsigned component = 0; component < 6; component++) {
+        char *board_path = component < s->board_record_count ?
+                           s->board_record_files[component] : NULL;
+        char *spd_path = component < s->spd_record_count ?
+                         s->spd_record_files[component] : NULL;
+        bool board = board_path && board_path[0];
+        bool spd = spd_path && spd_path[0];
+        SGIL1SelectedEEPROM *record = &s->selected[component];
+        gsize length;
+        GError *local_error = NULL;
+        char *data;
+
+        if (!board && !spd) {
+            continue;
+        }
+        if (board == spd || (board && component >= 2) ||
+            (spd && component < 2)) {
+            error_setg(errp, "L1 selected EEPROM component kind is invalid");
+            return;
+        }
+        if (s->records[component].length ||
+            s->records[16 + component].length ||
+            s->records[32 + component].length) {
+            error_setg(errp, "L1 selected EEPROM conflicts with raw area file");
+            return;
+        }
+        if (!g_file_get_contents(board ? board_path : spd_path, &data,
+                                 &length, &local_error)) {
+            error_setg(errp, "L1 selected EEPROM: %s", local_error->message);
+            g_error_free(local_error);
+            return;
+        }
+        if (length > 65535 || (board && length < 8) ||
+            (spd && length != 160)) {
+            error_setg(errp, "L1 selected EEPROM record length is invalid");
+            g_free(data);
+            return;
+        }
+        record->present = true;
+        record->kind = board ? 1 : 2;
+        record->capacity = length;
+        record->image = (uint8_t *)data;
+        if (board) {
+            l1_selected_board_scan(record);
+        } else {
+            l1_selected_spd_scan(record);
+        }
+    }
     s->pending_rack = s->rack;
     s->pending_bay = s->bay;
     s->power_up_bh = qemu_bh_new(l1_power_up_bh, s);
@@ -1688,6 +1978,10 @@ static const Property l1_properties[] = {
                       board_files, qdev_prop_string, char *),
     DEFINE_PROP_ARRAY("spd-eeprom", SGIL1State, spd_count,
                       spd_files, qdev_prop_string, char *),
+    DEFINE_PROP_ARRAY("board-record-eeprom", SGIL1State, board_record_count,
+                      board_record_files, qdev_prop_string, char *),
+    DEFINE_PROP_ARRAY("spd-record-eeprom", SGIL1State, spd_record_count,
+                      spd_record_files, qdev_prop_string, char *),
     DEFINE_PROP_UINT32("rack", SGIL1State, rack, 1),
     DEFINE_PROP_UINT32("bay", SGIL1State, bay, 1),
     DEFINE_PROP_UINT32("node-position", SGIL1State, node_position, 0),
@@ -1735,6 +2029,9 @@ static void l1_finalize(Object *obj)
     SGIL1State *s = SGI_L1(obj);
     for (unsigned i = 0; i < 48; i++) {
         g_free(s->records[i].data);
+    }
+    for (unsigned i = 0; i < 6; i++) {
+        g_free(s->selected[i].image);
     }
     g_free(s->system_serial);
     g_free(s->brick_serial);

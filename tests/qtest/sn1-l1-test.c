@@ -215,6 +215,44 @@ static QTestState *start_files(const char *spd, const char *board,
     return s;
 }
 
+static QTestState *start_selected(const char *board, const char *spd,
+                                  const char *extra)
+{
+    QTestState *s = qtest_initf(
+        "-M none -cpu R10000 -S %s -device '{\"driver\":\"sgi-l1\","
+        "\"id\":\"l1c\",\"board-record-eeprom\":[\"%s\"],"
+        "\"spd-record-eeprom\":[\"\",\"\",\"%s\"]}' "
+        "-device '{\"driver\":\"sgi-l1-uart\",\"id\":\"l1\","
+        "\"controller\":\"l1c\"}'",
+        extra, board, spd);
+
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    return s;
+}
+
+static size_t eeprom_format(QTestState *s, uint32_t component,
+                            uint8_t *reply)
+{
+    uint8_t arg[5];
+
+    integer(arg, component);
+    return general(s, 7, arg, sizeof(arg), 1, reply);
+}
+
+static void expect_format(QTestState *s, uint32_t component,
+                          const uint32_t *values, unsigned count)
+{
+    uint8_t expected[51] = { 0x30, 0, 0, 0, 0 };
+    uint8_t reply[131];
+
+    expected[5] = count;
+    for (unsigned i = 0; i < count; i++) {
+        integer(expected + 6 + 5 * i, values[i]);
+    }
+    g_assert_cmpuint(eeprom_format(s, component, reply), ==, 6 + 5 * count);
+    g_assert_cmpmem(reply, 6 + 5 * count, expected, 6 + 5 * count);
+}
+
 static size_t eeprom_read(QTestState *s, unsigned component, unsigned area,
                           unsigned offset, unsigned length, uint8_t *reply)
 {
@@ -428,6 +466,191 @@ static void test_board_area_validity(void)
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
+static void test_selected_board(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-l1-selected-board-XXXXXX",
+                                        &error);
+    g_autofree char *path = NULL;
+    uint8_t image[64] = { 0 }, reply[131];
+    const uint8_t area[] = { 1, 1, 0, 0, 0, 0, 0, 0xfe };
+    const uint8_t iua_reply[] = {
+        0x30, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0x88,
+        1, 1, 0, 0, 0, 0, 0, 0xfe
+    };
+    const uint32_t all_ok[] = { 1, 8, 8, 8, 8, 0, 0, 0, 0 };
+    const uint32_t rounded[] = { 1, 0, 0, 16, 8, 1, 1, 0, 0 };
+    const uint32_t equal_capacity[] = { 1, 0, 0, 0, 8, 1, 1, 1, 0 };
+    const uint32_t bad_iua[] = { 1, 0, 0, 0, 8, 1, 1, 3, 0 };
+    const uint8_t invalid[] = { 0x30, 0xff, 0xff, 0xff, 0x95, 0 };
+    const uint8_t too_high[] = { 0x30, 0xff, 0xff, 0xff, 0x97, 0 };
+    QTestState *s;
+
+    g_assert_no_error(error);
+    path = g_build_filename(dir, "board.bin", NULL);
+    memcpy(image, (uint8_t[]){ 1, 2, 3, 4, 0, 0, 0, 0xf6 }, 8);
+    memcpy(image + 16, area, 8);
+    memcpy(image + 24, area, 8);
+    memcpy(image + 32, area, 8);
+    g_assert_true(g_file_set_contents(path, (char *)image,
+                                      sizeof(image), &error));
+    g_assert_no_error(error);
+    s = start_selected(path, "", "");
+    expect_format(s, 0, all_ok, G_N_ELEMENTS(all_ok));
+    g_assert_cmpuint(eeprom_read(s, 0, 3, 0, 8, reply), ==,
+                     sizeof(iua_reply));
+    g_assert_cmpmem(reply, sizeof(iua_reply), iua_reply,
+                    sizeof(iua_reply));
+    for (unsigned area_index = 0; area_index < 3; area_index++) {
+        unsigned area_code = area_index == 0 ? 0 : area_index == 1 ? 1 : 2;
+        g_assert_cmpuint(eeprom_read(s, 0, area_code, 0, 8, reply), ==, 20);
+        g_assert_cmpmem(reply + 12, 8,
+                        area_code == 0 ? image : area, 8);
+    }
+    g_assert_cmpuint(eeprom_format(s, 256, reply), ==, sizeof(too_high));
+    g_assert_cmpmem(reply, sizeof(too_high), too_high, sizeof(too_high));
+    qtest_quit(s);
+
+    memset(image, 0, sizeof(image));
+    memcpy(image, (uint8_t[]){ 1, 2, 0, 0, 0, 0, 0, 0xfd }, 8);
+    image[18] = 4;
+    image[31] = 0xfc;
+    g_assert_true(g_file_set_contents(path, (char *)image,
+                                      sizeof(image), &error));
+    g_assert_no_error(error);
+    s = start_selected(path, "", "");
+    expect_format(s, 0, rounded, G_N_ELEMENTS(rounded));
+    g_assert_cmpuint(eeprom_read(s, 0, 3, 0, 16, reply), ==, 28);
+    g_assert_cmpmem(reply + 12, 16, image + 16, 16);
+    qtest_quit(s);
+
+    g_assert_true(g_file_set_contents(path, (char *)image, 32, &error));
+    g_assert_no_error(error);
+    s = start_selected(path, "", "");
+    expect_format(s, 0, equal_capacity, G_N_ELEMENTS(equal_capacity));
+    g_assert_cmpuint(eeprom_read(s, 0, 3, 99, 1, reply), ==,
+                     sizeof(invalid));
+    g_assert_cmpmem(reply, sizeof(invalid), invalid, sizeof(invalid));
+    qtest_quit(s);
+
+    image[18] = 3;
+    image[23] = 0xfe;
+    g_assert_true(g_file_set_contents(path, (char *)image,
+                                      sizeof(image), &error));
+    g_assert_no_error(error);
+    s = start_selected(path, "", "");
+    expect_format(s, 0, bad_iua, G_N_ELEMENTS(bad_iua));
+    g_assert_cmpuint(eeprom_read(s, 0, 3, 99, 1, reply), ==,
+                     sizeof(invalid));
+    g_assert_cmpmem(reply, sizeof(invalid), invalid, sizeof(invalid));
+    qtest_quit(s);
+
+    unlink(path);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_selected_spd(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-l1-selected-spd-XXXXXX",
+                                        &error);
+    g_autofree char *path = NULL;
+    uint8_t spd[160] = { 0 }, reply[131];
+    const uint8_t valid[] = {
+        0x30, 0, 0, 0, 0, 3, 0, 0, 0, 0, 2,
+        0, 0, 0, 0, 0xa0, 0, 0, 0, 0, 0
+    };
+    const uint8_t failed[] = {
+        0x30, 0, 0, 0, 0, 3, 0, 0, 0, 0, 2,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 3
+    };
+    const uint8_t invalid[] = { 0x30, 0xff, 0xff, 0xff, 0x95, 0 };
+    const uint8_t dropped[] = { 0x30, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0x2b };
+    QTestState *s;
+
+    g_assert_no_error(error);
+    path = g_build_filename(dir, "spd.bin", NULL);
+    g_assert_true(g_file_set_contents(path, (char *)spd,
+                                      sizeof(spd), &error));
+    g_assert_no_error(error);
+    s = start_selected("", path, "");
+    g_assert_cmpuint(eeprom_format(s, 2, reply), ==, sizeof(valid));
+    g_assert_cmpmem(reply, sizeof(valid), valid, sizeof(valid));
+    g_assert_cmpuint(eeprom_read(s, 2, 4, 0, 117, reply), ==,
+                     sizeof(dropped));
+    g_assert_cmpmem(reply, sizeof(dropped), dropped, sizeof(dropped));
+    qtest_quit(s);
+
+    spd[63] = 1;
+    g_assert_true(g_file_set_contents(path, (char *)spd,
+                                      sizeof(spd), &error));
+    g_assert_no_error(error);
+    s = start_selected("", path, "");
+    g_assert_cmpuint(eeprom_format(s, 2, reply), ==, sizeof(failed));
+    g_assert_cmpmem(reply, sizeof(failed), failed, sizeof(failed));
+    g_assert_cmpuint(eeprom_read(s, 2, 4, 200, 0, reply), ==,
+                     sizeof(invalid));
+    g_assert_cmpmem(reply, sizeof(invalid), invalid, sizeof(invalid));
+    qtest_quit(s);
+    unlink(path);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_selected_raw_conflict(void)
+{
+    const char *path = g_getenv("L1_SELECTED_CONFLICT_PATH");
+    const char *kind = g_getenv("L1_SELECTED_CONFLICT_KIND");
+
+    if (g_test_subprocess()) {
+        if (!strcmp(kind, "board")) {
+            qtest_initf(
+                "-M none -cpu R10000 -S -device '{\"driver\":\"sgi-l1\","
+                "\"id\":\"l1c\",\"board-record-eeprom\":[\"%s\"],"
+                "\"board-eeprom\":[\"%s\"]}'" , path, path);
+        } else {
+            qtest_initf(
+                "-M none -cpu R10000 -S -device '{\"driver\":\"sgi-l1\","
+                "\"id\":\"l1c\",\"spd-record-eeprom\":[\"\","
+                "\"\",\"%s\"],\"spd-eeprom\":[\"\",\"\",\"%s\"]}'",
+                path, path);
+        }
+        return;
+    }
+    {
+        GError *error = NULL;
+        g_autofree char *dir = g_dir_make_tmp("sn1-l1-mixed-files-XXXXXX",
+                                            &error);
+        g_autofree char *board_path = NULL, *spd_path = NULL;
+        uint8_t board[64] = { 1, 0, 0, 0, 0, 0, 0, 0xff };
+        uint8_t spd[160] = { 0 };
+
+        g_assert_no_error(error);
+        board_path = g_build_filename(dir, "board.bin", NULL);
+        spd_path = g_build_filename(dir, "spd.bin", NULL);
+        g_assert_true(g_file_set_contents(board_path, (char *)board,
+                                          sizeof(board), &error));
+        g_assert_no_error(error);
+        g_assert_true(g_file_set_contents(spd_path, (char *)spd,
+                                          sizeof(spd), &error));
+        g_assert_no_error(error);
+        g_setenv("L1_SELECTED_CONFLICT_PATH", board_path, TRUE);
+        g_setenv("L1_SELECTED_CONFLICT_KIND", "board", TRUE);
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr("*conflicts with raw area file*");
+        g_setenv("L1_SELECTED_CONFLICT_PATH", spd_path, TRUE);
+        g_setenv("L1_SELECTED_CONFLICT_KIND", "spd", TRUE);
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr("*conflicts with raw area file*");
+        g_unsetenv("L1_SELECTED_CONFLICT_PATH");
+        g_unsetenv("L1_SELECTED_CONFLICT_KIND");
+        unlink(board_path);
+        unlink(spd_path);
+        g_assert_cmpint(rmdir(dir), ==, 0);
+    }
+}
+
 static void wait_migration(QTestState *s)
 {
     int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
@@ -529,6 +752,81 @@ static void test_eeprom_migration(void)
     unlink(socket);
     unlink(source);
     unlink(destination);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_selected_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-l1-selected-migrate-XXXXXX",
+                                        &error);
+    g_autofree char *socket = NULL, *uri = NULL;
+    g_autofree char *from_board = NULL, *to_board = NULL;
+    g_autofree char *from_spd = NULL, *to_spd = NULL;
+    uint8_t board[64] = { 0 }, spd[160] = { 0 }, reply[131];
+    const uint32_t board_ok[] = { 1, 0, 0, 8, 8, 1, 1, 0, 0 };
+    const uint32_t board_bad[] = { 1, 0, 0, 0, 8, 1, 1, 1, 3 };
+    const uint8_t spd_failed[] = {
+        0x30, 0, 0, 0, 0, 3, 0, 0, 0, 0, 2,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 3
+    };
+    const uint8_t iua[] = { 1, 1, 0, 0, 0, 0, 0, 0xfe };
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from_board = g_build_filename(dir, "from-board.bin", NULL);
+    to_board = g_build_filename(dir, "to-board.bin", NULL);
+    from_spd = g_build_filename(dir, "from-spd.bin", NULL);
+    to_spd = g_build_filename(dir, "to-spd.bin", NULL);
+    memcpy(board, (uint8_t[]){ 1, 2, 0, 0, 0, 0, 0, 0xfd }, 8);
+    memcpy(board + 16,
+           (uint8_t[]){ 1, 1, 0, 0, 0, 0, 0, 0xfe }, 8);
+    g_assert_true(g_file_set_contents(from_board, (char *)board,
+                                      sizeof(board), &error));
+    g_assert_no_error(error);
+    board[7]++;
+    g_assert_true(g_file_set_contents(to_board, (char *)board,
+                                      sizeof(board), &error));
+    g_assert_no_error(error);
+    spd[63] = 1;
+    g_assert_true(g_file_set_contents(from_spd, (char *)spd,
+                                      sizeof(spd), &error));
+    g_assert_no_error(error);
+    spd[63] = 0;
+    g_assert_true(g_file_set_contents(to_spd, (char *)spd,
+                                      sizeof(spd), &error));
+    g_assert_no_error(error);
+
+    from = start_selected(from_board, from_spd, "");
+    to = start_selected(to_board, to_spd, "-incoming defer");
+    expect_format(to, 0, board_bad, G_N_ELEMENTS(board_bad));
+    expect_format(from, 0, board_ok, G_N_ELEMENTS(board_ok));
+    g_assert_cmpuint(eeprom_format(from, 2, reply), ==,
+                     sizeof(spd_failed));
+    g_assert_cmpmem(reply, sizeof(spd_failed), spd_failed,
+                    sizeof(spd_failed));
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    wait_migration(from);
+    wait_migration(to);
+    expect_format(to, 0, board_ok, G_N_ELEMENTS(board_ok));
+    g_assert_cmpuint(eeprom_read(to, 0, 3, 0, 8, reply), ==, 20);
+    g_assert_cmpmem(reply + 12, 8, iua, sizeof(iua));
+    g_assert_cmpuint(eeprom_format(to, 2, reply), ==,
+                     sizeof(spd_failed));
+    g_assert_cmpmem(reply, sizeof(spd_failed), spd_failed,
+                    sizeof(spd_failed));
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    unlink(from_board);
+    unlink(to_board);
+    unlink(from_spd);
+    unlink(to_spd);
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
@@ -2486,9 +2784,15 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/reset", test_reset);
     qtest_add_func("sn1/l1/eeprom", test_eeprom);
     qtest_add_func("sn1/l1/eeprom-six-entries", test_eeprom_six_entries);
+    qtest_add_func("sn1/l1/eeprom-selected-board", test_selected_board);
+    qtest_add_func("sn1/l1/eeprom-selected-spd", test_selected_spd);
+    qtest_add_func("sn1/l1/eeprom-selected-raw-conflict",
+                   test_selected_raw_conflict);
     qtest_add_func("sn1/l1/board-area-validity", test_board_area_validity);
     qtest_add_func("sn1/l1/migration", test_migration);
     qtest_add_func("sn1/l1/eeprom-migration", test_eeprom_migration);
+    qtest_add_func("sn1/l1/eeprom-selected-migration",
+                   test_selected_migration);
     qtest_add_func("sn1/l1/console", test_console);
     qtest_add_func("sn1/l1/metadata", test_metadata);
     qtest_add_func("sn1/l1/poweroff", test_poweroff);
