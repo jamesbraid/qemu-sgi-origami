@@ -241,7 +241,7 @@ static void test_eeprom(void)
     spd_path = g_build_filename(dir, "spd.bin", NULL);
     board_path = g_build_filename(dir, "board.bin", NULL);
     spd[0] = 64;
-    spd[63] = 192;
+    spd[63] = 64;
     memset(spd + 64, 0x37, 64);
     memset(board, 0x83, sizeof(board) - 1);
     board[sizeof(board) - 1] = 0xd0;
@@ -305,6 +305,14 @@ static void test_eeprom(void)
     }
     qtest_quit(s);
     spd[63]++;
+    g_assert_true(g_file_set_contents(spd_path, (char *)spd,
+                                      sizeof(spd), &error));
+    g_assert_no_error(error);
+    s = start_files(spd_path, board_path, "", "", "");
+    g_assert_cmpuint(eeprom_read(s, 0, 4, 0, 0, reply), ==, 6);
+    g_assert_cmphex(reply[4], ==, 0x95);
+    qtest_quit(s);
+    spd[63] = 192;
     g_assert_true(g_file_set_contents(spd_path, (char *)spd,
                                       sizeof(spd), &error));
     g_assert_no_error(error);
