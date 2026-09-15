@@ -138,6 +138,17 @@ void qemu_system_shutdown_request(ShutdownCause reason)
 }
 
 /*
+ * Queues a committed action on the processor driving it, reached only when
+ * current_cpu is set. Both tests exercise only the "no processor" case
+ * above, so this is never called; it exists to link hw/misc/sgi-elsc.c,
+ * which takes its address to hand to async_run_on_cpu().
+ */
+void cpu_pause(CPUState *cpu)
+{
+    g_assert_not_reached();
+}
+
+/*
  * Backends for qdev property kinds no device in this link declares: no
  * audiodev, no netdev, no drive.  They exist because
  * hw/core/qdev-properties-system.c defines all of its property kinds in one
