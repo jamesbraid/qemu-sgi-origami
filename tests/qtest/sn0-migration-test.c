@@ -21,6 +21,7 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "sn0-user-image.h"
 
 /* This file's own copies, the way every sn0-*-test.c stands alone. */
 #define SPACE_XTALK             0x20000000000ULL
@@ -45,6 +46,7 @@
 #define FLASH_PROGRAM_TARGET    0xe0100
 
 #define HUB_LOCAL               (SPACE_XTALK + 0x01000000)
+#define HUB_BY_NODE             (SPACE_XTALK + 0x01800000)
 #define HUB_ONEWIRE             (HUB_LOCAL + 0x2000a8)
 #define HUB_ONEWIRE_DONE        (1ULL << 1)
 #define HUB_ONEWIRE_RX          (1ULL << 0)
@@ -494,35 +496,6 @@ static void queue_ioc3_ethernet_tx(QTestState *qts, uint32_t desc,
     qtest_writel(qts, IOC3_ENET_TX_PRODUCE, produce);
 }
 
-/* The Hub's network interface, as far as renumbering a stock machine needs. */
-#define NI_STATUS               0x600000
-#define NI_VECTOR_PARMS         0x600200
-#define NI_VECTOR               0x600208
-#define NI_VECTOR_DATA          0x600210
-#define NI_REGION_SIZE          (1ULL << 17)
-#define NI_NODE_MASK            (0x1ffULL << 8)
-#define NI_PIOTYPE_WRITE        1
-#define HUB_BY_NODE             (SPACE_XTALK + 0x01800000)
-
-/*
- * A stock-PROM machine boots with every Hub programmed zero, so a
- * node-one-qualified address names no Hub. Program node 1's real number
- * the way the PROM's global master does, a vector write over the
- * CrayLink, so the test can reach node 1's devices by address. The
- * programmed number is Hub state: the destination re-derives its claim
- * from the migrated register, which this test then rides.
- */
-static void assign_node1_number(QTestState *qts)
-{
-    qtest_writeq(qts, HUB_LOCAL + NI_VECTOR, 0);
-    qtest_writeq(qts, HUB_LOCAL + NI_VECTOR_DATA,
-                 NI_REGION_SIZE | (1ULL << 8));
-    qtest_writeq(qts, HUB_LOCAL + NI_VECTOR_PARMS,
-                 NI_STATUS | NI_PIOTYPE_WRITE);
-    g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + NODE_STRIDE + NI_STATUS) &
-                    NI_NODE_MASK, ==, 1ULL << 8);
-}
-
 /* Two equal devfns on different root buses must migrate independently. */
 static void test_dual_base_io_survives_migration(const void *data)
 {
@@ -537,7 +510,7 @@ static void test_dual_base_io_survives_migration(const void *data)
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
     from = qtest_init(MACHINE_DUAL);
-    assign_node1_number(from);
+    sn0_program_nasid(from, 1);
     attach_node_ioc3(from, 0);
     attach_node_ioc3(from, 1);
     qtest_writeb(from, IOC3_SCRATCH_AT(0), 0x5a);
@@ -1278,7 +1251,7 @@ static void test_bte_physical_routing_survives_migration(const void *data)
     g_assert(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
     from = qtest_init(MACHINE_DUAL);
-    assign_node1_number(from);
+    sn0_program_nasid(from, 1);
     qtest_memset(from, src, 0xaa, BTE_LINE);
     qtest_memset(from, NODE_STRIDE + src, 0xbb, BTE_LINE);
     qtest_memset(from, dst, 0xcc, 2 * BTE_LINE);
