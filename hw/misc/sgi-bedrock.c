@@ -15,9 +15,10 @@
 #define BEDROCK_PI_MODIFY_OFFSET 0x90
 #define BEDROCK_PI1_OFFSET 0x200000
 
-static bool bedrock_remote_permitted(SGIBedrockState *s)
+bool sgi_bedrock_hub_registers_permitted(SGIBedrockState *s)
 {
-    return s->md.current_cell & (UINT64_C(1) << s->initiator_region);
+    return s->initiator_region < 64 &&
+           (s->md.current_cell & (UINT64_C(1) << s->initiator_region));
 }
 
 /* True when the window refuses the access, with the reason logged. */
@@ -30,7 +31,7 @@ static bool bedrock_remote_refused(SGIBedrockState *s, hwaddr addr,
                       access, addr);
         return true;
     }
-    if (!bedrock_remote_permitted(s)) {
+    if (!sgi_bedrock_hub_registers_permitted(s)) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock: remote register window "
                       "%s at 0x%" HWADDR_PRIx " denied for region %u\n",
                       access, addr, (unsigned)s->initiator_region);
@@ -115,6 +116,72 @@ static MemTxResult bedrock_remote_write(void *opaque, hwaddr addr,
 static const MemoryRegionOps bedrock_remote_ops = {
     .read_with_attrs = bedrock_remote_read,
     .write_with_attrs = bedrock_remote_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8 },
+    .impl = { .min_access_size = 1, .max_access_size = 8 },
+};
+
+static MemTxResult bedrock_hub_special_read(void *opaque, hwaddr addr,
+                                            uint64_t *value, unsigned size,
+                                            MemTxAttrs attrs)
+{
+    SGIBedrockState *s = opaque;
+    MemoryRegionSection section;
+    MemTxResult result;
+
+    if (!sgi_bedrock_hub_registers_permitted(s)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock: hub register read at "
+                      "0x%" HWADDR_PRIx " denied for region %u\n", addr,
+                      (unsigned)s->initiator_region);
+        return MEMTX_DECODE_ERROR;
+    }
+    section = memory_region_find(&s->mmio, addr, size);
+    if (!section.mr || section.mr == &s->mmio ||
+        int128_lt(section.size, int128_make64(size))) {
+        if (section.mr) {
+            memory_region_unref(section.mr);
+        }
+        return MEMTX_DECODE_ERROR;
+    }
+    result = memory_region_dispatch_read(section.mr,
+                                         section.offset_within_region, value,
+                                         size_memop(size) | MO_BE, attrs);
+    memory_region_unref(section.mr);
+    return result;
+}
+
+static MemTxResult bedrock_hub_special_write(void *opaque, hwaddr addr,
+                                             uint64_t value, unsigned size,
+                                             MemTxAttrs attrs)
+{
+    SGIBedrockState *s = opaque;
+    MemoryRegionSection section;
+    MemTxResult result;
+
+    if (!sgi_bedrock_hub_registers_permitted(s)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock: hub register write at "
+                      "0x%" HWADDR_PRIx " denied for region %u\n", addr,
+                      (unsigned)s->initiator_region);
+        return MEMTX_DECODE_ERROR;
+    }
+    section = memory_region_find(&s->mmio, addr, size);
+    if (!section.mr || section.mr == &s->mmio ||
+        int128_lt(section.size, int128_make64(size))) {
+        if (section.mr) {
+            memory_region_unref(section.mr);
+        }
+        return MEMTX_DECODE_ERROR;
+    }
+    result = memory_region_dispatch_write(section.mr,
+                                          section.offset_within_region, value,
+                                          size_memop(size) | MO_BE, attrs);
+    memory_region_unref(section.mr);
+    return result;
+}
+
+static const MemoryRegionOps bedrock_hub_special_ops = {
+    .read_with_attrs = bedrock_hub_special_read,
+    .write_with_attrs = bedrock_hub_special_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid = { .min_access_size = 1, .max_access_size = 8 },
     .impl = { .min_access_size = 1, .max_access_size = 8 },
@@ -407,6 +474,12 @@ static void bedrock_init(Object *obj)
     memory_region_init_alias(&s->hub_window, obj,
                              TYPE_SGI_BEDROCK "-hub-window", &s->mmio, 0,
                              SGI_BEDROCK_SIZE);
+    memory_region_init_io(&s->hub_special_registers, obj,
+                          &bedrock_hub_special_ops, s,
+                          TYPE_SGI_BEDROCK "-hub-special-registers",
+                          SGI_BEDROCK_SIZE);
+    /* The checked view forwards into this device's own register tree. */
+    s->hub_special_registers.disable_reentrancy_guard = true;
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj),
                      sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->io), 1));
