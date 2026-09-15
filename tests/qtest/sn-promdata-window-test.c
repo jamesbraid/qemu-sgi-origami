@@ -6,13 +6,7 @@
  *
  * Covers placement, priority and memory-space wiring for the
  * flash-execution filter every generation installs, and for the
- * copy_local routing overlay, installed only where a RAM-copy execution
- * address is established for that generation's PROM -- today, Origin
- * 200/2000 only. See docs/datasheets/firmware-structures.md, "The
- * Bedrock/IP35 PROM: the same window, mostly inferred", for why Origin
- * 300 has none yet; test_copy_local_window's Origin 300 case asserts
- * that absence explicitly, so establishing an address later has to
- * touch this test rather than pass by accident.
+ * copy_local routing overlay at each generation's PROM RAM-copy address.
  *
  * qtest never executes guest code, so the private phase itself cannot
  * be armed here -- the same limitation sn0-migration-test.c's own
@@ -37,8 +31,9 @@
 #define PROMDATA_SIZE           UINT64_C(0x00008000)
 
 /* hw/mips/sgi/sn0.c's own constant and origin200's flash_reset.size. */
-#define SN0_PROM_COPY_PADDR     UINT64_C(0x01a00000)
+#define PROM_COPY_PADDR         UINT64_C(0x01a00000)
 #define SN0_FLASH_RESET_SIZE    UINT64_C(0x00100000)
+#define SN1_PROM_COPY_SIZE      UINT64_C(0x00200000)
 
 /* hw/mips/sn1-origin300-model.c's generated prom_size. */
 #define SN1_PROM_SIZE           UINT64_C(0x1686a8)
@@ -48,7 +43,7 @@ typedef struct PromdataWindowCase {
     const char *machine_args;
     bool needs_bios;
     const char *filter_region;
-    const char *copy_region;    /* NULL where no copy_local exists */
+    const char *copy_region;
     uint64_t copy_size;
 } PromdataWindowCase;
 
@@ -66,8 +61,8 @@ static const PromdataWindowCase promdata_window_cases[] = {
         .machine_args = "-M origin300 -cpu R14000 -smp 2",
         .needs_bios = true,
         .filter_region = "sn1.node0.cpu0.promdata-filter",
-        .copy_region = NULL,
-        .copy_size = 0,
+        .copy_region = "sn1.node0.cpu0.prom-copy-local",
+        .copy_size = SN1_PROM_COPY_SIZE,
     },
 };
 
@@ -129,19 +124,15 @@ static void test_copy_local_window(const void *data)
     QTestState *qts = start_case(c, prom_path);
     g_autofree char *mtree = qtest_hmp(qts, "info mtree -D");
 
-    if (c->copy_region == NULL) {
-        g_assert_null(strstr(mtree, "prom-copy-local"));
-    } else {
-        g_autofree char *mapping = g_strdup_printf(
-            "%016" PRIx64 "-%016" PRIx64
-            " (prio 2, container): alias %s @system "
-            "%016" PRIx64 "-%016" PRIx64 " [disabled]",
-            SN0_PROM_COPY_PADDR, SN0_PROM_COPY_PADDR + c->copy_size - 1,
-            c->copy_region, SN0_PROM_COPY_PADDR,
-            SN0_PROM_COPY_PADDR + c->copy_size - 1);
+    g_autofree char *mapping = g_strdup_printf(
+        "%016" PRIx64 "-%016" PRIx64
+        " (prio 2, container): alias %s @system "
+        "%016" PRIx64 "-%016" PRIx64 " [disabled]",
+        PROM_COPY_PADDR, PROM_COPY_PADDR + c->copy_size - 1,
+        c->copy_region, PROM_COPY_PADDR,
+        PROM_COPY_PADDR + c->copy_size - 1);
 
-        g_assert_nonnull(strstr(mtree, mapping));
-    }
+    g_assert_nonnull(strstr(mtree, mapping));
 
     qtest_quit(qts);
     unlink(prom_path);
@@ -167,10 +158,6 @@ static void test_copy_local_window_survives_migration(const void *data)
     QTestState *from, *to;
     g_autofree char *mtree = NULL;
     g_autofree char *mapping = NULL;
-
-    if (c->copy_region == NULL) {
-        return;
-    }
 
     tmpfs = g_dir_make_tmp("sn-promdata-window-migration-XXXXXX", &err);
     g_assert_no_error(err);
@@ -210,9 +197,9 @@ static void test_copy_local_window_survives_migration(const void *data)
         "%016" PRIx64 "-%016" PRIx64
         " (prio 2, container): alias %s @system "
         "%016" PRIx64 "-%016" PRIx64 " [disabled]",
-        SN0_PROM_COPY_PADDR, SN0_PROM_COPY_PADDR + c->copy_size - 1,
-        c->copy_region, SN0_PROM_COPY_PADDR,
-        SN0_PROM_COPY_PADDR + c->copy_size - 1);
+        PROM_COPY_PADDR, PROM_COPY_PADDR + c->copy_size - 1,
+        c->copy_region, PROM_COPY_PADDR,
+        PROM_COPY_PADDR + c->copy_size - 1);
     g_assert_nonnull(strstr(mtree, mapping));
 
     qtest_quit(to);
