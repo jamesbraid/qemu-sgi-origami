@@ -11,6 +11,7 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "sn0-user-image.h"
 
 #define IMAGE_SIZE       0x1000
 #define CODE_START       0x400
@@ -169,6 +170,10 @@ static void test_warm_reset_rendezvous(void)
         "-smp 4,sockets=2,cores=2,threads=1 "
         "-bios %s -accel tcg,thread=multi -S -no-shutdown", image);
     unlink(image);
+    /* No PROM ran to number node one's Hub; mailbox(2) and mailbox(3)
+     * need it claimed, and a full machine reset (every generation below)
+     * clears it back to zero along with everything else. */
+    sn0_program_nasid(qts, 1);
     for (unsigned int cpu = 0; cpu < 4; cpu++) {
         qtest_writeq(qts, mailbox(cpu), 0);
     }
@@ -179,6 +184,7 @@ static void test_warm_reset_rendezvous(void)
          generation <= RESET_CYCLES; generation++) {
         qtest_writeq(qts, MAILBOX + RESET_REQUEST, generation);
         qtest_qmp_eventwait(qts, "RESET");
+        sn0_program_nasid(qts, 1);
         wait_for_generation(qts, generation + 1);
     }
     qtest_quit(qts);
@@ -346,6 +352,9 @@ static void test_scratch_publish(const void *opaque)
         "-bios %s -accel tcg,thread=%s -S -no-shutdown", image, thread);
     unlink(image);
 
+    /* No PROM ran to number node one's Hub; every base below for node 1
+     * needs it claimed, and phase 1's full machine reset clears it again. */
+    sn0_program_nasid(qts, 1);
     for (unsigned int phase = 0; phase < 2; phase++) {
         QDict *status;
 
@@ -353,6 +362,7 @@ static void test_scratch_publish(const void *opaque)
             qtest_qmp_assert_success(qts, "{'execute':'stop'}");
             qtest_writeq(qts, HUB_BY_NODE + NI_PORT_RESET, WARM_LOCAL_RESET);
             qtest_qmp_eventwait(qts, "RESET");
+            sn0_program_nasid(qts, 1);
         }
         /* Pausing at the register boundary lets us initialize both phases. */
         status = qtest_qmp(qts, "{'execute':'query-status'}");
