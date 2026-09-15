@@ -777,8 +777,19 @@ static const Property pi_properties[] = {
                        processor_count, 1),
     DEFINE_PROP_UINT32("processor-mask", SGIBedrockPIState,
                        processor_mask, 0),
+    DEFINE_PROP_UINT8("cpu-enable-initial", SGIBedrockPIState,
+                      cpu_enable_initial, 0),
     DEFINE_PROP_UINT32("request-region", SGIBedrockPIState, request_region, 0),
 };
+
+static void pi_realize(DeviceState *dev, Error **errp)
+{
+    SGIBedrockPIState *s = SGI_BEDROCK_PI(dev);
+
+    (void)errp;
+    s->cpu_enable[0] = s->cpu_enable_initial & 1;
+    s->cpu_enable[1] = (s->cpu_enable_initial >> 1) & 1;
+}
 
 static void pi_init(Object *obj)
 {
@@ -820,6 +831,7 @@ static void pi_class_init(ObjectClass *klass, const void *data)
     ResettableClass *rc = RESETTABLE_CLASS(klass);
 
     dc->desc = "SGI Bedrock processor interface";
+    dc->realize = pi_realize;
     dc->vmsd = &vmstate_pi;
     dc->user_creatable = false;
     device_class_set_props(dc, pi_properties);

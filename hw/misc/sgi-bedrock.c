@@ -303,6 +303,11 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
                    "of four slots", s->processor_count);
         return;
     }
+    if (s->cpu_enable_initial_mask & ~mask) {
+        error_setg(errp, "Bedrock initial CPU enable mask selects an "
+                   "empty slot");
+        return;
+    }
     s->processor_mask = mask;
     if (!s->dma_mr) {
         error_setg(errp, TYPE_SGI_BEDROCK " 'dma-memory' link not set");
@@ -359,6 +364,8 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
                             s->processor_count);
         qdev_prop_set_uint32(DEVICE(&s->pi[i]), "processor-mask",
                             s->processor_mask);
+        qdev_prop_set_uint8(DEVICE(&s->pi[i]), "cpu-enable-initial",
+                           (s->cpu_enable_initial_mask >> (2 * i)) & 3);
         if (!qdev_realize(DEVICE(&s->pi[i]), sysbus_get_default(), errp)) {
             return;
         }
@@ -433,6 +440,8 @@ static const Property bedrock_properties[] = {
                        processor_count, 1),
     DEFINE_PROP_UINT32("processor-mask", SGIBedrockState,
                        processor_mask, 0),
+    DEFINE_PROP_UINT32("cpu-enable-initial-mask", SGIBedrockState,
+                       cpu_enable_initial_mask, 0),
     /*
      * Index of this node's first processor, so each interface can name its
      * own pair and tell the reading processor A from B.

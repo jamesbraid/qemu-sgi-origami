@@ -273,6 +273,10 @@ static void sn1_node_create_bedrock(SN1NodeState *node,
     qdev_prop_set_uint32(node->bedrock, "processor-count", model->cpu_count);
     qdev_prop_set_uint32(node->bedrock, "processor-mask",
                         model->cpu_population_mask);
+    /* Initial C grant is a model approximation. Silicon reset is unknown. */
+    if (model->cpu_count == 2 && model->cpu_population_mask == 0x5) {
+        qdev_prop_set_uint32(node->bedrock, "cpu-enable-initial-mask", 0x4);
+    }
     qdev_prop_set_uint8(node->bedrock, "revision", model->bedrock_revision);
     qdev_prop_set_uint8(node->bedrock, "local-region",
                         model->bedrock_local_region);
