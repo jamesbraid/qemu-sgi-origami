@@ -27,6 +27,7 @@
 #include "system/address-spaces.h"
 #include "system/block-backend.h"
 #include "system/blockdev.h"
+#include "system/ram_addr.h"
 #include "system/reset.h"
 #include "system/system.h"
 #include "cpu.h"
@@ -143,16 +144,7 @@ static void sn1_cpu_reset(void *opaque)
                                     SN1_CONFIG0_RESET_INPUT);
 }
 
-static void sn1_machine_reset(MachineState *machine, ResetType type)
-{
-    CPUState *cs;
-
-    /* Busless MIPS CPUs are outside the registered SysBus reset tree. */
-    CPU_FOREACH(cs) {
-        sn1_cpu_reset(cs);
-    }
-    qemu_devices_reset(type);
-}
+static void sn1_machine_reset(MachineState *machine, ResetType type);
 
 static void sn1_flash_reject_write(hwaddr offset, uint64_t value)
 {
@@ -190,14 +182,9 @@ static const MemoryRegionOps sn1_flash_erased_ops = {
  * Without an image the machine keeps the immutable payload it had before.
  */
 /*
- * The processor's own views of the boot flash. A read handler rather than an
- * alias of the part's region: an alias forwards a write to its target even
- * when the alias is marked read-only, which would let a native command
- * sequence reach the part without passing through Bedrock's translation. A
- * copied region is no better, because it would own an unrelated RAM block that
- * the part's own invalidation never reaches, so an instruction translated from
- * it could survive a program that changed the byte underneath. The dispatch
- * cost on the firmware's fetch path is accepted for that.
+ * The processor fetches from cacheable ROM devices, not MMIO handlers. The
+ * flash's write callback refreshes their copies and invalidates old code.
+ * An alias would pass writes through to the part's command interface.
  */
 static MemTxResult sn1_prom_view_read(void *opaque, hwaddr offset,
                                       uint64_t *value, unsigned size,
@@ -242,13 +229,71 @@ static const MemoryRegionOps sn1_prom_view_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 8 },
 };
 
-static void sn1_init_prom_view(SN1PromView *view, MachineState *machine,
-                               const char *name, MemoryRegion *backing)
+static void sn1_prom_view_apply(SN1PromView *view, DirtyBitmapSnapshot *dirty)
+{
+    uint8_t *dst = memory_region_get_ram_ptr(&view->rom);
+    const uint8_t *src = memory_region_get_ram_ptr(view->backing);
+    uint64_t size = sn1_origin300_model.prom_size;
+
+    for (uint64_t offset = 0; offset < size; offset += 4 * KiB) {
+        uint64_t length = MIN(4 * KiB, size - offset);
+
+        if (dirty && !memory_region_snapshot_get_dirty(view->backing, dirty,
+                                                        offset, length)) {
+            continue;
+        }
+        memcpy(dst + offset, src + offset, length);
+        memory_region_flush_rom_device(&view->rom, offset, length);
+    }
+}
+
+static bool sn1_init_prom_view(SN1PromView *view, Object *owner,
+                               const char *name, MemoryRegion *backing,
+                               Error **errp)
 {
     view->name = name;
     view->backing = backing;
-    memory_region_init_io(&view->mmio, OBJECT(machine), &sn1_prom_view_ops,
-                          view, name, sn1_origin300_model.prom_size);
+    if (!memory_region_init_rom_device(&view->rom, owner, &sn1_prom_view_ops,
+                                       view, name,
+                                       sn1_origin300_model.prom_size, errp)) {
+        return false;
+    }
+    sn1_prom_view_apply(view, NULL);
+    return true;
+}
+
+static void sn1_refresh_prom_views(SN1MachineState *s, bool everything)
+{
+    MemoryRegion *backing = s->prom_view_reset.backing;
+    g_autofree DirtyBitmapSnapshot *snapshot =
+        memory_region_snapshot_and_clear_dirty(backing, 0,
+                                               sn1_origin300_model.prom_size,
+                                               DIRTY_MEMORY_VGA);
+
+    sn1_prom_view_apply(&s->prom_view_reset, everything ? NULL : snapshot);
+    sn1_prom_view_apply(&s->prom_view_local_high, everything ? NULL : snapshot);
+}
+
+static void sn1_prom_flash_programmed(void *opaque, unsigned position)
+{
+    if (position == 0) {
+        sn1_refresh_prom_views(opaque, false);
+    }
+}
+
+static void sn1_machine_reset(MachineState *machine, ResetType type)
+{
+    SN1MachineState *s = SN1_MACHINE(machine);
+    CPUState *cs;
+
+    /* Busless MIPS CPUs are outside the registered SysBus reset tree. */
+    CPU_FOREACH(cs) {
+        sn1_cpu_reset(cs);
+    }
+    qemu_devices_reset(type);
+    if (s->node && SN1_NODE(s->node)->boot_flash) {
+        sn1_refresh_prom_views(s, true);
+    }
 }
 
 /* Match the loaded CPU-module image to this machine's reset configuration. */
@@ -319,12 +364,20 @@ static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
          * the payload carrier and is used for that carrier only.
          */
         sn1_apply_cpu_config(memory_region_get_ram_ptr(stored));
-        sn1_init_prom_view(&s->prom_view_reset, machine, "sn1.prom.reset",
-                           stored);
-        sn1_init_prom_view(&s->prom_view_local_high, machine,
-                           "sn1.prom.local-high", stored);
+        memory_region_set_log(stored, true, DIRTY_MEMORY_VGA);
+        if (!sn1_init_prom_view(&s->prom_view_reset,
+                                OBJECT(SN1_NODE(s->node)->boot_flash),
+                                "sn1.prom.reset", stored, errp) ||
+            !sn1_init_prom_view(&s->prom_view_local_high,
+                                OBJECT(SN1_NODE(s->node)->boot_flash),
+                                "sn1.prom.local-high", stored, errp)) {
+            return false;
+        }
+        SGI_BEDROCK_FLASH(SN1_NODE(s->node)->boot_flash)->programmed =
+            sn1_prom_flash_programmed;
+        SGI_BEDROCK_FLASH(SN1_NODE(s->node)->boot_flash)->programmed_opaque = s;
         memory_region_add_subregion_overlap(system, SN1_PROM_RESET,
-                                            &s->prom_view_reset.mmio, 1);
+                                            &s->prom_view_reset.rom, 1);
         /*
          * The high local view sits inside a boot space the flash answers for,
          * so it is overlaid above it. The remote space is left to the flash:
@@ -333,7 +386,7 @@ static bool sn1_load_prom(SN1MachineState *s, MachineState *machine,
          * monitor could not drive the part through that space at all.
          */
         memory_region_add_subregion_overlap(system, SN1_HUB_LOCAL_HIGH_BOOT,
-                                            &s->prom_view_local_high.mmio, 1);
+                                            &s->prom_view_local_high.rom, 1);
         return true;
     }
 

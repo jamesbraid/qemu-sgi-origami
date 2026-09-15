@@ -11,12 +11,11 @@
 OBJECT_DECLARE_SIMPLE_TYPE(SN1MachineState, SN1_MACHINE)
 
 /*
- * One of the processor's views of the boot flash. It answers reads out of the
- * part's current storage and refuses every write, so it holds no bytes of its
- * own and adds no migration state.
+ * A cacheable ROM device mirroring the boot flash's current storage. Stores
+ * still reach its write callback and are refused; its RAM block migrates.
  */
 typedef struct SN1PromView {
-    MemoryRegion mmio;
+    MemoryRegion rom;
     MemoryRegion *backing;
     const char *name;
 } SN1PromView;
