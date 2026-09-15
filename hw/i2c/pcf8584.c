@@ -32,18 +32,6 @@ typedef enum {
     PCF8584_REG_DATA,
 } PCF8584Reg;
 
-static uint64_t pcf8584_diagnostic_state(PCF8584State *s)
-{
-    return ((uint64_t)s->control << 56) |
-           ((uint64_t)s->status << 48) |
-           ((uint64_t)s->data << 40) |
-           ((uint64_t)s->cur_addr7 << 32) |
-           ((uint64_t)s->transfer << 3) |
-           ((uint64_t)s->recv << 2) |
-           ((uint64_t)s->start_pending << 1) |
-           s->start_address_staged;
-}
-
 static PCF8584Reg pcf8584_selected(PCF8584State *s)
 {
     if ((s->control & PCF8584_CTL_ES2) && !(s->control & PCF8584_CTL_ES1)) {
@@ -783,9 +771,7 @@ static void pcf8584_write_internal(void *opaque, hwaddr addr, uint64_t val,
 static uint64_t pcf8584_read(void *opaque, hwaddr addr, unsigned size)
 {
     PCF8584State *s = PCF8584(opaque);
-    uint64_t before;
     uint64_t value;
-    uint64_t after;
 
     /*
      * A host that has not run the shared wire's timer while the guest polls
@@ -795,19 +781,8 @@ static uint64_t pcf8584_read(void *opaque, hwaddr addr, unsigned size)
         i2c_wire_advance(s->bus);
     }
 
-    if (likely(!s->diagnostic)) {
-        value = pcf8584_read_internal(opaque, addr, size);
-        trace_pcf8584_read(addr, value, size);
-        return value;
-    }
-
-    before = pcf8584_diagnostic_state(s);
     value = pcf8584_read_internal(opaque, addr, size);
-    after = pcf8584_diagnostic_state(s);
-
     trace_pcf8584_read(addr, value, size);
-    device_diagnostic_record(s->diagnostic, "pcf8584", "mmio-read",
-                             addr, value, size, true, before, after);
     return value;
 }
 
@@ -815,8 +790,6 @@ static void pcf8584_write(void *opaque, hwaddr addr, uint64_t val,
                           unsigned size)
 {
     PCF8584State *s = PCF8584(opaque);
-    uint64_t before;
-    uint64_t after;
 
     trace_pcf8584_write(addr, val, size);
 
@@ -824,16 +797,7 @@ static void pcf8584_write(void *opaque, hwaddr addr, uint64_t val,
         i2c_wire_advance(s->bus);
     }
 
-    if (likely(!s->diagnostic)) {
-        pcf8584_write_internal(opaque, addr, val, size);
-        return;
-    }
-
-    before = pcf8584_diagnostic_state(s);
     pcf8584_write_internal(opaque, addr, val, size);
-    after = pcf8584_diagnostic_state(s);
-    device_diagnostic_record(s->diagnostic, "pcf8584", "mmio-write",
-                             addr, val, size, true, before, after);
 }
 
 uint64_t pcf8584_read_register(PCF8584State *s, hwaddr addr, unsigned size)

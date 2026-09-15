@@ -3382,19 +3382,6 @@ static bool sgi_hub_diagnostic_value(SGIHubState *s, hwaddr addr,
     return false;
 }
 
-static bool sgi_hub_diagnostic_read_value(SGIHubState *s, hwaddr addr,
-                                          uint64_t *value)
-{
-    const SGIHubRegDef *reg = sgi_hub_reg_lookup(addr);
-
-    if (reg && (reg->flags & HUB_REG_DIAG) &&
-        (reg->flags & HUB_REG_READ_CLEARS)) {
-        *value = sgi_hub_reg_peek(s, reg);
-        return true;
-    }
-    return false;
-}
-
 /*
  * The registers a node's processors coordinate through, narrow enough to
  * trace a whole boot. The pending banks answer their own event: the
@@ -3523,26 +3510,8 @@ static uint64_t sgi_hub_read_sized(SGIHubState *s, hwaddr addr, unsigned size)
 static uint64_t sgi_hub_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIHubState *s = opaque;
-    uint64_t before = 0;
-    uint64_t value;
-    uint64_t after = 0;
-    bool has_before_after;
 
-    if (likely(!s->diagnostic)) {
-        return sgi_hub_read_sized(s, addr, size);
-    }
-
-    /* The shadow is probed at the aligned doubleword it recognizes. */
-    has_before_after =
-        sgi_hub_diagnostic_read_value(s, addr & ~(hwaddr)7, &before);
-    value = sgi_hub_read_sized(s, addr, size);
-    if (has_before_after &&
-        !sgi_hub_diagnostic_read_value(s, addr & ~(hwaddr)7, &after)) {
-        has_before_after = false;
-    }
-    device_diagnostic_record(s->diagnostic, "hub", "mmio-read", addr,
-                             value, size, has_before_after, before, after);
-    return value;
+    return sgi_hub_read_sized(s, addr, size);
 }
 
 static void sgi_hub_write_internal(void *opaque, hwaddr addr, uint64_t val,
@@ -3650,25 +3619,8 @@ static void sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
                           unsigned size)
 {
     SGIHubState *s = opaque;
-    uint64_t before = 0;
-    uint64_t after = 0;
-    bool has_before;
-    bool has_after;
 
-    if (likely(!s->diagnostic)) {
-        sgi_hub_write_sized(s, addr, val, size);
-        return;
-    }
-
-    /* The shadow samples the aligned doubleword. */
-    has_before = sgi_hub_diagnostic_value(s, addr & ~(hwaddr)7, val,
-                                          &before);
     sgi_hub_write_sized(s, addr, val, size);
-    has_after = sgi_hub_diagnostic_value(s, addr & ~(hwaddr)7, val,
-                                         &after);
-    device_diagnostic_record(s->diagnostic, "hub", "mmio-write", addr,
-                             val, size, has_before && has_after,
-                             before, after);
 }
 
 /*
@@ -4002,7 +3954,6 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     }
 
     if (s->population & SGI_HUB_POPULATION_I2C_CONTROLLER) {
-        s->i2c.diagnostic = s->diagnostic;
         if (!sysbus_realize(SYS_BUS_DEVICE(&s->i2c), errp)) {
             return;
         }
@@ -4041,7 +3992,6 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
                             s->elsc_dip_switches);
         qdev_prop_set_chr(DEVICE(elsc), "chardev", s->elsc_chr);
         s->elsc = SGI_ELSC(elsc);
-        s->elsc->diagnostic = s->diagnostic;
         if (!i2c_slave_realize_and_unref(elsc, s->i2c.bus, errp)) {
             s->elsc = NULL;
             return;

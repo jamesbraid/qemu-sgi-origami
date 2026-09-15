@@ -10,7 +10,6 @@
 #define HW_MISC_SGI_ELSC_H
 
 #include "hw/i2c/i2c.h"
-#include "hw/misc/sgi-diagnostic.h"
 #include "qemu/timer.h"
 #include "chardev/char-fe.h"
 #include "qom/object.h"
@@ -79,8 +78,6 @@ typedef struct SGIElscModuleOps {
 
 struct SGIElscState {
     I2CSlave parent_obj;
-    DeviceDiagnosticSink *diagnostic;
-    bool diagnostic_arbitration_broadcast;
 
     /* The module owner, or NULL where this controller is the whole module. */
     const SGIElscModuleOps *module_ops;

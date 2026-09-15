@@ -136,16 +136,6 @@ static void elsc_handle_get(SGIElscState *s)
     if (n) {
         trace_sgi_elsc_rx_dequeue(n, s->rx_queue_len);
     }
-    if (s->diagnostic && n) {
-        device_diagnostic_record(s->diagnostic, "elsc", "console-dequeue",
-                                 before, n, 1, true, before,
-                                 s->rx_queue_len);
-        if (!s->rx_queue_len) {
-            device_diagnostic_record(s->diagnostic, "elsc",
-                                     "arbitration-end", before, n, 1, true,
-                                     before, 0);
-        }
-    }
 }
 
 /* "acp": a bare "ok" parses as zero accepted and livelocks the firmware. */
@@ -1060,38 +1050,8 @@ static int elsc_event_internal(SGIElscState *s, enum i2c_event event)
 static int elsc_event(I2CSlave *i2c, enum i2c_event event)
 {
     SGIElscState *s = SGI_ELSC(i2c);
-    uint64_t before;
-    const char *operation;
-    int ret;
 
-    if (likely(!s->diagnostic)) {
-        return elsc_event_internal(s, event);
-    }
-    if (s->diagnostic_arbitration_broadcast) {
-        return elsc_event_internal(s, event);
-    }
-
-    switch (event) {
-    case I2C_START_SEND:
-        operation = "start-send";
-        break;
-    case I2C_START_RECV:
-        operation = "start-receive";
-        break;
-    case I2C_FINISH:
-        operation = "finish";
-        break;
-    default:
-        return elsc_event_internal(s, event);
-    }
-
-    before = ((uint64_t)s->rxlen << 32) |
-             ((uint64_t)s->txlen << 16) | s->txpos;
-    ret = elsc_event_internal(s, event);
-    device_diagnostic_record(
-        s->diagnostic, "elsc", operation, event, 0, 1, true, before,
-        ((uint64_t)s->rxlen << 32) | ((uint64_t)s->txlen << 16) | s->txpos);
-    return ret;
+    return elsc_event_internal(s, event);
 }
 
 static int elsc_send_internal(SGIElscState *s, uint8_t data)
@@ -1111,23 +1071,8 @@ static int elsc_send_internal(SGIElscState *s, uint8_t data)
 static int elsc_send(I2CSlave *i2c, uint8_t data)
 {
     SGIElscState *s = SGI_ELSC(i2c);
-    uint64_t before;
-    int ret;
 
-    if (likely(!s->diagnostic)) {
-        return elsc_send_internal(s, data);
-    }
-    if (s->diagnostic_arbitration_broadcast) {
-        return elsc_send_internal(s, data);
-    }
-
-    before = s->rxlen;
-    ret = elsc_send_internal(s, data);
-    if (s->rxlen != before) {
-        device_diagnostic_record(s->diagnostic, "elsc", "send", before,
-                                 data, 1, true, before, s->rxlen);
-    }
-    return ret;
+    return elsc_send_internal(s, data);
 }
 
 static uint8_t elsc_recv_internal(SGIElscState *s)
@@ -1154,23 +1099,8 @@ static uint8_t elsc_recv_internal(SGIElscState *s)
 static uint8_t elsc_recv(I2CSlave *i2c)
 {
     SGIElscState *s = SGI_ELSC(i2c);
-    uint64_t before;
-    uint8_t value;
 
-    if (likely(!s->diagnostic)) {
-        return elsc_recv_internal(s);
-    }
-    if (s->diagnostic_arbitration_broadcast) {
-        return elsc_recv_internal(s);
-    }
-
-    before = s->txpos;
-    value = elsc_recv_internal(s);
-    if (s->txpos != before) {
-        device_diagnostic_record(s->diagnostic, "elsc", "receive", before,
-                                 value, 1, true, before, s->txpos);
-    }
-    return value;
+    return elsc_recv_internal(s);
 }
 
 /*
@@ -1196,17 +1126,9 @@ static void elsc_publish_grant_on(I2CBus *bus, uint8_t value)
 
 static void elsc_publish_grant(SGIElscState *s, uint8_t value)
 {
-    bool diagnostic = s->diagnostic != NULL;
-
-    if (diagnostic) {
-        s->diagnostic_arbitration_broadcast = true;
-    }
     elsc_publish_grant_on(s->bus, value);
     if (s->arb_peer) {
         elsc_publish_grant_on(s->arb_peer->bus, value);
-    }
-    if (diagnostic) {
-        s->diagnostic_arbitration_broadcast = false;
     }
 }
 
@@ -1272,7 +1194,6 @@ static void elsc_arb_step(void *opaque)
 static void elsc_receive(void *opaque, const uint8_t *buf, int size)
 {
     SGIElscState *s = opaque;
-    bool diagnostic = unlikely(s->diagnostic);
     bool was_pending = s->rx_queue_len > 0;
     int i;
 
@@ -1290,20 +1211,8 @@ static void elsc_receive(void *opaque, const uint8_t *buf, int size)
             continue;
         }
         if (s->rx_queue_len < sizeof(s->rx_queue)) {
-            uint32_t before = s->rx_queue_len;
-
             s->rx_queue[s->rx_queue_len++] = c;
             trace_sgi_elsc_rx_enqueue(c, s->rx_queue_len);
-            if (diagnostic) {
-                if (!before) {
-                    device_diagnostic_record(
-                        s->diagnostic, "elsc", "arbitration-start", 0, c,
-                        1, true, 0, 1);
-                }
-                device_diagnostic_record(
-                    s->diagnostic, "elsc", "console-enqueue", before, c,
-                    1, true, before, s->rx_queue_len);
-            }
         } else {
             qemu_log_mask(LOG_GUEST_ERROR,
                           "sgi-elsc: console input queue full, byte "
@@ -1367,7 +1276,6 @@ static void elsc_reset_hold(Object *obj, ResetType type)
     s->arb_signal = 0;
     s->arb_hold_until = 0;
     s->rx_queue_len = 0;
-    s->diagnostic_arbitration_broadcast = false;
     s->in_escape = false;
     s->supervisor = false;
     s->deferred_action = ELSC_ACTION_NONE;

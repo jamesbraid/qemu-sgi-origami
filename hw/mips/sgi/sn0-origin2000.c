@@ -539,7 +539,6 @@ void sn0_origin2000_realize_nodes(MachineState *machine)
         unsigned int slice;
 
         g_assert(!DEVICE(node)->realized);
-        sn0_diagnostic_attach(s, i);
         sysbus_realize(SYS_BUS_DEVICE(node), &error_fatal);
         origin2000_install_bus_error_aperture(node);
         for (slice = 0; slice < physical->cpu_count; slice++) {

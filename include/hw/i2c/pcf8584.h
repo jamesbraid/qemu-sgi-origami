@@ -10,7 +10,6 @@
 #define HW_I2C_PCF8584_H
 
 #include "hw/core/sysbus.h"
-#include "hw/misc/sgi-diagnostic.h"
 #include "hw/i2c/i2c.h"
 #include "qom/object.h"
 
@@ -76,7 +75,6 @@ struct PCF8584State {
     I2CBus *bus;
     I2CSlave *rx;               /* this adapter's own endpoint on that bus */
     qemu_irq irq;
-    DeviceDiagnosticSink *diagnostic;
 
     /*
      * Four registers behind one address, chosen by ESO/ES1/ES2. Separate
