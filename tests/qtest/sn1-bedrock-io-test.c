@@ -508,28 +508,29 @@ static void test_inbound_protection(void)
     assert_ram_filled(s, 0x190000, 0x77, 16);
     qtest_quit(s);
 
-    /*
-     * Clear both configured candidates' device-0 bits (widget 0xe at bit
-     * 48, widget 0xf at bit 56); restoring only one after the refused
-     * write must not retroactively land it.
-     */
+    /* Device-0 bits for heads 0xe and 0xf occupy bits 48 and 56. */
     s = io_start("-global sgi-bedrock-io.device-mask-reset="
                  "0xfefeffffffffffff");
     dma_writeq(s, 0x190000, UINT64_MAX);
+    qtest_writeq(s, REG_BASE + DEVICE_MASK, UINT64_C(1) << 48);
+    dma_writeq(s, 0x190000, UINT64_C(0x1111111111111111));
+    qtest_writeq(s, REG_BASE + DEVICE_MASK, UINT64_C(1) << 56);
+    g_assert_cmphex(dma_readq(s, 0x190000), ==, 0);
+    dma_writeq(s, 0x190000, UINT64_C(0x2222222222222222));
+    g_assert_cmphex(dma_readq(s, 0x190000), ==,
+                    UINT64_C(0x2222222222222222));
+    qtest_quit(s);
+
+    s = io_start("-global sgi-bedrock-io.device-mask-reset="
+                 "0xfefeffffffffffff");
+    qtest_writeq(s, REG_BASE + DEVICE_MASK, UINT64_C(1) << 56);
+    dma_writeq(s, 0x190000, UINT64_C(0x3333333333333333));
     qtest_writeq(s, REG_BASE + DEVICE_MASK, UINT64_C(1) << 48);
     g_assert_cmphex(dma_readq(s, 0x190000), ==, 0);
     qtest_quit(s);
 }
 
-/*
- * The shared inbound window cannot tell which of the two real widgets (the
- * XBridge's two heads, 0xe and 0xf) sent a given request, so it must accept
- * one as long as either is permitted; only refusing both is a refusal.
- * This is also the regression case for the defect this mask replaces: the
- * device used to gate every inbound access on widget 8 alone, a widget
- * nothing in an XBridge machine is wired to, so the first guest write that
- * cleared bit 8 silently broke every inbound DMA and interrupt packet.
- */
+/* The shared window cannot identify a head; a split permission must refuse. */
 static void test_inbound_source_widgets(void)
 {
     QTestState *s = io_start("");
@@ -545,32 +546,29 @@ static void test_inbound_source_widgets(void)
     g_assert_cmphex(dma_readq(s, 0x191000), ==,
                     UINT64_C(0x2222222222222222));
 
-    /* Either head alone still gets through. */
+    /* A denied head must not borrow the other head's permission. */
     qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX & ~IN_WIDGET_E);
     dma_writeq(s, 0x191000, UINT64_C(0x3333333333333333));
-    g_assert_cmphex(dma_readq(s, 0x191000), ==,
-                    UINT64_C(0x3333333333333333));
-
     qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX & ~IN_WIDGET_F);
     dma_writeq(s, 0x191000, UINT64_C(0x4444444444444444));
-    g_assert_cmphex(dma_readq(s, 0x191000), ==,
-                    UINT64_C(0x4444444444444444));
 
     /*
-     * Only refusing both heads refuses the access -- and, while it does,
-     * refuses the read back too, so restore access before checking that
-     * the write never landed.
+     * Refusing both heads also refuses the read back.  Restore access
+     * before checking that none of the refused writes landed.
      */
     qtest_writeq(s, REG_BASE + IN_ACCESS,
                 UINT64_MAX & ~(IN_WIDGET_E | IN_WIDGET_F));
     dma_writeq(s, 0x191000, UINT64_C(0x5555555555555555));
     qtest_writeq(s, REG_BASE + IN_ACCESS, UINT64_MAX);
     g_assert_cmphex(dma_readq(s, 0x191000), ==,
-                    UINT64_C(0x4444444444444444));
+                    UINT64_C(0x2222222222222222));
+    dma_writeq(s, 0x191000, UINT64_C(0x6666666666666666));
+    g_assert_cmphex(dma_readq(s, 0x191000), ==,
+                    UINT64_C(0x6666666666666666));
     qtest_quit(s);
 }
 
-/* A refusal that reaches every configured candidate widget is never silent. */
+/* A denied candidate on the shared window is never silent. */
 static void test_inbound_refusal_is_logged(void)
 {
     g_autofree char *log = log_file_new();
@@ -583,7 +581,7 @@ static void test_inbound_refusal_is_logged(void)
     qtest_quit(s);
     contents = log_file_take(log);
     g_assert_nonnull(strstr(contents, "sgi-bedrock-io: inbound write"));
-    g_assert_nonnull(strstr(contents, "refused for every widget in mask"));
+    g_assert_nonnull(strstr(contents, "refused for widget mask"));
 }
 
 static QTestState *io_start_loopback(const char *machine, const char *extra)

@@ -48,9 +48,10 @@ struct SGIBedrockIOState {
     /*
      * Which crosstalk widget numbers a request arriving at the shared
      * inbound window may credibly have come from, one bit per widget.  The
-     * window itself carries no source-widget field to read back, so this
-     * stands in for the real per-packet source ID until one is threaded
-     * through.  Defaults to the two heads an XBridge presents to its host
+     * window itself carries no source-widget field to read back, so all
+     * candidates must be permitted before an unknown-source access proceeds.
+     * This is not a substitute for per-packet source identity.  Defaults to
+     * the two heads an XBridge presents to its host
      * port (0xe and 0xf; see hw/pci-host/sgi-xbridge.c CHIP_HEAD_E/F and
      * the Origin 300 model's xbridge_widgets), not widget 8, which nothing
      * in a Bedrock+XBridge machine is ever wired to.
