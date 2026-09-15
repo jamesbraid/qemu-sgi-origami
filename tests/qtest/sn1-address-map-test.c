@@ -884,6 +884,29 @@ static void test_hub_local_reaches_bedrock(const void *data)
     qtest_quit(qts);
 }
 
+static void test_hub_remote_reaches_bedrock_tail(const void *data)
+{
+    QTestState *qts = machine_start();
+    const uint64_t scratch = UINT64_C(0x90ef7856cdab3412);
+
+    qtest_writeq(qts, HUB_REMOTE_REGISTERS + BEDROCK_LB + LB_SCRATCH2,
+                 scratch);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + BEDROCK_LB +
+                                LB_SCRATCH2), ==, scratch);
+
+    qtest_quit(qts);
+}
+
+static void test_hub_remote_reaches_processor_interface(const void *data)
+{
+    QTestState *qts = machine_start();
+
+    qtest_writeq(qts, HUB_REMOTE_REGISTERS + PI_CPU_ENABLE_B, 1);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 1);
+
+    qtest_quit(qts);
+}
+
 static void test_crosstalk_big_window_routes(const void *data)
 {
     QTestState *qts = machine_start();
@@ -3103,6 +3126,10 @@ int main(int argc, char **argv)
                         test_bedrock_register_aliases);
     qtest_add_data_func("sn1/address-map/hub-local-reaches-bedrock", NULL,
                         test_hub_local_reaches_bedrock);
+    qtest_add_data_func("sn1/address-map/hub-remote-reaches-bedrock-tail", NULL,
+                        test_hub_remote_reaches_bedrock_tail);
+    qtest_add_data_func("sn1/address-map/hub-remote-reaches-processor-interface",
+                        NULL, test_hub_remote_reaches_processor_interface);
     qtest_add_data_func("sn1/address-map/crosstalk-big-window", NULL,
                         test_crosstalk_big_window_routes);
     qtest_add_data_func("sn1/address-map/xbridge-topology", NULL,

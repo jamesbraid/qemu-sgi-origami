@@ -50,6 +50,8 @@ typedef struct SN1NodeState {
     DeviceState *boot_flash;
     MemoryRegion bedrock_node;
     MemoryRegion hub_local_register_block;
+    MemoryRegion hub_remote_register_head;
+    MemoryRegion hub_remote_register_tail;
 } SN1NodeState;
 
 #define TYPE_SGI_SN1_NODE "sgi-sn1-node"
