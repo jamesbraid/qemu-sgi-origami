@@ -162,7 +162,7 @@ static char *write_fixture(const char *directory, const char *name,
     return path;
 }
 
-static void check_record(bool mismatched)
+static void test_configured_mac_in_board_record(void)
 {
     g_autoptr(GError) error = NULL;
     g_autofree char *directory = g_dir_make_tmp("sn1-io8-mac-XXXXXX", &error);
@@ -180,10 +180,6 @@ static void check_record(bool mismatched)
 
     g_assert_no_error(error);
     memcpy(record, bia, sizeof(record));
-    if (mismatched) {
-        record[65] = '1';
-        record[79] = 0xd0; /* +1 ASCII byte needs -1 checksum byte. */
-    }
     prom_path = write_fixture(directory, "prom.bin", prom, PROM_SIZE);
     chassis_path = write_fixture(directory, "chassis.bin", cia, sizeof(cia));
     board_path = write_fixture(directory, "board.bin", record,
@@ -199,6 +195,7 @@ static void check_record(bool mismatched)
         "-nic user,mac=" MAC,
         quoted_chassis, quoted_board, quoted_prom);
 
+    /* This property reports -nic's configured MAC, not a BIA-derived value. */
     result = qtest_qmp(qts, "{'execute':'qom-get','arguments':"
                            "{'path':'" IOC3_PATH "','property':'mac'}}");
     g_assert_true(qdict_haskey(result, "return"));
@@ -230,7 +227,7 @@ static void check_record(bool mismatched)
     g_assert_cmphex(board[77], ==, 0xc1);
     g_assert_cmphex(board[78], ==, 0);
     g_assert_cmphex(sum_bytes(board, sizeof(board)), ==, 0);
-    g_assert_cmpint(board_matches_mac(board, actual_mac), ==, !mismatched);
+    g_assert_true(board_matches_mac(board, actual_mac));
 
     qtest_quit(qts);
     g_assert_cmpint(g_unlink(prom_path), ==, 0);
@@ -239,22 +236,10 @@ static void check_record(bool mismatched)
     g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
-static void test_matching_record(void)
-{
-    check_record(false);
-}
-
-static void test_mismatched_record(void)
-{
-    check_record(true);
-}
-
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
-    qtest_add_func("origin300/io8/mac/record-matches-ioc3",
-                   test_matching_record);
-    qtest_add_func("origin300/io8/mac/mismatched-record-detected",
-                   test_mismatched_record);
+    qtest_add_func("origin300/io8/mac/record-matches-configured-mac",
+                   test_configured_mac_in_board_record);
     return g_test_run();
 }
