@@ -71,7 +71,7 @@ class PromCopySpeed(QemuSystemTest):
         # The same smallest real-firmware cell test_prom_boot builds.
         cell = Cell(id='prom_copy_speed', guest='prom',
                     scenario='full_boot', cpus=1, nodes=1, mem='64M',
-                    accel='wallclock', firmware='prom', speed='thorough',
+                    accel='wallclock', speed='thorough',
                     timeout=DEADLINE_SECONDS, attempts=1, min_passes=1,
                     expect='pass', xfail_mark='', xfail_signature='')
 
