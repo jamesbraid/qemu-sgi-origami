@@ -52,7 +52,6 @@ slow_qtests = {
   # tests over Aug 30 - Sep 3 (105 and 20 timeout kills at the 120s ceiling,
   # zero failing subtests). Same treatment: twice the measured wall time.
   'sn0-bridge-test': 240,
-  'sn0-model-test': 240,
   # sn0-ioc3-serial-test itself finishes in 7-17s, but its own socket read/accept
   # deadline is 120s to tolerate scheduling delay (see
   # tests/qtest/sn0-ioc3-serial-test.c). This budget has to exceed that deadline,
@@ -393,7 +392,6 @@ qtests_mips64 = \
                                                    'sn0-widget-decode-test',
                                                    'sn0-bridge-invalid-addr-test',
                                                    'sn0-bridge-widget-test',
-                                                   'sn0-model-test',
                                                    'sn0-origin2000-test',
                                                    'sn0-module-management-test',
                                                    'sn0-origin2000-pflash-test',

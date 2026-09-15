@@ -10,6 +10,7 @@ import struct
 import time
 from pathlib import Path
 
+import unittest
 from qemu_test import QemuSystemTest
 
 
@@ -2012,6 +2013,7 @@ class SN0SMPMachine(QemuSystemTest):
         self.assertGreaterEqual(state[RT_TICK_DEADLINE_KEPT // 8],
                                 RT_TICK_ITERATIONS - 4, state)
 
+    @unittest.skip("synthesized-firmware property deleted; re-home to qtests with NASID register programming")
     def test_pending_read_schedules_local_peer(self):
         self.set_machine('origin200')
         firmware = self.scratch_file('pending-read-rendezvous.bin')
@@ -2069,6 +2071,7 @@ class SN0SMPMachine(QemuSystemTest):
                     HUB_PI_INT_MASK0_B, HUB_PI_INT_MASK1_B):
             self.assertEqual(self.read_state(hub1 + reg, 1)[0], 0, state)
 
+    @unittest.skip("synthesized-firmware property deleted; re-home to qtests with NASID register programming")
     def test_pending_read_rendezvous_thread_multi(self):
         self.set_machine('origin200')
         firmware = self.scratch_file('pending-read-rendezvous-multi.bin')
@@ -2150,6 +2153,7 @@ class SN0SMPMachine(QemuSystemTest):
         self.assertEqual(state[SLICE_B_START_STATUS // 8] & PCF_LRB, 0, state)
         self.assertEqual(state[SLICE_B_VER_PREFIX // 8], 0x6f6b, state)
 
+    @unittest.skip("synthesized-firmware property deleted; re-home to qtests with NASID register programming")
     def test_peer_scratch_handoff_before_rtc_deadline(self):
         self.set_machine('origin200')
         firmware = self.scratch_file('peer-scratch-deadline.bin')
@@ -2208,6 +2212,7 @@ class SN0SMPMachine(QemuSystemTest):
         self.assertEqual(hubs[0][4], 0, hubs)
         self.assertEqual(hubs[1][4], PEER_SCRATCH_PEND1, hubs)
 
+    @unittest.skip("synthesized-firmware property deleted; re-home to qtests with NASID register programming")
     def test_remote_hub_scratch_write_schedules_peer(self):
         self.set_machine('origin200')
         firmware = self.scratch_file('remote-scratch-notification.bin')
@@ -2247,6 +2252,7 @@ class SN0SMPMachine(QemuSystemTest):
         self.assertEqual(scratch[1],
                          [REMOTE_SCRATCH_GO, REMOTE_SCRATCH_DONE], scratch)
 
+    @unittest.skip("synthesized-firmware property deleted; re-home to qtests with NASID register programming")
     def test_peer_port_error_vector_read_completes_clean(self):
         # The stock PROM's link diagnostic vector-reads the peer hub's
         # LLP port error register. The NI datasheet's reviewed
@@ -2284,6 +2290,7 @@ class SN0SMPMachine(QemuSystemTest):
             NI_VECTOR_VALID, hex(status))
         self.assertEqual(read_data, 0, hex(read_data))
 
+    @unittest.skip("synthesized-firmware property deleted; re-home to qtests with NASID register programming")
     def test_peer_io_protect_vector_write_completes_clean(self):
         # The link diagnostic's first vector operation is a WRITE of the
         # peer's PIO protection register; with the register undecoded on
@@ -2319,6 +2326,7 @@ class SN0SMPMachine(QemuSystemTest):
             status & (NI_VECTOR_VALID | NI_VECTOR_RESPONSE_MASK),
             NI_VECTOR_VALID | NI_VECTOR_TYPE_WRITE, hex(status))
 
+    @unittest.skip("synthesized-firmware property deleted; re-home to qtests with NASID register programming")
     def test_promdata_reads_survive_flag_and_pc_changes(self):
         # The cache-as-RAM window's data is a resident cache line on real
         # hardware, so it must read back identically after the PROM
@@ -2364,6 +2372,7 @@ class SN0SMPMachine(QemuSystemTest):
              0],
             [hex(slot) for slot in slots])
 
+    @unittest.skip("synthesized-firmware property deleted; re-home to qtests with NASID register programming")
     def test_peer_scratch_handoff_before_rtc_deadline_thread_multi(self):
         self.set_machine('origin200')
         firmware = self.scratch_file(
