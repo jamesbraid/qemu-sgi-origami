@@ -1009,6 +1009,7 @@ static void test_crosstalk_big_window_routes(const void *data)
 static void test_xbridge_topology(const void *data)
 {
     QTestState *qts = machine_start();
+    g_autoptr(QDict) response = NULL;
     uint32_t identity;
 
     identity = xtalk_reg_read(qts, 0, 0);
@@ -1028,6 +1029,12 @@ static void test_xbridge_topology(const void *data)
     g_assert_cmphex(WIDGET_PART(identity), ==, XBRIDGE_HEAD_PART);
     g_assert_cmphex(WIDGET_MFG(identity), ==, XBRIDGE_HEAD_MFG);
     g_assert_cmphex(identity & 1, ==, 1);
+
+    response = qtest_qmp(qts,
+        "{'execute':'qom-get', 'arguments':{"
+        "'path':'/machine/node0/xbridge', 'property':'board-part-f'}}");
+    g_assert_cmpstr(qdict_get_try_str(response, "return"), ==,
+                    "NOT-OBSERVED");
 
     xtalk_reg_write(qts, 0xe, 0x20, 0x0f00320e);
     g_assert_cmphex(xtalk_reg_read(qts, 0xe, 0x20), ==, 0x0f00321e);
