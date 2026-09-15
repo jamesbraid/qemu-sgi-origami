@@ -44,6 +44,15 @@ mips_ss.add(when: 'CONFIG_SGI_SN1',
 mips_ss.add(when: 'CONFIG_SGI_XTALK_BOARD', if_true: files('sgi/xtalk-board.c'))
 mips_ss.add(when: 'CONFIG_SGI_XTALK_BOARD_TEST',
             if_true: files('sgi/xtalk-test-board.c'))
+# The four board classes: each its own Kconfig symbol, since a product will
+# build only the ones it fits once the machine wiring step selects them.
+mips_ss.add(when: 'CONFIG_SGI_IP29_IO', if_true: files('sgi/board-ip29-io.c'))
+mips_ss.add(when: 'CONFIG_SGI_BASEIO', if_true: files('sgi/board-baseio.c'))
+mips_ss.add(when: 'CONFIG_SGI_IO8', if_true: files('sgi/board-io8.c'))
+mips_ss.add(when: 'CONFIG_SGI_PCI_EXPANSION',
+            if_true: files('sgi/board-pci-expansion.c'))
+mips_ss.add(when: 'CONFIG_SGI_BOARD_TEST',
+            if_true: files('sgi/board-test-fixture.c'))
 subdir('sgi')
 mips_ss.add(when: 'CONFIG_FULOONG', if_true: files('fuloong2e.c'))
 mips_ss.add(when: 'CONFIG_MIPS_BOSTON', if_true: files('boston.c'))
