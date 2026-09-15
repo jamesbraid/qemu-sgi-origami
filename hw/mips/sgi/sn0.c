@@ -2,7 +2,9 @@
 /*
  * SGI SN0 (IP27) family mechanics and node device.
  * Origin 200 supplies a compiled topology to the generic model consumer.
- * Firmware lives in sn0-firmware.c and diagnostics in sn0-diag.c.
+ * -bios and pflash fill a node's boot flash here; the direct -kernel and
+ * sashARCS loaders in sn0-firmware.c patch it further, and diagnostics
+ * live in sn0-diag.c.
  */
 
 #include "qemu/osdep.h"
@@ -17,6 +19,9 @@
 #include "hw/core/clock.h"
 #include "hw/core/qdev-clock.h"
 #include "system/system.h"
+#include "system/block-backend.h"
+#include "system/blockdev.h"
+#include "system/qtest.h"
 #include "exec/cpu-common.h"
 #include "hw/core/cpu.h"
 #include "hw/core/qdev-properties.h"
@@ -509,9 +514,6 @@ static void sn0_machine_reset(MachineState *machine, ResetType type)
 
     qemu_devices_reset(type);
 
-    if (s->synthesized_firmware) {
-        sn0_firmware_reset(s);
-    }
     CPU_FOREACH(cs) {
         sn0_cpu_reset(cs);
         sn0_mode_bits_reset(cs);
@@ -526,9 +528,6 @@ static void sn0_machine_reset(MachineState *machine, ResetType type)
             sgi_hub_set_cpu_enable(&node_state->hub, slice,
                                    !direct_secondary, true);
         }
-    }
-    if (s->synthesized_firmware) {
-        sn0_assign_pci_resources(s);
     }
     sn0_report_node_flash_mode(s);
     sn0_diagnostic_machine_reset(s);
@@ -1328,6 +1327,8 @@ static void sn0_init(MachineState *machine)
                               machine->numa_state->num_nodes : 0;
     uint64_t ram_offset = 0;
     g_autofree unsigned int *profile_cpus = NULL;
+    g_autofree BlockBackend **flash_drives = NULL;
+    unsigned int flash_count = 0;
     unsigned int max_nodes = sn0_model_max_nodes(model);
     unsigned int node_count, node_index, cpu_index = 0;
     size_t link_index;
@@ -1416,6 +1417,28 @@ static void sn0_init(MachineState *machine)
         sn0_show_indicator_codes(&error_fatal);
     }
 
+    /*
+     * -bios fills every node's flash; a pflash drive at IF_PFLASH unit N
+     * overrides node N's, as Origin 2000 already takes them. Without
+     * either there is no firmware and stock PROM boot cannot start, so
+     * this is fatal -- except under a register test, which deliberately
+     * builds the machine with none of the vendor's bits.
+     */
+    flash_drives = g_new0(BlockBackend *, node_count);
+    for (node_index = 0; node_index < node_count; node_index++) {
+        DriveInfo *drive = drive_get_by_index(IF_PFLASH, node_index);
+
+        if (drive) {
+            flash_drives[node_index] = blk_by_legacy_dinfo(drive);
+            flash_count++;
+        }
+    }
+    if (!machine->firmware && !flash_count && !qtest_enabled()) {
+        error_report("%s: supports stock-PROM boot only: pass -bios or a "
+                     "pflash drive per node", mc->name);
+        exit(EXIT_FAILURE);
+    }
+
     s->num_nodes = node_count;
     s->nodes = g_new0(SN0NodeState *, node_count);
     s->io_bridge = g_new0(SGIBridgeState *, node_count);
@@ -1493,6 +1516,7 @@ static void sn0_init(MachineState *machine)
         }
 
         qdev_prop_set_uint32(DEVICE(node), "nasid", node_model->nasid);
+        node->flash_drive = flash_drives[node_index];
         node->model = model;
         node->instance = node_model;
         node->topology = node_model->topology;

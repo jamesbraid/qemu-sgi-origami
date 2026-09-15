@@ -75,92 +75,6 @@ static const SN0ModelComponent sn0_o200_t0_pci[] = {
     },
 };
 
-static const SN0KlComponentModel sn0_o200_t0_b0_components[] = {
-    {
-        .record_kind = SN0_KL_RECORD_PROCESSOR,
-        .type = 1,
-        .identification = 0x926,
-        .fp_identification = 0x900,
-        .clock_mhz = 180,
-        .cache_mib = 1,
-        .cache_clock_mhz = 90,
-        .revision = 255,
-    },
-    {
-        .record_kind = SN0_KL_RECORD_HUB,
-        .component = &sn0_o200_t0_hub,
-        .type = 2,
-        .clock_hz = 0x55d4a80ULL,
-        .port = 0xffff000000000000ULL,
-    },
-    {
-        .record_kind = SN0_KL_RECORD_MEMORY_BANK,
-        .type = 3,
-        .revision = 255,
-    },
-};
-
-static const SN0KlComponentModel sn0_o200_t0_b1_components[] = {
-    {
-        .record_kind = SN0_KL_RECORD_COMPONENT,
-        .type = 26,
-        .revision = 255,
-    },
-};
-
-static const SN0KlComponentModel sn0_o200_t0_b2_components[] = {
-    {
-        .record_kind = SN0_KL_RECORD_COMPONENT,
-        .component = &sn0_o200_t0_base_io,
-        .type = 5,
-    },
-    {
-        .record_kind = SN0_KL_RECORD_COMPONENT,
-        .component = &sn0_o200_t0_pci[0],
-        .type = 11,
-    },
-    {
-        .record_kind = SN0_KL_RECORD_COMPONENT,
-        .component = &sn0_o200_t0_pci[1],
-        .type = 11,
-    },
-    {
-        .record_kind = SN0_KL_RECORD_COMPONENT,
-        .component = &sn0_o200_t0_pci[2],
-        .type = 6,
-    },
-};
-
-static const SN0KlBoardModel sn0_o200_t0_kl_boards[] = {
-    {
-        .type = 17,
-        .record_kind = 1,
-        .version = 3,
-        .slot = 0,
-        .declared_count = -1,
-        .components = sn0_o200_t0_b0_components,
-        .component_count = ARRAY_SIZE(sn0_o200_t0_b0_components),
-    },
-    {
-        .type = 65,
-        .record_kind = 1,
-        .version = 2,
-        .slot = 0,
-        .declared_count = 0,
-        .components = sn0_o200_t0_b1_components,
-        .component_count = ARRAY_SIZE(sn0_o200_t0_b1_components),
-    },
-    {
-        .type = 33,
-        .record_kind = 1,
-        .version = 2,
-        .slot = 0,
-        .declared_count = -1,
-        .components = sn0_o200_t0_b2_components,
-        .component_count = ARRAY_SIZE(sn0_o200_t0_b2_components),
-    },
-};
-
 static const SN0ModelRegion sn0_o200_t0_lboot = {
     .offset = 0x10000000ULL,
     .size = 0x10000000ULL,
@@ -244,23 +158,6 @@ static const SN0ModelNodeTopology sn0_origin200_node_topologies[] = {
             .parallel = true,
             .timekeeper = true,
             .onewire_identity = true,
-        },
-        .klconfig = {
-            .base = 0x4000ULL,
-            .size = 0xc000ULL,
-            .signature = 0xbeedbabeULL,
-            .version = 0x0,
-            .arena_offset = 0x48,
-            .board_base = 0x4100,
-            .board_stride = 0xc0,
-            .component_base = 0x4400,
-            .component_stride = 0x80,
-            .console_config_window = 0x22000,
-            .console_port_offset = 0x20178,
-            .console_baud = 0x2580,
-            .console_type = 0x0,
-            .boards = sn0_o200_t0_kl_boards,
-            .board_count = ARRAY_SIZE(sn0_o200_t0_kl_boards),
         },
     },
 };
