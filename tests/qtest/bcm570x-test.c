@@ -192,6 +192,8 @@
 #define BCM_RX_STD_RCB_LO       0x2454u
 #define BCM_RX_STD_RCB_MAXLEN   0x2458u
 #define BCM_SRAM_RX_RETURN_RCB  0x0200u
+/* nicNoMoreRXBDs, PG105 page 110 Table 49 / page 114 Table 54. */
+#define BCM_SRAM_STATS_NO_MORE_RXBDS 0x0898u
 #define BCM_TXBD_SIZE           16
 #define BCM_RXBD_SIZE           32
 #define BCM_RXBD_LEN            0x08   /* idx_len word: length in the low half */
@@ -3776,6 +3778,13 @@ static void test_receive_waits_for_standard_ring(const void *data)
  * last step pins is the model's own approximation, and the datasheet's jumbo
  * receive contract carries the evidence, the limitation, and the measurement
  * that rejected holding the frame briefly instead.
+ *
+ * The manual does say the chip counts this condition rather than latching it
+ * (`nicNoMoreRXBDs`, PG105 page 110), so the discard has to reach the guest
+ * there too: the test reads BCM_SRAM_STATS_NO_MORE_RXBDS before and after the
+ * dropped frame and asserts it moved by exactly one, then stays there through
+ * every step that follows -- the delivered standard frame and the belated
+ * jumbo post neither one is the condition this counter names.
  */
 static void test_receive_drops_oversize_with_empty_jumbo_ring(const void *data)
 {
@@ -3804,6 +3813,9 @@ static void test_receive_drops_oversize_with_empty_jumbo_ring(const void *data)
     write_jumbo_rx_bd(&b, JUMBO_RING_PHYS, 1, JUMBO_STALE_BUF_PHYS,
                       JUMBO_BUF_SIZE);
 
+    g_assert_cmpuint(bar_readl(&b, BCM_SRAM_WINDOW +
+                                BCM_SRAM_STATS_NO_MORE_RXBDS), ==, 0);
+
     net_socket_send_frame(sv[0], first, BCM_JUMBO_FRAME_LEN);
     wait_for_rx_prod(&b, 1);
     bar_writel(&b, BCM_MBX_RX_CONS0_LO, 1);
@@ -3821,6 +3833,13 @@ static void test_receive_drops_oversize_with_empty_jumbo_ring(const void *data)
     memset(first, 0xa5, BCM_JUMBO_FRAME_LEN);
     g_assert_cmpmem(got, BCM_JUMBO_FRAME_LEN,
                     first, BCM_JUMBO_FRAME_LEN);
+
+    /*
+     * The chip counts this rather than latching it (PG105 page 110): one
+     * frame dropped for want of a posted jumbo descriptor, one count.
+     */
+    g_assert_cmpuint(bar_readl(&b, BCM_SRAM_WINDOW +
+                                BCM_SRAM_STATS_NO_MORE_RXBDS), ==, 1);
 
     /* Acknowledge the first frame's update, so the next one stands alone. */
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
@@ -3846,6 +3865,10 @@ static void test_receive_drops_oversize_with_empty_jumbo_ring(const void *data)
     qtest_memread(b.qts, JUMBO_STALE_BUF_PHYS, got, BCM_JUMBO_FRAME_LEN);
     g_assert_cmpmem(got, BCM_JUMBO_FRAME_LEN,
                     first, BCM_JUMBO_FRAME_LEN);
+
+    /* Neither the delivered frame nor the late post is this condition. */
+    g_assert_cmpuint(bar_readl(&b, BCM_SRAM_WINDOW +
+                                BCM_SRAM_STATS_NO_MORE_RXBDS), ==, 1);
 
     bcm_close(&b);
     close(sv[0]);
