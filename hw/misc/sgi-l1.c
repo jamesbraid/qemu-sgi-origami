@@ -1420,12 +1420,15 @@ static void l1_reset_enter(Object *obj, ResetType type)
 static bool l1_record_invalid(const SGIL1EEPROM *record, unsigned area)
 {
     uint8_t sum = 0;
-    /* Raw area files have no common header or encoded EEPROM capacity. */
-    size_t checked = area == 2 ? MIN(record->length, 64) : record->length;
+    size_t checked = area == 2 ? 63 : record->length;
 
     for (size_t i = 0; i < checked; i++) {
         sum += record->data[i];
     }
+    if (area == 2) {
+        return record->data[63] != sum;
+    }
+    /* Raw area files have no common header or encoded EEPROM capacity. */
     return sum != 0;
 }
 
