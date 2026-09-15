@@ -396,6 +396,7 @@ qtests_mips64 = \
                                                    'sn0-module-management-test',
                                                    'sn0-origin2000-pflash-test',
                                                    'sn0-cross-node-test',
+                                                   'sn0-smp-rendezvous-test',
                                                    'sn0-warm-reset-test',
                                                    'sn0-migration-test',
                                                    'sn0-snapshot-test',
