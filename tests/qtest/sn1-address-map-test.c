@@ -40,6 +40,7 @@
 #define PI_CPU_ENABLE_B UINT64_C(0x58)
 #define PI_NMI_A UINT64_C(0x70)
 #define PI_NMI_B UINT64_C(0x78)
+#define PI_CACHED_ALIAS UINT64_C(0x28)
 #define IO_WIDGET_ID UINT64_C(0x0)
 #define IO_SCRATCH0 UINT64_C(0x150)
 #define IO_ITTE0 UINT64_C(0x160)
@@ -1555,6 +1556,7 @@ static void test_hub_special_register_windows(const void *data)
 {
     QTestState *qts = machine_start();
     const uint64_t scratch = UINT64_C(0x5a);
+    uint64_t cached_alias = qtest_readq(qts, BEDROCK_LOCAL + PI_CACHED_ALIAS);
 
     qtest_writeq(qts, HUB_REMOTE_REGISTERS + L1_UART + L1_SCRATCH, scratch);
     g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + L1_UART +
@@ -1563,6 +1565,15 @@ static void test_hub_special_register_windows(const void *data)
     /* Public consumers establish the L1 decoder only in the remote form. */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + L1_UART +
                                 L1_SCRATCH), !=, scratch);
+    /* NMI stores reach the remote PI head, not the UART at its 0x80 edge. */
+    qtest_writeq(qts, HUB_REMOTE_REGISTERS + PI_NMI_A, 0x100);
+    qtest_writeq(qts, HUB_REMOTE_REGISTERS + PI_NMI_B, 0x100);
+    g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + L1_UART +
+                                L1_SCRATCH), ==, scratch);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CACHED_ALIAS), ==,
+                    cached_alias);
+    g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + PI_CACHED_ALIAS),
+                    ==, cached_alias);
     check_access_has_no_storage(qts, HUB_REMOTE_REGISTERS + 0x1000);
 
     qtest_quit(qts);
