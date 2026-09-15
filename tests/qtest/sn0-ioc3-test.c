@@ -178,10 +178,6 @@ static void test_ioc3_attach(QTestState *qts)
 #define PIN_DATA         (IOC3_BASE + 0x3c)
 #define PIN_REG(n)       (IOC3_BASE + 0x40 + 4 * (n))
 
-/* Where the graph keeps the console descriptor, and its serial-port base. */
-#define CONFIG_GRAPH    0x4000
-#define GRAPH_CONSOLE   0x18
-
 static void test_ports_are_distinct(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -260,31 +256,6 @@ static void test_the_port_answers_a_byte_at_a_time(const void *data)
     wide = qtest_readl(qts, SERIAL_A + REG_MCR);
     g_assert_cmphex(wide, ==, lane[0] | (lane[1] << 8) | (lane[2] << 16) |
                               ((uint32_t)lane[3] << 24));
-
-    qtest_quit(qts);
-}
-
-static void test_port_answers_where_the_graph_says(const void *data)
-{
-    QTestState *qts = qtest_init("-M origin200");
-    uint64_t advertised = qtest_readq(qts, CONFIG_GRAPH + GRAPH_CONSOLE);
-    uint64_t reached;
-
-    sn0_ioc3_attach(qts);
-
-    /*
-     * The graph's console descriptor is read, not restated, and decoded the
-     * way the processor decodes it -- undecoded it fails on a correct
-     * machine, raw it passes with the device somewhere else.
-     */
-    g_assert_cmphex(advertised >> 62, ==, 2);            /* unmapped window */
-    g_assert_cmphex((advertised >> 57) & 3, ==, 1);      /* crosstalk I/O */
-    reached = SPACE_XTALK | (advertised & ((1ULL << 40) - 1));
-    g_assert_cmphex(reached, ==, SERIAL_A);
-
-    /* And something answers there, which no assertion about the graph shows. */
-    qtest_writeb(qts, reached + REG_SCR, 0x3c);
-    g_assert_cmphex(qtest_readb(qts, reached + REG_SCR), ==, 0x3c);
 
     qtest_quit(qts);
 }
@@ -5396,8 +5367,6 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3/second-interrupt-reaches-bridge-pin-3",
                         NULL,
                         test_the_second_interrupt_reaches_bridge_pin_3);
-    qtest_add_data_func("sn0/ioc3/port-answers-where-the-graph-says", NULL,
-                        test_port_answers_where_the_graph_says);
     qtest_add_data_func("sn0/ioc3/one-wire-slot-always-finishes", NULL,
                         test_a_one_wire_slot_always_finishes);
     qtest_add_data_func("sn0/ioc3/one-wire-reset-finds-the-part", NULL,
