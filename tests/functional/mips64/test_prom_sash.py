@@ -58,7 +58,7 @@ The QEMU argv lib_prom_sash.py builds (sash_extra_args) is close to tools/
 sashlib.py's own qemu_command(cpus=1, skip_prom_diags=False) -- diag-gate
 calls that exact function to build the argv test_prom_diagnostics.py's
 diag_extra_args ports, so the two functions share the same shape (the
-"-M origin200,synthesized-firmware=off,debug-leds=off" machine string and
+"-M origin200,debug-leds=off" machine string and
 the ELSC AUX chardev on serial line 2 that podlib.serial_args wires, so
 the firmware's power-on-diagnostic console output -- which the PROM
 re-opens on the system controller after a failed diagnostic -- is captured
@@ -277,7 +277,7 @@ class PromSash(QemuSystemTest):
 
         vm = self.get_vm(name='prom_sash')
         vm.set_machine(
-            'origin200,synthesized-firmware=off,debug-leds=off')
+            'origin200,debug-leds=off')
         vm.set_console()
         elsc_log = self.log_file('elsc-aux.log')
         capture = self.log_file('wire.pcap')
@@ -332,7 +332,7 @@ class PromSash(QemuSystemTest):
                 'command': {
                     'binary': self.qemu_bin,
                     'machine': (
-                        'origin200,synthesized-firmware=off,'
+                        'origin200,'
                         'debug-leds=off'),
                     'args': sash_extra_args(
                         prom, netboot_tftp, elsc_log, capture),

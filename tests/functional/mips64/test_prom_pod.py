@@ -145,7 +145,7 @@ class PromPod(QemuSystemTest):
 
         vm = self.get_vm(name='prom_pod')
         vm.set_machine(
-            'origin200,synthesized-firmware=off,'
+            'origin200,'
             f'elsc-dip-switches={LOCAL_POD_SWITCHES},junk-uart=on')
         # The junk-bus UART is serial line 3; the framework fills
         # the earlier indexes with null backends.

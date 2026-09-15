@@ -218,7 +218,7 @@ static void test_nmi_entry_and_retrigger(void)
     write_guest_image(fd);
     close(fd);
 
-    qts = qtest_initf("-M origin200,synthesized-firmware=off -m 64M "
+    qts = qtest_initf("-M origin200 -m 64M "
                       "-cpu R10000 -bios %s -accel tcg "
                       "-no-reboot -no-shutdown", image);
     unlink(image);
@@ -258,7 +258,7 @@ static void test_nmi_reset_rearms(void)
     g_assert_cmpint(fd, >=, 0);
     write_guest_image(fd);
     close(fd);
-    qts = qtest_initf("-M origin200,synthesized-firmware=off -m 64M "
+    qts = qtest_initf("-M origin200 -m 64M "
                       "-cpu R10000 -bios %s -accel tcg "
                       "-no-shutdown", image);
     unlink(image);
@@ -300,10 +300,10 @@ static void test_nmi_latch_migration(void)
     socket = g_build_filename(directory, "migration.sock", NULL);
     uri = g_strdup_printf("unix:%s", socket);
     source_args = g_strdup_printf(
-        "-M origin200,synthesized-firmware=off -m 64M -cpu R10000 -bios %s "
+        "-M origin200 -m 64M -cpu R10000 -bios %s "
         "-accel tcg -no-reboot -no-shutdown", image);
     dest_args = g_strdup_printf(
-        "-M origin200,synthesized-firmware=off -m 64M -cpu R10000 -bios %s "
+        "-M origin200 -m 64M -cpu R10000 -bios %s "
         "-accel tcg -no-reboot -no-shutdown -incoming defer", image);
     from = qtest_init(source_args);
     to = qtest_init(dest_args);

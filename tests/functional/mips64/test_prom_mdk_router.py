@@ -112,7 +112,7 @@ class PromMdkRouter(QemuSystemTest):
         vm = self.get_vm(name='prom_mdk_router')
         # No debug-leds=off: with more than one CPU that option wedged
         # the PROM boot (test_prom_mdk_instgen.py).
-        vm.set_machine('origin200,synthesized-firmware=off')
+        vm.set_machine('origin200')
         vm.set_console()
         elsc_log = self.log_file('elsc-aux.log')
         capture = self.log_file('wire.pcap')

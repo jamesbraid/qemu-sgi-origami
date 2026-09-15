@@ -196,13 +196,13 @@ _MEM_RE = re.compile(r'^(\d+)([A-Za-z]*)$')
 def machine_props(_cell):
     """Build the -M origin200,... machine property string for a cell.
 
-    Every cell in the manifest boots the real PROM now that the
-    synthesized-firmware axis is gone, so this is fixed rather than
-    read from the cell -- kept as a function, taking the cell it no
-    longer reads, so a caller building the machine string from a cell
-    still has one name to call regardless of what varies later.
+    Every cell in the manifest boots the real PROM, the only firmware
+    the machine has, so this is fixed rather than read from the cell --
+    kept as a function, taking the cell it no longer reads, so a caller
+    building the machine string from a cell still has one name to call
+    regardless of what varies later.
     """
-    return 'origin200,synthesized-firmware=off,debug-leds=on'
+    return 'origin200,debug-leds=on'
 
 
 def qemu_args(cell):

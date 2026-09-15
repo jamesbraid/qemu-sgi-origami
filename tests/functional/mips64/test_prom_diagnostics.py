@@ -40,7 +40,7 @@ The QEMU argv lib_prom_diagnostics.py builds (diag_extra_args) was
 diag-gate's own gate_qemu_command, which was tools/sash-gate's
 qemu_command with cpus=1,
 skip_prom_diags=False -- read directly from tools/sash-gate in the project
-checkout (the "-M origin200,synthesized-firmware=off,debug-leds=off" machine
+checkout (the "-M origin200,debug-leds=off" machine
 string, the "-nic user,...,tftp=...,bootfile=sash64" SLIRP usermode netboot
 line, and the ELSC AUX chardev on serial line 2 that podlib.serial_args
 wires so the firmware's power-on-diagnostic console output -- which the
@@ -208,7 +208,7 @@ class PromDiagnostics(QemuSystemTest):
 
         vm = self.get_vm(name='prom_diagnostics')
         vm.set_machine(
-            'origin200,synthesized-firmware=off,debug-leds=off')
+            'origin200,debug-leds=off')
         vm.set_console()
         elsc_log = self.log_file('elsc-aux.log')
         capture = self.log_file('wire.pcap')
@@ -270,7 +270,7 @@ class PromDiagnostics(QemuSystemTest):
                 'command': {
                     'binary': self.qemu_bin,
                     'machine': (
-                        'origin200,synthesized-firmware=off,'
+                        'origin200,'
                         'debug-leds=off'),
                     'args': diag_extra_args(
                         prom, tftp, elsc_log, capture),

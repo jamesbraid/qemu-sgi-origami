@@ -175,7 +175,7 @@ class XframePci(QemuSystemTest):
         self.require_netdev('user')
 
         vm = self.get_vm(name='xframe_pci')
-        vm.set_machine('origin200,synthesized-firmware=off,debug-leds=off')
+        vm.set_machine('origin200,debug-leds=off')
         vm.set_console()
         vm.add_args(
             '-m', str(MEMORY_MIB), '-snapshot',

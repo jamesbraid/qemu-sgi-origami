@@ -130,7 +130,7 @@ class PromMdk(QemuSystemTest):
 
         vm = self.get_vm(name='prom_mdk')
         vm.set_machine(
-            'origin200,synthesized-firmware=off,debug-leds=off')
+            'origin200,debug-leds=off')
         vm.set_console()
         elsc_log = self.log_file('elsc-aux.log')
         capture = self.log_file('wire.pcap')
@@ -176,7 +176,7 @@ class PromMdk(QemuSystemTest):
                 'command': {
                     'binary': self.qemu_bin,
                     'machine': (
-                        'origin200,synthesized-firmware=off,'
+                        'origin200,'
                         'debug-leds=off'),
                     'args': mdk_extra_args(
                         prom, netboot_tftp, elsc_log, capture),

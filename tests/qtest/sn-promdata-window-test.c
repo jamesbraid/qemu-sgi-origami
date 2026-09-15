@@ -50,7 +50,7 @@ typedef struct PromdataWindowCase {
 static const PromdataWindowCase promdata_window_cases[] = {
     {
         .label = "origin200",
-        .machine_args = "-M origin200,synthesized-firmware=off -smp 2",
+        .machine_args = "-M origin200 -smp 2",
         .needs_bios = false,
         .filter_region = "sn0.node0.cpu0.promdata-filter",
         .copy_region = "sn0.node0.cpu0.prom-copy-local",

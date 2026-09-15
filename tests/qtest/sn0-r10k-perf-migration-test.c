@@ -415,10 +415,10 @@ static void test_active_counter(const void *opaque)
     uri = g_strdup_printf("unix:%s", socket);
 
     source_args = g_strdup_printf(
-        "-M origin200,synthesized-firmware=off -m 64M -cpu %s -bios %s "
+        "-M origin200 -m 64M -cpu %s -bios %s "
         "-accel tcg -no-reboot -no-shutdown", config->cpu, image);
     dest_args = g_strdup_printf(
-        "-M origin200,synthesized-firmware=off -m 64M -cpu %s -bios %s "
+        "-M origin200 -m 64M -cpu %s -bios %s "
         "-accel tcg -no-reboot -no-shutdown -incoming defer",
         config->cpu, image);
     from = qtest_init(source_args);
@@ -478,7 +478,7 @@ static void test_stream_representation(const void *opaque)
     state = g_build_filename(directory, "state.json", NULL);
     uri = g_strdup_printf("exec:cat > %s", stream);
     source_args = g_strdup_printf(
-        "-M origin200,synthesized-firmware=off -m 64M -cpu %s -bios %s "
+        "-M origin200 -m 64M -cpu %s -bios %s "
         "-accel tcg -no-reboot -no-shutdown", config->cpu, image);
     from = qtest_init(source_args);
     wait_for_ready(from);
@@ -545,11 +545,11 @@ static void test_r10000_scache_migration(void)
     socket = g_build_filename(directory, "migration.sock", NULL);
     uri = g_strdup_printf("unix:%s", socket);
     source_args = g_strdup_printf(
-        "-M origin2000,synthesized-firmware=off -m 256M -smp 8 "
+        "-M origin2000 -m 256M -smp 8 "
         "-cpu R10000 -bios %s -accel tcg,thread=single -nodefaults "
         "-no-reboot -no-shutdown", image);
     dest_args = g_strdup_printf(
-        "-M origin2000,synthesized-firmware=off -m 256M -smp 8 "
+        "-M origin2000 -m 256M -smp 8 "
         "-cpu R10000 -bios %s -accel tcg,thread=single -nodefaults "
         "-no-reboot -no-shutdown -incoming defer", image);
     from = qtest_init(source_args);
@@ -605,7 +605,7 @@ static void test_r10000_scache_data_padding(void)
     write_cache_guest_image(fd, &r10000_cache_probe, 1);
     close(fd);
     args = g_strdup_printf(
-        "-M origin200,synthesized-firmware=off -m 64M -cpu R10000 -bios %s "
+        "-M origin200 -m 64M -cpu R10000 -bios %s "
         "-accel tcg -nodefaults -no-reboot -no-shutdown", image);
     qts = qtest_init(args);
     wait_for_state(qts, CACHE_READY_OFF, CACHE_READY_MAGIC);

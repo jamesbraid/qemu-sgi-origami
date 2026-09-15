@@ -367,7 +367,7 @@ if QemuSystemTest is not None:
             pcap = self.log_file('tg-wire.pcap')
 
             vm = self.get_vm(name='irix_tg')
-            vm.set_machine('origin200,synthesized-firmware=off,debug-leds=off')
+            vm.set_machine('origin200,debug-leds=off')
             vm.set_console()
             elsc_log = self.log_file('elsc-aux.log')
             vm.add_args(

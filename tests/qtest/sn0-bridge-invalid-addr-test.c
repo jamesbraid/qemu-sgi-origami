@@ -46,7 +46,7 @@
  * the synthesized one is off here: both Hubs start on the reset number.
  */
 #define MACHINE_TWO_NODE \
-    "-M origin200,synthesized-firmware=off -m 128M " \
+    "-M origin200 -m 128M " \
     "-object memory-backend-ram,id=ram0,size=64M " \
     "-object memory-backend-ram,id=ram1,size=64M " \
     "-numa node,nodeid=0,cpus=0-1,memdev=ram0 " \

@@ -337,7 +337,7 @@ static void assert_dual_node_master_slave_sense(QTestState *qts)
 static void test_dual_node_master_slave_sense(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200,synthesized-firmware=off -m 128M "
+        "-M origin200 -m 128M "
         "-object memory-backend-ram,id=ram0,size=64M "
         "-object memory-backend-ram,id=ram1,size=64M "
         "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
@@ -1704,7 +1704,7 @@ static void test_cpu_enable_registers_control_matching_processors(
     build_cpu_enable_heartbeat_image(image);
     path = sn0_image_write(image, "sn0-hub-cpu-enable");
     qts = qtest_initf(
-        "-M origin200,synthesized-firmware=off -smp 2 -bios %s "
+        "-M origin200 -smp 2 -bios %s "
         "-accel tcg,thread=multi -S -no-shutdown", path);
     unlink(path);
 
@@ -1890,7 +1890,7 @@ static void test_a_matched_comparator_post_waits_for_its_partner(
     build_comparator_rendezvous_image(image);
     path = sn0_image_write(image, "sn0-hub-rt-rendezvous");
     qts = qtest_initf(
-        "-M origin200,synthesized-firmware=off -smp 2 -bios %s "
+        "-M origin200 -smp 2 -bios %s "
         "-accel tcg,thread=multi -S -no-shutdown", path);
     unlink(path);
 
@@ -2320,7 +2320,7 @@ static void test_pend1_credit_traces_set_and_spend(const void *data)
     image_path = sn0_image_write(image, "sn0-hub-pend1-credit");
     path = trace_file_create();
     qts = qtest_initf(
-        "-M origin200,synthesized-firmware=off -smp 2 -bios %s "
+        "-M origin200 -smp 2 -bios %s "
         "-accel tcg,thread=multi -S -no-shutdown "
         "-trace enable=sgi_hub_pend1_credit,file=%s", image_path, path);
     unlink(image_path);
@@ -2450,7 +2450,7 @@ static QTestState *handshake_start(const SN0Image *image, const char *stem,
 {
     g_autofree char *image_path = sn0_image_write(image, stem);
     QTestState *qts = qtest_initf(
-        "-M origin200,synthesized-firmware=off -smp 2 -bios %s "
+        "-M origin200 -smp 2 -bios %s "
         "-accel tcg,thread=%s -S -no-shutdown "
         "-trace enable=sgi_hub_rt_hold*,file=%s", image_path, thread, trace);
 
@@ -3046,10 +3046,10 @@ static void test_alive_signal_survives_migration(const void *data)
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpdir);
 
     from = qtest_initf(
-        "-M origin200,synthesized-firmware=off -smp 2 -bios %s "
+        "-M origin200 -smp 2 -bios %s "
         "-accel tcg,thread=multi -S -no-shutdown", image_path);
     to = qtest_initf(
-        "-M origin200,synthesized-firmware=off -smp 2 -bios %s "
+        "-M origin200 -smp 2 -bios %s "
         "-accel tcg,thread=multi -S -no-shutdown -incoming %s "
         "-trace enable=sgi_hub_rt_hold*,file=%s", image_path, uri, path);
     unlink(image_path);
@@ -3144,11 +3144,11 @@ static void test_a_withheld_withdrawal_migrates_landed(const void *data)
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpdir);
 
     from = qtest_initf(
-        "-M origin200,synthesized-firmware=off -smp 2 -bios %s "
+        "-M origin200 -smp 2 -bios %s "
         "-accel tcg,thread=multi -S -no-shutdown "
         "-trace enable=sgi_hub_rt_hold*,file=%s", image_path, path);
     to = qtest_initf(
-        "-M origin200,synthesized-firmware=off -smp 2 -bios %s "
+        "-M origin200 -smp 2 -bios %s "
         "-accel tcg,thread=multi -S -no-shutdown -incoming %s",
         image_path, uri);
     unlink(image_path);
@@ -3266,7 +3266,7 @@ static void test_rt_hold_release_and_wake_trace(const void *data)
     image_path = sn0_image_write(image, "sn0-hub-rt-hold-release");
     path = trace_file_create();
     qts = qtest_initf(
-        "-M origin200,synthesized-firmware=off -smp 2 -bios %s "
+        "-M origin200 -smp 2 -bios %s "
         "-accel tcg,thread=multi -S -no-shutdown "
         "-trace enable=sgi_hub_rt_hold*,file=%s", image_path, path);
     unlink(image_path);
@@ -4135,7 +4135,7 @@ static void test_pi_pending_reaches_cpu_cause(const void *data)
         { PI_INT_PEND1, PI_INT_MASK1_A, PI_INT_MASK1_B, 70, 0x800 },
     };
     QTestState *qts = qtest_init(
-        "-M origin200,synthesized-firmware=off -m 128M "
+        "-M origin200 -m 128M "
         "-object memory-backend-ram,id=ram0,size=64M "
         "-object memory-backend-ram,id=ram1,size=64M "
         "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
@@ -5249,7 +5249,7 @@ static void test_network_routes_reset_to_zero(const void *data)
 static void test_stock_prom_hubs_start_unnumbered(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200,synthesized-firmware=off -m 128M "
+        "-M origin200 -m 128M "
         "-object memory-backend-ram,id=ram0,size=64M "
         "-object memory-backend-ram,id=ram1,size=64M "
         "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
@@ -6103,7 +6103,7 @@ static void test_bte_error_latches_and_no_store_clears_it(const void *data)
 static void test_bte_physical_node_ownership(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200,synthesized-firmware=off -m 128M "
+        "-M origin200 -m 128M "
         "-object memory-backend-ram,id=ram0,size=64M "
         "-object memory-backend-ram,id=ram1,size=64M "
         "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
@@ -6188,7 +6188,7 @@ static void test_bte_physical_node_ownership(const void *data)
 static void test_bte_reset_retires_peer_claim(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200,synthesized-firmware=off -m 128M "
+        "-M origin200 -m 128M "
         "-object memory-backend-ram,id=ram0,size=64M "
         "-object memory-backend-ram,id=ram1,size=64M "
         "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
@@ -6289,7 +6289,7 @@ static void bte_reset_write(GString *args, unsigned int cpu,
 static void test_bte_routing_follows_nasid(const void *data)
 {
     g_autoptr(GString) args = g_string_new(
-        "-M origin200,synthesized-firmware=off -m 128M "
+        "-M origin200 -m 128M "
         "-object memory-backend-ram,id=ram0,size=64M "
         "-object memory-backend-ram,id=ram1,size=64M "
         "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "

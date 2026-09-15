@@ -1118,7 +1118,7 @@ static QTestState *boot_cpu_case(const char *accel, const char *cpu,
     writer(fd, build);
     close(fd);
 
-    qts = qtest_initf("-M origin200,synthesized-firmware=off -m 128M "
+    qts = qtest_initf("-M origin200 -m 128M "
                       "-smp %d -cpu %s -bios %s "
                       "-accel %s -no-reboot -no-shutdown",
                       nr_cpus, cpu, image, accel);
