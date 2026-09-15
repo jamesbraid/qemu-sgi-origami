@@ -34,6 +34,9 @@ mips_ss.add(when: 'CONFIG_SN0_XTALK_ASSEMBLY_TEST',
 # Shared by sgi-sn0-node and sgi-sn1-node; SGI_SN0 always implies SGI_SN1 is
 # also selected on this fork's mips64 target, so either config would do.
 mips_ss.add(when: 'CONFIG_SGI_SN0', if_true: files('sgi/sn-promdata.c'))
+# The format-2 machine descriptor (sn-model.h): lands ahead of the builder
+# that reads it, so for now it builds with no consumer.
+mips_ss.add(when: 'CONFIG_SGI_SN0', if_true: files('sgi/sn-model.c'))
 mips_ss.add(when: 'CONFIG_SGI_SN1',
             if_true: files('sgi/sn1.c', 'sgi/sn1-node.c',
                            'sgi/sn1-topology.c', 'sn1-origin300-model.c'))
