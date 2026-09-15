@@ -13,8 +13,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
-
-#include <elf.h>
+#include "sn0-user-image.h"
 
 #define SPACE_XTALK       0x20000000000ULL
 
@@ -132,77 +131,38 @@ static void test_new_widgets_are_one_bridge(const void *data)
 /*
  * An eight-byte load through net-new widget 0xa; the marker lands only if
  * it returned. Widget 2 at this offset is the PROM's deliberate PI error
- * probe, tested separately.
+ * probe, tested separately. Runs from the reset vector now rather than a
+ * directly loaded kernel, so it sets kernel mode (with KX, for the xkphys
+ * forms below) itself instead of inheriting it from a firmware handoff.
  */
-static char *write_doubleword_load_guest(void)
+static void build_doubleword_load_image(SN0Image *p)
 {
-    static const uint32_t code[] = {
-        0x3c089200,             /* lui    t0, 0x9200                        */
-        0x0008403c,             /* dsll32 t0, t0, 0                         */
-        0x3c090a40,             /* lui    t1, 0x0a40                        */
-        0x35290208,             /* ori    t1, t1, 0x0208 -> 0x0a40_0208     */
-        0x01094025,             /* or     t0, t0, t1  -> widget 0xa + 0x400208 */
-        0xdd0a0000,             /* ld     t2, 0(t0)   -- 8-byte load, w0xa   */
-        0x3c089600,             /* lui    t0, 0x9600                        */
-        0x0008403c,             /* dsll32 t0, t0, 0                         */
-        0x3c090003,             /* lui    t1, 0x0003                        */
-        0x01094025,             /* or     t0, t0, t1  -> phys 0x30000        */
-        0x3c095a17,             /* lui    t1, 0x5a17                        */
-        0x3529c0de,             /* ori    t1, t1, 0xc0de -> 0x5a17c0de       */
-        0xad090000,             /* sw     t1, 0(t0)   -- load returned       */
-        0x1000ffff,             /* b      .                                 */
-        0x00000000,             /* nop                                      */
-    };
-    uint8_t image[0x1000 + sizeof(code)] = { 0 };
-    const uint64_t entry = 0x8000000000020000ULL;
-    GError *err = NULL;
-    char *path = NULL;
-    int fd;
-    size_t i;
+    sn0_emit_li(p, SN0_R_T0, SN0_STATUS_KERNEL);
+    sn0_emit_mtc0(p, SN0_R_T0, SN0_CP0_STATUS);
 
-    fd = g_file_open_tmp("sn0-widget-decode-guest-XXXXXX", &path, &err);
-    g_assert_no_error(err);
-    g_assert_cmpint(fd, >=, 0);
+    /*
+     * widget 0xa + 0x400208, the same xkphys form as sn0-bridge-test.c's
+     * PROM PI probe: an 8-byte load, not a qtest chunked read.
+     */
+    sn0_emit_li64(p, SN0_R_T0, UINT64_C(0x9200000000000000) | 0x0a400208);
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_T0, SN0_R_T2, 0);
 
-    image[0] = ELFMAG0;
-    image[1] = ELFMAG1;
-    image[2] = ELFMAG2;
-    image[3] = ELFMAG3;
-    image[EI_CLASS] = ELFCLASS64;
-    image[EI_DATA] = ELFDATA2MSB;
-    image[EI_VERSION] = EV_CURRENT;
-    stw_be_p(image + 16, ET_EXEC);
-    stw_be_p(image + 18, EM_MIPS);
-    stl_be_p(image + 20, EV_CURRENT);
-    stq_be_p(image + 24, entry);
-    stq_be_p(image + 32, 64);
-    stw_be_p(image + 52, 64);
-    stw_be_p(image + 54, 56);
-    stw_be_p(image + 56, 1);
-
-    stl_be_p(image + 64, PT_LOAD);
-    stl_be_p(image + 68, PF_R | PF_X);
-    stq_be_p(image + 72, 0x1000);
-    stq_be_p(image + 80, entry);
-    stq_be_p(image + 88, entry);
-    stq_be_p(image + 96, sizeof(code));
-    stq_be_p(image + 104, sizeof(code));
-    stq_be_p(image + 112, 0x1000);
-
-    for (i = 0; i < ARRAY_SIZE(code); i++) {
-        stl_be_p(image + 0x1000 + i * sizeof(code[0]), code[i]);
-    }
-
-    g_assert_cmpint(write(fd, image, sizeof(image)), ==, (ssize_t)sizeof(image));
-    g_assert_cmpint(close(fd), ==, 0);
-    return path;
+    sn0_emit_li64(p, SN0_R_T0,
+                  UINT64_C(0x9600000000000000) | GUEST_MARKER_ADDR);
+    sn0_emit_li(p, SN0_R_T1, GUEST_MARKER);
+    sn0_emit_i(p, SN0_OPC_SW, SN0_R_T0, SN0_R_T1, 0);
+    sn0_emit_park(p);
 }
 
 static void test_other_widget_doubleword_load_completes(const void *data)
 {
-    g_autofree char *kernel = write_doubleword_load_guest();
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
     QTestState *qts;
     uint32_t marker = 0;
+
+    build_doubleword_load_image(image);
+    path = sn0_image_write(image, "sn0-widget-decode-guest");
 
     /*
      * Must run a real ld: a qtest wide read is chunked into legal four-byte
@@ -210,8 +170,9 @@ static void test_other_widget_doubleword_load_completes(const void *data)
      * watched go red by reverting each fix alone.
      */
     g_assert_true(g_setenv("QTEST_QEMU_ARGS", "-accel tcg", true));
-    qts = qtest_initf("-M origin200 -smp 1 -kernel %s", kernel);
+    qts = qtest_initf("-M origin200 -smp 1 -bios %s", path);
     g_unsetenv("QTEST_QEMU_ARGS");
+    unlink(path);
 
     g_test_timer_start();
     while (marker != GUEST_MARKER && g_test_timer_elapsed() < 1) {
@@ -221,7 +182,6 @@ static void test_other_widget_doubleword_load_completes(const void *data)
 
     g_assert_cmphex(marker, ==, GUEST_MARKER);
     qtest_quit(qts);
-    g_unlink(kernel);
 }
 
 static void test_doubleword_split_order(const void *data)
