@@ -329,6 +329,8 @@ static void l1_after_node_reset(void *opaque)
 
     s->usb_test_state.set = false;
     g_strlcpy(s->usb_test_result, "none", sizeof(s->usb_test_result));
+    g_strlcpy(s->usb_test_descriptor_result, "none",
+              sizeof(s->usb_test_descriptor_result));
 
     if (s->power_up_pending) {
         s->power_up_pending = false;
@@ -1557,6 +1559,8 @@ static void l1_reset_enter(Object *obj, ResetType type)
 
     s->usb_test_state.set = false;
     g_strlcpy(s->usb_test_result, "none", sizeof(s->usb_test_result));
+    g_strlcpy(s->usb_test_descriptor_result, "none",
+              sizeof(s->usb_test_descriptor_result));
     l1_boot(s);
 }
 
@@ -2124,6 +2128,84 @@ static char *l1_usb_state_get(Object *obj, Error **errp)
                            state->config, state->ep0, state->out1, state->in2);
 }
 
+static const uint8_t l1_usb_device_table[] = {
+    0x12, 0x01, 0x00, 0x01, 0xff, 0xff, 0x00, 0x40, 0x5e,
+    0x06, 0x34, 0x12, 0x00, 0x01, 0x01, 0x02, 0x03, 0x01,
+};
+
+static const uint8_t l1_usb_configuration_tree[] = {
+    0x09, 0x02, 0x20, 0x00, 0x01, 0x01, 0x04, 0x60, 0x00,
+    0x09, 0x04, 0x00, 0x00, 0x02, 0x00, 0x00, 0xff, 0x05,
+    0x07, 0x05, 0x01, 0x02, 0x40, 0x00, 0x00,
+    0x07, 0x05, 0x82, 0x02, 0x40, 0x00, 0x00,
+};
+
+typedef struct L1USBPreparedDescriptor {
+    const uint8_t *table;
+    size_t exposed;
+} L1USBPreparedDescriptor;
+
+/* Select internal software bytes without creating a USB transfer. */
+static L1USBPreparedDescriptor l1_usb_descriptor(const uint8_t setup[8])
+{
+    L1USBPreparedDescriptor result;
+    size_t length;
+
+    if (setup[3] == 1) {
+        result.table = l1_usb_device_table;
+        length = sizeof(l1_usb_device_table);
+    } else {
+        result.table = l1_usb_configuration_tree;
+        length = sizeof(l1_usb_configuration_tree);
+    }
+    result.exposed = MIN((size_t)(setup[6] | setup[7] << 8), length);
+    return result;
+}
+
+static void l1_usb_descriptor_setup_set(Object *obj, const char *value,
+                                         Error **errp)
+{
+    SGIL1State *s = SGI_L1(obj);
+    uint8_t setup[8];
+    L1USBPreparedDescriptor prepared;
+    char result[sizeof(s->usb_test_descriptor_result)];
+    static const char hex[] = "0123456789abcdef";
+
+    if (strlen(value) != 16) {
+        error_setg(errp, "usb-test-descriptor-setup requires eight hex bytes");
+        return;
+    }
+    for (unsigned i = 0; i < 8; i++) {
+        int hi = l1_usb_hex(value[2 * i]);
+        int lo = l1_usb_hex(value[2 * i + 1]);
+
+        if (hi < 0 || lo < 0) {
+            error_setg(errp, "usb-test-descriptor-setup has a non-hex digit");
+            return;
+        }
+        setup[i] = hi << 4 | lo;
+    }
+    if (setup[0] != 0x80 || setup[1] != 0x06 || setup[2] ||
+        (setup[3] != 1 && setup[3] != 2) || setup[4] || setup[5]) {
+        error_setg(errp, "unsupported usb-test-descriptor-setup selector");
+        return;
+    }
+    prepared = l1_usb_descriptor(setup);
+    memcpy(result, "prepared:", 9);
+    for (size_t i = 0; i < prepared.exposed; i++) {
+        result[9 + 2 * i] = hex[prepared.table[i] >> 4];
+        result[10 + 2 * i] = hex[prepared.table[i] & 0xf];
+    }
+    result[9 + 2 * prepared.exposed] = 0;
+    g_strlcpy(s->usb_test_descriptor_result, result,
+              sizeof(s->usb_test_descriptor_result));
+}
+
+static char *l1_usb_descriptor_result_get(Object *obj, Error **errp)
+{
+    return g_strdup(SGI_L1(obj)->usb_test_descriptor_result);
+}
+
 static const Property l1_properties[] = {
     DEFINE_PROP_CHR("chardev", SGIL1State, chr),
     DEFINE_PROP_INT32("revision-major", SGIL1State, revision_major, -1),
@@ -2156,6 +2238,8 @@ static void l1_init(Object *obj)
     SGIL1State *s = SGI_L1(obj);
 
     g_strlcpy(s->usb_test_result, "none", sizeof(s->usb_test_result));
+    g_strlcpy(s->usb_test_descriptor_result, "none",
+              sizeof(s->usb_test_descriptor_result));
     if (qtest_enabled()) {
         object_property_add_str(obj, "usb-test-setup", NULL,
                                 l1_usb_setup_set);
@@ -2165,6 +2249,10 @@ static void l1_init(Object *obj)
                                 l1_usb_state_set);
         object_property_add_str(obj, "usb-test-cached-state-readback",
                                 l1_usb_state_get, NULL);
+        object_property_add_str(obj, "usb-test-descriptor-setup", NULL,
+                                l1_usb_descriptor_setup_set);
+        object_property_add_str(obj, "usb-test-descriptor-result",
+                                l1_usb_descriptor_result_get, NULL);
     }
 
     qdev_init_gpio_out_named(DEVICE(obj), &s->node_power_out, "node-power", 1);
