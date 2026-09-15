@@ -285,23 +285,6 @@ static void sn0_hub_attach_ioc3(QTestState *qts)
                 DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
 }
 
-/*
- * A stock-PROM machine boots with every Hub programmed zero, so a
- * node-one-qualified address names no Hub -- the qtest backdoor rides
- * processor 0's view like any other access. Program node 1's real
- * number the way the PROM's global master does, a vector write over
- * the CrayLink, so the test can reach node 1 by address.
- */
-static void assign_node1_number(QTestState *qts)
-{
-    qtest_writeq(qts, HUB_LOCAL + NI_VECTOR, 0);
-    qtest_writeq(qts, HUB_LOCAL + NI_VECTOR_DATA,
-                 NI_REGION_SIZE | (1ULL << 8));
-    qtest_writeq(qts, HUB_LOCAL + NI_VECTOR_PARMS, NI_STATUS | PIOTYPE_WRITE);
-    g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + NODE_STRIDE + NI_STATUS) &
-                    NI_NODE_MASK, ==, 1ULL << 8);
-}
-
 /* Both ready bits: firmware polls either; a one-sided test would hang it. */
 static void test_the_flash_ready_signal_reads_ready_at_both_bits(
     const void *data)
@@ -344,11 +327,11 @@ static void test_dual_node_master_slave_sense(const void *data)
         "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
         "-smp 4,sockets=2,cores=2,threads=1");
 
-    assign_node1_number(qts);
+    sn0_program_nasid(qts, 1);
     assert_dual_node_master_slave_sense(qts);
     qtest_system_reset(qts);
     /* Reset returns both Hubs to zero; renumber to reach node 1 again. */
-    assign_node1_number(qts);
+    sn0_program_nasid(qts, 1);
     assert_dual_node_master_slave_sense(qts);
 
     qtest_quit(qts);
@@ -850,6 +833,7 @@ static void test_network_link_presence(const void *data)
         "-smp 4,sockets=2,cores=2,threads=1");
     unsigned int node;
 
+    sn0_program_nasid(qts, 1);
     for (node = 0; node < 2; node++) {
         uint64_t hub = NODE_STRIDE * node + HUB_LOCAL;
 
@@ -858,6 +842,7 @@ static void test_network_link_presence(const void *data)
     }
 
     qtest_system_reset(qts);
+    sn0_program_nasid(qts, 1);
     for (node = 0; node < 2; node++) {
         uint64_t hub = NODE_STRIDE * node + HUB_LOCAL;
 
@@ -1220,8 +1205,11 @@ static void test_each_hub_carries_its_own_identity(const void *data)
         "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
         "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
         "-smp 4,sockets=2,cores=2,threads=1");
-    uint64_t node0 = onewire_search_identity(qts, HUB_BY_NODE);
-    uint64_t node1 = onewire_search_identity(qts, HUB_BY_NODE + NODE_STRIDE);
+    uint64_t node0, node1;
+
+    sn0_program_nasid(qts, 1);
+    node0 = onewire_search_identity(qts, HUB_BY_NODE);
+    node1 = onewire_search_identity(qts, HUB_BY_NODE + NODE_STRIDE);
 
     g_assert_cmphex(node0, ==,
                     onewire_expected_identity(HUB_ONEWIRE_SERIAL(0)));
@@ -4759,6 +4747,13 @@ static void test_vector_pio_reaches_the_direct_peer(const void *data)
     uint64_t node1 = HUB_BY_NODE + NODE_STRIDE;
     uint64_t status;
 
+    /*
+     * The vector operation under test never needs node 1 numbered -- it
+     * addresses the peer by route, not by node. Only this test's own
+     * planting and checking through the node-qualified stride does.
+     */
+    sn0_program_nasid(qts, 1);
+
     qtest_writeq(qts, node1 + NI_SCRATCH_0, 0x0123456789abcdefULL);
     status = vector_operation(qts, node0, NI_SCRATCH_0, PIOTYPE_READ);
     g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
@@ -4882,6 +4877,7 @@ static void test_llp_port_error_clear_contract(const void *data)
                       UINT64_C(0x12345678);
     uint64_t status;
 
+    sn0_program_nasid(qts, 1);
     inject_port_errors(qts, errors);
     g_assert_cmphex(qtest_readq(qts, node1 + NI_PORT_ERROR), ==, errors);
 
@@ -5001,6 +4997,8 @@ static void test_vector_writes_land_only_on_rows_that_store(
     uint64_t node1 = HUB_BY_NODE + NODE_STRIDE;
     uint64_t status;
 
+    sn0_program_nasid(qts, 1);
+
     qtest_writeq(qts, node0 + NI_VECTOR_DATA, ~0ULL);
     status = vector_operation(qts, node0, NI_PORT_ERROR, PIOTYPE_WRITE);
     g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
@@ -5066,6 +5064,8 @@ static void test_io_protect_registers_answer_the_vector_decode(
     uint64_t node0 = HUB_BY_NODE;
     uint64_t node1 = HUB_BY_NODE + NODE_STRIDE;
     uint64_t status;
+
+    sn0_program_nasid(qts, 1);
 
     status = vector_operation(qts, node0, NI_IO_PROTECT, PIOTYPE_READ);
     g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
@@ -5166,6 +5166,8 @@ static void test_ni_config_registers_answer_the_vector_decode(
     uint64_t node0 = HUB_BY_NODE;
     uint64_t node1 = HUB_BY_NODE + NODE_STRIDE;
     uint64_t status;
+
+    sn0_program_nasid(qts, 1);
 
     status = vector_operation(qts, node0, NI_PROTECTION, PIOTYPE_READ);
     g_assert_cmphex(status & (NVS_VALID | NVS_TYPE_MASK), ==,
@@ -5367,6 +5369,9 @@ static void test_qualified_window_follows_the_programmed_number(
     uint64_t hub0 = HUB_BY_NODE;
     uint64_t hub1 = HUB_BY_NODE + NODE_STRIDE;
 
+    /* No PROM ran; numbered at the real numbers the way it would have. */
+    sn0_program_nasid(qts, 1);
+
     /* Distinguishable state in each Hub, planted by board position. */
     qtest_writeq(qts, HUB_LOCAL + NI_DIAG_PARMS, DIAG_PLANT_NODE0);
     qtest_writeq(qts, NODE_STRIDE + HUB_LOCAL + NI_DIAG_PARMS,
@@ -5396,7 +5401,7 @@ static void test_qualified_window_follows_the_programmed_number(
                     DIAG_PLANT_NODE0);
 
     /* The real number restored: the same address reaches the peer again. */
-    assign_node1_number(qts);
+    sn0_program_nasid(qts, 1);
     g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU, hub0 + NI_DIAG_PARMS),
                     ==, DIAG_PLANT_NODE0);
     g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU, hub1 + NI_DIAG_PARMS),
@@ -5416,6 +5421,8 @@ static void test_unclaimed_node_number_fails(const void *data)
     uint64_t hub1 = HUB_BY_NODE + NODE_STRIDE;
     uint64_t value;
 
+    /* No PROM ran; number it first so the plant below can land at all. */
+    sn0_program_nasid(qts, 1);
     qtest_writeq(qts, NODE_STRIDE + HUB_LOCAL + NI_DIAG_PARMS,
                  DIAG_PLANT_NODE1);
 
@@ -5426,7 +5433,7 @@ static void test_unclaimed_node_number_fails(const void *data)
     g_assert_false(cpu_view_readq(qts, 0, hub1 + NI_DIAG_PARMS, &value));
 
     /* Not sticky: reclaimed over the link, the address answers again. */
-    assign_node1_number(qts);
+    sn0_program_nasid(qts, 1);
     g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU, hub1 + NI_DIAG_PARMS),
                     ==, DIAG_PLANT_NODE1);
 
@@ -5446,6 +5453,9 @@ static void test_qualified_memory_follows_the_programmed_number(
 {
     QTestState *qts = qtest_init_dual_node();
     uint64_t value;
+
+    /* No PROM ran; number it first so the plant below can land at all. */
+    sn0_program_nasid(qts, 1);
 
     /* A distinct word in each node's memory, planted by board position. */
     qtest_writeq(qts, MEM_PROBE, MEM_PLANT_NODE0);
@@ -5471,7 +5481,7 @@ static void test_qualified_memory_follows_the_programmed_number(
     g_assert_false(cpu_view_readq(qts, 0, NODE_STRIDE + MEM_PROBE, &value));
 
     /* The real number restored: the qualified stride reaches node 1. */
-    assign_node1_number(qts);
+    sn0_program_nasid(qts, 1);
     g_assert_cmphex(cpu_view_word64(qts, NODE1_CPU, NODE_STRIDE + MEM_PROBE),
                     ==, MEM_PLANT_NODE1);
     g_assert_cmphex(cpu_view_word64(qts, 0, NODE_STRIDE + MEM_PROBE), ==,
@@ -5495,6 +5505,7 @@ static void test_qualified_memory_follows_the_programmed_number(
 /* Both nodes' words at both probes; the plants ride the claimed strides. */
 static void calias_plant_both_nodes(QTestState *qts)
 {
+    sn0_program_nasid(qts, 1);
     qtest_writeq(qts, CALIAS_PROBE, CALIAS_PLANT_NODE0);
     qtest_writeq(qts, NODE_STRIDE + CALIAS_PROBE, CALIAS_PLANT_NODE1);
     qtest_writeq(qts, CALIAS_LOW_PROBE, CALIAS_LOW_PLANT_NODE0);
@@ -6114,7 +6125,7 @@ static void test_bte_physical_node_ownership(const void *data)
     uint8_t got[BTE_LINE];
     unsigned int i;
 
-    assign_node1_number(qts);
+    sn0_program_nasid(qts, 1);
 
     /* Zero-field addresses name node zero after NASID assignment. */
     qtest_memset(qts, 0x01500000, 0xaa, BTE_LINE);
@@ -6196,7 +6207,7 @@ static void test_bte_reset_retires_peer_claim(const void *data)
         "-smp 4,sockets=2,cores=2,threads=1");
     unsigned int engine;
 
-    assign_node1_number(qts);
+    sn0_program_nasid(qts, 1);
     qtest_memset(qts, NODE_STRIDE + 0x00800000, 0xaa, BTE_LINE);
     qtest_system_reset(qts);
     /* No NASID write after reset may be needed to retire the peer's claim. */
@@ -6224,6 +6235,7 @@ static void test_bte_addresses_ignore_calias(const void *data)
     const unsigned int calias[] = { 0, PI_CALIAS_SIZE_16M };
     unsigned int c, o, engine, nodes, i;
 
+    sn0_program_nasid(qts, 1);
     for (c = 0; c < ARRAY_SIZE(calias); c++) {
         qtest_writeq(qts, hub + PI_CALIAS_SIZE, calias[c]);
         for (o = 0; o < ARRAY_SIZE(offsets); o++) {
@@ -6335,7 +6347,7 @@ static void test_bte_routing_follows_nasid(const void *data)
                                 notify + engine * BTE_LINE), ==, 0);
             }
         }
-        assign_node1_number(qts);
+        sn0_program_nasid(qts, 1);
         qtest_memset(qts, dst, 0xcc, 2 * BTE_LINE);
         qtest_memset(qts, notify, 0xff, 2 * BTE_LINE);
         for (engine = 0; engine < 2; engine++) {
@@ -6353,7 +6365,7 @@ static void test_bte_routing_follows_nasid(const void *data)
         }
         qtest_system_reset(qts);
     }
-    assign_node1_number(qts);
+    sn0_program_nasid(qts, 1);
     qtest_memset(qts, dst, 0xcc, 2 * BTE_LINE);
     qtest_memset(qts, notify, 0xff, 2 * BTE_LINE);
     qtest_memset(qts, NODE_STRIDE + dst, 0xcc, 2 * BTE_LINE);
@@ -6372,7 +6384,7 @@ static void test_bte_routing_follows_nasid(const void *data)
         qtest_writeq(qts, HUB_BY_NODE + BTE_CONTROL(engine), BTE_CTL_NOTIFY);
     }
     qtest_writeq(qts, HUB_LOCAL + NI_STATUS, NI_REGION_SIZE);
-    assign_node1_number(qts);
+    sn0_program_nasid(qts, 1);
     for (engine = 0; engine < 2; engine++) {
         g_assert_cmphex(qtest_readq(qts, dst + engine * BTE_LINE),
                         ==, 0xaaaaaaaaaaaaaaaaULL);
@@ -6394,6 +6406,7 @@ static void test_bte_unclaimed_addresses_fail(const void *data)
     const uint64_t notify = 0x00a00000;
     unsigned int engine, role, node;
 
+    sn0_program_nasid(qts, 1);
     for (engine = 0; engine < 2; engine++) {
         for (role = 0; role < 3; role++) {
             for (node = 0; node < 2; node++) {
