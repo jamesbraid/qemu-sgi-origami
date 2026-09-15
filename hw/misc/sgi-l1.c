@@ -470,8 +470,8 @@ static void l1_eeprom(SGIL1State *s, uint8_t channel, const uint8_t *args)
         l1_reply(s, channel, -100, 0, NULL, 0);
         return;
     }
-    /* The absent check precedes the range check: no file in any area. */
-    if (component >= 16 || (!s->records[component].length &&
+    /* The selected IP45 six-entry bound precedes area and offset checks. */
+    if (component >= 6 || (!s->records[component].length &&
                             !s->records[16 + component].length &&
                             !s->records[32 + component].length)) {
         l1_reply(s, channel, -104, 0, NULL, 0);

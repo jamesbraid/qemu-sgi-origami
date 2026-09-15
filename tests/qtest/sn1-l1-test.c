@@ -10,6 +10,8 @@
 #define BASE 0x11000000ULL
 
 static void expect_router_error(QTestState *s, uint8_t subchannel);
+static void expect_raw_reply(QTestState *s, const uint8_t *expected,
+                             size_t length);
 static size_t general(QTestState *s, uint16_t code, const uint8_t *args,
                       size_t args_len, unsigned count, uint8_t *reply);
 static void integer(uint8_t *out, uint32_t value);
@@ -322,6 +324,46 @@ static void test_eeprom(void)
     qtest_quit(s);
     unlink(spd_path);
     unlink(board_path);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_eeprom_six_entries(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sn1-l1-six-records-XXXXXX",
+                                        &error);
+    g_autofree char *spd_path = NULL;
+    uint8_t spd[64] = { 0 };
+    const uint8_t request[] = {
+        0x10, 0x0f, 0xff, 0xf0, 6, 0, 6, 4,
+        0, 0, 0, 0, 6, 0, 0, 0, 0, 4,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    };
+    const uint8_t absent[] = {
+        0x7e, 0x30, 0xff, 0xff, 0xff, 0x98, 0,
+        0xb9, 0x11, 0x7e,
+    };
+    uint8_t reply[131];
+    QTestState *s;
+
+    g_assert_no_error(error);
+    spd_path = g_build_filename(dir, "spd.bin", NULL);
+    g_assert_true(g_file_set_contents(spd_path, (char *)spd,
+                                      sizeof(spd), &error));
+    g_assert_no_error(error);
+    s = qtest_initf(
+        "-M none -cpu R10000 -S -device '{\"driver\":\"sgi-l1\","
+        "\"id\":\"l1c\",\"spd-eeprom\":[\"\",\"\",\"\",\"\",\"\",\"\",\"%s\"]}' "
+        "-device '{\"driver\":\"sgi-l1-uart\",\"id\":\"l1\","
+        "\"controller\":\"l1c\"}'",
+        spd_path);
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    send_frame(s, request, sizeof(request), false);
+    expect_raw_reply(s, absent, sizeof(absent));
+    g_assert_cmpuint(eeprom_read(s, 6, 5, 200, 1, reply), ==, 6);
+    g_assert_cmpmem(reply, 6, absent + 1, 6);
+    qtest_quit(s);
+    unlink(spd_path);
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
@@ -2398,6 +2440,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/errors", test_errors);
     qtest_add_func("sn1/l1/reset", test_reset);
     qtest_add_func("sn1/l1/eeprom", test_eeprom);
+    qtest_add_func("sn1/l1/eeprom-six-entries", test_eeprom_six_entries);
     qtest_add_func("sn1/l1/board-area-validity", test_board_area_validity);
     qtest_add_func("sn1/l1/migration", test_migration);
     qtest_add_func("sn1/l1/eeprom-migration", test_eeprom_migration);
