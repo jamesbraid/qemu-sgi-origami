@@ -4504,6 +4504,310 @@ static void test_receive_jumbo_ring_unprovisioned(const void *data)
     close(sv[0]);
 }
 
+/*
+ * The guard on the standard branch's discard, which is the only thing between
+ * that discard and silent loss: a standard-size frame is thrown away only
+ * while the jumbo ring could really have taken a frame. In every other state
+ * the caller is owed the refusal, because nothing could have received the
+ * frame and nothing would ever say it went.
+ *
+ * Two states reach it. The jumbo ring published but empty, which is ordinary
+ * flow control with neither ring posted; and the jumbo doorbell rung with the
+ * ring's control block still zero, which names buffers the card cannot reach
+ * -- tigon_can_receive tests neither base address, and tigon_parse_gib reads
+ * the jumbo base once at firmware-up, so a driver that posts before it
+ * publishes lands here. Both must hold the frame and deliver it once the
+ * standard ring is posted.
+ *
+ * Without this, every test in this file sets up a posted jumbo ring and the
+ * guard could be deleted with the suite still green.
+ */
+static void test_standard_shortage_guard_holds(const void *data)
+{
+    enum { JUMBO_LEN = 4000 };
+    int sv[2];
+    QTestState *qts;
+    uint8_t landed[sizeof(rx_frame_ours)];
+    uint8_t big[JUMBO_LEN];
+    unsigned n;
+
+    /* Neither ring posted: the jumbo control block is published and empty. */
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+    go_operational(qts);
+    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
+
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+    assert_return_prod_stays(qts, 0);
+    qtest_clock_step(qts, STATS_LIVE_NS * 2);
+    g_assert_cmpuint(qtest_readl(qts, GIB_PHYS + STAT_IF_IN_DISCARDS), ==, 0);
+
+    /* Held, not discarded: posting the standard ring delivers it. */
+    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+    qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed), rx_frame_ours, sizeof(landed));
+    g_assert_cmpuint(qtest_readl(qts, GIB_PHYS + STAT_IF_IN_DISCARDS), ==, 0);
+    qtest_quit(qts);
+    close(sv[0]);
+
+    /* The jumbo doorbell rung with the ring's control block left at zero. */
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    enable_dma_big_endian(qts);
+    build_gib(qts);
+    write_rcb_addr(qts, GIB_PHYS + GIB_JUMBO_RX_RCB, 0);
+    publish_gib(qts);
+    release_cpu(qts);
+    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_JUMBORXPROD_IDX, 1);
+
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+    assert_return_prod_stays(qts, 0);
+    qtest_clock_step(qts, STATS_LIVE_NS * 2);
+    g_assert_cmpuint(qtest_readl(qts, GIB_PHYS + STAT_IF_IN_DISCARDS), ==, 0);
+
+    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+    qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed), rx_frame_ours, sizeof(landed));
+    g_assert_cmpuint(qtest_readl(qts, GIB_PHYS + STAT_IF_IN_DISCARDS), ==, 0);
+    qtest_quit(qts);
+    close(sv[0]);
+
+    /*
+     * The third state, and the only one that reaches the index half of the
+     * guard. The back end delivers a queued frame straight to receive()
+     * without asking can_receive() again, so a jumbo buffer posted for the
+     * frame in front is already consumed when the standard frame behind it
+     * arrives: both rings empty, and the jumbo control block published. Case
+     * one never enters receive() at all, because nothing is posted and
+     * can_receive() is false; case two enters it but stops at the base
+     * disjunct, because the jumbo ring has no base to check indices against.
+     *
+     * Both frames go out in one write. The socket back end finalizes every
+     * complete packet in a single read, so one write puts both on the queue
+     * while can_receive() is false and the doorbell's flush then hands them
+     * to receive() back to back. Two writes would let the read handler run
+     * between them, and the second frame would be offered through
+     * qemu_net_queue_send, which re-checks can_receive and queues it without
+     * entering receive() -- every assertion below still true and the guard
+     * never exercised.
+     */
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+    go_operational(qts);
+    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
+    qtest_memset(qts, JUMBO_BUF_PHYS, 0, 16384);
+
+    for (n = 14; n < JUMBO_LEN; n++) {
+        big[n] = (uint8_t)(n * 3 + (n >> 5));
+    }
+    memcpy(big, rx_frame_ours, 14);
+    {
+        uint8_t both[8 + JUMBO_LEN + sizeof(rx_frame_ours)];
+        size_t len = 0;
+        uint32_t hdr;
+
+        hdr = htonl((uint32_t)JUMBO_LEN);
+        memcpy(both + len, &hdr, 4);
+        len += 4;
+        memcpy(both + len, big, JUMBO_LEN);
+        len += JUMBO_LEN;
+        hdr = htonl((uint32_t)sizeof(rx_frame_ours));
+        memcpy(both + len, &hdr, 4);
+        len += 4;
+        memcpy(both + len, rx_frame_ours, sizeof(rx_frame_ours));
+        len += sizeof(rx_frame_ours);
+        g_assert_cmpint(send(sv[0], both, len, 0), ==, (int)len);
+    }
+
+    /* Exactly one jumbo buffer: the frame in front consumes it. */
+    write_rcb_addr(qts, JUMBO_RX_RING_PHYS + 0, JUMBO_BUF_PHYS);
+    qtest_writel(qts, JUMBO_RX_RING_PHYS + 8, (5u << 16) | 16222);
+    qtest_writel(qts, JUMBO_RX_RING_PHYS + 12,
+                 (uint32_t)TI_BDTYPE_RECV_JUMBO_BD << 16);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_JUMBORXPROD_IDX, 1);
+
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+    assert_return_prod_stays(qts, 1);
+    qtest_clock_step(qts, STATS_LIVE_NS * 2);
+    g_assert_cmpuint(qtest_readl(qts, GIB_PHYS + STAT_IF_IN_DISCARDS), ==, 0);
+
+    /* Held, not discarded: the standard ring delivers it. */
+    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+    g_assert_cmphex(wait_return_prod_reaches(qts, 2), ==, 2);
+    qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed), rx_frame_ours, sizeof(landed));
+    g_assert_cmpuint(qtest_readl(qts, GIB_PHYS + STAT_IF_IN_DISCARDS), ==, 0);
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * The standard ring's own shortage, the mirror of
+ * receive-jumbo-ring-unprovisioned: a jumbo buffer posted and no standard
+ * buffer at all. A 64-byte frame cannot take the jumbo one, so it is
+ * discarded and counted, both rings' buffers are left alone, the jumbo frame
+ * behind it still completes, and posting a standard buffer afterwards brings
+ * nothing back.
+ *
+ * The middle step is the one a model that parked the frame fails. The last
+ * says the frame did not come back later. Neither pins when it went;
+ * standard-shortage-discards-without-waiting does that.
+ */
+static void test_receive_standard_ring_unprovisioned(const void *data)
+{
+    enum { JUMBO_LEN = 4000 };
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[JUMBO_LEN], landed[JUMBO_LEN], zeros[JUMBO_LEN];
+    unsigned n;
+    uint32_t word2, word3;
+
+    memcpy(frame, rx_frame_ours, 14);
+    for (n = 14; n < JUMBO_LEN; n++) {
+        frame[n] = (uint8_t)(n * 9 + (n >> 6));
+    }
+    memset(zeros, 0, sizeof(zeros));
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    /* One jumbo buffer, and no standard buffer at all. */
+    qtest_memset(qts, RX_BUF_PHYS, 0, 4096);
+    qtest_memset(qts, JUMBO_BUF_PHYS, 0, 16384);
+    write_rcb_addr(qts, JUMBO_RX_RING_PHYS + 0, JUMBO_BUF_PHYS);
+    qtest_writel(qts, JUMBO_RX_RING_PHYS + 8, (3u << 16) | 16222);
+    qtest_writel(qts, JUMBO_RX_RING_PHYS + 12,
+                 (uint32_t)TI_BDTYPE_RECV_JUMBO_BD << 16);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_JUMBORXPROD_IDX, 1);
+
+    qtest_clock_step(qts, STATS_LIVE_NS * 2);
+    g_assert_cmpuint(qtest_readl(qts, GIB_PHYS + STAT_IF_IN_DISCARDS), ==, 0);
+
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+    g_assert_cmpuint(wait_head_discards_reaches(qts, 1), ==, 1);
+
+    /* No completion, and neither ring's buffer written. */
+    assert_return_prod_stays(qts, 0);
+    qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(rx_frame_ours));
+    g_assert_cmpmem(landed, sizeof(rx_frame_ours), zeros,
+                    sizeof(rx_frame_ours));
+    qtest_memread(qts, JUMBO_BUF_PHYS, landed, sizeof(rx_frame_ours));
+    g_assert_cmpmem(landed, sizeof(rx_frame_ours), zeros,
+                    sizeof(rx_frame_ours));
+
+    /* The receiver is not latched: the frame behind the dropped one lands. */
+    net_send_frame(sv[0], frame, sizeof(frame));
+    g_assert_cmphex(wait_return_prod(qts), ==, 1);
+    word2 = qtest_readl(qts, RETURN_RING_PHYS + 8);
+    g_assert_cmphex(word2 >> 16, ==, 3);
+    g_assert_cmphex(word2 & 0xffff, ==, sizeof(frame));
+    word3 = qtest_readl(qts, RETURN_RING_PHYS + 12);
+    g_assert_cmphex(word3 >> 16, ==, TI_BDTYPE_RECV_JUMBO_BD);
+    g_assert_cmphex(word3 & TI_BDFLAG_JUMBO_RING, ==, TI_BDFLAG_JUMBO_RING);
+    qtest_memread(qts, JUMBO_BUF_PHYS, landed, sizeof(frame));
+    g_assert_cmpmem(landed, sizeof(frame), frame, sizeof(frame));
+
+    /* Posting a standard buffer now brings nothing back: that frame is gone. */
+    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
+    assert_return_prod_stays(qts, 1);
+    qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(rx_frame_ours));
+    g_assert_cmpmem(landed, sizeof(rx_frame_ours), zeros,
+                    sizeof(rx_frame_ours));
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * The mirror: a jumbo buffer posted and no standard buffer at all. A
+ * standard-size frame cannot take the jumbo one -- the ring is chosen by
+ * size, and the standard ring's max_len is the threshold for sending a large
+ * frame the other way, not a licence for a small one to come back -- so the
+ * card discards it at once and counts an input discard.
+ *
+ * Frozen clock, for the reason the jumbo case gives: with virtual time
+ * standing still, only a discard lets the jumbo frame queued behind this one
+ * through. This is the assertion that would notice a bounded hold coming
+ * back on the ring that carries the MTU 1500 qualification; that alternative
+ * was built and measured on this path, and the receive shortage contract in
+ * the Tigon datasheet carries what it cost.
+ */
+static void test_standard_shortage_discards_without_waiting(const void *data)
+{
+    enum { JUMBO_LEN = 4000 };
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[JUMBO_LEN], landed[JUMBO_LEN], zeros[JUMBO_LEN];
+    unsigned n;
+    uint32_t word2, word3;
+
+    memcpy(frame, rx_frame_ours, 14);
+    for (n = 14; n < JUMBO_LEN; n++) {
+        frame[n] = (uint8_t)(n * 9 + (n >> 6));
+    }
+    memset(zeros, 0, sizeof(zeros));
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = tigon_init_netdev_no_arrival_floor(sv[1]);
+    close(sv[1]);
+    net_recv_timeout(sv[0], 5);
+
+    go_operational(qts);
+
+    /* One jumbo buffer, and no standard buffer at all. */
+    qtest_memset(qts, RX_BUF_PHYS, 0, 4096);
+    qtest_memset(qts, JUMBO_BUF_PHYS, 0, 16384);
+    write_rcb_addr(qts, JUMBO_RX_RING_PHYS + 0, JUMBO_BUF_PHYS);
+    qtest_writel(qts, JUMBO_RX_RING_PHYS + 8, (3u << 16) | 16222);
+    qtest_writel(qts, JUMBO_RX_RING_PHYS + 12,
+                 (uint32_t)TI_BDTYPE_RECV_JUMBO_BD << 16);
+    qtest_writel(qts, WINDOW_TIGON + TI_MB_JUMBORXPROD_IDX, 1);
+
+    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
+    net_send_frame(sv[0], frame, sizeof(frame));
+
+    /* No qtest_clock_step anywhere: only a discard gets the second frame in. */
+    g_assert_cmphex(return_prod_without_clock(qts, 1), ==, 1);
+    word2 = qtest_readl(qts, RETURN_RING_PHYS + 8);
+    g_assert_cmphex(word2 >> 16, ==, 3);
+    g_assert_cmphex(word2 & 0xffff, ==, sizeof(frame));
+    word3 = qtest_readl(qts, RETURN_RING_PHYS + 12);
+    g_assert_cmphex(word3 >> 16, ==, TI_BDTYPE_RECV_JUMBO_BD);
+    g_assert_cmphex(word3 & TI_BDFLAG_JUMBO_RING, ==, TI_BDFLAG_JUMBO_RING);
+    qtest_memread(qts, JUMBO_BUF_PHYS, landed, sizeof(frame));
+    g_assert_cmpmem(landed, sizeof(frame), frame, sizeof(frame));
+
+    /* The standard buffer was never written: that frame is gone. */
+    qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(rx_frame_ours));
+    g_assert_cmpmem(landed, sizeof(rx_frame_ours), zeros,
+                    sizeof(rx_frame_ours));
+
+    /* The discard is counted where the card publishes its input discards. */
+    qtest_clock_step(qts, STATS_LIVE_NS * 2);
+    g_assert_cmpuint(wait_head_discards_reaches(qts, 1), ==, 1);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -4598,6 +4902,13 @@ int main(int argc, char **argv)
                         test_receive_jumbo_frame);
     qtest_add_data_func("/sn0/tigon/receive-jumbo-posted-by-command", NULL,
                         test_receive_jumbo_posted_by_command);
+    qtest_add_data_func("/sn0/tigon/standard-shortage-guard-holds", NULL,
+                        test_standard_shortage_guard_holds);
+    qtest_add_data_func("/sn0/tigon/receive-standard-ring-unprovisioned", NULL,
+                        test_receive_standard_ring_unprovisioned);
+    qtest_add_data_func(
+        "/sn0/tigon/standard-shortage-discards-without-waiting", NULL,
+        test_standard_shortage_discards_without_waiting);
     qtest_add_data_func("/sn0/tigon/receive-jumbo-ring-unprovisioned", NULL,
                         test_receive_jumbo_ring_unprovisioned);
     qtest_add_data_func(

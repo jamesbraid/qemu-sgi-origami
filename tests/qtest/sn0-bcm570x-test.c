@@ -1188,6 +1188,90 @@ static void test_jumbo_shortage_discards_without_waiting(const void *data)
     close(sv[1]);
 }
 
+/*
+ * The mirror: the standard ring addressed but carrying no posted buffer,
+ * with the jumbo ring provisioned. A standard-size frame cannot take a jumbo
+ * buffer -- the ring is chosen by length against the standard ring's Max_Len
+ * -- so it has nowhere to go, and the card discards it at once rather than
+ * refusing it.
+ *
+ * Frozen clock, for the reason the jumbo case gives: a test that steps far
+ * enough to see a completion has stepped past any plausible hold, and both
+ * dispositions end in the same state. With virtual time standing still, only
+ * a discard lets the jumbo frame queued behind this one through.
+ *
+ * This is the assertion that would notice a bounded hold coming back on the
+ * ring that carries the MTU 1500 qualification. That alternative was built
+ * and measured on this path; the receive shortage contract in the BCM570x
+ * datasheet carries what it cost.
+ */
+static void test_standard_shortage_discards_without_waiting(const void *data)
+{
+    QTestState *qts;
+    uint8_t big[BIG_FRAME_LEN];
+    uint8_t small[100];
+    uint8_t got[BIG_FRAME_LEN];
+    uint8_t zeros[BIG_FRAME_LEN];
+    int sv[2];
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    qts = qtest_initf("-M origin200 -netdev socket,fd=%d,id=n0 "
+                      "-device bcm570x,addr=3,netdev=n0,mac=" BCM_MAC
+                      ",rx-arrival-latency-us=0", sv[1]);
+    aim_window_at_bar(qts);
+
+    bar_writel(qts, BCM_HCC_STATUSBLK_ADDR_HI, IOVA(STATUS_PHYS) >> 32);
+    bar_writel(qts, BCM_HCC_STATUSBLK_ADDR_LO, IOVA(STATUS_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_RX_STD_RCB_HI, IOVA(STD_RING_PHYS) >> 32);
+    bar_writel(qts, BCM_RX_STD_RCB_LO, IOVA(STD_RING_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_RX_STD_RCB_MAXLEN, STD_MAXLEN_1518 << 16);
+    /* Addresses only, like IRIX: 0x2448 stays at its reset value of 0. */
+    bar_writel(qts, BCM_RX_JUMBO_RCB_HI, IOVA(JUMBO_RING_PHYS) >> 32);
+    bar_writel(qts, BCM_RX_JUMBO_RCB_LO, IOVA(JUMBO_RING_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_RX_JUMBO_RCB_NICADDR, 0x00001000u);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 0,
+               IOVA(RET_RING_PHYS) >> 32);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 4,
+               IOVA(RET_RING_PHYS) & 0xffffffff);
+    bar_writel(qts, BCM_SRAM_WINDOW_BASE + BCM_SRAM_RX_RETURN_RCB + 8,
+               64 << 16);
+    bar_writel(qts, BCM_HCC_RX_MAX_COAL_BDS, 1);
+    bar_writel(qts, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(qts, BCM_RX_MODE, BCM_RXMODE_ENABLE);
+
+    /* A jumbo buffer only; the standard producer mailbox is never written. */
+    post_rx_descriptor(qts, JUMBO_RING_PHYS, 0, JUMBO_BUF_PHYS,
+                       JUMBO_BUF_LEN, BCM_RXBDFLAG_JUMBO_RING);
+    qtest_memset(qts, JUMBO_BUF_PHYS, 0, BIG_FRAME_LEN);
+    qtest_memset(qts, RX_BUF_PHYS, 0, STD_BUF_SIZE);
+    qtest_memset(qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
+    qtest_memset(qts, STATUS_PHYS, 0, 0x50);
+    bar_writel(qts, BCM_MBX_RX_JUMBO_PROD_LO, 1);
+    g_assert_cmphex(bar_readl(qts, BCM_MBX_RX_STD_PROD_LO), ==, 0);
+
+    build_big_rx_frame(small, sizeof(small));
+    net_send_frame(sv[0], small, sizeof(small));
+    build_big_rx_frame(big, sizeof(big));
+    net_send_frame(sv[0], big, sizeof(big));
+
+    /* No qtest_clock_step anywhere: only a discard gets the second frame in. */
+    g_assert_cmphex(rx_producer_without_clock(qts, 1), ==, 1);
+    qtest_memread(qts, JUMBO_BUF_PHYS, got, sizeof(big));
+    g_assert_cmpmem(got, sizeof(big), big, sizeof(big));
+    g_assert_cmphex(bd_word_be(qts, RET_RING_PHYS, BCM_RXBD_IDX_LEN) & 0xffff,
+                    ==, sizeof(big) + BCM_ETH_FCS_LEN);
+    g_assert_cmphex(bd_word_be(qts, RET_RING_PHYS, BCM_RXBD_TYPE_FLAGS) &
+                    BCM_RXBDFLAG_JUMBO_RING, ==, BCM_RXBDFLAG_JUMBO_RING);
+    /* The standard buffer was never written: that frame is gone. */
+    qtest_memread(qts, RX_BUF_PHYS, got, sizeof(small));
+    memset(zeros, 0, sizeof(small));
+    g_assert_cmpmem(got, sizeof(small), zeros, sizeof(small));
+
+    qtest_quit(qts);
+    close(sv[0]);
+    close(sv[1]);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1202,6 +1286,9 @@ int main(int argc, char **argv)
                         test_station_address_byte_reads);
     qtest_add_data_func("/sn0/bcm570x/jumbo-ring-selected-by-standard-length",
                         NULL, test_jumbo_ring_selected_by_standard_length);
+    qtest_add_data_func(
+        "/sn0/bcm570x/standard-shortage-discards-without-waiting", NULL,
+        test_standard_shortage_discards_without_waiting);
     qtest_add_data_func("/sn0/bcm570x/jumbo-ring-disabled-drops-oversize",
                         NULL, test_jumbo_ring_disabled_drops_oversize);
     qtest_add_data_func("/sn0/bcm570x/jumbo-frame-overruns-descriptor",
