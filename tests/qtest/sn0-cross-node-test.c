@@ -53,9 +53,11 @@
     "-M origin200 " SN0_TWO_NODE_TOPOLOGY \
     " -cpu R10000 -accel tcg,thread=multi -S"
 
-/* Result slots, node-relative: every node holds its own copy at the same
+/*
+ * Result slots, node-relative: every node holds its own copy at the same
  * offset, so the host tells them apart by reading node-explicit physical
- * addresses rather than by anything the code computes. */
+ * addresses rather than by anything the code computes.
+ */
 #define RESULT_BASE          0x2000u   /* two slots, one per local slice */
 #define PRIMARY_MAGIC         0x5a5aa5a5u
 
@@ -250,8 +252,10 @@ static void test_second_node_reads_across_fabric(const void *data)
 
     seed_nodes(qts);
 
-    /* Plant a distinct word in each node's own copy of NODE_DATA_OFF before
-     * releasing any CPU, so the reader's first load already sees them. */
+    /*
+     * Plant a distinct word in each node's own copy of NODE_DATA_OFF before
+     * releasing any CPU, so the reader's first load already sees them.
+     */
     qtest_writeq(qts, NODE_DATA_OFF, NODE0_DATA);
     qtest_writeq(qts, NUMA_NODE1_BASE + NODE_DATA_OFF, NODE1_DATA);
     g_assert_cmphex(qtest_readq(qts, NODE_DATA_OFF), ==, NODE0_DATA);
@@ -260,10 +264,12 @@ static void test_second_node_reads_across_fabric(const void *data)
 
     qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
 
-    /* Each slot is a big-endian doubleword whose data lives in the low
+    /*
+     * Each slot is a big-endian doubleword whose data lives in the low
      * word (NODE0_DATA and NODE1_DATA both fit in 32 bits); poll that
      * half, then check the whole word below. The reader is on node zero,
-     * so both slots are its own node's plain memory. */
+     * so both slots are its own node's plain memory.
+     */
     wait_word(qts, R_NODE0_SLOT + 4, 30);
     wait_word(qts, R_NODE1_SLOT + 4, 30);
 
