@@ -193,6 +193,9 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
         qdev_connect_clock_in(cpu_dev, "clk-in", node->cpuclk);
         object_property_set_bool(OBJECT(cpu_dev), "big-endian", true,
                                  &error_abort);
+        /* Release both vCPUs from the machine reset handler, not realize. */
+        object_property_set_bool(OBJECT(cpu_dev), "start-powered-off", true,
+                                 &error_abort);
         cpu->store_transaction = sn1_node_store_transaction;
         cpu->store_transaction_opaque = node;
         qdev_realize(cpu_dev, NULL, &error_fatal);
