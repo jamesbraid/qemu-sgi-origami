@@ -21,6 +21,11 @@ test_mips64_timeouts = {
   # (measured 2026-09-14). Same reasoning as sn0_port_reset above for the
   # 300s budget.
   'sn0_elsc_reset' : 300,
+  # Three short VM launches, twenty resets each, one L1 UART frame
+  # (header, destination, command, two check bytes, all escaped and
+  # flagged) per reset rather than a register poke. Same reasoning as
+  # sn0_elsc_reset's budget for the same shape of exercise.
+  'sn1_l1_reset' : 300,
   # One test method per origin200-matrix row whose speed column says quick
   # runs after another in this one script (test_origin200_matrix.py), each
   # budgeted up to its own cell.timeout before declaring FAIL: today the
@@ -171,6 +176,7 @@ tests_mips64_system_quick = [
   'sn0_smp',
   'sn0_port_reset',
   'sn0_elsc_reset',
+  'sn1_l1_reset',
   'mttcg_cause',
   'origin200_matrix',
   'origin2000_cache_reset',
