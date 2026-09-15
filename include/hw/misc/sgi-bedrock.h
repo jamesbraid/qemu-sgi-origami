@@ -23,6 +23,7 @@ struct SGIBedrockState {
      * routed read addresses hub registers wherever mmio itself is mapped.
      */
     MemoryRegion hub_window;
+    MemoryRegion hub_special_registers;
     MemoryRegion remote_registers;
     MemoryRegion io_registers;
     SGIBedrockPIState pi[2];
@@ -52,5 +53,7 @@ struct SGIBedrockState {
     uint8_t initiator_region;
     MemoryRegion *widget_mr[16];
 };
+
+bool sgi_bedrock_hub_registers_permitted(SGIBedrockState *s);
 
 #endif

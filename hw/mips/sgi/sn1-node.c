@@ -230,6 +230,7 @@ static void sn1_node_create_bedrock(SN1NodeState *node,
     MemoryRegion *l1_uart;
     DeviceState *l1_uart_dev;
     MemoryRegion *bedrock_widget;
+    MemoryRegion *hub_registers;
     SysBusDevice *bedrock;
 
     node->l1 = qdev_new(TYPE_SGI_L1);
@@ -291,6 +292,7 @@ static void sn1_node_create_bedrock(SN1NodeState *node,
     sysbus_realize(SYS_BUS_DEVICE(node->xbridge), &error_fatal);
     object_unref(OBJECT(node->xbridge));
     bedrock = SYS_BUS_DEVICE(node->bedrock);
+    hub_registers = &SGI_BEDROCK(node->bedrock)->hub_special_registers;
 
     memory_region_add_subregion(system, model->xtalk_address,
                                 sysbus_mmio_get_region(bedrock, 1));
@@ -305,7 +307,7 @@ static void sn1_node_create_bedrock(SN1NodeState *node,
                                         &node->bedrock_node, 1);
     memory_region_init_alias(&node->hub_local_register_block, OBJECT(node),
                              "sn1.hub.local-register-block",
-                             sysbus_mmio_get_region(bedrock, 0), 0,
+                             hub_registers, 0,
                              SGI_BEDROCK_SIZE);
     memory_region_add_subregion(&SN1_MACHINE(machine)->hub_local_registers, 0,
                                 &node->hub_local_register_block);
@@ -314,14 +316,14 @@ static void sn1_node_create_bedrock(SN1NodeState *node,
     /* Preserve the remote L1 UART decoder between the register aliases. */
     memory_region_init_alias(&node->hub_remote_register_head, OBJECT(node),
                              "sn1.hub.remote-register-head",
-                             sysbus_mmio_get_region(bedrock, 0), 0,
+                             hub_registers, 0,
                              SN1_HUB_REMOTE_PI_SIZE);
     memory_region_add_subregion_overlap(
         system, model->hub_remote_registers_address,
         &node->hub_remote_register_head, 1);
     memory_region_init_alias(&node->hub_remote_register_tail, OBJECT(node),
                              "sn1.hub.remote-register-tail",
-                             sysbus_mmio_get_region(bedrock, 0),
+                             hub_registers,
                              SN1_HUB_REMOTE_UART_END,
                              SGI_BEDROCK_SIZE - SN1_HUB_REMOTE_UART_END);
     memory_region_add_subregion_overlap(

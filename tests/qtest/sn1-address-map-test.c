@@ -34,6 +34,7 @@
 #define BEDROCK_NI UINT64_C(0x680000)
 #define BEDROCK_WINDOW_SIZE UINT64_C(0x800000)
 #define BEDROCK_MD_MEMORY_CONFIG UINT64_C(0x780008)
+#define BEDROCK_MD_CURRENT_CELL UINT64_C(0x780000)
 #define BEDROCK_MD_BANK0_512M UINT64_C(0x41)
 
 #define PI_CPU_NUMBER UINT64_C(0x20)
@@ -938,6 +939,45 @@ static void test_hub_remote_reaches_processor_interface(const void *data)
     qtest_writeq(qts, HUB_REMOTE_REGISTERS + PI_CPU_ENABLE_B, 1);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 1);
 
+    qtest_quit(qts);
+}
+
+static void test_hub_registers_refuse_denied_region(const void *data)
+{
+    QTestState *qts = machine_start();
+    const uint64_t scratch = UINT64_C(0x1122334455667788);
+    const uint64_t md_cell = BEDROCK_LOCAL + BEDROCK_MD_CURRENT_CELL;
+
+    qtest_writeq(qts, BEDROCK_LOCAL + BEDROCK_LB + LB_SCRATCH2, scratch);
+    qtest_writeq(qts, HUB_REMOTE_REGISTERS + L1_UART + L1_SCRATCH, 0x5a);
+    qtest_writeq(qts, md_cell, 0);
+    g_assert_cmphex(qtest_readq(qts, md_cell), ==, 0);
+
+    qtest_writeq(qts, HUB_LOCAL_REGISTERS + PI_CPU_ENABLE_B, 1);
+    qtest_writeq(qts, HUB_REMOTE_REGISTERS + PI_CPU_ENABLE_B, 1);
+    qtest_writeq(qts, HUB_LOCAL_REGISTERS + BEDROCK_LB + LB_SCRATCH2, 0xaa);
+    qtest_writeq(qts, HUB_REMOTE_REGISTERS + BEDROCK_LB + LB_SCRATCH2, 0xbb);
+    qtest_writeq(qts, HUB_REMOTE_REGISTERS + L1_UART + L1_SCRATCH, 0xcc);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + BEDROCK_LB +
+                                LB_SCRATCH2), ==, scratch);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + PI_CPU_ENABLE_B),
+                    ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + BEDROCK_LB +
+                                LB_SCRATCH2), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BOARD_ID_LOCAL), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BOARD_ID_REMOTE), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + L1_UART +
+                                L1_SCRATCH), ==, 0);
+
+    /* Restoring access reveals the unchanged UART and register contents. */
+    qtest_writeq(qts, md_cell, 1);
+    g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + L1_UART +
+                                L1_SCRATCH), ==, 0x5a);
+    g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + BEDROCK_LB +
+                                LB_SCRATCH2), ==, scratch);
+    g_assert_cmphex(qtest_readq(qts, BOARD_ID_LOCAL), ==, BOARD_ID_VALUE);
+    g_assert_cmphex(qtest_readq(qts, BOARD_ID_REMOTE), ==, BOARD_ID_VALUE);
     qtest_quit(qts);
 }
 
@@ -3303,6 +3343,8 @@ int main(int argc, char **argv)
                         test_hub_remote_reaches_bedrock_tail);
     qtest_add_data_func("sn1/address-map/hub-remote-reaches-processor-interface",
                         NULL, test_hub_remote_reaches_processor_interface);
+    qtest_add_data_func("sn1/address-map/hub-registers-refuse-denied-region",
+                        NULL, test_hub_registers_refuse_denied_region);
     qtest_add_data_func("sn1/address-map/crosstalk-big-window", NULL,
                         test_crosstalk_big_window_routes);
     qtest_add_data_func("sn1/address-map/xbridge-topology", NULL,

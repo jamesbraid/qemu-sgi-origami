@@ -19,6 +19,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/mips/sn1.h"
+#include "hw/misc/sgi-bedrock.h"
 #include "hw/misc/sgi-bedrock-flash.h"
 #include "hw/misc/sgi-ioc3.h"
 #include "hw/pci/pci.h"
@@ -550,6 +551,16 @@ static MemTxResult sn1_board_id_read(void *opaque, hwaddr offset,
                                      uint64_t *value, unsigned size,
                                      MemTxAttrs attrs)
 {
+    SN1MachineState *s = opaque;
+    SGIBedrockState *bedrock = SGI_BEDROCK(SN1_NODE(s->node)->bedrock);
+
+    if (!sgi_bedrock_hub_registers_permitted(bedrock)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sn1: board identification read denied for region %u\n",
+                      (unsigned)bedrock->initiator_region);
+        *value = 0;
+        return MEMTX_DECODE_ERROR;
+    }
     if (offset != 0 || size != 8) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sn1: board identification answers only an aligned "
@@ -566,6 +577,15 @@ static MemTxResult sn1_board_id_write(void *opaque, hwaddr offset,
                                       uint64_t value, unsigned size,
                                       MemTxAttrs attrs)
 {
+    SN1MachineState *s = opaque;
+    SGIBedrockState *bedrock = SGI_BEDROCK(SN1_NODE(s->node)->bedrock);
+
+    if (!sgi_bedrock_hub_registers_permitted(bedrock)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sn1: board identification write denied for region %u\n",
+                      (unsigned)bedrock->initiator_region);
+        return MEMTX_DECODE_ERROR;
+    }
     qemu_log_mask(LOG_GUEST_ERROR,
                   "sn1: board identification is fixed; refusing a %u-byte "
                   "write of 0x%" PRIx64 " at offset 0x%" HWADDR_PRIx "\n",
