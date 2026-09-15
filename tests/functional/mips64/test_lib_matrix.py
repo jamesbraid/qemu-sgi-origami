@@ -103,6 +103,11 @@ class StarterManifestTest(unittest.TestCase):
         self.assertEqual(
             (two_node.scenario, two_node.cpus, two_node.nodes,
              two_node.accel), ('full_boot', 4, 2, 'wallclock'))
+        # 128M total splits into two 64 MiB nodes -- the smallest size
+        # sn0_origin200_memory_sizes_mib supports. 64M total would split
+        # into 32 MiB nodes, below every supported IP29 bank size, and
+        # the model refuses to populate one.
+        self.assertEqual(two_node.mem, '128M')
 
         mttcg = by_id['prom_full_boot_mttcg']
         self.assertEqual(
