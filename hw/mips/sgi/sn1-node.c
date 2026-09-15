@@ -274,6 +274,9 @@ static void sn1_node_create_bedrock(SN1NodeState *node,
     object_property_add_child(OBJECT(node), "xbridge",
                               OBJECT(node->xbridge));
     qdev_prop_set_uint8(node->xbridge, "host-port", model->xbridge_host_port);
+    /* Widget 15's responder is a compatibility choice, not observed wiring. */
+    qdev_prop_set_string(node->xbridge, "board-part-f",
+                         SGI_XBRIDGE_NIC_PLACEHOLDER_PART);
     bedrock_widget = sysbus_mmio_get_region(SYS_BUS_DEVICE(node->bedrock), 2);
     object_property_set_link(OBJECT(node->xbridge), "fabric",
                              OBJECT(bedrock_widget), &error_abort);
