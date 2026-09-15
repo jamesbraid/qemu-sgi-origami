@@ -13,6 +13,7 @@
 #include "qemu/units.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "qobject/qlist.h"
 
 /* Node zero's window, and the space the Hub answers uncached references in. */
 #define NODE0           0x0000000000ULL
@@ -1011,6 +1012,502 @@ static void test_backdoor_accesses_trace(const void *data)
         "pc 0x0000000000000000 offset 0x08000000 size 8 write 0 value "));
 }
 
+/*
+ * The rest of this file is the disposition of tests/qtest/sn0-model-test.c,
+ * deleted in the same commit as this addition: the facts below are not
+ * duplicated by any other qtest, so they move here rather than disappear
+ * with the file. Every case that read the synthesized KLCONFIG graph or
+ * booted a -kernel image went with the file instead -- that machinery no
+ * longer exists to have a fact left to port. See that commit's body for
+ * the full disposition, including what is already covered elsewhere.
+ */
+
+static void assert_qemu_rejects(const char *const args[], const char *message)
+{
+    g_autofree char *error_output = NULL;
+    int wait_status = 0;
+
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                              NULL, &error_output, &wait_status, NULL));
+    g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
+    g_assert_nonnull(strstr(error_output, message));
+}
+
+static void assert_machine_property_rejected(const char *value,
+                                             const char *property)
+{
+    g_autofree char *machine = g_strdup_printf("origin200,%s", value);
+    g_autofree char *message = g_strdup_printf(
+        "Property 'origin200-machine.%s' not found", property);
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", machine, "-display", "none", NULL
+    };
+
+    assert_qemu_rejects(args, message);
+}
+
+static void test_reject_removed_topology_properties(const void *data)
+{
+    assert_machine_property_rejected("io-bridge=off", "io-bridge");
+    assert_machine_property_rejected("widget0-revision=3",
+                                     "widget0-revision");
+}
+
+static void test_reject_non_r10000_cpu(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-cpu", "R4000",
+        "-display", "none", NULL
+    };
+
+    assert_qemu_rejects(args, "Invalid CPU model: R4000");
+}
+
+static void test_reject_three_numa_nodes(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "192M",
+        "-object", "memory-backend-ram,id=ram0,size=64M",
+        "-object", "memory-backend-ram,id=ram1,size=64M",
+        "-object", "memory-backend-ram,id=ram2,size=64M",
+        "-numa", "node,nodeid=0,cpus=0-1,memdev=ram0",
+        "-numa", "node,nodeid=1,cpus=2-3,memdev=ram1",
+        "-numa", "node,nodeid=2,memdev=ram2",
+        "-smp", "4,sockets=2,cores=2,threads=1",
+        "-display", "none", NULL
+    };
+
+    assert_qemu_rejects(args,
+                        "origin200: at most 2 NUMA nodes are supported");
+}
+
+static void test_reject_partial_cpu_numa_mapping(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "128M",
+        "-object", "memory-backend-ram,id=ram0,size=64M",
+        "-object", "memory-backend-ram,id=ram1,size=64M",
+        "-numa", "node,nodeid=0,cpus=0-1,memdev=ram0",
+        "-numa", "node,nodeid=1,memdev=ram1",
+        "-smp", "4,sockets=2,cores=2,threads=1",
+        "-display", "none", NULL
+    };
+
+    assert_qemu_rejects(args,
+                        "origin200: CPU 2 must be assigned to NUMA node 1");
+}
+
+static void test_reject_invalid_node_memory(const void *data)
+{
+    g_autofree char *path = write_config_block_fixture();
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "96M",
+        "-object", "memory-backend-ram,id=ram0,size=64M",
+        "-object", "memory-backend-ram,id=ram1,size=32M",
+        "-numa", "node,nodeid=0,cpus=0-1,memdev=ram0",
+        "-numa", "node,nodeid=1,cpus=2-3,memdev=ram1",
+        "-smp", "4,sockets=2,cores=2,threads=1",
+        "-display", "none", "-bios", path, NULL
+    };
+
+    assert_qemu_rejects(args,
+                        "node 1's 32 MiB cannot be populated from IP29");
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
+static void test_reject_split_one_node_topology(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200",
+        "-smp", "2,sockets=2,cores=1,threads=1",
+        "-display", "none", NULL
+    };
+
+    /*
+     * Two sockets now ask for two chassis outright -- each socket is one
+     * chassis -- so the machine rejects this as an under-populated
+     * dual-chassis request rather than as a malformed one-chassis one.
+     */
+    assert_qemu_rejects(args,
+                        "2 chassis require 4 CPUs as 2 sockets with "
+                        "2 cores and one thread each");
+}
+
+static void test_reject_split_numa_topology(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "128M",
+        "-object", "memory-backend-ram,id=ram0,size=64M",
+        "-object", "memory-backend-ram,id=ram1,size=64M",
+        "-numa", "node,nodeid=0,cpus=0,memdev=ram0",
+        "-numa", "node,nodeid=1,cpus=1,memdev=ram1",
+        "-smp", "2,sockets=2,cores=1,threads=1",
+        "-display", "none", NULL
+    };
+
+    assert_qemu_rejects(args,
+                        "origin200: 2 chassis require 4 CPUs as 2 sockets "
+                        "with 2 cores and one thread each");
+}
+
+static void test_reject_three_cores_one_chassis(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200",
+        "-smp", "3,sockets=1,cores=3,threads=1",
+        "-display", "none", NULL
+    };
+
+    assert_qemu_rejects(args,
+                        "origin200: one chassis requires one socket with "
+                        "at most 2 cores and one thread per core");
+}
+
+static void test_reject_three_sockets(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200",
+        "-smp", "3,sockets=3,cores=1,threads=1",
+        "-display", "none", NULL
+    };
+
+    assert_qemu_rejects(args,
+                        "origin200: at most 2 chassis are supported, and "
+                        "each -smp socket is one chassis");
+}
+
+static void test_reject_uneven_no_numa_split(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "129M",
+        "-smp", "4,sockets=2,cores=2,threads=1",
+        "-display", "none", NULL
+    };
+
+    assert_qemu_rejects(args,
+                        "origin200: 2 chassis split -m evenly into whole "
+                        "MiB; use -numa for an uneven fit");
+}
+
+/*
+ * The Bridge wires eight slots to eight interrupt pins; nothing past slot 7
+ * exists on the chip. A device placed there must be refused when it is
+ * added -- accepted, it would sit unreachable until its first interrupt
+ * asserted a pin the bus never wired and aborted the emulator.
+ */
+static void test_reject_a_device_beyond_the_bridge_slots(const void *data)
+{
+    g_autofree char *path = write_config_block_fixture();
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200",
+        "-device", "sgi-bridge-dma-test,addr=8",
+        "-display", "none", "-bios", path, NULL
+    };
+
+    if (!qtest_has_device("sgi-bridge-dma-test")) {
+        g_test_skip("sgi-bridge-dma-test is not in this build");
+        g_assert_cmpint(unlink(path), ==, 0);
+        return;
+    }
+
+    assert_qemu_rejects(args,
+                        "not available for sgi-bridge-dma-test, reserved");
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
+/*
+ * A compat-props entry pins a QOM default across a migration boundary
+ * forever; origin200 has never shipped, so it must never accrue one for a
+ * property whose value the model itself now decides.
+ */
+static void test_origin200_has_no_ioc3_compat_global(const void *data)
+{
+    QTestState *qts = qtest_init("-machine none");
+    QDict *response = qtest_qmp(
+        qts, "{ 'execute': 'query-machines',"
+             " 'arguments': { 'compat-props': true } }");
+    QList *machines = qdict_get_qlist(response, "return");
+    const QListEntry *machine_entry;
+    bool found_machine = false;
+    bool found_property = false;
+
+    for (machine_entry = qlist_first(machines); machine_entry;
+         machine_entry = qlist_next(machine_entry)) {
+        QDict *machine = qobject_to(
+            QDict, qlist_entry_obj(machine_entry));
+        QList *properties;
+        const QListEntry *property_entry;
+
+        if (!g_str_equal(qdict_get_str(machine, "name"), "origin200")) {
+            continue;
+        }
+        found_machine = true;
+        properties = qdict_get_qlist(machine, "compat-props");
+        for (property_entry = qlist_first(properties); property_entry;
+             property_entry = qlist_next(property_entry)) {
+            QDict *property = qobject_to(
+                QDict, qlist_entry_obj(property_entry));
+
+            if (g_str_equal(qdict_get_str(property, "qom-type"),
+                            "sgi-ioc3") &&
+                g_str_equal(qdict_get_str(property, "property"),
+                            "subsystem-id")) {
+                g_assert_false(found_property);
+                found_property = true;
+            }
+        }
+    }
+    g_assert_true(found_machine);
+    g_assert_false(found_property);
+    qobject_unref(response);
+    qtest_quit(qts);
+}
+
+/*
+ * QEMU's standard CPU-topology interface must describe the IP29 sockets,
+ * not merely accept a scalar -smp value: one Origin 200 chassis is one
+ * topology socket, and its two processor slices are the two cores in that
+ * socket.
+ */
+static void test_one_node_cpu_topology(const void *data)
+{
+    g_autofree char *path = write_config_block_fixture();
+    QTestState *qts = qtest_initf(
+        "-M origin200 -smp 2,sockets=1,cores=2,threads=1 -bios %s", path);
+    QDict *response;
+    QList *cpus;
+    QObject *entry;
+    unsigned int seen = 0;
+
+    response = qtest_qmp(qts, "{ 'execute': 'query-cpus-fast' }");
+    g_assert_true(qdict_haskey(response, "return"));
+    cpus = qdict_get_qlist(response, "return");
+
+    while ((entry = qlist_pop(cpus))) {
+        QDict *cpu = qobject_to(QDict, entry);
+        QDict *props = qdict_get_qdict(cpu, "props");
+        int64_t index = qdict_get_int(cpu, "cpu-index");
+
+        g_assert_cmpint(index, >=, 0);
+        g_assert_cmpint(index, <, 2);
+        g_assert_cmpint(qdict_get_int(props, "socket-id"), ==, 0);
+        g_assert_cmpint(qdict_get_int(props, "core-id"), ==, index);
+        g_assert_cmpint(qdict_get_int(props, "thread-id"), ==, 0);
+        seen |= 1U << index;
+        qobject_unref(entry);
+    }
+    g_assert_cmphex(seen, ==, 0x3);
+
+    qobject_unref(response);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
+/*
+ * An explicit NUMA description is the operator-facing way to select
+ * physical Origin 200 nodes. Even the one-node form matters: it proves
+ * that a memory backend survives QEMU's generic NUMA setup and that the
+ * standard CPU-topology callbacks attach both IP29 slices to the declared
+ * node.
+ */
+static void test_explicit_one_node_numa(const void *data)
+{
+    g_autofree char *path = write_config_block_fixture();
+    QTestState *qts = qtest_initf(
+        "-M origin200 -m 64M "
+        "-object memory-backend-ram,id=ram0,size=64M "
+        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
+        "-smp 2,sockets=1,cores=2,threads=1 -bios %s", path);
+    QDict *response;
+    QList *cpus;
+    QObject *entry;
+    unsigned int seen = 0;
+
+    response = qtest_qmp(qts, "{ 'execute': 'query-cpus-fast' }");
+    g_assert_true(qdict_haskey(response, "return"));
+    cpus = qdict_get_qlist(response, "return");
+
+    while ((entry = qlist_pop(cpus))) {
+        QDict *cpu = qobject_to(QDict, entry);
+        QDict *props = qdict_get_qdict(cpu, "props");
+        int64_t index = qdict_get_int(cpu, "cpu-index");
+
+        g_assert_cmpint(index, >=, 0);
+        g_assert_cmpint(index, <, 2);
+        g_assert_cmpint(qdict_get_int(props, "node-id"), ==, 0);
+        seen |= 1U << index;
+        qobject_unref(entry);
+    }
+    g_assert_cmphex(seen, ==, 0x3);
+
+    qobject_unref(response);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
+static void test_dual_chassis_cpu_topology(const void *data)
+{
+    g_autofree char *path = write_config_block_fixture();
+    QTestState *qts = qtest_initf(
+        "%s -bios %s", SN0_DUAL_CHASSIS_FIRMWARE_ARGS, path);
+    QDict *response;
+    QList *cpus;
+    QObject *entry;
+    unsigned int seen = 0;
+
+    response = qtest_qmp(qts, "{ 'execute': 'query-cpus-fast' }");
+    g_assert_true(qdict_haskey(response, "return"));
+    cpus = qdict_get_qlist(response, "return");
+    while ((entry = qlist_pop(cpus))) {
+        QDict *cpu = qobject_to(QDict, entry);
+        QDict *props = qdict_get_qdict(cpu, "props");
+        int64_t index = qdict_get_int(cpu, "cpu-index");
+
+        g_assert_cmpint(index, >=, 0);
+        g_assert_cmpint(index, <, 4);
+        g_assert_cmpint(qdict_get_int(props, "node-id"), ==, index / 2);
+        g_assert_cmpint(qdict_get_int(props, "socket-id"), ==, index / 2);
+        g_assert_cmpint(qdict_get_int(props, "core-id"), ==, index % 2);
+        seen |= 1U << index;
+        qobject_unref(entry);
+    }
+    g_assert_cmphex(seen, ==, 0xf);
+    qobject_unref(response);
+
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
+static void assert_pci_root_bus_name(QTestState *qts, const char *bridge,
+                                     const char *expected)
+{
+    QDict *response = qtest_qmp(qts, "{ 'execute': 'qom-list',"
+                                     " 'arguments': { 'path': %s } }",
+                                     bridge);
+    QList *children;
+    const QListEntry *entry;
+    const char *name = NULL;
+
+    g_assert_true(qdict_haskey(response, "return"));
+    children = qdict_get_qlist(response, "return");
+    for (entry = qlist_first(children); entry; entry = qlist_next(entry)) {
+        QDict *child = qobject_to(QDict, qlist_entry_obj(entry));
+        const char *type = qdict_get_try_str(child, "type");
+
+        if (type && g_str_equal(type, "child<PCI>")) {
+            g_assert_null(name);
+            name = qdict_get_str(child, "name");
+        }
+    }
+
+    g_assert_nonnull(name);
+    g_assert_cmpstr(name, ==, expected);
+    qobject_unref(response);
+}
+
+/*
+ * Each physical chassis owns a Bridge and therefore a separate PCI root
+ * bus. Node 0 keeps its original bus name, part of existing device
+ * migration paths; node 1 gets a stable identity of its own.
+ */
+static void test_bridge_root_bus_names(const void *data)
+{
+    g_autofree char *path = write_config_block_fixture();
+    QTestState *qts = qtest_initf(
+        "%s -global sgi-bridge.pci-bus-name=hostile -bios %s",
+        SN0_DUAL_CHASSIS_FIRMWARE_ARGS, path);
+
+    assert_pci_root_bus_name(qts, "/machine/bridge", "pci");
+    assert_pci_root_bus_name(qts, "/machine/bridge1", "pci.1");
+
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
+/*
+ * A drive named onto the second adapter. Both adapters on a base I/O board
+ * are ordinary SCSI buses, numbered in the order the machine creates them,
+ * so -drive if=scsi,bus=1 names the second one -- a machine that offers
+ * its command-line drives to the first adapter alone leaves that drive
+ * attached to nothing.
+ */
+static void test_a_drive_on_the_second_adapter(const void *data)
+{
+    g_autofree char *path = write_config_block_fixture();
+    QTestState *qts = qtest_initf(
+        "-M origin200 -bios %s "
+        "-drive if=scsi,bus=1,file=null-co://,format=raw", path);
+    QDict *response = qtest_qmp(qts, "{ 'execute': 'query-block' }");
+    QList *blocks;
+    const QListEntry *entry;
+    bool found = false;
+
+    g_assert_true(qdict_haskey(response, "return"));
+    blocks = qdict_get_qlist(response, "return");
+    for (entry = qlist_first(blocks); entry; entry = qlist_next(entry)) {
+        QDict *block = qobject_to(QDict, qlist_entry_obj(entry));
+        QDict *inserted = qdict_haskey(block, "inserted") ?
+                          qdict_get_qdict(block, "inserted") : NULL;
+        const char *file = inserted ? qdict_get_try_str(inserted, "file")
+                                    : NULL;
+
+        if (file && g_str_equal(file, "null-co://")) {
+            g_assert_false(found);
+            found = true;
+            g_assert_nonnull(qdict_get_try_str(block, "qdev"));
+        }
+    }
+
+    g_assert_true(found);
+    qobject_unref(response);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
+/*
+ * A default drive belongs on the first SCSI adapter. It used to be
+ * accepted and attached to nothing: the drive existed, no device claimed
+ * it, and a guest booting from "the first disk" found an empty bus.
+ */
+static void test_default_drive_reaches_the_first_scsi_adapter(
+    const void *data)
+{
+    g_autofree char *bios = write_config_block_fixture();
+    g_autofree char *img = NULL;
+    GError *err = NULL;
+    int fd = g_file_open_tmp("sn0-hda-XXXXXX", &img, &err);
+    QTestState *qts;
+    QDict *response;
+    QList *blocks;
+    const QListEntry *entry;
+    bool attached = false;
+
+    g_assert_no_error(err);
+    g_assert_cmpint(ftruncate(fd, 1 * 1024 * 1024), ==, 0);
+    g_assert_cmpint(close(fd), ==, 0);
+
+    qts = qtest_initf("-M origin200 -bios %s "
+                      "-drive file=%s,format=raw,index=0", bios, img);
+
+    response = qtest_qmp(qts, "{ 'execute': 'query-block' }");
+    g_assert_true(qdict_haskey(response, "return"));
+    blocks = qdict_get_qlist(response, "return");
+    for (entry = qlist_first(blocks); entry; entry = qlist_next(entry)) {
+        QDict *block = qobject_to(QDict, qlist_entry_obj(entry));
+        const char *qdev = qdict_get_try_str(block, "qdev");
+
+        if (qdev && qdev[0] != '\0') {
+            attached = true;
+        }
+    }
+    g_assert_true(attached);
+    qobject_unref(response);
+
+    qtest_quit(qts);
+    g_unlink(img);
+    g_assert_cmpint(unlink(bios), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1059,6 +1556,43 @@ int main(int argc, char **argv)
                         test_backdoor_accesses_trace);
     qtest_add_data_func("sn0/address-map/backdoor-reads-bypass-dispatch",
                         NULL, test_backdoor_reads_bypass_dispatch);
+    qtest_add_data_func("sn0/address-map/reject-removed-topology-properties",
+                        NULL, test_reject_removed_topology_properties);
+    qtest_add_data_func("sn0/address-map/reject-non-r10000-cpu", NULL,
+                        test_reject_non_r10000_cpu);
+    qtest_add_data_func("sn0/address-map/reject-three-numa-nodes", NULL,
+                        test_reject_three_numa_nodes);
+    qtest_add_data_func("sn0/address-map/reject-partial-cpu-numa-mapping",
+                        NULL, test_reject_partial_cpu_numa_mapping);
+    qtest_add_data_func("sn0/address-map/reject-invalid-node-memory", NULL,
+                        test_reject_invalid_node_memory);
+    qtest_add_data_func("sn0/address-map/reject-split-one-node-topology",
+                        NULL, test_reject_split_one_node_topology);
+    qtest_add_data_func("sn0/address-map/reject-split-numa-topology", NULL,
+                        test_reject_split_numa_topology);
+    qtest_add_data_func("sn0/address-map/reject-three-cores-one-chassis",
+                        NULL, test_reject_three_cores_one_chassis);
+    qtest_add_data_func("sn0/address-map/reject-three-sockets", NULL,
+                        test_reject_three_sockets);
+    qtest_add_data_func("sn0/address-map/reject-uneven-no-numa-split", NULL,
+                        test_reject_uneven_no_numa_split);
+    qtest_add_data_func("sn0/address-map/reject-device-beyond-bridge-slots",
+                        NULL, test_reject_a_device_beyond_the_bridge_slots);
+    qtest_add_data_func("sn0/address-map/no-origin200-ioc3-compat-global",
+                        NULL, test_origin200_has_no_ioc3_compat_global);
+    qtest_add_data_func("sn0/address-map/one-node-cpu-topology", NULL,
+                        test_one_node_cpu_topology);
+    qtest_add_data_func("sn0/address-map/explicit-one-node-numa", NULL,
+                        test_explicit_one_node_numa);
+    qtest_add_data_func("sn0/address-map/dual-chassis-cpu-topology", NULL,
+                        test_dual_chassis_cpu_topology);
+    qtest_add_data_func("sn0/address-map/bridge-root-bus-names", NULL,
+                        test_bridge_root_bus_names);
+    qtest_add_data_func("sn0/address-map/drive-on-the-second-adapter", NULL,
+                        test_a_drive_on_the_second_adapter);
+    qtest_add_data_func("sn0/address-map/default-drive-reaches-first-adapter",
+                        NULL,
+                        test_default_drive_reaches_the_first_scsi_adapter);
 
     return g_test_run();
 }
