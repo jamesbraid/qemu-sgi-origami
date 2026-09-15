@@ -377,7 +377,6 @@ qtests_mips64 = \
                                                    'sn0-mmio-branch-test',
                                                    'sn0-address-map-test',
                                                    'sn0-bridge-test',
-                                                   'sn0-firmware-test',
                                                    'sn0-ioc3-test',
                                                    'sn0-ioc3-parallel-test',
                                                    'sn0-ioc3-serial-test',

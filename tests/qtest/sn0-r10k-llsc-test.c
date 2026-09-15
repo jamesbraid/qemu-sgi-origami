@@ -345,7 +345,7 @@ static void test_cpu(gconstpointer opaque)
     write_guest_image(fd, cpu_case->has_pref);
     close(fd);
 
-    qts = qtest_initf("-M origin200,synthesized-firmware=off -m 64M "
+    qts = qtest_initf("-M origin200 -m 64M "
                       "-cpu %s -bios %s -accel tcg "
                       "-no-reboot -no-shutdown", cpu_case->name, image);
     unlink(image);

@@ -350,7 +350,7 @@ if base.QemuSystemTest is not None:
 
             pcap = self.log_file('eg-perf-wire.pcap')
             vm = self.get_vm(name='irix_eg_perf')
-            vm.set_machine('origin200,synthesized-firmware=off,debug-leds=off')
+            vm.set_machine('origin200,debug-leds=off')
             vm.set_console()
             elsc = self.log_file('elsc-aux.log')
             if NETDEV:

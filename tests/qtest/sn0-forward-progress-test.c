@@ -181,7 +181,7 @@ typedef struct {
  * project boots it with; the others fix their own processor count.
  */
 static const Recipe recipes[] = {
-    { "origin200", "-M origin200,synthesized-firmware=off -m 128M -smp 2", 0 },
+    { "origin200", "-M origin200 -m 128M -smp 2", 0 },
     { "origin2000", "-M origin2000", 0 },
     { "origin300", "-M origin300", 0x1686a8 },
 };

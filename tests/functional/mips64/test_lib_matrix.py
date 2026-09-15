@@ -276,11 +276,10 @@ class QemuArgsTest(unittest.TestCase):
     """The per-cell QEMU command-line builder."""
 
     def test_machine_props_is_fixed_to_the_real_prom(self):
-        # Every cell boots the real PROM now that the
-        # synthesized-firmware axis is gone -- machine_props() no
-        # longer reads anything from the cell it is given.
+        # Every cell boots the real PROM -- machine_props() no longer
+        # reads anything from the cell it is given.
         self.assertEqual(machine_props(make_cell()),
-                         'origin200,synthesized-firmware=off,debug-leds=on')
+                         'origin200,debug-leds=on')
 
     def test_icount_regime(self):
         args = qemu_args(make_cell(accel='icount'))

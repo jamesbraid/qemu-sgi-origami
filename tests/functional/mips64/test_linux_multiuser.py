@@ -165,7 +165,7 @@ class LinuxMultiuser(QemuSystemTest):
         firmware, kernel, disk = paths
 
         vm = self.get_vm(name='linux_multiuser')
-        vm.set_machine('origin200,synthesized-firmware=off,debug-leds=off')
+        vm.set_machine('origin200,debug-leds=off')
         vm.set_console()
         vm.add_args(
             '-cpu', 'R10000', '-m', str(MEMORY_MIB), '-snapshot',

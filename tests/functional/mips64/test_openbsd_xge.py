@@ -374,7 +374,7 @@ class OpenbsdXge(QemuSystemTest):
         pcap_path = self.log_file('wire.pcap')
 
         vm = self.get_vm(name='openbsd_xge')
-        vm.set_machine('origin200,synthesized-firmware=off,debug-leds=off')
+        vm.set_machine('origin200,debug-leds=off')
         vm.set_console()
         vm.add_args(
             '-m', str(MEMORY_MIB), '-snapshot',

@@ -203,7 +203,7 @@
     "-numa node,nodeid=1,cpus=2-3,memdev=ram1 " \
     "-smp 4,sockets=2,cores=2,threads=1"
 #define MACHINE_DUAL \
-    "-M origin200,synthesized-firmware=off " DUAL_CHASSIS_TOPOLOGY
+    "-M origin200 " DUAL_CHASSIS_TOPOLOGY
 #define MACHINE_WITH_NET "-M origin200 -nic user,id=n0"
 
 /* The board identity part's one-wire register and slot widths. */

@@ -917,7 +917,7 @@ static void resident_checks(QTestState *qts, const TestCase *tc)
 static char *case_cmdline(const TestCase *tc, const char *bios,
                           const char *tail)
 {
-    return g_strdup_printf("-M origin200,synthesized-firmware=off -m 64M %s "
+    return g_strdup_printf("-M origin200 -m 64M %s "
                            "-cpu R10000 -bios %s -accel %s %s %s "
                            "-no-shutdown %s",
                            tc->smp, bios, tc->accel,

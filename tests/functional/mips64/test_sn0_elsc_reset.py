@@ -353,8 +353,7 @@ class SN0ElscReset(QemuSystemTest):
         build_elsc_reset().write(firmware)
         log = self.log_file('qemu-exec.log')
 
-        self.vm.set_machine(
-            'origin200,synthesized-firmware=off,debug-leds=off')
+        self.vm.set_machine('origin200,debug-leds=off')
         self.vm.add_args(
             *accelerator, '-smp', '2', '-bios', firmware,
             '-d', 'exec,trace:memory_region_ops_write,trace:cpu_reset',

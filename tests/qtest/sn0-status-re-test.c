@@ -218,7 +218,7 @@ static char *run_fragment(void)
     g_assert_cmpint(fd, >=, 0);
     close(fd);
 
-    qts = qtest_initf("-M origin200,synthesized-firmware=off -m 64M "
+    qts = qtest_initf("-M origin200 -m 64M "
                       "-cpu R10000 -bios %s -accel tcg "
                       "-d unimp -D %s -no-reboot -no-shutdown",
                       image, log_path);

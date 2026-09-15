@@ -175,8 +175,7 @@ class Origin2000CacheReset(QemuSystemTest):
         rom = self.scratch_file('cache-reset.bin')
         Path(rom).write_bytes(cache_reset_rom())
         self.set_machine('origin2000')
-        self.vm.add_args('-machine', 'synthesized-firmware=off',
-                         '-accel', 'tcg,thread=single', '-cpu', 'R10000',
+        self.vm.add_args('-accel', 'tcg,thread=single', '-cpu', 'R10000',
                          '-m', '256M', '-smp',
                          '8,sockets=4,cores=2,threads=1',
                          '-bios', rom, '-S', '-nodefaults')
@@ -206,8 +205,7 @@ class Origin2000CacheReset(QemuSystemTest):
         Path(rom).write_bytes(cache_tag_rom())
         cpus = 8 if machine == 'origin2000' else 2
         self.set_machine(machine)
-        self.vm.add_args('-machine', 'synthesized-firmware=off',
-                         '-accel', 'tcg,thread=single', '-cpu', 'R10000',
+        self.vm.add_args('-accel', 'tcg,thread=single', '-cpu', 'R10000',
                          '-m', '256M', '-smp', str(cpus), '-bios', rom,
                          '-nodefaults')
         self.vm.launch()

@@ -2261,7 +2261,7 @@ static void assign_node1_number(QTestState *qts)
 static void test_each_node_has_its_own_board_identity(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200,synthesized-firmware=off -m 128M "
+        "-M origin200 -m 128M "
         "-object memory-backend-ram,id=ram0,size=64M "
         "-object memory-backend-ram,id=ram1,size=64M "
         "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "

@@ -1892,7 +1892,7 @@ class SN0SMPMachine(QemuSystemTest):
         build_rtc_rendezvous().write(firmware)
 
         self.vm.set_machine(
-            'origin200,synthesized-firmware=off,debug-leds=off')
+            'origin200,debug-leds=off')
         self.vm.add_args('-accel', 'tcg,thread=single',
                          '-icount', 'shift=2,align=off,sleep=on',
                          '-smp', '2', '-bios', firmware)
@@ -1924,7 +1924,7 @@ class SN0SMPMachine(QemuSystemTest):
         build_promdata_cache_bypass().write(firmware)
 
         self.vm.set_machine(
-            'origin200,synthesized-firmware=off,debug-leds=off')
+            'origin200,debug-leds=off')
         self.vm.add_args('-accel', 'tcg,thread=single',
                          '-smp', '2', '-bios', firmware)
         self.vm.launch()
@@ -1949,7 +1949,7 @@ class SN0SMPMachine(QemuSystemTest):
         build_rr_kick_deadline().write(firmware)
 
         self.vm.set_machine(
-            'origin200,synthesized-firmware=off,debug-leds=off')
+            'origin200,debug-leds=off')
         self.vm.add_args(
             '-accel', 'tcg,thread=single,rr-kick-period-ns=1000',
             '-icount', 'shift=2,align=off,sleep=on',
@@ -1988,7 +1988,7 @@ class SN0SMPMachine(QemuSystemTest):
         # The long kick period makes a yielded quantum (12500 ticks)
         # unmistakable against a window that kept its slice.
         self.vm.set_machine(
-            'origin200,synthesized-firmware=off,debug-leds=off')
+            'origin200,debug-leds=off')
         self.vm.add_args(
             '-accel',
             f'tcg,thread=single,rr-kick-period-ns='

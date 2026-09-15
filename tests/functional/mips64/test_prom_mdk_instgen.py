@@ -116,7 +116,7 @@ class PromMdkInstgen(QemuSystemTest):
         # General Exception loop on the ELSC), while the same binary
         # boots two CPUs cleanly with the flight recorder left on.
         # Recorded in the project checkout's firmware-diags notebook.
-        vm.set_machine('origin200,synthesized-firmware=off')
+        vm.set_machine('origin200')
         vm.set_console()
         elsc_log = self.log_file('elsc-aux.log')
         capture = self.log_file('wire.pcap')

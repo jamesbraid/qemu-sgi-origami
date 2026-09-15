@@ -1054,7 +1054,7 @@ static void test_two_towers_only_master_aux_active(const void *data)
 static void test_two_towers_share_master_grant_ring(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200,synthesized-firmware=off -m 128M "
+        "-M origin200 -m 128M "
         "-object memory-backend-ram,id=ram0,size=64M "
         "-object memory-backend-ram,id=ram1,size=64M "
         "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
@@ -1193,7 +1193,7 @@ static void test_two_towers_share_master_grant_ring(const void *data)
 static void test_two_towers_reset_keeps_cpu3_grant_live(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200,synthesized-firmware=off -m 128M "
+        "-M origin200 -m 128M "
         "-object memory-backend-ram,id=ram0,size=64M "
         "-object memory-backend-ram,id=ram1,size=64M "
         "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "

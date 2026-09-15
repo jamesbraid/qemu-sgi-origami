@@ -133,7 +133,7 @@ if QemuSystemTest is not None:
 
             vm = self.get_vm(name='irix_oltape')
             vm.set_machine(
-                'origin200,synthesized-firmware=off,debug-leds=off')
+                'origin200,debug-leds=off')
             vm.set_console()
             vm.add_args(
                 '-accel', 'tcg,thread=single',

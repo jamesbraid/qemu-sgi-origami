@@ -202,7 +202,7 @@ class LinuxKernel(QemuSystemTest):
         firmware, kernel = paths
 
         vm = self.get_vm(name=name)
-        vm.set_machine('origin200,synthesized-firmware=off,debug-leds=off')
+        vm.set_machine('origin200,debug-leds=off')
         vm.set_console()
         vm.add_args('-cpu', 'R10000', '-m', str(mem_mib),
                    '-bios', firmware,
