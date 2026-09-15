@@ -49,6 +49,7 @@ typedef struct SN1NodeState {
     DeviceState *xbridge;
     DeviceState *boot_flash;
     MemoryRegion bedrock_node;
+    MemoryRegion hub_local_register_block;
 } SN1NodeState;
 
 #define TYPE_SGI_SN1_NODE "sgi-sn1-node"
