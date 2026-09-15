@@ -1204,6 +1204,12 @@ static void test_jumbo_shortage_discards_without_waiting(const void *data)
  * ring that carries the MTU 1500 qualification. That alternative was built
  * and measured on this path; the receive shortage contract in the BCM570x
  * datasheet carries what it cost.
+ *
+ * The manual's counter for this condition, `nicNoMoreRXBDs`, names no ring
+ * (PG105 page 110, Table 49; page 114, Table 54 gives it one offset with no
+ * per-ring companion), so this discard counts there too, the same offset the
+ * jumbo case bumps. The test reads it before the dropped frame, immediately
+ * after, and confirms the jumbo frame delivered right behind it adds nothing.
  */
 static void test_standard_shortage_discards_without_waiting(const void *data)
 {
@@ -1248,6 +1254,8 @@ static void test_standard_shortage_discards_without_waiting(const void *data)
     qtest_memset(qts, STATUS_PHYS, 0, 0x50);
     bar_writel(qts, BCM_MBX_RX_JUMBO_PROD_LO, 1);
     g_assert_cmphex(bar_readl(qts, BCM_MBX_RX_STD_PROD_LO), ==, 0);
+    g_assert_cmphex(bar_readl(qts, BCM_SRAM_WINDOW_BASE +
+                               BCM_SRAM_STATS_NO_MORE_RXBDS), ==, 0);
 
     build_big_rx_frame(small, sizeof(small));
     net_send_frame(sv[0], small, sizeof(small));
@@ -1266,6 +1274,16 @@ static void test_standard_shortage_discards_without_waiting(const void *data)
     qtest_memread(qts, RX_BUF_PHYS, got, sizeof(small));
     memset(zeros, 0, sizeof(small));
     g_assert_cmpmem(got, sizeof(small), zeros, sizeof(small));
+
+    /*
+     * The chip counts this rather than latching it (PG105 page 110), the
+     * same as the jumbo case: one frame dropped for want of a posted
+     * standard descriptor, one count. The jumbo frame that lands right
+     * after adds nothing to it -- delivery is not the condition this
+     * counter names.
+     */
+    g_assert_cmphex(bar_readl(qts, BCM_SRAM_WINDOW_BASE +
+                               BCM_SRAM_STATS_NO_MORE_RXBDS), ==, 1);
 
     qtest_quit(qts);
     close(sv[0]);

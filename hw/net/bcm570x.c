@@ -41,10 +41,10 @@
  * the receive descriptor-shortage count (`nicNoMoreRXBDs`, PG105 page 110) at
  * on-chip SRAM 0x0898, reachable through the BAR0 and indirect memory windows
  * like any other SRAM offset, bumped when the receive path below discards a
- * frame for an empty jumbo ring. Every other counter in the block stays
- * unmodelled. Nor are the four during-interrupt coalescing registers
- * (0x3C18-0x3C24), which the chip uses in place of the four below while the
- * host is inside its interrupt handler.
+ * frame for either ring's empty producer -- the manual's description names no
+ * ring. Every other counter in the block stays unmodelled. Nor are the four
+ * during-interrupt coalescing registers (0x3C18-0x3C24), which the chip uses
+ * in place of the four below while the host is inside its interrupt handler.
  *
  * Written from docs/datasheets/bcm570x.md (the reviewed register/DMA/interrupt
  * contract) and docs/library/nic-on-bridge-conventions.md (the shared byte-swap
@@ -404,7 +404,9 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
  * block (PG105 page 114, Table 54). The block's slots are each a full 8
  * bytes; only the low 32 bits at this offset are counted; the high word and
  * every other counter in the block stay generic store-and-log state, as
- * before. Bumped on the jumbo-ring-empty discard below.
+ * before. Bumped on the empty-producer discard below, jumbo ring and
+ * standard ring alike: the manual's description scopes the count to neither
+ * ring, and Table 54 gives it no per-ring companion.
  */
 #define BCM570X_SRAM_STATS_NO_MORE_RXBDS 0x0898
 #define BCM570X_RXBD_SIZE           32
@@ -2311,6 +2313,7 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
                               "posted\n", framelen);
             }
             s->rx_std_shortage_drops++;
+            bcm570x_stats_bump_no_more_rxbds(s);
             trace_bcm570x_rx_shortage_drop("standard", framelen);
             return orig_size;
         }
