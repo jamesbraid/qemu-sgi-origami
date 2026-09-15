@@ -60,26 +60,6 @@ typedef struct SN0FlashImplementation {
 /* The seven big windows follow; their aim is the translation table's. */
 #define SN0_BIG_WINDOW_BASE      0x20000000
 
-/* The identification field is four bits wide. */
-/*
- * The firmware's widget-0 redirection: the last big window aimed at
- * widget 0, which both guests expect done. OpenBSD's allocator would
- * read the entry's contents as a free entry; a hard-coded index
- * exclusion is the only protection.
- */
-#define SN0_HUB_IO_BWIN_TABLE       0x400160
-#define SN0_HUB_IO_BWIN_STRIDE      8
-#define SN0_HUB_IO_BWIN_ENTRY(n)    (SN0_HUB_IO_BWIN_TABLE + \
-                                     (n) * SN0_HUB_IO_BWIN_STRIDE)
-#define SN0_HUB_IO_BWIN_WIDGET(w)   ((uint64_t)(w) << 8)
-#define SN0_HUB_IO_BWIN_SLICE(x)    ((uint64_t)(x))
-
-/* The last window carries it; software counts 0-6, SGI manuals 1-7. */
-#define SN0_FIRMWARE_WIDGET0_WINDOW 6
-
-/* Term by term: each address error here was a dropped term in a sum. */
-#define SN0_FIRMWARE_WIDGET0_SLICE  0
-
 /*
  * The Hub's widget-1 window: the lower half resolves to the reading
  * processor's own node, the upper half names one. The cached
@@ -87,102 +67,17 @@ typedef struct SN0FlashImplementation {
  */
 #define SN0_COMPAT_CACHED 0xffffffff80000000ull
 
-/* Ten entry points at the start of the flash, eight bytes apart. */
-#define SN0_FLASH_ENTRIES   10
-#define SN0_FLASH_ENTRY_STRIDE 8
-
-/* The low-memory structures, fixed by the boot structures datasheet. */
-#define SN0_PARAM_BLOCK         0x1000
-#define SN0_PARAM_SIGNATURE     0x53435241  /* a constant, not "ARCS" */
-#define SN0_HW_DIRECTORY        0x2000
-#define SN0_HW_DIR_ENTRIES      16
-#define SN0_HW_DIR_ENTRY_SIZE   64
-#define SN0_HW_DIR_SIGNATURE    0x434d5f53505f5357ULL
-#define SN0_HW_DIR_LAUNCH       0
-#define SN0_HW_DIR_CONFIG_GRAPH 1
-#define SN0_HW_DIR_NMI          2
-#define SN0_HW_DIR_GDA          3
-#define SN0_HW_DIR_FREEMEM      4
-#define SN0_HW_DIR_DEBUG_STACKS 5
-#define SN0_HW_DIR_PI_ERROR     6
-
-/* The directory's size field spans both launch blocks together. */
-#define SN0_LAUNCH_BLOCKS       0x2400
-#define SN0_LAUNCH_ENTRIES      2
-#define SN0_LAUNCH_STRIDE       0x200
-#define SN0_LAUNCH_DIR_SIZE     (SN0_LAUNCH_ENTRIES * SN0_LAUNCH_STRIDE)
-#define SN0_LAUNCH_SIGNATURE    0xaddbead2addbead3ULL
-
-/* Here the size field is one block -- the element a guest indexes. */
-#define SN0_NMI_BLOCKS          0x3000
-#define SN0_NMI_ENTRIES         2
-#define SN0_NMI_STRIDE          0x40
-#define SN0_NMI_DIR_SIZE        SN0_NMI_STRIDE
-
-/* Entries with no content of their own: offset, size, count, stride. */
-#define SN0_HWDIR_FREEMEM_SIZE        ((uint64_t)-1)
-#define SN0_HWDIR_DEBUG_STACKS_BASE   0x25000
-#define SN0_HWDIR_DEBUG_STACKS_SIZE   0xe000
-#define SN0_HWDIR_DEBUG_STACKS_N      2
-#define SN0_HWDIR_DEBUG_STACKS_STRIDE 0x7000
-#define SN0_HWDIR_PI_ERROR_BASE       0x12000
-#define SN0_HWDIR_PI_ERROR_SIZE       0x4000
-
-/* KLCONFIG component state, independent of product contents. */
-#define SN0_COMP_ENABLED        1
-
-/* The -serial line assignment lives in hw/misc/sgi-hub.h; both units see it. */
-#define SN0_GDA                 0x11000
-#define SN0_GDA_SIZE            0x400
-#define SN0_GDA_SIGNATURE       0x58464552  /* "XFER" */
-#define SN0_GDA_VERSION         2
-#define SN0_GDA_NODE_TABLE      0x80
-/* 64 signed halfword entries; a byte-per-entry write reads as node 255. */
-#define SN0_GDA_NODES           64
-#define SN0_GDA_NODE_ABSENT     0xffff
-#define SN0_FIRST_FREE          0x19000
-
-/* A guest holds the pointer and reads through it, so the list is real. */
-#define SN0_MEM_LIST            0x900
-
-/* Thirty-five entries, none null -- guests jump through five of them. */
-#define SN0_ARCS_VECTOR         0x2800
-#define SN0_ARCS_ENTRIES        35
-#define SN0_ARCS_GET_CHILD      10      /* entry at offset 0x50 */
-#define SN0_ARCS_GET_SYSTEM_ID  17      /* entry at offset 0x88 */
-#define SN0_ARCS_GET_MEMORY     18      /* entry at offset 0x90 */
-#define SN0_ARCS_WRITE          27      /* entry at offset 0xd8 */
-#define SN0_ARCS_GET_ENV        30      /* entry at offset 0xf0 */
-
-/* Seventeen more entries continuing the same trap page and op numbers. */
-#define SN0_ARCS_PRIVATE_VECTOR   (SN0_ARCS_VECTOR + 0x400)
-#define SN0_ARCS_PRIVATE_ENTRIES  17
-#define SN0_ARCS_PRIVATE_BASE_OP  SN0_ARCS_ENTRIES
-/* Capability level, private-vector entry at offset 0x48 -> index 9. */
-#define SN0_ARCS_CAPABILITY_OP    (SN0_ARCS_PRIVATE_BASE_OP + 9)
-/* Fixed-PROM launch_slave entry, implemented by the synthesized firmware. */
-#define SN0_FIRMWARE_LAUNCH_OP    (SN0_ARCS_PRIVATE_BASE_OP + \
-                                   SN0_ARCS_PRIVATE_ENTRIES)
-/* Level three: the firmware can load a relocatable object. */
-#define SN0_ARCS_CAPABILITY_LEVEL 3
-
-/* A stub is four instructions: form the address, load from it, return. */
-#define SN0_ARCS_STUB_SIZE      16
-#define SN0_ARCS_TRAP_LOCAL     0x1fd00000  /* node offset, past the flash */
-#define SN0_ARCS_TRAP_SIZE      0x1000
-
 /* Outside the flash, which belongs to whatever image was put there. */
 #define SN0_FW_TEXT_LOCAL       0x1fd01000
 #define SN0_FW_TEXT_SIZE        0x1000
 #define SN0_FW_BOOTLOADER       0x000       /* offset within that region */
-#define SN0_ARCS_STUBS          0x100
-#define SN0_FW_LAUNCH_STUB      0x500
-#define SN0_FW_SECONDARY_BOOT   0x520
 
-/* launch_slave is fixed entry seven in the IP27 PROM jump table. */
-#define SN0_FLASH_LAUNCHSLAVE   (7 * SN0_FLASH_ENTRY_STRIDE)
-
-/* The firmware configuration block, at flash offset 0x60. */
+/*
+ * The board's boot flash records the configuration it was provisioned
+ * for at this offset; sn0_report_node_flash_mode() compares it against
+ * the processor mode bits the board itself latches. Present in every
+ * IP27 PROM image, stock or otherwise -- not synthesized content.
+ */
 #define SN0_CONFIG_OFFSET   0x60
 #define SN0_CONFIG_MAGIC    0x69703237636f6e66ULL  /* "ip27conf" */
 
@@ -269,7 +164,6 @@ typedef struct SN0NodeState {
     MemoryRegion flash_rboot_view;
     MemoryRegion flash_hub_fast;
     MemoryRegion hub_regs_node_view;
-    MemoryRegion arcs_trap;
     MemoryRegion fw_text;
     MemoryRegion backdoor_ecc_absent;
     MemoryRegion backdoor_dir_absent;
@@ -291,9 +185,6 @@ typedef struct SN0NodeState {
                                            [SN0_MAX_MEMORY_SLOTS];
     uint16_t bank_mb[SN0_MAX_MEMORY_BANKS];
     unsigned int populated_banks;
-
-    uint64_t mem_addr;
-    unsigned int mem_count;
 } SN0NodeState;
 
 #define TYPE_SGI_SN0_NODE "sgi-sn0-node"
@@ -413,12 +304,7 @@ void sn0_diagnostic_finalize(SN0MachineState *s);
 /* Reapplied on every processor reset and by the firmware launch path. */
 void sn0_mode_bits_reset(void *opaque);
 
-/*
- * The synthesized firmware and direct kernel boot (sn0-firmware.c); the
- * reset handlers redo the widget-0 redirection and the PCI assignment.
- */
+/* The direct kernel and sash loader (sn0-firmware.c). */
 void sn0_firmware_init(MachineState *machine);
-void sn0_firmware_reset(void *opaque);
-void sn0_assign_pci_resources(void *opaque);
 
 #endif /* HW_MIPS_SN0_H */

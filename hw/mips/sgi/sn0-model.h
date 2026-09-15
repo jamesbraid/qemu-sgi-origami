@@ -20,13 +20,6 @@ typedef enum SN0ModelModuleRole {
     SN0_MODULE_SLAVE,
 } SN0ModelModuleRole;
 
-typedef enum SN0KlRecordKind {
-    SN0_KL_RECORD_COMPONENT,
-    SN0_KL_RECORD_PROCESSOR,
-    SN0_KL_RECORD_HUB,
-    SN0_KL_RECORD_MEMORY_BANK,
-} SN0KlRecordKind;
-
 typedef struct SN0ModelAddressSpace {
     unsigned int selector;
     uint64_t carrier_base;
@@ -109,51 +102,6 @@ typedef struct SN0ModelIoc3Population {
     bool onewire_identity;
 } SN0ModelIoc3Population;
 
-typedef struct SN0KlComponentModel {
-    SN0KlRecordKind record_kind;
-    const SN0ModelComponent *component;
-    uint8_t type;
-    uint8_t revision;
-    uint8_t physical_id;
-    uint8_t widget;
-    uint16_t identification;
-    uint16_t fp_identification;
-    uint32_t clock_mhz;
-    uint64_t clock_hz;
-    uint16_t cache_mib;
-    uint16_t cache_clock_mhz;
-    uint64_t port;
-    uint16_t bank_mapping;
-} SN0KlComponentModel;
-
-typedef struct SN0KlBoardModel {
-    uint8_t type;
-    uint8_t record_kind;
-    uint8_t version;
-    uint8_t slot;
-    int declared_count;
-    const SN0KlComponentModel *components;
-    size_t component_count;
-} SN0KlBoardModel;
-
-typedef struct SN0KlConfigModel {
-    uint64_t base;
-    uint64_t size;
-    uint64_t signature;
-    uint32_t version;
-    uint32_t arena_offset;
-    uint32_t board_base;
-    uint32_t board_stride;
-    uint32_t component_base;
-    uint32_t component_stride;
-    uint32_t console_config_window;
-    uint32_t console_port_offset;
-    uint16_t console_baud;
-    uint32_t console_type;
-    const SN0KlBoardModel *boards;
-    size_t board_count;
-} SN0KlConfigModel;
-
 typedef struct SN0ModelNodeTopology {
     const SN0ModelComponent *hub;
     const SN0ModelComponent *base_io;
@@ -161,7 +109,6 @@ typedef struct SN0ModelNodeTopology {
     size_t pci_count;
     SN0ModelAddressMap map;
     SN0ModelIoc3Population ioc3_population;
-    SN0KlConfigModel klconfig;
 } SN0ModelNodeTopology;
 
 typedef struct SN0ModelNodeInstance {
