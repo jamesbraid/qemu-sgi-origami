@@ -566,22 +566,58 @@ static void test_selected_spd(void)
     };
     const uint8_t invalid[] = { 0x30, 0xff, 0xff, 0xff, 0x95, 0 };
     const uint8_t dropped[] = { 0x30, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0x2b };
+    const uint8_t probe[] = { 0x30, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0xa0 };
+    const uint8_t first_chunk[] = {
+        0x30, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0x60, 0xc0
+    };
+    const uint8_t second_chunk[] = {
+        0x30, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0x20, 0xc0
+    };
+    const uint8_t final_chunk[] = {
+        0x30, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0xa0
+    };
     QTestState *s;
 
     g_assert_no_error(error);
     path = g_build_filename(dir, "spd.bin", NULL);
+    spd[0] = 0x40;
+    spd[63] = 0x40;
+    memset(spd + 64, 0x5a, 96);
     g_assert_true(g_file_set_contents(path, (char *)spd,
                                       sizeof(spd), &error));
     g_assert_no_error(error);
     s = start_selected("", path, "");
     g_assert_cmpuint(eeprom_format(s, 2, reply), ==, sizeof(valid));
     g_assert_cmpmem(reply, sizeof(valid), valid, sizeof(valid));
+    g_assert_cmpuint(eeprom_read(s, 2, 4, 0, 0, reply), ==,
+                     sizeof(probe));
+    g_assert_cmpmem(reply, sizeof(probe), probe, sizeof(probe));
+    g_assert_cmpuint(eeprom_read(s, 2, 4, 0, 64, reply), ==, 76);
+    g_assert_cmpmem(reply, sizeof(first_chunk), first_chunk,
+                    sizeof(first_chunk));
+    g_assert_cmphex(reply[12], ==, 0x40);
+    for (unsigned i = 13; i < 75; i++) {
+        g_assert_cmphex(reply[i], ==, 0);
+    }
+    g_assert_cmphex(reply[75], ==, 0x40);
+    g_assert_cmpuint(eeprom_read(s, 2, 4, 64, 64, reply), ==, 76);
+    g_assert_cmpmem(reply, sizeof(second_chunk), second_chunk,
+                    sizeof(second_chunk));
+    for (unsigned i = 12; i < 76; i++) {
+        g_assert_cmphex(reply[i], ==, 0x5a);
+    }
+    g_assert_cmpuint(eeprom_read(s, 2, 4, 128, 64, reply), ==, 44);
+    g_assert_cmpmem(reply, sizeof(final_chunk), final_chunk,
+                    sizeof(final_chunk));
+    for (unsigned i = 12; i < 44; i++) {
+        g_assert_cmphex(reply[i], ==, 0x5a);
+    }
     g_assert_cmpuint(eeprom_read(s, 2, 4, 0, 117, reply), ==,
                      sizeof(dropped));
     g_assert_cmpmem(reply, sizeof(dropped), dropped, sizeof(dropped));
     qtest_quit(s);
 
-    spd[63] = 1;
+    spd[63] = 0x41;
     g_assert_true(g_file_set_contents(path, (char *)spd,
                                       sizeof(spd), &error));
     g_assert_no_error(error);
