@@ -3,11 +3,13 @@
 test_mips64_timeouts = {
   'malta' : 240,
   'mttcg_cause' : 60,
-  # Fourteen bare-metal SMP scheduling checks, each its own short VM
-  # launch, in one script: the whole run took 41-42s on a moderately
-  # loaded host (measured twice, 2026-08-28). 240 gives better than
-  # four times that for a heavily contended CI host; the previous
-  # unlisted default of 90 left under half.
+  # Nine bare-metal SMP scheduling checks, each its own short VM launch,
+  # in one script (eight cells that depended on synthesized firmware
+  # moved to qtests in the firmware deletion; the measured 41-42s below
+  # is from before that move, on fourteen cells, so it is headroom now
+  # rather than a current measurement). 240 gives better than four times
+  # that for a heavily contended CI host; the previous unlisted default
+  # of 90 left under half.
   'sn0_smp' : 240,
   # Three short VM launches, twenty machine resets each: 18s for the whole
   # script on a host at load 174 (measured 2026-09-13). Each case gives the
