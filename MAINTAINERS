@@ -1516,6 +1516,7 @@ F: tests/functional/mips64/
 F: tests/qtest/mips64-*.c
 F: tests/qtest/qlogic-isp-test.c
 F: tests/qtest/sgi-ioc3-eth-test.c
+F: tests/qtest/sgi-l1-usb-software-test.c
 F: tests/qtest/sn0-*
 F: tests/qtest/sn1-l1-test.c
 F: tests/qtest/sn1-*
