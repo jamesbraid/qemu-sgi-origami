@@ -32,6 +32,15 @@ typedef struct SGIL1SelectedEEPROM {
     uint8_t status[5];
 } SGIL1SelectedEEPROM;
 
+/* Qtest-only inputs for the selected image's software status builder. */
+typedef struct SGIL1USBTestState {
+    bool set;
+    uint8_t config;
+    uint8_t ep0;
+    uint8_t out1;
+    uint8_t in2;
+} SGIL1USBTestState;
+
 /* The controller: what the L1 keeps on its own side of the link. */
 struct SGIL1State {
     DeviceState parent_obj;
@@ -95,6 +104,8 @@ struct SGIL1State {
     bool escape;
     bool overflow;
     uint8_t display[2][128];
+    SGIL1USBTestState usb_test_state;
+    char usb_test_result[16];
 };
 
 /* The node-side junk-bus UART window through which the Bedrock reaches it. */

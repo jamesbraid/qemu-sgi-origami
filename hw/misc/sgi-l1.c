@@ -21,6 +21,7 @@
 #include "system/reset.h"
 #include "system/rtc.h"
 #include "system/runstate.h"
+#include "system/qtest.h"
 
 /* The UART window: registers, interrupt and the byte queue toward the node. */
 
@@ -325,6 +326,9 @@ static void l1_node_reset(SGIL1State *s, uint8_t reason)
 static void l1_after_node_reset(void *opaque)
 {
     SGIL1State *s = opaque;
+
+    s->usb_test_state.set = false;
+    g_strlcpy(s->usb_test_result, "none", sizeof(s->usb_test_result));
 
     if (s->power_up_pending) {
         s->power_up_pending = false;
@@ -1549,7 +1553,11 @@ static const MemoryRegionOps l1_uart_ops = {
 
 static void l1_reset_enter(Object *obj, ResetType type)
 {
-    l1_boot(SGI_L1(obj));
+    SGIL1State *s = SGI_L1(obj);
+
+    s->usb_test_state.set = false;
+    g_strlcpy(s->usb_test_result, "none", sizeof(s->usb_test_result));
+    l1_boot(s);
 }
 
 static bool l1_record_invalid(const SGIL1EEPROM *record, unsigned area)
@@ -1968,6 +1976,154 @@ static char *l1_display_first_get(Object *obj, Error **errp)
     return g_strdup((char *)SGI_L1(obj)->display[0]);
 }
 
+typedef struct L1USBPreparedStatus {
+    bool has_value;
+    uint8_t bytes[2];
+    unsigned exposed;
+} L1USBPreparedStatus;
+
+/* Selected-image software calculation only; no USB transfer is prepared. */
+static L1USBPreparedStatus l1_usb_status(const uint8_t setup[8],
+                                          const SGIL1USBTestState *state)
+{
+    L1USBPreparedStatus result = { 0 };
+    uint8_t recipient = setup[0] & 3;
+    uint8_t endpoint = setup[4];
+
+    result.exposed = MIN((unsigned)(setup[6] | setup[7] << 8), 2u);
+    switch (recipient) {
+    case 0:
+        result.has_value = true;
+        result.bytes[0] = 1;
+        break;
+    case 1:
+        result.has_value = true;
+        break;
+    case 2:
+        switch (endpoint) {
+        case 0x00:
+        case 0x80:
+            result.bytes[0] = state->ep0 == 1;
+            break;
+        case 0x01:
+            result.bytes[0] = state->out1 == 1;
+            break;
+        case 0x82:
+            result.bytes[0] = state->in2 == 1;
+            break;
+        default:
+            return result;
+        }
+        result.has_value = true;
+        break;
+    }
+    return result;
+}
+
+static int l1_usb_hex(char c)
+{
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+
+static void l1_usb_setup_set(Object *obj, const char *value, Error **errp)
+{
+    SGIL1State *s = SGI_L1(obj);
+    uint8_t setup[8];
+    L1USBPreparedStatus prepared;
+
+    if (strlen(value) != 16) {
+        error_setg(errp, "usb-test-setup requires exactly eight hex bytes");
+        return;
+    }
+    for (unsigned i = 0; i < 8; i++) {
+        int hi = l1_usb_hex(value[2 * i]);
+        int lo = l1_usb_hex(value[2 * i + 1]);
+        if (hi < 0 || lo < 0) {
+            error_setg(errp, "usb-test-setup contains a non-hex digit");
+            return;
+        }
+        setup[i] = hi << 4 | lo;
+    }
+    if (setup[1] != 0 || (setup[0] != 0x80 && setup[0] != 0x81 &&
+                          setup[0] != 0x82) || setup[2] || setup[3] ||
+        setup[5] || (setup[0] != 0x82 && setup[4])) {
+        error_setg(errp, "unsupported usb-test-setup request or index");
+        return;
+    }
+    if (!s->usb_test_state.set) {
+        error_setg(errp, "usb-test-cached-state must be injected first");
+        return;
+    }
+    prepared = l1_usb_status(setup, &s->usb_test_state);
+    if (!prepared.has_value) {
+        g_strlcpy(s->usb_test_result, "none", sizeof(s->usb_test_result));
+        return;
+    }
+    switch (prepared.exposed) {
+    case 0:
+        g_strlcpy(s->usb_test_result, "prepared:",
+                  sizeof(s->usb_test_result));
+        break;
+    case 1:
+        snprintf(s->usb_test_result, sizeof(s->usb_test_result),
+                 "prepared:%02x", prepared.bytes[0]);
+        break;
+    default:
+        snprintf(s->usb_test_result, sizeof(s->usb_test_result),
+                 "prepared:%02x%02x", prepared.bytes[0], prepared.bytes[1]);
+        break;
+    }
+}
+
+static char *l1_usb_result_get(Object *obj, Error **errp)
+{
+    return g_strdup(SGI_L1(obj)->usb_test_result);
+}
+
+static void l1_usb_state_set(Object *obj, const char *value, Error **errp)
+{
+    SGIL1State *s = SGI_L1(obj);
+    unsigned config, ep0, out1, in2;
+    char canonical[32];
+
+    if (sscanf(value, "config=%u,ep0=%u,out1=%u,in2=%u",
+               &config, &ep0, &out1, &in2) != 4 ||
+        config > 1 || ep0 < 1 || ep0 > 2 || out1 < 1 || out1 > 2 ||
+        in2 < 1 || in2 > 2) {
+        error_setg(errp, "invalid usb-test-cached-state");
+        return;
+    }
+    snprintf(canonical, sizeof(canonical),
+             "config=%u,ep0=%u,out1=%u,in2=%u", config, ep0, out1, in2);
+    if (strcmp(value, canonical)) {
+        error_setg(errp, "invalid usb-test-cached-state syntax");
+        return;
+    }
+    s->usb_test_state = (SGIL1USBTestState) {
+        .set = true, .config = config, .ep0 = ep0, .out1 = out1, .in2 = in2,
+    };
+}
+
+static char *l1_usb_state_get(Object *obj, Error **errp)
+{
+    SGIL1USBTestState *state = &SGI_L1(obj)->usb_test_state;
+
+    if (!state->set) {
+        return g_strdup("unset");
+    }
+    return g_strdup_printf("config=%u,ep0=%u,out1=%u,in2=%u",
+                           state->config, state->ep0, state->out1, state->in2);
+}
+
 static const Property l1_properties[] = {
     DEFINE_PROP_CHR("chardev", SGIL1State, chr),
     DEFINE_PROP_INT32("revision-major", SGIL1State, revision_major, -1),
@@ -1998,6 +2154,18 @@ static const Property l1_properties[] = {
 static void l1_init(Object *obj)
 {
     SGIL1State *s = SGI_L1(obj);
+
+    g_strlcpy(s->usb_test_result, "none", sizeof(s->usb_test_result));
+    if (qtest_enabled()) {
+        object_property_add_str(obj, "usb-test-setup", NULL,
+                                l1_usb_setup_set);
+        object_property_add_str(obj, "usb-test-result", l1_usb_result_get,
+                                NULL);
+        object_property_add_str(obj, "usb-test-cached-state", NULL,
+                                l1_usb_state_set);
+        object_property_add_str(obj, "usb-test-cached-state-readback",
+                                l1_usb_state_get, NULL);
+    }
 
     qdev_init_gpio_out_named(DEVICE(obj), &s->node_power_out, "node-power", 1);
     qdev_init_gpio_out_named(DEVICE(obj), &s->node_reset_out, "node-reset", 1);
