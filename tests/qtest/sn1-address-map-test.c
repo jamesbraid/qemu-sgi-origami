@@ -2188,7 +2188,10 @@ static void test_boot_flash_backs_every_prom_view(const void *data)
     QTestState *qts = machine_start_with_flash(flash, "");
 
     ramblocks = qtest_hmp(qts, "info ramblock");
-    g_assert_null(strstr(ramblocks, "sn1.prom"));
+    g_assert_nonnull(strstr(ramblocks, "sn1.prom.reset"));
+    g_assert_nonnull(strstr(ramblocks, "sn1.prom.local-high"));
+    assert_flat_view_is_execution_storage(qts, PROM_RESET);
+    assert_flat_view_is_execution_storage(qts, HUB_LOCAL_HIGH_BOOT);
 
     /* Every execution view reads position zero, not the supplied payload. */
     assert_flash_everywhere(qts, 0, FLASH_LOWER_WORD);
