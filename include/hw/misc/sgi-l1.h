@@ -106,6 +106,7 @@ struct SGIL1State {
     uint8_t display[2][128];
     SGIL1USBTestState usb_test_state;
     char usb_test_result[16];
+    char usb_test_descriptor_result[74];
 };
 
 /* The node-side junk-bus UART window through which the Bedrock reaches it. */

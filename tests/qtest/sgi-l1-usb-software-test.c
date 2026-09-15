@@ -8,6 +8,9 @@
 #define L1 "/machine/node0/l1"
 #define PROM_SIZE 0x1686a8
 #define DEFAULT_STATE "config=1,ep0=2,out1=1,in2=2"
+#define DEVICE_HEX "12010001ffff00405e063412000101020301"
+#define TREE_HEX "09022000010104600009040000020000ff05" \
+                 "0705010240000007058202400000"
 
 static char *test_dir(void)
 {
@@ -81,6 +84,13 @@ static void expect_state(QTestState *s, const char *expected)
     g_assert_cmpstr(actual, ==, expected);
 }
 
+static void expect_descriptor(QTestState *s, const char *expected)
+{
+    g_autofree char *actual = get(s, "usb-test-descriptor-result");
+
+    g_assert_cmpstr(actual, ==, expected);
+}
+
 static void test_matrix(void)
 {
     static const struct {
@@ -122,13 +132,89 @@ static void test_matrix(void)
             found++;
         }
     }
-    g_assert_cmpuint(found, ==, 4);
+    g_assert_cmpuint(found, ==, 6);
     for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
         expect_set(s, "usb-test-cached-state", cases[i].state, true);
         expect_state(s, cases[i].state);
         expect_set(s, "usb-test-setup", cases[i].setup, true);
         expect_result(s, cases[i].result);
     }
+    qtest_quit(s);
+    g_assert_cmpint(unlink(prom), ==, 0);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_descriptor_matrix(void)
+{
+    static const struct {
+        const char *setup;
+        const char *result;
+    } cases[] = {
+        { "8006000100000000", "prepared:" },
+        { "8006000100000100", "prepared:12" },
+        { "8006000100001200", "prepared:" DEVICE_HEX },
+        { "8006000100001300", "prepared:" DEVICE_HEX },
+        { "8006000200000000", "prepared:" },
+        { "8006000200000100", "prepared:09" },
+        { "8006000200000900", "prepared:090220000101046000" },
+        { "8006000200000a00", "prepared:09022000010104600009" },
+        { "8006000200001200", "prepared:09022000010104600009040000020000ff05" },
+        { "8006000200001300", "prepared:090220000101046000"
+                              "09040000020000ff0507" },
+        { "8006000200001900", "prepared:090220000101046000"
+                              "09040000020000ff0507050102400000" },
+        { "8006000200001a00", "prepared:090220000101046000"
+                              "09040000020000ff050705010240000007" },
+        { "8006000200002000", "prepared:" TREE_HEX },
+        { "8006000200002100", "prepared:" TREE_HEX },
+        { "8006000200000A00", "prepared:09022000010104600009" },
+    };
+    g_autofree char *dir = test_dir();
+    g_autofree char *prom = empty_prom(dir);
+    QTestState *s = start(prom, "");
+
+    expect_descriptor(s, "none");
+    expect_set(s, "usb-test-cached-state", DEFAULT_STATE, true);
+    expect_set(s, "usb-test-setup", "8000000000000200", true);
+    for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        expect_set(s, "usb-test-descriptor-setup", cases[i].setup, true);
+        expect_descriptor(s, cases[i].result);
+        expect_state(s, DEFAULT_STATE);
+        expect_result(s, "prepared:0100");
+    }
+    qtest_quit(s);
+    g_assert_cmpint(unlink(prom), ==, 0);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+static void test_descriptor_errors_reset(void)
+{
+    static const char *invalid[] = {
+        "80060002000020", "800600020000200000", "80060002000020gg",
+        "0006000200002000", "8106000200002000", "8005000200002000",
+        "8006000300002000", "8006000900002000",
+        "8006010100002000", "8006010200002000",
+        "8006000201002000", "8006000200012000",
+        "8006000309002000", "8006000300002000",
+        "8006000309042000",
+    };
+    g_autofree char *dir = test_dir();
+    g_autofree char *prom = empty_prom(dir);
+    QTestState *s = start(prom, "");
+
+    expect_set(s, "usb-test-cached-state", DEFAULT_STATE, true);
+    expect_set(s, "usb-test-setup", "8000000000000200", true);
+    expect_set(s, "usb-test-descriptor-setup", "8006000200002000", true);
+    for (unsigned i = 0; i < G_N_ELEMENTS(invalid); i++) {
+        expect_set(s, "usb-test-descriptor-setup", invalid[i], false);
+        expect_descriptor(s, "prepared:" TREE_HEX);
+        expect_state(s, DEFAULT_STATE);
+        expect_result(s, "prepared:0100");
+    }
+    qtest_system_reset(s);
+    expect_descriptor(s, "none");
+    expect_state(s, "unset");
+    expect_result(s, "none");
     qtest_quit(s);
     g_assert_cmpint(unlink(prom), ==, 0);
     g_assert_cmpint(rmdir(dir), ==, 0);
@@ -204,6 +290,7 @@ static void test_migration(void)
     to = start(prom, "-incoming defer");
     expect_set(from, "usb-test-cached-state", DEFAULT_STATE, true);
     expect_set(from, "usb-test-setup", "8000000000000200", true);
+    expect_set(from, "usb-test-descriptor-setup", "8006000200002000", true);
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
@@ -212,7 +299,10 @@ static void test_migration(void)
     wait_migration(to);
     expect_state(to, "unset");
     expect_result(to, "none");
+    expect_descriptor(to, "none");
     expect_set(to, "usb-test-setup", "8000000000000200", false);
+    expect_set(to, "usb-test-descriptor-setup", "8006000100001200", true);
+    expect_descriptor(to, "prepared:" DEVICE_HEX);
     qtest_quit(from);
     qtest_quit(to);
     g_assert_cmpint(unlink(prom), ==, 0);
@@ -223,6 +313,9 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("l1/usb-software/matrix", test_matrix);
+    qtest_add_func("l1/usb-software/descriptor-matrix", test_descriptor_matrix);
+    qtest_add_func("l1/usb-software/descriptor-errors-reset",
+                   test_descriptor_errors_reset);
     qtest_add_func("l1/usb-software/errors-reset", test_errors_reset);
     qtest_add_func("l1/usb-software/migration", test_migration);
     return g_test_run();
