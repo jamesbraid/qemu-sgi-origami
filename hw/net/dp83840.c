@@ -3,7 +3,10 @@
  * DP83840 ethernet transceiver, reached through the IOC3's management
  * registers (the lan9118-phy shape). Out of reset the link is down; it
  * comes up a settle after the first status read, or at once on a
- * control-register write. See docs/specs/sgi-ioc3.rst.
+ * control-register write. The "dp83843" property switches the model to
+ * the Origin 300 IO-8 board's DP83843 part instead, which differs only in
+ * its identity register and its second loopback switch. See
+ * docs/specs/sgi-ioc3.rst.
  */
 
 #include "qemu/osdep.h"
@@ -78,7 +81,7 @@ static uint16_t dp83840_read_impl(DP83840State *s, int reg)
         return DP83840_PHYID1;
 
     case MII_PHYID2:
-        return DP83840_PHYID2;
+        return s->dp83843 ? DP83843_PHYID2 : DP83840_PHYID2;
 
     case MII_ANAR:
         return s->advertise;
@@ -180,12 +183,24 @@ void dp83840_write(DP83840State *s, int reg, uint16_t val)
     }
 }
 
-/* Three switches select loopback; the diagnostic uses more than one. */
+/*
+ * Three switches select loopback on the DP83840A; the diagnostic uses more
+ * than one. The DP83843's register 0x17 (DP83840_PCS_CONFIG's address,
+ * plain storage on the DP83840A) replaces register 0x18 as the second
+ * switch: its Loopback Register carries the twister/PMD and 10BASE-T ENDEC
+ * loopback selects instead.
+ */
 bool dp83840_in_loopback(DP83840State *s)
 {
-    return (s->control & MII_BMCR_LOOPBACK) ||
-           (s->loopback_bypass & (DP83840_LBREMR_LB_MASK |
-                                  DP83840_LBREMR_10BT_LOOPBACK));
+    if (s->control & MII_BMCR_LOOPBACK) {
+        return true;
+    }
+    if (s->dp83843) {
+        return (s->pcs_config & (DP83843_LBR_TW_LBEN |
+                                 DP83843_LBR_10_ENDEC_LB)) != 0;
+    }
+    return (s->loopback_bypass & (DP83840_LBREMR_LB_MASK |
+                                  DP83840_LBREMR_10BT_LOOPBACK)) != 0;
 }
 
 void dp83840_reset(DP83840State *s)
@@ -195,6 +210,12 @@ void dp83840_reset(DP83840State *s)
     /* Link down: SGI's diagnostic probes the not-yet-settled state. */
     s->control = DP83840_CONTROL_RESET_VALUE;
     s->advertise = DP83840_ADVERTISE_RESET;
+    /*
+     * Reused for the DP83843's LBR at the same address: both loopback-select
+     * bits (4 and 5) are clear in this value, which is what a reset must
+     * leave them regardless of part, and the DP83843 datasheet is not in the
+     * Library to give its own reset value (docs/datasheets/dp83840.md).
+     */
     s->pcs_config = DP83840_PCS_RESET_VALUE;
     s->loopback_bypass = DP83840_LBREMR_RESET_VALUE;
     s->tenbt_config = DP83840_10BT_RESET_VALUE;
@@ -245,6 +266,7 @@ static const VMStateDescription vmstate_dp83840 = {
 
 static const Property dp83840_properties[] = {
     DEFINE_PROP_UINT8("addr", DP83840State, addr, 31),
+    DEFINE_PROP_BOOL("dp83843", DP83840State, dp83843, false),
 };
 
 static void dp83840_class_init(ObjectClass *oc, const void *data)

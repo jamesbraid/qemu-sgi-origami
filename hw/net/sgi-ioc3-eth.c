@@ -907,6 +907,7 @@ static void sgi_ioc3_eth_init(Object *obj)
     object_initialize_child(obj, "phy", &s->phy, TYPE_DP83840);
 
     object_property_add_alias(obj, "phy-addr", OBJECT(&s->phy), "addr");
+    object_property_add_alias(obj, "phy-dp83843", OBJECT(&s->phy), "dp83843");
 }
 
 static int sgi_ioc3_eth_post_load(void *opaque, int version_id)

@@ -48,6 +48,7 @@
 
 #define ENET_INT_RX_TIMER (1u << 0)
 #define ENET_INT_RX_THRESHOLD (1u << 1)
+#define ENET_INT_TX_EMPTY     (1u << 16)
 #define ENET_INT_TX_COMPLETE  (1u << 22)
 #define RPIR_ARM          (1u << 31)
 
@@ -72,6 +73,16 @@
 #define BMCR_DUPLEX       0x0100
 #define BMSR_AN_COMP      0x0020
 #define BMSR_LINK         0x0004
+
+/*
+ * Register 0x17: plain storage on the default DP83840A part (PCS_CONFIG),
+ * the DP83843's Loopback Register (LBR) when the "phy-dp83843" property is
+ * set. LBR_TW_LBEN is the DP83843's twister/PMD loopback select, the bit
+ * the IP35 BASEIO PROM's Twister diagnostic writes (OpenBSD's
+ * sys/dev/mii/nsphyterreg.h; docs/datasheets/dp83840.md).
+ */
+#define MII_LBR           0x17
+#define LBR_TW_LBEN       0x0020
 
 #define TXD_INT_DONE      (1u << 12)
 #define TXD_DATA_VALID    (1u << 16)
@@ -241,6 +252,23 @@ static QTestState *ioc3_attach_socket(int guest_fd, unsigned int buffers)
     qts = qtest_initf("-M pc -display none "
                       "-netdev socket,fd=%d,id=n0 "
                       "-device sgi-ioc3,addr=%02x.0,netdev=n0",
+                      guest_fd, IOC3_PCI_SLOT);
+    ioc3_bring_up(qts, RAM_SCRATCH + 0x8000, RAM_SCRATCH + 0xc000, buffers);
+    return qts;
+}
+
+/*
+ * The same attachment, with the transceiver switched to the Origin 300
+ * IO-8 board's DP83843 instead of the default DP83840A.
+ */
+static QTestState *ioc3_attach_socket_dp83843(int guest_fd,
+                                              unsigned int buffers)
+{
+    QTestState *qts;
+
+    qts = qtest_initf("-M pc -display none "
+                      "-netdev socket,fd=%d,id=n0 "
+                      "-device sgi-ioc3,addr=%02x.0,netdev=n0,phy-dp83843=on",
                       guest_fd, IOC3_PCI_SLOT);
     ioc3_bring_up(qts, RAM_SCRATCH + 0x8000, RAM_SCRATCH + 0xc000, buffers);
     return qts;
@@ -1752,6 +1780,188 @@ static void test_loopback_respects_a_full_arrival_line(const void *data)
     close(sv[0]);
 }
 
+/*
+ * The IP35 BASEIO PROM's Twister loopback sub-test (enet_tw_loop): BMCR
+ * disables autonegotiation and selects 100 Mb full duplex with no BMCR
+ * loopback bit, then LBR's twister/PMD select is OR-ed in. On the DP83843
+ * this loops transmitted frames back to the receive ring the way PHY
+ * loopback always has -- through the whole controller, four bytes higher
+ * and a real status word -- without ever reaching the backend.
+ */
+static void test_dp83843_twister_loopback_turns_a_frame_round(const void *data)
+{
+    enum { LEN = 301 };
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[LEN];
+    uint8_t landed[LEN];
+    uint32_t rxbuf = RAM_SCRATCH + 0xc000;
+    uint32_t base = RAM_SCRATCH;
+    unsigned int i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i + 0x11);
+    }
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 1);
+    qts = ioc3_attach_socket_dp83843(sv[1], 2);
+
+    mii_write(qts, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX);
+    mii_write(qts, MII_LBR, mii_read(qts, MII_LBR) | LBR_TW_LBEN);
+
+    ioc3_writel(qts, ENET_TX_RING_HI, 0);
+    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+    tx_one(qts, base, 0, frame, sizeof(frame));
+
+    wait_for_rx_consume(qts, RX_RING_STRIDE);
+
+    g_assert_cmphex(dma_ldl_be(qts, rxbuf) & RXH_VALID, ==, RXH_VALID);
+    g_assert_cmpuint((dma_ldl_be(qts, rxbuf) & RXH_BYTECNT_MASK) >>
+                     RXH_BYTECNT_SHIFT, ==, sizeof(frame) + ETHER_FCS_LEN);
+    g_assert_cmphex(dma_ldl_be(qts, rxbuf + 4) & RXE_GOODPKT, ==,
+                    RXE_GOODPKT);
+
+    qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(landed));
+    g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
+
+    g_assert_cmphex(ioc3_readl(qts, ENET_INT_STATUS) & ENET_INT_TX_EMPTY, ==,
+                    ENET_INT_TX_EMPTY);
+
+    /* The whole point: nothing of this crossed to the backend. */
+    net_socket_expect_no_frame(sv[0]);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * The negative control this bug turns on: leaving TW_LBEN clear on the same
+ * DP83843 part, same BMCR, same everything else, must not loop -- otherwise
+ * the fix would really be "any register 0x17 write loops," not this bit.
+ */
+static void test_dp83843_loopback_requires_the_tw_lben_bit(const void *data)
+{
+    enum { LEN = 128 };
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[LEN];
+    uint8_t got[256];
+    uint32_t base = RAM_SCRATCH;
+    unsigned int i;
+    size_t len;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i + 0x22);
+    }
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = ioc3_attach_socket_dp83843(sv[1], 2);
+
+    mii_write(qts, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX);
+    /* Bit 5 explicitly left clear; the rest of the sequence is unchanged. */
+    mii_write(qts, MII_LBR, mii_read(qts, MII_LBR) & ~LBR_TW_LBEN);
+
+    ioc3_writel(qts, ENET_TX_RING_HI, 0);
+    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+    tx_one(qts, base, 0, frame, sizeof(frame));
+
+    len = net_socket_recv_frame(sv[0], got, sizeof(got));
+    g_assert_cmpint(len, ==, sizeof(frame));
+    g_assert_cmpmem(got, len, frame, sizeof(frame));
+    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * The Origin 200 / OpenBSD nsphy non-regression: on the default DP83840A
+ * part, register 0x17 bit 5 is PCR.CIM_DIS, which nsphy sets on every media
+ * change and sn0-ioc3-test.c exercises as ordinary storage. The identical
+ * write that loops a DP83843 must do nothing but store on this part.
+ */
+static void test_dp83840a_bit5_does_not_select_loopback(const void *data)
+{
+    enum { LEN = 128 };
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[LEN];
+    uint8_t got[256];
+    uint32_t base = RAM_SCRATCH;
+    unsigned int i;
+    size_t len;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i + 0x33);
+    }
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = ioc3_attach_socket(sv[1], 2);
+
+    mii_write(qts, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX);
+    mii_write(qts, MII_LBR, mii_read(qts, MII_LBR) | LBR_TW_LBEN);
+
+    ioc3_writel(qts, ENET_TX_RING_HI, 0);
+    ioc3_writel(qts, ENET_TX_RING_LO, base & 0xffffc000u);
+    tx_one(qts, base, 0, frame, sizeof(frame));
+
+    len = net_socket_recv_frame(sv[0], got, sizeof(got));
+    g_assert_cmpint(len, ==, sizeof(frame));
+    g_assert_cmpmem(got, len, frame, sizeof(frame));
+    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * A PHY reset clears LBR along with the rest of the transceiver's state, so
+ * leaving loopback that way must re-open the backend exactly as clearing
+ * BMCR's own loopback bit already does
+ * (test_a_queued_frame_lands_when_phy_loopback_clears).
+ */
+static void test_dp83843_reset_clears_lbr_and_reopens_the_backend(
+    const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[64];
+    uint32_t rxbuf = RAM_SCRATCH + 0xc000;
+    unsigned int i;
+
+    for (i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(i + 0x44);
+    }
+    memset(frame, 0xff, 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = ioc3_attach_socket_dp83843(sv[1], 2);
+
+    mii_write(qts, PHY_BMCR, BMCR_SPEED100 | BMCR_DUPLEX);
+    mii_write(qts, MII_LBR, mii_read(qts, MII_LBR) | LBR_TW_LBEN);
+
+    /* Refused while looping back: the index must sit still. */
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    g_usleep(200000);
+    qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS);
+    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
+
+    /* Only the flush a reset's loopback exit triggers delivers it. */
+    mii_write(qts, PHY_BMCR, 0x8000);
+    wait_for_rx_consume(qts, RX_RING_STRIDE);
+    g_assert_cmphex(dma_ldl_be(qts, rxbuf) & RXH_VALID, ==, RXH_VALID);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 int main(int argc, char **argv)
 {
     unsigned int i;
@@ -1819,6 +2029,18 @@ int main(int argc, char **argv)
                         test_the_inline_path_off_the_fabric);
     qtest_add_data_func("sgi-ioc3-eth/pointer-path-off-the-fabric", NULL,
                         test_the_pointer_path_off_the_fabric);
+    qtest_add_data_func("sgi-ioc3-eth/dp83843-twister-loopback-turns-a-frame"
+                        "-round", NULL,
+                        test_dp83843_twister_loopback_turns_a_frame_round);
+    qtest_add_data_func("sgi-ioc3-eth/dp83843-loopback-requires-tw-lben",
+                        NULL,
+                        test_dp83843_loopback_requires_the_tw_lben_bit);
+    qtest_add_data_func("sgi-ioc3-eth/dp83840a-bit5-does-not-select-loopback",
+                        NULL,
+                        test_dp83840a_bit5_does_not_select_loopback);
+    qtest_add_data_func("sgi-ioc3-eth/dp83843-reset-reopens-the-backend",
+                        NULL,
+                        test_dp83843_reset_clears_lbr_and_reopens_the_backend);
 
     return g_test_run();
 }

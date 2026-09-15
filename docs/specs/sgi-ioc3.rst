@@ -232,7 +232,10 @@ generation (the diagnostic demands the byte count unchanged and a
 zero status word), while the PHY's loopback runs the whole
 controller (count four higher, status real). Either loopback
 disconnects the backend in both directions, or outside traffic
-shifts the diagnostic's frame comparisons.
+shifts the diagnostic's frame comparisons. What selects the PHY's
+loopback is itself part-specific -- see the DP83843 paragraph below
+-- and the model dispatches on the transceiver's own ``dp83843``
+property rather than guessing from the register write alone.
 
 The MAC-control reset bit resets the engine but not the ring base
 registers: SGI's power-on diagnostic programs the bases, asserts
@@ -248,15 +251,46 @@ the firmware reads the station address from the one-wire part and
 expects a real part's prefix; an explicitly configured address is
 never rewritten.
 
-The PHY is a DP83840 modelled at address 31 with mii.h register
-names; its autonegotiation completes on a settle window timed so the
-firmware diagnostic's probe lands inside it, its link-status bit
-latches low, and backend link state drives it the way lan9118's PHY
-models the same thing. Its LBREMR pin-latched bits reflect board
-wiring nothing observed, modelled as normal operation, and the
-settle window has a second constraint besides the diagnostic probe:
-the firmware's reset-value sweep spends about a tenth of a second of
-virtual time, which the settle must outlast.
+The PHY is a DP83840A modelled with mii.h register names, at an
+address the ``phy-addr`` property selects (default 31, an alias
+chain from ``sgi-ioc3`` through the eth child to the transceiver's
+own ``addr`` property). 31 is Origin 200's address; Origin 300's
+IO-8 board sets 1, the address its BASEIO PROM's MII helper
+functions hard-code and a real board's OpenBSD capture confirms
+(docs/datasheets/dp83840.md). Its autonegotiation completes on a
+settle window timed so the firmware diagnostic's probe lands
+inside it, its link-status bit latches low, and backend link state
+drives it the way lan9118's PHY models the same thing. Its LBREMR
+pin-latched bits reflect board wiring nothing observed, modelled as
+normal operation, and the settle window has a second constraint
+besides the diagnostic probe: the firmware's reset-value sweep
+spends about a tenth of a second of virtual time, which the settle
+must outlast.
+
+Origin 300's IO-8 board carries a different part, a National
+Semiconductor DP83843 "PHYTER", which the ``phy-dp83843`` property
+selects through the same alias chain (default false, the
+DP83840A). It shares every DP83840A register except two. Its
+identity register 3 (PHYIDR2) reads 0x5c10 instead of 0x5c01, which
+also binds OpenBSD's nsphyter driver instead of nsphy. And its
+register 0x17 -- plain storage on the DP83840A (PCS_CONFIG) -- is
+instead its Loopback Register: bits 5 and 4 (TW_LBEN and
+10_ENDEC_LB) select loopback the way BMCR's own bit and the
+DP83840A's LBREMR (register 0x18) do. The IP35 BASEIO PROM's
+Twister loopback sub-test writes exactly this bit on the real
+board; a DP83840A stuck with the same write must not loop, since
+bit 5 there is PCR.CIM_DIS, which OpenBSD's nsphy driver sets on
+every media change and this project's own sn0-ioc3-test.c exercises
+-- the part switch keeps that write inert on the default part and
+only closes the loop when ``dp83843`` is set. Register 0x18 on the
+DP83843 is 10BTSCR, plain storage with no loopback function; the
+model keeps the same storage field regardless of part and only its
+loopback interpretation differs. A PHY reset clears register 0x17
+to the DP83840A's PCS_CONFIG reset value on both parts -- 0 in both
+of the DP83843's loopback-select bits -- which is reused rather
+than an independent DP83843 reset value, since the DP83843
+datasheet is not in the Library and only OpenBSD's nsphyterreg.h
+gives the bit names (docs/datasheets/dp83840.md).
 
 Buffer RAM
 ==========

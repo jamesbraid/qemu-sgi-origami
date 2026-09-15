@@ -27,6 +27,8 @@ static const SN1ModelPciDevice sn1_origin300_pci_devices[] = {
         .subsystem_id = 0xffff,
         .population = 0x0,
         .timekeeper_kind = 0x0,
+        .phy_addr = 0x0,
+        .phy_dp83843 = false,
     },
     {
         .kind = SN1_PCI_IOC3,
@@ -41,6 +43,8 @@ static const SN1ModelPciDevice sn1_origin300_pci_devices[] = {
         .subsystem_id = 0xffff,
         .population = 0x17,
         .timekeeper_kind = 0x1,
+        .phy_addr = 0x1,
+        .phy_dp83843 = true,
     },
     {
         .kind = SN1_PCI_LUCENT_OHCI,
@@ -55,6 +59,8 @@ static const SN1ModelPciDevice sn1_origin300_pci_devices[] = {
         .subsystem_id = 0xffff,
         .population = 0x0,
         .timekeeper_kind = 0x0,
+        .phy_addr = 0x0,
+        .phy_dp83843 = false,
     },
 };
 
