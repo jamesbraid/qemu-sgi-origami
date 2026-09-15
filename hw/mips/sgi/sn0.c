@@ -13,7 +13,6 @@
 #include "qobject/qlist.h"
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
-#include "qemu/timer.h"
 #include "hw/core/boards.h"
 #include "hw/core/clock.h"
 #include "hw/core/qdev-clock.h"
@@ -37,16 +36,13 @@
 
 #define SN0_HUB_PRIVATE_SIZE (128 * KiB)
 #define SN0_HUB_PRIVATE_HALF (SN0_HUB_PRIVATE_SIZE / 2)
-#define SN0_PROMDATA_PADDR  0x100000
-#define SN0_PROMDATA_SIZE   (32 * KiB)
-#define SN0_PROM_COPY_PADDR 0x01a00000
+
 /*
- * How often a processor whose window is mapped as RAM samples its stack
- * pointer for the exit's stack switch. A late sample only leaves the
- * block mapped that much longer, in a span nothing fetches from the
- * window; an early one only restores the filter sooner.
+ * The PROM's second execution home during the cache-as-RAM phase: a RAM
+ * copy of its own text, reached by an ASID re-point rather than a PC
+ * change. See sn-promdata.c and the datasheet section it cites.
  */
-#define SN0_PROMDATA_POLL_NS (10 * SCALE_MS)
+#define SN0_PROM_COPY_PADDR 0x01a00000
 
 /* MIPS CPU input 0 is IP0. Hardware interrupt inputs begin at IP2. */
 #define SN0_MIPS_HARDWARE_IRQ_OFFSET 2
@@ -62,382 +58,20 @@ const SN0FlashImplementation sn0_flash = {
 };
 
 /*
- * Not a hardware register: the IP27 PROM's own software convention of
- * boot-status flags in FPR 0. Bit 1 marks the cache-as-RAM phase.
+ * The per-CPU cache-as-RAM private window (physical 0x10_0000, keyed on
+ * the PROM boot-status flag and the PC being in the PROM) is
+ * sn-promdata.c's SNPromDataState and its functions, shared with
+ * sgi-sn1-node. See that file and docs/datasheets/firmware-structures.md,
+ * "The PROM cache-as-RAM phase and its boot-status bit", for the
+ * contract. This file only computes the bounds sn0_node_create_cpus
+ * passes it, the peer write counter its trace line reports below, and
+ * the array-level migration wrapper.
  */
-#define SN0_PROM_BOOT_STATUS_CACHE_AS_RAM    (1U << 1)
-
-/*
- * A virtual address of this processor's, translated through the MMU
- * rather than pattern-matched, because the phase does not stay on the
- * unmapped aliases: besides the compatibility segments and XKPHYS, the
- * PROM's guarded PI error probe runs from a TLB-mapped alias of the
- * flash, and under ERL the low region is an unmapped alias of physical
- * memory. A node-qualified physical address reduces to its node-local
- * offset. False when the address does not translate.
- */
-static bool sn0_promdata_local_phys(SN0PromDataState *s, uint64_t vaddr,
-                                    uint64_t *local)
+static uint64_t sn0_promdata_peer_writes(const void *peer)
 {
-    const SN0ModelRegion *memory_region = &s->map->node_memory;
-    TranslateForDebugResult r;
-    uint64_t phys;
+    const SN0NodeState *node = peer;
 
-    if (!cpu_translate_for_debug(CPU(s->cpu), vaddr, &r)) {
-        return false;
-    }
-    /*
-     * An uncached alias names the same node-local text: drop the
-     * uncached-attribute window above the address, then the node.
-     */
-    phys = r.physaddr & ((1ULL << MIPS_UNCACHED_WINDOW_SHIFT) - 1);
-    if (phys - s->node_base < memory_region->size) {
-        phys -= s->node_base;
-    }
-    *local = phys;
-    return true;
-}
-
-/*
- * The phase's two execution homes, from the full 64-bit PC. Comparing
- * physically also admits the cached alias of the PROM's RAM copy;
- * harmless, because the phase bit already over-covers the residency.
- * Post-exit PROM code does touch the window: on the eight-processor
- * Origin 2000 a node's first processor makes 28,673 more doubleword
- * accesses after its stack switch, a memory-test pass, and the held
- * latch serves them from the private block until the OS handoff.
- */
-static bool sn0_promdata_pc_in_prom(SN0PromDataState *s)
-{
-    const SN0ModelRegion *flash = &s->map->flash_reset;
-    uint64_t phys;
-
-    if (!sn0_promdata_local_phys(s, s->cpu->env.active_tc.PC, &phys)) {
-        return false;
-    }
-
-    return (phys >= flash->offset && phys < flash->offset + flash->size) ||
-           (phys >= SN0_PROM_COPY_PADDR &&
-            phys < SN0_PROM_COPY_PADDR + flash->size);
-}
-
-/* The stack pointer, resolved the same way, still inside the window. */
-static bool sn0_promdata_sp_in_window(SN0PromDataState *s)
-{
-    uint64_t phys;
-
-    return sn0_promdata_local_phys(s, s->cpu->env.active_tc.gpr[29],
-                                   &phys) &&
-           phys >= SN0_PROMDATA_PADDR &&
-           phys < SN0_PROMDATA_PADDR + SN0_PROMDATA_SIZE;
-}
-
-static void sn0_promdata_trace_phase(SN0PromDataState *s, const char *event)
-{
-    CPUMIPSState *env = &s->cpu->env;
-
-    trace_sn0_promdata_phase(s->cpu->parent_obj.cpu_index, event,
-                             env->active_tc.PC, env->active_tc.gpr[29],
-                             env->CP0_EntryHi & 0xff, s->private_reads,
-                             s->private_writes,
-                             s->node->backdoor_ecc_state.writes +
-                             s->node->backdoor_dir_state.writes,
-                             qemu_clock_get_ns(QEMU_CLOCK_REALTIME));
-}
-
-/*
- * The phase recognised. From here the private RAM block itself answers
- * this processor's cached window accesses: mapped above the filter, a
- * translated load or store resolves to a host pointer and takes neither
- * the dispatch path nor the big lock. The filter stays beneath for what
- * RAM cannot decide -- the uncached view, which the processor's second
- * address space routes to the filter alone, and the release at OS
- * handoff, which needs an access to evaluate. The poll below puts the
- * filter back at the exit's stack switch, before that release can
- * matter. While the block is mapped a cached instruction fetch from the
- * window executes the block rather than ending the phase; the PROM
- * never fetches there, and the OS runs long after the switch.
- */
-static void sn0_promdata_latch(SN0PromDataState *s)
-{
-    s->phase_private = true;
-    if (s->fast_allowed) {
-        s->fast = true;
-        memory_region_set_enabled(&s->data, true);
-        if (!timer_pending(s->node->promdata_poll)) {
-            timer_mod(s->node->promdata_poll,
-                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                      SN0_PROMDATA_POLL_NS);
-        }
-    }
-    sn0_promdata_trace_phase(s, "latch");
-}
-
-/*
- * The residency the block served is over: the filter answers again
- * from the same block, evaluating the release per access as before.
- * One-way until reset.
- */
-static void sn0_promdata_unmap(SN0PromDataState *s, const char *event)
-{
-    if (s->fast) {
-        s->fast = false;
-        memory_region_set_enabled(&s->data, false);
-        sn0_promdata_trace_phase(s, event);
-    }
-}
-
-/*
- * On the processor's own thread: its stack pointer outside the window
- * is the exit's stack switch, the PROM having moved to its real
- * per-processor stack (the cache-as-RAM exit section of
- * docs/datasheets/firmware-structures.md; confirmed on PROM 6.156 by
- * every processor of the eight-processor boots this was measured on).
- */
-static void sn0_promdata_check_stack(CPUState *cs, run_on_cpu_data data)
-{
-    SN0PromDataState *s = data.host_ptr;
-
-    BQL_LOCK_GUARD();
-    if (s->fast && !sn0_promdata_sp_in_window(s)) {
-        sn0_promdata_unmap(s, "stack-switch");
-    }
-}
-
-/*
- * The node's poll: each mapped processor samples itself; rearm while any
- * still needs it. A node's first processor does the bulk of the resident
- * work -- 1.92 to 1.96 million private accesses against 95 to 131
- * thousand for its second, measured on PROM 6.156 -- and is the last of
- * the two to release on every measured boot. A second processor still
- * mapped once the first has released is the one the eight-processor
- * boot logs name "CPU B failed early init": parked, and never reaching
- * its own exit. Stop polling it at that point instead of keeping the
- * node's timer running at 100 Hz for the rest of the run. The first
- * processor itself is always polled for as long as it is mapped; this
- * has no observed failure mode and stays unbounded.
- */
-static void sn0_promdata_poll(void *opaque)
-{
-    SN0NodeState *node = opaque;
-    SN0PromDataState *primary = &node->promdata[0];
-    bool mapped = false;
-    unsigned int slice;
-
-    for (slice = 0; slice < SN0_MAX_CPUS_PER_NODE; slice++) {
-        SN0PromDataState *s = &node->promdata[slice];
-
-        if (!s->present || !s->fast) {
-            continue;
-        }
-        if (slice != 0 && primary->present && !primary->fast) {
-            continue;
-        }
-        async_run_on_cpu(CPU(s->cpu), sn0_promdata_check_stack,
-                         RUN_ON_CPU_HOST_PTR(s));
-        mapped = true;
-    }
-    if (mapped) {
-        timer_mod(node->promdata_poll,
-                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                  SN0_PROMDATA_POLL_NS);
-    }
-}
-
-/*
- * The window holds this CPU's cache-resident PROM stack for the whole
- * cache-as-RAM phase, entered when boot-status bit 1 is set with the PC
- * in one of the phase's execution homes -- the boot flash, or the RAM
- * copy of the PROM text it jumps to mid-phase. Both conditions are
- * needed to recognise the phase: the bit alone over-covers it, staying
- * set well after the stack has left the window, and a single-home PC
- * test flips the classification at the mid-phase jump. Once recognised,
- * the phase holds for this CPU until reset or OS handoff: on real
- * hardware the window is resident cache lines, and neither clearing the
- * bookkeeping bit nor moving the PC is a cache operation, so no single
- * later state change may reroute an access. Handoff is both recognition
- * inputs withdrawn at once -- the bit clear and the PC outside both
- * homes -- a state first reached with the OS running, because the PROM
- * clears the bit at its second uncached switch and then executes from
- * its RAM copy through handoff. The exit's cache invalidate discards
- * the private lines without writing them back, so serving RAM from then
- * on is faithful; like the OS-execution release below, this one is
- * one-way until reset. Uncached accesses always forward -- the phase's
- * exit copies the persistent structures out to real RAM through exactly
- * that path. Contract: the cache-as-RAM phase and exit sections of
- * docs/datasheets/firmware-structures.md (in the origami project tree,
- * not this repository).
- */
-static void sn0_promdata_leave_private(CPUState *cs, run_on_cpu_data data);
-
-static bool sn0_promdata_is_private(SN0PromDataState *s, MemTxAttrs attrs)
-{
-    if (!current_cpu || current_cpu != CPU(s->cpu)) {
-        return false;
-    }
-
-    if (attrs.mips_uncached) {
-        return false;
-    }
-
-    if (s->leaving_private) {
-        return false;
-    }
-
-    if (s->phase_private) {
-        /*
-         * Test the bit first: the PC translation runs only on the
-         * phase's way out, not on every private access.
-         */
-        if (!(s->cpu->env.active_fpu.fpr[0].d &
-              SN0_PROM_BOOT_STATUS_CACHE_AS_RAM) &&
-            !sn0_promdata_pc_in_prom(s)) {
-            s->phase_private = false;
-            s->leaving_private = true;
-            async_safe_run_on_cpu(CPU(s->cpu), sn0_promdata_leave_private,
-                                  RUN_ON_CPU_HOST_PTR(s));
-        }
-        return s->phase_private;
-    }
-
-    if ((s->cpu->env.active_fpu.fpr[0].d &
-         SN0_PROM_BOOT_STATUS_CACHE_AS_RAM) &&
-        sn0_promdata_pc_in_prom(s)) {
-        sn0_promdata_latch(s);
-        memory_region_set_enabled(&s->copy_local, true);
-    }
-
-    return s->phase_private;
-}
-
-/*
- * Only the operating system can execute from inside the window -- the
- * PROM never does -- so execution here ends the private phase for good.
- * The PC is translated through the MMU because kernels run mapped.
- */
-static bool sn0_promdata_executing_here(SN0PromDataState *s)
-{
-    TranslateForDebugResult r;
-
-    if (!cpu_translate_for_debug(CPU(s->cpu), s->cpu->env.active_tc.PC, &r)) {
-        return false;
-    }
-
-    return r.physaddr >= SN0_PROMDATA_PADDR &&
-           r.physaddr < SN0_PROMDATA_PADDR + SN0_PROMDATA_SIZE;
-}
-
-/*
- * Runs at a quiescent point. Disabling the overlay exposes the DRAM
- * alias beneath, which backs cached translations at full speed.
- */
-static void sn0_promdata_leave_private(CPUState *cs, run_on_cpu_data data)
-{
-    SN0PromDataState *s = data.host_ptr;
-
-    BQL_LOCK_GUARD();
-    /* A reset since scheduling re-armed the overlay; leave it in place. */
-    if (s->leaving_private) {
-        memory_region_set_enabled(&s->filter, false);
-        memory_region_set_enabled(&s->copy_local, false);
-        sn0_promdata_unmap(s, "leave-mapped");
-        sn0_promdata_trace_phase(s, "leave");
-    }
-}
-
-static MemTxResult sn0_promdata_read(void *opaque, hwaddr addr, uint64_t *val,
-                                     unsigned size, MemTxAttrs attrs)
-{
-    SN0PromDataState *s = opaque;
-    uint8_t bytes[8];
-    MemTxResult result;
-
-    if (!s->leaving_private && current_cpu == CPU(s->cpu) &&
-        sn0_promdata_executing_here(s)) {
-        s->leaving_private = true;
-        async_safe_run_on_cpu(CPU(s->cpu), sn0_promdata_leave_private,
-                              RUN_ON_CPU_HOST_PTR(s));
-    }
-
-    if (sn0_promdata_is_private(s, attrs)) {
-        s->private_reads++;
-        trace_sn0_promdata_private(s->cpu->parent_obj.cpu_index, addr, size,
-                                   false, s->cpu->env.active_tc.PC,
-                                   s->cpu->env.active_tc.gpr[29]);
-        *val = ldn_be_p(memory_region_get_ram_ptr(&s->data) + addr, size);
-        return MEMTX_OK;
-    }
-
-    result = address_space_read(&address_space_memory,
-                                s->node_base + SN0_PROMDATA_PADDR + addr,
-                                attrs, bytes, size);
-    trace_sn0_promdata_forward(s->cpu->parent_obj.cpu_index, s->node_base,
-                               addr, size, false, attrs.mips_uncached,
-                               s->phase_private, s->leaving_private,
-                               s->cpu->env.active_tc.PC, result);
-    *val = ldn_be_p(bytes, size);
-    return result;
-}
-
-static MemTxResult sn0_promdata_write(void *opaque, hwaddr addr, uint64_t val,
-                                      unsigned size, MemTxAttrs attrs)
-{
-    SN0PromDataState *s = opaque;
-    uint8_t bytes[8];
-    MemTxResult result;
-
-    if (sn0_promdata_is_private(s, attrs)) {
-        s->private_writes++;
-        trace_sn0_promdata_private(s->cpu->parent_obj.cpu_index, addr, size,
-                                   true, s->cpu->env.active_tc.PC,
-                                   s->cpu->env.active_tc.gpr[29]);
-        stn_be_p(memory_region_get_ram_ptr(&s->data) + addr, size, val);
-        memory_region_set_dirty(&s->data, addr, size);
-        return MEMTX_OK;
-    }
-
-    stn_be_p(bytes, size, val);
-    result = address_space_write(&address_space_memory,
-                                 s->node_base + SN0_PROMDATA_PADDR + addr,
-                                 attrs, bytes, size);
-    trace_sn0_promdata_forward(s->cpu->parent_obj.cpu_index, s->node_base,
-                               addr, size, true, attrs.mips_uncached,
-                               s->phase_private, s->leaving_private,
-                               s->cpu->env.active_tc.PC, result);
-    return result;
-}
-
-static const MemoryRegionOps sn0_promdata_ops = {
-    .read_with_attrs = sn0_promdata_read,
-    .write_with_attrs = sn0_promdata_write,
-    .endianness = DEVICE_BIG_ENDIAN,
-    .valid.min_access_size = 1,
-    .valid.max_access_size = 8,
-    .valid.unaligned = true,
-    .impl.min_access_size = 1,
-    .impl.max_access_size = 8,
-    .impl.unaligned = true,
-};
-
-static void sn0_promdata_reset(void *opaque)
-{
-    SN0PromDataState *s = opaque;
-
-    memset(memory_region_get_ram_ptr(&s->data), 0, SN0_PROMDATA_SIZE);
-    memory_region_set_dirty(&s->data, 0, SN0_PROMDATA_SIZE);
-
-    /* A reboot re-enters the cache-only phase; restore the overlay. */
-    s->leaving_private = false;
-    s->phase_private = false;
-    s->fast = false;
-    s->private_reads = 0;
-    s->private_writes = 0;
-    memory_region_set_enabled(&s->filter, true);
-    memory_region_set_enabled(&s->copy_local, false);
-    memory_region_set_enabled(&s->data, false);
-    if (s->node->promdata_poll) {
-        timer_del(s->node->promdata_poll);
-    }
+    return node->backdoor_ecc_state.writes + node->backdoor_dir_state.writes;
 }
 
 static bool sn0_promdata_needed(void *opaque)
@@ -454,44 +88,18 @@ static int sn0_promdata_post_load(void *opaque, int version_id)
 
     /* Reapply how far each processor's cache-only phase had got. */
     for (slice = 0; slice < SN0_MAX_CPUS_PER_NODE; slice++) {
-        SN0PromDataState *s = &node->promdata[slice];
-
-        if (s->present) {
-            memory_region_set_enabled(&s->filter, !s->leaving_private);
-            memory_region_set_enabled(&s->copy_local,
-                                      s->phase_private &&
-                                      !s->leaving_private);
-            memory_region_set_enabled(&s->data, s->fast);
-            /*
-             * A destination started without promdata-fast has no timer:
-             * fast came from the source's migrated state, but this node
-             * never allocated node->promdata_poll to serve it.
-             */
-            if (s->fast && node->promdata_poll) {
-                sn0_promdata_poll(node);
-            }
-        }
+        sn_promdata_apply_load(&node->promdata[slice]);
     }
     return 0;
 }
 
 /*
- * Version 2 carries whether the RAM block is mapped; the block's bytes
- * migrate as RAM. Migration is between identical builds, so an older
- * stream is refused, not translated.
+ * vmstate_sn_promdata_slice (sn-promdata.c) is the one-slice subsection,
+ * shared with sgi-sn1-node; this array-level wrapper is per node type
+ * because it names SN0NodeState's own promdata[] field. Its name stays
+ * "sn0-flash/promdata" for wire compatibility with streams saved before
+ * the node device carried a shared promdata implementation.
  */
-static const VMStateDescription vmstate_sn0_promdata_slice = {
-    .name = "sn0-flash/promdata-slice",
-    .version_id = 2,
-    .minimum_version_id = 2,
-    .fields = (const VMStateField[]) {
-        VMSTATE_BOOL(leaving_private, SN0PromDataState),
-        VMSTATE_BOOL(phase_private, SN0PromDataState),
-        VMSTATE_BOOL(fast, SN0PromDataState),
-        VMSTATE_END_OF_LIST()
-    }
-};
-
 static const VMStateDescription vmstate_sn0_promdata = {
     .name = "sn0-flash/promdata",
     .version_id = 1,
@@ -500,7 +108,7 @@ static const VMStateDescription vmstate_sn0_promdata = {
     .post_load = sn0_promdata_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_STRUCT_ARRAY(promdata, SN0NodeState, SN0_MAX_CPUS_PER_NODE, 1,
-                             vmstate_sn0_promdata_slice, SN0PromDataState),
+                             vmstate_sn_promdata_slice, SNPromDataState),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -1113,27 +721,18 @@ static void sn0_node_create_cpus(SN0NodeState *node)
     unsigned int node_index = node->nasid;
     unsigned int slice, half, space_index;
 
-    if (node->promdata_filter && node->promdata_fast) {
-        node->promdata_poll = timer_new_ns(QEMU_CLOCK_VIRTUAL,
-                                           sn0_promdata_poll, node);
+    if (node->promdata_filter) {
+        sn_promdata_poll_init(&node->promdata_poll, node->promdata,
+                              SN0_MAX_CPUS_PER_NODE, node->promdata_fast,
+                              sn0_promdata_peer_writes, node);
     }
 
     for (slice = 0; slice < node->nr_cpus; slice++) {
         g_autofree char *alias_name =
             g_strdup_printf("sn0.node%u.cpu%u.system", node_index, slice);
         g_autofree char *name = g_strdup_printf("cpu%u", slice);
-        g_autofree char *promdata_name =
-            g_strdup_printf("sn0.node%u.cpu%u.promdata", node_index, slice);
-        g_autofree char *promdata_filter_name = g_strdup_printf(
-            "sn0.node%u.cpu%u.promdata-filter", node_index, slice);
-        g_autofree char *prom_copy_name = g_strdup_printf(
-            "sn0.node%u.cpu%u.prom-copy-local", node_index, slice);
-        g_autofree char *uncached_name =
-            g_strdup_printf("sn0.node%u.cpu%u.uncached", node_index, slice);
-        g_autofree char *uncached_alias_name = g_strdup_printf(
-            "sn0.node%u.cpu%u.uncached.memory", node_index, slice);
-        g_autofree char *filter_uncached_name = g_strdup_printf(
-            "sn0.node%u.cpu%u.promdata-filter.uncached", node_index, slice);
+        g_autofree char *promdata_prefix =
+            g_strdup_printf("sn0.node%u.cpu%u", node_index, slice);
         g_autofree char *sysmem_name =
             g_strdup_printf("sn0.node%u.cpu%u.memory", node_index, slice);
         g_autofree char *claim_name =
@@ -1239,82 +838,17 @@ static void sn0_node_create_cpus(SN0NodeState *node)
          * an I/O region cannot back translated code, so leave it off.
          */
         if (node->promdata_filter) {
-            node->promdata[slice].cpu = node->cpu[slice];
-            node->promdata[slice].node = node;
-            node->promdata[slice].map = map;
-            node->promdata[slice].node_base = node_base;
-            node->promdata[slice].present = true;
-            memory_region_init_ram(&node->promdata[slice].data, OBJECT(node),
-                                   promdata_name, SN0_PROMDATA_SIZE,
-                                   &error_fatal);
-            memory_region_init_io(&node->promdata[slice].filter, OBJECT(node),
-                                  &sn0_promdata_ops, &node->promdata[slice],
-                                  promdata_filter_name, SN0_PROMDATA_SIZE);
-            /*
-             * Firmware traps copy through guest pointers; the shared
-             * owner would trip the reentrancy guard.
-             */
-            node->promdata[slice].filter.disable_reentrancy_guard = true;
-            qemu_register_reset(sn0_promdata_reset, &node->promdata[slice]);
-
-            /* Intercept the PROM's cached carrier window before node RAM. */
-            memory_region_add_subregion_overlap(
-                &node->cpu_sysmem[slice],
-                map->memory.carrier_base +
-                SN0_PROMDATA_PADDR,
-                &node->promdata[slice].filter, 2);
-
-            /* Keep the RAM copy local until this CPU leaves the phase. */
-            memory_region_init_alias(&node->promdata[slice].copy_local,
-                                     OBJECT(node), prom_copy_name, system,
-                                     node_base + SN0_PROM_COPY_PADDR,
-                                     map->flash_reset.size);
-            memory_region_set_enabled(&node->promdata[slice].copy_local,
-                                      false);
-            memory_region_add_subregion_overlap(
-                &node->cpu_sysmem[slice],
-                map->memory.carrier_base + SN0_PROM_COPY_PADDR,
-                &node->promdata[slice].copy_local, 2);
-        }
-        if (node->promdata_filter && node->promdata_fast) {
-            /*
-             * Above the filter, the private block as RAM, mapped only
-             * while the phase's stack is resident there.
-             */
-            node->promdata[slice].fast_allowed = true;
-            memory_region_set_enabled(&node->promdata[slice].data, false);
-            memory_region_add_subregion_overlap(
-                &node->cpu_sysmem[slice],
-                map->memory.carrier_base + SN0_PROMDATA_PADDR,
-                &node->promdata[slice].data, 3);
-
-            /*
-             * The uncached view: everything the cached one resolves,
-             * with the filter alone at the window, so an uncached
-             * reference forwards to node RAM whatever sits above the
-             * filter in the cached view. The processor selects it by
-             * the access's cache attribute.
-             */
-            memory_region_init(&node->cpu_uncached[slice], OBJECT(node),
-                               uncached_name, UINT64_MAX);
-            memory_region_init_alias(&node->cpu_uncached_alias[slice],
-                                     OBJECT(node), uncached_alias_name,
-                                     &node->cpu_sysmem[slice], 0, UINT64_MAX);
-            memory_region_add_subregion_overlap(
-                &node->cpu_uncached[slice], 0,
-                &node->cpu_uncached_alias[slice], 0);
-            memory_region_init_alias(&node->promdata[slice].filter_uncached,
-                                     OBJECT(node), filter_uncached_name,
-                                     &node->promdata[slice].filter, 0,
-                                     SN0_PROMDATA_SIZE);
-            memory_region_add_subregion_overlap(
-                &node->cpu_uncached[slice],
-                map->memory.carrier_base + SN0_PROMDATA_PADDR,
-                &node->promdata[slice].filter_uncached, 1);
-            object_property_set_link(OBJECT(node->cpu[slice]),
-                                     "uncached-memory",
-                                     OBJECT(&node->cpu_uncached[slice]),
-                                     &error_abort);
+            sn_promdata_init(&node->promdata[slice], OBJECT(node),
+                             node->cpu[slice], &node->promdata_poll,
+                             node->promdata_fast, node_base,
+                             memory_region->size,
+                             map->flash_reset.offset, map->flash_reset.size,
+                             SN0_PROM_COPY_PADDR, map->flash_reset.size,
+                             &node->cpu_sysmem[slice],
+                             map->memory.carrier_base,
+                             &node->cpu_uncached[slice],
+                             &node->cpu_uncached_alias[slice],
+                             promdata_prefix);
         }
         object_property_add_child(OBJECT(node), name,
                                   OBJECT(node->cpu[slice]));
@@ -2174,10 +1708,7 @@ static void sn0_node_unrealize(DeviceState *dev)
         address_space_destroy(&node->origin2000_xtalk_as);
         node->origin2000_xtalk_as_ready = false;
     }
-    if (node->promdata_poll) {
-        timer_free(node->promdata_poll);
-        node->promdata_poll = NULL;
-    }
+    sn_promdata_poll_free(&node->promdata_poll);
 }
 
 static const Property sn0_node_properties[] = {
