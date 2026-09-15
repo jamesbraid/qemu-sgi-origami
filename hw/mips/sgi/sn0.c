@@ -2,14 +2,14 @@
 /*
  * SGI SN0 (IP27) family mechanics and node device.
  * Origin 200 supplies a compiled topology to the generic model consumer.
- * -bios and pflash fill a node's boot flash here; the direct -kernel and
- * sashARCS loaders in sn0-firmware.c patch it further, and diagnostics
- * live in sn0-diag.c.
+ * -bios and pflash fill a node's boot flash here; diagnostics live in
+ * sn0-diag.c.
  */
 
 #include "qemu/osdep.h"
 #include "qemu/units.h"
 #include "qemu/host-utils.h"
+#include "qemu/datadir.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "qobject/qlist.h"
@@ -17,6 +17,7 @@
 #include "qemu/main-loop.h"
 #include "hw/core/boards.h"
 #include "hw/core/clock.h"
+#include "hw/core/loader.h"
 #include "hw/core/qdev-clock.h"
 #include "system/system.h"
 #include "system/block-backend.h"
@@ -409,27 +410,6 @@ static void sn0_backdoor_configure(SN0BackdoorState *s, SN0NodeState *node,
     }
 }
 
-/*
- * Nothing resets a MIPS processor automatically: without the explicit
- * reset the machine services a reset request with the program counter
- * untouched. The mode bits are driven from the same constant the flash
- * configuration block advertises -- real firmware compares the two and
- * reports a mismatch.
- */
-static void sn0_cpu_reset(void *opaque)
-{
-    CPUState *cs = CPU(opaque);
-    MachineState *machine = MACHINE(qdev_get_machine());
-    SN0MachineState *s = SN0_MACHINE(machine);
-
-    cpu_reset(cs);
-    if (s->synthesized_firmware && machine->kernel_filename &&
-        cs->cpu_index != 0) {
-        /* Direct boot enters only the primary; launch_slave starts the rest. */
-        cs->halted = 1;
-    }
-}
-
 static uint32_t sn0_board_mode_bits(SN0MachineState *s)
 {
     SN0MachineClass *smc = SN0_MACHINE_GET_CLASS(s);
@@ -514,19 +494,20 @@ static void sn0_machine_reset(MachineState *machine, ResetType type)
 
     qemu_devices_reset(type);
 
+    /*
+     * Nothing resets a MIPS processor automatically: without this the
+     * machine services a reset request with the program counter
+     * untouched.
+     */
     CPU_FOREACH(cs) {
-        sn0_cpu_reset(cs);
+        cpu_reset(cs);
         sn0_mode_bits_reset(cs);
     }
     for (node = 0; node < s->num_nodes; node++) {
         SN0NodeState *node_state = s->nodes[node];
 
         for (slice = 0; slice < node_state->nr_cpus; slice++) {
-            bool direct_secondary = s->synthesized_firmware &&
-                machine->kernel_filename && node_state->cpu_base + slice != 0;
-
-            sgi_hub_set_cpu_enable(&node_state->hub, slice,
-                                   !direct_secondary, true);
+            sgi_hub_set_cpu_enable(&node_state->hub, slice, true, true);
         }
     }
     sn0_report_node_flash_mode(s);
@@ -667,26 +648,6 @@ static int64_t sn0_get_default_cpu_node_id(const MachineState *machine,
 }
 
 /*
- * Which node a NASID-less address names in memory space: normally the
- * node's own, but after synthesized firmware hands a kernel control,
- * remote processors' unqualified addresses name node zero (Linux
- * disables PI_CALIAS_SIZE first). For a processor this aims only the
- * cached-alias window -- beyond the bound the claim layer routes by
- * programmed number; the Hub's engines use it for their whole low view.
- */
-static hwaddr sn0_node_local_memory_base(
-    MachineState *machine, const SN0ModelNodeInstance *node)
-{
-    const SN0ModelAddressMap *map = &node->topology->map;
-    unsigned int nasid = node->nasid;
-
-    if (nasid != 0 && SN0_MACHINE(machine)->synthesized_firmware &&
-        machine->kernel_filename) {
-        nasid = 0;
-    }
-    return sn0_model_node_address(map, &map->memory, nasid, 0);
-}
-
 static const SN0ModelAddressMap *sn0_node_address_map(SN0NodeState *node)
 {
     return node->physical ? &node->physical->map : &node->topology->map;
@@ -766,9 +727,7 @@ static void sn0_node_create_cpus(SN0NodeState *node)
             g_autofree char *local_name = g_strdup_printf(
                 "sn0.node%u.cpu%u.local-space%u", node_index, slice,
                 space_model->selector);
-            hwaddr alias_node_base =
-                space_model == &map->memory ?
-                node->local_memory_base : node_base;
+            hwaddr alias_node_base = node_base;
             hwaddr local_offset = 0;
             hwaddr local_size = memory_region->size;
 
@@ -1316,6 +1275,50 @@ void sn0_map_cpu_big_windows(SN0MachineState *s)
     }
 }
 
+/*
+ * -bios fills every node's boot flash unless a pflash drive already backs
+ * it (set on the node before it realized); a short -bios image leaves the
+ * rest erased, matching an unprogrammed chip. sn0_init() calls this after
+ * every node has realized, so each node's flash device already exists.
+ */
+static void sn0_load_flash(MachineState *machine)
+{
+    SN0MachineState *s = SN0_MACHINE(machine);
+    const SN0ModelRegion *flash_region =
+        &s->nodes[0]->topology->map.flash_reset;
+    uint8_t *flash;
+    unsigned int node_index;
+
+    flash = g_malloc(flash_region->size);
+    memset(flash, 0xff, flash_region->size);
+    if (machine->firmware) {
+        char *path = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
+        ssize_t size = path ? load_image_size(path, flash,
+                                              flash_region->size) : -1;
+
+        if (size < 0) {
+            error_report("%s: cannot read the firmware image '%s'",
+                         MACHINE_GET_CLASS(machine)->name,
+                         machine->firmware);
+            exit(EXIT_FAILURE);
+        }
+        g_free(path);
+    }
+
+    for (node_index = 0; node_index < s->num_nodes; node_index++) {
+        SN0NodeState *node = s->nodes[node_index];
+        MemoryRegion *chip;
+
+        if (node->flash_drive) {
+            continue;
+        }
+        chip = sysbus_mmio_get_region(SYS_BUS_DEVICE(node->flash), 0);
+        memcpy(memory_region_get_ram_ptr(chip), flash, flash_region->size);
+        memory_region_set_dirty(chip, 0, flash_region->size);
+    }
+    g_free(flash);
+}
+
 static void sn0_init(MachineState *machine)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
@@ -1339,6 +1342,13 @@ static void sn0_init(MachineState *machine)
     g_assert(model->cpu_slots_per_node <= SN0_MAX_CPUS_PER_NODE);
     g_assert(model->memory.architectural_banks <= SN0_MAX_MEMORY_BANKS);
     profile_cpus = g_new0(unsigned int, max_nodes);
+
+    if (machine->kernel_filename) {
+        error_report("%s: stock-PROM boot only; boot a kernel through the "
+                     "PROM's own TFTP netboot or a disk image, not -kernel",
+                     mc->name);
+        exit(EXIT_FAILURE);
+    }
 
     /*
      * One SMP socket is one chassis; -numa still owns the memory split
@@ -1526,11 +1536,7 @@ static void sn0_init(MachineState *machine)
         object_property_set_link(OBJECT(node), "ram", OBJECT(machine->ram),
                                  &error_abort);
         qdev_prop_set_uint64(DEVICE(node), "ram-start", ram_offset);
-        qdev_prop_set_uint64(DEVICE(node), "local-memory-base",
-                             sn0_node_local_memory_base(machine, node_model));
-        qdev_prop_set_bit(DEVICE(node), "promdata-filter",
-                          !(s->synthesized_firmware &&
-                            machine->kernel_filename));
+        qdev_prop_set_bit(DEVICE(node), "promdata-filter", true);
         qdev_prop_set_array(DEVICE(node), "banks-mb", banks_mb);
         qdev_connect_clock_in(DEVICE(node), "cpu-refclk", s->cpu_refclk);
         qdev_connect_clock_in(DEVICE(node), "rt-refclk", s->rt_refclk);
@@ -1603,7 +1609,7 @@ static void sn0_init(MachineState *machine)
         sn0_model_populate_node(s, node_index);
     }
 
-    sn0_firmware_init(machine);
+    sn0_load_flash(machine);
 }
 
 static bool sn0_get_synthesized_firmware(Object *obj, Error **errp)
@@ -1743,8 +1749,6 @@ static const Property sn0_node_properties[] = {
     DEFINE_PROP_LINK("ram", SN0NodeState, ram, TYPE_MEMORY_REGION,
                      MemoryRegion *),
     DEFINE_PROP_UINT64("ram-start", SN0NodeState, ram_start, 0),
-    DEFINE_PROP_UINT64("local-memory-base", SN0NodeState,
-                       local_memory_base, 0),
     DEFINE_PROP_BOOL("promdata-filter", SN0NodeState, promdata_filter, true),
     DEFINE_PROP_BOOL("promdata-fast", SN0NodeState, promdata_fast, true),
     DEFINE_PROP_ARRAY("banks-mb", SN0NodeState, nr_banks_mb, banks_mb,
