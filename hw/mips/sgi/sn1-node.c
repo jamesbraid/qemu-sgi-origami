@@ -39,6 +39,8 @@
 #define SN1_HUB_ECC (SN1_SPACE_HUB + UINT64_C(0x140000000))
 #define SN1_HUB_DIRECTORY (SN1_SPACE_HUB + UINT64_C(0x1c0000000))
 #define SN1_PROM_RESET UINT64_C(0x1fc00000)
+#define SN1_PROM_RAM_COPY UINT64_C(0x01a00000)
+#define SN1_PROM_RAM_COPY_SIZE UINT64_C(0x00200000)
 #define SN1_HUB_REMOTE_PI_SIZE UINT64_C(0x80)
 #define SN1_HUB_REMOTE_UART_END (SN1_HUB_REMOTE_PI_SIZE + SGI_L1_SIZE)
 
@@ -202,18 +204,12 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
             g_autofree char *promdata_prefix =
                 g_strdup_printf("sn1.node0.cpu%u", i);
 
-            /*
-             * copy_size 0: unlike SN0, no PROM RAM-copy execution address is
-             * confirmed for IP35 yet, so neither the range test nor the
-             * copy_local routing overlay (sn-promdata.c) has anywhere to
-             * apply -- sn_promdata_init() skips installing copy_local
-             * whenever copy_size is zero. See the datasheet note this
-             * cites for what would settle an address to use here.
-             */
+            /* The IP35 PROM's RAM copy executes within one 2 MiB TLB span. */
             sn_promdata_init(&node->promdata[i], OBJECT(node), cpu,
                              &node->promdata_poll, node->promdata_fast,
                              0, model->ram_size, SN1_PROM_RESET,
-                             model->prom_size, 0, 0,
+                             model->prom_size, SN1_PROM_RAM_COPY,
+                             SN1_PROM_RAM_COPY_SIZE,
                              &node->cpu_sysmem[i], 0,
                              &node->cpu_uncached[i],
                              &node->cpu_uncached_alias[i],

@@ -3066,6 +3066,70 @@ static void test_cpu_b_enabled_migration(const void *data)
  * overlays instead of tracing a forward, silently.
  */
 #define PROMDATA_WINDOW_PHYS UINT64_C(0x100000)
+#define PROMDATA_RAM_HOME UINT64_C(0x01a00000)
+#define PROMDATA_RAM_HOME_READY UINT64_C(0xcafe)
+
+static char *create_promdata_ram_home_prom(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    char *path = NULL;
+    int fd;
+
+    stl_be_p(image + 0x000, 0x100000ff); /* beq zero, zero, 0x400 */
+    stl_be_p(image + 0x400, 0x40086000); /* mfc0 t0, Status */
+    stl_be_p(image + 0x404, 0x3c092000); /* lui t1, Status.CU1 >> 16 */
+    stl_be_p(image + 0x408, 0x01094025); /* or t0, t0, t1 */
+    stl_be_p(image + 0x40c, 0x40886000); /* mtc0 t0, Status */
+    stl_be_p(image + 0x410, 0x000000c0); /* ehb */
+    stl_be_p(image + 0x414, 0x34080002); /* ori t0, zero, private phase */
+    stl_be_p(image + 0x418, 0x44a80000); /* dmtc1 t0, f0 */
+    stl_be_p(image + 0x41c, 0x3c098010); /* lui t1, cached window */
+    stl_be_p(image + 0x420, 0x340a1111); /* ori t2, zero, first value */
+    stl_be_p(image + 0x424, 0xad2a0000); /* sw t2, 0(t1) */
+    stl_be_p(image + 0x428, 0x3c0881a0); /* lui t0, cached RAM home */
+    stl_be_p(image + 0x42c, 0x01000008); /* jr t0 */
+
+    fd = g_file_open_tmp("sn1-promdata-ram-home-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static void test_promdata_ram_copy_is_execution_home(const void *data)
+{
+    g_autofree char *path = NULL;
+    uint8_t copy[0x20] = { 0 };
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    stl_be_p(copy + 0x00, 0x44a00000); /* dmtc1 zero, f0 */
+    stl_be_p(copy + 0x04, 0x3c098010); /* lui t1, cached window */
+    stl_be_p(copy + 0x08, 0x340a2222); /* ori t2, zero, second value */
+    stl_be_p(copy + 0x0c, 0xad2a0000); /* sw t2, 0(t1) */
+    stl_be_p(copy + 0x10, 0x3410cafe); /* ori s0, zero, ready */
+    stl_be_p(copy + 0x14, 0x1000ffff); /* beq zero, zero, self */
+
+    path = create_promdata_ram_home_prom();
+    qts = machine_start_with(path, "-accel tcg,thread=multi -S");
+    qtest_memwrite(qts, PROMDATA_RAM_HOME, copy, sizeof(copy));
+    g_assert_cmphex(qtest_readl(qts, PROMDATA_WINDOW_PHYS), ==, 0);
+
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_for_cpu_gpr(qts, 0, "s0", PROMDATA_RAM_HOME_READY);
+    stop_vm(qts);
+    /* The cached phase must not spill either store into shared DRAM. */
+    g_assert_cmphex(qtest_readl(qts, PROMDATA_WINDOW_PHYS), ==, 0);
+
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
 
 static void promdata_cpu_probe(QTestState *qts, unsigned int cpu)
 {
@@ -3263,6 +3327,8 @@ int main(int argc, char **argv)
                         test_prom_migration);
     qtest_add_data_func("sn1/address-map/cpu-b-enabled-migration", NULL,
                         test_cpu_b_enabled_migration);
+    qtest_add_data_func("sn1/address-map/promdata-ram-copy-home", NULL,
+                        test_promdata_ram_copy_is_execution_home);
     qtest_add_data_func("sn1/address-map/promdata-filter-survives-migration",
                         NULL, test_promdata_filter_survives_migration);
     qtest_add_data_func("sn1/address-map/system-reset", NULL,
