@@ -320,18 +320,10 @@ static bool xbridge_register_defined(unsigned off)
 }
 
 /*
- * The bridge-half's own MicroLAN board-identity NIC, at the same offset and
- * bit layout as the base Bridge chip's BRIDGE_NIC (docs/datasheets/xbridge.md,
- * "Stock-PROM IO-8 identity access"; register layout confirmed unchanged from
- * the Bridge datasheet's 0xb0 in the XBridge register delta table). The
- * reviewed rev-A contract called this register inert in XBridge mode, wired
- * only to widget 0's crossbar NIC instead; the stock IP35 PROM's own
- * disassembly and a live BASEIO PROM struct dump instead show the IO-8 head
- * (widget 15) needing a real response here to attach its bridge object --
- * see the amendment in docs/datasheets/xbridge.md. This model answers only
- * for a head a machine gives a board-part identity to (head_realize),
- * leaving an unfit head (no board behind it, like the empty option slot at
- * widget 14) exactly as inert as before.
+ * Bridge-half board identity at offset 0xb0. A populated head answers as a
+ * firmware-compatibility choice; an unpopulated head stays inert. The
+ * selected rev-A XBridge contract calls this offset unused, so a modeled
+ * response does not establish a physical IP45 connection.
  */
 #define XBRIDGE_NIC             0x0b0
 #define XBRIDGE_NIC_LEVEL       (1u << 0)
