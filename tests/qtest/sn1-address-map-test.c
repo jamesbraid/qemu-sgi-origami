@@ -38,7 +38,10 @@
 #define BEDROCK_MD_BANK0_512M UINT64_C(0x41)
 
 #define PI_CPU_NUMBER UINT64_C(0x20)
+#define PI_CPU_PRESENT_A UINT64_C(0x40)
+#define PI_CPU_PRESENT_B UINT64_C(0x48)
 #define PI_CPU_ENABLE_B UINT64_C(0x58)
+#define PI_CPU_ENABLE_C (BEDROCK_PI1 + UINT64_C(0x50))
 #define PI_NMI_A UINT64_C(0x70)
 #define PI_NMI_B UINT64_C(0x78)
 #define PI_CACHED_ALIAS UINT64_C(0x28)
@@ -380,8 +383,10 @@ static char *create_cpu_number_prom(void)
     stl_be_p(image + 0x41c, 0x0002103c);
     stl_be_p(image + 0x420, 0x00431025);
     stl_be_p(image + 0x424, 0xdc530000); /* ld s3, 0(v0) */
-    stl_be_p(image + 0x428, 0x34150000 | CPU_NUMBER_READY_MARKER);
-    stl_be_p(image + 0x42c, 0x1000ffff); /* park */
+    stl_be_p(image + 0x428, 0xdc540078); /* ld s4, pending 0 */
+    stl_be_p(image + 0x42c, 0x34150000 | CPU_NUMBER_READY_MARKER);
+    stl_be_p(image + 0x430, 0x1000ffff); /* park */
+    stl_be_p(image + 0x434, 0x00000000);
 
     fd = g_file_open_tmp("sn1-cpu-number-prom-XXXXXX.bin", &path, &error);
     g_assert_no_error(error);
@@ -888,6 +893,12 @@ static void test_bedrock_register_aliases(const void *data)
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_NUMBER), ==, 0);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + BEDROCK_PI1 +
                                 PI_CPU_NUMBER), ==, 2);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_PRESENT_A), ==, 1);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_PRESENT_B), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + BEDROCK_PI1 +
+                                PI_CPU_PRESENT_A), ==, 1);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + BEDROCK_PI1 +
+                                PI_CPU_PRESENT_B), ==, 0);
 
     qtest_writeq(qts, BEDROCK_LOCAL + BEDROCK_LB + LB_SCRATCH2, scratch);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + BEDROCK_LB +
@@ -1003,6 +1014,29 @@ static void test_crosstalk_big_window_routes(const void *data)
     check_access_has_no_storage(qts,
                                 SPACE_XTALK + UINT64_C(0x10000000));
 
+    qtest_quit(qts);
+}
+
+static void test_pi1_a_irq_reaches_cpu1(const void *data)
+{
+    QTestState *qts = machine_start();
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_PI1 + PI_PENDING_MODIFY,
+                 0x107);
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_PI1 + PI_MASK_0_A,
+                 UINT64_C(1) << 7);
+    g_assert_cmphex(cpu_cause(qts, 1) & MIPS_CAUSE_HARDWARE_IRQ0, ==,
+                    MIPS_CAUSE_HARDWARE_IRQ0);
+    g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_PI1 + PI_MASK_0_A, 0);
+    g_assert_cmphex(cpu_cause(qts, 1) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
+
+    /* A line for absent B must not reach either fitted processor. */
+    qtest_writeq(qts, BEDROCK_NODE0 + PI_PENDING_MODIFY, 0x108);
+    qtest_writeq(qts, BEDROCK_NODE0 + 0xb8, UINT64_C(1) << 8);
+    g_assert_cmphex(cpu_cause(qts, 1) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
+    g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
+    qtest_writeq(qts, BEDROCK_NODE0 + 0xb8, 0);
     qtest_quit(qts);
 }
 
@@ -2815,7 +2849,7 @@ static void test_machine_defaults(const void *data)
     qtest_quit(qts);
 }
 
-static void test_cpu_b_enable_controls_bus_eligibility(const void *data)
+static void test_cpu_c_enable_controls_bus_eligibility(const void *data)
 {
     g_autofree char *path = NULL;
     QTestState *qts;
@@ -2830,17 +2864,17 @@ static void test_cpu_b_enable_controls_bus_eligibility(const void *data)
     qts = machine_start_with(
         path, "-accel tcg,thread=multi -no-shutdown -S");
 
-    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_C), ==, 0);
     progress = run_vm_until_cpu_gpr_changes(qts, 1, "t0", 0);
-    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
-    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 1);
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_C, 1);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_C), ==, 1);
     progress = run_vm_until_cpu_gpr_changes(qts, 1, "t0", progress);
-    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 0);
-    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 0);
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_C, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_C), ==, 0);
     run_vm_until_cpu_gpr_changes(qts, 1, "t0", progress);
 
     qtest_system_reset(qts);
-    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_C), ==, 0);
     g_assert_cmphex(cpu_gpr(qts, 1, "t0"), ==, 0);
     run_vm_until_cpu_gpr_changes(qts, 1, "t0", 0);
 
@@ -2859,12 +2893,21 @@ static void test_cpu_number_read_is_per_cpu(const void *data)
     }
     path = create_cpu_number_prom();
     qts = machine_start_with(path, "-accel tcg,thread=multi -no-shutdown -S");
+    qtest_writeq(qts, BEDROCK_NODE0 + PI_PENDING_MODIFY, 0x107);
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_PI1 + PI_PENDING_MODIFY,
+                 0x108);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + PI_PENDING_0), ==,
+                    UINT64_C(1) << 7);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + BEDROCK_PI1 +
+                                PI_PENDING_0), ==, UINT64_C(1) << 8);
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
     wait_for_cpu_gpr(qts, 0, "s5", CPU_NUMBER_READY_MARKER);
     wait_for_cpu_gpr(qts, 1, "s5", CPU_NUMBER_READY_MARKER);
     stop_vm(qts);
     g_assert_cmphex(cpu_gpr(qts, 0, "s3"), ==, 0);
-    g_assert_cmphex(cpu_gpr(qts, 1, "s3"), ==, 1);
+    g_assert_cmphex(cpu_gpr(qts, 1, "s3"), ==, 2);
+    g_assert_cmphex(cpu_gpr(qts, 0, "s4"), ==, UINT64_C(1) << 7);
+    g_assert_cmphex(cpu_gpr(qts, 1, "s4"), ==, UINT64_C(1) << 8);
     qtest_quit(qts);
     g_assert_cmpint(g_unlink(path), ==, 0);
 }
@@ -2920,11 +2963,11 @@ static void test_config0_cold_reset(const void *data)
     g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
-static void test_cpu_b_executes_across_enable_falling_edge(const void *data)
+static void test_cpu_c_executes_across_enable_falling_edge(const void *data)
 {
     g_autofree char *path = NULL;
     QTestState *qts;
-    uint64_t cpu_b_progress;
+    uint64_t cpu_c_progress;
 
     if (!qtest_has_accel("tcg")) {
         g_test_skip("TCG is unavailable");
@@ -2935,13 +2978,13 @@ static void test_cpu_b_executes_across_enable_falling_edge(const void *data)
     qts = machine_start_with(
         path, "-accel tcg,thread=multi -no-shutdown -S");
 
-    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
-    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 1);
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_C, 1);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_C), ==, 1);
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
-    cpu_b_progress = wait_for_cpu_gpr_change(qts, 1, "t0", 0);
-    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 0);
-    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 0);
-    wait_for_cpu_gpr_change(qts, 1, "t0", cpu_b_progress);
+    cpu_c_progress = wait_for_cpu_gpr_change(qts, 1, "t0", 0);
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_C, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_C), ==, 0);
+    wait_for_cpu_gpr_change(qts, 1, "t0", cpu_c_progress);
     stop_vm(qts);
 
     qtest_quit(qts);
@@ -2983,6 +3026,32 @@ static void test_nmi_register_write_is_inert(const void *data)
         g_assert_cmphex(cpu_gpr(qts, 1, "s0"), ==, NMI_READY_MARKER);
         g_usleep(NMI_SETTLE_INTERVAL_US);
     }
+
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
+static void test_pi1_a_nmi_reaches_cpu_c(const void *data)
+{
+    g_autofree char *path = NULL;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    path = create_nmi_control_prom();
+    qts = machine_start_with(path,
+                             "-accel tcg,thread=multi -no-shutdown -S");
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_for_cpu_gpr(qts, 0, "s0", NMI_READY_MARKER);
+    wait_for_cpu_gpr(qts, 1, "s0", NMI_READY_MARKER);
+
+    qtest_set_irq_in(qts, "/machine/node0/bedrock", "pi-nmi", 2, 1);
+    wait_for_cpu_gpr(qts, 1, "s0", NMI_TAKEN_MARKER);
+    g_assert_cmphex(cpu_gpr(qts, 0, "s0"), ==, NMI_READY_MARKER);
+    qtest_set_irq_in(qts, "/machine/node0/bedrock", "pi-nmi", 2, 0);
 
     qtest_quit(qts);
     g_assert_cmpint(g_unlink(path), ==, 0);
@@ -3134,7 +3203,7 @@ static void test_prom_migration(const void *data)
     g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
-static void test_cpu_b_enabled_migration(const void *data)
+static void test_cpu_c_enabled_migration(const void *data)
 {
     g_autoptr(GError) error = NULL;
     g_autofree char *directory = NULL;
@@ -3160,7 +3229,7 @@ static void test_cpu_b_enabled_migration(const void *data)
     to = machine_start_with(
         path, "-accel tcg,thread=multi -no-shutdown -S -incoming defer");
 
-    qtest_writeq(from, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
+    qtest_writeq(from, BEDROCK_LOCAL + PI_CPU_ENABLE_C, 1);
     run_vm_until_cpu_gpr_changes(from, 1, "t0", 0);
     g_assert_cmphex(cpu_gpr(from, 1, "t0"), !=, 0);
 
@@ -3175,13 +3244,13 @@ static void test_cpu_b_enabled_migration(const void *data)
 
     stopped = cpu_gpr(to, 1, "t0");
     g_assert_cmphex(stopped, !=, 0);
-    g_assert_cmphex(qtest_readq(to, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 1);
-    qtest_writeq(to, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 0);
-    g_assert_cmphex(qtest_readq(to, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 0);
+    g_assert_cmphex(qtest_readq(to, BEDROCK_LOCAL + PI_CPU_ENABLE_C), ==, 1);
+    qtest_writeq(to, BEDROCK_LOCAL + PI_CPU_ENABLE_C, 0);
+    g_assert_cmphex(qtest_readq(to, BEDROCK_LOCAL + PI_CPU_ENABLE_C), ==, 0);
     stopped = run_vm_until_cpu_gpr_changes(to, 1, "t0", stopped);
 
-    qtest_writeq(to, BEDROCK_LOCAL + PI_CPU_ENABLE_B, 1);
-    g_assert_cmphex(qtest_readq(to, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 1);
+    qtest_writeq(to, BEDROCK_LOCAL + PI_CPU_ENABLE_C, 1);
+    g_assert_cmphex(qtest_readq(to, BEDROCK_LOCAL + PI_CPU_ENABLE_C), ==, 1);
     run_vm_until_cpu_gpr_changes(to, 1, "t0", stopped);
 
     qtest_quit(from);
@@ -3376,6 +3445,8 @@ int main(int argc, char **argv)
                         NULL, test_hub_registers_refuse_denied_region);
     qtest_add_data_func("sn1/address-map/crosstalk-big-window", NULL,
                         test_crosstalk_big_window_routes);
+    qtest_add_data_func("sn1/address-map/pi1-a-irq-reaches-cpu1", NULL,
+                        test_pi1_a_irq_reaches_cpu1);
     qtest_add_data_func("sn1/address-map/xbridge-topology", NULL,
                         test_xbridge_topology);
     qtest_add_data_func("sn1/address-map/io8-usb-attachment", NULL,
@@ -3448,16 +3519,18 @@ int main(int argc, char **argv)
                         test_machine_defaults);
     qtest_add_data_func("sn1/address-map/cpu-number-read-is-per-cpu", NULL,
                         test_cpu_number_read_is_per_cpu);
-    qtest_add_data_func("sn1/address-map/cpu-b-enable-controls-bus", NULL,
-                        test_cpu_b_enable_controls_bus_eligibility);
+    qtest_add_data_func("sn1/address-map/cpu-c-enable-controls-bus", NULL,
+                        test_cpu_c_enable_controls_bus_eligibility);
     qtest_add_data_func("sn1/address-map/config0-cold-reset", NULL,
                         test_config0_cold_reset);
-    qtest_add_data_func("sn1/address-map/cpu-b-executes-across-enable-fall",
-                        NULL, test_cpu_b_executes_across_enable_falling_edge);
+    qtest_add_data_func("sn1/address-map/cpu-c-executes-across-enable-fall",
+                        NULL, test_cpu_c_executes_across_enable_falling_edge);
     qtest_add_data_func("sn1/address-map/nmi-write-a-is-inert", &nmi_a,
                         test_nmi_register_write_is_inert);
     qtest_add_data_func("sn1/address-map/nmi-write-b-is-inert", &nmi_b,
                         test_nmi_register_write_is_inert);
+    qtest_add_data_func("sn1/address-map/pi1-a-nmi-reaches-cpu-c", NULL,
+                        test_pi1_a_nmi_reaches_cpu_c);
     qtest_add_data_func("sn1/address-map/prom-executes-reset-and-xkphys", NULL,
                         test_prom_executes_from_reset_and_xkphys);
     qtest_add_data_func("sn1/address-map/prom-executes-tlb-mapped-xkseg",
@@ -3468,8 +3541,8 @@ int main(int argc, char **argv)
                         test_prom_executes_from_tlb_mapped_xkseg);
     qtest_add_data_func("sn1/address-map/prom-migration", NULL,
                         test_prom_migration);
-    qtest_add_data_func("sn1/address-map/cpu-b-enabled-migration", NULL,
-                        test_cpu_b_enabled_migration);
+    qtest_add_data_func("sn1/address-map/cpu-c-enabled-migration", NULL,
+                        test_cpu_c_enabled_migration);
     qtest_add_data_func("sn1/address-map/promdata-ram-copy-home", NULL,
                         test_promdata_ram_copy_is_execution_home);
     qtest_add_data_func("sn1/address-map/promdata-filter-survives-migration",

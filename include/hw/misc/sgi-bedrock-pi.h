@@ -28,6 +28,7 @@ struct SGIBedrockPIState {
     uint32_t interface;
     uint32_t cpu_base;
     uint32_t processor_count;
+    uint32_t processor_mask;
     uint32_t request_region;
     uint64_t cpu_protect;
     uint64_t io_protect;

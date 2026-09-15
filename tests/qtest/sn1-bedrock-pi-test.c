@@ -185,6 +185,69 @@ static void test_processor_presence(void)
     }
 }
 
+static void test_sparse_processor_presence(void)
+{
+    QTestState *s = start_processors(2,
+        "-global sgi-bedrock.processor-mask=5");
+
+    g_assert_cmphex(qtest_readq(s, PI(0, CPU_PRESENT_A)), ==, 1);
+    g_assert_cmphex(qtest_readq(s, PI(0, CPU_PRESENT_B)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(1, CPU_PRESENT_A)), ==, 1);
+    g_assert_cmphex(qtest_readq(s, PI(1, CPU_PRESENT_B)), ==, 0);
+    qtest_quit(s);
+}
+
+static void test_invalid_processor_masks(void)
+{
+    const char *const too_few[] = {
+        qtest_qemu_binary(NULL), "-M", "none", "-cpu", "R10000",
+        "-device", "sgi-bedrock,processor-count=2,processor-mask=1",
+        "-display", "none", "-accel", "qtest", NULL,
+    };
+    const char *const outside_slots[] = {
+        qtest_qemu_binary(NULL), "-M", "none", "-cpu", "R10000",
+        "-device", "sgi-bedrock,processor-count=2,processor-mask=17",
+        "-display", "none", "-accel", "qtest", NULL,
+    };
+    const char *const *cases[] = { too_few, outside_slots };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        g_autofree char *error_output = NULL;
+        int wait_status = 0;
+
+        g_assert_true(g_spawn_sync(NULL, (char **)cases[i], NULL, 0,
+                                   NULL, NULL, NULL, &error_output,
+                                   &wait_status, NULL));
+        g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
+        g_assert_nonnull(strstr(error_output,
+            "Bedrock processor mask must select exactly 2 of four slots"));
+    }
+}
+
+static void test_sparse_irq_and_nmi_slots(void)
+{
+    QTestState *s = start_processors(2,
+        "-global sgi-bedrock.processor-mask=5");
+
+    qtest_irq_intercept_out_named(s, BEDROCK_PATH, "hardware-irq");
+    qtest_writeq(s, PI(1, PENDING_MODIFY), 0x107);
+    qtest_writeq(s, PI(1, MASK_0_A), 1ULL << 7);
+    g_assert_true(qtest_get_irq(s, 10));
+    g_assert_false(qtest_get_irq(s, 5));
+    qtest_writeq(s, PI(1, MASK_0_A), 0);
+    g_assert_false(qtest_get_irq(s, 10));
+    qtest_quit(s);
+
+    s = start_processors(2, "-global sgi-bedrock.processor-mask=5");
+    qtest_irq_intercept_out_named(s, BEDROCK_PATH, "nmi");
+    qtest_set_irq_in(s, BEDROCK_PATH, "pi-nmi", 2, 1);
+    g_assert_true(qtest_get_irq(s, 2));
+    g_assert_false(qtest_get_irq(s, 1));
+    qtest_set_irq_in(s, BEDROCK_PATH, "pi-nmi", 2, 0);
+    g_assert_false(qtest_get_irq(s, 2));
+    qtest_quit(s);
+}
+
 static void test_pending_modify_and_reflection(void)
 {
     QTestState *s = start("");
@@ -1154,6 +1217,12 @@ int main(int argc, char **argv)
                    test_identity_storage_and_width);
     qtest_add_func("sn1/bedrock-pi/processor-presence",
                    test_processor_presence);
+    qtest_add_func("sn1/bedrock-pi/sparse-processor-presence",
+                   test_sparse_processor_presence);
+    qtest_add_func("sn1/bedrock-pi/invalid-processor-masks",
+                   test_invalid_processor_masks);
+    qtest_add_func("sn1/bedrock-pi/sparse-irq-and-nmi-slots",
+                   test_sparse_irq_and_nmi_slots);
     qtest_add_func("sn1/bedrock-pi/pending-reflection",
                    test_pending_modify_and_reflection);
     qtest_add_func("sn1/bedrock-pi/coherency-pending",

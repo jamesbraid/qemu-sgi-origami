@@ -47,6 +47,7 @@ typedef struct SN1MachineModel {
     const char *description;
     SN1ModelCpuKind cpu_kind;
     unsigned int cpu_count;
+    uint8_t cpu_population_mask;
     uint64_t cpu_clock_hz;
     uint64_t ram_size;
     uint64_t ram_address;

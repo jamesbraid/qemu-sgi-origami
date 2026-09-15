@@ -5,6 +5,7 @@
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
+#include "qemu/host-utils.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 
@@ -289,11 +290,20 @@ static void bedrock_local_reset(void *opaque, int n, int level)
 static void bedrock_realize(DeviceState *dev, Error **errp)
 {
     SGIBedrockState *s = SGI_BEDROCK(dev);
+    unsigned mask;
 
     if (s->processor_count > 4) {
         error_setg(errp, "Bedrock processor count exceeds four slots");
         return;
     }
+    mask = s->processor_mask ? s->processor_mask :
+        (1U << s->processor_count) - 1;
+    if ((mask & ~0xfU) || ctpop32(mask) != s->processor_count) {
+        error_setg(errp, "Bedrock processor mask must select exactly %u "
+                   "of four slots", s->processor_count);
+        return;
+    }
+    s->processor_mask = mask;
     if (!s->dma_mr) {
         error_setg(errp, TYPE_SGI_BEDROCK " 'dma-memory' link not set");
         return;
@@ -347,6 +357,8 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
         qdev_prop_set_uint32(DEVICE(&s->pi[i]), "cpu-base", s->cpu_base);
         qdev_prop_set_uint32(DEVICE(&s->pi[i]), "processor-count",
                             s->processor_count);
+        qdev_prop_set_uint32(DEVICE(&s->pi[i]), "processor-mask",
+                            s->processor_mask);
         if (!qdev_realize(DEVICE(&s->pi[i]), sysbus_get_default(), errp)) {
             return;
         }
@@ -419,6 +431,8 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
 static const Property bedrock_properties[] = {
     DEFINE_PROP_UINT32("processor-count", SGIBedrockState,
                        processor_count, 1),
+    DEFINE_PROP_UINT32("processor-mask", SGIBedrockState,
+                       processor_mask, 0),
     /*
      * Index of this node's first processor, so each interface can name its
      * own pair and tell the reading processor A from B.

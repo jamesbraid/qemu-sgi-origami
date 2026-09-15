@@ -285,21 +285,34 @@ bool sgi_bedrock_pi_io_modify(SGIBedrockPIState *s, uint64_t value,
  * That is model behaviour rather than a hardware claim: real silicon always
  * has a requester.
  */
+static unsigned pi_population_mask(SGIBedrockPIState *s)
+{
+    return s->processor_mask ? s->processor_mask :
+        (1U << MIN(s->processor_count, 4U)) - 1;
+}
+
 static uint64_t pi_cpu_number(SGIBedrockPIState *s)
 {
-    unsigned first = s->cpu_base + s->interface * SGI_BEDROCK_PI_PROCESSORS;
-    uint64_t slot = 0;
+    unsigned logical = s->cpu_base;
+    unsigned mask = pi_population_mask(s);
 
-    if (current_cpu && current_cpu->cpu_index >= first &&
-        current_cpu->cpu_index < first + SGI_BEDROCK_PI_PROCESSORS) {
-        slot = current_cpu->cpu_index - first;
+    for (unsigned physical = 0; physical < 4; physical++) {
+        if (!(mask & (1U << physical))) {
+            continue;
+        }
+        if (current_cpu && physical / 2 == s->interface &&
+            current_cpu->cpu_index == logical) {
+            return (physical & 1) | ((uint64_t)s->interface << 1);
+        }
+        logical++;
     }
-    return slot | ((uint64_t)s->interface << 1);
+    return (uint64_t)s->interface << 1;
 }
 
 static uint64_t pi_read(void *opaque, hwaddr offset, unsigned size)
 {
     SGIBedrockPIState *s = opaque;
+    unsigned mask = pi_population_mask(s);
 
     switch (offset) {
     case PI_CPU_PROTECT: return s->cpu_protect;
@@ -310,9 +323,9 @@ static uint64_t pi_read(void *opaque, hwaddr offset, unsigned size)
     case PI_RQ_TIMEOUT_MAX: return s->rq_timeout_max;
     case PI_RQ_TIMEOUT_SCALE: return s->rq_timeout_scale;
     case PI_CPU_PRESENT_A:
-        return s->interface * 2 < s->processor_count;
+        return !!(mask & (1U << (s->interface * 2)));
     case PI_CPU_PRESENT_B:
-        return s->interface * 2 + 1 < s->processor_count;
+        return !!(mask & (1U << (s->interface * 2 + 1)));
     case PI_CPU_ENABLE_A: return s->cpu_enable[0];
     case PI_CPU_ENABLE_B: return s->cpu_enable[1];
     case PI_PENDING_0: return pi_pending0(s);
@@ -762,6 +775,8 @@ static const Property pi_properties[] = {
     DEFINE_PROP_UINT32("cpu-base", SGIBedrockPIState, cpu_base, 0),
     DEFINE_PROP_UINT32("processor-count", SGIBedrockPIState,
                        processor_count, 1),
+    DEFINE_PROP_UINT32("processor-mask", SGIBedrockPIState,
+                       processor_mask, 0),
     DEFINE_PROP_UINT32("request-region", SGIBedrockPIState, request_region, 0),
 };
 
