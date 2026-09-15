@@ -170,9 +170,11 @@ static void test_warm_reset_rendezvous(void)
         "-smp 4,sockets=2,cores=2,threads=1 "
         "-bios %s -accel tcg,thread=multi -S -no-shutdown", image);
     unlink(image);
-    /* No PROM ran to number node one's Hub; mailbox(2) and mailbox(3)
+    /*
+     * No PROM ran to number node one's Hub; mailbox(2) and mailbox(3)
      * need it claimed, and a full machine reset (every generation below)
-     * clears it back to zero along with everything else. */
+     * clears it back to zero along with everything else.
+     */
     sn0_program_nasid(qts, 1);
     for (unsigned int cpu = 0; cpu < 4; cpu++) {
         qtest_writeq(qts, mailbox(cpu), 0);
@@ -352,8 +354,10 @@ static void test_scratch_publish(const void *opaque)
         "-bios %s -accel tcg,thread=%s -S -no-shutdown", image, thread);
     unlink(image);
 
-    /* No PROM ran to number node one's Hub; every base below for node 1
-     * needs it claimed, and phase 1's full machine reset clears it again. */
+    /*
+     * No PROM ran to number node one's Hub; every base below for node 1
+     * needs it claimed, and phase 1's full machine reset clears it again.
+     */
     sn0_program_nasid(qts, 1);
     for (unsigned int phase = 0; phase < 2; phase++) {
         QDict *status;
