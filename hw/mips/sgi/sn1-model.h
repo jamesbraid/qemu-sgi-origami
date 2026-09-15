@@ -39,6 +39,8 @@ typedef struct SN1ModelPciDevice {
     uint16_t subsystem_id;
     uint32_t population;
     uint8_t timekeeper_kind;
+    uint8_t phy_addr;
+    bool phy_dp83843;
 } SN1ModelPciDevice;
 
 typedef struct SN1MachineModel {

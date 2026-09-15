@@ -394,6 +394,21 @@ static void sn1_configure_ioc3(PCIDevice *ioc3, const SN1ModelPciDevice *model)
     qdev_prop_set_uint32(DEVICE(ioc3), "population", model->population);
     qdev_prop_set_uint8(DEVICE(ioc3), "timekeeper-kind",
                         model->timekeeper_kind);
+    /*
+     * The IO8 board's transceiver answers at address 1, not the DP83840
+     * model's Origin-200 default of 31: the BASEIO PROM's MII helpers
+     * hard-code that address, and a real board's OpenBSD capture confirms
+     * it (docs/datasheets/dp83840.md).
+     */
+    qdev_prop_set_uint8(DEVICE(ioc3), "phy-addr", model->phy_addr);
+    /*
+     * The IO8 board's transceiver is a DP83843, not the DP83840A model's
+     * default part: its register 0x17 selects loopback differently and its
+     * identity register reads differently, both of which the BASEIO PROM's
+     * Twister loopback diagnostic depends on (docs/datasheets/dp83840.md).
+     */
+    object_property_set_bool(OBJECT(ioc3), "phy-dp83843", model->phy_dp83843,
+                             &error_abort);
     if (nvram_blk) {
         qdev_prop_set_drive(DEVICE(ioc3), "nvram-drive", nvram_blk);
     }

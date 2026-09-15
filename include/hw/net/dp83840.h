@@ -36,6 +36,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(DP83840State, DP83840)
 #define DP83840_LBREMR_10BT_LOOPBACK 0x0800
 
 /*
+ * National Semiconductor DP83843 "PHYTER": the Origin 300 IO-8 board's
+ * transceiver, selected by the "dp83843" property instead of the default
+ * DP83840A. Register 0x17 (DP83840_PCS_CONFIG's address, plain storage on
+ * the DP83840A) is its Loopback Register, and register 0x18 (the DP83840A's
+ * LBREMR) is its 10BTSCR, plain storage with no loopback function. See
+ * docs/datasheets/dp83840.md.
+ */
+#define DP83843_PHYID2          0x5c10
+#define DP83843_LBR_10_ENDEC_LB 0x0010
+#define DP83843_LBR_TW_LBEN     0x0020
+
+/*
  * In the specification's 1.5-2.3 s range, and long enough that the
  * firmware diagnostic's sweep still finds the link settling.
  */
@@ -46,6 +58,9 @@ struct DP83840State {
 
     /* Default 31, where every real capture prints the transceiver. */
     uint8_t addr;
+
+    /* False: DP83840A (Origin 200). True: DP83843 (Origin 300 IO-8). */
+    bool dp83843;
 
     uint16_t control;
     uint16_t advertise;
