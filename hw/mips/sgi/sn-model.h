@@ -70,7 +70,7 @@ typedef struct SGIModelProcessor {
     uint32_t mode_bits;
 } SGIModelProcessor;
 
-/* A populated or empty processor-interface slot. assembly is NULL when empty. */
+/* A populated or empty processor-interface slot; NULL assembly is empty. */
 typedef struct SGIModelCpuSlot {
     unsigned int interface;
     unsigned int slot;
@@ -124,12 +124,14 @@ typedef struct SGIModelNode {
     const SGIModelCpuSlot *cpu_slots;
     size_t cpu_slot_count;
     uint64_t bank_mib[SGI_MODEL_MAX_MEMORY_BANKS];
-    /* Other total sizes (MiB) the node builder's fitting rule accepts
+    /*
+     * Other total sizes (MiB) the node builder's fitting rule accepts
      * for this node besides the shipped bank_mib[] above; empty means
      * the shipped population only (every Origin 2000 node today). Named
      * for the plan's topology-level accepted_memory_populations; kept
      * per node here since bank_mib[] is already per node and every
-     * measured configuration populates its nodes uniformly. */
+     * measured configuration populates its nodes uniformly.
+     */
     const uint64_t *accepted_memory_mib;
     size_t accepted_memory_mib_count;
     SGIModelFlash flash;
