@@ -327,8 +327,16 @@ static void test_filtered_stop_on_cpu2(void)
 
 static void test_errors(void)
 {
-    QTestState *qts = qtest_init(SINGLE_MACHINE);
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
+    QTestState *qts;
     QDict *response;
+
+    /* Nothing here runs guest code; the machine just needs a valid -bios. */
+    sn0_emit_park(image);
+    path = sn0_image_write(image, "sn0-debug-breakpoint-errors");
+    qts = qtest_initf("%s -bios %s", SINGLE_MACHINE, path);
+    unlink(path);
 
     response = qtest_qmp(qts,
         "{ 'execute': 'x-mips-debug-breakpoint', 'arguments': "
