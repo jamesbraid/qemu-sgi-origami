@@ -3714,6 +3714,12 @@ static void test_receive_jumbo_frame(const void *data)
  *
  * The last step proves the frame was discarded rather than parked: posting a
  * standard buffer afterwards brings nothing back.
+ *
+ * The manual's counter for this, `nicNoMoreRXBDs`, names no ring (PG105 page
+ * 110, Table 49; page 114, Table 54 gives it one offset with no per-ring
+ * companion), so this discard counts at the same offset the jumbo case
+ * bumps. Read before the drop, immediately after, and once more at the end,
+ * the same three points the jumbo test checks.
  */
 static void test_receive_drops_standard_with_empty_standard_ring(
     const void *data)
@@ -3742,6 +3748,9 @@ static void test_receive_drops_standard_with_empty_standard_ring(
     rx_open_jumbo(&b);
     write_rx_bd(&b, STD_RING_PHYS, 1, STD_STALE_BUF_PHYS);
 
+    g_assert_cmpuint(bar_readl(&b, BCM_SRAM_WINDOW +
+                                BCM_SRAM_STATS_NO_MORE_RXBDS), ==, 0);
+
     net_socket_send_frame(sv[0], first, sizeof(first));
     wait_for_rx_prod(&b, 1);
     bar_writel(&b, BCM_MBX_RX_CONS0_LO, 1);
@@ -3759,6 +3768,13 @@ static void test_receive_drops_standard_with_empty_standard_ring(
     g_assert_cmpmem(got, sizeof(got), untouched, sizeof(untouched));
     qtest_memread(b.qts, JUMBO_BUF_PHYS, got, sizeof(got));
     g_assert_cmpmem(got, sizeof(got), untouched, sizeof(untouched));
+
+    /*
+     * The chip counts this rather than latching it (PG105 page 110): one
+     * frame dropped for want of a posted standard descriptor, one count.
+     */
+    g_assert_cmpuint(bar_readl(&b, BCM_SRAM_WINDOW +
+                                BCM_SRAM_STATS_NO_MORE_RXBDS), ==, 1);
 
     /* Unmask the existing update, then acknowledge it. */
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
@@ -3784,6 +3800,10 @@ static void test_receive_drops_standard_with_empty_standard_ring(
     g_assert_cmpuint(read_rx_prod(&b), ==, 2);
     qtest_memread(b.qts, STD_STALE_BUF_PHYS, got, sizeof(got));
     g_assert_cmpmem(got, sizeof(got), untouched, sizeof(untouched));
+
+    /* Neither the delivered jumbo frame nor the late post is this condition. */
+    g_assert_cmpuint(bar_readl(&b, BCM_SRAM_WINDOW +
+                                BCM_SRAM_STATS_NO_MORE_RXBDS), ==, 1);
 
     bcm_close(&b);
     close(sv[0]);
