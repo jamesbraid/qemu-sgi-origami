@@ -1610,6 +1610,42 @@ static void test_prom_four_read_only_views(const void *data)
     qtest_quit(qts);
 }
 
+static char *create_flash_image(void);
+static void remove_flash_image(const char *flash);
+static QTestState *machine_start_with_flash(const char *flash,
+                                             const char *extra);
+
+static void test_prom_cpu_module_config(const void *data)
+{
+    static const uint64_t views[] = {
+        PROM_RESET, HUB_LOCAL_BOOT, HUB_LOCAL_HIGH_BOOT, HUB_REMOTE_BOOT,
+    };
+    static const struct {
+        uint64_t offset;
+        uint32_t value;
+    } words[] = {
+        { 0x64, UINT32_C(0x549aa985) },
+        { 0x74, UINT32_C(500000000) },
+        { 0x90, 1 },
+        { 0x94, UINT32_C(0x9c) },
+        { 0x98, 1 },
+    };
+    g_autofree char *flash = create_flash_image();
+    QTestState *qts;
+
+    for (unsigned int attached = 0; attached < 2; attached++) {
+        qts = attached ? machine_start_with_flash(flash, "") : machine_start();
+        for (size_t i = 0; i < ARRAY_SIZE(words); i++) {
+            for (size_t j = 0; j < ARRAY_SIZE(views); j++) {
+                g_assert_cmphex(qtest_readl(qts, views[j] + words[i].offset),
+                                ==, words[i].value);
+            }
+        }
+        qtest_quit(qts);
+    }
+    remove_flash_image(flash);
+}
+
 static void assert_flat_view_extent(QTestState *qts, uint64_t start,
                                     uint64_t size)
 {
@@ -3160,6 +3196,8 @@ int main(int argc, char **argv)
                         test_l1_operator_console_uses_serial0);
     qtest_add_data_func("sn1/address-map/prom-four-read-only-views", NULL,
                         test_prom_four_read_only_views);
+    qtest_add_data_func("sn1/address-map/prom-cpu-module-config", NULL,
+                        test_prom_cpu_module_config);
     qtest_add_data_func("sn1/address-map/prom-flat-view-extents", NULL,
                         test_prom_flat_view_extents);
     qtest_add_data_func("sn1/address-map/prom-execution-windows-not-io", NULL,
