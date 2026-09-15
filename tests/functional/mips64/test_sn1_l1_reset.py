@@ -57,7 +57,9 @@ from pathlib import Path
 from lib_prom import resolve_asset
 
 from qemu_test import QemuSystemTest
+from qemu_test import exec_command_and_wait_for_pattern
 from qemu_test import skipIfMissingEnv
+from qemu_test import wait_for_console_pattern
 
 
 R_ZERO = 0
@@ -294,11 +296,26 @@ def build_slice_b():
     return program
 
 
+def build_console_spinner(counter_offset):
+    """A processor that continuously writes, so every scheduled block is
+    visible in the execution log while a console action is pending."""
+    program = MipsProgram()
+    program.status_kx_kernel()
+    program.address(R_S0, 0x9600, STATE)
+    program.emit(mips_i(0x19, R_ZERO, R_T1, 0))
+    loop = program.here()
+    program.emit(mips_i(0x19, R_T1, R_T1, 1))
+    program.emit(mips_i(0x3f, R_S0, R_T1, counter_offset))
+    program.patch(program.branch(0x04, R_ZERO, R_ZERO), loop)
+    return program
+
+
 WRITE_RE = re.compile(
     r"memory_region_ops_write cpu (-?\d+) mr \S+ addr 0x([0-9a-f]+) "
     r"value 0x([0-9a-f]+) size \d+ name '([^']*)'")
 TRACE_RE = re.compile(r"^Trace (\d+):")
 RESET_RE = re.compile(r"^cpu_reset (\d+)")
+SHUTDOWN_RE = re.compile(r"^qemu_system_shutdown_request reason=6$")
 
 
 def committing_write(line):
@@ -356,6 +373,22 @@ def reset_windows(log):
             if trace and int(trace.group(1)) != requester:
                 entered.append(line)
         windows.append((requester, entered))
+    return windows
+
+
+def shutdown_windows(log):
+    """Translation blocks entered after each shutdown request and before
+    the power-up reset which ends that stopped interval."""
+    windows = []
+    entered = None
+    for line in log.splitlines():
+        if SHUTDOWN_RE.match(line):
+            entered = []
+            windows.append(entered)
+        elif entered is not None and RESET_RE.match(line):
+            entered = None
+        elif entered is not None and TRACE_RE.match(line):
+            entered.append(line)
     return windows
 
 
@@ -417,6 +450,54 @@ class SN1L1Reset(QemuSystemTest):
         self.vm.shutdown()
         return Path(log).read_text(errors='replace')
 
+    def run_console_power_cycles(self):
+        assets_root = os.environ.get('ORIGAMI_ASSETS')
+        prom = resolve_asset(
+            assets_root,
+            os.path.join('assets', 'firmware', '6.5.30',
+                         'ip35prom.payload.bin'))
+        if prom is None:
+            self.fail(
+                'ORIGAMI_ASSETS is set but the Origin 300 stock PROM is '
+                'missing at <ORIGAMI_ASSETS>/assets/firmware/6.5.30/'
+                'ip35prom.payload.bin -- provision it rather than '
+                'silently skipping a real check')
+
+        self.set_machine('origin300')
+        slice_a = self.scratch_file('sn1-l1-console-a.bin')
+        slice_b = self.scratch_file('sn1-l1-console-b.bin')
+        build_console_spinner(STATE_A_DONE).write(slice_a)
+        build_console_spinner(STATE_B_DONE).write(slice_b)
+        log = self.log_file('qemu-console-exec.log')
+
+        self.vm.set_console()
+        self.vm.add_args(
+            '-accel', 'tcg,thread=multi', '-smp', '2', '-m', '512M',
+            '-bios', str(prom), '-no-shutdown',
+            '-device',
+            f'loader,file={slice_a},force-raw=on,addr={SLICE_A_LOAD:#x}',
+            '-device', f'loader,addr={SLICE_A_PC:#x},cpu-num=0',
+            '-device',
+            f'loader,file={slice_b},force-raw=on,addr={SLICE_B_LOAD:#x}',
+            '-device', f'loader,addr={SLICE_B_PC:#x},cpu-num=1',
+            '-d', 'exec,trace:qemu_system_shutdown_request,trace:cpu_reset',
+            '-D', log)
+        self.vm.launch()
+        wait_for_console_pattern(self, '<CTRL_T> to escape to L1')
+
+        for _ in range(CYCLES):
+            exec_command_and_wait_for_pattern(
+                self, '\x14power down', '<CTRL_T> to escape to L1')
+            exec_command_and_wait_for_pattern(
+                self, '\x14power down', '001c01-L1> ')
+            self.vm.event_wait('SHUTDOWN')
+            exec_command_and_wait_for_pattern(
+                self, 'power up', '<CTRL_T> to escape to L1')
+            self.vm.event_wait('RESET')
+
+        self.vm.shutdown()
+        return Path(log).read_text(errors='replace')
+
     def assert_only_the_requester_ran(self, log):
         windows = reset_windows(log)
         self.assertEqual(len(windows), CYCLES,
@@ -426,7 +507,7 @@ class SN1L1Reset(QemuSystemTest):
         self.log.info('%d resets, %d with a peer running after the '
                       'committing write', len(windows), len(ran))
         self.assertEqual(
-            [entered[0] for _, entered in ran[:4]], [],
+            ran, [],
             f'a peer entered a translation block after the closing L1 '
             f'frame flag write in {len(ran)} of {len(windows)} resets')
 
@@ -454,6 +535,18 @@ class SN1L1Reset(QemuSystemTest):
         slices resume."""
         log = self.run_resets('-accel', 'tcg,thread=multi')
         self.assertEqual(len(reset_windows(log)), CYCLES)
+
+    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    def test_console_power_down_stops_every_cpu(self):
+        windows = shutdown_windows(self.run_console_power_cycles())
+        self.assertEqual(len(windows), CYCLES)
+        ran = [entered for entered in windows if entered]
+        self.log.info('%d power-downs, %d with a processor running after '
+                      'the shutdown request', len(windows), len(ran))
+        self.assertEqual(
+            ran, [],
+            f'a processor entered a translation block after the L1 console '
+            f'requested shutdown in {len(ran)} of {len(windows)} cycles')
 
 
 if __name__ == '__main__':
