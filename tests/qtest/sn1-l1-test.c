@@ -1562,6 +1562,29 @@ static void expect_debug_switches(QTestState *s, uint8_t high, uint8_t low)
     g_assert_cmpmem(reply, sizeof(expected), expected, sizeof(expected));
 }
 
+static void send_task3(QTestState *s, const char *command)
+{
+    uint8_t request[128] = { 0x10, 0x0f, 0xff, 0xf0, 3, 0, 3, 1, 1 };
+    size_t length = strlen(command) + 1;
+
+    g_assert_cmpuint(length, <=, sizeof(request) - 9);
+    memcpy(request + 9, command, length);
+    send_frame(s, request, length + 9, false);
+}
+
+static void expect_raw_reply(QTestState *s, const uint8_t *expected,
+                             size_t length)
+{
+    uint8_t actual[131];
+
+    g_assert_cmpuint(length, <=, sizeof(actual));
+    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x61);
+    for (size_t i = 0; i < length; i++) {
+        actual[i] = qtest_readq(s, BASE);
+    }
+    g_assert_cmpmem(actual, length, expected, length);
+}
+
 static void test_debug_set(void)
 {
     int fd;
@@ -1618,6 +1641,48 @@ static void test_debug_set(void)
     expect_debug_switches(s, 1, 0x0d);
     qtest_quit(s);
     close(fd);
+}
+
+static void test_debug_task3(void)
+{
+    QTestState *s = start();
+    uint8_t reply[131];
+    const uint8_t accepted[] = {
+        0x7e, 0x30, 0, 0, 0, 0, 1, 1,
+        'd', 'e', 'b', 'u', 'g', ' ', 's', 'w', 'i', 't', 'c', 'h', 'e', 's',
+        ' ', 's', 'e', 't', ' ', 't', 'o', ' ', '0', 'x', '0', '1', '0', 'd',
+        '\n', 0, 0x15, 0x5b, 0x7e,
+    };
+    const uint8_t malformed[] = {
+        0x7e, 0x30, 0xff, 0xff, 0xfb, 0x50, 1, 1,
+        'E', 'R', 'R', 'O', 'R', ':', ' ', 'c', 'o', 'm', 'm', 'a', 'n', 'd',
+        ' ', 'n', 'o', 't', ' ', 'f', 'o', 'u', 'n', 'd', '.', '\n', 0,
+        0x42, 0xac, 0x7e,
+    };
+
+    send_task3(s, "debug 269");
+    expect_raw_reply(s, accepted, sizeof(accepted));
+    expect_debug_switches(s, 1, 0x0d);
+    send_task3(s, "debug nope");
+    expect_raw_reply(s, malformed, sizeof(malformed));
+    expect_debug_switches(s, 1, 0x0d);
+
+    send_task3(s, "* debug 0");
+    g_assert_cmpuint(receive(s, reply), >, 8);
+    g_assert_cmphex(reply[4], ==, 0xff);
+    g_assert_cmphex(reply[5], ==, 1);
+    g_assert_cmphex(reply[6], ==, 1);
+    g_assert_nonnull(strstr((char *)reply + 7,
+                            "wildcard debug is unsupported"));
+    expect_debug_switches(s, 1, 0x0d);
+    send_task3(s, "ctc debug 0");
+    g_assert_cmpuint(receive(s, reply), >, 8);
+    g_assert_cmphex(reply[4], ==, 0xff);
+    g_assert_cmphex(reply[5], ==, 1);
+    g_assert_cmphex(reply[6], ==, 1);
+    g_assert_nonnull(strstr((char *)reply + 7, "peer debug is unsupported"));
+    expect_debug_switches(s, 1, 0x0d);
+    qtest_quit(s);
 }
 
 static void test_uart_interrupts(void)
@@ -2368,6 +2433,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/task-commands", test_task_commands);
     qtest_add_func("sn1/l1/settings-queries", test_settings_queries);
     qtest_add_func("sn1/l1/debug-set", test_debug_set);
+    qtest_add_func("sn1/l1/debug-task3", test_debug_task3);
     qtest_add_func("sn1/l1/uart-interrupts", test_uart_interrupts);
     qtest_add_func("sn1/l1/uart-irq-migration", test_uart_irq_migration);
     qtest_add_func("sn1/l1/node-position", test_node_position);

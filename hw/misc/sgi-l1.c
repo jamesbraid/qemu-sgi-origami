@@ -574,11 +574,11 @@ static void l1_version(SGIL1State *s)
 }
 
 /*
- * Run one command line. Returns false for a command the interpreter does
- * not know. When @console is set the prompt or the return to console mode
- * follows; the request interpreter collects the output instead.
+ * Run one command line. Return the task-3 result code. When @console is set,
+ * the prompt or the return to console mode follows; the request interpreter
+ * collects the output instead.
  */
-static bool l1_run_line(SGIL1State *s, const char *text, bool console)
+static int l1_run_line(SGIL1State *s, const char *text, bool console)
 {
     char line[sizeof(s->command)];
     char original[sizeof(s->command)];
@@ -587,7 +587,7 @@ static bool l1_run_line(SGIL1State *s, const char *text, bool console)
     int argc = 0;
     char *p;
     bool own_prompt = false;
-    bool found = true;
+    int result = 0;
     unsigned int debug_value;
 
     pstrcpy(line, sizeof(line), text);
@@ -612,6 +612,14 @@ static bool l1_run_line(SGIL1State *s, const char *text, bool console)
         }
     }
     if (argc && !strcmp(argv[0], "*")) {
+        if (argc > 1 && !strcmp(argv[1], "debug")) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-l1: wildcard debug needs connected modules\n");
+            l1_printf(s, "INFO: wildcard debug is unsupported without "
+                      "connected modules.%s", console ? "\r\n" : "\n");
+            result = -1;
+            goto complete;
+        }
         argc--;
         memmove(argv, argv + 1, argc * sizeof(argv[0]));
         rest = NULL;
@@ -620,7 +628,15 @@ static bool l1_run_line(SGIL1State *s, const char *text, bool console)
         if (console) {
             l1_prompt(s);
         }
-        return true;
+        return 0;
+    }
+    if (!strcmp(argv[0], "ctc") && argc > 1 &&
+        !strcmp(argv[1], "debug")) {
+        qemu_log_mask(LOG_UNIMP, "sgi-l1: peer debug is unsupported\n");
+        l1_printf(s, "INFO: peer debug is unsupported.%s",
+                  console ? "\r\n" : "\n");
+        result = -1;
+        goto complete;
     }
     if (l1_word(argv[0], "power", "pwr")) {
         if (argc == 2 && l1_word(argv[1], "up", "u")) {
@@ -653,7 +669,7 @@ static bool l1_run_line(SGIL1State *s, const char *text, bool console)
         }
     } else if (!strcmp(argv[0], "reboot_l1")) {
         l1_boot(s);
-        return true;
+        return 0;
     } else if (!strcmp(argv[0], "l1dbg")) {
         if (argc == 1) {
             l1_printf(s, "L1 PROM request debugging is %s\r\n",
@@ -666,14 +682,19 @@ static bool l1_run_line(SGIL1State *s, const char *text, bool console)
         }
     } else if (!strcmp(argv[0], "debug")) {
         if (argc == 1) {
-            l1_printf(s, "debug switches set to 0x%04x\r\n",
-                      s->debug_switches);
+            l1_printf(s, "debug switches set to 0x%04x%s",
+                      s->debug_switches, console ? "\r\n" : "\n");
         } else if (argc == 2 && l1_debug_value(argv[1], &debug_value)) {
             s->debug_switches = debug_value & 0xffff;
-            l1_printf(s, "debug switches set to 0x%04x\r\n",
-                      s->debug_switches);
+            l1_printf(s, "debug switches set to 0x%04x%s",
+                      s->debug_switches, console ? "\r\n" : "\n");
         } else {
-            l1_invalid(s, "debug");
+            if (console) {
+                l1_invalid(s, "debug");
+            } else {
+                l1_printf(s, "ERROR: command not found.\n");
+            }
+            result = -1200;
         }
     } else if (l1_word(argv[0], "version", "ver")) {
         l1_version(s);
@@ -747,10 +768,11 @@ static bool l1_run_line(SGIL1State *s, const char *text, bool console)
     } else {
         l1_printf(s, "ERROR: command not found.\r\n");
         qemu_log_mask(LOG_UNIMP, "sgi-l1: unsupported operator command\n");
-        found = false;
+        result = -1;
     }
+complete:
     if (!console || own_prompt) {
-        return found;
+        return result;
     }
     if (s->escaped && s->node_power) {
         l1_mode_message(s, true);
@@ -758,7 +780,7 @@ static bool l1_run_line(SGIL1State *s, const char *text, bool console)
         s->escaped = false;
         l1_prompt(s);
     }
-    return found;
+    return result;
 }
 
 static void l1_command(SGIL1State *s)
@@ -775,7 +797,7 @@ static void l1_interpret(SGIL1State *s, uint8_t channel, const uint8_t *args,
     g_autofree char *output = NULL;
     uint8_t fields[121];
     unsigned length = 0, fields_count = 0;
-    bool found;
+    int result;
     char **lines;
 
     if (count != 1 || args[0] != 1) {
@@ -783,7 +805,7 @@ static void l1_interpret(SGIL1State *s, uint8_t channel, const uint8_t *args,
         return;
     }
     s->capture = g_string_new(NULL);
-    found = l1_run_line(s, (const char *)args + 1, false);
+    result = l1_run_line(s, (const char *)args + 1, false);
     output = g_string_free(s->capture, FALSE);
     s->capture = NULL;
     lines = g_strsplit(output, "\r\n", -1);
@@ -803,7 +825,7 @@ static void l1_interpret(SGIL1State *s, uint8_t channel, const uint8_t *args,
     }
     g_strfreev(lines);
     /* A status of minus 1 for an unknown command is a model choice. */
-    l1_reply(s, channel, found ? 0 : -1, fields_count, fields, length);
+    l1_reply(s, channel, result, fields_count, fields, length);
 }
 
 static int l1_console_can_receive(void *opaque)
