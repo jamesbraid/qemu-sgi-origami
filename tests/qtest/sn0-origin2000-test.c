@@ -1921,37 +1921,6 @@ static void assert_cpu_inventory(QTestState *qts)
     }
 }
 
-static void test_reordered_model(void)
-{
-    QTestState *qts = qtest_init("-M origin2000-model-test");
-
-    assert_cpu_inventory(qts);
-    program_module(qts);
-    assert_routes(qts, all_module_routes);
-    initialize_module_memory(qts);
-    assert_module_memory(qts, false);
-    set_down_links(qts, "r1-r2");
-    assert_routes(qts, split_module_routes);
-    assert_module_memory(qts, true);
-    set_down_links(qts, "");
-    assert_routes(qts, all_module_routes);
-    qtest_quit(qts);
-}
-
-static void test_invalid_model(gconstpointer data)
-{
-    const char *fault = data;
-    g_autofree char *machine = g_strdup_printf(
-        "origin2000-model-test,fault=%s", fault);
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", machine,
-        "-display", "none", "-S", "-nodefaults", "-qmp", "stdio",
-        "-accel", "qtest", NULL,
-    };
-
-    assert_launch_rejected(args, "Origin 2000");
-}
-
 static void assert_cpu_interrupts(QTestState *qts, unsigned int target,
                                    unsigned int slice, uint32_t expected)
 {
@@ -2110,26 +2079,15 @@ static void test_distinct_table_migration(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
-    if (qtest_has_machine("origin2000-model-test")) {
-        static const char *faults[] = {
-            "composition", "hardware", "routers", "router-module",
-            "router-slot", "router-identity", "links", "link-count",
-            "link-endpoint", "link-port", "link-kind", "link-duplicate",
-            "link-name", "cpu-range", "cpu-duplicate", "cpu-count",
-            "memory-total", "memory-geometry", "memory-bank", "address-map",
-            "xtalk-reference", "module-serial", "module-binding",
-            "module-cross-binding", "module-rom-crc", "module-page-crc",
-            "module-rom-duplicate",
-        };
-
-        qtest_add_func("sn0/origin2000/reordered-model", test_reordered_model);
-        for (unsigned int i = 0; i < G_N_ELEMENTS(faults); i++) {
-            g_autofree char *name = g_strdup_printf(
-                "sn0/origin2000/reject-model/%s", faults[i]);
-
-            qtest_add_data_func(name, faults[i], test_invalid_model);
-        }
-    }
+    /*
+     * Test functions test_reordered_model and test_invalid_model were
+     * deleted since they depended on the origin2000-model-test machine,
+     * which was deleted when the Origin 2000 driver moved to the format-2
+     * family builder. These fixture machine tests validated descriptor
+     * composition but are now covered indirectly by acceptance testing
+     * (IRIX boot) and direct validation of the builder output
+     * (sn-builder-test, address-map-test, migration-test).
+     */
     qtest_add_func("sn0/origin2000/remote-cpu-interrupts",
                    test_remote_cpu_interrupts);
     qtest_add_func("sn0/origin2000/processor-mode-reset-and-release",
