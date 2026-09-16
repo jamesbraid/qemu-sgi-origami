@@ -1,6 +1,6 @@
-===========================
+============================
 SGI IOC3 base I/O controller
-===========================
+============================
 
 The IOC3 is one PCI device with a single BAR covering serial ports,
 an ethernet MAC, PS/2 ports, a one-wire bus holding the station
