@@ -130,6 +130,41 @@ static void test_flash_three_views(const void *data)
 }
 
 /*
+ * A supplied -bios image that carries the real config block -- the pattern
+ * every stock PROM image carries at flash offset 0x60 -- gets three fields
+ * patched to this product's own values (sn0-origin200-model.c: 15 read
+ * cycles, machine type 1, 4 write cycles) while the block's total byte sum
+ * stays exactly where the supplied image left it. That is the flasher's
+ * whole contract, and it runs whether the image is a synthesized template
+ * or a real one; sn0_load_flash must keep applying it after -bios loads a
+ * real PROM image, not only when building the synthesized default.
+ */
+static void test_flash_configure_patches_model_fields(const void *data)
+{
+    g_autofree char *path = write_config_block_fixture();
+    g_autofree char *args = g_strdup_printf("-M origin200 -bios %s", path);
+    QTestState *qts = qtest_init(args);
+    /* The fixture is all zero except the eight magic bytes "ip27conf". */
+    uint8_t sum = (uint8_t)(0x69 + 0x70 + 0x32 + 0x37 +
+                            0x63 + 0x6f + 0x6e + 0x66);
+    int i;
+
+    g_assert_cmphex(qtest_readl(qts, FLASH_RESET + CONFIG_OFFSET +
+                                FIELD_FPROM_CYC), ==, 15);
+    g_assert_cmphex(qtest_readl(qts, FLASH_RESET + CONFIG_OFFSET +
+                                FIELD_MACHTYPE), ==, 1);
+    g_assert_cmphex(qtest_readl(qts, FLASH_RESET + CONFIG_OFFSET +
+                                FIELD_FPROM_WR), ==, 4);
+
+    for (i = 0; i < CONFIG_SIZE; i++) {
+        sum -= qtest_readb(qts, FLASH_RESET + CONFIG_OFFSET + i);
+    }
+    g_assert_cmphex(sum, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
  * Node zero's own boot windows in a two-node machine, the same shape
  * test_flash_three_views checks for the single-node default. Node one's
  * NASID-qualified boot windows are not checked here: reading them this
@@ -1514,6 +1549,8 @@ int main(int argc, char **argv)
 
     qtest_add_data_func("sn0/address-map/flash-three-views", NULL,
                         test_flash_three_views);
+    qtest_add_data_func("sn0/address-map/flash-configure-patches-model-fields",
+                        NULL, test_flash_configure_patches_model_fields);
     qtest_add_data_func("sn0/address-map/dual-node-boot-windows", NULL,
                         test_dual_node_boot_windows);
     qtest_add_data_func("sn0/address-map/boot-windows-mirror-flash", NULL,
