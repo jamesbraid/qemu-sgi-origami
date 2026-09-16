@@ -30,6 +30,19 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
 #define SGI_MGRAS_INT_DEST_UPPER 0x000034
 #define SGI_MGRAS_INT_DEST_LOWER 0x00003c
 
+/*
+ * The widget's own generic control register, at the offset every widget's
+ * copy shares (docs/datasheets/xbow.md documents Crossbow's own copy of the
+ * same offset, "Widget-zero status, control and interrupt destination").
+ * SI Viz's own control bit assignments were never captured, so -- following
+ * that datasheet's own instruction not to invent semantics for an
+ * unevidenced widget-zero control field -- this stores whatever the guest
+ * writes and returns it unchanged, rather than either inventing bit meanings
+ * or treating a plain generic-header register as an SI-specific unsupported
+ * access.
+ */
+#define SGI_MGRAS_WIDGET_CONTROL 0x000024
+
 struct SGIMgrasState {
     SysBusDevice parent_obj;
     MemoryRegion regs;
@@ -39,6 +52,7 @@ struct SGIMgrasState {
     AddressSpace fabric_as;
     uint32_t int_dest_upper;
     uint32_t int_dest_lower;
+    uint32_t widget_control;
     bool irq_asserted;
     /* Host-only qtest introspection; not guest state, not migrated. */
     uint32_t test_pixel_x;

@@ -24,6 +24,7 @@
 
 /* Registers sit at their slot's offset plus four, as datasheets name them. */
 #define REG_IDENTIFICATION     SI_REG(0x000004)
+#define REG_WIDGET_CONTROL     SI_REG(0x000024)
 #define REG_INT_DEST_UPPER     SI_REG(0x000034)
 #define REG_INT_DEST_LOWER     SI_REG(0x00003c)
 #define REG_STARTUP_STATUS     SI_REG(0x008000)
@@ -162,6 +163,36 @@ static void test_identity_and_aperture(void)
     /* No-DMA idle: low five bits clear, direct-copy ready bit set. */
     g_assert_cmphex(qtest_readl(qts, REG_DMA_BUSY) & 0x1f, ==, 0);
     g_assert_cmphex(qtest_readl(qts, REG_DIRECT_COPY_READY), ==, 0x100);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The generic widget-header control register every crosstalk widget carries
+ * at this offset (docs/datasheets/xbow.md documents Crossbow's own copy,
+ * "Widget-zero status, control and interrupt destination"). SI Viz's own
+ * control bit assignments were never captured, so this holds the device to
+ * plain storage -- readable, writable, reset clear -- rather than either
+ * inventing bit semantics or routing a universal generic-header register
+ * through the SI-specific unsupported-access path. A live boot against this
+ * exact machine reached this offset during the PROM's own widget walk
+ * (docs/plans/si-graphics-widget-wiring-handoff-20260916.md on the Origami
+ * side); before this register existed, that access fell through to the
+ * sticky unsupported-access error and raised a spurious interrupt.
+ */
+static void test_widget_control_is_plain_storage(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    g_assert_cmphex(qtest_readl(qts, REG_WIDGET_CONTROL), ==, 0);
+
+    qtest_writel(qts, REG_WIDGET_CONTROL, 0x0000300f);
+    g_assert_cmphex(qtest_readl(qts, REG_WIDGET_CONTROL), ==, 0x0000300f);
+    /* Not an SI-specific access: it must not raise the sticky error. */
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    qtest_writel(qts, REG_WIDGET_CONTROL, 0x00003000);
+    g_assert_cmphex(qtest_readl(qts, REG_WIDGET_CONTROL), ==, 0x00003000);
 
     qtest_quit(qts);
 }
@@ -415,6 +446,8 @@ int main(int argc, char **argv)
 
     qtest_add_func("sn0/origin2000/mgras/identity-and-aperture",
                    test_identity_and_aperture);
+    qtest_add_func("sn0/origin2000/mgras/widget-control-is-plain-storage",
+                   test_widget_control_is_plain_storage);
     qtest_add_func("sn0/origin2000/mgras/generic-bringup-step",
                    test_generic_bringup_step);
     qtest_add_func("sn0/origin2000/mgras/hq-upload-readback",
