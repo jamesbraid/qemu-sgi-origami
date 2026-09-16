@@ -606,7 +606,6 @@ static void sn1_map_memory(SN1MachineState *s, MachineState *machine)
     const SN1MachineModel *model = &sn1_origin300_model;
     MemoryRegion *system = get_system_memory();
 
-    memory_region_add_subregion(system, model->ram_address, machine->ram);
     memory_region_init_alias(&s->hub_memory, OBJECT(machine),
                              "sn1.hub.local-memory", machine->ram, 0,
                              model->hub_memory.size);

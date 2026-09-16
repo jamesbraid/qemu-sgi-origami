@@ -31,13 +31,20 @@
 #define PROTECTION_LAST 0x3ffffc38
 #define PROTECTION_FIRST_ABSENT 0x40000408
 #define PROTECTION_MACHINE_BASE UINT64_C(0x101c0000000)
-#define PROTECTION_MACHINE_FIRST \
-    (PROTECTION_MACHINE_BASE + PROTECTION_FIRST)
-#define PROTECTION_MACHINE_512M_ALIAS \
-    (PROTECTION_MACHINE_BASE + 0x04000408)
-#define PROTECTION_MACHINE_BANK1_HIGH \
-    (PROTECTION_MACHINE_BASE + PROTECTION_BANK1_HIGH)
-#define DIRECTORY_UNFITTED_512M (PROTECTION_MACHINE_BASE + 0x04000000)
+#define HUB_LOCAL_REGISTERS UINT64_C(0x10010000000)
+#define SELFTEST_MACHINE(_x) (HUB_LOCAL_REGISTERS + 0x780000 + (_x))
+#define PROTECTION_MACHINE_BANK2 \
+    (PROTECTION_MACHINE_BASE + UINT64_C(0x10000408))
+#define PROTECTION_MACHINE_BANK2_ALIAS \
+    (PROTECTION_MACHINE_BASE + UINT64_C(0x12000408))
+#define PROTECTION_MACHINE_BANK3 \
+    (PROTECTION_MACHINE_BASE + UINT64_C(0x18000408))
+#define PROTECTION_MACHINE_BANK3_ALIAS \
+    (PROTECTION_MACHINE_BASE + UINT64_C(0x1a000408))
+#define PROTECTION_MACHINE_BANK0 \
+    (PROTECTION_MACHINE_BASE + UINT64_C(0x00000408))
+#define DIRECTORY_MACHINE_BANK2_FIRST_ABSENT \
+    (PROTECTION_MACHINE_BASE + UINT64_C(0x12000000))
 #define PROM_SIZE UINT64_C(0x1686a8)
 #define NODE_MEMORY_512M \
     "-object memory-backend-ram,id=node-memory,size=512M "
@@ -155,6 +162,23 @@ static QTestState *start(const char *extra)
     return start_with_memory("512M", extra);
 }
 
+static QTestState *start_with_installed_memory(const char *extra)
+{
+    QTestState *s = qtest_initf("-M none -cpu R10000 "
+                                NODE_MEMORY_512M
+                                "-device sgi-bedrock-md,id=md,"
+                                "node-memory=/objects/node-memory/"
+                                "node-memory[0],installed-bank-mask=12,"
+                                "installed-bank2-mib=256,"
+                                "installed-bank3-mib=256 -S %s", extra);
+
+    qtest_sysbus_mmio_map(s, MD_PATH, 0, BASE);
+    qtest_sysbus_mmio_map(s, MD_PATH, 1, DIRECTORY_BASE);
+    qtest_sysbus_mmio_map(s, MD_PATH, 2, ECC_BASE);
+    qtest_sysbus_mmio_map(s, MD_PATH, 3, MEMORY_BASE);
+    return s;
+}
+
 static void ensure_clock_running(QTestState *s)
 {
     g_autoptr(QDict) response =
@@ -164,6 +188,49 @@ static void ensure_clock_running(QTestState *s)
     if (!qdict_get_bool(status, "running")) {
         qtest_qmp_assert_success(s, "{'execute':'cont'}");
     }
+}
+
+static char *flat_view_region_type_at(QTestState *s, uint64_t address)
+{
+    g_autofree char *mtree = qtest_hmp(s, "info mtree -f");
+    const char *system_view = strstr(mtree, "Root memory region: system");
+    const char *system_view_end;
+    const char *line;
+
+    g_assert_nonnull(system_view);
+    system_view = strchr(system_view, '\n');
+    g_assert_nonnull(system_view);
+    system_view++;
+    system_view_end = strstr(system_view, "\nFlatView #");
+    if (!system_view_end) {
+        system_view_end = system_view + strlen(system_view);
+    }
+
+    for (line = system_view; line < system_view_end; ) {
+        const char *line_end = strchr(line, '\n');
+        uint64_t start_address;
+        uint64_t end_address;
+        char type[32];
+
+        if (!line_end || line_end > system_view_end) {
+            line_end = system_view_end;
+        }
+        if (sscanf(line, " %" SCNx64 "-%" SCNx64 " (prio %*d, %31[^)])",
+                   &start_address, &end_address, type) == 3 &&
+            address >= start_address && address <= end_address) {
+            return g_strdup(type);
+        }
+        line = line_end + (line_end < system_view_end);
+    }
+    return NULL;
+}
+
+static void assert_flat_view_type(QTestState *s, uint64_t address,
+                                  const char *expected)
+{
+    g_autofree char *type = flat_view_region_type_at(s, address);
+
+    g_assert_cmpstr(type, ==, expected);
 }
 
 static QTestState *start_clock_with_memory(const char *size, const char *extra)
@@ -334,6 +401,204 @@ static void test_selftest_negative_carriers(void)
     assert_selftest_result("128M", memory_bank_config(0, 6) |
                                    memory_bank_config(1, 1), 1,
                            SELFTEST_DONE);
+}
+
+/*
+ * Origin 300 installs locational banks two and three. Temporary descriptors
+ * for the other selectors must not consume their dense RAM; checking every
+ * selector in both phases distinguishes installed population from guest
+ * configuration alone.
+ */
+static void test_selftest_origin300_installed_population(void)
+{
+    static const uint64_t detail[] = {
+        SELFTEST_ERROR_ADDRESS, SELFTEST_DIRECTORY_ERROR,
+        SELFTEST_MEMORY_ERROR0, SELFTEST_MEMORY_ERROR0 + 8,
+        SELFTEST_MEMORY_ERROR0 + 0x10, SELFTEST_MEMORY_ERROR0 + 0x18,
+    };
+    g_autofree char *prom = empty_prom_new();
+    g_autofree char *quoted_prom = g_shell_quote(prom);
+    QTestState *s = qtest_initf("-M origin300 -cpu R14000 -smp 2 "
+                                "-m 512M -bios %s -S", quoted_prom);
+
+    ensure_clock_running(s);
+    for (unsigned selector = 0; selector < 8; selector++) {
+        unsigned bank_select = selector & 3;
+        unsigned configured_bank = selector ^ bank_select;
+
+        qtest_writeq(s, SELFTEST_MACHINE(0x8),
+                     ((uint64_t)bank_select << 32) |
+                     memory_bank_config(configured_bank, 3));
+        for (unsigned phase = 0; phase < 2; phase++) {
+            bool installed = selector == 2 || selector == 3;
+            uint64_t expected_status = installed ?
+                SELFTEST_DONE | SELFTEST_PASSED : SELFTEST_DONE;
+            uint64_t expected_error = installed ?
+                0 : SELFTEST_MEMORY_ERROR;
+
+            qtest_writeq(s, SELFTEST_MACHINE(SELFTEST_DATA),
+                         phase == 0 ? 0xda : 0x5a);
+            qtest_writeq(s, SELFTEST_MACHINE(SELFTEST_CONTROL),
+                         (selector << 4) | 1);
+            g_assert_cmphex(qtest_readq(s,
+                                       SELFTEST_MACHINE(SELFTEST_STATUS)),
+                            ==, 0);
+            g_assert_cmphex(qtest_readq(s,
+                                       SELFTEST_MACHINE(
+                                           SELFTEST_ERROR_ADDRESS)),
+                            ==, 0);
+            qtest_clock_step(s, SELFTEST_INTERVAL_NS);
+            g_assert_cmphex(qtest_readq(s,
+                                       SELFTEST_MACHINE(SELFTEST_STATUS)),
+                            ==, expected_status);
+            for (unsigned i = 0; i < ARRAY_SIZE(detail); i++) {
+                g_assert_cmphex(qtest_readq(s,
+                                           SELFTEST_MACHINE(detail[i])),
+                                ==, i == 0 ? expected_error : 0);
+            }
+        }
+    }
+    qtest_quit(s);
+    unlink(prom);
+}
+
+/*
+ * Enabling absent descriptors must not move the two installed banks within
+ * dense backing. A nonzero selector also pins XOR-before-presence ordering.
+ */
+static void test_memory_installed_population(void)
+{
+    uint64_t config = UINT64_C(1) << 32;
+    QTestState *s = start_with_installed_memory("");
+
+    for (unsigned bank = 0; bank < 8; bank++) {
+        config |= memory_bank_config(bank, 3);
+    }
+    qtest_writeq(s, MD(0x8), config);
+    qtest_writeq(s, MEMORY(3 * MEMORY_BANK_SIZE), UINT64_C(0x0123456789abcdef));
+    qtest_writeq(s, MEMORY(2 * MEMORY_BANK_SIZE), UINT64_C(0xfedcba9876543210));
+    g_assert_cmphex(qtest_readq(s, MEMORY(3 * MEMORY_BANK_SIZE)), ==,
+                    UINT64_C(0x0123456789abcdef));
+    g_assert_cmphex(qtest_readq(s, MEMORY(2 * MEMORY_BANK_SIZE)), ==,
+                    UINT64_C(0xfedcba9876543210));
+    qtest_writeq(s, MEMORY(MEMORY_BANK_SIZE), UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, MEMORY(MEMORY_BANK_SIZE)), !=, UINT64_MAX);
+    qtest_writeq(s, MEMORY(3 * MEMORY_BANK_SIZE + 0x10000000), UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s,
+                    MEMORY(3 * MEMORY_BANK_SIZE + 0x10000000)), !=,
+                    UINT64_MAX);
+    qtest_set_irq_in(s, MD_PATH, "soft-reset", 0, 1);
+    qtest_set_irq_in(s, MD_PATH, "soft-reset", 0, 0);
+    g_assert_cmphex(qtest_readq(s, MD(0x8)), ==, config);
+    assert_flat_view_type(s, MEMORY(3 * MEMORY_BANK_SIZE), "ram");
+    g_assert_cmphex(qtest_readq(s, MEMORY(3 * MEMORY_BANK_SIZE)), ==,
+                    UINT64_C(0x0123456789abcdef));
+    qtest_quit(s);
+}
+
+/*
+ * Origin 300 exposes installed banks in fixed 1 GiB windows. This rejects a
+ * raw-RAM mapping at zero and a mapping truncated to the 512 MiB backing.
+ */
+static void test_origin300_memory_aperture(void)
+{
+    static const uint8_t prom_marker[] = {
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
+    };
+    g_autofree char *prom = empty_prom_new();
+    g_autofree char *quoted_prom = g_shell_quote(prom);
+    int fd = open(prom, O_WRONLY);
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, prom_marker, sizeof(prom_marker)), ==,
+                    sizeof(prom_marker));
+    g_assert_cmpint(close(fd), ==, 0);
+    QTestState *s = qtest_initf("-M origin300 -cpu R14000 -smp 2 "
+                                "-m 512M -bios %s -S", quoted_prom);
+
+    g_assert_cmphex(qtest_readq(s, UINT64_C(0x1fc00000)), ==,
+                    UINT64_C(0x0123456789abcdef));
+    g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(0x8)), ==, 0);
+    qtest_writeq(s, SELFTEST_MACHINE(0x8),
+                 memory_bank_config(2, 3) | memory_bank_config(3, 3));
+    qtest_writeq(s, 0, UINT64_C(0x599a599a599a599a));
+    g_assert_cmphex(qtest_readq(s, 0), !=, UINT64_C(0x599a599a599a599a));
+    qtest_writeq(s, UINT64_C(0x80000000), UINT64_C(0x0123456789abcdef));
+    qtest_writeq(s, UINT64_C(0xc0000000), UINT64_C(0xfedcba9876543210));
+    g_assert_cmphex(qtest_readq(s, UINT64_C(0x80000000)), ==,
+                    UINT64_C(0x0123456789abcdef));
+    g_assert_cmphex(qtest_readq(s, UINT64_C(0xc0000000)), ==,
+                    UINT64_C(0xfedcba9876543210));
+    qtest_writeb(s, UINT64_C(0x8fffffff), 0xa5);
+    g_assert_cmphex(qtest_readb(s, UINT64_C(0x8fffffff)), ==, 0xa5);
+    qtest_writeb(s, UINT64_C(0x90000000), 0x5a);
+    g_assert_cmphex(qtest_readb(s, UINT64_C(0x90000000)), !=, 0x5a);
+    qtest_quit(s);
+    unlink(prom);
+}
+
+/*
+ * Temporary descriptors must not relocate directory or ECC storage. Swapping
+ * software banks with selector three distinguishes dense installed backing
+ * from storage keyed only by carrier address.
+ */
+static void test_backdoors_installed_population(void)
+{
+    uint64_t config = UINT64_C(2) << 32;
+    QTestState *s = start_with_installed_memory("");
+
+    for (unsigned bank = 0; bank < 8; bank++) {
+        config |= memory_bank_config(bank, 3);
+    }
+    qtest_writeq(s, MD(0x8), config);
+    qtest_writeq(s, DIRECTORY(0), 0x13579bdf);
+    qtest_writeq(s, DIRECTORY(DIRECTORY_BANK_SIZE), 0x2468ace0);
+    qtest_writeb(s, ECC(7), 0x35);
+    qtest_writeb(s, ECC(DIRECTORY_BANK_SIZE + 7), 0x46);
+
+    qtest_writeq(s, MD(0x8), (config & ~(UINT64_C(3) << 32)) |
+                              (UINT64_C(3) << 32));
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(0)), ==, 0x2468ace0);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_BANK_SIZE)), ==,
+                    0x13579bdf);
+    g_assert_cmphex(qtest_readb(s, ECC(7)), ==, 0x46);
+    g_assert_cmphex(qtest_readb(s, ECC(DIRECTORY_BANK_SIZE + 7)), ==, 0x35);
+
+    qtest_writeq(s, MD(0x8), config);
+    qtest_writeq(s, DIRECTORY(DIRECTORY_LAST_256M), 0x10203040);
+    qtest_writeq(s, DIRECTORY(DIRECTORY_BANK_SIZE + DIRECTORY_LAST_256M),
+                 0x50607080);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LAST_256M)), ==,
+                    0x10203040);
+    g_assert_cmphex(qtest_readq(s,
+                    DIRECTORY(DIRECTORY_BANK_SIZE + DIRECTORY_LAST_256M)),
+                    ==, 0x50607080);
+    qtest_writeq(s, DIRECTORY(DIRECTORY_FIRST_ABSENT_256M), UINT64_MAX);
+    qtest_writeq(s,
+                 DIRECTORY(DIRECTORY_BANK_SIZE +
+                           DIRECTORY_FIRST_ABSENT_256M), UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s,
+                    DIRECTORY(DIRECTORY_FIRST_ABSENT_256M)), ==, 0);
+    g_assert_cmphex(qtest_readq(s,
+                    DIRECTORY(DIRECTORY_BANK_SIZE +
+                              DIRECTORY_FIRST_ABSENT_256M)), ==, 0);
+    qtest_writeq(s, DIRECTORY(2 * DIRECTORY_BANK_SIZE), UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(2 * DIRECTORY_BANK_SIZE)), ==,
+                    0);
+
+    qtest_writeb(s, ECC(0x01fffff8), 0xa5);
+    qtest_writeb(s, ECC(DIRECTORY_BANK_SIZE + 0x01fffff8), 0x5a);
+    g_assert_cmphex(qtest_readb(s, ECC(0x01fffff8)), ==, 0xa5);
+    g_assert_cmphex(qtest_readb(s,
+                    ECC(DIRECTORY_BANK_SIZE + 0x01fffff8)), ==, 0x5a);
+    qtest_writeb(s, ECC(0x02000007), 0xff);
+    qtest_writeb(s, ECC(DIRECTORY_BANK_SIZE + 0x02000007), 0xff);
+    qtest_writeb(s, ECC(2 * DIRECTORY_BANK_SIZE + 7), 0xff);
+    g_assert_cmphex(qtest_readb(s, ECC(0x02000007)), ==, 0);
+    g_assert_cmphex(qtest_readb(s,
+                    ECC(DIRECTORY_BANK_SIZE + 0x02000007)), ==, 0);
+    g_assert_cmphex(qtest_readb(s, ECC(2 * DIRECTORY_BANK_SIZE + 7)), ==, 0);
+    qtest_quit(s);
 }
 
 static void test_selftest_replacement(void)
@@ -930,30 +1195,38 @@ static void test_protection_capacity_probe(void)
     g_autofree char *quoted_prom = g_shell_quote(prom);
     g_autofree char *log = log_file_new();
     g_autofree char *contents = NULL;
-    const uint64_t low = UINT64_C(0xa55aa55aa55aa55a);
-    const uint64_t high = UINT64_C(0x5aa55aa55aa55aa5);
+    const uint64_t bank2 = UINT64_C(0xa55aa55aa55aa55a);
+    const uint64_t bank3 = UINT64_C(0x5aa55aa55aa55aa5);
     const uint64_t absent = UINT64_C(0x599a599a599a599a);
     const uint64_t selected_lanes = UINT64_C(0x0000ffff0000ffff);
     QTestState *s = qtest_initf("-M origin300 -cpu R14000 -smp 2 "
                                 "-m 512M -bios %s -S -d guest_errors -D %s",
                                 quoted_prom, log);
 
-    qtest_writeq(s, PROTECTION_MACHINE_FIRST, low);
-    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_FIRST), ==, low);
-    qtest_writeq(s, PROTECTION_MACHINE_512M_ALIAS, high);
-    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_FIRST), ==, high);
-    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_512M_ALIAS), ==, high);
+    qtest_writeq(s, PROTECTION_MACHINE_BANK2, bank2);
+    qtest_writeq(s, PROTECTION_MACHINE_BANK3, bank3);
+    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_BANK2), ==, bank2);
+    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_BANK2_ALIAS), ==, bank2);
+    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_BANK3), ==, bank3);
+    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_BANK3_ALIAS), ==, bank3);
+    qtest_writeq(s, SELFTEST_MACHINE(0x8), UINT64_C(1) << 32);
+    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_BANK2), ==, bank3);
+    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_BANK3), ==, bank2);
 
-    qtest_writeq(s, PROTECTION_MACHINE_BANK1_HIGH, absent);
-    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_BANK1_HIGH) &
+    qtest_writeq(s, SELFTEST_MACHINE(0x8),
+                 memory_bank_config(2, 3) | memory_bank_config(3, 3));
+    qtest_writeq(s, PROTECTION_MACHINE_BANK0, absent);
+    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_BANK0) &
                     selected_lanes, !=, absent & selected_lanes);
-    qtest_writeq(s, DIRECTORY_UNFITTED_512M, UINT64_MAX);
+    qtest_writeq(s, DIRECTORY_MACHINE_BANK2_FIRST_ABSENT, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY_MACHINE_BANK2_FIRST_ABSENT),
+                    ==, 0);
     qtest_quit(s);
 
     contents = log_file_take(log);
     g_assert_null(strstr(contents, "protection"));
     g_assert_nonnull(strstr(contents,
-                           "directory write at offset 0x4000000"));
+                           "directory write at offset 0x12000000"));
     unlink(prom);
 }
 
@@ -1445,6 +1718,54 @@ static void migrate_pair(QTestState *from, QTestState *to, const char *uri)
     migrate_wait(to);
 }
 
+/*
+ * Post-load must rebuild RAM aliases from the migrated selector and leave
+ * capacity holes on the decoder. Data alone would also pass through MMIO.
+ */
+static void test_memory_installed_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *directory =
+        g_dir_make_tmp("sn1-md-memory-migration-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    uint64_t config = (UINT64_C(2) << 32) |
+                      memory_bank_config(2, 3) |
+                      memory_bank_config(3, 3);
+    g_autofree char *prom = empty_prom_new();
+    g_autofree char *quoted_prom = g_shell_quote(prom);
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = qtest_initf("-M origin300 -cpu R14000 -smp 2 -m 512M "
+                       "-bios %s -S", quoted_prom);
+    to = qtest_initf("-M origin300 -cpu R14000 -smp 2 -m 512M "
+                     "-bios %s -S -incoming defer", quoted_prom);
+    qtest_writeq(from, SELFTEST_MACHINE(0x8), config);
+    qtest_writeq(from, 0, UINT64_C(0x0123456789abcdef));
+    qtest_writeq(from, MEMORY_BANK_SIZE,
+                 UINT64_C(0xfedcba9876543210));
+    assert_flat_view_type(from, 0, "ram");
+    assert_flat_view_type(from, 0x10000000, "i/o");
+    ensure_clock_running(from);
+    migrate_pair(from, to, uri);
+    g_assert_cmphex(qtest_readq(to, SELFTEST_MACHINE(0x8)), ==, config);
+    assert_flat_view_type(to, 0, "ram");
+    assert_flat_view_type(to, 0x10000000, "i/o");
+    assert_flat_view_type(to, 2 * MEMORY_BANK_SIZE, "i/o");
+    g_assert_cmphex(qtest_readq(to, 0), ==,
+                    UINT64_C(0x0123456789abcdef));
+    g_assert_cmphex(qtest_readq(to, MEMORY_BANK_SIZE), ==,
+                    UINT64_C(0xfedcba9876543210));
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(directory), ==, 0);
+    unlink(prom);
+}
+
 static void test_selftest_migration_running(void)
 {
     GError *error = NULL;
@@ -1794,6 +2115,8 @@ int main(int argc, char **argv)
                    test_selftest_bank_remap);
     qtest_add_func("sn1/bedrock-md/selftest-negative-carriers",
                    test_selftest_negative_carriers);
+    qtest_add_func("sn1/bedrock-md/selftest-origin300-installed-population",
+                   test_selftest_origin300_installed_population);
     qtest_add_func("sn1/bedrock-md/selftest-replacement",
                    test_selftest_replacement);
     qtest_add_func("sn1/bedrock-md/selftest-cancellation",
@@ -1807,6 +2130,12 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-md/selftest-migration-running",
                    test_selftest_migration_running);
     qtest_add_func("sn1/bedrock-md/memory-banks", test_memory_banks);
+    qtest_add_func("sn1/bedrock-md/memory-installed-population",
+                   test_memory_installed_population);
+    qtest_add_func("sn1/bedrock-md/origin300-memory-aperture",
+                   test_origin300_memory_aperture);
+    qtest_add_func("sn1/bedrock-md/backdoors-installed-population",
+                   test_backdoors_installed_population);
     qtest_add_func("sn1/bedrock-md/directory-bank-translation",
                    test_directory_bank_translation);
     qtest_add_func("sn1/bedrock-md/memory-size-boundaries",
@@ -1859,6 +2188,8 @@ int main(int argc, char **argv)
                    test_perf_counter_lock_word);
     qtest_add_func("sn1/bedrock-md/reset", test_reset);
     qtest_add_func("sn1/bedrock-md/migration", test_migration);
+    qtest_add_func("sn1/bedrock-md/memory-installed-migration",
+                   test_memory_installed_migration);
     qtest_add_func("sn1/bedrock-md/writable-masks", test_writable_masks);
     qtest_add_func("sn1/bedrock-md/ecc-carrier", test_ecc_carrier);
     qtest_add_func("sn1/bedrock-md/ecc-bank-translation",
