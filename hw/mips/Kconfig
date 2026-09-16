@@ -56,6 +56,7 @@ config SGI_SN0
     select SGI_IOC3
     select SGI_IOC3_ETH
     select SGI_NET_CABLE
+    select SGI_MGRAS
     select SGI_PCI_EXPANSION
     select SGI_ROUTER
     select SGI_XBOW
@@ -188,4 +189,3 @@ config MIPS_BOSTON
 
 config FW_CFG_MIPS
     bool
-

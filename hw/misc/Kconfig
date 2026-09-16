@@ -322,6 +322,9 @@ config SGI_XBRIDGE_XBOW
     bool
     default y if TEST_DEVICES
 
+config SGI_MGRAS
+    bool
+
 config SGI_BRIDGE_DMA_TEST
     bool
     default y if TEST_DEVICES
