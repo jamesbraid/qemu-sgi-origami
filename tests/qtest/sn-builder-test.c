@@ -1,13 +1,14 @@
 /*
  * The format-2 builder (sn-machine.c): the named faults
  * sgi_machine_validate_topology rejects before creating any device
- * (sn-builder-fault-test's fixture, a minimal two-node topology),
- * plus the command-line contract every product shares -- -numa
- * refused, an unsupported -smp population rejected, and a topology
- * belonging to a different product refused -- checked against the
- * real Origin 200 machine. The console field test drives the same
- * fixture file's sn-builder-console-test machine, a real two-node
- * build the fault fixture never realizes.
+ * (sn-builder-fault-test's fixture, a minimal two-node topology), plus
+ * the command-line contract every product shares -- -numa refused, an
+ * unsupported -smp or -m population rejected, and a topology belonging
+ * to a different product refused -- checked against the real Origin
+ * 200, Origin 200 (dual) and Origin 2000 machines, whose every accepted
+ * population is also checked to build. The console field test drives
+ * the same fixture file's sn-builder-console-test machine, a real
+ * two-node build the fault fixture never realizes.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -48,10 +49,15 @@ static void assert_fault_rejected(const char *fault, const char *message)
     assert_qemu_rejects(args, message);
 }
 
-static void test_link_end_out_of_range(const void *data)
+static void test_empty_topology(const void *data)
 {
-    assert_fault_rejected("link-end-range",
-                          "link 'link0' end 0 names vertex 99, past 2");
+    assert_fault_rejected("empty-topology", "names no nodes");
+}
+
+static void test_module_node_out_of_range(const void *data)
+{
+    assert_fault_rejected("module-node-range",
+                          "module 'm1' names node 99, past its 2 nodes");
 }
 
 static void test_node_in_two_modules(const void *data)
@@ -60,11 +66,47 @@ static void test_node_in_two_modules(const void *data)
                           "node 0 is in two modules");
 }
 
+static void test_node_in_no_module(const void *data)
+{
+    assert_fault_rejected("node-in-no-module", "node 1 is in no module");
+}
+
+static void test_unknown_asic_kind(const void *data)
+{
+    assert_fault_rejected("unknown-asic-kind",
+                          "node 0 names an unknown node ASIC kind");
+}
+
 static void test_cpu_slot_beyond_interfaces(const void *data)
 {
     assert_fault_rejected("cpu-slot-range",
                           "names a CPU slot beyond its ASIC's 1 "
                           "interface(s) of 2 each");
+}
+
+static void test_link_end_out_of_range(const void *data)
+{
+    assert_fault_rejected("link-end-range",
+                          "link 'link0' end 0 names vertex 99, past 2");
+}
+
+static void test_unknown_vertex_kind(const void *data)
+{
+    assert_fault_rejected("unknown-vertex-kind",
+                          "link 'link0' names an unknown fabric vertex kind");
+}
+
+static void test_router_port_out_of_range(const void *data)
+{
+    assert_fault_rejected("router-port-range",
+                          "link 'link0' end 0 names port 99, outside "
+                          "router 0's 1-2 hardware-numbered ports");
+}
+
+static void test_duplicate_link_end(const void *data)
+{
+    assert_fault_rejected("duplicate-link-end",
+                          "links 'link1' and 'link0' share one fabric end");
 }
 
 static void test_unknown_fault_reported(const void *data)
@@ -105,13 +147,15 @@ static void test_topology_from_another_product_refused(const void *data)
 {
     /*
      * sgi_model_entries[] holds every product's topologies in one
-     * table; topology= names one by string alone, with no other
-     * check to keep a product on its own wiring. Origin 2000's
-     * "origin2000-module" descriptor already sits in that table (the
-     * format-2 goldens merge), unreachable through its own product
-     * only because Origin 2000 has no machine class here yet -- once
-     * it does, the same name would resolve just as well for Origin
-     * 200. This is refused the way any other unknown name is.
+     * table; topology= names one by string alone, so
+     * sgi_machine_topology() also checks the resolved entry against
+     * this machine's own product (sgi_machine_topology_matches_product)
+     * before handing it back. Origin 2000's "origin2000-module"
+     * descriptor exists and resolves by name just as well for Origin
+     * 200's product class, so without that check Origin 200 would
+     * build Origin 2000's four-node wiring under its own product.
+     * The product mismatch is refused the way any other unknown name
+     * is: sgi_machine_topology() returns NULL either way.
      */
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M", "origin200,topology=origin2000-module",
@@ -119,6 +163,71 @@ static void test_topology_from_another_product_refused(const void *data)
     };
 
     assert_qemu_rejects(args, "unknown topology 'origin2000-module'");
+}
+
+/*
+ * Every accepted -smp/-m population actually builds, for every topology
+ * that ships today -- the positive side of the rejection tests above.
+ * qtest_enabled() waives the stock-PROM/-bios requirement, so a bare
+ * qtest_init() that returns at all, without QEMU exiting first, is the
+ * pass: sgi_machine_init ran its validation and built every node.
+ */
+static void test_origin200_accepts_its_cpu_populations(const void *data)
+{
+    static const unsigned int cpus[] = { 1, 2 };
+    unsigned int i;
+
+    for (i = 0; i < ARRAY_SIZE(cpus); i++) {
+        g_autofree char *args = g_strdup_printf(
+            "-M origin200 -smp %u -display none", cpus[i]);
+        QTestState *qts = qtest_init(args);
+
+        qtest_quit(qts);
+    }
+}
+
+static void test_origin200_accepts_its_memory_populations(const void *data)
+{
+    static const unsigned int mib[] = { 512, 256, 128, 64 };
+    unsigned int i;
+
+    for (i = 0; i < ARRAY_SIZE(mib); i++) {
+        g_autofree char *args = g_strdup_printf(
+            "-M origin200 -m %uM -display none", mib[i]);
+        QTestState *qts = qtest_init(args);
+
+        qtest_quit(qts);
+    }
+}
+
+static void test_origin200_dual_accepts_its_populations(const void *data)
+{
+    /*
+     * default_ram_size is origin200's own shipped total (one node), so
+     * -m must be named explicitly here: left out, it would divide across
+     * this topology's two real nodes and fail, not fall back to a value
+     * this topology accepts.
+     */
+    static const unsigned int mib_per_node[] = { 512, 256, 128, 64 };
+    unsigned int i;
+
+    for (i = 0; i < ARRAY_SIZE(mib_per_node); i++) {
+        g_autofree char *args = g_strdup_printf(
+            "-M origin200,topology=origin200-dual -smp 4,sockets=2,cores=2 "
+            "-m %uM -display none", mib_per_node[i] * 2);
+        QTestState *qts = qtest_init(args);
+
+        qtest_quit(qts);
+    }
+}
+
+static void test_origin2000_module_accepts_its_populations(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin2000 -smp 8 -display none");
+
+    qtest_quit(qts);
+    qts = qtest_init("-M origin2000 -smp 8 -m 256M -display none");
+    qtest_quit(qts);
 }
 
 /*
@@ -169,12 +278,26 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
-    qtest_add_data_func("sn/builder/link-end-out-of-range", NULL,
-                        test_link_end_out_of_range);
+    qtest_add_data_func("sn/builder/empty-topology", NULL,
+                        test_empty_topology);
+    qtest_add_data_func("sn/builder/module-node-out-of-range", NULL,
+                        test_module_node_out_of_range);
     qtest_add_data_func("sn/builder/node-in-two-modules", NULL,
                         test_node_in_two_modules);
+    qtest_add_data_func("sn/builder/node-in-no-module", NULL,
+                        test_node_in_no_module);
+    qtest_add_data_func("sn/builder/unknown-asic-kind", NULL,
+                        test_unknown_asic_kind);
     qtest_add_data_func("sn/builder/cpu-slot-beyond-interfaces", NULL,
                         test_cpu_slot_beyond_interfaces);
+    qtest_add_data_func("sn/builder/link-end-out-of-range", NULL,
+                        test_link_end_out_of_range);
+    qtest_add_data_func("sn/builder/unknown-vertex-kind", NULL,
+                        test_unknown_vertex_kind);
+    qtest_add_data_func("sn/builder/router-port-out-of-range", NULL,
+                        test_router_port_out_of_range);
+    qtest_add_data_func("sn/builder/duplicate-link-end", NULL,
+                        test_duplicate_link_end);
     qtest_add_data_func("sn/builder/unknown-fault-reported", NULL,
                         test_unknown_fault_reported);
     qtest_add_data_func("sn/builder/numa-refused", NULL,
@@ -187,6 +310,15 @@ int main(int argc, char **argv)
                         test_console_field_puts_its_node_on_serial_line_zero);
     qtest_add_data_func("sn/builder/unsupported-memory-population-rejected",
                         NULL, test_unsupported_memory_population_rejected);
+    qtest_add_data_func("sn/builder/origin200-accepts-its-cpu-populations",
+                        NULL, test_origin200_accepts_its_cpu_populations);
+    qtest_add_data_func("sn/builder/origin200-accepts-its-memory-populations",
+                        NULL, test_origin200_accepts_its_memory_populations);
+    qtest_add_data_func("sn/builder/origin200-dual-accepts-its-populations",
+                        NULL, test_origin200_dual_accepts_its_populations);
+    qtest_add_data_func(
+        "sn/builder/origin2000-module-accepts-its-populations", NULL,
+        test_origin2000_module_accepts_its_populations);
 
     return g_test_run();
 }
