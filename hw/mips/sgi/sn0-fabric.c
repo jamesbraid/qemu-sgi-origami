@@ -1,17 +1,16 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * The SN0 fabric and its direct adapter.
+ * The SN0 fabric base class.
  *
  * The fabric owns the topology and answers two questions for a Hub's
  * endpoint: which endpoint is reachable as node number d, and what does a
- * vector reach. The direct adapter is the fabric of two Hubs joined by one
- * link -- the Origin 200's CrayLink cable, or a deskside Origin 2000's Null
- * Router: each Hub reaches itself by its own number and the other Hub by
- * the number that Hub has programmed, and a vector of zero names the other
- * Hub while any other vector, which would need a Router, is refused. Two
- * Hubs programmed the same number cannot reach each other; the issuer
- * always wins its own number, so no access is ever served by the wrong Hub.
+ * vector reach. Every product builds the routed subclass
+ * (sn0-fabric-routed.c), which answers both questions the same way whether
+ * the graph holds real Routers or none: a two-Hub topology with no Router
+ * (the Origin 200's CrayLink cable, or a deskside Origin 2000's Null
+ * Router) walks a zero-router graph of one link, so this base class no
+ * longer needs a second, direct-wired subclass of its own.
  *
  * Contract: the routed-fabric design in the Origami project tree
  * (docs/designs/2026-09-03-origin2000-routed-fabric-design.md).
@@ -64,27 +63,12 @@ unsigned int sn0_fabric_add_named_link(SN0FabricState *f, const char *name)
 {
     SN0FabricLink link = {
         .name = g_strdup(name),
-        .a = UINT_MAX,
-        .b = UINT_MAX,
     };
 
     g_assert(!f->built);
     g_assert(f->links->len < 64);
     g_array_append_val(f->links, link);
     return f->links->len - 1;
-}
-
-void sn0_fabric_add_link(SN0FabricState *f, const char *name,
-                         unsigned int a, unsigned int b)
-{
-    unsigned int index;
-    SN0FabricLink *link;
-
-    g_assert(a < f->endpoints->len && b < f->endpoints->len && a != b);
-    index = sn0_fabric_add_named_link(f, name);
-    link = sn0_fabric_link(f, index);
-    link->a = a;
-    link->b = b;
 }
 
 bool sn0_fabric_link_enabled(SN0FabricState *f, unsigned int index)
@@ -179,22 +163,6 @@ bool sn0_fabric_link_up(SN0FabricState *f, unsigned int endpoint)
     return SN0_FABRIC_GET_CLASS(f)->link_up(f, endpoint);
 }
 
-static bool sn0_fabric_direct_link_up(SN0FabricState *f,
-                                      unsigned int endpoint)
-{
-    unsigned int n;
-
-    for (n = 0; n < f->links->len; n++) {
-        SN0FabricLink *link = sn0_fabric_link(f, n);
-
-        if ((link->a == endpoint || link->b == endpoint) &&
-            !sn0_fabric_link_down(f, n)) {
-            return true;
-        }
-    }
-    return false;
-}
-
 SN0FabricVectorResult sn0_fabric_vector(SN0FabricState *f,
                                         unsigned int endpoint,
                                         uint64_t vector,
@@ -202,109 +170,6 @@ SN0FabricVectorResult sn0_fabric_vector(SN0FabricState *f,
 {
     access->reply_vector = 0;
     return SN0_FABRIC_GET_CLASS(f)->vector(f, endpoint, vector, access);
-}
-
-/* The direct adapter: one link, two endpoints, no Router. */
-
-static int sn0_fabric_direct_peer(SN0FabricState *f, unsigned int endpoint)
-{
-    unsigned int n;
-
-    for (n = 0; n < f->links->len; n++) {
-        SN0FabricLink *link = sn0_fabric_link(f, n);
-
-        if (sn0_fabric_link_down(f, n)) {
-            continue;
-        }
-        if (link->a == endpoint) {
-            return link->b;
-        }
-        if (link->b == endpoint) {
-            return link->a;
-        }
-    }
-    return SN0_FABRIC_NONE;
-}
-
-static void sn0_fabric_direct_recompute(SN0FabricState *f)
-{
-    unsigned int index;
-
-    for (index = 0; index < f->endpoints->len; index++) {
-        SN0FabricEndpoint *self = sn0_fabric_endpoint(f, index);
-        int16_t map[SN0_FABRIC_NUMBERS];
-        int peer = sn0_fabric_direct_peer(f, index);
-        unsigned int n;
-
-        for (n = 0; n < SN0_FABRIC_NUMBERS; n++) {
-            map[n] = SN0_FABRIC_NONE;
-        }
-        /* Own number first: two Hubs both at zero each keep zero. */
-        if (self->number < SN0_FABRIC_NUMBERS) {
-            map[self->number] = index;
-        }
-        if (peer != SN0_FABRIC_NONE) {
-            SN0FabricEndpoint *other = sn0_fabric_endpoint(f, peer);
-
-            if (other->number < SN0_FABRIC_NUMBERS &&
-                other->number != self->number) {
-                map[other->number] = peer;
-            }
-        }
-        sn0_fabric_publish(f, index, map);
-    }
-}
-
-/*
- * A vector of zero names the directly wired peer; any other route needs a
- * Router this fabric does not have and fails with the address-error
- * response, as the fork answered before this change. With no link up nothing
- * answers at all.
- */
-static SN0FabricVectorResult
-sn0_fabric_direct_vector(SN0FabricState *f, unsigned int endpoint,
-                         uint64_t vector, SN0FabricVectorAccess *access)
-{
-    int peer = sn0_fabric_direct_peer(f, endpoint);
-    SGIHubState *target;
-    bool performed;
-
-    if (peer == SN0_FABRIC_NONE) {
-        return SN0_FABRIC_VECTOR_NONE;
-    }
-    target = sn0_fabric_endpoint(f, peer)->hub;
-    if (vector != 0) {
-        access->source = sgi_hub_programmed_nasid(target);
-        return SN0_FABRIC_VECTOR_ERROR;
-    }
-    performed = sgi_hub_vector_access(target, access);
-    /*
-     * The reply names the responder as it is when it replies: a write that
-     * renumbers the target reports the new number, which is how firmware
-     * confirms an assignment took.
-     */
-    access->source = sgi_hub_programmed_nasid(target);
-    return performed ? SN0_FABRIC_VECTOR_OK : SN0_FABRIC_VECTOR_ERROR;
-}
-
-static char *sn0_fabric_direct_routes(SN0FabricState *f)
-{
-    GString *routes = g_string_new(NULL);
-    unsigned int from, to;
-
-    for (from = 0; from < f->endpoints->len; from++) {
-        for (to = 0; to < f->endpoints->len; to++) {
-            bool linked;
-
-            if (from == to) {
-                continue;
-            }
-            linked = sn0_fabric_direct_peer(f, from) == (int)to;
-            g_string_append_printf(routes, "%s%u>%u=%s", routes->len ? " " : "",
-                                   from, to, linked ? "0x0" : "-");
-        }
-    }
-    return g_string_free(routes, false);
 }
 
 /* The properties tests read and write: which links are down, and the routes. */
@@ -419,16 +284,6 @@ static void sn0_fabric_class_init(ObjectClass *klass, const void *data)
         "vector in the PROM manual's notation, or - when unreachable");
 }
 
-static void sn0_fabric_direct_class_init(ObjectClass *klass, const void *data)
-{
-    SN0FabricClass *fc = SN0_FABRIC_CLASS(klass);
-
-    fc->link_up = sn0_fabric_direct_link_up;
-    fc->recompute = sn0_fabric_direct_recompute;
-    fc->vector = sn0_fabric_direct_vector;
-    fc->routes = sn0_fabric_direct_routes;
-}
-
 static const TypeInfo sn0_fabric_types[] = {
     {
         .name = TYPE_SN0_FABRIC,
@@ -439,11 +294,6 @@ static const TypeInfo sn0_fabric_types[] = {
         .class_size = sizeof(SN0FabricClass),
         .class_init = sn0_fabric_class_init,
         .abstract = true,
-    },
-    {
-        .name = TYPE_SN0_FABRIC_DIRECT,
-        .parent = TYPE_SN0_FABRIC,
-        .class_init = sn0_fabric_direct_class_init,
     },
 };
 

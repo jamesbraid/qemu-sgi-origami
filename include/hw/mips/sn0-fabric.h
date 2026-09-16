@@ -27,7 +27,6 @@
 #include "exec/hwaddr.h"
 
 #define TYPE_SN0_FABRIC        "sn0-fabric"
-#define TYPE_SN0_FABRIC_DIRECT "sn0-fabric-direct"
 
 OBJECT_DECLARE_TYPE(SN0FabricState, SN0FabricClass, SN0_FABRIC)
 
@@ -53,9 +52,6 @@ typedef struct SN0FabricEndpoint {
 typedef struct SN0FabricLink {
     /* The model's bus identifier, which the down-links property names. */
     char *name;
-    /* The two endpoints the link joins (the direct adapter's only shape). */
-    unsigned int a;
-    unsigned int b;
 } SN0FabricLink;
 
 typedef enum SN0FabricVectorOp {
@@ -123,9 +119,7 @@ struct SN0FabricClass {
 /* The machine's side: build the topology, then declare it built. */
 unsigned int sn0_fabric_add_endpoint(SN0FabricState *f, SGIHubState *hub,
                                      uint32_t stride);
-void sn0_fabric_add_link(SN0FabricState *f, const char *name,
-                         unsigned int a, unsigned int b);
-/* Adapter helpers; link names and down-state share one migration stream. */
+/* Registers a named link; a subclass keeps its own endpoint records. */
 unsigned int sn0_fabric_add_named_link(SN0FabricState *f, const char *name);
 bool sn0_fabric_link_enabled(SN0FabricState *f, unsigned int index);
 void sn0_fabric_recompute(SN0FabricState *f);
