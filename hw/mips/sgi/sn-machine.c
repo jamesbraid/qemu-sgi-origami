@@ -289,6 +289,35 @@ static const SGIModelCpuPopulation *sgi_machine_find_population(
     return NULL;
 }
 
+/*
+ * Validate that the per-node memory size matches one of the accepted
+ * populations. Every node in the topology must accept the same per-node
+ * size if an accepted list is present.
+ */
+static bool sgi_machine_validate_memory_population(
+    const SGIModelTopology *t, uint64_t per_node_mib)
+{
+    unsigned int node_index;
+
+    for (node_index = 0; node_index < t->node_count; node_index++) {
+        const SGIModelNode *node = &t->nodes[node_index];
+        size_t i;
+
+        if (!node->accepted_memory_mib || !node->accepted_memory_mib_count) {
+            continue;
+        }
+        for (i = 0; i < node->accepted_memory_mib_count; i++) {
+            if (node->accepted_memory_mib[i] == per_node_mib) {
+                break;
+            }
+        }
+        if (i == node->accepted_memory_mib_count) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /* ---- possible_cpu_arch_ids and friends ---- */
 
 static const CPUArchIdList *sgi_machine_possible_cpu_arch_ids(
@@ -1029,6 +1058,13 @@ static void sgi_machine_init(MachineState *machine)
         exit(EXIT_FAILURE);
     }
 
+    if (!sgi_machine_validate_memory_population(t,
+                                                machine->ram_size / node_count / MiB)) {
+        error_report("%s: topology '%s' does not accept %" PRIu64 " MiB per node",
+                    mc->name, t->name, machine->ram_size / node_count / MiB);
+        exit(EXIT_FAILURE);
+    }
+
     if (s->debug_leds && !sgi_machine_show_indicator_codes(&err)) {
         error_report_err(err);
         exit(EXIT_FAILURE);
@@ -1128,12 +1164,14 @@ static void sgi_machine_init(MachineState *machine)
 
         s->hub_components[node_index] =
             *sgi_machine_build_hub_component(&model_node->identity);
+        s->hub_components[node_index].i2c_controller_offset =
+            model_node->management_adapter_offset;
         s->physical_nodes[node_index] = (SN0ModelPhysicalNode) {
             .id = model_node->id,
             .slot = model_node->slot,
             .hub = &s->hub_components[node_index],
             .map = sgi_sn0_hub_address_map,
-            .flash = { .kind = SN0_FLASH_AM29F080 },
+            .flash = { .kind = (SN0ModelFlashKind)model_node->flash.kind },
         };
 
         qdev_prop_set_uint32(DEVICE(node), "nasid", node_index);
