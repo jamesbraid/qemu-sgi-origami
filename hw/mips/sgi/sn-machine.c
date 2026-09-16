@@ -1142,8 +1142,10 @@ static void sgi_machine_init(MachineState *machine)
         qdev_prop_set_uint8(DEVICE(&node->hub), "elsc-dip-switches",
                             s->elsc_dip_switches);
         if (!model_node->slave_role) {
-            aux_chr = serial_hd(sgi_machine_compute_serial_line(t, node_index,
-                                                                SN0_ELSC_CHARDEV));
+            int line = sgi_machine_compute_serial_line(t, node_index,
+                                                        SN0_ELSC_CHARDEV);
+
+            aux_chr = serial_hd(line);
             if (aux_chr) {
                 object_property_set_link(OBJECT(&node->hub), "elsc-chardev",
                                          OBJECT(aux_chr), &error_fatal);
