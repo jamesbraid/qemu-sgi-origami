@@ -100,6 +100,91 @@ static SGIModelTopology fault_test_topology = {
 };
 
 /*
+ * Console field test fixture: a two-node topology with console=1 to
+ * exercise the serial line reordering logic in sgi_machine_compute_serial_line.
+ * All current topologies have console=0, so the non-default branch is never
+ * exercised without this fixture.
+ */
+static const SGIModelProcessor console_test_processor = {
+    .id = "test-cpu",
+    .kind = "TEST",
+};
+
+static SGIModelCpuSlot console_test_n0_cpu_slots[] = {
+    { .interface = 0, .slot = 0, .assembly = &console_test_processor },
+    { .interface = 0, .slot = 1, .assembly = &console_test_processor },
+};
+
+static SGIModelCpuSlot console_test_n1_cpu_slots[] = {
+    { .interface = 0, .slot = 0, .assembly = &console_test_processor },
+    { .interface = 0, .slot = 1, .assembly = &console_test_processor },
+};
+
+static SGIModelNode console_test_nodes[] = {
+    {
+        .id = "n0",
+        .module_index = 0,
+        .slot = 0,
+        .asic_kind = SGI_MODEL_ASIC_HUB,
+        .cpu_slots = console_test_n0_cpu_slots,
+        .cpu_slot_count = ARRAY_SIZE(console_test_n0_cpu_slots),
+        .bank_mib = { 64, 0, 0, 0, 0, 0, 0, 0 },
+    },
+    {
+        .id = "n1",
+        .module_index = 1,
+        .slot = 0,
+        .asic_kind = SGI_MODEL_ASIC_HUB,
+        .cpu_slots = console_test_n1_cpu_slots,
+        .cpu_slot_count = ARRAY_SIZE(console_test_n1_cpu_slots),
+        .bank_mib = { 64, 0, 0, 0, 0, 0, 0, 0 },
+    },
+};
+
+static unsigned int console_test_m0_nodes[] = { 0 };
+static unsigned int console_test_m1_nodes[] = { 1 };
+
+static SGIModelModule console_test_modules[] = {
+    {
+        .id = "m0",
+        .controller_index = -1,
+        .nodes = console_test_m0_nodes,
+        .node_count = ARRAY_SIZE(console_test_m0_nodes),
+    },
+    {
+        .id = "m1",
+        .controller_index = -1,
+        .nodes = console_test_m1_nodes,
+        .node_count = ARRAY_SIZE(console_test_m1_nodes),
+    },
+};
+
+static SGIModelFabricLink console_test_links[] = {
+    {
+        .name = "link0",
+        .ends = {
+            { .kind = SGI_MODEL_FABRIC_NODE, .index = 0, .port = 0 },
+            { .kind = SGI_MODEL_FABRIC_NODE, .index = 1, .port = 0 },
+        },
+        .kind = SGI_MODEL_LINK_CABLE,
+    },
+};
+
+static SGIModelTopology console_test_topology = {
+    .name = "sn-builder-console-test",
+    .generation = SGI_MODEL_GENERATION_SN0,
+    .description = "console field serial line reordering test fixture",
+    .nodes = console_test_nodes,
+    .node_count = ARRAY_SIZE(console_test_nodes),
+    .modules = console_test_modules,
+    .module_count = ARRAY_SIZE(console_test_modules),
+    .links = console_test_links,
+    .link_count = ARRAY_SIZE(console_test_links),
+    .console = 1,
+    .junk_uart = -1,
+};
+
+/*
  * Named faults for the checks sgi_machine_validate_topology runs before
  * the builder creates anything. Two of the plan's named checks have no
  * fixture case here: a bank beyond geometry needs a bank index past the
@@ -165,3 +250,50 @@ static void fault_test_register_types(void)
 }
 
 type_init(fault_test_register_types)
+
+/*
+ * Console field test machine: verifies that the serial line reordering
+ * logic in sgi_machine_compute_serial_line works for console != 0.
+ * The machine type provides the console_test_topology directly.
+ */
+#define TYPE_SN_BUILDER_CONSOLE_TEST MACHINE_TYPE_NAME("sn-builder-console-test")
+
+static const SGIModelTopology *console_test_machine_topology(
+    MachineState *machine)
+{
+    return &console_test_topology;
+}
+
+static void console_test_machine_init(MachineState *machine)
+{
+    Error *err = NULL;
+
+    if (!console_test_machine_topology(machine)) {
+        return;
+    }
+    if (!sgi_machine_validate_topology(&console_test_topology, &err)) {
+        error_report_err(err);
+        exit(EXIT_FAILURE);
+    }
+}
+
+static void console_test_class_init(ObjectClass *oc, const void *data)
+{
+    MachineClass *mc = MACHINE_CLASS(oc);
+
+    mc->desc = "console field reordering test fixture";
+    mc->init = console_test_machine_init;
+}
+
+static const TypeInfo console_test_type = {
+    .name = TYPE_SN_BUILDER_CONSOLE_TEST,
+    .parent = TYPE_MACHINE,
+    .class_init = console_test_class_init,
+};
+
+static void console_test_register_types(void)
+{
+    type_register_static(&console_test_type);
+}
+
+type_init(console_test_register_types)

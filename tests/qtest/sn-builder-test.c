@@ -108,6 +108,42 @@ static void test_topology_from_another_product_refused(const void *data)
     assert_qemu_rejects(args, "unknown topology 'origin2000-module'");
 }
 
+static void test_console_field_reordering(const void *data)
+{
+    /*
+     * sgi_machine_compute_serial_line() reorders serial lines based on the
+     * console field: the console node gets serial line 0, and other nodes
+     * shift accordingly. The console test fixture has console=1, exercising
+     * the non-default branch (node_index < t->console and node_index >
+     * t->console cases).
+     */
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "sn-builder-console-test",
+        "-display", "none", NULL
+    };
+    g_autofree char *error_output = NULL;
+    int wait_status = 0;
+
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                              NULL, &error_output, &wait_status, NULL));
+    g_assert_true(g_spawn_check_exit_status(wait_status, NULL));
+}
+
+static void test_unsupported_memory_population_rejected(const void *data)
+{
+    /*
+     * Origin 200 accepts 512, 256, 128, and 64 MiB per node.
+     * -m 768M (single node, default topology) is not in the accepted list.
+     */
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "768M",
+        "-display", "none", NULL
+    };
+
+    assert_qemu_rejects(args,
+                        "topology 'origin200' does not accept 768 MiB per node");
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -126,6 +162,10 @@ int main(int argc, char **argv)
                         NULL, test_unsupported_smp_population_rejected);
     qtest_add_data_func("sn/builder/topology-from-another-product-refused",
                         NULL, test_topology_from_another_product_refused);
+    qtest_add_data_func("sn/builder/console-field-reordering", NULL,
+                        test_console_field_reordering);
+    qtest_add_data_func("sn/builder/unsupported-memory-population-rejected",
+                        NULL, test_unsupported_memory_population_rejected);
 
     return g_test_run();
 }
