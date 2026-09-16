@@ -1156,45 +1156,46 @@ static void sn0_node_map_xtalk_windows(SN0NodeState *node)
         &node->hub_regs_node_view);
 }
 
-void sn0_map_cpu_big_windows(SN0MachineState *s)
+void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
+                             unsigned int num_nodes, MemoryRegion **route_out)
 {
     unsigned int source, slice, target;
+    MemoryRegion *big_window_route = g_new0(
+        MemoryRegion, num_nodes * SN0_MAX_CPUS_PER_NODE * (num_nodes + 1));
 
-    s->big_window_route = g_new0(
-        MemoryRegion, s->num_nodes * SN0_MAX_CPUS_PER_NODE *
-                      (s->num_nodes + 1));
-    for (source = 0; source < s->num_nodes; source++) {
-        SN0NodeState *source_node = s->nodes[source];
+    *route_out = big_window_route;
+    for (source = 0; source < num_nodes; source++) {
+        SN0NodeState *source_node = nodes[source];
         const SN0ModelAddressMap *map =
             sn0_node_address_map(source_node);
 
         for (slice = 0; slice < source_node->nr_cpus; slice++) {
             unsigned int base =
                 (source * SN0_MAX_CPUS_PER_NODE + slice) *
-                (s->num_nodes + 1);
-            MemoryRegion *nameless = &s->big_window_route[base];
+                (num_nodes + 1);
+            MemoryRegion *nameless = &big_window_route[base];
             g_autofree char *nameless_name = g_strdup_printf(
                 "sn0.node%u.cpu%u.xtalk.nameless-bigwin",
                 source_node->nasid, slice);
 
-            memory_region_init_alias(nameless, OBJECT(s), nameless_name,
-                                     &s->nodes[0]->hub.bwin, 0,
+            memory_region_init_alias(nameless, owner, nameless_name,
+                                     &nodes[0]->hub.bwin, 0,
                                      memory_region_size(
-                                         &s->nodes[0]->hub.bwin));
+                                         &nodes[0]->hub.bwin));
             memory_region_add_subregion(
                 &source_node->cpu_sysmem[slice],
                 map->xtalk.carrier_base + SN0_BIG_WINDOW_BASE,
                 nameless);
 
-            for (target = 0; target < s->num_nodes; target++) {
-                SN0NodeState *target_node = s->nodes[target];
+            for (target = 0; target < num_nodes; target++) {
+                SN0NodeState *target_node = nodes[target];
                 MemoryRegion *route =
-                    &s->big_window_route[base + 1 + target];
+                    &big_window_route[base + 1 + target];
                 g_autofree char *name = g_strdup_printf(
                     "sn0.node%u.cpu%u.xtalk.node%u.bigwin",
                     source_node->nasid, slice, target_node->nasid);
 
-                memory_region_init_alias(route, OBJECT(s), name,
+                memory_region_init_alias(route, owner, name,
                                          &target_node->hub.bwin, 0,
                                          memory_region_size(
                                              &target_node->hub.bwin));
@@ -1636,7 +1637,8 @@ static void sn0_init(MachineState *machine)
     g_assert(cpu_index == machine->smp.cpus);
     g_assert(ram_offset == machine->ram_size);
 
-    sn0_map_cpu_big_windows(s);
+    sn0_map_cpu_big_windows(OBJECT(s), s->nodes, s->num_nodes,
+                            &s->big_window_route);
 
     /* The two-module Origin 200 has four CPU turns and one slave turn. */
     if (node_count == 2) {
