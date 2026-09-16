@@ -3,7 +3,7 @@
 #define HW_MISC_SGI_MGRAS_H
 
 #include "hw/core/sysbus.h"
-#include "hw/core/irq.h"
+#include "system/memory.h"
 #include "qom/object.h"
 #include "qemu/units.h"
 
@@ -14,10 +14,30 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
 #define SGI_MGRAS_WIDTH 1280
 #define SGI_MGRAS_HEIGHT 1024
 
+/*
+ * The widget's own crosstalk interrupt-destination pair, at the offset the
+ * Crossbow datasheet gives for "any widget's" copy of that register
+ * (docs/datasheets/xbow.md, offset 0x0030/0x0038 relative to the widget's
+ * register base). SI Viz's exact register table was never captured, so this
+ * reuses the one interrupt-destination encoding the project holds evidence
+ * for rather than inventing a SI-specific one. One destination serves all
+ * four IP27 interrupt roles, which this device recomputes and delivers as a
+ * single level whenever any unmasked pending role is set. The target widget
+ * field, vector and address are guest-programmed and carried in migration.
+ */
+#define SGI_MGRAS_INT_DEST_UPPER 0x000034
+#define SGI_MGRAS_INT_DEST_LOWER 0x00003c
+
 struct SGIMgrasState {
     SysBusDevice parent_obj;
     MemoryRegion regs;
-    qemu_irq irq[4];
+    MemoryRegion *fabric;
+    uint64_t fabric_base;
+    uint32_t fabric_widget_shift;
+    AddressSpace fabric_as;
+    uint32_t int_dest_upper;
+    uint32_t int_dest_lower;
+    bool irq_asserted;
     QEMUTimer *retrace_timer;
     uint32_t *front;
     uint32_t *back;
@@ -41,6 +61,7 @@ struct SGIMgrasState {
     uint32_t entry;
     uint32_t protocol;
     uint64_t prefix;
+    bool prefix_written;
     bool entry_selected;
     bool first_ack;
     bool second_ack;
