@@ -353,6 +353,25 @@ static void test_repp_sync_handshake(void)
     qtest_quit(qts);
 }
 
+/*
+ * The unrolled poll the same boot reaches right after the REPP handshake
+ * completes, live-traced with GDB: `lw a0,0(s0); andi a0,a0,0x2; bnez
+ * a0,<continue>`, against this same register. This device's first commit
+ * returned a plain nonzero value here with no evidence behind the exact
+ * bits, since nothing had ever exercised the consumer; that value's bit
+ * 0x2 was clear, so the poll spun forever the first time real driver code
+ * reached it. See the header comment on the 0x020000 case for why bit 0x2
+ * is what the healthy path reports now.
+ */
+static void test_hq_status_bringup_bit(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x2, ==, 0x2);
+
+    qtest_quit(qts);
+}
+
 static void test_hq_upload_and_readback(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
@@ -683,6 +702,8 @@ int main(int argc, char **argv)
                    test_i2c_probe_loopback);
     qtest_add_func("sn0/origin2000/mgras/repp-sync-handshake",
                    test_repp_sync_handshake);
+    qtest_add_func("sn0/origin2000/mgras/hq-status-bringup-bit",
+                   test_hq_status_bringup_bit);
     qtest_add_func("sn0/origin2000/mgras/hq-upload-readback",
                    test_hq_upload_and_readback);
     qtest_add_func("sn0/origin2000/mgras/context-recognizer-ordering",

@@ -229,7 +229,19 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
      * bring-up delay.
      */
     case 0x011098: return 0x2;
-    case 0x020000: return s->error ? 0x80000000 : 1;
+    /*
+     * This device's first commit returned a plain nonzero "healthy" value
+     * here (1) with no evidence behind the exact bits, since nothing had
+     * ever exercised the consumer. Live-tracing a boot that finally reaches
+     * this poll (only possible once the REPP sync handshake above stopped
+     * blocking it) shows the same unrolled bit-0x2 poll shape already
+     * evidenced at 0x011098: `lw a4,0(s0); andi a4,a4,0x2; beqz a4,<retry>`.
+     * The old value's bit 0x2 was clear, so the poll never saw its exit
+     * condition. Report that bit set on the healthy path instead, dropping
+     * the previously unevidenced low bit rather than keep a second guess
+     * beside a now-evidenced one.
+     */
+    case 0x020000: return s->error ? 0x80000000 : 0x2;
     case 0x020008: return s->fifo_count;
     /*
      * The kernel driver's own reset routine polls this offset's low five
