@@ -205,6 +205,8 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
     case SGI_MGRAS_INT_DEST_UPPER: return s->int_dest_upper;
     case SGI_MGRAS_INT_DEST_LOWER: return s->int_dest_lower;
     case SGI_MGRAS_WIDGET_CONTROL: return s->widget_control;
+    case SGI_MGRAS_RESET_ARG: return s->reset_arg;
+    case SGI_MGRAS_RESET_CONTROL: return s->reset_control;
     case 0x008000: return 0;
     case 0x011020: return s->pending;
     case 0x011040: return s->irq_mask;
@@ -224,7 +226,18 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
     case 0x011098: return 0x2;
     case 0x020000: return s->error ? 0x80000000 : 1;
     case 0x020008: return s->fifo_count;
-    case 0x020100: return 31 << 4;
+    /*
+     * The kernel driver's own reset routine polls this offset's low five
+     * bits, waiting for ((bits + 1) >> 1) < 8 -- i.e. the field settling to
+     * 14 or below -- before it will continue. The value this case returned
+     * before, 31 << 4, has its low five bits fixed at 16, which never
+     * satisfies that test: once this driver code actually ran (only
+     * possible after installing the retained kernel module, which no
+     * earlier pass had done), it spun here forever. Reporting an
+     * already-settled field is the same "immediate readiness, no modelled
+     * delay" approximation already used at 0x011098 above.
+     */
+    case 0x020100: return 0;
     case 0x020200: return 0;
     case 0x02c578: return 0x100;
     case 0x071208: return 0x08;
@@ -258,6 +271,8 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     case SGI_MGRAS_INT_DEST_UPPER: s->int_dest_upper = value; return;
     case SGI_MGRAS_INT_DEST_LOWER: s->int_dest_lower = value; return;
     case SGI_MGRAS_WIDGET_CONTROL: s->widget_control = value; return;
+    case SGI_MGRAS_RESET_ARG: s->reset_arg = value; return;
+    case SGI_MGRAS_RESET_CONTROL: s->reset_control = value; return;
     case 0x011000:
         /*
          * MgrasStart writes configuration here before the first context
@@ -389,6 +404,7 @@ static void si_reset(DeviceState *dev)
     s->xmap_mode = 0x7a4; s->cmap_index = 0; s->retraces = 0;
     s->int_dest_upper = s->int_dest_lower = 0;
     s->widget_control = 0;
+    s->reset_arg = s->reset_control = 0;
     /*
      * Reset does not retroactively unsend an already-delivered packet, so
      * this clears the transition-detector directly rather than going
@@ -464,6 +480,8 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32(int_dest_upper, SGIMgrasState),
         VMSTATE_UINT32(int_dest_lower, SGIMgrasState),
         VMSTATE_UINT32(widget_control, SGIMgrasState),
+        VMSTATE_UINT32(reset_arg, SGIMgrasState),
+        VMSTATE_UINT32(reset_control, SGIMgrasState),
         VMSTATE_BOOL(irq_asserted, SGIMgrasState),
         VMSTATE_UINT16(fifo_count, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(command, SGIMgrasState, 0x200),

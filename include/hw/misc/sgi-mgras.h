@@ -44,6 +44,19 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
  */
 #define SGI_MGRAS_WIDGET_CONTROL 0x000024
 
+/*
+ * Two more registers the kernel driver's own reset routine writes once it
+ * observes the readiness field at 0x020100 settled, live-traced through a
+ * boot that actually reaches this code path: 0x011008 (a second word next
+ * to the existing startup-configuration register at 0x011000) and 0x072408
+ * (in the display/cursor register block). Neither field's bit meaning was
+ * captured -- only that this driver writes them once during reset and
+ * expects the access to succeed -- so both store opaque state, the same
+ * treatment already given to the generic widget control register above.
+ */
+#define SGI_MGRAS_RESET_ARG 0x011008
+#define SGI_MGRAS_RESET_CONTROL 0x072408
+
 struct SGIMgrasState {
     SysBusDevice parent_obj;
     MemoryRegion regs;
@@ -54,6 +67,8 @@ struct SGIMgrasState {
     uint32_t int_dest_upper;
     uint32_t int_dest_lower;
     uint32_t widget_control;
+    uint32_t reset_arg;
+    uint32_t reset_control;
     bool irq_asserted;
     /* Host-only qtest introspection; not guest state, not migrated. */
     uint32_t test_pixel_x;
