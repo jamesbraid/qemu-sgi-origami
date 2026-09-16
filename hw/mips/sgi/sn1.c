@@ -48,7 +48,7 @@
  */
 #define SN1_SPACE_HUB UINT64_C(0x10000000000)
 #define SN1_BOARD_ID_OFFSET UINT64_C(0x4000000)
-#define SN1_BOARD_ID_VALUE UINT64_C(0x8000)
+#define SN1_BOARD_ID_VALUE UINT64_C(0x8001)
 #define SN1_HUB_LOCAL_HIGH_BOOT (SN1_SPACE_HUB + UINT64_C(0x1fc00000))
 #define SN1_HUB_REMOTE_FLASH (SN1_SPACE_HUB + UINT64_C(0x3a000000))
 #define SN1_PROM_RESET UINT64_C(0x1fc00000)
@@ -542,8 +542,9 @@ static void sn1_create_pci_devices(SN1MachineState *s, MachineState *machine)
 
 /*
  * The board-identification register both consumers read: OpenBSD through the
- * remote form and the stock firmware through the local one, each taking the
- * product code from bits 15 through 12. One stateless response serves both.
+ * remote form and the stock firmware through the local one. The response keeps
+ * the product code in bits 15 through 12 and the fixed CPU configuration
+ * selector in the low byte. One stateless response serves both.
  * Only the aligned 64-bit read is answered; everything else is refused and
  * said out loud, because nothing establishes what the other bits or widths do.
  */
