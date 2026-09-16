@@ -32,6 +32,14 @@ struct SGIMachineClass {
     const char *product;
     /* The topology name topology= selects when the user names none. */
     const char *default_topology;
+    /*
+     * A fixture's own descriptor, bypassing the name lookup in
+     * sgi_model_entries[] entirely. Set only by a qtest machine type that
+     * needs the real builder over a topology no product ships (a
+     * non-default console node, say); every shipping product leaves this
+     * NULL and resolves topology= against the generated table instead.
+     */
+    const SGIModelTopology *test_topology;
 };
 
 /*
@@ -41,5 +49,14 @@ struct SGIMachineClass {
  */
 bool sgi_machine_validate_topology(const SGIModelTopology *topology,
                                    Error **errp);
+
+/*
+ * Exposed for the same fixture: the real builder, for a qtest-only
+ * machine class that sets test_topology and wants to run it, gated
+ * behind its own property the way sn-builder-fault-test.c's validator
+ * is gated behind "fault" -- inert for qom-test and test-hmp's blanket,
+ * property-free sweep of every registered machine type.
+ */
+void sgi_machine_init(MachineState *machine);
 
 #endif /* HW_MIPS_SGI_SN_MACHINE_H */

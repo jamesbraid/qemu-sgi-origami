@@ -100,68 +100,125 @@ static SGIModelTopology fault_test_topology = {
 };
 
 /*
- * Console field test fixture: a two-node topology with console=1 to
- * exercise the serial line reordering logic in sgi_machine_compute_serial_line.
- * All current topologies have console=0, so the non-default branch is never
- * exercised without this fixture.
+ * Console field test fixture: a two-node topology with console=1, each
+ * node carrying its own base I/O controller the way Origin 200's two-tower
+ * wiring does (node/module/xtalk/PCI values copied from the origin200-dual
+ * descriptor in sn-model.c, minus its two SCSI functions, which the serial
+ * line contract never touches). All shipping topologies have console=0,
+ * so the reordering sgi_machine_compute_serial_line() does for a non-
+ * default console is otherwise never built or realized, only validated.
+ * SGIMachineClass.test_topology hands this straight to sgi_machine_init,
+ * so the qtest in tests/qtest/sn-builder-test.c that boots
+ * "sn-builder-console-test" exercises the real builder, not a stand-in.
  */
-static const SGIModelProcessor console_test_processor = {
-    .id = "test-cpu",
-    .kind = "TEST",
+static const SGIModelProcessor console_test_r10000_180mhz = {
+    .id = "r10000-180mhz",
+    .kind = "R10000",
+    .prid = 0x926,
+    .fpu_prid = 0x900,
+    .clock_hz = 0xaba9500,
+    .cache_clock_hz = 0x55d4a80,
+    .cache_mib = 1,
+    .mode_bits = 0x1211a785,
 };
 
-static SGIModelCpuSlot console_test_n0_cpu_slots[] = {
-    { .interface = 0, .slot = 0, .assembly = &console_test_processor },
-    { .interface = 0, .slot = 1, .assembly = &console_test_processor },
+static const SGIModelCpuSlot console_test_cpu_slots[] = {
+    { .interface = 0, .slot = 0, .assembly = &console_test_r10000_180mhz },
+    { .interface = 0, .slot = 1, .assembly = &console_test_r10000_180mhz },
 };
 
-static SGIModelCpuSlot console_test_n1_cpu_slots[] = {
-    { .interface = 0, .slot = 0, .assembly = &console_test_processor },
-    { .interface = 0, .slot = 1, .assembly = &console_test_processor },
+static const uint64_t console_test_accepted_mib[] = { 512, 256, 128, 64 };
+
+static const SGIModelFlashView console_test_flash_views[] = {
+    { .name = "reset", .size = 0x100000 },
+    { .name = "lboot", .size = 0x10000000 },
+    { .name = "rboot", .size = 0x10000000 },
 };
 
-static SGIModelNode console_test_nodes[] = {
+static const SGIModelNode console_test_nodes[] = {
     {
-        .id = "n0",
+        .id = "node0-hub",
         .module_index = 0,
         .slot = 0,
         .asic_kind = SGI_MODEL_ASIC_HUB,
-        .cpu_slots = console_test_n0_cpu_slots,
-        .cpu_slot_count = ARRAY_SIZE(console_test_n0_cpu_slots),
+        .identity = {
+            .ni_revision = 3,
+            .widget_revision = 1,
+            .serial = 0xc0b0a090807,
+            .i2c_controller = true,
+            .system_controller = true,
+            .i2c_controller_offset = 0x220000,
+            .i2c_elsc_addr = 8,
+            .i2c_nvram_first_addr = 0x50,
+            .i2c_nvram_pages = 8,
+        },
+        .cpu_slots = console_test_cpu_slots,
+        .cpu_slot_count = ARRAY_SIZE(console_test_cpu_slots),
+        .flash = {
+            .kind = SGI_MODEL_FLASH_AM29F080,
+            .size = 0x100000,
+            .views = console_test_flash_views,
+            .view_count = ARRAY_SIZE(console_test_flash_views),
+        },
+        .management_adapter_offset = 0x220000,
+        .slave_role = false,
+        .accepted_memory_mib = console_test_accepted_mib,
+        .accepted_memory_mib_count = ARRAY_SIZE(console_test_accepted_mib),
         .bank_mib = { 64, 0, 0, 0, 0, 0, 0, 0 },
     },
     {
-        .id = "n1",
+        .id = "node1-hub",
         .module_index = 1,
         .slot = 0,
         .asic_kind = SGI_MODEL_ASIC_HUB,
-        .cpu_slots = console_test_n1_cpu_slots,
-        .cpu_slot_count = ARRAY_SIZE(console_test_n1_cpu_slots),
+        .identity = {
+            .ni_revision = 3,
+            .widget_revision = 1,
+            .serial = 0xc0b0a090808,
+            .i2c_controller = true,
+            .system_controller = true,
+            .i2c_controller_offset = 0x220000,
+            .i2c_elsc_addr = 8,
+            .i2c_nvram_first_addr = 0x50,
+            .i2c_nvram_pages = 8,
+        },
+        .cpu_slots = console_test_cpu_slots,
+        .cpu_slot_count = ARRAY_SIZE(console_test_cpu_slots),
+        .flash = {
+            .kind = SGI_MODEL_FLASH_AM29F080,
+            .size = 0x100000,
+            .views = console_test_flash_views,
+            .view_count = ARRAY_SIZE(console_test_flash_views),
+        },
+        .management_adapter_offset = 0x220000,
+        .slave_role = true,
+        .accepted_memory_mib = console_test_accepted_mib,
+        .accepted_memory_mib_count = ARRAY_SIZE(console_test_accepted_mib),
         .bank_mib = { 64, 0, 0, 0, 0, 0, 0, 0 },
     },
 };
 
-static unsigned int console_test_m0_nodes[] = { 0 };
-static unsigned int console_test_m1_nodes[] = { 1 };
+static const unsigned int console_test_m0_nodes[] = { 0 };
+static const unsigned int console_test_m1_nodes[] = { 1 };
 
-static SGIModelModule console_test_modules[] = {
+static const SGIModelModule console_test_modules[] = {
     {
-        .id = "m0",
+        .id = "node0-cpu-module",
         .controller_index = -1,
         .nodes = console_test_m0_nodes,
         .node_count = ARRAY_SIZE(console_test_m0_nodes),
     },
     {
-        .id = "m1",
+        .id = "node1-cpu-module",
         .controller_index = -1,
         .nodes = console_test_m1_nodes,
         .node_count = ARRAY_SIZE(console_test_m1_nodes),
     },
 };
 
-static SGIModelFabricLink console_test_links[] = {
+static const SGIModelFabricLink console_test_links[] = {
     {
-        .name = "link0",
+        .name = "peer-craylink",
         .ends = {
             { .kind = SGI_MODEL_FABRIC_NODE, .index = 0, .port = 0 },
             { .kind = SGI_MODEL_FABRIC_NODE, .index = 1, .port = 0 },
@@ -170,7 +227,128 @@ static SGIModelFabricLink console_test_links[] = {
     },
 };
 
-static SGIModelTopology console_test_topology = {
+static const SGIModelXtalkAttachment console_test_xtalk[] = {
+    {
+        .crossbar_index = -1,
+        .widget = 8,
+        .node_index = 0,
+        .decoded_widget_mask = 0xfffd,
+        .discovery_widget = 0,
+    },
+    {
+        .crossbar_index = -1,
+        .widget = 8,
+        .node_index = 1,
+        .decoded_widget_mask = 0xfffd,
+        .discovery_widget = 0,
+    },
+};
+
+/*
+ * One IOC3 per node's board, node0's and node1's boards each their own
+ * onewire serial so the two devices are distinguishable; no ISP1040, since
+ * SCSI takes no serial line and the serial line contract is all this
+ * fixture exists to exercise.
+ */
+static const SGIModelPciFunction console_test_m0_baseio_pci[] = {
+    {
+        .kind = SGI_MODEL_PCI_IOC3,
+        .device = 2,
+        .function = 0,
+        .revision = 1,
+        .irq_input = 3,
+        .subsystem_id = 0xc303,
+        .serial = 0x5e7000000001,
+        .ioc3_population = {
+            .ethernet = true,
+            .serial_a = true,
+            .serial_b = true,
+            .keyboard_mouse = true,
+            .parallel = true,
+            .timekeeper = true,
+            .onewire_identity = true,
+        },
+    },
+};
+
+static const SGIModelPciFunction console_test_m1_baseio_pci[] = {
+    {
+        .kind = SGI_MODEL_PCI_IOC3,
+        .device = 2,
+        .function = 0,
+        .revision = 1,
+        .irq_input = 3,
+        .subsystem_id = 0xc303,
+        .serial = 0x5e7000000002,
+        .ioc3_population = {
+            .ethernet = true,
+            .serial_a = true,
+            .serial_b = true,
+            .keyboard_mouse = true,
+            .parallel = true,
+            .timekeeper = true,
+            .onewire_identity = true,
+        },
+    },
+};
+
+static const SGIModelIoBoard console_test_io_boards[] = {
+    {
+        .id = "baseio",
+        .module_index = 0,
+        .board_kind = SGI_MODEL_IO_BASEIO,
+        .onboard = true,
+        .slot_index = 0,
+        .removable = false,
+        .revision = 4,
+        .serial = 0x60504030201,
+        .part = "030-1244-001",
+        .pci = console_test_m0_baseio_pci,
+        .pci_count = ARRAY_SIZE(console_test_m0_baseio_pci),
+        .ioc3_population = {
+            .ethernet = true,
+            .serial_a = true,
+            .serial_b = true,
+            .keyboard_mouse = true,
+            .parallel = true,
+            .timekeeper = true,
+            .onewire_identity = true,
+        },
+    },
+    {
+        .id = "baseio",
+        .module_index = 1,
+        .board_kind = SGI_MODEL_IO_BASEIO,
+        .onboard = true,
+        .slot_index = 0,
+        .removable = false,
+        .revision = 4,
+        .serial = 0x60504030202,
+        .part = "030-1244-001",
+        .pci = console_test_m1_baseio_pci,
+        .pci_count = ARRAY_SIZE(console_test_m1_baseio_pci),
+        .ioc3_population = {
+            .ethernet = true,
+            .serial_a = true,
+            .serial_b = true,
+            .keyboard_mouse = true,
+            .parallel = true,
+            .timekeeper = true,
+            .onewire_identity = true,
+        },
+    },
+};
+
+static const unsigned int console_test_population_0[] = { 2, 2 };
+
+static const SGIModelCpuPopulation console_test_populations[] = {
+    {
+        .cpus_per_node = console_test_population_0,
+        .node_count = 2,
+    },
+};
+
+static const SGIModelTopology console_test_topology = {
     .name = "sn-builder-console-test",
     .generation = SGI_MODEL_GENERATION_SN0,
     .description = "console field serial line reordering test fixture",
@@ -180,8 +358,14 @@ static SGIModelTopology console_test_topology = {
     .module_count = ARRAY_SIZE(console_test_modules),
     .links = console_test_links,
     .link_count = ARRAY_SIZE(console_test_links),
+    .xtalk_attachments = console_test_xtalk,
+    .xtalk_attachment_count = ARRAY_SIZE(console_test_xtalk),
+    .io_boards = console_test_io_boards,
+    .io_board_count = ARRAY_SIZE(console_test_io_boards),
     .console = 1,
     .junk_uart = -1,
+    .supported_cpu_populations = console_test_populations,
+    .supported_cpu_population_count = ARRAY_SIZE(console_test_populations),
 };
 
 /*
@@ -252,42 +436,59 @@ static void fault_test_register_types(void)
 type_init(fault_test_register_types)
 
 /*
- * Console field test machine: verifies that the serial line reordering
- * logic in sgi_machine_compute_serial_line works for console != 0.
- * The machine type provides the console_test_topology directly.
+ * Console field test machine: a real sgi-sn-machine product whose test_
+ * topology is console_test_topology, so an activated instance goes
+ * through the real node, bridge and IOC3 construction sgi_machine_
+ * compute_serial_line() feeds -- not a validator-only stand-in.
+ * test_topology bypasses the topology= name lookup, since sgi_model_
+ * entries[] never carries a fixture's own descriptor.
+ *
+ * "activate" gates the real builder the way sn-builder-fault-test's own
+ * "fault" gates its validator: qom-test and test-hmp instantiate every
+ * registered machine type with no properties at all, and this fixture's
+ * topology has two nodes as two sockets, which the default one-socket
+ * instantiation those two sweeps use does not satisfy. Off by default,
+ * mc->init is a no-op, the same as the "none" machine there; the qtest
+ * that wants the real two-node machine turns it on itself.
  */
 #define TYPE_SN_BUILDER_CONSOLE_TEST MACHINE_TYPE_NAME("sn-builder-console-test")
 
-static const SGIModelTopology *console_test_machine_topology(
-    MachineState *machine)
+static bool console_test_activate_requested;
+
+static void console_test_set_activate(Object *obj, bool value, Error **errp)
 {
-    return &console_test_topology;
+    console_test_activate_requested = value;
 }
 
 static void console_test_machine_init(MachineState *machine)
 {
-    Error *err = NULL;
-
-    if (!console_test_machine_topology(machine)) {
+    if (!console_test_activate_requested) {
         return;
     }
-    if (!sgi_machine_validate_topology(&console_test_topology, &err)) {
-        error_report_err(err);
-        exit(EXIT_FAILURE);
-    }
+    sgi_machine_init(machine);
 }
 
 static void console_test_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
+    SGIMachineClass *smc = SGI_MACHINE_CLASS(oc);
 
-    mc->desc = "console field reordering test fixture";
+    mc->desc = "console field serial line reordering test fixture";
     mc->init = console_test_machine_init;
+    mc->max_cpus = 4;
+    mc->default_ram_id = "sn-builder-console-test.node0.ram";
+    smc->test_topology = &console_test_topology;
+    object_class_property_add_bool(oc, "activate", NULL,
+                                   console_test_set_activate);
+    object_class_property_set_description(oc, "activate",
+        "Build the fixture's two nodes through the real builder. Off by "
+        "default so qom-test and test-hmp's blanket sweep leaves this "
+        "inert; the qtest that wants a real machine turns it on.");
 }
 
 static const TypeInfo console_test_type = {
     .name = TYPE_SN_BUILDER_CONSOLE_TEST,
-    .parent = TYPE_MACHINE,
+    .parent = TYPE_SGI_SN_MACHINE,
     .class_init = console_test_class_init,
 };
 
