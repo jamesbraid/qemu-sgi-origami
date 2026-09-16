@@ -1210,21 +1210,143 @@ void sn0_map_cpu_big_windows(SN0MachineState *s)
 }
 
 /*
+ * The IP27 PROM jump table at flash offset zero: ten entries, real
+ * hardware's own layout.
+ */
+#define SN0_FLASH_ENTRIES       10
+#define SN0_FLASH_ENTRY_STRIDE  8
+
+/*
+ * The firmware configuration block, at flash offset 0x60 -- real
+ * hardware's own layout.
+ */
+#define SN0_CONFIG_OFFSET   0x60
+#define SN0_CONFIG_MAGIC    0x69703237636f6e66ULL  /* "ip27conf" */
+#define SN0_CONFIG_SIZE                0x50
+#define SN0_CONFIG_FPROM_CYC_OFFSET    0x2c
+#define SN0_CONFIG_MACHINE_TYPE_OFFSET 0x30
+#define SN0_CONFIG_CHECKSUM_OFFSET     0x34
+#define SN0_CONFIG_FPROM_WR_OFFSET     0x3c
+
+/* Where the factory-fresh environment log sits in the flash image. */
+#define SN0_PROMLOG_SECTOR    14
+#define SN0_PROMLOG_MAGIC     0x504c4f47
+#define SN0_PROMLOG_VERSION   1
+
+/*
+ * The default flash template: the jump table's entries all return except
+ * entry zero, which spins -- what an unprogrammed reset vector does on
+ * real hardware -- plus a configuration block and a factory-fresh
+ * environment log, both in the real IP27 firmware's own field order and
+ * widths. A -bios image shorter than the flash overlays only its own
+ * bytes on top of this, so a real PROM image that does not reach its own
+ * configuration block or environment log sector still finds the ones
+ * built here, the same way real flash ships pre-formatted rather than
+ * merely erased. sn0_configure_flash() then patches the block actually
+ * present -- this template's own or the image's -- to this product's
+ * values.
+ */
+static void sn0_build_flash(const SN0MachineModel *model, uint8_t *flash,
+                            uint64_t flash_size)
+{
+    static const uint32_t jr_ra = 0x03e00008;      /* jr $31 */
+    static const uint32_t branch_to_self = 0x1000ffff; /* b . */
+    uint8_t *config = flash + SN0_CONFIG_OFFSET;
+    int i;
+
+    g_assert(flash_size >=
+             (SN0_PROMLOG_SECTOR + 1) * sn0_flash.sector_size);
+    memset(flash, 0xff, flash_size);
+
+    for (i = 0; i < SN0_FLASH_ENTRIES; i++) {
+        uint8_t *entry = flash + i * SN0_FLASH_ENTRY_STRIDE;
+
+        stl_be_p(entry, i == 0 ? branch_to_self : jr_ra);
+        stl_be_p(entry + 4, 0);                    /* the delay slot */
+    }
+
+    /* The field order and widths are the IP27 firmware's. */
+    stl_be_p(config + 0x00, 0xb);                  /* timing constant */
+    stl_be_p(config + 0x04, model->cpu_mode_bits);
+    stq_be_p(config + 0x08, SN0_CONFIG_MAGIC);
+    stq_be_p(config + 0x10, model->cpu_clock_hz);
+    stq_be_p(config + 0x18, model->hub_clock_hz);
+    stq_be_p(config + 0x20, model->rtc_clock_hz);
+    stl_be_p(config + 0x28, 1);                    /* error correction on */
+    stl_be_p(config + SN0_CONFIG_FPROM_CYC_OFFSET, model->flash_read_cycles);
+    stl_be_p(config + SN0_CONFIG_MACHINE_TYPE_OFFSET,
+             model->firmware_machine_type);
+    stl_be_p(config + SN0_CONFIG_CHECKSUM_OFFSET, 0); /* checksum adjustment */
+    stl_be_p(config + 0x38, 0);                    /* flash program count */
+    stl_be_p(config + SN0_CONFIG_FPROM_WR_OFFSET, model->flash_write_cycles);
+    stl_be_p(config + 0x40, 6);                    /* firmware version */
+    stl_be_p(config + 0x44, 11);                   /* firmware revision */
+    stl_be_p(config + 0x48, 0);                    /* configuration flags */
+
+    /* The factory-fresh environment log; an erased first entry ends it. */
+    config = flash + SN0_PROMLOG_SECTOR * sn0_flash.sector_size;
+    stl_be_p(config + 0x10, SN0_PROMLOG_MAGIC);
+    stl_be_p(config + 0x14, SN0_PROMLOG_VERSION);
+    stl_be_p(config + 0x18, 1);                    /* initial sequence */
+}
+
+static uint8_t sn0_config_byte_sum(const uint8_t *config)
+{
+    uint8_t sum = 0;
+    unsigned int i;
+
+    for (i = 0; i < SN0_CONFIG_SIZE; i++) {
+        sum += config[i];
+    }
+    return sum;
+}
+
+/*
+ * The flasher's contract: the three product values in, every other field
+ * and the old block sum preserved; no IP27 signature, no touch. Runs
+ * whether the configuration block present is this file's own default
+ * template or a real PROM image's -- every stock PROM image carries one
+ * at this same offset with this same magic.
+ */
+static void sn0_configure_flash(const SN0MachineModel *model, uint8_t *flash)
+{
+    uint8_t *config = flash + SN0_CONFIG_OFFSET;
+    uint8_t old_sum;
+    uint8_t new_sum;
+
+    if (ldq_be_p(config + 0x08) != SN0_CONFIG_MAGIC) {
+        return;
+    }
+
+    old_sum = sn0_config_byte_sum(config);
+    stl_be_p(config + SN0_CONFIG_CHECKSUM_OFFSET, 0);
+    stl_be_p(config + SN0_CONFIG_FPROM_CYC_OFFSET, model->flash_read_cycles);
+    stl_be_p(config + SN0_CONFIG_MACHINE_TYPE_OFFSET,
+             model->firmware_machine_type);
+    stl_be_p(config + SN0_CONFIG_FPROM_WR_OFFSET, model->flash_write_cycles);
+    new_sum = sn0_config_byte_sum(config);
+    stl_be_p(config + SN0_CONFIG_CHECKSUM_OFFSET,
+             (uint8_t)(old_sum - new_sum));
+}
+
+/*
  * -bios fills every node's boot flash unless a pflash drive already backs
  * it (set on the node before it realized); a short -bios image leaves the
- * rest erased, matching an unprogrammed chip. sn0_init() calls this after
- * every node has realized, so each node's flash device already exists.
+ * default template's own bytes behind it, matching a factory-formatted
+ * chip rather than a merely erased one. sn0_init() calls this after every
+ * node has realized, so each node's flash device already exists.
  */
 static void sn0_load_flash(MachineState *machine)
 {
     SN0MachineState *s = SN0_MACHINE(machine);
+    SN0MachineClass *smc = SN0_MACHINE_GET_CLASS(machine);
     const SN0ModelRegion *flash_region =
         &s->nodes[0]->topology->map.flash_reset;
     uint8_t *flash;
     unsigned int node_index;
 
     flash = g_malloc(flash_region->size);
-    memset(flash, 0xff, flash_region->size);
+    sn0_build_flash(smc->model, flash, flash_region->size);
     if (machine->firmware) {
         char *path = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
         ssize_t size = path ? load_image_size(path, flash,
@@ -1238,6 +1360,7 @@ static void sn0_load_flash(MachineState *machine)
         }
         g_free(path);
     }
+    sn0_configure_flash(smc->model, flash);
 
     for (node_index = 0; node_index < s->num_nodes; node_index++) {
         SN0NodeState *node = s->nodes[node_index];
