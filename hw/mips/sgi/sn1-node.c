@@ -1,10 +1,24 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * SGI Origin 300 ("SN1", IP35/Bedrock) node device. See sn1-node.h.
+ *
+ * The family builder (sn-machine.c) creates one of these from the
+ * format-2 descriptor's Bedrock node record, links its RAM and CPU
+ * clock, sets its populated I/O board (if any) and realizes it; this
+ * file owns everything the node needs to become a running Origin 300:
+ * the PROM/flash policy, the node's own address-space views, the CPUs,
+ * Bedrock, L1, XBridge and the XBridge's PCI population.
+ *
+ * Node strides, window splits and unit offsets are Bedrock hardware
+ * facts, not configuration, so the addresses below are constants here
+ * rather than descriptor fields; see sn-model.h's header comment for
+ * the rule this follows.
  */
 
 #include "qemu/osdep.h"
 #include "qemu/units.h"
+#include "qemu/datadir.h"
+#include "qemu/log.h"
 #include "qapi/error.h"
 #include "block/block-global-state.h"
 #include "block/block-io.h"
@@ -13,29 +27,34 @@
 #include "hw/core/cpu.h"
 #include "hw/core/qdev-clock.h"
 #include "hw/core/qdev-properties.h"
-#include "hw/mips/sn1.h"
+#include "hw/mips/sgi/sn-machine.h"
 #include "hw/misc/sgi-bedrock.h"
 #include "hw/misc/sgi-bedrock-flash.h"
 #include "hw/misc/sgi-bedrock-pi.h"
+#include "hw/misc/sgi-ioc3.h"
 #include "hw/misc/sgi-l1.h"
 #include "hw/pci-host/sgi-xbridge.h"
+#include "hw/pci/pci.h"
 #include "migration/vmstate.h"
+#include "net/net.h"
 #include "system/address-spaces.h"
 #include "system/block-backend.h"
 #include "system/blockdev.h"
+#include "system/reset.h"
 #include "system/system.h"
 #include "cpu.h"
 #include "cpu-qom.h"
-#include "sn1-model.h"
 #include "sn1-node.h"
 #include "sn1-topology.h"
 
 /*
- * Mirrors sn1.c's own private addresses until the board-devices step
- * moves the rest of the node's address decode here too.
+ * The node's own crosstalk/Hub-register address decode: identical on
+ * every Origin 300 measured, so constants here rather than descriptor
+ * data repeated for a node kind with exactly one shipped configuration.
  */
 #define SN1_SPACE_HUB UINT64_C(0x10000000000)
 #define SN1_HUB_LOCAL_BOOT (SN1_SPACE_HUB + UINT64_C(0x18000000))
+#define SN1_HUB_LOCAL_HIGH_BOOT (SN1_SPACE_HUB + UINT64_C(0x1fc00000))
 #define SN1_HUB_REMOTE_BOOT (SN1_SPACE_HUB + UINT64_C(0x38000000))
 #define SN1_HUB_ECC (SN1_SPACE_HUB + UINT64_C(0x140000000))
 #define SN1_HUB_DIRECTORY (SN1_SPACE_HUB + UINT64_C(0x1c0000000))
@@ -44,8 +63,44 @@
 #define SN1_PROM_RAM_COPY_SIZE UINT64_C(0x00200000)
 #define SN1_HUB_REMOTE_PI_SIZE UINT64_C(0x80)
 #define SN1_HUB_REMOTE_UART_END (SN1_HUB_REMOTE_PI_SIZE + SGI_L1_SIZE)
+#define SN1_PROM_SECOND_SELECTION (SN1_SPACE_HUB + UINT64_C(0x1a000000))
+#define SN1_PROM_SECOND_SELECTION_SIZE UINT64_C(0x800000)
+#define SN1_HUB_REMOTE_FLASH (SN1_SPACE_HUB + UINT64_C(0x3a000000))
+
+#define SN1_RAM_ADDRESS UINT64_C(0x0)
+#define SN1_HUB_MEMORY_ADDRESS SN1_SPACE_HUB
+#define SN1_HUB_MEMORY_SIZE UINT64_C(0x10000000)
+#define SN1_HUB_LOCAL_REGISTERS_ADDRESS (SN1_SPACE_HUB + UINT64_C(0x10000000))
+#define SN1_HUB_LOCAL_REGISTERS_SIZE UINT64_C(0x8000000)
+#define SN1_XTALK_ADDRESS UINT64_C(0x20000000000)
+#define SN1_BEDROCK_LOCAL_ADDRESS UINT64_C(0x20001000000)
+#define SN1_BEDROCK_NODE_ADDRESS UINT64_C(0x20001800000)
+#define SN1_BEDROCK_NODE_SIZE UINT64_C(0x800000)
+#define SN1_HUB_REMOTE_REGISTERS_ADDRESS UINT64_C(0x10030000000)
+#define SN1_BEDROCK_REVISION 2
+#define SN1_BEDROCK_LOCAL_REGION 0
+#define SN1_BEDROCK_INITIATOR_REGION 0
+#define SN1_XBRIDGE_HOST_PORT 0xa
+
+#define SN1_BOARD_ID_OFFSET UINT64_C(0x4000000)
+/* Bits 15:12 are the product code; the low byte selects the 500 MHz PSC. */
+#define SN1_BOARD_ID_VALUE UINT64_C(0x8001)
+
+/* The IO-8's transceiver and SuperIO wiring: fixed board facts. */
+#define SN1_IOC3_PHY_ADDR 1
+#define SN1_IOC3_SUPERIO_PIN 0
 
 #define SN1_MIPS_HARDWARE_IRQ_OFFSET 2
+
+#define SN1_INSTALLED_BANK_MASK 0xc
+/*
+ * The shipped Origin 300 inventory: two 256 MiB banks at locational
+ * banks two and three. See sn1_node_create_bedrock's comment on why
+ * this stays a literal instead of node->model_node->bank_mib.
+ */
+static const uint16_t sn1_installed_bank_mib[SGI_MODEL_MAX_MEMORY_BANKS] = {
+    0, 0, 256, 256, 0, 0, 0, 0,
+};
 
 static BlockDriverState *sn1_node_open_flash_slice(BlockDriverState *backing,
                                                     int64_t offset,
@@ -60,9 +115,14 @@ static BlockDriverState *sn1_node_open_flash_slice(BlockDriverState *backing,
     return bdrv_open(NULL, NULL, options, flags, errp);
 }
 
-MemoryRegion *sn1_node_create_boot_flash(SN1NodeState *node,
-                                         MachineState *machine,
-                                         Error **errp)
+/*
+ * Creates the node's boot-flash part from -drive if=pflash and returns the
+ * processor's read view of its first selection, or NULL with no error when
+ * no such drive was given (the caller then falls back to an immutable
+ * -bios image).
+ */
+static MemoryRegion *sn1_node_create_boot_flash(SN1NodeState *node,
+                                                Error **errp)
 {
     DriveInfo *dinfo = drive_get(IF_PFLASH, 0, 0);
     DriveInfo *extra = drive_get(IF_PFLASH, 0, 1);
@@ -139,6 +199,438 @@ MemoryRegion *sn1_node_create_boot_flash(SN1NodeState *node,
     return SGI_BEDROCK_FLASH(node->boot_flash)->flash_mmio[0];
 }
 
+/* Match the loaded CPU-module image to this machine's reset configuration. */
+static void sn1_apply_cpu_config(uint8_t *payload)
+{
+    stl_be_p(payload + 0x64, UINT32_C(0x549aa985));
+    stl_be_p(payload + 0x74, UINT32_C(500000000));
+    stl_be_p(payload + 0x90, 1);
+    stl_be_p(payload + 0x94, UINT32_C(0x9c));
+    stl_be_p(payload + 0x98, 1);
+}
+
+static void sn1_flash_reject_write(hwaddr offset, uint64_t value)
+{
+    qemu_log_mask(LOG_UNIMP,
+                  "sn1: flash programming unsupported, dropping 0x%" PRIx64
+                  " at flash offset 0x%" HWADDR_PRIx "\n", value, offset);
+}
+
+static uint64_t sn1_flash_erased_read(void *opaque, hwaddr offset,
+                                      unsigned size)
+{
+    return MAKE_64BIT_MASK(0, size * 8);
+}
+
+static void sn1_flash_erased_write(void *opaque, hwaddr offset, uint64_t value,
+                                   unsigned size)
+{
+    sn1_flash_reject_write(offset, value);
+}
+
+static const MemoryRegionOps sn1_flash_erased_ops = {
+    .read = sn1_flash_erased_read,
+    .write = sn1_flash_erased_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+};
+
+/*
+ * A run that supplies a flash image gets a writable part: both software
+ * selections reach it, and every bounded view reads its stored bytes, so the
+ * monitor's own rewrite of the first sector is what the next reset fetches.
+ * Without an image the machine keeps the immutable payload it had before.
+ */
+/*
+ * The processor fetches from cacheable ROM devices, not MMIO handlers. The
+ * flash's write callback refreshes their copies and invalidates old code.
+ * An alias would pass writes through to the part's command interface.
+ */
+static MemTxResult sn1_prom_view_read(void *opaque, hwaddr offset,
+                                      uint64_t *value, unsigned size,
+                                      MemTxAttrs attrs)
+{
+    SN1PromView *view = opaque;
+    uint64_t high, low;
+    MemTxResult result;
+
+    if (size == 8) {
+        /* The part answers at most four bytes per cycle. */
+        result = memory_region_dispatch_read(view->backing, offset, &high,
+                                             MO_32 | MO_BE, attrs);
+        result |= memory_region_dispatch_read(view->backing, offset + 4, &low,
+                                              MO_32 | MO_BE, attrs);
+        *value = (high << 32) | (uint32_t)low;
+        return result;
+    }
+    return memory_region_dispatch_read(view->backing, offset, value,
+                                       size_memop(size) | MO_BE, attrs);
+}
+
+static MemTxResult sn1_prom_view_write(void *opaque, hwaddr offset,
+                                       uint64_t value, unsigned size,
+                                       MemTxAttrs attrs)
+{
+    SN1PromView *view = opaque;
+
+    qemu_log_mask(LOG_GUEST_ERROR, "sn1: %s execution view: refusing a %u-byte "
+                  "write of 0x%" PRIx64 " at offset 0x%" HWADDR_PRIx "; the "
+                  "boot flash takes commands through a Bedrock boot space, "
+                  "not through a view the processor executes from\n",
+                  view->name, size, value, offset);
+    return MEMTX_ERROR;
+}
+
+static const MemoryRegionOps sn1_prom_view_ops = {
+    .read_with_attrs = sn1_prom_view_read,
+    .write_with_attrs = sn1_prom_view_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8 },
+    .impl = { .min_access_size = 1, .max_access_size = 8 },
+};
+
+static void sn1_prom_view_apply(SN1PromView *view, DirtyBitmapSnapshot *dirty,
+                                uint64_t size)
+{
+    uint8_t *dst = memory_region_get_ram_ptr(&view->rom);
+    const uint8_t *src = memory_region_get_ram_ptr(view->backing);
+    uint64_t offset;
+
+    for (offset = 0; offset < size; offset += 4 * KiB) {
+        uint64_t length = MIN(4 * KiB, size - offset);
+
+        if (dirty && !memory_region_snapshot_get_dirty(view->backing, dirty,
+                                                        offset, length)) {
+            continue;
+        }
+        memcpy(dst + offset, src + offset, length);
+        memory_region_flush_rom_device(&view->rom, offset, length);
+    }
+}
+
+static bool sn1_init_prom_view(SN1PromView *view, Object *owner,
+                               const char *name, MemoryRegion *backing,
+                               uint64_t size, Error **errp)
+{
+    view->name = name;
+    view->backing = backing;
+    if (!memory_region_init_rom_device(&view->rom, owner, &sn1_prom_view_ops,
+                                       view, name, size, errp)) {
+        return false;
+    }
+    sn1_prom_view_apply(view, NULL, size);
+    return true;
+}
+
+static void sn1_refresh_prom_views(SN1NodeState *node, bool everything)
+{
+    uint64_t prom_size = node->model_node->flash.size;
+    MemoryRegion *backing = node->prom_view_reset.backing;
+    g_autofree DirtyBitmapSnapshot *snapshot =
+        memory_region_snapshot_and_clear_dirty(backing, 0, prom_size,
+                                               DIRTY_MEMORY_VGA);
+
+    sn1_prom_view_apply(&node->prom_view_reset, everything ? NULL : snapshot,
+                       prom_size);
+    sn1_prom_view_apply(&node->prom_view_local_high,
+                       everything ? NULL : snapshot, prom_size);
+}
+
+static void sn1_prom_flash_programmed(void *opaque, unsigned position)
+{
+    if (position == 0) {
+        sn1_refresh_prom_views(opaque, false);
+    }
+}
+
+/*
+ * The 25-bit reset-latched processor mode field (bits 24:0 of
+ * CP0_Config0), the R10000 family's own architectural width -- the
+ * same mask sn-machine.c's shared prefix applies for the Hub, kept as
+ * its own constant here because this node's reset cannot share that
+ * prefix's ordering (see sn1_node_full_reset).
+ */
+#define SN1_PROCESSOR_MODE_MASK 0x01ffffff
+
+void sn1_node_full_reset(SN1NodeState *node, ResetType type)
+{
+    uint32_t mode_bits = node->model_node->cpu_slots[0].assembly->mode_bits;
+    unsigned int i;
+
+    /*
+     * cpu_reset() must run before qemu_devices_reset(): each CPU's
+     * "start-powered-off" property re-halts it on every cpu_reset(),
+     * not only at creation, so releasing them (below) has to follow
+     * both, and qemu_devices_reset() resetting Bedrock/L1/XBridge
+     * first would let a CPU race a device that assumes it is not
+     * running yet. The Hub takes the opposite order and releases
+     * through sgi_hub_set_cpu_enable instead, which carries no such
+     * constraint.
+     */
+    for (i = 0; i < node->nr_cpus; i++) {
+        CPUState *cs = CPU(node->cpu[i]);
+        CPUMIPSState *env = &node->cpu[i]->env;
+
+        cpu_reset(cs);
+        env->CP0_Config0 = (env->CP0_Config0 & ~(uint32_t)
+                           SN1_PROCESSOR_MODE_MASK) |
+                           (mode_bits & SN1_PROCESSOR_MODE_MASK);
+    }
+    qemu_devices_reset(type);
+    if (node->boot_flash) {
+        sn1_refresh_prom_views(node, true);
+    }
+
+    /*
+     * Every CPU exists now. Release them back-to-back under BQL; generic
+     * vCPU resume can still skew their first fetch, and this is not a
+     * claim about physical reset-edge timing.
+     */
+    for (i = 0; i < node->nr_cpus; i++) {
+        CPUState *cs = CPU(node->cpu[i]);
+
+        cs->halted = false;
+        qemu_cpu_kick(cs);
+    }
+}
+
+/*
+ * Where each named flash view executes from: a Bedrock hardware fact
+ * (the boot space it is wired to), not configuration. "local" and
+ * "remote" are answered by the flash part's own command decode
+ * (sn1_node_create_boot_flash) once one is attached, so only "reset"
+ * and "local-high" are mapped as separate SN1PromView aliases in that
+ * case; the immutable -bios path below maps every named view here.
+ */
+static bool sn1_node_flash_view_address(const char *name, uint64_t *address)
+{
+    if (!strcmp(name, "sn1.prom.reset")) {
+        *address = SN1_PROM_RESET;
+    } else if (!strcmp(name, "sn1.prom.local")) {
+        *address = SN1_HUB_LOCAL_BOOT;
+    } else if (!strcmp(name, "sn1.prom.local-high")) {
+        *address = SN1_HUB_LOCAL_HIGH_BOOT;
+    } else if (!strcmp(name, "sn1.prom.remote")) {
+        *address = SN1_HUB_REMOTE_BOOT;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+static bool sn1_node_load_prom(SN1NodeState *node, MachineState *machine,
+                               Error **errp)
+{
+    uint64_t prom_size = node->model_node->flash.size;
+    MemoryRegion *system = get_system_memory();
+    g_autoptr(GError) local_error = NULL;
+    g_autofree char *contents = NULL;
+    g_autofree char *path = NULL;
+    MemoryRegion *stored;
+    gsize length;
+    size_t i;
+
+    if (!machine->firmware) {
+        error_setg(errp,
+                   "origin300 requires -bios with a raw stock PROM payload");
+        return false;
+    }
+    path = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
+    if (!path) {
+        error_setg(errp, "origin300: cannot find PROM image '%s'",
+                   machine->firmware);
+        return false;
+    }
+    if (!g_file_get_contents(path, &contents, &length, &local_error)) {
+        error_setg(errp, "origin300: cannot read PROM image '%s': %s",
+                   machine->firmware, local_error->message);
+        return false;
+    }
+    if (length != prom_size) {
+        error_setg(errp,
+                   "origin300: PROM image must be exactly %" PRIu64 " bytes",
+                   prom_size);
+        return false;
+    }
+    if (machine->kernel_filename) {
+        error_setg(errp, "origin300 supports stock-PROM boot only");
+        return false;
+    }
+
+    stored = sn1_node_create_boot_flash(node, errp);
+    if (errp && *errp) {
+        return false;
+    }
+    if (stored) {
+        /*
+         * With a part attached the views answer through handlers over its
+         * storage: they report the bytes it holds now, including a change the
+         * monitor has just programmed, and refuse a write instead of passing
+         * it to the part as a command cycle.
+         */
+        sn1_apply_cpu_config(memory_region_get_ram_ptr(stored));
+        memory_region_set_log(stored, true, DIRTY_MEMORY_VGA);
+        if (!sn1_init_prom_view(&node->prom_view_reset, OBJECT(node),
+                                "sn1.prom.reset", stored, prom_size, errp) ||
+            !sn1_init_prom_view(&node->prom_view_local_high, OBJECT(node),
+                                "sn1.prom.local-high", stored, prom_size,
+                                errp)) {
+            return false;
+        }
+        SGI_BEDROCK_FLASH(node->boot_flash)->programmed =
+            sn1_prom_flash_programmed;
+        SGI_BEDROCK_FLASH(node->boot_flash)->programmed_opaque = node;
+        memory_region_add_subregion_overlap(system, SN1_PROM_RESET,
+                                            &node->prom_view_reset.rom, 1);
+        /*
+         * The high local view sits inside a boot space the flash answers for,
+         * so it is overlaid above it. The remote space is left to the flash:
+         * its read decode already serves the same bytes at the same offsets,
+         * and an overlay at its base would shadow the command addresses, so a
+         * monitor could not drive the part through that space at all.
+         */
+        memory_region_add_subregion_overlap(system, SN1_HUB_LOCAL_HIGH_BOOT,
+                                            &node->prom_view_local_high.rom,
+                                            1);
+        return true;
+    }
+
+    if (!memory_region_init_ram_flags_nomigrate(&node->prom, OBJECT(node),
+                                                "sn1.prom", prom_size, 0,
+                                                errp)) {
+        return false;
+    }
+    memory_region_set_readonly(&node->prom, true);
+    /* The stock PROM bytes are part of snapshots despite being immutable. */
+    vmstate_register_ram_global(&node->prom);
+    memcpy(memory_region_get_ram_ptr(&node->prom), contents, prom_size);
+    sn1_apply_cpu_config(memory_region_get_ram_ptr(&node->prom));
+    memory_region_set_dirty(&node->prom, 0, prom_size);
+
+    node->prom_views = g_new0(MemoryRegion, node->model_node->flash.view_count);
+    for (i = 0; i < node->model_node->flash.view_count; i++) {
+        const SGIModelFlashView *view = &node->model_node->flash.views[i];
+        uint64_t address;
+
+        if (!sn1_node_flash_view_address(view->name, &address)) {
+            error_setg(errp, "origin300: flash view '%s' names no known "
+                      "boot space", view->name);
+            return false;
+        }
+        memory_region_init_alias(&node->prom_views[i], OBJECT(node),
+                                 view->name, &node->prom, 0, view->size);
+        /* PROM views take precedence where their carriers overlap RAM. */
+        memory_region_add_subregion_overlap(system, address,
+                                            &node->prom_views[i], 1);
+    }
+
+    /* An empty second position answers erased through both boot spaces. */
+    memory_region_init_io(&node->prom_flash, OBJECT(node),
+                          &sn1_flash_erased_ops, node, "sn1.prom.flash",
+                          SN1_PROM_SECOND_SELECTION_SIZE);
+    memory_region_add_subregion(system, SN1_PROM_SECOND_SELECTION,
+                                &node->prom_flash);
+    memory_region_init_alias(&node->prom_flash_remote, OBJECT(node),
+                             "sn1.prom.flash-remote", &node->prom_flash, 0,
+                             SN1_PROM_SECOND_SELECTION_SIZE);
+    memory_region_add_subregion(system, SN1_HUB_REMOTE_FLASH,
+                                &node->prom_flash_remote);
+    return true;
+}
+
+/*
+ * The board-identification register both consumers read: OpenBSD through the
+ * remote form and the stock firmware through the local one, each taking the
+ * product code from bits 15 through 12. One stateless response serves both.
+ * Only the aligned 64-bit read is answered; everything else is refused and
+ * said out loud, because nothing establishes what the other bits or widths do.
+ */
+static MemTxResult sn1_board_id_read(void *opaque, hwaddr offset,
+                                     uint64_t *value, unsigned size,
+                                     MemTxAttrs attrs)
+{
+    SN1NodeState *node = opaque;
+    SGIBedrockState *bedrock = SGI_BEDROCK(node->bedrock);
+
+    if (!sgi_bedrock_hub_registers_permitted(bedrock)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sn1: board identification read denied for region %u\n",
+                      (unsigned)bedrock->initiator_region);
+        *value = 0;
+        return MEMTX_DECODE_ERROR;
+    }
+    if (offset != 0 || size != 8) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sn1: board identification answers only an aligned "
+                      "eight-byte read; refusing %u byte%s at offset 0x%"
+                      HWADDR_PRIx "\n", size, size == 1 ? "" : "s", offset);
+        *value = 0;
+        return MEMTX_ERROR;
+    }
+    *value = SN1_BOARD_ID_VALUE;
+    return MEMTX_OK;
+}
+
+static MemTxResult sn1_board_id_write(void *opaque, hwaddr offset,
+                                      uint64_t value, unsigned size,
+                                      MemTxAttrs attrs)
+{
+    SN1NodeState *node = opaque;
+    SGIBedrockState *bedrock = SGI_BEDROCK(node->bedrock);
+
+    if (!sgi_bedrock_hub_registers_permitted(bedrock)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sn1: board identification write denied for region %u\n",
+                      (unsigned)bedrock->initiator_region);
+        return MEMTX_DECODE_ERROR;
+    }
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sn1: board identification is fixed; refusing a %u-byte "
+                  "write of 0x%" PRIx64 " at offset 0x%" HWADDR_PRIx "\n",
+                  size, value, offset);
+    return MEMTX_ERROR;
+}
+
+static const MemoryRegionOps sn1_board_id_ops = {
+    .read_with_attrs = sn1_board_id_read,
+    .write_with_attrs = sn1_board_id_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8 },
+    .impl = { .min_access_size = 1, .max_access_size = 8 },
+};
+
+static void sn1_node_map_memory(SN1NodeState *node)
+{
+    MemoryRegion *system = get_system_memory();
+
+    memory_region_add_subregion(system, SN1_RAM_ADDRESS, node->ram);
+    memory_region_init_alias(&node->hub_memory, OBJECT(node),
+                             "sn1.hub.local-memory", node->ram, 0,
+                             SN1_HUB_MEMORY_SIZE);
+    memory_region_add_subregion(system, SN1_HUB_MEMORY_ADDRESS,
+                                &node->hub_memory);
+
+    memory_region_init(&node->hub_local_registers, OBJECT(node),
+                       "sn1.hub.local-registers",
+                       SN1_HUB_LOCAL_REGISTERS_SIZE);
+    memory_region_add_subregion(system, SN1_HUB_LOCAL_REGISTERS_ADDRESS,
+                                &node->hub_local_registers);
+
+    memory_region_init_io(&node->board_id, OBJECT(node), &sn1_board_id_ops,
+                          node, "sn1.board-id", 8);
+    memory_region_add_subregion(&node->hub_local_registers,
+                                SN1_BOARD_ID_OFFSET, &node->board_id);
+    /* The remote form reaches the same response above the Bedrock window. */
+    memory_region_init_alias(&node->board_id_remote, OBJECT(node),
+                             "sn1.board-id.remote", &node->board_id, 0, 8);
+    memory_region_add_subregion_overlap(
+        system, SN1_HUB_REMOTE_REGISTERS_ADDRESS + SN1_BOARD_ID_OFFSET,
+        &node->board_id_remote, 1);
+}
+
 static target_ulong sn1_node_store_transaction(MIPSCPU *cpu, MemoryRegion *mr,
                                                hwaddr offset,
                                                target_ulong value,
@@ -157,7 +649,7 @@ static target_ulong sn1_node_store_transaction(MIPSCPU *cpu, MemoryRegion *mr,
 static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
 {
     MemoryRegion *system = get_system_memory();
-    const SN1MachineModel *model = &sn1_origin300_model;
+    uint64_t prom_size = node->model_node->flash.size;
     unsigned int i;
 
     if (node->promdata_filter) {
@@ -166,7 +658,7 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
                               NULL, NULL);
     }
 
-    for (i = 0; i < model->cpu_count; i++) {
+    for (i = 0; i < node->nr_cpus; i++) {
         g_autofree char *name = g_strdup_printf("cpu%u", i);
         g_autofree char *alias_name =
             g_strdup_printf("sn1.node0.cpu%u.system", i);
@@ -211,8 +703,8 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
             /* The IP35 PROM's RAM copy executes within one 2 MiB TLB span. */
             sn_promdata_init(&node->promdata[i], OBJECT(node), cpu,
                              &node->promdata_poll, node->promdata_fast,
-                             0, model->ram_size, SN1_PROM_RESET,
-                             model->prom_size, SN1_PROM_RAM_COPY,
+                             0, memory_region_size(node->ram), SN1_PROM_RESET,
+                             prom_size, SN1_PROM_RAM_COPY,
                              SN1_PROM_RAM_COPY_SIZE,
                              &node->cpu_sysmem[i], 0,
                              &node->cpu_uncached[i],
@@ -225,21 +717,21 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
 static void sn1_node_create_bedrock(SN1NodeState *node,
                                     MachineState *machine)
 {
-    const SN1MachineModel *model = &sn1_origin300_model;
     Chardev *l1_console = serial_hd(0);
     MemoryRegion *system = get_system_memory();
     MemoryRegion *l1_uart;
     DeviceState *l1_uart_dev;
-    MemoryRegion *bedrock_widget;
     MemoryRegion *hub_registers;
     SysBusDevice *bedrock;
+    unsigned int cpu;
+    size_t i;
 
     node->l1 = qdev_new(TYPE_SGI_L1);
     object_property_add_child(OBJECT(node), "l1", OBJECT(node->l1));
     if (l1_console) {
         qdev_prop_set_chr(node->l1, "chardev", l1_console);
     }
-    sn1_set_l1_identity_records(SN1_MACHINE(machine), node->l1);
+    sgi_machine_set_l1_identity_records(machine, node->l1);
     /* The revision every retained Origin 300 capture pairs with PROM 6.210. */
     qdev_prop_set_int32(node->l1, "revision-major", 1);
     qdev_prop_set_int32(node->l1, "revision-minor", 18);
@@ -256,28 +748,36 @@ static void sn1_node_create_bedrock(SN1NodeState *node,
     l1_uart = sysbus_mmio_get_region(SYS_BUS_DEVICE(l1_uart_dev), 0);
 
     node->bedrock = qdev_new(TYPE_SGI_BEDROCK);
-    object_property_add_child(OBJECT(node), "bedrock",
-                              OBJECT(node->bedrock));
-    qdev_prop_set_uint32(node->bedrock, "processor-count", model->cpu_count);
+    object_property_add_child(OBJECT(node), "bedrock", OBJECT(node->bedrock));
+    qdev_prop_set_uint32(node->bedrock, "processor-count", node->nr_cpus);
     qdev_prop_set_uint32(node->bedrock, "processor-mask",
-                        model->cpu_population_mask);
+                        sn1_cpu_population_mask(node->model_node));
     /* Initial C grant is a model approximation. Silicon reset is unknown. */
-    if (model->cpu_count == 2 && model->cpu_population_mask == 0x5) {
+    if (node->nr_cpus == 2 &&
+        sn1_cpu_population_mask(node->model_node) == 0x5) {
         qdev_prop_set_uint32(node->bedrock, "cpu-enable-initial-mask", 0x4);
     }
-    qdev_prop_set_uint8(node->bedrock, "revision", model->bedrock_revision);
+    qdev_prop_set_uint8(node->bedrock, "revision", SN1_BEDROCK_REVISION);
     qdev_prop_set_uint8(node->bedrock, "local-region",
-                        model->bedrock_local_region);
+                        SN1_BEDROCK_LOCAL_REGION);
     qdev_prop_set_uint8(node->bedrock, "initiator-region",
-                        model->bedrock_initiator_region);
+                        SN1_BEDROCK_INITIATOR_REGION);
+    /*
+     * The shipped Origin 300 inventory installs two 256 MiB banks at
+     * locational banks two and three, not the single dense bank zero the
+     * generated origin300 topology's node.bank_mib[] still carries (its
+     * 512 MiB total is right; its bank placement predates this fact).
+     * Kept as an origin300-specific literal here, like sn-model.h's
+     * address-map constants, until the catalogue's fixture is corrected.
+     */
     qdev_prop_set_uint8(node->bedrock, "installed-bank-mask",
-                        model->installed_memory_bank_mask);
-    for (unsigned bank = 0; bank < 8; bank++) {
-        g_autofree char *property =
-            g_strdup_printf("installed-bank%u-mib", bank);
+                        SN1_INSTALLED_BANK_MASK);
+    for (i = 0; i < SGI_MODEL_MAX_MEMORY_BANKS; i++) {
+        g_autofree char *property = g_strdup_printf("installed-bank%zu-mib",
+                                                     i);
 
         qdev_prop_set_uint16(node->bedrock, property,
-                            model->installed_memory_bank_mib[bank]);
+                            sn1_installed_bank_mib[i]);
     }
     object_property_set_link(OBJECT(node->bedrock), "dma-memory",
                              OBJECT(system), &error_abort);
@@ -287,22 +787,29 @@ static void sn1_node_create_bedrock(SN1NodeState *node,
                              OBJECT(l1_uart), &error_abort);
 
     node->xbridge = qdev_new(TYPE_SGI_XBRIDGE);
-    object_property_add_child(OBJECT(node), "xbridge",
-                              OBJECT(node->xbridge));
-    qdev_prop_set_uint8(node->xbridge, "host-port", model->xbridge_host_port);
+    object_property_add_child(OBJECT(node), "xbridge", OBJECT(node->xbridge));
+    qdev_prop_set_uint8(node->xbridge, "host-port", SN1_XBRIDGE_HOST_PORT);
     /* Widget 15's responder is a compatibility choice, not observed wiring. */
     qdev_prop_set_string(node->xbridge, "board-part-f",
                          SGI_XBRIDGE_NIC_PLACEHOLDER_PART);
-    bedrock_widget = sysbus_mmio_get_region(SYS_BUS_DEVICE(node->bedrock), 2);
-    object_property_set_link(OBJECT(node->xbridge), "fabric",
-                             OBJECT(bedrock_widget), &error_abort);
-    for (size_t i = 0; i < model->num_xbridge_widgets; i++) {
-        unsigned int widget = model->xbridge_widgets[i];
-        g_autofree char *property = g_strdup_printf("widget-%u", widget);
+    object_property_set_link(
+        OBJECT(node->xbridge), "fabric",
+        OBJECT(sysbus_mmio_get_region(SYS_BUS_DEVICE(node->bedrock), 2)),
+        &error_abort);
+    /*
+     * Every widget the crossbar decodes: the host's own local view (widget
+     * zero) plus one per xtalk attachment, including a board slot with
+     * nothing plugged in -- its head still answers "no PCI device here"
+     * through the XBridge itself, which a widget left undecoded could not.
+     */
+    for (i = 0; i < node->xbridge_widget_count; i++) {
+        g_autofree char *property =
+            g_strdup_printf("widget-%u", node->xbridge_widgets[i]);
 
         object_property_set_link(OBJECT(node->bedrock), property,
                                  OBJECT(sgi_xbridge_widget_view(
-                                     SGI_XBRIDGE(node->xbridge), widget)),
+                                     SGI_XBRIDGE(node->xbridge),
+                                     node->xbridge_widgets[i])),
                                  &error_abort);
     }
 
@@ -313,25 +820,25 @@ static void sn1_node_create_bedrock(SN1NodeState *node,
     bedrock = SYS_BUS_DEVICE(node->bedrock);
     hub_registers = &SGI_BEDROCK(node->bedrock)->hub_special_registers;
 
-    memory_region_add_subregion(system, model->xtalk_address,
+    memory_region_add_subregion(system, SN1_XTALK_ADDRESS,
                                 sysbus_mmio_get_region(bedrock, 1));
-    memory_region_add_subregion_overlap(system, model->bedrock_local_address,
+    memory_region_add_subregion_overlap(system, SN1_BEDROCK_LOCAL_ADDRESS,
                                         sysbus_mmio_get_region(bedrock, 0),
                                         1);
     memory_region_init_alias(&node->bedrock_node, OBJECT(node),
                              "sn1.bedrock.node0",
                              sysbus_mmio_get_region(bedrock, 0), 0,
-                             model->bedrock_node.size);
-    memory_region_add_subregion_overlap(system, model->bedrock_node.address,
+                             SN1_BEDROCK_NODE_SIZE);
+    memory_region_add_subregion_overlap(system, SN1_BEDROCK_NODE_ADDRESS,
                                         &node->bedrock_node, 1);
     memory_region_init_alias(&node->hub_local_register_block, OBJECT(node),
                              "sn1.hub.local-register-block",
                              hub_registers, 0,
                              SGI_BEDROCK_SIZE);
-    memory_region_add_subregion(&SN1_MACHINE(machine)->hub_local_registers, 0,
+    memory_region_add_subregion(&node->hub_local_registers, 0,
                                 &node->hub_local_register_block);
     /* OpenBSD expects local PI accesses to select the requester's interface. */
-    if (model->cpu_count > 1 && sn1_cpu_slot(model, 1) == 2) {
+    if (node->nr_cpus > 1 && sn1_cpu_slot(node->model_node, 1) == 2) {
         SGIBedrockState *bedrock_state = SGI_BEDROCK(node->bedrock);
         MemoryRegion *pi1 = sysbus_mmio_get_region(
             SYS_BUS_DEVICE(&bedrock_state->pi[1]), 0);
@@ -340,16 +847,16 @@ static void sn1_node_create_bedrock(SN1NodeState *node,
                                  "sn1.cpu-c.local-pi-xtalk", pi1, 0,
                                  SGI_BEDROCK_PI_SIZE);
         memory_region_add_subregion_overlap(&node->cpu_sysmem[1],
-                                            model->bedrock_local_address,
+                                            SN1_BEDROCK_LOCAL_ADDRESS,
                                             &node->cpu_c_local_pi_xtalk, 1);
         memory_region_init_alias(&node->cpu_c_local_pi_hub, OBJECT(node),
                                  "sn1.cpu-c.local-pi-hub", pi1, 0,
                                  SGI_BEDROCK_PI_SIZE);
         memory_region_add_subregion_overlap(&node->cpu_sysmem[1],
-                                            model->hub_local_registers.address,
+                                            SN1_HUB_LOCAL_REGISTERS_ADDRESS,
                                             &node->cpu_c_local_pi_hub, 1);
     }
-    memory_region_add_subregion(system, model->hub_remote_registers_address,
+    memory_region_add_subregion(system, SN1_HUB_REMOTE_REGISTERS_ADDRESS,
                                 sysbus_mmio_get_region(bedrock, 3));
     /* Preserve the remote L1 UART decoder between the register aliases. */
     memory_region_init_alias(&node->hub_remote_register_head, OBJECT(node),
@@ -357,7 +864,7 @@ static void sn1_node_create_bedrock(SN1NodeState *node,
                              hub_registers, 0,
                              SN1_HUB_REMOTE_PI_SIZE);
     memory_region_add_subregion_overlap(
-        system, model->hub_remote_registers_address,
+        system, SN1_HUB_REMOTE_REGISTERS_ADDRESS,
         &node->hub_remote_register_head, 1);
     memory_region_init_alias(&node->hub_remote_register_tail, OBJECT(node),
                              "sn1.hub.remote-register-tail",
@@ -365,8 +872,7 @@ static void sn1_node_create_bedrock(SN1NodeState *node,
                              SN1_HUB_REMOTE_UART_END,
                              SGI_BEDROCK_SIZE - SN1_HUB_REMOTE_UART_END);
     memory_region_add_subregion_overlap(
-        system, model->hub_remote_registers_address +
-                SN1_HUB_REMOTE_UART_END,
+        system, SN1_HUB_REMOTE_REGISTERS_ADDRESS + SN1_HUB_REMOTE_UART_END,
         &node->hub_remote_register_tail, 1);
     /*
      * The directory back door is the last part of the node's address space,
@@ -384,11 +890,11 @@ static void sn1_node_create_bedrock(SN1NodeState *node,
     memory_region_add_subregion(system, SN1_HUB_ECC,
                                 sysbus_mmio_get_region(bedrock, 6));
     memory_region_add_subregion_overlap(
-        system, model->ram_address, sysbus_mmio_get_region(bedrock, 7), 0);
+        system, SN1_RAM_ADDRESS, sysbus_mmio_get_region(bedrock, 7), 0);
 
-    for (unsigned int cpu = 0; cpu < model->cpu_count; cpu++) {
+    for (cpu = 0; cpu < node->nr_cpus; cpu++) {
         MIPSCPU *mips_cpu = node->cpu[cpu];
-        unsigned physical = sn1_cpu_slot(model, cpu);
+        unsigned physical = sn1_cpu_slot(node->model_node, cpu);
 
         qdev_connect_gpio_out_named(
             node->bedrock, "nmi", physical,
@@ -402,13 +908,149 @@ static void sn1_node_create_bedrock(SN1NodeState *node,
     }
 }
 
+static const char *sn1_node_pci_type(SGIModelPciKind kind)
+{
+    switch (kind) {
+    case SGI_MODEL_PCI_ISP12160:
+        return "qlogic-isp12160";
+    case SGI_MODEL_PCI_IOC3:
+        return TYPE_SGI_IOC3;
+    case SGI_MODEL_PCI_LUCENT_OHCI:
+        return "lucent-ohci";
+    default:
+        g_assert_not_reached();
+    }
+}
+
+/*
+ * The unobserved-placeholder subsystem vendor a datasheet capture never
+ * fixed for this board (isp12160, lucent-ohci), or the class's own public
+ * vendor (ioc3) -- a device-kind fact, not per-configuration data.
+ */
+static uint16_t sn1_node_pci_subsystem_vendor(SGIModelPciKind kind)
+{
+    switch (kind) {
+    case SGI_MODEL_PCI_IOC3:
+        return SGI_IOC3_VENDOR_ID;
+    default:
+        return 0xffff;
+    }
+}
+
+static void sn1_node_configure_ioc3(DeviceState *ioc3,
+                                    const SGIModelPciFunction *function)
+{
+    DriveInfo *nvram_dinfo = drive_get(IF_MTD, 0, 0);
+    BlockBackend *nvram_blk = nvram_dinfo ?
+        blk_by_legacy_dinfo(nvram_dinfo) : blk_by_name("sgi-nvram0");
+    Chardev *serial_a = serial_hd(1);
+    Chardev *serial_b = serial_hd(2);
+    Chardev *record_a = serial_hd(3);
+    Chardev *record_b = serial_hd(4);
+
+    if (serial_a) {
+        qdev_prop_set_chr(ioc3, "chardev-a", serial_a);
+    }
+    if (serial_b) {
+        qdev_prop_set_chr(ioc3, "chardev-b", serial_b);
+    }
+    if (record_a) {
+        qdev_prop_set_chr(ioc3, "record-a", record_a);
+    }
+    if (record_b) {
+        qdev_prop_set_chr(ioc3, "record-b", record_b);
+    }
+    if (parallel_hds[0]) {
+        qdev_prop_set_chr(ioc3, "parallel-chardev", parallel_hds[0]);
+    }
+    qdev_prop_set_uint16(ioc3, "subsystem-id", function->subsystem_id);
+    qdev_prop_set_uint32(ioc3, "population",
+                         sgi_machine_ioc3_population(
+                             &function->ioc3_population));
+    qdev_prop_set_uint8(ioc3, "timekeeper-kind",
+                        function->ioc3_population.timekeeper ?
+                        SGI_IOC3_TIMEKEEPER_M48T35 : SGI_IOC3_TIMEKEEPER_NONE);
+    qdev_prop_set_uint64(ioc3, "onewire-serial", function->serial);
+    /*
+     * The IO-8's transceiver answers at MII address 1 as a DP83843, not
+     * the Origin 200 BaseIO's default address 31 DP83840A
+     * (docs/datasheets/dp83840.md).
+     */
+    qdev_prop_set_uint8(ioc3, "phy-addr", SN1_IOC3_PHY_ADDR);
+    object_property_set_bool(OBJECT(ioc3), "phy-dp83843", true, &error_abort);
+    if (nvram_blk) {
+        qdev_prop_set_drive(ioc3, "nvram-drive", nvram_blk);
+    }
+}
+
+static const char *sn1_node_pci_child_name(SGIModelPciKind kind)
+{
+    switch (kind) {
+    case SGI_MODEL_PCI_ISP12160:
+        return "scsi";
+    case SGI_MODEL_PCI_IOC3:
+        return "ioc3";
+    case SGI_MODEL_PCI_LUCENT_OHCI:
+        return "usb";
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static void sn1_node_create_pci_devices(SN1NodeState *node)
+{
+    size_t i;
+
+    if (!node->io_board) {
+        return;
+    }
+    for (i = 0; i < node->io_board->pci_count; i++) {
+        const SGIModelPciFunction *function = &node->io_board->pci[i];
+        PCIDevice *dev = pci_new(
+            PCI_DEVFN(function->device, function->function),
+            sn1_node_pci_type(function->kind));
+        g_autofree char *intx =
+            g_strdup_printf("head-%x-pci-intx", node->pci_widget);
+        g_autofree char *pin = g_strdup_printf("head-%x-pin", node->pci_widget);
+
+        object_property_add_child(OBJECT(node),
+                                  sn1_node_pci_child_name(function->kind),
+                                  OBJECT(dev));
+        if (function->kind == SGI_MODEL_PCI_IOC3) {
+            sn1_node_configure_ioc3(DEVICE(dev), function);
+        }
+        qdev_connect_gpio_out_named(
+            node->xbridge, intx, function->device * PCI_NUM_PINS,
+            qdev_get_gpio_in_named(node->xbridge, pin, function->irq_input));
+        pci_realize_and_unref(dev,
+                              sgi_xbridge_pci_bus(SGI_XBRIDGE(node->xbridge),
+                                                  node->pci_widget),
+                              &error_fatal);
+        pci_set_byte(dev->config + PCI_REVISION_ID, function->revision);
+        pci_set_word(dev->config + PCI_SUBSYSTEM_VENDOR_ID,
+                     sn1_node_pci_subsystem_vendor(function->kind));
+        pci_set_word(dev->config + PCI_SUBSYSTEM_ID, function->subsystem_id);
+        if (function->kind == SGI_MODEL_PCI_IOC3) {
+            qdev_connect_gpio_out(
+                DEVICE(dev), 0,
+                qdev_get_gpio_in_named(node->xbridge, pin,
+                                      SN1_IOC3_SUPERIO_PIN));
+        }
+    }
+}
+
 static void sn1_node_realize(DeviceState *dev, Error **errp)
 {
     SN1NodeState *node = SN1_NODE(dev);
     MachineState *machine = MACHINE(qdev_get_machine());
 
+    sn1_node_map_memory(node);
+    if (!sn1_node_load_prom(node, machine, errp)) {
+        return;
+    }
     sn1_node_create_cpus(node, machine);
     sn1_node_create_bedrock(node, machine);
+    sn1_node_create_pci_devices(node);
 }
 
 static void sn1_node_unrealize(DeviceState *dev)
@@ -478,9 +1120,18 @@ static void sn1_node_instance_init(Object *obj)
                                       0);
 }
 
+static void sn1_node_instance_finalize(Object *obj)
+{
+    SN1NodeState *node = SN1_NODE(obj);
+
+    g_free(node->prom_views);
+    g_free(node->xbridge_widgets);
+}
+
 static const Property sn1_node_properties[] = {
     DEFINE_PROP_LINK("ram", SN1NodeState, ram, TYPE_MEMORY_REGION,
                      MemoryRegion *),
+    DEFINE_PROP_UINT32("nr-cpus", SN1NodeState, nr_cpus, 0),
     DEFINE_PROP_BOOL("promdata-filter", SN1NodeState, promdata_filter, true),
     /*
      * Off by default: the fast path (sn-promdata.c) is proven on sgi-sn0-
@@ -509,6 +1160,7 @@ static const TypeInfo sn1_node_types[] = {
         .parent            = TYPE_SYS_BUS_DEVICE,
         .instance_size     = sizeof(SN1NodeState),
         .instance_init     = sn1_node_instance_init,
+        .instance_finalize = sn1_node_instance_finalize,
         .class_init        = sn1_node_class_init,
     },
 };

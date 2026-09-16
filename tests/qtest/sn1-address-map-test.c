@@ -2781,17 +2781,17 @@ static void test_prom_size_is_exact(const void *data)
     const char *empty_args[] = {
         qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
         "-smp", "2", "-bios", empty, "-display", "none",
-        "-kernel", "/definitely/not/a/kernel", NULL,
+        NULL,
     };
     const char *short_args[] = {
         qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
         "-smp", "2", "-bios", short_path, "-display", "none",
-        "-kernel", "/definitely/not/a/kernel", NULL,
+        NULL,
     };
     const char *long_args[] = {
         qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
         "-smp", "2", "-bios", long_path, "-display", "none",
-        "-kernel", "/definitely/not/a/kernel", NULL,
+        NULL,
     };
 
     assert_qemu_rejects(empty_args, "must be exactly 1476264 bytes");
@@ -2808,7 +2808,7 @@ static void test_prom_is_required(const void *data)
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
         "-smp", "2", "-display", "none",
-        "-kernel", "/definitely/not/a/kernel", NULL,
+        NULL,
     };
 
     assert_qemu_rejects(args, "requires -bios");
@@ -2819,12 +2819,12 @@ static void test_cpu_count_is_exact(const void *data)
     const char *one_args[] = {
         qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
         "-smp", "1", "-bios", prom_path, "-display", "none",
-        "-kernel", "/definitely/not/a/kernel", NULL,
+        NULL,
     };
     const char *three_args[] = {
         qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
         "-smp", "3", "-bios", prom_path, "-display", "none",
-        "-kernel", "/definitely/not/a/kernel", NULL,
+        NULL,
     };
 
     assert_qemu_rejects(one_args, "Invalid SMP CPUs 1");
@@ -2836,16 +2836,16 @@ static void test_ram_size_is_exact(const void *data)
     const char *small_args[] = {
         qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
         "-smp", "2", "-m", "256M", "-bios", prom_path,
-        "-display", "none", "-kernel", "/definitely/not/a/kernel", NULL,
+        "-display", "none", NULL,
     };
     const char *large_args[] = {
         qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R14000",
         "-smp", "2", "-m", "1G", "-bios", prom_path,
-        "-display", "none", "-kernel", "/definitely/not/a/kernel", NULL,
+        "-display", "none", NULL,
     };
 
-    assert_qemu_rejects(small_args, "requires 512 MiB of RAM");
-    assert_qemu_rejects(large_args, "requires 512 MiB of RAM");
+    assert_qemu_rejects(small_args, "does not accept 256 MiB per node");
+    assert_qemu_rejects(large_args, "does not accept 1024 MiB per node");
 }
 
 static void test_cpu_type_is_r14000(const void *data)
@@ -2853,12 +2853,12 @@ static void test_cpu_type_is_r14000(const void *data)
     const char *r4000_args[] = {
         qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R4000",
         "-smp", "2", "-bios", prom_path, "-display", "none",
-        "-kernel", "/definitely/not/a/kernel", NULL,
+        NULL,
     };
     const char *r10000_args[] = {
         qtest_qemu_binary(NULL), "-M", "origin300", "-cpu", "R10000",
         "-smp", "2", "-bios", prom_path, "-display", "none",
-        "-kernel", "/definitely/not/a/kernel", NULL,
+        NULL,
     };
 
     assert_qemu_rejects(r4000_args, "Invalid CPU model: R4000");

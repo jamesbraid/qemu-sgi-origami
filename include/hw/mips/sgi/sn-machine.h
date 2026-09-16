@@ -70,4 +70,27 @@ bool sgi_machine_validate_topology(const SGIModelTopology *topology,
  */
 void sgi_machine_init(MachineState *machine);
 
+/*
+ * Exposed for each product class file (sn0.c's origin200/origin2000,
+ * sn1.c's origin300): default_cpus, max_cpus and default_ram_size for
+ * mc->default_cpus/max_cpus/default_ram_size, derived from the same
+ * topology the class names.
+ */
+unsigned int sgi_machine_topology_default_cpus(const SGIModelTopology *t);
+unsigned int sgi_machine_product_max_cpus(const char *product);
+uint64_t sgi_machine_topology_default_ram(const SGIModelTopology *t);
+
+/* An IOC3 population mask from the descriptor's boolean fields. */
+uint32_t sgi_machine_ioc3_population(const SGIModelIoc3Population *population);
+
+/*
+ * Copies the machine's own chassis-eeprom/board-eeprom/spd-eeprom
+ * identity-record file lists onto an L1 device before it is realized.
+ * Takes the L1 explicitly because it lives on the node (sgi-sn1-node),
+ * while the file lists it reads are machine properties -- one identity
+ * per machine, one L1 per node.
+ */
+void sgi_machine_set_l1_identity_records(MachineState *machine,
+                                         DeviceState *l1);
+
 #endif /* HW_MIPS_SGI_SN_MACHINE_H */

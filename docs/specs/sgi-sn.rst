@@ -24,25 +24,20 @@ parents. It owns the family's own machine properties and a builder,
 descriptor: an array of ``SGIModelTopology`` entries
 (``hw/mips/sgi/sn-model.h``, generated into ``sn-model.c``) naming
 every node, module, fabric link, I/O board and controller a product's
-configuration ships. Two products stand on this base today:
-``origin200`` and ``origin2000``, both SN0. The Origin 300
-(``origin300``, SN1) is not one of them yet: it keeps its own,
-older-style machine class in ``hw/mips/sgi/sn1.c``, parented directly
-on QEMU's plain ``TYPE_MACHINE`` rather than on ``sgi-sn``, with its
-own fixed-population builder, its own PROM loading and its own PCI
-construction. It shares the family's node ASIC, bridge and controller
-device models and its board-device classes (below), but not yet the
-``topology=`` command-line contract or the compiled descriptor this
-page otherwise describes. Where a fact below is qualified "on
-``origin200`` and ``origin2000``" or "on the shared builder", read it
-as not yet true of ``origin300``.
+configuration ships. Three products stand on this base today:
+``origin200`` and ``origin2000`` (SN0), and ``origin300`` (SN1).
+``origin300``'s own product class (``hw/mips/sgi/sn1.c``) parents
+``sgi-sn`` like the other two and names the same ``topology=``
+contract and compiled descriptor this page describes; only its node
+device (``sgi-sn1-node``, ``hw/mips/sgi/sn1-node.c``) is
+product-specific, the way each SN0 node's own device is.
 
 Products and topology
 =====================
 
 A product's ``topology=`` machine property selects which configuration
 of it to build; ``-smp``, ``-m`` and ``-cpu`` then select and validate
-a population within that wiring. The compiled descriptor carries three
+a population within that wiring. The compiled descriptor carries four
 topologies today:
 
 .. list-table::
@@ -68,6 +63,11 @@ topologies today:
      - 4, two Crossbows and two routers
      - 2+2+2+2 (fixed)
      - 64 MiB (fixed)
+   * - ``origin300`` (default)
+     - ``origin300``
+     - 1
+     - 2 (fixed)
+     - 512 MiB (fixed)
 
 ``-M origin200,topology=origin200-dual`` selects the second row; naming
 a topology that is not one of a product's own (or any other unknown
@@ -82,18 +82,18 @@ across nodes and each node's share must be one of its own accepted
 sizes -- ``origin200-dual`` accepts the same four per-node sizes
 ``origin200`` does, so its total ranges from 128 MiB to 1024 MiB, while
 ``origin2000-module``'s four nodes ship a fixed 64 MiB each and accept
-no other size. ``-cpu`` accepts only R10000, the default and the only
-member of both products' ``valid_cpu_types``.
+no other size. ``origin300`` accepts only R14000 for ``-cpu``; the
+other two accept only R10000, the default and the only member of
+their own ``valid_cpu_types``.
 
 The abstract base refuses ``-numa`` outright: ``topology=`` already
 selects the wiring, and ``-smp``/``-m`` select the population within
 it, so a NUMA node list would either repeat that or contradict it.
 This refusal, and every other command-line rule described in this
-section, applies to ``origin200`` and ``origin2000`` through the
-shared builder; ``origin300`` enforces none of it -- it takes a fixed
-``-smp 2 -m 512M`` (its class sets ``min_cpus``, ``max_cpus`` and
-``default_cpus`` to the one population it ships, and rejects any
-other ``-m`` outright) and does not refuse ``-numa`` itself.
+section, applies to every product through the shared builder;
+``origin300`` happens to ship only the one population above, so its
+own class fixes ``min_cpus``, ``max_cpus`` and ``default_cpus`` to it
+rather than accepting a range the way ``origin200`` does.
 
 Every product across both generations refuses ``-kernel``: booting a
 guest kernel directly, bypassing the stock PROM, is not a supported
@@ -195,9 +195,9 @@ exist:
   bus, for an Origin 2000 module's optional XIO PCI expansion slot.
 
 The first three are onboard-only (``user_creatable`` is off: a real
-system never lets a user plug one into that slot) and are today built,
-where they are built at all, by construction still inline in a
-product's own machine file rather than through this base class.
+system never lets a user plug one into that slot). The shared builder
+(``sgi_machine_io_board_type()``) picks the concrete class from the
+descriptor's own ``board_kind`` field and builds it for every product;
 ``sgi-pci-expansion`` is the one ``-device``-creatable board:
 
 .. code-block:: shell
@@ -208,16 +208,19 @@ A board realizes once machine init has returned, but a Crossbow needs
 every one of its endpoints attached before its own realize builds the
 routes between them, so a board's realize only validates its
 properties, builds its widget and registers itself as pending; a
-machine that owns a module's Crossbow is expected to create it
-unrealized, build every board its topology places directly, then
-attach every pending board for that Crossbow and module from a
-machine-init-done notifier before realizing the Crossbow itself. No
-product's builder does this yet -- ``origin200``, ``origin2000`` and
-``origin300`` each still build their onboard I/O and any Crossbow
-inline, the way they did before these classes existed -- so
-``sgi-pci-expansion`` has no module or Crossbow on any shipping
-machine to attach to today; the ordering contract above is exercised
-only by a qtest-only fixture machine, not by a product.
+machine that owns a module's Crossbow creates it unrealized, builds
+every board its topology places directly, then attaches every pending
+board for that Crossbow and module from a machine-init-done notifier
+before realizing the Crossbow itself. ``origin2000`` follows this
+ordering for its own two Crossbows; ``origin200`` has no Crossbow (its
+one ``sgi-ip29-io`` attaches directly to its node's crosstalk port),
+and neither does ``origin300`` (its one ``sgi-io8`` is the fused
+XBridge chip itself, sitting directly on Bedrock's crosstalk port), so
+both build their one board synchronously instead and never reach the
+machine-init-done notifier. ``sgi-pci-expansion`` has no module or
+Crossbow on any shipping machine to attach to today; the ordering
+contract above is otherwise exercised only by a qtest-only fixture
+machine, not by a product.
 
 Devices
 =======

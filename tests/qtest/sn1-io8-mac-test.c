@@ -11,7 +11,7 @@
 #define L1_UART_BASE (UINT64_C(0x10000000000) + UINT64_C(0x30000000) + 0x80)
 #define L1_UART_STATUS 0x28
 #define L1_STATUS_READY 0x61
-#define IOC3_PATH "/machine/io8-ioc3"
+#define IOC3_PATH "/machine/node0/ioc3"
 #define MAC "02:00:5d:aa:bb:cc"
 
 /* The 16-byte CIA and 80-byte BIA use the documented field boundaries. */
