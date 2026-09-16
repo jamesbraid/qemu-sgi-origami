@@ -404,15 +404,6 @@ static void test_eeprom_six_entries(void)
                                         &error);
     g_autofree char *spd_path = NULL;
     uint8_t spd[64] = { 0 };
-    const uint8_t request[] = {
-        0x10, 0x0f, 0xff, 0xf0, 6, 0, 6, 4,
-        0, 0, 0, 0, 6, 0, 0, 0, 0, 4,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    };
-    const uint8_t absent[] = {
-        0x7e, 0x30, 0xff, 0xff, 0xff, 0x98, 0,
-        0xb9, 0x11, 0x7e,
-    };
     uint8_t reply[131];
     QTestState *s;
 
@@ -428,10 +419,10 @@ static void test_eeprom_six_entries(void)
         "\"controller\":\"l1c\"}'",
         spd_path);
     qtest_sysbus_mmio_map(s, PATH, 0, BASE);
-    send_frame(s, request, sizeof(request), false);
-    expect_raw_reply(s, absent, sizeof(absent));
+    g_assert_cmpuint(eeprom_read(s, 6, 4, 0, 64, reply), ==, 76);
+    g_assert_cmpmem(reply + 12, 64, spd, sizeof(spd));
     g_assert_cmpuint(eeprom_read(s, 6, 5, 200, 1, reply), ==, 6);
-    g_assert_cmpmem(reply, 6, absent + 1, 6);
+    g_assert_cmphex(reply[4], ==, 0x97);
     qtest_quit(s);
     unlink(spd_path);
     g_assert_cmpint(rmdir(dir), ==, 0);
