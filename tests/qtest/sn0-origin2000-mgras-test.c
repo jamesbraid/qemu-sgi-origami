@@ -30,6 +30,7 @@
 #define REG_STARTUP_STATUS     SI_REG(0x008000)
 #define REG_BRINGUP_STEP       SI_REG(0x011098)
 #define REG_PREFIX             SI_REG(0x011000)
+#define REG_RESET_ARG          SI_REG(0x011008)
 #define REG_PENDING            SI_REG(0x011020)
 #define REG_PENDING_ACK        SI_REG(0x011028)
 #define REG_IRQ_MASK           SI_REG(0x011040)
@@ -38,6 +39,7 @@
 #define REG_BUS_STATUS         SI_REG(0x020100)
 #define REG_DMA_BUSY           SI_REG(0x020200)
 #define REG_DIRECT_COPY_READY  SI_REG(0x02c578)
+#define REG_RESET_CONTROL      SI_REG(0x072408)
 #define REG_HQ_UPLOAD           SI_REG(0x050000)
 #define REG_ENTRY               SI_REG(0x130500)
 #define REG_CONTEXT_COMMAND     SI_REG(0x120400)
@@ -212,6 +214,51 @@ static void test_generic_bringup_step(void)
 
     qtest_writel(qts, REG_BRINGUP_STEP, (520u << 10) | (65u << 2));
     g_assert_cmphex(qtest_readl(qts, REG_BRINGUP_STEP) & 0x2, ==, 0x2);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The kernel driver's own reset routine polls this offset's low five bits,
+ * waiting for ((bits + 1) >> 1) < 8 before it will continue -- i.e. the
+ * field settling to 14 or below. The value this offset returned before,
+ * 31 << 4, fixes those bits at 16, which never satisfies that test: a live
+ * boot against this exact machine hung forever inside the driver's reset
+ * routine before this was fixed, only reachable at all once a kernel with
+ * that driver code actually linked in existed (see the Origami handoff for
+ * the retained-media install and kernel rebuild that first exercised it).
+ */
+static void test_bus_status_reads_settled(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    g_assert_cmpuint(((qtest_readl(qts, REG_BUS_STATUS) & 0x1f) + 1) >> 1, <, 8);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Two registers the reset routine writes once it observes REG_BUS_STATUS
+ * settled, live-traced through the same boot: REG_RESET_ARG (a second word
+ * next to the existing REG_PREFIX register) and REG_RESET_CONTROL (in the
+ * display/cursor register block). Neither field's bit meaning was captured
+ * -- only that this driver writes them once during reset and expects the
+ * access to succeed -- so both hold the device to plain storage, the same
+ * treatment already given to REG_WIDGET_CONTROL above.
+ */
+static void test_reset_registers_are_plain_storage(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    g_assert_cmphex(qtest_readl(qts, REG_RESET_ARG), ==, 0);
+    qtest_writel(qts, REG_RESET_ARG, 0x765b900f);
+    g_assert_cmphex(qtest_readl(qts, REG_RESET_ARG), ==, 0x765b900f);
+
+    g_assert_cmphex(qtest_readl(qts, REG_RESET_CONTROL), ==, 0);
+    qtest_writel(qts, REG_RESET_CONTROL, 0x40000000);
+    g_assert_cmphex(qtest_readl(qts, REG_RESET_CONTROL), ==, 0x40000000);
+    /* Not SI-specific accesses: neither must raise the sticky error. */
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 
     qtest_quit(qts);
 }
@@ -538,6 +585,10 @@ int main(int argc, char **argv)
                    test_widget_control_is_plain_storage);
     qtest_add_func("sn0/origin2000/mgras/generic-bringup-step",
                    test_generic_bringup_step);
+    qtest_add_func("sn0/origin2000/mgras/bus-status-reads-settled",
+                   test_bus_status_reads_settled);
+    qtest_add_func("sn0/origin2000/mgras/reset-registers-are-plain-storage",
+                   test_reset_registers_are_plain_storage);
     qtest_add_func("sn0/origin2000/mgras/hq-upload-readback",
                    test_hq_upload_and_readback);
     qtest_add_func("sn0/origin2000/mgras/context-recognizer-ordering",
