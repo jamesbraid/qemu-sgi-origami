@@ -106,6 +106,7 @@ tests = {
   'test-sn0-origin2000-xtalk-model': [
     '../../hw/mips/sn0-origin2000-model.c',
     '../../hw/mips/sgi/sn0-origin2000-xtalk-model.c'],
+  'test-sn1-topology': ['../../hw/mips/sgi/sn1-topology.c'],
   'test-logging': [],
   'test-qapi-util': [],
   'test-interval-tree': [],
