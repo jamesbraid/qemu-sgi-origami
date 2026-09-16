@@ -10,6 +10,7 @@
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "system/address-spaces.h"
+#include "ui/console.h"
 #include "trace.h"
 
 #define SI_PENDING_FLAGS 0x00080000
@@ -353,6 +354,25 @@ static const MemoryRegionOps si_ops = {
     .impl = { .min_access_size = 4, .max_access_size = 8 },
 };
 
+/*
+ * The host's own screendump command needs a real console; without one it
+ * reports "There is no console to take a screendump from" even though the
+ * device already keeps a complete framebuffer in front[]. The console's
+ * surface is created directly over front[]'s own storage below, so this
+ * callback only has to say "something in it may have changed" -- there is
+ * no separate pixel copy to perform or dirty region to track.
+ */
+static bool si_gfx_update(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+    qemu_console_update_full(s->con);
+    return true;
+}
+
+static const GraphicHwOps si_gfx_ops = {
+    .gfx_update = si_gfx_update,
+};
+
 static void si_reset(DeviceState *dev)
 {
     SGIMgrasState *s = SGI_MGRAS(dev);
@@ -395,6 +415,12 @@ static void si_realize(DeviceState *dev, Error **errp)
     memory_region_init_io(&s->regs, OBJECT(dev), &si_ops, s, "sgi-mgras.regs", SGI_MGRAS_MMIO_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->regs);
     address_space_init(&s->fabric_as, s->fabric, "sgi-mgras.fabric");
+    s->con = qemu_graphic_console_create(dev, 0, &si_gfx_ops, s);
+    qemu_console_set_surface(s->con,
+        qemu_create_displaysurface_from(SGI_MGRAS_WIDTH, SGI_MGRAS_HEIGHT,
+                                        PIXMAN_x8r8g8b8,
+                                        SGI_MGRAS_WIDTH * sizeof(uint32_t),
+                                        (uint8_t *)s->front));
     s->retrace_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, si_retrace, s);
     si_reset(dev);
 }
@@ -404,6 +430,13 @@ static void si_unrealize(DeviceState *dev)
     SGIMgrasState *s = SGI_MGRAS(dev);
     timer_del(s->retrace_timer); timer_free(s->retrace_timer);
     address_space_destroy(&s->fabric_as);
+    /*
+     * Closes the console and drops its surface before front[] is freed;
+     * that surface wraps front[]'s storage without owning it (no pixman
+     * destroy function was registered), so this ordering is required, not
+     * just tidy -- freeing front[] first would leave a dangling surface.
+     */
+    qemu_graphic_console_close(s->con);
     g_free(s->front); g_free(s->back); g_free(s->wid); g_free(s->ge);
 }
 

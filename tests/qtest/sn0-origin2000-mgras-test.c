@@ -409,6 +409,94 @@ static void test_direct_fill_and_reset(void)
     qtest_quit(qts);
 }
 
+/*
+ * The device screen dimensions, mirrored from SGI_MGRAS_WIDTH/HEIGHT in
+ * include/hw/misc/sgi-mgras.h -- this file does not include the device
+ * header, so the two stay in sync only by convention; the dimension
+ * assertion below fails loudly if that ever drifts.
+ */
+#define SI_SCREEN_WIDTH  1280
+#define SI_SCREEN_HEIGHT 1024
+
+/*
+ * Parses the fixed three-line header QEMU's own ppm_save() writes
+ * ("P6\n%d %d\n%d\n") and returns the RGB triplet at (x, y).
+ */
+static void si_screendump_pixel(const char *path, int x, int y,
+                                uint8_t *r, uint8_t *g, uint8_t *b)
+{
+    g_autofree char *data = NULL;
+    gsize len = 0;
+    int width, height, maxval, header_len = 0;
+    size_t offset;
+
+    g_assert(g_file_get_contents(path, &data, &len, NULL));
+    g_assert_cmpint(sscanf(data, "P6\n%d %d\n%d\n%n",
+                          &width, &height, &maxval, &header_len), ==, 3);
+    g_assert_cmpint(width, ==, SI_SCREEN_WIDTH);
+    g_assert_cmpint(height, ==, SI_SCREEN_HEIGHT);
+    g_assert_cmpint(maxval, ==, 255);
+
+    offset = (size_t)header_len + ((size_t)y * width + x) * 3;
+    g_assert_cmpint(offset + 3, <=, len);
+    *r = (uint8_t)data[offset];
+    *g = (uint8_t)data[offset + 1];
+    *b = (uint8_t)data[offset + 2];
+}
+
+/*
+ * Confirms the host's own screendump command reaches this device at all --
+ * before the console wiring, it failed outright with "There is no console
+ * to take a screendump from" regardless of what front[] held -- and that
+ * the surface it captures really is front[]'s content, not some other
+ * placeholder, by round-tripping the same fill test_direct_fill_and_reset
+ * already exercises through a real screendump file instead of the
+ * host-only x-test-pixel introspection property.
+ */
+static void test_screendump_matches_pixels(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *path = NULL;
+    GError *err = NULL;
+    uint8_t r, g, b;
+
+    si_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_FILL_CLIP_START, (10u << 16) | 10u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_FILL_CLIP_END, (13u << 16) | 13u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_FILL_COLOR, 0x00112233));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (10u << 16) | 10u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (13u << 16) | 13u));
+    g_assert_cmphex(si_test_pixel(qts, 11, 11), ==, 0x00112233);
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-screendump-XXXXXX", &err);
+    g_assert_no_error(err);
+    path = g_strdup_printf("%s/screen.ppm", tmpfs);
+
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'screendump', 'arguments': {'filename': %s}}", path);
+
+    /* Inside the filled rectangle: the written colour, split into R/G/B. */
+    si_screendump_pixel(path, 11, 11, &r, &g, &b);
+    g_assert_cmphex(r, ==, 0x11);
+    g_assert_cmphex(g, ==, 0x22);
+    g_assert_cmphex(b, ==, 0x33);
+
+    /* Outside the clipped rectangle: still the reset-cleared black. */
+    si_screendump_pixel(path, 20, 11, &r, &g, &b);
+    g_assert_cmphex(r, ==, 0);
+    g_assert_cmphex(g, ==, 0);
+    g_assert_cmphex(b, ==, 0);
+
+    qtest_quit(qts);
+}
+
 static void test_migration(void)
 {
     g_autofree char *tmpfs = NULL;
@@ -466,6 +554,8 @@ int main(int argc, char **argv)
                    test_fifo_full_and_unsupported_access);
     qtest_add_func("sn0/origin2000/mgras/direct-fill-and-reset",
                    test_direct_fill_and_reset);
+    qtest_add_func("sn0/origin2000/mgras/screendump-matches-pixels",
+                   test_screendump_matches_pixels);
     qtest_add_func("sn0/origin2000/mgras/migration", test_migration);
 
     return g_test_run();

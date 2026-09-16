@@ -6,6 +6,7 @@
 #include "system/memory.h"
 #include "qom/object.h"
 #include "qemu/units.h"
+#include "ui/console.h"
 
 #define TYPE_SGI_MGRAS "sgi-mgras"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
@@ -60,6 +61,13 @@ struct SGIMgrasState {
     uint64_t test_last_interrupt_addr;
     uint64_t test_last_interrupt_value;
     QEMUTimer *retrace_timer;
+    /*
+     * A QEMU display surface created directly over front[]'s own storage
+     * (PIXMAN_x8r8g8b8, matching the low-24-bit colour word this device
+     * already stores verbatim), so the host's screendump command reads
+     * whatever front[] holds with no separate copy.
+     */
+    QemuConsole *con;
     uint32_t *front;
     uint32_t *back;
     uint32_t front_count;
