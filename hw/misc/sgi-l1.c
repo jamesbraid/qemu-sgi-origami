@@ -1789,12 +1789,12 @@ static const VMStateDescription vmstate_l1_selected = {
 static const VMStateDescription vmstate_l1 = {
     .name = TYPE_SGI_L1,
     .version_id = 8,
-    .minimum_version_id = 8,
+    .minimum_version_id = 7,
     .post_load = l1_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_STRUCT_ARRAY(records, SGIL1State, 48, 0,
                              vmstate_l1_record, SGIL1EEPROM),
-        VMSTATE_STRUCT_ARRAY(selected, SGIL1State, 6, 0,
+        VMSTATE_STRUCT_ARRAY(selected, SGIL1State, 6, 8,
                              vmstate_l1_selected, SGIL1SelectedEEPROM),
         VMSTATE_BOOL(node_power, SGIL1State),
         VMSTATE_BOOL(power_up_pending, SGIL1State),
