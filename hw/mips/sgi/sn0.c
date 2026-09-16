@@ -411,10 +411,7 @@ static void sn0_backdoor_configure(SN0BackdoorState *s, SN0NodeState *node,
 
 static uint32_t sn0_board_mode_bits(SN0MachineState *s)
 {
-    SN0MachineClass *smc = SN0_MACHINE_GET_CLASS(s);
-
-    return s->composition ? s->composition->hardware->cpu_mode_bits
-                          : smc->model->cpu_mode_bits;
+    return s->composition->hardware->cpu_mode_bits;
 }
 
 void sn0_mode_bits_reset(void *opaque)
@@ -454,153 +451,19 @@ static void sn0_machine_reset(MachineState *machine, ResetType type)
     }
 }
 
-/*
- * Arm the sgi_hub_led trace event: the only progress this machine shows
- * while firmware picks a console. One line is enough -- the log backend
- * already forces LOG_TRACE on every run. The emitted text is parsed, so
- * the event stays the single route.
- */
-static void sn0_show_indicator_codes(Error **errp)
-{
-    TraceEvent *ev = trace_event_name("sgi_hub_led");
-
-    if (!ev) {
-        error_setg(errp, "the sgi_hub_led trace event is missing, so the "
-                         "firmware's boot-progress indicator cannot be "
-                         "shown; build with it or pass debug-leds=off");
-        return;
-    }
-    trace_event_set_state_dynamic(ev, true);
-}
-
-static const CPUArchIdList *sn0_possible_cpu_arch_ids(MachineState *machine)
-{
-    const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(machine)->model;
-    const SN0ModelProfile *profile;
-    unsigned int max_cpus = machine->smp.max_cpus;
-    g_autofree unsigned int *cpus = NULL;
-    unsigned int index = 0;
-    unsigned int node_count = machine->smp.sockets;
-    unsigned int node_index;
-
-    if (machine->possible_cpus) {
-        assert(machine->possible_cpus->len == max_cpus);
-        return machine->possible_cpus;
-    }
-
-    cpus = g_new0(unsigned int, node_count);
-    for (node_index = 0; node_index < node_count; node_index++) {
-        cpus[node_index] = node_count == 1 ? machine->smp.max_cpus :
-            machine->smp.cores * machine->smp.threads;
-    }
-    profile = sn0_model_find_profile(model, node_count, cpus);
-
-    machine->possible_cpus = g_malloc0(sizeof(CPUArchIdList) +
-                                       sizeof(CPUArchId) * max_cpus);
-    machine->possible_cpus->len = max_cpus;
-    if (!profile) {
-        /*
-         * NUMA parsing asks for CPU properties before sn0_init() can reject
-         * an unsupported geometry.  Preserve the physical slot mapping long
-         * enough for that validation to report the user-facing error.
-         */
-        for (index = 0; index < max_cpus; index++) {
-            CPUArchId *slot = &machine->possible_cpus->cpus[index];
-            unsigned int node = index / model->cpu_slots_per_node;
-            unsigned int slice = index % model->cpu_slots_per_node;
-
-            slot->type = machine->cpu_type;
-            slot->vcpus_count = 1;
-            slot->arch_id = node * model->cpu_slots_per_node + slice;
-            slot->props.has_socket_id = true;
-            slot->props.socket_id = node;
-            slot->props.has_core_id = true;
-            slot->props.core_id = slice;
-            slot->props.has_thread_id = true;
-            slot->props.thread_id = 0;
-        }
-        return machine->possible_cpus;
-    }
-
-    for (node_index = 0; node_index < profile->node_count; node_index++) {
-        const SN0ModelNodeInstance *node =
-            &profile->nodes[node_index];
-        unsigned int slice;
-
-        for (slice = 0; slice < node->cpu_count; slice++, index++) {
-            CPUArchId *slot = &machine->possible_cpus->cpus[index];
-
-            g_assert(index < max_cpus);
-            slot->type = machine->cpu_type;
-            slot->vcpus_count = 1;
-            slot->arch_id = node->cpu_first_id + slice;
-            slot->props.has_socket_id = true;
-            slot->props.socket_id = node_index;
-            slot->props.has_core_id = true;
-            slot->props.core_id = slice;
-            slot->props.has_thread_id = true;
-            slot->props.thread_id = 0;
-        }
-    }
-    g_assert(index == max_cpus);
-
-    return machine->possible_cpus;
-}
-
-static CpuInstanceProperties
-sn0_cpu_index_to_props(MachineState *machine, unsigned int cpu_index)
-{
-    const CPUArchIdList *possible_cpus =
-        sn0_possible_cpu_arch_ids(machine);
-
-    assert(cpu_index < possible_cpus->len);
-    return possible_cpus->cpus[cpu_index].props;
-}
-
-static int64_t sn0_get_default_cpu_node_id(const MachineState *machine,
-                                           int index)
-{
-    const SN0MachineModel *model = SN0_MACHINE_GET_CLASS(machine)->model;
-    const SN0ModelProfile *profile;
-    g_autofree unsigned int *cpus = NULL;
-    unsigned int node_count = machine->smp.sockets;
-    unsigned int node_index;
-
-    cpus = g_new0(unsigned int, node_count);
-    for (node_index = 0; node_index < node_count; node_index++) {
-        cpus[node_index] = node_count == 1 ? machine->smp.cpus :
-            machine->smp.cores * machine->smp.threads;
-    }
-    profile = sn0_model_find_profile(model, node_count, cpus);
-    if (!profile) {
-        return index / model->cpu_slots_per_node;
-    }
-    for (node_index = 0; node_index < profile->node_count; node_index++) {
-        const SN0ModelNodeInstance *node =
-            &profile->nodes[node_index];
-
-        if (index < node->cpu_count) {
-            return node_index;
-        }
-        index -= node->cpu_count;
-    }
-    g_assert_not_reached();
-}
-
 static const SN0ModelAddressMap *sn0_node_address_map(SN0NodeState *node)
 {
-    return node->physical ? &node->physical->map : &node->topology->map;
+    return &node->physical->map;
 }
 
 static const SN0ModelMemory *sn0_node_memory_geometry(SN0NodeState *node)
 {
-    return node->hardware ? &node->hardware->memory : &node->model->memory;
+    return &node->hardware->memory;
 }
 
 static unsigned int sn0_node_cpu_slots(SN0NodeState *node)
 {
-    return node->hardware ? node->hardware->cpu_slots_per_node :
-                            node->model->cpu_slots_per_node;
+    return node->hardware->cpu_slots_per_node;
 }
 
 static void sn0_node_create_cpus(SN0NodeState *node)
@@ -979,8 +842,7 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
 
 static void sn0_node_create_hub(SN0NodeState *node)
 {
-    const SN0ModelComponent *hub = node->physical ? node->physical->hub :
-                                                  node->topology->hub;
+    const SN0ModelComponent *hub = node->physical->hub;
     const SN0ModelAddressMap *map = sn0_node_address_map(node);
     unsigned int node_index = node->nasid;
     g_autofree char *xtalk_name =
@@ -1008,35 +870,17 @@ static void sn0_node_create_hub(SN0NodeState *node)
 
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpus", node->nr_cpus);
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpu-base", node->cpu_base);
-    if (node->physical) {
-        qdev_prop_set_uint32(DEVICE(&node->hub), "physical-slot",
-                            node->physical->slot);
-    }
-    if (node->instance) {
-        switch (node->instance->module_role) {
-        case SN0_MODULE_MASTER:
-            qdev_prop_set_bit(DEVICE(&node->hub), "slave-module", false);
-            break;
-        case SN0_MODULE_SLAVE:
-            qdev_prop_set_bit(DEVICE(&node->hub), "slave-module", true);
-            break;
-        default:
-            g_assert_not_reached();
-        }
-    }
-    qdev_prop_set_uint8(DEVICE(&node->hub), "ni-revision",
-                        node->physical ? hub->ni_revision : hub->revision);
-    if (node->physical) {
-        qdev_prop_set_uint8(DEVICE(&node->hub), "widget-revision",
-                            hub->widget_revision);
-    }
+    qdev_prop_set_uint32(DEVICE(&node->hub), "physical-slot",
+                        node->physical->slot);
+    qdev_prop_set_bit(DEVICE(&node->hub), "slave-module", node->slave_role);
+    qdev_prop_set_uint8(DEVICE(&node->hub), "ni-revision", hub->ni_revision);
+    qdev_prop_set_uint8(DEVICE(&node->hub), "widget-revision",
+                        hub->widget_revision);
     /*
      * Each PIMM record part gets its own synthetic serial: per-unit as the
      * hub one-wire datasheet's contract requires, never a real machine's.
      */
-    qdev_prop_set_uint64(DEVICE(&node->hub), "onewire-serial",
-                         node->physical ? hub->serial :
-                                          node->instance->hub_serial);
+    qdev_prop_set_uint64(DEVICE(&node->hub), "onewire-serial", hub->serial);
     qdev_prop_set_uint32(
         DEVICE(&node->hub), "population",
         (hub->i2c_controller ?
@@ -1210,464 +1054,6 @@ void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
     }
 }
 
-/*
- * The IP27 PROM jump table at flash offset zero: ten entries, real
- * hardware's own layout.
- */
-#define SN0_FLASH_ENTRIES       10
-#define SN0_FLASH_ENTRY_STRIDE  8
-
-/*
- * The firmware configuration block, at flash offset 0x60 -- real
- * hardware's own layout.
- */
-#define SN0_CONFIG_OFFSET   0x60
-#define SN0_CONFIG_MAGIC    0x69703237636f6e66ULL  /* "ip27conf" */
-#define SN0_CONFIG_SIZE                0x50
-#define SN0_CONFIG_FPROM_CYC_OFFSET    0x2c
-#define SN0_CONFIG_MACHINE_TYPE_OFFSET 0x30
-#define SN0_CONFIG_CHECKSUM_OFFSET     0x34
-#define SN0_CONFIG_FPROM_WR_OFFSET     0x3c
-
-/* Where the factory-fresh environment log sits in the flash image. */
-#define SN0_PROMLOG_SECTOR    14
-#define SN0_PROMLOG_MAGIC     0x504c4f47
-#define SN0_PROMLOG_VERSION   1
-
-/*
- * The default flash template: the jump table's entries all return except
- * entry zero, which spins -- what an unprogrammed reset vector does on
- * real hardware -- plus a configuration block and a factory-fresh
- * environment log, both in the real IP27 firmware's own field order and
- * widths. A -bios image shorter than the flash overlays only its own
- * bytes on top of this, so a real PROM image that does not reach its own
- * configuration block or environment log sector still finds the ones
- * built here, the same way real flash ships pre-formatted rather than
- * merely erased. sn0_configure_flash() then patches the block actually
- * present -- this template's own or the image's -- to this product's
- * values.
- */
-static void sn0_build_flash(const SN0MachineModel *model, uint8_t *flash,
-                            uint64_t flash_size)
-{
-    static const uint32_t jr_ra = 0x03e00008;      /* jr $31 */
-    static const uint32_t branch_to_self = 0x1000ffff; /* b . */
-    uint8_t *config = flash + SN0_CONFIG_OFFSET;
-    int i;
-
-    g_assert(flash_size >=
-             (SN0_PROMLOG_SECTOR + 1) * sn0_flash.sector_size);
-    memset(flash, 0xff, flash_size);
-
-    for (i = 0; i < SN0_FLASH_ENTRIES; i++) {
-        uint8_t *entry = flash + i * SN0_FLASH_ENTRY_STRIDE;
-
-        stl_be_p(entry, i == 0 ? branch_to_self : jr_ra);
-        stl_be_p(entry + 4, 0);                    /* the delay slot */
-    }
-
-    /* The field order and widths are the IP27 firmware's. */
-    stl_be_p(config + 0x00, 0xb);                  /* timing constant */
-    stl_be_p(config + 0x04, model->cpu_mode_bits);
-    stq_be_p(config + 0x08, SN0_CONFIG_MAGIC);
-    stq_be_p(config + 0x10, model->cpu_clock_hz);
-    stq_be_p(config + 0x18, model->hub_clock_hz);
-    stq_be_p(config + 0x20, model->rtc_clock_hz);
-    stl_be_p(config + 0x28, 1);                    /* error correction on */
-    stl_be_p(config + SN0_CONFIG_FPROM_CYC_OFFSET, model->flash_read_cycles);
-    stl_be_p(config + SN0_CONFIG_MACHINE_TYPE_OFFSET,
-             model->firmware_machine_type);
-    stl_be_p(config + SN0_CONFIG_CHECKSUM_OFFSET, 0); /* checksum adjustment */
-    stl_be_p(config + 0x38, 0);                    /* flash program count */
-    stl_be_p(config + SN0_CONFIG_FPROM_WR_OFFSET, model->flash_write_cycles);
-    stl_be_p(config + 0x40, 6);                    /* firmware version */
-    stl_be_p(config + 0x44, 11);                   /* firmware revision */
-    stl_be_p(config + 0x48, 0);                    /* configuration flags */
-
-    /* The factory-fresh environment log; an erased first entry ends it. */
-    config = flash + SN0_PROMLOG_SECTOR * sn0_flash.sector_size;
-    stl_be_p(config + 0x10, SN0_PROMLOG_MAGIC);
-    stl_be_p(config + 0x14, SN0_PROMLOG_VERSION);
-    stl_be_p(config + 0x18, 1);                    /* initial sequence */
-}
-
-static uint8_t sn0_config_byte_sum(const uint8_t *config)
-{
-    uint8_t sum = 0;
-    unsigned int i;
-
-    for (i = 0; i < SN0_CONFIG_SIZE; i++) {
-        sum += config[i];
-    }
-    return sum;
-}
-
-/*
- * The flasher's contract: the three product values in, every other field
- * and the old block sum preserved; no IP27 signature, no touch. Runs
- * whether the configuration block present is this file's own default
- * template or a real PROM image's -- every stock PROM image carries one
- * at this same offset with this same magic.
- */
-static void sn0_configure_flash(const SN0MachineModel *model, uint8_t *flash)
-{
-    uint8_t *config = flash + SN0_CONFIG_OFFSET;
-    uint8_t old_sum;
-    uint8_t new_sum;
-
-    if (ldq_be_p(config + 0x08) != SN0_CONFIG_MAGIC) {
-        return;
-    }
-
-    old_sum = sn0_config_byte_sum(config);
-    stl_be_p(config + SN0_CONFIG_CHECKSUM_OFFSET, 0);
-    stl_be_p(config + SN0_CONFIG_FPROM_CYC_OFFSET, model->flash_read_cycles);
-    stl_be_p(config + SN0_CONFIG_MACHINE_TYPE_OFFSET,
-             model->firmware_machine_type);
-    stl_be_p(config + SN0_CONFIG_FPROM_WR_OFFSET, model->flash_write_cycles);
-    new_sum = sn0_config_byte_sum(config);
-    stl_be_p(config + SN0_CONFIG_CHECKSUM_OFFSET,
-             (uint8_t)(old_sum - new_sum));
-}
-
-/*
- * -bios fills every node's boot flash unless a pflash drive already backs
- * it (set on the node before it realized); a short -bios image leaves the
- * default template's own bytes behind it, matching a factory-formatted
- * chip rather than a merely erased one. sn0_init() calls this after every
- * node has realized, so each node's flash device already exists.
- */
-static void sn0_load_flash(MachineState *machine)
-{
-    SN0MachineState *s = SN0_MACHINE(machine);
-    SN0MachineClass *smc = SN0_MACHINE_GET_CLASS(machine);
-    const SN0ModelRegion *flash_region =
-        &s->nodes[0]->topology->map.flash_reset;
-    uint8_t *flash;
-    unsigned int node_index;
-
-    flash = g_malloc(flash_region->size);
-    sn0_build_flash(smc->model, flash, flash_region->size);
-    if (machine->firmware) {
-        char *path = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
-        ssize_t size = path ? load_image_size(path, flash,
-                                              flash_region->size) : -1;
-
-        if (size < 0) {
-            error_report("%s: cannot read the firmware image '%s'",
-                         MACHINE_GET_CLASS(machine)->name,
-                         machine->firmware);
-            exit(EXIT_FAILURE);
-        }
-        g_free(path);
-    }
-    sn0_configure_flash(smc->model, flash);
-
-    for (node_index = 0; node_index < s->num_nodes; node_index++) {
-        SN0NodeState *node = s->nodes[node_index];
-        MemoryRegion *chip;
-
-        if (node->flash_drive) {
-            continue;
-        }
-        chip = sysbus_mmio_get_region(SYS_BUS_DEVICE(node->flash), 0);
-        memcpy(memory_region_get_ram_ptr(chip), flash, flash_region->size);
-        memory_region_set_dirty(chip, 0, flash_region->size);
-    }
-    g_free(flash);
-}
-
-static void sn0_init(MachineState *machine)
-{
-    SN0MachineState *s = SN0_MACHINE(machine);
-    SN0MachineClass *smc = SN0_MACHINE_GET_CLASS(machine);
-    const SN0MachineModel *model = smc->model;
-    const SN0ModelProfile *profile;
-    MachineClass *mc = MACHINE_GET_CLASS(machine);
-    unsigned int numa_nodes = machine->numa_state ?
-                              machine->numa_state->num_nodes : 0;
-    uint64_t ram_offset = 0;
-    g_autofree unsigned int *profile_cpus = NULL;
-    g_autofree BlockBackend **flash_drives = NULL;
-    unsigned int flash_count = 0;
-    unsigned int max_nodes = sn0_model_max_nodes(model);
-    unsigned int node_count, node_index, cpu_index = 0;
-    size_t link_index;
-
-    /* A product class must supply its static description. */
-    g_assert(model);
-    g_assert(max_nodes > 0);
-    g_assert(model->cpu_slots_per_node <= SN0_MAX_CPUS_PER_NODE);
-    g_assert(model->memory.architectural_banks <= SN0_MAX_MEMORY_BANKS);
-    profile_cpus = g_new0(unsigned int, max_nodes);
-
-    if (machine->kernel_filename) {
-        error_report("%s: stock-PROM boot only; boot a kernel through the "
-                     "PROM's own TFTP netboot or a disk image, not -kernel",
-                     mc->name);
-        exit(EXIT_FAILURE);
-    }
-
-    /*
-     * One SMP socket is one chassis; -numa still owns the memory split
-     * and must agree with the socket count.
-     */
-    if (numa_nodes > max_nodes) {
-        error_report("%s: at most %u NUMA nodes are supported",
-                     mc->name, max_nodes);
-        exit(EXIT_FAILURE);
-    }
-    node_count = numa_nodes ? numa_nodes : machine->smp.sockets;
-    if (node_count > max_nodes) {
-        error_report("%s: at most %u chassis are supported, and each -smp "
-                     "socket is one chassis", mc->name, max_nodes);
-        exit(EXIT_FAILURE);
-    }
-
-    if (node_count == 1) {
-        if (machine->smp.sockets != 1 ||
-            machine->smp.cores > model->cpu_slots_per_node ||
-            machine->smp.threads != 1) {
-            error_report("%s: one chassis requires one socket with at most "
-                         "%u cores and one thread per core", mc->name,
-                         model->cpu_slots_per_node);
-            exit(EXIT_FAILURE);
-        }
-        profile_cpus[0] = machine->smp.cpus;
-    } else if (machine->smp.cpus !=
-                   node_count * model->cpu_slots_per_node ||
-               machine->smp.sockets != node_count ||
-               machine->smp.cores != model->cpu_slots_per_node ||
-               machine->smp.threads != 1) {
-        error_report("%s: %u chassis require %u CPUs as %u sockets with "
-                     "%u cores and one thread each", mc->name, node_count,
-                     node_count * model->cpu_slots_per_node, node_count,
-                     model->cpu_slots_per_node);
-        exit(EXIT_FAILURE);
-    } else {
-        for (node_index = 0; node_index < node_count; node_index++) {
-            profile_cpus[node_index] = model->cpu_slots_per_node;
-        }
-    }
-
-    profile = sn0_model_find_profile(model, node_count, profile_cpus);
-    if (!profile) {
-        error_report("%s: the requested CPU and chassis population is not "
-                     "described by the machine model", mc->name);
-        exit(EXIT_FAILURE);
-    }
-    /* Whole mebibytes per chassis: the bank fit is counted in them. */
-    if (node_count > 1 && !numa_nodes &&
-        machine->ram_size % ((uint64_t)node_count * MiB)) {
-        error_report("%s: %u chassis split -m evenly into whole MiB; use "
-                     "-numa for an uneven fit", mc->name, node_count);
-        exit(EXIT_FAILURE);
-    }
-
-    sn0_possible_cpu_arch_ids(machine);
-    if (numa_nodes) {
-        for (node_index = 0; node_index < machine->smp.cpus; node_index++) {
-            CPUArchId *cpu_slot = &machine->possible_cpus->cpus[node_index];
-            unsigned int expected =
-                sn0_get_default_cpu_node_id(machine, node_index);
-
-            if (!cpu_slot->props.has_node_id ||
-                cpu_slot->props.node_id != expected) {
-                error_report("%s: CPU %u must be assigned to NUMA "
-                             "node %u", mc->name, node_index, expected);
-                exit(EXIT_FAILURE);
-            }
-        }
-    }
-
-    /* Fatal: silently missing codes look like firmware that wrote none. */
-    if (s->debug_leds) {
-        sn0_show_indicator_codes(&error_fatal);
-    }
-
-    /*
-     * -bios fills every node's flash; a pflash drive at IF_PFLASH unit N
-     * overrides node N's, as Origin 2000 already takes them. Without
-     * either there is no firmware and stock PROM boot cannot start, so
-     * this is fatal -- except under a register test, which deliberately
-     * builds the machine with none of the vendor's bits.
-     */
-    flash_drives = g_new0(BlockBackend *, node_count);
-    for (node_index = 0; node_index < node_count; node_index++) {
-        DriveInfo *drive = drive_get_by_index(IF_PFLASH, node_index);
-
-        if (drive) {
-            flash_drives[node_index] = blk_by_legacy_dinfo(drive);
-            flash_count++;
-        }
-    }
-    if (!machine->firmware && !flash_count && !qtest_enabled()) {
-        error_report("%s: supports stock-PROM boot only: pass -bios or a "
-                     "pflash drive per node", mc->name);
-        exit(EXIT_FAILURE);
-    }
-
-    s->num_nodes = node_count;
-    s->nodes = g_new0(SN0NodeState *, node_count);
-    s->io_bridge = g_new0(SGIBridgeState *, node_count);
-    s->widget0 = g_new0(MemoryRegion, node_count);
-    s->widget_alias = g_malloc0(sizeof(*s->widget_alias) * node_count);
-    s->pci_devices = g_new0(PCIDevice **, node_count);
-
-    for (node_index = 0; node_index < node_count; node_index++) {
-        g_autofree char *name = g_strdup_printf("node%u", node_index);
-        Object *node = object_new(TYPE_SGI_SN0_NODE);
-
-        object_property_add_child(OBJECT(machine), name, node);
-        object_unref(node);
-        s->nodes[node_index] = SN0_NODE(node);
-    }
-
-    s->cpu_refclk = clock_new(OBJECT(machine), "cpu-refclk");
-    clock_set_hz(s->cpu_refclk, model->cpu_clock_hz);
-    s->rt_refclk = clock_new(OBJECT(machine), "rt-refclk");
-    clock_set_hz(s->rt_refclk, model->rtc_clock_hz);
-
-    /*
-     * The fabric that joins the Hubs, built from the profile before any
-     * Hub realizes: every node's Hub is an endpoint at its board stride,
-     * and the profile's peer link, the one cable a direct-wired pair has,
-     * is the direct adapter's single link. The Hubs learn nothing of it
-     * beyond their own endpoint.
-     */
-    s->fabric = SN0_FABRIC(qdev_new(TYPE_SN0_FABRIC_DIRECT));
-    object_property_add_child(OBJECT(machine), "fabric", OBJECT(s->fabric));
-    for (node_index = 0; node_index < node_count; node_index++) {
-        const SN0ModelNodeInstance *node_model =
-            &profile->nodes[node_index];
-        unsigned int endpoint;
-
-        endpoint = sn0_fabric_add_endpoint(s->fabric,
-                                           &s->nodes[node_index]->hub,
-                                           node_model->nasid);
-        g_assert(endpoint == node_index);
-    }
-    for (link_index = 0; link_index < profile->link_count; link_index++) {
-        const SN0ModelFabricLink *link = &profile->links[link_index];
-
-        sn0_fabric_add_link(s->fabric, link->name, link->endpoint[0],
-                            link->endpoint[1]);
-    }
-    qdev_realize_and_unref(DEVICE(s->fabric), NULL, &error_fatal);
-
-    for (node_index = 0; node_index < node_count; node_index++) {
-        SN0NodeState *node = s->nodes[node_index];
-        const SN0ModelNodeInstance *node_model =
-            &profile->nodes[node_index];
-        uint64_t ram_size = numa_nodes ?
-            machine->numa_state->nodes[node_index].node_mem :
-            machine->ram_size / node_count;
-        unsigned int cpu_base = node_model->cpu_first_id;
-        unsigned int cpu_count = node_model->cpu_count;
-        uint16_t bank_mb[SN0_MAX_MEMORY_BANKS];
-        unsigned int populated_banks;
-        QList *banks_mb;
-        Chardev *aux_chr;
-        unsigned int slice, bank;
-
-        if (!sn0_model_memory_layout(model, ram_size, bank_mb,
-                                     &populated_banks)) {
-            error_report("%s: node %u's %" PRIu64 " MiB cannot be "
-                         "populated from IP29 memory banks without "
-                         "overlapping firmware regions",
-                         mc->name, node_index, ram_size / MiB);
-            exit(EXIT_FAILURE);
-        }
-        banks_mb = qlist_new();
-        for (bank = 0; bank < populated_banks; bank++) {
-            qlist_append_int(banks_mb, bank_mb[bank]);
-        }
-
-        qdev_prop_set_uint32(DEVICE(node), "nasid", node_model->nasid);
-        node->flash_drive = flash_drives[node_index];
-        node->model = model;
-        node->instance = node_model;
-        node->topology = node_model->topology;
-        qdev_prop_set_uint32(DEVICE(node), "cpu-base", cpu_base);
-        qdev_prop_set_uint32(DEVICE(node), "nr-cpus", cpu_count);
-        qdev_prop_set_string(DEVICE(node), "cpu-type", machine->cpu_type);
-        object_property_set_link(OBJECT(node), "ram", OBJECT(machine->ram),
-                                 &error_abort);
-        qdev_prop_set_uint64(DEVICE(node), "ram-start", ram_offset);
-        qdev_prop_set_array(DEVICE(node), "banks-mb", banks_mb);
-        qdev_connect_clock_in(DEVICE(node), "cpu-refclk", s->cpu_refclk);
-        qdev_connect_clock_in(DEVICE(node), "rt-refclk", s->rt_refclk);
-
-        /*
-         * The runtime Hub state the machine owns: its programmed node number
-         * (real firmware programs it later, so a real-PROM boot starts at
-         * zero), the chassis DIP switches, the fabric endpoint, the system
-         * controller's external AUX backend, and the bring-up UART. Only the
-         * master module drives the external AUX port. Keep the node-major
-         * serial numbering, but leave a slave module's nominal AUX backend
-         * unattached. The bring-up UART is a diagnostic device, not part of
-         * any shipped chassis; keeping it on the model's console node avoids
-         * character-backend collisions.
-         */
-        qdev_prop_set_uint32(DEVICE(&node->hub), "nasid", 0);
-        qdev_prop_set_uint8(DEVICE(&node->hub), "elsc-dip-switches",
-                            s->elsc_dip_switches);
-        if (node_model->module_role == SN0_MODULE_MASTER) {
-            aux_chr = serial_hd(SN0_NODE_SERIAL(node_index,
-                                                SN0_ELSC_CHARDEV));
-            if (aux_chr) {
-                object_property_set_link(OBJECT(&node->hub), "elsc-chardev",
-                                         OBJECT(aux_chr), &error_fatal);
-            }
-        }
-        object_property_set_link(OBJECT(&node->hub), "fabric",
-                                 OBJECT(s->fabric), &error_fatal);
-        qdev_prop_set_uint32(DEVICE(&node->hub), "fabric-endpoint",
-                             node_index);
-        sn0_model_configure_junk_uart(s, node_index);
-
-        sysbus_realize(SYS_BUS_DEVICE(node), &error_fatal);
-
-        for (slice = 0; slice < cpu_count; slice++) {
-            machine->possible_cpus->cpus[cpu_index++].cpu =
-                CPU(node->cpu[slice]);
-        }
-        ram_offset += ram_size;
-    }
-    g_assert(cpu_index == machine->smp.cpus);
-    g_assert(ram_offset == machine->ram_size);
-
-    sn0_map_cpu_big_windows(OBJECT(s), s->nodes, s->num_nodes,
-                            &s->big_window_route);
-
-    /* The two-module Origin 200 has four CPU turns and one slave turn. */
-    if (node_count == 2) {
-        SGIElscState *master = NULL;
-        SGIElscState *slave = NULL;
-
-        for (node_index = 0; node_index < node_count; node_index++) {
-            if (profile->nodes[node_index].module_role == SN0_MODULE_MASTER) {
-                master = s->nodes[node_index]->hub.elsc;
-            } else if (profile->nodes[node_index].module_role ==
-                       SN0_MODULE_SLAVE) {
-                slave = s->nodes[node_index]->hub.elsc;
-            }
-        }
-        g_assert(master);
-        g_assert(slave);
-        sgi_elsc_share_arbitration(master, slave, 5);
-    }
-
-    /* Every Hub has its endpoint and its aliases: the maps can be aimed. */
-    sn0_fabric_build(s->fabric);
-
-    for (node_index = 0; node_index < node_count; node_index++) {
-        sn0_model_populate_node(s, node_index);
-    }
-
-    sn0_load_flash(machine);
-}
-
 static bool sn0_get_junk_uart(Object *obj, Error **errp)
 {
     return SN0_MACHINE(obj)->junk_uart_present;
@@ -1713,7 +1099,7 @@ static void sn0_node_realize(DeviceState *dev, Error **errp)
     SN0NodeState *node = SN0_NODE(dev);
     unsigned int bank;
 
-    g_assert(node->model || node->hardware);
+    g_assert(node->physical && node->hardware);
     if (node->nr_cpus < 1 ||
         node->nr_cpus > sn0_node_cpu_slots(node)) {
         error_setg(errp, "a node carries one to %u processors, not %u",
@@ -1771,6 +1157,7 @@ static const Property sn0_node_properties[] = {
     DEFINE_PROP_UINT32("cpu-base", SN0NodeState, cpu_base, 0),
     DEFINE_PROP_UINT32("nr-cpus", SN0NodeState, nr_cpus, 1),
     DEFINE_PROP_STRING("cpu-type", SN0NodeState, cpu_type),
+    DEFINE_PROP_BOOL("slave-role", SN0NodeState, slave_role, false),
     DEFINE_PROP_LINK("ram", SN0NodeState, ram, TYPE_MEMORY_REGION,
                      MemoryRegion *),
     DEFINE_PROP_UINT64("ram-start", SN0NodeState, ram_start, 0),
@@ -1800,13 +1187,13 @@ static void sn0_node_class_init(ObjectClass *oc, const void *data)
 static void sn0_instance_init(Object *obj)
 {
     SN0MachineState *s = SN0_MACHINE(obj);
-
     SN0MachineClass *smc = SN0_MACHINE_GET_CLASS(obj);
 
-    g_assert(smc->model || smc->default_composition);
+    g_assert(smc->default_composition);
     s->composition = smc->default_composition;
     s->debug_leds = true;
-    s->junk_uart_present = smc->model && smc->model->junk_uart_default_enabled;
+    /* Origin 2000 ships no junk-bus UART in any composition today. */
+    s->junk_uart_present = false;
 }
 
 static void sn0_instance_finalize(Object *obj)
@@ -1833,12 +1220,12 @@ static void sn0_machine_class_init(ObjectClass *oc, const void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
 
+    /*
+     * Origin 2000 is the only remaining child of this abstract class
+     * (Origin 200 now builds on sgi-sn-machine, sn-machine.c) and
+     * overrides every one of these in origin2000_class_init.
+     */
     mc->reset = sn0_machine_reset;
-
-    mc->init = sn0_init;
-    mc->possible_cpu_arch_ids = sn0_possible_cpu_arch_ids;
-    mc->cpu_index_to_instance_props = sn0_cpu_index_to_props;
-    mc->get_default_cpu_node_id = sn0_get_default_cpu_node_id;
 
     object_class_property_add_bool(oc, "junk-uart",
                                    sn0_get_junk_uart, sn0_set_junk_uart);

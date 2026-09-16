@@ -17,7 +17,7 @@
 #define SINGLE_MACHINE \
     "-M origin200 -m 128M -cpu R10000 -accel tcg,thread=multi -S"
 #define FOUR_CPU_MACHINE \
-    "-M origin200 " SN0_TWO_NODE_TOPOLOGY \
+    "-M origin200,topology=origin200-dual " SN0_TWO_NODE_TOPOLOGY \
     " -cpu R10000 -accel tcg,thread=multi -S"
 
 #define VECTOR_PC       UINT64_C(0xffffffffbfc00380)

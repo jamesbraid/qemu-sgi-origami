@@ -88,9 +88,6 @@ typedef struct SN0NodeState {
     SysBusDevice parent_obj;
 
     /* Static product description supplied by the owning machine. */
-    const SN0MachineModel *model;
-    const SN0ModelNodeInstance *instance;
-    const SN0ModelNodeTopology *topology;
     const SN0ModelPhysicalNode *physical;
     const SN0ModelHardware *hardware;
 
@@ -102,6 +99,12 @@ typedef struct SN0NodeState {
     uint32_t cpu_base;
     uint32_t nr_cpus;
     char *cpu_type;
+    /*
+     * Answers module-management commands only through its module's
+     * master, never on its own external AUX line -- true for one node
+     * of a two-chassis Origin 200, and every other product's nodes.
+     */
+    bool slave_role;
     MemoryRegion *ram;
     uint64_t ram_start;
     bool promdata_filter;
@@ -233,13 +236,8 @@ struct SN0MachineClass {
 
     /*< public >*/
     /* Static product facts compiled from the canonical machine model. */
-    const SN0MachineModel *model;
     const SN0ModelComposition *default_composition;
 };
-
-void sn0_model_populate_node(SN0MachineState *s, unsigned int node_index);
-void sn0_model_configure_junk_uart(SN0MachineState *s,
-                                   unsigned int node_index);
 
 /* Call once in order; set optional node links between these two phases. */
 void sn0_origin2000_prepare_nodes(MachineState *machine);

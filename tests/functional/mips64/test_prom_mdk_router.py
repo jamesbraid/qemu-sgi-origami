@@ -44,13 +44,6 @@ ROUTER_SSO_SHA256 = (
 
 BOOT_TIMEOUT_SECONDS = 1740
 
-TWO_CHASSIS_ARGS = (
-    '-object', 'memory-backend-ram,id=ram0,size=64M',
-    '-object', 'memory-backend-ram,id=ram1,size=64M',
-    '-numa', 'node,nodeid=0,cpus=0-1,memdev=ram0',
-    '-numa', 'node,nodeid=1,cpus=2-3,memdev=ram1',
-)
-
 DRIVER_STEPS = (
     (r"Option\?", "5\n"),
     (r">>", "unsetenv netaddr\n"),
@@ -112,7 +105,7 @@ class PromMdkRouter(QemuSystemTest):
         vm = self.get_vm(name='prom_mdk_router')
         # No debug-leds=off: with more than one CPU that option wedged
         # the PROM boot (test_prom_mdk_instgen.py).
-        vm.set_machine('origin200')
+        vm.set_machine('origin200,topology=origin200-dual')
         vm.set_console()
         elsc_log = self.log_file('elsc-aux.log')
         capture = self.log_file('wire.pcap')
@@ -120,8 +113,7 @@ class PromMdkRouter(QemuSystemTest):
                                netboot_path=NETBOOT_PATH)
         extra[extra.index('-smp') + 1] = '4,sockets=2,cores=2,threads=1'
         extra[extra.index('-m') + 1] = '128'
-        vm.add_args('-accel', 'tcg,thread=single', *extra,
-                    *TWO_CHASSIS_ARGS)
+        vm.add_args('-accel', 'tcg,thread=single', *extra)
 
         started = utc_now()
         vm.launch()

@@ -275,11 +275,15 @@ def make_cell(**overrides):
 class QemuArgsTest(unittest.TestCase):
     """The per-cell QEMU command-line builder."""
 
-    def test_machine_props_is_fixed_to_the_real_prom(self):
-        # Every cell boots the real PROM -- machine_props() no longer
-        # reads anything from the cell it is given.
-        self.assertEqual(machine_props(make_cell()),
+    def test_machine_props_one_node(self):
+        # Every cell boots the real PROM; a one-node cell needs no
+        # topology= (origin200's default already names it).
+        self.assertEqual(machine_props(make_cell(nodes=1)),
                          'origin200,debug-leds=on')
+
+    def test_machine_props_two_node(self):
+        self.assertEqual(machine_props(make_cell(nodes=2)),
+                         'origin200,topology=origin200-dual,debug-leds=on')
 
     def test_icount_regime(self):
         args = qemu_args(make_cell(accel='icount'))
@@ -343,15 +347,17 @@ class QemuArgsTest(unittest.TestCase):
         self.assertIn('-smp 1', joined)
         self.assertNotIn('-numa', args)
 
-    def test_two_node_numa(self):
+    def test_two_node_even_split(self):
         args = qemu_args(make_cell(cpus=4, nodes=2, mem='128M'))
         joined = ' '.join(args)
 
         self.assertIn('-smp 4,sockets=2,cores=2,threads=1', joined)
-        self.assertIn('-object memory-backend-ram,id=ram0,size=64M', joined)
-        self.assertIn('-object memory-backend-ram,id=ram1,size=64M', joined)
-        self.assertIn('-numa node,nodeid=0,memdev=ram0,cpus=0-1', joined)
-        self.assertIn('-numa node,nodeid=1,memdev=ram1,cpus=2-3', joined)
+        self.assertNotIn('-numa', args)
+        self.assertNotIn('-object', args)
+
+    def test_two_node_uneven_mem_rejected(self):
+        with self.assertRaises(MatrixError):
+            qemu_args(make_cell(cpus=4, nodes=2, mem='129M'))
 
     def test_cpus_not_divisible_by_nodes_rejected(self):
         with self.assertRaises(MatrixError):

@@ -193,23 +193,23 @@ ROUND_ROBIN_KICK_PERIOD_NS = 100000
 _MEM_RE = re.compile(r'^(\d+)([A-Za-z]*)$')
 
 
-def machine_props(_cell):
+def machine_props(cell):
     """Build the -M origin200,... machine property string for a cell.
 
-    Every cell in the manifest boots the real PROM, the only firmware
-    the machine has, so this is fixed rather than read from the cell --
-    kept as a function, taking the cell it no longer reads, so a caller
-    building the machine string from a cell still has one name to call
-    regardless of what varies later.
+    topology= names the wiring a multi-node cell needs; every cell in
+    the manifest boots the real PROM, the only firmware the machine has.
     """
-    return 'origin200,debug-leds=on'
+    if cell.nodes == 1:
+        return 'origin200,debug-leds=on'
+    return 'origin200,topology=origin200-dual,debug-leds=on'
 
 
 def qemu_args(cell):
     """Build the QEMU args that follow -M for a cell: accelerator (plus
     icount, for the icount regime, or the round-robin kick period, for
-    wallclock/roundrobin above one CPU), -m, -smp, and, for a multi-node
-    cell, one memory-backend-ram object and one -numa node per node.
+    wallclock/roundrobin above one CPU), -m and -smp. A multi-node cell
+    splits -m evenly across the nodes topology= already named -- -numa
+    is refused, so there is no per-node memory backend to build here.
     """
     args = list(_ACCEL_ARGS[cell.accel])
     if cell.accel in _ROUND_ROBIN_ACCELS and cell.cpus > 1:
@@ -229,15 +229,8 @@ def qemu_args(cell):
              f'{cell.cpus},sockets={cell.nodes},'
              f'cores={cpus_per_node},threads=1']
 
-    per_node_mem = _split_mem(cell.mem, cell.nodes)
-    for node in range(cell.nodes):
-        args += ['-object',
-                 f'memory-backend-ram,id=ram{node},size={per_node_mem}']
-    for node in range(cell.nodes):
-        lo = node * cpus_per_node
-        hi = lo + cpus_per_node - 1
-        args += ['-numa',
-                 f'node,nodeid={node},memdev=ram{node},cpus={lo}-{hi}']
+    # Fail fast in Python, matching the machine's own even-split check.
+    _split_mem(cell.mem, cell.nodes)
 
     return args
 

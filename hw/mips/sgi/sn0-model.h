@@ -15,11 +15,6 @@ typedef enum SN0ModelComponentKind {
     SN0_COMPONENT_ISP1040,
 } SN0ModelComponentKind;
 
-typedef enum SN0ModelModuleRole {
-    SN0_MODULE_MASTER,
-    SN0_MODULE_SLAVE,
-} SN0ModelModuleRole;
-
 typedef struct SN0ModelAddressSpace {
     unsigned int selector;
     uint64_t carrier_base;
@@ -101,57 +96,6 @@ typedef struct SN0ModelIoc3Population {
     bool timekeeper;
     bool onewire_identity;
 } SN0ModelIoc3Population;
-
-typedef struct SN0ModelNodeTopology {
-    const SN0ModelComponent *hub;
-    const SN0ModelComponent *base_io;
-    const SN0ModelComponent *pci;
-    size_t pci_count;
-    SN0ModelAddressMap map;
-    SN0ModelIoc3Population ioc3_population;
-} SN0ModelNodeTopology;
-
-typedef struct SN0ModelNodeInstance {
-    uint8_t nasid;
-    uint8_t cpu_first_id;
-    uint8_t cpu_count;
-    SN0ModelModuleRole module_role;
-    uint64_t hub_serial;
-    uint64_t base_io_serial;
-    uint64_t ioc3_serial;
-    const SN0ModelNodeTopology *topology;
-} SN0ModelNodeInstance;
-
-typedef struct SN0ModelFabricLink {
-    const char *name;
-    unsigned int endpoint[2];
-} SN0ModelFabricLink;
-
-typedef struct SN0ModelProfile {
-    const SN0ModelNodeInstance *nodes;
-    size_t node_count;
-    const SN0ModelFabricLink *links;
-    size_t link_count;
-} SN0ModelProfile;
-
-typedef struct SN0MachineModel {
-    const char *description;
-    SN0ModelCpuKind cpu_kind;
-    uint64_t default_ram_mib;
-    unsigned int cpu_slots_per_node;
-    uint64_t cpu_clock_hz;
-    uint32_t cpu_mode_bits;
-    uint64_t hub_clock_hz;
-    uint64_t rtc_clock_hz;
-    uint32_t firmware_machine_type;
-    uint32_t flash_read_cycles;
-    uint32_t flash_write_cycles;
-    SN0ModelMemory memory;
-    const SN0ModelProfile *profiles;
-    size_t profile_count;
-    unsigned int junk_uart_node;
-    bool junk_uart_default_enabled;
-} SN0MachineModel;
 
 /* The physical flash selection, independent of firmware contents. */
 typedef enum SN0ModelFlashKind {
@@ -306,13 +250,6 @@ extern const char sn0_origin2000_default_composition[];
 
 const SN0ModelComposition *sn0_origin2000_find_composition(const char *name);
 
-extern const SN0MachineModel sn0_origin200_model;
-
-const SN0ModelProfile *sn0_model_find_profile(const SN0MachineModel *model,
-                                              unsigned int nodes,
-                                              const unsigned int *cpus);
-unsigned int sn0_model_max_nodes(const SN0MachineModel *model);
-unsigned int sn0_model_max_cpus(const SN0MachineModel *model);
 uint64_t sn0_model_node_address(const SN0ModelAddressMap *map,
                                 const SN0ModelAddressSpace *space,
                                 unsigned int nasid, uint64_t offset);
@@ -321,7 +258,7 @@ uint64_t sn0_model_region_address(const SN0ModelAddressMap *map,
                                   unsigned int nasid,
                                   const SN0ModelRegion *region,
                                   uint64_t offset);
-bool sn0_model_memory_layout(const SN0MachineModel *model, uint64_t ram_size,
+bool sn0_model_memory_layout(const SN0ModelMemory *memory, uint64_t ram_size,
                              uint16_t *bank_mb,
                              unsigned int *populated_banks);
 

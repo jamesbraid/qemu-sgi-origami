@@ -162,11 +162,7 @@ static void test_warm_reset_rendezvous(void)
     write_guest_image(fd);
     close(fd);
     qts = qtest_initf(
-        "-M origin200 -m 128M -cpu R10000 "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-object memory-backend-ram,id=ram1,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-M origin200,topology=origin200-dual -m 128M -cpu R10000 "
         "-smp 4,sockets=2,cores=2,threads=1 "
         "-bios %s -accel tcg,thread=multi -S -no-shutdown", image);
     unlink(image);
@@ -345,11 +341,7 @@ static void test_scratch_publish(const void *opaque)
     write_scratch_publish_image(fd);
     close(fd);
     qts = qtest_initf(
-        "-M origin200 -m 128M -cpu R10000 "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-object memory-backend-ram,id=ram1,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-M origin200,topology=origin200-dual -m 128M -cpu R10000 "
         "-smp 4,sockets=2,cores=2,threads=1 "
         "-bios %s -accel tcg,thread=%s -S -no-shutdown", image, thread);
     unlink(image);

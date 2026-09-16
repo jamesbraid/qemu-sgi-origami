@@ -77,18 +77,13 @@ FIRMWARE_REL = os.path.join('assets', 'firmware', RELEASE,
                             'ip27prom.payload.bin')
 DISK_REL = os.path.join('assets', 'irix', RELEASE, 'root-diags.qcow2')
 
-# The installed IRIX single-node machine: one CPU, 64 MiB, the release's
-# own PROM, user-mode networking so IRIX's network init completes without
-# a server (the diagnostics run locally and need none). The machine
-# model requires two chassis to be four CPUs as two sockets of two
-# cores, each socket its own 64 MiB memory node.
+# The installed IRIX two-chassis machine, the release's own PROM, and
+# user-mode networking so IRIX's network init completes without a
+# server (the diagnostics run locally and need none). topology= selects
+# the two-chassis wiring; -m splits evenly into 64 MiB per node.
 MEMORY_MIB = 128
 TWO_CHASSIS_ARGS = (
     '-smp', '4,sockets=2,cores=2,threads=1',
-    '-object', 'memory-backend-ram,id=ram0,size=64M',
-    '-object', 'memory-backend-ram,id=ram1,size=64M',
-    '-numa', 'node,nodeid=0,cpus=0-1,memdev=ram0',
-    '-numa', 'node,nodeid=1,cpus=2-3,memdev=ram1',
 )
 
 # The whole two-chassis run -- boot, oldisk and olmem against four CPUs
@@ -199,7 +194,7 @@ if QemuSystemTest is not None:
 
             vm = self.get_vm(name='irix_diag')
             vm.set_machine(
-                'origin200,debug-leds=off')
+                'origin200,topology=origin200-dual,debug-leds=off')
             vm.set_console()
             vm.add_args(
                 '-accel', 'tcg,thread=single',
