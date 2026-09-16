@@ -10,7 +10,13 @@
 #define SPACE_XTALK UINT64_C(0x20000000000)
 #define BEDROCK_NODE0 (SPACE_XTALK + UINT64_C(0x01800000))
 #define MD_MEMORY_CONFIG UINT64_C(0x780008)
-#define BANK0_512M UINT64_C(0x41)
+/*
+ * Origin 300's installed memory occupies locational banks 2 and 3, not
+ * bank 0: map software bank 0 onto them so the guest's low-memory
+ * coordination state (its completion flag included) lands in backed RAM
+ * instead of an I/O hole.
+ */
+#define MD_INSTALLED_SELECT2 ((UINT64_C(2) << 32) | UINT64_C(0x3300))
 
 static void emit(uint8_t *image, unsigned *offset, uint32_t instruction)
 {
@@ -100,7 +106,7 @@ static void test_cpu_halfword_stores(void)
 
     s = qtest_initf("-M origin300 -cpu R14000 -smp 2 -bios %s "
                     "-accel tcg,thread=single -no-shutdown -S", quoted);
-    qtest_writeq(s, BEDROCK_NODE0 + MD_MEMORY_CONFIG, BANK0_512M);
+    qtest_writeq(s, BEDROCK_NODE0 + MD_MEMORY_CONFIG, MD_INSTALLED_SELECT2);
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
 
     for (unsigned tries = 0; tries < 200 && !qtest_readq(s, 0x108); tries++) {
@@ -121,9 +127,16 @@ static void test_cpu_halfword_stores(void)
 /*
  * The stock PROM's walking-address memory test reads a positioned check word
  * back from the very top of the fitted bank. Repeat all four residues at the
- * last fitted 64-byte line of a 512 MiB bank. Its residue 0x30 (ECC carrier
- * offset 0) selects source bits 31:16, the slice the first-line cases above
- * never exercise. Physical 0x1fff_fff0 is where the PROM first read zero.
+ * last fitted 64-byte line of installed memory. Its residue 0x30 (ECC
+ * carrier offset 0) selects source bits 31:16, the slice the first-line
+ * cases above never exercise.
+ *
+ * Origin 300's installed memory occupies locational banks 2 and 3, 256 MiB
+ * each (see MD_INSTALLED_SELECT2 above), not one 512 MiB bank at slot 0.
+ * The last fitted line sits in the second (higher) of those two banks:
+ * software bank 1, which the 2-selector routes to locational bank 3, at
+ * device offset 0x9fffff8 -- that bank's own last 64-byte line, 0x1fffff8,
+ * past its dense base of 0x2000000 (bank 2's own 0x2000000 ECC bytes).
  */
 static char *create_prom_top_line(void)
 {
@@ -152,8 +165,8 @@ static char *create_prom_top_line(void)
     emit(image, &offset, 0x408c6000); /* mtc0 t4, Status */
     emit(image, &offset, 0x000000c0); /* ehb */
 
-    /* t0 = xkphys view of the last fitted ECC carrier word (device 0x3fffff8). */
-    emit_load64(image, &offset, 8, UINT64_C(0x9000000143fffff8));
+    /* t0 = xkphys view of the last fitted ECC carrier word (device 0x9fffff8). */
+    emit_load64(image, &offset, 8, UINT64_C(0x9000000149fffff8));
     emit_load64(image, &offset, 1, UINT64_C(0x1111222233334444));
     emit(image, &offset, 0xa5010006); /* sh at, 6(t0)  residue 0x00 -> 0x4444 */
     emit_load64(image, &offset, 1, UINT64_C(0x5555666677778888));
@@ -190,7 +203,7 @@ static void test_cpu_halfword_stores_top_line(void)
 
     s = qtest_initf("-M origin300 -cpu R14000 -smp 2 -bios %s "
                     "-accel tcg,thread=single -no-shutdown -S", quoted);
-    qtest_writeq(s, BEDROCK_NODE0 + MD_MEMORY_CONFIG, BANK0_512M);
+    qtest_writeq(s, BEDROCK_NODE0 + MD_MEMORY_CONFIG, MD_INSTALLED_SELECT2);
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
 
     for (unsigned tries = 0; tries < 200 && !qtest_readq(s, 0x108); tries++) {
@@ -199,15 +212,15 @@ static void test_cpu_halfword_stores_top_line(void)
     g_assert_cmphex(qtest_readq(s, 0x108), ==, 1);
 
     /* Each residue keeps its own positioned check word at the top fitted line. */
-    g_assert_cmphex(qtest_readw(s, HUB_ECC + 0x3fffffe), ==, 0x4444);
-    g_assert_cmphex(qtest_readw(s, HUB_ECC + 0x3fffffc), ==, 0x5555);
-    g_assert_cmphex(qtest_readw(s, HUB_ECC + 0x3fffffa), ==, 0xaaaa);
-    g_assert_cmphex(qtest_readw(s, HUB_ECC + 0x3fffff8), ==, 0x1357);
+    g_assert_cmphex(qtest_readw(s, HUB_ECC + 0x9fffffe), ==, 0x4444);
+    g_assert_cmphex(qtest_readw(s, HUB_ECC + 0x9fffffc), ==, 0x5555);
+    g_assert_cmphex(qtest_readw(s, HUB_ECC + 0x9fffffa), ==, 0xaaaa);
+    g_assert_cmphex(qtest_readw(s, HUB_ECC + 0x9fffff8), ==, 0x1357);
     /* Big-endian byte view of the residue 0x30 word. */
-    g_assert_cmphex(qtest_readb(s, HUB_ECC + 0x3fffff9), ==, 0x13);
-    g_assert_cmphex(qtest_readb(s, HUB_ECC + 0x3fffff8), ==, 0x57);
+    g_assert_cmphex(qtest_readb(s, HUB_ECC + 0x9fffff9), ==, 0x13);
+    g_assert_cmphex(qtest_readb(s, HUB_ECC + 0x9fffff8), ==, 0x57);
     /* The adjacent lower carrier word was never written. */
-    g_assert_cmphex(qtest_readw(s, HUB_ECC + 0x3fffff0), ==, 0);
+    g_assert_cmphex(qtest_readw(s, HUB_ECC + 0x9fffff0), ==, 0);
 
     qtest_quit(s);
     g_assert_cmpint(unlink(prom), ==, 0);
