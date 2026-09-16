@@ -343,7 +343,7 @@ static void sn1_node_create_bedrock(SN1NodeState *node,
     memory_region_add_subregion(&SN1_MACHINE(machine)->hub_local_registers, 0,
                                 &node->hub_local_register_block);
     /* OpenBSD expects local PI accesses to select the requester's interface. */
-    if (sn1_cpu_slot(model, 1) == 2) {
+    if (model->cpu_count > 1 && sn1_cpu_slot(model, 1) == 2) {
         SGIBedrockState *bedrock_state = SGI_BEDROCK(node->bedrock);
         MemoryRegion *pi1 = sysbus_mmio_get_region(
             SYS_BUS_DEVICE(&bedrock_state->pi[1]), 0);
