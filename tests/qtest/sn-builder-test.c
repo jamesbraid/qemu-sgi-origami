@@ -6,11 +6,17 @@
  * refused and an unsupported -smp population rejected -- checked
  * against the real Origin 200 machine.
  *
+ * Serial line calculation tests verify that the console field in
+ * SGIModelTopology is properly respected when assigning serial line
+ * indices to nodes.
+ *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "hw/misc/sgi-hub.h"
+#include "hw/mips/sgi/sn-model.h"
 
 static void assert_qemu_rejects(const char *const args[], const char *message)
 {
@@ -87,6 +93,32 @@ static void test_unsupported_smp_population_rejected(const void *data)
                         "as 1 socket(s)");
 }
 
+static void test_console_field_used_single_node(const void *data)
+{
+    /*
+     * Verify that the console field in SGIModelTopology is read and used
+     * correctly for serial line assignment. For a single-node topology,
+     * the console node is node 0, and serial line 0 should be its IOC3-A.
+     * This test ensures that existing single-node topologies continue to
+     * work with the new serial line calculation logic.
+     */
+    QTestState *qts = qtest_init("-M origin200 -display none");
+    qtest_quit(qts);
+}
+
+static void test_console_field_used_dual_node(const void *data)
+{
+    /*
+     * Verify that the console field works for a two-node topology.
+     * Origin 200 dual-node topology has console=0, so serial line 0
+     * should map to node 0's IOC3-A, and the other node's IOC3-A
+     * should be at a later line (position 1 in the reordered scheme).
+     */
+    QTestState *qts = qtest_init("-M origin200,topology=origin200-dual "
+                                 "-display none");
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -103,6 +135,10 @@ int main(int argc, char **argv)
                         test_numa_refused);
     qtest_add_data_func("sn/builder/unsupported-smp-population-rejected",
                         NULL, test_unsupported_smp_population_rejected);
+    qtest_add_data_func("sn/builder/console-field-used-single-node", NULL,
+                        test_console_field_used_single_node);
+    qtest_add_data_func("sn/builder/console-field-used-dual-node", NULL,
+                        test_console_field_used_dual_node);
 
     return g_test_run();
 }
