@@ -207,6 +207,7 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
     case SGI_MGRAS_WIDGET_CONTROL: return s->widget_control;
     case SGI_MGRAS_RESET_ARG: return s->reset_arg;
     case SGI_MGRAS_RESET_CONTROL: return s->reset_control;
+    case SGI_MGRAS_I2C_SCRATCH: return s->i2c_scratch;
     case 0x008000: return 0;
     case 0x011020: return s->pending;
     case 0x011040: return s->irq_mask;
@@ -273,6 +274,8 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     case SGI_MGRAS_WIDGET_CONTROL: s->widget_control = value; return;
     case SGI_MGRAS_RESET_ARG: s->reset_arg = value; return;
     case SGI_MGRAS_RESET_CONTROL: s->reset_control = value; return;
+    case SGI_MGRAS_I2C_SCRATCH: s->i2c_scratch = value; return;
+    case SGI_MGRAS_I2C_STROBE: return;
     case 0x011000:
         /*
          * MgrasStart writes configuration here before the first context
@@ -358,7 +361,19 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
 
 static const MemoryRegionOps si_ops = {
     .read = si_read, .write = si_write, .endianness = DEVICE_BIG_ENDIAN,
-    .valid = { .min_access_size = 4, .max_access_size = 8 },
+    /*
+     * The kernel driver's own I2C probe (see the 0x073c08/0x073c88 cases
+     * below) does plain byte-wide loads and stores. min_access_size stayed
+     * at 4 since this device's first commit, so every one of those byte
+     * accesses violated .valid outright -- not something this device's own
+     * unsupported-access path could log, since the memory core rejects an
+     * out-of-range width before ever reaching si_read/si_write, and MIPS
+     * turns that rejection into a real bus-error exception. Widening this
+     * to 1 lets the memory core's own width-adjustment machinery satisfy a
+     * byte access by read-modify-writing the aligned word si_read/si_write
+     * already handle, so neither function needs its own byte-width logic.
+     */
+    .valid = { .min_access_size = 1, .max_access_size = 8 },
     /*
      * Without an explicit impl width, the memory core defaults to 4 and
      * silently splits every 8-byte access this device's own si_read/
@@ -404,7 +419,7 @@ static void si_reset(DeviceState *dev)
     s->xmap_mode = 0x7a4; s->cmap_index = 0; s->retraces = 0;
     s->int_dest_upper = s->int_dest_lower = 0;
     s->widget_control = 0;
-    s->reset_arg = s->reset_control = 0;
+    s->reset_arg = s->reset_control = s->i2c_scratch = 0;
     /*
      * Reset does not retroactively unsend an already-delivered packet, so
      * this clears the transition-detector directly rather than going
@@ -482,6 +497,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32(widget_control, SGIMgrasState),
         VMSTATE_UINT32(reset_arg, SGIMgrasState),
         VMSTATE_UINT32(reset_control, SGIMgrasState),
+        VMSTATE_UINT32(i2c_scratch, SGIMgrasState),
         VMSTATE_BOOL(irq_asserted, SGIMgrasState),
         VMSTATE_UINT16(fifo_count, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(command, SGIMgrasState, 0x200),

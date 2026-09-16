@@ -40,6 +40,8 @@
 #define REG_DMA_BUSY           SI_REG(0x020200)
 #define REG_DIRECT_COPY_READY  SI_REG(0x02c578)
 #define REG_RESET_CONTROL      SI_REG(0x072408)
+#define REG_I2C_SCRATCH        SI_REG(0x073c08)
+#define REG_I2C_STROBE         SI_REG(0x073c88)
 #define REG_HQ_UPLOAD           SI_REG(0x050000)
 #define REG_ENTRY               SI_REG(0x130500)
 #define REG_CONTEXT_COMMAND     SI_REG(0x120400)
@@ -259,6 +261,37 @@ static void test_reset_registers_are_plain_storage(void)
     g_assert_cmphex(qtest_readl(qts, REG_RESET_CONTROL), ==, 0x40000000);
     /* Not SI-specific accesses: neither must raise the sticky error. */
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The kernel driver's own I2C device probe, live-traced through the same
+ * boot once the reset hang above was fixed: it writes a strobe byte to
+ * REG_I2C_STROBE, writes a test byte (0x55, then 0xaa if that fails) to
+ * REG_I2C_SCRATCH, strobes REG_I2C_STROBE again, and reads REG_I2C_SCRATCH
+ * back, concluding a device answers only if the byte read matches the byte
+ * just written -- a write/read-back loopback test, not a real I2C exchange.
+ * Both registers are byte-wide accesses; this device's own .valid width
+ * never permitted anything narrower than 4 bytes before, so the memory core
+ * rejected every one of these accesses outright and MIPS turned that
+ * rejection into a real bus-error exception -- confirmed live as a "Data
+ * Bus Error" kernel panic at this exact offset, immediately after the reset
+ * hang above was fixed and the boot reached this code for the first time.
+ */
+static void test_i2c_probe_loopback(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    qtest_writeb(qts, REG_I2C_STROBE, 0x40);
+    qtest_writeb(qts, REG_I2C_SCRATCH, 0x55);
+    qtest_writeb(qts, REG_I2C_STROBE, 0x40);
+    g_assert_cmphex(qtest_readb(qts, REG_I2C_SCRATCH), ==, 0x55);
+    /* Not an SI-specific access: it must not raise the sticky error. */
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    qtest_writeb(qts, REG_I2C_SCRATCH, 0xaa);
+    g_assert_cmphex(qtest_readb(qts, REG_I2C_SCRATCH), ==, 0xaa);
 
     qtest_quit(qts);
 }
@@ -589,6 +622,8 @@ int main(int argc, char **argv)
                    test_bus_status_reads_settled);
     qtest_add_func("sn0/origin2000/mgras/reset-registers-are-plain-storage",
                    test_reset_registers_are_plain_storage);
+    qtest_add_func("sn0/origin2000/mgras/i2c-probe-loopback",
+                   test_i2c_probe_loopback);
     qtest_add_func("sn0/origin2000/mgras/hq-upload-readback",
                    test_hq_upload_and_readback);
     qtest_add_func("sn0/origin2000/mgras/context-recognizer-ordering",
