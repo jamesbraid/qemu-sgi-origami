@@ -28,6 +28,7 @@
 #include "cpu-qom.h"
 #include "sn1-model.h"
 #include "sn1-node.h"
+#include "sn1-topology.h"
 
 /*
  * Mirrors sn1.c's own private addresses until the board-devices step
@@ -151,19 +152,6 @@ static target_ulong sn1_node_store_transaction(MIPSCPU *cpu, MemoryRegion *mr,
         return sgi_bedrock_md_ecc_store_value(offset, value, size);
     }
     return value;
-}
-
-static unsigned sn1_cpu_slot(const SN1MachineModel *model, unsigned logical)
-{
-    for (unsigned physical = 0; physical < 4; physical++) {
-        if (model->cpu_population_mask & (1U << physical)) {
-            if (logical == 0) {
-                return physical;
-            }
-            logical--;
-        }
-    }
-    g_assert_not_reached();
 }
 
 static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
