@@ -663,6 +663,13 @@ static void test_hub_local_memory_alias(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * 96 MiB is not one of origin200's accepted per-node populations (512,
+ * 256, 128, 64): sgi_machine_validate_memory_population() now catches
+ * it before node construction ever reaches the IP29 bank-fitting check
+ * this test used to name, so the accepted-population message is what
+ * a real user sees.
+ */
 static void test_invalid_memory_size(const void *data)
 {
     g_autofree char *path = write_config_block_fixture();
@@ -677,7 +684,8 @@ static void test_invalid_memory_size(const void *data)
                               NULL, &error_output, &wait_status, NULL));
     g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
     g_assert_nonnull(strstr(error_output,
-                           "cannot be populated from IP29 memory banks"));
+                           "topology 'origin200' does not accept 96 MiB "
+                           "per node"));
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -1113,6 +1121,11 @@ static void test_reject_numa_on_the_dual_topology(const void *data)
                         "within it");
 }
 
+/*
+ * 18 MiB per node is not one of origin200-dual's accepted populations
+ * either; see test_invalid_memory_size for why the message names the
+ * accepted-population check rather than the IP29 bank-fitting one.
+ */
 static void test_reject_invalid_node_memory(const void *data)
 {
     g_autofree char *path = write_config_block_fixture();
@@ -1123,8 +1136,8 @@ static void test_reject_invalid_node_memory(const void *data)
     };
 
     assert_qemu_rejects(args,
-                        "node 0's 18 MiB cannot be populated from IP29 "
-                        "memory banks");
+                        "topology 'origin200-dual' does not accept 18 "
+                        "MiB per node");
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
