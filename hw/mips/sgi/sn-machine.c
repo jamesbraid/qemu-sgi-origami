@@ -296,9 +296,12 @@ static const SGIModelCpuPopulation *sgi_machine_find_population(
 }
 
 /*
- * Validate that the per-node memory size matches one of the accepted
- * populations. Every node in the topology must accept the same per-node
- * size if an accepted list is present.
+ * Validate that the per-node memory size (-m split evenly across every
+ * node) matches this node's accepted population, per sn-model.h's
+ * SGIModelNode.accepted_memory_mib: a present list is the DIMM kit
+ * sizes the node accepts, and an absent one means the node's own
+ * shipped bank_mib[] total is the only accepted size, not an open
+ * fitting rule.
  */
 static bool sgi_machine_validate_memory_population(
     const SGIModelTopology *t, uint64_t per_node_mib)
@@ -310,6 +313,15 @@ static bool sgi_machine_validate_memory_population(
         size_t i;
 
         if (!node->accepted_memory_mib || !node->accepted_memory_mib_count) {
+            uint64_t shipped_mib = 0;
+            unsigned int bank;
+
+            for (bank = 0; bank < SGI_MODEL_MAX_MEMORY_BANKS; bank++) {
+                shipped_mib += node->bank_mib[bank];
+            }
+            if (per_node_mib != shipped_mib) {
+                return false;
+            }
             continue;
         }
         for (i = 0; i < node->accepted_memory_mib_count; i++) {
@@ -1064,10 +1076,11 @@ void sgi_machine_init(MachineState *machine)
         exit(EXIT_FAILURE);
     }
 
-    if (!sgi_machine_validate_memory_population(t,
-                                                machine->ram_size / node_count / MiB)) {
-        error_report("%s: topology '%s' does not accept %" PRIu64 " MiB per node",
-                    mc->name, t->name, machine->ram_size / node_count / MiB);
+    if (!sgi_machine_validate_memory_population(
+            t, machine->ram_size / node_count / MiB)) {
+        error_report("%s: topology '%s' does not accept %" PRIu64
+                    " MiB per node", mc->name, t->name,
+                    machine->ram_size / node_count / MiB);
         exit(EXIT_FAILURE);
     }
 
