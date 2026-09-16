@@ -593,6 +593,35 @@ static const MemoryRegionOps sgi_machine_prom_pi_probe_ops = {
     .impl.max_access_size = 8,
 };
 
+/*
+ * Compute the serial line index for a node component, respecting the
+ * topology's console field.
+ *
+ * The console field selects which node's IOC3 port A is serial line 0.
+ * Serial lines are assigned: console node first (lines 0-5), then other
+ * nodes in their original index order (starting from line 6).
+ */
+static unsigned int sgi_machine_compute_serial_line(
+    const SGIModelTopology *t, unsigned int node_index, unsigned int offset)
+{
+    unsigned int position;
+
+    /*
+     * Compute the position of this node in console-first ordering.
+     * After reordering, the console node is at position 0, and all
+     * other nodes shift accordingly.
+     */
+    if (node_index == t->console) {
+        position = 0;
+    } else if (node_index < t->console) {
+        position = node_index + 1;
+    } else {
+        position = node_index;
+    }
+
+    return position * SN0_SERIAL_LINES_PER_NODE + offset;
+}
+
 static uint32_t sgi_machine_ioc3_population(
     const SGIModelIoc3Population *population)
 {
@@ -610,6 +639,7 @@ static uint32_t sgi_machine_ioc3_population(
 }
 
 static PCIDevice *sgi_machine_create_ioc3(SGIMachineState *s,
+                                          const SGIModelTopology *t,
                                           unsigned int node_index,
                                           const SGIModelPciFunction *function)
 {
@@ -620,19 +650,23 @@ static PCIDevice *sgi_machine_create_ioc3(SGIMachineState *s,
     object_property_add_child(OBJECT(s->nodes[node_index]), "ioc3",
                               OBJECT(ioc3));
 
-    chr = serial_hd(SN0_NODE_SERIAL(node_index, SN0_IOC3_SERIAL_A_CHARDEV));
+    chr = serial_hd(sgi_machine_compute_serial_line(t, node_index,
+                                                    SN0_IOC3_SERIAL_A_CHARDEV));
     if (chr) {
         qdev_prop_set_chr(DEVICE(ioc3), "chardev-a", chr);
     }
-    chr = serial_hd(SN0_NODE_SERIAL(node_index, SN0_IOC3_SERIAL_B_CHARDEV));
+    chr = serial_hd(sgi_machine_compute_serial_line(t, node_index,
+                                                    SN0_IOC3_SERIAL_B_CHARDEV));
     if (chr) {
         qdev_prop_set_chr(DEVICE(ioc3), "chardev-b", chr);
     }
-    chr = serial_hd(SN0_NODE_SERIAL(node_index, SN0_IOC3_RECORD_A_CHARDEV));
+    chr = serial_hd(sgi_machine_compute_serial_line(t, node_index,
+                                                    SN0_IOC3_RECORD_A_CHARDEV));
     if (chr) {
         qdev_prop_set_chr(DEVICE(ioc3), "record-a", chr);
     }
-    chr = serial_hd(SN0_NODE_SERIAL(node_index, SN0_IOC3_RECORD_B_CHARDEV));
+    chr = serial_hd(sgi_machine_compute_serial_line(t, node_index,
+                                                    SN0_IOC3_RECORD_B_CHARDEV));
     if (chr) {
         qdev_prop_set_chr(DEVICE(ioc3), "record-b", chr);
     }
@@ -772,7 +806,7 @@ static void sgi_machine_populate_node(SGIMachineState *s,
             break;
         case SGI_MODEL_PCI_IOC3:
             s->pci_devices[node_index][i] =
-                sgi_machine_create_ioc3(s, node_index, function);
+                sgi_machine_create_ioc3(s, t, node_index, function);
             break;
         default:
             g_assert_not_reached();
@@ -1108,7 +1142,8 @@ static void sgi_machine_init(MachineState *machine)
         qdev_prop_set_uint8(DEVICE(&node->hub), "elsc-dip-switches",
                             s->elsc_dip_switches);
         if (!model_node->slave_role) {
-            aux_chr = serial_hd(SN0_NODE_SERIAL(node_index, SN0_ELSC_CHARDEV));
+            aux_chr = serial_hd(sgi_machine_compute_serial_line(t, node_index,
+                                                                SN0_ELSC_CHARDEV));
             if (aux_chr) {
                 object_property_set_link(OBJECT(&node->hub), "elsc-chardev",
                                          OBJECT(aux_chr), &error_fatal);
@@ -1126,7 +1161,8 @@ static void sgi_machine_init(MachineState *machine)
             qdev_prop_set_bit(DEVICE(&node->hub), "junk-uart", has_junk_uart);
             if (has_junk_uart) {
                 Chardev *junk_chr = serial_hd(
-                    SN0_NODE_SERIAL(node_index, SN0_JUNK_UART_CHARDEV));
+                    sgi_machine_compute_serial_line(t, node_index,
+                                                    SN0_JUNK_UART_CHARDEV));
 
                 if (junk_chr) {
                     object_property_set_link(OBJECT(&node->hub),
