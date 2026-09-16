@@ -904,6 +904,14 @@ static void check_backdoor_bank_span(QTestState *qts, uint64_t base,
     g_assert_cmphex(qtest_readq(qts, first) & 0xffffULL, ==, 0x3333);
 }
 
+/*
+ * A bank whose size exactly fills its architectural slot (512 MiB: its
+ * span, size/4, equals BACKDOOR_BANK_STRIDE's 128 MiB) gets exactly one
+ * fold from sn0_backdoor_configure() and no smaller repeat within it,
+ * so there is no alias boundary inside the slot for check_backdoor_
+ * bank_span to find. This instead proves the two entries stay distinct
+ * storage within that one fold.
+ */
 static void check_backdoor_bank_distinct(QTestState *qts, uint64_t base,
                                          unsigned int bank, uint64_t offset)
 {
@@ -934,7 +942,27 @@ static void test_backdoor_tracks_bank_size(const void *data)
     check_backdoor_bank_span(qts, BACKDOOR_ECC, 0, 64 * MiB);
     qtest_quit(qts);
 
-    qts = qtest_init("-M origin200 -m 768M");
+    /*
+     * 512 MiB is origin200's largest accepted population, and IP29's
+     * first-bank cap (256 MiB) forces it into two banks (256 + 256):
+     * bank 0's span is unaffected by a populated bank 1 alongside it.
+     */
+    qts = qtest_init("-M origin200 -m 512M");
+    check_backdoor_bank_span(qts, BACKDOOR_DIR, 0, 64 * MiB);
+    check_backdoor_bank_span(qts, BACKDOOR_ECC, 0, 64 * MiB);
+    qtest_quit(qts);
+
+    /*
+     * No product's accepted list reaches a bank 1 larger than bank 0
+     * (origin200's 512 MiB maximum splits into two equal 256 MiB banks,
+     * as above): sn-builder-bank-test ships 256 MiB in bank 0 and 512
+     * MiB in bank 1, the largest single bank IP29 supports, whose span
+     * (128 MiB) exactly fills its architectural slot with one fold and
+     * no smaller repeat -- check_backdoor_bank_distinct is what proves
+     * that fold is real, distinct storage rather than aliased.
+     */
+    qts = qtest_init(
+        "-M sn-builder-bank-test,activate=on -cpu R10000 -m 768M");
     check_backdoor_bank_span(qts, BACKDOOR_DIR, 0, 64 * MiB);
     check_backdoor_bank_span(qts, BACKDOOR_ECC, 0, 64 * MiB);
     check_backdoor_bank_distinct(qts, BACKDOOR_DIR, 1, 64 * MiB);
@@ -997,7 +1025,11 @@ static void check_backdoor_multi_bank(QTestState *qts, uint64_t base)
 
 static void test_backdoor_tracks_populated_banks(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200 -m 768M");
+    /*
+     * 512 MiB is the accepted population that reaches two banks; see
+     * test_backdoor_tracks_bank_size.
+     */
+    QTestState *qts = qtest_init("-M origin200 -m 512M");
 
     check_backdoor_multi_bank(qts, BACKDOOR_DIR);
     check_backdoor_multi_bank(qts, BACKDOOR_ECC);

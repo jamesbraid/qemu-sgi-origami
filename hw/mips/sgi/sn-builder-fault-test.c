@@ -451,7 +451,8 @@ type_init(fault_test_register_types)
  * mc->init is a no-op, the same as the "none" machine there; the qtest
  * that wants the real two-node machine turns it on itself.
  */
-#define TYPE_SN_BUILDER_CONSOLE_TEST MACHINE_TYPE_NAME("sn-builder-console-test")
+#define TYPE_SN_BUILDER_CONSOLE_TEST \
+    MACHINE_TYPE_NAME("sn-builder-console-test")
 
 static bool console_test_activate_requested;
 
@@ -498,3 +499,134 @@ static void console_test_register_types(void)
 }
 
 type_init(console_test_register_types)
+
+/*
+ * Bank test fixture: one HUB node shipping 256 MiB in bank 0 and 512 MiB
+ * in bank 1 (768 MiB total), a population no product's accepted_memory_
+ * mib list carries -- origin200's largest accepted total is 512 MiB, so
+ * a real product can never populate a bank past IP29's 256 MiB first-
+ * bank cap. The IP29 backdoor window's quarter-size aliasing scales with
+ * each bank's own size (tests/qtest/sn0-address-map-test.c's
+ * check_backdoor_bank_span), so proving bank 1 aliases at ITS size's own
+ * quarter (128 MiB), not bank 0's (64 MiB), needs a bank 1 this large.
+ * That is generic sgi_sn0_hub_hardware decode behavior, identical for
+ * every SN0 node regardless of product, so exercising it here over a
+ * fixture-only population is as hardware-accurate as exercising it over
+ * a real product would be -- it is the product catalogue, not the Hub,
+ * that happens not to sell this combination today.
+ *
+ * accepted_memory_mib is left absent (empty): sgi_machine_validate_
+ * memory_population() then requires the requested per-node size to
+ * match this node's shipped bank_mib[] total exactly, so only 768 MiB
+ * is ever accepted here, the same "shipped population only" contract
+ * origin2000-module's own nodes are documented to want.
+ */
+static const SGIModelCpuSlot bank_test_cpu_slots[] = {
+    { .interface = 0, .slot = 0, .assembly = &console_test_r10000_180mhz },
+};
+
+static const SGIModelNode bank_test_nodes[] = {
+    {
+        .id = "n0",
+        .module_index = 0,
+        .slot = 0,
+        .asic_kind = SGI_MODEL_ASIC_HUB,
+        .cpu_slots = bank_test_cpu_slots,
+        .cpu_slot_count = ARRAY_SIZE(bank_test_cpu_slots),
+        .bank_mib = { 256, 512, 0, 0, 0, 0, 0, 0 },
+    },
+};
+
+static const unsigned int bank_test_m0_nodes[] = { 0 };
+
+static const SGIModelModule bank_test_modules[] = {
+    {
+        .id = "m0",
+        .controller_index = -1,
+        .nodes = bank_test_m0_nodes,
+        .node_count = ARRAY_SIZE(bank_test_m0_nodes),
+    },
+};
+
+static const unsigned int bank_test_population_0[] = { 1 };
+
+static const SGIModelCpuPopulation bank_test_populations[] = {
+    {
+        .cpus_per_node = bank_test_population_0,
+        .node_count = 1,
+    },
+};
+
+/*
+ * Every node needs its own board and crosstalk attachment --
+ * sgi_machine_populate_node() asserts both -- so this fixture reuses
+ * the console fixture's node 0 board and attachment verbatim: a
+ * plain BASEIO with one IOC3, nothing this test touches.
+ */
+static const SGIModelTopology bank_test_topology = {
+    .name = "sn-builder-bank-test",
+    .generation = SGI_MODEL_GENERATION_SN0,
+    .description = "one node shipping two banks (256+512 MiB) past any "
+                   "product's accepted total, for the IP29 backdoor's "
+                   "per-bank aliasing",
+    .nodes = bank_test_nodes,
+    .node_count = ARRAY_SIZE(bank_test_nodes),
+    .modules = bank_test_modules,
+    .module_count = ARRAY_SIZE(bank_test_modules),
+    .xtalk_attachments = console_test_xtalk,
+    .xtalk_attachment_count = 1,
+    .io_boards = console_test_io_boards,
+    .io_board_count = 1,
+    .console = 0,
+    .junk_uart = -1,
+    .supported_cpu_populations = bank_test_populations,
+    .supported_cpu_population_count = ARRAY_SIZE(bank_test_populations),
+};
+
+#define TYPE_SN_BUILDER_BANK_TEST MACHINE_TYPE_NAME("sn-builder-bank-test")
+
+static bool bank_test_activate_requested;
+
+static void bank_test_set_activate(Object *obj, bool value, Error **errp)
+{
+    bank_test_activate_requested = value;
+}
+
+static void bank_test_machine_init(MachineState *machine)
+{
+    if (!bank_test_activate_requested) {
+        return;
+    }
+    sgi_machine_init(machine);
+}
+
+static void bank_test_class_init(ObjectClass *oc, const void *data)
+{
+    MachineClass *mc = MACHINE_CLASS(oc);
+    SGIMachineClass *smc = SGI_MACHINE_CLASS(oc);
+
+    mc->desc = "two-bank IP29 backdoor aliasing test fixture";
+    mc->init = bank_test_machine_init;
+    mc->max_cpus = 1;
+    mc->default_ram_id = "sn-builder-bank-test.node0.ram";
+    smc->test_topology = &bank_test_topology;
+    object_class_property_add_bool(oc, "activate", NULL,
+                                   bank_test_set_activate);
+    object_class_property_set_description(oc, "activate",
+        "Build the fixture's node through the real builder. Off by "
+        "default so qom-test and test-hmp's blanket sweep leaves this "
+        "inert; the qtest that wants a real machine turns it on.");
+}
+
+static const TypeInfo bank_test_type = {
+    .name = TYPE_SN_BUILDER_BANK_TEST,
+    .parent = TYPE_SGI_SN_MACHINE,
+    .class_init = bank_test_class_init,
+};
+
+static void bank_test_register_types(void)
+{
+    type_register_static(&bank_test_type);
+}
+
+type_init(bank_test_register_types)
