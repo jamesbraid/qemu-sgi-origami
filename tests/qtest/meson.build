@@ -377,6 +377,7 @@ qtests_mips64 = \
                                                    'sn0-bridge-invalid-addr-test',
                                                    'sn0-bridge-widget-test',
                                                    'sn0-origin2000-test',
+                                                   'sn0-origin2000-xtalk-owner-test',
                                                    'sn0-module-management-test',
                                                    'sn0-origin2000-pflash-test',
                                                    'sn0-cross-node-test',
