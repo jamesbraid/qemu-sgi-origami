@@ -74,6 +74,11 @@ static SGIModelModule fault_test_modules[] = {
     },
 };
 
+/*
+ * A second link, at ports the first link's ends do not use, so the
+ * "duplicate-link-end" fault below can move one of its ends onto link0's
+ * without the two ends colliding from the start.
+ */
 static SGIModelFabricLink fault_test_links[] = {
     {
         .name = "link0",
@@ -82,6 +87,29 @@ static SGIModelFabricLink fault_test_links[] = {
             { .kind = SGI_MODEL_FABRIC_NODE, .index = 1, .port = 0 },
         },
         .kind = SGI_MODEL_LINK_CABLE,
+    },
+    {
+        .name = "link1",
+        .ends = {
+            { .kind = SGI_MODEL_FABRIC_NODE, .index = 0, .port = 1 },
+            { .kind = SGI_MODEL_FABRIC_NODE, .index = 1, .port = 1 },
+        },
+        .kind = SGI_MODEL_LINK_CABLE,
+    },
+};
+
+/*
+ * A router existing only to give the "router-port-range" fault below a
+ * router vertex to name: port_count is arbitrary, not a real chip's, and
+ * no link ends here in the fault-free case, so a router record with
+ * nothing wired to it is not itself a fault the validator catches.
+ */
+static const SGIModelRouter fault_test_routers[] = {
+    {
+        .id = "test-router",
+        .module_index = 0,
+        .slot = 0,
+        .port_count = 2,
     },
 };
 
@@ -93,6 +121,8 @@ static SGIModelTopology fault_test_topology = {
     .node_count = ARRAY_SIZE(fault_test_nodes),
     .modules = fault_test_modules,
     .module_count = ARRAY_SIZE(fault_test_modules),
+    .routers = fault_test_routers,
+    .router_count = ARRAY_SIZE(fault_test_routers),
     .links = fault_test_links,
     .link_count = ARRAY_SIZE(fault_test_links),
     .console = 0,
@@ -370,14 +400,13 @@ static const SGIModelTopology console_test_topology = {
 
 /*
  * Named faults for the checks sgi_machine_validate_topology runs before
- * the builder creates anything. Two of the plan's named checks have no
+ * the builder creates anything. One of the plan's named checks has no
  * fixture case here: a bank beyond geometry needs a bank index past the
  * HUB's eight architectural banks, which is also this fixture's array
- * bound, so it cannot be expressed without a wider array than any real
- * node uses; a port beyond port_count needs a router, and this part's
- * Origin 200 topologies carry none. Both stay covered by the validator's
- * code, just not by a fixture case, until a router-carrying topology
- * (the Origin 2000 module, later) can drive one.
+ * bound (and every other node ASIC's, since none modeled today has
+ * fewer), so it cannot be expressed without a wider array than any real
+ * node uses. It stays covered by the validator's code, just not by a
+ * fixture case, until a narrower-banked ASIC exists to drive one.
  */
 static bool fault_test_fault_requested;
 
@@ -385,12 +414,28 @@ static void fault_test_set_fault(Object *obj, const char *value,
                                  Error **errp)
 {
     fault_test_fault_requested = true;
-    if (!strcmp(value, "link-end-range")) {
-        fault_test_links[0].ends[0].index = 99;
+    if (!strcmp(value, "empty-topology")) {
+        fault_test_topology.node_count = 0;
+    } else if (!strcmp(value, "module-node-range")) {
+        fault_test_m1_nodes[0] = 99;
     } else if (!strcmp(value, "node-in-two-modules")) {
         fault_test_m1_nodes[0] = 0;
+    } else if (!strcmp(value, "node-in-no-module")) {
+        fault_test_modules[1].node_count = 0;
+    } else if (!strcmp(value, "unknown-asic-kind")) {
+        fault_test_nodes[0].asic_kind = (SGIModelAsicKind)99;
     } else if (!strcmp(value, "cpu-slot-range")) {
         fault_test_n0_cpu_slots[0].interface = 5;
+    } else if (!strcmp(value, "unknown-vertex-kind")) {
+        fault_test_links[0].ends[0].kind = (SGIModelFabricVertexKind)99;
+    } else if (!strcmp(value, "router-port-range")) {
+        fault_test_links[0].ends[0] = (SGIModelFabricVertex){
+            .kind = SGI_MODEL_FABRIC_ROUTER, .index = 0, .port = 99,
+        };
+    } else if (!strcmp(value, "link-end-range")) {
+        fault_test_links[0].ends[0].index = 99;
+    } else if (!strcmp(value, "duplicate-link-end")) {
+        fault_test_links[1].ends[0].port = 0;
     } else {
         error_setg(errp, "unknown sn-builder-fault-test fault '%s'", value);
     }
