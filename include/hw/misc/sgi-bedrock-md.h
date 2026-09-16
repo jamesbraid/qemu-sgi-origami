@@ -50,6 +50,7 @@ struct SGIBedrockMDState {
     uint8_t selftest_selector;
     bool selftest_phase;
     bool selftest_result;
+    uint64_t selftest_error_address;
     uint8_t selftest_status;
 };
 
