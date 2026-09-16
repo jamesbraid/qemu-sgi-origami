@@ -565,8 +565,7 @@ static void l1_eeprom(SGIL1State *s, uint8_t channel, const uint8_t *args)
         l1_selected_read(s, channel, component, area, offset, requested);
         return;
     }
-    /* The selected IP45 six-entry bound precedes area and offset checks. */
-    if (component >= 6 || (!s->records[component].length &&
+    if (component >= 16 || (!s->records[component].length &&
                             !s->records[16 + component].length &&
                             !s->records[32 + component].length)) {
         l1_reply(s, channel, -104, 0, NULL, 0);
