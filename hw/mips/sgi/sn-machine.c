@@ -1473,10 +1473,22 @@ static void sgi_machine_load_flash(MachineState *machine,
     sgi_machine_build_flash(t, smc, flash, flash_size);
     if (machine->firmware) {
         char *path = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
-        ssize_t size = path ? load_image_size(path, flash, flash_size) : -1;
+        int64_t image_size = path ? get_image_size(path, NULL) : -1;
+        ssize_t size;
 
-        if (size < 0) {
+        if (image_size < 0) {
             error_report("%s: cannot read the firmware image '%s'",
+                        MACHINE_GET_CLASS(machine)->name, machine->firmware);
+            exit(EXIT_FAILURE);
+        }
+        if ((uint64_t)image_size > flash_size) {
+            error_report("%s: firmware image '%s' exceeds flash capacity",
+                        MACHINE_GET_CLASS(machine)->name, machine->firmware);
+            exit(EXIT_FAILURE);
+        }
+        size = load_image_size(path, flash, flash_size);
+        if (size != image_size) {
+            error_report("%s: cannot load firmware image '%s'",
                         MACHINE_GET_CLASS(machine)->name, machine->firmware);
             exit(EXIT_FAILURE);
         }
