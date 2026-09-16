@@ -42,6 +42,12 @@
 #define REG_RESET_CONTROL      SI_REG(0x072408)
 #define REG_I2C_SCRATCH        SI_REG(0x073c08)
 #define REG_I2C_STROBE         SI_REG(0x073c88)
+#define REG_REPP_STATUS_1      SI_REG(0x071c08)
+#define REG_CMAP_INDEX         SI_REG(0x071c88)
+#define REG_REPP_STATUS_3      SI_REG(0x071d00)
+#define REG_REPP_STATUS_4      SI_REG(0x071d08)
+#define REG_SYNC_STATUS        SI_REG(0x061038)
+#define REG_REPP_SYNC          SI_REG(0x071f80)
 #define REG_HQ_UPLOAD           SI_REG(0x050000)
 #define REG_ENTRY               SI_REG(0x130500)
 #define REG_CONTEXT_COMMAND     SI_REG(0x120400)
@@ -292,6 +298,57 @@ static void test_i2c_probe_loopback(void)
 
     qtest_writeb(qts, REG_I2C_SCRATCH, 0xaa);
     g_assert_cmphex(qtest_readb(qts, REG_I2C_SCRATCH), ==, 0xaa);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The kernel driver's own RE/PP sync handshake, live-traced through the
+ * same boot once the I2C probe above stopped blocking it: it writes a
+ * channel-select word to REG_REPP_SYNC, writes status bytes to the four
+ * registers above it (REG_REPP_STATUS_1/3/4 and REG_SYNC_STATUS, in a
+ * different register block), then reads REG_REPP_SYNC back, requiring bits
+ * 3:0 and bits 11:8 of the result to agree with each other and equal 1
+ * before it continues -- otherwise it retries the whole handshake forever.
+ * No value the driver actually writes there has matching nibbles (traced:
+ * 0x50214, 0x70214, 0x653, 0x10214), so this device reports the handshake
+ * already satisfied rather than echoing any of them back; see the header
+ * comment on SGI_MGRAS_REPP_SYNC for the manual and topology evidence this
+ * approximation rests on.
+ *
+ * The fourth status write in this same handshake lands on the offset this
+ * device already treats as REG_CMAP_INDEX -- a real, working register from
+ * earlier in this device's history, set only by a write to 0x070c30 and
+ * merely read back here -- so the handshake's own write to it must be
+ * accepted without disturbing whatever REG_CMAP_INDEX already held.
+ */
+static void test_repp_sync_handshake(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    g_assert_cmphex(qtest_readl(qts, REG_REPP_SYNC) & 0x00000f0f, ==,
+                     0x00000101);
+
+    qtest_writel(qts, SI_REG(0x070c30), 7);
+    g_assert_cmphex(qtest_readl(qts, REG_CMAP_INDEX), ==, 7);
+
+    qtest_writel(qts, REG_REPP_STATUS_1, 0x50214);
+    qtest_writel(qts, REG_CMAP_INDEX, 0x70214);
+    qtest_writel(qts, REG_REPP_STATUS_3, 0x653);
+    qtest_writel(qts, REG_REPP_STATUS_4, 0x10214);
+    qtest_writel(qts, REG_SYNC_STATUS, 1);
+    qtest_writel(qts, REG_REPP_SYNC, 0x50214);
+    /* Not SI-specific accesses: none may raise the sticky error. */
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    g_assert_cmphex(qtest_readl(qts, REG_REPP_STATUS_1), ==, 0x50214);
+    g_assert_cmphex(qtest_readl(qts, REG_REPP_STATUS_3), ==, 0x653);
+    g_assert_cmphex(qtest_readl(qts, REG_REPP_STATUS_4), ==, 0x10214);
+    g_assert_cmphex(qtest_readl(qts, REG_SYNC_STATUS), ==, 1);
+    /* The handshake's write to this offset must not disturb cmap_index. */
+    g_assert_cmphex(qtest_readl(qts, REG_CMAP_INDEX), ==, 7);
+    g_assert_cmphex(qtest_readl(qts, REG_REPP_SYNC) & 0x00000f0f, ==,
+                     0x00000101);
 
     qtest_quit(qts);
 }
@@ -624,6 +681,8 @@ int main(int argc, char **argv)
                    test_reset_registers_are_plain_storage);
     qtest_add_func("sn0/origin2000/mgras/i2c-probe-loopback",
                    test_i2c_probe_loopback);
+    qtest_add_func("sn0/origin2000/mgras/repp-sync-handshake",
+                   test_repp_sync_handshake);
     qtest_add_func("sn0/origin2000/mgras/hq-upload-readback",
                    test_hq_upload_and_readback);
     qtest_add_func("sn0/origin2000/mgras/context-recognizer-ordering",

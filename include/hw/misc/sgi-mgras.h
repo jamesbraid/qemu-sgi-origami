@@ -72,6 +72,67 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
 #define SGI_MGRAS_I2C_SCRATCH 0x073c08
 #define SGI_MGRAS_I2C_STROBE 0x073c88
 
+/*
+ * The kernel driver's own RE/PP (rasterizer-to-pixel-processor) sync
+ * handshake, live-traced through a boot that reaches this code for the
+ * first time: the driver writes a channel-select word here, then reads
+ * this same offset back, requiring bits 3:0 and bits 11:8 of the result to
+ * agree with each other and equal 1 before it will continue -- otherwise it
+ * retries the whole handshake forever. This device's usual "echo the last
+ * write back" treatment does not work here, since every value the driver
+ * writes (0x50214, 0x70214, 0x653, 0x10214) has two nibbles that already
+ * disagree, so echoing any of them back would leave the driver spinning
+ * exactly as it did unmodelled.
+ *
+ * The Octane_ide (Integrated Diagnostic Environment) Reference Guide (SGI
+ * document 108-0217-002), a published manual, shows this same function
+ * completing on real, working hardware with no visible delay -- its
+ * "before/in/after MgrasSyncREPP" trace lines appear back to back in every
+ * logged diagnostic run, immediately followed by the next test suite
+ * passing. This project's own retained evidence for the SI board class
+ * this device models (docs/research/graphics/configurations.md) also gives
+ * this configuration a small, fixed pixel-processor topology: one GE, one
+ * RE, no TRAM. Together, that licenses the same "immediate readiness, no
+ * modelled delay" approximation already used at 0x011098 and 0x020100:
+ * report the handshake already satisfied rather than modelling multi-chip
+ * link training this configuration does not have.
+ */
+#define SGI_MGRAS_REPP_SYNC 0x071f80
+
+/*
+ * Three more offsets the REPP sync handshake above writes a status byte to
+ * on every pass, before it ever reads SGI_MGRAS_REPP_SYNC back: 0x071c08,
+ * 0x071d00 and 0x071d08. None had a case before this device live-verified
+ * the handshake actually completing -- every write took the sticky
+ * unsupported-access path, which does not fail the write itself but does
+ * set the same error flag SGI_MGRAS_HQ_STATUS's healthy path depends on
+ * being clear, so leaving these unmodelled was silently blocking the very
+ * next poll after the handshake it appears in even once the handshake
+ * itself was fixed. None of their bit meanings were captured, so all three
+ * store opaque state, the same treatment already given to the other
+ * undocumented registers above.
+ *
+ * The handshake writes a fourth offset in this same cluster, 0x071c88, but
+ * that address already has an established meaning here as the colour map
+ * index register (see the 0x071c88 read case and 0x070c30's write case) --
+ * a real, working register from earlier in this device's history, not
+ * something to redefine on the strength of one more write site. si_write
+ * accepts that specific write without storing it, the same "accept but
+ * don't invent a second meaning" treatment SGI_MGRAS_I2C_STROBE gets,
+ * rather than either overwriting the colour map index with an unrelated
+ * value or leaving the write to fall through to the sticky-error path.
+ */
+#define SGI_MGRAS_REPP_STATUS_1 0x071c08
+#define SGI_MGRAS_REPP_STATUS_3 0x071d00
+#define SGI_MGRAS_REPP_STATUS_4 0x071d08
+
+/*
+ * A fifth status write the same handshake makes, in a different register
+ * block (0x61000s, not the 0x71000s cluster above) -- found and treated the
+ * same way, for the same reason.
+ */
+#define SGI_MGRAS_SYNC_STATUS 0x061038
+
 struct SGIMgrasState {
     SysBusDevice parent_obj;
     MemoryRegion regs;
@@ -85,6 +146,8 @@ struct SGIMgrasState {
     uint32_t reset_arg;
     uint32_t reset_control;
     uint32_t i2c_scratch;
+    uint32_t repp_status[3];
+    uint32_t sync_status;
     bool irq_asserted;
     /* Host-only qtest introspection; not guest state, not migrated. */
     uint32_t test_pixel_x;
