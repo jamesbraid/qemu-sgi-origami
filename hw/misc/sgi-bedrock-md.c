@@ -138,6 +138,7 @@ static uint64_t md_read(void *opaque, hwaddr offset, unsigned size)
     case 0x8: return s->memory_config;
     case 0x60: return MD_REPLY_QUEUE;
     case 0x20000: return s->refresh;
+    case 0x20040: return s->selftest_error_address;
     case 0x20048: return s->selftest_status;
     case 0x40000: return s->directory_config;
     case 0x40050: return MD_REQUEST_QUEUE;
@@ -670,6 +671,7 @@ static void md_selftest_cancel(SGIBedrockMDState *s)
     s->selftest_selector = 0;
     s->selftest_phase = false;
     s->selftest_result = false;
+    s->selftest_error_address = 0;
     s->selftest_status = 0;
 }
 
@@ -692,6 +694,7 @@ static void md_selftest_command(SGIBedrockMDState *s, uint64_t value)
     s->selftest_phase = s->storage[MD_SELFTEST_DATA] & 0x80;
     s->selftest_result = md_selftest_bank_fits(
         s, md_memory_remap_bank(s, s->selftest_selector));
+    s->selftest_error_address = 0;
     s->selftest_status = 0;
     timer_mod_ns(s->selftest_timer,
                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
@@ -706,6 +709,7 @@ static void md_selftest_complete(void *opaque)
         return;
     }
     s->selftest_running = false;
+    s->selftest_error_address = s->selftest_result ? 0 : UINT64_C(1) << 48;
     s->selftest_status = MD_SELFTEST_DONE |
                          (s->selftest_result ? MD_SELFTEST_PASSED : 0);
 }
@@ -952,7 +956,7 @@ static int md_post_load(void *opaque, int version_id)
 }
 
 static const VMStateDescription vmstate_md = {
-    .name = TYPE_SGI_BEDROCK_MD, .version_id = 6, .minimum_version_id = 1,
+    .name = TYPE_SGI_BEDROCK_MD, .version_id = 7, .minimum_version_id = 1,
     .post_load = md_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(current_cell, SGIBedrockMDState),
@@ -983,6 +987,7 @@ static const VMStateDescription vmstate_md = {
         VMSTATE_UINT8_V(selftest_selector, SGIBedrockMDState, 5),
         VMSTATE_BOOL_V(selftest_phase, SGIBedrockMDState, 5),
         VMSTATE_BOOL_V(selftest_result, SGIBedrockMDState, 5),
+        VMSTATE_UINT64_V(selftest_error_address, SGIBedrockMDState, 7),
         VMSTATE_UINT8_V(selftest_status, SGIBedrockMDState, 5),
         VMSTATE_TIMER_PTR_V(selftest_timer, SGIBedrockMDState, 5),
         VMSTATE_END_OF_LIST()

@@ -85,6 +85,7 @@
 #define SELFTEST_INTERVAL_NS 1000
 #define SELFTEST_DONE 2
 #define SELFTEST_PASSED 1
+#define SELFTEST_MEMORY_ERROR (UINT64_C(1) << 48)
 
 /*
  * Bits 58:56 are write-only in the public definition. Reading them back,
@@ -273,6 +274,8 @@ static void assert_selftest_result(const char *memory_size,
     qtest_clock_step(s, 1);
     g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==,
                     expected_status);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_ERROR_ADDRESS)), ==,
+                    SELFTEST_MEMORY_ERROR);
     qtest_quit(s);
 }
 
@@ -291,6 +294,7 @@ static void test_selftest_phases(void)
     qtest_clock_step(s, 1);
     g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==,
                     SELFTEST_DONE | SELFTEST_PASSED);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_ERROR_ADDRESS)), ==, 0);
 
     qtest_writeq(s, MD(0x8), config);
     selftest_start(s, 3, 0x5a);
@@ -298,6 +302,7 @@ static void test_selftest_phases(void)
     qtest_clock_step(s, SELFTEST_INTERVAL_NS);
     g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==,
                     SELFTEST_DONE | SELFTEST_PASSED);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_ERROR_ADDRESS)), ==, 0);
     qtest_quit(s);
 }
 
@@ -312,6 +317,7 @@ static void test_selftest_bank_remap(void)
     qtest_clock_step(s, SELFTEST_INTERVAL_NS);
     g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==,
                     SELFTEST_DONE | SELFTEST_PASSED);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_ERROR_ADDRESS)), ==, 0);
     qtest_quit(s);
 }
 
@@ -351,8 +357,10 @@ static void test_selftest_replacement(void)
 static void assert_selftest_cancelled(QTestState *s)
 {
     g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_ERROR_ADDRESS)), ==, 0);
     qtest_clock_step(s, SELFTEST_INTERVAL_NS);
     g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_ERROR_ADDRESS)), ==, 0);
 }
 
 static void test_selftest_cancellation(void)
@@ -365,34 +373,63 @@ static void test_selftest_cancellation(void)
     qtest_writeq(s, MD(SELFTEST_CONTROL), 4);
     assert_selftest_cancelled(s);
 
+    qtest_writeq(s, MD(0x8), 0);
     selftest_start(s, 1, 0xda);
     qtest_clock_step(s, SELFTEST_INTERVAL_NS);
-    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==,
-                    SELFTEST_DONE | SELFTEST_PASSED);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, SELFTEST_DONE);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_ERROR_ADDRESS)), ==,
+                    SELFTEST_MEMORY_ERROR);
+    selftest_start(s, 1, 0xda);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_ERROR_ADDRESS)), ==, 0);
     qtest_writeq(s, MD(SELFTEST_CONTROL), 4);
     g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_ERROR_ADDRESS)), ==, 0);
 
+    qtest_writeq(s, MD(0x8), memory_bank_config(1, 1));
     selftest_start(s, 1, 0xda);
     qtest_clock_step(s, SELFTEST_INTERVAL_NS / 2);
     qtest_writeq(s, MD(SELFTEST_CONTROL), 2);
     assert_selftest_cancelled(s);
 
+    qtest_writeq(s, MD(0x8), 0);
     selftest_start(s, 1, 0xda);
     qtest_clock_step(s, SELFTEST_INTERVAL_NS);
-    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==,
-                    SELFTEST_DONE | SELFTEST_PASSED);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, SELFTEST_DONE);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_ERROR_ADDRESS)), ==,
+                    SELFTEST_MEMORY_ERROR);
     qtest_writeq(s, MD(SELFTEST_CONTROL), 2);
     g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_ERROR_ADDRESS)), ==, 0);
 
+    qtest_writeq(s, MD(0x8), memory_bank_config(1, 1));
     selftest_start(s, 1, 0xda);
     qtest_clock_step(s, SELFTEST_INTERVAL_NS / 2);
     qtest_set_irq_in(s, MD_PATH, "soft-reset", 0, 1);
+    qtest_set_irq_in(s, MD_PATH, "soft-reset", 0, 0);
     assert_selftest_cancelled(s);
 
+    qtest_writeq(s, MD(0x8), 0);
+    selftest_start(s, 1, 0xda);
+    qtest_clock_step(s, SELFTEST_INTERVAL_NS);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_ERROR_ADDRESS)), ==,
+                    SELFTEST_MEMORY_ERROR);
+    qtest_set_irq_in(s, MD_PATH, "soft-reset", 0, 1);
+    qtest_set_irq_in(s, MD_PATH, "soft-reset", 0, 0);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_ERROR_ADDRESS)), ==, 0);
+
+    qtest_writeq(s, MD(0x8), memory_bank_config(1, 1));
     selftest_start(s, 1, 0xda);
     qtest_clock_step(s, SELFTEST_INTERVAL_NS / 2);
     qtest_system_reset(s);
     assert_selftest_cancelled(s);
+
+    qtest_writeq(s, MD(0x8), 0);
+    selftest_start(s, 1, 0xda);
+    qtest_clock_step(s, SELFTEST_INTERVAL_NS);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_ERROR_ADDRESS)), ==,
+                    SELFTEST_MEMORY_ERROR);
+    qtest_system_reset(s);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_ERROR_ADDRESS)), ==, 0);
     qtest_quit(s);
 }
 
@@ -403,7 +440,7 @@ static void test_selftest_unsupported_writes(void)
     g_autofree char *contents = NULL;
     QTestState *s = start_clock_with_memory("64M", extra);
 
-    qtest_writeq(s, MD(0x8), memory_bank_config(1, 1));
+    qtest_writeq(s, MD(0x8), 0);
     selftest_start(s, 1, 0xda);
     qtest_clock_step(s, 400);
     qtest_writeq(s, MD(SELFTEST_CONTROL), 3);
@@ -411,11 +448,13 @@ static void test_selftest_unsupported_writes(void)
     g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, 0);
     qtest_writeq(s, MD(SELFTEST_CONTROL), 0x100);
     qtest_clock_step(s, 1);
-    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==,
-                    SELFTEST_DONE | SELFTEST_PASSED);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, SELFTEST_DONE);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_ERROR_ADDRESS)), ==,
+                    SELFTEST_MEMORY_ERROR);
     qtest_writeq(s, MD(SELFTEST_CONTROL), 0x14);
-    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==,
-                    SELFTEST_DONE | SELFTEST_PASSED);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, SELFTEST_DONE);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_ERROR_ADDRESS)), ==,
+                    SELFTEST_MEMORY_ERROR);
     qtest_quit(s);
 
     contents = log_file_take(log);
@@ -424,21 +463,29 @@ static void test_selftest_unsupported_writes(void)
 
 static void test_selftest_read_only_results(void)
 {
-    static const uint64_t detail[] = {
-        SELFTEST_ERROR_ADDRESS, SELFTEST_DIRECTORY_ERROR,
-        SELFTEST_MEMORY_ERROR0, SELFTEST_MEMORY_ERROR0 + 8,
-        SELFTEST_MEMORY_ERROR0 + 0x10, SELFTEST_MEMORY_ERROR0 + 0x18,
+    static const struct {
+        uint64_t offset;
+        uint64_t expected;
+    } detail[] = {
+        { SELFTEST_ERROR_ADDRESS, SELFTEST_MEMORY_ERROR },
+        { SELFTEST_DIRECTORY_ERROR, 0 },
+        { SELFTEST_MEMORY_ERROR0, 0 },
+        { SELFTEST_MEMORY_ERROR0 + 8, 0 },
+        { SELFTEST_MEMORY_ERROR0 + 0x10, 0 },
+        { SELFTEST_MEMORY_ERROR0 + 0x18, 0 },
     };
     QTestState *s = start_clock_with_memory("64M", "");
 
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_ERROR_ADDRESS)), ==, 0);
     selftest_start(s, 1, 0x1da);
     g_assert_cmphex(qtest_readq(s, MD(SELFTEST_DATA)), ==, 0xda);
     qtest_clock_step(s, SELFTEST_INTERVAL_NS);
     g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, SELFTEST_DONE);
     qtest_writeq(s, MD(SELFTEST_STATUS), UINT64_MAX);
     for (unsigned i = 0; i < ARRAY_SIZE(detail); i++) {
-        qtest_writeq(s, MD(detail[i]), UINT64_MAX);
-        g_assert_cmphex(qtest_readq(s, MD(detail[i])), ==, 0);
+        qtest_writeq(s, MD(detail[i].offset), UINT64_MAX);
+        g_assert_cmphex(qtest_readq(s, MD(detail[i].offset)), ==,
+                        detail[i].expected);
     }
     g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, SELFTEST_DONE);
     qtest_quit(s);
@@ -1422,11 +1469,14 @@ static void test_selftest_migration_running(void)
     ensure_clock_running(to);
     qtest_clock_set(to, source_time);
     g_assert_cmphex(qtest_readq(to, MD(SELFTEST_STATUS)), ==, 0);
+    g_assert_cmphex(qtest_readq(to, MD(SELFTEST_ERROR_ADDRESS)), ==, 0);
     qtest_clock_step(to, 599);
     g_assert_cmphex(qtest_readq(to, MD(SELFTEST_STATUS)), ==, 0);
+    g_assert_cmphex(qtest_readq(to, MD(SELFTEST_ERROR_ADDRESS)), ==, 0);
     qtest_clock_step(to, 1);
     g_assert_cmphex(qtest_readq(to, MD(SELFTEST_STATUS)), ==,
                     SELFTEST_DONE | SELFTEST_PASSED);
+    g_assert_cmphex(qtest_readq(to, MD(SELFTEST_ERROR_ADDRESS)), ==, 0);
     qtest_quit(from);
     qtest_quit(to);
     unlink(socket);
@@ -1462,6 +1512,8 @@ static void test_migration(void)
     qtest_clock_step(from, SELFTEST_INTERVAL_NS);
     g_assert_cmphex(qtest_readq(from, MD(SELFTEST_STATUS)), ==,
                     SELFTEST_DONE);
+    g_assert_cmphex(qtest_readq(from, MD(SELFTEST_ERROR_ADDRESS)), ==,
+                    SELFTEST_MEMORY_ERROR);
     qtest_writeq(from, DIRECTORY(DIRECTORY_LINE_01A00000),
                  UINT64_C(0x89abcdef01234567));
     qtest_writeq(from, DIRECTORY(DIRECTORY_LINE_01A00000 + 8),
@@ -1490,6 +1542,8 @@ static void test_migration(void)
     g_assert_cmphex(qtest_readq(to, MD(0x40000)), ==, 3);
     g_assert_cmphex(qtest_readq(to, MD(SELFTEST_STATUS)), ==,
                     SELFTEST_DONE);
+    g_assert_cmphex(qtest_readq(to, MD(SELFTEST_ERROR_ADDRESS)), ==,
+                    SELFTEST_MEMORY_ERROR);
     g_assert_cmphex(qtest_readq(to, DIRECTORY(DIRECTORY_LINE_01A00000)),
                     ==, UINT64_C(0x89abcdef01234567));
     g_assert_cmphex(qtest_readq(to, DIRECTORY(DIRECTORY_LINE_01A00000 + 8)),
