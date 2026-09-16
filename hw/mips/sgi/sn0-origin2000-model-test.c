@@ -5,6 +5,7 @@
 #include "hw/1wire/crc.h"
 #include "system/qtest.h"
 #include "sn0.h"
+#include "sn0-model.h"
 
 #define TYPE_SN0_MODEL_TEST MACHINE_TYPE_NAME("origin2000-model-test")
 OBJECT_DECLARE_SIMPLE_TYPE(SN0ModelTestState, SN0_MODEL_TEST)

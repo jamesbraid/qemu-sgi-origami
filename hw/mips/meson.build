@@ -12,7 +12,6 @@ mips_ss.add(when: 'CONFIG_JAZZ', if_true: files('jazz.c'))
 # explicitly; qemu-build does not regenerate them during configure.
 mips_ss.add(when: 'CONFIG_SGI_SN0',
             if_true: files('sgi/sn0.c', 'sgi/sn0-fabric.c',
-                           'sgi/sn0-model.c',
                            'sgi/sn0-origin2000.c', 'sn0-origin2000-model.c',
                            'sgi/sn0-origin2000-management-model.c',
                            'sgi/sn0-origin2000-model-consumer.c',
