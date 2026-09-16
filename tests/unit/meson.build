@@ -99,13 +99,6 @@ tests = {
                             '../../hw/core/reset.c', '../../hw/1wire/core.c',
                             '../../hw/1wire/crc.c', '../../hw/1wire/ds2505.c',
                             qom, hwcore, migration, io],
-  'test-sn0-origin2000-management-model': [
-    '../../hw/1wire/crc.c',
-    '../../hw/mips/sgi/sn0-origin2000-management-model.c',
-    '../../hw/mips/sn0-origin2000-model.c'],
-  'test-sn0-origin2000-xtalk-model': [
-    '../../hw/mips/sn0-origin2000-model.c',
-    '../../hw/mips/sgi/sn0-origin2000-xtalk-model.c'],
   'test-sn1-topology': ['../../hw/mips/sgi/sn1-topology.c'],
   'test-logging': [],
   'test-qapi-util': [],

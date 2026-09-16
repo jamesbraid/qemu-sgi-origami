@@ -36,8 +36,12 @@
 #include "hw/core/qdev-clock.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
+#include "hw/1wire/crc.h"
+#include "hw/misc/sgi-elsc.h"
 #include "hw/misc/sgi-hub.h"
 #include "hw/misc/sgi-ioc3.h"
+#include "hw/misc/sgi-router.h"
+#include "hw/misc/sgi-sn0-module-management.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci/pci.h"
 #include "hw/scsi/qlogic-isp.h"
@@ -51,6 +55,7 @@
 #include "cpu.h"
 #include "hw/mips/sgi/sn-machine.h"
 #include "hw/mips/sn0-fabric-routed.h"
+#include "sn0-origin2000-xtalk.h"
 #include "sn0.h"
 
 /* The Hub's flash controller offers this view whenever the board wires it. */
@@ -156,6 +161,13 @@ struct SGIMachineState {
     Clock *cpu_refclk;
     Clock *rt_refclk;
 
+    /*
+     * A crossbar topology's switched I/O fabric, built instead of the
+     * direct per-node Bridge attach below (sgi_machine_populate_node) when
+     * the topology names any crossbars. NULL on every direct-attach product.
+     */
+    SN0Origin2000XtalkState *origin2000_xtalk;
+
     bool debug_leds;
     bool junk_uart_present;
     uint8_t elsc_dip_switches;
@@ -232,6 +244,34 @@ static unsigned int sgi_machine_product_max_cpus(const char *product)
         }
     }
     return max_cpus;
+}
+
+/*
+ * The NASID a node seeds with: its descriptor slot, relative to the
+ * topology's lowest slot, wherever the topology gives every node a
+ * distinct slot (every measured Origin 2000 module: slots one to four).
+ * Origin 200's descriptor does not yet populate a real per-node slot --
+ * every node reads zero -- so a topology whose slots collide falls back
+ * to node array order instead of colliding every node on NASID zero.
+ */
+static unsigned int sgi_machine_topology_nasid(const SGIModelTopology *t,
+                                               unsigned int node_index)
+{
+    unsigned int slot_min;
+    size_t i, j;
+
+    for (i = 0; i < t->node_count; i++) {
+        for (j = 0; j < i; j++) {
+            if (t->nodes[i].slot == t->nodes[j].slot) {
+                return node_index;
+            }
+        }
+    }
+    slot_min = t->nodes[0].slot;
+    for (i = 1; i < t->node_count; i++) {
+        slot_min = MIN(slot_min, t->nodes[i].slot);
+    }
+    return t->nodes[node_index].slot - slot_min;
 }
 
 static uint64_t sgi_machine_topology_default_ram(const SGIModelTopology *t)
@@ -380,6 +420,8 @@ static const CPUArchIdList *sgi_machine_possible_cpu_arch_ids(
             slot->props.core_id = slice;
             slot->props.has_thread_id = true;
             slot->props.thread_id = 0;
+            slot->props.has_node_id = true;
+            slot->props.node_id = node_index;
         }
     }
     /*
@@ -398,6 +440,8 @@ static const CPUArchIdList *sgi_machine_possible_cpu_arch_ids(
         slot->props.has_core_id = true;
         slot->props.core_id = index;
         slot->props.has_thread_id = true;
+        slot->props.has_node_id = true;
+        slot->props.node_id = 0;
     }
     return machine->possible_cpus;
 }
@@ -549,11 +593,12 @@ bool sgi_machine_validate_topology(const SGIModelTopology *t, Error **errp)
                 return false;
             }
             if (end->kind == SGI_MODEL_FABRIC_ROUTER &&
-                end->port >= t->routers[end->index].port_count) {
+                (end->port < 1 ||
+                 end->port > t->routers[end->index].port_count)) {
                 error_setg(errp, "topology '%s' link '%s' end %u names port "
-                          "%u, past router %u's %u ports", t->name,
-                          link->name, side, end->port, end->index,
-                          t->routers[end->index].port_count);
+                          "%u, outside router %u's 1-%u hardware-numbered "
+                          "ports", t->name, link->name, side, end->port,
+                          end->index, t->routers[end->index].port_count);
                 return false;
             }
         }
@@ -652,6 +697,92 @@ static const MemoryRegionOps sgi_machine_prom_pi_probe_ops = {
     .impl.min_access_size = 1,
     .impl.max_access_size = 8,
 };
+
+/*
+ * Origin 2000's own PROM PI-error probe: reached through the node's own
+ * crosstalk container at a fixed widget-2 offset (widget 2 is a synthetic
+ * address here too, as it is for Origin 200's probe above, but the two
+ * products keep their own long-standing emulation approach to it; folding
+ * them into one is future work, not this step's). A zero-length probe
+ * read latches the PI error the way Origin 200's does; every other access
+ * crosses through the node's own crosstalk address space so the switched
+ * fabric answers it like any other widget access.
+ */
+#define ORIGIN2000_HUB_IO_BUS_ERROR 0x02400208
+#define ORIGIN2000_HUB_IO_BUS_ERROR_WIDGET 2
+#define ORIGIN2000_HUB_IO_BUS_ERROR_XTALK \
+    (SN0_XTALK_BASE(ORIGIN2000_HUB_IO_BUS_ERROR_WIDGET) + \
+     ORIGIN2000_HUB_IO_BUS_ERROR - \
+     SN0_SMALL_WINDOW(ORIGIN2000_HUB_IO_BUS_ERROR_WIDGET))
+
+static MemTxResult origin2000_bus_error_read(void *opaque, hwaddr addr,
+                                             uint64_t *data, unsigned size,
+                                             MemTxAttrs attrs)
+{
+    SN0NodeState *node = opaque;
+    uint8_t bytes[8] = {};
+    MemTxResult result;
+
+    if (addr == 0 && size == 8) {
+        *data = 0;
+        sgi_hub_latch_prom_pi_error(&node->hub);
+        return MEMTX_ERROR;
+    }
+    result = address_space_read(&node->origin2000_xtalk_as,
+                                ORIGIN2000_HUB_IO_BUS_ERROR_XTALK + addr,
+                                attrs, bytes, size);
+    *data = ldn_be_p(bytes, size);
+    return result;
+}
+
+static MemTxResult origin2000_bus_error_write(void *opaque, hwaddr addr,
+                                              uint64_t data, unsigned size,
+                                              MemTxAttrs attrs)
+{
+    SN0NodeState *node = opaque;
+    uint8_t bytes[8];
+
+    stn_be_p(bytes, size, data);
+    return address_space_write(&node->origin2000_xtalk_as,
+                               ORIGIN2000_HUB_IO_BUS_ERROR_XTALK + addr,
+                               attrs, bytes, size);
+}
+
+static const MemoryRegionOps origin2000_bus_error_ops = {
+    .read_with_attrs = origin2000_bus_error_read,
+    .write_with_attrs = origin2000_bus_error_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .valid.unaligned = true,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+    .impl.unaligned = true,
+};
+
+static void origin2000_install_bus_error_aperture(SN0NodeState *node)
+{
+    const SN0ModelAddressSpace *xtalk = &node->physical->map.xtalk;
+    g_autofree char *name = g_strdup_printf(
+        "sn0.node%u.origin2000-xtalk", node->nasid);
+    unsigned int slice;
+
+    address_space_init(&node->origin2000_xtalk_as, &node->xtalk, name);
+    node->origin2000_xtalk_as_ready = true;
+
+    for (slice = 0; slice < node->nr_cpus; slice++) {
+        g_autofree char *region_name = g_strdup_printf(
+            "sn0.node%u.cpu%u.hub-io-bus-error", node->nasid, slice);
+
+        memory_region_init_io(&node->origin2000_bus_error[slice],
+                              OBJECT(node), &origin2000_bus_error_ops, node,
+                              region_name, 8);
+        memory_region_add_subregion_overlap(
+            &node->cpu_sysmem[slice],
+            xtalk->carrier_base + ORIGIN2000_HUB_IO_BUS_ERROR,
+            &node->origin2000_bus_error[slice], 1);
+    }
+}
 
 /*
  * Compute the serial line index for a node component, respecting the
@@ -916,6 +1047,245 @@ static void sgi_machine_populate_node(SGIMachineState *s,
         SN0_XTALK_BASE(SGI_SN0_PROM_PI_PROBE_WIDGET) +
         SGI_SN0_PROM_PI_PROBE_OFFSET,
         &node->prom_pi_probe, 1);
+}
+
+/* ---- Module identity, shared controllers and routers ---- */
+
+/*
+ * A module's one-wire identity pages, from its serial alone: page 0 is the
+ * family byte plus the ten-character serial, page 1 the fixed "MODULEID"
+ * name at offset sixteen, both CRC16-terminated. Ported unchanged from the
+ * generator Origami's implementation layer used to bake these bytes into
+ * the old descriptor (sn0-origin2000-management-model.c); the builder now
+ * derives them itself from the format-2 module record so the PROM-visible
+ * identity does not change.
+ */
+static bool sgi_machine_module_identity_pages(const char *serial,
+                                              uint8_t page[2][DS2502_PAGE_SIZE])
+{
+    static const char name[] = "MODULEID";
+    size_t i;
+
+    if (strlen(serial) != SGI_MODEL_MODULE_SERIAL_LEN) {
+        return false;
+    }
+    for (i = 0; i < SGI_MODEL_MODULE_SERIAL_LEN; i++) {
+        if (!g_ascii_isprint(serial[i]) || serial[i] == ':' ||
+            serial[i] == ';') {
+            return false;
+        }
+    }
+
+    memset(page, 0xff, 2 * DS2502_PAGE_SIZE);
+    page[0][0] = 0x01;
+    memcpy(&page[0][1], serial, SGI_MODEL_MODULE_SERIAL_LEN);
+    memcpy(&page[1][16], name, sizeof(name) - 1);
+    for (i = 0; i < 2; i++) {
+        uint16_t crc = ~onewire_crc16(0, page[i], DS2502_PAGE_SIZE - 2);
+
+        page[i][DS2502_PAGE_SIZE - 2] = crc;
+        page[i][DS2502_PAGE_SIZE - 1] = crc >> 8;
+    }
+    return true;
+}
+
+/*
+ * The module responder's eight-byte one-wire ROM: family code 0x09, then a
+ * byte unique per node within the module (0x08 plus the node's physical
+ * slot, matching the shipped module's 0x09-0x0c) and one that folds in the
+ * module number (its top nibble, matching the shipped module number one
+ * giving 0x10), three zero bytes, and a trailing CRC8 self-check byte
+ * (onewire_crc8 over the whole eight bytes is zero when it is right).
+ * Reproduces sn0_o2000_c0_module_identity from the deleted static
+ * generator's baked descriptor byte for byte for the shipped module (slot
+ * 1-4, module number one); the module-number fold is inferred from that
+ * one sample plus the field it is keyed on and has not been independently
+ * confirmed against a second module number.
+ */
+static void sgi_machine_module_identity_rom(unsigned int slot,
+                                            uint8_t module_number,
+                                            uint8_t rom[8])
+{
+    rom[0] = 0x09;
+    rom[1] = 0x08 + slot;
+    rom[2] = rom[3] = rom[4] = rom[5] = 0x00;
+    rom[6] = (module_number & 0x0f) << 4;
+    rom[7] = onewire_crc8(0, rom, 7);
+}
+
+/*
+ * A module whose controller_index names a shared system controller also
+ * shares one MicroLAN module-identity responder across every node it
+ * carries, so IRIX can read one module number and serial regardless which
+ * node's Hub it asks. A module whose nodes each carry their own controller
+ * (controller_index -1, Origin 200) has no module-identity concept: each
+ * node answers for itself.
+ */
+static void sgi_machine_attach_module_identities(SGIMachineState *s,
+                                                  const SGIModelTopology *t)
+{
+    size_t module_index;
+
+    for (module_index = 0; module_index < t->module_count; module_index++) {
+        const SGIModelModule *module = &t->modules[module_index];
+        SGIHubModuleIdentity identity;
+        size_t i;
+
+        if (module->controller_index < 0) {
+            continue;
+        }
+        if (!sgi_machine_module_identity_pages(module->serial,
+                                               identity.page)) {
+            error_report("module '%s' has an invalid identity serial",
+                        module->id);
+            exit(EXIT_FAILURE);
+        }
+        for (i = 0; i < module->node_count; i++) {
+            unsigned int node_index = module->nodes[i];
+
+            sgi_machine_module_identity_rom(t->nodes[node_index].slot,
+                                            module->initial_module_number,
+                                            identity.rom);
+            if (!sgi_hub_attach_module_identity(&s->nodes[node_index]->hub,
+                                                &identity, &error_fatal)) {
+                exit(EXIT_FAILURE);
+            }
+        }
+    }
+}
+
+/*
+ * One shared controller per module that names one: an MSC over the module
+ * management wire, with one PCF8584 adapter reflected into each of the
+ * module's nodes at that node's own management_adapter_offset -- adapter
+ * count and placement both come from the module's own nodes[], replacing
+ * the old descriptor's separate adapter_count/adapter_nodes/adapter_offsets
+ * fields. The controller device's own adapter array is still capacity
+ * SGI_O2000_ADAPTER_COUNT (every module measured ships four nodes); a
+ * module with more nodes than that is asserted here rather than silently
+ * truncated.
+ *
+ * No action capability is declared. Nothing in this machine receives a
+ * module reset, NMI or power line, and the module refuses those commands
+ * rather than answering for a line that reaches nothing.
+ */
+static void sgi_machine_build_controllers(SGIMachineState *s,
+                                          const SGIModelTopology *t)
+{
+    size_t controller_index;
+
+    for (controller_index = 0; controller_index < t->controller_count;
+         controller_index++) {
+        const SGIModelController *controller =
+            &t->controllers[controller_index];
+        const SGIModelModule *module = NULL;
+        DeviceState *dev;
+        Chardev *aux;
+        size_t i;
+
+        for (i = 0; i < t->module_count; i++) {
+            if (t->modules[i].controller_index == (int)controller_index) {
+                module = &t->modules[i];
+                break;
+            }
+        }
+        g_assert(module);
+        g_assert(controller->kind == SGI_MODEL_CONTROLLER_MSC);
+        g_assert(module->node_count <= SGI_O2000_ADAPTER_COUNT);
+
+        dev = qdev_new(TYPE_SGI_SN0_MODULE_MANAGEMENT);
+        object_property_add_child(OBJECT(s), "module-management",
+                                  OBJECT(dev));
+        qdev_prop_set_uint8(dev, "module-number",
+                            module->initial_module_number);
+        qdev_prop_set_string(dev, "model-serial", module->serial);
+        qdev_prop_set_uint8(dev, "dip-switches", s->elsc_dip_switches);
+        aux = serial_hd(sgi_machine_compute_serial_line(
+            t, module->nodes[0], SN0_ELSC_CHARDEV));
+        if (aux) {
+            qdev_prop_set_chr(dev, "chardev", aux);
+        }
+        qdev_realize_and_unref(dev, NULL, &error_fatal);
+
+        for (i = 0; i < module->node_count; i++) {
+            unsigned int node_index = module->nodes[i];
+            const SGIModelNode *model_node = &t->nodes[node_index];
+            SGIHubState *hub = &s->nodes[node_index]->hub;
+            SysBusDevice *adapter = SYS_BUS_DEVICE(
+                sgi_sn0_module_management_get_adapter(
+                    SGI_SN0_MODULE_MANAGEMENT(dev), i));
+
+            memory_region_add_subregion_overlap(
+                &hub->regs, model_node->management_adapter_offset,
+                sysbus_mmio_get_region(adapter, 0), 1);
+        }
+    }
+}
+
+#define SGI_SN0_ROUTER_NIC_PAGES 2
+
+static void sgi_machine_router_nic_page_crc(uint8_t page[32])
+{
+    uint16_t crc = ~onewire_crc16(0, page, 30);
+
+    page[30] = crc;
+    page[31] = crc >> 8;
+}
+
+static void sgi_machine_router_nic_image(const SGIModelRouter *router,
+                                         uint8_t image[64])
+{
+    static const uint8_t page_a[30] = {
+        0x01, ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+        'O', 'R', 'I', 'G', 'A', 'M', 'I', '-', 'R', 'O', 'U', 'T', 'E',
+        'R', '-', 'T', 'E', 'S', 'T',
+    };
+    static const uint8_t page_b[30] = {
+        '-', '0', '0', '0', '0', '1', 'A', '0', '0', '1',
+        0, 0, 0, 0, 0, 0,
+        'O', 'R', 'I', 'G', 'A', 'M', 'I', ' ', 'R', 'O', 'U', 'T', 'E', 'R',
+    };
+    char serial[11];
+    unsigned int page;
+
+    memcpy(image, page_a, sizeof(page_a));
+    memcpy(&image[32], page_b, sizeof(page_b));
+    g_snprintf(serial, sizeof(serial), "ORTR%06u", router->slot);
+    memcpy(&image[1], serial, 10);
+    for (page = 0; page < SGI_SN0_ROUTER_NIC_PAGES; page++) {
+        sgi_machine_router_nic_page_crc(&image[page * 32]);
+    }
+}
+
+/*
+ * One router per t->routers[] entry, added to the fabric in array order so
+ * the vertex index the fabric hands back matches the descriptor's router
+ * index, the way node creation order already matches node index.
+ */
+static void sgi_machine_build_routers(SGIMachineState *s,
+                                      const SGIModelTopology *t)
+{
+    size_t i;
+
+    for (i = 0; i < t->router_count; i++) {
+        const SGIModelRouter *router = &t->routers[i];
+        g_autofree char *name = g_strdup_printf("router%zu", i);
+        DeviceState *dev = qdev_new(TYPE_SGI_ROUTER);
+        uint8_t nic_image[64];
+        unsigned int vertex;
+
+        object_property_add_child(OBJECT(s), name, OBJECT(dev));
+        qdev_prop_set_uint8(dev, "chip-inputs", router->chip_inputs);
+        qdev_prop_set_uint64(dev, "nic-clock-hz",
+                            sgi_sn0_hub_hardware.hub_clock_hz);
+        qdev_prop_set_uint64(dev, "nic-serial", router->serial);
+        sgi_machine_router_nic_image(router, nic_image);
+        sgi_router_set_nic_image(SGI_ROUTER(dev), nic_image,
+                                 sizeof(nic_image));
+        vertex = sn0_fabric_routed_add_router(s->fabric, SGI_ROUTER(dev));
+        g_assert(vertex == i);
+        qdev_realize_and_unref(dev, NULL, &error_fatal);
+    }
 }
 
 /* ---- The builder ---- */
@@ -1190,6 +1560,26 @@ void sgi_machine_init(MachineState *machine)
             exit(EXIT_FAILURE);
         }
         requested[0] = machine->smp.cpus;
+    } else if (machine->smp.sockets == 1 &&
+               machine->smp.cores == machine->smp.cpus) {
+        /*
+         * A bare -smp N (no explicit topology) completes to one socket
+         * of N cores before this runs, for a default topology of more
+         * than one node: accept it as the even split across the
+         * topology's nodes it names, the way -smp N alone always has for
+         * this product, and correct smp.sockets/cores to match what was
+         * actually built.
+         */
+        if (machine->smp.cpus % node_count) {
+            error_report("%s: topology '%s' splits -smp evenly across %u "
+                        "nodes", mc->name, t->name, node_count);
+            exit(EXIT_FAILURE);
+        }
+        machine->smp.sockets = node_count;
+        machine->smp.cores = machine->smp.cpus / node_count;
+        for (node_index = 0; node_index < node_count; node_index++) {
+            requested[node_index] = machine->smp.cores;
+        }
     } else {
         if (machine->smp.sockets != node_count ||
             machine->smp.cpus != node_count * machine->smp.cores) {
@@ -1267,6 +1657,8 @@ void sgi_machine_init(MachineState *machine)
         s->nodes[node_index] = SN0_NODE(node);
     }
 
+    sgi_machine_attach_module_identities(s, t);
+
     /* One clock per processor entry; the Hub shares its rate. */
     s->cpu_refclk = clock_new(OBJECT(machine), "cpu-refclk");
     clock_set_hz(s->cpu_refclk, t->nodes[0].cpu_slots[0].assembly->clock_hz);
@@ -1281,15 +1673,18 @@ void sgi_machine_init(MachineState *machine)
 
         g_assert(endpoint == node_index);
     }
+    sgi_machine_build_routers(s, t);
     for (link_index = 0; link_index < t->link_count; link_index++) {
         const SGIModelFabricLink *link = &t->links[link_index];
         SN0FabricVertex a = {
-            .kind = SN0_FABRIC_VERTEX_HUB,
+            .kind = link->ends[0].kind == SGI_MODEL_FABRIC_ROUTER ?
+                SN0_FABRIC_VERTEX_ROUTER : SN0_FABRIC_VERTEX_HUB,
             .index = link->ends[0].index,
             .port = link->ends[0].port,
         };
         SN0FabricVertex b = {
-            .kind = SN0_FABRIC_VERTEX_HUB,
+            .kind = link->ends[1].kind == SGI_MODEL_FABRIC_ROUTER ?
+                SN0_FABRIC_VERTEX_ROUTER : SN0_FABRIC_VERTEX_HUB,
             .index = link->ends[1].index,
             .port = link->ends[1].port,
         };
@@ -1332,7 +1727,9 @@ void sgi_machine_init(MachineState *machine)
             .flash = { .kind = (SN0ModelFlashKind)model_node->flash.kind },
         };
 
-        qdev_prop_set_uint32(DEVICE(node), "nasid", node_index);
+        qdev_prop_set_uint32(DEVICE(node),
+                             "nasid",
+                             sgi_machine_topology_nasid(t, node_index));
         node->flash_drive = flash_drives[node_index];
         node->physical = &s->physical_nodes[node_index];
         node->hardware = &sgi_sn0_hub_hardware;
@@ -1383,26 +1780,50 @@ void sgi_machine_init(MachineState *machine)
             }
         }
 
-        sysbus_realize(SYS_BUS_DEVICE(node), &error_fatal);
-
-        {
-            unsigned int slice;
-
-            for (slice = 0; slice < requested[node_index]; slice++) {
-                machine->possible_cpus->cpus[cpu_index++].cpu =
-                    CPU(node->cpu[slice]);
-            }
-        }
         cpu_base += requested[node_index];
         ram_offset += ram_size;
     }
-    g_assert(cpu_index == machine->smp.cpus);
     g_assert(ram_offset == machine->ram_size);
+
+    /*
+     * A crossbar topology's switched I/O fabric is built here, after every
+     * node has its physical record and Hub properties but before any node
+     * is realized: sn0_origin2000_xtalk_prepare needs both (the Hub's
+     * outgoing adapter it links refuses a realized Hub).
+     */
+    if (t->crossbar_count) {
+        s->origin2000_xtalk = sn0_origin2000_xtalk_prepare(
+            OBJECT(s), s->nodes, node_count, t, &error_fatal);
+    }
+
+    for (node_index = 0; node_index < node_count; node_index++) {
+        SN0NodeState *node = s->nodes[node_index];
+        unsigned int slice;
+
+        sysbus_realize(SYS_BUS_DEVICE(node), &error_fatal);
+        if (t->crossbar_count) {
+            origin2000_install_bus_error_aperture(node);
+        }
+        for (slice = 0; slice < requested[node_index]; slice++) {
+            machine->possible_cpus->cpus[cpu_index++].cpu =
+                CPU(node->cpu[slice]);
+        }
+    }
+    g_assert(cpu_index == machine->smp.cpus);
 
     sn0_map_cpu_big_windows(OBJECT(s), s->nodes, s->num_nodes,
                             &s->big_window_route);
 
-    /* The two-chassis Origin 200 has four CPU turns and one slave turn. */
+    /*
+     * The two-chassis Origin 200 has four CPU turns and one slave turn,
+     * shared across its two one-node modules' own Hub-embedded ELSCs. A
+     * topology whose nodes carry a shared controller instead (Origin
+     * 2000's MSC) has no per-node ELSC to arbitrate here;
+     * sgi_machine_build_controllers below builds its one shared
+     * controller. No topology measured shares arbitration within one
+     * module of more than one node; this stays the topology-wide rule
+     * the shipped two-chassis machine needs until one does.
+     */
     if (node_count == 2) {
         SGIElscState *master = NULL;
         SGIElscState *slave = NULL;
@@ -1421,9 +1842,16 @@ void sgi_machine_init(MachineState *machine)
 
     sn0_fabric_build(s->fabric);
 
-    for (node_index = 0; node_index < node_count; node_index++) {
-        sgi_machine_populate_node(s, t, node_index);
+    if (t->crossbar_count) {
+        if (!sn0_origin2000_xtalk_attach(s->origin2000_xtalk, &error_fatal)) {
+            exit(EXIT_FAILURE);
+        }
+    } else {
+        for (node_index = 0; node_index < node_count; node_index++) {
+            sgi_machine_populate_node(s, t, node_index);
+        }
     }
+    sgi_machine_build_controllers(s, t);
 
     sgi_machine_load_flash(machine, t, s);
 }
@@ -1606,6 +2034,39 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
     mc->default_ram_id = "sn0.node0.ram";
 }
 
+static void origin2000_class_init(ObjectClass *oc, const void *data)
+{
+    MachineClass *mc = MACHINE_CLASS(oc);
+    SGIMachineClass *smc = SGI_MACHINE_CLASS(oc);
+    const SGIModelTopology *t = sgi_model_find_topology("origin2000-module");
+
+    g_assert(t);
+    smc->product = "origin2000";
+    smc->default_topology = "origin2000-module";
+    mc->desc = t->description;
+    mc->valid_cpu_types = sgi_sn0_r10000_cpu_types;
+    mc->default_cpus = sgi_machine_topology_default_cpus(t);
+    mc->max_cpus = sgi_machine_product_max_cpus("origin2000");
+    mc->default_ram_size = sgi_machine_topology_default_ram(t);
+    mc->default_ram_id = "sn0.ram";
+}
+
+/*
+ * The default topology carries more than one node, so a bare -M origin2000
+ * (no -smp at all) needs sockets and cores preset before the core's own
+ * smp_parse divides mc->default_cpus between them; every other product's
+ * default topology is one node, where socket=1 falls out on its own.
+ */
+static void origin2000_instance_init(Object *obj)
+{
+    MachineState *machine = MACHINE(obj);
+    const SGIModelTopology *t = sgi_model_find_topology("origin2000-module");
+
+    g_assert(t);
+    machine->smp.sockets = t->node_count;
+    machine->smp.cores = t->nodes[0].cpu_slot_count;
+}
+
 static const TypeInfo sgi_machine_types[] = {
     {
         .name              = TYPE_SGI_SN_MACHINE,
@@ -1621,6 +2082,12 @@ static const TypeInfo sgi_machine_types[] = {
         .name       = MACHINE_TYPE_NAME("origin200"),
         .parent     = TYPE_SGI_SN_MACHINE,
         .class_init = origin200_class_init,
+    },
+    {
+        .name          = MACHINE_TYPE_NAME("origin2000"),
+        .parent        = TYPE_SGI_SN_MACHINE,
+        .instance_init = origin2000_instance_init,
+        .class_init    = origin2000_class_init,
     },
 };
 

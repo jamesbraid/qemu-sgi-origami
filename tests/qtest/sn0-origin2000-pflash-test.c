@@ -223,15 +223,21 @@ static void test_launch_selection(gconstpointer data)
     g_spawn_close_pid(pid);
     g_test_message("launch output: %s", error_output);
     g_assert_true(WIFEXITED(status));
-    if (which) {
+    /*
+     * which == 1 and which == 2 used to be refused under Origin 2000's own
+     * rules ("requires all four node pflash drives", "cannot combine -bios
+     * with node pflash drives"). The one-builder step's unified rule
+     * (-bios fills every node's flash, per-node pflash overrides) accepts
+     * both: which == 1's three drive-less nodes come up with blank flash,
+     * the same as a node would with neither -bios nor a drive of its own;
+     * which == 2's four drives leave nothing for -bios to fill, the same
+     * as passing -bios alongside a full population on every other product.
+     * which == 3's wrong-sized backing file is still refused -- that is
+     * the generic pflash device's own size check, not an Origin 2000 rule.
+     */
+    if (which == 3) {
         g_assert_cmpint(WEXITSTATUS(status), !=, 0);
-        if (which == 1) {
-            g_assert_nonnull(strstr(error_output, "all four node pflash"));
-        } else if (which == 2) {
-            g_assert_nonnull(strstr(error_output, "cannot combine -bios"));
-        } else {
-            g_assert_nonnull(strstr(error_output, "requires 1048576 bytes"));
-        }
+        g_assert_nonnull(strstr(error_output, "requires 1048576 bytes"));
     } else {
         g_assert_cmpint(WEXITSTATUS(status), ==, 0);
     }
@@ -250,14 +256,22 @@ int main(int argc, char **argv)
     }
     qtest_add_data_func("sn0/origin2000/pflash/writable-stores",
                         "origin2000", test_writable_stores);
-    qtest_add_data_func("sn0/origin2000/pflash/reordered-stores",
-                        "origin2000-model-test", test_writable_stores);
+    /*
+     * The reordered-stores variant ran the same assertions against a
+     * fixture machine that built its nodes in an order different from
+     * the descriptor's, to catch a store keyed to the wrong physical
+     * node. That fixture depended on the deleted per-product descriptor
+     * (SN0ModelComposition) and its physical-slot indirection; format 2
+     * has no such indirection left to get wrong; node array index and
+     * descriptor node index are the same number everywhere the builder
+     * reads, so there is no second order left to test against.
+     */
     qtest_add_func("sn0/origin2000/pflash/migration", test_migration);
     qtest_add_data_func("sn0/origin2000/pflash/normal-launch",
                         GUINT_TO_POINTER(0), test_launch_selection);
-    qtest_add_data_func("sn0/origin2000/pflash/reject-partial",
+    qtest_add_data_func("sn0/origin2000/pflash/partial-drives",
                         GUINT_TO_POINTER(1), test_launch_selection);
-    qtest_add_data_func("sn0/origin2000/pflash/reject-bios-conflict",
+    qtest_add_data_func("sn0/origin2000/pflash/bios-with-full-drives",
                         GUINT_TO_POINTER(2), test_launch_selection);
     qtest_add_data_func("sn0/origin2000/pflash/reject-wrong-size",
                         GUINT_TO_POINTER(3), test_launch_selection);

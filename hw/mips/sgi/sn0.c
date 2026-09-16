@@ -38,7 +38,6 @@
 #include "trace.h"
 #include "cpu.h"
 #include "sn0.h"
-#include "sn0-model.h"
 
 #define SN0_HUB_PRIVATE_SIZE (128 * KiB)
 #define SN0_HUB_PRIVATE_HALF (SN0_HUB_PRIVATE_SIZE / 2)
@@ -494,48 +493,6 @@ static void sn0_backdoor_configure(SN0BackdoorState *s, SN0NodeState *node,
                                         base + bank * bank_stride +
                                         repeat * span, &s->fold[next]);
             next++;
-        }
-    }
-}
-
-static uint32_t sn0_board_mode_bits(SN0MachineState *s)
-{
-    return s->composition->hardware->cpu_mode_bits;
-}
-
-void sn0_mode_bits_reset(void *opaque)
-{
-    CPUMIPSState *env = &MIPS_CPU(opaque)->env;
-    SN0MachineState *s = SN0_MACHINE(qdev_get_machine());
-    uint32_t mode_bits = sn0_board_mode_bits(s);
-
-    env->CP0_Config0 = (env->CP0_Config0 & ~(uint32_t)SN0_PROCESSOR_MODE_MASK) |
-                       (mode_bits & SN0_PROCESSOR_MODE_MASK);
-}
-
-/* The mode-bits write must follow the CPUs' own resets. */
-static void sn0_machine_reset(MachineState *machine, ResetType type)
-{
-    SN0MachineState *s = SN0_MACHINE(machine);
-    CPUState *cs;
-    unsigned int node, slice;
-
-    qemu_devices_reset(type);
-
-    /*
-     * Nothing resets a MIPS processor automatically: without this the
-     * machine services a reset request with the program counter
-     * untouched.
-     */
-    CPU_FOREACH(cs) {
-        cpu_reset(cs);
-        sn0_mode_bits_reset(cs);
-    }
-    for (node = 0; node < s->num_nodes; node++) {
-        SN0NodeState *node_state = s->nodes[node];
-
-        for (slice = 0; slice < node_state->nr_cpus; slice++) {
-            sgi_hub_set_cpu_enable(&node_state->hub, slice, true, true);
         }
     }
 }
@@ -1143,46 +1100,6 @@ void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
     }
 }
 
-static bool sn0_get_junk_uart(Object *obj, Error **errp)
-{
-    return SN0_MACHINE(obj)->junk_uart_present;
-}
-
-static void sn0_set_junk_uart(Object *obj, bool value, Error **errp)
-{
-    SN0_MACHINE(obj)->junk_uart_present = value;
-}
-
-static bool sn0_get_debug_leds(Object *obj, Error **errp)
-{
-    return SN0_MACHINE(obj)->debug_leds;
-}
-
-static void sn0_set_debug_leds(Object *obj, bool value, Error **errp)
-{
-    SN0_MACHINE(obj)->debug_leds = value;
-}
-
-static void sn0_get_elsc_dip_switches(Object *obj, Visitor *v,
-                                     const char *name, void *opaque,
-                                     Error **errp)
-{
-    uint8_t value = SN0_MACHINE(obj)->elsc_dip_switches;
-
-    visit_type_uint8(v, name, &value, errp);
-}
-
-static void sn0_set_elsc_dip_switches(Object *obj, Visitor *v,
-                                     const char *name, void *opaque,
-                                     Error **errp)
-{
-    uint8_t value;
-
-    if (visit_type_uint8(v, name, &value, errp)) {
-        SN0_MACHINE(obj)->elsc_dip_switches = value;
-    }
-}
-
 static void sn0_node_realize(DeviceState *dev, Error **errp)
 {
     SN0NodeState *node = SN0_NODE(dev);
@@ -1273,94 +1190,7 @@ static void sn0_node_class_init(ObjectClass *oc, const void *data)
     dc->user_creatable = false;
 }
 
-static void sn0_instance_init(Object *obj)
-{
-    SN0MachineState *s = SN0_MACHINE(obj);
-    SN0MachineClass *smc = SN0_MACHINE_GET_CLASS(obj);
-
-    g_assert(smc->default_composition);
-    s->composition = smc->default_composition;
-    s->debug_leds = true;
-    /* Origin 2000 ships no junk-bus UART in any composition today. */
-    s->junk_uart_present = false;
-}
-
-static void sn0_instance_finalize(Object *obj)
-{
-    SN0MachineState *s = SN0_MACHINE(obj);
-    unsigned int node_index;
-
-    for (node_index = 0; node_index < s->num_nodes; node_index++) {
-        if (s->pci_devices) {
-            g_free(s->pci_devices[node_index]);
-        }
-    }
-    g_free(s->nodes);
-    g_free(s->io_bridge);
-    g_free(s->pci_devices);
-    /*
-     * The widget arrays hold MemoryRegions owned as QOM children,
-     * released after instance_finalize; freeing them here would leave
-     * the release walking freed memory.
-     */
-}
-
-static void sn0_machine_class_init(ObjectClass *oc, const void *data)
-{
-    MachineClass *mc = MACHINE_CLASS(oc);
-
-    /*
-     * Origin 2000 is the only remaining child of this abstract class
-     * (Origin 200 now builds on sgi-sn-machine, sn-machine.c) and
-     * overrides every one of these in origin2000_class_init.
-     */
-    mc->reset = sn0_machine_reset;
-
-    object_class_property_add_bool(oc, "junk-uart",
-                                   sn0_get_junk_uart, sn0_set_junk_uart);
-    object_class_property_set_description(oc, "junk-uart",
-        "Fit the junk-bus UART, a real NS16550-compatible serial interface "
-        "in the Hub's own register space that a shipped Origin 200 does not "
-        "have -- SGI fits one only for manufacturing and bring-up. Off by "
-        "default: real firmware treats this port as its highest-priority "
-        "console candidate and stops probing at the first one that answers, "
-        "so fitting it unasked would hide the real candidates behind "
-        "it. On, it takes the fourth character device (serial_hd index 3); "
-        "the first three stay the base I/O controller's two ports and the "
-        "system controller's AUX port.");
-
-    object_class_property_add_bool(oc, "debug-leds",
-                                   sn0_get_debug_leds, sn0_set_debug_leds);
-    object_class_property_set_description(oc, "debug-leds",
-        "Show the firmware's boot-progress indicator, decoded. Real firmware "
-        "writes a one-byte code to the Hub before each stage of power-on "
-        "self-test, which on a real Origin 200 drives the front-panel LEDs "
-        "and is the only progress this machine reports while the firmware is "
-        "still deciding which console to talk to -- so it is on by default, "
-        "and turning it off buys a quieter stderr and nothing else. The "
-        "codes go to the log destination, meaning stderr unless -D names a "
-        "file.");
-
-    object_class_property_add(oc, "elsc-dip-switches", "uint8",
-                              sn0_get_elsc_dip_switches,
-                              sn0_set_elsc_dip_switches, NULL, NULL);
-    object_class_property_set_description(oc, "elsc-dip-switches",
-        "Set the eight physical ELSC DIP switches as asserted bits. The "
-        "controller reports their active-low wire value to firmware.");
-
-}
-
 static const TypeInfo sn0_machine_types[] = {
-    {
-        .name              = TYPE_SN0_MACHINE,
-        .parent            = TYPE_MACHINE,
-        .abstract          = true,
-        .instance_size     = sizeof(SN0MachineState),
-        .instance_init     = sn0_instance_init,
-        .instance_finalize = sn0_instance_finalize,
-        .class_size        = sizeof(SN0MachineClass),
-        .class_init        = sn0_machine_class_init,
-    },
     {
         .name              = TYPE_SGI_SN0_NODE,
         .parent            = TYPE_SYS_BUS_DEVICE,
