@@ -1429,7 +1429,8 @@ class SN0SMPMachine(QemuSystemTest):
         firmware = self.scratch_file('four-cpu-rendezvous.bin')
         build_four_cpu_rendezvous().write(firmware)
 
-        self.vm.set_machine('origin200,debug-leds=off')
+        self.vm.set_machine(
+            'origin200,topology=origin200-dual,debug-leds=off')
         # icount is the deterministic reference: a bounded instruction
         # budget per CPU under the single-threaded scheduler.
         # test_four_cpu_two_node_rendezvous_thread_multi is the twin that
@@ -1440,10 +1441,6 @@ class SN0SMPMachine(QemuSystemTest):
             '-icount', 'shift=2,align=off,sleep=on',
             '-m', '128M',
             '-smp', '4,sockets=2,cores=2,threads=1',
-            '-object', 'memory-backend-ram,id=ram0,size=64M',
-            '-object', 'memory-backend-ram,id=ram1,size=64M',
-            '-numa', 'node,nodeid=0,memdev=ram0,cpus=0-1',
-            '-numa', 'node,nodeid=1,memdev=ram1,cpus=2-3',
             '-bios', firmware)
         self.vm.launch()
         state = self.wait_for_four_cpu_state()
@@ -1490,16 +1487,13 @@ class SN0SMPMachine(QemuSystemTest):
         build_four_cpu_rendezvous(
             wait_limit=FOUR_CPU_WAIT_LIMIT_UNBOUNDED).write(firmware)
 
-        self.vm.set_machine('origin200,debug-leds=off')
+        self.vm.set_machine(
+            'origin200,topology=origin200-dual,debug-leds=off')
         # No -icount: QEMU hard-errors combining it with thread=multi.
         self.vm.add_args(
             '-accel', 'tcg,thread=multi',
             '-m', '128M',
             '-smp', '4,sockets=2,cores=2,threads=1',
-            '-object', 'memory-backend-ram,id=ram0,size=64M',
-            '-object', 'memory-backend-ram,id=ram1,size=64M',
-            '-numa', 'node,nodeid=0,memdev=ram0,cpus=0-1',
-            '-numa', 'node,nodeid=1,memdev=ram1,cpus=2-3',
             '-bios', firmware)
         self.vm.launch()
         state = self.wait_for_four_cpu_state(timeout=30)
@@ -1545,15 +1539,12 @@ class SN0SMPMachine(QemuSystemTest):
         firmware = self.scratch_file('dual-node-stress-thread-multi.bin')
         build_dual_node_stress().write(firmware)
 
-        self.vm.set_machine('origin200,debug-leds=off')
+        self.vm.set_machine(
+            'origin200,topology=origin200-dual,debug-leds=off')
         self.vm.add_args(
             '-accel', 'tcg,thread=multi',
             '-m', '128M',
             '-smp', '4,sockets=2,cores=2,threads=1',
-            '-object', 'memory-backend-ram,id=ram0,size=64M',
-            '-object', 'memory-backend-ram,id=ram1,size=64M',
-            '-numa', 'node,nodeid=0,memdev=ram0,cpus=0-1',
-            '-numa', 'node,nodeid=1,memdev=ram1,cpus=2-3',
             '-bios', firmware)
         self.vm.launch()
         state = self.wait_for_dual_node_state(timeout=30)
@@ -1582,7 +1573,8 @@ class SN0SMPMachine(QemuSystemTest):
             order_rounds=DUAL_NODE_ORDER_ROUNDS_ICOUNT,
             mailbox_rounds=DUAL_NODE_MAILBOX_ROUNDS_ICOUNT).write(firmware)
 
-        self.vm.set_machine('origin200,debug-leds=off')
+        self.vm.set_machine(
+            'origin200,topology=origin200-dual,debug-leds=off')
         # The deterministic test-of-the-test: the same ROM, a reduced
         # budget, and the single-threaded round-robin scheduler icount
         # requires, proving the ROM's correctness does not depend on
@@ -1592,10 +1584,6 @@ class SN0SMPMachine(QemuSystemTest):
             '-icount', 'shift=2,align=off,sleep=on',
             '-m', '128M',
             '-smp', '4,sockets=2,cores=2,threads=1',
-            '-object', 'memory-backend-ram,id=ram0,size=64M',
-            '-object', 'memory-backend-ram,id=ram1,size=64M',
-            '-numa', 'node,nodeid=0,memdev=ram0,cpus=0-1',
-            '-numa', 'node,nodeid=1,memdev=ram1,cpus=2-3',
             '-bios', firmware)
         self.vm.launch()
         state = self.wait_for_dual_node_state(timeout=30)

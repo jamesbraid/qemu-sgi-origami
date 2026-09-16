@@ -7,11 +7,7 @@
 
 #define DATA_BASE 0x20001220000ULL
 #define MACHINE_DUAL \
-    "-M origin200 -m 128M " \
-    "-object memory-backend-ram,id=ram0,size=64M " \
-    "-object memory-backend-ram,id=ram1,size=64M " \
-    "-numa node,nodeid=0,cpus=0-1,memdev=ram0 " \
-    "-numa node,nodeid=1,cpus=2-3,memdev=ram1 " \
+    "-M origin200,topology=origin200-dual -m 128M " \
     "-smp 4,sockets=2,cores=2,threads=1"
 
 static void write_register(QTestState *qts, unsigned int cpu, uint64_t addr,

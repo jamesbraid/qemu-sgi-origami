@@ -50,7 +50,7 @@
 #define R_T5 13
 
 #define MACHINE_ARGS \
-    "-M origin200 " SN0_TWO_NODE_TOPOLOGY \
+    "-M origin200,topology=origin200-dual " SN0_TWO_NODE_TOPOLOGY \
     " -cpu R10000 -accel tcg,thread=multi -S"
 
 /*

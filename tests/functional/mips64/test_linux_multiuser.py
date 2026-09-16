@@ -22,11 +22,11 @@ generic/gentoo/<sha>/gentoo-rootfs.img). Guarded by @skipBigDataTest()
 @skipIfMissingEnv('ORIGAMI_ASSETS') and a skipTest at method entry --
 the same guards test_openbsd_login.py keeps.
 
-The machine matches the verified milestone boot: -M origin200 -cpu R10000
--m 256, two 128 MiB memory backends as NUMA nodes 0-1, -smp
-4,sockets=2,cores=2,threads=1, -accel tcg,thread=multi, -snapshot so the
-2 GiB disk stays read-only -- with the kernel now loaded through the real
-PROM's own netboot path rather than -kernel directly (lib_prom's
+The machine matches the verified milestone boot: -M
+origin200,topology=origin200-dual -cpu R10000 -m 256 (128 MiB per node),
+-smp 4,sockets=2,cores=2,threads=1, -accel tcg,thread=multi, -snapshot
+so the 2 GiB disk stays read-only -- with the kernel now loaded through
+the real PROM's own netboot path rather than -kernel directly (lib_prom's
 prom_netboot_steps(), the same conversion test_linux_kernel.py makes and
 for the same reason: the plan this test belongs to retires synthesized
 firmware). The one user-mode NIC carries both jobs the guest's single
@@ -165,17 +165,14 @@ class LinuxMultiuser(QemuSystemTest):
         firmware, kernel, disk = paths
 
         vm = self.get_vm(name='linux_multiuser')
-        vm.set_machine('origin200,debug-leds=off')
+        vm.set_machine(
+            'origin200,topology=origin200-dual,debug-leds=off')
         vm.set_console()
         vm.add_args(
             '-cpu', 'R10000', '-m', str(MEMORY_MIB), '-snapshot',
             '-bios', firmware,
             '-drive', f'if=none,id=disk0,file={disk},format=raw',
             '-device', 'scsi-hd,drive=disk0,bus=scsi.0,scsi-id=0,lun=0',
-            '-object', 'memory-backend-ram,id=ram0,size=128M',
-            '-object', 'memory-backend-ram,id=ram1,size=128M',
-            '-numa', 'node,nodeid=0,cpus=0-1,memdev=ram0',
-            '-numa', 'node,nodeid=1,cpus=2-3,memdev=ram1',
             '-smp', '4,sockets=2,cores=2,threads=1',
             '-accel', 'tcg,thread=multi',
             '-nic', ('user,id=n1,'

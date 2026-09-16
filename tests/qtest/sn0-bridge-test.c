@@ -753,11 +753,7 @@ static void test_translation_entries_reset_clear(const void *data)
  * collapsing node 1 into node 0's RAM.
  */
 #define MACHINE_TWO_NODE \
-    "-M origin200 -m 128M " \
-    "-object memory-backend-ram,id=ram0,size=64M " \
-    "-object memory-backend-ram,id=ram1,size=64M " \
-    "-numa node,nodeid=0,cpus=0-1,memdev=ram0 " \
-    "-numa node,nodeid=1,cpus=2-3,memdev=ram1 " \
+    "-M origin200,topology=origin200-dual -m 128M " \
     "-smp 4,sockets=2,cores=2,threads=1"
 
 #define NODE1_PCI_ADDR          0xa000000100bc4000ULL /* widget 0xa, xtalk 0x100bc4000 */
@@ -2136,11 +2132,7 @@ static void assign_node1_number(QTestState *qts)
 static void test_each_node_has_its_own_board_identity(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200 -m 128M "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-object memory-backend-ram,id=ram1,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-M origin200,topology=origin200-dual -m 128M "
         "-smp 4,sockets=2,cores=2,threads=1");
     uint64_t node0;
     uint64_t node1;

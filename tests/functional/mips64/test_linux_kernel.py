@@ -34,9 +34,10 @@ test belongs to retires synthesized firmware, so no product boots any
 other way any more, and the mainline kernel is a 64-bit ELF the PROM
 loads directly, the same as sash64.
 
-The four-CPU case is IN scope. It boots the same kernel with two 64 MiB
-nodes (-numa node0 cpus 0-1 / node1 cpus 2-3, -smp
-4,sockets=2,cores=2,threads=1) under the same deterministic thread=single
+The four-CPU case is IN scope. It boots the same kernel on the two-node
+topology (topology=origin200-dual, -smp 4,sockets=2,cores=2,threads=1;
+-m splits evenly into 64 MiB per node) under the same deterministic
+thread=single
 -icount regime the one- and two-CPU cells use -- shift=2 here, the
 four-CPU-only icount value -- and requires linux-usercheck's own eleven
 four-CPU markers: both nodes' CPUs executing, both nodes' memory, both
@@ -138,15 +139,25 @@ BOOT_TIMEOUT_SECONDS = 240
 FOUR_CPU_BOOT_TIMEOUT_SECONDS = 900
 
 
+def machine_props(cpus):
+    """The -M origin200,... property string for a one-, two-, or
+    four-CPU cell: four CPUs need the two-node topology, named
+    explicitly since topology= no longer follows from -smp alone.
+    """
+    if cpus == 4:
+        return 'origin200,topology=origin200-dual,debug-leds=off'
+    return 'origin200,debug-leds=off'
+
+
 def cpu_qemu_args(cpus):
     """The QEMU args tools/linux_topology.py's topology_args() and
     accelerator_args() build for a one-, two-, or four-CPU cell (project
-    checkout), ported directly: -smp only above one CPU; two 64 MiB
-    memory-backends and the two NUMA nodes at four CPUs (node 0 gets
-    CPUs 0-1, node 1 gets CPUs 2-3); and -accel tcg,thread=single with
-    fixed instruction counting at every count -- linux_topology's own
-    icount shift=3 at one and two CPUs, shift=2 at four (its four-CPU-only
-    value).
+    checkout), ported directly: -smp only above one CPU, splitting
+    evenly across the two-node topology's nodes at four CPUs (node 0
+    gets CPUs 0-1, node 1 gets CPUs 2-3); and -accel tcg,thread=single
+    with fixed instruction counting at every count -- linux_topology's
+    own icount shift=3 at one and two CPUs, shift=2 at four (its
+    four-CPU-only value).
     """
     if cpus not in (1, 2, 4):
         raise ValueError('cpu_qemu_args: cpus must be 1, 2, or 4')
@@ -154,11 +165,7 @@ def cpu_qemu_args(cpus):
     if cpus == 2:
         args += ['-smp', '2']
     elif cpus == 4:
-        args += ['-object', 'memory-backend-ram,id=ram0,size=64M',
-                 '-object', 'memory-backend-ram,id=ram1,size=64M',
-                 '-numa', 'node,nodeid=0,cpus=0-1,memdev=ram0',
-                 '-numa', 'node,nodeid=1,cpus=2-3,memdev=ram1',
-                 '-smp', '4,sockets=2,cores=2,threads=1']
+        args += ['-smp', '4,sockets=2,cores=2,threads=1']
     icount = ('shift=2,align=off,sleep=on' if cpus == 4
               else 'shift=3,align=off,sleep=off')
     args += ['-accel', 'tcg,thread=single', '-icount', icount]
@@ -202,7 +209,7 @@ class LinuxKernel(QemuSystemTest):
         firmware, kernel = paths
 
         vm = self.get_vm(name=name)
-        vm.set_machine('origin200,debug-leds=off')
+        vm.set_machine(machine_props(cpus))
         vm.set_console()
         vm.add_args('-cpu', 'R10000', '-m', str(mem_mib),
                    '-bios', firmware,

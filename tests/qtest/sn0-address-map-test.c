@@ -58,11 +58,7 @@ static void flash_command(QTestState *qts, uint32_t offset, uint8_t value)
 #define NODE0_RBOOT (SPACE_HUB + NODE0 + RBOOT_OFFSET)
 
 #define SN0_DUAL_CHASSIS_FIRMWARE_ARGS \
-    "-M origin200 -m 128M " \
-    "-object memory-backend-ram,id=ram0,size=64M " \
-    "-object memory-backend-ram,id=ram1,size=64M " \
-    "-numa node,nodeid=0,cpus=0-1,memdev=ram0 " \
-    "-numa node,nodeid=1,cpus=2-3,memdev=ram1 " \
+    "-M origin200,topology=origin200-dual -m 128M " \
     "-smp 4,sockets=2,cores=2,threads=1"
 
 #define FIELD_MAGIC     0x08
@@ -1098,55 +1094,37 @@ static void test_reject_non_r10000_cpu(const void *data)
     assert_qemu_rejects(args, "Invalid CPU model: R4000");
 }
 
-static void test_reject_three_numa_nodes(const void *data)
+static void test_reject_numa_on_the_dual_topology(const void *data)
 {
     const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "192M",
+        qtest_qemu_binary(NULL), "-M", "origin200,topology=origin200-dual",
+        "-m", "128M",
         "-object", "memory-backend-ram,id=ram0,size=64M",
         "-object", "memory-backend-ram,id=ram1,size=64M",
-        "-object", "memory-backend-ram,id=ram2,size=64M",
         "-numa", "node,nodeid=0,cpus=0-1,memdev=ram0",
         "-numa", "node,nodeid=1,cpus=2-3,memdev=ram1",
-        "-numa", "node,nodeid=2,memdev=ram2",
         "-smp", "4,sockets=2,cores=2,threads=1",
         "-display", "none", NULL
     };
 
     assert_qemu_rejects(args,
-                        "origin200: at most 2 NUMA nodes are supported");
-}
-
-static void test_reject_partial_cpu_numa_mapping(const void *data)
-{
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "128M",
-        "-object", "memory-backend-ram,id=ram0,size=64M",
-        "-object", "memory-backend-ram,id=ram1,size=64M",
-        "-numa", "node,nodeid=0,cpus=0-1,memdev=ram0",
-        "-numa", "node,nodeid=1,memdev=ram1",
-        "-smp", "4,sockets=2,cores=2,threads=1",
-        "-display", "none", NULL
-    };
-
-    assert_qemu_rejects(args,
-                        "origin200: CPU 2 must be assigned to NUMA node 1");
+                        "origin200: -numa is refused; topology= selects "
+                        "the wiring, -smp and -m select the population "
+                        "within it");
 }
 
 static void test_reject_invalid_node_memory(const void *data)
 {
     g_autofree char *path = write_config_block_fixture();
     const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "96M",
-        "-object", "memory-backend-ram,id=ram0,size=64M",
-        "-object", "memory-backend-ram,id=ram1,size=32M",
-        "-numa", "node,nodeid=0,cpus=0-1,memdev=ram0",
-        "-numa", "node,nodeid=1,cpus=2-3,memdev=ram1",
-        "-smp", "4,sockets=2,cores=2,threads=1",
+        qtest_qemu_binary(NULL), "-M", "origin200,topology=origin200-dual",
+        "-m", "36M", "-smp", "4,sockets=2,cores=2,threads=1",
         "-display", "none", "-bios", path, NULL
     };
 
     assert_qemu_rejects(args,
-                        "node 1's 32 MiB cannot be populated from IP29");
+                        "node 0's 18 MiB cannot be populated from IP29 "
+                        "memory banks");
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
@@ -1159,30 +1137,13 @@ static void test_reject_split_one_node_topology(const void *data)
     };
 
     /*
-     * Two sockets now ask for two chassis outright -- each socket is one
-     * chassis -- so the machine rejects this as an under-populated
-     * dual-chassis request rather than as a malformed one-chassis one.
+     * topology= selects the wiring explicitly now; a plain -smp sockets=2
+     * against the default one-node topology no longer switches shape on
+     * its own -- the two-chassis topology must be named.
      */
     assert_qemu_rejects(args,
-                        "2 chassis require 4 CPUs as 2 sockets with "
-                        "2 cores and one thread each");
-}
-
-static void test_reject_split_numa_topology(const void *data)
-{
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "128M",
-        "-object", "memory-backend-ram,id=ram0,size=64M",
-        "-object", "memory-backend-ram,id=ram1,size=64M",
-        "-numa", "node,nodeid=0,cpus=0,memdev=ram0",
-        "-numa", "node,nodeid=1,cpus=1,memdev=ram1",
-        "-smp", "2,sockets=2,cores=1,threads=1",
-        "-display", "none", NULL
-    };
-
-    assert_qemu_rejects(args,
-                        "origin200: 2 chassis require 4 CPUs as 2 sockets "
-                        "with 2 cores and one thread each");
+                        "origin200: topology 'origin200' is one node, "
+                        "one socket");
 }
 
 static void test_reject_three_cores_one_chassis(const void *data)
@@ -1194,8 +1155,8 @@ static void test_reject_three_cores_one_chassis(const void *data)
     };
 
     assert_qemu_rejects(args,
-                        "origin200: one chassis requires one socket with "
-                        "at most 2 cores and one thread per core");
+                        "origin200: topology 'origin200' does not accept "
+                        "3 CPUs as 1 socket(s)");
 }
 
 static void test_reject_three_sockets(const void *data)
@@ -1207,21 +1168,22 @@ static void test_reject_three_sockets(const void *data)
     };
 
     assert_qemu_rejects(args,
-                        "origin200: at most 2 chassis are supported, and "
-                        "each -smp socket is one chassis");
+                        "origin200: topology 'origin200' is one node, "
+                        "one socket");
 }
 
 static void test_reject_uneven_no_numa_split(const void *data)
 {
     const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "129M",
+        qtest_qemu_binary(NULL), "-M", "origin200,topology=origin200-dual",
+        "-m", "129M",
         "-smp", "4,sockets=2,cores=2,threads=1",
         "-display", "none", NULL
     };
 
     assert_qemu_rejects(args,
-                        "origin200: 2 chassis split -m evenly into whole "
-                        "MiB; use -numa for an uneven fit");
+                        "origin200: topology 'origin200-dual' splits -m "
+                        "evenly across 2 nodes");
 }
 
 /*
@@ -1345,39 +1307,25 @@ static void test_one_node_cpu_topology(const void *data)
  * standard CPU-topology callbacks attach both IP29 slices to the declared
  * node.
  */
-static void test_explicit_one_node_numa(const void *data)
+/*
+ * -numa is refused outright now, even the one-node form that used to
+ * pick a memory backend explicitly: topology= names the wiring and
+ * -smp/-m name the population, so a NUMA description is never needed.
+ */
+static void test_reject_one_node_numa(const void *data)
 {
-    g_autofree char *path = write_config_block_fixture();
-    QTestState *qts = qtest_initf(
-        "-M origin200 -m 64M "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-smp 2,sockets=1,cores=2,threads=1 -bios %s", path);
-    QDict *response;
-    QList *cpus;
-    QObject *entry;
-    unsigned int seen = 0;
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "64M",
+        "-object", "memory-backend-ram,id=ram0,size=64M",
+        "-numa", "node,nodeid=0,cpus=0-1,memdev=ram0",
+        "-smp", "2,sockets=1,cores=2,threads=1",
+        "-display", "none", NULL
+    };
 
-    response = qtest_qmp(qts, "{ 'execute': 'query-cpus-fast' }");
-    g_assert_true(qdict_haskey(response, "return"));
-    cpus = qdict_get_qlist(response, "return");
-
-    while ((entry = qlist_pop(cpus))) {
-        QDict *cpu = qobject_to(QDict, entry);
-        QDict *props = qdict_get_qdict(cpu, "props");
-        int64_t index = qdict_get_int(cpu, "cpu-index");
-
-        g_assert_cmpint(index, >=, 0);
-        g_assert_cmpint(index, <, 2);
-        g_assert_cmpint(qdict_get_int(props, "node-id"), ==, 0);
-        seen |= 1U << index;
-        qobject_unref(entry);
-    }
-    g_assert_cmphex(seen, ==, 0x3);
-
-    qobject_unref(response);
-    qtest_quit(qts);
-    g_assert_cmpint(unlink(path), ==, 0);
+    assert_qemu_rejects(args,
+                        "origin200: -numa is refused; topology= selects "
+                        "the wiring, -smp and -m select the population "
+                        "within it");
 }
 
 static void test_dual_chassis_cpu_topology(const void *data)
@@ -1400,7 +1348,6 @@ static void test_dual_chassis_cpu_topology(const void *data)
 
         g_assert_cmpint(index, >=, 0);
         g_assert_cmpint(index, <, 4);
-        g_assert_cmpint(qdict_get_int(props, "node-id"), ==, index / 2);
         g_assert_cmpint(qdict_get_int(props, "socket-id"), ==, index / 2);
         g_assert_cmpint(qdict_get_int(props, "core-id"), ==, index % 2);
         seen |= 1U << index;
@@ -1597,16 +1544,12 @@ int main(int argc, char **argv)
                         NULL, test_reject_removed_topology_properties);
     qtest_add_data_func("sn0/address-map/reject-non-r10000-cpu", NULL,
                         test_reject_non_r10000_cpu);
-    qtest_add_data_func("sn0/address-map/reject-three-numa-nodes", NULL,
-                        test_reject_three_numa_nodes);
-    qtest_add_data_func("sn0/address-map/reject-partial-cpu-numa-mapping",
-                        NULL, test_reject_partial_cpu_numa_mapping);
+    qtest_add_data_func("sn0/address-map/reject-numa-on-dual-topology", NULL,
+                        test_reject_numa_on_the_dual_topology);
     qtest_add_data_func("sn0/address-map/reject-invalid-node-memory", NULL,
                         test_reject_invalid_node_memory);
     qtest_add_data_func("sn0/address-map/reject-split-one-node-topology",
                         NULL, test_reject_split_one_node_topology);
-    qtest_add_data_func("sn0/address-map/reject-split-numa-topology", NULL,
-                        test_reject_split_numa_topology);
     qtest_add_data_func("sn0/address-map/reject-three-cores-one-chassis",
                         NULL, test_reject_three_cores_one_chassis);
     qtest_add_data_func("sn0/address-map/reject-three-sockets", NULL,
@@ -1619,8 +1562,8 @@ int main(int argc, char **argv)
                         NULL, test_origin200_has_no_ioc3_compat_global);
     qtest_add_data_func("sn0/address-map/one-node-cpu-topology", NULL,
                         test_one_node_cpu_topology);
-    qtest_add_data_func("sn0/address-map/explicit-one-node-numa", NULL,
-                        test_explicit_one_node_numa);
+    qtest_add_data_func("sn0/address-map/reject-one-node-numa", NULL,
+                        test_reject_one_node_numa);
     qtest_add_data_func("sn0/address-map/dual-chassis-cpu-topology", NULL,
                         test_dual_chassis_cpu_topology);
     qtest_add_data_func("sn0/address-map/bridge-root-bus-names", NULL,

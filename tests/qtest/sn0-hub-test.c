@@ -320,11 +320,7 @@ static void assert_dual_node_master_slave_sense(QTestState *qts)
 static void test_dual_node_master_slave_sense(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200 -m 128M "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-object memory-backend-ram,id=ram1,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-M origin200,topology=origin200-dual -m 128M "
         "-smp 4,sockets=2,cores=2,threads=1");
 
     sn0_program_nasid(qts, 1);
@@ -825,11 +821,7 @@ static void test_addressing_mode(const void *data)
 static void test_network_link_presence(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200 -m 128M "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-object memory-backend-ram,id=ram1,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-M origin200,topology=origin200-dual -m 128M "
         "-smp 4,sockets=2,cores=2,threads=1");
     unsigned int node;
 
@@ -1199,11 +1191,7 @@ static void test_the_search_reads_a_valid_identity(const void *data)
 static void test_each_hub_carries_its_own_identity(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200 -m 128M "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-object memory-backend-ram,id=ram1,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-M origin200,topology=origin200-dual -m 128M "
         "-smp 4,sockets=2,cores=2,threads=1");
     uint64_t node0, node1;
 
@@ -4123,11 +4111,7 @@ static void test_pi_pending_reaches_cpu_cause(const void *data)
         { PI_INT_PEND1, PI_INT_MASK1_A, PI_INT_MASK1_B, 70, 0x800 },
     };
     QTestState *qts = qtest_init(
-        "-M origin200 -m 128M "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-object memory-backend-ram,id=ram1,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-M origin200,topology=origin200-dual -m 128M "
         "-smp 4,sockets=2,cores=2,threads=1");
 
     for (unsigned int phase = 0; phase < 2; phase++) {
@@ -4737,11 +4721,7 @@ static void inject_port_errors(QTestState *qts, uint64_t errors)
 static void test_vector_pio_reaches_the_direct_peer(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200 -m 128M "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-object memory-backend-ram,id=ram1,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-M origin200,topology=origin200-dual -m 128M "
         "-smp 4,sockets=2,cores=2,threads=1");
     uint64_t node0 = HUB_BY_NODE;
     uint64_t node1 = HUB_BY_NODE + NODE_STRIDE;
@@ -4864,11 +4844,7 @@ static void test_llp_port_registers(const void *data)
 static void test_llp_port_error_clear_contract(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200 -m 128M "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-object memory-backend-ram,id=ram1,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-M origin200,topology=origin200-dual -m 128M "
         "-smp 4,sockets=2,cores=2,threads=1 "
         "-device sgi-hub-test,id=hub-errors,hub=/machine/node1/hub");
     const uint64_t node0 = HUB_BY_NODE;
@@ -4944,11 +4920,7 @@ static void test_llp_port_registers_answer_the_vector_decode(
     const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200 -m 128M "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-object memory-backend-ram,id=ram1,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-M origin200,topology=origin200-dual -m 128M "
         "-smp 4,sockets=2,cores=2,threads=1");
     uint64_t node0 = HUB_BY_NODE;
     uint64_t status;
@@ -4987,11 +4959,7 @@ static void test_vector_writes_land_only_on_rows_that_store(
     const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200 -m 128M "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-object memory-backend-ram,id=ram1,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-M origin200,topology=origin200-dual -m 128M "
         "-smp 4,sockets=2,cores=2,threads=1");
     uint64_t node0 = HUB_BY_NODE;
     uint64_t node1 = HUB_BY_NODE + NODE_STRIDE;
@@ -5055,11 +5023,7 @@ static void test_io_protect_registers_answer_the_vector_decode(
     const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200 -m 128M "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-object memory-backend-ram,id=ram1,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-M origin200,topology=origin200-dual -m 128M "
         "-smp 4,sockets=2,cores=2,threads=1");
     uint64_t node0 = HUB_BY_NODE;
     uint64_t node1 = HUB_BY_NODE + NODE_STRIDE;
@@ -5157,11 +5121,7 @@ static void test_ni_config_registers_answer_the_vector_decode(
     const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200 -m 128M "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-object memory-backend-ram,id=ram1,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-M origin200,topology=origin200-dual -m 128M "
         "-smp 4,sockets=2,cores=2,threads=1");
     uint64_t node0 = HUB_BY_NODE;
     uint64_t node1 = HUB_BY_NODE + NODE_STRIDE;
@@ -5202,11 +5162,7 @@ static void test_a_32_bit_vector_clear_read_leaves_the_status(
     const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200 -m 128M "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-object memory-backend-ram,id=ram1,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-M origin200,topology=origin200-dual -m 128M "
         "-smp 4,sockets=2,cores=2,threads=1");
     uint64_t node0 = HUB_BY_NODE;
     uint64_t status;
@@ -5251,11 +5207,7 @@ static void test_network_routes_reset_to_zero(const void *data)
 static void test_stock_prom_hubs_start_unnumbered(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200 -m 128M "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-object memory-backend-ram,id=ram1,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-M origin200,topology=origin200-dual -m 128M "
         "-smp 4,sockets=2,cores=2,threads=1");
     uint64_t node0 = HUB_BY_NODE;
     uint64_t node1 = HUB_BY_NODE + NODE_STRIDE;
@@ -5334,11 +5286,7 @@ static uint64_t cpu_view_word64(QTestState *qts, unsigned int cpu,
 static QTestState *qtest_init_dual_node(void)
 {
     return qtest_init(
-        "-M origin200 -m 128M "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-object memory-backend-ram,id=ram1,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-M origin200,topology=origin200-dual -m 128M "
         "-smp 4,sockets=2,cores=2,threads=1");
 }
 
@@ -6114,11 +6062,7 @@ static void test_bte_error_latches_and_no_store_clears_it(const void *data)
 static void test_bte_physical_node_ownership(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200 -m 128M "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-object memory-backend-ram,id=ram1,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-M origin200,topology=origin200-dual -m 128M "
         "-smp 4,sockets=2,cores=2,threads=1");
     const uint64_t node1 = NODE_STRIDE;
     const uint64_t hub1 = HUB_BY_NODE + NODE_STRIDE;
@@ -6199,11 +6143,7 @@ static void test_bte_physical_node_ownership(const void *data)
 static void test_bte_reset_retires_peer_claim(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200 -m 128M "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-object memory-backend-ram,id=ram1,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-M origin200,topology=origin200-dual -m 128M "
         "-smp 4,sockets=2,cores=2,threads=1");
     unsigned int engine;
 
@@ -6301,11 +6241,7 @@ static void bte_reset_write(GString *args, unsigned int cpu,
 static void test_bte_routing_follows_nasid(const void *data)
 {
     g_autoptr(GString) args = g_string_new(
-        "-M origin200 -m 128M "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-object memory-backend-ram,id=ram1,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-M origin200,topology=origin200-dual -m 128M "
         "-smp 4,sockets=2,cores=2,threads=1");
     const uint64_t src = 0x00800000;
     const uint64_t dst = 0x00900000;

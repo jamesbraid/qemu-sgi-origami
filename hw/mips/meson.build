@@ -12,19 +12,18 @@ mips_ss.add(when: 'CONFIG_JAZZ', if_true: files('jazz.c'))
 # explicitly; qemu-build does not regenerate them during configure.
 mips_ss.add(when: 'CONFIG_SGI_SN0',
             if_true: files('sgi/sn0.c', 'sgi/sn0-fabric.c',
-                           'sgi/sn0-model.c', 'sgi/sn0-model-consumer.c',
-                           'sgi/sn0-origin200.c',
+                           'sgi/sn0-model.c',
                            'sgi/sn0-origin2000.c', 'sn0-origin2000-model.c',
                            'sgi/sn0-origin2000-management-model.c',
                            'sgi/sn0-origin2000-model-consumer.c',
                            'sgi/sn0-origin2000-io.c',
                            'sgi/sn0-origin2000-xtalk.c',
                            'sgi/sn0-origin2000-xtalk-model.c',
-                           'sgi/sn0-fabric-routed.c',
-                           'sn0-origin200-model.c'))
+                           'sgi/sn0-fabric-routed.c'))
 mips_ss.add(when: ['CONFIG_SGI_SN0', 'CONFIG_TEST_DEVICES'],
             if_true: files('sgi/sn0-origin2000-flash-test.c',
-                           'sgi/sn0-origin2000-model-test.c'))
+                           'sgi/sn0-origin2000-model-test.c',
+                           'sgi/sn-builder-fault-test.c'))
 mips_ss.add(when: 'CONFIG_SN0_HUB_PACKET_TEST',
             if_true: files('sgi/sn0-origin2000-io-test.c'))
 mips_ss.add(when: 'CONFIG_SN0_HUB_OUTGOING_TEST',
@@ -34,9 +33,11 @@ mips_ss.add(when: 'CONFIG_SN0_XTALK_ASSEMBLY_TEST',
 # Shared by sgi-sn0-node and sgi-sn1-node; SGI_SN0 always implies SGI_SN1 is
 # also selected on this fork's mips64 target, so either config would do.
 mips_ss.add(when: 'CONFIG_SGI_SN0', if_true: files('sgi/sn-promdata.c'))
-# The format-2 machine descriptor (sn-model.h): lands ahead of the builder
-# that reads it, so for now it builds with no consumer.
-mips_ss.add(when: 'CONFIG_SGI_SN0', if_true: files('sgi/sn-model.c'))
+# The format-2 machine descriptor (sn-model.h) and the family machine
+# base and builder that reads it (Origin 200 so far; other products
+# join at later steps).
+mips_ss.add(when: 'CONFIG_SGI_SN0',
+            if_true: files('sgi/sn-model.c', 'sgi/sn-machine.c'))
 mips_ss.add(when: 'CONFIG_SGI_SN1',
             if_true: files('sgi/sn1.c', 'sgi/sn1-node.c',
                            'sgi/sn1-topology.c', 'sn1-origin300-model.c'))

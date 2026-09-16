@@ -199,13 +199,9 @@
 
 #define DUAL_CHASSIS_TOPOLOGY \
     "-m 128M " \
-    "-object memory-backend-ram,id=ram0,size=64M " \
-    "-object memory-backend-ram,id=ram1,size=64M " \
-    "-numa node,nodeid=0,cpus=0-1,memdev=ram0 " \
-    "-numa node,nodeid=1,cpus=2-3,memdev=ram1 " \
     "-smp 4,sockets=2,cores=2,threads=1"
 #define MACHINE_DUAL \
-    "-M origin200 " DUAL_CHASSIS_TOPOLOGY
+    "-M origin200,topology=origin200-dual " DUAL_CHASSIS_TOPOLOGY
 #define MACHINE_WITH_NET "-M origin200 -nic user,id=n0"
 
 /* The board identity part's one-wire register and slot widths. */

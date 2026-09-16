@@ -4521,11 +4521,7 @@ static uint64_t onewire_search_rom_node(QTestState *qts, uint64_t node)
 static void test_each_node_has_its_own_onewire_identity(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200 -m 128 "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-object memory-backend-ram,id=ram1,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-M origin200,topology=origin200-dual -m 128 "
         "-smp 4,sockets=2,cores=2,threads=1");
     uint64_t node0, node1;
     uint8_t bytes[8];
@@ -4571,11 +4567,7 @@ static void test_each_node_has_its_own_onewire_identity(const void *data)
 static void test_each_node_has_its_own_storage(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin200 -m 128 "
-        "-object memory-backend-ram,id=ram0,size=64M "
-        "-object memory-backend-ram,id=ram1,size=64M "
-        "-numa node,nodeid=0,cpus=0-1,memdev=ram0 "
-        "-numa node,nodeid=1,cpus=2-3,memdev=ram1 "
+        "-M origin200,topology=origin200-dual -m 128 "
         "-smp 4,sockets=2,cores=2,threads=1");
 
     sn0_program_nasid(qts, 1);

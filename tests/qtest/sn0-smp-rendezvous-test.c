@@ -37,7 +37,7 @@
 #define SN0_OPC_SLTIU 11
 
 #define MACHINE_ARGS \
-    "-M origin200 " SN0_TWO_NODE_TOPOLOGY \
+    "-M origin200,topology=origin200-dual " SN0_TWO_NODE_TOPOLOGY \
     " -cpu R10000 -accel tcg,thread=multi -S"
 
 #define HUB_BY_NODE       UINT64_C(0x20001800000)
@@ -491,11 +491,11 @@ static void run_peer_scratch_deadline(bool thread_multi)
     path = sn0_image_write(image, "sn0-smp-peer-scratch");
     if (thread_multi) {
         qts = qtest_initf(
-            "-M origin200 " SN0_TWO_NODE_TOPOLOGY
+            "-M origin200,topology=origin200-dual " SN0_TWO_NODE_TOPOLOGY
             " -cpu R10000 -accel tcg,thread=multi -S -bios %s", path);
     } else {
         qts = qtest_initf(
-            "-M origin200 " SN0_TWO_NODE_TOPOLOGY
+            "-M origin200,topology=origin200-dual " SN0_TWO_NODE_TOPOLOGY
             " -cpu R10000 "
             "-accel tcg,thread=single,rr-kick-period-ns=100000 "
             "-S -bios %s", path);
@@ -773,11 +773,11 @@ static void run_pending_read_rendezvous(uint32_t wait_limit, bool thread_multi)
     path = sn0_image_write(image, "sn0-smp-pending-read");
     if (thread_multi) {
         qts = qtest_initf(
-            "-M origin200 " SN0_TWO_NODE_TOPOLOGY
+            "-M origin200,topology=origin200-dual " SN0_TWO_NODE_TOPOLOGY
             " -cpu R10000 -accel tcg,thread=multi -S -bios %s", path);
     } else {
         qts = qtest_initf(
-            "-M origin200 " SN0_TWO_NODE_TOPOLOGY
+            "-M origin200,topology=origin200-dual " SN0_TWO_NODE_TOPOLOGY
             " -cpu R10000 "
             "-accel tcg,thread=single,rr-kick-period-ns=10000000 "
             "-S -bios %s", path);
