@@ -330,86 +330,6 @@ typedef struct SN0NodeState {
 #define TYPE_SGI_SN0_NODE "sgi-sn0-node"
 DECLARE_INSTANCE_CHECKER(SN0NodeState, SN0_NODE, TYPE_SGI_SN0_NODE)
 
-#define TYPE_SN0_MACHINE MACHINE_TYPE_NAME("sn0")
-
-/*
- * The old, per-product descriptor (sn0-model.h): only sn0-origin2000.c
- * and its Crosstalk assembly still need the full definition, through a
- * pointer here.
- */
-typedef struct SN0ModelComposition SN0ModelComposition;
-typedef struct SN0Origin2000XtalkState SN0Origin2000XtalkState;
-
-struct SN0MachineState {
-    MachineState parent_obj;
-
-    /* The installed chassis; nodes and bridges are QOM children. */
-    const SN0ModelComposition *composition;
-    unsigned int num_nodes;
-    /* Origin 2000 uses physical slot minus one, not descriptor array order. */
-    SN0NodeState **nodes;
-    SGIBridgeState **io_bridge;
-
-    /* What joins the nodes' Hubs; every Hub holds one endpoint on it. */
-    SN0FabricState *fabric;
-
-    /* Descriptor-owned Crossbows and stable packet forwarding containers. */
-    SN0Origin2000XtalkState *origin2000_xtalk;
-
-    /* The product reference clock every node's processors derive from. */
-    Clock *cpu_refclk;
-
-    /*
-     * The clock every node's real-time counter counts. Separate from the
-     * processor reference because no source relates the two rates; see the
-     * Hub processor-interface datasheet.
-     */
-    Clock *rt_refclk;
-
-    /* Widget 0: a second view of the bridge needs its own alias storage. */
-    MemoryRegion *widget0;
-
-    /* The bridge at every other non-zero widget: net-new 2-7 and 9-15. */
-    MemoryRegion (*widget_alias)[SN0_XTALK_WIDGETS];
-
-    /* Processor views of every explicitly node-qualified big window. */
-    MemoryRegion *big_window_route;
-
-    /* Off by default: not a shipped part, and firmware would prefer it. */
-    bool junk_uart_present;
-
-    /* On by default: the only output while firmware picks a console. */
-    bool debug_leds;
-
-    /* Physical switch mask returned through each node's ELSC. */
-    uint8_t elsc_dip_switches;
-
-    /* Where the firmware's console output goes. */
-    Chardev *console;
-
-    /* Realized devices follow the generated PCI descriptor order. */
-    PCIDevice ***pci_devices;
-
-};
-
-typedef struct SN0MachineState SN0MachineState;
-typedef struct SN0MachineClass SN0MachineClass;
-
-DECLARE_OBJ_CHECKERS(SN0MachineState, SN0MachineClass,
-                     SN0_MACHINE, TYPE_SN0_MACHINE)
-
-struct SN0MachineClass {
-    /*< private >*/
-    MachineClass parent_class;
-
-    /*< public >*/
-    /* Static product facts compiled from the canonical machine model. */
-    const SN0ModelComposition *default_composition;
-};
-
-/* Call once in order; set optional node links between these two phases. */
-void sn0_origin2000_prepare_nodes(MachineState *machine);
-void sn0_origin2000_realize_nodes(MachineState *machine);
 /*
  * Shared by every product: one nameless big-window alias per CPU plus
  * one routed alias per (source CPU, target node) pair. owner parents
@@ -422,8 +342,5 @@ void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
                              MemoryRegion **route_out);
 
 extern const SN0FlashImplementation sn0_flash;
-
-/* Reapplied on every processor reset. */
-void sn0_mode_bits_reset(void *opaque);
 
 #endif /* HW_MIPS_SN0_H */

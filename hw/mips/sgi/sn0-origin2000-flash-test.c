@@ -20,7 +20,9 @@ struct SN0FlashTestState {
 static void sn0_flash_test_realize(DeviceState *dev, Error **errp)
 {
     SN0FlashTestState *s = SN0_FLASH_TEST(dev);
-    SN0MachineState *machine;
+    g_autofree char *node_name = g_strdup_printf("node%u", s->node);
+    Object *node_obj;
+    SN0NodeState *node;
     MemoryRegion *chip;
     const hwaddr offset = 0x64;
 
@@ -33,14 +35,26 @@ static void sn0_flash_test_realize(DeviceState *dev, Error **errp)
         error_setg(errp, TYPE_SN0_FLASH_TEST " requires Origin 2000");
         return;
     }
-    machine = SN0_MACHINE(current_machine);
-    if (s->node >= machine->num_nodes || !machine->nodes[s->node]->flash) {
+    /*
+     * The machine's node array is private to the builder (sn-machine.c);
+     * every node it builds is a QOM child named "node<index>", so a test
+     * fixture outside that file reaches one by that name instead of a
+     * second accessor API that would exist for this one caller.
+     */
+    node_obj = object_resolve_path_component(OBJECT(current_machine),
+                                             node_name);
+    if (!node_obj) {
         error_setg(errp, TYPE_SN0_FLASH_TEST
                    " needs a populated physical node");
         return;
     }
-    chip = sysbus_mmio_get_region(
-        SYS_BUS_DEVICE(machine->nodes[s->node]->flash), 0);
+    node = SN0_NODE(node_obj);
+    if (!node->flash) {
+        error_setg(errp, TYPE_SN0_FLASH_TEST
+                   " needs a populated physical node");
+        return;
+    }
+    chip = sysbus_mmio_get_region(SYS_BUS_DEVICE(node->flash), 0);
     if (memory_region_size(chip) < offset + sizeof(s->word)) {
         error_setg(errp, TYPE_SN0_FLASH_TEST " flash is too small");
         return;

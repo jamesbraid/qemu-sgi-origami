@@ -331,50 +331,6 @@ static uint8_t onewire_read_byte(QTestState *qts, unsigned node)
     return value;
 }
 
-static bool hub_onewire_slot(QTestState *qts, unsigned pulse)
-{
-    uint64_t value;
-
-    qtest_writeq(qts, HUB_BASE + MD_ONEWIRE,
-                 HUB_ONEWIRE_RESET | ((uint64_t)pulse << 10) |
-                 (0x04ULL << 2));
-    qtest_clock_step(qts, (pulse + 4) * 1000);
-    value = qtest_readq(qts, HUB_BASE + MD_ONEWIRE);
-    g_assert_cmphex(value & HUB_ONEWIRE_DONE, ==, HUB_ONEWIRE_DONE);
-    return value & HUB_ONEWIRE_RXDATA;
-}
-
-static void hub_onewire_write_byte(QTestState *qts, uint8_t value)
-{
-    for (unsigned bit = 0; bit < 8; bit++) {
-        hub_onewire_slot(qts, value & (1u << bit) ?
-                             HUB_ONEWIRE_SHORT : HUB_ONEWIRE_ZERO);
-    }
-}
-
-static uint8_t hub_onewire_read_byte(QTestState *qts)
-{
-    uint8_t value = 0;
-
-    for (unsigned bit = 0; bit < 8; bit++) {
-        value |= hub_onewire_slot(qts, HUB_ONEWIRE_SHORT) << bit;
-    }
-    return value;
-}
-
-static void hub_onewire_select_module(QTestState *qts)
-{
-    static const uint8_t rom[8] = {
-        0x09, 0x09, 0x00, 0x00, 0x00, 0x00, 0x10, 0xc7,
-    };
-
-    g_assert_false(hub_onewire_slot(qts, 0x321));
-    hub_onewire_write_byte(qts, 0x55);
-    for (unsigned int i = 0; i < sizeof(rom); i++) {
-        hub_onewire_write_byte(qts, rom[i]);
-    }
-}
-
 static void onewire_select(QTestState *qts, unsigned node)
 {
     g_assert_true(onewire_reset(qts, node));
@@ -966,41 +922,21 @@ static void test_module_serial_generated_crc_and_status(void)
     qtest_quit(qts);
 }
 
-static void test_module_serial_follows_generated_model(void)
-{
-    static const char *serials[] = { "KORIGAMI01", "TESTMODEL2" };
-
-    for (unsigned int serial_index = 0;
-         serial_index < G_N_ELEMENTS(serials); serial_index++) {
-        const char *serial = serials[serial_index];
-        g_autofree char *extra = g_strdup_printf(
-            " -M origin2000-model-test,module-serial=%s", serial);
-        QTestState *qts = start_module_with(extra);
-        uint8_t controller[1 + MODULE_SERIAL_LEN];
-        uint8_t hub[1 + MODULE_SERIAL_LEN];
-
-        onewire_start_read(qts, 0, 0xc3, 0);
-        (void)onewire_read_byte(qts, 0);
-        for (unsigned int i = 0; i < sizeof(controller); i++) {
-            controller[i] = onewire_read_byte(qts, 0);
-        }
-
-        hub_onewire_select_module(qts);
-        hub_onewire_write_byte(qts, 0xc3);
-        hub_onewire_write_byte(qts, 0);
-        hub_onewire_write_byte(qts, 0);
-        (void)hub_onewire_read_byte(qts);
-        for (unsigned int i = 0; i < sizeof(hub); i++) {
-            hub[i] = hub_onewire_read_byte(qts);
-        }
-
-        g_assert_cmphex(controller[0], ==, 0x01);
-        g_assert_cmpmem(&controller[1], MODULE_SERIAL_LEN,
-                        serial, MODULE_SERIAL_LEN);
-        g_assert_cmpmem(controller, sizeof(controller), hub, sizeof(hub));
-        qtest_quit(qts);
-    }
-}
+/*
+ * A prior fixture (origin2000-model-test, MACHINE_TYPE_NAME
+ * "origin2000-model-test") drove this same read pair against a module
+ * whose serial its module-serial= property could override, confirming
+ * the read follows the descriptor's serial rather than a hardcoded one.
+ * That fixture deep-copied the deleted per-product descriptor
+ * (SN0ModelComposition) to make the override; format 2 carries no
+ * settable copy for a test to reach into. The mechanism it checked is
+ * still generic -- sgi_machine_module_identity_pages in sn-machine.c
+ * derives both one-wire pages from the module's own serial field, not a
+ * literal -- and test_module_serial_generated_crc_and_status above
+ * already reads both the controller and the Hub relay for the shipped
+ * module against that derivation; only the check that a second serial
+ * value also round-trips is not ported.
+ */
 
 static void test_module_serial_reset_preserves_identity(void)
 {
@@ -1234,8 +1170,6 @@ int main(int argc, char **argv)
                    test_module_serial_memory_and_crc);
     qtest_add_func("/sn0/o2000-module-management/module-serial-crc-status",
                    test_module_serial_generated_crc_and_status);
-    qtest_add_func("/sn0/o2000-module-management/module-serial-model",
-                   test_module_serial_follows_generated_model);
     qtest_add_func("/sn0/o2000-module-management/module-serial-reset",
                    test_module_serial_reset_preserves_identity);
     qtest_add_func("/sn0/o2000-module-management/module-serial-module-number",

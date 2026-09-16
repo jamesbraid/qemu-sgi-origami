@@ -2148,8 +2148,15 @@ int main(int argc, char **argv)
     if (qtest_has_device("sgi-sn0-node-flash-test")) {
         qtest_add_data_func("sn0/origin2000/local-flash-words", "origin2000",
                             test_local_flash_words);
-        qtest_add_data_func("sn0/origin2000/reordered-flash-words",
-                            "origin2000-model-test", test_local_flash_words);
+        /*
+         * The reordered-flash-words variant ran the same check against a
+         * fixture machine that built its nodes in an order different from
+         * the descriptor's; format 2 has no such indirection left (node
+         * array index and descriptor node index are the same number
+         * everywhere the builder reads), so there is no second order left
+         * to test -- see the same note on the pflash test's own
+         * reordered-stores variant.
+         */
         qtest_add_func("sn0/origin2000/flash-fixture-isolation",
                        test_flash_fixture_isolation);
     }

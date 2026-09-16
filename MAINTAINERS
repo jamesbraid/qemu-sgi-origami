@@ -1526,7 +1526,6 @@ F: tests/qtest/sn-promdata-window-test.c
 F: tests/unit/test-sgi-o2000-module-mgmt*.c
 F: tests/unit/test-sgi-router.c
 F: tests/unit/test-sn0-fabric-routed.c
-F: tests/unit/test-sn0-origin2000-management-model.c
 
 Jazz
 M: Hervé Poussineau <hpoussin@reactos.org>

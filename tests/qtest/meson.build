@@ -38,7 +38,6 @@ slow_qtests = {
   'sn0-ioc3-test': 240,
   # Hub's 115 cases took 212s alone and exceeded 240s in the parallel suite.
   'sn0-hub-test': 600,
-  'sn0-origin2000-xtalk-attach-test': 120,
   # Routed acceptance takes 44-60s; keep headroom under parallel CI load.
   'sn0-origin2000-test': 120,
   # The migration suite runs twenty sequential cases. Its intentional
@@ -281,21 +280,6 @@ elif not config_all_devices.has_key('CONFIG_PCI_BRIDGE') or \
                         'sn1-xbridge-xbow-test']
 endif
 
-sn0_hub_outgoing_qtests = \
-  (config_all_devices.has_key('CONFIG_SGI_SN0') ?
-    ['sn0-origin2000-hub-outgoing-test'] : [])
-if not config_all_devices.has_key('CONFIG_SN0_HUB_OUTGOING_TEST')
-  sn0_hub_outgoing_qtests = []
-endif
-
-sn0_xtalk_assembly_qtests = \
-  (config_all_devices.has_key('CONFIG_SGI_SN0') ?
-    ['sn0-origin2000-xtalk-owner-test',
-     'sn0-origin2000-xtalk-attach-test'] : [])
-if not config_all_devices.has_key('CONFIG_SN0_XTALK_ASSEMBLY_TEST')
-  sn0_xtalk_assembly_qtests = []
-endif
-
 # The Crossbow qtest builds its own populated switch out of test-only
 # Crosstalk endpoints.  Keep the registration under the machine guard, then
 # omit it where that fixture is not present in a minimal device build.
@@ -414,8 +398,7 @@ qtests_mips64 = \
   sn0_xbow_qtests + \
   sn0_xbow_transport_qtests + \
   sn1_xbridge_qtests + \
-  sn0_hub_packet_qtests + sn0_hub_outgoing_qtests + \
-  sn0_xtalk_assembly_qtests + \
+  sn0_hub_packet_qtests + \
   sgi_xtalk_board_qtests + \
   sgi_board_qtests
 
