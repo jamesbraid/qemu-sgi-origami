@@ -33,6 +33,8 @@
 #include "qemu/host-utils.h"
 #include "qemu/datadir.h"
 #include "qapi/error.h"
+#include "qapi/qapi-builtin-types.h"
+#include "qapi/qapi-visit-common.h"
 #include "qapi/visitor.h"
 #include "qobject/qlist.h"
 #include "qemu/error-report.h"
@@ -61,6 +63,7 @@
 #include "trace/control.h"
 #include "cpu.h"
 #include "hw/mips/sgi/sn-machine.h"
+#include "hw/mips/sgi/sn1-node.h"
 #include "hw/mips/sn0-fabric-routed.h"
 #include "sn0.h"
 
@@ -271,6 +274,19 @@ struct SGIMachineState {
     bool debug_leds;
     bool junk_uart_present;
     uint8_t elsc_dip_switches;
+
+    /* The Bedrock node, for a topology whose node kind is Bedrock. */
+    DeviceState *bedrock_node;
+
+    /*
+     * The Origin 300/350 L1's identity-record file lists. One machine
+     * property set regardless of product (per-kind properties split
+     * across classes is exactly what the family base replaces); refused
+     * at init if the topology carries no L1 controller to hand them to.
+     */
+    strList *chassis_eeprom;
+    strList *board_eeprom;
+    strList *spd_eeprom;
 };
 
 /*
@@ -543,6 +559,94 @@ static bool sn0_origin2000_hub_outgoing_io_init(SN0Origin2000HubOutgoingIO *io,
     return true;
 }
 
+/*
+ * The controller holds one identification record per file, in order. The
+ * machine names the files and claims nothing about what is in them: no
+ * default record, and no record implied by the memory size.
+ */
+typedef struct SGIMachineIdentityRecords {
+    const char *name;
+    ptrdiff_t offset;
+    const char *description;
+} SGIMachineIdentityRecords;
+
+static const SGIMachineIdentityRecords sgi_machine_identity_records[] = {
+    {
+        "chassis-eeprom", offsetof(SGIMachineState, chassis_eeprom),
+        "Files holding the chassis identification records, in order",
+    },
+    {
+        "board-eeprom", offsetof(SGIMachineState, board_eeprom),
+        "Files holding the board identification records, in order",
+    },
+    {
+        "spd-eeprom", offsetof(SGIMachineState, spd_eeprom),
+        "Files holding the memory module presence-detect records, in order",
+    },
+};
+
+static strList **sgi_machine_identity_slot(Object *obj, void *opaque)
+{
+    const SGIMachineIdentityRecords *records = opaque;
+
+    return (strList **)((char *)SGI_MACHINE(obj) + records->offset);
+}
+
+static void sgi_machine_get_identity_records(Object *obj, Visitor *v,
+                                             const char *name, void *opaque,
+                                             Error **errp)
+{
+    visit_type_strList(v, name, sgi_machine_identity_slot(obj, opaque), errp);
+}
+
+static void sgi_machine_set_identity_records(Object *obj, Visitor *v,
+                                             const char *name, void *opaque,
+                                             Error **errp)
+{
+    strList **slot = sgi_machine_identity_slot(obj, opaque);
+    strList *replacement = NULL;
+
+    if (!visit_type_strList(v, name, &replacement, errp)) {
+        return;
+    }
+    qapi_free_strList(*slot);
+    *slot = replacement;
+}
+
+static bool sgi_machine_has_identity_records(SGIMachineState *s)
+{
+    return s->chassis_eeprom || s->board_eeprom || s->spd_eeprom;
+}
+
+/*
+ * Copies the machine's own identity-record file lists onto an L1 device
+ * before it is realized. Takes the L1 explicitly because it lives on the
+ * node (sgi-sn1-node), while the file lists it reads are machine
+ * properties -- one identity per machine, one L1 per node.
+ */
+void sgi_machine_set_l1_identity_records(MachineState *machine,
+                                         DeviceState *l1)
+{
+    SGIMachineState *s = SGI_MACHINE(machine);
+    size_t i;
+
+    for (i = 0; i < ARRAY_SIZE(sgi_machine_identity_records); i++) {
+        const SGIMachineIdentityRecords *records =
+            &sgi_machine_identity_records[i];
+        strList *file = *sgi_machine_identity_slot(OBJECT(s), (void *)records);
+        QList *files;
+
+        if (!file) {
+            continue;
+        }
+        files = qlist_new();
+        for (; file; file = file->next) {
+            qlist_append_str(files, file->value);
+        }
+        qdev_prop_set_array(l1, records->name, files);
+    }
+}
+
 /* ---- Topology resolution and the CPU-population contract ---- */
 
 static bool sgi_machine_topology_matches_product(const SGIModelTopology *t,
@@ -595,7 +699,7 @@ static unsigned int sgi_machine_population_total(
     return total;
 }
 
-static unsigned int sgi_machine_product_max_cpus(const char *product)
+unsigned int sgi_machine_product_max_cpus(const char *product)
 {
     unsigned int max_cpus = 0;
     size_t i, j;
@@ -644,7 +748,7 @@ static unsigned int sgi_machine_topology_nasid(const SGIModelTopology *t,
     return t->nodes[node_index].slot - slot_min;
 }
 
-static uint64_t sgi_machine_topology_default_ram(const SGIModelTopology *t)
+uint64_t sgi_machine_topology_default_ram(const SGIModelTopology *t)
 {
     uint64_t total_mib = 0;
     size_t i, b;
@@ -657,7 +761,7 @@ static uint64_t sgi_machine_topology_default_ram(const SGIModelTopology *t)
     return total_mib * MiB;
 }
 
-static unsigned int sgi_machine_topology_default_cpus(
+unsigned int sgi_machine_topology_default_cpus(
     const SGIModelTopology *t)
 {
     g_assert(t->supported_cpu_population_count > 0);
@@ -1325,6 +1429,22 @@ static uint16_t sgi_machine_crossbar_startup_alive(
             mask |= 1u << attachment->widget;
         }
     }
+    return mask;
+}
+
+uint32_t sgi_machine_ioc3_population(
+    const SGIModelIoc3Population *population)
+{
+    uint32_t mask = 0;
+
+    mask |= population->ethernet ? SGI_IOC3_POPULATION_ETHERNET : 0;
+    mask |= population->serial_a ? SGI_IOC3_POPULATION_SERIAL_A : 0;
+    mask |= population->serial_b ? SGI_IOC3_POPULATION_SERIAL_B : 0;
+    mask |= population->keyboard_mouse ?
+        SGI_IOC3_POPULATION_KEYBOARD_MOUSE : 0;
+    mask |= population->parallel ? SGI_IOC3_POPULATION_PARALLEL : 0;
+    mask |= population->onewire_identity ?
+        SGI_IOC3_POPULATION_ONEWIRE_IDENTITY : 0;
     return mask;
 }
 
@@ -2350,6 +2470,23 @@ void sgi_machine_init(MachineState *machine)
         error_report_err(err);
         exit(EXIT_FAILURE);
     }
+    if (sgi_machine_has_identity_records(s)) {
+        bool has_l1 = false;
+        size_t i;
+
+        for (i = 0; i < t->controller_count; i++) {
+            if (t->controllers[i].kind == SGI_MODEL_CONTROLLER_L1) {
+                has_l1 = true;
+                break;
+            }
+        }
+        if (!has_l1) {
+            error_report("%s: chassis-eeprom/board-eeprom/spd-eeprom name "
+                        "an L1 identity controller, which topology '%s' "
+                        "does not have", mc->name, t->name);
+            exit(EXIT_FAILURE);
+        }
+    }
     if (machine->kernel_filename) {
         error_report("%s: stock-PROM boot only; boot a kernel through the "
                     "PROM's own TFTP netboot or a disk image, not -kernel",
@@ -2428,7 +2565,14 @@ void sgi_machine_init(MachineState *machine)
         exit(EXIT_FAILURE);
     }
 
-    if (s->debug_leds && !sgi_machine_show_indicator_codes(&err)) {
+    /*
+     * The boot-progress indicator is a Hub trace event; Bedrock has no
+     * counterpart yet, so debug-leds (on by default) stays inert for it
+     * rather than refusing every origin300 launch that does not turn it
+     * off explicitly.
+     */
+    if (t->nodes[0].asic_kind == SGI_MODEL_ASIC_HUB && s->debug_leds &&
+        !sgi_machine_show_indicator_codes(&err)) {
         error_report_err(err);
         exit(EXIT_FAILURE);
     }
@@ -2438,6 +2582,59 @@ void sgi_machine_init(MachineState *machine)
      * below fills in each CPU's pointer.
      */
     sgi_machine_possible_cpu_arch_ids(machine);
+
+    /* One clock per processor entry; both node kinds share this rate rule. */
+    s->cpu_refclk = clock_new(OBJECT(machine), "cpu-refclk");
+    clock_set_hz(s->cpu_refclk, t->nodes[0].cpu_slots[0].assembly->clock_hz);
+
+    if (t->nodes[0].asic_kind != SGI_MODEL_ASIC_HUB) {
+        const SGIModelIoBoard *populated_board = NULL;
+        unsigned int populated_widget = 0;
+        g_autofree unsigned int *widgets = NULL;
+        size_t widget_count = 0;
+        size_t i;
+        Object *node;
+
+        g_assert(t->node_count == 1);
+        for (i = 0; i < t->io_board_count && i < t->xtalk_attachment_count;
+             i++) {
+            if (t->io_boards[i].pci_count) {
+                populated_board = &t->io_boards[i];
+                populated_widget = t->xtalk_attachments[i].widget;
+            }
+        }
+        /*
+         * Widget zero is the crossbar's own local view; the rest come one
+         * per xtalk attachment (a board slot, populated or not -- see
+         * sn1-node.c's widget-wiring comment for why an empty slot still
+         * needs one).
+         */
+        widgets = g_new0(unsigned int, t->xtalk_attachment_count + 1);
+        widgets[widget_count++] = 0;
+        for (i = 0; i < t->xtalk_attachment_count; i++) {
+            widgets[widget_count++] = t->xtalk_attachments[i].widget;
+        }
+
+        node = object_new(TYPE_SGI_SN1_NODE);
+        object_property_add_child(OBJECT(machine), "node0", node);
+        object_unref(node);
+        s->bedrock_node = DEVICE(node);
+        SN1_NODE(node)->model_node = &t->nodes[0];
+        SN1_NODE(node)->io_board = populated_board;
+        SN1_NODE(node)->pci_widget = populated_widget;
+        SN1_NODE(node)->xbridge_widgets = g_steal_pointer(&widgets);
+        SN1_NODE(node)->xbridge_widget_count = widget_count;
+        object_property_set_link(OBJECT(node), "ram", OBJECT(machine->ram),
+                                 &error_abort);
+        qdev_prop_set_uint32(DEVICE(node), "nr-cpus", requested[0]);
+        qdev_connect_clock_in(DEVICE(node), "cpu-refclk", s->cpu_refclk);
+        sysbus_realize(SYS_BUS_DEVICE(node), &error_fatal);
+        for (i = 0; i < requested[0]; i++) {
+            machine->possible_cpus->cpus[i].cpu =
+                CPU(SN1_NODE(node)->cpu[i]);
+        }
+        return;
+    }
 
     flash_drives = g_new0(BlockBackend *, node_count);
     for (node_index = 0; node_index < node_count; node_index++) {
@@ -2487,9 +2684,6 @@ void sgi_machine_init(MachineState *machine)
 
     sgi_machine_attach_module_identities(s, t);
 
-    /* One clock per processor entry; the Hub shares its rate. */
-    s->cpu_refclk = clock_new(OBJECT(machine), "cpu-refclk");
-    clock_set_hz(s->cpu_refclk, t->nodes[0].cpu_slots[0].assembly->clock_hz);
     s->rt_refclk = clock_new(OBJECT(machine), "rt-refclk");
     clock_set_hz(s->rt_refclk, sgi_sn0_hub_hardware.rtc_clock_hz);
 
@@ -2716,10 +2910,21 @@ static void sgi_machine_reset(MachineState *machine, ResetType type)
 {
     SGIMachineState *s = SGI_MACHINE(machine);
     const SGIModelTopology *t = sgi_machine_topology(machine);
-    uint32_t mode_bits = t ? t->nodes[0].cpu_slots[0].assembly->mode_bits : 0;
+    uint32_t mode_bits;
     CPUState *cs;
     unsigned int node, slice;
 
+    /*
+     * The Bedrock node resets itself: "start-powered-off" needs its
+     * cpu_reset() to run before qemu_devices_reset(), the reverse of
+     * the Hub's own order below, so it cannot share this prefix.
+     */
+    if (t && t->nodes[0].asic_kind != SGI_MODEL_ASIC_HUB) {
+        sn1_node_full_reset(SN1_NODE(s->bedrock_node), type);
+        return;
+    }
+
+    mode_bits = t ? t->nodes[0].cpu_slots[0].assembly->mode_bits : 0;
     qemu_devices_reset(type);
     CPU_FOREACH(cs) {
         CPUMIPSState *env = &MIPS_CPU(cs)->env;
@@ -2804,6 +3009,7 @@ static void sgi_machine_instance_init(Object *obj)
 static void sgi_machine_instance_finalize(Object *obj)
 {
     SGIMachineState *s = SGI_MACHINE(obj);
+    size_t i;
 
     g_free(s->nodes);
     g_free(s->physical_nodes);
@@ -2820,6 +3026,10 @@ static void sgi_machine_instance_finalize(Object *obj)
     g_free(s->node_cpu_alias);
     g_free(s->node_crossbar_face);
     g_free(s->topology_name);
+    for (i = 0; i < ARRAY_SIZE(sgi_machine_identity_records); i++) {
+        qapi_free_strList(*sgi_machine_identity_slot(
+            obj, (void *)&sgi_machine_identity_records[i]));
+    }
 }
 
 static void sgi_machine_class_init(ObjectClass *oc, const void *data)
@@ -2863,6 +3073,18 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc, "elsc-dip-switches",
         "Set the eight physical ELSC DIP switches as asserted bits. The "
         "controller reports their active-low wire value to firmware.");
+
+    for (size_t i = 0; i < ARRAY_SIZE(sgi_machine_identity_records); i++) {
+        const SGIMachineIdentityRecords *records =
+            &sgi_machine_identity_records[i];
+
+        object_class_property_add(oc, records->name, "strList",
+                                  sgi_machine_get_identity_records,
+                                  sgi_machine_set_identity_records, NULL,
+                                  (void *)records);
+        object_class_property_set_description(oc, records->name,
+                                              records->description);
+    }
 }
 
 /* ---- Product classes ---- */

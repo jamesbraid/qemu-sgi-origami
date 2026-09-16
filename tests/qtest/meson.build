@@ -343,7 +343,8 @@ qtests_mips64 = \
      'sn1-cpu-identity-test',
      'sn1-io8-mac-test',
      'sn1-io8-scsi-test', 'sn1-io8-ioc3-test',
-     'sn1-xbridge-host-error-test'] : []) + \
+     'sn1-xbridge-host-error-test',
+     'sn1-migration-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-mttcg-test',
                                                    'sn0-forward-progress-test',
                                                    'sn0-nmi-test',
