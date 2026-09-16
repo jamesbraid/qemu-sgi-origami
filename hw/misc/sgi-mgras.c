@@ -8,6 +8,7 @@
 #include "hw/misc/sgi-mgras.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "system/address-spaces.h"
 #include "trace.h"
 
@@ -58,6 +59,9 @@ static void si_deliver_interrupt(SGIMgrasState *s, bool set)
     } else {
         where = s->fabric_base + addr;
     }
+    /* Host-only qtest introspection; see the header comment on the fields. */
+    s->test_last_interrupt_addr = where;
+    s->test_last_interrupt_value = value;
     address_space_stq(&s->fabric_as, where, value, MEMTXATTRS_UNSPECIFIED,
                       NULL);
 }
@@ -167,12 +171,13 @@ static void si_command(SGIMgrasState *s, uint64_t word)
         si_error(s, 0x120400, 8, "command register out of range");
         return;
     }
-    if (s->fifo_count == ARRAY_SIZE(s->fifo) / 2) {
+    if (s->fifo_count == SGI_MGRAS_FIFO_DEPTH) {
         si_error(s, 0x120400, 8, "command FIFO full");
         return;
     }
     s->command[reg] = value;
     s->command_valid[reg] = 1;
+    s->fifo_count++;
     if (reg == 0x47) {
         if (!s->command_valid[0x147] || !s->command_valid[0x148] ||
             !s->command_valid[0x140]) {
@@ -320,6 +325,14 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
 static const MemoryRegionOps si_ops = {
     .read = si_read, .write = si_write, .endianness = DEVICE_BIG_ENDIAN,
     .valid = { .min_access_size = 4, .max_access_size = 8 },
+    /*
+     * Without an explicit impl width, the memory core defaults to 4 and
+     * silently splits every 8-byte access this device's own si_read/
+     * si_write already handle (FIFO command submission, HQ/GE readback)
+     * into two narrower callbacks -- corrupting the context recognizer's
+     * width check and losing the low half of every direct command.
+     */
+    .impl = { .min_access_size = 4, .max_access_size = 8 },
 };
 
 static void si_reset(DeviceState *dev)
@@ -399,6 +412,9 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32(int_dest_upper, SGIMgrasState),
         VMSTATE_UINT32(int_dest_lower, SGIMgrasState),
         VMSTATE_BOOL(irq_asserted, SGIMgrasState),
+        VMSTATE_UINT16(fifo_count, SGIMgrasState),
+        VMSTATE_UINT32_ARRAY(command, SGIMgrasState, 0x200),
+        VMSTATE_UINT8_ARRAY(command_valid, SGIMgrasState, 0x200),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -414,6 +430,45 @@ static const Property si_properties[] = {
                        fabric_widget_shift, 0),
 };
 
+/*
+ * Host-only pixel introspection for qtests: nothing here is guest-visible.
+ * Framebuffer readback is deliberately unsupported on the MMIO interface
+ * (si-one-mode-functional-approximation.md, "Explicit exclusions"), so a
+ * qtest that wants to check a rendered pixel has no other way to see one.
+ * x-test-pixel-x/-y set the coordinate a following read of x-test-pixel
+ * reports, mirroring the port-then-register pattern hw/misc/sgi-router-test.c
+ * already uses for the same kind of host-only, index-then-read access.
+ */
+static void si_test_get_pixel(Object *obj, Visitor *v, const char *name,
+                              void *opaque, Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint32_t value = 0;
+
+    if (s->test_pixel_x < SGI_MGRAS_WIDTH && s->test_pixel_y < SGI_MGRAS_HEIGHT) {
+        value = s->front[s->test_pixel_y * SGI_MGRAS_WIDTH + s->test_pixel_x];
+    }
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void si_instance_init(Object *obj)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+
+    object_property_add_uint32_ptr(obj, "x-test-pixel-x", &s->test_pixel_x,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add_uint32_ptr(obj, "x-test-pixel-y", &s->test_pixel_y,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add(obj, "x-test-pixel", "uint32", si_test_get_pixel,
+                        NULL, NULL, NULL);
+    object_property_add_uint64_ptr(obj, "x-test-last-interrupt-addr",
+                                   &s->test_last_interrupt_addr,
+                                   OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(obj, "x-test-last-interrupt-value",
+                                   &s->test_last_interrupt_value,
+                                   OBJ_PROP_FLAG_READ);
+}
+
 static void si_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -423,5 +478,6 @@ static void si_class_init(ObjectClass *oc, const void *data)
 }
 
 static const TypeInfo si_types[] = {{ .name = TYPE_SGI_MGRAS, .parent = TYPE_SYS_BUS_DEVICE,
-    .instance_size = sizeof(SGIMgrasState), .class_init = si_class_init }};
+    .instance_size = sizeof(SGIMgrasState), .instance_init = si_instance_init,
+    .class_init = si_class_init }};
 DEFINE_TYPES(si_types)
