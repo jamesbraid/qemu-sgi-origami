@@ -22,10 +22,13 @@ struct SGIBedrockMDState {
     MemoryRegion mmio;
     MemoryRegion directory_mmio;
     MemoryRegion ecc_mmio;
+    MemoryRegion memory_mr;
     MemoryRegion memory_mmio;
+    MemoryRegion memory_alias[8];
     MemoryRegion *node_mr;
     AddressSpace node_as;
     bool node_as_initialized;
+    bool memory_alias_initialized;
     uint64_t *directory;
     uint64_t *page_counters;
     uint64_t *protection;
@@ -33,6 +36,8 @@ struct SGIBedrockMDState {
     uint32_t directory_entries;
     uint32_t protection_entries;
     uint32_t ecc_entries;
+    uint8_t installed_memory_bank_mask;
+    uint16_t installed_memory_bank_mib[8];
     uint64_t directory_compat_offsets[
         SGI_BEDROCK_MD_DIRECTORY_COMPAT_ENTRIES];
     uint64_t directory_compat_values[

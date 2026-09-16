@@ -35,7 +35,9 @@
 #define BEDROCK_WINDOW_SIZE UINT64_C(0x800000)
 #define BEDROCK_MD_MEMORY_CONFIG UINT64_C(0x780008)
 #define BEDROCK_MD_CURRENT_CELL UINT64_C(0x780000)
-#define BEDROCK_MD_BANK0_512M UINT64_C(0x41)
+#define BEDROCK_MD_INSTALLED UINT64_C(0x3300)
+#define BEDROCK_MD_INSTALLED_SELECT2 \
+    ((UINT64_C(2) << 32) | BEDROCK_MD_INSTALLED)
 
 #define PI_CPU_NUMBER UINT64_C(0x20)
 #define PI_CPU_PRESENT_A UINT64_C(0x40)
@@ -62,10 +64,10 @@
 #define HUB_LOCAL_FLASH (SPACE_HUB + UINT64_C(0x1a000000))
 #define HUB_ECC (SPACE_HUB + UINT64_C(0x140000000))
 /*
- * One ECC byte per eight bytes of node memory, so the machine's 512 MiB gives
- * a 64 MiB extent inside the gigabyte the back door reserves for it.
+ * One ECC byte per eight bytes of memory gives each installed 256 MiB bank a
+ * 32 MiB extent inside the carrier window reserved for its software bank.
  */
-#define ECC_EXTENT UINT64_C(0x4000000)
+#define ECC_EXTENT UINT64_C(0x2000000)
 #define ECC_APERTURE UINT64_C(0x40000000)
 #define HUB_DIRECTORY (SPACE_HUB + UINT64_C(0x1c0000000))
 #define BOARD_ID_LOCAL (HUB_LOCAL_REGISTERS + UINT64_C(0x4000000))
@@ -122,11 +124,11 @@
 #define FLASH_PAYLOAD_TARGET UINT64_C(0x1000)
 /*
  * The directory words for memory line 0x1a00000 and for the last line of
- * 512 MiB, and the aperture the node ends with.
+ * one installed 256 MiB bank, and the aperture the node ends with.
  */
 #define DIRECTORY_LINE_1A00000 UINT64_C(0x340000)
-#define DIRECTORY_LAST_FITTED UINT64_C(0x3fffff0)
-#define DIRECTORY_FIRST_ABSENT UINT64_C(0x4000000)
+#define DIRECTORY_LAST_FITTED UINT64_C(0x1fffff0)
+#define DIRECTORY_FIRST_ABSENT UINT64_C(0x2000000)
 #define DIRECTORY_PROTECTION_BANK1_HIGH UINT64_C(0xf800408)
 #define DIRECTORY_APERTURE UINT64_C(0x40000000)
 
@@ -650,6 +652,12 @@ static QTestState *machine_start(void)
     return machine_start_with(prom_path, "");
 }
 
+static void machine_configure_memory(QTestState *qts)
+{
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_SELECT2);
+}
+
 static void expect_console_text(int fd, const char *expected)
 {
     g_autofree char *actual = g_malloc(strlen(expected) + 1);
@@ -861,10 +869,32 @@ static void assert_flat_view_is_execution_storage(QTestState *qts,
     }
 }
 
+static void assert_flat_view_is_io(QTestState *qts, uint64_t address)
+{
+    g_autofree char *type = flat_view_region_type_at(qts, address);
+
+    g_assert_cmpstr(type, ==, "i/o");
+}
+
 static void test_ram_and_hub_alias(const void *data)
 {
     QTestState *qts = machine_start();
 
+    machine_configure_memory(qts);
+    assert_flat_view_is_execution_storage(qts, 0x1000);
+    assert_flat_view_is_execution_storage(qts, 1 * GiB + 0x1000);
+    assert_flat_view_is_io(qts, 256 * MiB);
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED);
+    assert_flat_view_is_io(qts, 0x1000);
+    assert_flat_view_is_execution_storage(qts, 2 * GiB + 0x1000);
+    assert_flat_view_is_execution_storage(qts, 3 * GiB + 0x1000);
+    machine_configure_memory(qts);
+    assert_flat_view_is_execution_storage(qts, 0x1000);
+    qtest_system_reset(qts);
+    assert_flat_view_is_io(qts, 0x1000);
+    machine_configure_memory(qts);
+    assert_flat_view_is_execution_storage(qts, 0x1000);
     qtest_writeq(qts, 0x1000, UINT64_C(0x0123456789abcdef));
     g_assert_cmphex(qtest_readq(qts, SPACE_HUB + 0x1000), ==,
                     UINT64_C(0x0123456789abcdef));
@@ -879,8 +909,10 @@ static void test_ram_and_hub_alias(const void *data)
                  UINT64_C(0xdeadbeefcafef00d));
     g_assert_cmphex(qtest_readq(qts, SPACE_HUB + 256 * MiB + PI_CPU_NUMBER),
                     ==, 0);
-    /* Node memory ends at the selected 512 MiB population. */
-    assert_flat_view_unmapped(qts, 512 * MiB);
+    /* The first fixed 1 GiB window has a 256 MiB installed bank. */
+    qtest_writeq(qts, 512 * MiB, UINT64_C(0x599a599a599a599a));
+    g_assert_cmphex(qtest_readq(qts, 512 * MiB), !=,
+                    UINT64_C(0x599a599a599a599a));
     /* Memory-special has no mapping in this skeleton. */
     assert_flat_view_unmapped(qts, SPACE_MEMORY_SPECIAL + 0x1000);
 
@@ -1195,6 +1227,8 @@ static void test_io8_usb_attachment(const void *data)
     uint32_t identity;
     unsigned i;
 
+    machine_configure_memory(qts);
+
     identity = io8_usb_config_readl(qts, 0);
     g_assert_cmphex(identity, ==, 0x580211c1);
     g_assert_cmphex(qtest_readl(qts, XTALK_WIDGET(0xe) + 0x25000), ==,
@@ -1288,6 +1322,8 @@ static void test_io8_usb_rejects_invalid_ate_dma(const void *data)
     uint8_t sentinel[0x100];
     uint8_t actual[sizeof(sentinel)];
     QTestState *qts = machine_start();
+
+    machine_configure_memory(qts);
 
     memset(sentinel, 0xa5, sizeof(sentinel));
     qtest_memwrite(qts, IO8_USB_HCCA_PHYS, sentinel, sizeof(sentinel));
@@ -1524,6 +1560,7 @@ static void test_io8_ioc3_ethernet_dma_interrupt(const void *data)
     g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     extra = g_strdup_printf("-nic socket,fd=%d,id=ioc3-net", sv[1]);
     qts = machine_start_with(prom_path, extra);
+    machine_configure_memory(qts);
     g_assert_cmpint(close(sv[1]), ==, 0);
 
     io8_ioc3_attach(qts);
@@ -1723,6 +1760,8 @@ static void test_prom_four_read_only_views(const void *data)
         { PROM_SIZE - 1, 0x93 },
     };
 
+    machine_configure_memory(qts);
+
     for (size_t i = 0; i < ARRAY_SIZE(probes); i++) {
         for (size_t j = 0; j < ARRAY_SIZE(views); j++) {
             g_assert_cmphex(qtest_readb(qts, views[j] + probes[i].offset), ==,
@@ -1749,11 +1788,9 @@ static void test_prom_four_read_only_views(const void *data)
     assert_flat_view_unmapped(qts, HUB_LOCAL_HIGH_BOOT + PROM_SIZE);
     assert_flat_view_unmapped(qts, HUB_REMOTE_BOOT + PROM_SIZE);
 
-    /* The reset view ends there too and reveals the RAM underneath. */
-    qtest_writeq(qts, PROM_RESET + PROM_SIZE,
-                 UINT64_C(0x7766554433221100));
-    g_assert_cmphex(qtest_readq(qts, PROM_RESET + PROM_SIZE), ==,
-                    UINT64_C(0x7766554433221100));
+    /* The reset view ends there too, within the first 1 GiB memory hole. */
+    assert_flat_view_is_io(qts, PROM_RESET + PROM_SIZE);
+    check_access_has_no_storage(qts, PROM_RESET + PROM_SIZE);
 
     qtest_quit(qts);
 }
@@ -2202,7 +2239,7 @@ static void test_board_identification(const void *data)
 
 /*
  * The ECC back door answers where the contract puts it, over an extent taken
- * from the fitted memory rather than from the aperture, and nothing answers
+ * from installed memory rather than from the aperture, and nothing answers
  * on either side. A machine that mapped the region but left the controller's
  * memory link unset would give a zero extent and refuse its own first byte,
  * so the accepted access at offset zero is what proves the link.
@@ -2223,15 +2260,16 @@ static void test_ecc_backdoor_window(const void *data)
     quoted = g_shell_quote(log_path);
     extra = g_strdup_printf("-d unimp,guest_errors -D %s", quoted);
     qts = machine_start_with(prom_path, extra);
+    machine_configure_memory(qts);
 
-    /* The first byte and the last byte of the fitted extent both answer. */
+    /* The first byte and the last byte of the installed extent both answer. */
     g_assert_cmphex(qtest_readb(qts, HUB_ECC), ==, 0);
     g_assert_cmphex(qtest_readb(qts, HUB_ECC + ECC_EXTENT - 1), ==, 0);
     /* An aligned halfword is the other width the carrier takes. */
     g_assert_cmphex(qtest_readw(qts, HUB_ECC + ECC_EXTENT - 2), ==, 0);
 
     /*
-     * One byte past the fitted extent is refused while still inside the
+     * One byte past the installed extent is refused while still inside the
      * aperture, which is what separates the two bounds from each other.
      */
     qtest_readb(qts, HUB_ECC + ECC_EXTENT);
@@ -2262,8 +2300,7 @@ static void test_directory_backdoor_window(const void *data)
     const uint64_t last = HUB_DIRECTORY + DIRECTORY_LAST_FITTED;
     const uint64_t absent = HUB_DIRECTORY + DIRECTORY_FIRST_ABSENT;
 
-    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_BANK0_512M);
+    machine_configure_memory(qts);
 
     /*
      * The window answers at the carrier the contract names, which needs the
@@ -2301,8 +2338,7 @@ static void test_directory_backdoor_window(const void *data)
     assert_flat_view_unmapped(qts, HUB_DIRECTORY + DIRECTORY_APERTURE);
 
     qtest_system_reset(qts);
-    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_BANK0_512M);
+    machine_configure_memory(qts);
     g_assert_cmphex(qtest_readq(qts, carrier), ==, 0);
     g_assert_cmphex(qtest_readq(qts, carrier + 8), ==, 0);
     g_assert_cmphex(qtest_readq(qts, last), ==, 0);
@@ -3121,6 +3157,7 @@ static void test_prom_executes_from_reset_and_xkphys(const void *data)
 
     path = create_xkphys_fetch_prom();
     qts = machine_start_with(path, "-accel tcg -no-shutdown -S");
+    machine_configure_memory(qts);
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
 
     for (unsigned int tries = 0; tries < 10000; tries++) {
@@ -3165,6 +3202,7 @@ static void test_prom_executes_from_tlb_mapped_xkseg(const void *data)
                                  test->entrylo0_low, test->entrylo1_low,
                                  test->physical_offset);
     qts = machine_start_with(path, "-accel tcg -no-shutdown -S");
+    machine_configure_memory(qts);
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
 
     for (unsigned int tries = 0; tries < 10000; tries++) {
@@ -3375,6 +3413,7 @@ static void test_promdata_ram_copy_is_execution_home(const void *data)
 
     path = create_promdata_ram_home_prom();
     qts = machine_start_with(path, "-accel tcg,thread=multi -S");
+    machine_configure_memory(qts);
     qtest_memwrite(qts, PROMDATA_RAM_HOME, copy, sizeof(copy));
     g_assert_cmphex(qtest_readl(qts, PROMDATA_WINDOW_PHYS), ==, 0);
 

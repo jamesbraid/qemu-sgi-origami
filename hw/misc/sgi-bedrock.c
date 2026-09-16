@@ -357,6 +357,15 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
             return;
         }
     }
+    qdev_prop_set_uint8(DEVICE(&s->md), "installed-bank-mask",
+                        s->installed_memory_bank_mask);
+    for (unsigned bank = 0; bank < 8; bank++) {
+        g_autofree char *property =
+            g_strdup_printf("installed-bank%u-mib", bank);
+
+        qdev_prop_set_uint16(DEVICE(&s->md), property,
+                            s->installed_memory_bank_mib[bank]);
+    }
     for (unsigned i = 0; i < 2; i++) {
         qdev_prop_set_uint32(DEVICE(&s->pi[i]), "interface", i);
         qdev_prop_set_uint32(DEVICE(&s->pi[i]), "cpu-base", s->cpu_base);
@@ -449,6 +458,24 @@ static const Property bedrock_properties[] = {
     DEFINE_PROP_UINT32("cpu-base", SGIBedrockState, cpu_base, 0),
     DEFINE_PROP_UINT8("revision", SGIBedrockState, revision, 2),
     DEFINE_PROP_UINT8("local-region", SGIBedrockState, local_region, 0),
+    DEFINE_PROP_UINT8("installed-bank-mask", SGIBedrockState,
+                      installed_memory_bank_mask, UINT8_MAX),
+    DEFINE_PROP_UINT16("installed-bank0-mib", SGIBedrockState,
+                       installed_memory_bank_mib[0], 0),
+    DEFINE_PROP_UINT16("installed-bank1-mib", SGIBedrockState,
+                       installed_memory_bank_mib[1], 0),
+    DEFINE_PROP_UINT16("installed-bank2-mib", SGIBedrockState,
+                       installed_memory_bank_mib[2], 0),
+    DEFINE_PROP_UINT16("installed-bank3-mib", SGIBedrockState,
+                       installed_memory_bank_mib[3], 0),
+    DEFINE_PROP_UINT16("installed-bank4-mib", SGIBedrockState,
+                       installed_memory_bank_mib[4], 0),
+    DEFINE_PROP_UINT16("installed-bank5-mib", SGIBedrockState,
+                       installed_memory_bank_mib[5], 0),
+    DEFINE_PROP_UINT16("installed-bank6-mib", SGIBedrockState,
+                       installed_memory_bank_mib[6], 0),
+    DEFINE_PROP_UINT16("installed-bank7-mib", SGIBedrockState,
+                       installed_memory_bank_mib[7], 0),
     DEFINE_PROP_UINT16("inbound-widget-mask", SGIBedrockState,
                        inbound_widget_mask, (1U << 0xe) | (1U << 0xf)),
     DEFINE_PROP_UINT8("inbound-device", SGIBedrockState, inbound_device, 0),

@@ -46,6 +46,7 @@ enum {
 
 static void md_selftest_command(SGIBedrockMDState *s, uint64_t value);
 static void md_selftest_complete(void *opaque);
+static void md_update_memory_aliases(SGIBedrockMDState *s);
 
 static bool md_storage(hwaddr offset, unsigned *index, uint64_t *mask)
 {
@@ -167,6 +168,7 @@ static void md_write(void *opaque, hwaddr offset, uint64_t value,
         return;
     case 0x8:
         s->memory_config = value & MD_MEMORY_CONFIG_MASK;
+        md_update_memory_aliases(s);
         return;
     case 0x20000:
         s->refresh = value & ((UINT64_C(1) << 63) | 0xfff); return;
@@ -229,6 +231,71 @@ static uint64_t md_memory_bank_size(unsigned size_code)
     return UINT64_C(0x2000000) << size_code;
 }
 
+static bool md_has_installed_bank_sizes(const SGIBedrockMDState *s)
+{
+    for (unsigned bank = 0; bank < 8; bank++) {
+        if (s->installed_memory_bank_mib[bank]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool md_installed_bank(const SGIBedrockMDState *s, unsigned bank,
+                              uint64_t *base, uint64_t *size)
+{
+    uint64_t dense_base = 0;
+
+    if (!(s->installed_memory_bank_mask & (1U << bank)) ||
+        !s->installed_memory_bank_mib[bank]) {
+        return false;
+    }
+    for (unsigned earlier = 0; earlier < bank; earlier++) {
+        if (s->installed_memory_bank_mask & (1U << earlier)) {
+            dense_base += (uint64_t)s->installed_memory_bank_mib[earlier]
+                          << 20;
+        }
+    }
+    *base = dense_base;
+    *size = (uint64_t)s->installed_memory_bank_mib[bank] << 20;
+    return true;
+}
+
+static void md_update_memory_aliases(SGIBedrockMDState *s)
+{
+    uint64_t raw_size;
+
+    if (!s->memory_alias_initialized || !md_has_installed_bank_sizes(s)) {
+        return;
+    }
+    raw_size = memory_region_size(s->node_mr);
+    memory_region_transaction_begin();
+    for (unsigned software_bank = 0; software_bank < 8; software_bank++) {
+        unsigned locational_bank = software_bank ^
+                                   extract64(s->memory_config, 32, 2);
+        unsigned size_code = md_memory_size_code(s, locational_bank);
+        uint64_t bank_base;
+        uint64_t bank_size;
+
+        memory_region_set_enabled(&s->memory_alias[software_bank], false);
+        if (!md_memory_bank_enabled(s, locational_bank) ||
+            size_code == 0 || size_code > 5 ||
+            !md_installed_bank(s, locational_bank, &bank_base, &bank_size)) {
+            continue;
+        }
+        bank_size = MIN(bank_size, md_memory_bank_size(size_code));
+        if (bank_base >= raw_size) {
+            continue;
+        }
+        bank_size = MIN(bank_size, raw_size - bank_base);
+        memory_region_set_alias_offset(&s->memory_alias[software_bank],
+                                       bank_base);
+        memory_region_set_size(&s->memory_alias[software_bank], bank_size);
+        memory_region_set_enabled(&s->memory_alias[software_bank], true);
+    }
+    memory_region_transaction_commit();
+}
+
 static bool md_is_protection(hwaddr offset)
 {
     return offset < MD_PROTECTION_EXTENT &&
@@ -239,6 +306,8 @@ static bool md_protection_translate(const SGIBedrockMDState *s,
                                     hwaddr offset, unsigned *index)
 {
     unsigned software_bank = offset / MD_DIRECTORY_BANK_SIZE;
+    unsigned locational_bank = software_bank ^
+                               extract64(s->memory_config, 32, 2);
     uint64_t node_size;
     uint64_t bank_base = software_bank * MD_MEMORY_BANK_SIZE;
     uint64_t bank_size;
@@ -248,10 +317,21 @@ static bool md_protection_translate(const SGIBedrockMDState *s,
         return false;
     }
     node_size = memory_region_size(s->node_mr);
+    if (md_has_installed_bank_sizes(s)) {
+        if (!md_installed_bank(s, locational_bank, &bank_base, &bank_size)) {
+            return false;
+        }
+        if (bank_base >= node_size) {
+            return false;
+        }
+        bank_size = MIN(bank_size, node_size - bank_base);
+        goto translate;
+    }
     if (bank_base >= node_size) {
         return false;
     }
     bank_size = MIN(node_size - bank_base, MD_MEMORY_BANK_SIZE);
+translate:
     within = ((uint64_t)((offset % MD_DIRECTORY_BANK_SIZE) >> 11) << 14) |
              (((offset >> 4) & 3) << 7);
     within %= bank_size;
@@ -282,6 +362,15 @@ static bool md_directory_translate(const SGIBedrockMDState *s, hwaddr offset,
 
     /* One 16-byte carrier slot describes one 128-byte memory line. */
     within = ((offset % MD_DIRECTORY_BANK_SIZE) & ~UINT64_C(0xf)) << 3;
+    if (md_has_installed_bank_sizes(s)) {
+        uint64_t installed_size;
+
+        if (!md_installed_bank(s, locational_bank, &raw, &installed_size) ||
+            within >= MIN(md_memory_bank_size(size_code), installed_size)) {
+            return false;
+        }
+        goto translated;
+    }
     if (within >= md_memory_bank_size(size_code)) {
         return false;
     }
@@ -301,6 +390,7 @@ static bool md_directory_translate(const SGIBedrockMDState *s, hwaddr offset,
             raw += md_memory_bank_size(earlier_code);
         }
     }
+translated:
     raw += within;
     if (configured) {
         *configured = true;
@@ -450,9 +540,9 @@ static const MemoryRegionOps md_directory_ops = {
 };
 
 /*
- * Fitted ECC bytes follow the same software-to-locational bank mapping as
+ * Installed ECC bytes follow the same software-to-locational bank mapping as
  * memory. The carrier packs byte addresses in reverse order within each
- * doubleword, so undo that transform before applying the fitted bound.
+ * doubleword, so undo that transform before applying the installed bound.
  */
 static bool md_ecc_translate(const SGIBedrockMDState *s, hwaddr offset,
                              unsigned size, unsigned *index)
@@ -473,6 +563,22 @@ static bool md_ecc_translate(const SGIBedrockMDState *s, hwaddr offset,
     }
 
     within = (offset % MD_ECC_BANK_SIZE) ^ (size == 1 ? 7 : 6);
+    if (md_has_installed_bank_sizes(s)) {
+        uint64_t installed_size;
+
+        if (!md_installed_bank(s, locational_bank, &raw, &installed_size)) {
+            return false;
+        }
+        installed_size /= 8;
+        if (within >= MIN(md_memory_bank_size(size_code) / 8,
+                          installed_size) ||
+            size > MIN(md_memory_bank_size(size_code) / 8,
+                       installed_size) - within) {
+            return false;
+        }
+        raw /= 8;
+        goto translated;
+    }
     if (within >= md_memory_bank_size(size_code) / 8 ||
         size > md_memory_bank_size(size_code) / 8 - within) {
         return false;
@@ -492,6 +598,7 @@ static bool md_ecc_translate(const SGIBedrockMDState *s, hwaddr offset,
             raw += md_memory_bank_size(earlier_code) / 8;
         }
     }
+translated:
     raw += within;
     if (raw >= s->ecc_entries || size > s->ecc_entries - raw) {
         return false;
@@ -628,17 +735,34 @@ static unsigned md_memory_remap_bank(const SGIBedrockMDState *s,
 }
 
 static bool md_selftest_bank_fits(const SGIBedrockMDState *s,
-                                  unsigned locational_bank)
+                                  unsigned selector,
+                                  unsigned configured_bank)
 {
     uint64_t dense_base = 0;
     uint64_t raw_size;
     unsigned size_code;
 
-    if (!s->node_mr || !md_memory_bank_enabled(s, locational_bank)) {
+    if (!s->node_mr || !md_memory_bank_enabled(s, configured_bank)) {
         return false;
     }
 
-    for (unsigned bank = 0; bank < locational_bank; bank++) {
+    size_code = md_memory_size_code(s, configured_bank);
+    if (size_code < 1 || size_code > 5) {
+        return false;
+    }
+    if (md_has_installed_bank_sizes(s)) {
+        uint64_t installed_size;
+
+        if (!md_installed_bank(s, selector, &dense_base, &installed_size) ||
+            md_memory_bank_size(size_code) > installed_size) {
+            return false;
+        }
+        raw_size = memory_region_size(s->node_mr);
+        return dense_base <= raw_size &&
+               installed_size <= raw_size - dense_base;
+    }
+
+    for (unsigned bank = 0; bank < configured_bank; bank++) {
         uint64_t bank_size;
 
         if (!md_memory_bank_enabled(s, bank)) {
@@ -655,10 +779,6 @@ static bool md_selftest_bank_fits(const SGIBedrockMDState *s,
         dense_base += bank_size;
     }
 
-    size_code = md_memory_size_code(s, locational_bank);
-    if (size_code < 1 || size_code > 5) {
-        return false;
-    }
     raw_size = memory_region_size(s->node_mr);
     return dense_base <= raw_size &&
            md_memory_bank_size(size_code) <= raw_size - dense_base;
@@ -692,8 +812,11 @@ static void md_selftest_command(SGIBedrockMDState *s, uint64_t value)
     s->selftest_running = true;
     s->selftest_selector = extract64(value, 4, 3);
     s->selftest_phase = s->storage[MD_SELFTEST_DATA] & 0x80;
-    s->selftest_result = md_selftest_bank_fits(
-        s, md_memory_remap_bank(s, s->selftest_selector));
+    s->selftest_result =
+        (s->installed_memory_bank_mask & (1U << s->selftest_selector)) &&
+        md_selftest_bank_fits(s, s->selftest_selector,
+                              md_memory_remap_bank(
+                                  s, s->selftest_selector));
     s->selftest_error_address = 0;
     s->selftest_status = 0;
     timer_mod_ns(s->selftest_timer,
@@ -760,6 +883,18 @@ static MemTxResult md_memory_translate(SGIBedrockMDState *s, hwaddr offset,
     }
 
     bank_size = md_memory_bank_size(size_code);
+    if (md_has_installed_bank_sizes(s)) {
+        uint64_t installed_size;
+
+        if (!md_installed_bank(s, locational_bank, &raw, &installed_size)) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                          "sgi-bedrock-md: memory %s at offset 0x%08"
+                          HWADDR_PRIx " rejected: locational bank %u is not "
+                          "installed\n", access, offset, locational_bank);
+            return MEMTX_DECODE_ERROR;
+        }
+        bank_size = MIN(bank_size, installed_size);
+    }
     if (within >= bank_size) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-bedrock-md: memory %s at offset 0x%08"
@@ -777,8 +912,9 @@ static MemTxResult md_memory_translate(SGIBedrockMDState *s, hwaddr offset,
         return MEMTX_DECODE_ERROR;
     }
 
-    /* The linked RAM densely packs enabled locational banks in bank order. */
-    for (unsigned bank = 0; bank < locational_bank; bank++) {
+    /* The linked RAM densely packs locational banks in bank order. */
+    for (unsigned bank = 0;
+         !md_has_installed_bank_sizes(s) && bank < locational_bank; bank++) {
         unsigned earlier_code;
 
         if (!md_memory_bank_enabled(s, bank)) {
@@ -895,6 +1031,7 @@ static void md_reset_registers(SGIBedrockMDState *s)
     md_selftest_cancel(s);
     s->current_cell = UINT64_MAX;
     s->memory_config = 0;
+    md_update_memory_aliases(s);
     s->refresh = 0;
     s->directory_config = 0;
     memset(s->storage, 0, sizeof(s->storage));
@@ -908,6 +1045,7 @@ void sgi_bedrock_md_soft_reset(SGIBedrockMDState *s)
 
     md_reset_registers(s);
     s->memory_config = memory_config;
+    md_update_memory_aliases(s);
     s->refresh = refresh;
     s->directory_config = directory_config;
 }
@@ -952,6 +1090,7 @@ static int md_post_load(void *opaque, int version_id)
         SGI_BEDROCK_MD_DIRECTORY_COMPAT_ENTRIES) {
         return -EINVAL;
     }
+    md_update_memory_aliases(s);
     return 0;
 }
 
@@ -1011,10 +1150,13 @@ static void md_init(Object *obj)
                           TYPE_SGI_BEDROCK_MD "-ecc",
                           SGI_BEDROCK_MD_ECC_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->ecc_mmio);
+    memory_region_init(&s->memory_mr, obj, TYPE_SGI_BEDROCK_MD "-memory",
+                       SGI_BEDROCK_MD_MEMORY_SIZE);
     memory_region_init_io(&s->memory_mmio, obj, &md_memory_ops, s,
-                          TYPE_SGI_BEDROCK_MD "-memory",
+                          TYPE_SGI_BEDROCK_MD "-memory-decoder",
                           SGI_BEDROCK_MD_MEMORY_SIZE);
-    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->memory_mmio);
+    memory_region_add_subregion(&s->memory_mr, 0, &s->memory_mmio);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->memory_mr);
     qdev_init_gpio_in_named(DEVICE(obj), md_soft_reset_input, "soft-reset", 1);
 }
 
@@ -1047,6 +1189,20 @@ static void md_realize(DeviceState *dev, Error **errp)
     address_space_init(&s->node_as, s->node_mr,
                        TYPE_SGI_BEDROCK_MD "-node-memory");
     s->node_as_initialized = true;
+    for (unsigned bank = 0; bank < 8; bank++) {
+        g_autofree char *name =
+            g_strdup_printf(TYPE_SGI_BEDROCK_MD "-memory-bank%u", bank);
+
+        memory_region_init_alias(&s->memory_alias[bank], OBJECT(s), name,
+                                 s->node_mr, 0, 1);
+        memory_region_set_enabled(&s->memory_alias[bank], false);
+        memory_region_set_unmergeable(&s->memory_alias[bank], true);
+        memory_region_add_subregion_overlap(&s->memory_mr,
+                                            bank * MD_MEMORY_BANK_SIZE,
+                                            &s->memory_alias[bank], 1);
+    }
+    s->memory_alias_initialized = true;
+    md_update_memory_aliases(s);
     s->directory_entries = node_size / 128;
     s->ecc_entries = node_size / 8;
     s->directory = g_new0(uint64_t, s->directory_entries);
@@ -1059,6 +1215,13 @@ static void md_unrealize(DeviceState *dev)
     SGIBedrockMDState *s = SGI_BEDROCK_MD(dev);
 
     timer_del(s->selftest_timer);
+    if (s->memory_alias_initialized) {
+        for (unsigned bank = 0; bank < 8; bank++) {
+            memory_region_del_subregion(&s->memory_mr,
+                                        &s->memory_alias[bank]);
+        }
+        s->memory_alias_initialized = false;
+    }
     if (s->node_as_initialized) {
         address_space_destroy(&s->node_as);
         s->node_as_initialized = false;
@@ -1073,6 +1236,24 @@ static void md_unrealize(DeviceState *dev)
 }
 
 static const Property md_properties[] = {
+    DEFINE_PROP_UINT8("installed-bank-mask", SGIBedrockMDState,
+                      installed_memory_bank_mask, UINT8_MAX),
+    DEFINE_PROP_UINT16("installed-bank0-mib", SGIBedrockMDState,
+                       installed_memory_bank_mib[0], 0),
+    DEFINE_PROP_UINT16("installed-bank1-mib", SGIBedrockMDState,
+                       installed_memory_bank_mib[1], 0),
+    DEFINE_PROP_UINT16("installed-bank2-mib", SGIBedrockMDState,
+                       installed_memory_bank_mib[2], 0),
+    DEFINE_PROP_UINT16("installed-bank3-mib", SGIBedrockMDState,
+                       installed_memory_bank_mib[3], 0),
+    DEFINE_PROP_UINT16("installed-bank4-mib", SGIBedrockMDState,
+                       installed_memory_bank_mib[4], 0),
+    DEFINE_PROP_UINT16("installed-bank5-mib", SGIBedrockMDState,
+                       installed_memory_bank_mib[5], 0),
+    DEFINE_PROP_UINT16("installed-bank6-mib", SGIBedrockMDState,
+                       installed_memory_bank_mib[6], 0),
+    DEFINE_PROP_UINT16("installed-bank7-mib", SGIBedrockMDState,
+                       installed_memory_bank_mib[7], 0),
     DEFINE_PROP_LINK("node-memory", SGIBedrockMDState, node_mr,
                      TYPE_MEMORY_REGION, MemoryRegion *),
 };

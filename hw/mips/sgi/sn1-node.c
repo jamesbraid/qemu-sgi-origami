@@ -282,6 +282,15 @@ static void sn1_node_create_bedrock(SN1NodeState *node,
                         model->bedrock_local_region);
     qdev_prop_set_uint8(node->bedrock, "initiator-region",
                         model->bedrock_initiator_region);
+    qdev_prop_set_uint8(node->bedrock, "installed-bank-mask",
+                        model->installed_memory_bank_mask);
+    for (unsigned bank = 0; bank < 8; bank++) {
+        g_autofree char *property =
+            g_strdup_printf("installed-bank%u-mib", bank);
+
+        qdev_prop_set_uint16(node->bedrock, property,
+                            model->installed_memory_bank_mib[bank]);
+    }
     object_property_set_link(OBJECT(node->bedrock), "dma-memory",
                              OBJECT(system), &error_abort);
     object_property_set_link(OBJECT(node->bedrock), "node-memory",
@@ -386,6 +395,8 @@ static void sn1_node_create_bedrock(SN1NodeState *node,
      */
     memory_region_add_subregion(system, SN1_HUB_ECC,
                                 sysbus_mmio_get_region(bedrock, 6));
+    memory_region_add_subregion_overlap(
+        system, model->ram_address, sysbus_mmio_get_region(bedrock, 7), 0);
 
     for (unsigned int cpu = 0; cpu < model->cpu_count; cpu++) {
         MIPSCPU *mips_cpu = node->cpu[cpu];

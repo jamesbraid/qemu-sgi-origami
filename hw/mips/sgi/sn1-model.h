@@ -60,6 +60,8 @@ typedef struct SN1MachineModel {
     uint8_t bedrock_revision;
     uint8_t bedrock_local_region;
     uint8_t bedrock_initiator_region;
+    uint8_t installed_memory_bank_mask;
+    uint16_t installed_memory_bank_mib[8];
     uint64_t prom_size;
     const SN1ModelPromView *prom_views;
     size_t num_prom_views;

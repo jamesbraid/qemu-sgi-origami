@@ -42,6 +42,8 @@ struct SGIBedrockState {
     uint32_t cpu_base;
     uint8_t revision;
     uint8_t local_region;
+    uint8_t installed_memory_bank_mask;
+    uint16_t installed_memory_bank_mib[8];
     uint16_t inbound_widget_mask;
     uint8_t inbound_device;
     uint64_t device_mask_reset;
