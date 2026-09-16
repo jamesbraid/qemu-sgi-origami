@@ -208,6 +208,10 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
     case SGI_MGRAS_RESET_ARG: return s->reset_arg;
     case SGI_MGRAS_RESET_CONTROL: return s->reset_control;
     case SGI_MGRAS_I2C_SCRATCH: return s->i2c_scratch;
+    case SGI_MGRAS_REPP_STATUS_1: return s->repp_status[0];
+    case SGI_MGRAS_REPP_STATUS_3: return s->repp_status[1];
+    case SGI_MGRAS_REPP_STATUS_4: return s->repp_status[2];
+    case SGI_MGRAS_SYNC_STATUS: return s->sync_status;
     case 0x008000: return 0;
     case 0x011020: return s->pending;
     case 0x011040: return s->irq_mask;
@@ -244,6 +248,8 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
     case 0x071208: return 0x08;
     case 0x071c88: return s->cmap_index;
     case 0x071f00: return 1;
+    /* See the header comment on SGI_MGRAS_REPP_SYNC. */
+    case SGI_MGRAS_REPP_SYNC: return 0x101;
     case 0x072038: return s->cursor_control;
     case 0x130500: return s->entry;
     case 0x070d18: return s->cmap[s->cmap_index & 255];
@@ -276,6 +282,12 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     case SGI_MGRAS_RESET_CONTROL: s->reset_control = value; return;
     case SGI_MGRAS_I2C_SCRATCH: s->i2c_scratch = value; return;
     case SGI_MGRAS_I2C_STROBE: return;
+    case SGI_MGRAS_REPP_STATUS_1: s->repp_status[0] = value; return;
+    /* Already the colour map index register; see the header comment. */
+    case 0x071c88: return;
+    case SGI_MGRAS_REPP_STATUS_3: s->repp_status[1] = value; return;
+    case SGI_MGRAS_REPP_STATUS_4: s->repp_status[2] = value; return;
+    case SGI_MGRAS_SYNC_STATUS: s->sync_status = value; return;
     case 0x011000:
         /*
          * MgrasStart writes configuration here before the first context
@@ -318,6 +330,12 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     case 0x070c30: s->cmap_index = value & 255; return;
     case 0x070d18: s->cmap[s->cmap_index & 255] = value; return;
     case 0x071f00: return;
+    /*
+     * The channel-select word the driver writes before each readback; see
+     * the header comment on SGI_MGRAS_REPP_SYNC for why the read side does
+     * not echo this back.
+     */
+    case SGI_MGRAS_REPP_SYNC: return;
     case 0x072038:
         /*
          * MgrasPositionCursor tags an ordered X word (0x02) and Y word
@@ -420,6 +438,8 @@ static void si_reset(DeviceState *dev)
     s->int_dest_upper = s->int_dest_lower = 0;
     s->widget_control = 0;
     s->reset_arg = s->reset_control = s->i2c_scratch = 0;
+    memset(s->repp_status, 0, sizeof(s->repp_status));
+    s->sync_status = 0;
     /*
      * Reset does not retroactively unsend an already-delivered packet, so
      * this clears the transition-detector directly rather than going
@@ -498,6 +518,8 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32(reset_arg, SGIMgrasState),
         VMSTATE_UINT32(reset_control, SGIMgrasState),
         VMSTATE_UINT32(i2c_scratch, SGIMgrasState),
+        VMSTATE_UINT32_ARRAY(repp_status, SGIMgrasState, 3),
+        VMSTATE_UINT32(sync_status, SGIMgrasState),
         VMSTATE_BOOL(irq_asserted, SGIMgrasState),
         VMSTATE_UINT16(fifo_count, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(command, SGIMgrasState, 0x200),
