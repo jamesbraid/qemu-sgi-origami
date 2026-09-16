@@ -44,7 +44,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 
 #define RAD4_BAR0_SIZE          128
 #define RAD4_BAR2_SIZE          (16 * MiB)
-#define RAD4_ROMROUTE_SIZE      (2 * KiB)
+#define RAD4_ROMROUTE_SIZE      (8 * MiB)
 
 #define RAD4_MODE0_WIDTH        1280
 #define RAD4_MODE0_HEIGHT       1024
