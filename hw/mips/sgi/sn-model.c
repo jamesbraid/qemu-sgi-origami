@@ -660,7 +660,7 @@ static const SGIModelFlashView sgi_model_origin2000_module_n3_flash_views[] = {
 
 static const SGIModelNode sgi_model_origin2000_module_nodes[] = {
     {
-        .id = "hub-1",
+        .id = "node-board-1-hub",
         .module_index = 0x0ULL,
         .slot = 0x1ULL,
         .asic_kind = SGI_MODEL_ASIC_HUB,
@@ -690,7 +690,7 @@ static const SGIModelNode sgi_model_origin2000_module_nodes[] = {
         .bank_mib = { 0x40ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL },
     },
     {
-        .id = "hub-2",
+        .id = "node-board-2-hub",
         .module_index = 0x0ULL,
         .slot = 0x2ULL,
         .asic_kind = SGI_MODEL_ASIC_HUB,
@@ -720,7 +720,7 @@ static const SGIModelNode sgi_model_origin2000_module_nodes[] = {
         .bank_mib = { 0x40ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL },
     },
     {
-        .id = "hub-3",
+        .id = "node-board-3-hub",
         .module_index = 0x0ULL,
         .slot = 0x3ULL,
         .asic_kind = SGI_MODEL_ASIC_HUB,
@@ -750,7 +750,7 @@ static const SGIModelNode sgi_model_origin2000_module_nodes[] = {
         .bank_mib = { 0x40ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL, 0x0ULL },
     },
     {
-        .id = "hub-4",
+        .id = "node-board-4-hub",
         .module_index = 0x0ULL,
         .slot = 0x4ULL,
         .asic_kind = SGI_MODEL_ASIC_HUB,
@@ -946,12 +946,12 @@ static const SGIModelPciFunction sgi_model_origin2000_module_m0_baseio_pci[] = {
         .serial = 0x100000000008ULL,
         .ioc3_population = {
             .ethernet = true,
-            .serial_a = false,
-            .serial_b = false,
+            .serial_a = true,
+            .serial_b = true,
             .keyboard_mouse = false,
             .parallel = false,
-            .timekeeper = false,
-            .onewire_identity = false,
+            .timekeeper = true,
+            .onewire_identity = true,
         },
     },
 };
@@ -970,12 +970,12 @@ static const SGIModelIoBoard sgi_model_origin2000_module_io_boards[] = {
         .pci = sgi_model_origin2000_module_m0_baseio_pci,
         .ioc3_population = {
             .ethernet = true,
-            .serial_a = false,
-            .serial_b = false,
+            .serial_a = true,
+            .serial_b = true,
             .keyboard_mouse = false,
             .parallel = false,
-            .timekeeper = false,
-            .onewire_identity = false,
+            .timekeeper = true,
+            .onewire_identity = true,
         },
         .pci_count = 0x3ULL,
     },
