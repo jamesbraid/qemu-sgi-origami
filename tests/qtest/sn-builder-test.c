@@ -161,7 +161,8 @@ static void test_unsupported_memory_population_rejected(const void *data)
     };
 
     assert_qemu_rejects(args,
-                        "topology 'origin200' does not accept 768 MiB per node");
+                        "topology 'origin200' does not accept 768 "
+                        "MiB per node");
 }
 
 int main(int argc, char **argv)
