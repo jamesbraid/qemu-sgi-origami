@@ -808,7 +808,7 @@ static const SGIModelRouter sgi_model_origin2000_module_routers[] = {
         .part = 0x1ULL,
         .revision = 0x1ULL,
         .chip_inputs = 0xfULL,
-        .serial = 0x0ULL,
+        .serial = 0x100000000005ULL,
     },
     {
         .id = "router-2",
@@ -818,7 +818,7 @@ static const SGIModelRouter sgi_model_origin2000_module_routers[] = {
         .part = 0x1ULL,
         .revision = 0x1ULL,
         .chip_inputs = 0xeULL,
-        .serial = 0x0ULL,
+        .serial = 0x100000000006ULL,
     },
 };
 
@@ -1012,6 +1012,7 @@ static const SGIModelIoBoard sgi_model_origin2000_module_io_boards[] = {
 static const SGIModelController sgi_model_origin2000_module_controllers[] = {
     {
         .kind = SGI_MODEL_CONTROLLER_MSC,
+        .id = "module-msc",
         .module_index = 0x0ULL,
         .msc_address = 0x8ULL,
         .nvram_address = 0x50ULL,
