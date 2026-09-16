@@ -167,19 +167,32 @@ static bool sgi_machine_topology_matches_product(const SGIModelTopology *t,
                                                   const char *product)
 {
     size_t len = strlen(product);
+    size_t name_len = strlen(t->name);
 
-    return !strncmp(t->name, product, len) &&
+    return name_len >= len && !strncmp(t->name, product, len) &&
            (t->name[len] == '\0' || t->name[len] == '-');
 }
 
+/*
+ * A name alone is not enough: sgi_model_entries[] holds every product's
+ * topologies in one table, and topology= is product-scoped (origin200
+ * never builds origin2000's wiring). Require the match sgi_model_
+ * find_topology only checks by name to also belong to this machine's
+ * own product, the way the "unknown topology" listing below already
+ * does.
+ */
 static const SGIModelTopology *sgi_machine_topology(MachineState *machine)
 {
     SGIMachineState *s = SGI_MACHINE(machine);
     SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(machine);
     const char *name = s->topology_name ? s->topology_name :
                                           smc->default_topology;
+    const SGIModelTopology *t = sgi_model_find_topology(name);
 
-    return sgi_model_find_topology(name);
+    if (t && !sgi_machine_topology_matches_product(t, smc->product)) {
+        return NULL;
+    }
+    return t;
 }
 
 static unsigned int sgi_machine_population_total(
