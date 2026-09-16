@@ -245,6 +245,22 @@ sn0_routed_vector(SN0FabricState *f, unsigned int endpoint, uint64_t vector,
         return SN0_FABRIC_VECTOR_NONE;
     }
     path[path_length++] = vertex;
+    if (vertex.kind != SN0_FABRIC_VERTEX_ROUTER && vector != 0) {
+        /*
+         * No Router sits between this endpoint and its neighbor -- the
+         * Origin 200's CrayLink cable, or a deskside Origin 2000's Null
+         * Router. The neighbor Hub is on the wire and answers, but a
+         * route past it needs a Router the link does not have, so it
+         * refuses: the address-error response, not the timeout a link
+         * with nothing on it leaves.
+         */
+        SGIHubState *hub =
+            g_array_index(f->endpoints, SN0FabricEndpoint,
+                          vertex.index).hub;
+
+        access->source = sgi_hub_programmed_nasid(hub);
+        return SN0_FABRIC_VECTOR_ERROR;
+    }
     if (access->op == SN0_FABRIC_VECTOR_WRITE &&
         sgi_hub_sends_data_error(source) &&
         vertex.kind == SN0_FABRIC_VERTEX_ROUTER) {

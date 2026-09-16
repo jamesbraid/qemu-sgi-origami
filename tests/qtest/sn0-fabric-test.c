@@ -51,6 +51,9 @@
 #define NVS_TYPE_MASK       0x7ULL
 #define PIOTYPE_READ        0
 #define PIOTYPE_WRITE       1
+#define NVS_ADDRESS_ERROR   4
+#define NVS_TARGET_SHIFT    51
+#define NVS_TARGET_MASK     0x1ffULL
 
 #define PI_CALIAS_SIZE      0x000028
 #define PI_CALIAS_SIZE_4K   1
@@ -182,12 +185,19 @@ static void fabric_set_down_links(QTestState *qts, const char *value)
     g_assert(qdict_haskey(response, "return"));
 }
 
+static uint64_t vector_operation_on_route(QTestState *qts, uint64_t hub,
+                                          uint64_t route, uint64_t address,
+                                          uint64_t type)
+{
+    qtest_writeq(qts, hub + NI_VECTOR, route);
+    qtest_writeq(qts, hub + NI_VECTOR_PARMS, address | type);
+    return qtest_readq(qts, hub + NI_VECTOR_STATUS);
+}
+
 static uint64_t vector_operation(QTestState *qts, uint64_t hub,
                                  uint64_t address, uint64_t type)
 {
-    qtest_writeq(qts, hub + NI_VECTOR, 0);
-    qtest_writeq(qts, hub + NI_VECTOR_PARMS, address | type);
-    return qtest_readq(qts, hub + NI_VECTOR_STATUS);
+    return vector_operation_on_route(qts, hub, 0, address, type);
 }
 
 static void memset_line(QTestState *qts, uint64_t where, uint8_t fill)
@@ -562,6 +572,34 @@ static void test_link_status_follows_the_fabric(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The dual has no Router: route 0x0 names the peer directly, and any
+ * other route would need a Router this link does not have. The peer is
+ * on the wire and answers, so it refuses with its address-error
+ * response instead of leaving the poll to time out, and the write the
+ * refused route carried never reaches the peer's register.
+ */
+static void test_direct_link_refuses_nonzero_route(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_DUAL);
+    const uint64_t peer_scratch = NODE_STRIDE + HUB_LOCAL + NI_SCRATCH_0;
+    const uint64_t planted = 0x1122334455667788ULL;
+    uint64_t status;
+
+    sn0_program_nasid(qts, 1);
+    qtest_writeq(qts, peer_scratch, planted);
+
+    qtest_writeq(qts, HUB_BY_NODE + NI_VECTOR_DATA, 0xdeadbeefULL);
+    status = vector_operation_on_route(qts, HUB_BY_NODE, 0x1, NI_SCRATCH_0,
+                                       PIOTYPE_WRITE);
+    g_assert_cmphex(status & NVS_VALID, ==, NVS_VALID);
+    g_assert_cmphex(status & NVS_TYPE_MASK, ==, NVS_ADDRESS_ERROR);
+    g_assert_cmphex((status >> NVS_TARGET_SHIFT) & NVS_TARGET_MASK, ==, 1);
+    g_assert_cmphex(qtest_readq(qts, peer_scratch), ==, planted);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -570,6 +608,8 @@ int main(int argc, char **argv)
                         NULL, test_dual_map_is_own_plus_peer);
     qtest_add_data_func("/sn0/fabric/link-status-follows-the-fabric",
                         NULL, test_link_status_follows_the_fabric);
+    qtest_add_data_func("/sn0/fabric/direct-link-refuses-nonzero-route",
+                        NULL, test_direct_link_refuses_nonzero_route);
     qtest_add_data_func("/sn0/fabric/bte-resolves-by-programmed-number",
                         NULL, test_bte_resolves_by_programmed_number);
     qtest_add_data_func("/sn0/fabric/bte-completion-interrupt-goes-by-number",
