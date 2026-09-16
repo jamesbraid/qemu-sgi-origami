@@ -206,6 +206,20 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
     case 0x008000: return 0;
     case 0x011020: return s->pending;
     case 0x011040: return s->irq_mask;
+    /*
+     * A generic widget bring-up step, not an SI-specific register: the
+     * retained PROM's local-IO discovery writes a step-table argument word
+     * here for every widget it finds (520<<10 | 65<<2, unrelated to SI's own
+     * protocol) and polls this same offset for bit 0x2 before it will
+     * continue. hw/pci-host/sgi-bridge.c has no register here either --
+     * Bridge's own catch-all invalid-address read returns all-ones, which
+     * happens to carry that bit, so Bridge passes this step by accident
+     * rather than by implementing it. Reporting it explicitly, rather than
+     * through the sticky unsupported-access path every other undecoded
+     * offset takes, is the approximation: immediate readiness, no modelled
+     * bring-up delay.
+     */
+    case 0x011098: return 0x2;
     case 0x020000: return s->error ? 0x80000000 : 1;
     case 0x020008: return s->fifo_count;
     case 0x020100: return 31 << 4;
@@ -262,6 +276,8 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         si_update_irq(s); return;
     case 0x011040: s->irq_mask = value; si_update_irq(s); return;
     case 0x011048: s->error = 0; s->pending &= ~SI_PENDING_ERROR; si_update_irq(s); return;
+    /* The generic bring-up step argument; see the read side's comment. */
+    case 0x011098: return;
     case 0x130500:
         if (size != 4 || value != 0x4fc || !s->prefix_written) {
             si_error(s, addr, size, "invalid HQ entry"); return;

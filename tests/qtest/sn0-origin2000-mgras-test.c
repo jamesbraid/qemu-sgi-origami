@@ -27,6 +27,7 @@
 #define REG_INT_DEST_UPPER     SI_REG(0x000034)
 #define REG_INT_DEST_LOWER     SI_REG(0x00003c)
 #define REG_STARTUP_STATUS     SI_REG(0x008000)
+#define REG_BRINGUP_STEP       SI_REG(0x011098)
 #define REG_PREFIX             SI_REG(0x011000)
 #define REG_PENDING            SI_REG(0x011020)
 #define REG_PENDING_ACK        SI_REG(0x011028)
@@ -161,6 +162,25 @@ static void test_identity_and_aperture(void)
     /* No-DMA idle: low five bits clear, direct-copy ready bit set. */
     g_assert_cmphex(qtest_readl(qts, REG_DMA_BUSY) & 0x1f, ==, 0);
     g_assert_cmphex(qtest_readl(qts, REG_DIRECT_COPY_READY), ==, 0x100);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The retained IP27 PROM's own local-IO widget-discovery step: it writes a
+ * step-table argument word here for every widget it finds, then polls this
+ * same offset for bit 0x2 before continuing. Confirmed live: a guest boot
+ * against this exact machine hung forever in "Discovering local IO" before
+ * this offset was decoded, and completed it immediately once it was (see
+ * docs/plans/si-graphics-widget-wiring-handoff-20260916.md on the Origami
+ * side for the full disassembly-backed account).
+ */
+static void test_generic_bringup_step(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    qtest_writel(qts, REG_BRINGUP_STEP, (520u << 10) | (65u << 2));
+    g_assert_cmphex(qtest_readl(qts, REG_BRINGUP_STEP) & 0x2, ==, 0x2);
 
     qtest_quit(qts);
 }
@@ -395,6 +415,8 @@ int main(int argc, char **argv)
 
     qtest_add_func("sn0/origin2000/mgras/identity-and-aperture",
                    test_identity_and_aperture);
+    qtest_add_func("sn0/origin2000/mgras/generic-bringup-step",
+                   test_generic_bringup_step);
     qtest_add_func("sn0/origin2000/mgras/hq-upload-readback",
                    test_hq_upload_and_readback);
     qtest_add_func("sn0/origin2000/mgras/context-recognizer-ordering",
