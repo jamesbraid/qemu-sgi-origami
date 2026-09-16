@@ -6,11 +6,12 @@
  * the machine-owned fabric, and nothing resolves by board position.
  *
  * The two-node Origin 200 is two Hubs joined by one CrayLink cable, so its
- * fabric is the direct adapter: each Hub reaches itself by its own number and
- * the other Hub by that Hub's programmed number, and nothing else. The tests
- * renumber node 1 to a number that is no board position (7) to tell a map keyed
- * by programmed number from the board-keyed aliases the fork had before this
- * change, which could reach a peer only at its board stride.
+ * fabric is the routed fabric with no Router on the graph: each Hub reaches
+ * itself by its own number and the other Hub by that Hub's programmed
+ * number, and nothing else. The tests renumber node 1 to a number that is no
+ * board position (7) to tell a map keyed by programmed number from the
+ * board-keyed aliases the fork had before this change, which could reach a
+ * peer only at its board stride.
  *
  * The qtest backdoor is processor 0's view of the machine, so it too reaches
  * a node by that node's programmed number: once node 1 is renumbered to 7,
@@ -206,13 +207,12 @@ static void assert_line(QTestState *qts, uint64_t where, uint8_t fill)
 }
 
 /*
- * The direct adapter's map is own number plus the peer's programmed number,
- * wherever those numbers are. A peer renumbered off its board position is
- * reachable at its new number and at nothing else; today's board-keyed
- * aliases leave it unreachable, which is the second declared Origin 200
- * change.
+ * The dual's map is own number plus the peer's programmed number, wherever
+ * those numbers are. A peer renumbered off its board position is reachable
+ * at its new number and at nothing else; today's board-keyed aliases leave
+ * it unreachable, which is the second declared Origin 200 change.
  */
-static void test_direct_adapter_map_is_own_plus_peer(const void *data)
+static void test_dual_map_is_own_plus_peer(const void *data)
 {
     QTestState *qts = qtest_init(MACHINE_DUAL);
     uint64_t value;
@@ -487,7 +487,7 @@ static void migrate_stopped_vm(QTestState *from, const char *uri)
  * Reachability is derived, not carried: a renumbered peer, a latched vector
  * reply, and a remote read all come back the same after a migration.
  */
-static void test_direct_adapter_migration(const void *data)
+static void test_dual_migration(const void *data)
 {
     g_autofree char *tmpdir = NULL;
     g_autofree char *uri = NULL;
@@ -566,8 +566,8 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
-    qtest_add_data_func("/sn0/fabric/direct-adapter-map-is-own-plus-peer",
-                        NULL, test_direct_adapter_map_is_own_plus_peer);
+    qtest_add_data_func("/sn0/fabric/dual-map-is-own-plus-peer",
+                        NULL, test_dual_map_is_own_plus_peer);
     qtest_add_data_func("/sn0/fabric/link-status-follows-the-fabric",
                         NULL, test_link_status_follows_the_fabric);
     qtest_add_data_func("/sn0/fabric/bte-resolves-by-programmed-number",
@@ -578,8 +578,8 @@ int main(int argc, char **argv)
                         NULL, test_bridge_interrupt_reaches_the_peer_hub);
     qtest_add_data_func("/sn0/fabric/bridge-dma-reaches-the-peer-node",
                         NULL, test_bridge_dma_reaches_the_peer_node);
-    qtest_add_data_func("/sn0/fabric/direct-adapter-migration",
-                        NULL, test_direct_adapter_migration);
+    qtest_add_data_func("/sn0/fabric/dual-migration",
+                        NULL, test_dual_migration);
 
     return g_test_run();
 }
