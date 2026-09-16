@@ -5,13 +5,26 @@
  * plus the command-line contract every product shares -- -numa
  * refused, an unsupported -smp population rejected, and a topology
  * belonging to a different product refused -- checked against the
- * real Origin 200 machine.
+ * real Origin 200 machine. The console field test drives the same
+ * fixture file's sn-builder-console-test machine, a real two-node
+ * build the fault fixture never realizes.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
+
+static char *qom_get_str(QTestState *qts, const char *path, const char *prop)
+{
+    QDict *r = qtest_qmp(qts, "{'execute': 'qom-get', 'arguments': "
+                         "{'path': %s, 'property': %s}}", path, prop);
+    char *value = g_strdup(qdict_get_str(r, "return"));
+
+    qobject_unref(r);
+    return value;
+}
 
 static void assert_qemu_rejects(const char *const args[], const char *message)
 {
@@ -108,25 +121,32 @@ static void test_topology_from_another_product_refused(const void *data)
     assert_qemu_rejects(args, "unknown topology 'origin2000-module'");
 }
 
-static void test_console_field_reordering(const void *data)
+/*
+ * sn-builder-console-test (sn-builder-fault-test.c) is a two-node topology
+ * with console=1: node 1's IOC3 port A, not node 0's, must land on serial
+ * line 0. Give the machine exactly one backend, at line 0, and read it
+ * back off each node's IOC3 "chardev-a" property -- a chardev property
+ * reports the backend's own id once bound (qdev-properties-system.c's
+ * get_chr), empty string unbound, so this fails the way the removed
+ * boot-and-quit version could not: node 0 answering "probe" instead of
+ * node 1 would still exit 0.
+ */
+static void test_console_field_puts_its_node_on_serial_line_zero(
+    const void *data)
 {
-    /*
-     * sgi_machine_compute_serial_line() reorders serial lines based on the
-     * console field: the console node gets serial line 0, and other nodes
-     * shift accordingly. The console test fixture has console=1, exercising
-     * the non-default branch (node_index < t->console and node_index >
-     * t->console cases).
-     */
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "sn-builder-console-test",
-        "-display", "none", NULL
-    };
-    g_autofree char *error_output = NULL;
-    int wait_status = 0;
+    QTestState *qts = qtest_init(
+        "-M sn-builder-console-test,activate=on -m 128M "
+        "-smp 4,sockets=2,cores=2,threads=1 -cpu R10000 "
+        "-chardev null,id=probe -serial chardev:probe -display none");
+    g_autofree char *node0_chardev_a =
+        qom_get_str(qts, "/machine/node0/ioc3", "chardev-a");
+    g_autofree char *node1_chardev_a =
+        qom_get_str(qts, "/machine/node1/ioc3", "chardev-a");
 
-    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
-                              NULL, &error_output, &wait_status, NULL));
-    g_assert_true(g_spawn_check_exit_status(wait_status, NULL));
+    g_assert_cmpstr(node1_chardev_a, ==, "probe");
+    g_assert_cmpstr(node0_chardev_a, ==, "");
+
+    qtest_quit(qts);
 }
 
 static void test_unsupported_memory_population_rejected(const void *data)
@@ -162,8 +182,8 @@ int main(int argc, char **argv)
                         NULL, test_unsupported_smp_population_rejected);
     qtest_add_data_func("sn/builder/topology-from-another-product-refused",
                         NULL, test_topology_from_another_product_refused);
-    qtest_add_data_func("sn/builder/console-field-reordering", NULL,
-                        test_console_field_reordering);
+    qtest_add_data_func("sn/builder/console-node-gets-serial-line-zero", NULL,
+                        test_console_field_puts_its_node_on_serial_line_zero);
     qtest_add_data_func("sn/builder/unsupported-memory-population-rejected",
                         NULL, test_unsupported_memory_population_rejected);
 

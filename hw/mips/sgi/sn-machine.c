@@ -185,9 +185,15 @@ static const SGIModelTopology *sgi_machine_topology(MachineState *machine)
 {
     SGIMachineState *s = SGI_MACHINE(machine);
     SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(machine);
-    const char *name = s->topology_name ? s->topology_name :
-                                          smc->default_topology;
-    const SGIModelTopology *t = sgi_model_find_topology(name);
+    const char *name;
+    const SGIModelTopology *t;
+
+    if (smc->test_topology) {
+        return smc->test_topology;
+    }
+
+    name = s->topology_name ? s->topology_name : smc->default_topology;
+    t = sgi_model_find_topology(name);
 
     if (t && !sgi_machine_topology_matches_product(t, smc->product)) {
         return NULL;
@@ -970,7 +976,7 @@ static void sgi_machine_load_flash(MachineState *machine, SGIMachineState *s)
     g_free(flash);
 }
 
-static void sgi_machine_init(MachineState *machine)
+void sgi_machine_init(MachineState *machine)
 {
     SGIMachineState *s = SGI_MACHINE(machine);
     SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(machine);
