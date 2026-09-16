@@ -46,6 +46,7 @@
 #include "hw/mips/sgi/xtalk-link.h"
 #include "hw/misc/sgi-elsc.h"
 #include "hw/misc/sgi-hub.h"
+#include "hw/misc/sgi-mgras.h"
 #include "hw/misc/sgi-router.h"
 #include "hw/misc/sgi-sn0-module-management.h"
 #include "hw/misc/sgi-xbow.h"
@@ -182,6 +183,10 @@ struct SGIMachineState {
      * Hub-product topology's io board on a Bedrock node) stay zeroed.
      */
     SGIXtalkCrossbowLink *crossbow_links;
+
+    SGIMgrasState *mgras;
+    MemoryRegion mgras_packet_proxy;
+    MemoryRegion mgras_packet_alias;
 
     bool debug_leds;
     bool junk_uart_present;
@@ -803,6 +808,9 @@ static uint32_t sgi_machine_crossbar_part(SGIModelCrossbarKind kind)
     }
 }
 
+#define SGI_MACHINE_MGRAS_CROSSBAR_INDEX 0
+#define SGI_MACHINE_MGRAS_WIDGET 0xf
+
 static void sgi_machine_build_crossbars(SGIMachineState *s,
                                         const SGIModelTopology *t)
 {
@@ -820,10 +828,7 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
         uint16_t startup_alive = 0;
         size_t attachment_index;
 
-        /*
-         * The widget mask this Crossbow's own attachments populate,
-         * reported as startup-links-alive for software to read.
-         */
+        /* The populated widgets reported alive at startup. */
         for (attachment_index = 0; attachment_index < attachment_count;
              attachment_index++) {
             const SGIModelXtalkAttachment *attachment =
@@ -832,6 +837,10 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
             if ((unsigned int)attachment->crossbar_index == i) {
                 startup_alive |= 1u << attachment->widget;
             }
+        }
+        if (i == SGI_MACHINE_MGRAS_CROSSBAR_INDEX &&
+            sgi_machine_topology_matches_product(t, "origin2000")) {
+            startup_alive |= 1u << SGI_MACHINE_MGRAS_WIDGET;
         }
 
         s->crossbars[i] = SGI_XBOW(crossbow);
@@ -1104,6 +1113,30 @@ static bool sgi_machine_instantiate_io8(
  * other preset once, so this dispatch trusts it and only reports the
  * case it does not recognize.
  */
+static bool sgi_machine_build_mgras(SGIMachineState *s, Error **errp)
+{
+    DeviceState *dev = qdev_new(TYPE_SGI_MGRAS);
+
+    object_property_add_child(OBJECT(s), "si-viz", OBJECT(dev));
+    s->mgras = SGI_MGRAS(dev);
+    object_unref(OBJECT(dev));
+
+    memory_region_init(&s->mgras_packet_proxy, OBJECT(s),
+                       "si-viz-packet-proxy",
+                       SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
+    memory_region_set_enabled(&s->mgras_packet_proxy, false);
+    object_property_set_link(OBJECT(dev), "fabric",
+                             OBJECT(&s->mgras_packet_proxy), &error_fatal);
+    qdev_prop_set_uint32(dev, "fabric-widget-shift",
+                        SGI_BRIDGE_PACKET_ADDRESS_BITS);
+    sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
+
+    return sgi_xbow_attach_widget(
+        s->crossbars[SGI_MACHINE_MGRAS_CROSSBAR_INDEX],
+        SGI_MACHINE_MGRAS_WIDGET,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 0), errp);
+}
+
 static bool sgi_machine_instantiate_io_board(
     SGIMachineState *s, const SGIModelTopology *t,
     const SGIModelIoBoard *record, unsigned int board_index,
@@ -1187,6 +1220,19 @@ static bool sgi_machine_realize_crossbars(
                 errp)) {
             return false;
         }
+    }
+    if (s->mgras) {
+        SGIXbowState *crossbow =
+            s->crossbars[SGI_MACHINE_MGRAS_CROSSBAR_INDEX];
+        MemoryRegion *packet =
+            sgi_xbow_packet_ingress(crossbow, SGI_MACHINE_MGRAS_WIDGET);
+
+        memory_region_init_alias(&s->mgras_packet_alias, OBJECT(s),
+                                 "si-viz-packet-ingress", packet, 0,
+                                 memory_region_size(packet));
+        memory_region_add_subregion(&s->mgras_packet_proxy, 0,
+                                    &s->mgras_packet_alias);
+        memory_region_set_enabled(&s->mgras_packet_proxy, true);
     }
     return true;
 }
@@ -2205,6 +2251,11 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                 }
             }
         }
+    }
+    if (crossbar_count &&
+        sgi_machine_topology_matches_product(t, "origin2000") &&
+        !sgi_machine_build_mgras(s, errp)) {
+        return false;
     }
     if (!sgi_machine_build_controllers(s, t, errp)) {
         return false;
