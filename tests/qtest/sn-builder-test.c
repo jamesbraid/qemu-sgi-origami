@@ -3,8 +3,9 @@
  * sgi_machine_validate_topology rejects before creating any device
  * (sn-builder-fault-test's fixture, a minimal two-node topology),
  * plus the command-line contract every product shares -- -numa
- * refused and an unsupported -smp population rejected -- checked
- * against the real Origin 200 machine.
+ * refused, an unsupported -smp population rejected, and a topology
+ * belonging to a different product refused -- checked against the
+ * real Origin 200 machine.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -87,6 +88,26 @@ static void test_unsupported_smp_population_rejected(const void *data)
                         "as 1 socket(s)");
 }
 
+static void test_topology_from_another_product_refused(const void *data)
+{
+    /*
+     * sgi_model_entries[] holds every product's topologies in one
+     * table; topology= names one by string alone, with no other
+     * check to keep a product on its own wiring. Origin 2000's
+     * "origin2000-module" descriptor already sits in that table (the
+     * format-2 goldens merge), unreachable through its own product
+     * only because Origin 2000 has no machine class here yet -- once
+     * it does, the same name would resolve just as well for Origin
+     * 200. This is refused the way any other unknown name is.
+     */
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200,topology=origin2000-module",
+        "-display", "none", NULL
+    };
+
+    assert_qemu_rejects(args, "unknown topology 'origin2000-module'");
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -103,6 +124,8 @@ int main(int argc, char **argv)
                         test_numa_refused);
     qtest_add_data_func("sn/builder/unsupported-smp-population-rejected",
                         NULL, test_unsupported_smp_population_rejected);
+    qtest_add_data_func("sn/builder/topology-from-another-product-refused",
+                        NULL, test_topology_from_another_product_refused);
 
     return g_test_run();
 }
