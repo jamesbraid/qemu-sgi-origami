@@ -70,6 +70,10 @@ config BOCHS_DISPLAY
     select VGA
     select EDID
 
+config PSITECH_RAD4
+    bool
+    depends on PCI
+
 config FRAMEBUFFER
     bool
 
