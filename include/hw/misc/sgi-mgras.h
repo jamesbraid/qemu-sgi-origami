@@ -57,6 +57,21 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
 #define SGI_MGRAS_RESET_ARG 0x011008
 #define SGI_MGRAS_RESET_CONTROL 0x072408
 
+/*
+ * The kernel driver's own I2C device probe, live-traced through a boot that
+ * reaches this code for the first time: it writes a strobe byte (0x40) to
+ * 0x073c88, writes a test byte (0x55, then 0xaa on the first pattern's
+ * failure) to 0x073c08, strobes 0x073c88 again, and reads 0x073c08 back,
+ * concluding a device answers only if the byte it reads matches the byte it
+ * just wrote -- a write/read-back loopback test, not a real I2C exchange.
+ * 0x073c08 stores whatever byte was last written and echoes it back, the
+ * same "accept as opaque state" treatment as the other undocumented
+ * registers above; 0x073c88 is never read back in this routine, so it is
+ * accepted but not otherwise modelled.
+ */
+#define SGI_MGRAS_I2C_SCRATCH 0x073c08
+#define SGI_MGRAS_I2C_STROBE 0x073c88
+
 struct SGIMgrasState {
     SysBusDevice parent_obj;
     MemoryRegion regs;
@@ -69,6 +84,7 @@ struct SGIMgrasState {
     uint32_t widget_control;
     uint32_t reset_arg;
     uint32_t reset_control;
+    uint32_t i2c_scratch;
     bool irq_asserted;
     /* Host-only qtest introspection; not guest state, not migrated. */
     uint32_t test_pixel_x;
