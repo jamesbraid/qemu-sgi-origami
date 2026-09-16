@@ -362,6 +362,7 @@ qtests_mips64 = \
                                                    'sn0-xframe-test',
                                                    'sn0-tigon-test',
                                                    'sn0-bcm570x-test',
+                                                   'psitech-rad4-test',
                                                    'sn0-hub-test',
                                                    'sn0-pi-error-test',
                                                    'sn0-i2c-test',
