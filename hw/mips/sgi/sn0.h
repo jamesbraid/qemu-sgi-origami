@@ -17,8 +17,170 @@
 #include "hw/misc/sgi-hub.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci/pci.h"
-#include "sn0-model.h"
 #include "sn-promdata.h"
+
+/*
+ * The shared SN0 node builder's own vocabulary: what sn0.c (the Hub node,
+ * common to every SN0 product) and the family builder (sn-machine.c) that
+ * feeds it need to construct one node. This is not a per-product
+ * descriptor -- the family builder populates these from the format-2
+ * descriptor (sn-model.h) once per node at machine-init time, the way it
+ * already builds SN0ModelComponent from SGIModelAsicIdentity. What used
+ * to be the whole per-product descriptor (SN0ModelComposition and the
+ * types only it needed: modules, routers, crossbows, xtalk attachments,
+ * I/O boards) is gone with the old descriptor and its compilers; a
+ * product's shape now comes from sn-model.h alone.
+ */
+
+typedef enum SN0ModelCpuKind {
+    SN0_CPU_R10000,
+} SN0ModelCpuKind;
+
+typedef enum SN0ModelComponentKind {
+    SN0_COMPONENT_HUB,
+    SN0_COMPONENT_BASE_IO,
+    SN0_COMPONENT_IOC3,
+    SN0_COMPONENT_ISP1040,
+} SN0ModelComponentKind;
+
+typedef struct SN0ModelAddressSpace {
+    unsigned int selector;
+    uint64_t carrier_base;
+    uint64_t unmapped_base;
+} SN0ModelAddressSpace;
+
+typedef struct SN0ModelRegion {
+    uint64_t offset;
+    uint64_t size;
+} SN0ModelRegion;
+
+typedef struct SN0ModelAddressMap {
+    uint64_t node_stride;
+    SN0ModelAddressSpace memory;
+    SN0ModelAddressSpace hub_special;
+    SN0ModelAddressSpace xtalk;
+    SN0ModelAddressSpace memory_special;
+    SN0ModelRegion node_memory;
+    SN0ModelRegion hub_registers_local;
+    SN0ModelRegion hub_registers_node;
+    SN0ModelRegion hub_local_memory;
+    SN0ModelRegion hub_remote_memory;
+    SN0ModelRegion backdoor_ecc;
+    SN0ModelRegion backdoor_directory;
+    SN0ModelRegion flash_reset;
+    const SN0ModelRegion *lboot;
+    SN0ModelRegion rboot;
+    SN0ModelRegion bridge_registers;
+} SN0ModelAddressMap;
+
+typedef struct SN0ModelComponent {
+    SN0ModelComponentKind kind;
+    uint8_t type;
+    uint8_t revision;
+    uint8_t ni_revision;
+    uint8_t widget_revision;
+    uint8_t physical_id;
+    uint8_t widget;
+    uint8_t device;
+    uint8_t function;
+    int8_t irq_input;
+    uint16_t subsystem_id;
+    uint32_t bar[2];
+    uint8_t cpu_irq_bank0;
+    uint8_t cpu_irq_bank1;
+    uint8_t cpu_irq_rt;
+    bool i2c_controller;
+    bool system_controller;
+    uint64_t i2c_controller_offset;
+    uint8_t i2c_elsc_addr;
+    uint8_t i2c_nvram_first_addr;
+    uint8_t i2c_nvram_pages;
+    uint8_t discovery_widget;
+    uint16_t decoded_widget_mask;
+    const char *part;
+    uint64_t serial;
+    uint8_t prom_pi_probe_widget;
+    uint64_t prom_pi_probe_offset;
+    uint64_t prom_pi_probe_window_offset;
+} SN0ModelComponent;
+
+typedef struct SN0ModelMemory {
+    unsigned int physical_banks;
+    unsigned int architectural_banks;
+    const uint64_t *supported_mib;
+    unsigned int supported_size_count;
+    uint64_t first_bank_max_mib;
+    uint64_t bank_stride_mib;
+    uint64_t interleave_slot_stride_mib;
+    unsigned int interleave_slots_per_bank;
+} SN0ModelMemory;
+
+typedef struct SN0ModelIoc3Population {
+    bool ethernet;
+    bool serial_a;
+    bool serial_b;
+    bool keyboard_mouse;
+    bool parallel;
+    bool timekeeper;
+    bool onewire_identity;
+} SN0ModelIoc3Population;
+
+/* The physical flash selection, independent of firmware contents. */
+typedef enum SN0ModelFlashKind {
+    SN0_FLASH_AM29F080,
+} SN0ModelFlashKind;
+
+typedef struct SN0ModelFlash {
+    SN0ModelFlashKind kind;
+} SN0ModelFlash;
+
+#define SN0_MODEL_MODULE_IDENTITY_PAGES 2
+#define SN0_MODEL_ONEWIRE_PAGE_SIZE 32
+
+typedef struct SN0ModelModuleIdentity {
+    uint8_t rom[8];
+    uint8_t page[SN0_MODEL_MODULE_IDENTITY_PAGES]
+                [SN0_MODEL_ONEWIRE_PAGE_SIZE];
+} SN0ModelModuleIdentity;
+
+typedef struct SN0ModelHardware {
+    SN0ModelCpuKind cpu_kind;
+    uint64_t cpu_clock_hz;
+    uint32_t cpu_mode_bits;
+    unsigned int cpu_slots_per_node;
+    uint64_t hub_clock_hz;
+    uint64_t rtc_clock_hz;
+    uint32_t firmware_machine_type;
+    uint32_t flash_read_cycles;
+    uint32_t flash_write_cycles;
+    SN0ModelMemory memory;
+} SN0ModelHardware;
+
+typedef struct SN0ModelPhysicalNode {
+    const char *id;
+    unsigned int module_index;
+    unsigned int slot;
+    unsigned int cpu_first_id;
+    unsigned int cpu_count;
+    uint64_t memory_mib;
+    uint64_t bank_mib[8];
+    const SN0ModelComponent *hub;
+    const SN0ModelModuleIdentity *module_identity;
+    SN0ModelAddressMap map;
+    SN0ModelFlash flash;
+} SN0ModelPhysicalNode;
+
+uint64_t sn0_model_node_address(const SN0ModelAddressMap *map,
+                                const SN0ModelAddressSpace *space,
+                                unsigned int nasid, uint64_t offset);
+uint64_t sn0_model_region_address(const SN0ModelAddressMap *map,
+                                  const SN0ModelAddressSpace *space,
+                                  unsigned int nasid,
+                                  const SN0ModelRegion *region,
+                                  uint64_t offset);
+bool sn0_model_memory_layout(const SN0ModelMemory *memory, uint64_t ram_size,
+                             uint16_t *bank_mb,
+                             unsigned int *populated_banks);
 
 /* Fixed storage capacities; each product supplies its active geometry. */
 #define SN0_MAX_MEMORY_BANKS 8
@@ -170,6 +332,12 @@ DECLARE_INSTANCE_CHECKER(SN0NodeState, SN0_NODE, TYPE_SGI_SN0_NODE)
 
 #define TYPE_SN0_MACHINE MACHINE_TYPE_NAME("sn0")
 
+/*
+ * The old, per-product descriptor (sn0-model.h): only sn0-origin2000.c
+ * and its Crosstalk assembly still need the full definition, through a
+ * pointer here.
+ */
+typedef struct SN0ModelComposition SN0ModelComposition;
 typedef struct SN0Origin2000XtalkState SN0Origin2000XtalkState;
 
 struct SN0MachineState {

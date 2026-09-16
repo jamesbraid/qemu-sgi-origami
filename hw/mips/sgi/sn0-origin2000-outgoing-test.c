@@ -9,6 +9,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/misc/sgi-xbow.h"
 #include "system/address-spaces.h"
+#include "sn0-model.h"
 #include "sn0-origin2000-io.h"
 
 #define TYPE_OUTGOING_TEST MACHINE_TYPE_NAME("origin2000-hub-outgoing-test")
