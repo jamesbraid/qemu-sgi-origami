@@ -42,8 +42,10 @@ static void assert_crossbow(QTestState *qts, const char *crossbow,
                     ==, links);
 }
 
-/* The shipped module: Crossbow 1 keeps three links (widgets 8-10), Crossbow
- * 2 keeps two (widgets 9-10); no XIO position is populated on either. */
+/*
+ * The shipped module: Crossbow 1 keeps three links (widgets 8-10), Crossbow
+ * 2 keeps two (widgets 9-10); no XIO position is populated on either.
+ */
 static void test_owner(void)
 {
     QTestState *qts = qtest_initf("-M origin2000 -m 256M "
