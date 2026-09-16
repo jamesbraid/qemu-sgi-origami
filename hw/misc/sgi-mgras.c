@@ -203,6 +203,7 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
                (s->manufacturer << 1) | 1;
     case SGI_MGRAS_INT_DEST_UPPER: return s->int_dest_upper;
     case SGI_MGRAS_INT_DEST_LOWER: return s->int_dest_lower;
+    case SGI_MGRAS_WIDGET_CONTROL: return s->widget_control;
     case 0x008000: return 0;
     case 0x011020: return s->pending;
     case 0x011040: return s->irq_mask;
@@ -255,6 +256,7 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     switch (addr) {
     case SGI_MGRAS_INT_DEST_UPPER: s->int_dest_upper = value; return;
     case SGI_MGRAS_INT_DEST_LOWER: s->int_dest_lower = value; return;
+    case SGI_MGRAS_WIDGET_CONTROL: s->widget_control = value; return;
     case 0x011000:
         /*
          * MgrasStart writes configuration here before the first context
@@ -366,6 +368,7 @@ static void si_reset(DeviceState *dev)
     s->display_enabled = s->cursor_enabled = false; s->fifo_count = 0;
     s->xmap_mode = 0x7a4; s->cmap_index = 0; s->retraces = 0;
     s->int_dest_upper = s->int_dest_lower = 0;
+    s->widget_control = 0;
     /*
      * Reset does not retroactively unsend an already-delivered packet, so
      * this clears the transition-detector directly rather than going
@@ -427,6 +430,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32(manufacturer, SGIMgrasState),
         VMSTATE_UINT32(int_dest_upper, SGIMgrasState),
         VMSTATE_UINT32(int_dest_lower, SGIMgrasState),
+        VMSTATE_UINT32(widget_control, SGIMgrasState),
         VMSTATE_BOOL(irq_asserted, SGIMgrasState),
         VMSTATE_UINT16(fifo_count, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(command, SGIMgrasState, 0x200),
