@@ -28,6 +28,11 @@ test_mips64_timeouts = {
   # flagged) per reset rather than a register poke. Same reasoning as
   # sn0_elsc_reset's budget for the same shape of exercise.
   'sn1_l1_reset' : 300,
+  # One VM launch, waiting only for the IP35 PROM's first console line:
+  # measured PASS in about a second end to end (2026-09-16, real boot
+  # against the stock 6.5.30 PROM). 60 keeps well over that plus launch/
+  # shutdown overhead, the same order of margin sn1_l1_reset keeps.
+  'origin300_prom' : 60,
   # One test method per origin200-matrix row whose speed column says quick,
   # in this one script (test_origin200_matrix.py). The synthesized-firmware
   # axis is gone, so the manifest's one quick row now boots the real PROM
@@ -184,6 +189,7 @@ tests_mips64_system_quick = [
   'sn0_port_reset',
   'sn0_elsc_reset',
   'sn1_l1_reset',
+  'origin300_prom',
   'mttcg_cause',
   'origin200_matrix',
   'origin2000_cache_reset',
