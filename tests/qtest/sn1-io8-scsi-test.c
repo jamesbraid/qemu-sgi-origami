@@ -24,6 +24,15 @@
 #define HUB_LOCAL_IO (SPACE_HUB + UINT64_C(0x10000000) + 0x400000)
 #define IO_INBOUND_ACCESS 0x118
 
+#define BEDROCK_NODE0 (SPACE_XTALK + UINT64_C(0x01800000))
+#define MD_MEMORY_CONFIG UINT64_C(0x780008)
+/*
+ * Origin 300's installed memory occupies locational banks 2 and 3, not
+ * bank 0: map software bank 0 onto them so the request and response
+ * rings, both under 4 MiB, land in backed RAM instead of an I/O hole.
+ */
+#define MD_INSTALLED_SELECT2 ((UINT64_C(2) << 32) | UINT64_C(0x3300))
+
 /* The machine refuses any other length, so the fixture matches it. */
 #define PROM_SIZE UINT64_C(0x1686a8)
 
@@ -434,6 +443,7 @@ static QTestState *machine_start_with_disks(DiskPair *disks)
                       " -drive if=none,id=d1,format=raw,file=%s"
                       " -device scsi-hd,bus=scsi.1,scsi-id=%u,drive=d1",
                       prom, file0, DISK_TARGET, file1, DISK_TARGET);
+    qtest_writeq(qts, BEDROCK_NODE0 + MD_MEMORY_CONFIG, MD_INSTALLED_SELECT2);
     io8_scsi_attach(qts);
     return qts;
 }
