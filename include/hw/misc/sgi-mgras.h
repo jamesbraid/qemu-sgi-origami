@@ -11,6 +11,8 @@
 OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
 
 #define SGI_MGRAS_MMIO_SIZE (2 * MiB)
+/* The selected direct-command FIFO depth (design's own approximation). */
+#define SGI_MGRAS_FIFO_DEPTH 256
 #define SGI_MGRAS_WIDTH 1280
 #define SGI_MGRAS_HEIGHT 1024
 
@@ -38,6 +40,11 @@ struct SGIMgrasState {
     uint32_t int_dest_upper;
     uint32_t int_dest_lower;
     bool irq_asserted;
+    /* Host-only qtest introspection; not guest state, not migrated. */
+    uint32_t test_pixel_x;
+    uint32_t test_pixel_y;
+    uint64_t test_last_interrupt_addr;
+    uint64_t test_last_interrupt_value;
     QEMUTimer *retrace_timer;
     uint32_t *front;
     uint32_t *back;
@@ -74,9 +81,6 @@ struct SGIMgrasState {
     uint32_t cursor_y;
     uint32_t cmap_index;
     uint32_t cmap[256];
-    uint32_t fifo[256 * 2];
-    uint16_t fifo_head;
-    uint16_t fifo_tail;
     uint16_t fifo_count;
     uint32_t command[0x200];
     uint8_t command_valid[0x200];

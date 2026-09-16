@@ -280,6 +280,13 @@ elif not config_all_devices.has_key('CONFIG_PCI_BRIDGE') or \
                         'sn1-xbridge-xbow-test']
 endif
 
+sn0_mgras_qtests = \
+  (config_all_devices.has_key('CONFIG_SGI_SN0') ?
+    ['sn0-origin2000-mgras-test'] : [])
+if not config_all_devices.has_key('CONFIG_SGI_MGRAS')
+  sn0_mgras_qtests = []
+endif
+
 # The Crossbow qtest builds its own populated switch out of test-only
 # Crosstalk endpoints.  Keep the registration under the machine guard, then
 # omit it where that fixture is not present in a minimal device build.
@@ -397,6 +404,7 @@ qtests_mips64 = \
   sn0_xbow_qtests + \
   sn0_xbow_transport_qtests + \
   sn1_xbridge_qtests + \
+  sn0_mgras_qtests + \
   sgi_xtalk_board_qtests + \
   sgi_board_qtests
 
