@@ -293,16 +293,19 @@ static void test_framebuffer_mask(void)
 {
     QTestState *qts = rad4_init();
 
-    /* Full mask by default: an ordinary pixel write is stored. */
+    /* Full mask by default: an ordinary pixel write is stored whole. */
     bar2_write(qts, 0x000000, 0x00ff0080u);
     g_assert_cmphex(bar2_read(qts, 0x000000), ==, 0x00ff0080u);
 
-    /* An unsupported mask drops later framebuffer writes. */
+    /*
+     * A partial mask is a plane mask: only the masked bits of the
+     * write take effect, the rest of the existing pixel is preserved.
+     */
     bar2_write(qts, B_MASK, 0x0000ffffu);
     bar2_write(qts, 0x000004, 0x00112233u);
-    g_assert_cmphex(bar2_read(qts, 0x000004), ==, 0);
+    g_assert_cmphex(bar2_read(qts, 0x000004), ==, 0x00002233u);
 
-    /* Restoring the full mask re-enables framebuffer writes. */
+    /* Restoring the full mask lets a write replace the whole pixel. */
     bar2_write(qts, B_MASK, 0xffffffffu);
     bar2_write(qts, 0x000004, 0x00112233u);
     g_assert_cmphex(bar2_read(qts, 0x000004), ==, 0x00112233u);

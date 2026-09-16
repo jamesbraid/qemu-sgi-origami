@@ -197,7 +197,6 @@ struct PsitechRad4State {
     /* BAR2 framebuffer and mask. */
     uint8_t *framebuffer;
     uint32_t mask;
-    bool mask_supported;
 
     /* RGB561 indexed register file. */
     uint8_t rgb_index_low;
@@ -617,12 +616,6 @@ static const MemoryRegionOps rad4_romroute_ops = {
 static void rad4_apply_mask_write(PsitechRad4State *s, uint32_t val)
 {
     s->mask = val;
-    s->mask_supported = (val == 0xffffffffu);
-    if (!s->mask_supported) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                     "psitech-rad4: unsupported pixel mask 0x%08x, "
-                     "framebuffer writes dropped until restored\n", val);
-    }
 }
 
 static uint64_t rad4_bar2_read(void *opaque, hwaddr addr, unsigned size)
@@ -685,13 +678,9 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
     uint32_t v = val;
 
     if (offset < RAD4_FB_SIZE) {
-        if (s->mask_supported) {
-            stl_be_p(s->framebuffer + offset, v);
-        } else {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                         "psitech-rad4: framebuffer write at +0x%06x "
-                         "dropped under unsupported mask\n", offset);
-        }
+        uint32_t old = ldl_be_p(s->framebuffer + offset);
+
+        stl_be_p(s->framebuffer + offset, (old & ~s->mask) | (v & s->mask));
         return;
     }
     if (offset >= RAD4_BAR2_VERT &&
@@ -799,7 +788,6 @@ static void rad4_reset_hold(Object *obj, ResetType type)
 
     memset(s->framebuffer, 0, RAD4_FB_SIZE);
     s->mask = 0xffffffffu;
-    s->mask_supported = true;
 
     s->rgb_index_low = 0;
     s->rgb_index_high = 0;
@@ -898,7 +886,6 @@ static const VMStateDescription vmstate_psitech_rad4 = {
         VMSTATE_BUFFER_POINTER_UNSAFE(framebuffer, PsitechRad4State, 1,
                                       RAD4_FB_SIZE),
         VMSTATE_UINT32(mask, PsitechRad4State),
-        VMSTATE_BOOL(mask_supported, PsitechRad4State),
         VMSTATE_UINT8(rgb_index_low, PsitechRad4State),
         VMSTATE_UINT8(rgb_index_high, PsitechRad4State),
         VMSTATE_BUFFER_POINTER_UNSAFE(rgb_store, PsitechRad4State, 1,
