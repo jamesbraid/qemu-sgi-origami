@@ -172,7 +172,19 @@ typedef struct {
     const char *machine;
     const char *args;       /* what it needs besides -bios and -accel */
     size_t image_size;      /* the only size the machine accepts, or 0 */
+    void (*prepare)(QTestState *qts);
 } Recipe;
+
+#define ORIGIN300_BEDROCK_MD_MEMORY_CONFIG UINT64_C(0x20001f80008)
+#define ORIGIN300_MD_INSTALLED_SELECT2 \
+    ((UINT64_C(2) << 32) | UINT64_C(0x3300))
+
+static void prepare_origin300(QTestState *qts)
+{
+    /* Map the installed banks over the synthetic guest's low-memory state. */
+    qtest_writeq(qts, ORIGIN300_BEDROCK_MD_MEMORY_CONFIG,
+                 ORIGIN300_MD_INSTALLED_SELECT2);
+}
 
 /*
  * How each machine takes a raw image at the reset vector.  A machine
@@ -183,7 +195,7 @@ typedef struct {
 static const Recipe recipes[] = {
     { "origin200", "-M origin200 -m 128M -smp 2", 0 },
     { "origin2000", "-M origin2000", 0 },
-    { "origin300", "-M origin300", 0x1686a8 },
+    { "origin300", "-M origin300", 0x1686a8, prepare_origin300 },
 };
 
 static const char *const r10000_family[] = {
@@ -861,21 +873,23 @@ static uint64_t check_delivery(Run *r, unsigned int go, unsigned int ip,
     return worst;
 }
 
-static void boot(Run *r, const char *args, size_t image_size,
-                 Program program)
+static void boot(Run *r, const Recipe *recipe, Program program)
 {
     g_autofree SN0Image *image = g_new0(SN0Image, 1);
     g_autofree char *path = NULL;
 
     build_image(image, program);
-    path = write_image(image, image_size);
+    path = write_image(image, recipe->image_size);
     r->qts = qtest_initf("%s -bios %s -accel tcg,thread=multi -S",
-                         args, path);
+                         recipe->args, path);
     unlink(path);
 
     r->cpus = count_cpus(r->qts);
     g_assert_cmpuint(r->cpus, >=, 1);
     g_assert_cmpuint(r->cpus, <=, MAX_CPUS);
+    if (recipe->prepare) {
+        recipe->prepare(r->qts);
+    }
     discover_views(r);
     g_free(qtest_hmp(r->qts, "sync-profile on"));
     qtest_qmp_assert_success(r->qts, "{ 'execute': 'cont' }");
@@ -912,7 +926,7 @@ static void test_count_wrap(const void *data)
         return;
     }
 
-    boot(&r, recipe->args, recipe->image_size, PROGRAM_COUNT_WRAP);
+    boot(&r, recipe, PROGRAM_COUNT_WRAP);
     clear = run_phase(&r, 1);
     masked = run_phase(&r, 2);
     unmask = run_phase(&r, 3);
@@ -951,7 +965,7 @@ static void test_steady_state(const void *data)
         return;
     }
 
-    boot(&r, recipes[0].args, recipes[0].image_size, PROGRAM_STEADY_STATE);
+    boot(&r, &recipes[0], PROGRAM_STEADY_STATE);
     g_assert_cmpuint(r.cpus, ==, 2);
     compute = run_phase(&r, 1);
     device_line = run_phase(&r, 2);
