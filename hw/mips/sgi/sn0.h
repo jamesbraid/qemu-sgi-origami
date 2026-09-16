@@ -244,7 +244,16 @@ void sn0_model_configure_junk_uart(SN0MachineState *s,
 /* Call once in order; set optional node links between these two phases. */
 void sn0_origin2000_prepare_nodes(MachineState *machine);
 void sn0_origin2000_realize_nodes(MachineState *machine);
-void sn0_map_cpu_big_windows(SN0MachineState *s);
+/*
+ * Shared by every product: one nameless big-window alias per CPU plus
+ * one routed alias per (source CPU, target node) pair. owner parents
+ * the new MemoryRegions; *route_out receives the array so the caller
+ * can free it (nothing frees it today; the machine object outlives the
+ * process, as sn0_instance_finalize's own comment notes).
+ */
+void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
+                             unsigned int num_nodes,
+                             MemoryRegion **route_out);
 
 extern const SN0FlashImplementation sn0_flash;
 
