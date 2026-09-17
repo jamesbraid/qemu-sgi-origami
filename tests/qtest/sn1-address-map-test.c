@@ -1119,11 +1119,20 @@ static void test_xbridge_topology(const void *data)
     g_assert_cmphex(WIDGET_MFG(identity), ==, XBRIDGE_HEAD_MFG);
     g_assert_cmphex(identity & 1, ==, 1);
 
+    /*
+     * The onboard IO-8 (sgi-io8) is a crosstalk board like every other
+     * product's onboard I/O now, reparented under its module and the
+     * fixed crosstalk port the whole chip answers on (host-port 0xa)
+     * rather than living directly under the node; its own "chip" child
+     * is the XBridge this test otherwise reads through xtalk_reg_*.
+     * "board-part-f" now defaults to the origin300-base.yaml catalogue's
+     * own captured part for this board, not the chip's placeholder.
+     */
     response = qtest_qmp(qts,
         "{'execute':'qom-get', 'arguments':{"
-        "'path':'/machine/node0/xbridge', 'property':'board-part-f'}}");
+        "'path':'/machine/module0/slot10/chip', 'property':'board-part-f'}}");
     g_assert_cmpstr(qdict_get_try_str(response, "return"), ==,
-                    "NOT-OBSERVED");
+                    "030-1673-003");
 
     xtalk_reg_write(qts, 0xe, 0x20, 0x0f00320e);
     g_assert_cmphex(xtalk_reg_read(qts, 0xe, 0x20), ==, 0x0f00321e);

@@ -80,8 +80,17 @@ unsigned int sgi_machine_topology_default_cpus(const SGIModelTopology *t);
 unsigned int sgi_machine_product_max_cpus(const char *product);
 uint64_t sgi_machine_topology_default_ram(const SGIModelTopology *t);
 
-/* An IOC3 population mask from the descriptor's boolean fields. */
-uint32_t sgi_machine_ioc3_population(const SGIModelIoc3Population *population);
+/*
+ * Builds and realizes a Bedrock topology's one onboard I/O board (today
+ * always sgi-io8) from its populated io_boards[] record, wiring its
+ * "fabric" link to the region the caller supplies. Exposed for
+ * sn1-node.c: see the definition's own comment for why the node, not
+ * this builder, is the one that calls it, and when.
+ */
+DeviceState *sgi_machine_build_bedrock_io_board(const SGIModelIoBoard *record,
+                                                unsigned int slot,
+                                                MemoryRegion *fabric,
+                                                Error **errp);
 
 /*
  * Copies the machine's own chassis-eeprom/board-eeprom/spd-eeprom
