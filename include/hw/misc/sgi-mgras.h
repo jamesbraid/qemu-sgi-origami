@@ -235,6 +235,25 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
  */
 #define SGI_MGRAS_RE_ARG 0x071e80
 
+/*
+ * The VC3 SRAM self-test's own write/read register. The driver's
+ * MgrasLoadVC3SRAM routine picks one of several fixed values (based on a
+ * discovered per-unit configuration byte) and writes it here, then calls
+ * MgrasVerifyVC3SRAM, which writes an address/mode word here before
+ * reading it back -- disassembly shows both routines touch only this one
+ * offset, never an address range, so this is a single scalar register
+ * rather than a window onto a larger SRAM array. Its own bit layout was
+ * never captured, so it gets the same opaque, plain-storage treatment as
+ * this device's other undocumented registers: whatever the guest writes,
+ * it reads back unchanged. The device's original stub instead indexed a
+ * 64-entry array by bits of the written value, which never round-tripped
+ * a write back to the same read -- exactly the "VC3SRAM verify failed"
+ * failure a live boot reached once the driver's own hardware
+ * self-verification step could run for the first time in this project's
+ * history.
+ */
+#define SGI_MGRAS_VC3_SRAM 0x072000
+
 struct SGIMgrasState {
     SysBusDevice parent_obj;
     MemoryRegion regs;
@@ -316,7 +335,7 @@ struct SGIMgrasState {
     uint8_t command_valid[0x200];
     uint64_t retraces;
     uint32_t xmap_mode;
-    uint32_t vc3[64];
+    uint32_t vc3_sram;
     uint32_t revision;
     uint32_t part;
     uint32_t manufacturer;

@@ -213,6 +213,7 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
     case SGI_MGRAS_SCRATCH_COMMAND: return s->scratch_command;
     case SGI_MGRAS_BRINGUP_ARG_3: return s->bringup_arg_3;
     case SGI_MGRAS_VC3_ARG: return s->vc3_arg;
+    case SGI_MGRAS_VC3_SRAM: return s->vc3_sram;
     case SGI_MGRAS_RE_ARG: return s->re_arg;
     case SGI_MGRAS_RESET_CONTROL: return s->reset_control;
     case SGI_MGRAS_I2C_SCRATCH: return s->i2c_scratch;
@@ -455,7 +456,7 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
             s->cursor_enabled = ((value & 0x1d000000) == 0x1d000000);
         }
         return;
-    case 0x072000: s->vc3[(value >> 2) & 63] = value; s->display_enabled = true; return;
+    case SGI_MGRAS_VC3_SRAM: s->vc3_sram = value; s->display_enabled = true; return;
     default: break;
     }
     if (addr >= 0x050000 && addr < 0x050000 + sizeof(s->hq) && size == 4) {
@@ -556,6 +557,7 @@ static void si_reset(DeviceState *dev)
     s->scratch_command = 0;
     s->bringup_arg_3 = 0;
     s->vc3_arg = 0;
+    s->vc3_sram = 0;
     s->re_arg = 0;
     /*
      * Reset does not retroactively unsend an already-delivered packet, so
@@ -649,6 +651,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT64(scratch_command, SGIMgrasState),
         VMSTATE_UINT32(bringup_arg_3, SGIMgrasState),
         VMSTATE_UINT32(vc3_arg, SGIMgrasState),
+        VMSTATE_UINT32(vc3_sram, SGIMgrasState),
         VMSTATE_UINT32(re_arg, SGIMgrasState),
         VMSTATE_BOOL(irq_asserted, SGIMgrasState),
         VMSTATE_UINT16(fifo_count, SGIMgrasState),
