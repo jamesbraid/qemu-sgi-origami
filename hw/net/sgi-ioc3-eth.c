@@ -118,11 +118,41 @@ static bool sgi_ioc3_eth_looping_back(SGIIOC3EthState *s)
     return sgi_ioc3_eth_mac_loopback(s) || dp83840_in_loopback(&s->phy);
 }
 
+/*
+ * True when a completion still held behind the arrival floor already names
+ * this buffer address. The floor writes a frame's bytes into its buffer as
+ * soon as the backend hands it over, but defers the header word, the index
+ * and the interrupt that tell the guest so; a second frame landing in the
+ * same buffer before the first of those completions publishes would
+ * overwrite bytes the guest has not been told about yet, so the earlier
+ * frame is silently lost while its own completion still reports the slot
+ * as delivered. Real hardware cannot receive a second frame before the
+ * first's DMA and index update are done, so this is this model's own
+ * queueing to prevent, not a hardware contract to reproduce.
+ */
+static bool sgi_ioc3_eth_rx_pending(SGIIOC3EthState *s, uint64_t buf_addr)
+{
+    uint32_t i;
+
+    for (i = 0; i < s->rx_latency.count; i++) {
+        uint32_t slot = (s->rx_latency.head + i) % SGI_NET_RX_LATENCY_DEPTH;
+        const SGIIOC3EthRxDone *done =
+            (const SGIIOC3EthRxDone *)s->rx_latency.ring[slot].record;
+
+        if (done->buf_addr == buf_addr) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static bool sgi_ioc3_eth_can_receive(NetClientState *nc)
 {
     SGIIOC3EthState *s = SGI_IOC3_ETH(qemu_get_nic_opaque(nc));
     uint32_t mcr = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_MAC_CONTROL);
     uint32_t need = SGI_IOC3_ENET_MCR_RX_DMA_EN | SGI_IOC3_ENET_MCR_RX_EN;
+    uint32_t produce;
+    uint64_t ring_base, buf_addr;
 
     if (s->defer_backend_rx) {
         s->backend_rx_deferred = true;
@@ -146,8 +176,32 @@ static bool sgi_ioc3_eth_can_receive(NetClientState *nc)
      * Against the staged index, not the published one: a buffer whose
      * completion is still held has already been used.
      */
-    return (sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_PRODUCE) &
-           SGI_IOC3_ENET_RX_INDEX_MASK) != s->rx_consume_staged;
+    produce = sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_PRODUCE) &
+             SGI_IOC3_ENET_RX_INDEX_MASK;
+    if (produce == s->rx_consume_staged) {
+        return false;
+    }
+
+    /*
+     * A driver keeps far fewer physical buffers than the ring has slots and
+     * reposts one into a later slot once it has serviced the frame sitting
+     * there. Peek at the buffer that slot names before staging anything
+     * into it: if a completion for an earlier use of the same address is
+     * still held, wait for it to publish rather than overwrite it. A
+     * refused entry fetch is not this check's to report; deliver() makes
+     * and logs that same read shortly after and drops the frame there.
+     */
+    ring_base = ((uint64_t)sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_RING_HI)
+                << 32) |
+               (sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_RING_LO) &
+                SGI_IOC3_ENET_RX_BASE_MASK);
+    if (ldq_be_dma(&s->dma_as, ring_base + s->rx_consume_staged, &buf_addr,
+                   MEMTXATTRS_UNSPECIFIED) == MEMTX_OK &&
+        sgi_ioc3_eth_rx_pending(s, buf_addr)) {
+        return false;
+    }
+
+    return true;
 }
 
 static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
