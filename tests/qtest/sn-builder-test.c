@@ -38,6 +38,39 @@ static void assert_qemu_rejects(const char *const args[], const char *message)
     g_assert_nonnull(strstr(error_output, message));
 }
 
+/*
+ * The QOM type of the named child of a qom-list'd parent, or NULL if no
+ * such child exists: proves which board class the builder actually
+ * instantiated at a slot, independent of any property both board
+ * classes happen to share.
+ */
+static char *qom_child_type(QTestState *qts, const char *parent,
+                            const char *child)
+{
+    QDict *response = qtest_qmp(qts, "{ 'execute': 'qom-list',"
+                                     " 'arguments': { 'path': %s } }",
+                                     parent);
+    QList *children;
+    const QListEntry *entry;
+    char *found = NULL;
+
+    g_assert_true(qdict_haskey(response, "return"));
+    children = qdict_get_qlist(response, "return");
+    for (entry = qlist_first(children); entry; entry = qlist_next(entry)) {
+        QDict *item = qobject_to(QDict, qlist_entry_obj(entry));
+        const char *type = qdict_get_try_str(item, "type");
+
+        if (type && g_str_has_prefix(type, "child<") &&
+            g_str_equal(qdict_get_str(item, "name"), child)) {
+            found = g_strndup(type + strlen("child<"),
+                              strlen(type) - strlen("child<") - 1);
+        }
+    }
+
+    qobject_unref(response);
+    return found;
+}
+
 static void assert_fault_rejected(const char *fault, const char *message)
 {
     g_autofree char *machine = g_strdup_printf("sn-builder-fault-test,"
@@ -107,6 +140,13 @@ static void test_duplicate_link_end(const void *data)
 {
     assert_fault_rejected("duplicate-link-end",
                           "links 'link1' and 'link0' share one fabric end");
+}
+
+static void test_unsupported_io_board_kind(const void *data)
+{
+    assert_fault_rejected("unsupported-io-board-kind",
+                          "io board 'test-board' names an unsupported "
+                          "board kind");
 }
 
 static void test_unknown_fault_reported(const void *data)
@@ -260,6 +300,35 @@ static void test_console_field_puts_its_node_on_serial_line_zero(
     qtest_quit(qts);
 }
 
+/*
+ * The builder dispatches io_boards[] entries on the descriptor's own
+ * board_kind alone (sgi_machine_io_board_type), not on how the board
+ * attaches: Origin 200's onboard board and Origin 2000's BaseIO both
+ * attach at widget 8 on their own module, and both happen to also
+ * differ by attachment kind (direct vs. Crossbow), which is exactly
+ * what let a board_kind data defect go unnoticed before. Checking the
+ * actual QOM type this builds, not merely that something builds, is
+ * what a heuristic that happened to agree on both shipped products
+ * could not catch.
+ */
+static void test_origin200_onboard_board_is_ip29_io(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -display none");
+    g_autofree char *type = qom_child_type(qts, "/machine/module0", "slot8");
+
+    g_assert_cmpstr(type, ==, "sgi-ip29-io");
+    qtest_quit(qts);
+}
+
+static void test_origin2000_onboard_board_is_baseio(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin2000 -display none");
+    g_autofree char *type = qom_child_type(qts, "/machine/module0", "slot8");
+
+    g_assert_cmpstr(type, ==, "sgi-baseio");
+    qtest_quit(qts);
+}
+
 static void test_unsupported_memory_population_rejected(const void *data)
 {
     /*
@@ -300,6 +369,8 @@ int main(int argc, char **argv)
                         test_router_port_out_of_range);
     qtest_add_data_func("sn/builder/duplicate-link-end", NULL,
                         test_duplicate_link_end);
+    qtest_add_data_func("sn/builder/unsupported-io-board-kind", NULL,
+                        test_unsupported_io_board_kind);
     qtest_add_data_func("sn/builder/unknown-fault-reported", NULL,
                         test_unknown_fault_reported);
     qtest_add_data_func("sn/builder/numa-refused", NULL,
@@ -321,6 +392,10 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn/builder/origin2000-module-accepts-its-populations", NULL,
         test_origin2000_module_accepts_its_populations);
+    qtest_add_data_func("sn/builder/origin200-onboard-board-is-ip29-io", NULL,
+                        test_origin200_onboard_board_is_ip29_io);
+    qtest_add_data_func("sn/builder/origin2000-onboard-board-is-baseio", NULL,
+                        test_origin2000_onboard_board_is_baseio);
 
     return g_test_run();
 }
