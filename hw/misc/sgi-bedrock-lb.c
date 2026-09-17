@@ -2,6 +2,7 @@
 /* Bedrock local block: bounded register storage and atomic scratch aliases. */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-bedrock-lb.h"
+#include "hw/misc/sgi-bedrock.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/misc/sgi-onewire-slot.h"
@@ -280,6 +281,18 @@ static void lb_write(void *opaque, hwaddr offset, uint64_t value,
     if (offset >= LB_SCRATCH_BASE && offset < LB_SCRATCH_BASE + 5 * 8) {
         unsigned index = (offset - LB_SCRATCH_BASE) / 8;
 
+        /*
+         * Scratch 1 is the stock PROM's inter-processor rendezvous mailbox
+         * (docs/known-issues.md, docs/datasheets/bedrock-local-block.md);
+         * the owning node arbitrates a multi-threaded-TCG hold there. A
+         * standalone device under a register-contract qtest has no owning
+         * node (s->bedrock is only set by sgi-bedrock.c's bedrock_realize())
+         * and stores the value directly, as before.
+         */
+        if (index == 1 && s->bedrock) {
+            sgi_bedrock_hold_scratch1_write(s->bedrock, value);
+            return;
+        }
         s->scratch[index] = index < 3 ? value : value & 1;
         return;
     }

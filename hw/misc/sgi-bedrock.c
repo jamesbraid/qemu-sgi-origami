@@ -2,12 +2,18 @@
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-bedrock.h"
 #include "hw/misc/sgi-l1.h"
+#include "hw/core/cpu.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
 #include "qapi/error.h"
 #include "qemu/host-utils.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h"
 #include "qemu/module.h"
+#include "qemu/timer.h"
+#include "system/cpus.h"
+#include "system/tcg.h"
+#include "trace.h"
 
 #define BEDROCK_REMOTE_REGISTERS_SIZE 0x8000000
 #define BEDROCK_L1_UART_OFFSET 0x80
@@ -20,6 +26,370 @@ bool sgi_bedrock_hub_registers_permitted(SGIBedrockState *s)
 {
     return s->initiator_region < 64 &&
            (s->md.current_cell & (UINT64_C(1) << s->initiator_region));
+}
+
+/*
+ * The multi-threaded rendezvous hold at LB scratch 1 (H1). See the struct's
+ * own comment in sgi-bedrock.h and docs/known-issues.md for what this
+ * approximates and why: the stock PROM meets a node's processors at this
+ * register, on the assumption that real processors leave reset on the same
+ * edge and run continuously, which a host thread does not. A bounded hold
+ * restores that assumption for a bounded time, the same shape as
+ * sgi-hub.c's RT-mailbox hold (sgi_hub_rt_hold and neighbors, ~line 1440
+ * onward): queued work on the held vCPU's own thread, waiting on its halt
+ * condition with the BQL released, yielding to other queued work and
+ * resuming behind it, and ending on a stop, a deliverable interrupt, a
+ * partner that can no longer run, or SGI_BEDROCK_HOLD_MS.
+ *
+ * This hold differs from the Hub's in shape, not in mechanism: the Hub
+ * always holds one processor against one fixed partner. H1 joins across
+ * every populated processor of the node -- up to three partners in the
+ * four-CPU case -- so a hold's condition is a predicate recomputed fresh on
+ * every wake (bedrock_hold_ready) rather than a single tagged event a
+ * setter answers once (contrast sgi_hub_rt_release, which flips a specific
+ * hold kind). Waking a hold here (bedrock_hold_wake_kind) only kicks it
+ * back into its own loop to re-check that predicate.
+ *
+ * One deliberate deviation from the Hub template: sgi_hub_slice_can_read()
+ * requires the partner's pi_cpu_enable, because on SN0 that register
+ * really controls whether the Hub's vCPU is scheduled at all
+ * (sgi_hub_set_cpu_enable calls through to a halt/unhalt run_on_cpu). On
+ * this Origin 300 model every populated processor's vCPU runs
+ * unconditionally from sn1_machine_reset() regardless of the Bedrock PI's
+ * own cpu-enable register (see hw/mips/sgi/sn1.c); Bedrock's cpu-enable
+ * GPIO output is not wired to anything in hw/mips/sgi/sn1-node.c, and
+ * cpu-enable-initial-mask leaves exactly one physical slot enabled at
+ * reset (sn1-node.c: "Initial C grant is a model approximation"). The very
+ * race H1 exists to close is between that one initially-enabled processor
+ * and a populated sibling whose own cpu-enable bit is still clear at the
+ * moment of the race. Gating bedrock_hold_slot_running() on cpu-enable
+ * would therefore exclude the sibling from the join and silently disable
+ * the hold in exactly the case it is meant to fix. "Present, running" here
+ * is population (processor-mask) plus real vCPU schedulability (not
+ * halted, cpu_can_run()); the PI cpu-enable register plays no part.
+ */
+
+#define SGI_BEDROCK_HOLD_MS 2000 /* mirrors sgi-hub.c's SGI_HUB_RT_HOLD_MS */
+
+typedef struct SGIBedrockHold {
+    SGIBedrockState *bedrock;
+    unsigned int slot;
+    uint64_t id;
+    int64_t start; /* realtime it first ran; a yield keeps the deadline */
+} SGIBedrockHold;
+
+static void bedrock_hold_run(CPUState *cs, run_on_cpu_data data);
+
+/* The physical slot (0..3: A, B, C, D) the executing processor is, or -1. */
+static int bedrock_hold_current_slot(SGIBedrockState *s)
+{
+    unsigned int logical = s->cpu_base;
+
+    if (!current_cpu) {
+        return -1;
+    }
+    for (unsigned int physical = 0; physical < SGI_BEDROCK_PROCESSORS;
+         physical++) {
+        if (!(s->processor_mask & (1U << physical))) {
+            continue;
+        }
+        if (current_cpu->cpu_index == logical) {
+            return (int)physical;
+        }
+        logical++;
+    }
+    return -1;
+}
+
+/* A physical slot's CPUState, resolved once and cached; NULL if absent. */
+static CPUState *bedrock_hold_cpu(SGIBedrockState *s, unsigned int physical)
+{
+    unsigned int logical = s->cpu_base;
+
+    if (unlikely(!s->hold_cpu[physical])) {
+        if (!(s->processor_mask & (1U << physical))) {
+            return NULL;
+        }
+        for (unsigned int p = 0; p < physical; p++) {
+            if (s->processor_mask & (1U << p)) {
+                logical++;
+            }
+        }
+        s->hold_cpu[physical] = qemu_get_cpu(logical);
+    }
+    return s->hold_cpu[physical];
+}
+
+/*
+ * Populated and actually able to run -- see the deviation from the Hub
+ * template above for why this does not also check the PI cpu-enable
+ * register.
+ */
+static bool bedrock_hold_slot_running(SGIBedrockState *s,
+                                      unsigned int physical)
+{
+    CPUState *cs;
+
+    if (!(s->processor_mask & (1U << physical))) {
+        return false;
+    }
+    cs = bedrock_hold_cpu(s, physical);
+    return cs && !cs->halted && cpu_can_run(cs);
+}
+
+/* Whether a hold is worth taking at all: this node has someone to wait on. */
+static bool bedrock_hold_applicable(SGIBedrockState *s)
+{
+    unsigned int running = 0;
+
+    if (!tcg_enabled()) {
+        return false;
+    }
+    for (unsigned int p = 0; p < SGI_BEDROCK_PROCESSORS; p++) {
+        if (bedrock_hold_slot_running(s, p)) {
+            running++;
+        }
+    }
+    return running >= 2;
+}
+
+/*
+ * H1's join: every other present, running processor has made its first
+ * scratch-1 write since reset.
+ */
+static bool bedrock_hold_scratch1_ready(SGIBedrockState *s)
+{
+    for (unsigned int p = 0; p < SGI_BEDROCK_PROCESSORS; p++) {
+        if (bedrock_hold_slot_running(s, p) && !s->hold_scratch1_seen[p]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool bedrock_hold_ready(SGIBedrockState *s, unsigned int slot,
+                               SGIBedrockHoldKind kind)
+{
+    return bedrock_hold_scratch1_ready(s);
+}
+
+/*
+ * Land a processor's own withheld scratch-1 write, if one is waiting. Every
+ * caller is an access by that same processor that must not observe a post
+ * it has already taken back.
+ */
+static void bedrock_hold_flush_scratch1(SGIBedrockState *s,
+                                        unsigned int slot)
+{
+    if (!s->hold_scratch1_withheld_valid[slot]) {
+        return;
+    }
+    s->lb.scratch[1] = s->hold_scratch1_withheld[slot];
+    s->hold_scratch1_withheld_valid[slot] = false;
+}
+
+static const char *bedrock_hold_kind_name(SGIBedrockHoldKind kind)
+{
+    return kind == SGI_BEDROCK_HOLD_SCRATCH1 ? "scratch1" : "scratch0";
+}
+
+/*
+ * Kick every processor currently held on this register, so each re-checks
+ * its own join condition; mirrors sgi_hub_rt_release's wake, adapted for an
+ * N-way join where the setter cannot itself say which holds now clear.
+ */
+static void bedrock_hold_wake_kind(SGIBedrockState *s,
+                                   SGIBedrockHoldKind kind)
+{
+    for (unsigned int slot = 0; slot < SGI_BEDROCK_PROCESSORS; slot++) {
+        CPUState *cs;
+
+        if (!s->hold_id[slot] || s->hold_kind[slot] != kind) {
+            continue;
+        }
+        cs = bedrock_hold_cpu(s, slot);
+        if (cs) {
+            trace_sgi_bedrock_hold_wake(current_cpu ? current_cpu->cpu_index
+                                                     : -1, cs->cpu_index,
+                                        s->hold_id[slot]);
+            qemu_cpu_kick(cs);
+        }
+    }
+}
+
+static void bedrock_hold_start(SGIBedrockState *s, unsigned int slot,
+                               SGIBedrockHoldKind kind)
+{
+    SGIBedrockHold *hold = g_new0(SGIBedrockHold, 1);
+
+    hold->bedrock = SGI_BEDROCK(object_ref(OBJECT(s)));
+    hold->slot = slot;
+    hold->id = ++s->hold_seq;
+    s->hold_id[slot] = hold->id;
+    s->hold_kind[slot] = kind;
+    trace_sgi_bedrock_hold_begin(current_cpu->cpu_index,
+                                 bedrock_hold_kind_name(kind), slot,
+                                 qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
+                                 hold->id);
+    async_run_on_cpu(current_cpu, bedrock_hold_run, RUN_ON_CPU_HOST_PTR(hold));
+}
+
+static void bedrock_hold_run(CPUState *cs, run_on_cpu_data data)
+{
+    SGIBedrockHold *hold = data.host_ptr;
+    SGIBedrockState *s = hold->bedrock;
+    unsigned int slot = hold->slot;
+    SGIBedrockHoldKind kind = s->hold_kind[slot];
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    int64_t deadline;
+    const char *outcome;
+    bool yield = false;
+    int wait_ms;
+
+    if (!hold->start) {
+        hold->start = now;
+    }
+    deadline = hold->start + SGI_BEDROCK_HOLD_MS * SCALE_MS;
+
+    for (;;) {
+        now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+        if (s->hold_id[slot] != hold->id) {
+            outcome = "answered";
+        } else if (bedrock_hold_ready(s, slot, kind)) {
+            outcome = "satisfied";
+        } else if (cs->stop || cs->unplug) {
+            outcome = "preempted by a stop";
+        } else if (cpu_has_work(cs)) {
+            outcome = "preempted by an interrupt";
+        } else if (!cpu_work_list_empty(cs)) {
+            /*
+             * Work queued on this processor runs before its next
+             * instruction, and the 100 Hz promdata poll queues some on
+             * every processor. Step aside for it and take the hold up
+             * again behind it; the guest cannot come between.
+             */
+            outcome = NULL;
+            yield = true;
+        } else if (now >= deadline) {
+            outcome = "timed out";
+        } else {
+            outcome = NULL;
+        }
+
+        if (yield) {
+            trace_sgi_bedrock_hold_yield(cs->cpu_index, hold->id,
+                                         (now - hold->start) / SCALE_US);
+            async_run_on_cpu(cs, bedrock_hold_run, data);
+            return;
+        }
+        if (outcome) {
+            break;
+        }
+
+        wait_ms = (deadline - now) / SCALE_MS + 1;
+        qemu_cond_timedwait_bql(cs->halt_cond, wait_ms);
+    }
+
+    if (s->hold_id[slot] == hold->id) {
+        s->hold_id[slot] = 0;
+    }
+    /*
+     * Whatever ended it, a withheld scratch-1 write lands before this
+     * processor's next instruction: it cannot observe a post it has
+     * already taken back.
+     */
+    bedrock_hold_flush_scratch1(s, slot);
+    trace_sgi_bedrock_hold_end(cs->cpu_index, outcome,
+                               (now - hold->start) / SCALE_US, hold->id);
+    object_unref(OBJECT(s));
+    g_free(hold);
+}
+
+/*
+ * Best-effort round-robin (thread=single) help: nothing can block the
+ * single host thread, so kick every processor that still owes the join a
+ * write, the way sgi_hub_kick_peer does on a write-side phase change. A
+ * kicked processor may then run before this quantum's guest-visible poll
+ * budget expires; full round-robin reliability is not claimed -- see
+ * docs/known-issues.md.
+ */
+static void bedrock_hold_kick_pending(SGIBedrockState *s,
+                                      SGIBedrockHoldKind kind,
+                                      unsigned int self)
+{
+    for (unsigned int p = 0; p < SGI_BEDROCK_PROCESSORS; p++) {
+        CPUState *peer;
+
+        if (p == self || s->hold_scratch1_seen[p] ||
+            !bedrock_hold_slot_running(s, p)) {
+            continue;
+        }
+        peer = bedrock_hold_cpu(s, p);
+        if (peer && peer != current_cpu) {
+            trace_sgi_bedrock_hold_kick(current_cpu->cpu_index,
+                                        peer->cpu_index,
+                                        bedrock_hold_kind_name(kind));
+            qemu_cpu_kick(peer);
+        }
+    }
+}
+
+void sgi_bedrock_hold_scratch1_write(SGIBedrockState *s, uint64_t value)
+{
+    int cslot = bedrock_hold_current_slot(s);
+    unsigned int slot;
+
+    if (cslot < 0) {
+        /*
+         * qtest, DMA, or an access this node did not issue: ordinary
+         * storage, no hold bookkeeping.
+         */
+        s->lb.scratch[1] = value;
+        return;
+    }
+    slot = (unsigned int)cslot;
+    bedrock_hold_flush_scratch1(s, slot); /* self-consistency */
+
+    if (!s->hold_scratch1_seen[slot]) {
+        s->lb.scratch[1] = value;
+        s->hold_scratch1_seen[slot] = true;
+        bedrock_hold_wake_kind(s, SGI_BEDROCK_HOLD_SCRATCH1);
+        return;
+    }
+
+    if (!bedrock_hold_applicable(s) || bedrock_hold_scratch1_ready(s)) {
+        s->lb.scratch[1] = value;
+        return;
+    }
+
+    s->hold_scratch1_withheld[slot] = value;
+    s->hold_scratch1_withheld_valid[slot] = true;
+    if (qemu_tcg_mttcg_enabled()) {
+        bedrock_hold_start(s, slot, SGI_BEDROCK_HOLD_SCRATCH1);
+    } else {
+        bedrock_hold_kick_pending(s, SGI_BEDROCK_HOLD_SCRATCH1, slot);
+    }
+}
+
+/*
+ * Release every hold, and forget every first-write and withheld value: a
+ * fresh start. Mirrors sgi_hub_rt_hold_reset(); called from this device's
+ * own reset, from the local-reset GPIO (bedrock_local_reset, since that
+ * resets the LB and II registers this state tracks without cold-resetting
+ * this device itself), and from unrealize.
+ */
+void sgi_bedrock_hold_reset(SGIBedrockState *s)
+{
+    for (unsigned int slot = 0; slot < SGI_BEDROCK_PROCESSORS; slot++) {
+        CPUState *cs = bedrock_hold_cpu(s, slot);
+
+        if (s->hold_id[slot] && cs) {
+            qemu_cpu_kick(cs);
+        }
+        s->hold_id[slot] = 0;
+        s->hold_scratch1_seen[slot] = false;
+        s->hold_scratch1_withheld_valid[slot] = false;
+    }
 }
 
 /* True when the window refuses the access, with the reason logged. */
@@ -284,6 +654,13 @@ static void bedrock_local_reset(void *opaque, int n, int level)
         device_cold_reset(DEVICE(&s->lb));
         device_cold_reset(DEVICE(&s->ni));
         device_cold_reset(DEVICE(&s->xb));
+        /*
+         * The local-reset GPIO resets the LB and II scratch registers this
+         * device's hold state tracks (each above), without cold-resetting
+         * this device itself, so the hold state needs its own clear here
+         * too, alongside bedrock_reset_enter's for the ordinary reset path.
+         */
+        sgi_bedrock_hold_reset(s);
     }
 }
 
@@ -398,6 +775,7 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
                     i * SGI_BEDROCK_PI_PROCESSORS + cpu));
         }
     }
+    s->lb.bedrock = s;
     qdev_prop_set_uint32(DEVICE(&s->lb), "revision", s->revision);
     /*
      * The local block's vector engine reads a hub register for a routed read;
@@ -566,6 +944,16 @@ static void bedrock_init(Object *obj)
     qdev_init_gpio_in_named(dev, bedrock_local_reset, "local-reset", 1);
 }
 
+static void bedrock_reset_enter(Object *obj, ResetType type)
+{
+    sgi_bedrock_hold_reset(SGI_BEDROCK(obj));
+}
+
+static void bedrock_unrealize(DeviceState *dev)
+{
+    sgi_bedrock_hold_reset(SGI_BEDROCK(dev));
+}
+
 static void bedrock_finalize(Object *obj)
 {
     SGIBedrockState *s = SGI_BEDROCK(obj);
@@ -581,11 +969,14 @@ static void bedrock_finalize(Object *obj)
 static void bedrock_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
+    ResettableClass *rc = RESETTABLE_CLASS(klass);
 
     dc->desc = "SGI Bedrock node controller";
     dc->realize = bedrock_realize;
+    dc->unrealize = bedrock_unrealize;
     dc->user_creatable = true;
     device_class_set_props(dc, bedrock_properties);
+    rc->phases.enter = bedrock_reset_enter;
 }
 
 static const TypeInfo bedrock_info = {
