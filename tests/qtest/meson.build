@@ -74,6 +74,11 @@ slow_qtests = {
   # time, which is four qtest round trips per word, and starts eight further
   # QEMU processes for the rejection and migration cases.
   'sn1-bedrock-flash-test': 180,
+  # Growing from 21 to 27 subtests to cover the HQ interrupt/config block
+  # pushed this past the 60s default: two runs on a loaded workstation were
+  # killed at 60.10-60.20s with no failed assertion, the same signature
+  # sn0-tigon-test saw at its own default-timeout boundary.
+  'sn0-origin2000-mgras-test': 120,
 }
 
 qtest_priorities = {
