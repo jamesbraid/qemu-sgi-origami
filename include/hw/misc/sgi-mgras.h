@@ -331,11 +331,35 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
 /*
  * The HQ4-specific interrupt-vector programming MgrasSetHQ4IntrVectors
  * writes alongside the generic destination pair above: a second address
- * pair in the same field shape (0x011060/0x011068) and a four-byte packed
- * vector table, one byte per interrupt role -- general, retrace, FIFO
- * high-water, error (0x011070). Which byte serves which role was not
- * settled, so the whole word stores opaque state rather than guessing an
- * assignment; none of the three is ever read back.
+ * pair in the same field shape (0x011060/0x011068, target widget in bits
+ * 27:24, crosstalk address upper 16 bits in bits 15:0 of 0x011060, lower 32
+ * bits in 0x011068), plus a four-byte packed vector table, one byte per
+ * interrupt role (0x011070). Settled by disassembling mgras_attach's own
+ * four xtalk_intr_connect-style registrations against the retained disk's
+ * rebuilt kernel: mgras_hq4_lowater_intr (the FIFO status/low-water role)
+ * takes bits 7:0, MgrasGeneralInterrupt (context/flags/swap/HQ-error,
+ * dispatched from the pending register at 0x011020 and its mask at
+ * 0x011040) takes bits 15:8, MgrasRetraceHandler takes bits 23:16. This
+ * device delivers each of those three roles as its own independent
+ * pending/assertion source using this destination pair and its own vector
+ * byte (si_deliver_hq_role, sgi-mgras.c) instead of the single shared
+ * vector/delivery path every role used before -- the actual cause of the
+ * "TLBMISS: KERNEL FAULT" watchdog panic the SI_PENDING_LOWATER row above
+ * used to record as still open: every packet this device ever sent used
+ * the widget-error vector below instead (confirmed live: "HQ4 widget err -
+ * 0x0," appears in every retained panicking console log, exactly once,
+ * right when MgrasSetHQ4IntrVectors' packet lands in MgrasHQ4ErrInterrupt
+ * instead of mgras_hq4_lowater_intr), so mgras_hq4_lowater_intr never ran
+ * regardless of the arming-side fixes already landed. The fourth role,
+ * MgrasHQ4ErrInterrupt (widget error, a printf-only handler that clears
+ * nothing), keeps using the generic destination pair above
+ * (0x000030/0x000038, vector in bits 31:24) exactly as already implemented
+ * -- that pair's own decode was already correct, it just needed to stop
+ * being every other role's vector source too. Confirmed live against the
+ * same retained disk: with this fix, opening the board (gfxinit) twice in
+ * one boot no longer reaches the panic at all, and "HQ4 widget err" no
+ * longer appears anywhere in the console output, where it previously
+ * appeared exactly once per open.
  */
 #define SGI_MGRAS_HQ_VECTOR_DEST_UPPER 0x011060
 #define SGI_MGRAS_HQ_VECTOR_DEST_LOWER 0x011068
@@ -449,7 +473,16 @@ struct SGIMgrasState {
     uint32_t sched_arg_3;
     uint32_t bank_status_1;
     uint32_t bank_status_2;
-    bool irq_asserted;
+    /*
+     * Four independent interrupt roles, each with its own transition
+     * detector: low-water, general (context/flags/HQ-error), retrace and
+     * widget-error. See the SGI_MGRAS_HQ_VECTOR_DEST_UPPER/LOWER/VECTORS
+     * header comment above and si_update_irq (sgi-mgras.c).
+     */
+    bool lowater_asserted;
+    bool general_asserted;
+    bool retrace_asserted;
+    bool error_asserted;
     /* Host-only qtest introspection; not guest state, not migrated. */
     uint32_t test_pixel_x;
     uint32_t test_pixel_y;

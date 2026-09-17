@@ -10,6 +10,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/timer.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qjson.h"
@@ -81,6 +82,8 @@
 #define SI_FINAL_TOKEN           0x0000f400
 #define SI_PENDING_FLAGS         0x00080000
 #define SI_PENDING_CONTEXT       0x10000000
+#define SI_PENDING_RETRACE       0x00000001
+#define SI_PENDING_ERROR         0x00000002
 #define SI_PENDING_LOWATER       0x00000004
 #define SI_HQ_ENABLE_LOWATER     0x10
 #define SI_CONTEXT_WORDS         63
@@ -703,47 +706,159 @@ static void test_pending_mask_and_reassert(void)
 /*
  * Full delivery through Crossbow's own port-to-port routing to a live Hub
  * register is a separate, harder-to-pin-down claim about hw/misc/sgi-xbow.c
- * internals this pass did not settle with confidence. What this test holds
+ * internals this pass did not settle with confidence. What these tests hold
  * sgi-mgras itself to is its own half of the contract: composing the
  * documented wire form (widget field, vector, address; see the header
- * comment on int_dest_upper and si_deliver_interrupt) and issuing exactly
- * one send per pending&mask transition. x-test-last-interrupt-addr/-value
- * are host-only introspection recording what si_deliver_interrupt last
- * composed, independent of whether the switch actually routed it anywhere.
+ * comment on SGI_MGRAS_HQ_VECTOR_DEST_UPPER, si_deliver_hq_role and
+ * si_deliver_widget_error) and issuing exactly one send per role per
+ * pending&mask transition, from each role's own destination and vector.
+ * x-test-last-interrupt-addr/-value are host-only introspection recording
+ * what was last composed, independent of whether the switch actually
+ * routed it anywhere.
+ *
+ * Each test below deliberately programs the *other* destination pair with
+ * a different widget/vector than the one it expects, so a regression back
+ * to the pre-fix behavior -- every role delivered through the generic
+ * widget-error pair's vector, the actual cause of the FIFO-watchdog panic
+ * this device used to hit on every guest that opened this board -- shows
+ * up as a wrong address or vector, not just a missing packet.
  */
 #define HUB_WIDGET              9
 #define HUB_REG_OFFSET          0x90
+#define HQ_WIDGET               11
+#define HQ_REG_OFFSET           0xa0
 
-static void test_interrupt_packet_delivery(void)
+static void test_general_interrupt_vector(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
-    const unsigned int vector = 50;
+    const unsigned int general_vector = 51;
+    const unsigned int error_vector = 50;
     const uint64_t expected_addr =
-        ((uint64_t)HUB_WIDGET << 48) | HUB_REG_OFFSET;
+        ((uint64_t)HQ_WIDGET << 48) | HQ_REG_OFFSET;
 
     g_assert_cmphex(si_qom_get_uint(qts, "x-test-last-interrupt-addr"),
                      ==, 0);
 
-    qtest_writel(qts, REG_INT_DEST_UPPER, (HUB_WIDGET << 16) | (vector << 24));
+    qtest_writel(qts, REG_INT_DEST_UPPER,
+                 (HUB_WIDGET << 16) | (error_vector << 24));
     qtest_writel(qts, REG_INT_DEST_LOWER, HUB_REG_OFFSET);
+
+    qtest_writel(qts, REG_HQ_VECTOR_DEST_UPPER, HQ_WIDGET << 24);
+    qtest_writel(qts, REG_HQ_VECTOR_DEST_LOWER, HQ_REG_OFFSET);
+    qtest_writel(qts, REG_HQ_VECTORS, general_vector << 8);
 
     qtest_writel(qts, REG_IRQ_MASK, SI_PENDING_FLAGS);
     qtest_writel(qts, REG_PREFIX, 0);
     qtest_writel(qts, REG_ENTRY, SI_ENTRY_WORD);
 
-    /* Bit 8 raises, low byte carries the vector (sgi-mgras.c's
-     * si_deliver_interrupt, mirroring sgi_bridge_deliver_interrupt). */
+    /* Bit 8 raises, low byte carries the general role's own vector
+     * (REG_HQ_VECTORS bits 15:8), from the HQ vector-dest pair -- not the
+     * generic widget-error pair's vector or address. */
     g_assert_cmphex(si_qom_get_uint(qts, "x-test-last-interrupt-addr"),
                      ==, expected_addr);
     g_assert_cmphex(si_qom_get_uint(qts, "x-test-last-interrupt-value"),
-                     ==, vector | 0x100);
+                     ==, general_vector | 0x100);
 
     /* Acknowledging the pending bit is itself a pending&mask level
      * transition (asserted -> deasserted), so it sends its own packet,
      * this time without the raise bit. */
     qtest_writel(qts, REG_PENDING_ACK, SI_PENDING_FLAGS);
     g_assert_cmphex(si_qom_get_uint(qts, "x-test-last-interrupt-value"),
-                     ==, vector);
+                     ==, general_vector);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The retrace role (MgrasRetraceHandler): delivers via the same HQ
+ * vector-dest pair as general and low-water, from its own byte of
+ * REG_HQ_VECTORS (bits 23:16), gated by REG_IRQ_MASK the same way general
+ * is (unlike low-water, which bypasses it -- see si_update_irq's own
+ * comment). si_retrace only fires once the display is enabled (VC3 index
+ * 0x1e bit 0x4, MgrasEnableVideoTiming -- the existing, separately
+ * evidenced gate this test reuses unchanged; see the header comment on
+ * SGI_MGRAS_VC3_INDEXDATA).
+ */
+static void test_retrace_interrupt_vector(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+    const unsigned int retrace_vector = 54;
+    const unsigned int error_vector = 55;
+    const uint64_t expected_addr =
+        ((uint64_t)HQ_WIDGET << 48) | HQ_REG_OFFSET;
+
+    qtest_writel(qts, REG_INT_DEST_UPPER,
+                 (HUB_WIDGET << 16) | (error_vector << 24));
+    qtest_writel(qts, REG_INT_DEST_LOWER, HUB_REG_OFFSET);
+
+    qtest_writel(qts, REG_HQ_VECTOR_DEST_UPPER, HQ_WIDGET << 24);
+    qtest_writel(qts, REG_HQ_VECTOR_DEST_LOWER, HQ_REG_OFFSET);
+    qtest_writel(qts, REG_HQ_VECTORS, retrace_vector << 16);
+
+    qtest_writel(qts, REG_IRQ_MASK, SI_PENDING_RETRACE);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+
+    /* si_retrace re-arms itself on this same period (sgi-mgras.c); one
+     * step is enough to fire it once. */
+    qtest_clock_step(qts, NANOSECONDS_PER_SECOND / 60);
+
+    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & SI_PENDING_RETRACE, ==,
+                     SI_PENDING_RETRACE);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-last-interrupt-addr"),
+                     ==, expected_addr);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-last-interrupt-value"),
+                     ==, retrace_vector | 0x100);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The widget-error role (MgrasHQ4ErrInterrupt): unchanged from this
+ * device's original, single delivery path -- the generic widget
+ * destination pair (REG_INT_DEST_UPPER/LOWER, aliased at
+ * REG_INT_DEST_UPPER_ALT/LOWER_ALT), vector in its own top byte -- see
+ * si_deliver_widget_error. Before this device modelled per-role vectors,
+ * this was the *only* path every role's packet ever took (confirmed live:
+ * "HQ4 widget err - 0x0," in every retained panicking console log), so
+ * this test's own regression check runs the other direction from the
+ * three above: the HQ vector-dest pair is programmed with a different
+ * vector and destination, proving the error role does not deliver there
+ * instead.
+ */
+static void test_widget_error_interrupt_vector(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+    const unsigned int error_vector = 52;
+    const unsigned int hq_vector = 53;
+    const uint64_t expected_addr =
+        ((uint64_t)HUB_WIDGET << 48) | HUB_REG_OFFSET;
+
+    qtest_writel(qts, REG_INT_DEST_UPPER,
+                 (HUB_WIDGET << 16) | (error_vector << 24));
+    qtest_writel(qts, REG_INT_DEST_LOWER, HUB_REG_OFFSET);
+
+    qtest_writel(qts, REG_HQ_VECTOR_DEST_UPPER, HQ_WIDGET << 24);
+    qtest_writel(qts, REG_HQ_VECTOR_DEST_LOWER, HQ_REG_OFFSET);
+    qtest_writel(qts, REG_HQ_VECTORS,
+                 (hq_vector << 16) | (hq_vector << 8) | hq_vector);
+
+    /* Only the error role unmasked: si_enter_context's own FLAGS/CONTEXT
+     * transitions must not deliver a general packet here. */
+    qtest_writel(qts, REG_IRQ_MASK, SI_PENDING_ERROR);
+    si_enter_context(qts);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-last-interrupt-addr"),
+                     ==, 0);
+
+    /* An out-of-range command selector: si_error's own sticky-error path
+     * (the same trigger test_command_accepts_hq_config_words uses). */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00000001 << 34) | 1);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==,
+                     0x80000000);
+
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-last-interrupt-addr"),
+                     ==, expected_addr);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-last-interrupt-value"),
+                     ==, error_vector | 0x100);
 
     qtest_quit(qts);
 }
@@ -1011,22 +1126,38 @@ static void test_hq_config_and_enable_registers(void)
  * watchdog by writing bit SI_HQ_ENABLE_LOWATER into REG_HQ_ENABLE
  * (live-traced from both routines), then wait for mgras_hq4_lowater_intr to
  * run; only that interrupt ever clears the bit back out (via
- * REG_HQ_ENABLE_CLEAR). Before this device modelled the interrupt, nothing
- * ever ran it, and IRIX panicked its own watchdog roughly 15 seconds after
- * any code path (gfxinit, the X server) opened this board. This device
- * tracks no real FIFO occupancy, so it satisfies the wait immediately on
- * the arming write instead: this test holds it to that behavior, not to
- * genuine watermark timing this project has no evidence for.
+ * REG_HQ_ENABLE_CLEAR). Before this device modelled the interrupt at all,
+ * nothing ever ran it, and IRIX panicked its own watchdog roughly 15
+ * seconds after any code path (gfxinit, the X server) opened this board.
+ * Modelling the pending bit alone was not enough either: this device still
+ * delivered every role, this one included, through the generic
+ * widget-error destination pair's vector -- which routes to
+ * MgrasHQ4ErrInterrupt, a printf-only handler -- so mgras_hq4_lowater_intr
+ * still never ran. This test's own regression check programs that pair
+ * with a different vector and destination than the HQ vector-dest pair's,
+ * so a regression back to the shared path shows up as a wrong address or
+ * vector delivered, not just a missing packet. This device tracks no real
+ * FIFO occupancy, so it satisfies the wait immediately on the arming write
+ * instead: this test holds it to that behavior, not to genuine watermark
+ * timing this project has no evidence for.
  */
 static void test_fifo_lowater_interrupt(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
-    const unsigned int vector = 60;
+    const unsigned int lowater_vector = 60;
+    const unsigned int error_vector = 61;
     const uint64_t expected_addr =
-        ((uint64_t)HUB_WIDGET << 48) | HUB_REG_OFFSET;
+        ((uint64_t)HQ_WIDGET << 48) | HQ_REG_OFFSET;
 
-    qtest_writel(qts, REG_INT_DEST_UPPER, (HUB_WIDGET << 16) | (vector << 24));
+    /* The generic widget-error pair: a deliberately different destination
+     * and vector than the HQ vector-dest pair below. */
+    qtest_writel(qts, REG_INT_DEST_UPPER,
+                 (HUB_WIDGET << 16) | (error_vector << 24));
     qtest_writel(qts, REG_INT_DEST_LOWER, HUB_REG_OFFSET);
+
+    qtest_writel(qts, REG_HQ_VECTOR_DEST_UPPER, HQ_WIDGET << 24);
+    qtest_writel(qts, REG_HQ_VECTOR_DEST_LOWER, HQ_REG_OFFSET);
+    qtest_writel(qts, REG_HQ_VECTORS, lowater_vector);
 
     /*
      * Left masked out of the shared top-level enable on purpose: this
@@ -1035,14 +1166,17 @@ static void test_fifo_lowater_interrupt(void)
      */
     qtest_writel(qts, REG_IRQ_MASK, 0);
 
-    /* Arming: a newly-set low-water bit raises the interrupt promptly. */
+    /* Arming: a newly-set low-water bit raises the interrupt promptly,
+     * carrying low-water's own vector (REG_HQ_VECTORS bits 7:0) from the
+     * HQ vector-dest pair -- not the widget-error pair's vector or
+     * address. */
     qtest_writel(qts, REG_HQ_ENABLE, SI_HQ_ENABLE_LOWATER);
     g_assert_cmphex(qtest_readl(qts, REG_PENDING) & SI_PENDING_LOWATER, ==,
                      SI_PENDING_LOWATER);
     g_assert_cmphex(si_qom_get_uint(qts, "x-test-last-interrupt-addr"),
                      ==, expected_addr);
     g_assert_cmphex(si_qom_get_uint(qts, "x-test-last-interrupt-value"),
-                     ==, vector | 0x100);
+                     ==, lowater_vector | 0x100);
 
     /* Re-writing the same already-set bit is not a new arming event. */
     qtest_writel(qts, REG_PENDING_ACK, SI_PENDING_LOWATER);
@@ -1068,9 +1202,11 @@ static void test_fifo_lowater_interrupt(void)
 
 /*
  * The HQ4-specific interrupt-vector triple MgrasSetHQ4IntrVectors writes
- * alongside the generic destination pair: which byte of the packed vector
- * word serves which interrupt role was not settled, so all three store
- * plain opaque state.
+ * alongside the generic destination pair: plain register-storage round
+ * trip coverage. See the header comment on SGI_MGRAS_HQ_VECTOR_DEST_UPPER
+ * for which byte of REG_HQ_VECTORS serves which interrupt role, and
+ * test_general_interrupt_vector/test_retrace_interrupt_vector/
+ * test_fifo_lowater_interrupt for that behavior.
  */
 static void test_hq_vector_registers(void)
 {
@@ -1240,8 +1376,12 @@ int main(int argc, char **argv)
                    test_context_rejects_wrong_final_token);
     qtest_add_func("sn0/origin2000/mgras/pending-mask-and-reassert",
                    test_pending_mask_and_reassert);
-    qtest_add_func("sn0/origin2000/mgras/interrupt-packet-delivery",
-                   test_interrupt_packet_delivery);
+    qtest_add_func("sn0/origin2000/mgras/general-interrupt-vector",
+                   test_general_interrupt_vector);
+    qtest_add_func("sn0/origin2000/mgras/retrace-interrupt-vector",
+                   test_retrace_interrupt_vector);
+    qtest_add_func("sn0/origin2000/mgras/widget-error-interrupt-vector",
+                   test_widget_error_interrupt_vector);
     qtest_add_func("sn0/origin2000/mgras/fifo-full-and-unsupported-access",
                    test_fifo_full_and_unsupported_access);
     qtest_add_func("sn0/origin2000/mgras/fifo-status-poll-ignores-stuck-occupancy",
