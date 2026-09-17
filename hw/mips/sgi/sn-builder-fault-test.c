@@ -59,6 +59,21 @@ static SGIModelNode fault_test_nodes[] = {
 static unsigned int fault_test_m0_nodes[] = { 0 };
 static unsigned int fault_test_m1_nodes[] = { 1 };
 
+/*
+ * One board existing only to give the "unsupported-io-board-kind" fault
+ * below a board_kind to corrupt; no attachment or PCI population, since
+ * the validator checks board_kind alone and nothing here builds a
+ * device.
+ */
+static SGIModelIoBoard fault_test_io_boards[] = {
+    {
+        .id = "test-board",
+        .module_index = 0,
+        .board_kind = SGI_MODEL_IO_IP29_IO,
+        .onboard = true,
+    },
+};
+
 static SGIModelModule fault_test_modules[] = {
     {
         .id = "m0",
@@ -125,6 +140,8 @@ static SGIModelTopology fault_test_topology = {
     .router_count = ARRAY_SIZE(fault_test_routers),
     .links = fault_test_links,
     .link_count = ARRAY_SIZE(fault_test_links),
+    .io_boards = fault_test_io_boards,
+    .io_board_count = ARRAY_SIZE(fault_test_io_boards),
     .console = 0,
     .junk_uart = -1,
 };
@@ -326,7 +343,7 @@ static const SGIModelIoBoard console_test_io_boards[] = {
     {
         .id = "baseio",
         .module_index = 0,
-        .board_kind = SGI_MODEL_IO_BASEIO,
+        .board_kind = SGI_MODEL_IO_IP29_IO,
         .onboard = true,
         .slot_index = 0,
         .removable = false,
@@ -348,7 +365,7 @@ static const SGIModelIoBoard console_test_io_boards[] = {
     {
         .id = "baseio",
         .module_index = 1,
-        .board_kind = SGI_MODEL_IO_BASEIO,
+        .board_kind = SGI_MODEL_IO_IP29_IO,
         .onboard = true,
         .slot_index = 0,
         .removable = false,
@@ -436,6 +453,8 @@ static void fault_test_set_fault(Object *obj, const char *value,
         fault_test_links[0].ends[0].index = 99;
     } else if (!strcmp(value, "duplicate-link-end")) {
         fault_test_links[1].ends[0].port = 0;
+    } else if (!strcmp(value, "unsupported-io-board-kind")) {
+        fault_test_io_boards[0].board_kind = (SGIModelIoBoardKind)99;
     } else {
         error_setg(errp, "unknown sn-builder-fault-test fault '%s'", value);
     }

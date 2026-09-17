@@ -980,6 +980,17 @@ bool sgi_machine_validate_topology(const SGIModelTopology *t, Error **errp)
         }
     }
 
+    for (i = 0; i < t->io_board_count; i++) {
+        const SGIModelIoBoard *board = &t->io_boards[i];
+
+        if (board->board_kind != SGI_MODEL_IO_IP29_IO &&
+            board->board_kind != SGI_MODEL_IO_BASEIO) {
+            error_setg(errp, "topology '%s' io board '%s' names an "
+                      "unsupported board kind", t->name, board->id);
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -1027,21 +1038,30 @@ static void sgi_machine_index_xtalk_attachments(
     g_assert(board == t->io_board_count);
 }
 
-static const char *sgi_machine_io_board_type(
-    const SGIModelXtalkAttachment *attachment)
+static const char *sgi_machine_io_board_type(const SGIModelIoBoard *record)
 {
     /*
-     * board_kind is not read here: Origami's compiled origin200
-     * descriptor currently emits SGI_MODEL_IO_BASEIO for the Origin
-     * 200 System Board's onboard I/O too, instead of
-     * SGI_MODEL_IO_IP29_IO -- a vocabulary-step data defect, out of
-     * scope for this QEMU-only leg to fix and reported in its handoff.
-     * How the board attaches is reliable data and settles it on both
-     * products measured: Origin 200's onboard board is always direct
-     * (no Crossbow between it and its one node), Origin 2000's BaseIO
-     * always sits behind one.
+     * board_kind alone decides the class: the descriptor already names
+     * which board this is, and inferring it instead from how the board
+     * attaches (direct vs. Crossbow) happened to agree with board_kind
+     * on every topology shipped so far, which is exactly what let
+     * Origami's compiled origin200 descriptor's own defect -- emitting
+     * SGI_MODEL_IO_BASEIO for the Origin 200 System Board's onboard I/O
+     * instead of SGI_MODEL_IO_IP29_IO -- go unnoticed here. Origami's
+     * exporter fix (branch sn/exporter-data-fixes) has no pushed commits
+     * to regenerate this file from yet, so sn-model.c carries a disclosed
+     * hand correction for the three affected entries instead (see its
+     * own header comment); sgi_machine_validate_topology rejects any
+     * other board_kind before this function ever sees it.
      */
-    return attachment->crossbar_index < 0 ? TYPE_SGI_IP29_IO : TYPE_SGI_BASEIO;
+    switch (record->board_kind) {
+    case SGI_MODEL_IO_IP29_IO:
+        return TYPE_SGI_IP29_IO;
+    case SGI_MODEL_IO_BASEIO:
+        return TYPE_SGI_BASEIO;
+    default:
+        g_assert_not_reached();
+    }
 }
 
 /*
@@ -1445,7 +1465,7 @@ static void sgi_machine_build_io_board(
     const SGIModelXtalkAttachment *attachment)
 {
     const SGIModelIoBoard *record = &t->io_boards[board_index];
-    DeviceState *dev = qdev_new(sgi_machine_io_board_type(attachment));
+    DeviceState *dev = qdev_new(sgi_machine_io_board_type(record));
     g_autofree char *name = g_strdup_printf("io-board%u", board_index);
 
     object_property_add_child(OBJECT(s), name, OBJECT(dev));
