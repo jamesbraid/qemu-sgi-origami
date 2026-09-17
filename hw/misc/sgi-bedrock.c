@@ -417,20 +417,22 @@ static bool bedrock_remote_refused(SGIBedrockState *s, hwaddr addr,
     return false;
 }
 
-static MemTxResult bedrock_remote_read(void *opaque, hwaddr addr,
-                                       uint64_t *value, unsigned size,
-                                       MemTxAttrs attrs)
+/*
+ * Marshal one access to or from the attached L1 controller's UART, addr
+ * already relative to its own eight registers. Both register-window forms
+ * reach the same UART at offset 0x80 (docs/datasheets/l1-controller.md);
+ * each form's own ops function gates the call with its own refusal check
+ * and owns its own log wording, then shares this one forwarding path.
+ */
+static MemTxResult bedrock_l1_uart_transfer_read(SGIBedrockState *s,
+                                                 hwaddr addr, uint64_t *value,
+                                                 unsigned size,
+                                                 MemTxAttrs attrs)
 {
-    SGIBedrockState *s = opaque;
     uint8_t buffer[8];
     MemTxResult result;
 
-    if (bedrock_remote_refused(s, addr, size, "read")) {
-        return MEMTX_DECODE_ERROR;
-    }
-    result = address_space_read(&s->l1_uart_as,
-                                addr - BEDROCK_L1_UART_OFFSET,
-                                attrs, buffer, size);
+    result = address_space_read(&s->l1_uart_as, addr, attrs, buffer, size);
     if (result != MEMTX_OK) {
         return result;
     }
@@ -453,16 +455,13 @@ static MemTxResult bedrock_remote_read(void *opaque, hwaddr addr,
     return MEMTX_OK;
 }
 
-static MemTxResult bedrock_remote_write(void *opaque, hwaddr addr,
-                                        uint64_t value, unsigned size,
-                                        MemTxAttrs attrs)
+static MemTxResult bedrock_l1_uart_transfer_write(SGIBedrockState *s,
+                                                   hwaddr addr, uint64_t value,
+                                                   unsigned size,
+                                                   MemTxAttrs attrs)
 {
-    SGIBedrockState *s = opaque;
     uint8_t buffer[8];
 
-    if (bedrock_remote_refused(s, addr, size, "write")) {
-        return MEMTX_DECODE_ERROR;
-    }
     switch (size) {
     case 1:
         buffer[0] = value;
@@ -479,14 +478,99 @@ static MemTxResult bedrock_remote_write(void *opaque, hwaddr addr,
     default:
         return MEMTX_DECODE_ERROR;
     }
-    return address_space_write(&s->l1_uart_as,
-                               addr - BEDROCK_L1_UART_OFFSET,
-                               attrs, buffer, size);
+    return address_space_write(&s->l1_uart_as, addr, attrs, buffer, size);
+}
+
+static MemTxResult bedrock_remote_read(void *opaque, hwaddr addr,
+                                       uint64_t *value, unsigned size,
+                                       MemTxAttrs attrs)
+{
+    SGIBedrockState *s = opaque;
+
+    if (bedrock_remote_refused(s, addr, size, "read")) {
+        return MEMTX_DECODE_ERROR;
+    }
+    return bedrock_l1_uart_transfer_read(s, addr - BEDROCK_L1_UART_OFFSET,
+                                         value, size, attrs);
+}
+
+static MemTxResult bedrock_remote_write(void *opaque, hwaddr addr,
+                                        uint64_t value, unsigned size,
+                                        MemTxAttrs attrs)
+{
+    SGIBedrockState *s = opaque;
+
+    if (bedrock_remote_refused(s, addr, size, "write")) {
+        return MEMTX_DECODE_ERROR;
+    }
+    return bedrock_l1_uart_transfer_write(s, addr - BEDROCK_L1_UART_OFFSET,
+                                          value, size, attrs);
 }
 
 static const MemoryRegionOps bedrock_remote_ops = {
     .read_with_attrs = bedrock_remote_read,
     .write_with_attrs = bedrock_remote_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8 },
+    .impl = { .min_access_size = 1, .max_access_size = 8 },
+};
+
+/*
+ * True when the LOCAL form's own L1 UART slot refuses the access, with the
+ * reason logged. This is bedrock_remote_refused's counterpart for the
+ * local register-window form: same three refusals, form-neutral wording
+ * (no window name), and the region is already sized to exactly the UART
+ * (SGI_L1_SIZE) so its own range check needs no offset arithmetic.
+ */
+static bool bedrock_l1_uart_refused(SGIBedrockState *s, hwaddr addr,
+                                    unsigned size, const char *access)
+{
+    if (!s->l1_uart_as_initialized) {
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock: L1 UART %s at 0x%" HWADDR_PRIx
+                      " with no L1 controller linked\n", access, addr);
+        return true;
+    }
+    if (!sgi_bedrock_hub_registers_permitted(s)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock: L1 UART %s at 0x%"
+                      HWADDR_PRIx " denied for region %u\n", access, addr,
+                      (unsigned)s->initiator_region);
+        return true;
+    }
+    if (addr + size > SGI_L1_SIZE) {
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock: L1 UART %s at 0x%" HWADDR_PRIx
+                      " is not decoded\n", access, addr);
+        return true;
+    }
+    return false;
+}
+
+static MemTxResult bedrock_l1_uart_read(void *opaque, hwaddr addr,
+                                        uint64_t *value, unsigned size,
+                                        MemTxAttrs attrs)
+{
+    SGIBedrockState *s = opaque;
+
+    if (bedrock_l1_uart_refused(s, addr, size, "read")) {
+        return MEMTX_DECODE_ERROR;
+    }
+    return bedrock_l1_uart_transfer_read(s, addr, value, size, attrs);
+}
+
+static MemTxResult bedrock_l1_uart_write(void *opaque, hwaddr addr,
+                                         uint64_t value, unsigned size,
+                                         MemTxAttrs attrs)
+{
+    SGIBedrockState *s = opaque;
+
+    if (bedrock_l1_uart_refused(s, addr, size, "write")) {
+        return MEMTX_DECODE_ERROR;
+    }
+    return bedrock_l1_uart_transfer_write(s, addr, value, size, attrs);
+}
+
+static const MemoryRegionOps bedrock_l1_uart_ops = {
+    .read_with_attrs = bedrock_l1_uart_read,
+    .write_with_attrs = bedrock_l1_uart_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid = { .min_access_size = 1, .max_access_size = 8 },
     .impl = { .min_access_size = 1, .max_access_size = 8 },
@@ -927,6 +1011,10 @@ static void bedrock_init(Object *obj)
                      sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->md), 2));
     sysbus_init_mmio(SYS_BUS_DEVICE(obj),
                      sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->md), 3));
+    memory_region_init_io(&s->l1_uart_registers, obj, &bedrock_l1_uart_ops, s,
+                          TYPE_SGI_BEDROCK "-l1-uart-registers",
+                          SGI_L1_SIZE);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->l1_uart_registers);
     qdev_init_gpio_out_named(dev, s->hardware_irq, "hardware-irq",
                              ARRAY_SIZE(s->hardware_irq));
     qdev_init_gpio_out_named(dev, s->nmi, "nmi", ARRAY_SIZE(s->nmi));

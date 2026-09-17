@@ -79,9 +79,11 @@ typedef struct SN1NodeState {
     DeviceState *io8;
     DeviceState *boot_flash;
     MemoryRegion bedrock_node;
-    MemoryRegion hub_local_register_block;
+    MemoryRegion hub_local_register_head;
+    MemoryRegion hub_local_register_tail;
     MemoryRegion cpu_c_local_pi_xtalk;
-    MemoryRegion cpu_c_local_pi_hub;
+    MemoryRegion cpu_c_local_pi_hub_head;
+    MemoryRegion cpu_c_local_pi_hub_tail;
     MemoryRegion hub_remote_register_head;
     MemoryRegion hub_remote_register_tail;
 
