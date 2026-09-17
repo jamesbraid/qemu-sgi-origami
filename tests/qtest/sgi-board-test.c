@@ -7,12 +7,14 @@
  *
  * sgi-ip29-io, sgi-baseio and sgi-io8 are onboard-only (user_creatable
  * off): a real system never lets a user plug one in, so `-device` cannot
- * create them directly. sgi-board-test-fixture stands in for what a
- * machine builder does with one of them, the same way
- * sgi-xtalk-board-fixture stands in for a module's Crossbow in the base
- * class's own qtest; see hw/mips/sgi/board-test-fixture.c. sgi-pci-expansion
- * is the plan's one `-device` demonstrator and goes through the same
- * fixture here anyway, so one code path covers all four.
+ * create them directly. sgi-pci-expansion is the plan's named `-device`
+ * demonstrator but is not yet reachable that way either (see its own
+ * header comment for why), so it is user_creatable off too for now.
+ * sgi-board-test-fixture stands in for what a machine builder does with
+ * one of them, the same way sgi-xtalk-board-fixture stands in for a
+ * module's Crossbow in the base class's own qtest; see
+ * hw/mips/sgi/board-test-fixture.c. All four go through it here, so one
+ * code path covers all four.
  *
  * Every board's internal Bridge or XBridge chip shares one register
  * layout (hw/pci-host/sgi-bridge.c and sgi-xbridge.c: "Same programming

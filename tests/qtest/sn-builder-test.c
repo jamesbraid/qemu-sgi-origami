@@ -171,6 +171,42 @@ static void test_numa_refused(const void *data)
     assert_qemu_rejects(args, "origin200: -numa is refused");
 }
 
+/*
+ * sgi-pci-expansion (board-pci-expansion.c) is not user-creatable: its
+ * "fabric" property has nowhere to resolve to before a `-device`
+ * realizes (see that class's own header comment), so it stays reachable
+ * only through the machine builder or the board-test fixture, not the
+ * command line. Values do not matter; the check runs before qdev even
+ * tries to set them. -device is processed after sgi_machine_init, so
+ * this still needs a -bios that clears the stock-PROM requirement, the
+ * same blank flash write_config_block_fixture's sibling in
+ * sn0-address-map-test.c uses for the same reason.
+ */
+static void test_pci_expansion_not_user_creatable(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *blank = g_malloc0(0x100000);
+    g_autofree char *path = NULL;
+    int fd;
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin2000", "-bios", NULL,
+        "-device", "sgi-pci-expansion,module=1,slot=9",
+        "-display", "none", NULL
+    };
+
+    fd = g_file_open_tmp("sn-builder-blank-bios-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    close(fd);
+    g_assert_true(g_file_set_contents(path, (const char *)blank, 0x100000,
+                                      &error));
+    g_assert_no_error(error);
+    args[4] = path;
+
+    assert_qemu_rejects(args, "Parameter 'driver' expects a pluggable "
+                        "device type");
+    g_assert_cmpint(unlink(path), ==, 0);
+}
+
 static void test_unsupported_smp_population_rejected(const void *data)
 {
     const char *args[] = {
@@ -375,6 +411,8 @@ int main(int argc, char **argv)
                         test_unknown_fault_reported);
     qtest_add_data_func("sn/builder/numa-refused", NULL,
                         test_numa_refused);
+    qtest_add_data_func("sn/builder/pci-expansion-not-user-creatable", NULL,
+                        test_pci_expansion_not_user_creatable);
     qtest_add_data_func("sn/builder/unsupported-smp-population-rejected",
                         NULL, test_unsupported_smp_population_rejected);
     qtest_add_data_func("sn/builder/topology-from-another-product-refused",
