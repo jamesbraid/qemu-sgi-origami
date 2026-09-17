@@ -72,7 +72,7 @@
 
 #define BASEIO_WIDGET 8
 #define LOCAL_HUB_WIDGET 9
-#define CROSSBOW0 "/machine/xtalk/crossbow0"
+#define CROSSBOW0 "/machine/crossbow0"
 #define CROSSBOW0_PRESENT 0x0700
 
 #define BRIDGE_CONTROL 0x0020

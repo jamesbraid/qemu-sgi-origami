@@ -296,13 +296,6 @@ if not config_all_devices.has_key('CONFIG_SGI_ROUTER_TEST')
   sn0_router_qtests = []
 endif
 
-sn0_hub_packet_qtests = \
-  (config_all_devices.has_key('CONFIG_SGI_SN0') ?
-    ['sn0-origin2000-hub-packet-test'] : [])
-if not config_all_devices.has_key('CONFIG_SN0_HUB_PACKET_TEST')
-  sn0_hub_packet_qtests = []
-endif
-
 sn0_xbow_transport_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ?
     ['sn0-xbow-transport-test'] : [])
@@ -399,7 +392,6 @@ qtests_mips64 = \
   sn0_xbow_qtests + \
   sn0_xbow_transport_qtests + \
   sn1_xbridge_qtests + \
-  sn0_hub_packet_qtests + \
   sgi_xtalk_board_qtests + \
   sgi_board_qtests
 

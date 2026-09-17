@@ -315,8 +315,14 @@ typedef struct SN0NodeState {
     bool origin2000_xtalk_as_ready;
     MemoryRegion origin2000_bus_error[SN0_MAX_CPUS_PER_NODE];
     MemoryRegion prom_pi_probe;
-    SGIBridgeState *prom_pi_probe_bridge;
-    unsigned int prom_pi_probe_device_window;
+    /*
+     * Origin 200's onboard board answers the probe through its own device
+     * window; reached as a plain address space over the board's widget
+     * face (sgi-ip29-io's cpu_face) rather than a borrowed SGIBridgeState
+     * pointer, so the board class stays this file's only dependency on
+     * the board's own internals.
+     */
+    AddressSpace prom_pi_probe_as;
     MemoryRegion small_window[SN0_XTALK_WIDGETS];
     MemoryRegion mem_slot[SN0_MAX_MEMORY_BANKS][SN0_MAX_MEMORY_SLOTS];
     MemoryRegion hub_local_mem_slot[SN0_MAX_MEMORY_BANKS]

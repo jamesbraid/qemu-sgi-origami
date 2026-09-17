@@ -12,14 +12,10 @@ mips_ss.add(when: 'CONFIG_JAZZ', if_true: files('jazz.c'))
 # explicitly; qemu-build does not regenerate them during configure.
 mips_ss.add(when: 'CONFIG_SGI_SN0',
             if_true: files('sgi/sn0.c', 'sgi/sn0-fabric.c',
-                           'sgi/sn0-origin2000-io.c',
-                           'sgi/sn0-origin2000-xtalk.c',
                            'sgi/sn0-fabric-routed.c'))
 mips_ss.add(when: ['CONFIG_SGI_SN0', 'CONFIG_TEST_DEVICES'],
             if_true: files('sgi/sn0-origin2000-flash-test.c',
                            'sgi/sn-builder-fault-test.c'))
-mips_ss.add(when: 'CONFIG_SN0_HUB_PACKET_TEST',
-            if_true: files('sgi/sn0-origin2000-io-test.c'))
 # Shared by sgi-sn0-node and sgi-sn1-node; SGI_SN0 always implies SGI_SN1 is
 # also selected on this fork's mips64 target, so either config would do.
 mips_ss.add(when: 'CONFIG_SGI_SN0', if_true: files('sgi/sn-promdata.c'))
@@ -36,8 +32,9 @@ mips_ss.add(when: 'CONFIG_SGI_SN1',
 mips_ss.add(when: 'CONFIG_SGI_XTALK_BOARD', if_true: files('sgi/xtalk-board.c'))
 mips_ss.add(when: 'CONFIG_SGI_XTALK_BOARD_TEST',
             if_true: files('sgi/xtalk-test-board.c'))
-# The four board classes: each its own Kconfig symbol, since a product will
-# build only the ones it fits once the machine wiring step selects them.
+# The four board classes: each its own Kconfig symbol, since a product
+# builds only the ones it fits (Origin 200 selects sgi-ip29-io, Origin 2000
+# sgi-baseio and sgi-pci-expansion; sgi-io8 awaits the Origin 300 step).
 mips_ss.add(when: 'CONFIG_SGI_IP29_IO', if_true: files('sgi/board-ip29-io.c'))
 mips_ss.add(when: 'CONFIG_SGI_BASEIO', if_true: files('sgi/board-baseio.c'))
 mips_ss.add(when: 'CONFIG_SGI_IO8', if_true: files('sgi/board-io8.c'))

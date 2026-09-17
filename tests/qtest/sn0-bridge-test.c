@@ -21,6 +21,14 @@
 #define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
 
 /*
+ * The onboard sgi-ip29-io board's own internal Bridge, re-parented under
+ * its module the way every sgi-xtalk-board is (include/hw/mips/sgi/
+ * xtalk-board.h), landing at its own slot name since the machine gives
+ * it no id (see sgi-board-test.c's own identical path).
+ */
+#define BRIDGE_PATH "/machine/module0/slot8/bridge"
+
+/*
  * Registers sit at a slot's offset plus four: Linux names that address,
  * OpenBSD names the slot and folds the four in.
  */
@@ -2759,21 +2767,21 @@ static void test_the_pin_ors_its_wire_and_pci_sources(const void *data)
                     1u << INT_TEST_SLOT);
 
     /* The wire beside it rises and falls; the held PCI level stays. */
-    qtest_set_irq_in(qts, "/machine/bridge", NULL, INT_TEST_SLOT, 1);
+    qtest_set_irq_in(qts, BRIDGE_PATH, NULL, INT_TEST_SLOT, 1);
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)), ==,
                     1u << INT_TEST_SLOT);
-    qtest_set_irq_in(qts, "/machine/bridge", NULL, INT_TEST_SLOT, 0);
+    qtest_set_irq_in(qts, BRIDGE_PATH, NULL, INT_TEST_SLOT, 0);
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)), ==,
                     1u << INT_TEST_SLOT);
 
     /* And the wire holds after the function lets go. */
-    qtest_set_irq_in(qts, "/machine/bridge", NULL, INT_TEST_SLOT, 1);
+    qtest_set_irq_in(qts, BRIDGE_PATH, NULL, INT_TEST_SLOT, 1);
     bridge_drive_pin(qts, 0);
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)), ==,
                     1u << INT_TEST_SLOT);
 
     /* Both down, the pin is down. */
-    qtest_set_irq_in(qts, "/machine/bridge", NULL, INT_TEST_SLOT, 0);
+    qtest_set_irq_in(qts, BRIDGE_PATH, NULL, INT_TEST_SLOT, 0);
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_STATUS)), ==, 0);
 
     qtest_quit(qts);
@@ -3044,8 +3052,8 @@ static void test_the_interrupt_pins_fold(const void *data)
 
 static void bridge_link_reset(QTestState *qts)
 {
-    qtest_set_irq_in(qts, "/machine/bridge", "link-reset", 0, 1);
-    qtest_set_irq_in(qts, "/machine/bridge", "link-reset", 0, 0);
+    qtest_set_irq_in(qts, BRIDGE_PATH, "link-reset", 0, 1);
+    qtest_set_irq_in(qts, BRIDGE_PATH, "link-reset", 0, 0);
 }
 
 static void test_an_inbound_link_reset_clears_the_core(const void *data)
@@ -3071,9 +3079,9 @@ static void test_an_inbound_link_reset_clears_the_core(const void *data)
     qtest_writeq(qts, ATE(ATE_TEST_ENTRY), 0xa5a5000012345678ull);
 
     /* The core goes when the line rises, not when the pulse ends. */
-    qtest_set_irq_in(qts, "/machine/bridge", "link-reset", 0, 1);
+    qtest_set_irq_in(qts, BRIDGE_PATH, "link-reset", 0, 1);
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_CONTROL)), ==, CONTROL_RESET);
-    qtest_set_irq_in(qts, "/machine/bridge", "link-reset", 0, 0);
+    qtest_set_irq_in(qts, BRIDGE_PATH, "link-reset", 0, 0);
 
     /*
      * The two registers IRIX saves across the pulse are the two it cannot
