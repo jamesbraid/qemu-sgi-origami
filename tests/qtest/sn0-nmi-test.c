@@ -269,8 +269,21 @@ static void test_nmi_reset_rearms(void)
 
     qtest_set_irq_in(qts, cpu_path, "nmi", 0, 1);
     wait_for_state(qts, ACK_OFF, 1);
+
+    /*
+     * QMP system_reset only requests a reset; QEMU applies it at the next
+     * main-loop turn, after this command's reply. Stop the vCPU first so it
+     * cannot keep spinning through the old MAIN_LOOP and rewriting READY_OFF
+     * back to READY_MAGIC in that gap: a poll landing in that window would
+     * pass on the pre-reset guest's own write and go on to fire the next
+     * NMI before the real reset has run, catching the CPU still at the
+     * reset vector instead of parked in the post-reset MAIN_LOOP. cont
+     * resumes only once the reset above is known to have been applied.
+     */
+    qtest_qmp_assert_success(qts, "{'execute':'stop'}");
     qtest_writeq(qts, STATE_PHYS + READY_OFF, 0);
     qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
     wait_for_state(qts, READY_OFF, READY_MAGIC);
     qtest_set_irq_in(qts, cpu_path, "nmi", 0, 1);
     wait_for_state(qts, ACK_OFF, 2);
