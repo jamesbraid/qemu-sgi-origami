@@ -624,7 +624,7 @@ static void sn0_emit_wait_nonzero(SN0Image *p, unsigned int base_reg,
  */
 static void build_pending_read_rendezvous(SN0Image *p, uint32_t wait_limit)
 {
-    unsigned int select_a, select_b, observe, parked, observer_park;
+    unsigned int select_a, select_b, observe;
     unsigned int a_round, a_poll, cleared, a_timeout, a_park;
     unsigned int b_round, b_poll, set_seen, b_timeout;
     unsigned int b_wait_set_a, b_wait_done_a, b_park;
@@ -642,23 +642,28 @@ static void build_pending_read_rendezvous(SN0Image *p, uint32_t wait_limit)
     sn0_emit_i(p, SN0_OPC_ORI, SN0_R_ZERO, SN0_R_T0, 1);
     select_b = sn0_emit_branch(p, SN0_OPC_BEQ, SN0_R_S1, SN0_R_T0);
 
-    /* Node one's pair: observe the round counter and count fairness. */
+    /*
+     * Node one's pair: record that this CPU ran at all, without ever
+     * giving up. The old form stopped watching once PEND_READ_DONE_A
+     * reached PEND_READ_ROUNDS, so a host that delayed this CPU's own
+     * thread past the point where slice A and B finished every round
+     * between themselves left fair[] at zero even though this CPU was
+     * never actually starved, only scheduled late -- indistinguishable
+     * from a real starvation bug at the assertion. Looping forever
+     * instead means the one fact under test, whether this CPU ever
+     * gets a timeslice, survives however long the host makes it wait;
+     * a CPU the model truly never schedules still leaves its slot at
+     * zero no matter how long the host side is willing to poll.
+     */
     sn0_emit(p, (SN0_R_S0 << 21) | (SN0_R_S2 << 16) | (R_S3 << 11) |
              0x2d);                                  /* daddu s3, s0, s2 */
     sn0_emit_wait_nonzero(p, SN0_R_S0, PEND_READ_ROUND);
     observe = p->pos;
-    sn0_emit_i(p, SN0_OPC_LD, SN0_R_S0, SN0_R_T0, PEND_READ_DONE_A);
-    sn0_emit_i(p, SN0_OPC_SLTIU, SN0_R_T0, SN0_R_T1, PEND_READ_ROUNDS);
-    parked = sn0_emit_branch(p, SN0_OPC_BEQ, SN0_R_T1, SN0_R_ZERO);
     sn0_emit_i(p, SN0_OPC_LD, R_S3, SN0_R_T0, PEND_READ_FAIR);
     sn0_emit_i(p, SN0_OPC_ORI, SN0_R_T0, SN0_R_T0, 1);
     sn0_emit_i(p, SN0_OPC_SD, R_S3, SN0_R_T0, PEND_READ_FAIR);
     branch = sn0_emit_branch(p, SN0_OPC_BEQ, SN0_R_ZERO, SN0_R_ZERO);
     sn0_patch_branch(p, branch, observe);
-    sn0_patch_branch(p, parked, p->pos);
-    observer_park = p->pos;
-    branch = sn0_emit_branch(p, SN0_OPC_BEQ, SN0_R_ZERO, SN0_R_ZERO);
-    sn0_patch_branch(p, branch, observer_park);
 
     /*
      * Slice A: publish the interrupt each round, then bounded-poll for
@@ -802,9 +807,30 @@ static void run_pending_read_rendezvous(uint32_t wait_limit, bool thread_multi)
 
     g_assert_cmphex(timeout, ==, 0);
     g_assert_cmphex(done_a, ==, PEND_READ_ROUNDS);
-    for (reg = 0; reg < 4; reg++) {
-        fair[reg] = qtest_readq(qts, PEND_READ_STATE + PEND_READ_FAIR +
-                                8 * reg);
+
+    /*
+     * Node one's pair now spins forever recording its own progress (see
+     * build_pending_read_rendezvous), so a slow host scheduler only
+     * delays when fair[2]/fair[3] go nonzero rather than erasing the
+     * one chance those CPUs had to prove it. Poll for both for up to
+     * 30 s, generous next to ordinary scheduling delay under a loaded
+     * merge-queue runner; a CPU the model genuinely never schedules
+     * still leaves its slot at zero and still fails the assertion
+     * below.
+     */
+    {
+        int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+
+        do {
+            for (reg = 0; reg < 4; reg++) {
+                fair[reg] = qtest_readq(qts, PEND_READ_STATE +
+                                        PEND_READ_FAIR + 8 * reg);
+            }
+            if (fair[2] && fair[3]) {
+                break;
+            }
+            g_usleep(1000);
+        } while (g_get_monotonic_time() < deadline);
     }
     g_assert_cmphex(fair[0], ==, 0);
     g_assert_cmphex(fair[1], ==, 0);
