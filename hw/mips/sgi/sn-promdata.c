@@ -108,6 +108,23 @@ static bool sn_promdata_sp_in_window(SNPromDataState *s)
            phys < SN_PROMDATA_PADDR + SN_PROMDATA_SIZE;
 }
 
+/*
+ * Whether this CPU has withdrawn both of the phase's own recognition
+ * inputs at once -- the boot-status bit and the PC being in one of the
+ * phase's execution homes -- the same handoff test sn_promdata_is_private()
+ * applies on a filter access. Test the bit first: the PC translation
+ * only has to run on the phase's way out, not on every private access.
+ * Shared with sn_promdata_check_stack() so a CPU whose later traffic
+ * never dispatches through the filter's read/write handlers again still
+ * gets this test applied, instead of only a CPU whose traffic does.
+ */
+static bool sn_promdata_should_leave(SNPromDataState *s)
+{
+    return !(s->cpu->env.active_fpu.fpr[0].d &
+             SN_PROM_BOOT_STATUS_CACHE_AS_RAM) &&
+           !sn_promdata_pc_in_prom(s);
+}
+
 static void sn_promdata_trace_phase(SNPromDataState *s, const char *event)
 {
     CPUMIPSState *env = &s->cpu->env;
@@ -138,8 +155,20 @@ static void sn_promdata_trace_phase(SNPromDataState *s, const char *event)
  * number of further chances (SN_PROMDATA_STRAGGLER_LIMIT) instead: enough
  * for a live straggler to reach its own exit, not so many that a truly
  * disabled processor keeps the node's 100 Hz timer running indefinitely.
+ *
+ * A slot that has released its fast mapping but not yet left the phase
+ * stays watched too, unbounded by the straggler count above: the fast
+ * path's own accesses never reach sn_promdata_is_private() in the first
+ * place (data answers them directly, above the filter), so a processor
+ * that never again touches the small filter window after its own stack
+ * switch -- every processor but the one doing the boot's node-ID
+ * renumbering, on a measured eight-processor boot -- would otherwise
+ * never run that reactive detector again and would keep phase_private,
+ * and this window's prom-copy-local alias, latched for the rest of its
+ * run. sn_promdata_check_stack() applies the same handoff test here.
  */
 static void sn_promdata_check_stack(CPUState *cs, run_on_cpu_data data);
+static void sn_promdata_leave_private(CPUState *cs, run_on_cpu_data data);
 
 static void sn_promdata_poll_cb(void *opaque)
 {
@@ -157,14 +186,18 @@ static void sn_promdata_poll_cb(void *opaque)
 
     for (i = 0; i < poll->count; i++) {
         SNPromDataState *s = &poll->slots[i];
+        bool watched = s->present &&
+            (s->fast || (s->phase_private && !s->leaving_private));
 
-        if (!s->present || !s->fast) {
+        if (!watched) {
             continue;
         }
-        if (!any_released) {
-            s->straggler_polls = 0;
-        } else if (++s->straggler_polls > SN_PROMDATA_STRAGGLER_LIMIT) {
-            continue;
+        if (s->fast) {
+            if (!any_released) {
+                s->straggler_polls = 0;
+            } else if (++s->straggler_polls > SN_PROMDATA_STRAGGLER_LIMIT) {
+                continue;
+            }
         }
         async_run_on_cpu(CPU(s->cpu), sn_promdata_check_stack,
                          RUN_ON_CPU_HOST_PTR(s));
@@ -254,6 +287,22 @@ static void sn_promdata_check_stack(CPUState *cs, run_on_cpu_data data)
     if (s->fast && !sn_promdata_sp_in_window(s)) {
         sn_promdata_unmap(s, "stack-switch");
     }
+
+    /*
+     * The stack switch above only ever drops the fast mapping; it says
+     * nothing about whether the phase itself is over. Apply the same
+     * handoff test a filter access would, here, on the poll's own
+     * schedule: a CPU that has released its fast mapping may simply
+     * never touch the filter window again for the rest of its run, and
+     * sn_promdata_is_private() only ever runs when something does.
+     */
+    if (s->phase_private && !s->leaving_private &&
+        sn_promdata_should_leave(s)) {
+        s->phase_private = false;
+        s->leaving_private = true;
+        async_safe_run_on_cpu(CPU(s->cpu), sn_promdata_leave_private,
+                              RUN_ON_CPU_HOST_PTR(s));
+    }
 }
 
 /*
@@ -267,10 +316,9 @@ static void sn_promdata_check_stack(CPUState *cs, run_on_cpu_data data)
  * -- the bit clear and the PC outside every home -- a state first reached
  * with the OS running. Uncached accesses always forward -- the phase's
  * exit copies the persistent structures out to real RAM through exactly
- * that path.
+ * that path. sn_promdata_check_stack() applies the same handoff test
+ * from the node's poll, not only from a filter access.
  */
-static void sn_promdata_leave_private(CPUState *cs, run_on_cpu_data data);
-
 static bool sn_promdata_is_private(SNPromDataState *s, MemTxAttrs attrs)
 {
     if (!current_cpu || current_cpu != CPU(s->cpu)) {
@@ -286,13 +334,7 @@ static bool sn_promdata_is_private(SNPromDataState *s, MemTxAttrs attrs)
     }
 
     if (s->phase_private) {
-        /*
-         * Test the bit first: the PC translation runs only on the
-         * phase's way out, not on every private access.
-         */
-        if (!(s->cpu->env.active_fpu.fpr[0].d &
-              SN_PROM_BOOT_STATUS_CACHE_AS_RAM) &&
-            !sn_promdata_pc_in_prom(s)) {
+        if (sn_promdata_should_leave(s)) {
             s->phase_private = false;
             s->leaving_private = true;
             async_safe_run_on_cpu(CPU(s->cpu), sn_promdata_leave_private,

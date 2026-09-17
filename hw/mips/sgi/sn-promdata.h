@@ -32,15 +32,20 @@ typedef struct SNPromDataState SNPromDataState;
 /*
  * One node's shared poll, live only while the fast path is enabled.
  * While any of the node's processors has its private block mapped as
- * RAM, the timer samples each mapped processor's stack pointer every
- * SN_PROMDATA_POLL_NS of guest time, on that processor's own thread,
- * until none remain mapped (sn_promdata_poll_arm() in sn-promdata.c).
- * slots/count name the node's own promdata[] array, so the callback can
- * walk every slice without the node's own type. peer/peer_writes let
- * sn_promdata_trace_phase() report a generation-specific write counter
- * alongside the filter's own counts -- SN0's ECC and directory back
- * doors, by way of sn0.c's own callback; NULL when a generation tracks
- * no such counter (sgi-sn1-node does not supply one).
+ * RAM, or has released that mapping without yet leaving the private
+ * phase, the timer samples that processor every SN_PROMDATA_POLL_NS of
+ * guest time, on its own thread, until none remain watched
+ * (sn_promdata_poll_cb() in sn-promdata.c). Each sample checks the
+ * exit's stack switch and, once that has happened, the phase's own
+ * handoff test directly -- the fast path's own accesses never dispatch
+ * through the filter, so a processor need not touch the filter window
+ * again for the poll to notice it has left. slots/count name the node's
+ * own promdata[] array, so the callback can walk every slice without
+ * the node's own type. peer/peer_writes let sn_promdata_trace_phase()
+ * report a generation-specific write counter alongside the filter's own
+ * counts -- SN0's ECC and directory back doors, by way of sn0.c's own
+ * callback; NULL when a generation tracks no such counter (sgi-sn1-node
+ * does not supply one).
  */
 typedef struct SNPromDataPoll {
     QEMUTimer *timer;
