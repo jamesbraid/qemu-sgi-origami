@@ -483,6 +483,24 @@ static void test_board_bringup_scratch_registers(void)
     qtest_quit(qts);
 }
 
+/*
+ * Live-traced polling this register with a 1-byte `lbu` at its own base
+ * address, not a 4-byte load: `lbu t0,...; andi t0,t0,0x8; bnez t0,
+ * <continue>`. A big-endian 1-byte read at a register's base address
+ * extracts the most significant byte of the 32-bit value the memory
+ * core widens it from, so the bit this poll checks has to be stored
+ * there, not in the low byte a naive 0x08 return would put it in.
+ */
+static void test_board_bringup_byte_poll_bit_position(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    g_assert_cmphex(qtest_readl(qts, SI_REG(0x071208)), ==, 0x08000000);
+    g_assert_cmphex(qtest_readb(qts, SI_REG(0x071208)) & 0x8, ==, 0x8);
+
+    qtest_quit(qts);
+}
+
 static void test_hq_upload_and_readback(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
@@ -821,6 +839,8 @@ int main(int argc, char **argv)
                    test_write_path_fixes_dont_raise_the_sticky_error);
     qtest_add_func("sn0/origin2000/mgras/board-bringup-scratch-registers",
                    test_board_bringup_scratch_registers);
+    qtest_add_func("sn0/origin2000/mgras/board-bringup-byte-poll-bit-position",
+                   test_board_bringup_byte_poll_bit_position);
     qtest_add_func("sn0/origin2000/mgras/hq-upload-readback",
                    test_hq_upload_and_readback);
     qtest_add_func("sn0/origin2000/mgras/context-recognizer-ordering",

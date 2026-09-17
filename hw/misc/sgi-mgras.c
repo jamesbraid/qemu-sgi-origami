@@ -289,7 +289,16 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
      */
     case 0x02c574: return 0x8;
     case 0x02c578: return 0x100;
-    case 0x071208: return 0x08;
+    /*
+     * Live-traced polling this register with `lbu` at its own base
+     * address (not a 4-byte load): `lbu t0,...; andi t0,t0,0x8;
+     * bnez t0,<continue>`. A big-endian 1-byte read at a register's
+     * base address extracts the most significant byte of the 32-bit
+     * value the memory core widens it from, so the bit this poll
+     * checks has to live there, not in the low byte a 0x08 return
+     * would put it in.
+     */
+    case 0x071208: return 0x08000000;
     case 0x071c88: return s->cmap_index;
     case 0x071f00: return 1;
     /* See the header comment on SGI_MGRAS_REPP_SYNC. */
