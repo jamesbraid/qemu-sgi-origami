@@ -31,6 +31,21 @@
 #define SN_PROMDATA_POLL_NS (10 * SCALE_MS)
 
 /*
+ * How many extra poll periods a still-mapped slot gets once a sibling in
+ * its node has already released, before this poll gives up on it too.
+ * Every measured boot's own residency is a small fraction of this many
+ * periods (see the struct comment on straggler_polls), and QEMU_CLOCK_VIRTUAL
+ * itself stretches under host load rather than this count needing to, so a
+ * generous bound stays generous under load rather than firing early. This
+ * is what distinguishes a slower-but-live sibling, which reaches its own
+ * exit within a handful of periods, from a genuinely disabled processor
+ * that never does -- the boot's own PROM console reports that case as "CPU
+ * failed early init" and it is not this window's job to keep it mapped
+ * forever.
+ */
+#define SN_PROMDATA_STRAGGLER_LIMIT 6000
+
+/*
  * A virtual address of this processor's, translated through the MMU
  * rather than pattern-matched, because the phase does not stay on the
  * unmapped aliases: besides the compatibility segments and XKPHYS, a
@@ -110,23 +125,35 @@ static void sn_promdata_trace_phase(SNPromDataState *s, const char *event)
  * The node's poll: each mapped processor samples itself; rearm while any
  * still needs it. A node's first processor does the bulk of the resident
  * work -- 1.92 to 1.96 million private accesses against 95 to 131
- * thousand for its second, measured on PROM 6.156 -- and is the last of
- * the two to release on every measured boot. A second processor still
- * mapped once the first has released is the one the eight-processor
- * boot logs name "CPU B failed early init": parked, and never reaching
- * its own exit. Stop polling it at that point instead of keeping the
- * node's timer running at 100 Hz for the rest of the run. The first
- * processor itself is always polled for as long as it is mapped; this
- * has no observed failure mode and stays unbounded.
+ * thousand for its second, measured on PROM 6.156 -- and is usually the
+ * last of the two to release, but not always: a slower sibling that
+ * releases after the other is still a live processor finishing the same
+ * phase, not the "CPU failed early init" case the eight-processor boot's
+ * own PROM console reports for a genuinely disabled one. Coupling a
+ * slot's exemption to a specific sibling's index conflates the two --
+ * whichever slot happens to release first was treated as proof the other
+ * never would, which stranded a still-mapped, still-booting sibling's
+ * window open for the rest of the run once it lost the race by even one
+ * poll period. Give every slot that outlasts a released sibling a bounded
+ * number of further chances (SN_PROMDATA_STRAGGLER_LIMIT) instead: enough
+ * for a live straggler to reach its own exit, not so many that a truly
+ * disabled processor keeps the node's 100 Hz timer running indefinitely.
  */
 static void sn_promdata_check_stack(CPUState *cs, run_on_cpu_data data);
 
 static void sn_promdata_poll_cb(void *opaque)
 {
     SNPromDataPoll *poll = opaque;
-    SNPromDataState *primary = &poll->slots[0];
-    bool mapped = false;
+    bool any_released = false;
+    bool rearm = false;
     unsigned int i;
+
+    for (i = 0; i < poll->count; i++) {
+        if (poll->slots[i].present && !poll->slots[i].fast) {
+            any_released = true;
+            break;
+        }
+    }
 
     for (i = 0; i < poll->count; i++) {
         SNPromDataState *s = &poll->slots[i];
@@ -134,14 +161,16 @@ static void sn_promdata_poll_cb(void *opaque)
         if (!s->present || !s->fast) {
             continue;
         }
-        if (i != 0 && primary->present && !primary->fast) {
+        if (!any_released) {
+            s->straggler_polls = 0;
+        } else if (++s->straggler_polls > SN_PROMDATA_STRAGGLER_LIMIT) {
             continue;
         }
         async_run_on_cpu(CPU(s->cpu), sn_promdata_check_stack,
                          RUN_ON_CPU_HOST_PTR(s));
-        mapped = true;
+        rearm = true;
     }
-    if (mapped) {
+    if (rearm) {
         timer_mod(poll->timer,
                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + SN_PROMDATA_POLL_NS);
     }
@@ -406,6 +435,7 @@ static void sn_promdata_reset(void *opaque)
     s->leaving_private = false;
     s->phase_private = false;
     s->fast = false;
+    s->straggler_polls = 0;
     s->private_reads = 0;
     s->private_writes = 0;
     memory_region_set_enabled(&s->filter, true);

@@ -97,6 +97,13 @@ struct SNPromDataState {
     bool leaving_private;   /* the overlay has been (or is being) disabled */
     bool phase_private;     /* the cache-as-RAM phase is latched for this CPU */
     bool fast;              /* data is mapped above the filter */
+    /*
+     * Consecutive poll periods this slot has stayed mapped after a
+     * sibling in the same node released first. Reset to 0 while no
+     * sibling has released yet; see sn_promdata_poll_cb() in
+     * sn-promdata.c.
+     */
+    uint32_t straggler_polls;
     /* Through the filter, for tracing only. */
     uint64_t private_reads;
     uint64_t private_writes;
