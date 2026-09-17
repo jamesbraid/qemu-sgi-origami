@@ -81,6 +81,8 @@
 #define SI_FINAL_TOKEN           0x0000f400
 #define SI_PENDING_FLAGS         0x00080000
 #define SI_PENDING_CONTEXT       0x10000000
+#define SI_PENDING_LOWATER       0x00000004
+#define SI_HQ_ENABLE_LOWATER     0x10
 #define SI_CONTEXT_WORDS         63
 
 #define ID_PART(v)          (((v) >> 12) & 0xffff)
@@ -404,6 +406,26 @@ static void test_hq_status_bringup_bit(void)
     QTestState *qts = qtest_init(MACHINE_ARGS);
 
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x2, ==, 0x2);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The same word's second poll bit: mgras_hq4_hiwater_intr's own short
+ * local poll (called from MgrasPcxSwap during a buffer swap), live-traced
+ * from the driver object pulled off the retained disk, requiring bit 0x10
+ * set before it will treat the FIFO as healthy -- separate from and in
+ * addition to bit 0x2's own bring-up consumer above. Before this bit was
+ * modelled, that poll always exhausted its ten retries and fell into the
+ * same watchdog-arming fallback MgrasFlushHQ3Poll's own timeout does
+ * (REG_HQ_ENABLE's bit SI_HQ_ENABLE_LOWATER), on every call, regardless of
+ * REG_FIFO_STATUS's own fix.
+ */
+static void test_hq_status_hiwater_poll_bit(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x10, ==, 0x10);
 
     qtest_quit(qts);
 }
@@ -745,7 +767,13 @@ static void test_fifo_full_and_unsupported_access(void)
         qtest_writeq(qts, REG_CONTEXT_COMMAND,
                      SI_COMMAND(REG_FILL_CLIP_START, 0));
     }
-    g_assert_cmphex(qtest_readl(qts, REG_FIFO_STATUS) & 0xff, ==, 255);
+    /*
+     * The overflow accounting itself, not REG_FIFO_STATUS: that register
+     * always reads ready now (see the header comment on its case in
+     * sgi-mgras.c), so this checks the host-only property backing it
+     * instead.
+     */
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-fifo-count"), ==, 255);
 
     /* The 256th record still fits. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_FILL_CLIP_START, 0));
@@ -754,6 +782,34 @@ static void test_fifo_full_and_unsupported_access(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_FILL_CLIP_START, 0));
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==,
                      0x80000000);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The crash this device's watchdog approximation caused: MgrasCtxsw's and
+ * MgrasPcxSwap's own MgrasFlushHQ3 calls poll REG_FIFO_STATUS against a
+ * threshold of zero (live-traced from the driver object pulled off the
+ * retained disk, see the header comment on REG_FIFO_STATUS's case in
+ * sgi-mgras.c), and this device has no way to disarm the watchdog those
+ * routines arm on a timed-out poll -- nothing ever modelled the interrupt
+ * that does. A command word left stored without ever completing a fill
+ * (the same setup as test_fifo_full_and_unsupported_access, stopped after
+ * one word rather than 255) used to leave REG_FIFO_STATUS permanently
+ * nonzero, so the poll never saw its exit condition and IRIX panicked
+ * roughly 15 seconds later. The register now reports ready regardless of
+ * the true stored count, so the poll this driver depends on always
+ * succeeds.
+ */
+static void test_fifo_status_poll_ignores_stuck_occupancy(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_FILL_CLIP_START, 0));
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-fifo-count"), ==, 1);
+    g_assert_cmphex(qtest_readl(qts, REG_FIFO_STATUS) & 0xff, ==, 0);
 
     qtest_quit(qts);
 }
@@ -777,7 +833,7 @@ static void test_direct_fill_and_reset(void)
                  SI_COMMAND(REG_BLOCK_END, (13u << 16) | 13u));
 
     /* FIFO drains once the execute record commits the fill. */
-    g_assert_cmphex(qtest_readl(qts, REG_FIFO_STATUS) & 0xff, ==, 0);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-fifo-count"), ==, 0);
 
     g_assert_cmphex(si_test_pixel(qts, 11, 11), ==, 0x00112233);
     /* Outside the clipped rectangle stays untouched. */
@@ -950,6 +1006,67 @@ static void test_hq_config_and_enable_registers(void)
 }
 
 /*
+ * The FIFO status/low-water interrupt: MgrasFlushHQ3 and
+ * mgras_hq4_hiwater_intr's own timeout fallback both arm the driver's FIFO
+ * watchdog by writing bit SI_HQ_ENABLE_LOWATER into REG_HQ_ENABLE
+ * (live-traced from both routines), then wait for mgras_hq4_lowater_intr to
+ * run; only that interrupt ever clears the bit back out (via
+ * REG_HQ_ENABLE_CLEAR). Before this device modelled the interrupt, nothing
+ * ever ran it, and IRIX panicked its own watchdog roughly 15 seconds after
+ * any code path (gfxinit, the X server) opened this board. This device
+ * tracks no real FIFO occupancy, so it satisfies the wait immediately on
+ * the arming write instead: this test holds it to that behavior, not to
+ * genuine watermark timing this project has no evidence for.
+ */
+static void test_fifo_lowater_interrupt(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+    const unsigned int vector = 60;
+    const uint64_t expected_addr =
+        ((uint64_t)HUB_WIDGET << 48) | HUB_REG_OFFSET;
+
+    qtest_writel(qts, REG_INT_DEST_UPPER, (HUB_WIDGET << 16) | (vector << 24));
+    qtest_writel(qts, REG_INT_DEST_LOWER, HUB_REG_OFFSET);
+
+    /*
+     * Left masked out of the shared top-level enable on purpose: this
+     * source is not gated by REG_IRQ_MASK (see si_update_irq's own
+     * comment), only by REG_HQ_ENABLE's own bit.
+     */
+    qtest_writel(qts, REG_IRQ_MASK, 0);
+
+    /* Arming: a newly-set low-water bit raises the interrupt promptly. */
+    qtest_writel(qts, REG_HQ_ENABLE, SI_HQ_ENABLE_LOWATER);
+    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & SI_PENDING_LOWATER, ==,
+                     SI_PENDING_LOWATER);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-last-interrupt-addr"),
+                     ==, expected_addr);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-last-interrupt-value"),
+                     ==, vector | 0x100);
+
+    /* Re-writing the same already-set bit is not a new arming event. */
+    qtest_writel(qts, REG_PENDING_ACK, SI_PENDING_LOWATER);
+    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & SI_PENDING_LOWATER, ==, 0);
+    qtest_writel(qts, REG_HQ_ENABLE, SI_HQ_ENABLE_LOWATER);
+    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & SI_PENDING_LOWATER, ==, 0);
+
+    /*
+     * Disarming (the companion clear register mgras_hq4_lowater_intr
+     * itself writes) does not by itself acknowledge a still-pending
+     * interrupt -- that is REG_PENDING_ACK's own job, exercised above.
+     * Clearing and re-setting the bit is a fresh arming event.
+     */
+    qtest_writel(qts, REG_HQ_ENABLE_CLEAR, SI_HQ_ENABLE_LOWATER);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_ENABLE) & SI_HQ_ENABLE_LOWATER,
+                     ==, 0);
+    qtest_writel(qts, REG_HQ_ENABLE, SI_HQ_ENABLE_LOWATER);
+    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & SI_PENDING_LOWATER, ==,
+                     SI_PENDING_LOWATER);
+
+    qtest_quit(qts);
+}
+
+/*
  * The HQ4-specific interrupt-vector triple MgrasSetHQ4IntrVectors writes
  * alongside the generic destination pair: which byte of the packed vector
  * word serves which interrupt role was not settled, so all three store
@@ -1071,7 +1188,7 @@ static void test_migration(void)
     /* The completed context recognizer and the one stored, uncommitted
      * FIFO record both have to survive migration. */
     g_assert_cmphex(qtest_readl(to, REG_CONTEXT_COMMAND), ==, SI_FINAL_TOKEN);
-    g_assert_cmphex(qtest_readl(to, REG_FIFO_STATUS) & 0xff, ==, 1);
+    g_assert_cmphex(si_qom_get_uint(to, "x-test-fifo-count"), ==, 1);
 
     qtest_quit(to);
     qtest_quit(from);
@@ -1097,6 +1214,8 @@ int main(int argc, char **argv)
                    test_repp_sync_handshake);
     qtest_add_func("sn0/origin2000/mgras/hq-status-bringup-bit",
                    test_hq_status_bringup_bit);
+    qtest_add_func("sn0/origin2000/mgras/hq-status-hiwater-poll-bit",
+                   test_hq_status_hiwater_poll_bit);
     qtest_add_func("sn0/origin2000/mgras/dac-lut-load",
                    test_dac_lut_load);
     qtest_add_func("sn0/origin2000/mgras/write-path-fixes-dont-raise-error",
@@ -1125,6 +1244,8 @@ int main(int argc, char **argv)
                    test_interrupt_packet_delivery);
     qtest_add_func("sn0/origin2000/mgras/fifo-full-and-unsupported-access",
                    test_fifo_full_and_unsupported_access);
+    qtest_add_func("sn0/origin2000/mgras/fifo-status-poll-ignores-stuck-occupancy",
+                   test_fifo_status_poll_ignores_stuck_occupancy);
     qtest_add_func("sn0/origin2000/mgras/direct-fill-and-reset",
                    test_direct_fill_and_reset);
     qtest_add_func("sn0/origin2000/mgras/vc3-sram-round-trip",
@@ -1139,6 +1260,8 @@ int main(int argc, char **argv)
                    test_int_dest_alt_offset_aliases);
     qtest_add_func("sn0/origin2000/mgras/hq-config-and-enable-registers",
                    test_hq_config_and_enable_registers);
+    qtest_add_func("sn0/origin2000/mgras/fifo-lowater-interrupt",
+                   test_fifo_lowater_interrupt);
     qtest_add_func("sn0/origin2000/mgras/hq-vector-registers",
                    test_hq_vector_registers);
     qtest_add_func("sn0/origin2000/mgras/fifo-threshold-registers",
