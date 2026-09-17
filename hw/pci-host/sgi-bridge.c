@@ -576,20 +576,21 @@ static hwaddr sgi_bridge_window_correct(hwaddr offset, unsigned int size)
  * at the window boundary, independent of the host's endianness.
  */
 /*
- * One device-window cycle of up to four bytes, corrected if the slot needs it:
- * a byte, halfword or word, and each half of a 32-bit device's split
+ * One window cycle of up to four bytes, corrected if the caller needs it: a
+ * byte, halfword or word, and each half of a 32-bit device's split
  * doubleword. impl.max caps size at four here; the assert makes that bound
  * visible to the compiler's array-bounds check, the eight-byte doubleword being
- * the caller's.
+ * the caller's. Parameterized on a plain base and a correction flag rather
+ * than a slot: the per-device windows pass their slot's own base and its
+ * self-ordered exemption, the inbound PIO translated window (no slot, no
+ * exemption a card can declare into) always corrects from PCI address zero.
  */
-static uint64_t sgi_bridge_window_read_word(SGIBridgeState *s,
-                                            unsigned int slot,
+static uint64_t sgi_bridge_window_read_word(hwaddr base, bool correct,
                                             AddressSpace *space, hwaddr addr,
                                             unsigned int size)
 {
-    hwaddr offset = sgi_bridge_slot_needs_correction(s, slot) ?
-                    sgi_bridge_window_correct(addr, size) : addr;
-    hwaddr target = s->device_window_base[slot] + offset;
+    hwaddr offset = correct ? sgi_bridge_window_correct(addr, size) : addr;
+    hwaddr target = base + offset;
     uint8_t bytes[4] = { 0 };
 
     assert(size <= sizeof(bytes));
@@ -611,6 +612,8 @@ static uint64_t sgi_bridge_window_read(SGIBridgeState *s, unsigned int slot,
                                        unsigned int size)
 {
     uint32_t dev = s->reg[SGI_BRIDGE_SLOT(BRIDGE_DEVICE(slot))];
+    bool correct = sgi_bridge_slot_needs_correction(s, slot);
+    hwaddr base = s->device_window_base[slot];
 
     if (size == 8 && (dev & DEV_64BIT_DEVICE)) {
         uint8_t bytes[8] = { 0 };
@@ -621,25 +624,25 @@ static uint64_t sgi_bridge_window_read(SGIBridgeState *s, unsigned int slot,
     }
 
     if (size == 8) {
-        uint64_t word0 = sgi_bridge_window_read_word(s, slot, space, addr, 4);
-        uint64_t word1 = sgi_bridge_window_read_word(s, slot, space,
+        uint64_t word0 = sgi_bridge_window_read_word(base, correct, space,
+                                                     addr, 4);
+        uint64_t word1 = sgi_bridge_window_read_word(base, correct, space,
                                                      addr + 4, 4);
 
         return (word0 << 32) | word1;
     }
 
-    return sgi_bridge_window_read_word(s, slot, space, addr, size);
+    return sgi_bridge_window_read_word(base, correct, space, addr, size);
 }
 
-/* One device-window write cycle of up to four bytes, the counterpart of
+/* One window write cycle of up to four bytes, the counterpart of
  * sgi_bridge_window_read_word. */
-static void sgi_bridge_window_write_word(SGIBridgeState *s, unsigned int slot,
+static void sgi_bridge_window_write_word(hwaddr base, bool correct,
                                          AddressSpace *space, hwaddr addr,
                                          uint64_t val, unsigned int size)
 {
-    hwaddr offset = sgi_bridge_slot_needs_correction(s, slot) ?
-                    sgi_bridge_window_correct(addr, size) : addr;
-    hwaddr target = s->device_window_base[slot] + offset;
+    hwaddr offset = correct ? sgi_bridge_window_correct(addr, size) : addr;
+    hwaddr target = base + offset;
     uint8_t bytes[4];
 
     assert(size <= sizeof(bytes));
@@ -657,6 +660,8 @@ static void sgi_bridge_window_write(SGIBridgeState *s, unsigned int slot,
                                     uint64_t val, unsigned int size)
 {
     uint32_t dev = s->reg[SGI_BRIDGE_SLOT(BRIDGE_DEVICE(slot))];
+    bool correct = sgi_bridge_slot_needs_correction(s, slot);
+    hwaddr base = s->device_window_base[slot];
 
     if (size == 8 && (dev & DEV_64BIT_DEVICE)) {
         uint8_t bytes[8];
@@ -672,12 +677,12 @@ static void sgi_bridge_window_write(SGIBridgeState *s, unsigned int slot,
     }
 
     if (size == 8) {
-        sgi_bridge_window_write_word(s, slot, space, addr, val >> 32, 4);
-        sgi_bridge_window_write_word(s, slot, space, addr + 4, val, 4);
+        sgi_bridge_window_write_word(base, correct, space, addr, val >> 32, 4);
+        sgi_bridge_window_write_word(base, correct, space, addr + 4, val, 4);
         return;
     }
 
-    sgi_bridge_window_write_word(s, slot, space, addr, val, size);
+    sgi_bridge_window_write_word(base, correct, space, addr, val, size);
 }
 
 static uint64_t sgi_bridge_window_mem_read(void *opaque, hwaddr addr,
@@ -735,6 +740,58 @@ static const MemoryRegionOps sgi_bridge_window_mem_ops = {
 static const MemoryRegionOps sgi_bridge_window_io_ops = {
     .read = sgi_bridge_window_io_read,
     .write = sgi_bridge_window_io_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+};
+
+/*
+ * The inbound PIO translated window's cycle: the same byte-lane correction
+ * as a per-device window's, but based at PCI address zero rather than a
+ * slot's programmed base, and always corrected. There is no per-device
+ * register behind this window to carry a self-ordered exemption or a
+ * 64-bit-device declaration, so a doubleword access always gets the two
+ * corrected four-byte cycles a 32-bit device's window would use -- the
+ * common case, and the only one this window can express.
+ */
+static uint64_t sgi_bridge_pio_xlate_read(void *opaque, hwaddr addr,
+                                          unsigned size)
+{
+    SGIBridgeState *s = opaque;
+
+    if (size == 8) {
+        uint64_t word0 = sgi_bridge_window_read_word(0, true, &s->pci_mmio_as,
+                                                      addr, 4);
+        uint64_t word1 = sgi_bridge_window_read_word(0, true, &s->pci_mmio_as,
+                                                      addr + 4, 4);
+
+        return (word0 << 32) | word1;
+    }
+
+    return sgi_bridge_window_read_word(0, true, &s->pci_mmio_as, addr, size);
+}
+
+static void sgi_bridge_pio_xlate_write(void *opaque, hwaddr addr,
+                                       uint64_t val, unsigned size)
+{
+    SGIBridgeState *s = opaque;
+
+    if (size == 8) {
+        sgi_bridge_window_write_word(0, true, &s->pci_mmio_as, addr,
+                                     val >> 32, 4);
+        sgi_bridge_window_write_word(0, true, &s->pci_mmio_as, addr + 4, val,
+                                     4);
+        return;
+    }
+
+    sgi_bridge_window_write_word(0, true, &s->pci_mmio_as, addr, val, size);
+}
+
+static const MemoryRegionOps sgi_bridge_pio_xlate_ops = {
+    .read = sgi_bridge_pio_xlate_read,
+    .write = sgi_bridge_pio_xlate_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid.min_access_size = 1,
     .valid.max_access_size = 8,
@@ -1860,6 +1917,16 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     memory_region_init(&s->pci_io, obj, "sgi-bridge.pci-io", 4 * GiB);
     address_space_init(&s->pci_mmio_as, &s->pci_mmio, "sgi-bridge.pci-mmio");
     address_space_init(&s->pci_io_as, &s->pci_io, "sgi-bridge.pci-io");
+
+    /*
+     * See the header comment on SGI_BRIDGE_PIO_XLATE_BASE for the evidence.
+     * Not an alias: an alias cannot carry the byte-lane correction, exactly
+     * the reason the per-device windows below use dedicated ops too.
+     */
+    memory_region_init_io(&s->pio_xlate, obj, &sgi_bridge_pio_xlate_ops, s,
+                          "sgi-bridge.pio-xlate", SGI_BRIDGE_PIO_XLATE_SIZE);
+    memory_region_add_subregion(&s->widget, SGI_BRIDGE_PIO_XLATE_BASE,
+                                &s->pio_xlate);
 
     /* Not aliases: an alias cannot carry the byte-lane correction. */
     for (slot = 0; slot < SGI_BRIDGE_DEVICES; slot++) {

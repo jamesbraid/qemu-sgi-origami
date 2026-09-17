@@ -69,8 +69,38 @@ AddressSpace *sgi_bridge_plain_dma_as(PCIDevice *dev);
  */
 #define SGI_BRIDGE_BYTE_LANE_SELF_ORDERED "byte-lane-self-ordered"
 
-/* The whole of the widget's crosstalk space belongs to this chip. */
-#define SGI_BRIDGE_WIDGET_SIZE  (16 * MiB)
+/*
+ * The whole of the widget's crosstalk space belongs to this chip. Sized to
+ * reach the PIO translated window below, not just the low CSR/cfg0/ssram/
+ * small-window region.
+ */
+#define SGI_BRIDGE_WIDGET_SIZE  (2 * GiB)
+
+/*
+ * Inbound PIO translated window: a processor-initiated access landing here
+ * reaches PCI memory space directly, offset by this base. Confirmed live: a
+ * booted IRIX 6.5.30 kernel programs a Hub big window at exactly this widget
+ * offset (widget shifted into the crosstalk address, OR'd with slice 2 --
+ * 512 MB granularity -- landing here once the widget-select bits are routed
+ * away) when mapping a PCI BAR too large for the per-slot device window, and
+ * the resulting pointer's low 30 bits equal the BAR's own PCI address exactly
+ * (docs/research/graphics/rad4-xradsgi-connection-hang-20260916.md). This is
+ * the same 0x40000000-0x7fffffff range the DMA side calls the ATE-translated
+ * window (docs/datasheets/bridge.md, "## DMA"), but for an inbound access the
+ * evidence shows a plain offset into PCI memory space, not an ATE lookup --
+ * the ATE stores a crosstalk destination, which has no reverse mapping to a
+ * PCI address. "Plain offset" describes the address math only: the model
+ * still applies the same byte-lane correction as the per-device windows
+ * (sgi_bridge_window_correct), since this is the same big-endian-processor-
+ * onto-little-endian-PCI-bus path they correct, just reached without a
+ * slot's own programmed base. There is no per-device register behind this
+ * window, so unlike a per-device window it has no self-ordered exemption --
+ * every access through it is corrected. Only this range is modeled; the
+ * adjacent 0x80000000-0xffffffff "direct-mapped" DMA range has no
+ * equivalent inbound evidence yet.
+ */
+#define SGI_BRIDGE_PIO_XLATE_BASE 0x40000000
+#define SGI_BRIDGE_PIO_XLATE_SIZE 0x40000000
 
 /* Switched packets use four widget bits above their full 48-bit address. */
 #define SGI_BRIDGE_WIDGET_BITS         4
@@ -131,6 +161,13 @@ struct SGIBridgeState {
     /* The PCI side's two address spaces, which the device windows look into. */
     MemoryRegion pci_mmio;
     MemoryRegion pci_io;
+
+    /*
+     * Inbound PIO translated window: dedicated ops onto pci_mmio_as at PCI
+     * 0, not an alias -- it needs the same byte-lane correction as the
+     * per-device windows below, which a plain alias cannot carry.
+     */
+    MemoryRegion pio_xlate;
 
     /*
      * Address-space views of the two containers above: a window callback
