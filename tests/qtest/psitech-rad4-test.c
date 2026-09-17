@@ -87,6 +87,7 @@
 #define B_RGB_LO        0x900000
 #define B_RGB_HI        0x910000
 #define B_RGB_DATA      0x920000
+#define B_RGB_RESERVED  0x930000
 #define B_HORIZ0        0xa00000
 #define B_VERT          0xb00000
 #define B_MASK          0xd00000
@@ -95,6 +96,23 @@
 #define CTRL_MODE_CMD   0x20u
 #define CTRL_STORED_BIT 0x02u
 #define STATUS_FRAME    0x20u
+
+/*
+ * RGB561 indexed cursor registers (docs/datasheets/psitech-rad4.md,
+ * "Cursor"; IBM Microelectronics "RGB561 Architecture", Preliminary
+ * Rev. 1.1, pages 27 and 37-39, 45).
+ */
+#define RGB_CURSOR_CONTROL      0x0030
+#define RGB_CURSOR_HOTSPOT_X    0x0034
+#define RGB_CURSOR_HOTSPOT_Y    0x0035
+#define RGB_CURSOR_X_LOW        0x0036
+#define RGB_CURSOR_X_HIGH       0x0037
+#define RGB_CURSOR_Y_LOW        0x0038
+#define RGB_CURSOR_Y_HIGH       0x0039
+#define CURSOR_CONTROL_CE       (1u << 0)
+
+#define RGB_CURSOR_LUT_BASE     0x0a10
+#define RGB_CURSOR_PIXMAP_BASE  0x2000
 
 static void rad4_window_to(QTestState *qts, uint32_t pci_addr)
 {
@@ -134,6 +152,34 @@ static uint32_t bar2_read(QTestState *qts, uint32_t off)
 static void bar2_write(QTestState *qts, uint32_t off, uint32_t val)
 {
     rad4_writel(qts, RAD4_BAR2_PCI + off, val);
+}
+
+/* Points the RGB561 index registers at a given 16-bit index. */
+static void rgb_set_index(QTestState *qts, uint16_t index)
+{
+    bar2_write(qts, B_RGB_LO, index & 0xff);
+    bar2_write(qts, B_RGB_HI, (index >> 8) & 0xff);
+}
+
+static uint16_t rgb_current_index(QTestState *qts)
+{
+    uint8_t lo = bar2_read(qts, B_RGB_LO);
+    uint8_t hi = bar2_read(qts, B_RGB_HI);
+
+    return ((uint16_t)hi << 8) | lo;
+}
+
+/* Ordinary single-cycle RGB561 registers: one byte per addressed index. */
+static void rgb_write_byte(QTestState *qts, uint16_t index, uint8_t value)
+{
+    rgb_set_index(qts, index);
+    bar2_write(qts, B_RGB_DATA, value);
+}
+
+static uint8_t rgb_read_byte(QTestState *qts, uint16_t index)
+{
+    rgb_set_index(qts, index);
+    return (uint8_t)bar2_read(qts, B_RGB_DATA);
 }
 
 /*
@@ -401,6 +447,113 @@ static void test_dma_registers_inert(void)
     qtest_quit(qts);
 }
 
+static void test_cursor_position_and_enable(void)
+{
+    QTestState *qts = rad4_init();
+
+    /* Cursor control: CE (bit 0) is the enable bit (IBM page 37). */
+    rgb_write_byte(qts, RGB_CURSOR_CONTROL, CURSOR_CONTROL_CE);
+    g_assert_cmphex(rgb_read_byte(qts, RGB_CURSOR_CONTROL), ==,
+                    CURSOR_CONTROL_CE);
+
+    /* Position: an ordinary 16-bit two's complement pair (IBM page 38). */
+    rgb_write_byte(qts, RGB_CURSOR_X_LOW, 100);
+    rgb_write_byte(qts, RGB_CURSOR_X_HIGH, 0);
+    rgb_write_byte(qts, RGB_CURSOR_Y_LOW, 200);
+    rgb_write_byte(qts, RGB_CURSOR_Y_HIGH, 0);
+
+    g_assert_cmphex(rgb_read_byte(qts, RGB_CURSOR_X_LOW), ==, 100);
+    g_assert_cmphex(rgb_read_byte(qts, RGB_CURSOR_X_HIGH), ==, 0);
+    g_assert_cmphex(rgb_read_byte(qts, RGB_CURSOR_Y_LOW), ==, 200);
+    g_assert_cmphex(rgb_read_byte(qts, RGB_CURSOR_Y_HIGH), ==, 0);
+
+    /* Hot spot: six bits (IBM page 38). */
+    rgb_write_byte(qts, RGB_CURSOR_HOTSPOT_X, 0x3f);
+    rgb_write_byte(qts, RGB_CURSOR_HOTSPOT_Y, 0x01);
+    g_assert_cmphex(rgb_read_byte(qts, RGB_CURSOR_HOTSPOT_X), ==, 0x3f);
+    g_assert_cmphex(rgb_read_byte(qts, RGB_CURSOR_HOTSPOT_Y), ==, 0x01);
+
+    /* Disabling again clears the enable bit but not the position. */
+    rgb_write_byte(qts, RGB_CURSOR_CONTROL, 0);
+    g_assert_cmphex(rgb_read_byte(qts, RGB_CURSOR_CONTROL), ==, 0);
+    g_assert_cmphex(rgb_read_byte(qts, RGB_CURSOR_X_LOW), ==, 100);
+
+    qtest_quit(qts);
+}
+
+static void test_cursor_pixmap_round_trip(void)
+{
+    QTestState *qts = rad4_init();
+
+    /*
+     * The cursor pixel map is a plain 1Kx8 SRAM (IBM page 27 lists it
+     * without the "N RW/ADDR" annotation the look-up tables carry), so
+     * writing it goes through the ordinary auto-incrementing data port
+     * and advances the index by exactly one per byte.
+     */
+    rgb_set_index(qts, RGB_CURSOR_PIXMAP_BASE);
+    bar2_write(qts, B_RGB_DATA, 0x1b);
+    bar2_write(qts, B_RGB_DATA, 0xe4);
+    g_assert_cmphex(rgb_current_index(qts), ==, RGB_CURSOR_PIXMAP_BASE + 2);
+
+    g_assert_cmphex(rgb_read_byte(qts, RGB_CURSOR_PIXMAP_BASE), ==, 0x1b);
+    g_assert_cmphex(rgb_read_byte(qts, RGB_CURSOR_PIXMAP_BASE + 1), ==, 0xe4);
+
+    /* A byte at the far end of the 1 KiB pixel map round-trips too. */
+    rgb_write_byte(qts, RGB_CURSOR_PIXMAP_BASE + 0x3ff, 0x55);
+    g_assert_cmphex(rgb_read_byte(qts, RGB_CURSOR_PIXMAP_BASE + 0x3ff), ==,
+                    0x55);
+
+    qtest_quit(qts);
+}
+
+static void test_cursor_lut_tri_write(void)
+{
+    QTestState *qts = rad4_init();
+
+    /*
+     * The cursor/cross-hair look-up table is a three-writes-per-address
+     * ("3 RW/ADDR") port reached through BAR2 +0x930000, not the ordinary
+     * data port: point the index at Cursor Primary Color 1 (IBM page 45,
+     * Table 22) and issue three writes there without touching the index
+     * registers in between, matching the shipped driver's own
+     * init_RGB561 sequence.
+     */
+    rgb_set_index(qts, RGB_CURSOR_LUT_BASE + 1);
+    bar2_write(qts, B_RGB_RESERVED, 0x11);
+    bar2_write(qts, B_RGB_RESERVED, 0x22);
+    bar2_write(qts, B_RGB_RESERVED, 0x33);
+
+    /*
+     * The visible index must have advanced by exactly one, to the next
+     * LUT entry -- not by three, the way an ordinary auto-incrementing
+     * range would. This is what discriminates this port's
+     * three-writes-per-address protocol from plain per-byte storage.
+     */
+    g_assert_cmphex(rgb_current_index(qts), ==, RGB_CURSOR_LUT_BASE + 2);
+
+    /*
+     * Reading the three components back in order, at the original
+     * address, confirms they landed in three separate planes of one
+     * entry rather than at three separate addresses.
+     */
+    rgb_set_index(qts, RGB_CURSOR_LUT_BASE + 1);
+    g_assert_cmphex(bar2_read(qts, B_RGB_RESERVED), ==, 0x11);
+    g_assert_cmphex(bar2_read(qts, B_RGB_RESERVED), ==, 0x22);
+    g_assert_cmphex(bar2_read(qts, B_RGB_RESERVED), ==, 0x33);
+    g_assert_cmphex(rgb_current_index(qts), ==, RGB_CURSOR_LUT_BASE + 2);
+
+    /* The next entry (Cursor Primary Color 2) was left untouched. */
+    rgb_set_index(qts, RGB_CURSOR_LUT_BASE + 2);
+    g_assert_cmphex(bar2_read(qts, B_RGB_RESERVED), ==, 0);
+
+    /* This port never reaches the plain framebuffer or interrupt path. */
+    g_assert_cmphex(bar2_read(qts, 0x000000), ==, 0);
+    g_assert_cmphex(bar0_read(qts, R_INTCSR) & INTCSR_PENDING, ==, 0);
+
+    qtest_quit(qts);
+}
+
 static void test_reset(void)
 {
     QTestState *qts = rad4_init();
@@ -444,6 +597,12 @@ int main(int argc, char **argv)
                    test_interrupt_acknowledge);
     qtest_add_func("/psitech-rad4/dma-registers-inert",
                    test_dma_registers_inert);
+    qtest_add_func("/psitech-rad4/cursor-position-and-enable",
+                   test_cursor_position_and_enable);
+    qtest_add_func("/psitech-rad4/cursor-pixmap-round-trip",
+                   test_cursor_pixmap_round_trip);
+    qtest_add_func("/psitech-rad4/cursor-lut-tri-write",
+                   test_cursor_lut_tri_write);
     qtest_add_func("/psitech-rad4/reset", test_reset);
 
     return g_test_run();

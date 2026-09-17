@@ -95,7 +95,93 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 
 #define RAD4_FRAME_HZ           60
 
-/* RGB561 index ranges this profile stores and treats as supported. */
+/*
+ * RGB561 indexed cursor registers. IBM Microelectronics, "RGB561
+ * Architecture", Preliminary Rev. 1.1, 23 January 1995 (retained at
+ * docs/library/cache/graphics/ibm-rgb561-architecture.pdf in the owning
+ * Origami repository), page 27's register address table and pages 37-39.
+ * Index 0x0030's value 0x60 disabling the cursor and cross-hair at
+ * initialization is the same fact docs/datasheets/psitech-rad4.md already
+ * cites from the shipped driver's init_RGB561 (offsets 0xb158-0xb180);
+ * disassembling that same routine (0xb1f0 onward, .text-relative) further
+ * shows the nine RGB561 data-port writes immediately following it are all
+ * zero, confirming every other cursor register here also resets to zero
+ * on that path.
+ */
+#define RAD4_RGB_CURSOR_CONTROL     0x0030
+#define RAD4_RGB_CURSOR_HOTSPOT_X   0x0034
+#define RAD4_RGB_CURSOR_HOTSPOT_Y   0x0035
+#define RAD4_RGB_CURSOR_X_LOW       0x0036
+#define RAD4_RGB_CURSOR_X_HIGH      0x0037
+#define RAD4_RGB_CURSOR_Y_LOW       0x0038
+#define RAD4_RGB_CURSOR_Y_HIGH      0x0039
+#define RAD4_CURSOR_CONTROL_CE      (1u << 0)   /* Cursor Enabling, page 37 */
+#define RAD4_CURSOR_HOTSPOT_MASK    0x3f        /* 6 bits, page 38 */
+
+/*
+ * Cursor/cross-hair look-up table, indices 0x0a10-0x0a1f (IBM page 27's
+ * "CURSOR LUT (3 RW/ADDR)" and "CROSS-HAIR CURSOR LUT (3 RW/ADDR)", page 45's
+ * Table 22). Two things make this range unlike every other indexed range
+ * this file already implements:
+ *
+ * - Reads and writes go through the fourth RGB561 port, BAR2 +0x930000
+ *   (RAD4_BAR2_RGB_RESERVED below), not the ordinary data port at
+ *   +0x920000. Disassembling the shipped driver's init_RGB561 shows the
+ *   index-setting writes (0xb540-0xb55c, .text-relative) target the same
+ *   two struct fields used for every other index-then-data sequence in
+ *   the same function, but the three RGB data writes that follow
+ *   (0xb560-0xb5b0) dereference a different struct field from the one
+ *   used for every ordinary single-cycle register nearby, including the
+ *   cursor control block a few instructions earlier (0xb158-0xb1e4). The
+ *   struct holds four consecutive pointer-sized fields (0x10, 0x18, 0x20,
+ *   0x28), matching the chip's four apertures in order (index-low,
+ *   index-high, data, reserved); the cursor data writes use the fourth.
+ * - Real hardware does not advance the visible index after each byte
+ *   here: the driver points the index at 0x0a11 once, issues six raw
+ *   writes to that fourth port with no index write between them, then
+ *   explicitly re-points the index to 0x0a15 rather than continuing to
+ *   rely on it having advanced there. That is only consistent with the
+ *   index auto-incrementing once per three bytes (one RGB triple per
+ *   addressed entry), not once per byte.
+ *
+ * The six bytes observed are (0, 0, 0, 0xff, 0xff, 0xff): primary color 1
+ * (0x0a11) is black, primary color 2 (0x0a12) is white, matching an
+ * ordinary white-on-black pointer; primary color 3 (0x0a13) is left
+ * unwritten (zero). Component order within each triple (red, green,
+ * blue) matches this same driver's separate palette upload helper, which
+ * extracts red/green/blue from software word bits 16-23/8-15/0-7 in that
+ * order (docs/research/graphics/rad4-contract-closure-20260916.md,
+ * "RAMDAC setup"); it is not independently confirmed for this specific
+ * register block.
+ */
+#define RAD4_RGB_CURSOR_LUT_BASE    0x0a10
+#define RAD4_RGB_CURSOR_LUT_COUNT   16
+#define RAD4_RGB_CURSOR_LUT_LAST    (RAD4_RGB_CURSOR_LUT_BASE + \
+                                     RAD4_RGB_CURSOR_LUT_COUNT - 1)
+
+/*
+ * Cursor pixel map, index 0x2000-0x23ff: a plain 1Kx8 SRAM (IBM page 27),
+ * two bits per pixel packed four to a byte, least-significant pair first,
+ * sixteen bytes per 64-pixel row (IBM page 3, "Cursor Pixel Map", and
+ * Tables 3-4). Each two-bit value selects a transparent pixel (0) or one of
+ * the three primary-color LUT entries above (1-3); this model does not
+ * implement cursor or cross-hair blinking, so the blink LUT is stored
+ * (through the ordinary indexed path) but never consulted.
+ */
+#define RAD4_RGB_CURSOR_PIXMAP_BASE 0x2000
+#define RAD4_CURSOR_WIDTH           64
+#define RAD4_CURSOR_HEIGHT          64
+#define RAD4_CURSOR_PIXMAP_STRIDE   (RAD4_CURSOR_WIDTH / 4)
+#define RAD4_CURSOR_PIXMAP_SIZE     (RAD4_CURSOR_PIXMAP_STRIDE * \
+                                     RAD4_CURSOR_HEIGHT)
+
+/*
+ * RGB561 index ranges this profile stores and treats as supported. The
+ * cursor/cross-hair look-up table (0x0a10-0x0a1f) is handled entirely
+ * separately, before this table is consulted, because it needs the
+ * three-writes-per-address behavior described above rather than plain
+ * per-byte storage.
+ */
 typedef struct Rad4RgbRange {
     uint16_t first;
     uint16_t last;
@@ -110,8 +196,6 @@ static const Rad4RgbRange rad4_rgb_supported_ranges[] = {
     { 0x0050, 0x0056 },
     { 0x005f, 0x005f },
     { 0x0082, 0x0082 },
-    { 0x0a11, 0x0a12 },
-    { 0x0a15, 0x0a15 },
     { 0x0e00, 0x0e0f },
     { 0x0f00, 0x0f0f },
     { 0x1000, 0x10ff },
@@ -202,6 +286,13 @@ struct PsitechRad4State {
     uint8_t rgb_index_low;
     uint8_t rgb_index_high;
     uint8_t *rgb_store;
+
+    /*
+     * Cursor/cross-hair look-up table, separate from rgb_store because its
+     * index advances once per three-byte RGB write, not once per byte.
+     */
+    uint8_t cursor_lut[RAD4_RGB_CURSOR_LUT_COUNT][3];
+    uint8_t cursor_lut_phase;
 
     /*
      * Timing memories, stored for readback only; recognition is gated by
@@ -406,6 +497,82 @@ static void rad4_ensure_surface(PsitechRad4State *s)
                                          PIXMAN_BE_x8r8g8b8,
                                          RAD4_MODE0_STRIDE, s->framebuffer);
     qemu_console_set_surface(s->con, ds);
+}
+
+static bool rad4_index_is_cursor_lut(uint16_t index)
+{
+    return index >= RAD4_RGB_CURSOR_LUT_BASE &&
+           index <= RAD4_RGB_CURSOR_LUT_LAST;
+}
+
+/*
+ * Push the cursor's board-visible position and enable state to the UI
+ * layer. IBM page 38's location registers are a 16-bit two's complement
+ * pair with a documented valid range of -256 to +2047; bits 14-11 of the
+ * high byte are specified to read back the sign value regardless of what
+ * was written there. This model stores and reports the full 16 bits as an
+ * ordinary signed value without independently forcing that readback
+ * behavior -- the qualified guest workload here never reads this register
+ * back, so the difference is not guest-visible in that workload, but a
+ * guest that did read it back could observe a difference from real
+ * hardware. That is this approximation's one disclosed limitation.
+ */
+static void rad4_cursor_update_position(PsitechRad4State *s)
+{
+    uint8_t ctrl = s->rgb_store[RAD4_RGB_CURSOR_CONTROL];
+    uint16_t xu = ((uint16_t)s->rgb_store[RAD4_RGB_CURSOR_X_HIGH] << 8) |
+                  s->rgb_store[RAD4_RGB_CURSOR_X_LOW];
+    uint16_t yu = ((uint16_t)s->rgb_store[RAD4_RGB_CURSOR_Y_HIGH] << 8) |
+                  s->rgb_store[RAD4_RGB_CURSOR_Y_LOW];
+    int16_t x = (int16_t)xu;
+    int16_t y = (int16_t)yu;
+
+    qemu_console_set_mouse(s->con, x, y, (ctrl & RAD4_CURSOR_CONTROL_CE) != 0);
+}
+
+/*
+ * Rebuild the cursor sprite from the pixel map and look-up table and hand
+ * it to the UI layer. Cursor and cross-hair blinking (page 37's CB/XB/BT
+ * bits, and the blink-rate/duty-cycle registers at 0x0032-0x0033) are not
+ * modeled: the sprite always shows the primary-color entries, never the
+ * blink entries or a transparent blink phase. Cross-hair display is not
+ * modeled at all, matching the driver's own cursor-only observed usage
+ * (docs/research/graphics/rad4-xserver-nodma-audit-20260915.md).
+ */
+static void rad4_cursor_update_image(PsitechRad4State *s)
+{
+    QEMUCursor *cursor = cursor_alloc(RAD4_CURSOR_WIDTH, RAD4_CURSOR_HEIGHT);
+    int row, col;
+
+    cursor->hot_x = s->rgb_store[RAD4_RGB_CURSOR_HOTSPOT_X] &
+                    RAD4_CURSOR_HOTSPOT_MASK;
+    cursor->hot_y = s->rgb_store[RAD4_RGB_CURSOR_HOTSPOT_Y] &
+                    RAD4_CURSOR_HOTSPOT_MASK;
+
+    for (row = 0; row < RAD4_CURSOR_HEIGHT; row++) {
+        for (col = 0; col < RAD4_CURSOR_WIDTH; col += 4) {
+            uint8_t byte = s->rgb_store[RAD4_RGB_CURSOR_PIXMAP_BASE +
+                                        row * RAD4_CURSOR_PIXMAP_STRIDE +
+                                        col / 4];
+            int sub;
+
+            for (sub = 0; sub < 4; sub++) {
+                unsigned val = (byte >> (sub * 2)) & 0x3;
+                uint32_t pixel = 0; /* Transparent (QEMUCursor alpha is 0). */
+
+                if (val != 0) {
+                    const uint8_t *rgb = s->cursor_lut[val];
+
+                    pixel = (0xffu << 24) | ((uint32_t)rgb[2] << 16) |
+                           ((uint32_t)rgb[1] << 8) | rgb[0];
+                }
+                cursor->data[row * RAD4_CURSOR_WIDTH + col + sub] = pixel;
+            }
+        }
+    }
+
+    qemu_console_set_cursor(s->con, cursor);
+    cursor_unref(cursor);
 }
 
 static uint64_t rad4_bar0_read(void *opaque, hwaddr addr, unsigned size)
@@ -650,8 +817,40 @@ static uint64_t rad4_bar2_read(void *opaque, hwaddr addr, unsigned size)
         return s->rgb_index_high;
     case RAD4_BAR2_RGB_DATA:
         return s->rgb_store[rad4_rgb_index(s)];
-    case RAD4_BAR2_RGB_RESERVED:
+    case RAD4_BAR2_RGB_RESERVED: {
+        /*
+         * The fourth RGB561 indexed port, used for every multi-cycle
+         * ("N RW/ADDR") register: window-attribute tables, gamma tables,
+         * the runtime palette and the cursor/cross-hair look-up table.
+         * Only the cursor/cross-hair sub-range (0x0a10-0x0a1f) is modeled
+         * here; the driver's own init_RGB561 confirms these entries go
+         * through this port rather than the ordinary single-cycle
+         * RAD4_BAR2_RGB_DATA port (disassembly offsets 0xb540-0xb618,
+         * .text-relative: the index-setting writes target the same
+         * struct field as RAD4_BAR2_RGB_LO/HI, but the three data writes
+         * per entry target a distinct field from the one used for every
+         * ordinary single-cycle register in the same function, such as
+         * the cursor control block at 0xb158-0xb1e4). Window-attribute,
+         * gamma and palette entries reaching this port through other
+         * indices are not handled by this model.
+         */
+        uint16_t index = rad4_rgb_index(s);
+
+        if (rad4_index_is_cursor_lut(index)) {
+            uint8_t val = s->cursor_lut[index - RAD4_RGB_CURSOR_LUT_BASE]
+                                       [s->cursor_lut_phase];
+
+            if (++s->cursor_lut_phase == 3) {
+                uint16_t next = index + 1;
+
+                s->cursor_lut_phase = 0;
+                s->rgb_index_low = next & 0xff;
+                s->rgb_index_high = (next >> 8) & 0xff;
+            }
+            return val;
+        }
         return 0;
+    }
     case RAD4_BAR2_MASK:
         return s->mask;
     case RAD4_BAR2_CTRL: {
@@ -711,10 +910,20 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
     switch (offset) {
     case RAD4_BAR2_RGB_LO:
         s->rgb_index_low = v;
+        /*
+         * Pointing the index register anywhere restarts the cursor LUT's
+         * three-write cycle at the red component. This is not directly
+         * evidenced -- the shipped driver only ever re-points the index
+         * between complete RGB triples -- but it is the ordinary behavior
+         * of a multi-cycle-transfer register and keeps this model defined
+         * for guest sequences that driver does not exercise.
+         */
+        s->cursor_lut_phase = 0;
         rad4_recognizer_feed(s, offset, v);
         break;
     case RAD4_BAR2_RGB_HI:
         s->rgb_index_high = v;
+        s->cursor_lut_phase = 0;
         rad4_recognizer_feed(s, offset, v);
         break;
     case RAD4_BAR2_RGB_DATA: {
@@ -727,14 +936,42 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
         }
         s->rgb_store[index] = v;
         rad4_recognizer_feed(s, offset, v);
+
+        if (index >= RAD4_RGB_CURSOR_CONTROL &&
+            index <= RAD4_RGB_CURSOR_Y_HIGH) {
+            rad4_cursor_update_position(s);
+            rad4_cursor_update_image(s);
+        } else if (index >= RAD4_RGB_CURSOR_PIXMAP_BASE &&
+                  index < RAD4_RGB_CURSOR_PIXMAP_BASE +
+                          RAD4_CURSOR_PIXMAP_SIZE) {
+            rad4_cursor_update_image(s);
+        }
+
         /* Documented auto-increment on data-port access. */
         index++;
         s->rgb_index_low = index & 0xff;
         s->rgb_index_high = (index >> 8) & 0xff;
         break;
     }
-    case RAD4_BAR2_RGB_RESERVED:
+    case RAD4_BAR2_RGB_RESERVED: {
+        /* See the matching comment in rad4_bar2_read(). */
+        uint16_t index = rad4_rgb_index(s);
+
+        if (rad4_index_is_cursor_lut(index)) {
+            s->cursor_lut[index - RAD4_RGB_CURSOR_LUT_BASE]
+                         [s->cursor_lut_phase] = v;
+            rad4_recognizer_feed(s, offset, v);
+            if (++s->cursor_lut_phase == 3) {
+                uint16_t next = index + 1;
+
+                s->cursor_lut_phase = 0;
+                s->rgb_index_low = next & 0xff;
+                s->rgb_index_high = (next >> 8) & 0xff;
+            }
+            rad4_cursor_update_image(s);
+        }
         break;
+    }
     case RAD4_BAR2_MASK:
         rad4_apply_mask_write(s, v);
         break;
@@ -793,6 +1030,9 @@ static void rad4_reset_hold(Object *obj, ResetType type)
     s->rgb_index_high = 0;
     memset(s->rgb_store, 0, 0x10000);
 
+    memset(s->cursor_lut, 0, sizeof(s->cursor_lut));
+    s->cursor_lut_phase = 0;
+
     memset(s->vert_timing, 0, sizeof(s->vert_timing));
     memset(s->horiz_timing, 0, sizeof(s->horiz_timing));
 
@@ -802,6 +1042,8 @@ static void rad4_reset_hold(Object *obj, ResetType type)
     rad4_recognizer_reset(s);
 
     rad4_update_irq(s);
+    rad4_cursor_update_position(s);
+    rad4_cursor_update_image(s);
 }
 
 static void rad4_realize(PCIDevice *dev, Error **errp)
@@ -853,6 +1095,8 @@ static int rad4_post_load(void *opaque, int version_id)
 
     rad4_ensure_surface(s);
     rad4_update_irq(s);
+    rad4_cursor_update_position(s);
+    rad4_cursor_update_image(s);
     if (s->rec_state == RAD4_REC_RECOGNIZED && s->frame_timer &&
         !timer_pending(s->frame_timer)) {
         timer_mod(s->frame_timer,
@@ -890,6 +1134,9 @@ static const VMStateDescription vmstate_psitech_rad4 = {
         VMSTATE_UINT8(rgb_index_high, PsitechRad4State),
         VMSTATE_BUFFER_POINTER_UNSAFE(rgb_store, PsitechRad4State, 1,
                                       0x10000),
+        VMSTATE_UINT8_2DARRAY(cursor_lut, PsitechRad4State,
+                              RAD4_RGB_CURSOR_LUT_COUNT, 3),
+        VMSTATE_UINT8(cursor_lut_phase, PsitechRad4State),
         VMSTATE_UINT32_ARRAY(vert_timing, PsitechRad4State, RAD4_VERT_WORDS),
         VMSTATE_UINT32_2DARRAY(horiz_timing, PsitechRad4State, 3,
                                RAD4_HORIZ_WORDS),
