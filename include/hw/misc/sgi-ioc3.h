@@ -55,6 +55,23 @@ struct SGIIOC3BusState {
 #define SGI_IOC3_SUBSYS_MENET           0xC305
 #define SGI_IOC3_SUBSYS_MENET4          0xC306
 
+/*
+ * The SGI Cad Duo PCI Card, SGI option board 030-1155-002: a standalone
+ * add-in PCI card carrying its own IOC3, wired for Ethernet, one-wire
+ * identity and PS/2 keyboard/mouse only -- no serial ports, no clock
+ * (docs/datasheets/sgi-cad-duo-pci-card.md). Its own PCI subsystem device
+ * id has not been captured from any available source, so this is the same
+ * kind of explicit "not observed" placeholder hw/mips/sgi/board-baseio.c
+ * and hw/mips/sgi/board-io8.c already use for an unobserved IOC3
+ * population: leaving the class's own default (SGI_IOC3_SUBSYSTEM_ID)
+ * would misrepresent an add-in card as another IP29 System Board, and any
+ * value already claimed above would misrepresent it as that other named
+ * board. Left at the class's default population (auto), this value
+ * already resolves through sgi_ioc3_board()'s fall-through to the CAD DUO
+ * population the fall-through is itself named for.
+ */
+#define SGI_IOC3_SUBSYS_CAD_DUO_PCI_CARD_UNCAPTURED 0xFFFF
+
 #define SGI_IOC3_SUBSYSTEM_ID   SGI_IOC3_SUBSYS_IP29_SYSBOARD
 
 #define SGI_IOC3_BAR_SIZE       (1 * MiB)

@@ -5113,6 +5113,99 @@ static void test_a_board_fits_its_own_sub_devices(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * TEST_IOC3_DEVICE above is a synthetic slot: the Origin 200's real PCI
+ * backplane carries option slots 5 through 7 only (docs/machines/
+ * origin200.md), with devices 0-2 fixed to the two onboard SCSI adapters
+ * and the system-board IOC3. This group instead attaches at device 6, a
+ * real free option slot, to exercise the add-in card this project's own
+ * datasheet documents (docs/datasheets/sgi-cad-duo-pci-card.md) the way it
+ * is actually meant to be used: alongside the native IOC3 the machine
+ * always builds, not in place of it.
+ */
+#define ADDIN_IOC3_DEVICE   6
+#define BRIDGE_DEVICE6      0xa00000  /* device 2's window plus 4 x 1 MB */
+#define ADDIN_IOC3_BASE     (SPACE_XTALK + \
+                            ((uint64_t)CONSOLE_WIDGET << 24) + BRIDGE_DEVICE6)
+#define ADDIN_IOC3_PCI_MMIO 0x1c000000u
+
+#define ADDIN_KBC_KBD_RECEIVE  (ADDIN_IOC3_BASE + 0x0a0)
+#define ADDIN_KBC_AUX_RECEIVE  (ADDIN_IOC3_BASE + 0x0a4)
+#define ADDIN_KBC_KBD_TRANSMIT (ADDIN_IOC3_BASE + 0x0a8)
+#define ADDIN_KBC_AUX_TRANSMIT (ADDIN_IOC3_BASE + 0x0ac)
+
+/*
+ * 0xffff is SGI_IOC3_SUBSYS_CAD_DUO_PCI_CARD_UNCAPTURED
+ * (include/hw/misc/sgi-ioc3.h): the real card's own subsystem identity has
+ * never been captured, so this is the explicit "not observed" placeholder
+ * rather than a guessed value or the class's IP29 System Board default,
+ * which would misrepresent the add-in card as a second system board.
+ */
+#define ADDIN_CARD_DEVICE_ARG \
+    "-device sgi-ioc3,id=cad-duo,addr=" G_STRINGIFY(ADDIN_IOC3_DEVICE) \
+    ",subsystem-id=0xffff"
+
+static void addin_ioc3_attach(QTestState *qts)
+{
+    qtest_writel(qts, CFG0(ADDIN_IOC3_DEVICE) + PCI_BAR0, ADDIN_IOC3_PCI_MMIO);
+    qtest_writel(qts, CFG0(ADDIN_IOC3_DEVICE) + PCI_COMMAND,
+                PCI_COMMAND_MEMORY);
+    qtest_writel(qts, BRIDGE_DEVICE(ADDIN_IOC3_DEVICE),
+                DEV_MEMORY_SPACE | (ADDIN_IOC3_PCI_MMIO >> 20));
+}
+
+static void test_the_addin_card_answers_at_a_free_option_slot(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 " ADDIN_CARD_DEVICE_ARG);
+
+    addin_ioc3_attach(qts);
+
+    g_assert_cmphex(qtest_readl(qts, CFG0(ADDIN_IOC3_DEVICE) + PCI_SUBSYSTEM),
+                    ==, SUBSYSTEM(0xffff));
+
+    /* The CAD DUO population: Ethernet, one-wire and PS/2, nothing else. */
+    g_assert_cmpint(ethernet_is_fitted(qts, ADDIN_IOC3_BASE), ==, true);
+    g_assert_cmpint(one_wire_part_is_fitted(qts, ADDIN_IOC3_BASE), ==, true);
+    g_assert_cmpint(ps2_is_fitted(qts, ADDIN_IOC3_BASE), ==, true);
+    g_assert_cmpint(serial_port_is_fitted(qts, ADDIN_IOC3_BASE + 0x020178),
+                    ==, false);
+    g_assert_cmpint(serial_port_is_fitted(qts, ADDIN_IOC3_BASE + 0x020170),
+                    ==, false);
+    g_assert_cmpint(timekeeper_is_fitted(qts, ADDIN_IOC3_BASE), ==, false);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The point of an add-in keyboard/mouse card: a guest can have the native
+ * system-board keyboard/mouse and this card's own keyboard/mouse at once,
+ * each its own independent PS/2 line reachable at its own PCI slot. Round
+ * trips a port on each chip in the same machine and checks neither leaks
+ * into the other's receive register.
+ */
+static void test_the_addin_card_ps2_ports_are_independent_of_the_native_ones(
+    const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 " ADDIN_CARD_DEVICE_ARG);
+
+    sn0_ioc3_attach(qts);
+    addin_ioc3_attach(qts);
+
+    qtest_writel(qts, KBC_KBD_TRANSMIT, 0xff);
+    qtest_writel(qts, ADDIN_KBC_AUX_TRANSMIT, 0xff);
+
+    /* The native board's own keyboard reset reply, untouched by the card. */
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, 0xc0faaa00);
+    /* The add-in card's own mouse reset reply, its own three bytes. */
+    g_assert_cmphex(qtest_readl(qts, ADDIN_KBC_AUX_RECEIVE), ==, 0xe8faaa00);
+
+    /* Neither chip's other port saw a byte that belongs to the other chip. */
+    g_assert_cmphex(qtest_readl(qts, KBC_AUX_RECEIVE), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, ADDIN_KBC_KBD_RECEIVE), ==, 0);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     unsigned int i;
@@ -5126,6 +5219,13 @@ int main(int argc, char **argv)
         qtest_add_data_func(path, &ioc3_boards[i],
                             test_a_board_fits_its_own_sub_devices);
     }
+
+    qtest_add_data_func(
+        "sn0/ioc3/addin-card-answers-at-a-free-option-slot", NULL,
+        test_the_addin_card_answers_at_a_free_option_slot);
+    qtest_add_data_func(
+        "sn0/ioc3/addin-card-ps2-ports-are-independent-of-the-native-ones",
+        NULL, test_the_addin_card_ps2_ports_are_independent_of_the_native_ones);
 
     qtest_add_data_func("sn0/ioc3/pci-status-reset-value", NULL,
                         test_pci_status_reset_value);
