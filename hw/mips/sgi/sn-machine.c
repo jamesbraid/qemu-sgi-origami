@@ -21,11 +21,11 @@
  * (sgi-baseio) sits behind a Crossbow this builder also owns. Both are
  * sgi-xtalk-board instances built and realized here, before the nodes'
  * Crossbows realize, per the board-devices step (docs/plans/
- * sn-machine-model.md, "QEMU", "I/O boards"); a `-device
- * sgi-pci-expansion` cold-plugs into a spare Crossbow position the same
- * way, and attaches at the deferred machine-done hook this builder
- * registers, once every board (built or plugged) has had its chance to
- * queue.
+ * sn-machine-model.md, "QEMU", "I/O boards"). sgi-pci-expansion
+ * (board-pci-expansion.c) is not built here or by anything else yet: see
+ * that class's own header comment for why it stays onboard-only, not
+ * `-device`-creatable, until a machine-owned spare fabric proxy exists
+ * for it to attach through.
  */
 
 #include "qemu/osdep.h"
@@ -72,7 +72,6 @@
  */
 #define TYPE_SGI_IP29_IO "sgi-ip29-io"
 #define TYPE_SGI_BASEIO "sgi-baseio"
-#define TYPE_SGI_PCI_EXPANSION "sgi-pci-expansion"
 
 /* The Hub's flash controller offers this view whenever the board wires it. */
 static const SN0ModelRegion sgi_sn0_hub_lboot = {
@@ -2909,15 +2908,6 @@ static void origin2000_class_init(ObjectClass *oc, const void *data)
     mc->max_cpus = sgi_machine_product_max_cpus("origin2000");
     mc->default_ram_size = sgi_machine_topology_default_ram(t);
     mc->default_ram_id = "sn0.ram";
-    /*
-     * sgi-pci-expansion (board-pci-expansion.c) cold-plugs an XIO PCI
-     * expansion board into a spare Crossbow position: an Origin 2000
-     * module fact (its own header names Origin 2000 specifically), and
-     * one only this product's own machine has a Crossbow to plug into
-     * at all -- Origin 200's onboard Bridge attaches directly, with no
-     * spare position a `-device` could ever reach.
-     */
-    machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_PCI_EXPANSION);
 }
 
 /*
