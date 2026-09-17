@@ -137,7 +137,18 @@ static void si_context_write(SGIMgrasState *s, uint32_t value)
         }
         return;
     }
-    si_error(s, 0x120400, 4, "context write after completion");
+    /*
+     * protocol == 3: the context switch already completed. MgrasStart and
+     * MgrasCtxsw submit further 4-byte FIFO words here afterward (0xf200,
+     * 0x80000008, 0x40000, 0x111, 0x3700, zero, and several computed
+     * values), live-traced with nothing establishing any of them ties to
+     * further protocol state. Accepting them as opaque post-completion
+     * traffic, rather than flagging every one as a protocol violation, is
+     * this device's usual "accept, don't invent meaning" approximation --
+     * the check above already excludes every state where a stray write
+     * here would be a genuine error (no entry selected, or the sticky
+     * error already latched).
+     */
 }
 
 static void si_draw_fill(SGIMgrasState *s)
@@ -160,8 +171,25 @@ static void si_draw_fill(SGIMgrasState *s)
 
 static void si_command(SGIMgrasState *s, uint64_t word)
 {
-    uint32_t selector = (word >> 34) & 0xffffff;
+    uint32_t high = word >> 32;
+    uint32_t selector;
     uint32_t value = word;
+
+    /*
+     * MgrasStart submits two HQ-local configuration words around the
+     * context switch (the GE and RE population counts), live-traced with
+     * a zero unit field in the high half rather than a real command
+     * selector: 0x0000ff04 and 0x00008c04. Neither is ever read back, so
+     * this accepts them as opaque configuration traffic instead of routing
+     * them through the entry-register selector check below, which was
+     * designed before this part of the sequence was understood and
+     * otherwise flags them as an "unknown command selector".
+     */
+    if (high == 0x0000ff04 || high == 0x00008c04) {
+        return;
+    }
+
+    selector = (word >> 34) & 0xffffff;
     if (selector < 0x60001 || ((selector - 0x60001) & 0xf)) {
         si_error(s, 0x120400, 8, "unknown command selector");
         return;
@@ -203,6 +231,9 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
                (s->manufacturer << 1) | 1;
     case SGI_MGRAS_INT_DEST_UPPER: return s->int_dest_upper;
     case SGI_MGRAS_INT_DEST_LOWER: return s->int_dest_lower;
+    /* The same destination pair, reachable at a second offset too. */
+    case SGI_MGRAS_INT_DEST_UPPER_ALT: return s->int_dest_upper;
+    case SGI_MGRAS_INT_DEST_LOWER_ALT: return s->int_dest_lower;
     case SGI_MGRAS_WIDGET_CONTROL: return s->widget_control;
     case SGI_MGRAS_RESET_ARG: return s->reset_arg;
     /* See the header comment: a fixed population code, not an echo. */
@@ -248,8 +279,30 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
     case SGI_MGRAS_DAC_CONFIG: return s->dac_config;
     case SGI_MGRAS_DAC_LUT_DATA_1_LOW: return s->dac_lut_data_1_low;
     case 0x008000: return 0;
-    case 0x011020: return s->pending;
+    /*
+     * MgrasCtxsw writes 0x80 to this offset outside the pending/mask/
+     * acknowledge protocol the rest of this register already implements,
+     * then reads it back masking in bit 0x20 -- neither bit's meaning was
+     * captured, so the extra bits are stored separately and reported
+     * alongside whatever is genuinely pending, rather than corrupting the
+     * real pending state SI_PENDING_FLAGS/CONTEXT/RETRACE/ERROR track.
+     */
+    case 0x011020: return s->pending | s->hq_status_extra;
     case 0x011040: return s->irq_mask;
+    case SGI_MGRAS_HQ_CONFIG_A: return s->hq_config_a;
+    case SGI_MGRAS_HQ_CONFIG_B: return s->hq_config_b;
+    case SGI_MGRAS_HQ_ENABLE: return s->hq_enable;
+    case SGI_MGRAS_HQ_VECTOR_DEST_UPPER: return s->hq_vector_dest_upper;
+    case SGI_MGRAS_HQ_VECTOR_DEST_LOWER: return s->hq_vector_dest_lower;
+    case SGI_MGRAS_HQ_VECTORS: return s->hq_vectors;
+    case SGI_MGRAS_SCHED_ARG_1: return s->sched_arg_1;
+    case SGI_MGRAS_SCHED_ARG_2: return s->sched_arg_2;
+    case SGI_MGRAS_SCHED_ARG_3: return s->sched_arg_3;
+    case SGI_MGRAS_BANK_STATUS_1: return s->bank_status_1;
+    case SGI_MGRAS_BANK_STATUS_2: return s->bank_status_2;
+    /* See the header comment: no evidence for real content, report zero. */
+    case SGI_MGRAS_RETRACE_STATUS_1: return 0;
+    case SGI_MGRAS_RETRACE_STATUS_2: return 0;
     /*
      * A generic widget bring-up step, not an SI-specific register: the
      * retained PROM's local-IO discovery writes a step-table argument word
@@ -307,6 +360,15 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
      * continue. This device's usual "immediate readiness, no modelled
      * delay" approximation, already used at 0x011098 and 0x020000/
      * 0x020100 above, applies the same way here.
+     */
+    /*
+     * A readback data register, not simply a status word: readData/readCC
+     * push a 64-bit FIFO "read" command here before reading this offset
+     * for the answer, and MgrasSyncPPRDRAMs polls its bit 3. This constant
+     * satisfies that poll, but the FIFO read-command encoding it should
+     * really answer from was never decoded, so any consumer expecting a
+     * specific readback value (MgrasInitCCR) gets this fixed constant
+     * instead -- a known, labelled approximation, not evidence.
      */
     case 0x02c574: return 0x8;
     case 0x02c578: return 0x100;
@@ -366,6 +428,13 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
             size == 4) {
             return s->config_table[(addr - SGI_MGRAS_CONFIG_TABLE_BASE) >> 2];
         }
+        if (addr >= SGI_MGRAS_FIFO_THRESHOLD_BASE &&
+            addr < SGI_MGRAS_FIFO_THRESHOLD_BASE +
+                   sizeof(s->fifo_threshold) &&
+            size == 4) {
+            return s->fifo_threshold[(addr - SGI_MGRAS_FIFO_THRESHOLD_BASE)
+                                      >> 2];
+        }
         si_error(s, addr, size, "unsupported read");
         return 0;
     }
@@ -392,6 +461,8 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     switch (addr) {
     case SGI_MGRAS_INT_DEST_UPPER: s->int_dest_upper = value; return;
     case SGI_MGRAS_INT_DEST_LOWER: s->int_dest_lower = value; return;
+    case SGI_MGRAS_INT_DEST_UPPER_ALT: s->int_dest_upper = value; return;
+    case SGI_MGRAS_INT_DEST_LOWER_ALT: s->int_dest_lower = value; return;
     case SGI_MGRAS_WIDGET_CONTROL: s->widget_control = value; return;
     case SGI_MGRAS_RESET_ARG: s->reset_arg = value; return;
     case SGI_MGRAS_BRINGUP_ARG_2: s->bringup_arg_2 = value; return;
@@ -399,7 +470,15 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     case SGI_MGRAS_BRINGUP_BLOCK_2: s->bringup_block[1] = value; return;
     case SGI_MGRAS_BRINGUP_BLOCK_3: s->bringup_block[2] = value; return;
     case SGI_MGRAS_SCRATCH_COMMAND: s->scratch_command = value; return;
-    case SGI_MGRAS_BRINGUP_ARG_3: s->bringup_arg_3 = value; return;
+    /*
+     * This offset also serves as the kernel HQ driver's own enable-clear
+     * register later in the boot (SGI_MGRAS_HQ_ENABLE's header comment);
+     * both effects apply to the same write.
+     */
+    case SGI_MGRAS_BRINGUP_ARG_3:
+        s->bringup_arg_3 = value;
+        s->hq_enable &= ~(uint32_t)value;
+        return;
     case SGI_MGRAS_VC3_ARG: s->vc3_arg = value; return;
     case SGI_MGRAS_RE_ARG: s->re_arg = value; return;
     case SGI_MGRAS_RESET_CONTROL: s->reset_control = value; return;
@@ -435,8 +514,23 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         if (value & SI_PENDING_FLAGS) s->first_ack = true;
         if (value & SI_PENDING_CONTEXT) s->second_ack = true;
         si_update_irq(s); return;
+    /* The extra bits MgrasCtxsw writes here; see the read side's comment. */
+    case 0x011020: s->hq_status_extra = value; return;
     case 0x011040: s->irq_mask = value; si_update_irq(s); return;
     case 0x011048: s->error = 0; s->pending &= ~SI_PENDING_ERROR; si_update_irq(s); return;
+    case SGI_MGRAS_HQ_CONFIG_A: s->hq_config_a = value; return;
+    case SGI_MGRAS_HQ_CONFIG_B: s->hq_config_b = value; return;
+    case SGI_MGRAS_HQ_ENABLE: s->hq_enable = value; return;
+    case SGI_MGRAS_HQ_VECTOR_DEST_UPPER: s->hq_vector_dest_upper = value; return;
+    case SGI_MGRAS_HQ_VECTOR_DEST_LOWER: s->hq_vector_dest_lower = value; return;
+    case SGI_MGRAS_HQ_VECTORS: s->hq_vectors = value; return;
+    case SGI_MGRAS_SCHED_ARG_1: s->sched_arg_1 = value; return;
+    case SGI_MGRAS_SCHED_ARG_2: s->sched_arg_2 = value; return;
+    case SGI_MGRAS_SCHED_ARG_3: s->sched_arg_3 = value; return;
+    case SGI_MGRAS_BANK_STATUS_1: s->bank_status_1 = value; return;
+    case SGI_MGRAS_BANK_STATUS_2: s->bank_status_2 = value; return;
+    /* Always written zero in the evidenced case; see the header comment. */
+    case SGI_MGRAS_RETRACE_ACK: return;
     /* The generic bring-up step argument; see the read side's comment. */
     case 0x011098: return;
     /* The reset routine's own clearing write; see the read side's comment. */
@@ -542,6 +636,13 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         s->config_table[(addr - SGI_MGRAS_CONFIG_TABLE_BASE) >> 2] = value;
         return;
     }
+    if (addr >= SGI_MGRAS_FIFO_THRESHOLD_BASE &&
+        addr < SGI_MGRAS_FIFO_THRESHOLD_BASE + sizeof(s->fifo_threshold) &&
+        size == 4) {
+        s->fifo_threshold[(addr - SGI_MGRAS_FIFO_THRESHOLD_BASE) >> 2] =
+            value;
+        return;
+    }
     if (addr == 0x120400 && size == 8) { si_command(s, value); return; }
     if (addr == 0x58044 || addr == 0x5804c) { s->ge_addr = value % (59392 * 3); return; }
     if (addr == 0x58040 || addr == 0x58048) {
@@ -614,6 +715,12 @@ static void si_reset(DeviceState *dev)
     s->bringup_arg_3 = 0;
     s->vc3_arg = 0;
     s->re_arg = 0;
+    s->hq_status_extra = 0;
+    s->hq_vector_dest_upper = s->hq_vector_dest_lower = s->hq_vectors = 0;
+    s->hq_config_a = s->hq_config_b = s->hq_enable = 0;
+    memset(s->fifo_threshold, 0, sizeof(s->fifo_threshold));
+    s->sched_arg_1 = s->sched_arg_2 = s->sched_arg_3 = 0;
+    s->bank_status_1 = s->bank_status_2 = 0;
     /*
      * Reset does not retroactively unsend an already-delivered packet, so
      * this clears the transition-detector directly rather than going
@@ -694,6 +801,20 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32(bringup_arg_3, SGIMgrasState),
         VMSTATE_UINT32(vc3_arg, SGIMgrasState),
         VMSTATE_UINT32(re_arg, SGIMgrasState),
+        VMSTATE_UINT32(hq_status_extra, SGIMgrasState),
+        VMSTATE_UINT32(hq_vector_dest_upper, SGIMgrasState),
+        VMSTATE_UINT32(hq_vector_dest_lower, SGIMgrasState),
+        VMSTATE_UINT32(hq_vectors, SGIMgrasState),
+        VMSTATE_UINT32(hq_config_a, SGIMgrasState),
+        VMSTATE_UINT32(hq_config_b, SGIMgrasState),
+        VMSTATE_UINT32(hq_enable, SGIMgrasState),
+        VMSTATE_UINT32_ARRAY(fifo_threshold, SGIMgrasState,
+                             SGI_MGRAS_FIFO_THRESHOLD_WORDS),
+        VMSTATE_UINT32(sched_arg_1, SGIMgrasState),
+        VMSTATE_UINT32(sched_arg_2, SGIMgrasState),
+        VMSTATE_UINT32(sched_arg_3, SGIMgrasState),
+        VMSTATE_UINT32(bank_status_1, SGIMgrasState),
+        VMSTATE_UINT32(bank_status_2, SGIMgrasState),
         VMSTATE_BOOL(irq_asserted, SGIMgrasState),
         VMSTATE_UINT16(fifo_count, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(command, SGIMgrasState, 0x200),

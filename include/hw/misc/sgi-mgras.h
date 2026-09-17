@@ -249,7 +249,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
 /*
  * A single, one-shot write in the same generic widget bring-up block as
  * SGI_MGRAS_BRINGUP_ARG_2, never read back, so it gets the same opaque
- * treatment.
+ * treatment. The kernel HQ driver's own enable-clear register
+ * (SGI_MGRAS_HQ_ENABLE below) shares this exact offset, written later in
+ * the boot for a different purpose; see that macro's comment.
  */
 #define SGI_MGRAS_BRINGUP_ARG_3 0x011058
 
@@ -291,6 +293,89 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
 #define SGI_MGRAS_VC3_RAM 0x072190
 #define SGI_MGRAS_VC3_SRAM_WORDS 0x8000
 
+/*
+ * Two more offsets the generic widget interrupt-destination pair above is
+ * also reachable at: MgrasSetHQ4IntrVectors programs the same field layout
+ * (target widget, vector, address) through 0x000030/0x000038 instead of
+ * SGI_MGRAS_INT_DEST_UPPER/LOWER, one word below the pair this device
+ * already models. Nothing establishes the two pairs hold independent
+ * state, so both address the same destination fields rather than adding a
+ * second, separate one.
+ */
+#define SGI_MGRAS_INT_DEST_UPPER_ALT 0x000030
+#define SGI_MGRAS_INT_DEST_LOWER_ALT 0x000038
+
+/*
+ * The HQ4-specific interrupt-vector programming MgrasSetHQ4IntrVectors
+ * writes alongside the generic destination pair above: a second address
+ * pair in the same field shape (0x011060/0x011068) and a four-byte packed
+ * vector table, one byte per interrupt role -- general, retrace, FIFO
+ * high-water, error (0x011070). Which byte serves which role was not
+ * settled, so the whole word stores opaque state rather than guessing an
+ * assignment; none of the three is ever read back.
+ */
+#define SGI_MGRAS_HQ_VECTOR_DEST_UPPER 0x011060
+#define SGI_MGRAS_HQ_VECTOR_DEST_LOWER 0x011068
+#define SGI_MGRAS_HQ_VECTORS 0x011070
+
+/*
+ * Three more registers MgrasCtxsw and MgrasFlushHQ3 save, restore or
+ * read-modify-write around a context switch: 0x011030 and 0x011038 store
+ * plain opaque state (MgrasInitHQ also writes both once at start-of-day).
+ * 0x011050 is the driver's own "current second-level interrupt enables"
+ * word -- it reads this back, computes a new value in software, and writes
+ * the whole word back, so the device only needs to store and echo it
+ * faithfully, not perform the read-modify-write itself. 0x011058 is that
+ * enable word's companion clear register: a bit written there is cleared
+ * from 0x011050 rather than replacing the whole word. It shares its
+ * offset with SGI_MGRAS_BRINGUP_ARG_3 above, a generic one-shot write an
+ * earlier, PROM-level bring-up pass already found at this same address --
+ * both are real, at different points in the boot (PROM bring-up, then
+ * later kernel HQ operation), so the write case applies both effects
+ * rather than treating one observation as replacing the other.
+ */
+#define SGI_MGRAS_HQ_CONFIG_A 0x011030
+#define SGI_MGRAS_HQ_CONFIG_B 0x011038
+#define SGI_MGRAS_HQ_ENABLE 0x011050
+
+/*
+ * A block of FIFO threshold registers MgrasInitHQ writes once at start-of-
+ * day and MgrasFlushHQ3 rewrites afterward (low/high-water marks and
+ * similar bounds); none is ever read back, so the whole small range stores
+ * opaque state the same way SGI_MGRAS_CONFIG_TABLE_BASE does for the
+ * larger board-configuration block.
+ */
+#define SGI_MGRAS_FIFO_THRESHOLD_BASE 0x040000
+#define SGI_MGRAS_FIFO_THRESHOLD_WORDS 13
+
+/*
+ * Three more registers in the same 0x040000s block MgrasInitialize,
+ * MgrasStart, MgrasCtxsw and several buffer-swap paths write during normal
+ * operation, none ever read back, so they get the same opaque treatment.
+ */
+#define SGI_MGRAS_SCHED_ARG_1 0x040068
+#define SGI_MGRAS_SCHED_ARG_2 0x040078
+#define SGI_MGRAS_SCHED_ARG_3 0x040088
+
+/*
+ * Two more registers MgrasValidateBanks/Clip and MgrasPcxSwap write and
+ * read back, in the same 0x020000s block as the reset-readiness and bus-
+ * status registers above; plain opaque storage.
+ */
+#define SGI_MGRAS_BANK_STATUS_1 0x020010
+#define SGI_MGRAS_BANK_STATUS_2 0x020018
+
+/*
+ * The retrace interrupt handler's own status registers: it reads a 64-bit
+ * word (0x020038) and a 32-bit word (0x020044) on every retrace interrupt,
+ * and when both read zero, writes a zero halfword to 0x020028. Nothing
+ * establishes real content for the two reads, so this device reports zero
+ * -- a labelled approximation, not evidence -- and accepts the write.
+ */
+#define SGI_MGRAS_RETRACE_STATUS_1 0x020038
+#define SGI_MGRAS_RETRACE_STATUS_2 0x020044
+#define SGI_MGRAS_RETRACE_ACK 0x020028
+
 struct SGIMgrasState {
     SysBusDevice parent_obj;
     MemoryRegion regs;
@@ -318,6 +403,19 @@ struct SGIMgrasState {
     uint32_t bringup_arg_3;
     uint32_t vc3_arg;
     uint32_t re_arg;
+    uint32_t hq_status_extra;
+    uint32_t hq_vector_dest_upper;
+    uint32_t hq_vector_dest_lower;
+    uint32_t hq_vectors;
+    uint32_t hq_config_a;
+    uint32_t hq_config_b;
+    uint32_t hq_enable;
+    uint32_t fifo_threshold[SGI_MGRAS_FIFO_THRESHOLD_WORDS];
+    uint32_t sched_arg_1;
+    uint32_t sched_arg_2;
+    uint32_t sched_arg_3;
+    uint32_t bank_status_1;
+    uint32_t bank_status_2;
     bool irq_asserted;
     /* Host-only qtest introspection; not guest state, not migrated. */
     uint32_t test_pixel_x;
