@@ -976,14 +976,16 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     case 0x011000:
         /*
          * MgrasStart writes configuration here before the first context
-         * switch (retained startup evidence). The written value's fields
-         * are unresolved; retain it as opaque prefix state and use only
-         * its presence to gate the first entry selection at 0x130500.
+         * switch (retained startup evidence). MgrasCtxsw also rewrites it
+         * on every later context switch, after entry selection, as part
+         * of its own ordinary per-context HQ-register save/restore -- not
+         * a protocol violation, live-traced against a real MgrasStart
+         * hang this device's old post-selection rejection caused (see the
+         * 0x011000 row in docs/datasheets/mgras-hq4.md). The written
+         * value's fields are unresolved; retain it as opaque prefix state
+         * and use only its presence to gate the first entry selection at
+         * 0x130500.
          */
-        if (s->entry_selected) {
-            si_error(s, addr, size, "prefix write after entry selection");
-            return;
-        }
         s->prefix = value;
         s->prefix_written = true;
         return;
