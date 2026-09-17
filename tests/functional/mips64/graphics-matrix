@@ -1,2 +1,0 @@
-# id | guest | device | disk | scenario | cpus | mem | accel | speed | timeout | attempts | min_passes | expect | xfail_mark | xfail_signature
-rad4_login_screen | irix | psitech-rad4,addr=5 | root-rad4 | rad4_login_screen | 1 | 64M | wallclock | thorough | 600 | 1 | 1 | pass | |
