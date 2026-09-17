@@ -447,6 +447,17 @@ static bool sn0_origin2000_hub_io_init(SN0Origin2000HubIO *io, Object *owner,
     return true;
 }
 
+/*
+ * Whether a bounded access at offset/size stays inside one widget's own
+ * per-widget window: the same bound sn0_origin2000_packet_address applies
+ * to its own general case, since both this face and that one forward a
+ * bounded access into a packet-addressed region unchanged.
+ */
+static bool sn0_origin2000_outgoing_bounded(uint64_t offset, unsigned size)
+{
+    return size && size <= SN0_XTALK_WIDGET_SIZE - offset;
+}
+
 static MemTxResult sn0_origin2000_outgoing_read(void *opaque, hwaddr addr,
                                                 uint64_t *data, unsigned size,
                                                 MemTxAttrs attrs)
@@ -459,7 +470,7 @@ static MemTxResult sn0_origin2000_outgoing_read(void *opaque, hwaddr addr,
 
     *data = 0;
     if (!io->active || widget < 8 || widget > 15 ||
-        offset != SN0_ORIGIN2000_PACKET_IDENTITY || size != 8) {
+        !sn0_origin2000_outgoing_bounded(offset, size)) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sn0: unsupported outgoing Hub I/O read at 0x%"
                       HWADDR_PRIx " size %u\n", addr, size);
@@ -468,7 +479,7 @@ static MemTxResult sn0_origin2000_outgoing_read(void *opaque, hwaddr addr,
     result = address_space_read(
         io->packets,
         ((uint64_t)widget << 48) | SN0_ORIGIN2000_PACKET_IO | offset, attrs,
-        bytes, size);
+        bytes + 8 - size, size);
     *data = ldq_be_p(bytes);
     return result;
 }
@@ -482,7 +493,8 @@ static MemTxResult sn0_origin2000_outgoing_write(void *opaque, hwaddr addr,
     uint64_t offset = addr & (SN0_XTALK_WIDGET_SIZE - 1);
     uint8_t bytes[8];
 
-    if (io->active && widget >= 8 && widget <= 15 && size == 1) {
+    if (io->active && widget >= 8 && widget <= 15 &&
+        sn0_origin2000_outgoing_bounded(offset, size)) {
         stq_be_p(bytes, data);
         return address_space_write(
             io->packets,
