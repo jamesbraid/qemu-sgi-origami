@@ -70,7 +70,7 @@
 
 /*
  * Three of the four onboard/plugged board classes have no shared header
- * (see hw/mips/sgi/xtalk-test-board.c's own precedent): each names its
+ * (see tests/qtest/xtalk-test-board.c's own precedent): each names its
  * QOM type entirely inside its own file, because nothing before this
  * builder has needed to name one from outside. sgi-io8 is the exception
  * (board-io8.h): Origin 300's Bedrock needs its own per-widget views,

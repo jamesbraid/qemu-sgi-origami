@@ -13,7 +13,7 @@
  * sgi-board-test-fixture stands in for what a machine builder does with
  * one of them, the same way sgi-xtalk-board-fixture stands in for a
  * module's Crossbow in the base class's own qtest; see
- * hw/mips/sgi/board-test-fixture.c. All four go through it here, so one
+ * tests/qtest/board-test-fixture.c. All four go through it here, so one
  * code path covers all four.
  *
  * Every board's internal Bridge or XBridge chip shares one register

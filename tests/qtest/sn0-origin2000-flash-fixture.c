@@ -6,7 +6,7 @@
 #include "qemu/module.h"
 #include "hw/core/qdev-properties.h"
 #include "system/qtest.h"
-#include "sn0.h"
+#include "hw/mips/sgi/sn0.h"
 
 #define TYPE_SN0_FLASH_TEST "sgi-sn0-node-flash-test"
 OBJECT_DECLARE_SIMPLE_TYPE(SN0FlashTestState, SN0_FLASH_TEST)
