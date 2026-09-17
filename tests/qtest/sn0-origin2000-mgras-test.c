@@ -48,6 +48,10 @@
 #define REG_REPP_STATUS_4      SI_REG(0x071d08)
 #define REG_SYNC_STATUS        SI_REG(0x061038)
 #define REG_REPP_SYNC          SI_REG(0x071f80)
+#define REG_DAC_LUT_INDEX      SI_REG(0x071890)
+#define REG_DAC_LUT_DATA_1     SI_REG(0x071810)
+#define REG_DAC_LUT_DATA_2     SI_REG(0x071910)
+#define REG_DAC_CONFIG         SI_REG(0x071988)
 #define REG_HQ_UPLOAD           SI_REG(0x050000)
 #define REG_ENTRY               SI_REG(0x130500)
 #define REG_CONTEXT_COMMAND     SI_REG(0x120400)
@@ -368,6 +372,113 @@ static void test_hq_status_bringup_bit(void)
     QTestState *qts = qtest_init(MACHINE_ARGS);
 
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x2, ==, 0x2);
+
+    qtest_quit(qts);
+}
+
+/*
+ * A colour-lookup-table load reached once the REPP handshake and the HQ
+ * status bring-up bit above stopped blocking it: a bounded, index-checked
+ * loop that writes a computed word to REG_DAC_LUT_INDEX on every pass, and
+ * a byte each to REG_DAC_LUT_DATA_1/2 depending on which channel the pass
+ * targets, plus a fourth register (REG_DAC_CONFIG) written once just
+ * before the loop starts. None of the four is ever read back, so all four
+ * store opaque state -- this loop alone accounted for most of the
+ * unsupported-access traffic this device previously logged during a full
+ * boot (roughly three writes per table entry, 256 entries).
+ */
+static void test_dac_lut_load(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    qtest_writel(qts, REG_DAC_CONFIG, 0x1c);
+    g_assert_cmphex(qtest_readl(qts, REG_DAC_CONFIG), ==, 0x1c);
+
+    qtest_writel(qts, REG_DAC_LUT_INDEX, 0x7300);
+    qtest_writel(qts, REG_DAC_LUT_DATA_1, 0xff);
+    qtest_writel(qts, REG_DAC_LUT_DATA_2, 0x01);
+    /* Not SI-specific accesses: none may raise the sticky error. */
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    g_assert_cmphex(qtest_readl(qts, REG_DAC_LUT_INDEX), ==, 0x7300);
+    g_assert_cmphex(qtest_readl(qts, REG_DAC_LUT_DATA_1), ==, 0xff);
+    g_assert_cmphex(qtest_readl(qts, REG_DAC_LUT_DATA_2), ==, 0x01);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Two write-path fixes found once the DAC load above stopped blocking
+ * board bring-up. First, the kernel driver's own reset routine writes
+ * zero to REG_HQ_STATUS before polling it: with no write case there, that
+ * clearing write took the sticky unsupported-access path itself, which
+ * poisoned the very read the driver was about to poll -- the driver's own
+ * "clear my status" write was what broke its own next read. Second, board
+ * bring-up code -- unrelated to the real context/command protocol
+ * REG_CONTEXT_COMMAND otherwise enforces -- writes a constant doubleword
+ * there before the guest ever selects an HQ entry; accepting that
+ * specific case silently avoids raising the sticky error over traffic
+ * that has nothing to do with the protocol, while a genuine mid-protocol
+ * command submitted before this device reports ready is still flagged.
+ *
+ * A third fix in this same pass, the SGI_MGRAS_DAC_LUT_DATA_1_LOW
+ * carve-out in si_write for a genuinely misaligned 4-byte write live-
+ * traced one byte into REG_DAC_LUT_DATA_1's own word, is not exercised
+ * here: qtest_writel's own write path enforces natural alignment before
+ * the device ever sees the access, so it cannot reproduce the misaligned
+ * store a real MIPS swr/swl instruction produced in the field. That fix
+ * is verified live instead (see the handoff doc), not by this suite.
+ */
+static void test_write_path_fixes_dont_raise_the_sticky_error(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    qtest_writel(qts, REG_HQ_STATUS, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x2, ==, 0x2);
+
+    /* An entry has not been selected yet: this 8-byte write is accepted. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, 0x482b0400000000ULL);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * A handful of one-shot or small write-only registers found across
+ * several distinct board bring-up spots in the same live boot, in
+ * register blocks the REPP handshake and DAC load above do not otherwise
+ * touch. None is ever read back except as plain storage, so each stores
+ * opaque state; REG_BRINGUP_POLL is the one exception, a read-only status
+ * poll requiring bit 0x8 set, traced directly from its own retry loop.
+ */
+static void test_board_bringup_scratch_registers(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    g_assert_cmphex(qtest_readl(qts, SI_REG(0x02c574)) & 0x8, ==, 0x8);
+
+    qtest_writel(qts, SI_REG(0x061008), 0x1088);
+    qtest_writel(qts, SI_REG(0x061040), 0x210a);
+    qtest_writel(qts, SI_REG(0x060008), 2);
+    qtest_writel(qts, SI_REG(0x011088), 0x68f);
+    qtest_writel(qts, SI_REG(0x040918), 0x200000);
+    qtest_writel(qts, SI_REG(0x040928), 0);
+    qtest_writeq(qts, SI_REG(0x130400), 0x482b0400000000ULL);
+    qtest_writel(qts, SI_REG(0x011058), 0xffffffff);
+    qtest_writel(qts, SI_REG(0x070d88), 0x3000000);
+    qtest_writel(qts, SI_REG(0x071e80), 0);
+    /* None of these are SI-specific accesses: none may raise the error. */
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    g_assert_cmphex(qtest_readl(qts, SI_REG(0x061008)), ==, 0x1088);
+    g_assert_cmphex(qtest_readl(qts, SI_REG(0x061040)), ==, 0x210a);
+    g_assert_cmphex(qtest_readl(qts, SI_REG(0x060008)), ==, 2);
+    g_assert_cmphex(qtest_readl(qts, SI_REG(0x011088)), ==, 0x68f);
+    g_assert_cmphex(qtest_readl(qts, SI_REG(0x040918)), ==, 0x200000);
+    g_assert_cmphex(qtest_readq(qts, SI_REG(0x130400)), ==, 0x482b0400000000ULL);
+    g_assert_cmphex(qtest_readl(qts, SI_REG(0x011058)), ==, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, SI_REG(0x070d88)), ==, 0x3000000);
 
     qtest_quit(qts);
 }
@@ -704,6 +815,12 @@ int main(int argc, char **argv)
                    test_repp_sync_handshake);
     qtest_add_func("sn0/origin2000/mgras/hq-status-bringup-bit",
                    test_hq_status_bringup_bit);
+    qtest_add_func("sn0/origin2000/mgras/dac-lut-load",
+                   test_dac_lut_load);
+    qtest_add_func("sn0/origin2000/mgras/write-path-fixes-dont-raise-error",
+                   test_write_path_fixes_dont_raise_the_sticky_error);
+    qtest_add_func("sn0/origin2000/mgras/board-bringup-scratch-registers",
+                   test_board_bringup_scratch_registers);
     qtest_add_func("sn0/origin2000/mgras/hq-upload-readback",
                    test_hq_upload_and_readback);
     qtest_add_func("sn0/origin2000/mgras/context-recognizer-ordering",
