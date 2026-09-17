@@ -12,6 +12,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "libqtest.h"
 
 #include "psitech-rad4-mode0-fixture.h"
@@ -28,6 +29,7 @@
 #define PCI_ROM_ADDRESS_OFF 0x30
 #define PCI_COMMAND_OFF     0x04
 #define PCI_COMMAND_MEMORY  0x0002u
+#define PCI_COMMAND_MASTER  0x0004u
 
 /* Crosstalk space and the Bridge's widget window inside it. */
 #define SPACE_XTALK     0x20000000000ULL
@@ -125,6 +127,50 @@
 #define RGB_CURSOR_LUT_BASE     0x0a10
 #define RGB_CURSOR_PIXMAP_BASE  0x2000
 
+/*
+ * Expansion-ROM route DMA registers (docs/datasheets/psitech-rad4.md,
+ * "DMA"; PLX PCI9054 Data Book Tables 11-76, 11-80 and 11-86): DMAMODE0,
+ * DMADPR0 and DMACSR0 at local offsets 0x100, 0x110 and 0x128.
+ */
+#define ROM_MODE        0x100
+#define ROM_DESC        0x110
+#define ROM_COMMAND     0x128
+
+#define DMA_MODE_SCATTER_GATHER (1u << 9)
+#define DMA_MODE_DONE_IRQ       (1u << 10)
+
+#define DMA_CMD_START           0x3u    /* ENABLE | START */
+#define DMA_CMD_ABORT           0x4u
+#define DMA_STATUS_DONE         0x10u
+
+/* Descriptor pointer / next-descriptor-pointer low flag bits. */
+#define DMA_DESC_LOC_PCI        (1u << 0)
+#define DMA_DESC_END_OF_CHAIN   (1u << 1)
+#define DMA_DESC_INTR_ON_TC     (1u << 2)
+#define DMA_DESC_LOCAL_TO_PCI   (1u << 3)
+
+/*
+ * Bridge's byte-lane correction for a device-initiated DMA transfer
+ * (crosses crosstalk, unlike this file's own PIO-only apertures above):
+ * tests/qtest/sn0-qlogic-isp-test.c exercises the mechanism itself. The
+ * Direct window's own swap enable, and the register holding the bit that
+ * clears its "add 512 megabytes" quirk, which resets set.
+ */
+#define DEV_SWAP_DIRECT         (1u << 19)
+#define PCI_DMA_DIRECT          0x80000000u
+#define BRIDGE_DIRECT_MAP_REG   (BRIDGE_BASE + 0x080 + REG_DATA)
+
+/*
+ * Two low, otherwise-unused guest physical pages: one for descriptor
+ * blocks a DMA start names, one for the pixel payload a descriptor
+ * points at as its source.
+ */
+#define DMA_DESC_PHYS           0x00100000u
+#define DMA_SRC_PHYS            0x00200000u
+
+/* Matches RAD4_FB_SIZE in hw/display/psitech-rad4.c. */
+#define FB_SIZE                 (8 * 1024 * 1024)
+
 static void rad4_window_to(QTestState *qts, uint32_t pci_addr)
 {
     uint32_t base = pci_addr & ~(WINDOW_SIZE - 1);
@@ -218,6 +264,63 @@ static QTestState *rad4_init(void)
 
     rad4_configure_bars(qts);
     return qts;
+}
+
+/* Writes one 16-byte scatter/gather descriptor into guest memory. */
+static void dma_write_descriptor(QTestState *qts, uint32_t phys,
+                                 uint32_t pci_addr, uint32_t local_addr,
+                                 uint32_t size, uint32_t next)
+{
+    uint8_t buf[16];
+
+    stl_be_p(buf, pci_addr);
+    stl_be_p(buf + 4, local_addr);
+    stl_be_p(buf + 8, size);
+    stl_be_p(buf + 12, next);
+    qtest_memwrite(qts, phys, buf, sizeof(buf));
+}
+
+/* Writes a run of 32-bit pixel words into guest memory as a DMA source. */
+static void dma_write_payload(QTestState *qts, uint32_t phys,
+                              const uint32_t *words, unsigned count)
+{
+    unsigned i;
+
+    for (i = 0; i < count; i++) {
+        uint8_t buf[4];
+
+        stl_be_p(buf, words[i]);
+        qtest_memwrite(qts, phys + i * 4, buf, sizeof(buf));
+    }
+}
+
+/*
+ * Enables bus mastering and this slot's Direct-window byte-lane
+ * correction, then writes DMACSR0 (ROM_COMMAND) to start (or abort) a
+ * transfer. Real firmware programs a working device's DMA for the
+ * corrected case -- the disabled case leaves the crossed wiring this
+ * chip's DMA path otherwise faithfully emulates, which
+ * tests/qtest/sn0-qlogic-isp-test.c exercises directly -- and
+ * rad4_window_to()'s own writes to the slot's device register never set
+ * this bit, so it is set again immediately before every start or abort
+ * this file issues rather than once in rad4_init().
+ */
+static void dma_start(QTestState *qts, uint32_t val)
+{
+    uint32_t base = RAD4_ROM_PCI & ~(WINDOW_SIZE - 1);
+
+    qtest_writel(qts, CFG0(RAD4_SLOT) + PCI_COMMAND_OFF,
+                PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    /*
+     * The add-512-megabytes field resets set (tests/qtest/sn0-qlogic-isp-
+     * test.c); left alone it moves every Direct-window transfer this file
+     * issues half a gigabyte away from the physical page it named.
+     */
+    qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
+    qtest_writel(qts, BRIDGE_DEVICE(RAD4_SLOT),
+                DEV_MEMORY_SPACE | DEV_SWAP_DIRECT | (base >> 20));
+    qtest_writel(qts, WINDOW_RAD4 + ((RAD4_ROM_PCI + ROM_COMMAND) &
+                                    (WINDOW_SIZE - 1)), val);
 }
 
 static void test_pci_identity(void)
@@ -548,19 +651,183 @@ static void test_interrupt_acknowledge(void)
     qtest_quit(qts);
 }
 
-static void test_dma_registers_inert(void)
+/*
+ * Writing the mode and descriptor-pointer registers alone -- without also
+ * writing DMACSR0's start bits -- only latches the value back for
+ * readback, matching every other configuration-only register this file
+ * already round-trips (R_REG14, R_REG18, R_MAILBOX).
+ */
+static void test_dma_registers_before_start(void)
 {
     QTestState *qts = rad4_init();
 
-    bar2_write(qts, 0x100000, 0x12345678u); /* +0x100 through the ROM route */
-    rad4_writel(qts, RAD4_ROM_PCI + 0x100, 0xaabbccddu);
-    g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + 0x100), ==, 0xaabbccddu);
-    /*
-     * No pixel, interrupt or completion effect: the framebuffer at offset
-     * zero is untouched by this store.
-     */
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_MODE, 0x7c3u);
+    g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_MODE), ==, 0x7c3u);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC, 0xaabbccc0u);
+    g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_DESC), ==,
+                    0xaabbccc0u);
+
+    /* No pixel, completion or interrupt effect from either write alone. */
     g_assert_cmphex(bar2_read(qts, 0x000000), ==, 0);
+    g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
+                    DMA_STATUS_DONE, ==, 0);
     g_assert_cmphex(bar0_read(qts, R_INTCSR) & INTCSR_PENDING, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * A single, end-of-chain descriptor uploads its named span of guest
+ * memory into the framebuffer at its named local address, and DMACSR0's
+ * Done bit follows.
+ */
+static void test_dma_single_descriptor_upload(void)
+{
+    QTestState *qts = rad4_init();
+    static const uint32_t payload[4] = {
+        0x00ff0080u, 0x00112233u, 0x00445566u, 0x00778899u,
+    };
+
+    dma_write_payload(qts, DMA_SRC_PHYS, payload, ARRAY_SIZE(payload));
+    dma_write_descriptor(qts, DMA_DESC_PHYS, PCI_DMA_DIRECT | DMA_SRC_PHYS,
+                         0x000010u, sizeof(payload), 0);
+
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_MODE, DMA_MODE_SCATTER_GATHER);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
+               (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI |
+               DMA_DESC_END_OF_CHAIN);
+    dma_start(qts, DMA_CMD_START);
+
+    g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
+                    DMA_STATUS_DONE, ==, DMA_STATUS_DONE);
+    for (unsigned i = 0; i < ARRAY_SIZE(payload); i++) {
+        g_assert_cmphex(bar2_read(qts, 0x000010 + i * 4), ==, payload[i]);
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * The plane mask (RAD4_BAR2_MASK) applies to a DMA upload exactly as it
+ * does to a CPU pixel write (test_framebuffer_mask): the mask register is
+ * documented as programmed before a transfer and restored afterward,
+ * naming both driver render paths that share this device's DMA engine,
+ * not a CPU-only feature of the memory controller it sits in front of.
+ */
+static void test_dma_upload_honors_mask(void)
+{
+    QTestState *qts = rad4_init();
+    static const uint32_t payload[1] = { 0x00112233u };
+
+    bar2_write(qts, 0x000020, 0x00aabbccu);
+    bar2_write(qts, B_MASK, 0x0000ffffu);
+
+    dma_write_payload(qts, DMA_SRC_PHYS, payload, ARRAY_SIZE(payload));
+    dma_write_descriptor(qts, DMA_DESC_PHYS, PCI_DMA_DIRECT | DMA_SRC_PHYS,
+                         0x000020u, sizeof(payload), 0);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
+               (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI |
+               DMA_DESC_END_OF_CHAIN);
+    dma_start(qts, DMA_CMD_START);
+
+    /* Only the masked low half of the incoming word took effect. */
+    g_assert_cmphex(bar2_read(qts, 0x000020), ==, 0x00aa2233u);
+
+    qtest_quit(qts);
+}
+
+/*
+ * DMAMODE0's Done Interrupt Enable bit (0x400) routes transfer completion
+ * into this file's existing shared interrupt-pending convention
+ * (test_interrupt_acknowledge), the same one the frame timer uses.
+ */
+static void test_dma_done_interrupt_when_enabled(void)
+{
+    QTestState *qts = rad4_init();
+    static const uint32_t payload[1] = { 0x00abcdefu };
+
+    bar0_write(qts, R_INTCSR, INTCSR_ENABLE);
+
+    dma_write_payload(qts, DMA_SRC_PHYS, payload, ARRAY_SIZE(payload));
+    dma_write_descriptor(qts, DMA_DESC_PHYS, PCI_DMA_DIRECT | DMA_SRC_PHYS,
+                         0x000030u, sizeof(payload), 0);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_MODE,
+               DMA_MODE_SCATTER_GATHER | DMA_MODE_DONE_IRQ);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
+               (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI |
+               DMA_DESC_END_OF_CHAIN);
+    dma_start(qts, DMA_CMD_START);
+
+    g_assert_cmphex(bar0_read(qts, R_INTCSR) & INTCSR_PENDING, ==,
+                    INTCSR_PENDING);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Two chained descriptors: the first names the second through its own
+ * next-descriptor-pointer word (PLX PCI9054 Data Book Table 11-80), and
+ * both land in the framebuffer at their own, independent local addresses
+ * -- the mechanism the driver's own disassembly shows building one
+ * descriptor per page-sized run of a transfer, not one flat descriptor
+ * for the whole span (docs/research/graphics/rad4-chipset-20260915.md).
+ */
+static void test_dma_descriptor_chain(void)
+{
+    QTestState *qts = rad4_init();
+    static const uint32_t first_word[1] = { 0x0000aaaau };
+    static const uint32_t second_word[1] = { 0x0000bbbbu };
+    uint32_t second_desc_phys = DMA_DESC_PHYS + 16;
+
+    dma_write_payload(qts, DMA_SRC_PHYS, first_word, 1);
+    dma_write_payload(qts, DMA_SRC_PHYS + 0x1000, second_word, 1);
+
+    dma_write_descriptor(qts, second_desc_phys,
+                         PCI_DMA_DIRECT | (DMA_SRC_PHYS + 0x1000),
+                         0x000044u, sizeof(second_word), 0);
+    dma_write_descriptor(qts, DMA_DESC_PHYS, PCI_DMA_DIRECT | DMA_SRC_PHYS,
+                         0x000040u, sizeof(first_word),
+                         (PCI_DMA_DIRECT | second_desc_phys) |
+                         DMA_DESC_LOC_PCI | DMA_DESC_END_OF_CHAIN);
+
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
+               (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI);
+    dma_start(qts, DMA_CMD_START);
+
+    g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
+                    DMA_STATUS_DONE, ==, DMA_STATUS_DONE);
+    g_assert_cmphex(bar2_read(qts, 0x000040), ==, first_word[0]);
+    g_assert_cmphex(bar2_read(qts, 0x000044), ==, second_word[0]);
+
+    qtest_quit(qts);
+}
+
+/*
+ * A descriptor this model cannot honor (its local span runs past the
+ * framebuffer) leaves DMACSR0's Done bit clear, exactly as the
+ * unmodeled-DMA build already left it before this transfer existed at
+ * all -- the guest's own timeout/abort recovery, exercised then by every
+ * buffered-mode draw, is exercised here by hand. Writing ABORT (0x4)
+ * still sets Done, matching PLX PCI9054 Data Book Table 11-86 ("Sets
+ * Channel 0 Done bit when abort is complete"), so that recovery path
+ * keeps working for a transfer this model genuinely cannot complete.
+ */
+static void test_dma_abort_recovers_a_failed_transfer(void)
+{
+    QTestState *qts = rad4_init();
+
+    dma_write_descriptor(qts, DMA_DESC_PHYS, PCI_DMA_DIRECT | DMA_SRC_PHYS,
+                         FB_SIZE - 4, 16, 0);
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
+               (PCI_DMA_DIRECT | DMA_DESC_PHYS) | DMA_DESC_LOC_PCI |
+               DMA_DESC_END_OF_CHAIN);
+    dma_start(qts, DMA_CMD_START);
+    g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
+                    DMA_STATUS_DONE, ==, 0);
+
+    dma_start(qts, DMA_CMD_ABORT);
+    g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
+                    DMA_STATUS_DONE, ==, DMA_STATUS_DONE);
 
     qtest_quit(qts);
 }
@@ -720,8 +987,18 @@ int main(int argc, char **argv)
                    test_mode_recognition_rejects_mutation);
     qtest_add_func("/psitech-rad4/interrupt-acknowledge",
                    test_interrupt_acknowledge);
-    qtest_add_func("/psitech-rad4/dma-registers-inert",
-                   test_dma_registers_inert);
+    qtest_add_func("/psitech-rad4/dma-registers-before-start",
+                   test_dma_registers_before_start);
+    qtest_add_func("/psitech-rad4/dma-single-descriptor-upload",
+                   test_dma_single_descriptor_upload);
+    qtest_add_func("/psitech-rad4/dma-upload-honors-mask",
+                   test_dma_upload_honors_mask);
+    qtest_add_func("/psitech-rad4/dma-done-interrupt-when-enabled",
+                   test_dma_done_interrupt_when_enabled);
+    qtest_add_func("/psitech-rad4/dma-descriptor-chain",
+                   test_dma_descriptor_chain);
+    qtest_add_func("/psitech-rad4/dma-abort-recovers-a-failed-transfer",
+                   test_dma_abort_recovers_a_failed_transfer);
     qtest_add_func("/psitech-rad4/cursor-position-and-enable",
                    test_cursor_position_and_enable);
     qtest_add_func("/psitech-rad4/cursor-pixmap-round-trip",
