@@ -63,8 +63,13 @@
 #define SN1_PROM_RESET UINT64_C(0x1fc00000)
 #define SN1_PROM_RAM_COPY UINT64_C(0x01a00000)
 #define SN1_PROM_RAM_COPY_SIZE UINT64_C(0x00200000)
-#define SN1_HUB_REMOTE_PI_SIZE UINT64_C(0x80)
-#define SN1_HUB_REMOTE_UART_END (SN1_HUB_REMOTE_PI_SIZE + SGI_L1_SIZE)
+/*
+ * The register window's own split, the same in both forms: a PI head
+ * below the L1 UART's 0x80 offset, the UART itself, then a PI tail. See
+ * sn1_node_create_bedrock's remote and local construction below.
+ */
+#define SN1_HUB_REGISTER_HEAD_SIZE UINT64_C(0x80)
+#define SN1_HUB_REGISTER_UART_END (SN1_HUB_REGISTER_HEAD_SIZE + SGI_L1_SIZE)
 #define SN1_PROM_SECOND_SELECTION (SN1_SPACE_HUB + UINT64_C(0x1a000000))
 #define SN1_PROM_SECOND_SELECTION_SIZE UINT64_C(0x800000)
 #define SN1_HUB_REMOTE_FLASH (SN1_SPACE_HUB + UINT64_C(0x3a000000))
@@ -831,12 +836,37 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                              SN1_BEDROCK_NODE_SIZE);
     memory_region_add_subregion_overlap(system, SN1_BEDROCK_NODE_ADDRESS,
                                         &node->bedrock_node, 1);
-    memory_region_init_alias(&node->hub_local_register_block, OBJECT(node),
-                             "sn1.hub.local-register-block",
+    /*
+     * The local register window is a plain, non-overlapping partition of
+     * the same three parts the remote window already answers below: a PI
+     * head, the L1 UART's own dedicated region at 0x80
+     * (docs/datasheets/l1-controller.md), and a PI tail. sMDK, the Origin
+     * 300 field-diagnostic kernel, polls the UART's line status through
+     * this local form under the stock PROM's console=d
+     * (docs/datasheets/ip35-address-map.md); before this split, the whole
+     * window aliased the general PI register file straight through, so
+     * the same offset served a PI mask register instead and sMDK's console
+     * write loop never saw the ready bit. SN1_HUB_REGISTER_HEAD_SIZE and
+     * SN1_HUB_REGISTER_UART_END are the same constants the remote window's
+     * own head/tail split below uses, so the two forms cannot drift apart.
+     */
+    memory_region_init_alias(&node->hub_local_register_head, OBJECT(node),
+                             "sn1.hub.local-register-head",
                              hub_registers, 0,
-                             SGI_BEDROCK_SIZE);
+                             SN1_HUB_REGISTER_HEAD_SIZE);
     memory_region_add_subregion(&node->hub_local_registers, 0,
-                                &node->hub_local_register_block);
+                                &node->hub_local_register_head);
+    memory_region_add_subregion(&node->hub_local_registers,
+                                SN1_HUB_REGISTER_HEAD_SIZE,
+                                sysbus_mmio_get_region(bedrock, 8));
+    memory_region_init_alias(&node->hub_local_register_tail, OBJECT(node),
+                             "sn1.hub.local-register-tail",
+                             hub_registers,
+                             SN1_HUB_REGISTER_UART_END,
+                             SGI_BEDROCK_SIZE - SN1_HUB_REGISTER_UART_END);
+    memory_region_add_subregion(&node->hub_local_registers,
+                                SN1_HUB_REGISTER_UART_END,
+                                &node->hub_local_register_tail);
     /* OpenBSD expects local PI accesses to select the requester's interface. */
     if (node->nr_cpus > 1 && sn1_cpu_slot(node->model_node, 1) == 2) {
         SGIBedrockState *bedrock_state = SGI_BEDROCK(node->bedrock);
@@ -849,12 +879,31 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
         memory_region_add_subregion_overlap(&node->cpu_sysmem[1],
                                             SN1_BEDROCK_LOCAL_ADDRESS,
                                             &node->cpu_c_local_pi_xtalk, 1);
-        memory_region_init_alias(&node->cpu_c_local_pi_hub, OBJECT(node),
-                                 "sn1.cpu-c.local-pi-hub", pi1, 0,
-                                 SGI_BEDROCK_PI_SIZE);
+        /*
+         * CPU C's own local-window PI1 overlay is split the same way as
+         * the machine-wide window above, but leaves the 0x80-0xbf gap
+         * between its head and tail unclaimed instead of overlaying its
+         * own UART alias there: with nothing at priority 1 over that one
+         * range, CPU C's access falls through to the lower-priority
+         * system alias underneath, which reaches the same machine-wide
+         * container and its UART region above, the same as every other
+         * processor.
+         */
+        memory_region_init_alias(&node->cpu_c_local_pi_hub_head, OBJECT(node),
+                                 "sn1.cpu-c.local-pi-hub-head", pi1, 0,
+                                 SN1_HUB_REGISTER_HEAD_SIZE);
         memory_region_add_subregion_overlap(&node->cpu_sysmem[1],
                                             SN1_HUB_LOCAL_REGISTERS_ADDRESS,
-                                            &node->cpu_c_local_pi_hub, 1);
+                                            &node->cpu_c_local_pi_hub_head, 1);
+        memory_region_init_alias(&node->cpu_c_local_pi_hub_tail, OBJECT(node),
+                                 "sn1.cpu-c.local-pi-hub-tail", pi1,
+                                 SN1_HUB_REGISTER_UART_END,
+                                 SGI_BEDROCK_PI_SIZE -
+                                 SN1_HUB_REGISTER_UART_END);
+        memory_region_add_subregion_overlap(
+            &node->cpu_sysmem[1],
+            SN1_HUB_LOCAL_REGISTERS_ADDRESS + SN1_HUB_REGISTER_UART_END,
+            &node->cpu_c_local_pi_hub_tail, 1);
     }
     memory_region_add_subregion(system, SN1_HUB_REMOTE_REGISTERS_ADDRESS,
                                 sysbus_mmio_get_region(bedrock, 3));
@@ -862,17 +911,17 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     memory_region_init_alias(&node->hub_remote_register_head, OBJECT(node),
                              "sn1.hub.remote-register-head",
                              hub_registers, 0,
-                             SN1_HUB_REMOTE_PI_SIZE);
+                             SN1_HUB_REGISTER_HEAD_SIZE);
     memory_region_add_subregion_overlap(
         system, SN1_HUB_REMOTE_REGISTERS_ADDRESS,
         &node->hub_remote_register_head, 1);
     memory_region_init_alias(&node->hub_remote_register_tail, OBJECT(node),
                              "sn1.hub.remote-register-tail",
                              hub_registers,
-                             SN1_HUB_REMOTE_UART_END,
-                             SGI_BEDROCK_SIZE - SN1_HUB_REMOTE_UART_END);
+                             SN1_HUB_REGISTER_UART_END,
+                             SGI_BEDROCK_SIZE - SN1_HUB_REGISTER_UART_END);
     memory_region_add_subregion_overlap(
-        system, SN1_HUB_REMOTE_REGISTERS_ADDRESS + SN1_HUB_REMOTE_UART_END,
+        system, SN1_HUB_REMOTE_REGISTERS_ADDRESS + SN1_HUB_REGISTER_UART_END,
         &node->hub_remote_register_tail, 1);
     /*
      * The directory back door is the last part of the node's address space,

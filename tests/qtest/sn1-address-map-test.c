@@ -47,6 +47,7 @@
 #define PI_CPU_ENABLE_C (BEDROCK_PI1 + UINT64_C(0x50))
 #define PI_NMI_A UINT64_C(0x70)
 #define PI_NMI_B UINT64_C(0x78)
+#define PI_MASK_1_B UINT64_C(0xc0)
 #define PI_CACHED_ALIAS UINT64_C(0x28)
 #define IO_WIDGET_ID UINT64_C(0x0)
 #define IO_SCRATCH0 UINT64_C(0x150)
@@ -1024,6 +1025,7 @@ static void test_hub_registers_refuse_denied_region(const void *data)
     qtest_writeq(qts, HUB_LOCAL_REGISTERS + BEDROCK_LB + LB_SCRATCH2, 0xaa);
     qtest_writeq(qts, HUB_REMOTE_REGISTERS + BEDROCK_LB + LB_SCRATCH2, 0xbb);
     qtest_writeq(qts, HUB_REMOTE_REGISTERS + L1_UART + L1_SCRATCH, 0xcc);
+    qtest_writeq(qts, HUB_LOCAL_REGISTERS + L1_UART + L1_SCRATCH, 0xdd);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 0);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + BEDROCK_LB +
                                 LB_SCRATCH2), ==, scratch);
@@ -1035,10 +1037,14 @@ static void test_hub_registers_refuse_denied_region(const void *data)
     g_assert_cmphex(qtest_readq(qts, BOARD_ID_REMOTE), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + L1_UART +
                                 L1_SCRATCH), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + L1_UART +
+                                L1_SCRATCH), ==, 0);
 
     /* Restoring access reveals the unchanged UART and register contents. */
     qtest_writeq(qts, md_cell, 1);
     g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + L1_UART +
+                                L1_SCRATCH), ==, 0x5a);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + L1_UART +
                                 L1_SCRATCH), ==, 0x5a);
     g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + BEDROCK_LB +
                                 LB_SCRATCH2), ==, scratch);
@@ -1712,9 +1718,13 @@ static void test_hub_special_register_windows(const void *data)
     g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + L1_UART +
                                 L1_SCRATCH), ==, scratch);
 
-    /* Public consumers establish the L1 decoder only in the remote form. */
+    /*
+     * sMDK's headless console (PROM console=d) polls line status through
+     * this local form; the local window now reaches the same L1 UART the
+     * remote window does (docs/datasheets/l1-controller.md).
+     */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + L1_UART +
-                                L1_SCRATCH), !=, scratch);
+                                L1_SCRATCH), ==, scratch);
     /* NMI stores reach the remote PI head, not the UART at its 0x80 edge. */
     qtest_writeq(qts, HUB_REMOTE_REGISTERS + PI_NMI_A, 0x100);
     qtest_writeq(qts, HUB_REMOTE_REGISTERS + PI_NMI_B, 0x100);
@@ -1725,6 +1735,45 @@ static void test_hub_special_register_windows(const void *data)
     g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + PI_CACHED_ALIAS),
                     ==, cached_alias);
     check_access_has_no_storage(qts, HUB_REMOTE_REGISTERS + 0x1000);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The local window's own decode is now a plain, non-overlapping partition
+ * (see sn1_node_create_bedrock): a PI head, the UART's own dedicated
+ * region, then a PI tail. It is no longer a whole-file alias of the PI
+ * register file, so a PI register written through the crosstalk form must
+ * not leak through when read back at the same relative offset in the
+ * local window -- only the UART lives there now. Restoring the old
+ * whole-file alias (hub_local_register_block) makes this fail: the
+ * pre-fix model answered the crosstalk write's value, not the UART's line
+ * status, at that offset.
+ */
+static void test_hub_local_register_window_omits_pi_registers(
+    const void *data)
+{
+    QTestState *qts = machine_start();
+    /* Idle line status: transmitter empty, nothing queued to read yet. */
+    const uint64_t idle = UINT64_C(0x60);
+
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_MASK_0_A, 0x80);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + L1_UART +
+                                L1_UART_STATUS), ==, idle);
+    g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + L1_UART +
+                                L1_UART_STATUS), ==, idle);
+
+    /* PI itself still works: only the crosstalk form ever reaches it. */
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_PENDING_MODIFY, 0x107);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0) & 0x80,
+                    ==, 0x80);
+
+    /* Head and tail still reach the PI register file around the UART. */
+    qtest_writeq(qts, HUB_LOCAL_REGISTERS + PI_CPU_ENABLE_B, 1);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + PI_CPU_ENABLE_B),
+                    ==, 1);
+    qtest_writeq(qts, HUB_LOCAL_REGISTERS + PI_MASK_1_B, 0x5a);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_MASK_1_B), ==, 0x5a);
 
     qtest_quit(qts);
 }
@@ -2000,6 +2049,220 @@ static size_t l1_eeprom_read(QTestState *qts, unsigned component,
     }
     l1_send(qts, request, sizeof(request));
     return l1_receive(qts, reply);
+}
+
+/*
+ * base-parameterized mirrors of l1_put/l1_send/l1_receive/l1_eeprom_read,
+ * so a caller can drive the same framed protocol through either
+ * register-window form's L1 UART slot and compare the results.
+ */
+static void l1_put_at(QTestState *qts, uint64_t base, uint8_t byte)
+{
+    if (byte == 0x7e || byte == 0x7d) {
+        qtest_writeq(qts, base, 0x7d);
+        byte ^= 0x20;
+    }
+    qtest_writeq(qts, base, byte);
+}
+
+static void l1_send_at(QTestState *qts, uint64_t base, const uint8_t *frame,
+                       size_t length)
+{
+    uint16_t crc = 0xffff;
+
+    qtest_writeq(qts, base, 0x7e);
+    for (size_t i = 0; i < length; i++) {
+        crc = l1_fcs(crc, frame[i]);
+        l1_put_at(qts, base, frame[i]);
+    }
+    crc = ~crc;
+    l1_put_at(qts, base, crc);
+    l1_put_at(qts, base, crc >> 8);
+    qtest_writeq(qts, base, 0x7e);
+}
+
+static size_t l1_receive_at(QTestState *qts, uint64_t base, uint8_t *reply)
+{
+    size_t length = 0;
+    bool escape = false;
+    uint16_t crc = 0xffff;
+
+    g_assert_cmphex(qtest_readq(qts, base + L1_UART_STATUS), ==,
+                    L1_STATUS_READY);
+    g_assert_cmphex(qtest_readq(qts, base), ==, 0x7e);
+    for (;;) {
+        uint8_t byte;
+
+        g_assert_cmphex(qtest_readq(qts, base + L1_UART_STATUS), ==,
+                        L1_STATUS_READY);
+        byte = qtest_readq(qts, base);
+        if (byte == 0x7e) {
+            break;
+        }
+        if (byte == 0x7d && !escape) {
+            escape = true;
+            continue;
+        }
+        if (escape) {
+            byte ^= 0x20;
+            escape = false;
+        }
+        g_assert_cmpuint(length, <, 131);
+        reply[length++] = byte;
+        crc = l1_fcs(crc, byte);
+    }
+    g_assert_false(escape);
+    g_assert_cmpuint(length, >=, 3);
+    g_assert_cmphex(crc, ==, 0xf0b8);
+    return length - 2;
+}
+
+static size_t l1_eeprom_read_at(QTestState *qts, uint64_t base,
+                                unsigned component, unsigned area,
+                                unsigned offset, unsigned length,
+                                uint8_t *reply)
+{
+    uint8_t request[28] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 6, 4 };
+    const unsigned values[] = { component, area, offset, length };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(values); i++) {
+        stl_be_p(request + 9 + 5 * i, values[i]);
+    }
+    l1_send_at(qts, base, request, sizeof(request));
+    return l1_receive_at(qts, base, reply);
+}
+
+/*
+ * The qtest protocol itself has no per-CPU physical access: every
+ * qtest_read call and every human-monitor-command "xp" dispatch goes
+ * through the first CPU's own address space regardless of a requested
+ * cpu-index in this build. A per-CPU register-window defect (like CPU
+ * C's own overlay shadowing the machine-wide UART alias) is therefore
+ * invisible to any such check; only a ROM a CPU actually executes proves
+ * what that CPU's own view resolves to. See docs/known-issues.md.
+ */
+#define L1_LOCAL_FORM_READY_MARKER UINT64_C(0x1a57)
+
+static char *create_l1_local_form_prom(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    char *path = NULL;
+    int fd;
+
+    stl_be_p(image + 0x000, 0x100000ff); /* branch to 0x400 */
+    for (unsigned int offset = 0x200; offset <= 0x380; offset += 0x80) {
+        stl_be_p(image + offset, 0x1000ffff); /* park fault vectors */
+    }
+    stl_be_p(image + 0x400, 0x400a6000); /* mfc0 t2, Status */
+    stl_be_p(image + 0x404, 0x354a0080); /* enable KX */
+    stl_be_p(image + 0x408, 0x408a6000); /* mtc0 t2, Status */
+    stl_be_p(image + 0x40c, 0x000000c0); /* ehb */
+    /*
+     * Every processor computes the same uncached local register-window
+     * L1 UART line-status address (0x9000_0000_1000_0080 + L1_UART_STATUS)
+     * and loads it independently; cpu_gpr() then reads each one's own
+     * copy, the way a real console driver running on any populated slot
+     * would see its own load's result.
+     */
+    stl_be_p(image + 0x410, 0x3c029000); /* lui v0, 0x9000 */
+    stl_be_p(image + 0x414, 0x3c031000); /* lui v1, local window */
+    stl_be_p(image + 0x418, 0x346300a8); /* ori v1, v1, UART + LSR */
+    stl_be_p(image + 0x41c, 0x0002103c); /* dsll32 v0, v0, 0 */
+    stl_be_p(image + 0x420, 0x00431025); /* or v0, v0, v1 */
+    stl_be_p(image + 0x424, 0xdc530000); /* ld s3, 0(v0) */
+    stl_be_p(image + 0x428, 0x34150000 | L1_LOCAL_FORM_READY_MARKER);
+    stl_be_p(image + 0x42c, 0x1000ffff); /* park */
+    stl_be_p(image + 0x430, 0x00000000);
+
+    fd = g_file_open_tmp("sn1-l1-local-form-prom-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static void test_hub_local_l1_uart_reaches_cpu_c(const void *data)
+{
+    g_autofree char *path = NULL;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    path = create_l1_local_form_prom();
+    qts = machine_start_with(path, "-accel tcg,thread=multi -S");
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_for_cpu_gpr(qts, 0, "s5", L1_LOCAL_FORM_READY_MARKER);
+    wait_for_cpu_gpr(qts, 1, "s5", L1_LOCAL_FORM_READY_MARKER);
+    stop_vm(qts);
+
+    /*
+     * CPU C (logical index 1, physical slot C) has its own local-window
+     * PI1 overlay (sn1.cpu-c.local-pi-hub-head/tail) around this same
+     * offset, split the same way the machine-wide window is; the gap
+     * between the two halves must still fall through to the machine-wide
+     * UART underneath, the same as CPU A, which has no per-slot override
+     * at all and reaches the UART through that container directly.
+     */
+    g_assert_cmphex(cpu_gpr(qts, 0, "s3") & 0xff, ==, 0x60);
+    g_assert_cmphex(cpu_gpr(qts, 1, "s3") & 0xff, ==, 0x60);
+
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
+static void test_hub_local_reaches_l1_uart(const void *data)
+{
+    QTestState *qts = machine_start();
+    const uint64_t scratch = UINT64_C(0xa5);
+    uint64_t cached_alias;
+    uint8_t reply_local[131];
+    uint8_t reply_remote[131];
+    size_t length_local;
+    size_t length_remote;
+
+    /* Idle line status, read before any protocol byte crosses either form. */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + L1_UART +
+                                L1_UART_STATUS), ==, 0x60);
+
+    /* The same framed request gets the same reply through either form. */
+    length_local = l1_eeprom_read_at(qts, HUB_LOCAL_REGISTERS + L1_UART,
+                                     L1_EEPROM_BOARD, 0, 0, 16, reply_local);
+    length_remote = l1_eeprom_read_at(qts, HUB_REMOTE_REGISTERS + L1_UART,
+                                      L1_EEPROM_BOARD, 0, 0, 16, reply_remote);
+    g_assert_cmpuint(length_local, ==, length_remote);
+    g_assert_cmpmem(reply_local, length_local, reply_remote, length_remote);
+
+    /* Scratch written through the local form reads back through the remote. */
+    qtest_writeq(qts, HUB_LOCAL_REGISTERS + L1_UART + L1_SCRATCH, scratch);
+    g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + L1_UART +
+                                L1_SCRATCH), ==, scratch);
+
+    /*
+     * PI head (below 0x80): a stored register round-trips, and a write to
+     * the write-only NMI B register there does not disturb the UART
+     * scratch just proven above (NMI_B itself reads back 0, write-only,
+     * the same as every other consumer of it in this file).
+     */
+    cached_alias = qtest_readq(qts, HUB_LOCAL_REGISTERS + PI_CACHED_ALIAS);
+    qtest_writeq(qts, HUB_LOCAL_REGISTERS + PI_CACHED_ALIAS,
+                (cached_alias + 1) & 0xf);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + PI_CACHED_ALIAS),
+                    ==, (cached_alias + 1) & 0xf);
+    qtest_writeq(qts, HUB_LOCAL_REGISTERS + PI_CACHED_ALIAS, cached_alias);
+    qtest_writeq(qts, HUB_LOCAL_REGISTERS + PI_NMI_B, 0x100);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + L1_UART +
+                                L1_SCRATCH), ==, scratch);
+
+    /* PI tail (0xc0 and up): a mask register round-trips there too. */
+    qtest_writeq(qts, HUB_LOCAL_REGISTERS + PI_MASK_1_B, 0x5a);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + PI_MASK_1_B), ==,
+                    0x5a);
+
+    qtest_quit(qts);
 }
 
 static char *write_record(const char *directory, const char *name,
@@ -3570,6 +3833,13 @@ int main(int argc, char **argv)
                         test_io8_ioc3_migration);
     qtest_add_data_func("sn1/address-map/hub-special-register-windows", NULL,
                         test_hub_special_register_windows);
+    qtest_add_data_func(
+        "sn1/address-map/hub-local-register-window-omits-pi-registers",
+        NULL, test_hub_local_register_window_omits_pi_registers);
+    qtest_add_data_func("sn1/address-map/hub-local-reaches-l1-uart", NULL,
+                        test_hub_local_reaches_l1_uart);
+    qtest_add_data_func("sn1/address-map/hub-local-l1-uart-reaches-cpu-c",
+                        NULL, test_hub_local_l1_uart_reaches_cpu_c);
     qtest_add_data_func("sn1/address-map/l1-operator-console", NULL,
                         test_l1_operator_console_uses_serial0);
     qtest_add_data_func("sn1/address-map/prom-four-read-only-views", NULL,

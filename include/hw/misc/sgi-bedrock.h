@@ -33,6 +33,15 @@ struct SGIBedrockState {
     MemoryRegion hub_window;
     MemoryRegion hub_special_registers;
     MemoryRegion remote_registers;
+    /*
+     * The L1 UART's own eight registers, zero-based and sized to exactly
+     * them (SGI_L1_SIZE), so a caller can place this one slot at offset
+     * 0x80 in either register-window form without claiming anything else
+     * in the window. bedrock_remote_ops still owns the remote form's own
+     * decode at that offset directly; this region is what lets the local
+     * form reach the same UART (see sn1-node.c's sn1_node_create_bedrock).
+     */
+    MemoryRegion l1_uart_registers;
     MemoryRegion io_registers;
     SGIBedrockPIState pi[2];
     SGIBedrockIOState io;
