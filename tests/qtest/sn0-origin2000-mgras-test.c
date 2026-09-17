@@ -52,6 +52,9 @@
 #define REG_DAC_LUT_DATA_1     SI_REG(0x071810)
 #define REG_DAC_LUT_DATA_2     SI_REG(0x071910)
 #define REG_DAC_CONFIG         SI_REG(0x071988)
+#define REG_CMAP_WRITE_INDEX   SI_REG(0x070c30)
+#define REG_CMAP_DATA          SI_REG(0x070d18)
+#define REG_CURSOR             SI_REG(0x072038)
 #define REG_HQ_UPLOAD           SI_REG(0x050000)
 #define REG_ENTRY               SI_REG(0x130500)
 #define REG_CONTEXT_COMMAND     SI_REG(0x120400)
@@ -358,6 +361,36 @@ static void test_repp_sync_handshake(void)
 }
 
 /*
+ * The colormap data register itself, independent of the REPP handshake
+ * test above (which only exercises REG_CMAP_INDEX's read alias in
+ * passing). A write to REG_CMAP_WRITE_INDEX selects which of the 256
+ * colormap entries REG_CMAP_DATA reads and writes; changing the index
+ * must not disturb an entry already written under a different index.
+ */
+static void test_colormap_data_round_trip(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    qtest_writel(qts, REG_CMAP_WRITE_INDEX, 7);
+    qtest_writel(qts, REG_CMAP_DATA, 0x00112233);
+    g_assert_cmphex(qtest_readl(qts, REG_CMAP_DATA), ==, 0x00112233);
+
+    /* A different index reads and writes a different entry. */
+    qtest_writel(qts, REG_CMAP_WRITE_INDEX, 42);
+    qtest_writel(qts, REG_CMAP_DATA, 0x00445566);
+    g_assert_cmphex(qtest_readl(qts, REG_CMAP_DATA), ==, 0x00445566);
+
+    /* Selecting index 7 again finds its entry undisturbed. */
+    qtest_writel(qts, REG_CMAP_WRITE_INDEX, 7);
+    g_assert_cmphex(qtest_readl(qts, REG_CMAP_DATA), ==, 0x00112233);
+
+    /* Not an SI-specific access failure: none may raise the sticky error. */
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
  * The unrolled poll the same boot reaches right after the REPP handshake
  * completes, live-traced with GDB: `lw a0,0(s0); andi a0,a0,0x2; bnez
  * a0,<continue>`, against this same register. This device's first commit
@@ -403,6 +436,45 @@ static void test_dac_lut_load(void)
     g_assert_cmphex(qtest_readl(qts, REG_DAC_LUT_INDEX), ==, 0x7300);
     g_assert_cmphex(qtest_readl(qts, REG_DAC_LUT_DATA_1), ==, 0xff);
     g_assert_cmphex(qtest_readl(qts, REG_DAC_LUT_DATA_2), ==, 0x01);
+
+    qtest_quit(qts);
+}
+
+/*
+ * MgrasPositionCursor's three write shapes at REG_CURSOR, and the bug
+ * this device's first commit had here: the X tag (0x02) and Y tag (0x03)
+ * only differ in a low bit, and the Y tag and the control-enable pattern
+ * (0x1d000000) share bit 24, so a masked check let a Y-position write
+ * fall through and land in cursor_control -- a real regression this
+ * device fixed by matching each tag's exact top byte instead. REG_CURSOR
+ * itself only ever reads back cursor_control (position has no MMIO or
+ * introspection readback), so each position write is checked by
+ * confirming it leaves the control word this same register already
+ * reports completely alone.
+ */
+static void test_cursor_position_and_control_tags(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    g_assert_cmphex(qtest_readl(qts, REG_CURSOR), ==, 0);
+
+    /* An X-position write (tag 0x02) must not touch cursor_control. */
+    qtest_writel(qts, REG_CURSOR, (0x02u << 24) | (0x1234 << 8));
+    g_assert_cmphex(qtest_readl(qts, REG_CURSOR), ==, 0);
+
+    /*
+     * A Y-position write (tag 0x03) is the exact case that used to
+     * collide with the control-enable pattern's shared bit 24.
+     */
+    qtest_writel(qts, REG_CURSOR, (0x03u << 24) | (0x5678 << 8));
+    g_assert_cmphex(qtest_readl(qts, REG_CURSOR), ==, 0);
+
+    /* Any other top byte is the control/enable word, stored verbatim. */
+    qtest_writel(qts, REG_CURSOR, 0x1d000003);
+    g_assert_cmphex(qtest_readl(qts, REG_CURSOR), ==, 0x1d000003);
+
+    /* Not an SI-specific access failure: none may raise the sticky error. */
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 
     qtest_quit(qts);
 }
@@ -831,10 +903,14 @@ int main(int argc, char **argv)
                    test_i2c_probe_loopback);
     qtest_add_func("sn0/origin2000/mgras/repp-sync-handshake",
                    test_repp_sync_handshake);
+    qtest_add_func("sn0/origin2000/mgras/colormap-data-round-trip",
+                   test_colormap_data_round_trip);
     qtest_add_func("sn0/origin2000/mgras/hq-status-bringup-bit",
                    test_hq_status_bringup_bit);
     qtest_add_func("sn0/origin2000/mgras/dac-lut-load",
                    test_dac_lut_load);
+    qtest_add_func("sn0/origin2000/mgras/cursor-position-and-control-tags",
+                   test_cursor_position_and_control_tags);
     qtest_add_func("sn0/origin2000/mgras/write-path-fixes-dont-raise-error",
                    test_write_path_fixes_dont_raise_the_sticky_error);
     qtest_add_func("sn0/origin2000/mgras/board-bringup-scratch-registers",
