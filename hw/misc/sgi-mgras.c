@@ -217,6 +217,50 @@ static void si_command(SGIMgrasState *s, uint64_t word)
     }
 }
 
+/*
+ * One GE11 engine slot's control port. 0x200000 resets both the write
+ * pointer the load loop fills and the read pointer the verify loop drains;
+ * a value with bit 31 set arms readback by resetting only the read pointer,
+ * matching the driver's own "control 0x80000000 | count" step right before
+ * it starts reading back. Every other control word (the 0x40038 mode flag
+ * the driver pairs with a 0xd1 data write, the GE reset pulse this device
+ * doesn't model) is accepted as opaque state, the same treatment this
+ * device already gives undocumented control registers elsewhere.
+ */
+static void si_ge_control_write(SGIMgrasState *s, unsigned int slot,
+                                uint32_t value)
+{
+    s->ge_active_slot = slot;
+    if (value == 0x200000) {
+        s->ge_write_ptr[slot] = 0;
+        s->ge_read_ptr[slot] = 0;
+    } else if (value & 0x80000000) {
+        s->ge_read_ptr[slot] = 0;
+    }
+}
+
+/*
+ * One GE11 engine slot's data port: each write appends one microcode word
+ * to that slot's own buffer, matching the driver's three-writes-per-triple
+ * load loop (traced in MgrasDownloadGE11Ucode). The 0xd1 marker word the
+ * driver writes just before re-arming readback lands here too, but the
+ * control write that follows it resets the pointer back to zero, so it
+ * never reaches the buffer the verify loop actually reads from.
+ */
+static void si_ge_data_write(SGIMgrasState *s, hwaddr addr, unsigned size,
+                             unsigned int slot, uint32_t value)
+{
+    uint32_t ptr = s->ge_write_ptr[slot];
+
+    if (ptr >= SGI_MGRAS_GE_WORDS) {
+        si_error(s, addr, size, "GE upload overflow");
+        return;
+    }
+    s->ge[slot][ptr] = value;
+    s->ge_write_ptr[slot] = ptr + 1;
+    s->ge_words[slot] = MAX(s->ge_words[slot], ptr + 1);
+}
+
 static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIMgrasState *s = opaque;
@@ -416,9 +460,17 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
     case 0x130500: return s->entry;
     case 0x070d18: return s->cmap[s->cmap_index & 255];
     case 0x120400: return s->ready ? 0xf400 : 0;
-    case 0x58230:
-    case 0x5822c:
-        return s->ge_addr < s->ge_words ? s->ge[s->ge_addr] : 0;
+    case SGI_MGRAS_GE_READ_1:
+    case SGI_MGRAS_GE_READ_2: {
+        uint32_t slot = s->ge_active_slot;
+        uint32_t ptr = s->ge_read_ptr[slot];
+
+        if (ptr >= s->ge_words[slot]) {
+            return 0;
+        }
+        s->ge_read_ptr[slot] = ptr + 1;
+        return s->ge[slot][ptr];
+    }
     default:
         if (addr >= 0x050000 && addr < 0x050000 + sizeof(s->hq) && size == 4) {
             return s->hq[(addr - 0x050000) >> 2] & 0x00ffffff;
@@ -644,13 +696,20 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         return;
     }
     if (addr == 0x120400 && size == 8) { si_command(s, value); return; }
-    if (addr == 0x58044 || addr == 0x5804c) { s->ge_addr = value % (59392 * 3); return; }
-    if (addr == 0x58040 || addr == 0x58048) {
-        if (s->ge_addr < 59392 * 3) {
-            s->ge[s->ge_addr++] = value;
-            s->ge_words = MAX(s->ge_words, s->ge_addr);
-        }
-        else si_error(s, addr, size, "GE upload overflow");
+    if (addr == SGI_MGRAS_GE_CTRL_A) {
+        si_ge_control_write(s, SGI_MGRAS_GE_SLOT_A, value);
+        return;
+    }
+    if (addr == SGI_MGRAS_GE_CTRL_B) {
+        si_ge_control_write(s, SGI_MGRAS_GE_SLOT_B, value);
+        return;
+    }
+    if (addr == SGI_MGRAS_GE_DATA_A) {
+        si_ge_data_write(s, addr, size, SGI_MGRAS_GE_SLOT_A, value);
+        return;
+    }
+    if (addr == SGI_MGRAS_GE_DATA_B) {
+        si_ge_data_write(s, addr, size, SGI_MGRAS_GE_SLOT_B, value);
         return;
     }
     si_error(s, addr, size, "unsupported write");
@@ -687,7 +746,12 @@ static void si_reset(DeviceState *dev)
     memset(s->front, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT * sizeof(*s->front));
     memset(s->back, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT * sizeof(*s->back));
     memset(s->wid, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
-    memset(s->hq, 0, sizeof(s->hq)); memset(s->ge, 0, sizeof(uint32_t) * 59392 * 3);
+    memset(s->hq, 0, sizeof(s->hq));
+    for (int slot = 0; slot < 2; slot++) {
+        memset(s->ge[slot], 0, sizeof(uint32_t) * SGI_MGRAS_GE_WORDS);
+        s->ge_write_ptr[slot] = s->ge_read_ptr[slot] = s->ge_words[slot] = 0;
+    }
+    s->ge_active_slot = 0;
     memset(s->context, 0, sizeof(s->context)); memset(s->cursor, 0, sizeof(s->cursor));
     memset(s->command_valid, 0, sizeof(s->command_valid));
     memset(s->vc3_reg, 0, sizeof(s->vc3_reg));
@@ -743,7 +807,8 @@ static void si_realize(DeviceState *dev, Error **errp)
     s->back = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
     s->front_count = s->back_count = SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT;
     s->wid = g_new0(uint8_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
-    s->ge = g_new0(uint32_t, 59392 * 3);
+    s->ge[SGI_MGRAS_GE_SLOT_A] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
+    s->ge[SGI_MGRAS_GE_SLOT_B] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
     memory_region_init_io(&s->regs, OBJECT(dev), &si_ops, s, "sgi-mgras.regs", SGI_MGRAS_MMIO_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->regs);
     address_space_init(&s->fabric_as, s->fabric, "sgi-mgras.fabric");
@@ -756,7 +821,8 @@ static void si_unrealize(DeviceState *dev)
     SGIMgrasState *s = SGI_MGRAS(dev);
     timer_del(s->retrace_timer); timer_free(s->retrace_timer);
     address_space_destroy(&s->fabric_as);
-    g_free(s->front); g_free(s->back); g_free(s->wid); g_free(s->ge);
+    g_free(s->front); g_free(s->back); g_free(s->wid);
+    g_free(s->ge[SGI_MGRAS_GE_SLOT_A]); g_free(s->ge[SGI_MGRAS_GE_SLOT_B]);
 }
 
 static const VMStateDescription vmstate_sgi_mgras = {
