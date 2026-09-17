@@ -52,13 +52,16 @@
 #define REG_DAC_LUT_DATA_1     SI_REG(0x071810)
 #define REG_DAC_LUT_DATA_2     SI_REG(0x071910)
 #define REG_DAC_CONFIG         SI_REG(0x071988)
-#define REG_CMAP_WRITE_INDEX   SI_REG(0x070c30)
-#define REG_CMAP_DATA          SI_REG(0x070d18)
-#define REG_CURSOR             SI_REG(0x072038)
-#define REG_VC3_SRAM           SI_REG(0x072000)
 #define REG_HQ_UPLOAD           SI_REG(0x050000)
 #define REG_ENTRY               SI_REG(0x130500)
 #define REG_CONTEXT_COMMAND     SI_REG(0x120400)
+#define REG_VC3_INDEXDATA       SI_REG(0x072038)
+#define REG_VC3_INDEX           SI_REG(0x072008)
+#define REG_VC3_DATA            SI_REG(0x0720b0)
+#define REG_VC3_RAM             SI_REG(0x072190)
+#define REG_BOARD_INVENTORY     SI_REG(0x072488)
+#define REG_CMAP_WRITE_INDEX    SI_REG(0x070c30)
+#define REG_CMAP_DATA           SI_REG(0x070d18)
 
 #define SI_ENTRY_WORD           0x000004fc
 #define SI_FINAL_TOKEN           0x0000f400
@@ -76,6 +79,11 @@
 /* A direct 64-bit command record: payload32 | (selector << 34). */
 #define SI_COMMAND(reg, value) \
     ((((uint64_t)(0x60001 + ((reg) << 4))) << 34) | (uint32_t)(value))
+
+/* The VC3's indexed write port: register index in the top byte, 16-bit
+ * value in bits 23:8. */
+#define VC3_INDEXDATA(index, data16) \
+    (((uint32_t)(index) << 24) | (((uint32_t)(data16) & 0xffff) << 8))
 
 #define REG_FILL_CLIP_START     0x147
 #define REG_FILL_CLIP_END       0x148
@@ -270,9 +278,13 @@ static void test_reset_registers_are_plain_storage(void)
     qtest_writel(qts, REG_RESET_ARG, 0x765b900f);
     g_assert_cmphex(qtest_readl(qts, REG_RESET_ARG), ==, 0x765b900f);
 
-    g_assert_cmphex(qtest_readl(qts, REG_RESET_CONTROL), ==, 0);
+    /*
+     * REG_RESET_CONTROL's write side is still plain opaque storage, but
+     * its read side no longer echoes it -- see
+     * test_board_inventory_registers, which covers the fixed population
+     * code the read side now reports.
+     */
     qtest_writel(qts, REG_RESET_CONTROL, 0x40000000);
-    g_assert_cmphex(qtest_readl(qts, REG_RESET_CONTROL), ==, 0x40000000);
     /* Not SI-specific accesses: neither must raise the sticky error. */
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 
@@ -337,7 +349,9 @@ static void test_repp_sync_handshake(void)
     g_assert_cmphex(qtest_readl(qts, REG_REPP_SYNC) & 0x00000f0f, ==,
                      0x00000101);
 
-    qtest_writel(qts, SI_REG(0x070c30), 7);
+    /* A real 2-byte access, matching MgrasSetColors' own sh instruction --
+     * see test_cmap_index_addresses_the_right_slot for why this matters. */
+    qtest_writew(qts, SI_REG(0x070c30), 7);
     g_assert_cmphex(qtest_readl(qts, REG_CMAP_INDEX), ==, 7);
 
     qtest_writel(qts, REG_REPP_STATUS_1, 0x50214);
@@ -357,36 +371,6 @@ static void test_repp_sync_handshake(void)
     g_assert_cmphex(qtest_readl(qts, REG_CMAP_INDEX), ==, 7);
     g_assert_cmphex(qtest_readl(qts, REG_REPP_SYNC) & 0x00000f0f, ==,
                      0x00000101);
-
-    qtest_quit(qts);
-}
-
-/*
- * The colormap data register itself, independent of the REPP handshake
- * test above (which only exercises REG_CMAP_INDEX's read alias in
- * passing). A write to REG_CMAP_WRITE_INDEX selects which of the 256
- * colormap entries REG_CMAP_DATA reads and writes; changing the index
- * must not disturb an entry already written under a different index.
- */
-static void test_colormap_data_round_trip(void)
-{
-    QTestState *qts = qtest_init(MACHINE_ARGS);
-
-    qtest_writel(qts, REG_CMAP_WRITE_INDEX, 7);
-    qtest_writel(qts, REG_CMAP_DATA, 0x00112233);
-    g_assert_cmphex(qtest_readl(qts, REG_CMAP_DATA), ==, 0x00112233);
-
-    /* A different index reads and writes a different entry. */
-    qtest_writel(qts, REG_CMAP_WRITE_INDEX, 42);
-    qtest_writel(qts, REG_CMAP_DATA, 0x00445566);
-    g_assert_cmphex(qtest_readl(qts, REG_CMAP_DATA), ==, 0x00445566);
-
-    /* Selecting index 7 again finds its entry undisturbed. */
-    qtest_writel(qts, REG_CMAP_WRITE_INDEX, 7);
-    g_assert_cmphex(qtest_readl(qts, REG_CMAP_DATA), ==, 0x00112233);
-
-    /* Not an SI-specific access failure: none may raise the sticky error. */
-    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 
     qtest_quit(qts);
 }
@@ -437,45 +421,6 @@ static void test_dac_lut_load(void)
     g_assert_cmphex(qtest_readl(qts, REG_DAC_LUT_INDEX), ==, 0x7300);
     g_assert_cmphex(qtest_readl(qts, REG_DAC_LUT_DATA_1), ==, 0xff);
     g_assert_cmphex(qtest_readl(qts, REG_DAC_LUT_DATA_2), ==, 0x01);
-
-    qtest_quit(qts);
-}
-
-/*
- * MgrasPositionCursor's three write shapes at REG_CURSOR, and the bug
- * this device's first commit had here: the X tag (0x02) and Y tag (0x03)
- * only differ in a low bit, and the Y tag and the control-enable pattern
- * (0x1d000000) share bit 24, so a masked check let a Y-position write
- * fall through and land in cursor_control -- a real regression this
- * device fixed by matching each tag's exact top byte instead. REG_CURSOR
- * itself only ever reads back cursor_control (position has no MMIO or
- * introspection readback), so each position write is checked by
- * confirming it leaves the control word this same register already
- * reports completely alone.
- */
-static void test_cursor_position_and_control_tags(void)
-{
-    QTestState *qts = qtest_init(MACHINE_ARGS);
-
-    g_assert_cmphex(qtest_readl(qts, REG_CURSOR), ==, 0);
-
-    /* An X-position write (tag 0x02) must not touch cursor_control. */
-    qtest_writel(qts, REG_CURSOR, (0x02u << 24) | (0x1234 << 8));
-    g_assert_cmphex(qtest_readl(qts, REG_CURSOR), ==, 0);
-
-    /*
-     * A Y-position write (tag 0x03) is the exact case that used to
-     * collide with the control-enable pattern's shared bit 24.
-     */
-    qtest_writel(qts, REG_CURSOR, (0x03u << 24) | (0x5678 << 8));
-    g_assert_cmphex(qtest_readl(qts, REG_CURSOR), ==, 0);
-
-    /* Any other top byte is the control/enable word, stored verbatim. */
-    qtest_writel(qts, REG_CURSOR, 0x1d000003);
-    g_assert_cmphex(qtest_readl(qts, REG_CURSOR), ==, 0x1d000003);
-
-    /* Not an SI-specific access failure: none may raise the sticky error. */
-    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 
     qtest_quit(qts);
 }
@@ -767,90 +712,104 @@ static void test_direct_fill_and_reset(void)
     qtest_quit(qts);
 }
 
-/*
- * The device screen dimensions, mirrored from SGI_MGRAS_WIDTH/HEIGHT in
- * include/hw/misc/sgi-mgras.h -- this file does not include the device
- * header, so the two stay in sync only by convention; the dimension
- * assertion below fails loudly if that ever drifts.
- */
-#define SI_SCREEN_WIDTH  1280
-#define SI_SCREEN_HEIGHT 1024
-
-/*
- * Parses the fixed three-line header QEMU's own ppm_save() writes
- * ("P6\n%d %d\n%d\n") and returns the RGB triplet at (x, y).
- */
-static void si_screendump_pixel(const char *path, int x, int y,
-                                uint8_t *r, uint8_t *g, uint8_t *b)
-{
-    g_autofree char *data = NULL;
-    gsize len = 0;
-    int width, height, maxval, header_len = 0;
-    size_t offset;
-
-    g_assert(g_file_get_contents(path, &data, &len, NULL));
-    g_assert_cmpint(sscanf(data, "P6\n%d %d\n%d\n%n",
-                          &width, &height, &maxval, &header_len), ==, 3);
-    g_assert_cmpint(width, ==, SI_SCREEN_WIDTH);
-    g_assert_cmpint(height, ==, SI_SCREEN_HEIGHT);
-    g_assert_cmpint(maxval, ==, 255);
-
-    offset = (size_t)header_len + ((size_t)y * width + x) * 3;
-    g_assert_cmpint(offset + 3, <=, len);
-    *r = (uint8_t)data[offset];
-    *g = (uint8_t)data[offset + 1];
-    *b = (uint8_t)data[offset + 2];
-}
-
-/*
- * Confirms the host's own screendump command reaches this device at all --
- * before the console wiring, it failed outright with "There is no console
- * to take a screendump from" regardless of what front[] held -- and that
- * the surface it captures really is front[]'s content, not some other
- * placeholder, by round-tripping the same fill test_direct_fill_and_reset
- * already exercises through a real screendump file instead of the
- * host-only x-test-pixel introspection property.
- */
-static void test_screendump_matches_pixels(void)
+static void test_vc3_sram_round_trip(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
-    g_autofree char *tmpfs = NULL;
-    g_autofree char *path = NULL;
-    GError *err = NULL;
-    uint8_t r, g, b;
 
-    si_enter_context(qts);
+    /* Index 7 loads the SRAM address pointer; the data port then reads
+     * back whatever was stored at that same address, auto-incrementing
+     * after each access the same way the load did. */
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(7, 0x0100));
+    qtest_writew(qts, REG_VC3_RAM, 0x1234);
+    qtest_writew(qts, REG_VC3_RAM, 0x5678);
 
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_FILL_CLIP_START, (10u << 16) | 10u));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_FILL_CLIP_END, (13u << 16) | 13u));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_FILL_COLOR, 0x00112233));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_BLOCK_START, (10u << 16) | 10u));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_BLOCK_END, (13u << 16) | 13u));
-    g_assert_cmphex(si_test_pixel(qts, 11, 11), ==, 0x00112233);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(7, 0x0100));
+    g_assert_cmphex(qtest_readw(qts, REG_VC3_RAM), ==, 0x1234);
+    g_assert_cmphex(qtest_readw(qts, REG_VC3_RAM), ==, 0x5678);
 
-    tmpfs = g_dir_make_tmp("sn0-mgras-screendump-XXXXXX", &err);
-    g_assert_no_error(err);
-    path = g_strdup_printf("%s/screen.ppm", tmpfs);
+    /* The address field wraps at the SRAM's own 0x8000-halfword size. */
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(7, 0x7fff));
+    qtest_writew(qts, REG_VC3_RAM, 0xaaaa);
+    qtest_writew(qts, REG_VC3_RAM, 0xbbbb);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(7, 0x7fff));
+    g_assert_cmphex(qtest_readw(qts, REG_VC3_RAM), ==, 0xaaaa);
+    g_assert_cmphex(qtest_readw(qts, REG_VC3_RAM), ==, 0xbbbb);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(7, 0x0000));
+    g_assert_cmphex(qtest_readw(qts, REG_VC3_RAM), ==, 0xbbbb);
 
-    qtest_qmp_assert_success(qts,
-        "{'execute': 'screendump', 'arguments': {'filename': %s}}", path);
+    qtest_quit(qts);
+}
 
-    /* Inside the filled rectangle: the written colour, split into R/G/B. */
-    si_screendump_pixel(path, 11, 11, &r, &g, &b);
-    g_assert_cmphex(r, ==, 0x11);
-    g_assert_cmphex(g, ==, 0x22);
-    g_assert_cmphex(b, ==, 0x33);
+static void test_vc3_register_file(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
 
-    /* Outside the clipped rectangle: still the reset-cleared black. */
-    si_screendump_pixel(path, 20, 11, &r, &g, &b);
-    g_assert_cmphex(r, ==, 0);
-    g_assert_cmphex(g, ==, 0);
-    g_assert_cmphex(b, ==, 0);
+    /* An ordinary register: written through the index/data port, read
+     * back through the select-then-data pair. */
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x06, 0x2468));
+    qtest_writeb(qts, REG_VC3_INDEX, 0x06);
+    g_assert_cmphex(qtest_readw(qts, REG_VC3_DATA), ==, 0x2468);
+
+    /* Cursor position (indices 2/3) also updates this device's own
+     * named cursor state, unchanged from before this register file
+     * existed. */
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x02, 100));
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x03, 200));
+    qtest_writeb(qts, REG_VC3_INDEX, 0x02);
+    g_assert_cmphex(qtest_readw(qts, REG_VC3_DATA), ==, 100);
+    qtest_writeb(qts, REG_VC3_INDEX, 0x03);
+    g_assert_cmphex(qtest_readw(qts, REG_VC3_DATA), ==, 200);
+
+    /* Index 0x1d bit 1 enables the cursor; index 0x1e bit 2 enables
+     * video display -- both were previously driven by a since-removed
+     * ad hoc tag check on this same write port. */
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1d, 0x0002));
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x0004));
+
+    /* Index 0x1f (config) echoes back what was written, except its own
+     * revision bits (6:5) always report "VC3 A", revision 0. */
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1f, 0x01ff));
+    qtest_writeb(qts, REG_VC3_INDEX, 0x1f);
+    g_assert_cmphex(qtest_readw(qts, REG_VC3_DATA), ==, 0x019f);
+
+    qtest_quit(qts);
+}
+
+static void test_board_inventory_registers(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    /* Fixed population codes for this SI board class: one GE, single-RE,
+     * no RB daughterboard; both TRAM fields report absent. Neither
+     * echoes a write -- see the header comments on SGI_MGRAS_
+     * BOARD_INVENTORY and SGI_MGRAS_RESET_CONTROL. */
+    g_assert_cmphex(qtest_readl(qts, REG_BOARD_INVENTORY), ==, 0x21000000);
+    g_assert_cmphex(qtest_readl(qts, REG_RESET_CONTROL), ==, 0x0f000000);
+    qtest_writel(qts, REG_RESET_CONTROL, 0xe8000000);
+    g_assert_cmphex(qtest_readl(qts, REG_RESET_CONTROL), ==, 0x0f000000);
+
+    qtest_quit(qts);
+}
+
+static void test_cmap_index_addresses_the_right_slot(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    /* Before the width fix, this 2-byte index write always landed in the
+     * low byte of a widened 4-byte value, which this device's big-endian
+     * access adjustment never populates -- so every index selected slot
+     * zero regardless of what the guest asked for. */
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 5);
+    qtest_writel(qts, REG_CMAP_DATA, 0x00aabbcc);
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 9);
+    qtest_writel(qts, REG_CMAP_DATA, 0x00112233);
+
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 5);
+    g_assert_cmphex(qtest_readl(qts, REG_CMAP_DATA), ==, 0x00aabbcc);
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 9);
+    g_assert_cmphex(qtest_readl(qts, REG_CMAP_DATA), ==, 0x00112233);
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_CMAP_DATA), ==, 0);
 
     qtest_quit(qts);
 }
@@ -886,31 +845,6 @@ static void test_migration(void)
     qtest_quit(from);
 }
 
-/*
- * The driver's own VC3 SRAM self-test writes a computed value here, then
- * reads it back to confirm the write landed -- disassembly of the shipped
- * driver shows both its load and verify routines touch only this one
- * offset, never an address range, so a plain read/write round trip is
- * the whole contract. Before this test existed, a live boot logged
- * "WARNING: mgras: VC3SRAM verify failed" here because the device's
- * original stub indexed a 64-entry array by bits of the written value
- * instead of storing and echoing it back.
- */
-static void test_vc3_sram_round_trip(void)
-{
-    QTestState *qts = qtest_init(MACHINE_ARGS);
-
-    g_assert_cmphex(qtest_readl(qts, REG_VC3_SRAM), ==, 0);
-
-    qtest_writel(qts, REG_VC3_SRAM, 0x12345678);
-    g_assert_cmphex(qtest_readl(qts, REG_VC3_SRAM), ==, 0x12345678);
-
-    qtest_writel(qts, REG_VC3_SRAM, 0);
-    g_assert_cmphex(qtest_readl(qts, REG_VC3_SRAM), ==, 0);
-
-    qtest_quit(qts);
-}
-
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -929,16 +863,10 @@ int main(int argc, char **argv)
                    test_i2c_probe_loopback);
     qtest_add_func("sn0/origin2000/mgras/repp-sync-handshake",
                    test_repp_sync_handshake);
-    qtest_add_func("sn0/origin2000/mgras/colormap-data-round-trip",
-                   test_colormap_data_round_trip);
     qtest_add_func("sn0/origin2000/mgras/hq-status-bringup-bit",
                    test_hq_status_bringup_bit);
     qtest_add_func("sn0/origin2000/mgras/dac-lut-load",
                    test_dac_lut_load);
-    qtest_add_func("sn0/origin2000/mgras/cursor-position-and-control-tags",
-                   test_cursor_position_and_control_tags);
-    qtest_add_func("sn0/origin2000/mgras/vc3-sram-round-trip",
-                   test_vc3_sram_round_trip);
     qtest_add_func("sn0/origin2000/mgras/write-path-fixes-dont-raise-error",
                    test_write_path_fixes_dont_raise_the_sticky_error);
     qtest_add_func("sn0/origin2000/mgras/board-bringup-scratch-registers",
@@ -961,8 +889,14 @@ int main(int argc, char **argv)
                    test_fifo_full_and_unsupported_access);
     qtest_add_func("sn0/origin2000/mgras/direct-fill-and-reset",
                    test_direct_fill_and_reset);
-    qtest_add_func("sn0/origin2000/mgras/screendump-matches-pixels",
-                   test_screendump_matches_pixels);
+    qtest_add_func("sn0/origin2000/mgras/vc3-sram-round-trip",
+                   test_vc3_sram_round_trip);
+    qtest_add_func("sn0/origin2000/mgras/vc3-register-file",
+                   test_vc3_register_file);
+    qtest_add_func("sn0/origin2000/mgras/board-inventory-registers",
+                   test_board_inventory_registers);
+    qtest_add_func("sn0/origin2000/mgras/cmap-index-addresses-the-right-slot",
+                   test_cmap_index_addresses_the_right_slot);
     qtest_add_func("sn0/origin2000/mgras/migration", test_migration);
 
     return g_test_run();

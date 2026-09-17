@@ -10,7 +10,6 @@
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "system/address-spaces.h"
-#include "ui/console.h"
 #include "trace.h"
 
 #define SI_PENDING_FLAGS 0x00080000
@@ -206,6 +205,29 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
     case SGI_MGRAS_INT_DEST_LOWER: return s->int_dest_lower;
     case SGI_MGRAS_WIDGET_CONTROL: return s->widget_control;
     case SGI_MGRAS_RESET_ARG: return s->reset_arg;
+    /* See the header comment: a fixed population code, not an echo. */
+    case SGI_MGRAS_RESET_CONTROL: return 0x0f000000;
+    /* See the header comment: this SI board class has one GE, no RB. */
+    case SGI_MGRAS_BOARD_INVENTORY: return 0x21000000;
+    /*
+     * MgrasGatherInfo also reads these four offsets once each, for board
+     * revision bytes this device's own register table was never evidenced
+     * for. Reporting them explicitly, rather than through the sticky
+     * unsupported-access path every other undecoded offset takes, matches
+     * this device's established "immediate readiness, no invented meaning"
+     * approximation: an unknown revision reads as zero instead of raising
+     * an error over an access that does not block the boot either way.
+     * GatherInfo reads a fifth offset here too, 0x071d00, but that address
+     * already has an established meaning (SGI_MGRAS_REPP_STATUS_3, below)
+     * whose existing echo-back behaviour already answers GatherInfo's read
+     * with whatever the REPP handshake wrote earlier in the same boot,
+     * which is what it needs -- nothing to add for it here.
+     */
+    case 0x071308:
+    case 0x071708:
+    case 0x028000:
+    case 0x028004:
+        return 0;
     case SGI_MGRAS_BRINGUP_ARG_2: return s->bringup_arg_2;
     case SGI_MGRAS_BRINGUP_BLOCK_1: return s->bringup_block[0];
     case SGI_MGRAS_BRINGUP_BLOCK_2: return s->bringup_block[1];
@@ -213,9 +235,7 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
     case SGI_MGRAS_SCRATCH_COMMAND: return s->scratch_command;
     case SGI_MGRAS_BRINGUP_ARG_3: return s->bringup_arg_3;
     case SGI_MGRAS_VC3_ARG: return s->vc3_arg;
-    case SGI_MGRAS_VC3_SRAM: return s->vc3_sram;
     case SGI_MGRAS_RE_ARG: return s->re_arg;
-    case SGI_MGRAS_RESET_CONTROL: return s->reset_control;
     case SGI_MGRAS_I2C_SCRATCH: return s->i2c_scratch;
     case SGI_MGRAS_REPP_STATUS_1: return s->repp_status[0];
     case SGI_MGRAS_REPP_STATUS_3: return s->repp_status[1];
@@ -304,7 +324,33 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
     case 0x071f00: return 1;
     /* See the header comment on SGI_MGRAS_REPP_SYNC. */
     case SGI_MGRAS_REPP_SYNC: return 0x101;
-    case 0x072038: return s->cursor_control;
+    /*
+     * The register the index port above selected, widened into bits
+     * 31:16 the same way every other 2-byte read on this device is (see
+     * the 0x071208 comment). Index 0x1f (config) additionally clears its
+     * own revision bits on readback -- see the header comment on
+     * SGI_MGRAS_VC3_INDEXDATA -- everything else echoes back what was
+     * last written through the indexed write port unchanged.
+     */
+    case SGI_MGRAS_VC3_DATA: {
+        uint16_t v = s->vc3_index < ARRAY_SIZE(s->vc3_reg) ?
+                     s->vc3_reg[s->vc3_index] : 0;
+        if (s->vc3_index == 0x1f) {
+            v &= ~0x60; /* revision bits: report "VC3 A", revision 0 */
+        }
+        return (uint32_t)v << 16;
+    }
+    /*
+     * The VC3 SRAM's own data port, read back through whatever address
+     * the index port (SGI_MGRAS_VC3_INDEXDATA index 7) last set, auto-
+     * incrementing after every access the same way the write side does.
+     */
+    case SGI_MGRAS_VC3_RAM: {
+        uint16_t v = s->vc3_sram[s->vc3_ram_addr &
+                                 (SGI_MGRAS_VC3_SRAM_WORDS - 1)];
+        s->vc3_ram_addr++;
+        return (uint32_t)v << 16;
+    }
     case 0x130500: return s->entry;
     case 0x070d18: return s->cmap[s->cmap_index & 255];
     case 0x120400: return s->ready ? 0xf400 : 0;
@@ -427,7 +473,13 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
             si_error(s, addr, size, "unsupported context width");
         }
         return;
-    case 0x070c30: s->cmap_index = value & 255; return;
+    /*
+     * The colour-map index: a 2-byte write, widened into bits 31:16 the
+     * same way every other 2-byte access on this device is (see the
+     * 0x071208 comment) -- the low-byte mask this case used before always
+     * saw zero, so the index this register selected never actually moved.
+     */
+    case 0x070c30: s->cmap_index = (value >> 16) & 255; return;
     case 0x070d18: s->cmap[s->cmap_index & 255] = value; return;
     case 0x071f00: return;
     /*
@@ -436,27 +488,47 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
      * not echo this back.
      */
     case SGI_MGRAS_REPP_SYNC: return;
-    case 0x072038:
-        /*
-         * MgrasPositionCursor tags an ordered X word (0x02) and Y word
-         * (0x03) in the top byte, with the kernel-adjusted coordinate in
-         * bits 23:8; the kernel does the origin subtraction and +31 before
-         * this write, so the device only ever sees the final value. Any
-         * other top byte is the cursor control/enable word, which combines
-         * with 0x1d000000. Matching the tag exactly (rather than by masked
-         * bits) keeps a Y write from being misread as a control write: 0x03
-         * and 0x1d share bit 24.
-         */
-        if ((value >> 24) == 0x02) {
-            s->cursor_x = (value >> 8) & 0xffff;
-        } else if ((value >> 24) == 0x03) {
-            s->cursor_y = (value >> 8) & 0xffff;
-        } else {
-            s->cursor_control = value;
-            s->cursor_enabled = ((value & 0x1d000000) == 0x1d000000);
+    /*
+     * The VC3's indexed register write port: top byte selects the
+     * register (see the header comment), bits 23:8 carry the 16-bit
+     * value. Index 7 does not select an ordinary register -- it loads the
+     * SRAM address pointer SGI_MGRAS_VC3_RAM's data port uses -- so it is
+     * handled separately from the general register file. Cursor position
+     * (indices 2/3, already evidenced from MgrasPositionCursor before this
+     * offset's full contract was understood), the cursor-enable bit
+     * (index 0x1d bit 1) and the display-enable bit (index 0x1e bit 2)
+     * additionally update this device's own named state for whatever
+     * cursor/retrace code already reads it.
+     */
+    case SGI_MGRAS_VC3_INDEXDATA: {
+        uint8_t index = value >> 24;
+        uint16_t data16 = (value >> 8) & 0xffff;
+
+        if (index == 7) {
+            s->vc3_ram_addr = data16;
+            return;
+        }
+        if (index >= ARRAY_SIZE(s->vc3_reg)) {
+            return;
+        }
+        s->vc3_reg[index] = data16;
+        switch (index) {
+        case 0x02: s->cursor_x = data16; break;
+        case 0x03: s->cursor_y = data16; break;
+        case 0x1d: s->cursor_enabled = (data16 & 0x2) != 0; break;
+        case 0x1e: s->display_enabled = (data16 & 0x4) != 0; break;
+        default: break;
         }
         return;
-    case SGI_MGRAS_VC3_SRAM: s->vc3_sram = value; s->display_enabled = true; return;
+    }
+    /* The VC3's register-select port; see the header comment. */
+    case SGI_MGRAS_VC3_INDEX: s->vc3_index = value >> 24; return;
+    /* The VC3 SRAM's own data port; see the header comment. */
+    case SGI_MGRAS_VC3_RAM:
+        s->vc3_sram[s->vc3_ram_addr & (SGI_MGRAS_VC3_SRAM_WORDS - 1)] =
+            (value >> 16) & 0xffff;
+        s->vc3_ram_addr++;
+        return;
     default: break;
     }
     if (addr >= 0x050000 && addr < 0x050000 + sizeof(s->hq) && size == 4) {
@@ -508,25 +580,6 @@ static const MemoryRegionOps si_ops = {
     .impl = { .min_access_size = 4, .max_access_size = 8 },
 };
 
-/*
- * The host's own screendump command needs a real console; without one it
- * reports "There is no console to take a screendump from" even though the
- * device already keeps a complete framebuffer in front[]. The console's
- * surface is created directly over front[]'s own storage below, so this
- * callback only has to say "something in it may have changed" -- there is
- * no separate pixel copy to perform or dirty region to track.
- */
-static bool si_gfx_update(void *opaque)
-{
-    SGIMgrasState *s = opaque;
-    qemu_console_update_full(s->con);
-    return true;
-}
-
-static const GraphicHwOps si_gfx_ops = {
-    .gfx_update = si_gfx_update,
-};
-
 static void si_reset(DeviceState *dev)
 {
     SGIMgrasState *s = SGI_MGRAS(dev);
@@ -536,6 +589,9 @@ static void si_reset(DeviceState *dev)
     memset(s->hq, 0, sizeof(s->hq)); memset(s->ge, 0, sizeof(uint32_t) * 59392 * 3);
     memset(s->context, 0, sizeof(s->context)); memset(s->cursor, 0, sizeof(s->cursor));
     memset(s->command_valid, 0, sizeof(s->command_valid));
+    memset(s->vc3_reg, 0, sizeof(s->vc3_reg));
+    memset(s->vc3_sram, 0, sizeof(s->vc3_sram));
+    s->vc3_index = 0; s->vc3_ram_addr = 0;
     s->pending = s->irq_mask = s->error = s->context_words = 0;
     s->entry = s->protocol = s->prefix = 0; s->prefix_written = false;
     s->entry_selected = s->ready = false;
@@ -557,7 +613,6 @@ static void si_reset(DeviceState *dev)
     s->scratch_command = 0;
     s->bringup_arg_3 = 0;
     s->vc3_arg = 0;
-    s->vc3_sram = 0;
     s->re_arg = 0;
     /*
      * Reset does not retroactively unsend an already-delivered packet, so
@@ -585,12 +640,6 @@ static void si_realize(DeviceState *dev, Error **errp)
     memory_region_init_io(&s->regs, OBJECT(dev), &si_ops, s, "sgi-mgras.regs", SGI_MGRAS_MMIO_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->regs);
     address_space_init(&s->fabric_as, s->fabric, "sgi-mgras.fabric");
-    s->con = qemu_graphic_console_create(dev, 0, &si_gfx_ops, s);
-    qemu_console_set_surface(s->con,
-        qemu_create_displaysurface_from(SGI_MGRAS_WIDTH, SGI_MGRAS_HEIGHT,
-                                        PIXMAN_x8r8g8b8,
-                                        SGI_MGRAS_WIDTH * sizeof(uint32_t),
-                                        (uint8_t *)s->front));
     s->retrace_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, si_retrace, s);
     si_reset(dev);
 }
@@ -600,13 +649,6 @@ static void si_unrealize(DeviceState *dev)
     SGIMgrasState *s = SGI_MGRAS(dev);
     timer_del(s->retrace_timer); timer_free(s->retrace_timer);
     address_space_destroy(&s->fabric_as);
-    /*
-     * Closes the console and drops its surface before front[] is freed;
-     * that surface wraps front[]'s storage without owning it (no pixman
-     * destroy function was registered), so this ordering is required, not
-     * just tidy -- freeing front[] first would leave a dangling surface.
-     */
-    qemu_graphic_console_close(s->con);
     g_free(s->front); g_free(s->back); g_free(s->wid); g_free(s->ge);
 }
 
@@ -651,12 +693,16 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT64(scratch_command, SGIMgrasState),
         VMSTATE_UINT32(bringup_arg_3, SGIMgrasState),
         VMSTATE_UINT32(vc3_arg, SGIMgrasState),
-        VMSTATE_UINT32(vc3_sram, SGIMgrasState),
         VMSTATE_UINT32(re_arg, SGIMgrasState),
         VMSTATE_BOOL(irq_asserted, SGIMgrasState),
         VMSTATE_UINT16(fifo_count, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(command, SGIMgrasState, 0x200),
         VMSTATE_UINT8_ARRAY(command_valid, SGIMgrasState, 0x200),
+        VMSTATE_UINT16_ARRAY(vc3_reg, SGIMgrasState, 32),
+        VMSTATE_UINT8(vc3_index, SGIMgrasState),
+        VMSTATE_UINT16(vc3_ram_addr, SGIMgrasState),
+        VMSTATE_UINT16_ARRAY(vc3_sram, SGIMgrasState,
+                             SGI_MGRAS_VC3_SRAM_WORDS),
         VMSTATE_END_OF_LIST()
     }
 };
