@@ -33,6 +33,17 @@ struct SGIMachineClass {
     /* The topology name topology= selects when the user names none. */
     const char *default_topology;
     /*
+     * The boot flash's firmware configuration block carries these three
+     * fields per product (real IP27 PROM layout): a POD/inventory
+     * machine-type code and the flash chip's read/write wait-state
+     * counts. Not carried in the format-2 descriptor -- every measured
+     * product shares one processor catalogue and one Hub, but each
+     * ships its own firmware identity and flash timing.
+     */
+    uint32_t firmware_machine_type;
+    uint32_t flash_read_cycles;
+    uint32_t flash_write_cycles;
+    /*
      * A fixture's own descriptor, bypassing the name lookup in
      * sgi_model_entries[] entirely. Set only by a qtest machine type that
      * needs the real builder over a topology no product ships (a
