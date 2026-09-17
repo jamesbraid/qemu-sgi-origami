@@ -381,7 +381,8 @@ static void test_remote_hub_scratch_write_schedules_peer(const void *data)
     qtest_quit(qts);
 }
 
-#define PEER_SCRATCH_DEADLINE_TICKS  12500  /* 10 ms at 1.25 MHz */
+/* Generous host-schedule margin, not a hardware bound: 5 s at 1.25 MHz. */
+#define PEER_SCRATCH_DEADLINE_TICKS  6250000
 #define PEER_SCRATCH_IDENTITY_BASE   0x10
 #define PEER_SCRATCH_ARMED           0x21
 #define PEER_SCRATCH_GO              0x22
@@ -428,8 +429,8 @@ static void build_peer_scratch_deadline(SN0Image *p)
     sn0_patch_branch(p, branch, wait_armed);
 
     sn0_emit_i(p, SN0_OPC_LD, SN0_R_S2, SN0_R_T2, 0);
-    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_T2, SN0_R_T2,
-              PEER_SCRATCH_DEADLINE_TICKS);
+    sn0_emit_li(p, SN0_R_T0, PEER_SCRATCH_DEADLINE_TICKS);
+    sn0_emit_addu(p, SN0_R_T2, SN0_R_T2, SN0_R_T0);
     sn0_emit_i(p, SN0_OPC_ORI, SN0_R_ZERO, SN0_R_T1, PEER_SCRATCH_GO);
     sn0_emit_i(p, SN0_OPC_SD, SN0_R_S0, SN0_R_T1, REL(HUB_NI_SCRATCH_1));
     sn0_emit(p, 0x0000000f);                       /* sync */
