@@ -26,24 +26,25 @@
  * own disassembly. The only place that clears that bit back out is
  * mgras_hq4_lowater_intr, dispatched by this same pending source once
  * delivered; nothing before this device modelled it, so the watchdog was
- * never disarmed and IRIX panics roughly 15 seconds after any code path
- * (gfxinit, the X server) opens this board. This device tracks no real FIFO
+ * never disarmed and IRIX panicked roughly 15 seconds after any code path
+ * (gfxinit, the X server) opened this board. This device tracks no real FIFO
  * occupancy to know when a genuine low-water transition would happen, so it
  * satisfies the wait immediately on the arming write rather than never --
  * the same "immediate readiness, no modelled delay" approximation already
  * used elsewhere in this file (see si_update_irq and the SGI_MGRAS_HQ_ENABLE
  * write case).
  *
- * This delivers the interrupt (confirmed live: the pending bit sets and a
- * packet goes out), but does not by itself stop the panic: MgrasCtxsw also
- * restores this same word's bit 0x10 unconditionally on every context
- * switch, independent of any poll, and a live boot still reaches the
- * identical panic with this mechanism and both known poll-timeout fixes
- * (0x020000, 0x020008) applied together. See docs/datasheets/mgras-hq4.md's
- * HQ interrupt/config block row for the still-open remainder: the interrupt
- * fires but mgras_hq4_lowater_intr does not appear to run in time, most
- * likely because this device has no per-role interrupt vector (0x011070
- * stays opaque) and IRIX's real dispatch may key off it.
+ * Modelling the pending bit alone was not sufficient: mgras_hq4_lowater_intr
+ * never actually ran, because every interrupt role this device delivered --
+ * this one included -- used the same shared destination and vector (the
+ * generic widget destination pair, see the header comment on int_dest_upper),
+ * which is wired to MgrasHQ4ErrInterrupt, a printf-only handler that clears
+ * nothing. Confirmed live: "HQ4 widget err - 0x0," appears exactly once in
+ * every retained panicking console log, right on schedule. Disassembling
+ * mgras_attach's own four interrupt-handler registrations against the
+ * retained disk's rebuilt kernel settled the real per-role vector table at
+ * SGI_MGRAS_HQ_VECTORS (see that header comment); si_update_irq below now
+ * delivers this role through its own vector there instead.
  */
 #define SI_PENDING_LOWATER 0x00000004
 #define SI_HQ_ENABLE_LOWATER 0x10
@@ -55,41 +56,28 @@
 #define SI_INT_DEST_VECTOR_SHIFT 24
 
 /*
- * Compose and send one crosstalk interrupt packet from the widget-level
- * destination pair, the same wire form hw/pci-host/sgi-bridge.c uses
- * (sgi_bridge_deliver_interrupt/compose_xtalk): a write to the target's
- * interrupt-modify register carrying the vector and a raise/lower bit. The
- * destination is guest-programmed and unvalidated hardware fact beyond that
- * generic widget-header layout (see the header comment on int_dest_upper).
+ * The HQ4 vector-dest pair's own target-widget field sits at a different
+ * shift than the generic pair above (bits 27:24, not 19:16); the address
+ * and widget-bit-count shapes are otherwise identical. See the header
+ * comment on SGI_MGRAS_HQ_VECTOR_DEST_UPPER.
  */
-static void si_deliver_interrupt(SGIMgrasState *s, bool set)
-{
-    unsigned int widget = (s->int_dest_upper >> SI_INT_DEST_WIDGET_SHIFT) &
-                          ((1u << SI_INT_DEST_WIDGET_BITS) - 1);
-    uint64_t addr = ((uint64_t)(s->int_dest_upper & 0xffff) << 32) |
-                    s->int_dest_lower;
-    uint8_t vector = s->int_dest_upper >> SI_INT_DEST_VECTOR_SHIFT;
-    uint64_t value = vector | (set ? SI_HUB_INT_MODIFY_SET : 0);
-    hwaddr where;
+#define SI_HQ_VECTOR_WIDGET_SHIFT 24
+#define SI_HQ_VECTOR_WIDGET_BITS 4
 
-    if (!s->int_dest_upper && !s->int_dest_lower) {
-        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: interrupt %s with no "
-                      "destination programmed; no packet sent\n",
-                      set ? "raised" : "lowered");
-        return;
-    }
-    if (s->fabric_widget_shift) {
-        if (widget >= (1u << SI_INT_DEST_WIDGET_BITS) ||
-            addr >> s->fabric_widget_shift) {
-            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: packet fabric cannot "
-                          "encode widget %u address 0x%" PRIx64 "\n", widget,
-                          addr);
-            return;
-        }
-        where = ((uint64_t)widget << s->fabric_widget_shift) | addr;
-    } else {
-        where = s->fabric_base + addr;
-    }
+/* Byte offsets into SGI_MGRAS_HQ_VECTORS; see the header comment. */
+#define SI_HQ_VECTOR_LOWATER_SHIFT 0
+#define SI_HQ_VECTOR_GENERAL_SHIFT 8
+#define SI_HQ_VECTOR_RETRACE_SHIFT 16
+
+/*
+ * A write to the target's interrupt-modify register; data bit 8 selects
+ * raise. Mirrors hw/pci-host/sgi-bridge.c's sgi_bridge_deliver_interrupt.
+ */
+static void si_send_packet(SGIMgrasState *s, hwaddr where, uint8_t vector,
+                           bool set)
+{
+    uint64_t value = vector | (set ? SI_HUB_INT_MODIFY_SET : 0);
+
     /* Host-only qtest introspection; see the header comment on the fields. */
     s->test_last_interrupt_addr = where;
     s->test_last_interrupt_value = value;
@@ -97,26 +85,123 @@ static void si_deliver_interrupt(SGIMgrasState *s, bool set)
                       NULL);
 }
 
+/*
+ * Keep the packet header's widget separate from its complete address,
+ * mirroring hw/pci-host/sgi-bridge.c's sgi_bridge_compose_xtalk.
+ */
+static bool si_compose_xtalk(SGIMgrasState *s, unsigned int widget,
+                             uint64_t address, hwaddr *fabric)
+{
+    if (s->fabric_widget_shift) {
+        if (widget >= (1u << SI_INT_DEST_WIDGET_BITS) ||
+            address >> s->fabric_widget_shift) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: packet fabric cannot "
+                          "encode widget %u address 0x%" PRIx64 "\n", widget,
+                          address);
+            return false;
+        }
+        *fabric = ((uint64_t)widget << s->fabric_widget_shift) | address;
+    } else {
+        *fabric = s->fabric_base + address;
+    }
+    return true;
+}
+
+/*
+ * The widget-error role (MgrasHQ4ErrInterrupt): unchanged from this
+ * device's original, single delivery path -- the generic widget
+ * destination pair, vector in its own top byte. See the header comment on
+ * int_dest_upper and SGI_MGRAS_HQ_VECTOR_DEST_UPPER.
+ */
+static void si_deliver_widget_error(SGIMgrasState *s, bool set)
+{
+    unsigned int widget = (s->int_dest_upper >> SI_INT_DEST_WIDGET_SHIFT) &
+                          ((1u << SI_INT_DEST_WIDGET_BITS) - 1);
+    uint64_t addr = ((uint64_t)(s->int_dest_upper & 0xffff) << 32) |
+                    s->int_dest_lower;
+    uint8_t vector = s->int_dest_upper >> SI_INT_DEST_VECTOR_SHIFT;
+    hwaddr where;
+
+    if (!s->int_dest_upper && !s->int_dest_lower) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: widget-error interrupt %s "
+                      "with no destination programmed; no packet sent\n",
+                      set ? "raised" : "lowered");
+        return;
+    }
+    if (!si_compose_xtalk(s, widget, addr, &where)) {
+        return;
+    }
+    si_send_packet(s, where, vector, set);
+}
+
+/*
+ * The three HQ4-specific roles (low-water, general, retrace): share the
+ * HQ vector-dest pair for target/address, each with its own vector byte
+ * from SGI_MGRAS_HQ_VECTORS. See that header comment.
+ */
+static void si_deliver_hq_role(SGIMgrasState *s, bool set, uint8_t vector,
+                               const char *role)
+{
+    unsigned int widget = (s->hq_vector_dest_upper >>
+                           SI_HQ_VECTOR_WIDGET_SHIFT) &
+                          ((1u << SI_HQ_VECTOR_WIDGET_BITS) - 1);
+    uint64_t addr = ((uint64_t)(s->hq_vector_dest_upper & 0xffff) << 32) |
+                    s->hq_vector_dest_lower;
+    hwaddr where;
+
+    if (!s->hq_vector_dest_upper && !s->hq_vector_dest_lower) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: %s interrupt %s with no "
+                      "HQ vector destination programmed; no packet sent\n",
+                      role, set ? "raised" : "lowered");
+        return;
+    }
+    if (!si_compose_xtalk(s, widget, addr, &where)) {
+        return;
+    }
+    si_send_packet(s, where, vector, set);
+}
+
 static void si_update_irq(SGIMgrasState *s)
 {
     /*
-     * SI_PENDING_LOWATER bypasses the shared top-level mask: this device
-     * has no evidence for which bit of the guest's own irq_mask write
-     * (0x011040) real hardware assigns to the status/low-water role (see
-     * the header comment on SI_PENDING_LOWATER), while the second-level
-     * enable bit that gates it (SGI_MGRAS_HQ_ENABLE's bit 0x10) is
-     * live-traced from two independent driver routines. Gating delivery on
-     * that bit instead, rather than on a guessed top-level mask bit, is
-     * sufficient to satisfy the driver's own wait.
+     * Four independent roles, each with its own transition detector and
+     * its own packet -- see the header comment on SGI_MGRAS_HQ_VECTOR_DEST_
+     * UPPER/LOWER/VECTORS. SI_PENDING_LOWATER bypasses the shared top-level
+     * mask: this device has no evidence for which bit of the guest's own
+     * irq_mask write (0x011040) real hardware assigns to the status/
+     * low-water role (see the header comment on SI_PENDING_LOWATER), while
+     * the second-level enable bit that gates it (SGI_MGRAS_HQ_ENABLE's bit
+     * 0x10) is live-traced from two independent driver routines. Gating
+     * delivery on that bit instead, rather than on a guessed top-level mask
+     * bit, is sufficient to satisfy the driver's own wait. The other three
+     * roles are ordinary pending&mask sources.
      */
-    uint32_t active = (s->pending & s->irq_mask) |
-                       (s->pending & SI_PENDING_LOWATER);
-    bool level = !!active;
+    bool lowater = !!(s->pending & SI_PENDING_LOWATER);
+    bool general = !!(s->pending & s->irq_mask &
+                      (SI_PENDING_FLAGS | SI_PENDING_CONTEXT));
+    bool retrace = !!(s->pending & s->irq_mask & SI_PENDING_RETRACE);
+    bool error = !!(s->pending & s->irq_mask & SI_PENDING_ERROR);
+
+    uint8_t lowater_vector = s->hq_vectors >> SI_HQ_VECTOR_LOWATER_SHIFT;
+    uint8_t general_vector = s->hq_vectors >> SI_HQ_VECTOR_GENERAL_SHIFT;
+    uint8_t retrace_vector = s->hq_vectors >> SI_HQ_VECTOR_RETRACE_SHIFT;
 
     /* The chip sends on a transition, not while a level is held. */
-    if (level != s->irq_asserted) {
-        s->irq_asserted = level;
-        si_deliver_interrupt(s, level);
+    if (lowater != s->lowater_asserted) {
+        s->lowater_asserted = lowater;
+        si_deliver_hq_role(s, lowater, lowater_vector, "low-water");
+    }
+    if (general != s->general_asserted) {
+        s->general_asserted = general;
+        si_deliver_hq_role(s, general, general_vector, "general");
+    }
+    if (retrace != s->retrace_asserted) {
+        s->retrace_asserted = retrace;
+        si_deliver_hq_role(s, retrace, retrace_vector, "retrace");
+    }
+    if (error != s->error_asserted) {
+        s->error_asserted = error;
+        si_deliver_widget_error(s, error);
     }
 }
 
@@ -886,12 +971,23 @@ static void si_reset(DeviceState *dev)
     s->bank_status_1 = s->bank_status_2 = 0;
     /*
      * Reset does not retroactively unsend an already-delivered packet, so
-     * this clears the transition-detector directly rather than going
-     * through si_update_irq(), which would otherwise read the asserted ->
-     * deasserted edge as one more packet to send.
+     * this clears each role's transition-detector directly rather than
+     * going through si_update_irq(), which would otherwise read the
+     * asserted -> deasserted edge as one more packet to send per role.
      */
-    s->irq_asserted = false;
+    s->lowater_asserted = s->general_asserted = s->retrace_asserted =
+        s->error_asserted = false;
     si_update_irq(s);
+    /*
+     * The retrace timer models continuous vsync timing, not something this
+     * device starts only once the guest enables the display -- si_retrace
+     * itself already gates on display_enabled and no-ops otherwise, and
+     * re-arms itself for the next period every time it runs. Nothing
+     * previously gave it its first arm, so it never ran at all; this is
+     * that first arm, the same period si_retrace uses for every one after.
+     */
+    timer_mod(s->retrace_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+              NANOSECONDS_PER_SECOND / 60);
 }
 
 static void si_realize(DeviceState *dev, Error **errp)
@@ -980,7 +1076,10 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32(sched_arg_3, SGIMgrasState),
         VMSTATE_UINT32(bank_status_1, SGIMgrasState),
         VMSTATE_UINT32(bank_status_2, SGIMgrasState),
-        VMSTATE_BOOL(irq_asserted, SGIMgrasState),
+        VMSTATE_BOOL(lowater_asserted, SGIMgrasState),
+        VMSTATE_BOOL(general_asserted, SGIMgrasState),
+        VMSTATE_BOOL(retrace_asserted, SGIMgrasState),
+        VMSTATE_BOOL(error_asserted, SGIMgrasState),
         VMSTATE_UINT16(fifo_count, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(command, SGIMgrasState, 0x200),
         VMSTATE_UINT8_ARRAY(command_valid, SGIMgrasState, 0x200),
