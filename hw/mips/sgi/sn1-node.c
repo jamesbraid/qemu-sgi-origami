@@ -788,6 +788,17 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                              OBJECT(node->ram), &error_abort);
     object_property_set_link(OBJECT(node->bedrock), "l1-uart",
                              OBJECT(l1_uart), &error_abort);
+    /*
+     * The register window above only carries the L1 UART's content; its
+     * own receive/THRE interrupt output (hw/misc/sgi-l1.c) still needs its
+     * own path to a consumer. Bedrock pending bank 0 bit 4 is that consumer
+     * (docs/datasheets/bedrock-processor-interface.md), reached through the
+     * composite's own "uart-irq" input, which broadcasts to both PI0 and
+     * PI1 (hw/misc/sgi-bedrock.c).
+     */
+    qdev_connect_gpio_out_named(l1_uart_dev, "uart", 0,
+                                qdev_get_gpio_in_named(node->bedrock,
+                                                       "uart-irq", 0));
 
     /*
      * The onboard IO-8 (sgi-io8) is the family builder's own device, like
