@@ -17,9 +17,20 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockMDState, SGI_BEDROCK_MD)
 #define SGI_BEDROCK_MD_PROTECTION_ENTRIES (1 << 21)
 #define SGI_BEDROCK_MD_DIRECTORY_COMPAT_ENTRIES 74
 
+/* Opaque here: only the owning sgi-bedrock.c dereferences it. */
+typedef struct SGIBedrockState SGIBedrockState;
+
 struct SGIBedrockMDState {
     SysBusDevice parent_obj;
     MemoryRegion mmio;
+    /*
+     * The owning node, set directly by bedrock_realize() the way the local
+     * block's own back-reference is (sgi-bedrock-lb.h). Reads of performance
+     * counter 0, which the stock PROM uses as a software lock word, are
+     * handed to sgi_bedrock_perf_counter_access() for the second rendezvous's
+     * fairness yield; see sgi-bedrock.h.
+     */
+    SGIBedrockState *bedrock;
     MemoryRegion directory_mmio;
     MemoryRegion ecc_mmio;
     MemoryRegion memory_mr;
