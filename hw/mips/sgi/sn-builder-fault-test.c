@@ -274,7 +274,7 @@ static const SGIModelFabricLink console_test_links[] = {
     },
 };
 
-static const SGIModelXtalkAttachment console_test_xtalk[] = {
+static SGIModelXtalkAttachment console_test_xtalk[] = {
     {
         .crossbar_index = -1,
         .widget = 8,
@@ -525,6 +525,30 @@ static void console_test_set_activate(Object *obj, bool value, Error **errp)
     console_test_activate_requested = value;
 }
 
+/*
+ * A descriptor fault sgi_machine_index_xtalk_attachments now catches
+ * (relocated there from the deleted sgi_machine_populate_node's own
+ * g_assert(board && xtalk)): a node with no matching crosstalk
+ * attachment reaches it only once construction is already under way.
+ * Unlike "fault" above, this runs the real builder (sgi_machine_init),
+ * the only place this gap is reachable, so it forces activation the way
+ * console-test's own "activate" does.
+ */
+static void console_test_set_construction_fault(Object *obj,
+                                                 const char *value,
+                                                 Error **errp)
+{
+    if (!strcmp(value, "node-without-xtalk-attachment")) {
+        /* Node 1 loses its own attachment; node 0's now answers for both. */
+        console_test_xtalk[1].node_index = 0;
+    } else {
+        error_setg(errp, "unknown sn-builder-console-test construction "
+                  "fault '%s'", value);
+        return;
+    }
+    console_test_activate_requested = true;
+}
+
 static void console_test_machine_init(MachineState *machine)
 {
     if (!console_test_activate_requested) {
@@ -549,6 +573,12 @@ static void console_test_class_init(ObjectClass *oc, const void *data)
         "Build the fixture's two nodes through the real builder. Off by "
         "default so qom-test and test-hmp's blanket sweep leaves this "
         "inert; the qtest that wants a real machine turns it on.");
+    object_class_property_add_str(oc, "construction-fault", NULL,
+                                  console_test_set_construction_fault);
+    object_class_property_set_description(oc, "construction-fault",
+        "Break the fixture's descriptor in a way sgi_machine_validate_"
+        "topology does not catch, then build through the real builder. "
+        "Implies activate.");
 }
 
 static const TypeInfo console_test_type = {

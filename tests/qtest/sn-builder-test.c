@@ -14,6 +14,7 @@
  */
 
 #include "qemu/osdep.h"
+#include <sys/wait.h>
 #include "libqtest.h"
 #include "qobject/qdict.h"
 
@@ -35,6 +36,13 @@ static void assert_qemu_rejects(const char *const args[], const char *message)
     g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
                               NULL, &error_output, &wait_status, NULL));
     g_assert_false(g_spawn_check_exit_status(wait_status, NULL));
+    /*
+     * A rejection reports through error_report and exits; it must not
+     * reach the guest as a signal (SIGABRT from a failed assertion,
+     * SIGSEGV from a wild pointer). WIFSIGNALED tells the two apart where
+     * a bare nonzero exit status cannot.
+     */
+    g_assert_false(WIFSIGNALED(wait_status));
     g_assert_nonnull(strstr(error_output, message));
 }
 
@@ -337,6 +345,35 @@ static void test_console_field_puts_its_node_on_serial_line_zero(
 }
 
 /*
+ * sgi_machine_validate_topology never cross-checks xtalk_attachments/
+ * io_boards against node_count, so a node missing its own crosstalk
+ * attachment passes validation and only fails once sgi_machine_
+ * index_xtalk_attachments looks it up during real construction. This
+ * must surface as sgi_machine_init's own reported error and a clean
+ * exit, not an aborting assertion or a memory-region collision reaching
+ * the guest as a signal.
+ */
+static void test_node_without_xtalk_attachment_rejected(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M",
+        "sn-builder-console-test,"
+        "construction-fault=node-without-xtalk-attachment",
+        "-m", "128M", "-smp", "4,sockets=2,cores=2,threads=1",
+        "-cpu", "R10000",
+        /*
+         * The fault is reported before flash content is ever read, so
+         * this only needs to clear the "-bios or pflash" precondition,
+         * not name a real image.
+         */
+        "-bios", "/dev/null", "-display", "none", NULL
+    };
+
+    assert_qemu_rejects(args, "node 1 names no direct-attach I/O board or "
+                        "crosstalk attachment");
+}
+
+/*
  * The builder dispatches io_boards[] entries on the descriptor's own
  * board_kind alone (sgi_machine_io_board_type), not on how the board
  * attaches: Origin 200's onboard board and Origin 2000's BaseIO both
@@ -419,6 +456,8 @@ int main(int argc, char **argv)
                         NULL, test_topology_from_another_product_refused);
     qtest_add_data_func("sn/builder/console-node-gets-serial-line-zero", NULL,
                         test_console_field_puts_its_node_on_serial_line_zero);
+    qtest_add_data_func("sn/builder/node-without-xtalk-attachment-rejected",
+                        NULL, test_node_without_xtalk_attachment_rejected);
     qtest_add_data_func("sn/builder/unsupported-memory-population-rejected",
                         NULL, test_unsupported_memory_population_rejected);
     qtest_add_data_func("sn/builder/origin200-accepts-its-cpu-populations",
