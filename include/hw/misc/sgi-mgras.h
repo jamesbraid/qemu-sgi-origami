@@ -17,6 +17,29 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
 #define SGI_MGRAS_HEIGHT 1024
 
 /*
+ * GE11 microcode is uploaded to one of two engine slots, each with its own
+ * data and control port. Live-traced from the retained driver's
+ * MgrasDownloadGE11Ucode: a control write of 0x200000 resets that slot's
+ * write and read pointers, each data-port write appends one word (bounded
+ * at this many), and after the load a control write of 0x80000000 | count
+ * arms readback through the shared read ports below, which this device
+ * answers from the same slot's buffer in write order -- the exact
+ * word-for-word readback ordering the real GE ASIC uses was not resolved
+ * from the disassembly, so returning what was written, in the order it was
+ * written, is this device's own approximation rather than a verified wire
+ * contract.
+ */
+#define SGI_MGRAS_GE_WORDS (59392 * 3)
+#define SGI_MGRAS_GE_SLOT_A 0
+#define SGI_MGRAS_GE_SLOT_B 1
+#define SGI_MGRAS_GE_DATA_A 0x058048
+#define SGI_MGRAS_GE_CTRL_A 0x05804c
+#define SGI_MGRAS_GE_DATA_B 0x058040
+#define SGI_MGRAS_GE_CTRL_B 0x058044
+#define SGI_MGRAS_GE_READ_1 0x05822c
+#define SGI_MGRAS_GE_READ_2 0x058230
+
+/*
  * The widget's own crosstalk interrupt-destination pair, at the offset the
  * Crossbow datasheet gives for "any widget's" copy of that register
  * (docs/datasheets/xbow.md, offset 0x0030/0x0038 relative to the widget's
@@ -429,9 +452,11 @@ struct SGIMgrasState {
     uint32_t back_count;
     uint8_t *wid;
     uint32_t hq[5120];
-    uint32_t *ge;
-    uint32_t ge_addr;
-    uint32_t ge_words;
+    uint32_t *ge[2];
+    uint32_t ge_write_ptr[2];
+    uint32_t ge_read_ptr[2];
+    uint32_t ge_words[2];
+    uint32_t ge_active_slot;
     uint32_t hq_words;
     uint32_t hq_hash;
     uint32_t ge_hash;

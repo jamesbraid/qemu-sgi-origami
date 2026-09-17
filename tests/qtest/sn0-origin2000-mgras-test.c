@@ -549,6 +549,73 @@ static void test_hq_upload_and_readback(void)
     qtest_quit(qts);
 }
 
+/*
+ * The GE11 microcode load-and-verify sequence live-traced from
+ * MgrasDownloadGE11Ucode: a control write of 0x200000 resets the slot's
+ * pointers, three data writes per instruction triple load the buffer, then
+ * a control write of 0x80000000 | count arms readback through the shared
+ * read ports. This device answers readback in write order (see the header
+ * comment on the GE port offsets for why that ordering is an approximation,
+ * not a verified wire contract) -- this test holds the device to exactly
+ * that self-consistent contract, not to real GE11 silicon behavior.
+ */
+static void test_ge_upload_and_readback(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    qtest_writel(qts, SI_REG(0x05804c), 0x200000);
+    qtest_writel(qts, SI_REG(0x058048), 0x11111111);
+    qtest_writel(qts, SI_REG(0x058048), 0x22222222);
+    qtest_writel(qts, SI_REG(0x058048), 0x33333333);
+    qtest_writel(qts, SI_REG(0x05804c), 0x40038);
+    qtest_writel(qts, SI_REG(0x058048), 0xd1);
+    qtest_writel(qts, SI_REG(0x05804c), 0x200000);
+    qtest_writel(qts, SI_REG(0x05804c), 0x80000001);
+
+    g_assert_cmphex(qtest_readl(qts, SI_REG(0x05822c)), ==, 0x11111111);
+    g_assert_cmphex(qtest_readl(qts, SI_REG(0x058230)), ==, 0x22222222);
+    g_assert_cmphex(qtest_readl(qts, SI_REG(0x05822c)), ==, 0x33333333);
+
+    qtest_quit(qts);
+}
+
+/* The two engine slots keep independent buffers and pointers. */
+static void test_ge_upload_slots_do_not_cross_contaminate(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    qtest_writel(qts, SI_REG(0x05804c), 0x200000);
+    qtest_writel(qts, SI_REG(0x058048), 0xaaaaaaaa);
+    qtest_writel(qts, SI_REG(0x058044), 0x200000);
+    qtest_writel(qts, SI_REG(0x058040), 0xbbbbbbbb);
+
+    qtest_writel(qts, SI_REG(0x05804c), 0x80000001);
+    g_assert_cmphex(qtest_readl(qts, SI_REG(0x05822c)), ==, 0xaaaaaaaa);
+
+    qtest_writel(qts, SI_REG(0x058044), 0x80000001);
+    g_assert_cmphex(qtest_readl(qts, SI_REG(0x058230)), ==, 0xbbbbbbbb);
+
+    qtest_quit(qts);
+}
+
+/* Re-arming readback rewinds the read pointer without touching the data. */
+static void test_ge_upload_rearm_rereads_from_start(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    qtest_writel(qts, SI_REG(0x05804c), 0x200000);
+    qtest_writel(qts, SI_REG(0x058048), 0x01020304);
+    qtest_writel(qts, SI_REG(0x058048), 0x05060708);
+    qtest_writel(qts, SI_REG(0x05804c), 0x80000001);
+
+    g_assert_cmphex(qtest_readl(qts, SI_REG(0x05822c)), ==, 0x01020304);
+    qtest_writel(qts, SI_REG(0x05804c), 0x80000001);
+    g_assert_cmphex(qtest_readl(qts, SI_REG(0x05822c)), ==, 0x01020304);
+    g_assert_cmphex(qtest_readl(qts, SI_REG(0x058230)), ==, 0x05060708);
+
+    qtest_quit(qts);
+}
+
 static void test_context_recognizer_ordering(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
@@ -1040,6 +1107,12 @@ int main(int argc, char **argv)
                    test_board_bringup_byte_poll_bit_position);
     qtest_add_func("sn0/origin2000/mgras/hq-upload-readback",
                    test_hq_upload_and_readback);
+    qtest_add_func("sn0/origin2000/mgras/ge-upload-readback",
+                   test_ge_upload_and_readback);
+    qtest_add_func("sn0/origin2000/mgras/ge-upload-slots-independent",
+                   test_ge_upload_slots_do_not_cross_contaminate);
+    qtest_add_func("sn0/origin2000/mgras/ge-upload-rearm-rereads",
+                   test_ge_upload_rearm_rereads_from_start);
     qtest_add_func("sn0/origin2000/mgras/context-recognizer-ordering",
                    test_context_recognizer_ordering);
     qtest_add_func("sn0/origin2000/mgras/entry-requires-prefix",
