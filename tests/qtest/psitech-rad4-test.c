@@ -803,6 +803,103 @@ static void test_dma_descriptor_chain(void)
 }
 
 /*
+ * A Local-space descriptor (DMA_DESC_LOC_PCI clear) is read straight out of
+ * the framebuffer at its own masked address instead of guest/PCI memory,
+ * honoring the same convention a live IRIX 6.5.30 boot's buffered driver
+ * path was captured actually using: a descriptor stored at the very top of
+ * the 8 MiB local extent (docs/datasheets/psitech-rad4.md, "DMA", "Live
+ * capture"). The descriptor's own storage location is Local; the payload
+ * source it names is still an ordinary PCI address, exactly as the live
+ * capture's own descriptor decoded.
+ */
+static void test_dma_local_descriptor_upload(void)
+{
+    QTestState *qts = rad4_init();
+    static const uint32_t payload[4] = {
+        0x0000aaaau, 0x0000bbbbu, 0x0000ccccu, 0x0000ddddu,
+    };
+    uint32_t desc_local = FB_SIZE - 16;
+
+    dma_write_payload(qts, DMA_SRC_PHYS, payload, ARRAY_SIZE(payload));
+    bar2_write(qts, desc_local, PCI_DMA_DIRECT | DMA_SRC_PHYS);
+    bar2_write(qts, desc_local + 4, 0x000050u);
+    bar2_write(qts, desc_local + 8, sizeof(payload));
+    bar2_write(qts, desc_local + 12, 0);
+
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
+               desc_local | DMA_DESC_END_OF_CHAIN);
+    dma_start(qts, DMA_CMD_START);
+
+    g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
+                    DMA_STATUS_DONE, ==, DMA_STATUS_DONE);
+    for (unsigned i = 0; i < ARRAY_SIZE(payload); i++) {
+        g_assert_cmphex(bar2_read(qts, 0x000050 + i * 4), ==, payload[i]);
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * Two chained descriptors both stored in Local space, the first's own
+ * next-descriptor-pointer word naming the second exactly as the live
+ * capture's descriptor array did (each entry 16 bytes below the one
+ * DMADPR0 or the previous entry's next-pointer named).
+ */
+static void test_dma_local_descriptor_chain(void)
+{
+    QTestState *qts = rad4_init();
+    static const uint32_t first_word[1] = { 0x0000ccccu };
+    static const uint32_t second_word[1] = { 0x0000ddddu };
+    uint32_t first_desc_local = FB_SIZE - 32;
+    uint32_t second_desc_local = FB_SIZE - 16;
+
+    dma_write_payload(qts, DMA_SRC_PHYS, first_word, 1);
+    dma_write_payload(qts, DMA_SRC_PHYS + 0x1000, second_word, 1);
+
+    bar2_write(qts, second_desc_local,
+              PCI_DMA_DIRECT | (DMA_SRC_PHYS + 0x1000));
+    bar2_write(qts, second_desc_local + 4, 0x000064u);
+    bar2_write(qts, second_desc_local + 8, sizeof(second_word));
+    bar2_write(qts, second_desc_local + 12, 0);
+
+    bar2_write(qts, first_desc_local, PCI_DMA_DIRECT | DMA_SRC_PHYS);
+    bar2_write(qts, first_desc_local + 4, 0x000060u);
+    bar2_write(qts, first_desc_local + 8, sizeof(first_word));
+    bar2_write(qts, first_desc_local + 12,
+              second_desc_local | DMA_DESC_END_OF_CHAIN);
+
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC, first_desc_local);
+    dma_start(qts, DMA_CMD_START);
+
+    g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
+                    DMA_STATUS_DONE, ==, DMA_STATUS_DONE);
+    g_assert_cmphex(bar2_read(qts, 0x000060), ==, first_word[0]);
+    g_assert_cmphex(bar2_read(qts, 0x000064), ==, second_word[0]);
+
+    qtest_quit(qts);
+}
+
+/*
+ * A Local-space descriptor pointer at or past the framebuffer's own end
+ * leaves no room for the 16 bytes it names and leaves DMACSR0's Done bit
+ * clear, the same failure convention test_dma_abort_recovers_a_failed_
+ * transfer already exercises for an out-of-bounds payload target.
+ */
+static void test_dma_local_descriptor_out_of_bounds(void)
+{
+    QTestState *qts = rad4_init();
+
+    rad4_writel(qts, RAD4_ROM_PCI + ROM_DESC,
+               FB_SIZE | DMA_DESC_END_OF_CHAIN);
+    dma_start(qts, DMA_CMD_START);
+
+    g_assert_cmphex(rad4_readl(qts, RAD4_ROM_PCI + ROM_COMMAND) &
+                    DMA_STATUS_DONE, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
  * A descriptor this model cannot honor (its local span runs past the
  * framebuffer) leaves DMACSR0's Done bit clear, exactly as the
  * unmodeled-DMA build already left it before this transfer existed at
@@ -997,6 +1094,12 @@ int main(int argc, char **argv)
                    test_dma_done_interrupt_when_enabled);
     qtest_add_func("/psitech-rad4/dma-descriptor-chain",
                    test_dma_descriptor_chain);
+    qtest_add_func("/psitech-rad4/dma-local-descriptor-upload",
+                   test_dma_local_descriptor_upload);
+    qtest_add_func("/psitech-rad4/dma-local-descriptor-chain",
+                   test_dma_local_descriptor_chain);
+    qtest_add_func("/psitech-rad4/dma-local-descriptor-out-of-bounds",
+                   test_dma_local_descriptor_out_of_bounds);
     qtest_add_func("/psitech-rad4/dma-abort-recovers-a-failed-transfer",
                    test_dma_abort_recovers_a_failed_transfer);
     qtest_add_func("/psitech-rad4/cursor-position-and-enable",

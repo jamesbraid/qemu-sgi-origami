@@ -1009,11 +1009,25 @@ static const MemoryRegionOps rad4_bar0_ops = {
  * marks the last descriptor in the chain, bit2 asks for an interrupt once
  * that descriptor's own transfer completes, and bit3 picks direction.
  *
+ * A descriptor claiming Local Address space is read straight out of
+ * s->framebuffer at the masked pointer: BAR2's framebuffer memory is this
+ * model's only locally addressable storage, the same array
+ * rad4_bar2_read()/rad4_bar2_write() already serve BAR2 accesses from, so a
+ * Local-space descriptor pointer is simply a BAR2 offset. A live capture
+ * confirmed this against a real IRIX 6.5.30 buffered-mode transfer: the
+ * shipped 1.101 driver's own first descriptor names Local Address space,
+ * and its 16 bytes decode into a self-consistent chain only under that
+ * interpretation -- local address 0, size 0x1400 (one 1280-pixel, 4-byte
+ * scanline), a PCI-Direct source address, and a next-pointer chaining
+ * backward through a 40-entry descriptor array built at the top of the 8
+ * MiB local extent -- while the same 16 bytes read as an ordinary guest-
+ * physical address were all zero. See "Live capture" under "DMA" in
+ * docs/datasheets/psitech-rad4.md for the full account.
+ *
  * Returns true once an end-of-chain descriptor has been transferred, false
- * on any failure (a chain that never ends within
- * RAD4_DMA_MAX_DESCRIPTORS, a descriptor claiming Local Address space --
- * unsupported, since this model keeps no separately addressable local
- * descriptor store -- a failed guest-memory read, or a descriptor whose
+ * on any failure (a chain that never ends within RAD4_DMA_MAX_DESCRIPTORS,
+ * a Local-space descriptor pointer outside the framebuffer, a failed
+ * guest-memory read for a PCI-space descriptor, or a descriptor whose
  * Local address/size run outside the framebuffer). The caller leaves
  * RAD4_DMA_STATUS_DONE clear on failure, so the guest's existing
  * timeout/abort recovery (already exercised before this transfer was
@@ -1034,19 +1048,24 @@ static bool rad4_dma_run(PsitechRad4State *s)
         uint8_t raw[16];
         uint32_t pci_addr, local_addr, size, next;
 
-        if (!from_pci) {
-            qemu_log_mask(LOG_UNIMP,
-                         "psitech-rad4: DMA descriptor at 0x%"HWADDR_PRIx
-                         " claims Local Address space, which this model "
-                         "does not implement\n", desc_addr);
-            return false;
-        }
-
-        if (pci_dma_read(&s->pci, desc_addr, raw, sizeof(raw)) != MEMTX_OK) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                         "psitech-rad4: DMA descriptor read failed at "
-                         "0x%"HWADDR_PRIx"\n", desc_addr);
-            return false;
+        if (from_pci) {
+            if (pci_dma_read(&s->pci, desc_addr, raw,
+                             sizeof(raw)) != MEMTX_OK) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                             "psitech-rad4: DMA descriptor read failed at "
+                             "0x%"HWADDR_PRIx"\n", desc_addr);
+                return false;
+            }
+        } else {
+            if (desc_addr >= RAD4_FB_SIZE ||
+                sizeof(raw) > RAD4_FB_SIZE - desc_addr) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                             "psitech-rad4: DMA descriptor at Local address "
+                             "0x%"HWADDR_PRIx" falls outside the "
+                             "framebuffer\n", desc_addr);
+                return false;
+            }
+            memcpy(raw, s->framebuffer + desc_addr, sizeof(raw));
         }
 
         pci_addr = ldl_be_p(raw);
