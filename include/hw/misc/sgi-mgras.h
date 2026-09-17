@@ -356,6 +356,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
  * both are real, at different points in the boot (PROM bring-up, then
  * later kernel HQ operation), so the write case applies both effects
  * rather than treating one observation as replacing the other.
+ *
+ * Bit 0x10 of 0x011050 (SI_HQ_ENABLE_LOWATER, sgi-mgras.c) is no longer
+ * opaque: it is MgrasFlushHQ3's and mgras_hq4_hiwater_intr's own
+ * "arm the FIFO status/low-water wait" signal, live-traced from both
+ * routines, and mgras_hq4_lowater_intr clears it back out via 0x011058
+ * when that interrupt is delivered. See si_update_irq's SI_PENDING_LOWATER
+ * comment and the datasheet's HQ interrupt/config block row for the
+ * approximation this closes: a watchdog panic roughly 15 seconds after
+ * any driver path (gfxinit, the X server) opened this board, since nothing
+ * previously ever raised the interrupt that disarms it.
  */
 #define SGI_MGRAS_HQ_CONFIG_A 0x011030
 #define SGI_MGRAS_HQ_CONFIG_B 0x011038

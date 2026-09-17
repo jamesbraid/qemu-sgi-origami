@@ -16,6 +16,37 @@
 #define SI_PENDING_CONTEXT 0x10000000
 #define SI_PENDING_RETRACE 0x00000001
 #define SI_PENDING_ERROR 0x00000002
+/*
+ * A fifth pending source alongside the four above: the HQ4 command FIFO's
+ * status/low-water role. The kernel driver's own MgrasFlushHQ3 (called from
+ * MgrasCtxsw and MgrasPcxSwap) and mgras_hq4_hiwater_intr's timeout fallback
+ * both arm a 15-second watchdog (mgras_fifotimer) whenever they need to wait
+ * for this FIFO to drain, and both write bit SI_HQ_ENABLE_LOWATER into
+ * SGI_MGRAS_HQ_ENABLE right beforehand -- live-traced from each routine's
+ * own disassembly. The only place that clears that bit back out is
+ * mgras_hq4_lowater_intr, dispatched by this same pending source once
+ * delivered; nothing before this device modelled it, so the watchdog was
+ * never disarmed and IRIX panics roughly 15 seconds after any code path
+ * (gfxinit, the X server) opens this board. This device tracks no real FIFO
+ * occupancy to know when a genuine low-water transition would happen, so it
+ * satisfies the wait immediately on the arming write rather than never --
+ * the same "immediate readiness, no modelled delay" approximation already
+ * used elsewhere in this file (see si_update_irq and the SGI_MGRAS_HQ_ENABLE
+ * write case).
+ *
+ * This delivers the interrupt (confirmed live: the pending bit sets and a
+ * packet goes out), but does not by itself stop the panic: MgrasCtxsw also
+ * restores this same word's bit 0x10 unconditionally on every context
+ * switch, independent of any poll, and a live boot still reaches the
+ * identical panic with this mechanism and both known poll-timeout fixes
+ * (0x020000, 0x020008) applied together. See docs/datasheets/mgras-hq4.md's
+ * HQ interrupt/config block row for the still-open remainder: the interrupt
+ * fires but mgras_hq4_lowater_intr does not appear to run in time, most
+ * likely because this device has no per-role interrupt vector (0x011070
+ * stays opaque) and IRIX's real dispatch may key off it.
+ */
+#define SI_PENDING_LOWATER 0x00000004
+#define SI_HQ_ENABLE_LOWATER 0x10
 
 /* Where the Hub's interrupt-modify register sits; data bit 8 selects raise. */
 #define SI_HUB_INT_MODIFY_SET 0x100
@@ -68,7 +99,18 @@ static void si_deliver_interrupt(SGIMgrasState *s, bool set)
 
 static void si_update_irq(SGIMgrasState *s)
 {
-    uint32_t active = s->pending & s->irq_mask;
+    /*
+     * SI_PENDING_LOWATER bypasses the shared top-level mask: this device
+     * has no evidence for which bit of the guest's own irq_mask write
+     * (0x011040) real hardware assigns to the status/low-water role (see
+     * the header comment on SI_PENDING_LOWATER), while the second-level
+     * enable bit that gates it (SGI_MGRAS_HQ_ENABLE's bit 0x10) is
+     * live-traced from two independent driver routines. Gating delivery on
+     * that bit instead, rather than on a guessed top-level mask bit, is
+     * sufficient to satisfy the driver's own wait.
+     */
+    uint32_t active = (s->pending & s->irq_mask) |
+                       (s->pending & SI_PENDING_LOWATER);
     bool level = !!active;
 
     /* The chip sends on a transition, not while a level is held. */
@@ -373,7 +415,23 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
      * the previously unevidenced low bit rather than keep a second guess
      * beside a now-evidenced one.
      */
-    case 0x020000: return s->error ? 0x80000000 : 0x2;
+    /*
+     * This same word also carries a second, independent poll bit: live-
+     * traced from the driver object pulled off the retained disk (not the
+     * older 6.5-base release this project analysed first), mgras_hq4_
+     * hiwater_intr -- called from MgrasPcxSwap during a buffer swap -- runs
+     * its own short, ten-iteration local poll of this offset's bit 0x10
+     * (`lw t9,0(s2); andi t9,t9,0x10; beqz t9,<retry>`) before it will
+     * treat the FIFO as healthy. Bit 0x10 was never modelled, so that poll
+     * always exhausted its ten retries and fell into the same watchdog-
+     * arming fallback MgrasFlushHQ3Poll's own timeout does (writing
+     * SGI_MGRAS_HQ_ENABLE's bit 0x10, see that macro's header comment) --
+     * on every single call, deterministically, independent of the FIFO-
+     * status fix above. Reporting the bit set on the healthy path is the
+     * same "immediate readiness, no modelled delay" approximation already
+     * used for bit 0x2 above.
+     */
+    case 0x020000: return s->error ? 0x80000000 : 0x12;
     /*
      * MgrasReset writes zero here before polling it, live-traced once the
      * DAC load above stopped blocking that far: with no write case, the
@@ -384,7 +442,36 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
      * no-op, the same treatment already given to 0x011098's write side,
      * lets the read case's existing healthy-path answer stand.
      */
-    case 0x020008: return s->fifo_count;
+    /*
+     * MgrasFlushHQ3Poll's own second poll mode, live-traced from the actual
+     * driver object pulled off the retained disk (mgras.o, not the older
+     * 6.5-base release this project analysed first): when its own third
+     * argument is zero, it reads this offset's low byte and requires
+     * `caller_threshold >= (value & 0xff)` (`sltu`/`beqz`) before it will
+     * stop retrying. Both live call sites that take this branch --
+     * MgrasCtxsw's own MgrasFlushHQ3 call and MgrasPcxSwap's second one --
+     * pass a threshold of zero, so this field has to read back exactly 0 to
+     * satisfy the poll; MgrasPcxSwap's other two calls and MgrasCtxsw's own
+     * take the sibling DMA_BUSY poll at 0x020200 instead, already always
+     * zero.
+     *
+     * s->fifo_count is this device's own FIFO occupancy accounting for
+     * si_command's overflow check (SGI_MGRAS_FIFO_DEPTH above): it advances
+     * on every accepted command word and only returns to zero once a fill
+     * command (register 0x47) completes, so a diagnostic or setup sequence
+     * that submits a word without ever completing a fill leaves it stuck
+     * nonzero -- exactly what live-tracing a boot that reaches gfxinit's
+     * own HQ4 widget diagnostic showed: MgrasCtxsw's poll timed out and
+     * armed the FIFO-status watchdog (SGI_MGRAS_HQ_ENABLE's bit 0x10 above),
+     * which this device has no way to disarm again since it tracks no real
+     * FIFO drain over time, panicking IRIX roughly 15 seconds later. This
+     * offset is the only guest-visible read of that accounting, so
+     * reporting it separately as always-ready is the same "immediate
+     * readiness, no modelled delay" approximation already used at 0x011098,
+     * 0x020000 and 0x020100 above, without weakening the overflow check
+     * s->fifo_count still serves inside si_command.
+     */
+    case 0x020008: return 0;
     /*
      * The kernel driver's own reset routine polls this offset's low five
      * bits, waiting for ((bits + 1) >> 1) < 8 -- i.e. the field settling to
@@ -572,7 +659,19 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     case 0x011048: s->error = 0; s->pending &= ~SI_PENDING_ERROR; si_update_irq(s); return;
     case SGI_MGRAS_HQ_CONFIG_A: s->hq_config_a = value; return;
     case SGI_MGRAS_HQ_CONFIG_B: s->hq_config_b = value; return;
-    case SGI_MGRAS_HQ_ENABLE: s->hq_enable = value; return;
+    case SGI_MGRAS_HQ_ENABLE:
+        /*
+         * See the header comment on SI_PENDING_LOWATER: a newly-set bit
+         * 0x10 here is MgrasFlushHQ3's or mgras_hq4_hiwater_intr's own
+         * signal that it is about to wait on this device's FIFO
+         * status/low-water interrupt, live-traced from both routines.
+         */
+        if ((value & ~s->hq_enable) & SI_HQ_ENABLE_LOWATER) {
+            s->pending |= SI_PENDING_LOWATER;
+        }
+        s->hq_enable = value;
+        si_update_irq(s);
+        return;
     case SGI_MGRAS_HQ_VECTOR_DEST_UPPER: s->hq_vector_dest_upper = value; return;
     case SGI_MGRAS_HQ_VECTOR_DEST_LOWER: s->hq_vector_dest_lower = value; return;
     case SGI_MGRAS_HQ_VECTORS: s->hq_vectors = value; return;
@@ -946,6 +1045,18 @@ static void si_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READ);
     object_property_add_uint32_ptr(obj, "x-test-error-addr",
                                    &s->error_addr, OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "x-test-pending", &s->pending,
+                                   OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "x-test-irq-mask", &s->irq_mask,
+                                   OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "x-test-hq-enable", &s->hq_enable,
+                                   OBJ_PROP_FLAG_READ);
+    object_property_add_uint16_ptr(obj, "x-test-fifo-count", &s->fifo_count,
+                                   OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "x-test-int-dest-upper",
+                                   &s->int_dest_upper, OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "x-test-int-dest-lower",
+                                   &s->int_dest_lower, OBJ_PROP_FLAG_READ);
 }
 
 static void si_class_init(ObjectClass *oc, const void *data)
