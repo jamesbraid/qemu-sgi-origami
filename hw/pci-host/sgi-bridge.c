@@ -755,6 +755,15 @@ static const MemoryRegionOps sgi_bridge_window_io_ops = {
  * 64-bit-device declaration, so a doubleword access always gets the two
  * corrected four-byte cycles a 32-bit device's window would use -- the
  * common case, and the only one this window can express.
+ *
+ * This correction is a no-op for the only traffic confirmed to use this
+ * window today: PsiTech RAD4's BAR2 is 4-byte-access-only end to end
+ * (rad4_bar2_ops), and sgi_bridge_window_correct's offset adjustment is the
+ * identity function at size 4. A live boot with the correction forced off
+ * produced byte-identical screendumps to a corrected boot. See the header
+ * comment on SGI_BRIDGE_PIO_XLATE_BASE for what was tested and what remains
+ * unexplained -- RAD4's wrong login-screen colors are confirmed independent
+ * of this flag.
  */
 static uint64_t sgi_bridge_pio_xlate_read(void *opaque, hwaddr addr,
                                           unsigned size)
