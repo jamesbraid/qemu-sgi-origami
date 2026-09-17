@@ -42,15 +42,32 @@
  * building more than one instance of this board -- the two-chassis
  * Origin 200's own case -- has to give each its own name, since two PCI
  * buses answering to the same name is a migration-identity collision on
- * every device behind them, not merely a cosmetic one. "nvram-drive"
- * passes through to the onboard IOC3's own Timekeeper storage (its own
- * alias of the same name), unset by default, the way the deleted inline
- * builder resolved a `-drive if=mtd` or a bare `-drive if=none,
- * id=sgi-nvram<N>` by index before this board existed.
+ * every device behind them, not merely a cosmetic one. "onewire-serial"
+ * is Bridge's own NIC ROM identity (widget discovery); "ioc3-onewire-
+ * serial" is the onboard IOC3's separate one-wire identity part, a
+ * distinct physical serial the topology's io_boards[] entry's own PCI
+ * function record carries -- unset, it keeps the IOC3 class's own
+ * default, matching a bare -device. "nvram-drive", "chardev-a",
+ * "chardev-b", "record-a", "record-b" and "parallel-chardev" name the
+ * onboard IOC3's own Timekeeper storage and serial/parallel backends by
+ * block or chardev id, unset by default, rather than carrying either
+ * kind of backend directly the way "fabric" does: a "drive" or
+ * "chardev" property claims its backend the moment it is set, and the
+ * IOC3 this board is about to build is the one device that may claim
+ * each of these, once, before it realizes -- a link property here would
+ * claim it first and leave the IOC3's own identically-named property
+ * nothing to claim, and setting either one after this board has
+ * realized is refused outright (qdev_prop_set_after_realize()). The
+ * deleted inline builder resolved these same backends and the IOC3's
+ * own onewire-serial from a `-drive if=mtd` or a bare `-drive if=none,
+ * id=sgi-nvram<N>`, the topology's console field, the command line by
+ * node index, and the PCI function record; that is now the machine's
+ * own job, handed to this board only as an id or a value.
  */
 
 #include "qemu/osdep.h"
 #include "hw/mips/sgi/xtalk-board.h"
+#include "chardev/char.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "hw/core/sysbus.h"
@@ -61,6 +78,7 @@
 #include "qapi/error.h"
 #include "qemu/module.h"
 #include "qom/object.h"
+#include "system/block-backend.h"
 
 #define TYPE_SGI_IP29_IO "sgi-ip29-io"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIIp29IoState, SGI_IP29_IO)
@@ -102,11 +120,58 @@ struct SGIIp29IoState {
     uint32_t fabric_node_shift;
     uint32_t fabric_widget_shift;
     uint64_t onewire_serial;
+    uint64_t ioc3_onewire_serial;
     char *pci_bus_name;
-    BlockBackend *nvram_drive;
+    char *nvram_drive_id;
+    char *chardev_a_id;
+    char *chardev_b_id;
+    char *record_a_id;
+    char *record_b_id;
+    char *parallel_chardev_id;
 
     SGIBridgeState *bridge;
 };
+
+/*
+ * Resolve a chardev id to its backend and set it on dev's own
+ * same-named property, before dev realizes: setting a "chardev"
+ * property claims the backend, so this board never holds one of its
+ * own (see the header comment on "chardev-a" and its siblings above) --
+ * it only carries the id long enough to hand it to the one child that
+ * will actually claim it.
+ */
+static void ip29_io_pass_chardev(DeviceState *dev, const char *prop,
+                                 const char *id)
+{
+    Chardev *chr;
+
+    if (!id) {
+        return;
+    }
+    chr = qemu_chr_find(id);
+    if (chr) {
+        qdev_prop_set_chr(dev, prop, chr);
+    }
+}
+
+/*
+ * Resolve a block backend id to its backend and set it on dev's own
+ * "nvram-drive" property, before dev realizes: the same claim-timing
+ * reason ip29_io_pass_chardev exists for, and the same reason this
+ * board holds an id rather than a BlockBackend of its own.
+ */
+static void ip29_io_pass_drive(DeviceState *dev, const char *id)
+{
+    BlockBackend *blk;
+
+    if (!id) {
+        return;
+    }
+    blk = blk_by_name(id);
+    if (blk) {
+        qdev_prop_set_drive(dev, "nvram-drive", blk);
+    }
+}
 
 static bool ip29_io_build_widget(SGIXtalkBoardState *board, Error **errp)
 {
@@ -163,9 +228,15 @@ static bool ip29_io_build_widget(SGIXtalkBoardState *board, Error **errp)
     qdev_prop_set_uint32(DEVICE(ioc3), "population", IP29_IO_IOC3_POPULATION);
     qdev_prop_set_uint8(DEVICE(ioc3), "timekeeper-kind",
                         SGI_IOC3_TIMEKEEPER_M48T35);
-    if (s->nvram_drive) {
-        qdev_prop_set_drive(DEVICE(ioc3), "nvram-drive", s->nvram_drive);
-    }
+    qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial",
+                         s->ioc3_onewire_serial);
+    ip29_io_pass_drive(DEVICE(ioc3), s->nvram_drive_id);
+    ip29_io_pass_chardev(DEVICE(ioc3), "chardev-a", s->chardev_a_id);
+    ip29_io_pass_chardev(DEVICE(ioc3), "chardev-b", s->chardev_b_id);
+    ip29_io_pass_chardev(DEVICE(ioc3), "record-a", s->record_a_id);
+    ip29_io_pass_chardev(DEVICE(ioc3), "record-b", s->record_b_id);
+    ip29_io_pass_chardev(DEVICE(ioc3), "parallel-chardev",
+                         s->parallel_chardev_id);
     pci_realize_and_unref(ioc3, bus, &error_abort);
     pci_set_byte(ioc3->config + PCI_REVISION_ID, IP29_IO_IOC3_REVISION);
     /* Direct board wiring, not the bus's own per-slot PCI INTx rule. */
@@ -187,8 +258,16 @@ static const Property ip29_io_properties[] = {
                        fabric_widget_shift, 0),
     DEFINE_PROP_UINT64("onewire-serial", SGIIp29IoState, onewire_serial,
                        IP29_IO_SERIAL_PLACEHOLDER),
+    DEFINE_PROP_UINT64("ioc3-onewire-serial", SGIIp29IoState,
+                       ioc3_onewire_serial, SGI_IOC3_ONEWIRE_SERIAL),
     DEFINE_PROP_STRING("pci-bus-name", SGIIp29IoState, pci_bus_name),
-    DEFINE_PROP_DRIVE("nvram-drive", SGIIp29IoState, nvram_drive),
+    DEFINE_PROP_STRING("nvram-drive", SGIIp29IoState, nvram_drive_id),
+    DEFINE_PROP_STRING("chardev-a", SGIIp29IoState, chardev_a_id),
+    DEFINE_PROP_STRING("chardev-b", SGIIp29IoState, chardev_b_id),
+    DEFINE_PROP_STRING("record-a", SGIIp29IoState, record_a_id),
+    DEFINE_PROP_STRING("record-b", SGIIp29IoState, record_b_id),
+    DEFINE_PROP_STRING("parallel-chardev", SGIIp29IoState,
+                       parallel_chardev_id),
 };
 
 /* No state of its own outside the children Bridge, the ISPs and IOC3 own. */

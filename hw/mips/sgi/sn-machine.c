@@ -155,6 +155,7 @@ static const SN0ModelHardware sgi_sn0_hub_hardware = {
  */
 #define SGI_SN0_PROM_PI_PROBE_WIDGET        2
 #define SGI_SN0_PROM_PI_PROBE_OFFSET        0x400208ULL
+#define SGI_SN0_PROM_PI_PROBE_WINDOW_OFFSET 0x208ULL
 
 /*
  * Which node and widget a crossbar-attached node's own refusing processor
@@ -1044,11 +1045,10 @@ static const char *sgi_machine_io_board_type(
 }
 
 /*
- * The Bridge's own device-window offset the PROM's fixed widget-2 probe
- * reads (see the probe's own definition above): reached as a plain
- * address space over the onboard board's own widget face, so this file's
- * only dependency on the board's internals is the sgi-xtalk-board
- * contract every concrete class already honors (cpu_face).
+ * The Bridge's own device-window region the PROM's fixed widget-2 probe
+ * reads (see the probe's own definition above), dispatched to directly:
+ * see the field comment on SN0NodeState's own prom_pi_probe_window for
+ * why an address space cannot stand in for this one dispatch.
  */
 static MemTxResult sgi_machine_prom_pi_probe_read(void *opaque, hwaddr addr,
                                                    uint64_t *data,
@@ -1056,19 +1056,16 @@ static MemTxResult sgi_machine_prom_pi_probe_read(void *opaque, hwaddr addr,
                                                    MemTxAttrs attrs)
 {
     SN0NodeState *node = opaque;
-    uint8_t bytes[8] = { 0 };
-    MemTxResult result;
 
     if (addr == 0 && size == 8) {
         *data = 0;
         sgi_hub_latch_prom_pi_error(&node->hub);
         return MEMTX_ERROR;
     }
-    result = address_space_read(&node->prom_pi_probe_as,
-                                SGI_SN0_PROM_PI_PROBE_OFFSET + addr, attrs,
-                                bytes + 8 - size, size);
-    *data = ldq_be_p(bytes);
-    return result;
+    return memory_region_dispatch_read(
+        node->prom_pi_probe_window,
+        SGI_SN0_PROM_PI_PROBE_WINDOW_OFFSET + addr, data,
+        size_memop(size) | MO_BE, attrs);
 }
 
 static MemTxResult sgi_machine_prom_pi_probe_write(void *opaque, hwaddr addr,
@@ -1077,12 +1074,11 @@ static MemTxResult sgi_machine_prom_pi_probe_write(void *opaque, hwaddr addr,
                                                     MemTxAttrs attrs)
 {
     SN0NodeState *node = opaque;
-    uint8_t bytes[8];
 
-    stq_be_p(bytes, data);
-    return address_space_write(&node->prom_pi_probe_as,
-                               SGI_SN0_PROM_PI_PROBE_OFFSET + addr, attrs,
-                               bytes + 8 - size, size);
+    return memory_region_dispatch_write(
+        node->prom_pi_probe_window,
+        SGI_SN0_PROM_PI_PROBE_WINDOW_OFFSET + addr, data,
+        size_memop(size) | MO_BE, attrs);
 }
 
 static const MemoryRegionOps sgi_machine_prom_pi_probe_ops = {
@@ -1467,16 +1463,44 @@ static void sgi_machine_build_io_board(
     qdev_prop_set_uint32(dev, "slot", attachment->widget);
     qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
     /*
+     * The onboard IOC3's own one-wire identity part carries its own
+     * separate serial, a fact about this specific fitted unit -- the
+     * descriptor's own io_boards[].pci[] entry for the IOC3 function,
+     * not the board's own "onewire-serial" above (Bridge's NIC ROM
+     * identity, a different part). Left at the board class's own
+     * default (matching the IOC3 class's own bare-device default) if
+     * this record's own pci[] carries no IOC3 entry.
+     */
+    {
+        size_t i;
+
+        for (i = 0; i < record->pci_count; i++) {
+            if (record->pci[i].kind == SGI_MODEL_PCI_IOC3) {
+                qdev_prop_set_uint64(dev, "ioc3-onewire-serial",
+                                     record->pci[i].serial);
+                break;
+            }
+        }
+    }
+    /*
      * Each board's internal Bridge otherwise keeps its own default PCI
      * bus name, which two boards of the same class -- the two-chassis
      * Origin 200's pair of sgi-ip29-io instances -- would then share:
      * not merely cosmetic, since two PCI buses of the same name make
      * every device behind them collide on migration identity. Named the
-     * way the deleted inline builder named its own per-node bus.
+     * way the deleted inline builder named each product's own bus: a
+     * direct-attached board (Origin 200) as "pci"/"pci.<N>" per node,
+     * matching sgi_machine_create_bridge; a Crossbow-attached one
+     * (Origin 2000's BaseIO) as "pci.baseio<N>" per board, matching
+     * sn0_origin2000_xtalk_build_bridge -- kept distinct rather than
+     * folded into one scheme since it is a guest- and test-visible name,
+     * not merely cosmetic.
      */
     {
-        g_autofree char *bus_name = board_index == 0 ?
-            g_strdup("pci") : g_strdup_printf("pci.%u", board_index);
+        g_autofree char *bus_name = attachment->crossbar_index < 0 ?
+            (board_index == 0 ? g_strdup("pci")
+                              : g_strdup_printf("pci.%u", board_index)) :
+            g_strdup_printf("pci.baseio%u", board_index);
 
         qdev_prop_set_string(dev, "pci-bus-name", bus_name);
     }
@@ -1484,7 +1508,12 @@ static void sgi_machine_build_io_board(
      * The onboard IOC3's Timekeeper storage: an indexed `-drive if=mtd`
      * first, else a bare `-drive if=none,id=sgi-nvram<N>` by name, the
      * same two forms and the same index the deleted inline builder
-     * resolved before this board existed.
+     * resolved before this board existed. Passed down as the resolved
+     * backend's own name, not the backend itself: a "drive" property
+     * claims its backend the moment it is set, so setting one here on
+     * the board and then again on the board's own "ioc3" child once it
+     * builds would claim the same backend twice, the same claim-timing
+     * problem the chardev properties below avoid the same way.
      */
     {
         g_autofree char *nvram_id =
@@ -1494,10 +1523,57 @@ static void sgi_machine_build_io_board(
             blk_by_legacy_dinfo(nvram_dinfo) : blk_by_name(nvram_id);
 
         if (nvram_blk) {
-            qdev_prop_set_drive(dev, "nvram-drive", nvram_blk);
+            qdev_prop_set_string(dev, "nvram-drive", blk_name(nvram_blk));
         }
     }
+    /*
+     * The onboard IOC3's serial and parallel backends: named by chardev
+     * id, not passed as a "chardev" property, since setting one of
+     * those claims the backend immediately, and the board's own
+     * build_widget() has to be the one call that claims it, on the
+     * "ioc3" child it is about to realize -- a claim here, followed by
+     * another there, is refused as already-claimed, and a claim on
+     * "ioc3" after this board has realized is refused as too late
+     * (device properties of this kind are set-before-realize only). The
+     * topology's console field orders these by node
+     * (sgi_machine_compute_serial_line), the same command-line backends
+     * and the same ordering the deleted inline builder resolved before
+     * this board existed.
+     */
+    {
+        Chardev *chr;
 
+        chr = serial_hd(sgi_machine_compute_serial_line(
+            t, attachment->node_index, SN0_IOC3_SERIAL_A_CHARDEV));
+        if (chr) {
+            qdev_prop_set_string(dev, "chardev-a", chr->label);
+        }
+        chr = serial_hd(sgi_machine_compute_serial_line(
+            t, attachment->node_index, SN0_IOC3_SERIAL_B_CHARDEV));
+        if (chr) {
+            qdev_prop_set_string(dev, "chardev-b", chr->label);
+        }
+        chr = serial_hd(sgi_machine_compute_serial_line(
+            t, attachment->node_index, SN0_IOC3_RECORD_A_CHARDEV));
+        if (chr) {
+            qdev_prop_set_string(dev, "record-a", chr->label);
+        }
+        chr = serial_hd(sgi_machine_compute_serial_line(
+            t, attachment->node_index, SN0_IOC3_RECORD_B_CHARDEV));
+        if (chr) {
+            qdev_prop_set_string(dev, "record-b", chr->label);
+        }
+        /*
+         * Only sgi-ip29-io exposes "parallel-chardev" (a parallel
+         * function); BaseIO's board carries no parallel port, matching
+         * sgi-baseio's own class.
+         */
+        if (attachment->crossbar_index < 0 &&
+            board_index < MAX_PARALLEL_PORTS && parallel_hds[board_index]) {
+            qdev_prop_set_string(dev, "parallel-chardev",
+                                 parallel_hds[board_index]->label);
+        }
+    }
     if (attachment->crossbar_index < 0) {
         const SN0ModelAddressMap *map = &sgi_sn0_hub_address_map;
         SN0NodeState *node = s->nodes[attachment->node_index];
@@ -1603,8 +1679,33 @@ static void sgi_machine_wire_io_board(
                 &s->widget_alias[board_index][widget]);
         }
 
-        address_space_init(&node->prom_pi_probe_as, board->cpu_face,
-                           "sn0.prom-pi-probe.target");
+        /*
+         * The probe's own device-window region: this board's own
+         * Bridge, resolved once by its fixed QOM child name ("bridge",
+         * every concrete board class's own name for it) rather than a
+         * borrowed SGIBridgeState field on the board, then whichever of
+         * its eight windows the fixed probe offset falls in -- fixed by
+         * Bridge's own window geometry, not by which device a guest has
+         * configured there.
+         */
+        {
+            SGIBridgeState *bridge = SGI_BRIDGE(
+                object_resolve_path_component(OBJECT(board), "bridge"));
+            unsigned int window;
+
+            g_assert(bridge);
+            for (window = 0; window < SGI_BRIDGE_DEVICES; window++) {
+                MemoryRegion *candidate = &bridge->device_window_mem[window];
+
+                if (SGI_SN0_PROM_PI_PROBE_OFFSET >= candidate->addr &&
+                    SGI_SN0_PROM_PI_PROBE_OFFSET - candidate->addr <
+                        memory_region_size(candidate)) {
+                    break;
+                }
+            }
+            g_assert(window < SGI_BRIDGE_DEVICES);
+            node->prom_pi_probe_window = &bridge->device_window_mem[window];
+        }
         memory_region_init_io(&node->prom_pi_probe, OBJECT(node),
                               &sgi_machine_prom_pi_probe_ops, node,
                               "sn0.prom-pi-probe", 8);
