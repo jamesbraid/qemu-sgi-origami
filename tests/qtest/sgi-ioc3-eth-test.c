@@ -1695,6 +1695,97 @@ static void test_a_receive_waits_for_its_arrival_deadline(const void *data)
     close(sv[0]);
 }
 
+/*
+ * A driver keeps far fewer physical buffers than the ring has slots and
+ * reposts one of them into a later slot once it has serviced the frame
+ * sitting there -- the receive-ring-wraps test's own ring does exactly
+ * this, across every one of its 512 entries, with an eight-buffer pool.
+ * Nothing here waits for a repost's buffer to actually be free: this posts
+ * a fifth ring entry pointing back at the first of four buffers, fills all
+ * four without letting any of them publish, then sends the fifth frame
+ * before advancing the clock. The first buffer's completion is still held,
+ * so its bytes must survive untouched until that completion publishes.
+ */
+static void test_a_reused_buffer_waits_for_its_held_completion(const void *data)
+{
+    enum { BUFFERS = 4 };
+    int sv[2];
+    QTestState *qts;
+    uint8_t frame[64];
+    uint8_t landed[sizeof(frame)];
+    uint32_t ring = RAM_SCRATCH + 0x8000;
+    uint32_t rxbuf = RAM_SCRATCH + 0xc000;
+    unsigned int i;
+    int attempt;
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = ioc3_attach_socket(sv[1], BUFFERS);
+
+    /* One slot past what ioc3_attach_socket posted, reusing buffer 0. */
+    dma_stl_be(qts, ring + BUFFERS * RX_RING_STRIDE, 0);
+    dma_stl_be(qts, ring + BUFFERS * RX_RING_STRIDE + 4, rxbuf);
+    ioc3_writel(qts, ENET_RX_PRODUCE,
+               ((BUFFERS + 1) * RX_RING_STRIDE) | RPIR_ARM);
+
+    /*
+     * Fill all four buffers. Nothing here steps the virtual clock, so none
+     * of the four can have published yet.
+     */
+    for (i = 0; i < BUFFERS; i++) {
+        memset(frame, 0xff, 6);
+        memset(frame + 6, (uint8_t)(0x40 + i), sizeof(frame) - 6);
+        net_socket_send_frame(sv[0], frame, sizeof(frame));
+    }
+    memset(frame, 0xff, 6);
+    memset(frame + 6, 0x40, sizeof(frame) - 6);
+    for (attempt = 0; attempt < 200; attempt++) {
+        qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(landed));
+        if (memcmp(landed, frame, sizeof(frame)) == 0) {
+            break;
+        }
+        g_usleep(5000);
+    }
+    g_assert_cmpint(memcmp(landed, frame, sizeof(frame)), ==, 0);
+    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
+
+    /*
+     * A fifth frame, destined for buffer 0 again: a driver reposting it
+     * into ring slot four before it has seen buffer 0's own completion.
+     */
+    memset(frame, 0xff, 6);
+    memset(frame + 6, 0x99, sizeof(frame) - 6);
+    net_socket_send_frame(sv[0], frame, sizeof(frame));
+    g_usleep(20000);
+
+    /*
+     * Buffer 0's first frame must still be there: the guest has not been
+     * told slot 0 is ready, so nothing may overwrite what it will read
+     * once it is. Unfixed, the fifth frame lands straight through and
+     * buffer 0 already holds it here, before its own deadline let it.
+     */
+    qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(frame));
+    memset(frame, 0xff, 6);
+    memset(frame + 6, 0x40, sizeof(frame) - 6);
+    g_assert_cmpint(memcmp(landed, frame, sizeof(frame)), ==, 0);
+    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
+
+    /*
+     * Past the arrival deadline, the four originals publish and the fifth
+     * is retried once buffer 0 is no longer held: all five land, in order,
+     * none lost to the reuse.
+     */
+    qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS);
+    wait_for_rx_consume(qts, (BUFFERS + 1) * RX_RING_STRIDE);
+    qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(frame));
+    memset(frame, 0xff, 6);
+    memset(frame + 6, 0x99, sizeof(frame) - 6);
+    g_assert_cmpint(memcmp(landed, frame, sizeof(frame)), ==, 0);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
 /* SGI_NET_RX_LATENCY_DEPTH, hw/net/net-rx-latency.h: the line's cap. */
 #define RX_LATENCY_LINE_DEPTH 256
 
@@ -1990,6 +2081,9 @@ int main(int argc, char **argv)
                         test_a_receive_burst_asserts_the_irq_once);
     qtest_add_data_func("sgi-ioc3-eth/receive-waits-for-arrival-deadline",
                         NULL, test_a_receive_waits_for_its_arrival_deadline);
+    qtest_add_data_func("sgi-ioc3-eth/reused-buffer-waits-for-held-completion",
+                        NULL,
+                        test_a_reused_buffer_waits_for_its_held_completion);
     qtest_add_data_func("sgi-ioc3-eth/loopback-respects-a-full-arrival-line",
                         NULL, test_loopback_respects_a_full_arrival_line);
     qtest_add_data_func("sgi-ioc3-eth/unreadable-transmit-descriptor", NULL,
