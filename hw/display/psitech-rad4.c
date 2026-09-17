@@ -182,6 +182,85 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
  * three-writes-per-address behavior described above rather than plain
  * per-byte storage.
  */
+
+/*
+ * RGB561 multi-cycle registers reached through RAD4_BAR2_RGB_RESERVED
+ * (BAR2 +0x930000). IBM Microelectronics, "RGB561 Architecture",
+ * Preliminary Rev. 1.1, 23 January 1995 (docs/library/cache/graphics/
+ * ibm-rgb561-architecture.pdf in the owning Origami repository), page 1's
+ * "Programming" section and Table 20's register address table (page 27)
+ * establish that every "N RW/ADDR" index range in that table -- both
+ * window attribute tables, their auxiliary tables, the gamma tables, the
+ * color look-up table and the cursor/cross-hair look-up table -- goes
+ * through this one physical port, driven by the same RAD4_BAR2_RGB_LO/
+ * RAD4_BAR2_RGB_HI index registers already used to select an entry for
+ * the ordinary single-cycle RAD4_BAR2_RGB_DATA port. This model
+ * implements the two ranges the qualified guest workload
+ * (docs/datasheets/psitech-rad4.md) actually exercises: the frame-buffer
+ * window attribute table (FB_WAT) and the runtime color look-up table it
+ * points into. Any other multi-cycle index -- the overlay WAT, the gamma
+ * tables, the cursor/cross-hair look-up table -- is unimplemented and
+ * trace-visible rather than silently accepted.
+ */
+#define RAD4_WAT_BASE           0x1000
+#define RAD4_WAT_COUNT          256
+#define RAD4_WAT_LAST           (RAD4_WAT_BASE + RAD4_WAT_COUNT - 1)
+#define RAD4_WAT_CYCLES         2
+
+#define RAD4_COLOR_LUT_BASE     0x4000
+#define RAD4_COLOR_LUT_COUNT    1024
+#define RAD4_COLOR_LUT_LAST     (RAD4_COLOR_LUT_BASE + RAD4_COLOR_LUT_COUNT - 1)
+#define RAD4_COLOR_LUT_CYCLES   3
+
+/*
+ * FB_WAT entry bit layout, same document page 47's "X'1000-10FF FB_WAT"
+ * table: a 10-bit value with START_ADDR in bits 9-6, PIX_FORM in bits
+ * 5-4, BS in bit 3, MODE in bits 2-1 and TR in bit 0. Table 1 on page 2
+ * adds START_ADDR to the pixel's index data to form the color LUT
+ * address; this model only evidences PIX_FORM 8bpp (00) in Index mode,
+ * so RAD4_WAT_PIXFORM_8BPP gates that formula and anything else is
+ * traced rather than guessed at.
+ */
+#define RAD4_WAT_START_ADDR_SHIFT 6
+#define RAD4_WAT_START_ADDR_MASK  0xf
+#define RAD4_WAT_PIXFORM_SHIFT    4
+#define RAD4_WAT_PIXFORM_MASK     0x3
+#define RAD4_WAT_PIXFORM_8BPP     0x0
+#define RAD4_WAT_MODE_SHIFT       1
+#define RAD4_WAT_MODE_MASK        0x3
+#define RAD4_WAT_MODE_INDEX       0x0
+#define RAD4_WAT_MODE_TRUE        0x3
+
+/*
+ * Two cycle transfer of a 10-bit WAT entry, same document page 4's
+ * Table 5: the first cycle carries bits 9-2 in bit positions 7-0 of the
+ * byte, the second carries bits 1-0 in bit positions 7-6.
+ */
+#define RAD4_WAT_CYCLE0_SHIFT   2
+#define RAD4_WAT_CYCLE1_SHIFT   6
+#define RAD4_WAT_CYCLE1_MASK    0x3
+
+/*
+ * The WID byte's position within RAD4's 32-bit software pixel word. The
+ * RGB561 datasheet defines the WID *input pins* and how many bits CONF/4
+ * allocates to them, but not which VRAM byte a given board wires to
+ * those pins -- that is board-specific. This model's best-evidenced
+ * choice is the top byte: every captured login-screen pixel already has
+ * this byte at zero (docs/datasheets/psitech-rad4.md's "0x00RRGGBB"
+ * True-color layout, established from the driver's disassembled channel
+ * order and the shipped X server's compiled visual masks), consistent
+ * with those pixels all belonging to window ID 0. Confirmed live: with
+ * this shift, the whole qualified guest workload (IRIX 6.5.30, RAD4 at
+ * PCI slot 5) renders a correctly colored xdm login screen end to end --
+ * light gray/white window chrome, a pink login field and a real yellow/
+ * red/black EZsetup icon, not the near-black symptom this change fixes.
+ * This confirms the shift for window ID 0, the only value the qualified
+ * workload's login screen exercises; it has not been independently
+ * confirmed against a captured pixel with a nonzero window ID.
+ */
+#define RAD4_PIXEL_WID_SHIFT    24
+
+/* RGB561 index ranges this profile stores and treats as supported. */
 typedef struct Rad4RgbRange {
     uint16_t first;
     uint16_t last;
@@ -282,17 +361,35 @@ struct PsitechRad4State {
     uint8_t *framebuffer;
     uint32_t mask;
 
+    /*
+     * Displayed color, converted from the raw framebuffer through each
+     * pixel's window ID and FB_WAT entry (rad4_convert_scanout()). A
+     * plain, host-owned buffer -- not qemu_create_displaysurface()'s
+     * default shareable pixman allocation -- since nothing here needs
+     * zero-copy sharing with an external consumer.
+     */
+    uint32_t *display_buffer;
+
     /* RGB561 indexed register file. */
     uint8_t rgb_index_low;
     uint8_t rgb_index_high;
     uint8_t *rgb_store;
 
     /*
-     * Cursor/cross-hair look-up table, separate from rgb_store because its
-     * index advances once per three-byte RGB write, not once per byte.
+     * RGB561 multi-cycle port state (BAR2 +0x930000): the frame-buffer
+     * window attribute table, the color look-up table it addresses, and
+     * the cursor/cross-hair look-up table. One phase counter serves the
+     * whole port, matching the datasheet's description of a single
+     * address-index-register-driven state machine (IBM RGB561
+     * Architecture p.1, "Address Index Register"), not a separate
+     * counter per table -- the cursor LUT's three-bytes-per-entry cycle
+     * and the WAT's two-bytes-per-entry cycle share this same counter,
+     * distinguished by which index range is currently selected.
      */
+    uint16_t fb_wat[RAD4_WAT_COUNT];
+    uint8_t color_lut[RAD4_COLOR_LUT_COUNT][3];
     uint8_t cursor_lut[RAD4_RGB_CURSOR_LUT_COUNT][3];
-    uint8_t cursor_lut_phase;
+    uint8_t rgb_reserved_phase;
 
     /*
      * Timing memories, stored for readback only; recognition is gated by
@@ -314,6 +411,86 @@ struct PsitechRad4State {
 static uint16_t rad4_rgb_index(PsitechRad4State *s)
 {
     return ((uint16_t)s->rgb_index_high << 8) | s->rgb_index_low;
+}
+
+static bool rad4_index_in_wat(uint16_t index)
+{
+    return index >= RAD4_WAT_BASE && index <= RAD4_WAT_LAST;
+}
+
+static bool rad4_index_in_color_lut(uint16_t index)
+{
+    return index >= RAD4_COLOR_LUT_BASE && index <= RAD4_COLOR_LUT_LAST;
+}
+
+/*
+ * Advance the RGB561 multi-cycle port's shared phase counter, completing
+ * the auto-increment of the address index register once an entry's last
+ * cycle has been transferred. This generalizes the auto-increment
+ * RAD4_BAR2_RGB_DATA already applies per cycle to instead apply once per
+ * whole multi-cycle entry, per IBM RGB561 Architecture p.1,
+ * "Programming": "The address index register will auto increment to the
+ * next address after each read or write cycle to a configuration
+ * register or after the end of a multi-cycle LUT or WAT access."
+ */
+static void rad4_rgb_reserved_advance(PsitechRad4State *s, uint16_t index,
+                                      unsigned cycles)
+{
+    if (++s->rgb_reserved_phase < cycles) {
+        return;
+    }
+    s->rgb_reserved_phase = 0;
+    index++;
+    s->rgb_index_low = index & 0xff;
+    s->rgb_index_high = (index >> 8) & 0xff;
+}
+
+/*
+ * Interpret one raw 32-bit framebuffer word for display, per its window
+ * ID's FB_WAT entry (IBM RGB561 Architecture p.47). True color mode
+ * bypasses the color LUT and presents the pixel data directly (same
+ * document p.20, Figure 5): this model's raw word is already
+ * 0x00RRGGBB in that mode (docs/datasheets/psitech-rad4.md,
+ * "Framebuffer and masks"), so pass it through unmodified. Index mode
+ * looks the low byte up in the color LUT through the start-address
+ * formula in Table 1 (p.2): LUT[START_ADDR * 64 + index]. Grey Scale and
+ * Direct RGB modes, and Index mode with a PIX_FORM other than 8bpp, are
+ * not evidenced by the qualified guest workload and are traced rather
+ * than guessed at.
+ */
+static uint32_t rad4_pixel_to_rgb(PsitechRad4State *s, uint32_t word)
+{
+    uint8_t wid = (word >> RAD4_PIXEL_WID_SHIFT) & 0xff;
+    uint16_t wat = s->fb_wat[wid];
+    unsigned mode = (wat >> RAD4_WAT_MODE_SHIFT) & RAD4_WAT_MODE_MASK;
+
+    if (mode == RAD4_WAT_MODE_INDEX) {
+        unsigned pix_form = (wat >> RAD4_WAT_PIXFORM_SHIFT) &
+                            RAD4_WAT_PIXFORM_MASK;
+        unsigned start_addr = (wat >> RAD4_WAT_START_ADDR_SHIFT) &
+                              RAD4_WAT_START_ADDR_MASK;
+        uint8_t index = word & 0xff;
+        uint16_t lut_addr = (start_addr * 64 + index) &
+                            (RAD4_COLOR_LUT_COUNT - 1);
+        const uint8_t *rgb = s->color_lut[lut_addr];
+
+        if (pix_form != RAD4_WAT_PIXFORM_8BPP) {
+            qemu_log_mask(LOG_UNIMP,
+                         "psitech-rad4: FB_WAT PIX_FORM %u for WID 0x%02x "
+                         "in Index mode is unimplemented; treating pixel "
+                         "data as an 8-bit index regardless\n",
+                         pix_form, wid);
+        }
+        return ((uint32_t)rgb[0] << 16) | ((uint32_t)rgb[1] << 8) | rgb[2];
+    }
+
+    if (mode != RAD4_WAT_MODE_TRUE) {
+        qemu_log_mask(LOG_UNIMP,
+                     "psitech-rad4: FB_WAT color mode %u for WID 0x%02x is "
+                     "unimplemented; treating as direct pass-through\n",
+                     mode, wid);
+    }
+    return word & 0x00ffffffu;
 }
 
 static void rad4_update_irq(PsitechRad4State *s)
@@ -471,6 +648,30 @@ static void rad4_recognizer_feed(PsitechRad4State *s, uint32_t offset,
     }
 }
 
+/*
+ * Convert the raw guest framebuffer into displayed color, one pixel at a
+ * time through rad4_pixel_to_rgb(). This can no longer alias guest memory
+ * directly (qemu_create_displaysurface_from()'s previous role): a pixel's
+ * displayed color depends on its window ID's FB_WAT entry and, in Index
+ * mode, the color LUT, both of which the guest can reprogram after the
+ * pixel data underneath is already written.
+ */
+static void rad4_convert_scanout(PsitechRad4State *s)
+{
+    uint32_t *dst = s->display_buffer;
+    int x, y;
+
+    for (y = 0; y < RAD4_MODE0_HEIGHT; y++) {
+        uint32_t row = (uint32_t)y * RAD4_MODE0_STRIDE;
+
+        for (x = 0; x < RAD4_MODE0_WIDTH; x++) {
+            uint32_t word = ldl_be_p(s->framebuffer + row + x * 4);
+
+            *dst++ = rad4_pixel_to_rgb(s, word);
+        }
+    }
+}
+
 static bool rad4_gfx_update(void *opaque)
 {
     PsitechRad4State *s = opaque;
@@ -478,6 +679,7 @@ static bool rad4_gfx_update(void *opaque)
     if (s->rec_state != RAD4_REC_RECOGNIZED) {
         return true;
     }
+    rad4_convert_scanout(s);
     qemu_console_update_full(s->con);
     return true;
 }
@@ -490,12 +692,22 @@ static void rad4_ensure_surface(PsitechRad4State *s)
 {
     DisplaySurface *ds = qemu_console_surface(s->con);
 
-    if (ds && surface_data(ds) == s->framebuffer) {
+    /*
+     * qemu_graphic_console_create() starts the console on a small
+     * placeholder surface of its own; checking for any non-NULL surface
+     * here (rather than specifically this device's own one) would leave
+     * that placeholder in place forever, since it is never NULL once
+     * set. Recognize our own surface by its backing buffer, exactly as
+     * this device recognized its old direct-alias surface before this
+     * conversion pass existed.
+     */
+    if (ds && surface_data(ds) == (uint8_t *)s->display_buffer) {
         return;
     }
     ds = qemu_create_displaysurface_from(RAD4_MODE0_WIDTH, RAD4_MODE0_HEIGHT,
-                                         PIXMAN_BE_x8r8g8b8,
-                                         RAD4_MODE0_STRIDE, s->framebuffer);
+                                         PIXMAN_x8r8g8b8,
+                                         RAD4_MODE0_WIDTH * 4,
+                                         (uint8_t *)s->display_buffer);
     qemu_console_set_surface(s->con, ds);
 }
 
@@ -815,41 +1027,66 @@ static uint64_t rad4_bar2_read(void *opaque, hwaddr addr, unsigned size)
         return s->rgb_index_low;
     case RAD4_BAR2_RGB_HI:
         return s->rgb_index_high;
-    case RAD4_BAR2_RGB_DATA:
-        return s->rgb_store[rad4_rgb_index(s)];
+    case RAD4_BAR2_RGB_DATA: {
+        uint16_t index = rad4_rgb_index(s);
+        uint8_t val = s->rgb_store[index];
+
+        /*
+         * Real fidelity fix, not a functional necessity for any
+         * currently observed guest behavior: IBM RGB561 Architecture
+         * p.1 documents the address index register auto-incrementing
+         * "after each read or write cycle," but this model previously
+         * only advanced it after a write. Nothing in the qualified
+         * guest workload reads this port back, so the omission was
+         * harmless in practice; it is still wrong to leave uncorrected
+         * while this file's other index-then-data ports are being made
+         * to match the same documented convention.
+         */
+        index++;
+        s->rgb_index_low = index & 0xff;
+        s->rgb_index_high = (index >> 8) & 0xff;
+        return val;
+    }
     case RAD4_BAR2_RGB_RESERVED: {
         /*
          * The fourth RGB561 indexed port, used for every multi-cycle
          * ("N RW/ADDR") register: window-attribute tables, gamma tables,
          * the runtime palette and the cursor/cross-hair look-up table.
-         * Only the cursor/cross-hair sub-range (0x0a10-0x0a1f) is modeled
-         * here; the driver's own init_RGB561 confirms these entries go
-         * through this port rather than the ordinary single-cycle
-         * RAD4_BAR2_RGB_DATA port (disassembly offsets 0xb540-0xb618,
-         * .text-relative: the index-setting writes target the same
-         * struct field as RAD4_BAR2_RGB_LO/HI, but the three data writes
-         * per entry target a distinct field from the one used for every
-         * ordinary single-cycle register in the same function, such as
-         * the cursor control block at 0xb158-0xb1e4). Window-attribute,
-         * gamma and palette entries reaching this port through other
-         * indices are not handled by this model.
+         * One phase counter serves the whole port (rgb_reserved_phase),
+         * matching the datasheet's description of a single address-
+         * index-register-driven state machine (IBM RGB561 Architecture
+         * p.1, "Address Index Register"). Only the frame-buffer window
+         * attribute table, the runtime color look-up table and the
+         * cursor/cross-hair look-up table are modeled; the overlay WAT
+         * and gamma tables reaching this port through other indices are
+         * not handled by this model.
          */
         uint16_t index = rad4_rgb_index(s);
+        uint8_t val = 0;
 
         if (rad4_index_is_cursor_lut(index)) {
-            uint8_t val = s->cursor_lut[index - RAD4_RGB_CURSOR_LUT_BASE]
-                                       [s->cursor_lut_phase];
+            val = s->cursor_lut[index - RAD4_RGB_CURSOR_LUT_BASE]
+                               [s->rgb_reserved_phase];
+            rad4_rgb_reserved_advance(s, index, 3);
+        } else if (rad4_index_in_wat(index)) {
+            uint16_t wat = s->fb_wat[index - RAD4_WAT_BASE];
 
-            if (++s->cursor_lut_phase == 3) {
-                uint16_t next = index + 1;
-
-                s->cursor_lut_phase = 0;
-                s->rgb_index_low = next & 0xff;
-                s->rgb_index_high = (next >> 8) & 0xff;
-            }
-            return val;
+            /* Table 5, p.4: cycle 0 is bits 9-2, cycle 1 is bits 1-0. */
+            val = s->rgb_reserved_phase == 0 ?
+                  (wat >> RAD4_WAT_CYCLE0_SHIFT) & 0xff :
+                  (uint8_t)((wat & RAD4_WAT_CYCLE1_MASK) <<
+                            RAD4_WAT_CYCLE1_SHIFT);
+            rad4_rgb_reserved_advance(s, index, RAD4_WAT_CYCLES);
+        } else if (rad4_index_in_color_lut(index)) {
+            val = s->color_lut[index - RAD4_COLOR_LUT_BASE]
+                              [s->rgb_reserved_phase];
+            rad4_rgb_reserved_advance(s, index, RAD4_COLOR_LUT_CYCLES);
+        } else {
+            qemu_log_mask(LOG_UNIMP,
+                         "psitech-rad4: RGB561 multi-cycle read from "
+                         "unsupported index 0x%04x\n", index);
         }
-        return 0;
+        return val;
     }
     case RAD4_BAR2_MASK:
         return s->mask;
@@ -911,19 +1148,18 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
     case RAD4_BAR2_RGB_LO:
         s->rgb_index_low = v;
         /*
-         * Pointing the index register anywhere restarts the cursor LUT's
-         * three-write cycle at the red component. This is not directly
-         * evidenced -- the shipped driver only ever re-points the index
-         * between complete RGB triples -- but it is the ordinary behavior
-         * of a multi-cycle-transfer register and keeps this model defined
-         * for guest sequences that driver does not exercise.
+         * Pointing the index register anywhere restarts any in-progress
+         * multi-cycle transfer at its first cycle: IBM RGB561
+         * Architecture p.1, "If the address index register is accessed
+         * before completion of a multi-cycle access, the counter is
+         * reset and the operation is terminated."
          */
-        s->cursor_lut_phase = 0;
+        s->rgb_reserved_phase = 0;
         rad4_recognizer_feed(s, offset, v);
         break;
     case RAD4_BAR2_RGB_HI:
         s->rgb_index_high = v;
-        s->cursor_lut_phase = 0;
+        s->rgb_reserved_phase = 0;
         rad4_recognizer_feed(s, offset, v);
         break;
     case RAD4_BAR2_RGB_DATA: {
@@ -959,16 +1195,30 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
 
         if (rad4_index_is_cursor_lut(index)) {
             s->cursor_lut[index - RAD4_RGB_CURSOR_LUT_BASE]
-                         [s->cursor_lut_phase] = v;
+                         [s->rgb_reserved_phase] = v;
             rad4_recognizer_feed(s, offset, v);
-            if (++s->cursor_lut_phase == 3) {
-                uint16_t next = index + 1;
-
-                s->cursor_lut_phase = 0;
-                s->rgb_index_low = next & 0xff;
-                s->rgb_index_high = (next >> 8) & 0xff;
-            }
+            rad4_rgb_reserved_advance(s, index, 3);
             rad4_cursor_update_image(s);
+        } else if (rad4_index_in_wat(index)) {
+            uint16_t wid = index - RAD4_WAT_BASE;
+
+            /* Table 5, p.4: cycle 0 is bits 9-2, cycle 1 is bits 1-0. */
+            if (s->rgb_reserved_phase == 0) {
+                s->fb_wat[wid] = (uint16_t)(v & 0xff) <<
+                                 RAD4_WAT_CYCLE0_SHIFT;
+            } else {
+                s->fb_wat[wid] |= (v >> RAD4_WAT_CYCLE1_SHIFT) &
+                                  RAD4_WAT_CYCLE1_MASK;
+            }
+            rad4_rgb_reserved_advance(s, index, RAD4_WAT_CYCLES);
+        } else if (rad4_index_in_color_lut(index)) {
+            s->color_lut[index - RAD4_COLOR_LUT_BASE]
+                        [s->rgb_reserved_phase] = v;
+            rad4_rgb_reserved_advance(s, index, RAD4_COLOR_LUT_CYCLES);
+        } else {
+            qemu_log_mask(LOG_UNIMP,
+                         "psitech-rad4: RGB561 multi-cycle write to "
+                         "unsupported index 0x%04x\n", index);
         }
         break;
     }
@@ -1030,8 +1280,18 @@ static void rad4_reset_hold(Object *obj, ResetType type)
     s->rgb_index_high = 0;
     memset(s->rgb_store, 0, 0x10000);
 
+    /*
+     * IBM RGB561 Architecture p.1 excludes the Color, Cursor and Gamma
+     * LUTs and the Window Attribute Tables from the reset-to-zero rule,
+     * since real hardware does not clear this SRAM on reset and expects
+     * software to reload it. This model zeroes them anyway, matching
+     * rgb_store's own unconditional reset just above, for a
+     * deterministic post-reset state.
+     */
+    memset(s->fb_wat, 0, sizeof(s->fb_wat));
+    memset(s->color_lut, 0, sizeof(s->color_lut));
     memset(s->cursor_lut, 0, sizeof(s->cursor_lut));
-    s->cursor_lut_phase = 0;
+    s->rgb_reserved_phase = 0;
 
     memset(s->vert_timing, 0, sizeof(s->vert_timing));
     memset(s->horiz_timing, 0, sizeof(s->horiz_timing));
@@ -1053,6 +1313,7 @@ static void rad4_realize(PCIDevice *dev, Error **errp)
 
     s->framebuffer = g_malloc0(RAD4_FB_SIZE);
     s->rgb_store = g_malloc0(0x10000);
+    s->display_buffer = g_malloc0(RAD4_MODE0_WIDTH * RAD4_MODE0_HEIGHT * 4);
 
     s->con = qemu_graphic_console_create(DEVICE(dev), 0, &rad4_gfx_ops, s);
 
@@ -1087,6 +1348,7 @@ static void rad4_exit(PCIDevice *dev)
     qemu_graphic_console_close(s->con);
     g_free(s->framebuffer);
     g_free(s->rgb_store);
+    g_free(s->display_buffer);
 }
 
 static int rad4_post_load(void *opaque, int version_id)
@@ -1108,8 +1370,8 @@ static int rad4_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_psitech_rad4 = {
     .name = TYPE_PSITECH_RAD4,
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .post_load = rad4_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(pci, PsitechRad4State),
@@ -1134,9 +1396,12 @@ static const VMStateDescription vmstate_psitech_rad4 = {
         VMSTATE_UINT8(rgb_index_high, PsitechRad4State),
         VMSTATE_BUFFER_POINTER_UNSAFE(rgb_store, PsitechRad4State, 1,
                                       0x10000),
+        VMSTATE_UINT16_ARRAY(fb_wat, PsitechRad4State, RAD4_WAT_COUNT),
+        VMSTATE_UINT8_2DARRAY(color_lut, PsitechRad4State,
+                              RAD4_COLOR_LUT_COUNT, 3),
         VMSTATE_UINT8_2DARRAY(cursor_lut, PsitechRad4State,
                               RAD4_RGB_CURSOR_LUT_COUNT, 3),
-        VMSTATE_UINT8(cursor_lut_phase, PsitechRad4State),
+        VMSTATE_UINT8(rgb_reserved_phase, PsitechRad4State),
         VMSTATE_UINT32_ARRAY(vert_timing, PsitechRad4State, RAD4_VERT_WORDS),
         VMSTATE_UINT32_2DARRAY(horiz_timing, PsitechRad4State, 3,
                                RAD4_HORIZ_WORDS),
