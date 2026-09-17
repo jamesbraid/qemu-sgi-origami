@@ -17,6 +17,13 @@
  * machine-init-done notifier, the same ordering sgi-xtalk-test-board relies
  * on. The board is exposed as this fixture's own "board" QOM child so a
  * qtest can reach its internal Bridge or XBridge chip by path.
+ *
+ * "chardev-a" and "nvram-drive" pass straight through to the same-named
+ * property on sgi-ip29-io and sgi-baseio, the two board classes that
+ * carry them: a qtest can exercise backend-id resolution (an id a
+ * command-line chardev or drive never claimed) the same way a machine
+ * builder would hand one down, without needing a whole product machine.
+ * Unset by default, like the board's own property.
  */
 
 #include "qemu/osdep.h"
@@ -37,6 +44,8 @@ struct SGIBoardTestFixtureState {
     char *board_type;
     uint32_t module;
     uint32_t slot;
+    char *chardev_a_id;
+    char *nvram_drive_id;
 
     MemoryRegion sink;
 };
@@ -60,6 +69,12 @@ static void board_test_fixture_realize(DeviceState *dev, Error **errp)
     qdev_prop_set_uint32(board, "slot", s->slot);
     object_property_set_link(OBJECT(board), "fabric", OBJECT(&s->sink),
                              &error_abort);
+    if (s->chardev_a_id) {
+        qdev_prop_set_string(board, "chardev-a", s->chardev_a_id);
+    }
+    if (s->nvram_drive_id) {
+        qdev_prop_set_string(board, "nvram-drive", s->nvram_drive_id);
+    }
     sysbus_realize(SYS_BUS_DEVICE(board), errp);
 }
 
@@ -67,6 +82,9 @@ static const Property board_test_fixture_properties[] = {
     DEFINE_PROP_STRING("board-type", SGIBoardTestFixtureState, board_type),
     DEFINE_PROP_UINT32("module", SGIBoardTestFixtureState, module, 0),
     DEFINE_PROP_UINT32("slot", SGIBoardTestFixtureState, slot, 8),
+    DEFINE_PROP_STRING("chardev-a", SGIBoardTestFixtureState, chardev_a_id),
+    DEFINE_PROP_STRING("nvram-drive", SGIBoardTestFixtureState,
+                       nvram_drive_id),
 };
 
 /* Test-only harness state, not guest-visible; the board carries its own. */
