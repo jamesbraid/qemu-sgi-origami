@@ -743,6 +743,47 @@ static void test_prefix_register_reads_back(void)
     qtest_quit(qts);
 }
 
+/*
+ * MgrasCtxsw rewrites this offset on every context switch, after entry
+ * selection, as part of its own ordinary per-context HQ-register
+ * save/restore -- live-traced against a real MgrasStart hang this
+ * device's old post-selection rejection caused (see the 0x011000 row in
+ * docs/datasheets/mgras-hq4.md): the rejection poisoned the whole
+ * context transaction (protocol went to 0xff), so the following 63-word
+ * context payload was rejected wholesale ("context write in invalid
+ * state") and the switch never completed. A rewrite after entry
+ * selection must not raise the sticky error, and the context
+ * transaction that follows must still complete.
+ */
+static void test_prefix_rewrite_after_entry_selection_does_not_poison_context(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    qtest_writel(qts, REG_PREFIX, 0);
+    qtest_writel(qts, REG_ENTRY, SI_ENTRY_WORD);
+    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & SI_PENDING_FLAGS, ==,
+                     SI_PENDING_FLAGS);
+    qtest_writel(qts, REG_PENDING_ACK, SI_PENDING_FLAGS);
+
+    /* MgrasCtxsw's per-context save/restore rewrite, after selection. */
+    qtest_writel(qts, REG_PREFIX, 0x12345678);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_PREFIX), ==, 0x12345678);
+
+    for (int i = 0; i < SI_CONTEXT_WORDS; i++) {
+        qtest_writel(qts, REG_CONTEXT_COMMAND, i);
+    }
+    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & SI_PENDING_CONTEXT, ==,
+                     SI_PENDING_CONTEXT);
+    qtest_writel(qts, REG_PENDING_ACK, SI_PENDING_CONTEXT);
+
+    qtest_writel(qts, REG_CONTEXT_COMMAND, SI_FINAL_TOKEN);
+    g_assert_cmphex(qtest_readl(qts, REG_CONTEXT_COMMAND), ==, SI_FINAL_TOKEN);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    qtest_quit(qts);
+}
+
 static void test_context_recognizer_ordering(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
@@ -1576,6 +1617,8 @@ int main(int argc, char **argv)
                    test_ge_upload_rearm_rereads_from_start);
     qtest_add_func("sn0/origin2000/mgras/prefix-register-reads-back",
                    test_prefix_register_reads_back);
+    qtest_add_func("sn0/origin2000/mgras/prefix-rewrite-after-entry-selection",
+                   test_prefix_rewrite_after_entry_selection_does_not_poison_context);
     qtest_add_func("sn0/origin2000/mgras/context-recognizer-ordering",
                    test_context_recognizer_ordering);
     qtest_add_func("sn0/origin2000/mgras/entry-requires-prefix",
