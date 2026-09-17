@@ -49,6 +49,59 @@
 #define SI_PENDING_LOWATER 0x00000004
 #define SI_HQ_ENABLE_LOWATER 0x10
 
+/*
+ * The direct-command selector shape and the register roles this bounded 2D
+ * interpreter implements. si_command decodes a 64-bit record as
+ * payload32 | (selector << 34): selector = 0x60001 | (reg << 6) for a
+ * plain state write, or 0x70001 | (reg << 6) for the execute-form write of
+ * the same register, reg a 9-bit index into the persistent register file
+ * (SGIMgrasState.rss). Corrected from this device's original decoder,
+ * which read the register field at the wrong bit position and would have
+ * rejected every real desktop record as out of range (docs/designs/
+ * 2026-09-17-si-viz-pixel-output-design.md and its evidence trail,
+ * docs/plans/si-graphics-widget-wiring-handoff-20260916.md's "Pixel output
+ * evidence trail").
+ *
+ * That handoff quotes the check as (selector & 0x1fffc03f) == 0x60001/
+ * 0x70001, but bit 14 of that mask is set where the register field needs
+ * it clear: reconstructing selector = 0x60001 | (reg << 6) | (exec ?
+ * 0x10000 : 0) for all six selectors the handoff cites from the shipped
+ * driver's own disassembly (0x651c1, 0x65201, 0x61181, 0x711c1, 0x653c1,
+ * 0x65841) only lands every one of them on its claimed public register
+ * name (0x46 BLOCKXYSTARTI, 0x47 BLOCKXYENDI as an execute write, 0x161
+ * PP1FILLMODE, and so on -- see OpenBSD's impactreg.h, in refs/) under
+ * 0x1fff803f. This device uses the corrected constant; the mismatch is a
+ * real gap in the design handoff's own worked example, not a re-derivation
+ * of the design.
+ *
+ * Anything that doesn't match either shape -- MgrasStart's own HQ-local
+ * configuration words (0x0000ff04/0x00008c04 in the record's high half)
+ * and the HQ-local DMA words the driver also submits at this offset
+ * (0x000c0004, 0x000a0204, 0x00080004) -- decodes to neither pattern
+ * either, so si_command accepts them silently as opaque traffic instead
+ * of needing their own carve-out, the same "accept as opaque state"
+ * treatment this device gives every other undocumented register.
+ */
+#define SI_CMD_SELECTOR_MASK 0x1fff803f
+#define SI_CMD_SELECTOR_STATE 0x60001
+#define SI_CMD_SELECTOR_EXEC 0x70001
+
+/*
+ * Register roles this interpreter actually consumes, named from OpenBSD's
+ * impactreg.h and X.Org's impact_regs.h (both public, in refs/). Every
+ * other register index is still stored in the persistent file above; only
+ * these drive the fill/glyph/PIO primitives below.
+ */
+#define SI_REG_BLOCKXYSTARTI 0x046
+#define SI_REG_BLOCKXYENDI 0x047
+#define SI_REG_PACKEDCOLOR 0x05b
+#define SI_REG_CHAR_H 0x070
+#define SI_REG_CHAR_L 0x071
+#define SI_REG_BKGRD_RG 0x140
+#define SI_REG_BKGRD_BA 0x141
+#define SI_REG_PP1FILLMODE 0x161
+#define SI_REG_COLORMASKMSBS 0x162
+
 /* Where the Hub's interrupt-modify register sits; data bit 8 selects raise. */
 #define SI_HUB_INT_MODIFY_SET 0x100
 #define SI_INT_DEST_WIDGET_SHIFT 16
@@ -278,12 +331,63 @@ static void si_context_write(SGIMgrasState *s, uint32_t value)
      */
 }
 
+/*
+ * The plane-masked result of applying an X11-style GX logic op (0-15,
+ * PP1FILLMODE's top nibble) between a new colour and the pixel already
+ * there. The sixteen values are the standard two-operand boolean
+ * functions of (src, dst) X11 GCs already use for raster ops; a four-bit
+ * field fits them exactly, which is this device's own reading of
+ * "top nibble" (docs/designs/2026-09-17-si-viz-pixel-output-design.md's
+ * ordered plan) rather than the wider six-bit field OpenBSD's
+ * IMPACTSR_PP1FILLMODE macro reserves for it.
+ */
+static uint32_t si_logic_op(uint8_t op, uint32_t dst, uint32_t src)
+{
+    switch (op & 0xf) {
+    case 0x0: return 0;
+    case 0x1: return src & dst;
+    case 0x2: return src & ~dst;
+    case 0x3: return src;
+    case 0x4: return ~src & dst;
+    case 0x5: return dst;
+    case 0x6: return src ^ dst;
+    case 0x7: return src | dst;
+    case 0x8: return ~(src | dst);
+    case 0x9: return ~(src ^ dst);
+    case 0xa: return ~dst;
+    case 0xb: return src | ~dst;
+    case 0xc: return ~src;
+    case 0xd: return ~src | dst;
+    case 0xe: return ~(src & dst);
+    default: return ~0u; /* 0xf: GXset */
+    }
+}
+
+static uint32_t si_paint_pixel(uint8_t op, uint32_t dst, uint32_t src,
+                               uint32_t mask)
+{
+    uint32_t result = si_logic_op(op, dst, src) & 0x00ffffff;
+    return (result & mask) | (dst & ~mask);
+}
+
+/*
+ * Solid fill, triggered by BLOCKXYENDI's own execute-form write: rectangle
+ * from BLOCKXYSTARTI/BLOCKXYENDI (x<<16|y each), colour from PACKEDCOLOR,
+ * logic op from PP1FILLMODE's top nibble, plane mask from COLORMASKMSBS
+ * (design doc's ordered plan, step 2). All four come from the persistent
+ * register file, not this record -- a driver that only ever set colour and
+ * fill mode once still gets them on every later fill.
+ */
 static void si_draw_fill(SGIMgrasState *s)
 {
-    uint32_t xy0 = s->command[0x147], xy1 = s->command[0x148];
-    uint32_t color = s->command[0x140] & 0x00ffffff;
+    uint32_t xy0 = s->rss[SI_REG_BLOCKXYSTARTI];
+    uint32_t xy1 = s->rss[SI_REG_BLOCKXYENDI];
+    uint32_t color = s->rss[SI_REG_PACKEDCOLOR] & 0x00ffffff;
+    uint32_t mask = s->rss[SI_REG_COLORMASKMSBS];
+    uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 28;
     int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
     int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
+
     if (x0 > x1 || y0 > y1 || x0 >= SGI_MGRAS_WIDTH || y0 >= SGI_MGRAS_HEIGHT) {
         return;
     }
@@ -291,56 +395,173 @@ static void si_draw_fill(SGIMgrasState *s)
     y1 = MIN(y1, SGI_MGRAS_HEIGHT - 1);
     for (int y = y0; y <= y1; y++) {
         for (int x = x0; x <= x1; x++) {
-            s->front[y * SGI_MGRAS_WIDTH + x] = color;
+            uint32_t *p = &s->front[y * SGI_MGRAS_WIDTH + x];
+            *p = si_paint_pixel(op, *p, color, mask);
         }
+    }
+}
+
+/*
+ * 1-bit glyph row expansion, triggered by CHAR_L's own execute-form write:
+ * CHAR_L (0x71) supplies the row's first 32 pixels, MSB-first (bit 31 is
+ * the glyph's own leftmost pixel); CHAR_H (0x70) supplies a further 32 if
+ * the glyph is wider, the common case (an 8- or 16-pixel-wide console
+ * font row) needing only CHAR_L. Set bits paint PACKEDCOLOR, clear bits
+ * paint BKGRD_RG (design doc's ordered plan: "same fill-mode/colour
+ * registers plus a background colour register pair"). One row paints per
+ * execute record; this device tracks which row with its own persistent
+ * cursor (SGIMgrasState.glyph_row), reset whenever BLOCKXYSTARTI is
+ * rewritten (si_command).
+ *
+ * Neither this CHAR_H/CHAR_L split nor which register of the BKGRD_RG/
+ * BKGRD_BA pair actually carries a paintable background colour is settled
+ * by this pass's evidence -- the design doc's own "genuinely unresolved"
+ * list names glyph chunking as needing a live trace, not a guess. This is
+ * this device's own bounded approximation: BKGRD_BA is left as opaque
+ * persistent state here (see si_draw_pio_pixel_pair, which gives it a
+ * different meaning under its own execute trigger).
+ */
+static void si_draw_glyph_row(SGIMgrasState *s)
+{
+    uint32_t xy0 = s->rss[SI_REG_BLOCKXYSTARTI];
+    uint32_t xy1 = s->rss[SI_REG_BLOCKXYENDI];
+    int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
+    int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
+    uint32_t fg = s->rss[SI_REG_PACKEDCOLOR] & 0x00ffffff;
+    uint32_t bg = s->rss[SI_REG_BKGRD_RG] & 0x00ffffff;
+    uint32_t mask = s->rss[SI_REG_COLORMASKMSBS];
+    uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 28;
+    uint32_t char_l = s->rss[SI_REG_CHAR_L];
+    uint32_t char_h = s->rss[SI_REG_CHAR_H];
+    int y = y0 + s->glyph_row;
+    int width;
+
+    if (x0 > x1 || y0 > y1 || x0 >= SGI_MGRAS_WIDTH || y0 >= SGI_MGRAS_HEIGHT) {
+        return;
+    }
+    x1 = MIN(x1, SGI_MGRAS_WIDTH - 1);
+    y1 = MIN(y1, SGI_MGRAS_HEIGHT - 1);
+    s->glyph_row++;
+    if (y > y1 || y >= SGI_MGRAS_HEIGHT) {
+        return;
+    }
+    width = MIN(x1 - x0 + 1, 64);
+    for (int i = 0; i < width; i++) {
+        uint32_t half = (i < 32) ? char_l : char_h;
+        bool set = (half >> (31 - (i % 32))) & 1;
+        uint32_t *p = &s->front[y * SGI_MGRAS_WIDTH + x0 + i];
+        *p = si_paint_pixel(op, *p, set ? fg : bg, mask);
+    }
+}
+
+/*
+ * 32-bit PIO pixel-pair upload (icons, image puts), triggered by BKGRD_BA's
+ * own execute-form write: paints BKGRD_RG as one pixel and the value just
+ * written to BKGRD_BA as the next, at this device's own persistent write
+ * cursor (SGIMgrasState.pio_x/pio_y), advancing left to right across the
+ * block rectangle and wrapping to the next row. Reset whenever
+ * BLOCKXYSTARTI is rewritten, the same as the glyph row cursor.
+ *
+ * No public register name distinguishes "raw pixel pair" traffic from the
+ * background-colour pair glyph rendering gives the same two registers --
+ * the design doc's own "genuinely unresolved" list names PIO's exact
+ * register grammar as needing a live trace, not a guess. This device
+ * reuses BKGRD_RG/BKGRD_BA for both, disambiguated only by whether the
+ * write to BKGRD_BA carries the execute bit: a plain state write updates
+ * the background colour a later glyph row reads, an execute write paints a
+ * pixel pair immediately. XFRSIZE/XFRMODE are accepted into the register
+ * file but not consulted here.
+ */
+static void si_draw_pio_pixel_pair(SGIMgrasState *s)
+{
+    uint32_t xy0 = s->rss[SI_REG_BLOCKXYSTARTI];
+    uint32_t xy1 = s->rss[SI_REG_BLOCKXYENDI];
+    int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
+    int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
+    uint32_t pixels[2] = {
+        s->rss[SI_REG_BKGRD_RG] & 0x00ffffff,
+        s->rss[SI_REG_BKGRD_BA] & 0x00ffffff,
+    };
+    uint32_t mask = s->rss[SI_REG_COLORMASKMSBS];
+    uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 28;
+
+    if (x0 > x1 || y0 > y1 || x0 >= SGI_MGRAS_WIDTH || y0 >= SGI_MGRAS_HEIGHT) {
+        return;
+    }
+    x1 = MIN(x1, SGI_MGRAS_WIDTH - 1);
+    y1 = MIN(y1, SGI_MGRAS_HEIGHT - 1);
+
+    for (int i = 0; i < 2; i++) {
+        int x = x0 + s->pio_x;
+        int y = y0 + s->pio_y;
+
+        if (y > y1) {
+            return;
+        }
+        uint32_t *p = &s->front[y * SGI_MGRAS_WIDTH + x];
+        *p = si_paint_pixel(op, *p, pixels[i], mask);
+        s->pio_x++;
+        if (x0 + s->pio_x > x1) {
+            s->pio_x = 0;
+            s->pio_y++;
+        }
+    }
+}
+
+/*
+ * Anything an execute record triggers that this bounded interpreter does
+ * not implement -- framebuffer-to-framebuffer copy (explicitly deferred,
+ * design doc headline 3: "pending a live trace of its exact register
+ * grammar") and whatever else a live trace eventually surfaces. Logged and
+ * left alone rather than raised through si_error: an error interrupt on
+ * every unimplemented primitive would take a real guest's X server down
+ * before anything is visible, defeating this phase's purpose (design doc,
+ * "Design highlights not already in the design doc" in the evidence
+ * trail).
+ */
+static void si_command_execute(SGIMgrasState *s, uint32_t reg)
+{
+    switch (reg) {
+    case SI_REG_BLOCKXYENDI:
+        si_draw_fill(s);
+        return;
+    case SI_REG_CHAR_L:
+        si_draw_glyph_row(s);
+        return;
+    case SI_REG_BKGRD_BA:
+        si_draw_pio_pixel_pair(s);
+        return;
+    default:
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: unimplemented direct-command "
+                      "execute, register 0x%03x\n", reg);
+        return;
     }
 }
 
 static void si_command(SGIMgrasState *s, uint64_t word)
 {
-    uint32_t high = word >> 32;
-    uint32_t selector;
+    uint32_t selector = (word >> 34) & 0xffffff;
     uint32_t value = word;
+    bool state = (selector & SI_CMD_SELECTOR_MASK) == SI_CMD_SELECTOR_STATE;
+    bool exec = (selector & SI_CMD_SELECTOR_MASK) == SI_CMD_SELECTOR_EXEC;
+    uint32_t reg;
 
-    /*
-     * MgrasStart submits two HQ-local configuration words around the
-     * context switch (the GE and RE population counts), live-traced with
-     * a zero unit field in the high half rather than a real command
-     * selector: 0x0000ff04 and 0x00008c04. Neither is ever read back, so
-     * this accepts them as opaque configuration traffic instead of routing
-     * them through the entry-register selector check below, which was
-     * designed before this part of the sequence was understood and
-     * otherwise flags them as an "unknown command selector".
-     */
-    if (high == 0x0000ff04 || high == 0x00008c04) {
+    if (!state && !exec) {
+        /* Opaque HQ-local traffic this interpreter does not decode as a
+         * register write; see this file's header comment on
+         * SI_CMD_SELECTOR_MASK. */
         return;
     }
-
-    selector = (word >> 34) & 0xffffff;
-    if (selector < 0x60001 || ((selector - 0x60001) & 0xf)) {
-        si_error(s, 0x120400, 8, "unknown command selector");
-        return;
+    reg = (selector >> 6) & 0x1ff;
+    s->rss[reg] = value;
+    if (reg == SI_REG_BLOCKXYSTARTI) {
+        /* A new block rectangle restarts this device's own glyph-row/PIO
+         * write cursor; see si_draw_glyph_row and si_draw_pio_pixel_pair. */
+        s->glyph_row = 0;
+        s->pio_x = s->pio_y = 0;
     }
-    uint32_t reg = (selector - 0x60001) >> 4;
-    if (reg >= ARRAY_SIZE(s->command)) {
-        si_error(s, 0x120400, 8, "command register out of range");
-        return;
-    }
-    if (s->fifo_count == SGI_MGRAS_FIFO_DEPTH) {
-        si_error(s, 0x120400, 8, "command FIFO full");
-        return;
-    }
-    s->command[reg] = value;
-    s->command_valid[reg] = 1;
-    s->fifo_count++;
-    if (reg == 0x47) {
-        if (!s->command_valid[0x147] || !s->command_valid[0x148] ||
-            !s->command_valid[0x140]) {
-            si_error(s, 0x120400, 8, "incomplete fill command");
-            return;
-        }
-        si_draw_fill(s);
-        s->fifo_count = 0;
+    if (exec) {
+        si_command_execute(s, reg);
     }
 }
 
@@ -540,21 +761,20 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
      * take the sibling DMA_BUSY poll at 0x020200 instead, already always
      * zero.
      *
-     * s->fifo_count is this device's own FIFO occupancy accounting for
-     * si_command's overflow check (SGI_MGRAS_FIFO_DEPTH above): it advances
-     * on every accepted command word and only returns to zero once a fill
-     * command (register 0x47) completes, so a diagnostic or setup sequence
-     * that submits a word without ever completing a fill leaves it stuck
-     * nonzero -- exactly what live-tracing a boot that reaches gfxinit's
-     * own HQ4 widget diagnostic showed: MgrasCtxsw's poll timed out and
-     * armed the FIFO-status watchdog (SGI_MGRAS_HQ_ENABLE's bit 0x10 above),
-     * which this device has no way to disarm again since it tracks no real
-     * FIFO drain over time, panicking IRIX roughly 15 seconds later. This
-     * offset is the only guest-visible read of that accounting, so
-     * reporting it separately as always-ready is the same "immediate
-     * readiness, no modelled delay" approximation already used at 0x011098,
-     * 0x020000 and 0x020100 above, without weakening the overflow check
-     * s->fifo_count still serves inside si_command.
+     * This offset is also the guest-visible read of this device's direct-
+     * command FIFO occupancy. si_command now applies every state and
+     * execute record to the persistent register file immediately, with no
+     * modelled queueing depth, so occupancy is always zero -- not "31
+     * units of available capacity", an earlier design note this pass's own
+     * evidence trail settled as wrong (docs/plans/si-graphics-widget-
+     * wiring-handoff-20260916.md, "The FIFO-occupancy field, settled"):
+     * every consumer in the disassembled driver (MgrasWriteBfifo,
+     * MgrasPositionCursor, MgrasInitVC3, MgrasClearCursor, MgrasSetColors,
+     * MgrasReset) treats the low bits as a pending programmed-write count
+     * and waits for it to reach zero, which reporting zero already
+     * satisfies unconditionally. This is the same "immediate readiness, no
+     * modelled delay" approximation already used at 0x011098, 0x020000 and
+     * 0x020100 above.
      */
     case 0x020008: return 0;
     /*
@@ -937,14 +1157,28 @@ static void si_reset(DeviceState *dev)
     }
     s->ge_active_slot = 0;
     memset(s->context, 0, sizeof(s->context)); memset(s->cursor, 0, sizeof(s->cursor));
-    memset(s->command_valid, 0, sizeof(s->command_valid));
+    memset(s->rss, 0, sizeof(s->rss));
+    /*
+     * Two reset defaults for the direct-command register file, not zero
+     * like every other entry: a fresh register file with logic op 0
+     * (GXclear) or plane mask 0 (nothing writable) would silently turn a
+     * driver's very first fill, issued before it ever programs either
+     * register, into a no-op instead of a plain opaque copy. X11 GCs
+     * default to GXcopy and an all-ones planemask (AllPlanes) for the same
+     * reason; this device picks the same defaults for its own analogous
+     * registers rather than leaving them at zero. A stated approximation,
+     * not evidence for a real hardware reset value.
+     */
+    s->rss[SI_REG_PP1FILLMODE] = 0x3 << 28;
+    s->rss[SI_REG_COLORMASKMSBS] = 0xffffffff;
+    s->glyph_row = s->pio_x = s->pio_y = 0;
     memset(s->vc3_reg, 0, sizeof(s->vc3_reg));
     memset(s->vc3_sram, 0, sizeof(s->vc3_sram));
     s->vc3_index = 0; s->vc3_ram_addr = 0;
     s->pending = s->irq_mask = s->error = s->context_words = 0;
     s->entry = s->protocol = s->prefix = 0; s->prefix_written = false;
     s->entry_selected = s->ready = false;
-    s->display_enabled = s->cursor_enabled = false; s->fifo_count = 0;
+    s->display_enabled = s->cursor_enabled = false;
     s->xmap_mode = 0x7a4; s->cmap_index = 0; s->retraces = 0;
     s->int_dest_upper = s->int_dest_lower = 0;
     s->widget_control = 0;
@@ -1080,9 +1314,10 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_BOOL(general_asserted, SGIMgrasState),
         VMSTATE_BOOL(retrace_asserted, SGIMgrasState),
         VMSTATE_BOOL(error_asserted, SGIMgrasState),
-        VMSTATE_UINT16(fifo_count, SGIMgrasState),
-        VMSTATE_UINT32_ARRAY(command, SGIMgrasState, 0x200),
-        VMSTATE_UINT8_ARRAY(command_valid, SGIMgrasState, 0x200),
+        VMSTATE_UINT32_ARRAY(rss, SGIMgrasState, 0x200),
+        VMSTATE_UINT32(glyph_row, SGIMgrasState),
+        VMSTATE_UINT32(pio_x, SGIMgrasState),
+        VMSTATE_UINT32(pio_y, SGIMgrasState),
         VMSTATE_UINT16_ARRAY(vc3_reg, SGIMgrasState, 32),
         VMSTATE_UINT8(vc3_index, SGIMgrasState),
         VMSTATE_UINT16(vc3_ram_addr, SGIMgrasState),
@@ -1149,8 +1384,6 @@ static void si_instance_init(Object *obj)
     object_property_add_uint32_ptr(obj, "x-test-irq-mask", &s->irq_mask,
                                    OBJ_PROP_FLAG_READ);
     object_property_add_uint32_ptr(obj, "x-test-hq-enable", &s->hq_enable,
-                                   OBJ_PROP_FLAG_READ);
-    object_property_add_uint16_ptr(obj, "x-test-fifo-count", &s->fifo_count,
                                    OBJ_PROP_FLAG_READ);
     object_property_add_uint32_ptr(obj, "x-test-int-dest-upper",
                                    &s->int_dest_upper, OBJ_PROP_FLAG_READ);

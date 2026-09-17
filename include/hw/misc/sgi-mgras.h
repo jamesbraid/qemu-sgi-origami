@@ -11,8 +11,6 @@
 OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
 
 #define SGI_MGRAS_MMIO_SIZE (2 * MiB)
-/* The selected direct-command FIFO depth (design's own approximation). */
-#define SGI_MGRAS_FIFO_DEPTH 256
 #define SGI_MGRAS_WIDTH 1280
 #define SGI_MGRAS_HEIGHT 1024
 
@@ -525,9 +523,28 @@ struct SGIMgrasState {
     uint32_t cursor_y;
     uint32_t cmap_index;
     uint32_t cmap[256];
-    uint16_t fifo_count;
-    uint32_t command[0x200];
-    uint8_t command_valid[0x200];
+    /*
+     * The direct-command register file the guest addresses through
+     * si_command's decoded selector -- persistent state, not per-fill
+     * scratch: fill mode, masks, window origin and colour are set once
+     * and reused across operations until reset or a context switch, the
+     * same way real hardware keeps them (docs/designs/2026-09-17-si-viz-
+     * pixel-output-design.md). Indexed by the 9-bit register field
+     * si_command decodes from the selector; see the SI_REG_* macros and
+     * si_command's own header comment in sgi-mgras.c.
+     */
+    uint32_t rss[0x200];
+    /*
+     * This device's own write cursor for glyph rows and PIO pixel pairs
+     * (si_draw_glyph_row/si_draw_pio_pixel_pair, sgi-mgras.c), reset
+     * whenever the block-start register is rewritten. Real hardware has
+     * no guest-visible cursor register for either -- this is internal
+     * bookkeeping for this device's own bounded interpretation of "one
+     * execute record per row/pair", not a modelled register.
+     */
+    uint32_t glyph_row;
+    uint32_t pio_x;
+    uint32_t pio_y;
     uint64_t retraces;
     uint32_t xmap_mode;
     uint16_t vc3_reg[32];
