@@ -48,6 +48,18 @@ test_mips64_timeouts = {
   # overhead. Matches linux_kernel's own reasoning below for the same
   # one-script, several-budgets-in-sequence shape.
   'origin200_matrix_thorough' : 1800,
+  # graphics-matrix's one row (rad4_login_screen): boot IRIX 6.5.30 with
+  # RAD4 at its vendor-documented PCI slot, drive it to the console login
+  # prompt, wait a fixed settle for xdm's own, independently-timed
+  # redraw (see test_graphics_matrix.py's _SCREEN_SETTLE_SECONDS), run a
+  # short input script, and check the resulting screendump. Measured
+  # boot-to-login around 180s on this host (2026-09-17, one run already
+  # carrying a from-scratch QEMU build in the same wall-clock figure);
+  # 600 in the manifest's own timeout column leaves generous margin for
+  # a contended host, and this entry adds the same margin again on top
+  # for VM launch/shutdown and the settle/input-script/screendump steps
+  # after the console wait.
+  'graphics_matrix_thorough' : 700,
   'prom_boot' : 700,
   'prom_copy_speed' : 320,
   'prom_diagnostics' : 1800,
@@ -193,12 +205,17 @@ tests_mips64_system_quick = [
   'mttcg_cause',
   'origin200_matrix',
   'origin2000_cache_reset',
+  # graphics-matrix carries no quick row yet (see graphics_matrix_thorough's
+  # own comment below); registered anyway so a future device's quick
+  # smoke-test row needs only a manifest line, not a meson.build edit.
+  'graphics_matrix',
 ]
 
 tests_mips64_system_thorough = [
   'malta',
   'tuxrun',
   'origin200_matrix_thorough',
+  'graphics_matrix_thorough',
   'prom_boot',
   'prom_copy_speed',
   'prom_diagnostics',
@@ -235,8 +252,11 @@ tests_mips64_system_thorough = [
 # the lists above feed, and they belong to the quick suite: the whole set
 # is seconds.
 tests_mips64_unit = [
+  'lib_graphics_matrix',
+  'lib_input',
   'lib_matrix',
   'lib_prom',
+  'lib_screen',
   'lib_translation_health',
   'irix_eg_net_verdict',
   'irix_eg_perf_helpers',
