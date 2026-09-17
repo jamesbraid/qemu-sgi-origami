@@ -380,6 +380,31 @@ static void test_scratch_aliases_and_reset(void)
 }
 
 /*
+ * hw/misc/sgi-bedrock.c's rendezvous hold at LB scratch 1
+ * (sgi_bedrock_hold_scratch1_write, docs/known-issues.md) only arbitrates
+ * an access this node's own processor issues. A standalone
+ * sgi-bedrock-lb, as every test in this file runs, has no owning node
+ * (SGIBedrockLBState.bedrock is only set by sgi-bedrock.c's
+ * bedrock_realize), and a qtest backdoor write carries no issuing vCPU
+ * either way. A second write to scratch 1 must therefore still round-trip
+ * at once, never withheld, exactly as the first assertion in
+ * test_scratch_aliases_and_reset already exercises in passing; this test
+ * names the property directly.
+ */
+static void test_scratch1_second_write_no_hold(void)
+{
+    QTestState *s = lb_start("");
+
+    qtest_writeq(s, LB_BASE + SCRATCH(1), 0x7f80000);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + SCRATCH(1)), ==, 0x7f80000);
+    qtest_writeq(s, LB_BASE + SCRATCH(1), 0);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + SCRATCH(1)), ==, 0);
+    qtest_writeq(s, LB_BASE + SCRATCH(1), 0x7f80000);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + SCRATCH(1)), ==, 0x7f80000);
+    qtest_quit(s);
+}
+
+/*
  * The vector registers as the datasheet's checklist states them: parameters
  * keep their fields with busy reading clear, a status-clear write is
  * accepted, and route and data are plain storage. With no hub register window
@@ -790,6 +815,8 @@ int main(int argc, char **argv)
                    test_byte_order_and_width);
     qtest_add_func("sn1/bedrock-lb/scratch-reset",
                    test_scratch_aliases_and_reset);
+    qtest_add_func("sn1/bedrock-lb/scratch1-second-write-no-hold",
+                   test_scratch1_second_write_no_hold);
     qtest_add_func("sn1/bedrock-lb/vector-registers", test_vector_registers);
     qtest_add_func("sn1/bedrock-lb/vector-local-read", test_vector_local_read);
     qtest_add_func("sn1/bedrock-lb/microlan-slot", test_microlan_slot);

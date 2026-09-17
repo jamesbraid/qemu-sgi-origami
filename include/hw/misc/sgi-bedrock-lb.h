@@ -11,11 +11,24 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockLBState, SGI_BEDROCK_LB)
 
 #define SGI_BEDROCK_LB_SIZE 0xc040
 
+/* Opaque here: only the owning sgi-bedrock.c dereferences it. */
+typedef struct SGIBedrockState SGIBedrockState;
+
 struct SGIBedrockLBState {
     SysBusDevice parent_obj;
     MemoryRegion mmio;
     qemu_irq soft_reset;
     qemu_irq error;
+
+    /*
+     * The owning node, set directly by bedrock_realize() the way
+     * sgi-hub.c's elsc back-reference is: a plain pointer rather than a
+     * QOM link, because this child's lifetime is enclosed by its parent's.
+     * Scratch 1 writes are handed to sgi_bedrock_hold_scratch1_write(),
+     * which owns the processor-mask/cpu-enable state and the CPUs; see
+     * sgi-bedrock.h.
+     */
+    SGIBedrockState *bedrock;
 
     /*
      * The MicroLAN wire and the controller's slot deadline. The endpoint is

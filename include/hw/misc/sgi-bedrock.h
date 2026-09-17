@@ -15,6 +15,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockState, SGI_BEDROCK)
 
 #define SGI_BEDROCK_SIZE 0x7e0048
 
+/* The four physical processor slots a node's two PIs together address. */
+#define SGI_BEDROCK_PROCESSORS 4
+
+/* What a held processor waits for. Mirrors sgi-hub.c's SGIHubRTHoldKind. */
+typedef enum SGIBedrockHoldKind {
+    SGI_BEDROCK_HOLD_SCRATCH1 = 1, /* H1: LB scratch 1's withheld write */
+} SGIBedrockHoldKind;
+
 struct SGIBedrockState {
     SysBusDevice parent_obj;
     MemoryRegion mmio;
@@ -56,8 +64,51 @@ struct SGIBedrockState {
     bool l1_uart_as_initialized;
     uint8_t initiator_region;
     MemoryRegion *widget_mr[16];
+
+    /*
+     * Cached CPUState resolution per physical processor slot (0..3: A, B,
+     * C, D), lazily filled the way sgi-hub.c's sgi_hub_cpu() fills its own
+     * cpu[] cache. Neither reset state nor migrated state: derived from the
+     * machine's topology, which outlives the device.
+     */
+    CPUState *hold_cpu[SGI_BEDROCK_PROCESSORS];
+
+    /*
+     * The multi-threaded rendezvous hold at LB scratch 1 (H1), host-only
+     * and discarded across reset -- see sgi_bedrock_hold_reset() and
+     * docs/known-issues.md. It mirrors sgi-hub.c's RT-mailbox hold
+     * (sgi_hub_rt_hold and neighbors): queued work on the held vCPU,
+     * waiting on its own halt condition, one hold per processor at a time.
+     * Unlike the Hub's fixed pairwise partner, this hold joins across
+     * every populated processor of the node, so a hold's wait condition is
+     * recomputed fresh on every wake rather than answered by a single
+     * tagged release.
+     *
+     * hold_scratch1_seen: whether this processor has made its first write
+     * to LB scratch 1 since reset. hold_scratch1_withheld(_valid): the
+     * value a second-or-later write is holding back until every other
+     * present, running processor has made its own first write.
+     *
+     * hold_id/hold_kind: the active hold on each slot, zero for none, and
+     * which register it is waiting on. hold_seq hands out ascending ids
+     * the way sgi-hub.c's pi_rt_hold_seq does.
+     */
+    bool hold_scratch1_seen[SGI_BEDROCK_PROCESSORS];
+    bool hold_scratch1_withheld_valid[SGI_BEDROCK_PROCESSORS];
+    uint64_t hold_scratch1_withheld[SGI_BEDROCK_PROCESSORS];
+    uint64_t hold_id[SGI_BEDROCK_PROCESSORS];
+    uint8_t hold_kind[SGI_BEDROCK_PROCESSORS];
+    uint64_t hold_seq;
 };
 
 bool sgi_bedrock_hub_registers_permitted(SGIBedrockState *s);
+
+/*
+ * The rendezvous hold's entry point, called from lb_write() for LB scratch 1
+ * (docs/known-issues.md and docs/datasheets/bedrock-local-block.md). It
+ * applies or withholds the write itself; the caller does not also store it.
+ */
+void sgi_bedrock_hold_reset(SGIBedrockState *s);
+void sgi_bedrock_hold_scratch1_write(SGIBedrockState *s, uint64_t value);
 
 #endif
