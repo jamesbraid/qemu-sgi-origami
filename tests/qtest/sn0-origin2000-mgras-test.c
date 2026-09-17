@@ -55,6 +55,7 @@
 #define REG_CMAP_WRITE_INDEX   SI_REG(0x070c30)
 #define REG_CMAP_DATA          SI_REG(0x070d18)
 #define REG_CURSOR             SI_REG(0x072038)
+#define REG_VC3_SRAM           SI_REG(0x072000)
 #define REG_HQ_UPLOAD           SI_REG(0x050000)
 #define REG_ENTRY               SI_REG(0x130500)
 #define REG_CONTEXT_COMMAND     SI_REG(0x120400)
@@ -885,6 +886,31 @@ static void test_migration(void)
     qtest_quit(from);
 }
 
+/*
+ * The driver's own VC3 SRAM self-test writes a computed value here, then
+ * reads it back to confirm the write landed -- disassembly of the shipped
+ * driver shows both its load and verify routines touch only this one
+ * offset, never an address range, so a plain read/write round trip is
+ * the whole contract. Before this test existed, a live boot logged
+ * "WARNING: mgras: VC3SRAM verify failed" here because the device's
+ * original stub indexed a 64-entry array by bits of the written value
+ * instead of storing and echoing it back.
+ */
+static void test_vc3_sram_round_trip(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    g_assert_cmphex(qtest_readl(qts, REG_VC3_SRAM), ==, 0);
+
+    qtest_writel(qts, REG_VC3_SRAM, 0x12345678);
+    g_assert_cmphex(qtest_readl(qts, REG_VC3_SRAM), ==, 0x12345678);
+
+    qtest_writel(qts, REG_VC3_SRAM, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_VC3_SRAM), ==, 0);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -911,6 +937,8 @@ int main(int argc, char **argv)
                    test_dac_lut_load);
     qtest_add_func("sn0/origin2000/mgras/cursor-position-and-control-tags",
                    test_cursor_position_and_control_tags);
+    qtest_add_func("sn0/origin2000/mgras/vc3-sram-round-trip",
+                   test_vc3_sram_round_trip);
     qtest_add_func("sn0/origin2000/mgras/write-path-fixes-dont-raise-error",
                    test_write_path_fixes_dont_raise_the_sticky_error);
     qtest_add_func("sn0/origin2000/mgras/board-bringup-scratch-registers",
