@@ -6,7 +6,6 @@
 #include "system/memory.h"
 #include "qom/object.h"
 #include "qemu/units.h"
-#include "ui/console.h"
 
 #define TYPE_SGI_MGRAS "sgi-mgras"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
@@ -45,17 +44,50 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
 #define SGI_MGRAS_WIDGET_CONTROL 0x000024
 
 /*
- * Two more registers the kernel driver's own reset routine writes once it
+ * A second word the kernel driver's own reset routine writes once it
  * observes the readiness field at 0x020100 settled, live-traced through a
- * boot that actually reaches this code path: 0x011008 (a second word next
- * to the existing startup-configuration register at 0x011000) and 0x072408
- * (in the display/cursor register block). Neither field's bit meaning was
- * captured -- only that this driver writes them once during reset and
- * expects the access to succeed -- so both store opaque state, the same
+ * boot that actually reaches this code path -- next to the existing
+ * startup-configuration register at 0x011000. Its own field meaning was
+ * never captured, only that this driver writes it once during reset and
+ * expects the access to succeed, so it stores opaque state, the same
  * treatment already given to the generic widget control register above.
  */
 #define SGI_MGRAS_RESET_ARG 0x011008
+
+/*
+ * The board-population/reset-control word for the graphics rasterizer
+ * pipeline, disassembled from the kernel driver's own board-bring-up and
+ * inventory routines (MgrasReset, MgrasSetTiming, MgrasSetGenlock, the GE
+ * microcode download's reset pulse, and MgrasGatherInfo). Write and read
+ * carry different meanings, the usual shape for a combined control/status
+ * word: writes to the top byte select a reset or clock line (the exact bit
+ * assignments were not captured, so writes still store as opaque state);
+ * a read returns a fixed population code MgrasGatherInfo decodes as two
+ * independent 2-bit TRAM-daughtercard fields (bits 25:24 for the RA board,
+ * bits 27:26 for the RB board), where the driver treats field value 3 as
+ * "absent" and any other value as "4 TRAMs present". This project's own
+ * retained evidence for the SI board class this device models
+ * (docs/research/graphics/configurations.md) gives it no TRAM daughtercard
+ * on either board, so the read side reports both fields absent (0xf in
+ * that nibble) rather than echoing back a write-side reset bit that was
+ * never meant to double as a population code.
+ */
 #define SGI_MGRAS_RESET_CONTROL 0x072408
+
+/*
+ * The GE (geometry engine) and board-revision inventory word, read once by
+ * MgrasGatherInfo and never written by the kernel driver. The top byte
+ * packs three fields: bits 1:0 the number of GEs populated, bits 4:2 a
+ * GD/board revision code, bits 6:5 compared against 1 to mean "single-RE
+ * board, no RB daughterboard". Leaving this offset unmodelled made every
+ * boot report zero GEs, which silently skips the entire GE microcode
+ * download path (MgrasDownloadGE11Ucode returns immediately for a
+ * non-positive GE count) -- the single most consequential inventory gap
+ * found so far. The same retained SI board-class evidence cited above (one
+ * GE, one RE, no TRAM, single-RE population) fixes a value for all three
+ * fields; the low 24 bits have no established meaning and read zero.
+ */
+#define SGI_MGRAS_BOARD_INVENTORY 0x072488
 
 /*
  * The kernel driver's own I2C device probe, live-traced through a boot that
@@ -236,23 +268,28 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
 #define SGI_MGRAS_RE_ARG 0x071e80
 
 /*
- * The VC3 SRAM self-test's own write/read register. The driver's
- * MgrasLoadVC3SRAM routine picks one of several fixed values (based on a
- * discovered per-unit configuration byte) and writes it here, then calls
- * MgrasVerifyVC3SRAM, which writes an address/mode word here before
- * reading it back -- disassembly shows both routines touch only this one
- * offset, never an address range, so this is a single scalar register
- * rather than a window onto a larger SRAM array. Its own bit layout was
- * never captured, so it gets the same opaque, plain-storage treatment as
- * this device's other undocumented registers: whatever the guest writes,
- * it reads back unchanged. The device's original stub instead indexed a
- * 64-entry array by bits of the written value, which never round-tripped
- * a write back to the same read -- exactly the "VC3SRAM verify failed"
- * failure a live boot reached once the driver's own hardware
- * self-verification step could run for the first time in this project's
- * history.
+ * The VC3 video-timing/cursor/display-control chip's own indexed register
+ * file, disassembled from the kernel driver's timing, cursor and display
+ * setup routines (MgrasSetVC3Timing, MgrasClearCursor, MgrasPositionCursor,
+ * MgrasEnableVideoTiming, MgrasInitVC3, MgrasStart). The driver writes
+ * every register through one indexed port -- a 32-bit write packing an
+ * 8-bit register index in the top byte and a 16-bit value in bits 23:8 --
+ * and reads one back through a separate index-then-data pair. Register
+ * index 7 does not select an ordinary value register; it loads the address
+ * pointer for a 64 KiB (0x8000-halfword) SRAM the same chip exposes through
+ * its own data port (see SGI_MGRAS_VC3_RAM below), auto-incrementing after
+ * every RAM access. The SRAM holds video/DID line and frame tables, the
+ * cursor glyph, and colour lookup data the X server keeps writing after
+ * attach; the register file's own remaining indices (cursor position,
+ * cursor/display enable bits, scan geometry, a revision readback) were
+ * already partly modelled ad hoc before this offset's full contract was
+ * understood -- see the individual bit assignments in si_write/si_read.
  */
-#define SGI_MGRAS_VC3_SRAM 0x072000
+#define SGI_MGRAS_VC3_INDEXDATA 0x072038
+#define SGI_MGRAS_VC3_INDEX 0x072008
+#define SGI_MGRAS_VC3_DATA 0x0720b0
+#define SGI_MGRAS_VC3_RAM 0x072190
+#define SGI_MGRAS_VC3_SRAM_WORDS 0x8000
 
 struct SGIMgrasState {
     SysBusDevice parent_obj;
@@ -288,13 +325,6 @@ struct SGIMgrasState {
     uint64_t test_last_interrupt_addr;
     uint64_t test_last_interrupt_value;
     QEMUTimer *retrace_timer;
-    /*
-     * A QEMU display surface created directly over front[]'s own storage
-     * (PIXMAN_x8r8g8b8, matching the low-24-bit colour word this device
-     * already stores verbatim), so the host's screendump command reads
-     * whatever front[] holds with no separate copy.
-     */
-    QemuConsole *con;
     uint32_t *front;
     uint32_t *back;
     uint32_t front_count;
@@ -325,7 +355,6 @@ struct SGIMgrasState {
     bool display_enabled;
     bool cursor_enabled;
     uint8_t cursor[256];
-    uint32_t cursor_control;
     uint32_t cursor_x;
     uint32_t cursor_y;
     uint32_t cmap_index;
@@ -335,7 +364,10 @@ struct SGIMgrasState {
     uint8_t command_valid[0x200];
     uint64_t retraces;
     uint32_t xmap_mode;
-    uint32_t vc3_sram;
+    uint16_t vc3_reg[32];
+    uint8_t vc3_index;
+    uint16_t vc3_ram_addr;
+    uint16_t vc3_sram[SGI_MGRAS_VC3_SRAM_WORDS];
     uint32_t revision;
     uint32_t part;
     uint32_t manufacturer;
