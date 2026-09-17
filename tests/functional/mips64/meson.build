@@ -48,18 +48,23 @@ test_mips64_timeouts = {
   # overhead. Matches linux_kernel's own reasoning below for the same
   # one-script, several-budgets-in-sequence shape.
   'origin200_matrix_thorough' : 1800,
-  # graphics-matrix's one row (rad4_login_screen): boot IRIX 6.5.30 with
-  # RAD4 at its vendor-documented PCI slot, drive it to the console login
-  # prompt, wait a fixed settle for xdm's own, independently-timed
-  # redraw (see test_graphics_matrix.py's _SCREEN_SETTLE_SECONDS), run a
-  # short input script, and check the resulting screendump. Measured
-  # boot-to-login around 180s on this host (2026-09-17, one run already
-  # carrying a from-scratch QEMU build in the same wall-clock figure);
-  # 600 in the manifest's own timeout column leaves generous margin for
-  # a contended host, and this entry adds the same margin again on top
-  # for VM launch/shutdown and the settle/input-script/screendump steps
-  # after the console wait.
-  'graphics_matrix_thorough' : 700,
+  # graphics-matrix's two rows (rad4_login_screen, rad4_login_screen_smp2):
+  # boot IRIX 6.5.30 with RAD4 at its vendor-documented PCI slot, one CPU
+  # and two, drive each to the console login prompt, wait a fixed settle
+  # for xdm's own, independently-timed redraw (see test_graphics_matrix.py's
+  # _settle_seconds -- longer on the 2-CPU row: pinning rr-kick-period-ns
+  # above one CPU trades away wall-clock-to-guest-progress once the boot
+  # itself is over), run a short input script, and check the resulting
+  # screendump. Measured end to end against an already-built binary
+  # (2026-09-17): the single-CPU row in 49s, the 2-CPU row (30s of that its
+  # own settle) in 118s. 600 in each manifest row's own timeout column
+  # leaves generous margin for a contended host reaching login at all; this
+  # entry budgets both rows hitting that full 600s in sequence (1200s) plus
+  # the same kind of margin on top for VM launch/shutdown and the
+  # settle/input-script/screendump steps the measurements above show is not
+  # usually needed, matching origin200_matrix_thorough's own reasoning for
+  # its two real-boot cells below.
+  'graphics_matrix_thorough' : 1400,
   'prom_boot' : 700,
   'prom_copy_speed' : 320,
   'prom_diagnostics' : 1800,
