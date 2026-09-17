@@ -847,6 +847,7 @@ static void test_a_pin_register_reaches_the_shared_data_word(const void *data)
 #define KBC_KBD_RECEIVE   (IOC3_BASE + 0x0a0)
 #define KBC_AUX_RECEIVE   (IOC3_BASE + 0x0a4)
 #define KBC_KBD_TRANSMIT  (IOC3_BASE + 0x0a8)
+#define KBC_AUX_TRANSMIT  (IOC3_BASE + 0x0ac)
 
 static void test_the_ps2_ports_read_empty(const void *data)
 {
@@ -900,6 +901,37 @@ static void test_the_ps2_keyboard_round_trips(const void *data)
      * is clear for the keyboard and nothing overflowed (bit 28 clear).
      */
     g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, 0xc0faaa00);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The mouse port's own transmit and receive registers exercise the same
+ * round trip as the keyboard's, through the generic ps2 mouse device wired
+ * behind AUX_TRANSMIT/AUX_RECEIVE. A reset packs one more byte than the
+ * keyboard's: the generic ps2 mouse answers 0xFF with ACK (0xFA),
+ * self-test-pass (0xAA) and a third mouse-ID byte (0x00), all three valid.
+ * The source bit (27) is set: this is the one bit the register contract
+ * uses to tell the two ports apart once their bytes reach a shared
+ * interrupt.
+ */
+static void test_the_ps2_mouse_round_trips(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writel(qts, KBC_AUX_TRANSMIT, 0xff);
+
+    /*
+     * Oldest byte in the highest slot: 0xFA in bits 16-23, 0xAA in bits
+     * 8-15, the mouse-ID byte 0x00 in bits 0-7, all three valid flags
+     * (bits 29-31) set and the source bit (27) set for aux.
+     */
+    g_assert_cmphex(qtest_readl(qts, KBC_AUX_RECEIVE), ==, 0xe8faaa00);
+
+    /* The keyboard's own receive register is untouched by a mouse byte. */
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, 0);
 
     qtest_quit(qts);
 }
@@ -5273,6 +5305,8 @@ int main(int argc, char **argv)
                         test_the_ps2_ports_read_empty);
     qtest_add_data_func("sn0/ioc3/ps2-keyboard-round-trip", NULL,
                         test_the_ps2_keyboard_round_trips);
+    qtest_add_data_func("sn0/ioc3/ps2-mouse-round-trip", NULL,
+                        test_the_ps2_mouse_round_trips);
     qtest_add_data_func("sn0/ioc3/ps2-keyboard-acks-set-key-type", NULL,
                         test_the_ps2_keyboard_acks_set_key_type);
     qtest_add_data_func("sn0/ioc3/ps2-receive-drains-on-read", NULL,

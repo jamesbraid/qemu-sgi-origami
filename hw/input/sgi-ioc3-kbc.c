@@ -18,6 +18,7 @@
 #include "hw/input/sgi-ioc3-kbc.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
+#include "trace.h"
 
 /*
  * The controller's output is the data-available line, driven high while
@@ -39,6 +40,7 @@ static void sgi_ioc3_kbc_set_irq(void *opaque, int n, int level)
 {
     SGIIOC3KBCState *s = SGI_IOC3_KBC(opaque);
 
+    trace_sgi_ioc3_kbc_irq(n, level);
     sgi_ioc3_kbc_update_irq(s);
 }
 
@@ -91,6 +93,7 @@ static uint32_t sgi_ioc3_kbc_receive(SGIIOC3KBCState *s, PS2State *ps2,
 static uint64_t sgi_ioc3_kbc_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIIOC3KBCState *s = SGI_IOC3_KBC(opaque);
+    uint64_t val;
 
     switch (addr) {
     case SGI_IOC3_KBC_CONTROL:
@@ -99,21 +102,28 @@ static uint64_t sgi_ioc3_kbc_read(void *opaque, hwaddr addr, unsigned size)
          * synchronous transmit completes within the register write, so a
          * driver's post-transmit poll finishes on its first look.
          */
-        return s->control;
+        val = s->control;
+        break;
 
     case SGI_IOC3_KBC_KBD_RECEIVE:
-        return sgi_ioc3_kbc_receive(s, PS2_DEVICE(&s->kbd), false);
+        val = sgi_ioc3_kbc_receive(s, PS2_DEVICE(&s->kbd), false);
+        break;
 
     case SGI_IOC3_KBC_AUX_RECEIVE:
-        return sgi_ioc3_kbc_receive(s, PS2_DEVICE(&s->mouse), true);
+        val = sgi_ioc3_kbc_receive(s, PS2_DEVICE(&s->mouse), true);
+        break;
 
     default:
         /* The transmit registers are write-only. */
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-ioc3-kbc: read of write-only register 0x%"
                       HWADDR_PRIx "\n", addr);
-        return 0;
+        val = 0;
+        break;
     }
+
+    trace_sgi_ioc3_kbc_read(addr, val);
+    return val;
 }
 
 static void sgi_ioc3_kbc_write(void *opaque, hwaddr addr, uint64_t val,
@@ -121,6 +131,7 @@ static void sgi_ioc3_kbc_write(void *opaque, hwaddr addr, uint64_t val,
 {
     SGIIOC3KBCState *s = SGI_IOC3_KBC(opaque);
 
+    trace_sgi_ioc3_kbc_write(addr, val, size);
     switch (addr) {
     case SGI_IOC3_KBC_CONTROL:
         s->control = val & SGI_IOC3_KBC_CONTROL_MASK;
