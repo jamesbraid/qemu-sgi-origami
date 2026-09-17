@@ -54,6 +54,12 @@
 #define REG_DAC_LUT_DATA_2     SI_REG(0x071910)
 #define REG_DAC_CONFIG         SI_REG(0x071988)
 #define REG_HQ_UPLOAD           SI_REG(0x050000)
+#define REG_GE_DATA_A           SI_REG(0x058048)
+#define REG_GE_CTRL_A           SI_REG(0x05804c)
+#define REG_GE_DATA_B           SI_REG(0x058040)
+#define REG_GE_CTRL_B           SI_REG(0x058044)
+#define REG_GE_READ_1           SI_REG(0x05822c)
+#define REG_GE_READ_2           SI_REG(0x058230)
 #define REG_ENTRY               SI_REG(0x130500)
 #define REG_CONTEXT_COMMAND     SI_REG(0x120400)
 #define REG_VC3_INDEXDATA       SI_REG(0x072038)
@@ -594,68 +600,145 @@ static void test_hq_upload_and_readback(void)
 }
 
 /*
- * The GE11 microcode load-and-verify sequence live-traced from
- * MgrasDownloadGE11Ucode: a control write of 0x200000 resets the slot's
- * pointers, three data writes per instruction triple load the buffer, then
- * a control write of 0x80000000 | count arms readback through the shared
- * read ports. This device answers readback in write order (see the header
- * comment on the GE port offsets for why that ordering is an approximation,
- * not a verified wire contract) -- this test holds the device to exactly
- * that self-consistent contract, not to real GE11 silicon behavior.
+ * The GE11 microcode load-and-verify sequence, root-caused by disassembling
+ * the retained disk's own rebuilt kernel (MgrasDownloadGE11Ucode,
+ * docs/plans/si-graphics-widget-wiring-handoff-20260916.md, "GE microcode
+ * download failure"). A control write of 0x200000 starts a load at the
+ * first-pass (even) alignment; data-port writes append flat microcode
+ * words w0..w5. A control write of 0x40038 paired with a data write of
+ * 0xd1 right after is a register-select/value pair the driver sends next,
+ * not microcode -- it must not land in the buffer and must not raise the
+ * upload-overflow sticky error. Re-arming with 0x200000 and rewinding the
+ * read pointer (bit 31) replays the first pass: each verify step reads the
+ * discard port (GE_READ_2) then the compare port (GE_READ_1), and the
+ * k-th compare-port read yields flat word w[2k]. Arming with 0x200001
+ * (odd alignment) instead yields w[2k-1] -- w[-1] reads as 0 on the first
+ * read of that pass. The discard-port values asserted below are this
+ * device's own self-consistent approximation (the driver never checks
+ * them), not confirmed real-hardware evidence -- see the GE port header
+ * comment in include/hw/misc/sgi-mgras.h.
  */
 static void test_ge_upload_and_readback(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
+    static const uint32_t w[6] = {
+        0x11111111, 0x22222222, 0x33333333,
+        0x44444444, 0x55555555, 0x66666666,
+    };
 
-    qtest_writel(qts, SI_REG(0x05804c), 0x200000);
-    qtest_writel(qts, SI_REG(0x058048), 0x11111111);
-    qtest_writel(qts, SI_REG(0x058048), 0x22222222);
-    qtest_writel(qts, SI_REG(0x058048), 0x33333333);
-    qtest_writel(qts, SI_REG(0x05804c), 0x40038);
-    qtest_writel(qts, SI_REG(0x058048), 0xd1);
-    qtest_writel(qts, SI_REG(0x05804c), 0x200000);
-    qtest_writel(qts, SI_REG(0x05804c), 0x80000001);
+    qtest_writel(qts, REG_GE_CTRL_A, 0x200000);
+    for (int i = 0; i < 6; i++) {
+        qtest_writel(qts, REG_GE_DATA_A, w[i]);
+    }
 
-    g_assert_cmphex(qtest_readl(qts, SI_REG(0x05822c)), ==, 0x11111111);
-    g_assert_cmphex(qtest_readl(qts, SI_REG(0x058230)), ==, 0x22222222);
-    g_assert_cmphex(qtest_readl(qts, SI_REG(0x05822c)), ==, 0x33333333);
+    /* Register-select/value pair: not microcode, no overflow error. */
+    qtest_writel(qts, REG_GE_CTRL_A, 0x40038);
+    qtest_writel(qts, REG_GE_DATA_A, 0xd1);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    /* First pass: even alignment, compare port yields w[2k]. */
+    qtest_writel(qts, REG_GE_CTRL_A, 0x200000);
+    qtest_writel(qts, REG_GE_CTRL_A, 0x80000002);
+    for (int k = 0; k < 3; k++) {
+        g_assert_cmphex(qtest_readl(qts, REG_GE_READ_2), ==, w[2 * k + 1]);
+        g_assert_cmphex(qtest_readl(qts, REG_GE_READ_1), ==, w[2 * k]);
+    }
+
+    /* Second pass: odd alignment, compare port yields w[2k-1]; w[-1] is 0. */
+    qtest_writel(qts, REG_GE_CTRL_A, 0x200001);
+    qtest_writel(qts, REG_GE_CTRL_A, 0x80000004);
+    g_assert_cmphex(qtest_readl(qts, REG_GE_READ_2), ==, w[0]);
+    g_assert_cmphex(qtest_readl(qts, REG_GE_READ_1), ==, 0);
+    for (int k = 1; k < 3; k++) {
+        g_assert_cmphex(qtest_readl(qts, REG_GE_READ_2), ==, w[2 * k]);
+        g_assert_cmphex(qtest_readl(qts, REG_GE_READ_1), ==, w[2 * k - 1]);
+    }
+    /* Fourth pair: the discard port runs past the buffer too. */
+    g_assert_cmphex(qtest_readl(qts, REG_GE_READ_2), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_GE_READ_1), ==, w[5]);
 
     qtest_quit(qts);
 }
 
-/* The two engine slots keep independent buffers and pointers. */
+/*
+ * The two engine slots keep independent buffers, write/read pointers and
+ * alignment state -- interleaving a full load-and-arm sequence on slot B
+ * between slot A's own load and its readback must not perturb slot A's
+ * compare-port sequence.
+ */
 static void test_ge_upload_slots_do_not_cross_contaminate(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
 
-    qtest_writel(qts, SI_REG(0x05804c), 0x200000);
-    qtest_writel(qts, SI_REG(0x058048), 0xaaaaaaaa);
-    qtest_writel(qts, SI_REG(0x058044), 0x200000);
-    qtest_writel(qts, SI_REG(0x058040), 0xbbbbbbbb);
+    /*
+     * Even alignment maps the k-th compare-port read to flat index 2k, so
+     * two consecutive same-pass compare reads need four flat words each
+     * (indices 0 and 2); the odd flat indices are discard-port filler,
+     * unused by these assertions.
+     */
+    qtest_writel(qts, REG_GE_CTRL_A, 0x200000);
+    qtest_writel(qts, REG_GE_DATA_A, 0xaaaa0000);
+    qtest_writel(qts, REG_GE_DATA_A, 0xa0a0a0a0);
+    qtest_writel(qts, REG_GE_DATA_A, 0xaaaa0001);
+    qtest_writel(qts, REG_GE_DATA_A, 0xa1a1a1a1);
 
-    qtest_writel(qts, SI_REG(0x05804c), 0x80000001);
-    g_assert_cmphex(qtest_readl(qts, SI_REG(0x05822c)), ==, 0xaaaaaaaa);
+    qtest_writel(qts, REG_GE_CTRL_B, 0x200000);
+    qtest_writel(qts, REG_GE_DATA_B, 0xbbbb0000);
+    qtest_writel(qts, REG_GE_DATA_B, 0xb0b0b0b0);
+    qtest_writel(qts, REG_GE_DATA_B, 0xbbbb0001);
+    qtest_writel(qts, REG_GE_DATA_B, 0xb1b1b1b1);
+    qtest_writel(qts, REG_GE_CTRL_B, 0x80000004);
+    g_assert_cmphex(qtest_readl(qts, REG_GE_READ_1), ==, 0xbbbb0000);
 
-    qtest_writel(qts, SI_REG(0x058044), 0x80000001);
-    g_assert_cmphex(qtest_readl(qts, SI_REG(0x058230)), ==, 0xbbbbbbbb);
+    /* Slot A's own compare-port sequence is unaffected by slot B's load
+     * and first readback above. */
+    qtest_writel(qts, REG_GE_CTRL_A, 0x80000004);
+    g_assert_cmphex(qtest_readl(qts, REG_GE_READ_1), ==, 0xaaaa0000);
+    g_assert_cmphex(qtest_readl(qts, REG_GE_READ_1), ==, 0xaaaa0001);
+
+    /* Reselecting slot B without rearming (a control write with neither
+     * the load pattern nor bit 31 set) resumes its own read pointer
+     * exactly where it left off -- unaffected by slot A's reads above. */
+    qtest_writel(qts, REG_GE_CTRL_B, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_GE_READ_1), ==, 0xbbbb0001);
 
     qtest_quit(qts);
 }
 
-/* Re-arming readback rewinds the read pointer without touching the data. */
+/* Re-arming readback (bit 31) rewinds the read pointer without touching
+ * the loaded data: reading, rewinding and reading again returns the same
+ * word both times. */
 static void test_ge_upload_rearm_rereads_from_start(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
 
-    qtest_writel(qts, SI_REG(0x05804c), 0x200000);
-    qtest_writel(qts, SI_REG(0x058048), 0x01020304);
-    qtest_writel(qts, SI_REG(0x058048), 0x05060708);
-    qtest_writel(qts, SI_REG(0x05804c), 0x80000001);
+    qtest_writel(qts, REG_GE_CTRL_A, 0x200000);
+    qtest_writel(qts, REG_GE_DATA_A, 0x01020304);
+    qtest_writel(qts, REG_GE_DATA_A, 0x05060708);
+    qtest_writel(qts, REG_GE_CTRL_A, 0x80000002);
 
-    g_assert_cmphex(qtest_readl(qts, SI_REG(0x05822c)), ==, 0x01020304);
-    qtest_writel(qts, SI_REG(0x05804c), 0x80000001);
-    g_assert_cmphex(qtest_readl(qts, SI_REG(0x05822c)), ==, 0x01020304);
-    g_assert_cmphex(qtest_readl(qts, SI_REG(0x058230)), ==, 0x05060708);
+    g_assert_cmphex(qtest_readl(qts, REG_GE_READ_2), ==, 0x05060708);
+    g_assert_cmphex(qtest_readl(qts, REG_GE_READ_1), ==, 0x01020304);
+
+    qtest_writel(qts, REG_GE_CTRL_A, 0x80000002);
+    g_assert_cmphex(qtest_readl(qts, REG_GE_READ_2), ==, 0x05060708);
+    g_assert_cmphex(qtest_readl(qts, REG_GE_READ_1), ==, 0x01020304);
+
+    qtest_quit(qts);
+}
+
+/*
+ * MgrasDownloadGE11Ucode reads 0x011000 back once during the same
+ * sequence; this offset already stores whatever the guest last wrote as
+ * the entry-selection-gating prefix state (see REG_PREFIX's other uses),
+ * so a plain write-then-read-back must round-trip.
+ */
+static void test_prefix_register_reads_back(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    qtest_writel(qts, REG_PREFIX, 0x12345678);
+    g_assert_cmphex(qtest_readl(qts, REG_PREFIX), ==, 0x12345678);
 
     qtest_quit(qts);
 }
@@ -1491,6 +1574,8 @@ int main(int argc, char **argv)
                    test_ge_upload_slots_do_not_cross_contaminate);
     qtest_add_func("sn0/origin2000/mgras/ge-upload-rearm-rereads",
                    test_ge_upload_rearm_rereads_from_start);
+    qtest_add_func("sn0/origin2000/mgras/prefix-register-reads-back",
+                   test_prefix_register_reads_back);
     qtest_add_func("sn0/origin2000/mgras/context-recognizer-ordering",
                    test_context_recognizer_ordering);
     qtest_add_func("sn0/origin2000/mgras/entry-requires-prefix",

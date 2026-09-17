@@ -566,40 +566,55 @@ static void si_command(SGIMgrasState *s, uint64_t word)
 }
 
 /*
- * One GE11 engine slot's control port. 0x200000 resets both the write
- * pointer the load loop fills and the read pointer the verify loop drains;
- * a value with bit 31 set arms readback by resetting only the read pointer,
- * matching the driver's own "control 0x80000000 | count" step right before
- * it starts reading back. Every other control word (the 0x40038 mode flag
- * the driver pairs with a 0xd1 data write, the GE reset pulse this device
- * doesn't model) is accepted as opaque state, the same treatment this
- * device already gives undocumented control registers elsewhere.
+ * One GE11 engine slot's control port. A value of 0x200000 or 0x200001
+ * (bit 0 selects the verify pass's read-alignment) starts a new load: both
+ * the write pointer the load loop fills and the read pointer the verify
+ * loop drains reset to zero, and data-port writes append microcode words
+ * until the next control write. Any other control word ends the load --
+ * the driver's own 0x40038 mode-select word among them, always paired with
+ * a 0xd1 data write that is a register value, not a microcode word -- and,
+ * if bit 31 is set, rewinds the read pointer, matching the driver's own
+ * "control 0x80000000 | count" step right before it starts reading back a
+ * pass again.
  */
 static void si_ge_control_write(SGIMgrasState *s, unsigned int slot,
                                 uint32_t value)
 {
     s->ge_active_slot = slot;
-    if (value == 0x200000) {
+    if ((value & ~1u) == 0x200000) {
         s->ge_write_ptr[slot] = 0;
         s->ge_read_ptr[slot] = 0;
-    } else if (value & 0x80000000) {
-        s->ge_read_ptr[slot] = 0;
+        s->ge_read_odd[slot] = value & 1;
+        s->ge_load_mode[slot] = true;
+    } else {
+        if (value & 0x80000000) {
+            s->ge_read_ptr[slot] = 0;
+        }
+        s->ge_load_mode[slot] = false;
     }
 }
 
 /*
- * One GE11 engine slot's data port: each write appends one microcode word
- * to that slot's own buffer, matching the driver's three-writes-per-triple
- * load loop (traced in MgrasDownloadGE11Ucode). The 0xd1 marker word the
- * driver writes just before re-arming readback lands here too, but the
- * control write that follows it resets the pointer back to zero, so it
- * never reaches the buffer the verify loop actually reads from.
+ * One GE11 engine slot's data port: while a load is active (the most
+ * recent control write to this slot was 0x200000/0x200001), each write
+ * appends one microcode word to that slot's own buffer, matching the
+ * driver's three-writes-per-triple load loop (traced in
+ * MgrasDownloadGE11Ucode). Once the driver ends the load with a different
+ * control word, further data-port writes are opaque register-select/value
+ * traffic -- the 0xd1 word the driver writes right after 0x40038 is the
+ * confirmed case -- accepted without touching the microcode buffer or its
+ * write pointer, the same "accept as opaque state" treatment this device
+ * gives undocumented registers elsewhere.
  */
 static void si_ge_data_write(SGIMgrasState *s, hwaddr addr, unsigned size,
                              unsigned int slot, uint32_t value)
 {
-    uint32_t ptr = s->ge_write_ptr[slot];
+    uint32_t ptr;
 
+    if (!s->ge_load_mode[slot]) {
+        return;
+    }
+    ptr = s->ge_write_ptr[slot];
     if (ptr >= SGI_MGRAS_GE_WORDS) {
         si_error(s, addr, size, "GE upload overflow");
         return;
@@ -627,6 +642,12 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
     case SGI_MGRAS_INT_DEST_UPPER_ALT: return s->int_dest_upper;
     case SGI_MGRAS_INT_DEST_LOWER_ALT: return s->int_dest_lower;
     case SGI_MGRAS_WIDGET_CONTROL: return s->widget_control;
+    /*
+     * MgrasDownloadGE11Ucode reads this back once during the GE verify
+     * sequence; the write case below (0x011000) is the same offset's
+     * entry-selection-gating prefix state, so this just echoes it back.
+     */
+    case 0x011000: return s->prefix;
     case SGI_MGRAS_RESET_ARG: return s->reset_arg;
     /* See the header comment: a fixed population code, not an echo. */
     case SGI_MGRAS_RESET_CONTROL: return 0x0f000000;
@@ -852,16 +873,29 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
     case 0x130500: return s->entry;
     case 0x070d18: return s->cmap[s->cmap_index & 255];
     case 0x120400: return s->ready ? 0xf400 : 0;
+    /*
+     * See the GE port header comment: GE_READ_1 is the driver's compare
+     * port, GE_READ_2 the discard port it reads first and never checks.
+     * The read pointer is a unit index; GE_READ_1 yields flat word
+     * 2*ptr - odd and advances the pointer, GE_READ_2 yields the pass's
+     * other word from the same pair without advancing -- this device's own
+     * approximation for what GE_READ_2 carries, since the driver never
+     * validates it.
+     */
     case SGI_MGRAS_GE_READ_1:
     case SGI_MGRAS_GE_READ_2: {
         uint32_t slot = s->ge_active_slot;
-        uint32_t ptr = s->ge_read_ptr[slot];
+        int64_t idx = 2 * (int64_t)s->ge_read_ptr[slot] -
+                      s->ge_read_odd[slot] +
+                      (addr == SGI_MGRAS_GE_READ_2 ? 1 : 0);
 
-        if (ptr >= s->ge_words[slot]) {
+        if (addr == SGI_MGRAS_GE_READ_1) {
+            s->ge_read_ptr[slot]++;
+        }
+        if (idx < 0 || idx >= s->ge_words[slot]) {
             return 0;
         }
-        s->ge_read_ptr[slot] = ptr + 1;
-        return s->ge[slot][ptr];
+        return s->ge[slot][idx];
     }
     default:
         if (addr >= 0x050000 && addr < 0x050000 + sizeof(s->hq) && size == 4) {
@@ -1154,6 +1188,7 @@ static void si_reset(DeviceState *dev)
     for (int slot = 0; slot < 2; slot++) {
         memset(s->ge[slot], 0, sizeof(uint32_t) * SGI_MGRAS_GE_WORDS);
         s->ge_write_ptr[slot] = s->ge_read_ptr[slot] = s->ge_words[slot] = 0;
+        s->ge_read_odd[slot] = s->ge_load_mode[slot] = false;
     }
     s->ge_active_slot = 0;
     memset(s->context, 0, sizeof(s->context)); memset(s->cursor, 0, sizeof(s->cursor));

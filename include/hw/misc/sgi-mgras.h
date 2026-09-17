@@ -16,16 +16,29 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
 
 /*
  * GE11 microcode is uploaded to one of two engine slots, each with its own
- * data and control port. Live-traced from the retained driver's
- * MgrasDownloadGE11Ucode: a control write of 0x200000 resets that slot's
- * write and read pointers, each data-port write appends one word (bounded
- * at this many), and after the load a control write of 0x80000000 | count
- * arms readback through the shared read ports below, which this device
- * answers from the same slot's buffer in write order -- the exact
- * word-for-word readback ordering the real GE ASIC uses was not resolved
- * from the disassembly, so returning what was written, in the order it was
- * written, is this device's own approximation rather than a verified wire
- * contract.
+ * data and control port, then verified by reading it back through the two
+ * shared readback ports below. Root-caused by disassembling the retained
+ * disk's own rebuilt kernel (MgrasDownloadGE11Ucode,
+ * docs/plans/si-graphics-widget-wiring-handoff-20260916.md, "GE microcode
+ * download failure"): a control write of 0x200000 or 0x200001 resets that
+ * slot's write and read pointers and starts a new load, with bit 0
+ * selecting which of two verify-pass alignments the read pointer's unit
+ * index maps to; each data-port write, while the load is active, appends
+ * one flat microcode word (bounded at this many). Any other control write
+ * -- 0x40038 among them -- ends the load (further data-port writes are then
+ * opaque register-select/value traffic, not microcode) and, if bit 31 is
+ * set, rewinds the read pointer to reread from the start of the current
+ * pass.
+ *
+ * Each verify step reads the discard port (GE_READ_2) then the compare
+ * port (GE_READ_1). Confirmed against the driver's own comparison loop:
+ * the k-th compare-port read returns flat word w[2k] in the first
+ * (even/0x200000) pass and w[2k-1] in the second (odd/0x200001) pass --
+ * w[-1] reads as 0 -- and only the compare-port read advances the read
+ * pointer. What the discard port actually carries on real hardware is not
+ * observable through this driver (it never checks the value); this device
+ * returns the pass's other word from the same pair as its own approximation,
+ * not a confirmed wire contract.
  */
 #define SGI_MGRAS_GE_WORDS (59392 * 3)
 #define SGI_MGRAS_GE_SLOT_A 0
@@ -495,9 +508,15 @@ struct SGIMgrasState {
     uint32_t hq[5120];
     uint32_t *ge[2];
     uint32_t ge_write_ptr[2];
+    /* Unit index (not a flat word index); see the GE port header comment. */
     uint32_t ge_read_ptr[2];
     uint32_t ge_words[2];
     uint32_t ge_active_slot;
+    /* Per-slot verify-pass alignment (control bit 0) and load-vs-register-
+     * value mode, both from the most recent control write to that slot;
+     * see the GE port header comment. */
+    bool ge_read_odd[2];
+    bool ge_load_mode[2];
     uint32_t hq_words;
     uint32_t hq_hash;
     uint32_t ge_hash;
