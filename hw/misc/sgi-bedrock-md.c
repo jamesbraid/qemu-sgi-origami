@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-bedrock-md.h"
+#include "hw/misc/sgi-bedrock.h"
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
@@ -145,6 +146,16 @@ static uint64_t md_read(void *opaque, hwaddr offset, unsigned size)
     case 0x40050: return MD_REQUEST_QUEUE;
     }
     if (md_storage(offset, &index, &mask)) {
+        /*
+         * Performance counter 0 is plain storage, but the stock PROM uses it
+         * as a software lock word at the second SMP rendezvous. The owning
+         * node arbitrates a busy spin on it under multi-threaded TCG
+         * (sgi_bedrock_perf_counter_access, docs/known-issues.md); the value
+         * is unchanged. A standalone sgi-bedrock-md has no owning node.
+         */
+        if (index == MD_PERF_COUNTER0 && s->bedrock) {
+            sgi_bedrock_perf_counter_access(s->bedrock);
+        }
         return s->storage[index];
     }
     if (md_idle(offset)) {
@@ -189,6 +200,10 @@ static void md_write(void *opaque, hwaddr offset, uint64_t value,
     }
     if (md_storage(offset, &index, &mask)) {
         s->storage[index] = value & mask;
+        /* A write is an access to the software lock word, like a read. */
+        if (index == MD_PERF_COUNTER0 && s->bedrock) {
+            sgi_bedrock_perf_counter_access(s->bedrock);
+        }
         return;
     }
     if (md_idle(offset)) {
