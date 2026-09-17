@@ -250,7 +250,8 @@ test_peer_io_protect_vector_write_completes_clean(const void *data)
     qtest_quit(qts);
 }
 
-#define REMOTE_SCRATCH_DEADLINE_TICKS  12500  /* 10 ms at 1.25 MHz */
+/* Generous host-schedule margin, not a hardware bound: 5 s at 1.25 MHz. */
+#define REMOTE_SCRATCH_DEADLINE_TICKS  6250000
 #define REMOTE_SCRATCH_IDENTITY_BASE   0x30
 #define REMOTE_SCRATCH_ARMED           0x31
 #define REMOTE_SCRATCH_GO              0x32
@@ -302,8 +303,8 @@ static void build_remote_scratch_notification(SN0Image *p)
     sn0_patch_branch(p, branch, wait_armed);
 
     sn0_emit_i(p, SN0_OPC_LD, SN0_R_S2, SN0_R_T2, 0);
-    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_T2, SN0_R_T2,
-              REMOTE_SCRATCH_DEADLINE_TICKS);
+    sn0_emit_li(p, SN0_R_T0, REMOTE_SCRATCH_DEADLINE_TICKS);
+    sn0_emit_addu(p, SN0_R_T2, SN0_R_T2, SN0_R_T0);
     sn0_emit_i(p, SN0_OPC_ORI, SN0_R_ZERO, SN0_R_T1, REMOTE_SCRATCH_GO);
     sn0_emit_i(p, SN0_OPC_SD, R_S3, SN0_R_T1, 0);
     sn0_emit(p, 0x0000000f);                      /* sync */
