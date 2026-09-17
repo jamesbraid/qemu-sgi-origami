@@ -15,8 +15,6 @@
 #include "hw/block/flash.h"
 #include "hw/core/boards.h"
 #include "hw/misc/sgi-hub.h"
-#include "hw/pci-host/sgi-bridge.h"
-#include "hw/pci/pci.h"
 #include "sn-promdata.h"
 
 /*
@@ -38,9 +36,6 @@ typedef enum SN0ModelCpuKind {
 
 typedef enum SN0ModelComponentKind {
     SN0_COMPONENT_HUB,
-    SN0_COMPONENT_BASE_IO,
-    SN0_COMPONENT_IOC3,
-    SN0_COMPONENT_ISP1040,
 } SN0ModelComponentKind;
 
 typedef struct SN0ModelAddressSpace {
@@ -75,17 +70,8 @@ typedef struct SN0ModelAddressMap {
 
 typedef struct SN0ModelComponent {
     SN0ModelComponentKind kind;
-    uint8_t type;
-    uint8_t revision;
     uint8_t ni_revision;
     uint8_t widget_revision;
-    uint8_t physical_id;
-    uint8_t widget;
-    uint8_t device;
-    uint8_t function;
-    int8_t irq_input;
-    uint16_t subsystem_id;
-    uint32_t bar[2];
     uint8_t cpu_irq_bank0;
     uint8_t cpu_irq_bank1;
     uint8_t cpu_irq_rt;
@@ -95,13 +81,7 @@ typedef struct SN0ModelComponent {
     uint8_t i2c_elsc_addr;
     uint8_t i2c_nvram_first_addr;
     uint8_t i2c_nvram_pages;
-    uint8_t discovery_widget;
-    uint16_t decoded_widget_mask;
-    const char *part;
     uint64_t serial;
-    uint8_t prom_pi_probe_widget;
-    uint64_t prom_pi_probe_offset;
-    uint64_t prom_pi_probe_window_offset;
 } SN0ModelComponent;
 
 typedef struct SN0ModelMemory {
@@ -115,16 +95,6 @@ typedef struct SN0ModelMemory {
     unsigned int interleave_slots_per_bank;
 } SN0ModelMemory;
 
-typedef struct SN0ModelIoc3Population {
-    bool ethernet;
-    bool serial_a;
-    bool serial_b;
-    bool keyboard_mouse;
-    bool parallel;
-    bool timekeeper;
-    bool onewire_identity;
-} SN0ModelIoc3Population;
-
 /* The physical flash selection, independent of firmware contents. */
 typedef enum SN0ModelFlashKind {
     SN0_FLASH_AM29F080,
@@ -134,38 +104,18 @@ typedef struct SN0ModelFlash {
     SN0ModelFlashKind kind;
 } SN0ModelFlash;
 
-#define SN0_MODEL_MODULE_IDENTITY_PAGES 2
-#define SN0_MODEL_ONEWIRE_PAGE_SIZE 32
-
-typedef struct SN0ModelModuleIdentity {
-    uint8_t rom[8];
-    uint8_t page[SN0_MODEL_MODULE_IDENTITY_PAGES]
-                [SN0_MODEL_ONEWIRE_PAGE_SIZE];
-} SN0ModelModuleIdentity;
-
 typedef struct SN0ModelHardware {
     SN0ModelCpuKind cpu_kind;
-    uint64_t cpu_clock_hz;
-    uint32_t cpu_mode_bits;
     unsigned int cpu_slots_per_node;
     uint64_t hub_clock_hz;
     uint64_t rtc_clock_hz;
-    uint32_t firmware_machine_type;
-    uint32_t flash_read_cycles;
-    uint32_t flash_write_cycles;
     SN0ModelMemory memory;
 } SN0ModelHardware;
 
 typedef struct SN0ModelPhysicalNode {
     const char *id;
-    unsigned int module_index;
     unsigned int slot;
-    unsigned int cpu_first_id;
-    unsigned int cpu_count;
-    uint64_t memory_mib;
-    uint64_t bank_mib[8];
     const SN0ModelComponent *hub;
-    const SN0ModelModuleIdentity *module_identity;
     SN0ModelAddressMap map;
     SN0ModelFlash flash;
 } SN0ModelPhysicalNode;
