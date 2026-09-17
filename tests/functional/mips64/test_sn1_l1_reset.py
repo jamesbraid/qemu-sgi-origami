@@ -32,6 +32,19 @@ every fetch is valid from the very first instruction, before the guest
 program has set up CP0 Status.KX for 64-bit addressing itself, the same
 guarantee the real reset vector 0xbfc00000 gives the stock PROM.
 
+Physical memory is not backed until something programs the Bedrock
+memory/directory chip's memory-configuration register (hw/misc/sgi-
+bedrock-md.c, docs/datasheets/bedrock-memory-directory.md): it resets
+to zero, so every bank starts disabled, and the stock PROM's own self-
+test and provisional-word sequence is what enables and maps the
+installed banks before trusting memory. A third, file-less -device
+loader with addr, data and data-len writes the minimum equivalent of
+that sequence directly -- enabling the shipped 256 MiB bank at
+locational bank two and selecting it onto software bank zero, physical
+0x0 through 0x1fffffff, where STATE and both slices' own load addresses
+live -- on every reset its own hook runs for, the same way the PC-
+setting loaders above do.
+
 The L1 UART sits in the node's Hub-special register window, reached only
 through the uncached xkphys attribute the R10000 family drives out to
 the system interface (target/mips/system/r10k_addr.c): attribute 0 places
@@ -95,6 +108,35 @@ B_COUNT_TARGET = 8
 # transport (docs/datasheets/l1-controller.md, "Transport") and
 # hw/misc/sgi-bedrock.c's BEDROCK_L1_UART_OFFSET.
 L1_UART_DATA = 0x30000080
+
+# The Bedrock memory/directory chip's memory-configuration register
+# (docs/datasheets/bedrock-memory-directory.md, register 0x780008),
+# reached through the same Hub-special window as the L1 UART:
+# hw/misc/sgi-bedrock.c embeds the MD's own register file into the
+# node's register window at local offset 0x780000, and
+# hw/mips/sgi/sn1-node.c maps that window at SN1_SPACE_HUB
+# (0x10000000000) plus offset 0x30000000 -- the same base the L1 UART's
+# own attribute-0 access above resolves to through the CPU's xkphys
+# decode. A -device loader write goes straight to the machine bus and
+# skips that decode, so it needs the sum as a plain physical address.
+MD_MEMORY_CONFIG = 0x10000000000 + 0x30000000 + 0x780008
+
+# The shipped Origin 300 installs two 256 MiB DIMM banks at locational
+# banks two and three, not locational bank zero (hw/mips/sgi/sn1-node.c,
+# sn1_installed_bank_mib); the memory-configuration register's bank-select
+# field (bits 33:32) maps a locational bank onto a software bank by
+# exclusive-or (docs/datasheets/bedrock-memory-directory.md, "Bank
+# geometry"), so selecting 2 there puts locational bank two -- the first
+# installed one -- at software bank zero, physical 0x0 through
+# 0x1fffffff, where STATE and both slices' own load addresses live.
+# Bit 8 enables that bank; bits 15:12 carry its size code, 3 for 256 MiB
+# (same datasheet, the memory-configuration register's field table).
+# The stock PROM performs the equivalent programming itself before
+# trusting memory (same datasheet, "Stock-PROM self-test requirement");
+# this test never runs the PROM (see the module docstring), so it must
+# do the minimum of that job itself or physical memory stays exactly as
+# unbacked as it is before the PROM runs on real hardware.
+MD_MEMORY_CONFIG_VALUE = (2 << 32) | (3 << 12) | (1 << 8)
 
 # The 64-bit kernel mode the firmware itself selects at entry: clears
 # ERL/EXL and sets CP0 Status.KX, the same constant
@@ -442,6 +484,16 @@ class SN1L1Reset(QemuSystemTest):
             '-device',
             f'loader,file={slice_b},force-raw=on,addr={SLICE_B_LOAD:#x}',
             '-device', f'loader,addr={SLICE_B_PC:#x},cpu-num=1',
+            # Neither slice's own program runs the PROM, so nothing else
+            # programs the memory-configuration register the PROM
+            # otherwise writes before trusting memory; do that minimum
+            # here, on every reset this loader device's reset hook runs
+            # for, the same way the other loader devices above re-point
+            # each slice's PC on every reset rather than only the first.
+            '-device',
+            f'loader,addr={MD_MEMORY_CONFIG:#x},'
+            f'data={MD_MEMORY_CONFIG_VALUE:#x},data-len=8,data-be=on,'
+            'cpu-num=0',
             '-d', 'exec,trace:memory_region_ops_write,trace:cpu_reset',
             '-D', log)
         self.vm.launch()
