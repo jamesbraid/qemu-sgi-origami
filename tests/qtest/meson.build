@@ -314,7 +314,7 @@ sgi_xtalk_board_qtests = \
 # gated on their own combined test config rather than SGI_SN0/SGI_SN1.
 sgi_board_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_BOARD_TEST') ?
-    ['sgi-board-test'] : [])
+    ['sgi-board-test', 'sgi-board-backend-test'] : [])
 
 # The Origin 200 is a 64-bit machine, so its tests cannot be shared with the
 # 32-bit mips targets, where the machine does not exist.

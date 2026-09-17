@@ -138,39 +138,52 @@ struct SGIIp29IoState {
  * property claims the backend, so this board never holds one of its
  * own (see the header comment on "chardev-a" and its siblings above) --
  * it only carries the id long enough to hand it to the one child that
- * will actually claim it.
+ * will actually claim it. An id that names no real backend is refused
+ * here rather than left to build the IOC3 with that function unbound:
+ * a typo or a removed `-chardev` must not silently change which
+ * backends this board's IOC3 answers with.
  */
-static void ip29_io_pass_chardev(DeviceState *dev, const char *prop,
-                                 const char *id)
+static bool ip29_io_pass_chardev(DeviceState *dev, const char *prop,
+                                 const char *id, Error **errp)
 {
     Chardev *chr;
 
     if (!id) {
-        return;
+        return true;
     }
     chr = qemu_chr_find(id);
-    if (chr) {
-        qdev_prop_set_chr(dev, prop, chr);
+    if (!chr) {
+        error_setg(errp, "sgi-ip29-io: no chardev backend named '%s' for "
+                  "%s", id, prop);
+        return false;
     }
+    qdev_prop_set_chr(dev, prop, chr);
+    return true;
 }
 
 /*
  * Resolve a block backend id to its backend and set it on dev's own
  * "nvram-drive" property, before dev realizes: the same claim-timing
  * reason ip29_io_pass_chardev exists for, and the same reason this
- * board holds an id rather than a BlockBackend of its own.
+ * board holds an id rather than a BlockBackend of its own. An
+ * unresolved id is refused the same way.
  */
-static void ip29_io_pass_drive(DeviceState *dev, const char *id)
+static bool ip29_io_pass_drive(DeviceState *dev, const char *id,
+                               Error **errp)
 {
     BlockBackend *blk;
 
     if (!id) {
-        return;
+        return true;
     }
     blk = blk_by_name(id);
-    if (blk) {
-        qdev_prop_set_drive(dev, "nvram-drive", blk);
+    if (!blk) {
+        error_setg(errp, "sgi-ip29-io: no drive backend named '%s' for "
+                  "nvram-drive", id);
+        return false;
     }
+    qdev_prop_set_drive(dev, "nvram-drive", blk);
+    return true;
 }
 
 static bool ip29_io_build_widget(SGIXtalkBoardState *board, Error **errp)
@@ -230,13 +243,19 @@ static bool ip29_io_build_widget(SGIXtalkBoardState *board, Error **errp)
                         SGI_IOC3_TIMEKEEPER_M48T35);
     qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial",
                          s->ioc3_onewire_serial);
-    ip29_io_pass_drive(DEVICE(ioc3), s->nvram_drive_id);
-    ip29_io_pass_chardev(DEVICE(ioc3), "chardev-a", s->chardev_a_id);
-    ip29_io_pass_chardev(DEVICE(ioc3), "chardev-b", s->chardev_b_id);
-    ip29_io_pass_chardev(DEVICE(ioc3), "record-a", s->record_a_id);
-    ip29_io_pass_chardev(DEVICE(ioc3), "record-b", s->record_b_id);
-    ip29_io_pass_chardev(DEVICE(ioc3), "parallel-chardev",
-                         s->parallel_chardev_id);
+    if (!ip29_io_pass_drive(DEVICE(ioc3), s->nvram_drive_id, errp) ||
+        !ip29_io_pass_chardev(DEVICE(ioc3), "chardev-a", s->chardev_a_id,
+                              errp) ||
+        !ip29_io_pass_chardev(DEVICE(ioc3), "chardev-b", s->chardev_b_id,
+                              errp) ||
+        !ip29_io_pass_chardev(DEVICE(ioc3), "record-a", s->record_a_id,
+                              errp) ||
+        !ip29_io_pass_chardev(DEVICE(ioc3), "record-b", s->record_b_id,
+                              errp) ||
+        !ip29_io_pass_chardev(DEVICE(ioc3), "parallel-chardev",
+                              s->parallel_chardev_id, errp)) {
+        return false;
+    }
     pci_realize_and_unref(ioc3, bus, &error_abort);
     pci_set_byte(ioc3->config + PCI_REVISION_ID, IP29_IO_IOC3_REVISION);
     /* Direct board wiring, not the bus's own per-slot PCI INTx rule. */

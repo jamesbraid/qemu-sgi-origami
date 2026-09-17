@@ -125,20 +125,25 @@ struct SGIBaseioState {
  * Resolve a chardev id to its backend and set it on dev's own
  * same-named property, before dev realizes; see the header comment on
  * "chardev-a" and its siblings above for why this board never holds a
- * "chardev" property of its own.
+ * "chardev" property of its own. An id that names no real backend is
+ * refused here; see sgi-ip29-io's identical helper for why.
  */
-static void baseio_pass_chardev(DeviceState *dev, const char *prop,
-                                const char *id)
+static bool baseio_pass_chardev(DeviceState *dev, const char *prop,
+                                const char *id, Error **errp)
 {
     Chardev *chr;
 
     if (!id) {
-        return;
+        return true;
     }
     chr = qemu_chr_find(id);
-    if (chr) {
-        qdev_prop_set_chr(dev, prop, chr);
+    if (!chr) {
+        error_setg(errp, "sgi-baseio: no chardev backend named '%s' for "
+                  "%s", id, prop);
+        return false;
     }
+    qdev_prop_set_chr(dev, prop, chr);
+    return true;
 }
 
 /*
@@ -146,17 +151,22 @@ static void baseio_pass_chardev(DeviceState *dev, const char *prop,
  * "nvram-drive" property, before dev realizes; see baseio_pass_chardev
  * and sgi-ip29-io's header for why this board holds only an id.
  */
-static void baseio_pass_drive(DeviceState *dev, const char *id)
+static bool baseio_pass_drive(DeviceState *dev, const char *id,
+                              Error **errp)
 {
     BlockBackend *blk;
 
     if (!id) {
-        return;
+        return true;
     }
     blk = blk_by_name(id);
-    if (blk) {
-        qdev_prop_set_drive(dev, "nvram-drive", blk);
+    if (!blk) {
+        error_setg(errp, "sgi-baseio: no drive backend named '%s' for "
+                  "nvram-drive", id);
+        return false;
     }
+    qdev_prop_set_drive(dev, "nvram-drive", blk);
+    return true;
 }
 
 static bool baseio_build_widget(SGIXtalkBoardState *board, Error **errp)
@@ -218,11 +228,17 @@ static bool baseio_build_widget(SGIXtalkBoardState *board, Error **errp)
                         SGI_IOC3_TIMEKEEPER_M48T35);
     qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial",
                          s->ioc3_onewire_serial);
-    baseio_pass_drive(DEVICE(ioc3), s->nvram_drive_id);
-    baseio_pass_chardev(DEVICE(ioc3), "chardev-a", s->chardev_a_id);
-    baseio_pass_chardev(DEVICE(ioc3), "chardev-b", s->chardev_b_id);
-    baseio_pass_chardev(DEVICE(ioc3), "record-a", s->record_a_id);
-    baseio_pass_chardev(DEVICE(ioc3), "record-b", s->record_b_id);
+    if (!baseio_pass_drive(DEVICE(ioc3), s->nvram_drive_id, errp) ||
+        !baseio_pass_chardev(DEVICE(ioc3), "chardev-a", s->chardev_a_id,
+                             errp) ||
+        !baseio_pass_chardev(DEVICE(ioc3), "chardev-b", s->chardev_b_id,
+                             errp) ||
+        !baseio_pass_chardev(DEVICE(ioc3), "record-a", s->record_a_id,
+                             errp) ||
+        !baseio_pass_chardev(DEVICE(ioc3), "record-b", s->record_b_id,
+                             errp)) {
+        return false;
+    }
     pci_realize_and_unref(ioc3, bus, &error_abort);
     pci_set_byte(ioc3->config + PCI_REVISION_ID, BASEIO_IOC3_REVISION);
     /* Direct board wiring, not the bus's own per-slot PCI INTx rule. */
