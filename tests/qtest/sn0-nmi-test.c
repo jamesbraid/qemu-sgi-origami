@@ -28,7 +28,6 @@
 #define ERROREPC_OFF        0x20
 
 #define READY_MAGIC         0x1400
-#define POLL_TRIES          10000
 #define POLL_INTERVAL_US    1000
 
 #define OPC_SPECIAL         (0x00u << 26)
@@ -164,15 +163,18 @@ static uint64_t state_word(QTestState *qts, uint64_t off)
 
 static void wait_for_state(QTestState *qts, uint64_t off, uint64_t expected)
 {
-    unsigned int tries;
+    /*
+     * A generous host-schedule margin, not a guest timing bound: under a
+     * loaded runner the guest still needs real wall-clock time to reach
+     * the next state. A guest state machine that never advances still
+     * fails, just not on host contention alone.
+     */
+    int64_t deadline = g_get_monotonic_time() + 60 * G_TIME_SPAN_SECOND;
 
-    for (tries = 0; tries < POLL_TRIES; tries++) {
-        if (state_word(qts, off) == expected) {
-            return;
-        }
+    while (state_word(qts, off) != expected) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
         g_usleep(POLL_INTERVAL_US);
     }
-    g_assert_cmphex(state_word(qts, off), ==, expected);
 }
 
 static char *cpu_qom_path(QTestState *qts)
