@@ -309,6 +309,21 @@ static void build_program(Image *p)
     emit_nop(p);
 }
 
+static void write_exact(int fd, const uint8_t *buf, size_t len)
+{
+    size_t sent = 0;
+
+    while (sent < len) {
+        ssize_t n = write(fd, buf + sent, len - sent);
+
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        g_assert_cmpint(n, >, 0);
+        sent += n;
+    }
+}
+
 static char *write_image(void)
 {
     g_autoptr(GError) error = NULL;
@@ -321,7 +336,7 @@ static char *write_image(void)
     fd = g_file_open_tmp("sn1-hub-lock-prom-XXXXXX.bin", &path, &error);
     g_assert_no_error(error);
     g_assert_cmpint(fd, >=, 0);
-    g_assert_cmpint(write(fd, bytes, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    write_exact(fd, bytes, PROM_SIZE);
     g_assert_cmpint(close(fd), ==, 0);
     return path;
 }
