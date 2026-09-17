@@ -62,16 +62,19 @@
 #include "system/system.h"
 #include "trace/control.h"
 #include "cpu.h"
+#include "hw/mips/sgi/board-io8.h"
 #include "hw/mips/sgi/sn-machine.h"
 #include "hw/mips/sgi/sn1-node.h"
 #include "hw/mips/sn0-fabric-routed.h"
 #include "sn0.h"
 
 /*
- * The four onboard/plugged board classes have no shared header (see
- * hw/mips/sgi/xtalk-test-board.c's own precedent): each names its QOM
- * type entirely inside its own file, because nothing before this builder
- * has needed to name one from outside.
+ * Three of the four onboard/plugged board classes have no shared header
+ * (see hw/mips/sgi/xtalk-test-board.c's own precedent): each names its
+ * QOM type entirely inside its own file, because nothing before this
+ * builder has needed to name one from outside. sgi-io8 is the exception
+ * (board-io8.h): Origin 300's Bedrock needs its own per-widget views,
+ * which the base class's one-view-per-board contract does not carry.
  */
 #define TYPE_SGI_IP29_IO "sgi-ip29-io"
 #define TYPE_SGI_BASEIO "sgi-baseio"
@@ -1099,9 +1102,34 @@ bool sgi_machine_validate_topology(const SGIModelTopology *t, Error **errp)
         const SGIModelIoBoard *board = &t->io_boards[i];
 
         if (board->board_kind != SGI_MODEL_IO_IP29_IO &&
-            board->board_kind != SGI_MODEL_IO_BASEIO) {
+            board->board_kind != SGI_MODEL_IO_BASEIO &&
+            board->board_kind != SGI_MODEL_IO_IO8) {
             error_setg(errp, "topology '%s' io board '%s' names an "
                       "unsupported board kind", t->name, board->id);
+            return false;
+        }
+    }
+
+    /*
+     * A Bedrock topology's IO-8 is fixed, always-present silicon (this
+     * class's own header comment), not optional configuration -- unlike
+     * the Hub products, where an io_boards[] entry with nothing behind it
+     * (pci_count 0) can be a genuinely empty slot. A Bedrock node with no
+     * populated IO-8 board entry names data the builder cannot act on.
+     */
+    if (t->nodes[0].asic_kind != SGI_MODEL_ASIC_HUB) {
+        bool has_populated_io8 = false;
+
+        for (i = 0; i < t->io_board_count; i++) {
+            if (t->io_boards[i].board_kind == SGI_MODEL_IO_IO8 &&
+                t->io_boards[i].pci_count) {
+                has_populated_io8 = true;
+                break;
+            }
+        }
+        if (!has_populated_io8) {
+            error_setg(errp, "topology '%s' names a Bedrock node with no "
+                      "populated IO-8 board", t->name);
             return false;
         }
     }
@@ -1157,26 +1185,125 @@ static const char *sgi_machine_io_board_type(const SGIModelIoBoard *record)
 {
     /*
      * board_kind alone decides the class: the descriptor already names
-     * which board this is, and inferring it instead from how the board
-     * attaches (direct vs. Crossbow) happened to agree with board_kind
-     * on every topology shipped so far, which is exactly what let
-     * Origami's compiled origin200 descriptor's own defect -- emitting
-     * SGI_MODEL_IO_BASEIO for the Origin 200 System Board's onboard I/O
-     * instead of SGI_MODEL_IO_IP29_IO -- go unnoticed here. Origami's
-     * exporter fix (branch sn/exporter-data-fixes) has no pushed commits
-     * to regenerate this file from yet, so sn-model.c carries a disclosed
-     * hand correction for the three affected entries instead (see its
-     * own header comment); sgi_machine_validate_topology rejects any
-     * other board_kind before this function ever sees it.
+     * which board this is. Origami trunk eb6eff401f corrected the
+     * exporter's own defect that once made inferring the class from how
+     * a board attaches (direct vs. Crossbow) agree with board_kind on
+     * every topology shipped so far -- hw/mips/sgi/sn-model.c is now that
+     * corrected exporter's exact output; sgi_machine_validate_topology
+     * rejects any other board_kind before this function ever sees it.
      */
     switch (record->board_kind) {
     case SGI_MODEL_IO_IP29_IO:
         return TYPE_SGI_IP29_IO;
     case SGI_MODEL_IO_BASEIO:
         return TYPE_SGI_BASEIO;
+    case SGI_MODEL_IO_IO8:
+        return TYPE_SGI_IO8;
     default:
         g_assert_not_reached();
     }
+}
+
+/*
+ * Builds and realizes the topology's one Bedrock-attached I/O board
+ * (today always sgi-io8) from its populated io_boards[] entry, wiring its
+ * "fabric" link to the region the caller supplies. Every I/O board's
+ * device is created here regardless of node kind, matching the Hub
+ * products' sgi_machine_build_io_board() above; what differs is the
+ * caller and the timing. Origin 300's Bedrock has no Crossbow, so there
+ * is no module Crossbow's own address space to hand this class at
+ * machine setup time the way the Hub path does -- the region only exists
+ * once the node's own Bedrock device has been created, which is
+ * sn1-node.c's job, not this builder's. sn1-node.c calls this once its
+ * own Bedrock exists (created, not yet realized: sysbus_init_mmio() has
+ * already given it the crosstalk egress region this needs). "slot" has no
+ * Origin 300 hardware meaning of its own (sgi-io8's own header comment);
+ * the caller supplies the fixed crosstalk port the whole chip answers on
+ * only to satisfy the base class's module+slot uniqueness registry.
+ */
+DeviceState *sgi_machine_build_bedrock_io_board(
+    const SGIModelIoBoard *record, unsigned int slot, MemoryRegion *fabric,
+    Error **errp)
+{
+    DeviceState *dev;
+    size_t i;
+
+    dev = qdev_new(sgi_machine_io_board_type(record));
+    object_property_add_child(qdev_get_machine(), "io-board0", OBJECT(dev));
+    object_unref(OBJECT(dev));
+    qdev_prop_set_uint32(dev, "module", record->module_index);
+    qdev_prop_set_uint32(dev, "slot", slot);
+    qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
+    /*
+     * The onboard IOC3's own one-wire identity part carries its own
+     * separate serial, a fact about this specific fitted unit -- the
+     * descriptor's own io_boards[].pci[] entry for the IOC3 function, not
+     * the board's own "onewire-serial" above. Matches
+     * sgi_machine_build_io_board's identical comment.
+     */
+    for (i = 0; i < record->pci_count; i++) {
+        if (record->pci[i].kind == SGI_MODEL_PCI_IOC3) {
+            qdev_prop_set_uint64(dev, "ioc3-onewire-serial",
+                                 record->pci[i].serial);
+            break;
+        }
+    }
+    /*
+     * The onboard IOC3's Timekeeper storage: an indexed `-drive if=mtd`
+     * first, else a bare `-drive if=none,id=sgi-nvram0` by name -- one
+     * Bedrock node, so always index/id zero, unlike the Hub path's
+     * per-board index. Passed as the resolved backend's own name, not the
+     * backend itself, for the claim-timing reason
+     * sgi_machine_build_io_board's identical comment gives.
+     */
+    {
+        DriveInfo *nvram_dinfo = drive_get(IF_MTD, 0, 0);
+        BlockBackend *nvram_blk = nvram_dinfo ?
+            blk_by_legacy_dinfo(nvram_dinfo) : blk_by_name("sgi-nvram0");
+
+        if (nvram_blk) {
+            qdev_prop_set_string(dev, "nvram-drive", blk_name(nvram_blk));
+        }
+    }
+    /*
+     * The onboard IOC3's serial and parallel backends, named by chardev
+     * id for the same claim-timing reason. serial_hd(0) is the L1
+     * console -- this node's own controller, not this board's -- so the
+     * onboard IOC3 takes indices one through four rather than the Hub
+     * path's sgi_machine_compute_serial_line() console-first ordering,
+     * which assumes a Hub node's own six-line block with no console
+     * device of its own ahead of it.
+     */
+    {
+        Chardev *chr;
+
+        chr = serial_hd(1);
+        if (chr) {
+            qdev_prop_set_string(dev, "chardev-a", chr->label);
+        }
+        chr = serial_hd(2);
+        if (chr) {
+            qdev_prop_set_string(dev, "chardev-b", chr->label);
+        }
+        chr = serial_hd(3);
+        if (chr) {
+            qdev_prop_set_string(dev, "record-a", chr->label);
+        }
+        chr = serial_hd(4);
+        if (chr) {
+            qdev_prop_set_string(dev, "record-b", chr->label);
+        }
+        if (parallel_hds[0]) {
+            qdev_prop_set_string(dev, "parallel-chardev",
+                                 parallel_hds[0]->label);
+        }
+    }
+    object_property_set_link(OBJECT(dev), "fabric", OBJECT(fabric),
+                             &error_abort);
+    if (!sysbus_realize(SYS_BUS_DEVICE(dev), errp)) {
+        return NULL;
+    }
+    return dev;
 }
 
 /*
@@ -1429,22 +1556,6 @@ static uint16_t sgi_machine_crossbar_startup_alive(
             mask |= 1u << attachment->widget;
         }
     }
-    return mask;
-}
-
-uint32_t sgi_machine_ioc3_population(
-    const SGIModelIoc3Population *population)
-{
-    uint32_t mask = 0;
-
-    mask |= population->ethernet ? SGI_IOC3_POPULATION_ETHERNET : 0;
-    mask |= population->serial_a ? SGI_IOC3_POPULATION_SERIAL_A : 0;
-    mask |= population->serial_b ? SGI_IOC3_POPULATION_SERIAL_B : 0;
-    mask |= population->keyboard_mouse ?
-        SGI_IOC3_POPULATION_KEYBOARD_MOUSE : 0;
-    mask |= population->parallel ? SGI_IOC3_POPULATION_PARALLEL : 0;
-    mask |= population->onewire_identity ?
-        SGI_IOC3_POPULATION_ONEWIRE_IDENTITY : 0;
     return mask;
 }
 
@@ -1893,6 +2004,15 @@ static void sgi_machine_wire_io_board(
  * and finally realize -- which is also the first moment its real packet
  * and plain ingress regions exist, so the per-node and per-board proxies
  * built above are aliased onto them only here.
+ *
+ * A Bedrock topology's own crossbar_count is not zero (its descriptor
+ * names the fused chip's own internal crossbar section, kind
+ * SGI_MODEL_CROSSBAR_XBRIDGE, so a caller inspecting the descriptor alone
+ * can still see it), but it names no real, separately realized Crossbow
+ * for this hook to build: sn1-node.c already built and realized Bedrock's
+ * one I/O board directly, synchronously, before this run ever reaches
+ * machine-init-done. Every array and lookup below this guard (s->nodes[],
+ * sgi_machine_index_xtalk_attachments) is Hub-only.
  */
 static void sgi_machine_attach_crossbars(Notifier *notifier, void *data)
 {
@@ -1903,7 +2023,8 @@ static void sgi_machine_attach_crossbars(Notifier *notifier, void *data)
     g_autofree unsigned int *board_attachment = NULL;
     size_t i;
 
-    if (!t || !t->crossbar_count) {
+    if (!t || !t->crossbar_count ||
+        t->nodes[0].asic_kind != SGI_MODEL_ASIC_HUB) {
         return;
     }
     node_attachment = g_new0(unsigned int, t->node_count);
@@ -2589,25 +2710,23 @@ void sgi_machine_init(MachineState *machine)
 
     if (t->nodes[0].asic_kind != SGI_MODEL_ASIC_HUB) {
         const SGIModelIoBoard *populated_board = NULL;
-        unsigned int populated_widget = 0;
         g_autofree unsigned int *widgets = NULL;
         size_t widget_count = 0;
         size_t i;
         Object *node;
 
         g_assert(t->node_count == 1);
-        for (i = 0; i < t->io_board_count && i < t->xtalk_attachment_count;
-             i++) {
+        for (i = 0; i < t->io_board_count; i++) {
             if (t->io_boards[i].pci_count) {
                 populated_board = &t->io_boards[i];
-                populated_widget = t->xtalk_attachments[i].widget;
             }
         }
         /*
          * Widget zero is the crossbar's own local view; the rest come one
          * per xtalk attachment (a board slot, populated or not -- see
          * sn1-node.c's widget-wiring comment for why an empty slot still
-         * needs one).
+         * needs one). sgi_machine_validate_topology has already refused a
+         * Bedrock topology with no populated_board.
          */
         widgets = g_new0(unsigned int, t->xtalk_attachment_count + 1);
         widgets[widget_count++] = 0;
@@ -2621,7 +2740,6 @@ void sgi_machine_init(MachineState *machine)
         s->bedrock_node = DEVICE(node);
         SN1_NODE(node)->model_node = &t->nodes[0];
         SN1_NODE(node)->io_board = populated_board;
-        SN1_NODE(node)->pci_widget = populated_widget;
         SN1_NODE(node)->xbridge_widgets = g_steal_pointer(&widgets);
         SN1_NODE(node)->xbridge_widget_count = widget_count;
         object_property_set_link(OBJECT(node), "ram", OBJECT(machine->ram),

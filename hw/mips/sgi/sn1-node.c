@@ -7,7 +7,11 @@
  * clock, sets its populated I/O board (if any) and realizes it; this
  * file owns everything the node needs to become a running Origin 300:
  * the PROM/flash policy, the node's own address-space views, the CPUs,
- * Bedrock, L1, XBridge and the XBridge's PCI population.
+ * Bedrock and L1. The onboard IO-8 (sgi-io8, board-io8.c) is the
+ * builder's own device too, built through
+ * sgi_machine_build_bedrock_io_board() once this file's own Bedrock
+ * exists -- see that function's comment for why the call has to happen
+ * here rather than in sn-machine.c directly.
  *
  * Node strides, window splits and unit offsets are Bedrock hardware
  * facts, not configuration, so the addresses below are constants here
@@ -27,14 +31,12 @@
 #include "hw/core/cpu.h"
 #include "hw/core/qdev-clock.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/mips/sgi/board-io8.h"
 #include "hw/mips/sgi/sn-machine.h"
 #include "hw/misc/sgi-bedrock.h"
 #include "hw/misc/sgi-bedrock-flash.h"
 #include "hw/misc/sgi-bedrock-pi.h"
-#include "hw/misc/sgi-ioc3.h"
 #include "hw/misc/sgi-l1.h"
-#include "hw/pci-host/sgi-xbridge.h"
-#include "hw/pci/pci.h"
 #include "migration/vmstate.h"
 #include "net/net.h"
 #include "system/address-spaces.h"
@@ -85,10 +87,6 @@
 #define SN1_BOARD_ID_OFFSET UINT64_C(0x4000000)
 /* Bits 15:12 are the product code; the low byte selects the 500 MHz PSC. */
 #define SN1_BOARD_ID_VALUE UINT64_C(0x8001)
-
-/* The IO-8's transceiver and SuperIO wiring: fixed board facts. */
-#define SN1_IOC3_PHY_ADDR 1
-#define SN1_IOC3_SUPERIO_PIN 0
 
 #define SN1_MIPS_HARDWARE_IRQ_OFFSET 2
 
@@ -714,8 +712,8 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
     }
 }
 
-static void sn1_node_create_bedrock(SN1NodeState *node,
-                                    MachineState *machine)
+static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
+                                    Error **errp)
 {
     Chardev *l1_console = serial_hd(0);
     MemoryRegion *system = get_system_memory();
@@ -786,37 +784,39 @@ static void sn1_node_create_bedrock(SN1NodeState *node,
     object_property_set_link(OBJECT(node->bedrock), "l1-uart",
                              OBJECT(l1_uart), &error_abort);
 
-    node->xbridge = qdev_new(TYPE_SGI_XBRIDGE);
-    object_property_add_child(OBJECT(node), "xbridge", OBJECT(node->xbridge));
-    qdev_prop_set_uint8(node->xbridge, "host-port", SN1_XBRIDGE_HOST_PORT);
-    /* Widget 15's responder is a compatibility choice, not observed wiring. */
-    qdev_prop_set_string(node->xbridge, "board-part-f",
-                         SGI_XBRIDGE_NIC_PLACEHOLDER_PART);
-    object_property_set_link(
-        OBJECT(node->xbridge), "fabric",
-        OBJECT(sysbus_mmio_get_region(SYS_BUS_DEVICE(node->bedrock), 2)),
-        &error_abort);
+    /*
+     * The onboard IO-8 (sgi-io8) is the family builder's own device, like
+     * every other product's onboard board -- built and realized here,
+     * against Bedrock's own crosstalk egress region (sysbus_init_mmio()
+     * has already given the not-yet-realized Bedrock device that region;
+     * see sgi_machine_build_bedrock_io_board's own comment), rather than
+     * by this file directly.
+     */
+    node->io8 = sgi_machine_build_bedrock_io_board(
+        node->io_board, SN1_XBRIDGE_HOST_PORT,
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(node->bedrock), 2), errp);
+    if (!node->io8) {
+        return false;
+    }
     /*
      * Every widget the crossbar decodes: the host's own local view (widget
      * zero) plus one per xtalk attachment, including a board slot with
      * nothing plugged in -- its head still answers "no PCI device here"
-     * through the XBridge itself, which a widget left undecoded could not.
+     * through the IO-8 itself, which a widget left undecoded could not.
      */
     for (i = 0; i < node->xbridge_widget_count; i++) {
         g_autofree char *property =
             g_strdup_printf("widget-%u", node->xbridge_widgets[i]);
 
-        object_property_set_link(OBJECT(node->bedrock), property,
-                                 OBJECT(sgi_xbridge_widget_view(
-                                     SGI_XBRIDGE(node->xbridge),
-                                     node->xbridge_widgets[i])),
-                                 &error_abort);
+        object_property_set_link(
+            OBJECT(node->bedrock), property,
+            OBJECT(sgi_io8_widget_view(SGI_IO8(node->io8),
+                                       node->xbridge_widgets[i])),
+            &error_abort);
     }
 
     sysbus_realize(SYS_BUS_DEVICE(node->bedrock), &error_fatal);
     object_unref(OBJECT(node->bedrock));
-    sysbus_realize(SYS_BUS_DEVICE(node->xbridge), &error_fatal);
-    object_unref(OBJECT(node->xbridge));
     bedrock = SYS_BUS_DEVICE(node->bedrock);
     hub_registers = &SGI_BEDROCK(node->bedrock)->hub_special_registers;
 
@@ -906,137 +906,7 @@ static void sn1_node_create_bedrock(SN1NodeState *node,
                 mips_cpu->env.irq[SN1_MIPS_HARDWARE_IRQ_OFFSET + line]);
         }
     }
-}
-
-static const char *sn1_node_pci_type(SGIModelPciKind kind)
-{
-    switch (kind) {
-    case SGI_MODEL_PCI_ISP12160:
-        return "qlogic-isp12160";
-    case SGI_MODEL_PCI_IOC3:
-        return TYPE_SGI_IOC3;
-    case SGI_MODEL_PCI_LUCENT_OHCI:
-        return "lucent-ohci";
-    default:
-        g_assert_not_reached();
-    }
-}
-
-/*
- * The unobserved-placeholder subsystem vendor a datasheet capture never
- * fixed for this board (isp12160, lucent-ohci), or the class's own public
- * vendor (ioc3) -- a device-kind fact, not per-configuration data.
- */
-static uint16_t sn1_node_pci_subsystem_vendor(SGIModelPciKind kind)
-{
-    switch (kind) {
-    case SGI_MODEL_PCI_IOC3:
-        return SGI_IOC3_VENDOR_ID;
-    default:
-        return 0xffff;
-    }
-}
-
-static void sn1_node_configure_ioc3(DeviceState *ioc3,
-                                    const SGIModelPciFunction *function)
-{
-    DriveInfo *nvram_dinfo = drive_get(IF_MTD, 0, 0);
-    BlockBackend *nvram_blk = nvram_dinfo ?
-        blk_by_legacy_dinfo(nvram_dinfo) : blk_by_name("sgi-nvram0");
-    Chardev *serial_a = serial_hd(1);
-    Chardev *serial_b = serial_hd(2);
-    Chardev *record_a = serial_hd(3);
-    Chardev *record_b = serial_hd(4);
-
-    if (serial_a) {
-        qdev_prop_set_chr(ioc3, "chardev-a", serial_a);
-    }
-    if (serial_b) {
-        qdev_prop_set_chr(ioc3, "chardev-b", serial_b);
-    }
-    if (record_a) {
-        qdev_prop_set_chr(ioc3, "record-a", record_a);
-    }
-    if (record_b) {
-        qdev_prop_set_chr(ioc3, "record-b", record_b);
-    }
-    if (parallel_hds[0]) {
-        qdev_prop_set_chr(ioc3, "parallel-chardev", parallel_hds[0]);
-    }
-    qdev_prop_set_uint16(ioc3, "subsystem-id", function->subsystem_id);
-    qdev_prop_set_uint32(ioc3, "population",
-                         sgi_machine_ioc3_population(
-                             &function->ioc3_population));
-    qdev_prop_set_uint8(ioc3, "timekeeper-kind",
-                        function->ioc3_population.timekeeper ?
-                        SGI_IOC3_TIMEKEEPER_M48T35 : SGI_IOC3_TIMEKEEPER_NONE);
-    qdev_prop_set_uint64(ioc3, "onewire-serial", function->serial);
-    /*
-     * The IO-8's transceiver answers at MII address 1 as a DP83843, not
-     * the Origin 200 BaseIO's default address 31 DP83840A
-     * (docs/datasheets/dp83840.md).
-     */
-    qdev_prop_set_uint8(ioc3, "phy-addr", SN1_IOC3_PHY_ADDR);
-    object_property_set_bool(OBJECT(ioc3), "phy-dp83843", true, &error_abort);
-    if (nvram_blk) {
-        qdev_prop_set_drive(ioc3, "nvram-drive", nvram_blk);
-    }
-}
-
-static const char *sn1_node_pci_child_name(SGIModelPciKind kind)
-{
-    switch (kind) {
-    case SGI_MODEL_PCI_ISP12160:
-        return "scsi";
-    case SGI_MODEL_PCI_IOC3:
-        return "ioc3";
-    case SGI_MODEL_PCI_LUCENT_OHCI:
-        return "usb";
-    default:
-        g_assert_not_reached();
-    }
-}
-
-static void sn1_node_create_pci_devices(SN1NodeState *node)
-{
-    size_t i;
-
-    if (!node->io_board) {
-        return;
-    }
-    for (i = 0; i < node->io_board->pci_count; i++) {
-        const SGIModelPciFunction *function = &node->io_board->pci[i];
-        PCIDevice *dev = pci_new(
-            PCI_DEVFN(function->device, function->function),
-            sn1_node_pci_type(function->kind));
-        g_autofree char *intx =
-            g_strdup_printf("head-%x-pci-intx", node->pci_widget);
-        g_autofree char *pin = g_strdup_printf("head-%x-pin", node->pci_widget);
-
-        object_property_add_child(OBJECT(node),
-                                  sn1_node_pci_child_name(function->kind),
-                                  OBJECT(dev));
-        if (function->kind == SGI_MODEL_PCI_IOC3) {
-            sn1_node_configure_ioc3(DEVICE(dev), function);
-        }
-        qdev_connect_gpio_out_named(
-            node->xbridge, intx, function->device * PCI_NUM_PINS,
-            qdev_get_gpio_in_named(node->xbridge, pin, function->irq_input));
-        pci_realize_and_unref(dev,
-                              sgi_xbridge_pci_bus(SGI_XBRIDGE(node->xbridge),
-                                                  node->pci_widget),
-                              &error_fatal);
-        pci_set_byte(dev->config + PCI_REVISION_ID, function->revision);
-        pci_set_word(dev->config + PCI_SUBSYSTEM_VENDOR_ID,
-                     sn1_node_pci_subsystem_vendor(function->kind));
-        pci_set_word(dev->config + PCI_SUBSYSTEM_ID, function->subsystem_id);
-        if (function->kind == SGI_MODEL_PCI_IOC3) {
-            qdev_connect_gpio_out(
-                DEVICE(dev), 0,
-                qdev_get_gpio_in_named(node->xbridge, pin,
-                                      SN1_IOC3_SUPERIO_PIN));
-        }
-    }
+    return true;
 }
 
 static void sn1_node_realize(DeviceState *dev, Error **errp)
@@ -1049,8 +919,9 @@ static void sn1_node_realize(DeviceState *dev, Error **errp)
         return;
     }
     sn1_node_create_cpus(node, machine);
-    sn1_node_create_bedrock(node, machine);
-    sn1_node_create_pci_devices(node);
+    if (!sn1_node_create_bedrock(node, machine, errp)) {
+        return;
+    }
 }
 
 static void sn1_node_unrealize(DeviceState *dev)

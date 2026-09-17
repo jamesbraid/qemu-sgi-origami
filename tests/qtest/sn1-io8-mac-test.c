@@ -11,7 +11,13 @@
 #define L1_UART_BASE (UINT64_C(0x10000000000) + UINT64_C(0x30000000) + 0x80)
 #define L1_UART_STATUS 0x28
 #define L1_STATUS_READY 0x61
-#define IOC3_PATH "/machine/node0/ioc3"
+/*
+ * The onboard IO-8 (sgi-io8) is a crosstalk board like every other
+ * product's onboard I/O now, reparented under its module and the fixed
+ * crosstalk port the whole chip answers on (host-port 0xa) rather than
+ * living directly under the node.
+ */
+#define IOC3_PATH "/machine/module0/slot10/ioc3"
 #define MAC "02:00:5d:aa:bb:cc"
 
 /* The 16-byte CIA and 80-byte BIA use the documented field boundaries. */

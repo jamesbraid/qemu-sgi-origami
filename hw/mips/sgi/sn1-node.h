@@ -52,7 +52,6 @@ typedef struct SN1NodeState {
      */
     const SGIModelNode *model_node;
     const SGIModelIoBoard *io_board;
-    unsigned int pci_widget;
     /*
      * Every widget the crossbar decodes for this node (widget zero, the
      * host's own local view, plus one per xtalk attachment), set by the
@@ -77,7 +76,7 @@ typedef struct SN1NodeState {
 
     DeviceState *l1;
     DeviceState *bedrock;
-    DeviceState *xbridge;
+    DeviceState *io8;
     DeviceState *boot_flash;
     MemoryRegion bedrock_node;
     MemoryRegion hub_local_register_block;

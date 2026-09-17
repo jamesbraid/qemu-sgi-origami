@@ -39,12 +39,16 @@
  * docs/datasheets/lucent-ohci.md own the other two functions'.
  *
  * Head F's own MicroLAN board-identity part ("board-part-f" on the chip)
- * has no IP45 IO-8 identity capture (docs/datasheets/xbridge.md's own
- * placeholder note), so this class exposes the same explicit "not
- * observed" pair the chip itself already defines for exactly this case
- * (SGI_XBRIDGE_NIC_PLACEHOLDER_PART/SERIAL) as overridable properties,
- * rather than baking them in, since a real configuration-space capture is
- * expected to replace them.
+ * is "030-1673-003" (origin300-base.yaml, the "xbridge" component's own
+ * part field), carried here as this class's own fixed default the same
+ * way sgi-baseio and sgi-ip29-io carry their own Bridge's board part;
+ * "board-part" stays an overridable property rather than baking the
+ * string into build_widget() itself, matching how the chip's own
+ * SGI_XBRIDGE_NIC_PLACEHOLDER_PART already works, in case a future
+ * configuration-space capture disagrees. The IOC3's own separate one-wire
+ * identity part has no such fixed board fact -- it is a per-unit serial,
+ * carried instead as "ioc3-onewire-serial", a machine-supplied property
+ * like sgi-baseio and sgi-ip29-io's own.
  *
  * Widget identity: XBridge has no separate outer Crossbow chip on the
  * Origin 300 -- the whole chip sits directly on the Bedrock's own
@@ -52,17 +56,28 @@
  * origin300-base.yaml, xbridge_host_port). This board's own `slot=`
  * property (the base class's module-Crossbow widget number) has no
  * matching Origin 300 hardware fact, since there is no module Crossbow
- * for it to name a position on; it exists only to satisfy the base
- * class's contract. The eventual Origin 300 machine wiring is expected to
- * attach this board's fabric link directly, the way hw/mips/sgi/sn1.c
- * does today, rather than through sgi_xtalk_board_attach_pending().
- * "fabric" passes straight through to the internal chip and is required:
- * XBridge refuses to realize without it.
+ * for it to name a position on; the machine (sn-machine.c) sets it to
+ * that same host port only to satisfy the base class's module+slot
+ * uniqueness registry, and attaches this board's fabric link directly
+ * rather than through sgi_xtalk_board_attach_pending() -- Origin 300 has
+ * no Crossbow for the machine-init-done hook to defer this board's
+ * realize to. "fabric" passes straight through to the internal chip and
+ * is required: XBridge refuses to realize without it.
+ *
+ * "nvram-drive", "chardev-a", "chardev-b", "record-a", "record-b" and
+ * "parallel-chardev" name the onboard IOC3's own Timekeeper storage and
+ * serial/parallel backends by block or chardev id, unset by default,
+ * rather than carrying either kind of backend directly: see sgi-ip29-io's
+ * header for why a "drive" or "chardev" property here would collide with
+ * the IOC3 child's own identically-named property, which is the one
+ * device that actually claims each backend.
  */
 
 #include "qemu/osdep.h"
-#include "hw/mips/sgi/xtalk-board.h"
+#include "hw/mips/sgi/board-io8.h"
+#include "chardev/char.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "hw/core/sysbus.h"
 #include "hw/misc/sgi-ioc3.h"
 #include "hw/pci-host/sgi-xbridge.h"
@@ -71,12 +86,13 @@
 #include "qapi/error.h"
 #include "qemu/module.h"
 #include "qom/object.h"
-
-#define TYPE_SGI_IO8 "sgi-io8"
-OBJECT_DECLARE_SIMPLE_TYPE(SGIIo8State, SGI_IO8)
+#include "system/block-backend.h"
 
 /* The Bedrock's own crosstalk port the whole chip sits on (fixed wiring). */
 #define IO8_HOST_PORT 0xa
+
+/* origin300-base.yaml's own part field for the "xbridge" component. */
+#define IO8_BOARD_PART "030-1673-003"
 
 /* Head F: the IO-8's fixed devices; head E's two option slots stay empty. */
 #define IO8_HEAD_F 0xf
@@ -112,9 +128,62 @@ struct SGIIo8State {
     MemoryRegion *fabric;
     char *board_part;
     uint64_t onewire_serial;
+    uint64_t ioc3_onewire_serial;
+    char *nvram_drive_id;
+    char *chardev_a_id;
+    char *chardev_b_id;
+    char *record_a_id;
+    char *record_b_id;
+    char *parallel_chardev_id;
 
     SGIXBridgeState *chip;
 };
+
+/*
+ * Resolve a chardev id to its backend and set it on dev's own same-named
+ * property, before dev realizes; see sgi-ip29-io's identical helper for
+ * why this board never holds a "chardev" property of its own, and why an
+ * id naming no real backend is refused here.
+ */
+static bool io8_pass_chardev(DeviceState *dev, const char *prop,
+                             const char *id, Error **errp)
+{
+    Chardev *chr;
+
+    if (!id) {
+        return true;
+    }
+    chr = qemu_chr_find(id);
+    if (!chr) {
+        error_setg(errp, "sgi-io8: no chardev backend named '%s' for %s",
+                  id, prop);
+        return false;
+    }
+    qdev_prop_set_chr(dev, prop, chr);
+    return true;
+}
+
+/*
+ * Resolve a block backend id to its backend and set it on dev's own
+ * "nvram-drive" property, before dev realizes; see io8_pass_chardev and
+ * sgi-ip29-io's header for why this board holds only an id.
+ */
+static bool io8_pass_drive(DeviceState *dev, const char *id, Error **errp)
+{
+    BlockBackend *blk;
+
+    if (!id) {
+        return true;
+    }
+    blk = blk_by_name(id);
+    if (!blk) {
+        error_setg(errp, "sgi-io8: no drive backend named '%s' for "
+                  "nvram-drive", id);
+        return false;
+    }
+    qdev_prop_set_drive(dev, "nvram-drive", blk);
+    return true;
+}
 
 /* Wires one head F function's PCI INTx into the chip's own pin group. */
 static void io8_wire_intx(DeviceState *chip, unsigned int device,
@@ -146,7 +215,7 @@ static bool io8_build_widget(SGIXtalkBoardState *board, Error **errp)
     s->chip = SGI_XBRIDGE(chip);
     qdev_prop_set_uint8(chip, "host-port", IO8_HOST_PORT);
     qdev_prop_set_string(chip, "board-part-f",
-                         s->board_part ?: SGI_XBRIDGE_NIC_PLACEHOLDER_PART);
+                         s->board_part ?: IO8_BOARD_PART);
     qdev_prop_set_uint64(chip, "onewire-serial-f", s->onewire_serial);
     object_property_set_link(OBJECT(chip), "fabric", OBJECT(s->fabric),
                              &error_abort);
@@ -171,6 +240,17 @@ static bool io8_build_widget(SGIXtalkBoardState *board, Error **errp)
                         SGI_IOC3_TIMEKEEPER_M48T35);
     qdev_prop_set_uint8(DEVICE(ioc3), "phy-addr", IO8_IOC3_PHY_ADDR);
     object_property_set_bool(OBJECT(ioc3), "phy-dp83843", true, &error_abort);
+    qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial",
+                         s->ioc3_onewire_serial);
+    if (!io8_pass_drive(DEVICE(ioc3), s->nvram_drive_id, errp) ||
+        !io8_pass_chardev(DEVICE(ioc3), "chardev-a", s->chardev_a_id, errp) ||
+        !io8_pass_chardev(DEVICE(ioc3), "chardev-b", s->chardev_b_id, errp) ||
+        !io8_pass_chardev(DEVICE(ioc3), "record-a", s->record_a_id, errp) ||
+        !io8_pass_chardev(DEVICE(ioc3), "record-b", s->record_b_id, errp) ||
+        !io8_pass_chardev(DEVICE(ioc3), "parallel-chardev",
+                          s->parallel_chardev_id, errp)) {
+        return false;
+    }
     pci_realize_and_unref(ioc3, bus, &error_abort);
     pci_set_byte(ioc3->config + PCI_REVISION_ID, IO8_IOC3_REVISION);
     pci_set_word(ioc3->config + PCI_SUBSYSTEM_VENDOR_ID,
@@ -204,7 +284,20 @@ static const Property io8_properties[] = {
     DEFINE_PROP_STRING("board-part", SGIIo8State, board_part),
     DEFINE_PROP_UINT64("onewire-serial", SGIIo8State, onewire_serial,
                        SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL),
+    DEFINE_PROP_UINT64("ioc3-onewire-serial", SGIIo8State,
+                       ioc3_onewire_serial, SGI_IOC3_ONEWIRE_SERIAL),
+    DEFINE_PROP_STRING("nvram-drive", SGIIo8State, nvram_drive_id),
+    DEFINE_PROP_STRING("chardev-a", SGIIo8State, chardev_a_id),
+    DEFINE_PROP_STRING("chardev-b", SGIIo8State, chardev_b_id),
+    DEFINE_PROP_STRING("record-a", SGIIo8State, record_a_id),
+    DEFINE_PROP_STRING("record-b", SGIIo8State, record_b_id),
+    DEFINE_PROP_STRING("parallel-chardev", SGIIo8State, parallel_chardev_id),
 };
+
+MemoryRegion *sgi_io8_widget_view(SGIIo8State *s, unsigned int widget)
+{
+    return sgi_xbridge_widget_view(s->chip, widget);
+}
 
 /* No state of its own outside the internal chip, which carries its own. */
 static const VMStateDescription vmstate_io8 = {
