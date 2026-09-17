@@ -48,12 +48,18 @@
  *
  * "fabric", "fabric-base", "fabric-node-shift" and "fabric-widget-shift"
  * pass straight through to the internal Bridge; see sgi-ip29-io's header
- * for why this board does not fix them itself.
+ * for why this board does not fix them itself. "pci-bus-name" also
+ * passes through, unset by default; see sgi-ip29-io's header for why a
+ * machine building more than one instance of a board class must give
+ * each its own. "nvram-drive" passes through to the onboard IOC3's own
+ * Timekeeper storage, unset by default; see sgi-ip29-io's header for the
+ * `-drive` forms it replaces.
  */
 
 #include "qemu/osdep.h"
 #include "hw/mips/sgi/xtalk-board.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "hw/core/sysbus.h"
 #include "hw/misc/sgi-ioc3.h"
 #include "hw/pci-host/sgi-bridge.h"
@@ -96,6 +102,8 @@ struct SGIBaseioState {
     uint32_t fabric_node_shift;
     uint32_t fabric_widget_shift;
     uint64_t onewire_serial;
+    char *pci_bus_name;
+    BlockBackend *nvram_drive;
 
     SGIBridgeState *bridge;
 };
@@ -124,6 +132,9 @@ static bool baseio_build_widget(SGIXtalkBoardState *board, Error **errp)
     qdev_prop_set_uint32(bridge, "revision", BASEIO_BRIDGE_REVISION);
     qdev_prop_set_string(bridge, "board-part", BASEIO_BRIDGE_BOARD_PART);
     qdev_prop_set_uint64(bridge, "onewire-serial", s->onewire_serial);
+    if (s->pci_bus_name) {
+        qdev_prop_set_string(bridge, "pci-bus-name", s->pci_bus_name);
+    }
     object_property_set_link(OBJECT(bridge), "fabric", OBJECT(s->fabric),
                              &error_abort);
     qdev_prop_set_uint64(bridge, "fabric-base", s->fabric_base);
@@ -154,6 +165,9 @@ static bool baseio_build_widget(SGIXtalkBoardState *board, Error **errp)
                          BASEIO_IOC3_SUBSYSTEM_ID_NOT_OBSERVED);
     qdev_prop_set_uint8(DEVICE(ioc3), "timekeeper-kind",
                         SGI_IOC3_TIMEKEEPER_M48T35);
+    if (s->nvram_drive) {
+        qdev_prop_set_drive(DEVICE(ioc3), "nvram-drive", s->nvram_drive);
+    }
     pci_realize_and_unref(ioc3, bus, &error_abort);
     pci_set_byte(ioc3->config + PCI_REVISION_ID, BASEIO_IOC3_REVISION);
     /* Direct board wiring, not the bus's own per-slot PCI INTx rule. */
@@ -175,6 +189,8 @@ static const Property baseio_properties[] = {
                        fabric_widget_shift, 0),
     DEFINE_PROP_UINT64("onewire-serial", SGIBaseioState, onewire_serial,
                        BASEIO_SERIAL_PLACEHOLDER),
+    DEFINE_PROP_STRING("pci-bus-name", SGIBaseioState, pci_bus_name),
+    DEFINE_PROP_DRIVE("nvram-drive", SGIBaseioState, nvram_drive),
 };
 
 /*

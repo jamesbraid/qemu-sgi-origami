@@ -47,12 +47,15 @@ config SGI_SN0
     select PCF8584
     select PFLASH_CFI02
     select QLOGIC_ISP_SCSI_PCI
+    select SGI_BASEIO
     select SGI_BRIDGE
     select SGI_ELSC
     select SGI_HUB
+    select SGI_IP29_IO
     select SGI_O2000_MODULE_MGMT
     select SGI_IOC3
     select SGI_IOC3_ETH
+    select SGI_PCI_EXPANSION
     select SGI_ROUTER
     select SGI_XBOW
     select TIGON
@@ -81,10 +84,11 @@ config SGI_XTALK_BOARD_TEST
     select SGI_XTALK_BOARD
     select SGI_XTALK_TEST_TARGET
 
-# The four board classes. No product machine builds any of them yet -- the
-# machine wiring that replaces the xtalk assembly with these is a later
-# step -- so each is a plain symbol the qtest-only config below selects,
-# the way SGI_XTALK_BOARD_TEST selects the base class's own test board.
+# The four board classes. Origin 200 selects SGI_IP29_IO and Origin 2000
+# SGI_BASEIO and SGI_PCI_EXPANSION (the board-devices step's own
+# board-wiring part); SGI_IO8 awaits the Origin 300 step and stays a plain
+# symbol the qtest-only config below selects meanwhile, the way
+# SGI_XTALK_BOARD_TEST selects the base class's own test board.
 config SGI_IP29_IO
     bool
     select SGI_XTALK_BOARD
@@ -173,12 +177,3 @@ config MIPS_BOSTON
 config FW_CFG_MIPS
     bool
 
-config SN0_HUB_PACKET_TEST
-    bool
-    default y
-    depends on SGI_SN0 && TEST_DEVICES
-
-config SN0_XTALK_ASSEMBLY_TEST
-    bool
-    default y
-    depends on SGI_SN0 && TEST_DEVICES

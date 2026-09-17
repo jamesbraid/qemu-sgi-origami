@@ -36,14 +36,23 @@
  * pass straight through to the internal Bridge: which Hub or fabric proxy
  * receives this board's interrupt packets is a fact about the machine this
  * board is built into, not about the board itself, so the machine sets
- * them the same way it would on a bare Bridge (see
- * hw/mips/sgi/sn0-model-consumer.c, sn0_model_create_bridge()). "fabric" is
- * required: Bridge refuses to realize without it.
+ * them the same way it would on a bare Bridge. "fabric" is required:
+ * Bridge refuses to realize without it. "pci-bus-name" also passes
+ * through, unset by default (Bridge's own default bus name): the machine
+ * building more than one instance of this board -- the two-chassis
+ * Origin 200's own case -- has to give each its own name, since two PCI
+ * buses answering to the same name is a migration-identity collision on
+ * every device behind them, not merely a cosmetic one. "nvram-drive"
+ * passes through to the onboard IOC3's own Timekeeper storage (its own
+ * alias of the same name), unset by default, the way the deleted inline
+ * builder resolved a `-drive if=mtd` or a bare `-drive if=none,
+ * id=sgi-nvram<N>` by index before this board existed.
  */
 
 #include "qemu/osdep.h"
 #include "hw/mips/sgi/xtalk-board.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/qdev-properties-system.h"
 #include "hw/core/sysbus.h"
 #include "hw/misc/sgi-ioc3.h"
 #include "hw/pci-host/sgi-bridge.h"
@@ -93,6 +102,8 @@ struct SGIIp29IoState {
     uint32_t fabric_node_shift;
     uint32_t fabric_widget_shift;
     uint64_t onewire_serial;
+    char *pci_bus_name;
+    BlockBackend *nvram_drive;
 
     SGIBridgeState *bridge;
 };
@@ -121,6 +132,9 @@ static bool ip29_io_build_widget(SGIXtalkBoardState *board, Error **errp)
     qdev_prop_set_uint32(bridge, "revision", IP29_IO_BRIDGE_REVISION);
     qdev_prop_set_string(bridge, "board-part", IP29_IO_BRIDGE_BOARD_PART);
     qdev_prop_set_uint64(bridge, "onewire-serial", s->onewire_serial);
+    if (s->pci_bus_name) {
+        qdev_prop_set_string(bridge, "pci-bus-name", s->pci_bus_name);
+    }
     object_property_set_link(OBJECT(bridge), "fabric", OBJECT(s->fabric),
                              &error_abort);
     qdev_prop_set_uint64(bridge, "fabric-base", s->fabric_base);
@@ -149,6 +163,9 @@ static bool ip29_io_build_widget(SGIXtalkBoardState *board, Error **errp)
     qdev_prop_set_uint32(DEVICE(ioc3), "population", IP29_IO_IOC3_POPULATION);
     qdev_prop_set_uint8(DEVICE(ioc3), "timekeeper-kind",
                         SGI_IOC3_TIMEKEEPER_M48T35);
+    if (s->nvram_drive) {
+        qdev_prop_set_drive(DEVICE(ioc3), "nvram-drive", s->nvram_drive);
+    }
     pci_realize_and_unref(ioc3, bus, &error_abort);
     pci_set_byte(ioc3->config + PCI_REVISION_ID, IP29_IO_IOC3_REVISION);
     /* Direct board wiring, not the bus's own per-slot PCI INTx rule. */
@@ -170,6 +187,8 @@ static const Property ip29_io_properties[] = {
                        fabric_widget_shift, 0),
     DEFINE_PROP_UINT64("onewire-serial", SGIIp29IoState, onewire_serial,
                        IP29_IO_SERIAL_PLACEHOLDER),
+    DEFINE_PROP_STRING("pci-bus-name", SGIIp29IoState, pci_bus_name),
+    DEFINE_PROP_DRIVE("nvram-drive", SGIIp29IoState, nvram_drive),
 };
 
 /* No state of its own outside the children Bridge, the ISPs and IOC3 own. */
