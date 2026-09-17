@@ -62,6 +62,26 @@ _START_SYSTEM_STEPS = ((r"Option\?", "1\n"),)
 # one.
 _SCREEN_SETTLE_SECONDS = 3.0
 
+# The round-robin regimes (wallclock, roundrobin) pin rr-kick-period-ns once a
+# cell carries more than one CPU (lib_matrix.qemu_args): a fixed, deliberately
+# short 100us kick, needed for a reliable cross-CPU rendezvous, that trades
+# away a lot of host wall-clock per unit of guest progress once the boot
+# itself is over. It is a binary switch on cell.cpus > 1, not a smoothly
+# scaling cost, so a multi-CPU cell gets its own separately measured settle
+# rather than a multiple of the single-CPU number above. Measured live
+# adding this manifest's first 2-CPU cell: the single-CPU settle (3s) and
+# twice that (6s) both reproducibly left the screendump showing the root
+# window's stipple, byte-identical each time, never the dialog; 20s passed.
+# 30s keeps margin above that observed pass point for a more heavily loaded
+# host, the same reasoning the single-CPU constant's own comment gives for
+# its margin.
+_MULTI_CPU_SCREEN_SETTLE_SECONDS = 30.0
+
+
+def _settle_seconds(cell):
+    return (_SCREEN_SETTLE_SECONDS if cell.cpus == 1
+           else _MULTI_CPU_SCREEN_SETTLE_SECONDS)
+
 
 def _boot_one_attempt(test, cell, attempt_index):
     """Launch one boot attempt for cell, drive it to its scenario's
@@ -96,7 +116,14 @@ def _boot_one_attempt(test, cell, attempt_index):
             'rather than silently skipping a claimed capability')
 
     vm = test.get_vm(name=name)
-    vm.set_machine('origin200,synthesized-firmware=off,debug-leds=off')
+    # synthesized-firmware was a real origin200-machine property once, but
+    # QEMU commit bd935b711b ("hw/mips/sgi/sn0: delete the node's
+    # synthesized-firmware hooks") -- an ancestor of every commit on this
+    # branch -- deleted it from the class entirely; tools/origami's own
+    # irix.py harness already treats it as gone
+    # (machines.py's has_synthesized_firmware_toggle is false for
+    # origin200), so naming it here just fails machine creation outright.
+    vm.set_machine('origin200,debug-leds=off')
     vm.set_console()
     vm.add_args(*qemu_args(cell),
                '-cpu', 'R10000',
@@ -124,7 +151,7 @@ def _boot_one_attempt(test, cell, attempt_index):
         if not reached:
             return AttemptResult(reached_pass=False, signature='timeout')
 
-        time.sleep(_SCREEN_SETTLE_SECONDS)
+        time.sleep(_settle_seconds(cell))
         run_script(vm, scenario.input_steps)
 
         screendump_path = test.scratch_file(f'{name}.ppm')

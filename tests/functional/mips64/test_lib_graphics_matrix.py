@@ -46,19 +46,37 @@ def make_row(**overrides):
 
 class StarterManifestTest(unittest.TestCase):
 
-    def test_parses_the_rad4_cell(self):
+    def _cells_by_id(self):
         with open(STARTER_MANIFEST, encoding='utf-8') as fobj:
             lines = [line.strip() for line in fobj
                      if line.strip() and not line.strip().startswith('#')]
 
-        self.assertEqual(len(lines), 1)
-        cell = parse_row(STARTER_MANIFEST, 2, lines[0])
+        cells = [parse_row(STARTER_MANIFEST, lineno, line)
+                 for lineno, line in enumerate(lines, start=2)]
+        return {cell.id: cell for cell in cells}
 
-        self.assertEqual(cell.id, 'rad4_login_screen')
+    def test_parses_the_rad4_cell(self):
+        cell = self._cells_by_id()['rad4_login_screen']
+
         self.assertEqual(cell.guest, 'irix')
         self.assertEqual(cell.device, 'psitech-rad4,addr=5')
         self.assertEqual(cell.disk, 'root-rad4')
         self.assertEqual(cell.scenario, 'rad4_login_screen')
+        self.assertEqual(cell.cpus, 1)
+        self.assertEqual(cell.expect, 'pass')
+        self.assertEqual(cell.nodes, 1)
+
+    def test_parses_the_dual_cpu_rad4_cell(self):
+        # Same scenario and disk as the single-CPU cell above -- only the
+        # CPU count differs, so this cell exercises the same login-screen
+        # scenario against origin200's own 2-CPU population.
+        cell = self._cells_by_id()['rad4_login_screen_smp2']
+
+        self.assertEqual(cell.guest, 'irix')
+        self.assertEqual(cell.device, 'psitech-rad4,addr=5')
+        self.assertEqual(cell.disk, 'root-rad4')
+        self.assertEqual(cell.scenario, 'rad4_login_screen')
+        self.assertEqual(cell.cpus, 2)
         self.assertEqual(cell.expect, 'pass')
         self.assertEqual(cell.nodes, 1)
 
