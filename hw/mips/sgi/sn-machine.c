@@ -2877,6 +2877,15 @@ static void origin2000_class_init(ObjectClass *oc, const void *data)
     mc->max_cpus = sgi_machine_product_max_cpus("origin2000");
     mc->default_ram_size = sgi_machine_topology_default_ram(t);
     mc->default_ram_id = "sn0.ram";
+    /*
+     * sgi-pci-expansion (board-pci-expansion.c) cold-plugs an XIO PCI
+     * expansion board into a spare Crossbow position: an Origin 2000
+     * module fact (its own header names Origin 2000 specifically), and
+     * one only this product's own machine has a Crossbow to plug into
+     * at all -- Origin 200's onboard Bridge attaches directly, with no
+     * spare position a `-device` could ever reach.
+     */
+    machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_PCI_EXPANSION);
 }
 
 /*
