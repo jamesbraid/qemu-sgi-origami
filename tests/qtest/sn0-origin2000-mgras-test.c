@@ -95,9 +95,17 @@
 #define SI_PART             0xc003
 #define SI_MANUFACTURER     0x02aa
 
-/* A direct 64-bit command record: payload32 | (selector << 34). */
+/*
+ * A direct 64-bit command record: payload32 | (selector << 34). Selector
+ * = 0x60001 | (reg << 6) for a plain state write, or 0x70001 | (reg << 6)
+ * for the execute-form write of the same register -- see si_command's own
+ * header comment in hw/misc/sgi-mgras.c for the evidence and the mask-
+ * constant correction against the design handoff's own worked example.
+ */
 #define SI_COMMAND(reg, value) \
-    ((((uint64_t)(0x60001 + ((reg) << 4))) << 34) | (uint32_t)(value))
+    ((((uint64_t)(0x60001 | ((reg) << 6))) << 34) | (uint32_t)(value))
+#define SI_COMMAND_EXEC(reg, value) \
+    ((((uint64_t)(0x70001 | ((reg) << 6))) << 34) | (uint32_t)(value))
 
 /* The VC3's indexed write port: register index in the top byte, 16-bit
  * value in bits 23:8. */
@@ -109,6 +117,17 @@
 #define REG_FILL_COLOR          0x140
 #define REG_BLOCK_START         0x46
 #define REG_BLOCK_END           0x47
+#define REG_PACKEDCOLOR         0x05b
+#define REG_CHAR_H              0x070
+#define REG_CHAR_L              0x071
+#define REG_BKGRD_RG            0x140
+#define REG_BKGRD_BA            0x141
+#define REG_PP1FILLMODE         0x161
+#define REG_COLORMASKMSBS       0x162
+
+/* X11-style GX logic-op values, PP1FILLMODE's own top nibble. */
+#define SI_LOGIC_OP_COPY        0x3
+#define SI_LOGIC_OP_XOR         0x6
 
 /*
  * sgi_machine_build_mgras (hw/mips/sgi/sn-machine.c) parents SI Viz
@@ -849,9 +868,10 @@ static void test_widget_error_interrupt_vector(void)
     g_assert_cmphex(si_qom_get_uint(qts, "x-test-last-interrupt-addr"),
                      ==, 0);
 
-    /* An out-of-range command selector: si_error's own sticky-error path
-     * (the same trigger test_command_accepts_hq_config_words uses). */
-    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00000001 << 34) | 1);
+    /* A write to a genuinely unmapped offset: si_error's own sticky-error
+     * path. Not an invalid command selector -- si_command no longer
+     * rejects any selector, see its own header comment in sgi-mgras.c. */
+    qtest_writel(qts, SI_REG(0x000010), 0);
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==,
                      0x80000000);
 
@@ -863,96 +883,75 @@ static void test_widget_error_interrupt_vector(void)
     qtest_quit(qts);
 }
 
-static void test_fifo_full_and_unsupported_access(void)
+/*
+ * si_command now applies every state and execute record to the persistent
+ * register file immediately, with no modelled queueing depth (docs/
+ * designs/2026-09-17-si-viz-pixel-output-design.md's ordered plan, step 1;
+ * see also the header comment on REG_FIFO_STATUS's case in sgi-mgras.c).
+ * Occupancy is therefore always zero, both through the real MMIO register
+ * and internally -- overflow is not reachable the way it used to be, so
+ * this replaces the old test that filled a modelled 256-record FIFO and
+ * checked the 257th record was refused.
+ */
+static void test_fifo_occupancy_always_drained(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
 
     si_enter_context(qts);
 
-    /*
-     * Fill the command FIFO without ever completing an operation: every
-     * record stores state only, none names the fill's execute register.
-     * Stop one short of the 256-record capacity: full occupancy does not
-     * fit the status register's eight-bit field and reads back as zero,
-     * indistinguishable from empty (docs/reviews/
-     * si-functional-approximation-review-20260916.md, blocker 7 -- an
-     * open gap this test works around rather than resolves).
-     */
-    for (int i = 0; i < 255; i++) {
+    /* Many more state records than the old modelled FIFO depth, none of
+     * them naming an execute register. */
+    for (int i = 0; i < 300; i++) {
         qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                     SI_COMMAND(REG_FILL_CLIP_START, 0));
+                     SI_COMMAND(REG_FILL_CLIP_START, i));
+        g_assert_cmphex(qtest_readl(qts, REG_FIFO_STATUS) & 0xff, ==, 0);
     }
-    /*
-     * The overflow accounting itself, not REG_FIFO_STATUS: that register
-     * always reads ready now (see the header comment on its case in
-     * sgi-mgras.c), so this checks the host-only property backing it
-     * instead.
-     */
-    g_assert_cmphex(si_qom_get_uint(qts, "x-test-fifo-count"), ==, 255);
-
-    /* The 256th record still fits. */
-    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_FILL_CLIP_START, 0));
-
-    /* The 257th must be refused, and the sticky error latches. */
-    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_FILL_CLIP_START, 0));
-    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==,
-                     0x80000000);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 
     qtest_quit(qts);
 }
 
 /*
- * The crash this device's watchdog approximation caused: MgrasCtxsw's and
- * MgrasPcxSwap's own MgrasFlushHQ3 calls poll REG_FIFO_STATUS against a
- * threshold of zero (live-traced from the driver object pulled off the
- * retained disk, see the header comment on REG_FIFO_STATUS's case in
- * sgi-mgras.c), and this device has no way to disarm the watchdog those
- * routines arm on a timed-out poll -- nothing ever modelled the interrupt
- * that does. A command word left stored without ever completing a fill
- * (the same setup as test_fifo_full_and_unsupported_access, stopped after
- * one word rather than 255) used to leave REG_FIFO_STATUS permanently
- * nonzero, so the poll never saw its exit condition and IRIX panicked
- * roughly 15 seconds later. The register now reports ready regardless of
- * the true stored count, so the poll this driver depends on always
- * succeeds.
+ * Solid fill against the real public register grammar: state records for
+ * the block rectangle and packed colour, then an execute-form write of
+ * BLOCKXYENDI triggers the fill (design doc, ordered plan step 2). A
+ * second fill over the same rectangle with an XOR logic op flips the same
+ * pixels back to zero, exercising PP1FILLMODE's top nibble and the
+ * persistent register file's own headline feature: colour and the block
+ * rectangle are not re-supplied, they are read from state set once and
+ * reused.
  */
-static void test_fifo_status_poll_ignores_stuck_occupancy(void)
-{
-    QTestState *qts = qtest_init(MACHINE_ARGS);
-
-    si_enter_context(qts);
-
-    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_FILL_CLIP_START, 0));
-    g_assert_cmphex(si_qom_get_uint(qts, "x-test-fifo-count"), ==, 1);
-    g_assert_cmphex(qtest_readl(qts, REG_FIFO_STATUS) & 0xff, ==, 0);
-
-    qtest_quit(qts);
-}
-
 static void test_direct_fill_and_reset(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
 
     si_enter_context(qts);
 
-    /* One clipped 4x4 rectangle at (10,10)-(13,13), packed color. */
+    /* Solid fill: a 4x4 rectangle at (10,10)-(13,13), default (copy)
+     * logic op from this device's own reset default. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_FILL_CLIP_START, (10u << 16) | 10u));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_FILL_CLIP_END, (13u << 16) | 13u));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_FILL_COLOR, 0x00112233));
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00112233));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BLOCK_START, (10u << 16) | 10u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_BLOCK_END, (13u << 16) | 13u));
-
-    /* FIFO drains once the execute record commits the fill. */
-    g_assert_cmphex(si_qom_get_uint(qts, "x-test-fifo-count"), ==, 0);
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (13u << 16) | 13u));
 
     g_assert_cmphex(si_test_pixel(qts, 11, 11), ==, 0x00112233);
-    /* Outside the clipped rectangle stays untouched. */
+    g_assert_cmphex(si_test_pixel(qts, 13, 13), ==, 0x00112233);
+    /* Outside the filled rectangle stays untouched. */
     g_assert_cmphex(si_test_pixel(qts, 20, 11), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 9, 9), ==, 0);
+
+    /* An XOR fill over the same rectangle, reusing the colour and block
+     * rectangle already in the persistent register file, flips those
+     * pixels back to zero. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PP1FILLMODE, SI_LOGIC_OP_XOR << 28));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (10u << 16) | 10u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (13u << 16) | 13u));
+    g_assert_cmphex(si_test_pixel(qts, 11, 11), ==, 0);
 
     /* Reset returns the device to its documented cleared state. */
     qtest_qmp_assert_success(qts, "{'execute': 'system_reset'}");
@@ -960,6 +959,105 @@ static void test_direct_fill_and_reset(void)
     g_assert_cmphex(qtest_readl(qts, REG_ENTRY), ==, 0);
     g_assert_cmphex(qtest_readl(qts, REG_CONTEXT_COMMAND), ==, 0);
     g_assert_cmphex(si_test_pixel(qts, 11, 11), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * 1-bit glyph row expansion: an 8x8 pattern (this pass's own small
+ * fixture -- the retained fixture the design doc cites,
+ * si-direct-command-inputs-20260916.json on emdash/graphics-sarct, is not
+ * reachable from this worktree), one execute record per row, CHAR_H/
+ * CHAR_L combined into a 64-bit row painted MSB-first (si_draw_glyph_row's
+ * own header comment in sgi-mgras.c states the chunking is this device's
+ * approximation, not a confirmed wire contract). Row 0 is a checkerboard
+ * byte (0xaa) so both the foreground and background paths are exercised
+ * in the same row.
+ */
+static void test_direct_glyph_row(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+    static const uint8_t glyph[8] = {
+        0xaa, 0xff, 0x00, 0x81, 0x81, 0x00, 0xff, 0xaa,
+    };
+
+    si_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BKGRD_RG, 0x00000000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (40u << 16) | 40u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (47u << 16) | 47u));
+
+    for (int row = 0; row < 8; row++) {
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     SI_COMMAND(REG_CHAR_H, 0));
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     SI_COMMAND_EXEC(REG_CHAR_L,
+                                    (uint32_t)glyph[row] << 24));
+    }
+
+    /* Row 0, 0xaa = 10101010: bit 7 (leftmost, MSB-first) is set. */
+    g_assert_cmphex(si_test_pixel(qts, 40, 40), ==, 0x00ffffff);
+    g_assert_cmphex(si_test_pixel(qts, 41, 40), ==, 0);
+    /* Row 2, 0x00: every pixel is background. */
+    g_assert_cmphex(si_test_pixel(qts, 40, 42), ==, 0);
+    /* Row 3, 0x81 = 10000001: both ends set, the middle background. */
+    g_assert_cmphex(si_test_pixel(qts, 40, 43), ==, 0x00ffffff);
+    g_assert_cmphex(si_test_pixel(qts, 47, 43), ==, 0x00ffffff);
+    g_assert_cmphex(si_test_pixel(qts, 43, 43), ==, 0);
+    /* Outside the glyph's own rectangle stays untouched. */
+    g_assert_cmphex(si_test_pixel(qts, 50, 40), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * 32-bit PIO pixel-pair upload: BKGRD_RG/BKGRD_BA reused as a raw pixel
+ * pair, the write to BKGRD_BA's own execute form painting both at once and
+ * advancing this device's own write cursor (si_draw_pio_pixel_pair's own
+ * header comment states which two registers carry PIO traffic is this
+ * device's approximation, not a confirmed wire contract). A 4x4 test
+ * image, uploaded as eight pixel pairs, checks the cursor wraps a row at
+ * the block rectangle's own width.
+ */
+static void test_direct_pio_pixel_pairs(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+    static const uint32_t image[4][4] = {
+        { 0x00ff0000, 0x0000ff00, 0x000000ff, 0x00ffffff },
+        { 0x00111111, 0x00222222, 0x00333333, 0x00444444 },
+        { 0x00555555, 0x00666666, 0x00777777, 0x00888888 },
+        { 0x00999999, 0x00aaaaaa, 0x00bbbbbb, 0x00cccccc },
+    };
+
+    si_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (60u << 16) | 60u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (63u << 16) | 63u));
+
+    for (int y = 0; y < 4; y++) {
+        for (int x = 0; x < 4; x += 2) {
+            qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                         SI_COMMAND(REG_BKGRD_RG, image[y][x]));
+            qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                         SI_COMMAND_EXEC(REG_BKGRD_BA, image[y][x + 1]));
+        }
+    }
+
+    for (int y = 0; y < 4; y++) {
+        for (int x = 0; x < 4; x++) {
+            g_assert_cmphex(si_test_pixel(qts, 60 + x, 60 + y), ==,
+                            image[y][x]);
+        }
+    }
+    /* Outside the image's own rectangle stays untouched. */
+    g_assert_cmphex(si_test_pixel(qts, 70, 60), ==, 0);
 
     qtest_quit(qts);
 }
@@ -1251,9 +1349,14 @@ static void test_fifo_threshold_registers(void)
 /*
  * MgrasStart submits two 64-bit HQ-local configuration words (GE and RE
  * population counts) around the context switch, with a zero unit field in
- * the high half rather than a real command selector -- these must be
- * accepted as opaque configuration traffic, not rejected as an unknown
- * command selector the way any other out-of-range selector still is.
+ * the high half rather than a real command selector, and the driver also
+ * submits HQ-local DMA words at this same offset (0x000c0004, 0x000a0204,
+ * 0x00080004 in the record's high half) -- none of these match the
+ * corrected state/execute selector shape (si_command's own header
+ * comment), so si_command now accepts every one of them, and any other
+ * non-matching selector, as opaque traffic rather than rejecting it. This
+ * device's direct-command decoder no longer has an "unknown command
+ * selector" error path at all.
  */
 static void test_command_accepts_hq_config_words(void)
 {
@@ -1263,12 +1366,15 @@ static void test_command_accepts_hq_config_words(void)
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x0000ff04 << 32) | 1);
     qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00008c04 << 32) | 1);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x000c0004 << 32) | 1);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x000a0204 << 32) | 1);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080004 << 32) | 1);
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 
-    /* An out-of-range selector must still be rejected. */
+    /* A selector that would have been out of range under the old decoder
+     * is opaque traffic now too, not rejected. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00000001 << 34) | 1);
-    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==,
-                     0x80000000);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 
     qtest_quit(qts);
 }
@@ -1317,14 +1423,19 @@ static void test_migration(void)
 
     si_enter_context(from);
     qtest_writeq(from, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_FILL_CLIP_START, (1u << 16) | 1u));
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00445566));
+    qtest_writeq(from, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (2u << 16) | 2u));
 
     si_migrate(from, uri);
 
-    /* The completed context recognizer and the one stored, uncommitted
-     * FIFO record both have to survive migration. */
+    /* The completed context recognizer survives migration, and so does the
+     * persistent direct-command register file: completing the fill on the
+     * destination with state programmed before the move proves it. */
     g_assert_cmphex(qtest_readl(to, REG_CONTEXT_COMMAND), ==, SI_FINAL_TOKEN);
-    g_assert_cmphex(si_qom_get_uint(to, "x-test-fifo-count"), ==, 1);
+    qtest_writeq(to, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (3u << 16) | 3u));
+    g_assert_cmphex(si_test_pixel(to, 2, 2), ==, 0x00445566);
 
     qtest_quit(to);
     qtest_quit(from);
@@ -1382,12 +1493,14 @@ int main(int argc, char **argv)
                    test_retrace_interrupt_vector);
     qtest_add_func("sn0/origin2000/mgras/widget-error-interrupt-vector",
                    test_widget_error_interrupt_vector);
-    qtest_add_func("sn0/origin2000/mgras/fifo-full-and-unsupported-access",
-                   test_fifo_full_and_unsupported_access);
-    qtest_add_func("sn0/origin2000/mgras/fifo-status-poll-ignores-stuck-occupancy",
-                   test_fifo_status_poll_ignores_stuck_occupancy);
+    qtest_add_func("sn0/origin2000/mgras/fifo-occupancy-always-drained",
+                   test_fifo_occupancy_always_drained);
     qtest_add_func("sn0/origin2000/mgras/direct-fill-and-reset",
                    test_direct_fill_and_reset);
+    qtest_add_func("sn0/origin2000/mgras/direct-glyph-row",
+                   test_direct_glyph_row);
+    qtest_add_func("sn0/origin2000/mgras/direct-pio-pixel-pairs",
+                   test_direct_pio_pixel_pairs);
     qtest_add_func("sn0/origin2000/mgras/vc3-sram-round-trip",
                    test_vc3_sram_round_trip);
     qtest_add_func("sn0/origin2000/mgras/vc3-register-file",
