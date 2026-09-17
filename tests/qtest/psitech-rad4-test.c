@@ -93,6 +93,17 @@
 #define B_MASK          0xd00000
 #define B_CTRL          0xf00000
 
+/*
+ * RGB561 multi-cycle index ranges reached through B_RGB_RESERVED, from
+ * IBM Microelectronics "RGB561 Architecture" Preliminary Rev. 1.1
+ * (docs/library/cache/graphics/ibm-rgb561-architecture.pdf in the owning
+ * Origami repository): Table 20's register address table (page 27) for
+ * the base addresses, page 47's FB_WAT bit layout and page 2's Table 1
+ * color LUT addressing formula.
+ */
+#define WAT_BASE        0x1000
+#define COLOR_LUT_BASE  0x4000
+
 #define CTRL_MODE_CMD   0x20u
 #define CTRL_STORED_BIT 0x02u
 #define STATUS_FRAME    0x20u
@@ -359,6 +370,113 @@ static void test_framebuffer_mask(void)
     qtest_quit(qts);
 }
 
+static void rad4_set_rgb_index(QTestState *qts, uint16_t index)
+{
+    bar2_write(qts, B_RGB_LO, index & 0xff);
+    bar2_write(qts, B_RGB_HI, (index >> 8) & 0xff);
+}
+
+/*
+ * The address index register auto increments "after each read or write
+ * cycle" (IBM RGB561 Architecture p.1), a convention this model applies
+ * to the ordinary single-cycle B_RGB_DATA port on write already. This
+ * checks the read side, previously missing: a real fidelity gap, though
+ * harmless for the qualified guest workload, since nothing there reads
+ * this port back.
+ */
+static void test_rgb_data_read_autoincrement(void)
+{
+    QTestState *qts = rad4_init();
+
+    rad4_set_rgb_index(qts, 0x0001);
+    bar2_write(qts, B_RGB_DATA, 0x11);
+    bar2_write(qts, B_RGB_DATA, 0x22);
+
+    rad4_set_rgb_index(qts, 0x0001);
+    g_assert_cmphex(bar2_read(qts, B_RGB_DATA), ==, 0x11);
+    g_assert_cmphex(bar2_read(qts, B_RGB_DATA), ==, 0x22);
+
+    qtest_quit(qts);
+}
+
+/*
+ * FB_WAT entries are a 10-bit value transferred in two cycles through
+ * B_RGB_RESERVED (IBM RGB561 Architecture p.4, Table 5): the first cycle
+ * carries bits 9-2 in bit positions 7-0, the second carries bits 1-0 in
+ * bit positions 7-6. Writing and reading one entry back must round-trip,
+ * and the address index register must auto increment only after the
+ * second (last) cycle, to the next window ID's entry.
+ */
+static void test_fb_wat_round_trip(void)
+{
+    QTestState *qts = rad4_init();
+
+    /* 0x36 << 2 == 0x0d8, matching the reviewed True-24bpp init value. */
+    rad4_set_rgb_index(qts, WAT_BASE + 5);
+    bar2_write(qts, B_RGB_RESERVED, 0xd8);
+    bar2_write(qts, B_RGB_RESERVED, 0x00);
+
+    rad4_set_rgb_index(qts, WAT_BASE + 5);
+    g_assert_cmphex(bar2_read(qts, B_RGB_RESERVED), ==, 0xd8);
+    g_assert_cmphex(bar2_read(qts, B_RGB_RESERVED), ==, 0x00);
+
+    /* Auto increment landed on WID 6's entry, still zero. */
+    g_assert_cmphex(bar2_read(qts, B_RGB_RESERVED), ==, 0x00);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Re-pointing the address index register mid-entry restarts the next
+ * multi-cycle transfer at its first cycle (IBM RGB561 Architecture p.1:
+ * "If the address index register is accessed before completion of a
+ * multi-cycle access, the counter is reset and the operation is
+ * terminated.").
+ */
+static void test_reserved_port_index_write_resets_phase(void)
+{
+    QTestState *qts = rad4_init();
+
+    rad4_set_rgb_index(qts, WAT_BASE + 9);
+    bar2_write(qts, B_RGB_RESERVED, 0xff); /* First cycle only. */
+
+    /* Re-pointing anywhere resets the phase, even back to the same WID. */
+    rad4_set_rgb_index(qts, WAT_BASE + 9);
+    bar2_write(qts, B_RGB_RESERVED, 0xaa); /* Treated as first cycle again. */
+    bar2_write(qts, B_RGB_RESERVED, 0xc0); /* Second cycle: D1 D0 = 11. */
+
+    rad4_set_rgb_index(qts, WAT_BASE + 9);
+    g_assert_cmphex(bar2_read(qts, B_RGB_RESERVED), ==, 0xaa);
+    g_assert_cmphex(bar2_read(qts, B_RGB_RESERVED), ==, 0xc0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The color look-up table is a 3 cycle (red, green, blue) transfer
+ * through the same port (same document, p.2, "Color Look-Up Table
+ * (LUT)"). Entry 0 corresponds to color LUT address 0.
+ */
+static void test_color_lut_round_trip(void)
+{
+    QTestState *qts = rad4_init();
+
+    rad4_set_rgb_index(qts, COLOR_LUT_BASE);
+    bar2_write(qts, B_RGB_RESERVED, 0x11);
+    bar2_write(qts, B_RGB_RESERVED, 0x22);
+    bar2_write(qts, B_RGB_RESERVED, 0x33);
+
+    rad4_set_rgb_index(qts, COLOR_LUT_BASE);
+    g_assert_cmphex(bar2_read(qts, B_RGB_RESERVED), ==, 0x11);
+    g_assert_cmphex(bar2_read(qts, B_RGB_RESERVED), ==, 0x22);
+    g_assert_cmphex(bar2_read(qts, B_RGB_RESERVED), ==, 0x33);
+
+    /* Auto increment landed on entry 1, still zero. */
+    g_assert_cmphex(bar2_read(qts, B_RGB_RESERVED), ==, 0x00);
+
+    qtest_quit(qts);
+}
+
 /* Replays the exact reviewed mode-zero write sequence, in order. */
 static void rad4_play_mode0(QTestState *qts)
 {
@@ -590,6 +708,13 @@ int main(int argc, char **argv)
     qtest_add_func("/psitech-rad4/serial-eeprom-bad",
                    test_serial_eeprom_bad_command);
     qtest_add_func("/psitech-rad4/framebuffer-mask", test_framebuffer_mask);
+    qtest_add_func("/psitech-rad4/rgb-data-read-autoincrement",
+                   test_rgb_data_read_autoincrement);
+    qtest_add_func("/psitech-rad4/fb-wat-round-trip", test_fb_wat_round_trip);
+    qtest_add_func("/psitech-rad4/reserved-port-index-write-resets-phase",
+                   test_reserved_port_index_write_resets_phase);
+    qtest_add_func("/psitech-rad4/color-lut-round-trip",
+                   test_color_lut_round_trip);
     qtest_add_func("/psitech-rad4/mode-recognition", test_mode_recognition);
     qtest_add_func("/psitech-rad4/mode-recognition-mutation",
                    test_mode_recognition_rejects_mutation);
