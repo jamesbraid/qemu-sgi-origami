@@ -30,7 +30,7 @@
 #include "qobject/qdict.h"
 
 /*
- * Matches SGI_XTALK_BOARD_FIXTURE_SPAN in hw/mips/sgi/xtalk-test-board.c:
+ * Matches SGI_XTALK_BOARD_FIXTURE_SPAN in tests/qtest/xtalk-test-board.c:
  * how much address space the fixture's Crossbow gives each widget.
  */
 #define WIDGET_SPAN (32ULL * 1024 * 1024)

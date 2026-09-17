@@ -1520,9 +1520,12 @@ F: tests/qtest/sgi-ioc3-eth-test.c
 F: tests/qtest/sgi-l1-usb-software-test.c
 F: tests/qtest/sn0-*
 F: tests/qtest/sn-builder-test.c
+F: tests/qtest/sn-builder-fault-test.c
 F: tests/qtest/sn1-l1-test.c
 F: tests/qtest/sn1-*
 F: tests/qtest/sn-promdata-window-test.c
+F: tests/qtest/board-test-fixture.c
+F: tests/qtest/xtalk-test-board.c
 F: tests/unit/test-sgi-o2000-module-mgmt*.c
 F: tests/unit/test-sgi-router.c
 F: tests/unit/test-sn0-fabric-routed.c

@@ -13,9 +13,12 @@ mips_ss.add(when: 'CONFIG_JAZZ', if_true: files('jazz.c'))
 mips_ss.add(when: 'CONFIG_SGI_SN0',
             if_true: files('sgi/sn0.c', 'sgi/sn0-fabric.c',
                            'sgi/sn0-fabric-routed.c'))
+# These qtest-only fixtures live under tests/qtest, beside the qtest
+# programs that are their only consumer, and are pulled in here because
+# meson builds hw/ before tests/ so the target binary must gain them here.
 mips_ss.add(when: ['CONFIG_SGI_SN0', 'CONFIG_TEST_DEVICES'],
-            if_true: files('sgi/sn0-origin2000-flash-test.c',
-                           'sgi/sn-builder-fault-test.c'))
+            if_true: files('../../tests/qtest/sn0-origin2000-flash-fixture.c',
+                           '../../tests/qtest/sn-builder-fault-test.c'))
 # Shared by sgi-sn0-node and sgi-sn1-node; SGI_SN0 always implies SGI_SN1 is
 # also selected on this fork's mips64 target, so either config would do.
 mips_ss.add(when: 'CONFIG_SGI_SN0', if_true: files('sgi/sn-promdata.c'))
@@ -30,8 +33,9 @@ mips_ss.add(when: 'CONFIG_SGI_SN1',
 # The crosstalk board base class: shared by SN0 and SN1 I/O boards, so it
 # selects on its own Kconfig symbol rather than either machine's.
 mips_ss.add(when: 'CONFIG_SGI_XTALK_BOARD', if_true: files('sgi/xtalk-board.c'))
+# Likewise for the crosstalk board fixture: see the comment above.
 mips_ss.add(when: 'CONFIG_SGI_XTALK_BOARD_TEST',
-            if_true: files('sgi/xtalk-test-board.c'))
+            if_true: files('../../tests/qtest/xtalk-test-board.c'))
 # The four board classes: each its own Kconfig symbol, since a product
 # builds only the ones it fits (Origin 200 selects sgi-ip29-io, Origin 2000
 # sgi-baseio and sgi-pci-expansion; sgi-io8 awaits the Origin 300 step).
@@ -40,8 +44,9 @@ mips_ss.add(when: 'CONFIG_SGI_BASEIO', if_true: files('sgi/board-baseio.c'))
 mips_ss.add(when: 'CONFIG_SGI_IO8', if_true: files('sgi/board-io8.c'))
 mips_ss.add(when: 'CONFIG_SGI_PCI_EXPANSION',
             if_true: files('sgi/board-pci-expansion.c'))
+# Likewise for the board fixture: see the comment above.
 mips_ss.add(when: 'CONFIG_SGI_BOARD_TEST',
-            if_true: files('sgi/board-test-fixture.c'))
+            if_true: files('../../tests/qtest/board-test-fixture.c'))
 subdir('sgi')
 mips_ss.add(when: 'CONFIG_FULOONG', if_true: files('fuloong2e.c'))
 mips_ss.add(when: 'CONFIG_MIPS_BOSTON', if_true: files('boston.c'))
