@@ -316,13 +316,21 @@ typedef struct SN0NodeState {
     MemoryRegion origin2000_bus_error[SN0_MAX_CPUS_PER_NODE];
     MemoryRegion prom_pi_probe;
     /*
-     * Origin 200's onboard board answers the probe through its own device
-     * window; reached as a plain address space over the board's widget
-     * face (sgi-ip29-io's cpu_face) rather than a borrowed SGIBridgeState
-     * pointer, so the board class stays this file's only dependency on
-     * the board's own internals.
+     * Origin 200's onboard board answers the probe through its own
+     * Bridge's own device-window region, dispatched to directly rather
+     * than through an address space: that window sits behind Bridge's
+     * own memory/IO routing bit for its device slot (sgi-bridge.c's
+     * device_window_mem[]/device_window_io[], toggled by each slot's own
+     * DEV_MEMORY_SPACE control bit), off at reset until the PROM itself
+     * configures it, while this probe is meant to reach it regardless --
+     * an address-space read respects that routing and finds nothing
+     * there before the PROM configures it; a direct dispatch does not.
+     * Resolved once, at wiring time, by the board's own QOM child name
+     * ("bridge") rather than a borrowed SGIBridgeState pointer, so the
+     * board class stays this file's only dependency on the board's own
+     * internals.
      */
-    AddressSpace prom_pi_probe_as;
+    MemoryRegion *prom_pi_probe_window;
     MemoryRegion small_window[SN0_XTALK_WIDGETS];
     MemoryRegion mem_slot[SN0_MAX_MEMORY_BANKS][SN0_MAX_MEMORY_SLOTS];
     MemoryRegion hub_local_mem_slot[SN0_MAX_MEMORY_BANKS]

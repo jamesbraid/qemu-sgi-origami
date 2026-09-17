@@ -234,11 +234,13 @@ static void test_origin2000_module_accepts_its_populations(const void *data)
  * sn-builder-console-test (sn-builder-fault-test.c) is a two-node topology
  * with console=1: node 1's IOC3 port A, not node 0's, must land on serial
  * line 0. Give the machine exactly one backend, at line 0, and read it
- * back off each node's IOC3 "chardev-a" property -- a chardev property
- * reports the backend's own id once bound (qdev-properties-system.c's
- * get_chr), empty string unbound, so this fails the way the removed
- * boot-and-quit version could not: node 0 answering "probe" instead of
- * node 1 would still exit 0.
+ * back off each node's onboard board's own IOC3 "chardev-a" property (the
+ * board re-parents under its own module, per include/hw/mips/sgi/xtalk-
+ * board.h, landing at its own slot name since neither board is given an
+ * id) -- a chardev property reports the backend's own id once bound
+ * (qdev-properties-system.c's get_chr), empty string unbound, so this
+ * fails the way the removed boot-and-quit version could not: node 0
+ * answering "probe" instead of node 1 would still exit 0.
  */
 static void test_console_field_puts_its_node_on_serial_line_zero(
     const void *data)
@@ -248,9 +250,9 @@ static void test_console_field_puts_its_node_on_serial_line_zero(
         "-smp 4,sockets=2,cores=2,threads=1 -cpu R10000 "
         "-chardev null,id=probe -serial chardev:probe -display none");
     g_autofree char *node0_chardev_a =
-        qom_get_str(qts, "/machine/node0/ioc3", "chardev-a");
+        qom_get_str(qts, "/machine/module0/slot8/ioc3", "chardev-a");
     g_autofree char *node1_chardev_a =
-        qom_get_str(qts, "/machine/node1/ioc3", "chardev-a");
+        qom_get_str(qts, "/machine/module1/slot8/ioc3", "chardev-a");
 
     g_assert_cmpstr(node1_chardev_a, ==, "probe");
     g_assert_cmpstr(node0_chardev_a, ==, "");

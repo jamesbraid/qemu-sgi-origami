@@ -51,13 +51,20 @@
  * for why this board does not fix them itself. "pci-bus-name" also
  * passes through, unset by default; see sgi-ip29-io's header for why a
  * machine building more than one instance of a board class must give
- * each its own. "nvram-drive" passes through to the onboard IOC3's own
- * Timekeeper storage, unset by default; see sgi-ip29-io's header for the
- * `-drive` forms it replaces.
+ * each its own. "ioc3-onewire-serial" is the onboard IOC3's own
+ * one-wire identity part, distinct from this board's own "onewire-
+ * serial" (Bridge's NIC ROM identity); see sgi-ip29-io's header for
+ * both. "nvram-drive" names the onboard IOC3's own Timekeeper storage
+ * by block id, and "chardev-a", "chardev-b", "record-a" and "record-b"
+ * name its two serial functions by chardev id, all unset by default
+ * and all held only as an id rather than a claimed backend, for the
+ * claim-timing reason sgi-ip29-io's header gives; BaseIO has no
+ * parallel function, so this class exposes no "parallel-chardev".
  */
 
 #include "qemu/osdep.h"
 #include "hw/mips/sgi/xtalk-board.h"
+#include "chardev/char.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "hw/core/sysbus.h"
@@ -68,6 +75,7 @@
 #include "qapi/error.h"
 #include "qemu/module.h"
 #include "qom/object.h"
+#include "system/block-backend.h"
 
 #define TYPE_SGI_BASEIO "sgi-baseio"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBaseioState, SGI_BASEIO)
@@ -102,11 +110,54 @@ struct SGIBaseioState {
     uint32_t fabric_node_shift;
     uint32_t fabric_widget_shift;
     uint64_t onewire_serial;
+    uint64_t ioc3_onewire_serial;
     char *pci_bus_name;
-    BlockBackend *nvram_drive;
+    char *nvram_drive_id;
+    char *chardev_a_id;
+    char *chardev_b_id;
+    char *record_a_id;
+    char *record_b_id;
 
     SGIBridgeState *bridge;
 };
+
+/*
+ * Resolve a chardev id to its backend and set it on dev's own
+ * same-named property, before dev realizes; see the header comment on
+ * "chardev-a" and its siblings above for why this board never holds a
+ * "chardev" property of its own.
+ */
+static void baseio_pass_chardev(DeviceState *dev, const char *prop,
+                                const char *id)
+{
+    Chardev *chr;
+
+    if (!id) {
+        return;
+    }
+    chr = qemu_chr_find(id);
+    if (chr) {
+        qdev_prop_set_chr(dev, prop, chr);
+    }
+}
+
+/*
+ * Resolve a block backend id to its backend and set it on dev's own
+ * "nvram-drive" property, before dev realizes; see baseio_pass_chardev
+ * and sgi-ip29-io's header for why this board holds only an id.
+ */
+static void baseio_pass_drive(DeviceState *dev, const char *id)
+{
+    BlockBackend *blk;
+
+    if (!id) {
+        return;
+    }
+    blk = blk_by_name(id);
+    if (blk) {
+        qdev_prop_set_drive(dev, "nvram-drive", blk);
+    }
+}
 
 static bool baseio_build_widget(SGIXtalkBoardState *board, Error **errp)
 {
@@ -165,9 +216,13 @@ static bool baseio_build_widget(SGIXtalkBoardState *board, Error **errp)
                          BASEIO_IOC3_SUBSYSTEM_ID_NOT_OBSERVED);
     qdev_prop_set_uint8(DEVICE(ioc3), "timekeeper-kind",
                         SGI_IOC3_TIMEKEEPER_M48T35);
-    if (s->nvram_drive) {
-        qdev_prop_set_drive(DEVICE(ioc3), "nvram-drive", s->nvram_drive);
-    }
+    qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial",
+                         s->ioc3_onewire_serial);
+    baseio_pass_drive(DEVICE(ioc3), s->nvram_drive_id);
+    baseio_pass_chardev(DEVICE(ioc3), "chardev-a", s->chardev_a_id);
+    baseio_pass_chardev(DEVICE(ioc3), "chardev-b", s->chardev_b_id);
+    baseio_pass_chardev(DEVICE(ioc3), "record-a", s->record_a_id);
+    baseio_pass_chardev(DEVICE(ioc3), "record-b", s->record_b_id);
     pci_realize_and_unref(ioc3, bus, &error_abort);
     pci_set_byte(ioc3->config + PCI_REVISION_ID, BASEIO_IOC3_REVISION);
     /* Direct board wiring, not the bus's own per-slot PCI INTx rule. */
@@ -189,8 +244,14 @@ static const Property baseio_properties[] = {
                        fabric_widget_shift, 0),
     DEFINE_PROP_UINT64("onewire-serial", SGIBaseioState, onewire_serial,
                        BASEIO_SERIAL_PLACEHOLDER),
+    DEFINE_PROP_UINT64("ioc3-onewire-serial", SGIBaseioState,
+                       ioc3_onewire_serial, SGI_IOC3_ONEWIRE_SERIAL),
     DEFINE_PROP_STRING("pci-bus-name", SGIBaseioState, pci_bus_name),
-    DEFINE_PROP_DRIVE("nvram-drive", SGIBaseioState, nvram_drive),
+    DEFINE_PROP_STRING("nvram-drive", SGIBaseioState, nvram_drive_id),
+    DEFINE_PROP_STRING("chardev-a", SGIBaseioState, chardev_a_id),
+    DEFINE_PROP_STRING("chardev-b", SGIBaseioState, chardev_b_id),
+    DEFINE_PROP_STRING("record-a", SGIBaseioState, record_a_id),
+    DEFINE_PROP_STRING("record-b", SGIBaseioState, record_b_id),
 };
 
 /*
