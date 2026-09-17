@@ -53,3 +53,8 @@ virtio_input_queue_full(void) "queue full"
 lasips2_reg_read(unsigned int size, int id, uint64_t addr, const char *name, uint64_t val) "%u %d addr 0x%"PRIx64 "%s -> 0x%"PRIx64
 lasips2_reg_write(unsigned int size, int id, uint64_t addr, const char *name, uint64_t val) "%u %d addr 0x%"PRIx64 "%s <- 0x%"PRIx64
 lasips2_intr(unsigned int val) "%d"
+
+# sgi-ioc3-kbc.c
+sgi_ioc3_kbc_write(uint64_t addr, uint64_t val, unsigned int size) "addr 0x%"PRIx64" val 0x%"PRIx64" size %u"
+sgi_ioc3_kbc_read(uint64_t addr, uint64_t val) "addr 0x%"PRIx64" -> 0x%"PRIx64
+sgi_ioc3_kbc_irq(int n, int level) "n %d level %d"
