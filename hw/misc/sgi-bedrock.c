@@ -5,6 +5,7 @@
 #include "hw/core/cpu.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
+#include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/host-utils.h"
 #include "qemu/log.h"
@@ -1069,6 +1070,55 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
         qdev_get_gpio_in_named(dev, "local-reset", 0));
 }
 
+/*
+ * Release any hold a migration snapshot caught mid-wait: a vCPU parked in
+ * bedrock_hold_cpu()'s wait condition has no way to be woken by a stream
+ * that carries no callback state for it, so this mirrors sgi_hub_post_load()
+ * kicking the same way through sgi_hub_rt_hold_reset().
+ */
+static int bedrock_post_load(void *opaque, int version_id)
+{
+    sgi_bedrock_hold_reset(opaque);
+    return 0;
+}
+
+/*
+ * SGIBedrockState carries no migrated fields of its own. Its registers live
+ * entirely in the pi/io/md/lb/ni/xb sub-devices, each realized with its own
+ * VMStateDescription (device_set_realized() registers every realized
+ * sub-device by its own dc->vmsd, independent of this one). Everything else
+ * directly in this struct is either wiring and links reproduced identically
+ * from the same machine construction on both ends (MemoryRegion/AddressSpace
+ * plumbing, qemu_irq fan-out, the dma/node/l1-uart/widget MemoryRegion
+ * links), a qdev property normalized once in bedrock_realize() and never
+ * mutated afterward (processor_count, processor_mask,
+ * cpu_enable_initial_mask, cpu_base, revision, local_region,
+ * installed_memory_bank_mask, installed_memory_bank_mib, inbound_widget_mask,
+ * inbound_device, device_mask_reset, initiator_region), or the host-only
+ * rendezvous-hold scheduling state documented on hold_cpu and
+ * hold_scratch1_seen in sgi-bedrock.h: bounded, re-accumulated from the
+ * guest's own polling, and never itself a value the guest reads. That state
+ * -- hold_cpu, hold_scratch1_seen, hold_scratch1_withheld_valid,
+ * hold_scratch1_withheld, perf_last_slot, perf_run, hold_id, hold_kind,
+ * hold_seq -- stays out of this description on purpose, the way
+ * sgi-hub.c's vmstate_sgi_hub omits its own pi_rt_hold family; post_load
+ * puts it through the same reset path a cold reset does.
+ *
+ * This description still exists, rather than leaving dc->vmsd unset, so this
+ * device is accounted for in the migration stream and a future field that
+ * does need migrating has a place to land already reviewed for the fields
+ * around it.
+ */
+static const VMStateDescription vmstate_sgi_bedrock = {
+    .name = TYPE_SGI_BEDROCK,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .post_load = bedrock_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const Property bedrock_properties[] = {
     DEFINE_PROP_UINT32("processor-count", SGIBedrockState,
                        processor_count, 1),
@@ -1226,6 +1276,7 @@ static void bedrock_class_init(ObjectClass *klass, const void *data)
     dc->desc = "SGI Bedrock node controller";
     dc->realize = bedrock_realize;
     dc->unrealize = bedrock_unrealize;
+    dc->vmsd = &vmstate_sgi_bedrock;
     dc->user_creatable = true;
     device_class_set_props(dc, bedrock_properties);
     rc->phases.enter = bedrock_reset_enter;
