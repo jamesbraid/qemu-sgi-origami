@@ -62,6 +62,20 @@
 #define REG_BOARD_INVENTORY     SI_REG(0x072488)
 #define REG_CMAP_WRITE_INDEX    SI_REG(0x070c30)
 #define REG_CMAP_DATA           SI_REG(0x070d18)
+#define REG_INT_DEST_UPPER_ALT  SI_REG(0x000030)
+#define REG_INT_DEST_LOWER_ALT  SI_REG(0x000038)
+#define REG_HQ_CONFIG_A         SI_REG(0x011030)
+#define REG_HQ_CONFIG_B         SI_REG(0x011038)
+#define REG_HQ_ENABLE           SI_REG(0x011050)
+#define REG_HQ_ENABLE_CLEAR     SI_REG(0x011058)
+#define REG_HQ_VECTOR_DEST_UPPER SI_REG(0x011060)
+#define REG_HQ_VECTOR_DEST_LOWER SI_REG(0x011068)
+#define REG_HQ_VECTORS           SI_REG(0x011070)
+#define REG_FIFO_THRESHOLD_0     SI_REG(0x040000)
+#define REG_FIFO_THRESHOLD_1     SI_REG(0x040008)
+#define REG_FIFO_THRESHOLD_LAST  SI_REG(0x040030)
+#define REG_BANK_STATUS_1       SI_REG(0x020010)
+#define REG_BANK_STATUS_2       SI_REG(0x020018)
 
 #define SI_ENTRY_WORD           0x000004fc
 #define SI_FINAL_TOKEN           0x0000f400
@@ -814,6 +828,157 @@ static void test_cmap_index_addresses_the_right_slot(void)
     qtest_quit(qts);
 }
 
+/*
+ * MgrasSetHQ4IntrVectors programs the same interrupt-destination fields the
+ * generic widget-header pair already models, but through a second address
+ * pair one word below it; both must feed the same destination state.
+ */
+static void test_int_dest_alt_offset_aliases(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    qtest_writel(qts, REG_INT_DEST_UPPER_ALT, 0x12340000);
+    qtest_writel(qts, REG_INT_DEST_LOWER_ALT, 0x5678);
+    g_assert_cmphex(qtest_readl(qts, REG_INT_DEST_UPPER), ==, 0x12340000);
+    g_assert_cmphex(qtest_readl(qts, REG_INT_DEST_LOWER), ==, 0x5678);
+
+    qtest_writel(qts, REG_INT_DEST_UPPER, 0xabcd0000);
+    qtest_writel(qts, REG_INT_DEST_LOWER, 0xef01);
+    g_assert_cmphex(qtest_readl(qts, REG_INT_DEST_UPPER_ALT), ==, 0xabcd0000);
+    g_assert_cmphex(qtest_readl(qts, REG_INT_DEST_LOWER_ALT), ==, 0xef01);
+
+    qtest_quit(qts);
+}
+
+/*
+ * MgrasCtxsw and MgrasFlushHQ3 save, restore and read-modify-write these
+ * four registers around a context switch. The device only needs to store
+ * and echo each faithfully -- the driver does its own read-modify-write in
+ * software -- except SGI_MGRAS_HQ_ENABLE_CLEAR (SGI_MGRAS_BRINGUP_ARG_3's
+ * offset), which clears bits from SGI_MGRAS_HQ_ENABLE rather than
+ * replacing it outright.
+ */
+static void test_hq_config_and_enable_registers(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    qtest_writel(qts, REG_HQ_CONFIG_A, 0x11000f);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_CONFIG_A), ==, 0x11000f);
+    qtest_writel(qts, REG_HQ_CONFIG_B, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_CONFIG_B), ==, 0xffffffff);
+
+    qtest_writel(qts, REG_HQ_ENABLE, 0x1f8);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_ENABLE), ==, 0x1f8);
+    /* The driver's own read-modify-write: (v & ~8) | 0x10. */
+    qtest_writel(qts, REG_HQ_ENABLE, (0x1f8 & ~8) | 0x10);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_ENABLE), ==, 0x1f0);
+
+    qtest_writel(qts, REG_HQ_ENABLE_CLEAR, 0x10);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_ENABLE), ==, 0x1e0);
+
+    /* Not SI-specific accesses: none may raise the sticky error. */
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The HQ4-specific interrupt-vector triple MgrasSetHQ4IntrVectors writes
+ * alongside the generic destination pair: which byte of the packed vector
+ * word serves which interrupt role was not settled, so all three store
+ * plain opaque state.
+ */
+static void test_hq_vector_registers(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    qtest_writel(qts, REG_HQ_VECTOR_DEST_UPPER, 0x2000f000);
+    qtest_writel(qts, REG_HQ_VECTOR_DEST_LOWER, 0x9000);
+    qtest_writel(qts, REG_HQ_VECTORS, 0x01020304);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_VECTOR_DEST_UPPER), ==,
+                     0x2000f000);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_VECTOR_DEST_LOWER), ==, 0x9000);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_VECTORS), ==, 0x01020304);
+
+    qtest_quit(qts);
+}
+
+/*
+ * MgrasInitHQ writes FIFO low/high-water thresholds across this small
+ * range once at start-of-day; none is ever read back by the driver, but
+ * this device stores and echoes the whole range like the larger board-
+ * configuration table.
+ */
+static void test_fifo_threshold_registers(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    qtest_writel(qts, REG_FIFO_THRESHOLD_0, 0x47);
+    qtest_writel(qts, REG_FIFO_THRESHOLD_1, 0x14);
+    qtest_writel(qts, REG_FIFO_THRESHOLD_LAST, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_FIFO_THRESHOLD_0), ==, 0x47);
+    g_assert_cmphex(qtest_readl(qts, REG_FIFO_THRESHOLD_1), ==, 0x14);
+    g_assert_cmphex(qtest_readl(qts, REG_FIFO_THRESHOLD_LAST), ==, 0);
+
+    qtest_writel(qts, REG_BANK_STATUS_1, 0x100000);
+    qtest_writel(qts, REG_BANK_STATUS_2, 0x20000);
+    g_assert_cmphex(qtest_readl(qts, REG_BANK_STATUS_1), ==, 0x100000);
+    g_assert_cmphex(qtest_readl(qts, REG_BANK_STATUS_2), ==, 0x20000);
+
+    qtest_quit(qts);
+}
+
+/*
+ * MgrasStart submits two 64-bit HQ-local configuration words (GE and RE
+ * population counts) around the context switch, with a zero unit field in
+ * the high half rather than a real command selector -- these must be
+ * accepted as opaque configuration traffic, not rejected as an unknown
+ * command selector the way any other out-of-range selector still is.
+ */
+static void test_command_accepts_hq_config_words(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x0000ff04 << 32) | 1);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00008c04 << 32) | 1);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    /* An out-of-range selector must still be rejected. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00000001 << 34) | 1);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==,
+                     0x80000000);
+
+    qtest_quit(qts);
+}
+
+/*
+ * MgrasStart and MgrasCtxsw submit further 4-byte FIFO words to
+ * REG_CONTEXT_COMMAND after the context switch has already completed
+ * (0xf200, 0x80000008, 0x40000, 0x111, 0x3700, zero, and others); these
+ * must be accepted as opaque post-completion traffic, not flagged as a
+ * protocol violation the way a write before the first acknowledgement
+ * still is.
+ */
+static void test_context_write_accepted_after_completion(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    qtest_writel(qts, REG_CONTEXT_COMMAND, 0xf200);
+    qtest_writel(qts, REG_CONTEXT_COMMAND, 0x80000008);
+    qtest_writel(qts, REG_CONTEXT_COMMAND, 0x40000);
+    qtest_writel(qts, REG_CONTEXT_COMMAND, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+    /* The completion token itself still reads back afterward. */
+    g_assert_cmphex(qtest_readl(qts, REG_CONTEXT_COMMAND), ==, SI_FINAL_TOKEN);
+
+    qtest_quit(qts);
+}
+
 static void test_migration(void)
 {
     g_autofree char *tmpfs = NULL;
@@ -897,6 +1062,18 @@ int main(int argc, char **argv)
                    test_board_inventory_registers);
     qtest_add_func("sn0/origin2000/mgras/cmap-index-addresses-the-right-slot",
                    test_cmap_index_addresses_the_right_slot);
+    qtest_add_func("sn0/origin2000/mgras/int-dest-alt-offset-aliases",
+                   test_int_dest_alt_offset_aliases);
+    qtest_add_func("sn0/origin2000/mgras/hq-config-and-enable-registers",
+                   test_hq_config_and_enable_registers);
+    qtest_add_func("sn0/origin2000/mgras/hq-vector-registers",
+                   test_hq_vector_registers);
+    qtest_add_func("sn0/origin2000/mgras/fifo-threshold-registers",
+                   test_fifo_threshold_registers);
+    qtest_add_func("sn0/origin2000/mgras/command-accepts-hq-config-words",
+                   test_command_accepts_hq_config_words);
+    qtest_add_func("sn0/origin2000/mgras/context-write-after-completion",
+                   test_context_write_accepted_after_completion);
     qtest_add_func("sn0/origin2000/mgras/migration", test_migration);
 
     return g_test_run();
