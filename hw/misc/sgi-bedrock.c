@@ -726,6 +726,20 @@ static void bedrock_xb_error(void *opaque, int n, int level)
     sgi_bedrock_pi_set_xb_error(&s->pi[1], level);
 }
 
+/*
+ * The L1 controller's UART is one link per node, not one per processor
+ * interface (docs/datasheets/l1-controller.md), so it is broadcast to both
+ * PI0 and PI1's own pending bit 4 the same way lb-error, ni-error and
+ * xb-error already broadcast their single node-wide line to both.
+ */
+static void bedrock_uart_irq(void *opaque, int n, int level)
+{
+    SGIBedrockState *s = opaque;
+
+    sgi_bedrock_pi_set_uart_irq(&s->pi[0], level);
+    sgi_bedrock_pi_set_uart_irq(&s->pi[1], level);
+}
+
 static void bedrock_local_reset(void *opaque, int n, int level)
 {
     SGIBedrockState *s = opaque;
@@ -1029,6 +1043,7 @@ static void bedrock_init(Object *obj)
     qdev_init_gpio_in_named(dev, bedrock_lb_error, "lb-error", 1);
     qdev_init_gpio_in_named(dev, bedrock_ni_error, "ni-error", 1);
     qdev_init_gpio_in_named(dev, bedrock_xb_error, "xb-error", 1);
+    qdev_init_gpio_in_named(dev, bedrock_uart_irq, "uart-irq", 1);
     qdev_init_gpio_in_named(dev, bedrock_local_reset, "local-reset", 1);
 }
 

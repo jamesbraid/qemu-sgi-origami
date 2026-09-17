@@ -82,8 +82,12 @@
 #define L1_UART UINT64_C(0x80)
 #define L1_SCRATCH UINT64_C(0x38)
 #define L1_UART_BASE (HUB_REMOTE_REGISTERS + L1_UART)
+#define L1_UART_LOCAL_BASE (HUB_LOCAL_REGISTERS + L1_UART)
+#define L1_UART_IER UINT64_C(0x08)
+#define L1_UART_IIR UINT64_C(0x10)
 #define L1_UART_STATUS UINT64_C(0x28)
 #define L1_STATUS_READY UINT64_C(0x61)
+#define PI_UART_PENDING (UINT64_C(1) << 4)
 #define L1_EEPROM_CHASSIS 1
 #define L1_EEPROM_BOARD 2
 #define L1_EEPROM_SPD 4
@@ -1799,6 +1803,81 @@ static void test_l1_operator_console_uses_serial0(const void *data)
     expect_console_text(sv[0], "escaping to L1 system controller\r\n"
                                "001c01-L1> ");
 
+    qtest_quit(qts);
+    g_assert_cmpint(close(sv[0]), ==, 0);
+}
+
+/*
+ * A byte typed at the operator console reaches the node UART's receive
+ * queue (confirmed live: LSR Data Ready and IIR 0x04 latch correctly) but,
+ * before this fix, the UART's own IRQ output was never connected to any
+ * interrupt consumer, so sMDK's smdk> prompt never accepted typed input.
+ * Bedrock pending bank 0 bit 4 is the documented UART consumer
+ * (docs/datasheets/bedrock-processor-interface.md); this exercises the
+ * whole path a keystroke takes, chardev to CPU Cause, the way
+ * test_io8_ioc3_superio_interrupt exercises the IOC3 serial path.
+ */
+static void test_l1_uart_irq_reaches_cpu(const void *data)
+{
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    int sv[2];
+    unsigned int i;
+
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    extra = g_strdup_printf("-S -chardev socket,id=l1-console,fd=%d "
+                            "-serial chardev:l1-console", sv[1]);
+    qts = machine_start_with(prom_path, extra);
+    g_assert_cmpint(close(sv[1]), ==, 0);
+
+    /* The L1 powers the node and enters console mode on its own. */
+    expect_console_text(sv[0], "INFO: 001c01 powering up the system.\r\n"
+                               "001c01-L1> \r\n"
+                               "entering console mode  001c01 CPU0, "
+                               "<CTRL_T> to escape to L1\r\n");
+
+    qtest_writeq(qts, L1_UART_LOCAL_BASE + L1_UART_IER, 0x01);
+    g_assert_cmphex(qtest_readq(qts, L1_UART_LOCAL_BASE + L1_UART_STATUS),
+                    ==, 0x60);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0) &
+                    PI_UART_PENDING, ==, 0);
+    g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
+
+    /* A keystroke at the operator console reaches the node's UART queue. */
+    g_assert_cmpint(write(sv[0], "x", 1), ==, 1);
+    for (i = 0; i < POLL_TRIES; i++) {
+        if (qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0) &
+            PI_UART_PENDING) {
+            break;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+    g_assert_cmphex(qtest_readq(qts, L1_UART_LOCAL_BASE + L1_UART_STATUS) &
+                    1, ==, 1);
+    g_assert_cmphex(qtest_readq(qts, L1_UART_LOCAL_BASE + L1_UART_IIR) &
+                    0xf, ==, 0x04);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0) &
+                    PI_UART_PENDING, ==, PI_UART_PENDING);
+    /* One node-wide UART line, broadcast to both processor interfaces. */
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + BEDROCK_PI1 +
+                                PI_PENDING_0) & PI_UART_PENDING, ==,
+                    PI_UART_PENDING);
+    /* Still masked off: the pending bit alone must not reach the CPU. */
+    g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
+
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_MASK_0_A, PI_UART_PENDING);
+    g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==,
+                    MIPS_CAUSE_HARDWARE_IRQ0);
+
+    /* Draining the whole framed reply clears the pending bit and the line. */
+    while (qtest_readq(qts, L1_UART_LOCAL_BASE + L1_UART_STATUS) & 1) {
+        qtest_readq(qts, L1_UART_LOCAL_BASE);
+    }
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0) &
+                    PI_UART_PENDING, ==, 0);
+    g_assert_cmphex(cpu_cause(qts, 0) & MIPS_CAUSE_HARDWARE_IRQ0, ==, 0);
+
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_MASK_0_A, 0);
     qtest_quit(qts);
     g_assert_cmpint(close(sv[0]), ==, 0);
 }
@@ -3842,6 +3921,8 @@ int main(int argc, char **argv)
                         NULL, test_hub_local_l1_uart_reaches_cpu_c);
     qtest_add_data_func("sn1/address-map/l1-operator-console", NULL,
                         test_l1_operator_console_uses_serial0);
+    qtest_add_data_func("sn1/address-map/l1-uart-irq-reaches-cpu", NULL,
+                        test_l1_uart_irq_reaches_cpu);
     qtest_add_data_func("sn1/address-map/prom-four-read-only-views", NULL,
                         test_prom_four_read_only_views);
     qtest_add_data_func("sn1/address-map/prom-cpu-module-config", NULL,
