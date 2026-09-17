@@ -86,8 +86,8 @@ struct SGIBedrockState {
 
     /*
      * The multi-threaded rendezvous hold at LB scratch 1 (H1), host-only
-     * and discarded across reset -- see sgi_bedrock_hold_reset() and
-     * docs/known-issues.md. It mirrors sgi-hub.c's RT-mailbox hold
+     * and discarded across reset and migration -- see sgi_bedrock_hold_reset()
+     * and docs/known-issues.md. It mirrors sgi-hub.c's RT-mailbox hold
      * (sgi_hub_rt_hold and neighbors): queued work on the held vCPU,
      * waiting on its own halt condition, one hold per processor at a time.
      * Unlike the Hub's fixed pairwise partner, this hold joins across
