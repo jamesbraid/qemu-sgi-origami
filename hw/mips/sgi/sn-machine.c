@@ -1151,9 +1151,9 @@ bool sgi_machine_validate_topology(const SGIModelTopology *t, Error **errp)
  * board's entry after its controlling node's), so every later entry
  * repeating a node index already seen is that node's board.
  */
-static void sgi_machine_index_xtalk_attachments(
+static bool sgi_machine_index_xtalk_attachments(
     const SGIModelTopology *t, unsigned int *node_attachment,
-    unsigned int *board_attachment)
+    unsigned int *board_attachment, Error **errp)
 {
     g_autofree bool *claimed = g_new0(bool, t->node_count);
     unsigned int board = 0;
@@ -1163,10 +1163,21 @@ static void sgi_machine_index_xtalk_attachments(
         const SGIModelXtalkAttachment *attachment = &t->xtalk_attachments[i];
         unsigned int node_index = attachment->node_index;
 
-        g_assert(node_index < t->node_count);
+        if (node_index >= t->node_count) {
+            error_setg(errp, "topology '%s' crosstalk attachment %zu names "
+                      "node %u, past its %zu nodes", t->name, i, node_index,
+                      t->node_count);
+            return false;
+        }
         if (attachment->crossbar_index < 0) {
             node_attachment[node_index] = i;
-            g_assert(board < t->io_board_count);
+            claimed[node_index] = true;
+            if (board >= t->io_board_count) {
+                error_setg(errp, "topology '%s' names more direct-attach or "
+                          "board-owning crosstalk attachments than its %zu "
+                          "io board(s)", t->name, t->io_board_count);
+                return false;
+            }
             board_attachment[board++] = i;
             continue;
         }
@@ -1174,11 +1185,36 @@ static void sgi_machine_index_xtalk_attachments(
             claimed[node_index] = true;
             node_attachment[node_index] = i;
         } else {
-            g_assert(board < t->io_board_count);
+            if (board >= t->io_board_count) {
+                error_setg(errp, "topology '%s' names more direct-attach or "
+                          "board-owning crosstalk attachments than its %zu "
+                          "io board(s)", t->name, t->io_board_count);
+                return false;
+            }
             board_attachment[board++] = i;
         }
     }
-    g_assert(board == t->io_board_count);
+    /*
+     * A node no attachment entry ever claimed: the same fault the
+     * deleted sgi_machine_populate_node used to catch with
+     * g_assert(board && xtalk), relocated here now that this function
+     * resolves each node's own attachment before the board path builds
+     * anything.
+     */
+    for (i = 0; i < t->node_count; i++) {
+        if (!claimed[i]) {
+            error_setg(errp, "topology '%s' node %zu names no direct-attach "
+                      "I/O board or crosstalk attachment", t->name, i);
+            return false;
+        }
+    }
+    if (board != t->io_board_count) {
+        error_setg(errp, "topology '%s' names %zu io board(s) but only %u "
+                  "crosstalk attachment(s) own one", t->name,
+                  t->io_board_count, board);
+        return false;
+    }
+    return true;
 }
 
 static const char *sgi_machine_io_board_type(const SGIModelIoBoard *record)
@@ -1637,8 +1673,9 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
  * this runs before the node realize loop, the way the deleted assembly's
  * own prepare() did.
  */
-static void sgi_machine_build_node_outbound(SGIMachineState *s,
-                                            unsigned int node_index)
+static bool sgi_machine_build_node_outbound(SGIMachineState *s,
+                                            unsigned int node_index,
+                                            Error **errp)
 {
     g_autofree char *name =
         g_strdup_printf("node%u-packet-proxy", node_index);
@@ -1649,12 +1686,13 @@ static void sgi_machine_build_node_outbound(SGIMachineState *s,
     memory_region_set_enabled(&s->node_packet_proxy[node_index], false);
     if (!sn0_origin2000_hub_outgoing_io_init(
             &s->node_outbound[node_index], OBJECT(s), node,
-            &s->node_packet_proxy[node_index], &error_fatal) ||
+            &s->node_packet_proxy[node_index], errp) ||
         !object_property_set_link(
             OBJECT(&node->hub), "xtalk-io",
-            OBJECT(&s->node_outbound[node_index].face), &error_fatal)) {
-        exit(EXIT_FAILURE);
+            OBJECT(&s->node_outbound[node_index].face), errp)) {
+        return false;
     }
+    return true;
 }
 
 /*
@@ -1666,17 +1704,17 @@ static void sgi_machine_build_node_outbound(SGIMachineState *s,
  * this runs after the node realize loop and before
  * sgi_machine_attach_crossbars.
  */
-static void sgi_machine_wire_node_crossbar(
+static bool sgi_machine_wire_node_crossbar(
     SGIMachineState *s, unsigned int node_index,
-    const SGIModelXtalkAttachment *attachment)
+    const SGIModelXtalkAttachment *attachment, Error **errp)
 {
     SN0NodeState *node = s->nodes[node_index];
     g_autofree char *name =
         g_strdup_printf("node%u-cpu-refusal", node_index);
 
     if (!sn0_origin2000_hub_io_init(&s->node_inbound[node_index], OBJECT(s),
-                                    node, &error_fatal)) {
-        exit(EXIT_FAILURE);
+                                    node, errp)) {
+        return false;
     }
     s->node_crossbar_face[node_index].node = node;
     s->node_crossbar_face[node_index].widget = attachment->widget;
@@ -1688,9 +1726,10 @@ static void sgi_machine_wire_node_crossbar(
                                   attachment->widget,
                                   &s->node_cpu_refusal[node_index],
                                   &s->node_inbound[node_index].face,
-                                  &error_fatal)) {
-        exit(EXIT_FAILURE);
+                                  errp)) {
+        return false;
     }
+    return true;
 }
 
 /*
@@ -1889,9 +1928,9 @@ static void sgi_machine_build_io_board(
  * through sgi_xbow_attach_endpoint(), the same primitive
  * sgi_xtalk_board_attach_pending() uses for a `-device`-plugged one.
  */
-static void sgi_machine_wire_io_board(
+static bool sgi_machine_wire_io_board(
     SGIMachineState *s, unsigned int board_index,
-    const SGIModelXtalkAttachment *attachment)
+    const SGIModelXtalkAttachment *attachment, Error **errp)
 {
     SGIXtalkBoardState *board = s->io_boards[board_index];
 
@@ -1979,8 +2018,8 @@ static void sgi_machine_wire_io_board(
     } else {
         if (!sgi_xbow_attach_endpoint(
                 s->crossbars[attachment->crossbar_index], attachment->widget,
-                board->cpu_face, board->packet_face, &error_fatal)) {
-            exit(EXIT_FAILURE);
+                board->cpu_face, board->packet_face, errp)) {
+            return false;
         }
         /*
          * Every sgi-xtalk-board queues itself for sgi_xtalk_board_attach_
@@ -1993,6 +2032,7 @@ static void sgi_machine_wire_io_board(
          */
         board->attached = true;
     }
+    return true;
 }
 
 /*
@@ -2029,7 +2069,11 @@ static void sgi_machine_attach_crossbars(Notifier *notifier, void *data)
     }
     node_attachment = g_new0(unsigned int, t->node_count);
     board_attachment = g_new0(unsigned int, t->io_board_count);
-    sgi_machine_index_xtalk_attachments(t, node_attachment, board_attachment);
+    if (!sgi_machine_index_xtalk_attachments(t, node_attachment,
+                                             board_attachment,
+                                             &error_fatal)) {
+        exit(EXIT_FAILURE);
+    }
 
     for (i = 0; i < t->crossbar_count; i++) {
         sgi_machine_own_crossbar(s, i);
@@ -2210,8 +2254,9 @@ static void sgi_machine_attach_module_identities(SGIMachineState *s,
  * module reset, NMI or power line, and the module refuses those commands
  * rather than answering for a line that reaches nothing.
  */
-static void sgi_machine_build_controllers(SGIMachineState *s,
-                                          const SGIModelTopology *t)
+static bool sgi_machine_build_controllers(SGIMachineState *s,
+                                          const SGIModelTopology *t,
+                                          Error **errp)
 {
     size_t controller_index;
 
@@ -2230,9 +2275,23 @@ static void sgi_machine_build_controllers(SGIMachineState *s,
                 break;
             }
         }
-        g_assert(module);
-        g_assert(controller->kind == SGI_MODEL_CONTROLLER_MSC);
-        g_assert(module->node_count <= SGI_O2000_ADAPTER_COUNT);
+        if (!module) {
+            error_setg(errp, "topology '%s' controller %zu names no module",
+                      t->name, controller_index);
+            return false;
+        }
+        if (controller->kind != SGI_MODEL_CONTROLLER_MSC) {
+            error_setg(errp, "topology '%s' controller %zu names an unknown "
+                      "controller kind", t->name, controller_index);
+            return false;
+        }
+        if (module->node_count > SGI_O2000_ADAPTER_COUNT) {
+            error_setg(errp, "topology '%s' module '%s' has %zu nodes, "
+                      "beyond its controller's %u adapters", t->name,
+                      module->id, module->node_count,
+                      SGI_O2000_ADAPTER_COUNT);
+            return false;
+        }
 
         dev = qdev_new(TYPE_SGI_SN0_MODULE_MANAGEMENT);
         object_property_add_child(OBJECT(s), "module-management",
@@ -2261,6 +2320,7 @@ static void sgi_machine_build_controllers(SGIMachineState *s,
                 sysbus_mmio_get_region(adapter, 0), 1);
         }
     }
+    return true;
 }
 
 #define SGI_SN0_ROUTER_NIC_PAGES 2
@@ -2501,39 +2561,40 @@ static void sgi_machine_configure_flash(const SGIMachineClass *smc,
  * default template's own bytes behind it, matching a factory-formatted
  * chip rather than a merely erased one.
  */
-static void sgi_machine_load_flash(MachineState *machine,
+static bool sgi_machine_load_flash(MachineState *machine,
                                    const SGIModelTopology *t,
-                                   SGIMachineState *s)
+                                   SGIMachineState *s, Error **errp)
 {
     const SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(machine);
     uint64_t flash_size = sgi_sn0_hub_address_map.flash_reset.size;
-    uint8_t *flash;
+    g_autofree uint8_t *flash = NULL;
     unsigned int node_index;
 
     flash = g_malloc(flash_size);
     sgi_machine_build_flash(t, smc, flash, flash_size);
     if (machine->firmware) {
-        char *path = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
+        g_autofree char *path =
+            qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
         int64_t image_size = path ? get_image_size(path, NULL) : -1;
         ssize_t size;
 
         if (image_size < 0) {
-            error_report("%s: cannot read the firmware image '%s'",
-                        MACHINE_GET_CLASS(machine)->name, machine->firmware);
-            exit(EXIT_FAILURE);
+            error_setg(errp, "%s: cannot read the firmware image '%s'",
+                      MACHINE_GET_CLASS(machine)->name, machine->firmware);
+            return false;
         }
         if ((uint64_t)image_size > flash_size) {
-            error_report("%s: firmware image '%s' exceeds flash capacity",
-                        MACHINE_GET_CLASS(machine)->name, machine->firmware);
-            exit(EXIT_FAILURE);
+            error_setg(errp, "%s: firmware image '%s' exceeds flash "
+                      "capacity", MACHINE_GET_CLASS(machine)->name,
+                      machine->firmware);
+            return false;
         }
         size = load_image_size(path, flash, flash_size);
         if (size != image_size) {
-            error_report("%s: cannot load firmware image '%s'",
-                        MACHINE_GET_CLASS(machine)->name, machine->firmware);
-            exit(EXIT_FAILURE);
+            error_setg(errp, "%s: cannot load firmware image '%s'",
+                      MACHINE_GET_CLASS(machine)->name, machine->firmware);
+            return false;
         }
-        g_free(path);
     }
     sgi_machine_configure_flash(smc, flash);
     for (node_index = 0; node_index < s->num_nodes; node_index++) {
@@ -2547,16 +2608,15 @@ static void sgi_machine_load_flash(MachineState *machine,
         memcpy(memory_region_get_ram_ptr(chip), flash, flash_size);
         memory_region_set_dirty(chip, 0, flash_size);
     }
-    g_free(flash);
+    return true;
 }
 
-void sgi_machine_init(MachineState *machine)
+static bool sgi_machine_realize(MachineState *machine, Error **errp)
 {
     SGIMachineState *s = SGI_MACHINE(machine);
     SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(machine);
     MachineClass *mc = MACHINE_GET_CLASS(machine);
     const SGIModelTopology *t = sgi_machine_topology(machine);
-    Error *err = NULL;
     g_autofree unsigned int *requested = NULL;
     g_autofree unsigned int *node_attachment = NULL;
     g_autofree unsigned int *board_attachment = NULL;
@@ -2580,16 +2640,14 @@ void sgi_machine_init(MachineState *machine)
                 g_string_append(names, sgi_model_entries[i].name);
             }
         }
-        error_report("%s: unknown topology '%s'; known topologies: %s",
-                    mc->name,
-                    s->topology_name ? s->topology_name : "(none)",
-                    names->str);
+        error_setg(errp, "%s: unknown topology '%s'; known topologies: %s",
+                  mc->name, s->topology_name ? s->topology_name : "(none)",
+                  names->str);
         g_string_free(names, true);
-        exit(EXIT_FAILURE);
+        return false;
     }
-    if (!sgi_machine_validate_topology(t, &err)) {
-        error_report_err(err);
-        exit(EXIT_FAILURE);
+    if (!sgi_machine_validate_topology(t, errp)) {
+        return false;
     }
     if (sgi_machine_has_identity_records(s)) {
         bool has_l1 = false;
@@ -2609,28 +2667,29 @@ void sgi_machine_init(MachineState *machine)
         }
     }
     if (machine->kernel_filename) {
-        error_report("%s: stock-PROM boot only; boot a kernel through the "
-                    "PROM's own TFTP netboot or a disk image, not -kernel",
-                    mc->name);
-        exit(EXIT_FAILURE);
+        error_setg(errp, "%s: stock-PROM boot only; boot a kernel through "
+                  "the PROM's own TFTP netboot or a disk image, not -kernel",
+                  mc->name);
+        return false;
     }
     if (machine->numa_state && machine->numa_state->num_nodes) {
-        error_report("%s: -numa is refused; topology= selects the wiring, "
-                    "-smp and -m select the population within it", mc->name);
-        exit(EXIT_FAILURE);
+        error_setg(errp, "%s: -numa is refused; topology= selects the "
+                  "wiring, -smp and -m select the population within it",
+                  mc->name);
+        return false;
     }
     if (machine->smp.threads != 1) {
-        error_report("%s: one thread per core", mc->name);
-        exit(EXIT_FAILURE);
+        error_setg(errp, "%s: one thread per core", mc->name);
+        return false;
     }
 
     node_count = t->node_count;
     requested = g_new0(unsigned int, node_count);
     if (node_count == 1) {
         if (machine->smp.sockets != 1) {
-            error_report("%s: topology '%s' is one node, one socket",
-                        mc->name, t->name);
-            exit(EXIT_FAILURE);
+            error_setg(errp, "%s: topology '%s' is one node, one socket",
+                      mc->name, t->name);
+            return false;
         }
         requested[0] = machine->smp.cpus;
     } else if (machine->smp.sockets == 1 &&
@@ -2644,9 +2703,9 @@ void sgi_machine_init(MachineState *machine)
          * actually built.
          */
         if (machine->smp.cpus % node_count) {
-            error_report("%s: topology '%s' splits -smp evenly across %u "
-                        "nodes", mc->name, t->name, node_count);
-            exit(EXIT_FAILURE);
+            error_setg(errp, "%s: topology '%s' splits -smp evenly across "
+                      "%u nodes", mc->name, t->name, node_count);
+            return false;
         }
         machine->smp.sockets = node_count;
         machine->smp.cores = machine->smp.cpus / node_count;
@@ -2656,34 +2715,34 @@ void sgi_machine_init(MachineState *machine)
     } else {
         if (machine->smp.sockets != node_count ||
             machine->smp.cpus != node_count * machine->smp.cores) {
-            error_report("%s: topology '%s' is %u nodes as %u sockets with "
-                        "one core count each", mc->name, t->name, node_count,
-                        node_count);
-            exit(EXIT_FAILURE);
+            error_setg(errp, "%s: topology '%s' is %u nodes as %u sockets "
+                      "with one core count each", mc->name, t->name,
+                      node_count, node_count);
+            return false;
         }
         for (node_index = 0; node_index < node_count; node_index++) {
             requested[node_index] = machine->smp.cores;
         }
     }
     if (!sgi_machine_find_population(t, requested)) {
-        error_report("%s: topology '%s' does not accept %u CPUs as %u "
-                    "socket(s)", mc->name, t->name, machine->smp.cpus,
-                    machine->smp.sockets);
-        exit(EXIT_FAILURE);
+        error_setg(errp, "%s: topology '%s' does not accept %u CPUs as %u "
+                  "socket(s)", mc->name, t->name, machine->smp.cpus,
+                  machine->smp.sockets);
+        return false;
     }
 
     if (node_count > 1 && machine->ram_size % ((uint64_t)node_count * MiB)) {
-        error_report("%s: topology '%s' splits -m evenly across %u nodes",
-                    mc->name, t->name, node_count);
-        exit(EXIT_FAILURE);
+        error_setg(errp, "%s: topology '%s' splits -m evenly across %u "
+                  "nodes", mc->name, t->name, node_count);
+        return false;
     }
 
     if (!sgi_machine_validate_memory_population(
             t, machine->ram_size / node_count / MiB)) {
-        error_report("%s: topology '%s' does not accept %" PRIu64
-                    " MiB per node", mc->name, t->name,
-                    machine->ram_size / node_count / MiB);
-        exit(EXIT_FAILURE);
+        error_setg(errp, "%s: topology '%s' does not accept %" PRIu64
+                  " MiB per node", mc->name, t->name,
+                  machine->ram_size / node_count / MiB);
+        return false;
     }
 
     /*
@@ -2693,9 +2752,8 @@ void sgi_machine_init(MachineState *machine)
      * off explicitly.
      */
     if (t->nodes[0].asic_kind == SGI_MODEL_ASIC_HUB && s->debug_leds &&
-        !sgi_machine_show_indicator_codes(&err)) {
-        error_report_err(err);
-        exit(EXIT_FAILURE);
+        !sgi_machine_show_indicator_codes(errp)) {
+        return false;
     }
 
     /*
@@ -2751,7 +2809,7 @@ void sgi_machine_init(MachineState *machine)
             machine->possible_cpus->cpus[i].cpu =
                 CPU(SN1_NODE(node)->cpu[i]);
         }
-        return;
+        return true;
     }
 
     flash_drives = g_new0(BlockBackend *, node_count);
@@ -2764,9 +2822,9 @@ void sgi_machine_init(MachineState *machine)
         }
     }
     if (!machine->firmware && !flash_count && !qtest_enabled()) {
-        error_report("%s: supports stock-PROM boot only: pass -bios or a "
-                    "pflash drive per node", mc->name);
-        exit(EXIT_FAILURE);
+        error_setg(errp, "%s: supports stock-PROM boot only: pass -bios or "
+                  "a pflash drive per node", mc->name);
+        return false;
     }
 
     s->num_nodes = node_count;
@@ -2845,10 +2903,10 @@ void sgi_machine_init(MachineState *machine)
 
         if (!sn0_model_memory_layout(&sgi_sn0_hub_hardware.memory, ram_size,
                                      bank_mb, &populated_banks)) {
-            error_report("%s: node %u's %" PRIu64 " MiB cannot be populated "
-                        "from IP29 memory banks", mc->name, node_index,
-                        ram_size / MiB);
-            exit(EXIT_FAILURE);
+            error_setg(errp, "%s: node %u's %" PRIu64 " MiB cannot be "
+                      "populated from IP29 memory banks", mc->name,
+                      node_index, ram_size / MiB);
+            return false;
         }
         banks_mb = qlist_new();
         for (bank = 0; bank < populated_banks; bank++) {
@@ -2925,7 +2983,10 @@ void sgi_machine_init(MachineState *machine)
     }
     g_assert(ram_offset == machine->ram_size);
 
-    sgi_machine_index_xtalk_attachments(t, node_attachment, board_attachment);
+    if (!sgi_machine_index_xtalk_attachments(t, node_attachment,
+                                             board_attachment, errp)) {
+        return false;
+    }
 
     /*
      * Every crossbar the topology names is built (unrealized) and given
@@ -2941,7 +3002,9 @@ void sgi_machine_init(MachineState *machine)
         for (node_index = 0; node_index < node_count; node_index++) {
             if (t->xtalk_attachments[node_attachment[node_index]]
                     .crossbar_index >= 0) {
-                sgi_machine_build_node_outbound(s, node_index);
+                if (!sgi_machine_build_node_outbound(s, node_index, errp)) {
+                    return false;
+                }
             }
         }
     }
@@ -3006,22 +3069,37 @@ void sgi_machine_init(MachineState *machine)
             &t->xtalk_attachments[board_attachment[board_index]];
 
         sgi_machine_build_io_board(s, t, board_index, attachment);
-        sgi_machine_wire_io_board(s, board_index, attachment);
+        if (!sgi_machine_wire_io_board(s, board_index, attachment, errp)) {
+            return false;
+        }
     }
     for (node_index = 0; node_index < node_count; node_index++) {
         const SGIModelXtalkAttachment *attachment =
             &t->xtalk_attachments[node_attachment[node_index]];
 
         if (attachment->crossbar_index >= 0) {
-            sgi_machine_wire_node_crossbar(s, node_index, attachment);
+            if (!sgi_machine_wire_node_crossbar(s, node_index, attachment,
+                                                errp)) {
+                return false;
+            }
         }
     }
-    sgi_machine_build_controllers(s, t);
+    if (!sgi_machine_build_controllers(s, t, errp)) {
+        return false;
+    }
 
-    sgi_machine_load_flash(machine, t, s);
+    if (!sgi_machine_load_flash(machine, t, s, errp)) {
+        return false;
+    }
 
     s->machine_done.notify = sgi_machine_attach_crossbars;
     qemu_add_machine_init_done_notifier(&s->machine_done);
+    return true;
+}
+
+void sgi_machine_init(MachineState *machine)
+{
+    sgi_machine_realize(machine, &error_fatal);
 }
 
 static void sgi_machine_reset(MachineState *machine, ResetType type)
