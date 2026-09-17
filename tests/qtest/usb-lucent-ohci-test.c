@@ -38,6 +38,8 @@
 #define OHCI_HC_HCCA               0x18
 #define OHCI_HC_CONTROL_HEAD_ED    0x20
 #define OHCI_HC_BULK_HEAD_ED       0x28
+#define OHCI_HC_FM_INTERVAL        0x34
+#define OHCI_HC_FM_REMAINING       0x38
 #define OHCI_HC_FM_NUMBER          0x3c
 #define OHCI_HC_PERIODIC_START     0x40
 #define OHCI_HC_LS_THRESHOLD       0x44
@@ -91,6 +93,13 @@
 #define MIGRATION_BULK_HEAD        0x40000110
 #define MIGRATION_PERIODIC_START   0x2a2a
 #define MIGRATION_LS_THRESHOLD     0x55aa
+
+/*
+ * The reused OHCI core's non-PXA path (what pci-ohci, and so lucent-ohci,
+ * always takes) fixes the frame at 1ms; usb_frame_time in hcd-ohci.c is
+ * the same constant, kept private to that file.
+ */
+#define OHCI_FRAME_TIME_NS         1000000
 
 typedef struct LucentOHCI {
     QTestState *qts;
@@ -412,6 +421,96 @@ static void test_reset_reuse(void)
     lucent_ohci_close(&ohci);
 }
 
+static void test_frame_number_tracks_clock_while_timer_starved(void)
+{
+    LucentOHCI ohci = { 0 };
+    uint32_t remaining, interval;
+    unsigned int i;
+
+    lucent_ohci_open(&ohci, lucent_ohci_start("lucent-ohci", ""));
+    lucent_ohci_map_bar(&ohci);
+    lucent_ohci_configure_dma(&ohci);
+
+    lucent_ohci_writel(&ohci, OHCI_HC_HCCA, lucent_ohci_hcca_address(&ohci));
+    lucent_ohci_writel(&ohci, OHCI_HC_CONTROL, OHCI_CONTROL_OPERATIONAL);
+
+    /*
+     * Stop the VM. pause_all_vcpus() disables QEMU_CLOCK_VIRTUAL's timer
+     * service (qemu_clock_enable(..., false) in system/cpus.c) without
+     * freezing the clock's own value: qtest_clock_step() below still
+     * advances qemu_clock_get_ns(), but timerlist_run_timers() now
+     * bails out before running eof_timer's callback. That reproduces,
+     * deterministically, the exact gap the PROM hits under host
+     * scheduling pressure: the clock has passed the frame deadline, but
+     * nothing has advanced frame_number yet.
+     */
+    qtest_qmp_assert_success(ohci.qts, "{'execute': 'stop'}");
+
+    /* One warp across three frame deadlines; no timer callback runs. */
+    qtest_clock_step(ohci.qts, 3 * OHCI_FRAME_TIME_NS);
+
+    /*
+     * Unfixed: frame_number only ever advances inside the eof_timer
+     * callback, so this reads back 0. Fixed: HcFmNumber catches the
+     * frame counter up to the clock at read time.
+     */
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_FM_NUMBER), ==, 3);
+    g_assert_cmphex(lucent_ohci_dma_frame(&ohci), ==, 3);
+
+    /* Frame remaining must reflect the caught-up frame, not the stale one. */
+    remaining = lucent_ohci_readl(&ohci, OHCI_HC_FM_REMAINING);
+    interval = lucent_ohci_readl(&ohci, OHCI_HC_FM_INTERVAL);
+    g_assert_cmphex(remaining, <, interval);
+
+    /*
+     * Resume the clock and let the real timer run. It must find nothing
+     * left to do for the three frames the read-time catch-up already
+     * processed, and advance exactly one more frame, not four (a naive
+     * "always advance" catch-up would double count here).
+     */
+    qtest_qmp_assert_success(ohci.qts, "{'execute': 'cont'}");
+    for (i = 0; i < 64 &&
+         lucent_ohci_readl(&ohci, OHCI_HC_FM_NUMBER) == 3; i++) {
+        qtest_clock_step_next(ohci.qts);
+    }
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_FM_NUMBER), ==, 4);
+
+    lucent_ohci_writel(&ohci, OHCI_HC_CONTROL, OHCI_CONTROL_SUSPEND);
+    lucent_ohci_close(&ohci);
+}
+
+/*
+ * Register-contract invariant, independent of the read-time catch-up:
+ * with the clock running normally (no 'stop'), the real eof_timer
+ * services every frame deadline as qtest_clock_step_next() crosses it,
+ * so a read must never report fewer frames than have actually elapsed.
+ * This holds whether or not the read-time catch-up above exists; it
+ * guards against a future change making HcFmNumber lag or double count.
+ */
+static void test_frame_number_never_lags_elapsed_time(void)
+{
+    LucentOHCI ohci = { 0 };
+    unsigned int i;
+
+    lucent_ohci_open(&ohci, lucent_ohci_start("lucent-ohci", ""));
+    lucent_ohci_map_bar(&ohci);
+    lucent_ohci_configure_dma(&ohci);
+
+    lucent_ohci_writel(&ohci, OHCI_HC_HCCA, lucent_ohci_hcca_address(&ohci));
+    lucent_ohci_writel(&ohci, OHCI_HC_CONTROL, OHCI_CONTROL_OPERATIONAL);
+
+    for (i = 0; i < 5; i++) {
+        int64_t now = qtest_clock_step_next(ohci.qts);
+        uint32_t frame_number = lucent_ohci_readl(&ohci, OHCI_HC_FM_NUMBER);
+        uint32_t elapsed_frames = now / OHCI_FRAME_TIME_NS;
+
+        g_assert_cmphex(frame_number, >=, elapsed_frames);
+    }
+
+    lucent_ohci_writel(&ohci, OHCI_HC_CONTROL, OHCI_CONTROL_SUSPEND);
+    lucent_ohci_close(&ohci);
+}
+
 static void migrate_stopped_vm(QTestState *from, const char *uri)
 {
     qtest_qmp_assert_success(from,
@@ -542,6 +641,10 @@ int main(int argc, char **argv)
     qtest_add_func("/lucent-ohci/dma-and-inta-reuse",
                    test_dma_and_inta_reuse);
     qtest_add_func("/lucent-ohci/reset-reuse", test_reset_reuse);
+    qtest_add_func("/lucent-ohci/frame-number-tracks-clock-while-timer-starved",
+                   test_frame_number_tracks_clock_while_timer_starved);
+    qtest_add_func("/lucent-ohci/frame-number-never-lags-elapsed-time",
+                   test_frame_number_never_lags_elapsed_time);
     qtest_add_func("/lucent-ohci/migration-reuse", test_migration_reuse);
 
     return g_test_run();
