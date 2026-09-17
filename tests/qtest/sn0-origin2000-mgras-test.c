@@ -964,21 +964,26 @@ static void test_direct_fill_and_reset(void)
 }
 
 /*
- * 1-bit glyph row expansion: an 8x8 pattern (this pass's own small
- * fixture -- the retained fixture the design doc cites,
- * si-direct-command-inputs-20260916.json on emdash/graphics-sarct, is not
- * reachable from this worktree), one execute record per row, CHAR_H/
- * CHAR_L combined into a 64-bit row painted MSB-first (si_draw_glyph_row's
- * own header comment in sgi-mgras.c states the chunking is this device's
- * approximation, not a confirmed wire contract). Row 0 is a checkerboard
- * byte (0xaa) so both the foreground and background paths are exercised
- * in the same row.
+ * 1-bit glyph row expansion: the 8x8 bitmap from the design doc's own
+ * cited fixture, `si-direct-command-inputs-20260916.json` on
+ * `emdash/graphics-sarct` ("opaque-glyph-8x8" -- reachable from this
+ * worktree after all, at
+ * ../emdash-graphics-sarct/docs/research/graphics/
+ * si-direct-command-inputs-20260916.json, though its own
+ * `command_records` are `null` for every operation, so the register-write
+ * sequence below is still this pass's own construction, not a captured
+ * one). One execute record per row; CHAR_L supplies the row's first 32
+ * pixels MSB-first (si_draw_glyph_row's own header comment in
+ * sgi-mgras.c states the CHAR_H/CHAR_L split is this device's own
+ * approximation, not a confirmed wire contract). The fixture's own
+ * pixel rule -- "bitmap bit 1 selects foreground; bit 0 selects
+ * background" -- matches this device's set-bit-is-foreground choice.
  */
 static void test_direct_glyph_row(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
     static const uint8_t glyph[8] = {
-        0xaa, 0xff, 0x00, 0x81, 0x81, 0x00, 0xff, 0xaa,
+        0x18, 0x24, 0x42, 0x7e, 0x42, 0x42, 0x42, 0x00,
     };
 
     si_enter_context(qts);
@@ -1000,15 +1005,16 @@ static void test_direct_glyph_row(void)
                                     (uint32_t)glyph[row] << 24));
     }
 
-    /* Row 0, 0xaa = 10101010: bit 7 (leftmost, MSB-first) is set. */
-    g_assert_cmphex(si_test_pixel(qts, 40, 40), ==, 0x00ffffff);
-    g_assert_cmphex(si_test_pixel(qts, 41, 40), ==, 0);
-    /* Row 2, 0x00: every pixel is background. */
-    g_assert_cmphex(si_test_pixel(qts, 40, 42), ==, 0);
-    /* Row 3, 0x81 = 10000001: both ends set, the middle background. */
-    g_assert_cmphex(si_test_pixel(qts, 40, 43), ==, 0x00ffffff);
-    g_assert_cmphex(si_test_pixel(qts, 47, 43), ==, 0x00ffffff);
-    g_assert_cmphex(si_test_pixel(qts, 43, 43), ==, 0);
+    /* Row 0, 0x18 = 00011000: pixels 3 and 4 set, the rest background. */
+    g_assert_cmphex(si_test_pixel(qts, 40, 40), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 43, 40), ==, 0x00ffffff);
+    g_assert_cmphex(si_test_pixel(qts, 44, 40), ==, 0x00ffffff);
+    /* Row 3, 0x7e = 01111110: both ends background, the middle set. */
+    g_assert_cmphex(si_test_pixel(qts, 40, 43), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 41, 43), ==, 0x00ffffff);
+    g_assert_cmphex(si_test_pixel(qts, 47, 43), ==, 0);
+    /* Row 7, 0x00: every pixel is background. */
+    g_assert_cmphex(si_test_pixel(qts, 40, 47), ==, 0);
     /* Outside the glyph's own rectangle stays untouched. */
     g_assert_cmphex(si_test_pixel(qts, 50, 40), ==, 0);
 
@@ -1020,26 +1026,32 @@ static void test_direct_glyph_row(void)
  * pair, the write to BKGRD_BA's own execute form painting both at once and
  * advancing this device's own write cursor (si_draw_pio_pixel_pair's own
  * header comment states which two registers carry PIO traffic is this
- * device's approximation, not a confirmed wire contract). A 4x4 test
- * image, uploaded as eight pixel pairs, checks the cursor wraps a row at
- * the block rectangle's own width.
+ * device's approximation, not a confirmed wire contract). The 4x4 image
+ * from the design doc's own cited fixture ("packed-image-4x4-aligned",
+ * same file as the glyph test above -- again reachable, but with
+ * `command_records: null`, so the register sequence is this pass's own
+ * construction), uploaded as eight pixel pairs, checks the cursor wraps a
+ * row at the block rectangle's own width. That fixture also flags its own
+ * PIO path as `"pio_without_ioctl_0x6d67000b": "unqualified"` -- further,
+ * independent evidence that this device's own choice of trigger register
+ * for PIO traffic is an approximation, not a captured contract.
  */
 static void test_direct_pio_pixel_pairs(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
     static const uint32_t image[4][4] = {
-        { 0x00ff0000, 0x0000ff00, 0x000000ff, 0x00ffffff },
-        { 0x00111111, 0x00222222, 0x00333333, 0x00444444 },
-        { 0x00555555, 0x00666666, 0x00777777, 0x00888888 },
-        { 0x00999999, 0x00aaaaaa, 0x00bbbbbb, 0x00cccccc },
+        { 0x00000000, 0x00ff0000, 0x0000ff00, 0x000000ff },
+        { 0x00ffffff, 0x00808080, 0x00ffff00, 0x0000ffff },
+        { 0x00ff00ff, 0x00800000, 0x00008000, 0x00000080 },
+        { 0x00c0c0c0, 0x00804000, 0x00408000, 0x00004080 },
     };
 
     si_enter_context(qts);
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_BLOCK_START, (60u << 16) | 60u));
+                 SI_COMMAND(REG_BLOCK_START, (160u << 16) | 96u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_BLOCK_END, (63u << 16) | 63u));
+                 SI_COMMAND(REG_BLOCK_END, (163u << 16) | 99u));
 
     for (int y = 0; y < 4; y++) {
         for (int x = 0; x < 4; x += 2) {
@@ -1052,12 +1064,12 @@ static void test_direct_pio_pixel_pairs(void)
 
     for (int y = 0; y < 4; y++) {
         for (int x = 0; x < 4; x++) {
-            g_assert_cmphex(si_test_pixel(qts, 60 + x, 60 + y), ==,
+            g_assert_cmphex(si_test_pixel(qts, 160 + x, 96 + y), ==,
                             image[y][x]);
         }
     }
     /* Outside the image's own rectangle stays untouched. */
-    g_assert_cmphex(si_test_pixel(qts, 70, 60), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 170, 96), ==, 0);
 
     qtest_quit(qts);
 }
