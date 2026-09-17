@@ -133,6 +133,108 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
  */
 #define SGI_MGRAS_SYNC_STATUS 0x061038
 
+/*
+ * A colour-lookup-table load reached once the fixes above let a boot get
+ * this far: a bounded, index-checked loop writes a computed 16-bit word to
+ * 0x071890 on every pass, and a byte each to 0x071810 and 0x071910
+ * depending on which channel the pass targets. None of the three is ever
+ * read back, so all three store opaque state, the same treatment already
+ * given to the other undocumented registers above. This loop alone
+ * accounts for most of the unsupported-access traffic this device
+ * previously logged during a full boot.
+ */
+#define SGI_MGRAS_DAC_LUT_INDEX 0x071890
+#define SGI_MGRAS_DAC_LUT_DATA_1 0x071810
+#define SGI_MGRAS_DAC_LUT_DATA_2 0x071910
+
+/* A fourth register the same initialization writes just before the loop
+ * above. Never read back either, so it gets the same treatment. */
+#define SGI_MGRAS_DAC_CONFIG 0x071988
+
+/*
+ * A single, live-observed 4-byte write one byte into
+ * SGI_MGRAS_DAC_LUT_DATA_1's own word (offset 0x071811, not 0x071810 --
+ * genuinely misaligned, not a byte-wide access this device's own width
+ * adjustment already handles). This device's generic width/alignment
+ * guard rejects any unaligned access before the address switch below ever
+ * sees it, so this offset needs its own carve-out ahead of that guard.
+ * Seen exactly once in a full boot, never read back, so it stores opaque
+ * state like the other undocumented registers above rather than being
+ * folded into the aligned word next to it, since nothing establishes the
+ * two share one meaning.
+ */
+#define SGI_MGRAS_DAC_LUT_DATA_1_LOW 0x071811
+
+/*
+ * A board-configuration table, live-observed as a block of fixed 4-byte
+ * constants written across this whole offset range during bring-up
+ * (0x061008, 0x061018-0x061030, 0x061040, 0x061048, 0x061078 confirmed so
+ * far; SGI_MGRAS_SYNC_STATUS above, at 0x061038, is a separately-evidenced
+ * register in the same block, kept as its own named field since the REPP
+ * handshake gives it a distinct story). None of this range is ever read
+ * back, so the whole table stores opaque state rather than naming each
+ * offset individually.
+ */
+#define SGI_MGRAS_CONFIG_TABLE_BASE 0x061000
+#define SGI_MGRAS_CONFIG_TABLE_WORDS 64
+
+/*
+ * A single, fixed-value write live-observed in the same board bring-up
+ * pass as the configuration table above, in a sibling register block
+ * (0x060000s, not 0x061000s) -- always the same constant (2), never read
+ * back, so it gets the same opaque treatment.
+ */
+#define SGI_MGRAS_BRINGUP_FLAG 0x060008
+
+/*
+ * A single, fixed-value write in the generic widget bring-up block (next
+ * to SGI_MGRAS_RESET_ARG and the 0x011098 generic bring-up step), never
+ * read back, so it gets the same opaque treatment.
+ */
+#define SGI_MGRAS_BRINGUP_ARG_2 0x011088
+
+/*
+ * A small, one-shot write-only block in a fourth register area
+ * (0x040000s), each offset written exactly once during the same board
+ * bring-up pass and never read back, so all three get the same opaque
+ * treatment.
+ */
+#define SGI_MGRAS_BRINGUP_BLOCK_1 0x040918
+#define SGI_MGRAS_BRINGUP_BLOCK_2 0x040920
+#define SGI_MGRAS_BRINGUP_BLOCK_3 0x040928
+
+/*
+ * A register one word above the real context/command register
+ * (0x120400/0x130500's own protocol -- see si_context_write and
+ * si_command), written at both 4 and 8 bytes with varying values across
+ * 33 accesses in one boot and never read back. Nothing ties this offset
+ * to the entry-selection/context-word protocol those two enforce, so it
+ * gets plain opaque storage at either width instead of being routed
+ * through that protocol's own state machine.
+ */
+#define SGI_MGRAS_SCRATCH_COMMAND 0x130400
+
+/*
+ * A single, one-shot write in the same generic widget bring-up block as
+ * SGI_MGRAS_BRINGUP_ARG_2, never read back, so it gets the same opaque
+ * treatment.
+ */
+#define SGI_MGRAS_BRINGUP_ARG_3 0x011058
+
+/*
+ * A write-only register near the existing colour map data register
+ * (0x070d18), seen twice with the same constant during VC3 SRAM
+ * initialization. Never read back, so it gets the same opaque treatment.
+ */
+#define SGI_MGRAS_VC3_ARG 0x070d88
+
+/*
+ * A write-only register in the same 0x71000s block as the REPP handshake
+ * and DAC registers above, always written zero, never read back, so it
+ * gets the same opaque treatment.
+ */
+#define SGI_MGRAS_RE_ARG 0x071e80
+
 struct SGIMgrasState {
     SysBusDevice parent_obj;
     MemoryRegion regs;
@@ -148,6 +250,18 @@ struct SGIMgrasState {
     uint32_t i2c_scratch;
     uint32_t repp_status[3];
     uint32_t sync_status;
+    uint32_t dac_lut_index;
+    uint32_t dac_lut_data[2];
+    uint32_t dac_config;
+    uint32_t dac_lut_data_1_low;
+    uint32_t config_table[SGI_MGRAS_CONFIG_TABLE_WORDS];
+    uint32_t bringup_flag;
+    uint32_t bringup_arg_2;
+    uint32_t bringup_block[3];
+    uint64_t scratch_command;
+    uint32_t bringup_arg_3;
+    uint32_t vc3_arg;
+    uint32_t re_arg;
     bool irq_asserted;
     /* Host-only qtest introspection; not guest state, not migrated. */
     uint32_t test_pixel_x;

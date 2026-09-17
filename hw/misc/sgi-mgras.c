@@ -206,12 +206,26 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
     case SGI_MGRAS_INT_DEST_LOWER: return s->int_dest_lower;
     case SGI_MGRAS_WIDGET_CONTROL: return s->widget_control;
     case SGI_MGRAS_RESET_ARG: return s->reset_arg;
+    case SGI_MGRAS_BRINGUP_ARG_2: return s->bringup_arg_2;
+    case SGI_MGRAS_BRINGUP_BLOCK_1: return s->bringup_block[0];
+    case SGI_MGRAS_BRINGUP_BLOCK_2: return s->bringup_block[1];
+    case SGI_MGRAS_BRINGUP_BLOCK_3: return s->bringup_block[2];
+    case SGI_MGRAS_SCRATCH_COMMAND: return s->scratch_command;
+    case SGI_MGRAS_BRINGUP_ARG_3: return s->bringup_arg_3;
+    case SGI_MGRAS_VC3_ARG: return s->vc3_arg;
+    case SGI_MGRAS_RE_ARG: return s->re_arg;
     case SGI_MGRAS_RESET_CONTROL: return s->reset_control;
     case SGI_MGRAS_I2C_SCRATCH: return s->i2c_scratch;
     case SGI_MGRAS_REPP_STATUS_1: return s->repp_status[0];
     case SGI_MGRAS_REPP_STATUS_3: return s->repp_status[1];
     case SGI_MGRAS_REPP_STATUS_4: return s->repp_status[2];
     case SGI_MGRAS_SYNC_STATUS: return s->sync_status;
+    case SGI_MGRAS_BRINGUP_FLAG: return s->bringup_flag;
+    case SGI_MGRAS_DAC_LUT_INDEX: return s->dac_lut_index;
+    case SGI_MGRAS_DAC_LUT_DATA_1: return s->dac_lut_data[0];
+    case SGI_MGRAS_DAC_LUT_DATA_2: return s->dac_lut_data[1];
+    case SGI_MGRAS_DAC_CONFIG: return s->dac_config;
+    case SGI_MGRAS_DAC_LUT_DATA_1_LOW: return s->dac_lut_data_1_low;
     case 0x008000: return 0;
     case 0x011020: return s->pending;
     case 0x011040: return s->irq_mask;
@@ -242,6 +256,16 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
      * beside a now-evidenced one.
      */
     case 0x020000: return s->error ? 0x80000000 : 0x2;
+    /*
+     * MgrasReset writes zero here before polling it, live-traced once the
+     * DAC load above stopped blocking that far: with no write case, the
+     * write took the sticky unsupported-access path, which set the same
+     * error flag the read case above reports through bit 31 -- so the
+     * driver's own clearing write was what poisoned the very next read of
+     * the readiness bit it was about to poll for. Accepting the write as a
+     * no-op, the same treatment already given to 0x011098's write side,
+     * lets the read case's existing healthy-path answer stand.
+     */
     case 0x020008: return s->fifo_count;
     /*
      * The kernel driver's own reset routine polls this offset's low five
@@ -256,6 +280,14 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
      */
     case 0x020100: return 0;
     case 0x020200: return 0;
+    /*
+     * A status poll live-traced immediately before the existing 0x02c578
+     * case: `andi t2,t2,0x8; beqz t2,<retry>`, requiring bit 0x8 set to
+     * continue. This device's usual "immediate readiness, no modelled
+     * delay" approximation, already used at 0x011098 and 0x020000/
+     * 0x020100 above, applies the same way here.
+     */
+    case 0x02c574: return 0x8;
     case 0x02c578: return 0x100;
     case 0x071208: return 0x08;
     case 0x071c88: return s->cmap_index;
@@ -273,6 +305,11 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
         if (addr >= 0x050000 && addr < 0x050000 + sizeof(s->hq) && size == 4) {
             return s->hq[(addr - 0x050000) >> 2] & 0x00ffffff;
         }
+        if (addr >= SGI_MGRAS_CONFIG_TABLE_BASE &&
+            addr < SGI_MGRAS_CONFIG_TABLE_BASE + sizeof(s->config_table) &&
+            size == 4) {
+            return s->config_table[(addr - SGI_MGRAS_CONFIG_TABLE_BASE) >> 2];
+        }
         si_error(s, addr, size, "unsupported read");
         return 0;
     }
@@ -282,6 +319,16 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
 {
     SGIMgrasState *s = opaque;
     trace_sgi_mgras_mmio(addr, value, size, true);
+    /*
+     * See the header comment on SGI_MGRAS_DAC_LUT_DATA_1_LOW: a genuinely
+     * misaligned 4-byte write, ahead of the generic alignment guard below
+     * because that guard would otherwise reject it before the address
+     * switch ever sees it.
+     */
+    if (addr == SGI_MGRAS_DAC_LUT_DATA_1_LOW && size == 4) {
+        s->dac_lut_data_1_low = value;
+        return;
+    }
     if ((size != 4 && size != 8) || (addr & (size - 1))) {
         si_error(s, addr, size, "unsupported or unaligned write");
         return;
@@ -291,6 +338,14 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     case SGI_MGRAS_INT_DEST_LOWER: s->int_dest_lower = value; return;
     case SGI_MGRAS_WIDGET_CONTROL: s->widget_control = value; return;
     case SGI_MGRAS_RESET_ARG: s->reset_arg = value; return;
+    case SGI_MGRAS_BRINGUP_ARG_2: s->bringup_arg_2 = value; return;
+    case SGI_MGRAS_BRINGUP_BLOCK_1: s->bringup_block[0] = value; return;
+    case SGI_MGRAS_BRINGUP_BLOCK_2: s->bringup_block[1] = value; return;
+    case SGI_MGRAS_BRINGUP_BLOCK_3: s->bringup_block[2] = value; return;
+    case SGI_MGRAS_SCRATCH_COMMAND: s->scratch_command = value; return;
+    case SGI_MGRAS_BRINGUP_ARG_3: s->bringup_arg_3 = value; return;
+    case SGI_MGRAS_VC3_ARG: s->vc3_arg = value; return;
+    case SGI_MGRAS_RE_ARG: s->re_arg = value; return;
     case SGI_MGRAS_RESET_CONTROL: s->reset_control = value; return;
     case SGI_MGRAS_I2C_SCRATCH: s->i2c_scratch = value; return;
     case SGI_MGRAS_I2C_STROBE: return;
@@ -300,6 +355,11 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     case SGI_MGRAS_REPP_STATUS_3: s->repp_status[1] = value; return;
     case SGI_MGRAS_REPP_STATUS_4: s->repp_status[2] = value; return;
     case SGI_MGRAS_SYNC_STATUS: s->sync_status = value; return;
+    case SGI_MGRAS_BRINGUP_FLAG: s->bringup_flag = value; return;
+    case SGI_MGRAS_DAC_LUT_INDEX: s->dac_lut_index = value; return;
+    case SGI_MGRAS_DAC_LUT_DATA_1: s->dac_lut_data[0] = value; return;
+    case SGI_MGRAS_DAC_LUT_DATA_2: s->dac_lut_data[1] = value; return;
+    case SGI_MGRAS_DAC_CONFIG: s->dac_config = value; return;
     case 0x011000:
         /*
          * MgrasStart writes configuration here before the first context
@@ -323,6 +383,8 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     case 0x011048: s->error = 0; s->pending &= ~SI_PENDING_ERROR; si_update_irq(s); return;
     /* The generic bring-up step argument; see the read side's comment. */
     case 0x011098: return;
+    /* The reset routine's own clearing write; see the read side's comment. */
+    case 0x020000: return;
     case 0x130500:
         if (size != 4 || value != 0x4fc || !s->prefix_written) {
             si_error(s, addr, size, "invalid HQ entry"); return;
@@ -335,6 +397,22 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
             si_context_write(s, value);
         } else if (size == 8 && s->ready) {
             si_command(s, value);
+        } else if (size == 8 && !s->entry_selected) {
+            /*
+             * Board bring-up code writes a constant doubleword here, live-
+             * traced well before the guest ever selects an HQ entry at
+             * 0x130500 -- unrelated incidental traffic on the same offset
+             * this device's real context/command protocol uses, not a
+             * premature command submission. Accepting it silently, the
+             * same "opaque, no invented meaning" treatment given to other
+             * undocumented registers, avoids raising the sticky error over
+             * a write that has nothing to do with the protocol this
+             * register otherwise enforces. Once an entry is selected the
+             * stricter check below still applies, so a genuine mid-
+             * protocol command submitted before this device reports ready
+             * is still flagged.
+             */
+            return;
         } else {
             si_error(s, addr, size, "unsupported context width");
         }
@@ -374,6 +452,12 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     if (addr >= 0x050000 && addr < 0x050000 + sizeof(s->hq) && size == 4) {
         s->hq[(addr - 0x050000) >> 2] = value;
         s->hq_words = MAX(s->hq_words, ((addr - 0x050000) >> 2) + 1);
+        return;
+    }
+    if (addr >= SGI_MGRAS_CONFIG_TABLE_BASE &&
+        addr < SGI_MGRAS_CONFIG_TABLE_BASE + sizeof(s->config_table) &&
+        size == 4) {
+        s->config_table[(addr - SGI_MGRAS_CONFIG_TABLE_BASE) >> 2] = value;
         return;
     }
     if (addr == 0x120400 && size == 8) { si_command(s, value); return; }
@@ -452,6 +536,18 @@ static void si_reset(DeviceState *dev)
     s->reset_arg = s->reset_control = s->i2c_scratch = 0;
     memset(s->repp_status, 0, sizeof(s->repp_status));
     s->sync_status = 0;
+    s->dac_lut_index = 0;
+    memset(s->dac_lut_data, 0, sizeof(s->dac_lut_data));
+    s->dac_config = 0;
+    s->dac_lut_data_1_low = 0;
+    memset(s->config_table, 0, sizeof(s->config_table));
+    s->bringup_flag = 0;
+    s->bringup_arg_2 = 0;
+    memset(s->bringup_block, 0, sizeof(s->bringup_block));
+    s->scratch_command = 0;
+    s->bringup_arg_3 = 0;
+    s->vc3_arg = 0;
+    s->re_arg = 0;
     /*
      * Reset does not retroactively unsend an already-delivered packet, so
      * this clears the transition-detector directly rather than going
@@ -532,6 +628,19 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32(i2c_scratch, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(repp_status, SGIMgrasState, 3),
         VMSTATE_UINT32(sync_status, SGIMgrasState),
+        VMSTATE_UINT32(dac_lut_index, SGIMgrasState),
+        VMSTATE_UINT32_ARRAY(dac_lut_data, SGIMgrasState, 2),
+        VMSTATE_UINT32(dac_config, SGIMgrasState),
+        VMSTATE_UINT32(dac_lut_data_1_low, SGIMgrasState),
+        VMSTATE_UINT32_ARRAY(config_table, SGIMgrasState,
+                             SGI_MGRAS_CONFIG_TABLE_WORDS),
+        VMSTATE_UINT32(bringup_flag, SGIMgrasState),
+        VMSTATE_UINT32(bringup_arg_2, SGIMgrasState),
+        VMSTATE_UINT32_ARRAY(bringup_block, SGIMgrasState, 3),
+        VMSTATE_UINT64(scratch_command, SGIMgrasState),
+        VMSTATE_UINT32(bringup_arg_3, SGIMgrasState),
+        VMSTATE_UINT32(vc3_arg, SGIMgrasState),
+        VMSTATE_UINT32(re_arg, SGIMgrasState),
         VMSTATE_BOOL(irq_asserted, SGIMgrasState),
         VMSTATE_UINT16(fifo_count, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(command, SGIMgrasState, 0x200),
@@ -588,6 +697,10 @@ static void si_instance_init(Object *obj)
     object_property_add_uint64_ptr(obj, "x-test-last-interrupt-value",
                                    &s->test_last_interrupt_value,
                                    OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "x-test-error", &s->error,
+                                   OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "x-test-error-addr",
+                                   &s->error_addr, OBJ_PROP_FLAG_READ);
 }
 
 static void si_class_init(ObjectClass *oc, const void *data)
