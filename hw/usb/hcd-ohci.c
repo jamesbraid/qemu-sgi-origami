@@ -1297,6 +1297,43 @@ static void ohci_frame_boundary(void *opaque)
 }
 
 /*
+ * Real OHCI silicon advances HcFmNumber from its own clock, so a guest
+ * that reads the register mid-frame always sees current progress. This
+ * model only advances frame_number inside the eof_timer callback above,
+ * which fires on the main loop some time after the frame deadline. A
+ * register read that lands in that gap would otherwise observe a stale
+ * (possibly still-zero) frame count.
+ *
+ * Run any overdue frame boundary synchronously before a register read,
+ * so the read reflects the clock rather than host scheduling. This is
+ * the same work ohci_frame_boundary() does when the timer eventually
+ * fires; running it early just makes it happen on read instead, and
+ * timer_mod() inside it means the timer finds nothing left to do when
+ * it does fire.
+ */
+static void ohci_catch_up_frame(OHCIState *ohci)
+{
+    while ((ohci->ctl & OHCI_CTL_HCFS) == OHCI_USB_OPERATIONAL &&
+           timer_pending(ohci->eof_timer) &&
+           qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) >=
+               ohci->sof_time + usb_frame_time) {
+        int64_t sof_time = ohci->sof_time;
+
+        ohci_frame_boundary(ohci);
+
+        /*
+         * ohci_frame_boundary() can return early (UnrecoverableError) or
+         * tear the bus down (ohci_die(), which deletes eof_timer) without
+         * advancing sof_time. Either way there is nothing more to catch
+         * up, and looping again would spin forever on a stale deadline.
+         */
+        if (ohci->sof_time == sof_time) {
+            break;
+        }
+    }
+}
+
+/*
  * Start sending SOF tokens across the USB bus, lists are processed in
  * next frame
  */
@@ -1534,6 +1571,8 @@ static uint64_t ohci_mem_read(void *opaque,
 {
     OHCIState *ohci = opaque;
     uint32_t retval;
+
+    ohci_catch_up_frame(ohci);
 
     /* Only aligned reads are allowed on OHCI */
     if (addr & 3) {
