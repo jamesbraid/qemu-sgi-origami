@@ -349,8 +349,10 @@ static bool sgi_ioc3_eth_rx_publish(void *opaque, const void *record)
  * models. It is still published in order behind anything the line is holding,
  * or the consume index it moves would pass a held one and then walk backwards
  * when that one lands. It also arrives from the transmit walk rather than
- * receive(), so can_receive() never ran for it -- the line's room is checked
- * here instead, and a full line is the overrun any other receive gets.
+ * receive(), so can_receive() never ran for it -- the line's room and the
+ * target buffer's own held completion are both checked here instead, and a
+ * full line or a buffer still held is the same overrun any other receive
+ * gets.
  */
 static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
                                     size_t size, bool short_circuit,
@@ -397,6 +399,25 @@ static ssize_t sgi_ioc3_eth_deliver(SGIIOC3EthState *s, const uint8_t *buf,
                       "sgi-ioc3-eth: receive ring entry at 0x%" PRIx64
                       " cannot be read; the frame is dropped\n",
                       ring_base + consume);
+        return size;
+    }
+
+    /*
+     * can_receive()'s own peek at this buffer address never ran for an
+     * immediate delivery (see this function's comment on immediate above).
+     * Repeat it here: staging into a buffer a held completion still names
+     * would overwrite that completion's bytes before the guest is told
+     * about them, the same corruption can_receive() now keeps off the wire
+     * path. No later retry reopens this the way a refused wire receive gets
+     * retried from the backend queue, so this is the same overrun drop the
+     * full-line check above already gives a loopback frame with nowhere to
+     * go.
+     */
+    if (immediate && sgi_ioc3_eth_rx_pending(s, buf_addr)) {
+        trace_sgi_ioc3_eth_rx_refused(
+            sgi_ioc3_enet_get(s, SGI_IOC3_ENET_MAC_CONTROL),
+            sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_PRODUCE),
+            sgi_ioc3_enet_get(s, SGI_IOC3_ENET_RX_CONSUME));
         return size;
     }
 
