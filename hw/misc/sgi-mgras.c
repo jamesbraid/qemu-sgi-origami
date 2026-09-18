@@ -162,12 +162,13 @@
  *
  * The matching execute class (0x1c/0x1d) is this device's real "go do it"
  * trigger for drawing operations -- see si_command_fifo_dispatch and the
- * si_draw_* functions below. BLOCKXYENDI (0x047), CHAR_L (0x071) and
+ * si_draw_* functions below. BLOCKXYENDI (0x047), CHAR_H (0x070) and
  * BKGRD_BA (0x141) already trigger through the direct-record grammar
- * above; this device also reaches RE_POINT (0x040), RE_LINE (0x041),
- * RE_BLOCKCOPY (0x045) and CHAR_H (0x070, si_command_execute's own case)
- * through this header class, so a guest that issues either wire encoding
- * for the same register reaches the same drawing code.
+ * above; this device also reaches RE_POINT (0x040), RE_LINE (0x041) and
+ * RE_BLOCKCOPY (0x045) through this header class, so a guest that issues
+ * either wire encoding for the same register reaches the same drawing
+ * code. CHAR_L (0x071) is not a mono-glyph trigger -- see
+ * si_draw_glyph_chunk's own header comment.
  *
  * A header's own declared payload can span the boundary between two
  * separate 64-bit MMIO stores to this offset, or trail a header that
@@ -574,26 +575,65 @@ static void si_draw_fill(SGIMgrasState *s)
 }
 
 /*
- * 1-bit glyph row expansion, triggered by CHAR_L's own execute-form write:
- * CHAR_L (0x71) supplies the row's first 32 pixels, MSB-first (bit 31 is
- * the glyph's own leftmost pixel); CHAR_H (0x70) supplies a further 32 if
- * the glyph is wider, the common case (an 8- or 16-pixel-wide console
- * font row) needing only CHAR_L. Set bits paint PACKEDCOLOR, clear bits
- * paint BKGRD_RG (design doc's ordered plan: "same fill-mode/colour
- * registers plus a background colour register pair"). One row paints per
- * execute record; this device tracks which row with its own persistent
- * cursor (SGIMgrasState.glyph_row), reset whenever BLOCKXYSTARTI is
- * rewritten (si_command).
+ * 1-bit glyph bitmap expansion, triggered by CHAR_H's own execute-form
+ * write: each push carries one fresh 32-bit chunk of the glyph bitmap,
+ * MSB-first (bit 31 is the next pixel), painted into the current block
+ * rectangle (BLOCKXYSTARTI/BLOCKXYENDI) at this device's own persistent
+ * bit cursor (SGIMgrasState.glyph_x/glyph_y) -- advancing left to right,
+ * wrapping to the next row at the rectangle's own width, the same way
+ * si_draw_pio_pixel_pair's cursor advances across a block for raw pixel
+ * pairs. Set bits paint PACKEDCOLOR, clear bits paint BKGRD_RG. The
+ * cursor resets whenever BLOCKXYSTARTI is rewritten (si_rss_write).
  *
- * Neither this CHAR_H/CHAR_L split nor which register of the BKGRD_RG/
- * BKGRD_BA pair actually carries a paintable background colour is settled
- * by this pass's evidence -- the design doc's own "genuinely unresolved"
- * list names glyph chunking as needing a live trace, not a guess. This is
- * this device's own bounded approximation: BKGRD_BA is left as opaque
- * persistent state here (see si_draw_pio_pixel_pair, which gives it a
- * different meaning under its own execute trigger).
+ * Corrected from this device's original reading (CHAR_L supplies a row's
+ * first 32 pixels, CHAR_H a further 32, one row per execute, either
+ * register triggering) -- the file's own previous header comment already
+ * flagged that split as unconfirmed. Disassembling the shipped 2D
+ * driver's own accelerated glyph-blit routines (mgrasImageGlyphBlt at
+ * 0x443bd0, mgrasPolyGlyphBlt at 0x4508f0, impactsr.so) settles it: both
+ * compute CHAR_L's own execute-form FIFO selector early but never issue
+ * it, and every glyph pixel push in each function's own unrolled inner
+ * loop (mgrasImageGlyphBlt 0x444ac0-0x444b24, mgrasPolyGlyphBlt from
+ * 0x4512d0) is an independent CHAR_H execute record carrying that push's
+ * own fresh 32-bit payload word -- never combined with a previous or
+ * stale CHAR_L value, never waiting for a second register write. This
+ * matches this device's own already-recorded live trace exactly: a real
+ * desktop session's 496 glyph-path execute hits landed on CHAR_H alone,
+ * zero on CHAR_L (docs/datasheets/mgras-hq4.md's `0x120400` row) -- not a
+ * trace gap, the real contract for this code path. The previous
+ * implementation's "one row per execute, from either register" reading
+ * fired once per push instead of once per row and mixed a live value
+ * with whatever stale word happened to be sitting in the other register,
+ * which is what produced the blocky, overlapping glyphs a real screendump
+ * showed (docs/boot-logs/irix.boot.2026-09-18T04:41:12-07:00).
+ *
+ * The exact wrap point for a glyph narrower than 32 pixels -- how the bit
+ * stream packs multiple font rows into one push -- is not settled by this
+ * evidence: disassembly confirms the push shape (one CHAR_H execute, one
+ * fresh 32-bit chunk) and its payload source (a flat glyph-bitmap array)
+ * but not the packing rule those chunks follow once written. Wrapping at
+ * the block rectangle's own width, MSB-first, left-to-right, top-to-
+ * bottom, is this device's own bounded approximation of the simplest
+ * reading consistent with the evidence gathered so far, not a confirmed
+ * wire contract. Which of BKGRD_RG/BKGRD_BA actually carries a paintable
+ * background colour is likewise still this device's own approximation
+ * (see si_draw_pio_pixel_pair, which gives BKGRD_BA a different meaning
+ * under its own execute trigger).
+ *
+ * CHAR_L's own execute form is a separate, unimplemented contract: the
+ * same disassembly also found a second, real CHAR_H/CHAR_L pairing in the
+ * shipped driver's antialiased glyph path (mgrasPolyGlyphBltTE8 at
+ * 0x462790 and its TE6/TE9, Image/Poly siblings) -- there CHAR_H is a
+ * plain state write immediately followed by CHAR_L's own execute trigger
+ * (0x462d8c-0x462d9c), each carrying four packed 8-bit antialiasing
+ * coverage values extracted from a 16-bit fixed-point accumulator, not
+ * bitmap bits. Nothing in this device's own evidence shows a stock
+ * desktop session reaching that path (the live trace above found zero
+ * CHAR_L executes), so it stays unimplemented -- CHAR_L's execute form
+ * falls through to si_command_execute's own logged default case rather
+ * than being wired to this function.
  */
-static void si_draw_glyph_row(SGIMgrasState *s)
+static void si_draw_glyph_chunk(SGIMgrasState *s)
 {
     uint32_t xy0 = s->rss[SI_REG_BLOCKXYSTARTI];
     uint32_t xy1 = s->rss[SI_REG_BLOCKXYENDI];
@@ -603,26 +643,31 @@ static void si_draw_glyph_row(SGIMgrasState *s)
     uint32_t bg = s->rss[SI_REG_BKGRD_RG] & 0x00ffffff;
     uint32_t mask = s->rss[SI_REG_COLORMASKLSBSA];
     uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 26;
-    uint32_t char_l = s->rss[SI_REG_CHAR_L];
-    uint32_t char_h = s->rss[SI_REG_CHAR_H];
-    int y = y0 + s->glyph_row;
-    int width;
+    uint32_t bits = s->rss[SI_REG_CHAR_H];
 
     if (x0 > x1 || y0 > y1 || x0 >= SGI_MGRAS_WIDTH || y0 >= SGI_MGRAS_HEIGHT) {
         return;
     }
     x1 = MIN(x1, SGI_MGRAS_WIDTH - 1);
     y1 = MIN(y1, SGI_MGRAS_HEIGHT - 1);
-    s->glyph_row++;
-    if (y > y1 || y >= SGI_MGRAS_HEIGHT) {
-        return;
-    }
-    width = MIN(x1 - x0 + 1, 64);
-    for (int i = 0; i < width; i++) {
-        uint32_t half = (i < 32) ? char_l : char_h;
-        bool set = (half >> (31 - (i % 32))) & 1;
-        uint32_t *p = &s->front[y * SGI_MGRAS_WIDTH + x0 + i];
+
+    for (int i = 0; i < 32; i++) {
+        int x = x0 + s->glyph_x;
+        int y = y0 + s->glyph_y;
+        bool set;
+        uint32_t *p;
+
+        if (y > y1) {
+            return;
+        }
+        set = (bits >> (31 - i)) & 1;
+        p = &s->front[y * SGI_MGRAS_WIDTH + x];
         *p = si_paint_pixel(op, *p, set ? fg : bg, mask);
+        s->glyph_x++;
+        if (x0 + s->glyph_x > x1) {
+            s->glyph_x = 0;
+            s->glyph_y++;
+        }
     }
 }
 
@@ -835,8 +880,7 @@ static void si_command_execute(SGIMgrasState *s, uint32_t reg)
         s->dirty = true;
         return;
     case SI_REG_CHAR_H:
-    case SI_REG_CHAR_L:
-        si_draw_glyph_row(s);
+        si_draw_glyph_chunk(s);
         s->dirty = true;
         return;
     case SI_REG_BKGRD_BA:
@@ -864,9 +908,9 @@ static void si_rss_write(SGIMgrasState *s, uint32_t reg, uint32_t value)
 {
     s->rss[reg] = value;
     if (reg == SI_REG_BLOCKXYSTARTI) {
-        /* A new block rectangle restarts this device's own glyph-row/PIO
-         * write cursor; see si_draw_glyph_row and si_draw_pio_pixel_pair. */
-        s->glyph_row = 0;
+        /* A new block rectangle restarts this device's own glyph/PIO
+         * write cursor; see si_draw_glyph_chunk and si_draw_pio_pixel_pair. */
+        s->glyph_x = s->glyph_y = 0;
         s->pio_x = s->pio_y = 0;
     }
 }
@@ -1704,7 +1748,7 @@ static void si_reset(DeviceState *dev)
      */
     s->rss[SI_REG_PP1FILLMODE] = 0x3 << 26;
     s->rss[SI_REG_COLORMASKLSBSA] = 0xffffffff;
-    s->glyph_row = s->pio_x = s->pio_y = 0;
+    s->glyph_x = s->glyph_y = s->pio_x = s->pio_y = 0;
     s->cmd_token_class = s->cmd_token_reg = 0;
     s->cmd_token_words_remaining = s->cmd_token_payload_count = 0;
     memset(s->cmd_token_payload, 0, sizeof(s->cmd_token_payload));
@@ -1950,7 +1994,8 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_BOOL(retrace_asserted, SGIMgrasState),
         VMSTATE_BOOL(error_asserted, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(rss, SGIMgrasState, 0x200),
-        VMSTATE_UINT32(glyph_row, SGIMgrasState),
+        VMSTATE_UINT32(glyph_x, SGIMgrasState),
+        VMSTATE_UINT32(glyph_y, SGIMgrasState),
         VMSTATE_UINT32(pio_x, SGIMgrasState),
         VMSTATE_UINT32(pio_y, SGIMgrasState),
         VMSTATE_UINT32(cmd_token_class, SGIMgrasState),
