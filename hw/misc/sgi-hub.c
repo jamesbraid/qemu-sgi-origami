@@ -14,6 +14,7 @@
 #include "hw/1wire/crc.h"
 #include "hw/1wire/ds2502.h"
 #include "hw/1wire/ds2505.h"
+#include "hw/mips/sgi-xtalk-port.h"
 #include "hw/misc/sgi-hub.h"
 #include "hw/misc/sgi-elsc.h"
 #include "hw/misc/sgi-onewire-slot.h"
@@ -4428,10 +4429,56 @@ static void sgi_hub_init(Object *obj)
     clock_set_hz(s->rt_clk, PI_RT_DEFAULT_HZ);
 }
 
+/*
+ * ---- The crosstalk port interface ----
+ *
+ * cpu_face() is the container every widget alias a direct link installs
+ * lands in: the same "xtalk" link property the Hub's own big windows
+ * translate through. packet_face() is the Hub's own engine claim view,
+ * SGI_HUB_DEVICE_VIEW: what a crosstalk-attach link's inbound decoder
+ * dispatches a remote nasid's packet into, the same view a Hub's own
+ * network interface and block-transfer engines see memory through.
+ * Always present once this Hub realizes -- sgi_hub_claim_view_present()
+ * requires it regardless of population.
+ */
+
+static const char *sgi_hub_xtalk_port_describe(Object *port, unsigned int index)
+{
+    return "the Hub's crosstalk port";
+}
+
+static MemoryRegion *sgi_hub_xtalk_port_cpu_face(Object *port,
+                                                 unsigned int index)
+{
+    return SGI_HUB(port)->xtalk;
+}
+
+static MemoryRegion *sgi_hub_xtalk_port_packet_face(Object *port,
+                                                     unsigned int index)
+{
+    return SGI_HUB(port)->claim_view[SGI_HUB_DEVICE_VIEW];
+}
+
+bool sgi_hub_set_xtalk_io(SGIHubState *s, MemoryRegion *target, Error **errp)
+{
+    if (DEVICE(s)->realized) {
+        error_setg(errp,
+                   "cannot connect the Hub's crosstalk port after realize");
+        return false;
+    }
+    if (s->xtalk_io) {
+        error_setg(errp, "the Hub's crosstalk port is already connected");
+        return false;
+    }
+    s->xtalk_io = target;
+    return true;
+}
+
 static void sgi_hub_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     ResettableClass *rc = RESETTABLE_CLASS(oc);
+    SGIXtalkPortClass *pc = SGI_XTALK_PORT_CLASS(oc);
 
     dc->desc = "SGI SN0 Hub ASIC";
     dc->realize = sgi_hub_realize;
@@ -4443,6 +4490,9 @@ static void sgi_hub_class_init(ObjectClass *oc, const void *data)
     rc->phases.enter = sgi_hub_reset_enter;
     rc->phases.hold = sgi_hub_reset_hold;
     rc->phases.exit = sgi_hub_reset_exit;
+    pc->describe = sgi_hub_xtalk_port_describe;
+    pc->cpu_face = sgi_hub_xtalk_port_cpu_face;
+    pc->packet_face = sgi_hub_xtalk_port_packet_face;
 }
 
 static const TypeInfo sgi_hub_types[] = {
@@ -4452,6 +4502,10 @@ static const TypeInfo sgi_hub_types[] = {
         .instance_size = sizeof(SGIHubState),
         .instance_init = sgi_hub_init,
         .class_init = sgi_hub_class_init,
+        .interfaces = (const InterfaceInfo[]) {
+            { TYPE_SGI_XTALK_PORT },
+            { }
+        },
     },
 };
 
