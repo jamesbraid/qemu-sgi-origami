@@ -76,6 +76,24 @@
 #define PI_RT_LOCAL_CTRL_MASK  0x100ffULL
 #define PI_RT_LOCAL_CTRL_RESET 0x10000ULL
 
+/* Graphics flow control, per processor; plain storage, see the datasheet. */
+#define PI_GFX_PAGE_A        0x000300
+#define PI_GFX_CREDIT_A      0x000308
+#define PI_GFX_BIAS_A        0x000310
+#define PI_GFX_INT_COUNT_A   0x000318
+#define PI_GFX_INT_COMPARE_A 0x000320
+#define PI_GFX_PAGE_B        0x000328
+#define PI_GFX_CREDIT_B      0x000330
+#define PI_GFX_BIAS_B        0x000338
+#define PI_GFX_INT_COUNT_B   0x000340
+#define PI_GFX_INT_COMPARE_B 0x000348
+#define PI_GFX_CREDIT_MASK      0xfffULL        /* 12 bits */
+#define PI_GFX_BIAS_MASK        0xfffULL        /* 12 bits */
+#define PI_GFX_INT_COUNT_MASK   0x3ffffffULL    /* 26 bits */
+#define PI_GFX_INT_COMPARE_MASK 0x3ffffffULL    /* 26 bits */
+/* The attach sequence's own page-enable bit (public SN0 hubpi.h). */
+#define PI_GFX_PAGE_ENABLE   (1ULL << 40)
+
 /*
  * The Hub's outgoing lines: one named GPIO list per kind, each indexed by
  * processor slice. qtest intercepts one list per session, so a test that
@@ -109,6 +127,10 @@
 #define IO_ICRB_C_LAST_OFF  (IO_ICRB_C_BASE + 7 * IO_ICRB_C_STRIDE) /* slot 14 */
 #define IO_LINK_STATUS      0x400128
 #define IO_LLP_LOG          0x400130
+/* Graphics node/widget routing, two entries; plain storage. */
+#define IO_GFX_INIT_0        0x400140
+#define IO_GFX_INIT_1        0x400148
+#define IO_GFX_INIT_MASK     0x1fffffULL    /* bits 20:0 */
 #define IO_ERROR_CLEAR      0x4001f8
 #define IO_PIO_DEALLOC      0x400388
 #define IO_CRB_DEALLOC      0x400390
@@ -1457,6 +1479,175 @@ static void test_network_ageing_controls(const void *data)
         g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_AGEING_BASE +
                                     i * NI_AGEING_STRIDE), ==, 0);
     }
+    qtest_quit(qts);
+}
+
+/*
+ * Graphics flow control: twelve registers of plain, uncomputed storage
+ * (hub-processor-interface datasheet, "Graphics flow control"; hub-io-
+ * interface datasheet for the two node/widget routing words). A write
+ * stores the masked value and a read returns it -- nothing else.
+ */
+static void test_graphics_flow_control_registers_round_trip(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    /* The page register keeps a full doubleword, including low bits. */
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_PAGE_A, 0x0123456789abcdefULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_PAGE_A), ==,
+                    0x0123456789abcdefULL);
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_PAGE_B, 0xfedcba9876543210ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_PAGE_B), ==,
+                    0xfedcba9876543210ULL);
+
+    /* Credit and bias, twelve bits each, A and B independent. */
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_CREDIT_A, 0x065);
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_CREDIT_B, 0x0ab);
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_BIAS_A, 0x044);
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_BIAS_B, 0x0cd);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_CREDIT_A), ==, 0x065);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_CREDIT_B), ==, 0x0ab);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_BIAS_A), ==, 0x044);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_BIAS_B), ==, 0x0cd);
+
+    /* Interrupt counter and compare, twenty-six bits each. */
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_INT_COUNT_A, 0x1234567);
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_INT_COUNT_B, 0x2345678);
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_INT_COMPARE_A, 0x3456789);
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_INT_COMPARE_B, 0x0abcdef);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_INT_COUNT_A), ==,
+                    0x1234567 & PI_GFX_INT_COUNT_MASK);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_INT_COUNT_B), ==,
+                    0x2345678 & PI_GFX_INT_COUNT_MASK);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_INT_COMPARE_A), ==,
+                    0x3456789 & PI_GFX_INT_COMPARE_MASK);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_INT_COMPARE_B), ==,
+                    0x0abcdef & PI_GFX_INT_COMPARE_MASK);
+
+    /* The two II node/widget routing words, independent of each other. */
+    qtest_writeq(qts, HUB_LOCAL + IO_GFX_INIT_0, 0x123456);
+    qtest_writeq(qts, HUB_LOCAL + IO_GFX_INIT_1, 0x1fffff);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_GFX_INIT_0), ==,
+                    0x123456 & IO_GFX_INIT_MASK);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_GFX_INIT_1), ==,
+                    0x1fffff & IO_GFX_INIT_MASK);
+
+    /* All twelve reset to zero. */
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_PAGE_A), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_PAGE_B), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_CREDIT_A), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_CREDIT_B), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_BIAS_A), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_BIAS_B), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_INT_COUNT_A), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_INT_COUNT_B), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_INT_COMPARE_A), ==,
+                    0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_INT_COMPARE_B), ==,
+                    0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_GFX_INIT_0), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_GFX_INIT_1), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/* A value wider than a register's own field reads back masked to it. */
+static void test_graphics_flow_control_registers_mask_wide_writes(
+    const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_CREDIT_A, ~0ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_CREDIT_A), ==,
+                    PI_GFX_CREDIT_MASK);
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_BIAS_A, ~0ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_BIAS_A), ==,
+                    PI_GFX_BIAS_MASK);
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_INT_COUNT_A, ~0ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_INT_COUNT_A), ==,
+                    PI_GFX_INT_COUNT_MASK);
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_INT_COMPARE_A, ~0ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_INT_COMPARE_A), ==,
+                    PI_GFX_INT_COMPARE_MASK);
+    qtest_writeq(qts, HUB_LOCAL + IO_GFX_INIT_0, ~0ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_GFX_INIT_0), ==,
+                    IO_GFX_INIT_MASK);
+
+    /* The page register alone keeps the full doubleword, unmasked. */
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_PAGE_A, ~0ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_PAGE_A), ==, ~0ULL);
+
+    qtest_quit(qts);
+}
+
+/*
+ * gfx_flow_attach_me's own sequence (si-graphics-widget-wiring-handoff-
+ * 20260916.md): seed bias at zero, write the real credit value, program
+ * the page and the II routing word, then raise bias to the comparison
+ * value MgrasResume polls against. The counter is untouched by any of
+ * the other writes, so the driver's own "credit >= bias" test is
+ * satisfied without this model inventing a value.
+ */
+static void test_graphics_flow_control_replays_the_attach_sequence(
+    const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+    uint64_t page = 0x0000000012340000ULL;
+
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_BIAS_A, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_CREDIT_A, 0x65);
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_PAGE_A, page | PI_GFX_PAGE_ENABLE);
+    qtest_writeq(qts, HUB_LOCAL + IO_GFX_INIT_0, 0x100001);
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_BIAS_A, 0x44);
+
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_CREDIT_A), ==, 0x65);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_BIAS_A), ==, 0x44);
+    g_assert_true(qtest_readq(qts, HUB_LOCAL + PI_GFX_CREDIT_A) >=
+                 qtest_readq(qts, HUB_LOCAL + PI_GFX_BIAS_A));
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_PAGE_A), ==,
+                    page | PI_GFX_PAGE_ENABLE);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_GFX_INIT_0), ==, 0x100001);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The new block shares its address range with nothing else this device
+ * answers; writing every one of the twelve registers must not disturb an
+ * unrelated PI register that already has its own qtest coverage, and vice
+ * versa.
+ */
+static void test_graphics_flow_control_does_not_disturb_rt_compare(
+    const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200");
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A, 0x123456789abcdULL);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_PAGE_A, ~0ULL);
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_CREDIT_A, ~0ULL);
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_BIAS_A, ~0ULL);
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_INT_COUNT_A, ~0ULL);
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_INT_COMPARE_A, ~0ULL);
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_PAGE_B, ~0ULL);
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_CREDIT_B, ~0ULL);
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_BIAS_B, ~0ULL);
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_INT_COUNT_B, ~0ULL);
+    qtest_writeq(qts, HUB_LOCAL + PI_GFX_INT_COMPARE_B, ~0ULL);
+    qtest_writeq(qts, HUB_LOCAL + IO_GFX_INIT_0, ~0ULL);
+    qtest_writeq(qts, HUB_LOCAL + IO_GFX_INIT_1, ~0ULL);
+
+    /* Untouched by any of the twelve graphics writes. */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_RT_COMPARE_A), ==,
+                    0x123456789abcdULL);
+
+    /* And the other direction: the RT compare write left the block alone. */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_PAGE_A), ==, ~0ULL);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_CREDIT_A), ==,
+                    PI_GFX_CREDIT_MASK);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A, 0);
     qtest_quit(qts);
 }
 
@@ -6714,6 +6905,17 @@ int main(int argc, char **argv)
                         test_bte_zero_length_and_misalignment);
     qtest_add_data_func("sn0/hub/network-ageing-controls", NULL,
                         test_network_ageing_controls);
+    qtest_add_data_func("sn0/hub/graphics-flow-control-round-trip", NULL,
+                        test_graphics_flow_control_registers_round_trip);
+    qtest_add_data_func("sn0/hub/graphics-flow-control-masks-wide-writes",
+                        NULL,
+                        test_graphics_flow_control_registers_mask_wide_writes);
+    qtest_add_data_func("sn0/hub/graphics-flow-control-attach-sequence",
+                        NULL,
+                        test_graphics_flow_control_replays_the_attach_sequence);
+    qtest_add_data_func("sn0/hub/graphics-flow-control-leaves-rt-compare-alone",
+                        NULL,
+                        test_graphics_flow_control_does_not_disturb_rt_compare);
 
     return g_test_run();
 }

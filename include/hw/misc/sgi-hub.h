@@ -319,6 +319,19 @@ struct SGIHubState {
     /* The counter's clock control -- bit 16 resets set, see the definition. */
     uint64_t pi_rt_local_ctrl;
 
+    /*
+     * Graphics flow-control block, per processor: page, credit counter,
+     * bias, interrupt counter and interrupt compare (hub-processor-interface
+     * datasheet, "Graphics flow control"). Plain storage -- nothing moves
+     * the credit counter for a completed transaction, the stated
+     * approximation the datasheet names.
+     */
+    uint64_t pi_gfx_page[SGI_HUB_PROCESSORS];
+    uint32_t pi_gfx_credit[SGI_HUB_PROCESSORS];
+    uint32_t pi_gfx_bias[SGI_HUB_PROCESSORS];
+    uint32_t pi_gfx_int_count[SGI_HUB_PROCESSORS];
+    uint32_t pi_gfx_int_compare[SGI_HUB_PROCESSORS];
+
     QEMUTimer *rt_timer[SGI_HUB_PROCESSORS];
     SGIHubCounterLine rt_line[SGI_HUB_PROCESSORS];
     uint8_t ni_revision;
@@ -361,6 +374,9 @@ struct SGIHubState {
     uint64_t io_xtalk_timeout;
     uint64_t io_xtalk_prescale;
     uint32_t io_bwin[SGI_HUB_BWIN_ENTRIES];
+
+    /* Graphics node/widget routing, two entries; plain storage. */
+    uint32_t io_gfx_init[2];
 
     /* The engines' six registers each, the whole of an engine's state. */
     uint64_t bte_length[SGI_HUB_BTES];
