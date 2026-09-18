@@ -3185,7 +3185,7 @@ static void test_cpu_count_is_exact(const void *data)
      * refuses it -- the same check "-smp 3" always exercised, its
      * message just used to be masked by the tighter core bound.
      */
-    assert_qemu_rejects(three_args, "does not accept 3 CPUs");
+    assert_qemu_rejects(three_args, "accepts 2 or 4 CPUs, not 3");
 }
 
 static void test_ram_size_is_exact(const void *data)
