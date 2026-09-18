@@ -9,6 +9,7 @@
 #include "hw/pci-host/sgi-xbridge.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/misc/sgi-xbridge-xbow.h"
+#include "hw/mips/sgi-xtalk-port.h"
 #include "hw/core/hotplug.h"
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
@@ -1094,7 +1095,8 @@ struct SGIXBridgeState {
     uint64_t onewire_serial[2];
 };
 
-MemoryRegion *sgi_xbridge_widget_view(SGIXBridgeState *s, unsigned widget)
+/* NULL for a widget this chip does not answer for, rather than asserting. */
+static MemoryRegion *chip_widget_view(SGIXBridgeState *s, unsigned widget)
 {
     unsigned i;
 
@@ -1103,7 +1105,15 @@ MemoryRegion *sgi_xbridge_widget_view(SGIXBridgeState *s, unsigned widget)
             return &s->view[i];
         }
     }
-    g_assert_not_reached();
+    return NULL;
+}
+
+MemoryRegion *sgi_xbridge_widget_view(SGIXBridgeState *s, unsigned widget)
+{
+    MemoryRegion *view = chip_widget_view(s, widget);
+
+    g_assert(view);
+    return view;
 }
 
 PCIBus *sgi_xbridge_pci_bus(SGIXBridgeState *s, unsigned widget)
@@ -1289,9 +1299,45 @@ static const VMStateDescription vmstate_chip = {
     }
 };
 
+/*
+ * ---- The crosstalk port interface ----
+ *
+ * index is a widget number: 0 (the crossbar's own identity), 0xe or 0xf
+ * (the heads). cpu_face() is sgi_xbridge_widget_view() itself -- where a
+ * peer's processor-addressed traffic at that widget position lands,
+ * exactly what the machine linked by hand before. Nothing in this model
+ * separately packet-addresses an XBridge widget (unlike a Crossbow, this
+ * chip's internal crossbar-to-head wiring never leaves the windowed
+ * form for a destination-prefixed packet one), so packet_face() answers
+ * with the same region: the leaf case the interface header documents,
+ * a widget whose registers nothing packet-addresses separately.
+ */
+
+static const char *chip_xtalk_port_describe(Object *port, unsigned int index)
+{
+    SGIXBridgeState *s = SGI_XBRIDGE(port);
+
+    if (index == s->host_port) {
+        return "the XBridge's host port";
+    }
+    switch (index) {
+    case 0: return "the XBridge's own crossbar widget";
+    case CHIP_HEAD_E: return "the XBridge's head E";
+    case CHIP_HEAD_F: return "the XBridge's head F";
+    default: return "an XBridge widget";
+    }
+}
+
+static MemoryRegion *chip_xtalk_port_cpu_face(Object *port,
+                                              unsigned int index)
+{
+    return chip_widget_view(SGI_XBRIDGE(port), index);
+}
+
 static void chip_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
+    SGIXtalkPortClass *pc = SGI_XTALK_PORT_CLASS(oc);
 
     dc->desc = "SGI XBridge crosstalk-PCI bridge";
     dc->user_creatable = true;
@@ -1299,6 +1345,9 @@ static void chip_class_init(ObjectClass *oc, const void *data)
     dc->unrealize = chip_unrealize;
     dc->vmsd = &vmstate_chip;
     device_class_set_props(dc, chip_properties);
+    pc->describe = chip_xtalk_port_describe;
+    pc->cpu_face = chip_xtalk_port_cpu_face;
+    pc->packet_face = chip_xtalk_port_cpu_face;
 }
 
 static void chip_init(Object *obj)
@@ -1355,6 +1404,10 @@ static const TypeInfo chip_type = {
     .instance_size = sizeof(SGIXBridgeState),
     .class_init = chip_class_init,
     .instance_init = chip_init,
+    .interfaces = (const InterfaceInfo[]) {
+        { TYPE_SGI_XTALK_PORT },
+        { }
+    },
 };
 
 static void xbridge_register_types(void)
