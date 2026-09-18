@@ -68,6 +68,9 @@ bool sgi_bedrock_hub_registers_permitted(SGIBedrockState *s)
  * the hold in exactly the case it is meant to fix. "Present, running" here
  * is population (processor-mask) plus real vCPU schedulability (not
  * halted, cpu_can_run()); the PI cpu-enable register plays no part.
+ *
+ * Which vCPU is in which slot comes from the board's processor-slot-order,
+ * not from counting fitted slots: see bedrock_resolve_slot_processors().
  */
 
 #define SGI_BEDROCK_HOLD_MS 2000 /* mirrors sgi-hub.c's SGI_HUB_RT_HOLD_MS */
@@ -143,20 +146,14 @@ static void bedrock_hold_run(CPUState *cs, run_on_cpu_data data);
 /* The physical slot (0..3: A, B, C, D) the executing processor is, or -1. */
 static int bedrock_hold_current_slot(SGIBedrockState *s)
 {
-    unsigned int logical = s->cpu_base;
-
     if (!current_cpu) {
         return -1;
     }
     for (unsigned int physical = 0; physical < SGI_BEDROCK_PROCESSORS;
          physical++) {
-        if (!(s->processor_mask & (1U << physical))) {
-            continue;
-        }
-        if (current_cpu->cpu_index == logical) {
+        if (s->slot_cpu_index[physical] == current_cpu->cpu_index) {
             return (int)physical;
         }
-        logical++;
     }
     return -1;
 }
@@ -164,18 +161,11 @@ static int bedrock_hold_current_slot(SGIBedrockState *s)
 /* A physical slot's CPUState, resolved once and cached; NULL if absent. */
 static CPUState *bedrock_hold_cpu(SGIBedrockState *s, unsigned int physical)
 {
-    unsigned int logical = s->cpu_base;
-
     if (unlikely(!s->hold_cpu[physical])) {
-        if (!(s->processor_mask & (1U << physical))) {
+        if (s->slot_cpu_index[physical] < 0) {
             return NULL;
         }
-        for (unsigned int p = 0; p < physical; p++) {
-            if (s->processor_mask & (1U << p)) {
-                logical++;
-            }
-        }
-        s->hold_cpu[physical] = qemu_get_cpu(logical);
+        s->hold_cpu[physical] = qemu_get_cpu(s->slot_cpu_index[physical]);
     }
     return s->hold_cpu[physical];
 }
@@ -911,6 +901,54 @@ static void bedrock_local_reset(void *opaque, int n, int level)
     }
 }
 
+/*
+ * Work out which vCPU sits in each of the four slots, from the board's own
+ * processor-slot-order. Only the board knows: a mask names the fitted
+ * slots, and once all four are fitted it no longer says which processor
+ * the machine put in each of them.
+ */
+static bool bedrock_resolve_slot_processors(SGIBedrockState *s, Error **errp)
+{
+    unsigned int assigned = 0;
+
+    for (unsigned int slot = 0; slot < SGI_BEDROCK_PROCESSORS; slot++) {
+        s->slot_cpu_index[slot] = -1;
+    }
+    if (s->processor_slot_order == SGI_BEDROCK_SLOT_ORDER_BY_SLOT) {
+        unsigned int logical = s->cpu_base;
+
+        for (unsigned int slot = 0; slot < SGI_BEDROCK_PROCESSORS; slot++) {
+            if (s->processor_mask & (1U << slot)) {
+                s->slot_cpu_index[slot] = (int)logical++;
+            }
+        }
+        return true;
+    }
+    for (unsigned int processor = 0; processor < s->processor_count;
+         processor++) {
+        unsigned int slot = (s->processor_slot_order >> (2 * processor)) & 3;
+
+        if (!(s->processor_mask & (1U << slot))) {
+            error_setg(errp, "Bedrock processor %u is placed in empty slot %u",
+                       processor, slot);
+            return false;
+        }
+        if (s->slot_cpu_index[slot] >= 0) {
+            error_setg(errp, "Bedrock slot %u holds more than one processor",
+                       slot);
+            return false;
+        }
+        s->slot_cpu_index[slot] = (int)(s->cpu_base + processor);
+        assigned++;
+    }
+    if (assigned != s->processor_count) {
+        error_setg(errp, "Bedrock processor-slot-order covers %u of %u "
+                   "processors", assigned, s->processor_count);
+        return false;
+    }
+    return true;
+}
+
 static void bedrock_realize(DeviceState *dev, Error **errp)
 {
     SGIBedrockState *s = SGI_BEDROCK(dev);
@@ -933,6 +971,9 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
         return;
     }
     s->processor_mask = mask;
+    if (!bedrock_resolve_slot_processors(s, errp)) {
+        return;
+    }
     if (!s->dma_mr) {
         error_setg(errp, TYPE_SGI_BEDROCK " 'dma-memory' link not set");
         return;
@@ -992,7 +1033,11 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
     }
     for (unsigned i = 0; i < 2; i++) {
         qdev_prop_set_uint32(DEVICE(&s->pi[i]), "interface", i);
-        qdev_prop_set_uint32(DEVICE(&s->pi[i]), "cpu-base", s->cpu_base);
+        qdev_prop_set_int32(DEVICE(&s->pi[i]), "slot-a-cpu-index",
+                           s->slot_cpu_index[i * SGI_BEDROCK_PI_PROCESSORS]);
+        qdev_prop_set_int32(DEVICE(&s->pi[i]), "slot-b-cpu-index",
+                           s->slot_cpu_index[i * SGI_BEDROCK_PI_PROCESSORS +
+                                             1]);
         qdev_prop_set_uint32(DEVICE(&s->pi[i]), "processor-count",
                             s->processor_count);
         qdev_prop_set_uint32(DEVICE(&s->pi[i]), "processor-mask",
@@ -1131,6 +1176,8 @@ static const Property bedrock_properties[] = {
      * own pair and tell the reading processor A from B.
      */
     DEFINE_PROP_UINT32("cpu-base", SGIBedrockState, cpu_base, 0),
+    DEFINE_PROP_UINT32("processor-slot-order", SGIBedrockState,
+                       processor_slot_order, SGI_BEDROCK_SLOT_ORDER_BY_SLOT),
     DEFINE_PROP_UINT8("revision", SGIBedrockState, revision, 2),
     DEFINE_PROP_UINT8("local-region", SGIBedrockState, local_region, 0),
     DEFINE_PROP_UINT8("installed-bank-mask", SGIBedrockState,
