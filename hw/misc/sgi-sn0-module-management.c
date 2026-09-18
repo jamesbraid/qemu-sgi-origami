@@ -629,6 +629,61 @@ static const SGIElscModuleOps mgmt_elsc_ops = {
     .onewire_slot = mgmt_elsc_onewire_slot,
 };
 
+/*
+ * A module's one-wire identity pages, from its serial alone: page 0 is
+ * the family byte plus the ten-character serial, page 1 the fixed
+ * "MODULEID" name at offset sixteen, both CRC16-terminated. Fed by the
+ * "model-serial" property's value, not by this device's own onewire-bus
+ * responder above, which answers the module's separate serial chip.
+ */
+bool sgi_sn0_module_management_identity_pages(
+    const char *serial, uint8_t page[2][DS2502_PAGE_SIZE])
+{
+    static const char name[] = "MODULEID";
+    size_t i;
+
+    if (strlen(serial) != SGI_O2000_MODULE_SERIAL_LEN) {
+        return false;
+    }
+    for (i = 0; i < SGI_O2000_MODULE_SERIAL_LEN; i++) {
+        if (!g_ascii_isprint(serial[i]) || serial[i] == ':' ||
+            serial[i] == ';') {
+            return false;
+        }
+    }
+
+    memset(page, 0xff, 2 * DS2502_PAGE_SIZE);
+    page[0][0] = 0x01;
+    memcpy(&page[0][1], serial, SGI_O2000_MODULE_SERIAL_LEN);
+    memcpy(&page[1][16], name, sizeof(name) - 1);
+    for (i = 0; i < 2; i++) {
+        uint16_t crc = ~onewire_crc16(0, page[i], DS2502_PAGE_SIZE - 2);
+
+        page[i][DS2502_PAGE_SIZE - 2] = crc;
+        page[i][DS2502_PAGE_SIZE - 1] = crc >> 8;
+    }
+    return true;
+}
+
+/*
+ * The module responder's eight-byte one-wire ROM: family code 0x09, a
+ * byte unique per node (0x08 plus slot), the module number folded into
+ * the next byte's top nibble, three zero bytes, then a CRC8 self-check.
+ * Matches the shipped module (slot 1-4, module number one) byte for
+ * byte; the module-number fold is inferred from that one sample and not
+ * independently confirmed against a second module number.
+ */
+void sgi_sn0_module_management_identity_rom(unsigned int slot,
+                                            uint8_t module_number,
+                                            uint8_t rom[8])
+{
+    rom[0] = 0x09;
+    rom[1] = 0x08 + slot;
+    rom[2] = rom[3] = rom[4] = rom[5] = 0x00;
+    rom[6] = (module_number & 0x0f) << 4;
+    rom[7] = onewire_crc8(0, rom, 7);
+}
+
 static const uint8_t module_serial_image_template[DS2502_DATA_SIZE] = {
     0x01, 0x4b, 0x4f, 0x52, 0x49, 0x47, 0x41, 0x4d,
     0x49, 0x30, 0x31, 0x4f, 0x52, 0x49, 0x47, 0x41,

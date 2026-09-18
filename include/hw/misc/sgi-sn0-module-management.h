@@ -12,6 +12,7 @@
 #include "hw/core/qdev.h"
 #include "hw/core/irq.h"
 #include "hw/i2c/i2c.h"
+#include "hw/1wire/ds2502.h"
 #include "hw/1wire/onewire.h"
 #include "hw/misc/sgi-elsc.h"
 #include "qemu/timer.h"
@@ -112,6 +113,19 @@ struct SN0ModuleManagementState {
 I2CBus *sgi_sn0_module_management_get_bus(SN0ModuleManagementState *s);
 DeviceState *sgi_sn0_module_management_get_adapter(SN0ModuleManagementState *s,
                                                unsigned index);
+
+/*
+ * The module's one-wire identity, attached directly to each node's Hub: the
+ * byte layout below is the same on every module of this kind, so the
+ * machine passes only the fitted-part values (a module's own serial and
+ * initial number, a node's physical slot) rather than building the bytes
+ * itself.
+ */
+bool sgi_sn0_module_management_identity_pages(
+    const char *serial, uint8_t page[2][DS2502_PAGE_SIZE]);
+void sgi_sn0_module_management_identity_rom(unsigned int slot,
+                                            uint8_t module_number,
+                                            uint8_t rom[8]);
 
 /*
  * Controller-side requests the scheduler arbitrates against processor grants.
