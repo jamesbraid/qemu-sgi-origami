@@ -60,7 +60,7 @@ static void assert_crossbow(QTestState *qts, const char *crossbow,
  * 8-10, BaseIO plus its two host nodes), Crossbow 2 has two (widgets
  * 9-10, its two host nodes only); no XIO position is populated on
  * either. BaseIO itself re-parents under its module the way every
- * sgi-xtalk-board does (include/hw/mips/sgi/xtalk-board.h), landing at
+ * sgi-xio-board does (include/hw/mips/sgi/xio-board.h), landing at
  * its own slot name since this builder gives it no id.
  */
 static void test_owner(void)

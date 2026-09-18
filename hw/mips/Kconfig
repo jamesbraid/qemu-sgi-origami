@@ -52,13 +52,13 @@ config SGI_SN0
     select SGI_BRIDGE
     select SGI_ELSC
     select SGI_HUB
-    select SGI_IP29_IO
     select SGI_O2000_MODULE_MGMT
     select SGI_IOC3
     select SGI_IOC3_ETH
     select SGI_PCI_EXPANSION
     select SGI_ROUTER
     select SGI_XBOW
+    select SGI_XIO_BASEIO
     select SGI_XTALK_LINK
     select TIGON
 
@@ -68,6 +68,7 @@ config SGI_SN1
     depends on MIPS64 && TARGET_BIG_ENDIAN
     imply TEST_DEVICES
     select QLOGIC_ISP_SCSI_PCI
+    select SGI_BASEIO
     select SGI_BEDROCK
     select SGI_BEDROCK_FLASH
     select SGI_IOC3
@@ -83,58 +84,50 @@ config SGI_XTALK_LINK
     select SGI_XTALK_PORT
     select SGI_XBOW
 
-config SGI_XTALK_BOARD
+config SGI_XIO_BOARD
     bool
     select SGI_XBOW
     select SGI_XTALK_PORT
 
-config SGI_XTALK_BOARD_TEST
+config SGI_XIO_BOARD_TEST
     bool
     default y if TEST_DEVICES
     depends on TEST_DEVICES
-    select SGI_XTALK_BOARD
+    select SGI_XIO_BOARD
     select SGI_XTALK_TEST_TARGET
 
-# The four board classes. Origin 200 selects SGI_IP29_IO and Origin 2000
-# SGI_BASEIO and SGI_PCI_EXPANSION (the board-devices step's own
-# board-wiring part); SGI_IO8 awaits the Origin 300 step and stays a plain
-# symbol the qtest-only config below selects meanwhile, the way
-# SGI_XTALK_BOARD_TEST selects the base class's own test board.
-config SGI_IP29_IO
-    bool
-    select SGI_XTALK_BOARD
-    select SGI_BRIDGE
-    select QLOGIC_ISP_SCSI_PCI
-    select SGI_IOC3
-
+# sgi-baseio (the base I/O functional unit, presets ip29/baseio/io8) is
+# selected directly by whichever family builds base I/O at all: Origin
+# 200's onboard I/O and Origin 300's IO-8 have no XIO card of their own,
+# only a carrier (sn0.c, sn1-node.c) that owns the Bridge or XBridge chip
+# directly and hands sgi-baseio its PCI bus. SGI_XIO_BASEIO is the Origin
+# 2000/Onyx2 BaseIO card, the one preset with a removable-card carrier.
 config SGI_BASEIO
     bool
-    select SGI_XTALK_BOARD
-    select SGI_BRIDGE
-    select QLOGIC_ISP_SCSI_PCI
-    select SGI_IOC3
-
-config SGI_IO8
-    bool
-    select SGI_XTALK_BOARD
-    select SGI_XBRIDGE
     select QLOGIC_ISP_SCSI_PCI
     select SGI_IOC3
     select USB_OHCI_PCI
 
+config SGI_XIO_BASEIO
+    bool
+    select SGI_XIO_BOARD
+    select SGI_BRIDGE
+    select SGI_BASEIO
+
 config SGI_PCI_EXPANSION
     bool
-    select SGI_XTALK_BOARD
+    select SGI_XIO_BOARD
     select SGI_BRIDGE
 
 config SGI_BOARD_TEST
     bool
     default y if TEST_DEVICES
     depends on TEST_DEVICES
-    select SGI_IP29_IO
     select SGI_BASEIO
-    select SGI_IO8
+    select SGI_XIO_BASEIO
     select SGI_PCI_EXPANSION
+    select SGI_BRIDGE
+    select SGI_XBRIDGE
 
 config FULOONG
     bool

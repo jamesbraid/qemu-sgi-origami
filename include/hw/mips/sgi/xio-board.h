@@ -1,15 +1,22 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * SGI crosstalk board base class.
+ * SGI XIO board base class: the removable unit that plugs into one of a
+ * module's XIO slots (the BaseIO card, the PCI expansion card, a future
+ * GIGAchannel cabinet), each carrying a Bridge or XBridge widget of its
+ * own. A board that is not removable -- IP29's onboard I/O, soldered to
+ * the System Board rather than plugged into a slot -- is not one of
+ * these; its Bridge answers the crosstalk port interface directly (see
+ * hw/pci-host/sgi-bridge.c), with no board wrapper at all.
  *
- * A crosstalk board is the removable unit that plugs into one of a
- * module's XIO slots: a Bridge or XBridge carrying PCI functions on a
- * shipped board, or the existing crosstalk test target on the test board
- * this header also declares (see xtalk-board-test.c). Every concrete
- * board shares two properties -- a module index and a slot, the
- * crosstalk widget number the module's Crossbow assigns that position,
- * matching the product's own printed slot (IO1 through IO12 on an
- * Origin 2000 module) -- and one class method, build_widget(), that
+ * Renamed from sgi-xtalk-board (the base-io-device step) once its only
+ * onboard-only subclasses (sgi-ip29-io, sgi-io8) stopped existing: what
+ * is left is exactly the removable-card scope this name states, plus the
+ * test board this header also declares (see xtalk-test-board.c).
+ *
+ * Every concrete board shares two properties -- a module index and a
+ * slot, the crosstalk widget number the module's Crossbow assigns that
+ * position, matching the product's own printed slot (IO1 through IO12 on
+ * an Origin 2000 module) -- and one class method, build_widget(), that
  * builds the board's own widget-facing device.
  *
  * ORDERING CONTRACT
@@ -29,7 +36,7 @@
  *     does not matter: boards attach in build order, not realize order),
  *     then registers a machine-init-done notifier
  *     (qemu_add_machine_init_done_notifier()) that calls
- *     sgi_xtalk_board_attach_pending() once for that Crossbow and
+ *     sgi_xio_board_attach_pending() once for that Crossbow and
  *     module -- by then every `-device` board has also realized, since
  *     cold-plugged devices are created before machine init is done -- and
  *     realizes the Crossbow only once that call succeeds.
@@ -41,23 +48,23 @@
  *     `device_add` sent once the machine is up) still realizes -- its
  *     widget builds and it re-parents under its module -- but nothing
  *     attaches it: the notifier fires once, and calling
- *     sgi_xtalk_board_attach_pending() again against an already-realized
+ *     sgi_xio_board_attach_pending() again against an already-realized
  *     Crossbow fails on the first pending board it finds, the same way a
  *     direct sgi_xbow_attach_endpoint() call would.
  */
 
-#ifndef HW_MIPS_SGI_XTALK_BOARD_H
-#define HW_MIPS_SGI_XTALK_BOARD_H
+#ifndef HW_MIPS_SGI_XIO_BOARD_H
+#define HW_MIPS_SGI_XIO_BOARD_H
 
 #include "hw/core/sysbus.h"
 #include "hw/misc/sgi-xbow.h"
 #include "qemu/queue.h"
 #include "qom/object.h"
 
-#define TYPE_SGI_XTALK_BOARD "sgi-xtalk-board"
-OBJECT_DECLARE_TYPE(SGIXtalkBoardState, SGIXtalkBoardClass, SGI_XTALK_BOARD)
+#define TYPE_SGI_XIO_BOARD "sgi-xtalk-board"
+OBJECT_DECLARE_TYPE(SGIXioBoardState, SGIXioBoardClass, SGI_XIO_BOARD)
 
-struct SGIXtalkBoardState {
+struct SGIXioBoardState {
     SysBusDevice parent_obj;
 
     /*
@@ -78,17 +85,17 @@ struct SGIXtalkBoardState {
     MemoryRegion *packet_face;
 
     /*
-     * Whether sgi_xtalk_board_attach_pending() has already wired this
+     * Whether sgi_xio_board_attach_pending() has already wired this
      * board into a Crossbow.
      */
     bool attached;
 
     /*< private >*/
     bool queued;
-    QTAILQ_ENTRY(SGIXtalkBoardState) node;
+    QTAILQ_ENTRY(SGIXioBoardState) node;
 };
 
-struct SGIXtalkBoardClass {
+struct SGIXioBoardClass {
     /*< private >*/
     SysBusDeviceClass parent_class;
 
@@ -101,7 +108,7 @@ struct SGIXtalkBoardClass {
      * owned by the board (add it as a QOM child of `board`) so it is
      * released along with a board that never attaches.
      */
-    bool (*build_widget)(SGIXtalkBoardState *board, Error **errp);
+    bool (*build_widget)(SGIXioBoardState *board, Error **errp);
 };
 
 /*
@@ -113,7 +120,7 @@ struct SGIXtalkBoardClass {
  * marked attached from an earlier call is skipped. See the ordering
  * contract above for when to call this and what a late board sees.
  */
-bool sgi_xtalk_board_attach_pending(SGIXbowState *crossbow,
+bool sgi_xio_board_attach_pending(SGIXbowState *crossbow,
                                     unsigned int module, Error **errp);
 
-#endif /* HW_MIPS_SGI_XTALK_BOARD_H */
+#endif /* HW_MIPS_SGI_XIO_BOARD_H */

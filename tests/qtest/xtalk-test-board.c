@@ -8,7 +8,7 @@
  * The second type here, sgi-xtalk-board-fixture, is not a board. It is
  * the smallest stand-in for what a machine builder does with a module's
  * Crossbow: it creates one unrealized, registers the machine-init-done
- * notifier that calls sgi_xtalk_board_attach_pending() and realizes the
+ * notifier that calls sgi_xio_board_attach_pending() and realizes the
  * Crossbow once that succeeds, and reports the outcome through two
  * read-only properties so a qtest can check it without a real machine.
  * Its own "retry" property lets a qtest run that same attempt a second
@@ -17,7 +17,7 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/mips/sgi/xtalk-board.h"
+#include "hw/mips/sgi/xio-board.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/misc/sgi-xbow.h"
@@ -40,10 +40,10 @@
 OBJECT_DECLARE_SIMPLE_TYPE(SGIXtalkTestBoardState, SGI_XTALK_TEST_BOARD)
 
 struct SGIXtalkTestBoardState {
-    SGIXtalkBoardState parent_obj;
+    SGIXioBoardState parent_obj;
 };
 
-static bool sgi_xtalk_test_board_build_widget(SGIXtalkBoardState *board,
+static bool sgi_xtalk_test_board_build_widget(SGIXioBoardState *board,
                                               Error **errp)
 {
     DeviceState *target = qdev_new(TYPE_SGI_XTALK_TEST_TARGET);
@@ -70,7 +70,7 @@ static bool sgi_xtalk_test_board_build_widget(SGIXtalkBoardState *board,
 static void sgi_xtalk_test_board_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
-    SGIXtalkBoardClass *bc = SGI_XTALK_BOARD_CLASS(oc);
+    SGIXioBoardClass *bc = SGI_XIO_BOARD_CLASS(oc);
 
     dc->desc = "Crosstalk test board, widget sgi-xtalk-test-target";
     dc->user_creatable = true;
@@ -79,7 +79,7 @@ static void sgi_xtalk_test_board_class_init(ObjectClass *oc, const void *data)
 
 static const TypeInfo sgi_xtalk_test_board_type = {
     .name = TYPE_SGI_XTALK_TEST_BOARD,
-    .parent = TYPE_SGI_XTALK_BOARD,
+    .parent = TYPE_SGI_XIO_BOARD,
     .instance_size = sizeof(SGIXtalkTestBoardState),
     .class_init = sgi_xtalk_test_board_class_init,
 };
@@ -118,7 +118,7 @@ struct SGIXtalkBoardFixtureState {
  * from (a link never routes to itself, so reading widget 8 takes a
  * second live port). Nothing here depends on a board actually being at
  * either widget; "alive" only enables the memory regions, independently
- * of whether sgi_xtalk_board_attach_pending() has attached anything.
+ * of whether sgi_xio_board_attach_pending() has attached anything.
  */
 #define SGI_XTALK_BOARD_FIXTURE_HEALTH ((1u << 8) | (1u << 9))
 
@@ -149,7 +149,7 @@ static void sgi_xtalk_board_fixture_attempt(SGIXtalkBoardFixtureState *s)
 
     g_free(s->error);
     s->error = NULL;
-    if (sgi_xtalk_board_attach_pending(s->crossbow, s->module, &local_err) &&
+    if (sgi_xio_board_attach_pending(s->crossbow, s->module, &local_err) &&
         (realized || sysbus_realize(SYS_BUS_DEVICE(s->crossbow),
                                     &local_err))) {
         s->attached = true;
@@ -187,7 +187,7 @@ static void sgi_xtalk_board_fixture_set_retry(Object *obj, bool value,
 }
 
 /*
- * Realizes the Crossbow directly, skipping sgi_xtalk_board_attach_pending()
+ * Realizes the Crossbow directly, skipping sgi_xio_board_attach_pending()
  * entirely -- a way to put a fixture's Crossbow into the "already
  * realized, nothing attached" state a qtest cannot otherwise reach
  * without hot-plugging a late board, which -M none's main system bus
@@ -242,7 +242,7 @@ static void sgi_xtalk_board_fixture_realize(DeviceState *dev, Error **errp)
 
     /*
      * Not realized here: the whole point of this fixture is that the
-     * Crossbow waits for sgi_xtalk_board_attach_pending() at machine
+     * Crossbow waits for sgi_xio_board_attach_pending() at machine
      * init done, the way a real builder's would. auto-attach=false skips
      * even that: nothing calls attach_pending or realizes the Crossbow
      * until the qtest triggers "realize-now" and "retry" itself, the only

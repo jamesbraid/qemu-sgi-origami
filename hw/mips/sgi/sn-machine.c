@@ -6,17 +6,21 @@
  *
  * Fixed here rather than carried in the descriptor, because they are Hub
  * hardware facts rather than per-configuration data: the Hub's physical
- * address map, its memory-bank geometry, its three hardwired CPU
- * interrupt inputs, and the PROM PI-error probe's Bridge offset.
+ * address map, its memory-bank geometry and its three hardwired CPU
+ * interrupt inputs.
  *
- * Origin 200's onboard board (sgi-ip29-io) sits directly on its one
- * node's crosstalk port; the Origin 2000 module's onboard board
- * (sgi-baseio) sits behind a Crossbow this builder also owns. Both are
- * sgi-xtalk-board instances built and realized here, before the nodes'
- * Crossbows realize. sgi-pci-expansion (board-pci-expansion.c) is not
- * built here or by anything else yet: see that class's own header
- * comment for why it stays onboard-only, not `-device`-creatable, until
- * a machine-owned spare fabric proxy exists for it to attach through.
+ * Origin 200's onboard base I/O sits directly on its one node's
+ * crosstalk port: sn0.c owns it (sn0_node_build_baseio(), called from
+ * this file's own io_boards[] loop below, once every node has realized)
+ * since it is a fitted part of the node's own System Board, not a
+ * removable card. The Origin 2000 module's BaseIO card (sgi-xio-baseio)
+ * sits behind a Crossbow this builder owns, and is a sgi-xio-board
+ * instance built and realized here, before the nodes' Crossbows realize,
+ * like every other card class the base-io-device step's design table
+ * names. sgi-pci-expansion (board-pci-expansion.c) is not built here or
+ * by anything else yet: see that class's own header comment for why it
+ * stays onboard-only, not `-device`-creatable, until a machine-owned
+ * spare fabric proxy exists for it to attach through.
  */
 
 #include "qemu/osdep.h"
@@ -36,7 +40,8 @@
 #include "hw/core/qdev-properties-system.h"
 #include "hw/core/sysbus.h"
 #include "hw/mips/sgi-xtalk-port.h"
-#include "hw/mips/sgi/xtalk-board.h"
+#include "hw/mips/sgi/baseio.h"
+#include "hw/mips/sgi/xio-board.h"
 #include "hw/mips/sgi/xtalk-link.h"
 #include "hw/misc/sgi-elsc.h"
 #include "hw/misc/sgi-hub.h"
@@ -51,20 +56,12 @@
 #include "system/system.h"
 #include "trace/control.h"
 #include "cpu.h"
-#include "hw/mips/sgi/board-io8.h"
 #include "hw/mips/sgi/sn-machine.h"
 #include "hw/mips/sgi/sn1-node.h"
 #include "hw/mips/sn0-fabric-routed.h"
 #include "sn0.h"
 
-/*
- * The board classes have no shared header; each names its own QOM type,
- * except sgi-io8 (board-io8.h): Origin 300's Bedrock needs its own
- * per-widget views, which the base class's one-view-per-board contract
- * does not carry.
- */
-#define TYPE_SGI_IP29_IO "sgi-ip29-io"
-#define TYPE_SGI_BASEIO "sgi-baseio"
+#define TYPE_SGI_XIO_BASEIO "sgi-xio-baseio"
 
 /* The Hub's flash controller offers this view whenever the board wires it. */
 static const SN0ModelRegion sgi_sn0_hub_lboot = {
@@ -135,14 +132,6 @@ static const SN0ModelHardware sgi_sn0_hub_hardware = {
 #define SGI_SN0_HUB_CPU_IRQ_BANK1 1
 #define SGI_SN0_HUB_CPU_IRQ_RT    2
 
-/*
- * The PROM PI-error probe's fixed target: widget 2 (a synthetic address,
- * not a populated widget) at the Bridge's own device-window offset for
- * its error-status decode. Origin 2000 does not use this probe at all.
- */
-#define SGI_SN0_PROM_PI_PROBE_WIDGET        2
-#define SGI_SN0_PROM_PI_PROBE_OFFSET        0x400208ULL
-
 struct SGIMachineState {
     MachineState parent_obj;
 
@@ -162,10 +151,12 @@ struct SGIMachineState {
     SGIXbowState **crossbars;
 
     /*
-     * One sgi-xtalk-board per io_boards[] entry, built before its own
-     * Crossbow, if any.
+     * One sgi-xio-board per Crossbow-attached io_boards[] entry, built
+     * before its own Crossbow. A direct-attach entry (Origin 200's
+     * onboard I/O, built by sn0_node_build_baseio() instead) leaves its
+     * own slot NULL: there is no board wrapper for it any more.
      */
-    SGIXtalkBoardState **io_boards;
+    SGIXioBoardState **io_boards;
 
     /*
      * A directly attached board's own crosstalk wiring: one link per
@@ -650,132 +641,6 @@ static bool sgi_machine_index_xtalk_attachments(
     return true;
 }
 
-static const char *sgi_machine_io_board_type(const SGIModelIoBoard *record)
-{
-    /*
-     * board_kind alone decides the class: the descriptor already names
-     * which board this is. Origami trunk eb6eff401f corrected the
-     * exporter's own defect that once made inferring the class from how
-     * a board attaches (direct vs. Crossbow) agree with board_kind on
-     * every topology shipped so far -- hw/mips/sgi/sn-model.c is now that
-     * corrected exporter's exact output; tests/unit/test-sn-model.c
-     * checks every entry's board_kind once, so this function trusts the
-     * descriptor and only asserts on a kind it does not recognize.
-     */
-    switch (record->board_kind) {
-    case SGI_MODEL_IO_IP29_IO:
-        return TYPE_SGI_IP29_IO;
-    case SGI_MODEL_IO_BASEIO:
-        return TYPE_SGI_BASEIO;
-    case SGI_MODEL_IO_IO8:
-        return TYPE_SGI_IO8;
-    default:
-        g_assert_not_reached();
-    }
-}
-
-/*
- * Builds and realizes the topology's one Bedrock-attached I/O board
- * (today always sgi-io8) from its populated io_boards[] entry, wiring its
- * "fabric" link to the region the caller supplies. Every I/O board's
- * device is created here regardless of node kind, matching the Hub
- * products' sgi_machine_instantiate_io_board() above; what differs is
- * the caller and the timing. Origin 300's Bedrock has no Crossbow, so there
- * is no module Crossbow's own address space to hand this class at
- * machine setup time the way the Hub path does -- the region only exists
- * once the node's own Bedrock device has been created, which is
- * sn1-node.c's job, not this builder's. sn1-node.c calls this once its
- * own Bedrock exists (created, not yet realized: sysbus_init_mmio() has
- * already given it the crosstalk egress region this needs). "slot" has no
- * Origin 300 hardware meaning of its own (sgi-io8's own header comment);
- * the caller supplies the fixed crosstalk port the whole chip answers on
- * only to satisfy the base class's module+slot uniqueness registry.
- */
-DeviceState *sgi_machine_build_bedrock_io_board(
-    const SGIModelIoBoard *record, unsigned int slot, MemoryRegion *fabric,
-    Error **errp)
-{
-    DeviceState *dev;
-    size_t i;
-
-    dev = qdev_new(sgi_machine_io_board_type(record));
-    object_property_add_child(qdev_get_machine(), "io-board0", OBJECT(dev));
-    object_unref(OBJECT(dev));
-    qdev_prop_set_uint32(dev, "module", record->module_index);
-    qdev_prop_set_uint32(dev, "slot", slot);
-    qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
-    /*
-     * The onboard IOC3's own one-wire identity part carries its own
-     * separate serial, a fact about this specific fitted unit -- the
-     * descriptor's own io_boards[].pci[] entry for the IOC3 function, not
-     * the board's own "onewire-serial" above. Matches
-     * sgi_machine_instantiate_io_board's identical comment.
-     */
-    for (i = 0; i < record->pci_count; i++) {
-        if (record->pci[i].kind == SGI_MODEL_PCI_IOC3) {
-            qdev_prop_set_uint64(dev, "ioc3-onewire-serial",
-                                 record->pci[i].serial);
-            break;
-        }
-    }
-    /*
-     * The onboard IOC3's Timekeeper storage: an indexed `-drive if=mtd`
-     * first, else a bare `-drive if=none,id=sgi-nvram0` by name -- one
-     * Bedrock node, so always index/id zero, unlike the Hub path's
-     * per-board index. Passed as the resolved backend's own name, not the
-     * backend itself, for the claim-timing reason
-     * sgi_machine_instantiate_io_board's identical comment gives.
-     */
-    {
-        DriveInfo *nvram_dinfo = drive_get(IF_MTD, 0, 0);
-        BlockBackend *nvram_blk = nvram_dinfo ?
-            blk_by_legacy_dinfo(nvram_dinfo) : blk_by_name("sgi-nvram0");
-
-        if (nvram_blk) {
-            qdev_prop_set_string(dev, "nvram-drive", blk_name(nvram_blk));
-        }
-    }
-    /*
-     * The onboard IOC3's serial and parallel backends, named by chardev
-     * id for the same claim-timing reason. serial_hd(0) is the L1
-     * console -- this node's own controller, not this board's -- so the
-     * onboard IOC3 takes indices one through four rather than the Hub
-     * path's sgi_machine_compute_serial_line() console-first ordering,
-     * which assumes a Hub node's own six-line block with no console
-     * device of its own ahead of it.
-     */
-    {
-        Chardev *chr;
-
-        chr = serial_hd(1);
-        if (chr) {
-            qdev_prop_set_string(dev, "chardev-a", chr->label);
-        }
-        chr = serial_hd(2);
-        if (chr) {
-            qdev_prop_set_string(dev, "chardev-b", chr->label);
-        }
-        chr = serial_hd(3);
-        if (chr) {
-            qdev_prop_set_string(dev, "record-a", chr->label);
-        }
-        chr = serial_hd(4);
-        if (chr) {
-            qdev_prop_set_string(dev, "record-b", chr->label);
-        }
-        if (parallel_hds[0]) {
-            qdev_prop_set_string(dev, "parallel-chardev",
-                                 parallel_hds[0]->label);
-        }
-    }
-    object_property_set_link(OBJECT(dev), "fabric", OBJECT(fabric),
-                             &error_abort);
-    if (!sysbus_realize(SYS_BUS_DEVICE(dev), errp)) {
-        return NULL;
-    }
-    return dev;
-}
-
 /*
  * The console node's IOC3 port A is serial line 0; other nodes follow
  * in index order from line 6.
@@ -854,40 +719,98 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
     }
 }
 
-/* A simple uint64 qdev property, applied by object_property_set_uint. */
-struct SGIMachineUintProperty {
-    const char *name;
-    uint64_t value;
-};
+/*
+ * The onboard IOC3's own separate one-wire identity part (the carrier's
+ * chip identity is a different part); NULL when this record's pci[]
+ * names no IOC3, leaving sgi-baseio's own class default.
+ */
+static const uint64_t *sgi_machine_io_board_ioc3_serial(
+    const SGIModelIoBoard *record, uint64_t *storage)
+{
+    size_t i;
+
+    for (i = 0; i < record->pci_count; i++) {
+        if (record->pci[i].kind == SGI_MODEL_PCI_IOC3) {
+            *storage = record->pci[i].serial;
+            return storage;
+        }
+    }
+    return NULL;
+}
 
 /*
- * Build one io_boards[] entry, wire it to its own crosstalk position and
- * realize it. A Crossbow-attached board attaches through
- * sgi_xtalk_crossbow_link_attach_widget(); the Crossbow itself realizes
- * later, once every board and node that attaches to it has (see
- * sgi_machine_realize's own crossbar-realize pass, after this function's
- * every caller has returned).
+ * IP29's onboard I/O: direct-attach, one per Origin 200 node. sn0.c owns
+ * the Bridge, the sgi-baseio behind it and the direct-link wiring (see
+ * sn0_node_build_baseio()'s own comment for why); this function resolves
+ * every fitted-part value and backend id the descriptor and command line
+ * carry, the same policy the Crossbow-attached BaseIO card below applies.
  */
-static bool sgi_machine_instantiate_io_board(
+static bool sgi_machine_instantiate_ip29_io(
     SGIMachineState *s, const SGIModelTopology *t, unsigned int board_index,
     const SGIModelXtalkAttachment *attachment, Error **errp)
 {
     const SGIModelIoBoard *record = &t->io_boards[board_index];
-    bool direct = attachment->crossbar_index < 0;
-    DeviceState *dev = qdev_new(sgi_machine_io_board_type(record));
+    SN0NodeState *node = s->nodes[attachment->node_index];
+    uint64_t ioc3_serial_storage;
+    const uint64_t *ioc3_serial =
+        sgi_machine_io_board_ioc3_serial(record, &ioc3_serial_storage);
+    /*
+     * "pci" for the first onboard board, "pci.<N>" for a second: a
+     * two-chassis Origin 200's two onboard Bridges would otherwise share
+     * a migration-visible PCI bus name.
+     */
+    g_autofree char *bus_name = board_index == 0 ? g_strdup("pci") :
+        g_strdup_printf("pci.%u", board_index);
+    g_autofree char *nvram_id = g_strdup_printf("sgi-nvram%u", board_index);
+    DriveInfo *nvram_dinfo = drive_get(IF_MTD, 0, board_index);
+    BlockBackend *nvram_blk = nvram_dinfo ?
+        blk_by_legacy_dinfo(nvram_dinfo) : blk_by_name(nvram_id);
+    Chardev *chardev_a = serial_hd(sgi_machine_compute_serial_line(
+        t, attachment->node_index, SN0_IOC3_SERIAL_A_CHARDEV));
+    Chardev *chardev_b = serial_hd(sgi_machine_compute_serial_line(
+        t, attachment->node_index, SN0_IOC3_SERIAL_B_CHARDEV));
+    Chardev *record_a = serial_hd(sgi_machine_compute_serial_line(
+        t, attachment->node_index, SN0_IOC3_RECORD_A_CHARDEV));
+    Chardev *record_b = serial_hd(sgi_machine_compute_serial_line(
+        t, attachment->node_index, SN0_IOC3_RECORD_B_CHARDEV));
+    const char *parallel_id = board_index < MAX_PARALLEL_PORTS &&
+        parallel_hds[board_index] ? parallel_hds[board_index]->label : NULL;
+
+    return sn0_node_build_baseio(
+        node, OBJECT(s), &s->direct_links[board_index], record->serial,
+        ioc3_serial, bus_name, nvram_blk ? blk_name(nvram_blk) : NULL,
+        chardev_a ? chardev_a->label : NULL,
+        chardev_b ? chardev_b->label : NULL,
+        record_a ? record_a->label : NULL,
+        record_b ? record_b->label : NULL, parallel_id,
+        attachment->discovery_widget, attachment->widget,
+        attachment->decoded_widget_mask, errp);
+}
+
+/*
+ * The Origin 2000/Onyx2 BaseIO card: Crossbow-attached, an sgi-xio-baseio
+ * instance (an sgi-xio-board, so it attaches through
+ * sgi_xtalk_crossbow_link_attach_widget() like every other XIO card; the
+ * Crossbow itself realizes later, once every board and node that
+ * attaches to it has -- see sgi_machine_realize's own crossbar-realize
+ * pass, after this function's every caller has returned).
+ */
+static bool sgi_machine_instantiate_baseio_card(
+    SGIMachineState *s, const SGIModelTopology *t, unsigned int board_index,
+    const SGIModelXtalkAttachment *attachment, Error **errp)
+{
+    const SGIModelIoBoard *record = &t->io_boards[board_index];
+    DeviceState *dev = qdev_new(TYPE_SGI_XIO_BASEIO);
     g_autofree char *name = g_strdup_printf("io-board%u", board_index);
     /*
-     * "module" is the descriptor's own module index, unique per module
-     * by construction, unlike a direct-attach product's shipped module
-     * number (a two-chassis Origin 200's onboard boards would otherwise
-     * collide on the base class's module+slot uniqueness check, since
-     * slot is the same fixed widget 8 on both).
+     * "pci.baseio<N>": two cards would otherwise share a
+     * migration-visible PCI bus name.
      */
-    struct SGIMachineUintProperty uint_props[4] = {
-        { "module", record->module_index },
-        { "slot", attachment->widget },
-        { "onewire-serial", record->serial },
-    };
+    g_autofree char *bus_name = g_strdup_printf("pci.baseio%u", board_index);
+    g_autofree char *nvram_id = g_strdup_printf("sgi-nvram%u", board_index);
+    DriveInfo *nvram_dinfo = drive_get(IF_MTD, 0, board_index);
+    BlockBackend *nvram_blk = nvram_dinfo ?
+        blk_by_legacy_dinfo(nvram_dinfo) : blk_by_name(nvram_id);
     static const struct {
         unsigned int offset;
         const char *prop;
@@ -898,66 +821,40 @@ static bool sgi_machine_instantiate_io_board(
         { SN0_IOC3_RECORD_B_CHARDEV, "record-b" },
     };
     /*
-     * "pci"/"pci.<N>" direct, or "pci.baseio<N>" behind a Crossbow: two
-     * boards of the same class (Origin 200's two onboard sgi-ip29-io
-     * instances) would otherwise share a migration-visible PCI bus name.
+     * A switched fabric carries the destination widget in its own packet
+     * header, so the Bridge keeps it in bits 51:48 of the address it
+     * composes rather than spending address bits on a node number the
+     * switch would not read. This Crossbow's own packet ingress does not
+     * exist until it realizes, so the link's own proxy stands in;
+     * sgi_xtalk_crossbow_link_finish() aliases the real ingress onto it
+     * once the Crossbow is built.
      */
-    g_autofree char *bus_name = direct ?
-        (board_index == 0 ? g_strdup("pci")
-                          : g_strdup_printf("pci.%u", board_index)) :
-        g_strdup_printf("pci.baseio%u", board_index);
-    g_autofree char *nvram_id = g_strdup_printf("sgi-nvram%u", board_index);
-    DriveInfo *nvram_dinfo = drive_get(IF_MTD, 0, board_index);
-    BlockBackend *nvram_blk = nvram_dinfo ?
-        blk_by_legacy_dinfo(nvram_dinfo) : blk_by_name(nvram_id);
-    unsigned int uint_prop_count = 3;
+    g_autofree char *proxy_name =
+        g_strdup_printf("io-board%u-packet-proxy", board_index);
     SGIXtalkCrossbowLink *crossbow_link =
         &s->crossbow_links[s->num_nodes + board_index];
-    SGIXtalkBoardState *board;
+    SGIXioBoardState *board;
     size_t i;
 
     object_property_add_child(OBJECT(s), name, OBJECT(dev));
     object_unref(OBJECT(dev));
 
-    /*
-     * "ioc3-onewire-serial" is the onboard IOC3's own separate one-wire
-     * identity part (Bridge's NIC ROM identity is a different part),
-     * left at its class default when this record's pci[] names no IOC3.
-     */
-    for (i = 0; i < record->pci_count; i++) {
-        if (record->pci[i].kind == SGI_MODEL_PCI_IOC3) {
-            uint_props[uint_prop_count++] = (struct SGIMachineUintProperty){
-                "ioc3-onewire-serial", record->pci[i].serial,
-            };
-            break;
+    qdev_prop_set_uint32(dev, "module", record->module_index);
+    qdev_prop_set_uint32(dev, "slot", attachment->widget);
+    qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
+    {
+        uint64_t ioc3_serial_storage;
+        const uint64_t *ioc3_serial =
+            sgi_machine_io_board_ioc3_serial(record, &ioc3_serial_storage);
+
+        if (ioc3_serial) {
+            qdev_prop_set_uint64(dev, "ioc3-onewire-serial", *ioc3_serial);
         }
     }
-    for (i = 0; i < uint_prop_count; i++) {
-        object_property_set_uint(OBJECT(dev), uint_props[i].name,
-                                 uint_props[i].value, &error_fatal);
-    }
     qdev_prop_set_string(dev, "pci-bus-name", bus_name);
-
-    /*
-     * The onboard IOC3's Timekeeper storage: an indexed `-drive if=mtd`
-     * first, else a bare `-drive if=none,id=sgi-nvram<N>` by name.
-     * Passed down as the resolved backend's own name, not the backend
-     * itself: a "drive" property claims its backend the moment it is
-     * set, and the board's own "ioc3" child has to be the one that
-     * claims it, on realize -- the same claim-timing problem the
-     * chardev properties below avoid the same way.
-     */
     if (nvram_blk) {
         qdev_prop_set_string(dev, "nvram-drive", blk_name(nvram_blk));
     }
-    /*
-     * The onboard IOC3's serial backends: named by chardev id, not
-     * passed as a "chardev" property, since setting one of those claims
-     * the backend immediately, and the board's own build_widget() has
-     * to be the one call that claims it, on the "ioc3" child it is
-     * about to realize. The topology's console field orders these by
-     * node (sgi_machine_compute_serial_line).
-     */
     for (i = 0; i < ARRAY_SIZE(serial_bindings); i++) {
         Chardev *chr = serial_hd(sgi_machine_compute_serial_line(
             t, attachment->node_index, serial_bindings[i].offset));
@@ -966,89 +863,55 @@ static bool sgi_machine_instantiate_io_board(
             qdev_prop_set_string(dev, serial_bindings[i].prop, chr->label);
         }
     }
-    /*
-     * Only sgi-ip29-io exposes "parallel-chardev" (a parallel function);
-     * BaseIO's board carries no parallel port, matching sgi-baseio's
-     * own class.
-     */
-    if (direct && board_index < MAX_PARALLEL_PORTS &&
-        parallel_hds[board_index]) {
-        qdev_prop_set_string(dev, "parallel-chardev",
-                             parallel_hds[board_index]->label);
-    }
-
-    if (direct) {
-        const SN0ModelAddressMap *map = &sgi_sn0_hub_address_map;
-        SN0NodeState *node = s->nodes[attachment->node_index];
-
-        /*
-         * Interrupt packets travel a processor's claim view, which
-         * resolves a node-qualified address by programmed number, not by
-         * the board's position. View zero speaks for the node; a node
-         * always has a processor. This is a Hub/Origin-200 fact the
-         * direct link's own port interface never has to carry, since it
-         * is set once here rather than once per widget the link aliases.
-         */
-        object_property_set_link(OBJECT(dev), "fabric",
-                                 OBJECT(&node->claim_view[0]), &error_fatal);
-        qdev_prop_set_uint64(dev, "fabric-base", map->xtalk.carrier_base);
-        qdev_prop_set_uint32(dev, "fabric-node-shift",
-                             ctz64(map->node_stride));
-    } else {
-        /*
-         * A switched fabric carries the destination widget in its own
-         * packet header, so the Bridge keeps it in bits 51:48 of the
-         * address it composes rather than spending address bits on a
-         * node number the switch would not read. This Crossbow's own
-         * packet ingress does not exist until it realizes, so the link's
-         * own proxy stands in; sgi_xtalk_crossbow_link_finish() aliases
-         * the real ingress onto it once the Crossbow is built.
-         */
-        g_autofree char *proxy_name =
-            g_strdup_printf("io-board%u-packet-proxy", board_index);
-
-        object_property_set_link(
-            OBJECT(dev), "fabric",
-            OBJECT(sgi_xtalk_crossbow_link_prepare(crossbow_link, OBJECT(s),
-                                                   proxy_name)),
-            &error_fatal);
-        qdev_prop_set_uint32(dev, "fabric-widget-shift",
-                             SGI_BRIDGE_PACKET_ADDRESS_BITS);
-    }
+    object_property_set_link(
+        OBJECT(dev), "fabric",
+        OBJECT(sgi_xtalk_crossbow_link_prepare(crossbow_link, OBJECT(s),
+                                               proxy_name)),
+        &error_fatal);
+    qdev_prop_set_uint32(dev, "fabric-widget-shift",
+                         SGI_BRIDGE_PACKET_ADDRESS_BITS);
 
     sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
-    board = SGI_XTALK_BOARD(dev);
+    board = SGI_XIO_BOARD(dev);
     s->io_boards[board_index] = board;
 
-    /*
-     * Direct attachment installs the board's whole widget face into its
-     * node's xtalk container, aliased at every other decoded widget too
-     * (docs/datasheets/bridge.md: the Bridge answers its full 16 MB face
-     * at every non-zero widget the Hub sends out its link), and wires
-     * the PROM's fixed widget-2 PI-error probe through it; a Crossbow-
-     * attached board instead attaches through
-     * sgi_xtalk_crossbow_link_attach_widget().
-     */
-    if (direct) {
-        SN0NodeState *node = s->nodes[attachment->node_index];
-
-        if (!sgi_xtalk_direct_link_connect(
-                &s->direct_links[board_index], OBJECT(s), node, OBJECT(board),
-                attachment->discovery_widget, attachment->widget,
-                attachment->decoded_widget_mask, SGI_SN0_PROM_PI_PROBE_WIDGET,
-                SGI_SN0_PROM_PI_PROBE_OFFSET, errp)) {
-            return false;
-        }
-    } else {
-        if (!sgi_xtalk_crossbow_link_attach_widget(
-                crossbow_link, OBJECT(board),
-                s->crossbars[attachment->crossbar_index], attachment->widget,
-                errp)) {
-            return false;
-        }
-        board->attached = true;
+    if (!sgi_xtalk_crossbow_link_attach_widget(
+            crossbow_link, OBJECT(board), s->crossbars[attachment->crossbar_index],
+            attachment->widget, errp)) {
+        return false;
     }
+    board->attached = true;
     return true;
+}
+
+/*
+ * Build one io_boards[] entry, wire it to its own crosstalk position and
+ * realize it: IP29's onboard I/O (direct-attach) and the Origin 2000
+ * BaseIO card (Crossbow-attach) are different enough carriers now
+ * (sn0.c owns one outright; the other is an sgi-xio-board instance this
+ * file builds) that board_kind alone -- not attachment kind -- decides
+ * which function runs; tests/unit/test-sn-model.c checks the compiled
+ * descriptor names no other board_kind once, so this dispatch trusts it
+ * and only reports the case it does not recognize.
+ */
+static bool sgi_machine_instantiate_io_board(
+    SGIMachineState *s, const SGIModelTopology *t, unsigned int board_index,
+    const SGIModelXtalkAttachment *attachment, Error **errp)
+{
+    const SGIModelIoBoard *record = &t->io_boards[board_index];
+
+    switch (record->board_kind) {
+    case SGI_MODEL_IO_IP29_IO:
+        return sgi_machine_instantiate_ip29_io(s, t, board_index, attachment,
+                                               errp);
+    case SGI_MODEL_IO_BASEIO:
+        return sgi_machine_instantiate_baseio_card(s, t, board_index,
+                                                   attachment, errp);
+    default:
+        error_setg(errp, "topology '%s' io board %u names an unsupported "
+                  "board kind for this family", t->name, board_index);
+        return false;
+    }
 }
 
 /*
@@ -1651,7 +1514,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     s->physical_nodes = g_new0(SN0ModelPhysicalNode, node_count);
     s->hub_components = g_new0(SN0ModelComponent, node_count);
     /* Indexed by io_boards[] position, one entry per board, not by node. */
-    s->io_boards = g_new0(SGIXtalkBoardState *, t->io_board_count);
+    s->io_boards = g_new0(SGIXioBoardState *, t->io_board_count);
     s->direct_links = g_new0(SGIXtalkDirectLink, t->io_board_count);
     s->crossbars = g_new0(SGIXbowState *, t->crossbar_count);
     /* One crossbow link per node, then one per io_boards[] position. */

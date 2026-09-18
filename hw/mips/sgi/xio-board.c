@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* SGI crosstalk board base class; see the header for the ordering contract. */
+/* SGI XIO board base class; see the header for the ordering contract. */
 
 #include "qemu/osdep.h"
-#include "hw/mips/sgi/xtalk-board.h"
+#include "hw/mips/sgi/xio-board.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev.h"
 #include "hw/core/sysbus.h"
@@ -16,19 +16,19 @@
  * Neither property has a sane default, so both start here and a board
  * realized without setting one refuses rather than silently picking 0.
  */
-#define SGI_XTALK_BOARD_UNSET UINT32_MAX
+#define SGI_XIO_BOARD_UNSET UINT32_MAX
 
 /*
  * Every sgi-xtalk-board realized so far, attached or not: this is both
  * the module+slot uniqueness registry and the pool
- * sgi_xtalk_board_attach_pending() scans. Boards are few (a module has at
+ * sgi_xio_board_attach_pending() scans. Boards are few (a module has at
  * most a handful of XIO slots), so a linear scan costs nothing a hash
  * table would be worth carrying instead.
  */
-static QTAILQ_HEAD(, SGIXtalkBoardState) sgi_xtalk_board_all =
-    QTAILQ_HEAD_INITIALIZER(sgi_xtalk_board_all);
+static QTAILQ_HEAD(, SGIXioBoardState) sgi_xio_board_all =
+    QTAILQ_HEAD_INITIALIZER(sgi_xio_board_all);
 
-static Object *sgi_xtalk_board_module_container(unsigned int module)
+static Object *sgi_xio_board_module_container(unsigned int module)
 {
     Object *machine = qdev_get_machine();
     g_autofree char *name = g_strdup_printf("module%u", module);
@@ -56,11 +56,11 @@ static Object *sgi_xtalk_board_module_container(unsigned int module)
  * bus every sgi-xtalk-board is realized on -- qdev_machine_creation_done()
  * asserts every realized device still has one.
  */
-static bool sgi_xtalk_board_reparent(SGIXtalkBoardState *board, Error **errp)
+static bool sgi_xio_board_reparent(SGIXioBoardState *board, Error **errp)
 {
     DeviceState *dev = DEVICE(board);
     Object *child = OBJECT(board);
-    Object *parent = sgi_xtalk_board_module_container(board->module);
+    Object *parent = sgi_xio_board_module_container(board->module);
     g_autofree char *default_name = g_strdup_printf("slot%u", board->slot);
     const char *name = dev->id ? dev->id : default_name;
 
@@ -76,30 +76,30 @@ static bool sgi_xtalk_board_reparent(SGIXtalkBoardState *board, Error **errp)
 
 /*
  * Reject a second board in the same module's slot, and otherwise
- * register this one in the pool sgi_xtalk_board_attach_pending() reads.
+ * register this one in the pool sgi_xio_board_attach_pending() reads.
  */
-static bool sgi_xtalk_board_claim(SGIXtalkBoardState *board, Error **errp)
+static bool sgi_xio_board_claim(SGIXioBoardState *board, Error **errp)
 {
-    SGIXtalkBoardState *other;
+    SGIXioBoardState *other;
 
-    QTAILQ_FOREACH(other, &sgi_xtalk_board_all, node) {
+    QTAILQ_FOREACH(other, &sgi_xio_board_all, node) {
         if (other->module == board->module && other->slot == board->slot) {
             error_setg(errp, "a crosstalk board already occupies module %u "
                        "slot %u", board->module, board->slot);
             return false;
         }
     }
-    QTAILQ_INSERT_TAIL(&sgi_xtalk_board_all, board, node);
+    QTAILQ_INSERT_TAIL(&sgi_xio_board_all, board, node);
     board->queued = true;
     return true;
 }
 
-static void sgi_xtalk_board_realize(DeviceState *dev, Error **errp)
+static void sgi_xio_board_realize(DeviceState *dev, Error **errp)
 {
-    SGIXtalkBoardState *board = SGI_XTALK_BOARD(dev);
-    SGIXtalkBoardClass *bc = SGI_XTALK_BOARD_GET_CLASS(board);
+    SGIXioBoardState *board = SGI_XIO_BOARD(dev);
+    SGIXioBoardClass *bc = SGI_XIO_BOARD_GET_CLASS(board);
 
-    if (board->module == SGI_XTALK_BOARD_UNSET) {
+    if (board->module == SGI_XIO_BOARD_UNSET) {
         error_setg(errp, "a crosstalk board requires a module index");
         return;
     }
@@ -110,34 +110,34 @@ static void sgi_xtalk_board_realize(DeviceState *dev, Error **errp)
                    SGI_XBOW_WIDGETS - 1);
         return;
     }
-    if (!sgi_xtalk_board_claim(board, errp)) {
+    if (!sgi_xio_board_claim(board, errp)) {
         return;
     }
     g_assert(bc->build_widget);
     if (!bc->build_widget(board, errp) ||
-        !sgi_xtalk_board_reparent(board, errp)) {
-        QTAILQ_REMOVE(&sgi_xtalk_board_all, board, node);
+        !sgi_xio_board_reparent(board, errp)) {
+        QTAILQ_REMOVE(&sgi_xio_board_all, board, node);
         board->queued = false;
         return;
     }
 }
 
-static void sgi_xtalk_board_unrealize(DeviceState *dev)
+static void sgi_xio_board_unrealize(DeviceState *dev)
 {
-    SGIXtalkBoardState *board = SGI_XTALK_BOARD(dev);
+    SGIXioBoardState *board = SGI_XIO_BOARD(dev);
 
     if (board->queued) {
-        QTAILQ_REMOVE(&sgi_xtalk_board_all, board, node);
+        QTAILQ_REMOVE(&sgi_xio_board_all, board, node);
         board->queued = false;
     }
 }
 
-bool sgi_xtalk_board_attach_pending(SGIXbowState *crossbow,
+bool sgi_xio_board_attach_pending(SGIXbowState *crossbow,
                                     unsigned int module, Error **errp)
 {
-    SGIXtalkBoardState *board;
+    SGIXioBoardState *board;
 
-    QTAILQ_FOREACH(board, &sgi_xtalk_board_all, node) {
+    QTAILQ_FOREACH(board, &sgi_xio_board_all, node) {
         if (board->module != module || board->attached) {
             continue;
         }
@@ -150,11 +150,11 @@ bool sgi_xtalk_board_attach_pending(SGIXbowState *crossbow,
     return true;
 }
 
-static const Property sgi_xtalk_board_properties[] = {
-    DEFINE_PROP_UINT32("module", SGIXtalkBoardState, module,
-                       SGI_XTALK_BOARD_UNSET),
-    DEFINE_PROP_UINT32("slot", SGIXtalkBoardState, slot,
-                       SGI_XTALK_BOARD_UNSET),
+static const Property sgi_xio_board_properties[] = {
+    DEFINE_PROP_UINT32("module", SGIXioBoardState, module,
+                       SGI_XIO_BOARD_UNSET),
+    DEFINE_PROP_UINT32("slot", SGIXioBoardState, slot,
+                       SGI_XIO_BOARD_UNSET),
 };
 
 /*
@@ -165,8 +165,8 @@ static const Property sgi_xtalk_board_properties[] = {
  * named description says so explicitly rather than leaving dc->vmsd
  * unset, matching hw/misc/sgi-xtalk-test-target.c.
  */
-static const VMStateDescription vmstate_sgi_xtalk_board = {
-    .name = TYPE_SGI_XTALK_BOARD,
+static const VMStateDescription vmstate_sgi_xio_board = {
+    .name = TYPE_SGI_XIO_BOARD,
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
@@ -184,48 +184,48 @@ static const VMStateDescription vmstate_sgi_xtalk_board = {
  * widget, named by its own "slot" property instead.
  */
 
-static const char *sgi_xtalk_board_xtalk_port_describe(Object *port,
+static const char *sgi_xio_board_xtalk_port_describe(Object *port,
                                                         unsigned int index)
 {
     return "a crosstalk board's widget";
 }
 
-static MemoryRegion *sgi_xtalk_board_xtalk_port_cpu_face(Object *port,
+static MemoryRegion *sgi_xio_board_xtalk_port_cpu_face(Object *port,
                                                           unsigned int index)
 {
-    return SGI_XTALK_BOARD(port)->cpu_face;
+    return SGI_XIO_BOARD(port)->cpu_face;
 }
 
-static MemoryRegion *sgi_xtalk_board_xtalk_port_packet_face(Object *port,
+static MemoryRegion *sgi_xio_board_xtalk_port_packet_face(Object *port,
                                                              unsigned int index)
 {
-    return SGI_XTALK_BOARD(port)->packet_face;
+    return SGI_XIO_BOARD(port)->packet_face;
 }
 
-static void sgi_xtalk_board_class_init(ObjectClass *oc, const void *data)
+static void sgi_xio_board_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     SGIXtalkPortClass *pc = SGI_XTALK_PORT_CLASS(oc);
 
     dc->desc = "SGI crosstalk board (abstract)";
-    dc->realize = sgi_xtalk_board_realize;
-    dc->unrealize = sgi_xtalk_board_unrealize;
-    dc->vmsd = &vmstate_sgi_xtalk_board;
-    device_class_set_props(dc, sgi_xtalk_board_properties);
+    dc->realize = sgi_xio_board_realize;
+    dc->unrealize = sgi_xio_board_unrealize;
+    dc->vmsd = &vmstate_sgi_xio_board;
+    device_class_set_props(dc, sgi_xio_board_properties);
     /* Only a concrete subclass is ever instantiated directly. */
     dc->user_creatable = false;
-    pc->describe = sgi_xtalk_board_xtalk_port_describe;
-    pc->cpu_face = sgi_xtalk_board_xtalk_port_cpu_face;
-    pc->packet_face = sgi_xtalk_board_xtalk_port_packet_face;
+    pc->describe = sgi_xio_board_xtalk_port_describe;
+    pc->cpu_face = sgi_xio_board_xtalk_port_cpu_face;
+    pc->packet_face = sgi_xio_board_xtalk_port_packet_face;
 }
 
-static const TypeInfo sgi_xtalk_board_types[] = {
+static const TypeInfo sgi_xio_board_types[] = {
     {
-        .name = TYPE_SGI_XTALK_BOARD,
+        .name = TYPE_SGI_XIO_BOARD,
         .parent = TYPE_SYS_BUS_DEVICE,
-        .instance_size = sizeof(SGIXtalkBoardState),
-        .class_size = sizeof(SGIXtalkBoardClass),
-        .class_init = sgi_xtalk_board_class_init,
+        .instance_size = sizeof(SGIXioBoardState),
+        .class_size = sizeof(SGIXioBoardClass),
+        .class_init = sgi_xio_board_class_init,
         .abstract = true,
         .interfaces = (const InterfaceInfo[]) {
             { TYPE_SGI_XTALK_PORT },
@@ -234,4 +234,4 @@ static const TypeInfo sgi_xtalk_board_types[] = {
     },
 };
 
-DEFINE_TYPES(sgi_xtalk_board_types)
+DEFINE_TYPES(sgi_xio_board_types)

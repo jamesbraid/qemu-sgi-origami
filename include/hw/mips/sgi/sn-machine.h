@@ -73,18 +73,6 @@ unsigned int sgi_machine_product_max_cpus(const char *product);
 uint64_t sgi_machine_topology_default_ram(const SGIModelTopology *t);
 
 /*
- * Builds and realizes a Bedrock topology's one onboard I/O board (today
- * always sgi-io8) from its populated io_boards[] record, wiring its
- * "fabric" link to the region the caller supplies. Exposed for
- * sn1-node.c: see the definition's own comment for why the node, not
- * this builder, is the one that calls it, and when.
- */
-DeviceState *sgi_machine_build_bedrock_io_board(const SGIModelIoBoard *record,
-                                                unsigned int slot,
-                                                MemoryRegion *fabric,
-                                                Error **errp);
-
-/*
  * Copies the machine's own chassis-eeprom/board-eeprom/spd-eeprom
  * identity-record file lists onto an L1 device before it is realized.
  * Takes the L1 explicitly because it lives on the node (sgi-sn1-node),

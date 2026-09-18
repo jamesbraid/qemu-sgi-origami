@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * sgi-pci-expansion: an Origin 2000 module's optional XIO PCI expansion
- * board, as a crosstalk board on the sgi-xtalk-board base class.
+ * board, as an XIO board on the sgi-xio-board base class.
  *
  * The Origin 2000 module descriptor reserves crosstalk position IO2 for an
  * optional PCI expansion, but does not establish whether a given system has
@@ -41,7 +41,7 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/mips/sgi/xtalk-board.h"
+#include "hw/mips/sgi/xio-board.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/pci-host/sgi-bridge.h"
@@ -58,7 +58,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIPciExpansionState, SGI_PCI_EXPANSION)
 #define PCI_EXPANSION_SERIAL_PLACEHOLDER 0x060504030201ULL
 
 struct SGIPciExpansionState {
-    SGIXtalkBoardState parent_obj;
+    SGIXioBoardState parent_obj;
 
     MemoryRegion *fabric;
     uint64_t fabric_base;
@@ -70,7 +70,7 @@ struct SGIPciExpansionState {
     SGIBridgeState *bridge;
 };
 
-static bool pci_expansion_build_widget(SGIXtalkBoardState *board,
+static bool pci_expansion_build_widget(SGIXioBoardState *board,
                                        Error **errp)
 {
     SGIPciExpansionState *s = SGI_PCI_EXPANSION(board);
@@ -132,7 +132,7 @@ static const VMStateDescription vmstate_pci_expansion = {
 static void pci_expansion_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
-    SGIXtalkBoardClass *bc = SGI_XTALK_BOARD_CLASS(oc);
+    SGIXioBoardClass *bc = SGI_XIO_BOARD_CLASS(oc);
 
     dc->desc = "Origin 2000 XIO PCI expansion board";
     dc->vmsd = &vmstate_pci_expansion;
@@ -148,7 +148,7 @@ static void pci_expansion_class_init(ObjectClass *oc, const void *data)
 
 static const TypeInfo pci_expansion_type = {
     .name = TYPE_SGI_PCI_EXPANSION,
-    .parent = TYPE_SGI_XTALK_BOARD,
+    .parent = TYPE_SGI_XIO_BOARD,
     .instance_size = sizeof(SGIPciExpansionState),
     .class_init = pci_expansion_class_init,
 };

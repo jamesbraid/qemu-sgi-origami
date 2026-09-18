@@ -15,6 +15,7 @@
 #include "hw/block/flash.h"
 #include "hw/core/boards.h"
 #include "hw/misc/sgi-hub.h"
+#include "hw/mips/sgi/xtalk-link.h"
 #include "sn-promdata.h"
 
 /*
@@ -272,10 +273,11 @@ typedef struct SN0NodeState {
      * configures it, while this probe is meant to reach it regardless --
      * an address-space read respects that routing and finds nothing
      * there before the PROM configures it; a direct dispatch does not.
-     * Resolved once, at wiring time, by the board's own QOM child name
-     * ("bridge") rather than a borrowed SGIBridgeState pointer, so the
-     * board class stays this file's only dependency on the board's own
-     * internals.
+     * Resolved once, at wiring time, from the Bridge object the direct
+     * link's own widget_port names directly (sn0_node_build_baseio()
+     * hands it sn0.c's own Bridge, the widget in the base-io-device
+     * step's design; see docs/designs/sn-machine-model-architecture.md,
+     * "Node devices").
      */
     MemoryRegion *prom_pi_probe_window;
     MemoryRegion small_window[SN0_XTALK_WIDGETS];
@@ -301,6 +303,26 @@ DECLARE_INSTANCE_CHECKER(SN0NodeState, SN0_NODE, TYPE_SGI_SN0_NODE)
 void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
                              unsigned int num_nodes,
                              MemoryRegion **route_out);
+
+/*
+ * Builds node's onboard base I/O (a Bridge and an sgi-baseio behind it,
+ * the "ip29" preset) and connects it through the direct link -- see the
+ * definition's own comment. Called once node has realized. link is the
+ * caller's own storage (SGIMachineState's direct_links[]); the various
+ * ids are resolved backend names, not claimed backends, for the
+ * claim-timing reason sgi-baseio's own header explains.
+ */
+bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
+                           SGIXtalkDirectLink *link, uint64_t bridge_serial,
+                           const uint64_t *ioc3_serial, const char *pci_bus_name,
+                           const char *nvram_drive_id,
+                           const char *chardev_a_id,
+                           const char *chardev_b_id,
+                           const char *record_a_id,
+                           const char *record_b_id,
+                           const char *parallel_chardev_id,
+                           unsigned int discovery_widget, unsigned int widget,
+                           uint32_t decoded_widget_mask, Error **errp);
 
 extern const SN0FlashImplementation sn0_flash;
 

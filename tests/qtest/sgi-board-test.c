@@ -1,22 +1,21 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The four crosstalk board classes: widget identity, PCI population per
- * device number, and the interrupt chain from a device to the board's
- * widget interrupt, parameterised over every class so the same contract
- * runs against all four (the sibling-parity rule).
+ * sgi-baseio's three presets, and sgi-pci-expansion: widget identity, PCI
+ * population per device number, and the interrupt chain from a device to
+ * the widget interrupt, parameterised over every case so the same
+ * contract runs against all four (the sibling-parity rule).
  *
- * sgi-ip29-io, sgi-baseio and sgi-io8 are onboard-only (user_creatable
- * off): a real system never lets a user plug one in, so `-device` cannot
- * create them directly. sgi-pci-expansion is the plan's named `-device`
- * demonstrator but is not yet reachable that way either (see its own
- * header comment for why), so it is user_creatable off too for now.
- * sgi-board-test-fixture stands in for what a machine builder does with
- * one of them, the same way sgi-xtalk-board-fixture stands in for a
- * module's Crossbow in the base class's own qtest; see
- * tests/qtest/board-test-fixture.c. All four go through it here, so one
- * code path covers all four.
+ * A preset is not itself user_creatable-reachable the way a real carrier
+ * builds it (a bare Bridge or XBridge, then sgi-baseio on its bus) --
+ * sgi-board-test-fixture builds exactly that pair for the "ip29",
+ * "baseio" and "io8" presets, the same way sgi-xtalk-board-fixture
+ * stands in for a module's Crossbow in the XIO board base class's own
+ * qtest; see tests/qtest/board-test-fixture.c. sgi-pci-expansion is the
+ * plan's named `-device` demonstrator but is not yet reachable that way
+ * either (see its own header comment for why), so it goes through the
+ * same fixture's "module"/"slot"/"fabric" path.
  *
- * Every board's internal Bridge or XBridge chip shares one register
+ * Every case's internal Bridge or XBridge chip shares one register
  * layout (hw/pci-host/sgi-bridge.c and sgi-xbridge.c: "Same programming
  * model as the Bridge with the deltas the XBridge datasheet lists"): a
  * 32-bit value per eight-byte register slot, read and written at the
@@ -44,12 +43,16 @@
 #include "qobject/qdict.h"
 
 /*
- * The board re-parents from the fixture to its module container at its
- * own realize (hw/mips/sgi/xtalk-board.c, sgi_xtalk_board_reparent()),
+ * sgi-pci-expansion re-parents from the fixture to its module container
+ * at its own realize (hw/mips/sgi/xio-board.c, sgi_xio_board_reparent()),
  * under a name from its own qdev id -- unset here, so its slot number,
- * matching every board_start() command line below.
+ * matching board_start()'s own command line for it. A preset built
+ * through the fixture's own "board-type=sgi-baseio" path does not
+ * re-parent at all (sgi-baseio is not an sgi-xio-board), so its chip and
+ * the sgi-baseio behind it stay exactly where the fixture put them.
  */
-#define BOARD "/machine/module0/slot8"
+#define BOARD_REPARENTED "/machine/module0/slot8"
+#define FIXTURE          "/machine/peripheral/wrap"
 
 #define BASE 0x10000000ULL
 
@@ -89,8 +92,15 @@ typedef struct FixedDevice {
 
 typedef struct BoardCase {
     const char *subtest;
+    /*
+     * board-type=sgi-baseio,preset=<preset> for one of sgi-baseio's three
+     * presets; board-type=<type> alone (module/slot/fabric) for
+     * sgi-pci-expansion, the one case still built as an XIO board.
+     */
+    const char *preset;
     const char *type;
-    /* The board's own internal chip, as a QOM child of BOARD. */
+    bool reparents;
+    /* The chip a real carrier would build, as a QOM child of its path. */
     const char *chip;
     /*
      * Which of the chip's sysbus MMIO regions carries the fixed devices'
@@ -119,14 +129,14 @@ static const FixedDevice io8_fixed[] = {
 
 static const BoardCase board_cases[] = {
     {
-        .subtest = "ip29-io",
-        .type = "sgi-ip29-io",
-        .chip = "bridge",
+        .subtest = "ip29",
+        .preset = "ip29",
+        .chip = "chip",
         .bus = "pci", /* Bridge's own unnamed default (sgi-bridge.c). */
         /*
          * revision 4, part 0xc002 and manufacturer 0x036 (Bridge's own
-         * defaults, both unset by this board): (4 << 28) | (0xc002 << 12)
-         * | (0x036 << 1) | 1.
+         * defaults, both unset by this test's own bare chip): (4 << 28)
+         * | (0xc002 << 12) | (0x036 << 1) | 1.
          */
         .identification = 0x4c00206dU,
         .fixed = ip29_io_fixed,
@@ -134,17 +144,17 @@ static const BoardCase board_cases[] = {
     },
     {
         .subtest = "baseio",
-        .type = "sgi-baseio",
-        .chip = "bridge",
+        .preset = "baseio",
+        .chip = "chip",
         .bus = "pci",
-        /* Same revision and Bridge defaults as sgi-ip29-io. */
+        /* Same revision and Bridge defaults as the "ip29" preset. */
         .identification = 0x4c00206dU,
         .fixed = baseio_fixed,
         .fixed_count = G_N_ELEMENTS(baseio_fixed),
     },
     {
         .subtest = "io8",
-        .type = "sgi-io8",
+        .preset = "io8",
         .chip = "chip",
         /*
          * Sysbus MMIO region 0 is the whole crosstalk space
@@ -160,10 +170,11 @@ static const BoardCase board_cases[] = {
          */
         .bus = "head-f.0",
         /*
-         * Head F's own identification: unconfigured by this board, so
-         * XBridge's fixed defaults apply (part 0xd002, manufacturer
-         * 0x024, revision 2), the same value sn1-xbridge-test.c's
-         * test_registers() observes on a bare sgi-xbridge-head.
+         * Head F's own identification: unconfigured by this test's own
+         * bare chip, so XBridge's fixed defaults apply (part 0xd002,
+         * manufacturer 0x024, revision 2), the same value
+         * sn1-xbridge-test.c's test_registers() observes on a bare
+         * sgi-xbridge-head.
          */
         .identification = 0x2d002049U,
         .fixed = io8_fixed,
@@ -173,6 +184,7 @@ static const BoardCase board_cases[] = {
     {
         .subtest = "pci-expansion",
         .type = "sgi-pci-expansion",
+        .reparents = true,
         .chip = "bridge",
         .bus = "pci",
         /*
@@ -198,14 +210,17 @@ static void reg_write(QTestState *qts, unsigned int offset, uint32_t value)
 
 static QTestState *board_start(const BoardCase *tc)
 {
+    g_autofree char *fixture_args = tc->reparents ?
+        g_strdup_printf("board-type=%s,module=0,slot=8", tc->type) :
+        g_strdup_printf("board-type=sgi-baseio,preset=%s", tc->preset);
     g_autofree char *cmdline = g_strdup_printf(
         "-M none -cpu R10000 -S "
-        "-device sgi-board-test-fixture,id=wrap,board-type=%s,module=0,"
-        "slot=8 "
+        "-device sgi-board-test-fixture,id=wrap,%s "
         "-device sgi-bridge-dma-test,bus=%s,addr=%u",
-        tc->type, tc->bus, PROBE_DEVICE);
+        fixture_args, tc->bus, PROBE_DEVICE);
     QTestState *qts = qtest_init(cmdline);
-    g_autofree char *chip_path = g_strdup_printf("%s/%s", BOARD, tc->chip);
+    g_autofree char *chip_path = g_strdup_printf(
+        "%s/%s", tc->reparents ? BOARD_REPARENTED : FIXTURE, tc->chip);
 
     qtest_sysbus_mmio_map(qts, chip_path, tc->mmio_region, BASE);
     return qts;
@@ -279,8 +294,8 @@ static void test_interrupt_chain(gconstpointer data)
     arm_probe(qts);
 
     if (tc->xbridge) {
-        g_autofree char *chip_path =
-            g_strdup_printf("%s/%s", BOARD, tc->chip);
+        g_autofree char *chip_path = g_strdup_printf(
+            "%s/%s", tc->reparents ? BOARD_REPARENTED : FIXTURE, tc->chip);
         /*
          * The probe card's own INTA, raw output index device * 4 + 0
          * (PCI_NUM_PINS per device, pin A first): re-driven as the

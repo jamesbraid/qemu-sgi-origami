@@ -12,12 +12,12 @@
 #define L1_UART_STATUS 0x28
 #define L1_STATUS_READY 0x61
 /*
- * The onboard IO-8 (sgi-io8) is a crosstalk board like every other
- * product's onboard I/O now, reparented under its module and the fixed
- * crosstalk port the whole chip answers on (host-port 0xa) rather than
- * living directly under the node.
+ * The IO-8's fixed devices are an sgi-baseio (the "io8" preset) on the
+ * XBridge's own head F; the XBridge itself is a fitted part of the IP45
+ * node board (sn1-node.c creates it directly, as a QOM child of the node
+ * object) rather than a removable board.
  */
-#define IOC3_PATH "/machine/module0/slot10/ioc3"
+#define IOC3_PATH "/machine/node0/baseio/ioc3"
 #define MAC "02:00:5d:aa:bb:cc"
 
 /* The 16-byte CIA and 80-byte BIA use the documented field boundaries. */

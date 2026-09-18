@@ -35,18 +35,23 @@ mips_ss.add(when: 'CONFIG_SGI_SN1',
 # selects on its own Kconfig symbol rather than either machine's.
 mips_ss.add(when: 'CONFIG_SGI_XTALK_PORT', if_true: files('sgi/xtalk-port.c'))
 mips_ss.add(when: 'CONFIG_SGI_XTALK_LINK', if_true: files('sgi/xtalk-link.c'))
-# The crosstalk board base class: shared by SN0 and SN1 I/O boards, so it
+# The XIO board base class (renamed from sgi-xtalk-board, the base-io-device
+# step: its onboard-only subclasses stopped existing, leaving exactly the
+# removable-card scope this name states). Shared by every XIO card, so it
 # selects on its own Kconfig symbol rather than either machine's.
-mips_ss.add(when: 'CONFIG_SGI_XTALK_BOARD', if_true: files('sgi/xtalk-board.c'))
-# Likewise for the crosstalk board fixture: see the comment above.
-mips_ss.add(when: 'CONFIG_SGI_XTALK_BOARD_TEST',
+mips_ss.add(when: 'CONFIG_SGI_XIO_BOARD', if_true: files('sgi/xio-board.c'))
+# Likewise for the XIO board fixture: see the comment above.
+mips_ss.add(when: 'CONFIG_SGI_XIO_BOARD_TEST',
             if_true: files('../../tests/qtest/xtalk-test-board.c'))
-# The four board classes: each its own Kconfig symbol, since a product
-# builds only the ones it fits (Origin 200 selects sgi-ip29-io, Origin 2000
-# sgi-baseio and sgi-pci-expansion; sgi-io8 awaits the Origin 300 step).
-mips_ss.add(when: 'CONFIG_SGI_IP29_IO', if_true: files('sgi/board-ip29-io.c'))
-mips_ss.add(when: 'CONFIG_SGI_BASEIO', if_true: files('sgi/board-baseio.c'))
-mips_ss.add(when: 'CONFIG_SGI_IO8', if_true: files('sgi/board-io8.c'))
+# sgi-baseio: the base I/O functional unit as one device with a preset per
+# shipped board design (docs/designs/sn-machine-model-architecture.md,
+# "Base I/O"). Every product that carries base I/O selects this, whether or
+# not it also builds an XIO card: the IP29 and IO-8 presets have no card of
+# their own, only a carrier that owns the chip directly.
+mips_ss.add(when: 'CONFIG_SGI_BASEIO', if_true: files('sgi/baseio.c'))
+# The Origin 2000/Onyx2 BaseIO XIO card: an sgi-xio-board subclass that
+# creates its own Bridge and an sgi-baseio (the "baseio" preset) behind it.
+mips_ss.add(when: 'CONFIG_SGI_XIO_BASEIO', if_true: files('sgi/xio-baseio.c'))
 mips_ss.add(when: 'CONFIG_SGI_PCI_EXPANSION',
             if_true: files('sgi/board-pci-expansion.c'))
 # Likewise for the board fixture: see the comment above.

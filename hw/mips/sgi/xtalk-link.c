@@ -78,15 +78,18 @@ static bool sgi_xtalk_direct_link_wire_probe(SN0NodeState *node,
                                              uint64_t probe_offset,
                                              Error **errp)
 {
-    SGIBridgeState *bridge;
+    /*
+     * The probe is an Origin 200 (IP29) fact only; its one caller
+     * (sn0_node_build_baseio()) always hands the direct link a bare
+     * Bridge as widget_port -- a fitted part of the node board, not
+     * wrapped in any board class (docs/designs/
+     * sn-machine-model-architecture.md, "Node devices") -- so this casts
+     * it directly rather than resolving a "bridge" child the way a
+     * removable board's own wrapper class used to expose one.
+     */
+    SGIBridgeState *bridge = SGI_BRIDGE(widget_port);
     unsigned int window;
 
-    bridge = SGI_BRIDGE(object_resolve_path_component(widget_port, "bridge"));
-    if (!bridge) {
-        error_setg(errp, "the PROM PI-error probe needs a \"bridge\" child "
-                   "on the widget it targets");
-        return false;
-    }
     for (window = 0; window < SGI_BRIDGE_DEVICES; window++) {
         MemoryRegion *candidate = &bridge->device_window_mem[window];
 
