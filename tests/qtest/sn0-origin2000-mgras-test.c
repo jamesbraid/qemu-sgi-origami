@@ -1228,22 +1228,23 @@ static void test_fill_mask_reads_colormasklsbsa(void)
 }
 
 /*
- * 1-bit glyph row expansion: the 8x8 bitmap from the design doc's own
- * cited fixture, `si-direct-command-inputs-20260916.json` on
- * `emdash/graphics-sarct` ("opaque-glyph-8x8" -- reachable from this
- * worktree after all, at
- * ../emdash-graphics-sarct/docs/research/graphics/
- * si-direct-command-inputs-20260916.json, though its own
- * `command_records` are `null` for every operation, so the register-write
- * sequence below is still this pass's own construction, not a captured
- * one). One execute record per row; CHAR_L supplies the row's first 32
- * pixels MSB-first (si_draw_glyph_row's own header comment in
- * sgi-mgras.c states the CHAR_H/CHAR_L split is this device's own
- * approximation, not a confirmed wire contract). The fixture's own
- * pixel rule -- "bitmap bit 1 selects foreground; bit 0 selects
- * background" -- matches this device's set-bit-is-foreground choice.
+ * 1-bit glyph bitmap expansion: the same 8x8 bitmap the previous version
+ * of this test used (the design doc's own cited fixture,
+ * `si-direct-command-inputs-20260916.json` on `emdash/graphics-sarct`,
+ * "opaque-glyph-8x8" -- its own `command_records` are `null` for every
+ * operation, so the register-write sequence below is still this pass's
+ * own construction, not a captured one), now pushed the way disassembling
+ * the shipped 2D driver's own glyph-blit routines (mgrasImageGlyphBlt,
+ * mgrasPolyGlyphBlt) shows real traffic does: CHAR_H's own execute-form
+ * write alone, one fresh 32-bit chunk per push, MSB-first, no CHAR_L
+ * involved (si_draw_glyph_chunk's own header comment in sgi-mgras.c).
+ * Two pushes cover the whole 8x8 glyph, since the block rectangle is 8
+ * pixels wide: the first carries bitmap rows 0-3, the second rows 4-7.
+ * The fixture's own pixel rule -- "bitmap bit 1 selects foreground; bit 0
+ * selects background" -- matches this device's set-bit-is-foreground
+ * choice, unchanged by this pass.
  */
-static void test_direct_glyph_row(void)
+static void test_direct_glyph_chunk(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
     static const uint8_t glyph[8] = {
@@ -1261,12 +1262,14 @@ static void test_direct_glyph_row(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BLOCK_END, (47u << 16) | 47u));
 
-    for (int row = 0; row < 8; row++) {
+    for (int chunk = 0; chunk < 2; chunk++) {
+        uint32_t word = 0;
+
+        for (int b = 0; b < 4; b++) {
+            word = (word << 8) | glyph[chunk * 4 + b];
+        }
         qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                     SI_COMMAND(REG_CHAR_H, 0));
-        qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                     SI_COMMAND_EXEC(REG_CHAR_L,
-                                    (uint32_t)glyph[row] << 24));
+                     SI_COMMAND_EXEC(REG_CHAR_H, word));
     }
 
     /* Row 0, 0x18 = 00011000: pixels 3 and 4 set, the rest background. */
@@ -1281,6 +1284,41 @@ static void test_direct_glyph_row(void)
     g_assert_cmphex(si_test_pixel(qts, 40, 47), ==, 0);
     /* Outside the glyph's own rectangle stays untouched. */
     g_assert_cmphex(si_test_pixel(qts, 50, 40), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * CHAR_L's own execute-form write is not a mono-glyph trigger: disassembling
+ * the shipped driver's real glyph-blit routines (mgrasImageGlyphBlt,
+ * mgrasPolyGlyphBlt) found CHAR_L's own execute selector computed but never
+ * issued on that path, and a live desktop trace confirmed it -- 496 execute
+ * hits on CHAR_H, zero on CHAR_L (docs/datasheets/mgras-hq4.md's `0x120400`
+ * row). si_command_execute leaves CHAR_L's execute form on its own logged,
+ * no-op default case rather than painting anything; this pins that down as
+ * a tested contract rather than only a comment (si_draw_glyph_chunk's own
+ * header comment in sgi-mgras.c has the fuller evidence trail, including
+ * the separate antialiased path that genuinely does trigger through
+ * CHAR_L, which this device does not implement).
+ */
+static void test_char_l_execute_is_not_a_glyph_trigger(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (60u << 16) | 60u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (67u << 16) | 67u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_CHAR_L, 0xffffffff));
+
+    g_assert_cmphex(si_test_pixel(qts, 60, 60), ==, 0);
+    /* Logged as unimplemented, not raised as a sticky error. */
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 
     qtest_quit(qts);
 }
@@ -2000,11 +2038,14 @@ static void test_re_line_execute(void)
 }
 
 /*
- * CHAR_H's own execute-form token header (class 0x1c reg 0x070) triggers
- * the same one-row glyph expansion CHAR_L's own execute form already does
- * (si_command_execute's shared case) -- both registers feed one glyph
- * row, so either one triggering the same draw is the "writing something
- * plausible" scope this device gives the trigger.
+ * CHAR_H's own execute-form token header (class 0x1c reg 0x070) reaches
+ * the same si_draw_glyph_chunk primitive the direct-record form does
+ * (si_command_execute's shared case), painting the 32-bit chunk this same
+ * header's own state-write counterpart (class 0x18/0x19) just stored into
+ * CHAR_H's register-file slot -- proving the two wire encodings share one
+ * glyph contract, not that CHAR_L plays any part in it (CHAR_L is not a
+ * mono-glyph trigger at all; see si_draw_glyph_chunk's own header comment
+ * and test_char_l_execute_is_not_a_glyph_trigger above).
  */
 static void test_re_char_h_execute(void)
 {
@@ -2021,7 +2062,9 @@ static void test_re_char_h_execute(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BLOCK_END, (207u << 16) | 207u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_CHAR_L, (uint32_t)0x18 << 24));
+                 ((uint64_t)SI_STATE_TOKEN(REG_CHAR_H, 4) << 32) |
+                 ((uint32_t)0x18 << 24));
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  (uint64_t)SI_EXEC_TOKEN(REG_CHAR_H, 0) << 32);
@@ -2204,8 +2247,10 @@ int main(int argc, char **argv)
                    test_direct_fill_and_reset);
     qtest_add_func("sn0/origin2000/mgras/fill-mask-reads-colormasklsbsa",
                    test_fill_mask_reads_colormasklsbsa);
-    qtest_add_func("sn0/origin2000/mgras/direct-glyph-row",
-                   test_direct_glyph_row);
+    qtest_add_func("sn0/origin2000/mgras/direct-glyph-chunk",
+                   test_direct_glyph_chunk);
+    qtest_add_func("sn0/origin2000/mgras/char-l-execute-is-not-a-glyph-trigger",
+                   test_char_l_execute_is_not_a_glyph_trigger);
     qtest_add_func("sn0/origin2000/mgras/display-surface-conversion",
                    test_display_surface_conversion);
     qtest_add_func("sn0/origin2000/mgras/direct-pio-pixel-pairs",
