@@ -946,6 +946,8 @@ static void sn0_node_create_hub(SN0NodeState *node)
                          SN0_XTALK_WIDGET_SHIFT);
     object_property_set_link(OBJECT(&node->hub), "xtalk",
                              OBJECT(&node->xtalk), &error_fatal);
+    qdev_prop_set_uint64(DEVICE(&node->hub), "xtalk-carrier-base",
+                         map->xtalk.carrier_base);
 
     /*
      * The claim layer's wiring: the per-view containers the Hub fills,
@@ -969,6 +971,17 @@ static void sn0_node_create_hub(SN0NodeState *node)
         object_property_set_link(
             OBJECT(&node->hub), window_prop,
             OBJECT(&node->local_space[slice][0]), &error_fatal);
+
+        /*
+         * This processor's own physical view, for the Origin 2000
+         * bus-error aperture the Hub installs when it finds itself
+         * Crossbow-attached.
+         */
+        g_autofree char *sysmem_prop = g_strdup_printf("cpu-sysmem%u", slice);
+
+        object_property_set_link(OBJECT(&node->hub), sysmem_prop,
+                                 OBJECT(&node->cpu_sysmem[slice]),
+                                 &error_fatal);
     }
     object_property_set_link(OBJECT(&node->hub), "claim-target",
                              OBJECT(system), &error_fatal);
@@ -1151,10 +1164,6 @@ static void sn0_node_unrealize(DeviceState *dev)
 {
     SN0NodeState *node = SN0_NODE(dev);
 
-    if (node->origin2000_xtalk_as_ready) {
-        address_space_destroy(&node->origin2000_xtalk_as);
-        node->origin2000_xtalk_as_ready = false;
-    }
     sn_promdata_poll_free(&node->promdata_poll);
 }
 

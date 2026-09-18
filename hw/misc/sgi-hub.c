@@ -11,6 +11,7 @@
 #include "qemu/bswap.h"
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
+#include "qemu/units.h"
 #include "hw/1wire/crc.h"
 #include "hw/1wire/ds2502.h"
 #include "hw/1wire/ds2505.h"
@@ -3815,6 +3816,113 @@ bool sgi_hub_attach_module_identity(SGIHubState *s,
     return true;
 }
 
+/*
+ * ---- Origin 2000's PROM PI-error probe, through the Crossbow-attached
+ * case ----
+ *
+ * Through this node's crosstalk container at a fixed widget-2 offset: a
+ * zero-length read latches the PI error the same way the direct link's
+ * own probe does (hw/mips/sgi/xtalk-link.c). Installed only when this
+ * Hub's crosstalk port connects to a Crossbow link, which is the only
+ * thing that ever sets xtalk_io; a direct-attach node wires its own
+ * probe on the widget's own device window instead and never sets it.
+ */
+#define SGI_HUB_ORIGIN2000_BUS_ERROR_ADDR    0x02400208
+#define SGI_HUB_ORIGIN2000_BUS_ERROR_WIDGET  2
+#define SGI_HUB_ORIGIN2000_SMALL_WINDOW_SIZE (16 * MiB)
+
+static hwaddr sgi_hub_origin2000_bus_error_xtalk_offset(SGIHubState *s)
+{
+    return ((hwaddr)SGI_HUB_ORIGIN2000_BUS_ERROR_WIDGET <<
+            s->xtalk_widget_shift) +
+           SGI_HUB_ORIGIN2000_BUS_ERROR_ADDR -
+           (hwaddr)SGI_HUB_ORIGIN2000_BUS_ERROR_WIDGET *
+               SGI_HUB_ORIGIN2000_SMALL_WINDOW_SIZE;
+}
+
+static MemTxResult sgi_hub_origin2000_bus_error_read(void *opaque,
+                                                      hwaddr addr,
+                                                      uint64_t *data,
+                                                      unsigned size,
+                                                      MemTxAttrs attrs)
+{
+    SGIHubState *s = opaque;
+    uint8_t bytes[8] = {};
+    MemTxResult result;
+
+    if (addr == 0 && size == 8) {
+        *data = 0;
+        sgi_hub_latch_prom_pi_error(s);
+        return MEMTX_ERROR;
+    }
+    result = address_space_read(
+        &s->origin2000_xtalk_as,
+        sgi_hub_origin2000_bus_error_xtalk_offset(s) + addr, attrs, bytes,
+        size);
+    *data = ldn_be_p(bytes, size);
+    return result;
+}
+
+static MemTxResult sgi_hub_origin2000_bus_error_write(void *opaque,
+                                                       hwaddr addr,
+                                                       uint64_t data,
+                                                       unsigned size,
+                                                       MemTxAttrs attrs)
+{
+    SGIHubState *s = opaque;
+    uint8_t bytes[8];
+
+    stn_be_p(bytes, size, data);
+    return address_space_write(
+        &s->origin2000_xtalk_as,
+        sgi_hub_origin2000_bus_error_xtalk_offset(s) + addr, attrs, bytes,
+        size);
+}
+
+static const MemoryRegionOps sgi_hub_origin2000_bus_error_ops = {
+    .read_with_attrs = sgi_hub_origin2000_bus_error_read,
+    .write_with_attrs = sgi_hub_origin2000_bus_error_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .valid.unaligned = true,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+    .impl.unaligned = true,
+};
+
+static bool sgi_hub_install_origin2000_bus_error(SGIHubState *s,
+                                                  Error **errp)
+{
+    unsigned int slice;
+
+    if (!s->xtalk_io) {
+        return true;
+    }
+    for (slice = 0; slice < s->cpus; slice++) {
+        if (!s->cpu_sysmem[slice]) {
+            error_setg(errp, "a Crossbow-attached Hub needs a cpu-sysmem "
+                       "view for each of its %u processors", s->cpus);
+            return false;
+        }
+    }
+    address_space_init(&s->origin2000_xtalk_as, s->xtalk,
+                       "sgi-hub.origin2000-xtalk");
+    for (slice = 0; slice < s->cpus; slice++) {
+        g_autofree char *region_name = g_strdup_printf(
+            "sgi-hub.cpu%u.origin2000-bus-error", slice);
+
+        memory_region_init_io(&s->origin2000_bus_error[slice], OBJECT(s),
+                              &sgi_hub_origin2000_bus_error_ops, s,
+                              region_name, 8);
+        memory_region_add_subregion_overlap(
+            s->cpu_sysmem[slice],
+            s->xtalk_carrier_base + SGI_HUB_ORIGIN2000_BUS_ERROR_ADDR,
+            &s->origin2000_bus_error[slice], 1);
+    }
+    return true;
+}
+
 static void sgi_hub_realize(DeviceState *dev, Error **errp)
 {
     SGIHubState *s = SGI_HUB(dev);
@@ -3932,6 +4040,10 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
      */
     address_space_init(&s->bte_as, s->claim_view[SGI_HUB_DEVICE_VIEW],
                        "sgi-hub.bte");
+
+    if (!sgi_hub_install_origin2000_bus_error(s, errp)) {
+        return;
+    }
 
     if (s->junk_uart_present) {
         DeviceState *uart;
@@ -4183,6 +4295,9 @@ static void sgi_hub_unrealize(DeviceState *dev)
     sgi_hub_rt_hold_reset(s);
     s->claim_ready = false;
     address_space_destroy(&s->bte_as);
+    if (s->xtalk_io) {
+        address_space_destroy(&s->origin2000_xtalk_as);
+    }
     for (view = 0; view < SGI_HUB_CLAIM_VIEWS; view++) {
         if (!sgi_hub_claim_view_present(s, view)) {
             continue;
@@ -4398,6 +4513,12 @@ static const Property sgi_hub_properties[] = {
                      MemoryRegion *),
     DEFINE_PROP_LINK("xtalk", SGIHubState, xtalk, TYPE_MEMORY_REGION,
                      MemoryRegion *),
+    DEFINE_PROP_LINK("cpu-sysmem0", SGIHubState, cpu_sysmem[0],
+                     TYPE_MEMORY_REGION, MemoryRegion *),
+    DEFINE_PROP_LINK("cpu-sysmem1", SGIHubState, cpu_sysmem[1],
+                     TYPE_MEMORY_REGION, MemoryRegion *),
+    DEFINE_PROP_UINT64("xtalk-carrier-base", SGIHubState,
+                       xtalk_carrier_base, 0),
     DEFINE_PROP_LINK("claim-view0", SGIHubState, claim_view[0],
                      TYPE_MEMORY_REGION, MemoryRegion *),
     DEFINE_PROP_LINK("claim-view1", SGIHubState, claim_view[1],
