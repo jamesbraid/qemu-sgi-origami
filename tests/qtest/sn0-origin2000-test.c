@@ -952,12 +952,12 @@ static void test_programmed_routes(void)
                     (UINT64_C(1) << 45), ==, 0);
     vector_write(qts, 0, ROUTER_DIAG_PARMS, 0);
     qtest_qmp_assert_success(qts,
-        "{ 'execute': 'qom-set', 'arguments': { 'path': '/machine/fabric',"
-        " 'property': 'down-links', 'value': 'r1-r2' } }");
+        "{ 'execute': 'qom-set', 'arguments': { 'path': '/machine/r1-r2',"
+        " 'property': 'down', 'value': true } }");
     g_assert_false(cpu_read(qts, 0, target, &value));
     qtest_qmp_assert_success(qts,
-        "{ 'execute': 'qom-set', 'arguments': { 'path': '/machine/fabric',"
-        " 'property': 'down-links', 'value': '' } }");
+        "{ 'execute': 'qom-set', 'arguments': { 'path': '/machine/r1-r2',"
+        " 'property': 'down', 'value': false } }");
     g_assert_true(cpu_read(qts, 0, target, &value));
     /*
      * Two Hubs can hold one number while the nodes are being renumbered,
@@ -1031,17 +1031,20 @@ static void test_link_without_routes(void)
     qtest_quit(qts);
 }
 
-static void set_down_links(QTestState *qts, const char *links)
+/* Mark one named network cable up or down through the monitor. */
+static void set_cable_down(QTestState *qts, const char *name, bool down)
 {
+    g_autofree char *path = g_strdup_printf("/machine/%s", name);
+
     qtest_qmp_assert_success(qts,
-        "{ 'execute': 'qom-set', 'arguments': { 'path': '/machine/fabric',"
-        " 'property': 'down-links', 'value': %s } }", links);
+        "{ 'execute': 'qom-set', 'arguments': { 'path': %s,"
+        " 'property': 'down', 'value': %i } }", path, down);
 }
 
 static void assert_routes(QTestState *qts, const char *expected)
 {
     g_autoptr(QDict) response = qtest_qmp(qts,
-        "{ 'execute': 'qom-get', 'arguments': { 'path': '/machine/fabric',"
+        "{ 'execute': 'qom-get', 'arguments': { 'path': '/machine',"
         " 'property': 'routes' } }");
 
     g_assert_cmpstr(qdict_get_str(response, "return"), ==, expected);
@@ -1401,7 +1404,7 @@ static void test_module_link_isolation(void)
     program_module(qts);
     initialize_module_memory(qts);
     assert_module_memory(qts, false);
-    set_down_links(qts, "r1-r2");
+    set_cable_down(qts, "r1-r2", true);
     assert_routes(qts, split_module_routes);
     assert_module_memory(qts, true);
     for (unsigned int node = 0; node < 4; node++) {
@@ -1410,7 +1413,7 @@ static void test_module_link_isolation(void)
         g_assert_cmphex(vector_op(qts, node, 0, 0, 0, 0) & VECTOR_VALID,
                         ==, VECTOR_VALID);
     }
-    set_down_links(qts, "");
+    set_cable_down(qts, "r1-r2", false);
     for (unsigned int node = 0; node < 4; node++) {
         g_assert_cmphex(vector_op(qts, node, 6, 0, 0, 0) & VECTOR_VALID,
                         ==, VECTOR_VALID);
@@ -1439,12 +1442,12 @@ static void test_module_interlink_status(void)
         g_assert_cmphex(local_router_status(qts, node) &
                         (attached | interlink), ==, attached | interlink);
     }
-    set_down_links(qts, "r1-r2");
+    set_cable_down(qts, "r1-r2", true);
     for (unsigned int node = 0; node <= 2; node += 2) {
         g_assert_cmphex(local_router_status(qts, node) &
                         (attached | interlink), ==, attached);
     }
-    set_down_links(qts, "");
+    set_cable_down(qts, "r1-r2", false);
     for (unsigned int node = 0; node <= 2; node += 2) {
         g_assert_cmphex(local_router_status(qts, node) &
                         (attached | interlink), ==, attached | interlink);
@@ -1714,7 +1717,7 @@ static void test_isolated_migration(void)
     initialize_module_memory(from);
     assert_routes(from, all_module_routes);
     assert_module_memory(from, false);
-    set_down_links(from, "r1-r2");
+    set_cable_down(from, "r1-r2", true);
     assert_routes(from, split_module_routes);
     assert_module_memory(from, true);
     vector_write(from, 0, ROUTER_SCRATCH0, marker);
@@ -1726,12 +1729,12 @@ static void test_isolated_migration(void)
     g_assert_cmphex(hub_read(to, 0, NI_VECTOR_STATUS), ==, status);
     g_assert_cmphex(hub_read(to, 0, NI_VECTOR_READ_DATA), ==, marker);
     response = qtest_qmp(to,
-        "{ 'execute': 'qom-get', 'arguments': { 'path': '/machine/fabric',"
-        " 'property': 'down-links' } }");
-    g_assert_cmpstr(qdict_get_str(response, "return"), ==, "r1-r2");
+        "{ 'execute': 'qom-get', 'arguments': { 'path': '/machine/r1-r2',"
+        " 'property': 'down' } }");
+    g_assert_true(qdict_get_bool(response, "return"));
     assert_routes(to, split_module_routes);
     assert_module_memory(to, true);
-    set_down_links(to, "");
+    set_cable_down(to, "r1-r2", false);
     assert_routes(to, all_module_routes);
     assert_module_memory(to, false);
     vector_op(to, 0, 0, ROUTER_SCRATCH0, 0, 0);
@@ -1982,7 +1985,7 @@ static void test_mutated_reset(void)
     vector_write(qts, 0, 0x10018, 0);
     vector_write(qts, 6, 0x60018, 1);
     vector_write(qts, 0, ROUTER_DIAG_PARMS, UINT64_C(1) << 17);
-    set_down_links(qts, "r1-r2");
+    set_cable_down(qts, "r1-r2", true);
     qtest_system_reset(qts);
     assert_cpu_inventory(qts);
     for (unsigned int node = 0; node < 4; node++) {
@@ -1999,7 +2002,7 @@ static void test_mutated_reset(void)
         g_assert_cmphex(vector_op(qts, node, 6, 0, 0, 0) & VECTOR_VALID, ==, 0);
     }
     /* A simulated disconnected cable stays disconnected across device reset. */
-    set_down_links(qts, "");
+    set_cable_down(qts, "r1-r2", false);
     for (unsigned int node = 0; node < 4; node++) {
         hub_write(qts, node, NI_STATUS,
                      NI_REGION_SIZE | ((uint64_t)module_nasids[node] << 8));
@@ -2044,7 +2047,7 @@ static void test_distinct_table_migration(void)
     g_assert_cmphex(value, ==, marker + 2);
     vector_write(from, 0, 0x10018, 0x15);
     vector_write(from, 6, 0x60018, 0x2a);
-    set_down_links(from, "r1-node2");
+    set_cable_down(from, "r1-node2", true);
     g_assert_false(cpu_read(from, 0, local, &value));
     g_assert_true(cpu_read(from, 0, meta, &value));
     vector_write(from, 0, ROUTER_SCRATCH0, marker);
@@ -2059,7 +2062,7 @@ static void test_distinct_table_migration(void)
     g_assert_cmphex(hub_read(to, 0, NI_VECTOR_READ_DATA), ==, 0x15);
     vector_op(to, 0, 6, 0x60018, 0, 0);
     g_assert_cmphex(hub_read(to, 0, NI_VECTOR_READ_DATA), ==, 0x2a);
-    set_down_links(to, "");
+    set_cable_down(to, "r1-node2", false);
     g_assert_true(cpu_read(to, 0, local, &value));
     g_assert_cmphex(value, ==, marker + 1);
     /* R2's local[2] is unwritten although its zero word would terminate. */

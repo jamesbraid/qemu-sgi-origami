@@ -1,9 +1,11 @@
 /*
- * SGI Router ASIC register target and programmed-route lookup.
- *
- * A Router has no processor-visible register window.  The machine-owned SN0
- * fabric reaches this device through sgi_router_access() after walking a
- * vector.  Routed reply construction stays in the fabric because the
+ * SGI Router ASIC register target, programmed-route lookup, and the six
+ * numbered network ports that forward a live vector packet by those same
+ * tables. A Router has no processor-visible register window; it is
+ * reached through sgi_router_access() -- directly (a host test fixture)
+ * or, ordinarily, through one of its own SGI_NET_PORT ports, when a
+ * forwarded packet's vector reaches zero. Routed reply construction
+ * stays out of this device's own arrival-port bookkeeping because the
  * Router's reply-source encoding is not established.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -172,6 +174,11 @@ struct SGIRouterState {
     bool port_working[SGI_ROUTER_PORTS];
     bool port_eight_bit[SGI_ROUTER_PORTS];
 
+    /* This Router's six numbered network ports' cables, machine-wired. */
+    SGINetCableState *port_cable[SGI_ROUTER_PORTS];
+    /* The peer_changed flood generation this Router last processed. */
+    uint64_t net_generation;
+
     uint32_t meta_table[RR_META_TABLE_COUNT];
     uint32_t local_table[RR_LOCAL_TABLE_COUNT];
     bool meta_valid[RR_META_TABLE_COUNT];
@@ -289,10 +296,210 @@ static bool sgi_router_nic_write(SGIRouterState *s, uint64_t value)
     return true;
 }
 
+static void sgi_router_net_changed_at(SGIRouterState *s, uint64_t generation,
+                                      unsigned int except_port);
+
 static void sgi_router_changed(SGIRouterState *s)
 {
+    sgi_router_net_changed_at(s, sgi_net_port_flood_start(), 0);
     if (s->changed) {
         s->changed(s->changed_opaque);
+    }
+}
+
+/*
+ * ---- The network port interface ----
+ *
+ * A Router's six numbered ports (1 to 6, matching the arrival-port
+ * numbering sgi_router_access() already used) each answer this
+ * interface directly on the Router object, distinguished by index.
+ */
+
+static const char *sgi_router_net_port_describe(Object *port,
+                                                 unsigned int index)
+{
+    return "an SGI Router port";
+}
+
+static bool sgi_router_net_port_forwards(Object *port, unsigned int index)
+{
+    return true;
+}
+
+static SGINetPortLinkState sgi_router_net_port_link_state(Object *port,
+                                                           unsigned int index)
+{
+    SGIRouterState *s = SGI_ROUTER(port);
+
+    return (SGINetPortLinkState) {
+        .enabled = sgi_router_port_enabled(s, index),
+        .eight_bit = sgi_router_port_eight_bit_forced(s, index),
+    };
+}
+
+/* Recompute one port's cached working/eight-bit status bits from its
+ * cable and both ends' own link_state() -- the same check a live vector
+ * forward and an offline route walk both use to find a neighbor. */
+static void sgi_router_recompute_port(SGIRouterState *s, unsigned int port)
+{
+    SGINetCableState *cable = s->port_cable[port - 1];
+    Object *peer_port;
+    unsigned int peer_index;
+    bool working;
+    bool eight_bit;
+
+    if (!cable) {
+        /*
+         * No cable names this port at all (an unpopulated port in this
+         * topology, or a host test fixture's standalone Router): leave
+         * whatever reset or sgi_router_set_port_link() already put
+         * there, the same way an unconnected port's own hardware has
+         * nothing for this Router to derive.
+         */
+        return;
+    }
+    working = sgi_net_cable_neighbor(cable, OBJECT(s), port, &peer_port,
+                                     &peer_index);
+    eight_bit = working &&
+        sgi_router_net_port_link_state(OBJECT(s), port).eight_bit;
+    sgi_router_set_port_link(s, port, working, eight_bit);
+}
+
+/*
+ * Recompute every port's status, unless this generation was already
+ * processed (a cyclic topology's flood converges here), then tell every
+ * other connected port's peer in turn -- except_port is 0 for a purely
+ * local change, or the port that told us, so we do not immediately
+ * bounce a notification back to whoever just sent it.
+ */
+static void sgi_router_net_changed_at(SGIRouterState *s, uint64_t generation,
+                                      unsigned int except_port)
+{
+    unsigned int port;
+
+    if (s->net_generation == generation) {
+        return;
+    }
+    s->net_generation = generation;
+    for (port = 1; port <= SGI_ROUTER_PORTS; port++) {
+        sgi_router_recompute_port(s, port);
+    }
+    for (port = 1; port <= SGI_ROUTER_PORTS; port++) {
+        SGINetCableState *cable = s->port_cable[port - 1];
+        Object *peer_port;
+        unsigned int peer_index;
+
+        if (port == except_port || !cable) {
+            continue;
+        }
+        if (sgi_net_cable_other_end(cable, OBJECT(s), port, &peer_port,
+                                    &peer_index)) {
+            sgi_net_port_peer_changed(peer_port, peer_index);
+        }
+    }
+}
+
+static void sgi_router_net_port_peer_changed(Object *port, unsigned int index)
+{
+    sgi_router_net_changed_at(SGI_ROUTER(port), sgi_net_port_flood_current(),
+                              index);
+}
+
+static void sgi_router_net_port_record_check_error(Object *port,
+                                                    unsigned int index)
+{
+    sgi_router_record_port_error(SGI_ROUTER(port), index,
+                                 SGI_ROUTER_PORT_CHECK_ERROR);
+}
+
+/*
+ * Charge this Router's own sends_data_error diagnostic on a successful
+ * read against whoever sent the packet on the port it arrived on --
+ * the Router directly connected to a Hub charges the Hub; one further
+ * along the path charges the Router before it. Matches the reviewed
+ * reply-error-charging contract in docs/datasheets/router.md.
+ */
+static void sgi_router_charge_reply_error(SGIRouterState *s,
+                                          unsigned int arrival_port,
+                                          SGINetPacketOp op)
+{
+    SGINetCableState *cable;
+    Object *sender_port;
+    unsigned int sender_index;
+
+    if (op != SGI_NET_PACKET_READ ||
+        !sgi_router_port_sends_data_error(s, arrival_port)) {
+        return;
+    }
+    cable = s->port_cable[arrival_port - 1];
+    if (cable && sgi_net_cable_other_end(cable, OBJECT(s), arrival_port,
+                                         &sender_port, &sender_index)) {
+        sgi_net_port_record_check_error(sender_port, sender_index);
+    }
+}
+
+static SGINetPacketResult sgi_router_net_port_receive(Object *port,
+                                                       unsigned int index,
+                                                       SGINetPacket *packet,
+                                                       Error **errp)
+{
+    SGIRouterState *s = SGI_ROUTER(port);
+    unsigned int arrival_port = index;
+
+    if (packet->vector == 0) {
+        /* A terminal Router that declines its own register decode is an
+         * unmodeled gap (LOG_UNIMP), reported as no answer at all, not a
+         * fabricated address-error -- unlike a terminal Hub's refusal. */
+        if (!sgi_net_packet_append_reply(packet, arrival_port) ||
+            !sgi_router_access(s, arrival_port, packet)) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-router: refusing unsupported Router vector "
+                          "operation\n");
+            return SGI_NET_PACKET_NONE;
+        }
+        /* Reviewed PROM 6.156 policy; not a physical Router identity. */
+        packet->source = 0;
+        sgi_router_charge_reply_error(s, arrival_port, packet->op);
+        return SGI_NET_PACKET_OK;
+    }
+
+    {
+        unsigned int nybble = packet->vector & 0xf;
+        uint64_t remaining = packet->vector >> 4;
+        unsigned int exit_port;
+        SGINetCableState *cable;
+        Object *peer_port;
+        unsigned int peer_index;
+        SGINetPacketResult result;
+
+        if (!nybble || nybble > SGI_ROUTER_PORTS ||
+            packet->hops == SGI_NET_PORT_MAX_HOPS) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-router: refusing unsupported vector path\n");
+            return SGI_NET_PACKET_NONE;
+        }
+        if (!sgi_net_packet_append_reply(packet, arrival_port)) {
+            return SGI_NET_PACKET_NONE;
+        }
+        exit_port = nybble;
+        cable = s->port_cable[exit_port - 1];
+        if (!cable ||
+            !sgi_net_cable_neighbor(cable, port, exit_port, &peer_port,
+                                    &peer_index)) {
+            return SGI_NET_PACKET_NONE;
+        }
+        if (!sgi_net_port_forwards(peer_port, peer_index) && remaining) {
+            qemu_log_mask(LOG_UNIMP,
+                          "sgi-router: refusing unsupported vector path\n");
+            return SGI_NET_PACKET_NONE;
+        }
+        packet->vector = remaining;
+        packet->hops++;
+        result = sgi_net_port_receive(peer_port, peer_index, packet, errp);
+        if (result == SGI_NET_PACKET_OK) {
+            sgi_router_charge_reply_error(s, arrival_port, packet->op);
+        }
+        return result;
     }
 }
 
@@ -828,7 +1035,7 @@ static bool sgi_router_write(SGIRouterState *s, hwaddr addr, uint64_t value)
 }
 
 bool sgi_router_access(SGIRouterState *s, unsigned int arrival_port,
-                       SN0FabricVectorAccess *access)
+                       SGINetPacket *access)
 {
     bool accepted;
 
@@ -841,14 +1048,14 @@ bool sgi_router_access(SGIRouterState *s, unsigned int arrival_port,
     }
 
     switch (access->op) {
-    case SN0_FABRIC_VECTOR_READ:
+    case SGI_NET_PACKET_READ:
         accepted = sgi_router_read(s, arrival_port, access->addr,
                                    &access->value);
         break;
-    case SN0_FABRIC_VECTOR_WRITE:
+    case SGI_NET_PACKET_WRITE:
         accepted = sgi_router_write(s, access->addr, access->data);
         break;
-    case SN0_FABRIC_VECTOR_EXCHANGE:
+    case SGI_NET_PACKET_EXCHANGE:
         if (access->addr != RR_SCRATCH_REG1) {
             qemu_log_mask(LOG_UNIMP,
                           "sgi-router: exchange outside scratch register 1 "
@@ -1022,6 +1229,20 @@ bool sgi_router_route(SGIRouterState *s, unsigned int entry_port,
     }
     *next_turn = extract32(entry, 4 * (*exit_port - 1), 4);
     return true;
+}
+
+bool sgi_router_port_neighbor(SGIRouterState *s, unsigned int port,
+                              Object **peer_port, unsigned int *peer_index)
+{
+    SGINetCableState *cable;
+
+    g_assert(port >= 1 && port <= SGI_ROUTER_PORTS);
+    cable = s->port_cable[port - 1];
+    if (!cable) {
+        return false;
+    }
+    return sgi_net_cable_neighbor(cable, OBJECT(s), port, peer_port,
+                                  peer_index);
 }
 
 static void sgi_router_reset_enter(Object *obj, ResetType type)
@@ -1371,12 +1592,25 @@ static const Property sgi_router_properties[] = {
     DEFINE_PROP_UINT64("nic-serial", SGIRouterState, nic_serial, 0),
     DEFINE_PROP_BOOL("nic-present", SGIRouterState, nic_present, true),
     DEFINE_PROP_STRING("nic-image", SGIRouterState, nic_image),
+    DEFINE_PROP_LINK("port1-cable", SGIRouterState, port_cable[0],
+                     TYPE_SGI_NET_CABLE, SGINetCableState *),
+    DEFINE_PROP_LINK("port2-cable", SGIRouterState, port_cable[1],
+                     TYPE_SGI_NET_CABLE, SGINetCableState *),
+    DEFINE_PROP_LINK("port3-cable", SGIRouterState, port_cable[2],
+                     TYPE_SGI_NET_CABLE, SGINetCableState *),
+    DEFINE_PROP_LINK("port4-cable", SGIRouterState, port_cable[3],
+                     TYPE_SGI_NET_CABLE, SGINetCableState *),
+    DEFINE_PROP_LINK("port5-cable", SGIRouterState, port_cable[4],
+                     TYPE_SGI_NET_CABLE, SGINetCableState *),
+    DEFINE_PROP_LINK("port6-cable", SGIRouterState, port_cable[5],
+                     TYPE_SGI_NET_CABLE, SGINetCableState *),
 };
 
 static void sgi_router_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     ResettableClass *rc = RESETTABLE_CLASS(oc);
+    SGINetPortClass *pc = SGI_NET_PORT_CLASS(oc);
 
     dc->desc = "SGI Router CrayLink switch";
     dc->realize = sgi_router_realize;
@@ -1386,6 +1620,12 @@ static void sgi_router_class_init(ObjectClass *oc, const void *data)
     device_class_set_props(dc, sgi_router_properties);
     rc->phases.enter = sgi_router_reset_enter;
     rc->phases.exit = sgi_router_reset_exit;
+    pc->describe = sgi_router_net_port_describe;
+    pc->forwards = sgi_router_net_port_forwards;
+    pc->link_state = sgi_router_net_port_link_state;
+    pc->peer_changed = sgi_router_net_port_peer_changed;
+    pc->receive = sgi_router_net_port_receive;
+    pc->record_check_error = sgi_router_net_port_record_check_error;
 }
 
 static const TypeInfo sgi_router_types[] = {
@@ -1396,6 +1636,10 @@ static const TypeInfo sgi_router_types[] = {
         .class_init = sgi_router_class_init,
         .instance_init = sgi_router_init,
         .instance_finalize = sgi_router_finalize,
+        .interfaces = (const InterfaceInfo[]) {
+            { TYPE_SGI_NET_PORT },
+            { }
+        },
     },
 };
 

@@ -3,7 +3,8 @@
 #define HW_MISC_SGI_ROUTER_H
 
 #include "exec/hwaddr.h"
-#include "hw/mips/sn0-fabric.h"
+#include "hw/mips/sgi-net-port.h"
+#include "hw/mips/sgi/net-cable.h"
 #include "qom/object.h"
 
 #define TYPE_SGI_ROUTER "sgi-router"
@@ -11,9 +12,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRouterState, SGI_ROUTER)
 
 #define SGI_ROUTER_PORTS 6
 
-/* The fabric-facing register target. The arrival port is numbered 1 to 6. */
+/* The register target, reached directly (a host test fixture) or through
+ * this Router's own SGI_NET_PORT ports. The arrival port is numbered 1
+ * to 6. */
 bool sgi_router_access(SGIRouterState *s, unsigned int arrival_port,
-                       SN0FabricVectorAccess *access);
+                       SGINetPacket *packet);
 
 /* Diagnostic controls for the fabric, with ports numbered 1 to 6. */
 bool sgi_router_port_eight_bit_forced(SGIRouterState *s, unsigned int port);
@@ -64,5 +67,13 @@ bool sgi_router_resolve_turn(unsigned int entry_port, uint8_t turn,
 bool sgi_router_route(SGIRouterState *s, unsigned int entry_port,
                       uint8_t turn, uint16_t destination,
                       unsigned int *exit_port, uint8_t *next_turn);
+
+/*
+ * The neighbor at one of this Router's ports if the link is genuinely
+ * up (a cable, not down, both ends administratively enabled) -- the one
+ * check both live vector forwarding and offline route derivation share.
+ */
+bool sgi_router_port_neighbor(SGIRouterState *s, unsigned int port,
+                              Object **peer_port, unsigned int *peer_index);
 
 #endif /* HW_MISC_SGI_ROUTER_H */

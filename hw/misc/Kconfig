@@ -272,6 +272,7 @@ config SGI_HUB
     select PCF8584
     select SERIAL
     select SGI_ELSC
+    select SGI_NET_PORT
     select SGI_XTALK_PORT
 
 config SGI_ELSC
@@ -311,6 +312,7 @@ config SGI_HUB_TEST
 config SGI_ROUTER
     bool
     select ONEWIRE
+    select SGI_NET_PORT
 
 config SGI_XBOW
     bool
