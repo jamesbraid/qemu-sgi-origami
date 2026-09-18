@@ -104,6 +104,24 @@
 #define SI_CMD_SELECTOR_EXEC 0x70001
 
 /*
+ * A 64-bit write to 0x120400 that isn't a direct-command state/execute
+ * record (the shapes above) still carries ordinary command-FIFO traffic:
+ * each 32-bit half is its own token header, class<<16 | reg<<8 |
+ * payload_bytes, high word first. Root-caused from the DDX's own
+ * mgrasCopyPixels/mgrasDrawPixels fence sequence (docs/datasheets/
+ * mgras-hq4.md's 0x020010/0x020018 row): it pushes header 0x000e0400
+ * (class SI_CMD_FIFO_FENCE_CLASS, reg SI_CMD_FIFO_FENCE_REG, no payload)
+ * right after clearing SGI_MGRAS_HQ_FLAGS bit SI_HQ_FLAG_FENCE, then polls
+ * that same bit. On real hardware the HQ4 sets it as a side effect of
+ * processing this one token; this is the only header either the DDX or the
+ * kernel object is evidenced to depend on a side effect from, so it is the
+ * only one this interpreter dispatches -- see si_command_fifo_token.
+ */
+#define SI_CMD_FIFO_FENCE_CLASS 0x000e
+#define SI_CMD_FIFO_FENCE_REG 0x04
+#define SI_HQ_FLAG_FENCE 0x00010000
+
+/*
  * Register roles this interpreter actually consumes, named from OpenBSD's
  * impactreg.h and X.Org's impact_regs.h (both public, in refs/). Every
  * other register index is still stored in the persistent file above; only
@@ -558,6 +576,41 @@ static void si_command_execute(SGIMgrasState *s, uint32_t reg)
     }
 }
 
+/*
+ * One command-FIFO token header reaching 0x120400 outside the direct-
+ * command state/execute shape -- see this file's header comment on
+ * SI_CMD_FIFO_FENCE_CLASS. The only header either the DDX or the kernel
+ * object is evidenced to need a side effect from is the CopyPixels/
+ * DrawPixels fence itself; everything else this interpreter doesn't
+ * recognize is logged and left alone, the same "accept, don't invent
+ * meaning" treatment this device gives other undocumented traffic.
+ *
+ * This does not track a payload obligation across separate MMIO writes: an
+ * unrecognized header's own payload_bytes field is reported in the log but
+ * not used to skip words, since nothing evidenced says what an unrecognized
+ * header's payload actually contains, and guessing wrong would risk
+ * silently discarding a later word this interpreter does understand (the
+ * fence sequence's own first push, header 0x00080b04, declares one 32-bit
+ * word of payload that arrives -- per the live trace -- as a separate,
+ * earlier 4-byte write through si_context_write's own opaque post-
+ * completion path, not through this function at all).
+ */
+static void si_command_fifo_token(SGIMgrasState *s, uint32_t token)
+{
+    uint32_t cmd_class = token >> 16;
+    uint32_t reg = (token >> 8) & 0xff;
+    uint32_t payload_bytes = token & 0xff;
+
+    if (cmd_class == SI_CMD_FIFO_FENCE_CLASS && reg == SI_CMD_FIFO_FENCE_REG &&
+        payload_bytes == 0) {
+        s->hq_flags |= SI_HQ_FLAG_FENCE;
+        return;
+    }
+    qemu_log_mask(LOG_UNIMP, "sgi-mgras: unimplemented command-FIFO token, "
+                  "class 0x%04x reg 0x%02x payload %u bytes\n", cmd_class,
+                  reg, payload_bytes);
+}
+
 static void si_command(SGIMgrasState *s, uint64_t word)
 {
     uint32_t selector = (word >> 34) & 0xffffff;
@@ -567,9 +620,14 @@ static void si_command(SGIMgrasState *s, uint64_t word)
     uint32_t reg;
 
     if (!state && !exec) {
-        /* Opaque HQ-local traffic this interpreter does not decode as a
-         * register write; see this file's header comment on
-         * SI_CMD_SELECTOR_MASK. */
+        /*
+         * Not a direct-command state/execute record; see this file's
+         * header comment on SI_CMD_SELECTOR_MASK. Still carries ordinary
+         * command-FIFO token traffic, two headers, high word first -- see
+         * si_command_fifo_token.
+         */
+        si_command_fifo_token(s, (uint32_t)(word >> 32));
+        si_command_fifo_token(s, (uint32_t)word);
         return;
     }
     reg = (selector >> 6) & 0x1ff;
@@ -732,8 +790,10 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
     case SGI_MGRAS_SCHED_ARG_2: return s->sched_arg_2;
     case SGI_MGRAS_SCHED_ARG_3: return s->sched_arg_3;
     case SGI_MGRAS_SCHED_ARG_4: return s->sched_arg_4;
-    case SGI_MGRAS_BANK_STATUS_1: return s->bank_status_1;
-    case SGI_MGRAS_BANK_STATUS_2: return s->bank_status_2;
+    /* Both offsets read the same underlying flag word; see the header
+     * comment on SGI_MGRAS_HQ_FLAGS. */
+    case SGI_MGRAS_HQ_FLAGS: return s->hq_flags;
+    case SGI_MGRAS_HQ_FLAGS_CLEAR: return s->hq_flags;
     /* See the header comment: no evidence for real content, report zero. */
     case SGI_MGRAS_RETRACE_STATUS_1: return 0;
     case SGI_MGRAS_RETRACE_STATUS_2: return 0;
@@ -1079,8 +1139,10 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     case SGI_MGRAS_SCHED_ARG_2: s->sched_arg_2 = value; return;
     case SGI_MGRAS_SCHED_ARG_3: s->sched_arg_3 = value; return;
     case SGI_MGRAS_SCHED_ARG_4: s->sched_arg_4 = value; return;
-    case SGI_MGRAS_BANK_STATUS_1: s->bank_status_1 = value; return;
-    case SGI_MGRAS_BANK_STATUS_2: s->bank_status_2 = value; return;
+    /* OR sets bits, AND-NOT clears them; see the header comment on
+     * SGI_MGRAS_HQ_FLAGS. */
+    case SGI_MGRAS_HQ_FLAGS: s->hq_flags |= value; return;
+    case SGI_MGRAS_HQ_FLAGS_CLEAR: s->hq_flags &= ~(uint32_t)value; return;
     /* Always written zero in the evidenced case; see the header comment. */
     case SGI_MGRAS_RETRACE_ACK: return;
     /* The generic bring-up step argument; see the read side's comment. */
@@ -1319,7 +1381,7 @@ static void si_reset(DeviceState *dev)
     s->hq_config_a = s->hq_config_b = s->hq_enable = 0;
     memset(s->fifo_threshold, 0, sizeof(s->fifo_threshold));
     s->sched_arg_1 = s->sched_arg_2 = s->sched_arg_3 = s->sched_arg_4 = 0;
-    s->bank_status_1 = s->bank_status_2 = 0;
+    s->hq_flags = 0;
     /*
      * Reset does not retroactively unsend an already-delivered packet, so
      * this clears each role's transition-detector directly rather than
@@ -1518,8 +1580,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32(sched_arg_2, SGIMgrasState),
         VMSTATE_UINT32(sched_arg_3, SGIMgrasState),
         VMSTATE_UINT32(sched_arg_4, SGIMgrasState),
-        VMSTATE_UINT32(bank_status_1, SGIMgrasState),
-        VMSTATE_UINT32(bank_status_2, SGIMgrasState),
+        VMSTATE_UINT32(hq_flags, SGIMgrasState),
         VMSTATE_BOOL(lowater_asserted, SGIMgrasState),
         VMSTATE_BOOL(general_asserted, SGIMgrasState),
         VMSTATE_BOOL(retrace_asserted, SGIMgrasState),

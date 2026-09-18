@@ -447,12 +447,31 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
 #define SGI_MGRAS_SCHED_ARG_4 0x040070
 
 /*
- * Two more registers MgrasValidateBanks/Clip and MgrasPcxSwap write and
- * read back, in the same 0x020000s block as the reset-readiness and bus-
- * status registers above; plain opaque storage.
+ * The HQ4's own flag word and its clear alias, in the same 0x020000s block
+ * as the reset-readiness and bus-status registers above. Both offsets read
+ * back the same underlying flag word; a write to SGI_MGRAS_HQ_FLAGS ORs the
+ * written value into it (sets bits), and a write to SGI_MGRAS_HQ_FLAGS_CLEAR
+ * AND-NOTs the written value out of it (clears bits) -- the usual shape for
+ * a combined set/clear status-flag pair.
+ *
+ * Root-caused by disassembling the kernel driver's own MgrasPcxSwap/
+ * MgrasValidateBanks/MgrasValidateClip (which read and clear bits here,
+ * previously modelled as two independent opaque scratch registers -- see
+ * the superseded row this replaces in docs/datasheets/mgras-hq4.md) together
+ * with the DDX's own mgrasCopyPixels/mgrasDrawPixels fence sequence: it
+ * clears bit 0x10000 here, submits a specific command-FIFO token at offset
+ * 0x120400 (see si_command_fifo_token, sgi-mgras.c), and then polls this
+ * same offset for that bit to come back. On real hardware the HQ4 sets the
+ * bit as a side effect of processing that token; this device previously
+ * modelled neither side of that mechanism, so the fence poll spun forever
+ * -- confirmed live as the exact PC and address Xsgi itself stalls on. This
+ * closed the one remaining blocker in SI graphics bring-up independent of
+ * the separate keyboard/mouse gap. CONTRACT CHANGE, needs independent
+ * review: replaces the two-opaque-register reading this offset pair had
+ * before.
  */
-#define SGI_MGRAS_BANK_STATUS_1 0x020010
-#define SGI_MGRAS_BANK_STATUS_2 0x020018
+#define SGI_MGRAS_HQ_FLAGS 0x020010
+#define SGI_MGRAS_HQ_FLAGS_CLEAR 0x020018
 
 /*
  * The retrace interrupt handler's own status registers: it reads a 64-bit
@@ -504,8 +523,7 @@ struct SGIMgrasState {
     uint32_t sched_arg_2;
     uint32_t sched_arg_3;
     uint32_t sched_arg_4;
-    uint32_t bank_status_1;
-    uint32_t bank_status_2;
+    uint32_t hq_flags;
     /*
      * Four independent interrupt roles, each with its own transition
      * detector: low-water, general (context/flags/HQ-error), retrace and
