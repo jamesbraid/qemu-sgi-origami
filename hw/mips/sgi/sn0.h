@@ -31,14 +31,6 @@
  * than through a repacked copy.
  */
 
-typedef enum SN0ModelCpuKind {
-    SN0_CPU_R10000,
-} SN0ModelCpuKind;
-
-typedef enum SN0ModelComponentKind {
-    SN0_COMPONENT_HUB,
-} SN0ModelComponentKind;
-
 typedef struct SN0ModelAddressSpace {
     unsigned int selector;
     uint64_t carrier_base;
@@ -69,22 +61,6 @@ typedef struct SN0ModelAddressMap {
     SN0ModelRegion bridge_registers;
 } SN0ModelAddressMap;
 
-typedef struct SN0ModelComponent {
-    SN0ModelComponentKind kind;
-    uint8_t ni_revision;
-    uint8_t widget_revision;
-    uint8_t cpu_irq_bank0;
-    uint8_t cpu_irq_bank1;
-    uint8_t cpu_irq_rt;
-    bool i2c_controller;
-    bool system_controller;
-    uint64_t i2c_controller_offset;
-    uint8_t i2c_elsc_addr;
-    uint8_t i2c_nvram_first_addr;
-    uint8_t i2c_nvram_pages;
-    uint64_t serial;
-} SN0ModelComponent;
-
 typedef struct SN0ModelMemory {
     unsigned int physical_banks;
     unsigned int architectural_banks;
@@ -95,36 +71,6 @@ typedef struct SN0ModelMemory {
     uint64_t interleave_slot_stride_mib;
     unsigned int interleave_slots_per_bank;
 } SN0ModelMemory;
-
-/*
- * The physical flash selection, independent of firmware contents. Dead
- * since the node takes its flash kind straight from its descriptor
- * record instead (SGIModelFlashKind, sn-model.h); kept until the next
- * commit deletes it and its siblings below together.
- */
-typedef enum SN0ModelFlashKind {
-    SN0_FLASH_AM29F080,
-} SN0ModelFlashKind;
-
-typedef struct SN0ModelFlash {
-    SN0ModelFlashKind kind;
-} SN0ModelFlash;
-
-typedef struct SN0ModelHardware {
-    SN0ModelCpuKind cpu_kind;
-    unsigned int cpu_slots_per_node;
-    uint64_t hub_clock_hz;
-    uint64_t rtc_clock_hz;
-    SN0ModelMemory memory;
-} SN0ModelHardware;
-
-typedef struct SN0ModelPhysicalNode {
-    const char *id;
-    unsigned int slot;
-    const SN0ModelComponent *hub;
-    SN0ModelAddressMap map;
-    SN0ModelFlash flash;
-} SN0ModelPhysicalNode;
 
 uint64_t sn0_model_node_address(const SN0ModelAddressMap *map,
                                 const SN0ModelAddressSpace *space,
