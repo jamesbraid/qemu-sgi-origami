@@ -70,6 +70,22 @@
 #define RAD4_VENDOR_ID  0x12d1
 #define RAD4_DEVICE_ID  0x0104
 
+/*
+ * RAD4-KM (12d1:0105), the same shared psitech-rad4 implementation at
+ * device-id=0x105 (docs/datasheets/psitech-rad4-km.md). A second synthetic
+ * slot, one window further along than RAD4_SLOT's, so both identities can
+ * be brought up independently in the same process; like RAD4_SLOT, this
+ * is a convenient free device number for register-contract testing, not a
+ * claim about which real Origin 200 backplane slot either board occupies.
+ */
+#define RAD4_KM_SLOT     4
+#define WINDOW_RAD4_KM   (BRIDGE_BASE + 0x800000)
+#define RAD4_KM_DEVICE_ID 0x0105
+
+#define MACHINE_WITH_BRIDGE_KM \
+    "-M origin200 -device psitech-rad4,addr=" G_STRINGIFY(RAD4_KM_SLOT) \
+    ",device-id=" G_STRINGIFY(RAD4_KM_DEVICE_ID)
+
 /* BAR0 offsets. */
 #define R_REG14         0x14
 #define R_REG18         0x18
@@ -264,6 +280,117 @@ static QTestState *rad4_init(void)
 
     rad4_configure_bars(qts);
     return qts;
+}
+
+/*
+ * RAD4-KM (12d1:0105) helpers, mirroring rad4_window_to()/rad4_readl()/
+ * rad4_writel()/rad4_configure_bars() above at RAD4_KM_SLOT's own window.
+ * docs/datasheets/psitech-rad4-km.md clears only the PCI identity and the
+ * guest-visible driver-attach outcome for this identity; the register
+ * layout underneath is plain RAD4's own, reused as a disclosed
+ * approximation (hw/display/psitech-rad4.c's file header). These helpers
+ * exist to prove that reuse round-trips as stated, not to assert any
+ * independently confirmed RAD4-KM register fact.
+ */
+static void rad4km_window_to(QTestState *qts, uint32_t pci_addr)
+{
+    uint32_t base = pci_addr & ~(WINDOW_SIZE - 1);
+
+    qtest_writel(qts, BRIDGE_DEVICE(RAD4_KM_SLOT), DEV_MEMORY_SPACE |
+                (base >> 20));
+}
+
+static uint32_t rad4km_readl(QTestState *qts, uint32_t pci_addr)
+{
+    rad4km_window_to(qts, pci_addr);
+    return qtest_readl(qts, WINDOW_RAD4_KM + (pci_addr & (WINDOW_SIZE - 1)));
+}
+
+static void rad4km_writel(QTestState *qts, uint32_t pci_addr, uint32_t val)
+{
+    rad4km_window_to(qts, pci_addr);
+    qtest_writel(qts, WINDOW_RAD4_KM + (pci_addr & (WINDOW_SIZE - 1)), val);
+}
+
+static uint32_t bar0_km_read(QTestState *qts, uint32_t off)
+{
+    return rad4km_readl(qts, RAD4_BAR0_PCI + off);
+}
+
+static void bar0_km_write(QTestState *qts, uint32_t off, uint32_t val)
+{
+    rad4km_writel(qts, RAD4_BAR0_PCI + off, val);
+}
+
+static uint32_t bar2_km_read(QTestState *qts, uint32_t off)
+{
+    return rad4km_readl(qts, RAD4_BAR2_PCI + off);
+}
+
+static void bar2_km_write(QTestState *qts, uint32_t off, uint32_t val)
+{
+    rad4km_writel(qts, RAD4_BAR2_PCI + off, val);
+}
+
+static void rad4km_configure_bars(QTestState *qts)
+{
+    qtest_writel(qts, CFG0(RAD4_KM_SLOT) + PCI_BAR0_OFF, RAD4_BAR0_PCI);
+    qtest_writel(qts, CFG0(RAD4_KM_SLOT) + PCI_BAR2_CFG_OFF, RAD4_BAR2_PCI);
+    qtest_writel(qts, CFG0(RAD4_KM_SLOT) + PCI_ROM_ADDRESS_OFF,
+                RAD4_ROM_PCI | PCI_ROM_ENABLE);
+    qtest_writel(qts, CFG0(RAD4_KM_SLOT) + PCI_COMMAND_OFF,
+                PCI_COMMAND_MEMORY);
+    qtest_writel(qts, BRIDGE_DEVICE(RAD4_KM_SLOT),
+                DEV_MEMORY_SPACE | (RAD4_BAR0_PCI >> 20));
+}
+
+static QTestState *rad4km_init(void)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE_KM);
+
+    rad4km_configure_bars(qts);
+    return qts;
+}
+
+static void test_km_pci_identity(void)
+{
+    QTestState *qts = rad4km_init();
+    uint32_t id = qtest_readl(qts, CFG0(RAD4_KM_SLOT) + PCI_VENDOR_ID_OFF);
+
+    g_assert_cmphex(id & 0xffff, ==, RAD4_VENDOR_ID);
+    g_assert_cmphex(id >> 16, ==, RAD4_KM_DEVICE_ID);
+
+    /* BAR0/BAR2 sizing is unchanged from plain RAD4 (128 B / 16 MiB). */
+    qtest_writel(qts, CFG0(RAD4_KM_SLOT) + PCI_BAR0_OFF, 0xffffffffu);
+    uint32_t bar0_size_mask = qtest_readl(qts,
+                                          CFG0(RAD4_KM_SLOT) + PCI_BAR0_OFF);
+    g_assert_cmphex(bar0_size_mask & 0xfffffff0u, ==,
+                    (uint32_t)-128 & 0xfffffff0u);
+    qtest_writel(qts, CFG0(RAD4_KM_SLOT) + PCI_BAR0_OFF, RAD4_BAR0_PCI);
+
+    qtest_quit(qts);
+}
+
+static void test_km_bar0_register_round_trip(void)
+{
+    QTestState *qts = rad4km_init();
+
+    g_assert_cmphex(bar0_km_read(qts, R_MAILBOX), ==, 0);
+    bar0_km_write(qts, R_MAILBOX, 0x12345678u);
+    g_assert_cmphex(bar0_km_read(qts, R_MAILBOX), ==, 0x12345678u);
+
+    qtest_quit(qts);
+}
+
+static void test_km_bar2_framebuffer_round_trip(void)
+{
+    QTestState *qts = rad4km_init();
+
+    g_assert_cmphex(bar2_km_read(qts, 0x000000), ==, 0);
+    bar2_km_write(qts, 0x000000, 0x00ff00ffu);
+    g_assert_cmphex(bar2_km_read(qts, 0x000000), ==, 0x00ff00ffu);
+
+    qtest_quit(qts);
 }
 
 /* Writes one 16-byte scatter/gather descriptor into guest memory. */
@@ -1109,6 +1236,12 @@ int main(int argc, char **argv)
     qtest_add_func("/psitech-rad4/cursor-lut-tri-write",
                    test_cursor_lut_tri_write);
     qtest_add_func("/psitech-rad4/reset", test_reset);
+
+    qtest_add_func("/psitech-rad4-km/pci-identity", test_km_pci_identity);
+    qtest_add_func("/psitech-rad4-km/bar0-register-round-trip",
+                   test_km_bar0_register_round_trip);
+    qtest_add_func("/psitech-rad4-km/bar2-framebuffer-round-trip",
+                   test_km_bar2_framebuffer_round_trip);
 
     return g_test_run();
 }
