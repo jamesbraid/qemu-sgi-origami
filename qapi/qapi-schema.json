@@ -67,6 +67,7 @@
 { 'include': 'misc-arm.json' }
 { 'include': 'misc-i386.json' }
 { 'include': 'misc-mips.json' }
+{ 'include': 'sgi-sn.json' }
 { 'include': 'audio.json' }
 { 'include': 'acpi.json' }
 { 'include': 'acpi-hest.json' }
