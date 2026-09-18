@@ -154,6 +154,34 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 #define RAD1_FIFO_SPACE_READY   0x00010000u
 
 /*
+ * Offset 0x40: live-gdb tracing against the shipped kernel (breakpoints at
+ * the addresses docs/datasheets/psitech-rad1.md's "Kernel-driver attach"
+ * section records) found `rad1pciattach` reads this word through the
+ * mapped Region Zero aperture itself -- not, as an earlier session's
+ * static reading guessed, a validity check on the softc pointer for PCI
+ * selector 9 (the framebuffer BAR). `rad1pciattach` converts the raw word
+ * to a boolean (`sltu`) and both (a) passes it as `rad1_pinit`'s second
+ * argument and (b) branches on it directly to decide whether attach
+ * continues toward `pciio_intr_alloc`/`hwgraph_char_device_add` at all.
+ * Tracing 36 live invocations of this check across one boot, the raw word
+ * was 0 every time: this model had no case for offset 0x40, so it fell
+ * through to the Control & Status block's default handler and returned 0.
+ * That is the confirmed, direct cause of the missing `/hw` vertex.
+ *
+ * Which Permedia2 Control & Status register (if any named one) actually
+ * lives at this offset was not established this session -- the cached
+ * TI/3Dlabs manual could not be read from this environment, and
+ * rad1_pinit's own use of the flag (skipping one extra block of
+ * GP-register zeroing when false) does not by itself name the bit.
+ * APPROXIMATED and disclosed: this model returns a fixed nonzero word
+ * here, which is sufficient for every use this session traced (a plain
+ * zero/nonzero gate, not a specific bit pattern) -- not a confirmed
+ * hardware value, and not yet independently reviewed.
+ */
+#define RAD1_REG_ATTACH_GATE    0x40
+#define RAD1_ATTACH_GATE_VALUE  0x00000001u
+
+/*
  * Interrupt status bits rad1_inthandler() decodes (docs/datasheets/
  * psitech-rad1.md, "Interrupts and errors"): bit 0, bit 1 and bit 7 each
  * signal a distinct softc wait-queue slot up to 200 times. This session
@@ -574,6 +602,8 @@ static uint64_t rad1_regzero_read(void *opaque, hwaddr addr, unsigned size)
             return s->int_status;
         case RAD1_REG_FIFO_SPACE:
             return RAD1_FIFO_SPACE_READY;
+        case RAD1_REG_ATTACH_GATE:
+            return RAD1_ATTACH_GATE_VALUE;
         default:
             qemu_log_mask(LOG_UNIMP,
                          "psitech-rad1: unsupported Control & Status read "

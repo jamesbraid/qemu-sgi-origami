@@ -85,6 +85,7 @@
 #define R_CTRL_ACK      0x08
 #define R_INT_STATUS    0x10
 #define R_FIFO_SPACE    0x18
+#define R_ATTACH_GATE   0x40
 
 #define INT_BIT0        (1u << 0)
 #define INT_BIT1        (1u << 1)
@@ -336,6 +337,15 @@ static void test_control_status_registers(void)
 
     /* FIFO space always reports readiness; this model has no real FIFO. */
     g_assert_cmpuint(regzero_read(qts, R_FIFO_SPACE), >, 0x64);
+
+    /*
+     * Live-gdb-traced gate `rad1pciattach` checks before it will finish
+     * attach (docs/datasheets/psitech-rad1.md, "Kernel-driver attach"):
+     * any nonzero word unblocks it, so this only pins "nonzero", not a
+     * specific bit pattern -- see hw/display/psitech-rad1.c's own
+     * disclosure at RAD1_REG_ATTACH_GATE.
+     */
+    g_assert_cmpuint(regzero_read(qts, R_ATTACH_GATE), !=, 0);
 
     qtest_quit(qts);
 }
