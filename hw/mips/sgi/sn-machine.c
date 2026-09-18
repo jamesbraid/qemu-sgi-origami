@@ -63,75 +63,6 @@
 
 #define TYPE_SGI_XIO_BASEIO "sgi-xio-baseio"
 
-/* The Hub's flash controller offers this view whenever the board wires it. */
-static const SN0ModelRegion sgi_sn0_hub_lboot = {
-    .offset = 0x10000000ULL,
-    .size = 0x10000000ULL,
-};
-
-/* The Hub's physical address map: identical on every SN0 node measured. */
-static const SN0ModelAddressMap sgi_sn0_hub_address_map = {
-    .node_stride = 0x100000000ULL,
-    .memory = {
-        .selector = 3,
-        .carrier_base = 0x0ULL,
-        .unmapped_base = 0x9600000000000000ULL,
-    },
-    .hub_special = {
-        .selector = 0,
-        .carrier_base = 0x10000000000ULL,
-        .unmapped_base = 0x9000000000000000ULL,
-    },
-    .xtalk = {
-        .selector = 1,
-        .carrier_base = 0x20000000000ULL,
-        .unmapped_base = 0x9200000000000000ULL,
-    },
-    .memory_special = {
-        .selector = 2,
-        .carrier_base = 0x30000000000ULL,
-        .unmapped_base = 0x9400000000000000ULL,
-    },
-    .node_memory = { .offset = 0x0ULL, .size = 0x100000000ULL },
-    .hub_registers_local = { .offset = 0x1000000ULL, .size = 0x800000ULL },
-    .hub_registers_node = { .offset = 0x1800000ULL, .size = 0x800000ULL },
-    .hub_local_memory = { .offset = 0x0ULL, .size = 0x10000000ULL },
-    .hub_remote_memory = { .offset = 0x20000000ULL, .size = 0x10000000ULL },
-    .backdoor_ecc = { .offset = 0x80000000ULL, .size = 0x40000000ULL },
-    .backdoor_directory = { .offset = 0xc0000000ULL, .size = 0x40000000ULL },
-    .flash_reset = { .offset = 0x1fc00000ULL, .size = 0x100000ULL },
-    .lboot = &sgi_sn0_hub_lboot,
-    .rboot = { .offset = 0x30000000ULL, .size = 0x10000000ULL },
-    .bridge_registers = { .offset = 0x8000000ULL, .size = 0x1000000ULL },
-};
-
-/* The Hub's memory-bank geometry: also identical across every SN0 node. */
-static const uint64_t sgi_sn0_hub_memory_sizes_mib[] = {
-    0x200ULL, 0x100ULL, 0x80ULL, 0x40ULL,
-};
-
-static const SN0ModelHardware sgi_sn0_hub_hardware = {
-    .cpu_kind = SN0_CPU_R10000,
-    .cpu_slots_per_node = 2,
-    .hub_clock_hz = 0x55d4a80ULL,
-    .rtc_clock_hz = 0x1312d0ULL,
-    .memory = {
-        .physical_banks = 4,
-        .architectural_banks = 8,
-        .supported_mib = sgi_sn0_hub_memory_sizes_mib,
-        .supported_size_count = ARRAY_SIZE(sgi_sn0_hub_memory_sizes_mib),
-        .first_bank_max_mib = 0x100ULL,
-        .bank_stride_mib = 0x200ULL,
-        .interleave_slot_stride_mib = 0x80ULL,
-        .interleave_slots_per_bank = 4,
-    },
-};
-
-/* The Hub's three CPU interrupt inputs: hardwired, not configuration. */
-#define SGI_SN0_HUB_CPU_IRQ_BANK0 0
-#define SGI_SN0_HUB_CPU_IRQ_BANK1 1
-#define SGI_SN0_HUB_CPU_IRQ_RT    2
-
 struct SGIMachineState {
     MachineState parent_obj;
 
@@ -139,8 +70,6 @@ struct SGIMachineState {
 
     unsigned int num_nodes;
     SN0NodeState **nodes;
-    SN0ModelPhysicalNode *physical_nodes;  /* Read by sn0.c's node builder. */
-    SN0ModelComponent *hub_components;
     MemoryRegion *big_window_route;
 
     SN0FabricState *fabric;
@@ -1103,7 +1032,7 @@ static void sgi_machine_build_routers(SGIMachineState *s,
         qdev_prop_set_uint8(dev, "chip-inputs", router->chip_inputs);
         qdev_prop_set_uint32(dev, "slot", router->slot);
         qdev_prop_set_uint64(dev, "nic-clock-hz",
-                            sgi_sn0_hub_hardware.hub_clock_hz);
+                            SN0_HUB_CLOCK_HZ);
         qdev_prop_set_uint64(dev, "nic-serial", router->serial);
         vertex = sn0_fabric_routed_add_router(s->fabric, SGI_ROUTER(dev));
         g_assert(vertex == i);
@@ -1171,8 +1100,8 @@ static void sgi_machine_build_flash(const SGIModelTopology *t,
     stl_be_p(config + 0x04, cpu->mode_bits);
     stq_be_p(config + 0x08, SGI_MACHINE_CONFIG_MAGIC);
     stq_be_p(config + 0x10, cpu->clock_hz);
-    stq_be_p(config + 0x18, sgi_sn0_hub_hardware.hub_clock_hz);
-    stq_be_p(config + 0x20, sgi_sn0_hub_hardware.rtc_clock_hz);
+    stq_be_p(config + 0x18, SN0_HUB_CLOCK_HZ);
+    stq_be_p(config + 0x20, SN0_HUB_RTC_CLOCK_HZ);
     stl_be_p(config + 0x28, 1);                    /* error correction on */
     stl_be_p(config + SGI_MACHINE_CONFIG_FPROM_CYC_OFFSET,
              smc->flash_read_cycles);
@@ -1247,7 +1176,7 @@ static bool sgi_machine_load_flash(MachineState *machine,
                                    SGIMachineState *s, Error **errp)
 {
     const SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(machine);
-    uint64_t flash_size = sgi_sn0_hub_address_map.flash_reset.size;
+    uint64_t flash_size = sn0_hub_address_map.flash_reset.size;
     g_autofree uint8_t *flash = NULL;
     unsigned int node_index;
 
@@ -1511,8 +1440,6 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
 
     s->num_nodes = node_count;
     s->nodes = g_new0(SN0NodeState *, node_count);
-    s->physical_nodes = g_new0(SN0ModelPhysicalNode, node_count);
-    s->hub_components = g_new0(SN0ModelComponent, node_count);
     /* Indexed by io_boards[] position, one entry per board, not by node. */
     s->io_boards = g_new0(SGIXioBoardState *, t->io_board_count);
     s->direct_links = g_new0(SGIXtalkDirectLink, t->io_board_count);
@@ -1536,7 +1463,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     sgi_machine_attach_module_identities(s, t);
 
     s->rt_refclk = clock_new(OBJECT(machine), "rt-refclk");
-    clock_set_hz(s->rt_refclk, sgi_sn0_hub_hardware.rtc_clock_hz);
+    clock_set_hz(s->rt_refclk, SN0_HUB_RTC_CLOCK_HZ);
 
     s->fabric = SN0_FABRIC(qdev_new(TYPE_SN0_FABRIC_ROUTED));
     object_property_add_child(OBJECT(machine), "fabric", OBJECT(s->fabric));
@@ -1569,7 +1496,6 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     for (node_index = 0; node_index < node_count; node_index++) {
         SN0NodeState *node = s->nodes[node_index];
         const SGIModelNode *model_node = &t->nodes[node_index];
-        const SGIModelAsicIdentity *identity = &model_node->identity;
         uint64_t ram_size = machine->ram_size / node_count;
         uint16_t bank_mb[SN0_MAX_MEMORY_BANKS];
         unsigned int populated_banks;
@@ -1577,7 +1503,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         unsigned int bank;
         Chardev *aux_chr;
 
-        if (!sn0_model_memory_layout(&sgi_sn0_hub_hardware.memory, ram_size,
+        if (!sn0_model_memory_layout(&sn0_hub_memory, ram_size,
                                      bank_mb, &populated_banks)) {
             error_setg(errp, "%s: node %u's %" PRIu64 " MiB cannot be "
                       "populated from IP29 memory banks", mc->name,
@@ -1589,35 +1515,11 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             qlist_append_int(banks_mb, bank_mb[bank]);
         }
 
-        s->hub_components[node_index] = (SN0ModelComponent) {
-            .kind = SN0_COMPONENT_HUB,
-            .ni_revision = identity->ni_revision,
-            .widget_revision = identity->widget_revision,
-            .serial = identity->serial,
-            .i2c_controller = identity->i2c_controller,
-            .system_controller = identity->system_controller,
-            .i2c_controller_offset = model_node->management_adapter_offset,
-            .i2c_elsc_addr = identity->i2c_elsc_addr,
-            .i2c_nvram_first_addr = identity->i2c_nvram_first_addr,
-            .i2c_nvram_pages = identity->i2c_nvram_pages,
-            .cpu_irq_bank0 = SGI_SN0_HUB_CPU_IRQ_BANK0,
-            .cpu_irq_bank1 = SGI_SN0_HUB_CPU_IRQ_BANK1,
-            .cpu_irq_rt = SGI_SN0_HUB_CPU_IRQ_RT,
-        };
-        s->physical_nodes[node_index] = (SN0ModelPhysicalNode) {
-            .id = model_node->id,
-            .slot = model_node->slot,
-            .hub = &s->hub_components[node_index],
-            .map = sgi_sn0_hub_address_map,
-            .flash = { .kind = (SN0ModelFlashKind)model_node->flash.kind },
-        };
-
         qdev_prop_set_uint32(DEVICE(node),
                              "nasid",
                              sgi_machine_topology_nasid(t, node_index));
         node->flash_drive = flash_drives[node_index];
-        node->physical = &s->physical_nodes[node_index];
-        node->hardware = &sgi_sn0_hub_hardware;
+        node->model_node = model_node;
         node->slave_role = model_node->slave_role;
         qdev_prop_set_uint32(DEVICE(node), "cpu-base", cpu_base);
         qdev_prop_set_uint32(DEVICE(node), "nr-cpus", requested[node_index]);
@@ -1897,8 +1799,6 @@ static void sgi_machine_instance_finalize(Object *obj)
     size_t i;
 
     g_free(s->nodes);
-    g_free(s->physical_nodes);
-    g_free(s->hub_components);
     g_free(s->crossbars);
     g_free(s->io_boards);
     g_free(s->direct_links);

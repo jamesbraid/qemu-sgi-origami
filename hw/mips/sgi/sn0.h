@@ -15,20 +15,20 @@
 #include "hw/block/flash.h"
 #include "hw/core/boards.h"
 #include "hw/misc/sgi-hub.h"
+#include "hw/mips/sgi/sn-model.h"
 #include "hw/mips/sgi/xtalk-link.h"
 #include "sn-promdata.h"
 
 /*
- * The shared SN0 node builder's own vocabulary: what sn0.c (the Hub node,
- * common to every SN0 product) and the family builder (sn-machine.c) that
- * feeds it need to construct one node. This is not a per-product
- * descriptor -- the family builder populates these from the format-2
- * descriptor (sn-model.h) once per node at machine-init time, the way it
- * already builds SN0ModelComponent from SGIModelAsicIdentity. What used
- * to be the whole per-product descriptor (SN0ModelComposition and the
- * types only it needed: modules, routers, crossbows, xtalk attachments,
- * I/O boards) is gone with the old descriptor and its compilers; a
- * product's shape now comes from sn-model.h alone.
+ * The Hub ASIC's own address-map and memory-geometry shapes: device
+ * facts shared by sn0.c (the Hub node, common to every SN0 product) and
+ * the family builder (sn-machine.c) that feeds it, identical on every
+ * SN0 node measured and defined once in sn0.c (sn0_hub_address_map,
+ * sn0_hub_memory below). A node's own fitted-part facts -- identity,
+ * slot, flash kind, populated memory banks -- come straight from its
+ * format-2 descriptor record (SGIModelNode, sn-model.h); the node
+ * device takes that record directly, the way the SN1 node does, rather
+ * than through a repacked copy.
  */
 
 typedef enum SN0ModelCpuKind {
@@ -96,7 +96,12 @@ typedef struct SN0ModelMemory {
     unsigned int interleave_slots_per_bank;
 } SN0ModelMemory;
 
-/* The physical flash selection, independent of firmware contents. */
+/*
+ * The physical flash selection, independent of firmware contents. Dead
+ * since the node takes its flash kind straight from its descriptor
+ * record instead (SGIModelFlashKind, sn-model.h); kept until the next
+ * commit deletes it and its siblings below together.
+ */
 typedef enum SN0ModelFlashKind {
     SN0_FLASH_AM29F080,
 } SN0ModelFlashKind;
@@ -200,9 +205,11 @@ typedef struct SN0BackdoorState {
 typedef struct SN0NodeState {
     SysBusDevice parent_obj;
 
-    /* Static product description supplied by the owning machine. */
-    const SN0ModelPhysicalNode *physical;
-    const SN0ModelHardware *hardware;
+    /*
+     * The topology's node record, set by the machine before realize --
+     * the format-2 descriptor this node builds from (sn-model.h).
+     */
+    const SGIModelNode *model_node;
 
     /*
      * Properties. promdata-filter installs the PROM's cache-as-RAM
@@ -325,5 +332,13 @@ bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
                            uint32_t decoded_widget_mask, Error **errp);
 
 extern const SN0FlashImplementation sn0_flash;
+
+/* The Hub's physical address map and memory-bank geometry, defined once. */
+extern const SN0ModelAddressMap sn0_hub_address_map;
+extern const SN0ModelMemory sn0_hub_memory;
+
+/* The Hub's two fixed clock rates: hardwired, not configuration. */
+#define SN0_HUB_CLOCK_HZ     0x55d4a80ULL
+#define SN0_HUB_RTC_CLOCK_HZ 0x1312d0ULL
 
 #endif /* HW_MIPS_SN0_H */

@@ -461,12 +461,12 @@ bool sgi_xtalk_crossbow_link_attach_hub(SGIXtalkCrossbowLink *link,
     const SN0ModelAddressMap *map;
     g_autofree char *refusal_name = g_strdup_printf("%s-cpu-refusal", name);
 
-    if (!node || !DEVICE(node)->realized || !node->physical) {
+    if (!node || !DEVICE(node)->realized || !node->model_node) {
         error_setg(errp,
                    "a Hub crossbow attachment requires a realized node");
         return false;
     }
-    map = &node->physical->map;
+    map = &sn0_hub_address_map;
     if (map->memory.carrier_base != 0 ||
         map->node_stride != SGI_XTALK_CROSSBOW_LINK_SUPPORTED_NODE_STRIDE ||
         map->xtalk.carrier_base != (2ULL << 40) ||
