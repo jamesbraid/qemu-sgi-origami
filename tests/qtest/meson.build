@@ -303,15 +303,16 @@ if not config_all_devices.has_key('CONFIG_SGI_XBOW_TRANSPORT_TEST')
   sn0_xbow_transport_qtests = []
 endif
 
-# The crosstalk board base class has no machine of its own yet; its qtest
+# The XIO board base class has no machine of its own yet; its qtest
 # builds a Crossbow and a test board straight from their device types under
 # -M none, so it needs only its own test fixture guard, not SGI_SN0/SGI_SN1.
 sgi_xtalk_board_qtests = \
-  (config_all_devices.has_key('CONFIG_SGI_XTALK_BOARD_TEST') ?
+  (config_all_devices.has_key('CONFIG_SGI_XIO_BOARD_TEST') ?
     ['sgi-xtalk-board-test'] : [])
 
-# The four board classes: same reasoning as sgi_xtalk_board_qtests above,
-# gated on their own combined test config rather than SGI_SN0/SGI_SN1.
+# sgi-baseio's presets and sgi-pci-expansion: same reasoning as
+# sgi_xtalk_board_qtests above, gated on their own combined test config
+# rather than SGI_SN0/SGI_SN1.
 sgi_board_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_BOARD_TEST') ?
     ['sgi-board-test', 'sgi-board-backend-test'] : [])

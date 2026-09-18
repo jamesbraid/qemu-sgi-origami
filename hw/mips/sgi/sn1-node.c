@@ -7,11 +7,12 @@
  * clock, sets its populated I/O board (if any) and realizes it; this
  * file owns everything the node needs to become a running Origin 300:
  * the PROM/flash policy, the node's own address-space views, the CPUs,
- * Bedrock and L1. The onboard IO-8 (sgi-io8, board-io8.c) is the
- * builder's own device too, built through
- * sgi_machine_build_bedrock_io_board() once this file's own Bedrock
- * exists -- see that function's comment for why the call has to happen
- * here rather than in sn-machine.c directly.
+ * Bedrock, L1 and the XBridge, a fitted part of the IP45 node board
+ * itself (docs/designs/sn-machine-model-architecture.md, "Node
+ * devices"). The IO-8's fixed devices are a separate sgi-baseio (the
+ * "io8" preset, hw/mips/sgi/baseio.c) on the chip's own head F -- see
+ * sn1_node_build_io8()'s own comment for why it is built here rather
+ * than in sn-machine.c directly.
  *
  * Node strides, window splits and unit offsets are Bedrock hardware
  * facts, not configuration, so the addresses below are constants here
@@ -31,8 +32,9 @@
 #include "hw/core/cpu.h"
 #include "hw/core/qdev-clock.h"
 #include "hw/core/qdev-properties.h"
-#include "hw/mips/sgi/board-io8.h"
+#include "hw/mips/sgi/baseio.h"
 #include "hw/mips/sgi/sn-machine.h"
+#include "hw/pci-host/sgi-xbridge.h"
 #include "hw/misc/sgi-bedrock.h"
 #include "hw/misc/sgi-bedrock-flash.h"
 #include "hw/misc/sgi-bedrock-pi.h"
@@ -717,6 +719,89 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
     }
 }
 
+/*
+ * The IO-8's fixed devices: an sgi-baseio (the "io8" preset) on the
+ * chip's own head F, once that head's PCI bus exists (sn1_node_
+ * create_bedrock() calls this right after the chip itself has
+ * realized). Resolves every backend id from node->io_board (the
+ * topology's populated IO-8 record) and the command line, the same
+ * policy the deleted sgi_machine_build_bedrock_io_board() applied.
+ */
+static bool sn1_node_build_io8(SN1NodeState *node, Error **errp)
+{
+    const SGIModelIoBoard *record = node->io_board;
+    DeviceState *baseio = qdev_new(TYPE_SGI_BASEIO);
+    PCIBus *bus = sgi_xbridge_pci_bus(SGI_XBRIDGE(node->xbridge), 0xf);
+    size_t i;
+
+    object_property_add_child(OBJECT(node), "baseio", OBJECT(baseio));
+    qdev_prop_set_string(baseio, "preset", "io8");
+    object_property_set_link(OBJECT(baseio), "pci-bus", OBJECT(bus),
+                             &error_abort);
+    /*
+     * The onboard IOC3's own one-wire identity part carries its own
+     * separate serial, a fact about this specific fitted unit -- the
+     * descriptor's own io_boards[].pci[] entry for the IOC3 function, not
+     * the chip's own "onewire-serial-f" (its own NIC ROM identity, set by
+     * the caller directly on the chip).
+     */
+    for (i = 0; i < record->pci_count; i++) {
+        if (record->pci[i].kind == SGI_MODEL_PCI_IOC3) {
+            qdev_prop_set_uint64(baseio, "onewire-serial",
+                                 record->pci[i].serial);
+            break;
+        }
+    }
+    /*
+     * The onboard IOC3's Timekeeper storage: an indexed `-drive if=mtd`
+     * first, else a bare `-drive if=none,id=sgi-nvram0` by name -- one
+     * Bedrock node, so always index/id zero, unlike the Hub path's
+     * per-board index. Passed as the resolved backend's own name, not the
+     * backend itself, for the claim-timing reason sgi-baseio's own header
+     * comment gives.
+     */
+    {
+        DriveInfo *nvram_dinfo = drive_get(IF_MTD, 0, 0);
+        BlockBackend *nvram_blk = nvram_dinfo ?
+            blk_by_legacy_dinfo(nvram_dinfo) : blk_by_name("sgi-nvram0");
+
+        if (nvram_blk) {
+            qdev_prop_set_string(baseio, "nvram-drive", blk_name(nvram_blk));
+        }
+    }
+    /*
+     * The onboard IOC3's serial and parallel backends, named by chardev
+     * id for the same claim-timing reason. serial_hd(0) is the L1
+     * console -- this node's own controller, not this board's -- so the
+     * onboard IOC3 takes indices one through four.
+     */
+    {
+        Chardev *chr;
+
+        chr = serial_hd(1);
+        if (chr) {
+            qdev_prop_set_string(baseio, "chardev-a", chr->label);
+        }
+        chr = serial_hd(2);
+        if (chr) {
+            qdev_prop_set_string(baseio, "chardev-b", chr->label);
+        }
+        chr = serial_hd(3);
+        if (chr) {
+            qdev_prop_set_string(baseio, "record-a", chr->label);
+        }
+        chr = serial_hd(4);
+        if (chr) {
+            qdev_prop_set_string(baseio, "record-b", chr->label);
+        }
+        if (parallel_hds[0]) {
+            qdev_prop_set_string(baseio, "parallel-chardev",
+                                 parallel_hds[0]->label);
+        }
+    }
+    return qdev_realize(DEVICE(baseio), NULL, errp);
+}
+
 static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                                     Error **errp)
 {
@@ -801,24 +886,39 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                                                        "uart-irq", 0));
 
     /*
-     * The onboard IO-8 (sgi-io8) is the family builder's own device, like
-     * every other product's onboard board -- built and realized here,
-     * against Bedrock's own crosstalk egress region (sysbus_init_mmio()
-     * has already given the not-yet-realized Bedrock device that region;
-     * see sgi_machine_build_bedrock_io_board's own comment), rather than
-     * by this file directly.
+     * The XBridge is a fitted part of the IP45 node board itself, as the
+     * L1 and the boot flash are (docs/designs/sn-machine-model-architecture.md,
+     * "Node devices"): this file creates it directly, the family builder's
+     * own device like every other product's onboard base I/O, against
+     * Bedrock's own crosstalk egress region (sysbus_init_mmio() has
+     * already given the not-yet-realized Bedrock device that region).
+     * The IO-8's fixed devices are a separate sgi-baseio (the "io8"
+     * preset) on the chip's own head F, once the chip itself has
+     * realized and that head's PCI bus exists.
      */
-    node->io8 = sgi_machine_build_bedrock_io_board(
-        node->io_board, SN1_XBRIDGE_HOST_PORT,
-        sysbus_mmio_get_region(SYS_BUS_DEVICE(node->bedrock), 2), errp);
-    if (!node->io8) {
+    node->xbridge = qdev_new(TYPE_SGI_XBRIDGE);
+    object_property_add_child(OBJECT(node), "xbridge", OBJECT(node->xbridge));
+    qdev_prop_set_uint8(node->xbridge, "host-port", SN1_XBRIDGE_HOST_PORT);
+    qdev_prop_set_string(node->xbridge, "board-part-f",
+                         sgi_baseio_preset_lookup("io8")->board_part);
+    qdev_prop_set_uint64(node->xbridge, "onewire-serial-f",
+                         SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL);
+    object_property_set_link(
+        OBJECT(node->xbridge), "fabric",
+        OBJECT(sysbus_mmio_get_region(SYS_BUS_DEVICE(node->bedrock), 2)),
+        &error_abort);
+    if (!sysbus_realize(SYS_BUS_DEVICE(node->xbridge), errp)) {
         return false;
     }
+    if (!sn1_node_build_io8(node, errp)) {
+        return false;
+    }
+
     /*
      * Every widget the crossbar decodes: the host's own local view (widget
      * zero) plus one per xtalk attachment, including a board slot with
      * nothing plugged in -- its head still answers "no PCI device here"
-     * through the IO-8 itself, which a widget left undecoded could not.
+     * through the chip itself, which a widget left undecoded could not.
      */
     for (i = 0; i < node->xbridge_widget_count; i++) {
         g_autofree char *property =
@@ -826,8 +926,8 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
 
         object_property_set_link(
             OBJECT(node->bedrock), property,
-            OBJECT(sgi_io8_widget_view(SGI_IO8(node->io8),
-                                       node->xbridge_widgets[i])),
+            OBJECT(sgi_xbridge_widget_view(SGI_XBRIDGE(node->xbridge),
+                                           node->xbridge_widgets[i])),
             &error_abort);
     }
 

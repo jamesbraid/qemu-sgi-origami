@@ -21,12 +21,13 @@
 #define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
 
 /*
- * The onboard sgi-ip29-io board's own internal Bridge, re-parented under
- * its module the way every sgi-xtalk-board is (include/hw/mips/sgi/
- * xtalk-board.h), landing at its own slot name since the machine gives
- * it no id (see sgi-board-test.c's own identical path).
+ * Origin 200's onboard Bridge, a fitted part of its node's own System
+ * Board (docs/designs/sn-machine-model-architecture.md, "Node devices"):
+ * sn0.c creates it directly, as a QOM child of the node object, not
+ * wrapped in any board class (the base-io-device step's design; see
+ * hw/mips/sgi/sn0.c, sn0_node_build_baseio()).
  */
-#define BRIDGE_PATH "/machine/module0/slot8/bridge"
+#define BRIDGE_PATH "/machine/node0/bridge"
 
 /*
  * Registers sit at a slot's offset plus four: Linux names that address,

@@ -1433,12 +1433,11 @@ static void assert_pci_root_bus_name(QTestState *qts, const char *bridge,
 }
 
 /*
- * Each physical chassis owns a Bridge, inside its own onboard
- * sgi-ip29-io board (re-parented under its module the way every
- * sgi-xtalk-board is, landing at its own slot name since the machine
- * gives it no id), and therefore a separate PCI root bus. Node 0 keeps
- * its original bus name, part of existing device migration paths; node
- * 1 gets a stable identity of its own.
+ * Each physical chassis's node owns a Bridge directly -- a fitted part
+ * of its own System Board, not a removable board (sn0.c,
+ * sn0_node_build_baseio()) -- and therefore a separate PCI root bus.
+ * Node 0 keeps its original bus name, part of existing device migration
+ * paths; node 1 gets a stable identity of its own.
  */
 static void test_bridge_root_bus_names(const void *data)
 {
@@ -1447,8 +1446,8 @@ static void test_bridge_root_bus_names(const void *data)
         "%s -global sgi-bridge.pci-bus-name=hostile -bios %s",
         SN0_DUAL_CHASSIS_FIRMWARE_ARGS, path);
 
-    assert_pci_root_bus_name(qts, "/machine/module0/slot8/bridge", "pci");
-    assert_pci_root_bus_name(qts, "/machine/module1/slot8/bridge", "pci.1");
+    assert_pci_root_bus_name(qts, "/machine/node0/bridge", "pci");
+    assert_pci_root_bus_name(qts, "/machine/node1/bridge", "pci.1");
 
     qtest_quit(qts);
     g_assert_cmpint(unlink(path), ==, 0);

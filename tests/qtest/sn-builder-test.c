@@ -234,13 +234,14 @@ static void test_origin2000_module_accepts_its_populations(const void *data)
  * sn-builder-console-test (sn-builder-fault-test.c) is a two-node topology
  * with console=1: node 1's IOC3 port A, not node 0's, must land on serial
  * line 0. Give the machine exactly one backend, at line 0, and read it
- * back off each node's onboard board's own IOC3 "chardev-a" property (the
- * board re-parents under its own module, per include/hw/mips/sgi/xtalk-
- * board.h, landing at its own slot name since neither board is given an
- * id) -- a chardev property reports the backend's own id once bound
- * (qdev-properties-system.c's get_chr), empty string unbound, so this
- * fails the way the removed boot-and-quit version could not: node 0
- * answering "probe" instead of node 1 would still exit 0.
+ * back off each node's own onboard sgi-baseio's own IOC3 "chardev-a"
+ * property (sn0.c creates the Bridge and the sgi-baseio behind it
+ * directly, as QOM children of the node object, since neither is a
+ * removable board -- docs/designs/sn-machine-model-architecture.md,
+ * "Node devices") -- a chardev property reports the backend's own id
+ * once bound (qdev-properties-system.c's get_chr), empty string unbound,
+ * so this fails the way the removed boot-and-quit version could not:
+ * node 0 answering "probe" instead of node 1 would still exit 0.
  */
 static void test_console_field_puts_its_node_on_serial_line_zero(
     const void *data)
@@ -250,9 +251,9 @@ static void test_console_field_puts_its_node_on_serial_line_zero(
         "-smp 4,sockets=2,cores=2,threads=1 -cpu R10000 "
         "-chardev null,id=probe -serial chardev:probe -display none");
     g_autofree char *node0_chardev_a =
-        qom_get_str(qts, "/machine/module0/slot8/ioc3", "chardev-a");
+        qom_get_str(qts, "/machine/node0/baseio/ioc3", "chardev-a");
     g_autofree char *node1_chardev_a =
-        qom_get_str(qts, "/machine/module1/slot8/ioc3", "chardev-a");
+        qom_get_str(qts, "/machine/node1/baseio/ioc3", "chardev-a");
 
     g_assert_cmpstr(node1_chardev_a, ==, "probe");
     g_assert_cmpstr(node0_chardev_a, ==, "");
@@ -291,30 +292,33 @@ static void test_node_without_xtalk_attachment_rejected(const void *data)
 
 /*
  * The builder dispatches io_boards[] entries on the descriptor's own
- * board_kind alone (sgi_machine_io_board_type), not on how the board
- * attaches: Origin 200's onboard board and Origin 2000's BaseIO both
- * attach at widget 8 on their own module, and both happen to also
- * differ by attachment kind (direct vs. Crossbow), which is exactly
- * what let a board_kind data defect go unnoticed before. Checking the
- * actual QOM type this builds, not merely that something builds, is
- * what a heuristic that happened to agree on both shipped products
- * could not catch.
+ * board_kind alone (sgi_machine_instantiate_io_board), not on how the
+ * board attaches: Origin 200's onboard I/O and Origin 2000's BaseIO card
+ * both, historically, attached at widget 8 on their own module, and both
+ * happen to also differ by attachment kind (direct vs. Crossbow), which
+ * is exactly what let a board_kind data defect go unnoticed before.
+ * Checking what each carrier actually builds, not merely that something
+ * builds, is what a heuristic that happened to agree on both shipped
+ * products could not catch: Origin 200's onboard sgi-baseio must carry
+ * the "ip29" preset, and Origin 2000's onboard board must be the
+ * sgi-xio-baseio card class, not merely something at widget 8.
  */
-static void test_origin200_onboard_board_is_ip29_io(const void *data)
+static void test_origin200_onboard_board_is_ip29_preset(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200 -display none");
-    g_autofree char *type = qom_child_type(qts, "/machine/module0", "slot8");
+    g_autofree char *preset =
+        qom_get_str(qts, "/machine/node0/baseio", "preset");
 
-    g_assert_cmpstr(type, ==, "sgi-ip29-io");
+    g_assert_cmpstr(preset, ==, "ip29");
     qtest_quit(qts);
 }
 
-static void test_origin2000_onboard_board_is_baseio(const void *data)
+static void test_origin2000_onboard_board_is_xio_baseio(const void *data)
 {
     QTestState *qts = qtest_init("-M origin2000 -display none");
     g_autofree char *type = qom_child_type(qts, "/machine/module0", "slot8");
 
-    g_assert_cmpstr(type, ==, "sgi-baseio");
+    g_assert_cmpstr(type, ==, "sgi-xio-baseio");
     qtest_quit(qts);
 }
 
@@ -361,10 +365,10 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn/builder/origin2000-module-accepts-its-populations", NULL,
         test_origin2000_module_accepts_its_populations);
-    qtest_add_data_func("sn/builder/origin200-onboard-board-is-ip29-io", NULL,
-                        test_origin200_onboard_board_is_ip29_io);
-    qtest_add_data_func("sn/builder/origin2000-onboard-board-is-baseio", NULL,
-                        test_origin2000_onboard_board_is_baseio);
+    qtest_add_data_func("sn/builder/origin200-onboard-board-is-ip29-preset",
+                        NULL, test_origin200_onboard_board_is_ip29_preset);
+    qtest_add_data_func("sn/builder/origin2000-onboard-board-is-xio-baseio",
+                        NULL, test_origin2000_onboard_board_is_xio_baseio);
 
     return g_test_run();
 }

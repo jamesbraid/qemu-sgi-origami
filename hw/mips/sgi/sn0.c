@@ -27,6 +27,8 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/misc/sgi-hub.h"
+#include "hw/mips/sgi/baseio.h"
+#include "hw/mips/sgi/xtalk-link.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci/pci.h"
 #include "hw/mips/mips.h"
@@ -1111,6 +1113,112 @@ void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
             }
         }
     }
+}
+
+/*
+ * The PROM's fixed target: widget 2 (a synthetic address, not a
+ * populated widget) at the Bridge's own device-window offset for its
+ * error-status decode. Origin 2000's Crossbow-attached BaseIO card does
+ * not use this probe at all; only IP29's onboard I/O, wired through the
+ * direct link, does.
+ */
+#define SN0_PROM_PI_PROBE_WIDGET 2
+#define SN0_PROM_PI_PROBE_OFFSET 0x400208ULL
+
+/*
+ * IP29's onboard base I/O: the System Board's own Bridge, cabled
+ * straight to this node's Hub through the direct link (no Crossbow --
+ * see docs/designs/sn-machine-model-architecture.md, "Node devices"),
+ * and an sgi-baseio behind it with the "ip29" preset. Unlike the Origin
+ * 2000 BaseIO card (sgi-xio-baseio), this Bridge is not wrapped in any
+ * board class: it is a fitted part of the System Board itself, not a
+ * removable card, so it answers the crosstalk port interface directly
+ * (hw/pci-host/sgi-bridge.c) rather than through a board's own
+ * re-parenting and module/slot registry -- the physical difference
+ * baseio.md draws between the two ("The Origin 200 has an integrated
+ * IP29 System Board, not an Origin 2000 BaseIO card").
+ *
+ * Called once node has realized (its Hub's claim view and crosstalk
+ * container exist by then), passing every fitted-part value and backend
+ * id the family builder (sn-machine.c) already resolved from the
+ * descriptor and the command line -- this file owns only the Hub
+ * address-map facts (fabric-base, fabric-node-shift, the PROM probe's
+ * fixed widget and offset) and the direct-link wiring itself.
+ */
+bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
+                           SGIXtalkDirectLink *link, uint64_t bridge_serial,
+                           const uint64_t *ioc3_serial, const char *pci_bus_name,
+                           const char *nvram_drive_id,
+                           const char *chardev_a_id,
+                           const char *chardev_b_id,
+                           const char *record_a_id,
+                           const char *record_b_id,
+                           const char *parallel_chardev_id,
+                           unsigned int discovery_widget, unsigned int widget,
+                           uint32_t decoded_widget_mask, Error **errp)
+{
+    const SN0ModelAddressMap *map = sn0_node_address_map(node);
+    const SGIBaseioPresetIdentity *identity = sgi_baseio_preset_lookup("ip29");
+    DeviceState *bridge, *baseio;
+    PCIBus *bus;
+
+    bridge = qdev_new(TYPE_SGI_BRIDGE);
+    object_property_add_child(OBJECT(node), "bridge", OBJECT(bridge));
+    qdev_prop_set_uint32(bridge, "revision", identity->bridge_revision);
+    qdev_prop_set_string(bridge, "board-part", identity->board_part);
+    qdev_prop_set_uint64(bridge, "onewire-serial", bridge_serial);
+    if (pci_bus_name) {
+        qdev_prop_set_string(bridge, "pci-bus-name", pci_bus_name);
+    }
+    /*
+     * Interrupt packets travel a processor's claim view, which resolves
+     * a node-qualified address by programmed number, not by the board's
+     * position. View zero speaks for the node; a node always has a
+     * processor.
+     */
+    object_property_set_link(OBJECT(bridge), "fabric",
+                             OBJECT(&node->claim_view[0]), &error_abort);
+    qdev_prop_set_uint64(bridge, "fabric-base", map->xtalk.carrier_base);
+    qdev_prop_set_uint32(bridge, "fabric-node-shift", ctz64(map->node_stride));
+    if (!sysbus_realize(SYS_BUS_DEVICE(bridge), errp)) {
+        return false;
+    }
+    bus = PCI_HOST_BRIDGE(bridge)->bus;
+
+    baseio = qdev_new(TYPE_SGI_BASEIO);
+    object_property_add_child(OBJECT(node), "baseio", OBJECT(baseio));
+    qdev_prop_set_string(baseio, "preset", "ip29");
+    object_property_set_link(OBJECT(baseio), "pci-bus", OBJECT(bus),
+                             &error_abort);
+    if (ioc3_serial) {
+        qdev_prop_set_uint64(baseio, "onewire-serial", *ioc3_serial);
+    }
+    if (nvram_drive_id) {
+        qdev_prop_set_string(baseio, "nvram-drive", nvram_drive_id);
+    }
+    if (chardev_a_id) {
+        qdev_prop_set_string(baseio, "chardev-a", chardev_a_id);
+    }
+    if (chardev_b_id) {
+        qdev_prop_set_string(baseio, "chardev-b", chardev_b_id);
+    }
+    if (record_a_id) {
+        qdev_prop_set_string(baseio, "record-a", record_a_id);
+    }
+    if (record_b_id) {
+        qdev_prop_set_string(baseio, "record-b", record_b_id);
+    }
+    if (parallel_chardev_id) {
+        qdev_prop_set_string(baseio, "parallel-chardev", parallel_chardev_id);
+    }
+    if (!qdev_realize(DEVICE(baseio), NULL, errp)) {
+        return false;
+    }
+
+    return sgi_xtalk_direct_link_connect(
+        link, owner, node, OBJECT(bridge), discovery_widget, widget,
+        decoded_widget_mask, SN0_PROM_PI_PROBE_WIDGET,
+        SN0_PROM_PI_PROBE_OFFSET, errp);
 }
 
 static void sn0_node_realize(DeviceState *dev, Error **errp)

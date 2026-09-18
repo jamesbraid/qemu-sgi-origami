@@ -76,7 +76,7 @@ typedef struct SN1NodeState {
 
     DeviceState *l1;
     DeviceState *bedrock;
-    DeviceState *io8;
+    DeviceState *xbridge;
     DeviceState *boot_flash;
     MemoryRegion bedrock_node;
     MemoryRegion hub_local_register_head;
