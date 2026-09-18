@@ -1795,10 +1795,16 @@ static void test_a_reused_buffer_waits_for_its_held_completion(const void *data)
  * ran for it. Hold one backend frame to occupy the line, then loopback
  * exactly enough frames to fill it: the last one finds the line full without
  * ever having been asked to refuse it.
+ *
+ * A distinct posted buffer for every one of those frames, not a reused
+ * handful: deliver()'s own held-completion guard
+ * (loopback-respects-a-held-completion) would otherwise refuse most of these
+ * as reuses of whatever a slot past the driver's posted ring happens to
+ * read as, which is a fact about this test's ring, not about a full line.
  */
 static void test_loopback_respects_a_full_arrival_line(const void *data)
 {
-    enum { BUFFERS = 16 };
+    enum { BUFFERS = RX_LATENCY_LINE_DEPTH };
     int sv[2];
     QTestState *qts;
     uint8_t seed[64];
@@ -1866,6 +1872,95 @@ static void test_loopback_respects_a_full_arrival_line(const void *data)
     qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS);
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==,
                     RX_LATENCY_LINE_DEPTH * RX_RING_STRIDE);
+
+    qtest_quit(qts);
+    close(sv[0]);
+}
+
+/*
+ * The wire path's own reused-buffer guard
+ * (sgi-ioc3-eth/reused-buffer-waits-for-held-completion) lives in
+ * can_receive(), which a loopback frame never passes through -- the same
+ * comment on sgi_ioc3_eth_deliver()'s immediate parameter that motivates the
+ * full-arrival-line test above. Hold one wire completion for a buffer, then
+ * post a second ring slot naming that same buffer and loop a frame back into
+ * it before the wire completion's own deadline: the loopback delivery must
+ * find the buffer still held and drop, the same overrun treatment
+ * loopback-respects-a-full-arrival-line already gets for a full line, rather
+ * than overwrite bytes the guest has not been told about yet.
+ */
+static void test_loopback_respects_a_held_completion(const void *data)
+{
+    int sv[2];
+    QTestState *qts;
+    uint8_t seed[64];
+    uint8_t frame[64];
+    uint8_t landed[sizeof(seed)];
+    uint32_t ring = RAM_SCRATCH + 0x8000;
+    uint32_t rxbuf = RAM_SCRATCH + 0xc000;
+    uint32_t base = RAM_SCRATCH;
+    int attempt;
+
+    memset(seed, 0xff, 6);
+    memset(seed + 6, 0x40, sizeof(seed) - 6);
+    memset(frame, 0xff, 6);
+    memset(frame + 6, 0x99, sizeof(frame) - 6);
+
+    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
+    net_socket_set_recv_timeout(sv[0], 10);
+    qts = ioc3_attach_socket(sv[1], 1);
+
+    /* A second ring slot naming the same buffer, the way a repost does. */
+    dma_stl_be(qts, ring + RX_RING_STRIDE, 0);
+    dma_stl_be(qts, ring + RX_RING_STRIDE + 4, rxbuf);
+    ioc3_writel(qts, ENET_RX_PRODUCE, 2 * RX_RING_STRIDE | RPIR_ARM);
+
+    /*
+     * One wire frame, held behind its arrival deadline: nothing here steps
+     * the virtual clock to let it publish. Poll for the payload landing, the
+     * way loopback-respects-a-full-arrival-line does for its seed frame.
+     */
+    net_socket_send_frame(sv[0], seed, sizeof(seed));
+    for (attempt = 0; attempt < 200; attempt++) {
+        qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(seed));
+        if (memcmp(landed, seed, sizeof(seed)) == 0) {
+            break;
+        }
+        g_usleep(5000);
+    }
+    g_assert_cmpint(memcmp(landed, seed, sizeof(seed)), ==, 0);
+    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
+
+    /* Loop back: can_receive() never runs on this path either. */
+    ioc3_writel(qts, ENET_MAC_CONTROL,
+               MCR_PROMISC | MCR_LOOPBACK | MCR_TX_DMA_EN | MCR_TX_EN |
+               MCR_RX_DMA_EN | MCR_RX_EN | MCR_RXOFF(RXD_BUF_OFFSET / 2));
+    ioc3_writel(qts, ENET_TX_RING_HI, 0);
+    ioc3_writel(qts, ENET_TX_RING_LO, (base & 0xffffc000u) | TX_RING_SEL);
+
+    /*
+     * The engine's staged consume index is now on the second ring slot,
+     * which names the same buffer the wire frame is still held in. Unfixed,
+     * this delivery lands straight through and overwrites it.
+     */
+    tx_one(qts, base, 0, frame, sizeof(frame));
+
+    qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(seed));
+    g_assert_cmpint(memcmp(landed, seed, sizeof(seed)), ==, 0);
+    g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
+
+    /* The transmit side still completes; the drop is the receive side's. */
+    g_assert_cmphex(ioc3_readl(qts, ENET_TX_CONSUME) & TX_CONSUME_MASK, ==,
+                    TX_DESC_SIZE);
+
+    /*
+     * Past the wire frame's own deadline, only it publishes: the loopback
+     * delivery found its target held and was dropped, not queued behind it.
+     */
+    qtest_clock_step(qts, RX_ARRIVAL_LATENCY_NS);
+    wait_for_rx_consume(qts, RX_RING_STRIDE);
+    qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(seed));
+    g_assert_cmpint(memcmp(landed, seed, sizeof(seed)), ==, 0);
 
     qtest_quit(qts);
     close(sv[0]);
@@ -2086,6 +2181,8 @@ int main(int argc, char **argv)
                         test_a_reused_buffer_waits_for_its_held_completion);
     qtest_add_data_func("sgi-ioc3-eth/loopback-respects-a-full-arrival-line",
                         NULL, test_loopback_respects_a_full_arrival_line);
+    qtest_add_data_func("sgi-ioc3-eth/loopback-respects-a-held-completion",
+                        NULL, test_loopback_respects_a_held_completion);
     qtest_add_data_func("sgi-ioc3-eth/unreadable-transmit-descriptor", NULL,
                         test_a_transmit_descriptor_that_cannot_be_read);
     qtest_add_data_func("sgi-ioc3-eth/unreadable-transmit-buffer", NULL,
