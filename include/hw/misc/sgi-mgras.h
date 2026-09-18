@@ -587,6 +587,15 @@ struct SGIMgrasState {
     uint32_t *back;
     uint32_t front_count;
     uint32_t back_count;
+    /*
+     * Per-pixel companion to front[], one byte per entry (same WIDTHxHEIGHT
+     * sizing as front_count): nonzero means the paired front[] value is a
+     * CMAP index needing si_cmap_rgb() at scan time, zero means it is
+     * already a direct 0x00BBGGRR colour -- see si_fill_rect's own header
+     * comment (sgi-mgras.c) for why this replaced a device-global XMAP-mode
+     * flag. Allocated alongside front[] (si_realize) but unused before this
+     * pass.
+     */
     uint8_t *wid;
     uint32_t hq[5120];
     uint32_t *ge[2];

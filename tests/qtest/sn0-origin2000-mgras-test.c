@@ -1536,14 +1536,21 @@ static void test_display_surface_conversion(void)
 }
 
 /*
- * PseudoColor scanout: once REG_XMAP_MAIN_MODE names a PseudoColor window
- * (the same 0x601-family value real Xsgi traffic writes there -- see the
- * header comment on SGI_MGRAS_XMAP_MAIN_MODE, include/hw/misc/sgi-mgras.h),
- * front[]'s stored byte is a CMAP index, looked up through the colour map
- * this device already accepted writes for, rather than painted directly
- * into the red channel. A TrueColor window (the driver's own real 0x7xx
- * family, and this device's reset default) keeps the pre-existing direct-
- * RGB scanout unchanged.
+ * PseudoColor scanout: BKGRD_RG (IR_ALIAS's own colour source, si_draw_
+ * ir_alias_fill) is always a CMAP index, looked up through the colour map
+ * this device already accepted writes for; PACKEDCOLOR (BLOCKXYENDI's own
+ * colour source, si_draw_fill) is always a direct 0x00BBGGRR colour. This
+ * split replaces an earlier version of this device that instead gated the
+ * whole frame's scanout on the most recently programmed
+ * SGI_MGRAS_XMAP_MAIN_MODE word -- see si_gfx_update's own header comment
+ * (hw/misc/sgi-mgras.c) for the live trace evidence that a single
+ * device-global mode value cannot be the right classifier: real desktop
+ * traffic interleaves indexed BKGRD_RG fills and direct-colour PACKEDCOLOR
+ * fills under one unchanged mode word. SGI_MGRAS_XMAP_MAIN_MODE is still a
+ * plain read/write register (covered by test_int_dest_alt_offset_aliases'
+ * sibling round-trip coverage of similarly opaque registers) but no
+ * longer affects scanout at all, which the second half of this test
+ * confirms directly.
  */
 static void test_pseudocolor_scanout_looks_up_cmap(void)
 {
@@ -1553,33 +1560,42 @@ static void test_pseudocolor_scanout_looks_up_cmap(void)
 
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
 
-    /* Load CMAP slot 7 with a real colour. */
-    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 7);
-    qtest_writel(qts, REG_CMAP_DATA, 0x00aabbcc);
+    /* Load CMAP slot 0x11 with a real colour -- the same slot and shape
+     * (teal-ish, R=0 G=236 B=236) a live boot-to-desktop session's own
+     * background fill used. */
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0x11);
+    qtest_writel(qts, REG_CMAP_DATA, 0x00ecec00);
 
-    /* Paint a pixel whose own low byte is just the index 7 -- the same
-     * "index stored where PACKEDCOLOR's own RR byte lives" shape real
-     * PseudoColor traffic uses (small integers like 0x07/0x11/0x14). */
-    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_PACKEDCOLOR, 7));
+    /* An IR_ALIAS fill using BKGRD_RG=0x11 -- the same "index stored where
+     * PACKEDCOLOR's own RR byte lives" shape real PseudoColor traffic uses
+     * (small integers like 0x07/0x11/0x14) -- resolves through the colour
+     * map at scan time, with no XMAP mode word involved at all. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_BKGRD_RG, 0x11));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BLOCK_START, (5u << 16) | 5u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND_EXEC(REG_BLOCK_END, (5u << 16) | 5u));
-    g_assert_cmphex(si_test_pixel(qts, 5, 5), ==, 7);
+                 SI_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
+    g_assert_cmphex(si_test_pixel(qts, 5, 5), ==, 0x11);
+    g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x0000ecec);
 
-    /* Before the XMAP mode names a PseudoColor window (this device's
-     * TrueColor reset default), scanout is still direct RGB: the raw
-     * index paints straight into the red channel. */
-    g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x00070000);
-
-    /* Naming PseudoColor routes the same pixel through the colour map
-     * instead -- no new fill, only the mode word changed. */
-    qtest_writel(qts, REG_XMAP_MAIN_MODE, 0x601);
-    g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x00ccbbaa);
-
-    /* A TrueColor window keeps direct RGB scanout: a pixel holding a
-     * real 24-bit colour is unaffected by the colour map. */
+    /*
+     * The defining regression this device previously got wrong: a later,
+     * unrelated write to SGI_MGRAS_XMAP_MAIN_MODE (a different window's
+     * own mode, real traffic this device must still accept and store)
+     * must not retroactively change how the earlier indexed fill scans
+     * out. Under the old device-global scan-time flag, this exact write
+     * (0x7a4, the old TrueColor bucket) flipped the whole frame's
+     * interpretation and turned the fill above back into raw dark-red RGB
+     * -- confirmed against a live trace, see si_gfx_update's own header
+     * comment.
+     */
     qtest_writel(qts, REG_XMAP_MAIN_MODE, 0x7a4);
+    g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x0000ecec);
+
+    /* A BLOCKXYENDI/PACKEDCOLOR fill keeps direct RGB scanout: a pixel
+     * holding a real 24-bit colour is unaffected by the colour map,
+     * regardless of the XMAP mode word or of CMAP slot 0x11's own
+     * content. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_PACKEDCOLOR, 0x00112233));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -1588,6 +1604,16 @@ static void test_pseudocolor_scanout_looks_up_cmap(void)
                  SI_COMMAND_EXEC(REG_BLOCK_END, (6u << 16) | 6u));
     g_assert_cmphex(si_test_display_pixel(qts, 6, 6), ==, 0x00332211);
 
+    /* A later PACKEDCOLOR fill landing on the same pixel as an earlier
+     * BKGRD_RG one overwrites its CMAP-index tag along with its colour --
+     * s->wid[] does not go stale once a pixel is repainted by a different
+     * register's own role. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (5u << 16) | 5u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (5u << 16) | 5u));
+    g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x00332211);
+
     qtest_quit(qts);
 }
 
@@ -1595,12 +1621,15 @@ static void test_pseudocolor_scanout_looks_up_cmap(void)
  * Hardware cursor compositing: si_composite_cursor (hw/misc/sgi-mgras.c)
  * reads the two 32x32 1-bit planes at the cursor-entry pointer (VC3 index
  * 1) out of VC3 SRAM and draws them into the scanout at (cursor_x,
- * cursor_y) only while enabled. Builds a tiny two-pixel sprite: row 0
- * column 0 opaque and colour-selected to the "ink" colour (CMAP slot
- * 0x1c, the slot this device's own live trace ties to the cursor -- see
- * si_composite_cursor's own header comment), row 1 column 1 opaque and
- * colour-selected to the background colour, row 0 column 1 left
- * transparent.
+ * cursor_y) only while enabled. Builds a tiny three-pixel sprite matching
+ * the real plane shape a live cursor install left in VC3 SRAM (the two
+ * planes never both set for the same pixel -- see si_composite_cursor's
+ * own header comment for the live evidence): row 0 column 0 is "mask"-
+ * only (the pointer's own body, colour-selected to "ink" -- CMAP slot
+ * 0x1c, the slot this device's own live trace ties to the cursor), row 1
+ * column 1 is "sel"-only (the pointer's one-pixel border, colour-selected
+ * to the background colour), row 2 column 2 has neither plane set and
+ * stays transparent.
  */
 static void test_cursor_composites_when_enabled(void)
 {
@@ -1617,20 +1646,23 @@ static void test_cursor_composites_when_enabled(void)
     /* Cursor entry pointer: SRAM halfword address 0x100. */
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x01, 0x0100));
 
-    /* First plane (transparency mask), two halfwords per row: row 0
-     * column 0 opaque, row 1 column 1 opaque, everything else clear. */
+    /* First plane ("mask", the pointer's own body), two halfwords per
+     * row: row 0 column 0 set, everything else clear -- row 2 column 2 is
+     * deliberately left clear in both planes to cover the transparent
+     * case. */
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x07, 0x0100));
     qtest_writew(qts, REG_VC3_RAM, 0x8000);
     qtest_writew(qts, REG_VC3_RAM, 0x0000);
-    qtest_writew(qts, REG_VC3_RAM, 0x4000);
+    qtest_writew(qts, REG_VC3_RAM, 0x0000);
+    qtest_writew(qts, REG_VC3_RAM, 0x0000);
+    qtest_writew(qts, REG_VC3_RAM, 0x0000);
     qtest_writew(qts, REG_VC3_RAM, 0x0000);
 
-    /* Second plane (colour select), 64 halfwords further on: row 0
-     * selects the ink colour, row 1 selects the background colour. */
-    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x07, 0x0140));
-    qtest_writew(qts, REG_VC3_RAM, 0x8000);
-    qtest_writew(qts, REG_VC3_RAM, 0x0000);
-    qtest_writew(qts, REG_VC3_RAM, 0x0000);
+    /* Second plane ("sel", the pointer's border), 64 halfwords further
+     * on: row 1 column 1 set, everything else clear -- non-overlapping
+     * with the first plane, matching the real evidence. */
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x07, 0x0142));
+    qtest_writew(qts, REG_VC3_RAM, 0x4000);
     qtest_writew(qts, REG_VC3_RAM, 0x0000);
 
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x02, 50));
@@ -1640,12 +1672,15 @@ static void test_cursor_composites_when_enabled(void)
      * programmed. */
     g_assert_cmphex(si_test_display_pixel(qts, 50, 60), ==, 0);
 
-    /* Enabling composites it. */
+    /* Enabling composites it: the mask-only body pixel is ink, the
+     * sel-only border pixel is the background colour (previously
+     * invisible entirely, since compositing gated all visibility on the
+     * mask plane alone), and the pixel with neither plane set is left
+     * transparent. */
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1d, 0x0002));
     g_assert_cmphex(si_test_display_pixel(qts, 50, 60), ==, 0x00ff0000);
     g_assert_cmphex(si_test_display_pixel(qts, 51, 61), ==, 0x00ffffff);
-    /* The masked-off pixel between them is untouched. */
-    g_assert_cmphex(si_test_display_pixel(qts, 51, 60), ==, 0);
+    g_assert_cmphex(si_test_display_pixel(qts, 52, 62), ==, 0);
 
     /* Disabling removes it again. */
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1d, 0x0000));

@@ -559,9 +559,17 @@ static uint32_t si_paint_pixel(uint8_t op, uint32_t dst, uint32_t src,
  * does not (see si_draw_ir_alias_fill's own header comment for the live
  * trace evidence), so normalizing here instead of rejecting a reversed
  * pair is what lets both trigger registers share this one loop.
+ *
+ * is_index records, per touched pixel in s->wid[], whether colour is a
+ * CMAP index (true) or a direct 0x00BBGGRR value (false) -- see the header
+ * comment on si_gfx_update's own PseudoColor-vs-TrueColor paragraph for why
+ * this replaced a device-global mode flag. s->wid[] is otherwise-unused
+ * per-pixel storage already allocated alongside front[] (si_realize); nothing
+ * before this pass gave it a role.
  */
 static void si_fill_rect(SGIMgrasState *s, uint32_t xy0, uint32_t xy1,
-                         uint32_t color, uint8_t op, uint32_t mask)
+                         uint32_t color, uint8_t op, uint32_t mask,
+                         bool is_index)
 {
     int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
     int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
@@ -575,8 +583,10 @@ static void si_fill_rect(SGIMgrasState *s, uint32_t xy0, uint32_t xy1,
     y_hi = MIN(y_hi, SGI_MGRAS_HEIGHT - 1);
     for (int y = y_lo; y <= y_hi; y++) {
         for (int x = x_lo; x <= x_hi; x++) {
-            uint32_t *p = &s->front[y * SGI_MGRAS_WIDTH + x];
+            unsigned int i = y * SGI_MGRAS_WIDTH + x;
+            uint32_t *p = &s->front[i];
             *p = si_paint_pixel(op, *p, color, mask);
+            s->wid[i] = is_index;
         }
     }
 }
@@ -605,7 +615,7 @@ static void si_draw_fill(SGIMgrasState *s)
     uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 26;
 
     si_fill_rect(s, s->rss[SI_REG_BLOCKXYSTARTI], s->rss[SI_REG_BLOCKXYENDI],
-                color, op, mask);
+                color, op, mask, false);
 }
 
 /*
@@ -662,6 +672,40 @@ static void si_draw_fill(SGIMgrasState *s)
  * dispatch. A future pass with evidence of a second operation should add
  * a real FILLMODE/XFRMODE-gated branch here instead of assuming this one
  * covers every case.
+ *
+ * BKGRD_RG is always a CMAP index here, not a direct colour -- corrected
+ * from this pass's own first cut, which stored it as a raw 0x00BBGGRR
+ * value and relied on a device-global "most recently programmed XMAP
+ * mode" flag (SGI_MGRAS_XMAP_MAIN_MODE) at scan-out time to decide whether
+ * to look it up. Replaying the same cited trace end to end (not just the
+ * single IR_ALIAS census above) falsifies that flag as a classifier: the
+ * real desktop's background rows arrive with BKGRD_RG=0x11 while
+ * SGI_MGRAS_XMAP_MAIN_MODE already holds 0x7a4 -- a value this device
+ * previously classified TrueColor -- both at the moment of this exact
+ * fill and for the rest of the captured session (no further mode write
+ * follows), so sampling the flag at fill time instead of scan time makes
+ * no difference. What does settle it: this device's own live CMAP state
+ * at that same point has index 0x11 loaded with a real teal-ish colour
+ * (0x00ecec00, i.e. R=0 G=236 B=236) that matches the desktop's own
+ * background exactly, while the previous raw-value interpretation painted
+ * RGB(0,0,0x11) -- near-black dark red, the exact bug this pass fixes.
+ * The single global mode flag cannot be the right classifier at all: the
+ * same trace shows a large tiled TrueColor-looking fill (BKGRD_RG=
+ * 0xff0ff0, a plausible direct magenta) interleaved with these indexed
+ * ones under that same unchanged mode word, so no single device-wide flag
+ * value, sampled at any time, can be right for both. BKGRD_RG's own
+ * established role (background colour, distinct from PACKEDCOLOR's
+ * foreground ink -- see this function's own trace census above and
+ * si_draw_glyph_row's matching background usage) is the real, evidenced
+ * split instead: si_fill_rect's new is_index parameter records this in
+ * s->wid[] per pixel, and si_gfx_update resolves it through the CMAP at
+ * scan time (preserving real indexed-colour hardware's own palette-
+ * cycling behaviour -- confirmed live: CMAP slot 0x11 is itself rewritten
+ * several times between this fill and the eventual scan, and only the
+ * scan-time value matches the expected desktop colour). CONTRACT CHANGE,
+ * needs independent review: this replaces the first cut's device-global
+ * mode flag with a per-pixel classification keyed on which register
+ * supplied the colour, not on SGI_MGRAS_XMAP_MAIN_MODE at all.
  */
 static void si_draw_ir_alias_fill(SGIMgrasState *s)
 {
@@ -670,7 +714,7 @@ static void si_draw_ir_alias_fill(SGIMgrasState *s)
     uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 26;
 
     si_fill_rect(s, s->rss[SI_REG_BLOCKXYSTARTI], s->rss[SI_REG_BLOCKXYENDI],
-                color, op, mask);
+                color, op, mask, true);
 }
 
 /*
@@ -774,8 +818,17 @@ static void si_draw_glyph_row(SGIMgrasState *s)
     width = MIN(x1 - x0 + 1, 16);
     for (int i = 0; i < width; i++) {
         bool set = (bits >> (31 - i)) & 1;
-        uint32_t *p = &s->front[y * SGI_MGRAS_WIDTH + x0 + i];
+        unsigned int idx = y * SGI_MGRAS_WIDTH + x0 + i;
+        uint32_t *p = &s->front[idx];
         *p = si_paint_pixel(op, *p, set ? fg : bg, mask);
+        /*
+         * fg is PACKEDCOLOR (direct colour, matching si_draw_fill/
+         * si_draw_point/si_draw_line); bg is BKGRD_RG, always a CMAP
+         * index -- see si_draw_ir_alias_fill's own header comment for the
+         * live evidence. s->wid[] records which one painted this pixel so
+         * si_gfx_update can resolve it correctly at scan time.
+         */
+        s->wid[idx] = !set;
     }
 }
 
@@ -796,6 +849,15 @@ static void si_draw_glyph_row(SGIMgrasState *s)
  * the background colour a later glyph row reads, an execute write paints a
  * pixel pair immediately. XFRSIZE/XFRMODE are accepted into the register
  * file but not consulted here.
+ *
+ * Unlike si_draw_ir_alias_fill/si_draw_glyph_row's own BKGRD_RG usage,
+ * this path is not evidenced live at all (zero BKGRD_BA executes in the
+ * cited boot-to-desktop trace), so it keeps its pre-existing direct-colour
+ * reading rather than gaining an unevidenced CMAP-index treatment; it
+ * still clears s->wid[] for the pixels it touches so a stale index tag
+ * left by an earlier fill at the same coordinates cannot survive an
+ * unrelated PIO overwrite -- see si_fill_rect's own header comment on
+ * s->wid[]'s role.
  */
 static void si_draw_pio_pixel_pair(SGIMgrasState *s)
 {
@@ -819,12 +881,15 @@ static void si_draw_pio_pixel_pair(SGIMgrasState *s)
     for (int i = 0; i < 2; i++) {
         int x = x0 + s->pio_x;
         int y = y0 + s->pio_y;
+        unsigned int idx;
 
         if (y > y1) {
             return;
         }
-        uint32_t *p = &s->front[y * SGI_MGRAS_WIDTH + x];
+        idx = y * SGI_MGRAS_WIDTH + x;
+        uint32_t *p = &s->front[idx];
         *p = si_paint_pixel(op, *p, pixels[i], mask);
+        s->wid[idx] = 0;
         s->pio_x++;
         if (x0 + s->pio_x > x1) {
             s->pio_x = 0;
@@ -852,13 +917,18 @@ static void si_draw_point(SGIMgrasState *s)
     uint32_t mask = s->rss[SI_REG_COLORMASKLSBSA];
     uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 26;
     int x = (xy0 >> 16) & 0xffff, y = xy0 & 0xffff;
+    unsigned int idx;
     uint32_t *p;
 
     if (x >= SGI_MGRAS_WIDTH || y >= SGI_MGRAS_HEIGHT) {
         return;
     }
-    p = &s->front[y * SGI_MGRAS_WIDTH + x];
+    idx = y * SGI_MGRAS_WIDTH + x;
+    p = &s->front[idx];
     *p = si_paint_pixel(op, *p, color, mask);
+    /* PACKEDCOLOR is always a direct colour; see si_fill_rect's own
+     * header comment on s->wid[]'s role. */
+    s->wid[idx] = 0;
 }
 
 /*
@@ -888,8 +958,12 @@ static void si_draw_line(SGIMgrasState *s)
 
     for (;;) {
         if (x0 < SGI_MGRAS_WIDTH && y0 < SGI_MGRAS_HEIGHT) {
-            uint32_t *p = &s->front[y0 * SGI_MGRAS_WIDTH + x0];
+            unsigned int idx = y0 * SGI_MGRAS_WIDTH + x0;
+            uint32_t *p = &s->front[idx];
             *p = si_paint_pixel(op, *p, color, mask);
+            /* PACKEDCOLOR is always a direct colour; see si_fill_rect's
+             * own header comment on s->wid[]'s role. */
+            s->wid[idx] = 0;
         }
         if (x0 == x1 && y0 == y1) {
             break;
@@ -927,7 +1001,10 @@ static void si_draw_line(SGIMgrasState *s)
  * copy... deferred pending a live trace of its exact register grammar").
  * Source and destination share one buffer, so overlapping rectangles copy
  * in whichever row order keeps a row's source data from being overwritten
- * before it is read.
+ * before it is read. s->wid[] moves alongside front[] a row at a time, so
+ * a copied region keeps whichever pixels were CMAP indices and which were
+ * direct colours -- see si_fill_rect's own header comment on s->wid[]'s
+ * role.
  */
 static void si_draw_block_copy(SGIMgrasState *s, const uint32_t *payload,
                                uint32_t payload_words)
@@ -958,8 +1035,11 @@ static void si_draw_block_copy(SGIMgrasState *s, const uint32_t *payload,
         int r = copy_backward ? (h - 1 - row) : row;
         uint32_t *dst_row = &s->front[(y0 + r) * SGI_MGRAS_WIDTH + x0];
         uint32_t *src_row = &s->front[(sy0 + r) * SGI_MGRAS_WIDTH + sx0];
+        uint8_t *dst_wid = &s->wid[(y0 + r) * SGI_MGRAS_WIDTH + x0];
+        uint8_t *src_wid = &s->wid[(sy0 + r) * SGI_MGRAS_WIDTH + sx0];
 
         memmove(dst_row, src_row, (size_t)w * sizeof(uint32_t));
+        memmove(dst_wid, src_wid, (size_t)w * sizeof(uint8_t));
     }
 }
 
@@ -1589,10 +1669,13 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         return;
     case SGI_MGRAS_VC3_ARG: s->vc3_arg = value; return;
     case SGI_MGRAS_RE_ARG: s->re_arg = value; return;
-    /* See the header comment: drives si_gfx_update's own PseudoColor-vs-
-     * TrueColor scanout split. Marked dirty so a mode change alone (with
-     * no following paint) still reaches the display surface on the next
-     * update, the same way the display-enable transition case does. */
+    /* Stored and echoed back for read-back correctness; si_gfx_update no
+     * longer gates its PseudoColor-vs-TrueColor scanout split on this
+     * word -- see that function's own header comment for why a device-
+     * global mode value was falsified as a per-pixel classifier. Still
+     * marked dirty on a write, since a real guest could plausibly follow
+     * a mode change with no further paint before the next redraw and
+     * this device does not track whether that happened. */
     case SGI_MGRAS_XMAP_MAIN_MODE: s->xmap_mode = value; s->dirty = true; return;
     case SGI_MGRAS_RESET_CONTROL: s->reset_control = value; return;
     case SGI_MGRAS_I2C_SCRATCH: s->i2c_scratch = value; return;
@@ -1984,37 +2067,49 @@ static uint32_t si_cmap_rgb(SGIMgrasState *s, uint8_t index)
  * own job is only the part that was still missing -- actually drawing the
  * sprite into the scanout, which si_gfx_update only calls while enabled.
  *
- * Plane-to-colour mapping is this device's own bounded approximation, not
- * independently confirmed: the first plane's bit gates transparency (0 =
- * leave the pixel already in display_buffer alone, the usual "outside the
- * glyph" convention for a hardware cursor) and the second plane's bit
- * selects between two colours within the glyph. Which physical plane is
- * "mask" versus "colour select", and which combination should be
- * transparent, is not settled by anything this pass traced -- only that
- * the sprite is two 32x32 1-bit planes at all (already established). This
- * device picks the simpler, common two-plane convention rather than the
- * classic AND/XOR shape, since the factory launch config
- * (`-cursorFG red -cursorBG white`) implies two real, distinct colours
- * rather than a monochrome/invert cursor.
+ * Plane-to-colour mapping was this device's own bounded approximation
+ * before this pass, and live evidence now settles it: reconstructing the
+ * actual glyph a real cursor install left in VC3 SRAM
+ * (/storage/nvme/origami/runs/irix-20260918T112956-2cabd8/qemu.trace, the
+ * cursor's own base pointer at VC3 index 1) shows the two planes are
+ * never both set for the same pixel -- "mask" traces a solid, growing
+ * arrow-head silhouette (the classic pointer body) while "sel" traces a
+ * complementary one-pixel border just outside it, together forming an
+ * ordinary bordered arrow. The previous reading gated visibility on
+ * "mask" alone and picked colour from "sel" alone; since the two planes
+ * never overlap, every visible pixel had sel=0 there, so the compositor
+ * always chose bg and never ink -- solid white/background colour with no
+ * split at all, exactly the bug this pass fixes. The corrected model:
+ * a pixel is visible when either plane is set (mask OR sel, not mask
+ * alone -- the body and its border are both part of the glyph), coloured
+ * ink where mask is set (the body) and bg where only sel is set (the
+ * border); both planes clear is the only transparent case (outside the
+ * glyph). Neither plane being set together in any traced row leaves that
+ * fourth combination unevidenced; this device breaks the tie toward ink,
+ * consistent with mask already gating visibility before this pass.
  *
  * The "ink" colour comes from CMAP slot 0x1c (SI_CURSOR_CMAP_INDEX):
- * live-tracing a full boot-to-desktop session
- * (/storage/nvme/origami/runs/irix-20260918T112956-2cabd8/qemu.trace)
- * found 46 writes there, every one immediately following a cursor
- * position/enable update (the same VC3 index 2/3/0x1d write burst
- * MgrasPositionCursor makes) -- the tightest live correlation this pass
- * found to any single register, and a real, evidenced cursor-colour
- * source, resolved through the same si_cmap_rgb path the PseudoColor
- * scanout above uses. The other colour is not independently evidenced
- * from this trace (no second CMAP slot showed the same correlation):
- * this device fills it with plain white, matching the factory
- * `-cursorBG white` default this same session was launched with, a
- * labelled constant rather than a second confirmed register.
+ * live-tracing the same session found 46 writes there, every one
+ * immediately following a cursor position/enable update (the same VC3
+ * index 2/3/0x1d write burst MgrasPositionCursor makes) -- the tightest
+ * live correlation this pass found to any single register, and a real,
+ * evidenced cursor-colour source, resolved through the same si_cmap_rgb
+ * path the CMAP-index scanout path above uses. The other colour is not
+ * independently evidenced from this trace (no second CMAP slot showed the
+ * same correlation): this device fills it with plain white, matching the
+ * factory `-cursorBG white` default this same session was launched with,
+ * a labelled constant rather than a second confirmed register. The
+ * project's own design doc (docs/designs/2026-09-17-si-viz-pixel-output-
+ * design.md, "Genuinely unresolved") names three CMAP-indexed cursor
+ * colours, not two; this pass found live evidence for only one dynamic
+ * slot (0x1c) and leaves the second as the same labelled white constant
+ * as before -- a third colour stays unimplemented, not guessed at.
  *
- * CONTRACT CHANGE, needs independent review: the plane roles, the
- * transparency convention and the background colour are this pass's own
- * bounded reading of partial evidence, not a confirmed VC3 cursor
- * contract.
+ * CONTRACT CHANGE, needs independent review: the visibility rule (union,
+ * not mask-alone) and the ink/bg plane assignment are corrected by this
+ * pass against live SRAM content; the background colour and the missing
+ * third colour remain this pass's own bounded reading, not a confirmed
+ * VC3 cursor contract.
  */
 static void si_composite_cursor(SGIMgrasState *s)
 {
@@ -2040,12 +2135,14 @@ static void si_composite_cursor(SGIMgrasState *s)
 
         for (unsigned col = 0; col < 32; col++) {
             uint32_t x = s->cursor_x + col;
+            bool mask_bit = (mask_bits >> (31 - col)) & 1;
+            bool sel_bit = (sel_bits >> (31 - col)) & 1;
             uint32_t rgb;
 
-            if (x >= SGI_MGRAS_WIDTH || !((mask_bits >> (31 - col)) & 1)) {
+            if (x >= SGI_MGRAS_WIDTH || (!mask_bit && !sel_bit)) {
                 continue;
             }
-            rgb = ((sel_bits >> (31 - col)) & 1) ? ink : bg;
+            rgb = mask_bit ? ink : bg;
             s->display_buffer[y * SGI_MGRAS_WIDTH + x] =
                 ((rgb & 0xff) << 16) | (rgb & 0x00ff00) | ((rgb >> 16) & 0xff);
         }
@@ -2069,25 +2166,43 @@ static void si_composite_cursor(SGIMgrasState *s)
  * partially-drawn content from before the guest enabled the display.
  *
  * PseudoColor-vs-TrueColor split (contract change, needs independent
- * review): when the most recently programmed XMAP main-mode word
- * (SGI_MGRAS_XMAP_MAIN_MODE, see that header comment for the evidence)
- * names a PseudoColor window, front[]'s stored byte (bits 7:0, the same
- * position PACKEDCOLOR calls RR) is a CMAP index the real driver writes,
- * not a direct colour -- si_read/si_write already accept and store CMAP
- * loads (0x070c30/0x070d18), but nothing before this pass ever looked one
- * up for scanout, so an indexed pixel painted its own raw index straight
- * into the red channel (a small integer like 0x07 or 0x11, producing
- * near-black/dark-red speckle instead of the real desktop colour). This
- * device tracks no per-window visual class, so the split is global and
- * driven by the single most-recently-written XMAP mode word; see that
- * macro's own header comment for why that is an honest first-pass
- * approximation rather than a per-window model. TrueColor pixels are
- * unaffected -- direct RGB scanout, exactly as before.
+ * review): a pixel whose stored byte (bits 7:0, the same position
+ * PACKEDCOLOR calls RR) is a CMAP index the real driver writes, not a
+ * direct colour, has to be looked up (si_read/si_write already accept and
+ * store CMAP loads at 0x070c30/0x070d18) or an indexed pixel paints its
+ * own raw index straight into the red channel -- a small integer like
+ * 0x07 or 0x11, producing near-black/dark-red speckle instead of the real
+ * desktop colour.
+ *
+ * This pass replaces an earlier version of this split that read the most
+ * recently programmed XMAP main-mode word (SGI_MGRAS_XMAP_MAIN_MODE) as a
+ * single device-global "is the whole frame PseudoColor" flag. Live-
+ * tracing a full boot-to-desktop session end to end
+ * (/storage/nvme/origami/runs/irix-20260918T112956-2cabd8/qemu.trace)
+ * falsifies that flag as a classifier, not just as an ordering bug: the
+ * real desktop's background rows paint with BKGRD_RG=0x11 while
+ * SGI_MGRAS_XMAP_MAIN_MODE already reads 0x7a4 (this device's old
+ * TrueColor bucket) at that exact fill, and the same mode word never
+ * changes again before the frame this device captured -- so sampling it
+ * at fill time instead of scan time would have made no difference. What
+ * does settle it: this device's own CMAP state at that same point has
+ * index 0x11 loaded with a real teal-ish colour that matches the
+ * desktop's own background, while the flag's TrueColor reading painted
+ * that index's raw byte value as near-black dark red -- confirmed live,
+ * not inferred. The same mode word also covers an interleaved fill using
+ * a plausible direct 24-bit colour (0xff0ff0), so no single global value,
+ * sampled at any time, can be right for both -- a real per-window visual
+ * class was never modelled at all, and a global mode flag cannot stand in
+ * for one. si_fill_rect/si_draw_glyph_row now record which register
+ * supplied each pixel's colour in s->wid[] (see si_fill_rect's own header
+ * comment) at the point they paint it, and this loop reads that per-pixel
+ * record instead of the device-global flag; SGI_MGRAS_XMAP_MAIN_MODE
+ * itself is still stored and echoed back for read-back correctness, just
+ * no longer consulted here.
  */
 static bool si_gfx_update(void *opaque)
 {
     SGIMgrasState *s = opaque;
-    bool pseudocolor;
 
     if (!s->dirty) {
         return true;
@@ -2100,10 +2215,9 @@ static bool si_gfx_update(void *opaque)
         return true;
     }
 
-    pseudocolor = (s->xmap_mode & 0x00000f00) == 0x00000600;
     for (int i = 0; i < SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT; i++) {
         uint32_t v = s->front[i];
-        uint32_t rgb = pseudocolor ? si_cmap_rgb(s, v & 0xff) : v;
+        uint32_t rgb = s->wid[i] ? si_cmap_rgb(s, v & 0xff) : v;
 
         s->display_buffer[i] = ((rgb & 0xff) << 16) | (rgb & 0x00ff00) |
                                ((rgb >> 16) & 0xff);
@@ -2208,6 +2322,10 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32(back_count, SGIMgrasState),
         VMSTATE_VARRAY_UINT32(back, SGIMgrasState, back_count, 0,
                               vmstate_info_uint32, uint32_t),
+        /* Reuses front_count: wid[] is front[]'s own per-pixel companion,
+         * same WIDTHxHEIGHT sizing -- see its header comment. */
+        VMSTATE_VARRAY_UINT32(wid, SGIMgrasState, front_count, 0,
+                              vmstate_info_uint8, uint8_t),
         VMSTATE_UINT32_ARRAY(hq, SGIMgrasState, 5120),
         VMSTATE_UINT32_ARRAY(context, SGIMgrasState, 63),
         VMSTATE_UINT32(context_words, SGIMgrasState), VMSTATE_UINT32(entry, SGIMgrasState),
