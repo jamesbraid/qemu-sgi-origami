@@ -1659,9 +1659,14 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                   mc->name);
         return false;
     }
-    if (machine->smp.sockets != machine->smp.cpus) {
+    /*
+     * With one core and one thread per socket, QEMU derives sockets from
+     * maxcpus, so a sockets= that disagrees can only come from an explicit
+     * count; -smp N,maxcpus=M (M sockets fitted, N running) stays legal.
+     */
+    if (machine->smp.sockets != machine->smp.max_cpus) {
         error_setg(errp, "%s: -smp N means N sockets; pass -smp %u, not "
-                  "sockets=%u", mc->name, machine->smp.cpus,
+                  "sockets=%u", mc->name, machine->smp.max_cpus,
                   machine->smp.sockets);
         return false;
     }
