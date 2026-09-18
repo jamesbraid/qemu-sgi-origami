@@ -357,7 +357,7 @@ static void test_ramdac_round_trip(void)
 
 /*
  * A same-surface (local buffer) rectangle copy: TextureBaseAddress names a
- * framebuffer offset directly (bit 30 clear, manual page 251), and
+ * framebuffer offset directly (bit 30 clear, manual page 260), and
  * RectangleOrigin/RectangleSize name the destination -- this exercises the
  * plain forward path every rectangle-move helper in the driver ultimately
  * drives (docs/datasheets/psitech-rad1.md, "Rectangle transfer...").
@@ -416,7 +416,7 @@ static void test_render_host_copy(void)
 }
 
 /*
- * FBHardwareWriteMask (manual page 200): "If a bit is set to one then the
+ * FBHardwareWriteMask (manual page 209): "If a bit is set to one then the
  * corresponding bit in the framebuffer is enabled for writing, otherwise
  * it is disabled" -- a full 32-bit AND mask, not RAD4's software byte-
  * level plane mask.
@@ -444,7 +444,7 @@ static void test_render_honors_write_mask(void)
 
 /*
  * The read-back direction (FBReadMode's Read Destination Enable, manual
- * page 202) copies the framebuffer rectangle out to a host address named
+ * page 211) copies the framebuffer rectangle out to a host address named
  * by TextureBaseAddress -- the read direction of rad1_dma_patch_move()
  * (docs/datasheets/psitech-rad1.md). This model's specific trigger
  * (Read Destination Enable selecting the read-back path at all) is an
