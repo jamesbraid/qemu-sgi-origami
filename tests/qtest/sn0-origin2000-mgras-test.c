@@ -173,6 +173,23 @@ static uint32_t si_test_pixel(QTestState *qts, uint32_t x, uint32_t y)
 }
 
 /*
+ * x-test-display-pixel reuses x-test-pixel's own x/y coordinate
+ * properties (hw/misc/sgi-mgras.c's si_test_get_display_pixel) and, on
+ * read, forces a synchronous gfx_update before reporting display_buffer
+ * -- the QEMU display surface front[] converts into, not front[] itself.
+ */
+static uint32_t si_test_display_pixel(QTestState *qts, uint32_t x, uint32_t y)
+{
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-x', 'value': %u}}", SI_VIZ_QOM_PATH, x);
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-y', 'value': %u}}", SI_VIZ_QOM_PATH, y);
+    return si_qom_get_uint(qts, "x-test-display-pixel");
+}
+
+/*
  * Migrate and block until completed or failed, mirroring
  * tests/qtest/sn0-migration-test.c's migrate_stopped_vm.
  */
@@ -1237,6 +1254,64 @@ static void test_direct_pio_pixel_pairs(void)
     qtest_quit(qts);
 }
 
+/*
+ * The display-surface conversion x-test-display-pixel introspects
+ * (si_gfx_update, hw/misc/sgi-mgras.c): black while the VC3's own
+ * display-enable bit (index 0x1e bit 2) is clear, regardless of what
+ * front[] holds; PACKEDCOLOR's own 0x00BBGGRR converted to
+ * PIXMAN_x8r8g8b8's 0x00RRGGBB (B and R swap byte position, G stays put)
+ * once enabled; and correctly re-armed by a later, independent fill --
+ * not stuck showing whatever the first forced update already converted.
+ */
+static void test_display_surface_conversion(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+
+    /* Draw before the display is enabled: front[] holds real content, but
+     * a real VC3 blanks its output while disabled, so the surface should
+     * still read black. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00112233));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (10u << 16) | 10u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (13u << 16) | 13u));
+    g_assert_cmphex(si_test_pixel(qts, 11, 11), ==, 0x00112233);
+    g_assert_cmphex(si_test_display_pixel(qts, 11, 11), ==, 0);
+
+    /* Enabling the display converts front[]'s 0x00BBGGRR into the
+     * surface's 0x00RRGGBB: B (0x11) and R (0x33) swap byte position, G
+     * (0x22) stays put. */
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    g_assert_cmphex(si_test_display_pixel(qts, 11, 11), ==, 0x00332211);
+    /* Outside the filled rectangle is still black either way. */
+    g_assert_cmphex(si_test_display_pixel(qts, 20, 11), ==, 0);
+
+    /* A second, independent fill re-arms the dirty flag: the surface
+     * updates again rather than staying stuck at whatever the first
+     * forced update already converted. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00aabbcc));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (30u << 16) | 30u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (31u << 16) | 31u));
+    g_assert_cmphex(si_test_display_pixel(qts, 30, 30), ==, 0x00ccbbaa);
+    /* The first fill's own pixel is untouched by the second. */
+    g_assert_cmphex(si_test_display_pixel(qts, 11, 11), ==, 0x00332211);
+
+    /* Disabling the display blanks the surface again, even though front[]
+     * still holds both fills. */
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x0));
+    g_assert_cmphex(si_test_display_pixel(qts, 11, 11), ==, 0);
+    g_assert_cmphex(si_test_display_pixel(qts, 30, 30), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 30, 30), ==, 0x00aabbcc);
+
+    qtest_quit(qts);
+}
+
 static void test_vc3_sram_round_trip(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
@@ -1656,6 +1731,11 @@ static void test_migration(void)
                  SI_COMMAND(REG_PACKEDCOLOR, 0x00445566));
     qtest_writeq(from, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BLOCK_START, (2u << 16) | 2u));
+    /* Enable the display before the move: si_post_load has to derive
+     * display_enabled from the migrated vc3_reg array itself, since that
+     * bool is not migrated directly (see the header comment on
+     * si_post_load, hw/misc/sgi-mgras.c). */
+    qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
 
     si_migrate(from, uri);
 
@@ -1666,6 +1746,11 @@ static void test_migration(void)
     qtest_writeq(to, REG_CONTEXT_COMMAND,
                  SI_COMMAND_EXEC(REG_BLOCK_END, (3u << 16) | 3u));
     g_assert_cmphex(si_test_pixel(to, 2, 2), ==, 0x00445566);
+    /* The migrated device's display surface reflects both the enable bit
+     * and the fill: si_post_load correctly re-derived display_enabled and
+     * forced a fresh conversion rather than leaving the surface on
+     * whatever si_realize's own pre-load reset last put there. */
+    g_assert_cmphex(si_test_display_pixel(to, 2, 2), ==, 0x00665544);
 
     qtest_quit(to);
     qtest_quit(from);
@@ -1735,6 +1820,8 @@ int main(int argc, char **argv)
                    test_direct_fill_and_reset);
     qtest_add_func("sn0/origin2000/mgras/direct-glyph-row",
                    test_direct_glyph_row);
+    qtest_add_func("sn0/origin2000/mgras/display-surface-conversion",
+                   test_display_surface_conversion);
     qtest_add_func("sn0/origin2000/mgras/direct-pio-pixel-pairs",
                    test_direct_pio_pixel_pairs);
     qtest_add_func("sn0/origin2000/mgras/vc3-sram-round-trip",
