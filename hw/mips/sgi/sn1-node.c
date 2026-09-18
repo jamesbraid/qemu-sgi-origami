@@ -101,14 +101,6 @@
 #define SN1_INSTALLED_BANK_MASK 0xc
 /* Bedrock's own architectural bank count; matches sn0.h's SN0_MAX_MEMORY_BANKS. */
 #define SN1_ARCHITECTURAL_MEMORY_BANKS 8
-/*
- * The shipped Origin 300 inventory: two 256 MiB banks at locational
- * banks two and three. See sn1_node_create_bedrock's comment on why
- * this stays a literal instead of node->model_node->bank_mib.
- */
-static const uint16_t sn1_installed_bank_mib[SN1_ARCHITECTURAL_MEMORY_BANKS] = {
-    0, 0, 256, 256, 0, 0, 0, 0,
-};
 
 static BlockDriverState *sn1_node_open_flash_slice(BlockDriverState *backing,
                                                     int64_t offset,
@@ -782,21 +774,26 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                         SN1_BEDROCK_INITIATOR_REGION);
     /*
      * The shipped Origin 300 inventory installs two 256 MiB banks at
-     * locational banks two and three, not the single dense bank zero the
-     * compiled origin300 topology's node bank-mib still carries (its
-     * 512 MiB total is right; its bank placement predates this fact).
-     * Kept as an origin300-specific literal here, like this file's own
-     * address-map constants above, until the catalogue's fixture is
-     * corrected.
+     * locational banks two and three; the compiled origin300 topology's
+     * node bank-mib now carries that placement (decision D-0026: bank
+     * placement is fitted-part data, so it lives in the descriptor, not
+     * a literal here). installed-bank-mask stays a literal: which banks
+     * are wired for the one shipped configuration is not a fact the
+     * catalogue carries on its own, only recoverable from bank-mib's
+     * zero entries, so restating it directly is clearer than deriving it.
      */
     qdev_prop_set_uint8(node->bedrock, "installed-bank-mask",
                         SN1_INSTALLED_BANK_MASK);
-    for (i = 0; i < SN1_ARCHITECTURAL_MEMORY_BANKS; i++) {
-        g_autofree char *property = g_strdup_printf("installed-bank%zu-mib",
-                                                     i);
+    {
+        const uint64List *bank_entry = node->model_node->bank_mib;
 
-        qdev_prop_set_uint16(node->bedrock, property,
-                            sn1_installed_bank_mib[i]);
+        for (i = 0; i < SN1_ARCHITECTURAL_MEMORY_BANKS; i++) {
+            g_autofree char *property =
+                g_strdup_printf("installed-bank%zu-mib", i);
+
+            qdev_prop_set_uint16(node->bedrock, property, bank_entry->value);
+            bank_entry = bank_entry->next;
+        }
     }
     object_property_set_link(OBJECT(node->bedrock), "dma-memory",
                              OBJECT(system), &error_abort);
