@@ -1,14 +1,18 @@
 /*
- * The format-2 builder (sn-machine.c): the named faults
- * sgi_machine_validate_topology rejects before creating any device
- * (sn-builder-fault-test's fixture, a minimal two-node topology), plus
- * the command-line contract every product shares -- -numa refused, an
- * unsupported -smp or -m population rejected, and a topology belonging
- * to a different product refused -- checked against the real Origin
- * 200, Origin 200 (dual) and Origin 2000 machines, whose every accepted
- * population is also checked to build. The console field test drives
- * the same fixture file's sn-builder-console-test machine, a real
- * two-node build the fault fixture never realizes.
+ * The format-2 builder (sn-machine.c): the command-line contract every
+ * product shares -- -numa refused, an unsupported -smp or -m population
+ * rejected, and a topology belonging to a different product refused --
+ * checked against the real Origin 200, Origin 200 (dual) and Origin 2000
+ * machines, whose every accepted population is also checked to build.
+ * The console field test drives tests/qtest/sn-builder-fault-test.c's
+ * sn-builder-console-test machine, a real two-node build.
+ *
+ * The named structural faults sgi_machine_validate_topology used to
+ * reject here (a minimal two-node fixture topology fed straight to that
+ * validator) are gone along with it: hw/mips/sgi/sn-machine.c now trusts
+ * the compiled descriptor, and tests/unit/test-sn-model.c checks those
+ * invariants once instead. See docs/plans/sn-machine-model.md, "The
+ * builder trusts the descriptor".
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -77,94 +81,6 @@ static char *qom_child_type(QTestState *qts, const char *parent,
 
     qobject_unref(response);
     return found;
-}
-
-static void assert_fault_rejected(const char *fault, const char *message)
-{
-    g_autofree char *machine = g_strdup_printf("sn-builder-fault-test,"
-                                               "fault=%s", fault);
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", machine, "-display", "none", NULL
-    };
-
-    assert_qemu_rejects(args, message);
-}
-
-static void test_empty_topology(const void *data)
-{
-    assert_fault_rejected("empty-topology", "names no nodes");
-}
-
-static void test_module_node_out_of_range(const void *data)
-{
-    assert_fault_rejected("module-node-range",
-                          "module 'm1' names node 99, past its 2 nodes");
-}
-
-static void test_node_in_two_modules(const void *data)
-{
-    assert_fault_rejected("node-in-two-modules",
-                          "node 0 is in two modules");
-}
-
-static void test_node_in_no_module(const void *data)
-{
-    assert_fault_rejected("node-in-no-module", "node 1 is in no module");
-}
-
-static void test_unknown_asic_kind(const void *data)
-{
-    assert_fault_rejected("unknown-asic-kind",
-                          "node 0 names an unknown node ASIC kind");
-}
-
-static void test_cpu_slot_beyond_interfaces(const void *data)
-{
-    assert_fault_rejected("cpu-slot-range",
-                          "names a CPU slot beyond its ASIC's 1 "
-                          "interface(s) of 2 each");
-}
-
-static void test_link_end_out_of_range(const void *data)
-{
-    assert_fault_rejected("link-end-range",
-                          "link 'link0' end 0 names vertex 99, past 2");
-}
-
-static void test_unknown_vertex_kind(const void *data)
-{
-    assert_fault_rejected("unknown-vertex-kind",
-                          "link 'link0' names an unknown fabric vertex kind");
-}
-
-static void test_router_port_out_of_range(const void *data)
-{
-    assert_fault_rejected("router-port-range",
-                          "link 'link0' end 0 names port 99, outside "
-                          "router 0's 1-2 hardware-numbered ports");
-}
-
-static void test_duplicate_link_end(const void *data)
-{
-    assert_fault_rejected("duplicate-link-end",
-                          "links 'link1' and 'link0' share one fabric end");
-}
-
-static void test_unsupported_io_board_kind(const void *data)
-{
-    assert_fault_rejected("unsupported-io-board-kind",
-                          "io board 'test-board' names an unsupported "
-                          "board kind");
-}
-
-static void test_unknown_fault_reported(const void *data)
-{
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "sn-builder-fault-test,fault=bogus",
-        "-display", "none", NULL
-    };
-
-    assert_qemu_rejects(args, "unknown sn-builder-fault-test fault 'bogus'");
 }
 
 static void test_numa_refused(const void *data)
@@ -345,13 +261,13 @@ static void test_console_field_puts_its_node_on_serial_line_zero(
 }
 
 /*
- * sgi_machine_validate_topology never cross-checks xtalk_attachments/
- * io_boards against node_count, so a node missing its own crosstalk
- * attachment passes validation and only fails once sgi_machine_
- * index_xtalk_attachments looks it up during real construction. This
- * must surface as sgi_machine_init's own reported error and a clean
- * exit, not an aborting assertion or a memory-region collision reaching
- * the guest as a signal.
+ * tests/unit/test-sn-model.c checks xtalk_attachments/io_boards against
+ * node_count once, for the compiled descriptor; this fixture corrupts a
+ * copy at runtime instead, so a node missing its own crosstalk
+ * attachment only fails once sgi_machine_index_xtalk_attachments looks
+ * it up during real construction. This must surface as sgi_machine_
+ * init's own reported error and a clean exit, not an aborting assertion
+ * or a memory-region collision reaching the guest as a signal.
  */
 static void test_node_without_xtalk_attachment_rejected(const void *data)
 {
@@ -422,30 +338,6 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
-    qtest_add_data_func("sn/builder/empty-topology", NULL,
-                        test_empty_topology);
-    qtest_add_data_func("sn/builder/module-node-out-of-range", NULL,
-                        test_module_node_out_of_range);
-    qtest_add_data_func("sn/builder/node-in-two-modules", NULL,
-                        test_node_in_two_modules);
-    qtest_add_data_func("sn/builder/node-in-no-module", NULL,
-                        test_node_in_no_module);
-    qtest_add_data_func("sn/builder/unknown-asic-kind", NULL,
-                        test_unknown_asic_kind);
-    qtest_add_data_func("sn/builder/cpu-slot-beyond-interfaces", NULL,
-                        test_cpu_slot_beyond_interfaces);
-    qtest_add_data_func("sn/builder/link-end-out-of-range", NULL,
-                        test_link_end_out_of_range);
-    qtest_add_data_func("sn/builder/unknown-vertex-kind", NULL,
-                        test_unknown_vertex_kind);
-    qtest_add_data_func("sn/builder/router-port-out-of-range", NULL,
-                        test_router_port_out_of_range);
-    qtest_add_data_func("sn/builder/duplicate-link-end", NULL,
-                        test_duplicate_link_end);
-    qtest_add_data_func("sn/builder/unsupported-io-board-kind", NULL,
-                        test_unsupported_io_board_kind);
-    qtest_add_data_func("sn/builder/unknown-fault-reported", NULL,
-                        test_unknown_fault_reported);
     qtest_add_data_func("sn/builder/numa-refused", NULL,
                         test_numa_refused);
     qtest_add_data_func("sn/builder/pci-expansion-not-user-creatable", NULL,

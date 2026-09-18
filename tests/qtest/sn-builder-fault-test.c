@@ -1,150 +1,28 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * A minimal, self-contained two-node topology this fixture mutates per
- * the "fault" property, to exercise sgi_machine_validate_topology's
- * named faults (docs/plans/sn-machine-model.md's one-builder step)
- * without needing the real Origin 200 descriptor. mc->init runs the
- * validator and reports its verdict only once a fault has been named;
- * qom-test and test-hmp instantiate every registered machine type
- * with no properties at all to probe generic QOM/HMP behavior, so an
- * unset "fault" is a silent no-op there, the same as the "none"
- * machine. No device is ever built, since the faults this fixture
- * names are all caught before the builder creates anything.
+ * Two machine types that run the real builder (sgi_machine_init) over a
+ * topology no shipped product carries, each gated behind its own
+ * "activate" property the way any qtest-only fixture here is: qom-test
+ * and test-hmp instantiate every registered machine type with no
+ * properties at all to probe generic QOM/HMP behavior, so leaving
+ * "activate" off makes mc->init a no-op there, the same as the "none"
+ * machine. SGIMachineClass.test_topology hands each fixture's topology
+ * straight to sgi_machine_init, bypassing the topology= name lookup,
+ * since sgi_model_entries[] never carries a fixture's own descriptor.
+ *
+ * This file used to also carry sn-builder-fault-test, a fixture that
+ * called sgi_machine_validate_topology() directly over a minimal
+ * two-node topology to exercise its named faults. That validator (and
+ * the four it dispatched to) is gone: hw/mips/sgi/sn-machine.c now
+ * trusts the compiled descriptor, and tests/unit/test-sn-model.c checks
+ * its structural invariants once instead of at every launch. See
+ * docs/plans/sn-machine-model.md, "The builder trusts the descriptor".
  */
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "qemu/error-report.h"
 #include "hw/core/boards.h"
 #include "hw/mips/sgi/sn-machine.h"
-
-#define TYPE_SN_BUILDER_FAULT_TEST MACHINE_TYPE_NAME("sn-builder-fault-test")
-
-static const SGIModelProcessor fault_test_processor = {
-    .id = "test-cpu",
-    .kind = "TEST",
-};
-
-static SGIModelCpuSlot fault_test_n0_cpu_slots[] = {
-    { .interface = 0, .slot = 0, .assembly = &fault_test_processor },
-    { .interface = 0, .slot = 1, .assembly = &fault_test_processor },
-};
-
-static SGIModelCpuSlot fault_test_n1_cpu_slots[] = {
-    { .interface = 0, .slot = 0, .assembly = &fault_test_processor },
-    { .interface = 0, .slot = 1, .assembly = &fault_test_processor },
-};
-
-static SGIModelNode fault_test_nodes[] = {
-    {
-        .id = "n0",
-        .module_index = 0,
-        .slot = 0,
-        .asic_kind = SGI_MODEL_ASIC_HUB,
-        .cpu_slots = fault_test_n0_cpu_slots,
-        .cpu_slot_count = ARRAY_SIZE(fault_test_n0_cpu_slots),
-        .bank_mib = { 64, 0, 0, 0, 0, 0, 0, 0 },
-    },
-    {
-        .id = "n1",
-        .module_index = 1,
-        .slot = 0,
-        .asic_kind = SGI_MODEL_ASIC_HUB,
-        .cpu_slots = fault_test_n1_cpu_slots,
-        .cpu_slot_count = ARRAY_SIZE(fault_test_n1_cpu_slots),
-        .bank_mib = { 64, 0, 0, 0, 0, 0, 0, 0 },
-    },
-};
-
-static unsigned int fault_test_m0_nodes[] = { 0 };
-static unsigned int fault_test_m1_nodes[] = { 1 };
-
-/*
- * One board existing only to give the "unsupported-io-board-kind" fault
- * below a board_kind to corrupt; no attachment or PCI population, since
- * the validator checks board_kind alone and nothing here builds a
- * device.
- */
-static SGIModelIoBoard fault_test_io_boards[] = {
-    {
-        .id = "test-board",
-        .module_index = 0,
-        .board_kind = SGI_MODEL_IO_IP29_IO,
-        .onboard = true,
-    },
-};
-
-static SGIModelModule fault_test_modules[] = {
-    {
-        .id = "m0",
-        .controller_index = -1,
-        .nodes = fault_test_m0_nodes,
-        .node_count = ARRAY_SIZE(fault_test_m0_nodes),
-    },
-    {
-        .id = "m1",
-        .controller_index = -1,
-        .nodes = fault_test_m1_nodes,
-        .node_count = ARRAY_SIZE(fault_test_m1_nodes),
-    },
-};
-
-/*
- * A second link, at ports the first link's ends do not use, so the
- * "duplicate-link-end" fault below can move one of its ends onto link0's
- * without the two ends colliding from the start.
- */
-static SGIModelFabricLink fault_test_links[] = {
-    {
-        .name = "link0",
-        .ends = {
-            { .kind = SGI_MODEL_FABRIC_NODE, .index = 0, .port = 0 },
-            { .kind = SGI_MODEL_FABRIC_NODE, .index = 1, .port = 0 },
-        },
-        .kind = SGI_MODEL_LINK_CABLE,
-    },
-    {
-        .name = "link1",
-        .ends = {
-            { .kind = SGI_MODEL_FABRIC_NODE, .index = 0, .port = 1 },
-            { .kind = SGI_MODEL_FABRIC_NODE, .index = 1, .port = 1 },
-        },
-        .kind = SGI_MODEL_LINK_CABLE,
-    },
-};
-
-/*
- * A router existing only to give the "router-port-range" fault below a
- * router vertex to name: port_count is arbitrary, not a real chip's, and
- * no link ends here in the fault-free case, so a router record with
- * nothing wired to it is not itself a fault the validator catches.
- */
-static const SGIModelRouter fault_test_routers[] = {
-    {
-        .id = "test-router",
-        .module_index = 0,
-        .slot = 0,
-        .port_count = 2,
-    },
-};
-
-static SGIModelTopology fault_test_topology = {
-    .name = "sn-builder-fault-test",
-    .generation = SGI_MODEL_GENERATION_SN0,
-    .description = "the builder validator's own test fixture",
-    .nodes = fault_test_nodes,
-    .node_count = ARRAY_SIZE(fault_test_nodes),
-    .modules = fault_test_modules,
-    .module_count = ARRAY_SIZE(fault_test_modules),
-    .routers = fault_test_routers,
-    .router_count = ARRAY_SIZE(fault_test_routers),
-    .links = fault_test_links,
-    .link_count = ARRAY_SIZE(fault_test_links),
-    .io_boards = fault_test_io_boards,
-    .io_board_count = ARRAY_SIZE(fault_test_io_boards),
-    .console = 0,
-    .junk_uart = -1,
-};
 
 /*
  * Console field test fixture: a two-node topology with console=1, each
@@ -416,90 +294,6 @@ static const SGIModelTopology console_test_topology = {
 };
 
 /*
- * Named faults for the checks sgi_machine_validate_topology runs before
- * the builder creates anything. One of the plan's named checks has no
- * fixture case here: a bank beyond geometry needs a bank index past the
- * HUB's eight architectural banks, which is also this fixture's array
- * bound (and every other node ASIC's, since none modeled today has
- * fewer), so it cannot be expressed without a wider array than any real
- * node uses. It stays covered by the validator's code, just not by a
- * fixture case, until a narrower-banked ASIC exists to drive one.
- */
-static bool fault_test_fault_requested;
-
-static void fault_test_set_fault(Object *obj, const char *value,
-                                 Error **errp)
-{
-    fault_test_fault_requested = true;
-    if (!strcmp(value, "empty-topology")) {
-        fault_test_topology.node_count = 0;
-    } else if (!strcmp(value, "module-node-range")) {
-        fault_test_m1_nodes[0] = 99;
-    } else if (!strcmp(value, "node-in-two-modules")) {
-        fault_test_m1_nodes[0] = 0;
-    } else if (!strcmp(value, "node-in-no-module")) {
-        fault_test_modules[1].node_count = 0;
-    } else if (!strcmp(value, "unknown-asic-kind")) {
-        fault_test_nodes[0].asic_kind = (SGIModelAsicKind)99;
-    } else if (!strcmp(value, "cpu-slot-range")) {
-        fault_test_n0_cpu_slots[0].interface = 5;
-    } else if (!strcmp(value, "unknown-vertex-kind")) {
-        fault_test_links[0].ends[0].kind = (SGIModelFabricVertexKind)99;
-    } else if (!strcmp(value, "router-port-range")) {
-        fault_test_links[0].ends[0] = (SGIModelFabricVertex){
-            .kind = SGI_MODEL_FABRIC_ROUTER, .index = 0, .port = 99,
-        };
-    } else if (!strcmp(value, "link-end-range")) {
-        fault_test_links[0].ends[0].index = 99;
-    } else if (!strcmp(value, "duplicate-link-end")) {
-        fault_test_links[1].ends[0].port = 0;
-    } else if (!strcmp(value, "unsupported-io-board-kind")) {
-        fault_test_io_boards[0].board_kind = (SGIModelIoBoardKind)99;
-    } else {
-        error_setg(errp, "unknown sn-builder-fault-test fault '%s'", value);
-    }
-}
-
-static void fault_test_machine_init(MachineState *machine)
-{
-    Error *err = NULL;
-
-    if (!fault_test_fault_requested) {
-        return;
-    }
-    if (sgi_machine_validate_topology(&fault_test_topology, &err)) {
-        error_setg(&error_fatal,
-                  "sn-builder-fault-test: the injected fault was not "
-                  "caught");
-        return;
-    }
-    error_report_err(err);
-    exit(EXIT_FAILURE);
-}
-
-static void fault_test_class_init(ObjectClass *oc, const void *data)
-{
-    MachineClass *mc = MACHINE_CLASS(oc);
-
-    mc->desc = "sgi-sn-machine builder validator test fixture";
-    mc->init = fault_test_machine_init;
-    object_class_property_add_str(oc, "fault", NULL, fault_test_set_fault);
-}
-
-static const TypeInfo fault_test_type = {
-    .name = TYPE_SN_BUILDER_FAULT_TEST,
-    .parent = TYPE_MACHINE,
-    .class_init = fault_test_class_init,
-};
-
-static void fault_test_register_types(void)
-{
-    type_register_static(&fault_test_type);
-}
-
-type_init(fault_test_register_types)
-
-/*
  * Console field test machine: a real sgi-sn-machine product whose test_
  * topology is console_test_topology, so an activated instance goes
  * through the real node, bridge and IOC3 construction sgi_machine_
@@ -507,8 +301,8 @@ type_init(fault_test_register_types)
  * test_topology bypasses the topology= name lookup, since sgi_model_
  * entries[] never carries a fixture's own descriptor.
  *
- * "activate" gates the real builder the way sn-builder-fault-test's own
- * "fault" gates its validator: qom-test and test-hmp instantiate every
+ * "activate" gates the real builder the way every other qtest-only
+ * fixture's own switch does: qom-test and test-hmp instantiate every
  * registered machine type with no properties at all, and this fixture's
  * topology has two nodes as two sockets, which the default one-socket
  * instantiation those two sweeps use does not satisfy. Off by default,
@@ -526,13 +320,16 @@ static void console_test_set_activate(Object *obj, bool value, Error **errp)
 }
 
 /*
- * A descriptor fault sgi_machine_index_xtalk_attachments now catches
- * (relocated there from the deleted sgi_machine_populate_node's own
- * g_assert(board && xtalk)): a node with no matching crosstalk
- * attachment reaches it only once construction is already under way.
- * Unlike "fault" above, this runs the real builder (sgi_machine_init),
- * the only place this gap is reachable, so it forces activation the way
- * console-test's own "activate" does.
+ * A descriptor fault sgi_machine_index_xtalk_attachments catches (the
+ * function that splits t->xtalk_attachments[] into each node's own entry
+ * and each io_boards[] entry's placement, still run at every realize --
+ * unlike sgi_machine_validate_topology, it is not just a validator: it
+ * computes the indices the builder needs to place each board): a node
+ * with no matching crosstalk attachment reaches it only once construction
+ * is already under way. Unlike sn-builder-test.c's user-option rejection
+ * tests, this runs the real builder (sgi_machine_init), the only place
+ * this gap is reachable, so it forces activation the way console-test's
+ * own "activate" does.
  */
 static void console_test_set_construction_fault(Object *obj,
                                                  const char *value,
@@ -576,8 +373,9 @@ static void console_test_class_init(ObjectClass *oc, const void *data)
     object_class_property_add_str(oc, "construction-fault", NULL,
                                   console_test_set_construction_fault);
     object_class_property_set_description(oc, "construction-fault",
-        "Break the fixture's descriptor in a way sgi_machine_validate_"
-        "topology does not catch, then build through the real builder. "
+        "Break the fixture's descriptor in a way that only reaches "
+        "sgi_machine_index_xtalk_attachments, not tests/unit/test-sn-"
+        "model.c's static checks, then build through the real builder. "
         "Implies activate.");
 }
 
