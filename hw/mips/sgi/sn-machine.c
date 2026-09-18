@@ -2270,7 +2270,22 @@ static void sgi_machine_set_elsc_dip_switches(Object *obj, Visitor *v,
 
 static void sgi_machine_instance_init(Object *obj)
 {
+    MachineState *machine = MACHINE(obj);
+    SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(obj);
+    const SGIModelTopology *t = smc->default_topology ?
+        sgi_model_find_topology(smc->default_topology) : NULL;
+
     SGI_MACHINE(obj)->debug_leds = true;
+    /*
+     * With no -smp at all QEMU leaves smp.sockets at 1 beside the class's
+     * default_cpus; the product's default population is that many
+     * single-core sockets, which is what -smp N would have said.
+     */
+    if (t) {
+        machine->smp.sockets = sgi_machine_topology_default_cpus(t);
+        machine->smp.cores = 1;
+        machine->smp.threads = 1;
+    }
 }
 
 static void sgi_machine_instance_finalize(Object *obj)
@@ -2404,15 +2419,6 @@ static void origin2000_class_init(ObjectClass *oc, const void *data)
  * product's default topology is one node, where one socket is already
  * right.
  */
-static void origin2000_instance_init(Object *obj)
-{
-    MachineState *machine = MACHINE(obj);
-    const SGIModelTopology *t = sgi_model_find_topology("origin2000-module");
-
-    g_assert(t);
-    machine->smp.sockets = sgi_machine_topology_default_cpus(t);
-    machine->smp.cores = 1;
-}
 
 static const TypeInfo sgi_machine_types[] = {
     {
@@ -2433,7 +2439,6 @@ static const TypeInfo sgi_machine_types[] = {
     {
         .name          = MACHINE_TYPE_NAME("origin2000"),
         .parent        = TYPE_SGI_SN_MACHINE,
-        .instance_init = origin2000_instance_init,
         .class_init    = origin2000_class_init,
     },
 };
