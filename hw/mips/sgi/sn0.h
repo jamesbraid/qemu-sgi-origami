@@ -15,7 +15,7 @@
 #include "hw/block/flash.h"
 #include "hw/core/boards.h"
 #include "hw/misc/sgi-hub.h"
-#include "hw/mips/sgi/sn-model.h"
+#include "hw/mips/sgi/sn-catalogue.h"
 #include "hw/mips/sgi/xtalk-link.h"
 #include "sn-promdata.h"
 
@@ -26,7 +26,7 @@
  * SN0 node measured and defined once in sn0.c (sn0_hub_address_map,
  * sn0_hub_memory below). A node's own fitted-part facts -- identity,
  * slot, flash kind, populated memory banks -- come straight from its
- * format-2 descriptor record (SGIModelNode, sn-model.h); the node
+ * compiled-catalogue record (SGIModelNode, qapi/sgi-sn.json); the node
  * device takes that record directly, the way the SN1 node does, rather
  * than through a repacked copy.
  */
@@ -274,8 +274,7 @@ bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
                            const char *record_a_id,
                            const char *record_b_id,
                            const char *parallel_chardev_id,
-                           unsigned int discovery_widget, unsigned int widget,
-                           uint32_t decoded_widget_mask, Error **errp);
+                           unsigned int widget, Error **errp);
 
 extern const SN0FlashImplementation sn0_flash;
 
@@ -286,5 +285,27 @@ extern const SN0ModelMemory sn0_hub_memory;
 /* The Hub's two fixed clock rates: hardwired, not configuration. */
 #define SN0_HUB_CLOCK_HZ     0x55d4a80ULL
 #define SN0_HUB_RTC_CLOCK_HZ 0x1312d0ULL
+
+/*
+ * The Hub register offset its I2C adapter answers at, whether it carries
+ * a private controller (Origin 200) or is one of a shared module
+ * controller's per-node adapters (Origin 2000's MSC): fixed by the Hub
+ * chip, the same on every node measured, so the compiled catalogue no
+ * longer carries it.
+ */
+#define SN0_HUB_MODULE_ADAPTER_OFFSET 0x220000ULL
+
+/*
+ * A node's own embedded ELSC answers I2C address 8 on every Hub that
+ * carries one (identity->system_controller); its NVRAM pages start at
+ * address 80 and there are 8 of them, again fixed by the ELSC/PCF8584
+ * pairing, the same on every node measured. The compiled catalogue no
+ * longer carries these (unread where the corresponding identity flag is
+ * false, since that Hub has no embedded ELSC or I2C controller to
+ * address).
+ */
+#define SN0_HUB_I2C_ELSC_ADDR         8
+#define SN0_HUB_I2C_NVRAM_FIRST_ADDR  80
+#define SN0_HUB_I2C_NVRAM_PAGES       8
 
 #endif /* HW_MIPS_SN0_H */

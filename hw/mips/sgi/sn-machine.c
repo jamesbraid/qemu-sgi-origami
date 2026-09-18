@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The abstract SGI Scalable Node family machine and its builder over a
- * format-2 SGIModelTopology (sn-model.h). Origin 200 is the first
- * product on this base; see docs/plans/sn-machine-model.md, "QEMU".
+ * The abstract SGI Scalable Node family machine and its builder over an
+ * SGIModelTopology from the compiled catalogue (qapi/sgi-sn.json,
+ * embedded and parsed by hw/mips/sgi/sn-catalogue.c). Origin 200 is the
+ * first product on this base; see docs/plans/sn-machine-model.md, "QEMU".
  *
  * Fixed here rather than carried in the descriptor, because they are Hub
  * hardware facts rather than per-configuration data: the Hub's physical
@@ -56,10 +57,87 @@
 #include "system/system.h"
 #include "trace/control.h"
 #include "cpu.h"
+#include "hw/mips/sgi/sn-catalogue.h"
 #include "hw/mips/sgi/sn-machine.h"
 #include "hw/mips/sgi/sn1-node.h"
 #include "hw/mips/sn0-fabric-routed.h"
 #include "sn0.h"
+
+/*
+ * The compiled catalogue's QAPI-generated types (qapi/sgi-sn.json) hold
+ * every repeated field as a NULL-terminated linked list, where the old
+ * hand-written sn-model.h used a flat array and a count; the builder
+ * below still wants positional indexing (a node's own position in
+ * t->nodes, a module's node by position in its own nodes list), so each
+ * helper walks a list once into a freshly allocated array of pointers --
+ * an index table built once per caller, per docs/plans/sn-machine-model.md's
+ * own "list walks or index tables" instruction for this step -- rather
+ * than threading list-walk logic through every call site below. Callers
+ * hold the result no longer than their own scope (g_autofree).
+ */
+#define SGI_MODEL_DEFINE_LIST_ARRAY(Type, name)                             \
+static const Type **sgi_model_##name##_array(const Type##List *list,        \
+                                             size_t *count)                  \
+{                                                                            \
+    const Type##List *entry;                                                \
+    Type **array;                                                           \
+    size_t i = 0, n = 0;                                                    \
+                                                                              \
+    for (entry = list; entry; entry = entry->next) {                        \
+        n++;                                                                \
+    }                                                                       \
+    array = g_new(Type *, n ? n : 1);                                       \
+    for (entry = list; entry; entry = entry->next) {                        \
+        array[i++] = entry->value;                                          \
+    }                                                                       \
+    *count = n;                                                             \
+    return (const Type **)array;                                           \
+}
+
+SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelNode, node)
+SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelModule, module)
+SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelRouter, router)
+SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelCable, cable)
+SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelCrossbar, crossbar)
+SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelXtalkAttachment, xtalk_attachment)
+SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelIoBoard, io_board)
+SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelController, controller)
+SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelCpuPopulation, cpu_population)
+SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelCpuSlot, cpu_slot)
+
+static unsigned int *sgi_model_array_uint32(const uint32List *list, size_t *count)
+{
+    const uint32List *entry;
+    unsigned int *array;
+    size_t i = 0, n = 0;
+
+    for (entry = list; entry; entry = entry->next) {
+        n++;
+    }
+    array = g_new(unsigned int, n ? n : 1);
+    for (entry = list; entry; entry = entry->next) {
+        array[i++] = entry->value;
+    }
+    *count = n;
+    return array;
+}
+
+static uint64_t *sgi_model_array_uint64(const uint64List *list, size_t *count)
+{
+    const uint64List *entry;
+    uint64_t *array;
+    size_t i = 0, n = 0;
+
+    for (entry = list; entry; entry = entry->next) {
+        n++;
+    }
+    array = g_new(uint64_t, n ? n : 1);
+    for (entry = list; entry; entry = entry->next) {
+        array[i++] = entry->value;
+    }
+    *count = n;
+    return array;
+}
 
 #define TYPE_SGI_XIO_BASEIO "sgi-xio-baseio"
 
@@ -222,8 +300,8 @@ static bool sgi_machine_topology_matches_product(const SGIModelTopology *t,
 }
 
 /*
- * sgi_model_entries[] holds every product's topologies in one table, so
- * a name match alone is not enough: topology= is product-scoped
+ * The compiled catalogue holds every product's topologies in one list,
+ * so a name match alone is not enough: topology= is product-scoped
  * (origin200 never builds origin2000's wiring).
  */
 static const SGIModelTopology *sgi_machine_topology(MachineState *machine)
@@ -250,10 +328,10 @@ static unsigned int sgi_machine_population_total(
     const SGIModelCpuPopulation *population)
 {
     unsigned int total = 0;
-    size_t i;
+    const uint32List *entry;
 
-    for (i = 0; i < population->node_count; i++) {
-        total += population->cpus_per_node[i];
+    for (entry = population->cpus_per_node; entry; entry = entry->next) {
+        total += entry->value;
     }
     return total;
 }
@@ -261,17 +339,19 @@ static unsigned int sgi_machine_population_total(
 unsigned int sgi_machine_product_max_cpus(const char *product)
 {
     unsigned int max_cpus = 0;
-    size_t i, j;
+    const SGIModelTopologyList *entry;
 
-    for (i = 0; i < sgi_model_entry_count; i++) {
-        const SGIModelTopology *t = &sgi_model_entries[i];
+    for (entry = sgi_model_catalogue()->topologies; entry; entry = entry->next) {
+        const SGIModelTopology *t = entry->value;
+        const SGIModelCpuPopulationList *population;
 
         if (!sgi_machine_topology_matches_product(t, product)) {
             continue;
         }
-        for (j = 0; j < t->supported_cpu_population_count; j++) {
+        for (population = t->supported_cpu_populations; population;
+             population = population->next) {
             unsigned int total =
-                sgi_machine_population_total(&t->supported_cpu_populations[j]);
+                sgi_machine_population_total(population->value);
 
             max_cpus = MAX(max_cpus, total);
         }
@@ -288,31 +368,39 @@ unsigned int sgi_machine_product_max_cpus(const char *product)
 static unsigned int sgi_machine_topology_nasid(const SGIModelTopology *t,
                                                unsigned int node_index)
 {
+    g_autofree const SGIModelNode **nodes = NULL;
     unsigned int slot_min;
-    size_t i, j;
+    size_t node_count, i, j;
 
-    for (i = 0; i < t->node_count; i++) {
+    nodes = sgi_model_node_array(t->nodes, &node_count);
+    for (i = 0; i < node_count; i++) {
         for (j = 0; j < i; j++) {
-            if (t->nodes[i].slot == t->nodes[j].slot) {
+            if (nodes[i]->slot == nodes[j]->slot) {
                 return node_index;
             }
         }
     }
-    slot_min = t->nodes[0].slot;
-    for (i = 1; i < t->node_count; i++) {
-        slot_min = MIN(slot_min, t->nodes[i].slot);
+    slot_min = nodes[0]->slot;
+    for (i = 1; i < node_count; i++) {
+        slot_min = MIN(slot_min, nodes[i]->slot);
     }
-    return t->nodes[node_index].slot - slot_min;
+    return nodes[node_index]->slot - slot_min;
 }
 
 uint64_t sgi_machine_topology_default_ram(const SGIModelTopology *t)
 {
+    g_autofree const SGIModelNode **nodes = NULL;
     uint64_t total_mib = 0;
-    size_t i, b;
+    size_t node_count, i;
 
-    for (i = 0; i < t->node_count; i++) {
-        for (b = 0; b < SGI_MODEL_MAX_MEMORY_BANKS; b++) {
-            total_mib += t->nodes[i].bank_mib[b];
+    nodes = sgi_model_node_array(t->nodes, &node_count);
+    for (i = 0; i < node_count; i++) {
+        g_autofree uint64_t *bank_mib = NULL;
+        size_t bank_count, b;
+
+        bank_mib = sgi_model_array_uint64(nodes[i]->bank_mib, &bank_count);
+        for (b = 0; b < bank_count; b++) {
+            total_mib += bank_mib[b];
         }
     }
     return total_mib * MiB;
@@ -321,8 +409,51 @@ uint64_t sgi_machine_topology_default_ram(const SGIModelTopology *t)
 unsigned int sgi_machine_topology_default_cpus(
     const SGIModelTopology *t)
 {
-    g_assert(t->supported_cpu_population_count > 0);
-    return sgi_machine_population_total(&t->supported_cpu_populations[0]);
+    g_assert(t->supported_cpu_populations);
+    return sgi_machine_population_total(t->supported_cpu_populations->value);
+}
+
+/* A topology's own first node: every product measured has at least one. */
+static const SGIModelNode *sgi_machine_topology_node0(const SGIModelTopology *t)
+{
+    g_assert(t->nodes);
+    return t->nodes->value;
+}
+
+/* Every topology's node_count, without an index table for one integer. */
+static size_t sgi_machine_topology_node_count(const SGIModelTopology *t)
+{
+    const SGIModelNodeList *entry;
+    size_t count = 0;
+
+    for (entry = t->nodes; entry; entry = entry->next) {
+        count++;
+    }
+    return count;
+}
+
+/* Likewise for io_boards, without allocating an index table for one count. */
+static size_t sgi_machine_topology_io_board_count(const SGIModelTopology *t)
+{
+    const SGIModelIoBoardList *entry;
+    size_t count = 0;
+
+    for (entry = t->io_boards; entry; entry = entry->next) {
+        count++;
+    }
+    return count;
+}
+
+/* Likewise for crossbars. */
+static size_t sgi_machine_topology_crossbar_count(const SGIModelTopology *t)
+{
+    const SGIModelCrossbarList *entry;
+    size_t count = 0;
+
+    for (entry = t->crossbars; entry; entry = entry->next) {
+        count++;
+    }
+    return count;
 }
 
 /* Fill requested[node_count] from -smp's shape; -smp validity, not fit. */
@@ -330,13 +461,14 @@ static void sgi_machine_population_shape(const SGIModelTopology *t,
                                          MachineState *machine,
                                          unsigned int *requested)
 {
-    unsigned int i;
+    size_t node_count = sgi_machine_topology_node_count(t);
+    size_t i;
 
-    if (t->node_count == 1) {
+    if (node_count == 1) {
         requested[0] = machine->smp.cpus;
         return;
     }
-    for (i = 0; i < t->node_count; i++) {
+    for (i = 0; i < node_count; i++) {
         requested[i] = machine->smp.cores;
     }
 }
@@ -344,22 +476,28 @@ static void sgi_machine_population_shape(const SGIModelTopology *t,
 static const SGIModelCpuPopulation *sgi_machine_find_population(
     const SGIModelTopology *t, const unsigned int *requested)
 {
-    size_t i;
-    unsigned int n;
+    size_t node_count = sgi_machine_topology_node_count(t);
+    const SGIModelCpuPopulationList *entry;
 
-    for (i = 0; i < t->supported_cpu_population_count; i++) {
-        const SGIModelCpuPopulation *population =
-            &t->supported_cpu_populations[i];
+    for (entry = t->supported_cpu_populations; entry; entry = entry->next) {
+        const SGIModelCpuPopulation *population = entry->value;
+        g_autofree unsigned int *cpus_per_node = NULL;
+        size_t population_node_count, n;
+        bool matches;
 
-        if (population->node_count != t->node_count) {
+        cpus_per_node = sgi_model_array_uint32(population->cpus_per_node,
+                                               &population_node_count);
+        if (population_node_count != node_count) {
             continue;
         }
-        for (n = 0; n < population->node_count; n++) {
-            if (population->cpus_per_node[n] != requested[n]) {
+        matches = true;
+        for (n = 0; n < population_node_count; n++) {
+            if (cpus_per_node[n] != requested[n]) {
+                matches = false;
                 break;
             }
         }
-        if (n == population->node_count) {
+        if (matches) {
             return population;
         }
     }
@@ -368,40 +506,50 @@ static const SGIModelCpuPopulation *sgi_machine_find_population(
 
 /*
  * Validate that the per-node memory size (-m split evenly across every
- * node) matches this node's accepted population, per sn-model.h's
- * SGIModelNode.accepted_memory_mib: a present list is the DIMM kit
+ * node) matches this node's accepted population, per
+ * SGIModelNode.accepted-memory-mib: a present list is the DIMM kit
  * sizes the node accepts, and an absent one means the node's own
- * shipped bank_mib[] total is the only accepted size, not an open
+ * shipped bank-mib total is the only accepted size, not an open
  * fitting rule.
  */
 static bool sgi_machine_validate_memory_population(
     const SGIModelTopology *t, uint64_t per_node_mib)
 {
-    unsigned int node_index;
+    g_autofree const SGIModelNode **nodes = NULL;
+    size_t node_count, node_index;
 
-    for (node_index = 0; node_index < t->node_count; node_index++) {
-        const SGIModelNode *node = &t->nodes[node_index];
-        size_t i;
+    nodes = sgi_model_node_array(t->nodes, &node_count);
+    for (node_index = 0; node_index < node_count; node_index++) {
+        const SGIModelNode *node = nodes[node_index];
 
-        if (!node->accepted_memory_mib || !node->accepted_memory_mib_count) {
+        if (!node->accepted_memory_mib) {
+            g_autofree uint64_t *bank_mib = NULL;
             uint64_t shipped_mib = 0;
-            unsigned int bank;
+            size_t bank_count, bank;
 
-            for (bank = 0; bank < SGI_MODEL_MAX_MEMORY_BANKS; bank++) {
-                shipped_mib += node->bank_mib[bank];
+            bank_mib = sgi_model_array_uint64(node->bank_mib, &bank_count);
+            for (bank = 0; bank < bank_count; bank++) {
+                shipped_mib += bank_mib[bank];
             }
             if (per_node_mib != shipped_mib) {
                 return false;
             }
-            continue;
-        }
-        for (i = 0; i < node->accepted_memory_mib_count; i++) {
-            if (node->accepted_memory_mib[i] == per_node_mib) {
-                break;
+        } else {
+            g_autofree uint64_t *accepted = NULL;
+            size_t accepted_count, i;
+            bool found = false;
+
+            accepted = sgi_model_array_uint64(node->accepted_memory_mib,
+                                              &accepted_count);
+            for (i = 0; i < accepted_count; i++) {
+                if (accepted[i] == per_node_mib) {
+                    found = true;
+                    break;
+                }
             }
-        }
-        if (i == node->accepted_memory_mib_count) {
-            return false;
+            if (!found) {
+                return false;
+            }
         }
     }
     return true;
@@ -414,7 +562,8 @@ static const CPUArchIdList *sgi_machine_possible_cpu_arch_ids(
 {
     const SGIModelTopology *t = sgi_machine_topology(machine);
     unsigned int max_cpus = machine->smp.max_cpus;
-    unsigned int node_count = t ? t->node_count : machine->smp.sockets;
+    unsigned int node_count =
+        t ? sgi_machine_topology_node_count(t) : machine->smp.sockets;
     g_autofree unsigned int *requested = NULL;
     g_autofree unsigned int *node_of = NULL;
     g_autofree unsigned int *core_of = NULL;
@@ -508,27 +657,34 @@ static bool sgi_machine_index_xtalk_attachments(
     const SGIModelTopology *t, unsigned int *node_attachment,
     unsigned int *board_attachment, Error **errp)
 {
-    g_autofree bool *claimed = g_new0(bool, t->node_count);
+    size_t node_count = sgi_machine_topology_node_count(t);
+    size_t io_board_count = sgi_machine_topology_io_board_count(t);
+    g_autofree const SGIModelXtalkAttachment **attachments = NULL;
+    size_t attachment_count;
+    g_autofree bool *claimed = g_new0(bool, node_count);
     unsigned int board = 0;
     size_t i;
 
-    for (i = 0; i < t->xtalk_attachment_count; i++) {
-        const SGIModelXtalkAttachment *attachment = &t->xtalk_attachments[i];
+    attachments = sgi_model_xtalk_attachment_array(t->xtalk_attachments,
+                                                    &attachment_count);
+
+    for (i = 0; i < attachment_count; i++) {
+        const SGIModelXtalkAttachment *attachment = attachments[i];
         unsigned int node_index = attachment->node_index;
 
-        if (node_index >= t->node_count) {
+        if (node_index >= node_count) {
             error_setg(errp, "topology '%s' crosstalk attachment %zu names "
                       "node %u, past its %zu nodes", t->name, i, node_index,
-                      t->node_count);
+                      node_count);
             return false;
         }
         if (attachment->crossbar_index < 0) {
             node_attachment[node_index] = i;
             claimed[node_index] = true;
-            if (board >= t->io_board_count) {
+            if (board >= io_board_count) {
                 error_setg(errp, "topology '%s' names more direct-attach or "
                           "board-owning crosstalk attachments than its %zu "
-                          "io board(s)", t->name, t->io_board_count);
+                          "io board(s)", t->name, io_board_count);
                 return false;
             }
             board_attachment[board++] = i;
@@ -538,10 +694,10 @@ static bool sgi_machine_index_xtalk_attachments(
             claimed[node_index] = true;
             node_attachment[node_index] = i;
         } else {
-            if (board >= t->io_board_count) {
+            if (board >= io_board_count) {
                 error_setg(errp, "topology '%s' names more direct-attach or "
                           "board-owning crosstalk attachments than its %zu "
-                          "io board(s)", t->name, t->io_board_count);
+                          "io board(s)", t->name, io_board_count);
                 return false;
             }
             board_attachment[board++] = i;
@@ -554,17 +710,17 @@ static bool sgi_machine_index_xtalk_attachments(
      * resolves each node's own attachment before the board path builds
      * anything.
      */
-    for (i = 0; i < t->node_count; i++) {
+    for (i = 0; i < node_count; i++) {
         if (!claimed[i]) {
             error_setg(errp, "topology '%s' node %zu names no direct-attach "
                       "I/O board or crosstalk attachment", t->name, i);
             return false;
         }
     }
-    if (board != t->io_board_count) {
+    if (board != io_board_count) {
         error_setg(errp, "topology '%s' names %zu io board(s) but only %u "
                   "crosstalk attachment(s) own one", t->name,
-                  t->io_board_count, board);
+                  io_board_count, board);
         return false;
     }
     return true;
@@ -598,13 +754,42 @@ static unsigned int sgi_machine_compute_serial_line(
  */
 #define SGI_MACHINE_CROSSBAR_LINKS_PRESENT 0xff00
 
+/*
+ * A crossbar's manufacturer id and part number are fixed by which chip
+ * it is (docs/designs/sn-machine-model-architecture.md's own
+ * SGIModelCrossbarKind split: a standalone Crossbow versus an XBridge's
+ * internal crossbar section), the same on every machine fitting either,
+ * so the compiled catalogue no longer carries them. The manufacturer id
+ * is zero for both kinds measured so far; the part number is what every
+ * measured configuration's descriptor named before the ownership-rule
+ * trim.
+ */
+#define SGI_MACHINE_CROSSBAR_MANUFACTURER 0
+
+static uint32_t sgi_machine_crossbar_part(SGIModelCrossbarKind kind)
+{
+    switch (kind) {
+    case SGI_MODEL_CROSSBAR_KIND_XBOW:
+        return 0;
+    case SGI_MODEL_CROSSBAR_KIND_XBRIDGE:
+        return 0xd000;
+    default:
+        g_assert_not_reached();
+    }
+}
+
 static void sgi_machine_build_crossbars(SGIMachineState *s,
                                         const SGIModelTopology *t)
 {
-    size_t i;
+    g_autofree const SGIModelCrossbar **crossbars = NULL;
+    g_autofree const SGIModelXtalkAttachment **attachments = NULL;
+    size_t crossbar_count, attachment_count, i;
 
-    for (i = 0; i < t->crossbar_count; i++) {
-        const SGIModelCrossbar *descriptor = &t->crossbars[i];
+    crossbars = sgi_model_crossbar_array(t->crossbars, &crossbar_count);
+    attachments = sgi_model_xtalk_attachment_array(t->xtalk_attachments,
+                                                    &attachment_count);
+    for (i = 0; i < crossbar_count; i++) {
+        const SGIModelCrossbar *descriptor = crossbars[i];
         DeviceState *crossbow = qdev_new(TYPE_SGI_XBOW);
         g_autofree char *name = g_strdup_printf("crossbow%zu", i);
         uint16_t startup_alive = 0;
@@ -614,11 +799,10 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
          * The widget mask this Crossbow's own attachments populate,
          * reported as startup-links-alive for software to read.
          */
-        for (attachment_index = 0;
-             attachment_index < t->xtalk_attachment_count;
+        for (attachment_index = 0; attachment_index < attachment_count;
              attachment_index++) {
             const SGIModelXtalkAttachment *attachment =
-                &t->xtalk_attachments[attachment_index];
+                attachments[attachment_index];
 
             if ((unsigned int)attachment->crossbar_index == i) {
                 startup_alive |= 1u << attachment->widget;
@@ -633,9 +817,10 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
                           "complete-posted-error-address-writes", true);
         qdev_prop_set_uint32(crossbow, "revision",
                              descriptor->widget_revision);
-        qdev_prop_set_uint32(crossbow, "part", descriptor->widget_part);
+        qdev_prop_set_uint32(crossbow, "part",
+                             sgi_machine_crossbar_part(descriptor->kind));
         qdev_prop_set_uint32(crossbow, "manufacturer",
-                             descriptor->widget_manufacturer);
+                             SGI_MACHINE_CROSSBAR_MANUFACTURER);
         qdev_prop_set_uint16(crossbow, "links-present",
                              SGI_MACHINE_CROSSBAR_LINKS_PRESENT);
         qdev_prop_set_uint16(crossbow, "startup-links-alive", startup_alive);
@@ -650,21 +835,13 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
 
 /*
  * The onboard IOC3's own separate one-wire identity part (the carrier's
- * chip identity is a different part); NULL when this record's pci[]
- * names no IOC3, leaving sgi-baseio's own class default.
+ * chip identity is a different part); NULL when this preset's IOC3 head
+ * carries no population, leaving sgi-baseio's own class default.
  */
 static const uint64_t *sgi_machine_io_board_ioc3_serial(
-    const SGIModelIoBoard *record, uint64_t *storage)
+    const SGIModelIoBoard *record)
 {
-    size_t i;
-
-    for (i = 0; i < record->pci_count; i++) {
-        if (record->pci[i].kind == SGI_MODEL_PCI_IOC3) {
-            *storage = record->pci[i].serial;
-            return storage;
-        }
-    }
-    return NULL;
+    return record->has_ioc3_serial ? &record->ioc3_serial : NULL;
 }
 
 /*
@@ -675,14 +852,12 @@ static const uint64_t *sgi_machine_io_board_ioc3_serial(
  * carry, the same policy the Crossbow-attached BaseIO card below applies.
  */
 static bool sgi_machine_instantiate_ip29_io(
-    SGIMachineState *s, const SGIModelTopology *t, unsigned int board_index,
+    SGIMachineState *s, const SGIModelTopology *t,
+    const SGIModelIoBoard *record, unsigned int board_index,
     const SGIModelXtalkAttachment *attachment, Error **errp)
 {
-    const SGIModelIoBoard *record = &t->io_boards[board_index];
     SN0NodeState *node = s->nodes[attachment->node_index];
-    uint64_t ioc3_serial_storage;
-    const uint64_t *ioc3_serial =
-        sgi_machine_io_board_ioc3_serial(record, &ioc3_serial_storage);
+    const uint64_t *ioc3_serial = sgi_machine_io_board_ioc3_serial(record);
     /*
      * "pci" for the first onboard board, "pci.<N>" for a second: a
      * two-chassis Origin 200's two onboard Bridges would otherwise share
@@ -712,8 +887,7 @@ static bool sgi_machine_instantiate_ip29_io(
         chardev_b ? chardev_b->label : NULL,
         record_a ? record_a->label : NULL,
         record_b ? record_b->label : NULL, parallel_id,
-        attachment->discovery_widget, attachment->widget,
-        attachment->decoded_widget_mask, errp);
+        attachment->widget, errp);
 }
 
 /*
@@ -725,10 +899,10 @@ static bool sgi_machine_instantiate_ip29_io(
  * pass, after this function's every caller has returned).
  */
 static bool sgi_machine_instantiate_baseio_card(
-    SGIMachineState *s, const SGIModelTopology *t, unsigned int board_index,
+    SGIMachineState *s, const SGIModelTopology *t,
+    const SGIModelIoBoard *record, unsigned int board_index,
     const SGIModelXtalkAttachment *attachment, Error **errp)
 {
-    const SGIModelIoBoard *record = &t->io_boards[board_index];
     DeviceState *dev = qdev_new(TYPE_SGI_XIO_BASEIO);
     g_autofree char *name = g_strdup_printf("io-board%u", board_index);
     /*
@@ -771,14 +945,8 @@ static bool sgi_machine_instantiate_baseio_card(
     qdev_prop_set_uint32(dev, "module", record->module_index);
     qdev_prop_set_uint32(dev, "slot", attachment->widget);
     qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
-    {
-        uint64_t ioc3_serial_storage;
-        const uint64_t *ioc3_serial =
-            sgi_machine_io_board_ioc3_serial(record, &ioc3_serial_storage);
-
-        if (ioc3_serial) {
-            qdev_prop_set_uint64(dev, "ioc3-onewire-serial", *ioc3_serial);
-        }
+    if (record->has_ioc3_serial) {
+        qdev_prop_set_uint64(dev, "ioc3-onewire-serial", record->ioc3_serial);
     }
     qdev_prop_set_string(dev, "pci-bus-name", bus_name);
     if (nvram_blk) {
@@ -814,31 +982,30 @@ static bool sgi_machine_instantiate_baseio_card(
 }
 
 /*
- * Build one io_boards[] entry, wire it to its own crosstalk position and
+ * Build one io_boards entry, wire it to its own crosstalk position and
  * realize it: IP29's onboard I/O (direct-attach) and the Origin 2000
  * BaseIO card (Crossbow-attach) are different enough carriers now
  * (sn0.c owns one outright; the other is an sgi-xio-board instance this
- * file builds) that board_kind alone -- not attachment kind -- decides
+ * file builds) that preset alone -- not attachment kind -- decides
  * which function runs; tests/unit/test-sn-model.c checks the compiled
- * descriptor names no other board_kind once, so this dispatch trusts it
+ * descriptor names no other preset once, so this dispatch trusts it
  * and only reports the case it does not recognize.
  */
 static bool sgi_machine_instantiate_io_board(
-    SGIMachineState *s, const SGIModelTopology *t, unsigned int board_index,
+    SGIMachineState *s, const SGIModelTopology *t,
+    const SGIModelIoBoard *record, unsigned int board_index,
     const SGIModelXtalkAttachment *attachment, Error **errp)
 {
-    const SGIModelIoBoard *record = &t->io_boards[board_index];
-
-    switch (record->board_kind) {
-    case SGI_MODEL_IO_IP29_IO:
-        return sgi_machine_instantiate_ip29_io(s, t, board_index, attachment,
-                                               errp);
-    case SGI_MODEL_IO_BASEIO:
-        return sgi_machine_instantiate_baseio_card(s, t, board_index,
+    switch (record->preset) {
+    case SGI_MODEL_IO_BOARD_PRESET_IP29_IO:
+        return sgi_machine_instantiate_ip29_io(s, t, record, board_index,
+                                               attachment, errp);
+    case SGI_MODEL_IO_BOARD_PRESET_BASEIO:
+        return sgi_machine_instantiate_baseio_card(s, t, record, board_index,
                                                    attachment, errp);
     default:
         error_setg(errp, "topology '%s' io board %u names an unsupported "
-                  "board kind for this family", t->name, board_index);
+                  "preset for this family", t->name, board_index);
         return false;
     }
 }
@@ -861,16 +1028,23 @@ static bool sgi_machine_realize_crossbars(
     const unsigned int *node_attachment, const unsigned int *board_attachment,
     Error **errp)
 {
-    size_t i;
+    g_autofree const SGIModelXtalkAttachment **attachments = NULL;
+    size_t crossbar_count = sgi_machine_topology_crossbar_count(t);
+    size_t node_count = sgi_machine_topology_node_count(t);
+    size_t io_board_count = sgi_machine_topology_io_board_count(t);
+    size_t attachment_count, i;
 
-    for (i = 0; i < t->crossbar_count; i++) {
+    attachments = sgi_model_xtalk_attachment_array(t->xtalk_attachments,
+                                                    &attachment_count);
+
+    for (i = 0; i < crossbar_count; i++) {
         if (!sysbus_realize(SYS_BUS_DEVICE(s->crossbars[i]), errp)) {
             return false;
         }
     }
-    for (i = 0; i < t->node_count; i++) {
+    for (i = 0; i < node_count; i++) {
         const SGIModelXtalkAttachment *attachment =
-            &t->xtalk_attachments[node_attachment[i]];
+            attachments[node_attachment[i]];
         g_autofree char *name = g_strdup_printf("node%zu", i);
 
         if (attachment->crossbar_index < 0) {
@@ -883,9 +1057,9 @@ static bool sgi_machine_realize_crossbars(
             return false;
         }
     }
-    for (i = 0; i < t->io_board_count; i++) {
+    for (i = 0; i < io_board_count; i++) {
         const SGIModelXtalkAttachment *attachment =
-            &t->xtalk_attachments[board_attachment[i]];
+            attachments[board_attachment[i]];
         g_autofree char *name = g_strdup_printf("io-board%zu", i);
 
         if (attachment->crossbar_index < 0) {
@@ -911,12 +1085,17 @@ static bool sgi_machine_realize_crossbars(
 static void sgi_machine_attach_module_identities(SGIMachineState *s,
                                                   const SGIModelTopology *t)
 {
-    size_t module_index;
+    g_autofree const SGIModelModule **modules = NULL;
+    g_autofree const SGIModelNode **nodes = NULL;
+    size_t module_count, node_count, module_index;
 
-    for (module_index = 0; module_index < t->module_count; module_index++) {
-        const SGIModelModule *module = &t->modules[module_index];
+    modules = sgi_model_module_array(t->modules, &module_count);
+    nodes = sgi_model_node_array(t->nodes, &node_count);
+    for (module_index = 0; module_index < module_count; module_index++) {
+        const SGIModelModule *module = modules[module_index];
+        g_autofree unsigned int *module_nodes = NULL;
+        size_t module_node_count, i;
         SGIHubModuleIdentity identity;
-        size_t i;
 
         if (module->controller_index < 0) {
             continue;
@@ -927,11 +1106,13 @@ static void sgi_machine_attach_module_identities(SGIMachineState *s,
                         module->id);
             exit(EXIT_FAILURE);
         }
-        for (i = 0; i < module->node_count; i++) {
-            unsigned int node_index = module->nodes[i];
+        module_nodes = sgi_model_array_uint32(module->nodes,
+                                              &module_node_count);
+        for (i = 0; i < module_node_count; i++) {
+            unsigned int node_index = module_nodes[i];
 
             sgi_sn0_module_management_identity_rom(
-                t->nodes[node_index].slot, module->initial_module_number,
+                nodes[node_index]->slot, module->initial_module_number,
                 identity.rom);
             if (!sgi_hub_attach_module_identity(&s->nodes[node_index]->hub,
                                                 &identity, &error_fatal)) {
@@ -951,20 +1132,24 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
                                           const SGIModelTopology *t,
                                           Error **errp)
 {
-    size_t controller_index;
+    g_autofree const SGIModelController **controllers = NULL;
+    g_autofree const SGIModelModule **modules = NULL;
+    size_t controller_count, module_count, controller_index;
 
-    for (controller_index = 0; controller_index < t->controller_count;
+    controllers = sgi_model_controller_array(t->controllers, &controller_count);
+    modules = sgi_model_module_array(t->modules, &module_count);
+    for (controller_index = 0; controller_index < controller_count;
          controller_index++) {
-        const SGIModelController *controller =
-            &t->controllers[controller_index];
+        const SGIModelController *controller = controllers[controller_index];
         const SGIModelModule *module = NULL;
+        g_autofree unsigned int *module_nodes = NULL;
+        size_t module_node_count, i;
         DeviceState *dev;
         Chardev *aux;
-        size_t i;
 
-        for (i = 0; i < t->module_count; i++) {
-            if (t->modules[i].controller_index == (int)controller_index) {
-                module = &t->modules[i];
+        for (i = 0; i < module_count; i++) {
+            if (modules[i]->controller_index == (int64_t)controller_index) {
+                module = modules[i];
                 break;
             }
         }
@@ -973,15 +1158,17 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
                       t->name, controller_index);
             return false;
         }
-        if (controller->kind != SGI_MODEL_CONTROLLER_MSC) {
+        if (controller->kind != SGI_MODEL_CONTROLLER_KIND_MSC) {
             error_setg(errp, "topology '%s' controller %zu names an unknown "
                       "controller kind", t->name, controller_index);
             return false;
         }
-        if (module->node_count > SGI_O2000_ADAPTER_COUNT) {
+        module_nodes = sgi_model_array_uint32(module->nodes,
+                                              &module_node_count);
+        if (module_node_count > SGI_O2000_ADAPTER_COUNT) {
             error_setg(errp, "topology '%s' module '%s' has %zu nodes, "
                       "beyond its controller's %u adapters", t->name,
-                      module->id, module->node_count,
+                      module->id, module_node_count,
                       SGI_O2000_ADAPTER_COUNT);
             return false;
         }
@@ -994,22 +1181,21 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
         qdev_prop_set_string(dev, "model-serial", module->serial);
         qdev_prop_set_uint8(dev, "dip-switches", s->elsc_dip_switches);
         aux = serial_hd(sgi_machine_compute_serial_line(
-            t, module->nodes[0], SN0_ELSC_CHARDEV));
+            t, module_nodes[0], SN0_ELSC_CHARDEV));
         if (aux) {
             qdev_prop_set_chr(dev, "chardev", aux);
         }
         qdev_realize_and_unref(dev, NULL, &error_fatal);
 
-        for (i = 0; i < module->node_count; i++) {
-            unsigned int node_index = module->nodes[i];
-            const SGIModelNode *model_node = &t->nodes[node_index];
+        for (i = 0; i < module_node_count; i++) {
+            unsigned int node_index = module_nodes[i];
             SGIHubState *hub = &s->nodes[node_index]->hub;
             SysBusDevice *adapter = SYS_BUS_DEVICE(
                 sgi_sn0_module_management_get_adapter(
                     SGI_SN0_MODULE_MANAGEMENT(dev), i));
 
             memory_region_add_subregion_overlap(
-                &hub->regs, model_node->management_adapter_offset,
+                &hub->regs, SN0_HUB_MODULE_ADAPTER_OFFSET,
                 sysbus_mmio_get_region(adapter, 0), 1);
         }
     }
@@ -1020,10 +1206,12 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
 static void sgi_machine_build_routers(SGIMachineState *s,
                                       const SGIModelTopology *t)
 {
-    size_t i;
+    g_autofree const SGIModelRouter **routers = NULL;
+    size_t router_count, i;
 
-    for (i = 0; i < t->router_count; i++) {
-        const SGIModelRouter *router = &t->routers[i];
+    routers = sgi_model_router_array(t->routers, &router_count);
+    for (i = 0; i < router_count; i++) {
+        const SGIModelRouter *router = routers[i];
         g_autofree char *name = g_strdup_printf("router%zu", i);
         DeviceState *dev = qdev_new(TYPE_SGI_ROUTER);
         unsigned int vertex;
@@ -1080,7 +1268,8 @@ static void sgi_machine_build_flash(const SGIModelTopology *t,
 {
     static const uint32_t jr_ra = 0x03e00008;      /* jr $31 */
     static const uint32_t branch_to_self = 0x1000ffff; /* b . */
-    const SGIModelProcessor *cpu = t->nodes[0].cpu_slots[0].assembly;
+    const SGIModelProcessor *cpu =
+        sgi_machine_topology_node0(t)->cpu_slots->value->assembly;
     uint8_t *config = flash + SGI_MACHINE_CONFIG_OFFSET;
     int i;
 
@@ -1231,23 +1420,25 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     g_autofree unsigned int *node_attachment = NULL;
     g_autofree unsigned int *board_attachment = NULL;
     g_autofree BlockBackend **flash_drives = NULL;
+    g_autofree const SGIModelNode **nodes = NULL;
     unsigned int flash_count = 0;
     unsigned int node_count, node_index, board_index;
     unsigned int cpu_index = 0, cpu_base = 0;
+    size_t io_board_count = 0, crossbar_count = 0, node_count_check;
     uint64_t ram_offset = 0;
-    size_t link_index;
 
     if (!t) {
         GString *names = g_string_new(NULL);
-        size_t i;
+        const SGIModelTopologyList *entry;
 
-        for (i = 0; i < sgi_model_entry_count; i++) {
-            if (sgi_machine_topology_matches_product(&sgi_model_entries[i],
+        for (entry = sgi_model_catalogue()->topologies; entry;
+             entry = entry->next) {
+            if (sgi_machine_topology_matches_product(entry->value,
                                                       smc->product)) {
                 if (names->len) {
                     g_string_append(names, ", ");
                 }
-                g_string_append(names, sgi_model_entries[i].name);
+                g_string_append(names, entry->value->name);
             }
         }
         error_setg(errp, "%s: unknown topology '%s'; known topologies: %s",
@@ -1257,11 +1448,15 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         return false;
     }
     if (sgi_machine_has_identity_records(s)) {
+        g_autofree const SGIModelController **controllers = NULL;
+        size_t controller_count;
         bool has_l1 = false;
         size_t i;
 
-        for (i = 0; i < t->controller_count; i++) {
-            if (t->controllers[i].kind == SGI_MODEL_CONTROLLER_L1) {
+        controllers = sgi_model_controller_array(t->controllers,
+                                                  &controller_count);
+        for (i = 0; i < controller_count; i++) {
+            if (controllers[i]->kind == SGI_MODEL_CONTROLLER_KIND_L1) {
                 has_l1 = true;
                 break;
             }
@@ -1290,7 +1485,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         return false;
     }
 
-    node_count = t->node_count;
+    node_count = sgi_machine_topology_node_count(t);
     requested = g_new0(unsigned int, node_count);
     if (node_count == 1) {
         if (machine->smp.sockets != 1) {
@@ -1358,7 +1553,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
      * rather than refusing every origin300 launch that does not turn it
      * off explicitly.
      */
-    if (t->nodes[0].asic_kind == SGI_MODEL_ASIC_HUB && s->debug_leds) {
+    if (sgi_machine_topology_node0(t)->asic_kind == SGI_MODEL_ASIC_KIND_HUB &&
+        s->debug_leds) {
         TraceEvent *ev = trace_event_name("sgi_hub_led");
 
         if (!ev) {
@@ -1375,19 +1571,32 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
 
     /* One clock per processor entry; both node kinds share this rate rule. */
     s->cpu_refclk = clock_new(OBJECT(machine), "cpu-refclk");
-    clock_set_hz(s->cpu_refclk, t->nodes[0].cpu_slots[0].assembly->clock_hz);
+    clock_set_hz(s->cpu_refclk,
+                sgi_machine_topology_node0(t)->cpu_slots->value->assembly->clock_hz);
 
-    if (t->nodes[0].asic_kind != SGI_MODEL_ASIC_HUB) {
+    if (sgi_machine_topology_node0(t)->asic_kind != SGI_MODEL_ASIC_KIND_HUB) {
+        g_autofree const SGIModelIoBoard **io_boards = NULL;
+        g_autofree const SGIModelXtalkAttachment **attachments = NULL;
         const SGIModelIoBoard *populated_board = NULL;
         g_autofree unsigned int *widgets = NULL;
+        size_t io_board_count, attachment_count;
         size_t widget_count = 0;
         size_t i;
         Object *node;
 
-        g_assert(t->node_count == 1);
-        for (i = 0; i < t->io_board_count; i++) {
-            if (t->io_boards[i].pci_count) {
-                populated_board = &t->io_boards[i];
+        g_assert(node_count == 1);
+        io_boards = sgi_model_io_board_array(t->io_boards, &io_board_count);
+        attachments = sgi_model_xtalk_attachment_array(t->xtalk_attachments,
+                                                        &attachment_count);
+        for (i = 0; i < io_board_count; i++) {
+            /*
+             * pci_count went with the ownership-rule trim; a preset's
+             * fitted IOC3 one-wire serial is the one fact left that
+             * distinguishes a populated head from an empty one (Origin
+             * 300's second XBridge head carries no population at all).
+             */
+            if (io_boards[i]->has_ioc3_serial) {
+                populated_board = io_boards[i];
             }
         }
         /*
@@ -1395,19 +1604,19 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
          * per xtalk attachment (a board slot, populated or not -- see
          * sn1-node.c's widget-wiring comment for why an empty slot still
          * needs one). tests/unit/test-sn-model.c already checks that every
-         * Bedrock topology in sgi_model_entries[] ships a populated_board.
+         * Bedrock topology in the compiled catalogue ships a populated_board.
          */
-        widgets = g_new0(unsigned int, t->xtalk_attachment_count + 1);
+        widgets = g_new0(unsigned int, attachment_count + 1);
         widgets[widget_count++] = 0;
-        for (i = 0; i < t->xtalk_attachment_count; i++) {
-            widgets[widget_count++] = t->xtalk_attachments[i].widget;
+        for (i = 0; i < attachment_count; i++) {
+            widgets[widget_count++] = attachments[i]->widget;
         }
 
         node = object_new(TYPE_SGI_SN1_NODE);
         object_property_add_child(OBJECT(machine), "node0", node);
         object_unref(node);
         s->bedrock_node = DEVICE(node);
-        SN1_NODE(node)->model_node = &t->nodes[0];
+        SN1_NODE(node)->model_node = sgi_machine_topology_node0(t);
         SN1_NODE(node)->io_board = populated_board;
         SN1_NODE(node)->xbridge_widgets = g_steal_pointer(&widgets);
         SN1_NODE(node)->xbridge_widget_count = widget_count;
@@ -1438,18 +1647,21 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         return false;
     }
 
+    io_board_count = sgi_machine_topology_io_board_count(t);
+    crossbar_count = sgi_machine_topology_crossbar_count(t);
+
     s->num_nodes = node_count;
     s->nodes = g_new0(SN0NodeState *, node_count);
-    /* Indexed by io_boards[] position, one entry per board, not by node. */
-    s->io_boards = g_new0(SGIXioBoardState *, t->io_board_count);
-    s->direct_links = g_new0(SGIXtalkDirectLink, t->io_board_count);
-    s->crossbars = g_new0(SGIXbowState *, t->crossbar_count);
-    /* One crossbow link per node, then one per io_boards[] position. */
+    /* Indexed by io_boards position, one entry per board, not by node. */
+    s->io_boards = g_new0(SGIXioBoardState *, io_board_count);
+    s->direct_links = g_new0(SGIXtalkDirectLink, io_board_count);
+    s->crossbars = g_new0(SGIXbowState *, crossbar_count);
+    /* One crossbow link per node, then one per io_boards position. */
     s->crossbow_links =
-        g_new0(SGIXtalkCrossbowLink, node_count + t->io_board_count);
+        g_new0(SGIXtalkCrossbowLink, node_count + io_board_count);
 
     node_attachment = g_new0(unsigned int, node_count);
-    board_attachment = g_new0(unsigned int, t->io_board_count);
+    board_attachment = g_new0(unsigned int, io_board_count);
 
     for (node_index = 0; node_index < node_count; node_index++) {
         g_autofree char *name = g_strdup_printf("node%u", node_index);
@@ -1474,28 +1686,39 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         g_assert(endpoint == node_index);
     }
     sgi_machine_build_routers(s, t);
-    for (link_index = 0; link_index < t->link_count; link_index++) {
-        const SGIModelFabricLink *link = &t->links[link_index];
-        SN0FabricVertex a = {
-            .kind = link->ends[0].kind == SGI_MODEL_FABRIC_ROUTER ?
-                SN0_FABRIC_VERTEX_ROUTER : SN0_FABRIC_VERTEX_HUB,
-            .index = link->ends[0].index,
-            .port = link->ends[0].port,
-        };
-        SN0FabricVertex b = {
-            .kind = link->ends[1].kind == SGI_MODEL_FABRIC_ROUTER ?
-                SN0_FABRIC_VERTEX_ROUTER : SN0_FABRIC_VERTEX_HUB,
-            .index = link->ends[1].index,
-            .port = link->ends[1].port,
-        };
+    {
+        g_autofree const SGIModelCable **cables = NULL;
+        size_t cable_count, cable_index;
 
-        sn0_fabric_routed_add_link(s->fabric, link->name, a, b);
+        cables = sgi_model_cable_array(t->cables, &cable_count);
+        for (cable_index = 0; cable_index < cable_count; cable_index++) {
+            const SGIModelCable *cable = cables[cable_index];
+            const SGIModelLinkEnd *end0 = cable->ends->value;
+            const SGIModelLinkEnd *end1 = cable->ends->next->value;
+            SN0FabricVertex a = {
+                .kind = end0->kind == SGI_MODEL_LINK_END_KIND_ROUTER ?
+                    SN0_FABRIC_VERTEX_ROUTER : SN0_FABRIC_VERTEX_HUB,
+                .index = end0->index,
+                .port = end0->port,
+            };
+            SN0FabricVertex b = {
+                .kind = end1->kind == SGI_MODEL_LINK_END_KIND_ROUTER ?
+                    SN0_FABRIC_VERTEX_ROUTER : SN0_FABRIC_VERTEX_HUB,
+                .index = end1->index,
+                .port = end1->port,
+            };
+
+            sn0_fabric_routed_add_link(s->fabric, cable->name, a, b);
+        }
     }
     qdev_realize_and_unref(DEVICE(s->fabric), NULL, &error_fatal);
 
+    nodes = sgi_model_node_array(t->nodes, &node_count_check);
+    g_assert(node_count_check == node_count);
+
     for (node_index = 0; node_index < node_count; node_index++) {
         SN0NodeState *node = s->nodes[node_index];
-        const SGIModelNode *model_node = &t->nodes[node_index];
+        const SGIModelNode *model_node = nodes[node_index];
         uint64_t ram_size = machine->ram_size / node_count;
         uint16_t bank_mb[SN0_MAX_MEMORY_BANKS];
         unsigned int populated_banks;
@@ -1583,11 +1806,15 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
      * node's own link claims it here, on a proxy of its own -- the
      * Crossbow itself, and its real packet ingress, do not exist yet.
      */
-    if (t->crossbar_count) {
+    if (crossbar_count) {
+        g_autofree const SGIModelXtalkAttachment **attachments = NULL;
+        size_t attachment_count;
+
         sgi_machine_build_crossbars(s, t);
+        attachments = sgi_model_xtalk_attachment_array(t->xtalk_attachments,
+                                                        &attachment_count);
         for (node_index = 0; node_index < node_count; node_index++) {
-            if (t->xtalk_attachments[node_attachment[node_index]]
-                    .crossbar_index >= 0) {
+            if (attachments[node_attachment[node_index]]->crossbar_index >= 0) {
                 g_autofree char *name =
                     g_strdup_printf("node%u-packet-proxy", node_index);
 
@@ -1625,7 +1852,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         SGIElscState *slave = NULL;
 
         for (node_index = 0; node_index < node_count; node_index++) {
-            if (t->nodes[node_index].slave_role) {
+            if (nodes[node_index]->slave_role) {
                 slave = s->nodes[node_index]->hub.elsc;
             } else {
                 master = s->nodes[node_index]->hub.elsc;
@@ -1642,27 +1869,38 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
      * Every node is realized now, so a direct board's claim view exists
      * and a Crossbow-attached node's physical map can be read.
      */
-    for (board_index = 0; board_index < t->io_board_count; board_index++) {
-        const SGIModelXtalkAttachment *attachment =
-            &t->xtalk_attachments[board_attachment[board_index]];
+    {
+        g_autofree const SGIModelIoBoard **io_boards = NULL;
+        g_autofree const SGIModelXtalkAttachment **attachments = NULL;
+        size_t io_board_count_check, attachment_count;
 
-        if (!sgi_machine_instantiate_io_board(s, t, board_index, attachment,
-                                              errp)) {
-            return false;
-        }
-    }
-    for (node_index = 0; node_index < node_count; node_index++) {
-        const SGIModelXtalkAttachment *attachment =
-            &t->xtalk_attachments[node_attachment[node_index]];
+        io_boards = sgi_model_io_board_array(t->io_boards, &io_board_count_check);
+        g_assert(io_board_count_check == io_board_count);
+        attachments = sgi_model_xtalk_attachment_array(t->xtalk_attachments,
+                                                        &attachment_count);
+        for (board_index = 0; board_index < io_board_count; board_index++) {
+            const SGIModelXtalkAttachment *attachment =
+                attachments[board_attachment[board_index]];
 
-        if (attachment->crossbar_index >= 0) {
-            g_autofree char *name = g_strdup_printf("node%u", node_index);
-
-            if (!sgi_xtalk_crossbow_link_attach_hub(
-                    &s->crossbow_links[node_index], OBJECT(s), name,
-                    s->crossbars[attachment->crossbar_index],
-                    attachment->widget, errp)) {
+            if (!sgi_machine_instantiate_io_board(
+                    s, t, io_boards[board_index], board_index, attachment,
+                    errp)) {
                 return false;
+            }
+        }
+        for (node_index = 0; node_index < node_count; node_index++) {
+            const SGIModelXtalkAttachment *attachment =
+                attachments[node_attachment[node_index]];
+
+            if (attachment->crossbar_index >= 0) {
+                g_autofree char *name = g_strdup_printf("node%u", node_index);
+
+                if (!sgi_xtalk_crossbow_link_attach_hub(
+                        &s->crossbow_links[node_index], OBJECT(s), name,
+                        s->crossbars[attachment->crossbar_index],
+                        attachment->widget, errp)) {
+                    return false;
+                }
             }
         }
     }
@@ -1706,12 +1944,13 @@ static void sgi_machine_reset(MachineState *machine, ResetType type)
      * cpu_reset() to run before qemu_devices_reset(), the reverse of
      * the Hub's own order below, so it cannot share this prefix.
      */
-    if (t && t->nodes[0].asic_kind != SGI_MODEL_ASIC_HUB) {
+    if (t && sgi_machine_topology_node0(t)->asic_kind != SGI_MODEL_ASIC_KIND_HUB) {
         sn1_node_full_reset(SN1_NODE(s->bedrock_node), type);
         return;
     }
 
-    mode_bits = t ? t->nodes[0].cpu_slots[0].assembly->mode_bits : 0;
+    mode_bits = t ?
+        sgi_machine_topology_node0(t)->cpu_slots->value->assembly->mode_bits : 0;
     qemu_devices_reset(type);
     CPU_FOREACH(cs) {
         CPUMIPSState *env = &MIPS_CPU(cs)->env;
@@ -1918,10 +2157,16 @@ static void origin2000_instance_init(Object *obj)
 {
     MachineState *machine = MACHINE(obj);
     const SGIModelTopology *t = sgi_model_find_topology("origin2000-module");
+    const SGIModelCpuSlotList *slot;
+    unsigned int cpu_slot_count = 0;
 
     g_assert(t);
-    machine->smp.sockets = t->node_count;
-    machine->smp.cores = t->nodes[0].cpu_slot_count;
+    machine->smp.sockets = sgi_machine_topology_node_count(t);
+    for (slot = sgi_machine_topology_node0(t)->cpu_slots; slot;
+         slot = slot->next) {
+        cpu_slot_count++;
+    }
+    machine->smp.cores = cpu_slot_count;
 }
 
 static const TypeInfo sgi_machine_types[] = {

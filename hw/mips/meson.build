@@ -22,11 +22,9 @@ mips_ss.add(when: ['CONFIG_SGI_SN0', 'CONFIG_TEST_DEVICES'],
 # Shared by sgi-sn0-node and sgi-sn1-node; SGI_SN0 always implies SGI_SN1 is
 # also selected on this fork's mips64 target, so either config would do.
 mips_ss.add(when: 'CONFIG_SGI_SN0', if_true: files('sgi/sn-promdata.c'))
-# The format-2 machine descriptor (sn-model.h) and the family machine
-# base and builder that reads it (Origin 200 so far; other products
-# join at later steps).
-mips_ss.add(when: 'CONFIG_SGI_SN0',
-            if_true: files('sgi/sn-model.c', 'sgi/sn-machine.c'))
+# The family machine base and builder over the compiled catalogue
+# (qapi/sgi-sn.json, embedded and parsed by sgi/sn-catalogue.c below).
+mips_ss.add(when: 'CONFIG_SGI_SN0', if_true: files('sgi/sn-machine.c'))
 mips_ss.add(when: 'CONFIG_SGI_SN1',
             if_true: files('sgi/sn1.c', 'sgi/sn1-node.c',
                            'sgi/sn1-topology.c'))

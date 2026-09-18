@@ -9,9 +9,10 @@
  * one fixed offset, a one-byte write of any offset).
  *
  * BaseIO's Bridge sits at widget 8 on the default origin2000 topology's
- * own crossbar 0, the same crossbar node 0 itself attaches to
- * (hw/mips/sgi/sn-model.c, sgi_model_origin2000_module_xtalk), so a big
- * window CPU 0 programs with that widget number reaches BaseIO's Bridge.
+ * own crossbar 0, the same crossbar node 0 itself attaches to (the
+ * compiled catalogue's own origin2000-module xtalk-attachments entries),
+ * so a big window CPU 0 programs with that widget number reaches
+ * BaseIO's Bridge.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */

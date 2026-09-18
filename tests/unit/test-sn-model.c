@@ -1,29 +1,44 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The compiled descriptor's own structural invariants (hw/mips/sgi/
- * sn-model.c's sgi_model_entries[]), checked once here instead of at
- * every machine launch. hw/mips/sgi/sn-machine.c's builder trusts this
- * descriptor now: Origami's compiler and its goldens are what keep
- * sgi_model_entries[] well-formed, and this test is what proves that for
- * the entries actually shipped. See docs/plans/sn-machine-model.md,
- * "The builder trusts the descriptor", and docs/designs/
- * sn-machine-model-architecture.md's "Validation" section.
+ * The compiled catalogue's own structural invariants (hw/mips/sgi/
+ * sn-catalogue.json's topologies), checked once here instead of at every
+ * machine launch. hw/mips/sgi/sn-machine.c's builder trusts this
+ * catalogue now: Origami's compiler and its goldens are what keep it
+ * well-formed, and this test is what proves that for the file actually
+ * shipped. See docs/plans/sn-machine-model.md, "The builder trusts the
+ * descriptor", and docs/designs/sn-machine-model-architecture.md's
+ * "Validation" section.
+ *
+ * Parses the tracked hw/mips/sgi/sn-catalogue.json directly, the same way
+ * hw/mips/sgi/sn-catalogue.c parses the build's embedded copy of the same
+ * file (qobject_from_json() and qobject_input_visitor_new(), also
+ * hw/uefi/var-service-json.c's pattern) -- reading the file here rather
+ * than linking the embedding machinery keeps this a host-native test with
+ * no target/mips dependency, the same property it had linking sn-model.c
+ * directly before the compiled-catalogue step.
  */
 
 #include "qemu/osdep.h"
-#include "hw/mips/sgi/sn-model.h"
+#include "qapi/error.h"
+#include "qapi/qapi-types-sgi-sn.h"
+#include "qapi/qapi-visit-sgi-sn.h"
+#include "qapi/qobject-input-visitor.h"
+#include "qobject/qjson.h"
+#include "qobject/qobject.h"
 
 /*
  * A node ASIC's CPU-slot and memory-bank shape: hardware facts, not
  * configuration (the deleted sgi_machine_asic_shape()'s own values).
- * The Hub's real numbers live in sn-machine.c's sgi_sn0_hub_hardware,
- * whose header (sn0.h) pulls in target/mips/cpu.h and so cannot link
- * into this host-native test; both kinds resolve to the same
- * SGI_MODEL_MAX_MEMORY_BANKS today (sgi_sn0_hub_hardware.memory.
- * architectural_banks is 8, the array bound every node's bank_mib[]
+ * The Hub's real numbers live in hw/mips/sgi/sn-machine.c's
+ * sgi_sn0_hub_hardware, whose header (sn0.h) pulls in target/mips/cpu.h
+ * and so cannot link into this host-native test; both kinds resolve to
+ * the same architectural bank count today (sgi_sn0_hub_hardware.memory.
+ * architectural_banks is 8, the same array bound every node's bank-mib
  * already carries), so restating that literal here duplicates no
- * information sn-model.h does not already fix.
+ * information the catalogue does not already fix.
  */
+#define SN_ARCHITECTURAL_MEMORY_BANKS 8
+
 struct AsicShape {
     unsigned int cpu_interfaces;
     unsigned int cpu_slots_per_interface;
@@ -33,18 +48,18 @@ struct AsicShape {
 static bool asic_shape(SGIModelAsicKind kind, struct AsicShape *shape)
 {
     switch (kind) {
-    case SGI_MODEL_ASIC_HUB:
+    case SGI_MODEL_ASIC_KIND_HUB:
         *shape = (struct AsicShape){
             .cpu_interfaces = 1,
             .cpu_slots_per_interface = 2,
-            .architectural_banks = SGI_MODEL_MAX_MEMORY_BANKS,
+            .architectural_banks = SN_ARCHITECTURAL_MEMORY_BANKS,
         };
         return true;
-    case SGI_MODEL_ASIC_BEDROCK:
+    case SGI_MODEL_ASIC_KIND_BEDROCK:
         *shape = (struct AsicShape){
             .cpu_interfaces = 2,
             .cpu_slots_per_interface = 2,
-            .architectural_banks = SGI_MODEL_MAX_MEMORY_BANKS,
+            .architectural_banks = SN_ARCHITECTURAL_MEMORY_BANKS,
         };
         return true;
     default:
@@ -52,24 +67,69 @@ static bool asic_shape(SGIModelAsicKind kind, struct AsicShape *shape)
     }
 }
 
-/* Every module's nodes[] partitions t->node_count: no gap, no overlap. */
+static size_t node_count(const SGIModelTopology *t)
+{
+    const SGIModelNodeList *entry;
+    size_t count = 0;
+
+    for (entry = t->nodes; entry; entry = entry->next) {
+        count++;
+    }
+    return count;
+}
+
+static size_t router_count(const SGIModelTopology *t)
+{
+    const SGIModelRouterList *entry;
+    size_t count = 0;
+
+    for (entry = t->routers; entry; entry = entry->next) {
+        count++;
+    }
+    return count;
+}
+
+static size_t io_board_count(const SGIModelTopology *t)
+{
+    const SGIModelIoBoardList *entry;
+    size_t count = 0;
+
+    for (entry = t->io_boards; entry; entry = entry->next) {
+        count++;
+    }
+    return count;
+}
+
+static const SGIModelNode *node0(const SGIModelTopology *t)
+{
+    g_assert(t->nodes);
+    return t->nodes->value;
+}
+
+/* Every module's nodes list partitions the topology's own nodes: no gap, no
+ * overlap.
+ */
 static void check_modules_partition_nodes(const SGIModelTopology *t)
 {
-    g_autofree bool *claimed = g_new0(bool, t->node_count);
-    size_t i, j;
+    size_t total_nodes = node_count(t);
+    g_autofree bool *claimed = g_new0(bool, total_nodes);
+    const SGIModelModuleList *module_entry;
+    size_t i;
 
-    for (i = 0; i < t->module_count; i++) {
-        const SGIModelModule *module = &t->modules[i];
+    for (module_entry = t->modules; module_entry;
+         module_entry = module_entry->next) {
+        const uint32List *node_entry;
 
-        for (j = 0; j < module->node_count; j++) {
-            unsigned int node_index = module->nodes[j];
+        for (node_entry = module_entry->value->nodes; node_entry;
+             node_entry = node_entry->next) {
+            unsigned int node_index = node_entry->value;
 
-            g_assert_cmpuint(node_index, <, t->node_count);
+            g_assert_cmpuint(node_index, <, total_nodes);
             g_assert_false(claimed[node_index]);
             claimed[node_index] = true;
         }
     }
-    for (i = 0; i < t->node_count; i++) {
+    for (i = 0; i < total_nodes; i++) {
         g_assert_true(claimed[i]);
     }
 }
@@ -77,11 +137,14 @@ static void check_modules_partition_nodes(const SGIModelTopology *t)
 /* Every node names a known ASIC kind; its CPU slots and banks fit it. */
 static void check_node_shapes(const SGIModelTopology *t)
 {
-    size_t i, j;
+    const SGIModelNodeList *node_entry;
 
-    for (i = 0; i < t->node_count; i++) {
-        const SGIModelNode *node = &t->nodes[i];
+    for (node_entry = t->nodes; node_entry; node_entry = node_entry->next) {
+        const SGIModelNode *node = node_entry->value;
+        const SGIModelCpuSlotList *slot_entry;
+        const uint64List *bank_entry;
         struct AsicShape shape = { };
+        unsigned int bank;
 
         /*
          * Zero-initialized rather than left indeterminate: GCC's flow
@@ -90,136 +153,154 @@ static void check_node_shapes(const SGIModelTopology *t)
          * read uninitialized.
          */
         g_assert_true(asic_shape(node->asic_kind, &shape));
-        for (j = 0; j < node->cpu_slot_count; j++) {
-            const SGIModelCpuSlot *slot = &node->cpu_slots[j];
+        for (slot_entry = node->cpu_slots; slot_entry;
+             slot_entry = slot_entry->next) {
+            const SGIModelCpuSlot *slot = slot_entry->value;
 
             g_assert_cmpuint(slot->interface, <, shape.cpu_interfaces);
             g_assert_cmpuint(slot->slot, <, shape.cpu_slots_per_interface);
         }
-        for (j = 0; j < SGI_MODEL_MAX_MEMORY_BANKS; j++) {
-            if (node->bank_mib[j] != 0) {
-                g_assert_cmpuint(j, <, shape.architectural_banks);
+        for (bank_entry = node->bank_mib, bank = 0; bank_entry;
+             bank_entry = bank_entry->next, bank++) {
+            if (bank_entry->value != 0) {
+                g_assert_cmpuint(bank, <, shape.architectural_banks);
             }
         }
     }
 }
 
-/* Every link's two ends name a real vertex; no end is shared by two links. */
-static void check_links(const SGIModelTopology *t)
+/*
+ * Every cable's two ends name a real vertex, at a port at least one (port
+ * zero is a crossbar's own local view, never a numbered cable end); no end
+ * is shared by two cables. A router's own port count is a device fact
+ * (decision D-0026) this catalogue does not carry, so the upper bound on
+ * a router end's port is the device's own qtest to check, not this one.
+ */
+static void check_cables(const SGIModelTopology *t)
 {
-    size_t i, j;
+    size_t total_nodes = node_count(t);
+    size_t total_routers = router_count(t);
+    const SGIModelCableList *cable_entry;
 
-    for (i = 0; i < t->link_count; i++) {
-        const SGIModelFabricLink *link = &t->links[i];
+    for (cable_entry = t->cables; cable_entry;
+         cable_entry = cable_entry->next) {
+        const SGIModelCable *cable = cable_entry->value;
+        const SGIModelLinkEnd *end0 = cable->ends->value;
+        const SGIModelLinkEnd *end1 = cable->ends->next->value;
+        const SGIModelLinkEnd *ends[2] = { end0, end1 };
+        const SGIModelCableList *other_entry;
         unsigned int side;
 
+        g_assert(cable->ends->next);
+        g_assert(!cable->ends->next->next);
         for (side = 0; side < 2; side++) {
-            const SGIModelFabricVertex *end = &link->ends[side];
-            unsigned int count;
+            const SGIModelLinkEnd *end = ends[side];
+            size_t count = end->kind == SGI_MODEL_LINK_END_KIND_ROUTER ?
+                total_routers : total_nodes;
 
-            switch (end->kind) {
-            case SGI_MODEL_FABRIC_NODE:
-                count = t->node_count;
-                break;
-            case SGI_MODEL_FABRIC_ROUTER:
-                count = t->router_count;
-                break;
-            default:
-                g_assert_not_reached();
-            }
             g_assert_cmpuint(end->index, <, count);
-            if (end->kind == SGI_MODEL_FABRIC_ROUTER) {
+            if (end->kind == SGI_MODEL_LINK_END_KIND_ROUTER) {
                 g_assert_cmpuint(end->port, >=, 1);
-                g_assert_cmpuint(end->port, <=,
-                                 t->routers[end->index].port_count);
             }
         }
-        for (j = 0; j < i; j++) {
-            const SGIModelFabricLink *other = &t->links[j];
+        for (other_entry = t->cables; other_entry != cable_entry;
+             other_entry = other_entry->next) {
+            const SGIModelCable *other = other_entry->value;
+            const SGIModelLinkEnd *other_ends[2] = {
+                other->ends->value, other->ends->next->value,
+            };
             unsigned int a, b;
 
             for (a = 0; a < 2; a++) {
                 for (b = 0; b < 2; b++) {
                     g_assert_false(
-                        link->ends[a].kind == other->ends[b].kind &&
-                        link->ends[a].index == other->ends[b].index &&
-                        link->ends[a].port == other->ends[b].port);
+                        ends[a]->kind == other_ends[b]->kind &&
+                        ends[a]->index == other_ends[b]->index &&
+                        ends[a]->port == other_ends[b]->port);
                 }
             }
         }
     }
 }
 
-/* Every io_boards[] entry names a board kind the builder knows. */
-static void check_io_board_kinds(const SGIModelTopology *t)
+/* Every io-boards entry names a preset the builder knows. */
+static void check_io_board_presets(const SGIModelTopology *t)
 {
-    size_t i;
+    const SGIModelIoBoardList *entry;
 
-    for (i = 0; i < t->io_board_count; i++) {
-        SGIModelIoBoardKind kind = t->io_boards[i].board_kind;
+    for (entry = t->io_boards; entry; entry = entry->next) {
+        SGIModelIoBoardPreset preset = entry->value->preset;
 
-        g_assert_true(kind == SGI_MODEL_IO_IP29_IO ||
-                      kind == SGI_MODEL_IO_BASEIO ||
-                      kind == SGI_MODEL_IO_IO8);
+        g_assert_true(preset == SGI_MODEL_IO_BOARD_PRESET_IP29_IO ||
+                      preset == SGI_MODEL_IO_BOARD_PRESET_BASEIO ||
+                      preset == SGI_MODEL_IO_BOARD_PRESET_IO8);
     }
 }
 
 /*
  * Every node claims exactly one crosstalk attachment as its own, and the
- * remaining attachments own the topology's io_boards[] entries one for
+ * remaining attachments own the topology's io-boards entries one for
  * one: the same split sgi_machine_index_xtalk_attachments() computes at
  * realize time. Hub topologies only -- sgi_machine_realize() builds a
  * Bedrock node and returns before that function ever runs, because a
  * Bedrock node's XBridge is not a separate crosstalk-attached board the
  * way a Hub's onboard or Crossbow-attached board is; a Bedrock
- * topology's io_boards[] entries are checked by
+ * topology's io-boards entries are checked by
  * check_bedrock_has_populated_io8() below instead.
  */
 static void check_xtalk_attachments(const SGIModelTopology *t)
 {
-    g_autofree bool *claimed = g_new0(bool, t->node_count);
+    size_t total_nodes = node_count(t);
+    size_t total_boards = io_board_count(t);
+    g_autofree bool *claimed = g_new0(bool, total_nodes);
+    const SGIModelXtalkAttachmentList *entry;
     unsigned int board = 0;
     size_t i;
 
-    if (t->nodes[0].asic_kind != SGI_MODEL_ASIC_HUB) {
+    if (node0(t)->asic_kind != SGI_MODEL_ASIC_KIND_HUB) {
         return;
     }
 
-    for (i = 0; i < t->xtalk_attachment_count; i++) {
-        const SGIModelXtalkAttachment *attachment = &t->xtalk_attachments[i];
+    for (entry = t->xtalk_attachments; entry; entry = entry->next) {
+        const SGIModelXtalkAttachment *attachment = entry->value;
         unsigned int node_index = attachment->node_index;
 
-        g_assert_cmpuint(node_index, <, t->node_count);
+        g_assert_cmpuint(node_index, <, total_nodes);
         if (attachment->crossbar_index < 0) {
             g_assert_false(claimed[node_index]);
             claimed[node_index] = true;
-            g_assert_cmpuint(board, <, t->io_board_count);
+            g_assert_cmpuint(board, <, total_boards);
             board++;
         } else if (!claimed[node_index]) {
             claimed[node_index] = true;
         } else {
-            g_assert_cmpuint(board, <, t->io_board_count);
+            g_assert_cmpuint(board, <, total_boards);
             board++;
         }
     }
-    for (i = 0; i < t->node_count; i++) {
+    for (i = 0; i < total_nodes; i++) {
         g_assert_true(claimed[i]);
     }
-    g_assert_cmpuint(board, ==, t->io_board_count);
+    g_assert_cmpuint(board, ==, total_boards);
 }
 
-/* A Bedrock topology's one node ships a populated IO-8 board. */
+/*
+ * A Bedrock topology's one node ships a populated IO-8 board: a preset's
+ * fitted IOC3 one-wire serial is the one fact left, after the
+ * ownership-rule trim, that distinguishes a populated head from an
+ * empty one (Origin 300's second XBridge head carries no population).
+ */
 static void check_bedrock_has_populated_io8(const SGIModelTopology *t)
 {
     bool has_populated_io8 = false;
-    size_t i;
+    const SGIModelIoBoardList *entry;
 
-    if (t->nodes[0].asic_kind == SGI_MODEL_ASIC_HUB) {
+    if (node0(t)->asic_kind == SGI_MODEL_ASIC_KIND_HUB) {
         return;
     }
-    for (i = 0; i < t->io_board_count; i++) {
-        if (t->io_boards[i].board_kind == SGI_MODEL_IO_IO8 &&
-            t->io_boards[i].pci_count) {
+    for (entry = t->io_boards; entry; entry = entry->next) {
+        if (entry->value->preset == SGI_MODEL_IO_BOARD_PRESET_IO8 &&
+            entry->value->has_ioc3_serial) {
             has_populated_io8 = true;
             break;
         }
@@ -227,22 +308,51 @@ static void check_bedrock_has_populated_io8(const SGIModelTopology *t)
     g_assert_true(has_populated_io8);
 }
 
+static char *catalogue_path(void)
+{
+    return g_build_filename(g_test_get_dir(G_TEST_DIST), "..", "..", "hw",
+                            "mips", "sgi", "sn-catalogue.json", NULL);
+}
+
+static SGIModelCatalogue *load_catalogue(void)
+{
+    g_autofree char *path = catalogue_path();
+    g_autofree char *contents = NULL;
+    g_autoptr(GError) local_error = NULL;
+    QObject *qobj;
+    Visitor *v;
+    SGIModelCatalogue *catalogue = NULL;
+
+    if (!g_file_get_contents(path, &contents, NULL, &local_error)) {
+        g_error("cannot read %s: %s", path, local_error->message);
+    }
+    qobj = qobject_from_json(contents, &error_abort);
+    v = qobject_input_visitor_new(qobj);
+    visit_type_SGIModelCatalogue(v, NULL, &catalogue, &error_abort);
+    visit_free(v);
+    qobject_unref(qobj);
+    return catalogue;
+}
+
 static void test_every_topology_is_well_formed(void)
 {
-    size_t i;
+    g_autoptr(SGIModelCatalogue) catalogue = load_catalogue();
+    const SGIModelTopologyList *entry;
+    size_t topology_count = 0;
 
-    g_assert_cmpuint(sgi_model_entry_count, >, 0);
-    for (i = 0; i < sgi_model_entry_count; i++) {
-        const SGIModelTopology *t = &sgi_model_entries[i];
+    for (entry = catalogue->topologies; entry; entry = entry->next) {
+        const SGIModelTopology *t = entry->value;
 
-        g_assert_cmpuint(t->node_count, >, 0);
+        topology_count++;
+        g_assert_cmpuint(node_count(t), >, 0);
         check_modules_partition_nodes(t);
         check_node_shapes(t);
-        check_links(t);
-        check_io_board_kinds(t);
+        check_cables(t);
+        check_io_board_presets(t);
         check_xtalk_attachments(t);
         check_bedrock_has_populated_io8(t);
     }
+    g_assert_cmpuint(topology_count, >, 0);
 }
 
 int main(int argc, char **argv)

@@ -956,7 +956,7 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
 
 static void sn0_node_create_hub(SN0NodeState *node)
 {
-    const SGIModelAsicIdentity *identity = &node->model_node->identity;
+    const SGIModelAsicIdentity *identity = node->model_node->identity;
     const SN0ModelAddressMap *map = sn0_node_address_map();
     unsigned int node_index = node->nasid;
     g_autofree char *xtalk_name =
@@ -1002,14 +1002,25 @@ static void sn0_node_create_hub(SN0NodeState *node)
         (identity->i2c_controller ?
          SGI_HUB_POPULATION_I2C_CONTROLLER : 0) |
         (identity->system_controller ? SGI_HUB_POPULATION_ELSC : 0));
+    /*
+     * The ELSC's own address answers only where this Hub's I2C bus
+     * carries one (identity->system_controller); the NVRAM behind it
+     * answers wherever the Hub carries an I2C controller at all
+     * (identity->i2c_controller) -- Origin 2000's Hub has one without an
+     * embedded ELSC. Both are 0 (unread: sgi-hub.c gates each behind its
+     * own population bit) where the fact does not apply.
+     */
     qdev_prop_set_uint32(DEVICE(&node->hub), "i2c-nvram-pages",
-                         identity->i2c_nvram_pages);
+                         identity->i2c_controller ?
+                         SN0_HUB_I2C_NVRAM_PAGES : 0);
     qdev_prop_set_uint64(DEVICE(&node->hub), "i2c-controller-offset",
-                         node->model_node->management_adapter_offset);
+                         SN0_HUB_MODULE_ADAPTER_OFFSET);
     qdev_prop_set_uint8(DEVICE(&node->hub), "i2c-elsc-addr",
-                        identity->i2c_elsc_addr);
+                        identity->system_controller ?
+                        SN0_HUB_I2C_ELSC_ADDR : 0);
     qdev_prop_set_uint8(DEVICE(&node->hub), "i2c-nvram-first-addr",
-                        identity->i2c_nvram_first_addr);
+                        identity->i2c_controller ?
+                        SN0_HUB_I2C_NVRAM_FIRST_ADDR : 0);
     qdev_prop_set_uint8(DEVICE(&node->hub), "onewire-kind",
                         SGI_HUB_ONEWIRE_BLANK_DS2505);
     qdev_prop_set_uint32(DEVICE(&node->hub), "xtalk-widget-shift",
@@ -1193,6 +1204,18 @@ void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
 #define SN0_PROM_PI_PROBE_OFFSET 0x400208ULL
 
 /*
+ * IP29's onboard Bridge is reachable at crosstalk widget 8 on its first
+ * discovery and decodes every other widget position the same way
+ * (docs/datasheets/bridge.md: a directly linked Hub's Bridge answers its
+ * whole face at every widget the Hub decodes to it) except widget 1;
+ * fixed by the chip and the System Board's own wiring, the same on
+ * every Origin 200 built, so this is a device constant rather than
+ * per-topology data -- the compiled catalogue no longer carries it.
+ */
+#define SN0_IP29_IO_DISCOVERY_WIDGET   0
+#define SN0_IP29_IO_DECODED_WIDGET_MASK 0xfffdU
+
+/*
  * IP29's onboard base I/O: the System Board's own Bridge, cabled
  * straight to this node's Hub through the direct link (no Crossbow --
  * see docs/designs/sn-machine-model-architecture.md, "Node devices"),
@@ -1221,8 +1244,7 @@ bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
                            const char *record_a_id,
                            const char *record_b_id,
                            const char *parallel_chardev_id,
-                           unsigned int discovery_widget, unsigned int widget,
-                           uint32_t decoded_widget_mask, Error **errp)
+                           unsigned int widget, Error **errp)
 {
     const SN0ModelAddressMap *map = sn0_node_address_map();
     const SGIBaseioPresetIdentity *identity = sgi_baseio_preset_lookup("ip29");
@@ -1283,8 +1305,8 @@ bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
     }
 
     return sgi_xtalk_direct_link_connect(
-        link, owner, node, OBJECT(bridge), discovery_widget, widget,
-        decoded_widget_mask, SN0_PROM_PI_PROBE_WIDGET,
+        link, owner, node, OBJECT(bridge), SN0_IP29_IO_DISCOVERY_WIDGET,
+        widget, SN0_IP29_IO_DECODED_WIDGET_MASK, SN0_PROM_PI_PROBE_WIDGET,
         SN0_PROM_PI_PROBE_OFFSET, errp);
 }
 

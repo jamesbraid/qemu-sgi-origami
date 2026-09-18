@@ -146,8 +146,8 @@ static void test_unsupported_smp_population_rejected(const void *data)
 static void test_topology_from_another_product_refused(const void *data)
 {
     /*
-     * sgi_model_entries[] holds every product's topologies in one
-     * table; topology= names one by string alone, so
+     * The compiled catalogue holds every product's topologies in one
+     * list; topology= names one by string alone, so
      * sgi_machine_topology() also checks the resolved entry against
      * this machine's own product (sgi_machine_topology_matches_product)
      * before handing it back. Origin 2000's "origin2000-module"
