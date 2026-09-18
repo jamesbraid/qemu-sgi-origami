@@ -1891,8 +1891,9 @@ static void assert_cpu_inventory(QTestState *qts)
         g_assert_false(seen & (1U << index));
         seen |= 1U << index;
         g_assert_cmpint(qdict_get_int(props, "node-id"), ==, index / 2);
-        g_assert_cmpint(qdict_get_int(props, "socket-id"), ==, index / 2);
-        g_assert_cmpint(qdict_get_int(props, "core-id"), ==, index % 2);
+        /* Every processor is its own single-core socket; nodes hold two. */
+        g_assert_cmpint(qdict_get_int(props, "socket-id"), ==, index);
+        g_assert_cmpint(qdict_get_int(props, "core-id"), ==, 0);
         g_assert_cmpstr(qdict_get_str(cpu, "qom-path"), ==, path);
         if (!(index % 2)) {
             g_autofree char *hub = g_strdup_printf("/machine/node%u/hub",
