@@ -576,254 +576,6 @@ static int64_t sgi_machine_get_default_cpu_node_id(
     return possible_cpus->cpus[index].props.socket_id;
 }
 
-/* ---- Descriptor validation ---- */
-
-/*
- * Where a node's CPU slots and memory banks are bounded: Hub and Bedrock
- * differ only in these constants, not in what the validator checks them
- * against.
- */
-struct SGIMachineAsicShape {
-    unsigned int cpu_interfaces;
-    unsigned int cpu_slots_per_interface;
-    unsigned int architectural_banks;
-};
-
-static bool sgi_machine_asic_shape(SGIModelAsicKind kind,
-                                   struct SGIMachineAsicShape *shape)
-{
-    switch (kind) {
-    case SGI_MODEL_ASIC_HUB:
-        *shape = (struct SGIMachineAsicShape){
-            .cpu_interfaces = 1,
-            .cpu_slots_per_interface = 2,
-            .architectural_banks =
-                sgi_sn0_hub_hardware.memory.architectural_banks,
-        };
-        return true;
-    case SGI_MODEL_ASIC_BEDROCK:
-        *shape = (struct SGIMachineAsicShape){
-            .cpu_interfaces = 2,
-            .cpu_slots_per_interface = 2,
-            .architectural_banks = SGI_MODEL_MAX_MEMORY_BANKS,
-        };
-        return true;
-    default:
-        return false;
-    }
-}
-
-/* A module's nodes[] must partition t->node_count with none left out. */
-static bool sgi_machine_validate_modules(const SGIModelTopology *t,
-                                         Error **errp)
-{
-    g_autofree bool *claimed = g_new0(bool, t->node_count);
-    size_t i, j;
-
-    for (i = 0; i < t->module_count; i++) {
-        const SGIModelModule *module = &t->modules[i];
-
-        for (j = 0; j < module->node_count; j++) {
-            unsigned int node_index = module->nodes[j];
-
-            if (node_index >= t->node_count) {
-                error_setg(errp, "topology '%s' module '%s' names node %u, "
-                          "past its %zu nodes", t->name, module->id,
-                          node_index, t->node_count);
-                return false;
-            }
-            if (claimed[node_index]) {
-                error_setg(errp, "topology '%s' node %u is in two modules",
-                          t->name, node_index);
-                return false;
-            }
-            claimed[node_index] = true;
-        }
-    }
-    for (i = 0; i < t->node_count; i++) {
-        if (!claimed[i]) {
-            error_setg(errp, "topology '%s' node %zu is in no module",
-                      t->name, i);
-            return false;
-        }
-    }
-    return true;
-}
-
-/* Every node's CPU slots and memory banks must fit its ASIC's shape. */
-static bool sgi_machine_validate_nodes(const SGIModelTopology *t,
-                                       Error **errp)
-{
-    size_t i, j;
-
-    for (i = 0; i < t->node_count; i++) {
-        const SGIModelNode *node = &t->nodes[i];
-        struct SGIMachineAsicShape shape;
-
-        if (!sgi_machine_asic_shape(node->asic_kind, &shape)) {
-            error_setg(errp, "topology '%s' node %zu names an unknown node "
-                      "ASIC kind", t->name, i);
-            return false;
-        }
-        for (j = 0; j < node->cpu_slot_count; j++) {
-            const SGIModelCpuSlot *slot = &node->cpu_slots[j];
-
-            if (slot->interface >= shape.cpu_interfaces ||
-                slot->slot >= shape.cpu_slots_per_interface) {
-                error_setg(errp, "topology '%s' node %zu names a CPU slot "
-                          "beyond its ASIC's %u interface(s) of %u each",
-                          t->name, i, shape.cpu_interfaces,
-                          shape.cpu_slots_per_interface);
-                return false;
-            }
-        }
-        for (j = 0; j < SGI_MODEL_MAX_MEMORY_BANKS; j++) {
-            if (node->bank_mib[j] != 0 && j >= shape.architectural_banks) {
-                error_setg(errp, "topology '%s' node %zu fills bank %zu, "
-                          "beyond its ASIC's %u architectural banks",
-                          t->name, i, j, shape.architectural_banks);
-                return false;
-            }
-        }
-    }
-    return true;
-}
-
-/* Every link's two ends must name a real vertex, and no end used twice. */
-static bool sgi_machine_validate_links(const SGIModelTopology *t,
-                                       Error **errp)
-{
-    size_t i, j;
-
-    for (i = 0; i < t->link_count; i++) {
-        const SGIModelFabricLink *link = &t->links[i];
-        unsigned int side;
-
-        for (side = 0; side < 2; side++) {
-            const SGIModelFabricVertex *end = &link->ends[side];
-            unsigned int count;
-
-            switch (end->kind) {
-            case SGI_MODEL_FABRIC_NODE:
-                count = t->node_count;
-                break;
-            case SGI_MODEL_FABRIC_ROUTER:
-                count = t->router_count;
-                break;
-            default:
-                error_setg(errp, "topology '%s' link '%s' names an unknown "
-                          "fabric vertex kind", t->name, link->name);
-                return false;
-            }
-            if (end->index >= count) {
-                error_setg(errp, "topology '%s' link '%s' end %u names "
-                          "vertex %u, past %u", t->name, link->name, side,
-                          end->index, count);
-                return false;
-            }
-            if (end->kind == SGI_MODEL_FABRIC_ROUTER &&
-                (end->port < 1 ||
-                 end->port > t->routers[end->index].port_count)) {
-                error_setg(errp, "topology '%s' link '%s' end %u names port "
-                          "%u, outside router %u's 1-%u hardware-numbered "
-                          "ports", t->name, link->name, side, end->port,
-                          end->index, t->routers[end->index].port_count);
-                return false;
-            }
-        }
-        for (j = 0; j < i; j++) {
-            const SGIModelFabricLink *other = &t->links[j];
-            unsigned int a, b;
-
-            for (a = 0; a < 2; a++) {
-                for (b = 0; b < 2; b++) {
-                    if (link->ends[a].kind == other->ends[b].kind &&
-                        link->ends[a].index == other->ends[b].index &&
-                        link->ends[a].port == other->ends[b].port) {
-                        error_setg(errp, "topology '%s' links '%s' and '%s' "
-                                  "share one fabric end", t->name, link->name,
-                                  other->name);
-                        return false;
-                    }
-                }
-            }
-        }
-    }
-    return true;
-}
-
-/* Every io_boards[] entry must name a board kind this builder knows. */
-static bool sgi_machine_validate_io_boards(const SGIModelTopology *t,
-                                           Error **errp)
-{
-    size_t i;
-
-    for (i = 0; i < t->io_board_count; i++) {
-        const SGIModelIoBoard *board = &t->io_boards[i];
-
-        if (board->board_kind != SGI_MODEL_IO_IP29_IO &&
-            board->board_kind != SGI_MODEL_IO_BASEIO &&
-            board->board_kind != SGI_MODEL_IO_IO8) {
-            error_setg(errp, "topology '%s' io board '%s' names an "
-                      "unsupported board kind", t->name, board->id);
-            return false;
-        }
-    }
-    return true;
-}
-
-/*
- * One pass over every record kind a topology names, each validated by
- * its own function but dispatched from this one table and this one loop
- * rather than four hand-inlined copies.
- */
-bool sgi_machine_validate_topology(const SGIModelTopology *t, Error **errp)
-{
-    static bool (* const validators[])(const SGIModelTopology *, Error **) = {
-        sgi_machine_validate_modules,
-        sgi_machine_validate_nodes,
-        sgi_machine_validate_links,
-        sgi_machine_validate_io_boards,
-    };
-    size_t i;
-
-    if (t->node_count == 0) {
-        error_setg(errp, "topology '%s' names no nodes", t->name);
-        return false;
-    }
-    for (i = 0; i < ARRAY_SIZE(validators); i++) {
-        if (!validators[i](t, errp)) {
-            return false;
-        }
-    }
-
-    /*
-     * A Bedrock topology's IO-8 is fixed, always-present silicon (this
-     * class's own header comment), not optional configuration -- unlike
-     * the Hub products, where an io_boards[] entry with nothing behind it
-     * (pci_count 0) can be a genuinely empty slot. A Bedrock node with no
-     * populated IO-8 board entry names data the builder cannot act on.
-     */
-    if (t->nodes[0].asic_kind != SGI_MODEL_ASIC_HUB) {
-        bool has_populated_io8 = false;
-
-        for (i = 0; i < t->io_board_count; i++) {
-            if (t->io_boards[i].board_kind == SGI_MODEL_IO_IO8 &&
-                t->io_boards[i].pci_count) {
-                has_populated_io8 = true;
-                break;
-            }
-        }
-        if (!has_populated_io8) {
-            error_setg(errp, "topology '%s' names a Bedrock node with no "
-                      "populated IO-8 board", t->name);
-            return false;
-        }
-    }
-
-    return true;
-}
-
 /* ---- Onboard and Crossbow-attached I/O boards ---- */
 
 /*
@@ -907,8 +659,9 @@ static const char *sgi_machine_io_board_type(const SGIModelIoBoard *record)
      * exporter's own defect that once made inferring the class from how
      * a board attaches (direct vs. Crossbow) agree with board_kind on
      * every topology shipped so far -- hw/mips/sgi/sn-model.c is now that
-     * corrected exporter's exact output; sgi_machine_validate_topology
-     * rejects any other board_kind before this function ever sees it.
+     * corrected exporter's exact output; tests/unit/test-sn-model.c
+     * checks every entry's board_kind once, so this function trusts the
+     * descriptor and only asserts on a kind it does not recognize.
      */
     switch (record->board_kind) {
     case SGI_MODEL_IO_IP29_IO:
@@ -1886,9 +1639,6 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         g_string_free(names, true);
         return false;
     }
-    if (!sgi_machine_validate_topology(t, errp)) {
-        return false;
-    }
     if (sgi_machine_has_identity_records(s)) {
         bool has_l1 = false;
         size_t i;
@@ -2027,8 +1777,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
          * Widget zero is the crossbar's own local view; the rest come one
          * per xtalk attachment (a board slot, populated or not -- see
          * sn1-node.c's widget-wiring comment for why an empty slot still
-         * needs one). sgi_machine_validate_topology has already refused a
-         * Bedrock topology with no populated_board.
+         * needs one). tests/unit/test-sn-model.c already checks that every
+         * Bedrock topology in sgi_model_entries[] ships a populated_board.
          */
         widgets = g_new0(unsigned int, t->xtalk_attachment_count + 1);
         widgets[widget_count++] = 0;
