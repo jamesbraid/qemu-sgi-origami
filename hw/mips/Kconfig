@@ -80,6 +80,7 @@ config SGI_XTALK_PORT
 config SGI_XTALK_LINK
     bool
     select SGI_XTALK_PORT
+    select SGI_XBOW
 
 config SGI_XTALK_BOARD
     bool
