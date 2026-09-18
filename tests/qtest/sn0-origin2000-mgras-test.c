@@ -1375,6 +1375,20 @@ static void test_hq_config_and_enable_registers(void)
  * FIFO occupancy, so it satisfies the wait immediately on the arming write
  * instead: this test holds it to that behavior, not to genuine watermark
  * timing this project has no evidence for.
+ *
+ * A third bug closed here (docs/plans/si-graphics-widget-wiring-handoff-
+ * 20260916.md, "gfxinit clears GE download live, then MgrasCtxsw
+ * timeout"): real driver usage never acks this pending source through
+ * REG_PENDING_ACK at all -- mgras_hq4_lowater_intr's own disarming write
+ * to REG_HQ_ENABLE_CLEAR is the only clear this bit ever gets. Before the
+ * fix, that write cleared REG_HQ_ENABLE's own bit but left the pending
+ * bit stuck set, so a second, routine arming (MgrasFlushHQ3 arms this bit
+ * on every ordinary FIFO wait, not only a timeout) could never raise a
+ * second packet: si_update_irq's edge detector never saw pending go
+ * false, so it never saw it go true again either. Both watchdogs then
+ * expired with nobody ever disarming them. The disarm-then-rearm sequence
+ * right after the first delivery below is that exact real sequence,
+ * reproduced without going through REG_PENDING_ACK at all.
  */
 static void test_fifo_lowater_interrupt(void)
 {
@@ -1413,24 +1427,41 @@ static void test_fifo_lowater_interrupt(void)
     g_assert_cmphex(si_qom_get_uint(qts, "x-test-last-interrupt-value"),
                      ==, lowater_vector | 0x100);
 
-    /* Re-writing the same already-set bit is not a new arming event. */
-    qtest_writel(qts, REG_PENDING_ACK, SI_PENDING_LOWATER);
-    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & SI_PENDING_LOWATER, ==, 0);
-    qtest_writel(qts, REG_HQ_ENABLE, SI_HQ_ENABLE_LOWATER);
-    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & SI_PENDING_LOWATER, ==, 0);
-
     /*
-     * Disarming (the companion clear register mgras_hq4_lowater_intr
-     * itself writes) does not by itself acknowledge a still-pending
-     * interrupt -- that is REG_PENDING_ACK's own job, exercised above.
-     * Clearing and re-setting the bit is a fresh arming event.
+     * Disarming with no preceding REG_PENDING_ACK -- the real sequence --
+     * must clear the pending bit itself and lower the interrupt. This is
+     * the regression check for the bug described above: before the fix,
+     * both assertions below failed (the pending bit stayed set and no
+     * "lowered" packet was ever sent).
      */
     qtest_writel(qts, REG_HQ_ENABLE_CLEAR, SI_HQ_ENABLE_LOWATER);
     g_assert_cmphex(qtest_readl(qts, REG_HQ_ENABLE) & SI_HQ_ENABLE_LOWATER,
                      ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & SI_PENDING_LOWATER, ==, 0);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-last-interrupt-value"),
+                     ==, lowater_vector);
+
+    /*
+     * Arming again after that real disarm must raise a fresh packet --
+     * before the fix, this never happened: the stuck pending bit meant
+     * si_update_irq's edge detector had nothing to transition from.
+     */
     qtest_writel(qts, REG_HQ_ENABLE, SI_HQ_ENABLE_LOWATER);
     g_assert_cmphex(qtest_readl(qts, REG_PENDING) & SI_PENDING_LOWATER, ==,
                      SI_PENDING_LOWATER);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-last-interrupt-value"),
+                     ==, lowater_vector | 0x100);
+
+    /*
+     * Re-writing the same already-set bit is not a new arming event, and
+     * REG_PENDING_ACK remains a separate, independent way to clear the
+     * shared pending register -- both properties this device already had
+     * before the fix above, unaffected by it.
+     */
+    qtest_writel(qts, REG_PENDING_ACK, SI_PENDING_LOWATER);
+    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & SI_PENDING_LOWATER, ==, 0);
+    qtest_writel(qts, REG_HQ_ENABLE, SI_HQ_ENABLE_LOWATER);
+    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & SI_PENDING_LOWATER, ==, 0);
 
     qtest_quit(qts);
 }

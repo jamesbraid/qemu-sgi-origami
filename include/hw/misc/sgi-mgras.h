@@ -401,6 +401,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
  * approximation this closes: a watchdog panic roughly 15 seconds after
  * any driver path (gfxinit, the X server) opened this board, since nothing
  * previously ever raised the interrupt that disarms it.
+ *
+ * 0x011058's SI_HQ_ENABLE_LOWATER-clearing write also clears the matching
+ * SI_PENDING_LOWATER pending bit, not just the enable bit -- only that
+ * handler ever clears it, matching the driver's own real arm/deliver/
+ * disarm/re-arm usage. See the write case's own comment for the root
+ * cause this closes (docs/plans/si-graphics-widget-wiring-handoff-
+ * 20260916.md, "gfxinit clears GE download live, then MgrasCtxsw
+ * timeout"): without this, a second arming after the first deliver/disarm
+ * cycle could never raise a second packet, since the pending bit was
+ * already stuck set.
  */
 #define SGI_MGRAS_HQ_CONFIG_A 0x011030
 #define SGI_MGRAS_HQ_CONFIG_B 0x011038
