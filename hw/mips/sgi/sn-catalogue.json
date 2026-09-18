@@ -1545,14 +1545,7 @@
           "module-index": 0
         }
       ],
-      "crossbars": [
-        {
-          "id": "xbridge-crossbar",
-          "kind": "xbridge",
-          "module-index": 0,
-          "widget-revision": 2
-        }
-      ],
+      "crossbars": [],
       "description": "SGI Origin 300 (IP45)",
       "generation": "sn1",
       "io-boards": [
@@ -1598,10 +1591,10 @@
           ],
           "asic-kind": "bedrock",
           "bank-mib": [
-            512,
             0,
             0,
-            0,
+            256,
+            256,
             0,
             0,
             0,
@@ -1698,12 +1691,12 @@
       ],
       "xtalk-attachments": [
         {
-          "crossbar-index": 0,
+          "crossbar-index": -1,
           "node-index": 0,
           "widget": 14
         },
         {
-          "crossbar-index": 0,
+          "crossbar-index": -1,
           "node-index": 0,
           "widget": 15
         }
