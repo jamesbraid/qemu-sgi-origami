@@ -227,7 +227,7 @@ static void set_crossbow0_links_alive(QTestState *qts, unsigned int widgets)
 
 static QTestState *start_control_module(const char *extra)
 {
-    return qtest_initf("-M origin2000 -smp 8,sockets=4,cores=2 "
+    return qtest_initf("-M origin2000 -smp 8 "
                        "-m 256M -S %s", extra);
 }
 
@@ -350,7 +350,7 @@ static void test_processor_mode_reset_and_release(void)
 
     build_processor_mode_image(image);
     path = sn0_image_write(image, "sn0-origin2000-processor-mode");
-    qts = qtest_initf("-M origin2000 -smp 8,sockets=4,cores=2 "
+    qts = qtest_initf("-M origin2000 -smp 8 "
                       "-m 256M -accel tcg,thread=multi -S -bios %s", path);
     unlink(path);
 
@@ -659,7 +659,7 @@ static bool cpu_read(QTestState *qts, unsigned int cpu, uint64_t address,
 
 static QTestState *start_module_with(const char *extra)
 {
-    QTestState *qts = qtest_initf("-M origin2000 -smp 8,sockets=4,cores=2 "
+    QTestState *qts = qtest_initf("-M origin2000 -smp 8 "
                                   "-m 256M -d unimp,guest_errors %s", extra);
     const unsigned int numbers[] = { 0x11, 0x12, 0x21, 0x22 };
     unsigned int i;
@@ -682,7 +682,7 @@ static QTestState *start_module(void)
 static void test_xtalk_switch_visible(void)
 {
     QTestState *qts = qtest_init(
-        "-M origin2000 -smp 8,sockets=4,cores=2 -m 256M");
+        "-M origin2000 -smp 8 -m 256M");
     uint8_t bytes[sizeof(uint32_t)];
     uint32_t id;
 
@@ -1530,7 +1530,7 @@ static void hub_write_slice(QTestState *qts, unsigned int cpu,
  */
 static void test_cached_alias_size(void)
 {
-    QTestState *from = qtest_init("-M origin2000 -smp 8,sockets=4,cores=2 "
+    QTestState *from = qtest_init("-M origin2000 -smp 8 "
                                   "-m 256M");
     QTestState *to;
     unsigned int node, slice;
@@ -1572,7 +1572,7 @@ static void test_cached_alias_size(void)
     g_assert_cmphex(hub_read_slice(from, 2, PI_CALIAS_SIZE), ==, 1);
 
     /* A migration carries the written code, and changes no other Hub. */
-    to = qtest_init("-M origin2000 -smp 8,sockets=4,cores=2 -m 256M "
+    to = qtest_init("-M origin2000 -smp 8 -m 256M "
                     "-incoming defer");
     migrate_module(from, to);
     for (node = 0; node < 4; node++) {
@@ -1841,7 +1841,7 @@ static void test_local_flash_words(gconstpointer data)
     const uint32_t words[] = { 0x13579bdf, 0x2468ace0, 0x5aa53cc3, 0xc33ca55a };
     const uint64_t views[] = { LOCAL_FLASH_VIEW, RESET_FLASH_VIEW };
 
-    g_string_printf(args, "-M %s -smp 8,sockets=4,cores=2 -m 256M "
+    g_string_printf(args, "-M %s -smp 8 -m 256M "
                     "-d unimp,guest_errors", (const char *)data);
     /* Mapping fixtures only: these words do not define CPU reset modes. */
     for (unsigned int node = 0; node < G_N_ELEMENTS(words); node++) {

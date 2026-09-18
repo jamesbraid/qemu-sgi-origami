@@ -1898,7 +1898,7 @@ static void test_an_unbacked_receive_ring_raises_the_pci_error(
 #define DUAL_IO_ARGS \
     "-M origin200,topology=origin200-dual " \
     "-m 128M " \
-    "-smp 4,sockets=2,cores=2,threads=1"
+    "-smp 4"
 
 /*
  * Node 1's base I/O controller must be backed by its own serial line. A

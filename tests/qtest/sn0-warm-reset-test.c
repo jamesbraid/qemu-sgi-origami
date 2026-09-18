@@ -163,7 +163,7 @@ static void test_warm_reset_rendezvous(void)
     close(fd);
     qts = qtest_initf(
         "-M origin200,topology=origin200-dual -m 128M -cpu R10000 "
-        "-smp 4,sockets=2,cores=2,threads=1 "
+        "-smp 4 "
         "-bios %s -accel tcg,thread=multi -S -no-shutdown", image);
     unlink(image);
     /*
@@ -342,7 +342,7 @@ static void test_scratch_publish(const void *opaque)
     close(fd);
     qts = qtest_initf(
         "-M origin200,topology=origin200-dual -m 128M -cpu R10000 "
-        "-smp 4,sockets=2,cores=2,threads=1 "
+        "-smp 4 "
         "-bios %s -accel tcg,thread=%s -S -no-shutdown", image, thread);
     unlink(image);
 

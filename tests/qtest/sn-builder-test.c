@@ -139,8 +139,7 @@ static void test_unsupported_smp_population_rejected(const void *data)
     };
 
     assert_qemu_rejects(args,
-                        "topology 'origin200' does not accept 3 CPUs "
-                        "as 1 socket(s)");
+                        "topology 'origin200' accepts 1 or 2 CPUs, not 3");
 }
 
 static void test_topology_from_another_product_refused(const void *data)
@@ -213,7 +212,7 @@ static void test_origin200_dual_accepts_its_populations(const void *data)
 
     for (i = 0; i < ARRAY_SIZE(mib_per_node); i++) {
         g_autofree char *args = g_strdup_printf(
-            "-M origin200,topology=origin200-dual -smp 4,sockets=2,cores=2 "
+            "-M origin200,topology=origin200-dual -smp 4 "
             "-m %uM -display none", mib_per_node[i] * 2);
         QTestState *qts = qtest_init(args);
 
@@ -248,7 +247,7 @@ static void test_console_field_puts_its_node_on_serial_line_zero(
 {
     QTestState *qts = qtest_init(
         "-M sn-builder-console-test,activate=on -m 128M "
-        "-smp 4,sockets=2,cores=2,threads=1 -cpu R10000 "
+        "-smp 4 -cpu R10000 "
         "-chardev null,id=probe -serial chardev:probe -display none");
     g_autofree char *node0_chardev_a =
         qom_get_str(qts, "/machine/node0/baseio/ioc3", "chardev-a");
@@ -276,7 +275,7 @@ static void test_node_without_xtalk_attachment_rejected(const void *data)
         qtest_qemu_binary(NULL), "-M",
         "sn-builder-console-test,"
         "construction-fault=node-without-xtalk-attachment",
-        "-m", "128M", "-smp", "4,sockets=2,cores=2,threads=1",
+        "-m", "128M", "-smp", "4",
         "-cpu", "R10000",
         /*
          * The fault is reported before flash content is ever read, so

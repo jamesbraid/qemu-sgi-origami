@@ -321,7 +321,7 @@ static void test_dual_node_master_slave_sense(const void *data)
 {
     QTestState *qts = qtest_init(
         "-M origin200,topology=origin200-dual -m 128M "
-        "-smp 4,sockets=2,cores=2,threads=1");
+        "-smp 4");
 
     sn0_program_nasid(qts, 1);
     assert_dual_node_master_slave_sense(qts);
@@ -337,7 +337,7 @@ static void test_dual_node_master_slave_sense(const void *data)
 #define ORIGIN2000_CPUS_PER_NODE 2
 #define ORIGIN2000_CPU_COUNT  8
 #define ORIGIN2000_MACHINE \
-    "-M origin2000 -smp 8,sockets=4,cores=2,threads=1 " \
+    "-M origin2000 -smp 8 " \
     "-m 256M -accel tcg,thread=multi"
 
 /* Each processor publishes its live Hub-local slice into node-local RAM. */
@@ -822,7 +822,7 @@ static void test_network_link_presence(const void *data)
 {
     QTestState *qts = qtest_init(
         "-M origin200,topology=origin200-dual -m 128M "
-        "-smp 4,sockets=2,cores=2,threads=1");
+        "-smp 4");
     unsigned int node;
 
     sn0_program_nasid(qts, 1);
@@ -1192,7 +1192,7 @@ static void test_each_hub_carries_its_own_identity(const void *data)
 {
     QTestState *qts = qtest_init(
         "-M origin200,topology=origin200-dual -m 128M "
-        "-smp 4,sockets=2,cores=2,threads=1");
+        "-smp 4");
     uint64_t node0, node1;
 
     sn0_program_nasid(qts, 1);
@@ -4112,7 +4112,7 @@ static void test_pi_pending_reaches_cpu_cause(const void *data)
     };
     QTestState *qts = qtest_init(
         "-M origin200,topology=origin200-dual -m 128M "
-        "-smp 4,sockets=2,cores=2,threads=1");
+        "-smp 4");
 
     for (unsigned int phase = 0; phase < 2; phase++) {
         if (phase) {
@@ -4722,7 +4722,7 @@ static void test_vector_pio_reaches_the_direct_peer(const void *data)
 {
     QTestState *qts = qtest_init(
         "-M origin200,topology=origin200-dual -m 128M "
-        "-smp 4,sockets=2,cores=2,threads=1");
+        "-smp 4");
     uint64_t node0 = HUB_BY_NODE;
     uint64_t node1 = HUB_BY_NODE + NODE_STRIDE;
     uint64_t status;
@@ -4845,7 +4845,7 @@ static void test_llp_port_error_clear_contract(const void *data)
 {
     QTestState *qts = qtest_init(
         "-M origin200,topology=origin200-dual -m 128M "
-        "-smp 4,sockets=2,cores=2,threads=1 "
+        "-smp 4 "
         "-device sgi-hub-test,id=hub-errors,hub=/machine/node1/hub");
     const uint64_t node0 = HUB_BY_NODE;
     const uint64_t node1 = HUB_BY_NODE + NODE_STRIDE;
@@ -4879,7 +4879,7 @@ static void test_llp_port_error_clear_contract(const void *data)
 static void test_routed_reply_error_count_saturates(const void *data)
 {
     QTestState *qts = qtest_init(
-        "-M origin2000 -smp 8,sockets=4,cores=2,threads=1 -m 256M "
+        "-M origin2000 -smp 8 -m 256M "
         "-device sgi-hub-test,id=hub-errors,hub=/machine/node0/hub");
     const uint64_t node0 = HUB_BY_NODE;
     uint64_t status;
@@ -4921,7 +4921,7 @@ static void test_llp_port_registers_answer_the_vector_decode(
 {
     QTestState *qts = qtest_init(
         "-M origin200,topology=origin200-dual -m 128M "
-        "-smp 4,sockets=2,cores=2,threads=1");
+        "-smp 4");
     uint64_t node0 = HUB_BY_NODE;
     uint64_t status;
 
@@ -4960,7 +4960,7 @@ static void test_vector_writes_land_only_on_rows_that_store(
 {
     QTestState *qts = qtest_init(
         "-M origin200,topology=origin200-dual -m 128M "
-        "-smp 4,sockets=2,cores=2,threads=1");
+        "-smp 4");
     uint64_t node0 = HUB_BY_NODE;
     uint64_t node1 = HUB_BY_NODE + NODE_STRIDE;
     uint64_t status;
@@ -5024,7 +5024,7 @@ static void test_io_protect_registers_answer_the_vector_decode(
 {
     QTestState *qts = qtest_init(
         "-M origin200,topology=origin200-dual -m 128M "
-        "-smp 4,sockets=2,cores=2,threads=1");
+        "-smp 4");
     uint64_t node0 = HUB_BY_NODE;
     uint64_t node1 = HUB_BY_NODE + NODE_STRIDE;
     uint64_t status;
@@ -5122,7 +5122,7 @@ static void test_ni_config_registers_answer_the_vector_decode(
 {
     QTestState *qts = qtest_init(
         "-M origin200,topology=origin200-dual -m 128M "
-        "-smp 4,sockets=2,cores=2,threads=1");
+        "-smp 4");
     uint64_t node0 = HUB_BY_NODE;
     uint64_t node1 = HUB_BY_NODE + NODE_STRIDE;
     uint64_t status;
@@ -5163,7 +5163,7 @@ static void test_a_32_bit_vector_clear_read_leaves_the_status(
 {
     QTestState *qts = qtest_init(
         "-M origin200,topology=origin200-dual -m 128M "
-        "-smp 4,sockets=2,cores=2,threads=1");
+        "-smp 4");
     uint64_t node0 = HUB_BY_NODE;
     uint64_t status;
 
@@ -5208,7 +5208,7 @@ static void test_stock_prom_hubs_start_unnumbered(const void *data)
 {
     QTestState *qts = qtest_init(
         "-M origin200,topology=origin200-dual -m 128M "
-        "-smp 4,sockets=2,cores=2,threads=1");
+        "-smp 4");
     uint64_t node0 = HUB_BY_NODE;
     uint64_t node1 = HUB_BY_NODE + NODE_STRIDE;
     uint64_t peer_status;
@@ -5287,7 +5287,7 @@ static QTestState *qtest_init_dual_node(void)
 {
     return qtest_init(
         "-M origin200,topology=origin200-dual -m 128M "
-        "-smp 4,sockets=2,cores=2,threads=1");
+        "-smp 4");
 }
 
 /* Node 1's processor slice A: processors 0-1 are node 0's. */
@@ -6063,7 +6063,7 @@ static void test_bte_physical_node_ownership(const void *data)
 {
     QTestState *qts = qtest_init(
         "-M origin200,topology=origin200-dual -m 128M "
-        "-smp 4,sockets=2,cores=2,threads=1");
+        "-smp 4");
     const uint64_t node1 = NODE_STRIDE;
     const uint64_t hub1 = HUB_BY_NODE + NODE_STRIDE;
     uint8_t got[BTE_LINE];
@@ -6144,7 +6144,7 @@ static void test_bte_reset_retires_peer_claim(const void *data)
 {
     QTestState *qts = qtest_init(
         "-M origin200,topology=origin200-dual -m 128M "
-        "-smp 4,sockets=2,cores=2,threads=1");
+        "-smp 4");
     unsigned int engine;
 
     sn0_program_nasid(qts, 1);
@@ -6242,7 +6242,7 @@ static void test_bte_routing_follows_nasid(const void *data)
 {
     g_autoptr(GString) args = g_string_new(
         "-M origin200,topology=origin200-dual -m 128M "
-        "-smp 4,sockets=2,cores=2,threads=1");
+        "-smp 4");
     const uint64_t src = 0x00800000;
     const uint64_t dst = 0x00900000;
     const uint64_t notify = 0x00a00000;

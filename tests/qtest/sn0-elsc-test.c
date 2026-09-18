@@ -240,7 +240,7 @@ static void test_read_switches_roundtrip(const void *data)
 
     qts = qtest_init(
         "-M origin200,topology=origin200-dual -m 128M "
-        "-smp 4,sockets=2,cores=2,threads=1 "
+        "-smp 4 "
         "-machine elsc-dip-switches=16");
 
     resp_len = elsc_transact_at(qts, HUB_LOCAL, req, req_len, resp,
@@ -1009,7 +1009,7 @@ static void test_two_towers_only_master_aux_active(const void *data)
 {
     QTestState *qts = qtest_init(
         "-M origin200,topology=origin200-dual -m 128M "
-        "-smp 4,sockets=2,cores=2,threads=1 "
+        "-smp 4 "
         "-serial null -serial null "
         "-chardev ringbuf,id=aux0,size=4096 -serial chardev:aux0 "
         "-serial null "
@@ -1049,7 +1049,7 @@ static void test_two_towers_share_master_grant_ring(const void *data)
 {
     QTestState *qts = qtest_init(
         "-M origin200,topology=origin200-dual -m 128M "
-        "-smp 4,sockets=2,cores=2,threads=1");
+        "-smp 4");
     g_autofree char *out = NULL;
     const unsigned int master_cpu = 0;
     const unsigned int slave_cpu = 2;
@@ -1182,7 +1182,7 @@ static void test_two_towers_reset_keeps_cpu3_grant_live(const void *data)
 {
     QTestState *qts = qtest_init(
         "-M origin200,topology=origin200-dual -m 128M "
-        "-smp 4,sockets=2,cores=2,threads=1");
+        "-smp 4");
     const unsigned int master_cpu = 0;
     const unsigned int slave_cpu = 3;
     const uint64_t explicit_zero = HUB_BY_NODE;

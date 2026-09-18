@@ -763,7 +763,7 @@ static void test_translation_entries_reset_clear(const void *data)
  */
 #define MACHINE_TWO_NODE \
     "-M origin200,topology=origin200-dual -m 128M " \
-    "-smp 4,sockets=2,cores=2,threads=1"
+    "-smp 4"
 
 #define NODE1_PCI_ADDR          0xa000000100bc4000ULL /* widget 0xa, xtalk 0x100bc4000 */
 #define NODE1_SYS_ADDR          0x100bc4000ULL        /* node 1 RAM: NASID 1 << 32 + off */
@@ -2142,7 +2142,7 @@ static void test_each_node_has_its_own_board_identity(const void *data)
 {
     QTestState *qts = qtest_init(
         "-M origin200,topology=origin200-dual -m 128M "
-        "-smp 4,sockets=2,cores=2,threads=1");
+        "-smp 4");
     uint64_t node0;
     uint64_t node1;
 

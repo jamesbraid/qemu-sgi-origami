@@ -4554,7 +4554,7 @@ static void test_each_node_has_its_own_onewire_identity(const void *data)
 {
     QTestState *qts = qtest_init(
         "-M origin200,topology=origin200-dual -m 128 "
-        "-smp 4,sockets=2,cores=2,threads=1");
+        "-smp 4");
     uint64_t node0, node1;
     uint8_t bytes[8];
     unsigned int i;
@@ -4600,7 +4600,7 @@ static void test_each_node_has_its_own_storage(const void *data)
 {
     QTestState *qts = qtest_init(
         "-M origin200,topology=origin200-dual -m 128 "
-        "-smp 4,sockets=2,cores=2,threads=1");
+        "-smp 4");
 
     sn0_program_nasid(qts, 1);
     sn0_ioc3_attach_node(qts, 0);
