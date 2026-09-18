@@ -21,6 +21,22 @@
  * The one-mode fixed timing sequence gating scanout comes from a reviewed,
  * generated fixture (psitech-rad4-mode0-fixture.h), not from vendor source
  * or a copied instruction listing.
+ *
+ * This file also answers the PCI identity 12d1:0105 (RAD4-KM), selected by
+ * the device-id property. docs/datasheets/psitech-rad4-km.md and its
+ * independent review (docs/reviews/
+ * psitech-rad4-km-datasheet-review-20260917.md) clear exactly two facts
+ * for that identity: the PCI vendor/device pair itself, and the
+ * guest-visible outcome that IRIX's rad4pci driver -- the
+ * same driver package as plain RAD4's -- attaches to it as a RAD4-KM
+ * board. Everything else this file implements under that identity (the
+ * BAR0/BAR2/expansion-ROM layout, the RGB561 path, the DMA engine) is
+ * plain RAD4's own approximation, reused as an explicitly disclosed
+ * approximation rather than an established RAD4-KM register fact; the
+ * datasheet's own review names this choice as needing its own future
+ * review. RAD4-KM's keyboard/mouse controller itself is not modeled at
+ * all -- its silicon identity and register protocol remain unknown, and
+ * this device does not claim, imply or emulate any specific chip for it.
  */
 
 #include "qemu/osdep.h"
@@ -45,6 +61,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad4State, PSITECH_RAD4)
 
 #define RAD4_VENDOR_ID          0x12d1
 #define RAD4_DEVICE_ID          0x0104
+
+/*
+ * RAD4-KM, PCI identity 12d1:0105: a distinct PsiTech product that shares
+ * RAD4's own rad4pci driver and hwgraph subtree (docs/datasheets/
+ * psitech-rad4-km.md, "Cleared for a bounded implementation"). Only the
+ * PCI identity and the guest-visible attach outcome are cleared for
+ * implementation; this device answers that identity with plain RAD4's own
+ * register layout below -- an explicitly disclosed approximation, not an
+ * independently established RAD4-KM register contract. See the file
+ * header for the full disclosure.
+ */
+#define RAD4_KM_DEVICE_ID       0x0105
 
 #define RAD4_BAR0_SIZE          128
 #define RAD4_BAR2_SIZE          (16 * MiB)
@@ -378,6 +406,17 @@ typedef enum Rad4RecState {
 
 struct PsitechRad4State {
     PCIDevice pci;
+
+    /*
+     * Selects the PCI identity this instance answers as: RAD4_DEVICE_ID
+     * (0x0104, plain RAD4) or RAD4_KM_DEVICE_ID (0x0105, RAD4-KM), a
+     * settable property mirroring how hw/misc/sgi-ioc3.c's subsystem-id
+     * property selects a board identity on one shared implementation.
+     * Every register below behaves identically regardless of this value;
+     * see the file header for what that reuse does and does not claim
+     * for RAD4-KM.
+     */
+    uint16_t device_id;
 
     MemoryRegion bar0;
     MemoryRegion bar2;
@@ -1570,6 +1609,14 @@ static void rad4_realize(PCIDevice *dev, Error **errp)
     pci_set_word(&s->pci.config[PCI_SUBSYSTEM_ID], 0);
     s->pci.config[PCI_INTERRUPT_PIN] = 0x01;
 
+    /*
+     * The identity a guest's hinv/PCI probe actually reads, over the
+     * class-wide RAD4_DEVICE_ID default the PCI core already wrote.
+     * Mirrors hw/misc/sgi-ioc3.c's own board-identity override of
+     * PCI_SUBSYSTEM_ID in its realize().
+     */
+    pci_set_word(&s->pci.config[PCI_DEVICE_ID], s->device_id);
+
     pci_register_bar(&s->pci, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar0);
     pci_register_bar(&s->pci, 2, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar2);
     pci_register_bar(&s->pci, PCI_ROM_SLOT, PCI_BASE_ADDRESS_SPACE_MEMORY,
@@ -1653,6 +1700,17 @@ static const VMStateDescription vmstate_psitech_rad4 = {
     },
 };
 
+/*
+ * device-id defaults to plain RAD4; "-device psitech-rad4,device-id=0x105"
+ * (RAD4_KM_DEVICE_ID) selects the RAD4-KM identity instead, over this same
+ * shared implementation, the way hw/misc/sgi-ioc3.c's own "subsystem-id"
+ * property selects a board identity.
+ */
+static const Property psitech_rad4_properties[] = {
+    DEFINE_PROP_UINT16("device-id", PsitechRad4State, device_id,
+                       RAD4_DEVICE_ID),
+};
+
 static void rad4_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -1670,6 +1728,7 @@ static void rad4_class_init(ObjectClass *klass, const void *data)
     dc->desc = "PsiTech RAD4 (one-mode functional approximation)";
     dc->vmsd = &vmstate_psitech_rad4;
     set_bit(DEVICE_CATEGORY_DISPLAY, dc->categories);
+    device_class_set_props(dc, psitech_rad4_properties);
 }
 
 static const TypeInfo psitech_rad4_type_info = {
