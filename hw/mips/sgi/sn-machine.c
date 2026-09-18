@@ -29,8 +29,6 @@
 #include "qapi/visitor.h"
 #include "qobject/qlist.h"
 #include "qemu/error-report.h"
-#include "qemu/log.h"
-#include "qemu/main-loop.h"
 #include "hw/core/clock.h"
 #include "hw/core/loader.h"
 #include "hw/core/qdev-clock.h"
@@ -51,7 +49,6 @@
 #include "system/blockdev.h"
 #include "system/qtest.h"
 #include "system/reset.h"
-#include "system/runstate.h"
 #include "system/system.h"
 #include "trace/control.h"
 #include "cpu.h"
@@ -147,41 +144,6 @@ static const SN0ModelHardware sgi_sn0_hub_hardware = {
 #define SGI_SN0_PROM_PI_PROBE_WIDGET        2
 #define SGI_SN0_PROM_PI_PROBE_OFFSET        0x400208ULL
 
-/*
- * Which node and widget a crossbar-attached node's own refusing processor
- * face (sgi_machine_crossbar_face_refusal) answers for.
- */
-typedef struct SGIMachineCrossbarFace {
-    SN0NodeState *node;
-    unsigned int widget;
-} SGIMachineCrossbarFace;
-
-/*
- * A Crossbow-attached node's own two Crosstalk packet adapters, moved
- * unaltered from the deleted hw/mips/sgi/sn0-origin2000-io.c; see their
- * full description where the functions that use them are defined, below
- * the machine state they are now members of.
- */
-typedef struct SN0Origin2000HubIO {
-    MemoryRegion face;
-    AddressSpace *target;
-    AddressSpace *local_registers;
-    MemoryRegion local_register_view;
-    uint64_t memory_size;
-    uint64_t xtalk_base;
-    uint64_t node_stride;
-    uint64_t modify_offset;
-    bool initialized;
-    bool active;
-} SN0Origin2000HubIO;
-
-typedef struct SN0Origin2000HubOutgoingIO {
-    MemoryRegion face;
-    AddressSpace *packets;
-    bool initialized;
-    bool active;
-} SN0Origin2000HubOutgoingIO;
-
 struct SGIMachineState {
     MachineState parent_obj;
 
@@ -197,9 +159,14 @@ struct SGIMachineState {
     Clock *cpu_refclk;
     Clock *rt_refclk;
 
-    /* Realized only once every board has queued; see attach_crossbars. */
+    /* Parented and realized as soon as every port attached to it is. */
     SGIXbowState **crossbars;
-    Notifier machine_done;
+
+    /*
+     * One sgi-xtalk-board per io_boards[] entry, built before its own
+     * Crossbow, if any.
+     */
+    SGIXtalkBoardState **io_boards;
 
     /*
      * A directly attached board's own crosstalk wiring: one link per
@@ -210,35 +177,12 @@ struct SGIMachineState {
     SGIXtalkDirectLink *direct_links;
 
     /*
-     * One sgi-xtalk-board per io_boards[] entry, built before its own
-     * Crossbow, if any.
+     * A Crossbow-attached endpoint's own link: one per node, then one
+     * per io_boards[] entry, in that order (index node_count + board
+     * index for a board's own). Unused entries (a direct board's, or a
+     * Hub-product topology's io board on a Bedrock node) stay zeroed.
      */
-    SGIXtalkBoardState **io_boards;
-
-    /*
-     * A Crossbow-attached board's outgoing packets, proxied until its own
-     * Crossbow's ingress exists; aliased on at attach_crossbars.
-     */
-    MemoryRegion *io_board_packet_proxy;
-
-    /*
-     * A Crossbow-attached node's own two adapters, moved unaltered from
-     * the deleted sn0-origin2000-io.c: an inbound decoder for the
-     * Crossbow's view of this node, and an outbound proxy for the Hub's
-     * "xtalk-io" big-window mode. NULL for a directly-attached node
-     * (Origin 200).
-     */
-    SN0Origin2000HubIO *node_inbound;
-    MemoryRegion *node_cpu_refusal;
-    SN0Origin2000HubOutgoingIO *node_outbound;
-    MemoryRegion *node_packet_proxy;
-    /* Aliases attach_crossbars adds once each node's Crossbow is built. */
-    MemoryRegion *node_packet_alias;
-    MemoryRegion *node_cpu_alias;
-    /* Which node/widget a crossbar-attached refusing face answers for. */
-    SGIMachineCrossbarFace *node_crossbar_face;
-    /* Alias attach_crossbars adds once a board's own Crossbow is built. */
-    MemoryRegion *io_board_packet_alias;
+    SGIXtalkCrossbowLink *crossbow_links;
 
     bool debug_leds;
     bool junk_uart_present;
@@ -257,264 +201,6 @@ struct SGIMachineState {
     strList *board_eeprom;
     strList *spd_eeprom;
 };
-
-/*
- * ---- A Crossbow-attached node's own two Crosstalk packet adapters ----
- *
- * Moved unaltered from the deleted sn0-origin2000-io.c.
- *
- * Inbound answers a Crossbow's view of this node's widget position: a
- * packet-space write addressed at the Hub's interrupt-modify register,
- * nasid embedded per the Bridge datasheet's INT_HOST field, decodes to
- * that nasid's physical offset and forwards through this node's
- * device_view, so a remote nasid reaches its own Hub as a direct-attach
- * interrupt does and a local one loops back into this same node.
- *
- * Outbound is what the Hub's "xtalk-io" big-window mode (hw/misc/
- * sgi-hub.c, IO_BWIN_SPACE) sends a widget-addressed access into: it
- * packet-izes the access into the proxy this builder aliases onto the
- * node's own Crossbow ingress once built.
- */
-
-#define SN0_ORIGIN2000_PACKET_IO (1ULL << 47)
-#define SN0_ORIGIN2000_PACKET_NASID_SHIFT 38
-#define SN0_ORIGIN2000_PACKET_MODIFY 0x01800090ULL
-#define SN0_ORIGIN2000_PACKET_IDENTITY 0x01600000ULL
-#define SN0_ORIGIN2000_HUB_NETWORK_IDENTITY 0x600000
-#define SN0_ORIGIN2000_SUPPORTED_NODE_STRIDE (1ULL << 32)
-#define SN0_ORIGIN2000_SUPPORTED_NASIDS 256
-/* A Crossbow's own full packet-addressed ingress: 16 widgets of 1<<48. */
-#define SN0_ORIGIN2000_PACKET_INGRESS_SIZE (1ULL << 52)
-
-static bool sn0_origin2000_packet_address(SN0Origin2000HubIO *io, hwaddr addr,
-                                          unsigned size, bool write,
-                                          hwaddr *target)
-{
-    unsigned nasid = (addr >> SN0_ORIGIN2000_PACKET_NASID_SHIFT) & 0xff;
-    uint64_t interrupt = SN0_ORIGIN2000_PACKET_IO |
-        ((uint64_t)nasid << SN0_ORIGIN2000_PACKET_NASID_SHIFT) |
-        SN0_ORIGIN2000_PACKET_MODIFY;
-
-    /* Validate the dispatched access before any downstream side effect. */
-    if (size && addr < io->memory_size && size <= io->memory_size - addr) {
-        *target = addr;
-        return true;
-    }
-    if (write && size == 8 && addr == interrupt) {
-        *target = io->xtalk_base + (uint64_t)nasid * io->node_stride +
-                  io->modify_offset;
-        return true;
-    }
-    qemu_log_mask(LOG_GUEST_ERROR,
-                  "sn0: unsupported Hub packet %s at 0x%" HWADDR_PRIx
-                  " size %u\n", write ? "write" : "read", addr, size);
-    return false;
-}
-
-static MemTxResult sn0_origin2000_packet_read(void *opaque, hwaddr addr,
-                                              uint64_t *data, unsigned size,
-                                              MemTxAttrs attrs)
-{
-    SN0Origin2000HubIO *io = opaque;
-    uint8_t bytes[8] = { 0 };
-    hwaddr target;
-    MemTxResult result;
-    AddressSpace *space = io->target;
-
-    *data = 0;
-    if (!io->active) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "sn0: read from detached Hub packet face\n");
-        return MEMTX_ERROR;
-    }
-    if (size == 8 && addr == (SN0_ORIGIN2000_PACKET_IO |
-                              SN0_ORIGIN2000_PACKET_IDENTITY)) {
-        /* The selected physical receiver, even when reset NASIDs coincide. */
-        space = io->local_registers;
-        target = 0;
-    } else if (!sn0_origin2000_packet_address(io, addr, size, false,
-                                              &target)) {
-        return MEMTX_ERROR;
-    }
-    result = address_space_read(space, target, attrs, bytes + 8 - size, size);
-    *data = ldq_be_p(bytes);
-    return result;
-}
-
-static MemTxResult sn0_origin2000_packet_write(void *opaque, hwaddr addr,
-                                               uint64_t data, unsigned size,
-                                               MemTxAttrs attrs)
-{
-    SN0Origin2000HubIO *io = opaque;
-    uint8_t bytes[8];
-    hwaddr target;
-
-    if (!io->active) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "sn0: write to detached Hub packet face\n");
-        return MEMTX_ERROR;
-    }
-    if (!sn0_origin2000_packet_address(io, addr, size, true, &target)) {
-        return MEMTX_ERROR;
-    }
-    stq_be_p(bytes, data);
-    return address_space_write(io->target, target, attrs, bytes + 8 - size,
-                               size);
-}
-
-static const MemoryRegionOps sn0_origin2000_packet_ops = {
-    .read_with_attrs = sn0_origin2000_packet_read,
-    .write_with_attrs = sn0_origin2000_packet_write,
-    .endianness = DEVICE_BIG_ENDIAN,
-    .valid = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
-    .impl = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
-};
-
-/*
- * Storage must live until owner's instance_finalize; initialize once,
- * after the node's Hub is realized (its physical map is what this reads).
- */
-static bool sn0_origin2000_hub_io_init(SN0Origin2000HubIO *io, Object *owner,
-                                       SN0NodeState *node, Error **errp)
-{
-    const SN0ModelAddressMap *map;
-
-    if (!owner || io->initialized) {
-        error_setg(errp,
-                   "Hub packet adapter needs an owner and unused storage");
-        return false;
-    }
-    if (!node || !DEVICE(node)->realized || !node->physical) {
-        error_setg(errp,
-                   "Hub packet adapter requires a realized physical node");
-        return false;
-    }
-    map = &node->physical->map;
-    if (map->memory.carrier_base != 0 ||
-        map->node_stride != SN0_ORIGIN2000_SUPPORTED_NODE_STRIDE ||
-        map->xtalk.carrier_base != (2ULL << 40) ||
-        map->hub_registers_node.offset != 0x01800000 ||
-        map->hub_registers_node.size < 0x98) {
-        error_setg(errp, "unsupported Hub packet address geometry");
-        return false;
-    }
-    io->memory_size = SN0_ORIGIN2000_SUPPORTED_NASIDS * map->node_stride;
-    io->xtalk_base = map->xtalk.carrier_base;
-    io->node_stride = map->node_stride;
-    io->modify_offset = map->hub_registers_node.offset + 0x90;
-    memory_region_init_io(&io->face, owner, &sn0_origin2000_packet_ops, io,
-                          "sn0.hub.packet", 1ULL << 48);
-    io->target = g_new0(AddressSpace, 1);
-    address_space_init(io->target, &node->device_view, "sn0.hub.packet.target");
-    /* Keep the sole local register independent of its system-bus placement. */
-    memory_region_init_alias(&io->local_register_view, owner,
-                             "sn0.hub.packet.local-register-view",
-                             &node->hub.regs,
-                             SN0_ORIGIN2000_HUB_NETWORK_IDENTITY, 8);
-    io->local_registers = g_new0(AddressSpace, 1);
-    address_space_init(io->local_registers, &io->local_register_view,
-                       "sn0.hub.packet.local-registers");
-    io->initialized = true;
-    io->active = true;
-    return true;
-}
-
-/*
- * Whether a bounded access at offset/size stays inside one widget's own
- * per-widget window: the same bound sn0_origin2000_packet_address applies
- * to its own general case, since both this face and that one forward a
- * bounded access into a packet-addressed region unchanged.
- */
-static bool sn0_origin2000_outgoing_bounded(uint64_t offset, unsigned size)
-{
-    return size && size <= SN0_XTALK_WIDGET_SIZE - offset;
-}
-
-static MemTxResult sn0_origin2000_outgoing_read(void *opaque, hwaddr addr,
-                                                uint64_t *data, unsigned size,
-                                                MemTxAttrs attrs)
-{
-    SN0Origin2000HubOutgoingIO *io = opaque;
-    unsigned int widget = addr >> SN0_XTALK_WIDGET_SHIFT;
-    uint64_t offset = addr & (SN0_XTALK_WIDGET_SIZE - 1);
-    uint8_t bytes[8] = { 0 };
-    MemTxResult result;
-
-    *data = 0;
-    if (!io->active || widget < 8 || widget > 15 ||
-        !sn0_origin2000_outgoing_bounded(offset, size)) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "sn0: unsupported outgoing Hub I/O read at 0x%"
-                      HWADDR_PRIx " size %u\n", addr, size);
-        return MEMTX_ERROR;
-    }
-    result = address_space_read(
-        io->packets,
-        ((uint64_t)widget << 48) | SN0_ORIGIN2000_PACKET_IO | offset, attrs,
-        bytes + 8 - size, size);
-    *data = ldq_be_p(bytes);
-    return result;
-}
-
-static MemTxResult sn0_origin2000_outgoing_write(void *opaque, hwaddr addr,
-                                                 uint64_t data, unsigned size,
-                                                 MemTxAttrs attrs)
-{
-    SN0Origin2000HubOutgoingIO *io = opaque;
-    unsigned int widget = addr >> SN0_XTALK_WIDGET_SHIFT;
-    uint64_t offset = addr & (SN0_XTALK_WIDGET_SIZE - 1);
-    uint8_t bytes[8];
-
-    if (io->active && widget >= 8 && widget <= 15 &&
-        sn0_origin2000_outgoing_bounded(offset, size)) {
-        stq_be_p(bytes, data);
-        return address_space_write(
-            io->packets,
-            ((uint64_t)widget << 48) | SN0_ORIGIN2000_PACKET_IO | offset,
-            attrs, bytes + 8 - size, size);
-    }
-    qemu_log_mask(LOG_GUEST_ERROR,
-                  "sn0: unsupported outgoing Hub I/O write at 0x%"
-                  HWADDR_PRIx " size %u\n", addr, size);
-    return MEMTX_ERROR;
-}
-
-static const MemoryRegionOps sn0_origin2000_outgoing_ops = {
-    .read_with_attrs = sn0_origin2000_outgoing_read,
-    .write_with_attrs = sn0_origin2000_outgoing_write,
-    .endianness = DEVICE_BIG_ENDIAN,
-    .valid = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
-    .impl = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
-};
-
-/* Supply a per-source packet proxy before the node's Hub is realized. */
-static bool sn0_origin2000_hub_outgoing_io_init(SN0Origin2000HubOutgoingIO *io,
-                                                Object *owner,
-                                                SN0NodeState *node,
-                                                MemoryRegion *packet_ingress,
-                                                Error **errp)
-{
-    if (!owner || io->initialized) {
-        error_setg(errp, "outgoing Hub I/O needs an owner and unused storage");
-        return false;
-    }
-    if (!node || !node->physical || DEVICE(&node->hub)->realized) {
-        error_setg(errp,
-                   "outgoing Hub I/O requires a prepared, unrealized Hub");
-        return false;
-    }
-    if (!packet_ingress || memory_region_size(packet_ingress) != (1ULL << 52)) {
-        error_setg(errp, "outgoing Hub I/O requires a full packet ingress");
-        return false;
-    }
-    memory_region_init_io(&io->face, owner, &sn0_origin2000_outgoing_ops, io,
-                          "sn0.hub.outgoing-io", 1ULL << 38);
-    io->packets = g_new0(AddressSpace, 1);
-    address_space_init(io->packets, packet_ingress, "sn0.hub.outgoing-packets");
-    io->initialized = true;
-    io->active = true;
-    return true;
-}
 
 /*
  * The controller holds one identification record per file, in order. The
@@ -1441,71 +1127,6 @@ static unsigned int sgi_machine_compute_serial_line(
 }
 
 /*
- * A crossbar-attached node's processor-side face: the Hub's widget-
- * identification word answers its one cleared short read; every other
- * access stops deliberately rather than answer with a fabricated value.
- */
-#define SGI_MACHINE_CROSSBAR_HUB_WIDGET_ID 0x400000
-#define SGI_MACHINE_CROSSBAR_WIDGET_REGISTER_DATA 4
-
-static MemTxResult sgi_machine_crossbar_face_refusal(
-    void *opaque, hwaddr addr, uint64_t *data, unsigned size, bool is_write,
-    MemTxAttrs attrs)
-{
-    SGIMachineCrossbarFace *face = opaque;
-
-    assert(bql_locked());
-    if (!is_write && addr == SGI_MACHINE_CROSSBAR_WIDGET_REGISTER_DATA &&
-        size == 4) {
-        return memory_region_dispatch_read(
-            &face->node->hub.regs,
-            SGI_MACHINE_CROSSBAR_HUB_WIDGET_ID + addr, data, MO_32 | MO_BE,
-            attrs);
-    }
-    error_report("Origin 2000 node %u widget %u: unsupported %u-byte %s at "
-                 "0x%" HWADDR_PRIx " on the processor-side Hub face, which "
-                 "is outside its cleared decode; stopping instead of "
-                 "answering", face->node->nasid, face->widget, size,
-                 is_write ? "write" : "read", addr);
-    qemu_system_vmstop_request_prepare();
-    qemu_system_vmstop_request(RUN_STATE_INTERNAL_ERROR);
-    if (data) {
-        *data = 0;
-    }
-    return MEMTX_ERROR;
-}
-
-static MemTxResult sgi_machine_crossbar_face_read(void *opaque, hwaddr addr,
-                                                   uint64_t *data,
-                                                   unsigned size,
-                                                   MemTxAttrs attrs)
-{
-    return sgi_machine_crossbar_face_refusal(opaque, addr, data, size, false,
-                                             attrs);
-}
-
-static MemTxResult sgi_machine_crossbar_face_write(void *opaque, hwaddr addr,
-                                                    uint64_t data,
-                                                    unsigned size,
-                                                    MemTxAttrs attrs)
-{
-    return sgi_machine_crossbar_face_refusal(opaque, addr, NULL, size, true,
-                                             attrs);
-}
-
-static const MemoryRegionOps sgi_machine_crossbar_face_ops = {
-    .read_with_attrs = sgi_machine_crossbar_face_read,
-    .write_with_attrs = sgi_machine_crossbar_face_write,
-    .endianness = DEVICE_BIG_ENDIAN,
-    .valid.min_access_size = 1,
-    .valid.max_access_size = 8,
-    .valid.unaligned = true,
-    .impl.min_access_size = 1,
-    .impl.max_access_size = 8,
-    .impl.unaligned = true,
-};
-
-/*
  * Every widget position a Crossbow physically wires (docs/datasheets/
  * xbow.md: one or two host connections plus six I/O ports), regardless
  * of what boot populates: sgi_xbow_realize requires startup-links-alive
@@ -1522,6 +1143,7 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
     for (i = 0; i < t->crossbar_count; i++) {
         const SGIModelCrossbar *descriptor = &t->crossbars[i];
         DeviceState *crossbow = qdev_new(TYPE_SGI_XBOW);
+        g_autofree char *name = g_strdup_printf("crossbow%zu", i);
         uint16_t startup_alive = 0;
         size_t attachment_index;
 
@@ -1541,6 +1163,8 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
         }
 
         s->crossbars[i] = SGI_XBOW(crossbow);
+        object_property_add_child(OBJECT(s), name, OBJECT(crossbow));
+        object_unref(OBJECT(crossbow));
         qdev_prop_set_uint64(crossbow, "span", SN0_XTALK_WIDGET_SIZE);
         qdev_prop_set_bit(crossbow,
                           "complete-posted-error-address-writes", true);
@@ -1561,65 +1185,6 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
     }
 }
 
-/*
- * Requires the node's Hub still unrealized, so this runs before the
- * node realize loop.
- */
-static bool sgi_machine_build_node_outbound(SGIMachineState *s,
-                                            unsigned int node_index,
-                                            Error **errp)
-{
-    g_autofree char *name =
-        g_strdup_printf("node%u-packet-proxy", node_index);
-    SN0NodeState *node = s->nodes[node_index];
-
-    memory_region_init(&s->node_packet_proxy[node_index], OBJECT(s), name,
-                       SN0_ORIGIN2000_PACKET_INGRESS_SIZE);
-    memory_region_set_enabled(&s->node_packet_proxy[node_index], false);
-    if (!sn0_origin2000_hub_outgoing_io_init(
-            &s->node_outbound[node_index], OBJECT(s), node,
-            &s->node_packet_proxy[node_index], errp) ||
-        !object_property_set_link(
-            OBJECT(&node->hub), "xtalk-io",
-            OBJECT(&s->node_outbound[node_index].face), errp)) {
-        return false;
-    }
-    return true;
-}
-
-/*
- * Requires the node's Hub realized (the inbound decoder reads its
- * physical map) and the Crossbow not yet realized, so this runs after
- * the node realize loop and before sgi_machine_attach_crossbars.
- */
-static bool sgi_machine_wire_node_crossbar(
-    SGIMachineState *s, unsigned int node_index,
-    const SGIModelXtalkAttachment *attachment, Error **errp)
-{
-    SN0NodeState *node = s->nodes[node_index];
-    g_autofree char *name =
-        g_strdup_printf("node%u-cpu-refusal", node_index);
-
-    if (!sn0_origin2000_hub_io_init(&s->node_inbound[node_index], OBJECT(s),
-                                    node, errp)) {
-        return false;
-    }
-    s->node_crossbar_face[node_index].node = node;
-    s->node_crossbar_face[node_index].widget = attachment->widget;
-    memory_region_init_io(&s->node_cpu_refusal[node_index], OBJECT(s),
-                          &sgi_machine_crossbar_face_ops,
-                          &s->node_crossbar_face[node_index], name,
-                          SN0_XTALK_WIDGET_SIZE);
-    if (!sgi_xbow_attach_endpoint(s->crossbars[attachment->crossbar_index],
-                                  attachment->widget,
-                                  &s->node_cpu_refusal[node_index],
-                                  &s->node_inbound[node_index].face,
-                                  errp)) {
-        return false;
-    }
-    return true;
-}
-
 /* A simple uint64 qdev property, applied by object_property_set_uint. */
 struct SGIMachineUintProperty {
     const char *name;
@@ -1629,8 +1194,10 @@ struct SGIMachineUintProperty {
 /*
  * Build one io_boards[] entry, wire it to its own crosstalk position and
  * realize it. A Crossbow-attached board attaches through
- * sgi_xbow_attach_endpoint(), deferring only the Crossbow's own realize
- * to sgi_machine_attach_crossbars below.
+ * sgi_xtalk_crossbow_link_attach_widget(); the Crossbow itself realizes
+ * later, once every board and node that attaches to it has (see
+ * sgi_machine_realize's own crossbar-realize pass, after this function's
+ * every caller has returned).
  */
 static bool sgi_machine_instantiate_io_board(
     SGIMachineState *s, const SGIModelTopology *t, unsigned int board_index,
@@ -1675,6 +1242,8 @@ static bool sgi_machine_instantiate_io_board(
     BlockBackend *nvram_blk = nvram_dinfo ?
         blk_by_legacy_dinfo(nvram_dinfo) : blk_by_name(nvram_id);
     unsigned int uint_prop_count = 3;
+    SGIXtalkCrossbowLink *crossbow_link =
+        &s->crossbow_links[s->num_nodes + board_index];
     SGIXtalkBoardState *board;
     size_t i;
 
@@ -1747,7 +1316,9 @@ static bool sgi_machine_instantiate_io_board(
          * Interrupt packets travel a processor's claim view, which
          * resolves a node-qualified address by programmed number, not by
          * the board's position. View zero speaks for the node; a node
-         * always has a processor.
+         * always has a processor. This is a Hub/Origin-200 fact the
+         * direct link's own port interface never has to carry, since it
+         * is set once here rather than once per widget the link aliases.
          */
         object_property_set_link(OBJECT(dev), "fabric",
                                  OBJECT(&node->claim_view[0]), &error_fatal);
@@ -1760,19 +1331,18 @@ static bool sgi_machine_instantiate_io_board(
          * packet header, so the Bridge keeps it in bits 51:48 of the
          * address it composes rather than spending address bits on a
          * node number the switch would not read. This Crossbow's own
-         * packet ingress does not exist until it realizes, so the Bridge
-         * is given this proxy instead; sgi_machine_attach_crossbars adds
-         * a subregion aliasing the real ingress once the Crossbow is
-         * built.
+         * packet ingress does not exist until it realizes, so the link's
+         * own proxy stands in; sgi_xtalk_crossbow_link_finish() aliases
+         * the real ingress onto it once the Crossbow is built.
          */
         g_autofree char *proxy_name =
             g_strdup_printf("io-board%u-packet-proxy", board_index);
 
-        memory_region_init(&s->io_board_packet_proxy[board_index], OBJECT(s),
-                           proxy_name, SN0_ORIGIN2000_PACKET_INGRESS_SIZE);
         object_property_set_link(
             OBJECT(dev), "fabric",
-            OBJECT(&s->io_board_packet_proxy[board_index]), &error_fatal);
+            OBJECT(sgi_xtalk_crossbow_link_prepare(crossbow_link, OBJECT(s),
+                                                   proxy_name)),
+            &error_fatal);
         qdev_prop_set_uint32(dev, "fabric-widget-shift",
                              SGI_BRIDGE_PACKET_ADDRESS_BITS);
     }
@@ -1787,9 +1357,8 @@ static bool sgi_machine_instantiate_io_board(
      * (docs/datasheets/bridge.md: the Bridge answers its full 16 MB face
      * at every non-zero widget the Hub sends out its link), and wires
      * the PROM's fixed widget-2 PI-error probe through it; a Crossbow-
-     * attached board instead attaches through sgi_xbow_attach_endpoint(),
-     * the same primitive sgi_xtalk_board_attach_pending() uses for a
-     * `-device`-plugged one.
+     * attached board instead attaches through
+     * sgi_xtalk_crossbow_link_attach_widget().
      */
     if (direct) {
         SN0NodeState *node = s->nodes[attachment->node_index];
@@ -1802,127 +1371,73 @@ static bool sgi_machine_instantiate_io_board(
             return false;
         }
     } else {
-        if (!sgi_xbow_attach_endpoint(
+        if (!sgi_xtalk_crossbow_link_attach_widget(
+                crossbow_link, OBJECT(board),
                 s->crossbars[attachment->crossbar_index], attachment->widget,
-                board->cpu_face, board->packet_face, errp)) {
+                errp)) {
             return false;
         }
-        /*
-         * Every board queues itself for attach_pending() on realize
-         * unconditionally, so a direct board that skipped the pending
-         * list has to say so itself or attach_crossbars retries it.
-         */
         board->attached = true;
     }
     return true;
 }
 
 /*
- * The deferred machine-init-done hook: by now every board this run will
- * attach has had its chance to queue, built above or `-device`-plugged
- * since, so each Crossbow can pick up anything pending for its own
- * module and finally realize -- also the first moment its real packet
- * and plain ingress exist, so the proxies built above alias onto them
- * only here.
- *
- * A Bedrock topology's own crossbar_count is not zero (its descriptor
- * names the fused chip's own internal crossbar section, kind
- * SGI_MODEL_CROSSBAR_XBRIDGE, so a caller inspecting the descriptor alone
- * can still see it), but it names no real, separately realized Crossbow
- * for this hook to build: sn1-node.c already built and realized Bedrock's
- * one I/O board directly, synchronously, before this run ever reaches
- * machine-init-done. Every array and lookup below this guard (s->nodes[],
- * sgi_machine_index_xtalk_attachments) is Hub-only.
+ * Realizes every Crossbow this topology built, once every node and board
+ * that attaches to one has (sgi_xbow_attach_endpoint() refuses on an
+ * already-realized Crossbow, so this can run no earlier), then installs
+ * each attached link's own real ingress views -- the first moment they
+ * exist -- as what its outer port's own outbound traffic reaches.
+ * node_attachment and board_attachment are sgi_machine_realize's own,
+ * already resolved by sgi_machine_index_xtalk_attachments there; nothing
+ * here waits for a `-device`-plugged board, unlike the deferred
+ * machine-init-done hook this replaces: a crosstalk board realized after
+ * the machine returns is not attached to anything (see the crosstalk
+ * port experiment's own report for why).
  */
-static void sgi_machine_attach_crossbars(Notifier *notifier, void *data)
+static bool sgi_machine_realize_crossbars(
+    SGIMachineState *s, const SGIModelTopology *t,
+    const unsigned int *node_attachment, const unsigned int *board_attachment,
+    Error **errp)
 {
-    SGIMachineState *s = container_of(notifier, SGIMachineState,
-                                      machine_done);
-    const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
-    g_autofree unsigned int *node_attachment = NULL;
-    g_autofree unsigned int *board_attachment = NULL;
     size_t i;
 
-    if (!t || !t->crossbar_count ||
-        t->nodes[0].asic_kind != SGI_MODEL_ASIC_HUB) {
-        return;
-    }
-    node_attachment = g_new0(unsigned int, t->node_count);
-    board_attachment = g_new0(unsigned int, t->io_board_count);
-    if (!sgi_machine_index_xtalk_attachments(t, node_attachment,
-                                             board_attachment,
-                                             &error_fatal)) {
-        exit(EXIT_FAILURE);
-    }
-
     for (i = 0; i < t->crossbar_count; i++) {
-        /*
-         * Parented only now: qdev_machine_creation_done() asserts every
-         * QOM-reachable device realized, and runs before this notifier.
-         */
-        Object *crossbow = OBJECT(s->crossbars[i]);
-
-        if (!crossbow->parent) {
-            g_autofree char *name = g_strdup_printf("crossbow%zu", i);
-
-            object_property_add_child(OBJECT(s), name, crossbow);
-            object_unref(crossbow);
-        }
-        if (!sgi_xtalk_board_attach_pending(s->crossbars[i],
-                                            t->crossbars[i].module_index,
-                                            &error_fatal) ||
-            !sysbus_realize(SYS_BUS_DEVICE(s->crossbars[i]), &error_fatal)) {
-            exit(EXIT_FAILURE);
+        if (!sysbus_realize(SYS_BUS_DEVICE(s->crossbars[i]), errp)) {
+            return false;
         }
     }
-
     for (i = 0; i < t->node_count; i++) {
         const SGIModelXtalkAttachment *attachment =
             &t->xtalk_attachments[node_attachment[i]];
-        SN0NodeState *node = s->nodes[i];
-        SGIXbowState *crossbow;
-        MemoryRegion *packet, *cpu;
-        g_autofree char *packet_name =
-            g_strdup_printf("node%zu-packet-ingress", i);
-        g_autofree char *cpu_name = g_strdup_printf("node%zu-cpu-ingress", i);
+        g_autofree char *name = g_strdup_printf("node%zu", i);
 
         if (attachment->crossbar_index < 0) {
             continue;
         }
-        crossbow = s->crossbars[attachment->crossbar_index];
-        packet = sgi_xbow_packet_ingress(crossbow, attachment->widget);
-        cpu = sgi_xbow_ingress(crossbow, attachment->widget);
-
-        memory_region_init_alias(&s->node_packet_alias[i], OBJECT(s),
-                                 packet_name, packet, 0,
-                                 memory_region_size(packet));
-        memory_region_add_subregion(&s->node_packet_proxy[i], 0,
-                                    &s->node_packet_alias[i]);
-        memory_region_set_enabled(&s->node_packet_proxy[i], true);
-        memory_region_init_alias(&s->node_cpu_alias[i], OBJECT(s), cpu_name,
-                                 cpu, 0, memory_region_size(cpu));
-        memory_region_add_subregion(&node->xtalk, 0, &s->node_cpu_alias[i]);
+        if (!sgi_xtalk_crossbow_link_finish(
+                &s->crossbow_links[i], OBJECT(s), name,
+                s->crossbars[attachment->crossbar_index], attachment->widget,
+                errp)) {
+            return false;
+        }
     }
-
     for (i = 0; i < t->io_board_count; i++) {
         const SGIModelXtalkAttachment *attachment =
             &t->xtalk_attachments[board_attachment[i]];
-        SGIXbowState *crossbow;
-        MemoryRegion *packet;
-        g_autofree char *name =
-            g_strdup_printf("io-board%zu-packet-ingress", i);
+        g_autofree char *name = g_strdup_printf("io-board%zu", i);
 
         if (attachment->crossbar_index < 0) {
             continue;
         }
-        crossbow = s->crossbars[attachment->crossbar_index];
-        packet = sgi_xbow_packet_ingress(crossbow, attachment->widget);
-        memory_region_init_alias(&s->io_board_packet_alias[i], OBJECT(s),
-                                 name, packet, 0, memory_region_size(packet));
-        memory_region_add_subregion(&s->io_board_packet_proxy[i], 0,
-                                    &s->io_board_packet_alias[i]);
-        memory_region_set_enabled(&s->io_board_packet_proxy[i], true);
+        if (!sgi_xtalk_crossbow_link_finish(
+                &s->crossbow_links[s->num_nodes + i], OBJECT(s), name,
+                s->crossbars[attachment->crossbar_index], attachment->widget,
+                errp)) {
+            return false;
+        }
     }
+    return true;
 }
 
 /* ---- Module identity, shared controllers and routers ---- */
@@ -2563,16 +2078,10 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     /* Indexed by io_boards[] position, one entry per board, not by node. */
     s->io_boards = g_new0(SGIXtalkBoardState *, t->io_board_count);
     s->direct_links = g_new0(SGIXtalkDirectLink, t->io_board_count);
-    s->io_board_packet_proxy = g_new0(MemoryRegion, t->io_board_count);
-    s->io_board_packet_alias = g_new0(MemoryRegion, t->io_board_count);
     s->crossbars = g_new0(SGIXbowState *, t->crossbar_count);
-    s->node_inbound = g_new0(SN0Origin2000HubIO, node_count);
-    s->node_cpu_refusal = g_new0(MemoryRegion, node_count);
-    s->node_outbound = g_new0(SN0Origin2000HubOutgoingIO, node_count);
-    s->node_packet_proxy = g_new0(MemoryRegion, node_count);
-    s->node_packet_alias = g_new0(MemoryRegion, node_count);
-    s->node_cpu_alias = g_new0(MemoryRegion, node_count);
-    s->node_crossbar_face = g_new0(SGIMachineCrossbarFace, node_count);
+    /* One crossbow link per node, then one per io_boards[] position. */
+    s->crossbow_links =
+        g_new0(SGIXtalkCrossbowLink, node_count + t->io_board_count);
 
     node_attachment = g_new0(unsigned int, node_count);
     board_attachment = g_new0(unsigned int, t->io_board_count);
@@ -2729,15 +2238,22 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     }
 
     /*
-     * Before any node realizes: the outbound adapter refuses a realized
-     * Hub. Each Crossbow itself realizes only at machine-init-done.
+     * Before any node realizes: the Hub's own "xtalk-io" property, once
+     * set, cannot change after this node's realize, so a crossbow-attached
+     * node's own link claims it here, on a proxy of its own -- the
+     * Crossbow itself, and its real packet ingress, do not exist yet.
      */
     if (t->crossbar_count) {
         sgi_machine_build_crossbars(s, t);
         for (node_index = 0; node_index < node_count; node_index++) {
             if (t->xtalk_attachments[node_attachment[node_index]]
                     .crossbar_index >= 0) {
-                if (!sgi_machine_build_node_outbound(s, node_index, errp)) {
+                g_autofree char *name =
+                    g_strdup_printf("node%u-packet-proxy", node_index);
+
+                if (!sgi_xtalk_crossbow_link_prepare_hub(
+                        &s->crossbow_links[node_index], OBJECT(s), name,
+                        s->nodes[node_index], errp)) {
                     return false;
                 }
             }
@@ -2803,8 +2319,12 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             &t->xtalk_attachments[node_attachment[node_index]];
 
         if (attachment->crossbar_index >= 0) {
-            if (!sgi_machine_wire_node_crossbar(s, node_index, attachment,
-                                                errp)) {
+            g_autofree char *name = g_strdup_printf("node%u", node_index);
+
+            if (!sgi_xtalk_crossbow_link_attach_hub(
+                    &s->crossbow_links[node_index], OBJECT(s), name,
+                    s->crossbars[attachment->crossbar_index],
+                    attachment->widget, errp)) {
                 return false;
             }
         }
@@ -2817,8 +2337,17 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         return false;
     }
 
-    s->machine_done.notify = sgi_machine_attach_crossbars;
-    qemu_add_machine_init_done_notifier(&s->machine_done);
+    /*
+     * Every port any node or board this run builds attaches through has
+     * attached now, so every Crossbow can realize in one pass, here,
+     * rather than waiting for a machine-init-done notifier: this
+     * experiment does not support a crosstalk board attaching later
+     * (see docs/plans/sn-machine-model.md, step 1's own report).
+     */
+    if (!sgi_machine_realize_crossbars(s, t, node_attachment, board_attachment,
+                                       errp)) {
+        return false;
+    }
     return true;
 }
 
@@ -2938,15 +2467,7 @@ static void sgi_machine_instance_finalize(Object *obj)
     g_free(s->crossbars);
     g_free(s->io_boards);
     g_free(s->direct_links);
-    g_free(s->io_board_packet_proxy);
-    g_free(s->io_board_packet_alias);
-    g_free(s->node_inbound);
-    g_free(s->node_cpu_refusal);
-    g_free(s->node_outbound);
-    g_free(s->node_packet_proxy);
-    g_free(s->node_packet_alias);
-    g_free(s->node_cpu_alias);
-    g_free(s->node_crossbar_face);
+    g_free(s->crossbow_links);
     g_free(s->topology_name);
     for (i = 0; i < ARRAY_SIZE(sgi_machine_identity_records); i++) {
         qapi_free_strList(*sgi_machine_identity_slot(
