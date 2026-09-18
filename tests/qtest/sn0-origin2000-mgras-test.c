@@ -460,6 +460,39 @@ static void test_hq_status_hiwater_poll_bit(void)
 }
 
 /*
+ * CONTRACT CHANGE, needs independent review (see the read case's own
+ * comment on this offset in hw/misc/sgi-mgras.c): this register used to
+ * report the device's sticky error flag (bit 31) instead of its own
+ * healthy bits whenever that flag was set, from any cause anywhere on
+ * the device -- so one unrelated unsupported access could make every
+ * later, unrelated FIFO status poll falsely report "busy". Root-caused
+ * live as part of the SGI_MGRAS_SCHED_ARG_4 (0x040070) investigation
+ * (docs/plans/si-graphics-widget-wiring-handoff-20260916.md, "gfxinit
+ * clears GE download live, then MgrasCtxsw timeout"). This device
+ * already has an independent way to surface "an error occurred" -- the
+ * sticky flag's own pending source and widget-error interrupt delivery,
+ * introspectable here via x-test-error -- so this register now reports
+ * its own healthy bits unconditionally.
+ */
+static void test_hq_status_independent_of_sticky_error(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS), ==, 0x12);
+
+    /* 0x090000: an offset this device has no case for, so it takes the
+     * generic unsupported-access path and latches the sticky error flag. */
+    qtest_writel(qts, SI_REG(0x090000), 0);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 1);
+
+    /* The FIFO status register still reports its own healthy bits, not
+     * the unrelated sticky error. */
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS), ==, 0x12);
+
+    qtest_quit(qts);
+}
+
+/*
  * A colour-lookup-table load reached once the REPP handshake and the HQ
  * status bring-up bit above stopped blocking it: a bounded, index-checked
  * loop that writes a computed word to REG_DAC_LUT_INDEX on every pass, and
@@ -993,12 +1026,17 @@ static void test_widget_error_interrupt_vector(void)
     g_assert_cmphex(si_qom_get_uint(qts, "x-test-last-interrupt-addr"),
                      ==, 0);
 
-    /* A write to a genuinely unmapped offset: si_error's own sticky-error
+    /*
+     * A write to a genuinely unmapped offset: si_error's own sticky-error
      * path. Not an invalid command selector -- si_command no longer
-     * rejects any selector, see its own header comment in sgi-mgras.c. */
+     * rejects any selector, see its own header comment in sgi-mgras.c.
+     * Checked through x-test-error, not REG_HQ_STATUS's own bit 31: that
+     * bit no longer folds the sticky error in (see the 0x020000 read
+     * case's own contract-change comment), so this device's dedicated
+     * error introspection is the right way to confirm the flag latched.
+     */
     qtest_writel(qts, SI_REG(0x000010), 0);
-    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==,
-                     0x80000000);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 1);
 
     g_assert_cmphex(si_qom_get_uint(qts, "x-test-last-interrupt-addr"),
                      ==, expected_addr);
@@ -1655,6 +1693,8 @@ int main(int argc, char **argv)
                    test_hq_status_bringup_bit);
     qtest_add_func("sn0/origin2000/mgras/hq-status-hiwater-poll-bit",
                    test_hq_status_hiwater_poll_bit);
+    qtest_add_func("sn0/origin2000/mgras/hq-status-independent-of-error",
+                   test_hq_status_independent_of_sticky_error);
     qtest_add_func("sn0/origin2000/mgras/dac-lut-load",
                    test_dac_lut_load);
     qtest_add_func("sn0/origin2000/mgras/write-path-fixes-dont-raise-error",
