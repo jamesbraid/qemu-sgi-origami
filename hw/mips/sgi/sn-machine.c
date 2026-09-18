@@ -1361,41 +1361,6 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
     return true;
 }
 
-#define SGI_SN0_ROUTER_NIC_PAGES 2
-
-static void sgi_machine_router_nic_page_crc(uint8_t page[32])
-{
-    uint16_t crc = ~onewire_crc16(0, page, 30);
-
-    page[30] = crc;
-    page[31] = crc >> 8;
-}
-
-static void sgi_machine_router_nic_image(const SGIModelRouter *router,
-                                         uint8_t image[64])
-{
-    static const uint8_t page_a[30] = {
-        0x01, ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
-        'O', 'R', 'I', 'G', 'A', 'M', 'I', '-', 'R', 'O', 'U', 'T', 'E',
-        'R', '-', 'T', 'E', 'S', 'T',
-    };
-    static const uint8_t page_b[30] = {
-        '-', '0', '0', '0', '0', '1', 'A', '0', '0', '1',
-        0, 0, 0, 0, 0, 0,
-        'O', 'R', 'I', 'G', 'A', 'M', 'I', ' ', 'R', 'O', 'U', 'T', 'E', 'R',
-    };
-    char serial[11];
-    unsigned int page;
-
-    memcpy(image, page_a, sizeof(page_a));
-    memcpy(&image[32], page_b, sizeof(page_b));
-    g_snprintf(serial, sizeof(serial), "ORTR%06u", router->slot);
-    memcpy(&image[1], serial, 10);
-    for (page = 0; page < SGI_SN0_ROUTER_NIC_PAGES; page++) {
-        sgi_machine_router_nic_page_crc(&image[page * 32]);
-    }
-}
-
 /* Added in array order so the fabric's vertex index matches router index. */
 static void sgi_machine_build_routers(SGIMachineState *s,
                                       const SGIModelTopology *t)
@@ -1406,17 +1371,14 @@ static void sgi_machine_build_routers(SGIMachineState *s,
         const SGIModelRouter *router = &t->routers[i];
         g_autofree char *name = g_strdup_printf("router%zu", i);
         DeviceState *dev = qdev_new(TYPE_SGI_ROUTER);
-        uint8_t nic_image[64];
         unsigned int vertex;
 
         object_property_add_child(OBJECT(s), name, OBJECT(dev));
         qdev_prop_set_uint8(dev, "chip-inputs", router->chip_inputs);
+        qdev_prop_set_uint32(dev, "slot", router->slot);
         qdev_prop_set_uint64(dev, "nic-clock-hz",
                             sgi_sn0_hub_hardware.hub_clock_hz);
         qdev_prop_set_uint64(dev, "nic-serial", router->serial);
-        sgi_machine_router_nic_image(router, nic_image);
-        sgi_router_set_nic_image(SGI_ROUTER(dev), nic_image,
-                                 sizeof(nic_image));
         vertex = sn0_fabric_routed_add_router(s->fabric, SGI_ROUTER(dev));
         g_assert(vertex == i);
         qdev_realize_and_unref(dev, NULL, &error_fatal);

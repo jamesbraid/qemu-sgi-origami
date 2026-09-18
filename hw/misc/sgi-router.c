@@ -14,6 +14,7 @@
 #include "qemu/log.h"
 #include "qemu/timer.h"
 #include "hw/1wire/onewire.h"
+#include "hw/1wire/crc.h"
 #include "hw/1wire/ds2505.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/resettable.h"
@@ -125,6 +126,7 @@ struct SGIRouterState {
     DeviceState parent_obj;
 
     uint8_t chip_inputs;
+    uint32_t slot;
 
     OneWireBus *nic_bus;
     DeviceState *nic;
@@ -132,8 +134,6 @@ struct SGIRouterState {
     uint64_t nic_clock_hz;
     uint64_t nic_serial;
     char *nic_image;
-    uint8_t *nic_image_data;
-    size_t nic_image_length;
     bool nic_present;
     uint8_t nic_population;
     uint8_t nic_phase;
@@ -1234,6 +1234,45 @@ static const VMStateDescription vmstate_sgi_router = {
     }
 };
 
+#define SGI_ROUTER_NIC_PAGES 2
+
+static void sgi_router_nic_page_crc(uint8_t page[32])
+{
+    uint16_t crc = ~onewire_crc16(0, page, 30);
+
+    page[30] = crc;
+    page[31] = crc >> 8;
+}
+
+/*
+ * The NIC manufacturing pages a stock PROM reads after ROM discovery: the
+ * same layout on every Router, with only the fitted board's slot number
+ * printed into the ASCII serial text.
+ */
+static void sgi_router_default_nic_image(uint32_t slot, uint8_t image[64])
+{
+    static const uint8_t page_a[30] = {
+        0x01, ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+        'O', 'R', 'I', 'G', 'A', 'M', 'I', '-', 'R', 'O', 'U', 'T', 'E',
+        'R', '-', 'T', 'E', 'S', 'T',
+    };
+    static const uint8_t page_b[30] = {
+        '-', '0', '0', '0', '0', '1', 'A', '0', '0', '1',
+        0, 0, 0, 0, 0, 0,
+        'O', 'R', 'I', 'G', 'A', 'M', 'I', ' ', 'R', 'O', 'U', 'T', 'E', 'R',
+    };
+    char serial[11];
+    unsigned int page;
+
+    memcpy(image, page_a, sizeof(page_a));
+    memcpy(&image[32], page_b, sizeof(page_b));
+    g_snprintf(serial, sizeof(serial), "ORTR%06u", slot);
+    memcpy(&image[1], serial, 10);
+    for (page = 0; page < SGI_ROUTER_NIC_PAGES; page++) {
+        sgi_router_nic_page_crc(&image[page * 32]);
+    }
+}
+
 static void sgi_router_realize(DeviceState *dev, Error **errp)
 {
     SGIRouterState *s = SGI_ROUTER(dev);
@@ -1246,12 +1285,8 @@ static void sgi_router_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "nic-serial must fit in 48 bits");
         return;
     }
-    if ((s->nic_image || s->nic_image_data) && !s->nic_present) {
+    if (s->nic_image && !s->nic_present) {
         error_setg(errp, "nic-image requires nic-present");
-        return;
-    }
-    if (s->nic_image && s->nic_image_data) {
-        error_setg(errp, "nic-image was supplied twice");
         return;
     }
     if (s->nic_present) {
@@ -1288,9 +1323,11 @@ static void sgi_router_realize(DeviceState *dev, Error **errp)
         qdev_prop_set_uint64(s->nic, "serial", s->nic_serial);
         if (image) {
             ds2505_set_image(s->nic, (uint8_t *)image, length);
-        } else if (s->nic_image_data) {
-            ds2505_set_image(s->nic, s->nic_image_data,
-                             s->nic_image_length);
+        } else {
+            uint8_t default_image[64];
+
+            sgi_router_default_nic_image(s->slot, default_image);
+            ds2505_set_image(s->nic, default_image, sizeof(default_image));
         }
         object_property_add_child(OBJECT(dev), "nic", OBJECT(s->nic));
         if (!qdev_realize_and_unref(s->nic, BUS(s->nic_bus), errp)) {
@@ -1325,22 +1362,11 @@ static void sgi_router_finalize(Object *obj)
     SGIRouterState *s = SGI_ROUTER(obj);
 
     timer_free(s->nic_timer);
-    g_free(s->nic_image_data);
-}
-
-void sgi_router_set_nic_image(SGIRouterState *s, const uint8_t *data,
-                              size_t length)
-{
-    g_assert(!DEVICE(s)->realized);
-    g_assert(length <= DS2505_DATA_SIZE);
-
-    g_free(s->nic_image_data);
-    s->nic_image_data = g_memdup2(data, length);
-    s->nic_image_length = length;
 }
 
 static const Property sgi_router_properties[] = {
     DEFINE_PROP_UINT8("chip-inputs", SGIRouterState, chip_inputs, 1),
+    DEFINE_PROP_UINT32("slot", SGIRouterState, slot, 0),
     DEFINE_PROP_UINT64("nic-clock-hz", SGIRouterState, nic_clock_hz, 100000000),
     DEFINE_PROP_UINT64("nic-serial", SGIRouterState, nic_serial, 0),
     DEFINE_PROP_BOOL("nic-present", SGIRouterState, nic_present, true),
