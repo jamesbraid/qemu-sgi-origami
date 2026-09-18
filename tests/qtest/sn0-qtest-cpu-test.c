@@ -669,6 +669,12 @@ static void test_r10000_word_loads(void)
     run_word_load_test(MACHINE_DUAL, "R10000", true);
 }
 
+static void test_r14000_word_loads(void)
+{
+    run_word_load_test("-M malta -m 64M -nic none -vga none", "R14000",
+                       true);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -678,5 +684,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sn0/qtest/remote-user-code-first-call",
                    test_remote_user_code_first_call);
     qtest_add_func("/sn0/qtest/r10000-word-loads", test_r10000_word_loads);
+    if (qtest_has_machine("malta")) {
+        qtest_add_func("/sn0/qtest/r14000-word-loads", test_r14000_word_loads);
+    }
     return g_test_run();
 }
