@@ -3,14 +3,23 @@
 #include "sn1-topology.h"
 
 /*
- * Headroom for the scratch array below, not a hardware constant: no
- * Bedrock-family node comes close to this many processor-interface
- * slots. Keeps this file free of a compile-time dependency on
- * sn1-node.h's own SGI_SN1_NODE_MAX_CPUS, since this lookup and its
- * regression test (tests/unit/test-sn1-topology.c) share nothing else
- * with the node device.
+ * A Bedrock has exactly two processor interfaces, two processors each
+ * (docs/datasheets/bedrock-processor-interface.md; the same fact
+ * SGI_SN1_NODE_MAX_CPUS (4) records in sn1-node.h and sgi-bedrock.c's
+ * own (mask >> (2 * i)) & 3 unpacking assumes). This is a hardware
+ * constant, not something to infer from how many of a descriptor's
+ * cpu_slots entries happen to be listed: the compiler always emits
+ * the full interfaces-times-positions square today, but a lookup that
+ * only works because of that convention, with no check that it holds,
+ * is a silent miscount waiting for a descriptor shape it does not
+ * expect. Kept as a plain constant here rather than an include of
+ * sgi-bedrock.h, which would pull in device state this file has none
+ * of (its own header comment: "no device state").
  */
-#define SN1_TOPOLOGY_MAX_SLOTS 64
+#define SN1_BEDROCK_PROCESSOR_INTERFACES 2
+#define SN1_BEDROCK_PROCESSORS_PER_INTERFACE 2
+#define SN1_BEDROCK_PROCESSORS \
+    (SN1_BEDROCK_PROCESSOR_INTERFACES * SN1_BEDROCK_PROCESSORS_PER_INTERFACE)
 
 /*
  * Every populated slot, in diagonal population order: round 0 visits
@@ -22,34 +31,42 @@
  * own list order (which groups every position of one interface before
  * the next) is not itself the population order and has to be walked
  * this way instead of straight through. Returns the count written into
- * physical[].
+ * physical[]. Aborts if a slot names an interface or position outside
+ * the Bedrock's own two-by-two shape, rather than silently computing a
+ * physical bit that does not match the hardware register layout.
  */
 static unsigned sn1_cpu_population_order(
-    const SGIModelNode *node, unsigned physical[SN1_TOPOLOGY_MAX_SLOTS])
+    const SGIModelNode *node,
+    unsigned physical[SN1_BEDROCK_PROCESSORS])
 {
     const SGIModelCpuSlotList *entry;
-    unsigned per_interface = 0;
     unsigned count = 0;
     unsigned round;
 
     for (entry = node->cpu_slots; entry; entry = entry->next) {
-        per_interface = MAX(per_interface, entry->value->slot + 1);
+        const SGIModelCpuSlot *slot = entry->value;
+
+        g_assert(slot->interface < SN1_BEDROCK_PROCESSOR_INTERFACES);
+        g_assert(slot->slot < SN1_BEDROCK_PROCESSORS_PER_INTERFACE);
     }
-    for (round = 0; round < per_interface; round++) {
+    for (round = 0; round < SN1_BEDROCK_PROCESSORS_PER_INTERFACE; round++) {
         for (entry = node->cpu_slots; entry; entry = entry->next) {
             const SGIModelCpuSlot *slot = entry->value;
 
             if (slot->slot != round || !slot->assembly) {
                 continue;
             }
-            g_assert(count < SN1_TOPOLOGY_MAX_SLOTS);
+            g_assert(count < SN1_BEDROCK_PROCESSORS);
             /*
              * The hardware bit/register layout sgi-bedrock.c's
              * processor-mask and cpu-enable-initial-mask split into
              * per-interface halves (its own (mask >> (2 * i)) & 3
-             * unpacking): interface * cpus-per-interface + position.
+             * unpacking): interface * processors-per-interface +
+             * position.
              */
-            physical[count++] = slot->interface * per_interface + slot->slot;
+            physical[count++] =
+                slot->interface * SN1_BEDROCK_PROCESSORS_PER_INTERFACE +
+                slot->slot;
         }
     }
     return count;
@@ -57,7 +74,7 @@ static unsigned sn1_cpu_population_order(
 
 unsigned sn1_cpu_slot(const SGIModelNode *node, unsigned logical)
 {
-    unsigned physical[SN1_TOPOLOGY_MAX_SLOTS];
+    unsigned physical[SN1_BEDROCK_PROCESSORS];
     unsigned count = sn1_cpu_population_order(node, physical);
 
     g_assert(logical < count);
@@ -66,7 +83,7 @@ unsigned sn1_cpu_slot(const SGIModelNode *node, unsigned logical)
 
 uint32_t sn1_cpu_population_mask(const SGIModelNode *node, unsigned nr_cpus)
 {
-    unsigned physical[SN1_TOPOLOGY_MAX_SLOTS];
+    unsigned physical[SN1_BEDROCK_PROCESSORS];
     unsigned count = sn1_cpu_population_order(node, physical);
     uint32_t mask = 0;
     unsigned i;
