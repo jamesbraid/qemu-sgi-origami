@@ -30,10 +30,10 @@ static bool test_port(SGIRouterTestState *s, Error **errp)
     return true;
 }
 
-static bool test_access(SGIRouterTestState *s, SN0FabricVectorOp op,
+static bool test_access(SGIRouterTestState *s, SGINetPacketOp op,
                          uint64_t data, uint64_t *value, Error **errp)
 {
-    SN0FabricVectorAccess access = {
+    SGINetPacket access = {
         .op = op,
         .addr = s->address,
         .data = data,
@@ -57,7 +57,7 @@ static void test_get(Object *obj, Visitor *v, const char *name,
     uint64_t value;
 
     if (!strcmp(name, "register")) {
-        if (!test_access(s, SN0_FABRIC_VECTOR_READ, 0, &value, errp)) {
+        if (!test_access(s, SGI_NET_PACKET_READ, 0, &value, errp)) {
             return;
         }
     } else if (!strcmp(name, "exchange")) {
@@ -84,9 +84,9 @@ static void test_set(Object *obj, Visitor *v, const char *name,
         return;
     }
     if (!strcmp(name, "register")) {
-        test_access(s, SN0_FABRIC_VECTOR_WRITE, value, &ignored, errp);
+        test_access(s, SGI_NET_PACKET_WRITE, value, &ignored, errp);
     } else if (!strcmp(name, "exchange")) {
-        test_access(s, SN0_FABRIC_VECTOR_EXCHANGE, value, &s->exchange, errp);
+        test_access(s, SGI_NET_PACKET_EXCHANGE, value, &s->exchange, errp);
     } else if (!strcmp(name, "link")) {
         sgi_router_set_port_link(SGI_ROUTER(s->router), s->port,
                                   value & 1, value & 2);

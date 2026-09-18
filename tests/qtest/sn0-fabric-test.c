@@ -175,13 +175,15 @@ static void renumber(QTestState *qts, unsigned int from, unsigned int to)
                     ==, NI_NODE(to));
 }
 
-/* Write the fabric's down-links property through the monitor. */
-static void fabric_set_down_links(QTestState *qts, const char *value)
+/* Mark one named network cable up or down through the monitor. */
+static void cable_set_down(QTestState *qts, const char *name, bool down)
 {
+    g_autofree char *path = g_strdup_printf("/machine/%s", name);
     g_autoptr(QDict) response = qtest_qmp(qts,
         "{ 'execute': 'qom-set',"
-        "  'arguments': { 'path': '/machine/fabric',"
-        "                 'property': 'down-links', 'value': %s } }", value);
+        "  'arguments': { 'path': %s,"
+        "                 'property': 'down', 'value': %i } }",
+        path, down);
     g_assert(qdict_haskey(response, "return"));
 }
 
@@ -556,7 +558,7 @@ static void test_link_status_follows_the_fabric(const void *data)
     g_assert_cmphex(qtest_readq(qts, hub1 + NI_STATUS) & NI_STATUS_LINK_UP,
                     ==, NI_STATUS_LINK_UP);
 
-    fabric_set_down_links(qts, "peer-craylink");
+    cable_set_down(qts, "peer-craylink", true);
     g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + NI_STATUS) &
                     NI_STATUS_LINK_UP, ==, 0);
     g_assert_cmphex(qtest_readq(qts, hub1 + NI_STATUS) & NI_STATUS_LINK_UP,
@@ -565,7 +567,7 @@ static void test_link_status_follows_the_fabric(const void *data)
     g_assert_cmphex(vector_operation(qts, HUB_BY_NODE, NI_SCRATCH_0,
                                      PIOTYPE_READ) & NVS_VALID, ==, 0);
 
-    fabric_set_down_links(qts, "");
+    cable_set_down(qts, "peer-craylink", false);
     g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + NI_STATUS) &
                     NI_STATUS_LINK_UP, ==, NI_STATUS_LINK_UP);
 

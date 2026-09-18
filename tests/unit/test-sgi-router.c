@@ -115,10 +115,10 @@ static void fixture_teardown(Fixture *f, gconstpointer data)
 }
 
 static bool access_reg(SGIRouterState *router, unsigned int port,
-                       SN0FabricVectorOp op, uint64_t addr, uint64_t data,
+                       SGINetPacketOp op, uint64_t addr, uint64_t data,
                        uint64_t *value)
 {
-    SN0FabricVectorAccess access = {
+    SGINetPacket access = {
         .op = op,
         .addr = addr,
         .data = data,
@@ -135,7 +135,7 @@ static uint64_t read_reg(Fixture *f, unsigned int port, uint64_t addr)
 {
     uint64_t value = UINT64_MAX;
 
-    g_assert_true(access_reg(f->router, port, SN0_FABRIC_VECTOR_READ,
+    g_assert_true(access_reg(f->router, port, SGI_NET_PACKET_READ,
                              addr, 0, &value));
     return value;
 }
@@ -143,7 +143,7 @@ static uint64_t read_reg(Fixture *f, unsigned int port, uint64_t addr)
 static void write_reg(Fixture *f, unsigned int port, uint64_t addr,
                       uint64_t value)
 {
-    g_assert_true(access_reg(f->router, port, SN0_FABRIC_VECTOR_WRITE,
+    g_assert_true(access_reg(f->router, port, SGI_NET_PACKET_WRITE,
                              addr, value, NULL));
 }
 
@@ -213,7 +213,7 @@ static void test_change_notifications(Fixture *f, gconstpointer unused)
         g_assert_cmpuint(observer.calls, ==, i + 1);
     }
     write_reg(f, 1, RR_SCRATCH_REG0, 1);
-    g_assert_false(access_reg(f->router, 1, SN0_FABRIC_VECTOR_WRITE,
+    g_assert_false(access_reg(f->router, 1, SGI_NET_PACKET_WRITE,
                               RR_LOCAL_TABLE(16), 1, NULL));
     g_assert_cmpuint(observer.calls, ==, 3);
 
@@ -249,7 +249,7 @@ static void test_identity_and_link_state(Fixture *f, gconstpointer unused)
     g_assert_cmphex(read_reg(f, 1, RR_STATUS_REV_ID), ==,
                     fixed | STATUS_INPUT_PORT(1));
 
-    g_assert_true(access_reg(r2_router, 5, SN0_FABRIC_VECTOR_READ,
+    g_assert_true(access_reg(r2_router, 5, SGI_NET_PACKET_READ,
                              RR_STATUS_REV_ID, 0, &value));
     g_assert_cmphex(value, ==,
                     STATUS_CHIP_ID | STATUS_REVISION | STATUS_INPUTS(0xe) |
@@ -260,8 +260,8 @@ static void test_identity_and_link_state(Fixture *f, gconstpointer unused)
 
 static void test_fabric_access_boundary(Fixture *f, gconstpointer unused)
 {
-    SN0FabricVectorAccess access = {
-        .op = SN0_FABRIC_VECTOR_READ,
+    SGINetPacket access = {
+        .op = SGI_NET_PACKET_READ,
         .addr = RR_STATUS_REV_ID,
         .source = 0x123,
     };
@@ -271,9 +271,9 @@ static void test_fabric_access_boundary(Fixture *f, gconstpointer unused)
                     STATUS_INPUT_PORT(3));
     g_assert_cmphex(access.source, ==, 0x123);
 
-    access.op = SN0_FABRIC_VECTOR_INVALID;
+    access.op = SGI_NET_PACKET_INVALID;
     g_assert_false(sgi_router_access(f->router, 3, &access));
-    access.op = SN0_FABRIC_VECTOR_READ;
+    access.op = SGI_NET_PACKET_READ;
     access.addr = RR_STATUS_REV_ID;
     g_assert_false(sgi_router_access(f->router, 0, &access));
     g_assert_false(sgi_router_access(f->router, 7, &access));
@@ -330,7 +330,7 @@ static void test_register_storage_masks(Fixture *f, gconstpointer unused)
     g_assert_cmphex(read_reg(f, 1, RR_DIAG_PARMS), ==, UINT64_C(0xfffff));
     g_assert_cmphex(read_reg(f, 1, RR_BIST_DATA), ==,
                     UINT64_C(0xfedcba9876543210));
-    g_assert_false(access_reg(f->router, 1, SN0_FABRIC_VECTOR_WRITE,
+    g_assert_false(access_reg(f->router, 1, SGI_NET_PACKET_WRITE,
                               RR_BIST_READY, UINT64_MAX, NULL));
     g_assert_cmphex(read_reg(f, 1, RR_BIST_READY), ==, 1);
 
@@ -356,11 +356,11 @@ static void test_conditional_exchange(Fixture *f, gconstpointer unused)
 {
     uint64_t old;
 
-    g_assert_true(access_reg(f->router, 1, SN0_FABRIC_VECTOR_EXCHANGE,
+    g_assert_true(access_reg(f->router, 1, SGI_NET_PACKET_EXCHANGE,
                              RR_SCRATCH_REG1, 0xffff, &old));
     g_assert_cmphex(old, ==, 0);
     g_assert_cmphex(read_reg(f, 1, RR_SCRATCH_REG1), ==, 0xffff);
-    g_assert_true(access_reg(f->router, 1, SN0_FABRIC_VECTOR_EXCHANGE,
+    g_assert_true(access_reg(f->router, 1, SGI_NET_PACKET_EXCHANGE,
                              RR_SCRATCH_REG1, 0x1234, &old));
     g_assert_cmphex(old, ==, 0xffff);
     g_assert_cmphex(read_reg(f, 1, RR_SCRATCH_REG1), ==, 0xffff);
@@ -732,7 +732,7 @@ static void test_routing_table_decode(Fixture *f, gconstpointer unused)
         g_assert_cmphex(read_reg(f, 1, RR_LOCAL_TABLE(i)), ==,
                         UINT64_C(0xf00000) | i);
     }
-    g_assert_false(access_reg(f->router, 1, SN0_FABRIC_VECTOR_READ,
+    g_assert_false(access_reg(f->router, 1, SGI_NET_PACKET_READ,
                               RR_LOCAL_TABLE(16), 0, &value));
 }
 
@@ -857,16 +857,16 @@ static void test_unsupported_operations_fail(Fixture *f, gconstpointer unused)
     uint64_t nic = read_reg(f, 1, RR_NIC_ULAN);
     uint64_t value;
 
-    g_assert_true(access_reg(f->router, 1, SN0_FABRIC_VECTOR_WRITE,
+    g_assert_true(access_reg(f->router, 1, SGI_NET_PACKET_WRITE,
                              RR_PORT_RESET, 0, NULL));
-    g_assert_false(access_reg(f->router, 1, SN0_FABRIC_VECTOR_WRITE,
+    g_assert_false(access_reg(f->router, 1, SGI_NET_PACKET_WRITE,
                               RR_NIC_ULAN, UINT64_C(1) << 10, NULL));
     g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN), ==, nic);
-    g_assert_false(access_reg(f->router, 1, SN0_FABRIC_VECTOR_WRITE,
+    g_assert_false(access_reg(f->router, 1, SGI_NET_PACKET_WRITE,
                               RR_BIST_COUNT_TARGET, 1, NULL));
-    g_assert_false(access_reg(f->router, 1, SN0_FABRIC_VECTOR_WRITE,
+    g_assert_false(access_reg(f->router, 1, SGI_NET_PACKET_WRITE,
                               RR_BIST_SHIFT_LOAD, 0, NULL));
-    g_assert_false(access_reg(f->router, 1, SN0_FABRIC_VECTOR_READ,
+    g_assert_false(access_reg(f->router, 1, SGI_NET_PACKET_READ,
                               RR_LOCAL_TABLE(3) + 1, 0, &value));
 }
 
@@ -925,16 +925,16 @@ static void test_migration(Fixture *f, gconstpointer unused)
     g_assert_cmpint(qemu_get_byte(file), ==, QEMU_VM_EOF);
     g_assert_cmpint(qemu_fclose(file), ==, 0);
 
-    g_assert_true(access_reg(target_router, 1, SN0_FABRIC_VECTOR_READ,
+    g_assert_true(access_reg(target_router, 1, SGI_NET_PACKET_READ,
                              RR_SCRATCH_REG0, 0, &value));
     g_assert_cmphex(value, ==, UINT64_C(0xfeedface01234567));
-    g_assert_true(access_reg(target_router, 1, SN0_FABRIC_VECTOR_READ,
+    g_assert_true(access_reg(target_router, 1, SGI_NET_PACKET_READ,
                              RR_LOCAL_TABLE(9), 0, &value));
     g_assert_cmphex(value, ==, UINT64_C(0x123456));
-    g_assert_true(access_reg(target_router, 1, SN0_FABRIC_VECTOR_READ,
+    g_assert_true(access_reg(target_router, 1, SGI_NET_PACKET_READ,
                              RR_STATUS_ERROR(4), 0, &value));
     g_assert_cmphex(value, ==, UINT64_C(0x200000001));
-    g_assert_true(access_reg(target_router, 2, SN0_FABRIC_VECTOR_READ,
+    g_assert_true(access_reg(target_router, 2, SGI_NET_PACKET_READ,
                              RR_STATUS_REV_ID, 0, &value));
     g_assert_cmphex(value & (STATUS_PORT_WORKING(4) |
                             STATUS_PORT_EIGHT_BIT(4)), ==,
@@ -987,7 +987,7 @@ static void test_nic_calibration(void)
                                (UINT64_C(520) << 10) | (65 << 2);
             bool supported = i == j && i < 3;
 
-            g_assert_cmpint(access_reg(f.router, 1, SN0_FABRIC_VECTOR_WRITE,
+            g_assert_cmpint(access_reg(f.router, 1, SGI_NET_PACKET_WRITE,
                                        RR_NIC_ULAN, request, NULL), ==,
                              supported);
             if (supported) {
@@ -1164,7 +1164,7 @@ static void test_nic_write_while_sampling(Fixture *f, gconstpointer unused)
     /* Family bit 0: refused in the sampling phase, then sampled on time. */
     write_reg(f, 1, RR_NIC_ULAN, short_read);
     virtual_time += 6000;
-    g_assert_false(access_reg(f->router, 1, SN0_FABRIC_VECTOR_WRITE,
+    g_assert_false(access_reg(f->router, 1, SGI_NET_PACKET_WRITE,
                               RR_NIC_ULAN, short_read, NULL));
     virtual_time += 12999;
     g_assert_cmphex(read_reg(f, 1, RR_NIC_ULAN) & NIC_DONE, ==, 0);
@@ -1179,7 +1179,7 @@ static void test_nic_write_while_sampling(Fixture *f, gconstpointer unused)
     virtual_time += 13000;
     g_assert_true(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
     g_assert_false(qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL));
-    g_assert_true(access_reg(f->router, 1, SN0_FABRIC_VECTOR_READ,
+    g_assert_true(access_reg(f->router, 1, SGI_NET_PACKET_READ,
                              RR_NIC_ULAN, 0, &value));
     g_assert_cmphex(value & 3, ==, NIC_DONE | ((family >> 1) & 1));
 

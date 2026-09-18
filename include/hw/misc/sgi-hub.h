@@ -18,7 +18,8 @@
 #include "hw/char/serial-mm.h"
 #include "hw/i2c/pcf8584.h"
 #include "hw/misc/sgi-elsc.h"
-#include "hw/mips/sn0-fabric.h"
+#include "hw/mips/sgi-net-port.h"
+#include "hw/mips/sgi/net-cable.h"
 #include "system/memory.h"
 #include "qom/object.h"
 
@@ -166,22 +167,27 @@ struct SGIHubState {
     AddressSpace bte_as;
 
     /*
-     * The fabric this Hub's network interface is an endpoint on, and which
-     * endpoint. The fabric hands the Hub a reachability map -- per node
-     * number, the endpoint programmed with it that the fabric connects --
-     * and the Hub aims its aliases by that map and by nothing else.
+     * This Hub's one network port's cable, and the fixed physical
+     * position (the machine bus stride, its own node index) this Hub
+     * itself sits at -- independent of whatever node number firmware
+     * programs. Every other Hub in the machine, including this one, in
+     * the same canonical stride order, for the claim-alias walk below;
+     * set once before realize with sgi_hub_set_net_peers().
      */
-    SN0FabricState *fabric;
-    uint32_t fabric_endpoint;
+    SGINetCableState *net_cable;
+    uint32_t stride;
+    SGIHubState **net_peers;
+    unsigned int net_peer_count;
 
     /*
      * The claim overlays: per view, one alias per uncached space per
-     * fabric endpoint, placed at the node-number stride that endpoint
-     * currently holds and aimed at the endpoint's own stride in the
-     * canonical map, over an error floor across every stride. The machine
-     * wires the per-view containers, the canonical map the aliases resolve
-     * into, and the geometry; the Hub owns the regions and moves them
-     * whenever the fabric's map changes.
+     * peer Hub, placed at the node number that peer currently holds --
+     * discovered by this Hub's own hop-by-hop walk through its own port
+     * -- and aimed at the peer's own stride in the canonical map, over
+     * an error floor across every stride. The machine wires the per-view
+     * containers, the canonical map the aliases resolve into, and the
+     * geometry; the Hub owns the regions and moves them whenever its own
+     * derived reachability changes.
      */
     MemoryRegion *claim_view[SGI_HUB_CLAIM_VIEWS];
     MemoryRegion *claim_target;
@@ -424,6 +430,9 @@ void sgi_hub_latch_port_error(SGIHubState *s, uint64_t errors);
 void sgi_hub_record_port_check_error(SGIHubState *s);
 bool sgi_hub_first_turn(const SGIHubState *s, uint32_t destination,
                          uint8_t *turn);
+/* Whether this Hub's own tables currently reach destination, and by
+ * what vector -- the machine's "routes" diagnostic property alone. */
+bool sgi_hub_route(SGIHubState *s, uint32_t destination, uint64_t *vector);
 void sgi_hub_latch_prom_pi_error(SGIHubState *s);
 void sgi_hub_set_cpu_enable(SGIHubState *s, unsigned int cpu, bool enabled,
                             bool synchronous);
@@ -441,8 +450,16 @@ bool sgi_hub_attach_module_identity(SGIHubState *s,
  */
 bool sgi_hub_set_xtalk_io(SGIHubState *s, MemoryRegion *target, Error **errp);
 
-/* The fabric's side of the interface: this endpoint's map or link state moved. */
-void sgi_hub_fabric_changed(SGIHubState *s);
-bool sgi_hub_vector_access(SGIHubState *target, SN0FabricVectorAccess *access);
+/*
+ * Every Hub in the machine, in canonical stride order (this Hub's own
+ * "stride" property is its index in that same order), this one
+ * included. Copied; must run before this Hub realizes.
+ */
+void sgi_hub_set_net_peers(SGIHubState *s, SGIHubState *const *peers,
+                           unsigned int count);
+
+/* The target's half of a vector operation delivered through this Hub's
+ * network port, whether directly or after a Router forwarded it. */
+bool sgi_hub_vector_access(SGIHubState *target, SGINetPacket *packet);
 
 #endif /* HW_MISC_SGI_HUB_H */

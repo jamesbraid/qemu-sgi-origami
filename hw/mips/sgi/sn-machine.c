@@ -61,7 +61,7 @@
 #include "hw/mips/sgi/sn-catalogue.h"
 #include "hw/mips/sgi/sn-machine.h"
 #include "hw/mips/sgi/sn1-node.h"
-#include "hw/mips/sn0-fabric-routed.h"
+#include "hw/mips/sgi/net-cable.h"
 #include "sn0.h"
 
 /*
@@ -149,7 +149,10 @@ struct SGIMachineState {
     SN0NodeState **nodes;
     MemoryRegion *big_window_route;
 
-    SN0FabricState *fabric;
+    /* This machine's Routers, in descriptor order, so a cable's own
+     * SGIModelLinkEnd index addresses them. */
+    SGIRouterState **routers;
+    unsigned int router_count;
     Clock *cpu_refclk;
     Clock *rt_refclk;
 
@@ -1311,7 +1314,13 @@ static bool sgi_machine_build_controllers(SGIMachineState *s,
     return true;
 }
 
-/* Added in array order so the fabric's vertex index matches router index. */
+/*
+ * Create every Router in descriptor order, matching the topology's own
+ * cable list's router index, and set its own chip properties -- not its
+ * port cables, which do not exist until the link-wiring loop below
+ * creates them, nor its realize, which waits until every port property
+ * is set.
+ */
 static void sgi_machine_build_routers(SGIMachineState *s,
                                       const SGIModelTopology *t)
 {
@@ -1319,11 +1328,12 @@ static void sgi_machine_build_routers(SGIMachineState *s,
     size_t router_count, i;
 
     routers = sgi_model_router_array(t->routers, &router_count);
+    s->router_count = router_count;
+    s->routers = g_new0(SGIRouterState *, router_count);
     for (i = 0; i < router_count; i++) {
         const SGIModelRouter *router = routers[i];
         g_autofree char *name = g_strdup_printf("router%zu", i);
         DeviceState *dev = qdev_new(TYPE_SGI_ROUTER);
-        unsigned int vertex;
 
         object_property_add_child(OBJECT(s), name, OBJECT(dev));
         qdev_prop_set_uint8(dev, "chip-inputs", router->chip_inputs);
@@ -1331,8 +1341,64 @@ static void sgi_machine_build_routers(SGIMachineState *s,
         qdev_prop_set_uint64(dev, "nic-clock-hz",
                             SN0_HUB_CLOCK_HZ);
         qdev_prop_set_uint64(dev, "nic-serial", router->serial);
-        vertex = sn0_fabric_routed_add_router(s->fabric, SGI_ROUTER(dev));
-        g_assert(vertex == i);
+        s->routers[i] = SGI_ROUTER(dev);
+    }
+}
+
+/*
+ * Point one endpoint's own cable-reference property at cable: a Hub's
+ * one "net-cable", or a Router's numbered "portN-cable".
+ */
+static void sgi_machine_wire_fabric_vertex(SGIMachineState *s,
+                                           const SGIModelLinkEnd *end,
+                                           SGINetCableState *cable)
+{
+    if (end->kind == SGI_MODEL_LINK_END_KIND_ROUTER) {
+        g_autofree char *prop =
+            g_strdup_printf("port%u-cable", end->port);
+
+        object_property_set_link(OBJECT(s->routers[end->index]), prop,
+                                 OBJECT(cable), &error_fatal);
+    } else {
+        object_property_set_link(OBJECT(&s->nodes[end->index]->hub),
+                                 "net-cable", OBJECT(cable), &error_fatal);
+    }
+}
+
+/*
+ * Build one sgi-net-cable per descriptor cable record, named and typed
+ * from it, and wire both ends' own cable-reference properties. Routers
+ * must already exist (sgi_machine_build_routers()); neither a Router nor
+ * a Hub may be realized yet.
+ */
+static void sgi_machine_build_fabric_links(SGIMachineState *s,
+                                           const SGIModelTopology *t)
+{
+    g_autofree const SGIModelCable **cables = NULL;
+    size_t cable_count, i;
+
+    cables = sgi_model_cable_array(t->cables, &cable_count);
+    for (i = 0; i < cable_count; i++) {
+        const SGIModelCable *cable = cables[i];
+        const SGIModelLinkEnd *end0 = cable->ends->value;
+        const SGIModelLinkEnd *end1 = cable->ends->next->value;
+        DeviceState *dev = qdev_new(TYPE_SGI_NET_CABLE);
+        SGINetCableState *net_cable = SGI_NET_CABLE(dev);
+
+        object_property_add_child(OBJECT(s), cable->name, OBJECT(dev));
+        qdev_prop_set_uint32(dev, "kind", cable->kind);
+        sgi_net_cable_set_end(net_cable, 0,
+            end0->kind == SGI_MODEL_LINK_END_KIND_ROUTER ?
+                OBJECT(s->routers[end0->index]) :
+                OBJECT(&s->nodes[end0->index]->hub),
+            end0->port);
+        sgi_net_cable_set_end(net_cable, 1,
+            end1->kind == SGI_MODEL_LINK_END_KIND_ROUTER ?
+                OBJECT(s->routers[end1->index]) :
+                OBJECT(&s->nodes[end1->index]->hub),
+            end1->port);
+        sgi_machine_wire_fabric_vertex(s, end0, net_cable);
+        sgi_machine_wire_fabric_vertex(s, end1, net_cable);
         qdev_realize_and_unref(dev, NULL, &error_fatal);
     }
 }
@@ -1922,41 +1988,24 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     s->rt_refclk = clock_new(OBJECT(machine), "rt-refclk");
     clock_set_hz(s->rt_refclk, SN0_HUB_RTC_CLOCK_HZ);
 
-    s->fabric = SN0_FABRIC(qdev_new(TYPE_SN0_FABRIC_ROUTED));
-    object_property_add_child(OBJECT(machine), "fabric", OBJECT(s->fabric));
-    for (node_index = 0; node_index < node_count; node_index++) {
-        unsigned int endpoint = sn0_fabric_add_endpoint(
-            s->fabric, &s->nodes[node_index]->hub, node_index);
-
-        g_assert(endpoint == node_index);
-    }
     sgi_machine_build_routers(s, t);
-    {
-        g_autofree const SGIModelCable **cables = NULL;
-        size_t cable_count, cable_index;
-
-        cables = sgi_model_cable_array(t->cables, &cable_count);
-        for (cable_index = 0; cable_index < cable_count; cable_index++) {
-            const SGIModelCable *cable = cables[cable_index];
-            const SGIModelLinkEnd *end0 = cable->ends->value;
-            const SGIModelLinkEnd *end1 = cable->ends->next->value;
-            SN0FabricVertex a = {
-                .kind = end0->kind == SGI_MODEL_LINK_END_KIND_ROUTER ?
-                    SN0_FABRIC_VERTEX_ROUTER : SN0_FABRIC_VERTEX_HUB,
-                .index = end0->index,
-                .port = end0->port,
-            };
-            SN0FabricVertex b = {
-                .kind = end1->kind == SGI_MODEL_LINK_END_KIND_ROUTER ?
-                    SN0_FABRIC_VERTEX_ROUTER : SN0_FABRIC_VERTEX_HUB,
-                .index = end1->index,
-                .port = end1->port,
-            };
-
-            sn0_fabric_routed_add_link(s->fabric, cable->name, a, b);
-        }
+    sgi_machine_build_fabric_links(s, t);
+    for (size_t router_index = 0; router_index < s->router_count;
+        router_index++) {
+        qdev_realize_and_unref(DEVICE(s->routers[router_index]), NULL,
+                               &error_fatal);
     }
-    qdev_realize_and_unref(DEVICE(s->fabric), NULL, &error_fatal);
+
+    /*
+     * Every Hub in the machine, in canonical stride order: each Hub's own
+     * "stride" property is its index here, and every Hub gets the same
+     * array, itself included, so its own claim-alias walk can size and
+     * aim one alias per peer.
+     */
+    g_autofree SGIHubState **net_peers = g_new(SGIHubState *, node_count);
+    for (node_index = 0; node_index < node_count; node_index++) {
+        net_peers[node_index] = &s->nodes[node_index]->hub;
+    }
 
     for (node_index = 0; node_index < node_count; node_index++) {
         SN0NodeState *node = s->nodes[node_index];
@@ -2009,10 +2058,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                                          OBJECT(aux_chr), &error_fatal);
             }
         }
-        object_property_set_link(OBJECT(&node->hub), "fabric",
-                                 OBJECT(s->fabric), &error_fatal);
-        qdev_prop_set_uint32(DEVICE(&node->hub), "fabric-endpoint",
-                            node_index);
+        qdev_prop_set_uint32(DEVICE(&node->hub), "stride", node_index);
+        sgi_hub_set_net_peers(&node->hub, net_peers, node_count);
 
         {
             bool has_junk_uart = (int)node_index == t->junk_uart &&
@@ -2105,7 +2152,15 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         sgi_elsc_share_arbitration(master, slave, 5);
     }
 
-    sn0_fabric_build(s->fabric);
+    /*
+     * Every Hub and Router now has its port cables wired and is
+     * realized; the machine's own cold reset that follows board
+     * construction derives every Hub's initial reachability and link
+     * state through the ordinary reset-exit path
+     * (sgi_hub_reset_exit(), sgi_router_reset_exit()), the same path a
+     * guest-triggered reset uses later. No separate build step is
+     * needed.
+     */
 
     /*
      * Every node is realized now, so a direct board's claim view exists
@@ -2273,6 +2328,40 @@ static void sgi_machine_set_elsc_dip_switches(Object *obj, Visitor *v,
     }
 }
 
+/*
+ * Asks each Hub for its own currently derived reachability, replacing
+ * the fabric's central "routes" property: the same string, from each
+ * Hub's own tables instead of one shared object's map.
+ */
+static char *sgi_machine_get_routes(Object *obj, Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+    GString *result = g_string_new(NULL);
+    unsigned int from, to;
+
+    for (from = 0; from < s->num_nodes; from++) {
+        for (to = 0; to < s->num_nodes; to++) {
+            uint32_t number;
+            uint64_t vector;
+            bool reachable;
+
+            if (from == to) {
+                continue;
+            }
+            number = sgi_hub_programmed_nasid(&s->nodes[to]->hub);
+            reachable = sgi_hub_route(&s->nodes[from]->hub, number, &vector);
+            g_string_append_printf(result, "%s%u>%u=", result->len ? " " : "",
+                                   from, to);
+            if (reachable) {
+                g_string_append_printf(result, "0x%" PRIx64, vector);
+            } else {
+                g_string_append_c(result, '-');
+            }
+        }
+    }
+    return g_string_free(result, false);
+}
+
 static void sgi_machine_instance_init(Object *obj)
 {
     MachineState *machine = MACHINE(obj);
@@ -2300,6 +2389,7 @@ static void sgi_machine_instance_finalize(Object *obj)
 
     g_free(s->nodes);
     g_free(s->bedrock_nodes);
+    g_free(s->routers);
     g_free(s->crossbars);
     g_free(s->io_boards);
     g_free(s->direct_links);
@@ -2358,6 +2448,12 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc, "elsc-dip-switches",
         "Set the eight physical ELSC DIP switches as asserted bits. The "
         "controller reports their active-low wire value to firmware.");
+
+    object_class_property_add_str(oc, "routes", sgi_machine_get_routes, NULL);
+    object_class_property_set_description(oc, "routes",
+        "The route each ordered pair of Hubs takes, as source>destination="
+        "vector in the PROM manual's notation, or - when unreachable, "
+        "asked of each Hub's own currently derived tables");
 
     for (size_t i = 0; i < ARRAY_SIZE(sgi_machine_identity_records); i++) {
         const SGIMachineIdentityRecords *records =
