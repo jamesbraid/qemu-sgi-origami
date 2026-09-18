@@ -1151,6 +1151,24 @@ static void test_xbridge_topology(const void *data)
     g_assert_cmphex(identity & 1, ==, 1);
 
     /*
+     * A widget scan addresses the same chip by the physical crosstalk
+     * port Bedrock actually attached it to, not only by the widget-zero
+     * local-CPU shortcut above -- both name the same upstream link, so
+     * this must read identically to widget 0. A field diagnostic that
+     * walks Bedrock's own ports (rather than using the shortcut) reads
+     * exactly this address to decide the IO-8 board is present; before
+     * this widget was wired, the read reached nothing at all (bus error,
+     * not the empty-slot 0xffffffff), and that diagnostic reported no
+     * board present without ever exercising the board's own PCI
+     * functions.
+     */
+    identity = xtalk_reg_read(qts, XBRIDGE_HOST_PORT, 0);
+    g_assert_cmphex(WIDGET_REV(identity), ==, 2);
+    g_assert_cmphex(WIDGET_PART(identity), ==, XBRIDGE_XBOW_PART);
+    g_assert_cmphex(WIDGET_MFG(identity), ==, 0);
+    g_assert_cmphex(identity & 1, ==, 1);
+
+    /*
      * The XBridge is a fitted part of the IP45 node board itself
      * (docs/designs/sn-machine-model-architecture.md, "Node devices"):
      * sn1-node.c creates it directly, as a QOM child of the node object,

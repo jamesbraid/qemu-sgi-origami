@@ -899,6 +899,25 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
         object_property_set_link(OBJECT(node->bedrock), property,
                                  OBJECT(face), &error_abort);
     }
+    /*
+     * A widget scan addresses the board by the physical crosstalk port
+     * Bedrock actually attached it to (SN1_XBRIDGE_HOST_PORT), not only by
+     * the widget-zero local-CPU shortcut wired above -- both name the same
+     * chip, seen through its single upstream link either way. Without this,
+     * a probe of Bedrock's own port SN1_XBRIDGE_HOST_PORT decodes to
+     * nothing (sgi-bedrock-io.c's widget_as_initialized stays false there),
+     * so firmware and diagnostics that walk Bedrock's ports rather than
+     * using the shortcut never learn the IO-8 is present.
+     */
+    {
+        g_autofree char *host_port_property =
+            g_strdup_printf("widget-%u", SN1_XBRIDGE_HOST_PORT);
+
+        object_property_set_link(
+            OBJECT(node->bedrock), host_port_property,
+            OBJECT(sgi_xbridge_widget_view(SGI_XBRIDGE(node->xbridge), 0)),
+            &error_abort);
+    }
 
     sysbus_realize(SYS_BUS_DEVICE(node->bedrock), &error_fatal);
     object_unref(OBJECT(node->bedrock));
