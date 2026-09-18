@@ -156,11 +156,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
  * (docs/datasheets/psitech-rad1.md, "Rectangle transfer and the FIFO-
  * tagged GP registers"). Offsets independently cross-checked against the
  * TVP4020 Programmer's Reference Manual's own per-register table entries
- * (page numbers in comments below are that manual's own printed page
- * numbers, e.g. RectangleOrigin/RectangleSize page 232).
+ * (page numbers in comments below are the PDF's own page count, matching
+ * this file's own top-of-file citation convention and
+ * docs/datasheets/psitech-rad1.md's, e.g. RectangleOrigin/RectangleSize
+ * page 241 -- not the manual's printed page numbers, which run about nine
+ * lower).
  */
 #define RAD1_REG_RENDER             0x8038  /* manual: write-only command */
-#define RAD1_REG_WAIT_FOR_COMPLETE 0x8088  /* manual page 266: write-only */
+#define RAD1_REG_WAIT_FOR_COMPLETE 0x8088  /* manual page 275: write-only */
 #define RAD1_REG_RECT_ORIGIN        0x80d0  /* manual page 241 */
 #define RAD1_REG_RECT_SIZE          0x80d8  /* manual page 241 */
 #define RAD1_REG_TEX_ADDR_MODE      0x8380
@@ -176,15 +179,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 #define RAD1_REG_TEX_COLOR_MODE     0x8680
 #define RAD1_REG_ALPHA_BLEND_MODE   0x8810
 #define RAD1_REG_LOGICAL_OP_MODE    0x8828
-#define RAD1_REG_FB_READ_MODE       0x8a80  /* manual page 202 */
+#define RAD1_REG_FB_READ_MODE       0x8a80  /* manual page 211 */
 #define RAD1_REG_FB_WRITE_MODE      0x8ab8
-#define RAD1_REG_FB_HW_WRITE_MASK   0x8ac0  /* manual page 200 */
-#define RAD1_REG_FILTER_MODE        0x8c00  /* manual page 210 */
+#define RAD1_REG_FB_HW_WRITE_MASK   0x8ac0  /* manual page 209 */
+#define RAD1_REG_FILTER_MODE        0x8c00  /* manual page 219 */
 #define RAD1_REG_SYNC               0x8c40
 
 /*
  * RectangleOrigin/RectangleSize bit packing, confirmed directly against
- * the manual's own register diagram (page 232): X/Width in bits 0-15, Y/
+ * the manual's own register diagram (page 241): X/Width in bits 0-15, Y/
  * Height in bits 16-31.
  */
 #define RAD1_RECT_LOW_MASK      0xffffu
@@ -219,7 +222,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 #define RAD1_TEXBASE_ADDR_MASK      0xbfffffffu
 
 /*
- * FBReadMode bits 9/10 (manual page 202): Read Source Enable and Read
+ * FBReadMode bits 9/10 (manual page 211): Read Source Enable and Read
  * Destination Enable. docs/datasheets/psitech-rad1.md's own reading of
  * this register is narrower -- "used for the read direction (framebuffer
  * -> host) of rad1_dma_patch_move" -- than the manual's general-purpose
@@ -558,7 +561,7 @@ static uint64_t rad1_regzero_read(void *opaque, hwaddr addr, unsigned size)
         switch (addr) {
         case RAD1_REG_WAIT_FOR_COMPLETE:
             /*
-             * Manual page 266: write-only command register, no readable
+             * Manual page 275: write-only command register, no readable
              * status bits. This model completes every Render synchronously,
              * so there is nothing to wait for by the time a read could
              * observe it; return 0 rather than asserting a specific
@@ -647,7 +650,7 @@ static void rad1_regzero_write(void *opaque, hwaddr addr, uint64_t val,
             rad1_do_render(s);
             break;
         case RAD1_REG_WAIT_FOR_COMPLETE:
-            /* Manual page 266: data field reserved/unused. */
+            /* Manual page 275: data field reserved/unused. */
             break;
         case RAD1_REG_RECT_ORIGIN:
             s->rect_origin = val;
