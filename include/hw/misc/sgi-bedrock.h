@@ -18,6 +18,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockState, SGI_BEDROCK)
 /* The four physical processor slots a node's two PIs together address. */
 #define SGI_BEDROCK_PROCESSORS 4
 
+/* processor-slot-order: fill the fitted slots in ascending slot order. */
+#define SGI_BEDROCK_SLOT_ORDER_BY_SLOT UINT32_MAX
+
 /* What a held processor waits for. Mirrors sgi-hub.c's SGIHubRTHoldKind. */
 typedef enum SGIBedrockHoldKind {
     SGI_BEDROCK_HOLD_SCRATCH1 = 1,       /* H1: LB scratch 1's withheld write */
@@ -59,6 +62,24 @@ struct SGIBedrockState {
     uint32_t processor_mask;
     uint32_t cpu_enable_initial_mask;
     uint32_t cpu_base;
+    /*
+     * Which processor occupies each of the four slots, two bits per
+     * realized processor: bits 1:0 name the slot of the processor at
+     * cpu_base, bits 3:2 the slot of the next one, and so on. Only the
+     * board knows this. A processor-mask says which slots are fitted but
+     * not which processor the machine put in each, and the two answers
+     * differ as soon as both slots of both interfaces are fitted, which
+     * is what made a processor in interface 0's second slot report
+     * itself as interface 0's first.
+     *
+     * SGI_BEDROCK_SLOT_ORDER_BY_SLOT keeps the processors in ascending
+     * slot order, which is what a caller that has no board behind it
+     * (the device's own tests) wants and what every partial population
+     * of this product comes to anyway.
+     */
+    uint32_t processor_slot_order;
+    /* Resolved from the order above: the vCPU in each slot, -1 if empty. */
+    int slot_cpu_index[SGI_BEDROCK_PROCESSORS];
     uint8_t revision;
     uint8_t local_region;
     uint8_t installed_memory_bank_mask;

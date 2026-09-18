@@ -292,6 +292,15 @@ bool sgi_bedrock_pi_io_modify(SGIBedrockPIState *s, uint64_t value,
  * access from outside this node's processors -- the model answers slot A.
  * That is model behaviour rather than a hardware claim: real silicon always
  * has a requester.
+ *
+ * Which processor is in which slot comes from the board through
+ * slot-a-cpu-index and slot-b-cpu-index. It used to be derived here from
+ * the population mask by walking the fitted slots in ascending order and
+ * handing them consecutive vCPU indices. That agrees with the board only
+ * while at most one slot per interface is fitted; with all four fitted the
+ * board puts its second processor on interface 1, the derivation put it in
+ * interface 0's second slot, and the processor actually sitting there read
+ * its own number as interface 0 slot A.
  */
 static unsigned pi_population_mask(SGIBedrockPIState *s)
 {
@@ -301,18 +310,13 @@ static unsigned pi_population_mask(SGIBedrockPIState *s)
 
 static uint64_t pi_cpu_number(SGIBedrockPIState *s)
 {
-    unsigned logical = s->cpu_base;
-    unsigned mask = pi_population_mask(s);
-
-    for (unsigned physical = 0; physical < 4; physical++) {
-        if (!(mask & (1U << physical))) {
-            continue;
+    if (current_cpu) {
+        for (unsigned slot = 0; slot < SGI_BEDROCK_PI_PROCESSORS; slot++) {
+            if (s->slot_cpu_index[slot] >= 0 &&
+                current_cpu->cpu_index == s->slot_cpu_index[slot]) {
+                return slot | ((uint64_t)s->interface << 1);
+            }
         }
-        if (current_cpu && physical / 2 == s->interface &&
-            current_cpu->cpu_index == logical) {
-            return (physical & 1) | ((uint64_t)s->interface << 1);
-        }
-        logical++;
     }
     return (uint64_t)s->interface << 1;
 }
@@ -780,7 +784,10 @@ static const VMStateDescription vmstate_pi = {
 
 static const Property pi_properties[] = {
     DEFINE_PROP_UINT32("interface", SGIBedrockPIState, interface, 0),
-    DEFINE_PROP_UINT32("cpu-base", SGIBedrockPIState, cpu_base, 0),
+    DEFINE_PROP_INT32("slot-a-cpu-index", SGIBedrockPIState,
+                      slot_cpu_index[0], -1),
+    DEFINE_PROP_INT32("slot-b-cpu-index", SGIBedrockPIState,
+                      slot_cpu_index[1], -1),
     DEFINE_PROP_UINT32("processor-count", SGIBedrockPIState,
                        processor_count, 1),
     DEFINE_PROP_UINT32("processor-mask", SGIBedrockPIState,

@@ -26,7 +26,13 @@ struct SGIBedrockPIState {
     qemu_irq cpu_enable_out[SGI_BEDROCK_PI_PROCESSORS];
 
     uint32_t interface;
-    uint32_t cpu_base;
+    /*
+     * The vCPU index in each of this interface's two slots, -1 when the
+     * slot is empty. The CPU number register answers with the reading
+     * processor's own slot, so the interface has to be told which
+     * processor that is rather than deriving it from the population.
+     */
+    int32_t slot_cpu_index[SGI_BEDROCK_PI_PROCESSORS];
     uint32_t processor_count;
     uint32_t processor_mask;
     uint8_t cpu_enable_initial;

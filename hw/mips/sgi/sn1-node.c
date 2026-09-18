@@ -728,6 +728,7 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     MemoryRegion *hub_registers;
     SysBusDevice *bedrock;
     unsigned int cpu;
+    uint32_t slot_order;
     size_t i;
 
     node->l1 = qdev_new(TYPE_SGI_L1);
@@ -757,6 +758,20 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     qdev_prop_set_uint32(node->bedrock, "processor-mask",
                         sn1_cpu_population_mask(node->model_node,
                                                node->nr_cpus));
+    /*
+     * Which slot each processor is in, two bits apiece. The mask above
+     * says which slots are fitted; with all four fitted it no longer says
+     * which processor went where, and the board's population order (one
+     * processor per interface before a second on either) is not ascending
+     * slot order. Without this the processor in interface 0's second slot
+     * read its own CPU number as interface 0's first slot and ran the
+     * stock PROM's boot-master path beside the real first processor.
+     */
+    slot_order = 0;
+    for (cpu = 0; cpu < node->nr_cpus; cpu++) {
+        slot_order |= sn1_cpu_slot(node->model_node, cpu) << (2 * cpu);
+    }
+    qdev_prop_set_uint32(node->bedrock, "processor-slot-order", slot_order);
     /*
      * Initial C grant is a model approximation; silicon reset is
      * unknown. Generalized from the two-processor case rather than
