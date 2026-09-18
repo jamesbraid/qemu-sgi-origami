@@ -127,13 +127,17 @@ static BlockDriverState *sn1_node_open_flash_slice(BlockDriverState *backing,
  * Creates the node's boot-flash part from -drive if=pflash and returns the
  * processor's read view of its first selection, or NULL with no error when
  * no such drive was given (the caller then falls back to an immutable
- * -bios image).
+ * -bios image). node_index selects the pflash unit the way sgi_machine_
+ * load_flash's own per-node override does for the Hub path: unit N for
+ * node N, so a second node (once one ships) takes its own drive rather
+ * than colliding with the first's.
  */
 static MemoryRegion *sn1_node_create_boot_flash(SN1NodeState *node,
+                                                unsigned int node_index,
                                                 Error **errp)
 {
-    DriveInfo *dinfo = drive_get(IF_PFLASH, 0, 0);
-    DriveInfo *extra = drive_get(IF_PFLASH, 0, 1);
+    DriveInfo *dinfo = drive_get(IF_PFLASH, 0, node_index);
+    DriveInfo *extra = drive_get(IF_PFLASH, 0, node_index + 1);
     BlockBackend *blk;
     BlockDriverState *backing;
     BlockDriverState *lower;
@@ -418,7 +422,7 @@ void sn1_node_full_reset(SN1NodeState *node, ResetType type)
  * Every named view a Bedrock node's flash controller answers, in the
  * order the immutable -bios path maps them: fixed by the chip, not
  * carried by the compiled catalogue (see the header comment on
- * sn1_node_load_prom's own use of this table).
+ * sn1_node_attach_prom's own use of this table).
  */
 static const char * const sn1_prom_view_names[] = {
     "sn1.prom.reset", "sn1.prom.local", "sn1.prom.local-high",
@@ -441,46 +445,23 @@ static bool sn1_node_flash_view_address(const char *name, uint64_t *address)
     return true;
 }
 
-static bool sn1_node_load_prom(SN1NodeState *node, MachineState *machine,
-                               Error **errp)
+bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
+                          const uint8_t *contents, uint64_t length,
+                          Error **errp)
 {
     uint64_t prom_size = node->model_node->flash->size;
     MemoryRegion *system = get_system_memory();
-    g_autoptr(GError) local_error = NULL;
-    g_autofree char *contents = NULL;
-    g_autofree char *path = NULL;
     MemoryRegion *stored;
-    gsize length;
     size_t i;
 
-    if (!machine->firmware) {
-        error_setg(errp,
-                   "origin300 requires -bios with a raw stock PROM payload");
-        return false;
-    }
-    path = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
-    if (!path) {
-        error_setg(errp, "origin300: cannot find PROM image '%s'",
-                   machine->firmware);
-        return false;
-    }
-    if (!g_file_get_contents(path, &contents, &length, &local_error)) {
-        error_setg(errp, "origin300: cannot read PROM image '%s': %s",
-                   machine->firmware, local_error->message);
-        return false;
-    }
     if (length != prom_size) {
         error_setg(errp,
                    "origin300: PROM image must be exactly %" PRIu64 " bytes",
                    prom_size);
         return false;
     }
-    if (machine->kernel_filename) {
-        error_setg(errp, "origin300 supports stock-PROM boot only");
-        return false;
-    }
 
-    stored = sn1_node_create_boot_flash(node, errp);
+    stored = sn1_node_create_boot_flash(node, node_index, errp);
     if (errp && *errp) {
         return false;
     }
@@ -1025,9 +1006,6 @@ static void sn1_node_realize(DeviceState *dev, Error **errp)
     MachineState *machine = MACHINE(qdev_get_machine());
 
     sn1_node_map_memory(node);
-    if (!sn1_node_load_prom(node, machine, errp)) {
-        return;
-    }
     sn1_node_create_cpus(node, machine);
     if (!sn1_node_create_bedrock(node, machine, errp)) {
         return;

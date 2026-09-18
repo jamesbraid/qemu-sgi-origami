@@ -120,4 +120,20 @@ DECLARE_INSTANCE_CHECKER(SN1NodeState, SN1_NODE, TYPE_SGI_SN1_NODE)
  */
 void sn1_node_full_reset(SN1NodeState *node, ResetType type);
 
+/*
+ * Attaches the node's boot flash: a pflash part from -drive if=pflash at
+ * unit node_index if one was given, else an immutable ROM holding
+ * contents (exactly length bytes, checked against the node's own
+ * descriptor flash size), and maps every PROM view either backs. The
+ * machine calls this once every node this run builds has realized
+ * (sgi_machine_load_flash() in sn-machine.c), after resolving -bios and
+ * the per-node pflash override the same way the Hub path does; realize
+ * itself no longer loads PROM content, only sn1_node_create_boot_flash's
+ * own device-level mechanics run here, the node's own concern under
+ * decision D-0026.
+ */
+bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
+                          const uint8_t *contents, uint64_t length,
+                          Error **errp);
+
 #endif /* HW_MIPS_SGI_SN1_NODE_H */

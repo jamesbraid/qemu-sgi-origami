@@ -1447,17 +1447,72 @@ static void sgi_machine_configure_flash(const SGIMachineClass *smc,
 }
 
 /*
+ * Bedrock's own PROM policy: -bios names the required stock image and a
+ * per-node pflash drive (unit node_index) overrides it, the same two
+ * inputs the Hub path below resolves, but with no synthesized default --
+ * every Bedrock node this family has built still requires a real image,
+ * the contract sn1_node_attach_prom's own removed prefix used to enforce
+ * on its own. One image, read once, attaches to every node this
+ * topology names (today, at most one: a topology with more is refused
+ * before sgi_machine_realize ever reaches this function).
+ */
+static bool sgi_machine_load_bedrock_flash(MachineState *machine,
+                                           SGIMachineState *s, Error **errp)
+{
+    g_autoptr(GError) local_error = NULL;
+    g_autofree char *contents = NULL;
+    g_autofree char *path = NULL;
+    gsize length;
+    unsigned int node_index;
+
+    if (!machine->firmware) {
+        error_setg(errp,
+                   "origin300 requires -bios with a raw stock PROM payload");
+        return false;
+    }
+    path = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
+    if (!path) {
+        error_setg(errp, "origin300: cannot find PROM image '%s'",
+                  machine->firmware);
+        return false;
+    }
+    if (!g_file_get_contents(path, &contents, &length, &local_error)) {
+        error_setg(errp, "origin300: cannot read PROM image '%s': %s",
+                  machine->firmware, local_error->message);
+        return false;
+    }
+
+    for (node_index = 0; node_index < s->num_nodes; node_index++) {
+        SN1NodeState *node = SN1_NODE(s->bedrock_nodes[node_index]);
+
+        if (!sn1_node_attach_prom(node, node_index, (const uint8_t *)contents,
+                                  length, errp)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/*
  * -bios fills every node's boot flash unless a pflash drive already backs
  * it (set on the node before it realized); a short -bios image leaves the
  * default template's own bytes behind it, matching a factory-formatted
- * chip rather than a merely erased one.
+ * chip rather than a merely erased one. Bedrock's own policy has no
+ * synthesized default and lives in sgi_machine_load_bedrock_flash above;
+ * this function's own body stays the Hub's.
  */
 static bool sgi_machine_load_flash(MachineState *machine,
                                    const SGIModelTopology *t,
                                    SGIMachineState *s, Error **errp)
 {
     const SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(machine);
-    uint64_t flash_size = sn0_hub_address_map.flash_reset.size;
+    uint64_t flash_size;
+
+    if (sgi_machine_topology_node0(t)->asic_kind != SGI_MODEL_ASIC_KIND_HUB) {
+        return sgi_machine_load_bedrock_flash(machine, s, errp);
+    }
+
+    flash_size = sn0_hub_address_map.flash_reset.size;
     g_autofree uint8_t *flash = NULL;
     unsigned int node_index;
 
@@ -1804,6 +1859,9 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                     return false;
                 }
             }
+        }
+        if (!sgi_machine_load_flash(machine, t, s, errp)) {
+            return false;
         }
         return true;
     }
