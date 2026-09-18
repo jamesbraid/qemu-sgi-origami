@@ -10,9 +10,7 @@ if 'CONFIG_TCG' in config_all_accel
 mips_ss.add(when: 'CONFIG_JAZZ', if_true: files('jazz.c'))
 # These generated model inputs are tracked QEMU sources. Origami exports them
 # explicitly; qemu-build does not regenerate them during configure.
-mips_ss.add(when: 'CONFIG_SGI_SN0',
-            if_true: files('sgi/sn0.c', 'sgi/sn0-fabric.c',
-                           'sgi/sn0-fabric-routed.c'))
+mips_ss.add(when: 'CONFIG_SGI_SN0', if_true: files('sgi/sn0.c'))
 # These qtest-only fixtures live under tests/qtest, beside the qtest
 # programs that are their only consumer, and are pulled in here because
 # meson builds hw/ before tests/ so the target binary must gain them here.
@@ -33,6 +31,11 @@ mips_ss.add(when: 'CONFIG_SGI_SN1',
 # selects on its own Kconfig symbol rather than either machine's.
 mips_ss.add(when: 'CONFIG_SGI_XTALK_PORT', if_true: files('sgi/xtalk-port.c'))
 mips_ss.add(when: 'CONFIG_SGI_XTALK_LINK', if_true: files('sgi/xtalk-link.c'))
+# The network port interface and the cable that joins two of them: shared
+# by the Hub and the Router, so each selects on its own Kconfig symbol
+# rather than either device's.
+mips_ss.add(when: 'CONFIG_SGI_NET_PORT', if_true: files('sgi/net-port.c'))
+mips_ss.add(when: 'CONFIG_SGI_NET_CABLE', if_true: files('sgi/net-cable.c'))
 # The XIO board base class (renamed from sgi-xtalk-board, the base-io-device
 # step: its onboard-only subclasses stopped existing, leaving exactly the
 # removable-card scope this name states). Shared by every XIO card, so it
