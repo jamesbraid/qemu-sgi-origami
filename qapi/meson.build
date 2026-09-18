@@ -68,6 +68,7 @@ if have_system
     'misc-arm',
     'misc-i386',
     'misc-mips',
+    'sgi-sn',
     'tpm',
     'uefi',
   ]

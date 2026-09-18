@@ -1,0 +1,864 @@
+# -*- Mode: Python -*- vim: filetype=python
+#
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+##
+# ***********************************
+# SGI Scalable Node compiled catalogue
+# ***********************************
+#
+# The record types of Origami's compiled catalogue (`hw/mips/sgi/
+# sn-catalogue.json`, embedded into the emulator at build time): one
+# `topologies` entry per configuration the SGI Scalable Node family
+# builder can construct, and one `offerings` entry per accepted CPU
+# population a launcher may select.  A `topologies` record carries
+# only what decision D-0026
+# (docs/decisions/D-0026-machine-description- ownership.md in the
+# Origami repository) keeps a machine description responsible for:
+# which devices are present, where each plugs in, and a fitted part's
+# own identity, revision or size.  A fact the same on every machine
+# fitting one chip -- a PCI function's position, an I2C address, a
+# crossbar's manufacturer id, a Router's port count, a flash's named
+# views, a crosstalk attachment's decode mask -- is a device fact
+# instead, fixed in the device model that already owns it.  An
+# `offerings` record carries what a launcher may choose, unfiltered by
+# that rule: the accepted CPU and memory populations, firmware kind
+# and size, storage controllers, console and network placement, and
+# the QEMU argument each becomes.
+##
+
+##
+# @SGIModelAsicKind:
+#
+# Which node ASIC a node board is built around.
+#
+# @hub: the SN0 (IP27/IP29) Hub
+#
+# @bedrock: the SN1 (IP35) Bedrock
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelAsicKind',
+  'data': ['hub', 'bedrock'] }
+
+##
+# @SGIModelProcessor:
+#
+# One catalogued processor assembly: identity registers and cache
+# facts a fitted part contributes to KLCONFIG and the flash
+# configuration block's mode word.
+#
+# @id: catalogue id of this assembly
+#
+# @kind: processor family name (R10000, R12000, R14000, ...)
+#
+# @prid: CP0 PRId register value
+#
+# @fpu-prid: FPU implementation/revision register value
+#
+# @clock-hz: core clock
+#
+# @cache-clock-hz: secondary cache clock
+#
+# @cache-mib: secondary cache size
+#
+# @mode-bits: the CP0_Config0-derived mode word the flash #
+#     configuration # block and the board latch both compare against,
+#     # computed once by # Origami's compiler from this assembly's
+#     other # fields
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelProcessor',
+  'data': { 'id': 'str',
+            'kind': 'str',
+            'prid': 'uint32',
+            'fpu-prid': 'uint32',
+            'clock-hz': 'uint64',
+            'cache-clock-hz': 'uint64',
+            'cache-mib': 'uint16',
+            'mode-bits': 'uint32' } }
+
+##
+# @SGIModelCpuSlot:
+#
+# One processor-interface slot on a node board.
+#
+# @interface: which of the ASIC's processor interfaces this slot is on
+#
+# @slot: position on that interface
+#
+# @assembly: the fitted processor, absent for an unpopulated slot
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelCpuSlot',
+  'data': { 'interface': 'uint32',
+            'slot': 'uint32',
+            '*assembly': 'SGIModelProcessor' } }
+
+##
+# @SGIModelFlashKind:
+#
+# Which boot-flash chip a node board carries.
+#
+# @am29f080: AMD Am29F080 (or a pin-compatible part)
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelFlashKind',
+  'data': ['am29f080'] }
+
+##
+# @SGIModelFlash:
+#
+# A node board's boot flash.  Which named execution or maintenance
+# views the flash controller answers, and their addresses, are fixed
+# by the node ASIC and are not carried here; the node device (`sn0.c`
+# for HUB, `sn1-node.c` for BEDROCK) names them itself.
+#
+# @kind: the fitted chip
+#
+# @size: total chip size in bytes
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelFlash',
+  'data': { 'kind': 'SGIModelFlashKind',
+            'size': 'uint64' } }
+
+##
+# @SGIModelAsicIdentity:
+#
+# A node ASIC's own fitted-part identity.  The Hub's embedded I2C
+# controller and system-controller role are named here when it carries
+# one; their bus addresses are chip constants and are not carried (a
+# Bedrock node, whose controller role belongs to its module's or
+# brick's L1 instead, reports both false).
+#
+# @ni-revision: NUMAlink interface revision
+#
+# @widget-revision: crosstalk widget revision this ASIC's port answers
+#
+# @serial: fitted-part one-wire serial
+#
+# @i2c-controller: whether this ASIC carries an embedded I2C #
+#     controller
+#
+# @system-controller: whether that controller also answers as the #
+#     node's # system controller (Origin 200's embedded ELSC)
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelAsicIdentity',
+  'data': { 'ni-revision': 'uint8',
+            'widget-revision': 'uint8',
+            'serial': 'uint64',
+            'i2c-controller': 'bool',
+            'system-controller': 'bool' } }
+
+##
+# @SGIModelNode:
+#
+# One node board: a node ASIC, its populated processor slots, its
+# memory banks and its boot flash.
+#
+# @id: catalogue id of this node
+#
+# @module-index: position in the topology's @modules list
+#
+# @slot: physical slot number within that module
+#
+# @asic-kind: which node ASIC this board is built around
+#
+# @identity: the ASIC's own fitted-part identity
+#
+# @cpu-slots: this node's processor-interface slots, populated and #
+#     empty
+#
+# @bank-mib: this node's memory banks, in bank order; a zero entry is
+#     # an # unpopulated bank.  Always exactly as many entries as the
+#     # node ASIC's # architectural bank count.
+#
+# @accepted-memory-mib: other total per-node memory sizes the #
+#     builder's # fitting rule accepts for this node besides #
+#     @bank-mib's own shipped # population; empty means the shipped #
+#     population only
+#
+# @flash: this node's boot flash
+#
+# @slave-role: whether this node answers module-management commands #
+#     only # through its module's master, never on its own external #
+#     AUX line # (Origin 2000's per-Hub adapters behind a shared MSC)
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelNode',
+  'data': { 'id': 'str',
+            'module-index': 'uint32',
+            'slot': 'uint32',
+            'asic-kind': 'SGIModelAsicKind',
+            'identity': 'SGIModelAsicIdentity',
+            'cpu-slots': ['SGIModelCpuSlot'],
+            'bank-mib': ['uint64'],
+            'accepted-memory-mib': ['uint64'],
+            'flash': 'SGIModelFlash',
+            'slave-role': 'bool' } }
+
+##
+# @SGIModelRouter:
+#
+# One Router board.  Its port count is fixed by the chip and is not
+# carried here.
+#
+# @id: catalogue id of this router
+#
+# @module-index: position in the topology's @modules list
+#
+# @slot: physical slot number within that module
+#
+# @part: NIC manufacturing part number
+#
+# @revision: fitted silicon revision
+#
+# @chip-inputs: fitted-part NUMAlink input calibration count, read #
+#     back # through the Router's own status register
+#
+# @serial: fitted-part one-wire serial
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelRouter',
+  'data': { 'id': 'str',
+            'module-index': 'uint32',
+            'slot': 'uint32',
+            'part': 'uint16',
+            'revision': 'uint8',
+            'chip-inputs': 'uint8',
+            'serial': 'uint64' } }
+
+##
+# @SGIModelLinkEndKind:
+#
+# What a cable's end plugs into.
+#
+# @node: a node board's own network port
+#
+# @router: a numbered Router port
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelLinkEndKind',
+  'data': ['node', 'router'] }
+
+##
+# @SGIModelLinkEnd:
+#
+# One end of a cable.
+#
+# @kind: what this end plugs into
+#
+# @index: which node or router, by position in the topology's own # #
+#     @nodes or @routers list
+#
+# @port: port number on that node or router
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelLinkEnd',
+  'data': { 'kind': 'SGIModelLinkEndKind',
+            'index': 'uint32',
+            'port': 'uint32' } }
+
+##
+# @SGIModelCableKind:
+#
+# What kind of cable joins two ports.
+#
+# @midplane: a fixed midplane trace (Origin 2000's within-module #
+#     wiring)
+#
+# @cable: a NUMAlink cable between modules
+#
+# @xpress-cable: a NUMAlink Xpress cable
+#
+# @carrier: an Origin 200 chassis-to-chassis carrier cable
+#
+# @null-router: a direct Hub-to-Hub cable with no Router between them
+#     # # (an Origin 200 pair)
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelCableKind',
+  'data': ['midplane', 'cable', 'xpress-cable', 'carrier', 'null-router'] }
+
+##
+# @SGIModelCable:
+#
+# One cable joining two ports.
+#
+# @name: catalogue name of this cable
+#
+# @kind: what kind of cable it is
+#
+# @ends: the two ports it joins
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelCable',
+  'data': { 'name': 'str',
+            'kind': 'SGIModelCableKind',
+            'ends': ['SGIModelLinkEnd'] } }
+
+##
+# @SGIModelCrossbarKind:
+#
+# Which crosstalk switch a crossbar record describes.
+#
+# @xbow: a standalone Crossbow chip
+#
+# @xbridge: an XBridge's own internal crossbar section
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelCrossbarKind',
+  'data': ['xbow', 'xbridge'] }
+
+##
+# @SGIModelCrossbar:
+#
+# One crosstalk switch.  Its manufacturer id, part number and
+# initially-populated-links mask are fixed by @kind and are not
+# carried here.
+#
+# @id: catalogue id of this crossbar
+#
+# @module-index: position in the topology's own @modules list
+#
+# @kind: which crosstalk switch this is
+#
+# @widget-revision: fitted silicon revision
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelCrossbar',
+  'data': { 'id': 'str',
+            'module-index': 'uint32',
+            'kind': 'SGIModelCrossbarKind',
+            'widget-revision': 'uint8' } }
+
+##
+# @SGIModelXtalkAttachment:
+#
+# Which node hosts a crosstalk widget: through a crossbar's numbered
+# link, or, with no crossbar between the node and the widget, a direct
+# attachment.  A direct attachment's decode mask and discovery widget
+# are fixed by the chip that answers it and are not carried here.
+#
+# @crossbar-index: position in the topology's own @crossbars list, or
+#     # -1 # for a direct attachment
+#
+# @widget: widget number this attachment answers on
+#
+# @node-index: position in the topology's own @nodes list
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelXtalkAttachment',
+  'data': { 'crossbar-index': 'int',
+            'widget': 'uint32',
+            'node-index': 'uint32' } }
+
+##
+# @SGIModelIoBoardPreset:
+#
+# Which base I/O board design a board record fits: the functions each
+# preset's Bridge carries are a design fact of the board and are not
+# carried here (`sgi-baseio`'s own preset table does).
+#
+# @ip29-io: Origin 200's integrated IP29 System Board I/O
+#
+# @baseio: the Origin 2000/Onyx2 BaseIO XIO card
+#
+# @io8: the Origin 300 IO-8
+#
+# @io9: the IO-9
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelIoBoardPreset',
+  'data': ['ip29-io', 'baseio', 'io8', 'io9'] }
+
+##
+# @SGIModelIoBoardCarrier:
+#
+# What physically carries a base I/O board.
+#
+# @onboard: a fitted part of the node board itself (Origin 200's IP29
+#     # # System Board)
+#
+# @xio-slot: a removable XIO card
+#
+# @machine-placed: a PCI board the machine places outright, not a # #
+#     removable card (Origin 300's IO-8, on the node board's own #
+#     XBridge)
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelIoBoardCarrier',
+  'data': ['onboard', 'xio-slot', 'machine-placed'] }
+
+##
+# @SGIModelIoBoard:
+#
+# One base I/O board.  A PCI function's own position, interrupt input
+# and IOC3 population flags are device facts @preset already implies
+# and are not carried here.
+#
+# @id: catalogue id of this board
+#
+# @module-index: position in the topology's own @modules list
+#
+# @preset: which base I/O board design is fitted
+#
+# @carrier: what physically carries it
+#
+# @attachment: physical slot or head label
+#
+# @part: fitted-part design number
+#
+# @revision: fitted-part revision
+#
+# @serial: fitted-part one-wire serial
+#
+# @ioc3-serial: the IOC3 function's own one-wire serial, a distinct #
+#     # fitted-part identity from the board's own @serial; absent
+#     where # # this board's preset carries no IOC3 population (an
+#     Origin 300 # # XBridge head with nothing fitted)
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelIoBoard',
+  'data': { 'id': 'str',
+            'module-index': 'uint32',
+            'preset': 'SGIModelIoBoardPreset',
+            'carrier': 'SGIModelIoBoardCarrier',
+            'attachment': 'uint32',
+            'part': 'str',
+            'revision': 'uint8',
+            'serial': 'uint64',
+            '*ioc3-serial': 'uint64' } }
+
+##
+# @SGIModelControllerKind:
+#
+# Which shared system controller a controller record describes.
+#
+# @msc: an Origin 2000 module's MSC, over the module management wire
+#
+# @l1: an Origin 300/350 brick's L1, over its UART
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelControllerKind',
+  'data': ['msc', 'l1'] }
+
+##
+# @SGIModelController:
+#
+# One module's or brick's shared system controller.  Its MicroLAN and
+# NVRAM addresses are fixed by the chip and are not carried here.
+#
+# @id: catalogue id of this controller
+#
+# @module-index: position in the topology's own @modules list
+#
+# @kind: which shared controller this is
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelController',
+  'data': { 'id': 'str',
+            'module-index': 'uint32',
+            'kind': 'SGIModelControllerKind' } }
+
+##
+# @SGIModelModule:
+#
+# One module or brick: the nodes it carries and, when it has one, the
+# index of its shared controller.
+#
+# @id: catalogue id of this module
+#
+# @serial: fitted-part identity serial the module's or brick's shared
+#     # # one-wire identity pages are generated from
+#
+# @initial-module-number: module number the PROM programs at reset
+#
+# @controller-index: position in the topology's own @controllers list,
+#     # # or -1 when this module's nodes each carry their own
+#     controller # # instead (Origin 200)
+#
+# @nodes: positions in the topology's own @nodes list, in slot order
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelModule',
+  'data': { 'id': 'str',
+            'serial': 'str',
+            'initial-module-number': 'uint8',
+            'controller-index': 'int',
+            'nodes': ['uint32'] } }
+
+##
+# @SGIModelCpuPopulation:
+#
+# One accepted `-smp`/`-numa` population: processors populated, per
+# node, in node order.
+#
+# @cpus-per-node: processor count for each node in the topology's own
+#     # # @nodes list, in order
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelCpuPopulation',
+  'data': { 'cpus-per-node': ['uint32'] } }
+
+##
+# @SGIModelGeneration:
+#
+# Which Scalable Node generation a topology's node boards belong to.
+#
+# @sn0: SN0 (IP27/IP29 Hub-family boards)
+#
+# @sn1: SN1 (IP35 Bedrock-family boards)
+#
+# Since: 11.2
+##
+{ 'enum': 'SGIModelGeneration',
+  'data': ['sn0', 'sn1'] }
+
+##
+# @SGIModelTopology:
+#
+# One authored configuration: a product's wiring and its shipped and
+# accepted populations.
+#
+# @name: catalogue name of this topology (`topology=` selects it)
+#
+# @product: which product this topology is a configuration of (`-M` #
+#     # value); not a device or wiring fact, but what a loaded
+#     catalogue # # needs to pick a product's default topology without
+#     a second, # # hand-authored table
+#
+# @generation: which Scalable Node generation this topology's node # #
+#     boards belong to
+#
+# @description: prose description of this configuration
+#
+# @nodes: this topology's node boards
+#
+# @modules: this topology's modules or bricks
+#
+# @routers: this topology's Router boards
+#
+# @cables: this topology's cables
+#
+# @crossbars: this topology's crosstalk switches
+#
+# @xtalk-attachments: which node hosts each crosstalk widget
+#
+# @io-boards: this topology's base I/O boards
+#
+# @controllers: this topology's shared system controllers
+#
+# @console: position in @nodes of the node whose IOC3 port A (SN0) or
+#     # # brick controller (SN1) the firmware treats as its console;
+#     the # # rest of the serial-line order is a builder rule, not
+#     data here
+#
+# @junk-uart: position in @nodes of the node that offers the # #
+#     manufacturing junk-bus UART when the junk-uart property is set,
+#     # or # -1 where this topology has none
+#
+# @supported-cpu-populations: every `-smp`/`-numa` population the # #
+#     builder accepts for this topology
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelTopology',
+  'data': { 'name': 'str',
+            'product': 'str',
+            'generation': 'SGIModelGeneration',
+            'description': 'str',
+            'nodes': ['SGIModelNode'],
+            'modules': ['SGIModelModule'],
+            'routers': ['SGIModelRouter'],
+            'cables': ['SGIModelCable'],
+            'crossbars': ['SGIModelCrossbar'],
+            'xtalk-attachments': ['SGIModelXtalkAttachment'],
+            'io-boards': ['SGIModelIoBoard'],
+            'controllers': ['SGIModelController'],
+            'console': 'int',
+            'junk-uart': 'int',
+            'supported-cpu-populations': ['SGIModelCpuPopulation'] } }
+
+##
+# @SGIModelConsole:
+#
+# One serial line a launch places.
+#
+# @kind: role this line plays (console, second-port, #
+#     system-controller, # junk-uart)
+#
+# @node: position in the owning topology's @nodes list this line #
+#     serves
+#
+# @argument: the QEMU argument form this line becomes
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelConsole',
+  'data': { 'kind': 'str',
+            'node': 'uint32',
+            'argument': 'str' } }
+
+##
+# @SGIModelFirmware:
+#
+# The firmware image an offering expects.
+#
+# @kind: which firmware contract this product's PROM speaks #
+#     (ip27-prom, # ip35-prom)
+#
+# @argument: the QEMU argument form the image is supplied through
+#
+# @size: expected image size in bytes
+#
+# @sha256: expected image digest, when the launcher pins one
+#
+# @per-node-flash: whether every node's own flash must be filled #
+#     (true) # or one managed image serves the whole configuration #
+#     (false)
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelFirmware',
+  'data': { 'kind': 'str',
+            'argument': 'str',
+            'size': 'uint64',
+            '*sha256': 'str',
+            'per-node-flash': 'bool' } }
+
+##
+# @SGIModelResource:
+#
+# One persistent resource a launcher provisions beyond the drives a
+# user attaches.
+#
+# @kind: what this resource is (nvram, boot-flash, identity-eeprom, #
+#     # spd-eeprom)
+#
+# @scope: what it is provisioned per (board, node, dimm)
+#
+# @count: how many instances this offering needs
+#
+# @size: byte size of one instance, when documented
+#
+# @argument: the QEMU argument form this resource becomes, `N` #
+#     standing # for its instance index
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelResource',
+  'data': { 'kind': 'str',
+            'scope': 'str',
+            'count': 'uint32',
+            '*size': 'uint64',
+            'argument': 'str' } }
+
+##
+# @SGIModelStorage:
+#
+# One SCSI host adapter an offering's I/O boards carry.
+#
+# @type: bus protocol (scsi)
+#
+# @bus: QEMU generic-SCSI bus id this adapter answers on
+#
+# @targets: SCSI ids a launcher may attach a target at
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelStorage',
+  'data': { 'type': 'str',
+            'bus': 'str',
+            'targets': ['uint32'] } }
+
+##
+# @SGIModelNetworkOffering:
+#
+# One network adapter an offering's I/O boards carry.
+#
+# @kind: adapter kind (ioc3-ethernet)
+#
+# @argument: the QEMU argument form this adapter becomes
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelNetworkOffering',
+  'data': { 'kind': 'str',
+            'argument': 'str' } }
+
+##
+# @SGIModelMemoryPopulation:
+#
+# The per-node memory sizes an offering accepts.
+#
+# @default: per-node size in MiB a launch uses when none is given
+#
+# @accepted: every per-node size in MiB the builder's fitting rule # #
+#     accepts
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelMemoryPopulation',
+  'data': { 'default': 'uint64',
+            'accepted': ['uint64'] } }
+
+##
+# @SGIModelOfferingProcessor:
+#
+# The processor an offering's accepted population is built from.
+#
+# @part: processor family name
+#
+# @clock-hz: core clock
+#
+# @cache-mib: secondary cache size
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelOfferingProcessor',
+  'data': { 'part': 'str',
+            'clock-hz': 'uint64',
+            'cache-mib': 'uint16' } }
+
+##
+# @SGIModelOffering:
+#
+# One accepted configuration a launcher may select: a product, a
+# topology and one of its accepted CPU populations, with every fact a
+# launcher needs to build the QEMU command line for it.  Unlike a
+# `topologies` record, an offering is not filtered by decision D-0026:
+# it is the catalogue's launcher-facing half, and carries what a
+# launcher may choose rather than only what QEMU's own builder needs.
+#
+# @product: `-M` value this offering is for
+#
+# @topology: `topology=` value this offering is for
+#
+# @display-name: human-readable name of this configuration
+#
+# @nodes: node count of this configuration
+#
+# @cpus-per-node: this offering's accepted population, per node
+#
+# @smp: total processor count (`-smp` value)
+#
+# @memory-per-node-mib: accepted per-node memory sizes
+#
+# @processor: the processor this population is built from
+#
+# @firmware: the firmware image this offering expects
+#
+# @resources: persistent resources this offering needs beyond a user's
+#     # # own drives
+#
+# @storage: SCSI host adapters this offering's I/O boards carry
+#
+# @consoles: serial lines this offering's launch places, in order
+#
+# @networks: network adapters this offering's I/O boards carry
+#
+# @console: which of @consoles is the primary console
+#
+# @prom-dialogue: which PROM console dialogue this product speaks
+#
+# @disk-bus: default disk bus a launcher attaches a boot disk to
+#
+# @netboot-adapter: adapter kind a netboot launch uses
+#
+# @identity-inputs: named identity/SPD inputs this offering accepts
+#
+# @supported-guests: guest operating systems documented to run on this
+#     # # offering
+#
+# @install-media: install media kinds this offering supports
+#
+# @default-cpu-model: default `-cpu` value for this offering
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelOffering',
+  'data': { 'product': 'str',
+            'topology': 'str',
+            'display-name': 'str',
+            'nodes': 'uint32',
+            'cpus-per-node': ['uint32'],
+            'smp': 'uint32',
+            'memory-per-node-mib': 'SGIModelMemoryPopulation',
+            'processor': 'SGIModelOfferingProcessor',
+            'firmware': 'SGIModelFirmware',
+            'resources': ['SGIModelResource'],
+            'storage': ['SGIModelStorage'],
+            'consoles': ['SGIModelConsole'],
+            'networks': ['SGIModelNetworkOffering'],
+            'console': 'str',
+            'prom-dialogue': 'str',
+            'disk-bus': 'str',
+            'netboot-adapter': 'str',
+            'identity-inputs': ['str'],
+            'supported-guests': ['str'],
+            'install-media': ['str'],
+            'default-cpu-model': 'str' } }
+
+##
+# @SGIModelCatalogue:
+#
+# Origami's compiled catalogue: every configuration the SGI Scalable
+# Node family builder can construct, and every configuration a
+# launcher may select.  The same document, embedded at build time,
+# backs @query-sgi-sn-catalogue, the running emulator's own copy for a
+# package build to read, and Origami's launch harness.
+#
+# @schema: catalogue schema name (`sgi-sn-catalogue`)
+#
+# @version: catalogue schema version
+#
+# @topologies: every configuration the builder can construct
+#
+# @offerings: every configuration a launcher may select
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelCatalogue',
+  'data': { 'schema': 'str',
+            'version': 'uint32',
+            'topologies': ['SGIModelTopology'],
+            'offerings': ['SGIModelOffering'] } }
+
+##
+# @query-sgi-sn-catalogue:
+#
+# Return the SGI Scalable Node family's compiled catalogue: the same
+# document embedded into this emulator at build time, so a package
+# build can read it back from the emulator it ships rather than
+# carrying its own copy out of band.
+#
+# Returns: the compiled catalogue
+#
+# Since: 11.2
+##
+{ 'command': 'query-sgi-sn-catalogue',
+  'returns': 'SGIModelCatalogue' }
