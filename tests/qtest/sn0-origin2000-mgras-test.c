@@ -147,10 +147,33 @@
 #define REG_BKGRD_BA            0x141
 #define REG_PP1FILLMODE         0x161
 #define REG_COLORMASKMSBS       0x162
+#define REG_RE_POINT            0x040
+#define REG_RE_LINE             0x041
+#define REG_RE_BLOCKCOPY        0x045
+#define REG_ALPHA               0x05f
+#define REG_COLORMASKLSBSA      0x163
+#define REG_GLINE_XSTARTF       0x00c
+#define REG_DRBPOINTERS         0x16d
 
 /* X11-style GX logic-op values, PP1FILLMODE's own top nibble. */
 #define SI_LOGIC_OP_COPY        0x3
 #define SI_LOGIC_OP_XOR         0x6
+
+/*
+ * Command-FIFO token-header builders: class<<16 | reg<<8 | payload_bytes,
+ * with reg's own bit 8 folded into the class byte's bit 0 -- see the
+ * header comment on SI_CMD_HDR_CLASS_STATE, hw/misc/sgi-mgras.c. A state
+ * header (class 0x18/0x19) triggers a plain register write once its
+ * declared payload has arrived; an execute header (class 0x1c/0x1d)
+ * triggers the matching drawing primitive, the same register roles the
+ * direct-record macros above reach through their own selector encoding.
+ */
+#define SI_STATE_TOKEN(reg, payload_bytes) \
+    ((uint32_t)(((0x18 | (((reg) >> 8) & 1)) << 16) | \
+                (((reg) & 0xff) << 8) | (payload_bytes)))
+#define SI_EXEC_TOKEN(reg, payload_bytes) \
+    ((uint32_t)(((0x1c | (((reg) >> 8) & 1)) << 16) | \
+                (((reg) & 0xff) << 8) | (payload_bytes)))
 
 /*
  * sgi_machine_build_mgras (hw/mips/sgi/sn-machine.c) parents SI Viz
@@ -1803,6 +1826,229 @@ static void test_context_write_accepted_after_completion(void)
     qtest_quit(qts);
 }
 
+/*
+ * State-write command-FIFO token headers (class 0x18/0x19) feed the same
+ * persistent register file the direct-record grammar's own state writes
+ * do (si_rss_write, hw/misc/sgi-mgras.c): setting up a fill entirely
+ * through token headers, then triggering it with the direct-record
+ * grammar's own execute form, proves the two wire encodings share state
+ * rather than each keeping its own copy.
+ */
+static void test_command_fifo_state_write_headers(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)SI_STATE_TOKEN(REG_PACKEDCOLOR, 4) << 32) |
+                 0x00223344);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)SI_STATE_TOKEN(REG_BLOCK_START, 4) << 32) |
+                 ((60u << 16) | 60u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)SI_STATE_TOKEN(REG_COLORMASKMSBS, 4) << 32) |
+                 0xffffffff);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)SI_STATE_TOKEN(REG_PP1FILLMODE, 4) << 32) |
+                 ((uint32_t)SI_LOGIC_OP_COPY << 28));
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    /* The fill itself still triggers through the direct-record grammar's
+     * own execute form, reading state the token headers above just set. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (61u << 16) | 61u));
+    g_assert_cmphex(si_test_pixel(qts, 60, 60), ==, 0x00223344);
+    g_assert_cmphex(si_test_pixel(qts, 61, 61), ==, 0x00223344);
+    g_assert_cmphex(si_test_pixel(qts, 59, 59), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * State-write headers for registers this device names but does not yet
+ * consume in any execute implementation (see the header comment on
+ * SI_CMD_HDR_CLASS_STATE) -- accepted and stored generically, not flagged,
+ * the same "traffic this device doesn't act on yet is not an error"
+ * treatment test_command_accepts_hq_config_words already covers for the
+ * direct-record grammar's own unmatched selectors.
+ */
+static void test_command_fifo_state_write_headers_not_yet_consumed(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)SI_STATE_TOKEN(REG_ALPHA, 4) << 32) | 0xff);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)SI_STATE_TOKEN(REG_COLORMASKLSBSA, 4) << 32) |
+                 0x0000ffff);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)SI_STATE_TOKEN(REG_GLINE_XSTARTF, 4) << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)SI_STATE_TOKEN(REG_DRBPOINTERS, 4) << 32) | 0);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Single-pixel plot: RE_POINT's own execute-form token header (class 0x1c
+ * reg 0x040) paints exactly one pixel, at BLOCKXYSTARTI, in the current
+ * colour -- si_draw_point's own header comment states the bounded,
+ * single-point scope this device gives the trigger.
+ */
+static void test_re_point_execute(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00abcdef));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (70u << 16) | 80u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 (uint64_t)SI_EXEC_TOKEN(REG_RE_POINT, 0) << 32);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    g_assert_cmphex(si_test_pixel(qts, 70, 80), ==, 0x00abcdef);
+    /* Only the one pixel -- not a filled rectangle. */
+    g_assert_cmphex(si_test_pixel(qts, 71, 80), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 70, 81), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Line draw: RE_LINE's own execute-form token header (class 0x1c reg
+ * 0x041) draws a Bresenham line from BLOCKXYSTARTI to BLOCKXYENDI in the
+ * current colour -- si_draw_line's own header comment states this is a
+ * bounded choice of stepping algorithm, not a claim about real hardware's
+ * exact pixels.
+ */
+static void test_re_line_execute(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00112233));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (100u << 16) | 100u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (105u << 16) | 105u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 (uint64_t)SI_EXEC_TOKEN(REG_RE_LINE, 0) << 32);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    /* The diagonal's own endpoints and midpoint. */
+    g_assert_cmphex(si_test_pixel(qts, 100, 100), ==, 0x00112233);
+    g_assert_cmphex(si_test_pixel(qts, 102, 102), ==, 0x00112233);
+    g_assert_cmphex(si_test_pixel(qts, 105, 105), ==, 0x00112233);
+    /* Off the diagonal, inside the same bounding box, stays untouched. */
+    g_assert_cmphex(si_test_pixel(qts, 100, 105), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * CHAR_H's own execute-form token header (class 0x1c reg 0x070) triggers
+ * the same one-row glyph expansion CHAR_L's own execute form already does
+ * (si_command_execute's shared case) -- both registers feed one glyph
+ * row, so either one triggering the same draw is the "writing something
+ * plausible" scope this device gives the trigger.
+ */
+static void test_re_char_h_execute(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BKGRD_RG, 0x00000000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (200u << 16) | 200u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (207u << 16) | 207u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_CHAR_L, (uint32_t)0x18 << 24));
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 (uint64_t)SI_EXEC_TOKEN(REG_CHAR_H, 0) << 32);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    /* 0x18 = 00011000: pixels 3 and 4 set, the rest background. */
+    g_assert_cmphex(si_test_pixel(qts, 200, 200), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 203, 200), ==, 0x00ffffff);
+    g_assert_cmphex(si_test_pixel(qts, 204, 200), ==, 0x00ffffff);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Framebuffer block copy: RE_BLOCKCOPY's own execute-form token header
+ * (class 0x1c reg 0x045) declares a six-word payload (0x18 bytes) instead
+ * of the usual zero -- si_draw_block_copy's own header comment gives the
+ * evidence and the bounded scope (a plain in-buffer rectangle copy, source
+ * origin from the payload's own first word). Spreading the header and its
+ * six payload words across four separate 64-bit MMIO stores exercises the
+ * actual structural fix this pass makes: a recognized header's own
+ * declared payload persists across MMIO accesses rather than being
+ * misparsed as fresh headers (see the header comment on
+ * SI_CMD_HDR_CLASS_STATE, hw/misc/sgi-mgras.c).
+ */
+static void test_re_blockcopy_execute(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+
+    /* Source: a 2x2 block at (10,10)-(11,11). */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00654321));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (10u << 16) | 10u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (11u << 16) | 11u));
+    g_assert_cmphex(si_test_pixel(qts, 10, 10), ==, 0x00654321);
+
+    /* Destination: a same-size 2x2 block elsewhere, still untouched. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (50u << 16) | 50u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (51u << 16) | 51u));
+    g_assert_cmphex(si_test_pixel(qts, 50, 50), ==, 0);
+
+    /* The execute header alone, no payload yet: not dispatched. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_EXEC_TOKEN(REG_RE_BLOCKCOPY, 0x18));
+    g_assert_cmphex(si_test_pixel(qts, 50, 50), ==, 0);
+    /* Payload words 0 and 1, in a separate store: word 0, the source
+     * origin, is this device's own evidenced field. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)((10u << 16) | 10u) << 32) | 0);
+    g_assert_cmphex(si_test_pixel(qts, 50, 50), ==, 0);
+    /* Payload words 2 and 3, in yet another store. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, 0);
+    g_assert_cmphex(si_test_pixel(qts, 50, 50), ==, 0);
+    /* Payload words 4 and 5 complete the header's own declared payload
+     * and dispatch the copy. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    g_assert_cmphex(si_test_pixel(qts, 50, 50), ==, 0x00654321);
+    g_assert_cmphex(si_test_pixel(qts, 51, 51), ==, 0x00654321);
+    /* Outside the destination rectangle stays untouched. */
+    g_assert_cmphex(si_test_pixel(qts, 52, 52), ==, 0);
+
+    qtest_quit(qts);
+}
+
 static void test_migration(void)
 {
     g_autofree char *tmpfs = NULL;
@@ -1947,6 +2193,19 @@ int main(int argc, char **argv)
                    test_command_accepts_hq_config_words);
     qtest_add_func("sn0/origin2000/mgras/context-write-after-completion",
                    test_context_write_accepted_after_completion);
+    qtest_add_func("sn0/origin2000/mgras/command-fifo-state-write-headers",
+                   test_command_fifo_state_write_headers);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "command-fifo-state-write-headers-not-yet-consumed",
+                   test_command_fifo_state_write_headers_not_yet_consumed);
+    qtest_add_func("sn0/origin2000/mgras/re-point-execute",
+                   test_re_point_execute);
+    qtest_add_func("sn0/origin2000/mgras/re-line-execute",
+                   test_re_line_execute);
+    qtest_add_func("sn0/origin2000/mgras/re-char-h-execute",
+                   test_re_char_h_execute);
+    qtest_add_func("sn0/origin2000/mgras/re-blockcopy-execute",
+                   test_re_blockcopy_execute);
     qtest_add_func("sn0/origin2000/mgras/migration", test_migration);
 
     return g_test_run();

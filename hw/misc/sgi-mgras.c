@@ -122,6 +122,90 @@
 #define SI_HQ_FLAG_FENCE 0x00010000
 
 /*
+ * Two more header classes in the same command-FIFO token-stream grammar as
+ * the fence header above: class 0x18 a state write, class 0x1c the
+ * matching execute-form trigger for the same register -- a second, generic
+ * on-the-wire encoding for the same persistent register file
+ * (SGIMgrasState.rss) the direct-command 64-bit record shape above already
+ * addresses by register number, not a separate register space. A header
+ * token only has 8 free bits next to its own class byte, but reg is 9
+ * bits, so reg's own bit 8 is folded into the class byte's bit 0: 0x18 and
+ * 0x19 are the same state-write class (reg < 0x100 vs. reg >= 0x100), and
+ * 0x1c/0x1d are the same execute class the same way. Confirmed by
+ * reconstructing the header for each of this device's own evidenced
+ * registers below -- 0x00185f04 for ALPHA (reg 0x05f), 0x00184604 for
+ * BLOCKXYSTARTI (reg 0x046), and so on -- each one only lands on its
+ * claimed register when the class byte's low bit is folded into the
+ * register field rather than kept as part of the class.
+ *
+ * Disassembling the shipped 2D driver (impactsr.so) and the retained
+ * kernel driver's own object together against this project's already-
+ * public register names (OpenBSD's impactreg.h) settled which header
+ * classes and registers a real desktop session actually uses. The eight
+ * highest-traffic state-write registers by that census are ALPHA (0x05f),
+ * BLOCKXYSTARTI (0x046, already named below), DRBPOINTERS (0x16d),
+ * COLORMASKMSBS (0x162, already named), COLORMASKLSBSA (0x163),
+ * PACKEDCOLOR (0x05b, already named), PP1FILLMODE (0x161, already named)
+ * and GLINE_XSTARTF (0x00c). A recognized state-write header always
+ * declares one 32-bit payload word in this census (payload_bytes 0x04 in
+ * every header above); this device stores that word into rss[reg] the
+ * same way the direct-record grammar's own state writes do (si_rss_write),
+ * so either wire encoding feeds the same persistent state the execute
+ * registers below read. Any other reg under these two classes -- roughly
+ * three dozen more by the same census, none of them consumed by an
+ * execute implementation yet -- is still stored the same generic way
+ * rather than left unhandled, without needing its own named macro.
+ *
+ * The matching execute class (0x1c/0x1d) is this device's real "go do it"
+ * trigger for drawing operations -- see si_command_fifo_dispatch and the
+ * si_draw_* functions below. BLOCKXYENDI (0x047), CHAR_L (0x071) and
+ * BKGRD_BA (0x141) already trigger through the direct-record grammar
+ * above; this device also reaches RE_POINT (0x040), RE_LINE (0x041),
+ * RE_BLOCKCOPY (0x045) and CHAR_H (0x070, si_command_execute's own case)
+ * through this header class, so a guest that issues either wire encoding
+ * for the same register reaches the same drawing code.
+ *
+ * A header's own declared payload can span the boundary between two
+ * separate 64-bit MMIO stores to this offset, or trail a header that
+ * itself arrived in the low half of one store, with its payload starting
+ * in the high half of the next -- si_command_fifo_token below tracks this
+ * with a persistent word counter (SGIMgrasState.cmd_token_*) rather than
+ * the old per-call decode, which could not represent "still waiting for a
+ * payload word from a previous MMIO access" at all. This tracking is
+ * scoped to the two classes above, the only ones this device interprets a
+ * payload for: applying it to every header, including ones this device
+ * does not recognize, would misparse real traffic this device already
+ * handles correctly. The fence sequence's own second push (SI_FENCE_PUSH_2
+ * in the qtest) carries an unrecognized word, 0xb1, in its high half,
+ * immediately followed by the fence header itself in the low half of the
+ * very same store; read as a header, 0xb1's own low byte (also 0xb1)
+ * would declare a payload_bytes field that is not even a whole number of
+ * 32-bit words, and honoring it would swallow the fence header that
+ * follows as bogus payload data instead of dispatching it. This device's
+ * own existing "don't guess a payload obligation for traffic it doesn't
+ * understand" treatment already avoided that; this change only extends
+ * real payload tracking to the classes this device newly interprets, not
+ * to unrecognized traffic in general.
+ *
+ * This tracking only covers 64-bit (8-byte) MMIO stores to this offset --
+ * si_command, the only caller -- since that is where every evidenced
+ * header/payload token exchange in this device's own census arrives (the
+ * public contract's own words, "then 64-bit command words"). A 4-byte
+ * store to this same offset takes a completely separate path,
+ * si_context_write, whose own protocol-word handling (0xf200/0xf400/
+ * 0xfa00-shaped words MgrasStart and MgrasCtxsw submit after the context
+ * switch completes) is untouched by this change and keeps working exactly
+ * as before -- deliberately: those 4-byte writes are evidenced elsewhere
+ * in this same file to carry no real command-FIFO header content (the
+ * fence sequence's own first push, header 0x00080b04, declares payload
+ * that arrives this way and is accepted as opaque, never actually
+ * consumed), so folding them into this parser would only add risk without
+ * an evidenced payoff.
+ */
+#define SI_CMD_HDR_CLASS_STATE 0x0018
+#define SI_CMD_HDR_CLASS_EXEC 0x001c
+
+/*
  * Register roles this interpreter actually consumes, named from OpenBSD's
  * impactreg.h and X.Org's impact_regs.h (both public, in refs/). Every
  * other register index is still stored in the persistent file above; only
@@ -136,6 +220,26 @@
 #define SI_REG_BKGRD_BA 0x141
 #define SI_REG_PP1FILLMODE 0x161
 #define SI_REG_COLORMASKMSBS 0x162
+
+/*
+ * RE execute registers this device newly implements, reached through the
+ * command-FIFO token-header grammar above (see si_command_fifo_dispatch);
+ * named the same way as the roles above.
+ */
+#define SI_REG_RE_POINT 0x040
+#define SI_REG_RE_LINE 0x041
+#define SI_REG_RE_BLOCKCOPY 0x045
+
+/*
+ * State-write registers named for the census above but not yet consumed
+ * by any execute implementation -- stored generically in the same
+ * persistent register file (rss[]) so a later pass can wire them up
+ * without another register-file redesign.
+ */
+#define SI_REG_ALPHA 0x05f
+#define SI_REG_COLORMASKLSBSA 0x163
+#define SI_REG_GLINE_XSTARTF 0x00c
+#define SI_REG_DRBPOINTERS 0x16d
 
 /* Where the Hub's interrupt-modify register sits; data bit 8 selects raise. */
 #define SI_HUB_INT_MODIFY_SET 0x100
@@ -544,23 +648,160 @@ static void si_draw_pio_pixel_pair(SGIMgrasState *s)
 }
 
 /*
+ * Single-pixel plot, triggered by RE_POINT's own execute-form header
+ * (class 0x1c reg 0x040): paints one pixel at BLOCKXYSTARTI in the
+ * current colour/logic-op/mask, the same persistent state the fill/line/
+ * glyph primitives above already read. This device's own evidence trail
+ * names this trigger's public role as mgrasSetPltParam/nfbPolyPoint,
+ * which names a multi-point path; nothing evidenced settles how a point
+ * list or count would reach this device (no register in this device's own
+ * census carries one), so this is a bounded single-point approximation,
+ * not a claim that real hardware never plots more than one point per
+ * trigger.
+ */
+static void si_draw_point(SGIMgrasState *s)
+{
+    uint32_t xy0 = s->rss[SI_REG_BLOCKXYSTARTI];
+    uint32_t color = s->rss[SI_REG_PACKEDCOLOR] & 0x00ffffff;
+    uint32_t mask = s->rss[SI_REG_COLORMASKMSBS];
+    uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 28;
+    int x = (xy0 >> 16) & 0xffff, y = xy0 & 0xffff;
+    uint32_t *p;
+
+    if (x >= SGI_MGRAS_WIDTH || y >= SGI_MGRAS_HEIGHT) {
+        return;
+    }
+    p = &s->front[y * SGI_MGRAS_WIDTH + x];
+    *p = si_paint_pixel(op, *p, color, mask);
+}
+
+/*
+ * Line/segment draw, triggered by RE_LINE's own execute-form header
+ * (class 0x1c reg 0x041): a Bresenham line from BLOCKXYSTARTI to
+ * BLOCKXYENDI in the current colour/logic-op/mask, the same registers
+ * si_draw_fill already reads. Real ImpactSR hardware almost certainly
+ * rasterizes with its own (DDA-style) stepping and endpoint/antialiasing
+ * rules; Bresenham is this device's own bounded choice for "a correct,
+ * visible line between the two named endpoints," not a claim about the
+ * exact pixels real hardware would set.
+ */
+static void si_draw_line(SGIMgrasState *s)
+{
+    uint32_t xy0 = s->rss[SI_REG_BLOCKXYSTARTI];
+    uint32_t xy1 = s->rss[SI_REG_BLOCKXYENDI];
+    uint32_t color = s->rss[SI_REG_PACKEDCOLOR] & 0x00ffffff;
+    uint32_t mask = s->rss[SI_REG_COLORMASKMSBS];
+    uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 28;
+    int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
+    int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
+    int dx = (x1 > x0) ? (x1 - x0) : (x0 - x1);
+    int dy = (y1 > y0) ? (y1 - y0) : (y0 - y1);
+    int sx = (x0 < x1) ? 1 : -1;
+    int sy = (y0 < y1) ? 1 : -1;
+    int err = dx - dy;
+
+    for (;;) {
+        if (x0 < SGI_MGRAS_WIDTH && y0 < SGI_MGRAS_HEIGHT) {
+            uint32_t *p = &s->front[y0 * SGI_MGRAS_WIDTH + x0];
+            *p = si_paint_pixel(op, *p, color, mask);
+        }
+        if (x0 == x1 && y0 == y1) {
+            break;
+        }
+        int e2 = 2 * err;
+        if (e2 > -dy) {
+            err -= dy;
+            x0 += sx;
+        }
+        if (e2 < dx) {
+            err += dx;
+            y0 += sy;
+        }
+    }
+}
+
+/*
+ * Framebuffer block copy, triggered by RE_BLOCKCOPY's own execute-form
+ * header (class 0x1c reg 0x045): this device's own evidence trail names
+ * it as the trigger for copy/readpixels/writeFBSubBlock-class operations
+ * and gives it a six-word payload (header payload_bytes 0x18, "IR_ALIAS"
+ * per that trail) instead of the usual zero. The destination rectangle is
+ * the same persistent BLOCKXYSTARTI/BLOCKXYENDI state every other
+ * primitive here reads; the source origin is this header's own first
+ * payload word, packed x<<16|y the same way every other block coordinate
+ * on this device already is. What the other five payload words carry --
+ * direction, plane selection, read-vs-write mode -- is not settled by
+ * this device's own evidence, so si_command_fifo_token still consumes
+ * them to keep the token stream in sync but this function does not
+ * interpret them: a plain in-buffer rectangle copy (GXcopy, no mask) is
+ * this device's own bounded approximation of "the one operation the
+ * driver is known to trigger this register for," not a confirmed wire
+ * contract -- framebuffer-to-framebuffer copy was previously deferred
+ * pending exactly this evidence (design doc, "Framebuffer-to-framebuffer
+ * copy... deferred pending a live trace of its exact register grammar").
+ * Source and destination share one buffer, so overlapping rectangles copy
+ * in whichever row order keeps a row's source data from being overwritten
+ * before it is read.
+ */
+static void si_draw_block_copy(SGIMgrasState *s, const uint32_t *payload,
+                               uint32_t payload_words)
+{
+    uint32_t xy0 = s->rss[SI_REG_BLOCKXYSTARTI];
+    uint32_t xy1 = s->rss[SI_REG_BLOCKXYENDI];
+    int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
+    int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
+    int sx0, sy0, w, h;
+    bool copy_backward;
+
+    if (payload_words < 1 || x0 > x1 || y0 > y1 ||
+        x0 >= SGI_MGRAS_WIDTH || y0 >= SGI_MGRAS_HEIGHT) {
+        return;
+    }
+    x1 = MIN(x1, SGI_MGRAS_WIDTH - 1);
+    y1 = MIN(y1, SGI_MGRAS_HEIGHT - 1);
+    sx0 = (payload[0] >> 16) & 0xffff;
+    sy0 = payload[0] & 0xffff;
+    if (sx0 >= SGI_MGRAS_WIDTH || sy0 >= SGI_MGRAS_HEIGHT) {
+        return;
+    }
+    w = MIN(x1 - x0 + 1, SGI_MGRAS_WIDTH - sx0);
+    h = MIN(y1 - y0 + 1, SGI_MGRAS_HEIGHT - sy0);
+    copy_backward = (y0 > sy0) || (y0 == sy0 && x0 > sx0);
+
+    for (int row = 0; row < h; row++) {
+        int r = copy_backward ? (h - 1 - row) : row;
+        uint32_t *dst_row = &s->front[(y0 + r) * SGI_MGRAS_WIDTH + x0];
+        uint32_t *src_row = &s->front[(sy0 + r) * SGI_MGRAS_WIDTH + sx0];
+
+        memmove(dst_row, src_row, (size_t)w * sizeof(uint32_t));
+    }
+}
+
+/*
  * Anything an execute record triggers that this bounded interpreter does
- * not implement -- framebuffer-to-framebuffer copy (explicitly deferred,
- * design doc headline 3: "pending a live trace of its exact register
- * grammar") and whatever else a live trace eventually surfaces. Logged and
- * left alone rather than raised through si_error: an error interrupt on
- * every unimplemented primitive would take a real guest's X server down
- * before anything is visible, defeating this phase's purpose (design doc,
- * "Design highlights not already in the design doc" in the evidence
- * trail).
+ * not implement -- whatever a live trace eventually surfaces beyond the
+ * registers named above. Logged and left alone rather than raised through
+ * si_error: an error interrupt on every unimplemented primitive would take
+ * a real guest's X server down before anything is visible, defeating this
+ * phase's purpose (design doc, "Design highlights not already in the
+ * design doc" in the evidence trail).
  */
 static void si_command_execute(SGIMgrasState *s, uint32_t reg)
 {
     switch (reg) {
+    case SI_REG_RE_POINT:
+        si_draw_point(s);
+        s->dirty = true;
+        return;
+    case SI_REG_RE_LINE:
+        si_draw_line(s);
+        s->dirty = true;
+        return;
     case SI_REG_BLOCKXYENDI:
         si_draw_fill(s);
         s->dirty = true;
         return;
+    case SI_REG_CHAR_H:
     case SI_REG_CHAR_L:
         si_draw_glyph_row(s);
         s->dirty = true;
@@ -577,35 +818,110 @@ static void si_command_execute(SGIMgrasState *s, uint32_t reg)
 }
 
 /*
- * One command-FIFO token header reaching 0x120400 outside the direct-
- * command state/execute shape -- see this file's header comment on
- * SI_CMD_FIFO_FENCE_CLASS. The only header either the DDX or the kernel
- * object is evidenced to need a side effect from is the CopyPixels/
- * DrawPixels fence itself; everything else this interpreter doesn't
- * recognize is logged and left alone, the same "accept, don't invent
- * meaning" treatment this device gives other undocumented traffic.
- *
- * This does not track a payload obligation across separate MMIO writes: an
- * unrecognized header's own payload_bytes field is reported in the log but
- * not used to skip words, since nothing evidenced says what an unrecognized
- * header's payload actually contains, and guessing wrong would risk
- * silently discarding a later word this interpreter does understand (the
- * fence sequence's own first push, header 0x00080b04, declares one 32-bit
- * word of payload that arrives -- per the live trace -- as a separate,
- * earlier 4-byte write through si_context_write's own opaque post-
- * completion path, not through this function at all).
+ * Shared state-write path for the persistent direct-command register file
+ * (SGIMgrasState.rss), used by both the 64-bit direct-record grammar
+ * (si_command) and the command-FIFO token-header grammar
+ * (si_command_fifo_dispatch) below -- the two are alternate wire encodings
+ * for the same register space (see the header comment on
+ * SI_CMD_HDR_CLASS_STATE), so either one has to reset this device's own
+ * glyph-row/PIO write cursor on a new block rectangle, not just whichever
+ * grammar happened to be implemented first.
+ */
+static void si_rss_write(SGIMgrasState *s, uint32_t reg, uint32_t value)
+{
+    s->rss[reg] = value;
+    if (reg == SI_REG_BLOCKXYSTARTI) {
+        /* A new block rectangle restarts this device's own glyph-row/PIO
+         * write cursor; see si_draw_glyph_row and si_draw_pio_pixel_pair. */
+        s->glyph_row = 0;
+        s->pio_x = s->pio_y = 0;
+    }
+}
+
+/*
+ * Dispatches a command-FIFO token header once si_command_fifo_token below
+ * has collected all of its declared payload (immediately, for the common
+ * zero-payload case). A state write stores its one payload word into the
+ * persistent register file the same way the direct-record grammar's own
+ * state writes do; an execute trigger reuses si_command_execute for every
+ * register that grammar already implements, and handles RE_BLOCKCOPY
+ * (0x045) separately since it is the one execute register this device's
+ * own evidence gives its own payload (see si_draw_block_copy).
+ */
+static void si_command_fifo_dispatch(SGIMgrasState *s)
+{
+    uint32_t reg = s->cmd_token_reg;
+
+    if (s->cmd_token_class == SI_CMD_HDR_CLASS_STATE) {
+        if (s->cmd_token_payload_count >= 1) {
+            si_rss_write(s, reg, s->cmd_token_payload[0]);
+        } else {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: state-write command-FIFO "
+                          "header, register 0x%03x with no payload word\n",
+                          reg);
+        }
+        return;
+    }
+    /* SI_CMD_HDR_CLASS_EXEC */
+    if (reg == SI_REG_RE_BLOCKCOPY) {
+        si_draw_block_copy(s, s->cmd_token_payload, s->cmd_token_payload_count);
+        s->dirty = true;
+        return;
+    }
+    si_command_execute(s, reg);
+}
+
+/*
+ * One command-FIFO token header or payload word reaching 0x120400 outside
+ * the direct-command state/execute shape -- see this file's header
+ * comment on SI_CMD_FIFO_FENCE_CLASS for the fence header and on
+ * SI_CMD_HDR_CLASS_STATE for the state-write/execute classes and the
+ * persistent payload-word tracking below. Everything else this
+ * interpreter doesn't recognize is logged and left alone, the same
+ * "accept, don't invent meaning" treatment this device gives other
+ * undocumented traffic -- and, as before this device tracked any payload
+ * at all, an unrecognized header's own payload_bytes field is reported in
+ * the log but not used to skip words, since nothing evidenced says what
+ * an unrecognized header's payload actually contains (see the header
+ * comment on SI_CMD_HDR_CLASS_STATE for why guessing wrong here would be
+ * dangerous, not just imprecise).
  */
 static void si_command_fifo_token(SGIMgrasState *s, uint32_t token)
 {
-    uint32_t cmd_class = token >> 16;
-    uint32_t reg = (token >> 8) & 0xff;
-    uint32_t payload_bytes = token & 0xff;
+    uint32_t cmd_class, reg, payload_bytes, true_class;
+
+    if (s->cmd_token_words_remaining > 0) {
+        if (s->cmd_token_payload_count < SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS) {
+            s->cmd_token_payload[s->cmd_token_payload_count++] = token;
+        }
+        if (--s->cmd_token_words_remaining == 0) {
+            si_command_fifo_dispatch(s);
+        }
+        return;
+    }
+
+    cmd_class = token >> 16;
+    reg = (token >> 8) & 0xff;
+    payload_bytes = token & 0xff;
 
     if (cmd_class == SI_CMD_FIFO_FENCE_CLASS && reg == SI_CMD_FIFO_FENCE_REG &&
         payload_bytes == 0) {
         s->hq_flags |= SI_HQ_FLAG_FENCE;
         return;
     }
+
+    true_class = cmd_class & ~1u;
+    if (true_class == SI_CMD_HDR_CLASS_STATE || true_class == SI_CMD_HDR_CLASS_EXEC) {
+        s->cmd_token_class = true_class;
+        s->cmd_token_reg = ((cmd_class & 1) << 8) | reg;
+        s->cmd_token_payload_count = 0;
+        s->cmd_token_words_remaining = payload_bytes / 4;
+        if (s->cmd_token_words_remaining == 0) {
+            si_command_fifo_dispatch(s);
+        }
+        return;
+    }
+
     qemu_log_mask(LOG_UNIMP, "sgi-mgras: unimplemented command-FIFO token, "
                   "class 0x%04x reg 0x%02x payload %u bytes\n", cmd_class,
                   reg, payload_bytes);
@@ -615,32 +931,35 @@ static void si_command(SGIMgrasState *s, uint64_t word)
 {
     uint32_t selector = (word >> 34) & 0xffffff;
     uint32_t value = word;
-    bool state = (selector & SI_CMD_SELECTOR_MASK) == SI_CMD_SELECTOR_STATE;
-    bool exec = (selector & SI_CMD_SELECTOR_MASK) == SI_CMD_SELECTOR_EXEC;
     uint32_t reg;
 
-    if (!state && !exec) {
+    if (s->cmd_token_words_remaining == 0) {
         /*
-         * Not a direct-command state/execute record; see this file's
-         * header comment on SI_CMD_SELECTOR_MASK. Still carries ordinary
-         * command-FIFO token traffic, two headers, high word first -- see
-         * si_command_fifo_token.
+         * Only tried where the command-FIFO token stream is between
+         * tokens: the direct-record shape occupies a full 64-bit store, so
+         * it cannot start mid-payload for a header parsed from an earlier
+         * store (see the header comment on SI_CMD_HDR_CLASS_STATE).
          */
-        si_command_fifo_token(s, (uint32_t)(word >> 32));
-        si_command_fifo_token(s, (uint32_t)word);
-        return;
+        bool state = (selector & SI_CMD_SELECTOR_MASK) == SI_CMD_SELECTOR_STATE;
+        bool exec = (selector & SI_CMD_SELECTOR_MASK) == SI_CMD_SELECTOR_EXEC;
+
+        if (state || exec) {
+            reg = (selector >> 6) & 0x1ff;
+            si_rss_write(s, reg, value);
+            if (exec) {
+                si_command_execute(s, reg);
+            }
+            return;
+        }
     }
-    reg = (selector >> 6) & 0x1ff;
-    s->rss[reg] = value;
-    if (reg == SI_REG_BLOCKXYSTARTI) {
-        /* A new block rectangle restarts this device's own glyph-row/PIO
-         * write cursor; see si_draw_glyph_row and si_draw_pio_pixel_pair. */
-        s->glyph_row = 0;
-        s->pio_x = s->pio_y = 0;
-    }
-    if (exec) {
-        si_command_execute(s, reg);
-    }
+    /*
+     * Not a direct-command state/execute record (or this device is still
+     * mid-payload for a command-FIFO header parsed from an earlier store).
+     * Either way, ordinary command-FIFO token-stream traffic: two 32-bit
+     * tokens, high word first -- see si_command_fifo_token.
+     */
+    si_command_fifo_token(s, (uint32_t)(word >> 32));
+    si_command_fifo_token(s, (uint32_t)word);
 }
 
 /*
@@ -1270,7 +1589,6 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
             value;
         return;
     }
-    if (addr == 0x120400 && size == 8) { si_command(s, value); return; }
     if (addr == SGI_MGRAS_GE_CTRL_A) {
         si_ge_control_write(s, SGI_MGRAS_GE_SLOT_A, value);
         return;
@@ -1344,6 +1662,9 @@ static void si_reset(DeviceState *dev)
     s->rss[SI_REG_PP1FILLMODE] = 0x3 << 28;
     s->rss[SI_REG_COLORMASKMSBS] = 0xffffffff;
     s->glyph_row = s->pio_x = s->pio_y = 0;
+    s->cmd_token_class = s->cmd_token_reg = 0;
+    s->cmd_token_words_remaining = s->cmd_token_payload_count = 0;
+    memset(s->cmd_token_payload, 0, sizeof(s->cmd_token_payload));
     memset(s->vc3_reg, 0, sizeof(s->vc3_reg));
     memset(s->vc3_sram, 0, sizeof(s->vc3_sram));
     s->vc3_index = 0; s->vc3_ram_addr = 0;
@@ -1589,6 +1910,12 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32(glyph_row, SGIMgrasState),
         VMSTATE_UINT32(pio_x, SGIMgrasState),
         VMSTATE_UINT32(pio_y, SGIMgrasState),
+        VMSTATE_UINT32(cmd_token_class, SGIMgrasState),
+        VMSTATE_UINT32(cmd_token_reg, SGIMgrasState),
+        VMSTATE_UINT32(cmd_token_words_remaining, SGIMgrasState),
+        VMSTATE_UINT32_ARRAY(cmd_token_payload, SGIMgrasState,
+                             SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS),
+        VMSTATE_UINT32(cmd_token_payload_count, SGIMgrasState),
         VMSTATE_UINT16_ARRAY(vc3_reg, SGIMgrasState, 32),
         VMSTATE_UINT8(vc3_index, SGIMgrasState),
         VMSTATE_UINT16(vc3_ram_addr, SGIMgrasState),

@@ -484,6 +484,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
 #define SGI_MGRAS_RETRACE_STATUS_2 0x020044
 #define SGI_MGRAS_RETRACE_ACK 0x020028
 
+/*
+ * Six words is the largest payload this device recognizes on any
+ * command-FIFO token header (RE_BLOCKCOPY's own six-word payload,
+ * sgi-mgras.c's header comment on SI_CMD_HDR_CLASS_STATE); sized with a
+ * little headroom rather than exactly six.
+ */
+#define SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS 8
+
 struct SGIMgrasState {
     SysBusDevice parent_obj;
     MemoryRegion regs;
@@ -604,6 +612,24 @@ struct SGIMgrasState {
     uint32_t glyph_row;
     uint32_t pio_x;
     uint32_t pio_y;
+    /*
+     * Command-FIFO token-stream parser state (si_command_fifo_token,
+     * sgi-mgras.c), persisted across separate 64-bit MMIO stores to
+     * 0x120400 rather than kept as local decode state: a recognized
+     * header's own declared payload can trail into a later store, so the
+     * parser needs to remember it is still mid-payload between si_write
+     * calls. cmd_token_class/cmd_token_reg identify the header this
+     * payload belongs to; cmd_token_payload holds what has arrived so far
+     * (extra words beyond SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS are still
+     * consumed to keep the stream in sync, just not stored). See the
+     * header comment on SI_CMD_HDR_CLASS_STATE for which headers this
+     * applies to and why it is scoped that way.
+     */
+    uint32_t cmd_token_class;
+    uint32_t cmd_token_reg;
+    uint32_t cmd_token_words_remaining;
+    uint32_t cmd_token_payload[SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS];
+    uint32_t cmd_token_payload_count;
     uint64_t retraces;
     uint32_t xmap_mode;
     uint16_t vc3_reg[32];
