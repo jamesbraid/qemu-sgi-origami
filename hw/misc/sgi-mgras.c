@@ -45,6 +45,22 @@
  * retained disk's rebuilt kernel settled the real per-role vector table at
  * SGI_MGRAS_HQ_VECTORS (see that header comment); si_update_irq below now
  * delivers this role through its own vector there instead.
+ *
+ * A third gap surfaced once gfxinit's GE microcode download started
+ * succeeding and driver code reached MgrasCtxsw for real (docs/plans/
+ * si-graphics-widget-wiring-handoff-20260916.md, "gfxinit clears GE
+ * download live, then MgrasCtxsw timeout"): this bit's own clear, via
+ * SGI_MGRAS_HQ_ENABLE_CLEAR (0x011058, mgras_hq4_lowater_intr's own
+ * disarm write), left SI_PENDING_LOWATER stuck set -- only a full device
+ * reset ever cleared it. The first arm/deliver/disarm cycle worked, but a
+ * second arming (MgrasFlushHQ3 arms this bit on every ordinary FIFO wait,
+ * not just a timeout) found the pending bit already set from the first
+ * delivery, so si_update_irq's transition detector never saw a fresh
+ * edge and never sent a second packet -- the driver's 15-second FIFO
+ * watchdog then expired unopposed, alongside the already-armed
+ * context-switch watchdog. The 0x011058 write case now clears this
+ * pending bit on the same transition it already detects for
+ * SI_HQ_ENABLE_LOWATER, making the role re-triggerable.
  */
 #define SI_PENDING_LOWATER 0x00000004
 #define SI_HQ_ENABLE_LOWATER 0x10
@@ -953,10 +969,29 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
      * This offset also serves as the kernel HQ driver's own enable-clear
      * register later in the boot (SGI_MGRAS_HQ_ENABLE's header comment);
      * both effects apply to the same write.
+     *
+     * Root-caused live (docs/plans/si-graphics-widget-wiring-handoff-
+     * 20260916.md, "gfxinit clears GE download live, then MgrasCtxsw
+     * timeout"): mgras_hq4_lowater_intr is the only handler that ever
+     * clears SI_HQ_ENABLE_LOWATER back out here, but this device never
+     * cleared SI_PENDING_LOWATER to match -- only a full reset did. The
+     * first arm/deliver cycle worked, but the second (MgrasFlushHQ3 arms
+     * this bit routinely, not just on a timeout) found the pending bit
+     * already stuck set from the first delivery, so si_update_irq's own
+     * transition detector never saw a fresh low->high edge and never sent
+     * a second packet; the driver's 15-second FIFO watchdog then ran
+     * unopposed. Clearing the pending bit on the same 1->0 transition this
+     * register already detects for SI_HQ_ENABLE_LOWATER makes the role
+     * re-triggerable, matching the datasheet's 0x011050 row: only the
+     * low-water handler clears the bit.
      */
     case SGI_MGRAS_BRINGUP_ARG_3:
         s->bringup_arg_3 = value;
+        if ((value & s->hq_enable) & SI_HQ_ENABLE_LOWATER) {
+            s->pending &= ~SI_PENDING_LOWATER;
+        }
         s->hq_enable &= ~(uint32_t)value;
+        si_update_irq(s);
         return;
     case SGI_MGRAS_VC3_ARG: s->vc3_arg = value; return;
     case SGI_MGRAS_RE_ARG: s->re_arg = value; return;
