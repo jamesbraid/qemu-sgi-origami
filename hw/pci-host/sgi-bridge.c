@@ -635,8 +635,10 @@ static uint64_t sgi_bridge_window_read(SGIBridgeState *s, unsigned int slot,
     return sgi_bridge_window_read_word(base, correct, space, addr, size);
 }
 
-/* One window write cycle of up to four bytes, the counterpart of
- * sgi_bridge_window_read_word. */
+/*
+ * One window write cycle of up to four bytes, the counterpart of
+ * sgi_bridge_window_read_word.
+ */
 static void sgi_bridge_window_write_word(hwaddr base, bool correct,
                                          AddressSpace *space, hwaddr addr,
                                          uint64_t val, unsigned int size)

@@ -30,7 +30,8 @@ import time
 
 from qemu_test import QemuSystemTest
 
-from lib_matrix import AttemptResult, MatrixError, matrix_rows, qemu_args, verdict
+from lib_matrix import (AttemptResult, MatrixError, matrix_rows, qemu_args,
+                        verdict)
 from lib_graphics_matrix import (SCENARIOS, disk_rel, peek_row, parse_row)
 from lib_input import run_script
 from lib_prom import FIRMWARE_REL, drive_console, resolve_asset
