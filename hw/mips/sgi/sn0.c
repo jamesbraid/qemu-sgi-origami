@@ -54,6 +54,14 @@
 /* MIPS CPU input 0 is IP0. Hardware interrupt inputs begin at IP2. */
 #define SN0_MIPS_HARDWARE_IRQ_OFFSET 2
 
+/* The Hub's three CPU interrupt inputs: hardwired, not configuration. */
+#define SN0_HUB_CPU_IRQ_BANK0 0
+#define SN0_HUB_CPU_IRQ_BANK1 1
+#define SN0_HUB_CPU_IRQ_RT    2
+
+/* Every node carries two processor-interface slots. */
+#define SN0_HUB_CPU_SLOTS_PER_NODE 2
+
 const SN0FlashImplementation sn0_flash = {
     .sector_size = 0x10000,
     .width = 1,
@@ -62,6 +70,64 @@ const SN0FlashImplementation sn0_flash = {
     .manufacturer_id = 0x01,
     .device_id = 0xd5,
     .unlock_address = { 0x5555, 0x2aaa },
+};
+
+/* The Hub's flash controller offers this view whenever the board wires it. */
+static const SN0ModelRegion sn0_hub_lboot = {
+    .offset = 0x10000000ULL,
+    .size = 0x10000000ULL,
+};
+
+/* The Hub's physical address map: identical on every SN0 node measured. */
+const SN0ModelAddressMap sn0_hub_address_map = {
+    .node_stride = 0x100000000ULL,
+    .memory = {
+        .selector = 3,
+        .carrier_base = 0x0ULL,
+        .unmapped_base = 0x9600000000000000ULL,
+    },
+    .hub_special = {
+        .selector = 0,
+        .carrier_base = 0x10000000000ULL,
+        .unmapped_base = 0x9000000000000000ULL,
+    },
+    .xtalk = {
+        .selector = 1,
+        .carrier_base = 0x20000000000ULL,
+        .unmapped_base = 0x9200000000000000ULL,
+    },
+    .memory_special = {
+        .selector = 2,
+        .carrier_base = 0x30000000000ULL,
+        .unmapped_base = 0x9400000000000000ULL,
+    },
+    .node_memory = { .offset = 0x0ULL, .size = 0x100000000ULL },
+    .hub_registers_local = { .offset = 0x1000000ULL, .size = 0x800000ULL },
+    .hub_registers_node = { .offset = 0x1800000ULL, .size = 0x800000ULL },
+    .hub_local_memory = { .offset = 0x0ULL, .size = 0x10000000ULL },
+    .hub_remote_memory = { .offset = 0x20000000ULL, .size = 0x10000000ULL },
+    .backdoor_ecc = { .offset = 0x80000000ULL, .size = 0x40000000ULL },
+    .backdoor_directory = { .offset = 0xc0000000ULL, .size = 0x40000000ULL },
+    .flash_reset = { .offset = 0x1fc00000ULL, .size = 0x100000ULL },
+    .lboot = &sn0_hub_lboot,
+    .rboot = { .offset = 0x30000000ULL, .size = 0x10000000ULL },
+    .bridge_registers = { .offset = 0x8000000ULL, .size = 0x1000000ULL },
+};
+
+/* The Hub's memory-bank geometry: also identical across every SN0 node. */
+static const uint64_t sn0_hub_memory_sizes_mib[] = {
+    0x200ULL, 0x100ULL, 0x80ULL, 0x40ULL,
+};
+
+const SN0ModelMemory sn0_hub_memory = {
+    .physical_banks = 4,
+    .architectural_banks = 8,
+    .supported_mib = sn0_hub_memory_sizes_mib,
+    .supported_size_count = ARRAY_SIZE(sn0_hub_memory_sizes_mib),
+    .first_bank_max_mib = 0x100ULL,
+    .bank_stride_mib = 0x200ULL,
+    .interleave_slot_stride_mib = 0x80ULL,
+    .interleave_slots_per_bank = 4,
 };
 
 /* Generic consumers for a node's address map, shared by every SN0 product. */
@@ -499,25 +565,25 @@ static void sn0_backdoor_configure(SN0BackdoorState *s, SN0NodeState *node,
     }
 }
 
-static const SN0ModelAddressMap *sn0_node_address_map(SN0NodeState *node)
+static const SN0ModelAddressMap *sn0_node_address_map(void)
 {
-    return &node->physical->map;
+    return &sn0_hub_address_map;
 }
 
-static const SN0ModelMemory *sn0_node_memory_geometry(SN0NodeState *node)
+static const SN0ModelMemory *sn0_node_memory_geometry(void)
 {
-    return &node->hardware->memory;
+    return &sn0_hub_memory;
 }
 
-static unsigned int sn0_node_cpu_slots(SN0NodeState *node)
+static unsigned int sn0_node_cpu_slots(void)
 {
-    return node->hardware->cpu_slots_per_node;
+    return SN0_HUB_CPU_SLOTS_PER_NODE;
 }
 
 static void sn0_node_create_cpus(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
-    const SN0ModelAddressMap *map = sn0_node_address_map(node);
+    const SN0ModelAddressMap *map = sn0_node_address_map();
     const SN0ModelAddressSpace *spaces[SN0_MAX_ADDRESS_SPACES] = {
         &map->memory,
         &map->hub_special,
@@ -671,8 +737,8 @@ static void sn0_node_create_cpus(SN0NodeState *node)
 static void sn0_node_map_memory(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
-    const SN0ModelAddressMap *map = sn0_node_address_map(node);
-    const SN0ModelMemory *geometry = sn0_node_memory_geometry(node);
+    const SN0ModelAddressMap *map = sn0_node_address_map();
+    const SN0ModelMemory *geometry = sn0_node_memory_geometry();
     const SN0ModelRegion *local_memory = &map->hub_local_memory;
     const SN0ModelRegion *remote_memory = &map->hub_remote_memory;
     hwaddr node_base = sn0_model_node_address(
@@ -758,7 +824,7 @@ static void sn0_node_map_memory(SN0NodeState *node)
 
 static void sn0_node_map_boot_storage(SN0NodeState *node)
 {
-    const SN0ModelAddressMap *map = sn0_node_address_map(node);
+    const SN0ModelAddressMap *map = sn0_node_address_map();
     const SN0ModelRegion *lboot = map->lboot;
     const SN0FlashImplementation *implementation = &sn0_flash;
     MemoryRegion *system = get_system_memory();
@@ -766,7 +832,7 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
     const SN0ModelRegion *flash_rboot = &map->rboot;
     const SN0ModelRegion *ecc = &map->backdoor_ecc;
     const SN0ModelRegion *directory = &map->backdoor_directory;
-    const SN0ModelMemory *geometry = sn0_node_memory_geometry(node);
+    const SN0ModelMemory *geometry = sn0_node_memory_geometry();
     hwaddr node_base = sn0_model_node_address(
         map, &map->memory, node->nasid, 0);
     hwaddr hub_base = sn0_model_node_address(
@@ -890,8 +956,8 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
 
 static void sn0_node_create_hub(SN0NodeState *node)
 {
-    const SN0ModelComponent *hub = node->physical->hub;
-    const SN0ModelAddressMap *map = sn0_node_address_map(node);
+    const SGIModelAsicIdentity *identity = &node->model_node->identity;
+    const SN0ModelAddressMap *map = sn0_node_address_map();
     unsigned int node_index = node->nasid;
     g_autofree char *xtalk_name =
         g_strdup_printf("sn0.node%u.xtalk", node_index);
@@ -919,29 +985,31 @@ static void sn0_node_create_hub(SN0NodeState *node)
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpus", node->nr_cpus);
     qdev_prop_set_uint32(DEVICE(&node->hub), "cpu-base", node->cpu_base);
     qdev_prop_set_uint32(DEVICE(&node->hub), "physical-slot",
-                        node->physical->slot);
+                        node->model_node->slot);
     qdev_prop_set_bit(DEVICE(&node->hub), "slave-module", node->slave_role);
-    qdev_prop_set_uint8(DEVICE(&node->hub), "ni-revision", hub->ni_revision);
+    qdev_prop_set_uint8(DEVICE(&node->hub), "ni-revision",
+                        identity->ni_revision);
     qdev_prop_set_uint8(DEVICE(&node->hub), "widget-revision",
-                        hub->widget_revision);
+                        identity->widget_revision);
     /*
      * Each PIMM record part gets its own synthetic serial: per-unit as the
      * hub one-wire datasheet's contract requires, never a real machine's.
      */
-    qdev_prop_set_uint64(DEVICE(&node->hub), "onewire-serial", hub->serial);
+    qdev_prop_set_uint64(DEVICE(&node->hub), "onewire-serial",
+                         identity->serial);
     qdev_prop_set_uint32(
         DEVICE(&node->hub), "population",
-        (hub->i2c_controller ?
+        (identity->i2c_controller ?
          SGI_HUB_POPULATION_I2C_CONTROLLER : 0) |
-        (hub->system_controller ? SGI_HUB_POPULATION_ELSC : 0));
+        (identity->system_controller ? SGI_HUB_POPULATION_ELSC : 0));
     qdev_prop_set_uint32(DEVICE(&node->hub), "i2c-nvram-pages",
-                         hub->i2c_nvram_pages);
+                         identity->i2c_nvram_pages);
     qdev_prop_set_uint64(DEVICE(&node->hub), "i2c-controller-offset",
-                         hub->i2c_controller_offset);
+                         node->model_node->management_adapter_offset);
     qdev_prop_set_uint8(DEVICE(&node->hub), "i2c-elsc-addr",
-                        hub->i2c_elsc_addr);
+                        identity->i2c_elsc_addr);
     qdev_prop_set_uint8(DEVICE(&node->hub), "i2c-nvram-first-addr",
-                        hub->i2c_nvram_first_addr);
+                        identity->i2c_nvram_first_addr);
     qdev_prop_set_uint8(DEVICE(&node->hub), "onewire-kind",
                         SGI_HUB_ONEWIRE_BLANK_DS2505);
     qdev_prop_set_uint32(DEVICE(&node->hub), "xtalk-widget-shift",
@@ -998,15 +1066,15 @@ static void sn0_node_create_hub(SN0NodeState *node)
         cpu = node->cpu[slice];
         qdev_connect_gpio_out_named(
             DEVICE(&node->hub), "bank0", slice,
-            cpu->env.irq[hub->cpu_irq_bank0 +
+            cpu->env.irq[SN0_HUB_CPU_IRQ_BANK0 +
                          SN0_MIPS_HARDWARE_IRQ_OFFSET]);
         qdev_connect_gpio_out_named(
             DEVICE(&node->hub), "bank1", slice,
-            cpu->env.irq[hub->cpu_irq_bank1 +
+            cpu->env.irq[SN0_HUB_CPU_IRQ_BANK1 +
                          SN0_MIPS_HARDWARE_IRQ_OFFSET]);
         qdev_connect_gpio_out_named(
             DEVICE(&node->hub), "rt", slice,
-            cpu->env.irq[hub->cpu_irq_rt +
+            cpu->env.irq[SN0_HUB_CPU_IRQ_RT +
                          SN0_MIPS_HARDWARE_IRQ_OFFSET]);
     }
 }
@@ -1014,7 +1082,7 @@ static void sn0_node_create_hub(SN0NodeState *node)
 static void sn0_node_map_xtalk_windows(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
-    const SN0ModelAddressMap *map = sn0_node_address_map(node);
+    const SN0ModelAddressMap *map = sn0_node_address_map();
     const SN0ModelAddressSpace *xtalk = &map->xtalk;
     const SN0ModelRegion *hub_explicit = &map->hub_registers_node;
     const SN0ModelRegion *hub_local = &map->hub_registers_local;
@@ -1071,8 +1139,7 @@ void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
     *route_out = big_window_route;
     for (source = 0; source < num_nodes; source++) {
         SN0NodeState *source_node = nodes[source];
-        const SN0ModelAddressMap *map =
-            sn0_node_address_map(source_node);
+        const SN0ModelAddressMap *map = sn0_node_address_map();
 
         for (slice = 0; slice < source_node->nr_cpus; slice++) {
             unsigned int base =
@@ -1157,7 +1224,7 @@ bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
                            unsigned int discovery_widget, unsigned int widget,
                            uint32_t decoded_widget_mask, Error **errp)
 {
-    const SN0ModelAddressMap *map = sn0_node_address_map(node);
+    const SN0ModelAddressMap *map = sn0_node_address_map();
     const SGIBaseioPresetIdentity *identity = sgi_baseio_preset_lookup("ip29");
     DeviceState *bridge, *baseio;
     PCIBus *bus;
@@ -1226,17 +1293,16 @@ static void sn0_node_realize(DeviceState *dev, Error **errp)
     SN0NodeState *node = SN0_NODE(dev);
     unsigned int bank;
 
-    g_assert(node->physical && node->hardware);
-    if (node->nr_cpus < 1 ||
-        node->nr_cpus > sn0_node_cpu_slots(node)) {
+    g_assert(node->model_node);
+    if (node->nr_cpus < 1 || node->nr_cpus > sn0_node_cpu_slots()) {
         error_setg(errp, "a node carries one to %u processors, not %u",
-                   sn0_node_cpu_slots(node), node->nr_cpus);
+                   sn0_node_cpu_slots(), node->nr_cpus);
         return;
     }
     if (node->nr_banks_mb < 1 ||
-        node->nr_banks_mb > sn0_node_memory_geometry(node)->physical_banks) {
+        node->nr_banks_mb > sn0_node_memory_geometry()->physical_banks) {
         error_setg(errp, "a node fills one to %u memory banks, not %u",
-                   sn0_node_memory_geometry(node)->physical_banks,
+                   sn0_node_memory_geometry()->physical_banks,
                    node->nr_banks_mb);
         return;
     }
