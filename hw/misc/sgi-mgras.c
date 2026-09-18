@@ -774,8 +774,27 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
      * status fix above. Reporting the bit set on the healthy path is the
      * same "immediate readiness, no modelled delay" approximation already
      * used for bit 0x2 above.
+     *
+     * CONTRACT CHANGE, needs independent review: this register used to
+     * report s->error (folded into bit 31) instead of its own healthy
+     * bits whenever this device's sticky error flag was set, from any
+     * cause anywhere on the device -- not just a genuine FIFO-related
+     * fault. Root-caused live as part of the SGI_MGRAS_SCHED_ARG_4
+     * (0x040070) investigation (docs/plans/si-graphics-widget-wiring-
+     * handoff-20260916.md, "gfxinit clears GE download live, then
+     * MgrasCtxsw timeout"): an unrelated unsupported access anywhere on
+     * this device silently made every later, unrelated poll of this
+     * register report "FIFO busy" until something explicitly acknowledged
+     * the error via 0x011048. This device already has an independent,
+     * dedicated way to surface "an error occurred" -- the sticky error
+     * flag drives its own pending source (SI_PENDING_ERROR) and widget-
+     * error interrupt delivery (si_error, si_deliver_widget_error) --
+     * so overloading this status register's own healthy bits with it was
+     * never necessary and actively broke every unrelated consumer.
+     * Reporting the healthy bits unconditionally here does not change
+     * whether an error is reported at all, only where.
      */
-    case 0x020000: return s->error ? 0x80000000 : 0x12;
+    case 0x020000: return 0x12;
     /*
      * MgrasReset writes zero here before polling it, live-traced once the
      * DAC load above stopped blocking that far: with no write case, the
