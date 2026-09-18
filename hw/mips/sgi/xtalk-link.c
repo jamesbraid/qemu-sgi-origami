@@ -553,3 +553,19 @@ bool sgi_xtalk_crossbow_link_finish(SGIXtalkCrossbowLink *link, Object *owner,
     }
     return true;
 }
+
+/* ---- The XBridge link ---- */
+
+bool sgi_xtalk_xbridge_link_connect(Object *bedrock_port, DeviceState *xbridge,
+                                    Error **errp)
+{
+    MemoryRegion *packet_face = sgi_xtalk_port_packet_face(bedrock_port, 0);
+
+    if (!packet_face) {
+        error_setg(errp, "an XBridge link's Bedrock port must already "
+                   "answer an initialized packet face");
+        return false;
+    }
+    return object_property_set_link(OBJECT(xbridge), "fabric",
+                                    OBJECT(packet_face), errp);
+}
