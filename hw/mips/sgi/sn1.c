@@ -36,10 +36,33 @@ static void origin300_class_init(ObjectClass *oc, const void *data)
     mc->default_ram_id = "sn1.ram";
 }
 
+/*
+ * A bare -M origin300 needs sockets and cores preset before QEMU's own
+ * -smp completion runs, the same reason origin2000_instance_init exists
+ * in sn-machine.c: nothing else sets machine->smp.sockets before a
+ * launch with no -smp at all reaches sgi_machine_realize's "topology is
+ * one node, one socket" check, and leaving that to QEMU's own default
+ * completion is an accident this makes explicit instead. The shipped
+ * Origin 300 is one chassis, one node, carrying its default population
+ * as that node's cores.
+ */
+static void origin300_instance_init(Object *obj)
+{
+    MachineState *machine = MACHINE(obj);
+    const SGIModelTopology *t = sgi_model_find_topology("origin300");
+
+    g_assert(t);
+    g_assert(!t->nodes->next);
+    machine->smp.sockets = 1;
+    machine->smp.cores = sgi_machine_topology_default_cpus(t);
+    machine->smp.threads = 1;
+}
+
 static const TypeInfo origin300_machine_type = {
-    .name       = MACHINE_TYPE_NAME("origin300"),
-    .parent     = TYPE_SGI_SN_MACHINE,
-    .class_init = origin300_class_init,
+    .name          = MACHINE_TYPE_NAME("origin300"),
+    .parent        = TYPE_SGI_SN_MACHINE,
+    .instance_init = origin300_instance_init,
+    .class_init    = origin300_class_init,
 };
 
 static void origin300_machine_register_types(void)
