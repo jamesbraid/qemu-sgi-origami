@@ -760,11 +760,20 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     object_property_add_child(OBJECT(node), "bedrock", OBJECT(node->bedrock));
     qdev_prop_set_uint32(node->bedrock, "processor-count", node->nr_cpus);
     qdev_prop_set_uint32(node->bedrock, "processor-mask",
-                        sn1_cpu_population_mask(node->model_node));
-    /* Initial C grant is a model approximation. Silicon reset is unknown. */
-    if (node->nr_cpus == 2 &&
-        sn1_cpu_population_mask(node->model_node) == 0x5) {
-        qdev_prop_set_uint32(node->bedrock, "cpu-enable-initial-mask", 0x4);
+                        sn1_cpu_population_mask(node->model_node,
+                                               node->nr_cpus));
+    /*
+     * Initial C grant is a model approximation; silicon reset is
+     * unknown. Generalized from the two-processor case rather than
+     * given a new rule for four: whichever physical slot the second
+     * realized processor occupies gets the initial grant, for any
+     * population with more than one processor. Population order keeps
+     * C there (sn1_cpu_slot's own comment) whether this run realizes
+     * two processors or four.
+     */
+    if (node->nr_cpus > 1) {
+        qdev_prop_set_uint32(node->bedrock, "cpu-enable-initial-mask",
+                            1U << sn1_cpu_slot(node->model_node, 1));
     }
     qdev_prop_set_uint8(node->bedrock, "revision", SN1_BEDROCK_REVISION);
     qdev_prop_set_uint8(node->bedrock, "local-region",
@@ -909,43 +918,64 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     memory_region_add_subregion(&node->hub_local_registers,
                                 SN1_HUB_REGISTER_UART_END,
                                 &node->hub_local_register_tail);
-    /* OpenBSD expects local PI accesses to select the requester's interface. */
-    if (node->nr_cpus > 1 && sn1_cpu_slot(node->model_node, 1) == 2) {
-        SGIBedrockState *bedrock_state = SGI_BEDROCK(node->bedrock);
-        MemoryRegion *pi1 = sysbus_mmio_get_region(
-            SYS_BUS_DEVICE(&bedrock_state->pi[1]), 0);
+    /*
+     * OpenBSD expects local PI accesses to select the requester's
+     * interface. Every realized processor whose physical slot sits on
+     * processor interface 1 needs its own PI1 overlay, not only a
+     * logical CPU 1 sitting there: the two-processor population fits
+     * one (C, at logical index 1 in population order -- sn1_cpu_slot's
+     * own comment), the four-processor population fits two (C and D,
+     * logical indices 1 and 3).
+     */
+    for (cpu = 0; cpu < node->nr_cpus; cpu++) {
+        unsigned physical = sn1_cpu_slot(node->model_node, cpu);
+        SGIBedrockState *bedrock_state;
+        MemoryRegion *pi1;
 
-        memory_region_init_alias(&node->cpu_c_local_pi_xtalk, OBJECT(node),
-                                 "sn1.cpu-c.local-pi-xtalk", pi1, 0,
-                                 SGI_BEDROCK_PI_SIZE);
-        memory_region_add_subregion_overlap(&node->cpu_sysmem[1],
-                                            SN1_BEDROCK_LOCAL_ADDRESS,
-                                            &node->cpu_c_local_pi_xtalk, 1);
         /*
-         * CPU C's own local-window PI1 overlay is split the same way as
-         * the machine-wide window above, but leaves the 0x80-0xbf gap
-         * between its head and tail unclaimed instead of overlaying its
-         * own UART alias there: with nothing at priority 1 over that one
-         * range, CPU C's access falls through to the lower-priority
-         * system alias underneath, which reaches the same machine-wide
-         * container and its UART region above, the same as every other
-         * processor.
+         * Bedrock's two processor interfaces split the physical slot
+         * numbering into two halves of SGI_BEDROCK_PROCESSORS / 2 each
+         * (sgi-bedrock.c's own (mask >> (2 * i)) & 3 unpacking uses the
+         * same split); interface 0's slots need no overlay; the
+         * machine-wide PI0 window below already serves them.
          */
-        memory_region_init_alias(&node->cpu_c_local_pi_hub_head, OBJECT(node),
-                                 "sn1.cpu-c.local-pi-hub-head", pi1, 0,
-                                 SN1_HUB_REGISTER_HEAD_SIZE);
-        memory_region_add_subregion_overlap(&node->cpu_sysmem[1],
-                                            SN1_HUB_LOCAL_REGISTERS_ADDRESS,
-                                            &node->cpu_c_local_pi_hub_head, 1);
-        memory_region_init_alias(&node->cpu_c_local_pi_hub_tail, OBJECT(node),
-                                 "sn1.cpu-c.local-pi-hub-tail", pi1,
-                                 SN1_HUB_REGISTER_UART_END,
+        if (physical < SGI_BEDROCK_PROCESSORS / 2) {
+            continue;
+        }
+        bedrock_state = SGI_BEDROCK(node->bedrock);
+        pi1 = sysbus_mmio_get_region(SYS_BUS_DEVICE(&bedrock_state->pi[1]), 0);
+
+        memory_region_init_alias(&node->cpu_local_pi_xtalk[cpu], OBJECT(node),
+                                 "sn1.cpu.local-pi-xtalk", pi1, 0,
+                                 SGI_BEDROCK_PI_SIZE);
+        memory_region_add_subregion_overlap(&node->cpu_sysmem[cpu],
+                                            SN1_BEDROCK_LOCAL_ADDRESS,
+                                            &node->cpu_local_pi_xtalk[cpu], 1);
+        /*
+         * This processor's own local-window PI1 overlay is split the
+         * same way as the machine-wide window above, but leaves the
+         * 0x80-0xbf gap between its head and tail unclaimed instead of
+         * overlaying its own UART alias there: with nothing at
+         * priority 1 over that one range, its access falls through to
+         * the lower-priority system alias underneath, which reaches
+         * the same machine-wide container and its UART region above,
+         * the same as every other processor.
+         */
+        memory_region_init_alias(&node->cpu_local_pi_hub_head[cpu],
+                                 OBJECT(node), "sn1.cpu.local-pi-hub-head",
+                                 pi1, 0, SN1_HUB_REGISTER_HEAD_SIZE);
+        memory_region_add_subregion_overlap(
+            &node->cpu_sysmem[cpu], SN1_HUB_LOCAL_REGISTERS_ADDRESS,
+            &node->cpu_local_pi_hub_head[cpu], 1);
+        memory_region_init_alias(&node->cpu_local_pi_hub_tail[cpu],
+                                 OBJECT(node), "sn1.cpu.local-pi-hub-tail",
+                                 pi1, SN1_HUB_REGISTER_UART_END,
                                  SGI_BEDROCK_PI_SIZE -
                                  SN1_HUB_REGISTER_UART_END);
         memory_region_add_subregion_overlap(
-            &node->cpu_sysmem[1],
+            &node->cpu_sysmem[cpu],
             SN1_HUB_LOCAL_REGISTERS_ADDRESS + SN1_HUB_REGISTER_UART_END,
-            &node->cpu_c_local_pi_hub_tail, 1);
+            &node->cpu_local_pi_hub_tail[cpu], 1);
     }
     memory_region_add_subregion(system, SN1_HUB_REMOTE_REGISTERS_ADDRESS,
                                 sysbus_mmio_get_region(bedrock, 3));

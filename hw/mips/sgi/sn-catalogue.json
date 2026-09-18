@@ -623,6 +623,129 @@
       ],
       "synthesized-firmware-toggle": false,
       "topology": "origin300"
+    },
+    {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        4
+      ],
+      "default-cpu-model": "R14000",
+      "dimms-per-node": [
+        2
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Origin 300",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "identity-inputs": [
+        "chassis-eeprom",
+        "board-eeprom",
+        "spd-eeprom",
+        "brick-serial",
+        "l1-debug-switches"
+      ],
+      "install-media": [
+        "disk-image",
+        "netboot"
+      ],
+      "memory-per-node-mib": {
+        "accepted": [
+          512
+        ],
+        "default": 512
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "ioc3-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "kind": "ioc3-ethernet"
+        }
+      ],
+      "nodes": 1,
+      "processor": {
+        "cache-mib": 2,
+        "clock-hz": 500000000,
+        "part": "R14000"
+      },
+      "product": "origin300",
+      "prom-dialogue": "ip35-l1-prompt",
+      "resources": [
+        {
+          "argument": "-drive if=mtd,index=N",
+          "count": 1,
+          "kind": "nvram",
+          "scope": "board",
+          "size": 32768
+        },
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 1,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        },
+        {
+          "argument": "chassis-eeprom.N=",
+          "count": 2,
+          "kind": "identity-eeprom",
+          "scope": "board"
+        },
+        {
+          "argument": "board-eeprom.N=",
+          "count": 2,
+          "kind": "identity-eeprom",
+          "scope": "board"
+        },
+        {
+          "argument": "spd-eeprom.N=",
+          "count": 2,
+          "kind": "spd-eeprom",
+          "scope": "dimm"
+        }
+      ],
+      "smp": 4,
+      "storage": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
+      "supported-guests": [
+        "irix"
+      ],
+      "synthesized-firmware-toggle": false,
+      "topology": "origin300"
     }
   ],
   "schema": "sgi-sn-catalogue",
@@ -1500,6 +1623,16 @@
               "slot": 0
             },
             {
+              "assembly": {
+                "cache-clock-hz": 250000000,
+                "cache-mib": 2,
+                "clock-hz": 500000000,
+                "fpu-prid": 0,
+                "id": "r14000-500mhz",
+                "kind": "R14000",
+                "mode-bits": 10135941,
+                "prid": 3876
+              },
               "interface": 0,
               "slot": 1
             },
@@ -1518,6 +1651,16 @@
               "slot": 0
             },
             {
+              "assembly": {
+                "cache-clock-hz": 250000000,
+                "cache-mib": 2,
+                "clock-hz": 500000000,
+                "fpu-prid": 0,
+                "id": "r14000-500mhz",
+                "kind": "R14000",
+                "mode-bits": 10135941,
+                "prid": 3876
+              },
               "interface": 1,
               "slot": 1
             }
@@ -1545,6 +1688,11 @@
         {
           "cpus-per-node": [
             2
+          ]
+        },
+        {
+          "cpus-per-node": [
+            4
           ]
         }
       ],
