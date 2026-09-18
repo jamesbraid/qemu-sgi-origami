@@ -977,6 +977,27 @@ static void test_origin300_cpu_c_initial_enable(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The four-processor population fits both slots of processor interface 1,
+ * and both come out of reset granted. The stock PROM never writes either
+ * CPU-enable register of that interface (hw/mips/sgi/sn1-node.c states what
+ * it does write), so a slot the model leaves clear there is a slot the
+ * firmware reports as having failed its early initialisation.
+ */
+static void test_origin300_four_cpu_initial_enable(const void *data)
+{
+    QTestState *qts = machine_start_bare("-cpu R14000 -smp 4");
+
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_A), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + BEDROCK_PI1 +
+                                PI_CPU_ENABLE_A), ==, 1);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + BEDROCK_PI1 +
+                                PI_CPU_ENABLE_B), ==, 1);
+
+    qtest_quit(qts);
+}
+
 static void test_hub_local_reaches_bedrock(const void *data)
 {
     QTestState *qts = machine_start();
@@ -3882,6 +3903,8 @@ int main(int argc, char **argv)
                         test_bedrock_register_aliases);
     qtest_add_data_func("sn1/address-map/origin300-cpu-c-initial-enable", NULL,
                         test_origin300_cpu_c_initial_enable);
+    qtest_add_data_func("sn1/address-map/origin300-four-cpu-initial-enable",
+                        NULL, test_origin300_four_cpu_initial_enable);
     qtest_add_data_func("sn1/address-map/hub-local-reaches-bedrock", NULL,
                         test_hub_local_reaches_bedrock);
     qtest_add_data_func("sn1/address-map/hub-remote-reaches-bedrock-tail", NULL,
