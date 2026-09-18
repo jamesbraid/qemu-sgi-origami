@@ -777,89 +777,6 @@ DeviceState *sgi_machine_build_bedrock_io_board(
 }
 
 /*
- * Origin 2000's PROM PI-error probe, through the node's crosstalk
- * container at a fixed widget-2 offset: a zero-length read latches the
- * PI error the same way Origin 200's direct-link probe does (hw/mips/
- * sgi/xtalk-link.c); other accesses cross the node's own crosstalk
- * address space.
- */
-#define ORIGIN2000_HUB_IO_BUS_ERROR 0x02400208
-#define ORIGIN2000_HUB_IO_BUS_ERROR_WIDGET 2
-#define ORIGIN2000_HUB_IO_BUS_ERROR_XTALK \
-    (SN0_XTALK_BASE(ORIGIN2000_HUB_IO_BUS_ERROR_WIDGET) + \
-     ORIGIN2000_HUB_IO_BUS_ERROR - \
-     SN0_SMALL_WINDOW(ORIGIN2000_HUB_IO_BUS_ERROR_WIDGET))
-
-static MemTxResult origin2000_bus_error_read(void *opaque, hwaddr addr,
-                                             uint64_t *data, unsigned size,
-                                             MemTxAttrs attrs)
-{
-    SN0NodeState *node = opaque;
-    uint8_t bytes[8] = {};
-    MemTxResult result;
-
-    if (addr == 0 && size == 8) {
-        *data = 0;
-        sgi_hub_latch_prom_pi_error(&node->hub);
-        return MEMTX_ERROR;
-    }
-    result = address_space_read(&node->origin2000_xtalk_as,
-                                ORIGIN2000_HUB_IO_BUS_ERROR_XTALK + addr,
-                                attrs, bytes, size);
-    *data = ldn_be_p(bytes, size);
-    return result;
-}
-
-static MemTxResult origin2000_bus_error_write(void *opaque, hwaddr addr,
-                                              uint64_t data, unsigned size,
-                                              MemTxAttrs attrs)
-{
-    SN0NodeState *node = opaque;
-    uint8_t bytes[8];
-
-    stn_be_p(bytes, size, data);
-    return address_space_write(&node->origin2000_xtalk_as,
-                               ORIGIN2000_HUB_IO_BUS_ERROR_XTALK + addr,
-                               attrs, bytes, size);
-}
-
-static const MemoryRegionOps origin2000_bus_error_ops = {
-    .read_with_attrs = origin2000_bus_error_read,
-    .write_with_attrs = origin2000_bus_error_write,
-    .endianness = DEVICE_BIG_ENDIAN,
-    .valid.min_access_size = 1,
-    .valid.max_access_size = 8,
-    .valid.unaligned = true,
-    .impl.min_access_size = 1,
-    .impl.max_access_size = 8,
-    .impl.unaligned = true,
-};
-
-static void origin2000_install_bus_error_aperture(SN0NodeState *node)
-{
-    const SN0ModelAddressSpace *xtalk = &node->physical->map.xtalk;
-    g_autofree char *name = g_strdup_printf(
-        "sn0.node%u.origin2000-xtalk", node->nasid);
-    unsigned int slice;
-
-    address_space_init(&node->origin2000_xtalk_as, &node->xtalk, name);
-    node->origin2000_xtalk_as_ready = true;
-
-    for (slice = 0; slice < node->nr_cpus; slice++) {
-        g_autofree char *region_name = g_strdup_printf(
-            "sn0.node%u.cpu%u.hub-io-bus-error", node->nasid, slice);
-
-        memory_region_init_io(&node->origin2000_bus_error[slice],
-                              OBJECT(node), &origin2000_bus_error_ops, node,
-                              region_name, 8);
-        memory_region_add_subregion_overlap(
-            &node->cpu_sysmem[slice],
-            xtalk->carrier_base + ORIGIN2000_HUB_IO_BUS_ERROR,
-            &node->origin2000_bus_error[slice], 1);
-    }
-}
-
-/*
  * The console node's IOC3 port A is serial line 0; other nodes follow
  * in index order from line 6.
  */
@@ -1923,9 +1840,6 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         unsigned int slice;
 
         sysbus_realize(SYS_BUS_DEVICE(node), &error_fatal);
-        if (t->crossbar_count) {
-            origin2000_install_bus_error_aperture(node);
-        }
         for (slice = 0; slice < requested[node_index]; slice++) {
             machine->possible_cpus->cpus[cpu_index++].cpu =
                 CPU(node->cpu[slice]);

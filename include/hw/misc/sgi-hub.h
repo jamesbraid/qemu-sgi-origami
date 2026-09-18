@@ -151,6 +151,17 @@ struct SGIHubState {
     MemoryRegion *xtalk_io;
     uint32_t xtalk_widget_shift;
 
+    /*
+     * Origin 2000's PROM PI-error probe, installed only when xtalk_io
+     * connects this Hub to a Crossbow link: each processor's own physical
+     * view (the machine's to define, one per populated slice) and the
+     * carrier base this node's crosstalk space sits at within it.
+     */
+    MemoryRegion *cpu_sysmem[SGI_HUB_PROCESSORS];
+    uint64_t xtalk_carrier_base;
+    AddressSpace origin2000_xtalk_as;
+    MemoryRegion origin2000_bus_error[SGI_HUB_PROCESSORS];
+
     /* The engines' view of the fabric: the device claim view, as a space. */
     AddressSpace bte_as;
 
