@@ -1411,7 +1411,8 @@ static void l1_request(SGIL1State *s)
 static void l1_parse(SGIL1State *s, uint8_t byte)
 {
     if (byte == 0x7e) {
-        if (s->in_frame && !s->overflow && !s->escape && s->frame_len >= 5) {
+        /* A header and its check: the PROM's one-character echo is four. */
+        if (s->in_frame && !s->overflow && !s->escape && s->frame_len >= 3) {
             uint16_t crc = 0xffff;
             for (unsigned i = 0; i < s->frame_len; i++) {
                 crc = l1_fcs(crc, s->frame[i]);
