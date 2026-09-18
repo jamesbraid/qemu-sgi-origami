@@ -25,6 +25,14 @@ compiled catalogue: a list of ``SGIModelTopology`` entries
 (``qapi/sgi-sn.json``, embedded into the emulator and parsed at first
 use by ``hw/mips/sgi/sn-catalogue.c``) naming every node, module,
 fabric link, I/O board and controller a product's configuration ships.
+The same compiled document backs the ``query-sgi-sn-catalogue`` QMP command
+(``SGIModelCatalogue`` in ``qapi/sgi-sn.json``): the emulator returns its own
+embedded copy verbatim, so a package build can read the catalogue back from
+the binary it ships instead of carrying a second copy out of band. The
+catalogue carries two sections; only ``topologies`` reaches this builder.
+``offerings``, one entry per accepted population a launcher may select, is
+for Origami's own launch harness and the packaged ``sgi`` command, never
+read here.
 Three products stand on this base today:
 ``origin200`` and ``origin2000`` (SN0), and ``origin300`` (SN1).
 ``origin300``'s own product class (``hw/mips/sgi/sn1.c``) parents
@@ -67,7 +75,7 @@ topologies today:
    * - ``origin300`` (default)
      - ``origin300``
      - 1
-     - 2 (fixed)
+     - 2 or 4
      - 512 MiB (fixed)
 
 ``-M origin200,topology=origin200-dual`` selects the second row; naming
@@ -176,52 +184,66 @@ per file for its L1 to serve.
 Board devices
 =============
 
-``sgi-xtalk-board`` (``hw/mips/sgi/xtalk-board.c``) is the abstract
-base for a crosstalk board: the removable unit that plugs into one of
-a module's XIO slots. Every concrete board takes a ``module`` and a
-``slot`` (the crosstalk widget number the module's Crossbow assigns
-that position); realizing one builds its own widget-facing device,
-then re-parents the board under ``/machine/module<N>`` so ``info
-qom-tree`` shows it where the hardware puts it. Four concrete classes
-exist:
+Base I/O -- the IOC3 plus one or two SCSI controllers, and on the IO-8 a USB
+controller, behind a crosstalk-to-PCI bridge -- is one device, ``sgi-baseio``
+(``hw/mips/sgi/baseio.c``), with a preset per shipped board design rather
+than a separate class each: ``ip29`` (the Origin 200 System Board's onboard
+I/O, on the node's own Bridge), ``baseio`` (the Origin 2000/Onyx2 standard
+XIO board, behind a Crossbow), and ``io8`` (the Origin 300 IO-8 assembly's
+PCI population -- a QLogic ISP12160, an IOC3 and a Lucent OHCI controller --
+placed on the SN1 node's own XBridge head F). A preset name that matches
+none of the three is refused outright. IP29's onboard I/O is soldered to the
+System Board rather than plugged into a slot, so the Origin 200 node builds
+its ``ip29`` instance directly on its own crosstalk port, with no board
+wrapper; the Origin 300 node's ``io8`` instance is placed the same way,
+directly on its XBridge head, not through a board class.
 
-* ``sgi-ip29-io`` -- the Origin 200 System Board's onboard I/O (a
-  Bridge with two ISP1040 SCSI controllers and one IOC3).
-* ``sgi-baseio`` -- the Origin 2000 and Onyx2 standard XIO I/O board
-  (the same Bridge/SCSI/IOC3 shape as ``sgi-ip29-io``, wired for a
-  module's Crossbow instead of a direct link).
-* ``sgi-io8`` -- the Origin 300 IO-8 assembly (an XBridge with a
-  QLogic ISP12160, an IOC3 and a Lucent OHCI controller on one head).
-* ``sgi-pci-expansion`` -- a plain Bridge with an empty, named PCI
-  bus, for an Origin 2000 module's optional XIO PCI expansion slot.
+``sgi-xio-board`` (``hw/mips/sgi/xio-board.c``, renamed from
+``sgi-xtalk-board`` once its only onboard-only subclasses stopped existing)
+is the abstract base for a removable crosstalk board: the unit that plugs
+into one of a module's XIO slots. Every concrete board takes a ``module``
+and a ``slot`` (the crosstalk widget number the module's Crossbow assigns
+that position); realizing one builds its own widget-facing device, then
+re-parents the board under ``/machine/module<N>`` so ``info qom-tree`` shows
+it where the hardware puts it. Two concrete classes exist. ``sgi-xio-baseio``
+(``hw/mips/sgi/xio-baseio.c``) is the Origin 2000/Onyx2 BaseIO card: a
+removable carrier with its own Bridge and an internal ``sgi-baseio`` behind
+it running the ``baseio`` preset; the family builder creates one directly
+for every Crossbow-attached I/O board a topology places, since it is the
+only removable board any shipping product uses today. ``sgi-pci-expansion``
+(``hw/mips/sgi/board-pci-expansion.c``) is a plain Bridge with an empty,
+named PCI bus, for an Origin 2000 module's optional XIO PCI expansion slot;
+no reviewed source gives it a fixed device population or a real board part
+number.
 
-The first three are onboard-only (``user_creatable`` is off: a real
-system never lets a user plug one into that slot). The shared builder
-(``sgi_machine_io_board_type()``) picks the concrete class from the
-descriptor's own ``board_kind`` field and builds it for every product;
-``sgi-pci-expansion`` is the one ``-device``-creatable board:
+Neither concrete class is ``-device``-creatable yet (``user_creatable`` is
+off on both, and on the abstract base): reaching one from the command line
+needs a machine-owned spare fabric proxy per Crossbow, built at the same
+machine-done point the builder's own boards attach through, which does not
+exist yet. Until it does, ``sgi-pci-expansion`` is reachable only by a
+qtest-only fixture machine, not by any product.
 
-.. code-block:: shell
+A board realizes once machine init has returned, but a Crossbow needs every
+one of its endpoints attached before its own realize builds the routes
+between them, so a board's realize only validates its properties, builds its
+widget and registers itself as pending; a machine that owns a module's
+Crossbow creates it unrealized, builds every board its topology places
+directly, then attaches every pending board for that Crossbow and module
+from a machine-init-done notifier before realizing the Crossbow itself.
+``origin2000`` follows this ordering for its own two Crossbows;
+``origin200`` and ``origin300`` have no Crossbow -- each places its one Base
+I/O instance directly on its node's crosstalk port, as above -- so both
+build it synchronously instead and never reach the machine-init-done
+notifier.
 
-   -device sgi-pci-expansion,module=1,slot=8,fabric=<path>[,...]
-
-A board realizes once machine init has returned, but a Crossbow needs
-every one of its endpoints attached before its own realize builds the
-routes between them, so a board's realize only validates its
-properties, builds its widget and registers itself as pending; a
-machine that owns a module's Crossbow creates it unrealized, builds
-every board its topology places directly, then attaches every pending
-board for that Crossbow and module from a machine-init-done notifier
-before realizing the Crossbow itself. ``origin2000`` follows this
-ordering for its own two Crossbows; ``origin200`` has no Crossbow (its
-one ``sgi-ip29-io`` attaches directly to its node's crosstalk port),
-and neither does ``origin300`` (its one ``sgi-io8`` is the fused
-XBridge chip itself, sitting directly on Bedrock's crosstalk port), so
-both build their one board synchronously instead and never reach the
-machine-init-done notifier. ``sgi-pci-expansion`` has no module or
-Crossbow on any shipping machine to attach to today; the ordering
-contract above is otherwise exercised only by a qtest-only fixture
-machine, not by a product.
+A crosstalk port is a QOM interface every attachable endpoint implements --
+a Hub's or Bedrock's I/O port, each Crossbow port, an XBridge head, and a
+board's own widget (``include/hw/mips/sgi-xtalk-port.h``). A link object
+connects two ports and owns whatever that link kind needs
+(``hw/mips/sgi/xtalk-link.c``): the direct link between a Hub and a Bridge
+answers the Bridge's whole face at every widget the Hub decodes; the link
+into a Crossbow port carries packets instead. Ports connect before either
+side realizes.
 
 Devices
 =======
