@@ -384,7 +384,7 @@ static void test_origin2000_probe_is_local_to_issuing_hub(const void *data)
     }
 
     qts = qtest_initf(
-        "-M origin2000 -smp 8,sockets=4,cores=2 -m 256M "
+        "-M origin2000 -smp 8 -m 256M "
         "-drive if=pflash,index=0,file=%s,format=raw "
         "-drive if=pflash,index=1,file=%s,format=raw "
         "-drive if=pflash,index=2,file=%s,format=raw "

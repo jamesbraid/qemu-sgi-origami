@@ -21,7 +21,7 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 
-#define ORIGIN2000_MACHINE "-M origin2000 -smp 8,sockets=4,cores=2"
+#define ORIGIN2000_MACHINE "-M origin2000 -smp 8"
 
 /* Position-independent crosstalk space and the per-widget small window. */
 #define XTALK_BASE UINT64_C(0x20000000000)

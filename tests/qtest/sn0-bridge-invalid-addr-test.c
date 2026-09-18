@@ -46,7 +46,7 @@
  */
 #define MACHINE_TWO_NODE \
     "-M origin200,topology=origin200-dual -m 128M " \
-    "-smp 4,sockets=2,cores=2,threads=1"
+    "-smp 4"
 
 /*
  * Two ways to name a Hub, and the pair is what makes the routing visible.

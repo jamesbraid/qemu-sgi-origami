@@ -59,7 +59,7 @@ static void flash_command(QTestState *qts, uint32_t offset, uint8_t value)
 
 #define SN0_DUAL_CHASSIS_FIRMWARE_ARGS \
     "-M origin200,topology=origin200-dual -m 128M " \
-    "-smp 4,sockets=2,cores=2,threads=1"
+    "-smp 4"
 
 #define FIELD_MAGIC     0x08
 #define FIELD_CPU_FREQ  0x10
@@ -1143,7 +1143,7 @@ static void test_reject_numa_on_the_dual_topology(const void *data)
         "-object", "memory-backend-ram,id=ram1,size=64M",
         "-numa", "node,nodeid=0,cpus=0-1,memdev=ram0",
         "-numa", "node,nodeid=1,cpus=2-3,memdev=ram1",
-        "-smp", "4,sockets=2,cores=2,threads=1",
+        "-smp", "4",
         "-display", "none", NULL
     };
 
@@ -1163,7 +1163,7 @@ static void test_reject_invalid_node_memory(const void *data)
     g_autofree char *path = write_config_block_fixture();
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M", "origin200,topology=origin200-dual",
-        "-m", "36M", "-smp", "4,sockets=2,cores=2,threads=1",
+        "-m", "36M", "-smp", "4",
         "-display", "none", "-bios", path, NULL
     };
 
@@ -1173,25 +1173,27 @@ static void test_reject_invalid_node_memory(const void *data)
     g_assert_cmpint(unlink(path), ==, 0);
 }
 
-static void test_reject_split_one_node_topology(const void *data)
+static void test_reject_dual_population_on_one_node_topology(
+    const void *data)
 {
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M", "origin200",
-        "-smp", "2,sockets=2,cores=1,threads=1",
+        "-smp", "4",
         "-display", "none", NULL
     };
 
     /*
-     * topology= selects the wiring explicitly now; a plain -smp sockets=2
-     * against the default one-node topology no longer switches shape on
-     * its own -- the two-chassis topology must be named.
+     * topology= selects the wiring explicitly now; naming the dual
+     * topology's four-processor population alone does not switch the
+     * default one-node topology to the two-node one that accepts it --
+     * the two-chassis topology must be named.
      */
     assert_qemu_rejects(args,
-                        "origin200: topology 'origin200' is one node, "
-                        "one socket");
+                        "origin200: topology 'origin200' accepts 1 or "
+                        "2 CPUs, not 4");
 }
 
-static void test_reject_three_cores_one_chassis(const void *data)
+static void test_reject_three_cores_one_socket(const void *data)
 {
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M", "origin200",
@@ -1200,11 +1202,12 @@ static void test_reject_three_cores_one_chassis(const void *data)
     };
 
     assert_qemu_rejects(args,
-                        "origin200: topology 'origin200' does not accept "
-                        "3 CPUs as 1 socket(s)");
+                        "origin200: every processor is its own "
+                        "single-core socket; pass -smp N alone, not "
+                        "cores= or threads=");
 }
 
-static void test_reject_three_sockets(const void *data)
+static void test_reject_three_single_core_sockets(const void *data)
 {
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M", "origin200",
@@ -1212,9 +1215,15 @@ static void test_reject_three_sockets(const void *data)
         "-display", "none", NULL
     };
 
+    /*
+     * Three single-core sockets is the shape the new rule asks for, but
+     * three is still not one of origin200's accepted totals: naming the
+     * shape explicitly and correctly does not excuse an unsupported
+     * population.
+     */
     assert_qemu_rejects(args,
-                        "origin200: topology 'origin200' is one node, "
-                        "one socket");
+                        "origin200: topology 'origin200' accepts 1 or "
+                        "2 CPUs, not 3");
 }
 
 static void test_reject_uneven_no_numa_split(const void *data)
@@ -1222,7 +1231,7 @@ static void test_reject_uneven_no_numa_split(const void *data)
     const char *args[] = {
         qtest_qemu_binary(NULL), "-M", "origin200,topology=origin200-dual",
         "-m", "129M",
-        "-smp", "4,sockets=2,cores=2,threads=1",
+        "-smp", "4",
         "-display", "none", NULL
     };
 
@@ -1307,15 +1316,15 @@ static void test_origin200_has_no_ioc3_compat_global(const void *data)
 
 /*
  * QEMU's standard CPU-topology interface must describe the IP29 sockets,
- * not merely accept a scalar -smp value: one Origin 200 chassis is one
- * topology socket, and its two processor slices are the two cores in that
- * socket.
+ * not merely accept a scalar -smp value: every R10000 is its own
+ * single-core socket, so a two-processor Origin 200 chassis is two
+ * sockets on the same node, never one socket of two cores.
  */
 static void test_one_node_cpu_topology(const void *data)
 {
     g_autofree char *path = write_config_block_fixture();
     QTestState *qts = qtest_initf(
-        "-M origin200 -smp 2,sockets=1,cores=2,threads=1 -bios %s", path);
+        "-M origin200 -smp 2 -bios %s", path);
     QDict *response;
     QList *cpus;
     QObject *entry;
@@ -1332,9 +1341,10 @@ static void test_one_node_cpu_topology(const void *data)
 
         g_assert_cmpint(index, >=, 0);
         g_assert_cmpint(index, <, 2);
-        g_assert_cmpint(qdict_get_int(props, "socket-id"), ==, 0);
-        g_assert_cmpint(qdict_get_int(props, "core-id"), ==, index);
+        g_assert_cmpint(qdict_get_int(props, "socket-id"), ==, index);
+        g_assert_cmpint(qdict_get_int(props, "core-id"), ==, 0);
         g_assert_cmpint(qdict_get_int(props, "thread-id"), ==, 0);
+        g_assert_cmpint(qdict_get_int(props, "node-id"), ==, 0);
         seen |= 1U << index;
         qobject_unref(entry);
     }
@@ -1363,7 +1373,7 @@ static void test_reject_one_node_numa(const void *data)
         qtest_qemu_binary(NULL), "-M", "origin200", "-m", "64M",
         "-object", "memory-backend-ram,id=ram0,size=64M",
         "-numa", "node,nodeid=0,cpus=0-1,memdev=ram0",
-        "-smp", "2,sockets=1,cores=2,threads=1",
+        "-smp", "2",
         "-display", "none", NULL
     };
 
@@ -1393,8 +1403,9 @@ static void test_dual_chassis_cpu_topology(const void *data)
 
         g_assert_cmpint(index, >=, 0);
         g_assert_cmpint(index, <, 4);
-        g_assert_cmpint(qdict_get_int(props, "socket-id"), ==, index / 2);
-        g_assert_cmpint(qdict_get_int(props, "core-id"), ==, index % 2);
+        g_assert_cmpint(qdict_get_int(props, "socket-id"), ==, index);
+        g_assert_cmpint(qdict_get_int(props, "core-id"), ==, 0);
+        g_assert_cmpint(qdict_get_int(props, "node-id"), ==, index / 2);
         seen |= 1U << index;
         qobject_unref(entry);
     }
@@ -1595,12 +1606,13 @@ int main(int argc, char **argv)
                         test_reject_numa_on_the_dual_topology);
     qtest_add_data_func("sn0/address-map/reject-invalid-node-memory", NULL,
                         test_reject_invalid_node_memory);
-    qtest_add_data_func("sn0/address-map/reject-split-one-node-topology",
-                        NULL, test_reject_split_one_node_topology);
-    qtest_add_data_func("sn0/address-map/reject-three-cores-one-chassis",
-                        NULL, test_reject_three_cores_one_chassis);
-    qtest_add_data_func("sn0/address-map/reject-three-sockets", NULL,
-                        test_reject_three_sockets);
+    qtest_add_data_func(
+        "sn0/address-map/reject-dual-population-on-one-node-topology",
+        NULL, test_reject_dual_population_on_one_node_topology);
+    qtest_add_data_func("sn0/address-map/reject-three-cores-one-socket",
+                        NULL, test_reject_three_cores_one_socket);
+    qtest_add_data_func("sn0/address-map/reject-three-single-core-sockets",
+                        NULL, test_reject_three_single_core_sockets);
     qtest_add_data_func("sn0/address-map/reject-uneven-no-numa-split", NULL,
                         test_reject_uneven_no_numa_split);
     qtest_add_data_func("sn0/address-map/reject-device-beyond-bridge-slots",

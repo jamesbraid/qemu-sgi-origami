@@ -461,52 +461,63 @@ static size_t sgi_machine_topology_crossbar_count(const SGIModelTopology *t)
     return count;
 }
 
-/* Fill requested[node_count] from -smp's shape; -smp validity, not fit. */
-static void sgi_machine_population_shape(const SGIModelTopology *t,
-                                         MachineState *machine,
-                                         unsigned int *requested)
+/*
+ * Every R10000 and R14000 is a single-core socket, so -smp N names a
+ * total, never a shape: which node each of the N sockets sits on comes
+ * from the topology's own accepted population, the way the population
+ * table already records it. Find the population whose total is
+ * total_cpus; *second names a second match so the caller can refuse an
+ * ambiguous total instead of guessing between them.
+ */
+static const SGIModelCpuPopulation *sgi_machine_find_population_by_total(
+    const SGIModelTopology *t, unsigned int total_cpus,
+    const SGIModelCpuPopulation **second)
 {
     size_t node_count = sgi_machine_topology_node_count(t);
-    size_t i;
-
-    if (node_count == 1) {
-        requested[0] = machine->smp.cpus;
-        return;
-    }
-    for (i = 0; i < node_count; i++) {
-        requested[i] = machine->smp.cores;
-    }
-}
-
-static const SGIModelCpuPopulation *sgi_machine_find_population(
-    const SGIModelTopology *t, const unsigned int *requested)
-{
-    size_t node_count = sgi_machine_topology_node_count(t);
+    const SGIModelCpuPopulation *match = NULL;
     const SGIModelCpuPopulationList *entry;
 
+    *second = NULL;
     for (entry = t->supported_cpu_populations; entry; entry = entry->next) {
         const SGIModelCpuPopulation *population = entry->value;
         g_autofree unsigned int *cpus_per_node = NULL;
-        size_t population_node_count, n;
-        bool matches;
+        size_t population_node_count;
 
         cpus_per_node = sgi_model_array_uint32(population->cpus_per_node,
                                                &population_node_count);
         if (population_node_count != node_count) {
             continue;
         }
-        matches = true;
-        for (n = 0; n < population_node_count; n++) {
-            if (cpus_per_node[n] != requested[n]) {
-                matches = false;
-                break;
-            }
+        if (sgi_machine_population_total(population) != total_cpus) {
+            continue;
         }
-        if (matches) {
-            return population;
+        if (!match) {
+            match = population;
+        } else {
+            *second = population;
+            break;
         }
     }
-    return NULL;
+    return match;
+}
+
+/* "1, 2 or 4": the topology's accepted totals, for a refusal message. */
+static char *sgi_machine_accepted_totals(const SGIModelTopology *t)
+{
+    GString *out = g_string_new(NULL);
+    const SGIModelCpuPopulationList *entry;
+    bool first = true;
+
+    for (entry = t->supported_cpu_populations; entry; entry = entry->next) {
+        unsigned int total = sgi_machine_population_total(entry->value);
+
+        if (!first) {
+            g_string_append(out, entry->next ? ", " : " or ");
+        }
+        g_string_append_printf(out, "%u", total);
+        first = false;
+    }
+    return g_string_free(out, false);
 }
 
 /*
@@ -567,11 +578,11 @@ static const CPUArchIdList *sgi_machine_possible_cpu_arch_ids(
 {
     const SGIModelTopology *t = sgi_machine_topology(machine);
     unsigned int max_cpus = machine->smp.max_cpus;
-    unsigned int node_count =
-        t ? sgi_machine_topology_node_count(t) : machine->smp.sockets;
-    g_autofree unsigned int *requested = NULL;
+    unsigned int node_count = t ? sgi_machine_topology_node_count(t) : 1;
+    const SGIModelCpuPopulation *population = NULL;
+    g_autofree unsigned int *cpus_per_node = NULL;
     g_autofree unsigned int *node_of = NULL;
-    g_autofree unsigned int *core_of = NULL;
+    size_t population_node_count = 0;
     unsigned int node_index, slice, index;
 
     if (machine->possible_cpus) {
@@ -582,33 +593,39 @@ static const CPUArchIdList *sgi_machine_possible_cpu_arch_ids(
                                        sizeof(CPUArchId) * max_cpus);
     machine->possible_cpus->len = max_cpus;
 
-    requested = g_new0(unsigned int, node_count ? node_count : 1);
     if (t) {
-        sgi_machine_population_shape(t, machine, requested);
-    } else if (node_count) {
-        requested[0] = max_cpus;
+        const SGIModelCpuPopulation *second;
+
+        population = sgi_machine_find_population_by_total(t, max_cpus,
+                                                           &second);
+    }
+    if (population) {
+        cpus_per_node = sgi_model_array_uint32(population->cpus_per_node,
+                                               &population_node_count);
     }
 
     /*
-     * One (socket, core) pair per slot in shape order, then socket 0
-     * for whatever -smp overshoots the population: sgi_machine_realize
-     * reports a mismatch clearly, so NUMA parsing just needs a complete
-     * table to reject from meanwhile.
+     * One node per slot in the selected population's order, then node 0
+     * for whatever -smp overshoots it (an unrecognized total or a
+     * second matching population): sgi_machine_realize reports the
+     * mismatch clearly, so this table just needs to be complete for
+     * NUMA parsing to reject from meanwhile. Every socket is its own
+     * arch-id slot; core and thread are always 0.
      */
     node_of = g_new0(unsigned int, max_cpus);
-    core_of = g_new0(unsigned int, max_cpus);
     index = 0;
-    for (node_index = 0; node_index < node_count && index < max_cpus;
-         node_index++) {
-        for (slice = 0; slice < requested[node_index] && index < max_cpus;
-             slice++, index++) {
-            node_of[index] = node_index;
-            core_of[index] = slice;
+    if (population) {
+        for (node_index = 0; node_index < node_count &&
+             node_index < population_node_count && index < max_cpus;
+             node_index++) {
+            for (slice = 0; slice < cpus_per_node[node_index]
+                 && index < max_cpus; slice++, index++) {
+                node_of[index] = node_index;
+            }
         }
     }
     for (; index < max_cpus; index++) {
         node_of[index] = 0;
-        core_of[index] = index;
     }
 
     for (index = 0; index < max_cpus; index++) {
@@ -618,9 +635,9 @@ static const CPUArchIdList *sgi_machine_possible_cpu_arch_ids(
         slot->vcpus_count = 1;
         slot->arch_id = index;
         slot->props.has_socket_id = true;
-        slot->props.socket_id = node_of[index];
+        slot->props.socket_id = index;
         slot->props.has_core_id = true;
-        slot->props.core_id = core_of[index];
+        slot->props.core_id = 0;
         slot->props.has_thread_id = true;
         slot->props.thread_id = 0;
         slot->props.has_node_id = true;
@@ -1628,57 +1645,57 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                   mc->name);
         return false;
     }
-    if (machine->smp.threads != 1) {
-        error_setg(errp, "%s: one thread per core", mc->name);
+    /*
+     * Every R10000 and R14000 is a single-core socket: -smp N means N
+     * sockets of one core each, and which node each socket sits on
+     * comes from the topology's accepted population whose total is N,
+     * never from sockets= or cores= on the command line (QEMU's own
+     * smp_props.prefer_sockets, set below, completes a bare -smp N to
+     * exactly this shape already).
+     */
+    if (machine->smp.cores != 1 || machine->smp.threads != 1) {
+        error_setg(errp, "%s: every processor is its own single-core "
+                  "socket; pass -smp N alone, not cores= or threads=",
+                  mc->name);
+        return false;
+    }
+    if (machine->smp.sockets != machine->smp.cpus) {
+        error_setg(errp, "%s: -smp N means N sockets; pass -smp %u, not "
+                  "sockets=%u", mc->name, machine->smp.cpus,
+                  machine->smp.sockets);
         return false;
     }
 
     node_count = sgi_machine_topology_node_count(t);
     requested = g_new0(unsigned int, node_count);
-    if (node_count == 1) {
-        if (machine->smp.sockets != 1) {
-            error_setg(errp, "%s: topology '%s' is one node, one socket",
-                      mc->name, t->name);
+    {
+        const SGIModelCpuPopulation *population;
+        const SGIModelCpuPopulation *second;
+        g_autofree unsigned int *cpus_per_node = NULL;
+        size_t population_node_count;
+
+        population = sgi_machine_find_population_by_total(
+            t, machine->smp.cpus, &second);
+        if (second) {
+            error_setg(errp, "%s: topology '%s' accepts %u CPUs as more "
+                      "than one population; a future topology= selector "
+                      "will name which one", mc->name, t->name,
+                      machine->smp.cpus);
             return false;
         }
-        requested[0] = machine->smp.cpus;
-    } else if (machine->smp.sockets == 1 &&
-               machine->smp.cores == machine->smp.cpus) {
-        /*
-         * A bare -smp N (no explicit topology) completes to one socket
-         * of N cores before this runs, for a default topology of more
-         * than one node: accept it as the even split across the
-         * topology's nodes it names, the way -smp N alone always has for
-         * this product, and correct smp.sockets/cores to match what was
-         * actually built.
-         */
-        if (machine->smp.cpus % node_count) {
-            error_setg(errp, "%s: topology '%s' splits -smp evenly across "
-                      "%u nodes", mc->name, t->name, node_count);
+        if (!population) {
+            g_autofree char *totals = sgi_machine_accepted_totals(t);
+
+            error_setg(errp, "%s: topology '%s' accepts %s CPUs, not %u",
+                      mc->name, t->name, totals, machine->smp.cpus);
             return false;
         }
-        machine->smp.sockets = node_count;
-        machine->smp.cores = machine->smp.cpus / node_count;
-        for (node_index = 0; node_index < node_count; node_index++) {
-            requested[node_index] = machine->smp.cores;
+        cpus_per_node = sgi_model_array_uint32(population->cpus_per_node,
+                                               &population_node_count);
+        for (node_index = 0; node_index < node_count &&
+             node_index < population_node_count; node_index++) {
+            requested[node_index] = cpus_per_node[node_index];
         }
-    } else {
-        if (machine->smp.sockets != node_count ||
-            machine->smp.cpus != node_count * machine->smp.cores) {
-            error_setg(errp, "%s: topology '%s' is %u nodes as %u sockets "
-                      "with one core count each", mc->name, t->name,
-                      node_count, node_count);
-            return false;
-        }
-        for (node_index = 0; node_index < node_count; node_index++) {
-            requested[node_index] = machine->smp.cores;
-        }
-    }
-    if (!sgi_machine_find_population(t, requested)) {
-        error_setg(errp, "%s: topology '%s' does not accept %u CPUs as %u "
-                  "socket(s)", mc->name, t->name, machine->smp.cpus,
-                  machine->smp.sockets);
-        return false;
     }
 
     if (node_count > 1 && machine->ram_size % ((uint64_t)node_count * MiB)) {
@@ -2287,6 +2304,12 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
     mc->block_default_type = IF_SCSI;
     /* Node memory is memdev-backed -numa nodes; bare mem= has no backend. */
     mc->numa_mem_supported = false;
+    /*
+     * Every processor is a single-core socket, so a bare -smp N (or no
+     * -smp at all, completing to mc->default_cpus) should complete to N
+     * sockets of one core each, not one socket of N cores.
+     */
+    mc->smp_props.prefer_sockets = true;
 
     object_class_property_add_str(oc, "topology", sgi_machine_get_topology,
                                   sgi_machine_set_topology);
@@ -2375,23 +2398,20 @@ static void origin2000_class_init(ObjectClass *oc, const void *data)
 }
 
 /*
- * A bare -M origin2000 needs sockets/cores preset before smp_parse runs;
- * every other product's default topology is one node.
+ * A bare -M origin2000, with no -smp at all, never runs smp_parse: the
+ * generic machine_initfn default of one socket survives unless this
+ * preset corrects it before realize's own validation runs. Every other
+ * product's default topology is one node, where one socket is already
+ * right.
  */
 static void origin2000_instance_init(Object *obj)
 {
     MachineState *machine = MACHINE(obj);
     const SGIModelTopology *t = sgi_model_find_topology("origin2000-module");
-    const SGIModelCpuSlotList *slot;
-    unsigned int cpu_slot_count = 0;
 
     g_assert(t);
-    machine->smp.sockets = sgi_machine_topology_node_count(t);
-    for (slot = sgi_machine_topology_node0(t)->cpu_slots; slot;
-         slot = slot->next) {
-        cpu_slot_count++;
-    }
-    machine->smp.cores = cpu_slot_count;
+    machine->smp.sockets = sgi_machine_topology_default_cpus(t);
+    machine->smp.cores = 1;
 }
 
 static const TypeInfo sgi_machine_types[] = {

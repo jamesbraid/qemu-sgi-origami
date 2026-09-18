@@ -75,7 +75,7 @@
 #define GRANT_SETTLE_NS     500000
 #define GRANT_BASE          0xe0
 
-#define MACHINE_ARGS "-M origin2000 -smp 8,sockets=4,cores=2 -m 256M"
+#define MACHINE_ARGS "-M origin2000 -smp 8 -m 256M"
 
 static uint8_t adapter_read(QTestState *qts, unsigned node, uint64_t offset)
 {

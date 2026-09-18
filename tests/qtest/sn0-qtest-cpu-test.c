@@ -8,7 +8,7 @@
 #define DATA_BASE 0x20001220000ULL
 #define MACHINE_DUAL \
     "-M origin200,topology=origin200-dual -m 128M " \
-    "-smp 4,sockets=2,cores=2,threads=1"
+    "-smp 4"
 
 static void write_register(QTestState *qts, unsigned int cpu, uint64_t addr,
                            uint8_t value)
