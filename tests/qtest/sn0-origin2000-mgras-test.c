@@ -1165,7 +1165,7 @@ static void test_direct_fill_and_reset(void)
      * rectangle already in the persistent register file, flips those
      * pixels back to zero. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_PP1FILLMODE, SI_LOGIC_OP_XOR << 28));
+                 SI_COMMAND(REG_PP1FILLMODE, SI_LOGIC_OP_XOR << 26));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BLOCK_START, (10u << 16) | 10u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -1178,6 +1178,51 @@ static void test_direct_fill_and_reset(void)
     g_assert_cmphex(qtest_readl(qts, REG_ENTRY), ==, 0);
     g_assert_cmphex(qtest_readl(qts, REG_CONTEXT_COMMAND), ==, 0);
     g_assert_cmphex(si_test_pixel(qts, 11, 11), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The plane mask a fill's own visible output actually depends on is
+ * COLORMASKLSBSA, not COLORMASKMSBS -- live-traced against OpenBSD's own
+ * public driver (sys/arch/sgi/dev/impact.c, "RSS initialization"), which
+ * sets COLORMASKMSBS to 0 and COLORMASKLSBSA to 0xffffff once, at
+ * attach, and leaves both alone before every later fill. Reproduces
+ * that exact pair -- the one a real driver actually leaves live -- and
+ * checks the fill still paints, then checks COLORMASKLSBSA on its own
+ * genuinely gates the write (closing it back to 0 makes the same fill a
+ * no-op), confirming which register this device's own mask reads from.
+ */
+static void test_fill_mask_reads_colormasklsbsa(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_COLORMASKMSBS, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00aa5533));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (30u << 16) | 30u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (31u << 16) | 31u));
+    g_assert_cmphex(si_test_pixel(qts, 30, 30), ==, 0x00aa5533);
+
+    /* Closing COLORMASKLSBSA, with COLORMASKMSBS untouched, makes the
+     * identical fill a no-op -- confirming LSBSA is the register that
+     * actually gates a 24-bit colour write, not MSBS. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_COLORMASKLSBSA, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00112233));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (40u << 16) | 40u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (41u << 16) | 41u));
+    g_assert_cmphex(si_test_pixel(qts, 40, 40), ==, 0);
 
     qtest_quit(qts);
 }
@@ -1847,11 +1892,11 @@ static void test_command_fifo_state_write_headers(void)
                  ((uint64_t)SI_STATE_TOKEN(REG_BLOCK_START, 4) << 32) |
                  ((60u << 16) | 60u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 ((uint64_t)SI_STATE_TOKEN(REG_COLORMASKMSBS, 4) << 32) |
+                 ((uint64_t)SI_STATE_TOKEN(REG_COLORMASKLSBSA, 4) << 32) |
                  0xffffffff);
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  ((uint64_t)SI_STATE_TOKEN(REG_PP1FILLMODE, 4) << 32) |
-                 ((uint32_t)SI_LOGIC_OP_COPY << 28));
+                 ((uint32_t)SI_LOGIC_OP_COPY << 26));
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 
     /* The fill itself still triggers through the direct-record grammar's
@@ -1882,7 +1927,7 @@ static void test_command_fifo_state_write_headers_not_yet_consumed(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  ((uint64_t)SI_STATE_TOKEN(REG_ALPHA, 4) << 32) | 0xff);
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 ((uint64_t)SI_STATE_TOKEN(REG_COLORMASKLSBSA, 4) << 32) |
+                 ((uint64_t)SI_STATE_TOKEN(REG_COLORMASKMSBS, 4) << 32) |
                  0x0000ffff);
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  ((uint64_t)SI_STATE_TOKEN(REG_GLINE_XSTARTF, 4) << 32) | 0);
@@ -2157,6 +2202,8 @@ int main(int argc, char **argv)
                    test_fifo_occupancy_always_drained);
     qtest_add_func("sn0/origin2000/mgras/direct-fill-and-reset",
                    test_direct_fill_and_reset);
+    qtest_add_func("sn0/origin2000/mgras/fill-mask-reads-colormasklsbsa",
+                   test_fill_mask_reads_colormasklsbsa);
     qtest_add_func("sn0/origin2000/mgras/direct-glyph-row",
                    test_direct_glyph_row);
     qtest_add_func("sn0/origin2000/mgras/display-surface-conversion",

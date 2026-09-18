@@ -146,7 +146,11 @@
  * BLOCKXYSTARTI (0x046, already named below), DRBPOINTERS (0x16d),
  * COLORMASKMSBS (0x162, already named), COLORMASKLSBSA (0x163),
  * PACKEDCOLOR (0x05b, already named), PP1FILLMODE (0x161, already named)
- * and GLINE_XSTARTF (0x00c). A recognized state-write header always
+ * and GLINE_XSTARTF (0x00c). High traffic does not mean high relevance to
+ * painting: COLORMASKMSBS turned out not to be the register a fill's own
+ * plane mask reads from -- see si_draw_fill's own header comment and the
+ * reset-defaults comment in si_reset for the live-traced correction. A
+ * recognized state-write header always
  * declares one 32-bit payload word in this census (payload_bytes 0x04 in
  * every header above); this device stores that word into rss[reg] the
  * same way the direct-record grammar's own state writes do (si_rss_write),
@@ -240,6 +244,16 @@
 #define SI_REG_COLORMASKLSBSA 0x163
 #define SI_REG_GLINE_XSTARTF 0x00c
 #define SI_REG_DRBPOINTERS 0x16d
+
+/*
+ * COLORMASKLSBSA's own companion register: OpenBSD's driver
+ * (sys/arch/sgi/dev/impact.c, "RSS initialization") sets it to the same
+ * 0xffffff value as COLORMASKLSBSA, once, at attach, and nothing in the
+ * disassembled evidence this device's own fill/glyph/PIO/point/line
+ * functions draw on distinguishes a separate role for it -- named for
+ * documentation, not consumed as a second mask here.
+ */
+#define SI_REG_COLORMASKLSBSB 0x164
 
 /* Where the Hub's interrupt-modify register sits; data bit 8 selects raise. */
 #define SI_HUB_INT_MODIFY_SET 0x100
@@ -472,13 +486,23 @@ static void si_context_write(SGIMgrasState *s, uint32_t value)
 
 /*
  * The plane-masked result of applying an X11-style GX logic op (0-15,
- * PP1FILLMODE's top nibble) between a new colour and the pixel already
+ * PP1FILLMODE bits 31:26) between a new colour and the pixel already
  * there. The sixteen values are the standard two-operand boolean
- * functions of (src, dst) X11 GCs already use for raster ops; a four-bit
- * field fits them exactly, which is this device's own reading of
- * "top nibble" (docs/designs/2026-09-17-si-viz-pixel-output-design.md's
- * ordered plan) rather than the wider six-bit field OpenBSD's
- * IMPACTSR_PP1FILLMODE macro reserves for it.
+ * functions of (src, dst) X11 GCs already use for raster ops.
+ *
+ * An earlier pass read this field at bits 31:28 (the top nibble), a
+ * bounded guess made explicitly instead of the wider six-bit field
+ * OpenBSD's own IMPACTSR_PP1FILLMODE(mode, op) macro reserves for it
+ * (sys/arch/sgi/dev/impactreg.h: `(mode) | ((op) << 26)`). A live trace
+ * of a real desktop session found that guess wrong: every observed
+ * PP1FILLMODE value had a zero top nibble, which decodes to GXclear
+ * under the old shift regardless of what the driver actually asked for
+ * -- exactly the all-black result that session's own screendump showed.
+ * Under the corrected `>> 26` shift the same trace decodes to a mix of
+ * GXcopy (3) and GXxor (6), the values a real desktop's fill and line
+ * operations plausibly use. `mode` (the macro's other operand, bits
+ * 25:0) is this device's own opaque state elsewhere in `rss[]`; nothing
+ * here reads it.
  */
 static uint32_t si_logic_op(uint8_t op, uint32_t dst, uint32_t src)
 {
@@ -512,18 +536,27 @@ static uint32_t si_paint_pixel(uint8_t op, uint32_t dst, uint32_t src,
 /*
  * Solid fill, triggered by BLOCKXYENDI's own execute-form write: rectangle
  * from BLOCKXYSTARTI/BLOCKXYENDI (x<<16|y each), colour from PACKEDCOLOR,
- * logic op from PP1FILLMODE's top nibble, plane mask from COLORMASKMSBS
- * (design doc's ordered plan, step 2). All four come from the persistent
- * register file, not this record -- a driver that only ever set colour and
- * fill mode once still gets them on every later fill.
+ * logic op from PP1FILLMODE bits 31:26, plane mask from COLORMASKLSBSA
+ * (design doc's ordered plan, step 2, corrected against OpenBSD's driver
+ * -- see si_logic_op's own header comment and the reset defaults'
+ * comment in si_reset for the evidence). All four come from the
+ * persistent register file, not this record -- a driver that only ever
+ * set colour and fill mode once still gets them on every later fill.
+ * COLORMASKMSBS (0x162) is a distinct, real register -- OpenBSD's own
+ * driver programs it too, to 0, once at attach -- but it covers bits
+ * 31:24, always zero in this device's 24-bit colour values, so it plays
+ * no part in a 24-bit fill's own visible result; COLORMASKLSBSB (0x164)
+ * is set alongside COLORMASKLSBSA in the one evidenced sequence and is
+ * not separately consumed here, since nothing distinguishes their two
+ * roles in that same evidence.
  */
 static void si_draw_fill(SGIMgrasState *s)
 {
     uint32_t xy0 = s->rss[SI_REG_BLOCKXYSTARTI];
     uint32_t xy1 = s->rss[SI_REG_BLOCKXYENDI];
     uint32_t color = s->rss[SI_REG_PACKEDCOLOR] & 0x00ffffff;
-    uint32_t mask = s->rss[SI_REG_COLORMASKMSBS];
-    uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 28;
+    uint32_t mask = s->rss[SI_REG_COLORMASKLSBSA];
+    uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 26;
     int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
     int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
 
@@ -568,8 +601,8 @@ static void si_draw_glyph_row(SGIMgrasState *s)
     int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
     uint32_t fg = s->rss[SI_REG_PACKEDCOLOR] & 0x00ffffff;
     uint32_t bg = s->rss[SI_REG_BKGRD_RG] & 0x00ffffff;
-    uint32_t mask = s->rss[SI_REG_COLORMASKMSBS];
-    uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 28;
+    uint32_t mask = s->rss[SI_REG_COLORMASKLSBSA];
+    uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 26;
     uint32_t char_l = s->rss[SI_REG_CHAR_L];
     uint32_t char_h = s->rss[SI_REG_CHAR_H];
     int y = y0 + s->glyph_row;
@@ -621,8 +654,8 @@ static void si_draw_pio_pixel_pair(SGIMgrasState *s)
         s->rss[SI_REG_BKGRD_RG] & 0x00ffffff,
         s->rss[SI_REG_BKGRD_BA] & 0x00ffffff,
     };
-    uint32_t mask = s->rss[SI_REG_COLORMASKMSBS];
-    uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 28;
+    uint32_t mask = s->rss[SI_REG_COLORMASKLSBSA];
+    uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 26;
 
     if (x0 > x1 || y0 > y1 || x0 >= SGI_MGRAS_WIDTH || y0 >= SGI_MGRAS_HEIGHT) {
         return;
@@ -663,8 +696,8 @@ static void si_draw_point(SGIMgrasState *s)
 {
     uint32_t xy0 = s->rss[SI_REG_BLOCKXYSTARTI];
     uint32_t color = s->rss[SI_REG_PACKEDCOLOR] & 0x00ffffff;
-    uint32_t mask = s->rss[SI_REG_COLORMASKMSBS];
-    uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 28;
+    uint32_t mask = s->rss[SI_REG_COLORMASKLSBSA];
+    uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 26;
     int x = (xy0 >> 16) & 0xffff, y = xy0 & 0xffff;
     uint32_t *p;
 
@@ -690,8 +723,8 @@ static void si_draw_line(SGIMgrasState *s)
     uint32_t xy0 = s->rss[SI_REG_BLOCKXYSTARTI];
     uint32_t xy1 = s->rss[SI_REG_BLOCKXYENDI];
     uint32_t color = s->rss[SI_REG_PACKEDCOLOR] & 0x00ffffff;
-    uint32_t mask = s->rss[SI_REG_COLORMASKMSBS];
-    uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 28;
+    uint32_t mask = s->rss[SI_REG_COLORMASKLSBSA];
+    uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 26;
     int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
     int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
     int dx = (x1 > x0) ? (x1 - x0) : (x0 - x1);
@@ -1656,11 +1689,21 @@ static void si_reset(DeviceState *dev)
      * register, into a no-op instead of a plain opaque copy. X11 GCs
      * default to GXcopy and an all-ones planemask (AllPlanes) for the same
      * reason; this device picks the same defaults for its own analogous
-     * registers rather than leaving them at zero. A stated approximation,
-     * not evidence for a real hardware reset value.
+     * registers rather than leaving them at zero. The default *values*
+     * (GXcopy, all-ones) are this device's own approximation, not
+     * evidence for a real hardware reset value -- but which register and
+     * bit position each one lives at is now live-traced: OpenBSD's public
+     * driver (sys/arch/sgi/dev/impact.c, impact_attach's own "RSS
+     * initialization") sets `COLORMASKLSBSA`/`COLORMASKLSBSB` to
+     * 0xffffff and `COLORMASKMSBS` to 0 once, at attach, and never
+     * touches any of the three again before a solid fill -- confirming
+     * `COLORMASKLSBSA`, not `COLORMASKMSBS`, is the mask that actually
+     * gates a 24-bit colour write (`COLORMASKMSBS` covers bits 31:24,
+     * always zero in this device's own 24-bit colour values, so it can
+     * never be what a real fill's visible output depends on).
      */
-    s->rss[SI_REG_PP1FILLMODE] = 0x3 << 28;
-    s->rss[SI_REG_COLORMASKMSBS] = 0xffffffff;
+    s->rss[SI_REG_PP1FILLMODE] = 0x3 << 26;
+    s->rss[SI_REG_COLORMASKLSBSA] = 0xffffffff;
     s->glyph_row = s->pio_x = s->pio_y = 0;
     s->cmd_token_class = s->cmd_token_reg = 0;
     s->cmd_token_words_remaining = s->cmd_token_payload_count = 0;
