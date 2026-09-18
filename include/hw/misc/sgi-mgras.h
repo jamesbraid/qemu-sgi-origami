@@ -417,13 +417,24 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
 #define SGI_MGRAS_FIFO_THRESHOLD_WORDS 13
 
 /*
- * Three more registers in the same 0x040000s block MgrasInitialize,
+ * Four more registers in the same 0x040000s block MgrasInitialize,
  * MgrasStart, MgrasCtxsw and several buffer-swap paths write during normal
  * operation, none ever read back, so they get the same opaque treatment.
+ * SGI_MGRAS_SCHED_ARG_4 (0x040070) is MgrasInitialize's own flow-control
+ * credit word, computed as (0x11 << 3) | (board_byte << 8) | 0x1000 and
+ * written once during setup -- root-caused live as the trigger for the
+ * gfxinit CTXSW/CFIFO timeout documented in docs/plans/
+ * si-graphics-widget-wiring-handoff-20260916.md, "gfxinit clears GE
+ * download live, then MgrasCtxsw timeout": with no case here, the write
+ * took the generic unsupported-access path and latched this device's
+ * sticky error flag, which in turn poisoned every later FIFO status read
+ * (see the 0x020000 case). Modelling it as opaque storage like its three
+ * siblings removes the trigger.
  */
 #define SGI_MGRAS_SCHED_ARG_1 0x040068
 #define SGI_MGRAS_SCHED_ARG_2 0x040078
 #define SGI_MGRAS_SCHED_ARG_3 0x040088
+#define SGI_MGRAS_SCHED_ARG_4 0x040070
 
 /*
  * Two more registers MgrasValidateBanks/Clip and MgrasPcxSwap write and
@@ -482,6 +493,7 @@ struct SGIMgrasState {
     uint32_t sched_arg_1;
     uint32_t sched_arg_2;
     uint32_t sched_arg_3;
+    uint32_t sched_arg_4;
     uint32_t bank_status_1;
     uint32_t bank_status_2;
     /*
