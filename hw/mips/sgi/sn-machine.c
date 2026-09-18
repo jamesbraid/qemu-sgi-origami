@@ -102,8 +102,6 @@ SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelCrossbar, crossbar)
 SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelXtalkAttachment, xtalk_attachment)
 SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelIoBoard, io_board)
 SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelController, controller)
-SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelCpuPopulation, cpu_population)
-SGI_MODEL_DEFINE_LIST_ARRAY(SGIModelCpuSlot, cpu_slot)
 
 static unsigned int *sgi_model_array_uint32(const uint32List *list, size_t *count)
 {
@@ -1579,16 +1577,17 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         g_autofree const SGIModelXtalkAttachment **attachments = NULL;
         const SGIModelIoBoard *populated_board = NULL;
         g_autofree unsigned int *widgets = NULL;
-        size_t io_board_count, attachment_count;
+        size_t bedrock_io_board_count, attachment_count;
         size_t widget_count = 0;
         size_t i;
         Object *node;
 
         g_assert(node_count == 1);
-        io_boards = sgi_model_io_board_array(t->io_boards, &io_board_count);
+        io_boards = sgi_model_io_board_array(t->io_boards,
+                                             &bedrock_io_board_count);
         attachments = sgi_model_xtalk_attachment_array(t->xtalk_attachments,
                                                         &attachment_count);
-        for (i = 0; i < io_board_count; i++) {
+        for (i = 0; i < bedrock_io_board_count; i++) {
             /*
              * pci_count went with the ownership-rule trim; a preset's
              * fitted IOC3 one-wire serial is the one fact left that

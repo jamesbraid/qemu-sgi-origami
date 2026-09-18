@@ -796,10 +796,12 @@
       "product": "origin200",
       "routers": [],
       "supported-cpu-populations": [
-        [
-          2,
-          2
-        ]
+        {
+          "cpus-per-node": [
+            2,
+            2
+          ]
+        }
       ],
       "xtalk-attachments": [
         {
@@ -916,12 +918,16 @@
       "product": "origin200",
       "routers": [],
       "supported-cpu-populations": [
-        [
-          1
-        ],
-        [
-          2
-        ]
+        {
+          "cpus-per-node": [
+            1
+          ]
+        },
+        {
+          "cpus-per-node": [
+            2
+          ]
+        }
       ],
       "xtalk-attachments": [
         {
@@ -1335,12 +1341,14 @@
         }
       ],
       "supported-cpu-populations": [
-        [
-          2,
-          2,
-          2,
-          2
-        ]
+        {
+          "cpus-per-node": [
+            2,
+            2,
+            2,
+            2
+          ]
+        }
       ],
       "xtalk-attachments": [
         {
@@ -1500,9 +1508,11 @@
       "product": "origin300",
       "routers": [],
       "supported-cpu-populations": [
-        [
-          2
-        ]
+        {
+          "cpus-per-node": [
+            2
+          ]
+        }
       ],
       "xtalk-attachments": [
         {

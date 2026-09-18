@@ -13,6 +13,7 @@
 #include "qapi/error.h"
 #include "qapi/qapi-commands-sgi-sn.h"
 #include "qapi/qapi-types-sgi-sn.h"
+#include "qapi/qapi-visit-sgi-sn.h"
 #include "qapi/qobject-input-visitor.h"
 #include "qobject/qjson.h"
 #include "qobject/qobject.h"
