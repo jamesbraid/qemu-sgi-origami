@@ -11,10 +11,6 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRouterState, SGI_ROUTER)
 
 #define SGI_ROUTER_PORTS 6
 
-/* Supply a machine-composed DS2505 image before realizing the Router. */
-void sgi_router_set_nic_image(SGIRouterState *s, const uint8_t *data,
-                              size_t length);
-
 /* The fabric-facing register target. The arrival port is numbered 1 to 6. */
 bool sgi_router_access(SGIRouterState *s, unsigned int arrival_port,
                        SN0FabricVectorAccess *access);
