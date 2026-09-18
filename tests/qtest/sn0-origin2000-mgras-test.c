@@ -69,6 +69,7 @@
 #define REG_BOARD_INVENTORY     SI_REG(0x072488)
 #define REG_CMAP_WRITE_INDEX    SI_REG(0x070c30)
 #define REG_CMAP_DATA           SI_REG(0x070d18)
+#define REG_XMAP_MAIN_MODE      SI_REG(0x071e00)
 #define REG_INT_DEST_UPPER_ALT  SI_REG(0x000030)
 #define REG_INT_DEST_LOWER_ALT  SI_REG(0x000038)
 #define REG_HQ_CONFIG_A         SI_REG(0x011030)
@@ -150,6 +151,9 @@
 #define REG_RE_POINT            0x040
 #define REG_RE_LINE             0x041
 #define REG_RE_BLOCKCOPY        0x045
+/* Same physical register as REG_RE_BLOCKCOPY above under its other public
+ * name; see the header comment on SI_REG_IR_ALIAS, hw/misc/sgi-mgras.c. */
+#define REG_IR_ALIAS            0x045
 #define REG_ALPHA               0x05f
 #define REG_COLORMASKLSBSA      0x163
 #define REG_GLINE_XSTARTF       0x00c
@@ -1228,6 +1232,69 @@ static void test_fill_mask_reads_colormasklsbsa(void)
 }
 
 /*
+ * IR_ALIAS (register 0x045), reached through the direct-record grammar's
+ * own execute-form write: before this pass, si_command_execute had no
+ * case for it at all and it fell to the logged default, painting nothing.
+ * OpenBSD's public driver (impact.c) issues IR_ALIAS as the execute
+ * trigger nearly every 2D primitive ends with, and a live trace of a real
+ * boot-to-desktop session found 382 real executes through this exact
+ * register that this device was silently dropping -- see si_draw_ir_
+ * alias_fill's own header comment in hw/misc/sgi-mgras.c for the evidence.
+ *
+ * Colour comes from BKGRD_RG, not PACKEDCOLOR: the same cited trace found
+ * PACKEDCOLOR reading 0x000000 at every one of those 382 executes while
+ * BKGRD_RG carried real, varying values, the opposite of BLOCKXYENDI's
+ * own real traffic. This also exercises si_fill_rect's own corner-
+ * normalizing behaviour -- BLOCKXYSTARTI's Y is larger than BLOCKXYENDI's
+ * here, the reverse of BLOCKXYENDI's own convention, matching 148 of the
+ * 382 real IR_ALIAS executes in the same trace.
+ */
+static void test_ir_alias_execute(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BKGRD_RG, 0x00aabbcc));
+    /* Reversed corners: start row 23, end row 20 -- the convention real
+     * IR_ALIAS traffic uses, not BLOCKXYENDI's top-left/bottom-right one.
+     * Both corners are plain state writes; IR_ALIAS's own execute-form
+     * write carries a small trigger value (0x18, matching real traffic),
+     * not a coordinate -- si_draw_ir_alias_fill reads the rectangle from
+     * BLOCKXYSTARTI/BLOCKXYENDI the same way si_draw_fill does. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (10u << 16) | 23u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (13u << 16) | 20u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
+
+    g_assert_cmphex(si_test_pixel(qts, 11, 21), ==, 0x00aabbcc);
+    g_assert_cmphex(si_test_pixel(qts, 13, 20), ==, 0x00aabbcc);
+    g_assert_cmphex(si_test_pixel(qts, 10, 23), ==, 0x00aabbcc);
+    /* Outside the normalized rectangle stays untouched. */
+    g_assert_cmphex(si_test_pixel(qts, 20, 21), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 10, 24), ==, 0);
+
+    /* PACKEDCOLOR plays no part in this trigger's own colour: setting it
+     * to something else and re-running the fill still paints BKGRD_RG's
+     * colour. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (30u << 16) | 31u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (31u << 16) | 30u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
+    g_assert_cmphex(si_test_pixel(qts, 30, 30), ==, 0x00aabbcc);
+    g_assert_cmphex(si_test_pixel(qts, 31, 31), ==, 0x00aabbcc);
+
+    qtest_quit(qts);
+}
+
+/*
  * 1-bit glyph row expansion: the same 8x8 bitmap this test has always
  * used (the design doc's own cited fixture,
  * `si-direct-command-inputs-20260916.json` on `emdash/graphics-sarct`,
@@ -1464,6 +1531,125 @@ static void test_display_surface_conversion(void)
     g_assert_cmphex(si_test_display_pixel(qts, 11, 11), ==, 0);
     g_assert_cmphex(si_test_display_pixel(qts, 30, 30), ==, 0);
     g_assert_cmphex(si_test_pixel(qts, 30, 30), ==, 0x00aabbcc);
+
+    qtest_quit(qts);
+}
+
+/*
+ * PseudoColor scanout: once REG_XMAP_MAIN_MODE names a PseudoColor window
+ * (the same 0x601-family value real Xsgi traffic writes there -- see the
+ * header comment on SGI_MGRAS_XMAP_MAIN_MODE, include/hw/misc/sgi-mgras.h),
+ * front[]'s stored byte is a CMAP index, looked up through the colour map
+ * this device already accepted writes for, rather than painted directly
+ * into the red channel. A TrueColor window (the driver's own real 0x7xx
+ * family, and this device's reset default) keeps the pre-existing direct-
+ * RGB scanout unchanged.
+ */
+static void test_pseudocolor_scanout_looks_up_cmap(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+
+    /* Load CMAP slot 7 with a real colour. */
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 7);
+    qtest_writel(qts, REG_CMAP_DATA, 0x00aabbcc);
+
+    /* Paint a pixel whose own low byte is just the index 7 -- the same
+     * "index stored where PACKEDCOLOR's own RR byte lives" shape real
+     * PseudoColor traffic uses (small integers like 0x07/0x11/0x14). */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_PACKEDCOLOR, 7));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (5u << 16) | 5u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (5u << 16) | 5u));
+    g_assert_cmphex(si_test_pixel(qts, 5, 5), ==, 7);
+
+    /* Before the XMAP mode names a PseudoColor window (this device's
+     * TrueColor reset default), scanout is still direct RGB: the raw
+     * index paints straight into the red channel. */
+    g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x00070000);
+
+    /* Naming PseudoColor routes the same pixel through the colour map
+     * instead -- no new fill, only the mode word changed. */
+    qtest_writel(qts, REG_XMAP_MAIN_MODE, 0x601);
+    g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x00ccbbaa);
+
+    /* A TrueColor window keeps direct RGB scanout: a pixel holding a
+     * real 24-bit colour is unaffected by the colour map. */
+    qtest_writel(qts, REG_XMAP_MAIN_MODE, 0x7a4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00112233));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (6u << 16) | 6u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (6u << 16) | 6u));
+    g_assert_cmphex(si_test_display_pixel(qts, 6, 6), ==, 0x00332211);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Hardware cursor compositing: si_composite_cursor (hw/misc/sgi-mgras.c)
+ * reads the two 32x32 1-bit planes at the cursor-entry pointer (VC3 index
+ * 1) out of VC3 SRAM and draws them into the scanout at (cursor_x,
+ * cursor_y) only while enabled. Builds a tiny two-pixel sprite: row 0
+ * column 0 opaque and colour-selected to the "ink" colour (CMAP slot
+ * 0x1c, the slot this device's own live trace ties to the cursor -- see
+ * si_composite_cursor's own header comment), row 1 column 1 opaque and
+ * colour-selected to the background colour, row 0 column 1 left
+ * transparent.
+ */
+static void test_cursor_composites_when_enabled(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+
+    /* "Ink" colour for CMAP slot 0x1c: pure red in this device's own
+     * 0x00BBGGRR packing. */
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0x1c);
+    qtest_writel(qts, REG_CMAP_DATA, 0x000000ff);
+
+    /* Cursor entry pointer: SRAM halfword address 0x100. */
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x01, 0x0100));
+
+    /* First plane (transparency mask), two halfwords per row: row 0
+     * column 0 opaque, row 1 column 1 opaque, everything else clear. */
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x07, 0x0100));
+    qtest_writew(qts, REG_VC3_RAM, 0x8000);
+    qtest_writew(qts, REG_VC3_RAM, 0x0000);
+    qtest_writew(qts, REG_VC3_RAM, 0x4000);
+    qtest_writew(qts, REG_VC3_RAM, 0x0000);
+
+    /* Second plane (colour select), 64 halfwords further on: row 0
+     * selects the ink colour, row 1 selects the background colour. */
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x07, 0x0140));
+    qtest_writew(qts, REG_VC3_RAM, 0x8000);
+    qtest_writew(qts, REG_VC3_RAM, 0x0000);
+    qtest_writew(qts, REG_VC3_RAM, 0x0000);
+    qtest_writew(qts, REG_VC3_RAM, 0x0000);
+
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x02, 50));
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x03, 60));
+
+    /* Disabled: the sprite does not appear, even though it is fully
+     * programmed. */
+    g_assert_cmphex(si_test_display_pixel(qts, 50, 60), ==, 0);
+
+    /* Enabling composites it. */
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1d, 0x0002));
+    g_assert_cmphex(si_test_display_pixel(qts, 50, 60), ==, 0x00ff0000);
+    g_assert_cmphex(si_test_display_pixel(qts, 51, 61), ==, 0x00ffffff);
+    /* The masked-off pixel between them is untouched. */
+    g_assert_cmphex(si_test_display_pixel(qts, 51, 60), ==, 0);
+
+    /* Disabling removes it again. */
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1d, 0x0000));
+    g_assert_cmphex(si_test_display_pixel(qts, 50, 60), ==, 0);
 
     qtest_quit(qts);
 }
@@ -2281,6 +2467,8 @@ int main(int argc, char **argv)
                    test_direct_fill_and_reset);
     qtest_add_func("sn0/origin2000/mgras/fill-mask-reads-colormasklsbsa",
                    test_fill_mask_reads_colormasklsbsa);
+    qtest_add_func("sn0/origin2000/mgras/ir-alias-execute",
+                   test_ir_alias_execute);
     qtest_add_func("sn0/origin2000/mgras/direct-glyph-row",
                    test_direct_glyph_row);
     qtest_add_func("sn0/origin2000/mgras/direct-glyph-row-width-cap",
@@ -2289,6 +2477,10 @@ int main(int argc, char **argv)
                    test_char_l_execute_is_not_a_glyph_trigger);
     qtest_add_func("sn0/origin2000/mgras/display-surface-conversion",
                    test_display_surface_conversion);
+    qtest_add_func("sn0/origin2000/mgras/pseudocolor-scanout-looks-up-cmap",
+                   test_pseudocolor_scanout_looks_up_cmap);
+    qtest_add_func("sn0/origin2000/mgras/cursor-composites-when-enabled",
+                   test_cursor_composites_when_enabled);
     qtest_add_func("sn0/origin2000/mgras/direct-pio-pixel-pairs",
                    test_direct_pio_pixel_pairs);
     qtest_add_func("sn0/origin2000/mgras/vc3-sram-round-trip",
