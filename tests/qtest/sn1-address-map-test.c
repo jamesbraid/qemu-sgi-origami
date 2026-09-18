@@ -3178,7 +3178,14 @@ static void test_cpu_count_is_exact(const void *data)
     };
 
     assert_qemu_rejects(one_args, "Invalid SMP CPUs 1");
-    assert_qemu_rejects(three_args, "Invalid SMP CPUs 3");
+    /*
+     * 3 sits inside [min_cpus, max_cpus] now that the machine accepts
+     * both two and four processors, so core QEMU's own bounds check
+     * lets it through and the topology's own population check is what
+     * refuses it -- the same check "-smp 3" always exercised, its
+     * message just used to be masked by the tighter core bound.
+     */
+    assert_qemu_rejects(three_args, "does not accept 3 CPUs");
 }
 
 static void test_ram_size_is_exact(const void *data)

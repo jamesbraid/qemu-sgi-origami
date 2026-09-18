@@ -83,9 +83,17 @@ typedef struct SN1NodeState {
     MemoryRegion bedrock_node;
     MemoryRegion hub_local_register_head;
     MemoryRegion hub_local_register_tail;
-    MemoryRegion cpu_c_local_pi_xtalk;
-    MemoryRegion cpu_c_local_pi_hub_head;
-    MemoryRegion cpu_c_local_pi_hub_tail;
+    /*
+     * OpenBSD expects a local PI access to select the requester's own
+     * interface (sn1_node_create_bedrock()); indexed by logical CPU, one
+     * entry per processor this node realizes whose physical slot sits on
+     * processor interface 1 -- at most two of the four (both are used only
+     * in the four-processor population; the two-processor population
+     * fits one).
+     */
+    MemoryRegion cpu_local_pi_xtalk[SGI_SN1_NODE_MAX_CPUS];
+    MemoryRegion cpu_local_pi_hub_head[SGI_SN1_NODE_MAX_CPUS];
+    MemoryRegion cpu_local_pi_hub_tail[SGI_SN1_NODE_MAX_CPUS];
     MemoryRegion hub_remote_register_head;
     MemoryRegion hub_remote_register_tail;
 
