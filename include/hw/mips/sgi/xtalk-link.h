@@ -152,4 +152,33 @@ bool sgi_xtalk_crossbow_link_finish(SGIXtalkCrossbowLink *link, Object *owner,
                                     const char *name, SGIXbowState *xbow,
                                     unsigned int widget, Error **errp);
 
+/*
+ * The XBridge link: an SN1 node's Bedrock joined to its own XBridge's
+ * port 0xa (the host port the datasheet observes, docs/datasheets/
+ * xbridge.md). Not the Crossbow link above under a new name: that link's
+ * shape is the SN0 Hub's own packet header and register-offset layout
+ * end to end (SN0NodeState, sn0_hub_address_map, the Hub's
+ * widget-relative "xtalk-io" property), none of which exists on SN1.
+ * The XBridge's crossbar section routes by destination widget exactly
+ * as a Crossbow does -- this is not a hardware difference -- but the two
+ * chips this link joins attach through their own typed property
+ * surfaces (the Bedrock's "widget-N" links, the XBridge's "fabric"
+ * link), not through an xbow's ingress/packet_ingress address-space
+ * routing, so there is no state for a link struct to own and nothing to
+ * share with the Crossbow link's code.
+ *
+ * Unlike the Crossbow link, an XBridge's own per-widget views exist from
+ * instance init (hw/pci-host/sgi-xbridge.c's chip_init()), so connecting
+ * needs no deferred finish() once the chip realizes: this installs the
+ * Bedrock's packet-receiving face as the chip's "fabric" property --
+ * what its own widget-0 conditions and both heads' interrupts reach the
+ * host through -- before the chip realizes. Reading back each of the
+ * machine's chosen widgets' own cpu_face() and handing them to the
+ * Bedrock's own "widget-N" properties is the caller's job, exactly as a
+ * widget port's own typed acceptance already works elsewhere in this
+ * file; that direction needs no link-owned state either.
+ */
+bool sgi_xtalk_xbridge_link_connect(Object *bedrock_port, DeviceState *xbridge,
+                                    Error **errp);
+
 #endif /* HW_MIPS_SGI_XTALK_LINK_H */

@@ -1008,10 +1008,15 @@ static bool sgi_machine_instantiate_baseio_card(
 
 /*
  * The IO-8's fixed devices: an sgi-baseio (the "io8" preset) on the
- * Bedrock node's own XBridge, at the head the node exposes as the
- * "io8-pci-bus" link property (sn1-node.c, once the node has realized).
- * The XBridge always answers both of its heads -- one carries the IO-8,
- * the other stays inert (docs/datasheets/xbridge.md) -- so an io_boards
+ * Bedrock node's own XBridge head F, reached through
+ * sn1_node_xbridge_pci_bus() (sn1-node.c) with this attachment's own
+ * widget number -- the same attachment record every other product's
+ * direct-attach board reads its widget from (Origin 200's onboard
+ * Bridge in sgi_machine_instantiate_ip29_io(); an attachment with
+ * crossbar_index -1, so sgi_machine_index_xtalk_attachments() already
+ * buckets it as a board-owning entry rather than a Crossbow one). The
+ * XBridge always answers both of its heads -- one carries the IO-8, the
+ * other stays inert (docs/datasheets/xbridge.md) -- so an io_boards
  * entry with no fitted IOC3 one-wire serial names the empty head, and
  * building nothing for it is correct, not a fault. Resolves every
  * backend id from this record and the command line, the policy
@@ -1022,7 +1027,7 @@ static bool sgi_machine_instantiate_io8(
     const SGIModelIoBoard *record, unsigned int board_index,
     const SGIModelXtalkAttachment *attachment, Error **errp)
 {
-    DeviceState *node = s->bedrock_nodes[attachment->node_index];
+    SN1NodeState *node = SN1_NODE(s->bedrock_nodes[attachment->node_index]);
     DeviceState *baseio;
     PCIBus *bus;
 
@@ -1030,8 +1035,7 @@ static bool sgi_machine_instantiate_io8(
         return true;
     }
 
-    bus = PCI_BUS(object_property_get_link(OBJECT(node), "io8-pci-bus",
-                                           &error_abort));
+    bus = sn1_node_xbridge_pci_bus(node, attachment->widget);
     baseio = qdev_new(TYPE_SGI_BASEIO);
     object_property_add_child(OBJECT(node), "baseio", OBJECT(baseio));
     qdev_prop_set_string(baseio, "preset", "io8");

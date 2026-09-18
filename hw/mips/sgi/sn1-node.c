@@ -9,10 +9,11 @@
  * the PROM/flash policy, the node's own address-space views, the CPUs,
  * Bedrock, L1 and the XBridge, a fitted part of the IP45 node board
  * itself (docs/designs/sn-machine-model-architecture.md, "Node
- * devices"). The IO-8's fixed devices are a separate sgi-baseio (the
- * "io8" preset, hw/mips/sgi/baseio.c) on the chip's own head F -- see
- * sn1_node_build_io8()'s own comment for why it is built here rather
- * than in sn-machine.c directly.
+ * devices"). The Bedrock's crosstalk port and the XBridge's port 0xa
+ * connect through the XBridge link (hw/mips/sgi/xtalk-link.c) before
+ * either realizes. The IO-8's fixed devices are a separate sgi-baseio
+ * (the "io8" preset, hw/mips/sgi/baseio.c) the machine places on the
+ * chip's own head F, through sn1_node_xbridge_pci_bus() below.
  *
  * Node strides, window splits and unit offsets are Bedrock hardware
  * facts, not configuration, so the addresses below are constants here
@@ -35,6 +36,8 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/mips/sgi/baseio.h"
 #include "hw/mips/sgi/sn-machine.h"
+#include "hw/mips/sgi/xtalk-link.h"
+#include "hw/mips/sgi-xtalk-port.h"
 #include "hw/pci-host/sgi-xbridge.h"
 #include "hw/misc/sgi-bedrock.h"
 #include "hw/misc/sgi-bedrock-flash.h"
@@ -817,15 +820,17 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
      * The XBridge is a fitted part of the IP45 node board itself, as the
      * L1 and the boot flash are (docs/designs/sn-machine-model-architecture.md,
      * "Node devices"): this file creates it directly, the family builder's
-     * own device like every other product's onboard base I/O, against
-     * Bedrock's own crosstalk egress region (sysbus_init_mmio() has
-     * already given the not-yet-realized Bedrock device that region).
-     * The IO-8's fixed devices are a separate sgi-baseio (the "io8"
-     * preset) the machine places on the chip's own head F, through the
-     * same board path every other product's base I/O goes through
-     * (sgi_machine_instantiate_io_board() in sn-machine.c); this file
-     * only exposes that head's PCI bus once the chip itself has
-     * realized.
+     * own device like every other product's onboard base I/O. The
+     * crosstalk port experiment's link pattern joins it to the Bedrock's
+     * own crosstalk port before either realizes: the XBridge link
+     * (hw/mips/sgi/xtalk-link.c) installs the Bedrock's packet face as
+     * the chip's "fabric" -- what its own widget-0 conditions and both
+     * heads' interrupts reach the host through. The IO-8's fixed devices
+     * are a separate sgi-baseio (the "io8" preset) the machine places on
+     * the chip's own head F, through the same board path every other
+     * product's base I/O goes through (sgi_machine_instantiate_io_board()
+     * in sn-machine.c, via sn1_node_xbridge_pci_bus() below) once the
+     * chip itself has realized.
      */
     node->xbridge = qdev_new(TYPE_SGI_XBRIDGE);
     object_property_add_child(OBJECT(node), "xbridge", OBJECT(node->xbridge));
@@ -834,38 +839,36 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                          sgi_baseio_preset_lookup("io8")->board_part);
     qdev_prop_set_uint64(node->xbridge, "onewire-serial-f",
                          SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL);
-    object_property_set_link(
-        OBJECT(node->xbridge), "fabric",
-        OBJECT(sysbus_mmio_get_region(SYS_BUS_DEVICE(node->bedrock), 2)),
-        &error_abort);
+    if (!sgi_xtalk_xbridge_link_connect(
+            OBJECT(&SGI_BEDROCK(node->bedrock)->io), node->xbridge, errp)) {
+        return false;
+    }
     if (!sysbus_realize(SYS_BUS_DEVICE(node->xbridge), errp)) {
         return false;
     }
-    /*
-     * The head-F PCI bus, as a link property: the machine places the
-     * IO-8's fixed devices on it once every node this run builds has
-     * realized (sgi_machine_instantiate_io_board(), the same board path
-     * every other product's base I/O goes through), not before.
-     */
-    object_property_add_const_link(
-        OBJECT(node), "io8-pci-bus",
-        OBJECT(sgi_xbridge_pci_bus(SGI_XBRIDGE(node->xbridge), 0xf)));
 
     /*
      * Every widget the crossbar decodes: the host's own local view (widget
      * zero) plus one per xtalk attachment, including a board slot with
      * nothing plugged in -- its head still answers "no PCI device here"
      * through the chip itself, which a widget left undecoded could not.
+     * Read through the crosstalk port interface, as any other widget
+     * attachment in this tree does, rather than the chip's own view
+     * accessor directly.
      */
     for (i = 0; i < node->xbridge_widget_count; i++) {
         g_autofree char *property =
             g_strdup_printf("widget-%u", node->xbridge_widgets[i]);
+        MemoryRegion *face = sgi_xtalk_port_cpu_face(OBJECT(node->xbridge),
+                                                     node->xbridge_widgets[i]);
 
-        object_property_set_link(
-            OBJECT(node->bedrock), property,
-            OBJECT(sgi_xbridge_widget_view(SGI_XBRIDGE(node->xbridge),
-                                           node->xbridge_widgets[i])),
-            &error_abort);
+        if (!face) {
+            error_setg(errp, "XBridge widget %u has no crosstalk face",
+                      node->xbridge_widgets[i]);
+            return false;
+        }
+        object_property_set_link(OBJECT(node->bedrock), property,
+                                 OBJECT(face), &error_abort);
     }
 
     sysbus_realize(SYS_BUS_DEVICE(node->bedrock), &error_fatal);
@@ -1025,6 +1028,11 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
         }
     }
     return true;
+}
+
+PCIBus *sn1_node_xbridge_pci_bus(SN1NodeState *node, unsigned int widget)
+{
+    return sgi_xbridge_pci_bus(SGI_XBRIDGE(node->xbridge), widget);
 }
 
 static void sn1_node_realize(DeviceState *dev, Error **errp)

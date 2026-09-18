@@ -50,8 +50,9 @@ typedef struct SN1NodeState {
      * realize -- the compiled catalogue this node builds from
      * (qapi/sgi-sn.json). The IO-8's own populated-board record is the
      * machine's own concern now (sgi_machine_instantiate_io_board() in
-     * sn-machine.c): this node exposes the "io8-pci-bus" link property
-     * instead of taking the record as a property of its own.
+     * sn-machine.c): this node exposes the chip's PCI bus through
+     * sn1_node_xbridge_pci_bus() instead of taking the record as a
+     * property of its own.
      */
     const SGIModelNode *model_node;
     /*
@@ -143,5 +144,16 @@ void sn1_node_full_reset(SN1NodeState *node, ResetType type);
 bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
                           const uint8_t *contents, uint64_t length,
                           Error **errp);
+
+/*
+ * The PCI bus behind one of the node's own XBridge heads (0xe or 0xf),
+ * for the machine to place a populated head's fixed devices on
+ * (sgi_machine_instantiate_io8() in sn-machine.c) -- the same attachment
+ * path Origin 200's direct board and Origin 2000's Crossbow board both
+ * read their own crosstalk widget from, since node->xbridge is a fitted
+ * part of this node's own board (decision D-0026) rather than something
+ * a board-owning attachment builds. The node must already be realized.
+ */
+PCIBus *sn1_node_xbridge_pci_bus(SN1NodeState *node, unsigned int widget);
 
 #endif /* HW_MIPS_SGI_SN1_NODE_H */
