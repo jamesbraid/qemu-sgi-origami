@@ -78,6 +78,17 @@
 #define HUB_IO_XTALK_TIMEOUT    0x4003b8
 #define HUB_IO_XTALK_PRESCALE   0x4003c0
 
+/*
+ * Graphics node/widget routing, two entries: which node, processor and
+ * widget a graphics interrupt targets. Bits 3:0 widget number, bits 12:4
+ * node number, bit 16 processor, bit 20 valid (public SN0 hubio.h
+ * IIO_IGFX_INIT layout). Plain storage: the low 21 bits store, the rest
+ * read and write as zero.
+ */
+#define HUB_IO_GFX_INIT_0       0x400140
+#define HUB_IO_GFX_INIT_1       0x400148
+#define IO_GFX_INIT_MASK        0x1fffffU    /* bits 20:0 */
+
 /* Scratch: a 36-bit word of four sub-fields, firmware's private boot state. */
 #define HUB_IO_SCRATCH_0        0x400150
 #define HUB_IO_SCRATCH_1        0x400158
@@ -276,6 +287,28 @@
 #define HUB_PI_RT_LOCAL_CTRL    0x000160
 #define PI_RT_LOCAL_CTRL_MASK   0x100ffULL
 #define PI_RT_LOCAL_CTRL_RESET  0x10000ULL
+
+/*
+ * Graphics flow control, per processor (hub-processor-interface datasheet,
+ * "Graphics flow control"): the attached pipe's page address, a credit
+ * counter the pipe's driver seeds and polls against a bias it also writes,
+ * and an interrupt counter/compare pair. Plain storage -- see the
+ * datasheet for the stated approximation.
+ */
+#define HUB_PI_GFX_PAGE_A          0x000300
+#define HUB_PI_GFX_CREDIT_A        0x000308
+#define HUB_PI_GFX_BIAS_A          0x000310
+#define HUB_PI_GFX_INT_COUNT_A     0x000318
+#define HUB_PI_GFX_INT_COMPARE_A   0x000320
+#define HUB_PI_GFX_PAGE_B          0x000328
+#define HUB_PI_GFX_CREDIT_B        0x000330
+#define HUB_PI_GFX_BIAS_B          0x000338
+#define HUB_PI_GFX_INT_COUNT_B     0x000340
+#define HUB_PI_GFX_INT_COMPARE_B   0x000348
+#define PI_GFX_CREDIT_MASK         0xfffU        /* 12 bits */
+#define PI_GFX_BIAS_MASK           0xfffU        /* 12 bits */
+#define PI_GFX_INT_COUNT_MASK      0x3ffffffU    /* 26 bits */
+#define PI_GFX_INT_COMPARE_MASK    0x3ffffffU    /* 26 bits */
 
 /* I/O interface: the crossbar link. */
 #define HUB_IO_LINK_STATUS      0x400128
@@ -3224,6 +3257,40 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .field = offsetof(SGIHubState, pi_rt_local_ctrl), .width = 8,
       .flags = HUB_REG_STORE | HUB_REG_DIAG,
       .wmask = PI_RT_LOCAL_CTRL_MASK },
+    { .offset = HUB_PI_GFX_PAGE_A, .arg = 0,
+      .field = offsetof(SGIHubState, pi_gfx_page[0]), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = ~0ULL },
+    { .offset = HUB_PI_GFX_CREDIT_A, .arg = 0,
+      .field = offsetof(SGIHubState, pi_gfx_credit[0]), .width = 4,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = PI_GFX_CREDIT_MASK },
+    { .offset = HUB_PI_GFX_BIAS_A, .arg = 0,
+      .field = offsetof(SGIHubState, pi_gfx_bias[0]), .width = 4,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = PI_GFX_BIAS_MASK },
+    { .offset = HUB_PI_GFX_INT_COUNT_A, .arg = 0,
+      .field = offsetof(SGIHubState, pi_gfx_int_count[0]), .width = 4,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG,
+      .wmask = PI_GFX_INT_COUNT_MASK },
+    { .offset = HUB_PI_GFX_INT_COMPARE_A, .arg = 0,
+      .field = offsetof(SGIHubState, pi_gfx_int_compare[0]), .width = 4,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG,
+      .wmask = PI_GFX_INT_COMPARE_MASK },
+    { .offset = HUB_PI_GFX_PAGE_B, .arg = 1,
+      .field = offsetof(SGIHubState, pi_gfx_page[1]), .width = 8,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = ~0ULL },
+    { .offset = HUB_PI_GFX_CREDIT_B, .arg = 1,
+      .field = offsetof(SGIHubState, pi_gfx_credit[1]), .width = 4,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = PI_GFX_CREDIT_MASK },
+    { .offset = HUB_PI_GFX_BIAS_B, .arg = 1,
+      .field = offsetof(SGIHubState, pi_gfx_bias[1]), .width = 4,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = PI_GFX_BIAS_MASK },
+    { .offset = HUB_PI_GFX_INT_COUNT_B, .arg = 1,
+      .field = offsetof(SGIHubState, pi_gfx_int_count[1]), .width = 4,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG,
+      .wmask = PI_GFX_INT_COUNT_MASK },
+    { .offset = HUB_PI_GFX_INT_COMPARE_B, .arg = 1,
+      .field = offsetof(SGIHubState, pi_gfx_int_compare[1]), .width = 4,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG,
+      .wmask = PI_GFX_INT_COMPARE_MASK },
     { .offset = HUB_PI_ERR_PENDING,
       .flags = HUB_REG_DIAG,
       .peek = sgi_hub_peek_zero, .write = sgi_hub_write_err_pending },
@@ -3315,6 +3382,12 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .flags = HUB_REG_DIAG, .store = sgi_hub_store_link_status },
     { .offset = HUB_IO_LLP_LOG,
       .read = sgi_hub_read_llp_log, .write = sgi_hub_write_llp_log },
+    { .offset = HUB_IO_GFX_INIT_0, .arg = 0,
+      .field = offsetof(SGIHubState, io_gfx_init[0]), .width = 4,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = IO_GFX_INIT_MASK },
+    { .offset = HUB_IO_GFX_INIT_1, .arg = 1,
+      .field = offsetof(SGIHubState, io_gfx_init[1]), .width = 4,
+      .flags = HUB_REG_STORE | HUB_REG_DIAG, .wmask = IO_GFX_INIT_MASK },
     { .offset = HUB_IO_SCRATCH_0, .arg = 0,
       .field = offsetof(SGIHubState, io_scratch[0]), .width = 8,
       .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_TRACE_COORD,
@@ -3917,6 +3990,11 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
     memset(s->pi_rt_pending, 0, sizeof(s->pi_rt_pending));
     memset(s->pi_rt_enable, 0, sizeof(s->pi_rt_enable));
     s->pi_rt_local_ctrl = PI_RT_LOCAL_CTRL_RESET;
+    memset(s->pi_gfx_page, 0, sizeof(s->pi_gfx_page));
+    memset(s->pi_gfx_credit, 0, sizeof(s->pi_gfx_credit));
+    memset(s->pi_gfx_bias, 0, sizeof(s->pi_gfx_bias));
+    memset(s->pi_gfx_int_count, 0, sizeof(s->pi_gfx_int_count));
+    memset(s->pi_gfx_int_compare, 0, sizeof(s->pi_gfx_int_compare));
     for (n = 0; n < SGI_HUB_PROCESSORS; n++) {
         timer_del(s->rt_timer[n]);
     }
@@ -3959,6 +4037,7 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
     s->io_xtalk_prescale = 0;
     s->io_scratch[0] = 0;
     s->io_scratch[1] = 0;
+    memset(s->io_gfx_init, 0, sizeof(s->io_gfx_init));
     s->pi_rt_alive_seen = false;
 
     /* No transfer is ever in flight, so zeroing the registers is the reset. */
@@ -4562,7 +4641,7 @@ static int sgi_hub_pre_save(void *opaque)
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 28,
+    .version_id = 29,
     .minimum_version_id = 1,
     .pre_save = sgi_hub_pre_save,
     .post_load = sgi_hub_post_load,
@@ -4617,6 +4696,17 @@ static const VMStateDescription vmstate_sgi_hub = {
                               SGI_HUB_PROCESSORS, 19),
         VMSTATE_UINT64_V(pi_rt_local_ctrl, SGIHubState, 10),
         VMSTATE_BOOL_V(pi_rt_alive_seen, SGIHubState, 28),
+        VMSTATE_UINT64_ARRAY_V(pi_gfx_page, SGIHubState, SGI_HUB_PROCESSORS,
+                               29),
+        VMSTATE_UINT32_ARRAY_V(pi_gfx_credit, SGIHubState,
+                               SGI_HUB_PROCESSORS, 29),
+        VMSTATE_UINT32_ARRAY_V(pi_gfx_bias, SGIHubState, SGI_HUB_PROCESSORS,
+                               29),
+        VMSTATE_UINT32_ARRAY_V(pi_gfx_int_count, SGIHubState,
+                               SGI_HUB_PROCESSORS, 29),
+        VMSTATE_UINT32_ARRAY_V(pi_gfx_int_compare, SGIHubState,
+                               SGI_HUB_PROCESSORS, 29),
+        VMSTATE_UINT32_ARRAY_V(io_gfx_init, SGIHubState, 2, 29),
         /* The registers are the whole of an engine's state. */
         VMSTATE_UINT64_ARRAY_V(bte_length, SGIHubState, SGI_HUB_BTES, 17),
         VMSTATE_UINT64_ARRAY_V(bte_source, SGIHubState, SGI_HUB_BTES, 17),
