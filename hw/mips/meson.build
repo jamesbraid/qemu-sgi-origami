@@ -30,10 +30,11 @@ mips_ss.add(when: 'CONFIG_SGI_SN0',
 mips_ss.add(when: 'CONFIG_SGI_SN1',
             if_true: files('sgi/sn1.c', 'sgi/sn1-node.c',
                            'sgi/sn1-topology.c'))
-# The crosstalk port interface: shared by whichever machines build
-# crosstalk boards or links, so it selects on its own Kconfig symbol
-# rather than either machine's.
+# The crosstalk port interface and the two link kinds that connect it:
+# shared by whichever machines build crosstalk boards or links, so each
+# selects on its own Kconfig symbol rather than either machine's.
 mips_ss.add(when: 'CONFIG_SGI_XTALK_PORT', if_true: files('sgi/xtalk-port.c'))
+mips_ss.add(when: 'CONFIG_SGI_XTALK_LINK', if_true: files('sgi/xtalk-link.c'))
 # The crosstalk board base class: shared by SN0 and SN1 I/O boards, so it
 # selects on its own Kconfig symbol rather than either machine's.
 mips_ss.add(when: 'CONFIG_SGI_XTALK_BOARD', if_true: files('sgi/xtalk-board.c'))

@@ -38,7 +38,9 @@
 #include "hw/core/qdev-properties-system.h"
 #include "hw/core/sysbus.h"
 #include "hw/1wire/crc.h"
+#include "hw/mips/sgi-xtalk-port.h"
 #include "hw/mips/sgi/xtalk-board.h"
+#include "hw/mips/sgi/xtalk-link.h"
 #include "hw/misc/sgi-elsc.h"
 #include "hw/misc/sgi-hub.h"
 #include "hw/misc/sgi-router.h"
@@ -144,7 +146,6 @@ static const SN0ModelHardware sgi_sn0_hub_hardware = {
  */
 #define SGI_SN0_PROM_PI_PROBE_WIDGET        2
 #define SGI_SN0_PROM_PI_PROBE_OFFSET        0x400208ULL
-#define SGI_SN0_PROM_PI_PROBE_WINDOW_OFFSET 0x208ULL
 
 /*
  * Which node and widget a crossbar-attached node's own refusing processor
@@ -190,8 +191,6 @@ struct SGIMachineState {
     SN0NodeState **nodes;
     SN0ModelPhysicalNode *physical_nodes;  /* Read by sn0.c's node builder. */
     SN0ModelComponent *hub_components;
-    MemoryRegion *widget0;      /* Origin 200 onboard widget-fanout aliases. */
-    MemoryRegion (*widget_alias)[SN0_XTALK_WIDGETS];
     MemoryRegion *big_window_route;
 
     SN0FabricState *fabric;
@@ -201,6 +200,14 @@ struct SGIMachineState {
     /* Realized only once every board has queued; see attach_crossbars. */
     SGIXbowState **crossbars;
     Notifier machine_done;
+
+    /*
+     * A directly attached board's own crosstalk wiring: one link per
+     * io_boards[] entry that attaches without a Crossbow (Origin 200's
+     * onboard I/O). Unused entries (a Crossbow-attached board's own)
+     * stay zeroed.
+     */
+    SGIXtalkDirectLink *direct_links;
 
     /*
      * One sgi-xtalk-board per io_boards[] entry, built before its own
@@ -1332,57 +1339,11 @@ DeviceState *sgi_machine_build_bedrock_io_board(
 }
 
 /*
- * The Bridge's own device-window region the PROM's fixed widget-2 probe
- * reads (see the probe's own definition above), dispatched to directly:
- * see the field comment on SN0NodeState's own prom_pi_probe_window for
- * why an address space cannot stand in for this one dispatch.
- */
-static MemTxResult sgi_machine_prom_pi_probe_read(void *opaque, hwaddr addr,
-                                                   uint64_t *data,
-                                                   unsigned int size,
-                                                   MemTxAttrs attrs)
-{
-    SN0NodeState *node = opaque;
-
-    if (addr == 0 && size == 8) {
-        *data = 0;
-        sgi_hub_latch_prom_pi_error(&node->hub);
-        return MEMTX_ERROR;
-    }
-    return memory_region_dispatch_read(
-        node->prom_pi_probe_window,
-        SGI_SN0_PROM_PI_PROBE_WINDOW_OFFSET + addr, data,
-        size_memop(size) | MO_BE, attrs);
-}
-
-static MemTxResult sgi_machine_prom_pi_probe_write(void *opaque, hwaddr addr,
-                                                    uint64_t data,
-                                                    unsigned int size,
-                                                    MemTxAttrs attrs)
-{
-    SN0NodeState *node = opaque;
-
-    return memory_region_dispatch_write(
-        node->prom_pi_probe_window,
-        SGI_SN0_PROM_PI_PROBE_WINDOW_OFFSET + addr, data,
-        size_memop(size) | MO_BE, attrs);
-}
-
-static const MemoryRegionOps sgi_machine_prom_pi_probe_ops = {
-    .read_with_attrs = sgi_machine_prom_pi_probe_read,
-    .write_with_attrs = sgi_machine_prom_pi_probe_write,
-    .endianness = DEVICE_BIG_ENDIAN,
-    .valid.min_access_size = 1,
-    .valid.max_access_size = 8,
-    .impl.min_access_size = 1,
-    .impl.max_access_size = 8,
-};
-
-/*
  * Origin 2000's PROM PI-error probe, through the node's crosstalk
  * container at a fixed widget-2 offset: a zero-length read latches the
- * PI error like Origin 200's probe above; other accesses cross the
- * node's own crosstalk address space.
+ * PI error the same way Origin 200's direct-link probe does (hw/mips/
+ * sgi/xtalk-link.c); other accesses cross the node's own crosstalk
+ * address space.
  */
 #define ORIGIN2000_HUB_IO_BUS_ERROR 0x02400208
 #define ORIGIN2000_HUB_IO_BUS_ERROR_WIDGET 2
@@ -1832,73 +1793,14 @@ static bool sgi_machine_instantiate_io_board(
      */
     if (direct) {
         SN0NodeState *node = s->nodes[attachment->node_index];
-        const SN0ModelRegion *bridge_region =
-            &sgi_sn0_hub_address_map.bridge_registers;
-        g_autofree char *widget0_name = g_strdup_printf(
-            "sn0.node%u.xtalk.widget0", attachment->node_index);
-        unsigned int widget, window;
-        SGIBridgeState *bridge;
 
-        g_assert(memory_region_size(board->cpu_face) == bridge_region->size);
-        memory_region_init_alias(&s->widget0[board_index], OBJECT(s),
-                                 widget0_name, board->cpu_face, 0,
-                                 bridge_region->size);
-        memory_region_add_subregion(
-            &node->xtalk, SN0_XTALK_BASE(attachment->discovery_widget),
-            &s->widget0[board_index]);
-        /*
-         * The board's own enumerated widget, separate from the discovery
-         * widget above but reaching the same onboard Bridge, so an
-         * overlapping alias, not a second owner, covers it too.
-         */
-        memory_region_add_subregion_overlap(
-            &node->xtalk, SN0_XTALK_BASE(attachment->widget), board->cpu_face,
-            -1);
-
-        for (widget = 0; widget < SN0_XTALK_WIDGETS; widget++) {
-            g_autofree char *widget_name = NULL;
-
-            if (!(attachment->decoded_widget_mask & (1u << widget)) ||
-                widget == attachment->discovery_widget ||
-                widget == attachment->widget) {
-                continue;
-            }
-            widget_name = g_strdup_printf("sn0.node%u.xtalk.widget%u",
-                                          attachment->node_index, widget);
-            memory_region_init_alias(&s->widget_alias[board_index][widget],
-                                     OBJECT(s), widget_name, board->cpu_face,
-                                     0, bridge_region->size);
-            memory_region_add_subregion(
-                &node->xtalk, SN0_XTALK_BASE(widget),
-                &s->widget_alias[board_index][widget]);
+        if (!sgi_xtalk_direct_link_connect(
+                &s->direct_links[board_index], OBJECT(s), node, OBJECT(board),
+                attachment->discovery_widget, attachment->widget,
+                attachment->decoded_widget_mask, SGI_SN0_PROM_PI_PROBE_WIDGET,
+                SGI_SN0_PROM_PI_PROBE_OFFSET, errp)) {
+            return false;
         }
-
-        /*
-         * This board's own Bridge, then whichever of its eight windows
-         * the fixed probe offset falls in.
-         */
-        bridge = SGI_BRIDGE(
-            object_resolve_path_component(OBJECT(board), "bridge"));
-        g_assert(bridge);
-        for (window = 0; window < SGI_BRIDGE_DEVICES; window++) {
-            MemoryRegion *candidate = &bridge->device_window_mem[window];
-
-            if (SGI_SN0_PROM_PI_PROBE_OFFSET >= candidate->addr &&
-                SGI_SN0_PROM_PI_PROBE_OFFSET - candidate->addr <
-                    memory_region_size(candidate)) {
-                break;
-            }
-        }
-        g_assert(window < SGI_BRIDGE_DEVICES);
-        node->prom_pi_probe_window = &bridge->device_window_mem[window];
-        memory_region_init_io(&node->prom_pi_probe, OBJECT(node),
-                              &sgi_machine_prom_pi_probe_ops, node,
-                              "sn0.prom-pi-probe", 8);
-        memory_region_add_subregion_overlap(
-            &node->xtalk,
-            SN0_XTALK_BASE(SGI_SN0_PROM_PI_PROBE_WIDGET) +
-            SGI_SN0_PROM_PI_PROBE_OFFSET,
-            &node->prom_pi_probe, 1);
     } else {
         if (!sgi_xbow_attach_endpoint(
                 s->crossbars[attachment->crossbar_index], attachment->widget,
@@ -2659,9 +2561,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     s->physical_nodes = g_new0(SN0ModelPhysicalNode, node_count);
     s->hub_components = g_new0(SN0ModelComponent, node_count);
     /* Indexed by io_boards[] position, one entry per board, not by node. */
-    s->widget0 = g_new0(MemoryRegion, t->io_board_count);
-    s->widget_alias = g_malloc0(sizeof(*s->widget_alias) * t->io_board_count);
     s->io_boards = g_new0(SGIXtalkBoardState *, t->io_board_count);
+    s->direct_links = g_new0(SGIXtalkDirectLink, t->io_board_count);
     s->io_board_packet_proxy = g_new0(MemoryRegion, t->io_board_count);
     s->io_board_packet_alias = g_new0(MemoryRegion, t->io_board_count);
     s->crossbars = g_new0(SGIXbowState *, t->crossbar_count);
@@ -3036,6 +2937,7 @@ static void sgi_machine_instance_finalize(Object *obj)
     g_free(s->hub_components);
     g_free(s->crossbars);
     g_free(s->io_boards);
+    g_free(s->direct_links);
     g_free(s->io_board_packet_proxy);
     g_free(s->io_board_packet_alias);
     g_free(s->node_inbound);

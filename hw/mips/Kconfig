@@ -58,6 +58,7 @@ config SGI_SN0
     select SGI_PCI_EXPANSION
     select SGI_ROUTER
     select SGI_XBOW
+    select SGI_XTALK_LINK
     select TIGON
 
 config SGI_SN1
@@ -75,6 +76,10 @@ config SGI_SN1
 
 config SGI_XTALK_PORT
     bool
+
+config SGI_XTALK_LINK
+    bool
+    select SGI_XTALK_PORT
 
 config SGI_XTALK_BOARD
     bool
