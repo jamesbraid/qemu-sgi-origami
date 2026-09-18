@@ -322,6 +322,38 @@ static void test_origin2000_onboard_board_is_xio_baseio(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The node-types step lets a Bedrock topology carry more than one node in
+ * the descriptor: nothing in the builder asserts node_count == 1 for
+ * Bedrock any more. No shipped product exercises this yet (the
+ * two-chassis Origin 300 stays reference-only in the compiled
+ * catalogue), so this drives the real builder over
+ * sn-builder-fault-test.c's own synthetic two-node fixture instead: two
+ * Bedrock nodes, each with its own populated IO-8 board at its own
+ * attachment, no controllers. The builder's population/memory
+ * validation and the node loop's per-node board/widget selection both
+ * run for two nodes here -- proving neither one is hardcoded to a
+ * single Bedrock node any more -- and every node becomes a real,
+ * configured device. What still refuses, by name, is realize: sn1-node.c
+ * maps a fixed, unstrided address-space view per node (a hardware path
+ * that exists for one node only, since no shipped Origin 300 carries a
+ * second chassis and nothing gives a second node its own remote-space
+ * stride yet), so a second node's hardware would collide with the
+ * first's. This is the expected, current boundary, not a crash: the
+ * machine reports it and exits cleanly.
+ */
+static void test_bedrock_topology_accepts_two_nodes(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "sn-builder-bedrock-test,activate=on",
+        "-m", "128M", "-smp", "2,sockets=2,cores=1,threads=1",
+        "-display", "none", NULL
+    };
+
+    assert_qemu_rejects(args, "names 2 Bedrock nodes; multi-node Bedrock "
+                        "hardware wiring is not modeled yet");
+}
+
 static void test_unsupported_memory_population_rejected(const void *data)
 {
     /*
@@ -356,6 +388,8 @@ int main(int argc, char **argv)
                         NULL, test_node_without_xtalk_attachment_rejected);
     qtest_add_data_func("sn/builder/unsupported-memory-population-rejected",
                         NULL, test_unsupported_memory_population_rejected);
+    qtest_add_data_func("sn/builder/bedrock-topology-accepts-two-nodes",
+                        NULL, test_bedrock_topology_accepts_two_nodes);
     qtest_add_data_func("sn/builder/origin200-accepts-its-cpu-populations",
                         NULL, test_origin200_accepts_its_cpu_populations);
     qtest_add_data_func("sn/builder/origin200-accepts-its-memory-populations",

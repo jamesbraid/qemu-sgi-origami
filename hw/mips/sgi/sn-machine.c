@@ -183,8 +183,14 @@ struct SGIMachineState {
     bool junk_uart_present;
     uint8_t elsc_dip_switches;
 
-    /* The Bedrock node, for a topology whose node kind is Bedrock. */
-    DeviceState *bedrock_node;
+    /*
+     * The Bedrock nodes, for a topology whose node kind is Bedrock: one
+     * per t->nodes entry, the way s->nodes is for a Hub topology. The
+     * shipped Origin 300 carries one; a second is descriptor data the
+     * builder accepts without exercising it (see sn-builder-test.c's
+     * synthetic two-node fixture).
+     */
+    DeviceState **bedrock_nodes;
 
     /*
      * The Origin 300/350 L1's identity-record file lists. One machine
@@ -1424,6 +1430,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     unsigned int cpu_index = 0, cpu_base = 0;
     size_t io_board_count = 0, crossbar_count = 0, node_count_check;
     uint64_t ram_offset = 0;
+    SGIModelAsicKind kind;
 
     if (!t) {
         GString *names = g_string_new(NULL);
@@ -1572,62 +1579,131 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     clock_set_hz(s->cpu_refclk,
                 sgi_machine_topology_node0(t)->cpu_slots->value->assembly->clock_hz);
 
-    if (sgi_machine_topology_node0(t)->asic_kind != SGI_MODEL_ASIC_KIND_HUB) {
+    kind = sgi_machine_topology_node0(t)->asic_kind;
+    nodes = sgi_model_node_array(t->nodes, &node_count_check);
+    g_assert(node_count_check == node_count);
+
+    /*
+     * One loop creates every node, the ASIC kind selecting the device
+     * type from this two-entry table. The two kinds share no fields, so
+     * what each configures below still differs; they no longer reach
+     * that configuration through two separate paths, one of them
+     * reachable only through an early return.
+     */
+    s->num_nodes = node_count;
+    if (kind == SGI_MODEL_ASIC_KIND_HUB) {
+        s->nodes = g_new0(SN0NodeState *, node_count);
+    } else {
+        s->bedrock_nodes = g_new0(DeviceState *, node_count);
+    }
+    for (node_index = 0; node_index < node_count; node_index++) {
+        g_autofree char *name = g_strdup_printf("node%u", node_index);
+        Object *node = object_new(kind == SGI_MODEL_ASIC_KIND_HUB ?
+                                  TYPE_SGI_SN0_NODE : TYPE_SGI_SN1_NODE);
+
+        object_property_add_child(OBJECT(machine), name, node);
+        object_unref(node);
+        if (kind == SGI_MODEL_ASIC_KIND_HUB) {
+            s->nodes[node_index] = SN0_NODE(node);
+        } else {
+            s->bedrock_nodes[node_index] = DEVICE(node);
+        }
+    }
+
+    if (kind != SGI_MODEL_ASIC_KIND_HUB) {
         g_autofree const SGIModelIoBoard **io_boards = NULL;
         g_autofree const SGIModelXtalkAttachment **attachments = NULL;
-        const SGIModelIoBoard *populated_board = NULL;
-        g_autofree unsigned int *widgets = NULL;
         size_t bedrock_io_board_count, attachment_count;
-        size_t widget_count = 0;
-        size_t i;
-        Object *node;
 
-        g_assert(node_count == 1);
         io_boards = sgi_model_io_board_array(t->io_boards,
                                              &bedrock_io_board_count);
         attachments = sgi_model_xtalk_attachment_array(t->xtalk_attachments,
                                                         &attachment_count);
-        for (i = 0; i < bedrock_io_board_count; i++) {
+        for (node_index = 0; node_index < node_count; node_index++) {
+            SN1NodeState *node = SN1_NODE(s->bedrock_nodes[node_index]);
+            const SGIModelIoBoard *populated_board = NULL;
+            g_autofree unsigned int *widgets = NULL;
+            size_t widget_count = 0;
+            size_t i;
+
             /*
              * pci_count went with the ownership-rule trim; a preset's
              * fitted IOC3 one-wire serial is the one fact left that
              * distinguishes a populated head from an empty one (Origin
              * 300's second XBridge head carries no population at all).
+             * A board names its own node through its attachment's own
+             * node-index; today's shipped topology has one node, so this
+             * is every io_boards entry.
              */
-            if (io_boards[i]->has_ioc3_serial) {
-                populated_board = io_boards[i];
+            for (i = 0; i < bedrock_io_board_count; i++) {
+                unsigned int a = io_boards[i]->attachment;
+
+                if (a < attachment_count &&
+                    attachments[a]->node_index == node_index &&
+                    io_boards[i]->has_ioc3_serial) {
+                    populated_board = io_boards[i];
+                }
             }
-        }
-        /*
-         * Widget zero is the crossbar's own local view; the rest come one
-         * per xtalk attachment (a board slot, populated or not -- see
-         * sn1-node.c's widget-wiring comment for why an empty slot still
-         * needs one). tests/unit/test-sn-model.c already checks that every
-         * Bedrock topology in the compiled catalogue ships a populated_board.
-         */
-        widgets = g_new0(unsigned int, attachment_count + 1);
-        widgets[widget_count++] = 0;
-        for (i = 0; i < attachment_count; i++) {
-            widgets[widget_count++] = attachments[i]->widget;
+            /*
+             * Widget zero is the crossbar's own local view; the rest come
+             * one per this node's own xtalk attachment (a board slot,
+             * populated or not -- see sn1-node.c's widget-wiring comment
+             * for why an empty slot still needs one). tests/unit/test-sn-
+             * model.c checks that every Bedrock topology in the compiled
+             * catalogue ships a populated_board.
+             */
+            widgets = g_new0(unsigned int, attachment_count + 1);
+            widgets[widget_count++] = 0;
+            for (i = 0; i < attachment_count; i++) {
+                if (attachments[i]->node_index != node_index) {
+                    continue;
+                }
+                widgets[widget_count++] = attachments[i]->widget;
+            }
+
+            node->model_node = nodes[node_index];
+            node->io_board = populated_board;
+            node->xbridge_widgets = g_steal_pointer(&widgets);
+            node->xbridge_widget_count = widget_count;
+            object_property_set_link(OBJECT(node), "ram",
+                                     OBJECT(machine->ram), &error_abort);
+            qdev_prop_set_uint32(DEVICE(node), "nr-cpus",
+                                 requested[node_index]);
+            qdev_connect_clock_in(DEVICE(node), "cpu-refclk", s->cpu_refclk);
         }
 
-        node = object_new(TYPE_SGI_SN1_NODE);
-        object_property_add_child(OBJECT(machine), "node0", node);
-        object_unref(node);
-        s->bedrock_node = DEVICE(node);
-        SN1_NODE(node)->model_node = sgi_machine_topology_node0(t);
-        SN1_NODE(node)->io_board = populated_board;
-        SN1_NODE(node)->xbridge_widgets = g_steal_pointer(&widgets);
-        SN1_NODE(node)->xbridge_widget_count = widget_count;
-        object_property_set_link(OBJECT(node), "ram", OBJECT(machine->ram),
-                                 &error_abort);
-        qdev_prop_set_uint32(DEVICE(node), "nr-cpus", requested[0]);
-        qdev_connect_clock_in(DEVICE(node), "cpu-refclk", s->cpu_refclk);
-        sysbus_realize(SYS_BUS_DEVICE(node), &error_fatal);
-        for (i = 0; i < requested[0]; i++) {
-            machine->possible_cpus->cpus[i].cpu =
-                CPU(SN1_NODE(node)->cpu[i]);
+        /*
+         * Every node above is a real device now, its own descriptor
+         * record and I/O board resolved: the validation and the node
+         * loop both already accept as many Bedrock nodes as the
+         * topology names. What stops here is realize, not the loop --
+         * sn1-node.c maps its whole address-space view (hub registers,
+         * the Bedrock node region, the PROM views) at fixed addresses a
+         * second node would collide with, because no shipped Origin 300
+         * carries more than one chassis yet and nothing has given a
+         * second node its own remote-space stride (the plan's
+         * board-devices and one-fabric steps track that). Refuse
+         * explicitly rather than let the second node's realize collide
+         * with the first's memory regions.
+         */
+        if (node_count > 1) {
+            error_setg(errp, "%s: topology '%s' names %u Bedrock nodes; "
+                      "multi-node Bedrock hardware wiring is not modeled "
+                      "yet", mc->name, t->name, node_count);
+            return false;
         }
+
+        for (node_index = 0; node_index < node_count; node_index++) {
+            SN1NodeState *node = SN1_NODE(s->bedrock_nodes[node_index]);
+            size_t i;
+
+            sysbus_realize(SYS_BUS_DEVICE(node), &error_fatal);
+            for (i = 0; i < requested[node_index]; i++) {
+                machine->possible_cpus->cpus[cpu_index++].cpu =
+                    CPU(node->cpu[i]);
+            }
+        }
+        g_assert(cpu_index == machine->smp.cpus);
         return true;
     }
 
@@ -1649,8 +1725,6 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     io_board_count = sgi_machine_topology_io_board_count(t);
     crossbar_count = sgi_machine_topology_crossbar_count(t);
 
-    s->num_nodes = node_count;
-    s->nodes = g_new0(SN0NodeState *, node_count);
     /* Indexed by io_boards position, one entry per board, not by node. */
     s->io_boards = g_new0(SGIXioBoardState *, io_board_count);
     s->direct_links = g_new0(SGIXtalkDirectLink, io_board_count);
@@ -1661,15 +1735,6 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
 
     node_attachment = g_new0(unsigned int, node_count);
     board_attachment = g_new0(unsigned int, io_board_count);
-
-    for (node_index = 0; node_index < node_count; node_index++) {
-        g_autofree char *name = g_strdup_printf("node%u", node_index);
-        Object *node = object_new(TYPE_SGI_SN0_NODE);
-
-        object_property_add_child(OBJECT(machine), name, node);
-        object_unref(node);
-        s->nodes[node_index] = SN0_NODE(node);
-    }
 
     sgi_machine_attach_module_identities(s, t);
 
@@ -1711,9 +1776,6 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         }
     }
     qdev_realize_and_unref(DEVICE(s->fabric), NULL, &error_fatal);
-
-    nodes = sgi_model_node_array(t->nodes, &node_count_check);
-    g_assert(node_count_check == node_count);
 
     for (node_index = 0; node_index < node_count; node_index++) {
         SN0NodeState *node = s->nodes[node_index];
@@ -1939,12 +2001,16 @@ static void sgi_machine_reset(MachineState *machine, ResetType type)
     unsigned int node, slice;
 
     /*
-     * The Bedrock node resets itself: "start-powered-off" needs its
+     * Every Bedrock node resets itself: "start-powered-off" needs its
      * cpu_reset() to run before qemu_devices_reset(), the reverse of
      * the Hub's own order below, so it cannot share this prefix.
      */
     if (t && sgi_machine_topology_node0(t)->asic_kind != SGI_MODEL_ASIC_KIND_HUB) {
-        sn1_node_full_reset(SN1_NODE(s->bedrock_node), type);
+        unsigned int i;
+
+        for (i = 0; i < s->num_nodes; i++) {
+            sn1_node_full_reset(SN1_NODE(s->bedrock_nodes[i]), type);
+        }
         return;
     }
 
@@ -2037,6 +2103,7 @@ static void sgi_machine_instance_finalize(Object *obj)
     size_t i;
 
     g_free(s->nodes);
+    g_free(s->bedrock_nodes);
     g_free(s->crossbars);
     g_free(s->io_boards);
     g_free(s->direct_links);
