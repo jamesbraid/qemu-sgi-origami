@@ -16,7 +16,7 @@
 #include "hw/core/clock.h"
 #include "hw/core/resettable.h"
 #include "hw/core/sysbus.h"
-#include "hw/mips/sgi/sn-model.h"
+#include "hw/mips/sgi/sn-catalogue.h"
 #include "cpu.h"
 #include "sn-promdata.h"
 
@@ -47,8 +47,8 @@ typedef struct SN1NodeState {
 
     /*
      * The topology's Bedrock node record and its populated I/O board
-     * (NULL if none), set by the machine before realize -- the format-2
-     * descriptor this node builds from (sn-model.h).
+     * (NULL if none), set by the machine before realize -- the compiled
+     * catalogue this node builds from (qapi/sgi-sn.json).
      */
     const SGIModelNode *model_node;
     const SGIModelIoBoard *io_board;

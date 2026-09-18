@@ -3,17 +3,17 @@
  * The abstract SGI Scalable Node family machine (QOM "sgi-sn-machine"):
  * every product's machine class parents this one, which carries the
  * family's machine properties once (topology, debug-leds, junk-uart,
- * elsc-dip-switches) and the builder that reads a format-2
- * SGIModelTopology (sn-model.h) to construct one. Origin 200 is the
- * first product on this base; see docs/plans/sn-machine-model.md,
- * "QEMU", for what else joins later.
+ * elsc-dip-switches) and the builder that reads an SGIModelTopology from
+ * the compiled catalogue (qapi/sgi-sn.json, hw/mips/sgi/sn-catalogue.c)
+ * to construct one. Origin 200 is the first product on this base; see
+ * docs/plans/sn-machine-model.md, "QEMU", for what else joins later.
  */
 
 #ifndef HW_MIPS_SGI_SN_MACHINE_H
 #define HW_MIPS_SGI_SN_MACHINE_H
 
 #include "hw/core/boards.h"
-#include "hw/mips/sgi/sn-model.h"
+#include "hw/mips/sgi/sn-catalogue.h"
 
 #define TYPE_SGI_SN_MACHINE MACHINE_TYPE_NAME("sgi-sn")
 
@@ -44,11 +44,11 @@ struct SGIMachineClass {
     uint32_t flash_read_cycles;
     uint32_t flash_write_cycles;
     /*
-     * A fixture's own descriptor, bypassing the name lookup in
-     * sgi_model_entries[] entirely. Set only by a qtest machine type that
+     * A fixture's own descriptor, bypassing the name lookup in the
+     * compiled catalogue entirely. Set only by a qtest machine type that
      * needs the real builder over a topology no product ships (a
      * non-default console node, say); every shipping product leaves this
-     * NULL and resolves topology= against the generated table instead.
+     * NULL and resolves topology= against the compiled catalogue instead.
      */
     const SGIModelTopology *test_topology;
 };

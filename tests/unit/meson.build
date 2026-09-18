@@ -100,7 +100,7 @@ tests = {
                             '../../hw/1wire/crc.c', '../../hw/1wire/ds2505.c',
                             qom, hwcore, migration, io],
   'test-sn1-topology': ['../../hw/mips/sgi/sn1-topology.c'],
-  'test-sn-model': ['../../hw/mips/sgi/sn-model.c'],
+  'test-sn-model': [],
   'test-logging': [],
   'test-qapi-util': [],
   'test-interval-tree': [],

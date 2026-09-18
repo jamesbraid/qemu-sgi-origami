@@ -16,8 +16,9 @@
  *
  * Node strides, window splits and unit offsets are Bedrock hardware
  * facts, not configuration, so the addresses below are constants here
- * rather than descriptor fields; see sn-model.h's header comment for
- * the rule this follows.
+ * rather than descriptor fields; see decision D-0026 (docs/decisions/
+ * D-0026-machine-description-ownership.md in the Origami repository)
+ * for the rule this follows.
  */
 
 #include "qemu/osdep.h"
@@ -98,12 +99,14 @@
 #define SN1_MIPS_HARDWARE_IRQ_OFFSET 2
 
 #define SN1_INSTALLED_BANK_MASK 0xc
+/* Bedrock's own architectural bank count; matches sn0.h's SN0_MAX_MEMORY_BANKS. */
+#define SN1_ARCHITECTURAL_MEMORY_BANKS 8
 /*
  * The shipped Origin 300 inventory: two 256 MiB banks at locational
  * banks two and three. See sn1_node_create_bedrock's comment on why
  * this stays a literal instead of node->model_node->bank_mib.
  */
-static const uint16_t sn1_installed_bank_mib[SGI_MODEL_MAX_MEMORY_BANKS] = {
+static const uint16_t sn1_installed_bank_mib[SN1_ARCHITECTURAL_MEMORY_BANKS] = {
     0, 0, 256, 256, 0, 0, 0, 0,
 };
 
@@ -332,7 +335,7 @@ static bool sn1_init_prom_view(SN1PromView *view, Object *owner,
 
 static void sn1_refresh_prom_views(SN1NodeState *node, bool everything)
 {
-    uint64_t prom_size = node->model_node->flash.size;
+    uint64_t prom_size = node->model_node->flash->size;
     MemoryRegion *backing = node->prom_view_reset.backing;
     g_autofree DirtyBitmapSnapshot *snapshot =
         memory_region_snapshot_and_clear_dirty(backing, 0, prom_size,
@@ -362,7 +365,8 @@ static void sn1_prom_flash_programmed(void *opaque, unsigned position)
 
 void sn1_node_full_reset(SN1NodeState *node, ResetType type)
 {
-    uint32_t mode_bits = node->model_node->cpu_slots[0].assembly->mode_bits;
+    uint32_t mode_bits =
+        node->model_node->cpu_slots->value->assembly->mode_bits;
     unsigned int i;
 
     /*
@@ -410,6 +414,17 @@ void sn1_node_full_reset(SN1NodeState *node, ResetType type)
  * and "local-high" are mapped as separate SN1PromView aliases in that
  * case; the immutable -bios path below maps every named view here.
  */
+/*
+ * Every named view a Bedrock node's flash controller answers, in the
+ * order the immutable -bios path maps them: fixed by the chip, not
+ * carried by the compiled catalogue (see the header comment on
+ * sn1_node_load_prom's own use of this table).
+ */
+static const char * const sn1_prom_view_names[] = {
+    "sn1.prom.reset", "sn1.prom.local", "sn1.prom.local-high",
+    "sn1.prom.remote",
+};
+
 static bool sn1_node_flash_view_address(const char *name, uint64_t *address)
 {
     if (!strcmp(name, "sn1.prom.reset")) {
@@ -429,7 +444,7 @@ static bool sn1_node_flash_view_address(const char *name, uint64_t *address)
 static bool sn1_node_load_prom(SN1NodeState *node, MachineState *machine,
                                Error **errp)
 {
-    uint64_t prom_size = node->model_node->flash.size;
+    uint64_t prom_size = node->model_node->flash->size;
     MemoryRegion *system = get_system_memory();
     g_autoptr(GError) local_error = NULL;
     g_autofree char *contents = NULL;
@@ -515,18 +530,26 @@ static bool sn1_node_load_prom(SN1NodeState *node, MachineState *machine,
     sn1_apply_cpu_config(memory_region_get_ram_ptr(&node->prom));
     memory_region_set_dirty(&node->prom, 0, prom_size);
 
-    node->prom_views = g_new0(MemoryRegion, node->model_node->flash.view_count);
-    for (i = 0; i < node->model_node->flash.view_count; i++) {
-        const SGIModelFlashView *view = &node->model_node->flash.views[i];
+    /*
+     * Which named views this node's flash controller answers, and their
+     * addresses, are Bedrock hardware facts (decision D-0026), not
+     * configuration: every view the compiler ever emitted for a Bedrock
+     * node was already sized to the flash chip's own total size, so
+     * SN1_PROM_VIEW_NAMES names them directly instead of reading a list
+     * the compiled catalogue no longer carries.
+     */
+    node->prom_views = g_new0(MemoryRegion, ARRAY_SIZE(sn1_prom_view_names));
+    for (i = 0; i < ARRAY_SIZE(sn1_prom_view_names); i++) {
+        const char *name = sn1_prom_view_names[i];
         uint64_t address;
 
-        if (!sn1_node_flash_view_address(view->name, &address)) {
+        if (!sn1_node_flash_view_address(name, &address)) {
             error_setg(errp, "origin300: flash view '%s' names no known "
-                      "boot space", view->name);
+                      "boot space", name);
             return false;
         }
         memory_region_init_alias(&node->prom_views[i], OBJECT(node),
-                                 view->name, &node->prom, 0, view->size);
+                                 name, &node->prom, 0, prom_size);
         /* PROM views take precedence where their carriers overlap RAM. */
         memory_region_add_subregion_overlap(system, address,
                                             &node->prom_views[i], 1);
@@ -654,7 +677,7 @@ static target_ulong sn1_node_store_transaction(MIPSCPU *cpu, MemoryRegion *mr,
 static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
 {
     MemoryRegion *system = get_system_memory();
-    uint64_t prom_size = node->model_node->flash.size;
+    uint64_t prom_size = node->model_node->flash->size;
     unsigned int i;
 
     if (node->promdata_filter) {
@@ -732,7 +755,6 @@ static bool sn1_node_build_io8(SN1NodeState *node, Error **errp)
     const SGIModelIoBoard *record = node->io_board;
     DeviceState *baseio = qdev_new(TYPE_SGI_BASEIO);
     PCIBus *bus = sgi_xbridge_pci_bus(SGI_XBRIDGE(node->xbridge), 0xf);
-    size_t i;
 
     object_property_add_child(OBJECT(node), "baseio", OBJECT(baseio));
     qdev_prop_set_string(baseio, "preset", "io8");
@@ -741,16 +763,11 @@ static bool sn1_node_build_io8(SN1NodeState *node, Error **errp)
     /*
      * The onboard IOC3's own one-wire identity part carries its own
      * separate serial, a fact about this specific fitted unit -- the
-     * descriptor's own io_boards[].pci[] entry for the IOC3 function, not
-     * the chip's own "onewire-serial-f" (its own NIC ROM identity, set by
-     * the caller directly on the chip).
+     * descriptor's own ioc3-serial, not the chip's own "onewire-serial-f"
+     * (its own NIC ROM identity, set by the caller directly on the chip).
      */
-    for (i = 0; i < record->pci_count; i++) {
-        if (record->pci[i].kind == SGI_MODEL_PCI_IOC3) {
-            qdev_prop_set_uint64(baseio, "onewire-serial",
-                                 record->pci[i].serial);
-            break;
-        }
+    if (record->has_ioc3_serial) {
+        qdev_prop_set_uint64(baseio, "onewire-serial", record->ioc3_serial);
     }
     /*
      * The onboard IOC3's Timekeeper storage: an indexed `-drive if=mtd`
@@ -853,14 +870,15 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     /*
      * The shipped Origin 300 inventory installs two 256 MiB banks at
      * locational banks two and three, not the single dense bank zero the
-     * generated origin300 topology's node.bank_mib[] still carries (its
+     * compiled origin300 topology's node bank-mib still carries (its
      * 512 MiB total is right; its bank placement predates this fact).
-     * Kept as an origin300-specific literal here, like sn-model.h's
-     * address-map constants, until the catalogue's fixture is corrected.
+     * Kept as an origin300-specific literal here, like this file's own
+     * address-map constants above, until the catalogue's fixture is
+     * corrected.
      */
     qdev_prop_set_uint8(node->bedrock, "installed-bank-mask",
                         SN1_INSTALLED_BANK_MASK);
-    for (i = 0; i < SGI_MODEL_MAX_MEMORY_BANKS; i++) {
+    for (i = 0; i < SN1_ARCHITECTURAL_MEMORY_BANKS; i++) {
         g_autofree char *property = g_strdup_printf("installed-bank%zu-mib",
                                                      i);
 
