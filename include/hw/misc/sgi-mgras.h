@@ -304,6 +304,41 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
 #define SGI_MGRAS_RE_ARG 0x071e80
 
 /*
+ * The XMAP main-mode window register: live-traced as the offset a real
+ * desktop session writes once per XMAP entry during Xsgi's own start-of-day
+ * window-ID setup (81 writes in one boot-to-desktop session, all clustered
+ * in one setup pass, never read back). This device previously had no case
+ * for this offset at all -- every one of those writes took the generic
+ * unsupported-access path -- and separately had a `xmap_mode` field that
+ * si_reset initialized to a plausible default but nothing ever wrote,
+ * leaving the field permanently dead. Decoding the same session's own
+ * traced values settles which family a write belongs to: eight consecutive
+ * writes (`0x601`, `0x621`, ..., `0x6e1`) share bits 11:8 == `0x6` and
+ * otherwise only vary bits 7:5, a plain 0-7 window-slot counter; four more
+ * (`0x7a4`, `0x7a5`, `0x7a7`, `0x17a8`) share bits 11:8 == `0x7`. These
+ * match the datasheet's own already-recorded public WID values for
+ * PseudoColor (`0x601`/`0x621`/`0x641`) and TrueColor (`0x7a4`/`0x7a5`/
+ * `0x7a7`/`0x17a8`) windows exactly, so bits 11:8 are this device's own
+ * bounded discriminator: `0x600` selects PseudoColor, `0x700` selects
+ * TrueColor. One traced write (`0x403`) matches neither family; this
+ * device treats an unrecognized value as TrueColor, the same direct-RGB
+ * scanout this device already had before this register was wired up, so
+ * an unrecognized mode does not regress existing behavior.
+ *
+ * This device tracks no per-window/per-region visual class at all, so
+ * `xmap_mode` is a single global "most recently programmed" value used for
+ * every pixel at scanout (si_gfx_update, hw/misc/sgi-mgras.c) rather than a
+ * real per-window lookup -- an explicit, labelled first-pass approximation,
+ * not a claim of per-window precision. See si_gfx_update's own header
+ * comment for how this drives colour-map lookup versus direct RGB.
+ * CONTRACT CHANGE, needs independent review: this is new dispatch on a
+ * previously-unhandled offset, and the PseudoColor/TrueColor split it
+ * drives is this device's own bounded reading of the cited trace, not an
+ * independently confirmed XMAP register contract.
+ */
+#define SGI_MGRAS_XMAP_MAIN_MODE 0x071e00
+
+/*
  * The VC3 video-timing/cursor/display-control chip's own indexed register
  * file, disassembled from the kernel driver's timing, cursor and display
  * setup routines (MgrasSetVC3Timing, MgrasClearCursor, MgrasPositionCursor,
