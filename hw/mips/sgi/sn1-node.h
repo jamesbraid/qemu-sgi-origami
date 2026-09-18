@@ -46,12 +46,14 @@ typedef struct SN1NodeState {
     bool promdata_fast;
 
     /*
-     * The topology's Bedrock node record and its populated I/O board
-     * (NULL if none), set by the machine before realize -- the compiled
-     * catalogue this node builds from (qapi/sgi-sn.json).
+     * The topology's Bedrock node record, set by the machine before
+     * realize -- the compiled catalogue this node builds from
+     * (qapi/sgi-sn.json). The IO-8's own populated-board record is the
+     * machine's own concern now (sgi_machine_instantiate_io_board() in
+     * sn-machine.c): this node exposes the "io8-pci-bus" link property
+     * instead of taking the record as a property of its own.
      */
     const SGIModelNode *model_node;
-    const SGIModelIoBoard *io_board;
     /*
      * Every widget the crossbar decodes for this node (widget zero, the
      * host's own local view, plus one per xtalk attachment), set by the

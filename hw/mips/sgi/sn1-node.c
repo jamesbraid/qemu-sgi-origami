@@ -742,83 +742,6 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
     }
 }
 
-/*
- * The IO-8's fixed devices: an sgi-baseio (the "io8" preset) on the
- * chip's own head F, once that head's PCI bus exists (sn1_node_
- * create_bedrock() calls this right after the chip itself has
- * realized). Resolves every backend id from node->io_board (the
- * topology's populated IO-8 record) and the command line, the same
- * policy the deleted sgi_machine_build_bedrock_io_board() applied.
- */
-static bool sn1_node_build_io8(SN1NodeState *node, Error **errp)
-{
-    const SGIModelIoBoard *record = node->io_board;
-    DeviceState *baseio = qdev_new(TYPE_SGI_BASEIO);
-    PCIBus *bus = sgi_xbridge_pci_bus(SGI_XBRIDGE(node->xbridge), 0xf);
-
-    object_property_add_child(OBJECT(node), "baseio", OBJECT(baseio));
-    qdev_prop_set_string(baseio, "preset", "io8");
-    object_property_set_link(OBJECT(baseio), "pci-bus", OBJECT(bus),
-                             &error_abort);
-    /*
-     * The onboard IOC3's own one-wire identity part carries its own
-     * separate serial, a fact about this specific fitted unit -- the
-     * descriptor's own ioc3-serial, not the chip's own "onewire-serial-f"
-     * (its own NIC ROM identity, set by the caller directly on the chip).
-     */
-    if (record->has_ioc3_serial) {
-        qdev_prop_set_uint64(baseio, "onewire-serial", record->ioc3_serial);
-    }
-    /*
-     * The onboard IOC3's Timekeeper storage: an indexed `-drive if=mtd`
-     * first, else a bare `-drive if=none,id=sgi-nvram0` by name -- one
-     * Bedrock node, so always index/id zero, unlike the Hub path's
-     * per-board index. Passed as the resolved backend's own name, not the
-     * backend itself, for the claim-timing reason sgi-baseio's own header
-     * comment gives.
-     */
-    {
-        DriveInfo *nvram_dinfo = drive_get(IF_MTD, 0, 0);
-        BlockBackend *nvram_blk = nvram_dinfo ?
-            blk_by_legacy_dinfo(nvram_dinfo) : blk_by_name("sgi-nvram0");
-
-        if (nvram_blk) {
-            qdev_prop_set_string(baseio, "nvram-drive", blk_name(nvram_blk));
-        }
-    }
-    /*
-     * The onboard IOC3's serial and parallel backends, named by chardev
-     * id for the same claim-timing reason. serial_hd(0) is the L1
-     * console -- this node's own controller, not this board's -- so the
-     * onboard IOC3 takes indices one through four.
-     */
-    {
-        Chardev *chr;
-
-        chr = serial_hd(1);
-        if (chr) {
-            qdev_prop_set_string(baseio, "chardev-a", chr->label);
-        }
-        chr = serial_hd(2);
-        if (chr) {
-            qdev_prop_set_string(baseio, "chardev-b", chr->label);
-        }
-        chr = serial_hd(3);
-        if (chr) {
-            qdev_prop_set_string(baseio, "record-a", chr->label);
-        }
-        chr = serial_hd(4);
-        if (chr) {
-            qdev_prop_set_string(baseio, "record-b", chr->label);
-        }
-        if (parallel_hds[0]) {
-            qdev_prop_set_string(baseio, "parallel-chardev",
-                                 parallel_hds[0]->label);
-        }
-    }
-    return qdev_realize(DEVICE(baseio), NULL, errp);
-}
-
 static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                                     Error **errp)
 {
@@ -911,8 +834,11 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
      * Bedrock's own crosstalk egress region (sysbus_init_mmio() has
      * already given the not-yet-realized Bedrock device that region).
      * The IO-8's fixed devices are a separate sgi-baseio (the "io8"
-     * preset) on the chip's own head F, once the chip itself has
-     * realized and that head's PCI bus exists.
+     * preset) the machine places on the chip's own head F, through the
+     * same board path every other product's base I/O goes through
+     * (sgi_machine_instantiate_io_board() in sn-machine.c); this file
+     * only exposes that head's PCI bus once the chip itself has
+     * realized.
      */
     node->xbridge = qdev_new(TYPE_SGI_XBRIDGE);
     object_property_add_child(OBJECT(node), "xbridge", OBJECT(node->xbridge));
@@ -928,9 +854,15 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     if (!sysbus_realize(SYS_BUS_DEVICE(node->xbridge), errp)) {
         return false;
     }
-    if (!sn1_node_build_io8(node, errp)) {
-        return false;
-    }
+    /*
+     * The head-F PCI bus, as a link property: the machine places the
+     * IO-8's fixed devices on it once every node this run builds has
+     * realized (sgi_machine_instantiate_io_board(), the same board path
+     * every other product's base I/O goes through), not before.
+     */
+    object_property_add_const_link(
+        OBJECT(node), "io8-pci-bus",
+        OBJECT(sgi_xbridge_pci_bus(SGI_XBRIDGE(node->xbridge), 0xf)));
 
     /*
      * Every widget the crossbar decodes: the host's own local view (widget

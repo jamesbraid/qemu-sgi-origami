@@ -50,6 +50,7 @@
 #include "hw/misc/sgi-sn0-module-management.h"
 #include "hw/misc/sgi-xbow.h"
 #include "hw/pci-host/sgi-bridge.h"
+#include "hw/pci/pci.h"
 #include "system/block-backend.h"
 #include "system/blockdev.h"
 #include "system/qtest.h"
@@ -986,14 +987,98 @@ static bool sgi_machine_instantiate_baseio_card(
 }
 
 /*
+ * The IO-8's fixed devices: an sgi-baseio (the "io8" preset) on the
+ * Bedrock node's own XBridge, at the head the node exposes as the
+ * "io8-pci-bus" link property (sn1-node.c, once the node has realized).
+ * The XBridge always answers both of its heads -- one carries the IO-8,
+ * the other stays inert (docs/datasheets/xbridge.md) -- so an io_boards
+ * entry with no fitted IOC3 one-wire serial names the empty head, and
+ * building nothing for it is correct, not a fault. Resolves every
+ * backend id from this record and the command line, the policy
+ * sn1_node_build_io8() applied before this step moved it here.
+ */
+static bool sgi_machine_instantiate_io8(
+    SGIMachineState *s, const SGIModelTopology *t,
+    const SGIModelIoBoard *record, unsigned int board_index,
+    const SGIModelXtalkAttachment *attachment, Error **errp)
+{
+    DeviceState *node = s->bedrock_nodes[attachment->node_index];
+    DeviceState *baseio;
+    PCIBus *bus;
+
+    if (!record->has_ioc3_serial) {
+        return true;
+    }
+
+    bus = PCI_BUS(object_property_get_link(OBJECT(node), "io8-pci-bus",
+                                           &error_abort));
+    baseio = qdev_new(TYPE_SGI_BASEIO);
+    object_property_add_child(OBJECT(node), "baseio", OBJECT(baseio));
+    qdev_prop_set_string(baseio, "preset", "io8");
+    object_property_set_link(OBJECT(baseio), "pci-bus", OBJECT(bus),
+                             &error_abort);
+    qdev_prop_set_uint64(baseio, "onewire-serial", record->ioc3_serial);
+    /*
+     * The onboard IOC3's Timekeeper storage: an indexed `-drive if=mtd`
+     * first, else a bare `-drive if=none,id=sgi-nvram0` by name -- one
+     * Bedrock node ships today, so always index/id zero, unlike the Hub
+     * path's per-board index. Passed as the resolved backend's own name,
+     * not the backend itself, for the claim-timing reason sgi-baseio's
+     * own header comment gives.
+     */
+    {
+        DriveInfo *nvram_dinfo = drive_get(IF_MTD, 0, 0);
+        BlockBackend *nvram_blk = nvram_dinfo ?
+            blk_by_legacy_dinfo(nvram_dinfo) : blk_by_name("sgi-nvram0");
+
+        if (nvram_blk) {
+            qdev_prop_set_string(baseio, "nvram-drive", blk_name(nvram_blk));
+        }
+    }
+    /*
+     * The onboard IOC3's serial and parallel backends, named by chardev
+     * id for the same claim-timing reason. serial_hd(0) is the L1
+     * console -- the node's own controller, not this board's -- so the
+     * onboard IOC3 takes indices one through four.
+     */
+    {
+        Chardev *chr;
+
+        chr = serial_hd(1);
+        if (chr) {
+            qdev_prop_set_string(baseio, "chardev-a", chr->label);
+        }
+        chr = serial_hd(2);
+        if (chr) {
+            qdev_prop_set_string(baseio, "chardev-b", chr->label);
+        }
+        chr = serial_hd(3);
+        if (chr) {
+            qdev_prop_set_string(baseio, "record-a", chr->label);
+        }
+        chr = serial_hd(4);
+        if (chr) {
+            qdev_prop_set_string(baseio, "record-b", chr->label);
+        }
+        if (parallel_hds[0]) {
+            qdev_prop_set_string(baseio, "parallel-chardev",
+                                 parallel_hds[0]->label);
+        }
+    }
+    return qdev_realize(DEVICE(baseio), NULL, errp);
+}
+
+/*
  * Build one io_boards entry, wire it to its own crosstalk position and
- * realize it: IP29's onboard I/O (direct-attach) and the Origin 2000
- * BaseIO card (Crossbow-attach) are different enough carriers now
- * (sn0.c owns one outright; the other is an sgi-xio-board instance this
- * file builds) that preset alone -- not attachment kind -- decides
- * which function runs; tests/unit/test-sn-model.c checks the compiled
- * descriptor names no other preset once, so this dispatch trusts it
- * and only reports the case it does not recognize.
+ * realize it: IP29's onboard I/O (direct-attach), the Origin 2000
+ * BaseIO card (Crossbow-attach) and the Origin 300 IO-8 (a Bedrock
+ * node's own XBridge head) are different enough carriers now (sn0.c
+ * owns one outright, sn1-node.c exposes the second as a link property,
+ * the third is an sgi-xio-board instance this file builds) that preset
+ * alone -- not attachment kind -- decides which function runs;
+ * tests/unit/test-sn-model.c checks the compiled descriptor names no
+ * other preset once, so this dispatch trusts it and only reports the
+ * case it does not recognize.
  */
 static bool sgi_machine_instantiate_io_board(
     SGIMachineState *s, const SGIModelTopology *t,
@@ -1007,6 +1092,9 @@ static bool sgi_machine_instantiate_io_board(
     case SGI_MODEL_IO_BOARD_PRESET_BASEIO:
         return sgi_machine_instantiate_baseio_card(s, t, record, board_index,
                                                    attachment, errp);
+    case SGI_MODEL_IO_BOARD_PRESET_IO8:
+        return sgi_machine_instantiate_io8(s, t, record, board_index,
+                                           attachment, errp);
     default:
         error_setg(errp, "topology '%s' io board %u names an unsupported "
                   "preset for this family", t->name, board_index);
@@ -1611,46 +1699,24 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     }
 
     if (kind != SGI_MODEL_ASIC_KIND_HUB) {
-        g_autofree const SGIModelIoBoard **io_boards = NULL;
         g_autofree const SGIModelXtalkAttachment **attachments = NULL;
-        size_t bedrock_io_board_count, attachment_count;
+        size_t attachment_count;
 
-        io_boards = sgi_model_io_board_array(t->io_boards,
-                                             &bedrock_io_board_count);
         attachments = sgi_model_xtalk_attachment_array(t->xtalk_attachments,
                                                         &attachment_count);
         for (node_index = 0; node_index < node_count; node_index++) {
             SN1NodeState *node = SN1_NODE(s->bedrock_nodes[node_index]);
-            const SGIModelIoBoard *populated_board = NULL;
             g_autofree unsigned int *widgets = NULL;
             size_t widget_count = 0;
             size_t i;
 
             /*
-             * pci_count went with the ownership-rule trim; a preset's
-             * fitted IOC3 one-wire serial is the one fact left that
-             * distinguishes a populated head from an empty one (Origin
-             * 300's second XBridge head carries no population at all).
-             * A board names its own node through its attachment's own
-             * node-index; today's shipped topology has one node, so this
-             * is every io_boards entry.
-             */
-            for (i = 0; i < bedrock_io_board_count; i++) {
-                unsigned int a = io_boards[i]->attachment;
-
-                if (a < attachment_count &&
-                    attachments[a]->node_index == node_index &&
-                    io_boards[i]->has_ioc3_serial) {
-                    populated_board = io_boards[i];
-                }
-            }
-            /*
              * Widget zero is the crossbar's own local view; the rest come
              * one per this node's own xtalk attachment (a board slot,
              * populated or not -- see sn1-node.c's widget-wiring comment
-             * for why an empty slot still needs one). tests/unit/test-sn-
-             * model.c checks that every Bedrock topology in the compiled
-             * catalogue ships a populated_board.
+             * for why an empty slot still needs one). Which of those
+             * boards is actually populated is the io_boards loop's own
+             * concern below, once every node here has realized.
              */
             widgets = g_new0(unsigned int, attachment_count + 1);
             widgets[widget_count++] = 0;
@@ -1662,7 +1728,6 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             }
 
             node->model_node = nodes[node_index];
-            node->io_board = populated_board;
             node->xbridge_widgets = g_steal_pointer(&widgets);
             node->xbridge_widget_count = widget_count;
             object_property_set_link(OBJECT(node), "ram",
@@ -1704,6 +1769,42 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             }
         }
         g_assert(cpu_index == machine->smp.cpus);
+
+        /*
+         * Every node is realized now, so a head's PCI bus link property
+         * exists. Each io_boards entry names its own attachment directly
+         * (record->attachment, an index into t->xtalk_attachments) rather
+         * than through node_attachment/board_attachment's claim-by-
+         * crossbar resolution below: a Bedrock head is not behind a real
+         * Crossbow, so there is no crossbar to claim through, and both
+         * of an XBridge's heads carry their own io_boards entry (one
+         * populated, one not) rather than one node-owned link plus a
+         * card behind it.
+         */
+        {
+            g_autofree const SGIModelIoBoard **io_boards = NULL;
+            size_t bedrock_io_board_count;
+
+            io_boards = sgi_model_io_board_array(t->io_boards,
+                                                 &bedrock_io_board_count);
+            for (board_index = 0; board_index < bedrock_io_board_count;
+                 board_index++) {
+                const SGIModelIoBoard *record = io_boards[board_index];
+
+                if (record->attachment >= attachment_count) {
+                    error_setg(errp, "topology '%s' io board %u names "
+                              "attachment %u, past its %zu crosstalk "
+                              "attachment(s)", t->name, board_index,
+                              record->attachment, attachment_count);
+                    return false;
+                }
+                if (!sgi_machine_instantiate_io_board(
+                        s, t, record, board_index,
+                        attachments[record->attachment], errp)) {
+                    return false;
+                }
+            }
+        }
         return true;
     }
 
