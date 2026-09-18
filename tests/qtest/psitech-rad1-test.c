@@ -25,6 +25,7 @@
 #define PCI_COMMAND_OFF     0x04
 #define PCI_COMMAND_MEMORY  0x0002u
 #define PCI_COMMAND_MASTER  0x0004u
+#define PCI_SUBSYS_ID_OFF   0x2c
 
 /* Crosstalk space and the Bridge's widget window inside it. */
 #define SPACE_XTALK     0x20000000000ULL
@@ -60,8 +61,21 @@
 #define RAD1_BAR1_PCI   0x30000000u  /* Framebuffer, 8 MiB. */
 #define RAD1_BAR2_PCI   0x40000000u  /* Flash aperture, 64 KiB. */
 
-#define RAD1_VENDOR_ID  0x12d1
-#define RAD1_DEVICE_ID  0x0101
+/*
+ * Primary identity is the raw TI TVP4020 (Permedia 2) die's own PCI
+ * Vendor/Device ID, matching the IRIX kernel driver's own registration
+ * call (docs/datasheets/psitech-rad1.md, "Kernel-driver attach: the real
+ * cause is a PCI identity mismatch"), not PsiTech's board identity.
+ */
+#define RAD1_VENDOR_ID  0x104c
+#define RAD1_DEVICE_ID  0x3d07
+
+/*
+ * PsiTech's board/subsystem identity, exposed as the separate PCI
+ * Subsystem Vendor/Device ID rather than the primary Vendor/Device ID.
+ */
+#define RAD1_SUBSYSTEM_VENDOR_ID 0x12d1
+#define RAD1_SUBSYSTEM_DEVICE_ID 0x0101
 
 #define RAD1_REGZERO_SIZE   0x20000u
 #define RAD1_FB_SIZE        (8 * 1024 * 1024u)
@@ -279,6 +293,10 @@ static void test_pci_identity(void)
 
     g_assert_cmphex(id & 0xffff, ==, RAD1_VENDOR_ID);
     g_assert_cmphex(id >> 16, ==, RAD1_DEVICE_ID);
+
+    uint32_t subsys = qtest_readl(qts, CFG0(RAD1_SLOT) + PCI_SUBSYS_ID_OFF);
+    g_assert_cmphex(subsys & 0xffff, ==, RAD1_SUBSYSTEM_VENDOR_ID);
+    g_assert_cmphex(subsys >> 16, ==, RAD1_SUBSYSTEM_DEVICE_ID);
 
     uint32_t rev_class = qtest_readl(qts,
                                      CFG0(RAD1_SLOT) + PCI_REVISION_ID_OFF);

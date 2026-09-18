@@ -1,8 +1,28 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * psitech-rad1: bounded functional approximation of a PsiTech RAD1 PCI
- * graphics head (vendor/device 12d1:0101), one primary head on an Origin
- * 200 Bridge PCI slot.
+ * graphics head, one primary head on an Origin 200 Bridge PCI slot.
+ *
+ * Primary PCI Vendor/Device ID is 104c:3d07 -- the raw TI/3Dlabs TVP4020
+ * (Permedia 2) die's own identity, not PsiTech's 12d1:0101 board identity.
+ * The IRIX kernel driver's boot-time registration function (`rad1pciinit`,
+ * disassembled and live-traced; see docs/datasheets/psitech-rad1.md,
+ * "Kernel-driver attach: the real cause is a PCI identity mismatch") calls
+ * `pciio_driver_register` against 104c:3d07 and, separately, 3d3d:0009
+ * (the same chip under 3Dlabs' own vendor ID) -- never against 12d1:0101.
+ * IRIX's PCI bus-probe path matches a live card's primary Vendor/Device ID
+ * against exactly that registered table, so a card presenting 12d1:0101 as
+ * its primary identity is never claimed by any driver. 104c:3d07 is chosen
+ * over the 3d3d:0009 alternative as an APPROXIMATION -- the product sheet's
+ * first-listed stock reference and `rad1pciinit`'s first registration
+ * call, but no evidence yet establishes which physical chip revision this
+ * project's modeled RAD1 should present; see the datasheet section above
+ * for the open item. 12d1:0101 remains real and is exposed separately as
+ * the PCI Subsystem Vendor/Device ID, matching what the datasheet's "PCI
+ * and address spaces" section and the standalone PROM textport driver's own
+ * subsystem-ID check (a different, standard PCI config-space field from
+ * the primary Vendor/Device ID) use for board identity independent of bus
+ * probing.
  *
  * Unlike psitech-rad4.c, RAD1 is built directly on the TI/3Dlabs TVP4020
  * (Permedia2/Permedia2V) with 8 MB of onboard SGRAM, an integrated RAMDAC,
@@ -58,8 +78,24 @@
 #define TYPE_PSITECH_RAD1 "psitech-rad1"
 OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 
-#define RAD1_VENDOR_ID          0x12d1
-#define RAD1_DEVICE_ID          0x0101
+/*
+ * Primary identity: the raw TI TVP4020 (Permedia 2) die, per
+ * `rad1pciinit`'s first pciio_driver_register() call. APPROXIMATED choice
+ * over the alternative 3Dlabs-badged 3d3d:0009 identity the same call
+ * registers second -- see the file comment above and
+ * docs/datasheets/psitech-rad1.md.
+ */
+#define RAD1_VENDOR_ID          0x104c
+#define RAD1_DEVICE_ID          0x3d07
+
+/*
+ * PsiTech's own board/subsystem identity (public 1999 product sheet),
+ * exposed as the PCI Subsystem Vendor/Device ID rather than the primary
+ * Vendor/Device ID -- what the standalone PROM textport driver's own
+ * subsystem-ID check matches against.
+ */
+#define RAD1_SUBSYSTEM_VENDOR_ID 0x12d1
+#define RAD1_SUBSYSTEM_DEVICE_ID 0x0101
 
 /*
  * BAR sizing. Region Zero's 128 KiB size and its role (control/RAMDAC/
@@ -965,8 +1001,9 @@ static void rad1_realize(PCIDevice *dev, Error **errp)
 
     pci_set_byte(&s->pci.config[PCI_REVISION_ID], 0x00);
     pci_config_set_class(s->pci.config, PCI_CLASS_DISPLAY_OTHER);
-    pci_set_word(&s->pci.config[PCI_SUBSYSTEM_VENDOR_ID], 0);
-    pci_set_word(&s->pci.config[PCI_SUBSYSTEM_ID], 0);
+    pci_set_word(&s->pci.config[PCI_SUBSYSTEM_VENDOR_ID],
+                RAD1_SUBSYSTEM_VENDOR_ID);
+    pci_set_word(&s->pci.config[PCI_SUBSYSTEM_ID], RAD1_SUBSYSTEM_DEVICE_ID);
     s->pci.config[PCI_INTERRUPT_PIN] = 0x01;
 
     pci_register_bar(&s->pci, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->regzero);
@@ -1043,6 +1080,8 @@ static void rad1_class_init(ObjectClass *klass, const void *data)
 
     k->vendor_id = RAD1_VENDOR_ID;
     k->device_id = RAD1_DEVICE_ID;
+    k->subsystem_vendor_id = RAD1_SUBSYSTEM_VENDOR_ID;
+    k->subsystem_id = RAD1_SUBSYSTEM_DEVICE_ID;
     k->class_id = PCI_CLASS_DISPLAY_OTHER;
     k->realize = rad1_realize;
     k->exit = rad1_exit;
