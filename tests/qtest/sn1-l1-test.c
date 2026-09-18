@@ -1735,7 +1735,10 @@ static void test_receive_tolerance(void)
     uint16_t crc;
     size_t n;
 
-    /* Frames of one to four bytes are dropped; a good frame follows. */
+    /*
+     * One or two bytes is a short frame; three or four bytes of a request
+     * header fail the check. All are dropped and a good frame follows.
+     */
     for (unsigned length = 1; length <= 4; length++) {
         uint8_t frame[4] = { 0x10, 0x0f, 0xff, 0xf0 };
         qtest_writeq(s, BASE, 0x7e);
@@ -1745,7 +1748,7 @@ static void test_receive_tolerance(void)
         send_frame(s, identity, sizeof(identity), false);
         expect_identity(s, 16, 0x41);
     }
-    /* A three-byte frame with a good check is still short. */
+    /* A well-checked header alone is a request with no destination. */
     crc = ~fcs(0xffff, 0x10);
     qtest_writeq(s, BASE, 0x7e);
     qtest_writeq(s, BASE, 0x10);
@@ -1878,6 +1881,51 @@ static void test_console_retarget(void)
     console_frame(s, reply, 2);
     g_assert_cmphex(reply[0], ==, 0x10);
     g_assert_cmphex(reply[1], ==, 'x');
+    qtest_quit(s);
+    close(fd);
+}
+
+/*
+ * The PROM echoes each keystroke, pads and breaks lines one character
+ * per frame: a header, one byte and the check sequence, four bytes
+ * between the flags. A header alone with its check is three.
+ */
+static void test_console_short_frames(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, "", "");
+    const uint8_t echo[] = { 0x44, '1' };
+    const uint8_t newline[] = { 0x44, '\r' };
+    const uint8_t header_only[] = { 0x40 };
+    const uint8_t text[] = { 0x40, 'O', 'K' };
+    uint8_t reply[131];
+
+    console_expect(fd, POWERING ENTER_CPU0);
+    send_frame(s, echo, sizeof(echo), false);
+    console_expect(fd, "1");
+    send_frame(s, newline, sizeof(newline), false);
+    console_expect(fd, "\r");
+    /* Output on subchannel 4 retargets typed input there. */
+    console_send(fd, "x");
+    console_frame(s, reply, 2);
+    g_assert_cmphex(reply[0], ==, 4);
+    g_assert_cmphex(reply[1], ==, 'x');
+    /* A header alone carries no text; it still retargets input. */
+    send_frame(s, header_only, sizeof(header_only), false);
+    send_frame(s, text, sizeof(text), false);
+    console_expect(fd, "OK");
+    console_send(fd, "y");
+    console_frame(s, reply, 2);
+    g_assert_cmphex(reply[0], ==, 0);
+    g_assert_cmphex(reply[1], ==, 'y');
+    /* One or two bytes between flags is a short frame, still dropped. */
+    qtest_writeq(s, BASE, 0x7e);
+    raw_bytes(s, echo, 1);
+    qtest_writeq(s, BASE, 0x7e);
+    raw_bytes(s, echo, 2);
+    qtest_writeq(s, BASE, 0x7e);
+    send_frame(s, text, sizeof(text), false);
+    console_expect(fd, "OK");
     qtest_quit(s);
     close(fd);
 }
@@ -2886,6 +2934,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/receive-tolerance", test_receive_tolerance);
     qtest_add_func("sn1/l1/request-log", test_request_log);
     qtest_add_func("sn1/l1/console-retarget", test_console_retarget);
+    qtest_add_func("sn1/l1/console-short-frames", test_console_short_frames);
     qtest_add_func("sn1/l1/general-reads", test_general_reads);
     qtest_add_func("sn1/l1/brick-serial", test_brick_serial);
     qtest_add_func("sn1/l1/general-actions", test_general_actions);
