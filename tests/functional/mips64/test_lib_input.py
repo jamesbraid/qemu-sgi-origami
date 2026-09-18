@@ -12,8 +12,10 @@ records the HMP command lines it was given, rather than a real VM.
 import unittest
 from unittest.mock import patch
 
-from lib_input import (MOUSE_MOVE_STEP_MAX, _split_delta, click_mouse,
-                       move_mouse, run_script, send_key)
+from lib_input import (CLAMP_MOVE_DELTA, DRAG_MOVE_STEP_MAX,
+                       MOUSE_MOVE_STEP_MAX, _split_delta, click_at,
+                       click_mouse, double_click_at, drag_from, drag_mouse,
+                       move_mouse, move_to, run_script, send_key, type_text)
 
 
 class SplitDeltaTest(unittest.TestCase):
@@ -113,6 +115,7 @@ class RunScriptTest(unittest.TestCase):
             ('key', 'shift'),
             ('click', 1),
             ('move', 100, 0),
+            ('type', 'hi'),
             ('wait', 0),
         ])
 
@@ -121,6 +124,8 @@ class RunScriptTest(unittest.TestCase):
             'mouse_button 1',
             'mouse_button 0',
             'mouse_move 100 0',
+            'sendkey h',
+            'sendkey i',
         ])
 
     def test_unknown_step_kind_raises(self):
@@ -128,6 +133,117 @@ class RunScriptTest(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             run_script(vm, [('spin', 1)])
+
+
+class MoveToTest(unittest.TestCase):
+
+    @patch('lib_input.time.sleep')
+    def test_clamps_to_the_corner_before_the_real_move(self, _sleep):
+        vm = FakeVm()
+
+        move_to(vm, 252, 44, step=500)
+
+        # The clamp (-2000, -2000) comes first, split at the same step
+        # bound, then the real move to (252, 44).
+        clamp_lines = vm.command_lines[:-1]
+        self.assertTrue(all(line.startswith('mouse_move -500 -500')
+                            for line in clamp_lines))
+        self.assertEqual(sum(1 for _ in clamp_lines),
+                         -(-CLAMP_MOVE_DELTA // 500))
+        self.assertEqual(vm.command_lines[-1], 'mouse_move 252 44')
+
+    @patch('lib_input.time.sleep')
+    def test_click_at_moves_then_clicks(self, _sleep):
+        vm = FakeVm()
+
+        click_at(vm, 0, 0, button=1)
+
+        self.assertEqual(vm.command_lines[-2:],
+                         ['mouse_button 1', 'mouse_button 0'])
+
+    @patch('lib_input.time.sleep')
+    def test_double_click_at_clicks_twice(self, _sleep):
+        vm = FakeVm()
+
+        double_click_at(vm, 0, 0, button=1)
+
+        self.assertEqual(vm.command_lines[-4:], [
+            'mouse_button 1', 'mouse_button 0',
+            'mouse_button 1', 'mouse_button 0',
+        ])
+
+
+class DragMouseTest(unittest.TestCase):
+
+    @patch('lib_input.time.sleep')
+    def test_holds_the_button_across_every_step(self, _sleep):
+        vm = FakeVm()
+
+        drag_mouse(vm, 438, 0, step=30)
+
+        self.assertEqual(vm.command_lines[0], 'mouse_button 1')
+        self.assertEqual(vm.command_lines[-1], 'mouse_button 0')
+        move_lines = vm.command_lines[1:-1]
+        self.assertTrue(all(line.startswith('mouse_move ')
+                            for line in move_lines))
+        for line in move_lines:
+            _cmd, sx, _sy = line.split()
+            self.assertLessEqual(abs(int(sx)), 30)
+
+    def test_default_step_is_tighter_than_the_plain_move_default(self):
+        # psitech-rad4.md's resize finding: a held-button drag needs
+        # smaller steps than an ordinary cursor move.
+        self.assertLess(DRAG_MOVE_STEP_MAX, MOUSE_MOVE_STEP_MAX)
+
+    @patch('lib_input.time.sleep')
+    def test_drag_from_positions_before_dragging(self, _sleep):
+        vm = FakeVm()
+
+        drag_from(vm, 683, 800, 438, 0, step=500)
+
+        press_index = vm.command_lines.index('mouse_button 1')
+        self.assertEqual(vm.command_lines[-1], 'mouse_button 0')
+        # Every positioning move (the clamp, then the walk to (683,
+        # 800)) happens before the button goes down; every move after
+        # it is the drag itself.
+        position_moves = [line for line in vm.command_lines[:press_index]
+                          if line.startswith('mouse_move ')]
+        drag_moves = [line for line in vm.command_lines[press_index + 1:-1]]
+        self.assertTrue(all(line.startswith('mouse_move ')
+                            for line in drag_moves))
+        total_x = sum(int(line.split()[1]) for line in position_moves)
+        total_y = sum(int(line.split()[2]) for line in position_moves)
+        # The clamp (-2000, -2000) plus the walk to (683, 800).
+        self.assertEqual((total_x, total_y), (683 - 2000, 800 - 2000))
+
+
+class TypeTextTest(unittest.TestCase):
+
+    @patch('lib_input.time.sleep')
+    def test_types_hinv_dash_v(self, _sleep):
+        vm = FakeVm()
+
+        type_text(vm, 'hinv -v')
+
+        self.assertEqual(vm.command_lines, [
+            'sendkey h', 'sendkey i', 'sendkey n', 'sendkey v',
+            'sendkey spc', 'sendkey minus', 'sendkey v',
+        ])
+
+    @patch('lib_input.time.sleep')
+    def test_uppercase_goes_through_shift(self, _sleep):
+        vm = FakeVm()
+
+        type_text(vm, 'Ab1')
+
+        self.assertEqual(vm.command_lines,
+                         ['sendkey shift-a', 'sendkey b', 'sendkey 1'])
+
+    def test_unsupported_character_raises(self):
+        vm = FakeVm()
+
+        with self.assertRaises(ValueError):
+            type_text(vm, 'hi!')
 
 
 if __name__ == '__main__':
