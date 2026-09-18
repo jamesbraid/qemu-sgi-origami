@@ -257,6 +257,7 @@ tests_mips64_system_thorough = [
 # the lists above feed, and they belong to the quick suite: the whole set
 # is seconds.
 tests_mips64_unit = [
+  'lib_evidence_capture',
   'lib_graphics_matrix',
   'lib_input',
   'lib_matrix',
