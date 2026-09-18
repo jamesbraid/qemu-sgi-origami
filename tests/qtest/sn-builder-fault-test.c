@@ -31,6 +31,7 @@
 #include "qapi/error.h"
 #include "hw/core/boards.h"
 #include "hw/mips/sgi/sn-machine.h"
+#include "cpu.h"
 
 static SGIModelCpuSlotList *cpu_slot_list(SGIModelCpuSlot *items, size_t count)
 {
@@ -561,6 +562,145 @@ static const TypeInfo bank_test_type = {
     .class_init = bank_test_class_init,
 };
 
+/*
+ * Two-node Bedrock fixture: the second plan's node-types step lets a
+ * Bedrock topology carry more than one node in the descriptor, with no
+ * shipped product exercising it yet (the two-chassis Origin 300 stays
+ * reference-only in the catalogue). This fixture proves the builder's
+ * validation and its node loop accept a two-node Bedrock topology and
+ * build both nodes through it: each node carries its own populated IO-8
+ * board, at its own attachment, so the node loop's per-node widget and
+ * board-selection filtering is exercised for both. No controllers (no
+ * L1 is expected) and no crossbars (Bedrock's own XBridge crossbar is
+ * not a real Crossbow chip the builder instantiates). Each node still
+ * needs a real boot flash and a stock-PROM image the same size, since
+ * sn1_node_realize's own PROM policy is unconditional; the qtest below
+ * supplies a blank one sized to bedrock_test_flash.
+ */
+static SGIModelCpuSlot bedrock_test_cpu_slots[] = {
+    { .interface = 0, .slot = 0, .assembly = &console_test_r10000_180mhz },
+};
+
+static SGIModelFlash bedrock_test_flash = {
+    .kind = SGI_MODEL_FLASH_KIND_AM29F080,
+    .size = 0x100000,
+};
+
+static uint64_t bedrock_test_bank_mib[] = { 64, 0, 0, 0, 0, 0, 0, 0 };
+
+static SGIModelNode bedrock_test_nodes[] = {
+    {
+        .id = (char *)"n0",
+        .module_index = 0,
+        .slot = 0,
+        .asic_kind = SGI_MODEL_ASIC_KIND_BEDROCK,
+        .flash = &bedrock_test_flash,
+    },
+    {
+        .id = (char *)"n1",
+        .module_index = 0,
+        .slot = 1,
+        .asic_kind = SGI_MODEL_ASIC_KIND_BEDROCK,
+        .flash = &bedrock_test_flash,
+    },
+};
+
+static SGIModelXtalkAttachment bedrock_test_xtalk[] = {
+    { .crossbar_index = -1, .widget = 15, .node_index = 0 },
+    { .crossbar_index = -1, .widget = 15, .node_index = 1 },
+};
+
+static SGIModelIoBoard bedrock_test_io_boards[] = {
+    {
+        .id = (char *)"io8-n0",
+        .module_index = 0,
+        .preset = SGI_MODEL_IO_BOARD_PRESET_IO8,
+        .carrier = SGI_MODEL_IO_BOARD_CARRIER_MACHINE_PLACED,
+        .attachment = 0,
+        .revision = 2,
+        .serial = 0x60504030201,
+        .part = (char *)"030-1673-003",
+        .has_ioc3_serial = true,
+        .ioc3_serial = 0x5e7000000001,
+    },
+    {
+        .id = (char *)"io8-n1",
+        .module_index = 0,
+        .preset = SGI_MODEL_IO_BOARD_PRESET_IO8,
+        .carrier = SGI_MODEL_IO_BOARD_CARRIER_MACHINE_PLACED,
+        .attachment = 1,
+        .revision = 2,
+        .serial = 0x60504030202,
+        .part = (char *)"030-1673-003",
+        .has_ioc3_serial = true,
+        .ioc3_serial = 0x5e7000000002,
+    },
+};
+
+static unsigned int bedrock_test_population_0[] = { 1, 1 };
+
+static SGIModelCpuPopulation bedrock_test_populations[] = {
+    { },
+};
+
+static SGIModelTopology bedrock_test_topology = {
+    .name = (char *)"sn-builder-bedrock-test",
+    .generation = SGI_MODEL_GENERATION_SN1,
+    .description = (char *)"two-node Bedrock topology fixture, for the node "
+                   "loop and validation only",
+    .console = 0,
+    .junk_uart = -1,
+};
+
+#define TYPE_SN_BUILDER_BEDROCK_TEST \
+    MACHINE_TYPE_NAME("sn-builder-bedrock-test")
+
+static const char * const bedrock_test_r14000_cpu_types[] = {
+    MIPS_CPU_TYPE_NAME("R14000"),
+    NULL,
+};
+
+static bool bedrock_test_activate_requested;
+
+static void bedrock_test_set_activate(Object *obj, bool value, Error **errp)
+{
+    bedrock_test_activate_requested = value;
+}
+
+static void bedrock_test_machine_init(MachineState *machine)
+{
+    if (!bedrock_test_activate_requested) {
+        return;
+    }
+    sgi_machine_init(machine);
+}
+
+static void bedrock_test_class_init(ObjectClass *oc, const void *data)
+{
+    MachineClass *mc = MACHINE_CLASS(oc);
+    SGIMachineClass *smc = SGI_MACHINE_CLASS(oc);
+
+    mc->desc = "two-node Bedrock topology fixture";
+    mc->init = bedrock_test_machine_init;
+    mc->valid_cpu_types = bedrock_test_r14000_cpu_types;
+    mc->max_cpus = 2;
+    mc->default_ram_id = "sn-builder-bedrock-test.ram";
+    smc->test_topology = &bedrock_test_topology;
+    object_class_property_add_bool(oc, "activate", NULL,
+                                   bedrock_test_set_activate);
+    object_class_property_set_description(oc, "activate",
+        "Build the fixture's two nodes through the real builder. Off by "
+        "default so qom-test and test-hmp's blind run over every "
+        "registered machine type leaves this inert; the qtest that wants "
+        "a real machine turns it on.");
+}
+
+static const TypeInfo bedrock_test_type = {
+    .name = TYPE_SN_BUILDER_BEDROCK_TEST,
+    .parent = TYPE_SGI_SN_MACHINE,
+    .class_init = bedrock_test_class_init,
+};
+
 static void sn_builder_fault_test_register_types(void)
 {
     /*
@@ -626,8 +766,31 @@ static void sn_builder_fault_test_register_types(void)
     bank_test_topology.supported_cpu_populations =
         cpu_population_list(bank_test_populations, ARRAY_SIZE(bank_test_populations));
 
+    bedrock_test_nodes[0].cpu_slots = bedrock_test_nodes[1].cpu_slots =
+        cpu_slot_list(bedrock_test_cpu_slots,
+                     ARRAY_SIZE(bedrock_test_cpu_slots));
+    bedrock_test_nodes[0].bank_mib = bedrock_test_nodes[1].bank_mib =
+        uint64_list(bedrock_test_bank_mib, ARRAY_SIZE(bedrock_test_bank_mib));
+
+    bedrock_test_populations[0].cpus_per_node =
+        uint32_list(bedrock_test_population_0,
+                   ARRAY_SIZE(bedrock_test_population_0));
+
+    bedrock_test_topology.nodes =
+        node_list(bedrock_test_nodes, ARRAY_SIZE(bedrock_test_nodes));
+    bedrock_test_topology.xtalk_attachments =
+        xtalk_attachment_list(bedrock_test_xtalk,
+                              ARRAY_SIZE(bedrock_test_xtalk));
+    bedrock_test_topology.io_boards =
+        io_board_list(bedrock_test_io_boards,
+                     ARRAY_SIZE(bedrock_test_io_boards));
+    bedrock_test_topology.supported_cpu_populations =
+        cpu_population_list(bedrock_test_populations,
+                            ARRAY_SIZE(bedrock_test_populations));
+
     type_register_static(&console_test_type);
     type_register_static(&bank_test_type);
+    type_register_static(&bedrock_test_type);
 }
 
 type_init(sn_builder_fault_test_register_types)
