@@ -55,6 +55,7 @@ config SGI_SN0
     select SGI_O2000_MODULE_MGMT
     select SGI_IOC3
     select SGI_IOC3_ETH
+    select SGI_NET_CABLE
     select SGI_PCI_EXPANSION
     select SGI_ROUTER
     select SGI_XBOW
@@ -83,6 +84,13 @@ config SGI_XTALK_LINK
     bool
     select SGI_XTALK_PORT
     select SGI_XBOW
+
+config SGI_NET_PORT
+    bool
+
+config SGI_NET_CABLE
+    bool
+    select SGI_NET_PORT
 
 config SGI_XIO_BOARD
     bool
