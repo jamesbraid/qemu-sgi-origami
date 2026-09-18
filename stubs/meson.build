@@ -87,6 +87,7 @@ if have_system
   stub_ss.add(files('qmp-i386-xen.c'))
   stub_ss.add(files('qmp-cpu.c'))
   stub_ss.add(files('qmp-mips-debug.c'))
+  stub_ss.add(files('qmp-sgi-sn-catalogue.c'))
   stub_ss.add(files('qmp-cpu-s390x.c'))
   stub_ss.add(files('qmp-cpu-s390x-kvm.c'))
   if have_hmp
