@@ -850,14 +850,24 @@ static void si_draw_glyph_row(SGIMgrasState *s)
  * pixel pair immediately. XFRSIZE/XFRMODE are accepted into the register
  * file but not consulted here.
  *
- * Unlike si_draw_ir_alias_fill/si_draw_glyph_row's own BKGRD_RG usage,
- * this path is not evidenced live at all (zero BKGRD_BA executes in the
- * cited boot-to-desktop trace), so it keeps its pre-existing direct-colour
- * reading rather than gaining an unevidenced CMAP-index treatment; it
- * still clears s->wid[] for the pixels it touches so a stale index tag
- * left by an earlier fill at the same coordinates cannot survive an
- * unrelated PIO overwrite -- see si_fill_rect's own header comment on
- * s->wid[]'s role.
+ * CONTRACT CHANGE, needs independent review: an earlier version of this
+ * function kept its pre-existing direct-colour reading here, reasoning
+ * that this path was not evidenced live at all (zero BKGRD_BA executes in
+ * the cited boot-to-desktop trace). Live-checking a fresh boot-to-desktop
+ * capture after that pass (QMP x-test-pixel/x-test-display-pixel against
+ * a real desktop background pixel, run irix-20260918T183100-1383ab)
+ * found front[] still holding a small raw value (0x11) that scanned out
+ * unresolved -- s->wid[] read false there, meaning neither si_draw_
+ * ir_alias_fill nor si_draw_glyph_row painted it, and the same session's
+ * BLOCKXYENDI traffic (per this device's own re-checked trace census)
+ * reads PACKEDCOLOR as 0 at every execute, not a small nonzero value like
+ * 0x11 -- ruling out both other wid[]-false paths as the source. This PIO
+ * path -- explicitly for "icons, image puts" per its own established
+ * role -- is the only remaining one that can paint a BKGRD_RG-sourced
+ * value without tagging it, so this pass now treats both pixels[] the
+ * same way si_draw_ir_alias_fill treats BKGRD_RG: always a CMAP index,
+ * the same "background colour family, not foreground ink" split already
+ * evidenced for BKGRD_RG's other consumers, not a new guess.
  */
 static void si_draw_pio_pixel_pair(SGIMgrasState *s)
 {
@@ -889,7 +899,7 @@ static void si_draw_pio_pixel_pair(SGIMgrasState *s)
         idx = y * SGI_MGRAS_WIDTH + x;
         uint32_t *p = &s->front[idx];
         *p = si_paint_pixel(op, *p, pixels[i], mask);
-        s->wid[idx] = 0;
+        s->wid[idx] = 1;
         s->pio_x++;
         if (x0 + s->pio_x > x1) {
             s->pio_x = 0;
