@@ -24,7 +24,7 @@ the same guards test_openbsd_login.py keeps.
 
 The machine matches the verified milestone boot: -M
 origin200,topology=origin200-dual -cpu R10000 -m 256 (128 MiB per node),
--smp 4,sockets=2,cores=2,threads=1, -accel tcg,thread=multi, -snapshot
+-smp 4, -accel tcg,thread=multi, -snapshot
 so the 2 GiB disk stays read-only -- with the kernel now loaded through
 the real PROM's own netboot path rather than -kernel directly (lib_prom's
 prom_netboot_steps(), the same conversion test_linux_kernel.py makes and
@@ -173,7 +173,7 @@ class LinuxMultiuser(QemuSystemTest):
             '-bios', firmware,
             '-drive', f'if=none,id=disk0,file={disk},format=raw',
             '-device', 'scsi-hd,drive=disk0,bus=scsi.0,scsi-id=0,lun=0',
-            '-smp', '4,sockets=2,cores=2,threads=1',
+            '-smp', '4',
             '-accel', 'tcg,thread=multi',
             '-nic', ('user,id=n1,'
                     f'hostfwd=tcp::{SSH_HOST_PORT}-:22,'

@@ -224,10 +224,7 @@ def qemu_args(cell):
         raise MatrixError(
             f'cell {cell.id!r}: cpus {cell.cpus} does not split evenly '
             f'across {cell.nodes} nodes')
-    cpus_per_node = cell.cpus // cell.nodes
-    args += ['-smp',
-             f'{cell.cpus},sockets={cell.nodes},'
-             f'cores={cpus_per_node},threads=1']
+    args += ['-smp', str(cell.cpus)]
 
     # Fail fast in Python, matching the machine's own even-split check.
     _split_mem(cell.mem, cell.nodes)

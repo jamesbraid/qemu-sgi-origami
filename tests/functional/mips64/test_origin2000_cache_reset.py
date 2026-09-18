@@ -177,7 +177,7 @@ class Origin2000CacheReset(QemuSystemTest):
         self.set_machine('origin2000')
         self.vm.add_args('-accel', 'tcg,thread=single', '-cpu', 'R10000',
                          '-m', '256M', '-smp',
-                         '8,sockets=4,cores=2,threads=1',
+                         '8',
                          '-bios', rom, '-S', '-nodefaults')
         for cpu in range(8):
             for offset in (0, 8):

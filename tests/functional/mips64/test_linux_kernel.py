@@ -35,7 +35,7 @@ other way any more, and the mainline kernel is a 64-bit ELF the PROM
 loads directly, the same as sash64.
 
 The four-CPU case is IN scope. It boots the same kernel on the two-node
-topology (topology=origin200-dual, -smp 4,sockets=2,cores=2,threads=1;
+topology (topology=origin200-dual, -smp 4;
 -m splits evenly into 64 MiB per node) under the same deterministic
 thread=single
 -icount regime the one- and two-CPU cells use -- shift=2 here, the
@@ -165,7 +165,7 @@ def cpu_qemu_args(cpus):
     if cpus == 2:
         args += ['-smp', '2']
     elif cpus == 4:
-        args += ['-smp', '4,sockets=2,cores=2,threads=1']
+        args += ['-smp', '4']
     icount = ('shift=2,align=off,sleep=on' if cpus == 4
               else 'shift=3,align=off,sleep=off')
     args += ['-accel', 'tcg,thread=single', '-icount', icount]

@@ -1440,7 +1440,7 @@ class SN0SMPMachine(QemuSystemTest):
             '-accel', 'tcg,thread=single',
             '-icount', 'shift=2,align=off,sleep=on',
             '-m', '128M',
-            '-smp', '4,sockets=2,cores=2,threads=1',
+            '-smp', '4',
             '-bios', firmware)
         self.vm.launch()
         state = self.wait_for_four_cpu_state()
@@ -1493,7 +1493,7 @@ class SN0SMPMachine(QemuSystemTest):
         self.vm.add_args(
             '-accel', 'tcg,thread=multi',
             '-m', '128M',
-            '-smp', '4,sockets=2,cores=2,threads=1',
+            '-smp', '4',
             '-bios', firmware)
         self.vm.launch()
         state = self.wait_for_four_cpu_state(timeout=30)
@@ -1544,7 +1544,7 @@ class SN0SMPMachine(QemuSystemTest):
         self.vm.add_args(
             '-accel', 'tcg,thread=multi',
             '-m', '128M',
-            '-smp', '4,sockets=2,cores=2,threads=1',
+            '-smp', '4',
             '-bios', firmware)
         self.vm.launch()
         state = self.wait_for_dual_node_state(timeout=30)
@@ -1583,7 +1583,7 @@ class SN0SMPMachine(QemuSystemTest):
             '-accel', 'tcg,thread=single',
             '-icount', 'shift=2,align=off,sleep=on',
             '-m', '128M',
-            '-smp', '4,sockets=2,cores=2,threads=1',
+            '-smp', '4',
             '-bios', firmware)
         self.vm.launch()
         state = self.wait_for_dual_node_state(timeout=30)
