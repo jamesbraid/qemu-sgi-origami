@@ -18,11 +18,15 @@
  * call, but no evidence yet establishes which physical chip revision this
  * project's modeled RAD1 should present; see the datasheet section above
  * for the open item. 12d1:0101 remains real and is exposed separately as
- * the PCI Subsystem Vendor/Device ID, matching what the datasheet's "PCI
- * and address spaces" section and the standalone PROM textport driver's own
- * subsystem-ID check (a different, standard PCI config-space field from
- * the primary Vendor/Device ID) use for board identity independent of bus
- * probing.
+ * the PCI Subsystem Vendor/Device ID (a different, standard PCI
+ * config-space field from the primary Vendor/Device ID) because it is
+ * PsiTech's own disclosed board identity, matching the datasheet's "PCI
+ * and address spaces" section -- not because any driver path is known to
+ * check it. The datasheet's "PROM/standalone textport" section disassembled
+ * only RAD1_baseindex's four-entry base-address lookup and explicitly did
+ * not disassemble the RAD1Tp-family, RAD1Reset or RAD1InitBoard routine
+ * bodies themselves, so no subsystem-ID check is established anywhere in
+ * that driver.
  *
  * Unlike psitech-rad4.c, RAD1 is built directly on the TI/3Dlabs TVP4020
  * (Permedia2/Permedia2V) with 8 MB of onboard SGRAM, an integrated RAMDAC,
@@ -91,8 +95,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 /*
  * PsiTech's own board/subsystem identity (public 1999 product sheet),
  * exposed as the PCI Subsystem Vendor/Device ID rather than the primary
- * Vendor/Device ID -- what the standalone PROM textport driver's own
- * subsystem-ID check matches against.
+ * Vendor/Device ID because it is PsiTech's real, disclosed board identity
+ * -- not because any driver path, including the standalone PROM textport
+ * library, is established to check it. See the file comment above.
  */
 #define RAD1_SUBSYSTEM_VENDOR_ID 0x12d1
 #define RAD1_SUBSYSTEM_DEVICE_ID 0x0101
