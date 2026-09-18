@@ -35,7 +35,6 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "hw/core/sysbus.h"
-#include "hw/1wire/crc.h"
 #include "hw/mips/sgi-xtalk-port.h"
 #include "hw/mips/sgi/xtalk-board.h"
 #include "hw/mips/sgi/xtalk-link.h"
@@ -1196,59 +1195,6 @@ static bool sgi_machine_realize_crossbars(
 /* ---- Module identity, shared controllers and routers ---- */
 
 /*
- * A module's one-wire identity pages, from its serial alone: page 0 is
- * the family byte plus the ten-character serial, page 1 the fixed
- * "MODULEID" name at offset sixteen, both CRC16-terminated.
- */
-static bool sgi_machine_module_identity_pages(const char *serial,
-                                              uint8_t page[2][DS2502_PAGE_SIZE])
-{
-    static const char name[] = "MODULEID";
-    size_t i;
-
-    if (strlen(serial) != SGI_MODEL_MODULE_SERIAL_LEN) {
-        return false;
-    }
-    for (i = 0; i < SGI_MODEL_MODULE_SERIAL_LEN; i++) {
-        if (!g_ascii_isprint(serial[i]) || serial[i] == ':' ||
-            serial[i] == ';') {
-            return false;
-        }
-    }
-
-    memset(page, 0xff, 2 * DS2502_PAGE_SIZE);
-    page[0][0] = 0x01;
-    memcpy(&page[0][1], serial, SGI_MODEL_MODULE_SERIAL_LEN);
-    memcpy(&page[1][16], name, sizeof(name) - 1);
-    for (i = 0; i < 2; i++) {
-        uint16_t crc = ~onewire_crc16(0, page[i], DS2502_PAGE_SIZE - 2);
-
-        page[i][DS2502_PAGE_SIZE - 2] = crc;
-        page[i][DS2502_PAGE_SIZE - 1] = crc >> 8;
-    }
-    return true;
-}
-
-/*
- * The module responder's eight-byte one-wire ROM: family code 0x09, a
- * byte unique per node (0x08 plus slot), the module number folded into
- * the next byte's top nibble, three zero bytes, then a CRC8 self-check.
- * Matches the shipped module (slot 1-4, module number one) byte for
- * byte; the module-number fold is inferred from that one sample and not
- * independently confirmed against a second module number.
- */
-static void sgi_machine_module_identity_rom(unsigned int slot,
-                                            uint8_t module_number,
-                                            uint8_t rom[8])
-{
-    rom[0] = 0x09;
-    rom[1] = 0x08 + slot;
-    rom[2] = rom[3] = rom[4] = rom[5] = 0x00;
-    rom[6] = (module_number & 0x0f) << 4;
-    rom[7] = onewire_crc8(0, rom, 7);
-}
-
-/*
  * A module naming a shared system controller shares one MicroLAN
  * module-identity responder across every node it carries. A module
  * whose nodes each carry their own controller (Origin 200) has none.
@@ -1266,8 +1212,8 @@ static void sgi_machine_attach_module_identities(SGIMachineState *s,
         if (module->controller_index < 0) {
             continue;
         }
-        if (!sgi_machine_module_identity_pages(module->serial,
-                                               identity.page)) {
+        if (!sgi_sn0_module_management_identity_pages(module->serial,
+                                                      identity.page)) {
             error_report("module '%s' has an invalid identity serial",
                         module->id);
             exit(EXIT_FAILURE);
@@ -1275,9 +1221,9 @@ static void sgi_machine_attach_module_identities(SGIMachineState *s,
         for (i = 0; i < module->node_count; i++) {
             unsigned int node_index = module->nodes[i];
 
-            sgi_machine_module_identity_rom(t->nodes[node_index].slot,
-                                            module->initial_module_number,
-                                            identity.rom);
+            sgi_sn0_module_management_identity_rom(
+                t->nodes[node_index].slot, module->initial_module_number,
+                identity.rom);
             if (!sgi_hub_attach_module_identity(&s->nodes[node_index]->hub,
                                                 &identity, &error_fatal)) {
                 exit(EXIT_FAILURE);

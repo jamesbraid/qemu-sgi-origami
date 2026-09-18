@@ -930,9 +930,10 @@ static void test_module_serial_generated_crc_and_status(void)
  * That fixture deep-copied the deleted per-product descriptor
  * (SN0ModelComposition) to make the override; format 2 carries no
  * settable copy for a test to reach into. The mechanism it checked is
- * still generic -- sgi_machine_module_identity_pages in sn-machine.c
- * derives both one-wire pages from the module's own serial field, not a
- * literal -- and test_module_serial_generated_crc_and_status above
+ * still generic -- sgi_sn0_module_management_identity_pages in
+ * hw/misc/sgi-sn0-module-management.c derives both one-wire pages from
+ * the module's own serial field, not a literal -- and
+ * test_module_serial_generated_crc_and_status above
  * already reads both the controller and the Hub relay for the shipped
  * module against that derivation; only the check that a second serial
  * value also round-trips is not ported.
