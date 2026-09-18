@@ -6,6 +6,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev.h"
 #include "hw/core/sysbus.h"
+#include "hw/mips/sgi-xtalk-port.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/module.h"
@@ -173,9 +174,38 @@ static const VMStateDescription vmstate_sgi_xtalk_board = {
     },
 };
 
+/*
+ * ---- The crosstalk port interface ----
+ *
+ * A board is always a leaf: its widget answers a processor and a packet
+ * access at the one place build_widget() records, so both faces are
+ * whatever it set on cpu_face/packet_face -- NULL before this board's
+ * own realize has run. index is unused: a board occupies exactly one
+ * widget, named by its own "slot" property instead.
+ */
+
+static const char *sgi_xtalk_board_xtalk_port_describe(Object *port,
+                                                        unsigned int index)
+{
+    return "a crosstalk board's widget";
+}
+
+static MemoryRegion *sgi_xtalk_board_xtalk_port_cpu_face(Object *port,
+                                                          unsigned int index)
+{
+    return SGI_XTALK_BOARD(port)->cpu_face;
+}
+
+static MemoryRegion *sgi_xtalk_board_xtalk_port_packet_face(Object *port,
+                                                             unsigned int index)
+{
+    return SGI_XTALK_BOARD(port)->packet_face;
+}
+
 static void sgi_xtalk_board_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
+    SGIXtalkPortClass *pc = SGI_XTALK_PORT_CLASS(oc);
 
     dc->desc = "SGI crosstalk board (abstract)";
     dc->realize = sgi_xtalk_board_realize;
@@ -184,6 +214,9 @@ static void sgi_xtalk_board_class_init(ObjectClass *oc, const void *data)
     device_class_set_props(dc, sgi_xtalk_board_properties);
     /* Only a concrete subclass is ever instantiated directly. */
     dc->user_creatable = false;
+    pc->describe = sgi_xtalk_board_xtalk_port_describe;
+    pc->cpu_face = sgi_xtalk_board_xtalk_port_cpu_face;
+    pc->packet_face = sgi_xtalk_board_xtalk_port_packet_face;
 }
 
 static const TypeInfo sgi_xtalk_board_types[] = {
@@ -194,6 +227,10 @@ static const TypeInfo sgi_xtalk_board_types[] = {
         .class_size = sizeof(SGIXtalkBoardClass),
         .class_init = sgi_xtalk_board_class_init,
         .abstract = true,
+        .interfaces = (const InterfaceInfo[]) {
+            { TYPE_SGI_XTALK_PORT },
+            { }
+        },
     },
 };
 

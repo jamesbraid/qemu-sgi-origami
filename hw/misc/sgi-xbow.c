@@ -21,6 +21,7 @@
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
 #include "system/runstate.h"
+#include "hw/mips/sgi-xtalk-port.h"
 #include "hw/misc/sgi-xbow.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
@@ -1518,10 +1519,47 @@ static void sgi_xbow_instance_finalize(Object *obj)
     }
 }
 
+/*
+ * ---- The crosstalk port interface ----
+ *
+ * Each of the eight external links is one port, addressed by index the
+ * way every other public accessor here addresses it: a widget number,
+ * 8 through 15, not a link index. Neither face exists before this
+ * Crossbow realizes (sgi_xbow_realize builds ingress[]/packet_ingress[]
+ * there), so a link that needs them calls in after, never before.
+ */
+
+static const char *sgi_xbow_xtalk_port_describe(Object *port,
+                                                 unsigned int index)
+{
+    return "a Crossbow port";
+}
+
+static bool sgi_xbow_xtalk_port_valid(Object *port, unsigned int index)
+{
+    return DEVICE(port)->realized &&
+           index >= SGI_XBOW_FIRST_WIDGET && index < SGI_XBOW_WIDGETS;
+}
+
+static MemoryRegion *sgi_xbow_xtalk_port_cpu_face(Object *port,
+                                                   unsigned int index)
+{
+    return sgi_xbow_xtalk_port_valid(port, index) ?
+        sgi_xbow_ingress(SGI_XBOW(port), index) : NULL;
+}
+
+static MemoryRegion *sgi_xbow_xtalk_port_packet_face(Object *port,
+                                                      unsigned int index)
+{
+    return sgi_xbow_xtalk_port_valid(port, index) ?
+        sgi_xbow_packet_ingress(SGI_XBOW(port), index) : NULL;
+}
+
 static void sgi_xbow_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     ResettableClass *rc = RESETTABLE_CLASS(oc);
+    SGIXtalkPortClass *pc = SGI_XTALK_PORT_CLASS(oc);
 
     dc->desc = "SGI Crossbow crosstalk crossbar";
     dc->realize = sgi_xbow_realize;
@@ -1533,6 +1571,9 @@ static void sgi_xbow_class_init(ObjectClass *oc, const void *data)
     rc->phases.enter = sgi_xbow_reset_enter;
     rc->phases.hold = sgi_xbow_reset_hold;
     rc->phases.exit = sgi_xbow_reset_exit;
+    pc->describe = sgi_xbow_xtalk_port_describe;
+    pc->cpu_face = sgi_xbow_xtalk_port_cpu_face;
+    pc->packet_face = sgi_xbow_xtalk_port_packet_face;
 }
 
 static const TypeInfo sgi_xbow_types[] = {
@@ -1543,6 +1584,10 @@ static const TypeInfo sgi_xbow_types[] = {
         .instance_init = sgi_xbow_instance_init,
         .instance_finalize = sgi_xbow_instance_finalize,
         .class_init = sgi_xbow_class_init,
+        .interfaces = (const InterfaceInfo[]) {
+            { TYPE_SGI_XTALK_PORT },
+            { }
+        },
     },
 };
 

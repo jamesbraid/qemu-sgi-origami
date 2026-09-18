@@ -73,9 +73,13 @@ config SGI_SN1
     select SGI_XBRIDGE
     select USB_OHCI_PCI
 
+config SGI_XTALK_PORT
+    bool
+
 config SGI_XTALK_BOARD
     bool
     select SGI_XBOW
+    select SGI_XTALK_PORT
 
 config SGI_XTALK_BOARD_TEST
     bool

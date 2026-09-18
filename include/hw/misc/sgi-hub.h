@@ -420,6 +420,16 @@ bool sgi_hub_attach_module_identity(SGIHubState *s,
                                     const SGIHubModuleIdentity *identity,
                                     Error **errp);
 
+/*
+ * Wire this Hub's own outbound big-window I/O traffic (the "xtalk-io"
+ * property) to target: a crosstalk-attach link's own doing, since a
+ * directly attached Hub never populates it. Must run before this Hub
+ * realizes, and at most once; target typically outlives the call by
+ * far (the crossbow link's own proxy region, filled in once its
+ * Crossbow has realized).
+ */
+bool sgi_hub_set_xtalk_io(SGIHubState *s, MemoryRegion *target, Error **errp);
+
 /* The fabric's side of the interface: this endpoint's map or link state moved. */
 void sgi_hub_fabric_changed(SGIHubState *s);
 bool sgi_hub_vector_access(SGIHubState *target, SN0FabricVectorAccess *access);
