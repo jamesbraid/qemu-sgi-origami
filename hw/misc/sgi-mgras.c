@@ -711,6 +711,7 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
     case SGI_MGRAS_SCHED_ARG_1: return s->sched_arg_1;
     case SGI_MGRAS_SCHED_ARG_2: return s->sched_arg_2;
     case SGI_MGRAS_SCHED_ARG_3: return s->sched_arg_3;
+    case SGI_MGRAS_SCHED_ARG_4: return s->sched_arg_4;
     case SGI_MGRAS_BANK_STATUS_1: return s->bank_status_1;
     case SGI_MGRAS_BANK_STATUS_2: return s->bank_status_2;
     /* See the header comment: no evidence for real content, report zero. */
@@ -1019,6 +1020,7 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     case SGI_MGRAS_SCHED_ARG_1: s->sched_arg_1 = value; return;
     case SGI_MGRAS_SCHED_ARG_2: s->sched_arg_2 = value; return;
     case SGI_MGRAS_SCHED_ARG_3: s->sched_arg_3 = value; return;
+    case SGI_MGRAS_SCHED_ARG_4: s->sched_arg_4 = value; return;
     case SGI_MGRAS_BANK_STATUS_1: s->bank_status_1 = value; return;
     case SGI_MGRAS_BANK_STATUS_2: s->bank_status_2 = value; return;
     /* Always written zero in the evidenced case; see the header comment. */
@@ -1238,7 +1240,7 @@ static void si_reset(DeviceState *dev)
     s->hq_vector_dest_upper = s->hq_vector_dest_lower = s->hq_vectors = 0;
     s->hq_config_a = s->hq_config_b = s->hq_enable = 0;
     memset(s->fifo_threshold, 0, sizeof(s->fifo_threshold));
-    s->sched_arg_1 = s->sched_arg_2 = s->sched_arg_3 = 0;
+    s->sched_arg_1 = s->sched_arg_2 = s->sched_arg_3 = s->sched_arg_4 = 0;
     s->bank_status_1 = s->bank_status_2 = 0;
     /*
      * Reset does not retroactively unsend an already-delivered packet, so
@@ -1345,6 +1347,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32(sched_arg_1, SGIMgrasState),
         VMSTATE_UINT32(sched_arg_2, SGIMgrasState),
         VMSTATE_UINT32(sched_arg_3, SGIMgrasState),
+        VMSTATE_UINT32(sched_arg_4, SGIMgrasState),
         VMSTATE_UINT32(bank_status_1, SGIMgrasState),
         VMSTATE_UINT32(bank_status_2, SGIMgrasState),
         VMSTATE_BOOL(lowater_asserted, SGIMgrasState),

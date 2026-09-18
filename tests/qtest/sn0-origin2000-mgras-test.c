@@ -83,6 +83,7 @@
 #define REG_FIFO_THRESHOLD_LAST  SI_REG(0x040030)
 #define REG_BANK_STATUS_1       SI_REG(0x020010)
 #define REG_BANK_STATUS_2       SI_REG(0x020018)
+#define REG_SCHED_ARG_4         SI_REG(0x040070)
 
 #define SI_ENTRY_WORD           0x000004fc
 #define SI_FINAL_TOKEN           0x0000f400
@@ -1458,6 +1459,30 @@ static void test_hq_vector_registers(void)
 }
 
 /*
+ * SGI_MGRAS_SCHED_ARG_4 (0x040070): MgrasInitialize's own flow-control
+ * credit word, computed as (0x11 << 3) | (board_byte << 8) | 0x1000 and
+ * written once during setup, never read back. Root-caused live as the
+ * trigger for the gfxinit CTXSW/CFIFO timeout (docs/plans/
+ * si-graphics-widget-wiring-handoff-20260916.md, "gfxinit clears GE
+ * download live, then MgrasCtxsw timeout"): with no case here, the write
+ * took the generic unsupported-access path and latched this device's
+ * sticky error flag, which poisoned every later REG_HQ_STATUS read. A
+ * plain write/read round trip that raises no sticky error is the
+ * regression check for this specific fix.
+ */
+static void test_sched_arg_4_round_trip(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    qtest_writel(qts, REG_SCHED_ARG_4, 0x1885);
+    g_assert_cmphex(qtest_readl(qts, REG_SCHED_ARG_4), ==, 0x1885);
+    /* Not an SI-specific access: it may not raise the sticky error. */
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
  * MgrasInitHQ writes FIFO low/high-water thresholds across this small
  * range once at start-of-day; none is ever read back by the driver, but
  * this device stores and echoes the whole range like the larger board-
@@ -1659,6 +1684,8 @@ int main(int argc, char **argv)
                    test_hq_vector_registers);
     qtest_add_func("sn0/origin2000/mgras/fifo-threshold-registers",
                    test_fifo_threshold_registers);
+    qtest_add_func("sn0/origin2000/mgras/sched-arg-4-round-trip",
+                   test_sched_arg_4_round_trip);
     qtest_add_func("sn0/origin2000/mgras/command-accepts-hq-config-words",
                    test_command_accepts_hq_config_words);
     qtest_add_func("sn0/origin2000/mgras/context-write-after-completion",
