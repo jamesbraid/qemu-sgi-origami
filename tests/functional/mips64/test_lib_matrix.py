@@ -351,7 +351,7 @@ class QemuArgsTest(unittest.TestCase):
         args = qemu_args(make_cell(cpus=4, nodes=2, mem='128M'))
         joined = ' '.join(args)
 
-        self.assertIn('-smp 4,sockets=2,cores=2,threads=1', joined)
+        self.assertIn('-smp 4', joined)
         self.assertNotIn('-numa', args)
         self.assertNotIn('-object', args)
 

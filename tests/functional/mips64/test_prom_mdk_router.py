@@ -111,7 +111,7 @@ class PromMdkRouter(QemuSystemTest):
         capture = self.log_file('wire.pcap')
         extra = mdk_extra_args(prom, netboot_tftp, elsc_log, capture,
                                netboot_path=NETBOOT_PATH)
-        extra[extra.index('-smp') + 1] = '4,sockets=2,cores=2,threads=1'
+        extra[extra.index('-smp') + 1] = '4'
         extra[extra.index('-m') + 1] = '128'
         vm.add_args('-accel', 'tcg,thread=single', *extra)
 

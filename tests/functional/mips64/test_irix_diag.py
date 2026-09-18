@@ -83,7 +83,7 @@ DISK_REL = os.path.join('assets', 'irix', RELEASE, 'root-diags.qcow2')
 # the two-chassis wiring; -m splits evenly into 64 MiB per node.
 MEMORY_MIB = 128
 TWO_CHASSIS_ARGS = (
-    '-smp', '4,sockets=2,cores=2,threads=1',
+    '-smp', '4',
 )
 
 # The whole two-chassis run -- boot, oldisk and olmem against four CPUs
