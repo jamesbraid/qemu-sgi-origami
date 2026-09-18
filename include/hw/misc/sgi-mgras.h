@@ -602,17 +602,14 @@ struct SGIMgrasState {
      */
     uint32_t rss[0x200];
     /*
-     * This device's own write cursor for glyph bitmap chunks and PIO pixel
-     * pairs (si_draw_glyph_chunk/si_draw_pio_pixel_pair, sgi-mgras.c),
-     * reset whenever the block-start register is rewritten. Real hardware
-     * has no guest-visible cursor register for either -- this is internal
+     * This device's own write cursor for glyph rows and PIO pixel pairs
+     * (si_draw_glyph_row/si_draw_pio_pixel_pair, sgi-mgras.c), reset
+     * whenever the block-start register is rewritten. Real hardware has
+     * no guest-visible cursor register for either -- this is internal
      * bookkeeping for this device's own bounded interpretation of "one
-     * execute record advances a persistent position within the block
-     * rectangle", not a modelled register. glyph_x/glyph_y track the next
-     * pixel a CHAR_H push paints, in block-rectangle-relative coordinates.
+     * execute record per row/pair", not a modelled register.
      */
-    uint32_t glyph_x;
-    uint32_t glyph_y;
+    uint32_t glyph_row;
     uint32_t pio_x;
     uint32_t pio_y;
     /*
