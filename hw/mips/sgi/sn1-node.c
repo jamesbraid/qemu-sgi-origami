@@ -773,17 +773,31 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     }
     qdev_prop_set_uint32(node->bedrock, "processor-slot-order", slot_order);
     /*
-     * Initial C grant is a model approximation; silicon reset is
-     * unknown. Generalized from the two-processor case rather than
-     * given a new rule for four: whichever physical slot the second
-     * realized processor occupies gets the initial grant, for any
-     * population with more than one processor. Population order keeps
-     * C there (sn1_cpu_slot's own comment) whether this run realizes
-     * two processors or four.
+     * Every fitted slot on processor interface 1 comes out of reset with
+     * its bus grant. This is a model approximation; the silicon's reset
+     * value is unknown. What the stock PROM does with these registers is
+     * measured: the boot master rewrites the whole register head of
+     * interface 0 during startup, the last pass leaving bit 0 set in both
+     * of that interface's CPU-enable registers, and it never writes
+     * either CPU-enable register of interface 1. Nothing in the firmware
+     * grants a processor on interface 1, so without this the
+     * two-processor board's slot C and the four-processor board's slot D
+     * both fail the PROM's early initialisation. A two-processor
+     * population fits only C on that interface, so its grant is
+     * unchanged. docs/datasheets/bedrock-processor-interface.md,
+     * "Selected Origin 300 PI1/A boot grant", records the runs.
      */
     if (node->nr_cpus > 1) {
-        qdev_prop_set_uint32(node->bedrock, "cpu-enable-initial-mask",
-                            1U << sn1_cpu_slot(node->model_node, 1));
+        uint32_t grant = 0;
+
+        for (cpu = 0; cpu < node->nr_cpus; cpu++) {
+            unsigned physical = sn1_cpu_slot(node->model_node, cpu);
+
+            if (physical >= SGI_BEDROCK_PROCESSORS / 2) {
+                grant |= 1U << physical;
+            }
+        }
+        qdev_prop_set_uint32(node->bedrock, "cpu-enable-initial-mask", grant);
     }
     qdev_prop_set_uint8(node->bedrock, "revision", SN1_BEDROCK_REVISION);
     qdev_prop_set_uint8(node->bedrock, "local-region",
