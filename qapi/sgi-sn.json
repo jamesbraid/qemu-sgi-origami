@@ -62,10 +62,10 @@
 #
 # @cache-mib: secondary cache size
 #
-# @mode-bits: the CP0_Config0-derived mode word the flash #
-#     configuration # block and the board latch both compare against,
-#     # computed once by # Origami's compiler from this assembly's
-#     other # fields
+# @mode-bits: the CP0_Config0-derived mode word the flash
+#     configuration block and the board latch both compare against,
+#     computed once by Origami's compiler from this assembly's other
+#     fields
 #
 # Since: 11.2
 ##
@@ -142,11 +142,11 @@
 #
 # @serial: fitted-part one-wire serial
 #
-# @i2c-controller: whether this ASIC carries an embedded I2C #
+# @i2c-controller: whether this ASIC carries an embedded I2C
 #     controller
 #
-# @system-controller: whether that controller also answers as the #
-#     node's # system controller (Origin 200's embedded ELSC)
+# @system-controller: whether that controller also answers as the
+#     node's system controller (Origin 200's embedded ELSC)
 #
 # Since: 11.2
 ##
@@ -173,23 +173,22 @@
 #
 # @identity: the ASIC's own fitted-part identity
 #
-# @cpu-slots: this node's processor-interface slots, populated and #
+# @cpu-slots: this node's processor-interface slots, populated and
 #     empty
 #
 # @bank-mib: this node's memory banks, in bank order; a zero entry is
-#     # an # unpopulated bank.  Always exactly as many entries as the
-#     # node ASIC's # architectural bank count.
+#     an unpopulated bank.  Always exactly as many entries as the node
+#     ASIC's architectural bank count.
 #
-# @accepted-memory-mib: other total per-node memory sizes the #
-#     builder's # fitting rule accepts for this node besides #
-#     @bank-mib's own shipped # population; empty means the shipped #
-#     population only
+# @accepted-memory-mib: other total per-node memory sizes the
+#     builder's fitting rule accepts for this node besides @bank-mib's
+#     own shipped population; empty means the shipped population only
 #
 # @flash: this node's boot flash
 #
-# @slave-role: whether this node answers module-management commands #
-#     only # through its module's master, never on its own external #
-#     AUX line # (Origin 2000's per-Hub adapters behind a shared MSC)
+# @slave-role: whether this node answers module-management commands
+#     only through its module's master, never on its own external AUX
+#     line (Origin 2000's per-Hub adapters behind a shared MSC)
 #
 # Since: 11.2
 ##
@@ -221,8 +220,8 @@
 #
 # @revision: fitted silicon revision
 #
-# @chip-inputs: fitted-part NUMAlink input calibration count, read #
-#     back # through the Router's own status register
+# @chip-inputs: fitted-part NUMAlink input calibration count, read
+#     back through the Router's own status register
 #
 # @serial: fitted-part one-wire serial
 #
@@ -258,7 +257,7 @@
 #
 # @kind: what this end plugs into
 #
-# @index: which node or router, by position in the topology's own # #
+# @index: which node or router, by position in the topology's own
 #     @nodes or @routers list
 #
 # @port: port number on that node or router
@@ -275,7 +274,7 @@
 #
 # What kind of cable joins two ports.
 #
-# @midplane: a fixed midplane trace (Origin 2000's within-module #
+# @midplane: a fixed midplane trace (Origin 2000's within-module
 #     wiring)
 #
 # @cable: a NUMAlink cable between modules
@@ -285,7 +284,7 @@
 # @carrier: an Origin 200 chassis-to-chassis carrier cable
 #
 # @null-router: a direct Hub-to-Hub cable with no Router between them
-#     # # (an Origin 200 pair)
+#     (an Origin 200 pair)
 #
 # Since: 11.2
 ##
@@ -356,7 +355,7 @@
 # are fixed by the chip that answers it and are not carried here.
 #
 # @crossbar-index: position in the topology's own @crossbars list, or
-#     # -1 # for a direct attachment
+#     -1 for a direct attachment
 #
 # @widget: widget number this attachment answers on
 #
@@ -395,12 +394,12 @@
 # What physically carries a base I/O board.
 #
 # @onboard: a fitted part of the node board itself (Origin 200's IP29
-#     # # System Board)
+#     System Board)
 #
 # @xio-slot: a removable XIO card
 #
-# @machine-placed: a PCI board the machine places outright, not a # #
-#     removable card (Origin 300's IO-8, on the node board's own #
+# @machine-placed: a PCI board the machine places outright, not a
+#     removable card (Origin 300's IO-8, on the node board's own
 #     XBridge)
 #
 # Since: 11.2
@@ -431,10 +430,10 @@
 #
 # @serial: fitted-part one-wire serial
 #
-# @ioc3-serial: the IOC3 function's own one-wire serial, a distinct #
-#     # fitted-part identity from the board's own @serial; absent
-#     where # # this board's preset carries no IOC3 population (an
-#     Origin 300 # # XBridge head with nothing fitted)
+# @ioc3-serial: the IOC3 function's own one-wire serial, a distinct
+#     fitted-part identity from the board's own @serial; absent where
+#     this board's preset carries no IOC3 population (an Origin 300
+#     XBridge head with nothing fitted)
 #
 # Since: 11.2
 ##
@@ -491,13 +490,13 @@
 # @id: catalogue id of this module
 #
 # @serial: fitted-part identity serial the module's or brick's shared
-#     # # one-wire identity pages are generated from
+#     one-wire identity pages are generated from
 #
 # @initial-module-number: module number the PROM programs at reset
 #
 # @controller-index: position in the topology's own @controllers list,
-#     # # or -1 when this module's nodes each carry their own
-#     controller # # instead (Origin 200)
+#     or -1 when this module's nodes each carry their own controller
+#     instead (Origin 200)
 #
 # @nodes: positions in the topology's own @nodes list, in slot order
 #
@@ -517,7 +516,7 @@
 # node, in node order.
 #
 # @cpus-per-node: processor count for each node in the topology's own
-#     # # @nodes list, in order
+#     @nodes list, in order
 #
 # Since: 11.2
 ##
@@ -546,12 +545,12 @@
 #
 # @name: catalogue name of this topology (`topology=` selects it)
 #
-# @product: which product this topology is a configuration of (`-M` #
-#     # value); not a device or wiring fact, but what a loaded
-#     catalogue # # needs to pick a product's default topology without
-#     a second, # # hand-authored table
+# @product: which product this topology is a configuration of (`-M`
+#     value); not a device or wiring fact, but what a loaded catalogue
+#     needs to pick a product's default topology without a second,
+#     hand-authored table
 #
-# @generation: which Scalable Node generation this topology's node # #
+# @generation: which Scalable Node generation this topology's node
 #     boards belong to
 #
 # @description: prose description of this configuration
@@ -573,15 +572,14 @@
 # @controllers: this topology's shared system controllers
 #
 # @console: position in @nodes of the node whose IOC3 port A (SN0) or
-#     # # brick controller (SN1) the firmware treats as its console;
-#     the # # rest of the serial-line order is a builder rule, not
-#     data here
+#     brick controller (SN1) the firmware treats as its console; the
+#     rest of the serial-line order is a builder rule, not data here
 #
-# @junk-uart: position in @nodes of the node that offers the # #
+# @junk-uart: position in @nodes of the node that offers the
 #     manufacturing junk-bus UART when the junk-uart property is set,
-#     # or # -1 where this topology has none
+#     or -1 where this topology has none
 #
-# @supported-cpu-populations: every `-smp`/`-numa` population the # #
+# @supported-cpu-populations: every `-smp`/`-numa` population the
 #     builder accepts for this topology
 #
 # Since: 11.2
@@ -608,10 +606,10 @@
 #
 # One serial line a launch places.
 #
-# @kind: role this line plays (console, second-port, #
-#     system-controller, # junk-uart)
+# @kind: role this line plays (console, second-port,
+#     system-controller, junk-uart)
 #
-# @node: position in the owning topology's @nodes list this line #
+# @node: position in the owning topology's @nodes list this line
 #     serves
 #
 # @argument: the QEMU argument form this line becomes
@@ -628,17 +626,20 @@
 #
 # The firmware image an offering expects.
 #
-# @kind: which firmware contract this product's PROM speaks #
-#     (ip27-prom, # ip35-prom)
+# @kind: which firmware contract this product's PROM speaks
+#     (ip27-prom, ip35-prom)
 #
 # @argument: the QEMU argument form the image is supplied through
+#
+# @asset: path of the firmware image asset a launcher fills this
+#     resource from
 #
 # @size: expected image size in bytes
 #
 # @sha256: expected image digest, when the launcher pins one
 #
-# @per-node-flash: whether every node's own flash must be filled #
-#     (true) # or one managed image serves the whole configuration #
+# @per-node-flash: whether every node's own flash must be filled
+#     (true) or one managed image serves the whole configuration
 #     (false)
 #
 # Since: 11.2
@@ -646,6 +647,7 @@
 { 'struct': 'SGIModelFirmware',
   'data': { 'kind': 'str',
             'argument': 'str',
+            'asset': 'str',
             'size': 'uint64',
             '*sha256': 'str',
             'per-node-flash': 'bool' } }
@@ -656,8 +658,8 @@
 # One persistent resource a launcher provisions beyond the drives a
 # user attaches.
 #
-# @kind: what this resource is (nvram, boot-flash, identity-eeprom, #
-#     # spd-eeprom)
+# @kind: what this resource is (nvram, boot-flash, identity-eeprom,
+#     spd-eeprom)
 #
 # @scope: what it is provisioned per (board, node, dimm)
 #
@@ -665,8 +667,8 @@
 #
 # @size: byte size of one instance, when documented
 #
-# @argument: the QEMU argument form this resource becomes, `N` #
-#     standing # for its instance index
+# @argument: the QEMU argument form this resource becomes, `N`
+#     standing for its instance index
 #
 # Since: 11.2
 ##
@@ -717,7 +719,7 @@
 #
 # @default: per-node size in MiB a launch uses when none is given
 #
-# @accepted: every per-node size in MiB the builder's fitting rule # #
+# @accepted: every per-node size in MiB the builder's fitting rule
 #     accepts
 #
 # Since: 11.2
@@ -764,6 +766,8 @@
 #
 # @cpus-per-node: this offering's accepted population, per node
 #
+# @dimms-per-node: this offering's fitted DIMM count, per node
+#
 # @smp: total processor count (`-smp` value)
 #
 # @memory-per-node-mib: accepted per-node memory sizes
@@ -773,7 +777,7 @@
 # @firmware: the firmware image this offering expects
 #
 # @resources: persistent resources this offering needs beyond a user's
-#     # # own drives
+#     own drives
 #
 # @storage: SCSI host adapters this offering's I/O boards carry
 #
@@ -792,11 +796,17 @@
 # @identity-inputs: named identity/SPD inputs this offering accepts
 #
 # @supported-guests: guest operating systems documented to run on this
-#     # # offering
+#     offering
 #
 # @install-media: install media kinds this offering supports
 #
 # @default-cpu-model: default `-cpu` value for this offering
+#
+# @synthesized-firmware-toggle: whether this product's PROM accepts a
+#     debug toggle for a synthesized (non-stock) firmware image
+#
+# @needs-debug-leds-off: whether this product's PROM dialogue needs
+#     its debug LEDs disabled before booting a guest
 #
 # Since: 11.2
 ##
@@ -806,6 +816,7 @@
             'display-name': 'str',
             'nodes': 'uint32',
             'cpus-per-node': ['uint32'],
+            'dimms-per-node': ['uint32'],
             'smp': 'uint32',
             'memory-per-node-mib': 'SGIModelMemoryPopulation',
             'processor': 'SGIModelOfferingProcessor',
@@ -821,7 +832,9 @@
             'identity-inputs': ['str'],
             'supported-guests': ['str'],
             'install-media': ['str'],
-            'default-cpu-model': 'str' } }
+            'default-cpu-model': 'str',
+            'synthesized-firmware-toggle': 'bool',
+            'needs-debug-leds-off': 'bool' } }
 
 ##
 # @SGIModelCatalogue:

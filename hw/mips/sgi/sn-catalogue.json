@@ -29,10 +29,15 @@
         2
       ],
       "default-cpu-model": "R10000",
+      "dimms-per-node": [
+        2,
+        2
+      ],
       "disk-bus": "scsi.0",
       "display-name": "Dual-module Origin 200",
       "firmware": {
         "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
         "kind": "ip27-prom",
         "per-node-flash": false,
         "size": 1048576
@@ -51,6 +56,7 @@
         ],
         "default": 64
       },
+      "needs-debug-leds-off": true,
       "netboot-adapter": "ioc3-ethernet",
       "networks": [
         {
@@ -140,6 +146,7 @@
         "openbsd",
         "gentoo"
       ],
+      "synthesized-firmware-toggle": false,
       "topology": "origin200-dual"
     },
     {
@@ -170,10 +177,14 @@
         1
       ],
       "default-cpu-model": "R10000",
+      "dimms-per-node": [
+        2
+      ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 200 (one-module form)",
       "firmware": {
         "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
         "kind": "ip27-prom",
         "per-node-flash": false,
         "size": 1048576
@@ -192,6 +203,7 @@
         ],
         "default": 64
       },
+      "needs-debug-leds-off": true,
       "netboot-adapter": "ioc3-ethernet",
       "networks": [
         {
@@ -251,6 +263,7 @@
         "openbsd",
         "gentoo"
       ],
+      "synthesized-firmware-toggle": false,
       "topology": "origin200"
     },
     {
@@ -281,10 +294,14 @@
         2
       ],
       "default-cpu-model": "R10000",
+      "dimms-per-node": [
+        2
+      ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 200 (one-module form)",
       "firmware": {
         "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
         "kind": "ip27-prom",
         "per-node-flash": false,
         "size": 1048576
@@ -303,6 +320,7 @@
         ],
         "default": 64
       },
+      "needs-debug-leds-off": true,
       "netboot-adapter": "ioc3-ethernet",
       "networks": [
         {
@@ -362,6 +380,7 @@
         "openbsd",
         "gentoo"
       ],
+      "synthesized-firmware-toggle": false,
       "topology": "origin200"
     },
     {
@@ -390,10 +409,17 @@
         2
       ],
       "default-cpu-model": "R10000",
+      "dimms-per-node": [
+        2,
+        2,
+        2,
+        2
+      ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 four-node module",
       "firmware": {
         "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
         "kind": "ip27-prom",
         "per-node-flash": true,
         "size": 1048576
@@ -408,6 +434,7 @@
         ],
         "default": 64
       },
+      "needs-debug-leds-off": false,
       "netboot-adapter": "ioc3-ethernet",
       "networks": [
         {
@@ -471,6 +498,7 @@
       "supported-guests": [
         "irix"
       ],
+      "synthesized-firmware-toggle": false,
       "topology": "origin2000-module"
     },
     {
@@ -486,10 +514,14 @@
         2
       ],
       "default-cpu-model": "R14000",
+      "dimms-per-node": [
+        2
+      ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 300",
       "firmware": {
         "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
         "kind": "ip35-prom",
         "per-node-flash": false,
         "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
@@ -512,6 +544,7 @@
         ],
         "default": 512
       },
+      "needs-debug-leds-off": false,
       "netboot-adapter": "ioc3-ethernet",
       "networks": [
         {
@@ -588,6 +621,7 @@
       "supported-guests": [
         "irix"
       ],
+      "synthesized-firmware-toggle": false,
       "topology": "origin300"
     }
   ],

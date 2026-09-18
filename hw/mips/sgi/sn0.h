@@ -153,7 +153,8 @@ typedef struct SN0NodeState {
 
     /*
      * The topology's node record, set by the machine before realize --
-     * the format-2 descriptor this node builds from (sn-model.h).
+     * the compiled catalogue's descriptor this node builds from
+     * (qapi/sgi-sn.json).
      */
     const SGIModelNode *model_node;
 
