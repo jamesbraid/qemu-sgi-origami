@@ -595,6 +595,22 @@ struct SGIMgrasState {
     uint32_t revision;
     uint32_t part;
     uint32_t manufacturer;
+    /*
+     * The QEMU display surface front[] scans out into (docs/designs/
+     * 2026-09-17-si-viz-pixel-output-design.md, "Wire a real
+     * QemuConsole"). display_buffer is a plain, host-owned
+     * PIXMAN_x8r8g8b8 buffer -- not qemu_create_displaysurface()'s own
+     * default shareable pixman allocation -- matching the RAD4 sibling
+     * device's own choice (hw/display/psitech-rad4.c) since nothing here
+     * needs zero-copy sharing with an external consumer. Neither con nor
+     * display_buffer is migrated; see si_post_load (sgi-mgras.c). dirty
+     * tracks whether front[] or display_enabled changed since the last
+     * gfx_update, so si_gfx_update only redoes the conversion when it
+     * would actually differ.
+     */
+    QemuConsole *con;
+    uint32_t *display_buffer;
+    bool dirty;
 };
 
 #endif

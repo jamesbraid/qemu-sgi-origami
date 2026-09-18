@@ -10,6 +10,7 @@
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "system/address-spaces.h"
+#include "ui/console.h"
 #include "trace.h"
 
 #define SI_PENDING_FLAGS 0x00080000
@@ -540,12 +541,15 @@ static void si_command_execute(SGIMgrasState *s, uint32_t reg)
     switch (reg) {
     case SI_REG_BLOCKXYENDI:
         si_draw_fill(s);
+        s->dirty = true;
         return;
     case SI_REG_CHAR_L:
         si_draw_glyph_row(s);
+        s->dirty = true;
         return;
     case SI_REG_BKGRD_BA:
         si_draw_pio_pixel_pair(s);
+        s->dirty = true;
         return;
     default:
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: unimplemented direct-command "
@@ -1158,7 +1162,20 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         case 0x02: s->cursor_x = data16; break;
         case 0x03: s->cursor_y = data16; break;
         case 0x1d: s->cursor_enabled = (data16 & 0x2) != 0; break;
-        case 0x1e: s->display_enabled = (data16 & 0x4) != 0; break;
+        case 0x1e: {
+            /*
+             * A transition, not a level: si_gfx_update reruns the
+             * front[]->display_buffer conversion or the blank fill only
+             * when dirty, so a write that leaves the bit unchanged should
+             * not force a redundant redraw.
+             */
+            bool enabled = (data16 & 0x4) != 0;
+            if (enabled != s->display_enabled) {
+                s->dirty = true;
+            }
+            s->display_enabled = enabled;
+            break;
+        }
         default: break;
         }
         return;
@@ -1272,6 +1289,13 @@ static void si_reset(DeviceState *dev)
     s->entry = s->protocol = s->prefix = 0; s->prefix_written = false;
     s->entry_selected = s->ready = false;
     s->display_enabled = s->cursor_enabled = false;
+    /*
+     * Reset turns the display off (above) and clears front[] (above), so
+     * the next gfx_update needs to redraw regardless of whatever it last
+     * showed -- the same "mark dirty" treatment si_command_execute and
+     * the 0x1e display-enable write case give a real content change.
+     */
+    s->dirty = true;
     s->xmap_mode = 0x7a4; s->cmap_index = 0; s->retraces = 0;
     s->int_dest_upper = s->int_dest_lower = 0;
     s->widget_control = 0;
@@ -1317,6 +1341,70 @@ static void si_reset(DeviceState *dev)
               NANOSECONDS_PER_SECOND / 60);
 }
 
+/*
+ * Convert front[] (SI_REG_PACKEDCOLOR's own 0x00BBGGRR packing -- see
+ * si_draw_fill and docs/datasheets/mgras-hq4.md's 0x120400 row) into
+ * display_buffer's PIXMAN_x8r8g8b8 (0x00RRGGBB): B and R swap byte
+ * position, G is already in the right place. Called on whatever cadence
+ * the active UI backend drives (the same pattern RAD4's rad4_gfx_update
+ * uses, hw/display/psitech-rad4.c), so this only redoes the conversion,
+ * or the blank fill, when dirty says something could actually be
+ * different from what display_buffer already holds.
+ *
+ * A real VC3 blanks its output while the display-enable bit is clear
+ * (SGI_MGRAS_VC3_INDEXDATA index 0x1e bit 2, SGIMgrasState.
+ * display_enabled) rather than scanning out whatever front[] holds; this
+ * device fills display_buffer black to match instead of showing stale or
+ * partially-drawn content from before the guest enabled the display.
+ */
+static bool si_gfx_update(void *opaque)
+{
+    SGIMgrasState *s = opaque;
+
+    if (!s->dirty) {
+        return true;
+    }
+    if (!s->display_enabled) {
+        memset(s->display_buffer, 0,
+              SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT * sizeof(*s->display_buffer));
+    } else {
+        for (int i = 0; i < SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT; i++) {
+            uint32_t v = s->front[i];
+
+            s->display_buffer[i] = ((v & 0xff) << 16) | (v & 0x00ff00) |
+                                   ((v >> 16) & 0xff);
+        }
+    }
+    qemu_console_update_full(s->con);
+    s->dirty = false;
+    return true;
+}
+
+static const GraphicHwOps si_gfx_ops = {
+    .gfx_update = si_gfx_update,
+};
+
+/*
+ * qemu_graphic_console_create() starts the console on a small placeholder
+ * surface of its own; recognize this device's own surface by its backing
+ * buffer, the same check RAD4's rad4_ensure_surface uses
+ * (hw/display/psitech-rad4.c), so a second call from si_post_load is a
+ * no-op once si_realize has already installed the real one.
+ */
+static void si_ensure_surface(SGIMgrasState *s)
+{
+    DisplaySurface *ds = qemu_console_surface(s->con);
+
+    if (ds && surface_data(ds) == (uint8_t *)s->display_buffer) {
+        return;
+    }
+    ds = qemu_create_displaysurface_from(SGI_MGRAS_WIDTH, SGI_MGRAS_HEIGHT,
+                                         PIXMAN_x8r8g8b8,
+                                         SGI_MGRAS_WIDTH * 4,
+                                         (uint8_t *)s->display_buffer);
+    qemu_console_set_surface(s->con, ds);
+}
+
 static void si_realize(DeviceState *dev, Error **errp)
 {
     SGIMgrasState *s = SGI_MGRAS(dev);
@@ -1331,11 +1419,14 @@ static void si_realize(DeviceState *dev, Error **errp)
     s->wid = g_new0(uint8_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
     s->ge[SGI_MGRAS_GE_SLOT_A] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
     s->ge[SGI_MGRAS_GE_SLOT_B] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
+    s->display_buffer = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
+    s->con = qemu_graphic_console_create(dev, 0, &si_gfx_ops, s);
     memory_region_init_io(&s->regs, OBJECT(dev), &si_ops, s, "sgi-mgras.regs", SGI_MGRAS_MMIO_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->regs);
     address_space_init(&s->fabric_as, s->fabric, "sgi-mgras.fabric");
     s->retrace_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, si_retrace, s);
     si_reset(dev);
+    si_ensure_surface(s);
 }
 
 static void si_unrealize(DeviceState *dev)
@@ -1343,12 +1434,37 @@ static void si_unrealize(DeviceState *dev)
     SGIMgrasState *s = SGI_MGRAS(dev);
     timer_del(s->retrace_timer); timer_free(s->retrace_timer);
     address_space_destroy(&s->fabric_as);
+    qemu_graphic_console_close(s->con);
     g_free(s->front); g_free(s->back); g_free(s->wid);
     g_free(s->ge[SGI_MGRAS_GE_SLOT_A]); g_free(s->ge[SGI_MGRAS_GE_SLOT_B]);
+    g_free(s->display_buffer);
+}
+
+/*
+ * con and display_buffer are host-only (see the header comment on those
+ * fields); neither is migrated. display_enabled and cursor_enabled are
+ * likewise not migrated directly -- vc3_reg (already migrated) already
+ * carries the same two bits this device derived them from at write time
+ * (SGI_MGRAS_VC3_INDEXDATA's index 0x1e/0x1d cases), so re-deriving them
+ * here on load avoids persisting the same fact twice. Forcing dirty true
+ * regardless of any transmitted value means a migrated device always
+ * redraws on its first post-migration gfx_update, the same treatment
+ * si_reset already gives a fresh device.
+ */
+static int si_post_load(void *opaque, int version_id)
+{
+    SGIMgrasState *s = opaque;
+
+    si_ensure_surface(s);
+    s->display_enabled = (s->vc3_reg[0x1e] & 0x4) != 0;
+    s->cursor_enabled = (s->vc3_reg[0x1d] & 0x2) != 0;
+    s->dirty = true;
+    return 0;
 }
 
 static const VMStateDescription vmstate_sgi_mgras = {
     .name = TYPE_SGI_MGRAS, .version_id = 1, .minimum_version_id = 1,
+    .post_load = si_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
         VMSTATE_VARRAY_UINT32(front, SGIMgrasState, front_count, 0,
@@ -1453,6 +1569,31 @@ static void si_test_get_pixel(Object *obj, Visitor *v, const char *name,
     visit_type_uint32(v, name, &value, errp);
 }
 
+/*
+ * Host-only display-surface introspection, the same port-then-register
+ * shape as x-test-pixel above and reusing its x/y coordinate properties
+ * rather than adding a second pair: forces a synchronous gfx_update (the
+ * same call qxl.c's qxl_hw_update makes to qemu_console_hw_update, the
+ * only in-tree precedent for driving one outside the UI's own refresh
+ * loop) so a read observes this device's own current dirty/display-enable
+ * state rather than whatever display_buffer happened to hold from a
+ * previous, possibly stale, update.
+ */
+static void si_test_get_display_pixel(Object *obj, Visitor *v,
+                                      const char *name, void *opaque,
+                                      Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint32_t value = 0;
+
+    qemu_console_hw_update(s->con);
+    if (s->test_pixel_x < SGI_MGRAS_WIDTH && s->test_pixel_y < SGI_MGRAS_HEIGHT) {
+        value = s->display_buffer[s->test_pixel_y * SGI_MGRAS_WIDTH +
+                                  s->test_pixel_x];
+    }
+    visit_type_uint32(v, name, &value, errp);
+}
+
 static void si_instance_init(Object *obj)
 {
     SGIMgrasState *s = SGI_MGRAS(obj);
@@ -1463,6 +1604,8 @@ static void si_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add(obj, "x-test-pixel", "uint32", si_test_get_pixel,
                         NULL, NULL, NULL);
+    object_property_add(obj, "x-test-display-pixel", "uint32",
+                        si_test_get_display_pixel, NULL, NULL, NULL);
     object_property_add_uint64_ptr(obj, "x-test-last-interrupt-addr",
                                    &s->test_last_interrupt_addr,
                                    OBJ_PROP_FLAG_READ);
