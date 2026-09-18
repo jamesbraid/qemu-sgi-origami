@@ -81,8 +81,8 @@
 #define REG_FIFO_THRESHOLD_0     SI_REG(0x040000)
 #define REG_FIFO_THRESHOLD_1     SI_REG(0x040008)
 #define REG_FIFO_THRESHOLD_LAST  SI_REG(0x040030)
-#define REG_BANK_STATUS_1       SI_REG(0x020010)
-#define REG_BANK_STATUS_2       SI_REG(0x020018)
+#define REG_HQ_FLAGS            SI_REG(0x020010)
+#define REG_HQ_FLAGS_CLEAR      SI_REG(0x020018)
 #define REG_SCHED_ARG_4         SI_REG(0x040070)
 
 #define SI_ENTRY_WORD           0x000004fc
@@ -94,6 +94,22 @@
 #define SI_PENDING_LOWATER       0x00000004
 #define SI_HQ_ENABLE_LOWATER     0x10
 #define SI_CONTEXT_WORDS         63
+
+/*
+ * The command-FIFO fence sequence mgrasCopyPixels/mgrasDrawPixels issue to
+ * end a drawing operation: clear REG_HQ_FLAGS bit SI_HQ_FLAG_FENCE, push a
+ * 32-bit token then a 64-bit token pair to REG_CONTEXT_COMMAND, then poll
+ * REG_HQ_FLAGS for that bit to come back -- see the header comment on
+ * SGI_MGRAS_HQ_FLAGS (include/hw/misc/sgi-mgras.h) and si_command_fifo_token
+ * (hw/misc/sgi-mgras.c). The second push's low word, SI_FENCE_TOKEN, is the
+ * one header this device's interpreter is evidenced to act on; the other
+ * three words are unrecognized traffic this device only needs to accept
+ * without raising the sticky error.
+ */
+#define SI_FENCE_PUSH_1          0x00080b04
+#define SI_FENCE_PUSH_2          0x000000b1000e0400ULL
+#define SI_FENCE_TOKEN           0x000e0400
+#define SI_HQ_FLAG_FENCE         0x00010000
 
 #define ID_PART(v)          (((v) >> 12) & 0xffff)
 #define ID_MANUFACTURER(v)  (((v) >> 1) & 0x7ff)
@@ -1643,10 +1659,87 @@ static void test_fifo_threshold_registers(void)
     g_assert_cmphex(qtest_readl(qts, REG_FIFO_THRESHOLD_1), ==, 0x14);
     g_assert_cmphex(qtest_readl(qts, REG_FIFO_THRESHOLD_LAST), ==, 0);
 
-    qtest_writel(qts, REG_BANK_STATUS_1, 0x100000);
-    qtest_writel(qts, REG_BANK_STATUS_2, 0x20000);
-    g_assert_cmphex(qtest_readl(qts, REG_BANK_STATUS_1), ==, 0x100000);
-    g_assert_cmphex(qtest_readl(qts, REG_BANK_STATUS_2), ==, 0x20000);
+    qtest_quit(qts);
+}
+
+/*
+ * CONTRACT CHANGE, needs independent review (see the header comment on
+ * SGI_MGRAS_HQ_FLAGS, include/hw/misc/sgi-mgras.h): REG_HQ_FLAGS/
+ * REG_HQ_FLAGS_CLEAR were previously modelled as two independent opaque
+ * scratch registers. Disassembling the DDX's own fence sequence alongside
+ * the kernel driver's read/clear sites settled the real mechanism -- a
+ * write to REG_HQ_FLAGS ORs bits in, a write to REG_HQ_FLAGS_CLEAR AND-NOTs
+ * them back out, and both offsets read the same underlying flag word.
+ */
+static void test_hq_flags_set_and_clear(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS), ==, 0);
+
+    /* A write ORs bits in rather than replacing the word. */
+    qtest_writel(qts, REG_HQ_FLAGS, 0x100000);
+    qtest_writel(qts, REG_HQ_FLAGS, 0x000010);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS), ==, 0x100010);
+    /* Both offsets read back the same underlying word. */
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS_CLEAR), ==, 0x100010);
+
+    /* A write to the clear alias AND-NOTs only the bits it names. */
+    qtest_writel(qts, REG_HQ_FLAGS_CLEAR, 0x100000);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS), ==, 0x000010);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The regression this fix closes: Xsgi's mgrasCopyPixels/mgrasDrawPixels
+ * fence sequence spun forever polling REG_HQ_FLAGS bit SI_HQ_FLAG_FENCE,
+ * since nothing on this device ever set it -- confirmed live as the exact
+ * PC and poll address Xsgi itself stalls on (gdb PC sampling against a
+ * running guest, see the SI graphics bring-up notes). The fix gives the
+ * command-FIFO write path at REG_CONTEXT_COMMAND real token-header parsing
+ * and dispatches the one header the fence sequence is evidenced to depend
+ * on: class 0x000e reg 0x04, no payload (SI_FENCE_TOKEN, the second push's
+ * low word). The first push and the second push's high word are
+ * unrecognized traffic this device only needs to accept, not act on.
+ */
+static void test_hq_flags_fence_token_sets_bit(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & SI_HQ_FLAG_FENCE, ==, 0);
+
+    /* The exact push sequence mgrasCopyPixels/mgrasDrawPixels issue. */
+    qtest_writel(qts, REG_CONTEXT_COMMAND, SI_FENCE_PUSH_1);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_FENCE_PUSH_2);
+    /* Not SI-specific traffic in the sense of a protocol error: neither
+     * push may raise the sticky error. */
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & SI_HQ_FLAG_FENCE, ==,
+                     SI_HQ_FLAG_FENCE);
+
+    /* The same poll's own disarm: a clear write of just that bit. */
+    qtest_writel(qts, REG_HQ_FLAGS_CLEAR, SI_HQ_FLAG_FENCE);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & SI_HQ_FLAG_FENCE, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The token alone, isolated from the rest of the push sequence: a bare
+ * 64-bit write whose low word is SI_FENCE_TOKEN dispatches the same way
+ * regardless of what else accompanies it in a real fence sequence.
+ */
+static void test_hq_flags_fence_token_isolated(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_FENCE_TOKEN);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & SI_HQ_FLAG_FENCE, ==,
+                     SI_HQ_FLAG_FENCE);
 
     qtest_quit(qts);
 }
@@ -1842,6 +1935,12 @@ int main(int argc, char **argv)
                    test_hq_vector_registers);
     qtest_add_func("sn0/origin2000/mgras/fifo-threshold-registers",
                    test_fifo_threshold_registers);
+    qtest_add_func("sn0/origin2000/mgras/hq-flags-set-and-clear",
+                   test_hq_flags_set_and_clear);
+    qtest_add_func("sn0/origin2000/mgras/hq-flags-fence-token-sets-bit",
+                   test_hq_flags_fence_token_sets_bit);
+    qtest_add_func("sn0/origin2000/mgras/hq-flags-fence-token-isolated",
+                   test_hq_flags_fence_token_isolated);
     qtest_add_func("sn0/origin2000/mgras/sched-arg-4-round-trip",
                    test_sched_arg_4_round_trip);
     qtest_add_func("sn0/origin2000/mgras/command-accepts-hq-config-words",
