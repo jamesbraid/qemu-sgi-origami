@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Two machine types that run the real builder (sgi_machine_init) over a
- * topology no shipped product carries, each gated behind its own
+ * topology no shipped product carries, each turned on only by its own
  * "activate" property the way any qtest-only fixture here is: qom-test
  * and test-hmp instantiate every registered machine type with no
  * properties at all to probe generic QOM/HMP behavior, so leaving
@@ -301,13 +301,13 @@ static const SGIModelTopology console_test_topology = {
  * test_topology bypasses the topology= name lookup, since sgi_model_
  * entries[] never carries a fixture's own descriptor.
  *
- * "activate" gates the real builder the way every other qtest-only
+ * "activate" turns on the real builder the way every other qtest-only
  * fixture's own switch does: qom-test and test-hmp instantiate every
  * registered machine type with no properties at all, and this fixture's
  * topology has two nodes as two sockets, which the default one-socket
- * instantiation those two sweeps use does not satisfy. Off by default,
- * mc->init is a no-op, the same as the "none" machine there; the qtest
- * that wants the real two-node machine turns it on itself.
+ * instantiation those two use does not satisfy. Off by default, mc->init
+ * is a no-op, the same as the "none" machine there; the qtest that wants
+ * the real two-node machine turns it on itself.
  */
 #define TYPE_SN_BUILDER_CONSOLE_TEST \
     MACHINE_TYPE_NAME("sn-builder-console-test")

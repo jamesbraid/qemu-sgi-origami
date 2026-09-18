@@ -56,9 +56,9 @@ struct SGIMachineClass {
 /*
  * Exposed for the builder's own fixture (tests/qtest/sn-builder-test.c):
  * the real builder, for a qtest-only machine class that sets
- * test_topology and wants to run it, gated behind its own property --
- * inert for qom-test and test-hmp's blanket, property-free sweep of
- * every registered machine type.
+ * test_topology and only calls this when its own property turns it on --
+ * inert for qom-test and test-hmp's blanket, property-free instantiation
+ * of every registered machine type.
  */
 void sgi_machine_init(MachineState *machine);
 
