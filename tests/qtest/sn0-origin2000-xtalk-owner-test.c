@@ -58,8 +58,8 @@ static void assert_crossbow(QTestState *qts, const char *crossbow,
 /*
  * The shipped module: Crossbow 1 has widgets 8-10 alive at boot (BaseIO
  * plus its two host nodes) and SI Viz at widget 0xf. Crossbow 2 has
- * widgets 9-10 alive for its two host nodes; no XIO position is populated
- * on either. BaseIO itself re-parents under its module the way every
+ * widgets 9-10 alive for its two host nodes; no other XIO position is
+ * populated on either. BaseIO itself re-parents under its module the way every
  * sgi-xio-board does (include/hw/mips/sgi/xio-board.h), landing at
  * its own slot name since this builder gives it no id.
  */
@@ -74,6 +74,8 @@ static void test_owner(void)
     qobject_unref(qtest_qmp_assert_success_ref(qts,
         "{'execute': 'qom-list', 'arguments': {"
         "'path': '/machine/module0/slot8'}}"));
+    g_assert_cmphex((qtest_readl(qts, UINT64_C(0x2000f000004)) >> 12) &
+                    0xffff, ==, 0xc003);
     qtest_quit(qts);
 }
 

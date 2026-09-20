@@ -185,6 +185,7 @@ struct SGIMachineState {
     SGIXtalkCrossbowLink *crossbow_links;
 
     SGIMgrasState *mgras;
+    const SGIModelXtalkSlot *mgras_slot;
     MemoryRegion mgras_packet_proxy;
     MemoryRegion mgras_packet_alias;
 
@@ -808,9 +809,6 @@ static uint32_t sgi_machine_crossbar_part(SGIModelCrossbarKind kind)
     }
 }
 
-#define SGI_MACHINE_MGRAS_CROSSBAR_INDEX 0
-#define SGI_MACHINE_MGRAS_WIDGET 0xf
-
 static void sgi_machine_build_crossbars(SGIMachineState *s,
                                         const SGIModelTopology *t)
 {
@@ -838,9 +836,8 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
                 startup_alive |= 1u << attachment->widget;
             }
         }
-        if (i == SGI_MACHINE_MGRAS_CROSSBAR_INDEX &&
-            sgi_machine_topology_matches_product(t, "origin2000")) {
-            startup_alive |= 1u << SGI_MACHINE_MGRAS_WIDGET;
+        if (s->mgras_slot && i == s->mgras_slot->crossbar_index) {
+            startup_alive |= 1u << s->mgras_slot->widget;
         }
 
         s->crossbars[i] = SGI_XBOW(crossbow);
@@ -1132,9 +1129,22 @@ static bool sgi_machine_build_mgras(SGIMachineState *s, Error **errp)
     sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
 
     return sgi_xbow_attach_widget(
-        s->crossbars[SGI_MACHINE_MGRAS_CROSSBAR_INDEX],
-        SGI_MACHINE_MGRAS_WIDGET,
+        s->crossbars[s->mgras_slot->crossbar_index],
+        s->mgras_slot->widget,
         sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 0), errp);
+}
+
+static const SGIModelXtalkSlot *sgi_machine_find_xtalk_slot(
+    const SGIModelTopology *t, const char *id)
+{
+    const SGIModelXtalkSlotList *entry;
+
+    for (entry = t->xtalk_slots; entry; entry = entry->next) {
+        if (g_str_equal(entry->value->id, id)) {
+            return entry->value;
+        }
+    }
+    return NULL;
 }
 
 static bool sgi_machine_instantiate_io_board(
@@ -1223,9 +1233,9 @@ static bool sgi_machine_realize_crossbars(
     }
     if (s->mgras) {
         SGIXbowState *crossbow =
-            s->crossbars[SGI_MACHINE_MGRAS_CROSSBAR_INDEX];
+            s->crossbars[s->mgras_slot->crossbar_index];
         MemoryRegion *packet =
-            sgi_xbow_packet_ingress(crossbow, SGI_MACHINE_MGRAS_WIDGET);
+            sgi_xbow_packet_ingress(crossbow, s->mgras_slot->widget);
 
         memory_region_init_alias(&s->mgras_packet_alias, OBJECT(s),
                                  "si-viz-packet-ingress", packet, 0,
@@ -2138,6 +2148,14 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     if (!sgi_machine_index_xtalk_attachments(t, node_attachment,
                                              board_attachment, errp)) {
         return false;
+    }
+
+    if (sgi_machine_topology_matches_product(t, "origin2000")) {
+        s->mgras_slot = sgi_machine_find_xtalk_slot(t, "xio-slot-3");
+        if (!s->mgras_slot) {
+            error_setg(errp, "topology '%s' has no xio-slot-3", t->name);
+            return false;
+        }
     }
 
     /*
