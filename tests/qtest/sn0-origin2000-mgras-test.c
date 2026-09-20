@@ -1163,9 +1163,13 @@ static void test_pseudocolor_scanout_looks_up_cmap(void)
     g_assert_cmphex(si_test_pixel(qts, 5, 5), ==, 0x11);
     g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x0000ecec);
 
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0x11);
+    qtest_writel(qts, REG_CMAP_DATA, 0x00112233);
+    g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x00332211);
+
 
     qtest_writel(qts, REG_XMAP_MAIN_MODE, 0x7a4);
-    g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x0000ecec);
+    g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x00332211);
 
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -1303,6 +1307,15 @@ static void test_cursor_composites_when_enabled(void)
     g_assert_cmphex(si_test_display_pixel(qts, 50, 60), ==, 0x00ff0000);
     g_assert_cmphex(si_test_display_pixel(qts, 51, 61), ==, 0x00ffffff);
     g_assert_cmphex(si_test_display_pixel(qts, 52, 62), ==, 0);
+
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x01, 0x0200));
+    g_assert_cmphex(si_test_display_pixel(qts, 50, 60), ==, 0);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x01, 0x0100));
+    g_assert_cmphex(si_test_display_pixel(qts, 50, 60), ==, 0x00ff0000);
+
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x07, 0x0100));
+    qtest_writew(qts, REG_VC3_RAM, 0x0000);
+    g_assert_cmphex(si_test_display_pixel(qts, 50, 60), ==, 0);
 
 
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1d, 0x0000));

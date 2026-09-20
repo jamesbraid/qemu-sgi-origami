@@ -293,7 +293,8 @@ static void si_draw_pio_pixel_pair(SGIMgrasState *s)
         int x = x0 + s->pio_x;
         int y = y0 + s->pio_y;
 
-        if (y > y1) {
+        if (x > x1 || y > y1 || x >= SGI_MGRAS_WIDTH ||
+            y >= SGI_MGRAS_HEIGHT) {
             return;
         }
         si_put_pixel(s, y * SGI_MGRAS_WIDTH + x, pixels[i], op, mask, true);
