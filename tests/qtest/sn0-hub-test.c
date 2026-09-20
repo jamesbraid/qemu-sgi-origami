@@ -4606,15 +4606,16 @@ static void test_the_hub_identifies_itself_on_the_crossbar(const void *data)
 
 static void test_model_revisions_survive_reset(const void *data)
 {
+    /* Graphics-capable module: the master node's Hub is code 5, Hub 2.3. */
     QTestState *qts = qtest_init("-M origin2000");
 
     g_assert_cmpuint((qtest_readq(qts, HUB_LOCAL + NI_STATUS) >> 4) & 0xf,
-                     ==, 3);
+                     ==, 5);
     g_assert_cmpuint((qtest_readq(qts, HUB_LOCAL + IO_WIDGET_ID) >> 28) & 0xf,
                      ==, 1);
     qtest_system_reset(qts);
     g_assert_cmpuint((qtest_readq(qts, HUB_LOCAL + NI_STATUS) >> 4) & 0xf,
-                     ==, 3);
+                     ==, 5);
     g_assert_cmpuint((qtest_readq(qts, HUB_LOCAL + IO_WIDGET_ID) >> 28) & 0xf,
                      ==, 1);
     qtest_quit(qts);
