@@ -519,6 +519,8 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         }
         s->entry = value; s->entry_selected = true; s->protocol = 1;
         s->first_ack = s->second_ack = false;
+        /* A new transaction restarts the context word count. */
+        s->context_words = 0;
         s->pending |= SI_PENDING_FLAGS; si_update_irq(s); return;
     case 0x120400:
         if (size == 4) {
