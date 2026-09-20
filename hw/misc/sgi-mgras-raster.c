@@ -358,46 +358,6 @@ static void si_draw_line(SGIMgrasState *s)
     }
 }
 
-
-/* Payload word 0 is the source origin; remaining words stay opaque. */
-static void si_draw_block_copy(SGIMgrasState *s, const uint32_t *payload,
-                               uint32_t payload_words)
-{
-    uint32_t xy0 = s->rss[SI_REG_BLOCKXYSTARTI];
-    uint32_t xy1 = s->rss[SI_REG_BLOCKXYENDI];
-    int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
-    int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
-    int sx0, sy0, w, h;
-    bool copy_backward;
-
-    if (payload_words < 1 || x0 > x1 || y0 > y1 ||
-        x0 >= SGI_MGRAS_WIDTH || y0 >= SGI_MGRAS_HEIGHT) {
-        return;
-    }
-    x1 = MIN(x1, SGI_MGRAS_WIDTH - 1);
-    y1 = MIN(y1, SGI_MGRAS_HEIGHT - 1);
-    sx0 = (payload[0] >> 16) & 0xffff;
-    sy0 = payload[0] & 0xffff;
-    if (sx0 >= SGI_MGRAS_WIDTH || sy0 >= SGI_MGRAS_HEIGHT) {
-        return;
-    }
-    w = MIN(x1 - x0 + 1, SGI_MGRAS_WIDTH - sx0);
-    h = MIN(y1 - y0 + 1, SGI_MGRAS_HEIGHT - sy0);
-    copy_backward = (y0 > sy0) || (y0 == sy0 && x0 > sx0);
-
-    for (int row = 0; row < h; row++) {
-        int r = copy_backward ? (h - 1 - row) : row;
-        uint32_t *dst_row = &s->front[(y0 + r) * SGI_MGRAS_WIDTH + x0];
-        uint32_t *src_row = &s->front[(sy0 + r) * SGI_MGRAS_WIDTH + sx0];
-        uint8_t *dst_wid = &s->wid[(y0 + r) * SGI_MGRAS_WIDTH + x0];
-        uint8_t *src_wid = &s->wid[(sy0 + r) * SGI_MGRAS_WIDTH + sx0];
-
-        memmove(dst_row, src_row, (size_t)w * sizeof(uint32_t));
-        memmove(dst_wid, src_wid, (size_t)w * sizeof(uint8_t));
-    }
-}
-
-
 static void si_raster_command_execute(SGIMgrasState *s, uint32_t reg)
 {
     switch (reg) {
@@ -459,10 +419,5 @@ static void si_raster_command_fifo_dispatch(SGIMgrasState *s)
         return;
     }
 
-    if (reg == SI_REG_RE_BLOCKCOPY) {
-        si_draw_block_copy(s, s->cmd_token_payload, s->cmd_token_payload_count);
-        s->dirty = true;
-        return;
-    }
     si_raster_command_execute(s, reg);
 }
