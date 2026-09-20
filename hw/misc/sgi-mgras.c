@@ -947,7 +947,7 @@ static void si_test_get_pixel(Object *obj, Visitor *v, const char *name,
     SGIMgrasState *s = SGI_MGRAS(obj);
     uint32_t value = 0;
 
-    if (s->front && s->test_pixel_x < SGI_MGRAS_WIDTH &&
+    if (DEVICE(obj)->realized && s->test_pixel_x < SGI_MGRAS_WIDTH &&
         s->test_pixel_y < SGI_MGRAS_HEIGHT) {
         value = s->front[s->test_pixel_y * SGI_MGRAS_WIDTH + s->test_pixel_x];
     }
@@ -962,10 +962,10 @@ static void si_test_get_display_pixel(Object *obj, Visitor *v,
     SGIMgrasState *s = SGI_MGRAS(obj);
     uint32_t value = 0;
 
-    if (s->con) {
+    if (DEVICE(obj)->realized) {
         qemu_console_hw_update(s->con);
     }
-    if (s->display_buffer && s->test_pixel_x < SGI_MGRAS_WIDTH &&
+    if (DEVICE(obj)->realized && s->test_pixel_x < SGI_MGRAS_WIDTH &&
         s->test_pixel_y < SGI_MGRAS_HEIGHT) {
         value = s->display_buffer[s->test_pixel_y * SGI_MGRAS_WIDTH +
                                   s->test_pixel_x];
