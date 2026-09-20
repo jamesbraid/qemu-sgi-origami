@@ -160,6 +160,17 @@ static uint32_t si_paint_pixel(uint8_t op, uint32_t dst, uint32_t src,
     return (result & mask) | (dst & ~mask);
 }
 
+/* Keep the indexed/direct tag when no modelled colour plane is enabled. */
+static void si_put_pixel(SGIMgrasState *s, unsigned int idx, uint32_t color,
+                         uint8_t op, uint32_t mask, bool is_index)
+{
+    if (!(mask & 0x00ffffff)) {
+        return;
+    }
+    s->front[idx] = si_paint_pixel(op, s->front[idx], color, mask);
+    s->wid[idx] = is_index;
+}
+
 
 /* Normalize corners and retain indexed/direct source in wid[]. */
 static void si_fill_rect(SGIMgrasState *s, uint32_t xy0, uint32_t xy1,
@@ -178,10 +189,8 @@ static void si_fill_rect(SGIMgrasState *s, uint32_t xy0, uint32_t xy1,
     y_hi = MIN(y_hi, SGI_MGRAS_HEIGHT - 1);
     for (int y = y_lo; y <= y_hi; y++) {
         for (int x = x_lo; x <= x_hi; x++) {
-            unsigned int i = y * SGI_MGRAS_WIDTH + x;
-            uint32_t *p = &s->front[i];
-            *p = si_paint_pixel(op, *p, color, mask);
-            s->wid[i] = is_index;
+            si_put_pixel(s, y * SGI_MGRAS_WIDTH + x, color, op, mask,
+                         is_index);
         }
     }
 }
@@ -236,11 +245,8 @@ static void si_draw_glyph_row(SGIMgrasState *s)
     width = MIN(x1 - x0 + 1, 16);
     for (int i = 0; i < width; i++) {
         bool set = (bits >> (31 - i)) & 1;
-        unsigned int idx = y * SGI_MGRAS_WIDTH + x0 + i;
-        uint32_t *p = &s->front[idx];
-        *p = si_paint_pixel(op, *p, set ? fg : bg, mask);
-
-        s->wid[idx] = !set;
+        si_put_pixel(s, y * SGI_MGRAS_WIDTH + x0 + i, set ? fg : bg, op,
+                     mask, !set);
     }
 }
 
@@ -268,16 +274,11 @@ static void si_draw_pio_pixel_pair(SGIMgrasState *s)
     for (int i = 0; i < 2; i++) {
         int x = x0 + s->pio_x;
         int y = y0 + s->pio_y;
-        unsigned int idx;
-        uint32_t *p;
 
         if (y > y1) {
             return;
         }
-        idx = y * SGI_MGRAS_WIDTH + x;
-        p = &s->front[idx];
-        *p = si_paint_pixel(op, *p, pixels[i], mask);
-        s->wid[idx] = 1;
+        si_put_pixel(s, y * SGI_MGRAS_WIDTH + x, pixels[i], op, mask, true);
         s->pio_x++;
         if (x0 + s->pio_x > x1) {
             s->pio_x = 0;
@@ -294,17 +295,11 @@ static void si_draw_point(SGIMgrasState *s)
     uint32_t mask = s->rss[SI_REG_COLORMASKLSBSA];
     uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 26;
     int x = (xy0 >> 16) & 0xffff, y = xy0 & 0xffff;
-    unsigned int idx;
-    uint32_t *p;
 
     if (x >= SGI_MGRAS_WIDTH || y >= SGI_MGRAS_HEIGHT) {
         return;
     }
-    idx = y * SGI_MGRAS_WIDTH + x;
-    p = &s->front[idx];
-    *p = si_paint_pixel(op, *p, color, mask);
-
-    s->wid[idx] = 0;
+    si_put_pixel(s, y * SGI_MGRAS_WIDTH + x, color, op, mask, false);
 }
 
 
@@ -327,11 +322,8 @@ static void si_draw_line(SGIMgrasState *s)
         int e2;
 
         if (x0 < SGI_MGRAS_WIDTH && y0 < SGI_MGRAS_HEIGHT) {
-            unsigned int idx = y0 * SGI_MGRAS_WIDTH + x0;
-            uint32_t *p = &s->front[idx];
-            *p = si_paint_pixel(op, *p, color, mask);
-
-            s->wid[idx] = 0;
+            si_put_pixel(s, y0 * SGI_MGRAS_WIDTH + x0, color, op, mask,
+                         false);
         }
         if (x0 == x1 && y0 == y1) {
             break;
