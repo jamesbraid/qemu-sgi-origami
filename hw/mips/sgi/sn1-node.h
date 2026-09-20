@@ -4,10 +4,12 @@
  * L1 and its UART, boot flash and PROM views one Origin 300 chassis
  * carries. The family builder (sn-machine.c) creates it from the
  * format-2 descriptor's Bedrock node record and its populated I/O
- * board, then realizes it; sn1.c holds only the product class (the
- * node-strided multi-node case is future work, tracked by the plan's
- * board-devices and one-fabric steps: today's Origin 300 is one
- * chassis, one node).
+ * board, then realizes it; sn1.c holds only the product class. Each
+ * node's own address-space views are strided by its nasid property
+ * (sn1-node.c), so a second node's windows land clear of the first's;
+ * the machine still refuses more than one Bedrock node (sn-machine.c)
+ * because nothing sources or models the cross-node NUMAlink fabric a
+ * real multi-chassis Origin 300 pair would need.
  */
 
 #ifndef HW_MIPS_SGI_SN1_NODE_H
@@ -42,6 +44,7 @@ typedef struct SN1NodeState {
     /* Properties, set by the machine before realize. */
     MemoryRegion *ram;
     uint32_t nr_cpus;
+    uint32_t nasid;
     bool promdata_filter;
     bool promdata_fast;
 

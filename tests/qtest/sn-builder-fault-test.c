@@ -28,9 +28,16 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/units.h"
 #include "qapi/error.h"
 #include "hw/core/boards.h"
+#include "hw/core/clock.h"
+#include "hw/core/qdev-clock.h"
+#include "hw/core/qdev-properties.h"
+#include "hw/core/sysbus.h"
 #include "hw/mips/sgi/sn-machine.h"
+#include "hw/mips/sgi/sn1-node.h"
+#include "system/memory.h"
 #include "cpu.h"
 
 static SGIModelCpuSlotList *cpu_slot_list(SGIModelCpuSlot *items, size_t count)
@@ -701,6 +708,130 @@ static const TypeInfo bedrock_test_type = {
     .class_init = bedrock_test_class_init,
 };
 
+/*
+ * A second Bedrock fixture, bypassing sgi_machine_init entirely: the
+ * machine-level refusal above is unconditional (no topology, however
+ * addressed, may realize two Bedrock nodes together yet), so nothing
+ * fed through the real builder can ever reach two realized nodes to
+ * prove their address-space windows actually land clear of each other.
+ * This fixture repeats the family builder's own per-node property set
+ * for a Bedrock node (hw/mips/sgi/sn-machine.c's SN1 node loop) directly
+ * for nasid 0 and nasid 1, reusing bedrock_test_nodes' two descriptor
+ * records, then realizes both with the same sysbus_realize call the
+ * builder makes -- only reached here without its node-count check.
+ * Each node gets its own RAM region: sn1-node.c maps a node's RAM as a
+ * subregion of the global address space at its own nasid-strided
+ * address, and one MemoryRegion object cannot be a subregion of two
+ * different (offset, container) placements, so sharing machine->ram the
+ * way today's single realized node does would abort the second
+ * add_subregion call. Neither node's I/O board is built: this fixture
+ * checks addressing only, so each carries just its own local crosstalk
+ * view (widget zero), the one widget every Bedrock always decodes.
+ */
+#define TYPE_SN_BUILDER_BEDROCK_NASID_TEST \
+    MACHINE_TYPE_NAME("sn-builder-bedrock-nasid-test")
+
+static bool bedrock_nasid_test_activate_requested;
+static SN1NodeState *bedrock_nasid_test_node[ARRAY_SIZE(bedrock_test_nodes)];
+
+static void bedrock_nasid_test_set_activate(Object *obj, bool value,
+                                            Error **errp)
+{
+    bedrock_nasid_test_activate_requested = value;
+}
+
+static void bedrock_nasid_test_machine_init(MachineState *machine)
+{
+    Clock *cpu_refclk;
+    unsigned int i;
+
+    if (!bedrock_nasid_test_activate_requested) {
+        return;
+    }
+
+    cpu_refclk = clock_new(OBJECT(machine), "cpu-refclk");
+    clock_set_hz(cpu_refclk, console_test_r10000_180mhz.clock_hz);
+
+    for (i = 0; i < ARRAY_SIZE(bedrock_test_nodes); i++) {
+        g_autofree char *name = g_strdup_printf("node%u", i);
+        g_autofree char *ram_name =
+            g_strdup_printf("sn-builder-bedrock-nasid-test.node%u.ram", i);
+        Object *obj = object_new(TYPE_SGI_SN1_NODE);
+        SN1NodeState *node = SN1_NODE(obj);
+        MemoryRegion *ram = g_new0(MemoryRegion, 1);
+
+        /*
+         * memory_region_init_ram's owner must itself be a device (it
+         * registers the region's migration state through one); the
+         * machine object is not, so the region belongs to the node.
+         */
+        memory_region_init_ram(ram, OBJECT(node), ram_name, 64 * MiB,
+                               &error_fatal);
+
+        object_property_add_child(OBJECT(machine), name, obj);
+        object_unref(obj);
+
+        qdev_prop_set_uint32(DEVICE(node), "nasid", i);
+        node->model_node = &bedrock_test_nodes[i];
+        node->xbridge_widgets = g_new0(unsigned int, 1);
+        node->xbridge_widgets[0] = 0;
+        node->xbridge_widget_count = 1;
+        object_property_set_link(OBJECT(node), "ram", OBJECT(ram),
+                                 &error_abort);
+        qdev_prop_set_uint32(DEVICE(node), "nr-cpus", 1);
+        qdev_connect_clock_in(DEVICE(node), "cpu-refclk", cpu_refclk);
+
+        sysbus_realize(SYS_BUS_DEVICE(node), &error_fatal);
+        bedrock_nasid_test_node[i] = node;
+    }
+}
+
+static void bedrock_nasid_test_machine_reset(MachineState *machine,
+                                             ResetType type)
+{
+    unsigned int i;
+
+    /*
+     * This fixture never populates a topology, so the inherited
+     * sgi_machine_reset would fall back to its Hub-shaped path and
+     * reset devices before CPUs -- the reverse of what a Bedrock node's
+     * "start-powered-off" CPUs need (sn1-node.h's sn1_node_full_reset
+     * comment). Reset each node itself instead, exactly as
+     * sgi_machine_reset's own multi-node branch does for a real
+     * Bedrock topology.
+     */
+    for (i = 0; i < ARRAY_SIZE(bedrock_nasid_test_node); i++) {
+        if (bedrock_nasid_test_node[i]) {
+            sn1_node_full_reset(bedrock_nasid_test_node[i], type);
+        }
+    }
+}
+
+static void bedrock_nasid_test_class_init(ObjectClass *oc, const void *data)
+{
+    MachineClass *mc = MACHINE_CLASS(oc);
+
+    mc->desc = "two-node Bedrock addressing fixture, bypassing the builder";
+    mc->init = bedrock_nasid_test_machine_init;
+    mc->reset = bedrock_nasid_test_machine_reset;
+    mc->valid_cpu_types = bedrock_test_r14000_cpu_types;
+    mc->max_cpus = 2;
+    object_class_property_add_bool(oc, "activate", NULL,
+                                   bedrock_nasid_test_set_activate);
+    object_class_property_set_description(oc, "activate",
+        "Build two sgi-sn1-node devices directly, at nasid 0 and 1, "
+        "skipping sgi_machine_init and its node-count refusal entirely. "
+        "Off by default so qom-test and test-hmp's blind run over every "
+        "registered machine type leaves this inert; the qtest that wants "
+        "a real machine turns it on.");
+}
+
+static const TypeInfo bedrock_nasid_test_type = {
+    .name = TYPE_SN_BUILDER_BEDROCK_NASID_TEST,
+    .parent = TYPE_SGI_SN_MACHINE,
+    .class_init = bedrock_nasid_test_class_init,
+};
+
 static void sn_builder_fault_test_register_types(void)
 {
     /*
@@ -791,6 +922,7 @@ static void sn_builder_fault_test_register_types(void)
     type_register_static(&console_test_type);
     type_register_static(&bank_test_type);
     type_register_static(&bedrock_test_type);
+    type_register_static(&bedrock_nasid_test_type);
 }
 
 type_init(sn_builder_fault_test_register_types)

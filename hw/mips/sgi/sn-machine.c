@@ -1874,6 +1874,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                 widgets[widget_count++] = attachments[i]->widget;
             }
 
+            qdev_prop_set_uint32(DEVICE(node), "nasid",
+                                 sgi_machine_topology_nasid(t, node_index));
             node->model_node = nodes[node_index];
             node->xbridge_widgets = g_steal_pointer(&widgets);
             node->xbridge_widget_count = widget_count;
@@ -1886,22 +1888,21 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
 
         /*
          * Every node above is a real device now, its own descriptor
-         * record and I/O board resolved: the validation and the node
-         * loop both already accept as many Bedrock nodes as the
-         * topology names. What stops here is realize, not the loop --
-         * sn1-node.c maps its whole address-space view (hub registers,
-         * the Bedrock node region, the PROM views) at fixed addresses a
-         * second node would collide with, because no shipped Origin 300
-         * carries more than one chassis yet and nothing has given a
-         * second node its own remote-space stride (the plan's
-         * board-devices and one-fabric steps track that). Refuse
-         * explicitly rather than let the second node's realize collide
-         * with the first's memory regions.
+         * record and I/O board resolved, and each already sits at its
+         * own nasid-strided address-space window (sn1-node.c), so a
+         * second node's realize no longer collides with the first's
+         * memory regions. What stops here is the cross-node NUMAlink
+         * fabric a real multi-chassis Origin 300 pair needs: nothing
+         * sources or models link traffic between Bedrock nodes, so a
+         * second node would realize with no way to reach the first one
+         * or be reached by it. Refuse explicitly rather than let the
+         * topology through to a fabric no code drives.
          */
         if (node_count > 1) {
             error_setg(errp, "%s: topology '%s' names %u Bedrock nodes; "
-                      "multi-node Bedrock hardware wiring is not modeled "
-                      "yet", mc->name, t->name, node_count);
+                      "the cross-node NUMAlink fabric between Bedrock "
+                      "nodes is not modeled yet", mc->name, t->name,
+                      node_count);
             return false;
         }
 

@@ -333,12 +333,12 @@ static void test_origin2000_onboard_board_is_xio_baseio(const void *data)
  * validation and the node loop's per-node board/widget selection both
  * run for two nodes here -- proving neither one is hardcoded to a
  * single Bedrock node any more -- and every node becomes a real,
- * configured device. What still refuses, by name, is realize: sn1-node.c
- * maps a fixed, unstrided address-space view per node (a hardware path
- * that exists for one node only, since no shipped Origin 300 carries a
- * second chassis and nothing gives a second node its own remote-space
- * stride yet), so a second node's hardware would collide with the
- * first's. This is the expected, current boundary, not a crash: the
+ * configured device, each already at its own nasid-strided
+ * address-space window (sn1-node.c), so realize no longer collides.
+ * What still refuses, by name, is the cross-node NUMAlink fabric: no
+ * code sources or models link traffic between Bedrock nodes, so a
+ * second node would realize with no way to reach, or be reached by,
+ * the first. This is the expected, current boundary, not a crash: the
  * machine reports it and exits cleanly.
  */
 static void test_bedrock_topology_accepts_two_nodes(const void *data)
@@ -349,8 +349,64 @@ static void test_bedrock_topology_accepts_two_nodes(const void *data)
         "-display", "none", NULL
     };
 
-    assert_qemu_rejects(args, "names 2 Bedrock nodes; multi-node Bedrock "
-                        "hardware wiring is not modeled yet");
+    assert_qemu_rejects(args, "names 2 Bedrock nodes; the cross-node "
+                        "NUMAlink fabric between Bedrock nodes is not "
+                        "modeled yet");
+}
+
+/*
+ * The topology-acceptance test above proves the builder no longer
+ * refuses a two-node Bedrock descriptor on structure; it cannot prove
+ * the two nodes' address-space windows actually land clear of each
+ * other, because the machine-level refusal (still in place for the
+ * unmodeled cross-node NUMAlink fabric) stops every such topology
+ * before any node past the first realizes. sn-builder-bedrock-nasid-
+ * test (sn-builder-fault-test.c) bypasses that refusal by building two
+ * sgi-sn1-node devices directly, at nasid 0 and nasid 1, the same way
+ * sn-machine.c's own per-node loop would. Both nodes' board-
+ * identification register -- one of the fixed windows sn1-node.c
+ * strides by nasid -- must answer 0x8001 at its own node's address, and
+ * node 0's answer must still be correct with node 1 realized alongside
+ * it: if the two nodes' windows collided instead of landing at their
+ * own nasid-strided addresses, realizing the second node would either
+ * abort on the resulting overlapping memory region or leave one node's
+ * register reachable at the other's expense, not answer both correctly
+ * from two distinct addresses the way real per-nasid decoding does.
+ */
+#define NASID_TEST_SPACE_HUB UINT64_C(0x10000000000)
+#define NASID_TEST_HUB_LOCAL_REGISTERS \
+    (NASID_TEST_SPACE_HUB + UINT64_C(0x10000000))
+#define NASID_TEST_BOARD_ID_LOCAL \
+    (NASID_TEST_HUB_LOCAL_REGISTERS + UINT64_C(0x4000000))
+#define NASID_TEST_BOARD_ID_VALUE UINT64_C(0x8001)
+/* M mode's node field sits at physical address bit 33 (ip35-address-map.md). */
+#define NASID_TEST_NODE_ADDRESS_SHIFT 33
+
+static void test_bedrock_nodes_answer_at_their_own_nasid_window(
+    const void *data)
+{
+    /*
+     * -nodefaults: each node's L1 unconditionally takes serial_hd(0)
+     * for its console (sn1_node_create_bedrock); the default machine
+     * would hand both nodes the same backend and the second qdev_realize
+     * would refuse it as already in use. Real per-node console routing
+     * is unmodeled and out of this fixture's addressing-only scope.
+     */
+    QTestState *qts = qtest_init(
+        "-M sn-builder-bedrock-nasid-test,activate=on -cpu R14000 "
+        "-smp 2 -nodefaults -display none");
+    uint64_t node1_offset = UINT64_C(1) << NASID_TEST_NODE_ADDRESS_SHIFT;
+
+    g_assert_cmphex(qtest_readq(qts, NASID_TEST_BOARD_ID_LOCAL), ==,
+                    NASID_TEST_BOARD_ID_VALUE);
+    g_assert_cmphex(qtest_readq(qts, NASID_TEST_BOARD_ID_LOCAL +
+                                node1_offset), ==,
+                    NASID_TEST_BOARD_ID_VALUE);
+    /* Node 0 must still answer correctly with node 1 realized too. */
+    g_assert_cmphex(qtest_readq(qts, NASID_TEST_BOARD_ID_LOCAL), ==,
+                    NASID_TEST_BOARD_ID_VALUE);
+
+    qtest_quit(qts);
 }
 
 static void test_unsupported_memory_population_rejected(const void *data)
@@ -389,6 +445,9 @@ int main(int argc, char **argv)
                         NULL, test_unsupported_memory_population_rejected);
     qtest_add_data_func("sn/builder/bedrock-topology-accepts-two-nodes",
                         NULL, test_bedrock_topology_accepts_two_nodes);
+    qtest_add_data_func(
+        "sn/builder/bedrock-nodes-answer-at-their-own-nasid-window", NULL,
+        test_bedrock_nodes_answer_at_their_own_nasid_window);
     qtest_add_data_func("sn/builder/origin200-accepts-its-cpu-populations",
                         NULL, test_origin200_accepts_its_cpu_populations);
     qtest_add_data_func("sn/builder/origin200-accepts-its-memory-populations",
