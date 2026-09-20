@@ -634,9 +634,14 @@ static const MemoryRegionOps si_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 8 },
 };
 
-static void si_reset(DeviceState *dev)
+static void si_reset_enter(Object *obj, ResetType type)
 {
-    SGIMgrasState *s = SGI_MGRAS(dev);
+    SGIMgrasClass *mc = SGI_MGRAS_GET_CLASS(obj);
+    SGIMgrasState *s = SGI_MGRAS(obj);
+
+    if (mc->parent_phases.enter) {
+        mc->parent_phases.enter(obj, type);
+    }
     memset(s->front, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT * sizeof(*s->front));
     memset(s->back, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT * sizeof(*s->back));
     memset(s->wid, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
@@ -689,10 +694,29 @@ static void si_reset(DeviceState *dev)
     memset(s->fifo_threshold, 0, sizeof(s->fifo_threshold));
     s->sched_arg_1 = s->sched_arg_2 = s->sched_arg_3 = s->sched_arg_4 = 0;
     s->hq_flags = 0;
-    /* Clear transition state directly to avoid sending packets during reset. */
     s->lowater_asserted = s->general_asserted = s->retrace_asserted =
         s->error_asserted = false;
+}
+
+static void si_reset_hold(Object *obj, ResetType type)
+{
+    SGIMgrasClass *mc = SGI_MGRAS_GET_CLASS(obj);
+    SGIMgrasState *s = SGI_MGRAS(obj);
+
+    if (mc->parent_phases.hold) {
+        mc->parent_phases.hold(obj, type);
+    }
     si_update_irq(s);
+}
+
+static void si_reset_exit(Object *obj, ResetType type)
+{
+    SGIMgrasClass *mc = SGI_MGRAS_GET_CLASS(obj);
+    SGIMgrasState *s = SGI_MGRAS(obj);
+
+    if (mc->parent_phases.exit) {
+        mc->parent_phases.exit(obj, type);
+    }
     /* Retrace timing is a fixed-period approximation. */
     timer_mod(s->retrace_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
               NANOSECONDS_PER_SECOND / 60);
@@ -718,7 +742,7 @@ static void si_realize(DeviceState *dev, Error **errp)
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->regs);
     address_space_init(&s->fabric_as, s->fabric, "sgi-mgras.fabric");
     s->retrace_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, si_retrace, s);
-    si_reset(dev);
+    device_cold_reset(dev);
     si_mgras_display_ensure_surface(s);
 }
 
@@ -906,12 +930,19 @@ static void si_instance_init(Object *obj)
 static void si_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
-    dc->realize = si_realize; dc->unrealize = si_unrealize; device_class_set_legacy_reset(dc, si_reset);
+    ResettableClass *rc = RESETTABLE_CLASS(oc);
+    SGIMgrasClass *mc = SGI_MGRAS_CLASS(oc);
+
+    dc->realize = si_realize;
+    dc->unrealize = si_unrealize;
+    resettable_class_set_parent_phases(rc, si_reset_enter, si_reset_hold,
+                                       si_reset_exit, &mc->parent_phases);
     dc->vmsd = &vmstate_sgi_mgras; dc->desc = "SGI MGRAS SI functional endpoint";
     device_class_set_props(dc, si_properties);
 }
 
 static const TypeInfo si_types[] = {{ .name = TYPE_SGI_MGRAS, .parent = TYPE_SYS_BUS_DEVICE,
-    .instance_size = sizeof(SGIMgrasState), .instance_init = si_instance_init,
+    .instance_size = sizeof(SGIMgrasState), .class_size = sizeof(SGIMgrasClass),
+    .instance_init = si_instance_init,
     .class_init = si_class_init }};
 DEFINE_TYPES(si_types)
