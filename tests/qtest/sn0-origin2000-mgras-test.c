@@ -1618,6 +1618,106 @@ static void test_pseudocolor_scanout_looks_up_cmap(void)
 }
 
 /*
+ * A paint whose plane mask enables none of the 24 colour planes leaves a
+ * pixel's CMAP-index tag alone along with its colour. This is the exact
+ * shape a real desktop's background paint ends with (boot-to-desktop
+ * trace /storage/nvme/origami/runs/irix-20260918T112956-2cabd8/qemu.trace,
+ * lines 3739548-3739570 then 3762832-3762861): IR_ALIAS tiles the root
+ * window with BKGRD_RG=0x11 through COLORMASKLSBSA=0xff, then the X server
+ * pushes COLORMASKLSBSA=0, COLORMASKMSBS=0xf0, PACKEDCOLOR=0, PP1FILLMODE
+ * 0x0013f500 (GXclear) and one BLOCKXYENDI execute per exposed root-window
+ * rectangle, the last covering (0,194)-(1279,1023). Those fills only write
+ * planes above bit 24 (si_fill_rect's own header comment names what this
+ * device does and does not model there); before this test's fix,
+ * si_fill_rect still stamped every covered pixel as direct colour, so the
+ * whole desktop background scanned out as raw RGB(17,0,0) instead of CMAP
+ * slot 0x11's teal. The same trace carries 96 RE_LINE executes with the
+ * same all-zero colour mask (GXxor, COLORMASKMSBS=0x70), so the line
+ * primitive is held to the same rule.
+ */
+static void test_masked_out_paint_keeps_index_tag(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0x11);
+    qtest_writel(qts, REG_CMAP_DATA, 0x00ecec00);
+
+    /* The background tile: an 8-bit index through the low byte only. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PP1FILLMODE, SI_LOGIC_OP_COPY << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_COLORMASKLSBSA, 0xff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_COLORMASKMSBS, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_PACKEDCOLOR, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_BKGRD_RG, 0x11));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (512u << 16) | 512u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (767u << 16) | 767u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
+    g_assert_cmphex(si_test_pixel(qts, 640, 512), ==, 0x11);
+    g_assert_cmphex(si_test_display_pixel(qts, 640, 512), ==, 0x0000ecec);
+
+    /*
+     * The root-window plane write that follows: no colour plane enabled,
+     * GXclear, over the whole exposed root rectangle.
+     */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_COLORMASKLSBSA, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_COLORMASKMSBS, 0xf0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PP1FILLMODE, 0x0013f500));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (0u << 16) | 194u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (1279u << 16) | 1023u));
+    g_assert_cmphex(si_test_pixel(qts, 640, 512), ==, 0x11);
+    g_assert_cmphex(si_test_display_pixel(qts, 640, 512), ==, 0x0000ecec);
+
+    /* The trace's other variant of the same write, GXcopy. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PP1FILLMODE, SI_LOGIC_OP_COPY << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (1279u << 16) | 1023u));
+    g_assert_cmphex(si_test_display_pixel(qts, 640, 512), ==, 0x0000ecec);
+
+    /* A masked-out GXxor line through the same pixel. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PP1FILLMODE, SI_LOGIC_OP_XOR << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_COLORMASKMSBS, 0x70));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (630u << 16) | 512u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (650u << 16) | 512u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 (uint64_t)SI_EXEC_TOKEN(REG_RE_LINE, 0) << 32);
+    g_assert_cmphex(si_test_pixel(qts, 640, 512), ==, 0x11);
+    g_assert_cmphex(si_test_display_pixel(qts, 640, 512), ==, 0x0000ecec);
+
+    /*
+     * A real colour write still retags: PACKEDCOLOR through a full mask
+     * paints direct colour over the tile.
+     */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PP1FILLMODE, SI_LOGIC_OP_COPY << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_COLORMASKLSBSA, 0xffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00112233));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (640u << 16) | 512u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (640u << 16) | 512u));
+    g_assert_cmphex(si_test_display_pixel(qts, 640, 512), ==, 0x00332211);
+
+    qtest_quit(qts);
+}
+
+/*
  * Hardware cursor compositing: si_composite_cursor (hw/misc/sgi-mgras.c)
  * reads the two 32x32 1-bit planes at the cursor-entry pointer (VC3 index
  * 1) out of VC3 SRAM and draws them into the scanout at (cursor_x,
@@ -2514,6 +2614,8 @@ int main(int argc, char **argv)
                    test_display_surface_conversion);
     qtest_add_func("sn0/origin2000/mgras/pseudocolor-scanout-looks-up-cmap",
                    test_pseudocolor_scanout_looks_up_cmap);
+    qtest_add_func("sn0/origin2000/mgras/masked-out-paint-keeps-index-tag",
+                   test_masked_out_paint_keeps_index_tag);
     qtest_add_func("sn0/origin2000/mgras/cursor-composites-when-enabled",
                    test_cursor_composites_when_enabled);
     qtest_add_func("sn0/origin2000/mgras/direct-pio-pixel-pairs",
