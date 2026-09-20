@@ -1956,6 +1956,41 @@ static void test_context_ack_migration(void)
     qtest_quit(from);
 }
 
+static void test_discarded_fifo_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-discard-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MACHINE_ARGS);
+    dest_cmdline = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    si_enter_context(from);
+    qtest_writeq(from, REG_CONTEXT_COMMAND,
+                 (uint64_t)SI_STATE_TOKEN(REG_PACKEDCOLOR, 252) << 32);
+
+    si_migrate(from, uri);
+
+    for (int i = 0; i < 31; i++) {
+        qtest_writeq(to, REG_CONTEXT_COMMAND, 0);
+    }
+    qtest_writeq(to, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00112233));
+    qtest_writeq(to, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_RE_POINT, 0));
+    g_assert_cmphex(si_test_pixel(to, 0, 0), ==, 0x00112233);
+
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2089,6 +2124,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/migration", test_migration);
     qtest_add_func("sn0/origin2000/mgras/context-ack-migration",
                    test_context_ack_migration);
+    qtest_add_func("sn0/origin2000/mgras/discarded-fifo-migration",
+                   test_discarded_fifo_migration);
 
     return g_test_run();
 }

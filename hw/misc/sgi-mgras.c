@@ -775,7 +775,8 @@ static int si_post_load(void *opaque, int version_id)
         s->context_words > ARRAY_SIZE(s->context) ||
         s->cmd_token_reg >= ARRAY_SIZE(s->rss) ||
         s->cmd_token_payload_count > ARRAY_SIZE(s->cmd_token_payload) ||
-        s->cmd_token_words_remaining > ARRAY_SIZE(s->cmd_token_payload) ||
+        (s->cmd_token_class != SGI_MGRAS_CMD_TOKEN_DISCARD &&
+         s->cmd_token_words_remaining > ARRAY_SIZE(s->cmd_token_payload)) ||
         s->pio_x > SGI_MGRAS_WIDTH || s->pio_y > SGI_MGRAS_HEIGHT) {
         return -EINVAL;
     }
