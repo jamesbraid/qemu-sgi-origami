@@ -765,8 +765,6 @@ static int si_post_load(void *opaque, int version_id)
     if (s->ge_active_slot >= ARRAY_SIZE(s->ge) ||
         s->ge_write_ptr[0] > s->ge_words[0] ||
         s->ge_write_ptr[1] > s->ge_words[1] ||
-        s->ge_read_ptr[0] > s->ge_words[0] ||
-        s->ge_read_ptr[1] > s->ge_words[1] ||
         s->context_words > ARRAY_SIZE(s->context) ||
         s->cmd_token_payload_count > ARRAY_SIZE(s->cmd_token_payload) ||
         s->cmd_token_words_remaining > ARRAY_SIZE(s->cmd_token_payload)) {
@@ -778,6 +776,20 @@ static int si_post_load(void *opaque, int version_id)
     s->cursor_enabled = (s->vc3_reg[0x1d] & 0x2) != 0;
     s->dirty = true;
     return 0;
+}
+
+static bool si_front_count_valid(void *opaque, int version_id)
+{
+    SGIMgrasState *s = opaque;
+
+    return s->front_count == SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT;
+}
+
+static bool si_back_count_valid(void *opaque, int version_id)
+{
+    SGIMgrasState *s = opaque;
+
+    return s->back_count == SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT;
 }
 
 static bool si_ge_lengths_valid(void *opaque, int version_id)
@@ -793,9 +805,11 @@ static const VMStateDescription vmstate_sgi_mgras = {
     .post_load = si_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
+        VMSTATE_VALIDATE("front plane length is fixed", si_front_count_valid),
         VMSTATE_VARRAY_UINT32(front, SGIMgrasState, front_count, 0,
                               vmstate_info_uint32, uint32_t),
         VMSTATE_UINT32(back_count, SGIMgrasState),
+        VMSTATE_VALIDATE("back plane length is fixed", si_back_count_valid),
         VMSTATE_VARRAY_UINT32(back, SGIMgrasState, back_count, 0,
                               vmstate_info_uint32, uint32_t),
         /* The WID plane has the same dimensions as the front color plane. */
