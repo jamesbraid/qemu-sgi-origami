@@ -76,19 +76,23 @@ static void replay_mmio(QTestState *qts, const char *path, unsigned int line,
     width = parse_number(path, line, words[1]);
     offset = parse_number(path, line, words[2]);
     value = parse_number(path, line, words[3]);
-    if (width != 4 && width != 8) {
+    if (width != 1 && width != 2 && width != 4 && width != 8) {
         g_error("%s:%u: unsupported MMIO width %" PRIu64, path, line, width);
     }
     if (offset >= SI_MMIO_SIZE || offset + width > SI_MMIO_SIZE) {
         g_error("%s:%u: MMIO access is outside the MGRAS aperture", path,
                 line);
     }
-    if (width == 4 && value > UINT32_MAX) {
-        g_error("%s:%u: 32-bit MMIO value is wider than 32 bits", path,
-                line);
+    if (width < 8 && value >= (1ULL << (width * 8))) {
+        g_error("%s:%u: MMIO value is wider than width %" PRIu64, path,
+                line, width);
     }
     if (write) {
-        if (width == 4) {
+        if (width == 1) {
+            qtest_writeb(qts, SI_REG(offset), value);
+        } else if (width == 2) {
+            qtest_writew(qts, SI_REG(offset), value);
+        } else if (width == 4) {
             qtest_writel(qts, SI_REG(offset), value);
         } else {
             qtest_writeq(qts, SI_REG(offset), value);
@@ -96,8 +100,15 @@ static void replay_mmio(QTestState *qts, const char *path, unsigned int line,
         return;
     }
 
-    actual = width == 4 ? qtest_readl(qts, SI_REG(offset)) :
-                          qtest_readq(qts, SI_REG(offset));
+    if (width == 1) {
+        actual = qtest_readb(qts, SI_REG(offset));
+    } else if (width == 2) {
+        actual = qtest_readw(qts, SI_REG(offset));
+    } else if (width == 4) {
+        actual = qtest_readl(qts, SI_REG(offset));
+    } else {
+        actual = qtest_readq(qts, SI_REG(offset));
+    }
     if (actual != value) {
         g_error("%s:%u: read 0x%" PRIx64 " returned 0x%" PRIx64
                 ", expected 0x%" PRIx64, path, line, offset, actual, value);
@@ -164,25 +175,47 @@ static void test_replay(void)
     const char *path = g_getenv("MGRAS_REPLAY");
     const char *trace = g_getenv("MGRAS_TRACE");
     g_autofree char *contents = NULL;
+    g_autofree char *trace_contents = NULL;
+    g_autofree char *temporary_trace = NULL;
     g_auto(GStrv) lines = NULL;
     g_autoptr(GError) error = NULL;
+    bool remove_trace = false;
     QTestState *qts;
+    int fd;
 
     path = path && *path ? path : DEFAULT_REPLAY;
     if (!g_file_get_contents(path, &contents, NULL, &error)) {
         g_error("cannot read replay %s: %s", path, error->message);
     }
-    if (trace && *trace) {
-        qts = qtest_initf(MACHINE_ARGS
-                          " -trace enable=sgi_mgras_mmio -D %s", trace);
-    } else {
-        qts = qtest_init(MACHINE_ARGS);
+    if (!trace || !*trace) {
+        fd = g_file_open_tmp("sgi-mgras-replay-XXXXXX.trace",
+                             &temporary_trace, &error);
+        if (fd < 0) {
+            g_error("cannot create trace file: %s", error->message);
+        }
+        close(fd);
+        trace = temporary_trace;
+        remove_trace = true;
     }
+    qts = qtest_initf(MACHINE_ARGS
+                      " -trace enable=sgi_mgras_mmio -D %s", trace);
     lines = g_strsplit(contents, "\n", -1);
     for (unsigned int i = 0; lines[i]; i++) {
         replay_line(qts, path, i + 1, lines[i]);
     }
     qtest_quit(qts);
+    if (!g_file_get_contents(trace, &trace_contents, NULL, &error)) {
+        g_error("cannot read trace %s: %s", trace, error->message);
+    }
+    g_assert_nonnull(strstr(trace_contents,
+        "offset 0x73c08 value 0x55 size 1 write=1"));
+    g_assert_nonnull(strstr(trace_contents,
+        "offset 0x73c08 value 0x55 size 1 write=0"));
+    g_assert_nonnull(strstr(trace_contents,
+        "offset 0x720b0 value 0x2468 size 2 write=0"));
+    if (remove_trace) {
+        unlink(trace);
+    }
 }
 
 int main(int argc, char **argv)

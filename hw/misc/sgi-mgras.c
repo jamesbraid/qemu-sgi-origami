@@ -358,8 +358,17 @@ static void si_ge_data_write(SGIMgrasState *s, hwaddr addr, unsigned size,
 
 static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
 {
-    if (size != 4 && size != 8) {
+    if (size != 1 && size != 2 && size != 4 && size != 8) {
         si_error(s, addr, size, "unsupported read width");
+        return 0;
+    }
+    if (size == 1 && addr != SGI_MGRAS_I2C_SCRATCH && addr != 0x071208) {
+        si_error(s, addr, size, "unsupported byte read");
+        return 0;
+    }
+    if (size == 2 && addr != SGI_MGRAS_VC3_DATA &&
+        addr != SGI_MGRAS_VC3_RAM) {
+        si_error(s, addr, size, "unsupported halfword read");
         return 0;
     }
     switch (addr) {
@@ -593,7 +602,7 @@ static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
      * checks has to live there, not in the low byte a 0x08 return
      * would put it in.
      */
-    case 0x071208: return 0x08000000;
+    case 0x071208: return size == 1 ? 0x08 : 0x08000000;
     case 0x071c88: return s->cmap_index;
     case 0x071f00: return 1;
     /* See the header comment on SGI_MGRAS_REPP_SYNC. */
@@ -612,7 +621,7 @@ static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
         if (s->vc3_index == 0x1f) {
             v &= ~0x60; /* revision bits: report "VC3 A", revision 0 */
         }
-        return (uint32_t)v << 16;
+        return size == 2 ? v : (uint32_t)v << 16;
     }
     /*
      * The VC3 SRAM's own data port, read back through whatever address
@@ -623,7 +632,7 @@ static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
         uint16_t v = s->vc3_sram[s->vc3_ram_addr &
                                  (SGI_MGRAS_VC3_SRAM_WORDS - 1)];
         s->vc3_ram_addr++;
-        return (uint32_t)v << 16;
+        return size == 2 ? v : (uint32_t)v << 16;
     }
     case 0x130500: return s->entry;
     case 0x070d18: return s->cmap[s->cmap_index & 255];
@@ -696,8 +705,18 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         s->dac_lut_data_1_low = value;
         return;
     }
-    if ((size != 4 && size != 8) || (addr & (size - 1))) {
+    if ((size != 1 && size != 2 && size != 4 && size != 8) ||
+        (addr & (size - 1))) {
         si_error(s, addr, size, "unsupported or unaligned write");
+        return;
+    }
+    if (size == 1 && addr != SGI_MGRAS_I2C_SCRATCH &&
+        addr != SGI_MGRAS_I2C_STROBE && addr != SGI_MGRAS_VC3_INDEX) {
+        si_error(s, addr, size, "unsupported byte write");
+        return;
+    }
+    if (size == 2 && addr != 0x070c30 && addr != SGI_MGRAS_VC3_RAM) {
+        si_error(s, addr, size, "unsupported halfword write");
         return;
     }
     switch (addr) {
@@ -859,7 +878,9 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
      * 0x071208 comment) -- the low-byte mask this case used before always
      * saw zero, so the index this register selected never actually moved.
      */
-    case 0x070c30: s->cmap_index = (value >> 16) & 255; return;
+    case 0x070c30:
+        s->cmap_index = (size == 2 ? value : value >> 16) & 255;
+        return;
     case 0x070d18: s->cmap[s->cmap_index & 255] = value; return;
     case 0x071f00: return;
     /*
@@ -932,11 +953,13 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         return;
     }
     /* The VC3's register-select port; see the header comment. */
-    case SGI_MGRAS_VC3_INDEX: s->vc3_index = value >> 24; return;
+    case SGI_MGRAS_VC3_INDEX:
+        s->vc3_index = size == 1 ? value : value >> 24;
+        return;
     /* The VC3 SRAM's own data port; see the header comment. */
     case SGI_MGRAS_VC3_RAM:
         s->vc3_sram[s->vc3_ram_addr & (SGI_MGRAS_VC3_SRAM_WORDS - 1)] =
-            (value >> 16) & 0xffff;
+            (size == 2 ? value : value >> 16) & 0xffff;
         s->vc3_ram_addr++;
         return;
     default: break;
@@ -980,18 +1003,6 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
 
 static const MemoryRegionOps si_ops = {
     .read = si_read, .write = si_write, .endianness = DEVICE_BIG_ENDIAN,
-    /*
-     * The kernel driver's own I2C probe (see the 0x073c08/0x073c88 cases
-     * below) does plain byte-wide loads and stores. min_access_size stayed
-     * at 4 since this device's first commit, so every one of those byte
-     * accesses violated .valid outright -- not something this device's own
-     * unsupported-access path could log, since the memory core rejects an
-     * out-of-range width before ever reaching si_read/si_write, and MIPS
-     * turns that rejection into a real bus-error exception. Widening this
-     * to 1 lets the memory core's own width-adjustment machinery satisfy a
-     * byte access by read-modify-writing the aligned word si_read/si_write
-     * already handle, so neither function needs its own byte-width logic.
-     */
     .valid = { .min_access_size = 1, .max_access_size = 8 },
     /*
      * Without an explicit impl width, the memory core defaults to 4 and
@@ -1000,7 +1011,7 @@ static const MemoryRegionOps si_ops = {
      * into two narrower callbacks -- corrupting the context recognizer's
      * width check and losing the low half of every direct command.
      */
-    .impl = { .min_access_size = 4, .max_access_size = 8 },
+    .impl = { .min_access_size = 1, .max_access_size = 8 },
 };
 
 static void si_reset(DeviceState *dev)
