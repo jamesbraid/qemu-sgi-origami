@@ -74,10 +74,10 @@ slow_qtests = {
   # time, which is four qtest round trips per word, and starts eight further
   # QEMU processes for the rejection and migration cases.
   'sn1-bedrock-flash-test': 180,
-  # The full register suite starts a fresh eight-CPU machine per subtest and
-  # measured 120.90s on a loaded builder, beyond its old 120s allowance.
+  # The full register suite starts a fresh eight-CPU machine per subtest. It
+  # measured 174.86s before the discarded-FIFO migration case was added.
   # Select one GLib test path for the normal edit/build/test loop.
-  'sn0-origin2000-mgras-test': 180,
+  'sn0-origin2000-mgras-test': 240,
 }
 
 qtest_priorities = {
