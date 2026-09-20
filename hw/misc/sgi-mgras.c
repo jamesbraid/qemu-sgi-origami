@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Bounded functional SI Viz endpoint for the Origin 2000 graphics path. */
+/* Bounded functional SI graphics endpoint. */
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "qemu/timer.h"
@@ -19,95 +19,39 @@
 #define SI_PENDING_CONTEXT 0x10000000
 #define SI_PENDING_RETRACE 0x00000001
 #define SI_PENDING_ERROR 0x00000002
-/*
- * A fifth pending source alongside the four above: the HQ4 command FIFO's
- * status/low-water role. The kernel driver's own MgrasFlushHQ3 (called from
- * MgrasCtxsw and MgrasPcxSwap) and mgras_hq4_hiwater_intr's timeout fallback
- * both arm a 15-second watchdog (mgras_fifotimer) whenever they need to wait
- * for this FIFO to drain, and both write bit SI_HQ_ENABLE_LOWATER into
- * SGI_MGRAS_HQ_ENABLE right beforehand -- live-traced from each routine's
- * own disassembly. The only place that clears that bit back out is
- * mgras_hq4_lowater_intr, dispatched by this same pending source once
- * delivered; nothing before this device modelled it, so the watchdog was
- * never disarmed and IRIX panicked roughly 15 seconds after any code path
- * (gfxinit, the X server) opened this board. This device tracks no real FIFO
- * occupancy to know when a genuine low-water transition would happen, so it
- * satisfies the wait immediately on the arming write rather than never --
- * the same "immediate readiness, no modelled delay" approximation already
- * used elsewhere in this file (see si_update_irq and the SGI_MGRAS_HQ_ENABLE
- * write case).
- *
- * Modelling the pending bit alone was not sufficient: mgras_hq4_lowater_intr
- * never actually ran, because every interrupt role this device delivered --
- * this one included -- used the same shared destination and vector (the
- * generic widget destination pair, see the header comment on int_dest_upper),
- * which is wired to MgrasHQ4ErrInterrupt, a printf-only handler that clears
- * nothing. Confirmed live: "HQ4 widget err - 0x0," appears exactly once in
- * every retained panicking console log, right on schedule. Disassembling
- * mgras_attach's own four interrupt-handler registrations against the
- * retained disk's rebuilt kernel settled the real per-role vector table at
- * SGI_MGRAS_HQ_VECTORS (see that header comment); si_update_irq below now
- * delivers this role through its own vector there instead.
- *
- * A third gap surfaced once gfxinit's GE microcode download started
- * succeeding and driver code reached MgrasCtxsw for real (docs/plans/
- * si-graphics-widget-wiring-handoff-20260916.md, "gfxinit clears GE
- * download live, then MgrasCtxsw timeout"): this bit's own clear, via
- * SGI_MGRAS_HQ_ENABLE_CLEAR (0x011058, mgras_hq4_lowater_intr's own
- * disarm write), left SI_PENDING_LOWATER stuck set -- only a full device
- * reset ever cleared it. The first arm/deliver/disarm cycle worked, but a
- * second arming (MgrasFlushHQ3 arms this bit on every ordinary FIFO wait,
- * not just a timeout) found the pending bit already set from the first
- * delivery, so si_update_irq's transition detector never saw a fresh
- * edge and never sent a second packet -- the driver's 15-second FIFO
- * watchdog then expired unopposed, alongside the already-armed
- * context-switch watchdog. The 0x011058 write case now clears this
- * pending bit on the same transition it already detects for
- * SI_HQ_ENABLE_LOWATER, making the role re-triggerable.
- */
+/* FIFO occupancy is not modeled, so low-water readiness is immediate. */
 #define SI_PENDING_LOWATER 0x00000004
 #define SI_HQ_ENABLE_LOWATER 0x10
 
-/* Where the Hub's interrupt-modify register sits; data bit 8 selects raise. */
+/* Data bit 8 selects assertion in the interrupt-modify write. */
 #define SI_HUB_INT_MODIFY_SET 0x100
 #define SI_INT_DEST_WIDGET_SHIFT 16
 #define SI_INT_DEST_WIDGET_BITS 4
 #define SI_INT_DEST_VECTOR_SHIFT 24
 
-/*
- * The HQ4 vector-dest pair's own target-widget field sits at a different
- * shift than the generic pair above (bits 27:24, not 19:16); the address
- * and widget-bit-count shapes are otherwise identical. See the header
- * comment on SGI_MGRAS_HQ_VECTOR_DEST_UPPER.
- */
+/* The HQ vector destination uses bits 27:24 for the target widget. */
 #define SI_HQ_VECTOR_WIDGET_SHIFT 24
 #define SI_HQ_VECTOR_WIDGET_BITS 4
 
-/* Byte offsets into SGI_MGRAS_HQ_VECTORS; see the header comment. */
+/* Byte offsets within the stored HQ vector word. */
 #define SI_HQ_VECTOR_LOWATER_SHIFT 0
 #define SI_HQ_VECTOR_GENERAL_SHIFT 8
 #define SI_HQ_VECTOR_RETRACE_SHIFT 16
 
-/*
- * A write to the target's interrupt-modify register; data bit 8 selects
- * raise. Mirrors hw/pci-host/sgi-bridge.c's sgi_bridge_deliver_interrupt.
- */
+/* Send an interrupt-modify write to the selected fabric address. */
 static void si_send_packet(SGIMgrasState *s, hwaddr where, uint8_t vector,
                            bool set)
 {
     uint64_t value = vector | (set ? SI_HUB_INT_MODIFY_SET : 0);
 
-    /* Host-only qtest introspection; see the header comment on the fields. */
+    /* Retain the packet for host-only qtest inspection. */
     s->test_last_interrupt_addr = where;
     s->test_last_interrupt_value = value;
     address_space_stq(&s->fabric_as, where, value, MEMTXATTRS_UNSPECIFIED,
                       NULL);
 }
 
-/*
- * Keep the packet header's widget separate from its complete address,
- * mirroring hw/pci-host/sgi-bridge.c's sgi_bridge_compose_xtalk.
- */
+/* Compose the fabric address without folding the widget into its payload. */
 static bool si_compose_xtalk(SGIMgrasState *s, unsigned int widget,
                              uint64_t address, hwaddr *fabric)
 {
@@ -126,12 +70,7 @@ static bool si_compose_xtalk(SGIMgrasState *s, unsigned int widget,
     return true;
 }
 
-/*
- * The widget-error role (MgrasHQ4ErrInterrupt): unchanged from this
- * device's original, single delivery path -- the generic widget
- * destination pair, vector in its own top byte. See the header comment on
- * int_dest_upper and SGI_MGRAS_HQ_VECTOR_DEST_UPPER.
- */
+/* Widget errors use the generic destination and its embedded vector. */
 static void si_deliver_widget_error(SGIMgrasState *s, bool set)
 {
     unsigned int widget = (s->int_dest_upper >> SI_INT_DEST_WIDGET_SHIFT) &
@@ -153,11 +92,7 @@ static void si_deliver_widget_error(SGIMgrasState *s, bool set)
     si_send_packet(s, where, vector, set);
 }
 
-/*
- * The three HQ4-specific roles (low-water, general, retrace): share the
- * HQ vector-dest pair for target/address, each with its own vector byte
- * from SGI_MGRAS_HQ_VECTORS. See that header comment.
- */
+/* HQ roles share one destination and select separate stored vectors. */
 static void si_deliver_hq_role(SGIMgrasState *s, bool set, uint8_t vector,
                                const char *role)
 {
@@ -182,19 +117,7 @@ static void si_deliver_hq_role(SGIMgrasState *s, bool set, uint8_t vector,
 
 static void si_update_irq(SGIMgrasState *s)
 {
-    /*
-     * Four independent roles, each with its own transition detector and
-     * its own packet -- see the header comment on SGI_MGRAS_HQ_VECTOR_DEST_
-     * UPPER/LOWER/VECTORS. SI_PENDING_LOWATER bypasses the shared top-level
-     * mask: this device has no evidence for which bit of the guest's own
-     * irq_mask write (0x011040) real hardware assigns to the status/
-     * low-water role (see the header comment on SI_PENDING_LOWATER), while
-     * the second-level enable bit that gates it (SGI_MGRAS_HQ_ENABLE's bit
-     * 0x10) is live-traced from two independent driver routines. Gating
-     * delivery on that bit instead, rather than on a guessed top-level mask
-     * bit, is sufficient to satisfy the driver's own wait. The other three
-     * roles are ordinary pending&mask sources.
-     */
+    /* The low-water top-level mask bit is unknown and remains unsupported. */
     bool lowater = !!(s->pending & SI_PENDING_LOWATER);
     bool general = !!(s->pending & s->irq_mask &
                       (SI_PENDING_FLAGS | SI_PENDING_CONTEXT));
@@ -205,7 +128,7 @@ static void si_update_irq(SGIMgrasState *s)
     uint8_t general_vector = s->hq_vectors >> SI_HQ_VECTOR_GENERAL_SHIFT;
     uint8_t retrace_vector = s->hq_vectors >> SI_HQ_VECTOR_RETRACE_SHIFT;
 
-    /* The chip sends on a transition, not while a level is held. */
+    /* This approximation sends one packet for each modeled transition. */
     if (lowater != s->lowater_asserted) {
         s->lowater_asserted = lowater;
         si_deliver_hq_role(s, lowater, lowater_vector, "low-water");
@@ -283,31 +206,12 @@ static void si_context_write(SGIMgrasState *s, uint32_t value)
         }
         return;
     }
-    /*
-     * protocol == 3: the context switch already completed. MgrasStart and
-     * MgrasCtxsw submit further 4-byte FIFO words here afterward (0xf200,
-     * 0x80000008, 0x40000, 0x111, 0x3700, zero, and several computed
-     * values), live-traced with nothing establishing any of them ties to
-     * further protocol state. Accepting them as opaque post-completion
-     * traffic, rather than flagging every one as a protocol violation, is
-     * this device's usual "accept, don't invent meaning" approximation --
-     * the check above already excludes every state where a stray write
-     * here would be a genuine error (no entry selected, or the sticky
-     * error already latched).
-     */
+    /* Post-completion words remain opaque because their grammar is unknown. */
 }
 
 /*
- * One GE11 engine slot's control port. A value of 0x200000 or 0x200001
- * (bit 0 selects the verify pass's read-alignment) starts a new load: both
- * the write pointer the load loop fills and the read pointer the verify
- * loop drains reset to zero, and data-port writes append microcode words
- * until the next control write. Any other control word ends the load --
- * the driver's own 0x40038 mode-select word among them, always paired with
- * a 0xd1 data write that is a register value, not a microcode word -- and,
- * if bit 31 is set, rewinds the read pointer, matching the driver's own
- * "control 0x80000000 | count" step right before it starts reading back a
- * pass again.
+ * This approximation stores uploaded GE words without interpreting them.
+ * Other control values end the upload, and bit 31 rewinds its read pointer.
  */
 static void si_ge_control_write(SGIMgrasState *s, unsigned int slot,
                                 uint32_t value)
@@ -326,18 +230,7 @@ static void si_ge_control_write(SGIMgrasState *s, unsigned int slot,
     }
 }
 
-/*
- * One GE11 engine slot's data port: while a load is active (the most
- * recent control write to this slot was 0x200000/0x200001), each write
- * appends one microcode word to that slot's own buffer, matching the
- * driver's three-writes-per-triple load loop (traced in
- * MgrasDownloadGE11Ucode). Once the driver ends the load with a different
- * control word, further data-port writes are opaque register-select/value
- * traffic -- the 0xd1 word the driver writes right after 0x40038 is the
- * confirmed case -- accepted without touching the microcode buffer or its
- * write pointer, the same "accept as opaque state" treatment this device
- * gives undocumented registers elsewhere.
- */
+/* Data writes append only while this approximation considers upload active. */
 static void si_ge_data_write(SGIMgrasState *s, hwaddr addr, unsigned size,
                              unsigned int slot, uint32_t value)
 {
@@ -377,35 +270,18 @@ static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
                (s->manufacturer << 1) | 1;
     case SGI_MGRAS_INT_DEST_UPPER: return s->int_dest_upper;
     case SGI_MGRAS_INT_DEST_LOWER: return s->int_dest_lower;
-    /* The same destination pair, reachable at a second offset too. */
+    /* The alternate offsets alias the same destination state. */
     case SGI_MGRAS_INT_DEST_UPPER_ALT: return s->int_dest_upper;
     case SGI_MGRAS_INT_DEST_LOWER_ALT: return s->int_dest_lower;
     case SGI_MGRAS_WIDGET_CONTROL: return s->widget_control;
-    /*
-     * MgrasDownloadGE11Ucode reads this back once during the GE verify
-     * sequence; the write case below (0x011000) is the same offset's
-     * entry-selection-gating prefix state, so this just echoes it back.
-     */
+    /* The unresolved prefix state is stored and echoed without decoding it. */
     case 0x011000: return s->prefix;
     case SGI_MGRAS_RESET_ARG: return s->reset_arg;
-    /* See the header comment: a fixed population code, not an echo. */
+    /* Fixed functional-approximation population value. */
     case SGI_MGRAS_RESET_CONTROL: return 0x0f000000;
-    /* See the header comment: this SI board class has one GE, no RB. */
+    /* Fixed functional-approximation inventory value. */
     case SGI_MGRAS_BOARD_INVENTORY: return 0x21000000;
-    /*
-     * MgrasGatherInfo also reads these four offsets once each, for board
-     * revision bytes this device's own register table was never evidenced
-     * for. Reporting them explicitly, rather than through the sticky
-     * unsupported-access path every other undecoded offset takes, matches
-     * this device's established "immediate readiness, no invented meaning"
-     * approximation: an unknown revision reads as zero instead of raising
-     * an error over an access that does not block the boot either way.
-     * GatherInfo reads a fifth offset here too, 0x071d00, but that address
-     * already has an established meaning (SGI_MGRAS_REPP_STATUS_3, below)
-     * whose existing echo-back behaviour already answers GatherInfo's read
-     * with whatever the REPP handshake wrote earlier in the same boot,
-     * which is what it needs -- nothing to add for it here.
-     */
+    /* These unresolved revision fields use zero as a functional approximation. */
     case 0x071308:
     case 0x071708:
     case 0x028000:
@@ -419,8 +295,7 @@ static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
     case SGI_MGRAS_BRINGUP_ARG_3: return s->bringup_arg_3;
     case SGI_MGRAS_VC3_ARG: return s->vc3_arg;
     case SGI_MGRAS_RE_ARG: return s->re_arg;
-    /* Never read back in the cited trace; echoed for consistency with the
-     * rest of this device's newly-given-meaning registers. */
+    /* Store and echo the unresolved XMAP mode value. */
     case SGI_MGRAS_XMAP_MAIN_MODE: return s->xmap_mode;
     case SGI_MGRAS_I2C_SCRATCH: return s->i2c_scratch;
     case SGI_MGRAS_REPP_STATUS_1: return s->repp_status[0];
@@ -434,14 +309,7 @@ static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
     case SGI_MGRAS_DAC_CONFIG: return s->dac_config;
     case SGI_MGRAS_DAC_LUT_DATA_1_LOW: return s->dac_lut_data_1_low;
     case 0x008000: return 0;
-    /*
-     * MgrasCtxsw writes 0x80 to this offset outside the pending/mask/
-     * acknowledge protocol the rest of this register already implements,
-     * then reads it back masking in bit 0x20 -- neither bit's meaning was
-     * captured, so the extra bits are stored separately and reported
-     * alongside whatever is genuinely pending, rather than corrupting the
-     * real pending state SI_PENDING_FLAGS/CONTEXT/RETRACE/ERROR track.
-     */
+    /* Keep unresolved status bits separate from modeled pending sources. */
     case 0x011020: return s->pending | s->hq_status_extra;
     case 0x011040: return s->irq_mask;
     case SGI_MGRAS_HQ_CONFIG_A: return s->hq_config_a;
@@ -454,180 +322,40 @@ static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
     case SGI_MGRAS_SCHED_ARG_2: return s->sched_arg_2;
     case SGI_MGRAS_SCHED_ARG_3: return s->sched_arg_3;
     case SGI_MGRAS_SCHED_ARG_4: return s->sched_arg_4;
-    /* Both offsets read the same underlying flag word; see the header
-     * comment on SGI_MGRAS_HQ_FLAGS. */
+    /* Both offsets expose the same stored flag word. */
     case SGI_MGRAS_HQ_FLAGS: return s->hq_flags;
     case SGI_MGRAS_HQ_FLAGS_CLEAR: return s->hq_flags;
-    /* See the header comment: no evidence for real content, report zero. */
+    /* Retrace status content is unsupported. */
     case SGI_MGRAS_RETRACE_STATUS_1: return 0;
     case SGI_MGRAS_RETRACE_STATUS_2: return 0;
-    /*
-     * A generic widget bring-up step, not an SI-specific register: the
-     * retained PROM's local-IO discovery writes a step-table argument word
-     * here for every widget it finds (520<<10 | 65<<2, unrelated to SI's own
-     * protocol) and polls this same offset for bit 0x2 before it will
-     * continue. hw/pci-host/sgi-bridge.c has no register here either --
-     * Bridge's own catch-all invalid-address read returns all-ones, which
-     * happens to carry that bit, so Bridge passes this step by accident
-     * rather than by implementing it. Reporting it explicitly, rather than
-     * through the sticky unsupported-access path every other undecoded
-     * offset takes, is the approximation: immediate readiness, no modelled
-     * bring-up delay.
-     */
+    /* Generic widget readiness is an immediate functional approximation. */
     case 0x011098: return 0x2;
-    /*
-     * This device's first commit returned a plain nonzero "healthy" value
-     * here (1) with no evidence behind the exact bits, since nothing had
-     * ever exercised the consumer. Live-tracing a boot that finally reaches
-     * this poll (only possible once the REPP sync handshake above stopped
-     * blocking it) shows the same unrolled bit-0x2 poll shape already
-     * evidenced at 0x011098: `lw a4,0(s0); andi a4,a4,0x2; beqz a4,<retry>`.
-     * The old value's bit 0x2 was clear, so the poll never saw its exit
-     * condition. Report that bit set on the healthy path instead, dropping
-     * the previously unevidenced low bit rather than keep a second guess
-     * beside a now-evidenced one.
-     */
-    /*
-     * This same word also carries a second, independent poll bit: live-
-     * traced from the driver object pulled off the retained disk (not the
-     * older 6.5-base release this project analysed first), mgras_hq4_
-     * hiwater_intr -- called from MgrasPcxSwap during a buffer swap -- runs
-     * its own short, ten-iteration local poll of this offset's bit 0x10
-     * (`lw t9,0(s2); andi t9,t9,0x10; beqz t9,<retry>`) before it will
-     * treat the FIFO as healthy. Bit 0x10 was never modelled, so that poll
-     * always exhausted its ten retries and fell into the same watchdog-
-     * arming fallback MgrasFlushHQ3Poll's own timeout does (writing
-     * SGI_MGRAS_HQ_ENABLE's bit 0x10, see that macro's header comment) --
-     * on every single call, deterministically, independent of the FIFO-
-     * status fix above. Reporting the bit set on the healthy path is the
-     * same "immediate readiness, no modelled delay" approximation already
-     * used for bit 0x2 above.
-     *
-     * CONTRACT CHANGE, needs independent review: this register used to
-     * report s->error (folded into bit 31) instead of its own healthy
-     * bits whenever this device's sticky error flag was set, from any
-     * cause anywhere on the device -- not just a genuine FIFO-related
-     * fault. Root-caused live as part of the SGI_MGRAS_SCHED_ARG_4
-     * (0x040070) investigation (docs/plans/si-graphics-widget-wiring-
-     * handoff-20260916.md, "gfxinit clears GE download live, then
-     * MgrasCtxsw timeout"): an unrelated unsupported access anywhere on
-     * this device silently made every later, unrelated poll of this
-     * register report "FIFO busy" until something explicitly acknowledged
-     * the error via 0x011048. This device already has an independent,
-     * dedicated way to surface "an error occurred" -- the sticky error
-     * flag drives its own pending source (SI_PENDING_ERROR) and widget-
-     * error interrupt delivery (si_error, si_deliver_widget_error) --
-     * so overloading this status register's own healthy bits with it was
-     * never necessary and actively broke every unrelated consumer.
-     * Reporting the healthy bits unconditionally here does not change
-     * whether an error is reported at all, only where.
-     */
+    /* FIFO readiness is immediate. Exact thresholds remain unknown. */
     case 0x020000: return 0x12;
-    /*
-     * MgrasReset writes zero here before polling it, live-traced once the
-     * DAC load above stopped blocking that far: with no write case, the
-     * write took the sticky unsupported-access path, which set the same
-     * error flag the read case above reports through bit 31 -- so the
-     * driver's own clearing write was what poisoned the very next read of
-     * the readiness bit it was about to poll for. Accepting the write as a
-     * no-op, the same treatment already given to 0x011098's write side,
-     * lets the read case's existing healthy-path answer stand.
-     */
-    /*
-     * MgrasFlushHQ3Poll's own second poll mode, live-traced from the actual
-     * driver object pulled off the retained disk (mgras.o, not the older
-     * 6.5-base release this project analysed first): when its own third
-     * argument is zero, it reads this offset's low byte and requires
-     * `caller_threshold >= (value & 0xff)` (`sltu`/`beqz`) before it will
-     * stop retrying. Both live call sites that take this branch --
-     * MgrasCtxsw's own MgrasFlushHQ3 call and MgrasPcxSwap's second one --
-     * pass a threshold of zero, so this field has to read back exactly 0 to
-     * satisfy the poll; MgrasPcxSwap's other two calls and MgrasCtxsw's own
-     * take the sibling DMA_BUSY poll at 0x020200 instead, already always
-     * zero.
-     *
-     * This offset is also the guest-visible read of this device's direct-
-     * command FIFO occupancy. si_raster_command now applies every state and
-     * execute record to the persistent register file immediately, with no
-     * modelled queueing depth, so occupancy is always zero -- not "31
-     * units of available capacity", an earlier design note this pass's own
-     * evidence trail settled as wrong (docs/plans/si-graphics-widget-
-     * wiring-handoff-20260916.md, "The FIFO-occupancy field, settled"):
-     * every consumer in the disassembled driver (MgrasWriteBfifo,
-     * MgrasPositionCursor, MgrasInitVC3, MgrasClearCursor, MgrasSetColors,
-     * MgrasReset) treats the low bits as a pending programmed-write count
-     * and waits for it to reach zero, which reporting zero already
-     * satisfies unconditionally. This is the same "immediate readiness, no
-     * modelled delay" approximation already used at 0x011098, 0x020000 and
-     * 0x020100 above.
-     */
+    /* Commands execute synchronously, so modeled FIFO occupancy is zero. */
     case 0x020008: return 0;
-    /*
-     * The kernel driver's own reset routine polls this offset's low five
-     * bits, waiting for ((bits + 1) >> 1) < 8 -- i.e. the field settling to
-     * 14 or below -- before it will continue. The value this case returned
-     * before, 31 << 4, has its low five bits fixed at 16, which never
-     * satisfies that test: once this driver code actually ran (only
-     * possible after installing the retained kernel module, which no
-     * earlier pass had done), it spun here forever. Reporting an
-     * already-settled field is the same "immediate readiness, no modelled
-     * delay" approximation already used at 0x011098 above.
-     */
+    /* Bus and DMA activity are not modeled and report idle. */
     case 0x020100: return 0;
     case 0x020200: return 0;
-    /*
-     * A status poll live-traced immediately before the existing 0x02c578
-     * case: `andi t2,t2,0x8; beqz t2,<retry>`, requiring bit 0x8 set to
-     * continue. This device's usual "immediate readiness, no modelled
-     * delay" approximation, already used at 0x011098 and 0x020000/
-     * 0x020100 above, applies the same way here.
-     */
-    /*
-     * A readback data register, not simply a status word: readData/readCC
-     * push a 64-bit FIFO "read" command here before reading this offset
-     * for the answer, and MgrasSyncPPRDRAMs polls its bit 3. This constant
-     * satisfies that poll, but the FIFO read-command encoding it should
-     * really answer from was never decoded, so any consumer expecting a
-     * specific readback value (MgrasInitCCR) gets this fixed constant
-     * instead -- a known, labelled approximation, not evidence.
-     */
+    /* Readback grammar is unsupported. These are fixed approximations. */
     case 0x02c574: return 0x8;
     case 0x02c578: return 0x100;
-    /*
-     * Live-traced polling this register with `lbu` at its own base
-     * address (not a 4-byte load): `lbu t0,...; andi t0,t0,0x8;
-     * bnez t0,<continue>`. A big-endian 1-byte read at a register's
-     * base address extracts the most significant byte of the 32-bit
-     * value the memory core widens it from, so the bit this poll
-     * checks has to live there, not in the low byte a 0x08 return
-     * would put it in.
-     */
+    /* Preserve the approximated status bit across supported access widths. */
     case 0x071208: return size == 1 ? 0x08 : 0x08000000;
     case 0x071c88: return s->cmap_index;
     case 0x071f00: return 1;
-    /* See the header comment on SGI_MGRAS_REPP_SYNC. */
+    /* Fixed functional-approximation synchronization value. */
     case SGI_MGRAS_REPP_SYNC: return 0x101;
-    /*
-     * The register the index port above selected, widened into bits
-     * 31:16 the same way every other 2-byte read on this device is (see
-     * the 0x071208 comment). Index 0x1f (config) additionally clears its
-     * own revision bits on readback -- see the header comment on
-     * SGI_MGRAS_VC3_INDEXDATA -- everything else echoes back what was
-     * last written through the indexed write port unchanged.
-     */
+    /* Indexed VC3 values are stored and echoed. Revision bits are approximate. */
     case SGI_MGRAS_VC3_DATA: {
         uint16_t v = s->vc3_index < ARRAY_SIZE(s->vc3_reg) ?
                      s->vc3_reg[s->vc3_index] : 0;
         if (s->vc3_index == 0x1f) {
-            v &= ~0x60; /* revision bits: report "VC3 A", revision 0 */
+            v &= ~0x60; /* Functional-approximation revision value. */
         }
         return size == 2 ? v : (uint32_t)v << 16;
     }
-    /*
-     * The VC3 SRAM's own data port, read back through whatever address
-     * the index port (SGI_MGRAS_VC3_INDEXDATA index 7) last set, auto-
-     * incrementing after every access the same way the write side does.
-     */
+    /* VC3 SRAM accesses auto-increment the stored address. */
     case SGI_MGRAS_VC3_RAM: {
         uint16_t v = s->vc3_sram[s->vc3_ram_addr &
                                  (SGI_MGRAS_VC3_SRAM_WORDS - 1)];
@@ -637,15 +365,7 @@ static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
     case 0x130500: return s->entry;
     case 0x070d18: return s->cmap[s->cmap_index & 255];
     case 0x120400: return s->ready ? 0xf400 : 0;
-    /*
-     * See the GE port header comment: GE_READ_1 is the driver's compare
-     * port, GE_READ_2 the discard port it reads first and never checks.
-     * The read pointer is a unit index; GE_READ_1 yields flat word
-     * 2*ptr - odd and advances the pointer, GE_READ_2 yields the pass's
-     * other word from the same pair without advancing -- this device's own
-     * approximation for what GE_READ_2 carries, since the driver never
-     * validates it.
-     */
+    /* GE readback order is a functional approximation over opaque uploads. */
     case SGI_MGRAS_GE_READ_1:
     case SGI_MGRAS_GE_READ_2: {
         uint32_t slot = s->ge_active_slot;
@@ -695,12 +415,7 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
 {
     SGIMgrasState *s = opaque;
     trace_sgi_mgras_mmio(s->trace_sequence++, addr, value, size, true);
-    /*
-     * See the header comment on SGI_MGRAS_DAC_LUT_DATA_1_LOW: a genuinely
-     * misaligned 4-byte write, ahead of the generic alignment guard below
-     * because that guard would otherwise reject it before the address
-     * switch ever sees it.
-     */
+    /* Handle this supported misaligned port before the alignment check. */
     if (addr == SGI_MGRAS_DAC_LUT_DATA_1_LOW && size == 4) {
         s->dac_lut_data_1_low = value;
         return;
@@ -731,26 +446,7 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     case SGI_MGRAS_BRINGUP_BLOCK_2: s->bringup_block[1] = value; return;
     case SGI_MGRAS_BRINGUP_BLOCK_3: s->bringup_block[2] = value; return;
     case SGI_MGRAS_SCRATCH_COMMAND: s->scratch_command = value; return;
-    /*
-     * This offset also serves as the kernel HQ driver's own enable-clear
-     * register later in the boot (SGI_MGRAS_HQ_ENABLE's header comment);
-     * both effects apply to the same write.
-     *
-     * Root-caused live (docs/plans/si-graphics-widget-wiring-handoff-
-     * 20260916.md, "gfxinit clears GE download live, then MgrasCtxsw
-     * timeout"): mgras_hq4_lowater_intr is the only handler that ever
-     * clears SI_HQ_ENABLE_LOWATER back out here, but this device never
-     * cleared SI_PENDING_LOWATER to match -- only a full reset did. The
-     * first arm/deliver cycle worked, but the second (MgrasFlushHQ3 arms
-     * this bit routinely, not just on a timeout) found the pending bit
-     * already stuck set from the first delivery, so si_update_irq's own
-     * transition detector never saw a fresh low->high edge and never sent
-     * a second packet; the driver's 15-second FIFO watchdog then ran
-     * unopposed. Clearing the pending bit on the same 1->0 transition this
-     * register already detects for SI_HQ_ENABLE_LOWATER makes the role
-     * re-triggerable, matching the datasheet's 0x011050 row: only the
-     * low-water handler clears the bit.
-     */
+    /* Clear modeled low-water state when its enable is cleared. */
     case SGI_MGRAS_BRINGUP_ARG_3:
         s->bringup_arg_3 = value;
         if ((value & s->hq_enable) & SI_HQ_ENABLE_LOWATER) {
@@ -761,19 +457,13 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         return;
     case SGI_MGRAS_VC3_ARG: s->vc3_arg = value; return;
     case SGI_MGRAS_RE_ARG: s->re_arg = value; return;
-    /* Stored and echoed back for read-back correctness; si_gfx_update no
-     * longer gates its PseudoColor-vs-TrueColor scanout split on this
-     * word -- see that function's own header comment for why a device-
-     * global mode value was falsified as a per-pixel classifier. Still
-     * marked dirty on a write, since a real guest could plausibly follow
-     * a mode change with no further paint before the next redraw and
-     * this device does not track whether that happened. */
+    /* Mode changes require a full scanout refresh in this synchronous model. */
     case SGI_MGRAS_XMAP_MAIN_MODE: s->xmap_mode = value; s->dirty = true; return;
     case SGI_MGRAS_RESET_CONTROL: s->reset_control = value; return;
     case SGI_MGRAS_I2C_SCRATCH: s->i2c_scratch = value; return;
     case SGI_MGRAS_I2C_STROBE: return;
     case SGI_MGRAS_REPP_STATUS_1: s->repp_status[0] = value; return;
-    /* Already the colour map index register; see the header comment. */
+    /* This register is already handled as the color-map index. */
     case 0x071c88: return;
     case SGI_MGRAS_REPP_STATUS_3: s->repp_status[1] = value; return;
     case SGI_MGRAS_REPP_STATUS_4: s->repp_status[2] = value; return;
@@ -784,18 +474,7 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     case SGI_MGRAS_DAC_LUT_DATA_2: s->dac_lut_data[1] = value; return;
     case SGI_MGRAS_DAC_CONFIG: s->dac_config = value; return;
     case 0x011000:
-        /*
-         * MgrasStart writes configuration here before the first context
-         * switch (retained startup evidence). MgrasCtxsw also rewrites it
-         * on every later context switch, after entry selection, as part
-         * of its own ordinary per-context HQ-register save/restore -- not
-         * a protocol violation, live-traced against a real MgrasStart
-         * hang this device's old post-selection rejection caused (see the
-         * 0x011000 row in docs/datasheets/mgras-hq4.md). The written
-         * value's fields are unresolved; retain it as opaque prefix state
-         * and use only its presence to gate the first entry selection at
-         * 0x130500.
-         */
+        /* Retain the unresolved prefix and use only its presence. */
         s->prefix = value;
         s->prefix_written = true;
         return;
@@ -804,19 +483,14 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         if (value & SI_PENDING_FLAGS) s->first_ack = true;
         if (value & SI_PENDING_CONTEXT) s->second_ack = true;
         si_update_irq(s); return;
-    /* The extra bits MgrasCtxsw writes here; see the read side's comment. */
+    /* Store unresolved status bits separately from pending sources. */
     case 0x011020: s->hq_status_extra = value; return;
     case 0x011040: s->irq_mask = value; si_update_irq(s); return;
     case 0x011048: s->error = 0; s->pending &= ~SI_PENDING_ERROR; si_update_irq(s); return;
     case SGI_MGRAS_HQ_CONFIG_A: s->hq_config_a = value; return;
     case SGI_MGRAS_HQ_CONFIG_B: s->hq_config_b = value; return;
     case SGI_MGRAS_HQ_ENABLE:
-        /*
-         * See the header comment on SI_PENDING_LOWATER: a newly-set bit
-         * 0x10 here is MgrasFlushHQ3's or mgras_hq4_hiwater_intr's own
-         * signal that it is about to wait on this device's FIFO
-         * status/low-water interrupt, live-traced from both routines.
-         */
+        /* Immediate readiness raises the modeled low-water source. */
         if ((value & ~s->hq_enable) & SI_HQ_ENABLE_LOWATER) {
             s->pending |= SI_PENDING_LOWATER;
         }
@@ -830,15 +504,14 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     case SGI_MGRAS_SCHED_ARG_2: s->sched_arg_2 = value; return;
     case SGI_MGRAS_SCHED_ARG_3: s->sched_arg_3 = value; return;
     case SGI_MGRAS_SCHED_ARG_4: s->sched_arg_4 = value; return;
-    /* OR sets bits, AND-NOT clears them; see the header comment on
-     * SGI_MGRAS_HQ_FLAGS. */
+    /* The set port ORs bits. The clear port removes them. */
     case SGI_MGRAS_HQ_FLAGS: s->hq_flags |= value; return;
     case SGI_MGRAS_HQ_FLAGS_CLEAR: s->hq_flags &= ~(uint32_t)value; return;
-    /* Always written zero in the evidenced case; see the header comment. */
+    /* Store this unresolved scheduling argument without interpreting it. */
     case SGI_MGRAS_RETRACE_ACK: return;
-    /* The generic bring-up step argument; see the read side's comment. */
+    /* The generic readiness argument has no modeled side effect. */
     case 0x011098: return;
-    /* The reset routine's own clearing write; see the read side's comment. */
+    /* The approximated status register accepts a clearing write. */
     case 0x020000: return;
     case 0x130500:
         if (size != 4 || value != 0x4fc || !s->prefix_written) {
@@ -853,54 +526,21 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         } else if (size == 8 && s->ready) {
             si_raster_command(s, value);
         } else if (size == 8 && !s->entry_selected) {
-            /*
-             * Board bring-up code writes a constant doubleword here, live-
-             * traced well before the guest ever selects an HQ entry at
-             * 0x130500 -- unrelated incidental traffic on the same offset
-             * this device's real context/command protocol uses, not a
-             * premature command submission. Accepting it silently, the
-             * same "opaque, no invented meaning" treatment given to other
-             * undocumented registers, avoids raising the sticky error over
-             * a write that has nothing to do with the protocol this
-             * register otherwise enforces. Once an entry is selected the
-             * stricter check below still applies, so a genuine mid-
-             * protocol command submitted before this device reports ready
-             * is still flagged.
-             */
+            /* Pre-selection traffic is opaque and has no modeled effect. */
             return;
         } else {
             si_error(s, addr, size, "unsupported context width");
         }
         return;
-    /*
-     * The colour-map index: a 2-byte write, widened into bits 31:16 the
-     * same way every other 2-byte access on this device is (see the
-     * 0x071208 comment) -- the low-byte mask this case used before always
-     * saw zero, so the index this register selected never actually moved.
-     */
+    /* The color-map index occupies the upper half of a widened write. */
     case 0x070c30:
         s->cmap_index = (size == 2 ? value : value >> 16) & 255;
         return;
     case 0x070d18: s->cmap[s->cmap_index & 255] = value; return;
     case 0x071f00: return;
-    /*
-     * The channel-select word the driver writes before each readback; see
-     * the header comment on SGI_MGRAS_REPP_SYNC for why the read side does
-     * not echo this back.
-     */
+    /* The unresolved synchronization selector is accepted but not stored. */
     case SGI_MGRAS_REPP_SYNC: return;
-    /*
-     * The VC3's indexed register write port: top byte selects the
-     * register (see the header comment), bits 23:8 carry the 16-bit
-     * value. Index 7 does not select an ordinary register -- it loads the
-     * SRAM address pointer SGI_MGRAS_VC3_RAM's data port uses -- so it is
-     * handled separately from the general register file. Cursor position
-     * (indices 2/3, already evidenced from MgrasPositionCursor before this
-     * offset's full contract was understood), the cursor-enable bit
-     * (index 0x1d bit 1) and the display-enable bit (index 0x1e bit 2)
-     * additionally update this device's own named state for whatever
-     * cursor/retrace code already reads it.
-     */
+    /* Index 7 selects SRAM. Other indices update the stored VC3 state. */
     case SGI_MGRAS_VC3_INDEXDATA: {
         uint8_t index = value >> 24;
         uint16_t data16 = (value >> 8) & 0xffff;
@@ -914,16 +554,7 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         }
         s->vc3_reg[index] = data16;
         switch (index) {
-        /*
-         * si_composite_cursor now makes cursor state guest-visible in the
-         * scanout, so a position or enable change has to mark the device
-         * dirty the same way a real paint does -- before Fix 3, nothing
-         * here ever did, since the cursor was tracked but never drawn.
-         * Position updates are marked unconditionally (cheap, and this
-         * device does not track whether a new position actually differs
-         * from the old one); enable follows 0x1e's own "only on a real
-         * transition" convention below.
-         */
+        /* Cursor changes require a scanout refresh in the synchronous model. */
         case 0x02: s->cursor_x = data16; s->dirty = true; break;
         case 0x03: s->cursor_y = data16; s->dirty = true; break;
         case 0x1d: {
@@ -935,12 +566,7 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
             break;
         }
         case 0x1e: {
-            /*
-             * A transition, not a level: si_gfx_update reruns the
-             * front[]->display_buffer conversion or the blank fill only
-             * when dirty, so a write that leaves the bit unchanged should
-             * not force a redundant redraw.
-             */
+            /* Redraw only when display enable changes. */
             bool enabled = (data16 & 0x4) != 0;
             if (enabled != s->display_enabled) {
                 s->dirty = true;
@@ -952,11 +578,11 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         }
         return;
     }
-    /* The VC3's register-select port; see the header comment. */
+    /* Store the selected VC3 register. */
     case SGI_MGRAS_VC3_INDEX:
         s->vc3_index = size == 1 ? value : value >> 24;
         return;
-    /* The VC3 SRAM's own data port; see the header comment. */
+    /* Store VC3 SRAM data and advance the address. */
     case SGI_MGRAS_VC3_RAM:
         s->vc3_sram[s->vc3_ram_addr & (SGI_MGRAS_VC3_SRAM_WORDS - 1)] =
             (size == 2 ? value : value >> 16) & 0xffff;
@@ -1004,13 +630,7 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
 static const MemoryRegionOps si_ops = {
     .read = si_read, .write = si_write, .endianness = DEVICE_BIG_ENDIAN,
     .valid = { .min_access_size = 1, .max_access_size = 8 },
-    /*
-     * Without an explicit impl width, the memory core defaults to 4 and
-     * silently splits every 8-byte access this device's own si_read/
-     * si_write already handle (FIFO command submission, HQ/GE readback)
-     * into two narrower callbacks -- corrupting the context recognizer's
-     * width check and losing the low half of every direct command.
-     */
+    /* Preserve 64-bit FIFO words instead of splitting them into callbacks. */
     .impl = { .min_access_size = 1, .max_access_size = 8 },
 };
 
@@ -1029,27 +649,7 @@ static void si_reset(DeviceState *dev)
     s->ge_active_slot = 0;
     memset(s->context, 0, sizeof(s->context)); memset(s->cursor, 0, sizeof(s->cursor));
     memset(s->rss, 0, sizeof(s->rss));
-    /*
-     * Two reset defaults for the direct-command register file, not zero
-     * like every other entry: a fresh register file with logic op 0
-     * (GXclear) or plane mask 0 (nothing writable) would silently turn a
-     * driver's very first fill, issued before it ever programs either
-     * register, into a no-op instead of a plain opaque copy. X11 GCs
-     * default to GXcopy and an all-ones planemask (AllPlanes) for the same
-     * reason; this device picks the same defaults for its own analogous
-     * registers rather than leaving them at zero. The default *values*
-     * (GXcopy, all-ones) are this device's own approximation, not
-     * evidence for a real hardware reset value -- but which register and
-     * bit position each one lives at is now live-traced: OpenBSD's public
-     * driver (sys/arch/sgi/dev/impact.c, impact_attach's own "RSS
-     * initialization") sets `COLORMASKLSBSA`/`COLORMASKLSBSB` to
-     * 0xffffff and `COLORMASKMSBS` to 0 once, at attach, and never
-     * touches any of the three again before a solid fill -- confirming
-     * `COLORMASKLSBSA`, not `COLORMASKMSBS`, is the mask that actually
-     * gates a 24-bit colour write (`COLORMASKMSBS` covers bits 31:24,
-     * always zero in this device's own 24-bit colour values, so it can
-     * never be what a real fill's visible output depends on).
-     */
+    /* Logic-operation and plane-mask reset values are functional approximations. */
     s->rss[0x161] = 0x3 << 26;
     s->rss[0x163] = 0xffffffff;
     s->glyph_row = s->pio_x = s->pio_y = 0;
@@ -1063,12 +663,7 @@ static void si_reset(DeviceState *dev)
     s->entry = s->protocol = s->prefix = 0; s->prefix_written = false;
     s->entry_selected = s->ready = false;
     s->display_enabled = s->cursor_enabled = false;
-    /*
-     * Reset turns the display off (above) and clears front[] (above), so
-     * the next gfx_update needs to redraw regardless of whatever it last
-     * showed -- the same "mark dirty" treatment si_raster_command_execute and
-     * the 0x1e display-enable write case give a real content change.
-     */
+    /* Redraw after reset because the display state and pixel storage changed. */
     s->dirty = true;
     s->xmap_mode = 0x7a4; s->cmap_index = 0; s->retraces = 0;
     s->int_dest_upper = s->int_dest_lower = 0;
@@ -1094,23 +689,11 @@ static void si_reset(DeviceState *dev)
     memset(s->fifo_threshold, 0, sizeof(s->fifo_threshold));
     s->sched_arg_1 = s->sched_arg_2 = s->sched_arg_3 = s->sched_arg_4 = 0;
     s->hq_flags = 0;
-    /*
-     * Reset does not retroactively unsend an already-delivered packet, so
-     * this clears each role's transition-detector directly rather than
-     * going through si_update_irq(), which would otherwise read the
-     * asserted -> deasserted edge as one more packet to send per role.
-     */
+    /* Clear transition state directly to avoid sending packets during reset. */
     s->lowater_asserted = s->general_asserted = s->retrace_asserted =
         s->error_asserted = false;
     si_update_irq(s);
-    /*
-     * The retrace timer models continuous vsync timing, not something this
-     * device starts only once the guest enables the display -- si_retrace
-     * itself already gates on display_enabled and no-ops otherwise, and
-     * re-arms itself for the next period every time it runs. Nothing
-     * previously gave it its first arm, so it never ran at all; this is
-     * that first arm, the same period si_retrace uses for every one after.
-     */
+    /* Retrace timing is a fixed-period approximation. */
     timer_mod(s->retrace_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
               NANOSECONDS_PER_SECOND / 60);
 }
@@ -1150,17 +733,7 @@ static void si_unrealize(DeviceState *dev)
     g_free(s->display_buffer);
 }
 
-/*
- * con and display_buffer are host-only (see the header comment on those
- * fields); neither is migrated. display_enabled and cursor_enabled are
- * likewise not migrated directly -- vc3_reg (already migrated) already
- * carries the same two bits this device derived them from at write time
- * (SGI_MGRAS_VC3_INDEXDATA's index 0x1e/0x1d cases), so re-deriving them
- * here on load avoids persisting the same fact twice. Forcing dirty true
- * regardless of any transmitted value means a migrated device always
- * redraws on its first post-migration gfx_update, the same treatment
- * si_reset already gives a fresh device.
- */
+/* Rebuild host-only display state from migrated VC3 state and redraw it. */
 static int si_post_load(void *opaque, int version_id)
 {
     SGIMgrasState *s = opaque;
@@ -1182,8 +755,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32(back_count, SGIMgrasState),
         VMSTATE_VARRAY_UINT32(back, SGIMgrasState, back_count, 0,
                               vmstate_info_uint32, uint32_t),
-        /* Reuses front_count: wid[] is front[]'s own per-pixel companion,
-         * same WIDTHxHEIGHT sizing -- see its header comment. */
+        /* The WID plane has the same dimensions as the front color plane. */
         VMSTATE_VARRAY_UINT32(wid, SGIMgrasState, front_count, 0,
                               vmstate_info_uint8, uint8_t),
         VMSTATE_UINT32_ARRAY(hq, SGIMgrasState, 5120),
@@ -1268,15 +840,7 @@ static const Property si_properties[] = {
                        fabric_widget_shift, 0),
 };
 
-/*
- * Host-only pixel introspection for qtests: nothing here is guest-visible.
- * Framebuffer readback is deliberately unsupported on the MMIO interface
- * (si-one-mode-functional-approximation.md, "Explicit exclusions"), so a
- * qtest that wants to check a rendered pixel has no other way to see one.
- * x-test-pixel-x/-y set the coordinate a following read of x-test-pixel
- * reports, mirroring the port-then-register pattern hw/misc/sgi-router-test.c
- * already uses for the same kind of host-only, index-then-read access.
- */
+/* Host-only qtest access to native pixel storage. */
 static void si_test_get_pixel(Object *obj, Visitor *v, const char *name,
                               void *opaque, Error **errp)
 {
@@ -1289,16 +853,7 @@ static void si_test_get_pixel(Object *obj, Visitor *v, const char *name,
     visit_type_uint32(v, name, &value, errp);
 }
 
-/*
- * Host-only display-surface introspection, the same port-then-register
- * shape as x-test-pixel above and reusing its x/y coordinate properties
- * rather than adding a second pair: forces a synchronous gfx_update (the
- * same call qxl.c's qxl_hw_update makes to qemu_console_hw_update, the
- * only in-tree precedent for driving one outside the UI's own refresh
- * loop) so a read observes this device's own current dirty/display-enable
- * state rather than whatever display_buffer happened to hold from a
- * previous, possibly stale, update.
- */
+/* Update scanout before exposing a display pixel to qtests. */
 static void si_test_get_display_pixel(Object *obj, Visitor *v,
                                       const char *name, void *opaque,
                                       Error **errp)
