@@ -24,6 +24,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/units.h"
+#include "qemu/host-utils.h"
 #include "qemu/datadir.h"
 #include "qemu/log.h"
 #include "qapi/error.h"
@@ -104,6 +105,28 @@
 #define SN1_INSTALLED_BANK_MASK 0xc
 /* Bedrock's own architectural bank count; matches sn0.h's SN0_MAX_MEMORY_BANKS. */
 #define SN1_ARCHITECTURAL_MEMORY_BANKS 8
+
+/*
+ * Bedrock's node field sits at physical address bit 33 in M mode
+ * (docs/datasheets/ip35-address-map.md); every constant above is this
+ * node's own view, node 0's. A node at a nonzero nasid answers the same
+ * views (docs/datasheets/bedrock-network-interface.md) offset by that
+ * many multiples of 1 << 33, the same way sn0.c's node_stride shifts the
+ * Hub's own windows by nasid multiples of its M-mode 1 << 32. Node 0's
+ * addresses are therefore unchanged: (0 << 33) is zero.
+ */
+#define SN1_NODE_ADDRESS_SHIFT 33
+
+static uint64_t sn1_node_address(const SN1NodeState *node, uint64_t address)
+{
+    uint64_t node_offset;
+    uint64_t shifted;
+
+    g_assert(!umul64_overflow(UINT64_C(1) << SN1_NODE_ADDRESS_SHIFT,
+                              node->nasid, &node_offset));
+    g_assert(!uadd64_overflow(address, node_offset, &shifted));
+    return shifted;
+}
 
 static BlockDriverState *sn1_node_open_flash_slice(BlockDriverState *backing,
                                                     int64_t offset,
@@ -200,8 +223,8 @@ static MemoryRegion *sn1_node_create_boot_flash(SN1NodeState *node,
      * addressed from the space's base. Mapping the selections separately
      * would put every write offset 32 MiB out.
      */
-    sysbus_mmio_map(flash, 0, SN1_HUB_LOCAL_BOOT);
-    sysbus_mmio_map(flash, 1, SN1_HUB_REMOTE_BOOT);
+    sysbus_mmio_map(flash, 0, sn1_node_address(node, SN1_HUB_LOCAL_BOOT));
+    sysbus_mmio_map(flash, 1, sn1_node_address(node, SN1_HUB_REMOTE_BOOT));
     /* The processor executes position zero through read-only views. */
     return SGI_BEDROCK_FLASH(node->boot_flash)->flash_mmio[0];
 }
@@ -479,8 +502,9 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
         SGI_BEDROCK_FLASH(node->boot_flash)->programmed =
             sn1_prom_flash_programmed;
         SGI_BEDROCK_FLASH(node->boot_flash)->programmed_opaque = node;
-        memory_region_add_subregion_overlap(system, SN1_PROM_RESET,
-                                            &node->prom_view_reset.rom, 1);
+        memory_region_add_subregion_overlap(
+            system, sn1_node_address(node, SN1_PROM_RESET),
+            &node->prom_view_reset.rom, 1);
         /*
          * The high local view sits inside a boot space the flash answers for,
          * so it is overlaid above it. The remote space is left to the flash:
@@ -488,9 +512,9 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
          * and an overlay at its base would shadow the command addresses, so a
          * monitor could not drive the part through that space at all.
          */
-        memory_region_add_subregion_overlap(system, SN1_HUB_LOCAL_HIGH_BOOT,
-                                            &node->prom_view_local_high.rom,
-                                            1);
+        memory_region_add_subregion_overlap(
+            system, sn1_node_address(node, SN1_HUB_LOCAL_HIGH_BOOT),
+            &node->prom_view_local_high.rom, 1);
         return true;
     }
 
@@ -527,21 +551,24 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
         memory_region_init_alias(&node->prom_views[i], OBJECT(node),
                                  name, &node->prom, 0, prom_size);
         /* PROM views take precedence where their carriers overlap RAM. */
-        memory_region_add_subregion_overlap(system, address,
-                                            &node->prom_views[i], 1);
+        memory_region_add_subregion_overlap(
+            system, sn1_node_address(node, address),
+            &node->prom_views[i], 1);
     }
 
     /* An empty second position answers erased through both boot spaces. */
     memory_region_init_io(&node->prom_flash, OBJECT(node),
                           &sn1_flash_erased_ops, node, "sn1.prom.flash",
                           SN1_PROM_SECOND_SELECTION_SIZE);
-    memory_region_add_subregion(system, SN1_PROM_SECOND_SELECTION,
-                                &node->prom_flash);
+    memory_region_add_subregion(
+        system, sn1_node_address(node, SN1_PROM_SECOND_SELECTION),
+        &node->prom_flash);
     memory_region_init_alias(&node->prom_flash_remote, OBJECT(node),
                              "sn1.prom.flash-remote", &node->prom_flash, 0,
                              SN1_PROM_SECOND_SELECTION_SIZE);
-    memory_region_add_subregion(system, SN1_HUB_REMOTE_FLASH,
-                                &node->prom_flash_remote);
+    memory_region_add_subregion(
+        system, sn1_node_address(node, SN1_HUB_REMOTE_FLASH),
+        &node->prom_flash_remote);
     return true;
 }
 
@@ -610,18 +637,21 @@ static void sn1_node_map_memory(SN1NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
 
-    memory_region_add_subregion(system, SN1_RAM_ADDRESS, node->ram);
+    memory_region_add_subregion(system, sn1_node_address(node, SN1_RAM_ADDRESS),
+                                node->ram);
     memory_region_init_alias(&node->hub_memory, OBJECT(node),
                              "sn1.hub.local-memory", node->ram, 0,
                              SN1_HUB_MEMORY_SIZE);
-    memory_region_add_subregion(system, SN1_HUB_MEMORY_ADDRESS,
-                                &node->hub_memory);
+    memory_region_add_subregion(
+        system, sn1_node_address(node, SN1_HUB_MEMORY_ADDRESS),
+        &node->hub_memory);
 
     memory_region_init(&node->hub_local_registers, OBJECT(node),
                        "sn1.hub.local-registers",
                        SN1_HUB_LOCAL_REGISTERS_SIZE);
-    memory_region_add_subregion(system, SN1_HUB_LOCAL_REGISTERS_ADDRESS,
-                                &node->hub_local_registers);
+    memory_region_add_subregion(
+        system, sn1_node_address(node, SN1_HUB_LOCAL_REGISTERS_ADDRESS),
+        &node->hub_local_registers);
 
     memory_region_init_io(&node->board_id, OBJECT(node), &sn1_board_id_ops,
                           node, "sn1.board-id", 8);
@@ -631,7 +661,9 @@ static void sn1_node_map_memory(SN1NodeState *node)
     memory_region_init_alias(&node->board_id_remote, OBJECT(node),
                              "sn1.board-id.remote", &node->board_id, 0, 8);
     memory_region_add_subregion_overlap(
-        system, SN1_HUB_REMOTE_REGISTERS_ADDRESS + SN1_BOARD_ID_OFFSET,
+        system,
+        sn1_node_address(node, SN1_HUB_REMOTE_REGISTERS_ADDRESS +
+                                SN1_BOARD_ID_OFFSET),
         &node->board_id_remote, 1);
 }
 
@@ -665,9 +697,9 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
     for (i = 0; i < node->nr_cpus; i++) {
         g_autofree char *name = g_strdup_printf("cpu%u", i);
         g_autofree char *alias_name =
-            g_strdup_printf("sn1.node0.cpu%u.system", i);
+            g_strdup_printf("sn1.node%u.cpu%u.system", node->nasid, i);
         g_autofree char *sysmem_name =
-            g_strdup_printf("sn1.node0.cpu%u.memory", i);
+            g_strdup_printf("sn1.node%u.cpu%u.memory", node->nasid, i);
         DeviceState *cpu_dev = qdev_new(machine->cpu_type);
         MIPSCPU *cpu = MIPS_CPU(cpu_dev);
 
@@ -702,7 +734,7 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
 
         if (node->promdata_filter) {
             g_autofree char *promdata_prefix =
-                g_strdup_printf("sn1.node0.cpu%u", i);
+                g_strdup_printf("sn1.node%u.cpu%u", node->nasid, i);
 
             /* The IP35 PROM's RAM copy executes within one 2 MiB TLB span. */
             sn_promdata_init(&node->promdata[i], OBJECT(node), cpu,
@@ -924,17 +956,19 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     bedrock = SYS_BUS_DEVICE(node->bedrock);
     hub_registers = &SGI_BEDROCK(node->bedrock)->hub_special_registers;
 
-    memory_region_add_subregion(system, SN1_XTALK_ADDRESS,
-                                sysbus_mmio_get_region(bedrock, 1));
-    memory_region_add_subregion_overlap(system, SN1_BEDROCK_LOCAL_ADDRESS,
-                                        sysbus_mmio_get_region(bedrock, 0),
-                                        1);
+    memory_region_add_subregion(
+        system, sn1_node_address(node, SN1_XTALK_ADDRESS),
+        sysbus_mmio_get_region(bedrock, 1));
+    memory_region_add_subregion_overlap(
+        system, sn1_node_address(node, SN1_BEDROCK_LOCAL_ADDRESS),
+        sysbus_mmio_get_region(bedrock, 0), 1);
     memory_region_init_alias(&node->bedrock_node, OBJECT(node),
                              "sn1.bedrock.node0",
                              sysbus_mmio_get_region(bedrock, 0), 0,
                              SN1_BEDROCK_NODE_SIZE);
-    memory_region_add_subregion_overlap(system, SN1_BEDROCK_NODE_ADDRESS,
-                                        &node->bedrock_node, 1);
+    memory_region_add_subregion_overlap(
+        system, sn1_node_address(node, SN1_BEDROCK_NODE_ADDRESS),
+        &node->bedrock_node, 1);
     /*
      * The local register window is a plain, non-overlapping partition of
      * the same three parts the remote window already answers below: a PI
@@ -1025,15 +1059,16 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
             SN1_HUB_LOCAL_REGISTERS_ADDRESS + SN1_HUB_REGISTER_UART_END,
             &node->cpu_local_pi_hub_tail[cpu], 1);
     }
-    memory_region_add_subregion(system, SN1_HUB_REMOTE_REGISTERS_ADDRESS,
-                                sysbus_mmio_get_region(bedrock, 3));
+    memory_region_add_subregion(
+        system, sn1_node_address(node, SN1_HUB_REMOTE_REGISTERS_ADDRESS),
+        sysbus_mmio_get_region(bedrock, 3));
     /* Preserve the remote L1 UART decoder between the register aliases. */
     memory_region_init_alias(&node->hub_remote_register_head, OBJECT(node),
                              "sn1.hub.remote-register-head",
                              hub_registers, 0,
                              SN1_HUB_REGISTER_HEAD_SIZE);
     memory_region_add_subregion_overlap(
-        system, SN1_HUB_REMOTE_REGISTERS_ADDRESS,
+        system, sn1_node_address(node, SN1_HUB_REMOTE_REGISTERS_ADDRESS),
         &node->hub_remote_register_head, 1);
     memory_region_init_alias(&node->hub_remote_register_tail, OBJECT(node),
                              "sn1.hub.remote-register-tail",
@@ -1041,25 +1076,30 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                              SN1_HUB_REGISTER_UART_END,
                              SGI_BEDROCK_SIZE - SN1_HUB_REGISTER_UART_END);
     memory_region_add_subregion_overlap(
-        system, SN1_HUB_REMOTE_REGISTERS_ADDRESS + SN1_HUB_REGISTER_UART_END,
+        system,
+        sn1_node_address(node, SN1_HUB_REMOTE_REGISTERS_ADDRESS +
+                              SN1_HUB_REGISTER_UART_END),
         &node->hub_remote_register_tail, 1);
     /*
      * The directory back door is the last part of the node's address space,
      * one word per fitted memory line. Firmware initialises it before it
      * trusts memory, so nothing boots without it.
      */
-    memory_region_add_subregion(system, SN1_HUB_DIRECTORY,
-                                sysbus_mmio_get_region(bedrock, 5));
+    memory_region_add_subregion(
+        system, sn1_node_address(node, SN1_HUB_DIRECTORY),
+        sysbus_mmio_get_region(bedrock, 5));
     /*
      * The ECC back door sits below the directory in the same back-door area,
      * one byte per eight bytes of node memory. Both apertures take their
      * extent from the memory linked above, so neither answers anything until
      * that link is set.
      */
-    memory_region_add_subregion(system, SN1_HUB_ECC,
-                                sysbus_mmio_get_region(bedrock, 6));
+    memory_region_add_subregion(
+        system, sn1_node_address(node, SN1_HUB_ECC),
+        sysbus_mmio_get_region(bedrock, 6));
     memory_region_add_subregion_overlap(
-        system, SN1_RAM_ADDRESS, sysbus_mmio_get_region(bedrock, 7), 0);
+        system, sn1_node_address(node, SN1_RAM_ADDRESS),
+        sysbus_mmio_get_region(bedrock, 7), 0);
 
     for (cpu = 0; cpu < node->nr_cpus; cpu++) {
         MIPSCPU *mips_cpu = node->cpu[cpu];
@@ -1174,6 +1214,7 @@ static const Property sn1_node_properties[] = {
     DEFINE_PROP_LINK("ram", SN1NodeState, ram, TYPE_MEMORY_REGION,
                      MemoryRegion *),
     DEFINE_PROP_UINT32("nr-cpus", SN1NodeState, nr_cpus, 0),
+    DEFINE_PROP_UINT32("nasid", SN1NodeState, nasid, 0),
     DEFINE_PROP_BOOL("promdata-filter", SN1NodeState, promdata_filter, true),
     /*
      * Off by default: the fast path (sn-promdata.c) is proven on sgi-sn0-
