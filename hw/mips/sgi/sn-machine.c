@@ -1122,9 +1122,8 @@ static bool sgi_machine_build_mgras(SGIMachineState *s, Error **errp)
                        "si-viz-packet-proxy",
                        SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
     memory_region_set_enabled(&s->mgras_packet_proxy, false);
-    object_property_set_link(OBJECT(dev), "fabric",
-                             OBJECT(&s->mgras_packet_proxy), errp);
-    if (*errp) {
+    if (!object_property_set_link(OBJECT(dev), "fabric",
+                                  OBJECT(&s->mgras_packet_proxy), errp)) {
         return false;
     }
     qdev_prop_set_uint32(dev, "fabric-widget-shift",
