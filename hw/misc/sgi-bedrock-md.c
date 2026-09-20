@@ -377,17 +377,29 @@ static bool md_directory_translate(const SGIBedrockMDState *s, hwaddr offset,
 
     /* One 16-byte carrier slot describes one 128-byte memory line. */
     within = ((offset % MD_DIRECTORY_BANK_SIZE) & ~UINT64_C(0xf)) << 3;
+    if (within >= md_memory_bank_size(size_code)) {
+        /* Beyond the declared bank: outside configured memory. */
+        return false;
+    }
     if (md_has_installed_bank_sizes(s)) {
         uint64_t installed_size;
 
         if (!md_installed_bank(s, locational_bank, &raw, &installed_size) ||
-            within >= MIN(md_memory_bank_size(size_code), installed_size)) {
+            within >= installed_size) {
+            /*
+             * Enabled bank, valid size code, but this carrier has no fitted
+             * backing (an absent bank, or above a partly-fitted bank's
+             * installed capacity). Firmware walks these provisionally-enabled
+             * carriers during its directory retention probe; admit them to the
+             * stock-PROM directory compatibility store instead of raising a
+             * bus error.
+             */
+            if (configured) {
+                *configured = true;
+            }
             return false;
         }
         goto translated;
-    }
-    if (within >= md_memory_bank_size(size_code)) {
-        return false;
     }
 
     /* The backing arrays follow the raw RAM's dense locational-bank order. */

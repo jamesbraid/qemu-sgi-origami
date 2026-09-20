@@ -582,9 +582,14 @@ static void test_backdoors_installed_population(void)
     g_assert_cmphex(qtest_readq(s,
                     DIRECTORY(DIRECTORY_BANK_SIZE +
                               DIRECTORY_FIRST_ABSENT_256M)), ==, 0);
+    /*
+     * Software bank 2 selects absent locational bank 0 here, within the
+     * declared bank size: the compatibility store admits it as an ordinary
+     * standard word rather than rejecting it outside configured memory.
+     */
     qtest_writeq(s, DIRECTORY(2 * DIRECTORY_BANK_SIZE), UINT64_MAX);
     g_assert_cmphex(qtest_readq(s, DIRECTORY(2 * DIRECTORY_BANK_SIZE)), ==,
-                    0);
+                    0xffffffff);
 
     qtest_writeb(s, ECC(0x01fffff8), 0xa5);
     qtest_writeb(s, ECC(DIRECTORY_BANK_SIZE + 0x01fffff8), 0x5a);
@@ -1349,6 +1354,59 @@ static void test_directory_compatibility_capacity(void)
 
     contents = log_file_take(log);
     g_assert_nonnull(strstr(contents, "compatibility store is full"));
+}
+
+/*
+ * Origin 300's installed-bank-mask=12 population leaves locational banks
+ * zero and one absent. Stock IP35 PROM provisionally enables every bank
+ * descriptor and walks each enabled bank's directory backdoor as a
+ * retention probe, including the absent ones. An aligned carrier within
+ * the declared bank size must reach the compatibility store rather than a
+ * bus error; only a disabled bank or an offset beyond the declared bank
+ * size stays outside configured memory.
+ */
+static void test_directory_installed_absent_bank_compat(void)
+{
+    g_autofree char *admitted_log = log_file_new();
+    g_autofree char *disabled_log = log_file_new();
+    g_autofree char *beyond_log = log_file_new();
+    g_autofree char *admitted_extra =
+        g_strdup_printf("-d guest_errors -D %s", admitted_log);
+    g_autofree char *disabled_extra =
+        g_strdup_printf("-d guest_errors -D %s", disabled_log);
+    g_autofree char *beyond_extra =
+        g_strdup_printf("-d guest_errors -D %s", beyond_log);
+    g_autofree char *admitted_contents = NULL;
+    g_autofree char *disabled_contents = NULL;
+    g_autofree char *beyond_contents = NULL;
+    QTestState *s;
+
+    /* Locational bank 0 is absent; within stays inside the declared size. */
+    s = start_with_installed_memory(admitted_extra);
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 3));
+    qtest_writeq(s, DIRECTORY(0x20), UINT64_C(0x89abcdef01234567));
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(0x20)), ==, 0x01234567);
+    qtest_quit(s);
+    admitted_contents = log_file_take(admitted_log);
+    g_assert_null(strstr(admitted_contents, "outside configured memory"));
+
+    /* Locational bank 0 left disabled still rejects. */
+    s = start_with_installed_memory(disabled_extra);
+    qtest_writeq(s, DIRECTORY(0x20), UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(0x20)), ==, 0);
+    qtest_quit(s);
+    disabled_contents = log_file_take(disabled_log);
+    g_assert_nonnull(strstr(disabled_contents, "outside configured memory"));
+
+    /* An offset beyond the declared 256 MiB bank size still rejects. */
+    s = start_with_installed_memory(beyond_extra);
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 3));
+    qtest_writeq(s, DIRECTORY(DIRECTORY_FIRST_ABSENT_256M), UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_FIRST_ABSENT_256M)),
+                    ==, 0);
+    qtest_quit(s);
+    beyond_contents = log_file_take(beyond_log);
+    g_assert_nonnull(strstr(beyond_contents, "outside configured memory"));
 }
 
 static void test_directory_access_policy(void)
@@ -2164,6 +2222,8 @@ int main(int argc, char **argv)
                    test_directory_compatibility_storage);
     qtest_add_func("sn1/bedrock-md/directory-compatibility-capacity",
                    test_directory_compatibility_capacity);
+    qtest_add_func("sn1/bedrock-md/directory-installed-absent-bank-compat",
+                   test_directory_installed_absent_bank_compat);
     qtest_add_func("sn1/bedrock-md/protection-storage",
                    test_protection_storage);
     qtest_add_func("sn1/bedrock-md/protection-capacity-probe",
