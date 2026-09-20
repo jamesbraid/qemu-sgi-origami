@@ -25,6 +25,7 @@
 
 #define SI_CMD_HDR_CLASS_STATE 0x0018
 #define SI_CMD_HDR_CLASS_EXEC 0x001c
+#define SI_CMD_HDR_CLASS_DISCARD UINT32_MAX
 
 
 #define SI_REG_BLOCKXYSTARTI 0x046
@@ -68,11 +69,13 @@ static void si_command_fifo_token(SGIMgrasState *s, uint32_t token)
     uint32_t cmd_class, reg, payload_bytes, true_class;
 
     if (s->cmd_token_words_remaining > 0) {
-        if (s->cmd_token_payload_count <
+        if (s->cmd_token_class != SI_CMD_HDR_CLASS_DISCARD &&
+            s->cmd_token_payload_count <
             SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS) {
             s->cmd_token_payload[s->cmd_token_payload_count++] = token;
         }
-        if (--s->cmd_token_words_remaining == 0) {
+        if (--s->cmd_token_words_remaining == 0 &&
+            s->cmd_token_class != SI_CMD_HDR_CLASS_DISCARD) {
             si_raster_command_fifo_dispatch(s);
         }
         return;
@@ -91,10 +94,25 @@ static void si_command_fifo_token(SGIMgrasState *s, uint32_t token)
     true_class = cmd_class & ~1u;
     if (true_class == SI_CMD_HDR_CLASS_STATE ||
         true_class == SI_CMD_HDR_CLASS_EXEC) {
+        if (payload_bytes % sizeof(uint32_t)) {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: command-FIFO header, "
+                          "class 0x%04x reg 0x%02x has unaligned payload "
+                          "%u bytes\n", cmd_class, reg, payload_bytes);
+            return;
+        }
         s->cmd_token_class = true_class;
         s->cmd_token_reg = ((cmd_class & 1) << 8) | reg;
         s->cmd_token_payload_count = 0;
         s->cmd_token_words_remaining = payload_bytes / 4;
+        if (s->cmd_token_words_remaining >
+            SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS) {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: command-FIFO header, "
+                          "class 0x%04x reg 0x%02x payload %u bytes "
+                          "exceeds %zu-byte limit\n", cmd_class, reg,
+                          payload_bytes, sizeof(s->cmd_token_payload));
+            s->cmd_token_class = SI_CMD_HDR_CLASS_DISCARD;
+            return;
+        }
         if (s->cmd_token_words_remaining == 0) {
             si_raster_command_fifo_dispatch(s);
         }

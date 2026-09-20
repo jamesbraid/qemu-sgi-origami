@@ -664,10 +664,10 @@ struct SGIMgrasState {
      * parser needs to remember it is still mid-payload between si_write
      * calls. cmd_token_class/cmd_token_reg identify the header this
      * payload belongs to; cmd_token_payload holds what has arrived so far
-     * (extra words beyond SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS are still
-     * consumed to keep the stream in sync, just not stored). See the
-     * header comment on SI_CMD_HDR_CLASS_STATE for which headers this
-     * applies to and why it is scoped that way.
+     * (an oversized payload is consumed in full to keep the stream in sync,
+     * but none of that command is stored or executed). See the header comment
+     * on SI_CMD_HDR_CLASS_STATE for which headers this applies to and why it
+     * is scoped that way.
      */
     uint32_t cmd_token_class;
     uint32_t cmd_token_reg;

@@ -2331,6 +2331,49 @@ static void test_command_fifo_state_write_headers_not_yet_consumed(void)
     qtest_quit(qts);
 }
 
+static void test_command_fifo_rejects_malformed_payload_lengths(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+
+    /* Reject six bytes instead of consuming the following fence token. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_STATE_TOKEN(REG_PACKEDCOLOR, 6));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 (uint64_t)SI_FENCE_TOKEN << 32);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & SI_HQ_FLAG_FENCE, ==,
+                    SI_HQ_FLAG_FENCE);
+    qtest_writel(qts, REG_HQ_FLAGS_CLEAR, SI_HQ_FLAG_FENCE);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00112233));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_COLORMASKLSBSA, 0xffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PP1FILLMODE, SI_LOGIC_OP_COPY << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (70u << 16) | 70u));
+
+    /* Consume all nine words, but discard the command instead of truncating. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_STATE_TOKEN(REG_PACKEDCOLOR, 36));
+    for (int i = 0; i < 4; i++) {
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     ((uint64_t)0xdeadbeef << 32) | 0xdeadbeef);
+    }
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, (uint64_t)0xdeadbeef << 32);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_RE_POINT, 0));
+    g_assert_cmphex(si_test_pixel(qts, 70, 70), ==, 0x00112233);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_FENCE_TOKEN);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & SI_HQ_FLAG_FENCE, ==,
+                    SI_HQ_FLAG_FENCE);
+
+    qtest_quit(qts);
+}
+
 /*
  * Single-pixel plot: RE_POINT's own execute-form token header (class 0x1c
  * reg 0x040) paints exactly one pixel, at BLOCKXYSTARTI, in the current
@@ -2655,6 +2698,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "command-fifo-state-write-headers-not-yet-consumed",
                    test_command_fifo_state_write_headers_not_yet_consumed);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "command-fifo-rejects-malformed-payload-lengths",
+                   test_command_fifo_rejects_malformed_payload_lengths);
     qtest_add_func("sn0/origin2000/mgras/re-point-execute",
                    test_re_point_execute);
     qtest_add_func("sn0/origin2000/mgras/re-line-execute",
