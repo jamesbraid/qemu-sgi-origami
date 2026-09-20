@@ -536,7 +536,10 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     case 0x070c30:
         s->cmap_index = (size == 2 ? value : value >> 16) & 255;
         return;
-    case 0x070d18: s->cmap[s->cmap_index & 255] = value; return;
+    case 0x070d18:
+        s->cmap[s->cmap_index & 255] = value;
+        s->dirty = true;
+        return;
     case 0x071f00: return;
     /* The unresolved synchronization selector is accepted but not stored. */
     case SGI_MGRAS_REPP_SYNC: return;
@@ -555,6 +558,9 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         s->vc3_reg[index] = data16;
         switch (index) {
         /* Cursor changes require a scanout refresh in the synchronous model. */
+        case 0x01:
+            s->dirty = true;
+            break;
         case 0x02: s->cursor_x = data16; s->dirty = true; break;
         case 0x03: s->cursor_y = data16; s->dirty = true; break;
         case 0x1d: {
@@ -587,6 +593,7 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         s->vc3_sram[s->vc3_ram_addr & (SGI_MGRAS_VC3_SRAM_WORDS - 1)] =
             (size == 2 ? value : value >> 16) & 0xffff;
         s->vc3_ram_addr++;
+        s->dirty = true;
         return;
     default: break;
     }
@@ -766,8 +773,10 @@ static int si_post_load(void *opaque, int version_id)
         s->ge_write_ptr[0] > s->ge_words[0] ||
         s->ge_write_ptr[1] > s->ge_words[1] ||
         s->context_words > ARRAY_SIZE(s->context) ||
+        s->cmd_token_reg >= ARRAY_SIZE(s->rss) ||
         s->cmd_token_payload_count > ARRAY_SIZE(s->cmd_token_payload) ||
-        s->cmd_token_words_remaining > ARRAY_SIZE(s->cmd_token_payload)) {
+        s->cmd_token_words_remaining > ARRAY_SIZE(s->cmd_token_payload) ||
+        s->pio_x > SGI_MGRAS_WIDTH || s->pio_y > SGI_MGRAS_HEIGHT) {
         return -EINVAL;
     }
 
