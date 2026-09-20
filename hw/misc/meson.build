@@ -45,7 +45,9 @@ system_ss.add(when: 'CONFIG_SGI_ROUTER', if_true: files('sgi-router.c'))
 system_ss.add(when: 'CONFIG_SGI_ROUTER_TEST', if_true: files('sgi-router-test.c'))
 system_ss.add(when: 'CONFIG_SGI_XBOW', if_true: files('sgi-xbow.c'))
 system_ss.add(when: 'CONFIG_SGI_XBRIDGE_XBOW', if_true: files('sgi-xbridge-xbow.c'))
-system_ss.add(when: 'CONFIG_SGI_MGRAS', if_true: files('sgi-mgras.c', 'sgi-mgras-raster.c'))
+system_ss.add(when: 'CONFIG_SGI_MGRAS',
+              if_true: files('sgi-mgras.c', 'sgi-mgras-raster.c',
+                             'sgi-mgras-display.c'))
 system_ss.add(when: 'CONFIG_SGI_XTALK_TEST_TARGET', if_true: files('sgi-xtalk-test-target.c'))
 system_ss.add(when: 'CONFIG_SIFIVE_TEST', if_true: files('sifive_test.c'))
 system_ss.add(when: 'CONFIG_SIFIVE_E_PRCI', if_true: files('sifive_e_prci.c'))
