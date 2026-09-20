@@ -327,7 +327,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
  *
  * This device tracks no per-window/per-region visual class at all, so
  * `xmap_mode` is a single global "most recently programmed" value used for
- * every pixel at scanout (si_gfx_update, hw/misc/sgi-mgras.c) rather than a
+ * every pixel at scanout (si_gfx_update, hw/misc/sgi-mgras-display.c) rather than a
  * real per-window lookup -- an explicit, labelled first-pass approximation,
  * not a claim of per-window precision. See si_gfx_update's own header
  * comment for how this drives colour-map lookup versus direct RGB.
@@ -495,7 +495,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
  * the superseded row this replaces in docs/datasheets/mgras-hq4.md) together
  * with the DDX's own mgrasCopyPixels/mgrasDrawPixels fence sequence: it
  * clears bit 0x10000 here, submits a specific command-FIFO token at offset
- * 0x120400 (see si_command_fifo_token, sgi-mgras.c), and then polls this
+ * 0x120400 (see si_command_fifo_token, hw/misc/sgi-mgras-raster.c), and then polls this
  * same offset for that bit to come back. On real hardware the HQ4 sets the
  * bit as a side effect of processing that token; this device previously
  * modelled neither side of that mechanism, so the fence poll spun forever
@@ -522,7 +522,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
 /*
  * Six words is the largest payload this device recognizes on any
  * command-FIFO token header (RE_BLOCKCOPY's own six-word payload,
- * sgi-mgras.c's header comment on SI_CMD_HDR_CLASS_STATE); sized with a
+ * sgi-mgras-raster.c's header comment on SI_CMD_HDR_CLASS_STATE); sized with a
  * little headroom rather than exactly six.
  */
 #define SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS 8
@@ -642,12 +642,12 @@ struct SGIMgrasState {
      * same way real hardware keeps them (docs/designs/2026-09-17-si-viz-
      * pixel-output-design.md). Indexed by the 9-bit register field
      * si_command decodes from the selector; see the SI_REG_* macros and
-     * si_command's own header comment in sgi-mgras.c.
+     * si_command's own header comment in sgi-mgras-raster.c.
      */
     uint32_t rss[0x200];
     /*
      * This device's own write cursor for glyph rows and PIO pixel pairs
-     * (si_draw_glyph_row/si_draw_pio_pixel_pair, sgi-mgras.c), reset
+     * (si_draw_glyph_row/si_draw_pio_pixel_pair, sgi-mgras-raster.c), reset
      * whenever the block-start register is rewritten. Real hardware has
      * no guest-visible cursor register for either -- this is internal
      * bookkeeping for this device's own bounded interpretation of "one
@@ -658,7 +658,7 @@ struct SGIMgrasState {
     uint32_t pio_y;
     /*
      * Command-FIFO token-stream parser state (si_command_fifo_token,
-     * sgi-mgras.c), persisted across separate 64-bit MMIO stores to
+     * sgi-mgras-raster.c), persisted across separate 64-bit MMIO stores to
      * 0x120400 rather than kept as local decode state: a recognized
      * header's own declared payload can trail into a later store, so the
      * parser needs to remember it is still mid-payload between si_write
