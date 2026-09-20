@@ -762,6 +762,17 @@ static int si_post_load(void *opaque, int version_id)
 {
     SGIMgrasState *s = opaque;
 
+    if (s->ge_active_slot >= ARRAY_SIZE(s->ge) ||
+        s->ge_write_ptr[0] > s->ge_words[0] ||
+        s->ge_write_ptr[1] > s->ge_words[1] ||
+        s->ge_read_ptr[0] > s->ge_words[0] ||
+        s->ge_read_ptr[1] > s->ge_words[1] ||
+        s->context_words > ARRAY_SIZE(s->context) ||
+        s->cmd_token_payload_count > ARRAY_SIZE(s->cmd_token_payload) ||
+        s->cmd_token_words_remaining > ARRAY_SIZE(s->cmd_token_payload)) {
+        return -EINVAL;
+    }
+
     si_mgras_display_ensure_surface(s);
     s->display_enabled = (s->vc3_reg[0x1e] & 0x4) != 0;
     s->cursor_enabled = (s->vc3_reg[0x1d] & 0x2) != 0;
@@ -769,8 +780,16 @@ static int si_post_load(void *opaque, int version_id)
     return 0;
 }
 
+static bool si_ge_lengths_valid(void *opaque, int version_id)
+{
+    SGIMgrasState *s = opaque;
+
+    return s->ge_words[0] <= SGI_MGRAS_GE_WORDS &&
+           s->ge_words[1] <= SGI_MGRAS_GE_WORDS;
+}
+
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 1, .minimum_version_id = 1,
+    .name = TYPE_SGI_MGRAS, .version_id = 2, .minimum_version_id = 1,
     .post_load = si_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -783,34 +802,34 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_VARRAY_UINT32(wid, SGIMgrasState, front_count, 0,
                               vmstate_info_uint8, uint8_t),
         VMSTATE_UINT32_ARRAY(hq, SGIMgrasState, 5120),
-        VMSTATE_UINT32(hq_words, SGIMgrasState),
-        VMSTATE_UINT32(hq_hash, SGIMgrasState),
-        VMSTATE_UINT32_ARRAY(ge_words, SGIMgrasState, 2),
-        VMSTATE_VARRAY_UINT32(ge[0], SGIMgrasState, ge_words[0], 0,
+        VMSTATE_UINT32_V(hq_words, SGIMgrasState, 2),
+        VMSTATE_UINT32_V(hq_hash, SGIMgrasState, 2),
+        VMSTATE_UINT32_ARRAY_V(ge_words, SGIMgrasState, 2, 2),
+        VMSTATE_VALIDATE("GE upload lengths are in range", si_ge_lengths_valid),
+        VMSTATE_VARRAY_UINT32(ge[0], SGIMgrasState, ge_words[0], 2,
                               vmstate_info_uint32, uint32_t),
-        VMSTATE_VARRAY_UINT32(ge[1], SGIMgrasState, ge_words[1], 0,
+        VMSTATE_VARRAY_UINT32(ge[1], SGIMgrasState, ge_words[1], 2,
                               vmstate_info_uint32, uint32_t),
-        VMSTATE_UINT32_ARRAY(ge_write_ptr, SGIMgrasState, 2),
-        VMSTATE_UINT32_ARRAY(ge_read_ptr, SGIMgrasState, 2),
-        VMSTATE_UINT32(ge_active_slot, SGIMgrasState),
-        VMSTATE_BOOL_ARRAY(ge_read_odd, SGIMgrasState, 2),
-        VMSTATE_BOOL_ARRAY(ge_load_mode, SGIMgrasState, 2),
-        VMSTATE_UINT32(ge_hash, SGIMgrasState),
+        VMSTATE_UINT32_ARRAY_V(ge_write_ptr, SGIMgrasState, 2, 2),
+        VMSTATE_UINT32_ARRAY_V(ge_read_ptr, SGIMgrasState, 2, 2),
+        VMSTATE_UINT32_V(ge_active_slot, SGIMgrasState, 2),
+        VMSTATE_BOOL_ARRAY_V(ge_read_odd, SGIMgrasState, 2, 2),
+        VMSTATE_BOOL_ARRAY_V(ge_load_mode, SGIMgrasState, 2, 2),
+        VMSTATE_UINT32_V(ge_hash, SGIMgrasState, 2),
         VMSTATE_UINT32_ARRAY(context, SGIMgrasState, 63),
         VMSTATE_UINT32(context_words, SGIMgrasState), VMSTATE_UINT32(entry, SGIMgrasState),
         VMSTATE_UINT32(protocol, SGIMgrasState), VMSTATE_UINT64(prefix, SGIMgrasState),
         VMSTATE_BOOL(prefix_written, SGIMgrasState),
         VMSTATE_BOOL(entry_selected, SGIMgrasState),
-        VMSTATE_BOOL(first_ack, SGIMgrasState),
-        VMSTATE_BOOL(second_ack, SGIMgrasState),
+        VMSTATE_BOOL_V(first_ack, SGIMgrasState, 2),
+        VMSTATE_BOOL_V(second_ack, SGIMgrasState, 2),
         VMSTATE_BOOL(ready, SGIMgrasState),
         VMSTATE_UINT32(pending, SGIMgrasState), VMSTATE_UINT32(irq_mask, SGIMgrasState),
         VMSTATE_UINT32(error, SGIMgrasState), VMSTATE_UINT32(error_addr, SGIMgrasState),
         VMSTATE_UINT32(error_width, SGIMgrasState), VMSTATE_UINT32(cmap_index, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(cmap, SGIMgrasState, 256), VMSTATE_UINT64(retraces, SGIMgrasState),
-        VMSTATE_UINT8_ARRAY(cursor, SGIMgrasState, 256),
-        VMSTATE_UINT32(cursor_x, SGIMgrasState),
-        VMSTATE_UINT32(cursor_y, SGIMgrasState),
+        VMSTATE_UINT32_V(cursor_x, SGIMgrasState, 2),
+        VMSTATE_UINT32_V(cursor_y, SGIMgrasState, 2),
         VMSTATE_UINT32(revision, SGIMgrasState), VMSTATE_UINT32(part, SGIMgrasState),
         VMSTATE_UINT32(manufacturer, SGIMgrasState),
         VMSTATE_UINT32(int_dest_upper, SGIMgrasState),
@@ -868,7 +887,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT16_ARRAY(vc3_sram, SGIMgrasState,
                              SGI_MGRAS_VC3_SRAM_WORDS),
         VMSTATE_UINT32(xmap_mode, SGIMgrasState),
-        VMSTATE_TIMER_PTR(retrace_timer, SGIMgrasState),
+        VMSTATE_TIMER_PTR_V(retrace_timer, SGIMgrasState, 2),
         VMSTATE_END_OF_LIST()
     }
 };
