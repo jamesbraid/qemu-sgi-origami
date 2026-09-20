@@ -873,8 +873,20 @@ static void test_reset_clears_context_acknowledgements(void)
     qtest_writel(qts, REG_PREFIX, 0);
     qtest_writel(qts, REG_ENTRY, SI_ENTRY_WORD);
     qtest_writel(qts, REG_PENDING_ACK, SI_PENDING_FLAGS);
+    for (int i = 0; i < SI_CONTEXT_WORDS; i++) {
+        qtest_writel(qts, REG_CONTEXT_COMMAND, i);
+    }
+    qtest_writel(qts, REG_PENDING_ACK, SI_PENDING_CONTEXT);
+    g_assert_true(qtest_qom_get_bool(qts, SI_VIZ_QOM_PATH,
+                                     "x-test-first-ack"));
+    g_assert_true(qtest_qom_get_bool(qts, SI_VIZ_QOM_PATH,
+                                     "x-test-second-ack"));
 
     qtest_system_reset(qts);
+    g_assert_false(qtest_qom_get_bool(qts, SI_VIZ_QOM_PATH,
+                                      "x-test-first-ack"));
+    g_assert_false(qtest_qom_get_bool(qts, SI_VIZ_QOM_PATH,
+                                      "x-test-second-ack"));
     qtest_writel(qts, REG_CONTEXT_COMMAND, 0);
     g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 1);
 

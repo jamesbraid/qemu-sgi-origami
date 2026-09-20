@@ -917,6 +917,16 @@ static const Property si_properties[] = {
                        fabric_widget_shift, 0),
 };
 
+static bool si_test_get_first_ack(Object *obj, Error **errp)
+{
+    return SGI_MGRAS(obj)->first_ack;
+}
+
+static bool si_test_get_second_ack(Object *obj, Error **errp)
+{
+    return SGI_MGRAS(obj)->second_ack;
+}
+
 /* Host-only qtest access to native pixel storage. */
 static void si_test_get_pixel(Object *obj, Visitor *v, const char *name,
                               void *opaque, Error **errp)
@@ -974,6 +984,10 @@ static void si_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READ);
     object_property_add_uint32_ptr(obj, "x-test-hq-enable", &s->hq_enable,
                                    OBJ_PROP_FLAG_READ);
+    object_property_add_bool(obj, "x-test-first-ack",
+                             si_test_get_first_ack, NULL);
+    object_property_add_bool(obj, "x-test-second-ack",
+                             si_test_get_second_ack, NULL);
     object_property_add_uint32_ptr(obj, "x-test-int-dest-upper",
                                    &s->int_dest_upper, OBJ_PROP_FLAG_READ);
     object_property_add_uint32_ptr(obj, "x-test-int-dest-lower",
