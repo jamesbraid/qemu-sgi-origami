@@ -2476,19 +2476,8 @@ static void test_re_char_h_execute(void)
     qtest_quit(qts);
 }
 
-/*
- * Framebuffer block copy: RE_BLOCKCOPY's own execute-form token header
- * (class 0x1c reg 0x045) declares a six-word payload (0x18 bytes) instead
- * of the usual zero -- si_draw_block_copy's own header comment gives the
- * evidence and the bounded scope (a plain in-buffer rectangle copy, source
- * origin from the payload's own first word). Spreading the header and its
- * six payload words across four separate 64-bit MMIO stores exercises the
- * actual structural fix this pass makes: a recognized header's own
- * declared payload persists across MMIO accesses rather than being
- * misparsed as fresh headers (see the header comment on
- * SI_CMD_HDR_CLASS_STATE, hw/misc/sgi-mgras.c).
- */
-static void test_re_blockcopy_execute(void)
+/* Block-copy grammar is unknown. Retain its payload without executing it. */
+static void test_re_blockcopy_stays_inert(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
 
@@ -2514,23 +2503,19 @@ static void test_re_blockcopy_execute(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_EXEC_TOKEN(REG_RE_BLOCKCOPY, 0x18));
     g_assert_cmphex(si_test_pixel(qts, 50, 50), ==, 0);
-    /* Payload words 0 and 1, in a separate store: word 0, the source
-     * origin, is this device's own evidenced field. */
+    /* Supply all six opaque payload words across three MMIO stores. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  ((uint64_t)((10u << 16) | 10u) << 32) | 0);
     g_assert_cmphex(si_test_pixel(qts, 50, 50), ==, 0);
-    /* Payload words 2 and 3, in yet another store. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND, 0);
     g_assert_cmphex(si_test_pixel(qts, 50, 50), ==, 0);
-    /* Payload words 4 and 5 complete the header's own declared payload
-     * and dispatch the copy. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND, 0);
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 
-    g_assert_cmphex(si_test_pixel(qts, 50, 50), ==, 0x00654321);
-    g_assert_cmphex(si_test_pixel(qts, 51, 51), ==, 0x00654321);
-    /* Outside the destination rectangle stays untouched. */
+    g_assert_cmphex(si_test_pixel(qts, 50, 50), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 51, 51), ==, 0);
     g_assert_cmphex(si_test_pixel(qts, 52, 52), ==, 0);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 0);
 
     qtest_quit(qts);
 }
@@ -2707,8 +2692,8 @@ int main(int argc, char **argv)
                    test_re_line_execute);
     qtest_add_func("sn0/origin2000/mgras/re-char-h-execute",
                    test_re_char_h_execute);
-    qtest_add_func("sn0/origin2000/mgras/re-blockcopy-execute",
-                   test_re_blockcopy_execute);
+    qtest_add_func("sn0/origin2000/mgras/re-blockcopy-stays-inert",
+                   test_re_blockcopy_stays_inert);
     qtest_add_func("sn0/origin2000/mgras/migration", test_migration);
 
     return g_test_run();
