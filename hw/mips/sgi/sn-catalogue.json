@@ -1283,7 +1283,7 @@
           "id": "node-board-1-hub",
           "identity": {
             "i2c-controller": true,
-            "ni-revision": 3,
+            "ni-revision": 5,
             "serial": 17592186044417,
             "system-controller": false,
             "widget-revision": 1
@@ -1344,7 +1344,7 @@
           "id": "node-board-2-hub",
           "identity": {
             "i2c-controller": true,
-            "ni-revision": 3,
+            "ni-revision": 5,
             "serial": 17592186044418,
             "system-controller": false,
             "widget-revision": 1
@@ -1405,7 +1405,7 @@
           "id": "node-board-3-hub",
           "identity": {
             "i2c-controller": true,
-            "ni-revision": 3,
+            "ni-revision": 5,
             "serial": 17592186044419,
             "system-controller": false,
             "widget-revision": 1
@@ -1466,7 +1466,7 @@
           "id": "node-board-4-hub",
           "identity": {
             "i2c-controller": true,
-            "ni-revision": 3,
+            "ni-revision": 5,
             "serial": 17592186044420,
             "system-controller": false,
             "widget-revision": 1

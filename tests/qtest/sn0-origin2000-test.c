@@ -384,8 +384,9 @@ static void test_processor_mode_reset_and_release(void)
 static void assert_asic_identities(QTestState *qts)
 {
     for (unsigned int node = 0; node < 4; node++) {
+        /* Graphics-capable module: every node's Hub is code 5, Hub 2.3. */
         g_assert_cmpuint(HUB_NI_REVISION(hub_read(qts, node, NI_STATUS)),
-                         ==, 3);
+                         ==, 5);
         g_assert_cmpuint(XTALK_ID_REVISION(hub_read(qts, node,
                                                     IO_WIDGET_ID)), ==, 1);
     }
