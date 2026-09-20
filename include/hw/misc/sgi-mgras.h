@@ -582,6 +582,8 @@ struct SGIMgrasState {
     uint32_t test_pixel_y;
     uint64_t test_last_interrupt_addr;
     uint64_t test_last_interrupt_value;
+    /* Host-only trace ordering; not guest state and not migrated. */
+    uint64_t trace_sequence;
     QEMUTimer *retrace_timer;
     uint32_t *front;
     uint32_t *back;

@@ -1,7 +1,7 @@
 # See docs/devel/tracing.rst for syntax documentation.
 
 # sgi-mgras.c
-sgi_mgras_mmio(uint64_t offset, uint64_t value, unsigned size, bool write) "offset 0x%" PRIx64 " value 0x%" PRIx64 " size %u write=%d"
+sgi_mgras_mmio(uint64_t sequence, uint64_t offset, uint64_t value, unsigned size, bool write) "seq %" PRIu64 " offset 0x%" PRIx64 " value 0x%" PRIx64 " size %u write=%d"
 
 # allwinner-cpucfg.c
 allwinner_cpucfg_cpu_reset(uint8_t cpu_id, uint32_t reset_addr) "id %u, reset_addr 0x%" PRIx32
