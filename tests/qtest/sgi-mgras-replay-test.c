@@ -17,6 +17,7 @@
 #define MACHINE_ARGS      "-M origin2000 -smp 8 -m 256M"
 #define SI_VIZ_QOM_PATH   "/machine/si-viz"
 #define DEFAULT_REPLAY    "../tests/data/mgras/fill.replay"
+#define MINIMAL_REPLAY    "../tests/data/mgras/minimal.replay"
 #define SI_MMIO_SIZE      (2 * MiB)
 
 static uint64_t parse_number(const char *path, unsigned int line,
@@ -170,9 +171,8 @@ static void replay_line(QTestState *qts, const char *path, unsigned int line,
     }
 }
 
-static void test_replay(void)
+static void run_replay(const char *path, bool check_default_trace)
 {
-    const char *path = g_getenv("MGRAS_REPLAY");
     const char *trace = g_getenv("MGRAS_TRACE");
     g_autofree char *contents = NULL;
     g_autofree char *trace_contents = NULL;
@@ -183,7 +183,6 @@ static void test_replay(void)
     QTestState *qts;
     int fd;
 
-    path = path && *path ? path : DEFAULT_REPLAY;
     if (!g_file_get_contents(path, &contents, NULL, &error)) {
         g_error("cannot read replay %s: %s", path, error->message);
     }
@@ -207,20 +206,36 @@ static void test_replay(void)
     if (!g_file_get_contents(trace, &trace_contents, NULL, &error)) {
         g_error("cannot read trace %s: %s", trace, error->message);
     }
-    g_assert_nonnull(strstr(trace_contents,
-        "offset 0x73c08 value 0x55 size 1 write=1"));
-    g_assert_nonnull(strstr(trace_contents,
-        "offset 0x73c08 value 0x55 size 1 write=0"));
-    g_assert_nonnull(strstr(trace_contents,
-        "offset 0x720b0 value 0x2468 size 2 write=0"));
+    if (check_default_trace) {
+        g_assert_nonnull(strstr(trace_contents,
+            "offset 0x73c08 value 0x55 size 1 write=1"));
+        g_assert_nonnull(strstr(trace_contents,
+            "offset 0x73c08 value 0x55 size 1 write=0"));
+        g_assert_nonnull(strstr(trace_contents,
+            "offset 0x720b0 value 0x2468 size 2 write=0"));
+    }
     if (remove_trace) {
         unlink(trace);
     }
+}
+
+static void test_replay(void)
+{
+    const char *path = g_getenv("MGRAS_REPLAY");
+    bool custom = path && *path;
+
+    run_replay(custom ? path : DEFAULT_REPLAY, !custom);
+}
+
+static void test_minimal_replay(void)
+{
+    run_replay(MINIMAL_REPLAY, false);
 }
 
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("sgi-mgras/replay", test_replay);
+    qtest_add_func("sgi-mgras/minimal-replay", test_minimal_replay);
     return g_test_run();
 }
