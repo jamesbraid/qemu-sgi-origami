@@ -1123,10 +1123,15 @@ static bool sgi_machine_build_mgras(SGIMachineState *s, Error **errp)
                        SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
     memory_region_set_enabled(&s->mgras_packet_proxy, false);
     object_property_set_link(OBJECT(dev), "fabric",
-                             OBJECT(&s->mgras_packet_proxy), &error_fatal);
+                             OBJECT(&s->mgras_packet_proxy), errp);
+    if (*errp) {
+        return false;
+    }
     qdev_prop_set_uint32(dev, "fabric-widget-shift",
                         SGI_BRIDGE_PACKET_ADDRESS_BITS);
-    sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
+    if (!sysbus_realize(SYS_BUS_DEVICE(dev), errp)) {
+        return false;
+    }
 
     return sgi_xbow_attach_widget(
         s->crossbars[s->mgras_slot->crossbar_index],
