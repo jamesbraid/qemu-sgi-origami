@@ -866,6 +866,21 @@ static void test_direct_fill_and_reset(void)
     qtest_quit(qts);
 }
 
+static void test_reset_clears_context_acknowledgements(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    qtest_writel(qts, REG_PREFIX, 0);
+    qtest_writel(qts, REG_ENTRY, SI_ENTRY_WORD);
+    qtest_writel(qts, REG_PENDING_ACK, SI_PENDING_FLAGS);
+
+    qtest_system_reset(qts);
+    qtest_writel(qts, REG_CONTEXT_COMMAND, 0);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 1);
+
+    qtest_quit(qts);
+}
+
 
 static void test_fill_mask_reads_colormasklsbsa(void)
 {
@@ -1849,6 +1864,12 @@ static void test_migration(void)
     to = qtest_init(dest_cmdline);
 
     si_enter_context(from);
+
+    qtest_writel(from, REG_GE_CTRL_A, 0x200000);
+    qtest_writel(from, REG_GE_DATA_A, 0x11223344);
+    qtest_writel(from, REG_GE_DATA_A, 0x55667788);
+    qtest_writel(from, REG_GE_CTRL_A, 0x80000002);
+
     qtest_writeq(from, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_PACKEDCOLOR, 0x00445566));
     qtest_writeq(from, REG_CONTEXT_COMMAND,
@@ -1858,13 +1879,49 @@ static void test_migration(void)
 
     si_migrate(from, uri);
 
-
+    g_assert_cmphex(qtest_readl(to, REG_GE_READ_2), ==, 0x55667788);
+    g_assert_cmphex(qtest_readl(to, REG_GE_READ_1), ==, 0x11223344);
     g_assert_cmphex(qtest_readl(to, REG_CONTEXT_COMMAND), ==, SI_FINAL_TOKEN);
     qtest_writeq(to, REG_CONTEXT_COMMAND,
                  SI_COMMAND_EXEC(REG_BLOCK_END, (3u << 16) | 3u));
     g_assert_cmphex(si_test_pixel(to, 2, 2), ==, 0x00445566);
 
     g_assert_cmphex(si_test_display_pixel(to, 2, 2), ==, 0x00665544);
+
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
+static void test_context_ack_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-context-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MACHINE_ARGS);
+    dest_cmdline = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    qtest_writel(from, REG_PREFIX, 0);
+    qtest_writel(from, REG_ENTRY, SI_ENTRY_WORD);
+    qtest_writel(from, REG_PENDING_ACK, SI_PENDING_FLAGS);
+
+    si_migrate(from, uri);
+
+    for (int i = 0; i < SI_CONTEXT_WORDS; i++) {
+        qtest_writel(to, REG_CONTEXT_COMMAND, i);
+    }
+    g_assert_cmphex(qtest_readl(to, REG_PENDING) & SI_PENDING_CONTEXT, ==,
+                     SI_PENDING_CONTEXT);
+    qtest_writel(to, REG_PENDING_ACK, SI_PENDING_CONTEXT);
+    qtest_writel(to, REG_CONTEXT_COMMAND, SI_FINAL_TOKEN);
+    g_assert_cmphex(qtest_readl(to, REG_CONTEXT_COMMAND), ==, SI_FINAL_TOKEN);
 
     qtest_quit(to);
     qtest_quit(from);
@@ -1932,6 +1989,8 @@ int main(int argc, char **argv)
                    test_fifo_occupancy_always_drained);
     qtest_add_func("sn0/origin2000/mgras/direct-fill-and-reset",
                    test_direct_fill_and_reset);
+    qtest_add_func("sn0/origin2000/mgras/reset-clears-context-acks",
+                   test_reset_clears_context_acknowledgements);
     qtest_add_func("sn0/origin2000/mgras/fill-mask-reads-colormasklsbsa",
                    test_fill_mask_reads_colormasklsbsa);
     qtest_add_func("sn0/origin2000/mgras/ir-alias-execute",
@@ -1999,6 +2058,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/re-blockcopy-stays-inert",
                    test_re_blockcopy_stays_inert);
     qtest_add_func("sn0/origin2000/mgras/migration", test_migration);
+    qtest_add_func("sn0/origin2000/mgras/context-ack-migration",
+                   test_context_ack_migration);
 
     return g_test_run();
 }

@@ -666,7 +666,7 @@ static void si_reset_enter(Object *obj, ResetType type)
     s->vc3_index = 0; s->vc3_ram_addr = 0;
     s->pending = s->irq_mask = s->error = s->context_words = 0;
     s->entry = s->protocol = s->prefix = 0; s->prefix_written = false;
-    s->entry_selected = s->ready = false;
+    s->entry_selected = s->first_ack = s->second_ack = s->ready = false;
     s->display_enabled = s->cursor_enabled = false;
     /* Redraw because reset changes display state and pixel storage. */
     s->dirty = true;
@@ -783,15 +783,34 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_VARRAY_UINT32(wid, SGIMgrasState, front_count, 0,
                               vmstate_info_uint8, uint8_t),
         VMSTATE_UINT32_ARRAY(hq, SGIMgrasState, 5120),
+        VMSTATE_UINT32(hq_words, SGIMgrasState),
+        VMSTATE_UINT32(hq_hash, SGIMgrasState),
+        VMSTATE_UINT32_ARRAY(ge_words, SGIMgrasState, 2),
+        VMSTATE_VARRAY_UINT32(ge[0], SGIMgrasState, ge_words[0], 0,
+                              vmstate_info_uint32, uint32_t),
+        VMSTATE_VARRAY_UINT32(ge[1], SGIMgrasState, ge_words[1], 0,
+                              vmstate_info_uint32, uint32_t),
+        VMSTATE_UINT32_ARRAY(ge_write_ptr, SGIMgrasState, 2),
+        VMSTATE_UINT32_ARRAY(ge_read_ptr, SGIMgrasState, 2),
+        VMSTATE_UINT32(ge_active_slot, SGIMgrasState),
+        VMSTATE_BOOL_ARRAY(ge_read_odd, SGIMgrasState, 2),
+        VMSTATE_BOOL_ARRAY(ge_load_mode, SGIMgrasState, 2),
+        VMSTATE_UINT32(ge_hash, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(context, SGIMgrasState, 63),
         VMSTATE_UINT32(context_words, SGIMgrasState), VMSTATE_UINT32(entry, SGIMgrasState),
         VMSTATE_UINT32(protocol, SGIMgrasState), VMSTATE_UINT64(prefix, SGIMgrasState),
         VMSTATE_BOOL(prefix_written, SGIMgrasState),
-        VMSTATE_BOOL(entry_selected, SGIMgrasState), VMSTATE_BOOL(ready, SGIMgrasState),
+        VMSTATE_BOOL(entry_selected, SGIMgrasState),
+        VMSTATE_BOOL(first_ack, SGIMgrasState),
+        VMSTATE_BOOL(second_ack, SGIMgrasState),
+        VMSTATE_BOOL(ready, SGIMgrasState),
         VMSTATE_UINT32(pending, SGIMgrasState), VMSTATE_UINT32(irq_mask, SGIMgrasState),
         VMSTATE_UINT32(error, SGIMgrasState), VMSTATE_UINT32(error_addr, SGIMgrasState),
         VMSTATE_UINT32(error_width, SGIMgrasState), VMSTATE_UINT32(cmap_index, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(cmap, SGIMgrasState, 256), VMSTATE_UINT64(retraces, SGIMgrasState),
+        VMSTATE_UINT8_ARRAY(cursor, SGIMgrasState, 256),
+        VMSTATE_UINT32(cursor_x, SGIMgrasState),
+        VMSTATE_UINT32(cursor_y, SGIMgrasState),
         VMSTATE_UINT32(revision, SGIMgrasState), VMSTATE_UINT32(part, SGIMgrasState),
         VMSTATE_UINT32(manufacturer, SGIMgrasState),
         VMSTATE_UINT32(int_dest_upper, SGIMgrasState),
@@ -849,6 +868,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT16_ARRAY(vc3_sram, SGIMgrasState,
                              SGI_MGRAS_VC3_SRAM_WORDS),
         VMSTATE_UINT32(xmap_mode, SGIMgrasState),
+        VMSTATE_TIMER_PTR(retrace_timer, SGIMgrasState),
         VMSTATE_END_OF_LIST()
     }
 };
