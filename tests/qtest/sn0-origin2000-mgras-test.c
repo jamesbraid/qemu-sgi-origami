@@ -644,6 +644,35 @@ static void test_context_recognizer_ordering(void)
     qtest_quit(qts);
 }
 
+/*
+ * A second context switch must restart the context word count. Entry
+ * selection resets the acknowledgement flags but must also restart the
+ * word count, or the next switch's first word lands on a stale count
+ * left over from the previous switch and is misread as the completion
+ * token.
+ */
+static void test_second_context_switch_restarts_word_count(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+
+    qtest_writel(qts, REG_ENTRY, SI_ENTRY_WORD);
+    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & SI_PENDING_FLAGS, ==,
+                     SI_PENDING_FLAGS);
+    qtest_writel(qts, REG_PENDING_ACK, SI_PENDING_FLAGS);
+
+    for (int i = 0; i < SI_CONTEXT_WORDS; i++) {
+        qtest_writel(qts, REG_CONTEXT_COMMAND, i);
+    }
+
+    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & SI_PENDING_CONTEXT, ==,
+                     SI_PENDING_CONTEXT);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 0);
+
+    qtest_quit(qts);
+}
+
 static void test_entry_requires_prefix(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
@@ -2037,6 +2066,8 @@ int main(int argc, char **argv)
                    test_prefix_rewrite_after_entry_selection_does_not_poison_context);
     qtest_add_func("sn0/origin2000/mgras/context-recognizer-ordering",
                    test_context_recognizer_ordering);
+    qtest_add_func("sn0/origin2000/mgras/second-switch-restarts-word-count",
+                   test_second_context_switch_restarts_word_count);
     qtest_add_func("sn0/origin2000/mgras/entry-requires-prefix",
                    test_entry_requires_prefix);
     qtest_add_func("sn0/origin2000/mgras/context-rejects-wrong-token",
