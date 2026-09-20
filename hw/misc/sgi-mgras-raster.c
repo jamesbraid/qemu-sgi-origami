@@ -269,12 +269,13 @@ static void si_draw_pio_pixel_pair(SGIMgrasState *s)
         int x = x0 + s->pio_x;
         int y = y0 + s->pio_y;
         unsigned int idx;
+        uint32_t *p;
 
         if (y > y1) {
             return;
         }
         idx = y * SGI_MGRAS_WIDTH + x;
-        uint32_t *p = &s->front[idx];
+        p = &s->front[idx];
         *p = si_paint_pixel(op, *p, pixels[i], mask);
         s->wid[idx] = 1;
         s->pio_x++;
@@ -323,6 +324,8 @@ static void si_draw_line(SGIMgrasState *s)
     int err = dx - dy;
 
     for (;;) {
+        int e2;
+
         if (x0 < SGI_MGRAS_WIDTH && y0 < SGI_MGRAS_HEIGHT) {
             unsigned int idx = y0 * SGI_MGRAS_WIDTH + x0;
             uint32_t *p = &s->front[idx];
@@ -333,7 +336,7 @@ static void si_draw_line(SGIMgrasState *s)
         if (x0 == x1 && y0 == y1) {
             break;
         }
-        int e2 = 2 * err;
+        e2 = 2 * err;
         if (e2 > -dy) {
             err -= dy;
             x0 += sx;
