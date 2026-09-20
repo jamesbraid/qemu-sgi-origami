@@ -1869,6 +1869,10 @@ static void test_migration(void)
     qtest_writel(from, REG_GE_DATA_A, 0x11223344);
     qtest_writel(from, REG_GE_DATA_A, 0x55667788);
     qtest_writel(from, REG_GE_CTRL_A, 0x80000002);
+    g_assert_cmphex(qtest_readl(from, REG_GE_READ_2), ==, 0x55667788);
+    g_assert_cmphex(qtest_readl(from, REG_GE_READ_1), ==, 0x11223344);
+    g_assert_cmphex(qtest_readl(from, REG_GE_READ_1), ==, 0);
+    g_assert_cmphex(qtest_readl(from, REG_GE_READ_1), ==, 0);
 
     qtest_writeq(from, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_PACKEDCOLOR, 0x00445566));
@@ -1879,8 +1883,8 @@ static void test_migration(void)
 
     si_migrate(from, uri);
 
-    g_assert_cmphex(qtest_readl(to, REG_GE_READ_2), ==, 0x55667788);
-    g_assert_cmphex(qtest_readl(to, REG_GE_READ_1), ==, 0x11223344);
+    g_assert_cmphex(qtest_readl(to, REG_GE_READ_2), ==, 0);
+    g_assert_cmphex(qtest_readl(to, REG_GE_READ_1), ==, 0);
     g_assert_cmphex(qtest_readl(to, REG_CONTEXT_COMMAND), ==, SI_FINAL_TOKEN);
     qtest_writeq(to, REG_CONTEXT_COMMAND,
                  SI_COMMAND_EXEC(REG_BLOCK_END, (3u << 16) | 3u));
