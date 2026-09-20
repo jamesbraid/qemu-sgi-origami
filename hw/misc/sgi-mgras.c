@@ -281,7 +281,7 @@ static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
     case SGI_MGRAS_RESET_CONTROL: return 0x0f000000;
     /* Fixed functional-approximation inventory value. */
     case SGI_MGRAS_BOARD_INVENTORY: return 0x21000000;
-    /* These unresolved revision fields use zero as a functional approximation. */
+    /* Unresolved revision fields use zero as a functional approximation. */
     case 0x071308:
     case 0x071708:
     case 0x028000:
@@ -346,7 +346,7 @@ static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
     case 0x071f00: return 1;
     /* Fixed functional-approximation synchronization value. */
     case SGI_MGRAS_REPP_SYNC: return 0x101;
-    /* Indexed VC3 values are stored and echoed. Revision bits are approximate. */
+    /* VC3 values are stored and echoed; revision bits are approximate. */
     case SGI_MGRAS_VC3_DATA: {
         uint16_t v = s->vc3_index < ARRAY_SIZE(s->vc3_reg) ?
                      s->vc3_reg[s->vc3_index] : 0;
@@ -654,7 +654,7 @@ static void si_reset_enter(Object *obj, ResetType type)
     s->ge_active_slot = 0;
     memset(s->context, 0, sizeof(s->context)); memset(s->cursor, 0, sizeof(s->cursor));
     memset(s->rss, 0, sizeof(s->rss));
-    /* Logic-operation and plane-mask reset values are functional approximations. */
+    /* Logic-operation and plane-mask reset values are approximations. */
     s->rss[0x161] = 0x3 << 26;
     s->rss[0x163] = 0xffffffff;
     s->glyph_row = s->pio_x = s->pio_y = 0;
@@ -668,7 +668,7 @@ static void si_reset_enter(Object *obj, ResetType type)
     s->entry = s->protocol = s->prefix = 0; s->prefix_written = false;
     s->entry_selected = s->ready = false;
     s->display_enabled = s->cursor_enabled = false;
-    /* Redraw after reset because the display state and pixel storage changed. */
+    /* Redraw because reset changes display state and pixel storage. */
     s->dirty = true;
     s->xmap_mode = 0x7a4; s->cmap_index = 0; s->retraces = 0;
     s->int_dest_upper = s->int_dest_lower = 0;
