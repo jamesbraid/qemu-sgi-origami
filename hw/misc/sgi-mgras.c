@@ -356,10 +356,8 @@ static void si_ge_data_write(SGIMgrasState *s, hwaddr addr, unsigned size,
     s->ge_words[slot] = MAX(s->ge_words[slot], ptr + 1);
 }
 
-static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
+static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
 {
-    SGIMgrasState *s = opaque;
-    trace_sgi_mgras_mmio(addr, 0, size, false);
     if (size != 4 && size != 8) {
         si_error(s, addr, size, "unsupported read width");
         return 0;
@@ -675,10 +673,19 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
     }
 }
 
+static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
+{
+    SGIMgrasState *s = opaque;
+    uint64_t value = si_read_internal(s, addr, size);
+
+    trace_sgi_mgras_mmio(s->trace_sequence++, addr, value, size, false);
+    return value;
+}
+
 static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
 {
     SGIMgrasState *s = opaque;
-    trace_sgi_mgras_mmio(addr, value, size, true);
+    trace_sgi_mgras_mmio(s->trace_sequence++, addr, value, size, true);
     /*
      * See the header comment on SGI_MGRAS_DAC_LUT_DATA_1_LOW: a genuinely
      * misaligned 4-byte write, ahead of the generic alignment guard below
