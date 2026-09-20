@@ -309,6 +309,9 @@ static void test_reset_registers_are_plain_storage(void)
 
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readl(qts, REG_RESET_ARG), ==, 0);
+
     qtest_quit(qts);
 }
 

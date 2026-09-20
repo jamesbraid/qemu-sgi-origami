@@ -3,12 +3,13 @@
 #define HW_MISC_SGI_MGRAS_H
 
 #include "hw/core/sysbus.h"
+#include "hw/core/resettable.h"
 #include "system/memory.h"
 #include "qom/object.h"
 #include "qemu/units.h"
 
 #define TYPE_SGI_MGRAS "sgi-mgras"
-OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
+OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 
 #define SGI_MGRAS_MMIO_SIZE (2 * MiB)
 #define SGI_MGRAS_WIDTH 1280
@@ -130,6 +131,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIMgrasState, SGI_MGRAS)
 
 /* Unknown command payloads remain unsupported. */
 #define SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS 8
+
+struct SGIMgrasClass {
+    SysBusDeviceClass parent_class;
+    ResettablePhases parent_phases;
+};
 
 struct SGIMgrasState {
     SysBusDevice parent_obj;
