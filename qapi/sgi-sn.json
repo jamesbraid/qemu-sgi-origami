@@ -369,6 +369,29 @@
             'node-index': 'uint32' } }
 
 ##
+# @SGIModelXtalkSlot:
+#
+# One physical crosstalk connector position.  A slot does not imply
+# that its link is populated or alive.
+#
+# @id: canonical component identifier from the machine model
+#
+# @crossbar-index: position in the topology's own @crossbars list
+#
+# @widget: widget number assigned to this physical position
+#
+# @controlling-node: position in the topology's own @nodes list of the
+#     node that controls this position
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelXtalkSlot',
+  'data': { 'id': 'str',
+            'crossbar-index': 'uint32',
+            'widget': 'uint32',
+            'controlling-node': 'uint32' } }
+
+##
 # @SGIModelIoBoardPreset:
 #
 # Which base I/O board design a board record fits: the functions each
@@ -567,6 +590,9 @@
 #
 # @xtalk-attachments: which node hosts each crosstalk widget
 #
+# @xtalk-slots: physical crosstalk connector positions, whether
+#     populated or not
+#
 # @io-boards: this topology's base I/O boards
 #
 # @controllers: this topology's shared system controllers
@@ -595,6 +621,7 @@
             'cables': ['SGIModelCable'],
             'crossbars': ['SGIModelCrossbar'],
             'xtalk-attachments': ['SGIModelXtalkAttachment'],
+            'xtalk-slots': ['SGIModelXtalkSlot'],
             'io-boards': ['SGIModelIoBoard'],
             'controllers': ['SGIModelController'],
             'console': 'int',

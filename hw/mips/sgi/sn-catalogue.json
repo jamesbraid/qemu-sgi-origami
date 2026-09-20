@@ -971,7 +971,8 @@
           "node-index": 1,
           "widget": 8
         }
-      ]
+      ],
+      "xtalk-slots": []
     },
     {
       "cables": [],
@@ -1092,7 +1093,8 @@
           "node-index": 0,
           "widget": 8
         }
-      ]
+      ],
+      "xtalk-slots": []
     },
     {
       "cables": [
@@ -1533,6 +1535,74 @@
           "node-index": 3,
           "widget": 9
         }
+      ],
+      "xtalk-slots": [
+        {
+          "controlling-node": 2,
+          "crossbar-index": 0,
+          "id": "pci-expansion",
+          "widget": 12
+        },
+        {
+          "controlling-node": 0,
+          "crossbar-index": 0,
+          "id": "xio-slot-3",
+          "widget": 15
+        },
+        {
+          "controlling-node": 2,
+          "crossbar-index": 0,
+          "id": "xio-slot-4",
+          "widget": 11
+        },
+        {
+          "controlling-node": 0,
+          "crossbar-index": 0,
+          "id": "xio-slot-5",
+          "widget": 14
+        },
+        {
+          "controlling-node": 2,
+          "crossbar-index": 0,
+          "id": "xio-slot-6",
+          "widget": 13
+        },
+        {
+          "controlling-node": 1,
+          "crossbar-index": 1,
+          "id": "xio-slot-7",
+          "widget": 14
+        },
+        {
+          "controlling-node": 3,
+          "crossbar-index": 1,
+          "id": "xio-slot-8",
+          "widget": 11
+        },
+        {
+          "controlling-node": 1,
+          "crossbar-index": 1,
+          "id": "xio-slot-9",
+          "widget": 15
+        },
+        {
+          "controlling-node": 3,
+          "crossbar-index": 1,
+          "id": "xio-slot-10",
+          "widget": 12
+        },
+        {
+          "controlling-node": 1,
+          "crossbar-index": 1,
+          "id": "xio-slot-11",
+          "widget": 8
+        },
+        {
+          "controlling-node": 3,
+          "crossbar-index": 1,
+          "id": "xio-slot-12",
+          "widget": 13
+        }
       ]
     },
     {
@@ -1700,7 +1770,8 @@
           "node-index": 0,
           "widget": 15
         }
-      ]
+      ],
+      "xtalk-slots": []
     }
   ],
   "version": 1

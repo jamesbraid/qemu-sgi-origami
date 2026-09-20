@@ -284,6 +284,61 @@ static void check_xtalk_attachments(const SGIModelTopology *t)
     g_assert_cmpuint(board, ==, total_boards);
 }
 
+static void check_xtalk_slots(const SGIModelTopology *t)
+{
+    size_t total_nodes = node_count(t);
+    size_t total_crossbars = 0;
+    const SGIModelCrossbarList *crossbar;
+    const SGIModelXtalkSlotList *entry;
+
+    for (crossbar = t->crossbars; crossbar; crossbar = crossbar->next) {
+        total_crossbars++;
+    }
+    for (entry = t->xtalk_slots; entry; entry = entry->next) {
+        const SGIModelXtalkSlot *slot = entry->value;
+        const SGIModelXtalkSlotList *other;
+
+        g_assert_cmpuint(slot->crossbar_index, <, total_crossbars);
+        g_assert_cmpuint(slot->controlling_node, <, total_nodes);
+        for (other = t->xtalk_slots; other != entry; other = other->next) {
+            g_assert_cmpstr(slot->id, !=, other->value->id);
+            g_assert_false(
+                slot->crossbar_index == other->value->crossbar_index &&
+                           slot->widget == other->value->widget);
+        }
+    }
+}
+
+static void check_origin2000_io3(const SGIModelTopology *t)
+{
+    const SGIModelXtalkSlotList *slot_entry;
+    const SGIModelXtalkAttachmentList *attachment_entry;
+    bool found = false;
+
+    if (!g_str_equal(t->product, "origin2000")) {
+        return;
+    }
+    for (slot_entry = t->xtalk_slots; slot_entry;
+         slot_entry = slot_entry->next) {
+        const SGIModelXtalkSlot *slot = slot_entry->value;
+
+        if (g_str_equal(slot->id, "xio-slot-3")) {
+            g_assert_cmpuint(slot->crossbar_index, ==, 0);
+            g_assert_cmpuint(slot->widget, ==, 0xf);
+            g_assert_cmpuint(slot->controlling_node, ==, 0);
+            found = true;
+        }
+    }
+    g_assert_true(found);
+    for (attachment_entry = t->xtalk_attachments; attachment_entry;
+         attachment_entry = attachment_entry->next) {
+        const SGIModelXtalkAttachment *attachment = attachment_entry->value;
+
+        g_assert_false(attachment->crossbar_index == 0 &&
+                       attachment->widget == 0xf);
+    }
+}
+
 /*
  * A Bedrock topology's one node ships a populated IO-8 board: a preset's
  * fitted IOC3 one-wire serial is the one fact left, after the
@@ -350,6 +405,8 @@ static void test_every_topology_is_well_formed(void)
         check_cables(t);
         check_io_board_presets(t);
         check_xtalk_attachments(t);
+        check_xtalk_slots(t);
+        check_origin2000_io3(t);
         check_bedrock_has_populated_io8(t);
     }
     g_assert_cmpuint(topology_count, >, 0);
