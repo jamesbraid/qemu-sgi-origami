@@ -131,6 +131,7 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 
 /* Unknown command payloads remain unsupported. */
 #define SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS 8
+#define SGI_MGRAS_CMD_TOKEN_DISCARD UINT32_MAX
 
 struct SGIMgrasClass {
     SysBusDeviceClass parent_class;
