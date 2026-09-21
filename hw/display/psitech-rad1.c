@@ -147,9 +147,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 /*
  * Region Zero range table (docs/datasheets/psitech-rad1.md, "PCI and
  * address spaces", matching the manual's own Region Zero address map,
- * Table 3.1 page 15). Only Control & Status, RAMDAC and GP Registers are
- * established as driver-reached; Memory Control, Video Control, Video
- * Streams, SVGA Control and Reserved are modeled as unimplemented and
+ * Table 3.1 page 15). Control & Status, RAMDAC and GP Registers are
+ * established as driver-reached. Memory Control and Video Control now
+ * each have one narrow, trace-evidenced slice modeled (RAD1_REG_
+ * BYPASS_WRITE_MASK at 0x1100, and the video-timing block at
+ * 0x3000-0x3078 -- see their own comments below); GP FIFO, Video Streams,
+ * SVGA Control and Reserved remain modeled as unimplemented and
  * trace-visible rather than guessed at.
  */
 #define RAD1_RANGE_CTRL_STATUS_LAST    0x0fff
@@ -326,6 +329,88 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 #define RAD1_BYDMA_MEMADDR_MASK          0x00ffffffu
 #define RAD1_BYDMA_BYTE_MASK_RIGHT_SHIFT 16
 #define RAD1_BYDMA_BYTE_MASK_LANE_MASK   0xfu
+
+/*
+ * Memory Control block, Region Zero 0x1000-0x1FFF: only offset 0x1100
+ * (PM2R_BYPASS_WRITE_MASK, public Linux include/video/permedia2.h) is
+ * evidenced by this session's guest_errors,unimp trace of the PROM/
+ * standalone textport console path (console=g) -- a single write, the
+ * same shape as Linux drivers/video/fbdev/pm2fb.c's reset_config(), which
+ * writes nearly every GP register to a power-on default exactly once at
+ * mode set. This offset previously fell through this file's whole
+ * dispatch to the final "unsupported Region Zero write" case (no Memory
+ * Control range existed at all). Stored only, no modeled side effect:
+ * this session found no traced access that reads it back or depends on a
+ * specific bit pattern.
+ */
+#define RAD1_REG_BYPASS_WRITE_MASK  0x1100
+
+/*
+ * Video Timing block, Region Zero 0x3000-0x3FFF. Offsets are the public
+ * Permedia2 register set (Linux include/video/permedia2.h:
+ * PM2R_SCREEN_BASE 0x3000, PM2R_SCREEN_STRIDE 0x3008, PM2R_H_TOTAL 0x3010,
+ * PM2R_HG_END 0x3018, PM2R_HB_END 0x3020, PM2R_HS_START 0x3028,
+ * PM2R_HS_END 0x3030, PM2R_V_TOTAL 0x3038, PM2R_VB_END 0x3040,
+ * PM2R_VS_START 0x3048, PM2R_VS_END 0x3050, PM2R_VIDEO_CONTROL 0x3058,
+ * PM2R_LINE_COUNT 0x3070, PM2R_FIFO_CONTROL 0x3078). This session's trace
+ * shows the whole block written once per mode set, previously falling
+ * through to this file's default "unsupported Region Zero write" case.
+ * Linux drivers/video/fbdev/pm2fb.c's pm2fb_set_par() writes the H/V
+ * timing and SCREEN_* registers as one block during a mode set, then
+ * set_video() writes VIDEO_CONTROL separately for sync polarity/blank/
+ * enable -- the same two-phase pattern the trace shows (a run of
+ * 0x3000-0x3078 writes, 0x3058 among them but also independently called
+ * out).
+ *
+ * This model stores every one of these registers (so the writes are no
+ * longer silently dropped) but does not resize the emulated console or
+ * otherwise change the active mode/timing in response to them: the fixed
+ * single active mode (RAD1_ACTIVE_MODE, see rad1_mode_records above)
+ * remains APPROXIMATED and unchanged, matching the file's existing,
+ * already-disclosed startup-mode-selection gap.
+ *
+ * SCREEN_BASE and SCREEN_STRIDE are stored but deliberately NOT wired into
+ * rad1_do_trapezoid_render()'s destination addressing, unlike an earlier
+ * plan in this session. Linux drivers/video/fbdev/pm2fb.c's pm2fb_set_par()
+ * computes the values it writes here via a local helper, to3264():
+ * `stride = to3264(width, depth, 1); base = to3264(yoffset*xres+xoffset,
+ * depth, 1);` -- to3264() right-shifts its pixel-count input by an amount
+ * that depends on bpp (0/1/2 bits depending on 8/16/24/32) and unconditionally
+ * shifts once more for 64-bit-word units (its third argument is the literal
+ * 1, not the driver's data64 flag). So SCREEN_STRIDE/SCREEN_BASE are pixel
+ * quantities re-expressed in 8-byte words under a depth-dependent formula,
+ * not a raw byte pitch/offset. Reconstructing the byte pitch this model
+ * would need requires knowing which of that formula's bpp branches RAD1's
+ * guest-visible framebuffer format actually takes, which this session's
+ * trace evidence (0x8830 colour writes packed as e.g. 0xf0f0f0) does not
+ * settle against a specific PM2R_FB_READ_PIXEL/depth setting on this board.
+ * Treating the raw register value as a byte pitch without that confirmation
+ * risks silently misaddressing every scanline the trapezoid renderer draws,
+ * which is worse than not consulting the register at all. RAD1_REG_RENDER's
+ * trapezoid path therefore uses the same fixed mode's own stride and a zero
+ * base that the existing flat rectangle/texture-copy path (rad1_do_render(),
+ * unchanged) already uses as established working behavior.
+ *
+ * VIDEO_CONTROL's PM2F_VIDEO_ENABLE bit is stored but not honored as a
+ * scanout gate, for the same reason: this session found no evidence the
+ * PROM/kernel path here ever needs the emulated display blanked, and
+ * gating an already-working scanout on an unverified enable bit risks
+ * turning a working display black instead of fixing anything.
+ */
+#define RAD1_REG_SCREEN_BASE        0x3000
+#define RAD1_REG_SCREEN_STRIDE      0x3008
+#define RAD1_REG_H_TOTAL            0x3010
+#define RAD1_REG_HG_END             0x3018
+#define RAD1_REG_HB_END             0x3020
+#define RAD1_REG_HS_START           0x3028
+#define RAD1_REG_HS_END             0x3030
+#define RAD1_REG_V_TOTAL            0x3038
+#define RAD1_REG_VB_END             0x3040
+#define RAD1_REG_VS_START           0x3048
+#define RAD1_REG_VS_END             0x3050
+#define RAD1_REG_VIDEO_CONTROL      0x3058
+#define RAD1_REG_LINE_COUNT         0x3070
+#define RAD1_REG_FIFO_CONTROL       0x3078
 
 /*
  * RAMDAC block, Region Zero 0x4000-0x4FFF (docs/datasheets/psitech-rad1.md
@@ -536,6 +621,28 @@ struct PsitechRad1State {
 
     /* RAMDAC block: seven established offsets, stored only. */
     uint32_t ramdac[7];
+
+    /*
+     * Video Timing block, Region Zero 0x3000-0x3078: stored only except
+     * for screen_base/screen_stride, see the block comment above.
+     */
+    uint32_t screen_base;
+    uint32_t screen_stride;
+    uint32_t h_total;
+    uint32_t hg_end;
+    uint32_t hb_end;
+    uint32_t hs_start;
+    uint32_t hs_end;
+    uint32_t v_total;
+    uint32_t vb_end;
+    uint32_t vs_start;
+    uint32_t vs_end;
+    uint32_t video_control;
+    uint32_t line_count;
+    uint32_t fifo_control;
+
+    /* Memory Control block: only offset 0x1100 evidenced, stored only. */
+    uint32_t bypass_write_mask;
 
     /* GP register block. */
     uint32_t rect_origin;
@@ -866,6 +973,42 @@ static uint64_t rad1_regzero_read(void *opaque, hwaddr addr, unsigned size)
         }
     }
 
+    if (addr <= RAD1_RANGE_MEMCTRL_LAST) {
+        switch (addr) {
+        case RAD1_REG_BYPASS_WRITE_MASK:
+            return s->bypass_write_mask;
+        default:
+            qemu_log_mask(LOG_UNIMP,
+                         "psitech-rad1: unsupported Memory Control read at "
+                         "0x%04x\n", (unsigned)addr);
+            return 0;
+        }
+    }
+
+    if (addr > RAD1_RANGE_GPFIFO_LAST && addr <= RAD1_RANGE_VIDEOCTRL_LAST) {
+        switch (addr) {
+        case RAD1_REG_SCREEN_BASE: return s->screen_base;
+        case RAD1_REG_SCREEN_STRIDE: return s->screen_stride;
+        case RAD1_REG_H_TOTAL: return s->h_total;
+        case RAD1_REG_HG_END: return s->hg_end;
+        case RAD1_REG_HB_END: return s->hb_end;
+        case RAD1_REG_HS_START: return s->hs_start;
+        case RAD1_REG_HS_END: return s->hs_end;
+        case RAD1_REG_V_TOTAL: return s->v_total;
+        case RAD1_REG_VB_END: return s->vb_end;
+        case RAD1_REG_VS_START: return s->vs_start;
+        case RAD1_REG_VS_END: return s->vs_end;
+        case RAD1_REG_VIDEO_CONTROL: return s->video_control;
+        case RAD1_REG_LINE_COUNT: return s->line_count;
+        case RAD1_REG_FIFO_CONTROL: return s->fifo_control;
+        default:
+            qemu_log_mask(LOG_UNIMP,
+                         "psitech-rad1: unsupported Video Timing read at "
+                         "0x%04x\n", (unsigned)addr);
+            return 0;
+        }
+    }
+
     ramdac_idx = rad1_ramdac_index(addr);
     if (ramdac_idx >= 0) {
         return s->ramdac[ramdac_idx];
@@ -967,6 +1110,75 @@ static void rad1_regzero_write(void *opaque, hwaddr addr, uint64_t val,
             qemu_log_mask(LOG_UNIMP,
                          "psitech-rad1: unsupported Control & Status write "
                          "at 0x%04x\n", (unsigned)addr);
+            break;
+        }
+        return;
+    }
+
+    if (addr <= RAD1_RANGE_MEMCTRL_LAST) {
+        switch (addr) {
+        case RAD1_REG_BYPASS_WRITE_MASK:
+            s->bypass_write_mask = val;
+            break;
+        default:
+            qemu_log_mask(LOG_UNIMP,
+                         "psitech-rad1: unsupported Memory Control write "
+                         "at 0x%04x (value 0x%"PRIx64")\n",
+                         (unsigned)addr, val);
+            break;
+        }
+        return;
+    }
+
+    if (addr > RAD1_RANGE_GPFIFO_LAST && addr <= RAD1_RANGE_VIDEOCTRL_LAST) {
+        switch (addr) {
+        case RAD1_REG_SCREEN_BASE:
+            s->screen_base = val;
+            break;
+        case RAD1_REG_SCREEN_STRIDE:
+            s->screen_stride = val;
+            break;
+        case RAD1_REG_H_TOTAL:
+            s->h_total = val;
+            break;
+        case RAD1_REG_HG_END:
+            s->hg_end = val;
+            break;
+        case RAD1_REG_HB_END:
+            s->hb_end = val;
+            break;
+        case RAD1_REG_HS_START:
+            s->hs_start = val;
+            break;
+        case RAD1_REG_HS_END:
+            s->hs_end = val;
+            break;
+        case RAD1_REG_V_TOTAL:
+            s->v_total = val;
+            break;
+        case RAD1_REG_VB_END:
+            s->vb_end = val;
+            break;
+        case RAD1_REG_VS_START:
+            s->vs_start = val;
+            break;
+        case RAD1_REG_VS_END:
+            s->vs_end = val;
+            break;
+        case RAD1_REG_VIDEO_CONTROL:
+            s->video_control = val;
+            break;
+        case RAD1_REG_LINE_COUNT:
+            s->line_count = val;
+            break;
+        case RAD1_REG_FIFO_CONTROL:
+            s->fifo_control = val;
+            break;
+        default:
+            qemu_log_mask(LOG_UNIMP,
+                         "psitech-rad1: unsupported Video Timing write "
+                         "at 0x%04x (value 0x%"PRIx64")\n",
+                         (unsigned)addr, val);
             break;
         }
         return;
@@ -1244,6 +1456,23 @@ static void rad1_reset_hold(Object *obj, ResetType type)
     s->ctrl_ack = 0;
     memset(s->ramdac, 0, sizeof(s->ramdac));
 
+    s->screen_base = 0;
+    s->screen_stride = 0;
+    s->h_total = 0;
+    s->hg_end = 0;
+    s->hb_end = 0;
+    s->hs_start = 0;
+    s->hs_end = 0;
+    s->v_total = 0;
+    s->vb_end = 0;
+    s->vs_start = 0;
+    s->vs_end = 0;
+    s->video_control = 0;
+    s->line_count = 0;
+    s->fifo_control = 0;
+
+    s->bypass_write_mask = 0;
+
     s->rect_origin = 0;
     s->rect_size = 0;
     s->tex_addr_mode = 0;
@@ -1346,8 +1575,15 @@ static int rad1_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_psitech_rad1 = {
     .name = TYPE_PSITECH_RAD1,
-    .version_id = 1,
-    .minimum_version_id = 1,
+    /*
+     * Bumped from 1 to 2 for the Video Timing and Memory Control state
+     * below: images are never committed per this project's rules
+     * (docs/README.md, "Images stay in ignored assets/"), so there is no
+     * real snapshot-compatibility concern being broken here, only the
+     * ordinary rule that a changed field list needs a new version.
+     */
+    .version_id = 2,
+    .minimum_version_id = 2,
     .post_load = rad1_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(pci, PsitechRad1State),
@@ -1356,6 +1592,21 @@ static const VMStateDescription vmstate_psitech_rad1 = {
         VMSTATE_UINT32(int_status, PsitechRad1State),
         VMSTATE_UINT32(ctrl_ack, PsitechRad1State),
         VMSTATE_UINT32_ARRAY(ramdac, PsitechRad1State, 7),
+        VMSTATE_UINT32(screen_base, PsitechRad1State),
+        VMSTATE_UINT32(screen_stride, PsitechRad1State),
+        VMSTATE_UINT32(h_total, PsitechRad1State),
+        VMSTATE_UINT32(hg_end, PsitechRad1State),
+        VMSTATE_UINT32(hb_end, PsitechRad1State),
+        VMSTATE_UINT32(hs_start, PsitechRad1State),
+        VMSTATE_UINT32(hs_end, PsitechRad1State),
+        VMSTATE_UINT32(v_total, PsitechRad1State),
+        VMSTATE_UINT32(vb_end, PsitechRad1State),
+        VMSTATE_UINT32(vs_start, PsitechRad1State),
+        VMSTATE_UINT32(vs_end, PsitechRad1State),
+        VMSTATE_UINT32(video_control, PsitechRad1State),
+        VMSTATE_UINT32(line_count, PsitechRad1State),
+        VMSTATE_UINT32(fifo_control, PsitechRad1State),
+        VMSTATE_UINT32(bypass_write_mask, PsitechRad1State),
         VMSTATE_UINT32(rect_origin, PsitechRad1State),
         VMSTATE_UINT32(rect_size, PsitechRad1State),
         VMSTATE_UINT32(tex_addr_mode, PsitechRad1State),
