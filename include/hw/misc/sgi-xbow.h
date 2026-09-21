@@ -174,4 +174,15 @@ bool sgi_xbow_attach_endpoint(SGIXbowState *s, unsigned int widget,
 bool sgi_xbow_attach_widget(SGIXbowState *s, unsigned int widget,
                             MemoryRegion *face, Error **errp);
 
+/*
+ * Marks a present-but-not-yet-alive widget's own link alive after realize,
+ * the same operational transition "links-alive" drives from the register
+ * side, without requiring an attached endpoint: a widget with no face can
+ * still send, since sgi_xbow_routed() only reads face[] for a destination,
+ * never for a source. Fails if the widget is already alive, not present,
+ * or the crossbar is not yet realized or is quiesced.
+ */
+bool sgi_xbow_mark_widget_alive(SGIXbowState *s, unsigned int widget,
+                                Error **errp);
+
 #endif /* HW_MISC_SGI_XBOW_H */

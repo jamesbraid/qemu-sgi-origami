@@ -36,6 +36,7 @@
 #include "qemu/osdep.h"
 #include "hw/mips/sgi/baseio.h"
 #include "hw/mips/sgi/xio-board.h"
+#include "hw/mips/sgi/xtalk-link.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "hw/core/sysbus.h"
@@ -89,6 +90,7 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
                   "packets travel");
         return false;
     }
+    sgi_xtalk_crossbow_link_claim_fabric(s->fabric);
     if (board->slot != XIO_BASEIO_WIDGET) {
         error_setg(errp, "sgi-xio-baseio is fixed at crosstalk widget %u",
                   XIO_BASEIO_WIDGET);
@@ -203,8 +205,11 @@ static void xio_baseio_class_init(ObjectClass *oc, const void *data)
      * deskside enclosure, but also `-device`-creatable: a late board's
      * own "fabric" can resolve against the spare fabric proxy a Crossbow
      * machine builder now holds back for it (sgi_machine_build_crossbars()
-     * in sn-machine.c), giving it the same outbound-only path onto a real
-     * Crossbow that sgi-pci-expansion's own header comment describes.
+     * in sn-machine.c), claiming it (build_widget()'s own
+     * sgi_xtalk_crossbow_link_claim_fabric() call) so sgi_machine_done()
+     * brings the underlying widget alive once it finishes the proxy --
+     * the same outbound-only path onto a real Crossbow that
+     * sgi-pci-expansion's own header comment describes.
      */
     dc->user_creatable = true;
     device_class_set_props(dc, xio_baseio_properties);

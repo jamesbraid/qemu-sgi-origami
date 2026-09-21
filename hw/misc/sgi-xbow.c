@@ -998,6 +998,62 @@ bool sgi_xbow_attach_widget(SGIXbowState *s, unsigned int widget,
     return sgi_xbow_attach_endpoint(s, widget, face, face, errp);
 }
 
+bool sgi_xbow_mark_widget_alive(SGIXbowState *s, unsigned int widget,
+                                Error **errp)
+{
+    unsigned int link;
+
+    if (s->quiesced) {
+        error_setg(errp, "crossbar is quiesced");
+        return false;
+    }
+    if (!DEVICE(s)->realized) {
+        error_setg(errp, "the crossbar takes its operational links from "
+                         "startup-links-alive until it is realized");
+        return false;
+    }
+    if (widget < SGI_XBOW_FIRST_WIDGET || widget >= SGI_XBOW_WIDGETS) {
+        error_setg(errp, "crossbar widget %u is outside its link range",
+                  widget);
+        return false;
+    }
+    link = widget - SGI_XBOW_FIRST_WIDGET;
+    if (!sgi_xbow_present(s, link)) {
+        error_setg(errp, "crossbar widget %u is not present", widget);
+        return false;
+    }
+    if (sgi_xbow_alive(s, link)) {
+        error_setg(errp, "crossbar widget %u is already alive", widget);
+        return false;
+    }
+
+    /*
+     * qdev_machine_creation_done() (hw/core/machine.c) fires the
+     * machine_init_done notifiers this call runs from and then
+     * unconditionally runs the machine's own cold reset in the same
+     * breath, before the guest's first instruction. That reset's
+     * sgi_xbow_reset_enter() reseeds link_alive from link_startup, so a
+     * widget only marked alive in link_alive would go back to not-alive
+     * before anything ever observes it alive. Marking it in link_startup
+     * as well makes every future reset -- this first one and any later
+     * guest-initiated one -- reproduce the same alive state, the same as
+     * a widget that came up before startup-links-alive was ever read.
+     */
+    s->link_startup |= BIT(link);
+    s->link_alive |= BIT(link);
+    s->link_came_up |= BIT(link);
+    s->link_event[link] |= XBOW_LINK_ALIVE;
+    if (s->link_control[link] & XBOW_LINK_EIGHT_BIT_FORCE) {
+        s->link_eight_bit |= BIT(link);
+    } else {
+        s->link_eight_bit &= ~BIT(link);
+    }
+    s->link_initializing &= ~BIT(link);
+    sgi_xbow_sync_routes(s);
+    sgi_xbow_update_interrupt(s);
+    return true;
+}
+
 static void sgi_xbow_get_links_alive(Object *obj, Visitor *v, const char *name,
                                      void *opaque, Error **errp)
 {

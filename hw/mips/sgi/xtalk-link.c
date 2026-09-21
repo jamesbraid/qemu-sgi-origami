@@ -183,13 +183,47 @@ bool sgi_xtalk_direct_link_connect(SGIXtalkDirectLink *link, Object *owner,
  */
 #define SGI_XTALK_CROSSBOW_LINK_PACKET_IO (1ULL << 47)
 
+/*
+ * Every proxy this file ever hands out, keyed by its own address, so
+ * claim_fabric() below can tell a real one from whatever else a board's
+ * generic "fabric" link property happens to be wired to. Storage is
+ * caller-owned and never freed before the machine itself, so entries
+ * outlive every lookup; the table only ever grows.
+ */
+static GHashTable *sgi_xtalk_crossbow_link_proxies;
+
 MemoryRegion *sgi_xtalk_crossbow_link_prepare(SGIXtalkCrossbowLink *link,
                                               Object *owner, const char *name)
 {
     memory_region_init(&link->proxy, owner, name,
                        SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
     memory_region_set_enabled(&link->proxy, false);
+    if (!sgi_xtalk_crossbow_link_proxies) {
+        sgi_xtalk_crossbow_link_proxies = g_hash_table_new(NULL, NULL);
+    }
+    g_hash_table_add(sgi_xtalk_crossbow_link_proxies, &link->proxy);
     return &link->proxy;
+}
+
+void sgi_xtalk_crossbow_link_claim_fabric(MemoryRegion *fabric)
+{
+    SGIXtalkCrossbowLink *link;
+
+    /*
+     * A board's own "fabric" is a generic link property; a real machine
+     * always resolves it to a proxy prepare() built, but a qtest fixture
+     * standing in for a machine builder (tests/qtest/board-test-fixture.c)
+     * deliberately wires it to a plain sink region instead, so this
+     * cannot assume the pointer it was handed is one of ours the way a
+     * container_of() reversal would. Look it up in the set prepare()
+     * populates and do nothing for anything else.
+     */
+    if (!sgi_xtalk_crossbow_link_proxies ||
+        !g_hash_table_contains(sgi_xtalk_crossbow_link_proxies, fabric)) {
+        return;
+    }
+    link = container_of(fabric, SGIXtalkCrossbowLink, proxy);
+    link->fabric_claimed = true;
 }
 
 /*
