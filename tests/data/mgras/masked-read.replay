@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# MASK selects bits to compare. This synthetic read ignores bit zero.
+read 4 0x008000 0x1 0xfffffffe
