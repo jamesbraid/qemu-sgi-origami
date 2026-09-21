@@ -1,3 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Synthetic custom replay without the default fixture's width probes.
 read 4 0x008000 0x0
+wid 0 0 0
+pixels 0 0 2 2 0
