@@ -929,9 +929,17 @@ static void rad1_do_render(PsitechRad1State *s)
     uint32_t width = s->rect_size & RAD1_RECT_LOW_MASK;
     uint32_t height = (s->rect_size >> RAD1_RECT_HIGH_SHIFT) &
                       RAD1_RECT_LOW_MASK;
-    uint32_t dst_x = s->rect_origin & RAD1_RECT_LOW_MASK;
-    uint32_t dst_y = (s->rect_origin >> RAD1_RECT_HIGH_SHIFT) &
-                     RAD1_RECT_LOW_MASK;
+    /*
+     * RectangleOrigin's X and Y are each a 12-bit two's complement value
+     * (manual page 73, Table 5.5; bits 12-15/28-31 of each 16-bit half are
+     * "Ignored" per the register diagram, page 241), matching
+     * rad1_do_rectangle_fill()'s decode below. This path draws one
+     * contiguous block starting at the corner rather than clipping pixel
+     * by pixel, so a negative origin -- unlike in the per-pixel fill --
+     * always puts the whole rectangle outside the framebuffer.
+     */
+    int32_t dst_x = sextract32(s->rect_origin, 0, 12);
+    int32_t dst_y = sextract32(s->rect_origin, RAD1_RECT_HIGH_SHIFT, 12);
     const Rad1ModeRecord *mode = &rad1_mode_records[RAD1_ACTIVE_MODE];
     uint32_t fb_stride = mode->width * RAD1_BYTES_PER_PIXEL;
     bool readback = (s->fb_read_mode & RAD1_FBREADMODE_READBACK_BIT) != 0;
@@ -950,18 +958,26 @@ static void rad1_do_render(PsitechRad1State *s)
          * describe no rasterizer-side clip against the active mode. Only
          * the X axis is bounded by mode->width, since fb_stride is fixed
          * at mode->width * RAD1_BYTES_PER_PIXEL and a wider write would
-         * spill into the next scanline's memory.
+         * spill into the next scanline's memory. dst_x/dst_y are checked
+         * for negative first -- that alone already puts the rectangle
+         * outside the framebuffer -- and the '||' chain's left-to-right
+         * short-circuit keeps that check ahead of udst_x/udst_y, which are
+         * only meaningful once both are known non-negative.
          */
-        uint64_t dst_end = (uint64_t)(dst_y + height) * fb_stride;
+        int64_t dst_end = (int64_t)(dst_y + (int64_t)height) * fb_stride;
 
-        if (dst_x > mode->width || width > mode->width - dst_x ||
+        if (dst_x < 0 || dst_y < 0 || dst_x > (int32_t)mode->width ||
+            (int64_t)width > (int64_t)mode->width - dst_x ||
             dst_end > RAD1_FB_SIZE) {
             qemu_log_mask(LOG_GUEST_ERROR,
-                         "psitech-rad1: Render rectangle (%u,%u)+(%ux%u) "
+                         "psitech-rad1: Render rectangle (%d,%d)+(%ux%u) "
                          "falls outside the %" PRIu64 "-byte framebuffer\n",
                          dst_x, dst_y, width, height,
                          (uint64_t)RAD1_FB_SIZE);
         } else {
+            uint32_t udst_x = (uint32_t)dst_x;
+            uint32_t udst_y = (uint32_t)dst_y;
+
             row_bytes = width * RAD1_BYTES_PER_PIXEL;
             linebuf = g_malloc(row_bytes);
 
@@ -970,8 +986,8 @@ static void rad1_do_render(PsitechRad1State *s)
 
                 for (row = 0; row < height; row++) {
                     uint8_t *src = s->framebuffer +
-                                  (dst_y + row) * fb_stride +
-                                  dst_x * RAD1_BYTES_PER_PIXEL;
+                                  (udst_y + row) * fb_stride +
+                                  udst_x * RAD1_BYTES_PER_PIXEL;
 
                     if (pci_dma_write(&s->pci,
                                       host_addr + (hwaddr)row * row_bytes,
@@ -993,8 +1009,8 @@ static void rad1_do_render(PsitechRad1State *s)
 
                 for (row = 0; row < height; row++) {
                     uint8_t *dst = s->framebuffer +
-                                   (dst_y + row) * fb_stride +
-                                   dst_x * RAD1_BYTES_PER_PIXEL;
+                                   (udst_y + row) * fb_stride +
+                                   udst_x * RAD1_BYTES_PER_PIXEL;
                     hwaddr src_addr = src_origin + (hwaddr)row * row_bytes;
 
                     if (system_memory) {
@@ -1133,7 +1149,8 @@ static void rad1_do_point_render(PsitechRad1State *s)
  * Render one rectangle primitive as a constant fill (manual page 62,
  * "5.3.4 Rectangles"): RectangleOrigin's corner, RectangleSize's width
  * and height (manual page 241; the origin's X and Y are 12-bit two's
- * complement, manual page 73), filled toward increasing X and Y, which is
+ * complement, manual page 73, Table 5.5 -- matching rad1_do_render()'s
+ * decode above), filled toward increasing X and Y, which is
  * the only direction any evidenced writer uses (the PROM textport's box
  * fill at 0x11c2a6bc and the kernel's RAD1TpSboxfi both write 0x6000c0;
  * the initialisers' clears 0x6000c8). A decreasing direction would move

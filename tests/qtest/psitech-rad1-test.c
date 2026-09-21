@@ -482,6 +482,33 @@ static void test_render_local_copy(void)
 }
 
 /*
+ * RectangleOrigin's X and Y are 12-bit two's complement (manual page 73,
+ * Table 5.5), so a negative origin here puts the whole destination
+ * rectangle outside the framebuffer and rad1_do_render() must reject it
+ * rather than reinterpret it as a large unsigned coordinate near the far
+ * edge of VRAM.
+ */
+static void test_render_negative_origin_rejected(void)
+{
+    QTestState *qts = rad1_init();
+
+    vram_write(qts, 0x1000, 0x00112233u);
+
+    regzero_write(qts, R_FB_HW_WRITE_MASK, 0xffffffffu);
+    regzero_write(qts, R_TEX_BASE_ADDR, 0x1000);
+    regzero_write(qts, R_S_START, 0);
+    regzero_write(qts, R_T_START, 0);
+    regzero_write(qts, R_RECT_ORIGIN, RECT(-4, 8));
+    regzero_write(qts, R_RECT_SIZE, SIZE(2, 1));
+    regzero_write(qts, R_RENDER, RENDER_TEXTURE_COPY);
+
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(0, 8)), ==, 0);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(1, 8)), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
  * A host-memory (system memory) rectangle copy: TextureBaseAddress's bit
  * 30 set means this session's copy of the manual's own text -- "the
  * texture resides in system memory ... and should be fetched across the
@@ -809,6 +836,34 @@ static void test_render_rectangle_constant_fill(void)
 }
 
 /*
+ * Unlike rad1_do_render()'s single-block copy, the constant fill clips
+ * pixel by pixel (rad1_put_pixel()), so a rectangle whose signed origin
+ * (manual page 73, Table 5.5) starts left of the framebuffer still draws
+ * its in-bounds columns -- the case the existing fill/copy tests, which
+ * only use small positive origins, never exercise.
+ */
+static void test_render_rectangle_fill_negative_origin(void)
+{
+    QTestState *qts = rad1_init();
+
+    regzero_write(qts, R_FB_HW_WRITE_MASK, 0xffffffffu);
+    regzero_write(qts, R_LOGICAL_OP_MODE, LOGICOP_USE_CONSTANT_FB_WRITE_DATA);
+    regzero_write(qts, R_FB_WRITE_DATA, 0x00aabbccu);
+    regzero_write(qts, R_RECT_ORIGIN, RECT(-2, 5));
+    regzero_write(qts, R_RECT_SIZE, SIZE(5, 1));
+    regzero_write(qts, R_RENDER, RENDER_BOX_FILL);
+
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(0, 5)), ==, 0x00aabbccu);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(1, 5)), ==, 0x00aabbccu);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(2, 5)), ==, 0x00aabbccu);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(3, 5)), ==, 0);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(0, 4)), ==, 0);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(0, 6)), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
  * FastFill (manual page 41, "Block Writes") writes FBBlockColor to every
  * pixel regardless of FBWriteData -- the full-screen clear both textport
  * initialisers issue (0x11c29fc4-0x11c29ff8; rad1_tpinit.o RAD1InitBoard).
@@ -927,6 +982,8 @@ int main(int argc, char **argv)
     qtest_add_func("/psitech-rad1/ramdac-round-trip",
                    test_ramdac_round_trip);
     qtest_add_func("/psitech-rad1/render-local-copy", test_render_local_copy);
+    qtest_add_func("/psitech-rad1/render-negative-origin-rejected",
+                   test_render_negative_origin_rejected);
     qtest_add_func("/psitech-rad1/render-host-copy", test_render_host_copy);
     qtest_add_func("/psitech-rad1/render-honors-write-mask",
                    test_render_honors_write_mask);
@@ -935,6 +992,8 @@ int main(int argc, char **argv)
                    test_render_point_writes_one_pixel);
     qtest_add_func("/psitech-rad1/render-rectangle-constant-fill",
                    test_render_rectangle_constant_fill);
+    qtest_add_func("/psitech-rad1/render-rectangle-fill-negative-origin",
+                   test_render_rectangle_fill_negative_origin);
     qtest_add_func("/psitech-rad1/render-fastfill-uses-block-color",
                    test_render_fastfill_uses_block_color);
     qtest_add_func("/psitech-rad1/render-fill-without-colour-source",
