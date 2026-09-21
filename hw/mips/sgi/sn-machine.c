@@ -18,10 +18,14 @@
  * sits behind a Crossbow this builder owns, and is a sgi-xio-board
  * instance built and realized here, before the nodes' Crossbows realize,
  * like every other card class the base-io-device step's design table
- * names. sgi-pci-expansion (board-pci-expansion.c) is not built here or
- * by anything else yet: see that class's own header comment for why it
- * stays onboard-only, not `-device`-creatable, until a machine-owned
- * spare fabric proxy exists for it to attach through.
+ * names. sgi-pci-expansion (board-pci-expansion.c) is never built here:
+ * it only exists as a `-device` board, plugged in after this builder has
+ * returned. Each Crossbow this builder realizes gets one spare widget
+ * held back from startup-links-alive (sgi_machine_build_crossbars())
+ * with its own fabric proxy prepared against it, finished from a
+ * machine-init-done notifier once every Crossbow has realized -- see
+ * that notifier's own comment below for exactly what a late board's
+ * proxy can and cannot reach through it.
  */
 
 #include "qemu/osdep.h"
@@ -34,6 +38,7 @@
 #include "qapi/visitor.h"
 #include "qobject/qlist.h"
 #include "qemu/error-report.h"
+#include "hw/core/boards.h"
 #include "hw/core/clock.h"
 #include "hw/core/loader.h"
 #include "hw/core/qdev-clock.h"
@@ -140,6 +145,7 @@ static uint64_t *sgi_model_array_uint64(const uint64List *list, size_t *count)
 }
 
 #define TYPE_SGI_XIO_BASEIO "sgi-xio-baseio"
+#define TYPE_SGI_PCI_EXPANSION "sgi-pci-expansion"
 
 struct SGIMachineState {
     MachineState parent_obj;
@@ -188,6 +194,19 @@ struct SGIMachineState {
     const SGIModelXtalkSlot *mgras_slot;
     MemoryRegion mgras_packet_proxy;
     MemoryRegion mgras_packet_alias;
+
+    /*
+     * One spare fabric proxy per crossbars[] entry, for a `-device` board
+     * plugged in after this builder has returned: prepared here (against
+     * a widget sgi_machine_build_crossbars() held out of
+     * startup-links-alive) and finished from machine_done below, once
+     * every Crossbow has realized. spare_fabric_widget holds the chosen
+     * widget number, or 0 (never a valid widget: see
+     * SGI_XBOW_FIRST_WIDGET) where a topology leaves no widget free.
+     */
+    SGIXtalkCrossbowLink *spare_fabric_links;
+    unsigned int *spare_fabric_widget;
+    Notifier machine_done;
 
     bool debug_leds;
     bool junk_uart_present;
@@ -815,6 +834,7 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
     g_autofree const SGIModelCrossbar **crossbars = NULL;
     g_autofree const SGIModelXtalkAttachment **attachments = NULL;
     size_t crossbar_count, attachment_count, i;
+    unsigned int widget;
 
     crossbars = sgi_model_crossbar_array(t->crossbars, &crossbar_count);
     attachments = sgi_model_xtalk_attachment_array(t->xtalk_attachments,
@@ -861,6 +881,30 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
          */
         qdev_prop_set_uint16(crossbow, "link-reset-restore-alive",
                              startup_alive);
+
+        /*
+         * Hold one populated-at-startup widget back as a spare fabric
+         * proxy for a `-device` board plugged in once this builder has
+         * returned (see the file header comment and the machine-done
+         * notifier below): the lowest widget this topology's own
+         * attachments leave unpopulated, or none if the topology fills
+         * every widget. spare_fabric_widget[i] stays 0 -- never a valid
+         * widget number -- when none is free.
+         */
+        for (widget = SGI_XBOW_FIRST_WIDGET; widget < SGI_XBOW_WIDGETS;
+             widget++) {
+            if (!(startup_alive & (1u << widget))) {
+                break;
+            }
+        }
+        if (widget < SGI_XBOW_WIDGETS) {
+            g_autofree char *spare_name =
+                g_strdup_printf("crossbow%zu-spare-fabric", i);
+
+            sgi_xtalk_crossbow_link_prepare(&s->spare_fabric_links[i],
+                                            OBJECT(s), spare_name);
+            s->spare_fabric_widget[i] = widget;
+        }
     }
 }
 
@@ -1183,8 +1227,11 @@ static bool sgi_machine_instantiate_io_board(
  * already resolved by sgi_machine_index_xtalk_attachments there; nothing
  * here waits for a `-device`-plugged board, unlike the deferred
  * machine-init-done hook this replaces: a crosstalk board realized after
- * the machine returns is not attached to anything (see the crosstalk
- * port experiment's own report for why).
+ * the machine returns cannot become an inbound destination on any of
+ * these Crossbows (see the crosstalk port experiment's own report for
+ * why), though sgi_machine_done() below still gives such a board an
+ * outbound path, through the spare widget this function's own caller
+ * held back for it.
  */
 static bool sgi_machine_realize_crossbars(
     SGIMachineState *s, const SGIModelTopology *t,
@@ -2044,6 +2091,9 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     /* One crossbow link per node, then one per io_boards position. */
     s->crossbow_links =
         g_new0(SGIXtalkCrossbowLink, node_count + io_board_count);
+    /* One spare fabric proxy per crossbars[] entry; see the header comment. */
+    s->spare_fabric_links = g_new0(SGIXtalkCrossbowLink, crossbar_count);
+    s->spare_fabric_widget = g_new0(unsigned int, crossbar_count);
 
     node_attachment = g_new0(unsigned int, node_count);
     board_attachment = g_new0(unsigned int, io_board_count);
@@ -2292,7 +2342,11 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
      * attached now, so every Crossbow can realize in one pass, here,
      * rather than waiting for a machine-init-done notifier: this
      * experiment does not support a crosstalk board attaching later
-     * (see docs/plans/sn-machine-model.md, step 1's own report).
+     * (see docs/plans/sn-machine-model.md, step 1's own report). A
+     * `-device` board realized later still reaches its Crossbow, but only
+     * outbound, through the spare widget sgi_machine_build_crossbars()
+     * held back for it; sgi_machine_done() below finishes that proxy once
+     * every Crossbow realized here is real.
      */
     if (!sgi_machine_realize_crossbars(s, t, node_attachment, board_attachment,
                                        errp)) {
@@ -2301,9 +2355,61 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     return true;
 }
 
+/*
+ * Finishes every Crossbow's own spare fabric proxy, once every Crossbow
+ * this machine builds has realized (sgi_machine_realize_crossbars() above,
+ * called from sgi_machine_realize(), always returns well before this
+ * notifier can fire: a cold `-device` board realizes only after
+ * machine_run_board_init() has returned, and machine-init-done notifiers
+ * do not run until after that). Finishing here, rather than at
+ * sgi_machine_build_crossbars() time, is exactly why the proxy is a
+ * two-phase prepare()/finish() object in the first place: finish() needs
+ * the crossbar's own real packet-ingress region, which does not exist
+ * until sgi_machine_realize_crossbars() has run.
+ *
+ * This gives a `-device` board taking the proxy as its own "fabric"
+ * property an outbound path only: a packet the board's own Bridge sends
+ * out through the proxy reaches the Crossbow's real routing and lands on
+ * whichever already-populated widget it addresses, the same as any
+ * onboard board's traffic. Nothing routes the other way.
+ * sgi_xbow_attach_endpoint() -- the call that registers a widget as a
+ * destination other ports may address -- refuses once its Crossbow is
+ * realized, and every Crossbow this machine builds always is by the time
+ * a `-device` board exists to ask for one, so the spare widget can never
+ * become an inbound destination without also deferring the Crossbow's own
+ * realize. Onboard and topology-built boards still need that realize to
+ * stay synchronous here, so this stays a one-way path until a later
+ * change is willing to defer Crossbow realize itself.
+ */
+static void sgi_machine_done(Notifier *notifier, void *data)
+{
+    SGIMachineState *s = container_of(notifier, SGIMachineState,
+                                      machine_done);
+    const SGIModelTopology *t = sgi_machine_topology(MACHINE(s));
+    size_t crossbar_count = sgi_machine_topology_crossbar_count(t);
+    size_t i;
+
+    for (i = 0; i < crossbar_count; i++) {
+        g_autofree char *name = NULL;
+
+        if (!s->spare_fabric_widget[i]) {
+            continue;
+        }
+        name = g_strdup_printf("crossbow%zu-spare-fabric", i);
+        sgi_xtalk_crossbow_link_finish(&s->spare_fabric_links[i], OBJECT(s),
+                                       name, s->crossbars[i],
+                                       s->spare_fabric_widget[i],
+                                       &error_fatal);
+    }
+}
+
 void sgi_machine_init(MachineState *machine)
 {
+    SGIMachineState *s = SGI_MACHINE(machine);
+
     sgi_machine_realize(machine, &error_fatal);
+    s->machine_done.notify = sgi_machine_done;
+    qemu_add_machine_init_done_notifier(&s->machine_done);
 }
 
 static void sgi_machine_reset(MachineState *machine, ResetType type)
@@ -2472,6 +2578,8 @@ static void sgi_machine_instance_finalize(Object *obj)
     g_free(s->io_boards);
     g_free(s->direct_links);
     g_free(s->crossbow_links);
+    g_free(s->spare_fabric_links);
+    g_free(s->spare_fabric_widget);
     g_free(s->topology_name);
     for (i = 0; i < ARRAY_SIZE(sgi_machine_identity_records); i++) {
         qapi_free_strList(*sgi_machine_identity_slot(
@@ -2498,6 +2606,16 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
      * sockets of one core each, not one socket of N cores.
      */
     mc->smp_props.prefer_sockets = true;
+
+    /*
+     * Both classes are TYPE_SYS_BUS_DEVICE (sgi-xio-board's own parent);
+     * qdev's -device path refuses any dynamic sysbus device the machine
+     * has not named here, on top of each class's own user_creatable.
+     * sgi_machine_build_crossbars()/sgi_machine_done() are what a late
+     * instance of either one plugs into.
+     */
+    machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_PCI_EXPANSION);
+    machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_XIO_BASEIO);
 
     object_class_property_add_str(oc, "topology", sgi_machine_get_topology,
                                   sgi_machine_set_topology);

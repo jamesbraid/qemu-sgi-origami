@@ -10,10 +10,15 @@
  * sgi-board-test-fixture builds exactly that pair for the "ip29",
  * "baseio" and "io8" presets, the same way sgi-xtalk-board-fixture
  * stands in for a module's Crossbow in the XIO board base class's own
- * qtest; see tests/qtest/board-test-fixture.c. sgi-pci-expansion is the
- * plan's named `-device` demonstrator but is not yet reachable that way
- * either (see its own header comment for why), so it goes through the
- * same fixture's "module"/"slot"/"fabric" path.
+ * qtest; see tests/qtest/board-test-fixture.c. sgi-pci-expansion is also
+ * `-device`-creatable now (see its own header comment for the spare
+ * fabric proxy that makes it so), but this file still runs it through the
+ * same fixture's "module"/"slot"/"fabric" path, matching the other three
+ * cases; sgi-xtalk-board-test.c's own attach-pending case, and sn-builder-
+ * test.c's test_pci_expansion_attaches_via_spare_fabric and test_xio_
+ * baseio_attaches_via_spare_fabric (which boot the real -M origin2000
+ * machine, unlike this file's bare fixture), cover the real `-device`
+ * command line instead.
  *
  * Every case's internal Bridge or XBridge chip shares one register
  * layout (hw/pci-host/sgi-bridge.c and sgi-xbridge.c: "Same programming
