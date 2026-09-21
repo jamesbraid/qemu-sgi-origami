@@ -1271,8 +1271,12 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
          * A child the board does not fit leaves the composition tree
          * entirely, rather than sitting in it unrealized: qdev asserts after
          * machine init that every device object it can reach is realized.
+         * Its chardev-a/chardev-b alias goes first, same dangling-alias
+         * hazard as the other conditionally-fitted children below.
          */
         if (!s->board->serial[i]) {
+            object_property_del(OBJECT(dev),
+                                i == 0 ? "chardev-a" : "chardev-b");
             object_unparent(OBJECT(serial));
             continue;
         }
@@ -1329,6 +1333,17 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
                            qdev_get_gpio_in_named(DEVICE(dev), "eth-irq", 0));
 
     } else {
+        /*
+         * The instance-init aliases below reach into this child regardless
+         * of population, so they must go before the child does: an alias
+         * left standing over an unparented target is a dangling property,
+         * not an absent one, and a deep introspection walk over a board
+         * that leaves ethernet off reads through it into freed state.
+         */
+        object_property_del(OBJECT(dev), "netdev");
+        object_property_del(OBJECT(dev), "mac");
+        object_property_del(OBJECT(dev), "phy-addr");
+        object_property_del(OBJECT(dev), "phy-dp83843");
         object_unparent(OBJECT(&s->eth));
     }
 
@@ -1387,6 +1402,8 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
                                                       "parallel-irq", i));
         }
     } else {
+        /* Same dangling-alias hazard as the ethernet block above. */
+        object_property_del(OBJECT(dev), "parallel-chardev");
         object_unparent(OBJECT(&s->parallel_dev));
     }
 
@@ -1436,7 +1453,8 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
      * On the chip's own bus, so a reset of the IOC3 reaches it. Whichever
      * clock this board does not fit is unparented rather than left realized
      * but unmapped, so it is absent from the object graph and from the
-     * migration stream too.
+     * migration stream too. The M48T35 alone is reached by an alias, so
+     * only its unparent needs one deleted first, same as ethernet above.
      */
     if (s->board->timekeeper == SGI_IOC3_TIMEKEEPER_M48T35) {
         if (!qdev_realize(DEVICE(&s->rtc), BUS(&s->ioc3_bus), errp)) {
@@ -1446,6 +1464,7 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
                                     sysbus_mmio_get_region(
                                         SYS_BUS_DEVICE(&s->rtc), 0));
     } else {
+        object_property_del(OBJECT(dev), "nvram-drive");
         object_unparent(OBJECT(&s->rtc));
     }
 
