@@ -415,11 +415,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 /*
  * RAMDAC block, Region Zero 0x4000-0x4FFF (docs/datasheets/psitech-rad1.md
  * table row for that range): rad1_init_RAMDAC()/rad1_load_lut() are
- * established to write exactly these seven offsets. This model stores
- * each as a plain register; it does not apply palette or gamma content to
- * displayed pixels (see "Scanout" below), since the qualified guest
- * workload is scoped to a flat, non-interpolated rectangle copy and no
- * RAD1-specific pseudocolor/gamma pixel path is evidenced.
+ * established to write exactly these seven offsets. Two of those seven --
+ * 0x4008 and 0x4018 -- are named registers this file previously treated
+ * as plain storage under the generic RAD1_RAMDAC_R0..R6 array; they are
+ * now broken out below with real palette-protocol behavior, since this
+ * session's trace showed 1536 writes to 0x4008 (a heavy-traffic register
+ * this file's generic RAMDAC array never actually reached: RAD1_RAMDAC_R0
+ * was 0x4000 and RAD1_RAMDAC_R1 was 0x4010, skipping 0x4008 and 0x4018
+ * entirely, so both fell through to the RAMDAC block's own "unsupported
+ * RAMDAC write" default). The remaining five offsets (cursor color
+ * address/data, two further unnamed slots, and the indexed-register data
+ * port) are unchanged: plain storage, no side effect, out of this
+ * session's trace-evidenced scope.
  */
 #define RAD1_RAMDAC_R0          0x4000
 #define RAD1_RAMDAC_R1          0x4010
@@ -428,6 +435,27 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 #define RAD1_RAMDAC_R4          0x4030
 #define RAD1_RAMDAC_R5          0x4038
 #define RAD1_RAMDAC_R6          0x4050
+
+/*
+ * Palette write/read registers (Linux include/video/permedia2.h:
+ * PM2R_RD_PALETTE_WRITE_ADDRESS 0x4000 == RAD1_RAMDAC_R0 above,
+ * PM2R_RD_PALETTE_DATA 0x4008, PM2R_RD_PALETTE_READ_ADDRESS 0x4018).
+ * Programming sequence and the auto-increment-after-each-triple behavior
+ * are both directly evidenced by Linux drivers/video/fbdev/pm2fb.c's
+ * clear_palette(): it writes PM2R_RD_PALETTE_WRITE_ADDRESS exactly once
+ * (to 0), then writes PM2R_RD_PALETTE_DATA three times (R, G, B) per
+ * palette index, for all 256 indices, with no further write-address
+ * write in between -- the only way that sequence can reach all 256
+ * entries is if the hardware auto-increments the write index internally
+ * after each complete (R,G,B) triple. This model implements exactly that
+ * state machine. A symmetric read-address/read-index pair is modeled for
+ * PM2R_RD_PALETTE_READ_ADDRESS on the same evidence (the header defines
+ * a separate read-address register, implying the same triple-byte
+ * protocol in the read direction), though no traced access in this
+ * session's evidence reads the palette back.
+ */
+#define RAD1_RAMDAC_PALETTE_DATA        0x4008
+#define RAD1_RAMDAC_PALETTE_READ_ADDR   0x4018
 
 /*
  * FIFO-tagged GP (rasterizer/texture) registers, Region Zero 0x8000-0xFFFF
@@ -621,6 +649,17 @@ struct PsitechRad1State {
 
     /* RAMDAC block: seven established offsets, stored only. */
     uint32_t ramdac[7];
+
+    /*
+     * RAMDAC palette storage and the write/read index + component-counter
+     * state that implements clear_palette()'s evidenced three-writes-per-
+     * index protocol; see the palette register comment above.
+     */
+    uint8_t palette[256][3];
+    uint8_t palette_write_index;
+    uint8_t palette_write_comp;
+    uint8_t palette_read_index;
+    uint8_t palette_read_comp;
 
     /*
      * Video Timing block, Region Zero 0x3000-0x3078: stored only except
@@ -948,6 +987,7 @@ static uint64_t rad1_regzero_read(void *opaque, hwaddr addr, unsigned size)
 {
     PsitechRad1State *s = opaque;
     int ramdac_idx;
+    uint8_t palette_comp;
 
     if (addr <= RAD1_RANGE_CTRL_STATUS_LAST) {
         switch (addr) {
@@ -1007,6 +1047,29 @@ static uint64_t rad1_regzero_read(void *opaque, hwaddr addr, unsigned size)
                          "0x%04x\n", (unsigned)addr);
             return 0;
         }
+    }
+
+    /*
+     * Palette write/read-index and data registers get real protocol
+     * behavior (see their own comment above); every other RAMDAC offset
+     * keeps falling through to the generic ramdac_idx dispatch below
+     * unchanged.
+     */
+    switch (addr) {
+    case RAD1_RAMDAC_R0:
+        return s->ramdac[0];
+    case RAD1_RAMDAC_PALETTE_DATA:
+        palette_comp = s->palette[s->palette_read_index][s->palette_read_comp];
+        s->palette_read_comp++;
+        if (s->palette_read_comp == 3) {
+            s->palette_read_comp = 0;
+            s->palette_read_index++;
+        }
+        return palette_comp;
+    case RAD1_RAMDAC_PALETTE_READ_ADDR:
+        return s->palette_read_index;
+    default:
+        break;
     }
 
     ramdac_idx = rad1_ramdac_index(addr);
@@ -1182,6 +1245,35 @@ static void rad1_regzero_write(void *opaque, hwaddr addr, uint64_t val,
             break;
         }
         return;
+    }
+
+    /*
+     * Palette write-index/data and read-index registers get real protocol
+     * behavior (see their own comment above); every other RAMDAC offset
+     * keeps falling through to the generic ramdac_idx dispatch below
+     * unchanged.
+     */
+    switch (addr) {
+    case RAD1_RAMDAC_R0:
+        s->ramdac[0] = val;
+        s->palette_write_index = (uint8_t)val;
+        s->palette_write_comp = 0;
+        return;
+    case RAD1_RAMDAC_PALETTE_DATA:
+        s->palette[s->palette_write_index][s->palette_write_comp] =
+            (uint8_t)val;
+        s->palette_write_comp++;
+        if (s->palette_write_comp == 3) {
+            s->palette_write_comp = 0;
+            s->palette_write_index++;
+        }
+        return;
+    case RAD1_RAMDAC_PALETTE_READ_ADDR:
+        s->palette_read_index = (uint8_t)val;
+        s->palette_read_comp = 0;
+        return;
+    default:
+        break;
     }
 
     ramdac_idx = rad1_ramdac_index(addr);
@@ -1456,6 +1548,12 @@ static void rad1_reset_hold(Object *obj, ResetType type)
     s->ctrl_ack = 0;
     memset(s->ramdac, 0, sizeof(s->ramdac));
 
+    memset(s->palette, 0, sizeof(s->palette));
+    s->palette_write_index = 0;
+    s->palette_write_comp = 0;
+    s->palette_read_index = 0;
+    s->palette_read_comp = 0;
+
     s->screen_base = 0;
     s->screen_stride = 0;
     s->h_total = 0;
@@ -1576,14 +1674,15 @@ static int rad1_post_load(void *opaque, int version_id)
 static const VMStateDescription vmstate_psitech_rad1 = {
     .name = TYPE_PSITECH_RAD1,
     /*
-     * Bumped from 1 to 2 for the Video Timing and Memory Control state
-     * below: images are never committed per this project's rules
-     * (docs/README.md, "Images stay in ignored assets/"), so there is no
-     * real snapshot-compatibility concern being broken here, only the
-     * ordinary rule that a changed field list needs a new version.
+     * Bumped from 1 to 2 for the Video Timing and Memory Control state,
+     * and from 2 to 3 for the RAMDAC palette state below: images are
+     * never committed per this project's rules (docs/README.md, "Images
+     * stay in ignored assets/"), so there is no real snapshot-
+     * compatibility concern being broken here, only the ordinary rule
+     * that a changed field list needs a new version.
      */
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .post_load = rad1_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(pci, PsitechRad1State),
@@ -1592,6 +1691,11 @@ static const VMStateDescription vmstate_psitech_rad1 = {
         VMSTATE_UINT32(int_status, PsitechRad1State),
         VMSTATE_UINT32(ctrl_ack, PsitechRad1State),
         VMSTATE_UINT32_ARRAY(ramdac, PsitechRad1State, 7),
+        VMSTATE_UINT8_2DARRAY(palette, PsitechRad1State, 256, 3),
+        VMSTATE_UINT8(palette_write_index, PsitechRad1State),
+        VMSTATE_UINT8(palette_write_comp, PsitechRad1State),
+        VMSTATE_UINT8(palette_read_index, PsitechRad1State),
+        VMSTATE_UINT8(palette_read_comp, PsitechRad1State),
         VMSTATE_UINT32(screen_base, PsitechRad1State),
         VMSTATE_UINT32(screen_stride, PsitechRad1State),
         VMSTATE_UINT32(h_total, PsitechRad1State),
