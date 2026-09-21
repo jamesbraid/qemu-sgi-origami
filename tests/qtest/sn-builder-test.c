@@ -83,6 +83,55 @@ static char *qom_child_type(QTestState *qts, const char *parent,
     return found;
 }
 
+/*
+ * A Crossbow's own uint property, the same way sn0-origin2000-xtalk-
+ * owner-test.c's assert_crossbow() reads one: used here to confirm a
+ * late `-device` board attaching through the spare fabric proxy leaves
+ * the Crossbow's own count of populated widgets untouched.
+ */
+static uint64_t xtalk_uint(QTestState *qts, const char *crossbow,
+                           const char *property)
+{
+    g_autofree char *path = g_strdup_printf("/machine/%s", crossbow);
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{'execute': 'qom-get', 'arguments': {'path': %s,"
+        "'property': %s}}", path, property);
+
+    g_assert_false(qdict_haskey(response, "error"));
+    return qdict_get_int(response, "return");
+}
+
+/*
+ * Whether typename's own class (device-list-properties always walks its
+ * parents) declares a qdev property named prop -- checked with no
+ * instance of either class ever attached, to prove two board classes
+ * share a property by name and not merely by coincidence at one
+ * particular attachment.
+ */
+static bool device_class_has_property(QTestState *qts, const char *typename,
+                                      const char *prop)
+{
+    QDict *response = qtest_qmp(qts, "{ 'execute': 'device-list-properties',"
+                                     " 'arguments': { 'typename': %s } }",
+                                     typename);
+    QList *properties;
+    const QListEntry *entry;
+    bool found = false;
+
+    g_assert_true(qdict_haskey(response, "return"));
+    properties = qdict_get_qlist(response, "return");
+    for (entry = qlist_first(properties); entry; entry = qlist_next(entry)) {
+        QDict *item = qobject_to(QDict, qlist_entry_obj(entry));
+
+        if (g_str_equal(qdict_get_str(item, "name"), prop)) {
+            found = true;
+            break;
+        }
+    }
+    qobject_unref(response);
+    return found;
+}
+
 static void test_numa_refused(const void *data)
 {
     const char *args[] = {
@@ -96,17 +145,21 @@ static void test_numa_refused(const void *data)
 }
 
 /*
- * sgi-pci-expansion (board-pci-expansion.c) is not user-creatable: its
- * "fabric" property has nowhere to resolve to before a `-device`
- * realizes (see that class's own header comment), so it stays reachable
- * only through the machine builder or the board-test fixture, not the
- * command line. Values do not matter; the check runs before qdev even
- * tries to set them. -device is processed after sgi_machine_init, so
- * this still needs a -bios that clears the stock-PROM requirement, the
- * same blank flash write_config_block_fixture's sibling in
- * sn0-address-map-test.c uses for the same reason.
+ * sgi-pci-expansion (board-pci-expansion.c) is user-creatable: a `-device`
+ * board's "fabric" link can resolve against the spare fabric proxy
+ * sgi_machine_build_crossbars()/sgi_machine_done() hold back and finish
+ * for exactly this purpose (see that class's own header comment). Nothing
+ * wires "fabric" for it automatically, though -- an explicit `-device`
+ * still has to name one itself -- so a bare `-device sgi-pci-expansion`
+ * now reaches past qdev's pluggable-device check and refuses for a later,
+ * different reason: the same missing-fabric error build_widget() reports
+ * from the machine builder or the board-test fixture. -device is
+ * processed after sgi_machine_init, so this still needs a -bios that
+ * clears the stock-PROM requirement, the same blank flash
+ * write_config_block_fixture's sibling in sn0-address-map-test.c uses for
+ * the same reason.
  */
-static void test_pci_expansion_not_user_creatable(const void *data)
+static void test_pci_expansion_requires_fabric(const void *data)
 {
     g_autoptr(GError) error = NULL;
     g_autofree uint8_t *blank = g_malloc0(0x100000);
@@ -126,9 +179,104 @@ static void test_pci_expansion_not_user_creatable(const void *data)
     g_assert_no_error(error);
     args[4] = path;
 
-    assert_qemu_rejects(args, "Parameter 'driver' expects a pluggable "
-                        "device type");
+    assert_qemu_rejects(args, "sgi-pci-expansion requires the fabric its "
+                        "interrupt packets travel");
     g_assert_cmpint(unlink(path), ==, 0);
+}
+
+/*
+ * sgi-pci-expansion and sgi-xio-baseio are the two -device-creatable XIO
+ * board classes (board-pci-expansion.c, xio-baseio.c); sgi-xio-board
+ * (xio-board.c) is their shared, non-instantiable base, which owns
+ * "module" and "slot". Each subclass repeats "fabric", "fabric-base",
+ * "fabric-node-shift" and "fabric-widget-shift" by name and type itself
+ * -- its own internal Bridge needs the link typed on its own class, not
+ * the base -- rather than one board's -device surface differing from
+ * the other's for what is otherwise the same attach step.
+ */
+static void test_expansion_boards_share_the_attach_contract(const void *data)
+{
+    static const char * const shared_properties[] = {
+        "module", "slot", "fabric", "fabric-base", "fabric-node-shift",
+        "fabric-widget-shift",
+    };
+    static const char * const board_classes[] = {
+        "sgi-pci-expansion", "sgi-xio-baseio",
+    };
+    QTestState *qts = qtest_init("-M origin2000 -display none");
+    size_t i, j;
+
+    for (i = 0; i < ARRAY_SIZE(board_classes); i++) {
+        for (j = 0; j < ARRAY_SIZE(shared_properties); j++) {
+            g_assert_true(device_class_has_property(qts, board_classes[i],
+                                                     shared_properties[j]));
+        }
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * The spare fabric proxy sgi_machine_build_crossbars()/sgi_machine_done()
+ * hold back and finish for exactly this purpose (see both classes' own
+ * header comments) resolves "fabric" for a `-device` board at runtime,
+ * the same way for either -device-creatable XIO board class: this board
+ * realizes and sgi_xio_board_reparent() (xio-board.c) lands it at
+ * /machine/module<N>/slot<S>, "module"/"slot" here chosen well clear of
+ * any onboard module the default origin2000 topology already populates.
+ * fabric-widget-shift=48 matches SGI_BRIDGE_PACKET_ADDRESS_BITS, the same
+ * shift the machine builder gives every onboard board's own Bridge. The
+ * "[0]" is not a typo or an artifact of one particular listing: every named
+ * MemoryRegion's own QOM child registers under "<name>[*]", an open-array
+ * property (system/memory.c, memory_region_do_init()), and QOM assigns it
+ * the first free index -- always 0 here, since "crossbow0-spare-fabric" is
+ * unique under its owner. Confirmed live: qom-get on the path without the
+ * suffix reports DeviceNotFound.
+ *
+ * crossbow0's own startup-links-alive (sn0-origin2000-xtalk-owner-test.c:
+ * 0x8700, its onboard BaseIO, two host nodes and SI Viz) stays exactly
+ * that after this board attaches: sgi_xbow_attach_endpoint(), the call
+ * that would register a widget as an inbound destination other ports
+ * can address, only ever runs for the onboard boards sn-machine.c builds
+ * before realizing the Crossbow (see board-pci-expansion.c's own header
+ * comment), and this board's own realize happens long after that. A
+ * `-device` board reaching the fabric must not silently start counting
+ * as one of the Crossbow's own alive links.
+ */
+static void test_pci_expansion_attaches_via_spare_fabric(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000 -display none -device sgi-pci-expansion,"
+        "module=99,slot=8,fabric=/machine/crossbow0-spare-fabric[0],"
+        "fabric-widget-shift=48");
+    g_autofree char *type = qom_child_type(qts, "/machine/module99", "slot8");
+
+    g_assert_cmpstr(type, ==, "sgi-pci-expansion");
+    g_assert_cmphex(xtalk_uint(qts, "crossbow0", "startup-links-alive"), ==,
+                    UINT64_C(0x8700));
+    qtest_quit(qts);
+}
+
+/*
+ * sgi-xio-baseio additionally refuses any slot but 8: BaseIO is fixed at
+ * IO1, crosstalk widget 8 (xio-baseio.c, XIO_BASEIO_WIDGET), a real
+ * hardware fact rather than the free QOM-path choice "slot" is for
+ * sgi-pci-expansion above -- slot=8 here satisfies that check, not a
+ * coincidence with the sibling test's own unrelated choice. The same
+ * outbound-only reasoning applies: see the sibling test above.
+ */
+static void test_xio_baseio_attaches_via_spare_fabric(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000 -display none -device sgi-xio-baseio,"
+        "module=99,slot=8,fabric=/machine/crossbow0-spare-fabric[0],"
+        "fabric-widget-shift=48");
+    g_autofree char *type = qom_child_type(qts, "/machine/module99", "slot8");
+
+    g_assert_cmpstr(type, ==, "sgi-xio-baseio");
+    g_assert_cmphex(xtalk_uint(qts, "crossbow0", "startup-links-alive"), ==,
+                    UINT64_C(0x8700));
+    qtest_quit(qts);
 }
 
 static void test_unsupported_smp_population_rejected(const void *data)
@@ -431,8 +579,15 @@ int main(int argc, char **argv)
 
     qtest_add_data_func("sn/builder/numa-refused", NULL,
                         test_numa_refused);
-    qtest_add_data_func("sn/builder/pci-expansion-not-user-creatable", NULL,
-                        test_pci_expansion_not_user_creatable);
+    qtest_add_data_func("sn/builder/pci-expansion-requires-fabric", NULL,
+                        test_pci_expansion_requires_fabric);
+    qtest_add_data_func("sn/builder/expansion-boards-share-the-attach-"
+                        "contract", NULL,
+                        test_expansion_boards_share_the_attach_contract);
+    qtest_add_data_func("sn/builder/pci-expansion-attaches-via-spare-fabric",
+                        NULL, test_pci_expansion_attaches_via_spare_fabric);
+    qtest_add_data_func("sn/builder/xio-baseio-attaches-via-spare-fabric",
+                        NULL, test_xio_baseio_attaches_via_spare_fabric);
     qtest_add_data_func("sn/builder/unsupported-smp-population-rejected",
                         NULL, test_unsupported_smp_population_rejected);
     qtest_add_data_func("sn/builder/topology-from-another-product-refused",

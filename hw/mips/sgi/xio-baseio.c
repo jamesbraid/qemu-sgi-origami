@@ -178,8 +178,15 @@ static void xio_baseio_class_init(ObjectClass *oc, const void *data)
 
     dc->desc = "Origin 2000 / Onyx2 BaseIO board";
     dc->vmsd = &vmstate_xio_baseio;
-    /* Fitted per module by the machine, at most one per deskside enclosure. */
-    dc->user_creatable = false;
+    /*
+     * Ordinarily fitted per module by the machine, at most one per
+     * deskside enclosure, but also `-device`-creatable: a late board's
+     * own "fabric" can resolve against the spare fabric proxy a Crossbow
+     * machine builder now holds back for it (sgi_machine_build_crossbars()
+     * in sn-machine.c), giving it the same outbound-only path onto a real
+     * Crossbow that sgi-pci-expansion's own header comment describes.
+     */
+    dc->user_creatable = true;
     device_class_set_props(dc, xio_baseio_properties);
     bc->build_widget = xio_baseio_build_widget;
 }

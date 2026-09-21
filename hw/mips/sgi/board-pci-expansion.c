@@ -15,18 +15,29 @@
  * (docs/plans/sn-machine-model.md, "SGI boards (new)"): a plain Bridge, its
  * PCI bus named so a following `-device ...,bus=<name>` can populate it.
  *
- * Not user-creatable yet, though: build_widget() below requires "fabric"
- * before this board's own realize, and every candidate fabric (a
- * Crossbow's own packet-ingress region) lives under a Crossbow the family
- * builder (sn-machine.c) only QOM-parents at the machine-done hook, after
- * every command-line device has already realized. Reaching this class from
- * `-device` needs a machine-owned spare fabric proxy per Crossbar,
- * parented at machine-init time the way the builder's own io_board_packet_
- * proxy[] already is for a board it builds itself, aliased onto the real
- * packet-ingress region at that same machine-done point -- not yet built.
- * Until it is, this class stays reachable only by the same fixture
- * tests/qtest/sgi-board-test.c uses for the other three onboard-only board
- * classes.
+ * `-device`-creatable: build_widget() below requires "fabric" before this
+ * board's own realize, and every candidate fabric (a Crossbow's own
+ * packet-ingress region) lives under a Crossbow the family builder
+ * (sn-machine.c) realizes during machine init, before a command-line
+ * device exists to reach it. sgi_machine_build_crossbars() there holds
+ * one populated-at-startup widget back per Crossbow and prepares a spare
+ * fabric proxy against it; a machine-init-done notifier
+ * (sgi_machine_done()) finishes that proxy, aliasing it onto the
+ * Crossbow's own real packet ingress, once every Crossbow the machine
+ * builds has realized. "fabric" on a `-device` board resolves against
+ * that proxy.
+ *
+ * This gives a `-device` board an outbound path only: its own Bridge can
+ * send a packet out through the proxy to any already-populated widget,
+ * but sgi_xbow_attach_endpoint() -- the call that would register this
+ * board's own widget as a destination other ports can address -- refuses
+ * once its Crossbow is realized, which every Crossbow this machine builds
+ * always is by the time a `-device` board exists. Nothing addresses this
+ * board's own widget as an inbound destination; see sgi_machine_done()'s
+ * own comment in sn-machine.c for why that stays out of reach without
+ * also deferring the Crossbow's own realize. A topology with no widget
+ * to spare (every one already populated at startup) leaves no proxy to
+ * resolve "fabric" against, and this board's own realize refuses.
  *
  * Bridge's own "board-part" is a required, exactly-12-character identity
  * register value (hw/pci-host/sgi-bridge.h,
@@ -136,12 +147,8 @@ static void pci_expansion_class_init(ObjectClass *oc, const void *data)
 
     dc->desc = "Origin 2000 XIO PCI expansion board";
     dc->vmsd = &vmstate_pci_expansion;
-    /*
-     * Not yet: see the header comment above. Flip this once a
-     * machine-owned spare fabric proxy exists for -device to resolve
-     * "fabric" against.
-     */
-    dc->user_creatable = false;
+    /* See the header comment above for what "fabric" resolves against. */
+    dc->user_creatable = true;
     device_class_set_props(dc, pci_expansion_properties);
     bc->build_widget = pci_expansion_build_widget;
 }
