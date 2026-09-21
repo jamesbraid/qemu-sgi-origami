@@ -55,11 +55,25 @@
 
 #define SI_REG_COLORMASKLSBSB 0x164
 
+typedef enum SGIMgrasRasterSubmissionForm {
+    SGI_MGRAS_RASTER_DIRECT,
+    SGI_MGRAS_RASTER_FIFO,
+} SGIMgrasRasterSubmissionForm;
+
+typedef struct SGIMgrasRasterSubmission {
+    SGIMgrasRasterSubmissionForm form;
+    uint32_t header;
+    uint32_t reg;
+    const uint32_t *payload;
+    uint32_t payload_words;
+} SGIMgrasRasterSubmission;
+
 /* A new block origin resets the glyph and PIO cursors. */
 static void si_raster_rss_write(SGIMgrasState *s, uint32_t reg,
                                 uint32_t value);
 /* Unimplemented execute registers log and leave state unchanged. */
-static void si_raster_command_execute(SGIMgrasState *s, uint32_t reg);
+static void si_raster_command_execute(
+    SGIMgrasState *s, const SGIMgrasRasterSubmission *submission);
 /* State payloads are one word; execute headers dispatch primitives. */
 static void si_raster_command_fifo_dispatch(SGIMgrasState *s);
 
@@ -136,10 +150,18 @@ void si_raster_command(SGIMgrasState *s, uint64_t word)
         bool exec = (selector & SI_CMD_SELECTOR_MASK) == SI_CMD_SELECTOR_EXEC;
 
         if (state || exec) {
+            SGIMgrasRasterSubmission submission = {
+                .form = SGI_MGRAS_RASTER_DIRECT,
+                .header = (uint32_t)(word >> 32),
+                .reg = (selector >> 6) & 0x1ff,
+                .payload = &value,
+                .payload_words = 1,
+            };
+
             reg = (selector >> 6) & 0x1ff;
             si_raster_rss_write(s, reg, value);
             if (exec) {
-                si_raster_command_execute(s, reg);
+                si_raster_command_execute(s, &submission);
             }
             return;
         }
@@ -396,9 +418,10 @@ static void si_draw_block_copy(SGIMgrasState *s, const uint32_t *payload,
     }
 }
 
-static void si_raster_command_execute(SGIMgrasState *s, uint32_t reg)
+static void si_raster_command_execute(
+    SGIMgrasState *s, const SGIMgrasRasterSubmission *submission)
 {
-    switch (reg) {
+    switch (submission->reg) {
     case SI_REG_RE_POINT:
         si_draw_point(s);
         s->dirty = true;
@@ -412,7 +435,12 @@ static void si_raster_command_execute(SGIMgrasState *s, uint32_t reg)
         s->dirty = true;
         return;
     case SI_REG_IR_ALIAS:
-        si_draw_ir_alias_fill(s);
+        if (submission->form == SGI_MGRAS_RASTER_FIFO) {
+            si_draw_block_copy(s, submission->payload,
+                               submission->payload_words);
+        } else {
+            si_draw_ir_alias_fill(s);
+        }
         s->dirty = true;
         return;
     case SI_REG_CHAR_H:
@@ -425,7 +453,7 @@ static void si_raster_command_execute(SGIMgrasState *s, uint32_t reg)
         return;
     default:
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: unimplemented direct-command "
-                      "execute, register 0x%03x\n", reg);
+                      "execute, register 0x%03x\n", submission->reg);
         return;
     }
 }
@@ -445,6 +473,16 @@ static void si_raster_rss_write(SGIMgrasState *s, uint32_t reg, uint32_t value)
 static void si_raster_command_fifo_dispatch(SGIMgrasState *s)
 {
     uint32_t reg = s->cmd_token_reg;
+    /* Rebuild the accepted header from parser fields already in VMState. */
+    SGIMgrasRasterSubmission submission = {
+        .form = SGI_MGRAS_RASTER_FIFO,
+        .header = ((s->cmd_token_class | (reg >> 8)) << 16) |
+                  ((reg & 0xff) << 8) |
+                  (s->cmd_token_payload_count * sizeof(uint32_t)),
+        .reg = reg,
+        .payload = s->cmd_token_payload,
+        .payload_words = s->cmd_token_payload_count,
+    };
 
     if (s->cmd_token_class == SI_CMD_HDR_CLASS_STATE) {
         if (s->cmd_token_payload_count >= 1) {
@@ -457,13 +495,5 @@ static void si_raster_command_fifo_dispatch(SGIMgrasState *s)
         return;
     }
 
-    /* RE_BLOCKCOPY only carries a payload on this wire path; IR_ALIAS's
-     * direct-record fill stays reg 0x045's meaning everywhere else. */
-    if (reg == SI_REG_RE_BLOCKCOPY) {
-        si_draw_block_copy(s, s->cmd_token_payload, s->cmd_token_payload_count);
-        s->dirty = true;
-        return;
-    }
-
-    si_raster_command_execute(s, reg);
+    si_raster_command_execute(s, &submission);
 }
