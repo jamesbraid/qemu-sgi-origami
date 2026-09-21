@@ -785,89 +785,114 @@ static void rad1_do_render(PsitechRad1State *s)
     uint8_t *linebuf;
     uint32_t row;
 
-    if (width == 0 || height == 0) {
-        return;
-    }
-    if (dst_x > mode->width || dst_y > mode->height ||
-        width > mode->width - dst_x || height > mode->height - dst_y) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                     "psitech-rad1: Render rectangle (%u,%u)+(%ux%u) falls "
-                     "outside the active %ux%u mode\n",
-                     dst_x, dst_y, width, height, mode->width, mode->height);
-        return;
-    }
+    if (width != 0 && height != 0) {
+        /*
+         * The rasterizer's FBWriteMode target is the framebuffer's actual
+         * VRAM (RAD1_FB_SIZE), not the RAMDAC/CRTC's currently active
+         * scanout mode -- those are independent hardware concerns on a
+         * real Permedia2: a Render write below the visible mode height is
+         * routine (off-screen scratch, cursor storage, a driver clearing
+         * VRAM rows the CRTC never scans out) and public Permedia2 sources
+         * describe no rasterizer-side clip against the active mode. Only
+         * the X axis is bounded by mode->width, since fb_stride is fixed
+         * at mode->width * RAD1_BYTES_PER_PIXEL and a wider write would
+         * spill into the next scanline's memory.
+         */
+        uint64_t dst_end = (uint64_t)(dst_y + height) * fb_stride;
 
-    row_bytes = width * RAD1_BYTES_PER_PIXEL;
-    linebuf = g_malloc(row_bytes);
+        if (dst_x > mode->width || width > mode->width - dst_x ||
+            dst_end > RAD1_FB_SIZE) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                         "psitech-rad1: Render rectangle (%u,%u)+(%ux%u) "
+                         "falls outside the %" PRIu64 "-byte framebuffer\n",
+                         dst_x, dst_y, width, height,
+                         (uint64_t)RAD1_FB_SIZE);
+        } else {
+            row_bytes = width * RAD1_BYTES_PER_PIXEL;
+            linebuf = g_malloc(row_bytes);
 
-    if (readback) {
-        hwaddr host_addr = s->tex_base_addr & RAD1_TEXBASE_ADDR_MASK;
+            if (readback) {
+                hwaddr host_addr = s->tex_base_addr & RAD1_TEXBASE_ADDR_MASK;
 
-        for (row = 0; row < height; row++) {
-            uint8_t *src = s->framebuffer + (dst_y + row) * fb_stride +
-                          dst_x * RAD1_BYTES_PER_PIXEL;
+                for (row = 0; row < height; row++) {
+                    uint8_t *src = s->framebuffer +
+                                  (dst_y + row) * fb_stride +
+                                  dst_x * RAD1_BYTES_PER_PIXEL;
 
-            if (pci_dma_write(&s->pci, host_addr + (hwaddr)row * row_bytes,
-                              src, row_bytes) != MEMTX_OK) {
-                qemu_log_mask(LOG_GUEST_ERROR,
-                             "psitech-rad1: read-back write failed at "
-                             "0x%"HWADDR_PRIx"\n", host_addr);
-                break;
-            }
-        }
-    } else {
-        bool system_memory = (s->tex_base_addr &
-                              RAD1_TEXBASE_SYSTEM_MEMORY) != 0;
-        hwaddr src_base = s->tex_base_addr & RAD1_TEXBASE_ADDR_MASK;
-        uint32_t src_x = s->s_start & RAD1_RECT_LOW_MASK;
-        uint32_t src_y = s->t_start & RAD1_RECT_LOW_MASK;
-        hwaddr src_origin = src_base + (hwaddr)src_y * row_bytes +
-                            (hwaddr)src_x * RAD1_BYTES_PER_PIXEL;
-
-        for (row = 0; row < height; row++) {
-            uint8_t *dst = s->framebuffer + (dst_y + row) * fb_stride +
-                           dst_x * RAD1_BYTES_PER_PIXEL;
-            hwaddr src_addr = src_origin + (hwaddr)row * row_bytes;
-
-            if (system_memory) {
-                if (pci_dma_read(&s->pci, src_addr, linebuf,
-                                 row_bytes) != MEMTX_OK) {
-                    qemu_log_mask(LOG_GUEST_ERROR,
-                                 "psitech-rad1: texture-read failed at "
-                                 "0x%"HWADDR_PRIx"\n", src_addr);
-                    break;
+                    if (pci_dma_write(&s->pci,
+                                      host_addr + (hwaddr)row * row_bytes,
+                                      src, row_bytes) != MEMTX_OK) {
+                        qemu_log_mask(LOG_GUEST_ERROR,
+                                     "psitech-rad1: read-back write failed "
+                                     "at 0x%"HWADDR_PRIx"\n", host_addr);
+                        break;
+                    }
                 }
             } else {
-                if (src_addr + row_bytes > RAD1_FB_SIZE) {
-                    qemu_log_mask(LOG_GUEST_ERROR,
-                                 "psitech-rad1: local texture read at "
-                                 "0x%"HWADDR_PRIx" falls outside the "
-                                 "framebuffer\n", src_addr);
-                    break;
+                bool system_memory = (s->tex_base_addr &
+                                      RAD1_TEXBASE_SYSTEM_MEMORY) != 0;
+                hwaddr src_base = s->tex_base_addr & RAD1_TEXBASE_ADDR_MASK;
+                uint32_t src_x = s->s_start & RAD1_RECT_LOW_MASK;
+                uint32_t src_y = s->t_start & RAD1_RECT_LOW_MASK;
+                hwaddr src_origin = src_base + (hwaddr)src_y * row_bytes +
+                                    (hwaddr)src_x * RAD1_BYTES_PER_PIXEL;
+
+                for (row = 0; row < height; row++) {
+                    uint8_t *dst = s->framebuffer +
+                                   (dst_y + row) * fb_stride +
+                                   dst_x * RAD1_BYTES_PER_PIXEL;
+                    hwaddr src_addr = src_origin + (hwaddr)row * row_bytes;
+
+                    if (system_memory) {
+                        if (pci_dma_read(&s->pci, src_addr, linebuf,
+                                         row_bytes) != MEMTX_OK) {
+                            qemu_log_mask(LOG_GUEST_ERROR,
+                                         "psitech-rad1: texture-read failed "
+                                         "at 0x%"HWADDR_PRIx"\n", src_addr);
+                            break;
+                        }
+                    } else {
+                        if (src_addr + row_bytes > RAD1_FB_SIZE) {
+                            qemu_log_mask(LOG_GUEST_ERROR,
+                                         "psitech-rad1: local texture read "
+                                         "at 0x%"HWADDR_PRIx" falls outside "
+                                         "the framebuffer\n", src_addr);
+                            break;
+                        }
+                        memcpy(linebuf, s->framebuffer + src_addr, row_bytes);
+                    }
+
+                    if (s->fb_hw_write_mask == 0xffffffffu) {
+                        memcpy(dst, linebuf, row_bytes);
+                    } else {
+                        uint32_t col;
+
+                        for (col = 0; col < width; col++) {
+                            uint32_t old = ldl_be_p(dst + col * 4);
+                            uint32_t incoming = ldl_be_p(linebuf + col * 4);
+                            uint32_t mask = s->fb_hw_write_mask;
+
+                            stl_be_p(dst + col * 4,
+                                    (old & ~mask) | (incoming & mask));
+                        }
+                    }
                 }
-                memcpy(linebuf, s->framebuffer + src_addr, row_bytes);
             }
 
-            if (s->fb_hw_write_mask == 0xffffffffu) {
-                memcpy(dst, linebuf, row_bytes);
-            } else {
-                uint32_t col;
-
-                for (col = 0; col < width; col++) {
-                    uint32_t old = ldl_be_p(dst + col * 4);
-                    uint32_t incoming = ldl_be_p(linebuf + col * 4);
-                    uint32_t mask = s->fb_hw_write_mask;
-
-                    stl_be_p(dst + col * 4,
-                            (old & ~mask) | (incoming & mask));
-                }
-            }
+            g_free(linebuf);
         }
     }
 
-    g_free(linebuf);
-
-    /* APPROXIMATED completion signaling; see RAD1_INT_KNOWN_MASK above. */
+    /*
+     * APPROXIMATED completion signaling; see RAD1_INT_KNOWN_MASK above.
+     * This fires even when the rectangle above was empty or fell outside
+     * the active mode: rad1_inthandler()'s wait queue has no separate
+     * "command rejected" path, and unconditionally skipping this signal
+     * on that path left the model with no way to ever wake a caller that
+     * issues an out-of-bounds Render and then waits on completion: the
+     * early return on the reject path left that caller with no wake at
+     * all.
+     */
     s->int_status |= RAD1_INT_KNOWN_MASK;
     rad1_update_irq(s);
 }
