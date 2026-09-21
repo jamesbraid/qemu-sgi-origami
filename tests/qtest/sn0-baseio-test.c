@@ -80,7 +80,7 @@
 #define NIC_SAMPLE(n) ((uint32_t)(n) << 2)
 
 /* docs/datasheets/baseio.md's board-variant table. */
-#define IO6G_BOARD_PART "030-0734-001"
+#define IO6G_BOARD_PART "030-0734-002"
 #define IO6G_MIO_BOARD_PART "030-0880-003"
 
 static const unsigned int module_nasids[] = { 0x11, 0x12, 0x23, 0x24 };
