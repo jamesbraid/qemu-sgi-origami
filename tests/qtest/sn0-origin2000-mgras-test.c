@@ -1170,6 +1170,26 @@ static void test_display_surface_conversion(void)
     qtest_quit(qts);
 }
 
+static void test_reset_refreshes_display_surface(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00112233));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (14u << 16) | 14u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (14u << 16) | 14u));
+    g_assert_cmphex(si_test_display_pixel(qts, 14, 14), ==, 0x00332211);
+
+    qtest_system_reset(qts);
+    g_assert_cmphex(si_test_display_pixel(qts, 14, 14), ==, 0);
+
+    qtest_quit(qts);
+}
+
 
 static void test_pseudocolor_scanout_looks_up_cmap(void)
 {
@@ -1798,6 +1818,26 @@ static void test_re_point_execute(void)
     qtest_quit(qts);
 }
 
+static void test_re_point_execute_after_bounded_payload(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00556677));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (72u << 16) | 80u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)SI_EXEC_TOKEN(REG_RE_POINT, 8) << 32) |
+                 0xdeadbeef);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0xcafebabe << 32) | 0);
+
+    g_assert_cmphex(si_test_pixel(qts, 72, 80), ==, 0x00556677);
+    qtest_quit(qts);
+}
+
 
 static void test_re_line_execute(void)
 {
@@ -1857,12 +1897,22 @@ static void test_re_char_h_execute(void)
     qtest_quit(qts);
 }
 
-/* Block-copy grammar is unknown. Retain its payload without executing it. */
+/* Block-copy execution pins the current bounded model path, not hardware
+ * command grammar. */
 static void test_re_blockcopy_execute(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
 
     si_enter_context(qts);
+
+    /* Direct 0x045 remains the indexed fill form. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BKGRD_RG, 0x00123456));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (4u << 16) | 4u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
+    g_assert_cmphex(si_test_pixel(qts, 4, 4), ==, 0x00123456);
 
     /* Source: a 2x2 block at (10,10)-(11,11). */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -1900,6 +1950,20 @@ static void test_re_blockcopy_execute(void)
     /* Outside the destination rectangle stays untouched. */
     g_assert_cmphex(si_test_pixel(qts, 52, 52), ==, 0);
     g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 0);
+
+    /* An incomplete FIFO submission must not survive reset. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_EXEC_TOKEN(REG_RE_BLOCKCOPY, 16));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)((10u << 16) | 10u) << 32));
+    qtest_system_reset(qts);
+    si_enter_context(qts);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00abcdef));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (90u << 16) | 90u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 (uint64_t)SI_EXEC_TOKEN(REG_RE_POINT, 0) << 32);
+    g_assert_cmphex(si_test_pixel(qts, 90, 90), ==, 0x00abcdef);
 
     qtest_quit(qts);
 }
@@ -2101,6 +2165,8 @@ int main(int argc, char **argv)
                    test_char_l_execute_is_not_a_glyph_trigger);
     qtest_add_func("sn0/origin2000/mgras/display-surface-conversion",
                    test_display_surface_conversion);
+    qtest_add_func("sn0/origin2000/mgras/reset-refreshes-display-surface",
+                   test_reset_refreshes_display_surface);
     qtest_add_func("sn0/origin2000/mgras/pseudocolor-scanout-looks-up-cmap",
                    test_pseudocolor_scanout_looks_up_cmap);
     qtest_add_func("sn0/origin2000/mgras/masked-out-paint-keeps-index-tag",
@@ -2149,6 +2215,9 @@ int main(int argc, char **argv)
                    test_command_fifo_rejects_malformed_payload_lengths);
     qtest_add_func("sn0/origin2000/mgras/re-point-execute",
                    test_re_point_execute);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "re-point-execute-after-bounded-payload",
+                   test_re_point_execute_after_bounded_payload);
     qtest_add_func("sn0/origin2000/mgras/re-line-execute",
                    test_re_line_execute);
     qtest_add_func("sn0/origin2000/mgras/re-char-h-execute",
