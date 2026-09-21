@@ -1211,7 +1211,7 @@
           "ioc3-serial": 17592186044424,
           "module-index": 0,
           "part": "030-1124-002",
-          "preset": "baseio",
+          "preset": "io6",
           "revision": 4,
           "serial": 17592186044423
         }

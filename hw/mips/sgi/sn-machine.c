@@ -151,6 +151,7 @@ struct SGIMachineState {
     MachineState parent_obj;
 
     char *topology_name;
+    char *baseio_preset;
 
     unsigned int num_nodes;
     SN0NodeState **nodes;
@@ -971,12 +972,16 @@ static bool sgi_machine_instantiate_ip29_io(
  * sgi_xtalk_crossbow_link_attach_widget() like every other XIO card; the
  * Crossbow itself realizes later, once every board and node that
  * attaches to it has -- see sgi_machine_realize's own crossbar-realize
- * pass, after this function's every caller has returned).
+ * pass, after this function's every caller has returned). preset names
+ * which sgi-xio-baseio preset to build: "io6" for the plain card,
+ * "io6g" for the variant whose MediaIO daughtercard fits a second
+ * IOC3.
  */
 static bool sgi_machine_instantiate_baseio_card(
     SGIMachineState *s, const SGIModelTopology *t,
     const SGIModelIoBoard *record, unsigned int board_index,
-    const SGIModelXtalkAttachment *attachment, Error **errp)
+    const SGIModelXtalkAttachment *attachment, const char *preset,
+    Error **errp)
 {
     DeviceState *dev = qdev_new(TYPE_SGI_XIO_BASEIO);
     g_autofree char *name = g_strdup_printf("io-board%u", board_index);
@@ -1024,6 +1029,7 @@ static bool sgi_machine_instantiate_baseio_card(
         qdev_prop_set_uint64(dev, "ioc3-onewire-serial", record->ioc3_serial);
     }
     qdev_prop_set_string(dev, "pci-bus-name", bus_name);
+    qdev_prop_set_string(dev, "preset", preset);
     if (nvram_blk) {
         qdev_prop_set_string(dev, "nvram-drive", blk_name(nvram_blk));
     }
@@ -1204,9 +1210,14 @@ static bool sgi_machine_instantiate_io_board(
     case SGI_MODEL_IO_BOARD_PRESET_IP29_IO:
         return sgi_machine_instantiate_ip29_io(s, t, record, board_index,
                                                attachment, errp);
-    case SGI_MODEL_IO_BOARD_PRESET_BASEIO:
+    case SGI_MODEL_IO_BOARD_PRESET_IO6:
+        return sgi_machine_instantiate_baseio_card(
+            s, t, record, board_index, attachment,
+            s->baseio_preset ? s->baseio_preset : "io6", errp);
+    case SGI_MODEL_IO_BOARD_PRESET_IO6G:
         return sgi_machine_instantiate_baseio_card(s, t, record, board_index,
-                                                   attachment, errp);
+                                                   attachment, "io6g",
+                                                   errp);
     case SGI_MODEL_IO_BOARD_PRESET_IO8:
         return sgi_machine_instantiate_io8(s, t, record, board_index,
                                            attachment, errp);
@@ -2472,6 +2483,27 @@ static void sgi_machine_set_topology(Object *obj, const char *value,
     s->topology_name = g_strdup(value);
 }
 
+/*
+ * origin2000 only: which sgi-xio-baseio preset builds the product's one
+ * catalogue-declared I/O board. "io6" (the plain card) by default; "io6g"
+ * asks for the variant whose second IOC3 carries a keyboard/mouse pair.
+ */
+static char *sgi_machine_get_baseio_preset(Object *obj, Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+
+    return g_strdup(s->baseio_preset ? s->baseio_preset : "io6");
+}
+
+static void sgi_machine_set_baseio_preset(Object *obj, const char *value,
+                                          Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+
+    g_free(s->baseio_preset);
+    s->baseio_preset = g_strdup(value);
+}
+
 static bool sgi_machine_get_debug_leds(Object *obj, Error **errp)
 {
     return SGI_MACHINE(obj)->debug_leds;
@@ -2581,6 +2613,7 @@ static void sgi_machine_instance_finalize(Object *obj)
     g_free(s->spare_fabric_links);
     g_free(s->spare_fabric_widget);
     g_free(s->topology_name);
+    g_free(s->baseio_preset);
     for (i = 0; i < ARRAY_SIZE(sgi_machine_identity_records); i++) {
         qapi_free_strList(*sgi_machine_identity_slot(
             obj, (void *)&sgi_machine_identity_records[i]));
@@ -2707,6 +2740,14 @@ static void origin2000_class_init(ObjectClass *oc, const void *data)
     mc->max_cpus = sgi_machine_product_max_cpus("origin2000");
     mc->default_ram_size = sgi_machine_topology_default_ram(t);
     mc->default_ram_id = "sn0.ram";
+
+    object_class_property_add_str(oc, "baseio-preset",
+                                  sgi_machine_get_baseio_preset,
+                                  sgi_machine_set_baseio_preset);
+    object_class_property_set_description(oc, "baseio-preset",
+        "Select the BaseIO card variant this product's I/O board builds: "
+        "'io6' (the plain card, the default) or 'io6g' (adds the MediaIO "
+        "daughtercard's second IOC3 and both chips' keyboard/mouse pair).");
 }
 
 /*

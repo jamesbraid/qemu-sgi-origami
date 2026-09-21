@@ -51,14 +51,14 @@ static void test_ip29_unresolved_drive(const void *data)
     assert_backend_id_rejected("ip29", "nvram-drive", "no-such-drive");
 }
 
-static void test_baseio_unresolved_chardev(const void *data)
+static void test_io6_unresolved_chardev(const void *data)
 {
-    assert_backend_id_rejected("baseio", "chardev-a", "no-such-chardev");
+    assert_backend_id_rejected("io6", "chardev-a", "no-such-chardev");
 }
 
-static void test_baseio_unresolved_drive(const void *data)
+static void test_io6_unresolved_drive(const void *data)
 {
-    assert_backend_id_rejected("baseio", "nvram-drive", "no-such-drive");
+    assert_backend_id_rejected("io6", "nvram-drive", "no-such-drive");
 }
 
 static void test_io8_unresolved_chardev(const void *data)
@@ -79,10 +79,10 @@ int main(int argc, char **argv)
                         test_ip29_unresolved_chardev);
     qtest_add_data_func("/sgi-board/ip29/unresolved-drive-refused", NULL,
                         test_ip29_unresolved_drive);
-    qtest_add_data_func("/sgi-board/baseio/unresolved-chardev-refused", NULL,
-                        test_baseio_unresolved_chardev);
-    qtest_add_data_func("/sgi-board/baseio/unresolved-drive-refused", NULL,
-                        test_baseio_unresolved_drive);
+    qtest_add_data_func("/sgi-board/io6/unresolved-chardev-refused", NULL,
+                        test_io6_unresolved_chardev);
+    qtest_add_data_func("/sgi-board/io6/unresolved-drive-refused", NULL,
+                        test_io6_unresolved_drive);
     qtest_add_data_func("/sgi-board/io8/unresolved-chardev-refused", NULL,
                         test_io8_unresolved_chardev);
     qtest_add_data_func("/sgi-board/io8/unresolved-drive-refused", NULL,

@@ -938,6 +938,50 @@ static void sgi_bridge_onewire_build_rom(uint8_t rom[NIC_ROM_SIZE],
     }
 }
 
+/*
+ * Realize one DS2505 board-identity part onto the bus and give it
+ * `child_name`, so the realize-time board record and a later
+ * sgi_bridge_add_onewire_board_part() attach can share this without QOM
+ * child-name collisions. `s->onewire_bus` must already exist.
+ */
+static bool sgi_bridge_onewire_attach_part(SGIBridgeState *s,
+                                           const char *child_name,
+                                           const char *board_part,
+                                           uint64_t serial, Error **errp)
+{
+    const char *board_part_error = sgi_bridge_board_part_error(board_part);
+    uint8_t rom[NIC_ROM_SIZE];
+    DeviceState *part;
+
+    if (board_part_error) {
+        error_setg(errp, "%s", board_part_error);
+        return false;
+    }
+    if (serial & ~NIC_ROM_SERIAL_MASK) {
+        error_setg(errp, "the I/O bridge one-wire serial 0x%" PRIx64
+                   " does not fit in 48 bits", serial);
+        return false;
+    }
+
+    sgi_bridge_onewire_build_rom(rom, board_part);
+    part = qdev_new(TYPE_ONEWIRE_DS2505);
+    object_property_add_child(OBJECT(s), child_name, OBJECT(part));
+    qdev_prop_set_uint8(part, "family", NIC_ROM_FAMILY);
+    qdev_prop_set_uint64(part, "serial", serial);
+    ds2505_set_image(part, rom, sizeof(rom));
+    return qdev_realize_and_unref(part, BUS(s->onewire_bus), errp);
+}
+
+bool sgi_bridge_add_onewire_board_part(DeviceState *bridge,
+                                       const char *board_part,
+                                       uint64_t serial, Error **errp)
+{
+    SGIBridgeState *s = SGI_BRIDGE(bridge);
+
+    return sgi_bridge_onewire_attach_part(s, "onewire-part-2", board_part,
+                                          serial, errp);
+}
+
 /* One bit slot, reported finished inside the write the guest polls after. */
 static void sgi_bridge_onewire_slot(SGIBridgeState *s, uint32_t val)
 {
@@ -1842,8 +1886,6 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     SGIBridgeState *s = SGI_BRIDGE(dev);
     PCIHostState *phb = PCI_HOST_BRIDGE(dev);
     Object *obj = OBJECT(dev);
-    uint8_t rom[NIC_ROM_SIZE];
-    DeviceState *part;
     const char *board_part;
     const char *board_part_error;
     unsigned int slot;
@@ -1874,8 +1916,12 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     }
 
     /*
-     * The MicroLAN bus and the one part on it: the board identity EPROM,
-     * a DS2505, which is what the family code 0x0b names.
+     * The MicroLAN bus and the one board-identity part every Bridge
+     * realizes for its own board: a DS2505 EPROM, which is what the
+     * family code 0x0b names. The bus is architecturally multi-drop -- a
+     * carrier fitting a daughtercard behind this same chip calls
+     * sgi_bridge_add_onewire_board_part() afterwards to add that card's
+     * own record alongside this one.
      *
      * The record is composed here and never again. An EPROM keeps its
      * contents across a reset -- that is what the technology is -- so a
@@ -1888,13 +1934,8 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
      * itself, so the ordering was never the hazard.
      */
     s->onewire_bus = onewire_create_bus(dev, "onewire");
-    sgi_bridge_onewire_build_rom(rom, board_part);
-    part = qdev_new(TYPE_ONEWIRE_DS2505);
-    object_property_add_child(obj, "onewire-part", OBJECT(part));
-    qdev_prop_set_uint8(part, "family", NIC_ROM_FAMILY);
-    qdev_prop_set_uint64(part, "serial", s->onewire_serial);
-    ds2505_set_image(part, rom, sizeof(rom));
-    if (!qdev_realize_and_unref(part, BUS(s->onewire_bus), errp)) {
+    if (!sgi_bridge_onewire_attach_part(s, "onewire-part", board_part,
+                                        s->onewire_serial, errp)) {
         return;
     }
 
