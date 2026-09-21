@@ -67,6 +67,32 @@
 #define KBC_AUX_TRANSMIT 0x0ac
 
 /*
+ * Chip-relative; the combined interrupt source/enable registers
+ * sn0-ioc3-test.c's own copy already names, restated here for this
+ * file's BaseIO-window access style. INT_KEYBOARD is a latched bit: it
+ * survives a drain of the receive register and only clears on a
+ * write-one to INT_STATUS itself.
+ */
+#define INT_STATUS      0x01c
+#define INT_ENABLE_SET  0x020
+#define INT_ENABLE_CLR  0x024
+#define INT_KEYBOARD    (1u << 22)
+
+/*
+ * Chip-relative; each IOC3's two 16550s (hw/char/serial.c), at the same
+ * offsets sn0-ioc3-test.c's own SERIAL_A/SERIAL_B use. Only the registers
+ * a local-loopback round trip needs are restated here: THR/RBR share
+ * register 0, MCR is register 4 and LSR is register 5 in every 16550.
+ */
+#define SERIAL_A 0x020178
+#define SERIAL_B 0x020170
+#define REG_THR  0
+#define REG_MCR  4
+#define REG_LSR  5
+#define UART_MCR_LOOP (1u << 4)   /* hw/char/serial.c's own bit, restated */
+#define UART_LSR_DR   (1u << 0)
+
+/*
  * The Bridge's own board-identity NIC (one-wire master register), the same
  * offset and bit-banging contract as sn1-xbridge-onewire-test.c's, reached
  * here through BaseIO's crosstalk window instead of that file's standalone
@@ -78,6 +104,18 @@
 #define NIC_DONE  (1u << 1)
 #define NIC_PULSE(n)  ((uint32_t)(n) << 10)
 #define NIC_SAMPLE(n) ((uint32_t)(n) << 2)
+
+/*
+ * The Bridge's own combined interrupt-status register and each IOC3's
+ * SuperIO pin bit, restated from sn0-ioc3-test.c's own BRIDGE_INT_STATUS
+ * and BRIDGE_PIN_SUPERIO. io6g wires device 2's board IOC3 to input 4 and
+ * device 6's MediaIO IOC3 to input 6 (hw/mips/sgi/baseio.c's
+ * BASEIO_IOC3_IRQ_PIN and BASEIO_G_MIO_IOC3_IRQ_PIN); IP29's single IOC3
+ * rides input 3 instead, a different board's pin assignment.
+ */
+#define BRIDGE_INT_STATUS (0x100 + XTALK_REG_DATA)
+#define BRIDGE_PIN_BOARD_IOC3 (1u << 4)
+#define BRIDGE_PIN_MIO_IOC3   (1u << 6)
 
 /* docs/datasheets/baseio.md's board-variant table. */
 #define IO6G_BOARD_PART "030-0734-002"
@@ -452,6 +490,102 @@ static void test_io6g_ps2(void)
 }
 
 /*
+ * The MediaIO IOC3's own combined interrupt reaches the Bridge on input 6
+ * (BASEIO_G_MIO_IOC3_IRQ_PIN), separate from device 2's board IOC3 on
+ * input 4 -- the same latched keyboard/mouse source
+ * test_the_ps2_interrupt_latches_until_acknowledged exercises against
+ * IP29's single chip in sn0-ioc3-test.c, applied here to confirm device 6
+ * carries a working interrupt path of its own rather than only
+ * enumerating a keyboard/mouse pair with nothing wired behind it.
+ */
+static void test_io6g_mio_keyboard_reaches_bridge_pin_6(void)
+{
+    QTestState *qts = start_module_io6g();
+
+    program_module(qts);
+    program_mio_ioc3(qts);
+
+    /* Nothing queued and nothing enabled: both chips' pins are clear. */
+    g_assert_cmphex(baseio_window_read(qts, BRIDGE_INT_STATUS) &
+                    (BRIDGE_PIN_BOARD_IOC3 | BRIDGE_PIN_MIO_IOC3), ==, 0);
+
+    /* The enable alone raises nothing while the source is still clear. */
+    baseio_window_write(qts, MIO_IOC3_WINDOW + INT_ENABLE_SET, INT_KEYBOARD);
+    g_assert_cmphex(baseio_window_read(qts, BRIDGE_INT_STATUS) &
+                    BRIDGE_PIN_MIO_IOC3, ==, 0);
+
+    /*
+     * A queued keyboard reply drives the whole chain -- source, combined
+     * status, SuperIO GPIO-out, board wire -- to Bridge input 6 alone;
+     * device 2's own pin stays clear throughout, confirming the two
+     * chips' interrupts are independent, not aliased.
+     */
+    baseio_window_write(qts, MIO_IOC3_WINDOW + KBC_KBD_TRANSMIT, 0xff);
+    g_assert_cmphex(baseio_window_read(qts, MIO_IOC3_WINDOW + INT_STATUS) &
+                    INT_KEYBOARD, ==, INT_KEYBOARD);
+    g_assert_cmphex(baseio_window_read(qts, BRIDGE_INT_STATUS) &
+                    BRIDGE_PIN_MIO_IOC3, ==, BRIDGE_PIN_MIO_IOC3);
+    g_assert_cmphex(baseio_window_read(qts, BRIDGE_INT_STATUS) &
+                    BRIDGE_PIN_BOARD_IOC3, ==, 0);
+
+    /* Latched: only an acknowledging write to the source clears the pin. */
+    baseio_window_write(qts, MIO_IOC3_WINDOW + INT_STATUS, INT_KEYBOARD);
+    g_assert_cmphex(baseio_window_read(qts, MIO_IOC3_WINDOW + INT_STATUS) &
+                    INT_KEYBOARD, ==, 0);
+    g_assert_cmphex(baseio_window_read(qts, BRIDGE_INT_STATUS) &
+                    BRIDGE_PIN_MIO_IOC3, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The MediaIO IOC3's own two serial ports carry the same 16550 the board
+ * IOC3's do (hw/char/serial.c), exercised here as actual data transport
+ * rather than a register echo: the 16550's own local-loopback mode (MCR
+ * bit 4) turns a transmitted byte straight back into the receive
+ * register, the same synchronous path serial_xmit() takes for any port,
+ * with no chardev backend and no guest console involved. These ports are
+ * peripheral connections, not a console (baseio_build_io6g()'s own doc
+ * comment), so what this confirms is that a byte put in over the MediaIO
+ * chip's own window comes back out, not any text.
+ */
+static void test_io6g_mio_serial_loopback(void)
+{
+    QTestState *qts = start_module_io6g();
+    static const struct {
+        uint32_t port;
+        uint8_t byte;
+    } ports[] = {
+        { SERIAL_A, 0x5a },
+        { SERIAL_B, 0xa5 },
+    };
+    unsigned int i;
+
+    program_module(qts);
+    program_mio_ioc3(qts);
+
+    for (i = 0; i < G_N_ELEMENTS(ports); i++) {
+        uint64_t base = MIO_IOC3_WINDOW + ports[i].port;
+
+        baseio_window_writeb(qts, base + REG_MCR, UART_MCR_LOOP);
+        g_assert_cmphex(baseio_window_readb(qts, base + REG_LSR) &
+                        UART_LSR_DR, ==, 0);
+
+        baseio_window_writeb(qts, base + REG_THR, ports[i].byte);
+        g_assert_cmphex(baseio_window_readb(qts, base + REG_LSR) &
+                        UART_LSR_DR, ==, UART_LSR_DR);
+        g_assert_cmphex(baseio_window_readb(qts, base + REG_THR), ==,
+                        ports[i].byte);
+
+        /* The read drained it: nothing left waiting. */
+        g_assert_cmphex(baseio_window_readb(qts, base + REG_LSR) &
+                        UART_LSR_DR, ==, 0);
+    }
+
+    qtest_quit(qts);
+}
+
+/*
  * One bit slot, mainline's widths: a long reset, a short write-one/read,
  * a middling write-zero.
  */
@@ -695,6 +829,10 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/baseio/mio-ioc3-subsystem-id",
                    test_mio_ioc3_subsystem_id);
     qtest_add_func("sn0/baseio/io6g-ps2", test_io6g_ps2);
+    qtest_add_func("sn0/baseio/io6g-mio-keyboard-reaches-bridge-pin-6",
+                   test_io6g_mio_keyboard_reaches_bridge_pin_6);
+    qtest_add_func("sn0/baseio/io6g-mio-serial-loopback",
+                   test_io6g_mio_serial_loopback);
     qtest_add_func("sn0/baseio/io6g-onewire-board-parts",
                    test_io6g_onewire_board_parts);
     return g_test_run();
