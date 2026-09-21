@@ -193,6 +193,44 @@ static uint32_t si_test_display_pixel(QTestState *qts, uint32_t x, uint32_t y)
     return si_qom_get_uint(qts, "x-test-display-pixel");
 }
 
+static uint32_t si_screendump_pixel(QTestState *qts, uint32_t x, uint32_t y)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *contents = NULL;
+    g_autoptr(GError) error = NULL;
+    char *pixels;
+    gsize length;
+    int fd;
+
+    fd = g_file_open_tmp("sgi-mgras-surface-XXXXXX.ppm", &path, &error);
+    g_assert_no_error(error);
+    close(fd);
+    {
+        QDict *response = qtest_qmp(qts,
+            "{'execute': 'screendump', 'arguments': {'filename': %s}}",
+            path);
+        if (!qdict_haskey(response, "return")) {
+            g_autoptr(GString) text = qobject_to_json(QOBJECT(response));
+            g_error("screendump failed: %s", text->str);
+        }
+        qobject_unref(response);
+    }
+    g_assert_true(g_file_get_contents(path, &contents, &length, &error));
+    g_assert_no_error(error);
+    g_assert_true(g_str_has_prefix(contents, "P6\n1280 1024\n255\n"));
+    pixels = g_strstr_len(contents, length, "\n255\n");
+    g_assert_nonnull(pixels);
+    pixels += 5;
+    g_assert_cmpuint(x, <, 1280);
+    g_assert_cmpuint(y, <, 1024);
+    g_assert_cmpuint((gsize)(pixels - contents) + 1280 * 1024 * 3, <=,
+                     length);
+    pixels += (y * 1280 + x) * 3;
+    unlink(path);
+    return ((uint8_t)pixels[0] << 16) | ((uint8_t)pixels[1] << 8) |
+           (uint8_t)pixels[2];
+}
+
 
 static void si_migrate(QTestState *from, const char *uri)
 {
@@ -1183,9 +1221,11 @@ static void test_reset_refreshes_display_surface(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND_EXEC(REG_BLOCK_END, (14u << 16) | 14u));
     g_assert_cmphex(si_test_display_pixel(qts, 14, 14), ==, 0x00332211);
+    g_assert_cmphex(si_screendump_pixel(qts, 14, 14), ==, 0x00332211);
 
     qtest_system_reset(qts);
     g_assert_cmphex(si_test_display_pixel(qts, 14, 14), ==, 0);
+    g_assert_cmphex(si_screendump_pixel(qts, 14, 14), ==, 0);
 
     qtest_quit(qts);
 }
@@ -1215,6 +1255,7 @@ static void test_pseudocolor_scanout_looks_up_cmap(void)
     qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0x11);
     qtest_writel(qts, REG_CMAP_DATA, 0x00112233);
     g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x00332211);
+    g_assert_cmphex(si_screendump_pixel(qts, 5, 5), ==, 0x00332211);
 
 
     qtest_writel(qts, REG_XMAP_MAIN_MODE, 0x7a4);
@@ -1354,6 +1395,7 @@ static void test_cursor_composites_when_enabled(void)
 
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1d, 0x0002));
     g_assert_cmphex(si_test_display_pixel(qts, 50, 60), ==, 0x00ff0000);
+    g_assert_cmphex(si_screendump_pixel(qts, 50, 60), ==, 0x00ff0000);
     g_assert_cmphex(si_test_display_pixel(qts, 51, 61), ==, 0x00ffffff);
     g_assert_cmphex(si_test_display_pixel(qts, 52, 62), ==, 0);
 
@@ -1365,6 +1407,7 @@ static void test_cursor_composites_when_enabled(void)
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x07, 0x0100));
     qtest_writew(qts, REG_VC3_RAM, 0x0000);
     g_assert_cmphex(si_test_display_pixel(qts, 50, 60), ==, 0);
+    g_assert_cmphex(si_screendump_pixel(qts, 50, 60), ==, 0);
 
 
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1d, 0x0000));
