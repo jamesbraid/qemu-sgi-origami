@@ -41,9 +41,6 @@
 
 #define SI_REG_RE_POINT 0x040
 #define SI_REG_RE_LINE 0x041
-#define SI_REG_RE_BLOCKCOPY 0x045
-
-
 #define SI_REG_IR_ALIAS 0x045
 
 
@@ -381,43 +378,6 @@ static void si_draw_line(SGIMgrasState *s)
     }
 }
 
-/* RE_BLOCKCOPY: source origin is the FIFO payload's first word, dest rect
- * is BLOCKXYSTARTI/ENDI. Rows walk toward the source when rectangles
- * overlap so a row survives being read after being overwritten. */
-static void si_draw_block_copy(SGIMgrasState *s, const uint32_t *payload,
-                               uint32_t payload_words)
-{
-    uint32_t xy0 = s->rss[SI_REG_BLOCKXYSTARTI];
-    uint32_t xy1 = s->rss[SI_REG_BLOCKXYENDI];
-    int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
-    int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
-    int sx0, sy0, w, h;
-    bool copy_backward;
-
-    if (payload_words < 1 || x0 > x1 || y0 > y1 ||
-        x0 >= SGI_MGRAS_WIDTH || y0 >= SGI_MGRAS_HEIGHT) {
-        return;
-    }
-    x1 = MIN(x1, SGI_MGRAS_WIDTH - 1);
-    y1 = MIN(y1, SGI_MGRAS_HEIGHT - 1);
-    sx0 = (payload[0] >> 16) & 0xffff;
-    sy0 = payload[0] & 0xffff;
-    if (sx0 >= SGI_MGRAS_WIDTH || sy0 >= SGI_MGRAS_HEIGHT) {
-        return;
-    }
-    w = MIN(x1 - x0 + 1, SGI_MGRAS_WIDTH - sx0);
-    h = MIN(y1 - y0 + 1, SGI_MGRAS_HEIGHT - sy0);
-    copy_backward = (y0 > sy0) || (y0 == sy0 && x0 > sx0);
-
-    for (int row = 0; row < h; row++) {
-        int r = copy_backward ? (h - 1 - row) : row;
-        uint32_t *dst_row = &s->front[(y0 + r) * SGI_MGRAS_WIDTH + x0];
-        uint32_t *src_row = &s->front[(sy0 + r) * SGI_MGRAS_WIDTH + sx0];
-
-        memmove(dst_row, src_row, (size_t)w * sizeof(uint32_t));
-    }
-}
-
 static void si_raster_command_execute(
     SGIMgrasState *s, const SGIMgrasRasterSubmission *submission)
 {
@@ -436,11 +396,11 @@ static void si_raster_command_execute(
         return;
     case SI_REG_IR_ALIAS:
         if (submission->form == SGI_MGRAS_RASTER_FIFO) {
-            si_draw_block_copy(s, submission->payload,
-                               submission->payload_words);
-        } else {
-            si_draw_ir_alias_fill(s);
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: unimplemented command-FIFO "
+                          "execute, register 0x%03x\n", submission->reg);
+            return;
         }
+        si_draw_ir_alias_fill(s);
         s->dirty = true;
         return;
     case SI_REG_CHAR_H:
