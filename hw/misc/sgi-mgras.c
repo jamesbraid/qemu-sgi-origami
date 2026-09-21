@@ -975,6 +975,20 @@ static void si_test_get_display_pixel(Object *obj, Visitor *v,
     visit_type_uint32(v, name, &value, errp);
 }
 
+/* Expose the current model WID tag for replay diagnostics. */
+static void si_test_get_wid(Object *obj, Visitor *v, const char *name,
+                            void *opaque, Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint32_t value = 0;
+
+    if (DEVICE(obj)->realized && s->test_pixel_x < SGI_MGRAS_WIDTH &&
+        s->test_pixel_y < SGI_MGRAS_HEIGHT) {
+        value = s->wid[s->test_pixel_y * SGI_MGRAS_WIDTH + s->test_pixel_x];
+    }
+    visit_type_uint32(v, name, &value, errp);
+}
+
 static void si_instance_init(Object *obj)
 {
     SGIMgrasState *s = SGI_MGRAS(obj);
@@ -987,6 +1001,8 @@ static void si_instance_init(Object *obj)
                         NULL, NULL, NULL);
     object_property_add(obj, "x-test-display-pixel", "uint32",
                         si_test_get_display_pixel, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-wid", "uint32", si_test_get_wid,
+                        NULL, NULL, NULL);
     object_property_add_uint64_ptr(obj, "x-test-last-interrupt-addr",
                                    &s->test_last_interrupt_addr,
                                    OBJ_PROP_FLAG_READ);

@@ -18,7 +18,12 @@
 #define SI_VIZ_QOM_PATH   "/machine/si-viz"
 #define DEFAULT_REPLAY    "../tests/data/mgras/fill.replay"
 #define MINIMAL_REPLAY    "../tests/data/mgras/minimal.replay"
+#define INVALID_REPLAY    "../tests/data/mgras/invalid.replay"
+#define INVALID_BOUNDS    "../tests/data/mgras/invalid-bounds.replay"
+#define INVALID_EXTRA     "../tests/data/mgras/invalid-extra.replay"
 #define SI_MMIO_SIZE      (2 * MiB)
+#define SI_NATIVE_WIDTH   1280
+#define SI_NATIVE_HEIGHT  1024
 
 static uint64_t parse_number(const char *path, unsigned int line,
                              const char *word)
@@ -27,6 +32,10 @@ static uint64_t parse_number(const char *path, unsigned int line,
     uint64_t value;
 
     errno = 0;
+    if (!word || *word == '-' || *word == '+') {
+        g_error("%s:%u: invalid number '%s'", path, line,
+                word ? word : "(null)");
+    }
     value = g_ascii_strtoull(word, &end, 0);
     if (errno || end == word || *end) {
         g_error("%s:%u: invalid number '%s'", path, line, word);
@@ -63,6 +72,19 @@ static uint32_t pixel(QTestState *qts, uint32_t x, uint32_t y,
         SI_VIZ_QOM_PATH, y);
     return qom_get_uint(qts, display ? "x-test-display-pixel" :
                                       "x-test-pixel");
+}
+
+static uint32_t wid(QTestState *qts, uint32_t x, uint32_t y)
+{
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-x', 'value': %u}}",
+        SI_VIZ_QOM_PATH, x);
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-y', 'value': %u}}",
+        SI_VIZ_QOM_PATH, y);
+    return qom_get_uint(qts, "x-test-wid");
 }
 
 static void replay_mmio(QTestState *qts, const char *path, unsigned int line,
@@ -127,14 +149,74 @@ static void replay_pixel(QTestState *qts, const char *path, unsigned int line,
     x = parse_number(path, line, words[1]);
     y = parse_number(path, line, words[2]);
     expected = parse_number(path, line, words[3]);
-    if (x > UINT32_MAX || y > UINT32_MAX || expected > UINT32_MAX) {
-        g_error("%s:%u: pixel value is wider than 32 bits", path, line);
+    if (x >= SI_NATIVE_WIDTH || y >= SI_NATIVE_HEIGHT ||
+        expected > UINT32_MAX) {
+        g_error("%s:%u: pixel is outside the native surface", path, line);
     }
     actual = pixel(qts, x, y, display);
     if (actual != expected) {
         g_error("%s:%u: pixel (%" PRIu64 ", %" PRIu64 ") returned 0x%"
                 PRIx64 ", expected 0x%" PRIx64,
                 path, line, x, y, actual, expected);
+    }
+}
+
+static void replay_pixels(QTestState *qts, const char *path, unsigned int line,
+                          char **words)
+{
+    uint64_t x, y, width, height, expected;
+
+    if (!words[1] || !words[2] || !words[3] || !words[4] || !words[5] ||
+        words[6]) {
+        g_error("%s:%u: pixels requires X Y WIDTH HEIGHT VALUE", path, line);
+    }
+    x = parse_number(path, line, words[1]);
+    y = parse_number(path, line, words[2]);
+    width = parse_number(path, line, words[3]);
+    height = parse_number(path, line, words[4]);
+    expected = parse_number(path, line, words[5]);
+    if (x > UINT32_MAX || y > UINT32_MAX || width > UINT32_MAX ||
+        height > UINT32_MAX || expected > UINT32_MAX ||
+        width > UINT32_MAX - x || height > UINT32_MAX - y || !width ||
+        !height || x >= SI_NATIVE_WIDTH || y >= SI_NATIVE_HEIGHT ||
+        width > SI_NATIVE_WIDTH - x || height > SI_NATIVE_HEIGHT - y) {
+        g_error("%s:%u: pixels rectangle is outside the native surface",
+                path, line);
+    }
+    for (uint32_t row = 0; row < height; row++) {
+        for (uint32_t column = 0; column < width; column++) {
+            uint32_t actual = pixel(qts, x + column, y + row, false);
+            if (actual != expected) {
+                g_error("%s:%u: pixels (%u,%u) returned 0x%08x, expected "
+                        "0x%08x", path, line, (uint32_t)(x + column),
+                        (uint32_t)(y + row),
+                        actual, (uint32_t)expected);
+            }
+        }
+    }
+}
+
+static void replay_wid(QTestState *qts, const char *path, unsigned int line,
+                       char **words)
+{
+    uint64_t x, y, expected, actual;
+
+    if (!words[1] || !words[2] || !words[3] || words[4]) {
+        g_error("%s:%u: wid requires X Y VALUE", path, line);
+    }
+    x = parse_number(path, line, words[1]);
+    y = parse_number(path, line, words[2]);
+    expected = parse_number(path, line, words[3]);
+    if (x >= SI_NATIVE_WIDTH || y >= SI_NATIVE_HEIGHT ||
+        expected > UINT8_MAX) {
+        g_error("%s:%u: wid value is outside the current model range", path,
+                line);
+    }
+    actual = wid(qts, x, y);
+    if (actual != expected) {
+        g_error("%s:%u: wid (%" PRIu64 ",%" PRIu64 ") returned 0x%02" PRIx64
+                ", expected 0x%02" PRIx64, path, line, x, y, actual,
+                expected);
     }
 }
 
@@ -165,6 +247,10 @@ static void replay_line(QTestState *qts, const char *path, unsigned int line,
         replay_pixel(qts, path, line, words, false);
     } else if (!strcmp(words[0], "display-pixel")) {
         replay_pixel(qts, path, line, words, true);
+    } else if (!strcmp(words[0], "pixels")) {
+        replay_pixels(qts, path, line, words);
+    } else if (!strcmp(words[0], "wid")) {
+        replay_wid(qts, path, line, words);
     } else {
         g_error("%s:%u: unknown or malformed operation '%s'", path, line,
                 words[0]);
@@ -232,10 +318,41 @@ static void test_minimal_replay(void)
     run_replay(MINIMAL_REPLAY, false);
 }
 
+static void test_invalid_replay(const char *path, const char *message)
+{
+    if (g_test_subprocess()) {
+        run_replay(g_getenv("MGRAS_INVALID_REPLAY"), false);
+        return;
+    }
+    g_setenv("MGRAS_INVALID_REPLAY", path, true);
+    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_unsetenv("MGRAS_INVALID_REPLAY");
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr(message);
+}
+
+static void test_invalid_number(void)
+{
+    test_invalid_replay(INVALID_REPLAY, "*invalid number*");
+}
+
+static void test_invalid_bounds(void)
+{
+    test_invalid_replay(INVALID_BOUNDS, "*outside the native surface*");
+}
+
+static void test_invalid_extra(void)
+{
+    test_invalid_replay(INVALID_EXTRA, "*requires X Y WIDTH HEIGHT VALUE*");
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("sgi-mgras/replay", test_replay);
     qtest_add_func("sgi-mgras/minimal-replay", test_minimal_replay);
+    qtest_add_func("sgi-mgras/invalid-number", test_invalid_number);
+    qtest_add_func("sgi-mgras/invalid-bounds", test_invalid_bounds);
+    qtest_add_func("sgi-mgras/invalid-extra", test_invalid_extra);
     return g_test_run();
 }
