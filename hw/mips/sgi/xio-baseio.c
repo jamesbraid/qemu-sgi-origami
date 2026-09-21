@@ -30,10 +30,15 @@
  * this card builds, "io6" by default; "io6g" builds the same
  * card with the MediaIO daughtercard's second IOC3 fitted. Both name
  * the same physical board part and Bridge revision, so this class's own
- * fitted-part identity is looked up from the same preset.
+ * fitted-part identity is looked up from the same preset. "flash-drive"
+ * names the image behind the card's own flash part on the Bridge's flash
+ * port, the BASEIO PROM the IP27 PROM loads from it; this file owns that
+ * part too, since it is a fitted part of the card and not of the
+ * sgi-baseio population.
  */
 
 #include "qemu/osdep.h"
+#include "hw/block/flash.h"
 #include "hw/mips/sgi/baseio.h"
 #include "hw/mips/sgi/xio-board.h"
 #include "hw/mips/sgi/xtalk-link.h"
@@ -45,7 +50,9 @@
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/module.h"
+#include "qemu/units.h"
 #include "qom/object.h"
+#include "system/block-backend.h"
 
 #define TYPE_SGI_XIO_BASEIO "sgi-xio-baseio"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIXioBaseioState, SGI_XIO_BASEIO)
@@ -55,6 +62,19 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIXioBaseioState, SGI_XIO_BASEIO)
 
 /* Placeholder; no reviewed source assigns a serial to this board class. */
 #define XIO_BASEIO_SERIAL_PLACEHOLDER 0x060504030201ULL
+
+/*
+ * The card's 1 MB flash EPROM on the Bridge's flash port, holding the
+ * BASEIO PROM (baseio.md, "the 1 MiB flash EPROM attaches on the
+ * Bridge"): a 512K x16 top-boot part answering the AMD command set with
+ * manufacturer 0x01 and device 0x22da, an identity the IP27 PROM's
+ * loader accepts and Linux's JEDEC table names AM29LV800BT. The port's
+ * unlock addresses are the x16 word addresses.
+ */
+#define XIO_BASEIO_FLASH_MANUFACTURER 0x01
+#define XIO_BASEIO_FLASH_DEVICE       0x22da
+#define XIO_BASEIO_FLASH_UNLOCK0      0x555
+#define XIO_BASEIO_FLASH_UNLOCK1      0x2aa
 
 struct SGIXioBaseioState {
     SGIXioBoardState parent_obj;
@@ -68,6 +88,7 @@ struct SGIXioBaseioState {
     char *pci_bus_name;
     char *preset;
     char *nvram_drive_id;
+    char *flash_drive_id;
     char *chardev_a_id;
     char *chardev_b_id;
     char *record_a_id;
@@ -75,7 +96,58 @@ struct SGIXioBaseioState {
 
     SGIBridgeState *bridge;
     SGIBaseioState *baseio;
+    PFlashCFI02 *flash;
 };
+
+/*
+ * The flash part, its contents from "flash-drive" when one is named: the
+ * image must be the part's own 1 MB. Without a drive the part is fitted
+ * blank and reads as zeros, not the erased 0xff a real unprogrammed chip
+ * would show; the firmware's loader rejects either and falls back to its
+ * internal copy.
+ */
+static bool xio_baseio_build_flash(SGIXioBaseioState *s, Error **errp)
+{
+    SGIXioBoardState *board = SGI_XIO_BOARD(s);
+    g_autofree char *name = g_strdup_printf("sgi-xio-baseio.module%u.flash",
+                                            board->module);
+    DeviceState *flash = qdev_new(TYPE_PFLASH_CFI02);
+
+    object_property_add_child(OBJECT(s), "flash", OBJECT(flash));
+    if (s->flash_drive_id) {
+        BlockBackend *blk = blk_by_name(s->flash_drive_id);
+
+        if (!blk) {
+            error_setg(errp, "sgi-xio-baseio: no drive named '%s' for "
+                      "flash-drive", s->flash_drive_id);
+            return false;
+        }
+        if (!qdev_prop_set_drive_err(flash, "drive", blk, errp)) {
+            return false;
+        }
+    }
+    /* Top boot: fifteen 64 KB sectors, then 32 KB, two 8 KB and 16 KB. */
+    qdev_prop_set_uint32(flash, "num-blocks0", 15);
+    qdev_prop_set_uint32(flash, "sector-length0", 64 * KiB);
+    qdev_prop_set_uint32(flash, "num-blocks1", 1);
+    qdev_prop_set_uint32(flash, "sector-length1", 32 * KiB);
+    qdev_prop_set_uint32(flash, "num-blocks2", 2);
+    qdev_prop_set_uint32(flash, "sector-length2", 8 * KiB);
+    qdev_prop_set_uint32(flash, "num-blocks3", 1);
+    qdev_prop_set_uint32(flash, "sector-length3", 16 * KiB);
+    qdev_prop_set_uint8(flash, "width", 2);
+    qdev_prop_set_uint8(flash, "big-endian", 1);
+    qdev_prop_set_uint16(flash, "id0", XIO_BASEIO_FLASH_MANUFACTURER);
+    qdev_prop_set_uint16(flash, "id1", XIO_BASEIO_FLASH_DEVICE);
+    qdev_prop_set_uint16(flash, "unlock-addr0", XIO_BASEIO_FLASH_UNLOCK0);
+    qdev_prop_set_uint16(flash, "unlock-addr1", XIO_BASEIO_FLASH_UNLOCK1);
+    qdev_prop_set_string(flash, "name", name);
+    if (!sysbus_realize(SYS_BUS_DEVICE(flash), errp)) {
+        return false;
+    }
+    s->flash = PFLASH_CFI02(flash);
+    return true;
+}
 
 static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
 {
@@ -118,6 +190,13 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
     qdev_prop_set_uint32(bridge, "fabric-node-shift", s->fabric_node_shift);
     qdev_prop_set_uint32(bridge, "fabric-widget-shift",
                          s->fabric_widget_shift);
+    if (!xio_baseio_build_flash(s, errp)) {
+        return false;
+    }
+    object_property_set_link(
+        OBJECT(bridge), "flash",
+        OBJECT(sysbus_mmio_get_region(SYS_BUS_DEVICE(s->flash), 0)),
+        &error_abort);
     if (!sysbus_realize(SYS_BUS_DEVICE(bridge), errp)) {
         return false;
     }
@@ -177,6 +256,7 @@ static const Property xio_baseio_properties[] = {
     DEFINE_PROP_STRING("pci-bus-name", SGIXioBaseioState, pci_bus_name),
     DEFINE_PROP_STRING("preset", SGIXioBaseioState, preset),
     DEFINE_PROP_STRING("nvram-drive", SGIXioBaseioState, nvram_drive_id),
+    DEFINE_PROP_STRING("flash-drive", SGIXioBaseioState, flash_drive_id),
     DEFINE_PROP_STRING("chardev-a", SGIXioBaseioState, chardev_a_id),
     DEFINE_PROP_STRING("chardev-b", SGIXioBaseioState, chardev_b_id),
     DEFINE_PROP_STRING("record-a", SGIXioBaseioState, record_a_id),

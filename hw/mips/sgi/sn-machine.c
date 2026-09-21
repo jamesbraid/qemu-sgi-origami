@@ -994,6 +994,13 @@ static bool sgi_machine_instantiate_baseio_card(
     DriveInfo *nvram_dinfo = drive_get(IF_MTD, 0, board_index);
     BlockBackend *nvram_blk = nvram_dinfo ?
         blk_by_legacy_dinfo(nvram_dinfo) : blk_by_name(nvram_id);
+    /*
+     * The card's BASEIO PROM flash, by name only: -drive if=none,
+     * id=sgi-baseio-flash<N>. The pflash units are the node PROMs.
+     */
+    g_autofree char *flash_id =
+        g_strdup_printf("sgi-baseio-flash%u", board_index);
+    BlockBackend *flash_blk = blk_by_name(flash_id);
     static const struct {
         unsigned int offset;
         const char *prop;
@@ -1032,6 +1039,9 @@ static bool sgi_machine_instantiate_baseio_card(
     qdev_prop_set_string(dev, "preset", preset);
     if (nvram_blk) {
         qdev_prop_set_string(dev, "nvram-drive", blk_name(nvram_blk));
+    }
+    if (flash_blk) {
+        qdev_prop_set_string(dev, "flash-drive", blk_name(flash_blk));
     }
     for (i = 0; i < ARRAY_SIZE(serial_bindings); i++) {
         Chardev *chr = serial_hd(sgi_machine_compute_serial_line(
