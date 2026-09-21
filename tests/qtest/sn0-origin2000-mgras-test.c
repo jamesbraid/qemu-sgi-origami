@@ -2110,6 +2110,48 @@ static void test_context_ack_migration(void)
     qtest_quit(from);
 }
 
+static void test_context_payload_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-context-payload-migration-XXXXXX",
+                           &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MACHINE_ARGS);
+    dest_cmdline = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    qtest_writel(from, REG_PREFIX, 0);
+    qtest_writel(from, REG_ENTRY, SI_ENTRY_WORD);
+    g_assert_cmphex(qtest_readl(from, REG_PENDING) & SI_PENDING_FLAGS, ==,
+                    SI_PENDING_FLAGS);
+    qtest_writel(from, REG_PENDING_ACK, SI_PENDING_FLAGS);
+    for (int i = 0; i < 3; i++) {
+        qtest_writel(from, REG_CONTEXT_COMMAND, i);
+    }
+
+    si_migrate(from, uri);
+
+    for (int i = 3; i < SI_CONTEXT_WORDS; i++) {
+        qtest_writel(to, REG_CONTEXT_COMMAND, i);
+    }
+    g_assert_cmphex(qtest_readl(to, REG_PENDING) & SI_PENDING_CONTEXT, ==,
+                    SI_PENDING_CONTEXT);
+    qtest_writel(to, REG_PENDING_ACK, SI_PENDING_CONTEXT);
+    qtest_writel(to, REG_CONTEXT_COMMAND, SI_FINAL_TOKEN);
+    g_assert_cmphex(qtest_readl(to, REG_CONTEXT_COMMAND), ==, SI_FINAL_TOKEN);
+    g_assert_cmphex(si_qom_get_uint(to, "x-test-error"), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
 static void test_discarded_fifo_migration(void)
 {
     g_autofree char *tmpfs = NULL;
@@ -2225,6 +2267,92 @@ static void test_partial_fifo_fill_migration(void)
     qtest_quit(to);
     qtest_quit(from);
     qtest_quit(expected);
+}
+
+static void test_ge_upload_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    static const uint32_t words[4] = {
+        0x11111111, 0x22222222, 0x33333333, 0x44444444,
+    };
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-ge-upload-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MACHINE_ARGS);
+    dest_cmdline = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    qtest_writel(from, REG_GE_CTRL_A, 0x200000);
+    for (int i = 0; i < ARRAY_SIZE(words) / 2; i++) {
+        qtest_writel(from, REG_GE_DATA_A, words[i]);
+    }
+
+    si_migrate(from, uri);
+
+    for (int i = ARRAY_SIZE(words) / 2; i < ARRAY_SIZE(words); i++) {
+        qtest_writel(to, REG_GE_DATA_A, words[i]);
+    }
+    qtest_writel(to, REG_GE_CTRL_A, 0x80000002);
+    for (int i = 0; i < ARRAY_SIZE(words) / 2; i++) {
+        g_assert_cmphex(qtest_readl(to, REG_GE_READ_2), ==, words[2 * i + 1]);
+        g_assert_cmphex(qtest_readl(to, REG_GE_READ_1), ==, words[2 * i]);
+    }
+    g_assert_cmphex(qtest_readl(to, REG_GE_READ_2), ==, 0);
+    g_assert_cmphex(qtest_readl(to, REG_GE_READ_1), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
+static void test_cursor_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-cursor-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MACHINE_ARGS);
+    dest_cmdline = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    qtest_writew(from, REG_CMAP_WRITE_INDEX, 0x1c);
+    qtest_writel(from, REG_CMAP_DATA, 0x000000ff);
+    qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x01, 0x0100));
+    qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x07, 0x0100));
+    qtest_writew(from, REG_VC3_RAM, 0x8000);
+    qtest_writew(from, REG_VC3_RAM, 0x0000);
+    qtest_writew(from, REG_VC3_RAM, 0x0000);
+    qtest_writew(from, REG_VC3_RAM, 0x0000);
+    qtest_writew(from, REG_VC3_RAM, 0x0000);
+    qtest_writew(from, REG_VC3_RAM, 0x0000);
+    qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x07, 0x0142));
+    qtest_writew(from, REG_VC3_RAM, 0x4000);
+    qtest_writew(from, REG_VC3_RAM, 0x0000);
+    qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x02, 50));
+    qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x03, 60));
+    qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1d, 0x0002));
+    g_assert_cmphex(si_test_display_pixel(from, 50, 60), ==, 0x00ff0000);
+
+    si_migrate(from, uri);
+
+    g_assert_cmphex(si_test_display_pixel(to, 50, 60), ==, 0x00ff0000);
+    g_assert_cmphex(si_test_display_pixel(to, 51, 61), ==, 0x00ffffff);
+    g_assert_cmphex(si_test_display_pixel(to, 52, 62), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
 }
 
 int main(int argc, char **argv)
@@ -2367,10 +2495,16 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/migration", test_migration);
     qtest_add_func("sn0/origin2000/mgras/context-ack-migration",
                    test_context_ack_migration);
+    qtest_add_func("sn0/origin2000/mgras/context-payload-migration",
+                   test_context_payload_migration);
     qtest_add_func("sn0/origin2000/mgras/discarded-fifo-migration",
                    test_discarded_fifo_migration);
     qtest_add_func("sn0/origin2000/mgras/partial-fifo-fill-migration",
                    test_partial_fifo_fill_migration);
+    qtest_add_func("sn0/origin2000/mgras/ge-upload-migration",
+                   test_ge_upload_migration);
+    qtest_add_func("sn0/origin2000/mgras/cursor-migration",
+                   test_cursor_migration);
 
     return g_test_run();
 }
