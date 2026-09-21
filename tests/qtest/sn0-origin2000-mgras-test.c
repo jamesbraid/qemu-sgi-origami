@@ -1952,26 +1952,31 @@ static void test_re_char_h_execute(void)
     qtest_quit(qts);
 }
 
-/*
- * Block-copy execution pins the current bounded model path, not hardware
- * command grammar.
- */
-static void test_re_blockcopy_execute(void)
+static void test_fifo_re_blockcopy_unsupported(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
+    uint32_t native_before, wid_before, display_before, surface_before;
 
     si_enter_context(qts);
+
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
 
     /* Direct 0x045 remains the indexed fill form. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BKGRD_RG, 0x00123456));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_BLOCK_START, (4u << 16) | 4u));
+                 SI_COMMAND(REG_BLOCK_START, (50u << 16) | 50u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
-    g_assert_cmphex(si_test_pixel(qts, 4, 4), ==, 0x00123456);
+    native_before = si_test_pixel(qts, 50, 50);
+    wid_before = si_test_wid(qts, 50, 50);
+    display_before = si_test_display_pixel(qts, 50, 50);
+    surface_before = si_screendump_pixel(qts, 50, 50);
+    g_assert_cmphex(native_before, ==, 0x00123456);
+    g_assert_cmphex(wid_before, ==, 1);
+    g_assert_cmphex(display_before, ==, surface_before);
 
-    /* Source: a 2x2 block at (10,10)-(11,11). */
+    /* A source rectangle makes the rejected copy request meaningful. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_PACKEDCOLOR, 0x00654321));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -1980,33 +1985,29 @@ static void test_re_blockcopy_execute(void)
                  SI_COMMAND_EXEC(REG_BLOCK_END, (11u << 16) | 11u));
     g_assert_cmphex(si_test_pixel(qts, 10, 10), ==, 0x00654321);
 
-    /* Destination: a same-size 2x2 block elsewhere, still untouched. */
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_BLOCK_START, (50u << 16) | 50u));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_BLOCK_END, (51u << 16) | 51u));
-    g_assert_cmphex(si_test_pixel(qts, 50, 50), ==, 0);
-
-    /* The execute header alone, no payload yet: not dispatched. */
+    /* The bounded parser accepts the payload but does not execute 0x045. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_EXEC_TOKEN(REG_RE_BLOCKCOPY, 0x18));
-    g_assert_cmphex(si_test_pixel(qts, 50, 50), ==, 0);
-    /* Payload words 0 and 1: word 0 is the source origin. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  ((uint64_t)((10u << 16) | 10u) << 32) | 0);
-    g_assert_cmphex(si_test_pixel(qts, 50, 50), ==, 0);
-    /* Payload words 2 and 3. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND, 0);
-    g_assert_cmphex(si_test_pixel(qts, 50, 50), ==, 0);
-    /* Payload words 4 and 5 complete the payload and dispatch. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND, 0);
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 
-    g_assert_cmphex(si_test_pixel(qts, 50, 50), ==, 0x00654321);
-    g_assert_cmphex(si_test_pixel(qts, 51, 51), ==, 0x00654321);
-    /* Outside the destination rectangle stays untouched. */
-    g_assert_cmphex(si_test_pixel(qts, 52, 52), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 50, 50), ==, native_before);
+    g_assert_cmphex(si_test_wid(qts, 50, 50), ==, wid_before);
+    g_assert_cmphex(si_test_display_pixel(qts, 50, 50), ==, display_before);
+    g_assert_cmphex(si_screendump_pixel(qts, 50, 50), ==, surface_before);
     g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 0);
+
+    /* Parser continuation still works after the unsupported submission. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00abcdef));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (90u << 16) | 90u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 (uint64_t)SI_EXEC_TOKEN(REG_RE_POINT, 0) << 32);
+    g_assert_cmphex(si_test_pixel(qts, 90, 90), ==, 0x00abcdef);
 
     /* An incomplete FIFO submission must not survive reset. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_EXEC_TOKEN(REG_RE_BLOCKCOPY, 16));
@@ -2361,8 +2362,8 @@ int main(int argc, char **argv)
                    test_re_line_execute);
     qtest_add_func("sn0/origin2000/mgras/re-char-h-execute",
                    test_re_char_h_execute);
-    qtest_add_func("sn0/origin2000/mgras/re-blockcopy-execute",
-                   test_re_blockcopy_execute);
+    qtest_add_func("sn0/origin2000/mgras/fifo-re-blockcopy-unsupported",
+                   test_fifo_re_blockcopy_unsupported);
     qtest_add_func("sn0/origin2000/mgras/migration", test_migration);
     qtest_add_func("sn0/origin2000/mgras/context-ack-migration",
                    test_context_ack_migration);
