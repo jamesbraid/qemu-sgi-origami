@@ -142,9 +142,21 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 /*
  * Control & Status block. offset 0x10 is the interrupt status word
  * rad1_inthandler() reads and write-clears; offset 0x08 is a second
- * register the same handler unconditionally clears afterward, role not
- * established beyond that -- modeled as a plain read/write register with
- * no independent side effect. Offset 0x18 is this session's inferred
+ * register the same handler unconditionally clears afterward. A later
+ * session reading the public TI/3Dlabs TVP4020 Hardware Reference Manual,
+ * Issue 6 (see the Bypass DMA block comment below for its full citation)
+ * found these two offsets named IntEnable (0x08, "3.2.2 Interrupt Enable
+ * Register", PDF page 34) and IntFlags (0x10, "3.2.3 Interrupt Flags",
+ * PDF page 35), each with a documented Bypass DMA Interrupt Enable/Flag
+ * pair at bit 7 -- see RAD1_INT_BIT7 below. This model still treats
+ * offset 0x08 as a plain
+ * read/write register with no independent side effect on IRQ delivery
+ * (rad1_update_irq() does not gate on it): APPROXIMATED, and now a known
+ * simplification rather than an unresolved one -- gating delivery on an
+ * enable bit this session did not trace the driver actually setting risks
+ * turning a working (if imprecise) interrupt path into a silent one, so
+ * this is left as a disclosed gap rather than "fixed" without live
+ * evidence the driver arms it first. Offset 0x18 is this session's inferred
  * "InFIFOSpace" location (the driver polls some counter here against
  * thresholds before GP-register writes; the exact offset was not found as
  * a named manual entry, only inferred from the driver's own polling
@@ -191,17 +203,104 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
  * psitech-rad1.md, "Interrupts and errors"): bit 0, bit 1 and bit 7 each
  * signal a distinct softc wait-queue slot up to 200 times. This session
  * did not establish which bit corresponds to which of
- * rad1_dma_patch_move()'s four completion paths, or a mask/enable
- * register. APPROXIMATED: every completed Render sets all three known
- * bits together rather than discriminating between them, and interrupt
- * delivery is unconditional (no enable gate) since none is evidenced.
- * Any other status bit is unimplemented and left visible in the status
- * word rather than silently swallowed.
+ * rad1_dma_patch_move()'s four completion paths for bit 0 and bit 1.
+ * Bit 7 is now established: the public TI/3Dlabs TVP4020 Hardware
+ * Reference Manual, Issue 6 (see the Bypass DMA block comment below for
+ * its full citation) names IntFlags bit 7 the "Bypass DMA Interrupt Flag"
+ * (IntEnable bit 7, offset 0x08, its enable counterpart) -- matching this
+ * bit's existing name and rad1_do_bypass_dma()'s own use of it below.
+ * APPROXIMATED: every completed Render still sets all three known bits
+ * together rather than discriminating between them (bit 7 is therefore
+ * overloaded between Render and Bypass DMA completion in this model,
+ * where real hardware would raise it only for the latter), and interrupt
+ * delivery is unconditional (no enable gate) since this session did not
+ * trace the driver actually arming IntEnable -- see the note at
+ * RAD1_REG_CTRL_ACK above. Any other status bit is unimplemented and left
+ * visible in the status word rather than silently swallowed.
  */
 #define RAD1_INT_BIT0           (1u << 0)
 #define RAD1_INT_BIT1           (1u << 1)
 #define RAD1_INT_BIT7           (1u << 7)
 #define RAD1_INT_KNOWN_MASK     (RAD1_INT_BIT0 | RAD1_INT_BIT1 | RAD1_INT_BIT7)
+
+/*
+ * Bypass DMA block, Region Zero 0x00a0-0x00d8: a separate host<->local-
+ * memory transfer engine from the FIFO-tagged GP registers below. This is
+ * the completion path "write dma int timed out" traced directly to: the
+ * driver posts a transfer through these six registers, in offset order,
+ * then sleeps on the completion interrupt this offset range never
+ * delivered before this file modeled it (RAD1_INT_BIT7 above).
+ *
+ * Register names, offsets and bit layouts below come from two independent
+ * sources that agree on every field: first-hand reading of the public
+ * TI/3Dlabs TVP4020 Hardware Reference Manual, Issue 6 (public web-archive
+ * mirror, Library root `irix-artifacts`, classification `public` -- a
+ * distinct copy from the bitsavers Programmer's Reference Manual this
+ * file's top comment already cites; see docs/provenance.md for the source
+ * record), pages 48-52 of that PDF's own count; and, separately, ELF+
+ * capstone disassembly of the shipped kernel driver's write-DMA posting
+ * sequence (no vendor source, no DWARF). All six registers' section
+ * numbers and pages were individually read and are cited per-register
+ * below, alongside the disassembly's own corroboration of each field.
+ * A seventh, adjacent register in the same manual family, ByDMAComplete
+ * (offset E8h, "3.2.25 Bypass DMA Complete", page 52 -- a manual-trigger
+ * "restart graphics processor" register distinct from ByDMAControl's own
+ * RestartGP bit, plus a read-only texture-invalid status bit) is not
+ * modeled: no traced driver access reaches it, so this offset range stops
+ * at ByDMAControl (D8h) and E8h is unimplemented, a disclosed gap rather
+ * than a resolved "not needed."
+ *
+ * ByDMAAddress (A0h, "3.2.19 Bypass DMA Start Address", page 48): PCI
+ * source address -- disassembly: the driver's own $a1 argument, a host
+ * physical address.
+ * ByDMAStride (B8h, "3.2.20 Bypass DMA Stride", page 48): source scanline
+ * stride in bytes -- disassembly: a per-mode constant loaded from the
+ * driver's own stack frame, distinct from the destination framebuffer's
+ * own mode stride.
+ * ByDMAMemAddr (C0h, "3.2.21 Bypass Memory Base Address", page 49):
+ * destination base address in Permedia2 local memory, texel units in bits
+ * 0-23 -- disassembly: an address computed as base + row * stride + col
+ * (mult/mflo/addu), consistent with the manual's account once "texel
+ * units" is read as a pixel count. This model's pixel is always
+ * RAD1_BYTES_PER_PIXEL bytes, so a texel offset converts to a byte offset
+ * by that fixed factor -- APPROXIMATED in the same sense as
+ * TextureBaseAddress above.
+ * ByDMASize (C8h, "3.2.22 Bypass DMA Transfer Size", page 49): Width bits
+ * 0-11, Height bits 16-27 -- disassembly: a packed value built the same
+ * RectangleSize-style way as RAD1_REG_RECT_SIZE above, with narrower
+ * (12-bit) fields.
+ * ByDMAByteMask (D0h, "3.2.23 Bypass DMA Byte Mask", page 50): left edge
+ * mask bits 0-3, right edge mask bits 16-19, one bit per byte lane of the
+ * edge pixel word. The driver's only traced value is 0x000f000f (both
+ * edges fully open). This model honors a closed lane bit as "leave that
+ * destination byte unchanged", applied only to the first and last column
+ * of a transfer (RAD1_REG_FB_HW_WRITE_MASK's own masked-write style
+ * above, but at edges rather than everywhere) -- the fully-open case is
+ * the only one this session's evidence confirms; any other value's
+ * precise behavior is APPROXIMATED.
+ * ByDMAControl (D8h, "3.2.24 Bypass DMA Control", pages 51-52): Mode bits
+ * 0-1, RestartGP bit 2, Data format bits 3-5, Patch Type bits 6-7, PP0-2
+ * bits 8-16 -- disassembly: the last MMIO write in the driver's own
+ * posting sequence, read from a fixed softc field. This model stores the
+ * value and triggers the transfer on every write, the same "last write
+ * starts it" contract RAD1_REG_RENDER already uses for the GP path; the
+ * individual Mode/RestartGP/format/Patch Type/PP fields are stored but
+ * not separately applied, matching this file's own established treatment
+ * of dSdx/dSdyDom/dTdx above, since the qualified guest workload (a flat
+ * write-DMA completion) does not exercise them independently.
+ */
+#define RAD1_REG_BYDMA_ADDRESS      0x00a0
+#define RAD1_REG_BYDMA_STRIDE       0x00b8
+#define RAD1_REG_BYDMA_MEM_ADDR     0x00c0
+#define RAD1_REG_BYDMA_SIZE         0x00c8
+#define RAD1_REG_BYDMA_BYTE_MASK    0x00d0
+#define RAD1_REG_BYDMA_CONTROL      0x00d8
+
+#define RAD1_BYDMA_DIM_MASK              0x0fffu
+#define RAD1_BYDMA_HEIGHT_SHIFT          16
+#define RAD1_BYDMA_MEMADDR_MASK          0x00ffffffu
+#define RAD1_BYDMA_BYTE_MASK_RIGHT_SHIFT 16
+#define RAD1_BYDMA_BYTE_MASK_LANE_MASK   0xfu
 
 /*
  * RAMDAC block, Region Zero 0x4000-0x4FFF (docs/datasheets/psitech-rad1.md
@@ -435,6 +534,14 @@ struct PsitechRad1State {
     uint32_t filter_mode;
     uint32_t sync_reg;
 
+    /* Bypass DMA block: the write-DMA completion path, see above. */
+    uint32_t bydma_addr;
+    uint32_t bydma_stride;
+    uint32_t bydma_mem_addr;
+    uint32_t bydma_size;
+    uint32_t bydma_byte_mask;
+    uint32_t bydma_control;
+
     /* Flash/EEPROM programming state machine. */
     int flash_state; /* Rad1FlashState, as plain int for VMState */
 };
@@ -594,6 +701,117 @@ static void rad1_do_render(PsitechRad1State *s)
     rad1_update_irq(s);
 }
 
+/*
+ * Expand one 4-bit ByDMAByteMask edge nibble into a 32-bit lane mask, one
+ * bit per byte lane of the pixel word (lane 0 = bits 7:0 of the value
+ * ldl_be_p()/stl_be_p() normalize to, matching the little-endian PCI byte-
+ * lane numbering this codebase's own Bridge byte-lane-swap handling already
+ * assumes elsewhere). No live evidence ties a specific lane bit to a
+ * specific memory byte beyond the driver's own fully-open 0xf value, which
+ * this mapping's choice of lane order cannot affect either way --
+ * APPROXIMATED, see the Bypass DMA block comment above.
+ */
+static uint32_t rad1_bydma_edge_mask(uint32_t nibble)
+{
+    uint32_t mask = 0;
+    int lane;
+
+    for (lane = 0; lane < 4; lane++) {
+        if (nibble & (1u << lane)) {
+            mask |= 0xffu << (8 * lane);
+        }
+    }
+    return mask;
+}
+
+/*
+ * Perform one Bypass DMA write transfer: read RectangleSize-style width/
+ * height scanlines from the PCI source address named by ByDMAAddress, at
+ * ByDMAStride bytes per source scanline, into the local-memory destination
+ * named by ByDMAMemAddr (texel units, converted to a byte offset by
+ * RAD1_BYTES_PER_PIXEL -- see the Bypass DMA block comment above), at the
+ * active mode's own scanline stride, honoring ByDMAByteMask at the first
+ * and last column of each row. This is the write-DMA completion path
+ * `rad1pci`'s posted write times out waiting for; see RAD1_REG_BYDMA_*
+ * above and RAD1_INT_BIT7.
+ */
+static void rad1_do_bypass_dma(PsitechRad1State *s)
+{
+    uint32_t width = s->bydma_size & RAD1_BYDMA_DIM_MASK;
+    uint32_t height = (s->bydma_size >> RAD1_BYDMA_HEIGHT_SHIFT) &
+                      RAD1_BYDMA_DIM_MASK;
+    const Rad1ModeRecord *mode = &rad1_mode_records[RAD1_ACTIVE_MODE];
+    uint32_t fb_stride = mode->width * RAD1_BYTES_PER_PIXEL;
+    hwaddr dst_base = (hwaddr)(s->bydma_mem_addr & RAD1_BYDMA_MEMADDR_MASK) *
+                      RAD1_BYTES_PER_PIXEL;
+    hwaddr src_base = s->bydma_addr;
+    uint32_t src_stride = s->bydma_stride;
+    uint32_t left_mask = rad1_bydma_edge_mask(
+        s->bydma_byte_mask & RAD1_BYDMA_BYTE_MASK_LANE_MASK);
+    uint32_t right_mask = rad1_bydma_edge_mask(
+        (s->bydma_byte_mask >> RAD1_BYDMA_BYTE_MASK_RIGHT_SHIFT) &
+        RAD1_BYDMA_BYTE_MASK_LANE_MASK);
+    uint32_t row_bytes;
+    uint8_t *linebuf;
+    uint32_t row, col;
+
+    if (width == 0 || height == 0) {
+        return;
+    }
+
+    row_bytes = width * RAD1_BYTES_PER_PIXEL;
+    if (row_bytes > fb_stride ||
+        dst_base + (hwaddr)(height - 1) * fb_stride + row_bytes >
+        RAD1_FB_SIZE) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                     "psitech-rad1: Bypass DMA destination at "
+                     "0x%"HWADDR_PRIx" (%ux%u) falls outside the "
+                     "framebuffer\n", dst_base, width, height);
+        return;
+    }
+
+    linebuf = g_malloc(row_bytes);
+
+    for (row = 0; row < height; row++) {
+        hwaddr src_addr = src_base + (hwaddr)row * src_stride;
+        uint8_t *dst = s->framebuffer + dst_base + (hwaddr)row * fb_stride;
+
+        if (pci_dma_read(&s->pci, src_addr, linebuf,
+                         row_bytes) != MEMTX_OK) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                         "psitech-rad1: Bypass DMA read failed at "
+                         "0x%"HWADDR_PRIx"\n", src_addr);
+            break;
+        }
+
+        for (col = 0; col < width; col++) {
+            uint32_t mask = 0xffffffffu;
+
+            if (col == 0) {
+                mask &= left_mask;
+            }
+            if (col == width - 1) {
+                mask &= right_mask;
+            }
+
+            if (mask == 0xffffffffu) {
+                memcpy(dst + col * 4, linebuf + col * 4, 4);
+            } else if (mask != 0) {
+                uint32_t old = ldl_be_p(dst + col * 4);
+                uint32_t incoming = ldl_be_p(linebuf + col * 4);
+
+                stl_be_p(dst + col * 4, (old & ~mask) | (incoming & mask));
+            }
+        }
+    }
+
+    g_free(linebuf);
+
+    /* IntFlags bit 7: Bypass DMA Interrupt Flag, see RAD1_INT_BIT7 above. */
+    s->int_status |= RAD1_INT_BIT7;
+    rad1_update_irq(s);
+}
+
 static uint64_t rad1_regzero_read(void *opaque, hwaddr addr, unsigned size)
 {
     PsitechRad1State *s = opaque;
@@ -609,6 +827,12 @@ static uint64_t rad1_regzero_read(void *opaque, hwaddr addr, unsigned size)
             return RAD1_FIFO_SPACE_READY;
         case RAD1_REG_ATTACH_GATE:
             return RAD1_ATTACH_GATE_VALUE;
+        case RAD1_REG_BYDMA_ADDRESS: return s->bydma_addr;
+        case RAD1_REG_BYDMA_STRIDE: return s->bydma_stride;
+        case RAD1_REG_BYDMA_MEM_ADDR: return s->bydma_mem_addr;
+        case RAD1_REG_BYDMA_SIZE: return s->bydma_size;
+        case RAD1_REG_BYDMA_BYTE_MASK: return s->bydma_byte_mask;
+        case RAD1_REG_BYDMA_CONTROL: return s->bydma_control;
         default:
             qemu_log_mask(LOG_UNIMP,
                          "psitech-rad1: unsupported Control & Status read "
@@ -693,6 +917,26 @@ static void rad1_regzero_write(void *opaque, hwaddr addr, uint64_t val,
             qemu_log_mask(LOG_GUEST_ERROR,
                          "psitech-rad1: unexpected write to read-only FIFO "
                          "space register at 0x%04x\n", (unsigned)addr);
+            break;
+        case RAD1_REG_BYDMA_ADDRESS:
+            s->bydma_addr = val;
+            break;
+        case RAD1_REG_BYDMA_STRIDE:
+            s->bydma_stride = val;
+            break;
+        case RAD1_REG_BYDMA_MEM_ADDR:
+            s->bydma_mem_addr = val;
+            break;
+        case RAD1_REG_BYDMA_SIZE:
+            s->bydma_size = val;
+            break;
+        case RAD1_REG_BYDMA_BYTE_MASK:
+            s->bydma_byte_mask = val;
+            break;
+        case RAD1_REG_BYDMA_CONTROL:
+            /* Last write in the posting sequence: starts the transfer. */
+            s->bydma_control = val;
+            rad1_do_bypass_dma(s);
             break;
         default:
             qemu_log_mask(LOG_UNIMP,
@@ -996,6 +1240,13 @@ static void rad1_reset_hold(Object *obj, ResetType type)
     s->filter_mode = 0;
     s->sync_reg = 0;
 
+    s->bydma_addr = 0;
+    s->bydma_stride = 0;
+    s->bydma_mem_addr = 0;
+    s->bydma_size = 0;
+    s->bydma_byte_mask = 0;
+    s->bydma_control = 0;
+
     memset(s->framebuffer, 0, RAD1_FB_SIZE);
     /* Erased NOR flash reads as all-ones. */
     memset(s->flash_data, 0xff, RAD1_FLASH_SIZE);
@@ -1100,6 +1351,12 @@ static const VMStateDescription vmstate_psitech_rad1 = {
         VMSTATE_UINT32(fb_hw_write_mask, PsitechRad1State),
         VMSTATE_UINT32(filter_mode, PsitechRad1State),
         VMSTATE_UINT32(sync_reg, PsitechRad1State),
+        VMSTATE_UINT32(bydma_addr, PsitechRad1State),
+        VMSTATE_UINT32(bydma_stride, PsitechRad1State),
+        VMSTATE_UINT32(bydma_mem_addr, PsitechRad1State),
+        VMSTATE_UINT32(bydma_size, PsitechRad1State),
+        VMSTATE_UINT32(bydma_byte_mask, PsitechRad1State),
+        VMSTATE_UINT32(bydma_control, PsitechRad1State),
         VMSTATE_INT32(flash_state, PsitechRad1State),
         VMSTATE_BUFFER_POINTER_UNSAFE(flash_data, PsitechRad1State, 1,
                                       RAD1_FLASH_SIZE),
