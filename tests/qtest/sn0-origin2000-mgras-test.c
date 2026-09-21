@@ -1941,8 +1941,10 @@ static void test_re_char_h_execute(void)
     qtest_quit(qts);
 }
 
-/* Block-copy execution pins the current bounded model path, not hardware
- * command grammar. */
+/*
+ * Block-copy execution pins the current bounded model path, not hardware
+ * command grammar.
+ */
 static void test_re_blockcopy_execute(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
