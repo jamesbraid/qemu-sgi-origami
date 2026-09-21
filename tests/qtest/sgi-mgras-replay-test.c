@@ -286,7 +286,9 @@ static void run_replay(const char *path, bool check_default_trace)
         remove_trace = true;
     }
     qts = qtest_initf(MACHINE_ARGS
-                      " -trace enable=sgi_mgras_mmio -D %s", trace);
+                      " -trace enable=sgi_mgras_mmio"
+                      " -trace enable=sgi_mgras_control_mmio"
+                      " -D %s", trace);
     lines = g_strsplit(contents, "\n", -1);
     for (unsigned int i = 0; lines[i]; i++) {
         replay_line(qts, path, i + 1, lines[i]);
@@ -296,12 +298,33 @@ static void run_replay(const char *path, bool check_default_trace)
         g_error("cannot read trace %s: %s", trace, error->message);
     }
     if (check_default_trace) {
+        g_auto(GStrv) trace_lines = g_strsplit(trace_contents, "\n", -1);
+        bool saw_control_read = false;
+        bool saw_control_write = false;
+
         g_assert_nonnull(strstr(trace_contents,
             "offset 0x73c08 value 0x55 size 1 write=1"));
         g_assert_nonnull(strstr(trace_contents,
             "offset 0x73c08 value 0x55 size 1 write=0"));
         g_assert_nonnull(strstr(trace_contents,
             "offset 0x720b0 value 0x2468 size 2 write=0"));
+        g_assert_nonnull(strstr(trace_contents, "offset 0x120400"));
+        g_assert_nonnull(strstr(trace_contents, "offset 0x130400"));
+        for (unsigned int i = 0; trace_lines[i]; i++) {
+            if (!strstr(trace_lines[i], "sgi_mgras_control_mmio")) {
+                continue;
+            }
+            g_assert_null(strstr(trace_lines[i], "offset 0x120400"));
+            g_assert_null(strstr(trace_lines[i], "offset 0x130400"));
+            saw_control_read |= strstr(trace_lines[i],
+                                       "offset 0x73c08 value 0x55 size 1 "
+                                       "write=0") != NULL;
+            saw_control_write |= strstr(trace_lines[i],
+                                        "offset 0x73c08 value 0x55 size 1 "
+                                        "write=1") != NULL;
+        }
+        g_assert_true(saw_control_read);
+        g_assert_true(saw_control_write);
     }
     if (remove_trace) {
         unlink(trace);

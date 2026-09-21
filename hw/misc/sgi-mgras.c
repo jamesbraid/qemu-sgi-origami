@@ -38,6 +38,8 @@
 #define SI_HQ_VECTOR_GENERAL_SHIFT 8
 #define SI_HQ_VECTOR_RETRACE_SHIFT 16
 
+#define SI_MGRAS_CONTEXT_COMMAND 0x120400
+
 /* Send an interrupt-modify write to the selected fabric address. */
 static void si_send_packet(SGIMgrasState *s, hwaddr where, uint8_t vector,
                            bool set)
@@ -406,15 +408,24 @@ static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIMgrasState *s = opaque;
     uint64_t value = si_read_internal(s, addr, size);
+    uint64_t sequence = s->trace_sequence++;
 
-    trace_sgi_mgras_mmio(s->trace_sequence++, addr, value, size, false);
+    trace_sgi_mgras_mmio(sequence, addr, value, size, false);
+    if (addr != SI_MGRAS_CONTEXT_COMMAND && addr != SGI_MGRAS_SCRATCH_COMMAND) {
+        trace_sgi_mgras_control_mmio(sequence, addr, value, size, false);
+    }
     return value;
 }
 
 static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
 {
     SGIMgrasState *s = opaque;
-    trace_sgi_mgras_mmio(s->trace_sequence++, addr, value, size, true);
+    uint64_t sequence = s->trace_sequence++;
+
+    trace_sgi_mgras_mmio(sequence, addr, value, size, true);
+    if (addr != SI_MGRAS_CONTEXT_COMMAND && addr != SGI_MGRAS_SCRATCH_COMMAND) {
+        trace_sgi_mgras_control_mmio(sequence, addr, value, size, true);
+    }
     /* Handle this supported misaligned port before the alignment check. */
     if (addr == SGI_MGRAS_DAC_LUT_DATA_1_LOW && size == 4) {
         s->dac_lut_data_1_low = value;
