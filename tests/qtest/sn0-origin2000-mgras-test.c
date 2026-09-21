@@ -1858,7 +1858,7 @@ static void test_re_char_h_execute(void)
 }
 
 /* Block-copy grammar is unknown. Retain its payload without executing it. */
-static void test_re_blockcopy_stays_inert(void)
+static void test_re_blockcopy_execute(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
 
@@ -1884,17 +1884,20 @@ static void test_re_blockcopy_stays_inert(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_EXEC_TOKEN(REG_RE_BLOCKCOPY, 0x18));
     g_assert_cmphex(si_test_pixel(qts, 50, 50), ==, 0);
-    /* Supply all six opaque payload words across three MMIO stores. */
+    /* Payload words 0 and 1: word 0 is the source origin. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  ((uint64_t)((10u << 16) | 10u) << 32) | 0);
     g_assert_cmphex(si_test_pixel(qts, 50, 50), ==, 0);
+    /* Payload words 2 and 3. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND, 0);
     g_assert_cmphex(si_test_pixel(qts, 50, 50), ==, 0);
+    /* Payload words 4 and 5 complete the payload and dispatch. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND, 0);
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 
-    g_assert_cmphex(si_test_pixel(qts, 50, 50), ==, 0);
-    g_assert_cmphex(si_test_pixel(qts, 51, 51), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 50, 50), ==, 0x00654321);
+    g_assert_cmphex(si_test_pixel(qts, 51, 51), ==, 0x00654321);
+    /* Outside the destination rectangle stays untouched. */
     g_assert_cmphex(si_test_pixel(qts, 52, 52), ==, 0);
     g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 0);
 
@@ -2150,8 +2153,8 @@ int main(int argc, char **argv)
                    test_re_line_execute);
     qtest_add_func("sn0/origin2000/mgras/re-char-h-execute",
                    test_re_char_h_execute);
-    qtest_add_func("sn0/origin2000/mgras/re-blockcopy-stays-inert",
-                   test_re_blockcopy_stays_inert);
+    qtest_add_func("sn0/origin2000/mgras/re-blockcopy-execute",
+                   test_re_blockcopy_execute);
     qtest_add_func("sn0/origin2000/mgras/migration", test_migration);
     qtest_add_func("sn0/origin2000/mgras/context-ack-migration",
                    test_context_ack_migration);
