@@ -131,7 +131,12 @@
  * Manual's own per-register table entries).
  */
 #define R_START_X_DOM       0x8000
+#define R_D_X_DOM           0x8008
+#define R_START_X_SUB       0x8010
+#define R_D_X_SUB           0x8018
 #define R_START_Y           0x8020
+#define R_D_Y               0x8028
+#define R_COUNT             0x8030
 #define R_RENDER            0x8038
 #define R_WAIT_FOR_COMPLETE 0x8088
 #define R_RECT_ORIGIN       0x80d0
@@ -161,6 +166,7 @@
  * plot glyph pixels with the point primitive, 0x80.
  */
 #define RENDER_FASTFILL         (1u << 3)
+#define RENDER_TRAPEZOID        (1u << 6)
 #define RENDER_POINT            (2u << 6)
 #define RENDER_RECTANGLE        (3u << 6)
 #define RENDER_TEXTURE_ENABLE   (1u << 13)
@@ -850,6 +856,42 @@ static void test_render_fill_without_colour_source(void)
     qtest_quit(qts);
 }
 
+/*
+ * A trapezoid primitive fills Count scanlines between its two edges, all
+ * of StartXDom/StartXSub/StartY and their deltas being 16.16 fixed point
+ * (manual page 70, "5.3.14 Registers"; Count on page 73). dY = 1.0 is
+ * exactly what the PROM textport initialiser writes at mode set
+ * (0x11c16110); only the kernel driver's fill_fb() (rad1drv.o) renders a
+ * trapezoid.
+ */
+static void test_render_trapezoid_spans(void)
+{
+    QTestState *qts = rad1_init();
+
+    regzero_write(qts, R_FB_HW_WRITE_MASK, 0xffffffffu);
+    regzero_write(qts, R_LOGICAL_OP_MODE, LOGICOP_USE_CONSTANT_FB_WRITE_DATA);
+    regzero_write(qts, R_FB_WRITE_DATA, 0x00abcdefu);
+    regzero_write(qts, R_START_X_DOM, 2u << 16);
+    regzero_write(qts, R_D_X_DOM, 0);
+    regzero_write(qts, R_START_X_SUB, 6u << 16);
+    regzero_write(qts, R_D_X_SUB, 0);
+    regzero_write(qts, R_START_Y, 3u << 16);
+    regzero_write(qts, R_D_Y, 1u << 16);
+    regzero_write(qts, R_COUNT, 2);
+    regzero_write(qts, R_RENDER, RENDER_TRAPEZOID);
+
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(2, 3)), ==, 0x00abcdefu);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(5, 3)), ==, 0x00abcdefu);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(2, 4)), ==, 0x00abcdefu);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(5, 4)), ==, 0x00abcdefu);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(1, 3)), ==, 0);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(6, 3)), ==, 0);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(2, 2)), ==, 0);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(2, 5)), ==, 0);
+
+    qtest_quit(qts);
+}
+
 static void test_reset(void)
 {
     QTestState *qts = rad1_init();
@@ -897,6 +939,8 @@ int main(int argc, char **argv)
                    test_render_fastfill_uses_block_color);
     qtest_add_func("/psitech-rad1/render-fill-without-colour-source",
                    test_render_fill_without_colour_source);
+    qtest_add_func("/psitech-rad1/render-trapezoid-spans",
+                   test_render_trapezoid_spans);
     qtest_add_func("/psitech-rad1/bydma-registers-round-trip",
                    test_bydma_registers_round_trip);
     qtest_add_func("/psitech-rad1/bydma-write-transfer",

@@ -493,22 +493,15 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
  *
  * Public source grounds these seven offsets and the primitive-selector
  * bits in RENDER (RAD1_RENDER_PRIMITIVE_MASK/_TRAPEZOID/_RECTANGLE/_LINE/
- * _POINT below, from the same header's PM2F_RENDER_* bits) but not the
- * rasterizer's own fixed-point/DDA math: Linux drivers/video/fbdev/
- * pm2fb.c never drives the TRAPEZOID primitive at all -- its accelerated
- * fillrect()/copyarea()/imageblit() exclusively use RECTANGLE, the same
- * primitive RAD1_REG_RECT_ORIGIN/RAD1_REG_RECT_SIZE/rad1_do_render()
- * below already model -- and the TVP4020 Programmer's Reference Manual
- * cache this file's top comment cites was not present in this session's
- * checkout (docs/library/cache/graphics/rad-psitech/ was searched for and
- * not found). So the 16.16 fixed-point start/delta interpretation
- * rad1_do_trapezoid_render() below uses is the ordinary, textbook
- * DDA-rasterizer convention this register naming itself implies
- * ("Start"/"D" = per-scanline delta), not a value read from either
- * permitted public source. APPROXIMATED and explicitly disclosed rather
- * than left unimplemented, because painting anything through this path at
- * all depends on it; needs independent review against an actual manual
- * citation before this project treats it as hardware-qualified.
+ * _POINT below, from the same header's PM2F_RENDER_* bits); the manual
+ * grounds their formats: every rasterizer coordinate and delta is 2's
+ * complement 16.16 fixed point (manual page 70, "5.3.14 Registers") and
+ * Count is a 12-bit scanline count (manual page 73, Table 5.5). The PROM
+ * textport initialiser agrees, writing dY = 0x10000 (1.0) and zero
+ * dXDom/dXSub once at mode set (io6prom 6.156 standalone image
+ * 0x11c16108-0x11c16110), and the point renders put Y<<16 in StartY.
+ * Neither textport renders a trapezoid; only the kernel driver's
+ * fill_fb() (rad1drv.o) does.
  */
 #define RAD1_REG_START_X_DOM        0x8000
 #define RAD1_REG_D_X_DOM            0x8008
@@ -1178,29 +1171,19 @@ static void rad1_do_rectangle_fill(PsitechRad1State *s)
 
 /*
  * Render one trapezoid/span primitive, selected by RAD1_RENDER_TRAPEZOID
- * (see the trapezoid/span rasterizer register block comment above for each
- * register's offset grounding and this function's own explicit algorithm
- * non-grounding disclosure -- neither permitted public source exercises
- * this primitive at all).
- *
- * This model reads StartXDom/StartXSub (and their D_X_DOM/D_X_SUB deltas)
- * as signed Q16.16 fixed point, matching their naming as the two edges of
- * a standard textbook DDA scan-converter, and StartY/DY as plain 32-bit
- * scanline integers -- the conventional split for a two-edge rasterizer
- * where only the X edges interpolate fractionally within a scanline and Y
- * always advances by whole scanlines. This split is picked for its
- * ordinary-DDA plausibility, not read from either permitted public source
- * or the (absent from this checkout) TVP4020 PRM; it needs independent
- * review, ideally against the actual manual, before landing.
- *
- * Each of Count iterations fills the half-open span
- * [min(x1,x2), max(x1,x2)) on the current scanline with
- * FBWriteData's stored value, honoring FBHardwareWriteMask exactly as
- * rad1_do_render() does, then advances all three DDA accumulators by their
- * delta registers. Count is defensively clamped to the active mode's
- * height: nothing in the public sources grounds Count's own units, and an
- * unclamped guest-supplied value could otherwise spin this loop
- * arbitrarily long.
+ * (register formats: see the trapezoid/span rasterizer register block
+ * comment above). StartXDom/StartXSub and StartY are 16.16 start values,
+ * advanced once per scanline by dXDom/dXSub and dY; each of Count
+ * scanlines fills the half-open span [min(xdom, xsub), max(xdom, xsub))
+ * with the constant colour rad1_constant_fill_color() resolves --
+ * FBBlockColor under FastFill, the case the manual's block-write
+ * description (page 41) names for trapezoids, FBWriteData otherwise.
+ * Which pixels a real Permedia2 includes at a fractional edge is
+ * APPROXIMATED by that truncating half-open rule; no evidenced writer
+ * draws a non-integer edge. An earlier revision read StartY and dY as
+ * plain integers, so every scanline after a 16.16 start row fell outside
+ * the framebuffer. Completion signaling is APPROXIMATED as in
+ * rad1_do_render().
  *
  * Destination stride/base: the fixed active mode's own stride and a zero
  * base, the same as rad1_do_render() -- see the Video Timing block comment
@@ -1209,52 +1192,30 @@ static void rad1_do_rectangle_fill(PsitechRad1State *s)
 static void rad1_do_trapezoid_render(PsitechRad1State *s)
 {
     const Rad1ModeRecord *mode = &rad1_mode_records[RAD1_ACTIVE_MODE];
-    uint32_t fb_stride = mode->width * RAD1_BYTES_PER_PIXEL;
     int32_t xdom = (int32_t)s->start_x_dom;
     int32_t xsub = (int32_t)s->start_x_sub;
     int32_t y = (int32_t)s->start_y;
     int32_t dxdom = (int32_t)s->d_x_dom;
     int32_t dxsub = (int32_t)s->d_x_sub;
     int32_t dy = (int32_t)s->d_y;
-    uint32_t iterations = MIN(s->count, mode->height);
-    uint32_t mask = s->fb_hw_write_mask;
-    uint32_t color = s->fb_write_data;
+    uint32_t count = s->count & 0xfffu; /* 12-bit, manual page 73 */
+    uint32_t color;
     uint32_t i;
 
-    for (i = 0; i < iterations; i++) {
-        int32_t x1 = xdom >> 16;
-        int32_t x2 = xsub >> 16;
-        int32_t lo = x1 < x2 ? x1 : x2;
-        int32_t hi = x1 < x2 ? x2 : x1;
+    if (rad1_constant_fill_color(s, &color)) {
+        for (i = 0; i < count; i++) {
+            int32_t lo = MAX(MIN(xdom >> 16, xsub >> 16), 0);
+            int32_t hi = MIN(MAX(xdom >> 16, xsub >> 16),
+                             (int32_t)mode->width);
+            int32_t x;
 
-        if (y >= 0 && y < (int32_t)mode->height) {
-            if (lo < 0) {
-                lo = 0;
+            for (x = lo; x < hi; x++) {
+                rad1_put_pixel(s, x, y >> 16, color);
             }
-            if (hi > (int32_t)mode->width) {
-                hi = mode->width;
-            }
-            if (lo < hi) {
-                uint8_t *dst = s->framebuffer + (uint32_t)y * fb_stride;
-                uint32_t col;
-
-                for (col = (uint32_t)lo; col < (uint32_t)hi; col++) {
-                    uint8_t *px = dst + col * RAD1_BYTES_PER_PIXEL;
-
-                    if (mask == 0xffffffffu) {
-                        stl_be_p(px, color);
-                    } else {
-                        uint32_t old = ldl_be_p(px);
-
-                        stl_be_p(px, (old & ~mask) | (color & mask));
-                    }
-                }
-            }
+            xdom += dxdom;
+            xsub += dxsub;
+            y += dy;
         }
-
-        xdom += dxdom;
-        xsub += dxsub;
-        y += dy;
     }
 
     /* APPROXIMATED completion signaling; see RAD1_INT_KNOWN_MASK above. */
