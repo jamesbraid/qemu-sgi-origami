@@ -279,6 +279,173 @@ static void test_xio_baseio_attaches_via_spare_fabric(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The Hub's own real crosstalk decode, confirmed against a real widget by
+ * sn0-origin2000-xtalk-owner-test.c's assert_owner(): a physical read at
+ * SPACE_XTALK plus a widget's small-window stride plus a register's own
+ * offset reaches that widget's real chip registers through the real
+ * Crossbow. Reused here read-only, on the machine's own onboard BaseIO
+ * (crosstalk widget 8, xio-baseio.c's XIO_BASEIO_WIDGET), to observe
+ * whatever the spare-fabric board below actually delivers to it.
+ */
+#define SPACE_XTALK             UINT64_C(0x20000000000)
+#define SMALL_WINDOW_SIZE       UINT64_C(0x1000000)
+#define SMALL_WINDOW(widget)    (SPACE_XTALK + \
+                                (uint64_t)(widget) * SMALL_WINDOW_SIZE)
+#define REG_DATA                4
+#define BASEIO_WIDGET           8
+
+/*
+ * The spare board's own Bridge, driven the same way sn0-bridge-widget-
+ * test.c's card_start()/card_transfer() drive a bare one: a `-device`
+ * board gets no CPU-side physical mapping of its own (nothing wires a
+ * Hub to a spare widget), so qtest_sysbus_mmio_map() gives its cpu_face a
+ * scratch physical base for this test alone, well clear of every address
+ * a real origin2000 topology ever composes.
+ */
+#define SPARE_BASE              UINT64_C(0xf0000000000)
+#define SPARE_REG(offset)       (SPARE_BASE + (offset) + REG_DATA)
+#define SPARE_BRIDGE            "/machine/module99/slot8/bridge"
+#define SENTINEL                0xa5
+
+/*
+ * BaseIO's own read response buffer registers (hw/pci-host/sgi-bridge.c,
+ * BRIDGE_RRB_EVEN): plain 32-bit storage with a full writable mask and no
+ * side effect, unlike an interrupt-host address register, whose writable
+ * bits cover only part of the word and would silently drop the rest of
+ * whatever pattern a transfer carries.
+ */
+#define BASEIO_RRB_EVEN         0x280
+
+/*
+ * The card this board's own Bridge masters, driven exactly the way
+ * sn0-bridge-widget-test.c's card_start()/card_transfer() drive one
+ * against a bare Bridge: its config space and window 0 sit at their bare
+ * offsets, neither being a chip register with the +REG_DATA skew.
+ */
+#define SPARE_CFG0(slot)        (SPARE_BASE + 0x020000 + (slot) * 0x1000)
+#define SPARE_WINDOW0           (SPARE_BASE + 0x200000)
+#define SPARE_DEVICE(n)         (0x200 + 8 * (n))
+#define DEV_SWAP_TRANSLATED     (1u << 20)
+#define DEV_SWAP_DIRECT         (1u << 19)
+#define DEV_MEMORY_SPACE        (1u << 12)
+#define CARD_SLOT               0
+#define CARD_MMIO               0x01000000u
+#define PCI_COMMAND             0x04
+#define PCI_COMMAND_MEMORY_MASTER 0x0006
+#define PCI_BAR0                0x10
+#define DMA_REG_ADDRESS         0x00
+#define DMA_REG_LENGTH          0x04
+#define DMA_REG_SEED            0x08
+#define DMA_REG_GO              0x0c
+#define DMA_REG_ADDRESS_HI      0x18
+
+/*
+ * The 64-bit-direct route's own destination: bits 63:60 of a bus-mastered
+ * PCI address name a widget (sgi_bridge_translate_common(),
+ * hw/pci-host/sgi-bridge.c) and the low 48 bits pass straight through to
+ * sgi_bridge_compose_xtalk() -- the same composer sgi_bridge_send_
+ * interrupt() uses, so a widget's own decode of the result cannot tell
+ * the two delivery mechanisms apart. Bit 47 of that low half is what
+ * sgi_bridge_realize() maps a widget's own registers onto (the packet_io
+ * alias sits at 1 << (SGI_BRIDGE_PACKET_ADDRESS_BITS - 1)), and REG_DATA
+ * is the same +4 skew every read in this file adds at the point of
+ * access; here it has to be baked into the destination address itself,
+ * since a DMA transfer has no separate access-time step once under way.
+ */
+#define DEST_WIDGET_SHIFT       60
+#define DEST_PACKET_IO          (UINT64_C(1) << 47)
+#define DEST_OFFSET             (BASEIO_RRB_EVEN + REG_DATA)
+#define DEST_PCI_ADDRESS        (((uint64_t)BASEIO_WIDGET << \
+                                DEST_WIDGET_SHIFT) | DEST_PACKET_IO | \
+                                DEST_OFFSET)
+#define DEST_SEED               0x10
+
+/*
+ * Give the card its registers and let it master the bus, the same way
+ * sn0-bridge-widget-test.c's card_start() does for a bare Bridge. Both
+ * byte-lane bits are set so a transfer carries the bytes it was given:
+ * what this test reads is the address, not the order.
+ */
+static void spare_card_start(QTestState *qts)
+{
+    qtest_writel(qts, SPARE_CFG0(CARD_SLOT) + PCI_BAR0, CARD_MMIO);
+    qtest_writel(qts, SPARE_CFG0(CARD_SLOT) + PCI_COMMAND,
+                PCI_COMMAND_MEMORY_MASTER);
+    qtest_writel(qts, SPARE_REG(SPARE_DEVICE(CARD_SLOT)),
+                DEV_SWAP_TRANSLATED | DEV_SWAP_DIRECT | DEV_MEMORY_SPACE |
+                (CARD_MMIO >> 20));
+}
+
+static void spare_card_transfer(QTestState *qts, uint64_t pci_addr,
+                                uint32_t length, uint32_t seed)
+{
+    qtest_writel(qts, SPARE_WINDOW0 + DMA_REG_ADDRESS, (uint32_t)pci_addr);
+    qtest_writel(qts, SPARE_WINDOW0 + DMA_REG_ADDRESS_HI, pci_addr >> 32);
+    qtest_writel(qts, SPARE_WINDOW0 + DMA_REG_LENGTH, length);
+    qtest_writel(qts, SPARE_WINDOW0 + DMA_REG_SEED, seed);
+    qtest_writel(qts, SPARE_WINDOW0 + DMA_REG_GO, 1);
+}
+
+static void assert_spare_landed(QTestState *qts, uint64_t at, uint32_t seed)
+{
+    uint8_t seen[sizeof(uint32_t)];
+    unsigned int i;
+
+    qtest_memread(qts, at, seen, sizeof(seen));
+    for (i = 0; i < sizeof(seen); i++) {
+        g_assert_cmpuint(seen[i], ==, (uint8_t)(seed + i));
+    }
+}
+
+/*
+ * The through-fabric half of the same attach: a spare board's own Bridge
+ * masters a real PCI DMA transfer from its own attached card, through the
+ * proxy sgi_machine_done() finishes, to BaseIO -- already alive at boot,
+ * sharing the fabric this board's own header comment
+ * (board-pci-expansion.c) says an outbound transfer can reach. The
+ * transfer takes the 64-bit-direct route sn0-bridge-widget-test.c's own
+ * WIDE_WIDGET route exercises against a bare fixture; here the widget
+ * field names the real BaseIO widget and the destination is one of its
+ * own chip registers. BASEIO_RRB_EVEN has no side effect of its own, so
+ * a value observed there can only have arrived as the transfer
+ * spare_card_transfer() below sends; nothing else in this test or in
+ * either board's own realize ever touches it.
+ *
+ * sgi_xbow_sync_routes() disables a port's entire ingress/packet_ingress
+ * region whenever that port's own sgi_xbow_alive() is false, always true
+ * for the not-alive widget the spare fabric proxy is built against
+ * (crossbow0's startup-links-alive, 0x8700, leaves widget 11 the first
+ * free one) -- this board's own outbound transfers have nowhere live to
+ * originate from until something marks that widget alive without also
+ * counting it as one of the Crossbow's own onboard links.
+ */
+static void test_pci_expansion_delivers_through_spare_fabric(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000 -display none -device sgi-pci-expansion,"
+        "module=99,slot=8,fabric=/machine/crossbow0-spare-fabric[0],"
+        "fabric-widget-shift=48 "
+        "-device sgi-bridge-dma-test,bus=pci,addr=0");
+    uint64_t dest = SMALL_WINDOW(BASEIO_WIDGET) + BASEIO_RRB_EVEN;
+
+    qtest_sysbus_mmio_map(qts, SPARE_BRIDGE, 0, SPARE_BASE);
+
+    /* A known value proves the read/write path itself, not just a zero. */
+    qtest_writel(qts, dest + REG_DATA, SENTINEL);
+    g_assert_cmphex(qtest_readl(qts, dest + REG_DATA), ==, SENTINEL);
+
+    spare_card_start(qts);
+
+    /* Nothing has been sent yet: still the sentinel, not the transfer. */
+    g_assert_cmphex(qtest_readl(qts, dest + REG_DATA), ==, SENTINEL);
+
+    spare_card_transfer(qts, DEST_PCI_ADDRESS, sizeof(uint32_t), DEST_SEED);
+    assert_spare_landed(qts, dest + REG_DATA, DEST_SEED);
+
+    qtest_quit(qts);
+}
+
 static void test_unsupported_smp_population_rejected(const void *data)
 {
     const char *args[] = {
@@ -588,6 +755,9 @@ int main(int argc, char **argv)
                         NULL, test_pci_expansion_attaches_via_spare_fabric);
     qtest_add_data_func("sn/builder/xio-baseio-attaches-via-spare-fabric",
                         NULL, test_xio_baseio_attaches_via_spare_fabric);
+    qtest_add_data_func("sn/builder/pci-expansion-delivers-through-spare-"
+                        "fabric", NULL,
+                        test_pci_expansion_delivers_through_spare_fabric);
     qtest_add_data_func("sn/builder/unsupported-smp-population-rejected",
                         NULL, test_unsupported_smp_population_rejected);
     qtest_add_data_func("sn/builder/topology-from-another-product-refused",

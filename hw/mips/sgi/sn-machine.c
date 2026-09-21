@@ -2379,8 +2379,18 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
  * until sgi_machine_realize_crossbars() has run.
  *
  * This gives a `-device` board taking the proxy as its own "fabric"
- * property an outbound path only: a packet the board's own Bridge sends
- * out through the proxy reaches the Crossbow's real routing and lands on
+ * property an outbound path only. finish() above aliases the spare
+ * widget's real packet ingress onto the proxy regardless, but a widget
+ * sgi_machine_build_crossbars() held out of startup-links-alive answers
+ * as not alive, and the Crossbow disables a not-alive port's whole
+ * ingress region (hw/misc/sgi-xbow.c, sgi_xbow_sync_routes()) -- so the
+ * alias would still resolve empty without the board also claiming it:
+ * build_widget() calls sgi_xtalk_crossbow_link_claim_fabric() on the
+ * proxy the moment it takes "fabric", and fabric_claimed here is what
+ * tells this loop to bring the widget's own link alive
+ * (sgi_xbow_mark_widget_alive()) once finish() has aliased its real
+ * ingress in. Once alive, a packet the board's own Bridge sends out
+ * through the proxy reaches the Crossbow's real routing and lands on
  * whichever already-populated widget it addresses, the same as any
  * onboard board's traffic. Nothing routes the other way.
  * sgi_xbow_attach_endpoint() -- the call that registers a widget as a
@@ -2411,6 +2421,11 @@ static void sgi_machine_done(Notifier *notifier, void *data)
                                        name, s->crossbars[i],
                                        s->spare_fabric_widget[i],
                                        &error_fatal);
+        if (s->spare_fabric_links[i].fabric_claimed) {
+            sgi_xbow_mark_widget_alive(s->crossbars[i],
+                                       s->spare_fabric_widget[i],
+                                       &error_fatal);
+        }
     }
 }
 

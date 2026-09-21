@@ -27,17 +27,23 @@
  * builds has realized. "fabric" on a `-device` board resolves against
  * that proxy.
  *
- * This gives a `-device` board an outbound path only: its own Bridge can
- * send a packet out through the proxy to any already-populated widget,
- * but sgi_xbow_attach_endpoint() -- the call that would register this
- * board's own widget as a destination other ports can address -- refuses
- * once its Crossbow is realized, which every Crossbow this machine builds
- * always is by the time a `-device` board exists. Nothing addresses this
- * board's own widget as an inbound destination; see sgi_machine_done()'s
- * own comment in sn-machine.c for why that stays out of reach without
- * also deferring the Crossbow's own realize. A topology with no widget
- * to spare (every one already populated at startup) leaves no proxy to
- * resolve "fabric" against, and this board's own realize refuses.
+ * This gives a `-device` board an outbound path only: build_widget() below
+ * calls sgi_xtalk_crossbow_link_claim_fabric() on the proxy as soon as it
+ * sees one, which tells sgi_machine_done() to bring the underlying spare
+ * widget's own link alive once it finishes the proxy -- without that call,
+ * the widget stays not-alive and the Crossbow disables the proxy's whole
+ * target region, same as any other not-alive port (hw/misc/sgi-xbow.c,
+ * sgi_xbow_sync_routes()). Once alive, this board's own Bridge can send a
+ * packet out through the proxy to any already-populated widget, but
+ * sgi_xbow_attach_endpoint() -- the call that would register this board's
+ * own widget as a destination other ports can address -- refuses once its
+ * Crossbow is realized, which every Crossbow this machine builds always is
+ * by the time a `-device` board exists. Nothing addresses this board's own
+ * widget as an inbound destination; see sgi_machine_done()'s own comment
+ * in sn-machine.c for why that stays out of reach without also deferring
+ * the Crossbow's own realize. A topology with no widget to spare (every
+ * one already populated at startup) leaves no proxy to resolve "fabric"
+ * against, and this board's own realize refuses.
  *
  * Bridge's own "board-part" is a required, exactly-12-character identity
  * register value (hw/pci-host/sgi-bridge.h,
@@ -53,6 +59,7 @@
 
 #include "qemu/osdep.h"
 #include "hw/mips/sgi/xio-board.h"
+#include "hw/mips/sgi/xtalk-link.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/pci-host/sgi-bridge.h"
@@ -92,6 +99,7 @@ static bool pci_expansion_build_widget(SGIXioBoardState *board,
                   "interrupt packets travel");
         return false;
     }
+    sgi_xtalk_crossbow_link_claim_fabric(s->fabric);
 
     bridge = qdev_new(TYPE_SGI_BRIDGE);
     object_property_add_child(OBJECT(board), "bridge", OBJECT(bridge));

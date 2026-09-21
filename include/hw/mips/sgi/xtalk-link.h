@@ -100,6 +100,17 @@ typedef struct SGIXtalkCrossbowLink {
     MemoryRegion proxy;
     MemoryRegion proxy_alias;
 
+    /*
+     * Set once a `-device` board actually takes this link's proxy as its
+     * own "fabric" property (sgi_xtalk_crossbow_link_claim_fabric()).
+     * finish() aliases the real ingress onto the proxy either way, but
+     * that real ingress answers only once its own widget is alive; a
+     * spare widget nobody claimed stays out of that count on purpose
+     * (see sgi_machine_done()), so this flag is what tells the caller
+     * whether to mark it alive.
+     */
+    bool fabric_claimed;
+
     bool is_hub;
     SN0NodeState *node;
 
@@ -133,6 +144,17 @@ typedef struct SGIXtalkCrossbowLink {
  */
 MemoryRegion *sgi_xtalk_crossbow_link_prepare(SGIXtalkCrossbowLink *link,
                                               Object *owner, const char *name);
+
+/*
+ * Marks a spare proxy prepare() built as actually taken by a `-device`
+ * board's own "fabric" property, so finish() knows to bring the
+ * underlying widget up. fabric is whatever a board's own "fabric" link
+ * property resolves to, which a real machine always sets to a proxy
+ * prepare() built but a qtest fixture standing in for one need not; this
+ * quietly does nothing when fabric is not a proxy prepare() returned,
+ * rather than assume every caller's fabric is one of ours.
+ */
+void sgi_xtalk_crossbow_link_claim_fabric(MemoryRegion *fabric);
 
 /* Also wires node's own "xtalk-io" property to the proxy prepare() built. */
 bool sgi_xtalk_crossbow_link_prepare_hub(SGIXtalkCrossbowLink *link,
