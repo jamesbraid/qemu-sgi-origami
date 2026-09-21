@@ -528,7 +528,7 @@ static bool baseio_build_io8(SGIBaseioState *s, Error **errp)
 static const SGIBaseioPreset sgi_baseio_presets[] = {
     { "ip29", { "030-1244-001", 4 }, baseio_build_ip29 },
     { "io6", { "030-1124-002", 4 }, baseio_build_io6 },
-    { "io6g", { "030-0734-001", 4 }, baseio_build_io6g },
+    { "io6g", { "030-0734-002", 4 }, baseio_build_io6g },
     { "io8", { "030-1673-003", 0 }, baseio_build_io8 },
 };
 
