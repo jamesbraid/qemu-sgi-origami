@@ -130,6 +130,8 @@
  * offsets cross-checked against the TVP4020 Programmer's Reference
  * Manual's own per-register table entries).
  */
+#define R_START_X_DOM       0x8000
+#define R_START_Y           0x8020
 #define R_RENDER            0x8038
 #define R_WAIT_FOR_COMPLETE 0x8088
 #define R_RECT_ORIGIN       0x80d0
@@ -137,11 +139,39 @@
 #define R_S_START           0x8388
 #define R_T_START           0x83a0
 #define R_TEX_BASE_ADDR     0x8580
+#define R_LOGICAL_OP_MODE   0x8828
+#define R_FB_WRITE_DATA     0x8830
 #define R_FB_READ_MODE      0x8a80
 #define R_FB_HW_WRITE_MASK  0x8ac0
+#define R_FB_BLOCK_COLOR    0x8ac8
 
 #define TEXBASE_SYSTEM_MEMORY   (1u << 30)
 #define FBREADMODE_READBACK_BIT (1u << 10)
+
+/* LogicalOpMode bit 5, manual page 231: write FBWriteData, not the fragment. */
+#define LOGICOP_USE_CONSTANT_FB_WRITE_DATA  (1u << 5)
+
+/*
+ * Render command bits (manual pages 242-243) and the three whole commands
+ * the guests actually write. The kernel driver's rectangle copies
+ * (rad1drv.o rect_pio_move/rect_dma_move) carry TextureEnable; the IO6
+ * PROM textport's box fill (io6prom 6.156 standalone image, 0x11c2a6bc)
+ * and the kernel textport's RAD1TpSboxfi write 0x6000c0; both textport
+ * initialisers clear the screen with FastFill, 0x6000c8; both textports
+ * plot glyph pixels with the point primitive, 0x80.
+ */
+#define RENDER_FASTFILL         (1u << 3)
+#define RENDER_POINT            (2u << 6)
+#define RENDER_RECTANGLE        (3u << 6)
+#define RENDER_TEXTURE_ENABLE   (1u << 13)
+#define RENDER_INCREASE_XY      (3u << 21)
+#define RENDER_TEXTURE_COPY \
+    (RENDER_RECTANGLE | RENDER_INCREASE_XY | RENDER_TEXTURE_ENABLE)
+#define RENDER_BOX_FILL         (RENDER_RECTANGLE | RENDER_INCREASE_XY)
+#define RENDER_FAST_CLEAR       (RENDER_BOX_FILL | RENDER_FASTFILL)
+
+/* Byte offset of pixel (x, y) in the model's fixed 1280-wide 32-bpp mode. */
+#define PIXEL_OFF(x, y)     ((((y) * 1280u) + (x)) * 4u)
 
 #define RECT(x, y)          (((uint32_t)(y) << 16) | ((x) & 0xffffu))
 #define SIZE(w, h)          (((uint32_t)(h) << 16) | ((w) & 0xffffu))
@@ -436,7 +466,7 @@ static void test_render_local_copy(void)
     regzero_write(qts, R_T_START, 0);
     regzero_write(qts, R_RECT_ORIGIN, RECT(4, 8));
     regzero_write(qts, R_RECT_SIZE, SIZE(2, 1));
-    regzero_write(qts, R_RENDER, 1);
+    regzero_write(qts, R_RENDER, RENDER_TEXTURE_COPY);
 
     uint32_t dst_off = (8u * 1280u + 4u) * 4u;
     g_assert_cmphex(vram_read(qts, dst_off), ==, src[0]);
@@ -467,7 +497,7 @@ static void test_render_host_copy(void)
     regzero_write(qts, R_T_START, 0);
     regzero_write(qts, R_RECT_ORIGIN, RECT(0, 0));
     regzero_write(qts, R_RECT_SIZE, SIZE(2, 1));
-    rad1_trigger_dma(qts, R_RENDER, 1);
+    rad1_trigger_dma(qts, R_RENDER, RENDER_TEXTURE_COPY);
 
     g_assert_cmphex(vram_read(qts, 0), ==, payload[0]);
     g_assert_cmphex(vram_read(qts, 4), ==, payload[1]);
@@ -494,7 +524,7 @@ static void test_render_honors_write_mask(void)
     regzero_write(qts, R_T_START, 0);
     regzero_write(qts, R_RECT_ORIGIN, RECT(0, 0));
     regzero_write(qts, R_RECT_SIZE, SIZE(1, 1));
-    regzero_write(qts, R_RENDER, 1);
+    regzero_write(qts, R_RENDER, RENDER_TEXTURE_COPY);
 
     /* Only the masked low half of the incoming word took effect. */
     g_assert_cmphex(vram_read(qts, 0), ==, 0x00aa2233u);
@@ -520,7 +550,7 @@ static void test_render_readback(void)
     regzero_write(qts, R_TEX_BASE_ADDR, PCI_DMA_DIRECT | HOST_DST_PHYS);
     regzero_write(qts, R_RECT_ORIGIN, RECT(0, 0));
     regzero_write(qts, R_RECT_SIZE, SIZE(1, 1));
-    rad1_trigger_dma(qts, R_RENDER, 1);
+    rad1_trigger_dma(qts, R_RENDER, RENDER_BOX_FILL);
 
     g_assert_cmphex(read_host_word(qts, HOST_DST_PHYS), ==, 0x00c0ffeeu);
 
@@ -650,7 +680,7 @@ static void test_interrupt_status_write_clear(void)
     regzero_write(qts, R_FB_HW_WRITE_MASK, 0xffffffffu);
     regzero_write(qts, R_RECT_ORIGIN, RECT(0, 0));
     regzero_write(qts, R_RECT_SIZE, SIZE(1, 1));
-    regzero_write(qts, R_RENDER, 1);
+    regzero_write(qts, R_RENDER, RENDER_TEXTURE_COPY);
 
     uint32_t status = regzero_read(qts, R_INT_STATUS);
     g_assert_cmphex(status, ==, INT_KNOWN_MASK);
@@ -708,6 +738,118 @@ static void test_flash_program_without_unlock_is_ignored(void)
     qtest_quit(qts);
 }
 
+/*
+ * A point primitive (manual page 62, "5.3.3 Points") writes exactly one
+ * pixel at StartXDom/StartY, both 16.16 fixed point, taking its colour
+ * from FBWriteData because LogicalOpMode's UseConstantFBWriteData is set
+ * (manual pages 217 and 231). This is how both textports draw every glyph
+ * pixel: the IO6 PROM console=g textport (io6prom 6.156 standalone image
+ * 0x11c2a428-0x11c2a42c) and the kernel's rad1_tport.o RAD1TpDrawbitmap.
+ */
+static void test_render_point_writes_one_pixel(void)
+{
+    QTestState *qts = rad1_init();
+
+    regzero_write(qts, R_FB_HW_WRITE_MASK, 0xffffffffu);
+    regzero_write(qts, R_LOGICAL_OP_MODE, LOGICOP_USE_CONSTANT_FB_WRITE_DATA);
+    regzero_write(qts, R_FB_WRITE_DATA, 0x00606070u);
+    regzero_write(qts, R_START_X_DOM, 5u << 16);
+    regzero_write(qts, R_START_Y, 7u << 16);
+    regzero_write(qts, R_RENDER, RENDER_POINT);
+
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(5, 7)), ==, 0x00606070u);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(4, 7)), ==, 0);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(6, 7)), ==, 0);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(5, 6)), ==, 0);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(5, 8)), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * A rectangle primitive without TextureEnable is a constant fill of
+ * RectangleOrigin/RectangleSize (manual page 62, "5.3.4 Rectangles") with
+ * FBWriteData, honoring FBHardwareWriteMask -- the PROM textport's box
+ * fill (0x11c2a6a8-0x11c2a6bc) and the kernel's RAD1TpSboxfi.
+ */
+static void test_render_rectangle_constant_fill(void)
+{
+    QTestState *qts = rad1_init();
+
+    regzero_write(qts, R_FB_HW_WRITE_MASK, 0xffffffffu);
+    regzero_write(qts, R_LOGICAL_OP_MODE, LOGICOP_USE_CONSTANT_FB_WRITE_DATA);
+    regzero_write(qts, R_FB_WRITE_DATA, 0x00f0f0f0u);
+    regzero_write(qts, R_RECT_ORIGIN, RECT(3, 2));
+    regzero_write(qts, R_RECT_SIZE, SIZE(4, 2));
+    regzero_write(qts, R_RENDER, RENDER_BOX_FILL);
+
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(3, 2)), ==, 0x00f0f0f0u);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(6, 2)), ==, 0x00f0f0f0u);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(3, 3)), ==, 0x00f0f0f0u);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(6, 3)), ==, 0x00f0f0f0u);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(2, 2)), ==, 0);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(7, 2)), ==, 0);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(3, 1)), ==, 0);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(3, 4)), ==, 0);
+
+    /* The hardware write mask gates the fill bit by bit. */
+    regzero_write(qts, R_FB_HW_WRITE_MASK, 0x00ff0000u);
+    regzero_write(qts, R_FB_WRITE_DATA, 0x00112233u);
+    regzero_write(qts, R_RENDER, RENDER_BOX_FILL);
+
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(3, 2)), ==, 0x0011f0f0u);
+
+    qtest_quit(qts);
+}
+
+/*
+ * FastFill (manual page 41, "Block Writes") writes FBBlockColor to every
+ * pixel regardless of FBWriteData -- the full-screen clear both textport
+ * initialisers issue (0x11c29fc4-0x11c29ff8; rad1_tpinit.o RAD1InitBoard).
+ */
+static void test_render_fastfill_uses_block_color(void)
+{
+    QTestState *qts = rad1_init();
+
+    regzero_write(qts, R_FB_HW_WRITE_MASK, 0xffffffffu);
+    regzero_write(qts, R_LOGICAL_OP_MODE, LOGICOP_USE_CONSTANT_FB_WRITE_DATA);
+    regzero_write(qts, R_FB_WRITE_DATA, 0x00ffffffu);
+    regzero_write(qts, R_FB_BLOCK_COLOR, 0x00445566u);
+    regzero_write(qts, R_RECT_ORIGIN, RECT(0, 0));
+    regzero_write(qts, R_RECT_SIZE, SIZE(2, 1));
+    regzero_write(qts, R_RENDER, RENDER_FAST_CLEAR);
+
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(0, 0)), ==, 0x00445566u);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(1, 0)), ==, 0x00445566u);
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(2, 0)), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * With neither FastFill nor UseConstantFBWriteData the fragment colour
+ * would come from the Color DDA unit, which this model does not implement:
+ * the fill stays an observable no-op rather than guessing a colour.
+ */
+static void test_render_fill_without_colour_source(void)
+{
+    QTestState *qts = rad1_init();
+
+    regzero_write(qts, R_FB_HW_WRITE_MASK, 0xffffffffu);
+    regzero_write(qts, R_LOGICAL_OP_MODE, 0);
+    regzero_write(qts, R_FB_WRITE_DATA, 0x00606070u);
+    regzero_write(qts, R_RECT_ORIGIN, RECT(0, 0));
+    regzero_write(qts, R_RECT_SIZE, SIZE(1, 1));
+    regzero_write(qts, R_RENDER, RENDER_BOX_FILL);
+    regzero_write(qts, R_START_X_DOM, 0);
+    regzero_write(qts, R_START_Y, 0);
+    regzero_write(qts, R_RENDER, RENDER_POINT);
+
+    g_assert_cmphex(vram_read(qts, PIXEL_OFF(0, 0)), ==, 0);
+
+    qtest_quit(qts);
+}
+
 static void test_reset(void)
 {
     QTestState *qts = rad1_init();
@@ -747,6 +889,14 @@ int main(int argc, char **argv)
     qtest_add_func("/psitech-rad1/render-honors-write-mask",
                    test_render_honors_write_mask);
     qtest_add_func("/psitech-rad1/render-readback", test_render_readback);
+    qtest_add_func("/psitech-rad1/render-point-writes-one-pixel",
+                   test_render_point_writes_one_pixel);
+    qtest_add_func("/psitech-rad1/render-rectangle-constant-fill",
+                   test_render_rectangle_constant_fill);
+    qtest_add_func("/psitech-rad1/render-fastfill-uses-block-color",
+                   test_render_fastfill_uses_block_color);
+    qtest_add_func("/psitech-rad1/render-fill-without-colour-source",
+                   test_render_fill_without_colour_source);
     qtest_add_func("/psitech-rad1/bydma-registers-round-trip",
                    test_bydma_registers_round_trip);
     qtest_add_func("/psitech-rad1/bydma-write-transfer",

@@ -46,11 +46,20 @@
  * to get a device-visible host physical address for TextureBaseAddress,
  * not a separate descriptor-chain format.
  *
- * This models a bounded compatibility profile for the flat, non-
- * interpolated rectangle copy the shipped `rad1pci` kernel driver and
- * PROM/standalone textport library actually perform, not full Permedia2
- * hardware fidelity: no 3D rendering, blending, logical ops, or texture
- * filtering is implemented. Every approximated behavior below is named,
+ * This models a bounded compatibility profile: the flat, non-interpolated
+ * texture-read rectangle copy the shipped `rad1pci` kernel driver
+ * performs; the constant-colour point and rectangle fills both textports
+ * draw with (the IO6 PROM's console=g textport and the kernel's
+ * rad1_tport.o plot every glyph pixel as a point primitive and every box
+ * as a rectangle primitive, colour from FBWriteData under LogicalOpMode's
+ * UseConstantFBWriteData, or from FBBlockColor under FastFill -- see
+ * rad1_do_point_render() and rad1_do_rectangle_fill()); a solid
+ * trapezoid/span rasterizer; a real RAMDAC palette write/read protocol;
+ * and acceptance of the video-timing block. This is still not full
+ * Permedia2 hardware fidelity: no 3D rendering, blending, logical ops,
+ * texture filtering, bitmask/stipple rendering, Color DDA fragment
+ * colours, line primitives, decreasing-direction rectangle fills or mode
+ * switching is implemented. Every approximated behavior below is named,
  * evidenced and requires independent review before it lands, per the
  * owning Origami repository's datasheet-before-device rule:
  * docs/datasheets/psitech-rad1.md. That document's own clearance checklist
@@ -72,6 +81,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bitops.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/units.h"
@@ -468,10 +478,86 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
  * page 241 -- not the manual's printed page numbers, which run about nine
  * lower).
  */
+/*
+ * Trapezoid/span rasterizer registers, Region Zero 0x8000-0x8038 (public
+ * Linux include/video/permedia2.h: PM2R_START_X_DOM 0x8000, PM2R_D_X_DOM
+ * 0x8008, PM2R_START_X_SUB 0x8010, PM2R_D_X_SUB 0x8018, PM2R_START_Y
+ * 0x8020, PM2R_D_Y 0x8028, PM2R_COUNT 0x8030; RAD1_REG_RENDER below is
+ * PM2R_RENDER 0x8038, already established here for the flat rectangle/
+ * texture-copy path). This session's guest_errors,unimp trace of the
+ * PROM/standalone textport console path (console=g) showed heavy traffic
+ * here against one boot -- 41k writes to START_X_DOM, 12.5k to START_Y --
+ * that this file previously dropped entirely: both offsets fell through
+ * the whole read/write dispatch to the GP block's own "unsupported GP
+ * register" default.
+ *
+ * Public source grounds these seven offsets and the primitive-selector
+ * bits in RENDER (RAD1_RENDER_PRIMITIVE_MASK/_TRAPEZOID/_RECTANGLE/_LINE/
+ * _POINT below, from the same header's PM2F_RENDER_* bits) but not the
+ * rasterizer's own fixed-point/DDA math: Linux drivers/video/fbdev/
+ * pm2fb.c never drives the TRAPEZOID primitive at all -- its accelerated
+ * fillrect()/copyarea()/imageblit() exclusively use RECTANGLE, the same
+ * primitive RAD1_REG_RECT_ORIGIN/RAD1_REG_RECT_SIZE/rad1_do_render()
+ * below already model -- and the TVP4020 Programmer's Reference Manual
+ * cache this file's top comment cites was not present in this session's
+ * checkout (docs/library/cache/graphics/rad-psitech/ was searched for and
+ * not found). So the 16.16 fixed-point start/delta interpretation
+ * rad1_do_trapezoid_render() below uses is the ordinary, textbook
+ * DDA-rasterizer convention this register naming itself implies
+ * ("Start"/"D" = per-scanline delta), not a value read from either
+ * permitted public source. APPROXIMATED and explicitly disclosed rather
+ * than left unimplemented, because painting anything through this path at
+ * all depends on it; needs independent review against an actual manual
+ * citation before this project treats it as hardware-qualified.
+ */
+#define RAD1_REG_START_X_DOM        0x8000
+#define RAD1_REG_D_X_DOM            0x8008
+#define RAD1_REG_START_X_SUB        0x8010
+#define RAD1_REG_D_X_SUB            0x8018
+#define RAD1_REG_START_Y            0x8020
+#define RAD1_REG_D_Y                0x8028
+#define RAD1_REG_COUNT               0x8030
+
+/* PM2F_RENDER_PRIMITIVE_MASK and its four primitive values, permedia2.h. */
+#define RAD1_RENDER_PRIMITIVE_MASK  (3u << 6)
+#define RAD1_RENDER_LINE            (0u << 6)
+#define RAD1_RENDER_TRAPEZOID       (1u << 6)
+#define RAD1_RENDER_POINT           (2u << 6)
+#define RAD1_RENDER_RECTANGLE       (3u << 6)
+
+/*
+ * Render's other short-term mode bits this model dispatches on (manual
+ * pages 242-243; permedia2.h PM2F_RENDER_FASTFILL and
+ * PM2F_RENDER_TEXTURE_ENABLE). FastFillEnable selects the block-fill path
+ * whose colour is FBBlockColor (manual page 41); TextureEnable is what
+ * turns a rectangle into the texture-read copy rad1_do_render() models --
+ * the kernel driver's rect_pio_move()/rect_dma_move() write 0x6020c0, the
+ * textports' box fills 0x6000c0 and their initialisers' clears 0x6000c8.
+ * IncreaseX/IncreaseY (bits 21-22) choose the fill direction; only the
+ * increasing direction every evidenced writer uses is modeled.
+ */
+#define RAD1_RENDER_FASTFILL        (1u << 3)
+#define RAD1_RENDER_TEXTURE_ENABLE  (1u << 13)
+#define RAD1_RENDER_INCREASE_X      (1u << 21)
+#define RAD1_RENDER_INCREASE_Y      (1u << 22)
+
 #define RAD1_REG_RENDER             0x8038  /* manual: write-only command */
 #define RAD1_REG_WAIT_FOR_COMPLETE 0x8088  /* manual page 275: write-only */
 #define RAD1_REG_RECT_ORIGIN        0x80d0  /* manual page 241 */
 #define RAD1_REG_RECT_SIZE          0x80d8  /* manual page 241 */
+
+/*
+ * RasterizerMode, Region Zero 0x80a0 (public Linux include/video/
+ * permedia2.h: PM2R_RASTERIZER_MODE). Stored only; this model's trapezoid
+ * path does not implement RasterizerMode's bitmask-invert/antialiasing
+ * controls. Linux drivers/video/fbdev/pm2fb.c's own use of this register
+ * is confined to pm2fb_imageblit()'s monochrome-glyph BIT_MASK_PATTERN
+ * path, which neither IRIX textport uses: the IO6 PROM textport and the
+ * kernel's rad1_tport.o RAD1TpDrawbitmap plot one point primitive per set
+ * glyph bit (StartXDom, StartY, Render), see rad1_do_point_render().
+ */
+#define RAD1_REG_RASTERIZER_MODE    0x80a0
+
 #define RAD1_REG_TEX_ADDR_MODE      0x8380
 #define RAD1_REG_S_START            0x8388
 #define RAD1_REG_DSDX               0x8390
@@ -490,6 +576,60 @@ OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 #define RAD1_REG_FB_HW_WRITE_MASK   0x8ac0  /* manual page 209 */
 #define RAD1_REG_FILTER_MODE        0x8c00  /* manual page 219 */
 #define RAD1_REG_SYNC               0x8c40
+
+/*
+ * FBWriteData, Region Zero 0x8830 (manual page 217): the colour written
+ * to the framebuffer in place of the fragment colour while LogicalOpMode's
+ * UseConstantFBWriteData bit (bit 5, manual page 231) is set. It is not in
+ * the public Linux include/video/permedia2.h list, which is why an earlier
+ * revision of this file carried it unnamed. Both textports draw every
+ * text pixel and box this way: the IO6 PROM 6.156 standalone image sets
+ * bit 5 in 0x8828, writes the colour here, renders, then clears bit 5
+ * (glyph bitmap 0x11c2a2cc-0x11c2a4fc, point 0x11c2a500-0x11c2a5b8, box
+ * fill 0x11c2a5c0-0x11c2a6d4), as do the kernel's rad1_tport.o
+ * RAD1TpDrawbitmap, RAD1TpPnt2i and
+ * RAD1TpSboxfi. The traced values (0xf0f0f0 background, 0x606070
+ * text) are the textport's own colours in the framebuffer's raw format.
+ */
+#define RAD1_REG_FB_WRITE_DATA      0x8830
+#define RAD1_LOGICOP_USE_CONSTANT_FB_WRITE_DATA (1u << 5)
+
+/*
+ * FBBlockColor, Region Zero 0x8ac8 (permedia2.h PM2R_FB_BLOCK_COLOR;
+ * manual page 41, "Block Writes"): the value a FastFillEnable Render
+ * writes to every pixel. Both textport initialisers zero it together with
+ * FBWriteData before their full-screen FastFill clear (io6prom 6.156
+ * standalone image 0x11c29fc4-0x11c29ff8; rad1_tpinit.o RAD1InitBoard).
+ */
+#define RAD1_REG_FB_BLOCK_COLOR     0x8ac8
+
+/*
+ * Unnamed GP register, Region Zero 0x8d80: one single write in this
+ * session's trace, in the same low-frequency cluster as STATISTICS_MODE
+ * (0x8c08)/YUV_MODE (0x8f00)/DELTA_MODE (0x9300) below -- all four read as
+ * part of one broad reset/init sequence, the same shape as Linux
+ * drivers/video/fbdev/pm2fb.c's reset_config(), which writes nearly every
+ * GP register to a power-on default exactly once. This offset sits eight
+ * bytes before PM2R_FB_SOURCE_DELTA (0x8d88) and is not itself a named
+ * register in permedia2.h. Stored only, no invented semantics, no
+ * modeled side effect -- this session found no evidence of a second
+ * access that would name its role.
+ */
+#define RAD1_REG_GP_UNNAMED_8D80     0x8d80
+
+/*
+ * Three further single-write registers from the same reset/init cluster
+ * (public Linux include/video/permedia2.h: PM2R_STATISTICS_MODE 0x8c08,
+ * PM2R_YUV_MODE 0x8f00, PM2R_DELTA_MODE 0x9300), each written exactly once
+ * in this session's trace, matching reset_config()'s own one-shot
+ * power-on-default write to each of these registers in pm2fb.c. Stored
+ * only, no modeled side effect: none of the qualified drawing paths this
+ * session traced or implemented reads them back or depends on a specific
+ * bit pattern.
+ */
+#define RAD1_REG_STATISTICS_MODE    0x8c08
+#define RAD1_REG_YUV_MODE           0x8f00
+#define RAD1_REG_DELTA_MODE         0x9300
 
 /*
  * RectangleOrigin/RectangleSize bit packing, confirmed directly against
@@ -705,6 +845,27 @@ struct PsitechRad1State {
     uint32_t filter_mode;
     uint32_t sync_reg;
 
+    /*
+     * Trapezoid/span rasterizer state (RAD1_REG_START_X_DOM etc., see the
+     * block comment above): raw register storage, interpreted as 16.16
+     * fixed point only inside rad1_do_trapezoid_render() itself.
+     */
+    uint32_t start_x_dom;
+    uint32_t d_x_dom;
+    uint32_t start_x_sub;
+    uint32_t d_x_sub;
+    uint32_t start_y;
+    uint32_t d_y;
+    uint32_t count;
+    uint32_t render_cmd;
+    uint32_t rasterizer_mode;
+    uint32_t fb_write_data;
+    uint32_t fb_block_color;
+    uint32_t gp_unnamed_8d80;
+    uint32_t statistics_mode;
+    uint32_t yuv_mode;
+    uint32_t delta_mode;
+
     /* Bypass DMA block: the write-DMA completion path, see above. */
     uint32_t bydma_addr;
     uint32_t bydma_stride;
@@ -893,6 +1054,210 @@ static void rad1_do_render(PsitechRad1State *s)
      * early return on the reject path left that caller with no wake at
      * all.
      */
+    s->int_status |= RAD1_INT_KNOWN_MASK;
+    rad1_update_irq(s);
+}
+
+/*
+ * Resolve the constant colour a Render without texturing writes: FastFill
+ * takes FBBlockColor (manual page 41), otherwise LogicalOpMode's
+ * UseConstantFBWriteData selects FBWriteData (manual pages 217 and 231).
+ * Every evidenced textport and initialiser fill sets one of the two. The
+ * remaining case, the Color DDA unit's own fragment colour, is not modeled
+ * and stays trace-visible: nothing is drawn rather than a guessed colour.
+ */
+static bool rad1_constant_fill_color(PsitechRad1State *s, uint32_t *color)
+{
+    if (s->render_cmd & RAD1_RENDER_FASTFILL) {
+        *color = s->fb_block_color;
+        return true;
+    }
+    if (s->logical_op_mode & RAD1_LOGICOP_USE_CONSTANT_FB_WRITE_DATA) {
+        *color = s->fb_write_data;
+        return true;
+    }
+    qemu_log_mask(LOG_UNIMP,
+                 "psitech-rad1: Render 0x%08x with neither FastFill nor "
+                 "UseConstantFBWriteData: Color DDA fragment colour not "
+                 "modeled, nothing drawn\n", s->render_cmd);
+    return false;
+}
+
+/*
+ * Write one pixel through FBHardwareWriteMask. Rows are addressed with the
+ * fixed active mode's stride, as rad1_do_render() does, and the row bound
+ * is the framebuffer itself rather than the visible mode height for the
+ * same reason that function gives: a write below the scanned-out rows is
+ * ordinary VRAM traffic, not an error.
+ */
+static void rad1_put_pixel(PsitechRad1State *s, int32_t x, int32_t y,
+                           uint32_t color)
+{
+    const Rad1ModeRecord *mode = &rad1_mode_records[RAD1_ACTIVE_MODE];
+    uint32_t mask = s->fb_hw_write_mask;
+    uint64_t offset;
+    uint8_t *px;
+
+    if (x < 0 || y < 0 || x >= (int32_t)mode->width) {
+        return;
+    }
+    offset = ((uint64_t)y * mode->width + (uint32_t)x) * RAD1_BYTES_PER_PIXEL;
+    if (offset + RAD1_BYTES_PER_PIXEL > RAD1_FB_SIZE) {
+        return;
+    }
+    px = s->framebuffer + offset;
+    if (mask == 0xffffffffu) {
+        stl_be_p(px, color);
+    } else {
+        stl_be_p(px, (ldl_be_p(px) & ~mask) | (color & mask));
+    }
+}
+
+/*
+ * Render one point primitive (manual page 62, "5.3.3 Points"): a single
+ * aliased pixel at StartXDom/StartY, both 16.16 fixed point ("StartXDom
+ * (X<<16), StartY (Y<<16)" in the manual's own pseudocode; page 70 makes
+ * 16.16 the format of every rasterizer coordinate). This is how
+ * both textports draw text: one point per set glyph bit, colour from
+ * FBWriteData (io6prom 6.156 standalone image 0x11c2a428-0x11c2a42c;
+ * rad1_tport.o RAD1TpDrawbitmap). Completion signaling is APPROXIMATED
+ * exactly as rad1_do_render()'s, see RAD1_INT_KNOWN_MASK.
+ */
+static void rad1_do_point_render(PsitechRad1State *s)
+{
+    uint32_t color;
+
+    if (rad1_constant_fill_color(s, &color)) {
+        rad1_put_pixel(s, (int32_t)s->start_x_dom >> 16,
+                       (int32_t)s->start_y >> 16, color);
+    }
+
+    s->int_status |= RAD1_INT_KNOWN_MASK;
+    rad1_update_irq(s);
+}
+
+/*
+ * Render one rectangle primitive as a constant fill (manual page 62,
+ * "5.3.4 Rectangles"): RectangleOrigin's corner, RectangleSize's width
+ * and height (manual page 241; the origin's X and Y are 12-bit two's
+ * complement, manual page 73), filled toward increasing X and Y, which is
+ * the only direction any evidenced writer uses (the PROM textport's box
+ * fill at 0x11c2a6bc and the kernel's RAD1TpSboxfi both write 0x6000c0;
+ * the initialisers' clears 0x6000c8). A decreasing direction would move
+ * the covered range to the other side of the origin; unmodeled and
+ * logged rather than guessed. Completion signaling is APPROXIMATED as in
+ * rad1_do_render().
+ */
+static void rad1_do_rectangle_fill(PsitechRad1State *s)
+{
+    uint32_t width = s->rect_size & RAD1_RECT_LOW_MASK;
+    uint32_t height = (s->rect_size >> RAD1_RECT_HIGH_SHIFT) &
+                      RAD1_RECT_LOW_MASK;
+    int32_t x0 = sextract32(s->rect_origin, 0, 12);
+    int32_t y0 = sextract32(s->rect_origin, RAD1_RECT_HIGH_SHIFT, 12);
+    uint32_t color;
+    uint32_t row, col;
+
+    if ((s->render_cmd & (RAD1_RENDER_INCREASE_X | RAD1_RENDER_INCREASE_Y)) !=
+        (RAD1_RENDER_INCREASE_X | RAD1_RENDER_INCREASE_Y)) {
+        qemu_log_mask(LOG_UNIMP,
+                     "psitech-rad1: decreasing-direction rectangle Render "
+                     "0x%08x not modeled, nothing drawn\n", s->render_cmd);
+    } else if (rad1_constant_fill_color(s, &color)) {
+        for (row = 0; row < height; row++) {
+            for (col = 0; col < width; col++) {
+                rad1_put_pixel(s, x0 + (int32_t)col, y0 + (int32_t)row,
+                               color);
+            }
+        }
+    }
+
+    s->int_status |= RAD1_INT_KNOWN_MASK;
+    rad1_update_irq(s);
+}
+
+/*
+ * Render one trapezoid/span primitive, selected by RAD1_RENDER_TRAPEZOID
+ * (see the trapezoid/span rasterizer register block comment above for each
+ * register's offset grounding and this function's own explicit algorithm
+ * non-grounding disclosure -- neither permitted public source exercises
+ * this primitive at all).
+ *
+ * This model reads StartXDom/StartXSub (and their D_X_DOM/D_X_SUB deltas)
+ * as signed Q16.16 fixed point, matching their naming as the two edges of
+ * a standard textbook DDA scan-converter, and StartY/DY as plain 32-bit
+ * scanline integers -- the conventional split for a two-edge rasterizer
+ * where only the X edges interpolate fractionally within a scanline and Y
+ * always advances by whole scanlines. This split is picked for its
+ * ordinary-DDA plausibility, not read from either permitted public source
+ * or the (absent from this checkout) TVP4020 PRM; it needs independent
+ * review, ideally against the actual manual, before landing.
+ *
+ * Each of Count iterations fills the half-open span
+ * [min(x1,x2), max(x1,x2)) on the current scanline with
+ * FBWriteData's stored value, honoring FBHardwareWriteMask exactly as
+ * rad1_do_render() does, then advances all three DDA accumulators by their
+ * delta registers. Count is defensively clamped to the active mode's
+ * height: nothing in the public sources grounds Count's own units, and an
+ * unclamped guest-supplied value could otherwise spin this loop
+ * arbitrarily long.
+ *
+ * Destination stride/base: the fixed active mode's own stride and a zero
+ * base, the same as rad1_do_render() -- see the Video Timing block comment
+ * above for why SCREEN_STRIDE/SCREEN_BASE are not wired in here.
+ */
+static void rad1_do_trapezoid_render(PsitechRad1State *s)
+{
+    const Rad1ModeRecord *mode = &rad1_mode_records[RAD1_ACTIVE_MODE];
+    uint32_t fb_stride = mode->width * RAD1_BYTES_PER_PIXEL;
+    int32_t xdom = (int32_t)s->start_x_dom;
+    int32_t xsub = (int32_t)s->start_x_sub;
+    int32_t y = (int32_t)s->start_y;
+    int32_t dxdom = (int32_t)s->d_x_dom;
+    int32_t dxsub = (int32_t)s->d_x_sub;
+    int32_t dy = (int32_t)s->d_y;
+    uint32_t iterations = MIN(s->count, mode->height);
+    uint32_t mask = s->fb_hw_write_mask;
+    uint32_t color = s->fb_write_data;
+    uint32_t i;
+
+    for (i = 0; i < iterations; i++) {
+        int32_t x1 = xdom >> 16;
+        int32_t x2 = xsub >> 16;
+        int32_t lo = x1 < x2 ? x1 : x2;
+        int32_t hi = x1 < x2 ? x2 : x1;
+
+        if (y >= 0 && y < (int32_t)mode->height) {
+            if (lo < 0) {
+                lo = 0;
+            }
+            if (hi > (int32_t)mode->width) {
+                hi = mode->width;
+            }
+            if (lo < hi) {
+                uint8_t *dst = s->framebuffer + (uint32_t)y * fb_stride;
+                uint32_t col;
+
+                for (col = (uint32_t)lo; col < (uint32_t)hi; col++) {
+                    uint8_t *px = dst + col * RAD1_BYTES_PER_PIXEL;
+
+                    if (mask == 0xffffffffu) {
+                        stl_be_p(px, color);
+                    } else {
+                        uint32_t old = ldl_be_p(px);
+
+                        stl_be_p(px, (old & ~mask) | (color & mask));
+                    }
+                }
+            }
+        }
+
+        xdom += dxdom;
+        xsub += dxsub;
+        y += dy;
+    }
+
+    /* APPROXIMATED completion signaling; see RAD1_INT_KNOWN_MASK above. */
     s->int_status |= RAD1_INT_KNOWN_MASK;
     rad1_update_irq(s);
 }
@@ -1139,6 +1504,20 @@ static uint64_t rad1_regzero_read(void *opaque, hwaddr addr, unsigned size)
         case RAD1_REG_FB_HW_WRITE_MASK: return s->fb_hw_write_mask;
         case RAD1_REG_FILTER_MODE: return s->filter_mode;
         case RAD1_REG_SYNC: return s->sync_reg;
+        case RAD1_REG_START_X_DOM: return s->start_x_dom;
+        case RAD1_REG_D_X_DOM: return s->d_x_dom;
+        case RAD1_REG_START_X_SUB: return s->start_x_sub;
+        case RAD1_REG_D_X_SUB: return s->d_x_sub;
+        case RAD1_REG_START_Y: return s->start_y;
+        case RAD1_REG_D_Y: return s->d_y;
+        case RAD1_REG_COUNT: return s->count;
+        case RAD1_REG_RASTERIZER_MODE: return s->rasterizer_mode;
+        case RAD1_REG_FB_WRITE_DATA: return s->fb_write_data;
+        case RAD1_REG_FB_BLOCK_COLOR: return s->fb_block_color;
+        case RAD1_REG_GP_UNNAMED_8D80: return s->gp_unnamed_8d80;
+        case RAD1_REG_STATISTICS_MODE: return s->statistics_mode;
+        case RAD1_REG_YUV_MODE: return s->yuv_mode;
+        case RAD1_REG_DELTA_MODE: return s->delta_mode;
         default:
             qemu_log_mask(LOG_UNIMP,
                          "psitech-rad1: unsupported GP register read at "
@@ -1316,7 +1695,41 @@ static void rad1_regzero_write(void *opaque, hwaddr addr, uint64_t val,
     if (addr >= RAD1_RANGE_GPREGS_FIRST && addr <= RAD1_RANGE_GPREGS_LAST) {
         switch (addr) {
         case RAD1_REG_RENDER:
-            rad1_do_render(s);
+            /*
+             * Dispatch on the primitive-selector bits (manual page 242,
+             * bits 6-7). A rectangle is the kernel driver's texture-read
+             * copy only when it carries TextureEnable (rect_pio_move()/
+             * rect_dma_move() write 0x6020c0) or when FBReadMode selects
+             * this model's read-back (see rad1_do_render()); the
+             * textports' 0x6000c0 boxes and the initialisers' 0x6000c8
+             * FastFill clears are constant fills. An earlier revision sent
+             * every non-trapezoid Render down the copy path, so those
+             * fills copied framebuffer offset zero onto themselves and the
+             * glyph points copied a stale rectangle: console=g stayed
+             * black with the PROM textport happily drawing.
+             */
+            s->render_cmd = val;
+            switch (val & RAD1_RENDER_PRIMITIVE_MASK) {
+            case RAD1_RENDER_TRAPEZOID:
+                rad1_do_trapezoid_render(s);
+                break;
+            case RAD1_RENDER_POINT:
+                rad1_do_point_render(s);
+                break;
+            case RAD1_RENDER_RECTANGLE:
+                if ((val & RAD1_RENDER_TEXTURE_ENABLE) ||
+                    (s->fb_read_mode & RAD1_FBREADMODE_READBACK_BIT)) {
+                    rad1_do_render(s);
+                } else {
+                    rad1_do_rectangle_fill(s);
+                }
+                break;
+            default:
+                qemu_log_mask(LOG_UNIMP,
+                             "psitech-rad1: line primitive Render 0x%08x "
+                             "not modeled\n", (uint32_t)val);
+                break;
+            }
             break;
         case RAD1_REG_WAIT_FOR_COMPLETE:
             /* Manual page 275: data field reserved/unused. */
@@ -1380,6 +1793,48 @@ static void rad1_regzero_write(void *opaque, hwaddr addr, uint64_t val,
             break;
         case RAD1_REG_SYNC:
             s->sync_reg = val;
+            break;
+        case RAD1_REG_START_X_DOM:
+            s->start_x_dom = val;
+            break;
+        case RAD1_REG_D_X_DOM:
+            s->d_x_dom = val;
+            break;
+        case RAD1_REG_START_X_SUB:
+            s->start_x_sub = val;
+            break;
+        case RAD1_REG_D_X_SUB:
+            s->d_x_sub = val;
+            break;
+        case RAD1_REG_START_Y:
+            s->start_y = val;
+            break;
+        case RAD1_REG_D_Y:
+            s->d_y = val;
+            break;
+        case RAD1_REG_COUNT:
+            s->count = val;
+            break;
+        case RAD1_REG_RASTERIZER_MODE:
+            s->rasterizer_mode = val;
+            break;
+        case RAD1_REG_FB_WRITE_DATA:
+            s->fb_write_data = val;
+            break;
+        case RAD1_REG_FB_BLOCK_COLOR:
+            s->fb_block_color = val;
+            break;
+        case RAD1_REG_GP_UNNAMED_8D80:
+            s->gp_unnamed_8d80 = val;
+            break;
+        case RAD1_REG_STATISTICS_MODE:
+            s->statistics_mode = val;
+            break;
+        case RAD1_REG_YUV_MODE:
+            s->yuv_mode = val;
+            break;
+        case RAD1_REG_DELTA_MODE:
+            s->delta_mode = val;
             break;
         default:
             qemu_log_mask(LOG_UNIMP,
@@ -1617,6 +2072,22 @@ static void rad1_reset_hold(Object *obj, ResetType type)
     s->filter_mode = 0;
     s->sync_reg = 0;
 
+    s->start_x_dom = 0;
+    s->d_x_dom = 0;
+    s->start_x_sub = 0;
+    s->d_x_sub = 0;
+    s->start_y = 0;
+    s->d_y = 0;
+    s->count = 0;
+    s->render_cmd = 0;
+    s->rasterizer_mode = 0;
+    s->fb_write_data = 0;
+    s->fb_block_color = 0;
+    s->gp_unnamed_8d80 = 0;
+    s->statistics_mode = 0;
+    s->yuv_mode = 0;
+    s->delta_mode = 0;
+
     s->bydma_addr = 0;
     s->bydma_stride = 0;
     s->bydma_mem_addr = 0;
@@ -1700,14 +2171,15 @@ static const VMStateDescription vmstate_psitech_rad1 = {
     .name = TYPE_PSITECH_RAD1,
     /*
      * Bumped from 1 to 2 for the Video Timing and Memory Control state,
-     * and from 2 to 3 for the RAMDAC palette state below: images are
-     * never committed per this project's rules (docs/README.md, "Images
-     * stay in ignored assets/"), so there is no real snapshot-
-     * compatibility concern being broken here, only the ordinary rule
-     * that a changed field list needs a new version.
+     * from 2 to 3 for the RAMDAC palette state, and from 3 to 4 for the
+     * trapezoid/span rasterizer state below: images are never committed
+     * per this project's rules (docs/README.md, "Images stay in ignored
+     * assets/"), so there is no real snapshot-compatibility concern being
+     * broken here, only the ordinary rule that a changed field list needs
+     * a new version.
      */
-    .version_id = 3,
-    .minimum_version_id = 3,
+    .version_id = 4,
+    .minimum_version_id = 4,
     .post_load = rad1_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(pci, PsitechRad1State),
@@ -1756,6 +2228,21 @@ static const VMStateDescription vmstate_psitech_rad1 = {
         VMSTATE_UINT32(fb_hw_write_mask, PsitechRad1State),
         VMSTATE_UINT32(filter_mode, PsitechRad1State),
         VMSTATE_UINT32(sync_reg, PsitechRad1State),
+        VMSTATE_UINT32(start_x_dom, PsitechRad1State),
+        VMSTATE_UINT32(d_x_dom, PsitechRad1State),
+        VMSTATE_UINT32(start_x_sub, PsitechRad1State),
+        VMSTATE_UINT32(d_x_sub, PsitechRad1State),
+        VMSTATE_UINT32(start_y, PsitechRad1State),
+        VMSTATE_UINT32(d_y, PsitechRad1State),
+        VMSTATE_UINT32(count, PsitechRad1State),
+        VMSTATE_UINT32(render_cmd, PsitechRad1State),
+        VMSTATE_UINT32(rasterizer_mode, PsitechRad1State),
+        VMSTATE_UINT32(fb_write_data, PsitechRad1State),
+        VMSTATE_UINT32(fb_block_color, PsitechRad1State),
+        VMSTATE_UINT32(gp_unnamed_8d80, PsitechRad1State),
+        VMSTATE_UINT32(statistics_mode, PsitechRad1State),
+        VMSTATE_UINT32(yuv_mode, PsitechRad1State),
+        VMSTATE_UINT32(delta_mode, PsitechRad1State),
         VMSTATE_UINT32(bydma_addr, PsitechRad1State),
         VMSTATE_UINT32(bydma_stride, PsitechRad1State),
         VMSTATE_UINT32(bydma_mem_addr, PsitechRad1State),
