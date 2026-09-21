@@ -135,6 +135,14 @@
 #define BRIDGE_SSRAM_SIZE       (512 * KiB)
 #define BRIDGE_ATE_LOW_SIZE     (SGI_BRIDGE_ATE_ENTRIES * BRIDGE_ATE_LOW_STRIDE)
 
+/*
+ * The external-flash window: two 2 MB chip selects on the 16-bit SSRAM
+ * port, the one the FLASH_SELECT strap names answering at the base.
+ */
+#define BRIDGE_FLASH_BASE        0xc00000
+#define BRIDGE_FLASH_SELECT_SIZE (2 * MiB)
+#define BRIDGE_FLASH_SIZE        (2 * BRIDGE_FLASH_SELECT_SIZE)
+
 /* Full sixteen bits: the direct-map mode bit decides how many fill. */
 #define ATE_REMOTE_MAP          MAKE_64BIT_MASK(48, 16)
 #define ATE_ADDRESS             MAKE_64BIT_MASK(12, 36)
@@ -1134,6 +1142,101 @@ static const MemoryRegionOps sgi_bridge_ssram_ops = {
 };
 
 /*
+ * The flash port is 16 bits wide, so a crosstalk read of any size is the
+ * part's words read one cycle at a time with the requested byte lanes
+ * kept, and the part repeats across its chip select above the address
+ * lines it decodes. Nothing answers on the other chip select, or on a
+ * Bridge with no part fitted: those fail the way an unpopulated widget
+ * address does.
+ */
+static bool sgi_bridge_flash_populated(SGIBridgeState *s, hwaddr addr,
+                                       bool is_write)
+{
+    if (s->flash && addr < BRIDGE_FLASH_SELECT_SIZE) {
+        return true;
+    }
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-bridge: flash %s at window offset 0x%" HWADDR_PRIx
+                  " with no part there\n", is_write ? "write" : "read", addr);
+    return false;
+}
+
+static MemTxResult sgi_bridge_flash_read(void *opaque, hwaddr addr,
+                                         uint64_t *value, unsigned size,
+                                         MemTxAttrs attrs)
+{
+    SGIBridgeState *s = opaque;
+    uint64_t part_size;
+    uint64_t result = 0;
+    unsigned i;
+
+    if (!sgi_bridge_flash_populated(s, addr, false)) {
+        return MEMTX_DECODE_ERROR;
+    }
+    part_size = memory_region_size(s->flash);
+    for (i = 0; i < size; i++) {
+        hwaddr byte = (addr + i) % part_size;
+        uint64_t word;
+        MemTxResult r;
+
+        r = memory_region_dispatch_read(s->flash, byte & ~(hwaddr)1, &word,
+                                        MO_BEUW, attrs);
+        if (r != MEMTX_OK) {
+            return r;
+        }
+        result = (result << 8) | (((byte & 1) ? word : word >> 8) & 0xff);
+    }
+    *value = result;
+    return MEMTX_OK;
+}
+
+/*
+ * The specification takes 16-bit writes only, on account of the parts'
+ * command sequences, and completes none while the control register's
+ * flash write enable is clear. How the chip reports the refused write is
+ * not established; it is logged and dropped.
+ */
+static MemTxResult sgi_bridge_flash_write(void *opaque, hwaddr addr,
+                                          uint64_t value, unsigned size,
+                                          MemTxAttrs attrs)
+{
+    SGIBridgeState *s = opaque;
+    hwaddr byte;
+
+    if (!sgi_bridge_flash_populated(s, addr, true)) {
+        return MEMTX_DECODE_ERROR;
+    }
+    if (!(s->reg[SGI_BRIDGE_SLOT(BRIDGE_CONTROL)] & CONTROL_FLASH_WRITE_EN)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bridge: flash write of 0x%" PRIx64 " at window "
+                      "offset 0x%" HWADDR_PRIx " with the write enable "
+                      "clear; not completed\n", value, addr);
+        return MEMTX_OK;
+    }
+    if (size != 2) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bridge: %u-byte flash write of 0x%" PRIx64 " at "
+                      "window offset 0x%" HWADDR_PRIx "; the port takes "
+                      "16-bit writes only, not completed\n", size, value,
+                      addr);
+        return MEMTX_OK;
+    }
+    byte = addr % memory_region_size(s->flash);
+    return memory_region_dispatch_write(s->flash, byte & ~(hwaddr)1, value,
+                                        MO_BEUW, attrs);
+}
+
+static const MemoryRegionOps sgi_bridge_flash_ops = {
+    .read_with_attrs = sgi_bridge_flash_read,
+    .write_with_attrs = sgi_bridge_flash_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+};
+
+/*
  * 64-bit write or 32-bit upper-half read only; a 32-bit write would
  * leave half an entry behind.
  */
@@ -1952,6 +2055,21 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     memory_region_init_io(&s->ssram, obj, &sgi_bridge_ssram_ops, s,
                           "sgi-bridge.ssram", BRIDGE_SSRAM_SIZE);
     memory_region_add_subregion(&s->widget, BRIDGE_SSRAM_BASE, &s->ssram);
+    if (s->flash) {
+        uint64_t part_size = memory_region_size(s->flash);
+
+        if (!is_power_of_2(part_size) ||
+            part_size > BRIDGE_FLASH_SELECT_SIZE) {
+            error_setg(errp, "the I/O bridge flash part must be a power of "
+                       "two of at most 2 MB, not %" PRIu64 " bytes",
+                       part_size);
+            return;
+        }
+    }
+    memory_region_init_io(&s->flash_window, obj, &sgi_bridge_flash_ops, s,
+                          "sgi-bridge.flash", BRIDGE_FLASH_SIZE);
+    memory_region_add_subregion(&s->widget, BRIDGE_FLASH_BASE,
+                                &s->flash_window);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->widget);
 
     memory_region_init(&s->packet, obj, "sgi-bridge.packet",
@@ -2182,6 +2300,12 @@ static const Property sgi_bridge_properties[] = {
                        NIC_ROM_SERIAL_DEFAULT),
     DEFINE_PROP_STRING("board-part", SGIBridgeState, board_part),
     DEFINE_PROP_STRING("pci-bus-name", SGIBridgeState, pci_bus_name),
+    /*
+     * The part on the flash port's base chip select, a 16-bit region of
+     * at most 2 MB; unset on a board that fits none.
+     */
+    DEFINE_PROP_LINK("flash", SGIBridgeState, flash, TYPE_MEMORY_REGION,
+                     MemoryRegion *),
     /*
      * Forces slots exempt whatever their cards say, for a test or a debug
      * run that wants the answer a card cannot be asked for. Cards declare

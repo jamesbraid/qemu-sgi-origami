@@ -299,6 +299,25 @@ write-and-read-back probe expecting a completing access, and
 all-ones differs from any probe pattern, so the size probes as zero.
 Writes are dropped.
 
+External flash port
+====================
+
+The same SSRAM pins double as a flash port: two 2 MB chip selects, a
+strap (``FLASH_SELECT``, mirrored in the status register) choosing
+which one answers at the window base, and the control register's
+write-enable bit gating writes. Unlike the external SSRAM window,
+an unfitted flash port decodes as an error rather than completing --
+the specification ties the flash port to a fitted part, where the
+SSRAM port stays wired regardless. A fitted part answers reads of
+any crosstalk size, repeating its sixteen-bit words across the
+access; writes complete at sixteen bits only, on account of the
+parts' differing command sequences, and are logged and dropped,
+without an error, while the write-enable bit is clear. The model
+reuses ``pflash_cfi02``, the AMD command-set part QEMU already
+carries, rather than a bespoke device: the fitted card's own class
+builds it sized to the part and hands the Bridge the resulting
+memory region.
+
 Migration
 =========
 

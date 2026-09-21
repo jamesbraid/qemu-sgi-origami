@@ -187,6 +187,17 @@ struct SGIBridgeState {
     /* Empty on this board; completes accesses for the PROM's size probe. */
     MemoryRegion ssram;
 
+    /*
+     * The external-flash window: 4 MB at 0xc0_0000, two 2 MB chip selects
+     * on a 16-bit port. A board that fits a part links its region as
+     * "flash" and it answers the chip select strapped to the base; the
+     * window carries a read of any width as 16-bit chip cycles and a
+     * write only while the control register's flash write enable is set.
+     * The other chip select is unpopulated.
+     */
+    MemoryRegion flash_window;
+    MemoryRegion *flash;
+
     /* Configuration space window, type 0 only: no PCI-to-PCI bridge here. */
     MemoryRegion cfg0;
 
