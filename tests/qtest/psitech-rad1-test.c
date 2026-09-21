@@ -92,6 +92,29 @@
 #define INT_BIT7        (1u << 7)
 #define INT_KNOWN_MASK  (INT_BIT0 | INT_BIT1 | INT_BIT7)
 
+/*
+ * Region Zero: Bypass DMA (docs/datasheets/psitech-rad1.md, "Bypass DMA
+ * write-completion path"; offsets and field layout cross-checked against
+ * the TVP4020 Hardware Reference Manual Issue 6, pages 44-51, and against
+ * the driver's own disassembled posting sequence). ByDMAControl's own
+ * Mode/RestartGP/format/patch-type field values are not exercised by this
+ * model -- any write triggers the transfer -- so BYDMA_CONTROL_TRIGGER
+ * below is a nominal value, not a decoded one.
+ */
+#define R_BYDMA_ADDRESS     0x00a0
+#define R_BYDMA_STRIDE      0x00b8
+#define R_BYDMA_MEM_ADDR    0x00c0
+#define R_BYDMA_SIZE        0x00c8
+#define R_BYDMA_BYTE_MASK   0x00d0
+#define R_BYDMA_CONTROL     0x00d8
+
+#define BYDMA_CONTROL_TRIGGER   1u
+
+/* Left mask in bits 0-3, right mask in bits 16-19; page 50, offset D0h. */
+#define BYDMA_BYTE_MASK(left, right) \
+    (((uint32_t)(right) << 16) | ((left) & 0xfu))
+#define BYDMA_BYTE_MASK_OPEN    BYDMA_BYTE_MASK(0xf, 0xf)
+
 /* Region Zero: RAMDAC (docs/datasheets/psitech-rad1.md). */
 #define R_RAMDAC_0      0x4000
 #define R_RAMDAC_1      0x4010
@@ -119,6 +142,9 @@
 
 #define RECT(x, y)          (((uint32_t)(y) << 16) | ((x) & 0xffffu))
 #define SIZE(w, h)          (((uint32_t)(h) << 16) | ((w) & 0xffffu))
+
+/* ByDMASize: Width in bits 0-11, Height in bits 16-27 (RAD1_BYDMA_DIM_MASK). */
+#define BYDMA_SIZE(w, h)    (((uint32_t)(h) << 16) | ((w) & 0x0fffu))
 
 /*
  * Flash/EEPROM: generic JEDEC/AMD unlock-and-program sequence, addressed
@@ -240,20 +266,23 @@ static QTestState *rad1_init(void)
 
 /*
  * Enables bus mastering and this slot's Direct-window byte-lane
- * correction, then writes the Render register to trigger the transfer --
- * matching psitech-rad4-test.c's dma_start() exactly, including why it
- * does the triggering write itself rather than through the generic
- * regzero_write()/rad1_writel() helpers: those re-window the Bridge
- * slot's own device register (rad1_window_to()), which shares its storage
- * with this correction bit, so anything windowing after this call would
- * silently drop it again. This also windows to Region Zero's own base
- * (not the host address's), since the triggering write itself is a
- * Region Zero PIO access; the correction bit is this Bridge slot's own
- * property, independent of which window base happens to be selected
- * alongside it, matching how RAD4's own DMA-triggering register lives in
- * the same window its DMA needs the correction for.
+ * correction, then writes `val` to Region Zero offset `off` to trigger a
+ * host-memory-capable transfer -- matching psitech-rad4-test.c's
+ * dma_start() exactly, including why it does the triggering write itself
+ * rather than through the generic regzero_write()/rad1_writel() helpers:
+ * those re-window the Bridge slot's own device register (rad1_window_to()),
+ * which shares its storage with this correction bit, so anything windowing
+ * after this call would silently drop it again. This also windows to
+ * Region Zero's own base (not the host address's), since the triggering
+ * write itself is a Region Zero PIO access; the correction bit is this
+ * Bridge slot's own property, independent of which window base happens to
+ * be selected alongside it, matching how RAD4's own DMA-triggering
+ * register lives in the same window its DMA needs the correction for.
+ * Shared by every register whose write can start a host-memory DMA
+ * (Render, and ByDMAControl below) since the correction is Bridge-slot
+ * state, not tied to one particular triggering register.
  */
-static void rad1_trigger_render_with_dma(QTestState *qts)
+static void rad1_trigger_dma(QTestState *qts, uint32_t off, uint32_t val)
 {
     uint32_t base = RAD1_BAR0_PCI & ~(WINDOW_SIZE - 1);
 
@@ -262,8 +291,8 @@ static void rad1_trigger_render_with_dma(QTestState *qts)
     qtest_writel(qts, BRIDGE_DIRECT_MAP_REG, 0);
     qtest_writel(qts, BRIDGE_DEVICE(RAD1_SLOT),
                 DEV_MEMORY_SPACE | DEV_SWAP_DIRECT | (base >> 20));
-    qtest_writel(qts, WINDOW_RAD1 + ((RAD1_BAR0_PCI + R_RENDER) &
-                                     (WINDOW_SIZE - 1)), 1);
+    qtest_writel(qts, WINDOW_RAD1 + ((RAD1_BAR0_PCI + off) &
+                                     (WINDOW_SIZE - 1)), val);
 }
 
 static void write_host_words(QTestState *qts, uint32_t phys,
@@ -435,7 +464,7 @@ static void test_render_host_copy(void)
     regzero_write(qts, R_T_START, 0);
     regzero_write(qts, R_RECT_ORIGIN, RECT(0, 0));
     regzero_write(qts, R_RECT_SIZE, SIZE(2, 1));
-    rad1_trigger_render_with_dma(qts);
+    rad1_trigger_dma(qts, R_RENDER, 1);
 
     g_assert_cmphex(vram_read(qts, 0), ==, payload[0]);
     g_assert_cmphex(vram_read(qts, 4), ==, payload[1]);
@@ -488,9 +517,116 @@ static void test_render_readback(void)
     regzero_write(qts, R_TEX_BASE_ADDR, PCI_DMA_DIRECT | HOST_DST_PHYS);
     regzero_write(qts, R_RECT_ORIGIN, RECT(0, 0));
     regzero_write(qts, R_RECT_SIZE, SIZE(1, 1));
-    rad1_trigger_render_with_dma(qts);
+    rad1_trigger_dma(qts, R_RENDER, 1);
 
     g_assert_cmphex(read_host_word(qts, HOST_DST_PHYS), ==, 0x00c0ffeeu);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Round-trip register storage for the six Bypass DMA registers
+ * (docs/datasheets/psitech-rad1.md, "Bypass DMA write-completion path"),
+ * writing a zero-sized ByDMASize so ByDMAControl's own write -- which
+ * always starts a transfer, see hw/display/psitech-rad1.c's
+ * rad1_regzero_write() -- returns immediately without touching the
+ * framebuffer or the interrupt status this test does not want to disturb.
+ */
+static void test_bydma_registers_round_trip(void)
+{
+    QTestState *qts = rad1_init();
+
+    regzero_write(qts, R_BYDMA_ADDRESS, 0x00123400u);
+    regzero_write(qts, R_BYDMA_STRIDE, 0x00000ff0u);
+    regzero_write(qts, R_BYDMA_MEM_ADDR, 0x00abcdefu);
+    regzero_write(qts, R_BYDMA_BYTE_MASK, BYDMA_BYTE_MASK_OPEN);
+    /* ByDMASize left at its post-reset zero: width and height both 0. */
+    regzero_write(qts, R_BYDMA_CONTROL, BYDMA_CONTROL_TRIGGER);
+
+    g_assert_cmphex(regzero_read(qts, R_BYDMA_ADDRESS), ==, 0x00123400u);
+    g_assert_cmphex(regzero_read(qts, R_BYDMA_STRIDE), ==, 0x00000ff0u);
+    g_assert_cmphex(regzero_read(qts, R_BYDMA_MEM_ADDR), ==, 0x00abcdefu);
+    g_assert_cmphex(regzero_read(qts, R_BYDMA_SIZE), ==, 0);
+    g_assert_cmphex(regzero_read(qts, R_BYDMA_BYTE_MASK), ==,
+                    BYDMA_BYTE_MASK_OPEN);
+    g_assert_cmphex(regzero_read(qts, R_BYDMA_CONTROL), ==,
+                    BYDMA_CONTROL_TRIGGER);
+
+    /* Zero-sized transfer ran and returned early: no completion raised. */
+    g_assert_cmphex(regzero_read(qts, R_INT_STATUS), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The write-DMA completion path itself: a host-memory source posted
+ * through ByDMAAddress/ByDMAStride/ByDMAMemAddr/ByDMASize/ByDMAByteMask,
+ * started by the ByDMAControl write -- the transfer `rad1pci`'s posted
+ * write times out waiting for completion (docs/datasheets/psitech-rad1.md,
+ * "Bypass DMA write-completion path"). Confirms both the framebuffer
+ * content and that completion raises only IntFlags bit 7, distinct from
+ * Render's own RAD1_INT_KNOWN_MASK (see test_interrupt_status_write_clear
+ * below).
+ */
+static void test_bydma_write_transfer(void)
+{
+    QTestState *qts = rad1_init();
+    static const uint32_t payload[2] = { 0x0011aabbu, 0x0022ccddu };
+
+    write_host_words(qts, HOST_SRC_PHYS, payload, ARRAY_SIZE(payload));
+
+    regzero_write(qts, R_BYDMA_ADDRESS, HOST_SRC_PHYS);
+    regzero_write(qts, R_BYDMA_STRIDE, ARRAY_SIZE(payload) * 4);
+    regzero_write(qts, R_BYDMA_MEM_ADDR, 0);
+    regzero_write(qts, R_BYDMA_SIZE, BYDMA_SIZE(ARRAY_SIZE(payload), 1));
+    regzero_write(qts, R_BYDMA_BYTE_MASK, BYDMA_BYTE_MASK_OPEN);
+    rad1_trigger_dma(qts, R_BYDMA_CONTROL, BYDMA_CONTROL_TRIGGER);
+
+    g_assert_cmphex(vram_read(qts, 0), ==, payload[0]);
+    g_assert_cmphex(vram_read(qts, 4), ==, payload[1]);
+
+    uint32_t status = regzero_read(qts, R_INT_STATUS);
+    g_assert_cmphex(status, ==, INT_BIT7);
+
+    regzero_write(qts, R_INT_STATUS, status);
+    g_assert_cmphex(regzero_read(qts, R_INT_STATUS), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * ByDMAByteMask (page 50, "3.2.23 Bypass DMA Byte Mask", offset D0h)
+ * applies only to the first and last column of a transfer row; a middle
+ * column of a wider row is always fully written regardless of the mask.
+ * The specific lane-to-byte mapping is APPROXIMATED beyond the driver's
+ * only-traced fully-open value (hw/display/psitech-rad1.c's
+ * rad1_bydma_edge_mask() comment) -- this test pins this model's own
+ * chosen mapping, not an independently confirmed hardware fact.
+ */
+static void test_bydma_byte_mask_edges(void)
+{
+    QTestState *qts = rad1_init();
+    static const uint32_t payload[3] = {
+        0xaabbccddu, 0x88888888u, 0x99887766u,
+    };
+
+    vram_write(qts, 0, 0x11223344u);
+    vram_write(qts, 4, 0x99999999u);
+    vram_write(qts, 8, 0x55667788u);
+
+    write_host_words(qts, HOST_SRC_PHYS, payload, ARRAY_SIZE(payload));
+
+    regzero_write(qts, R_BYDMA_ADDRESS, HOST_SRC_PHYS);
+    regzero_write(qts, R_BYDMA_STRIDE, ARRAY_SIZE(payload) * 4);
+    regzero_write(qts, R_BYDMA_MEM_ADDR, 0);
+    regzero_write(qts, R_BYDMA_SIZE, BYDMA_SIZE(ARRAY_SIZE(payload), 1));
+    /* Left column: lanes 0-1 only. Right column: lanes 2-3 only. */
+    regzero_write(qts, R_BYDMA_BYTE_MASK, BYDMA_BYTE_MASK(0x3, 0xc));
+    rad1_trigger_dma(qts, R_BYDMA_CONTROL, BYDMA_CONTROL_TRIGGER);
+
+    g_assert_cmphex(vram_read(qts, 0), ==, 0x1122ccddu);
+    g_assert_cmphex(vram_read(qts, 4), ==, 0x88888888u);
+    g_assert_cmphex(vram_read(qts, 8), ==, 0x99887788u);
 
     qtest_quit(qts);
 }
@@ -608,6 +744,12 @@ int main(int argc, char **argv)
     qtest_add_func("/psitech-rad1/render-honors-write-mask",
                    test_render_honors_write_mask);
     qtest_add_func("/psitech-rad1/render-readback", test_render_readback);
+    qtest_add_func("/psitech-rad1/bydma-registers-round-trip",
+                   test_bydma_registers_round_trip);
+    qtest_add_func("/psitech-rad1/bydma-write-transfer",
+                   test_bydma_write_transfer);
+    qtest_add_func("/psitech-rad1/bydma-byte-mask-edges",
+                   test_bydma_byte_mask_edges);
     qtest_add_func("/psitech-rad1/interrupt-status-write-clear",
                    test_interrupt_status_write_clear);
     qtest_add_func("/psitech-rad1/flash-program-sequence",
