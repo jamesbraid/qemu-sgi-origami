@@ -1136,6 +1136,28 @@ static void elsc_publish_grant(SGIElscState *s, uint8_t value)
 #define ELSC_ARB_RETRY_US 20
 
 /*
+ * A held grant occupies a slot of at least ten milliseconds, its length a
+ * fixed function of the code and the revolution counter, from ten to eleven
+ * point six milliseconds in fifths of a millisecond.
+ */
+#define ELSC_ARB_SLOT_BASE_US 10000
+#define ELSC_ARB_SLOT_STEP_US   200
+#define ELSC_ARB_SLOT_SPREAD      9
+
+/*
+ * The held-slot length for a code on a given revolution. Varying it by both
+ * the code and the revolution keeps the ring's period from repeating turn to
+ * turn, so no fixed polling cadence stays commensurate with it -- the cause
+ * of the processor a cold start intermittently loses on its first pass.
+ */
+static int64_t elsc_arb_slot_us(uint32_t code, uint32_t rev)
+{
+    uint32_t phase = (code * 7 + rev * 5) % ELSC_ARB_SLOT_SPREAD;
+
+    return ELSC_ARB_SLOT_BASE_US + (int64_t)phase * ELSC_ARB_SLOT_STEP_US;
+}
+
+/*
  * Whether something waits for the given code's processor: console
  * input for the console processor, or a response its requester has
  * not yet consumed.
@@ -1160,11 +1182,20 @@ static bool elsc_shared_arb_signal2(SGIElscState *s,
     return elsc_arb_signal2(owner, ring_position);
 }
 
-/* One address-only ring position is published on each eligible 1ms tick. */
+/*
+ * One address-only ring position is published, then held for its slot. A flat
+ * per-tick metronome let a poll whose cadence is commensurate with the ring
+ * read one code at the same phase on every revolution, so a processor whose
+ * grant never landed under its poll was lost on a cold start's first pass; a
+ * slot length that varies with the code and the revolution leaves no such
+ * cadence (docs/specs/sgi-elsc.rst, arbitration).
+ */
 static void elsc_arb_step(void *opaque)
 {
     SGIElscState *s = opaque;
     int64_t now = qemu_clock_get_us(QEMU_CLOCK_VIRTUAL);
+    uint32_t code = s->arb_code;
+    uint32_t rev = s->arb_rev;
     bool signal2;
 
     if (i2c_bus_busy(s->bus) ||
@@ -1174,17 +1205,16 @@ static void elsc_arb_step(void *opaque)
         return;
     }
 
-    signal2 = elsc_shared_arb_signal2(s, s->arb_code);
-    s->arb_signal = elsc_signal_byte(s->arb_code, signal2);
-    trace_sgi_elsc_arb_step(s->cpu_base, s->arb_code, s->arb_signal,
-                            signal2);
+    signal2 = elsc_shared_arb_signal2(s, code);
+    s->arb_signal = elsc_signal_byte(code, signal2);
+    trace_sgi_elsc_arb_step(s->cpu_base, code, s->arb_signal, signal2);
     elsc_publish_grant(s, s->arb_signal);
 
-    s->arb_code = (s->arb_code + 1) % s->arb_positions;
+    s->arb_code = (code + 1) % s->arb_positions;
     if (s->arb_code == 0) {
         s->arb_rev++;
     }
-    timer_mod(s->arb_timer, now + ELSC_ARB_TICK_US);
+    timer_mod(s->arb_timer, now + elsc_arb_slot_us(code, rev));
 }
 
 /*
@@ -1440,7 +1470,9 @@ static const VMStateDescription vmstate_sgi_elsc = {
         VMSTATE_BOOL_V(arb_held, SGIElscState, 4),
         VMSTATE_UINT8_V(arb_signal, SGIElscState, 4),
         VMSTATE_INT64_V(arb_hold_until, SGIElscState, 4),
-        /* Retained only so version 5 through 11 streams remain readable. */
+        /*
+         * The revolution counter varies the held-slot schedule (elsc_arb_step).
+         */
         VMSTATE_UINT32_V(arb_rev, SGIElscState, 5),
         /*
          * An older stream loads with no owner: a response in flight

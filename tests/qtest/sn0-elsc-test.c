@@ -384,59 +384,98 @@ static unsigned int elsc_read_response_cpu(QTestState *qts,
     return total;
 }
 
+/* Any code's grant, either half of its signal pair. */
+static bool arb_is_signal_byte(uint64_t value)
+{
+    return value >= 0xe0 && value <= 0xef;
+}
+
+/*
+ * Step the clock finely until the ring publishes a code different from the one
+ * currently latched, and return the new grant. Each code is now held for a slot
+ * of at least ten milliseconds whose length varies with the code and the
+ * revolution, so no fixed step lands on the boundary; scan for the change.
+ */
+static uint8_t arb_next_code(QTestState *qts)
+{
+    uint64_t start = read_data(qts);
+    int i;
+
+    for (i = 0; i < ARB_MAX_STEPS; i++) {
+        uint64_t data = read_data(qts);
+
+        if (arb_is_signal_byte(data) && data != start) {
+            return (uint8_t)data;
+        }
+        qtest_clock_step(qts, ARB_SCAN_STEP_NS);
+    }
+    g_assert_not_reached();
+    return 0;
+}
+
+/* As arb_next_code, reading one module window through a processor's mapping. */
+static uint8_t arb_next_code_at(QTestState *qts, unsigned int cpu, uint64_t hub)
+{
+    uint64_t start = cpu_readq(qts, cpu, hub + I2C_DATA);
+    int i;
+
+    for (i = 0; i < ARB_MAX_STEPS; i++) {
+        uint64_t data = cpu_readq(qts, cpu, hub + I2C_DATA);
+
+        if (arb_is_signal_byte(data) && data != start) {
+            return (uint8_t)data;
+        }
+        qtest_clock_step(qts, ARB_SCAN_STEP_NS);
+    }
+    g_assert_not_reached();
+    return 0;
+}
+
+/*
+ * Both module windows observe one master ring: they publish the same code, in
+ * sequence, and the fifth position is neither of the first four codes. Advance
+ * by held slots rather than by a fixed metronome tick.
+ */
 static void assert_shared_five_position_ring(QTestState *qts,
                                              unsigned int master_cpu,
                                              uint64_t master_hub,
                                              unsigned int slave_cpu,
                                              uint64_t slave_hub)
 {
-    uint64_t fifth;
+    uint8_t master_grant, fifth;
     unsigned int position, i;
 
+    /* Anchor both windows on code 0's signal one. */
     for (position = 0; position < 6; position++) {
-        qtest_clock_step(qts, ARB_TICK_NS);
         if (cpu_readq(qts, master_cpu, master_hub + I2C_DATA) ==
                 ARB_SIGNAL1 &&
             cpu_readq(qts, slave_cpu, slave_hub + I2C_DATA) ==
                 ARB_SIGNAL1) {
             break;
         }
+        (void)arb_next_code_at(qts, master_cpu, master_hub);
     }
     g_assert_cmpuint(position, <, 6);
 
     for (position = 1; position < 4; position++) {
-        qtest_clock_step(qts, ARB_TICK_NS);
-        g_assert_cmphex(cpu_readq(qts, master_cpu,
-                                  master_hub + I2C_DATA),
-                        ==, ARB_SIGNAL1 + position);
+        master_grant = arb_next_code_at(qts, master_cpu, master_hub);
+        g_assert_cmphex(master_grant, ==, ARB_SIGNAL1 + position);
         g_assert_cmphex(cpu_readq(qts, slave_cpu, slave_hub + I2C_DATA),
                         ==, ARB_SIGNAL1 + position);
     }
 
-    qtest_clock_step(qts, ARB_TICK_NS);
-    fifth = cpu_readq(qts, master_cpu, master_hub + I2C_DATA);
+    fifth = arb_next_code_at(qts, master_cpu, master_hub);
     g_assert_cmphex(cpu_readq(qts, slave_cpu, slave_hub + I2C_DATA),
                     ==, fifth);
     for (i = 0; i < 4; i++) {
         g_assert_cmphex(fifth, !=, ARB_SIGNAL1 + i);
     }
 
-    qtest_clock_step(qts, ARB_TICK_NS - 1);
-    g_assert_cmphex(cpu_readq(qts, master_cpu, master_hub + I2C_DATA),
-                    ==, fifth);
-    g_assert_cmphex(cpu_readq(qts, slave_cpu, slave_hub + I2C_DATA),
-                    ==, fifth);
-    qtest_clock_step(qts, 1);
-    g_assert_cmphex(cpu_readq(qts, master_cpu, master_hub + I2C_DATA),
-                    ==, ARB_SIGNAL1);
+    /* The ring wraps from the fifth position back to code 0. */
+    master_grant = arb_next_code_at(qts, master_cpu, master_hub);
+    g_assert_cmphex(master_grant, ==, ARB_SIGNAL1);
     g_assert_cmphex(cpu_readq(qts, slave_cpu, slave_hub + I2C_DATA),
                     ==, ARB_SIGNAL1);
-}
-
-/* Any code's grant, either half of its signal pair. */
-static bool arb_is_signal_byte(uint64_t value)
-{
-    return value >= 0xe0 && value <= 0xef;
 }
 
 /* Every grant address is otherwise unmatched on the Origin 200 I2C bus. */
@@ -460,7 +499,10 @@ static void test_arbitration_grant_addresses_are_unmatched(const void *data)
 
 /*
  * Loop 1: wait for another processor's grant. Skipping straight to "wait for
- * the signal" passes a model that parks code 0 and never advances.
+ * the signal" passes a model that parks code 0 and never advances. A grant is
+ * held for its whole slot, so a coarse scan still catches it; the budget must
+ * span a warm reset's resumption gap plus a held slot before code advances off
+ * zero, which the fine ten-microsecond step no longer reached.
  */
 static void arb_wait_for_absence(QTestState *qts)
 {
@@ -474,7 +516,7 @@ static void arb_wait_for_absence(QTestState *qts)
             (data & 7) != 0) {
             return;
         }
-        qtest_clock_step(qts, ARB_STEP_NS);
+        qtest_clock_step(qts, ARB_SCAN_STEP_NS);
     }
     g_assert_not_reached();
 }
@@ -578,7 +620,7 @@ static void test_arbitration_observes_grant_with_staged_start(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
     uint8_t req[8], resp[RESP_CAP];
-    uint8_t signal;
+    uint8_t signal, grant;
     unsigned req_len, resp_len, i;
 
     arb_enable_observer(qts);
@@ -587,11 +629,10 @@ static void test_arbitration_observes_grant_with_staged_start(const void *data)
     signal = arb_wait_for_signal(qts);
 
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, ELSC_ADDR << 1);
-    qtest_clock_step(qts, ARB_TICK_NS);
+    grant = arb_next_code(qts);
 
     g_assert_true((read_status(qts) & I2C_PCF_BB) != 0);
-    g_assert_true(arb_is_signal_byte(read_data(qts)));
-    g_assert_cmpuint(read_data(qts) & 7, ==, ((signal & 7) + 1) & 7);
+    g_assert_cmpuint(grant & 7, ==, ((signal & 7) + 1) & 7);
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
                  CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
     g_assert_cmphex(read_status(qts) & I2C_PCF_LRB, ==, 0);
@@ -634,9 +675,8 @@ static void test_arbitration_observes_grant_with_staged_start(const void *data)
     qtest_writeq(qts, HUB_LOCAL + I2C_DATA, ELSC_ADDR << 1);
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
                  CTL_PIN | CTL_ESO | CTL_ACK);
-    qtest_clock_step(qts, ARB_TICK_NS);
-    g_assert_true(arb_is_signal_byte(read_data(qts)));
-    g_assert_cmpuint(read_data(qts) & 7, ==, ((signal & 7) + 1) & 7);
+    grant = arb_next_code(qts);
+    g_assert_cmpuint(grant & 7, ==, ((signal & 7) + 1) & 7);
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
                  CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
     g_assert_cmphex(read_status(qts) & I2C_PCF_LRB, ==, 0);
@@ -648,32 +688,38 @@ static void test_arbitration_observes_grant_with_staged_start(const void *data)
     qtest_quit(qts);
 }
 
-/* A fixed seven-millisecond sampler sees all eight codes modulo eight. */
+/*
+ * A fixed-cadence sampler shorter than the shortest held slot cannot skip a
+ * code, so it observes every one of the eight codes as the ring rotates. No
+ * cadence stays pinned to a subset of codes -- the property a cold start needs.
+ */
 static void test_arbitration_fixed_cadence_walks_codes(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
-    uint64_t value;
-    unsigned code;
+    bool seen[8] = { false };
+    unsigned seen_count = 0;
     int i;
 
     arb_enable_observer(qts);
     arb_wait_for_absence(qts);
-    value = arb_wait_for_signal(qts);
-    code = value & 7;
+    (void)arb_wait_for_signal(qts);
 
-    for (i = 0; i < 8; i++) {
-        qtest_clock_step(qts, 7 * ARB_TICK_NS);
-        value = read_data(qts);
-        code = (code + 7) & 7;
-        g_assert_true((read_status(qts) & I2C_PCF_BB) != 0);
-        g_assert_true(arb_is_signal_byte(value));
-        g_assert_cmpuint(value & 7, ==, code);
+    for (i = 0; i < ARB_MAX_STEPS && seen_count < 8; i++) {
+        uint64_t value = read_data(qts);
+
+        if (arb_is_signal_byte(value) && !seen[value & 7]) {
+            seen[value & 7] = true;
+            seen_count++;
+        }
+        qtest_clock_step(qts, 5 * ARB_TICK_NS);
     }
+
+    g_assert_cmpuint(seen_count, ==, 8);
 
     qtest_quit(qts);
 }
 
-/* A busy tick retries without consuming a processor's turn. */
+/* A busy bus retries without consuming a processor's turn. */
 static void test_arbitration_busy_tick_does_not_advance(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
@@ -689,7 +735,10 @@ static void test_arbitration_busy_tick_does_not_advance(const void *data)
     g_assert_cmphex(read_status(qts) & I2C_PCF_LRB, ==, 0);
     g_assert_cmphex(read_status(qts) & I2C_PCF_BB, ==, 0);
 
-    qtest_clock_step(qts, 3 * ARB_TICK_NS);
+    /*
+     * Well past the longest held slot: the frozen ring still does not advance.
+     */
+    qtest_clock_step(qts, 30 * ARB_TICK_NS);
     g_assert_cmphex(read_status(qts) & I2C_PCF_BB, ==, 0);
 
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
@@ -698,14 +747,13 @@ static void test_arbitration_busy_tick_does_not_advance(const void *data)
     g_assert_true((read_status(qts) & I2C_PCF_BB) != 0);
     g_assert_cmpuint(read_data(qts) & 7, ==, ((signal & 7) + 1) & 7);
 
-    qtest_clock_step(qts, ARB_TICK_NS);
-    g_assert_cmpuint(read_data(qts) & 7, ==, ((signal & 7) + 2) & 7);
+    g_assert_cmpuint(arb_next_code(qts) & 7, ==, ((signal & 7) + 2) & 7);
 
     qtest_quit(qts);
 }
 
-/* Each eligible millisecond tick publishes the next code with no zero gap. */
-static void test_arbitration_advances_each_millisecond(const void *data)
+/* Each held slot publishes the next code with no zero gap between grants. */
+static void test_arbitration_advances_each_slot(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
     uint64_t value;
@@ -718,8 +766,7 @@ static void test_arbitration_advances_each_millisecond(const void *data)
     code = value & 7;
 
     for (i = 0; i < 16; i++) {
-        qtest_clock_step(qts, ARB_TICK_NS);
-        value = read_data(qts);
+        value = arb_next_code(qts);
         code = (code + 1) & 7;
         g_assert_true((read_status(qts) & I2C_PCF_BB) != 0);
         g_assert_true(arb_is_signal_byte(value));
@@ -729,20 +776,26 @@ static void test_arbitration_advances_each_millisecond(const void *data)
     qtest_quit(qts);
 }
 
-/* One grant stays readable until the following millisecond boundary. */
-static void test_arbitration_one_publication_per_tick(const void *data)
+/* One grant stays readable for its whole held slot, then the ring advances. */
+static void test_arbitration_one_publication_per_slot(const void *data)
 {
     QTestState *qts = qtest_init("-M origin200");
-    uint8_t signal;
+    uint8_t grant;
 
     arb_enable_observer(qts);
     arb_wait_for_absence(qts);
-    signal = arb_wait_for_signal(qts);
+    (void)arb_wait_for_signal(qts);
 
-    qtest_clock_step(qts, ARB_TICK_NS - 1);
-    g_assert_cmphex(read_data(qts), ==, signal);
-    qtest_clock_step(qts, 1);
-    g_assert_cmpuint(read_data(qts) & 7, ==, ((signal & 7) + 1) & 7);
+    /* Land on a fresh grant, so a full held slot remains ahead of it. */
+    grant = arb_next_code(qts);
+
+    /* It stays readable well past the retired one-millisecond metronome. */
+    qtest_clock_step(qts, 8 * ARB_TICK_NS);
+    g_assert_cmphex(read_data(qts), ==, grant);
+
+    /* Then the ring advances by exactly one code. */
+    g_assert_cmpuint(arb_next_code(qts) & 7, ==,
+                     (((unsigned)grant & 7) + 1) & 7);
 
     qtest_quit(qts);
 }
@@ -761,8 +814,7 @@ static void test_arbitration_walks_all_codes(const void *data)
     code = value & 7;
 
     for (i = 0; i < 8; i++) {
-        qtest_clock_step(qts, ARB_TICK_NS);
-        value = read_data(qts);
+        value = arb_next_code(qts);
         code = (code + 1) & 7;
         g_assert_true((read_status(qts) & I2C_PCF_BB) != 0);
         g_assert_true(arb_is_signal_byte(value));
@@ -1058,6 +1110,7 @@ static void test_two_towers_share_master_grant_ring(const void *data)
     const char *node0, *node1;
     uint8_t resp[RESP_CAP];
     unsigned int resp_len;
+    uint8_t grant;
 
     arb_enable_cpu_observer(qts, master_cpu, 0x1c);
     arb_enable_cpu_observer(qts, slave_cpu, 0x1d);
@@ -1093,11 +1146,14 @@ static void test_two_towers_share_master_grant_ring(const void *data)
     cpu_writeq(qts, slave_cpu, explicit_one + I2C_CTRL,
                CTL_PIN | CTL_ESO);
 
-    /* A slave-local transaction must stall the one shared ring. */
+    /*
+     * A slave-local transaction must stall the one shared ring: even past the
+     * longest held slot the frozen ring does not advance.
+     */
     cpu_writeq(qts, slave_cpu, explicit_one + I2C_DATA, ELSC_ADDR << 1);
     cpu_writeq(qts, slave_cpu, explicit_one + I2C_CTRL,
                CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
-    qtest_clock_step(qts, 3 * ARB_TICK_NS);
+    qtest_clock_step(qts, 30 * ARB_TICK_NS);
     g_assert_cmphex(cpu_readq(qts, slave_cpu, explicit_zero + I2C_DATA),
                     ==, ARB_SIGNAL1);
 
@@ -1113,18 +1169,21 @@ static void test_two_towers_share_master_grant_ring(const void *data)
     elsc_request_without_read_cpu(qts, slave_cpu, explicit_one, "ver");
     out = qtest_hmp(qts, "info elsc");
     g_assert_nonnull(strstr(out, "for processor code 2"));
-    qtest_clock_step(qts, ARB_TICK_NS);
-    g_assert_cmphex(cpu_readq(qts, slave_cpu, explicit_zero + I2C_DATA),
-                    ==, ARB_SIGNAL2 + 2);
+    do {
+        grant = arb_next_code_at(qts, slave_cpu, explicit_zero);
+    } while ((grant & 7) != 2);
+    g_assert_cmphex(grant, ==, ARB_SIGNAL2 + 2);
     g_assert_cmphex(cpu_readq(qts, slave_cpu, explicit_one + I2C_DATA),
                     ==, ARB_SIGNAL2 + 2);
 
     resp_len = elsc_read_response_cpu(qts, slave_cpu, explicit_one, resp,
                                       sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    qtest_clock_step(qts, 5 * ARB_TICK_NS);
-    g_assert_cmphex(cpu_readq(qts, slave_cpu, explicit_zero + I2C_DATA),
-                    ==, ARB_SIGNAL1 + 2);
+    /* With the response consumed, CPU 2's next grant reverts to signal 1. */
+    do {
+        grant = arb_next_code_at(qts, slave_cpu, explicit_zero);
+    } while ((grant & 7) != 2);
+    g_assert_cmphex(grant, ==, ARB_SIGNAL1 + 2);
     g_assert_cmphex(cpu_readq(qts, slave_cpu, explicit_one + I2C_DATA),
                     ==, ARB_SIGNAL1 + 2);
 
@@ -1217,7 +1276,8 @@ static void test_two_towers_reset_keeps_cpu3_grant_live(const void *data)
     arb_enable_cpu_observer(qts, master_cpu, 0x1c);
     arb_enable_cpu_observer(qts, slave_cpu, 0x1d);
 
-    for (i = 0; i < 8 * ARB_TICK_NS / ARB_SCAN_STEP_NS; i++) {
+    /* One revolution of the held slots exceeds fifty milliseconds; scan two. */
+    for (i = 0; i < 128 * ARB_TICK_NS / ARB_SCAN_STEP_NS; i++) {
         uint64_t status = cpu_readq(qts, slave_cpu,
                                     explicit_zero + I2C_CTRL);
         uint64_t value = cpu_readq(qts, slave_cpu,
@@ -1231,6 +1291,88 @@ static void test_two_towers_reset_keeps_cpu3_grant_live(const void *data)
         qtest_clock_step(qts, ARB_SCAN_STEP_NS);
     }
     g_assert_true(saw_cpu3_grant);
+
+    qtest_quit(qts);
+}
+
+/*
+ * A cold start intermittently discovers one processor short on the first
+ * PROM arbitration pass, recovering only after a module-identity reset
+ * (issue #352). The lost processor samples its grant at a cadence
+ * commensurate with the shared five-position ring; a metronome that publishes
+ * one code per fixed tick then pins every sample to a single foreign code, so
+ * the processor's own grant never lands under its poll even though the ring
+ * keeps rotating. The datasheet requires each grant held for a varying slot
+ * of at least ten milliseconds, re-broadcast throughout "so that a poll at
+ * any cadence finds it".
+ *
+ * Model the loser: arm both module windows, start from a known foreign code,
+ * then sample once per ring revolution. Code 3's grant must appear -- and
+ * then be replaced -- on both windows within the discovery budget. A flat
+ * per-tick metronome pins the sample and never presents code 3, so this is
+ * red until the held, varying slot is restored.
+ */
+static void test_two_towers_commensurate_poll_finds_cpu3_grant(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin200,topology=origin200-dual -m 128M "
+        "-smp 4");
+    const unsigned int master_cpu = 0;
+    const unsigned int slave_cpu = 2;
+    const uint64_t explicit_zero = HUB_BY_NODE;
+    /*
+     * A five-millisecond poll was commensurate with the old flat one-code-per-
+     * millisecond five-position ring, so it phase-locked and never sampled a
+     * lost processor's own code. Keep that cadence: under the varying held slot
+     * it must now sample every code instead.
+     */
+    const int64_t ring_period_ns = 5 * ARB_TICK_NS;
+    /* Several revolutions of held ten-millisecond slots, then some margin. */
+    const int discovery_polls = 200;
+    bool master_saw = false, slave_saw = false;
+    bool master_replaced = false, slave_replaced = false;
+    uint8_t anchor;
+    int i;
+
+    arb_enable_cpu_observer(qts, master_cpu, 0x1c);
+    arb_enable_cpu_observer(qts, slave_cpu, 0x1d);
+
+    /*
+     * Anchor the sampler on code 0, a foreign code for CPU 3. A freshly enabled
+     * observer does not latch the ring's very first publish, so code 0 is first
+     * seen only when the rotation brings it round again; scan for it across a
+     * revolution of held slots. Both module windows publish in lockstep.
+     */
+    do {
+        anchor = arb_next_code_at(qts, master_cpu, explicit_zero);
+    } while ((anchor & 7) != 0);
+    g_assert_cmphex(cpu_readq(qts, slave_cpu, explicit_zero + I2C_DATA) & 0xff,
+                    ==, anchor);
+
+    for (i = 0; i < discovery_polls; i++) {
+        uint64_t m = cpu_readq(qts, master_cpu, explicit_zero + I2C_DATA);
+        uint64_t s = cpu_readq(qts, slave_cpu, explicit_zero + I2C_DATA);
+
+        if (m == ARB_SIGNAL1 + 3 || m == ARB_SIGNAL2 + 3) {
+            master_saw = true;
+        } else if (master_saw && arb_is_signal_byte(m)) {
+            master_replaced = true;
+        }
+        if (s == ARB_SIGNAL1 + 3 || s == ARB_SIGNAL2 + 3) {
+            slave_saw = true;
+        } else if (slave_saw && arb_is_signal_byte(s)) {
+            slave_replaced = true;
+        }
+        if (master_replaced && slave_replaced) {
+            break;
+        }
+        qtest_clock_step(qts, ring_period_ns);
+    }
+
+    g_assert_true(master_saw);
+    g_assert_true(slave_saw);
+    g_assert_true(master_replaced);
+    g_assert_true(slave_replaced);
 
     qtest_quit(qts);
 }
@@ -2742,10 +2884,10 @@ int main(int argc, char **argv)
                         NULL, test_arbitration_fixed_cadence_walks_codes);
     qtest_add_data_func("sn0/elsc/arbitration-busy-tick-does-not-advance",
                         NULL, test_arbitration_busy_tick_does_not_advance);
-    qtest_add_data_func("sn0/elsc/arbitration-advances-each-millisecond",
-                        NULL, test_arbitration_advances_each_millisecond);
-    qtest_add_data_func("sn0/elsc/arbitration-one-publication-per-tick",
-                        NULL, test_arbitration_one_publication_per_tick);
+    qtest_add_data_func("sn0/elsc/arbitration-advances-each-slot",
+                        NULL, test_arbitration_advances_each_slot);
+    qtest_add_data_func("sn0/elsc/arbitration-one-publication-per-slot",
+                        NULL, test_arbitration_one_publication_per_slot);
     qtest_add_data_func("sn0/elsc/arbitration-walks-all-codes",
                         NULL, test_arbitration_walks_all_codes);
     qtest_add_data_func("sn0/elsc/pending-response-announces-signal2", NULL,
@@ -2764,6 +2906,9 @@ int main(int argc, char **argv)
                         NULL, test_two_towers_share_master_grant_ring);
     qtest_add_data_func("sn0/elsc/two-towers-reset-keeps-cpu3-grant-live",
                         NULL, test_two_towers_reset_keeps_cpu3_grant_live);
+    qtest_add_data_func(
+        "sn0/elsc/two-towers-commensurate-poll-finds-cpu3-grant",
+        NULL, test_two_towers_commensurate_poll_finds_cpu3_grant);
     qtest_add_data_func("sn0/elsc/acp-with-no-backend-still-answers", NULL,
                         test_acp_with_no_backend_still_answers);
     qtest_add_data_func("sn0/elsc/get-returns-queued-console-input", NULL,
