@@ -3,30 +3,36 @@
  * psitech-rad1: bounded functional approximation of a PsiTech RAD1 PCI
  * graphics head, one primary head on an Origin 200 Bridge PCI slot.
  *
- * Primary PCI Vendor/Device ID is 104c:3d07 -- the raw TI/3Dlabs TVP4020
- * (Permedia 2) die's own identity, not PsiTech's 12d1:0101 board identity.
- * The IRIX kernel driver's boot-time registration function (`rad1pciinit`,
- * disassembled and live-traced; see docs/datasheets/psitech-rad1.md,
- * "Kernel-driver attach: the real cause is a PCI identity mismatch") calls
- * `pciio_driver_register` against 104c:3d07 and, separately, 3d3d:0009
- * (the same chip under 3Dlabs' own vendor ID) -- never against 12d1:0101.
- * IRIX's PCI bus-probe path matches a live card's primary Vendor/Device ID
- * against exactly that registered table, so a card presenting 12d1:0101 as
- * its primary identity is never claimed by any driver. 104c:3d07 is chosen
- * over the 3d3d:0009 alternative as an APPROXIMATION -- the product sheet's
- * first-listed stock reference and `rad1pciinit`'s first registration
- * call, but no evidence yet establishes which physical chip revision this
- * project's modeled RAD1 should present; see the datasheet section above
- * for the open item. 12d1:0101 remains real and is exposed separately as
- * the PCI Subsystem Vendor/Device ID (a different, standard PCI
- * config-space field from the primary Vendor/Device ID) because it is
- * PsiTech's own disclosed board identity, matching the datasheet's "PCI
- * and address spaces" section -- not because any driver path is known to
- * check it. The datasheet's "PROM/standalone textport" section disassembled
- * only RAD1_baseindex's four-entry base-address lookup and explicitly did
- * not disassemble the RAD1Tp-family, RAD1Reset or RAD1InitBoard routine
- * bodies themselves, so no subsystem-ID check is established anywhere in
- * that driver.
+ * Primary PCI Vendor/Device ID is 3d3d:0009 -- the 3Dlabs-badged TI/3Dlabs
+ * TVP4020 (Permedia 2) die's own identity, not PsiTech's 12d1:0101 board
+ * identity. The IRIX kernel driver's boot-time registration function
+ * (`rad1pciinit`, disassembled and live-traced; see
+ * docs/datasheets/psitech-rad1.md, "Kernel-driver attach: the real cause is
+ * a PCI identity mismatch") calls `pciio_driver_register` against 3d3d:0009
+ * and, separately, 104c:3d07 (the same chip under TI's own vendor ID) --
+ * never against 12d1:0101. IRIX's PCI bus-probe path matches a live card's
+ * primary Vendor/Device ID against exactly that registered table, so a card
+ * presenting 12d1:0101 as its primary identity is never claimed by any
+ * driver. Disassembly of the IO6 PROM (io6prom.img, "SGI Version 6.156
+ * built ... Nov 18, 2003") independently shows its RAD1 graphics-console
+ * installer dispatch matches on the raw 16-bit PCI Device ID alone, with no
+ * Vendor ID check anywhere in that dispatch: it recognizes both device 0009
+ * and device 3d07 (see the RAD1_VENDOR_ID/RAD1_DEVICE_ID comment below for
+ * the exact addresses), so either identity reaches that installer equally.
+ * 3d3d:0009 is presented as a disclosed APPROXIMATION -- 3d3d is 3Dlabs'
+ * own PCI-SIG-registered vendor ID and 0009 a device ID both the PROM and
+ * the IRIX kernel driver accept, but no evidence yet establishes which
+ * physical chip revision this project's modeled RAD1 should present; see
+ * the datasheet section above for the open item. 12d1:0101 remains real and
+ * is exposed separately as the PCI Subsystem Vendor/Device ID (a different,
+ * standard PCI config-space field from the primary Vendor/Device ID)
+ * because it is PsiTech's own disclosed board identity, matching the
+ * datasheet's "PCI and address spaces" section -- not because any driver
+ * path is known to check it. The datasheet's "PROM/standalone textport"
+ * section disassembled only RAD1_baseindex's four-entry base-address lookup
+ * and explicitly did not disassemble the RAD1Tp-family, RAD1Reset or
+ * RAD1InitBoard routine bodies themselves, so no subsystem-ID check is
+ * established anywhere in that driver.
  *
  * Unlike psitech-rad4.c, RAD1 is built directly on the TI/3Dlabs TVP4020
  * (Permedia2/Permedia2V) with 8 MB of onboard SGRAM, an integrated RAMDAC,
@@ -83,14 +89,33 @@
 OBJECT_DECLARE_SIMPLE_TYPE(PsitechRad1State, PSITECH_RAD1)
 
 /*
- * Primary identity: the raw TI TVP4020 (Permedia 2) die, per
- * `rad1pciinit`'s first pciio_driver_register() call. APPROXIMATED choice
- * over the alternative 3Dlabs-badged 3d3d:0009 identity the same call
- * registers second -- see the file comment above and
- * docs/datasheets/psitech-rad1.md.
+ * Primary identity: the 3Dlabs-badged Permedia 2 die, 3d3d:0009, one of
+ * two identities `rad1pciinit`'s pciio_driver_register() calls accept.
+ * Disassembly of the IO6 PROM (io6prom.img, "SGI Version 6.156 built
+ * ... Nov 18, 2003") shows its RAD1 graphics-console installer dispatch
+ * matches on the raw 16-bit PCI Device ID alone, with no Vendor ID check
+ * anywhere in that dispatch: device 0009 is recognized (compared at
+ * 0x11c157c4) and device 3d07 is recognized too, at four sites
+ * (0x11c157dc, 0x11c15c8c, 0x11c15e5c, 0x11c16234), each running the
+ * same substantive RAMDAC/video-timing register setup as the 0009 path
+ * before reaching the "Installing RAD1 Graphics Console..." routine.
+ * Neither 3d3d nor 104c appears anywhere in the PROM's disassembled text
+ * as a compared immediate -- contrast the PROM's QLogic ISP probe, which
+ * does check a Vendor+Device pair (1077:1020, at 0x11c370ac), so a
+ * missing check here is this dispatch's own design, not a blind spot in
+ * this reading. Presenting either 3d3d:0009 or 104c:3d07 therefore
+ * reaches the PROM's RAD1 console installer equally; picking 3d3d:0009
+ * is a disclosed APPROXIMATION -- 3d3d is 3Dlabs' own PCI-SIG-registered
+ * vendor ID and 0009 a device ID both the PROM and the IRIX kernel
+ * driver accept, but no evidence yet establishes which physical chip
+ * revision this project's modeled RAD1 should present; see the public
+ * TI/3Dlabs TVP4020 (Permedia 2) Programmer's Reference Manual and the
+ * datasheet section referenced in the file comment above for the open
+ * item. The kernel driver's own attach is unaffected either way, since
+ * rad1pciinit registers against both identities.
  */
-#define RAD1_VENDOR_ID          0x104c
-#define RAD1_DEVICE_ID          0x3d07
+#define RAD1_VENDOR_ID          0x3d3d
+#define RAD1_DEVICE_ID          0x0009
 
 /*
  * PsiTech's own board/subsystem identity (public 1999 product sheet),

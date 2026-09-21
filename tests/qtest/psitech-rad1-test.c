@@ -62,13 +62,16 @@
 #define RAD1_BAR2_PCI   0x40000000u  /* Flash aperture, 64 KiB. */
 
 /*
- * Primary identity is the raw TI TVP4020 (Permedia 2) die's own PCI
- * Vendor/Device ID, matching the IRIX kernel driver's own registration
- * call (docs/datasheets/psitech-rad1.md, "Kernel-driver attach: the real
- * cause is a PCI identity mismatch"), not PsiTech's board identity.
+ * Primary identity is the 3Dlabs-badged Permedia 2 die's own PCI
+ * Vendor/Device ID, one of the two the IRIX kernel driver's own
+ * registration call accepts (docs/datasheets/psitech-rad1.md,
+ * "Kernel-driver attach: the real cause is a PCI identity mismatch") and
+ * one of two the IO6 PROM's RAD1 console installer also recognizes by
+ * Device ID alone (hw/display/psitech-rad1.c's own comment), not
+ * PsiTech's board identity.
  */
-#define RAD1_VENDOR_ID  0x104c
-#define RAD1_DEVICE_ID  0x3d07
+#define RAD1_VENDOR_ID  0x3d3d
+#define RAD1_DEVICE_ID  0x0009
 
 /*
  * PsiTech's board/subsystem identity, exposed as the separate PCI
