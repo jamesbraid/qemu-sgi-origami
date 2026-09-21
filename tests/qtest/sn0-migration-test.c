@@ -83,7 +83,11 @@
 #define ELSC_ADDR               0x08
 #define ARB_SIGNAL_AFTER_STAGE  0xe1
 #define ARB_SIGNAL1             0xe0
-#define ARB_TICK_NS             (1000 * 1000)
+/*
+ * Code 0 at revolution 0 holds its grant for the base slot of ten
+ * milliseconds (hw/misc/sgi-elsc.c elsc_arb_slot_us).
+ */
+#define ARB_SLOT0_NS            (10000 * 1000)
 #define ARB_PARTIAL_NS          (400 * 1000)
 
 #define ELSC_VMSTATE_VERSION        13
@@ -937,11 +941,12 @@ static void test_network_routes_survive_migration(const void *data)
 
 /*
  * A first START is split across two guest writes: the address reaches the
- * PCF8584 data register before the control write asserts START.  Migrate in
- * that interval after code 0's grant and part of code 1's one-millisecond
- * interval. Migration must preserve both the remaining interval and next
- * code. Code 1 then replaces readable S0 exactly at its deadline, while the
- * separately staged address still makes START reach the ELSC.
+ * PCF8584 data register before the control write asserts START.  Migrate part
+ * way through code 0's held slot, after its grant. Migration must preserve
+ * both the remaining slot interval and the next code. Code 1 then replaces
+ * readable S0 exactly at the slot deadline -- code 0 holds for the base ten
+ * milliseconds, not a fixed tick -- while the separately staged address still
+ * makes START reach the ELSC.
  */
 static void test_staged_i2c_start_survives_migration(const void *data)
 {
@@ -975,7 +980,7 @@ static void test_staged_i2c_start_survives_migration(const void *data)
     migrate_stopped_vm(from, uri);
     qtest_clock_set(to, source_time);
 
-    qtest_clock_step(to, ARB_TICK_NS - ARB_PARTIAL_NS - 1);
+    qtest_clock_step(to, ARB_SLOT0_NS - ARB_PARTIAL_NS - 1);
     g_assert_cmphex(qtest_readq(to, HUB_LOCAL + I2C_DATA), ==,
                     ELSC_ADDR << 1);
     qtest_clock_step(to, 1);
@@ -1023,7 +1028,7 @@ static void test_elsc_legacy_rotation_position_migrates(const void *data)
         to, "{ 'execute': 'migrate-incoming', "
             "'arguments': { 'uri': %s } }", uri);
     wait_for_incoming_complete(to);
-    qtest_clock_step(to, ARB_TICK_NS);
+    qtest_clock_step(to, ARB_SLOT0_NS);
     g_assert_cmphex(cpu_readq(to, 0, HUB_LOCAL + I2C_DATA), ==,
                     ARB_SIGNAL1 + 2);
     g_assert_cmphex(cpu_readq(to, 2, HUB_LOCAL + I2C_DATA), ==,
