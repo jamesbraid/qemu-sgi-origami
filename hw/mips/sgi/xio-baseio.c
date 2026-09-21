@@ -26,7 +26,13 @@
  * "record-a" and "record-b" forward the same way, unset by default;
  * BaseIO has no parallel function, so this class exposes no
  * "parallel-chardev" (the internal sgi-baseio's "io6" preset never
- * wires one either). "preset" selects which internal sgi-baseio preset
+ * wires one either). "mio-chardev-a" and "mio-chardev-b" forward the
+ * same way to the internal sgi-baseio's own same-named properties, the
+ * MediaIO daughtercard's two serial ports the "io6g" preset fits --
+ * peripheral connections, not a console or record backend, so neither
+ * has a record counterpart, and both are unset (the ports enumerate
+ * unbacked) under the "io6" preset, which never builds that chip.
+ * "preset" selects which internal sgi-baseio preset
  * this card builds, "io6" by default; "io6g" builds the same
  * card with the MediaIO daughtercard's second IOC3 fitted. Both name
  * the same physical board part and Bridge revision, so this class's own
@@ -93,6 +99,8 @@ struct SGIXioBaseioState {
     char *chardev_b_id;
     char *record_a_id;
     char *record_b_id;
+    char *mio_chardev_a_id;
+    char *mio_chardev_b_id;
 
     SGIBridgeState *bridge;
     SGIBaseioState *baseio;
@@ -224,6 +232,12 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
     if (s->record_b_id) {
         qdev_prop_set_string(baseio, "record-b", s->record_b_id);
     }
+    if (s->mio_chardev_a_id) {
+        qdev_prop_set_string(baseio, "mio-chardev-a", s->mio_chardev_a_id);
+    }
+    if (s->mio_chardev_b_id) {
+        qdev_prop_set_string(baseio, "mio-chardev-b", s->mio_chardev_b_id);
+    }
     if (!qdev_realize(DEVICE(baseio), NULL, errp)) {
         return false;
     }
@@ -261,6 +275,8 @@ static const Property xio_baseio_properties[] = {
     DEFINE_PROP_STRING("chardev-b", SGIXioBaseioState, chardev_b_id),
     DEFINE_PROP_STRING("record-a", SGIXioBaseioState, record_a_id),
     DEFINE_PROP_STRING("record-b", SGIXioBaseioState, record_b_id),
+    DEFINE_PROP_STRING("mio-chardev-a", SGIXioBaseioState, mio_chardev_a_id),
+    DEFINE_PROP_STRING("mio-chardev-b", SGIXioBaseioState, mio_chardev_b_id),
 };
 
 /* No state of its own outside the children the Bridge and baseio own. */

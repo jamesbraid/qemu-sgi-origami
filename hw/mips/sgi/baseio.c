@@ -64,7 +64,12 @@
  * IOC3 this device is about to build is the one device that may claim
  * each of these, once, before it realizes -- a link property here would
  * claim it first and leave the IOC3's own identically-named property
- * nothing to claim.
+ * nothing to claim. "mio-chardev-a" and "mio-chardev-b" name the same
+ * kind of backend for the io6g preset's second IOC3 (the MediaIO
+ * daughtercard's device 6), whose two serial ports carry no console or
+ * record role of their own -- they are peripheral connections (a serial
+ * tablet, an RS-422 deck), so this device offers only a plain chardev
+ * id for each, no record backend and no board-level default.
  */
 
 #include "qemu/osdep.h"
@@ -100,6 +105,8 @@ struct SGIBaseioState {
     char *record_a_id;
     char *record_b_id;
     char *parallel_chardev_id;
+    char *mio_chardev_a_id;
+    char *mio_chardev_b_id;
 };
 
 typedef bool (*SGIBaseioBuildFn)(SGIBaseioState *s, Error **errp);
@@ -187,15 +194,19 @@ static bool baseio_pass_drive(DeviceState *dev, const char *id, Error **errp)
  * Timekeeper part, SGI_IOC3_TIMEKEEPER_NONE for a chip that carries
  * none; nvram-drive is only ever forwarded to a chip that has one, so
  * an unrelated Timekeeper backend cannot be claimed by a chip that will
- * unparent its own rtc child unrealized. forward_serial_chardevs is
- * false for a chip whose own serial ports are not this board's chosen
- * console/record backends -- a second IOC3 sharing a board with one
- * that already claims "chardev-a"/"chardev-b"/"record-a"/"record-b".
- * child_name is the QOM child property this chip is added under; every
- * preset that builds a single IOC3 keeps the established "ioc3", so its
- * migration path is unchanged, while a preset fitting a second chip
- * (io6g's MediaIO daughtercard) must give it a distinct name --
- * QOM refuses two children of the same name under one parent.
+ * unparent its own rtc child unrealized. chardev_a_id/chardev_b_id/
+ * record_a_id/record_b_id name the backend ids this chip's own two
+ * serial ports claim, NULL for a chip whose ports claim none -- a
+ * second IOC3 sharing a board with one that already claims this
+ * device's own "chardev-a"/"chardev-b"/"record-a"/"record-b" (or a
+ * chip whose ports are given a distinct property of their own instead,
+ * such as the io6g preset's MediaIO chip and "mio-chardev-a"/
+ * "mio-chardev-b"). child_name is the QOM child property this chip is
+ * added under; every preset that builds a single IOC3 keeps the
+ * established "ioc3", so its migration path is unchanged, while a
+ * preset fitting a second chip (io6g's MediaIO daughtercard) must give
+ * it a distinct name -- QOM refuses two children of the same name
+ * under one parent.
  */
 static PCIDevice *baseio_build_ioc3(SGIBaseioState *s, const char *child_name,
                                     unsigned int device, uint8_t revision,
@@ -203,7 +214,10 @@ static PCIDevice *baseio_build_ioc3(SGIBaseioState *s, const char *child_name,
                                     bool has_subsystem_id,
                                     uint16_t subsystem_id, bool has_phy,
                                     uint8_t phy_addr,
-                                    bool forward_serial_chardevs,
+                                    const char *chardev_a_id,
+                                    const char *chardev_b_id,
+                                    const char *record_a_id,
+                                    const char *record_b_id,
                                     Error **errp)
 {
     PCIDevice *ioc3 = pci_new(PCI_DEVFN(device, 0), TYPE_SGI_IOC3);
@@ -225,15 +239,14 @@ static PCIDevice *baseio_build_ioc3(SGIBaseioState *s, const char *child_name,
         object_unparent(OBJECT(ioc3));
         return NULL;
     }
-    if (forward_serial_chardevs &&
-        (!baseio_pass_chardev(DEVICE(ioc3), "chardev-a", s->chardev_a_id,
+    if (!baseio_pass_chardev(DEVICE(ioc3), "chardev-a", chardev_a_id,
                              errp) ||
-         !baseio_pass_chardev(DEVICE(ioc3), "chardev-b", s->chardev_b_id,
+        !baseio_pass_chardev(DEVICE(ioc3), "chardev-b", chardev_b_id,
                              errp) ||
-         !baseio_pass_chardev(DEVICE(ioc3), "record-a", s->record_a_id,
+        !baseio_pass_chardev(DEVICE(ioc3), "record-a", record_a_id,
                              errp) ||
-         !baseio_pass_chardev(DEVICE(ioc3), "record-b", s->record_b_id,
-                             errp))) {
+        !baseio_pass_chardev(DEVICE(ioc3), "record-b", record_b_id,
+                             errp)) {
         object_unparent(OBJECT(ioc3));
         return NULL;
     }
@@ -280,7 +293,8 @@ static bool baseio_build_ip29(SGIBaseioState *s, Error **errp)
     ioc3 = baseio_build_ioc3(s, "ioc3", IP29_IOC3_DEVICE, IP29_IOC3_REVISION,
                              IP29_IOC3_POPULATION,
                              SGI_IOC3_TIMEKEEPER_M48T35, false, 0, false, 0,
-                             true, errp);
+                             s->chardev_a_id, s->chardev_b_id,
+                             s->record_a_id, s->record_b_id, errp);
     if (!ioc3) {
         return false;
     }
@@ -332,7 +346,8 @@ static bool baseio_build_baseio_core(SGIBaseioState *s,
                              BASEIO_IOC3_REVISION, ioc3_population,
                              SGI_IOC3_TIMEKEEPER_M48T35, true,
                              BASEIO_IOC3_SUBSYSTEM_ID_NOT_OBSERVED, false, 0,
-                             true, errp);
+                             s->chardev_a_id, s->chardev_b_id,
+                             s->record_a_id, s->record_b_id, errp);
     if (!ioc3) {
         return false;
     }
@@ -401,10 +416,12 @@ static bool baseio_build_io6(SGIBaseioState *s, Error **errp)
  * port; no ethernet, no IOC3-level one-wire identity, no Timekeeper
  * (docs/datasheets/baseio.md, docs/datasheets/ioc3.md's board-variant
  * table, subsystem id 0xc301). Between the two IOC3s io6g exposes four
- * PS/2 ports total. Its own serial chardevs are not forwarded: device
- * 2's IOC3 already owns "chardev-a"/"chardev-b"/"record-a"/"record-b",
- * so this chip's serial ports enumerate unbacked, an accepted limitation
- * rather than a second pair of board properties.
+ * PS/2 ports total. This chip's own two serial ports are peripheral
+ * connections, not a console or record backend -- device 2's IOC3
+ * already owns "chardev-a"/"chardev-b"/"record-a"/"record-b" for this
+ * board's chosen console and record backends -- so they claim their
+ * backend through this device's own "mio-chardev-a"/"mio-chardev-b"
+ * instead, with no record counterpart.
  */
 static bool baseio_build_io6g(SGIBaseioState *s, Error **errp)
 {
@@ -426,7 +443,8 @@ static bool baseio_build_io6g(SGIBaseioState *s, Error **errp)
                              BASEIO_G_MIO_IOC3_POPULATION,
                              SGI_IOC3_TIMEKEEPER_NONE, true,
                              BASEIO_G_MIO_IOC3_SUBSYSTEM_ID, false, 0,
-                             false, errp);
+                             s->mio_chardev_a_id, s->mio_chardev_b_id,
+                             NULL, NULL, errp);
     if (!ioc3) {
         return false;
     }
@@ -500,7 +518,9 @@ static bool baseio_build_io8(SGIBaseioState *s, Error **errp)
     ioc3 = baseio_build_ioc3(s, "ioc3", IO8_IOC3_DEVICE, IO8_IOC3_REVISION,
                              IO8_IOC3_POPULATION,
                              SGI_IOC3_TIMEKEEPER_M48T35, false, 0, true,
-                             IO8_IOC3_PHY_ADDR, true, errp);
+                             IO8_IOC3_PHY_ADDR,
+                             s->chardev_a_id, s->chardev_b_id,
+                             s->record_a_id, s->record_b_id, errp);
     if (!ioc3) {
         return false;
     }
@@ -629,6 +649,8 @@ static const Property baseio_properties[] = {
     DEFINE_PROP_STRING("record-b", SGIBaseioState, record_b_id),
     DEFINE_PROP_STRING("parallel-chardev", SGIBaseioState,
                        parallel_chardev_id),
+    DEFINE_PROP_STRING("mio-chardev-a", SGIBaseioState, mio_chardev_a_id),
+    DEFINE_PROP_STRING("mio-chardev-b", SGIBaseioState, mio_chardev_b_id),
 };
 
 /* No state of its own outside the children the preset's build() owns. */
