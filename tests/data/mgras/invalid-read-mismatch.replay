@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+write 1 0x073c08 0x55
+read 1 0x073c08 0x54

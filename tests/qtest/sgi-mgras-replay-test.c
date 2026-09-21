@@ -18,9 +18,16 @@
 #define SI_VIZ_QOM_PATH   "/machine/si-viz"
 #define DEFAULT_REPLAY    "../tests/data/mgras/fill.replay"
 #define MINIMAL_REPLAY    "../tests/data/mgras/minimal.replay"
+#define MASKED_READ       "../tests/data/mgras/masked-read.replay"
 #define INVALID_REPLAY    "../tests/data/mgras/invalid.replay"
 #define INVALID_BOUNDS    "../tests/data/mgras/invalid-bounds.replay"
 #define INVALID_EXTRA     "../tests/data/mgras/invalid-extra.replay"
+#define INVALID_READ_EXTRA "../tests/data/mgras/invalid-read-extra.replay"
+#define INVALID_READ_MASK "../tests/data/mgras/invalid-read-mask.replay"
+#define INVALID_READ_MISMATCH \
+    "../tests/data/mgras/invalid-read-mismatch.replay"
+#define INVALID_MASKED_MISMATCH \
+    "../tests/data/mgras/invalid-masked-mismatch.replay"
 #define INVALID_OVERFLOW  "../tests/data/mgras/invalid-overflow.replay"
 #define INVALID_WID_BOUNDS "../tests/data/mgras/invalid-wid-bounds.replay"
 #define INVALID_MISMATCH  "../tests/data/mgras/invalid-mismatch.replay"
@@ -93,15 +100,19 @@ static uint32_t wid(QTestState *qts, uint32_t x, uint32_t y)
 static void replay_mmio(QTestState *qts, const char *path, unsigned int line,
                         char **words, bool write)
 {
-    uint64_t width, offset, value, actual;
+    uint64_t width, offset, value, actual, mask;
+    bool masked;
+    size_t nwords = g_strv_length(words);
 
-    if (!words[1] || !words[2] || !words[3] || words[4]) {
-        g_error("%s:%u: %s requires WIDTH OFFSET VALUE", path, line,
-                words[0]);
+    if ((write && nwords != 4) || (!write && nwords != 4 && nwords != 5)) {
+        g_error("%s:%u: %s requires WIDTH OFFSET VALUE%s", path, line,
+                words[0], write ? "" : " [MASK]");
     }
     width = parse_number(path, line, words[1]);
     offset = parse_number(path, line, words[2]);
     value = parse_number(path, line, words[3]);
+    masked = nwords == 5;
+    mask = masked ? parse_number(path, line, words[4]) : UINT64_MAX;
     if (width != 1 && width != 2 && width != 4 && width != 8) {
         g_error("%s:%u: unsupported MMIO width %" PRIu64, path, line, width);
     }
@@ -111,6 +122,10 @@ static void replay_mmio(QTestState *qts, const char *path, unsigned int line,
     }
     if (width < 8 && value >= (1ULL << (width * 8))) {
         g_error("%s:%u: MMIO value is wider than width %" PRIu64, path,
+                line, width);
+    }
+    if (masked && width < 8 && mask >= (1ULL << (width * 8))) {
+        g_error("%s:%u: MMIO mask is wider than width %" PRIu64, path,
                 line, width);
     }
     if (write) {
@@ -135,7 +150,12 @@ static void replay_mmio(QTestState *qts, const char *path, unsigned int line,
     } else {
         actual = qtest_readq(qts, SI_REG(offset));
     }
-    if (actual != value) {
+    if ((actual ^ value) & mask) {
+        if (masked) {
+            g_error("%s:%u: read 0x%" PRIx64 " returned 0x%" PRIx64
+                    ", expected 0x%" PRIx64 " with mask 0x%" PRIx64,
+                    path, line, offset, actual, value, mask);
+        }
         g_error("%s:%u: read 0x%" PRIx64 " returned 0x%" PRIx64
                 ", expected 0x%" PRIx64, path, line, offset, actual, value);
     }
@@ -344,6 +364,11 @@ static void test_minimal_replay(void)
     run_replay(MINIMAL_REPLAY, false);
 }
 
+static void test_masked_read(void)
+{
+    run_replay(MASKED_READ, false);
+}
+
 static void test_invalid_replay(const char *path, const char *message)
 {
     if (g_test_subprocess()) {
@@ -372,6 +397,32 @@ static void test_invalid_extra(void)
     test_invalid_replay(INVALID_EXTRA, "*requires X Y WIDTH HEIGHT VALUE*");
 }
 
+static void test_invalid_read_extra(void)
+{
+    test_invalid_replay(INVALID_READ_EXTRA,
+                        "*read requires WIDTH OFFSET VALUE [MASK]*");
+}
+
+static void test_invalid_read_mask(void)
+{
+    test_invalid_replay(INVALID_READ_MASK,
+                        "*MMIO mask is wider than width 1*");
+}
+
+static void test_invalid_read_mismatch(void)
+{
+    test_invalid_replay(INVALID_READ_MISMATCH,
+                        "*invalid-read-mismatch.replay:3: read 0x73c08*"
+                        "*expected 0x54*");
+}
+
+static void test_invalid_masked_mismatch(void)
+{
+    test_invalid_replay(INVALID_MASKED_MISMATCH,
+                        "*invalid-masked-mismatch.replay:2: read 0x8000*"
+                        "*expected 0x2 with mask 0x2*");
+}
+
 static void test_invalid_overflow(void)
 {
     test_invalid_replay(INVALID_OVERFLOW, "*invalid number*");
@@ -394,9 +445,16 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("sgi-mgras/replay", test_replay);
     qtest_add_func("sgi-mgras/minimal-replay", test_minimal_replay);
+    qtest_add_func("sgi-mgras/masked-read", test_masked_read);
     qtest_add_func("sgi-mgras/invalid-number", test_invalid_number);
     qtest_add_func("sgi-mgras/invalid-bounds", test_invalid_bounds);
     qtest_add_func("sgi-mgras/invalid-extra", test_invalid_extra);
+    qtest_add_func("sgi-mgras/invalid-read-extra", test_invalid_read_extra);
+    qtest_add_func("sgi-mgras/invalid-read-mask", test_invalid_read_mask);
+    qtest_add_func("sgi-mgras/invalid-read-mismatch",
+                   test_invalid_read_mismatch);
+    qtest_add_func("sgi-mgras/invalid-masked-mismatch",
+                   test_invalid_masked_mismatch);
     qtest_add_func("sgi-mgras/invalid-overflow", test_invalid_overflow);
     qtest_add_func("sgi-mgras/invalid-wid-bounds", test_invalid_wid_bounds);
     qtest_add_func("sgi-mgras/invalid-mismatch", test_invalid_mismatch);
