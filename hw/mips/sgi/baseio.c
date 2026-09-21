@@ -207,6 +207,20 @@ static bool baseio_pass_drive(DeviceState *dev, const char *id, Error **errp)
  * preset fitting a second chip (io6g's MediaIO daughtercard) must give
  * it a distinct name -- QOM refuses two children of the same name
  * under one parent.
+ *
+ * child_name also gives each chip's own nested kbc/kbd/mouse
+ * (hw/input/sgi-ioc3-kbc.c) a distinct QOM canonical path today, e.g.
+ * ".../mio-ioc3/kbc/kbd" beside ".../ioc3/kbc/kbd", inspectable now
+ * through qom-list/qom-get. QMP's own input-send-event cannot yet key off
+ * that path: its device= argument needs a QemuConsole bound to the
+ * device (ui/console.c's qemu_console_lookup_by_device()), which no
+ * headless BaseIO board creates, and separately, a device built through
+ * object_initialize_child() like every kbd/mouse here never gets the
+ * settable dev->id that lookup also requires (system/qdev-monitor.c's
+ * qdev_set_id() refuses a device that already has a QOM parent). Binding
+ * a console to one of these controllers is later console-wiring work;
+ * this distinct QOM path is the seam it would key off, not something
+ * that change still has to invent.
  */
 static PCIDevice *baseio_build_ioc3(SGIBaseioState *s, const char *child_name,
                                     unsigned int device, uint8_t revision,
