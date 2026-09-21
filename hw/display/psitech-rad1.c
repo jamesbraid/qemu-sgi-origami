@@ -87,12 +87,10 @@
 #include "qemu/units.h"
 #include "hw/pci/pci_device.h"
 #include "hw/pci/pci_ids.h"
-#include "hw/core/qdev-properties.h"
 #include "hw/core/resettable.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "ui/console.h"
-#include "ui/qemu-pixman.h"
 #include "qom/object.h"
 
 #define TYPE_PSITECH_RAD1 "psitech-rad1"
