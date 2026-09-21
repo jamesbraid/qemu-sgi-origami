@@ -193,6 +193,17 @@ static uint32_t si_test_display_pixel(QTestState *qts, uint32_t x, uint32_t y)
     return si_qom_get_uint(qts, "x-test-display-pixel");
 }
 
+static uint32_t si_test_wid(QTestState *qts, uint32_t x, uint32_t y)
+{
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-x', 'value': %u}}", SI_VIZ_QOM_PATH, x);
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-y', 'value': %u}}", SI_VIZ_QOM_PATH, y);
+    return si_qom_get_uint(qts, "x-test-wid");
+}
+
 static uint32_t si_screendump_pixel(QTestState *qts, uint32_t x, uint32_t y)
 {
     g_autofree char *path = NULL;
@@ -2133,6 +2144,88 @@ static void test_discarded_fifo_migration(void)
     qtest_quit(from);
 }
 
+static void si_begin_partial_fifo_fill(QTestState *qts)
+{
+    si_enter_context(qts);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)SI_STATE_TOKEN(REG_PACKEDCOLOR, 4) << 32) |
+                 0x00336699);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)SI_STATE_TOKEN(REG_BLOCK_START, 4) << 32) |
+                 ((96u << 16) | 88u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)SI_STATE_TOKEN(REG_BLOCK_END, 4) << 32) |
+                 ((97u << 16) | 89u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)SI_STATE_TOKEN(REG_COLORMASKLSBSA, 4) << 32) |
+                 0x00ffffff);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)SI_STATE_TOKEN(REG_PP1FILLMODE, 4) << 32) |
+                 ((uint32_t)SI_LOGIC_OP_COPY << 26));
+
+    /* One accepted execute payload word remains after this write. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)SI_EXEC_TOKEN(REG_BLOCK_END, 8) << 32) |
+                 0xdeadbeef);
+}
+
+static void si_finish_partial_fifo_fill(QTestState *qts)
+{
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0xcafebabe << 32) | SI_FENCE_TOKEN);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & SI_HQ_FLAG_FENCE, ==,
+                     SI_HQ_FLAG_FENCE);
+}
+
+static void test_partial_fifo_fill_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *expected, *from, *to;
+    uint32_t expected_surface, migrated_surface;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-partial-fill-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    expected = qtest_init(MACHINE_ARGS);
+    from = qtest_init(MACHINE_ARGS);
+    dest_cmdline = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    si_begin_partial_fifo_fill(expected);
+    si_begin_partial_fifo_fill(from);
+    g_assert_cmphex(si_test_pixel(expected, 96, 88), ==, 0);
+    g_assert_cmphex(si_test_pixel(from, 96, 88), ==, 0);
+    si_migrate(from, uri);
+
+    si_finish_partial_fifo_fill(expected);
+    si_finish_partial_fifo_fill(to);
+
+    /* Sample the console before a display-property query forces a refresh. */
+    expected_surface = si_screendump_pixel(expected, 96, 88);
+    migrated_surface = si_screendump_pixel(to, 96, 88);
+
+    g_assert_cmphex(expected_surface, ==, 0x00996633);
+    g_assert_cmphex(si_test_pixel(expected, 96, 88), ==, 0x00336699);
+    g_assert_cmphex(si_test_wid(expected, 96, 88), ==, 0);
+    g_assert_cmphex(si_test_pixel(expected, 98, 90), ==, 0);
+    g_assert_cmphex(si_test_pixel(to, 96, 88), ==,
+                     si_test_pixel(expected, 96, 88));
+    g_assert_cmphex(si_test_wid(to, 96, 88), ==,
+                     si_test_wid(expected, 96, 88));
+    g_assert_cmphex(si_test_pixel(to, 98, 90), ==,
+                     si_test_pixel(expected, 98, 90));
+    g_assert_cmphex(migrated_surface, ==, expected_surface);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    qtest_quit(expected);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2275,6 +2368,8 @@ int main(int argc, char **argv)
                    test_context_ack_migration);
     qtest_add_func("sn0/origin2000/mgras/discarded-fifo-migration",
                    test_discarded_fifo_migration);
+    qtest_add_func("sn0/origin2000/mgras/partial-fifo-fill-migration",
+                   test_partial_fifo_fill_migration);
 
     return g_test_run();
 }
