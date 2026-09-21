@@ -816,7 +816,7 @@ static bool si_ge_lengths_valid(void *opaque, int version_id)
 }
 
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 2, .minimum_version_id = 1,
+    .name = TYPE_SGI_MGRAS, .version_id = 3, .minimum_version_id = 1,
     .post_load = si_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -859,6 +859,9 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32_ARRAY(cmap, SGIMgrasState, 256), VMSTATE_UINT64(retraces, SGIMgrasState),
         VMSTATE_UINT32_V(cursor_x, SGIMgrasState, 2),
         VMSTATE_UINT32_V(cursor_y, SGIMgrasState, 2),
+        VMSTATE_BOOL_V(display_enabled, SGIMgrasState, 3),
+        VMSTATE_BOOL_V(cursor_enabled, SGIMgrasState, 3),
+        VMSTATE_UINT8_ARRAY_V(cursor, SGIMgrasState, 256, 3),
         VMSTATE_UINT32(revision, SGIMgrasState), VMSTATE_UINT32(part, SGIMgrasState),
         VMSTATE_UINT32(manufacturer, SGIMgrasState),
         VMSTATE_UINT32(int_dest_upper, SGIMgrasState),
