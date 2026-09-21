@@ -20,7 +20,7 @@
  * not "module"/"slot"/"fabric" (hw/mips/sgi/baseio.c), the same way every
  * carrier hands it one. board-type=sgi-baseio instead has this fixture
  * build the chip a real carrier would -- a Bridge for the "ip29" and
- * "baseio" presets, an XBridge for "io8", cabled to the sink the same way
+ * "io6" presets, an XBridge for "io8", cabled to the sink the same way
  * -- and hands sgi-baseio the resulting bus, exposing the chip as this
  * fixture's own "chip" child and sgi-baseio itself as "board", matching
  * every real carrier's own child names (sn0.c, hw/mips/sgi/xio-baseio.c,

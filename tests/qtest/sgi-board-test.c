@@ -8,7 +8,7 @@
  * A preset is not itself user_creatable-reachable the way a real carrier
  * builds it (a bare Bridge or XBridge, then sgi-baseio on its bus) --
  * sgi-board-test-fixture builds exactly that pair for the "ip29",
- * "baseio" and "io8" presets, the same way sgi-xtalk-board-fixture
+ * "io6" and "io8" presets, the same way sgi-xtalk-board-fixture
  * stands in for a module's Crossbow in the XIO board base class's own
  * qtest; see tests/qtest/board-test-fixture.c. sgi-pci-expansion is also
  * `-device`-creatable now (see its own header comment for the spare
@@ -99,7 +99,7 @@ typedef struct BoardCase {
     const char *subtest;
     /*
      * board-type=sgi-baseio,preset=<preset> for one of sgi-baseio's three
-     * presets; board-type=<type> alone (module/slot/fabric) for
+     * tested presets; board-type=<type> alone (module/slot/fabric) for
      * sgi-pci-expansion, the one case still built as an XIO board.
      */
     const char *preset;
@@ -124,7 +124,7 @@ static const FixedDevice ip29_io_fixed[] = {
     { 0, 5 }, { 1, 5 }, { 2, 1 },
 };
 
-static const FixedDevice baseio_fixed[] = {
+static const FixedDevice io6_fixed[] = {
     { 0, 5 }, { 1, 5 }, { 2, 1 },
 };
 
@@ -148,14 +148,14 @@ static const BoardCase board_cases[] = {
         .fixed_count = G_N_ELEMENTS(ip29_io_fixed),
     },
     {
-        .subtest = "baseio",
-        .preset = "baseio",
+        .subtest = "io6",
+        .preset = "io6",
         .chip = "chip",
         .bus = "pci",
         /* Same revision and Bridge defaults as the "ip29" preset. */
         .identification = 0x4c00206dU,
-        .fixed = baseio_fixed,
-        .fixed_count = G_N_ELEMENTS(baseio_fixed),
+        .fixed = io6_fixed,
+        .fixed_count = G_N_ELEMENTS(io6_fixed),
     },
     {
         .subtest = "io8",

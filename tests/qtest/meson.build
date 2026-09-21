@@ -78,6 +78,11 @@ slow_qtests = {
   # measured 174.86s before the discarded-FIFO migration case was added.
   # Select one GLib test path for the normal edit/build/test loop.
   'sn0-origin2000-mgras-test': 240,
+  # The timekeeper repair-store loop alone starts sixteen QEMU processes
+  # (two module boots per CPU across eight vCPUs), and io6g's two IOC3
+  # keyboard controllers add a second PS/2 probe beside it. Measured just
+  # over 60s unloaded; keep headroom under parallel CI load.
+  'sn0-baseio-test': 120,
 }
 
 qtest_priorities = {
@@ -385,6 +390,7 @@ qtests_mips64 = \
                                                    'sn0-bridge-widget-test',
                                                    'sn0-bridge-pio-xlate-test',
                                                    'sn0-origin2000-test',
+                                                   'sn0-baseio-test',
                                                    'sn0-origin2000-outgoing-hub-io-test',
                                                    'sn0-origin2000-xtalk-owner-test',
                                                    'sn0-module-management-test',

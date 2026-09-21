@@ -400,7 +400,12 @@
 #
 # @ip29-io: Origin 200's integrated IP29 System Board I/O
 #
-# @baseio: the Origin 2000/Onyx2 BaseIO XIO card
+# @io6: the Origin 2000/Onyx2 plain BaseIO XIO card
+#
+# @io6g: the Origin 2000/Onyx2 BaseIO-G XIO card, whose MediaIO
+#     daughtercard adds a second IOC3 (keyboard, mouse, two serial
+#     ports and a parallel port, no ethernet) alongside the plain
+#     @io6 board's own
 #
 # @io8: the Origin 300 IO-8
 #
@@ -409,7 +414,7 @@
 # Since: 11.2
 ##
 { 'enum': 'SGIModelIoBoardPreset',
-  'data': ['ip29-io', 'baseio', 'io8', 'io9'] }
+  'data': ['ip29-io', 'io6', 'io6g', 'io8', 'io9'] }
 
 ##
 # @SGIModelIoBoardCarrier:

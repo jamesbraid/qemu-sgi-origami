@@ -2,7 +2,7 @@
 /*
  * sgi-xio-baseio: the Origin 2000 and Onyx2 standard XIO I/O board
  * (BaseIO), an sgi-xio-board subclass that creates its own Bridge and an
- * sgi-baseio (the "baseio" preset) behind it -- the removable-card
+ * sgi-baseio (the "io6" preset) behind it -- the removable-card
  * carrier docs/designs/sn-machine-model-architecture.md's "Base I/O"
  * table names. See sgi-baseio's own header and hw/mips/sgi/baseio.c for
  * the population this board's preset builds; this file owns only what
@@ -25,8 +25,12 @@
  * "onewire-serial" property. "nvram-drive", "chardev-a", "chardev-b",
  * "record-a" and "record-b" forward the same way, unset by default;
  * BaseIO has no parallel function, so this class exposes no
- * "parallel-chardev" (the internal sgi-baseio's "baseio" preset never
- * wires one either).
+ * "parallel-chardev" (the internal sgi-baseio's "io6" preset never
+ * wires one either). "preset" selects which internal sgi-baseio preset
+ * this card builds, "io6" by default; "io6g" builds the same
+ * card with the MediaIO daughtercard's second IOC3 fitted. Both name
+ * the same physical board part and Bridge revision, so this class's own
+ * fitted-part identity is looked up from the same preset.
  */
 
 #include "qemu/osdep.h"
@@ -61,6 +65,7 @@ struct SGIXioBaseioState {
     uint64_t onewire_serial;
     uint64_t ioc3_onewire_serial;
     char *pci_bus_name;
+    char *preset;
     char *nvram_drive_id;
     char *chardev_a_id;
     char *chardev_b_id;
@@ -74,8 +79,8 @@ struct SGIXioBaseioState {
 static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
 {
     SGIXioBaseioState *s = SGI_XIO_BASEIO(board);
-    const SGIBaseioPresetIdentity *identity = sgi_baseio_preset_lookup(
-        "baseio");
+    const SGIBaseioPresetIdentity *identity =
+        sgi_baseio_preset_lookup(s->preset);
     DeviceState *bridge, *baseio;
     PCIBus *bus;
 
@@ -87,6 +92,12 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
     if (board->slot != XIO_BASEIO_WIDGET) {
         error_setg(errp, "sgi-xio-baseio is fixed at crosstalk widget %u",
                   XIO_BASEIO_WIDGET);
+        return false;
+    }
+    if (!identity) {
+        error_setg(errp, "sgi-xio-baseio: '%s' names no known baseio "
+                  "preset; expected io6 or io6g",
+                  s->preset ? s->preset : "(unset)");
         return false;
     }
 
@@ -113,7 +124,7 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
     baseio = qdev_new(TYPE_SGI_BASEIO);
     object_property_add_child(OBJECT(board), "baseio", OBJECT(baseio));
     s->baseio = SGI_BASEIO(baseio);
-    qdev_prop_set_string(baseio, "preset", "baseio");
+    qdev_prop_set_string(baseio, "preset", s->preset);
     object_property_set_link(OBJECT(baseio), "pci-bus", OBJECT(bus),
                              &error_abort);
     qdev_prop_set_uint64(baseio, "onewire-serial", s->ioc3_onewire_serial);
@@ -141,6 +152,14 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
     return true;
 }
 
+static void xio_baseio_instance_init(Object *obj)
+{
+    SGIXioBaseioState *s = SGI_XIO_BASEIO(obj);
+
+    /* The plain board by default; a machine asks for "io6g" instead. */
+    s->preset = g_strdup("io6");
+}
+
 static const Property xio_baseio_properties[] = {
     DEFINE_PROP_LINK("fabric", SGIXioBaseioState, fabric, TYPE_MEMORY_REGION,
                      MemoryRegion *),
@@ -154,6 +173,7 @@ static const Property xio_baseio_properties[] = {
     DEFINE_PROP_UINT64("ioc3-onewire-serial", SGIXioBaseioState,
                        ioc3_onewire_serial, SGI_IOC3_ONEWIRE_SERIAL),
     DEFINE_PROP_STRING("pci-bus-name", SGIXioBaseioState, pci_bus_name),
+    DEFINE_PROP_STRING("preset", SGIXioBaseioState, preset),
     DEFINE_PROP_STRING("nvram-drive", SGIXioBaseioState, nvram_drive_id),
     DEFINE_PROP_STRING("chardev-a", SGIXioBaseioState, chardev_a_id),
     DEFINE_PROP_STRING("chardev-b", SGIXioBaseioState, chardev_b_id),
@@ -195,6 +215,7 @@ static const TypeInfo xio_baseio_type = {
     .name = TYPE_SGI_XIO_BASEIO,
     .parent = TYPE_SGI_XIO_BOARD,
     .instance_size = sizeof(SGIXioBaseioState),
+    .instance_init = xio_baseio_instance_init,
     .class_init = xio_baseio_class_init,
 };
 

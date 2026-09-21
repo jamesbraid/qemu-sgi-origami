@@ -43,6 +43,22 @@ void sgi_bridge_assign_window(SGIBridgeState *s, unsigned int slot,
                               hwaddr pci_base, bool memory_space);
 
 /*
+ * Add a second board-identity record to this Bridge's one-wire bus, for a
+ * daughtercard fitted behind the same chip: the bus is architecturally
+ * multi-drop, and a guest one-wire search finds every part on it, not only
+ * the chip's own board record realize() already attaches. `bridge` takes
+ * the generic qdev pointer a carrier-agnostic caller already has (an
+ * sgi-baseio preset reaches its host through baseio_bus_host(), which
+ * stays decoupled from any one host-bridge type); the Bridge must already
+ * be realized, since this attaches directly to its onewire_bus. `serial`
+ * must differ from the board's own onewire-serial property, or a guest
+ * one-wire search cannot tell the two records apart.
+ */
+bool sgi_bridge_add_onewire_board_part(DeviceState *bridge,
+                                       const char *board_part,
+                                       uint64_t serial, Error **errp);
+
+/*
  * The bridge's plain DMA route for a device on its bus, or NULL when the
  * device is not behind an SGI Bridge. Transfers move through this with
  * dma_memory_read/write: the same address decode and node-qualified fabric
@@ -298,8 +314,11 @@ struct SGIBridgeState {
     char *board_part;
 
     /*
-     * The MicroLAN bus, carrying the one board identity part. Every
-     * Bridge has both; the part is soldered to the board the chip is on.
+     * The MicroLAN bus. Every Bridge has one and realizes its own
+     * board-identity part on it, soldered to the board the chip is on;
+     * the bus is architecturally multi-drop, and
+     * sgi_bridge_add_onewire_board_part() adds a daughtercard's own
+     * record alongside it.
      */
     OneWireBus *onewire_bus;
 

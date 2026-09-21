@@ -18,7 +18,7 @@
  *     ISP1040s use the chip's own ordinary per-slot INTA rule.
  *     (docs/machines/layers/modules/ip29.yaml; hw/mips/sn0-origin200-model.c
  *     base_io and pci[], carried into the deleted board-ip29-io.c.)
- *   - baseio: Bridge revision 4, board part "030-1124-002". ISP1040 at
+ *   - io6: Bridge revision 4, board part "030-1124-002". ISP1040 at
  *     devices 0 and 1, revision 5. IOC3 at device 2, revision 1,
  *     population Ethernet, both serial ports and the one-wire identity
  *     part (no keyboard/mouse or parallel), an M48T35-compatible
@@ -76,6 +76,7 @@
 #include "hw/misc/sgi-ioc3.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_bus.h"
+#include "hw/pci-host/sgi-bridge.h"
 #include "hw/scsi/qlogic-isp.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
@@ -182,20 +183,34 @@ static bool baseio_pass_drive(DeviceState *dev, const char *id, Error **errp)
  * and setting one after realize is refused outright. has_phy is true
  * only for io8, whose IOC3 answers through a DP83843 at a fixed MII
  * address rather than the Origin 200/2000 boards' own DP83840A default,
- * for the same before-realize reason.
+ * for the same before-realize reason. timekeeper names the chip's own
+ * Timekeeper part, SGI_IOC3_TIMEKEEPER_NONE for a chip that carries
+ * none; nvram-drive is only ever forwarded to a chip that has one, so
+ * an unrelated Timekeeper backend cannot be claimed by a chip that will
+ * unparent its own rtc child unrealized. forward_serial_chardevs is
+ * false for a chip whose own serial ports are not this board's chosen
+ * console/record backends -- a second IOC3 sharing a board with one
+ * that already claims "chardev-a"/"chardev-b"/"record-a"/"record-b".
+ * child_name is the QOM child property this chip is added under; every
+ * preset that builds a single IOC3 keeps the established "ioc3", so its
+ * migration path is unchanged, while a preset fitting a second chip
+ * (io6g's MediaIO daughtercard) must give it a distinct name --
+ * QOM refuses two children of the same name under one parent.
  */
-static PCIDevice *baseio_build_ioc3(SGIBaseioState *s, unsigned int device,
-                                    uint8_t revision, uint32_t population,
+static PCIDevice *baseio_build_ioc3(SGIBaseioState *s, const char *child_name,
+                                    unsigned int device, uint8_t revision,
+                                    uint32_t population, uint8_t timekeeper,
                                     bool has_subsystem_id,
                                     uint16_t subsystem_id, bool has_phy,
-                                    uint8_t phy_addr, Error **errp)
+                                    uint8_t phy_addr,
+                                    bool forward_serial_chardevs,
+                                    Error **errp)
 {
     PCIDevice *ioc3 = pci_new(PCI_DEVFN(device, 0), TYPE_SGI_IOC3);
 
-    object_property_add_child(OBJECT(s), "ioc3", OBJECT(ioc3));
+    object_property_add_child(OBJECT(s), child_name, OBJECT(ioc3));
     qdev_prop_set_uint32(DEVICE(ioc3), "population", population);
-    qdev_prop_set_uint8(DEVICE(ioc3), "timekeeper-kind",
-                        SGI_IOC3_TIMEKEEPER_M48T35);
+    qdev_prop_set_uint8(DEVICE(ioc3), "timekeeper-kind", timekeeper);
     qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial", s->onewire_serial);
     if (has_subsystem_id) {
         qdev_prop_set_uint16(DEVICE(ioc3), "subsystem-id", subsystem_id);
@@ -205,15 +220,20 @@ static PCIDevice *baseio_build_ioc3(SGIBaseioState *s, unsigned int device,
         object_property_set_bool(OBJECT(ioc3), "phy-dp83843", true,
                                  &error_abort);
     }
-    if (!baseio_pass_drive(DEVICE(ioc3), s->nvram_drive_id, errp) ||
-        !baseio_pass_chardev(DEVICE(ioc3), "chardev-a", s->chardev_a_id,
+    if (timekeeper != SGI_IOC3_TIMEKEEPER_NONE &&
+        !baseio_pass_drive(DEVICE(ioc3), s->nvram_drive_id, errp)) {
+        object_unparent(OBJECT(ioc3));
+        return NULL;
+    }
+    if (forward_serial_chardevs &&
+        (!baseio_pass_chardev(DEVICE(ioc3), "chardev-a", s->chardev_a_id,
                              errp) ||
-        !baseio_pass_chardev(DEVICE(ioc3), "chardev-b", s->chardev_b_id,
+         !baseio_pass_chardev(DEVICE(ioc3), "chardev-b", s->chardev_b_id,
                              errp) ||
-        !baseio_pass_chardev(DEVICE(ioc3), "record-a", s->record_a_id,
+         !baseio_pass_chardev(DEVICE(ioc3), "record-a", s->record_a_id,
                              errp) ||
-        !baseio_pass_chardev(DEVICE(ioc3), "record-b", s->record_b_id,
-                             errp)) {
+         !baseio_pass_chardev(DEVICE(ioc3), "record-b", s->record_b_id,
+                             errp))) {
         object_unparent(OBJECT(ioc3));
         return NULL;
     }
@@ -257,8 +277,10 @@ static bool baseio_build_ip29(SGIBaseioState *s, Error **errp)
     pci_set_byte(isp1->config + PCI_REVISION_ID, IP29_ISP_REVISION);
     qlogic_isp_handle_legacy_cmdline(DEVICE(isp1));
 
-    ioc3 = baseio_build_ioc3(s, IP29_IOC3_DEVICE, IP29_IOC3_REVISION,
-                             IP29_IOC3_POPULATION, false, 0, false, 0, errp);
+    ioc3 = baseio_build_ioc3(s, "ioc3", IP29_IOC3_DEVICE, IP29_IOC3_REVISION,
+                             IP29_IOC3_POPULATION,
+                             SGI_IOC3_TIMEKEEPER_M48T35, false, 0, false, 0,
+                             true, errp);
     if (!ioc3) {
         return false;
     }
@@ -281,7 +303,16 @@ static bool baseio_build_ip29(SGIBaseioState *s, Error **errp)
                                 SGI_IOC3_POPULATION_SERIAL_B | \
                                 SGI_IOC3_POPULATION_ONEWIRE_IDENTITY)
 
-static bool baseio_build_baseio(SGIBaseioState *s, Error **errp)
+/*
+ * Both SCSI controllers and the device-2 IOC3 every BaseIO board carries.
+ * The device-2 IOC3's population is a caller-supplied argument: the io6g
+ * variant's own board IOC3 carries a keyboard/mouse pair beside plain
+ * io6's ethernet, serial and one-wire population (see
+ * BASEIO_G_IOC3_POPULATION below), while everything else about the chip
+ * and both SCSI controllers is identical between the two boards.
+ */
+static bool baseio_build_baseio_core(SGIBaseioState *s,
+                                     uint32_t ioc3_population, Error **errp)
 {
     PCIDevice *scsi0, *scsi1, *ioc3;
 
@@ -297,16 +328,118 @@ static bool baseio_build_baseio(SGIBaseioState *s, Error **errp)
     pci_set_byte(scsi1->config + PCI_REVISION_ID, BASEIO_SCSI_REVISION);
     qlogic_isp_handle_legacy_cmdline(DEVICE(scsi1));
 
-    ioc3 = baseio_build_ioc3(s, BASEIO_IOC3_DEVICE, BASEIO_IOC3_REVISION,
-                             BASEIO_IOC3_POPULATION, true,
+    ioc3 = baseio_build_ioc3(s, "ioc3", BASEIO_IOC3_DEVICE,
+                             BASEIO_IOC3_REVISION, ioc3_population,
+                             SGI_IOC3_TIMEKEEPER_M48T35, true,
                              BASEIO_IOC3_SUBSYSTEM_ID_NOT_OBSERVED, false, 0,
-                             errp);
+                             true, errp);
     if (!ioc3) {
         return false;
     }
     qdev_connect_gpio_out(DEVICE(ioc3), 0,
                           qdev_get_gpio_in(baseio_bus_host(s->pci_bus),
                                            BASEIO_IOC3_IRQ_PIN));
+    return true;
+}
+
+static bool baseio_build_io6(SGIBaseioState *s, Error **errp)
+{
+    return baseio_build_baseio_core(s, BASEIO_IOC3_POPULATION, errp);
+}
+
+#define BASEIO_G_MIO_IOC3_DEVICE   6
+#define BASEIO_G_MIO_IOC3_REVISION 1
+/*
+ * Device 6's SuperIO interrupt reaches Bridge input 6: with no ethernet
+ * this IOC3 is single-connection, so its shared interrupt lands on the
+ * chip's own PCI INTA, which the Bridge's favoured per-slot mapping sends
+ * to input 6. The board IOC3 at device 2 rides input 4 instead. Confirmed
+ * by 6.5.30 disassembly of the IOC3 interrupt-allocation path and a live
+ * IRIX 6.5.30 io6g boot whose keyboard and mouse enumerate at pci/6.
+ */
+#define BASEIO_G_MIO_IOC3_IRQ_PIN  6
+#define BASEIO_G_MIO_IOC3_SUBSYSTEM_ID SGI_IOC3_SUBSYS_IP27_MIO
+#define BASEIO_G_MIO_IOC3_POPULATION (SGI_IOC3_POPULATION_SERIAL_A | \
+                                      SGI_IOC3_POPULATION_SERIAL_B | \
+                                      SGI_IOC3_POPULATION_KEYBOARD_MOUSE | \
+                                      SGI_IOC3_POPULATION_PARALLEL)
+
+/*
+ * The io6g's own board IOC3 at device 2 carries a keyboard/mouse pair
+ * beside plain io6's ethernet, serial and one-wire population -- half
+ * of the board's four PS/2 ports, the MediaIO IOC3 above supplying the
+ * other half. IRIX only enables this chip's keyboard/mouse when the
+ * Bridge's own board-part record reads a "030-0734-" (io6g) prefix rather
+ * than plain io6's "030-1124-" (docs/datasheets/baseio.md's
+ * board-variant table); sgi_baseio_presets[]'s "io6g" entry below
+ * carries that part.
+ */
+#define BASEIO_G_IOC3_POPULATION (BASEIO_IOC3_POPULATION | \
+                                  SGI_IOC3_POPULATION_KEYBOARD_MOUSE)
+
+/*
+ * The MediaIO daughtercard's own board-part record on the Bridge's
+ * one-wire bus (docs/datasheets/baseio.md's board-variant table). Without
+ * it, device 6's IOC3 has no board record of its own on that bus, and
+ * IRIX's one-wire dispatch falls back to a default population that turns
+ * ethernet on for a chip that was never wired to one, driving pci/6 to
+ * probe a PHY that does not exist. The serial only has to read back
+ * distinct from the Bridge's own board record so a one-wire search can
+ * tell the two apart; it names no real part, so it continues the same
+ * placeholder descending-byte idiom as NIC_ROM_SERIAL_DEFAULT
+ * (hw/pci-host/sgi-bridge.c) and SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL
+ * (hw/pci-host/sgi-xbridge.c) one step further along it.
+ */
+#define BASEIO_G_MIO_BOARD_PART     "030-0880-003"
+#define BASEIO_G_MIO_ONEWIRE_SERIAL 0x0c0b0a090807ULL
+
+/*
+ * io6g: the io6 core with its device-2 IOC3 carrying a
+ * keyboard/mouse pair of its own (BASEIO_G_IOC3_POPULATION), plus the
+ * MediaIO daughtercard's own board-part record and second IOC3 at
+ * device 6 -- PS/2 keyboard/mouse, two more serial ports and a parallel
+ * port; no ethernet, no IOC3-level one-wire identity, no Timekeeper
+ * (docs/datasheets/baseio.md, docs/datasheets/ioc3.md's board-variant
+ * table, subsystem id 0xc301). Between the two IOC3s io6g exposes four
+ * PS/2 ports total. Its own serial chardevs are not forwarded: device
+ * 2's IOC3 already owns "chardev-a"/"chardev-b"/"record-a"/"record-b",
+ * so this chip's serial ports enumerate unbacked, an accepted limitation
+ * rather than a second pair of board properties.
+ */
+static bool baseio_build_io6g(SGIBaseioState *s, Error **errp)
+{
+    PCIDevice *ioc3;
+
+    if (!baseio_build_baseio_core(s, BASEIO_G_IOC3_POPULATION, errp)) {
+        return false;
+    }
+
+    if (!sgi_bridge_add_onewire_board_part(baseio_bus_host(s->pci_bus),
+                                           BASEIO_G_MIO_BOARD_PART,
+                                           BASEIO_G_MIO_ONEWIRE_SERIAL,
+                                           errp)) {
+        return false;
+    }
+
+    ioc3 = baseio_build_ioc3(s, "mio-ioc3", BASEIO_G_MIO_IOC3_DEVICE,
+                             BASEIO_G_MIO_IOC3_REVISION,
+                             BASEIO_G_MIO_IOC3_POPULATION,
+                             SGI_IOC3_TIMEKEEPER_NONE, true,
+                             BASEIO_G_MIO_IOC3_SUBSYSTEM_ID, false, 0,
+                             false, errp);
+    if (!ioc3) {
+        return false;
+    }
+    /*
+     * Only an IOC3's ethernet child drives its PCI INTA
+     * (hw/misc/sgi-ioc3.c); this chip has none, so its serial ports,
+     * keyboard/mouse, parallel port and real-time interrupt all ride
+     * its SuperIO GPIO-out index 0 alone. Left unwired, those
+     * interrupts are simply dead.
+     */
+    qdev_connect_gpio_out(DEVICE(ioc3), 0,
+                          qdev_get_gpio_in(baseio_bus_host(s->pci_bus),
+                                           BASEIO_G_MIO_IOC3_IRQ_PIN));
     return true;
 }
 
@@ -364,9 +497,10 @@ static bool baseio_build_io8(SGIBaseioState *s, Error **errp)
     pci_set_word(scsi->config + PCI_SUBSYSTEM_ID, IO8_SCSI_SUBSYSTEM_ID);
     io8_wire_intx(chip, IO8_SCSI_DEVICE, IO8_SCSI_INTERRUPT_PIN);
 
-    ioc3 = baseio_build_ioc3(s, IO8_IOC3_DEVICE, IO8_IOC3_REVISION,
-                             IO8_IOC3_POPULATION, false, 0, true,
-                             IO8_IOC3_PHY_ADDR, errp);
+    ioc3 = baseio_build_ioc3(s, "ioc3", IO8_IOC3_DEVICE, IO8_IOC3_REVISION,
+                             IO8_IOC3_POPULATION,
+                             SGI_IOC3_TIMEKEEPER_M48T35, false, 0, true,
+                             IO8_IOC3_PHY_ADDR, true, errp);
     if (!ioc3) {
         return false;
     }
@@ -393,7 +527,8 @@ static bool baseio_build_io8(SGIBaseioState *s, Error **errp)
 
 static const SGIBaseioPreset sgi_baseio_presets[] = {
     { "ip29", { "030-1244-001", 4 }, baseio_build_ip29 },
-    { "baseio", { "030-1124-002", 4 }, baseio_build_baseio },
+    { "io6", { "030-1124-002", 4 }, baseio_build_io6 },
+    { "io6g", { "030-0734-001", 4 }, baseio_build_io6g },
     { "io8", { "030-1673-003", 0 }, baseio_build_io8 },
 };
 
@@ -469,7 +604,8 @@ static void baseio_realize(DeviceState *dev, Error **errp)
 
     if (!preset) {
         error_setg(errp, "sgi-baseio: '%s' names no known preset; expected "
-                  "ip29, baseio or io8", s->preset ? s->preset : "(unset)");
+                  "ip29, io6, io6g or io8",
+                  s->preset ? s->preset : "(unset)");
         return;
     }
     if (!s->pci_bus) {
