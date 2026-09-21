@@ -21,6 +21,9 @@
 #define INVALID_REPLAY    "../tests/data/mgras/invalid.replay"
 #define INVALID_BOUNDS    "../tests/data/mgras/invalid-bounds.replay"
 #define INVALID_EXTRA     "../tests/data/mgras/invalid-extra.replay"
+#define INVALID_OVERFLOW  "../tests/data/mgras/invalid-overflow.replay"
+#define INVALID_WID_BOUNDS "../tests/data/mgras/invalid-wid-bounds.replay"
+#define INVALID_MISMATCH  "../tests/data/mgras/invalid-mismatch.replay"
 #define SI_MMIO_SIZE      (2 * MiB)
 #define SI_NATIVE_WIDTH   1280
 #define SI_NATIVE_HEIGHT  1024
@@ -346,6 +349,23 @@ static void test_invalid_extra(void)
     test_invalid_replay(INVALID_EXTRA, "*requires X Y WIDTH HEIGHT VALUE*");
 }
 
+static void test_invalid_overflow(void)
+{
+    test_invalid_replay(INVALID_OVERFLOW, "*invalid number*");
+}
+
+static void test_invalid_wid_bounds(void)
+{
+    test_invalid_replay(INVALID_WID_BOUNDS,
+                        "*outside the current model range*");
+}
+
+static void test_invalid_mismatch(void)
+{
+    test_invalid_replay(INVALID_MISMATCH,
+                        "*invalid-mismatch.replay:2: pixel (0, 0)*");
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -354,5 +374,8 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-mgras/invalid-number", test_invalid_number);
     qtest_add_func("sgi-mgras/invalid-bounds", test_invalid_bounds);
     qtest_add_func("sgi-mgras/invalid-extra", test_invalid_extra);
+    qtest_add_func("sgi-mgras/invalid-overflow", test_invalid_overflow);
+    qtest_add_func("sgi-mgras/invalid-wid-bounds", test_invalid_wid_bounds);
+    qtest_add_func("sgi-mgras/invalid-mismatch", test_invalid_mismatch);
     return g_test_run();
 }
