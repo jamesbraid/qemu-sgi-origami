@@ -869,8 +869,15 @@ static void rad4_cursor_update_image(PsitechRad4State *s)
                 if (val != 0) {
                     const uint8_t *rgb = s->cursor_lut[val];
 
-                    pixel = (0xffu << 24) | ((uint32_t)rgb[2] << 16) |
-                           ((uint32_t)rgb[1] << 8) | rgb[0];
+                    /*
+                     * Component order within each three-byte entry is
+                     * (red, green, blue), matching the framebuffer's own
+                     * palette upload helper in rad4_pixel_to_rgb() above
+                     * (docs/datasheets/psitech-rad4.md, "Cursor: bound to
+                     * the public specification and implemented").
+                     */
+                    pixel = (0xffu << 24) | ((uint32_t)rgb[0] << 16) |
+                           ((uint32_t)rgb[1] << 8) | rgb[2];
                 }
                 cursor->data[row * RAD4_CURSOR_WIDTH + col + sub] = pixel;
             }
