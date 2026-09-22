@@ -4,7 +4,7 @@
  *
  * See include/hw/input/psitech-rad4-km.h for the register contract this
  * file implements and the disclosed approximations (chip identity, and
- * the deliberately unconnected interrupt gate at driver offset 0x78).
+ * the undriven board-level interrupt gate at driver offset 0x78).
  */
 
 #include "qemu/osdep.h"
@@ -120,6 +120,32 @@ static uint8_t rad4_km_read_isr(PsitechRad4KMState *s)
     return val;
 }
 
+/*
+ * IMR gating which ISR bits reach the chip's own interrupt output is the
+ * ordinary SCN2681/SCC68681 DUART family contract (see the file header):
+ * a public, chip-family fact, unlike the board-level gate at driver
+ * offset 0x78 this model does not invent. ISR's own read behavior above
+ * stays the raw, unmasked value -- only this aggregate output is masked.
+ */
+static void rad4_km_update_irq(PsitechRad4KMState *s)
+{
+    qemu_set_irq(s->irq, !!(rad4_km_read_isr(s) & s->imr));
+}
+
+/*
+ * Either ps2 core device's own IRQ output changes only its queue-empty
+ * state (ps2_read_data()/ps2_write_*() already call ps2_raise_irq()/
+ * ps2_lower_irq()); this model recomputes the chip-wide masked condition
+ * from scratch on every edge rather than tracking each source bit
+ * incrementally, matching rad4_km_read_isr()'s own always-recompute style.
+ */
+static void rad4_km_ps2_irq(void *opaque, int n, int level)
+{
+    PsitechRad4KMState *s = PSITECH_RAD4_KM(opaque);
+
+    rad4_km_update_irq(s);
+}
+
 static uint8_t rad4_km_read_data(PS2State *ps2)
 {
     if (ps2_queue_empty(ps2)) {
@@ -211,10 +237,12 @@ static void rad4_km_write(void *opaque, hwaddr addr, uint64_t val,
 
     case RAD4_KM_REG_CRA:
         rad4_km_write_cr(&s->chan_a, byte);
+        rad4_km_update_irq(s);
         return;
 
     case RAD4_KM_REG_CRB:
         rad4_km_write_cr(&s->chan_b, byte);
+        rad4_km_update_irq(s);
         return;
 
     case RAD4_KM_REG_RHRA_THRA:
@@ -232,6 +260,7 @@ static void rad4_km_write(void *opaque, hwaddr addr, uint64_t val,
 
     case RAD4_KM_REG_ISR_IMR:
         s->imr = byte;
+        rad4_km_update_irq(s);
         return;
 
     case RAD4_KM_REG_OPCR:
@@ -282,6 +311,9 @@ static void rad4_km_init(Object *obj)
     memory_region_init_io(&s->mmio, obj, &rad4_km_ops, s, "psitech-rad4-km",
                           RAD4_KM_MMIO_SIZE);
     sysbus_init_mmio(sbd, &s->mmio);
+
+    qdev_init_gpio_in(DEVICE(obj), rad4_km_ps2_irq, 2);
+    sysbus_init_irq(sbd, &s->irq);
 }
 
 static void rad4_km_realize(DeviceState *dev, Error **errp)
@@ -296,11 +328,16 @@ static void rad4_km_realize(DeviceState *dev, Error **errp)
     }
 
     /*
-     * Neither ps2 device's own IRQ output is connected to anything: see
-     * the file header and include/hw/input/psitech-rad4-km.h for why this
-     * model leaves the board-level interrupt gate at driver offset 0x78
-     * unwired rather than guessing its destination.
+     * Each ps2 core device's own IRQ output feeds this chip's aggregate ISR/
+     * IMR condition (rad4_km_ps2_irq()); see the file header and
+     * include/hw/input/psitech-rad4-km.h for why this model wires that much
+     * and no further, leaving the board-level interrupt gate at driver
+     * offset 0x78 unwired rather than guessing its destination.
      */
+    qdev_connect_gpio_out(DEVICE(&s->kbd), PS2_DEVICE_IRQ,
+                          qdev_get_gpio_in(dev, 0));
+    qdev_connect_gpio_out(DEVICE(&s->mouse), PS2_DEVICE_IRQ,
+                          qdev_get_gpio_in(dev, 1));
 }
 
 static void rad4_km_reset_hold(Object *obj, ResetType type)
@@ -313,6 +350,8 @@ static void rad4_km_reset_hold(Object *obj, ResetType type)
     s->imr = 0;
     s->opcr = 0;
     s->output_port = 0;
+
+    rad4_km_update_irq(s);
 }
 
 static const VMStateDescription vmstate_rad4_km_channel = {
