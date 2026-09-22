@@ -59,6 +59,7 @@
 #define MIO_IOC3_WINDOW 0xa00000
 
 /* Chip-relative; combine with an IOC3's own window, e.g. IOC3_WINDOW. */
+#define KBC_CONTROL 0x09c
 #define KBC_KBD_RECEIVE 0x0a0
 #define KBC_AUX_RECEIVE 0x0a4
 #define KBC_KBD_TRANSMIT 0x0a8
@@ -75,6 +76,13 @@
 #define INT_ENABLE_SET  0x020
 #define INT_ENABLE_CLR  0x024
 #define INT_KEYBOARD    (1u << 22)
+
+/*
+ * Chip-relative; the keyboard port's clamp-after-one-character bit, at the
+ * position mainline Linux's own header assigns it
+ * (arch/mips/include/asm/sn/ioc3.h).
+ */
+#define KBC_K_CLAMP_1   0x00100000
 
 /*
  * Chip-relative; each IOC3's two 16550s (hw/char/serial.c), at the same
@@ -537,6 +545,70 @@ static void test_io6g_mio_keyboard_reaches_bridge_pin_6(void)
 }
 
 /*
+ * The same route, carrying a receive backlog. The controller holds three
+ * characters at most, and the clamp bits hold a port's clock line low once
+ * it has taken its quota, so a device with more to say is stopped rather
+ * than overrunning it. Armed after one character -- the tighter of the two
+ * clamps the control register offers -- a two-character reply arrives in two
+ * instalments, and the second instalment has to reach Bridge input 6 on its
+ * own, with nothing but the guest's own read of the first to prompt it.
+ * sn0-ioc3-test.c's ps2-clamp-after-one-splits-a-reply covers the same
+ * mechanism on the chip alone; what this adds is the board's wire.
+ */
+static void test_io6g_mio_keyboard_backlog_reaches_bridge_pin_6(void)
+{
+    QTestState *qts = start_module_io6g();
+
+    program_module(qts);
+    program_mio_ioc3(qts);
+
+    baseio_window_write(qts, MIO_IOC3_WINDOW + INT_ENABLE_SET, INT_KEYBOARD);
+    baseio_window_write(qts, MIO_IOC3_WINDOW + KBC_CONTROL, KBC_K_CLAMP_1);
+
+    /* The reset reply is two characters; the clamp lets one through. */
+    baseio_window_write(qts, MIO_IOC3_WINDOW + KBC_KBD_TRANSMIT, 0xff);
+    g_assert_cmphex(baseio_window_read(qts, BRIDGE_INT_STATUS) &
+                    BRIDGE_PIN_MIO_IOC3, ==, BRIDGE_PIN_MIO_IOC3);
+
+    /*
+     * Acknowledge before reading, the order mainline Linux's edge handler
+     * uses. The pin falls: a character is still held, but an already
+     * asserted line does not latch the source a second time.
+     */
+    baseio_window_write(qts, MIO_IOC3_WINDOW + INT_STATUS, INT_KEYBOARD);
+    g_assert_cmphex(baseio_window_read(qts, BRIDGE_INT_STATUS) &
+                    BRIDGE_PIN_MIO_IOC3, ==, 0);
+
+    /* The ACK alone, in the oldest slot. */
+    g_assert_cmphex(baseio_window_read(qts, MIO_IOC3_WINDOW + KBC_KBD_RECEIVE),
+                    ==, 0x80fa0000);
+
+    /*
+     * That read emptied the holding and released the clamp, so the stopped
+     * keyboard sent its second character. Its arrival drives the whole chain
+     * again -- source, combined status, SuperIO GPIO-out, board wire -- with
+     * no other event to help it, and device 2's pin stays clear.
+     */
+    g_assert_cmphex(baseio_window_read(qts, MIO_IOC3_WINDOW + INT_STATUS) &
+                    INT_KEYBOARD, ==, INT_KEYBOARD);
+    g_assert_cmphex(baseio_window_read(qts, BRIDGE_INT_STATUS) &
+                    BRIDGE_PIN_MIO_IOC3, ==, BRIDGE_PIN_MIO_IOC3);
+    g_assert_cmphex(baseio_window_read(qts, BRIDGE_INT_STATUS) &
+                    BRIDGE_PIN_BOARD_IOC3, ==, 0);
+
+    /* The second character, and then a drained port and a quiet pin. */
+    baseio_window_write(qts, MIO_IOC3_WINDOW + INT_STATUS, INT_KEYBOARD);
+    g_assert_cmphex(baseio_window_read(qts, MIO_IOC3_WINDOW + KBC_KBD_RECEIVE),
+                    ==, 0x80aa0000);
+    g_assert_cmphex(baseio_window_read(qts, MIO_IOC3_WINDOW + INT_STATUS) &
+                    INT_KEYBOARD, ==, 0);
+    g_assert_cmphex(baseio_window_read(qts, BRIDGE_INT_STATUS) &
+                    BRIDGE_PIN_MIO_IOC3, ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
  * The MediaIO IOC3's own two serial ports carry the same 16550 the board
  * IOC3's do (hw/char/serial.c), exercised here as actual data transport
  * rather than a register echo: the 16550's own local-loopback mode (MCR
@@ -829,6 +901,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/baseio/io6g-ps2", test_io6g_ps2);
     qtest_add_func("sn0/baseio/io6g-mio-keyboard-reaches-bridge-pin-6",
                    test_io6g_mio_keyboard_reaches_bridge_pin_6);
+    qtest_add_func("sn0/baseio/io6g-mio-keyboard-backlog-reaches-bridge-pin-6",
+                   test_io6g_mio_keyboard_backlog_reaches_bridge_pin_6);
     qtest_add_func("sn0/baseio/io6g-mio-serial-loopback",
                    test_io6g_mio_serial_loopback);
     qtest_add_func("sn0/baseio/io6g-onewire-board-parts",
