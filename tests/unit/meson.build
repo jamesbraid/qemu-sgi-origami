@@ -1,6 +1,15 @@
 
 testblock = declare_dependency(dependencies: [block], sources: 'iothread.c')
 
+# Every fork unit test, by name. tools/run-fork-unit-tests reads this list;
+# discovery by source path missed test-sn-model, whose source list is empty.
+fork_unit_tests = [
+  'test-onewire', 'test-i2c-masters', 'test-i2c-wire',
+  'test-sgi-o2000-module-mgmt', 'test-sgi-o2000-module-mgmt-real',
+  'test-sgi-router', 'test-sn0-fabric-routed', 'test-sn1-topology',
+  'test-sn-model', 'test-sgi-bedrock-ni',
+]
+
 tests = {
   'check-block-qdict': [],
   'check-qdict': [],
