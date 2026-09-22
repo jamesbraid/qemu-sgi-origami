@@ -238,7 +238,7 @@ def _parallel_send(host_ports, payloads):
     except OSError as error:
         for sock in sockets:
             sock.close()
-        raise base._Harness(f"parallel sender failed: {error}") from error
+        raise base.HarnessError(f"parallel sender failed: {error}") from error
 
     start = threading.Event()
     done = [0] * len(host_ports)
@@ -275,7 +275,7 @@ def _parallel_send(host_ports, payloads):
         t.join()
     elapsed = time.monotonic() - t0
     if any(errors):
-        raise base._Harness("parallel sender failed: " +
+        raise base.HarnessError("parallel sender failed: " +
                             "; ".join(e for e in errors if e))
     total = sum(done)
     rate = (total * 8 / elapsed / 1e6) if elapsed > 0 else 0.0
@@ -304,44 +304,24 @@ if base.QemuSystemTest is not None:
         """Boots installed IRIX, brings up eg, and moves TCP + UDP traffic
         across it with throughput measurement and byte verification."""
 
-        def _asset_paths(self):
-            root = os.environ.get('ORIGAMI_ASSETS')
-            if not root:
-                return None
-            prom = os.path.join(root, base.FIRMWARE_REL)
-            disk = os.path.join(root, base.DISK_REL)
-            if not (os.path.isfile(prom) and os.path.isfile(disk)):
-                return None
-            return prom, disk
-
         def _netstat_counter(self, con, proto, pattern, tag):
             try:
                 return int(con.capture_value(
                     f"netstat -s -p {proto} | " +
                     "awk '/" + pattern + "/ {print \"N=\" $1; exit}'",
                     tag, rb"N=(\d+)", timeout=60))
-            except base._Harness:
+            except base.HarnessError:
                 return None
 
         @base.skipBigDataTest()
         @base.skipSlowTest()
         @base.skipIfMissingEnv('ORIGAMI_ASSETS')
         def test_irix_eg_perf(self):
-            paths = self._asset_paths()
-            if paths is None:
-                # base.skipIfMissingEnv above already skipped the case
-                # where ORIGAMI_ASSETS is unset entirely -- getting here
-                # means it IS set, so a missing PROM or disk is a
-                # provisioning failure, not an absent-assets developer
-                # run, and must fail loudly rather than skip quietly.
-                self.fail(
-                    'ORIGAMI_ASSETS is set but the PROM/disk are missing '
-                    f'at <ORIGAMI_ASSETS>/{base.FIRMWARE_REL} and '
-                    f'<ORIGAMI_ASSETS>/{base.DISK_REL} -- provision them '
-                    '(nightly assets) rather than silently skipping a '
-                    'claimed capability')
-            prom, disk = paths
-            if base._sha256_file(prom) != base.PROM_SHA256:
+            assets = base.require_assets(
+                self, base.FIRMWARE_REL, base.DISK_REL)
+            prom = assets[base.FIRMWARE_REL]
+            disk = assets[base.DISK_REL]
+            if base.file_sha256(prom) != base.PROM_SHA256:
                 self.fail('6.5.30 PROM SHA-256 mismatch')
             self.require_netdev('user')
 
@@ -350,7 +330,7 @@ if base.QemuSystemTest is not None:
 
             pcap = self.log_file('eg-perf-wire.pcap')
             vm = self.get_vm(name='irix_eg_perf')
-            vm.set_machine('origin200,debug-leds=off')
+            vm.set_machine(base.MACHINES['origin200'])
             vm.set_console()
             elsc = self.log_file('elsc-aux.log')
             if NETDEV:
@@ -450,7 +430,7 @@ if base.QemuSystemTest is not None:
                         con.expect(rb"TERM\s*=\s*\(", 120,
                                    what="the TERM prompt")
                         con.send("")
-                    except base._Harness:
+                    except base.HarnessError:
                         pass
                     con.expect(rb"[0-9]# ", 300,
                                what="the login csh prompt after reboot")
@@ -485,7 +465,7 @@ if base.QemuSystemTest is not None:
                     con.capture_value("ifconfig " + base.IFACE, "ifs",
                                       rb"(UP)[,>]", timeout=60)
                     eg_up = True
-                except base._Harness:
+                except base.HarnessError:
                     pass
 
                 if PARALLEL:
@@ -682,7 +662,7 @@ if base.QemuSystemTest is not None:
                         "uptime | sed 's/.*average.//' | "
                         "awk -F, '{print \"GL=\" $1}'",
                         "gload", rb"GL=\s*([0-9.]+)", timeout=60)
-                except base._Harness:
+                except base.HarnessError:
                     results["guest_load"] = None
                 results["tcp_write_size"] = 65536
                 results["mtu"] = JUMBO_MTU if JUMBO else 1500
@@ -778,7 +758,7 @@ if base.QemuSystemTest is not None:
                             "uptime | sed 's/.*average.//' | "
                             "awk -F, '{print \"GL=\" $1}'",
                             "gload2", rb"GL=\s*([0-9.]+)", timeout=60)
-                    except base._Harness:
+                    except base.HarnessError:
                         results["guest_load_after_soak"] = None
                     results["soak"] = {
                         "rounds": rounds,
@@ -807,27 +787,27 @@ if base.QemuSystemTest is not None:
                         output = bytes(con.buf[output_start:]).decode(
                             "utf-8", "replace")
                         mtu[want] = mtu_probe_result(rc, output)
-                    except base._Harness:
+                    except base.HarnessError:
                         mtu[want] = "refused"
                 try:
                     mtu["reported"] = con.capture_value(
                         "netstat -in | awk '$1 ~ /^%s/ {print \"M=\" $2; exit}'"
                         % base.IFACE, "mtushow", rb"M=(\d+)", timeout=60)
-                except base._Harness:
+                except base.HarnessError:
                     mtu["reported"] = None
                 results["mtu"] = mtu
 
                 con.send("sync; sync")
                 time.sleep(2)
                 con._pump()
-            except base._Harness as e:
+            except base.HarnessError as e:
                 results["error"] = str(e)
                 # Drain the console so a guest panic dump is captured before
                 # the VM is torn down.
                 for _ in range(25):
                     try:
                         con._pump()
-                    except base._Harness:
+                    except base.HarnessError:
                         break
                     time.sleep(1)
             finally:

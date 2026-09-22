@@ -128,44 +128,24 @@ if base.QemuSystemTest is not None:
         """Boots installed IRIX, brings up tg, and moves TCP + UDP traffic
         across it with throughput measurement and byte verification."""
 
-        def _asset_paths(self):
-            root = os.environ.get('ORIGAMI_ASSETS')
-            if not root:
-                return None
-            prom = os.path.join(root, base.FIRMWARE_REL)
-            disk = os.path.join(root, base.DISK_REL)
-            if not (os.path.isfile(prom) and os.path.isfile(disk)):
-                return None
-            return prom, disk
-
         def _netstat_counter(self, con, proto, pattern, tag):
             try:
                 return int(con.capture_value(
                     f"netstat -s -p {proto} | " +
                     "awk '/" + pattern + "/ {print \"N=\" $1; exit}'",
                     tag, rb"N=(\d+)", timeout=60))
-            except base._Harness:
+            except base.HarnessError:
                 return None
 
         @base.skipBigDataTest()
         @base.skipSlowTest()
         @base.skipIfMissingEnv('ORIGAMI_ASSETS')
         def test_irix_tg_perf(self):
-            paths = self._asset_paths()
-            if paths is None:
-                # base.skipIfMissingEnv above already skipped the case
-                # where ORIGAMI_ASSETS is unset entirely -- getting here
-                # means it IS set, so a missing PROM or disk is a
-                # provisioning failure, not an absent-assets developer
-                # run, and must fail loudly rather than skip quietly.
-                self.fail(
-                    'ORIGAMI_ASSETS is set but the PROM/disk are missing '
-                    f'at <ORIGAMI_ASSETS>/{base.FIRMWARE_REL} and '
-                    f'<ORIGAMI_ASSETS>/{base.DISK_REL} -- provision them '
-                    '(nightly assets) rather than silently skipping a '
-                    'claimed capability')
-            prom, disk = paths
-            if base._sha256_file(prom) != base.PROM_SHA256:
+            assets = base.require_assets(
+                self, base.FIRMWARE_REL, base.DISK_REL)
+            prom = assets[base.FIRMWARE_REL]
+            disk = assets[base.DISK_REL]
+            if base.file_sha256(prom) != base.PROM_SHA256:
                 self.fail('6.5.30 PROM SHA-256 mismatch')
             self.require_netdev('user')
 
@@ -174,7 +154,7 @@ if base.QemuSystemTest is not None:
 
             pcap = self.log_file('tg-perf-wire.pcap')
             vm = self.get_vm(name='irix_tg_perf')
-            vm.set_machine('origin200,debug-leds=off')
+            vm.set_machine(base.MACHINES['origin200'])
             vm.set_console()
             elsc = self.log_file('elsc-aux.log')
             netdev = ('user,id=tgnet,tftp=%s'
@@ -216,7 +196,7 @@ if base.QemuSystemTest is not None:
                     con.capture_value("ifconfig " + base.IFACE, "ifs",
                                       rb"(UP)[,>]", timeout=60)
                     tg_up = True
-                except base._Harness:
+                except base.HarnessError:
                     pass
 
                 seg_before = self._netstat_counter(
@@ -289,14 +269,14 @@ if base.QemuSystemTest is not None:
                 con.send("sync; sync")
                 time.sleep(2)
                 con._pump()
-            except base._Harness as e:
+            except base.HarnessError as e:
                 results["error"] = str(e)
                 # Drain the console so a guest panic dump is captured before
                 # the VM is torn down.
                 for _ in range(25):
                     try:
                         con._pump()
-                    except base._Harness:
+                    except base.HarnessError:
                         break
                     time.sleep(1)
             finally:

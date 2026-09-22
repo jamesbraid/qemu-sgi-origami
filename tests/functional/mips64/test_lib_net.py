@@ -1,0 +1,425 @@
+#!/usr/bin/env python3
+#
+# Unit tests for lib_net: the console driver's command/marker idiom, the
+# ordered-progression scorer the OpenBSD verdicts are built from, and the
+# wire-level DHCP counting that decides whether a lease really happened
+#
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""
+A plain unittest -- no QEMU, no qemu_test import, runnable with just
+`python3 tests/functional/mips64/test_lib_net.py`.
+
+The DHCP and pcap cases came from the transfer test's own verdict module,
+and the ordering and trip-wire cases from the login and install ones,
+when the three modules' shared halves moved here. ConsoleTests plays a
+scripted guest over a socketpair, the same way test_lib_prom.py's console
+tests do.
+"""
+
+import os
+import re
+import socket
+import struct
+import tempfile
+import threading
+import unittest
+
+from lib_net import (DHCP_NAMES, OPENBSD_TRIPWIRES, Console, GuestFault,
+                     HarnessError, dhcp_kind, lease_established, login_steps,
+                     ordered_stages, summarise_pcap)
+
+
+# ---------------------------------------------------------------------------
+# Fixture builders: the smallest Ethernet+IPv4+UDP+DHCP frame dhcp_kind()
+# will read a message type out of, and a minimal .pcap file wrapping a
+# list of them.
+
+def _dhcp_frame(msg_type: int, sport: int = 68, dport: int = 67) -> bytes:
+    """Every field dhcp_kind() does not itself inspect (MAC addresses, IP
+    addresses, checksums, TTL) is a fixed placeholder; only the ethertype,
+    IP protocol, UDP ports, DHCP magic cookie, and the option 53 (message
+    type) TLV are meaningful."""
+    eth = (bytes.fromhex("080069123456") + bytes.fromhex("525400abcdef")
+           + b"\x08\x00")
+    ip = (bytes([0x45, 0x00]) + (0x0028).to_bytes(2, "big")
+          + (0x0000).to_bytes(2, "big") + (0x4000).to_bytes(2, "big")
+          + bytes([64, 17]) + (0x0000).to_bytes(2, "big")
+          + bytes([10, 0, 2, 2]) + bytes([10, 0, 2, 15]))
+    payload = b"\x63\x82\x53\x63" + bytes([53, 1, msg_type]) + bytes([255])
+    udp = (sport.to_bytes(2, "big") + dport.to_bytes(2, "big")
+           + (8 + len(payload)).to_bytes(2, "big") + b"\x00\x00")
+    return eth + ip + udp + payload
+
+
+def _pcap_bytes(frames) -> bytes:
+    """The 24-byte global header summarise_pcap() skips over, then one
+    16-byte per-record header plus the frame itself for each frame."""
+    header = (b"\xd4\xc3\xb2\xa1"
+              + struct.pack("<HHIIII", 2, 4, 0, 0, 65535, 1))
+    body = b"".join(
+        struct.pack("<IIII", 0, 0, len(frame), len(frame)) + frame
+        for frame in frames)
+    return header + body
+
+
+class DhcpKindTests(unittest.TestCase):
+
+    def test_identifies_each_message_type(self):
+        for code, name in DHCP_NAMES.items():
+            self.assertEqual(dhcp_kind(_dhcp_frame(code)), name,
+                             f"code {code}")
+
+    def test_ignores_a_short_frame(self):
+        self.assertIsNone(dhcp_kind(b"\x00" * 20))
+
+    def test_ignores_non_ip_ethertype(self):
+        frame = bytearray(_dhcp_frame(1))
+        frame[12:14] = b"\x08\x06"  # ARP, not IPv4
+        self.assertIsNone(dhcp_kind(bytes(frame)))
+
+    def test_ignores_non_udp_protocol(self):
+        frame = bytearray(_dhcp_frame(1))
+        frame[23] = 6  # TCP, not UDP
+        self.assertIsNone(dhcp_kind(bytes(frame)))
+
+    def test_ignores_udp_not_on_the_dhcp_ports(self):
+        self.assertIsNone(dhcp_kind(_dhcp_frame(1, sport=12345, dport=53)))
+
+
+class SummarisePcapTests(unittest.TestCase):
+
+    def test_counts_a_full_handshake(self):
+        raw = _pcap_bytes([
+            _dhcp_frame(1), _dhcp_frame(2, sport=67, dport=68),
+            _dhcp_frame(3), _dhcp_frame(5, sport=67, dport=68)])
+
+        summary = summarise_pcap(raw)
+
+        self.assertEqual(summary["dhcp"], {
+            "DHCPDISCOVER": 1, "DHCPOFFER": 1, "DHCPREQUEST": 1,
+            "DHCPACK": 1,
+        })
+        self.assertTrue(lease_established(summary["dhcp"]))
+
+    def test_counts_frames_by_who_sent_them(self):
+        raw = _pcap_bytes([_dhcp_frame(1), _dhcp_frame(3)])
+
+        self.assertEqual(summarise_pcap(raw)["by_src"],
+                         {"52:54:00:ab:cd:ef": 2})
+
+    def test_a_missing_ack_is_not_a_lease(self):
+        raw = _pcap_bytes([
+            _dhcp_frame(1), _dhcp_frame(2, sport=67, dport=68),
+            _dhcp_frame(3)])
+
+        self.assertFalse(lease_established(summarise_pcap(raw)["dhcp"]))
+
+    def test_bad_magic_returns_none(self):
+        self.assertIsNone(summarise_pcap(b"NOTAPCAP" + b"\x00" * 16))
+
+    def test_too_short_returns_empty(self):
+        self.assertEqual(summarise_pcap(b"\x00" * 10), {})
+
+    def test_lease_requires_all_four_messages(self):
+        self.assertFalse(lease_established({}))
+        self.assertFalse(lease_established({"DHCPDISCOVER": 1,
+                                            "DHCPOFFER": 1,
+                                            "DHCPREQUEST": 1}))
+        self.assertTrue(lease_established({
+            "DHCPDISCOVER": 1, "DHCPOFFER": 1, "DHCPREQUEST": 1,
+            "DHCPACK": 1,
+        }))
+
+
+# The login run's own three ordered markers, as its verdict names them.
+LOGIN_STAGES = (
+    ("never reached the root device question",
+     re.compile(r"root device\s*:")),
+    ("never reached the login prompt", re.compile(r"login:")),
+    ("never reached a root shell prompt", re.compile(r"# ")),
+)
+
+# The install run's own progression, shortened to the three stages that
+# exercise ordering: a banner, a prompt that must occur twice, and a
+# completion line after the second occurrence.
+INSTALL_STAGES = (
+    ("never reached the installer's welcome banner",
+     re.compile(r"Welcome to the OpenBSD/sgi 6\.9 installation program\.")),
+    ("never reached the first Location of sets prompt",
+     re.compile(r"Location of sets\?")),
+    ("never reached the second Location of sets prompt",
+     re.compile(r"Location of sets\?")),
+    ("never reached the CONGRATULATIONS completion banner",
+     re.compile(r"CONGRATULATIONS! Your OpenBSD install has been "
+                r"successfully completed")),
+)
+
+A_LOGIN = ("root device: sd0a\r\nswap device (default sd0b): \r\n"
+           "login: root\r\nPassword:\r\nLast login: Mon\r\n# ")
+
+
+class OrderedStagesTests(unittest.TestCase):
+
+    def test_a_complete_progression_is_a_pass(self):
+        self.assertEqual(
+            ordered_stages(A_LOGIN, LOGIN_STAGES, OPENBSD_TRIPWIRES), [])
+
+    def test_only_the_first_stage_not_reached_is_named(self):
+        # A run that hung right after a correct password, before the shell
+        # prompt printed, fails on the shell -- and says nothing about the
+        # stages after it, which were unreachable anyway.
+        transcript = ("root device: sd0a\r\nlogin: root\r\nPassword:\r\n"
+                      "Last login: Mon\r\n")
+
+        self.assertEqual(
+            ordered_stages(transcript, LOGIN_STAGES, OPENBSD_TRIPWIRES),
+            ["never reached a root shell prompt"])
+
+    def test_a_later_marker_without_an_earlier_one_does_not_count(self):
+        # A "login:" with no "root device:" answered first is not a run
+        # that reached that stage.
+        self.assertEqual(
+            ordered_stages("login: root\r\nPassword:\r\n# \r\n",
+                           LOGIN_STAGES),
+            ["never reached the root device question"])
+
+    def test_a_marker_before_its_turn_does_not_satisfy_its_stage(self):
+        # A bare "# " before "login:" is not an earlier shell: the search
+        # for it starts only after the login prompt matched.
+        self.assertEqual(
+            ordered_stages("root device: sd0a\r\n# \r\nlogin: root\r\n",
+                           LOGIN_STAGES),
+            ["never reached a root shell prompt"])
+
+    def test_a_repeated_stage_needs_its_own_occurrence(self):
+        # One "Location of sets?" cannot satisfy both the first and the
+        # second occurrence of that stage.
+        transcript = (
+            "Welcome to the OpenBSD/sgi 6.9 installation program.\r\n"
+            "Location of sets? (disk http nfs or 'done') [http] disk\r\n"
+            "CONGRATULATIONS! Your OpenBSD install has been successfully "
+            "completed!\r\n")
+
+        self.assertEqual(
+            ordered_stages(transcript, INSTALL_STAGES),
+            ["never reached the second Location of sets prompt"])
+
+    def test_a_completion_line_before_its_turn_does_not_count(self):
+        transcript = (
+            "Welcome to the OpenBSD/sgi 6.9 installation program.\r\n"
+            "Location of sets? [http] disk\r\n"
+            "CONGRATULATIONS! Your OpenBSD install has been successfully "
+            "completed!\r\n"
+            "Location of sets? [done] done\r\n")
+
+        self.assertEqual(
+            ordered_stages(transcript, INSTALL_STAGES),
+            ["never reached the CONGRATULATIONS completion banner"])
+
+    def test_an_empty_transcript_fails_on_the_first_stage(self):
+        self.assertEqual(ordered_stages("", LOGIN_STAGES),
+                         ["never reached the root device question"])
+
+    def test_a_wedge_before_the_end_fails_and_is_named(self):
+        # The property this scorer exists for: a guest that fell into its
+        # kernel debugger before it ever reached a login must FAIL, even
+        # though on timing alone it never got far enough to fail anything
+        # else first.
+        transcript = ("root device: sd0a\r\n"
+                      "Trap cause = 7 Frame 0xffffffff82b2f9c8\r\nddb> ")
+
+        problems = ordered_stages(transcript, LOGIN_STAGES,
+                                  OPENBSD_TRIPWIRES)
+
+        self.assertEqual(problems, [
+            "the guest fell into its kernel debugger",
+            "the guest took a bus error",
+            "never reached the login prompt",
+        ])
+
+    def test_a_wedge_is_not_laundered_by_what_the_guest_prints_later(self):
+        # "# " does eventually appear, after the panic. The run still
+        # fails, because the trip wire fired before the shell did.
+        transcript = ("root device: sd0a\r\nlogin: root\r\nPassword:\r\n"
+                      "panic: kernel diagnostic assertion failed\r\nddb> # ")
+
+        self.assertEqual(
+            ordered_stages(transcript, LOGIN_STAGES, OPENBSD_TRIPWIRES),
+            ["the guest fell into its kernel debugger", "the guest panicked"])
+
+    def test_a_wedge_after_the_last_stage_is_still_a_pass(self):
+        # The run already proved what it set out to prove; a debugger
+        # prompt during whatever happens afterwards -- a post-install
+        # reboot attempt, say -- does not retroactively fail it. Trip
+        # wires are checked only up to where the last stage began.
+        self.assertEqual(
+            ordered_stages(A_LOGIN + "\r\nddb> ", LOGIN_STAGES,
+                           OPENBSD_TRIPWIRES),
+            [])
+
+    def test_without_tripwires_only_the_progression_is_judged(self):
+        transcript = A_LOGIN.replace("Last login: Mon", "panic: nope")
+
+        self.assertEqual(ordered_stages(transcript, LOGIN_STAGES), [])
+
+
+class LoginStepsTests(unittest.TestCase):
+
+    NETBOOT = ((r"Option\?", "5\n"), (r">>", "boot -f bootp()/bsd.IP27\n"))
+
+    def test_the_netboot_dialogue_comes_first_unchanged(self):
+        steps = login_steps(self.NETBOOT, "origami123")
+
+        self.assertEqual(steps[:len(self.NETBOOT)], self.NETBOOT)
+
+    def test_the_kernels_own_questions_are_answered_in_order(self):
+        steps = login_steps(self.NETBOOT, "origami123")
+
+        self.assertEqual(steps[len(self.NETBOOT):], (
+            (r"root device\s*:", "sd0a\n"),
+            (r"swap device[^:]*:", "\n"),
+            (r"login:", "root\n"),
+            (r"[Pp]assword:", "origami123\n"),
+        ))
+
+    def test_as_bytes_encodes_only_the_patterns(self):
+        steps = login_steps(self.NETBOOT, "origami123", as_bytes=True)
+
+        for pattern, response in steps:
+            self.assertIsInstance(pattern, bytes)
+            self.assertIsInstance(response, str)
+        self.assertEqual(steps[0], (rb"Option\?", "5\n"))
+
+
+class _ScriptedGuest(threading.Thread):
+    """Reads what the driver sends and answers each command with the
+    scripted reply, so the console's marker handling can be exercised
+    without a guest."""
+
+    def __init__(self, sock, replies):
+        super().__init__(daemon=True)
+        self.sock = sock
+        self.replies = list(replies)
+        self.seen = []
+
+    def run(self):
+        self.sock.settimeout(5.0)
+        pending = b""
+        for reply in self.replies:
+            while b"\n" not in pending:
+                try:
+                    chunk = self.sock.recv(4096)
+                except OSError:
+                    return
+                if not chunk:
+                    return
+                pending += chunk
+            line, pending = pending.split(b"\n", 1)
+            self.seen.append(line)
+            # The guest's shell echoes the command line back before it
+            # runs: the marker must survive that echo.
+            self.sock.sendall(line + b"\r\n" + reply)
+
+
+class _TestConsole(Console):
+    # Console.TRIPWIRES pairs a compiled BYTES pattern with its message,
+    # the other way round from the str-pattern table the verdicts use.
+    TRIPWIRES = tuple((re.compile(rx.pattern.encode()), why)
+                      for why, rx in OPENBSD_TRIPWIRES)
+    STEP_TIMEOUT = 5
+
+
+class ConsoleTests(unittest.TestCase):
+
+    def setUp(self):
+        self.driver_end, self.guest_end = socket.socketpair()
+        self.addCleanup(self.driver_end.close)
+        self.addCleanup(self.guest_end.close)
+        log_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(log_dir.cleanup)
+        self.log_path = os.path.join(log_dir.name, "console.log")
+
+    def _console(self, replies, exited=None):
+        guest = _ScriptedGuest(self.guest_end, replies)
+        guest.start()
+        console = _TestConsole(self.driver_end, self.log_path, exited=exited)
+        self.addCleanup(console.close)
+        return console, guest
+
+    def test_run_returns_the_commands_exit_code(self):
+        console, guest = self._console([b"MARK-probe-3\r\n"])
+
+        self.assertEqual(console.run("false", "probe"), 3)
+        self.assertEqual(guest.seen[0],
+                         b'false; echo "MARK""-probe-$?"')
+
+    def test_the_shells_echo_of_the_command_does_not_match_the_marker(self):
+        # The command line itself contains MARK, split across a quote.
+        # Only the shell's own expansion produces a matching marker, so
+        # the echo above cannot end the wait early with the wrong code.
+        console, _guest = self._console([b"MARK-probe-0\r\n"])
+
+        self.assertEqual(console.run("true", "probe"), 0)
+
+    def test_capture_value_reads_only_this_commands_own_output(self):
+        console, _guest = self._console([
+            b"N=1\r\nMARK-first-0\r\n",
+            b"N=2\r\nMARK-second-0\r\n",
+        ])
+
+        console.capture_value("echo N=1", "first", rb"N=(\d+)")
+
+        self.assertEqual(
+            console.capture_value("echo N=2", "second", rb"N=(\d+)"), "2")
+
+    def test_two_values_pulls_a_digest_and_a_size_together(self):
+        console, _guest = self._console([
+            b"abc123 65536 /tmp/down.bin\r\nMARK-cksum-0\r\n"])
+
+        digest, size = console.two_values(
+            "cksum /tmp/down.bin", "cksum",
+            rb"(\w+)\s+(\d+)\s+/tmp/down\.bin")
+
+        self.assertEqual((digest, size), ("abc123", 65536))
+
+    def test_output_that_does_not_match_is_a_harness_error(self):
+        console, _guest = self._console([b"nothing useful\r\nMARK-x-0\r\n"])
+
+        with self.assertRaises(HarnessError):
+            console.capture_value("echo", "x", rb"N=(\d+)")
+
+    def test_a_tripwire_while_waiting_is_a_guest_fault(self):
+        console, _guest = self._console([b"panic: it fell over\r\n"])
+
+        with self.assertRaises(GuestFault) as caught:
+            console.run("uname", "probe", timeout=3)
+        self.assertIn("the guest panicked", str(caught.exception))
+
+    def test_a_timeout_is_a_harness_error_not_a_guest_fault(self):
+        console, _guest = self._console([b"still thinking\r\n"])
+
+        with self.assertRaises(HarnessError) as caught:
+            console.run("uname", "probe", timeout=1)
+        self.assertNotIsInstance(caught.exception, GuestFault)
+        self.assertIn("timed out", str(caught.exception))
+
+    def test_an_exited_emulator_ends_the_wait_without_burning_the_budget(self):
+        # A run whose emulator is already gone must not sit out the whole
+        # timeout: there is nothing further the console can ever receive.
+        console, _guest = self._console([], exited=lambda: True)
+
+        with self.assertRaises(HarnessError) as caught:
+            console.run("uname", "probe", timeout=600)
+        self.assertIn("the emulator exited", str(caught.exception))
+
+    def test_every_byte_received_lands_in_the_log(self):
+        console, _guest = self._console([b"hello\r\nMARK-probe-0\r\n"])
+        console.run("echo hello", "probe")
+        console.close()
+
+        with open(self.log_path, "rb") as log:
+            self.assertIn(b"hello", log.read())
+
+
+if __name__ == "__main__":
+    unittest.main()
