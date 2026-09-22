@@ -205,11 +205,12 @@ static void si_put_pixel(SGIMgrasState *s, unsigned int idx, uint32_t color,
         return;
     }
     s->front[idx] = si_paint_pixel(op, s->front[idx], color, mask);
-    s->wid[idx] = is_index;
+    s->indexed[idx] = is_index;
+    s->wid[idx] = is_index ? s->rss[SI_REG_DRBPOINTERS] >> 16 : 0;
 }
 
 
-/* Normalize corners and retain indexed/direct source in wid[]. */
+/* Normalize corners and retain indexed/direct state and visual separately. */
 static void si_fill_rect(SGIMgrasState *s, uint32_t xy0, uint32_t xy1,
                          uint32_t color, uint8_t op, uint32_t mask,
                          bool is_index)

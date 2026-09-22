@@ -42,7 +42,7 @@
 #define REG_I2C_SCRATCH        SI_REG(0x073c08)
 #define REG_I2C_STROBE         SI_REG(0x073c88)
 #define REG_REPP_STATUS_1      SI_REG(0x071c08)
-#define REG_CMAP_INDEX         SI_REG(0x071c88)
+#define REG_XMAP_INDEX         SI_REG(0x071c88)
 #define REG_REPP_STATUS_3      SI_REG(0x071d00)
 #define REG_REPP_STATUS_4      SI_REG(0x071d08)
 #define REG_SYNC_STATUS        SI_REG(0x061038)
@@ -170,6 +170,51 @@ static uint64_t si_qom_get_uint(QTestState *qts, const char *property)
     return value;
 }
 
+static uint64_t si_read_width(QTestState *qts, uint64_t addr,
+                              unsigned int width)
+{
+    switch (width) {
+    case 1:
+        return qtest_readb(qts, addr);
+    case 2:
+        return qtest_readw(qts, addr);
+    case 4:
+        return qtest_readl(qts, addr);
+    case 8:
+        return qtest_readq(qts, addr);
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static void si_write_width(QTestState *qts, uint64_t addr,
+                           unsigned int width, uint64_t value)
+{
+    switch (width) {
+    case 1:
+        qtest_writeb(qts, addr, value);
+        return;
+    case 2:
+        qtest_writew(qts, addr, value);
+        return;
+    case 4:
+        qtest_writel(qts, addr, value);
+        return;
+    case 8:
+        qtest_writeq(qts, addr, value);
+        return;
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static void si_assert_width_error(QTestState *qts, uint64_t addr)
+{
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 1);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-error-addr"), ==,
+                    addr - SI_BASE);
+}
+
 static uint32_t si_test_pixel(QTestState *qts, uint32_t x, uint32_t y)
 {
     qtest_qmp_assert_success(qts,
@@ -287,6 +332,16 @@ static void si_enter_context(QTestState *qts)
     g_assert_cmphex(qtest_readl(qts, REG_CONTEXT_COMMAND), ==, SI_FINAL_TOKEN);
 }
 
+static void si_write_cmap_position(QTestState *qts, uint16_t selector,
+                                   unsigned int position, uint32_t color)
+{
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, selector);
+    for (unsigned int i = 0; i < position; i++) {
+        qtest_writel(qts, REG_CMAP_DATA, 0);
+    }
+    qtest_writel(qts, REG_CMAP_DATA, color);
+}
+
 static void test_identity_and_aperture(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
@@ -391,11 +446,11 @@ static void test_repp_sync_handshake(void)
                      0x00000101);
 
 
-    qtest_writew(qts, SI_REG(0x070c30), 7);
-    g_assert_cmphex(qtest_readl(qts, REG_CMAP_INDEX), ==, 7);
+    qtest_writeb(qts, REG_XMAP_INDEX, 0x1c);
+    g_assert_cmphex(qtest_readb(qts, REG_XMAP_INDEX), ==, 0x1c);
 
     qtest_writel(qts, REG_REPP_STATUS_1, 0x50214);
-    qtest_writel(qts, REG_CMAP_INDEX, 0x70214);
+    qtest_writeb(qts, REG_XMAP_INDEX, 0x1c);
     qtest_writel(qts, REG_REPP_STATUS_3, 0x653);
     qtest_writel(qts, REG_REPP_STATUS_4, 0x10214);
     qtest_writel(qts, REG_SYNC_STATUS, 1);
@@ -408,11 +463,63 @@ static void test_repp_sync_handshake(void)
     g_assert_cmphex(qtest_readl(qts, REG_REPP_STATUS_4), ==, 0x10214);
     g_assert_cmphex(qtest_readl(qts, REG_SYNC_STATUS), ==, 1);
 
-    g_assert_cmphex(qtest_readl(qts, REG_CMAP_INDEX), ==, 7);
+    g_assert_cmphex(qtest_readb(qts, REG_XMAP_INDEX), ==, 0x1c);
     g_assert_cmphex(qtest_readl(qts, REG_REPP_SYNC) & 0x00000f0f, ==,
                      0x00000101);
 
     qtest_quit(qts);
+}
+
+typedef struct SIVisualRegisterWidth {
+    uint64_t addr;
+    unsigned int width;
+} SIVisualRegisterWidth;
+
+static const SIVisualRegisterWidth si_visual_register_widths[] = {
+    { REG_XMAP_INDEX, 1 },
+    { REG_XMAP_MAIN_MODE, 4 },
+    { REG_CMAP_WRITE_INDEX, 2 },
+    { REG_CMAP_DATA, 4 },
+};
+
+static const unsigned int si_access_widths[] = { 1, 2, 4, 8 };
+
+static void test_visual_register_read_widths(void)
+{
+    for (int reg = 0; reg < ARRAY_SIZE(si_visual_register_widths); reg++) {
+        for (int width = 0; width < ARRAY_SIZE(si_access_widths); width++) {
+            QTestState *qts;
+
+            if (si_access_widths[width] ==
+                si_visual_register_widths[reg].width) {
+                continue;
+            }
+            qts = qtest_init(MACHINE_ARGS);
+            si_read_width(qts, si_visual_register_widths[reg].addr,
+                          si_access_widths[width]);
+            si_assert_width_error(qts, si_visual_register_widths[reg].addr);
+            qtest_quit(qts);
+        }
+    }
+}
+
+static void test_visual_register_write_widths(void)
+{
+    for (int reg = 0; reg < ARRAY_SIZE(si_visual_register_widths); reg++) {
+        for (int width = 0; width < ARRAY_SIZE(si_access_widths); width++) {
+            QTestState *qts;
+
+            if (si_access_widths[width] ==
+                si_visual_register_widths[reg].width) {
+                continue;
+            }
+            qts = qtest_init(MACHINE_ARGS);
+            si_write_width(qts, si_visual_register_widths[reg].addr,
+                           si_access_widths[width], UINT64_MAX);
+            si_assert_width_error(qts, si_visual_register_widths[reg].addr);
+            qtest_quit(qts);
+        }
+    }
 }
 
 
@@ -1251,8 +1358,7 @@ static void test_pseudocolor_scanout_looks_up_cmap(void)
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
 
 
-    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0x11);
-    qtest_writel(qts, REG_CMAP_DATA, 0x00ecec00);
+    si_write_cmap_position(qts, 0x001d, 17, 0x00ecec00);
 
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_BKGRD_RG, 0x11));
@@ -1264,8 +1370,7 @@ static void test_pseudocolor_scanout_looks_up_cmap(void)
     g_assert_cmphex(si_screendump_pixel(qts, 5, 5), ==, 0x0000ecec);
     g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x0000ecec);
 
-    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0x11);
-    qtest_writel(qts, REG_CMAP_DATA, 0x00112233);
+    si_write_cmap_position(qts, 0x001d, 17, 0x00112233);
     g_assert_cmphex(si_screendump_pixel(qts, 5, 5), ==, 0x00332211);
     g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x00332211);
 
@@ -1292,6 +1397,80 @@ static void test_pseudocolor_scanout_looks_up_cmap(void)
     qtest_quit(qts);
 }
 
+static void test_target_first_cmap_visual_selection(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+    uint32_t native_a, native_b, wid_a, wid_b;
+
+    si_enter_context(qts);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+
+    qtest_writeb(qts, REG_XMAP_INDEX, 0x0c);
+    qtest_writel(qts, REG_XMAP_MAIN_MODE, 15 << 5);
+    qtest_writeb(qts, REG_XMAP_INDEX, 0x24);
+    qtest_writel(qts, REG_XMAP_MAIN_MODE, 29 << 5);
+
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0xe00f);
+    for (int position = 0; position < 16; position++) {
+        qtest_writel(qts, REG_CMAP_DATA, 0x00010101 + position * 0x00010101);
+    }
+    qtest_writel(qts, REG_CMAP_DATA, 0x00112233);
+    for (int position = 17; position < 32; position++) {
+        qtest_writel(qts, REG_CMAP_DATA, 0x00202020 + position * 0x00010101);
+    }
+    qtest_writel(qts, REG_CMAP_DATA, 0x00040506);
+
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0xe01d);
+    for (int position = 0; position < 16; position++) {
+        qtest_writel(qts, REG_CMAP_DATA, 0x00404040 + position * 0x00010101);
+    }
+    qtest_writel(qts, REG_CMAP_DATA, 0x00a1b2c3);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BKGRD_RG, 0xf0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_DRBPOINTERS, 3 << 16));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (20u << 16) | 20u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (20u << 16) | 20u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_DRBPOINTERS, 9 << 16));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (21u << 16) | 20u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (21u << 16) | 20u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
+
+    native_a = si_test_pixel(qts, 20, 20);
+    native_b = si_test_pixel(qts, 21, 20);
+    wid_a = si_test_wid(qts, 20, 20);
+    wid_b = si_test_wid(qts, 21, 20);
+    g_assert_cmphex(native_a, ==, 0xf0);
+    g_assert_cmphex(native_b, ==, 0xf0);
+    g_assert_cmphex(wid_a, ==, 3);
+    g_assert_cmphex(wid_b, ==, 9);
+    g_assert_cmphex(si_test_display_pixel(qts, 20, 20), ==, 0x00332211);
+    g_assert_cmphex(si_test_display_pixel(qts, 21, 20), ==, 0x00c3b2a1);
+
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0xe00f);
+    for (int position = 0; position < 16; position++) {
+        qtest_writel(qts, REG_CMAP_DATA, 0);
+    }
+    qtest_writel(qts, REG_CMAP_DATA, 0x00010203);
+    g_assert_cmphex(si_test_pixel(qts, 20, 20), ==, native_a);
+    g_assert_cmphex(si_test_pixel(qts, 21, 20), ==, native_b);
+    g_assert_cmphex(si_test_wid(qts, 20, 20), ==, wid_a);
+    g_assert_cmphex(si_test_wid(qts, 21, 20), ==, wid_b);
+    g_assert_cmphex(si_test_display_pixel(qts, 20, 20), ==, 0x00030201);
+    g_assert_cmphex(si_test_display_pixel(qts, 21, 20), ==, 0x00c3b2a1);
+
+    qtest_quit(qts);
+}
+
 
 static void test_masked_out_paint_keeps_index_tag(void)
 {
@@ -1300,8 +1479,7 @@ static void test_masked_out_paint_keeps_index_tag(void)
     si_enter_context(qts);
 
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
-    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0x11);
-    qtest_writel(qts, REG_CMAP_DATA, 0x00ecec00);
+    si_write_cmap_position(qts, 0x001d, 17, 0x00ecec00);
 
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -1378,8 +1556,7 @@ static void test_cursor_composites_when_enabled(void)
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
 
 
-    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0x1c);
-    qtest_writel(qts, REG_CMAP_DATA, 0x000000ff);
+    si_write_cmap_position(qts, 0x001d, 28, 0x000000ff);
 
 
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x01, 0x0100));
@@ -1496,22 +1673,17 @@ static void test_board_inventory_registers(void)
     qtest_quit(qts);
 }
 
-static void test_cmap_index_addresses_the_right_slot(void)
+static void test_cmap_selector_addresses_the_right_slot(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
 
-
-    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 5);
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0x2005);
+    for (int position = 0; position < 32; position++) {
+        qtest_writel(qts, REG_CMAP_DATA, 0x00100000 + position);
+    }
     qtest_writel(qts, REG_CMAP_DATA, 0x00aabbcc);
-    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 9);
-    qtest_writel(qts, REG_CMAP_DATA, 0x00112233);
-
-    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 5);
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0x2005);
     g_assert_cmphex(qtest_readl(qts, REG_CMAP_DATA), ==, 0x00aabbcc);
-    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 9);
-    g_assert_cmphex(qtest_readl(qts, REG_CMAP_DATA), ==, 0x00112233);
-    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0);
-    g_assert_cmphex(qtest_readl(qts, REG_CMAP_DATA), ==, 0);
 
     qtest_quit(qts);
 }
@@ -1973,7 +2145,7 @@ static void test_fifo_re_blockcopy_unsupported(void)
     display_before = si_test_display_pixel(qts, 50, 50);
     surface_before = si_screendump_pixel(qts, 50, 50);
     g_assert_cmphex(native_before, ==, 0x00123456);
-    g_assert_cmphex(wid_before, ==, 1);
+    g_assert_cmphex(wid_before, ==, 0);
     g_assert_cmphex(display_before, ==, surface_before);
 
     /* A source rectangle makes the rejected copy request meaningful. */
@@ -2310,6 +2482,82 @@ static void test_ge_upload_migration(void)
     qtest_quit(from);
 }
 
+static void test_visual_state_migration(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-visual-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MACHINE_ARGS);
+    dest_cmdline = g_strdup_printf(MACHINE_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    si_enter_context(from);
+    qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+
+    qtest_writeb(from, REG_XMAP_INDEX, 3 << 2);
+    qtest_writel(from, REG_XMAP_MAIN_MODE, 15 << 5);
+    qtest_writeb(from, REG_XMAP_INDEX, 9 << 2);
+    qtest_writel(from, REG_XMAP_MAIN_MODE, 29 << 5);
+
+    si_write_cmap_position(from, 0xe00f, 16, 0x00112233);
+    si_write_cmap_position(from, 0xe01d, 16, 0x00a1b2c3);
+    si_write_cmap_position(from, 0xe00f, 16, 0x00112233);
+
+    qtest_writeq(from, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BKGRD_RG, 0xf0));
+    qtest_writeq(from, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_DRBPOINTERS, 3 << 16));
+    qtest_writeq(from, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (30u << 16) | 30u));
+    qtest_writeq(from, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (30u << 16) | 30u));
+    qtest_writeq(from, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
+    qtest_writeq(from, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_DRBPOINTERS, 9 << 16));
+    qtest_writeq(from, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (31u << 16) | 30u));
+    qtest_writeq(from, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (31u << 16) | 30u));
+    qtest_writeq(from, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
+
+    g_assert_cmphex(si_test_display_pixel(from, 30, 30), ==, 0x00332211);
+    g_assert_cmphex(si_test_display_pixel(from, 31, 30), ==, 0x00c3b2a1);
+
+    si_migrate(from, uri);
+
+    g_assert_cmphex(qtest_readb(to, REG_XMAP_INDEX), ==, 9 << 2);
+    g_assert_cmphex(si_test_display_pixel(to, 30, 30), ==, 0x00332211);
+    g_assert_cmphex(si_test_display_pixel(to, 31, 30), ==, 0x00c3b2a1);
+
+    /* Continue the bank-15 upload at the migrated position, index 0xf1. */
+    qtest_writel(to, REG_CMAP_DATA, 0x00040506);
+    qtest_writeq(to, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BKGRD_RG, 0xf1));
+    qtest_writeq(to, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_DRBPOINTERS, 3 << 16));
+    qtest_writeq(to, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (32u << 16) | 30u));
+    qtest_writeq(to, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (32u << 16) | 30u));
+    qtest_writeq(to, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
+    g_assert_cmphex(si_test_display_pixel(to, 32, 30), ==, 0x00060504);
+    g_assert_cmphex(si_test_display_pixel(to, 30, 30), ==, 0x00332211);
+    g_assert_cmphex(si_test_display_pixel(to, 31, 30), ==, 0x00c3b2a1);
+
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
 static void test_cursor_migration(void)
 {
     g_autofree char *tmpfs = NULL;
@@ -2327,8 +2575,7 @@ static void test_cursor_migration(void)
     to = qtest_init(dest_cmdline);
 
     qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
-    qtest_writew(from, REG_CMAP_WRITE_INDEX, 0x1c);
-    qtest_writel(from, REG_CMAP_DATA, 0x000000ff);
+    si_write_cmap_position(from, 0x001d, 28, 0x000000ff);
     qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x01, 0x0100));
     qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x07, 0x0100));
     qtest_writew(from, REG_VC3_RAM, 0x8000);
@@ -2373,6 +2620,10 @@ int main(int argc, char **argv)
                    test_i2c_probe_loopback);
     qtest_add_func("sn0/origin2000/mgras/repp-sync-handshake",
                    test_repp_sync_handshake);
+    qtest_add_func("sn0/origin2000/mgras/visual-register-read-widths",
+                   test_visual_register_read_widths);
+    qtest_add_func("sn0/origin2000/mgras/visual-register-write-widths",
+                   test_visual_register_write_widths);
     qtest_add_func("sn0/origin2000/mgras/hq-status-bringup-bit",
                    test_hq_status_bringup_bit);
     qtest_add_func("sn0/origin2000/mgras/hq-status-hiwater-poll-bit",
@@ -2437,6 +2688,8 @@ int main(int argc, char **argv)
                    test_reset_refreshes_display_surface);
     qtest_add_func("sn0/origin2000/mgras/pseudocolor-scanout-looks-up-cmap",
                    test_pseudocolor_scanout_looks_up_cmap);
+    qtest_add_func("sn0/origin2000/mgras/target-first-cmap-visual-selection",
+                   test_target_first_cmap_visual_selection);
     qtest_add_func("sn0/origin2000/mgras/masked-out-paint-keeps-index-tag",
                    test_masked_out_paint_keeps_index_tag);
     qtest_add_func("sn0/origin2000/mgras/cursor-composites-when-enabled",
@@ -2449,8 +2702,9 @@ int main(int argc, char **argv)
                    test_vc3_register_file);
     qtest_add_func("sn0/origin2000/mgras/board-inventory-registers",
                    test_board_inventory_registers);
-    qtest_add_func("sn0/origin2000/mgras/cmap-index-addresses-the-right-slot",
-                   test_cmap_index_addresses_the_right_slot);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "cmap-selector-addresses-the-right-slot",
+                   test_cmap_selector_addresses_the_right_slot);
     qtest_add_func("sn0/origin2000/mgras/int-dest-alt-offset-aliases",
                    test_int_dest_alt_offset_aliases);
     qtest_add_func("sn0/origin2000/mgras/hq-config-and-enable-registers",
@@ -2503,6 +2757,8 @@ int main(int argc, char **argv)
                    test_partial_fifo_fill_migration);
     qtest_add_func("sn0/origin2000/mgras/ge-upload-migration",
                    test_ge_upload_migration);
+    qtest_add_func("sn0/origin2000/mgras/visual-state-migration",
+                   test_visual_state_migration);
     qtest_add_func("sn0/origin2000/mgras/cursor-migration",
                    test_cursor_migration);
 
