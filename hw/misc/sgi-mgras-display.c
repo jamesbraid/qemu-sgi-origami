@@ -9,11 +9,18 @@
 
 
 /* Bank selection and native 0x00BBGGRR lookup are explicit approximations. */
+/*
+ * Retained guest CMAP traffic packs the 24-bit colour left-justified,
+ * 0xRRGGBB00: every one of 24,708 observed live writes to the CMAP data
+ * register has a zero low byte, and re-reading bits 31:8 recovers an
+ * exact textbook IRIS default palette. The low byte's meaning stays
+ * unknown.
+ */
 static uint32_t si_cmap_rgb(SGIMgrasState *s, uint8_t visual, uint8_t index)
 {
     uint32_t bank = (s->xmap_mode[visual & 0x1f] >> 5) & 0x1f;
 
-    return s->cmap[bank * 256 + index] & 0x00ffffff;
+    return (s->cmap[bank * 256 + index] >> 8) & 0x00ffffff;
 }
 
 /* The cursor uses mask and select planes from VC3 SRAM. */

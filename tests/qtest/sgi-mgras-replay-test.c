@@ -19,6 +19,7 @@
 #define DEFAULT_REPLAY    "../tests/data/mgras/fill.replay"
 #define MINIMAL_REPLAY    "../tests/data/mgras/minimal.replay"
 #define MASKED_READ       "../tests/data/mgras/masked-read.replay"
+#define CMAP_HIGH_BYTE    "../tests/data/mgras/cmap-high-byte.replay"
 #define INVALID_REPLAY    "../tests/data/mgras/invalid.replay"
 #define INVALID_BOUNDS    "../tests/data/mgras/invalid-bounds.replay"
 #define INVALID_EXTRA     "../tests/data/mgras/invalid-extra.replay"
@@ -395,6 +396,11 @@ static void test_masked_read(void)
     run_replay(MASKED_READ, false);
 }
 
+static void test_cmap_high_byte(void)
+{
+    run_replay(CMAP_HIGH_BYTE, false);
+}
+
 static void test_invalid_replay(const char *path, const char *message)
 {
     if (g_test_subprocess()) {
@@ -473,6 +479,7 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-mgras/replay-screendump", test_replay_screendump);
     qtest_add_func("sgi-mgras/minimal-replay", test_minimal_replay);
     qtest_add_func("sgi-mgras/masked-read", test_masked_read);
+    qtest_add_func("sgi-mgras/cmap-high-byte", test_cmap_high_byte);
     qtest_add_func("sgi-mgras/invalid-number", test_invalid_number);
     qtest_add_func("sgi-mgras/invalid-bounds", test_invalid_bounds);
     qtest_add_func("sgi-mgras/invalid-extra", test_invalid_extra);

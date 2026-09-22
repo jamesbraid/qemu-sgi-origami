@@ -75,9 +75,10 @@ slow_qtests = {
   # QEMU processes for the rejection and migration cases.
   'sn1-bedrock-flash-test': 180,
   # The full register suite starts a fresh eight-CPU machine per subtest. It
-  # measured 174.86s before the discarded-FIFO migration case was added.
-  # Select one GLib test path for the normal edit/build/test loop.
-  'sn0-origin2000-mgras-test': 240,
+  # measured 174.86s before the discarded-FIFO migration case was added, and
+  # 250.31s after the CMAP byte-packing display-pixel case was added. Select
+  # one GLib test path for the normal edit/build/test loop.
+  'sn0-origin2000-mgras-test': 360,
   # The timekeeper repair-store loop alone starts sixteen QEMU processes
   # (two module boots per CPU across eight vCPUs), and io6g's two IOC3
   # keyboard controllers add a second PS/2 probe beside it. Measured just
