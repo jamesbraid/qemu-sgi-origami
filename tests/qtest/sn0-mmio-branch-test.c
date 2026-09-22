@@ -15,6 +15,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sgi-migrate.h"
+#include "sgi-mips-emit.h"
 #include "sgi-test.h"
 
 /*
@@ -101,28 +102,21 @@
 #define OPC_BNE             (0x05u << 26)
 #define OPC_BLEZ            (0x06u << 26)
 #define OPC_BGTZ            (0x07u << 26)
-#define OPC_ADDIU           (0x09u << 26)
 #define OPC_ANDI            (0x0cu << 26)
 #define OPC_ORI             (0x0du << 26)
 #define OPC_DADDIU          (0x19u << 26)
 #define OPC_LW              (0x23u << 26)
 #define OPC_SW              (0x2bu << 26)
-#define OPC_LD              (0x37u << 26)
-#define OPC_LUI             (0x0fu << 26)
 #define OPC_SD              (0x3fu << 26)
-#define OPC_SLL             (0x00u | OPC_SPECIAL)
 #define OPC_JR              (0x08u | OPC_SPECIAL)
 #define OPC_SYSCALL         (0x0cu | OPC_SPECIAL)
 #define OPC_SUBU            (0x23u | OPC_SPECIAL)
-#define OPC_AND             (0x24u | OPC_SPECIAL)
 #define OPC_OR              (0x25u | OPC_SPECIAL)
 #define OPC_DSLL32          (0x3cu | OPC_SPECIAL)
 #define OPC_CP0             (0x10u << 26)
 #define OPC_CP1             (0x11u << 26)
 #define OPC_DMTC1           (OPC_CP1 | (0x05u << 21))
 #define OPC_DMFC1           (OPC_CP1 | (0x01u << 21))
-#define OPC_MFC0            (OPC_CP0 | (0x00u << 21))
-#define OPC_MTC0            (OPC_CP0 | (0x04u << 21))
 #define OPC_C0              (OPC_CP0 | (0x10u << 21))
 #define OPC_ERET            (OPC_C0 | 0x18u)
 
@@ -232,7 +226,7 @@ static void emit_immediate(CodeBuf *buf, uint32_t opc, int rs, int rt,
 
 static void emit_lui(CodeBuf *buf, int rt, uint16_t imm)
 {
-    emit_immediate(buf, OPC_LUI, 0, rt, imm);
+    emit(buf, mips_lui(rt, imm));
 }
 
 static void emit_ori(CodeBuf *buf, int rt, int rs, uint16_t imm)
@@ -242,17 +236,17 @@ static void emit_ori(CodeBuf *buf, int rt, int rs, uint16_t imm)
 
 static void emit_addiu(CodeBuf *buf, int rt, int rs, int16_t imm)
 {
-    emit_immediate(buf, OPC_ADDIU, rs, rt, (uint16_t)imm);
+    emit(buf, mips_addiu(rt, rs, imm));
 }
 
 static void emit_sd(CodeBuf *buf, int rt, int base, uint16_t off)
 {
-    emit_immediate(buf, OPC_SD, base, rt, off);
+    emit(buf, mips_sd(rt, base, off));
 }
 
 static void emit_and(CodeBuf *buf, int rd, int rs, int rt)
 {
-    emit(buf, OPC_AND | (rs << 21) | (rt << 16) | (rd << 11));
+    emit(buf, mips_and(rd, rs, rt));
 }
 
 static void emit_or(CodeBuf *buf, int rd, int rs, int rt)
@@ -283,12 +277,12 @@ static void emit_daddiu(CodeBuf *buf, int rt, int rs, int16_t imm)
 
 static void emit_ld(CodeBuf *buf, int rt, int base, uint16_t off)
 {
-    emit_immediate(buf, OPC_LD, base, rt, off);
+    emit(buf, mips_ld(rt, base, off));
 }
 
 static void emit_nop(CodeBuf *buf)
 {
-    emit(buf, OPC_SLL);
+    emit(buf, mips_nop());
 }
 
 static void emit_eret(CodeBuf *buf)
@@ -356,12 +350,12 @@ static void emit_syscall(CodeBuf *buf)
 
 static void emit_mfc0(CodeBuf *buf, int rt, int rd)
 {
-    emit(buf, OPC_MFC0 | (rt << 16) | (rd << 11));
+    emit(buf, mips_mfc0(rt, rd));
 }
 
 static void emit_mtc0(CodeBuf *buf, int rt, int rd)
 {
-    emit(buf, OPC_MTC0 | (rt << 16) | (rd << 11));
+    emit(buf, mips_mtc0(rt, rd));
 }
 
 /* An absolute jump inside the ROM's own 256 MB region. */

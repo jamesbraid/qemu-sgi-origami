@@ -11,6 +11,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "sgi-mips-emit.h"
 #include "sgi-test.h"
 
 #define IMAGE_SIZE          0x1000
@@ -41,21 +42,13 @@
 #define OPC_SPECIAL         (0x00u << 26)
 #define OPC_BEQ             (0x04u << 26)
 #define OPC_BNE             (0x05u << 26)
-#define OPC_ADDIU           (0x09u << 26)
-#define OPC_LUI             (0x0fu << 26)
-#define OPC_CP0             (0x10u << 26)
 #define OPC_CACHE           (0x2fu << 26)
 #define OPC_PREF            (0x33u << 26)
 #define OPC_LLD             (0x34u << 26)
-#define OPC_LD              (0x37u << 26)
 #define OPC_SCD             (0x3cu << 26)
-#define OPC_SD              (0x3fu << 26)
 #define OPC_JR              (0x08u | OPC_SPECIAL)
 #define OPC_SYSCALL         (0x0cu | OPC_SPECIAL)
 #define OPC_SYNC            (0x0fu | OPC_SPECIAL)
-#define OPC_AND             (0x24u | OPC_SPECIAL)
-#define OPC_MFC0            (OPC_CP0 | (0x00u << 21))
-#define OPC_MTC0            (OPC_CP0 | (0x04u << 21))
 #define OPC_ERET            0x42000018u
 
 #define R_ZERO              0
@@ -118,7 +111,7 @@ static void emit(GuestImage *img, uint32_t insn)
 
 static void emit_nop(GuestImage *img)
 {
-    emit(img, 0);
+    emit(img, mips_nop());
 }
 
 static void emit_branch(GuestImage *img, uint32_t opc, int rs, int rt,
@@ -126,27 +119,27 @@ static void emit_branch(GuestImage *img, uint32_t opc, int rs, int rt,
 {
     int32_t off = ((int32_t)target - (int32_t)(img->pos + 4)) / 4;
 
-    emit(img, opc | (rs << 21) | (rt << 16) | (off & 0xffff));
+    emit(img, mips_branch(opc, rs, rt, off));
 }
 
 static void emit_lui(GuestImage *img, int rt, uint16_t imm)
 {
-    emit(img, OPC_LUI | (rt << 16) | imm);
+    emit(img, mips_lui(rt, imm));
 }
 
 static void emit_addiu(GuestImage *img, int rt, int rs, int16_t imm)
 {
-    emit(img, OPC_ADDIU | (rs << 21) | (rt << 16) | (uint16_t)imm);
+    emit(img, mips_addiu(rt, rs, imm));
 }
 
 static void emit_and(GuestImage *img, int rd, int rs, int rt)
 {
-    emit(img, OPC_AND | (rs << 21) | (rt << 16) | (rd << 11));
+    emit(img, mips_and(rd, rs, rt));
 }
 
 static void emit_ld(GuestImage *img, int rt, int base, int16_t off)
 {
-    emit(img, OPC_LD | (base << 21) | (rt << 16) | (uint16_t)off);
+    emit(img, mips_ld(rt, base, off));
 }
 
 static void emit_lld(GuestImage *img, int rt, int base, int16_t off)
@@ -156,7 +149,7 @@ static void emit_lld(GuestImage *img, int rt, int base, int16_t off)
 
 static void emit_sd(GuestImage *img, int rt, int base, int16_t off)
 {
-    emit(img, OPC_SD | (base << 21) | (rt << 16) | (uint16_t)off);
+    emit(img, mips_sd(rt, base, off));
 }
 
 static void emit_scd(GuestImage *img, int rt, int base, int16_t off)
@@ -166,12 +159,12 @@ static void emit_scd(GuestImage *img, int rt, int base, int16_t off)
 
 static void emit_mfc0(GuestImage *img, int rt, int rd)
 {
-    emit(img, OPC_MFC0 | (rt << 16) | (rd << 11));
+    emit(img, mips_mfc0(rt, rd));
 }
 
 static void emit_mtc0(GuestImage *img, int rt, int rd)
 {
-    emit(img, OPC_MTC0 | (rt << 16) | (rd << 11));
+    emit(img, mips_mtc0(rt, rd));
 }
 
 static void emit_ehb(GuestImage *img)
