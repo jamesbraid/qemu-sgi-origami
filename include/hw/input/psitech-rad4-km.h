@@ -15,11 +15,17 @@
  *
  * The register map below -- sixteen registers, each on its own 64 KiB
  * stride, index-for-index against the public Signetics/Philips
- * SCN2681/SCC68681 DUART family -- is the datasheet's cleared contract.
- * The chip identity itself stays an Inferred approximation: no vendor part
- * number was read, only a register-map match. Every register this file
- * does not implement stays LOG_UNIMP; see the datasheet's Established/
- * Inferred/Unknown split before changing this file's register policy.
+ * SCN2681/SCC68681 DUART family -- implements the keyboard/mouse register
+ * contract docs/datasheets/psitech-rad4-km.md establishes in its
+ * "Keyboard and mouse register contract" section, cleared for a bounded,
+ * disclosed-approximation implementation by the independent review at
+ * docs/reviews/psitech-rad4-km-register-contract-review-20260922.md. The
+ * chip vendor and part number stay an Inferred approximation: that review
+ * confirmed a register-map match against the public DUART family, not a
+ * vendor string or part number read from the driver object. Every
+ * register this file does not implement stays LOG_UNIMP; see the
+ * datasheet's Established/Inferred/Unknown split before changing this
+ * file's register policy.
  *
  * Register offset 0x78 in the driver's own object is established only as
  * a pointer to a distinct, board-level interrupt gate above this chip's
