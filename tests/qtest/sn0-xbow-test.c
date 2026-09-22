@@ -96,6 +96,10 @@
 #define STATUS_REQUEST          (1u << 23)
 #define STATUS_ACCESS_ERROR     (1u << 5)
 #define STATUS_MULTIPLE_ERROR   (1u << 0)
+
+/* Error command word: destination widget, then the port that sent it. */
+#define ERR_CMD_DIDN(w)         ((uint32_t)(w) << 28)
+#define ERR_CMD_SIDN(w)         ((uint32_t)(w) << 24)
 #define CONTROL_WRITABLE        0x00000026
 #define CONTROL_ACCESS_ENABLE   (1u << 5)
 
@@ -453,9 +457,10 @@ static void test_writable_storage(void)
 
 /*
  * Writing the error command word clears it and both error addresses, and
- * the data written is discarded. Only the discard is pinned here: the
- * first-error latch is not modeled, so all three registers were already
- * zero and clearing them proves nothing on its own.
+ * the data written is discarded. Only the discard is pinned here: this
+ * device is pristine, so all three registers were already zero and
+ * clearing them proves nothing on its own. The illegal-destination tests
+ * cover the latch actually holding and rearming.
  */
 static void test_error_command_word(void)
 {
@@ -660,6 +665,88 @@ static void test_illegal_destination(void)
                     ID_ALWAYS_ONE);
     g_assert_cmphex(reg_read(qts, LINK(WIDGET_IO) + LINK_STATUS), ==,
                     LINK_ALIVE);
+    qtest_quit(qts);
+}
+
+/*
+ * The first illegal-destination error also fills the global capture
+ * registers: the command word's DIDN is the widget the packet named and
+ * its SIDN is the widget attached to the port that sent it, and the
+ * address registers hold the offset the packet carried within that
+ * (illegal) widget's own space. A repeat while the first still stands
+ * leaves the capture alone, and writing the command word clears it and
+ * rearms capture for the next error.
+ */
+static void test_illegal_destination_captures_command_and_address(void)
+{
+    QTestState *qts = xbow_start("");
+    uint64_t from_a = WIDGET_SLOT(PORT_VIEW(WIDGET_HUB_A), WIDGET_ILLEGAL);
+    uint64_t from_io = WIDGET_SLOT(PORT_VIEW(WIDGET_IO), WIDGET_ILLEGAL);
+    uint64_t from_io_last = WIDGET_SLOT(PORT_VIEW(WIDGET_IO),
+                                        WIDGET_ILLEGAL_LAST);
+
+    qtest_writeq(qts, from_a + SCRATCH, 0);
+    g_assert_cmphex(reg_read(qts, ERR_CMD), ==,
+                    ERR_CMD_DIDN(WIDGET_ILLEGAL) | ERR_CMD_SIDN(WIDGET_HUB_A));
+    g_assert_cmphex(reg_read(qts, ERR_UPPER), ==, 0);
+    g_assert_cmphex(reg_read(qts, ERR_LOWER), ==, SCRATCH);
+
+    /* A second error from a different port while the first stands. */
+    qtest_writeq(qts, from_io + SCRATCH, 0);
+    g_assert_cmphex(reg_read(qts, ERR_CMD), ==,
+                    ERR_CMD_DIDN(WIDGET_ILLEGAL) | ERR_CMD_SIDN(WIDGET_HUB_A));
+    g_assert_cmphex(reg_read(qts, ERR_LOWER), ==, SCRATCH);
+
+    /* Writing it clears all three and rearms capture for the next error. */
+    reg_write(qts, ERR_CMD, 0xffffffff);
+    g_assert_cmphex(reg_read(qts, ERR_CMD), ==, 0);
+    g_assert_cmphex(reg_read(qts, ERR_UPPER), ==, 0);
+    g_assert_cmphex(reg_read(qts, ERR_LOWER), ==, 0);
+
+    qtest_writeq(qts, from_io_last + SPAN - 8, 0);
+    g_assert_cmphex(reg_read(qts, ERR_CMD), ==,
+                    ERR_CMD_DIDN(WIDGET_ILLEGAL_LAST) |
+                    ERR_CMD_SIDN(WIDGET_IO));
+    g_assert_cmphex(reg_read(qts, ERR_UPPER), ==, 0);
+    g_assert_cmphex(reg_read(qts, ERR_LOWER), ==, SPAN - 8);
+    qtest_quit(qts);
+}
+
+/*
+ * The offset inside a widget can exceed 32 bits when the widget is given
+ * a large span. This gives it the largest span the crossbar allows and an
+ * offset one giant step short of that, so the offset's bit 47 is set: the
+ * top of the 48-bit range any valid crosstalk address can reach, not a
+ * 16-bit mask boundary, since no valid offset ever gets that far. The
+ * address registers are asserted to hold that offset split the way the
+ * interrupt destination address's own registers are documented to split
+ * theirs: bits 47:32 in the upper register, bits 31:0 in the lower. That
+ * split is this model's own inferred choice for this register pair, not
+ * something read off a page for it, but it is exact for every offset the
+ * crossbar can ever produce.
+ */
+static void test_illegal_destination_wide_address(void)
+{
+    const uint64_t span = UINT64_C(1) << 48;
+    const uint64_t offset = span - 8;
+    QTestState *qts = qtest_initf("-M none -cpu R10000 -S "
+        "-d unimp,guest_errors "
+        "-device sgi-xtalk-test-target,id=io "
+        "-device sgi-xbow,id=xbow,span=%" PRIu64 ","
+        "links-present=%u,startup-links-alive=%u,"
+        "target-8=/machine/peripheral/io/io.ram[0]",
+        span, WIDGET_BIT(WIDGET_IO), WIDGET_BIT(WIDGET_IO));
+
+    qtest_sysbus_mmio_map(qts, XBOW, WIDGET_IO - 8, PORT_VIEW(WIDGET_IO));
+    qtest_writeq(qts, PORT_VIEW(WIDGET_IO) + span * WIDGET_ILLEGAL + offset,
+                 0);
+
+    g_assert_cmphex(reg_read_from(qts, WIDGET_IO, ERR_CMD), ==,
+                    ERR_CMD_DIDN(WIDGET_ILLEGAL) | ERR_CMD_SIDN(WIDGET_IO));
+    g_assert_cmphex(reg_read_from(qts, WIDGET_IO, ERR_UPPER), ==,
+                    (uint32_t)(offset >> 32));
+    g_assert_cmphex(reg_read_from(qts, WIDGET_IO, ERR_LOWER), ==,
+                    (uint32_t)offset);
     qtest_quit(qts);
 }
 
@@ -1357,6 +1444,10 @@ int main(int argc, char **argv)
                    test_routes_by_destination_widget);
     qtest_add_func("/sn0/xbow/no-route-to-self", test_no_route_to_self);
     qtest_add_func("/sn0/xbow/illegal-destination", test_illegal_destination);
+    qtest_add_func("/sn0/xbow/illegal-destination-captures-command-and-address",
+                   test_illegal_destination_captures_command_and_address);
+    qtest_add_func("/sn0/xbow/illegal-destination-wide-address",
+                   test_illegal_destination_wide_address);
     qtest_add_func("/sn0/xbow/unavailable-destination-is-not-illegal",
                    test_unavailable_destination_is_not_illegal);
     qtest_add_func("/sn0/xbow/illegal-destination-interrupt",
