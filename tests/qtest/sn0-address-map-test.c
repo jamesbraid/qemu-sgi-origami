@@ -34,6 +34,26 @@
 #define FLASH_LOG_SECTOR    0xe0000
 #define FLASH_SECTOR_SIZE   0x10000
 
+/*
+ * One plain origin200 serves every case that names no memory size, no
+ * firmware image, no trace file and no second node, started in main().
+ */
+static QTestState *qts;
+
+/*
+ * Open such a case. Flash contents deliberately survive a machine reset --
+ * that is what test_flash_program_and_erase asserts -- so the reset alone
+ * would not prove a case starts clean. Reading the log sector erased does:
+ * a chip left in autoselect or a sector left programmed both answer
+ * something other than an erased byte here.
+ */
+static void address_map_reset(void)
+{
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readb(qts, FLASH_RESET + FLASH_LOG_SECTOR), ==,
+                    0xff);
+}
+
 static void flash_command(QTestState *qts, uint32_t offset, uint8_t value)
 {
     /* Hub presents the flash's byte-wide command port on 64-bit cycles. */
@@ -188,8 +208,9 @@ static void test_dual_node_boot_windows(const void *data)
  */
 static void test_boot_windows_mirror_the_flash(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint64_t direct, mirrored;
+
+    address_map_reset();
 
     /* One repeat period past the flash's own size: the first wrap. */
     direct = qtest_readq(qts, FLASH_RESET + CONFIG_OFFSET);
@@ -211,8 +232,6 @@ static void test_boot_windows_mirror_the_flash(const void *data)
     g_assert_cmphex(mirrored, ==, direct);
     mirrored = qtest_readq(qts, FLASH_REMOTE + 0x10000000 - 8);
     g_assert_cmphex(mirrored, ==, direct);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -306,12 +325,10 @@ static void test_flash_hub_local_is_fast(const void *data)
  */
 static void test_execution_windows_are_not_io(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    address_map_reset();
 
     assert_flat_view_is_execution_storage(qts, FLASH_RESET);
     assert_flat_view_is_execution_storage(qts, FLASH_HUB_LOCAL);
-
-    qtest_quit(qts);
 }
 
 #define ORIGIN2000_FLASH_SIZE  (1024 * 1024)
@@ -465,8 +482,11 @@ static void test_flash_rejects_bare_writes(const void *data)
 
 static void test_flash_autoselect(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
-    uint32_t before = qtest_readl(qts, FLASH_HUB);
+    uint32_t before;
+
+    address_map_reset();
+
+    before = qtest_readl(qts, FLASH_HUB);
 
     flash_command(qts, 0, 0xf0);
     flash_command(qts, FLASH_UNLOCK1, 0xaa);
@@ -500,14 +520,13 @@ static void test_flash_autoselect(const void *data)
 
     flash_command(qts, 0, 0xf0);
     g_assert_cmphex(qtest_readl(qts, FLASH_HUB), ==, before);
-
-    qtest_quit(qts);
 }
 
 static void test_flash_program_and_erase(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     const uint32_t target = FLASH_LOG_SECTOR + 0x100;
+
+    address_map_reset();
 
     g_assert_cmphex(qtest_readb(qts, FLASH_RESET + target), ==, 0xff);
 
@@ -558,8 +577,6 @@ static void test_flash_program_and_erase(const void *data)
     g_assert_cmphex(qtest_readb(qts,
                                FLASH_RESET + FLASH_LOG_SECTOR +
                                FLASH_SECTOR_SIZE - 1), ==, 0xff);
-
-    qtest_quit(qts);
 }
 
 static void check_ram(QTestState *qts, uint64_t addr, uint64_t pattern)
@@ -827,7 +844,7 @@ static void check_backdoor_narrow_fold(QTestState *qts, uint64_t base,
 
 static void test_backdoor_entry_widths(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    address_map_reset();
 
     check_backdoor_entry_widths(qts, BACKDOOR_DIR);
     check_backdoor_entry_widths(qts, BACKDOOR_ECC);
@@ -836,8 +853,6 @@ static void test_backdoor_entry_widths(const void *data)
     check_backdoor_straddling_reads(qts, BACKDOOR_ECC + 16 * MiB - 8);
     check_backdoor_narrow_fold(qts, BACKDOOR_DIR, 16 * MiB);
     check_backdoor_narrow_fold(qts, BACKDOOR_ECC, 16 * MiB);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -976,26 +991,22 @@ static void test_backdoor_tracks_bank_size(const void *data)
  */
 static void test_directory_backdoor(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    address_map_reset();
 
     check_backdoor_entry(qts, BACKDOOR_DIR, 0);
     check_backdoor_standard_format(qts, BACKDOOR_DIR);
     check_backdoor_absent(qts, BACKDOOR_DIR + BACKDOOR_BANK_STRIDE);
     check_backdoor_absent(qts, BACKDOOR_DIR + BACKDOOR_SIZE - 8);
-
-    qtest_quit(qts);
 }
 
 static void test_ecc_backdoor(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    address_map_reset();
 
     check_backdoor_entry(qts, BACKDOOR_ECC, 0);
     check_backdoor_standard_format(qts, BACKDOOR_ECC);
     check_backdoor_absent(qts, BACKDOOR_ECC + BACKDOOR_BANK_STRIDE);
     check_backdoor_absent(qts, BACKDOOR_ECC + BACKDOOR_SIZE - 8);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -1549,7 +1560,11 @@ static void test_default_drive_reaches_the_first_scsi_adapter(
 
 int main(int argc, char **argv)
 {
+    int ret;
+
     g_test_init(&argc, &argv, NULL);
+
+    qts = qtest_init("-M origin200");
 
     qtest_add_data_func("sn0/address-map/flash-three-views", NULL,
                         test_flash_three_views);
@@ -1632,5 +1647,8 @@ int main(int argc, char **argv)
                         NULL,
                         test_default_drive_reaches_the_first_scsi_adapter);
 
-    return g_test_run();
+    ret = g_test_run();
+    qtest_quit(qts);
+
+    return ret;
 }
