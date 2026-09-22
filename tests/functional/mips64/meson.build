@@ -248,6 +248,7 @@ tests_mips64_unit = [
   'lib_graphics_matrix',
   'lib_input',
   'lib_matrix',
+  'lib_mips',
   'lib_prom',
   'lib_screen',
   'lib_translation_health',

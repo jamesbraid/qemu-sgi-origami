@@ -22,24 +22,14 @@ runs twenty resets and reads every one.
 """
 
 import re
-import struct
 import time
 from pathlib import Path
 
 from qemu_test import QemuSystemTest
 
-
-R_ZERO = 0
-R_AT = 1
-R_T0 = 8
-R_T1 = 9
-R_T2 = 10
-R_T3 = 11
-R_T4 = 12
-R_T5 = 13
-R_S0 = 16
-R_S1 = 17
-R_S2 = 18
+from lib_mips import (R_S0, R_S1, R_S2, R_T0, R_T1, R_T2, R_T3, R_T4, R_T5,
+                      R_ZERO, RESET_RE, TRACE_RE, WRITE_RE, MipsProgram,
+                      mips_i, mips_r)
 
 # Shared uncached RAM at physical 0x30000, reached through xkphys. Memory
 # survives the reset, which is how each boot knows which cycle it is in.
@@ -64,53 +54,6 @@ NI_PORT_RESET = 0x600008
 PORT_RESET_VALUE = 0x81
 
 STATUS_KX_KERNEL = 0x24400080
-
-
-def mips_i(op, rs, rt, immediate):
-    return op << 26 | rs << 21 | rt << 16 | immediate & 0xffff
-
-
-def mips_r(rs, rt, rd, shift, function):
-    return rs << 21 | rt << 16 | rd << 11 | shift << 6 | function
-
-
-class MipsProgram:
-    def __init__(self):
-        self.instructions = []
-
-    def emit(self, instruction):
-        self.instructions.append(instruction)
-
-    def here(self):
-        return len(self.instructions)
-
-    def branch(self, op, rs, rt):
-        branch = self.here()
-        self.emit(mips_i(op, rs, rt, 0))
-        self.emit(0)                      # branch delay slot
-        return branch
-
-    def patch(self, branch, target):
-        displacement = target - branch - 1
-        assert -(1 << 15) <= displacement < (1 << 15)
-        self.instructions[branch] |= displacement & 0xffff
-
-    def spin(self):
-        spin = self.here()
-        self.patch(self.branch(0x04, R_ZERO, R_ZERO), spin)
-
-    def address(self, register, prefix, offset):
-        """register = the xkphys address prefix << 32 | offset."""
-        self.emit(mips_i(0x0f, R_ZERO, register, prefix))
-        self.emit(mips_r(R_ZERO, register, register, 0, 0x3c))   # dsll32
-        self.emit(mips_i(0x0f, R_ZERO, R_AT, offset >> 16))
-        self.emit(mips_i(0x0d, R_AT, R_AT, offset & 0xffff))
-        self.emit(mips_r(register, R_AT, register, 0, 0x25))     # or
-
-    def write(self, path):
-        Path(path).write_bytes(b''.join(
-            struct.pack('>I', instruction)
-            for instruction in self.instructions))
 
 
 def build_port_reset():
@@ -174,13 +117,6 @@ def build_port_reset():
     return program
 
 
-WRITE_RE = re.compile(
-    r"memory_region_ops_write cpu (-?\d+) mr \S+ addr 0x([0-9a-f]+) "
-    r"value 0x([0-9a-f]+) size \d+ name '([^']*)'")
-TRACE_RE = re.compile(r"^Trace (\d+):")
-RESET_RE = re.compile(r"^cpu_reset (\d+)")
-
-
 def port_reset_write(line):
     """The requesting processor, if this line is the guest's port-reset
     write. Matched on the register offset rather than the whole address so
@@ -200,7 +136,15 @@ def port_reset_write(line):
 def reset_windows(log):
     """One entry per port-reset write: the requesting processor and the
     log lines showing another processor entering a translation block
-    before the reset that followed."""
+    before the reset that followed.
+
+    Kept here rather than taken from lib_mips: that one pairs each reset
+    with the write nearest before it and skips a reset with no write at
+    all, where this one walks forward from each write and refuses a write
+    that never produced a reset. The two agree on every log this exercise
+    has produced, but they are not the same reading of a malformed one,
+    so collapsing them is a change to what this test accepts, not a move.
+    """
     windows = []
     requester = None
     entered = []

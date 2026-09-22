@@ -33,25 +33,14 @@ runs twenty resets and reads every one.
 """
 
 import re
-import struct
 import time
 from pathlib import Path
 
 from qemu_test import QemuSystemTest
 
-
-R_ZERO = 0
-R_AT = 1
-R_T0 = 8
-R_T1 = 9
-R_T2 = 10
-R_T3 = 11
-R_T4 = 12
-R_T5 = 13
-R_S0 = 16
-R_S1 = 17
-R_S3 = 19
-R_S4 = 20
+from lib_mips import (R_S0, R_S1, R_S3, R_S4, R_T0, R_T1, R_T2, R_T3, R_T4,
+                      R_T5, R_ZERO, WRITE_RE, MipsProgram, mips_i, mips_r,
+                      reset_windows)
 
 # Shared uncached RAM at physical 0x30000, reached through xkphys. Memory
 # survives the reset, which is how each boot knows which cycle it is in.
@@ -100,46 +89,9 @@ RST = bytes([0x03]) + b'rst' + bytes([0xa4])
 RESP_TOTAL = 4
 
 
-def mips_i(op, rs, rt, immediate):
-    return op << 26 | rs << 21 | rt << 16 | immediate & 0xffff
-
-
-def mips_r(rs, rt, rd, shift, function):
-    return rs << 21 | rt << 16 | rd << 11 | shift << 6 | function
-
-
-class MipsProgram:
-    def __init__(self):
-        self.instructions = []
-
-    def emit(self, instruction):
-        self.instructions.append(instruction)
-
-    def here(self):
-        return len(self.instructions)
-
-    def branch(self, op, rs, rt):
-        branch = self.here()
-        self.emit(mips_i(op, rs, rt, 0))
-        self.emit(0)                      # branch delay slot
-        return branch
-
-    def patch(self, branch, target):
-        displacement = target - branch - 1
-        assert -(1 << 15) <= displacement < (1 << 15)
-        self.instructions[branch] |= displacement & 0xffff
-
-    def spin(self):
-        spin = self.here()
-        self.patch(self.branch(0x04, R_ZERO, R_ZERO), spin)
-
-    def address(self, register, prefix, offset):
-        """register = the xkphys address prefix << 32 | offset."""
-        self.emit(mips_i(0x0f, R_ZERO, register, prefix))
-        self.emit(mips_r(R_ZERO, register, register, 0, 0x3c))   # dsll32
-        self.emit(mips_i(0x0f, R_ZERO, R_AT, offset >> 16))
-        self.emit(mips_i(0x0d, R_AT, R_AT, offset & 0xffff))
-        self.emit(mips_r(register, R_AT, register, 0, 0x25))     # or
+class ElscProgram(MipsProgram):
+    """lib_mips's assembler plus the PCF8584 register dance this exercise
+    drives the ELSC through."""
 
     def write_reg(self, base, value):
         """*base = value, an 8-bit immediate the caller has already
@@ -179,16 +131,11 @@ class MipsProgram:
             self.read_reg_discard(R_S3)
         self.write_reg(R_S4, CTL_PIN | CTL_ESO | CTL_STO)
 
-    def write(self, path):
-        Path(path).write_bytes(b''.join(
-            struct.pack('>I', instruction)
-            for instruction in self.instructions))
-
 
 def build_elsc_reset():
     """Slice A authenticates and resets the machine while slice B spins,
     CYCLES times over; then each slice publishes its own done word."""
-    program = MipsProgram()
+    program = ElscProgram()
 
     # The 64-bit kernel mode the firmware itself selects at entry.
     program.emit(mips_i(0x0f, R_ZERO, R_T0, STATUS_KX_KERNEL >> 16))
@@ -251,12 +198,6 @@ def build_elsc_reset():
     return program
 
 
-WRITE_RE = re.compile(
-    r"memory_region_ops_write cpu (-?\d+) mr \S+ addr 0x([0-9a-f]+) "
-    r"value 0x([0-9a-f]+) size \d+ name '([^']*)'")
-TRACE_RE = re.compile(r"^Trace (\d+):")
-RESET_RE = re.compile(r"^cpu_reset (\d+)")
-
 STOP_VALUE = CTL_PIN | CTL_ESO | CTL_STO
 
 
@@ -269,8 +210,11 @@ def committing_write(line):
 
     Both "pas none" and "rst" end their transaction with an identical
     STOP write -- only the second one commits a deferred action -- so
-    this matches every occurrence and reset_windows() below picks the one
-    that actually precedes a given reset.
+    this matches every occurrence and lib_mips.reset_windows() picks the
+    one that actually precedes a given reset. The board's own two-pass
+    reset (hw/mips/sgi/sn0.c) resets each processor twice at machine
+    start, before the guest has written anything; that leading run has no
+    preceding write, which is how that reader skips it.
     """
     match = WRITE_RE.match(line)
     if not match:
@@ -281,49 +225,6 @@ def committing_write(line):
     if int(value, 16) != STOP_VALUE:
         return None
     return int(cpu)
-
-
-def reset_windows(log):
-    """One entry per machine reset: the requesting processor (the nearest
-    preceding STOP write) and the log lines showing another processor
-    entering a translation block before the reset that followed.
-
-    A reset resets every CPU object, so more than one "cpu_reset" line can
-    report one reset event; a run of consecutive lines collapses to its
-    first. The board's own two-pass reset (hw/mips/sgi/sn0.c) resets each
-    processor twice at machine start, before the guest has written
-    anything -- a leading run with no preceding write is that startup
-    reset, not one this exercise asked for, and is skipped rather than
-    treated as a window."""
-    lines = log.splitlines()
-    resets = []
-    last_reset_line = None
-    for i, line in enumerate(lines):
-        if RESET_RE.match(line):
-            if last_reset_line is None or i != last_reset_line + 1:
-                resets.append(i)
-            last_reset_line = i
-
-    windows = []
-    search_from = 0
-    for reset_index in resets:
-        requester = None
-        write_index = None
-        for i in range(reset_index - 1, search_from - 1, -1):
-            cpu = committing_write(lines[i])
-            if cpu is not None:
-                requester, write_index = cpu, i
-                break
-        search_from = reset_index + 1
-        if requester is None:
-            continue
-        entered = []
-        for line in lines[write_index + 1:reset_index]:
-            trace = TRACE_RE.match(line)
-            if trace and int(trace.group(1)) != requester:
-                entered.append(line)
-        windows.append((requester, entered))
-    return windows
 
 
 class SN0ElscReset(QemuSystemTest):
@@ -365,7 +266,7 @@ class SN0ElscReset(QemuSystemTest):
         return Path(log).read_text(errors='replace')
 
     def assert_only_the_requester_ran(self, log):
-        windows = reset_windows(log)
+        windows = reset_windows(log, committing_write)
         self.assertEqual(len(windows), CYCLES,
                          f'{len(windows)} of {CYCLES} resets are in the log')
         ran = [(requester, entered) for requester, entered in windows
@@ -401,7 +302,7 @@ class SN0ElscReset(QemuSystemTest):
         so this only requires that every reset still completes and both
         slices resume."""
         log = self.run_resets('-accel', 'tcg,thread=multi')
-        self.assertEqual(len(reset_windows(log)), CYCLES)
+        self.assertEqual(len(reset_windows(log, committing_write)), CYCLES)
 
 
 if __name__ == '__main__':
