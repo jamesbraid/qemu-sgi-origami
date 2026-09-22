@@ -9,23 +9,22 @@ test_mips64_timeouts = {
   # that for a heavily contended CI host; the previous unlisted default
   # of 90 left under half.
   'sn0_smp' : 240,
-  # Three short VM launches, twenty machine resets each: 18s for the whole
-  # script on a host at load 174 (measured 2026-09-13). Each case gives the
-  # guest 60s of its own before declaring failure, so 300 covers all three
-  # running out that budget in sequence and still reporting which one did,
-  # rather than the whole script being killed with nothing to read.
-  'sn0_port_reset' : 300,
-  # Three short VM launches, twenty resets each, two full ELSC transactions
-  # (authenticate, then "rst") per reset rather than the Hub's single
-  # register write: 10s for the whole script on a host at load 130
-  # (measured 2026-09-14). Same reasoning as sn0_port_reset above for the
-  # 300s budget.
-  'sn0_elsc_reset' : 300,
-  # Three short VM launches, twenty resets each, one L1 UART frame
-  # (header, destination, command, two check bytes, all escaped and
-  # flagged) per reset rather than a register poke. Same reasoning as
-  # sn0_elsc_reset's budget for the same shape of exercise.
-  'sn1_l1_reset' : 300,
+  # Ten short VM launches (three test classes -- three, three and four
+  # cases respectively), most exercising twenty machine resets and the
+  # last exercising twenty console power-down cycles, in one script
+  # (test_sn_reset.py) merged from what were three separate scripts
+  # (test_sn0_port_reset.py, test_sn0_elsc_reset.py, test_sn1_l1_reset.py):
+  # a Hub port-reset register write, two full ELSC transactions
+  # (authenticate, then "rst"), and one L1 UART frame (header,
+  # destination, command, two check bytes, all escaped and flagged),
+  # respectively, per reset. Each of the three kept its own measured total
+  # on its own host load (18s at load 174, 10s at load 130, and the L1
+  # section's own share of that order of magnitude), summing under 60s
+  # together; each case still gives the guest 60s of its own before
+  # declaring failure, so 900 (the three former budgets summed) covers all
+  # ten running out that budget in sequence and still reporting which one
+  # did, rather than the whole script being killed with nothing to read.
+  'sn_reset' : 900,
   # Four methods in this one script now: the original two first-line-only
   # smoke boots (about a second each) plus two real boots through a
   # writable boot flash and the chassis/board/SPD identity records
@@ -194,9 +193,7 @@ test_mips64_timeouts = {
 
 tests_mips64_system_quick = [
   'sn0_smp',
-  'sn0_port_reset',
-  'sn0_elsc_reset',
-  'sn1_l1_reset',
+  'sn_reset',
   'origin2000_cache_reset',
   # graphics-matrix carries no quick row yet (see graphics_matrix_thorough's
   # own comment below); registered anyway so a future device's quick
