@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 #
-# OpenBSD/sgi 6.9 install: boot the real interactive installer, drive it
-# unattended through a full install, and require it reach the
-# installer's own "CONGRATULATIONS!" completion banner
+# OpenBSD/sgi 6.9 install: netboot the install ramdisk through the stock
+# PROM, drive the real interactive installer unattended through a full
+# install, and require it reach the installer's own "CONGRATULATIONS!"
+# completion banner
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
@@ -25,6 +26,31 @@ comp69.tgz's own extraction and never reaching completion (see the
 project checkout's own docs/NOW.md, "a reproducible hang mid-extraction,
 traced to a double-completion in the device model", and the golden
 transcript cited below).
+
+Netboots the ramdisk through the real 6.5.30 PROM rather than loading it
+with -kernel, the same conversion test_openbsd_login.py and
+test_xframe_pci.py make and for the same reason: commit b707094c18 made
+origin200 refuse -kernel outright at machine construction ("stock-PROM
+boot only; boot a kernel through the PROM's own TFTP netboot or a disk
+image, not -kernel"), and this test's own -kernel command line had been
+refused, never running a single guest instruction, since that commit
+landed -- undetected because it is registered only in the thorough suite
+(mips64/meson.build), which an ordinary run never exercises. Also drops
+-no-reboot: a real PROM boot issues a QEMU-classified guest-initiated
+reset at machine construction before the PROM runs a single instruction,
+and -no-reboot turns that into an immediate silent shutdown with no
+console output at all, which would fail this test before the installer
+ever started. lib_prom's prom_netboot_steps() drives the System
+Maintenance Menu and command monitor to `boot -f bootp()/bsd.rd.IP27`;
+because two of its three steps share the literal ">>" prompt text,
+_drive_install()'s own window-clearing loop (which otherwise re-fires a
+rule on every fresh occurrence of the same text, by design, for the
+installer's own repeated prompts) tracks a separate position counter for
+these three steps, firing each exactly once in order -- the same
+duplicate-prompt problem lib_prom.drive_console()'s per-rule "fired"
+flag and test_openbsd_net_transfer.py's own strictly sequential
+_Console.expect()/send() solve differently, described in each of those
+modules' own docstrings.
 
 install_verdict() (test_openbsd_install_verdict.py, imported below) is the
 pure judge of PASS/FAIL, checking the same ordered completion progression
@@ -112,7 +138,7 @@ from qemu_test import (
     QemuSystemTest, skipBigDataTest, skipIfMissingEnv, skipSlowTest,
     get_qemu_img, which)
 
-from lib_prom import resolve_asset
+from lib_prom import FIRMWARE_REL, prom_netboot_steps, resolve_asset
 from lib_translation_health import assert_translation_healthy
 
 from test_openbsd_install_verdict import (
@@ -123,7 +149,10 @@ from test_openbsd_install_verdict import (
 # test_openbsd_login.py's own KERNEL_REL/DISK_REL idiom: ORIGAMI_ASSETS
 # names a CHECKOUT, not assets/ itself.
 RELEASE_REL = os.path.join('assets', 'openbsd', '6.9')
-INSTALL_KERNEL_NAME = 'bsd.rd.IP27'   # the install ramdisk, booted with -kernel
+# The install ramdisk. Also the TFTP bootfile name the PROM's netboot
+# command asks the SLIRP back end for -- it is both the asset's own name
+# and the name it is served under, so one constant names both.
+INSTALL_KERNEL_NAME = 'bsd.rd.IP27'
 # The install media that end up on the sets disk -- base69.tgz/comp69.tgz
 # are the sets themselves, SHA256/SHA256.sig are the release's own signed
 # manifest, and bsd.IP27 is the installed system's own kernel (required for
@@ -303,6 +332,12 @@ RULES = [
     ("nonfree-firmware", r"non-free firmware", "no\n"),
 ]
 
+# The stock PROM's own dialogue from the System Maintenance Menu to the
+# netboot command, generalized by lib_prom.prom_netboot_steps() -- see
+# this module's own docstring for why _drive_install() answers these by
+# position rather than folding them into RULES above.
+NETBOOT_STEPS = prom_netboot_steps(INSTALL_KERNEL_NAME)
+
 FALLBACK_QUIET = 3.0
 SEND_DEBOUNCE = 0.5
 _WINDOW_MAX = 300
@@ -330,6 +365,15 @@ def _drive_install(sock, log_path, timeout, vm=None):
     occurrence. Clearing the window instead of tracking fired state is
     what lets the exact same regex answer both.
 
+    The netboot steps (NETBOOT_STEPS, module level) are checked before
+    everything else, by position rather than by the window-clearing
+    reasoning above: two of the three share the literal ">>" prompt text,
+    and a rule that fires on whichever text is in the window would answer
+    the SAME one of those two forever, never reaching the boot command.
+    A plain counter -- the same fix install-driver.py's own author
+    already made for "Location of sets?" below, which has the identical
+    shape -- answers each of the three exactly once, in order.
+
     The Location-of-sets special case and the fallback are both
     RE-CHECKED EVERY LOOP TICK, not only when a byte just arrived --
     ported for the same reason install-driver.py's own comment gives:
@@ -345,6 +389,7 @@ def _drive_install(sock, log_path, timeout, vm=None):
     divergent judgment).
     """
     rules = [(label, re.compile(pattern), answer) for label, pattern, answer in RULES]
+    netboot_rules = [(re.compile(pattern), answer) for pattern, answer in NETBOOT_STEPS]
     sock.settimeout(1.0)
     deadline = time.monotonic() + timeout
     transcript = ""
@@ -352,6 +397,7 @@ def _drive_install(sock, log_path, timeout, vm=None):
     tail = ""
     last_byte_time = time.monotonic()
     last_send = 0.0
+    netboot_step = 0
     location_of_sets_seen = 0
     fallback_fired_for = None
     health_checked = False
@@ -385,6 +431,16 @@ def _drive_install(sock, log_path, timeout, vm=None):
             now = time.monotonic()
             if now - last_send < SEND_DEBOUNCE:
                 continue
+
+            if netboot_step < len(netboot_rules):
+                rx, answer = netboot_rules[netboot_step]
+                if rx.search(window):
+                    sock.sendall(answer.encode())
+                    last_send = now
+                    window = ""
+                    fallback_fired_for = None
+                    netboot_step += 1
+                    continue
 
             if LOCATION_OF_SETS_RE.search(window):
                 location_of_sets_seen += 1
@@ -435,19 +491,20 @@ class OpenbsdInstall(QemuSystemTest):
     """
 
     def _asset_paths(self):
-        """The install ramdisk kernel and the five sets-disk inputs
-        under ORIGAMI_ASSETS, or None if any is missing -- the runner
-        may not have assets provisioned yet (see this method's
-        caller)."""
+        """The 6.5.30 PROM, the install ramdisk kernel, and the five
+        sets-disk inputs under ORIGAMI_ASSETS, or None if any is
+        missing -- the runner may not have assets provisioned yet (see
+        this method's caller)."""
         assets_root = os.environ['ORIGAMI_ASSETS']
+        firmware = resolve_asset(assets_root, FIRMWARE_REL)
         kernel = resolve_asset(
             assets_root, os.path.join(RELEASE_REL, INSTALL_KERNEL_NAME))
         sets_files = [
             resolve_asset(assets_root, os.path.join(RELEASE_REL, name))
             for name in SETS_FILE_NAMES]
-        if not (kernel and all(sets_files)):
+        if not (firmware and kernel and all(sets_files)):
             return None
-        return kernel, sets_files
+        return firmware, kernel, sets_files
 
     def _build_target_disk(self, qemu_img):
         """The blank root disk, created raw then labeled -- ported
@@ -505,13 +562,14 @@ class OpenbsdInstall(QemuSystemTest):
             # loudly: a silent skip here would let a real install
             # regression pass CI unnoticed.
             self.fail(
-                'ORIGAMI_ASSETS is set but one of the install inputs is '
-                f'missing under <ORIGAMI_ASSETS>/{RELEASE_REL}/ '
+                'ORIGAMI_ASSETS is set but the firmware or one of the '
+                f'install inputs is missing at <ORIGAMI_ASSETS>/'
+                f'{FIRMWARE_REL} or under <ORIGAMI_ASSETS>/{RELEASE_REL}/ '
                 f'({INSTALL_KERNEL_NAME}, ' +
                 ', '.join(SETS_FILE_NAMES) +
                 ') -- provision them (nightly assets) rather than '
                 'silently skipping a claimed capability')
-        kernel, sets_files = paths
+        firmware, kernel, sets_files = paths
 
         qemu_img = get_qemu_img(self)
         makefs_bin = which('makefs')
@@ -523,12 +581,17 @@ class OpenbsdInstall(QemuSystemTest):
         target_disk = self._build_target_disk(qemu_img)
         sets_disk = self._build_sets_disk(makefs_bin, sets_files)
 
+        self.require_netdev('user')
+
         vm = self.get_vm(name='openbsd_install')
-        vm.set_machine('origin200')
+        vm.set_machine('origin200,debug-leds=off')
         vm.set_console()
         vm.add_args(
-            '-cpu', 'R10000', '-m', str(MEMORY_MIB), '-no-reboot',
-            '-kernel', kernel,
+            '-cpu', 'R10000', '-m', str(MEMORY_MIB),
+            '-bios', firmware,
+            '-nic', ('user,id=net0,'
+                     f'tftp={os.path.dirname(kernel)},'
+                     f'bootfile={INSTALL_KERNEL_NAME}'),
             '-drive', f'if=none,id=root-disk,file={target_disk},format=raw',
             '-device', 'scsi-hd,drive=root-disk,bus=scsi.0,scsi-id=1',
             '-drive', f'if=none,id=sets-disk,file={sets_disk},format=raw',
@@ -541,13 +604,15 @@ class OpenbsdInstall(QemuSystemTest):
                 vm.console_socket, log_path, INSTALL_TIMEOUT_SECONDS,
                 vm=vm)
         finally:
-            # A VM that crashed, exited on its own (-no-reboot after
-            # the installer's own post-completion reboot request), or
-            # was left running has each been seen here; a graceful
-            # shutdown() against an already-dead process still raises
-            # AbnormalShutdown even though qemu is in fact gone.
-            # Matches test_openbsd_login.py's own OpenbsdLogin.
-            # test_openbsd_login.
+            # A VM that crashed, exited on its own, or was left running
+            # has each been seen here; a graceful shutdown() against an
+            # already-dead process still raises AbnormalShutdown even
+            # though qemu is in fact gone. No -no-reboot here (a real
+            # PROM boot issues its own guest-initiated reset before the
+            # PROM runs a single instruction, and -no-reboot would turn
+            # that into an immediate silent shutdown -- see this
+            # module's own docstring), so a live process reaching here
+            # is the common case, not the exception.
             vm.shutdown(hard=vm.exitcode() is not None)
 
         if not transcript:

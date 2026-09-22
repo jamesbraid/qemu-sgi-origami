@@ -1,20 +1,32 @@
 #!/usr/bin/env python3
 #
-# OpenBSD/IP27 login: boot the installed 6.9 disk directly via -kernel and
-# require an authenticated root shell
+# OpenBSD/IP27 login: netboot the installed 6.9 disk through the stock PROM
+# and require an authenticated root shell
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
 Ports tools/net-transfer-diag's own login_origin() console drive (project
 checkout, read from fj/main) into this fork's own functional-test
 framework, the same way test_prom_boot.py ports tools/boot-gate and
-test_linux_kernel.py ports tools/linux-usercheck. A real boot has PROVEN
-this reaches an authenticated root login on -M origin200 at 128 MiB, on
-this fork's current trunk: a fresh trunk-pinned qemu, clean "origami#"
-root shell, "ifconfig -a" exit 0, no ddb>/panic/bus error -- see
-.superpowers/sdd/2026-08-25-track4-openbsd-tests/
-openbsd-128mb-login-reference.log, this test's own real reference
-transcript. This is a genuine PASSING test, not an xfail.
+test_linux_kernel.py ports tools/linux-usercheck.
+
+login_origin()'s own reference transcript (.superpowers/sdd/
+2026-08-25-track4-openbsd-tests/openbsd-128mb-login-reference.log) was
+captured with the kernel loaded directly via -kernel, before commit
+b707094c18 made origin200 refuse -kernel outright ("stock-PROM boot
+only; boot a kernel through the PROM's own TFTP netboot or a disk
+image, not -kernel"). That refusal happens at machine construction,
+before a single guest instruction runs, so this test had been failing
+outright rather than passing since that commit landed -- undetected
+because it is registered only in the thorough suite (mips64/meson.build),
+which an ordinary run never exercises. This port now boots the same
+kernel and disk the reference transcript did, but through the real
+6.5.30 PROM's own netboot path, the same conversion test_xframe_pci.py
+already made and for the same reason: lib_prom's prom_netboot_steps()
+drives the System Maintenance Menu and command monitor to `boot -f
+bootp()/bsd.IP27` over a SLIRP usermode network, landing on the same
+root-login progression the reference transcript recorded once the
+kernel is running.
 
 128 MiB, not this machine's default: at 128 MiB or below the guest puts
 its whole memory bank in one slot and the machine backs exactly that
@@ -45,14 +57,20 @@ already answered the question. login_verdict() is still what decides
 PASS/FAIL, from the transcript captured either way -- the early break is
 only a runtime-budget optimization, not a second, divergent judgment.
 
-The QEMU argv this file builds is exactly the brief's own spike-verified
-command line (-M origin200 -m 128 -nographic -snapshot -kernel ... -drive
-if=none,id=hd0,file=...,format=raw -device scsi-hd,bus=scsi.0,scsi-id=1,
-drive=hd0 -nic none) -- no -cpu override: the reference transcript's own
-command line carries none, so this board's default CPU model is already
-what that real run used. vm.set_machine()/vm.set_console() supply -M and
-the serial console wiring (see test_prom_sash.py/test_linux_kernel.py for
-the same division); -snapshot keeps the 2 GiB disk read-only.
+The QEMU argv this file builds keeps the reference transcript's own
+absence of a -cpu override (this board's default CPU model is already
+what that real run used) but replaces -kernel with -bios (the 6.5.30
+PROM) plus a SLIRP `-nic user,...,tftp=...,bootfile=bsd.IP27` serving
+the same kernel file the reference transcript loaded directly, matching
+test_xframe_pci.py's own already-converted command line. debug-leds=off
+on the machine property matches every other origin200 test that boots
+through the real PROM (test_prom_sash.py, test_prom_fx.py): a -kernel
+boot never runs the PROM's own LED-lighting code, so its absence from
+a build never mattered before; a real -bios boot does run that code,
+and this avoids depending on the trace event it uses being compiled in.
+vm.set_machine()/vm.set_console() supply -M and the serial console
+wiring (see test_prom_sash.py/test_linux_kernel.py for the same
+division); -snapshot keeps the 2 GiB disk read-only.
 
 Guarded by @skipBigDataTest() (the disk is 2 GiB) and @skipSlowTest()
 (the boot is minutes) -- the framework's own env-var-gated decorators
@@ -77,17 +95,24 @@ import time
 from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
                        skipSlowTest)
 
-from lib_prom import resolve_asset
+from lib_prom import FIRMWARE_REL, prom_netboot_steps, resolve_asset
 from lib_translation_health import assert_translation_healthy
 
 from test_openbsd_login_verdict import login_verdict, TRIPWIRES
 
 
 # Where ORIGAMI_ASSETS resolves the kernel and installed disk, matching
-# the brief's own confirmed paths and test_prom_boot.py's own
-# FIRMWARE_REL idiom: ORIGAMI_ASSETS names a CHECKOUT, not assets/ itself.
+# the brief's own confirmed paths; FIRMWARE_REL (the PROM image) comes
+# from lib_prom.py, imported above. ORIGAMI_ASSETS names a CHECKOUT, not
+# assets/ itself.
 KERNEL_REL = os.path.join('assets', 'openbsd', '6.9', 'bsd.IP27')
 DISK_REL = os.path.join('assets', 'openbsd', 'spike', 'root.img')
+
+# The boot file this test's own SLIRP TFTP server serves the kernel
+# under -- see prom_netboot_steps()'s own docstring for why this need
+# not match the kernel's name on disk. Matches test_xframe_pci.py's own
+# NETBOOT_BOOTFILE, which boots the identical kernel.
+NETBOOT_BOOTFILE = 'bsd.IP27'
 
 # Spike-verified: at 128 MiB or below the installed disk reaches an
 # authenticated root login (see this module's own docstring).
@@ -103,8 +128,11 @@ BOOT_TIMEOUT_SECONDS = 840
 # checkout): answer "root device:" with the disk, take the default swap,
 # send "root" at "login:", send the root password at "Password:". Ported
 # here rather than imported -- SELF-CONTAINED per this port's brief.
+# prom_netboot_steps() is prepended so the same rule engine first takes
+# the PROM from the System Maintenance Menu through `boot -f
+# bootp()/bsd.IP27` before any of login_origin()'s own questions appear.
 ROOT_PASSWORD = "origami123"
-LOGIN_STEPS = (
+LOGIN_STEPS = prom_netboot_steps(NETBOOT_BOOTFILE) + (
     (r"root device\s*:", "sd0a\n"),
     (r"swap device[^:]*:", "\n"),
     (r"login:", "root\n"),
@@ -168,7 +196,7 @@ def _drive_login(sock, log_path, timeout, vm=None):
 
 
 class OpenbsdLogin(QemuSystemTest):
-    """Boots the installed OpenBSD 6.9 disk directly via -kernel and
+    """Netboots the installed OpenBSD 6.9 disk through the stock PROM and
     requires login_verdict() to be PASS. See this module's docstring
     for the full contract; this class only wires it to a real boot,
     the same division test_prom_sash.py and test_linux_kernel.py keep
@@ -176,15 +204,16 @@ class OpenbsdLogin(QemuSystemTest):
     """
 
     def _asset_paths(self):
-        """The kernel and installed disk under ORIGAMI_ASSETS, or
-        None if either is missing -- the runner may not have assets
+        """The firmware, kernel and installed disk under ORIGAMI_ASSETS,
+        or None if any is missing -- the runner may not have assets
         provisioned yet (see this method's caller)."""
         assets_root = os.environ['ORIGAMI_ASSETS']
+        firmware = resolve_asset(assets_root, FIRMWARE_REL)
         kernel = resolve_asset(assets_root, KERNEL_REL)
         disk = resolve_asset(assets_root, DISK_REL)
-        if not (kernel and disk):
+        if not (firmware and kernel and disk):
             return None
-        return kernel, disk
+        return firmware, kernel, disk
 
     @skipBigDataTest()
     @skipSlowTest()
@@ -194,27 +223,32 @@ class OpenbsdLogin(QemuSystemTest):
         if paths is None:
             # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
             # the case where it is unset entirely -- getting here means
-            # it IS set, so a missing kernel or disk is a provisioning
-            # failure, not an absent-assets developer run, and must fail
-            # loudly: a silent skip here would let a real login
-            # regression pass CI unnoticed.
+            # it IS set, so a missing firmware, kernel or disk is a
+            # provisioning failure, not an absent-assets developer run,
+            # and must fail loudly: a silent skip here would let a real
+            # login regression pass CI unnoticed.
             self.fail(
-                'ORIGAMI_ASSETS is set but the kernel/disk are missing '
-                f'at <ORIGAMI_ASSETS>/{KERNEL_REL} and '
+                'ORIGAMI_ASSETS is set but the firmware/kernel/disk are '
+                f'missing at <ORIGAMI_ASSETS>/{FIRMWARE_REL}, '
+                f'<ORIGAMI_ASSETS>/{KERNEL_REL} and '
                 f'<ORIGAMI_ASSETS>/{DISK_REL} -- provision them '
                 '(nightly assets) rather than silently skipping a '
                 'claimed capability')
-        kernel, disk = paths
+        firmware, kernel, disk = paths
+
+        self.require_netdev('user')
 
         vm = self.get_vm(name='openbsd_login')
-        vm.set_machine('origin200')
+        vm.set_machine('origin200,debug-leds=off')
         vm.set_console()
         vm.add_args(
             '-m', str(MEMORY_MIB), '-snapshot',
-            '-kernel', kernel,
+            '-bios', firmware,
+            '-nic', ('user,id=net0,'
+                    f'tftp={os.path.dirname(kernel)},'
+                    f'bootfile={NETBOOT_BOOTFILE}'),
             '-drive', f'if=none,id=hd0,file={disk},format=raw',
-            '-device', 'scsi-hd,bus=scsi.0,scsi-id=1,drive=hd0',
-            '-nic', 'none')
+            '-device', 'scsi-hd,bus=scsi.0,scsi-id=1,drive=hd0')
         vm.launch()
 
         log_path = self.log_file('openbsd-login.log')

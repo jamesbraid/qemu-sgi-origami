@@ -1,24 +1,39 @@
 #!/usr/bin/env python3
 #
-# OpenBSD/IP27 network transfer: boot the installed 6.9 disk WITH a network
-# back end, log in, lease an address by DHCP, and move a payload three ways
-# over the guest's own network interface, each leg checked by SHA-256 and
-# byte count
+# OpenBSD/IP27 network transfer: netboot the installed 6.9 disk through the
+# stock PROM WITH a network back end, log in, lease an address by DHCP, and
+# move a payload three ways over the guest's own network interface, each
+# leg checked by SHA-256 and byte count
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
 Ports tools/net-transfer-diag's own --origin flow (project checkout, read
 from fj/main) into this fork's own functional-test framework, the same way
-test_openbsd_login.py ports that same tool's login_origin(). Where
-test_openbsd_login.py boots with `-nic none` to keep the network out of the
-question while proving login alone, this test fits the network back end
-net-transfer-diag's own origin_argv() uses for --origin and drives the rest
-of that tool's flow: DHCP lease, then three transfers -- read (host HTTP
-server -> guest ftp(1)), write (guest nc(1) -> host TCP sink), inbound
-(host opens a forwarded port -> guest nc -l) -- each checked by an
-independently-computed SHA-256 and byte count on both sides. See
-net_transfer_verdict()'s own docstring (test_openbsd_net_transfer_verdict.py,
-imported below) for why a command exiting 0 is not evidence here.
+test_openbsd_login.py ports that same tool's login_origin(). This test
+fits the network back end net-transfer-diag's own origin_argv() uses for
+--origin and drives the rest of that tool's flow: DHCP lease, then three
+transfers -- read (host HTTP server -> guest ftp(1)), write (guest nc(1)
+-> host TCP sink), inbound (host opens a forwarded port -> guest nc -l)
+-- each checked by an independently-computed SHA-256 and byte count on
+both sides. See net_transfer_verdict()'s own docstring
+(test_openbsd_net_transfer_verdict.py, imported below) for why a command
+exiting 0 is not evidence here.
+
+Boots through the real 6.5.30 PROM's own netboot path rather than a
+direct -kernel load, the conversion test_openbsd_login.py and
+test_xframe_pci.py both make and for the same reason: commit b707094c18
+made origin200 refuse -kernel outright at machine construction ("stock-PROM
+boot only; boot a kernel through the PROM's own TFTP netboot or a disk
+image, not -kernel"), and this test's own -kernel command line had been
+refused, never running a single guest instruction, since that commit
+landed -- undetected because it is registered only in the thorough suite
+(mips64/meson.build), which an ordinary run never exercises. lib_prom's
+prom_netboot_steps() drives the System Maintenance Menu and command
+monitor to `boot -f bootp()/bsd.IP27` over the same SLIRP usermode
+network this test's own DHCP lease and three transfer legs already use --
+one `-nic user` back end serves the netboot TFTP request, the DHCP
+lease, and the forwarded port, the same way test_linux_multiuser.py's own
+`-nic` string already combines `tftp=`/`bootfile=` with `hostfwd=`.
 
 THIS IS A PASSING TEST: it asserts that login, the DHCP lease, and all
 three transfers actually complete and match. The IOC3 ethernet model
@@ -88,7 +103,7 @@ from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
                        skipSlowTest)
 from qemu_test.utils import get_usernet_hostfwd_port
 
-from lib_prom import resolve_asset
+from lib_prom import FIRMWARE_REL, prom_netboot_steps, resolve_asset
 
 from test_openbsd_net_transfer_verdict import (
     net_transfer_verdict, summarise_pcap)
@@ -96,9 +111,16 @@ from test_openbsd_net_transfer_verdict import (
 
 # Where ORIGAMI_ASSETS resolves the kernel and installed disk -- the same
 # assets test_openbsd_login.py resolves, since this test boots the
-# identical kernel and disk with a network back end added.
+# identical kernel and disk with a network back end added. FIRMWARE_REL
+# comes from lib_prom.py; it names the same 6.5.30 PROM every origin200
+# netboot test loads with -bios.
 KERNEL_REL = os.path.join('assets', 'openbsd', '6.9', 'bsd.IP27')
 DISK_REL = os.path.join('assets', 'openbsd', 'spike', 'root.img')
+
+# The TFTP bootfile name the PROM's netboot command asks the SLIRP back
+# end for -- test_xframe_pci.py's own identical constant, kept equal
+# because both tests boot the same kernel through the same netboot path.
+NETBOOT_BOOTFILE = 'bsd.IP27'
 
 MEMORY_MIB = 128
 ROOT_PASSWORD = "origami123"
@@ -118,8 +140,15 @@ PAYLOAD_BYTES = 65536
 # login_origin()'s own console drive (tools/net-transfer-diag, project
 # checkout), reproduced here rather than imported -- SELF-CONTAINED per
 # this port's brief, the same duplication test_openbsd_login.py already
-# makes of the identical sequence.
-LOGIN_STEPS = (
+# makes of the identical sequence. prom_netboot_steps() returns str
+# patterns and responses; _Console.expect() only compiles a pattern when
+# it is bytes (see its own isinstance check below), so the netboot steps
+# are encoded to bytes before joining this file's own bytes-pattern
+# steps -- the responses stay str, matching every other entry's shape.
+LOGIN_STEPS = tuple(
+    (pattern.encode(), response)
+    for pattern, response in prom_netboot_steps(NETBOOT_BOOTFILE)
+) + (
     (rb"root device\s*:", "sd0a\n"),
     (rb"swap device[^:]*:", "\n"),
     (rb"login:", "root\n"),
@@ -350,19 +379,20 @@ class _Sink(socketserver.ThreadingTCPServer):
 
 
 class OpenbsdNetTransfer(QemuSystemTest):
-    """Boots the installed OpenBSD 6.9 disk with a network back end,
-    logs in, leases an address by DHCP, runs the three transfer legs,
-    and requires net_transfer_verdict() to be PASS. See this module's
-    own docstring for the full contract.
+    """Netboots the installed OpenBSD 6.9 disk through the stock PROM
+    with a network back end, logs in, leases an address by DHCP, runs
+    the three transfer legs, and requires net_transfer_verdict() to be
+    PASS. See this module's own docstring for the full contract.
     """
 
     def _asset_paths(self):
         assets_root = os.environ['ORIGAMI_ASSETS']
+        firmware = resolve_asset(assets_root, FIRMWARE_REL)
         kernel = resolve_asset(assets_root, KERNEL_REL)
         disk = resolve_asset(assets_root, DISK_REL)
-        if not (kernel and disk):
+        if not (firmware and kernel and disk):
             return None
-        return kernel, disk
+        return firmware, kernel, disk
 
     def _probe_tools(self, con):
         """Which of the guest programs the three legs need are
@@ -559,12 +589,13 @@ class OpenbsdNetTransfer(QemuSystemTest):
             # loudly: a silent skip here would let a real transfer
             # regression pass CI unnoticed.
             self.fail(
-                'ORIGAMI_ASSETS is set but the kernel/disk are missing '
-                f'at <ORIGAMI_ASSETS>/{KERNEL_REL} and '
+                'ORIGAMI_ASSETS is set but the firmware/kernel/disk are '
+                f'missing at <ORIGAMI_ASSETS>/{FIRMWARE_REL}, '
+                f'<ORIGAMI_ASSETS>/{KERNEL_REL} and '
                 f'<ORIGAMI_ASSETS>/{DISK_REL} -- provision them '
                 '(nightly assets) rather than silently skipping a '
                 'claimed capability')
-        kernel, disk = paths
+        firmware, kernel, disk = paths
 
         self.require_netdev('user')
 
@@ -592,14 +623,17 @@ class OpenbsdNetTransfer(QemuSystemTest):
         pcap_path = self.log_file('wire.pcap')
 
         vm = self.get_vm(name='openbsd_net_transfer')
-        vm.set_machine('origin200')
+        vm.set_machine('origin200,debug-leds=off')
         vm.set_console()
         vm.add_args(
             '-m', str(MEMORY_MIB), '-snapshot',
-            '-kernel', kernel,
+            '-bios', firmware,
             '-drive', f'if=none,id=hd0,file={disk},format=raw',
             '-device', 'scsi-hd,bus=scsi.0,scsi-id=1,drive=hd0',
-            '-nic', ('user,id=n1,hostfwd=tcp:127.0.0.1:0-'
+            '-nic', ('user,id=n1,'
+                     f'tftp={os.path.dirname(kernel)},'
+                     f'bootfile={NETBOOT_BOOTFILE},'
+                     'hostfwd=tcp:127.0.0.1:0-'
                      f'{GUEST_ADDR}:{GUEST_LISTEN_PORT}'),
             '-object', f'filter-dump,id=fd0,netdev=n1,file={pcap_path}')
         vm.launch()
