@@ -41,31 +41,61 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIIOC3KBCState, SGI_IOC3_KBC)
 #define SGI_IOC3_KBC_RX_VALID(p)    (1u << (29 + (p)))
 
 /*
- * Bit 27 reports whether the packed bytes came from the keyboard or the
- * mouse. The datasheet fixes the field's role but not its polarity, so the
- * assignment here -- clear for the keyboard, set for the mouse -- is this
- * model's choice; no guest on origami's path depends on it.
+ * Bit 27 reports whether the packed characters came from the keyboard or the
+ * mouse. Mainline Linux's own header gives the polarity -- clear for the
+ * keyboard, set for the mouse (arch/mips/include/asm/sn/ioc3.h) -- which is
+ * what this model follows.
  */
 #define SGI_IOC3_KBC_RX_SOURCE_AUX  (1u << 27)
 
 /*
- * The datasheet's overflow flag (bit 28) marks a fourth byte lost. This
- * model's ps2 queue drops nothing -- surplus stays queued for the next read
- * -- so nothing is ever lost and the flag is never set.
+ * Bit 28 reports that a character arrived while the three slots were full
+ * and was lost. A read clears it along with the characters it reports.
  */
+#define SGI_IOC3_KBC_RX_OVERFLOW    (1u << 28)
+
+/*
+ * The two clamp pairs. Arming a port's clamp makes the controller hold that
+ * port's clock line low once it has received one, or three, characters, which
+ * stops the device instead of losing what it has left to say. Mainline
+ * Linux's ioc3kbd driver arms clamp-after-three on both ports as its only
+ * initialisation write to this register; the bit positions are its own
+ * header's (arch/mips/include/asm/sn/ioc3.h).
+ */
+#define SGI_IOC3_KBC_CTRL_K_CLAMP_1 (1u << 20)
+#define SGI_IOC3_KBC_CTRL_M_CLAMP_1 (1u << 21)
+#define SGI_IOC3_KBC_CTRL_K_CLAMP_3 (1u << 22)
+#define SGI_IOC3_KBC_CTRL_M_CLAMP_3 (1u << 23)
+#define SGI_IOC3_KBC_CTRL_CLAMP_MASK 0x00f00000u
 
 /*
  * Control/status write mask. The datasheet enumerates the writable control
  * fields -- the clamp-after-one and clamp-after-three pairs, the two
  * timeout-enable bits, emulation mode, the fast-clock bit and the manual
- * line-pull bits -- but does not pin their bit positions. This model stores
- * the low half as software control and treats the upper half, where the
- * hardware-owned status (write-pending, idle, timeout and the live line
- * states) lives, as read-only, reading clear in the synchronous model. The
- * mask is deliberately conservative and easy to narrow once positions are
- * pinned.
+ * line-pull bits -- but does not pin their bit positions; Linux's header
+ * does, and the clamps are the only ones this model acts on. So the low
+ * half is stored as software control, the four clamp bits are stored and
+ * obeyed, and the rest of the upper half -- the hardware-owned write-pending,
+ * idle, timeout and live line states -- is read-only and reads clear in the
+ * synchronous model.
  */
-#define SGI_IOC3_KBC_CONTROL_MASK   0x0000ffffu
+#define SGI_IOC3_KBC_CONTROL_MASK   (0x0000ffffu | SGI_IOC3_KBC_CTRL_CLAMP_MASK)
+
+/* The two ports, in the order their GPIO inputs and registers are wired. */
+#define SGI_IOC3_KBC_PORT_KBD       0
+#define SGI_IOC3_KBC_PORT_AUX       1
+#define SGI_IOC3_KBC_PORTS          2
+
+/*
+ * What one port's controller is holding: the characters it has taken from
+ * the device, oldest first, and whether one was lost for want of room.
+ * Everything that decides the next interrupt lives here, so it all migrates.
+ */
+typedef struct SGIIOC3KBCPort {
+    uint8_t data[SGI_IOC3_KBC_RX_SLOTS];
+    uint8_t count;
+    bool overflow;
+} SGIIOC3KBCPort;
 
 struct SGIIOC3KBCState {
     SysBusDevice parent_obj;
@@ -77,6 +107,15 @@ struct SGIIOC3KBCState {
     qemu_irq irq;
 
     uint32_t control;
+    SGIIOC3KBCPort port[SGI_IOC3_KBC_PORTS];
+
+    /*
+     * Set while a fill is moving characters in. Popping one re-raises the
+     * ps2 device's own line, which lands back in the fill; the outer pass
+     * owns the holding, so the re-entry returns. Never set across a guest
+     * access, so nothing migrates it.
+     */
+    bool filling;
 };
 
 #endif /* HW_INPUT_SGI_IOC3_KBC_H */
