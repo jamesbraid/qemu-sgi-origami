@@ -2073,6 +2073,106 @@ static void char_wctablet_bad_model_test(void)
     qemu_opts_del(opts);
 }
 
+/*
+ * A frontend that asks the backend for more from inside its own read
+ * handler, the way a UART wired to a controller that drains it from the
+ * interrupt its receive raises does. chunk is how much it takes per
+ * pass, so a packet larger than that needs several.
+ */
+typedef struct ReentrantFeHandler {
+    CharFrontend *fe;
+    int chunk;
+    int depth;
+    int max_depth;
+    int deepest;
+    int read_count;
+    uint8_t read_buf[64];
+} ReentrantFeHandler;
+
+static int reentrant_fe_can_read(void *opaque)
+{
+    ReentrantFeHandler *h = opaque;
+
+    return h->chunk;
+}
+
+static void reentrant_fe_read(void *opaque, const uint8_t *buf, int size)
+{
+    ReentrantFeHandler *h = opaque;
+
+    g_assert_cmpint(size, <=, h->chunk);
+    g_assert_cmpint(h->read_count + size, <=, (int)sizeof(h->read_buf));
+    memcpy(h->read_buf + h->read_count, buf, size);
+    h->read_count += size;
+
+    /*
+     * Bounded, so a backend that hands the same bytes back on every
+     * nested call fails the length assertions below rather than running
+     * the stack out.
+     */
+    if (h->depth < h->max_depth) {
+        h->depth++;
+        if (h->depth > h->deepest) {
+            h->deepest = h->depth;
+        }
+        qemu_chr_fe_accept_input(h->fe);
+        h->depth--;
+    }
+}
+
+static void char_wctablet_reentrant_accept_test(void)
+{
+    QEMUSerialSetParams ssp = { .speed = 9600, .parity = 'N',
+                                .data_bits = 8, .stop_bits = 1 };
+    ReentrantFeHandler fe = { 0, };
+    QemuOpts *opts;
+    Chardev *chr;
+    CharFrontend c;
+    int ret, rx, ry;
+
+    opts = qemu_opts_create(qemu_find_opts("chardev"), "wctablet-reent-label",
+                            1, &error_abort);
+    qemu_opt_set(opts, "backend", "wctablet", &error_abort);
+    qemu_opt_set(opts, "model", "UD-1212-R", &error_abort);
+    chr = qemu_chr_new_from_opts(opts, NULL, &error_abort);
+    g_assert_nonnull(chr);
+    qemu_opts_del(opts);
+
+    qemu_chr_fe_init(&c, chr, &error_abort);
+    fe.fe = &c;
+    fe.chunk = 2; /* under the 7 bytes of a coordinate packet */
+    fe.max_depth = 8;
+    qemu_chr_fe_set_handlers(&c, reentrant_fe_can_read, reentrant_fe_read,
+                             NULL, NULL, &fe, NULL, true);
+
+    ret = qemu_chr_fe_ioctl(&c, CHR_IOCTL_SERIAL_SET_PARAMS, &ssp);
+    g_assert_cmpint(ret, ==, 0);
+
+    ret = qemu_chr_fe_write_all(&c, (const uint8_t *)"ST\r", 3);
+    g_assert_cmpint(ret, ==, 3);
+    fe.read_count = 0;
+
+    wctablet_send_abs(INPUT_AXIS_X, INPUT_EVENT_ABS_MAX);
+    wctablet_send_abs(INPUT_AXIS_Y, INPUT_EVENT_ABS_MAX);
+    wctablet_send_sync();
+
+    /* The frontend really did come back for more while a write was open. */
+    g_assert_cmpint(fe.deepest, >, 0);
+
+    /* One packet, delivered once and in order, not once per nested pass. */
+    g_assert_cmpint(fe.read_count, ==, 7);
+    rx = ((fe.read_buf[0] & 0x03) << 14) |
+         ((fe.read_buf[1] & 0x7f) << 7) |
+         (fe.read_buf[2] & 0x7f);
+    ry = ((fe.read_buf[3] & 0x03) << 14) |
+         ((fe.read_buf[4] & 0x7f) << 7) |
+         (fe.read_buf[5] & 0x7f);
+    g_assert_cmpint(rx, ==, 15240);
+    g_assert_cmpint(ry, ==, 15240);
+
+    qemu_chr_fe_deinit(&c, true);
+}
+
 static SocketAddress tcpaddr = {
     .type = SOCKET_ADDRESS_TYPE_INET,
     .u.inet.host = (char *)"127.0.0.1",
@@ -2197,6 +2297,8 @@ int main(int argc, char **argv)
     g_test_add_func("/char/wctablet/burst", char_wctablet_burst_test);
     g_test_add_func("/char/wctablet/ud1212r", char_wctablet_ud1212r_test);
     g_test_add_func("/char/wctablet/bad-model", char_wctablet_bad_model_test);
+    g_test_add_func("/char/wctablet/reentrant-accept",
+                    char_wctablet_reentrant_accept_test);
 
 end:
     return g_test_run();

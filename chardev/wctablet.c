@@ -253,6 +253,7 @@ static const QemuInputHandler wctablet_handler = {
 static void wctablet_chr_accept_input(Chardev *chr)
 {
     TabletChardev *tablet = WCTABLET_CHARDEV(chr);
+    uint8_t handed_over[WC_OUTPUT_BUF_MAX_LEN];
     int len, canWrite;
 
     canWrite = qemu_chr_be_can_write(chr);
@@ -262,11 +263,20 @@ static void wctablet_chr_accept_input(Chardev *chr)
     }
 
     if (len) {
-        qemu_chr_be_write(chr, tablet->outbuf, len);
+        /*
+         * Take the bytes off the queue before handing them over.
+         * qemu_chr_be_write() re-enters this function whenever the
+         * frontend drains its receive FIFO from inside its own read
+         * handler, and a nested call that could still see these bytes
+         * would send them a second time and leave outlen negative once
+         * both frames had subtracted the same length.
+         */
+        memcpy(handed_over, tablet->outbuf, len);
         tablet->outlen -= len;
         if (tablet->outlen) {
             memmove(tablet->outbuf, tablet->outbuf + len, tablet->outlen);
         }
+        qemu_chr_be_write(chr, handed_over, len);
     }
 }
 
