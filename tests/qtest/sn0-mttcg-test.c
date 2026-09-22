@@ -52,6 +52,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "sgi-mips-emit.h"
 #include "sgi-test.h"
 
 #define NR_CPUS             2
@@ -102,22 +103,17 @@
 #define OPC_SPECIAL         (0x00u << 26)
 #define OPC_BEQ             (0x04u << 26)
 #define OPC_BNE             (0x05u << 26)
-#define OPC_ADDIU           (0x09u << 26)
 #define OPC_SLTIU           (0x0bu << 26)
 #define OPC_ANDI            (0x0cu << 26)
 #define OPC_ORI             (0x0du << 26)
-#define OPC_LUI             (0x0fu << 26)
 #define OPC_DADDIU          (0x19u << 26)
 #define OPC_LW              (0x23u << 26)
 #define OPC_SW              (0x2bu << 26)
 #define OPC_LLD             (0x34u << 26)
-#define OPC_LD              (0x37u << 26)
 #define OPC_SCD             (0x3cu << 26)
-#define OPC_SD              (0x3fu << 26)
 #define OPC_SLL             (0x00u | OPC_SPECIAL)
 #define OPC_SYNC            (0x0fu | OPC_SPECIAL)
 #define OPC_ADDU            (0x21u | OPC_SPECIAL)
-#define OPC_AND             (0x24u | OPC_SPECIAL)
 #define OPC_OR              (0x25u | OPC_SPECIAL)
 #define OPC_SLTU            (0x2bu | OPC_SPECIAL)
 #define OPC_CP0             (0x10u << 26)
@@ -212,7 +208,7 @@ static void emit_immediate(GuestImage *img, uint32_t opc, int rs, int rt,
 
 static void emit_lui(GuestImage *img, int rt, uint16_t imm)
 {
-    emit_immediate(img, OPC_LUI, R_ZERO, rt, imm);
+    emit(img, mips_lui(rt, imm));
 }
 
 static void emit_ori(GuestImage *img, int rt, int rs, uint16_t imm)
@@ -227,7 +223,7 @@ static void emit_andi(GuestImage *img, int rt, int rs, uint16_t imm)
 
 static void emit_addiu(GuestImage *img, int rt, int rs, int16_t imm)
 {
-    emit_immediate(img, OPC_ADDIU, rs, rt, (uint16_t)imm);
+    emit(img, mips_addiu(rt, rs, imm));
 }
 
 static void emit_daddiu(GuestImage *img, int rt, int rs, int16_t imm)
@@ -242,12 +238,12 @@ static void emit_sltiu(GuestImage *img, int rt, int rs, uint16_t imm)
 
 static void emit_ld(GuestImage *img, int rt, int base, uint16_t off)
 {
-    emit_immediate(img, OPC_LD, base, rt, off);
+    emit(img, mips_ld(rt, base, off));
 }
 
 static void emit_sd(GuestImage *img, int rt, int base, uint16_t off)
 {
-    emit_immediate(img, OPC_SD, base, rt, off);
+    emit(img, mips_sd(rt, base, off));
 }
 
 static void emit_sw(GuestImage *img, int rt, int base, uint16_t off)
@@ -287,7 +283,7 @@ static void emit_addu(GuestImage *img, int rd, int rs, int rt)
 
 static void emit_and(GuestImage *img, int rd, int rs, int rt)
 {
-    emit_reg3(img, OPC_AND, rd, rs, rt);
+    emit(img, mips_and(rd, rs, rt));
 }
 
 static void emit_sltu(GuestImage *img, int rd, int rs, int rt)
@@ -322,7 +318,7 @@ static void emit_sync(GuestImage *img)
 
 static void emit_nop(GuestImage *img)
 {
-    emit_sll(img, R_ZERO, R_ZERO, 0);
+    emit(img, mips_nop());
 }
 
 /* EHB is SLL with rd = rt = 0 and sa = 3: an execution hazard barrier. */
