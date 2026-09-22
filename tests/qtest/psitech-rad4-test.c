@@ -548,7 +548,7 @@ static void test_km_interrupt_reaches_pci_status(void)
     g_assert_cmphex(qtest_readl(qts, CFG0(RAD4_KM_SLOT) + PCI_COMMAND_OFF) &
                     PCI_STATUS_INTERRUPT, ==, 0);
 
-    /* ISR's TXRDY_A condition alone, still masked by a zero IMR, is not enough. */
+    /* ISR's TXRDY_A condition alone, masked by a zero IMR, is not enough. */
     bar3_km_write(qts, KM_REG_CRA, KM_CR_TX_ENABLE);
     g_assert_cmphex(qtest_readl(qts, CFG0(RAD4_KM_SLOT) + PCI_COMMAND_OFF) &
                     PCI_STATUS_INTERRUPT, ==, 0);
