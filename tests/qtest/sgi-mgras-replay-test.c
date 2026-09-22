@@ -283,6 +283,7 @@ static void replay_line(QTestState *qts, const char *path, unsigned int line,
 static void run_replay(const char *path, bool check_default_trace)
 {
     const char *trace = g_getenv("MGRAS_TRACE");
+    const char *screendump = g_getenv("MGRAS_SCREENDUMP");
     g_autofree char *contents = NULL;
     g_autofree char *trace_contents = NULL;
     g_autofree char *temporary_trace = NULL;
@@ -312,6 +313,11 @@ static void run_replay(const char *path, bool check_default_trace)
     lines = g_strsplit(contents, "\n", -1);
     for (unsigned int i = 0; lines[i]; i++) {
         replay_line(qts, path, i + 1, lines[i]);
+    }
+    if (screendump && *screendump) {
+        qtest_qmp_assert_success(qts,
+            "{'execute': 'screendump', 'arguments': {'filename': %s}}",
+            screendump);
     }
     qtest_quit(qts);
     if (!g_file_get_contents(trace, &trace_contents, NULL, &error)) {
@@ -357,6 +363,26 @@ static void test_replay(void)
     bool custom = path && *path;
 
     run_replay(custom ? path : DEFAULT_REPLAY, !custom);
+}
+
+static void test_replay_screendump(void)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *contents = NULL;
+    g_autoptr(GError) error = NULL;
+    int fd;
+
+    fd = g_file_open_tmp("sgi-mgras-replay-XXXXXX.ppm", &path, &error);
+    g_assert_no_error(error);
+    close(fd);
+    unlink(path);
+    g_setenv("MGRAS_SCREENDUMP", path, true);
+    run_replay(MINIMAL_REPLAY, false);
+    g_unsetenv("MGRAS_SCREENDUMP");
+    g_assert_true(g_file_get_contents(path, &contents, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_true(g_str_has_prefix(contents, "P6\n1280 1024\n255\n"));
+    unlink(path);
 }
 
 static void test_minimal_replay(void)
@@ -444,6 +470,7 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("sgi-mgras/replay", test_replay);
+    qtest_add_func("sgi-mgras/replay-screendump", test_replay_screendump);
     qtest_add_func("sgi-mgras/minimal-replay", test_minimal_replay);
     qtest_add_func("sgi-mgras/masked-read", test_masked_read);
     qtest_add_func("sgi-mgras/invalid-number", test_invalid_number);
