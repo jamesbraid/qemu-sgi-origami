@@ -61,7 +61,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from lib_prom import drive_console, resolve_asset
+from lib_prom import (FORK_ROOT, MACHINES, drive_console, require_assets,
+                      run_record, utc_now)
 
 try:
     from qemu_test import QemuSystemTest
@@ -119,82 +120,21 @@ DIAG_SUMMARY_RE = re.compile(rb"META\s+TOTAL\s+\d+\s+\d+")
 DIAG_COUNT = 2
 
 
-def _utc_now():
-    import datetime
-    return datetime.datetime.now(datetime.UTC).isoformat().replace(
-        "+00:00", "Z")
-
-
-def _file_record(path):
-    import hashlib
-    resolved = os.path.realpath(path)
-    digest = hashlib.sha256()
-    with open(resolved, "rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return {"path": str(path), "resolved_path": resolved,
-            "sha256": digest.hexdigest(),
-            "size_bytes": os.path.getsize(resolved)}
-
-
-def _fork_git_identity(tree):
-    import subprocess
-    try:
-        commit = subprocess.run(
-            ["git", "-C", str(tree), "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=30)
-        status = subprocess.run(
-            ["git", "-C", str(tree), "status", "--porcelain=v1",
-             "--untracked-files=normal"],
-            capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if commit.returncode != 0 or status.returncode != 0:
-        return None
-    return {"path": str(tree), "commit": commit.stdout.strip(),
-            "dirty": bool(status.stdout.strip())}
-
-
 if QemuSystemTest is not None:
-
-    _FORK_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__)))))
 
     class IrixDiag(QemuSystemTest):
         """Boots the golden-with-diagnostics IRIX disk, logs in, runs
         oldisk, and requires diag_verdict() to be PASS."""
 
-        def _asset_paths(self):
-            assets_root = os.environ.get('ORIGAMI_ASSETS')
-            prom = resolve_asset(assets_root, FIRMWARE_REL)
-            disk = resolve_asset(assets_root, DISK_REL)
-            if not (prom and disk):
-                return None
-            return prom, disk
-
         @skipBigDataTest()
         @skipSlowTest()
         @skipIfMissingEnv('ORIGAMI_ASSETS')
         def test_irix_diag(self):
-            paths = self._asset_paths()
-            if paths is None:
-                # skipIfMissingEnv above already skipped the case where
-                # ORIGAMI_ASSETS is unset entirely -- getting here means
-                # it IS set, so a missing PROM or disk is a provisioning
-                # failure, not an absent-assets developer run, and must
-                # fail loudly: a silent skip here would let a real
-                # oldisk regression pass CI unnoticed.
-                self.fail(
-                    'ORIGAMI_ASSETS is set but the PROM/disk are missing '
-                    f'at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
-                    f'<ORIGAMI_ASSETS>/{DISK_REL} -- provision them '
-                    '(nightly assets) rather than silently skipping a '
-                    'claimed capability')
-            prom, disk = paths
+            assets = require_assets(self, FIRMWARE_REL, DISK_REL)
+            prom, disk = assets[FIRMWARE_REL], assets[DISK_REL]
 
             vm = self.get_vm(name='irix_diag')
-            vm.set_machine(
-                'origin200,topology=origin200-dual,debug-leds=off')
+            vm.set_machine(MACHINES['origin200_dual'])
             vm.set_console()
             vm.add_args(
                 '-accel', 'tcg,thread=single',
@@ -207,7 +147,7 @@ if QemuSystemTest is not None:
                 '-device', 'scsi-hd,bus=scsi.0,scsi-id=1,lun=0,drive=disk0',
                 '-nic', 'user,id=net0')
 
-            started = _utc_now()
+            started = utc_now()
             vm.launch()
             log_path = self.log_file('irix-diag.log')
             try:
@@ -218,7 +158,7 @@ if QemuSystemTest is not None:
                         >= DIAG_COUNT), vm=vm)
             finally:
                 vm.shutdown(hard=vm.exitcode() is not None)
-            ended = _utc_now()
+            ended = utc_now()
 
             if not transcript:
                 self.fail(
@@ -241,11 +181,8 @@ if QemuSystemTest is not None:
                     'console_driver_reached_sentinel': reached,
                     'timeout_seconds': BOOT_TIMEOUT_SECONDS,
                     'diagnostics': DIAG_CMD,
-                    'identity': {
-                        'fork': _fork_git_identity(_FORK_ROOT),
-                        'qemu_binary': _file_record(self.qemu_bin),
-                        'payload': {'prom': _file_record(prom),
-                                    'disk': _file_record(disk)}},
+                    'identity': run_record(FORK_ROOT, self.qemu_bin,
+                                          prom=prom, disk=disk),
                     'verdict': report['verdict'],
                     'problems': report['problems'],
                 }, run_file, indent=2, sort_keys=True)

@@ -69,16 +69,15 @@ reached_banner() and reached_first_console() below are the two pure
 functions this file factors its progress checks into.
 """
 
-import datetime
-import hashlib
 import json
 import os
 import re
-import subprocess
 
 from qemu_test import QemuSystemTest, skipIfMissingEnv
 
-from lib_prom import drive_console, resolve_asset
+from lib_prom import (FORK_ROOT, MACHINES, drive_console, file_record,
+                      file_sha256, fork_git_identity, require_assets,
+                      utc_now)
 
 
 # The miniroot kernel's own release banner, printed at kernel entry. The
@@ -212,23 +211,15 @@ DRIVER_STEPS = (
 DRIVER_UNTIL_RE = MINIROOT_BANNER_RE
 
 
-def _file_sha256(path):
-    digest = hashlib.sha256()
-    with open(path, "rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def artifact_identity_problems(prom_path, kernel_path):
     """Which of the release-matched PROM / miniroot-kernel SHA-256 digests
     mismatch, the same guard test_prom_sash's artifact_identity_problems
     makes against a stale or wrong-release asset before spending a boot on
     it. stdlib hashlib only."""
     problems = []
-    if _file_sha256(prom_path) != PROM_SHA256:
+    if file_sha256(prom_path) != PROM_SHA256:
         problems.append("PROM SHA-256 does not match release " + RELEASE)
-    if _file_sha256(kernel_path) != KERNEL_SHA256:
+    if file_sha256(kernel_path) != KERNEL_SHA256:
         problems.append(
             KERNEL_NAME + " SHA-256 does not match release " + RELEASE)
     return problems
@@ -264,54 +255,6 @@ def miniroot_extra_args(prom, tftp, elsc_log, capture):
     ]
 
 
-def _utc_now():
-    return datetime.datetime.now(datetime.UTC).isoformat().replace(
-        "+00:00", "Z")
-
-
-def _file_record(path):
-    resolved = os.path.realpath(path)
-    digest = hashlib.sha256()
-    with open(resolved, "rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return {
-        "path": str(path),
-        "resolved_path": resolved,
-        "sha256": digest.hexdigest(),
-        "size_bytes": os.path.getsize(resolved),
-    }
-
-
-def _fork_git_identity(tree):
-    """This fork checkout's own commit and dirty state, the binding record
-    for a functional test inside the fork itself. None on any git failure:
-    a missing identity must not read as a fabricated clean one. Matches
-    test_prom_sash._fork_git_identity."""
-    try:
-        commit = subprocess.run(
-            ["git", "-C", str(tree), "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=30)
-        status = subprocess.run(
-            ["git", "-C", str(tree), "status", "--porcelain=v1",
-             "--untracked-files=normal"],
-            capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if commit.returncode != 0 or status.returncode != 0:
-        return None
-    return {
-        "path": str(tree),
-        "commit": commit.stdout.strip(),
-        "dirty": bool(status.stdout.strip()),
-    }
-
-
-# This file's own repo root: tests/functional/mips64/test_irix_miniroot.py
-# is three directories below it.
-_FORK_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__)))))
-
 class IrixMiniroot(QemuSystemTest):
     """Boots the real IP27 PROM, direct-boots the 6.5.30 miniroot kernel
     over SLIRP usermode networking, and requires the kernel's release
@@ -321,35 +264,12 @@ class IrixMiniroot(QemuSystemTest):
     class.
     """
 
-    def _release_paths(self):
-        """The real PROM image and miniroot-kernel TFTP tree under
-        ORIGAMI_ASSETS, or None if either is missing -- the runner may
-        not have assets provisioned yet (see this method's caller)."""
-        assets_root = os.environ['ORIGAMI_ASSETS']
-        prom = resolve_asset(assets_root, FIRMWARE_REL)
-        kernel = resolve_asset(assets_root,
-                               os.path.join(TFTP_REL, KERNEL_NAME))
-        if not (prom and kernel):
-            return None
-        return prom, os.path.join(assets_root, TFTP_REL)
-
     @skipIfMissingEnv('ORIGAMI_ASSETS')
     def test_irix_miniroot(self):
-        paths = self._release_paths()
-        if paths is None:
-            # skipIfMissingEnv above already skipped the case where
-            # ORIGAMI_ASSETS is unset entirely -- getting here means it
-            # IS set, so a missing PROM or kernel is a provisioning
-            # failure, not an absent-assets developer run, and must fail
-            # loudly rather than skip quietly.
-            self.fail(
-                'ORIGAMI_ASSETS is set but the firmware/kernel are '
-                f'missing at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
-                f'<ORIGAMI_ASSETS>/{TFTP_REL}/{KERNEL_NAME} -- provision '
-                'them (tools/extract-irix, nightly assets) rather than '
-                'silently skipping a claimed capability')
-        prom, tftp = paths
-        kernel = os.path.join(tftp, KERNEL_NAME)
+        kernel_rel = os.path.join(TFTP_REL, KERNEL_NAME)
+        assets = require_assets(self, FIRMWARE_REL, kernel_rel)
+        prom, kernel = assets[FIRMWARE_REL], assets[kernel_rel]
+        tftp = os.path.dirname(kernel)
 
         # Refuse a stale or wrong-release PROM/kernel before spending a
         # boot on assets that would silently produce a meaningless pass
@@ -361,15 +281,14 @@ class IrixMiniroot(QemuSystemTest):
                 '; '.join(identity_problems))
 
         vm = self.get_vm(name='irix_miniroot')
-        vm.set_machine(
-            'origin200,debug-leds=off')
+        vm.set_machine(MACHINES['origin200'])
         vm.set_console()
         elsc_log = self.log_file('elsc-aux.log')
         capture = self.log_file('wire.pcap')
         vm.add_args('-accel', 'tcg,thread=single',
                    *miniroot_extra_args(prom, tftp, elsc_log, capture))
 
-        started = _utc_now()
+        started = utc_now()
         vm.launch()
         log_path = self.log_file('miniroot.log')
         try:
@@ -382,7 +301,7 @@ class IrixMiniroot(QemuSystemTest):
             # raises AbnormalShutdown even though qemu is in fact gone.
             # Matches test_prom_sash.py's PromSash.test_prom_sash.
             vm.shutdown(hard=vm.exitcode() is not None)
-        ended = _utc_now()
+        ended = utc_now()
 
         if not transcript:
             self.fail(
@@ -411,19 +330,17 @@ class IrixMiniroot(QemuSystemTest):
                 'timeout_seconds': BOOT_TIMEOUT_SECONDS,
                 'command': {
                     'binary': self.qemu_bin,
-                    'machine': (
-                        'origin200,'
-                        'debug-leds=off'),
+                    'machine': MACHINES['origin200'],
                     'args': miniroot_extra_args(
                         prom, tftp, elsc_log, capture),
                 },
                 'identity': {
-                    'fork': _fork_git_identity(_FORK_ROOT),
-                    'qemu_binary': _file_record(self.qemu_bin),
+                    'fork': fork_git_identity(FORK_ROOT),
+                    'qemu_binary': file_record(self.qemu_bin),
                     'firmware': {
                         'release': RELEASE,
-                        'prom': _file_record(prom),
-                        'kernel': _file_record(kernel),
+                        'prom': file_record(prom),
+                        'kernel': file_record(kernel),
                     },
                 },
             }, run_file, indent=2, sort_keys=True)

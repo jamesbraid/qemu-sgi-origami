@@ -31,8 +31,8 @@ import shutil
 
 from qemu_test import QemuSystemTest, skipIfMissingEnv
 
-from lib_prom import (FIRMWARE_REL, drive_console, file_record,
-                      fork_git_identity, resolve_asset, utc_now)
+from lib_prom import (FIRMWARE_REL, FORK_ROOT, drive_console,
+                      require_assets, run_record, utc_now)
 from lib_prom_mdk import mdk_extra_args, payload_identity_problems
 from lib_prom_mdk_router import NETBOOT_PATH, verdict
 
@@ -54,20 +54,9 @@ DRIVER_STEPS = (
 DRIVER_UNTIL_RE = re.compile(rb"Router_sso test run is complete")
 
 
-_FORK_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__)))))
-
 class PromMdkRouter(QemuSystemTest):
     """Boots the real IP27 PROM as two chassis, netboots
     MDK_router_sso, and requires the router test to run."""
-
-    def _asset_paths(self):
-        assets_root = os.environ['ORIGAMI_ASSETS']
-        prom = resolve_asset(assets_root, FIRMWARE_REL)
-        mdk = resolve_asset(assets_root, MDK_REL)
-        if not (prom and mdk):
-            return None
-        return prom, mdk
 
     def _stage_netboot_tftp(self, mdk):
         root = self.scratch_file('netboot-tftp')
@@ -78,21 +67,8 @@ class PromMdkRouter(QemuSystemTest):
 
     @skipIfMissingEnv('ORIGAMI_ASSETS')
     def test_prom_mdk_router(self):
-        paths = self._asset_paths()
-        if paths is None:
-            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
-            # the case where it is unset entirely -- getting here means
-            # it IS set, so a missing PROM or MDK_router_sso is a
-            # provisioning failure, not an absent-assets developer run,
-            # and must fail loudly: a silent skip here would let a real
-            # router-test regression pass CI unnoticed.
-            self.fail(
-                'ORIGAMI_ASSETS is set but the firmware/MDK_router_sso '
-                f'are missing at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
-                f'<ORIGAMI_ASSETS>/{MDK_REL} -- provision them '
-                '(nightly assets) rather than silently skipping a '
-                'claimed capability')
-        prom, mdk = paths
+        assets = require_assets(self, FIRMWARE_REL, MDK_REL)
+        prom, mdk = assets[FIRMWARE_REL], assets[MDK_REL]
 
         identity_problems = payload_identity_problems(
             prom, mdk, ROUTER_SSO_SHA256, "MDK_router_sso")
@@ -150,14 +126,8 @@ class PromMdkRouter(QemuSystemTest):
                 'ended_utc': ended,
                 'console_driver_reached_until': reached,
                 'timeout_seconds': BOOT_TIMEOUT_SECONDS,
-                'identity': {
-                    'fork': fork_git_identity(_FORK_ROOT),
-                    'qemu_binary': file_record(self.qemu_bin),
-                    'payload': {
-                        'prom': file_record(prom),
-                        'router_sso': file_record(mdk),
-                    },
-                },
+                'identity': run_record(FORK_ROOT, self.qemu_bin,
+                                       prom=prom, router_sso=mdk),
                 'verdict': report['verdict'],
                 'problems': report['problems'],
             }, run_file, indent=2, sort_keys=True)

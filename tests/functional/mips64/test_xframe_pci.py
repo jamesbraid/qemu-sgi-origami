@@ -79,8 +79,8 @@ import os
 from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
                        skipSlowTest)
 
-from lib_prom import (FIRMWARE_REL, drive_console, prom_netboot_steps,
-                      resolve_asset)
+from lib_prom import (FIRMWARE_REL, MACHINES, drive_console,
+                      prom_netboot_steps, require_assets)
 
 from test_xframe_pci_verdict import (TRIPWIRES, XFRAME_UNCLAIMED_RE,
                                      xframe_pci_verdict)
@@ -142,40 +142,18 @@ class XframePci(QemuSystemTest):
     verdict logic and its own QemuSystemTest.
     """
 
-    def _asset_paths(self):
-        assets_root = os.environ['ORIGAMI_ASSETS']
-        firmware = resolve_asset(assets_root, FIRMWARE_REL)
-        kernel = resolve_asset(assets_root, KERNEL_REL)
-        disk = resolve_asset(assets_root, DISK_REL)
-        if not (firmware and kernel and disk):
-            return None
-        return firmware, kernel, disk
-
     @skipBigDataTest()
     @skipSlowTest()
     @skipIfMissingEnv('ORIGAMI_ASSETS')
     def test_xframe_pci(self):
-        paths = self._asset_paths()
-        if paths is None:
-            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
-            # the case where it is unset entirely -- getting here means
-            # it IS set, so a missing PROM, kernel or disk is a
-            # provisioning failure, not an absent-assets developer run,
-            # and must fail loudly: a silent skip here would let a real
-            # Xframe PCI regression pass CI unnoticed.
-            self.fail(
-                'ORIGAMI_ASSETS is set but the PROM/kernel/disk are '
-                f'missing at <ORIGAMI_ASSETS>/{FIRMWARE_REL}, '
-                f'<ORIGAMI_ASSETS>/{KERNEL_REL} and '
-                f'<ORIGAMI_ASSETS>/{DISK_REL} -- provision them '
-                '(nightly assets) rather than silently skipping a '
-                'claimed capability')
-        firmware, kernel, disk = paths
+        assets = require_assets(self, FIRMWARE_REL, KERNEL_REL, DISK_REL)
+        firmware, kernel = assets[FIRMWARE_REL], assets[KERNEL_REL]
+        disk = assets[DISK_REL]
 
         self.require_netdev('user')
 
         vm = self.get_vm(name='xframe_pci')
-        vm.set_machine('origin200,debug-leds=off')
+        vm.set_machine(MACHINES['origin200'])
         vm.set_console()
         vm.add_args(
             '-m', str(MEMORY_MIB), '-snapshot',

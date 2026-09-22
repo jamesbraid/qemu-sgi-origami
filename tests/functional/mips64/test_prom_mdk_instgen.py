@@ -35,8 +35,8 @@ import shutil
 
 from qemu_test import QemuSystemTest, skipIfMissingEnv
 
-from lib_prom import (FIRMWARE_REL, drive_console, file_record,
-                      fork_git_identity, resolve_asset, utc_now)
+from lib_prom import (FIRMWARE_REL, FORK_ROOT, drive_console,
+                      require_assets, run_record, utc_now)
 from lib_prom_mdk import (CPU_MDK_SHA256, mdk_extra_args,
                           payload_identity_problems)
 from lib_prom_mdk_instgen import (END_PASS, INSTGEN_COMMAND, NETBOOT_PATH,
@@ -61,20 +61,9 @@ DRIVER_UNTIL_RE = re.compile(
     rb"Random Instruction Generator test run is complete")
 
 
-_FORK_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__)))))
-
 class PromMdkInstgen(QemuSystemTest):
     """Boots the real IP27 PROM with two CPUs, netboots cpu.mdk, and
     requires a clean thousand-pass instgen run."""
-
-    def _asset_paths(self):
-        assets_root = os.environ['ORIGAMI_ASSETS']
-        prom = resolve_asset(assets_root, FIRMWARE_REL)
-        mdk = resolve_asset(assets_root, MDK_REL)
-        if not (prom and mdk):
-            return None
-        return prom, mdk
 
     def _stage_netboot_tftp(self, mdk):
         root = self.scratch_file('netboot-tftp')
@@ -85,21 +74,8 @@ class PromMdkInstgen(QemuSystemTest):
 
     @skipIfMissingEnv('ORIGAMI_ASSETS')
     def test_prom_mdk_instgen(self):
-        paths = self._asset_paths()
-        if paths is None:
-            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
-            # the case where it is unset entirely -- getting here means
-            # it IS set, so a missing PROM or cpu.mdk is a provisioning
-            # failure, not an absent-assets developer run, and must
-            # fail loudly: a silent skip here would let a real instgen
-            # regression pass CI unnoticed.
-            self.fail(
-                'ORIGAMI_ASSETS is set but the firmware/cpu.mdk are '
-                f'missing at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
-                f'<ORIGAMI_ASSETS>/{MDK_REL} -- provision them '
-                '(nightly assets) rather than silently skipping a '
-                'claimed capability')
-        prom, mdk = paths
+        assets = require_assets(self, FIRMWARE_REL, MDK_REL)
+        prom, mdk = assets[FIRMWARE_REL], assets[MDK_REL]
 
         identity_problems = payload_identity_problems(
             prom, mdk, CPU_MDK_SHA256, "cpu.mdk")
@@ -164,14 +140,8 @@ class PromMdkInstgen(QemuSystemTest):
                 'console_driver_reached_until': reached,
                 'timeout_seconds': BOOT_TIMEOUT_SECONDS,
                 'command_line': INSTGEN_COMMAND,
-                'identity': {
-                    'fork': fork_git_identity(_FORK_ROOT),
-                    'qemu_binary': file_record(self.qemu_bin),
-                    'payload': {
-                        'prom': file_record(prom),
-                        'cpu_mdk': file_record(mdk),
-                    },
-                },
+                'identity': run_record(FORK_ROOT, self.qemu_bin,
+                                       prom=prom, cpu_mdk=mdk),
                 'verdict': report['verdict'],
                 'problems': report['problems'],
             }, run_file, indent=2, sort_keys=True)

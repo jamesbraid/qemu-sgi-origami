@@ -59,16 +59,15 @@ fork's meson build vendors libslirp as a static subproject
 in rather than loading it at runtime.
 """
 
-import datetime
 import hashlib
 import json
 import os
 import re
-import subprocess
 
 from qemu_test import QemuSystemTest, skipIfMissingEnv
 
-from lib_prom import drive_console, resolve_asset
+from lib_prom import (FORK_ROOT, MACHINES, drive_console, file_record,
+                      fork_git_identity, require_assets, utc_now)
 from lib_prom_diagnostics import (EXPECTED_FAILURES, EXPECTED_FAILURES_TEXT,
                                   diag_extra_args, evaluate_run,
                                   extract_identities)
@@ -116,57 +115,6 @@ DRIVER_STEPS = (
 DRIVER_UNTIL_RE = re.compile(rb"dlserver=192\.0\.2\.2")
 
 
-def _utc_now():
-    return datetime.datetime.now(datetime.UTC).isoformat().replace(
-        "+00:00", "Z")
-
-
-def _file_record(path):
-    resolved = os.path.realpath(path)
-    digest = hashlib.sha256()
-    with open(resolved, "rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return {
-        "path": str(path),
-        "resolved_path": resolved,
-        "sha256": digest.hexdigest(),
-        "size_bytes": os.path.getsize(resolved),
-    }
-
-
-def _fork_git_identity(tree):
-    """This fork checkout's own commit and dirty state -- the analog of
-    diag-gate's git_identity(ROOT), where ROOT there is the project tools
-    checkout. This is a functional test inside the fork itself, so there
-    is no separate "project tools" checkout to report on; the fork's own
-    identity is the binding record instead. None on any git failure: a
-    missing identity must not read as a fabricated clean one."""
-    try:
-        commit = subprocess.run(
-            ["git", "-C", str(tree), "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=30)
-        status = subprocess.run(
-            ["git", "-C", str(tree), "status", "--porcelain=v1",
-             "--untracked-files=normal"],
-            capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if commit.returncode != 0 or status.returncode != 0:
-        return None
-    return {
-        "path": str(tree),
-        "commit": commit.stdout.strip(),
-        "dirty": bool(status.stdout.strip()),
-    }
-
-
-# This file's own repo root:
-# tests/functional/mips64/test_prom_diagnostics.py is three directories
-# below it.
-_FORK_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__)))))
-
 class PromDiagnostics(QemuSystemTest):
     """Boots the real IP27 PROM firmware through diag-gate's two-pass
     factory sequence to an interactive sash prompt and requires
@@ -176,46 +124,22 @@ class PromDiagnostics(QemuSystemTest):
     PromBoot.
     """
 
-    def _release_paths(self):
-        """The real PROM image and sash64 boot tree under
-        ORIGAMI_ASSETS, or None if either is missing -- the runner may
-        not have assets provisioned yet (see this method's caller)."""
-        assets_root = os.environ['ORIGAMI_ASSETS']
-        prom = resolve_asset(assets_root, FIRMWARE_REL)
-        sash = resolve_asset(assets_root,
-                             os.path.join(TFTP_REL, 'sash64'))
-        if not (prom and sash):
-            return None
-        return prom, os.path.join(assets_root, TFTP_REL)
-
     @skipIfMissingEnv('ORIGAMI_ASSETS')
     def test_prom_diagnostics(self):
-        paths = self._release_paths()
-        if paths is None:
-            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
-            # the case where it is unset entirely -- getting here means
-            # it IS set, so a missing PROM or sash64 is a provisioning
-            # failure, not an absent-assets developer run, and must
-            # fail loudly: a silent skip here would let a real
-            # diagnostics regression pass CI unnoticed.
-            self.fail(
-                'ORIGAMI_ASSETS is set but the PROM/sash64 are missing '
-                f'at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
-                f'<ORIGAMI_ASSETS>/{TFTP_REL}/sash64 -- provision them '
-                '(nightly assets) rather than silently skipping a '
-                'claimed capability')
-        prom, tftp = paths
+        sash_rel = os.path.join(TFTP_REL, 'sash64')
+        assets = require_assets(self, FIRMWARE_REL, sash_rel)
+        prom = assets[FIRMWARE_REL]
+        tftp = os.path.dirname(assets[sash_rel])
 
         vm = self.get_vm(name='prom_diagnostics')
-        vm.set_machine(
-            'origin200,debug-leds=off')
+        vm.set_machine(MACHINES['origin200'])
         vm.set_console()
         elsc_log = self.log_file('elsc-aux.log')
         capture = self.log_file('wire.pcap')
         vm.add_args('-accel', 'tcg,thread=single',
                    *diag_extra_args(prom, tftp, elsc_log, capture))
 
-        started = _utc_now()
+        started = utc_now()
         vm.launch()
         log_path = self.log_file('diag.log')
         try:
@@ -229,7 +153,7 @@ class PromDiagnostics(QemuSystemTest):
             # fact gone. Matches PromBoot.test_prom_boot's own
             # reasoning.
             vm.shutdown(hard=vm.exitcode() is not None)
-        ended = _utc_now()
+        ended = utc_now()
 
         if not transcript:
             self.fail(
@@ -269,19 +193,17 @@ class PromDiagnostics(QemuSystemTest):
                 'timeout_seconds': BOOT_TIMEOUT_SECONDS,
                 'command': {
                     'binary': self.qemu_bin,
-                    'machine': (
-                        'origin200,'
-                        'debug-leds=off'),
+                    'machine': MACHINES['origin200'],
                     'args': diag_extra_args(
                         prom, tftp, elsc_log, capture),
                 },
                 'identity': {
-                    'fork': _fork_git_identity(_FORK_ROOT),
-                    'qemu_binary': _file_record(self.qemu_bin),
+                    'fork': fork_git_identity(FORK_ROOT),
+                    'qemu_binary': file_record(self.qemu_bin),
                     'firmware': {
                         'release': '6.5.30',
-                        'prom': _file_record(prom),
-                        'sash': _file_record(
+                        'prom': file_record(prom),
+                        'sash': file_record(
                             os.path.join(tftp, 'sash64')),
                     },
                 },

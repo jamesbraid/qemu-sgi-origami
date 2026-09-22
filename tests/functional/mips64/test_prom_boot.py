@@ -39,7 +39,7 @@ from qemu_test import QemuSystemTest, skipIfMissingEnv
 
 from lib_matrix import Cell, machine_props, qemu_args
 from lib_prom import (FIRMWARE_REL, MARK, codes_seen, mark_reached,
-                      resolve_asset)
+                      require_assets)
 from lib_translation_health import assert_translation_healthy
 
 
@@ -64,20 +64,7 @@ class PromBoot(QemuSystemTest):
 
     @skipIfMissingEnv('ORIGAMI_ASSETS')
     def test_prom_boot(self):
-        firmware = resolve_asset(os.environ['ORIGAMI_ASSETS'],
-                                 FIRMWARE_REL)
-        if firmware is None:
-            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
-            # the case where it is unset entirely -- getting here means
-            # it IS set, so a missing firmware image is a provisioning
-            # failure, not an absent-assets developer run, and must
-            # fail loudly: a silent skip here would let a real
-            # firmware-boot regression pass CI unnoticed.
-            self.fail(
-                'ORIGAMI_ASSETS is set but no firmware is present '
-                f'at <ORIGAMI_ASSETS>/{FIRMWARE_REL} -- provision it '
-                '(nightly assets) rather than silently skipping a '
-                'claimed capability')
+        firmware = require_assets(self, FIRMWARE_REL)[FIRMWARE_REL]
 
         # A single CPU and node use lib_matrix's real-PROM machine
         # properties and QEMU arguments rather than duplicating them here.
