@@ -77,6 +77,19 @@ static void rad4_km_write_cr(Rad4KMChannel *chan, uint8_t val)
          * separate receive FIFO, error-status or break-change state for
          * these commands to act on beyond what the ps2 core devices
          * already own, so no register bit changes here.
+         *
+         * Real SCN2681-family silicon additionally disables the receiver
+         * on Reset Receiver and the transmitter on Reset Transmitter,
+         * independent of the same command byte's own Rx/Tx enable field
+         * above -- this model does not clear rx_enabled/tx_enabled here,
+         * so it is untested and possibly divergent for a future guest
+         * access that issues one of these MISC commands with Rx/Tx left
+         * enabled in the same byte. Every documented driver use
+         * (docs/datasheets/psitech-rad4-km.md, "Established": the
+         * 0x1a/0x20/0x30/0x40/0x50 init sequence) issues them only after
+         * 0x1a has already disabled both, so the byte's own Rx/Tx field
+         * already reads disabled here -- not a divergence from any
+         * exercised guest behavior today.
          */
         break;
     default:
