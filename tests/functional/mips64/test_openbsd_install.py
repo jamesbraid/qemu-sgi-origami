@@ -52,16 +52,14 @@ flag and test_openbsd_net_transfer.py's own strictly sequential
 _Console.expect()/send() solve differently, described in each of those
 modules' own docstrings.
 
-install_verdict() (test_openbsd_install_verdict.py, imported below) is the
-pure judge of PASS/FAIL, checking the same ordered completion progression
-tests/golden/b4-openbsd-install-session shows for a real, complete install
-(project checkout, read via `git -C <project checkout> show fj/main:
-tests/golden/b4-openbsd-install-session`) -- see that module's own
-docstring for the full contract. This file only wires it to a real
-install: it builds the two disks, drives the installer, captures the
-console, and calls install_verdict() on what was captured -- the same
-division test_openbsd_login.py and test_prom_sash.py keep between their
-pure verdict logic and their own QemuSystemTest.
+install_verdict() below is the judge of PASS/FAIL, checking the same
+ordered completion progression tests/golden/b4-openbsd-install-session
+shows for a real, complete install (project checkout, read via `git -C
+<project checkout> show fj/main:tests/golden/b4-openbsd-install-session`).
+It scores STAGES with lib_net.ordered_stages(), whose ordering and
+trip-wire rules are unit-tested in test_lib_net.py without booting
+anything; this file wires that to a real install, building the two disks,
+driving the installer and capturing the console.
 
 RULES and the location-of-sets handling below are install-driver.py's own
 answer table (assets/openbsd/spike/install-driver.py, project checkout),
@@ -121,9 +119,9 @@ this test's own scope), so ORIGAMI_ASSETS being set with an install
 input missing underneath it is a provisioning failure, not an
 absent-assets run, and fails the test loudly rather than skipping it.
 
-The pure verdict logic lives entirely in test_openbsd_install_verdict.py
-(imported below; it needs no qemu_test itself). What is left here is the
-real install.
+The scoring rules install_verdict() applies live in lib_net, which needs
+no qemu_test and is unit-tested on its own. What is left here is this
+installer's own stages and the real install.
 """
 
 import os
@@ -138,11 +136,49 @@ from qemu_test import (
     QemuSystemTest, skipBigDataTest, skipIfMissingEnv, skipSlowTest,
     get_qemu_img, which)
 
-from lib_prom import FIRMWARE_REL, prom_netboot_steps, resolve_asset
+from lib_net import OPENBSD_TRIPWIRES, ordered_stages
+from lib_prom import (FIRMWARE_REL, MACHINES, prom_netboot_steps,
+                      require_assets)
 from lib_translation_health import assert_translation_healthy
 
-from test_openbsd_install_verdict import (
-    install_verdict, CONGRATULATIONS_RE, LOCATION_OF_SETS_RE, TRIPWIRES)
+
+# The installer's own ordered completion progression. Each marker is
+# searched for only after the one before it, so the second "Location of
+# sets?" prompt needs its own occurrence rather than re-finding the
+# first, and a "CONGRATULATIONS!" spliced in from elsewhere earlier in
+# the capture does not satisfy completion.
+CONGRATULATIONS_RE = re.compile(
+    r"CONGRATULATIONS! Your OpenBSD install has been successfully "
+    r"completed")
+LOCATION_OF_SETS_RE = re.compile(r"Location of sets\?")
+STAGES = (
+    ("never reached the installer's welcome banner",
+     re.compile(r"Welcome to the OpenBSD/sgi 6\.9 installation program\.")),
+    ("never reached the first Location of sets prompt", LOCATION_OF_SETS_RE),
+    ("never reached base69.tgz installation completion",
+     re.compile(r"Installing base69\.tgz\s+100%")),
+    ("never reached etc.tgz extraction completion",
+     re.compile(r"Extracting etc\.tgz\s+100%")),
+    ("never reached comp69.tgz installation completion",
+     re.compile(r"Installing comp69\.tgz\s+100%")),
+    ("never reached the second Location of sets prompt", LOCATION_OF_SETS_RE),
+    ("never reached the CONGRATULATIONS completion banner",
+     CONGRATULATIONS_RE),
+)
+
+
+def install_verdict(transcript):
+    """PASS iff transcript shows STAGES in order and none of
+    OPENBSD_TRIPWIRES fires before "CONGRATULATIONS!" is reached (or
+    anywhere in the transcript, if it is never reached).
+
+    Returns {"verdict": "PASS"|"FAIL", "problems": [...]}.
+    """
+    problems = ordered_stages(transcript, STAGES, OPENBSD_TRIPWIRES)
+    return {
+        "verdict": "PASS" if not problems else "FAIL",
+        "problems": problems,
+    }
 
 
 # Where ORIGAMI_ASSETS resolves the install media, matching
@@ -425,7 +461,7 @@ def _drive_install(sock, log_path, timeout, vm=None):
                     health_checked = True
                     assert_translation_healthy(vm)
                 if (CONGRATULATIONS_RE.search(tail) or
-                        any(rx.search(tail) for _why, rx in TRIPWIRES)):
+                        any(rx.search(tail) for _why, rx in OPENBSD_TRIPWIRES)):
                     break
 
             now = time.monotonic()
@@ -476,9 +512,8 @@ def _drive_install(sock, log_path, timeout, vm=None):
 
 # ---------------------------------------------------------------------------
 # The real install: media resolution, disk construction, and the
-# QemuSystemTest itself. Not covered by test_openbsd_install_verdict.py --
-# see this module's own docstring for why -- so nothing below this line
-# needs to be pure or independently testable the way the verdict logic is.
+# QemuSystemTest itself. Nothing below this line needs to be pure or
+# independently testable the way the scoring above is.
 # ---------------------------------------------------------------------------
 
 
@@ -489,22 +524,6 @@ class OpenbsdInstall(QemuSystemTest):
     same division test_openbsd_login.py and test_prom_sash.py keep
     between their pure verdict logic and their own QemuSystemTest.
     """
-
-    def _asset_paths(self):
-        """The 6.5.30 PROM, the install ramdisk kernel, and the five
-        sets-disk inputs under ORIGAMI_ASSETS, or None if any is
-        missing -- the runner may not have assets provisioned yet (see
-        this method's caller)."""
-        assets_root = os.environ['ORIGAMI_ASSETS']
-        firmware = resolve_asset(assets_root, FIRMWARE_REL)
-        kernel = resolve_asset(
-            assets_root, os.path.join(RELEASE_REL, INSTALL_KERNEL_NAME))
-        sets_files = [
-            resolve_asset(assets_root, os.path.join(RELEASE_REL, name))
-            for name in SETS_FILE_NAMES]
-        if not (firmware and kernel and all(sets_files)):
-            return None
-        return firmware, kernel, sets_files
 
     def _build_target_disk(self, qemu_img):
         """The blank root disk, created raw then labeled -- ported
@@ -553,23 +572,12 @@ class OpenbsdInstall(QemuSystemTest):
     @skipSlowTest()
     @skipIfMissingEnv('ORIGAMI_ASSETS')
     def test_openbsd_install(self):
-        paths = self._asset_paths()
-        if paths is None:
-            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
-            # the case where it is unset entirely -- getting here means
-            # it IS set, so a missing install input is a provisioning
-            # failure, not an absent-assets developer run, and must fail
-            # loudly: a silent skip here would let a real install
-            # regression pass CI unnoticed.
-            self.fail(
-                'ORIGAMI_ASSETS is set but the firmware or one of the '
-                f'install inputs is missing at <ORIGAMI_ASSETS>/'
-                f'{FIRMWARE_REL} or under <ORIGAMI_ASSETS>/{RELEASE_REL}/ '
-                f'({INSTALL_KERNEL_NAME}, ' +
-                ', '.join(SETS_FILE_NAMES) +
-                ') -- provision them (nightly assets) rather than '
-                'silently skipping a claimed capability')
-        firmware, kernel, sets_files = paths
+        kernel_rel = os.path.join(RELEASE_REL, INSTALL_KERNEL_NAME)
+        sets_rels = [os.path.join(RELEASE_REL, name)
+                     for name in SETS_FILE_NAMES]
+        assets = require_assets(self, FIRMWARE_REL, kernel_rel, *sets_rels)
+        firmware, kernel = assets[FIRMWARE_REL], assets[kernel_rel]
+        sets_files = [assets[rel] for rel in sets_rels]
 
         qemu_img = get_qemu_img(self)
         makefs_bin = which('makefs')
@@ -584,7 +592,7 @@ class OpenbsdInstall(QemuSystemTest):
         self.require_netdev('user')
 
         vm = self.get_vm(name='openbsd_install')
-        vm.set_machine('origin200,debug-leds=off')
+        vm.set_machine(MACHINES['origin200'])
         vm.set_console()
         vm.add_args(
             '-cpu', 'R10000', '-m', str(MEMORY_MIB),

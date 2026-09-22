@@ -33,29 +33,26 @@ its whole memory bank in one slot and the machine backs exactly that
 range, so the two filed >128MiB memory-map defects (see
 docs/plans/ip27-memory-map-handover.md, project checkout) have no address
 at which to appear. Above it the guest's map overruns what is backed and
-the installed system does not reach a login -- test_openbsd_login_verdict
-.py's own SYNTHETIC_DDB_WEDGE_TRANSCRIPT fixture is real evidence of
-exactly that defect at 256 MiB.
+the installed system does not reach a login, a defect one run captured at
+256 MiB as a wedge at the kernel debugger.
 
-login_verdict() (test_openbsd_login_verdict.py, imported below) is the
-pure port of login_origin()'s own three-stage progression and its wedge
-trip wires; see that module's own docstring for the full contract. This
-file only wires it to a real boot: _drive_login() drives the console
-through the same ordered questions login_origin() answers (root device,
-swap device default, login, password), against this fork's own
-framework console socket (QEMUMachine.console_socket via
-QemuSystemTest.get_vm(), the same real API lib_prom.py's own
-drive_console() drives) -- not net-transfer-diag's own Console class,
-per this port's SELF-CONTAINED brief. _drive_login() also breaks out of
-its read loop early on a TRIPWIRES match (imported from
-test_openbsd_login_verdict.py rather than duplicated), matching
-login_origin()'s own reasoning for watching every wait for a fault: a
-wedged guest never prints what is being waited for, so without an early
-trip a run would sit out its whole budget reporting a plain timeout,
-against a guest that is meanwhile sitting at a debugger prompt that
-already answered the question. login_verdict() is still what decides
-PASS/FAIL, from the transcript captured either way -- the early break is
-only a runtime-budget optimization, not a second, divergent judgment.
+login_verdict() below is login_origin()'s own three-stage progression and
+its wedge trip wires, scored by lib_net.ordered_stages(); that function's
+unit tests (test_lib_net.py) pin the ordering and trip-wire rules down
+without booting anything. This file only wires it to a real boot:
+_drive_login() drives the console through the same ordered questions
+login_origin() answers (root device, swap device default, login,
+password), against this fork's own framework console socket
+(QEMUMachine.console_socket via QemuSystemTest.get_vm(), the same real
+API lib_prom.py's own drive_console() drives). _drive_login() also breaks
+out of its read loop early on a trip-wire match, matching login_origin()'s
+own reasoning for watching every wait for a fault: a wedged guest never
+prints what is being waited for, so without an early trip a run would sit
+out its whole budget reporting a plain timeout, against a guest that is
+meanwhile sitting at a debugger prompt that already answered the
+question. login_verdict() is still what decides PASS/FAIL, from the
+transcript captured either way -- the early break is only a
+runtime-budget optimization, not a second, divergent judgment.
 
 The QEMU argv this file builds keeps the reference transcript's own
 absence of a -cpu override (this board's default CPU model is already
@@ -82,9 +79,9 @@ ORIGAMI_ASSETS being set with either one missing is a provisioning
 failure, not an absent-assets run, and fails the test loudly rather
 than skipping it.
 
-The pure verdict logic lives entirely in test_openbsd_login_verdict.py
-(imported below; it needs no qemu_test itself). What is left here is the
-real boot.
+The scoring rules login_verdict() applies live in lib_net, which needs no
+qemu_test and is unit-tested on its own. What is left here is this run's
+own stages and the real boot.
 """
 
 import os
@@ -95,10 +92,10 @@ import time
 from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
                        skipSlowTest)
 
-from lib_prom import FIRMWARE_REL, prom_netboot_steps, resolve_asset
+from lib_net import OPENBSD_TRIPWIRES, login_steps, ordered_stages
+from lib_prom import (FIRMWARE_REL, MACHINES, prom_netboot_steps,
+                      require_assets)
 from lib_translation_health import assert_translation_healthy
-
-from test_openbsd_login_verdict import login_verdict, TRIPWIRES
 
 
 # Where ORIGAMI_ASSETS resolves the kernel and installed disk, matching
@@ -124,21 +121,40 @@ MEMORY_MIB = 128
 # test_prom_boot.py keep against their own meson timeouts.
 BOOT_TIMEOUT_SECONDS = 840
 
-# login_origin()'s own console drive (tools/net-transfer-diag, project
-# checkout): answer "root device:" with the disk, take the default swap,
-# send "root" at "login:", send the root password at "Password:". Ported
-# here rather than imported -- SELF-CONTAINED per this port's brief.
-# prom_netboot_steps() is prepended so the same rule engine first takes
-# the PROM from the System Maintenance Menu through `boot -f
-# bootp()/bsd.IP27` before any of login_origin()'s own questions appear.
+# The PROM's netboot dialogue, then the kernel's own ordered questions on
+# the way to a root shell -- lib_net.login_steps() builds both (see its
+# docstring), so this file and test_openbsd_net_transfer.py drive the same
+# sequence rather than each keeping a copy.
 ROOT_PASSWORD = "origami123"
-LOGIN_STEPS = prom_netboot_steps(NETBOOT_BOOTFILE) + (
-    (r"root device\s*:", "sd0a\n"),
-    (r"swap device[^:]*:", "\n"),
-    (r"login:", "root\n"),
-    (r"[Pp]assword:", ROOT_PASSWORD + "\n"),
-)
+LOGIN_STEPS = login_steps(prom_netboot_steps(NETBOOT_BOOTFILE),
+                          ROOT_PASSWORD)
 _TAIL_MAX = 4096
+
+# The run's own three ordered markers. The swap-device answer is not
+# separately asserted: reaching the login prompt already proves it was
+# answered, since the kernel does not print "login:" without getting past
+# it.
+STAGES = (
+    ("never reached the root device question",
+     re.compile(r"root device\s*:")),
+    ("never reached the login prompt", re.compile(r"login:")),
+    ("never reached a root shell prompt", re.compile(r"# ")),
+)
+
+
+def login_verdict(transcript):
+    """PASS iff transcript shows, in order: the root device question
+    answered, the login prompt, and a root shell prompt -- and none of
+    OPENBSD_TRIPWIRES fires before that shell prompt is reached (or
+    anywhere in the transcript, if it is never reached).
+
+    Returns {"verdict": "PASS"|"FAIL", "problems": [...]}.
+    """
+    problems = ordered_stages(transcript, STAGES, OPENBSD_TRIPWIRES)
+    return {
+        "verdict": "PASS" if not problems else "FAIL",
+        "problems": problems,
+    }
 
 
 def _drive_login(sock, log_path, timeout, vm=None):
@@ -190,7 +206,7 @@ def _drive_login(sock, log_path, timeout, vm=None):
                     tail = ""
             if shell_re.search(tail):
                 break
-            if any(rx.search(tail) for _why, rx in TRIPWIRES):
+            if any(rx.search(tail) for _why, rx in OPENBSD_TRIPWIRES):
                 break
     return transcript
 
@@ -203,43 +219,18 @@ class OpenbsdLogin(QemuSystemTest):
     between their pure verdict logic and their own QemuSystemTest.
     """
 
-    def _asset_paths(self):
-        """The firmware, kernel and installed disk under ORIGAMI_ASSETS,
-        or None if any is missing -- the runner may not have assets
-        provisioned yet (see this method's caller)."""
-        assets_root = os.environ['ORIGAMI_ASSETS']
-        firmware = resolve_asset(assets_root, FIRMWARE_REL)
-        kernel = resolve_asset(assets_root, KERNEL_REL)
-        disk = resolve_asset(assets_root, DISK_REL)
-        if not (firmware and kernel and disk):
-            return None
-        return firmware, kernel, disk
-
     @skipBigDataTest()
     @skipSlowTest()
     @skipIfMissingEnv('ORIGAMI_ASSETS')
     def test_openbsd_login(self):
-        paths = self._asset_paths()
-        if paths is None:
-            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
-            # the case where it is unset entirely -- getting here means
-            # it IS set, so a missing firmware, kernel or disk is a
-            # provisioning failure, not an absent-assets developer run,
-            # and must fail loudly: a silent skip here would let a real
-            # login regression pass CI unnoticed.
-            self.fail(
-                'ORIGAMI_ASSETS is set but the firmware/kernel/disk are '
-                f'missing at <ORIGAMI_ASSETS>/{FIRMWARE_REL}, '
-                f'<ORIGAMI_ASSETS>/{KERNEL_REL} and '
-                f'<ORIGAMI_ASSETS>/{DISK_REL} -- provision them '
-                '(nightly assets) rather than silently skipping a '
-                'claimed capability')
-        firmware, kernel, disk = paths
+        assets = require_assets(self, FIRMWARE_REL, KERNEL_REL, DISK_REL)
+        firmware, kernel = assets[FIRMWARE_REL], assets[KERNEL_REL]
+        disk = assets[DISK_REL]
 
         self.require_netdev('user')
 
         vm = self.get_vm(name='openbsd_login')
-        vm.set_machine('origin200,debug-leds=off')
+        vm.set_machine(MACHINES['origin200'])
         vm.set_console()
         vm.add_args(
             '-m', str(MEMORY_MIB), '-snapshot',

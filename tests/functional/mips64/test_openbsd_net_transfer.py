@@ -15,9 +15,8 @@ fits the network back end net-transfer-diag's own origin_argv() uses for
 transfers -- read (host HTTP server -> guest ftp(1)), write (guest nc(1)
 -> host TCP sink), inbound (host opens a forwarded port -> guest nc -l)
 -- each checked by an independently-computed SHA-256 and byte count on
-both sides. See net_transfer_verdict()'s own docstring
-(test_openbsd_net_transfer_verdict.py, imported below) for why a command
-exiting 0 is not evidence here.
+both sides. See net_transfer_verdict()'s own docstring below for why a
+command exiting 0 is not evidence here.
 
 Boots through the real 6.5.30 PROM's own netboot path rather than a
 direct -kernel load, the conversion test_openbsd_login.py and
@@ -103,10 +102,11 @@ from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
                        skipSlowTest)
 from qemu_test.utils import get_usernet_hostfwd_port
 
-from lib_prom import FIRMWARE_REL, prom_netboot_steps, resolve_asset
-
-from test_openbsd_net_transfer_verdict import (
-    net_transfer_verdict, summarise_pcap)
+from lib_net import (LEASE_HANDSHAKE, OPENBSD_TRIPWIRES, Console,
+                     HarnessError, lease_established, login_steps,
+                     summarise_pcap)
+from lib_prom import (FIRMWARE_REL, MACHINES, prom_netboot_steps,
+                      require_assets)
 
 
 # Where ORIGAMI_ASSETS resolves the kernel and installed disk -- the same
@@ -137,23 +137,13 @@ HOME = "/root"
 # net-transfer-diag's own default payload size for each leg.
 PAYLOAD_BYTES = 65536
 
-# login_origin()'s own console drive (tools/net-transfer-diag, project
-# checkout), reproduced here rather than imported -- SELF-CONTAINED per
-# this port's brief, the same duplication test_openbsd_login.py already
-# makes of the identical sequence. prom_netboot_steps() returns str
-# patterns and responses; _Console.expect() only compiles a pattern when
-# it is bytes (see its own isinstance check below), so the netboot steps
-# are encoded to bytes before joining this file's own bytes-pattern
-# steps -- the responses stay str, matching every other entry's shape.
-LOGIN_STEPS = tuple(
-    (pattern.encode(), response)
-    for pattern, response in prom_netboot_steps(NETBOOT_BOOTFILE)
-) + (
-    (rb"root device\s*:", "sd0a\n"),
-    (rb"swap device[^:]*:", "\n"),
-    (rb"login:", "root\n"),
-    (rb"[Pp]assword:", ROOT_PASSWORD + "\n"),
-)
+# The PROM's netboot dialogue and the kernel's own ordered questions on
+# the way to a root shell -- the same sequence test_openbsd_login.py
+# drives, built by lib_net.login_steps(). Console.expect() only compiles
+# a pattern when it is bytes, so this driver asks for the bytes form; the
+# responses stay str either way.
+LOGIN_STEPS = login_steps(prom_netboot_steps(NETBOOT_BOOTFILE),
+                          ROOT_PASSWORD, as_bytes=True)
 
 # Kept equal to test_openbsd_login.py's own BOOT_TIMEOUT_SECONDS: reaching
 # a root shell here is the identical boot this fork has already proven at
@@ -165,157 +155,112 @@ LOGIN_STEPS = tuple(
 LOGIN_BUDGET_SECONDS = 840
 
 
-class _Harness(Exception):
-    """Something on this test's own side of the run went wrong -- a
-    timeout waiting for the guest, or a value the guest never printed.
-    Ported from net-transfer-diag's own Harness (project checkout): a
-    harness-level problem and a guest fault are different findings (see
-    _GuestFault below), and collapsing them loses which side of the
-    machine to look at first."""
+class _Console(Console):
+    """lib_net's console driver, watching for the three faults an
+    OpenBSD/IP27 guest shows when it wedges rather than answers."""
+
+    TRIPWIRES = tuple((re.compile(rx.pattern.encode()), why)
+                      for why, rx in OPENBSD_TRIPWIRES)
 
 
-class _GuestFault(_Harness):
-    """The guest itself fell over -- its kernel debugger, a panic, or a
-    bus error -- not a harness timeout. Ported from net-transfer-diag's
-    own GuestFault: unlike a leg that merely mismatches its digest, this
-    ends the whole run rather than being caught per-leg, the same
-    distinction that module's own leg() wrapper keeps
-    (`except GuestFault: raise`)."""
+# The three transfers, in the order they run and are reported.
+LEG_NAMES = ("read", "write", "inbound")
 
 
-class _Console:
-    """Send a line to the guest console, wait for a pattern in what comes
-    back. See this module's own docstring for how this relates to
-    net-transfer-diag's own Console and to this framework's own
-    drive_console()/_drive_login() idiom.
+def net_transfer_verdict(transcript, dhcp_counts, legs):
+    """PASS iff the DHCP lease's four-message handshake was seen on the
+    wire AND all three legs were attempted and match their recorded
+    SHA-256 + byte count. FAIL if the lease never appears, any leg's
+    digest or byte count mismatches, or a leg was never attempted at all
+    (a missing guest tool, or the guest never reaching that point) --
+    each is reported as its own distinct problem, never collapsed into a
+    single "it did not work".
+
+    transcript: the captured guest console text for the whole run (boot
+      through the three legs). Scanned only for trip wires -- a guest
+      that wedged partway through is a defect this must catch even if,
+      by coincidence, every leg dict below still looks complete.
+    dhcp_counts: a dict of DHCP message name -> count, as
+      lib_net.summarise_pcap()'s own "dhcp" key reports.
+    legs: a dict with keys "read", "write", "inbound". Each value is
+      either falsy (the leg was never attempted) or a dict with keys
+      "attempted" (bool), and when attempted, "host_sha256", "host_bytes",
+      "guest_sha256", "guest_bytes" -- the digest and byte count computed
+      independently by each side of the run, this Python process (host_*)
+      and the guest's own shell (guest_*). Naming them by which side
+      measured them, rather than by which one is "expected", is
+      deliberate: for the read and inbound legs the host originates the
+      payload and the guest's own report is what is being checked, but
+      for the write leg it is the other way around -- the guest builds
+      the payload and reports on it first, and the host's own receipt is
+      what is being checked. A leg dict may also carry "exit_code" (int
+      or None): when present and non-zero, the leg fails even if its
+      digest and byte count happen to match, because ftp(1) exits 0
+      having written a zero-length file if the server answers and says
+      nothing, and nc(1) exits 0 when the connection is accepted and the
+      payload is dropped. Absent or None means no exit-code check applies
+      to that leg (the inbound leg's nc -l runs backgrounded and prints
+      no exit status this harness waits on). A leg dict may also carry
+      "reason" (str), used only for the problem message when the leg was
+      not attempted.
+
+    Returns {"verdict": "PASS"|"FAIL", "problems": [...], "lease_ok":
+    bool, "legs_ok": {name: bool}}.
     """
+    problems = [why for why, rx in OPENBSD_TRIPWIRES
+                if rx.search(transcript)]
 
-    TRIPWIRES = (
-        (re.compile(rb"[\r\n]+ddb>"), "the guest fell into its kernel debugger"),
-        (re.compile(rb"panic: "), "the guest panicked"),
-        (re.compile(rb"Trap cause = 7"), "the guest took a bus error"),
-    )
+    lease_ok = lease_established(dhcp_counts)
+    if not lease_ok:
+        seen = sorted(name for name in LEASE_HANDSHAKE
+                      if dhcp_counts.get(name))
+        problems.append(
+            "the DHCP lease was never acquired -- its four-message "
+            "handshake (DHCPDISCOVER, DHCPOFFER, DHCPREQUEST, DHCPACK) "
+            "did not all appear on the wire (saw: "
+            + (", ".join(seen) if seen else "nothing") + ")")
 
-    def __init__(self, sock, log_path, exited=None):
-        self.sock = sock
-        self.sock.settimeout(1.0)
-        self.buf = bytearray()
-        self._log = open(log_path, "ab")
-        # A zero-arg callable reporting whether the emulator process has
-        # already exited (the real caller passes `lambda: vm.exitcode()
-        # is not None`). Ported from net-transfer-diag's own Console.expect(),
-        # whose `self.proc.poll() is not None` check is exactly this same
-        # question against a subprocess.Popen instead of a QEMUMachine.
-        # Defaults to "never exited" so a caller that has nothing to poll
-        # (a fixture, an offline smoke test) still behaves exactly as
-        # before -- it simply loses the fast-fail and waits out the
-        # timeout, the same as if this parameter did not exist.
-        self._exited = exited if exited is not None else (lambda: False)
+    legs_ok = {}
+    for name in LEG_NAMES:
+        leg = legs.get(name)
+        if not leg or not leg.get("attempted"):
+            reason = (leg or {}).get("reason")
+            problems.append(
+                f"the guest never reached the {name} leg"
+                + (f" ({reason})" if reason else ""))
+            legs_ok[name] = False
+            continue
+        exit_code = leg.get("exit_code")
+        exit_ok = exit_code is None or exit_code == 0
+        digest_ok = leg["guest_sha256"] == leg["host_sha256"]
+        size_ok = leg["guest_bytes"] == leg["host_bytes"]
+        if not exit_ok:
+            problems.append(
+                f"{name} leg: its own command exited {exit_code}, not 0")
+        if not digest_ok:
+            problems.append(
+                f"{name} leg: digest mismatch (host measured "
+                f"{leg['host_sha256']}, guest reported "
+                f"{leg['guest_sha256']})")
+        if not size_ok:
+            problems.append(
+                f"{name} leg: byte count mismatch (host measured "
+                f"{leg['host_bytes']}, guest reported "
+                f"{leg['guest_bytes']})")
+        legs_ok[name] = exit_ok and digest_ok and size_ok
 
-    def _pump(self):
-        """Read one chunk if the guest has sent one in the next second,
-        appending it to the buffer and the log. Returns without blocking
-        past that second either way.
-
-        Raises _Harness immediately, rather than returning quietly, when
-        a read produces nothing AND the emulator process has already
-        exited: once both are true there is nothing further this console
-        will ever receive, so waiting out the rest of whatever timeout
-        the caller passed burns the full budget on a question already
-        answered. Checked only after an empty read, not before one --
-        the process can legitimately exit between one chunk and the
-        next, and any bytes already in flight when it did must still be
-        drained and matched before this gives up on them.
-        """
-        try:
-            chunk = self.sock.recv(4096)
-        except socket.timeout:
-            chunk = None
-        except OSError:
-            chunk = None
-        if chunk:
-            self.buf += chunk
-            self._log.write(chunk)
-            self._log.flush()
-            return
-        if self._exited():
-            raise _Harness(
-                "the emulator exited and the console has nothing further "
-                "to read")
-
-    def expect(self, pattern, timeout, what=None):
-        rx = re.compile(pattern) if isinstance(pattern, bytes) else pattern
-        deadline = time.monotonic() + timeout
-        start = 0
-        trip_from = len(self.buf)
-        while True:
-            m = rx.search(self.buf, start)
-            if m:
-                return m
-            for trx, why in self.TRIPWIRES:
-                if trx.search(self.buf, trip_from):
-                    raise _GuestFault(
-                        f"{why} while waiting for {what or rx.pattern!r}")
-            if time.monotonic() >= deadline:
-                raise _Harness(
-                    f"timed out after {timeout}s waiting for "
-                    f"{what or rx.pattern!r}")
-            start = max(0, len(self.buf) - 4096)
-            self._pump()
-
-    def send(self, text):
-        self.sock.sendall(text.encode() + b"\n")
-
-    def run(self, cmd, tag, timeout=120):
-        """Send a shell command with its own end marker, and return its
-        exit code. Ports net-transfer-diag's own run(): the marker is
-        split across a quote in the command so the shell's own echo of
-        the command line can never match it."""
-        self.send(f'{cmd}; echo "MARK""-{tag}-$?"')
-        m = self.expect(rb"MARK-" + tag.encode() + rb"-(\d+)", timeout,
-                        what=f"{tag} to finish")
-        return int(m.group(1))
-
-    def two_values(self, cmd, tag, pattern, timeout=120):
-        """Run a command and pull two values (a digest and a byte count)
-        out of what it printed, from the same command. Ports
-        net-transfer-diag's own two_values(): two empty files have the
-        same digest, so checking size alongside it is what catches a
-        transfer that "succeeded" on nothing."""
-        pos = len(self.buf)
-        self.send(f'{cmd}; echo "MARK""-{tag}-$?"')
-        end = self.expect(rb"MARK-" + tag.encode() + rb"-(\d+)", timeout,
-                          what=f"{tag} to finish")
-        rx = re.compile(pattern)
-        m = rx.search(bytes(self.buf[pos:end.start()]))
-        if not m:
-            raise _Harness(f"{tag} printed no digest and size matching "
-                           f"{rx.pattern!r}")
-        return m.group(1).decode(), int(m.group(2))
-
-    def capture_value(self, cmd, tag, pattern, timeout=120):
-        """Run a command and pull one value out of what it printed. Ports
-        net-transfer-diag's own capture_value()."""
-        pos = len(self.buf)
-        self.send(f'{cmd}; echo "MARK""-{tag}-$?"')
-        end = self.expect(rb"MARK-" + tag.encode() + rb"-(\d+)", timeout,
-                          what=f"{tag} to finish")
-        rx = re.compile(pattern)
-        m = rx.search(bytes(self.buf[pos:end.start()]))
-        if not m:
-            raise _Harness(f"{tag} printed no value matching {rx.pattern!r}")
-        return m.group(1).decode()
-
-    def close(self):
-        self._log.close()
+    return {
+        "verdict": "PASS" if not problems else "FAIL",
+        "problems": problems,
+        "lease_ok": lease_ok,
+        "legs_ok": legs_ok,
+    }
 
 
 def _drive_login(con, budget):
     """Answer the kernel's device questions, then log in -- the same
-    ordered sequence test_openbsd_login.py's own _drive_login() drives
-    (LOGIN_STEPS above is that file's own LOGIN_STEPS, reproduced here
-    per this port's SELF-CONTAINED brief), adapted to this file's own
-    _Console rather than a bare socket loop.
+    ordered sequence test_openbsd_login.py's own _drive_login() drives,
+    against this file's own console rather than a bare socket loop.
     """
     deadline = time.monotonic() + budget
     left = lambda cap: max(1.0, min(cap, deadline - time.monotonic()))
@@ -385,15 +330,6 @@ class OpenbsdNetTransfer(QemuSystemTest):
     PASS. See this module's own docstring for the full contract.
     """
 
-    def _asset_paths(self):
-        assets_root = os.environ['ORIGAMI_ASSETS']
-        firmware = resolve_asset(assets_root, FIRMWARE_REL)
-        kernel = resolve_asset(assets_root, KERNEL_REL)
-        disk = resolve_asset(assets_root, DISK_REL)
-        if not (firmware and kernel and disk):
-            return None
-        return firmware, kernel, disk
-
     def _probe_tools(self, con):
         """Which of the guest programs the three legs need are
         actually present -- asked, not assumed. Ports net-transfer-diag's
@@ -435,7 +371,7 @@ class OpenbsdNetTransfer(QemuSystemTest):
                     leased = con.capture_value(
                         f"ifconfig {IFACE}", "leaseaddr",
                         rb"inet (\d+\.\d+\.\d+\.\d+)", timeout=60)
-            except _Harness:
+            except HarnessError:
                 leased = None
         if leased:
             return leased
@@ -445,7 +381,7 @@ class OpenbsdNetTransfer(QemuSystemTest):
             con.run(f"route -qn add default {GATEWAY} 2>/dev/null || "
                     f"route -qn change default {GATEWAY}", "route",
                     timeout=60)
-        except _Harness:
+        except HarnessError:
             pass
         return GUEST_ADDR
 
@@ -463,7 +399,7 @@ class OpenbsdNetTransfer(QemuSystemTest):
                 f"echo D $(sha256 -q {HOME}/down.bin) "
                 f"$(wc -c <{HOME}/down.bin)",
                 "readsum", rb"D ([0-9a-f]{64})\s+(\d+)", timeout=120)
-        except _Harness as e:
+        except HarnessError as e:
             return {"attempted": False, "reason": str(e)}
         # The host originates this payload (down_hash/PAYLOAD_BYTES,
         # computed before the guest ever fetches it); the guest's own
@@ -508,7 +444,7 @@ class OpenbsdNetTransfer(QemuSystemTest):
                                  f"payload, not {PAYLOAD_BYTES}"}
             rc = con.run(f"nc -N {GATEWAY} {sink_port} < {src}",
                          "write", timeout=300)
-        except _Harness as e:
+        except HarnessError as e:
             return {"attempted": False, "reason": str(e)}
         if not sink.done.wait(60):
             return {"attempted": False,
@@ -565,7 +501,7 @@ class OpenbsdNetTransfer(QemuSystemTest):
         try:
             m = con.expect(rb"IN ([0-9a-f]{64})\s+(\d+)", 180,
                            what="the inbound digest")
-        except _Harness as e:
+        except HarnessError as e:
             return {"attempted": False, "reason": str(e)}
         # The host originates this payload (in_hash/PAYLOAD_BYTES,
         # computed before pushing it through the forwarded port); the
@@ -580,22 +516,9 @@ class OpenbsdNetTransfer(QemuSystemTest):
     @skipSlowTest()
     @skipIfMissingEnv('ORIGAMI_ASSETS')
     def test_openbsd_net_transfer(self):
-        paths = self._asset_paths()
-        if paths is None:
-            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
-            # the case where it is unset entirely -- getting here means
-            # it IS set, so a missing kernel or disk is a provisioning
-            # failure, not an absent-assets developer run, and must fail
-            # loudly: a silent skip here would let a real transfer
-            # regression pass CI unnoticed.
-            self.fail(
-                'ORIGAMI_ASSETS is set but the firmware/kernel/disk are '
-                f'missing at <ORIGAMI_ASSETS>/{FIRMWARE_REL}, '
-                f'<ORIGAMI_ASSETS>/{KERNEL_REL} and '
-                f'<ORIGAMI_ASSETS>/{DISK_REL} -- provision them '
-                '(nightly assets) rather than silently skipping a '
-                'claimed capability')
-        firmware, kernel, disk = paths
+        assets = require_assets(self, FIRMWARE_REL, KERNEL_REL, DISK_REL)
+        firmware, kernel = assets[FIRMWARE_REL], assets[KERNEL_REL]
+        disk = assets[DISK_REL]
 
         self.require_netdev('user')
 
@@ -623,7 +546,7 @@ class OpenbsdNetTransfer(QemuSystemTest):
         pcap_path = self.log_file('wire.pcap')
 
         vm = self.get_vm(name='openbsd_net_transfer')
-        vm.set_machine('origin200,debug-leds=off')
+        vm.set_machine(MACHINES['origin200'])
         vm.set_console()
         vm.add_args(
             '-m', str(MEMORY_MIB), '-snapshot',
@@ -664,7 +587,7 @@ class OpenbsdNetTransfer(QemuSystemTest):
                 con.send("halt -p")
                 time.sleep(3)
                 con._pump()
-            except _Harness as e:
+            except HarnessError as e:
                 # A harness-level stop (a timeout, or a guest fault)
                 # anywhere in the sequence above leaves every leg not
                 # yet assigned still reading its initial "not reached

@@ -66,11 +66,9 @@ provisions it at <ORIGAMI_ASSETS>/assets/irix/6.5.30/root.qcow2 the same
 way the firmware and miniroot kernel are provisioned out of band.
 """
 
-import hashlib
 import json
 import os
 import re
-import socket
 import subprocess
 import sys
 import time
@@ -80,6 +78,9 @@ import time
 # find theirs.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from lib_net import Console, HarnessError  # noqa: E402
+from lib_prom import (MACHINES, file_sha256,  # noqa: E402
+                      require_assets)
 from test_irix_eg_net_verdict import eg_net_verdict  # noqa: E402
 
 try:
@@ -138,118 +139,16 @@ LOGIN_BUDGET_SECONDS = 1200
 STEP_TIMEOUT_SECONDS = 300
 
 
-class _Harness(Exception):
-    """This test's own side of the run went wrong -- a timeout waiting for
-    the guest, or a value it never printed. Kept distinct from a guest fault
-    (below) so a report names which side of the machine to look at first,
-    the same split test_openbsd_net_transfer.py keeps."""
-
-
-class _GuestFault(_Harness):
-    """The guest itself fell over -- an IRIX panic or a PROM exception --
-    rather than a harness timeout. Ends the whole run."""
-
-
-class _Console:
-    """Send a line to the guest console and wait for a pattern in what comes
-    back, over this framework's own console socket. The command/response
-    marker idiom is test_openbsd_net_transfer.py's _Console, reproduced here
-    (SELF-CONTAINED, the same duplication the other functional tests make):
-    every command carries its own end marker split across a quote so the
-    shell's echo of the command line itself can never match it.
-    """
+class _Console(Console):
+    """lib_net's console driver, watching for the faults an IRIX guest or
+    its PROM shows when it wedges rather than answers."""
 
     TRIPWIRES = (
         (re.compile(rb"PANIC"), "the guest panicked"),
         (re.compile(rb"Data bus error"), "the guest took a data bus error"),
         (re.compile(rb"\bException\b\s*<"), "the PROM took an exception"),
     )
-
-    def __init__(self, sock, log_path, exited=None):
-        self.sock = sock
-        self.sock.settimeout(1.0)
-        self.buf = bytearray()
-        self._log = open(log_path, "ab")
-        self._exited = exited if exited is not None else (lambda: False)
-
-    def _pump(self):
-        try:
-            chunk = self.sock.recv(4096)
-        except socket.timeout:
-            chunk = None
-        except OSError:
-            chunk = None
-        if chunk:
-            self.buf += chunk
-            self._log.write(chunk)
-            self._log.flush()
-            return
-        if self._exited():
-            raise _Harness(
-                "the emulator exited and the console has nothing further "
-                "to read")
-
-    def expect(self, pattern, timeout, what=None):
-        rx = re.compile(pattern) if isinstance(pattern, bytes) else pattern
-        deadline = time.monotonic() + timeout
-        start = 0
-        trip_from = len(self.buf)
-        while True:
-            m = rx.search(self.buf, start)
-            if m:
-                return m
-            for trx, why in self.TRIPWIRES:
-                if trx.search(self.buf, trip_from):
-                    raise _GuestFault(
-                        f"{why} while waiting for {what or rx.pattern!r}")
-            if time.monotonic() >= deadline:
-                raise _Harness(
-                    f"timed out after {timeout}s waiting for "
-                    f"{what or rx.pattern!r}")
-            start = max(0, len(self.buf) - 4096)
-            self._pump()
-
-    def send(self, text):
-        self.sock.sendall(text.encode() + b"\n")
-
-    def run(self, cmd, tag, timeout=STEP_TIMEOUT_SECONDS):
-        """Send a shell command with its own end marker, return its exit
-        code. The marker is split across a quote so the shell's echo of the
-        command line can never match it."""
-        self.send(f'{cmd}; echo "MARK""-{tag}-$?"')
-        m = self.expect(rb"MARK-" + tag.encode() + rb"-(\d+)", timeout,
-                        what=f"{tag} to finish")
-        return int(m.group(1))
-
-    def two_values(self, cmd, tag, pattern, timeout=STEP_TIMEOUT_SECONDS):
-        """Run a command and pull two values out of what it printed, from
-        the same command. Two empty files share a checksum, so pulling the
-        size alongside it is what catches a transfer that 'succeeded' on
-        nothing."""
-        pos = len(self.buf)
-        self.send(f'{cmd}; echo "MARK""-{tag}-$?"')
-        end = self.expect(rb"MARK-" + tag.encode() + rb"-(\d+)", timeout,
-                          what=f"{tag} to finish")
-        rx = re.compile(pattern)
-        m = rx.search(bytes(self.buf[pos:end.start()]))
-        if not m:
-            raise _Harness(f"{tag} printed nothing matching {rx.pattern!r}")
-        return m.group(1).decode(), int(m.group(2))
-
-    def capture_value(self, cmd, tag, pattern, timeout=STEP_TIMEOUT_SECONDS):
-        """Run a command and pull one value out of what it printed."""
-        pos = len(self.buf)
-        self.send(f'{cmd}; echo "MARK""-{tag}-$?"')
-        end = self.expect(rb"MARK-" + tag.encode() + rb"-(\d+)", timeout,
-                          what=f"{tag} to finish")
-        rx = re.compile(pattern)
-        m = rx.search(bytes(self.buf[pos:end.start()]))
-        if not m:
-            raise _Harness(f"{tag} printed no value matching {rx.pattern!r}")
-        return m.group(1).decode()
-
-    def close(self):
-        self._log.close()
+    STEP_TIMEOUT = STEP_TIMEOUT_SECONDS
 
 
 # The System Maintenance Menu answer and the login exchange, each firing
@@ -281,14 +180,6 @@ def _drive_to_shell(con, budget):
             "export PATH", "shinit", timeout=int(left(120)))
 
 
-def _sha256_file(path):
-    digest = hashlib.sha256()
-    with open(path, "rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _host_cksum(path):
     """The POSIX cksum CRC and byte count of a file, computed by the host's
     own cksum(1) (coreutils' default algorithm is the POSIX CRC IRIX's
@@ -306,16 +197,6 @@ if QemuSystemTest is not None:
         a payload over it by TFTP, and requires eg_net_verdict() to be PASS.
         See this module's docstring for the full contract."""
 
-        def _asset_paths(self):
-            assets_root = os.environ.get('ORIGAMI_ASSETS')
-            if not assets_root:
-                return None
-            prom = os.path.join(assets_root, FIRMWARE_REL)
-            disk = os.path.join(assets_root, DISK_REL)
-            if not (os.path.isfile(prom) and os.path.isfile(disk)):
-                return None
-            return prom, disk
-
         def _read_ipkts(self, con, tag):
             """eg0's received-packet counter from netstat -i, or None if it
             could not be read. netstat -in columns are
@@ -325,7 +206,7 @@ if QemuSystemTest is not None:
                     "netstat -in | awk '$1 ~ /^" + IFACE +
                     "/ {print \"IPKTS=\" $5; exit}'",
                     tag, rb"IPKTS=(\d+)", timeout=60))
-            except _Harness:
+            except HarnessError:
                 return None
 
         def _configure_eg(self, con):
@@ -340,7 +221,7 @@ if QemuSystemTest is not None:
                 con.capture_value("ifconfig " + IFACE, "ifshow",
                                  rb"(UP)[,>]", timeout=60)
                 return True
-            except _Harness:
+            except HarnessError:
                 return False
 
         def _transfer(self, con, host_crc, host_size):
@@ -356,7 +237,7 @@ if QemuSystemTest is not None:
                 guest_crc, guest_size = con.two_values(
                     "cksum /tmp/down.bin", "cksum",
                     rb"(\d+)\s+(\d+)\s+/tmp/down\.bin", timeout=120)
-            except _Harness as e:
+            except HarnessError as e:
                 leg["reason"] = str(e)
                 return leg
             leg.update({"attempted": True, "reason": None,
@@ -368,22 +249,10 @@ if QemuSystemTest is not None:
         @skipSlowTest()
         @skipIfMissingEnv('ORIGAMI_ASSETS')
         def test_irix_eg_net(self):
-            paths = self._asset_paths()
-            if paths is None:
-                # skipIfMissingEnv above already skipped the case where
-                # ORIGAMI_ASSETS is unset entirely -- getting here means
-                # it IS set, so a missing PROM or disk is a provisioning
-                # failure, not an absent-assets developer run, and must
-                # fail loudly rather than skip quietly.
-                self.fail(
-                    'ORIGAMI_ASSETS is set but the PROM/disk are missing '
-                    f'at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
-                    f'<ORIGAMI_ASSETS>/{DISK_REL} -- provision them '
-                    '(nightly assets) rather than silently skipping a '
-                    'claimed capability')
-            prom, disk = paths
+            assets = require_assets(self, FIRMWARE_REL, DISK_REL)
+            prom, disk = assets[FIRMWARE_REL], assets[DISK_REL]
 
-            if _sha256_file(prom) != PROM_SHA256:
+            if file_sha256(prom) != PROM_SHA256:
                 self.fail('the 6.5.30 PROM SHA-256 does not match -- a stale '
                           'or wrong-release firmware')
 
@@ -401,7 +270,7 @@ if QemuSystemTest is not None:
             pcap = self.log_file('eg-wire.pcap')
 
             vm = self.get_vm(name='irix_eg_net')
-            vm.set_machine('origin200,debug-leds=off')
+            vm.set_machine(MACHINES['origin200'])
             vm.set_console()
             elsc_log = self.log_file('elsc-aux.log')
             vm.add_args(
@@ -441,7 +310,7 @@ if QemuSystemTest is not None:
                     con.send("sync; sync")
                     time.sleep(2)
                     con._pump()
-                except _Harness as e:
+                except HarnessError as e:
                     if transfer.get("reason") == "not reached":
                         transfer["reason"] = str(e)
             finally:
