@@ -251,6 +251,18 @@ static void si_ge_data_write(SGIMgrasState *s, hwaddr addr, unsigned size,
     s->ge_words[slot] = MAX(s->ge_words[slot], ptr + 1);
 }
 
+/*
+ * The selector carries the color map in bits 4:0 and the first entry in
+ * bits 15:8; each data-port access takes the next entry and wraps inside
+ * the 256-entry map. Bits 7:5 are zero in every selector the stock X
+ * server writes. Established from the retained desktop capture.
+ */
+static uint32_t si_cmap_address(SGIMgrasState *s)
+{
+    return (s->cmap_selector & 0x1f) * 256 +
+           (((s->cmap_selector >> 8) + s->cmap_position) & 0xff);
+}
+
 static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
 {
     if (size != 1 && size != 2 && size != 4 && size != 8) {
@@ -373,13 +385,7 @@ static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
         return size == 2 ? v : (uint32_t)v << 16;
     }
     case 0x130500: return s->entry;
-    case 0x070d18: {
-        uint32_t address = (s->cmap_selector & 0x1f) * 256 +
-                           ((s->cmap_selector >> 13) & 7) * 32 +
-                           s->cmap_position;
-
-        return s->cmap[address];
-    }
+    case 0x070d18: return s->cmap[si_cmap_address(s)];
     case 0x120400: return s->ready ? 0xf400 : 0;
     /* GE readback order is a functional approximation over opaque uploads. */
     case SGI_MGRAS_GE_READ_1:
@@ -571,21 +577,16 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
             si_error(s, addr, size, "unsupported context width");
         }
         return;
-    /* Target-first selector decoding is a retained-trace approximation. */
     case 0x070c30:
         s->cmap_selector = value;
         s->cmap_position = 0;
         return;
-    case 0x070d18: {
-        uint32_t address = (s->cmap_selector & 0x1f) * 256 +
-                           ((s->cmap_selector >> 13) & 7) * 32 +
-                           s->cmap_position;
-
-        s->cmap[address] = value;
-        s->cmap_position = (s->cmap_position + 1) & 0x1f;
+    case 0x070d18:
+        s->cmap[si_cmap_address(s)] = value;
+        /* The position is an 8-bit count a selector write resets. */
+        s->cmap_position++;
         s->dirty = true;
         return;
-    }
     case 0x071f00: return;
     /* The unresolved synchronization selector is accepted but not stored. */
     case SGI_MGRAS_REPP_SYNC: return;
@@ -836,8 +837,7 @@ static int si_post_load(void *opaque, int version_id)
         (s->cmd_token_class != SGI_MGRAS_CMD_TOKEN_DISCARD &&
          s->cmd_token_words_remaining > ARRAY_SIZE(s->cmd_token_payload)) ||
         s->pio_x > SGI_MGRAS_WIDTH || s->pio_y > SGI_MGRAS_HEIGHT ||
-        s->xmap_index >= SGI_MGRAS_XMAP_ENTRIES ||
-        s->cmap_position >= 32) {
+        s->xmap_index >= SGI_MGRAS_XMAP_ENTRIES) {
         return -EINVAL;
     }
 

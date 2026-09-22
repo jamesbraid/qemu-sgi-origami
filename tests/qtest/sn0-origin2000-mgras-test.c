@@ -1852,8 +1852,60 @@ static void test_cmap_selector_addresses_the_right_slot(void)
         qtest_writel(qts, REG_CMAP_DATA, 0x00100000 + position);
     }
     qtest_writel(qts, REG_CMAP_DATA, 0x00aabbcc);
+
+    /* Selector 0x2005 starts at entry 32, so the 33rd write is entry 64. */
     qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0x2005);
+    g_assert_cmphex(qtest_readl(qts, REG_CMAP_DATA), ==, 0x00100000);
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, (64 << 8) | 5);
     g_assert_cmphex(qtest_readl(qts, REG_CMAP_DATA), ==, 0x00aabbcc);
+
+    /* A run wraps at the 256-entry map boundary, inside the same map. */
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0xff05);
+    qtest_writel(qts, REG_CMAP_DATA, 0x00ddeeff);
+    qtest_writel(qts, REG_CMAP_DATA, 0x00123456);
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0xff05);
+    g_assert_cmphex(qtest_readl(qts, REG_CMAP_DATA), ==, 0x00ddeeff);
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0x0005);
+    g_assert_cmphex(qtest_readl(qts, REG_CMAP_DATA), ==, 0x00123456);
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0xff04);
+    g_assert_cmphex(qtest_readl(qts, REG_CMAP_DATA), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The X server allocates single colour cells one selector at a time. Those
+ * selectors differ only in bits 15:8, so a decode that dropped that field
+ * would stack all of them onto one entry.
+ */
+static void test_cmap_selector_start_entry(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0x1011);
+    qtest_writel(qts, REG_CMAP_DATA, 0xc1c1c100);
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0x2c11);
+    qtest_writel(qts, REG_CMAP_DATA, 0x8b6a6a00);
+
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, (16 << 8) | 17);
+    g_assert_cmphex(qtest_readl(qts, REG_CMAP_DATA), ==, 0xc1c1c100);
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, (44 << 8) | 17);
+    g_assert_cmphex(qtest_readl(qts, REG_CMAP_DATA), ==, 0x8b6a6a00);
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0x0011);
+    g_assert_cmphex(qtest_readl(qts, REG_CMAP_DATA), ==, 0);
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, (32 << 8) | 17);
+    g_assert_cmphex(qtest_readl(qts, REG_CMAP_DATA), ==, 0);
+
+    /* A run advances one entry per write from the selected entry. */
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0x1011);
+    qtest_writel(qts, REG_CMAP_DATA, 0x11111100);
+    qtest_writel(qts, REG_CMAP_DATA, 0x22222200);
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, (17 << 8) | 17);
+    g_assert_cmphex(qtest_readl(qts, REG_CMAP_DATA), ==, 0x22222200);
+
+    /* The same entry in the neighbouring map is untouched. */
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, (16 << 8) | 18);
+    g_assert_cmphex(qtest_readl(qts, REG_CMAP_DATA), ==, 0);
 
     qtest_quit(qts);
 }
@@ -2881,6 +2933,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "cmap-selector-addresses-the-right-slot",
                    test_cmap_selector_addresses_the_right_slot);
+    qtest_add_func("sn0/origin2000/mgras/cmap-selector-start-entry",
+                   test_cmap_selector_start_entry);
     qtest_add_func("sn0/origin2000/mgras/int-dest-alt-offset-aliases",
                    test_int_dest_alt_offset_aliases);
     qtest_add_func("sn0/origin2000/mgras/hq-config-and-enable-registers",
