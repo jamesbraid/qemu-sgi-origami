@@ -139,6 +139,14 @@
 #define REG_GLINE_XSTARTF       0x00c
 #define REG_DRBPOINTERS         0x16d
 
+/*
+ * FILLMODE (OpenBSD impact(4) driver name) picks a CHAR_H/CHAR_L execute's
+ * paint mode; see hw/misc/sgi-mgras-raster.c.
+ */
+#define REG_FILLMODE             0x110
+#define SI_FILLMODE_GLYPH_ROW    0x10400008
+#define SI_FILLMODE_BYTE_XFER    0x10c00000
+
 
 #define SI_LOGIC_OP_COPY        0x3
 #define SI_LOGIC_OP_XOR         0x6
@@ -1165,6 +1173,8 @@ static void test_direct_glyph_row(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BKGRD_RG, 0x00000000));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_FILLMODE, SI_FILLMODE_GLYPH_ROW));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BLOCK_START, (40u << 16) | 40u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BLOCK_END, (47u << 16) | 47u));
@@ -1191,7 +1201,16 @@ static void test_direct_glyph_row(void)
 }
 
 
-static void test_direct_glyph_row_width_cap(void)
+/*
+ * A row up to 32 columns wide executes entirely on CHAR_H; CHAR_L is never
+ * written. Markers sit at columns 0, 15, 16 and 19 to exercise both CHAR_H
+ * halfwords and the row's last column. A second CHAR_H execute paints a
+ * different pattern on the next row: if a single execute painted a pair of
+ * rows (the row-pair theory this replaces), the first execute would already
+ * have reached row 1, and the second execute's pattern would land on row 2
+ * instead of row 1.
+ */
+static void test_direct_glyph_row_char_h_only(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
 
@@ -1202,27 +1221,54 @@ static void test_direct_glyph_row_width_cap(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BKGRD_RG, 0x00000000));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_FILLMODE, SI_FILLMODE_GLYPH_ROW));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BLOCK_START, (80u << 16) | 80u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (99u << 16) | 81u));
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_BLOCK_END, (103u << 16) | 80u));
-
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND_EXEC(REG_CHAR_H, 0x8000ffffu));
-
+                 SI_COMMAND_EXEC(REG_CHAR_H, 0x80019000u));
 
     g_assert_cmphex(si_test_pixel(qts, 80, 80), ==, 0x00ffffff);
     g_assert_cmphex(si_test_pixel(qts, 81, 80), ==, 0);
-    g_assert_cmphex(si_test_pixel(qts, 95, 80), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 94, 80), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 95, 80), ==, 0x00ffffff);
+    g_assert_cmphex(si_test_pixel(qts, 96, 80), ==, 0x00ffffff);
+    g_assert_cmphex(si_test_pixel(qts, 97, 80), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 98, 80), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 99, 80), ==, 0x00ffffff);
+    g_assert_cmphex(si_test_pixel(qts, 100, 80), ==, 0);
 
-    g_assert_cmphex(si_test_pixel(qts, 96, 80), ==, 0);
-    g_assert_cmphex(si_test_pixel(qts, 103, 80), ==, 0);
+    /* The single execute above must not have reached row 81 yet. */
+    g_assert_cmphex(si_test_pixel(qts, 80, 81), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 85, 81), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 90, 81), ==, 0);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_CHAR_H, 0x04200000u));
+
+    g_assert_cmphex(si_test_pixel(qts, 80, 81), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 85, 81), ==, 0x00ffffff);
+    g_assert_cmphex(si_test_pixel(qts, 86, 81), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 90, 81), ==, 0x00ffffff);
+    g_assert_cmphex(si_test_pixel(qts, 91, 81), ==, 0);
+    /* Row 1's pattern differs from row 0's; no bleed from the first row. */
+    g_assert_cmphex(si_test_pixel(qts, 95, 81), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 99, 81), ==, 0);
 
     qtest_quit(qts);
 }
 
 
-static void test_char_l_execute_is_not_a_glyph_trigger(void)
+/*
+ * A 64-column row executes entirely on CHAR_L (CHAR_H is staged first and
+ * never itself executes). Markers sit in all four halfwords -- CHAR_H's
+ * upper and lower half, CHAR_L's upper and lower half -- including both
+ * ends of the CHAR_H/CHAR_L boundary at columns 31 and 32, to pin down the
+ * bit order across the combined 64-bit row.
+ */
+static void test_direct_glyph_row_char_l_execute(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
 
@@ -1231,15 +1277,109 @@ static void test_char_l_execute_is_not_a_glyph_trigger(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_PACKEDCOLOR, 0x00ffffff));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_BLOCK_START, (60u << 16) | 60u));
+                 SI_COMMAND(REG_BKGRD_RG, 0x00000000));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_BLOCK_END, (67u << 16) | 67u));
+                 SI_COMMAND(REG_FILLMODE, SI_FILLMODE_GLYPH_ROW));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND_EXEC(REG_CHAR_L, 0xffffffff));
+                 SI_COMMAND(REG_BLOCK_START, (200u << 16) | 200u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (263u << 16) | 200u));
 
-    g_assert_cmphex(si_test_pixel(qts, 60, 60), ==, 0);
+    /*
+     * Column 3: CHAR_H's upper halfword. Column 31: CHAR_H's lower
+     * halfword, the last column CHAR_H sources.
+     */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_CHAR_H, 0x10000001u));
+    /*
+     * Column 32: CHAR_L's upper halfword, the first column CHAR_L sources.
+     * Column 61: CHAR_L's lower halfword.
+     */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_CHAR_L, 0x80000004u));
 
-    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 200, 200), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 202, 200), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 203, 200), ==, 0x00ffffff);
+    g_assert_cmphex(si_test_pixel(qts, 204, 200), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 230, 200), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 231, 200), ==, 0x00ffffff);
+    g_assert_cmphex(si_test_pixel(qts, 232, 200), ==, 0x00ffffff);
+    g_assert_cmphex(si_test_pixel(qts, 233, 200), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 260, 200), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 261, 200), ==, 0x00ffffff);
+    g_assert_cmphex(si_test_pixel(qts, 262, 200), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 263, 200), ==, 0);
+
+    /* The 64-column row is exactly this rect's width; nothing past it. */
+    g_assert_cmphex(si_test_pixel(qts, 264, 200), ==, 0);
+
+    qtest_quit(qts);
+}
+
+
+/*
+ * FILLMODE_BYTE_XFER delivers eight indexed pixels per CHAR_L execute. An
+ * 18-column-wide rect makes the row's skip into the 8-byte unit alternate
+ * 0, 4, 0, ... per row (skip = (row * 4 * ceil(width / 4)) % 8), covering
+ * both values in two rows. Each unit writes a fresh CHAR_H/CHAR_L pair with
+ * distinct byte markers so a painted pixel's value names the byte that
+ * produced it.
+ */
+static void test_direct_byte_row(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_FILLMODE, SI_FILLMODE_BYTE_XFER));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_DRBPOINTERS, 5u << 16));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (120u << 16) | 120u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (137u << 16) | 121u));
+
+    /* Row 0, skip 0: three 8-byte units cover columns 0-17. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_CHAR_H, 0x00010203u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_CHAR_L, 0x04050607u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_CHAR_H, 0x08090a0bu));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_CHAR_L, 0x0c0d0e0fu));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_CHAR_H, 0x10111213u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_CHAR_L, 0x14151617u));
+
+    g_assert_cmphex(si_test_pixel(qts, 120, 120), ==, 0x00);
+    g_assert_cmphex(si_test_pixel(qts, 127, 120), ==, 0x07);
+    g_assert_cmphex(si_test_pixel(qts, 128, 120), ==, 0x08);
+    g_assert_cmphex(si_test_pixel(qts, 137, 120), ==, 0x11);
+    g_assert_cmphex(si_test_wid(qts, 120, 120), ==, 5);
+
+    /* Row 1, skip 4: the first unit's low nibble lands on columns 0-3. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_CHAR_H, 0x28292a2bu));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_CHAR_L, 0x2c2d2e2fu));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_CHAR_H, 0x30313233u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_CHAR_L, 0x34353637u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_CHAR_H, 0x38393a3bu));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_CHAR_L, 0x3c3d3e3fu));
+
+    g_assert_cmphex(si_test_pixel(qts, 120, 121), ==, 0x2c);
+    g_assert_cmphex(si_test_pixel(qts, 123, 121), ==, 0x2f);
+    g_assert_cmphex(si_test_pixel(qts, 124, 121), ==, 0x30);
+    g_assert_cmphex(si_test_pixel(qts, 137, 121), ==, 0x3d);
+    g_assert_cmphex(si_test_wid(qts, 137, 121), ==, 5);
 
     qtest_quit(qts);
 }
@@ -2134,6 +2274,8 @@ static void test_re_char_h_execute(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BKGRD_RG, 0x00000000));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_FILLMODE, SI_FILLMODE_GLYPH_ROW));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BLOCK_START, (200u << 16) | 200u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BLOCK_END, (207u << 16) | 207u));
@@ -2708,10 +2850,12 @@ int main(int argc, char **argv)
                    test_ir_alias_execute);
     qtest_add_func("sn0/origin2000/mgras/direct-glyph-row",
                    test_direct_glyph_row);
-    qtest_add_func("sn0/origin2000/mgras/direct-glyph-row-width-cap",
-                   test_direct_glyph_row_width_cap);
-    qtest_add_func("sn0/origin2000/mgras/char-l-execute-is-not-a-glyph-trigger",
-                   test_char_l_execute_is_not_a_glyph_trigger);
+    qtest_add_func("sn0/origin2000/mgras/direct-glyph-row-char-h-only",
+                   test_direct_glyph_row_char_h_only);
+    qtest_add_func("sn0/origin2000/mgras/direct-glyph-row-char-l-execute",
+                   test_direct_glyph_row_char_l_execute);
+    qtest_add_func("sn0/origin2000/mgras/direct-byte-row",
+                   test_direct_byte_row);
     qtest_add_func("sn0/origin2000/mgras/display-surface-conversion",
                    test_display_surface_conversion);
     qtest_add_func("sn0/origin2000/mgras/reset-refreshes-display-surface",

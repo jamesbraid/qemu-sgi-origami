@@ -711,7 +711,7 @@ static void si_reset_enter(Object *obj, ResetType type)
     /* Logic-operation and plane-mask reset values are approximations. */
     s->rss[0x161] = 0x3 << 26;
     s->rss[0x163] = 0xffffffff;
-    s->glyph_row = s->pio_x = s->pio_y = 0;
+    s->glyph_row = s->glyph_unit = s->pio_x = s->pio_y = 0;
     s->cmd_token_class = s->cmd_token_reg = 0;
     s->cmd_token_words_remaining = s->cmd_token_payload_count = 0;
     memset(s->cmd_token_payload, 0, sizeof(s->cmd_token_payload));
@@ -876,7 +876,7 @@ static bool si_ge_lengths_valid(void *opaque, int version_id)
  * changes.
  */
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 4, .minimum_version_id = 4,
+    .name = TYPE_SGI_MGRAS, .version_id = 5, .minimum_version_id = 5,
     .post_load = si_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -970,6 +970,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_BOOL(error_asserted, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(rss, SGIMgrasState, 0x200),
         VMSTATE_UINT32(glyph_row, SGIMgrasState),
+        VMSTATE_UINT32(glyph_unit, SGIMgrasState),
         VMSTATE_UINT32(pio_x, SGIMgrasState),
         VMSTATE_UINT32(pio_y, SGIMgrasState),
         VMSTATE_UINT32(cmd_token_class, SGIMgrasState),
