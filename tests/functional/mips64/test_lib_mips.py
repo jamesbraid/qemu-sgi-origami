@@ -39,9 +39,9 @@ NI_PORT_RESET = 0x600008
 PORT_RESET_VALUE = 0x81
 STATUS_KX_KERNEL = 0x24400080
 
-# 53 big-endian words: the image build_port_reset() produced from
-# test_sn0_port_reset.py's own copy of this assembler, at the revision
-# that copy was moved here.
+# 53 big-endian words: the image build_port_reset() produced from the
+# SN0PortReset section of test_sn_reset.py's own copy of this assembler,
+# at the revision that copy was moved here.
 PORT_RESET_IMAGE_HEX = (
     "3c0824403508008040886000000000003c1090000010803c3c010003342100000201"
     "80253c1192000011883c3c01010034210020022188253c1292000012903c3c010160"
