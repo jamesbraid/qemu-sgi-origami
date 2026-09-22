@@ -242,6 +242,7 @@ struct SGIMgrasState {
     uint32_t rss[0x200];
     /* Internal cursors implement the bounded raster approximation. */
     uint32_t glyph_row;
+    uint32_t glyph_unit;
     uint32_t pio_x;
     uint32_t pio_y;
     /* Parser state preserves FIFO ordering across separate stores. */
