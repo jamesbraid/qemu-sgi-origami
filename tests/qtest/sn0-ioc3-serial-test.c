@@ -15,6 +15,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sn0-user-image.h"
+#include "sgi-migrate.h"
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -63,6 +64,25 @@ static void sn0_ioc3_attach_node(QTestState *qts, uint64_t node_base)
 static void sn0_ioc3_attach(QTestState *qts)
 {
     sn0_ioc3_attach_node(qts, 0);
+}
+
+/*
+ * One plain origin200 serves every case that wants no host socket wired
+ * to a port, started in main(). A case that writes bytes into a chardev
+ * needs qtest_init_with_serial or a named chardev, so it keeps its own.
+ */
+static QTestState *qts;
+
+/*
+ * Open such a case. Reset turns the controller's memory decode back off,
+ * which unmaps its window, so every case runs the attach sequence again
+ * exactly as it did after a boot.
+ */
+static void serial_reset(void)
+{
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readl(qts, CFG0(PCI_IOC3_DEVICE) + PCI_COMMAND) &
+                    PCI_COMMAND_MEMORY, ==, 0);
 }
 
 /* The chip control register, which carries the two ports' SuperIO offsets. */
@@ -300,11 +320,13 @@ static int portb_listen(uint16_t *port)
     addr.sin_port = 0;
 
     lfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    g_assert(lfd >= 0);
-    g_assert(bind(lfd, (struct sockaddr *)&addr, sizeof(addr)) == 0);
-    g_assert(getsockname(lfd, (struct sockaddr *)&addr, &addrlen) == 0);
+    g_assert_cmpint(lfd, >=, 0);
+    g_assert_cmpint(bind(lfd, (struct sockaddr *)&addr, sizeof(addr)),
+                    ==, 0);
+    g_assert_cmpint(getsockname(lfd, (struct sockaddr *)&addr, &addrlen),
+                    ==, 0);
     *port = ntohs(addr.sin_port);
-    g_assert(listen(lfd, 1) == 0);
+    g_assert_cmpint(listen(lfd, 1), ==, 0);
     return lfd;
 }
 
@@ -318,7 +340,7 @@ static int portb_accept(int lfd)
     FD_SET(lfd, &readfds);
     g_assert_cmpint(select(lfd + 1, &readfds, NULL, NULL, &tv), ==, 1);
     fd = accept(lfd, NULL, 0);
-    g_assert(fd >= 0);
+    g_assert_cmpint(fd, >=, 0);
     val = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &val, sizeof(val));
     serial_socket_deadline(fd);
@@ -394,18 +416,55 @@ static void collect_rx_chars(QTestState *qts, unsigned int port,
         }
 
         if (got < n) {
-            g_assert(g_test_timer_elapsed() < IOC3_SERIAL_SOCKET_TIMEOUT_SECS);
+            if (g_test_timer_elapsed() >= IOC3_SERIAL_SOCKET_TIMEOUT_SECS) {
+                g_test_message("port %u's ring held %u of %u characters "
+                               "after %d seconds", port, got, n,
+                               IOC3_SERIAL_SOCKET_TIMEOUT_SECS);
+                g_assert_not_reached();
+            }
             g_usleep(1000);
         }
     }
 }
 
-/* Wait for a SuperIO interrupt source to appear in the status register. */
+/*
+ * Wait for a SuperIO interrupt source to appear in the status register.
+ * On the wall clock, and it has to be: what raises the source is the main
+ * loop reading a host socket, which stepping the virtual clock does not
+ * make happen.
+ */
 static void wait_for_source(QTestState *qts, uint32_t bit)
 {
+    uint32_t seen;
+
     g_test_timer_start();
-    while ((qtest_readl(qts, INT_STATUS) & bit) != bit) {
-        g_assert(g_test_timer_elapsed() < IOC3_SERIAL_SOCKET_TIMEOUT_SECS);
+    while (((seen = qtest_readl(qts, INT_STATUS)) & bit) != bit) {
+        if (g_test_timer_elapsed() >= IOC3_SERIAL_SOCKET_TIMEOUT_SECS) {
+            g_test_message("the interrupt status held 0x%x, without 0x%x, "
+                           "after %d seconds", seen, bit,
+                           IOC3_SERIAL_SOCKET_TIMEOUT_SECS);
+            g_assert_not_reached();
+        }
+        g_usleep(1000);
+    }
+}
+
+/*
+ * Wait for a character written into a host socket to reach a port. Same
+ * reason for the wall clock as wait_for_source() above.
+ */
+static void wait_for_receive_ready(QTestState *qts, uint64_t port)
+{
+    uint8_t seen;
+
+    g_test_timer_start();
+    while (!((seen = qtest_readb(qts, port + REG_LSR)) & LSR_DR)) {
+        if (g_test_timer_elapsed() >= IOC3_SERIAL_SOCKET_TIMEOUT_SECS) {
+            g_test_message("the line status at 0x%" PRIx64 " held 0x%x, with "
+                           "no character ready, after %d seconds", port, seen,
+                           IOC3_SERIAL_SOCKET_TIMEOUT_SECS);
+            g_assert_not_reached();
+        }
         g_usleep(1000);
     }
 }
@@ -413,15 +472,13 @@ static void wait_for_source(QTestState *qts, uint32_t bit)
 /* No guest reads these fields back: asserted here or not at all. */
 static void test_the_control_register_round_trips(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    serial_reset();
 
     sn0_ioc3_attach(qts);
 
     qtest_writel(qts, CHIP_CONTROL, 0x00022e5e);
     g_assert_cmphex(qtest_readl(qts, CHIP_CONTROL), ==,
                     0x00022e5e | CHIP_CTRL_ARB_IDLE);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -431,7 +488,7 @@ static void test_the_control_register_round_trips(const void *data)
  */
 static void test_an_index_keeps_only_its_pointer_field(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    serial_reset();
 
     sn0_ioc3_attach(qts);
 
@@ -449,8 +506,6 @@ static void test_an_index_keeps_only_its_pointer_field(const void *data)
     qtest_writel(qts, sdma(1, SDMA_TX_PRODUCE), 0x18);
     g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_TX_PRODUCE)), ==, 0xff8);
     g_assert_cmphex(qtest_readl(qts, sdma(1, SDMA_TX_PRODUCE)), ==, 0x18);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -459,7 +514,7 @@ static void test_an_index_keeps_only_its_pointer_field(const void *data)
  */
 static void test_the_receive_consume_keeps_its_arming_bit(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    serial_reset();
 
     sn0_ioc3_attach(qts);
 
@@ -467,8 +522,6 @@ static void test_the_receive_consume_keeps_its_arming_bit(const void *data)
     qtest_writel(qts, sdma(0, SDMA_RX_CONSUME), 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_CONSUME)), ==,
                     0x800000f8 | 0xf00);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -477,8 +530,9 @@ static void test_the_receive_consume_keeps_its_arming_bit(const void *data)
  */
 static void test_the_receive_timer_keeps_twelve_bits(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint32_t val;
+
+    serial_reset();
 
     sn0_ioc3_attach(qts);
 
@@ -486,8 +540,6 @@ static void test_the_receive_timer_keeps_twelve_bits(const void *data)
     val = qtest_readl(qts, sdma(0, SDMA_RX_TIMER));
     g_assert_cmphex(val & 0xfff, ==, 0xfff);
     g_assert_cmphex(val & ~0x0fff0fffu, ==, 0);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -496,8 +548,9 @@ static void test_the_receive_timer_keeps_twelve_bits(const void *data)
  */
 static void test_the_alias_pages_are_views_of_the_main_block(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     unsigned int port;
+
+    serial_reset();
 
     sn0_ioc3_attach(qts);
 
@@ -526,14 +579,13 @@ static void test_the_alias_pages_are_views_of_the_main_block(const void *data)
     qtest_writel(qts, sdma_alias(1, SDMA_TX_PRODUCE), 0x38);
     g_assert_cmphex(qtest_readl(qts, sdma_alias(0, SDMA_TX_PRODUCE)), ==, 0x30);
     g_assert_cmphex(qtest_readl(qts, sdma_alias(1, SDMA_TX_PRODUCE)), ==, 0x38);
-
-    qtest_quit(qts);
 }
 
 static void test_the_alias_refuses_the_registers_hardware_owns(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     unsigned int port;
+
+    serial_reset();
 
     sn0_ioc3_attach(qts);
 
@@ -550,8 +602,6 @@ static void test_the_alias_refuses_the_registers_hardware_owns(const void *data)
         qtest_writel(qts, sdma_alias(port, SDMA_SHADOW), 0xffffffff);
         g_assert_cmphex(qtest_readl(qts, sdma(port, SDMA_SHADOW)), ==, shadow);
     }
-
-    qtest_quit(qts);
 }
 
 /*
@@ -561,9 +611,10 @@ static void test_the_alias_refuses_the_registers_hardware_owns(const void *data)
  */
 static void test_the_shadow_mirrors_the_port(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint32_t shadow;
     unsigned int port;
+
+    serial_reset();
 
     sn0_ioc3_attach(qts);
 
@@ -581,8 +632,6 @@ static void test_the_shadow_mirrors_the_port(const void *data)
         g_assert_cmphex(shadow & SHADOW_DTR, ==, SHADOW_DTR);
         g_assert_cmphex(shadow & SHADOW_RTS, ==, SHADOW_RTS);
     }
-
-    qtest_quit(qts);
 }
 
 /*
@@ -984,12 +1033,13 @@ static void test_an_entry_that_asked_for_nothing_gets_nothing(const void *data)
  */
 static void test_a_disabled_engine_walks_nothing(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     const uint8_t out[4] = { 'n', 'o', 'p', 'e' };
     const uint8_t control[4] = {
         TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
         TX_CHARACTER | TX_INTERRUPT,
     };
+
+    serial_reset();
 
     sn0_ioc3_attach(qts);
     configure_line(qts, 0);
@@ -1001,8 +1051,6 @@ static void test_a_disabled_engine_walks_nothing(const void *data)
 
     g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_TX_CONSUME)) & 0xff8, ==, 0);
     g_assert_cmphex(qtest_readl(qts, INT_STATUS), ==, 0);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -1092,12 +1140,13 @@ static void test_port_b_transmits_through_serial_hd_1(const void *data)
  */
 static void test_the_size_bit_is_not_part_of_the_address(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     const uint8_t out[4] = { 'b', 'a', 's', 'e' };
     const uint8_t control[4] = {
         TX_CHARACTER, TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
     };
     uint8_t landed[4];
+
+    serial_reset();
 
     sn0_ioc3_attach(qts);
     configure_line(qts, 0);
@@ -1112,8 +1161,6 @@ static void test_the_size_bit_is_not_part_of_the_address(const void *data)
 
     qtest_memread(qts, RING_RX(0), landed, sizeof(landed));
     g_assert_cmpint(memcmp(landed, out, sizeof(out)), ==, 0);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -1596,11 +1643,7 @@ static void test_pass_through_receives_while_the_rings_stay_off(
 
     g_assert_cmpint(write(sock, &sent, 1), ==, 1);
 
-    g_test_timer_start();
-    while (!(qtest_readb(qts, serial_port(0) + REG_LSR) & LSR_DR)) {
-        g_assert(g_test_timer_elapsed() < IOC3_SERIAL_SOCKET_TIMEOUT_SECS);
-        g_usleep(1000);
-    }
+    wait_for_receive_ready(qts, serial_port(0));
 
     /* The level source follows the port, and the byte is the guest's. */
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & SOURCE(0, SRC_PASSTHROUGH),
@@ -1639,11 +1682,7 @@ static void test_the_receive_drain_acts_and_reads_back_clear(const void *data)
 
     /* A character arrives while ring DMA is still off: it waits in the port. */
     g_assert_cmpint(write(sock, &sent, 1), ==, 1);
-    g_test_timer_start();
-    while (!(qtest_readb(qts, serial_port(0) + REG_LSR) & LSR_DR)) {
-        g_assert(g_test_timer_elapsed() < IOC3_SERIAL_SOCKET_TIMEOUT_SECS);
-        g_usleep(1000);
-    }
+    wait_for_receive_ready(qts, serial_port(0));
     g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)), ==, 0);
 
     /* The reconfiguration write: enable plus drain, in one store. */
@@ -1711,7 +1750,6 @@ static void test_a_channel_reset_stops_the_receive_timer(const void *data)
  */
 static void test_an_unfilled_slot_carries_no_validity_flag(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     const uint8_t full[4] = { 'f', 'u', 'l', 'l' };
     const uint8_t full_ctrl[4] = {
         TX_CHARACTER, TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
@@ -1720,6 +1758,8 @@ static void test_an_unfilled_slot_carries_no_validity_flag(const void *data)
     const uint8_t one_ctrl[4] = { TX_CHARACTER, TX_EMPTY, TX_EMPTY, TX_EMPTY };
     uint8_t landed[8];
     unsigned int i;
+
+    serial_reset();
 
     sn0_ioc3_attach(qts);
     configure_line(qts, 0);
@@ -1742,8 +1782,6 @@ static void test_an_unfilled_slot_carries_no_validity_flag(const void *data)
     for (i = 1; i < 4; i++) {
         g_assert_cmphex(landed[4 + i] & (RX_DATA_VALID | RX_MODEM_VALID), ==, 0);
     }
-
-    qtest_quit(qts);
 }
 
 /*
@@ -1783,14 +1821,12 @@ static void hold_two_in_the_packer(QTestState *qts, uint32_t consume)
  */
 static void test_a_channel_reset_clears_the_held_packer(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    serial_reset();
 
     hold_two_in_the_packer(qts, 16);
 
     qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_DMA_ENABLE | CTRL_RESET);
     g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_PRODUCE)), ==, 0);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -1938,11 +1974,7 @@ static void test_node1_ioc3_a_receives_through_serial_hd_6(const void *data)
 
     g_assert_cmpint(write(fd, &sent, 1), ==, 1);
 
-    g_test_timer_start();
-    while (!(qtest_readb(qts, serial_a + REG_LSR) & LSR_DR)) {
-        g_assert(g_test_timer_elapsed() < IOC3_SERIAL_SOCKET_TIMEOUT_SECS);
-        g_usleep(1000);
-    }
+    wait_for_receive_ready(qts, serial_a);
 
     /* The pass-through source follows the port, and the byte is node 1's. */
     g_assert_cmphex(qtest_readl(qts, node1 + INT_STATUS) &
@@ -2213,35 +2245,6 @@ static void test_a_left_unprogrammed_predivider_leaves_the_backend_silent(
 }
 
 /*
- * Migrate a not-running qtest machine and block until the destination
- * reports completion. Copied rather than shared, the way every
- * sn0-*-test.c stands alone; see sn0-migration-test.c for why qtest's own
- * migration framework does not fit here -- qtest never executes guest
- * code, so a stopped machine's device state is the whole question.
- */
-static void migrate_stopped_vm(QTestState *from, const char *uri)
-{
-    qtest_qmp_assert_success(from,
-        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
-
-    g_test_timer_start();
-    for (;;) {
-        QDict *ret = qtest_qmp_assert_success_ref(from,
-            "{ 'execute': 'query-migrate' }");
-        g_autofree char *status = g_strdup(qdict_get_str(ret, "status"));
-
-        qobject_unref(ret);
-        g_assert_cmpstr(status, !=, "failed");
-        if (g_str_equal(status, "completed")) {
-            break;
-        }
-
-        g_assert(g_test_timer_elapsed() < 30);
-        g_usleep(1000);
-    }
-}
-
-/*
  * The pre-divider is a migrated field, but the baudbase it derives is a
  * realize-time property of the embedded SerialState, not itself a vmstate
  * field: vmstate_serial's own post_load runs first, nested inside the
@@ -2280,7 +2283,7 @@ static void test_the_scratch_predivider_survives_migration(const void *data)
                                    "-serial chardev:tab -incoming %s", uri);
     to = qtest_init(dest_cmdline);
 
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     send_bytes(to, 0, (const uint8_t *)"~#", 2);
     got = read_reply(to, 0, reply, sizeof(reply));
@@ -2333,7 +2336,11 @@ static void test_the_scratch_predivider_survives_a_system_reset(
 
 int main(int argc, char **argv)
 {
+    int ret;
+
     g_test_init(&argc, &argv, NULL);
+
+    qts = qtest_init("-M origin200");
 
     qtest_add_data_func("sn0/ioc3-serial/control-register-round-trips", NULL,
                         test_the_control_register_round_trips);
@@ -2460,5 +2467,8 @@ int main(int argc, char **argv)
         "sn0/ioc3-serial/scratch-predivider-survives-a-system-reset", NULL,
         test_the_scratch_predivider_survives_a_system_reset);
 
-    return g_test_run();
+    ret = g_test_run();
+    qtest_quit(qts);
+
+    return ret;
 }
