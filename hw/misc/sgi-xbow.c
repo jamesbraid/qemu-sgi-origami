@@ -66,6 +66,10 @@
 #define XBOW_ID_MANUFACTURER_SHIFT  1
 #define XBOW_ID_ONE                 1
 
+/* Error command word: which widget was addressed, and which port sent it. */
+#define XBOW_ERR_CMD_DIDN_SHIFT     28
+#define XBOW_ERR_CMD_SIDN_SHIFT     24
+
 /* Widget 0 status: the link requests, this widget's request, then errors. */
 #define XBOW_STATUS_LINK_REQUEST(link) BIT(24 + (link))
 #define XBOW_STATUS_LINK_REQUESTS   0xff000000u
@@ -384,13 +388,14 @@ static void sgi_xbow_sync_routes(SGIXbowState *s)
 /*
  * The first-error latch holds the crosstalk command word of the packet
  * that failed and suppresses later logging until software writes it back.
- * A processor access through a memory region carries no command word to
- * put there, and filling the register with anything else would report a
- * packet that never existed, so the register and both error address halves
- * stay zero. Nine conditions share that one latch -- widget zero's access
- * error and an illegal destination on each of the eight links -- and this
- * prints whenever any of them finds its own status clear, which is a good
- * deal more often than the latch itself would rearm.
+ * An illegal-destination packet carries that command word, built from the
+ * receiving port and the destination it named, so those errors fill the
+ * latch below. A widget zero access error arrives instead as a processor
+ * access through a memory region, which carries no command word to put
+ * there, and filling the register with anything else would report a
+ * packet that never existed, so that one condition alone still leaves the
+ * register and both error address halves at zero and prints here on its
+ * first occurrence.
  */
 static void sgi_xbow_log_uncaptured_packet(void)
 {
@@ -413,14 +418,31 @@ static void sgi_xbow_record_access_error(SGIXbowState *s)
 /*
  * A destination number that is neither widget zero nor a link decodes to
  * no port at all, so the error belongs to the port the packet arrived at
- * rather than to anything it was addressed to. A repeat while the first
- * one still stands reports the second, and the packet goes nowhere either
- * way. A link that is merely down or unpopulated is a different case: its
- * number is legal and nothing here latches for it.
+ * rather than to anything it was addressed to. A repeat on the same port
+ * while its own status bit still stands reports the second there, and the
+ * packet goes nowhere either way. A link that is merely down or
+ * unpopulated is a different case: its number is legal and nothing here
+ * latches for it.
+ *
+ * The global capture registers are a single instance shared by the whole
+ * switch, not one per port, so what gates a capture is whether any port's
+ * error still stands there, not this one's own status bit: two ports can
+ * each take their first illegal-destination error before either is
+ * acknowledged, and only the one that arrived first may fill the
+ * registers. The command word's DIDN is the illegal widget the packet
+ * named and its SIDN is the widget attached to the port that sent it; the
+ * address registers hold the offset the packet carried within that
+ * widget's own space. Splitting that offset across the two halves the way
+ * the interrupt destination address's own registers are documented to,
+ * bits 47:32 in the upper half and bits 31:0 in the lower, is an inference
+ * by analogy: this pair's own layout is not itself directly stated. Every
+ * offset this switch can ever see stays within 48 bits, so the inference
+ * holds exactly throughout that range regardless.
  */
 static void sgi_xbow_record_illegal_destination(SGIXbowState *s,
                                                 unsigned int port,
-                                                unsigned int widget)
+                                                unsigned int widget,
+                                                uint64_t offset)
 {
     qemu_log_mask(LOG_GUEST_ERROR,
                   "sgi-xbow: widget %u addressed widget %u, which is not a "
@@ -428,8 +450,12 @@ static void sgi_xbow_record_illegal_destination(SGIXbowState *s,
                   widget);
     if (s->link_status[port] & XBOW_LINK_ILLEGAL_DEST) {
         s->link_status[port] |= XBOW_LINK_MULTIPLE_ERROR;
-    } else {
-        sgi_xbow_log_uncaptured_packet();
+    }
+    if (s->err_cmd == 0) {
+        s->err_cmd = (widget << XBOW_ERR_CMD_DIDN_SHIFT) |
+                     (sgi_xbow_widget(port) << XBOW_ERR_CMD_SIDN_SHIFT);
+        s->err_upper = offset >> 32;
+        s->err_lower = (uint32_t)offset;
     }
     s->link_status[port] |= XBOW_LINK_ILLEGAL_DEST;
     s->link_event[port] |= XBOW_LINK_ILLEGAL_DEST;
@@ -890,6 +916,12 @@ static unsigned int sgi_xbow_illegal_widget(const SGIXbowState *s, hwaddr addr)
     return XBOW_FIRST_ILLEGAL_WIDGET + addr / s->span;
 }
 
+/* The offset the packet carried within its (illegal) widget's own space. */
+static uint64_t sgi_xbow_illegal_offset(const SGIXbowState *s, hwaddr addr)
+{
+    return addr % s->span;
+}
+
 /*
  * One region per port covers the whole illegal range, so the port a packet
  * entered by is what selects the status register that records it. Nothing
@@ -904,7 +936,8 @@ static MemTxResult sgi_xbow_illegal_read(void *opaque, hwaddr addr,
 
     *data = 0;
     sgi_xbow_record_illegal_destination(s, context->link,
-                                        sgi_xbow_illegal_widget(s, addr));
+                                        sgi_xbow_illegal_widget(s, addr),
+                                        sgi_xbow_illegal_offset(s, addr));
     return MEMTX_ERROR;
 }
 
@@ -916,7 +949,8 @@ static MemTxResult sgi_xbow_illegal_write(void *opaque, hwaddr addr,
     SGIXbowState *s = context->xbow;
 
     sgi_xbow_record_illegal_destination(s, context->link,
-                                        sgi_xbow_illegal_widget(s, addr));
+                                        sgi_xbow_illegal_widget(s, addr),
+                                        sgi_xbow_illegal_offset(s, addr));
     return MEMTX_ERROR;
 }
 
