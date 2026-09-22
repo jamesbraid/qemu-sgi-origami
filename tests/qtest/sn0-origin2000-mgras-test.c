@@ -1358,7 +1358,7 @@ static void test_pseudocolor_scanout_looks_up_cmap(void)
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
 
 
-    si_write_cmap_position(qts, 0x001d, 17, 0x00ecec00);
+    si_write_cmap_position(qts, 0x001d, 17, 0xecec0000);
 
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_BKGRD_RG, 0x11));
@@ -1370,7 +1370,7 @@ static void test_pseudocolor_scanout_looks_up_cmap(void)
     g_assert_cmphex(si_screendump_pixel(qts, 5, 5), ==, 0x0000ecec);
     g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x0000ecec);
 
-    si_write_cmap_position(qts, 0x001d, 17, 0x00112233);
+    si_write_cmap_position(qts, 0x001d, 17, 0x11223300);
     g_assert_cmphex(si_screendump_pixel(qts, 5, 5), ==, 0x00332211);
     g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x00332211);
 
@@ -1397,6 +1397,36 @@ static void test_pseudocolor_scanout_looks_up_cmap(void)
     qtest_quit(qts);
 }
 
+/*
+ * The guest packs CMAP entries left-justified (0xRRGGBB00); si_cmap_rgb
+ * must read bits 31:8, not bits 23:0.
+ */
+static void test_cmap_high_byte_packing(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+
+    qtest_writeb(qts, REG_XMAP_INDEX, 3 << 2);
+    qtest_writel(qts, REG_XMAP_MAIN_MODE, 17 << 5);
+
+    si_write_cmap_position(qts, 0x0011, 17, 0xffffff00);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_BKGRD_RG, 0x11));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_DRBPOINTERS, 3 << 16));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (7u << 16) | 7u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
+    g_assert_cmphex(si_test_pixel(qts, 7, 7), ==, 0x11);
+    g_assert_cmphex(si_test_wid(qts, 7, 7), ==, 3);
+    g_assert_cmphex(si_test_display_pixel(qts, 7, 7), ==, 0x00ffffff);
+
+    qtest_quit(qts);
+}
+
 static void test_target_first_cmap_visual_selection(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
@@ -1414,7 +1444,7 @@ static void test_target_first_cmap_visual_selection(void)
     for (int position = 0; position < 16; position++) {
         qtest_writel(qts, REG_CMAP_DATA, 0x00010101 + position * 0x00010101);
     }
-    qtest_writel(qts, REG_CMAP_DATA, 0x00112233);
+    qtest_writel(qts, REG_CMAP_DATA, 0x11223300);
     for (int position = 17; position < 32; position++) {
         qtest_writel(qts, REG_CMAP_DATA, 0x00202020 + position * 0x00010101);
     }
@@ -1424,7 +1454,7 @@ static void test_target_first_cmap_visual_selection(void)
     for (int position = 0; position < 16; position++) {
         qtest_writel(qts, REG_CMAP_DATA, 0x00404040 + position * 0x00010101);
     }
-    qtest_writel(qts, REG_CMAP_DATA, 0x00a1b2c3);
+    qtest_writel(qts, REG_CMAP_DATA, 0xa1b2c300);
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BKGRD_RG, 0xf0));
@@ -1460,7 +1490,7 @@ static void test_target_first_cmap_visual_selection(void)
     for (int position = 0; position < 16; position++) {
         qtest_writel(qts, REG_CMAP_DATA, 0);
     }
-    qtest_writel(qts, REG_CMAP_DATA, 0x00010203);
+    qtest_writel(qts, REG_CMAP_DATA, 0x01020300);
     g_assert_cmphex(si_test_pixel(qts, 20, 20), ==, native_a);
     g_assert_cmphex(si_test_pixel(qts, 21, 20), ==, native_b);
     g_assert_cmphex(si_test_wid(qts, 20, 20), ==, wid_a);
@@ -1479,7 +1509,7 @@ static void test_masked_out_paint_keeps_index_tag(void)
     si_enter_context(qts);
 
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
-    si_write_cmap_position(qts, 0x001d, 17, 0x00ecec00);
+    si_write_cmap_position(qts, 0x001d, 17, 0xecec0000);
 
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -1556,7 +1586,7 @@ static void test_cursor_composites_when_enabled(void)
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
 
 
-    si_write_cmap_position(qts, 0x001d, 28, 0x000000ff);
+    si_write_cmap_position(qts, 0x001d, 28, 0x0000ff00);
 
 
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x01, 0x0100));
@@ -2506,9 +2536,9 @@ static void test_visual_state_migration(void)
     qtest_writeb(from, REG_XMAP_INDEX, 9 << 2);
     qtest_writel(from, REG_XMAP_MAIN_MODE, 29 << 5);
 
-    si_write_cmap_position(from, 0xe00f, 16, 0x00112233);
-    si_write_cmap_position(from, 0xe01d, 16, 0x00a1b2c3);
-    si_write_cmap_position(from, 0xe00f, 16, 0x00112233);
+    si_write_cmap_position(from, 0xe00f, 16, 0x11223300);
+    si_write_cmap_position(from, 0xe01d, 16, 0xa1b2c300);
+    si_write_cmap_position(from, 0xe00f, 16, 0x11223300);
 
     qtest_writeq(from, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BKGRD_RG, 0xf0));
@@ -2539,7 +2569,7 @@ static void test_visual_state_migration(void)
     g_assert_cmphex(si_test_display_pixel(to, 31, 30), ==, 0x00c3b2a1);
 
     /* Continue the bank-15 upload at the migrated position, index 0xf1. */
-    qtest_writel(to, REG_CMAP_DATA, 0x00040506);
+    qtest_writel(to, REG_CMAP_DATA, 0x04050600);
     qtest_writeq(to, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BKGRD_RG, 0xf1));
     qtest_writeq(to, REG_CONTEXT_COMMAND,
@@ -2575,7 +2605,7 @@ static void test_cursor_migration(void)
     to = qtest_init(dest_cmdline);
 
     qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
-    si_write_cmap_position(from, 0x001d, 28, 0x000000ff);
+    si_write_cmap_position(from, 0x001d, 28, 0x0000ff00);
     qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x01, 0x0100));
     qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x07, 0x0100));
     qtest_writew(from, REG_VC3_RAM, 0x8000);
@@ -2688,6 +2718,8 @@ int main(int argc, char **argv)
                    test_reset_refreshes_display_surface);
     qtest_add_func("sn0/origin2000/mgras/pseudocolor-scanout-looks-up-cmap",
                    test_pseudocolor_scanout_looks_up_cmap);
+    qtest_add_func("sn0/origin2000/mgras/cmap-high-byte-packing",
+                   test_cmap_high_byte_packing);
     qtest_add_func("sn0/origin2000/mgras/target-first-cmap-visual-selection",
                    test_target_first_cmap_visual_selection);
     qtest_add_func("sn0/origin2000/mgras/masked-out-paint-keeps-index-tag",

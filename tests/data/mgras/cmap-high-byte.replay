@@ -1,0 +1,128 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# CMAP entries pack the 24-bit colour left-justified (0xRRGGBB00); the low
+# byte's meaning is unknown. Every one of 24,708 live CMAP writes has a
+# zero low byte; 0xffffff00 is the white the census recovered at bank 17
+# index 7. Loads bank 17 index 17 with that same white value and reuses
+# the fill.replay FIFO preamble to paint through it.
+
+# --- palette setup: bank 17 index 17 = white, WID 5 -> bank 17 ---
+write 2 0x070c30 0x0011
+write 4 0x070d18 0x0
+write 4 0x070d18 0x0
+write 4 0x070d18 0x0
+write 4 0x070d18 0x0
+write 4 0x070d18 0x0
+write 4 0x070d18 0x0
+write 4 0x070d18 0x0
+write 4 0x070d18 0x0
+write 4 0x070d18 0x0
+write 4 0x070d18 0x0
+write 4 0x070d18 0x0
+write 4 0x070d18 0x0
+write 4 0x070d18 0x0
+write 4 0x070d18 0x0
+write 4 0x070d18 0x0
+write 4 0x070d18 0x0
+write 4 0x070d18 0x0
+write 4 0x070d18 0xffffff00
+write 1 0x071c88 0x14
+write 4 0x071e00 0x00000621
+
+# --- FIFO/context preamble, copied from fill.replay ---
+write 1 0x073c08 0x55
+read 1 0x073c08 0x55
+write 4 0x072038 0x06246800
+write 1 0x072008 0x06
+read 2 0x0720b0 0x2468
+read 4 0x008000 0x0
+write 4 0x011000 0x0
+write 4 0x130500 0x000004fc
+read 4 0x011020 0x00080000
+write 4 0x011028 0x00080000
+read 4 0x011020 0x0
+write 4 0x120400 0
+write 4 0x120400 1
+write 4 0x120400 2
+write 4 0x120400 3
+write 4 0x120400 4
+write 4 0x120400 5
+write 4 0x120400 6
+write 4 0x120400 7
+write 4 0x120400 8
+write 4 0x120400 9
+write 4 0x120400 10
+write 4 0x120400 11
+write 4 0x120400 12
+write 4 0x120400 13
+write 4 0x120400 14
+write 4 0x120400 15
+write 4 0x120400 16
+write 4 0x120400 17
+write 4 0x120400 18
+write 4 0x120400 19
+write 4 0x120400 20
+write 4 0x120400 21
+write 4 0x120400 22
+write 4 0x120400 23
+write 4 0x120400 24
+write 4 0x120400 25
+write 4 0x120400 26
+write 4 0x120400 27
+write 4 0x120400 28
+write 4 0x120400 29
+write 4 0x120400 30
+write 4 0x120400 31
+write 4 0x120400 32
+write 4 0x120400 33
+write 4 0x120400 34
+write 4 0x120400 35
+write 4 0x120400 36
+write 4 0x120400 37
+write 4 0x120400 38
+write 4 0x120400 39
+write 4 0x120400 40
+write 4 0x120400 41
+write 4 0x120400 42
+write 4 0x120400 43
+write 4 0x120400 44
+write 4 0x120400 45
+write 4 0x120400 46
+write 4 0x120400 47
+write 4 0x120400 48
+write 4 0x120400 49
+write 4 0x120400 50
+write 4 0x120400 51
+write 4 0x120400 52
+write 4 0x120400 53
+write 4 0x120400 54
+write 4 0x120400 55
+write 4 0x120400 56
+write 4 0x120400 57
+write 4 0x120400 58
+write 4 0x120400 59
+write 4 0x120400 60
+write 4 0x120400 61
+write 4 0x120400 62
+read 4 0x011020 0x10000000
+write 4 0x011028 0x10000000
+write 8 0x130400 0x123456789abcdef0
+read 8 0x130400 0x123456789abcdef0
+write 4 0x120400 0x0000f400
+read 4 0x120400 0x0000f400
+write 8 0x120400 0x0019630400ffffff
+write 8 0x120400 0x001961040c000000
+write 8 0x120400 0x0019400400000011
+write 8 0x120400 0x00184604000a000a
+write 8 0x120400 0x00184704000d000d
+write 8 0x120400 0x00196d0400050000
+write 8 0x120400 0x001c450400000018
+
+# --- sanity check: fill mechanics unchanged from fill.replay ---
+pixels 10 10 4 4 0x11
+wid 10 10 5
+
+# --- display-enable, mirroring fill.replay's own late placement ---
+write 4 0x072038 0x1e000400
+
+# --- discriminating check: fails on unmodified si_cmap_rgb ---
+display-pixel 10 10 0x00ffffff
