@@ -1985,9 +1985,16 @@ static void build_comparator_rendezvous_image(SN0Image *p)
     sn0_emit_park(p);
     sn0_patch_branch(p, seen, p->pos);
     emit_first_processor_alive(p);
+    /*
+     * Withdraw before announcing, the order slice B below already uses.
+     * The test reads this comparator as soon as the mailbox says the
+     * rendezvous happened, so announcing first leaves a window of one
+     * store in which a busy host lets that read land on the value this
+     * processor has not withdrawn yet.
+     */
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_ZERO, PI_RT_COMPARE_A);
     sn0_emit_li(p, SN0_R_T2, RENDEZVOUS_SEEN);
     sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_T2, 0);
-    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_ZERO, PI_RT_COMPARE_A);
     sn0_emit_park(p);
     sn0_emit_nop(p);
 
