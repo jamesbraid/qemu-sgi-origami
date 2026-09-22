@@ -38,10 +38,13 @@
  *
  * RAD4-KM's keyboard/mouse controller is modeled separately, as the child
  * device hw/input/psitech-rad4-km.c, realized onto PCI BAR 3 only under
- * the RAD4-KM identity. That file's own header names the register
- * contract it implements and, separately, the chip identity and
- * interrupt-routing facts it deliberately leaves unmodeled rather than
- * guessing.
+ * the RAD4-KM identity. That file implements the register contract
+ * docs/datasheets/psitech-rad4-km.md's "Keyboard and mouse register
+ * contract" section establishes, cleared for a bounded, disclosed-
+ * approximation implementation by independent review (docs/reviews/
+ * psitech-rad4-km-register-contract-review-20260922.md). Its own header
+ * names, separately, the chip identity and interrupt-routing facts it
+ * deliberately leaves unmodeled rather than guessing.
  */
 
 #include "qemu/osdep.h"
