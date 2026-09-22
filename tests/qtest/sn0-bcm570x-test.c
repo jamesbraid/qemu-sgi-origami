@@ -29,8 +29,8 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include <sys/socket.h>
+#include "sgi-test.h"
 
-#define SPACE_XTALK     0x20000000000ULL
 #define BRIDGE_WIDGET   8
 #define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
 
@@ -51,15 +51,9 @@
 #define CFG0_STRIDE     0x1000
 #define CFG0(dev)       (BRIDGE_BASE + BRIDGE_CFG0 + (dev) * CFG0_STRIDE)
 
-#define PCI_BAR0            0x10
-#define PCI_COMMAND         0x04
-#define PCI_COMMAND_MEMORY  0x0002
-#define PCI_COMMAND_MASTER  0x0004
-
 /* The Bridge's own per-slot device register, low half of its 8-byte slot. */
 #define REG_DATA            4
 #define BRIDGE_DEVICE(n)    (BRIDGE_BASE + 0x200 + 8 * (n) + REG_DATA)
-#define DEV_MEMORY_SPACE    (1u << 12)
 
 /* Where the card's BAR is parked in PCI memory space (1 MB aligned). */
 #define ADAPTER_MMIO        0x10000000u

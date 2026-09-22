@@ -6,8 +6,8 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "sgi-test.h"
 
-#define PROM_SIZE UINT64_C(0x1686a8)
 #define L1_UART_BASE (UINT64_C(0x10000000000) + UINT64_C(0x30000000) + 0x80)
 #define L1_UART_STATUS 0x28
 #define L1_STATUS_READY 0x61

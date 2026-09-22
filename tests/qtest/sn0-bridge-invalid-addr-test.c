@@ -13,8 +13,8 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "sn0-user-image.h"
+#include "sgi-test.h"
 
-#define SPACE_XTALK     0x20000000000ULL
 #define BRIDGE_WIDGET   8
 #define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
 
@@ -35,9 +35,7 @@
 #define INT_RESET_REQ_DSP_GRP (1u << 3)  /* clears the invalid-address bit's group */
 
 /* The local Hub's interrupt registers, where the error interrupt is delivered. */
-#define HUB_LOCAL           (SPACE_XTALK + 0x01000000)
 #define PI_INT_MODIFY       0x90
-#define PI_INT_PEND0        0x98
 #define ERR_HOST_BIT        5u
 
 /*
@@ -58,7 +56,6 @@
  * and the two handles name different boards.
  */
 #define HUB_BY_POSITION     HUB_LOCAL
-#define NODE_STRIDE         (1ULL << 32)
 #define HUB_BY_NUMBER(n)    (SPACE_XTALK + 0x01800000 + (n) * NODE_STRIDE)
 #define BRIDGE_BY_NUMBER(n) (BRIDGE_BASE + (n) * NODE_STRIDE)
 #define REG_BY_NUMBER(n, offset) \

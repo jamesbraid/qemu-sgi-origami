@@ -14,6 +14,7 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "sgi-test.h"
 
 /* The bridge's own 16 MB widget face, put clear of every target below. */
 #define BRIDGE_BASE     0x40000000ULL
@@ -48,14 +49,11 @@
 /* The per-slot register's fields these tests set. */
 #define DEV_SWAP_TRANSLATED     (1u << 20)
 #define DEV_SWAP_DIRECT         (1u << 19)
-#define DEV_MEMORY_SPACE        (1u << 12)
 
 /* The transfer source, its registers, and where they are put in PCI space. */
 #define CARD_SLOT               0
 #define CARD_MMIO               0x01000000u
-#define PCI_COMMAND             0x04
 #define PCI_COMMAND_MEMORY_MASTER 0x0006
-#define PCI_BAR0                0x10
 #define DMA_REG_ADDRESS         0x00
 #define DMA_REG_LENGTH          0x04
 #define DMA_REG_SEED            0x08

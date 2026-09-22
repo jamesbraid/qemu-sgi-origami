@@ -9,11 +9,7 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
-
-/* Crosstalk space, and the half of the crossbar's widget 1 window this
- * processor's own node resolves to -- same constants sn0-hub-test.c uses. */
-#define SPACE_XTALK     0x20000000000ULL
-#define HUB_LOCAL       (SPACE_XTALK + 0x01000000)
+#include "sgi-test.h"
 
 #define I2C_DATA        0x220000  /* S0/S0'/S2/S3, selected by control */
 #define I2C_CTRL        0x220008  /* S1: control bits, or status once ESO */

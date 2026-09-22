@@ -26,13 +26,10 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "sgi-test.h"
 
 #define MACHINE_ARGS "-M origin300 -cpu R14000 -smp 2"
 
-/* The machine refuses any other length, so the fixture matches it. */
-#define PROM_SIZE UINT64_C(0x1686a8)
-
-#define SPACE_XTALK UINT64_C(0x20000000000)
 #define XTALK_WIDGET(w) (SPACE_XTALK + (uint64_t)(w) * UINT64_C(0x1000000))
 
 /* Head F carries the IO-8 board, and the IOC3 is device 4 on it. */
@@ -57,10 +54,6 @@
 
 #define XBRIDGE_DEVICE(n) (0x200 + (n) * 8)
 #define XBRIDGE_DEVICE_MEMORY (1U << 12)
-
-#define PCI_COMMAND 0x04
-#define PCI_COMMAND_MEMORY 0x0002
-#define PCI_BAR0 0x10
 
 /* The ENET block's MII management registers (include/hw/net/sgi-ioc3-eth.h). */
 #define MII_CONTROL (IO8_IOC3_WINDOW + 0x148)

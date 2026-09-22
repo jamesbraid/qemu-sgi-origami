@@ -71,6 +71,7 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "sn0-user-image.h"
+#include "sgi-test.h"
 
 /*
  * The state words sit in plain node memory at physical 0x300000, reached
@@ -105,7 +106,6 @@
 #define EXC_MAGIC           0x00ecc000ULL
 #define FAULT_MAGIC         0x00fa0170ULL
 
-#define CODE_START          0x400
 #define HANDLER_BODY        0x1000
 
 /* Passes per counted phase, per processor: the guest's unit of work. */
@@ -135,7 +135,6 @@
 /* Hub processor-interface registers, through the uncached XKPHYS window. */
 #define HUB_LOCAL_BASE      0x9200000001000000ULL
 #define PI_INT_MODIFY       0x090
-#define PI_INT_PEND0        0x098
 #define PI_INT_MASK0_A      0x0a8
 #define PI_INT_MODIFY_SET   0x100u
 /* Bank 0 lines 5 and 6: one per slice, so an acknowledge lowers one line. */

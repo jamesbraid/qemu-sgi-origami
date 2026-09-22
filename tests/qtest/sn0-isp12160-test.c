@@ -12,9 +12,9 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "sgi-test.h"
 
 /* Crosstalk space, and the bridge's own widget window inside it. */
-#define SPACE_XTALK     0x20000000000ULL
 #define BRIDGE_WIDGET   8
 #define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
 
@@ -24,21 +24,14 @@
  */
 #define REG_DATA                4
 
-#define DEV_MEMORY_SPACE        (1u << 12)
-
 /* PCI type 0 configuration space, one 4 KB block per device. */
 #define BRIDGE_CFG0             0x020000
 #define CFG0_DEVICE_STRIDE      0x1000
 
 #define PCI_VENDOR_ID           0x00
-#define PCI_COMMAND             0x04
 #define PCI_COMMAND_IO          0x0001
-#define PCI_COMMAND_MEMORY      0x0002
-#define PCI_COMMAND_MASTER      0x0004
 #define PCI_STATUS_RESET        0x02b0
 #define PCI_CLASS_REVISION      0x08
-#define PCI_BAR0                0x10
-#define PCI_BAR1                0x14
 #define PCI_CAPABILITY_LIST     0x34
 #define PCI_INTERRUPT_LINE      0x3c
 

@@ -11,13 +11,13 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "sgi-test.h"
 
 #define IMAGE_SIZE          0x1000
 #define VEC_TLB_REFILL      0x200
 #define VEC_XTLB_REFILL     0x280
 #define VEC_CACHE_ERROR     0x300
 #define VEC_GENERAL         0x380
-#define CODE_START          0x400
 
 #define STATE_PHYS          0x00100000
 #define STATE_KSEG1_HI      0xa010

@@ -14,8 +14,7 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "sn0-user-image.h"
-
-#define SPACE_XTALK       0x20000000000ULL
+#include "sgi-test.h"
 
 #define SMALL_WINDOW_SIZE 0x1000000ULL
 #define SMALL_WINDOW(w)   (SPACE_XTALK + (w) * SMALL_WINDOW_SIZE)
@@ -53,13 +52,9 @@
 #define BRIDGE_BASE            SMALL_WINDOW(BRIDGE_WIDGET)
 #define REG(off)               (BRIDGE_BASE + (off) + REG_DATA)
 #define BRIDGE_DEVICE(n)       (0x200 + 8 * (n))
-#define DEV_MEMORY_SPACE       (1u << 12)
 #define BRIDGE_CFG0            0x020000
 #define CFG0(dev, fn)          (BRIDGE_BASE + BRIDGE_CFG0 + \
                                 (dev) * 0x1000 + (fn) * 0x100)
-#define PCI_BAR1               0x14
-#define PCI_COMMAND            0x04
-#define PCI_COMMAND_MEMORY     0x0002
 #define CARD_MMIO(slot)        (0x10000000u + (slot) * 0x1000000u)
 #define ORDER_SLOT             4          /* a free PCI slot for the scratch card */
 #define ORDER_WINDOW           0x800000   /* the device-4 window's widget offset */

@@ -12,8 +12,8 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qjson.h"
+#include "sgi-test.h"
 
-#define SPACE_XTALK       0x20000000000ULL
 #define WIDGET_BASE(w)    (SPACE_XTALK + ((uint64_t)(w) << 24))
 #define SI_WIDGET         0xf
 #define SI_BASE           WIDGET_BASE(SI_WIDGET)

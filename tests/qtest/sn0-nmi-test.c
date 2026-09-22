@@ -13,9 +13,9 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "sgi-test.h"
 
 #define IMAGE_SIZE          0x1000
-#define CODE_START          0x400
 #define NMI_HANDLER         0x480
 #define MAIN_LOOP           0x500
 

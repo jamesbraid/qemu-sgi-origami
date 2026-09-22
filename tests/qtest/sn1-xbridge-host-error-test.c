@@ -14,13 +14,12 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "sgi-test.h"
 
 #define MACHINE_ARGS "-M origin300 -cpu R14000 -smp 2"
 
-#define SPACE_XTALK UINT64_C(0x20000000000)
 #define XTALK_WIDGET(w) (SPACE_XTALK + (uint64_t)(w) * UINT64_C(0x1000000))
 #define BEDROCK_LOCAL (SPACE_XTALK + UINT64_C(0x01000000))
-#define PROM_SIZE UINT64_C(0x1686a8)
 
 #define XBRIDGE_HOST_PORT 0xa
 #define XBRIDGE_ERROR_ADDRESS_LOWER 0x18

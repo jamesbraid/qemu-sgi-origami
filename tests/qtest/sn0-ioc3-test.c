@@ -13,6 +13,7 @@
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "sn0-user-image.h"
+#include "sgi-test.h"
 
 /*
  * The modelled minimum between a frame arriving and its completion, in
@@ -23,8 +24,6 @@
 #define RX_ARRIVAL_LATENCY_NS  200000
 
 /* Crosstalk space, and the chip's window inside the console widget. */
-#define SPACE_XTALK     0x20000000000ULL
-#define HUB_LOCAL       (SPACE_XTALK + 0x01000000)
 #define CONSOLE_WIDGET  8
 #define BRIDGE_DEVICE2  0x600000
 #define BRIDGE_DEVICE3  0x700000
@@ -40,14 +39,9 @@
 #define CFG0_DEVICE_STRIDE 0x1000
 #define CFG0(device)    (BRIDGE_BASE + BRIDGE_CFG0 + (device) * CFG0_DEVICE_STRIDE)
 #define BRIDGE_DEVICE(n) (BRIDGE_BASE + 0x200 + 8 * (n) + REG_DATA)
-#define DEV_MEMORY_SPACE (1u << 12)
 
 #define PCI_IOC3_DEVICE  2         /* IP29 slot, restated for the test */
 #define TEST_IOC3_DEVICE 3
-#define PCI_COMMAND      0x04
-#define PCI_COMMAND_MEMORY 0x0002
-#define PCI_COMMAND_MASTER 0x0004
-#define PCI_BAR0         0x10
 #define IOC3_PCI_MMIO    0x10000000u
 #define TEST_IOC3_PCI_MMIO 0x18000000u
 
@@ -56,8 +50,6 @@
  * second node carries its own bridge and its own controller, so the same
  * attach sequence works there with every address offset by the stride.
  */
-#define NODE_STRIDE     0x100000000ULL
-
 static void sn0_ioc3_attach_node(QTestState *qts, uint64_t node)
 {
     qtest_writel(qts, node + CFG0(PCI_IOC3_DEVICE) + PCI_BAR0, IOC3_PCI_MMIO);
@@ -157,7 +149,6 @@ static void test_ioc3_attach(QTestState *qts)
 #define BRIDGE_INT_MODE   (BRIDGE_BASE + 0x118 + REG_DATA)
 #define BRIDGE_INT_HOST(n) (BRIDGE_BASE + 0x130 + 8 * (n) + REG_DATA)
 #define PI_INT_PEND_MOD   0x90
-#define PI_INT_PEND0      0x98
 #define IOC3_ETH_IRQ_NUMBER 12
 
 /* The MicroLAN engine and the pin block it shares a window with. */

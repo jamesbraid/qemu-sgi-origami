@@ -10,8 +10,8 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qjson.h"
+#include "sgi-test.h"
 
-#define SPACE_XTALK       0x20000000000ULL
 #define SI_BASE           (SPACE_XTALK + (0xfULL << 24))
 #define SI_REG(offset)    (SI_BASE + (offset))
 #define MACHINE_ARGS      "-M origin2000 -smp 8 -m 256M"

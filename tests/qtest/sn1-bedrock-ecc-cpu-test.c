@@ -3,11 +3,9 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "sgi-test.h"
 
-#define PROM_SIZE 0x1686a8
-#define SPACE_HUB UINT64_C(0x10000000000)
 #define HUB_ECC (SPACE_HUB + UINT64_C(0x140000000))
-#define SPACE_XTALK UINT64_C(0x20000000000)
 #define BEDROCK_NODE0 (SPACE_XTALK + UINT64_C(0x01800000))
 #define MD_MEMORY_CONFIG UINT64_C(0x780008)
 /*

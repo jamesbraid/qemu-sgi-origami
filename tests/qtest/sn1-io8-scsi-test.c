@@ -15,11 +15,10 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "sgi-test.h"
 
 #define MACHINE_ARGS "-M origin300 -cpu R14000 -smp 2"
 
-#define SPACE_XTALK UINT64_C(0x20000000000)
-#define SPACE_HUB UINT64_C(0x10000000000)
 #define XTALK_WIDGET(w) (SPACE_XTALK + (uint64_t)(w) * UINT64_C(0x1000000))
 #define HUB_LOCAL_IO (SPACE_HUB + UINT64_C(0x10000000) + 0x400000)
 #define IO_INBOUND_ACCESS 0x118
@@ -32,9 +31,6 @@
  * rings, both under 4 MiB, land in backed RAM instead of an I/O hole.
  */
 #define MD_INSTALLED_SELECT2 ((UINT64_C(2) << 32) | UINT64_C(0x3300))
-
-/* The machine refuses any other length, so the fixture matches it. */
-#define PROM_SIZE UINT64_C(0x1686a8)
 
 /* Head F carries the IO-8 board, and the adapter is device 1 on it. */
 #define IO8_WIDGET 0xf
@@ -77,11 +73,7 @@
 #define PI_TEST_PENDING_BIT 17
 
 #define PCI_VENDOR_ID 0x00
-#define PCI_COMMAND 0x04
-#define PCI_COMMAND_MEMORY 0x0002
-#define PCI_COMMAND_MASTER 0x0004
 #define PCI_CLASS_REVISION 0x08
-#define PCI_BAR1 0x14
 #define PCI_SUBSYSTEM_VENDOR_ID 0x2c
 #define PCI_INTERRUPT_LINE 0x3c
 

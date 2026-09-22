@@ -17,6 +17,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "sgi-test.h"
 
 /*
  * The image is loaded as the boot flash, so offsets are from the reset
@@ -29,7 +30,6 @@
 #define VEC_XTLB_REFILL     0x280
 #define VEC_CACHE_ERROR     0x300
 #define VEC_GENERAL         0x380
-#define CODE_START          0x400
 
 /*
  * Result words in low RAM, reached uncached through KSEG1 so nothing

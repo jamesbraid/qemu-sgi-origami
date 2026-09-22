@@ -26,9 +26,9 @@
 
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include "sgi-test.h"
 
 /* Crosstalk space and the Bridge's widget window inside it. */
-#define SPACE_XTALK     0x20000000000ULL
 #define BRIDGE_WIDGET   8
 #define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
 
@@ -53,15 +53,12 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 #define CFG0(dev)       (BRIDGE_BASE + BRIDGE_CFG0 + (dev) * CFG0_STRIDE)
 
 #define PCI_VENDOR_DEVICE   0x00
-#define PCI_COMMAND         0x04
 #define PCI_REV_CLASS       0x08
-#define PCI_BAR0            0x10
 #define PCI_INTR_LINE       0x3c
 
 /* The Bridge's own per-slot device register, low half of its 8-byte slot. */
 #define REG_DATA            4
 #define BRIDGE_DEVICE(n)    (BRIDGE_BASE + 0x200 + 8 * (n) + REG_DATA)
-#define DEV_MEMORY_SPACE    (1u << 12)
 #define DEV_SWAP_DIRECT     (1u << 19)   /* direct-map window swap bit */
 #define BRIDGE_DIRECT_MAP_REG (BRIDGE_BASE + 0x080 + REG_DATA)
 

@@ -14,6 +14,7 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "sgi-test.h"
 
 /*
  * The filter covers 32 KiB at physical 1 MiB; state words and RAM controls
@@ -86,7 +87,6 @@
 #define VEC_XTLB_REFILL     0x280
 #define VEC_CACHE_ERROR     0x300
 #define VEC_GENERAL         0x380
-#define CODE_START          0x400
 #define HANDLER_START       0x500
 #define ROM_BASE            0xbfc00000
 

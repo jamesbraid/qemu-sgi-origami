@@ -28,6 +28,7 @@
 #include "libqtest.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include "sgi-test.h"
 
 /*
  * The modelled minimum between a frame arriving and its completion, in
@@ -38,7 +39,6 @@
 #define RX_ARRIVAL_LATENCY_NS  200000
 
 /* Crosstalk space and the Bridge's widget window inside it. */
-#define SPACE_XTALK             0x20000000000ULL
 #define BRIDGE_WIDGET           8
 #define BRIDGE_BASE             (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
 #define REG_DATA                4
@@ -57,7 +57,6 @@
 
 /* The per-slot device register: 32 bits in the low half of an 8-byte slot. */
 #define BRIDGE_DEVICE(n)        (BRIDGE_BASE + 0x200 + 8 * (n) + REG_DATA)
-#define DEV_MEMORY_SPACE        (1u << 12)
 #define DEV_SWAP_PROGRAMMED     (1u << 13)   /* programmed-access (reg) swap */
 #define DEV_64BIT_DEVICE        (1u << 22)   /* doubleword in one cycle */
 
@@ -67,10 +66,6 @@
 #define CFG0(dev)               (BRIDGE_BASE + BRIDGE_CFG0 + \
                                  (dev) * CFG0_DEVICE_STRIDE)
 #define PCI_VENDOR_ID           0x00
-#define PCI_COMMAND             0x04
-#define PCI_COMMAND_MEMORY      0x0002
-#define PCI_COMMAND_MASTER      0x0004
-#define PCI_BAR0                0x10
 #define PCI_BAR0_HIGH           0x14
 #define PCI_BAR2                0x18
 
@@ -89,7 +84,6 @@
 #define BRIDGE_INT_HOST(n)      (BRIDGE_BASE + 0x130 + 8 * (n) + REG_DATA)
 #define HUB_LOCAL_WINDOW        (SPACE_XTALK + 0x01000000)
 #define PI_INT_PEND_MOD         0x90
-#define PI_INT_PEND0            0x98
 #define XFRAME_IRQ_NUMBER       14
 
 /*

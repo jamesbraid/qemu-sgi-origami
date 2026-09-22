@@ -4,9 +4,9 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
+#include "sgi-test.h"
 
 #define L1 "/machine/node0/l1"
-#define PROM_SIZE 0x1686a8
 #define DEFAULT_STATE "config=1,ep0=2,out1=1,in2=2"
 #define DEVICE_HEX "12010001ffff00405e063412000101020301"
 #define TREE_HEX "09022000010104600009040000020000ff05" \

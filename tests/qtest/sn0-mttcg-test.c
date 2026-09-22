@@ -52,6 +52,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "sgi-test.h"
 
 #define NR_CPUS             2
 
@@ -93,7 +94,6 @@
 #define VEC_XTLB_REFILL     0x280
 #define VEC_CACHE_ERROR     0x300
 #define VEC_GENERAL         0x380
-#define CODE_START          0x400
 
 #define POLL_TRIES          30000
 #define POLL_INTERVAL_US    1000

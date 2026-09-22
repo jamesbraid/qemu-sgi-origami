@@ -12,9 +12,9 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "sgi-test.h"
 
 #define IMAGE_SIZE          0x1000
-#define CODE_START          0x400
 #define MAIN_LOOP           0x480
 #define CACHE_START         0x900
 #define CACHE_LOOP          0xa00

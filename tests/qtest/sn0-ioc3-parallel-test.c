@@ -18,9 +18,9 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "sgi-test.h"
 
 /* Crosstalk space, and the chip's window inside the console widget. */
-#define SPACE_XTALK     0x20000000000ULL
 #define CONSOLE_WIDGET  8
 #define BRIDGE_DEVICE2  0x600000
 #define BRIDGE_DEVICE3  0x700000
@@ -41,14 +41,9 @@
 #define CFG0(device)    (BRIDGE_BASE + BRIDGE_CFG0 + \
                          (device) * CFG0_DEVICE_STRIDE)
 #define BRIDGE_DEVICE(n) (BRIDGE_BASE + 0x200 + 8 * (n) + REG_DATA)
-#define DEV_MEMORY_SPACE (1u << 12)
 
 #define PCI_IOC3_DEVICE  2
 #define TEST_IOC3_DEVICE 3
-#define PCI_COMMAND      0x04
-#define PCI_COMMAND_MEMORY 0x0002
-#define PCI_COMMAND_MASTER 0x0004
-#define PCI_BAR0         0x10
 #define IOC3_PCI_MMIO    0x10000000u
 #define TEST_IOC3_PCI_MMIO 0x18000000u
 

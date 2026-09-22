@@ -18,11 +18,10 @@
 #include "qobject/qlist.h"
 #include <poll.h>
 #include <sys/socket.h>
+#include "sgi-test.h"
 
 #define MACHINE_ARGS "-M origin300 -cpu R14000 -smp 2"
 
-#define SPACE_HUB UINT64_C(0x10000000000)
-#define SPACE_XTALK UINT64_C(0x20000000000)
 #define SPACE_MEMORY_SPECIAL UINT64_C(0x30000000000)
 #define HUB_LOCAL_REGISTERS (SPACE_HUB + UINT64_C(0x10000000))
 
@@ -94,7 +93,6 @@
 #define L1_REPLY_ABSENT 0x98
 
 #define PROM_RESET UINT64_C(0x1fc00000)
-#define PROM_SIZE UINT64_C(0x1686a8)
 #define PROM_CONFIG_OFFSET UINT64_C(0x60)
 #define FLASH_OBSERVED_OFFSET UINT64_C(0x1e0000)
 #define FLASH_INTERIOR_OFFSET UINT64_C(0x400000)

@@ -16,9 +16,9 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "sgi-test.h"
 
 /* Crosstalk space and the bridge that carries both controllers. */
-#define SPACE_XTALK     0x20000000000ULL
 #define CONSOLE_WIDGET  8
 #define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)CONSOLE_WIDGET << 24))
 
@@ -28,11 +28,6 @@
                          (device) * CFG0_DEVICE_STRIDE)
 #define REG_DATA        4         /* registers sit at a slot's upper half */
 #define BRIDGE_DEVICE(n) (BRIDGE_BASE + 0x200 + 8 * (n) + REG_DATA)
-#define DEV_MEMORY_SPACE (1u << 12)
-
-#define PCI_COMMAND      0x04
-#define PCI_COMMAND_MEMORY 0x0002
-#define PCI_BAR0         0x10
 
 /*
  * The machine's own controller sits at device 2. This one takes device 3,
