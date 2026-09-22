@@ -172,6 +172,25 @@ static const uint16_t bank_selections[] = {
 /* The machine is given 64 MB, so this is the first address behind nothing. */
 #define RAM_TOP_64M             0x04000000u
 
+/*
+ * One machine with one adapter and no disks serves every case that needs
+ * no disk, started in main(). Cases wanting disks, throttled disks, two
+ * units behind one target or a migration destination start their own.
+ */
+static QTestState *qts;
+
+/*
+ * Open such a case. Reset puts the adapter's configuration space back,
+ * and checking the command register reads zero here is what proves the
+ * previous case's window programming is gone.
+ */
+static void isp_reset(void)
+{
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readl(qts, CFG + PCI_COMMAND), ==,
+                    (uint32_t)PCI_STATUS_RESET << 16);
+}
+
 /* Every access to the adapter goes through the window's byte-lane swizzle. */
 static void isp_writew(QTestState *qts, unsigned natural, uint16_t val)
 {
@@ -337,9 +356,10 @@ static void aim_window_at_io_bar(QTestState *qts)
  */
 static void test_identity(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
     uint32_t bar;
     uint32_t pm_cap;
+
+    isp_reset();
 
     g_assert_cmphex(qtest_readl(qts, CFG + PCI_VENDOR_ID), ==, ISP_ID_PAIR);
     g_assert_cmphex(qtest_readl(qts, CFG + PCI_COMMAND), ==,
@@ -369,8 +389,6 @@ static void test_identity(const void *data)
     bar = qtest_readl(qts, CFG + PCI_BAR1);
     g_assert_cmphex(bar & ~0xfu, ==, ISP_REG_WINDOW_MASK);
     g_assert_cmphex(bar & 0x1u, ==, 0);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -381,8 +399,9 @@ static void test_identity(const void *data)
  */
 static void test_window_accepts_only_16_bit(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
     unsigned b;
+
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
 
@@ -407,8 +426,6 @@ static void test_window_accepts_only_16_bit(const void *data)
     for (b = 0; b < 4; b++) {
         g_assert_cmphex(qtest_readb(qts, WINDOW + b), ==, 0);
     }
-
-    qtest_quit(qts);
 }
 
 /*
@@ -418,7 +435,7 @@ static void test_window_accepts_only_16_bit(const void *data)
  */
 static void test_both_bars_alias_one_register_file(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
+    isp_reset();
 
     aim_window_at_io_bar(qts);
     isp_writew(qts, ISP_MAILBOX(7), 0x5a5a);
@@ -430,8 +447,6 @@ static void test_both_bars_alias_one_register_file(const void *data)
 
     aim_window_at_io_bar(qts);
     g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(6)), ==, 0xa5a5);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -442,8 +457,9 @@ static void test_both_bars_alias_one_register_file(const void *data)
  */
 static void test_three_banks_hold_distinct_words(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
     unsigned i;
+
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
 
@@ -462,14 +478,12 @@ static void test_three_banks_hold_distinct_words(const void *data)
         g_assert_cmphex(isp_readw(qts, ISP_REG_BANK_BASE), ==, 0x1000 + sel);
         g_assert_cmphex(isp_readw(qts, ISP_REG_BANK_MIDDLE), ==, 0x2000 + sel);
     }
-
-    qtest_quit(qts);
 }
 
 /* Only the bank selector is established for this register on the ISP12160. */
 static void test_cfg1_retains_only_the_bank_select(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
 
@@ -481,8 +495,6 @@ static void test_cfg1_retains_only_the_bank_select(const void *data)
 
     isp_writew(qts, ISP_REG_BUS_CFG1, 0x0000);
     g_assert_cmphex(isp_readw(qts, ISP_REG_BUS_CFG1), ==, 0x0000);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -493,8 +505,9 @@ static void test_cfg1_retains_only_the_bank_select(const void *data)
  */
 static void test_soft_reset_clears_banks_and_cfg1(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
     unsigned i;
+
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
 
@@ -510,8 +523,6 @@ static void test_soft_reset_clears_banks_and_cfg1(const void *data)
         isp_writew(qts, ISP_REG_BUS_CFG1, bank_selections[i]);
         g_assert_cmphex(isp_readw(qts, ISP_REG_BANK_BASE), ==, 0);
     }
-
-    qtest_quit(qts);
 }
 
 /*
@@ -521,7 +532,7 @@ static void test_soft_reset_clears_banks_and_cfg1(const void *data)
  */
 static void test_flat_dma_registers_are_unimplemented(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
 
@@ -530,8 +541,6 @@ static void test_flat_dma_registers_are_unimplemented(const void *data)
 
     g_assert_cmphex(isp_readw(qts, ISP_REG_DMA_CMD_CFG), ==, 0);
     g_assert_cmphex(isp_readw(qts, ISP_REG_DMA_DATA_CFG), ==, 0);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -541,13 +550,11 @@ static void test_flat_dma_registers_are_unimplemented(const void *data)
  */
 static void test_bus_cfg0_reads_zero(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
 
     g_assert_cmphex(isp_readw(qts, ISP_REG_BUS_CFG0), ==, 0);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -559,7 +566,7 @@ static void test_bus_cfg0_reads_zero(const void *data)
  */
 static void test_interface_control_reset_self_clears(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
 
@@ -572,8 +579,6 @@ static void test_interface_control_reset_self_clears(const void *data)
                ISP_BUS_CTRL_INT_ENABLE | ISP_BUS_CTRL_RISC_INT_ENABLE);
     g_assert_cmphex(isp_readw(qts, ISP_REG_BUS_CTRL), ==,
                     ISP_BUS_CTRL_INT_ENABLE | ISP_BUS_CTRL_RISC_INT_ENABLE);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -582,7 +587,7 @@ static void test_interface_control_reset_self_clears(const void *data)
  */
 static void test_reset_signature(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
 
@@ -593,8 +598,6 @@ static void test_reset_signature(const void *data)
 
     /* The initialisation both drivers run waits for this to go away. */
     g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), !=, ISP_MBOX_NOT_READY);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -604,11 +607,12 @@ static void test_reset_signature(const void *data)
  */
 static void test_mailbox_test_returns_distinct_patterns(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
     static const uint16_t pattern[] = {
         0x1111, 0x2222, 0x3333, 0x4444, 0x5555, 0x6666, 0x7777
     };
     unsigned i;
+
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
 
@@ -619,8 +623,6 @@ static void test_mailbox_test_returns_distinct_patterns(const void *data)
         g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(1 + i)), ==, pattern[i]);
     }
     isp_mbox_ack(qts);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -630,9 +632,10 @@ static void test_mailbox_test_returns_distinct_patterns(const void *data)
  */
 static void test_ram_word_round_trip_two_addresses(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
     const uint16_t low[] = { 0x0010, NOT_THE_ANSWER, NOT_THE_ANSWER };
     const uint16_t high[] = { 0xfff0, NOT_THE_ANSWER, NOT_THE_ANSWER };
+
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
 
@@ -651,8 +654,6 @@ static void test_ram_word_round_trip_two_addresses(const void *data)
     g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(2)), ==, 0xcafe);
     g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(3)), ==, 0);
     isp_mbox_ack(qts);
-
-    qtest_quit(qts);
 }
 
 /* Eight words with sixteen distinct bytes, so no swap of any pair hides. */
@@ -675,9 +676,10 @@ static const uint16_t a64_image[] = {
  */
 static void test_a64_ram_load_through_translated_dma(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
     uint8_t page[ARRAY_SIZE(a64_image) * 2];
     unsigned i;
+
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
     qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE, 0));
@@ -708,8 +710,6 @@ static void test_a64_ram_load_through_translated_dma(const void *data)
     g_assert_cmphex(isp_read_ram_word(qts,
                                       A64_LOAD_BASE + ARRAY_SIZE(a64_image)),
                     ==, A64_SENTINEL);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -719,7 +719,7 @@ static void test_a64_ram_load_through_translated_dma(const void *data)
  */
 static void test_a64_ram_load_rejects_end_crossing(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
 
@@ -732,8 +732,6 @@ static void test_a64_ram_load_rejects_end_crossing(const void *data)
 
     g_assert_cmphex(isp_read_ram_word(qts, 0x0000), ==, A64_SENTINEL);
     g_assert_cmphex(isp_read_ram_word(qts, 0xfff0), ==, A64_SENTINEL);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -744,10 +742,11 @@ static void test_a64_ram_load_rejects_end_crossing(const void *data)
  */
 static void test_a64_ram_load_reaches_the_last_word(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
     const uint16_t base = ISP_RAM_WORDS - ARRAY_SIZE(a64_image);
     uint8_t page[ARRAY_SIZE(a64_image) * 2];
     unsigned i;
+
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
     qtest_memset(qts, TARGET_PAGE, 0, PAGE_SIZE_4K);
@@ -766,8 +765,6 @@ static void test_a64_ram_load_reaches_the_last_word(const void *data)
     for (i = 0; i < ARRAY_SIZE(a64_image); i++) {
         g_assert_cmphex(isp_read_ram_word(qts, base + i), ==, a64_image[i]);
     }
-
-    qtest_quit(qts);
 }
 
 /*
@@ -777,10 +774,11 @@ static void test_a64_ram_load_reaches_the_last_word(const void *data)
  */
 static void test_a64_ram_load_failed_dma_commits_nothing(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
     const uint16_t base = 0x2000;
     const unsigned count = 4;
     unsigned i;
+
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
 
@@ -795,8 +793,6 @@ static void test_a64_ram_load_failed_dma_commits_nothing(const void *data)
     for (i = 0; i < count; i++) {
         g_assert_cmphex(isp_read_ram_word(qts, base + i), ==, A64_SENTINEL);
     }
-
-    qtest_quit(qts);
 }
 
 /*
@@ -807,9 +803,10 @@ static void test_a64_ram_load_failed_dma_commits_nothing(const void *data)
  */
 static void test_flat_ram_load_through_translated_dma(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
     uint8_t page[ARRAY_SIZE(a64_image) * 2];
     unsigned i;
+
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
     qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE, 0));
@@ -840,8 +837,6 @@ static void test_flat_ram_load_through_translated_dma(const void *data)
     g_assert_cmphex(isp_read_ram_word(qts,
                                       A64_LOAD_BASE + ARRAY_SIZE(a64_image)),
                     ==, A64_SENTINEL);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -864,11 +859,12 @@ static void test_flat_ram_load_through_translated_dma(const void *data)
  */
 static void test_a64_load_then_dump_round_trips(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
     uint8_t page[ARRAY_SIZE(a64_image) * 2];
     uint8_t back[sizeof(page)];
     uint8_t fence[4];
     unsigned i;
+
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
     qtest_writeq(qts, ATE(0), ATE_ENTRY(TARGET_PAGE, 0));
@@ -909,8 +905,6 @@ static void test_a64_load_then_dump_round_trips(const void *data)
     for (i = 0; i < sizeof(fence); i++) {
         g_assert_cmphex(fence[i], ==, DUMP_FENCE);
     }
-
-    qtest_quit(qts);
 }
 
 /*
@@ -920,8 +914,9 @@ static void test_a64_load_then_dump_round_trips(const void *data)
  */
 static void test_a64_ram_dump_failed_dma_answers_an_error(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
     const uint16_t base = 0x2000;
+
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
 
@@ -930,8 +925,6 @@ static void test_a64_ram_dump_failed_dma_answers_an_error(const void *data)
     g_assert_cmphex(isp_ram_dump(qts, base, DIRECT64(RAM_TOP_64M), 4), ==,
                     ISP_MBOX_HOST_INTERFACE_ERROR);
     isp_mbox_ack(qts);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -943,13 +936,14 @@ static void test_a64_ram_dump_failed_dma_answers_an_error(const void *data)
 
 static void test_checksum_passes_then_one_corrupt_word_fails(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
     static const uint16_t image[] = {
         0x0100, 0x0200, 0x0300, 0x0008, 0x1111, 0x2222, 0x3333
     };
     const uint16_t in[] = { CHECKSUM_BASE, NOT_THE_ANSWER };
     uint16_t sum = 0;
     unsigned i;
+
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
 
@@ -975,8 +969,6 @@ static void test_checksum_passes_then_one_corrupt_word_fails(const void *data)
     g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(1)), ==, 0x0001);
     g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(2)), ==, 0x0001);
     isp_mbox_ack(qts);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -986,9 +978,10 @@ static void test_checksum_passes_then_one_corrupt_word_fails(const void *data)
  */
 static void test_checksum_refuses_a_span_past_the_ram_end(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
     const uint16_t header_wraps[] = { 0xfffe, NOT_THE_ANSWER };
     const uint16_t span_wraps[] = { 0xfffc, NOT_THE_ANSWER };
+
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
 
@@ -1032,8 +1025,6 @@ static void test_checksum_refuses_a_span_past_the_ram_end(const void *data)
     g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_VERIFY_CHECKSUM, span_wraps,
                              ARRAY_SIZE(span_wraps)), ==, ISP_MBOX_COMPLETE);
     isp_mbox_ack(qts);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -1044,7 +1035,6 @@ static void test_checksum_refuses_a_span_past_the_ram_end(const void *data)
  */
 static void test_execute_then_stateful_commands(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
     const uint16_t start[] = { CHECKSUM_BASE };
     static const uint16_t queue[] = {
         8,                                              /* entries */
@@ -1054,6 +1044,8 @@ static void test_execute_then_stateful_commands(const void *data)
         (uint16_t)(DIRECT64(TARGET_PAGE) >> 48),
         (uint16_t)(DIRECT64(TARGET_PAGE) >> 32),
     };
+
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
 
@@ -1067,8 +1059,6 @@ static void test_execute_then_stateful_commands(const void *data)
     g_assert_cmphex(isp_mbox(qts, ISP_MBOX_CMD_INIT_REQ_QUEUE_A64, queue,
                              ARRAY_SIZE(queue)), ==, ISP_MBOX_COMPLETE);
     isp_mbox_ack(qts);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -1078,7 +1068,7 @@ static void test_execute_then_stateful_commands(const void *data)
  */
 static void test_about_firmware_and_status(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
 
@@ -1101,8 +1091,6 @@ static void test_about_firmware_and_status(const void *data)
     g_assert_cmpuint(isp_readw(qts, ISP_MAILBOX(2)), ==,
                      ISP_FIRMWARE_MAX_REQUESTS);
     isp_mbox_ack(qts);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -1113,10 +1101,11 @@ static void test_about_firmware_and_status(const void *data)
  */
 static void test_reset_delay_accepted_for_both_channels(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
     static const uint16_t delays[] = { 3, 5 };
     static const uint16_t selector[] = { 0x8100, 0x0100 };
     unsigned i;
+
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
 
@@ -1136,8 +1125,6 @@ static void test_reset_delay_accepted_for_both_channels(const void *data)
         g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(6)), ==, 0);
         isp_mbox_ack(qts);
     }
-
-    qtest_quit(qts);
 }
 
 /*
@@ -1206,8 +1193,9 @@ static void test_masked_completion_survives_and_both_ack_orders_clear(
  */
 static void test_submission_while_locked_is_ignored(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
     static const uint16_t first[] = { 0x1111 };
+
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
 
@@ -1234,8 +1222,6 @@ static void test_submission_while_locked_is_ignored(const void *data)
     g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(0)), ==, ISP_MBOX_COMPLETE);
     g_assert_cmphex(isp_readw(qts, ISP_MAILBOX(1)), ==, 0x9999);
     isp_mbox_ack(qts);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -1601,16 +1587,29 @@ static void submit_a64(QTestState *qts, uint16_t slot, uint32_t handle,
  * The next completion in the ring, whichever handle it carries. Reading
  * mailbox 5 answers the adapter's response producer index, so the entry
  * the test has not read yet is ready once that index moves; writing
- * mailbox 5 back releases the slot. The wait is bounded in wall time
- * because a read held by a block filter is waiting on that filter's own
- * timer rather than on anything the model or the guest clock does.
+ * mailbox 5 back releases the slot.
+ *
+ * The wait is bounded in wall time, and has to be. A read held by a block
+ * filter waits on that filter's own timer, and although a throttle group
+ * picks the virtual clock when qtest is enabled, one built from -object
+ * never sees that: object_create_early() runs it before
+ * configure_accelerators() has set the accelerator allowed, so
+ * qtest_enabled() is still false and the group meters on the host clock.
+ * Stepping the virtual clock here moves nothing, which is measurable --
+ * with the sleep taken out and only the step left, the recovery cases
+ * fail waiting for a completion that never arrives.
  */
 static uint32_t wait_next_status(QTestState *qts, uint8_t *status)
 {
     gint64 deadline = g_get_monotonic_time() + STATUS_WAIT_US;
 
     while (isp_readw(qts, ISP_REG_RESPONSE_QUEUE) == ring.resp_next) {
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        if (g_get_monotonic_time() >= deadline) {
+            g_test_message("the response producer stayed at %u for %d "
+                           "seconds", ring.resp_next,
+                           STATUS_WAIT_US / (1000 * 1000));
+            g_assert_not_reached();
+        }
         qtest_clock_step(qts, STATUS_STEP_NS);
     }
 
@@ -1770,10 +1769,11 @@ static void test_queue_init_in_both_orders_with_distinct_bases(const void *data)
  */
 static void test_response_queue_high_word_participates(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
     const uint64_t resp_high = DIRECT64(RESP_PHYS) | (1ULL << 32);
     uint8_t cdb[6] = { SCSI_TEST_UNIT_READY };
     uint8_t slot0[ISP_QUEUE_ENTRY_SIZE], sentinel[ISP_QUEUE_ENTRY_SIZE];
+
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
 
@@ -1795,8 +1795,6 @@ static void test_response_queue_high_word_participates(const void *data)
     g_assert_cmpmem(slot0, sizeof(slot0), sentinel, sizeof(sentinel));
     g_assert_cmphex(isp_readw(qts, ISP_REG_BUS_STATUS) &
                     ISP_BUS_STATUS_INT_BITS, ==, 0);
-
-    qtest_quit(qts);
 }
 
 /* Five descriptors: two in the command entry, three in one continuation. */
@@ -2073,9 +2071,10 @@ static void test_inquiry_real_payload_on_both_channels(const void *data)
  */
 static void test_cursor_roles_are_distinct(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
     uint8_t cdb[6] = { SCSI_TEST_UNIT_READY };
     unsigned i;
+
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
     qtest_memset(qts, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
@@ -2107,8 +2106,6 @@ static void test_cursor_roles_are_distinct(const void *data)
     isp_writew(qts, ISP_REG_REQUEST_QUEUE, 7);
     g_assert_cmphex(isp_readw(qts, ISP_REG_REQUEST_QUEUE), ==, 3);
     g_assert_cmphex(isp_readw(qts, ISP_REG_RESPONSE_QUEUE), ==, 3);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -2318,10 +2315,11 @@ static void test_check_condition_carries_real_sense(const void *data)
  */
 static void test_missing_target_on_each_channel(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE);
     uint8_t cdb[6] = { SCSI_TEST_UNIT_READY };
     const uint32_t handles[2] = { 0x00000031, 0x00000032 };
     unsigned channel;
+
+    isp_reset();
 
     aim_window_at_memory_bar(qts);
     qtest_memset(qts, RQST_PHYS, 0, ISP_QUEUE_ENTRY_SIZE * RQST_SLOTS);
@@ -2344,8 +2342,6 @@ static void test_missing_target_on_each_channel(const void *data)
         g_assert_cmphex(get16le(status + ISP_STATUS_OFF_STATUS_FLAGS), ==,
                         ISP_STATUS_FLAG_TIMEOUT);
     }
-
-    qtest_quit(qts);
 }
 
 /*
@@ -3137,15 +3133,21 @@ static void test_migration_preserves_distinct_state(const void *data)
 
 /*
  * Mailbox 5 answers the adapter's response producer index, the same
- * register wait_next_status() polls. Real time, not the guest clock: what
- * the caller is waiting on is a block filter's own timer.
+ * register wait_next_status() polls. Real time, not the guest clock, for
+ * the reason given there: the throttle group meters on the host clock.
  */
 static void wait_for_response_producer(QTestState *qts, uint16_t prod)
 {
     gint64 deadline = g_get_monotonic_time() + STATUS_WAIT_US;
+    uint16_t seen;
 
-    while (isp_readw(qts, ISP_REG_RESPONSE_QUEUE) != prod) {
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+    while ((seen = isp_readw(qts, ISP_REG_RESPONSE_QUEUE)) != prod) {
+        if (g_get_monotonic_time() >= deadline) {
+            g_test_message("the response producer held %u, not %u, after %d "
+                           "seconds", seen, prod,
+                           STATUS_WAIT_US / (1000 * 1000));
+            g_assert_not_reached();
+        }
         g_usleep(10 * 1000);
     }
 }
@@ -3520,7 +3522,11 @@ static void test_full_ring_holds_completions_and_migrates_them(const void *data)
 
 int main(int argc, char **argv)
 {
+    int ret;
+
     g_test_init(&argc, &argv, NULL);
+
+    qts = qtest_init(MACHINE);
 
     qtest_add_data_func("sn0/isp12160/identity", NULL, test_identity);
     qtest_add_data_func("sn0/isp12160/window-accepts-only-16-bit", NULL,
@@ -3643,5 +3649,8 @@ int main(int argc, char **argv)
         "sn0/isp12160/unplug-with-a-stalled-ring-takes-nothing-in", NULL,
         test_unplug_with_a_stalled_ring_takes_nothing_in);
 
-    return g_test_run();
+    ret = g_test_run();
+    qtest_quit(qts);
+
+    return ret;
 }
