@@ -688,6 +688,21 @@ static void test_board_bringup_byte_poll_bit_position(void)
     qtest_quit(qts);
 }
 
+static void test_board_info_byte_read_does_not_raise_error(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    /*
+     * The kernel's GFX_GETBOARDINFO handler performs a one-byte read here
+     * on every OpenGL context query; the captured flow answers 0 and the
+     * error state stays clear (glx-ioctl-trace.md).
+     */
+    g_assert_cmphex(qtest_readb(qts, SI_REG(0x071308)), ==, 0);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 0);
+
+    qtest_quit(qts);
+}
+
 static void test_hq_upload_and_readback(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
@@ -3210,6 +3225,8 @@ int main(int argc, char **argv)
                    test_board_bringup_scratch_registers);
     qtest_add_func("sn0/origin2000/mgras/board-bringup-byte-poll-bit-position",
                    test_board_bringup_byte_poll_bit_position);
+    qtest_add_func("sn0/origin2000/mgras/board-info-byte-read-no-error",
+                   test_board_info_byte_read_does_not_raise_error);
     qtest_add_func("sn0/origin2000/mgras/hq-upload-readback",
                    test_hq_upload_and_readback);
     qtest_add_func("sn0/origin2000/mgras/ge-upload-readback",

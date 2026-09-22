@@ -277,7 +277,7 @@ static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
         return 0;
     }
     if (size == 1 && addr != SGI_MGRAS_I2C_SCRATCH && addr != 0x071208 &&
-        addr != 0x071c88) {
+        addr != 0x071c88 && addr != 0x071308) {
         si_error(s, addr, size, "unsupported byte read");
         return 0;
     }
@@ -304,10 +304,17 @@ static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
     /* Fixed functional-approximation inventory value. */
     case SGI_MGRAS_BOARD_INVENTORY: return 0x21000000;
     /* Unresolved revision fields use zero as a functional approximation. */
-    case 0x071308:
     case 0x071708:
     case 0x028000:
     case 0x028004:
+        return 0;
+    /*
+     * The kernel's GFX_GETBOARDINFO handler performs a one-byte read here
+     * on every OpenGL context query; the captured flow answers 0 and
+     * raises no error (glx-ioctl-trace.md). The field's meaning is
+     * otherwise unknown.
+     */
+    case 0x071308:
         return 0;
     case SGI_MGRAS_BRINGUP_ARG_2: return s->bringup_arg_2;
     case SGI_MGRAS_BRINGUP_BLOCK_1: return s->bringup_block[0];
