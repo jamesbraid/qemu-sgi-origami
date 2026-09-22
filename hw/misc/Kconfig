@@ -300,7 +300,7 @@ config SGI_IOC3
 config SGI_ROUTER_TEST
     bool
     default y if TEST_DEVICES
-    depends on TEST_DEVICES
+    depends on TEST_DEVICES && SGI_SN0
     select SGI_ROUTER
 
 config SGI_HUB_TEST
@@ -312,7 +312,10 @@ config SGI_HUB_TEST
 config SGI_ROUTER
     bool
     select ONEWIRE
-    select SGI_NET_PORT
+    # SGI_NET_CABLE selects SGI_NET_PORT in turn: the Router calls into both
+    # unconditionally (a cable joins its ports to their peers), so either one
+    # missing is a link failure, not a disabled feature.
+    select SGI_NET_CABLE
 
 config SGI_XBOW
     bool
