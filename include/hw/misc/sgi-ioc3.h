@@ -392,6 +392,17 @@ struct SGIIOC3State {
     MemoryRegion serial_io[SGI_IOC3_SERIAL_PORTS];
     SGIIOC3SerialAlias serial_io_port[SGI_IOC3_SERIAL_PORTS];
 
+    /*
+     * The clock pre-divider a scratch-register write last programmed
+     * (offset 7, while the port's divisor latch was selected). Kept at
+     * the chip level, alongside but distinct from the child SerialState's
+     * own scratch byte, because it is this chip's overload of that
+     * register, not generic 16550 storage. The datasheet gives no reset
+     * value, so a reset leaves both this and the derived baud rate alone:
+     * a stated approximation, not a captured reset state.
+     */
+    uint8_t serial_predivider[SGI_IOC3_SERIAL_PORTS];
+
     /* Optional transmit record, independent of the port's own backend. */
     CharFrontend serial_record[SGI_IOC3_SERIAL_PORTS];
 

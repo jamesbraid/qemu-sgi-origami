@@ -13,6 +13,7 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
 #include "sn0-user-image.h"
 
 #include <sys/socket.h>
@@ -164,6 +165,10 @@ static uint64_t sdma_alias(unsigned int port, unsigned int reg)
 #define REG_LCR         3
 #define REG_MCR         4
 #define REG_LSR         5
+#define REG_SCR         7
+
+#define LCR_DLAB        0x80
+#define LCR_8N1         0x03
 
 #define IER_RDI         0x01
 #define LSR_DR          0x01
@@ -2092,6 +2097,239 @@ static void test_a_loopback_character_stays_out_of_the_record(
     g_unlink(path);
 }
 
+/*
+ * docs/datasheets/ioc3.md, "IOC3 overloads the scratch register": while a
+ * port's divisor latch is selected, a write to its scratch register (offset
+ * 7) programs the 16550's clock pre-divider instead of storing a scratch
+ * byte. The PROM and IRIX write 6, for a divide of 3. A model that treats
+ * offset 7 as plain storage still boots -- the guest only ever reads back
+ * what it wrote -- so the only thing that can hold this contract is a real
+ * baud rate landing on the far side of a backend that cares what it is.
+ *
+ * -chardev wctablet is that backend: chardev/wctablet.c answers nothing at
+ * all unless the frontend's computed line speed is exactly 9600, gating
+ * every reply on the very number this overload feeds. A predivider of 6
+ * with a divisor of 48 lands on 9600 only if the reference clock behind the
+ * divisor is the datasheet's inferred 22.1184 MHz crystal, divided by three;
+ * left unprogrammed, the 115200 Hz default gives 2400 instead and the
+ * chardev stays silent. Everything below runs synchronously inside a single
+ * qtest_writeb(): the wctablet backend answers a THR write by calling back
+ * into the port's receive path before that write returns, so no clock step
+ * is needed to observe a reply.
+ */
+#define WCTABLET_PREDIVIDE_BY_3 6
+#define WCTABLET_DIVISOR_9600   48
+#define WCTABLET_IDENTITY       "~#CT-0045R,V1.3-5,"
+
+/*
+ * Selects the divisor latch, writes the pre-divider unless it is 0 (the
+ * "left unprogrammed" case), then the divisor, then returns the port to
+ * 8N1 with the divisor latch cleared. Asserts the scratch register reads
+ * back what it was given while the latch is still selected, the only time
+ * the datasheet's overload leaves the guest anything to read back against.
+ */
+static void configure_line_at_divisor(QTestState *qts, unsigned int port,
+                                      uint8_t predivider, uint16_t divisor)
+{
+    qtest_writeb(qts, serial_port(port) + REG_LCR, LCR_DLAB | LCR_8N1);
+    if (predivider) {
+        qtest_writeb(qts, serial_port(port) + REG_SCR, predivider);
+        g_assert_cmphex(qtest_readb(qts, serial_port(port) + REG_SCR), ==,
+                        predivider);
+    }
+    qtest_writeb(qts, serial_port(port) + REG_RBR, divisor & 0xff);
+    qtest_writeb(qts, serial_port(port) + REG_IER, divisor >> 8);
+    qtest_writeb(qts, serial_port(port) + REG_LCR, LCR_8N1);
+}
+
+static void send_bytes(QTestState *qts, unsigned int port,
+                       const uint8_t *data, size_t len)
+{
+    size_t i;
+
+    for (i = 0; i < len; i++) {
+        qtest_writeb(qts, serial_port(port) + REG_RBR, data[i]);
+    }
+}
+
+/*
+ * No FIFO is enabled, so hw/char/serial.c's serial_can_receive() advertises
+ * room for exactly one more byte, and only once LSR_DR is clear: the
+ * backend's next queued byte arrives only when the RBR read that clears
+ * LSR_DR runs qemu_chr_fe_accept_input(). Everything is synchronous, so
+ * the first read with LSR_DR unset means the backend has nothing further
+ * queued right now, not that a reply is still coming.
+ */
+static size_t read_reply(QTestState *qts, unsigned int port,
+                         uint8_t *buf, size_t max)
+{
+    size_t got = 0;
+
+    while (got < max &&
+          (qtest_readb(qts, serial_port(port) + REG_LSR) & LSR_DR)) {
+        buf[got++] = qtest_readb(qts, serial_port(port) + REG_RBR);
+    }
+    return got;
+}
+
+static void test_the_scratch_predivider_reaches_the_backends_baud_rate(
+    const void *data)
+{
+    QTestState *qts;
+    uint8_t reply[sizeof(WCTABLET_IDENTITY) - 1];
+    size_t got;
+
+    qts = qtest_initf("-M origin200 -chardev wctablet,id=tab "
+                      "-serial chardev:tab");
+    sn0_ioc3_attach(qts);
+
+    configure_line_at_divisor(qts, 0, WCTABLET_PREDIVIDE_BY_3,
+                              WCTABLET_DIVISOR_9600);
+    send_bytes(qts, 0, (const uint8_t *)"~#", 2);
+    got = read_reply(qts, 0, reply, sizeof(reply));
+
+    g_assert_cmpuint(got, ==, sizeof(reply));
+    g_assert_cmpint(memcmp(reply, WCTABLET_IDENTITY, sizeof(reply)), ==, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_a_left_unprogrammed_predivider_leaves_the_backend_silent(
+    const void *data)
+{
+    QTestState *qts;
+    uint8_t reply[sizeof(WCTABLET_IDENTITY) - 1];
+
+    qts = qtest_initf("-M origin200 -chardev wctablet,id=tab "
+                      "-serial chardev:tab");
+    sn0_ioc3_attach(qts);
+
+    configure_line_at_divisor(qts, 0, 0, WCTABLET_DIVISOR_9600);
+    send_bytes(qts, 0, (const uint8_t *)"~#", 2);
+
+    g_assert_cmpuint(read_reply(qts, 0, reply, sizeof(reply)), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Migrate a not-running qtest machine and block until the destination
+ * reports completion. Copied rather than shared, the way every
+ * sn0-*-test.c stands alone; see sn0-migration-test.c for why qtest's own
+ * migration framework does not fit here -- qtest never executes guest
+ * code, so a stopped machine's device state is the whole question.
+ */
+static void migrate_stopped_vm(QTestState *from, const char *uri)
+{
+    qtest_qmp_assert_success(from,
+        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
+
+    g_test_timer_start();
+    for (;;) {
+        QDict *ret = qtest_qmp_assert_success_ref(from,
+            "{ 'execute': 'query-migrate' }");
+        g_autofree char *status = g_strdup(qdict_get_str(ret, "status"));
+
+        qobject_unref(ret);
+        g_assert_cmpstr(status, !=, "failed");
+        if (g_str_equal(status, "completed")) {
+            break;
+        }
+
+        g_assert(g_test_timer_elapsed() < 30);
+        g_usleep(1000);
+    }
+}
+
+/*
+ * The pre-divider is a migrated field, but the baudbase it derives is a
+ * realize-time property of the embedded SerialState, not itself a vmstate
+ * field: vmstate_serial's own post_load runs first, nested inside the
+ * struct-array field load above sgi_ioc3_post_load, and computes the
+ * port's parameters from the 16550 core's stock default before
+ * sgi_ioc3_post_load gets a chance to rederive anything. A snapshot taken
+ * after the guest programmed a pre-divider otherwise comes back at the
+ * wrong baud rate until the guest touches the scratch register again --
+ * invisible to a register readback, so this drives it through the same
+ * -chardev wctablet destination as the two tests above, but checks the
+ * destination of a migration instead of the machine that was configured.
+ */
+static void test_the_scratch_predivider_survives_migration(const void *data)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    uint8_t reply[sizeof(WCTABLET_IDENTITY) - 1];
+    size_t got;
+
+    tmpfs = g_dir_make_tmp("sn0-ioc3-serial-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    g_assert_nonnull(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_initf("-M origin200 -chardev wctablet,id=tab "
+                       "-serial chardev:tab");
+    sn0_ioc3_attach(from);
+    configure_line_at_divisor(from, 0, WCTABLET_PREDIVIDE_BY_3,
+                              WCTABLET_DIVISOR_9600);
+
+    /* Same devices as the source, listening before its QMP handshake. */
+    dest_cmdline = g_strdup_printf("-M origin200 -chardev wctablet,id=tab "
+                                   "-serial chardev:tab -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    migrate_stopped_vm(from, uri);
+
+    send_bytes(to, 0, (const uint8_t *)"~#", 2);
+    got = read_reply(to, 0, reply, sizeof(reply));
+
+    g_assert_cmpuint(got, ==, sizeof(reply));
+    g_assert_cmpint(memcmp(reply, WCTABLET_IDENTITY, sizeof(reply)), ==, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+}
+
+/*
+ * sgi_ioc3_reset_hold() does not touch serial_predivider[], and the 16550
+ * core's own reset does not touch baudbase either, so a system reset --
+ * unlike migration's nested vmstate_serial post_load -- has nothing that
+ * would recompute the port's baud rate from the wrong default in the first
+ * place. This is the datasheet's stated approximation from the other
+ * direction: reprogram only the divisor and line control across a reset,
+ * the way a guest that assumes its earlier pre-divider write survived
+ * would, and the backend should still answer at the pre-divider's baud
+ * rate rather than at whatever a cleared pre-divider would fall back to.
+ */
+static void test_the_scratch_predivider_survives_a_system_reset(
+    const void *data)
+{
+    QTestState *qts;
+    uint8_t reply[sizeof(WCTABLET_IDENTITY) - 1];
+    size_t got;
+
+    qts = qtest_initf("-M origin200 -chardev wctablet,id=tab "
+                      "-serial chardev:tab");
+    sn0_ioc3_attach(qts);
+
+    configure_line_at_divisor(qts, 0, WCTABLET_PREDIVIDE_BY_3,
+                              WCTABLET_DIVISOR_9600);
+
+    qtest_system_reset(qts);
+    sn0_ioc3_attach(qts);
+
+    /* Only the divisor and line control, as a guest assuming survival would. */
+    configure_line_at_divisor(qts, 0, 0, WCTABLET_DIVISOR_9600);
+    send_bytes(qts, 0, (const uint8_t *)"~#", 2);
+    got = read_reply(qts, 0, reply, sizeof(reply));
+
+    g_assert_cmpuint(got, ==, sizeof(reply));
+    g_assert_cmpint(memcmp(reply, WCTABLET_IDENTITY, sizeof(reply)), ==, 0);
+
+    qtest_quit(qts);
+}
 
 int main(int argc, char **argv)
 {
@@ -2208,6 +2446,19 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3-serial/loopback-stays-out-of-record",
                         NULL,
                         test_a_loopback_character_stays_out_of_the_record);
+    qtest_add_data_func(
+        "sn0/ioc3-serial/scratch-predivider-reaches-backend-baud-rate", NULL,
+        test_the_scratch_predivider_reaches_the_backends_baud_rate);
+    qtest_add_data_func(
+        "sn0/ioc3-serial/unprogrammed-predivider-leaves-backend-silent",
+        NULL,
+        test_a_left_unprogrammed_predivider_leaves_the_backend_silent);
+    qtest_add_data_func(
+        "sn0/ioc3-serial/scratch-predivider-survives-migration", NULL,
+        test_the_scratch_predivider_survives_migration);
+    qtest_add_data_func(
+        "sn0/ioc3-serial/scratch-predivider-survives-a-system-reset", NULL,
+        test_the_scratch_predivider_survives_a_system_reset);
 
     return g_test_run();
 }
