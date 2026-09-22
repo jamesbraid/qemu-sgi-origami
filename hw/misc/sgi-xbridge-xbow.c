@@ -65,6 +65,16 @@ static bool xbow_link_present(SGIXBridgeXbowState *s, unsigned link)
     return s->links_present & (1U << (link - LINK_FIRST));
 }
 
+void sgi_xbridge_xbow_set_link_present(SGIXBridgeXbowState *s,
+                                       unsigned int widget, bool present)
+{
+    uint8_t bit = 1U << (widget - LINK_FIRST);
+
+    g_assert(widget >= LINK_FIRST && widget < LINK_FIRST + LINK_COUNT);
+    s->links_present = present ? (s->links_present | bit)
+                               : (s->links_present & ~bit);
+}
+
 static void xbow_packet(SGIXBridgeXbowState *s, bool set)
 {
     SGIXioIntDest dest = sgi_xio_int_dest(REG(s, 0x30), REG(s, 0x38));
