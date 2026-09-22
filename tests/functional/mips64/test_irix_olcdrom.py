@@ -34,8 +34,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from lib_prom import (drive_console, resolve_asset, utc_now, file_record,
-                      fork_git_identity)
+from lib_prom import (FORK_ROOT, MACHINES, drive_console, require_assets,
+                      run_record, utc_now)
 
 try:
     from qemu_test import QemuSystemTest
@@ -52,7 +52,7 @@ FIRMWARE_REL = os.path.join('assets', 'firmware', RELEASE,
 DISK_REL = os.path.join('assets', 'irix', RELEASE, 'root-diags.qcow2')
 MEDIUM_REL = os.path.join('assets', 'irix', RELEASE, 'olcdrom-medium.raw')
 
-# The recorded SHA-256 of the olcdrom -gendata medium. resolve_asset
+# The recorded SHA-256 of the olcdrom -gendata medium. require_assets
 # raises AssetMismatch when a file at MEDIUM_REL is present but differs.
 MEDIUM_SHA256 = \
     'ba0a1466d7125cd350ee4f047677d7a3d9f8a8ed8b13469c92042cfa0bd07829'
@@ -77,48 +77,24 @@ DRIVER_STEPS = (
 
 if QemuSystemTest is not None:
 
-    _FORK_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__)))))
-
     class IrixOlcdrom(QemuSystemTest):
         """Boots the golden-with-diagnostics IRIX disk with a scsi-cd
         holding the generated data CD, logs in, runs olcdrom, and requires
         olcdrom_verdict() to be PASS."""
 
-        def _asset_paths(self):
-            assets_root = os.environ.get('ORIGAMI_ASSETS')
-            prom = resolve_asset(assets_root, FIRMWARE_REL)
-            disk = resolve_asset(assets_root, DISK_REL)
-            medium = resolve_asset(assets_root, MEDIUM_REL, MEDIUM_SHA256)
-            if not (prom and disk and medium):
-                return None
-            return prom, disk, medium
-
         @skipBigDataTest()
         @skipSlowTest()
         @skipIfMissingEnv('ORIGAMI_ASSETS')
         def test_irix_olcdrom(self):
-            paths = self._asset_paths()
-            if paths is None:
-                # skipIfMissingEnv above already skipped the case where
-                # ORIGAMI_ASSETS is unset entirely -- getting here means
-                # it IS set, so a missing PROM, disk or medium is a
-                # provisioning failure, not an absent-assets developer run,
-                # and must fail loudly: a silent skip here would let a real
-                # scsi-cd regression pass CI unnoticed. (A medium that is
-                # present but the wrong file already raises AssetMismatch.)
-                self.fail(
-                    'ORIGAMI_ASSETS is set but the PROM/disk/medium are '
-                    f'missing at <ORIGAMI_ASSETS>/{FIRMWARE_REL}, '
-                    f'<ORIGAMI_ASSETS>/{DISK_REL} and '
-                    f'<ORIGAMI_ASSETS>/{MEDIUM_REL} -- provision them '
-                    '(nightly assets) rather than silently skipping a '
-                    'claimed capability')
-            prom, disk, medium = paths
+            # A medium that is present but the wrong file raises
+            # AssetMismatch rather than resolving.
+            assets = require_assets(self, FIRMWARE_REL, DISK_REL,
+                                    (MEDIUM_REL, MEDIUM_SHA256))
+            prom, disk = assets[FIRMWARE_REL], assets[DISK_REL]
+            medium = assets[MEDIUM_REL]
 
             vm = self.get_vm(name='irix_olcdrom')
-            vm.set_machine(
-                'origin200,debug-leds=off')
+            vm.set_machine(MACHINES['origin200'])
             vm.set_console()
             vm.add_args(
                 '-accel', 'tcg,thread=single',
@@ -166,12 +142,9 @@ if QemuSystemTest is not None:
                     'console_driver_reached_summary': reached,
                     'timeout_seconds': BOOT_TIMEOUT_SECONDS,
                     'diagnostic': DIAG_CMD,
-                    'identity': {
-                        'fork': fork_git_identity(_FORK_ROOT),
-                        'qemu_binary': file_record(self.qemu_bin),
-                        'payload': {'prom': file_record(prom),
-                                    'disk': file_record(disk),
-                                    'medium': file_record(medium)}},
+                    'identity': run_record(FORK_ROOT, self.qemu_bin,
+                                          prom=prom, disk=disk,
+                                          medium=medium),
                     'verdict': report['verdict'],
                     'problems': report['problems'],
                 }, run_file, indent=2, sort_keys=True)

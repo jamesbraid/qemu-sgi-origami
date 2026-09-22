@@ -43,8 +43,8 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from lib_prom import (drive_console, resolve_asset, utc_now, file_record,
-                      fork_git_identity)
+from lib_prom import (FORK_ROOT, MACHINES, drive_console, require_assets,
+                      run_record, utc_now)
 
 try:
     from qemu_test import QemuSystemTest
@@ -91,40 +91,16 @@ DRIVER_STEPS = (
 
 if QemuSystemTest is not None:
 
-    _FORK_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__)))))
-
     class IrixOltape(QemuSystemTest):
         """Boots the golden-with-diagnostics IRIX disk with a scsi-tape,
         logs in, runs oltape, and requires oltape_verdict() to be PASS."""
-
-        def _asset_paths(self):
-            assets_root = os.environ.get('ORIGAMI_ASSETS')
-            prom = resolve_asset(assets_root, FIRMWARE_REL)
-            disk = resolve_asset(assets_root, DISK_REL)
-            if not (prom and disk):
-                return None
-            return prom, disk
 
         @skipBigDataTest()
         @skipSlowTest()
         @skipIfMissingEnv('ORIGAMI_ASSETS')
         def test_irix_oltape(self):
-            paths = self._asset_paths()
-            if paths is None:
-                # skipIfMissingEnv above already skipped the case where
-                # ORIGAMI_ASSETS is unset entirely -- getting here means
-                # it IS set, so a missing PROM or disk is a provisioning
-                # failure, not an absent-assets developer run, and must
-                # fail loudly: a silent skip here would let a real
-                # scsi-tape regression pass CI unnoticed.
-                self.fail(
-                    'ORIGAMI_ASSETS is set but the PROM/disk are missing '
-                    f'at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
-                    f'<ORIGAMI_ASSETS>/{DISK_REL} -- provision them '
-                    '(nightly assets) rather than silently skipping a '
-                    'claimed capability')
-            prom, disk = paths
+            assets = require_assets(self, FIRMWARE_REL, DISK_REL)
+            prom, disk = assets[FIRMWARE_REL], assets[DISK_REL]
 
             # A fresh empty tape image per run: oltape writes and reads it.
             tape_fd, tape_path = tempfile.mkstemp(
@@ -132,8 +108,7 @@ if QemuSystemTest is not None:
             os.close(tape_fd)
 
             vm = self.get_vm(name='irix_oltape')
-            vm.set_machine(
-                'origin200,debug-leds=off')
+            vm.set_machine(MACHINES['origin200'])
             vm.set_console()
             vm.add_args(
                 '-accel', 'tcg,thread=single',
@@ -185,11 +160,8 @@ if QemuSystemTest is not None:
                     'diagnostic': DIAG_CMD,
                     'tape_identity': {'vendor': TAPE_VENDOR,
                                       'product': TAPE_PRODUCT},
-                    'identity': {
-                        'fork': fork_git_identity(_FORK_ROOT),
-                        'qemu_binary': file_record(self.qemu_bin),
-                        'payload': {'prom': file_record(prom),
-                                    'disk': file_record(disk)}},
+                    'identity': run_record(FORK_ROOT, self.qemu_bin,
+                                          prom=prom, disk=disk),
                     'verdict': report['verdict'],
                     'problems': report['problems'],
                 }, run_file, indent=2, sort_keys=True)

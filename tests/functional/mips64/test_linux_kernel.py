@@ -97,8 +97,8 @@ import os
 
 from qemu_test import QemuSystemTest, skipIfMissingEnv
 
-from lib_prom import (FIRMWARE_REL, drive_console, prom_netboot_steps,
-                      resolve_asset)
+from lib_prom import (FIRMWARE_REL, MACHINES, drive_console,
+                      prom_netboot_steps, require_assets)
 
 from test_linux_kernel_verdict import missing_assertions
 
@@ -160,9 +160,7 @@ def machine_props(cpus):
     four-CPU cell: four CPUs need the two-node topology, named
     explicitly since topology= no longer follows from -smp alone.
     """
-    if cpus == 4:
-        return 'origin200,topology=origin200-dual,debug-leds=off'
-    return 'origin200,debug-leds=off'
+    return MACHINES['origin200_dual' if cpus == 4 else 'origin200']
 
 
 def cpu_qemu_args(cpus):
@@ -196,33 +194,9 @@ class LinuxKernel(QemuSystemTest):
     test_prom_boot.py keeps between its pure logic and PromBoot.
     """
 
-    def _asset_paths(self):
-        """The real PROM image and the built kernel under ORIGAMI_ASSETS,
-        or None if either is missing -- the runner may not have them
-        provisioned yet (see this method's caller)."""
-        assets_root = os.environ['ORIGAMI_ASSETS']
-        firmware = resolve_asset(assets_root, FIRMWARE_REL)
-        kernel = resolve_asset(assets_root, KERNEL_REL)
-        if not (firmware and kernel):
-            return None
-        return firmware, kernel
-
     def _boot_and_capture(self, cpus, mem_mib, name):
-        paths = self._asset_paths()
-        if paths is None:
-            # Every caller is already @skipIfMissingEnv('ORIGAMI_ASSETS'),
-            # so getting here means it IS set and the firmware or kernel
-            # is simply missing underneath it -- a provisioning failure,
-            # not an absent-assets developer run. Fail loudly: a silent
-            # skip here would let a real linux-usercheck regression pass
-            # CI unnoticed.
-            self.fail(
-                'ORIGAMI_ASSETS is set but the PROM/kernel are missing '
-                f'at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
-                f'<ORIGAMI_ASSETS>/{KERNEL_REL} -- provision them '
-                '(nightly assets) rather than silently skipping a '
-                'claimed capability')
-        firmware, kernel = paths
+        assets = require_assets(self, FIRMWARE_REL, KERNEL_REL)
+        firmware, kernel = assets[FIRMWARE_REL], assets[KERNEL_REL]
 
         vm = self.get_vm(name=name)
         vm.set_machine(machine_props(cpus))

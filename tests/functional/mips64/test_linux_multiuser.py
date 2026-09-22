@@ -62,8 +62,8 @@ import time
 from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
                        skipSlowTest)
 
-from lib_prom import (FIRMWARE_REL, drive_console, prom_netboot_steps,
-                      resolve_asset)
+from lib_prom import (FIRMWARE_REL, MACHINES, drive_console,
+                      prom_netboot_steps, require_assets)
 
 from test_linux_multiuser_verdict import missing_multiuser_markers
 
@@ -131,42 +131,16 @@ class LinuxMultiuser(QemuSystemTest):
     boot, the division test_openbsd_login.py keeps between its pure
     verdict and its own QemuSystemTest."""
 
-    def _asset_paths(self):
-        """The real PROM image, the kernel and the rootfs under
-        ORIGAMI_ASSETS, or None if any is missing -- the runner may not
-        have assets provisioned yet."""
-        assets_root = os.environ['ORIGAMI_ASSETS']
-        firmware = resolve_asset(assets_root, FIRMWARE_REL)
-        kernel = resolve_asset(assets_root, KERNEL_REL)
-        disk = resolve_asset(assets_root, DISK_REL)
-        if not (firmware and kernel and disk):
-            return None
-        return firmware, kernel, disk
-
     @skipBigDataTest()
     @skipSlowTest()
     @skipIfMissingEnv('ORIGAMI_ASSETS')
     def test_linux_multiuser(self):
-        paths = self._asset_paths()
-        if paths is None:
-            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
-            # the case where it is unset entirely -- getting here means
-            # it IS set, so a missing PROM, kernel or disk is a
-            # provisioning failure, not an absent-assets developer run,
-            # and must fail loudly: a silent skip here would let a real
-            # multiuser-boot regression pass CI unnoticed.
-            self.fail(
-                'ORIGAMI_ASSETS is set but the PROM/kernel/disk are '
-                f'missing at <ORIGAMI_ASSETS>/{FIRMWARE_REL}, '
-                f'<ORIGAMI_ASSETS>/{KERNEL_REL} and '
-                f'<ORIGAMI_ASSETS>/{DISK_REL} -- provision them '
-                '(nightly assets) rather than silently skipping a '
-                'claimed capability')
-        firmware, kernel, disk = paths
+        assets = require_assets(self, FIRMWARE_REL, KERNEL_REL, DISK_REL)
+        firmware, kernel = assets[FIRMWARE_REL], assets[KERNEL_REL]
+        disk = assets[DISK_REL]
 
         vm = self.get_vm(name='linux_multiuser')
-        vm.set_machine(
-            'origin200,topology=origin200-dual,debug-leds=off')
+        vm.set_machine(MACHINES['origin200_dual'])
         vm.set_console()
         vm.add_args(
             '-cpu', 'R10000', '-m', str(MEMORY_MIB), '-snapshot',

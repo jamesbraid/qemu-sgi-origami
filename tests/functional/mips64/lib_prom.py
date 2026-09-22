@@ -1,6 +1,7 @@
 # Shared helpers for the real-PROM boot tests: where the firmware image
-# lives, the firmware's progress codes and the recorded boot mark, and the
-# run-record helpers every netboot test writes its provenance with
+# lives, which board each one starts, the firmware's progress codes and
+# the recorded boot mark, how a transcript is scored, and the run-record
+# helpers every netboot test writes its provenance with
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
@@ -33,6 +34,25 @@ from lib_translation_health import assert_translation_healthy
 # ("resolves asset paths (assets/firmware/...) against `path`").
 FIRMWARE_REL = os.path.join('assets', 'firmware', '6.5.30',
                             'ip27prom.payload.bin')
+
+# This checkout's own root, four directories above
+# tests/functional/mips64 -- the tree run_record() below records the
+# commit and dirty state of.
+FORK_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))))
+
+# The -M fragment for each board a boot test in this directory starts.
+# debug-leds=off on the two origin200 entries: a real -bios boot runs
+# the PROM's own LED-lighting code, and turning the indicator off keeps
+# a boot from depending on the trace event that code uses being compiled
+# in. lib_matrix.py builds its own origin200 fragment with the indicator
+# ON, because reading those codes is that module's whole pass condition.
+MACHINES = {
+    'origin200': 'origin200,debug-leds=off',
+    'origin200_dual': 'origin200,topology=origin200-dual,debug-leds=off',
+    'origin2000': 'origin2000',
+    'origin300': 'origin300',
+}
 
 
 class AssetMismatch(Exception):
@@ -67,6 +87,66 @@ def resolve_asset(assets_root, rel_path, sha256=None):
                 f'{path}: SHA-256 {digest} does not match the '
                 f'recorded {sha256}')
     return path
+
+
+def require_assets(test, *rels):
+    """Every named asset's absolute path, keyed by the relative path it
+    was asked for, in the order it was asked for.
+
+    Each rel is either a relative path or a (relative path, recorded
+    SHA-256) pair; a pair's digest is checked the way resolve_asset()
+    checks it, raising AssetMismatch on a present-but-wrong file.
+
+    ORIGAMI_ASSETS unset or empty SKIPS the test: a developer with no
+    assets provisioned has nothing to run against at all. ORIGAMI_ASSETS
+    set with a file missing FAILS, naming every missing path at once --
+    a provisioning failure has to show up as a red check, not as a
+    quietly skipped one that lets a real regression pass unnoticed.
+    """
+    assets_root = os.environ.get('ORIGAMI_ASSETS')
+    if not assets_root:
+        test.skipTest('ORIGAMI_ASSETS is not set: no assets to run against')
+    resolved = {}
+    missing = []
+    for rel in rels:
+        rel, sha256 = rel if isinstance(rel, tuple) else (rel, None)
+        path = resolve_asset(assets_root, rel, sha256)
+        if path is None:
+            missing.append(rel)
+        else:
+            resolved[rel] = path
+    if missing:
+        test.fail(
+            'ORIGAMI_ASSETS is set but ' +
+            ', '.join(f'<ORIGAMI_ASSETS>/{rel}' for rel in missing) +
+            ' is missing -- provision it (nightly assets) rather than '
+            'silently skipping a claimed capability')
+    return resolved
+
+
+def _present(pattern, text):
+    """Whether pattern is in text. A compiled regex is searched for; a
+    plain string is a substring. The per-test copies this replaces
+    spelled their evidence both ways and both spellings still occur."""
+    if hasattr(pattern, 'search'):
+        return bool(pattern.search(text))
+    return pattern in text
+
+
+def verdict(transcript, assertions, tripwires=()):
+    """What is wrong with transcript: the name of every assertion it does
+    not satisfy, followed by 'tripwire: NAME' for every failure marker it
+    does contain. An empty list is a pass.
+
+    assertions and tripwires are both sequences of (name, pattern), where
+    pattern is a compiled regex or a plain substring -- see _present().
+    The order is fixed so a failure message reads the same way every run.
+    """
+    problems = [name for name, pattern in assertions
+                if not _present(pattern, transcript)]
+    problems += [f'tripwire: {name}' for name, pattern in tripwires
+                 if _present(pattern, transcript)]
+    return problems
 
 
 # The firmware-boot golden mark: the progress codes a known-good boot
@@ -305,4 +385,25 @@ def fork_git_identity(tree):
         "path": str(tree),
         "commit": commit.stdout.strip(),
         "dirty": bool(status.stdout.strip()),
+    }
+
+
+def run_record(tree, qemu_binary, **payload):
+    """The identity block a netboot test writes into its run.json: the
+    checkout it ran from, the emulator binary it ran, and one record per
+    payload file it fed the guest, keyed by the name the test calls that
+    file (prom=..., disk=..., kernel=...).
+
+    A payload value may also be a list of paths, for a test that feeds
+    the guest a set of files rather than one.
+    """
+    return {
+        "fork": fork_git_identity(tree),
+        "qemu_binary": file_record(qemu_binary),
+        "payload": {
+            name: ([file_record(one) for one in path]
+                   if isinstance(path, (list, tuple))
+                   else file_record(path))
+            for name, path in payload.items()
+        },
     }

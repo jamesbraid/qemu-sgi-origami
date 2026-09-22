@@ -34,7 +34,7 @@ import time
 from qemu_test import QemuSystemTest, skipIfMissingEnv
 
 from lib_matrix import Cell, machine_props, qemu_args
-from lib_prom import FIRMWARE_REL, resolve_asset
+from lib_prom import FIRMWARE_REL, require_assets
 from lib_prom_copy_speed import (COPY_BRACKET_END, COPY_BRACKET_MAX_SECONDS,
                                  COPY_BRACKET_START, copy_is_fast,
                                  record_first_seen)
@@ -53,20 +53,7 @@ class PromCopySpeed(QemuSystemTest):
 
     @skipIfMissingEnv('ORIGAMI_ASSETS')
     def test_prom_copy_speed(self):
-        firmware = resolve_asset(os.environ['ORIGAMI_ASSETS'],
-                                 FIRMWARE_REL)
-        if firmware is None:
-            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
-            # the case where it is unset entirely -- getting here means
-            # it IS set, so a missing firmware image is a provisioning
-            # failure, not an absent-assets developer run, and must
-            # fail loudly: a silent skip here would let a real
-            # copy-speed regression pass CI unnoticed.
-            self.fail(
-                'ORIGAMI_ASSETS is set but no firmware is present '
-                f'at <ORIGAMI_ASSETS>/{FIRMWARE_REL} -- provision it '
-                '(nightly assets) rather than silently skipping a '
-                'claimed capability')
+        firmware = require_assets(self, FIRMWARE_REL)[FIRMWARE_REL]
 
         # The same smallest real-firmware cell test_prom_boot builds.
         cell = Cell(id='prom_copy_speed', guest='prom',

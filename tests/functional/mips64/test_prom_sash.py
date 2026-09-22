@@ -78,17 +78,15 @@ a real sash-gate PASS run recording that its built emulator needed none of
 that plumbing.
 """
 
-import datetime
-import hashlib
 import json
 import os
 import re
 import shutil
-import subprocess
 
 from qemu_test import QemuSystemTest, skipIfMissingEnv
 
-from lib_prom import drive_console, resolve_asset
+from lib_prom import (FORK_ROOT, MACHINES, drive_console, file_record,
+                      fork_git_identity, require_assets, utc_now)
 from lib_prom_sash import (NETBOOT_PATH, artifact_identity_problems,
                            sash_extra_args, verdict)
 
@@ -149,56 +147,6 @@ DRIVER_STEPS = (
 DRIVER_UNTIL_RE = re.compile(rb"dlserver=192\.0\.2\.2")
 
 
-def _utc_now():
-    return datetime.datetime.now(datetime.UTC).isoformat().replace(
-        "+00:00", "Z")
-
-
-def _file_record(path):
-    resolved = os.path.realpath(path)
-    digest = hashlib.sha256()
-    with open(resolved, "rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return {
-        "path": str(path),
-        "resolved_path": resolved,
-        "sha256": digest.hexdigest(),
-        "size_bytes": os.path.getsize(resolved),
-    }
-
-
-def _fork_git_identity(tree):
-    """This fork checkout's own commit and dirty state -- the analog of
-    sash-gate's git_identity(ROOT), where ROOT there is the project tools
-    checkout. This is a functional test inside the fork itself, so there
-    is no separate "project tools" checkout to report on; the fork's own
-    identity is the binding record instead. None on any git failure: a
-    missing identity must not read as a fabricated clean one."""
-    try:
-        commit = subprocess.run(
-            ["git", "-C", str(tree), "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=30)
-        status = subprocess.run(
-            ["git", "-C", str(tree), "status", "--porcelain=v1",
-             "--untracked-files=normal"],
-            capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if commit.returncode != 0 or status.returncode != 0:
-        return None
-    return {
-        "path": str(tree),
-        "commit": commit.stdout.strip(),
-        "dirty": bool(status.stdout.strip()),
-    }
-
-
-# This file's own repo root: tests/functional/mips64/test_prom_sash.py
-# is three directories below it.
-_FORK_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__)))))
-
 class PromSash(QemuSystemTest):
     """Boots the real IP27 PROM firmware, netboots sash64 over SLIRP
     usermode networking, and requires verdict() to be PASS. See this
@@ -207,23 +155,6 @@ class PromSash(QemuSystemTest):
     test_prom_boot.py keep between their pure logic and their own
     QemuSystemTest classes.
     """
-
-    def _release_paths(self):
-        """The real PROM image and sash64 boot tree under
-        ORIGAMI_ASSETS, or None if either is missing -- the runner may
-        not have assets provisioned yet (see this method's caller).
-        `tftp` here is sash-gate's own FLAT assets/boot/<release>
-        layout (sash64 alongside sashARCS, unix.IP27, ...), shared,
-        read-only project state this test must not restructure -- see
-        _stage_netboot_tftp() for the PATH-STRUCTURED copy this test's
-        real boot actually serves."""
-        assets_root = os.environ['ORIGAMI_ASSETS']
-        prom = resolve_asset(assets_root, FIRMWARE_REL)
-        sash = resolve_asset(assets_root,
-                             os.path.join(TFTP_REL, 'sash64'))
-        if not (prom and sash):
-            return None
-        return prom, os.path.join(assets_root, TFTP_REL)
 
     def _stage_netboot_tftp(self, sash):
         """A fresh tftp root, under this test's own scratch directory,
@@ -244,22 +175,14 @@ class PromSash(QemuSystemTest):
 
     @skipIfMissingEnv('ORIGAMI_ASSETS')
     def test_prom_sash(self):
-        paths = self._release_paths()
-        if paths is None:
-            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
-            # the case where it is unset entirely -- getting here means
-            # it IS set, so a missing PROM or sash64 is a provisioning
-            # failure, not an absent-assets developer run, and must
-            # fail loudly: a silent skip here would let a real sash
-            # regression pass CI unnoticed.
-            self.fail(
-                'ORIGAMI_ASSETS is set but the PROM/sash64 are missing '
-                f'at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
-                f'<ORIGAMI_ASSETS>/{TFTP_REL}/sash64 -- provision them '
-                '(nightly assets) rather than silently skipping a '
-                'claimed capability')
-        prom, tftp = paths
-        sash = os.path.join(tftp, 'sash64')
+        # sash64 comes from sash-gate's own FLAT assets/boot/<release>
+        # layout (sash64 alongside sashARCS, unix.IP27, ...), shared
+        # read-only project state this test must not restructure -- see
+        # _stage_netboot_tftp() for the PATH-STRUCTURED copy this test's
+        # real boot actually serves.
+        sash_rel = os.path.join(TFTP_REL, 'sash64')
+        assets = require_assets(self, FIRMWARE_REL, sash_rel)
+        prom, sash = assets[FIRMWARE_REL], assets[sash_rel]
 
         # sash-gate itself refuses to launch against a PROM or sash64
         # that does not match the selected release's recorded digest
@@ -276,8 +199,7 @@ class PromSash(QemuSystemTest):
         netboot_tftp = self._stage_netboot_tftp(sash)
 
         vm = self.get_vm(name='prom_sash')
-        vm.set_machine(
-            'origin200,debug-leds=off')
+        vm.set_machine(MACHINES['origin200'])
         vm.set_console()
         elsc_log = self.log_file('elsc-aux.log')
         capture = self.log_file('wire.pcap')
@@ -285,7 +207,7 @@ class PromSash(QemuSystemTest):
                    *sash_extra_args(prom, netboot_tftp, elsc_log,
                                      capture))
 
-        started = _utc_now()
+        started = utc_now()
         vm.launch()
         log_path = self.log_file('sash.log')
         try:
@@ -300,7 +222,7 @@ class PromSash(QemuSystemTest):
             # PromDiagnostics.test_prom_diagnostics and
             # test_prom_boot.py's PromBoot.test_prom_boot.
             vm.shutdown(hard=vm.exitcode() is not None)
-        ended = _utc_now()
+        ended = utc_now()
 
         if not transcript:
             self.fail(
@@ -331,19 +253,17 @@ class PromSash(QemuSystemTest):
                 'timeout_seconds': BOOT_TIMEOUT_SECONDS,
                 'command': {
                     'binary': self.qemu_bin,
-                    'machine': (
-                        'origin200,'
-                        'debug-leds=off'),
+                    'machine': MACHINES['origin200'],
                     'args': sash_extra_args(
                         prom, netboot_tftp, elsc_log, capture),
                 },
                 'identity': {
-                    'fork': _fork_git_identity(_FORK_ROOT),
-                    'qemu_binary': _file_record(self.qemu_bin),
+                    'fork': fork_git_identity(FORK_ROOT),
+                    'qemu_binary': file_record(self.qemu_bin),
                     'firmware': {
                         'release': RELEASE,
-                        'prom': _file_record(prom),
-                        'sash': _file_record(sash),
+                        'prom': file_record(prom),
+                        'sash': file_record(sash),
                     },
                 },
                 'verdict': report['verdict'],

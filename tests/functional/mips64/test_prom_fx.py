@@ -45,8 +45,8 @@ import shutil
 
 from qemu_test import QemuSystemTest, skipIfMissingEnv
 
-from lib_prom import (FIRMWARE_REL, drive_console, file_record,
-                      fork_git_identity, resolve_asset, utc_now)
+from lib_prom import (FIRMWARE_REL, FORK_ROOT, MACHINES, drive_console,
+                      require_assets, run_record, utc_now)
 from lib_prom_fx import LEDGERS_EXPECTED, NBLOCKS, NETBOOT_PATH, verdict
 from lib_prom_mdk import payload_identity_problems
 
@@ -119,20 +119,9 @@ def fx_extra_args(prom, tftp, elsc_log, capture, disk):
     ]
 
 
-_FORK_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__)))))
-
 class PromFx(QemuSystemTest):
     """Boots the real IP27 PROM, netboots fx.64, and requires a clean
     write-compare exercise on a fresh scratch disk."""
-
-    def _asset_paths(self):
-        assets_root = os.environ['ORIGAMI_ASSETS']
-        prom = resolve_asset(assets_root, FIRMWARE_REL)
-        fx = resolve_asset(assets_root, FX_REL)
-        if not (prom and fx):
-            return None
-        return prom, fx
 
     def _stage_netboot_tftp(self, fx):
         root = self.scratch_file('netboot-tftp')
@@ -149,21 +138,8 @@ class PromFx(QemuSystemTest):
 
     @skipIfMissingEnv('ORIGAMI_ASSETS')
     def test_prom_fx(self):
-        paths = self._asset_paths()
-        if paths is None:
-            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
-            # the case where it is unset entirely -- getting here means
-            # it IS set, so a missing PROM or fx.64 is a provisioning
-            # failure, not an absent-assets developer run, and must
-            # fail loudly: a silent skip here would let a real fx
-            # regression pass CI unnoticed.
-            self.fail(
-                'ORIGAMI_ASSETS is set but the firmware/fx.64 are '
-                f'missing at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
-                f'<ORIGAMI_ASSETS>/{FX_REL} -- provision them '
-                '(nightly assets) rather than silently skipping a '
-                'claimed capability')
-        prom, fx = paths
+        assets = require_assets(self, FIRMWARE_REL, FX_REL)
+        prom, fx = assets[FIRMWARE_REL], assets[FX_REL]
 
         identity_problems = payload_identity_problems(
             prom, fx, FX_SHA256, "fx.64")
@@ -175,8 +151,7 @@ class PromFx(QemuSystemTest):
         disk = self._scratch_disk()
 
         vm = self.get_vm(name='prom_fx')
-        vm.set_machine(
-            'origin200,debug-leds=off')
+        vm.set_machine(MACHINES['origin200'])
         vm.set_console()
         elsc_log = self.log_file('elsc-aux.log')
         capture = self.log_file('wire.pcap')
@@ -220,14 +195,8 @@ class PromFx(QemuSystemTest):
                 'ended_utc': ended,
                 'console_driver_reached_until': reached,
                 'timeout_seconds': BOOT_TIMEOUT_SECONDS,
-                'identity': {
-                    'fork': fork_git_identity(_FORK_ROOT),
-                    'qemu_binary': file_record(self.qemu_bin),
-                    'payload': {
-                        'prom': file_record(prom),
-                        'fx': file_record(fx),
-                    },
-                },
+                'identity': run_record(FORK_ROOT, self.qemu_bin,
+                                       prom=prom, fx=fx),
                 'verdict': report['verdict'],
                 'problems': report['problems'],
             }, run_file, indent=2, sort_keys=True)

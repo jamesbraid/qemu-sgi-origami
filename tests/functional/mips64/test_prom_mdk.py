@@ -49,8 +49,8 @@ import shutil
 
 from qemu_test import QemuSystemTest, skipIfMissingEnv
 
-from lib_prom import (FIRMWARE_REL, drive_console, file_record,
-                      fork_git_identity, resolve_asset, utc_now)
+from lib_prom import (FIRMWARE_REL, FORK_ROOT, MACHINES, drive_console,
+                      require_assets, run_record, utc_now)
 from lib_prom_mdk import (NETBOOT_PATH, artifact_identity_problems,
                           mdk_extra_args, verdict)
 
@@ -79,22 +79,10 @@ DRIVER_STEPS = (
 DRIVER_UNTIL_RE = re.compile(rb"Pcache test run is complete")
 
 
-_FORK_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__)))))
-
-
 class PromMdk(QemuSystemTest):
     """Boots the real IP27 PROM, netboots cpu.mdk over SLIRP usermode
     networking, drives pcache at the MDK> prompt, and requires
     verdict() to be PASS."""
-
-    def _asset_paths(self):
-        assets_root = os.environ['ORIGAMI_ASSETS']
-        prom = resolve_asset(assets_root, FIRMWARE_REL)
-        mdk = resolve_asset(assets_root, MDK_REL)
-        if not (prom and mdk):
-            return None
-        return prom, mdk
 
     def _stage_netboot_tftp(self, mdk):
         root = self.scratch_file('netboot-tftp')
@@ -105,21 +93,8 @@ class PromMdk(QemuSystemTest):
 
     @skipIfMissingEnv('ORIGAMI_ASSETS')
     def test_prom_mdk(self):
-        paths = self._asset_paths()
-        if paths is None:
-            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
-            # the case where it is unset entirely -- getting here means
-            # it IS set, so a missing PROM or cpu.mdk is a provisioning
-            # failure, not an absent-assets developer run, and must
-            # fail loudly: a silent skip here would let a real pcache
-            # regression pass CI unnoticed.
-            self.fail(
-                'ORIGAMI_ASSETS is set but the firmware/cpu.mdk are '
-                f'missing at <ORIGAMI_ASSETS>/{FIRMWARE_REL} and '
-                f'<ORIGAMI_ASSETS>/{MDK_REL} -- provision them '
-                '(nightly assets) rather than silently skipping a '
-                'claimed capability')
-        prom, mdk = paths
+        assets = require_assets(self, FIRMWARE_REL, MDK_REL)
+        prom, mdk = assets[FIRMWARE_REL], assets[MDK_REL]
 
         identity_problems = artifact_identity_problems(prom, mdk)
         if identity_problems:
@@ -129,8 +104,7 @@ class PromMdk(QemuSystemTest):
         netboot_tftp = self._stage_netboot_tftp(mdk)
 
         vm = self.get_vm(name='prom_mdk')
-        vm.set_machine(
-            'origin200,debug-leds=off')
+        vm.set_machine(MACHINES['origin200'])
         vm.set_console()
         elsc_log = self.log_file('elsc-aux.log')
         capture = self.log_file('wire.pcap')
@@ -175,20 +149,12 @@ class PromMdk(QemuSystemTest):
                 'timeout_seconds': BOOT_TIMEOUT_SECONDS,
                 'command': {
                     'binary': self.qemu_bin,
-                    'machine': (
-                        'origin200,'
-                        'debug-leds=off'),
+                    'machine': MACHINES['origin200'],
                     'args': mdk_extra_args(
                         prom, netboot_tftp, elsc_log, capture),
                 },
-                'identity': {
-                    'fork': fork_git_identity(_FORK_ROOT),
-                    'qemu_binary': file_record(self.qemu_bin),
-                    'payload': {
-                        'prom': file_record(prom),
-                        'cpu_mdk': file_record(mdk),
-                    },
-                },
+                'identity': run_record(FORK_ROOT, self.qemu_bin,
+                                       prom=prom, cpu_mdk=mdk),
                 'verdict': report['verdict'],
                 'problems': report['problems'],
             }, run_file, indent=2, sort_keys=True)

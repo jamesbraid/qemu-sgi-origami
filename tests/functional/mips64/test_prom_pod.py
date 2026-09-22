@@ -46,8 +46,8 @@ import time
 
 from qemu_test import QemuSystemTest, skipIfMissingEnv
 
-from lib_prom import (file_record, file_sha256, fork_git_identity,
-                      resolve_asset, utc_now)
+from lib_prom import (FORK_ROOT, file_sha256, require_assets, run_record,
+                      utc_now)
 from lib_prom_pod import COMMANDS, LOCAL_POD_SWITCHES, verdict
 from lib_prom_sash import RELEASES
 from lib_translation_health import assert_translation_healthy
@@ -129,28 +129,13 @@ def _drive_pod(sock, log_path, timeout, commands, vm=None):
     return transcript.decode("utf-8", errors="replace"), reached
 
 
-_FORK_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__)))))
-
 class PromPod(QemuSystemTest):
     """Boots the real IP27 PROM with local-POD dip switches and
     requires verdict() to be PASS over the driven command list."""
 
     @skipIfMissingEnv('ORIGAMI_ASSETS')
     def test_prom_pod(self):
-        prom = resolve_asset(os.environ['ORIGAMI_ASSETS'], FIRMWARE_REL)
-        if prom is None:
-            # @skipIfMissingEnv('ORIGAMI_ASSETS') above already skipped
-            # the case where it is unset entirely -- getting here means
-            # it IS set, so a missing firmware image is a provisioning
-            # failure, not an absent-assets developer run, and must
-            # fail loudly: a silent skip here would let a real POD
-            # regression pass CI unnoticed.
-            self.fail(
-                'ORIGAMI_ASSETS is set but no firmware is present '
-                f'at <ORIGAMI_ASSETS>/{FIRMWARE_REL} -- provision it '
-                '(nightly assets) rather than silently skipping a '
-                'claimed capability')
+        prom = require_assets(self, FIRMWARE_REL)[FIRMWARE_REL]
 
         if file_sha256(prom) != PROM_SHA256:
             self.fail('PROM SHA-256 does not match the recorded release')
@@ -204,11 +189,7 @@ class PromPod(QemuSystemTest):
                 'started_utc': started,
                 'ended_utc': ended,
                 'timeout_seconds': BOOT_TIMEOUT_SECONDS,
-                'identity': {
-                    'fork': fork_git_identity(_FORK_ROOT),
-                    'qemu_binary': file_record(self.qemu_bin),
-                    'payload': {'prom': file_record(prom)},
-                },
+                'identity': run_record(FORK_ROOT, self.qemu_bin, prom=prom),
                 'verdict': report['verdict'],
                 'problems': report['problems'],
             }, run_file, indent=2, sort_keys=True)
