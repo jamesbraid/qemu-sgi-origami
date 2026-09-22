@@ -9,8 +9,8 @@
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "sn0-user-image.h"
+#include "sgi-test.h"
 
-#define NODE_STRIDE UINT64_C(0x100000000)
 #define HUB_BASE UINT64_C(0x20001000000)
 #define NI_STATUS 0x600000
 #define IO_WIDGET_ID 0x400000
@@ -80,9 +80,7 @@
 #define BRIDGE_CFG0(n) (0x020000 + (n) * 0x1000)
 #define BRIDGE_DEV_SWAP_DIRECT (1u << 19)
 #define BRIDGE_DEV_MEMORY_SPACE (1u << 12)
-#define PCI_COMMAND 0x04
 #define PCI_COMMAND_MEMORY_MASTER 0x0006
-#define PCI_BAR0 0x10
 #define DMA_DEVICE 3
 #define DMA_MMIO 0x01000000u
 #define DMA_WINDOW 0x700000

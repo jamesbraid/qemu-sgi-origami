@@ -15,11 +15,9 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include "sgi-test.h"
 
-#define SPACE_XTALK     0x20000000000ULL
-#define HUB_LOCAL       (SPACE_XTALK + 0x01000000)
 #define HUB_BY_NODE     (SPACE_XTALK + 0x01800000)
-#define NODE_STRIDE     0x100000000ULL
 
 #define I2C_DATA        0x220000
 #define I2C_CTRL        0x220008

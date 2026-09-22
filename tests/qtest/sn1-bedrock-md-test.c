@@ -2,6 +2,7 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "sgi-test.h"
 
 #define BASE UINT64_C(0x78000000)
 #define MD(_x) (BASE + (_x))
@@ -45,7 +46,6 @@
     (PROTECTION_MACHINE_BASE + UINT64_C(0x00000408))
 #define DIRECTORY_MACHINE_BANK2_FIRST_ABSENT \
     (PROTECTION_MACHINE_BASE + UINT64_C(0x12000000))
-#define PROM_SIZE UINT64_C(0x1686a8)
 #define NODE_MEMORY_512M \
     "-object memory-backend-ram,id=node-memory,size=512M "
 

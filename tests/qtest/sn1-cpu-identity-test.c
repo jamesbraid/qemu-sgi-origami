@@ -17,10 +17,8 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "sgi-test.h"
 
-#define PROM_SIZE 0x1686a8
-
-#define SPACE_XTALK UINT64_C(0x20000000000)
 #define BEDROCK_LOCAL (SPACE_XTALK + UINT64_C(0x01000000))
 #define BEDROCK_PI1 UINT64_C(0x200000)
 #define PI_CPU_ENABLE_A UINT64_C(0x50)

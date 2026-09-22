@@ -16,6 +16,7 @@
 #include "libqtest.h"
 
 #include "psitech-rad4-mode0-fixture.h"
+#include "sgi-test.h"
 
 /*
  * PCI type 0 configuration space offsets, restated the way
@@ -28,11 +29,8 @@
 #define PCI_BAR2_CFG_OFF    0x18
 #define PCI_ROM_ADDRESS_OFF 0x30
 #define PCI_COMMAND_OFF     0x04
-#define PCI_COMMAND_MEMORY  0x0002u
-#define PCI_COMMAND_MASTER  0x0004u
 
 /* Crosstalk space and the Bridge's widget window inside it. */
-#define SPACE_XTALK     0x20000000000ULL
 #define BRIDGE_WIDGET   8
 #define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
 
@@ -51,7 +49,6 @@
 
 #define REG_DATA            4
 #define BRIDGE_DEVICE(n)    (BRIDGE_BASE + 0x200 + 8 * (n) + REG_DATA)
-#define DEV_MEMORY_SPACE    (1u << 12)
 
 #define PCI_ROM_ENABLE      1u
 

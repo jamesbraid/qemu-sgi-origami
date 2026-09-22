@@ -33,10 +33,8 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "sgi-test.h"
 
-#define PROM_SIZE 0x1686a8
-
-#define SPACE_XTALK UINT64_C(0x20000000000)
 #define BEDROCK_LOCAL (SPACE_XTALK + UINT64_C(0x01000000))
 #define LB_SCRATCH_0 UINT64_C(0x608000)
 #define LB_SCRATCH_3 UINT64_C(0x608018)
@@ -54,7 +52,6 @@
  * Slot A's block, then slot C's block 0x100 above it.
  */
 #define STATE_PHYS UINT64_C(0x180000)
-#define SPACE_HUB UINT64_C(0x10000000000)
 #define STATE_HOST (SPACE_HUB + STATE_PHYS)
 #define STATE_SLOT_STRIDE 0x100
 #define STATE_ALIVE 0x00

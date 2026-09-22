@@ -13,6 +13,7 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "sgi-test.h"
 
 #define BRIDGE          "/machine/peripheral/bridge"
 #define BOARD_PART      "030-1244-001"
@@ -27,14 +28,10 @@
  */
 #define REG(offset)             ((offset) + 4)
 #define BRIDGE_DEVICE(n)        (0x200 + 8 * (n))
-#define DEV_MEMORY_SPACE        (1u << 12)
 
 /* A card in slot 0, and where firmware would put its BAR in PCI space. */
 #define CARD_SLOT               0
 #define CARD_MMIO               0x10000000u
-#define PCI_COMMAND             0x04
-#define PCI_COMMAND_MEMORY      0x0002
-#define PCI_BAR1                0x14
 
 /* Storage behind the card, and the least of the card. */
 #define CARD_SCRATCH            0x34

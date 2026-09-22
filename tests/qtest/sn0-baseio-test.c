@@ -16,8 +16,8 @@
 #include "qemu/bswap.h"
 #include "hw/pci/pci.h"
 #include "libqtest.h"
+#include "sgi-test.h"
 
-#define NODE_STRIDE UINT64_C(0x100000000)
 #define HUB_BASE UINT64_C(0x20001000000)
 #define NI_STATUS 0x600000
 #define NI_VECTOR_PARMS 0x600200
@@ -41,8 +41,6 @@
 #define BRIDGE_DEVICE(n) (0x0200 + 8 * (n))
 #define BRIDGE_CFG0(n) (0x020000 + (n) * 0x1000)
 #define BRIDGE_DEV_MEMORY_SPACE (1u << 12)
-#define PCI_COMMAND 0x04
-#define PCI_BAR0 0x10
 #define PCI_SUBSYSTEM 0x2c
 #define SUBSYSTEM_SGI 0x10a9u
 #define SUBSYSTEM(id) (((uint32_t)(id) << 16) | SUBSYSTEM_SGI)

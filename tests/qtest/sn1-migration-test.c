@@ -12,10 +12,8 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "sgi-test.h"
 
-#define PROM_SIZE UINT64_C(0x1686a8)
-
-#define SPACE_HUB UINT64_C(0x10000000000)
 #define HUB_LOCAL_REGISTERS (SPACE_HUB + UINT64_C(0x10000000))
 #define BOARD_ID_LOCAL (HUB_LOCAL_REGISTERS + UINT64_C(0x4000000))
 /* The 500 MHz board id (QEMU PR 640); sn1-node.c's own SN1_BOARD_ID_VALUE. */

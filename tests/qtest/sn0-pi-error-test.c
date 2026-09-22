@@ -12,6 +12,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sn0-user-image.h"
+#include "sgi-test.h"
 
 #define CAUSE_A                0x50000
 #define CAUSE_B                0x50008
@@ -32,7 +33,6 @@
 #define ORIGIN2000_HUB_LOCAL   0x20001000000ULL
 #define ORIGIN2000_XBOW_LINK   10
 
-#define HUB_LOCAL              0x20001000000ULL
 #define WIDGET2_PROBE          0x20002400208ULL
 #define WIDGETA_PROBE          0x2000a400208ULL
 #define BRIDGE_BASE            0x20008000000ULL
@@ -44,11 +44,8 @@
 #define TESTDEV_SLOT           3
 #define TESTDEV_CFG            (BRIDGE_BASE + BRIDGE_CFG0 + \
                                 TESTDEV_SLOT * BRIDGE_CFG0_STRIDE)
-#define PCI_COMMAND            0x04
-#define PCI_COMMAND_MEMORY     0x0002
 #define PCI_BAR2               0x18
 #define TESTDEV_MMIO           0x14000000u
-#define DEV_MEMORY_SPACE       (1u << 12)
 #define PI_ERR_STATUS0_A       0x430
 #define PI_ERR_STATUS0_CLR_A   0x438
 #define PI_ERR_STATUS0_B       0x450

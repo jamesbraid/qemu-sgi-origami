@@ -14,11 +14,10 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
+#include "sgi-test.h"
 
 /* Node zero's window, and the space the Hub answers uncached references in. */
 #define NODE0           0x0000000000ULL
-#define SPACE_HUB       0x10000000000ULL
-#define NODE_STRIDE     0x100000000ULL
 #define LBOOT_OFFSET    0x10000000ULL
 #define RBOOT_OFFSET    0x30000000ULL
 

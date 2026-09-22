@@ -28,11 +28,9 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sn0-user-image.h"
+#include "sgi-test.h"
 
-/* This file's own copies, the way every sn0-*-test.c stands alone. */
-#define SPACE_XTALK         0x20000000000ULL
-#define NODE_STRIDE         0x100000000ULL
-#define HUB_LOCAL           (SPACE_XTALK + 0x01000000)
+/* Addresses only this test uses; the shared ones come from sgi-test.h. */
 #define HUB_BY_NODE         (SPACE_XTALK + 0x01800000)
 
 #define NI_STATUS           0x600000
@@ -57,7 +55,6 @@
 
 #define PI_CALIAS_SIZE      0x000028
 #define PI_CALIAS_SIZE_4K   1
-#define PI_INT_PEND0        0x000098
 #define NI_STATUS_LINK_UP   (1ULL << 29)
 
 #define BTE_BASE(e)         (0x410000 + (e) * 0x10000)
@@ -84,13 +81,8 @@
 #define BRIDGE_INT_HOST(n)  (0x130 + 8 * (n))
 #define BRIDGE_DEVICE(n)    (0x200 + 8 * (n))
 #define DEV_SWAP_DIRECT     (1u << 19)
-#define DEV_MEMORY_SPACE    (1u << 12)
 #define BRIDGE_CFG0         0x020000
 #define CFG0(node, device)  (BRIDGE_AT(node) + BRIDGE_CFG0 + (device) * 0x1000)
-#define PCI_COMMAND         0x04
-#define PCI_COMMAND_MEMORY  0x0002
-#define PCI_COMMAND_MASTER  0x0004
-#define PCI_BAR0            0x10
 #define CARD_MMIO(slot)     (0x10000000u + (slot) * 0x1000000u)
 
 static const uint64_t window_offset[8] = {

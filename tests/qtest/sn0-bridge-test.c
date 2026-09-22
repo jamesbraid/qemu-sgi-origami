@@ -13,10 +13,9 @@
 #include "hw/pci-host/sgi-bridge.h"
 #include "libqtest.h"
 #include "sn0-user-image.h"
+#include "sgi-test.h"
 
 /* Crosstalk space, and the bridge's own widget window inside it. */
-#define SPACE_XTALK     0x20000000000ULL
-#define NODE_STRIDE     (1ULL << 32)
 #define BRIDGE_WIDGET   8
 #define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
 
@@ -125,7 +124,6 @@
 #define DEV_PAGE_CROSS_CHECK    (1u << 27)
 #define DEV_64BIT_DEVICE        (1u << 22)
 #define DEV_SWAP_PROGRAMMED     (1u << 13)
-#define DEV_MEMORY_SPACE        (1u << 12)
 #define DEV_WINDOW_BASE         0xfffu
 /*
  * The eight reset values the firmware's sanity diagnostic states, as
@@ -185,12 +183,7 @@ static const uint32_t device_reset[8] = {
 #define NO_CARD                 0xffffffffu
 
 /* The configuration registers these tests program on a card. */
-#define PCI_COMMAND             0x04
 #define PCI_COMMAND_IO          0x0001
-#define PCI_COMMAND_MEMORY      0x0002
-#define PCI_COMMAND_MASTER      0x0004
-#define PCI_BAR0                0x10
-#define PCI_BAR1                0x14
 
 /* A scratch register: storage behind a card, and the least of the card. */
 #define CARD_SCRATCH            0x34
@@ -1813,7 +1806,6 @@ static void test_dma_device_window_64bit_doubleword(const void *data)
  */
 #define HUB_LOCAL_WINDOW        (SPACE_XTALK + 0x01000000)
 #define PI_INT_PEND_MOD         0x90
-#define PI_INT_PEND0            0x98
 #define INT_TEST_HOST_NODE      0
 #define INT_TEST_HOST_NUMBER    42
 

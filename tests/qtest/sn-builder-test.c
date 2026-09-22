@@ -21,6 +21,7 @@
 #include <sys/wait.h>
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "sgi-test.h"
 
 static char *qom_get_str(QTestState *qts, const char *path, const char *prop)
 {
@@ -289,7 +290,6 @@ static void test_xio_baseio_attaches_via_spare_fabric(const void *data)
  * (crosstalk widget 8, xio-baseio.c's XIO_BASEIO_WIDGET), to observe
  * whatever the spare-fabric board below actually delivers to it.
  */
-#define SPACE_XTALK             UINT64_C(0x20000000000)
 #define SMALL_WINDOW_SIZE       UINT64_C(0x1000000)
 #define SMALL_WINDOW(widget)    (SPACE_XTALK + \
                                 (uint64_t)(widget) * SMALL_WINDOW_SIZE)
@@ -331,12 +331,9 @@ static void test_xio_baseio_attaches_via_spare_fabric(const void *data)
 #define SPARE_DEVICE(n)         (0x200 + 8 * (n))
 #define DEV_SWAP_TRANSLATED     (1u << 20)
 #define DEV_SWAP_DIRECT         (1u << 19)
-#define DEV_MEMORY_SPACE        (1u << 12)
 #define CARD_SLOT               0
 #define CARD_MMIO               0x01000000u
-#define PCI_COMMAND             0x04
 #define PCI_COMMAND_MEMORY_MASTER 0x0006
-#define PCI_BAR0                0x10
 #define DMA_REG_ADDRESS         0x00
 #define DMA_REG_LENGTH          0x04
 #define DMA_REG_SEED            0x08
@@ -494,8 +491,6 @@ static void test_pci_expansion_delivers_through_spare_fabric(const void *data)
 #define HUB_WIDGET_ON_XBOW      9
 #define HUB_INT_MODIFY_OFFSET   0x01800090
 #define INT_HOST_PACKET_IO_NASID0 0x200
-#define HUB_LOCAL               (SPACE_XTALK + 0x01000000)
-#define PI_INT_PEND0            0x000098
 #define SPARE_INT_NUMBER        42
 
 /*

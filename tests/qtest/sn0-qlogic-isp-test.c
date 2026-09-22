@@ -12,9 +12,9 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "sgi-test.h"
 
 /* Crosstalk space, and the bridge's own widget window inside it. */
-#define SPACE_XTALK     0x20000000000ULL
 #define BRIDGE_WIDGET   8
 #define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
 
@@ -26,7 +26,6 @@
 #define BRIDGE_DEVICE0          0x200
 #define REG_BRIDGE_DEVICE0      (BRIDGE_BASE + BRIDGE_DEVICE0 + REG_DATA)
 
-#define DEV_MEMORY_SPACE        (1u << 12)
 #define DEV_SWAP_PROGRAMMED     (1u << 13)
 
 /*
@@ -38,11 +37,6 @@
 #define CFG0(device)            (BRIDGE_BASE + BRIDGE_CFG0 + \
                                  (device) * CFG0_DEVICE_STRIDE)
 #define SCSI_DEVICE0            0
-
-#define PCI_COMMAND             0x04
-#define PCI_COMMAND_MEMORY      0x0002
-#define PCI_BAR0                0x10
-#define PCI_BAR1                0x14
 
 /* The per-slot form of the device register above. */
 #define BRIDGE_DEVICE(n)        (BRIDGE_BASE + 0x200 + 8 * (n) + REG_DATA)
@@ -87,7 +81,6 @@
  * What the adapter's memory DMA needs beyond register access: the bus
  * master bit, a translation entry, and the mailbox protocol.
  */
-#define PCI_COMMAND_MASTER      0x0004
 #define ATE_BASE                0x010000
 #define ATE(n)                  (BRIDGE_BASE + ATE_BASE + (n) * 8)
 #define ATE_ENTRY(page, widget) ((uint64_t)(page) | \

@@ -14,13 +14,9 @@
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "sn0-user-image.h"
+#include "sgi-test.h"
 
-/* The Hub's special space, one uncached window up from plain memory. */
-#define SPACE_HUB       0x10000000000ULL
-
-/* Crosstalk space, and the two halves of the crossbar's widget 1 window. */
-#define SPACE_XTALK     0x20000000000ULL
-#define HUB_LOCAL       (SPACE_XTALK + 0x01000000)
+/* The half of the crossbar's widget 1 window addressed by node. */
 #define HUB_BY_NODE     (SPACE_XTALK + 0x01800000)
 
 /* The boot flash's ready signal, at both positions it appears at. */
@@ -108,7 +104,6 @@
 /* A millisecond of the counter, which is the unit these tests arm. */
 #define PI_RT_MS            (PI_RT_HZ / 1000)
 #define PI_INT_MODIFY       0x000090
-#define PI_INT_PEND0        0x000098
 #define PI_INT_PEND1        0x0000a0
 #define PI_INT_MASK0_A      0x0000a8
 #define PI_INT_MASK1_A      0x0000b0
@@ -207,7 +202,6 @@
 #define NI_META_TABLE_LAST  (NI_META_TABLE + 31 * 8)
 #define NI_LOCAL_TABLE      0x638100
 
-#define NODE_STRIDE         0x100000000ULL
 #define NVP_PIOID_SHIFT     40
 #define NVP_WRITEID_SHIFT   32
 #define NVS_VALID           (1ULL << 63)
@@ -286,12 +280,8 @@
 #define BRIDGE_CFG0(device) (BRIDGE_BASE + BRIDGE_CFG0_BASE + \
                              (device) * BRIDGE_CFG0_DEVICE_STRIDE)
 #define BRIDGE_DEVICE(n) (BRIDGE_BASE + 0x200 + 8 * (n) + BRIDGE_REG_DATA)
-#define DEV_MEMORY_SPACE (1u << 12)
 
 #define PCI_IOC3_DEVICE     2      /* IP29 slot, restated for the test */
-#define PCI_COMMAND         0x04
-#define PCI_COMMAND_MEMORY  0x0002
-#define PCI_BAR0            0x10
 #define IOC3_PCI_MMIO       0x10000000u
 
 static void pi_cpu_writeq(QTestState *qts, unsigned int cpu,

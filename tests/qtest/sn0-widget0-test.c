@@ -9,9 +9,7 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
-
-#define SPACE_XTALK     0x20000000000ULL
-#define HUB_LOCAL       (SPACE_XTALK + 0x01000000)
+#include "sgi-test.h"
 
 #define IO_BWIN_TABLE   0x400160
 #define IO_BWIN_STRIDE  8

@@ -22,30 +22,26 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sn0-user-image.h"
+#include "sgi-test.h"
 
-/* This file's own copies, the way every sn0-*-test.c stands alone. */
-#define SPACE_XTALK             0x20000000000ULL
-#define NODE_STRIDE             0x100000000ULL
+/* Addresses only this test uses; the shared ones come from sgi-test.h. */
 #define BRIDGE_WIDGET           8
 #define BRIDGE_BASE             (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
 #define BRIDGE_BASE_FOR_NODE(n) (BRIDGE_BASE + (uint64_t)(n) * NODE_STRIDE)
 #define REG_DATA                4
 #define REG(offset)             (BRIDGE_BASE + (offset) + REG_DATA)
 #define BRIDGE_DEVICE(n)        (0x200 + 8 * (n))
-#define DEV_MEMORY_SPACE        (1u << 12)
 
 #define MACHINE_WITH_BRIDGE     "-M origin200"
 #define MACHINE                 "-M origin200"
 
 /* The Hub's boot-flash view and AMD command offsets. */
-#define SPACE_HUB               0x10000000000ULL
 #define FLASH_RESET             0x1fc00000ULL
 #define FLASH_HUB               (SPACE_HUB + 0x10000000)
 #define FLASH_UNLOCK1           0x5555
 #define FLASH_UNLOCK2           0x2aaa
 #define FLASH_PROGRAM_TARGET    0xe0100
 
-#define HUB_LOCAL               (SPACE_XTALK + 0x01000000)
 #define HUB_BY_NODE             (SPACE_XTALK + 0x01800000)
 #define HUB_ONEWIRE             (HUB_LOCAL + 0x2000a8)
 #define HUB_ONEWIRE_DONE        (1ULL << 1)
@@ -67,7 +63,6 @@
 #define BTE_CTL_NOTIFY          (1ULL << 4)
 #define BTE_INT_LEVEL(l)        ((uint64_t)(l) << 16)
 #define BTE_LINE                128
-#define PI_INT_PEND0            0x000098
 #define PI_REGION_PRESENT       0x000018
 
 /* PCF8584 data and control registers inside the Hub-local window. */
@@ -113,11 +108,6 @@
 /* Any card works for a window test; this one needs no backing or net. */
 #define PROBE_SLOT              4
 #define PROBE_CARD              " -device lsi53c895a,addr=" stringify(PROBE_SLOT)
-
-#define PCI_COMMAND             0x04
-#define PCI_COMMAND_MEMORY      0x0002
-#define PCI_BAR0                0x10
-#define PCI_BAR1                0x14
 
 /* A 32-bit scratch register in the card's memory-mapped register file. */
 #define CARD_SCRATCH            0x34
@@ -182,7 +172,6 @@
 #define IOC3_RING_RAM            0x00100000u
 #define IOC3_RX_RING_RAM         (IOC3_RING_RAM + 0x1000)
 #define IOC3_RX_TIMER_TICK_NS    62500LL
-#define PCI_COMMAND_MASTER       0x0004
 #define IOC3_TX_CHARACTER        0x40
 #define IOC3_MCR_TX_DMA_EN       (1u << 13)
 #define IOC3_MCR_TX_EN           (1u << 14)

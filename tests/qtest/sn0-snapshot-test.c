@@ -7,15 +7,14 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "sgi-test.h"
 
-/* This file's own copies, the way every sn0-*-test.c stands alone. */
-#define SPACE_XTALK             0x20000000000ULL
+/* Addresses only this test uses; the shared ones come from sgi-test.h. */
 #define BRIDGE_WIDGET           8
 #define BRIDGE_BASE             (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
 #define REG_DATA                4
 #define REG(offset)             (BRIDGE_BASE + (offset) + REG_DATA)
 #define BRIDGE_DEVICE(n)        (0x200 + 8 * (n))
-#define DEV_MEMORY_SPACE        (1u << 12)
 
 #define MACHINE_WITH_BRIDGE     "-M origin200"
 
@@ -30,11 +29,6 @@
 /* Any card works for a window test; this one needs no backing or net. */
 #define PROBE_SLOT              4
 #define PROBE_CARD              " -device lsi53c895a,addr=" stringify(PROBE_SLOT)
-
-#define PCI_COMMAND             0x04
-#define PCI_COMMAND_MEMORY      0x0002
-#define PCI_BAR0                0x10
-#define PCI_BAR1                0x14
 
 /* A 32-bit scratch register in the card's memory-mapped register file. */
 #define CARD_SCRATCH            0x34

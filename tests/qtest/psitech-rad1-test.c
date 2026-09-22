@@ -15,6 +15,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "sgi-test.h"
 
 /* PCI type 0 configuration space offsets, restated per file convention. */
 #define PCI_VENDOR_ID_OFF   0x00
@@ -23,12 +24,9 @@
 #define PCI_BAR1_OFF        0x14
 #define PCI_BAR2_OFF        0x18
 #define PCI_COMMAND_OFF     0x04
-#define PCI_COMMAND_MEMORY  0x0002u
-#define PCI_COMMAND_MASTER  0x0004u
 #define PCI_SUBSYS_ID_OFF   0x2c
 
 /* Crosstalk space and the Bridge's widget window inside it. */
-#define SPACE_XTALK     0x20000000000ULL
 #define BRIDGE_WIDGET   8
 #define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
 
@@ -48,7 +46,6 @@
 
 #define REG_DATA            4
 #define BRIDGE_DEVICE(n)    (BRIDGE_BASE + 0x200 + 8 * (n) + REG_DATA)
-#define DEV_MEMORY_SPACE    (1u << 12)
 
 #define MACHINE_WITH_BRIDGE \
     "-M origin200 -device psitech-rad1,addr=" G_STRINGIFY(RAD1_SLOT)
