@@ -27,6 +27,7 @@
 #define PCI_CLASS_DEVICE_OFF 0x0a
 #define PCI_BAR0_OFF        0x10
 #define PCI_BAR2_CFG_OFF    0x18
+#define PCI_BAR3_CFG_OFF    0x1c
 #define PCI_ROM_ADDRESS_OFF 0x30
 #define PCI_COMMAND_OFF     0x04
 
@@ -58,11 +59,14 @@
 /*
  * PCI addresses this test assigns the card's apertures; 1 MiB aligned so
  * BAR0 and the ROM route never need the window to slide, and BAR2's base is
- * 1 MiB aligned so the offsets below compose with it directly.
+ * 1 MiB aligned so the offsets below compose with it directly. RAD4_KM_BAR3_PCI
+ * is the RAD4-KM identity's own keyboard/mouse register file (BAR 3), unused
+ * by plain RAD4.
  */
 #define RAD4_BAR0_PCI   0x20000000u
 #define RAD4_BAR2_PCI   0x30000000u
 #define RAD4_ROM_PCI    0x40000000u
+#define RAD4_KM_BAR3_PCI 0x50000000u
 
 #define RAD4_VENDOR_ID  0x12d1
 #define RAD4_DEVICE_ID  0x0104
@@ -282,12 +286,13 @@ static QTestState *rad4_init(void)
 /*
  * RAD4-KM (12d1:0105) helpers, mirroring rad4_window_to()/rad4_readl()/
  * rad4_writel()/rad4_configure_bars() above at RAD4_KM_SLOT's own window.
- * docs/datasheets/psitech-rad4-km.md clears only the PCI identity and the
- * guest-visible driver-attach outcome for this identity; the register
- * layout underneath is plain RAD4's own, reused as a disclosed
- * approximation (hw/display/psitech-rad4.c's file header). These helpers
- * exist to prove that reuse round-trips as stated, not to assert any
- * independently confirmed RAD4-KM register fact.
+ * BAR0/BAR2 stay plain RAD4's own graphics/DMA register layout, reused as
+ * a disclosed approximation (hw/display/psitech-rad4.c's file header) --
+ * these two helpers exist to prove that reuse round-trips as stated, not
+ * to assert any independently confirmed RAD4-KM graphics register fact.
+ * BAR3 is different: it only exists under this identity, and is the
+ * keyboard/mouse controller's own cleared register contract
+ * (docs/datasheets/psitech-rad4-km.md, hw/input/psitech-rad4-km.c).
  */
 static void rad4km_window_to(QTestState *qts, uint32_t pci_addr)
 {
@@ -329,10 +334,62 @@ static void bar2_km_write(QTestState *qts, uint32_t off, uint32_t val)
     rad4km_writel(qts, RAD4_BAR2_PCI + off, val);
 }
 
+/*
+ * RAD4-KM keyboard/mouse register file (BAR 3): sixteen registers, each on
+ * its own 64 KiB stride, restated from include/hw/input/psitech-rad4-km.h
+ * and docs/datasheets/psitech-rad4-km.md the way this file restates every
+ * other register layout it tests rather than including the production
+ * header.
+ */
+#define KM_REG_STRIDE     0x10000u
+#define KM_REG(index)     ((index) * KM_REG_STRIDE)
+
+#define KM_REG_MRA        KM_REG(0x0)
+#define KM_REG_SRA_CSRA   KM_REG(0x1)
+#define KM_REG_CRA        KM_REG(0x2)
+#define KM_REG_RHRA_THRA  KM_REG(0x3)
+#define KM_REG_ACR        KM_REG(0x4)
+#define KM_REG_ISR_IMR    KM_REG(0x5)
+#define KM_REG_CTUR       KM_REG(0x6)
+#define KM_REG_CTLR       KM_REG(0x7)
+#define KM_REG_MRB        KM_REG(0x8)
+#define KM_REG_SRB_CSRB   KM_REG(0x9)
+#define KM_REG_CRB        KM_REG(0xa)
+#define KM_REG_RHRB_THRB  KM_REG(0xb)
+#define KM_REG_IVR        KM_REG(0xc)
+#define KM_REG_OPCR       KM_REG(0xd)
+#define KM_REG_OPR_SET    KM_REG(0xe)
+#define KM_REG_OPR_RESET  KM_REG(0xf)
+
+#define KM_SR_RXRDY       (1u << 0)
+#define KM_SR_TXRDY       (1u << 2)
+
+#define KM_ISR_TXRDY_A    (1u << 0)
+#define KM_ISR_RXRDY_A    (1u << 1)
+#define KM_ISR_TXRDY_B    (1u << 4)
+#define KM_ISR_RXRDY_B    (1u << 5)
+
+#define KM_CR_RX_ENABLE   0x01u
+#define KM_CR_RX_DISABLE  0x02u
+#define KM_CR_TX_ENABLE   0x04u
+#define KM_CR_TX_DISABLE  0x08u
+
+static uint32_t bar3_km_read(QTestState *qts, uint32_t off)
+{
+    return rad4km_readl(qts, RAD4_KM_BAR3_PCI + off);
+}
+
+static void bar3_km_write(QTestState *qts, uint32_t off, uint32_t val)
+{
+    rad4km_writel(qts, RAD4_KM_BAR3_PCI + off, val);
+}
+
 static void rad4km_configure_bars(QTestState *qts)
 {
     qtest_writel(qts, CFG0(RAD4_KM_SLOT) + PCI_BAR0_OFF, RAD4_BAR0_PCI);
     qtest_writel(qts, CFG0(RAD4_KM_SLOT) + PCI_BAR2_CFG_OFF, RAD4_BAR2_PCI);
+    qtest_writel(qts, CFG0(RAD4_KM_SLOT) + PCI_BAR3_CFG_OFF,
+                RAD4_KM_BAR3_PCI);
     qtest_writel(qts, CFG0(RAD4_KM_SLOT) + PCI_ROM_ADDRESS_OFF,
                 RAD4_ROM_PCI | PCI_ROM_ENABLE);
     qtest_writel(qts, CFG0(RAD4_KM_SLOT) + PCI_COMMAND_OFF,
@@ -365,6 +422,18 @@ static void test_km_pci_identity(void)
                     (uint32_t)-128 & 0xfffffff0u);
     qtest_writel(qts, CFG0(RAD4_KM_SLOT) + PCI_BAR0_OFF, RAD4_BAR0_PCI);
 
+    /*
+     * BAR3 exists only under this identity and sizes to the km device's
+     * own 1 MiB register file (sixteen registers x 64 KiB stride,
+     * include/hw/input/psitech-rad4-km.h). WINDOW_SIZE is the same 1 MiB.
+     */
+    qtest_writel(qts, CFG0(RAD4_KM_SLOT) + PCI_BAR3_CFG_OFF, 0xffffffffu);
+    uint32_t bar3_size_mask =
+        qtest_readl(qts, CFG0(RAD4_KM_SLOT) + PCI_BAR3_CFG_OFF);
+    g_assert_cmphex(bar3_size_mask & 0xfffffff0u, ==,
+                    (uint32_t)-WINDOW_SIZE & 0xfffffff0u);
+    qtest_writel(qts, CFG0(RAD4_KM_SLOT) + PCI_BAR3_CFG_OFF, RAD4_KM_BAR3_PCI);
+
     qtest_quit(qts);
 }
 
@@ -386,6 +455,139 @@ static void test_km_bar2_framebuffer_round_trip(void)
     g_assert_cmphex(bar2_km_read(qts, 0x000000), ==, 0);
     bar2_km_write(qts, 0x000000, 0x00ff00ffu);
     g_assert_cmphex(bar2_km_read(qts, 0x000000), ==, 0x00ff00ffu);
+
+    qtest_quit(qts);
+}
+
+/*
+ * CR's Rx/Tx enable bits (index 0x2/0xa, write) gate SR's RXRDY/TXRDY bits
+ * (index 0x1/0x9, read) per channel. TXRDY is synchronous -- ready as soon
+ * as Tx is enabled -- and RXRDY tracks the channel's own ps2 core queue,
+ * which starts empty after reset.
+ */
+static void test_km_channel_enable_reflects_in_status(void)
+{
+    QTestState *qts = rad4km_init();
+
+    g_assert_cmphex(bar3_km_read(qts, KM_REG_SRA_CSRA), ==, 0);
+    g_assert_cmphex(bar3_km_read(qts, KM_REG_SRB_CSRB), ==, 0);
+
+    bar3_km_write(qts, KM_REG_CRA, KM_CR_RX_ENABLE | KM_CR_TX_ENABLE);
+    bar3_km_write(qts, KM_REG_CRB, KM_CR_RX_ENABLE | KM_CR_TX_ENABLE);
+    g_assert_cmphex(bar3_km_read(qts, KM_REG_SRA_CSRA), ==, KM_SR_TXRDY);
+    g_assert_cmphex(bar3_km_read(qts, KM_REG_SRB_CSRB), ==, KM_SR_TXRDY);
+
+    bar3_km_write(qts, KM_REG_CRA, KM_CR_RX_DISABLE | KM_CR_TX_DISABLE);
+    bar3_km_write(qts, KM_REG_CRB, KM_CR_RX_DISABLE | KM_CR_TX_DISABLE);
+    g_assert_cmphex(bar3_km_read(qts, KM_REG_SRA_CSRA), ==, 0);
+    g_assert_cmphex(bar3_km_read(qts, KM_REG_SRB_CSRB), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * ISR (index 0x5, read) aggregates both channels' Rx/Tx ready state into
+ * one chip-wide register, matching docs/datasheets/psitech-rad4-km.md's
+ * cited driver IMR-shadow test. This model recomputes ISR purely from the
+ * channels' own enable/queue state on every read -- the same index's write
+ * side (IMR) is stored but never consulted (rad4_km_read_isr() ignores
+ * s->imr), matching the datasheet's Established facts and the disclosed
+ * absence of a wired interrupt line.
+ */
+static void test_km_isr_aggregates_both_channels(void)
+{
+    QTestState *qts = rad4km_init();
+
+    g_assert_cmphex(bar3_km_read(qts, KM_REG_ISR_IMR), ==, 0);
+
+    bar3_km_write(qts, KM_REG_CRA, KM_CR_TX_ENABLE);
+    g_assert_cmphex(bar3_km_read(qts, KM_REG_ISR_IMR), ==, KM_ISR_TXRDY_A);
+
+    bar3_km_write(qts, KM_REG_CRB, KM_CR_TX_ENABLE);
+    g_assert_cmphex(bar3_km_read(qts, KM_REG_ISR_IMR), ==,
+                    KM_ISR_TXRDY_A | KM_ISR_TXRDY_B);
+
+    /* A write to the same index (the IMR shadow) does not gate the read. */
+    bar3_km_write(qts, KM_REG_ISR_IMR, 0x00);
+    g_assert_cmphex(bar3_km_read(qts, KM_REG_ISR_IMR), ==,
+                    KM_ISR_TXRDY_A | KM_ISR_TXRDY_B);
+
+    qtest_quit(qts);
+}
+
+/*
+ * MRA/MRB, ACR, OPCR, CTUR/CTLR, IVR and the OPR set/reset pair have no
+ * Established read behavior or driver-visible effect beyond being written
+ * (docs/datasheets/psitech-rad4-km.md); this is a smoke test that writing
+ * each of them neither crashes nor perturbs the channels' own status.
+ */
+static void test_km_register_file_write_smoke(void)
+{
+    QTestState *qts = rad4km_init();
+
+    bar3_km_write(qts, KM_REG_MRA, 0x13);
+    bar3_km_write(qts, KM_REG_MRA, 0x07);
+    bar3_km_write(qts, KM_REG_MRB, 0x13);
+    bar3_km_write(qts, KM_REG_MRB, 0x07);
+    bar3_km_write(qts, KM_REG_ACR, 0x00);
+    bar3_km_write(qts, KM_REG_OPCR, 0x00);
+    bar3_km_write(qts, KM_REG_CTUR, 0xff);
+    bar3_km_write(qts, KM_REG_CTLR, 0xff);
+    bar3_km_write(qts, KM_REG_IVR, 0x40);
+    bar3_km_write(qts, KM_REG_OPR_SET, 0x01);
+    bar3_km_write(qts, KM_REG_OPR_RESET, 0x01);
+
+    g_assert_cmphex(bar3_km_read(qts, KM_REG_SRA_CSRA), ==, 0);
+    g_assert_cmphex(bar3_km_read(qts, KM_REG_SRB_CSRB), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Channel A is fixed to the keyboard (include/hw/input/psitech-rad4-km.h).
+ * Writing the PS/2 reset command to its data register must return the
+ * same two-byte ACK/POR sequence hw/input/ps2.c's ps2_write_keyboard()
+ * queues for KBD_CMD_RESET (0xfa, 0xaa), and RXRDY must track the queue
+ * draining.
+ */
+static void test_km_kbd_ps2_reset_round_trip(void)
+{
+    QTestState *qts = rad4km_init();
+
+    bar3_km_write(qts, KM_REG_CRA, KM_CR_RX_ENABLE | KM_CR_TX_ENABLE);
+    g_assert_cmphex(bar3_km_read(qts, KM_REG_SRA_CSRA), ==, KM_SR_TXRDY);
+
+    bar3_km_write(qts, KM_REG_RHRA_THRA, 0xff);
+    g_assert_cmphex(bar3_km_read(qts, KM_REG_SRA_CSRA), ==,
+                    KM_SR_TXRDY | KM_SR_RXRDY);
+
+    g_assert_cmphex(bar3_km_read(qts, KM_REG_RHRA_THRA), ==, 0xfa);
+    g_assert_cmphex(bar3_km_read(qts, KM_REG_RHRA_THRA), ==, 0xaa);
+    g_assert_cmphex(bar3_km_read(qts, KM_REG_SRA_CSRA), ==, KM_SR_TXRDY);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Channel B is fixed to the mouse. AUX_RESET (also 0xff) queues three
+ * bytes (hw/input/ps2.c: AUX_ACK, 0xaa, then mouse_type, which resets to
+ * 0), one more than the keyboard's reply.
+ */
+static void test_km_mouse_ps2_reset_round_trip(void)
+{
+    QTestState *qts = rad4km_init();
+
+    bar3_km_write(qts, KM_REG_CRB, KM_CR_RX_ENABLE | KM_CR_TX_ENABLE);
+    g_assert_cmphex(bar3_km_read(qts, KM_REG_SRB_CSRB), ==, KM_SR_TXRDY);
+
+    bar3_km_write(qts, KM_REG_RHRB_THRB, 0xff);
+    g_assert_cmphex(bar3_km_read(qts, KM_REG_SRB_CSRB), ==,
+                    KM_SR_TXRDY | KM_SR_RXRDY);
+
+    g_assert_cmphex(bar3_km_read(qts, KM_REG_RHRB_THRB), ==, 0xfa);
+    g_assert_cmphex(bar3_km_read(qts, KM_REG_RHRB_THRB), ==, 0xaa);
+    g_assert_cmphex(bar3_km_read(qts, KM_REG_RHRB_THRB), ==, 0x00);
+    g_assert_cmphex(bar3_km_read(qts, KM_REG_SRB_CSRB), ==, KM_SR_TXRDY);
 
     qtest_quit(qts);
 }
@@ -481,6 +683,24 @@ static void test_pci_identity(void)
     g_assert_cmphex(bar2_size_mask & 0xfffffff0u, ==,
                     (uint32_t)-(16 * 1024 * 1024) & 0xfffffff0u);
     qtest_writel(qts, CFG0(RAD4_SLOT) + PCI_BAR2_CFG_OFF, RAD4_BAR2_PCI);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Plain RAD4 never realizes the km child (hw/display/psitech-rad4.c's
+ * rad4_realize() only registers BAR 3 under the RAD4-KM identity), so its
+ * BAR 3 config-space register was never given a decode: an unregistered
+ * BAR's bytes stay hardwired at 0, not a size mask, and a write to them is
+ * dropped.
+ */
+static void test_plain_rad4_has_no_km_bar3(void)
+{
+    QTestState *qts = rad4_init();
+
+    qtest_writel(qts, CFG0(RAD4_SLOT) + PCI_BAR3_CFG_OFF, 0xffffffffu);
+    g_assert_cmphex(qtest_readl(qts, CFG0(RAD4_SLOT) + PCI_BAR3_CFG_OFF),
+                    ==, 0);
 
     qtest_quit(qts);
 }
@@ -1190,6 +1410,7 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
 
     qtest_add_func("/psitech-rad4/pci-identity", test_pci_identity);
+    qtest_add_func("/psitech-rad4/no-km-bar3", test_plain_rad4_has_no_km_bar3);
     qtest_add_func("/psitech-rad4/bar0-registers", test_bar0_registers);
     qtest_add_func("/psitech-rad4/serial-eeprom-valid",
                    test_serial_eeprom_valid_command);
@@ -1239,6 +1460,16 @@ int main(int argc, char **argv)
                    test_km_bar0_register_round_trip);
     qtest_add_func("/psitech-rad4-km/bar2-framebuffer-round-trip",
                    test_km_bar2_framebuffer_round_trip);
+    qtest_add_func("/psitech-rad4-km/channel-enable-reflects-in-status",
+                   test_km_channel_enable_reflects_in_status);
+    qtest_add_func("/psitech-rad4-km/isr-aggregates-both-channels",
+                   test_km_isr_aggregates_both_channels);
+    qtest_add_func("/psitech-rad4-km/register-file-write-smoke",
+                   test_km_register_file_write_smoke);
+    qtest_add_func("/psitech-rad4-km/kbd-ps2-reset-round-trip",
+                   test_km_kbd_ps2_reset_round_trip);
+    qtest_add_func("/psitech-rad4-km/mouse-ps2-reset-round-trip",
+                   test_km_mouse_ps2_reset_round_trip);
 
     return g_test_run();
 }

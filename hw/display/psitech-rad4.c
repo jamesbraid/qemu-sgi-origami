@@ -34,9 +34,14 @@
  * plain RAD4's own approximation, reused as an explicitly disclosed
  * approximation rather than an established RAD4-KM register fact; the
  * datasheet's own review names this choice as needing its own future
- * review. RAD4-KM's keyboard/mouse controller itself is not modeled at
- * all -- its silicon identity and register protocol remain unknown, and
- * this device does not claim, imply or emulate any specific chip for it.
+ * review.
+ *
+ * RAD4-KM's keyboard/mouse controller is modeled separately, as the child
+ * device hw/input/psitech-rad4-km.c, realized onto PCI BAR 3 only under
+ * the RAD4-KM identity. That file's own header names the register
+ * contract it implements and, separately, the chip identity and
+ * interrupt-routing facts it deliberately leaves unmodeled rather than
+ * guessing.
  */
 
 #include "qemu/osdep.h"
@@ -47,6 +52,8 @@
 #include "hw/pci/pci_ids.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/resettable.h"
+#include "hw/core/sysbus.h"
+#include "hw/input/psitech-rad4-km.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/timer.h"
@@ -421,6 +428,13 @@ struct PsitechRad4State {
     MemoryRegion bar0;
     MemoryRegion bar2;
     MemoryRegion romroute;
+
+    /*
+     * The keyboard/mouse controller child, realized onto BAR 3 only under
+     * the RAD4-KM identity (device_id == RAD4_KM_DEVICE_ID); unparented
+     * otherwise. See hw/input/psitech-rad4-km.c.
+     */
+    PsitechRad4KMState km;
 
     QemuConsole *con;
     QEMUTimer *frame_timer;
@@ -1607,6 +1621,16 @@ static void rad4_reset_hold(Object *obj, ResetType type)
 
     rad4_recognizer_reset(s);
 
+    /*
+     * The km child sits on the default sysbus, not a dedicated internal
+     * qbus, so a reset of this device does not reach it on its own
+     * (docs/comment-style.md, "Devices outside the bus reset tree need
+     * explicit reset registration or propagation").
+     */
+    if (s->device_id == RAD4_KM_DEVICE_ID) {
+        device_cold_reset(DEVICE(&s->km));
+    }
+
     rad4_update_irq(s);
     rad4_cursor_update_position(s);
     rad4_cursor_update_image(s);
@@ -1648,6 +1672,21 @@ static void rad4_realize(PCIDevice *dev, Error **errp)
     pci_register_bar(&s->pci, 2, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar2);
     pci_register_bar(&s->pci, PCI_ROM_SLOT, PCI_BASE_ADDRESS_SPACE_MEMORY,
                      &s->romroute);
+
+    /*
+     * The keyboard/mouse controller only exists under the RAD4-KM
+     * identity (hw/input/psitech-rad4-km.c's own header names what is and
+     * is not cleared for it); plain RAD4 never had this hardware.
+     */
+    if (s->device_id == RAD4_KM_DEVICE_ID) {
+        if (!sysbus_realize(SYS_BUS_DEVICE(&s->km), errp)) {
+            return;
+        }
+        pci_register_bar(&s->pci, 3, PCI_BASE_ADDRESS_SPACE_MEMORY,
+                         sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->km), 0));
+    } else {
+        object_unparent(OBJECT(&s->km));
+    }
 
     s->frame_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, rad4_frame_timer_cb, s);
 
@@ -1738,6 +1777,18 @@ static const Property psitech_rad4_properties[] = {
                        RAD4_DEVICE_ID),
 };
 
+static void rad4_instance_init(Object *obj)
+{
+    PsitechRad4State *s = PSITECH_RAD4(obj);
+
+    /*
+     * Created unconditionally; rad4_realize() only realizes it (and
+     * only registers BAR 3) under the RAD4-KM identity, and unparents
+     * it otherwise. See hw/input/psitech-rad4-km.c.
+     */
+    object_initialize_child(obj, "km", &s->km, TYPE_PSITECH_RAD4_KM);
+}
+
 static void rad4_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -1762,6 +1813,7 @@ static const TypeInfo psitech_rad4_type_info = {
     .name          = TYPE_PSITECH_RAD4,
     .parent        = TYPE_PCI_DEVICE,
     .instance_size = sizeof(PsitechRad4State),
+    .instance_init = rad4_instance_init,
     .class_init    = rad4_class_init,
     .interfaces    = (const InterfaceInfo[]) {
         { INTERFACE_CONVENTIONAL_PCI_DEVICE },
