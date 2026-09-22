@@ -58,3 +58,4 @@ lasips2_intr(unsigned int val) "%d"
 sgi_ioc3_kbc_write(uint64_t addr, uint64_t val, unsigned int size) "addr 0x%"PRIx64" val 0x%"PRIx64" size %u"
 sgi_ioc3_kbc_read(uint64_t addr, uint64_t val) "addr 0x%"PRIx64" -> 0x%"PRIx64
 sgi_ioc3_kbc_irq(int n, int level) "n %d level %d"
+sgi_ioc3_kbc_overflow(unsigned int port, uint8_t byte) "port %u lost 0x%02x"

@@ -66,10 +66,14 @@ static void sgi_ioc3_eth_irq(void *opaque, int n, int level)
 }
 
 /*
- * The PS/2 controller's data-available line latches interrupt-status bit 22:
- * a queued byte sets it and it holds across a drain of the receive registers.
- * Only a write-one-to-clear of the status register acknowledges it, which is
- * what both Linux's edge handler and IRIX's acknowledge writes expect.
+ * The PS/2 controller's data-available line latches interrupt-status bit 22.
+ * The controller asserts it for every character it takes off a port, and
+ * drops it once a guest read leaves both its receive holdings empty; the
+ * latch holds across that drain, and only a write-one-to-clear of the status
+ * register acknowledges it, which is what both Linux's edge handler and
+ * IRIX's acknowledge writes expect. Nothing here remembers the line: a byte
+ * the controller is still holding when the guest acknowledges is signalled
+ * again by the controller, not re-latched here.
  */
 static void sgi_ioc3_kbc_irq(void *opaque, int n, int level)
 {
