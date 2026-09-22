@@ -34,7 +34,77 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_irix_tg as base  # noqa: E402
-from test_irix_tg_perf_verdict import tg_perf_verdict  # noqa: E402
+
+def tg_perf_verdict(login_reached, tg_up, results):
+    """Decide PASS/FAIL for one IRIX tg transport-and-throughput run.
+
+    login_reached, tg_up: booleans for the two upstream milestones.
+
+    results: the dict the test records --
+        {"tcp_verify": {"host_cksum": str, "host_bytes": int,
+                        "guest_cksum": str or None,
+                        "guest_bytes": int or None} or None,
+         "tcp_mbps": float or None,
+         "udp_mbps": float or None,
+         "udp_loss": float or None,
+         "udp_bytes": int or None,
+         "tcp_segments_delta": int or None}
+
+    Returns {"verdict": "PASS"|"FAIL", "problems": [str, ...]}. PASS iff every
+    clause holds; problems names every clause that did not, so one run reports
+    all of what went wrong rather than only the first.
+    """
+    problems = []
+
+    if not login_reached:
+        problems.append("the guest never reached a root shell")
+    if not tg_up:
+        problems.append("the tg interface never came up configured")
+
+    verify = results.get("tcp_verify")
+    if not verify:
+        problems.append("the byte-checked TCP transfer did not run")
+    else:
+        gc, gb = verify.get("guest_cksum"), verify.get("guest_bytes")
+        hc, hb = verify.get("host_cksum"), verify.get("host_bytes")
+        if gc is None or gb is None:
+            problems.append(
+                "the guest never reported a checksum and size for the TCP "
+                "payload it received")
+        else:
+            if gb != hb:
+                problems.append(
+                    f"TCP size mismatch: the guest received {gb} bytes, "
+                    f"the host sent {hb}")
+            if gc != hc:
+                problems.append(
+                    f"TCP checksum mismatch: the guest computed {gc}, "
+                    f"the host computed {hc}")
+
+    segs = results.get("tcp_segments_delta")
+    if segs is None:
+        problems.append(
+            "the guest's TCP segment counter could not be read")
+    elif segs <= 0:
+        problems.append(
+            f"the guest's TCP stack processed no segments ({segs}): the bytes "
+            f"did not arrive as TCP through eg")
+
+    if results.get("tcp_mbps") is None:
+        problems.append("no TCP throughput was measured")
+
+    udp_bytes = results.get("udp_bytes")
+    if udp_bytes is None:
+        problems.append("no UDP datagrams were measured")
+    elif udp_bytes <= 0:
+        problems.append(
+            "the guest received no UDP payload at all: the datagram path "
+            "carried nothing")
+
+    return {
+        "verdict": "PASS" if not problems else "FAIL",
+        "problems": problems,
+    }
 
 TCP_GUEST_PORT = 5001
 UDP_GUEST_PORT = 5002

@@ -51,9 +51,8 @@ Origin 200 PCI option slot; the machine's on-board IOC3 Ethernet is left
 with no back end (-nic none), so the only configured interface is eg0 and
 the transfer can only have crossed eg.
 
-eg_net_verdict() (test_irix_eg_net_verdict.py, imported below) is the pure
-PASS/FAIL contract, testable without a boot; see its docstring for why each
-clause is scored the way it is.
+eg_net_verdict() below is the PASS/FAIL contract; its own
+docstring says why each clause is scored the way it is.
 
 Guarded by @skipBigDataTest() (the disk is multi-gigabyte) and
 @skipSlowTest() (a real multiuser IRIX boot plus the transfer is minutes),
@@ -73,15 +72,87 @@ import subprocess
 import sys
 import time
 
-# This file's own directory, so a plain `pytest test_irix_eg_net_verdict.py`
-# run finds the verdict module the same way the other functional tests here
-# find theirs.
+# This file's own directory, so a plain `pytest` run of this file
+# finds the shared modules beside it.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from lib_net import Console, HarnessError  # noqa: E402
 from lib_prom import (MACHINES, file_sha256,  # noqa: E402
                       require_assets)
-from test_irix_eg_net_verdict import eg_net_verdict  # noqa: E402
+
+def eg_net_verdict(login_reached, eg_up, transfer, rx):
+    """Decide PASS/FAIL for one IRIX eg transfer run.
+
+    login_reached, eg_up: booleans for the two upstream milestones.
+
+    transfer: a dict describing the TFTP download leg --
+        {"attempted": bool,
+         "reason": str or None,          # why it was not attempted/finished
+         "host_cksum": str,              # POSIX cksum CRC of the served file
+         "host_bytes": int,              # size of the served file
+         "guest_cksum": str or None,     # cksum the guest reported on its copy
+         "guest_bytes": int or None}     # size the guest reported on its copy
+
+    rx: {"ipkts_before": int or None, "ipkts_after": int or None} -- the eg
+        interface's received-packet counter before and after the transfer.
+
+    Returns {"verdict": "PASS"|"FAIL", "problems": [str, ...]}. PASS iff
+    every clause holds; problems names every clause that did not, so a
+    single run reports all of what went wrong rather than only the first.
+    """
+    problems = []
+
+    if not login_reached:
+        problems.append("the guest never reached a root shell")
+    if not eg_up:
+        problems.append("the eg interface never came up configured")
+
+    if not transfer.get("attempted"):
+        problems.append(
+            "the transfer was not attempted: "
+            + (transfer.get("reason") or "no reason recorded"))
+    else:
+        if transfer.get("reason") is not None:
+            problems.append(
+                "the completed transfer still records a failure reason: "
+                + str(transfer["reason"]))
+        gc = transfer.get("guest_cksum")
+        gb = transfer.get("guest_bytes")
+        hc = transfer.get("host_cksum")
+        hb = transfer.get("host_bytes")
+        if gc is None or gb is None:
+            problems.append(
+                "the guest never reported a checksum and size for its copy")
+        else:
+            if gb != hb:
+                problems.append(
+                    f"size mismatch: the guest received {gb} bytes, "
+                    f"the host served {hb}")
+            if gc != hc:
+                problems.append(
+                    f"checksum mismatch: the guest computed {gc}, "
+                    f"the host computed {hc}")
+
+    before = rx.get("ipkts_before")
+    after = rx.get("ipkts_after")
+    if after is None:
+        problems.append(
+            "the eg received-packet counter could not be read after the "
+            "transfer")
+    elif before is not None and after <= before:
+        problems.append(
+            f"the eg received-packet counter did not climb over the "
+            f"transfer ({before} -> {after}): the bytes did not arrive over "
+            f"eg's receive ring")
+    elif before is None and after <= 0:
+        problems.append(
+            "the eg received no packets at all (Ipkts is zero after the "
+            "transfer)")
+
+    return {
+        "verdict": "PASS" if not problems else "FAIL",
+        "problems": problems,
+    }
 
 try:
     from qemu_test import QemuSystemTest

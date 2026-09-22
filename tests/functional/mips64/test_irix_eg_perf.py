@@ -34,10 +34,195 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_irix_eg_net as base  # noqa: E402
-from test_irix_eg_perf_verdict import (  # noqa: E402
-    eg_perf_verdict,
-    mtu_probe_result,
-)
+
+def mtu_probe_result(rc, output):
+    """Classify one IRIX ifconfig MTU request from status and diagnostics."""
+    error = next((line.strip() for line in output.splitlines()
+                  if "mtu" in line.lower() and
+                  ("sioc" in line.lower() or "ioctl" in line.lower())), None)
+    if error:
+        return f"refused ({error})"
+    return "accepted" if rc == 0 else f"refused (rc {rc})"
+
+
+def _check_copy(problems, label, copy):
+    if not copy:
+        problems.append(f"{label} has no byte-integrity evidence")
+        return
+
+    gc, gb = copy.get("guest_cksum"), copy.get("guest_bytes")
+    hc, hb = copy.get("host_cksum"), copy.get("host_bytes")
+    sent = copy.get("sent_bytes")
+    if gc is None or gb is None:
+        problems.append(f"{label} has no guest checksum and byte count")
+        return
+    if hb is None or hb <= 0:
+        problems.append(f"{label} has no non-empty host byte count")
+    if sent is None:
+        problems.append(f"{label} has no sender byte count")
+    elif hb is not None and sent != hb:
+        problems.append(
+            f"{label} sender wrote {sent} bytes of the {hb}-byte payload")
+    if hb is not None and gb != hb:
+        problems.append(
+            f"{label} size mismatch: the guest received {gb} bytes, "
+            f"the host sent {hb}")
+    if hc is None:
+        problems.append(f"{label} has no host checksum")
+    elif gc != hc:
+        problems.append(
+            f"{label} checksum mismatch: the guest computed {gc}, "
+            f"the host computed {hc}")
+
+
+def eg_perf_verdict(login_reached, eg_up, results):
+    """Decide PASS/FAIL for one IRIX eg transport-and-throughput run.
+
+    login_reached, eg_up: booleans for the two upstream milestones.
+
+    results: the standard-mode dict the test records --
+        {"tcp_verify": {"host_cksum": str, "host_bytes": int,
+                        "guest_cksum": str or None,
+                        "guest_bytes": int or None} or None,
+         "tcp_mbps": float or None,
+         "udp_mbps": float or None,
+         "udp_loss": float or None,
+         "udp_bytes": int or None,
+         "tcp_segments_delta": int or None}
+
+        Parallel mode instead carries mode="parallel" and a parallel dict
+        with one single_copy, one copy per stream, both rates, and exact byte
+        counts for each timed stream. Each checked copy records host, sender,
+        and guest byte counts plus host/guest checksums.
+
+    Returns {"verdict": "PASS"|"FAIL", "problems": [str, ...]}. PASS iff every
+    clause holds; problems names every clause that did not, so one run reports
+    all of what went wrong rather than only the first.
+    """
+    problems = []
+
+    if not login_reached:
+        problems.append("the guest never reached a root shell")
+    if not eg_up:
+        problems.append("the eg interface never came up configured")
+
+    if results.get("mode") == "parallel":
+        parallel = results.get("parallel")
+        if not parallel:
+            problems.append("no parallel throughput was measured")
+        else:
+            streams = parallel.get("streams")
+            copies = parallel.get("copies") or []
+            if not isinstance(streams, int) or streams <= 0:
+                problems.append("the parallel stream count is invalid")
+            elif len(copies) != streams:
+                problems.append(
+                    f"parallel byte evidence covers {len(copies)} of "
+                    f"{streams} streams")
+            _check_copy(problems, "the single-stream baseline",
+                        parallel.get("single_copy"))
+            for index, copy in enumerate(copies):
+                _check_copy(problems, f"parallel stream {index}", copy)
+            if parallel.get("single_mbps") is None:
+                problems.append("no single-stream baseline was measured")
+            single_rate_bytes = parallel.get("single_rate_bytes")
+            if not isinstance(single_rate_bytes, int) or single_rate_bytes <= 0:
+                problems.append(
+                    "the single-stream baseline byte count is invalid")
+            if parallel.get("aggregate_mbps") is None:
+                problems.append("no parallel aggregate rate was measured")
+            rate_counts = parallel.get("stream_rate_bytes") or []
+            if isinstance(streams, int) and streams > 0:
+                if len(rate_counts) != streams:
+                    problems.append(
+                        f"parallel rate counts cover {len(rate_counts)} of "
+                        f"{streams} streams")
+                elif any(not isinstance(count, int) or count <= 0
+                         for count in rate_counts):
+                    problems.append("a parallel rate byte count is invalid")
+        return {
+            "verdict": "PASS" if not problems else "FAIL",
+            "problems": problems,
+        }
+
+    verify = results.get("tcp_verify")
+    if not verify:
+        problems.append("the byte-checked TCP transfer did not run")
+    else:
+        gc, gb = verify.get("guest_cksum"), verify.get("guest_bytes")
+        hc, hb = verify.get("host_cksum"), verify.get("host_bytes")
+        if gc is None or gb is None:
+            problems.append(
+                "the guest never reported a checksum and size for the TCP "
+                "payload it received")
+        else:
+            if gb != hb:
+                problems.append(
+                    f"TCP size mismatch: the guest received {gb} bytes, "
+                    f"the host sent {hb}")
+            if gc != hc:
+                problems.append(
+                    f"TCP checksum mismatch: the guest computed {gc}, "
+                    f"the host computed {hc}")
+
+    segs = results.get("tcp_segments_delta")
+    if segs is None:
+        problems.append(
+            "the guest's TCP segment counter could not be read")
+    elif segs <= 0:
+        problems.append(
+            f"the guest's TCP stack processed no segments ({segs}): the bytes "
+            f"did not arrive as TCP through eg")
+
+    if results.get("tcp_mbps") is None:
+        problems.append("no TCP throughput was measured")
+
+    udp_bytes = results.get("udp_bytes")
+    if udp_bytes is None:
+        problems.append("no UDP datagrams were measured")
+    elif udp_bytes <= 0:
+        problems.append(
+            "the guest received no UDP payload at all: the datagram path "
+            "carried nothing")
+
+    # Transmit, which every other clause here leaves untested because they all
+    # have the guest receiving. A transmit ring that stops releasing
+    # descriptors drains after a handful of frames and then stalls with the
+    # connection still established and no error anywhere -- so the check that
+    # matters is not whether the guest thinks it sent, but whether the bytes
+    # arrived. Comparing the two sides is what catches a stall.
+    if "tx_bytes_host" in results:
+        host_got = results.get("tx_bytes_host") or 0
+        guest_sent = results.get("tx_bytes_guest")
+        if host_got <= 0:
+            problems.append(
+                "the guest transmitted nothing that reached the host")
+        elif guest_sent and host_got < guest_sent:
+            problems.append(
+                f"transmit stalled: the guest reported {guest_sent} bytes "
+                f"sent but {host_got} arrived")
+        if results.get("tx_mbps") is None:
+            problems.append("no transmit throughput was measured")
+
+    # Only present when a soak was asked for. Every round carries its own
+    # digest and byte count, so a run that degrades partway through -- the
+    # shape a ring index or a recycled buffer produces -- names the round it
+    # went wrong on rather than just failing at the end.
+    soak = results.get("soak")
+    if soak:
+        failed = soak.get("failed") or []
+        if not soak.get("rounds"):
+            problems.append("a soak was asked for but no round ran")
+        elif failed:
+            where = ", ".join(str(r.get("round")) for r in failed)
+            problems.append(
+                f"{len(failed)} of {len(soak['rounds'])} soak rounds did not "
+                f"match byte for byte (round {where})")
+
+    return {
+        "verdict": "PASS" if not problems else "FAIL",
+        "problems": problems,
+    }
 
 TCP_GUEST_PORT = 5001
 UDP_GUEST_PORT = 5002

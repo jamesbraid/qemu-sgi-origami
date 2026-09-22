@@ -124,6 +124,16 @@ def require_assets(test, *rels):
     return resolved
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def strip_ansi(text):
+    """Text with the colour escapes removed. SGI's online diagnostics
+    wrap their result and summary lines in colour, so a pattern matched
+    against the raw capture would have to spell the escapes out."""
+    return _ANSI_RE.sub("", text)
+
+
 def _present(pattern, text):
     """Whether pattern is in text. A compiled regex is searched for; a
     plain string is a substring. The per-test copies this replaces

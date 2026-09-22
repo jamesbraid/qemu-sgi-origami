@@ -24,18 +24,19 @@ leaves IRIX's raw SCSI node not ready, so the medium is present from
 power-on. It carries diagnostic data, not a filesystem, so nothing mounts
 it; olcdrom reads the raw device node directly.
 
-test_irix_olcdrom_verdict.py proves the verdict logic against the real
-captured transcript without booting anything.
+olcdrom_verdict() below scores the transcript with lib_prom.verdict(),
+whose own unit tests pin that scoring without booting anything.
 """
 
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from lib_prom import (FORK_ROOT, MACHINES, drive_console, require_assets,
-                      run_record, utc_now)
+                      run_record, strip_ansi, utc_now, verdict)
 
 try:
     from qemu_test import QemuSystemTest
@@ -43,7 +44,51 @@ try:
 except (ImportError, RuntimeError):
     QemuSystemTest = None
 
-from test_irix_olcdrom_verdict import olcdrom_verdict, DIAG_DONE_RE
+
+# The console driver waits for olcdrom's final line over the whole
+# transcript -- the LOOP-completed line that follows RSLT, so RSLT is
+# captured rather than ending the driver a beat before it. A failure ends
+# it sooner: an RSLT FAIL, or an abort ("ABRT ...") that prints no RSLT at
+# all and would otherwise run out the timeout; the verdict fails those on
+# the missing RSLT PASS and the abort marker.
+DIAG_DONE_RE = re.compile(
+    rb"(LOOP\s+Completed Loop\s+\d+\s+of\s+\d+"
+    rb"|RSLT\s+olcdrom\s+FAIL|ABRT\s+\w)")
+
+ASSERTIONS = (
+    ("IRIX release banner", re.compile(r"IRIX Release 6\.5 IP27")),
+    ("root shell", re.compile(r"IRIX Release 6\.5 IP27 \w")),
+    ("olcdrom started", re.compile(r"olcdrom version")),
+    ("olcdrom pass", re.compile(r"RSLT\s+olcdrom\s+PASS")),
+    ("loop completed", re.compile(r"LOOP\s+Completed Loop\s+\d+\s+of\s+\d+")),
+)
+
+# olcdrom aborts (rather than printing RSLT FAIL) when it cannot open the
+# device or find its generated data on the medium; those spellings, plus a
+# read error and the kernel faults, are the failures.
+TRIPWIRES = (
+    ("olcdrom failed", "RSLT olcdrom        FAIL"),
+    ("the drive was not ready", "doesn't appear ready"),
+    ("the device would not open", "can't open device"),
+    ("the medium carried no diagnostic data",
+     "can't locate SGI diagnostic data"),
+    ("a read failed", "READ ERROR"),
+    ("the guest panicked", "PANIC"),
+    ("the guest took a bus error", "Bus error"),
+    ("the guest took a data bus error", "Data bus error"),
+)
+
+
+def olcdrom_verdict(log, reached=True):
+    """PASS iff every required line appeared, no failure spelling did,
+    and the console driver saw olcdrom's result line."""
+    problems = verdict(strip_ansi(log), ASSERTIONS, TRIPWIRES)
+    if not reached:
+        problems.append(
+            "console driver did not see olcdrom's result line before "
+            "timeout -- the run never proved the diagnostic finished")
+    return {"verdict": "PASS" if not problems else "FAIL",
+            "problems": problems}
 
 
 RELEASE = "6.5.30"

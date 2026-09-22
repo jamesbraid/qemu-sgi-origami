@@ -39,19 +39,14 @@ survive booting the real PROM (an immediate, silently-swallowed shutdown,
 confirmed by running that exact command line with and without the flag)
 and neither test's own pass condition ever depended on it.
 
-missing_multiuser_markers() (test_linux_multiuser_verdict.py, imported
-below) judges the console transcript -- ethernet link, dhcp client, sshd,
-login prompt. The live ssh answer is a host-side socket probe here
-(_ssh_banner): a running sshd sends its SSH-2.0 banner before any
-authentication, so a banner over the forwarded port is proof the service
-is up and reachable, which the console alone cannot give. No login or
-password is driven: a returned banner is the pass condition for a live
-network service; an authenticated round-trip is a deliberate follow-up,
-not this cut.
-
-The pure verdict lives entirely in test_linux_multiuser_verdict.py
-(imported below; it needs no qemu_test). What is left here is the real
-boot.
+missing_multiuser_markers() below judges the console transcript --
+ethernet link, dhcp client, sshd, login prompt. The live ssh answer is a
+host-side socket probe here (_ssh_banner): a running sshd sends its
+SSH-2.0 banner before any authentication, so a banner over the forwarded
+port is proof the service is up and reachable, which the console alone
+cannot give. No login or password is driven: a returned banner is the
+pass condition for a live network service; an authenticated round-trip is
+a deliberate follow-up, not this cut.
 """
 
 import os
@@ -63,9 +58,29 @@ from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
                        skipSlowTest)
 
 from lib_prom import (FIRMWARE_REL, MACHINES, drive_console,
-                      prom_netboot_steps, require_assets)
+                      prom_netboot_steps, require_assets, verdict)
 
-from test_linux_multiuser_verdict import missing_multiuser_markers
+
+# What a networked multiuser boot of the Gentoo disk should print: the
+# IOC3 ethernet linking, OpenRC starting the DHCP client and sshd, and the
+# multiuser login prompt. Each is a substring of a line a real boot
+# prints, so the check is line-ending agnostic -- a serial capture's CRLF
+# never splits one.
+MARKERS = (
+    ("ethernet link", "eth0: link up"),
+    ("dhcp client", "Starting DHCP Client Daemon"),
+    ("ssh service", "Starting sshd"),
+    ("multiuser login prompt", "login:"),
+)
+
+
+def missing_multiuser_markers(log):
+    """Which networked-multiuser markers never appeared in log, in order;
+    empty means the guest reached a networked multiuser login. The
+    stronger proof that ssh actually answers is not here -- that is the
+    host-side banner probe below, the network-service evidence a console
+    transcript cannot give."""
+    return verdict(log, MARKERS)
 
 
 # Where ORIGAMI_ASSETS resolves the networked kernel and the Gentoo rootfs,

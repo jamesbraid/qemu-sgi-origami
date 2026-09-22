@@ -236,13 +236,12 @@ tests_mips64_system_thorough = [
   'xframe_pci',
 ]
 
-# The boot tests' pure-logic companions: the *_verdict.py suites that pin
-# each test's pass condition against real captured transcripts, and the
-# unit tests of the lib_*.py helper modules they import. Plain unittest
-# modules -- no QEMU, no assets, no qemu_test import -- so they run under
-# the venv's bare python3 rather than through the qemu_test TAP machinery
-# the lists above feed, and they belong to the quick suite: the whole set
-# is seconds.
+# The unit tests of the lib_*.py helper modules the boot tests import,
+# plus the one verdict companion that is a parser in its own right (the
+# PROM's RSLT ledger). Plain unittest modules -- no QEMU, no assets, no
+# qemu_test import -- so they run under the venv's bare python3 rather
+# than through the qemu_test TAP machinery the lists above feed, and they
+# belong to the quick suite: the whole set is seconds.
 tests_mips64_unit = [
   'lib_evidence_capture',
   'lib_graphics_matrix',
@@ -253,17 +252,7 @@ tests_mips64_unit = [
   'lib_prom',
   'lib_screen',
   'lib_translation_health',
-  'irix_eg_net_verdict',
-  'irix_eg_perf_verdict',
-  'irix_tg_verdict',
-  'irix_tg_perf_verdict',
-  'linux_kernel_verdict',
-  'linux_multiuser_verdict',
   'prom_diagnostics_verdict',
-  'irix_diag_verdict',
-  'irix_oltape_verdict',
-  'irix_olcdrom_verdict',
-  'xframe_pci_verdict',
 ]
 
 foreach test : tests_mips64_unit

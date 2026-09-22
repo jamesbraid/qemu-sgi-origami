@@ -32,19 +32,20 @@ unbounded image never reaches. Excluding them leaves rw, thrash and block,
 which is the write/read/position coverage this exercises. Its fresh empty
 tape image is a scratch file per run.
 
-test_irix_oltape_verdict.py proves the verdict logic against the real
-captured transcript without booting anything.
+oltape_verdict() below scores the transcript with lib_prom.verdict(),
+whose own unit tests pin that scoring without booting anything.
 """
 
 import json
 import os
+import re
 import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from lib_prom import (FORK_ROOT, MACHINES, drive_console, require_assets,
-                      run_record, utc_now)
+                      run_record, strip_ansi, utc_now, verdict)
 
 try:
     from qemu_test import QemuSystemTest
@@ -52,7 +53,55 @@ try:
 except (ImportError, RuntimeError):
     QemuSystemTest = None
 
-from test_irix_oltape_verdict import oltape_verdict, DIAG_DONE_RE
+
+# The console driver waits for this over the whole transcript: oltape's
+# own end-of-run summary line, with its pass/non-pass counts. Waiting only
+# for "META TOTAL" would race the two numbers that follow it.
+DIAG_DONE_RE = re.compile(rb"META\s+TOTAL\s+\d+\s+\d+")
+
+# A pass requires the machine to have reached its IRIX release banner and
+# a root shell, oltape to have printed its own header, an RSLT PASS for
+# each of the three subtests this leg runs, and a META TOTAL summary of
+# three passes and zero non-passes.
+ASSERTIONS = (
+    ("IRIX release banner", re.compile(r"IRIX Release 6\.5 IP27")),
+    ("root shell", re.compile(r"IRIX Release 6\.5 IP27 \w")),
+    ("oltape started", re.compile(r"Online Tape Test")),
+    ("rw pass", re.compile(r"RSLT\s+rw\s+PASS")),
+    ("thrash pass", re.compile(r"RSLT\s+thrash\s+PASS")),
+    ("block pass", re.compile(r"RSLT\s+block\s+PASS")),
+    ("summary all passed", re.compile(r"META\s+TOTAL\s+3\s+0\b")),
+)
+
+# Kernel and diagnostic failure spellings. "NON-PASSES" is a column header
+# oltape always prints, so it is not a marker; a real non-pass shows as a
+# nonzero count in the META TOTAL line, which the summary assertion
+# catches. The open-failure spelling catches a drive IRIX did not
+# recognize (an unknown-type tape refuses the extended-status ioctl),
+# which aborts oltape before any RSLT line and must not read as an
+# incomplete-but-clean run.
+TRIPWIRES = (
+    ("rw failed", "RSLT rw             FAIL"),
+    ("thrash failed", "RSLT thrash         FAIL"),
+    ("block failed", "RSLT block          FAIL"),
+    ("the drive refused the extended-status request",
+     "ioctl(mtiocgetext) failed"),
+    ("the guest panicked", "PANIC"),
+    ("the guest took a bus error", "Bus error"),
+    ("the guest took a data bus error", "Data bus error"),
+)
+
+
+def oltape_verdict(log, reached=True):
+    """PASS iff every required line appeared, no failure spelling did,
+    and the console driver saw oltape's summary line."""
+    problems = verdict(strip_ansi(log), ASSERTIONS, TRIPWIRES)
+    if not reached:
+        problems.append(
+            "console driver did not see oltape's summary line before "
+            "timeout -- the run never proved the diagnostic finished")
+    return {"verdict": "PASS" if not problems else "FAIL",
+            "problems": problems}
 
 
 RELEASE = "6.5.30"
