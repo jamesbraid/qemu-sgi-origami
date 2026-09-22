@@ -2,14 +2,14 @@
 #
 # IRIX eg (Alteon Tigon) transport + throughput: boot installed IRIX, bring
 # up eg, and move real TCP and UDP traffic across it -- a byte-checked TCP
-# transfer, plus ttcp TCP and UDP throughput runs -- measuring the rate and
-# confirming the IP/TCP/UDP layers processed it via netstat protocol stats.
+# transfer, plus ttcp TCP and UDP throughput runs -- measuring the rate,
+# confirming the IP/TCP/UDP layers processed it via netstat protocol stats,
+# and confirming eg's own received-packet counter climbed over the transfer.
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-Where test_irix_eg_net.py proves a single UDP (TFTP) transfer crosses eg
-byte-for-byte, this test exercises the transport layers more fully and
-measures performance:
+This test exercises the transport layers eg carries and measures
+performance:
 
 - TCP correctness: a 1 MiB payload streamed host->guest into nc(1), checked
   by cksum + byte count on both sides (real TCP, not just ICMP or UDP).
@@ -19,21 +19,68 @@ measures performance:
 - IP/TCP/UDP proof: netstat -s protocol counters before and after, so the
   segments/datagrams the guest's stacks actually processed are recorded,
   not merely that a program exited 0.
+- Device-level receive proof: eg0's own Ipkts counter (netstat -in) read
+  before and after the byte-checked TCP transfer, so the frames are shown
+  to have crossed the adapter's own receive ring and not merely the
+  guest's TCP stack. This is IRIX on purpose: IRIX's eg driver silently
+  frees any received frame whose receive-return descriptor lacks the
+  end-of-frame flag, incrementing no counter, which is exactly the "eg
+  transmits but never receives, Ipkts stuck at zero" signature the fork's
+  receive-return end-of-frame fix ("hw/net/tigon: mark receive-return
+  descriptors end-of-frame") repairs. OpenBSD's ti(4) does not check that
+  flag, so a green OpenBSD-over-eg transfer would prove nothing about this
+  fix; only IRIX exercises the receive path the fix repairs. The register
+  and ring contract, including the receive end-of-frame flag itself, is
+  exercised separately by tests/qtest/sn0-tigon-test.c.
 
 All legs run host->guest (the guest receives), which is the receive ring the
 fork's end-of-frame fix repairs; the guest is the ttcp -r server and
 the host drives the load through a SLIRP hostfwd. ttcp (/usr/etc/ttcp) and
 nc (/usr/sbin/nc) are both in the installed 6.5.30 base image (confirmed by
-probe). Guarded and asset-gated exactly like test_irix_eg_net.py.
+probe).
+
+How the boot differs from the OpenBSD login test: IRIX here boots the real
+IP27 PROM (-bios), not a direct -kernel, so the drive first answers the
+System Maintenance Menu with "1" (Start System) to boot the local SCSI
+disk, then logs in as root (no password on the installed image), answers
+the TERM prompt, and switches the login csh to /bin/sh so the rest of the
+drive can use one Bourne command/response idiom. This is the same real PROM
+and SLIRP wiring test_irix_miniroot.py uses, with an installed disk added
+at SCSI id 1 and the maintenance-menu answer changed from the command
+monitor to Start System.
+
+The network back end is placed only on the eg (tigon) device, at a real
+Origin 200 PCI option slot; the machine's on-board IOC3 Ethernet is left
+with no back end (-nic none), so the only configured interface is eg0 and
+the transfer can only have crossed eg.
+
+eg_perf_verdict() below is the PASS/FAIL contract; its own docstring says
+why each clause is scored the way it is.
+
+Guarded by @skipBigDataTest() (the disk is multi-gigabyte) and
+@skipSlowTest() (a real multiuser IRIX boot plus the transfer is minutes),
+on top of @skipIfMissingEnv('ORIGAMI_ASSETS') (skips only when the env var
+itself is unset) and a self.fail() at method entry if it is set but the
+PROM or installed disk is missing -- a missing asset with the env var set
+means CI provisioning failed, not a reason to skip quietly. The installed
+IRIX disk is not committed (the fork ships no IRIX bits); a runner
+provisions it at <ORIGAMI_ASSETS>/assets/irix/6.5.30/root.qcow2 the same
+way the firmware and miniroot kernel are provisioned out of band.
 """
 import os
 import re
 import socket
+import subprocess
 import sys
 import time
 
+# This file's own directory, so a plain `pytest` run of this file finds the
+# shared modules beside it.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import test_irix_eg_net as base  # noqa: E402
+
+from lib_net import Console, HarnessError  # noqa: E402
+from lib_prom import (MACHINES, file_sha256,  # noqa: E402
+                      require_assets)
 
 def mtu_probe_result(rc, output):
     """Classify one IRIX ifconfig MTU request from status and diagnostics."""
@@ -75,7 +122,7 @@ def _check_copy(problems, label, copy):
             f"the host computed {hc}")
 
 
-def eg_perf_verdict(login_reached, eg_up, results):
+def eg_perf_verdict(login_reached, eg_up, results, rx=None):
     """Decide PASS/FAIL for one IRIX eg transport-and-throughput run.
 
     login_reached, eg_up: booleans for the two upstream milestones.
@@ -94,6 +141,11 @@ def eg_perf_verdict(login_reached, eg_up, results):
         with one single_copy, one copy per stream, both rates, and exact byte
         counts for each timed stream. Each checked copy records host, sender,
         and guest byte counts plus host/guest checksums.
+
+    rx: {"ipkts_before": int or None, "ipkts_after": int or None} -- eg0's
+        received-packet counter read either side of the byte-checked TCP
+        transfer, or None when it was not collected (the parallel-mode leg
+        returns before this point and carries no rx clause).
 
     Returns {"verdict": "PASS"|"FAIL", "problems": [str, ...]}. PASS iff every
     clause holds; problems names every clause that did not, so one run reports
@@ -165,6 +217,23 @@ def eg_perf_verdict(login_reached, eg_up, results):
                     f"TCP checksum mismatch: the guest computed {gc}, "
                     f"the host computed {hc}")
 
+    if rx is not None:
+        before = rx.get("ipkts_before")
+        after = rx.get("ipkts_after")
+        if after is None:
+            problems.append(
+                "the eg received-packet counter could not be read after "
+                "the byte-checked TCP transfer")
+        elif before is not None and after <= before:
+            problems.append(
+                f"the eg received-packet counter did not climb over the "
+                f"byte-checked TCP transfer ({before} -> {after}): the "
+                f"bytes did not arrive over eg's receive ring")
+        elif before is None and after <= 0:
+            problems.append(
+                "the eg received no packets at all (Ipkts is zero after "
+                "the byte-checked TCP transfer)")
+
     segs = results.get("tcp_segments_delta")
     if segs is None:
         problems.append(
@@ -224,6 +293,106 @@ def eg_perf_verdict(login_reached, eg_up, results):
         "problems": problems,
     }
 
+try:
+    from qemu_test import QemuSystemTest
+    from qemu_test import skipSlowTest, skipBigDataTest, skipIfMissingEnv
+except (ImportError, RuntimeError):
+    QemuSystemTest = None
+
+
+RELEASE = "6.5.30"
+
+# Where ORIGAMI_ASSETS resolves the real PROM and the installed IRIX disk.
+# ORIGAMI_ASSETS names a CHECKOUT (one with its own assets/ directory), not
+# assets/ itself, matching test_irix_miniroot.py's FIRMWARE_REL.
+FIRMWARE_REL = os.path.join('assets', 'firmware', RELEASE,
+                            'ip27prom.payload.bin')
+DISK_REL = os.path.join('assets', 'irix', RELEASE, 'root.qcow2')
+
+# The release-matched PROM SHA-256, so a stale or wrong-release firmware is
+# caught before a boot is spent on it. Same digest test_irix_miniroot.py and
+# tools/sashlib.py's RELEASES["6.5.30"] carry.
+PROM_SHA256 = (
+    "c2c69bf33c375b43ec7ac511fab41ddf595be1b6838ae717e58a9a1273437fdd"
+)
+
+# 128 MiB, the same size and reasoning test_openbsd_login.py uses: at or
+# below 128 MiB the guest's whole memory bank fits the one slot the machine
+# backs, so the filed >128MiB memory-map defects have no address at which to
+# appear. A real multiuser IRIX boot needs the headroom over the 64 MiB the
+# miniroot netboot uses.
+MEMORY_MIB = 128
+
+# SLIRP defaults: the gateway (and built-in TFTP server) and the guest's
+# first-lease address, the values the eg bring-up captures used.
+GATEWAY = "10.0.2.2"
+GUEST_ADDR = "10.0.2.15"
+
+# The eg (tigon) device sits at this Origin 200 PCI option slot; IRIX names
+# the first Gigabit Ethernet adapter there eg0 (confirmed by hinv in the eg
+# bring-up captures).
+EG_ADDR = 4
+IFACE = "eg0"
+
+STEP_TIMEOUT_SECONDS = 300
+
+# The real multiuser IRIX boot budget the absorbed eg_net leg measured
+# sufficient for a single-CPU boot: the PROM's own power-on diagnostics,
+# then the kernel, then init to a console login.
+_DEFAULT_LOGIN_BUDGET_SECONDS = 1200
+
+
+class _Console(Console):
+    """lib_net's console driver, watching for the faults an IRIX guest or
+    its PROM shows when it wedges rather than answers."""
+
+    TRIPWIRES = (
+        (re.compile(rb"PANIC"), "the guest panicked"),
+        (re.compile(rb"Data bus error"), "the guest took a data bus error"),
+        (re.compile(rb"\bException\b\s*<"), "the PROM took an exception"),
+    )
+    STEP_TIMEOUT = STEP_TIMEOUT_SECONDS
+
+
+# The System Maintenance Menu answer and the login exchange, each firing
+# once against the tail of what has arrived. "1" is Start System (boot the
+# local SCSI disk), as against test_irix_miniroot.py's "5" for the command
+# monitor. Root has no password on the installed image; the TERM prompt is
+# answered with the vt100 default.
+def _drive_to_shell(con, budget):
+    """Drive the PROM menu, log in as root, answer TERM, and switch to
+    /bin/sh. Returns once a Bourne shell is confirmed responsive."""
+    deadline = time.monotonic() + budget
+    left = lambda cap: max(1.0, min(cap, deadline - time.monotonic()))
+
+    con.expect(rb"Option\?", left(budget), what="the maintenance menu")
+    con.send("1")
+    con.expect(rb"login:", left(budget), what="the console login prompt")
+    con.send("root")
+    # First login sets TERM; accept the vt100 default. The prompt is
+    # answered before the shell appears.
+    con.expect(rb"TERM\s*=\s*\(", left(120), what="the TERM prompt")
+    con.send("")
+    # The login csh prints an "<hostname> <histnum># " prompt; the history
+    # number makes it distinctive enough not to match boot text.
+    con.expect(rb"[0-9]# ", left(120), what="the login csh prompt")
+    # One Bourne idiom for the rest of the drive; a wide PATH so the
+    # /usr/etc and /usr/bsd network tools are found by name.
+    con.send("exec /bin/sh")
+    con.run("PATH=/usr/sbin:/usr/bin:/sbin:/bin:/usr/etc:/usr/bsd:$PATH; "
+            "export PATH", "shinit", timeout=int(left(120)))
+
+
+def _host_cksum(path):
+    """The POSIX cksum CRC and byte count of a file, computed by the host's
+    own cksum(1) (coreutils' default algorithm is the POSIX CRC IRIX's
+    cksum implements). Returns (crc, size) as (str, int)."""
+    out = subprocess.run(["cksum", path], capture_output=True, text=True,
+                         check=True).stdout
+    crc, size = out.split()[0:2]
+    return crc, int(size)
+
+
 TCP_GUEST_PORT = 5001
 UDP_GUEST_PORT = 5002
 TCP_THROUGHPUT_BYTES = 4 * 1024 * 1024    # bulk TCP stream
@@ -257,7 +426,7 @@ SOAK_BYTES = int(os.environ.get('EG_PERF_SOAK_BYTES', str(4 * 1024 * 1024)))
 # a busy host, can want more, and a boot that is still making progress when
 # the budget runs out reads as a device failure and is not one.
 LOGIN_BUDGET_SECONDS = int(
-    os.environ.get('EG_PERF_LOGIN_BUDGET', str(base.LOGIN_BUDGET_SECONDS)))
+    os.environ.get('EG_PERF_LOGIN_BUDGET', str(_DEFAULT_LOGIN_BUDGET_SECONDS)))
 
 # Ask for jumbo frames before measuring. eg has no ifconfig MTU path -- the
 # size is a kernel tunable, eg_mtu[] in /var/sysgen/master.d/if_eg, and it is
@@ -312,7 +481,7 @@ def _usernet_hostport(vm, proto, guest_port):
     generalized here to a given protocol and guest port."""
     out = vm.cmd('human-monitor-command', command_line='info usernet')
     rx = re.compile(r'%s.HOST_FORWARD.*127\.0\.0\.1\s+(\d+)\s+%s\s+%d\b'
-                    % (proto.upper(), re.escape(base.GUEST_ADDR), guest_port))
+                    % (proto.upper(), re.escape(GUEST_ADDR), guest_port))
     for line in re.split(r'\r?\n', out):
         m = rx.search(line)
         if m:
@@ -423,7 +592,7 @@ def _parallel_send(host_ports, payloads):
     except OSError as error:
         for sock in sockets:
             sock.close()
-        raise base.HarnessError(f"parallel sender failed: {error}") from error
+        raise HarnessError(f"parallel sender failed: {error}") from error
 
     start = threading.Event()
     done = [0] * len(host_ports)
@@ -460,7 +629,7 @@ def _parallel_send(host_ports, payloads):
         t.join()
     elapsed = time.monotonic() - t0
     if any(errors):
-        raise base.HarnessError("parallel sender failed: " +
+        raise HarnessError("parallel sender failed: " +
                             "; ".join(e for e in errors if e))
     total = sum(done)
     rate = (total * 8 / elapsed / 1e6) if elapsed > 0 else 0.0
@@ -483,11 +652,12 @@ def _parse_ttcp_rate(text):
     return mbps, nbytes, secs
 
 
-if base.QemuSystemTest is not None:
+if QemuSystemTest is not None:
 
-    class IrixEgPerf(base.QemuSystemTest):
+    class IrixEg(QemuSystemTest):
         """Boots installed IRIX, brings up eg, and moves TCP + UDP traffic
-        across it with throughput measurement and byte verification."""
+        across it with throughput measurement, byte verification, and a
+        device-level receive-counter proof."""
 
         def _netstat_counter(self, con, proto, pattern, tag):
             try:
@@ -495,18 +665,30 @@ if base.QemuSystemTest is not None:
                     f"netstat -s -p {proto} | " +
                     "awk '/" + pattern + "/ {print \"N=\" $1; exit}'",
                     tag, rb"N=(\d+)", timeout=60))
-            except base.HarnessError:
+            except HarnessError:
                 return None
 
-        @base.skipBigDataTest()
-        @base.skipSlowTest()
-        @base.skipIfMissingEnv('ORIGAMI_ASSETS')
-        def test_irix_eg_perf(self):
-            assets = base.require_assets(
-                self, base.FIRMWARE_REL, base.DISK_REL)
-            prom = assets[base.FIRMWARE_REL]
-            disk = assets[base.DISK_REL]
-            if base.file_sha256(prom) != base.PROM_SHA256:
+        def _read_ipkts(self, con, tag):
+            """eg0's received-packet counter from netstat -i, or None if it
+            could not be read. netstat -in columns are
+            Name Mtu Network Address Ipkts ... so Ipkts is field 5."""
+            try:
+                return int(con.capture_value(
+                    "netstat -in | awk '$1 ~ /^" + IFACE +
+                    "/ {print \"IPKTS=\" $5; exit}'",
+                    tag, rb"IPKTS=(\d+)", timeout=60))
+            except HarnessError:
+                return None
+
+        @skipBigDataTest()
+        @skipSlowTest()
+        @skipIfMissingEnv('ORIGAMI_ASSETS')
+        def test_irix_eg(self):
+            assets = require_assets(
+                self, FIRMWARE_REL, DISK_REL)
+            prom = assets[FIRMWARE_REL]
+            disk = assets[DISK_REL]
+            if file_sha256(prom) != PROM_SHA256:
                 self.fail('6.5.30 PROM SHA-256 mismatch')
             self.require_netdev('user')
 
@@ -514,8 +696,8 @@ if base.QemuSystemTest is not None:
             os.makedirs(served_dir, exist_ok=True)
 
             pcap = self.log_file('eg-perf-wire.pcap')
-            vm = self.get_vm(name='irix_eg_perf')
-            vm.set_machine(base.MACHINES['origin200'])
+            vm = self.get_vm(name='irix_eg')
+            vm.set_machine(MACHINES['origin200'])
             vm.set_console()
             elsc = self.log_file('elsc-aux.log')
             if NETDEV:
@@ -524,14 +706,14 @@ if base.QemuSystemTest is not None:
                 netdev = ('user,id=egnet,tftp=%s'
                           ',hostfwd=tcp:127.0.0.1:0-%s:%d'
                           ',hostfwd=udp:127.0.0.1:0-%s:%d'
-                          % (served_dir, base.GUEST_ADDR, TCP_GUEST_PORT,
-                             base.GUEST_ADDR, UDP_GUEST_PORT))
+                          % (served_dir, GUEST_ADDR, TCP_GUEST_PORT,
+                             GUEST_ADDR, UDP_GUEST_PORT))
                 for _pi in range(PARALLEL):
                     netdev += (',hostfwd=tcp:127.0.0.1:0-%s:%d'
-                               % (base.GUEST_ADDR, TCP_GUEST_PORT + 1 + _pi))
+                               % (GUEST_ADDR, TCP_GUEST_PORT + 1 + _pi))
             vm.add_args(
                 '-accel', ACCEL,
-                '-cpu', 'R10000', '-smp', SMP, '-m', str(base.MEMORY_MIB),
+                '-cpu', 'R10000', '-smp', SMP, '-m', str(MEMORY_MIB),
                 '-bios', prom, '-audio', 'none',
                 '-chardev', f'file,id=elsc,path={elsc}',
                 '-serial', 'none', '-serial', 'chardev:elsc',
@@ -541,7 +723,7 @@ if base.QemuSystemTest is not None:
                 '-d', DFLAGS,
                 '-D', self.log_file('qemu-dbg.log'),
                 '-netdev', netdev,
-                '-device', f'tigon,netdev=egnet,addr={base.EG_ADDR}',
+                '-device', f'tigon,netdev=egnet,addr={EG_ADDR}',
                 '-object', f'filter-dump,id=egcap,netdev=egnet,file={pcap}')
             if TRACE:
                 # Which receive ring carried each frame, and how the interrupt
@@ -564,15 +746,17 @@ if base.QemuSystemTest is not None:
             udp_hp = _usernet_hostport(vm, 'udp', UDP_GUEST_PORT)
 
             log_path = self.log_file('irix-eg-perf.log')
-            con = base._Console(vm.console_socket, log_path,
-                                exited=lambda: vm.exitcode() is not None)
+            con = _Console(vm.console_socket, log_path,
+                           exited=lambda: vm.exitcode() is not None)
             results = {"mode": "parallel" if PARALLEL else "standard",
                        "topology": {"smp": SMP, "accel": ACCEL},
                        "tcp_verify": None, "tcp_mbps": None,
                        "udp_mbps": None, "udp_loss": None}
             login = eg_up = False
+            ipkts_before = None
+            ipkts_after = None
             try:
-                base._drive_to_shell(con, LOGIN_BUDGET_SECONDS)
+                _drive_to_shell(con, LOGIN_BUDGET_SECONDS)
                 login = True
 
                 if JUMBO:
@@ -615,7 +799,7 @@ if base.QemuSystemTest is not None:
                         con.expect(rb"TERM\s*=\s*\(", 120,
                                    what="the TERM prompt")
                         con.send("")
-                    except base.HarnessError:
+                    except HarnessError:
                         pass
                     con.expect(rb"[0-9]# ", 300,
                                what="the login csh prompt after reboot")
@@ -624,7 +808,7 @@ if base.QemuSystemTest is not None:
                             "/usr/bsd:$PATH; export PATH", "shinit2",
                             timeout=120)
 
-                con.run("egconfig -f 1 " + base.IFACE, "egc", timeout=180)
+                con.run("egconfig -f 1 " + IFACE, "egc", timeout=180)
                 if NETDEV:
                     # A raw peer answers ARP and counts what arrives; it speaks
                     # no TCP, so this measures one thing only -- how fast the
@@ -632,7 +816,7 @@ if base.QemuSystemTest is not None:
                     # configured for. That is the quantity the per-packet cost
                     # bounds, measured without the user-mode stack in the way.
                     con.run("ifconfig %s inet %s netmask 0xffffff00 up"
-                            % (base.IFACE, RAW_GUEST_IP), "rawup", timeout=60)
+                            % (IFACE, RAW_GUEST_IP), "rawup", timeout=60)
                     results["raw_ping"] = con.capture_value(
                         "ping -c 3 %s | awk '/packets received/ "
                         "{print \"RX=\" $4}'" % RAW_PEER_IP,
@@ -644,13 +828,13 @@ if base.QemuSystemTest is not None:
                             "rawblast", timeout=900)
                     results["raw_done"] = True
                     return
-                con.run(f"ifconfig {base.IFACE} inet {base.GUEST_ADDR} "
+                con.run(f"ifconfig {IFACE} inet {GUEST_ADDR} "
                         "netmask 0xffffff00 up", "ifup", timeout=60)
                 try:
-                    con.capture_value("ifconfig " + base.IFACE, "ifs",
+                    con.capture_value("ifconfig " + IFACE, "ifs",
                                       rb"(UP)[,>]", timeout=60)
                     eg_up = True
-                except base.HarnessError:
+                except HarnessError:
                     pass
 
                 if PARALLEL:
@@ -674,7 +858,7 @@ if base.QemuSystemTest is not None:
                             with open(path, 'wb') as payload_file:
                                 payload_file.write(
                                     os.urandom(TCP_THROUGHPUT_BYTES))
-                            host_crc, host_bytes = base._host_cksum(path)
+                            host_crc, host_bytes = _host_cksum(path)
                             with open(path, 'rb') as payload_file:
                                 payloads.append(payload_file.read())
                             copies.append({"host_cksum": host_crc,
@@ -788,19 +972,26 @@ if base.QemuSystemTest is not None:
                     con, "tcp", "packets received", "segb")
 
                 # --- TCP byte-verify (host -> guest, saved by ttcp -r) ---
+                # Also the leg the Ipkts clause attaches to: eg0's own
+                # received-packet counter must climb across this transfer,
+                # proving the bytes crossed the adapter's receive ring and
+                # not merely the guest's TCP stack (the now-absorbed
+                # eg_net leg proved the same thing over UDP/TFTP).
                 self.assertIsNotNone(tcp_hp, "no TCP hostfwd port")
                 verify_file = os.path.join(served_dir, 'verify.bin')
                 with open(verify_file, 'wb') as vf:
                     vf.write(os.urandom(VERIFY_BYTES))
-                host_crc, host_bytes = base._host_cksum(verify_file)
+                host_crc, host_bytes = _host_cksum(verify_file)
                 with open(verify_file, 'rb') as vf:
                     verify_bytes = vf.read()
+                ipkts_before = self._read_ipkts(con, "ipktsbefore")
                 # ttcp -r without -s writes the received stream to stdout.
                 con.send(f"ttcp -r -p {TCP_GUEST_PORT} -l 65536 "
                          ">/tmp/rx.bin 2>/dev/null; echo \"RX\"\"DONE\"")
                 time.sleep(3)
                 _tcp_stream(tcp_hp, verify_bytes)
                 con.expect(rb"RXDONE", 300, what="ttcp receive to finish")
+                ipkts_after = self._read_ipkts(con, "ipktsafter")
                 # ttcp appends its own report to the same stream, so checksum
                 # exactly the payload rather than whatever else landed after it.
                 # Tagged, because the echoed command line carries two numbers of
@@ -847,7 +1038,7 @@ if base.QemuSystemTest is not None:
                         "uptime | sed 's/.*average.//' | "
                         "awk -F, '{print \"GL=\" $1}'",
                         "gload", rb"GL=\s*([0-9.]+)", timeout=60)
-                except base.HarnessError:
+                except HarnessError:
                     results["guest_load"] = None
                 results["tcp_write_size"] = 65536
                 results["mtu"] = JUMBO_MTU if JUMBO else 1500
@@ -890,7 +1081,7 @@ if base.QemuSystemTest is not None:
                 srv.start()
                 ready.wait(30)
                 con.send(f"ttcp -t -s -l 65536 -n {TX_BUFS} -p {TX_PORT} "
-                         f"{base.GATEWAY} 2>&1; echo \"TX\"\"TP-$?\"")
+                         f"{GATEWAY} 2>&1; echo \"TX\"\"TP-$?\"")
                 con.expect(rb"TXTP-\d+", LEG_TIMEOUT_SECONDS,
                            what="ttcp transmit to finish")
                 tx_out = con.buf.decode("utf-8", "replace")
@@ -913,7 +1104,7 @@ if base.QemuSystemTest is not None:
                         soak_file = os.path.join(served_dir, 'soak.bin')
                         with open(soak_file, 'wb') as sf:
                             sf.write(os.urandom(SOAK_BYTES))
-                        s_crc, s_bytes = base._host_cksum(soak_file)
+                        s_crc, s_bytes = _host_cksum(soak_file)
                         with open(soak_file, 'rb') as sf:
                             soak_payload = sf.read()
                         con.send(f"ttcp -r -p {TCP_GUEST_PORT} -l 65536 "
@@ -943,7 +1134,7 @@ if base.QemuSystemTest is not None:
                             "uptime | sed 's/.*average.//' | "
                             "awk -F, '{print \"GL=\" $1}'",
                             "gload2", rb"GL=\s*([0-9.]+)", timeout=60)
-                    except base.HarnessError:
+                    except HarnessError:
                         results["guest_load_after_soak"] = None
                     results["soak"] = {
                         "rounds": rounds,
@@ -967,32 +1158,32 @@ if base.QemuSystemTest is not None:
                 for want in (9000, 4096, 2048):
                     try:
                         output_start = len(con.buf)
-                        rc = con.run(f"ifconfig {base.IFACE} mtu {want}",
+                        rc = con.run(f"ifconfig {IFACE} mtu {want}",
                                      f"mtu{want}", timeout=60)
                         output = bytes(con.buf[output_start:]).decode(
                             "utf-8", "replace")
                         mtu[want] = mtu_probe_result(rc, output)
-                    except base.HarnessError:
+                    except HarnessError:
                         mtu[want] = "refused"
                 try:
                     mtu["reported"] = con.capture_value(
                         "netstat -in | awk '$1 ~ /^%s/ {print \"M=\" $2; exit}'"
-                        % base.IFACE, "mtushow", rb"M=(\d+)", timeout=60)
-                except base.HarnessError:
+                        % IFACE, "mtushow", rb"M=(\d+)", timeout=60)
+                except HarnessError:
                     mtu["reported"] = None
                 results["mtu"] = mtu
 
                 con.send("sync; sync")
                 time.sleep(2)
                 con._pump()
-            except base.HarnessError as e:
+            except HarnessError as e:
                 results["error"] = str(e)
                 # Drain the console so a guest panic dump is captured before
                 # the VM is torn down.
                 for _ in range(25):
                     try:
                         con._pump()
-                    except base.HarnessError:
+                    except HarnessError:
                         break
                     time.sleep(1)
             finally:
@@ -1007,7 +1198,8 @@ if base.QemuSystemTest is not None:
                            "results": results}, f, indent=2, default=str)
                 f.write("\n")
 
-            report = eg_perf_verdict(login, eg_up, results)
+            rx = {"ipkts_before": ipkts_before, "ipkts_after": ipkts_after}
+            report = eg_perf_verdict(login, eg_up, results, rx)
             self.assertEqual(
                 report["verdict"], "PASS",
                 "IRIX eg transport problems: " + "; ".join(report["problems"])
@@ -1015,5 +1207,5 @@ if base.QemuSystemTest is not None:
 
 
 if __name__ == '__main__':
-    if base.QemuSystemTest is not None:
-        base.QemuSystemTest.main()
+    if QemuSystemTest is not None:
+        QemuSystemTest.main()
