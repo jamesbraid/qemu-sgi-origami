@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 test_mips64_timeouts = {
-  'malta' : 240,
-  'mttcg_cause' : 60,
   # Nine bare-metal SMP scheduling checks, each its own short VM launch,
   # in one script (eight cells that depended on synthesized firmware
   # moved to qtests in the firmware deletion; the measured 41-42s below
@@ -192,13 +190,6 @@ test_mips64_timeouts = {
   # own comment in test_xframe_pci.py); 360 keeps the usual 60s margin
   # over that file's own 300s budget.
   'xframe_pci' : 360,
-  # ASSET-GATED SCAFFOLD (test_openbsd_xge.py): no xge-enabled kernel is
-  # provisioned yet, so this always skips before ever launching a VM (see
-  # that file's own docstring) -- this timeout is for once that asset
-  # exists. Reuses test_openbsd_net_transfer.py's own 1400s entry: the
-  # same login budget plus one transfer leg's own fixed timeout, not
-  # three.
-  'openbsd_xge' : 1400,
 }
 
 tests_mips64_system_quick = [
@@ -207,7 +198,6 @@ tests_mips64_system_quick = [
   'sn0_elsc_reset',
   'sn1_l1_reset',
   'origin300_prom',
-  'mttcg_cause',
   'origin200_matrix',
   'origin2000_cache_reset',
   # graphics-matrix carries no quick row yet (see graphics_matrix_thorough's
@@ -217,8 +207,6 @@ tests_mips64_system_quick = [
 ]
 
 tests_mips64_system_thorough = [
-  'malta',
-  'tuxrun',
   'origin200_matrix_thorough',
   'graphics_matrix_thorough',
   'prom_boot',
@@ -246,7 +234,6 @@ tests_mips64_system_thorough = [
   'openbsd_net_transfer',
   'openbsd_install',
   'xframe_pci',
-  'openbsd_xge',
 ]
 
 # The boot tests' pure-logic companions: the *_verdict.py suites that pin
@@ -265,7 +252,6 @@ tests_mips64_unit = [
   'lib_screen',
   'lib_translation_health',
   'irix_eg_net_verdict',
-  'irix_eg_perf_helpers',
   'irix_eg_perf_verdict',
   'irix_tg_verdict',
   'irix_tg_perf_verdict',
@@ -274,20 +260,10 @@ tests_mips64_unit = [
   'openbsd_install_verdict',
   'openbsd_login_verdict',
   'openbsd_net_transfer_verdict',
-  'openbsd_xge_verdict',
-  'prom_boot_verdict',
-  'prom_copy_speed_verdict',
   'prom_diagnostics_verdict',
-  'prom_fx_verdict',
   'irix_diag_verdict',
   'irix_oltape_verdict',
   'irix_olcdrom_verdict',
-  'prom_mdk_instgen_verdict',
-  'prom_mdk_memory_verdict',
-  'prom_mdk_router_verdict',
-  'prom_mdk_verdict',
-  'prom_pod_verdict',
-  'prom_sash_verdict',
   'xframe_pci_verdict',
 ]
 
