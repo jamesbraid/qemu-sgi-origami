@@ -206,6 +206,24 @@ static const uint64_t window_offset[BRIDGE_DEVICES] = {
 
 #define WINDOW(slot)            (BRIDGE_BASE + window_offset[slot])
 
+/*
+ * One plain origin200 serves every case that wants no card and no second
+ * node, started in main(). Cases naming any other command line -- a card
+ * in a slot, two nodes, a firmware image, a trace file -- keep their own.
+ */
+static QTestState *qts;
+
+/*
+ * Open such a case. The chip's reset restores what these cases read, and
+ * checking the control register's reset word here is what proves it, so a
+ * case cannot silently inherit the previous case's programming.
+ */
+static void bridge_reset(void)
+{
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_CONTROL)), ==, CONTROL_RESET);
+}
+
 static uint32_t bridge_identity(uint32_t revision)
 {
     return (revision << ID_REVISION_SHIFT) |
@@ -241,6 +259,7 @@ static void test_reserved_data_half_store_completes(const void *data)
     g_autofree char *path = NULL;
     QTestState *qts;
     uint32_t marker = 0;
+    int64_t deadline;
 
     build_reserved_store_image(image);
     path = sn0_image_write(image, "sn0-bridge-guest");
@@ -250,8 +269,15 @@ static void test_reserved_data_half_store_completes(const void *data)
     g_unsetenv("QTEST_QEMU_ARGS");
     unlink(path);
 
-    g_test_timer_start();
-    while (marker != GUEST_MARKER && g_test_timer_elapsed() < 1) {
+    /*
+     * This case runs the guest, so the wait is on the wall clock: stepping
+     * the virtual clock executes no instructions. The deadline was one
+     * second, which a busy host can miss for a fragment that has run
+     * correctly; five is still far inside the suite's budget because the
+     * loop leaves as soon as the marker lands.
+     */
+    deadline = g_get_monotonic_time() + 5 * G_TIME_SPAN_SECOND;
+    while (marker != GUEST_MARKER && g_get_monotonic_time() < deadline) {
         marker = qtest_readl(qts, GUEST_MARKER_ADDR);
         g_usleep(1000);
     }
@@ -262,8 +288,11 @@ static void test_reserved_data_half_store_completes(const void *data)
 
 static void test_identity(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
-    uint32_t id = qtest_readl(qts, REG(BRIDGE_IDENTIFICATION));
+    uint32_t id;
+
+    bridge_reset();
+
+    id = qtest_readl(qts, REG(BRIDGE_IDENTIFICATION));
 
     /*
      * The whole word: the right part beside a crossbar's manufacturer is a
@@ -278,13 +307,11 @@ static void test_identity(const void *data)
      */
     g_assert_false(ID_PART_OF(id) == XBOW_PART &&
                    ID_MANUFACTURER_OF(id) == XBOW_MANUFACTURER);
-
-    qtest_quit(qts);
 }
 
 static void test_upper_half_of_the_slot(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+    bridge_reset();
 
     /*
      * The slot's upper half holds nothing, and it is the address a reader
@@ -292,13 +319,11 @@ static void test_upper_half_of_the_slot(const void *data)
      */
     g_assert_cmphex(qtest_readl(qts, BRIDGE_BASE + BRIDGE_IDENTIFICATION), !=,
                     qtest_readl(qts, REG(BRIDGE_IDENTIFICATION)));
-
-    qtest_quit(qts);
 }
 
 static void test_reset_state(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+    bridge_reset();
 
     /*
      * Reset is far more non-zero than a reader would guess: whole words,
@@ -326,8 +351,6 @@ static void test_reset_state(const void *data)
      * this model's choice -- asserted so changing it must be deliberate.
      */
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_STATUS)), ==, STATUS_PCI_MODE);
-
-    qtest_quit(qts);
 }
 
 /* The slot an IOC3-class device sits in on a base I/O board. */
@@ -335,8 +358,9 @@ static void test_reset_state(const void *data)
 
 static void test_each_slot_resets_to_its_own_window(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
     int n;
+
+    bridge_reset();
 
     /*
      * Three bits set, not two -- memory-or-I/O select is the third. All
@@ -350,14 +374,13 @@ static void test_each_slot_resets_to_its_own_window(const void *data)
         g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(n))), ==,
                         device_reset[n]);
     }
-
-    qtest_quit(qts);
 }
 
 static void test_fields_are_the_width_they_should_be(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
     int n;
+
+    bridge_reset();
 
     /*
      * All-ones and read back: the retry hold is five bits, not four, or a
@@ -399,14 +422,13 @@ static void test_fields_are_the_width_they_should_be(const void *data)
     qtest_writel(qts, REG(BRIDGE_CONTROL), 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_CONTROL)), ==,
                     0xffffffffu & ~CONTROL_RETRY_CLEAR);
-
-    qtest_quit(qts);
 }
 
 static void test_a_device_window_base_survives(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
     uint32_t written = DEV_ERROR_LOCK | DEV_PAGE_CROSS_CHECK | 0x123u;
+
+    bridge_reset();
 
     /*
      * The I/O choice is written by clearing a bit reset set, which a model
@@ -422,13 +444,11 @@ static void test_a_device_window_base_survives(const void *data)
     /* An untouched slot is unaffected by the write above. */
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_DEVICE(EMPTY_SLOT))), ==,
                     device_reset[EMPTY_SLOT]);
-
-    qtest_quit(qts);
 }
 
 static void test_a_read_only_register_stays_put(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+    bridge_reset();
 
     /*
      * The identity is what a guest decides the shape of the machine from, so a
@@ -438,13 +458,11 @@ static void test_a_read_only_register_stays_put(const void *data)
     qtest_writel(qts, REG(BRIDGE_IDENTIFICATION), 0xdeadbeef);
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_IDENTIFICATION)), ==,
                     bridge_identity(BRIDGE_REVISION));
-
-    qtest_quit(qts);
 }
 
 static void test_the_target_flush_answers(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+    bridge_reset();
 
     /*
      * Reading the flush register is the operation and the value means
@@ -453,13 +471,11 @@ static void test_the_target_flush_answers(const void *data)
     qtest_readl(qts, REG(BRIDGE_TARGET_FLUSH));
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_IDENTIFICATION)), ==,
                     bridge_identity(BRIDGE_REVISION));
-
-    qtest_quit(qts);
 }
 
 static void test_the_default_machine_has_the_bridge(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    bridge_reset();
 
     /*
      * The default machine must carry the bridge: every other test names the
@@ -469,8 +485,6 @@ static void test_the_default_machine_has_the_bridge(const void *data)
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_IDENTIFICATION)), ==,
                     bridge_identity(BRIDGE_REVISION));
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_CONTROL)), ==, CONTROL_RESET);
-
-    qtest_quit(qts);
 }
 
 static void test_configuration_space_reaches_a_card(const void *data)
@@ -678,9 +692,10 @@ static void test_a_window_goes_where_its_base_says(const void *data)
 
 static void test_translation_entries_are_written_whole(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
     static const int entries[] = { 0, 1, 63, 127 };
     unsigned int i;
+
+    bridge_reset();
 
     /*
      * Writes whole, reads back in halves from two places; all four written
@@ -696,13 +711,11 @@ static void test_translation_entries_are_written_whole(const void *data)
         g_assert_cmphex(qtest_readl(qts, ATE_LOW(entries[i])), ==,
                         0x5a5a0000u + entries[i]);
     }
-
-    qtest_quit(qts);
 }
 
 static void test_the_lower_half_view_is_read_only(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+    bridge_reset();
 
     qtest_writeq(qts, ATE(0), 0x1234567800abcdefull);
     g_assert_cmphex(qtest_readl(qts, ATE_LOW(0)), ==, 0x00abcdef);
@@ -714,14 +727,13 @@ static void test_the_lower_half_view_is_read_only(const void *data)
     qtest_writel(qts, ATE_LOW(0), 0xdeadbeef);
     g_assert_cmphex(qtest_readl(qts, ATE_LOW(0)), ==, 0x00abcdef);
     g_assert_cmphex(qtest_readl(qts, ATE_UPPER(0)), ==, 0x12345678);
-
-    qtest_quit(qts);
 }
 
 static void test_translation_entries_reset_clear(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
     unsigned int n;
+
+    bridge_reset();
 
     /*
      * The whole entry, not the valid bit: a stale page address behind a
@@ -731,8 +743,6 @@ static void test_translation_entries_reset_clear(const void *data)
         g_assert_cmphex(qtest_readl(qts, ATE_UPPER(n)), ==, 0);
         g_assert_cmphex(qtest_readl(qts, ATE_LOW(n)), ==, 0);
     }
-
-    qtest_quit(qts);
 }
 
 /*
@@ -1822,8 +1832,9 @@ static void test_dma_device_window_64bit_doubleword(const void *data)
  */
 static void test_a_write_runs_a_bit_slot(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint32_t nic;
+
+    bridge_reset();
 
     /* The widths mainline uses to reset the bus. */
     qtest_writel(qts, REG(BRIDGE_NIC), NIC_PULSE(520) | NIC_SAMPLE(65));
@@ -1834,8 +1845,6 @@ static void test_a_write_runs_a_bit_slot(const void *data)
     /* And the timings read back, so a driver can see what it asked for. */
     g_assert_cmphex(nic & (NIC_PULSE(0x3ff) | NIC_SAMPLE(0xff)), ==,
                     NIC_PULSE(520) | NIC_SAMPLE(65));
-
-    qtest_quit(qts);
 }
 
 /*
@@ -1864,9 +1873,10 @@ static bool nic_slot(QTestState *qts, unsigned int pulse, unsigned int sample)
  */
 static void test_a_search_returns_the_identity(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint64_t rom = 0;
     unsigned int i;
+
+    bridge_reset();
 
     g_assert_false(NIC_RESET(qts));         /* pulled low: the part is there */
 
@@ -1898,8 +1908,6 @@ static void test_a_search_returns_the_identity(const void *data)
     }
 
     g_assert_cmphex(rom, ==, 0x360605040302010bULL);
-
-    qtest_quit(qts);
 }
 
 /* Shift a byte out to the part, least-significant bit first. */
@@ -1972,10 +1980,11 @@ static void partnum_from_page(const uint8_t *page, char *out)
 
 static void test_a_page_reads_back_with_its_checks(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t exchange[6];
     uint8_t page[34];
     unsigned int i;
+
+    bridge_reset();
 
     g_assert_false(NIC_RESET(qts));
 
@@ -2019,8 +2028,6 @@ static void test_a_page_reads_back_with_its_checks(const void *data)
      */
     g_assert_cmpmem(&page[6], 5, "Part:", 5);
     g_assert_cmpint(page[11 + 12], ==, ';');
-
-    qtest_quit(qts);
 }
 
 /* Drive a search and return the identity the part hands back. */
@@ -2204,8 +2211,9 @@ static void nic_read_first_page(QTestState *qts)
  */
 static void test_a_named_part_reads_back_its_page(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint64_t rom;
+
+    bridge_reset();
 
     g_assert_false(NIC_RESET(qts));
     rom = nic_search_for_identity(qts);
@@ -2216,8 +2224,6 @@ static void test_a_named_part_reads_back_its_page(const void *data)
     nic_match_identity(qts, rom);
 
     nic_read_first_page(qts);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -2227,8 +2233,9 @@ static void test_a_named_part_reads_back_its_page(const void *data)
  */
 static void test_naming_another_part_deselects_this_one(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     unsigned int i;
+
+    bridge_reset();
 
     g_assert_false(NIC_RESET(qts));
 
@@ -2247,8 +2254,6 @@ static void test_naming_another_part_deselects_this_one(const void *data)
     for (i = 0; i < 40; i++) {
         g_assert_cmphex(nic_read_byte(qts), ==, 0xff);
     }
-
-    qtest_quit(qts);
 }
 
 /*
@@ -2258,10 +2263,11 @@ static void test_naming_another_part_deselects_this_one(const void *data)
  */
 static void test_the_status_memory_reads_back_by_the_page(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t first[9];
     uint8_t next[10];
     unsigned int i;
+
+    bridge_reset();
 
     g_assert_false(NIC_RESET(qts));
     nic_write_byte(qts, 0xcc);
@@ -2294,8 +2300,6 @@ static void test_the_status_memory_reads_back_by_the_page(const void *data)
     next[8] = nic_read_byte(qts);
     next[9] = nic_read_byte(qts);
     g_assert_cmphex(nic_crc(0, next, sizeof(next)), ==, NIC_CRC_RESIDUE);
-
-    qtest_quit(qts);
 }
 
 /* A skip-addressed status read from one address, keeping the request. */
@@ -2372,10 +2376,11 @@ static void nic_status_final_page(QTestState *qts, uint16_t addr,
  */
 static void test_status_past_the_programmed_regions(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t first[13];
     uint8_t next[10];
     unsigned int i;
+
+    bridge_reset();
 
     /* Past every programmed region, and well inside the address field. */
     nic_status_request(qts, 0x200, first);
@@ -2404,8 +2409,6 @@ static void test_status_past_the_programmed_regions(const void *data)
      */
     nic_status_final_page(qts, 0x7f8, 0x7f8);
     nic_status_final_page(qts, 0xff8, 0x7f8);
-
-    qtest_quit(qts);
 }
 
 /* Read one page the framed way and keep the thirty-two stored bytes. */
@@ -2466,11 +2469,12 @@ static bool page_field(const uint8_t *page, unsigned int len,
 
 static void test_the_unframed_read_matches_the_framed_one(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t framed[64];
     uint8_t plain[64];
     char partnum[26];
     unsigned int i;
+
+    bridge_reset();
 
     nic_extended_page(qts, 0, &framed[0]);
     nic_extended_page(qts, 32, &framed[32]);
@@ -2521,8 +2525,6 @@ static void test_the_unframed_read_matches_the_framed_one(const void *data)
     g_assert_cmpmem(&plain[11], 12, "030-1244-001", 12);
     g_assert_cmphex(nic_crc(0, &plain[0], 32), ==, NIC_CRC_RESIDUE);
     g_assert_cmphex(nic_crc(0, &plain[32], 32), ==, NIC_CRC_RESIDUE);
-
-    qtest_quit(qts);
 }
 
 static void test_the_model_board_part_overrides_class_global(const void *data)
@@ -2579,8 +2581,9 @@ static void test_invalid_board_part_is_rejected(const void *data)
  */
 static void test_the_data_past_the_image_is_unprogrammed(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     unsigned int i;
+
+    bridge_reset();
 
     g_assert_false(NIC_RESET(qts));
     nic_write_byte(qts, 0xcc);
@@ -2591,8 +2594,6 @@ static void test_the_data_past_the_image_is_unprogrammed(const void *data)
     for (i = 0; i < 32; i++) {
         g_assert_cmphex(nic_read_byte(qts), ==, 0xff);
     }
-
-    qtest_quit(qts);
 }
 
 /*
@@ -2645,9 +2646,10 @@ static void test_the_framed_read_past_the_image_is_unprogrammed(
  */
 static void test_the_unframed_read_ends_with_its_check(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t exchange[13];
     unsigned int i;
+
+    bridge_reset();
 
     g_assert_false(NIC_RESET(qts));
     nic_write_byte(qts, 0xcc);
@@ -2667,13 +2669,11 @@ static void test_the_unframed_read_ends_with_its_check(const void *data)
     exchange[12] = nic_read_byte(qts);
     g_assert_cmphex(nic_crc(0, exchange, sizeof(exchange)), ==,
                     NIC_CRC_RESIDUE);
-
-    qtest_quit(qts);
 }
 
 static void test_a_reset_finds_the_part(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    bridge_reset();
 
     /* The width mainline holds the wire down for to reset it. */
     qtest_writel(qts, REG(BRIDGE_NIC), NIC_PULSE(520) | NIC_SAMPLE(65));
@@ -2683,8 +2683,6 @@ static void test_a_reset_finds_the_part(const void *data)
     qtest_writel(qts, REG(BRIDGE_NIC), NIC_PULSE(6) | NIC_SAMPLE(13));
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_NIC)) & NIC_LEVEL, ==,
                     NIC_LEVEL);
-
-    qtest_quit(qts);
 }
 
 static void bridge_source_in_slot_three(QTestState *qts)
@@ -2912,7 +2910,7 @@ static void test_a_disabled_falling_edge_sends_no_clear(const void *data)
 
 static void test_the_enable_register_has_no_bit_31(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+    bridge_reset();
 
     /*
      * The multiple-error flag has no enable -- the table starts at bit 30
@@ -2920,14 +2918,13 @@ static void test_the_enable_register_has_no_bit_31(const void *data)
      */
     qtest_writel(qts, REG(BRIDGE_INT_ENABLE), 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_ENABLE)), ==, 0x7fffffff);
-
-    qtest_quit(qts);
 }
 
 static void test_mode_and_device_keep_what_was_written(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
     unsigned int n;
+
+    bridge_reset();
 
     /*
      * Established one at a time and checked at the end: a read-as-zero
@@ -2950,14 +2947,13 @@ static void test_mode_and_device_keep_what_was_written(const void *data)
     /* Three bits per pin and eight pins, so the top byte stays clear. */
     qtest_writel(qts, REG(BRIDGE_INT_DEVICE), 0xffffffff);
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_DEVICE)), ==, 0xffffff);
-
-    qtest_quit(qts);
 }
 
 static void test_the_per_pin_host_registers(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
     unsigned int n;
+
+    bridge_reset();
 
     /*
      * All eight written before any is read, so one register serving all
@@ -2978,8 +2974,6 @@ static void test_the_per_pin_host_registers(const void *data)
         g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_HOST(n))), ==,
                         0x100 + n);
     }
-
-    qtest_quit(qts);
 }
 
 /*
@@ -3051,7 +3045,7 @@ static void bridge_link_reset(QTestState *qts)
 
 static void test_an_inbound_link_reset_clears_the_core(const void *data)
 {
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
+    bridge_reset();
 
     /*
      * One register per group of the file, every one away from its reset,
@@ -3107,8 +3101,6 @@ static void test_an_inbound_link_reset_clears_the_core(const void *data)
     /* Composed on every reset, not a table row, so it is still right. */
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_IDENTIFICATION)), ==,
                     bridge_identity(BRIDGE_REVISION));
-
-    qtest_quit(qts);
 }
 
 /*
@@ -3155,7 +3147,11 @@ static void test_an_inbound_link_reset_stops_at_the_pci_side(const void *data)
 
 int main(int argc, char **argv)
 {
+    int ret;
+
     g_test_init(&argc, &argv, NULL);
+
+    qts = qtest_init(MACHINE_WITH_BRIDGE);
 
     qtest_add_data_func("sn0/bridge/identity", NULL, test_identity);
     qtest_add_data_func("sn0/bridge/upper-half-of-the-slot", NULL,
@@ -3305,5 +3301,8 @@ int main(int argc, char **argv)
                         NULL,
                         test_an_inbound_link_reset_stops_at_the_pci_side);
 
-    return g_test_run();
+    ret = g_test_run();
+    qtest_quit(qts);
+
+    return ret;
 }
