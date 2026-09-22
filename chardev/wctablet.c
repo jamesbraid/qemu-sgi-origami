@@ -28,7 +28,9 @@
 
 #include "qemu/osdep.h"
 #include "qemu/module.h"
+#include "qemu/option.h"
 #include "chardev/char-serial.h"
+#include "qapi/error.h"
 #include "ui/input.h"
 #include "trace.h"
 #include "qom/object.h"
@@ -47,6 +49,11 @@
 /* Model string and config string */
 #define WC_MODEL_STRING_LENGTH 18
 uint8_t WC_MODEL_STRING[WC_MODEL_STRING_LENGTH + 1] = "~#CT-0045R,V1.3-5,";
+
+/* "~#" reply for model=UD-1212-R: a Wacom UD-series tablet */
+#define WC_UD1212R_MODEL_STRING_LENGTH 21
+uint8_t WC_UD1212R_MODEL_STRING[WC_UD1212R_MODEL_STRING_LENGTH + 1] =
+    "~#UD-1212-R00 V1.3-5\r";
 
 #define WC_CONFIG_STRING_LENGTH 8
 uint8_t WC_CONFIG_STRING[WC_CONFIG_STRING_LENGTH + 1] = "96,N,8,0";
@@ -81,6 +88,14 @@ struct TabletChardev {
     int axis[INPUT_AXIS__MAX];
     bool btns[INPUT_BUTTON__MAX];
 
+    /*
+     * Identity to present on "~#", and the coordinate range to report on
+     * "~C" and scale outgoing packets to. NULL/0 selects the default
+     * Wacom Penpartner CT-0045R, which has neither a settable range nor
+     * an addressable "~C" query.
+     */
+    char *model;
+    int max_x, max_y;
 };
 typedef struct TabletChardev TabletChardev;
 
@@ -118,26 +133,81 @@ static void wctablet_reset(TabletChardev *tablet)
     tablet->send_events = false;
 }
 
+/*
+ * Fill in the WACOM IV pressure-mode switch and pressure fields the
+ * WTC-1002 "Software Interface Reference Manual" specifies for a
+ * UD-series tablet at ROM version 1.2 and higher (section 4.1's data
+ * format table, and section 4.2's table of button states). In WACOM
+ * IV, switch and pressure data always ride together in the same
+ * coordinate packet -- the PH command has no effect there -- so this
+ * does not need to gate on any pressure-mode flag.
+ *
+ * Byte 1 bit 3 is the Button Flag: 1 whenever any switch is active.
+ * Byte 4 bits 6-3 are B3-B0, the switch number: 0 = no switch, 1 =
+ * tip switch, 2 = first side switch, 3 = tip + first side switch, 4 =
+ * second side switch, 5 = tip + second side switch (the two-side-
+ * switch stylus's range, per chapter 5). QEMU's LEFT/MIDDLE/RIGHT map
+ * to tip/first side/second side; a stylus has no switch number for
+ * both side switches down together, so RIGHT wins if MIDDLE and RIGHT
+ * are both down.
+ *
+ * Byte 7 bits 5-0 are P6-P1, a 6-bit pressure magnitude (sign bit 6,
+ * Sp, stays 0: QEMU's tablet has no analog pressure axis, only a
+ * button). IRIX's wacom module derives its own "tip button" from the
+ * pressure crossing a threshold (input(7)'s btnpressure control), so
+ * LEFT down is reported as a high pressure -- 60, the top of the
+ * range the manual calls safe for readers still expecting the older
+ * 120-level format -- and zero otherwise.
+ */
+static void wctablet_set_ud_switch(TabletChardev *tablet, uint8_t codes[8])
+{
+    int switch_number = 0;
+
+    if (tablet->btns[INPUT_BUTTON_RIGHT]) {
+        switch_number = tablet->btns[INPUT_BUTTON_LEFT] ? 5 : 4;
+    } else if (tablet->btns[INPUT_BUTTON_MIDDLE]) {
+        switch_number = tablet->btns[INPUT_BUTTON_LEFT] ? 3 : 2;
+    } else if (tablet->btns[INPUT_BUTTON_LEFT]) {
+        switch_number = 1;
+    }
+
+    if (switch_number) {
+        codes[0] |= 0x08;
+    }
+    codes[3] |= switch_number << 3;
+    codes[6] = tablet->btns[INPUT_BUTTON_LEFT] ? 60 : 0;
+}
+
 static void wctablet_queue_event(TabletChardev *tablet)
 {
     uint8_t codes[8] = { 0xe0, 0, 0, 0, 0, 0, 0 };
+    int newX, newY;
 
     if (tablet->line_speed != 9600) {
         return;
     }
 
-    int newX = tablet->axis[INPUT_AXIS_X] * 0.1537;
-    int nexY = tablet->axis[INPUT_AXIS_Y] * 0.1152;
+    if (tablet->max_x && tablet->max_y) {
+        newX = (int64_t)tablet->axis[INPUT_AXIS_X] * tablet->max_x /
+               INPUT_EVENT_ABS_MAX;
+        newY = (int64_t)tablet->axis[INPUT_AXIS_Y] * tablet->max_y /
+               INPUT_EVENT_ABS_MAX;
+    } else {
+        newX = tablet->axis[INPUT_AXIS_X] * 0.1537;
+        newY = tablet->axis[INPUT_AXIS_Y] * 0.1152;
+    }
 
     codes[0] = codes[0] | WC_H2(newX);
     codes[1] = codes[1] | WC_M7(newX);
     codes[2] = codes[2] | WC_L7(newX);
 
-    codes[3] = codes[3] | WC_H2(nexY);
-    codes[4] = codes[4] | WC_M7(nexY);
-    codes[5] = codes[5] | WC_L7(nexY);
+    codes[3] = codes[3] | WC_H2(newY);
+    codes[4] = codes[4] | WC_M7(newY);
+    codes[5] = codes[5] | WC_L7(newY);
 
-    if (tablet->btns[INPUT_BUTTON_LEFT]) {
+    if (tablet->model) {
+        wctablet_set_ud_switch(tablet, codes);
+    } else if (tablet->btns[INPUT_BUTTON_LEFT]) {
         codes[0] = 0xa0;
     }
 
@@ -222,6 +292,8 @@ static int wctablet_chr_write(struct Chardev *chr,
      */
     for (;;) {
         while (tablet->query_index > 0 && (tablet->query[0] == '@'  ||
+                                           tablet->query[0] == '$'  ||
+                                           tablet->query[0] == '#'  ||
                                            tablet->query[0] == '\r' ||
                                            tablet->query[0] == '\n')) {
             wctablet_shift_input(tablet, 1);
@@ -234,8 +306,13 @@ static int wctablet_chr_write(struct Chardev *chr,
             /* init / detect sequence */
             trace_wct_init();
             wctablet_shift_input(tablet, 2);
-            wctablet_queue_output(tablet, WC_MODEL_STRING,
-                                  WC_MODEL_STRING_LENGTH);
+            if (tablet->model) {
+                wctablet_queue_output(tablet, WC_UD1212R_MODEL_STRING,
+                                      WC_UD1212R_MODEL_STRING_LENGTH);
+            } else {
+                wctablet_queue_output(tablet, WC_MODEL_STRING,
+                                      WC_MODEL_STRING_LENGTH);
+            }
             continue;
         }
 
@@ -256,6 +333,17 @@ static int wctablet_chr_write(struct Chardev *chr,
             wctablet_shift_input(tablet, 3);
             wctablet_queue_output(tablet, WC_CONFIG_STRING,
                                   WC_CONFIG_STRING_LENGTH);
+
+        } else if (strncmp((char *)tablet->query, "~C", 2) == 0 &&
+                   clen == 2 && tablet->max_x && tablet->max_y) {
+            char maxbuf[32];
+            int maxlen;
+
+            trace_wct_cmd_c();
+            wctablet_shift_input(tablet, 3);
+            maxlen = snprintf(maxbuf, sizeof(maxbuf), "~C%d,%d\r",
+                              tablet->max_x, tablet->max_y);
+            wctablet_queue_output(tablet, (uint8_t *)maxbuf, maxlen);
 
         } else if (strncmp((char *)tablet->query, "ST", 2) == 0 &&
                    clen == 2) {
@@ -324,6 +412,7 @@ static void wctablet_chr_finalize(Object *obj)
     if (tablet->hs) {
         qemu_input_handler_unregister(tablet->hs);
     }
+    g_free(tablet->model);
 }
 
 static bool wctablet_chr_open(Chardev *chr,
@@ -331,10 +420,31 @@ static bool wctablet_chr_open(Chardev *chr,
                               Error **errp)
 {
     TabletChardev *tablet = WCTABLET_CHARDEV(chr);
+    ChardevWctablet *wctablet = backend->u.wctablet.data;
+
+    if (wctablet->model) {
+        if (strcmp(wctablet->model, "UD-1212-R") != 0) {
+            error_setg(errp, "chardev: wctablet: unsupported model '%s'",
+                      wctablet->model);
+            return false;
+        }
+        tablet->model = g_strdup(wctablet->model);
+        tablet->max_x = 15240;
+        tablet->max_y = 15240;
+    }
 
     /* init state machine */
-    memcpy(tablet->outbuf, WC_FULL_CONFIG_STRING, WC_FULL_CONFIG_STRING_LENGTH);
-    tablet->outlen = WC_FULL_CONFIG_STRING_LENGTH;
+    tablet->outlen = 0;
+    if (!tablet->model) {
+        /*
+         * Unsolicited on open, matching the real Penpartner CT-0045R.
+         * IRIX's wacom module expects an identified UD-series tablet to
+         * stay quiet until asked, so the UD-1212-R model skips this.
+         */
+        memcpy(tablet->outbuf, WC_FULL_CONFIG_STRING,
+              WC_FULL_CONFIG_STRING_LENGTH);
+        tablet->outlen = WC_FULL_CONFIG_STRING_LENGTH;
+    }
     tablet->query_index = 0;
 
     tablet->hs = qemu_input_handler_register((DeviceState *)tablet,
@@ -344,10 +454,23 @@ static bool wctablet_chr_open(Chardev *chr,
     return true;
 }
 
+static void wctablet_chr_parse(QemuOpts *opts, ChardevBackend *backend,
+                               Error **errp)
+{
+    const char *model = qemu_opt_get(opts, "model");
+    ChardevWctablet *wctablet;
+
+    backend->type = CHARDEV_BACKEND_KIND_WCTABLET;
+    wctablet = backend->u.wctablet.data = g_new0(ChardevWctablet, 1);
+    qemu_chr_parse_common(opts, qapi_ChardevWctablet_base(wctablet));
+    wctablet->model = g_strdup(model);
+}
+
 static void wctablet_chr_class_init(ObjectClass *oc, const void *data)
 {
     ChardevClass *cc = CHARDEV_CLASS(oc);
 
+    cc->chr_parse = wctablet_chr_parse;
     cc->chr_open = wctablet_chr_open;
     cc->chr_write = wctablet_chr_write;
     cc->chr_ioctl = wctablet_chr_ioctl;
