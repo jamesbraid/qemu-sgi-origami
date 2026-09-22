@@ -13,6 +13,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "sgi-migrate.h"
 #include "sgi-test.h"
 
 #define IMAGE_SIZE          0x1000
@@ -188,25 +189,6 @@ static char *cpu_qom_path(QTestState *qts)
     return path;
 }
 
-static void wait_for_migration(QTestState *from)
-{
-    int64_t deadline = g_get_monotonic_time() + 60 * G_TIME_SPAN_SECOND;
-
-    for (;;) {
-        g_autoptr(QDict) response = qtest_qmp(from,
-                                             "{'execute':'query-migrate'}");
-        QDict *result = qdict_get_qdict(response, "return");
-        const char *status = qdict_get_str(result, "status");
-
-        if (!strcmp(status, "completed")) {
-            return;
-        }
-        g_assert_cmpstr(status, !=, "failed");
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(POLL_INTERVAL_US);
-    }
-}
-
 static void test_nmi_entry_and_retrigger(void)
 {
     g_autofree char *image = NULL;
@@ -334,7 +316,7 @@ static void test_nmi_latch_migration(void)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    wait_for_migration(from);
+    sgi_wait_migration_status(from, "completed");
     qtest_qmp_assert_success(to, "{'execute':'cont'}");
 
     qtest_set_irq_in(to, dest_path, "nmi", 0, 1);

@@ -14,6 +14,7 @@
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "sn0-user-image.h"
+#include "sgi-migrate.h"
 #include "sgi-test.h"
 
 /* The half of the crossbar's widget 1 window addressed by node. */
@@ -3157,24 +3158,6 @@ static void build_alive_go_image(SN0Image *p)
     emit_handshake_park(p);
 }
 
-static void wait_for_migration(QTestState *qts)
-{
-    g_test_timer_start();
-    for (;;) {
-        QDict *ret = qtest_qmp_assert_success_ref(
-            qts, "{'execute':'query-migrate'}");
-        g_autofree char *status = g_strdup(qdict_get_try_str(ret, "status"));
-
-        qobject_unref(ret);
-        g_assert_cmpstr(status, !=, "failed");
-        if (status && g_str_equal(status, "completed")) {
-            return;
-        }
-        g_assert(g_test_timer_elapsed() < 30);
-        g_usleep(1000);
-    }
-}
-
 /*
  * The first processor gave its alive signal on the source. Whether it has
  * cannot be read back from the registers -- firmware clears the bit again
@@ -3216,8 +3199,8 @@ static void test_alive_signal_survives_migration(const void *data)
     qtest_qmp_assert_success(from, "{'execute':'stop'}");
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    wait_for_migration(from);
-    wait_for_migration(to);
+    sgi_wait_migration_status(from, "completed");
+    sgi_wait_migration_status(to, "completed");
 
     qtest_qmp_assert_success(to, "{'execute':'cont'}");
     qtest_writeq(to, SN0_USER_MAILBOX + 32, 1);
@@ -3320,8 +3303,8 @@ static void test_a_withheld_withdrawal_migrates_landed(const void *data)
     qtest_qmp_assert_success(from, "{'execute':'stop'}");
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    wait_for_migration(from);
-    wait_for_migration(to);
+    sgi_wait_migration_status(from, "completed");
+    sgi_wait_migration_status(to, "completed");
 
     g_assert_cmphex(qtest_readq(to, HUB_LOCAL + PI_RT_COMPARE_A), ==, 0);
     g_assert_cmphex(qtest_readq(to, HUB_LOCAL + PI_RT_COMPARE_B), ==,

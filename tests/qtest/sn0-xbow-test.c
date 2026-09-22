@@ -14,6 +14,7 @@
 #include "exec/hwaddr.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "sgi-migrate.h"
 
 #define XBOW "/machine/peripheral/xbow"
 
@@ -1155,27 +1156,6 @@ static void test_reset_restores_startup_health(void)
     qtest_quit(qts);
 }
 
-static void migrate_stopped_vm(QTestState *from, const char *uri)
-{
-    qtest_qmp_assert_success(from,
-        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
-
-    g_test_timer_start();
-    for (;;) {
-        QDict *ret = qtest_qmp_assert_success_ref(from,
-            "{ 'execute': 'query-migrate' }");
-        g_autofree char *status = g_strdup(qdict_get_str(ret, "status"));
-
-        qobject_unref(ret);
-        g_assert_cmpstr(status, !=, "failed");
-        if (g_str_equal(status, "completed")) {
-            break;
-        }
-        g_assert(g_test_timer_elapsed() < 30);
-        g_usleep(1000);
-    }
-}
-
 /*
  * Migration carries the mask the machine is running with, not the startup
  * one, along with the registers and the routing derived from both.
@@ -1204,7 +1184,7 @@ static void test_migration_keeps_runtime_state(void)
 
     arrival = g_strdup_printf("-incoming %s", uri);
     to = xbow_start(arrival);
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     g_assert_cmphex(reg_read(to, ID), ==, 0x10000001);
     g_assert_cmphex(reg_read(to, PACKET_TIMEOUT), ==, 0x1234);
@@ -1258,7 +1238,7 @@ static void test_illegal_destination_crosses_migration(void)
 
     arrival = g_strdup_printf("-incoming %s", uri);
     to = xbow_start(arrival);
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     g_assert_cmphex(reg_read(to, LINK(WIDGET_IO) + LINK_STATUS), ==,
                     LINK_ALIVE | LINK_ILLEGAL_DEST | LINK_MULTIPLE_ERROR);

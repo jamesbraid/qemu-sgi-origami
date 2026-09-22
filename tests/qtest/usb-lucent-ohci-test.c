@@ -13,6 +13,7 @@
 #include "libqos/pci-pc.h"
 #include "qobject/qdict.h"
 #include "hw/pci/pci_regs.h"
+#include "sgi-migrate.h"
 #include <glib/gstdio.h>
 
 #define LUCENT_OHCI_SLOT           5
@@ -511,27 +512,6 @@ static void test_frame_number_never_lags_elapsed_time(void)
     lucent_ohci_close(&ohci);
 }
 
-static void migrate_stopped_vm(QTestState *from, const char *uri)
-{
-    qtest_qmp_assert_success(from,
-        "{'execute': 'migrate', 'arguments': {'uri': %s}}", uri);
-
-    g_test_timer_start();
-    for (;;) {
-        QDict *ret = qtest_qmp_assert_success_ref(
-            from, "{'execute': 'query-migrate'}");
-        g_autofree char *status = g_strdup(qdict_get_str(ret, "status"));
-
-        qobject_unref(ret);
-        g_assert_cmpstr(status, !=, "failed");
-        if (g_str_equal(status, "completed")) {
-            break;
-        }
-        g_assert(g_test_timer_elapsed() < 30);
-        g_usleep(1000);
-    }
-}
-
 static void assert_migration_registers(LucentOHCI *ohci)
 {
     uint32_t schedule = OHCI_COMMAND_STATUS_CLF | OHCI_COMMAND_STATUS_BLF;
@@ -602,7 +582,7 @@ static void test_migration_reuse(void)
 
     incoming = g_strdup_printf(" -incoming %s", uri);
     lucent_ohci_open(&to, lucent_ohci_start("lucent-ohci", incoming));
-    migrate_stopped_vm(from.qts, uri);
+    sgi_migrate_stopped(from.qts, uri);
 
     /*
      * No setup is repeated on the destination: these accesses depend on the

@@ -11,6 +11,7 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "sgi-migrate.h"
 
 #define HUB_BASE        UINT64_C(0x20001000000)
 #define MD_ONEWIRE      0x2000a8
@@ -1003,25 +1004,6 @@ static void test_dip_switches_reach_the_controller(void)
     qtest_quit(qts);
 }
 
-static void wait_for_migration(QTestState *qts)
-{
-    int64_t deadline = g_get_monotonic_time() + 60 * G_TIME_SPAN_SECOND;
-
-    for (;;) {
-        g_autoptr(QDict) response = qtest_qmp(qts,
-                                              "{'execute':'query-migrate'}");
-        QDict *result = qdict_get_qdict(response, "return");
-        const char *status = qdict_get_str(result, "status");
-
-        if (!strcmp(status, "completed")) {
-            return;
-        }
-        g_assert_cmpstr(status, !=, "failed");
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
-    }
-}
-
 static void migrate_module(QTestState *from, QTestState *to)
 {
     g_autofree char *directory = g_dir_make_tmp("o2000-management-XXXXXX",
@@ -1036,9 +1018,9 @@ static void migrate_module(QTestState *from, QTestState *to)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    wait_for_migration(from);
+    sgi_wait_migration_status(from, "completed");
     /* The source completes when its state is sent, not when it is loaded. */
-    wait_for_migration(to);
+    sgi_wait_migration_status(to, "completed");
     unlink(socket);
     g_assert_cmpint(rmdir(directory), ==, 0);
 }

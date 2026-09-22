@@ -16,6 +16,7 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "sgi-migrate.h"
 #include "sgi-test.h"
 
 /* Crosstalk space and the bridge that carries both controllers. */
@@ -753,26 +754,6 @@ static void test_the_octane_board_has_no_timekeeper(const void *data)
     qtest_quit(qts);
 }
 
-static void migrate_stopped_vm(QTestState *from, const char *uri)
-{
-    qtest_qmp_assert_success(from,
-        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
-
-    while (true) {
-        QDict *ret = qtest_qmp_assert_success_ref(from,
-            "{ 'execute': 'query-migrate' }");
-        const char *status = qdict_get_str(ret, "status");
-        bool done = g_str_equal(status, "completed");
-
-        g_assert(!g_str_equal(status, "failed"));
-        qobject_unref(ret);
-        if (done) {
-            return;
-        }
-        usleep(1000);
-    }
-}
-
 /*
  * State that survives a power cycle has to survive a migration. The board
  * without this clock is migrated in the same test, because the migration
@@ -807,7 +788,7 @@ static void migrate_one_board(const char *subsys, bool has_clock)
 
     to = qtest_initf("%s -incoming %s", args, uri);
 
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
     qtest_quit(from);
 
     octane_attach(to);

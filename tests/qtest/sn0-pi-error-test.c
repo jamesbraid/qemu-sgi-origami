@@ -12,6 +12,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sn0-user-image.h"
+#include "sgi-migrate.h"
 #include "sgi-test.h"
 
 #define CAUSE_A                0x50000
@@ -443,25 +444,6 @@ static void test_origin2000_probe_is_local_to_issuing_hub(const void *data)
     qtest_quit(qts);
 }
 
-static void migrate_stopped_vm(QTestState *from, const char *uri)
-{
-    qtest_qmp_assert_success(from,
-        "{'execute': 'migrate', 'arguments': {'uri': %s}}", uri);
-    for (;;) {
-        QDict *ret = qtest_qmp_assert_success_ref(
-            from, "{'execute': 'query-migrate'}");
-        const char *status = qdict_get_str(ret, "status");
-
-        if (!strcmp(status, "completed")) {
-            qobject_unref(ret);
-            return;
-        }
-        g_assert_cmpstr(status, !=, "failed");
-        qobject_unref(ret);
-        g_usleep(1000);
-    }
-}
-
 static void test_prom_probe_latches_the_issuing_slice(const void *data)
 {
     g_autofree SN0Image *image = g_new0(SN0Image, 1);
@@ -619,7 +601,7 @@ static void test_pi_status_survives_migration(const void *data)
         "-accel tcg,thread=multi -no-reboot -no-shutdown -incoming %s",
         path, uri);
     to = qtest_init(dest_args);
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     g_assert_cmphex(qtest_readq(to, HUB_LOCAL + PI_ERR_STATUS0_A), ==,
                     PI_STATUS_EXPECTED);

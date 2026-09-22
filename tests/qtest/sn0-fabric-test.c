@@ -28,6 +28,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sn0-user-image.h"
+#include "sgi-migrate.h"
 #include "sgi-test.h"
 
 /* Addresses only this test uses; the shared ones come from sgi-test.h. */
@@ -463,30 +464,6 @@ static void test_bridge_dma_reaches_the_peer_node(const void *data)
     qtest_quit(qts);
 }
 
-/* The migrate-and-poll steps of tests/qtest/sn0-migration-test.c. */
-static void migrate_stopped_vm(QTestState *from, const char *uri)
-{
-    g_autoptr(QDict) response = NULL;
-
-    response = qtest_qmp(from,
-                         "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }",
-                         uri);
-    g_assert(qdict_haskey(response, "return"));
-
-    for (;;) {
-        g_autoptr(QDict) query = qtest_qmp(from,
-                                           "{ 'execute': 'query-migrate' }");
-        QDict *ret = qdict_get_qdict(query, "return");
-        const char *status = qdict_get_str(ret, "status");
-
-        if (!strcmp(status, "completed")) {
-            break;
-        }
-        g_assert_cmpstr(status, !=, "failed");
-        g_usleep(1000);
-    }
-}
-
 /*
  * Reachability is derived, not carried: a renumbered peer, a latched vector
  * reply, and a remote read all come back the same after a migration.
@@ -517,7 +494,7 @@ static void test_dual_migration(const void *data)
 
     dest_args = g_strdup_printf(MACHINE_DUAL " -incoming %s", uri);
     to = qtest_init(dest_args);
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     g_assert_cmphex(qtest_readq(to, hub0 + NI_VECTOR_STATUS) &
                     (NVS_VALID | NVS_TYPE_MASK), ==,
