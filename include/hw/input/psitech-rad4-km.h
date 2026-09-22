@@ -24,14 +24,24 @@
  * Register offset 0x78 in the driver's own object is established only as
  * a pointer to a distinct, board-level interrupt gate above this chip's
  * own ISR/IMR; no evidence names which physical chip or address it
- * reaches. This model does not drive a qemu_irq for that reason --
- * wiring one would assert an unevidenced physical routing fact. ISR and
- * IMR are modeled as ordinary readable/writable register state only.
+ * reaches, and this model does not invent that register or claim to
+ * model it. What is a plain PCI-structural fact, not a guess: this is a
+ * single-function PCI device (docs/datasheets/psitech-rad4-km.md), so it
+ * has exactly one INTx# pin, and IMR gating which ISR bits reach that pin
+ * is the ordinary Signetics/Philips SCN2681/SCC68681 DUART family
+ * contract the register map's own header comment already cites -- a
+ * public chip-family fact, not a board-specific one. This model wires
+ * that much: the channels' ISR condition, masked by IMR, drives this
+ * device's own aggregate qemu_irq output, which hw/display/psitech-rad4.c
+ * ORs into its single shared PCI interrupt line alongside INTCSR's own
+ * frame interrupt. It does not assert where a real board's offset-0x78
+ * gate would additionally report this condition upstream of that pin.
  */
 
 #ifndef HW_INPUT_PSITECH_RAD4_KM_H
 #define HW_INPUT_PSITECH_RAD4_KM_H
 
+#include "hw/core/irq.h"
 #include "hw/core/sysbus.h"
 #include "hw/input/ps2.h"
 #include "qom/object.h"
@@ -117,6 +127,7 @@ struct PsitechRad4KMState {
     PS2MouseState mouse;  /* channel B */
 
     MemoryRegion mmio;
+    qemu_irq irq;         /* chan_a/chan_b ISR & IMR, aggregated */
 
     Rad4KMChannel chan_a;
     Rad4KMChannel chan_b;

@@ -31,6 +31,19 @@
 #define PCI_ROM_ADDRESS_OFF 0x30
 #define PCI_COMMAND_OFF     0x04
 
+/*
+ * PCI_STATUS_INTERRUPT (config+0x06 bit 3, Linux pci_regs.h), read through
+ * the same dword as PCI_COMMAND_OFF since STATUS occupies its high 16
+ * bits: core QEMU's pci_update_irq_status() (hw/pci/pci.c) mirrors this
+ * bit to a device's own irq_state on every edge, regardless of the
+ * Interrupt Disable bit -- a standards-based, chip-agnostic observation
+ * point for "did this device's IRQ line assert" that needs no GPIO
+ * interception into the origin200 machine's TYPE_SGI_BRIDGE chip (which,
+ * unlike TYPE_SGI_XBRIDGE, exposes no named PCI-INTx GPIO-out group for
+ * tests/qtest/sgi-board-test.c's own interception pattern to reach).
+ */
+#define PCI_STATUS_INTERRUPT (1u << 19)
+
 /* Crosstalk space and the Bridge's widget window inside it. */
 #define BRIDGE_WIDGET   8
 #define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
@@ -490,9 +503,11 @@ static void test_km_channel_enable_reflects_in_status(void)
  * one chip-wide register, matching docs/datasheets/psitech-rad4-km.md's
  * cited driver IMR-shadow test. This model recomputes ISR purely from the
  * channels' own enable/queue state on every read -- the same index's write
- * side (IMR) is stored but never consulted (rad4_km_read_isr() ignores
- * s->imr), matching the datasheet's Established facts and the disclosed
- * absence of a wired interrupt line.
+ * side (IMR) is stored but never consulted for this read
+ * (rad4_km_read_isr() ignores s->imr), matching the datasheet's
+ * Established facts. IMR does gate a separate thing this file tests next,
+ * test_km_interrupt_reaches_pci_status(): the aggregate qemu_irq output
+ * this chip now drives from the same ISR condition, masked.
  */
 static void test_km_isr_aggregates_both_channels(void)
 {
@@ -511,6 +526,42 @@ static void test_km_isr_aggregates_both_channels(void)
     bar3_km_write(qts, KM_REG_ISR_IMR, 0x00);
     g_assert_cmphex(bar3_km_read(qts, KM_REG_ISR_IMR), ==,
                     KM_ISR_TXRDY_A | KM_ISR_TXRDY_B);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The km child's aggregate ISR/IMR condition (hw/input/psitech-rad4-km.c's
+ * rad4_km_update_irq()) drives its own qemu_irq output, which
+ * hw/display/psitech-rad4.c's rad4_km_irq_handler() ORs into this device's
+ * single shared PCI interrupt line (rad4_update_irq()) -- see
+ * include/hw/input/psitech-rad4-km.h for what that wiring does and does
+ * not claim about the board-level gate at driver offset 0x78. This test
+ * observes that line through config space's own PCI_STATUS_INTERRUPT bit
+ * (defined above), independent of the ISR read path test_km_isr_
+ * aggregates_both_channels() already covers.
+ */
+static void test_km_interrupt_reaches_pci_status(void)
+{
+    QTestState *qts = rad4km_init();
+
+    g_assert_cmphex(qtest_readl(qts, CFG0(RAD4_KM_SLOT) + PCI_COMMAND_OFF) &
+                    PCI_STATUS_INTERRUPT, ==, 0);
+
+    /* ISR's TXRDY_A condition alone, still masked by a zero IMR, is not enough. */
+    bar3_km_write(qts, KM_REG_CRA, KM_CR_TX_ENABLE);
+    g_assert_cmphex(qtest_readl(qts, CFG0(RAD4_KM_SLOT) + PCI_COMMAND_OFF) &
+                    PCI_STATUS_INTERRUPT, ==, 0);
+
+    /* Unmasking the already-set ISR bit raises the shared PCI line. */
+    bar3_km_write(qts, KM_REG_ISR_IMR, KM_ISR_TXRDY_A);
+    g_assert_cmphex(qtest_readl(qts, CFG0(RAD4_KM_SLOT) + PCI_COMMAND_OFF) &
+                    PCI_STATUS_INTERRUPT, ==, PCI_STATUS_INTERRUPT);
+
+    /* Clearing the ISR condition it was masking lowers the line again. */
+    bar3_km_write(qts, KM_REG_CRA, KM_CR_TX_DISABLE);
+    g_assert_cmphex(qtest_readl(qts, CFG0(RAD4_KM_SLOT) + PCI_COMMAND_OFF) &
+                    PCI_STATUS_INTERRUPT, ==, 0);
 
     qtest_quit(qts);
 }
@@ -983,6 +1034,14 @@ static void test_interrupt_acknowledge(void)
     qtest_clock_step(qts, 1000000000 / 60 + 1000);
     g_assert_cmphex(bar0_read(qts, R_INTCSR) & INTCSR_PENDING, ==,
                     INTCSR_PENDING);
+    /*
+     * Plain RAD4 never realizes the km child (rad4_realize()), so this
+     * identity's shared PCI line is driven solely by INTCSR here --
+     * confirming rad4_update_irq()'s km_irq_level OR-in leaves this
+     * pre-existing path unchanged.
+     */
+    g_assert_cmphex(qtest_readl(qts, CFG0(RAD4_SLOT) + PCI_COMMAND_OFF) &
+                    PCI_STATUS_INTERRUPT, ==, PCI_STATUS_INTERRUPT);
 
     /*
      * Acknowledge: a control write with bit 1 clear while a frame is
@@ -991,6 +1050,8 @@ static void test_interrupt_acknowledge(void)
     bar2_write(qts, B_CTRL, 0);
     g_assert_cmphex(bar0_read(qts, R_INTCSR) & INTCSR_PENDING, ==, 0);
     g_assert_cmphex(bar2_read(qts, B_CTRL) & STATUS_FRAME, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, CFG0(RAD4_SLOT) + PCI_COMMAND_OFF) &
+                    PCI_STATUS_INTERRUPT, ==, 0);
 
     qtest_quit(qts);
 }
@@ -1464,6 +1525,8 @@ int main(int argc, char **argv)
                    test_km_channel_enable_reflects_in_status);
     qtest_add_func("/psitech-rad4-km/isr-aggregates-both-channels",
                    test_km_isr_aggregates_both_channels);
+    qtest_add_func("/psitech-rad4-km/interrupt-reaches-pci-status",
+                   test_km_interrupt_reaches_pci_status);
     qtest_add_func("/psitech-rad4-km/register-file-write-smoke",
                    test_km_register_file_write_smoke);
     qtest_add_func("/psitech-rad4-km/kbd-ps2-reset-round-trip",

@@ -436,6 +436,15 @@ struct PsitechRad4State {
      */
     PsitechRad4KMState km;
 
+    /*
+     * The km child's own aggregate IRQ output (rad4_km_irq_handler()),
+     * cached so rad4_update_irq() can OR it into the shared PCI line and
+     * so a post-load recompute doesn't depend on child/parent VMState
+     * load order. Always false under the plain RAD4 identity, since the
+     * child is unparented and never realized there.
+     */
+    bool km_irq_level;
+
     QemuConsole *con;
     QEMUTimer *frame_timer;
 
@@ -599,7 +608,23 @@ static void rad4_update_irq(PsitechRad4State *s)
     bool level = (s->intcsr & RAD4_INTCSR_PENDING) &&
                  (s->intcsr & RAD4_INTCSR_ENABLE);
 
-    pci_set_irq(&s->pci, level);
+    pci_set_irq(&s->pci, level || s->km_irq_level);
+}
+
+/*
+ * The km child is a single-function PCI device's own sub-block, not a
+ * second INTx# source: its aggregate ISR/IMR condition shares this
+ * device's one PCI interrupt line alongside INTCSR's own frame
+ * interrupt (see include/hw/input/psitech-rad4-km.h for what that
+ * aggregate does and does not claim about the board-level gate at
+ * driver offset 0x78).
+ */
+static void rad4_km_irq_handler(void *opaque, int n, int level)
+{
+    PsitechRad4State *s = opaque;
+
+    s->km_irq_level = level;
+    rad4_update_irq(s);
 }
 
 static void rad4_recognizer_reset(PsitechRad4State *s)
@@ -1684,6 +1709,8 @@ static void rad4_realize(PCIDevice *dev, Error **errp)
         }
         pci_register_bar(&s->pci, 3, PCI_BASE_ADDRESS_SPACE_MEMORY,
                          sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->km), 0));
+        sysbus_connect_irq(SYS_BUS_DEVICE(&s->km), 0,
+                           qdev_get_gpio_in_named(DEVICE(dev), "km-irq", 0));
     } else {
         object_unparent(OBJECT(&s->km));
     }
@@ -1723,8 +1750,8 @@ static int rad4_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_psitech_rad4 = {
     .name = TYPE_PSITECH_RAD4,
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .post_load = rad4_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(pci, PsitechRad4State),
@@ -1762,6 +1789,7 @@ static const VMStateDescription vmstate_psitech_rad4 = {
         VMSTATE_BOOL(frame_pending, PsitechRad4State),
         VMSTATE_INT32(rec_state, PsitechRad4State),
         VMSTATE_UINT32(rec_index, PsitechRad4State),
+        VMSTATE_BOOL(km_irq_level, PsitechRad4State),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -1787,6 +1815,7 @@ static void rad4_instance_init(Object *obj)
      * it otherwise. See hw/input/psitech-rad4-km.c.
      */
     object_initialize_child(obj, "km", &s->km, TYPE_PSITECH_RAD4_KM);
+    qdev_init_gpio_in_named(DEVICE(obj), rad4_km_irq_handler, "km-irq", 1);
 }
 
 static void rad4_class_init(ObjectClass *klass, const void *data)
