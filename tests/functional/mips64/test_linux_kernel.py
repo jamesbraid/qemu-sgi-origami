@@ -17,11 +17,10 @@ the guest -- and requires the console transcript to contain Linux's own
 byte the embedded init chose: 42 << 8 = 0x2a00 at one CPU; 43 << 8 =
 0x2b00 at two CPUs, after two affinity-pinned workers stress both CPUs;
 or 44 << 8 = 0x2c00 at four CPUs across two nodes, after a node-0 process
-moves and verifies a page on node 1. See test_linux_kernel_verdict.py's
-own docstring for why a plain literal-string match against the full
-8-hex value already rejects a fatal-signal death (the low byte would
-carry a signal number instead) without needing any extra logic -- and
-for its fatal-signal fixture, which proves it.
+moves and verifies a page on node 1. A plain literal-string match against
+the full 8-hex value already rejects a fatal-signal death (the low byte
+would carry a signal number instead) without needing any extra logic;
+MARKERS below says so where the values are.
 
 The kernel loads through the real stock IP27 PROM's own netboot path, the
 same command-monitor dialogue test_prom_sash.py drives (lib_prom's
@@ -50,9 +49,8 @@ guest-model bug. An earlier stop_machine livelock at the Hub-RT
 clocksource switch was fixed by fork pull request 135. The finding is
 docs/notebooks/mttcg-4cpu-usercheck-two-bugs.md (project checkout).
 
-missing_assertions() (test_linux_kernel_verdict.py, imported below) is a
-verbatim port of linux-usercheck's own function of the same name, for
-the one-, two-, and four-CPU cases.
+missing_assertions() below is a verbatim port of linux-usercheck's own
+function of the same name, for the one-, two-, and four-CPU cases.
 
 The QEMU argv this file builds (cpu_qemu_args) replicates
 tools/linux_topology.py's own topology_args()/accelerator_args() for the
@@ -87,10 +85,9 @@ drive_console() (lib_prom.py) owns that loop; test_prom_sash.py's own
 docstring covers why it is the console driver every netboot test in this
 directory shares.
 
-This module's own pure verdict logic lives entirely in
-test_linux_kernel_verdict.py (imported below; it needs no qemu_test
-itself -- see that file's own docstring). What is left here is the real
-boot.
+The marker lists below are what this test scores a transcript against;
+lib_prom.verdict() does the scoring, and its own unit tests pin that
+behaviour without booting anything.
 """
 
 import os
@@ -98,9 +95,60 @@ import os
 from qemu_test import QemuSystemTest, skipIfMissingEnv
 
 from lib_prom import (FIRMWARE_REL, MACHINES, drive_console,
-                      prom_netboot_steps, require_assets)
+                      prom_netboot_steps, require_assets, verdict)
 
-from test_linux_kernel_verdict import missing_assertions
+
+# What the kernel's own embedded userspace self-check prints, per CPU
+# count, ported from tools/linux-usercheck's own marker lists (project
+# checkout). The one-CPU case checks exactly two markers and deliberately
+# does NOT check a discovery line: a real one-CPU capture happening to
+# print one says nothing about whether every one must, and the shipped
+# tool's own contract does not require it.
+#
+# A fatal signal cannot masquerade as a chosen exit without any extra
+# logic here: the kernel prints the full eight hex digits every time, with
+# the chosen status in the upper byte and a signal's number in the lower
+# one, so a signal death is a wholly different string rather than a prefix
+# of the wanted one.
+ONE_CPU_MARKERS = (
+    ('init handoff', 'Run /init as init process'),
+    ('userspace exit status', 'exitcode=0x00002a00'),
+)
+TWO_CPU_MARKERS = (
+    ('two-CPU discovery', 'Discovered 2 cpus on 1 nodes'),
+    ('secondary CPU execution', 'CPU1 revision is:'),
+    ('two-CPU scheduler bring-up', 'smp: Brought up 1 node, 2 CPUs'),
+    ('init handoff', 'Run /init as init process'),
+    ('userspace exit status', 'exitcode=0x00002b00'),
+)
+# The four-CPU exit sentinel (0x2c00 = 44 << 8) is a node-0 process that
+# moved and verified one page on node 1.
+FOUR_CPU_MARKERS = (
+    ('four-CPU discovery', 'Discovered 4 cpus on 2 nodes'),
+    ('node-zero secondary CPU execution', 'CPU1 revision is:'),
+    ('node-one primary CPU execution', 'CPU2 revision is:'),
+    ('node-one secondary CPU execution', 'CPU3 revision is:'),
+    ('four-CPU scheduler bring-up', 'smp: Brought up 2 nodes, 4 CPUs'),
+    ('node-zero memory',
+     'node   0: [mem 0x0000000000000000-0x0000000003ffffff]'),
+    ('node-one memory',
+     'node   1: [mem 0x0000000100000000-0x0000000103ffffff]'),
+    ('node-zero crosstalk endpoint', 'xtalk:n0/8 bridge widget'),
+    ('node-one crosstalk endpoint', 'xtalk:n1/8 bridge widget'),
+    ('init handoff', 'Run /init as init process'),
+    ('node-one remote-memory userspace proof', 'exitcode=0x00002c00'),
+)
+MARKERS = {1: ONE_CPU_MARKERS, 2: TWO_CPU_MARKERS, 4: FOUR_CPU_MARKERS}
+
+
+def missing_assertions(log, cpus):
+    """Which of the one-, two-, or four-CPU self-check markers never
+    appeared in log. An empty return means every required marker was
+    found; any other CPU count raises rather than silently answering a
+    question this test does not cover."""
+    if cpus not in MARKERS:
+        raise ValueError('missing_assertions: cpus must be 1, 2, or 4')
+    return verdict(log, MARKERS[cpus])
 
 
 # Where ORIGAMI_ASSETS resolves the built kernel, matching tools/linux-run's

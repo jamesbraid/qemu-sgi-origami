@@ -23,22 +23,23 @@ future test that needs a kernel which does), so this test's own pass
 condition -- the device reported "not configured" at exactly that PCI
 slot -- is something this asset can satisfy today, unlike test_openbsd_xge.py.
 
-xframe_pci_verdict() (test_xframe_pci_verdict.py, imported below) is the
-pure check this file only wires to a real boot; see that module's own
-docstring for exactly how its expected text was derived and cross-checked
-against OpenBSD's own source, the real kernel binary these tests boot, and
-this fork's own xframe device model.
+xframe_pci_verdict() below is the check this file wires to a real boot.
+Its expected text was derived and cross-checked against OpenBSD's own
+source, the real kernel binary these tests boot, and this fork's own
+xframe device model: the device is composed at PCI slot 4 function 0 with
+vendor 0x17d5 and product 0x5831, and stock GENERIC-IP27 has no driver
+matching that pair, so autoconfiguration reports it by name and declares
+it not configured.
 
 _pci_probe_reached() below, past the netboot dialogue itself, never sends
 the guest anything: OpenBSD's PCI bus scan finishes well before any
-interactive question is asked -- in REAL_LOGIN_TRANSCRIPT
-(test_openbsd_login_verdict.py's own real captured boot of this exact
-kernel and disk), every PCI device line appears before "boot device:
+interactive question is asked -- in a real captured boot of this exact
+kernel and disk, every PCI device line appears before "boot device:
 'unknown' unrecognized." and "root device: sd0a", the first point that
 transcript ever needs an answer. This test only needs to read until
-XFRAME_UNCLAIMED_RE matches, a TRIPWIRE fires, or the timeout runs out --
-unlike test_openbsd_login.py's own _drive_login(), it never needs
-LOGIN_STEPS at all.
+XFRAME_UNCLAIMED_RE matches, a trip wire fires, or the timeout runs out;
+unlike test_openbsd_login.py's own _drive_login(), it never needs a login
+sequence at all.
 
 Boots through the real stock IP27 PROM's own netboot path rather than a
 direct `-kernel` load, the same conversion test_openbsd_login.py and
@@ -75,15 +76,48 @@ loudly rather than skipping it, the same as test_openbsd_login.py.
 """
 
 import os
+import re
 
 from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
                        skipSlowTest)
 
+from lib_net import OPENBSD_TRIPWIRES, ordered_stages
 from lib_prom import (FIRMWARE_REL, MACHINES, drive_console,
                       prom_netboot_steps, require_assets)
 
-from test_xframe_pci_verdict import (TRIPWIRES, XFRAME_UNCLAIMED_RE,
-                                     xframe_pci_verdict)
+
+# See this module's own docstring for exactly how the unclaimed-device
+# text was derived and cross-checked. The revision byte is left as any two
+# hex digits deliberately; everything else is pinned exactly. The bus line
+# comes first: it is proof PCI autoconfiguration ran at all, before this
+# looks for the xframe line specifically.
+XFRAME_UNCLAIMED_RE = re.compile(
+    r'"Neterion Xframe" rev 0x[0-9a-fA-F]{2} at pci0 dev 4 function 0 '
+    r'not configured')
+STAGES = (
+    ('never reached PCI bus enumeration (no "pci0 at ... bus ..." line)',
+     re.compile(r"pci0 at \S+ bus \d+")),
+    ('never saw the xframe adapter reported unclaimed at pci0 dev 4 '
+     'function 0 -- expected a line naming vendor 0x17d5 ("Neterion") '
+     'product 0x5831 ("Xframe") as "not configured"',
+     XFRAME_UNCLAIMED_RE),
+)
+
+
+def xframe_pci_verdict(transcript):
+    """PASS iff transcript shows, in order: the guest's PCI bus
+    enumerated and then the xframe adapter reported unclaimed at that
+    bus, PCI slot 4 function 0 -- and no trip wire fires before that
+    unclaimed-device line is reached (or anywhere in the transcript, if
+    it is never reached).
+
+    Returns {"verdict": "PASS"|"FAIL", "problems": [...]}.
+    """
+    problems = ordered_stages(transcript, STAGES, OPENBSD_TRIPWIRES)
+    return {
+        "verdict": "PASS" if not problems else "FAIL",
+        "problems": problems,
+    }
 
 
 # The same kernel and installed disk test_openbsd_login.py resolves --
@@ -131,7 +165,7 @@ def _pci_probe_reached(transcript):
     """
     text = transcript.decode("utf-8", errors="replace")
     return bool(XFRAME_UNCLAIMED_RE.search(text) or
-               any(rx.search(text) for _why, rx in TRIPWIRES))
+               any(rx.search(text) for _why, rx in OPENBSD_TRIPWIRES))
 
 
 class XframePci(QemuSystemTest):

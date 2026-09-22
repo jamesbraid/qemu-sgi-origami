@@ -36,9 +36,8 @@ The network back end is placed only on the tg device; the machine's on-board
 IOC3 Ethernet is left with no back end (-nic none), so tg1 is the only interface
 that can carry the pings.
 
-tg_acceptance_verdict() (test_irix_tg_verdict.py, imported below) is the pure
-PASS/FAIL contract, testable without a boot; see its docstring for why each
-clause is scored the way it is.
+tg_acceptance_verdict() below is the PASS/FAIL contract; its own
+docstring says why each clause is scored the way it is.
 
 Guarded by @skipBigDataTest() (the disk is multi-gigabyte) and @skipSlowTest()
 (a real multiuser IRIX boot is minutes), on top of
@@ -65,7 +64,77 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib_net import Console, HarnessError  # noqa: E402
 from lib_prom import (MACHINES, file_sha256,  # noqa: E402
                       require_assets)
-from test_irix_tg_verdict import tg_acceptance_verdict  # noqa: E402
+
+def tg_acceptance_verdict(login_reached, tg1_present, tg_up, link_up, traffic):
+    """Decide PASS/FAIL for one IRIX tg bring-up run.
+
+    login_reached, tg1_present, tg_up, link_up: booleans for the four
+    milestones above.
+
+    traffic: a dict of the interface's own counters, read from `netstat -in`
+    before and after a burst of pings to the SLIRP gateway --
+        {"ipkts_before": int or None, "ipkts_after": int or None,
+         "opkts_before": int or None, "opkts_after": int or None,
+         "ierrs_after":  int or None}
+    A None is a value that could not be read.
+
+    Returns {"verdict": "PASS"|"FAIL", "problems": [str, ...]}. PASS iff every
+    clause holds; problems names every clause that did not, so a single run
+    reports all of what went wrong rather than only the first.
+    """
+    problems = []
+
+    if not login_reached:
+        problems.append("the guest never reached a root shell")
+    if not tg1_present:
+        problems.append("tg1 not present in ifconfig -a")
+    if not tg_up:
+        problems.append(
+            "`ifconfig tg1 ... up` did not return to a shell prompt "
+            "(console wedged)")
+    if not link_up:
+        problems.append(
+            "the tg driver never logged its link-up notice; the adapter's "
+            "link never came up")
+
+    ib = traffic.get("ipkts_before")
+    ia = traffic.get("ipkts_after")
+    if ia is None or ib is None:
+        problems.append(
+            "tg1's received-packet counter could not be read before and "
+            "after the pings")
+    elif ia <= ib:
+        problems.append(
+            f"tg1's received-packet counter did not climb over the pings "
+            f"({ib} -> {ia}): no frames arrived over the adapter's receive "
+            f"ring")
+
+    ob = traffic.get("opkts_before")
+    oa = traffic.get("opkts_after")
+    if oa is None or ob is None:
+        problems.append(
+            "tg1's transmitted-packet counter could not be read before and "
+            "after the pings")
+    elif oa <= ob:
+        problems.append(
+            f"tg1's transmitted-packet counter did not climb over the pings "
+            f"({ob} -> {oa}): the adapter put no frames on the wire")
+
+    ie = traffic.get("ierrs_after")
+    if ie is None:
+        problems.append("tg1's input-error counter could not be read")
+    elif ie != 0:
+        problems.append(
+            f"tg1 reported {ie} input errors; the frames did not arrive clean")
+
+    return {
+        "verdict": "PASS" if not problems else "FAIL",
+        "problems": problems,
+    }
+
+
+# A traffic reading that passes every clause, copied and mutated per test so a
+# single wrong field is what fails a case, not a hand-built dict per test.
 
 try:
     from qemu_test import QemuSystemTest

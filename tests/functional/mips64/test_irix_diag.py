@@ -50,8 +50,8 @@ stalls under the container the functional tests run in, so it is left to
 manual runs. The project checkout's irix-online-diagnostics notebook
 characterizes all eleven.
 
-test_irix_diag_verdict.py proves the verdict logic against the real
-captured transcript without booting anything.
+diag_verdict() below scores the transcript with lib_prom.verdict(),
+whose own unit tests pin that scoring without booting anything.
 """
 
 import json
@@ -62,7 +62,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from lib_prom import (FORK_ROOT, MACHINES, drive_console, require_assets,
-                      run_record, utc_now)
+                      run_record, strip_ansi, utc_now, verdict)
 
 try:
     from qemu_test import QemuSystemTest
@@ -70,7 +70,53 @@ try:
 except (ImportError, RuntimeError):
     QemuSystemTest = None
 
-from test_irix_diag_verdict import diag_verdict
+# A pass requires the machine to have reached its IRIX release banner and
+# a root shell, and each of the two diagnostics -- oldisk (disk) and olmem
+# (memory and cache, five subtests) -- to have printed its own RSLT PASS
+# and a META TOTAL summary of N passes and zero non-passes.
+ASSERTIONS = (
+    ("IRIX release banner", re.compile(r"IRIX Release 6\.5 IP27")),
+    ("root shell", re.compile(r"IRIX Release 6\.5 IP27 \w")),
+    # oldisk: the disk exerciser's async-direct pattern pass and its
+    # one-pass summary.
+    ("oldisk async-direct pass",
+     re.compile(r"RSLT\s+async-direct\s+PASS")),
+    ("oldisk summary all passed",
+     re.compile(r"META\s+TOTAL\s+1\s+0\b")),
+    # olmem: five memory and cache subtests, all passing.
+    ("olmem tagram pass", re.compile(r"RSLT\s+tagram\s+PASS")),
+    ("olmem l1cache pass", re.compile(r"RSLT\s+l1cache\s+PASS")),
+    ("olmem l2cache pass", re.compile(r"RSLT\s+l2cache\s+PASS")),
+    ("olmem addr-pattern pass",
+     re.compile(r"RSLT\s+addr-pattern\s+PASS")),
+    ("olmem memaddr pass", re.compile(r"RSLT\s+memaddr\s+PASS")),
+    ("olmem summary all passed",
+     re.compile(r"META\s+TOTAL\s+5\s+0\b")),
+)
+
+# Kernel and diagnostic failure spellings. "NON-PASSES" is a column
+# header oldisk always prints, so it is not a marker; a real non-pass
+# shows as a nonzero count in the META TOTAL line, which the summary
+# assertion catches.
+TRIPWIRES = (
+    ("oldisk async-direct failed", "RSLT async-direct   FAIL"),
+    ("pattern test failed", "Patterntest Fail"),
+    ("the guest panicked", "PANIC"),
+    ("the guest took a bus error", "Bus error"),
+    ("the guest took a data bus error", "Data bus error"),
+)
+
+
+def diag_verdict(log, reached=True):
+    """PASS iff every required line appeared, no failure spelling did,
+    and the console driver saw both diagnostics' summary lines."""
+    problems = verdict(strip_ansi(log), ASSERTIONS, TRIPWIRES)
+    if not reached:
+        problems.append(
+            "console driver did not see both diagnostics' summary lines "
+            "before timeout -- the run never proved they finished")
+    return {"verdict": "PASS" if not problems else "FAIL",
+            "problems": problems}
 
 
 RELEASE = "6.5.30"
