@@ -183,12 +183,12 @@ static void vector_write(QTestState *qts, uint64_t route, uint64_t address,
  * arguments after it -- the two cannot share one string, since the machine
  * type takes only one "-M" and a preset override has to ride inside it.
  */
-static QTestState *start_module_with(const char *machine_options,
-                                     const char *extra)
+/*
+ * Give each node the number the module's routing is written in terms of.
+ * Nothing addresses anything before this runs, at boot or after a reset.
+ */
+static void number_the_nodes(QTestState *qts)
 {
-    QTestState *qts = qtest_initf("-M origin2000%s -smp 8 "
-                                  "-m 256M -d unimp,guest_errors %s",
-                                  machine_options, extra);
     const unsigned int numbers[] = { 0x11, 0x12, 0x21, 0x22 };
     unsigned int i;
 
@@ -198,18 +198,17 @@ static QTestState *start_module_with(const char *machine_options,
         g_assert_cmphex((hub_read(qts, i, NI_STATUS) >> 8) & 0xff,
                         ==, numbers[i]);
     }
+}
+
+static QTestState *start_module_with(const char *machine_options,
+                                     const char *extra)
+{
+    QTestState *qts = qtest_initf("-M origin2000%s -smp 8 "
+                                  "-m 256M -d unimp,guest_errors %s",
+                                  machine_options, extra);
+
+    number_the_nodes(qts);
     return qts;
-}
-
-static QTestState *start_module(void)
-{
-    return start_module_with("", "");
-}
-
-/* The io6g preset: MediaIO's second IOC3, both chips' keyboard/mouse. */
-static QTestState *start_module_io6g(void)
-{
-    return start_module_with(",baseio-preset=io6g", "");
 }
 
 static void program_module(QTestState *qts)
@@ -316,6 +315,49 @@ static void program_baseio_ioc3(QTestState *qts)
                         BRIDGE_DEV_MEMORY_SPACE | (IOC3_MMIO >> 20));
 }
 
+/*
+ * One machine per preset serves this file, started on first use and reset
+ * for each case that asks for it. Building a four-node module with eight
+ * processors and 256 MB is what this file spent its time on: it did it
+ * seventeen times, eight of them inside one loop over the processors that
+ * may store a repair.
+ */
+static QTestState *module;
+static QTestState *module_io6g;
+
+/*
+ * Hand one of them back, reset and renumbered. Every case reprograms the
+ * routing and the controller's window itself, exactly as it did after a
+ * boot, and checking the controller's memory decode is off here is what
+ * proves the reset landed before that reprogramming starts.
+ */
+static QTestState *reset_module_machine(QTestState **slot,
+                                        const char *machine_options)
+{
+    if (!*slot) {
+        *slot = start_module_with(machine_options, "");
+        return *slot;
+    }
+
+    qtest_system_reset(*slot);
+    number_the_nodes(*slot);
+    g_assert_cmphex(baseio_window_read(*slot, BRIDGE_CFG0(IOC3_DEVICE) +
+                                       PCI_COMMAND) & PCI_COMMAND_MEMORY,
+                    ==, 0);
+    return *slot;
+}
+
+static QTestState *start_module(void)
+{
+    return reset_module_machine(&module, "");
+}
+
+/* The io6g preset: MediaIO's second IOC3, both chips' keyboard/mouse. */
+static QTestState *start_module_io6g(void)
+{
+    return reset_module_machine(&module_io6g, ",baseio-preset=io6g");
+}
+
 static void program_mio_ioc3(QTestState *qts)
 {
     baseio_window_write(qts, BRIDGE_CFG0(MIO_IOC3_DEVICE) + PCI_BAR0,
@@ -346,7 +388,6 @@ static void test_baseio_timekeeper_storage_reset(void)
                     ==, 0xc3);
     g_assert_cmphex(baseio_window_readb(qts, IOC3_TIMEKEEPER + 0x7ff7),
                     ==, 0x3c);
-    qtest_quit(qts);
 }
 
 static void test_baseio_timekeeper_repair_stores(void)
@@ -411,7 +452,6 @@ static void test_baseio_timekeeper_repair_stores(void)
         g_assert_cmphex(baseio_window_readb(qts,
                                             IOC3_TIMEKEEPER + 0x04bc),
                         ==, checksum);
-        qtest_quit(qts);
     }
 }
 
@@ -458,7 +498,6 @@ static void test_mio_ioc3_subsystem_id(void)
     g_assert_cmphex(baseio_window_read(qts, BRIDGE_CFG0(MIO_IOC3_DEVICE) +
                                        PCI_SUBSYSTEM),
                     ==, SUBSYSTEM(0xc301));
-    qtest_quit(qts);
 }
 
 /*
@@ -492,7 +531,6 @@ static void test_io6g_ps2(void)
                     ==, 0xc0faaa00);
     g_assert_cmphex(baseio_window_read(qts, MIO_IOC3_WINDOW + KBC_AUX_RECEIVE),
                     ==, 0xe8faaa00);
-    qtest_quit(qts);
 }
 
 /*
@@ -540,8 +578,6 @@ static void test_io6g_mio_keyboard_reaches_bridge_pin_6(void)
                     INT_KEYBOARD, ==, 0);
     g_assert_cmphex(baseio_window_read(qts, BRIDGE_INT_STATUS) &
                     BRIDGE_PIN_MIO_IOC3, ==, 0);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -604,8 +640,6 @@ static void test_io6g_mio_keyboard_backlog_reaches_bridge_pin_6(void)
                     INT_KEYBOARD, ==, 0);
     g_assert_cmphex(baseio_window_read(qts, BRIDGE_INT_STATUS) &
                     BRIDGE_PIN_MIO_IOC3, ==, 0);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -651,8 +685,6 @@ static void test_io6g_mio_serial_loopback(void)
         g_assert_cmphex(baseio_window_readb(qts, base + REG_LSR) &
                         UART_LSR_DR, ==, 0);
     }
-
-    qtest_quit(qts);
 }
 
 /*
@@ -883,12 +915,12 @@ static void test_io6g_onewire_board_parts(void)
                   strcmp(part[1], IO6G_MIO_BOARD_PART) == 0) ||
                  (strcmp(part[0], IO6G_MIO_BOARD_PART) == 0 &&
                   strcmp(part[1], IO6G_BOARD_PART) == 0));
-
-    qtest_quit(qts);
 }
 
 int main(int argc, char **argv)
 {
+    int ret;
+
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("sn0/baseio/baseio-timekeeper-storage-reset",
                    test_baseio_timekeeper_storage_reset);
@@ -907,5 +939,14 @@ int main(int argc, char **argv)
                    test_io6g_mio_serial_loopback);
     qtest_add_func("sn0/baseio/io6g-onewire-board-parts",
                    test_io6g_onewire_board_parts);
-    return g_test_run();
+
+    ret = g_test_run();
+    if (module) {
+        qtest_quit(module);
+    }
+    if (module_io6g) {
+        qtest_quit(module_io6g);
+    }
+
+    return ret;
 }
