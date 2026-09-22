@@ -856,7 +856,14 @@ static void rad4_cursor_update_image(PsitechRad4State *s)
             int sub;
 
             for (sub = 0; sub < 4; sub++) {
-                unsigned val = (byte >> (sub * 2)) & 0x3;
+                /*
+                 * The IBM RGB561 Architecture spec (Preliminary Rev 1.1,
+                 * page 3, "Cursor Pixel Map" / Table 4) packs the first
+                 * (leftmost) of each four-pixel group into bits[7:6] and
+                 * the last (rightmost) into bits[1:0] -- most-significant
+                 * pair first, not least-significant pair first.
+                 */
+                unsigned val = (byte >> (6 - sub * 2)) & 0x3;
                 uint32_t pixel = 0; /* Transparent (QEMUCursor alpha is 0). */
 
                 if (val != 0) {
