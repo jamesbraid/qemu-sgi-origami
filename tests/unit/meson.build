@@ -227,7 +227,8 @@ if have_system
   if not get_option('tsan')
     if host_os != 'windows'
         tests += {
-          'test-char': ['socket-helpers.c', qom, io, chardev]
+          'test-char': ['socket-helpers.c', 'wctablet-stubs.c',
+                       '../../chardev/wctablet.c', qom, io, chardev]
         }
     endif
 
