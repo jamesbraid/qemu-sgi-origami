@@ -22,6 +22,7 @@
 #define CMAP_HIGH_BYTE    "../tests/data/mgras/cmap-high-byte.replay"
 #define CHAR_MODES        "../tests/data/mgras/char-modes.replay"
 #define CMAP_XMAP_WID     "../tests/data/mgras/cmap-xmap-wid.replay"
+#define ROOT_ICON         "../tests/data/mgras/root-icon.replay"
 #define INVALID_REPLAY    "../tests/data/mgras/invalid.replay"
 #define INVALID_BOUNDS    "../tests/data/mgras/invalid-bounds.replay"
 #define INVALID_EXTRA     "../tests/data/mgras/invalid-extra.replay"
@@ -413,6 +414,11 @@ static void test_cmap_xmap_wid(void)
     run_replay(CMAP_XMAP_WID, false);
 }
 
+static void test_root_icon(void)
+{
+    run_replay(ROOT_ICON, false);
+}
+
 static void test_invalid_replay(const char *path, const char *message)
 {
     if (g_test_subprocess()) {
@@ -494,6 +500,7 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-mgras/cmap-high-byte", test_cmap_high_byte);
     qtest_add_func("sgi-mgras/char-modes", test_char_modes);
     qtest_add_func("sgi-mgras/cmap-xmap-wid", test_cmap_xmap_wid);
+    qtest_add_func("sgi-mgras/root-icon", test_root_icon);
     qtest_add_func("sgi-mgras/invalid-number", test_invalid_number);
     qtest_add_func("sgi-mgras/invalid-bounds", test_invalid_bounds);
     qtest_add_func("sgi-mgras/invalid-extra", test_invalid_extra);

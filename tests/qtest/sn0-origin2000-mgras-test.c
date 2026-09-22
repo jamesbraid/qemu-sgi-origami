@@ -147,6 +147,14 @@
 #define SI_FILLMODE_GLYPH_ROW    0x10400008
 #define SI_FILLMODE_BYTE_XFER    0x10c00000
 
+/*
+ * Byte-transfer mode's own packing register; see
+ * hw/misc/sgi-mgras-raster.c's SI_REG_BYTE_XFER_PACKING comment.
+ */
+#define REG_BYTE_XFER_PACKING     0x159
+#define SI_BYTE_XFER_PACKING_BYTES 0x8000
+#define SI_BYTE_XFER_PACKING_PAIRS 0x0080
+
 
 #define SI_LOGIC_OP_COPY        0x3
 #define SI_LOGIC_OP_XOR         0x6
@@ -1512,7 +1520,9 @@ static void test_direct_glyph_row_char_l_execute(void)
 
 
 /*
- * FILLMODE_BYTE_XFER delivers eight indexed pixels per CHAR_L execute. An
+ * FILLMODE_BYTE_XFER delivers eight indexed pixels per CHAR_L execute when
+ * register 0x159 selects the packing (see REG_BYTE_XFER_PACKING); this is
+ * also the check that 0x159 == 0x8000 keeps that eight-pixel path. An
  * 18-column-wide rect makes the row's skip into the 8-byte unit alternate
  * 0, 4, 0, ... per row (skip = (row * 4 * ceil(width / 4)) % 8), covering
  * both values in two rows. Each unit writes a fresh CHAR_H/CHAR_L pair with
@@ -1529,6 +1539,9 @@ static void test_direct_byte_row(void)
     si_tag_wid(qts, 120, 120, 137, 121, 5);
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_FILLMODE, SI_FILLMODE_BYTE_XFER));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BYTE_XFER_PACKING,
+                            SI_BYTE_XFER_PACKING_BYTES));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_DRBPOINTERS, 5u << 16));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -1575,6 +1588,57 @@ static void test_direct_byte_row(void)
     g_assert_cmphex(si_test_pixel(qts, 124, 121), ==, 0x30);
     g_assert_cmphex(si_test_pixel(qts, 137, 121), ==, 0x3d);
     g_assert_cmphex(si_test_wid(qts, 137, 121), ==, 5);
+
+    qtest_quit(qts);
+}
+
+
+/*
+ * Register 0x159 == 0x0080 (the chooser icons' packing, see
+ * tests/data/mgras/root-icon.replay) delivers two indexed pixels per
+ * CHAR_L execute: pixel 0 from CHAR_H bits 7:0, pixel 1 from CHAR_L bits
+ * 7:0. A 6-wide, 3-row rect needs ceil(6 / 2) = 3 executes per row, no
+ * skip. Every execute's other three bytes are a constant, non-replicated
+ * marker distinct from the low byte, to pin down that only bits 7:0 feed
+ * the pixel.
+ */
+static void test_direct_byte_row_pairs(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+
+    si_tag_wid(qts, 200, 200, 205, 202, 9);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_FILLMODE, SI_FILLMODE_BYTE_XFER));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BYTE_XFER_PACKING,
+                            SI_BYTE_XFER_PACKING_PAIRS));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (200u << 16) | 200u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (205u << 16) | 202u));
+
+    for (int row = 0; row < 3; row++) {
+        for (int unit = 0; unit < 3; unit++) {
+            uint8_t pixel0 = 0x10 + row * 0x10 + unit * 2;
+            uint8_t pixel1 = pixel0 + 1;
+
+            qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                         SI_COMMAND(REG_CHAR_H, 0x12345600u | pixel0));
+            qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                         SI_COMMAND_EXEC(REG_CHAR_L, 0xabcdef00u | pixel1));
+        }
+    }
+
+    for (int row = 0; row < 3; row++) {
+        for (int col = 0; col < 6; col++) {
+            g_assert_cmphex(si_test_pixel(qts, 200 + col, 200 + row), ==,
+                            0x10 + row * 0x10 + col);
+        }
+    }
+    g_assert_cmphex(si_test_wid(qts, 200, 200), ==, 9);
+    g_assert_cmphex(si_test_wid(qts, 205, 202), ==, 9);
 
     qtest_quit(qts);
 }
@@ -3196,6 +3260,8 @@ int main(int argc, char **argv)
                    test_direct_glyph_row_char_l_execute);
     qtest_add_func("sn0/origin2000/mgras/direct-byte-row",
                    test_direct_byte_row);
+    qtest_add_func("sn0/origin2000/mgras/direct-byte-row-pairs",
+                   test_direct_byte_row_pairs);
     qtest_add_func("sn0/origin2000/mgras/display-surface-conversion",
                    test_display_surface_conversion);
     qtest_add_func("sn0/origin2000/mgras/reset-refreshes-display-surface",
