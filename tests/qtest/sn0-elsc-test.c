@@ -10,6 +10,7 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "qobject/qjson.h"
 #include "sn0-user-image.h"
 #include "sgi-migrate.h"
 
@@ -120,13 +121,48 @@ static unsigned elsc_transact(QTestState *qts, const uint8_t *req,
     return elsc_transact_at(qts, HUB_LOCAL, req, req_len, resp, resp_cap);
 }
 
+/*
+ * One plain origin200 serves every case that names no other command line,
+ * started in main(). Cases setting the switches, a second tower, an extra
+ * chardev, a migration destination or -no-shutdown start their own.
+ */
+static QTestState *qts;
+
+/*
+ * Open such a case. Reset leaves the adapter idle, which its pending-
+ * interrupt bit reports set, and checking that here is what proves the
+ * previous case is not still half-way through a frame. The bus-free bit
+ * is not checked with it: the controller drives the arbitration ring
+ * continuously, so the wire is busy whenever anything is listening.
+ */
+static void elsc_reset(void)
+{
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + I2C_CTRL) & CTL_PIN, ==,
+                    CTL_PIN);
+}
+
+/*
+ * A framed response's text against what it must begin with. The bare
+ * memcmp assertions this replaces failed with a line number and nothing
+ * else; the controller answers in ASCII, so printing both sides is what
+ * makes the failure readable.
+ */
+static void assert_response_begins(const uint8_t *resp, const char *want)
+{
+    g_autofree char *seen = g_strndup((const char *)&resp[1], strlen(want));
+
+    g_assert_cmpstr(seen, ==, want);
+}
+
 static void test_ver_command_succeeds(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[8], resp[RESP_CAP];
     const uint8_t *version_end;
     size_t version_len;
     unsigned req_len, resp_len;
+
+    elsc_reset();
 
     req_len = build_request(req, "ver");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
@@ -135,7 +171,7 @@ static void test_ver_command_succeeds(const void *data)
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     /* Succeeding takes more than a valid checksum: the text begins "ok". */
     g_assert_cmpuint(resp[0], >=, 4);
-    g_assert(memcmp(&resp[1], "ok ", 3) == 0);
+    assert_response_begins(resp, "ok ");
 
     /*
      * Keep the synthetic identity, including its terminator, within the
@@ -145,15 +181,14 @@ static void test_ver_command_succeeds(const void *data)
     version_len = version_end ? version_end - &resp[4] : resp[0] - 3;
     g_assert_cmpuint(version_len, >, 0);
     g_assert_cmpuint(version_len + 1, <=, 8);
-
-    qtest_quit(qts);
 }
 
 static void test_bad_request_checksum_gets_err_csum(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[8], resp[RESP_CAP];
     unsigned req_len, resp_len;
+
+    elsc_reset();
 
     req_len = build_request(req, "ver");
     req[req_len - 1] ^= 0xff;  /* corrupt only the checksum byte */
@@ -162,16 +197,15 @@ static void test_bad_request_checksum_gets_err_csum(const void *data)
 
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 8);
-    g_assert(memcmp(&resp[1], "err csum", 8) == 0);
-
-    qtest_quit(qts);
+    assert_response_begins(resp, "err csum");
 }
 
 static void test_unimplemented_command_gets_err_cmd(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[8], resp[RESP_CAP];
     unsigned req_len, resp_len;
+
+    elsc_reset();
 
     /*
      * An unimplemented mnemonic must complete the transaction rather than
@@ -182,9 +216,7 @@ static void test_unimplemented_command_gets_err_cmd(const void *data)
 
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 7);
-    g_assert(memcmp(&resp[1], "err cmd", 7) == 0);
-
-    qtest_quit(qts);
+    assert_response_begins(resp, "err cmd");
 }
 
 static void test_read_switches_command(const void *data)
@@ -199,7 +231,7 @@ static void test_read_switches_command(const void *data)
 
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 5);
-    g_assert(memcmp(&resp[1], "ok ff", 5) == 0);
+    assert_response_begins(resp, "ok ff");
     qtest_quit(qts);
 
     qts = qtest_init("-M origin200,elsc-dip-switches=1");
@@ -207,7 +239,7 @@ static void test_read_switches_command(const void *data)
 
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 5);
-    g_assert(memcmp(&resp[1], "ok fe", 5) == 0);
+    assert_response_begins(resp, "ok fe");
     qtest_quit(qts);
 }
 
@@ -234,7 +266,7 @@ static void test_read_switches_roundtrip(const void *data)
                                 sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 5);
-    g_assert(memcmp(&resp[1], "ok ef", 5) == 0);
+    assert_response_begins(resp, "ok ef");
     qtest_quit(qts);
 
     qts = qtest_init(
@@ -246,7 +278,7 @@ static void test_read_switches_roundtrip(const void *data)
                                 sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 5);
-    g_assert(memcmp(&resp[1], "ok ef", 5) == 0);
+    assert_response_begins(resp, "ok ef");
 
     /* Node 1's own Hub must know its number before anything can name it. */
     sn0_program_nasid(qts, 1);
@@ -255,7 +287,7 @@ static void test_read_switches_roundtrip(const void *data)
                                 resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 5);
-    g_assert(memcmp(&resp[1], "ok ef", 5) == 0);
+    assert_response_begins(resp, "ok ef");
 
     qtest_quit(qts);
 }
@@ -480,8 +512,9 @@ static void assert_shared_five_position_ring(QTestState *qts,
 /* Every grant address is otherwise unmatched on the Origin 200 I2C bus. */
 static void test_arbitration_grant_addresses_are_unmatched(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     unsigned token;
+
+    elsc_reset();
 
     arb_enable_observer(qts);
     for (token = ARB_SIGNAL1; token <= ARB_SIGNAL2 + 7; token++) {
@@ -492,8 +525,6 @@ static void test_arbitration_grant_addresses_are_unmatched(const void *data)
         qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
                      CTL_PIN | CTL_ESO | CTL_STO);
     }
-
-    qtest_quit(qts);
 }
 
 /*
@@ -546,16 +577,18 @@ static uint8_t arb_wait_for_signal(QTestState *qts)
  */
 static void test_arbitration_three_loop_wait(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t sig;
+
+    elsc_reset();
 
     arb_enable_observer(qts);
 
     arb_wait_for_absence(qts);
     sig = arb_wait_for_signal(qts);
-    g_assert(sig == ARB_SIGNAL1 || sig == ARB_SIGNAL2);
-
-    qtest_quit(qts);
+    /* Either signal byte is right; asserting one at a time prints it. */
+    if (sig != ARB_SIGNAL1) {
+        g_assert_cmphex(sig, ==, ARB_SIGNAL2);
+    }
 }
 
 /*
@@ -565,8 +598,9 @@ static void test_arbitration_three_loop_wait(const void *data)
  */
 static void test_arbitration_repeats(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t first, second;
+
+    elsc_reset();
 
     arb_enable_observer(qts);
 
@@ -576,8 +610,6 @@ static void test_arbitration_repeats(const void *data)
     arb_wait_for_absence(qts);
     second = arb_wait_for_signal(qts);
     g_assert_cmphex(second, ==, first);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -586,9 +618,10 @@ static void test_arbitration_repeats(const void *data)
  */
 static void test_arbitration_visits_other_processor_codes(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     bool saw_code_0 = false, saw_code_1 = false;
     int i;
+
+    elsc_reset();
 
     arb_enable_observer(qts);
 
@@ -607,8 +640,6 @@ static void test_arbitration_visits_other_processor_codes(const void *data)
 
     g_assert_true(saw_code_0);
     g_assert_true(saw_code_1);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -617,10 +648,11 @@ static void test_arbitration_visits_other_processor_codes(const void *data)
  */
 static void test_arbitration_observes_grant_with_staged_start(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[8], resp[RESP_CAP];
     uint8_t signal, grant;
     unsigned req_len, resp_len, i;
+
+    elsc_reset();
 
     arb_enable_observer(qts);
 
@@ -656,7 +688,7 @@ static void test_arbitration_observes_grant_with_staged_start(const void *data)
     }
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], >=, 2);
-    g_assert(resp[1] == 'o' && resp[2] == 'k');
+    assert_response_begins(resp, "ok");
 
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
                  CTL_PIN | CTL_ESO | CTL_STO);
@@ -683,8 +715,6 @@ static void test_arbitration_observes_grant_with_staged_start(const void *data)
                  CTL_PIN | CTL_ESO | CTL_STO);
     arb_wait_for_absence(qts);
     arb_wait_for_signal(qts);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -694,10 +724,11 @@ static void test_arbitration_observes_grant_with_staged_start(const void *data)
  */
 static void test_arbitration_fixed_cadence_walks_codes(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     bool seen[8] = { false };
     unsigned seen_count = 0;
     int i;
+
+    elsc_reset();
 
     arb_enable_observer(qts);
     arb_wait_for_absence(qts);
@@ -714,15 +745,14 @@ static void test_arbitration_fixed_cadence_walks_codes(const void *data)
     }
 
     g_assert_cmpuint(seen_count, ==, 8);
-
-    qtest_quit(qts);
 }
 
 /* A busy bus retries without consuming a processor's turn. */
 static void test_arbitration_busy_tick_does_not_advance(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t signal;
+
+    elsc_reset();
 
     arb_enable_observer(qts);
     arb_wait_for_absence(qts);
@@ -747,17 +777,16 @@ static void test_arbitration_busy_tick_does_not_advance(const void *data)
     g_assert_cmpuint(read_data(qts) & 7, ==, ((signal & 7) + 1) & 7);
 
     g_assert_cmpuint(arb_next_code(qts) & 7, ==, ((signal & 7) + 2) & 7);
-
-    qtest_quit(qts);
 }
 
 /* Each held slot publishes the next code with no zero gap between grants. */
 static void test_arbitration_advances_each_slot(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint64_t value;
     unsigned code;
     int i;
+
+    elsc_reset();
 
     arb_enable_observer(qts);
     arb_wait_for_absence(qts);
@@ -771,15 +800,14 @@ static void test_arbitration_advances_each_slot(const void *data)
         g_assert_true(arb_is_signal_byte(value));
         g_assert_cmpuint(value & 7, ==, code);
     }
-
-    qtest_quit(qts);
 }
 
 /* One grant stays readable for its whole held slot, then the ring advances. */
 static void test_arbitration_one_publication_per_slot(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t grant;
+
+    elsc_reset();
 
     arb_enable_observer(qts);
     arb_wait_for_absence(qts);
@@ -795,17 +823,16 @@ static void test_arbitration_one_publication_per_slot(const void *data)
     /* Then the ring advances by exactly one code. */
     g_assert_cmpuint(arb_next_code(qts) & 7, ==,
                      (((unsigned)grant & 7) + 1) & 7);
-
-    qtest_quit(qts);
 }
 
 /* A complete revolution publishes all eight codes in sequence. */
 static void test_arbitration_walks_all_codes(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint64_t value;
     unsigned code;
     unsigned i;
+
+    elsc_reset();
 
     arb_enable_observer(qts);
     arb_wait_for_absence(qts);
@@ -819,8 +846,6 @@ static void test_arbitration_walks_all_codes(const void *data)
         g_assert_true(arb_is_signal_byte(value));
         g_assert_cmpuint(value & 7, ==, code);
     }
-
-    qtest_quit(qts);
 }
 
 /*
@@ -891,8 +916,9 @@ static unsigned elsc_read_response(QTestState *qts, uint8_t *resp,
  */
 static void test_pending_response_announces_signal2(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     g_autofree char *out = NULL;
+
+    elsc_reset();
 
     arb_enable_observer(qts);
 
@@ -904,8 +930,6 @@ static void test_pending_response_announces_signal2(const void *data)
     out = qtest_hmp(qts, "info elsc");
     g_assert_nonnull(strstr(out, "pending response"));
     g_assert_nonnull(strstr(out, "for processor code 0"));
-
-    qtest_quit(qts);
 }
 
 /*
@@ -917,9 +941,10 @@ static void test_pending_response_announces_signal2(const void *data)
  */
 static void test_consumed_response_reverts_to_signal1(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[8], resp[RESP_CAP];
     unsigned req_len;
+
+    elsc_reset();
 
     arb_enable_observer(qts);
 
@@ -928,8 +953,6 @@ static void test_consumed_response_reverts_to_signal1(const void *data)
 
     arb_wait_for_absence(qts);
     g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL1);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -940,9 +963,10 @@ static void test_consumed_response_reverts_to_signal1(const void *data)
  */
 static void test_announced_response_read_after_stop(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t resp[RESP_CAP];
     unsigned resp_len;
+
+    elsc_reset();
 
     arb_enable_observer(qts);
 
@@ -954,12 +978,10 @@ static void test_announced_response_read_after_stop(const void *data)
     resp_len = elsc_read_response(qts, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], >=, 4);
-    g_assert(memcmp(&resp[1], "ok ", 3) == 0);
+    assert_response_begins(resp, "ok ");
 
     arb_wait_for_absence(qts);
     g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL1);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -970,9 +992,10 @@ static void test_announced_response_read_after_stop(const void *data)
  */
 static void test_new_request_supersedes_pending_response(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[8], resp[RESP_CAP];
     unsigned req_len, resp_len;
+
+    elsc_reset();
 
     arb_enable_observer(qts);
 
@@ -984,12 +1007,10 @@ static void test_new_request_supersedes_pending_response(const void *data)
     req_len = build_request(req, "rsw");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert(memcmp(&resp[1], "ok ff", 5) == 0);
+    assert_response_begins(resp, "ok ff");
 
     arb_wait_for_absence(qts);
     g_assert_cmphex(arb_wait_for_signal(qts), ==, ARB_SIGNAL1);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -1012,7 +1033,7 @@ static void test_acp_command_writes_to_console(const void *data)
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     /* "hi" is two characters, accepted count in hex is "2": "ok 2". */
     g_assert_cmpuint(resp[0], ==, 4);
-    g_assert(memcmp(&resp[1], "ok 2", 4) == 0);
+    assert_response_begins(resp, "ok 2");
 
     /*
      * Not qtest_qmp_assert_success_ref(): it unwraps the result as a
@@ -1022,7 +1043,11 @@ static void test_acp_command_writes_to_console(const void *data)
     rb = qtest_qmp(
         qts, "{'execute': 'ringbuf-read', "
              "'arguments': {'device': 'aux', 'size': 64}}");
-    g_assert(qdict_haskey(rb, "return"));
+    if (!qdict_haskey(rb, "return")) {
+        g_autoptr(GString) text = qobject_to_json(QOBJECT(rb));
+
+        g_error("ringbuf-read failed: %s", text->str);
+    }
     captured = qdict_get_str(rb, "return");
     g_assert_cmpstr(captured, ==, "hi");
     qobject_unref(rb);
@@ -1043,7 +1068,11 @@ static void assert_aux_captured(QTestState *qts, const char *id,
     rb = qtest_qmp(
         qts, "{'execute': 'ringbuf-read', "
              "'arguments': {'device': %s, 'size': 64}}", id);
-    g_assert(qdict_haskey(rb, "return"));
+    if (!qdict_haskey(rb, "return")) {
+        g_autoptr(GString) text = qobject_to_json(QOBJECT(rb));
+
+        g_error("ringbuf-read failed: %s", text->str);
+    }
     g_assert_cmpstr(qdict_get_str(rb, "return"), ==, expect);
     qobject_unref(rb);
 }
@@ -1073,7 +1102,7 @@ static void test_two_towers_only_master_aux_active(const void *data)
     resp_len = elsc_transact_at(qts, HUB_LOCAL, req, req_len, resp,
                                 sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert(memcmp(&resp[1], "ok 2", 4) == 0);
+    assert_response_begins(resp, "ok 2");
 
     sn0_program_nasid(qts, 1);
 
@@ -1081,7 +1110,7 @@ static void test_two_towers_only_master_aux_active(const void *data)
     resp_len = elsc_transact_at(qts, HUB_BY_NODE + NODE_STRIDE, req,
                                 req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert(memcmp(&resp[1], "ok 2", 4) == 0);
+    assert_response_begins(resp, "ok 2");
 
     assert_aux_captured(qts, "aux0", "n0");
     assert_aux_captured(qts, "aux1", "");
@@ -1263,13 +1292,13 @@ static void test_two_towers_reset_keeps_cpu3_grant_live(const void *data)
     resp_len = elsc_transact_at(qts, explicit_zero, req, req_len, resp,
                                 sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     req_len = build_request(req, "rst");
     resp_len = elsc_transact_at(qts, explicit_zero, req, req_len, resp,
                                 sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
     qtest_qmp_eventwait(qts, "RESET");
 
     arb_enable_cpu_observer(qts, master_cpu, 0x1c);
@@ -1379,9 +1408,10 @@ static void test_two_towers_commensurate_poll_finds_cpu3_grant(const void *data)
 /* A dark console must not also wedge the guest: "ok <count>" regardless. */
 static void test_acp_with_no_backend_still_answers(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
+
+    elsc_reset();
 
     req_len = build_request(req, "acp 0 hi");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
@@ -1389,9 +1419,7 @@ static void test_acp_with_no_backend_still_answers(const void *data)
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     /* "hi" is two characters, accepted count in hex is "2": "ok 2". */
     g_assert_cmpuint(resp[0], ==, 4);
-    g_assert(memcmp(&resp[1], "ok 2", 4) == 0);
-
-    qtest_quit(qts);
+    assert_response_begins(resp, "ok 2");
 }
 
 /*
@@ -1410,11 +1438,13 @@ static int aux_listen(uint16_t *port)
     addr.sin_port = 0;
 
     lfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    g_assert(lfd >= 0);
-    g_assert(bind(lfd, (struct sockaddr *)&addr, sizeof(addr)) == 0);
-    g_assert(getsockname(lfd, (struct sockaddr *)&addr, &addrlen) == 0);
+    g_assert_cmpint(lfd, >=, 0);
+    g_assert_cmpint(bind(lfd, (struct sockaddr *)&addr, sizeof(addr)),
+                    ==, 0);
+    g_assert_cmpint(getsockname(lfd, (struct sockaddr *)&addr, &addrlen),
+                    ==, 0);
     *port = ntohs(addr.sin_port);
-    g_assert(listen(lfd, 1) == 0);
+    g_assert_cmpint(listen(lfd, 1), ==, 0);
     return lfd;
 }
 
@@ -1434,7 +1464,7 @@ static int aux_accept(int lfd)
     FD_SET(lfd, &readfds);
     g_assert_cmpint(select(lfd + 1, &readfds, NULL, NULL, &tv), ==, 1);
     fd = accept(lfd, NULL, 0);
-    g_assert(fd >= 0);
+    g_assert_cmpint(fd, >=, 0);
     val = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &val, sizeof(val));
     return fd;
@@ -1498,7 +1528,7 @@ static void test_get_returns_queued_console_input(const void *data)
 
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], >=, 6 + 5);
-    g_assert(memcmp(&resp[1], "acp 0 hello", 11) == 0);
+    assert_response_begins(resp, "acp 0 hello");
 
     close(fd);
     close(lfd);
@@ -1540,7 +1570,7 @@ static void test_escape_byte_is_not_queued(const void *data)
 
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 6 + 4);
-    g_assert(memcmp(&resp[1], "acp 0 ABCD", 10) == 0);
+    assert_response_begins(resp, "acp 0 ABCD");
 
     close(fd);
     close(lfd);
@@ -1554,39 +1584,38 @@ static void test_escape_byte_is_not_queued(const void *data)
  */
 static void test_supervisor_gating(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
+
+    elsc_reset();
 
     /* Protected before authenticating. */
     req_len = build_request(req, "rst");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 8);
-    g_assert(memcmp(&resp[1], "err perm", 8) == 0);
+    assert_response_begins(resp, "err perm");
 
     /* A password of the wrong length. */
     req_len = build_request(req, "pas ab");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 7);
-    g_assert(memcmp(&resp[1], "err arg", 7) == 0);
+    assert_response_begins(resp, "err arg");
 
     /* The factory-default password, exactly four characters. */
     req_len = build_request(req, "pas none");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     /* Protected command now succeeds. */
     req_len = build_request(req, "rst");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
-
-    qtest_quit(qts);
+    assert_response_begins(resp, "ok");
 }
 
 /*
@@ -1600,37 +1629,35 @@ static void test_supervisor_gating(const void *data)
  */
 static void test_dsc_sets_display_character(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
     g_autofree char *out = NULL;
+
+    elsc_reset();
 
     req_len = build_request(req, "dsc 4 E");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     out = qtest_hmp(qts, "info elsc");
     g_assert_nonnull(strstr(out, "display: \"    E   \""));
-
-    qtest_quit(qts);
 }
 
 /* A position past the eight-character display is an argument error. */
 static void test_dsc_bad_position_gets_err_arg(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
+
+    elsc_reset();
 
     req_len = build_request(req, "dsc 8 E");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 7);
-    g_assert(memcmp(&resp[1], "err arg", 7) == 0);
-
-    qtest_quit(qts);
+    assert_response_begins(resp, "err arg");
 }
 
 /*
@@ -1639,26 +1666,25 @@ static void test_dsc_bad_position_gets_err_arg(const void *data)
  */
 static void test_dsc_space_character_is_legal(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
     g_autofree char *out = NULL;
 
+    elsc_reset();
+
     req_len = build_request(req, "dsp AAAAAAAA");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     req_len = build_request(req, "dsc 4  ");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     out = qtest_hmp(qts, "info elsc");
     g_assert_nonnull(strstr(out, "display: \"AAAA AAA\""));
-
-    qtest_quit(qts);
 }
 
 /*
@@ -1669,22 +1695,23 @@ static void test_dsc_space_character_is_legal(const void *data)
  */
 static void test_dsp_overwrites_leaving_the_tail(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
     g_autofree char *after_dsp = NULL;
     g_autofree char *after_reject = NULL;
 
+    elsc_reset();
+
     req_len = build_request(req, "dsc 7 Z");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     req_len = build_request(req, "dsp testing");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     after_dsp = qtest_hmp(qts, "info elsc");
     g_assert_nonnull(strstr(after_dsp, "display: \"testingZ\""));
@@ -1693,12 +1720,10 @@ static void test_dsp_overwrites_leaving_the_tail(const void *data)
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 7);
-    g_assert(memcmp(&resp[1], "err arg", 7) == 0);
+    assert_response_begins(resp, "err arg");
 
     after_reject = qtest_hmp(qts, "info elsc");
     g_assert_nonnull(strstr(after_reject, "display: \"testingZ\""));
-
-    qtest_quit(qts);
 }
 
 /*
@@ -1804,10 +1829,11 @@ static unsigned firmware_style_command(QTestState *qts, const uint8_t *req,
  */
 static void test_boot_acceptance_sequence(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[8], resp[RESP_CAP];
     uint8_t nvram[16];
     unsigned req_len, resp_len, i;
+
+    elsc_reset();
 
     arb_enable_observer(qts);
 
@@ -1823,16 +1849,17 @@ static void test_boot_acceptance_sequence(const void *data)
     resp_len = firmware_style_command(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 5);
-    g_assert(memcmp(&resp[1], "ok ff", 5) == 0);
+    assert_response_begins(resp, "ok ff");
 
     req_len = build_request(req, "ver");
     resp_len = firmware_style_command(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], >=, 2);
-    g_assert(resp[1] == 'o' && resp[2] == 'k');
-    g_assert(resp[0] == 2 || resp[3] == ' ');
-
-    qtest_quit(qts);
+    assert_response_begins(resp, "ok");
+    /* Either a bare "ok" or "ok " and a version; asserting one prints it. */
+    if (resp[0] != 2) {
+        g_assert_cmpint(resp[3], ==, ' ');
+    }
 }
 
 /*
@@ -1841,15 +1868,16 @@ static void test_boot_acceptance_sequence(const void *data)
  */
 static void test_info_elsc_dump_empty(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
-    g_autofree char *out = qtest_hmp(qts, "info elsc");
+    g_autofree char *out = NULL;
+
+    elsc_reset();
+
+    out = qtest_hmp(qts, "info elsc");
 
     g_assert_nonnull(strstr(out, "rx queue: 0 byte(s)"));
     g_assert_nonnull(strstr(out, "pending response: none"));
     g_assert_nonnull(strstr(out, "signal1"));
     g_assert_nonnull(strstr(out, "console input idle"));
-
-    qtest_quit(qts);
 }
 
 /*
@@ -1895,39 +1923,38 @@ static void test_info_elsc_dump_shows_queued_input(const void *data)
  */
 static void test_pwr_query_reports_cold_power_on(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
+
+    elsc_reset();
 
     /* First query after a cold power-on: the latch reads 1. */
     req_len = build_request(req, "pwr q");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 4);
-    g_assert(memcmp(&resp[1], "ok 1", 4) == 0);
+    assert_response_begins(resp, "ok 1");
 
     /* Cleared on read: a second query in the same power cycle reads 0. */
     req_len = build_request(req, "pwr q");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 4);
-    g_assert(memcmp(&resp[1], "ok 0", 4) == 0);
+    assert_response_begins(resp, "ok 0");
 
     /* An unknown power subcommand is an unknown command, not a bad arg. */
     req_len = build_request(req, "pwr z");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 7);
-    g_assert(memcmp(&resp[1], "err cmd", 7) == 0);
+    assert_response_begins(resp, "err cmd");
 
     /* A known subcommand letter with a bad argument is a bad argument. */
     req_len = build_request(req, "pwr q x");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 7);
-    g_assert(memcmp(&resp[1], "err arg", 7) == 0);
-
-    qtest_quit(qts);
+    assert_response_begins(resp, "err arg");
 }
 
 /*
@@ -1940,18 +1967,19 @@ static void test_pwr_query_reports_cold_power_on(const void *data)
  */
 static void test_hbt_watchdog_control(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
     const char *ok_forms[] = { "hbt", "hbt 0", "hbt 1000 5" };
     unsigned i;
+
+    elsc_reset();
 
     for (i = 0; i < ARRAY_SIZE(ok_forms); i++) {
         req_len = build_request(req, ok_forms[i]);
         resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
         g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
         g_assert_cmpuint(resp[0], ==, 2);
-        g_assert(memcmp(&resp[1], "ok", 2) == 0);
+        assert_response_begins(resp, "ok");
     }
 
     /* A non-decimal argument is rejected. */
@@ -1959,14 +1987,14 @@ static void test_hbt_watchdog_control(const void *data)
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 7);
-    g_assert(memcmp(&resp[1], "err arg", 7) == 0);
+    assert_response_begins(resp, "err arg");
 
     /* A single non-zero argument is not a valid form -- only "hbt 0" is. */
     req_len = build_request(req, "hbt 5");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 7);
-    g_assert(memcmp(&resp[1], "err arg", 7) == 0);
+    assert_response_begins(resp, "err arg");
 
     /*
      * A two-argument form with a non-decimal delay reaches the two-arg
@@ -1976,16 +2004,14 @@ static void test_hbt_watchdog_control(const void *data)
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 7);
-    g_assert(memcmp(&resp[1], "err arg", 7) == 0);
+    assert_response_begins(resp, "err arg");
 
     /* Junk after the mnemonic with no delimiter is an unknown command. */
     req_len = build_request(req, "hbtx");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 7);
-    g_assert(memcmp(&resp[1], "err cmd", 7) == 0);
-
-    qtest_quit(qts);
+    assert_response_begins(resp, "err cmd");
 }
 
 /*
@@ -1998,36 +2024,37 @@ static void test_hbt_watchdog_control(const void *data)
  */
 static void test_rst_performs_machine_reset(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
     g_autofree char *out = NULL;
+
+    elsc_reset();
 
     /* Leave a mark on the display the reset must clear. */
     req_len = build_request(req, "dsc 4 E");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmpuint(resp[0], ==, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     /* Refused before authenticating. */
     req_len = build_request(req, "rst");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 8);
-    g_assert(memcmp(&resp[1], "err perm", 8) == 0);
+    assert_response_begins(resp, "err perm");
 
     /* Authenticate with the factory-default password. */
     req_len = build_request(req, "pas none");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmpuint(resp[0], ==, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     /* Now "rst" answers ok and the reset really fires. */
     req_len = build_request(req, "rst");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     /* The reset actually happened, not just an "ok". */
     qtest_qmp_eventwait(qts, "RESET");
@@ -2035,8 +2062,6 @@ static void test_rst_performs_machine_reset(const void *data)
     /* And it cleared controller state: the display is blank again. */
     out = qtest_hmp(qts, "info elsc");
     g_assert_nonnull(strstr(out, "display: \"        \""));
-
-    qtest_quit(qts);
 }
 
 /*
@@ -2049,14 +2074,15 @@ static void test_rst_performs_machine_reset(const void *data)
  */
 static void test_rst_reset_waits_for_ack_read(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
+
+    elsc_reset();
 
     req_len = build_request(req, "pas none");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmpuint(resp[0], ==, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     /* Write "rst" and end the transaction without reading the response. */
     elsc_request_without_read(qts, "rst");
@@ -2065,12 +2091,10 @@ static void test_rst_reset_waits_for_ack_read(const void *data)
     resp_len = elsc_read_response(qts, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     /* Only now, once the ack has been read, does the reset fire. */
     qtest_qmp_eventwait(qts, "RESET");
-
-    qtest_quit(qts);
 }
 
 /*
@@ -2081,20 +2105,21 @@ static void test_rst_reset_waits_for_ack_read(const void *data)
  */
 static void test_rst_reset_dropped_on_supersession(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
     g_autofree char *out = NULL;
 
+    elsc_reset();
+
     req_len = build_request(req, "dsc 4 E");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmpuint(resp[0], ==, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     req_len = build_request(req, "pas none");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmpuint(resp[0], ==, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     /* Issue "rst" but leave its ack unread. */
     elsc_request_without_read(qts, "rst");
@@ -2103,13 +2128,11 @@ static void test_rst_reset_dropped_on_supersession(const void *data)
     req_len = build_request(req, "ver");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert(memcmp(&resp[1], "ok ", 3) == 0);
+    assert_response_begins(resp, "ok ");
 
     /* No reset ran: the display mark is still there. */
     out = qtest_hmp(qts, "info elsc");
     g_assert_nonnull(strstr(out, "display: \"    E   \""));
-
-    qtest_quit(qts);
 }
 
 /*
@@ -2121,14 +2144,15 @@ static void test_rst_reset_dropped_on_supersession(const void *data)
  */
 static void test_rst_reset_fires_without_stop(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, i, total;
+
+    elsc_reset();
 
     req_len = build_request(req, "pas none");
     elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmpuint(resp[0], ==, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     /* Issue "rst"; the ack is left pending. */
     elsc_request_without_read(qts, "rst");
@@ -2149,12 +2173,10 @@ static void test_rst_reset_fires_without_stop(const void *data)
         resp[i] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);
     }
     g_assert_cmphex(frame_checksum(resp, total), ==, 0);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     /* Reading the last ack byte fired the reset; no STOP was issued. */
     qtest_qmp_eventwait(qts, "RESET");
-
-    qtest_quit(qts);
 }
 
 /*
@@ -2174,14 +2196,15 @@ static void test_rst_reset_fires_without_stop(const void *data)
  */
 static void test_rst_reset_survives_last_text_byte_nack(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, i;
+
+    elsc_reset();
 
     req_len = build_request(req, "pas none");
     elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmpuint(resp[0], ==, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     /* Issue "rst"; the ack is left pending (ARMED). */
     elsc_request_without_read(qts, "rst");
@@ -2203,7 +2226,7 @@ static void test_rst_reset_survives_last_text_byte_nack(const void *data)
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_ESO);   /* NAK the next byte */
     resp[2] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);   /* 'k' */
     /* The whole ack was delivered, though the checksum stays unread. */
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     /*
      * No STOP: a same-address repeated START carrying an unrelated "ver".
@@ -2224,8 +2247,6 @@ static void test_rst_reset_survives_last_text_byte_nack(const void *data)
      * not cancel it.
      */
     qtest_qmp_eventwait(qts, "RESET");
-
-    qtest_quit(qts);
 }
 
 /*
@@ -2243,15 +2264,16 @@ static void test_rst_reset_survives_last_text_byte_nack(const void *data)
  */
 static void test_rst_reset_releases_i2c_bus(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, i, total;
     uint8_t page7_byte0;
 
+    elsc_reset();
+
     req_len = build_request(req, "pas none");
     elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmpuint(resp[0], ==, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     /* Issue "rst"; leave the ack pending. */
     elsc_request_without_read(qts, "rst");
@@ -2271,7 +2293,7 @@ static void test_rst_reset_releases_i2c_bus(const void *data)
         }
         resp[i] = qtest_readq(qts, HUB_LOCAL + I2C_DATA);
     }
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     /* Reading the last ack byte fired the reset. */
     qtest_qmp_eventwait(qts, "RESET");
@@ -2298,8 +2320,6 @@ static void test_rst_reset_releases_i2c_bus(const void *data)
     qtest_writeq(qts, HUB_LOCAL + I2C_CTRL, CTL_PIN | CTL_ESO | CTL_STO);
 
     g_assert_cmphex(page7_byte0, ==, 0x37);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -2324,7 +2344,7 @@ static void test_rst_reset_survives_migration(const void *data)
     unsigned req_len, resp_len;
 
     tmpfs = g_dir_make_tmp("sn0-elsc-test-XXXXXX", &err);
-    g_assert(tmpfs);
+    g_assert_nonnull(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
     from = qtest_init("-M origin200");
@@ -2332,7 +2352,7 @@ static void test_rst_reset_survives_migration(const void *data)
     req_len = build_request(req, "pas none");
     elsc_transact(from, req, req_len, resp, sizeof(resp));
     g_assert_cmpuint(resp[0], ==, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     /* Accept "rst" but leave its ack unread: the reset is ARMED, not fired. */
     elsc_request_without_read(from, "rst");
@@ -2349,7 +2369,7 @@ static void test_rst_reset_survives_migration(const void *data)
     resp_len = elsc_read_response(to, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     qtest_qmp_eventwait(to, "RESET");
 
@@ -2385,7 +2405,7 @@ static void test_rst_reset_open_frame_defers_across_migration(const void *data)
     unsigned req_len;
 
     tmpfs = g_dir_make_tmp("sn0-elsc-test-XXXXXX", &err);
-    g_assert(tmpfs);
+    g_assert_nonnull(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
     from = qtest_init("-M origin200");
@@ -2393,7 +2413,7 @@ static void test_rst_reset_open_frame_defers_across_migration(const void *data)
     req_len = build_request(req, "pas none");
     elsc_transact(from, req, req_len, resp, sizeof(resp));
     g_assert_cmpuint(resp[0], ==, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     /*
      * Accept "rst" (ARMED), then open a read and take len, 'o', 'k' -- the
@@ -2411,7 +2431,7 @@ static void test_rst_reset_open_frame_defers_across_migration(const void *data)
     g_assert_cmpuint(resp[0], ==, 2);
     resp[1] = qtest_readq(from, HUB_LOCAL + I2C_DATA);   /* 'o' */
     resp[2] = qtest_readq(from, HUB_LOCAL + I2C_DATA);   /* 'k', seam commits */
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     dest_cmdline = g_strdup_printf("-M origin200 -incoming %s", uri);
     to = qtest_init(dest_cmdline);
@@ -2447,67 +2467,66 @@ static void test_rst_reset_open_frame_defers_across_migration(const void *data)
  */
 static void test_tas_lock_cell(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
+
+    elsc_reset();
 
     /* Free cell: the pre-acquisition value is 0, then 'A' installs. */
     req_len = build_request(req, "tas A");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 4);
-    g_assert(memcmp(&resp[1], "ok 0", 4) == 0);
+    assert_response_begins(resp, "ok 0");
 
     /* Re-acquiring reads the owner back literally -- "ok A", not "ok a". */
     req_len = build_request(req, "tas A");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 4);
-    g_assert(memcmp(&resp[1], "ok A", 4) == 0);
+    assert_response_begins(resp, "ok A");
 
     /* Held by 'A': a different caller reads the holder, not its own byte. */
     req_len = build_request(req, "tas z");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 4);
-    g_assert(memcmp(&resp[1], "ok A", 4) == 0);
+    assert_response_begins(resp, "ok A");
 
     /* Release: the pre-release value is the holder, and the cell frees. */
     req_len = build_request(req, "tas 0");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 4);
-    g_assert(memcmp(&resp[1], "ok A", 4) == 0);
+    assert_response_begins(resp, "ok A");
 
     /* 'z' is a valid non-hex channel: the free cell reads 0 and installs it. */
     req_len = build_request(req, "tas z");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 4);
-    g_assert(memcmp(&resp[1], "ok 0", 4) == 0);
+    assert_response_begins(resp, "ok 0");
 
     /* And it reads back as itself. */
     req_len = build_request(req, "tas z");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 4);
-    g_assert(memcmp(&resp[1], "ok z", 4) == 0);
+    assert_response_begins(resp, "ok z");
 
     /* More than one channel character is a bad argument. */
     req_len = build_request(req, "tas zz");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 7);
-    g_assert(memcmp(&resp[1], "err arg", 7) == 0);
+    assert_response_begins(resp, "err arg");
 
     /* Junk after the mnemonic with no delimiter is an unknown command. */
     req_len = build_request(req, "tasx");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 7);
-    g_assert(memcmp(&resp[1], "err cmd", 7) == 0);
-
-    qtest_quit(qts);
+    assert_response_begins(resp, "err cmd");
 }
 
 /*
@@ -2520,9 +2539,10 @@ static void test_tas_lock_cell(const void *data)
  */
 static void test_tas_lock_nul_owner(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
+
+    elsc_reset();
 
     /*
      * "tas " with a NUL owner byte: text length 5. Built by hand because
@@ -2541,7 +2561,7 @@ static void test_tas_lock_nul_owner(const void *data)
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 4);
-    g_assert(memcmp(&resp[1], "ok 0", 4) == 0);
+    assert_response_begins(resp, "ok 0");
 
     /*
      * A different caller now finds the cell HELD -- the buggy free-sentinel
@@ -2586,9 +2606,7 @@ static void test_tas_lock_nul_owner(const void *data)
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 4);
-    g_assert(memcmp(&resp[1], "ok 0", 4) == 0);
-
-    qtest_quit(qts);
+    assert_response_begins(resp, "ok 0");
 }
 
 /*
@@ -2601,9 +2619,10 @@ static void test_tas_lock_nul_owner(const void *data)
  */
 static void test_pwr_control_subcommands(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
+
+    elsc_reset();
 
     /*
      * The read-only supply query needs no supervisor. The wire response is a
@@ -2614,25 +2633,25 @@ static void test_pwr_control_subcommands(const void *data)
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 16);
-    g_assert(memcmp(&resp[1], "ok m:y:ok s:y:ok", 16) == 0);
+    assert_response_begins(resp, "ok m:y:ok s:y:ok");
 
     /* Destructive power-down/cycle are refused before authenticating. */
     req_len = build_request(req, "pwr d 3c");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 8);
-    g_assert(memcmp(&resp[1], "err perm", 8) == 0);
+    assert_response_begins(resp, "err perm");
 
     req_len = build_request(req, "pwr c");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmpuint(resp[0], ==, 8);
-    g_assert(memcmp(&resp[1], "err perm", 8) == 0);
+    assert_response_begins(resp, "err perm");
 
     /* Authenticate with the factory-default password. */
     req_len = build_request(req, "pas none");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmpuint(resp[0], ==, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     /*
      * Out-of-range (below 5, above 0x258) and non-hex delays are err arg, as
@@ -2649,11 +2668,9 @@ static void test_pwr_control_subcommands(const void *data)
             resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
             g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
             g_assert_cmpuint(resp[0], ==, 7);
-            g_assert(memcmp(&resp[1], "err arg", 7) == 0);
+            assert_response_begins(resp, "err arg");
         }
     }
-
-    qtest_quit(qts);
 }
 
 /*
@@ -2670,14 +2687,14 @@ static void test_pwr_down_shuts_down(const void *data)
     req_len = build_request(req, "pas none");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmpuint(resp[0], ==, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     /* Immediate power-down: "ok", then the shutdown fires. */
     req_len = build_request(req, "pwr d 0");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     qtest_qmp_eventwait(qts, "SHUTDOWN");
 
@@ -2690,24 +2707,23 @@ static void test_pwr_down_shuts_down(const void *data)
  */
 static void test_pwr_cycle_resets(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
+
+    elsc_reset();
 
     req_len = build_request(req, "pas none");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmpuint(resp[0], ==, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     req_len = build_request(req, "pwr c");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 2);
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
 
     qtest_qmp_eventwait(qts, "RESET");
-
-    qtest_quit(qts);
 }
 
 /*
@@ -2720,7 +2736,6 @@ static void test_pwr_cycle_resets(const void *data)
  */
 static void test_pwr_down_range_checked_before_auth(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len, i;
     /* Below 5 or above 0x258: err arg, before the gate is even consulted. */
@@ -2728,22 +2743,22 @@ static void test_pwr_down_range_checked_before_auth(const void *data)
     /* In range (and 0), so the gate applies: err perm without a password. */
     const char *in_range[] = { "pwr d 0", "pwr d 5", "pwr d 258" };
 
+    elsc_reset();
+
     for (i = 0; i < ARRAY_SIZE(out_of_range); i++) {
         req_len = build_request(req, out_of_range[i]);
         resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
         g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
         g_assert_cmpuint(resp[0], ==, 7);
-        g_assert(memcmp(&resp[1], "err arg", 7) == 0);
+        assert_response_begins(resp, "err arg");
     }
     for (i = 0; i < ARRAY_SIZE(in_range); i++) {
         req_len = build_request(req, in_range[i]);
         resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
         g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
         g_assert_cmpuint(resp[0], ==, 8);
-        g_assert(memcmp(&resp[1], "err perm", 8) == 0);
+        assert_response_begins(resp, "err perm");
     }
-
-    qtest_quit(qts);
 }
 
 /*
@@ -2754,26 +2769,27 @@ static void test_pwr_down_range_checked_before_auth(const void *data)
  */
 static void test_pwr_cycle_rearms_cold_power(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
+
+    elsc_reset();
 
     /* Clear the cold-power latch: the first query reads 1, the next 0. */
     req_len = build_request(req, "pwr q");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
-    g_assert(memcmp(&resp[1], "ok 1", 4) == 0);
+    assert_response_begins(resp, "ok 1");
     req_len = build_request(req, "pwr q");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert(memcmp(&resp[1], "ok 0", 4) == 0);
+    assert_response_begins(resp, "ok 0");
 
     /* Authenticate and power-cycle. */
     req_len = build_request(req, "pas none");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
     req_len = build_request(req, "pwr c");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
-    g_assert(memcmp(&resp[1], "ok", 2) == 0);
+    assert_response_begins(resp, "ok");
     qtest_qmp_eventwait(qts, "RESET");
 
     /* The cycle re-armed the latch: the first post-cycle query reads 1. */
@@ -2781,9 +2797,7 @@ static void test_pwr_cycle_rearms_cold_power(const void *data)
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 4);
-    g_assert(memcmp(&resp[1], "ok 1", 4) == 0);
-
-    qtest_quit(qts);
+    assert_response_begins(resp, "ok 1");
 }
 
 /*
@@ -2795,39 +2809,38 @@ static void test_pwr_cycle_rearms_cold_power(const void *data)
  */
 static void test_nic_onewire_identity(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t req[16], resp[RESP_CAP];
     unsigned req_len, resp_len;
+
+    elsc_reset();
 
     /* Three hex arguments: the idle line samples high. */
     req_len = build_request(req, "nic 1 2 3");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 4);
-    g_assert(memcmp(&resp[1], "ok 1", 4) == 0);
+    assert_response_begins(resp, "ok 1");
 
     /* Too few arguments to a known command is a bad argument. */
     req_len = build_request(req, "nic 1 2");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 7);
-    g_assert(memcmp(&resp[1], "err arg", 7) == 0);
+    assert_response_begins(resp, "err arg");
 
     /* A non-hex argument. */
     req_len = build_request(req, "nic 1 2 zz");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 7);
-    g_assert(memcmp(&resp[1], "err arg", 7) == 0);
+    assert_response_begins(resp, "err arg");
 
     /* Junk after the mnemonic with no delimiter is an unknown command. */
     req_len = build_request(req, "nicx");
     resp_len = elsc_transact(qts, req, req_len, resp, sizeof(resp));
     g_assert_cmphex(frame_checksum(resp, resp_len), ==, 0);
     g_assert_cmpuint(resp[0], ==, 7);
-    g_assert(memcmp(&resp[1], "err cmd", 7) == 0);
-
-    qtest_quit(qts);
+    assert_response_begins(resp, "err cmd");
 }
 
 int main(int argc, char **argv)
@@ -2835,6 +2848,8 @@ int main(int argc, char **argv)
     int ret;
 
     g_test_init(&argc, &argv, NULL);
+
+    qts = qtest_init("-M origin200");
 
     qtest_add_data_func("sn0/elsc/ver-command-succeeds", NULL,
                         test_ver_command_succeeds);
@@ -2947,6 +2962,7 @@ int main(int argc, char **argv)
                         test_nic_onewire_identity);
 
     ret = g_test_run();
+    qtest_quit(qts);
 
     return ret;
 }
