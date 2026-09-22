@@ -21,6 +21,7 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "qobject/qjson.h"
 #include "sn0-user-image.h"
 #include "sgi-migrate.h"
 #include "sgi-test.h"
@@ -450,7 +451,7 @@ static void test_dual_base_io_survives_migration(const void *data)
     QTestState *from, *to;
 
     tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
-    g_assert(tmpfs);
+    g_assert_nonnull(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
     from = qtest_init(MACHINE_DUAL);
@@ -493,7 +494,7 @@ static void test_a_wound_receive_timer_survives_migration(const void *data)
     QTestState *from, *to;
 
     tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
-    g_assert(tmpfs);
+    g_assert_nonnull(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
     from = qtest_init(MACHINE_WITH_BRIDGE);
@@ -570,7 +571,7 @@ static void test_blocked_serial_transmit_survives_migration(const void *data)
 
     tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
     g_assert_no_error(err);
-    g_assert(tmpfs);
+    g_assert_nonnull(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
     g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, source_sv), ==, 0);
@@ -632,7 +633,7 @@ static void test_interrupt_output_phase_survives_migration(const void *data)
     int64_t source_time;
 
     tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
-    g_assert(tmpfs);
+    g_assert_nonnull(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
     from = qtest_init(MACHINE_WITH_BRIDGE);
@@ -702,7 +703,7 @@ static void test_legacy_count2_before_first_expiry_migrates(const void *data)
 
     tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
     g_assert_no_error(err);
-    g_assert(tmpfs);
+    g_assert_nonnull(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
     from = qtest_init_ext("QTEST_QEMU_BINARY_IOC3_V15",
@@ -751,7 +752,7 @@ static void test_legacy_count2_high_migrates_onward(const void *data)
 
     tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
     g_assert_no_error(err);
-    g_assert(tmpfs);
+    g_assert_nonnull(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
     onward_uri = g_strdup_printf("unix:%s/onward.sock", tmpfs);
 
@@ -813,7 +814,7 @@ static void test_a_device_window_survives_migration(const void *data)
     QTestState *from, *to;
 
     tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
-    g_assert(tmpfs);
+    g_assert_nonnull(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
     from = qtest_init(MACHINE_WITH_BRIDGE PROBE_CARD);
@@ -863,7 +864,7 @@ static void test_network_routes_survive_migration(const void *data)
     QTestState *from, *to;
 
     tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
-    g_assert(tmpfs);
+    g_assert_nonnull(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
     from = qtest_init(MACHINE);
@@ -902,7 +903,7 @@ static void test_staged_i2c_start_survives_migration(const void *data)
     int64_t source_time;
 
     tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
-    g_assert(tmpfs);
+    g_assert_nonnull(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
     from = qtest_init(MACHINE);
@@ -1064,7 +1065,7 @@ static void test_a_conversation_survives_migration(const void *data)
     unsigned int i;
 
     tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
-    g_assert(tmpfs);
+    g_assert_nonnull(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
     from = qtest_init(MACHINE_WITH_BRIDGE);
@@ -1124,7 +1125,7 @@ static void test_bte_state_survives_migration(const void *data)
     unsigned int i;
 
     tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
-    g_assert(tmpfs);
+    g_assert_nonnull(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
     from = qtest_init(MACHINE);
@@ -1193,7 +1194,7 @@ static void test_bte_physical_routing_survives_migration(const void *data)
     unsigned int engine;
 
     tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
-    g_assert(tmpfs);
+    g_assert_nonnull(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
     from = qtest_init(MACHINE_DUAL);
     sn0_program_nasid(from, 1);
@@ -1238,7 +1239,7 @@ static void test_flash_autoselect_survives_migration(const void *data)
     QTestState *from, *to;
 
     tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
-    g_assert(tmpfs);
+    g_assert_nonnull(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
     from = qtest_init(MACHINE);
@@ -1273,7 +1274,7 @@ static void test_flash_program_command_survives_migration(const void *data)
     QTestState *from, *to;
 
     tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
-    g_assert(tmpfs);
+    g_assert_nonnull(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
     from = qtest_init(MACHINE);
@@ -1312,7 +1313,7 @@ static void test_backdoor_storage_survives_migration(const void *data)
     QTestState *from, *to;
 
     tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
-    g_assert(tmpfs);
+    g_assert_nonnull(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
     from = qtest_init(MACHINE);
@@ -1348,7 +1349,7 @@ static void test_ethernet_interrupt_reasserts_after_migration(const void *data)
     uint32_t sources = IOC3_ENET_INT_TX_EMPTY | IOC3_ENET_INT_TX_COMPLETE;
 
     tmpfs = g_dir_make_tmp("sn0-migration-test-XXXXXX", &err);
-    g_assert(tmpfs);
+    g_assert_nonnull(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
     from = qtest_init(MACHINE_WITH_NET);
@@ -1398,7 +1399,7 @@ static void migrate_timekeeper_image(uint8_t fill)
     }
 
     tmpfs = g_dir_make_tmp("sn0-timekeeper-migration-XXXXXX", &err);
-    g_assert(tmpfs);
+    g_assert_nonnull(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
 
     from = qtest_init(MACHINE);
@@ -1472,7 +1473,11 @@ static void promdata_cpu_probe(QTestState *qts, unsigned int cpu)
         "  'arguments': { 'command-line': %s, 'cpu-index': %u } }",
         command, cpu);
 
-    g_assert(qdict_haskey(response, "return"));
+    if (!qdict_haskey(response, "return")) {
+        g_autoptr(GString) text = qobject_to_json(QOBJECT(response));
+
+        g_error("%s on processor %u failed: %s", command, cpu, text->str);
+    }
 }
 
 static bool promdata_forward_traced(const char *path)
@@ -1495,7 +1500,7 @@ static void test_promdata_filter_survives_migration(const void *data)
     QTestState *from, *to;
 
     tmpfs = g_dir_make_tmp("sn0-promdata-migration-XXXXXX", &err);
-    g_assert(tmpfs);
+    g_assert_nonnull(tmpfs);
     uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
     from_trace = g_strdup_printf("%s/from.trace", tmpfs);
     to_trace = g_strdup_printf("%s/to.trace", tmpfs);
