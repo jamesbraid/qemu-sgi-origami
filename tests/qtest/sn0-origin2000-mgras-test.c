@@ -1932,6 +1932,81 @@ static void test_masked_out_paint_keeps_the_visual(void)
 }
 
 
+/*
+ * A window move repaints by retagging or partially recolouring pixels
+ * that were already on screen, not just by filling a fresh rectangle.
+ * Each of the three paints below must still leave the QMP screendump
+ * agreeing with the model's own display-pixel readback.
+ */
+static void test_paint_variants_refresh_the_surface(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+
+    /* WID 2 resolves through map 5, WID 3 through map 6. */
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 2));
+    qtest_writel(qts, REG_XMAP_MAIN_MODE, 5 << 5);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 3));
+    qtest_writel(qts, REG_XMAP_MAIN_MODE, 6 << 5);
+    si_write_cmap_entry(qts, 5, 0x22, 0x11223300);
+    si_write_cmap_entry(qts, 6, 0x22, 0x44556600);
+
+    /* Baseline: a colour fill tagged WID 2, index 0x22 through map 5. */
+    si_tag_wid(qts, 200, 200, 207, 207, 2);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_PACKEDCOLOR, 0x22));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (200u << 16) | 200u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (207u << 16) | 207u));
+    g_assert_cmphex(si_screendump_pixel(qts, 203, 203), ==,
+                    si_test_display_pixel(qts, 203, 203));
+
+    /*
+     * (a) A WID-only fill retags the same rectangle to WID 3 without
+     * touching its colour byte, moving it to map 6.
+     */
+    si_tag_wid(qts, 200, 200, 207, 207, 3);
+    g_assert_cmphex(si_test_wid(qts, 203, 203), ==, 3);
+    g_assert_cmphex(si_test_pixel(qts, 203, 203), ==, 0x22);
+    g_assert_cmphex(si_screendump_pixel(qts, 203, 203), ==,
+                    si_test_display_pixel(qts, 203, 203));
+
+    /* (b) An IR_ALIAS fill masked to the colour's low byte only. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BKGRD_RG, 0x99887766));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_COLORMASKLSBSA, 0xff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (200u << 16) | 200u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (207u << 16) | 207u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    g_assert_cmphex(si_screendump_pixel(qts, 203, 203), ==,
+                    si_test_display_pixel(qts, 203, 203));
+
+    /* (c) A FILLMODE byte-transfer row. */
+    si_tag_wid(qts, 220, 220, 227, 221, 2);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_FILLMODE, SI_FILLMODE_BYTE_XFER));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (220u << 16) | 220u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (227u << 16) | 221u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_CHAR_H, 0x22222222u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_CHAR_L, 0x22222222u));
+    g_assert_cmphex(si_screendump_pixel(qts, 223, 220), ==,
+                    si_test_display_pixel(qts, 223, 220));
+
+    qtest_quit(qts);
+}
+
+
 static void test_cursor_composites_when_enabled(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
@@ -3133,6 +3208,8 @@ int main(int argc, char **argv)
                    test_target_first_cmap_visual_selection);
     qtest_add_func("sn0/origin2000/mgras/masked-out-paint-keeps-the-visual",
                    test_masked_out_paint_keeps_the_visual);
+    qtest_add_func("sn0/origin2000/mgras/paint-variants-refresh-the-surface",
+                   test_paint_variants_refresh_the_surface);
     qtest_add_func("sn0/origin2000/mgras/cursor-composites-when-enabled",
                    test_cursor_composites_when_enabled);
     qtest_add_func("sn0/origin2000/mgras/direct-pio-pixel-pairs",
