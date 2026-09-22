@@ -427,9 +427,9 @@ static void test_migration_reset(void)
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed");
+    sgi_wait_migration_status(from, "completed", 30);
     /* The source completes when its state is sent, not when it is loaded. */
-    sgi_wait_migration_status(to, "completed");
+    sgi_wait_migration_status(to, "completed", 30);
     g_assert_true(qtest_get_irq(to, 0));
     card_write(to, 0x10, 0);
     g_assert_false(qtest_get_irq(to, 0));

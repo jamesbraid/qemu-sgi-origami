@@ -3199,8 +3199,8 @@ static void test_alive_signal_survives_migration(const void *data)
     qtest_qmp_assert_success(from, "{'execute':'stop'}");
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed");
-    sgi_wait_migration_status(to, "completed");
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
 
     qtest_qmp_assert_success(to, "{'execute':'cont'}");
     qtest_writeq(to, SN0_USER_MAILBOX + 32, 1);
@@ -3303,8 +3303,8 @@ static void test_a_withheld_withdrawal_migrates_landed(const void *data)
     qtest_qmp_assert_success(from, "{'execute':'stop'}");
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed");
-    sgi_wait_migration_status(to, "completed");
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
 
     g_assert_cmphex(qtest_readq(to, HUB_LOCAL + PI_RT_COMPARE_A), ==, 0);
     g_assert_cmphex(qtest_readq(to, HUB_LOCAL + PI_RT_COMPARE_B), ==,
