@@ -27,23 +27,23 @@
  * builds has realized. "fabric" on a `-device` board resolves against
  * that proxy.
  *
- * This gives a `-device` board an outbound path only: build_widget() below
- * calls sgi_xtalk_crossbow_link_claim_fabric() on the proxy as soon as it
- * sees one, which tells sgi_machine_done() to bring the underlying spare
- * widget's own link alive once it finishes the proxy -- without that call,
- * the widget stays not-alive and the Crossbow disables the proxy's whole
- * target region, same as any other not-alive port (hw/misc/sgi-xbow.c,
- * sgi_xbow_sync_routes()). Once alive, this board's own Bridge can send a
- * packet out through the proxy to any already-populated widget, but
- * sgi_xbow_attach_endpoint() -- the call that would register this board's
- * own widget as a destination other ports can address -- refuses once its
- * Crossbow is realized, which every Crossbow this machine builds always is
- * by the time a `-device` board exists. Nothing addresses this board's own
- * widget as an inbound destination; see sgi_machine_done()'s own comment
- * in sn-machine.c for why that stays out of reach without also deferring
- * the Crossbow's own realize. A topology with no widget to spare (every
- * one already populated at startup) leaves no proxy to resolve "fabric"
- * against, and this board's own realize refuses.
+ * This gives a `-device` board a two-way widget. build_widget() below
+ * records its Bridge's own faces and hands them to
+ * sgi_xtalk_crossbow_link_claim_fabric(), which tells sgi_machine_done()
+ * to finish the attachment once it finishes the proxy -- without that
+ * call the spare widget stays not-alive and the Crossbow disables the
+ * proxy's whole target region, same as any other not-alive port
+ * (hw/misc/sgi-xbow.c, sgi_xbow_sync_routes()). sgi_machine_done()
+ * registers the board's faces as the widget's inbound destination
+ * (sgi_xbow_attach_endpoint_live(), the post-realize counterpart of the
+ * sgi_xbow_attach_endpoint() an onboard board uses before its Crossbow
+ * realizes) and brings its link alive (sgi_xbow_mark_widget_alive()). A
+ * processor or peer widget then reaches this board's Bridge through its
+ * own Crossbow, and the board's Bridge sends packets and interrupts out to
+ * any populated widget -- the same both-way path an onboard widget has. A
+ * topology with no widget to spare (every one already populated at
+ * startup) leaves no proxy to resolve "fabric" against, and this board's
+ * own realize refuses.
  *
  * Bridge's own "board-part" is a required, exactly-12-character identity
  * register value (hw/pci-host/sgi-bridge.h,
@@ -99,7 +99,6 @@ static bool pci_expansion_build_widget(SGIXioBoardState *board,
                   "interrupt packets travel");
         return false;
     }
-    sgi_xtalk_crossbow_link_claim_fabric(s->fabric);
 
     bridge = qdev_new(TYPE_SGI_BRIDGE);
     object_property_add_child(OBJECT(board), "bridge", OBJECT(bridge));
@@ -122,6 +121,17 @@ static bool pci_expansion_build_widget(SGIXioBoardState *board,
 
     board->cpu_face = sysbus_mmio_get_region(SYS_BUS_DEVICE(bridge), 0);
     board->packet_face = sgi_bridge_packet_face(s->bridge);
+
+    /*
+     * Claim the spare fabric proxy now the Bridge's own faces exist, so
+     * sgi_machine_done() both brings the spare widget's link alive for this
+     * board's outbound packets and registers those faces as the widget's
+     * inbound destination -- a processor or peer widget reaches this board's
+     * Bridge through its own Crossbow the same way it reaches any onboard
+     * widget. A fixture wiring "fabric" to a plain sink is a no-op here.
+     */
+    sgi_xtalk_crossbow_link_claim_fabric(s->fabric, board->cpu_face,
+                                         board->packet_face);
     return true;
 }
 

@@ -978,6 +978,38 @@ static const MemoryRegionOps sgi_xbow_illegal_ops = {
     .impl.unaligned = true,
 };
 
+/*
+ * Build one directed route: what a packet entering on `port` and addressed
+ * to `link` reaches, in both the processor and packet crosstalk views. The
+ * destination `link`'s own face must already be set. sgi_xbow_realize()
+ * builds every route this way as the Crossbow comes up, and
+ * sgi_xbow_attach_endpoint_live() builds the routes into a widget attached
+ * afterwards the same way, so the two paths cannot drift.
+ */
+static void sgi_xbow_install_route(SGIXbowState *s, unsigned int port,
+                                   unsigned int link)
+{
+    g_autofree char *route = g_strdup_printf("sgi-xbow.widget%u.to-widget%u",
+                                             sgi_xbow_widget(port),
+                                             sgi_xbow_widget(link));
+    g_autofree char *packet = g_strdup_printf("%s.packet", route);
+
+    memory_region_init_alias(&s->route[port][link], OBJECT(s), route,
+                             s->face[link], 0,
+                             MIN(s->span, memory_region_size(s->face[link])));
+    memory_region_add_subregion(&s->ingress[port],
+                                (hwaddr)sgi_xbow_widget(link) * s->span,
+                                &s->route[port][link]);
+    memory_region_init_alias(&s->packet_route[port][link], OBJECT(s), packet,
+                             s->packet_face[link], 0,
+                             MIN(SGI_XBOW_PACKET_SIZE,
+                                 memory_region_size(s->packet_face[link])));
+    memory_region_add_subregion(&s->packet_ingress[port],
+                                (hwaddr)sgi_xbow_widget(link) *
+                                SGI_XBOW_PACKET_SIZE,
+                                &s->packet_route[port][link]);
+}
+
 MemoryRegion *sgi_xbow_ingress(SGIXbowState *s, unsigned int widget)
 {
     g_assert(widget >= SGI_XBOW_FIRST_WIDGET && widget < SGI_XBOW_WIDGETS);
@@ -1085,6 +1117,66 @@ bool sgi_xbow_mark_widget_alive(SGIXbowState *s, unsigned int widget,
     s->link_initializing &= ~BIT(link);
     sgi_xbow_sync_routes(s);
     sgi_xbow_update_interrupt(s);
+    return true;
+}
+
+bool sgi_xbow_attach_endpoint_live(SGIXbowState *s, unsigned int widget,
+                                   MemoryRegion *cpu_face,
+                                   MemoryRegion *packet_face, Error **errp)
+{
+    g_autofree char *name = NULL;
+    unsigned int link;
+    unsigned int port;
+
+    if (s->quiesced) {
+        error_setg(errp, "crossbar is quiesced");
+        return false;
+    }
+    if (!DEVICE(s)->realized) {
+        error_setg(errp, "a live crossbar attachment needs the crossbar "
+                   "realized; attach before realize otherwise");
+        return false;
+    }
+    if (widget < SGI_XBOW_FIRST_WIDGET || widget >= SGI_XBOW_WIDGETS) {
+        error_setg(errp, "crossbar widget %u is outside its link range",
+                   widget);
+        return false;
+    }
+    if (!cpu_face || !packet_face || !memory_region_size(cpu_face) ||
+        !memory_region_size(packet_face)) {
+        error_setg(errp, "crossbar endpoints require two initialized faces");
+        return false;
+    }
+    link = widget - SGI_XBOW_FIRST_WIDGET;
+    if (s->face[link] || s->packet_face[link]) {
+        error_setg(errp, "crossbar widget %u already has a face attached",
+                   widget);
+        return false;
+    }
+
+    /*
+     * Register the widget as a destination and build the routes into it
+     * every other port needs to reach it, exactly as sgi_xbow_realize()
+     * does for a widget attached before realize. The packet address space
+     * matches the one realize builds too, so widget zero's own interrupt
+     * can target this widget the same way. The caller brings the widget's
+     * own link alive next (sgi_xbow_mark_widget_alive()), whose
+     * sgi_xbow_sync_routes() settles these routes to the enabled state a
+     * live destination has.
+     */
+    s->face[link] = cpu_face;
+    s->packet_face[link] = packet_face;
+    name = g_strdup_printf("sgi-xbow.widget%u.packets", widget);
+    s->face_as[link] = g_new0(AddressSpace, 1);
+    address_space_init(s->face_as[link], s->packet_face[link], name);
+
+    memory_region_transaction_begin();
+    for (port = 0; port < SGI_XBOW_LINKS; port++) {
+        if (sgi_xbow_routed(s, port, link)) {
+            sgi_xbow_install_route(s, port, link);
+        }
+    }
+    memory_region_transaction_commit();
     return true;
 }
 
@@ -1332,35 +1424,10 @@ static void sgi_xbow_realize(DeviceState *dev, Error **errp)
         }
 
         for (link = 0; link < SGI_XBOW_LINKS; link++) {
-            g_autofree char *route = NULL;
-
             if (!sgi_xbow_routed(s, port, link)) {
                 continue;
             }
-            route = g_strdup_printf("sgi-xbow.widget%u.to-widget%u",
-                                    sgi_xbow_widget(port),
-                                    sgi_xbow_widget(link));
-            memory_region_init_alias(&s->route[port][link], OBJECT(dev), route,
-                                     s->face[link], 0,
-                                     MIN(s->span,
-                                         memory_region_size(s->face[link])));
-            memory_region_add_subregion(&s->ingress[port],
-                                        (hwaddr)sgi_xbow_widget(link) *
-                                        s->span, &s->route[port][link]);
-            {
-                g_autofree char *packet = g_strdup_printf("%s.packet", route);
-
-                memory_region_init_alias(&s->packet_route[port][link],
-                                         OBJECT(dev), packet,
-                                         s->packet_face[link], 0,
-                                         MIN(SGI_XBOW_PACKET_SIZE,
-                                             memory_region_size(
-                                                 s->packet_face[link])));
-                memory_region_add_subregion(&s->packet_ingress[port],
-                                            (hwaddr)sgi_xbow_widget(link) *
-                                            SGI_XBOW_PACKET_SIZE,
-                                            &s->packet_route[port][link]);
-            }
+            sgi_xbow_install_route(s, port, link);
         }
     }
 

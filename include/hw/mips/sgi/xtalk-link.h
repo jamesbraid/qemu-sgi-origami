@@ -111,6 +111,16 @@ typedef struct SGIXtalkCrossbowLink {
      */
     bool fabric_claimed;
 
+    /*
+     * The faces the claiming `-device` board hands claim_fabric() once its
+     * own widget has built: what sgi_machine_done() registers as the spare
+     * widget's inbound destination (sgi_xbow_attach_endpoint_live()), so a
+     * processor or peer widget can address the board -- not only the board
+     * send outbound. NULL until a board claims the proxy.
+     */
+    MemoryRegion *claimant_cpu_face;
+    MemoryRegion *claimant_packet_face;
+
     bool is_hub;
     SN0NodeState *node;
 
@@ -148,13 +158,19 @@ MemoryRegion *sgi_xtalk_crossbow_link_prepare(SGIXtalkCrossbowLink *link,
 /*
  * Marks a spare proxy prepare() built as actually taken by a `-device`
  * board's own "fabric" property, so finish() knows to bring the
- * underlying widget up. fabric is whatever a board's own "fabric" link
- * property resolves to, which a real machine always sets to a proxy
- * prepare() built but a qtest fixture standing in for one need not; this
- * quietly does nothing when fabric is not a proxy prepare() returned,
- * rather than assume every caller's fabric is one of ours.
+ * underlying widget up, and records the board's own faces so
+ * sgi_machine_done() can register the widget as an inbound destination
+ * too. fabric is whatever a board's own "fabric" link property resolves
+ * to, which a real machine always sets to a proxy prepare() built but a
+ * qtest fixture standing in for one need not; this quietly does nothing
+ * when fabric is not a proxy prepare() returned, rather than assume every
+ * caller's fabric is one of ours. Call it once the board's build_widget()
+ * has recorded its own cpu_face and packet_face, so both are ready to hand
+ * over.
  */
-void sgi_xtalk_crossbow_link_claim_fabric(MemoryRegion *fabric);
+void sgi_xtalk_crossbow_link_claim_fabric(MemoryRegion *fabric,
+                                          MemoryRegion *cpu_face,
+                                          MemoryRegion *packet_face);
 
 /* Also wires node's own "xtalk-io" property to the proxy prepare() built. */
 bool sgi_xtalk_crossbow_link_prepare_hub(SGIXtalkCrossbowLink *link,

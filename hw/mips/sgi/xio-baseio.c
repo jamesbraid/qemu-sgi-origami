@@ -170,7 +170,6 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
                   "packets travel");
         return false;
     }
-    sgi_xtalk_crossbow_link_claim_fabric(s->fabric);
     if (board->slot != XIO_BASEIO_WIDGET) {
         error_setg(errp, "sgi-xio-baseio is fixed at crosstalk widget %u",
                   XIO_BASEIO_WIDGET);
@@ -244,6 +243,16 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
 
     board->cpu_face = sysbus_mmio_get_region(SYS_BUS_DEVICE(bridge), 0);
     board->packet_face = sgi_bridge_packet_face(s->bridge);
+
+    /*
+     * Claim the spare fabric proxy now the Bridge's own faces exist, so
+     * sgi_machine_done() both brings the spare widget's link alive for this
+     * board's outbound packets and registers those faces as the widget's
+     * inbound destination. A fixture wiring "fabric" to a plain sink is a
+     * no-op here.
+     */
+    sgi_xtalk_crossbow_link_claim_fabric(s->fabric, board->cpu_face,
+                                         board->packet_face);
     return true;
 }
 

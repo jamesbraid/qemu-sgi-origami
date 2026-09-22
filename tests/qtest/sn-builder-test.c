@@ -235,13 +235,14 @@ static void test_expansion_boards_share_the_attach_contract(const void *data)
  *
  * crossbow0's own startup-links-alive (sn0-origin2000-xtalk-owner-test.c:
  * 0x8700, its onboard BaseIO, two host nodes and SI Viz) stays exactly
- * that after this board attaches: sgi_xbow_attach_endpoint(), the call
- * that would register a widget as an inbound destination other ports
- * can address, only ever runs for the onboard boards sn-machine.c builds
- * before realizing the Crossbow (see board-pci-expansion.c's own header
- * comment), and this board's own realize happens long after that. A
- * `-device` board reaching the fabric must not silently start counting
- * as one of the Crossbow's own alive links.
+ * that after this board attaches. sgi_machine_done() does bring the spare
+ * widget alive and register it as an inbound destination once a board
+ * claims it (sgi_xbow_attach_endpoint_live() then
+ * sgi_xbow_mark_widget_alive(), see board-pci-expansion.c's header
+ * comment), but through the Crossbow's runtime link state, not by
+ * rewriting its configured "startup-links-alive" -- the declared boot
+ * health a reset restores. A `-device` board reaching the fabric must not
+ * silently rewrite that configured population.
  */
 static void test_pci_expansion_attaches_via_spare_fabric(const void *data)
 {
@@ -263,7 +264,7 @@ static void test_pci_expansion_attaches_via_spare_fabric(const void *data)
  * hardware fact rather than the free QOM-path choice "slot" is for
  * sgi-pci-expansion above -- slot=8 here satisfies that check, not a
  * coincidence with the sibling test's own unrelated choice. The same
- * outbound-only reasoning applies: see the sibling test above.
+ * configured-startup-links reasoning applies: see the sibling test above.
  */
 static void test_xio_baseio_attaches_via_spare_fabric(const void *data)
 {
@@ -297,11 +298,13 @@ static void test_xio_baseio_attaches_via_spare_fabric(const void *data)
 
 /*
  * The spare board's own Bridge, driven the same way sn0-bridge-widget-
- * test.c's card_start()/card_transfer() drive a bare one: a `-device`
- * board gets no CPU-side physical mapping of its own (nothing wires a
- * Hub to a spare widget), so qtest_sysbus_mmio_map() gives its cpu_face a
- * scratch physical base for this test alone, well clear of every address
- * a real origin2000 topology ever composes.
+ * test.c's card_start()/card_transfer() drive a bare one. The board is now
+ * addressable through crossbow0's own small window for its widget (see
+ * test_pci_expansion_is_inbound_addressable below), but this outbound test
+ * keeps to a scratch physical base of its own via qtest_sysbus_mmio_map(),
+ * exercising the board's outbound path without leaning on the inbound one;
+ * the base sits well clear of every address a real origin2000 topology
+ * ever composes.
  */
 #define SPARE_BASE              UINT64_C(0xf0000000000)
 #define SPARE_REG(offset)       (SPARE_BASE + (offset) + REG_DATA)
@@ -443,6 +446,146 @@ static void test_pci_expansion_delivers_through_spare_fabric(const void *data)
     spare_card_transfer(qts, DEST_PCI_ADDRESS, sizeof(uint32_t), DEST_SEED);
     assert_spare_landed(qts, dest + REG_DATA, DEST_SEED);
 
+    qtest_quit(qts);
+}
+
+/*
+ * ---- Inbound addressability and interrupt delivery ----
+ *
+ * The spare fabric widget crossbow0 holds back for a `-device` board is
+ * widget 11: the lowest position its startup-links-alive (0x8700 -- BaseIO
+ * at widget 8, the two host nodes at 9 and 10, SI Viz at 15) leaves free
+ * (sgi_machine_build_crossbars(), hw/mips/sgi/sn-machine.c). A board that
+ * takes the proxy is addressable at that widget, so its own Bridge answers
+ * a processor through crossbow0's real small window for widget 11 -- the
+ * same crosstalk decode SMALL_WINDOW(BASEIO_WIDGET) reaches the onboard
+ * BaseIO through -- with no scratch sysbus map of its own.
+ */
+#define SPARE_WIDGET            11
+#define SPARE_IN                SMALL_WINDOW(SPARE_WIDGET)
+#define SPARE_IN_REG(offset)    (SPARE_IN + (offset) + REG_DATA)
+#define SPARE_IN_CFG0(slot)     (SPARE_IN + 0x020000 + (slot) * 0x1000)
+#define SPARE_IN_WINDOW0        (SPARE_IN + 0x200000)
+#define INBOUND_SENTINEL        0x5a5aa5a5u
+
+/* The bus-mastering card's interrupt register (sgi-bridge-dma-test.c). */
+#define DMA_REG_INTERRUPT       0x10
+
+/*
+ * The expansion Bridge's own interrupt registers (hw/pci-host/sgi-bridge.c).
+ * With interrupt-pin INTA the card in slot S maps to Bridge pin S
+ * (sgi_bridge_map_irq()), so the card in slot 0 uses pin 0.
+ */
+#define BRIDGE_INT_DEST_UPPER   0x030
+#define BRIDGE_INT_DEST_LOWER   0x038
+#define BRIDGE_INT_ENABLE       0x108
+#define BRIDGE_INT_HOST(n)      (0x130 + 8 * (n))
+#define BRIDGE_DEVICE_REG(n)    (0x200 + 8 * (n))
+
+/*
+ * A host node's Hub sits at widget 9 on crossbow0. With fabric-widget-shift
+ * =48 the Bridge composes a packet address carrying the destination widget
+ * in bits 51:48, bit 47 marking packet I/O, the nasid in bits 45:38, and the
+ * Hub's own interrupt-modify offset (0x01800000 + 0x90) below. An INT_HOST
+ * address field of 0x200 sets bit 47 with nasid 0, so node 0's own Hub --
+ * read at HUB_LOCAL, whichever host-node widget the packet enters by, since
+ * the Hub's claim layer routes by programmed node number -- latches it.
+ */
+#define HUB_WIDGET_ON_XBOW      9
+#define HUB_INT_MODIFY_OFFSET   0x01800090
+#define INT_HOST_PACKET_IO_NASID0 0x200
+#define HUB_LOCAL               (SPACE_XTALK + 0x01000000)
+#define PI_INT_PEND0            0x000098
+#define SPARE_INT_NUMBER        42
+
+/*
+ * A board that takes the spare fabric proxy is addressable at its own
+ * widget: crossbow0's real small window for widget 11 reaches the board's
+ * own Bridge registers with no scratch sysbus map. BRIDGE_RRB_EVEN (0x280,
+ * the same benign fully-writable storage register sn0-bridge-widget-test.c
+ * and the through-fabric test above use) round-trips a sentinel only once
+ * the spare widget is an inbound destination; before that it reads back the
+ * zero an unrouted crosstalk hole returns.
+ */
+static void test_pci_expansion_is_inbound_addressable(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000 -display none -device sgi-pci-expansion,"
+        "module=99,slot=11,fabric=/machine/crossbow0-spare-fabric[0],"
+        "fabric-widget-shift=48");
+
+    qtest_writel(qts, SPARE_IN_REG(BASEIO_RRB_EVEN), INBOUND_SENTINEL);
+    g_assert_cmphex(qtest_readl(qts, SPARE_IN_REG(BASEIO_RRB_EVEN)), ==,
+                    INBOUND_SENTINEL);
+    qtest_quit(qts);
+}
+
+/*
+ * A real interrupt-capable card behind the expansion Bridge delivers to the
+ * guest: the processor programs the board's Bridge through the same inbound
+ * small window, aims its interrupt pin at node 0's Hub interrupt-modify
+ * register, enables the pin, and the card raises INTx. The packet travels
+ * out through the expansion Bridge, up through crossbow0 to the host node's
+ * Hub, and node 0's Hub PI_INT_PEND0 latches the programmed interrupt
+ * number. Without inbound addressability the processor cannot program the
+ * Bridge at all, so nothing arms and nothing latches.
+ */
+static void test_pci_expansion_delivers_card_interrupt_to_hub(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000 -display none -device sgi-pci-expansion,"
+        "module=99,slot=11,fabric=/machine/crossbow0-spare-fabric[0],"
+        "fabric-widget-shift=48,pci-bus-name=xpci "
+        "-device sgi-bridge-dma-test,bus=xpci,addr=0");
+
+    /* Nothing has fired yet. */
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0) &
+                    (1ULL << SPARE_INT_NUMBER), ==, 0);
+
+    /* Give the card its register window and let it master the bus. */
+    qtest_writel(qts, SPARE_IN_CFG0(CARD_SLOT) + PCI_BAR0, CARD_MMIO);
+    qtest_writel(qts, SPARE_IN_CFG0(CARD_SLOT) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY_MASTER);
+    qtest_writel(qts, SPARE_IN_REG(BRIDGE_DEVICE_REG(CARD_SLOT)),
+                 DEV_MEMORY_SPACE | (CARD_MMIO >> 20));
+
+    /* Aim pin 0 at node 0's Hub interrupt-modify register and enable it. */
+    qtest_writel(qts, SPARE_IN_REG(BRIDGE_INT_DEST_UPPER),
+                 HUB_WIDGET_ON_XBOW << 16);
+    qtest_writel(qts, SPARE_IN_REG(BRIDGE_INT_DEST_LOWER),
+                 HUB_INT_MODIFY_OFFSET);
+    qtest_writel(qts, SPARE_IN_REG(BRIDGE_INT_HOST(CARD_SLOT)),
+                 (INT_HOST_PACKET_IO_NASID0 << 8) | SPARE_INT_NUMBER);
+    qtest_writel(qts, SPARE_IN_REG(BRIDGE_INT_ENABLE), 1u << CARD_SLOT);
+
+    /* The card raises INTx; the packet must reach node 0's Hub. */
+    qtest_writel(qts, SPARE_IN_WINDOW0 + DMA_REG_INTERRUPT, 1);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0) &
+                    (1ULL << SPARE_INT_NUMBER), ==, 1ULL << SPARE_INT_NUMBER);
+
+    qtest_quit(qts);
+}
+
+/*
+ * A real modeled interrupt-capable card -- the dual-channel QLogic ISP12160
+ * SCSI host adapter (hw/scsi/qlogic-isp.c) -- plugged into the expansion
+ * board's own PCI bus is enumerable behind the expansion widget: its PCI
+ * configuration space answers its own vendor/device identity (0x1077/0x1216)
+ * through crossbow0's small window for the spare widget, the very config
+ * accesses a driver's own probe issues. On trunk the spare widget is no
+ * inbound destination, so the identity reads back the zero an unrouted
+ * crosstalk hole returns.
+ */
+#define ISP12160_ID_PAIR        0x12161077u
+static void test_expansion_card_enumerates_inbound(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000 -display none -device sgi-pci-expansion,"
+        "module=99,slot=11,fabric=/machine/crossbow0-spare-fabric[0],"
+        "fabric-widget-shift=48,pci-bus-name=xpci "
+        "-device qlogic-isp12160,bus=xpci,addr=3");
+
+    g_assert_cmphex(qtest_readl(qts, SPARE_IN_CFG0(3)), ==, ISP12160_ID_PAIR);
     qtest_quit(qts);
 }
 
@@ -758,6 +901,13 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn/builder/pci-expansion-delivers-through-spare-"
                         "fabric", NULL,
                         test_pci_expansion_delivers_through_spare_fabric);
+    qtest_add_data_func("sn/builder/pci-expansion-is-inbound-addressable",
+                        NULL, test_pci_expansion_is_inbound_addressable);
+    qtest_add_data_func("sn/builder/pci-expansion-delivers-card-interrupt-"
+                        "to-hub", NULL,
+                        test_pci_expansion_delivers_card_interrupt_to_hub);
+    qtest_add_data_func("sn/builder/expansion-card-enumerates-inbound",
+                        NULL, test_expansion_card_enumerates_inbound);
     qtest_add_data_func("sn/builder/unsupported-smp-population-rejected",
                         NULL, test_unsupported_smp_population_rejected);
     qtest_add_data_func("sn/builder/topology-from-another-product-refused",
