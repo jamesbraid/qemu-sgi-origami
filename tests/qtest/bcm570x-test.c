@@ -36,6 +36,7 @@
 #include "qobject/qlist.h"
 #include "hw/pci/pci_regs.h"
 #include "standard-headers/linux/virtio_net.h"
+#include "sgi-migrate.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #ifdef CONFIG_LINUX
@@ -5843,26 +5844,6 @@ static void test_status_dma_error(const void *data)
     bcm_close(&b);
 }
 
-/* Drive a migration between two connected qtest instances and block until it
- * completes; `to` is already listening on `uri` via its -incoming. */
-static void bcm570x_wait_migration(QTestState *qts)
-{
-    g_test_timer_start();
-    for (;;) {
-        QDict *ret = qtest_qmp_assert_success_ref(qts,
-            "{ 'execute': 'query-migrate' }");
-        g_autofree char *status = g_strdup(qdict_get_str(ret, "status"));
-
-        qobject_unref(ret);
-        g_assert_cmpstr(status, !=, "failed");
-        if (g_str_equal(status, "completed")) {
-            break;
-        }
-        g_assert(g_test_timer_elapsed() < 30);
-        g_usleep(1000);
-    }
-}
-
 /*
  * The source reports completion once it has sent the stream, which can be
  * before the destination has loaded it. A test that steps the destination's
@@ -5872,8 +5853,8 @@ static void bcm570x_migrate(QTestState *from, QTestState *to, const char *uri)
 {
     qtest_qmp_assert_success(from,
         "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
-    bcm570x_wait_migration(from);
-    bcm570x_wait_migration(to);
+    sgi_wait_migration_status(from, "completed");
+    sgi_wait_migration_status(to, "completed");
 }
 
 static QDict *bcm570x_vmstate_field(QList *fields, const char *name)

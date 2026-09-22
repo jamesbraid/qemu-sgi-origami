@@ -12,6 +12,7 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "sgi-migrate.h"
 #include "sgi-test.h"
 
 /* Crosstalk space, and the bridge's own widget window inside it. */
@@ -2982,26 +2983,6 @@ static void test_reused_handle_outlives_the_old_read_deadline(const void *data)
 #define MIGRATE_RAM_HIGH_ADDR   0x8100
 #define MIGRATE_RAM_HIGH_WORD   0x2020
 
-static void migrate_stopped_vm(QTestState *from, const char *uri)
-{
-    qtest_qmp_assert_success(from,
-        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
-
-    while (true) {
-        QDict *ret = qtest_qmp_assert_success_ref(from,
-            "{ 'execute': 'query-migrate' }");
-        const char *status = qdict_get_str(ret, "status");
-        bool done = g_str_equal(status, "completed");
-
-        g_assert(!g_str_equal(status, "failed"));
-        qobject_unref(ret);
-        if (done) {
-            return;
-        }
-        usleep(1000);
-    }
-}
-
 /*
  * One value per bank, in the order the selection table lists them, so a
  * stream that carries the RISC and SCSI processor 0 banks alone leaves
@@ -3096,7 +3077,7 @@ static void test_migration_preserves_distinct_state(const void *data)
     to = qtest_initf("%s -incoming %s", args, uri);
 
     qtest_qmp_assert_success(from, "{ 'execute': 'stop' }");
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
     qtest_quit(from);
 
     qtest_qmp_assert_success(to, "{ 'execute': 'cont' }");
@@ -3515,7 +3496,7 @@ static void test_full_ring_holds_completions_and_migrates_them(const void *data)
 
     to = qtest_initf("%s -incoming %s", args, uri);
     qtest_qmp_assert_success(from, "{ 'execute': 'stop' }");
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
     qtest_quit(from);
     qtest_qmp_assert_success(to, "{ 'execute': 'cont' }");
 

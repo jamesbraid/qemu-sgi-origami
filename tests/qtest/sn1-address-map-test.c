@@ -18,6 +18,7 @@
 #include "qobject/qlist.h"
 #include <poll.h>
 #include <sys/socket.h>
+#include "sgi-migrate.h"
 #include "sgi-test.h"
 
 #define MACHINE_ARGS "-M origin300 -cpu R14000 -smp 2"
@@ -760,25 +761,6 @@ static void stop_vm_if_running(QTestState *qts)
 
     if (qdict_get_bool(status, "running")) {
         stop_vm(qts);
-    }
-}
-
-static void wait_for_migration(QTestState *from)
-{
-    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
-
-    for (;;) {
-        g_autoptr(QDict) response = qtest_qmp(from,
-                                             "{'execute':'query-migrate'}");
-        QDict *result = qdict_get_qdict(response, "return");
-        const char *status = qdict_get_str(result, "status");
-
-        if (!strcmp(status, "completed")) {
-            return;
-        }
-        g_assert_cmpstr(status, !=, "failed");
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
     }
 }
 
@@ -1730,8 +1712,8 @@ static void test_io8_ioc3_migration(const void *data)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    wait_for_migration(from);
-    wait_for_migration(to);
+    sgi_wait_migration_status(from, "completed");
+    sgi_wait_migration_status(to, "completed");
 
     g_assert_cmphex(qtest_readb(to, IO8_IOC3_WINDOW +
                                 IO8_IOC3_BYTEBUS_DEV0 + 0x100), ==, 0xc3);
@@ -2956,9 +2938,9 @@ static void test_boot_flash_migration(const void *data)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    wait_for_migration(from);
+    sgi_wait_migration_status(from, "completed");
     /* The source completes when its state is sent, not when it is loaded. */
-    wait_for_migration(to);
+    sgi_wait_migration_status(to, "completed");
 
     qtest_writeq(to, HUB_REMOTE_BOOT + FLASH_ERASED_TARGET * 4, 0x1234);
     g_assert_cmphex(qtest_readw(to, HUB_LOCAL_BOOT + FLASH_ERASED_TARGET), ==,
@@ -3665,9 +3647,9 @@ static void test_prom_migration(const void *data)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    wait_for_migration(from);
+    sgi_wait_migration_status(from, "completed");
     /* The source completes when its state is sent, not when it is loaded. */
-    wait_for_migration(to);
+    sgi_wait_migration_status(to, "completed");
 
     for (size_t i = 0; i < ARRAY_SIZE(views); i++) {
         for (size_t j = 0; j < ARRAY_SIZE(probes); j++) {
@@ -3720,8 +3702,8 @@ static void test_cpu_c_enable_migration(const void *data)
     qtest_qmp_assert_success(from, "{'execute':'cont'}");
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    wait_for_migration(from);
-    wait_for_migration(to);
+    sgi_wait_migration_status(from, "completed");
+    sgi_wait_migration_status(to, "completed");
     stop_vm_if_running(to);
 
     stopped = cpu_gpr(to, 1, "t0");
@@ -3876,8 +3858,8 @@ static void test_promdata_filter_survives_migration(const void *data)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    wait_for_migration(from);
-    wait_for_migration(to);
+    sgi_wait_migration_status(from, "completed");
+    sgi_wait_migration_status(to, "completed");
 
     promdata_cpu_probe(to, 0);
     promdata_cpu_probe(to, 1);

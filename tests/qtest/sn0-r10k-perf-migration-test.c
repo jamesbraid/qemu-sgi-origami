@@ -12,6 +12,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "sgi-migrate.h"
 #include "sgi-test.h"
 
 #define IMAGE_SIZE          0x1000
@@ -366,25 +367,6 @@ static void wait_for_state(QTestState *qts, uint64_t off, uint64_t expected)
     g_assert_cmphex(state_word(qts, off), ==, expected);
 }
 
-static void wait_for_migration(QTestState *from)
-{
-    int64_t deadline = g_get_monotonic_time() + 60 * G_TIME_SPAN_SECOND;
-
-    for (;;) {
-        g_autoptr(QDict) response = qtest_qmp(from,
-                                             "{'execute':'query-migrate'}");
-        QDict *result = qdict_get_qdict(response, "return");
-        const char *status = qdict_get_str(result, "status");
-
-        if (!strcmp(status, "completed")) {
-            return;
-        }
-        g_assert_cmpstr(status, !=, "failed");
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
-    }
-}
-
 static void test_active_counter(const void *opaque)
 {
     const TestConfig *config = opaque;
@@ -432,7 +414,7 @@ static void test_active_counter(const void *opaque)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    wait_for_migration(from);
+    sgi_wait_migration_status(from, "completed");
     qtest_qmp_assert_success(to, "{'execute':'cont'}");
     after = wait_for_change(to, before);
     delta = after - before;
@@ -487,7 +469,7 @@ static void test_stream_representation(const void *opaque)
     qtest_qmp_assert_success(from, "{'execute':'stop'}");
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    wait_for_migration(from);
+    sgi_wait_migration_status(from, "completed");
     qtest_quit(from);
 
     state_fd = open(state, O_WRONLY | O_CREAT | O_TRUNC, 0600);
@@ -561,7 +543,7 @@ static void test_r10000_scache_migration(void)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    wait_for_migration(from);
+    sgi_wait_migration_status(from, "completed");
     qtest_qmp_assert_success(to, "{'execute':'cont'}");
     qtest_writeq(to, STATE_PHYS + CACHE_COMMAND_OFF, 1);
     wait_for_state(to, CACHE_DONE_OFF, CACHE_DONE_MAGIC);

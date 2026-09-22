@@ -22,6 +22,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sn0-user-image.h"
+#include "sgi-migrate.h"
 #include "sgi-test.h"
 
 /* Addresses only this test uses; the shared ones come from sgi-test.h. */
@@ -222,33 +223,6 @@ static void bridge_aim_window_at_card(QTestState *qts, int window, int slot)
                 DEV_MEMORY_SPACE | (CARD_MMIO(slot) >> 20));
 }
 
-/*
- * Migrate and block until completed or failed. `-incoming` on the
- * destination's command line has it listening before its QMP handshake,
- * so `from` cannot connect too early.
- */
-static void migrate_stopped_vm(QTestState *from, const char *uri)
-{
-    qtest_qmp_assert_success(from,
-        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
-
-    g_test_timer_start();
-    for (;;) {
-        QDict *ret = qtest_qmp_assert_success_ref(from,
-            "{ 'execute': 'query-migrate' }");
-        g_autofree char *status = g_strdup(qdict_get_str(ret, "status"));
-
-        qobject_unref(ret);
-        g_assert_cmpstr(status, !=, "failed");
-        if (g_str_equal(status, "completed")) {
-            break;
-        }
-
-        g_assert(g_test_timer_elapsed() < 30);
-        g_usleep(1000);
-    }
-}
-
 static bool module_onewire_slot(QTestState *qts, unsigned int pulse)
 {
     uint64_t value;
@@ -318,7 +292,7 @@ static void test_module_identity_page_progress_survives_migration(
         g_assert_cmphex(module_onewire_read_byte(from), ==, page[i]);
     }
 
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
     for (unsigned int i = 10; i < sizeof(page); i++) {
         g_assert_cmphex(module_onewire_read_byte(to), ==, page[i]);
     }
@@ -366,25 +340,6 @@ static void read_exact(int fd, uint8_t *buf, size_t len)
         }
         g_assert_cmpint(n, >, 0);
         got += n;
-    }
-}
-
-static void wait_for_incoming_complete(QTestState *qts)
-{
-    g_test_timer_start();
-    for (;;) {
-        QDict *ret = qtest_qmp_assert_success_ref(
-            qts, "{ 'execute': 'query-migrate' }");
-        const char *status = qdict_get_str(ret, "status");
-
-        if (g_str_equal(status, "completed")) {
-            qobject_unref(ret);
-            return;
-        }
-        g_assert_false(g_str_equal(status, "failed"));
-        qobject_unref(ret);
-        g_assert(g_test_timer_elapsed() < 30);
-        g_usleep(1000);
     }
 }
 
@@ -509,7 +464,7 @@ static void test_dual_base_io_survives_migration(const void *data)
 
     dest_cmdline = g_strdup_printf(MACHINE_DUAL " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     g_assert_cmphex(qtest_readb(to, IOC3_SCRATCH_AT(0)), ==, 0x5a);
     g_assert_cmphex(qtest_readb(to, IOC3_SCRATCH_AT(1)), ==, 0xa5);
@@ -571,7 +526,7 @@ static void test_a_wound_receive_timer_survives_migration(const void *data)
 
     dest_cmdline = g_strdup_printf(MACHINE_WITH_BRIDGE " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     /* The ring, the index, and the still-counting timer all crossed. */
     qtest_memread(to, IOC3_RX_RING_RAM, landed, sizeof(landed));
@@ -649,7 +604,7 @@ static void test_blocked_serial_transmit_survives_migration(const void *data)
     to = qtest_init(dest_cmdline);
     g_assert_cmpint(close(dest_sv[1]), ==, 0);
 
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
     while (remaining) {
         size_t chunk = MIN(remaining, sizeof(filler));
 
@@ -690,7 +645,7 @@ static void test_interrupt_output_phase_survives_migration(const void *data)
 
     dest_cmdline = g_strdup_printf(MACHINE_WITH_BRIDGE " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
     qtest_clock_set(to, source_time);
 
     g_assert_cmphex(qtest_readl(to, IOC3_INT_OUTPUT) & IOC3_INT_OUT_STATE,
@@ -760,7 +715,7 @@ static void test_legacy_count2_before_first_expiry_migrates(const void *data)
 
     dest_cmdline = g_strdup_printf(MACHINE_WITH_BRIDGE " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
     qtest_clock_set(to, source_time);
 
     g_assert_cmphex(qtest_readl(to, IOC3_INT_OUTPUT), ==,
@@ -810,7 +765,7 @@ static void test_legacy_count2_high_migrates_onward(const void *data)
 
     dest_cmdline = g_strdup_printf(MACHINE_WITH_BRIDGE " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
     qtest_clock_set(to, source_time);
 
     g_assert_cmphex(qtest_readl(to, IOC3_INT_OUTPUT), ==,
@@ -824,7 +779,7 @@ static void test_legacy_count2_high_migrates_onward(const void *data)
     onward_cmdline = g_strdup_printf(MACHINE_WITH_BRIDGE " -incoming %s",
                                      onward_uri);
     onward = qtest_init(onward_cmdline);
-    migrate_stopped_vm(to, onward_uri);
+    sgi_migrate_stopped(to, onward_uri);
     qtest_clock_set(onward, source_time);
 
     g_assert_cmphex(qtest_readl(onward, IOC3_INT_OUTPUT), ==,
@@ -877,7 +832,7 @@ static void test_a_device_window_survives_migration(const void *data)
                                    " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
 
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     /*
      * The claim: the access still reaches the card, which only holds if
@@ -919,7 +874,7 @@ static void test_network_routes_survive_migration(const void *data)
 
     dest_cmdline = g_strdup_printf(MACHINE " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     g_assert_cmphex(qtest_readq(to, HUB_LOCAL + NI_LOCAL_TABLE), ==, 0xb);
     g_assert_cmphex(qtest_readq(to, HUB_LOCAL + NI_META_TABLE_LAST), ==, 6);
@@ -966,7 +921,7 @@ static void test_staged_i2c_start_survives_migration(const void *data)
 
     dest_cmdline = g_strdup_printf(MACHINE " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
     qtest_clock_set(to, source_time);
 
     qtest_clock_step(to, ARB_SLOT0_NS - ARB_PARTIAL_NS - 1);
@@ -1007,7 +962,7 @@ static void test_elsc_legacy_rotation_position_migrates(const void *data)
     from = qtest_init(MACHINE_DUAL);
     enable_cpu_pcf_observer(from, 0);
     enable_cpu_pcf_observer(from, 2);
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
     qtest_quit(from);
 
     patch_master_elsc_stream(stream, ELSC_VMSTATE_VERSION,
@@ -1016,7 +971,7 @@ static void test_elsc_legacy_rotation_position_migrates(const void *data)
     qtest_qmp_assert_success(
         to, "{ 'execute': 'migrate-incoming', "
             "'arguments': { 'uri': %s } }", uri);
-    wait_for_incoming_complete(to);
+    sgi_wait_migration_status(to, "completed");
     qtest_clock_step(to, ARB_SLOT0_NS);
     g_assert_cmphex(cpu_readq(to, 0, HUB_LOCAL + I2C_DATA), ==,
                     ARB_SIGNAL1 + 2);
@@ -1136,7 +1091,7 @@ static void test_a_conversation_survives_migration(const void *data)
     dest_cmdline = g_strdup_printf(MACHINE_WITH_BRIDGE " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
 
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     /* ...and the rest there, mid-byte-stream, with nothing re-sent. */
     for (i = 16; i < sizeof(page); i++) {
@@ -1196,7 +1151,7 @@ static void test_bte_state_survives_migration(const void *data)
 
     dest_cmdline = g_strdup_printf(MACHINE " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     g_assert_cmphex(qtest_readq(to, HUB_LOCAL + BTE_CONTROL(1)), ==,
                     BTE_CTL_NOTIFY);
@@ -1257,7 +1212,7 @@ static void test_bte_physical_routing_survives_migration(const void *data)
     }
     dest_cmdline = g_strdup_printf(MACHINE_DUAL " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
     for (engine = 0; engine < 2; engine++) {
         qtest_writeq(to, hub + BTE_CONTROL(engine), BTE_CTL_NOTIFY);
         g_assert_cmphex(qtest_readq(to, hub + BTE_LENGTH(engine)), ==, 0);
@@ -1300,7 +1255,7 @@ static void test_flash_autoselect_survives_migration(const void *data)
 
     dest_cmdline = g_strdup_printf(MACHINE " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     g_assert_cmphex(qtest_readb(to, FLASH_RESET), ==, 0x01);
     g_assert_cmphex(qtest_readb(to, FLASH_RESET + 1), ==, 0xd5);
@@ -1328,7 +1283,7 @@ static void test_flash_program_command_survives_migration(const void *data)
 
     dest_cmdline = g_strdup_printf(MACHINE " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     flash_command(to, FLASH_PROGRAM_TARGET, 0x5a);
     g_assert_cmphex(qtest_readb(to, FLASH_RESET + FLASH_PROGRAM_TARGET), ==,
@@ -1368,7 +1323,7 @@ static void test_backdoor_storage_survives_migration(const void *data)
 
     dest_cmdline = g_strdup_printf(MACHINE " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     g_assert_cmphex(qtest_readq(to, BACKDOOR_ECC_HUB) & 0xffff, ==, 0xcafe);
     g_assert_cmphex(qtest_readq(to, BACKDOOR_DIR_HUB) & 0xffff, ==, 0xbabe);
@@ -1411,7 +1366,7 @@ static void test_ethernet_interrupt_reasserts_after_migration(const void *data)
 
     dest_cmdline = g_strdup_printf(MACHINE_WITH_NET " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     g_assert_cmphex(qtest_readl(to, BRIDGE_INT_STATUS) & BRIDGE_PIN_ETH,
                     ==, BRIDGE_PIN_ETH);
@@ -1459,7 +1414,7 @@ static void migrate_timekeeper_image(uint8_t fill)
 
     dest_cmdline = g_strdup_printf(MACHINE " -incoming %s", uri);
     to = qtest_init(dest_cmdline);
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     /* This is the destination's first access to the restored device. */
     qtest_memread(to, IOC3_TIMEKEEPER, actual, TIMEKEEPER_STORAGE_SIZE);
@@ -1555,7 +1510,7 @@ static void test_promdata_filter_survives_migration(const void *data)
         MACHINE " -trace enable=sn_promdata_forward,file=%s -incoming %s",
         to_trace, uri);
     to = qtest_init(to_cmdline);
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     promdata_cpu_probe(to, 0);
     g_assert_true(promdata_forward_traced(to_trace));

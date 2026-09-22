@@ -14,6 +14,7 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "sgi-migrate.h"
 #include "sgi-test.h"
 
 /*
@@ -823,47 +824,6 @@ static void wait_window_view(QTestState *qts, const char *as_name,
     g_assert_not_reached();
 }
 
-/* Migrate and block until completed or failed, as sn0-migration-test does. */
-static void migrate_and_wait(QTestState *from, const char *uri)
-{
-    qtest_qmp_assert_success(from,
-        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
-
-    g_test_timer_start();
-    for (;;) {
-        QDict *ret = qtest_qmp_assert_success_ref(from,
-            "{ 'execute': 'query-migrate' }");
-        g_autofree char *status = g_strdup(qdict_get_str(ret, "status"));
-
-        qobject_unref(ret);
-        g_assert_cmpstr(status, !=, "failed");
-        if (g_str_equal(status, "completed")) {
-            break;
-        }
-        g_assert(g_test_timer_elapsed() < 30);
-        g_usleep(1000);
-    }
-}
-
-static void wait_for_incoming_complete(QTestState *qts)
-{
-    g_test_timer_start();
-    for (;;) {
-        QDict *ret = qtest_qmp_assert_success_ref(
-            qts, "{ 'execute': 'query-migrate' }");
-        const char *status = qdict_get_str(ret, "status");
-
-        if (g_str_equal(status, "completed")) {
-            qobject_unref(ret);
-            return;
-        }
-        g_assert_false(g_str_equal(status, "failed"));
-        qobject_unref(ret);
-        g_assert(g_test_timer_elapsed() < 30);
-        g_usleep(1000);
-    }
-}
-
 /* Poll until the guest parks with this marker.  False on the deadline. */
 static bool wait_for_park(QTestState *qts, uint64_t mark)
 {
@@ -964,8 +924,8 @@ static QTestState *drive_stack_switch(QTestState *qts, const TestCase *tc,
         tail = g_strdup_printf("-incoming %s", uri);
         cmdline = case_cmdline(tc, bios, tail);
         to = qtest_init(cmdline);
-        migrate_and_wait(qts, uri);
-        wait_for_incoming_complete(to);
+        sgi_migrate_stopped(qts, uri);
+        sgi_wait_migration_status(to, "completed");
         qtest_quit(qts);
         qts = to;
         /* The destination removes its listening socket once it is done. */

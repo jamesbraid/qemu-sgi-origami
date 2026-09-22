@@ -4,6 +4,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
+#include "sgi-migrate.h"
 #include "sgi-test.h"
 
 #define L1 "/machine/node0/l1"
@@ -260,23 +261,6 @@ static void test_errors_reset(void)
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
-static void wait_migration(QTestState *s)
-{
-    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
-
-    for (;;) {
-        g_autoptr(QDict) reply = qtest_qmp(s, "{'execute':'query-migrate'}");
-        const char *status = qdict_get_str(qdict_get_qdict(reply, "return"),
-                                           "status");
-        if (!strcmp(status, "completed")) {
-            return;
-        }
-        g_assert_cmpstr(status, !=, "failed");
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
-    }
-}
-
 static void test_migration(void)
 {
     g_autofree char *dir = test_dir();
@@ -295,8 +279,8 @@ static void test_migration(void)
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
-    wait_migration(from);
-    wait_migration(to);
+    sgi_wait_migration_status(from, "completed");
+    sgi_wait_migration_status(to, "completed");
     expect_state(to, "unset");
     expect_result(to, "none");
     expect_descriptor(to, "none");

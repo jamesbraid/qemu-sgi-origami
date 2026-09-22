@@ -12,6 +12,7 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "sgi-migrate.h"
 #include "sgi-test.h"
 
 #define HUB_LOCAL_REGISTERS (SPACE_HUB + UINT64_C(0x10000000))
@@ -32,32 +33,6 @@ static char *write_prom_image(const char *directory)
                                       &error));
     g_assert_no_error(error);
     return path;
-}
-
-/*
- * Migrate and block until completed or failed, the way
- * sn0-migration-test.c's own migrate_stopped_vm does.
- */
-static void migrate_stopped_vm(QTestState *from, const char *uri)
-{
-    qtest_qmp_assert_success(from,
-        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
-
-    g_test_timer_start();
-    for (;;) {
-        QDict *ret = qtest_qmp_assert_success_ref(from,
-            "{ 'execute': 'query-migrate' }");
-        g_autofree char *status = g_strdup(qdict_get_str(ret, "status"));
-
-        qobject_unref(ret);
-        g_assert_cmpstr(status, !=, "failed");
-        if (g_str_equal(status, "completed")) {
-            break;
-        }
-
-        g_assert(g_test_timer_elapsed() < 30);
-        g_usleep(1000);
-    }
 }
 
 static void test_board_id_and_l1_uart_survive_migration(const void *data)
@@ -87,7 +62,7 @@ static void test_board_id_and_l1_uart_survive_migration(const void *data)
 
     to_cmdline = g_strdup_printf("%s -incoming %s", cmdline, uri);
     to = qtest_init(to_cmdline);
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     g_assert_cmphex(qtest_readq(to, BOARD_ID_LOCAL), ==, BOARD_ID_VALUE);
     g_assert_cmphex(qtest_readq(to, L1_UART_BASE + L1_UART_STATUS), ==,

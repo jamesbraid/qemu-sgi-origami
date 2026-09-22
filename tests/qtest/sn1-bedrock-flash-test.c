@@ -10,6 +10,7 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "sgi-migrate.h"
 
 #define FLASH_PATH "/machine/peripheral/flash"
 
@@ -1007,25 +1008,6 @@ static void test_read_only(void)
     g_assert_cmpint(unlink(image), ==, 0);
 }
 
-static void wait_for_migration(QTestState *from)
-{
-    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
-
-    for (;;) {
-        g_autoptr(QDict) response = qtest_qmp(from,
-                                              "{'execute':'query-migrate'}");
-        QDict *result = qdict_get_qdict(response, "return");
-        const char *status = qdict_get_str(result, "status");
-
-        if (!strcmp(status, "completed")) {
-            return;
-        }
-        g_assert_cmpstr(status, !=, "failed");
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
-    }
-}
-
 typedef struct {
     char *directory;
     char *socket;
@@ -1071,7 +1053,7 @@ static void migration_run(FlashMigration *m)
         "{'execute': 'migrate-incoming', 'arguments': {'uri': %s}}", m->uri);
     qtest_qmp_assert_success(m->from,
         "{'execute': 'migrate', 'arguments': {'uri': %s}}", m->uri);
-    wait_for_migration(m->from);
+    sgi_wait_migration_status(m->from, "completed");
     qtest_qmp_assert_success(m->to, "{'execute': 'cont'}");
 }
 

@@ -11,6 +11,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sn0-user-image.h"
+#include "sgi-migrate.h"
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -2301,28 +2302,6 @@ static void test_rst_reset_releases_i2c_bus(const void *data)
     qtest_quit(qts);
 }
 
-/* Migrate a stopped source to a listening destination; block until done. */
-static void migrate_stopped_vm(QTestState *from, const char *uri)
-{
-    qtest_qmp_assert_success(from,
-        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
-
-    g_test_timer_start();
-    for (;;) {
-        QDict *ret = qtest_qmp_assert_success_ref(from,
-            "{ 'execute': 'query-migrate' }");
-        g_autofree char *status = g_strdup(qdict_get_str(ret, "status"));
-
-        qobject_unref(ret);
-        g_assert_cmpstr(status, !=, "failed");
-        if (g_str_equal(status, "completed")) {
-            break;
-        }
-        g_assert(g_test_timer_elapsed() < 30);
-        g_usleep(1000);
-    }
-}
-
 /*
  * A "rst" accepted but not yet acknowledged is ARMED: its migrated state
  * carries what to do and that the ack is still unread. Migrating in that
@@ -2360,7 +2339,7 @@ static void test_rst_reset_survives_migration(const void *data)
 
     dest_cmdline = g_strdup_printf("-M origin200 -incoming %s", uri);
     to = qtest_init(dest_cmdline);
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     /*
      * The ARMED reset survived migration without firing early: the ack is
@@ -2436,7 +2415,7 @@ static void test_rst_reset_open_frame_defers_across_migration(const void *data)
 
     dest_cmdline = g_strdup_printf("-M origin200 -incoming %s", uri);
     to = qtest_init(dest_cmdline);
-    migrate_stopped_vm(from, uri);
+    sgi_migrate_stopped(from, uri);
 
     /*
      * On the destination the open frame is intact: the checksum reads back its

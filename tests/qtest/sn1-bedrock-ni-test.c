@@ -7,6 +7,7 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "sgi-migrate.h"
 
 #define NI_PATH "/machine/peripheral/ni"
 #define NI_BASE 0x10000000ULL
@@ -223,25 +224,6 @@ static void test_reset_model_policy(void)
     qtest_quit(s);
 }
 
-static void wait_for_migration(QTestState *qts)
-{
-    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
-
-    for (;;) {
-        g_autoptr(QDict) response = qtest_qmp(qts,
-                                              "{'execute':'query-migrate'}");
-        QDict *result = qdict_get_qdict(response, "return");
-        const char *status = qdict_get_str(result, "status");
-
-        if (!strcmp(status, "completed")) {
-            return;
-        }
-        g_assert_cmpstr(status, !=, "failed");
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
-    }
-}
-
 static void test_migration(void)
 {
     GError *error = NULL;
@@ -266,9 +248,9 @@ static void test_migration(void)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    wait_for_migration(from);
+    sgi_wait_migration_status(from, "completed");
     /* The source completes when its state is sent, not when it is loaded. */
-    wait_for_migration(to);
+    sgi_wait_migration_status(to, "completed");
     g_assert_cmphex(qtest_readq(to, NI_BASE + 0x10), ==, 1);
     g_assert_cmphex(qtest_readq(to, NI_BASE + 0x30), ==, 0x56abcdef0ULL);
     g_assert_cmphex(qtest_readq(to, NI_BASE + 0x38), ==, 0xa55a);

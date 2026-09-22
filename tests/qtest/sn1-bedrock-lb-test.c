@@ -6,6 +6,7 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "sgi-migrate.h"
 
 #define LB_PATH "/machine/peripheral/lb"
 #define LB_BASE 0x11000000ULL
@@ -655,25 +656,6 @@ static void test_microlan_write_during_a_slot_is_refused(void)
     g_assert_cmpint(unlink(log), ==, 0);
 }
 
-static void wait_for_migration(QTestState *from)
-{
-    int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
-
-    for (;;) {
-        g_autoptr(QDict) response = qtest_qmp(from,
-                                             "{'execute':'query-migrate'}");
-        QDict *result = qdict_get_qdict(response, "return");
-        const char *status = qdict_get_str(result, "status");
-
-        if (!strcmp(status, "completed")) {
-            return;
-        }
-        g_assert_cmpstr(status, !=, "failed");
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
-        g_usleep(1000);
-    }
-}
-
 static void test_migration(void)
 {
     GError *error = NULL;
@@ -730,9 +712,9 @@ static void test_migration(void)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    wait_for_migration(from);
+    sgi_wait_migration_status(from, "completed");
     /* The source completes when its state is sent, not when it is loaded. */
-    wait_for_migration(to);
+    sgi_wait_migration_status(to, "completed");
     for (size_t i = 0; i < ARRAY_SIZE(fields); i++) {
         g_assert_cmphex(qtest_readq(to, LB_BASE + fields[i].offset), ==,
                         fields[i].expected);
@@ -779,8 +761,8 @@ static void test_microlan_migration(void)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    wait_for_migration(from);
-    wait_for_migration(to);
+    sgi_wait_migration_status(from, "completed");
+    sgi_wait_migration_status(to, "completed");
     lb_wait_for_clock_running(to);
 
     /* Nothing completed in transit: the deadline is still ahead. */
