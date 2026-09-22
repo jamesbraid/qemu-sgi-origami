@@ -77,6 +77,7 @@ config PSITECH_RAD1
 config PSITECH_RAD4
     bool
     depends on PCI
+    select PSITECH_RAD4_KM
 
 config FRAMEBUFFER
     bool
