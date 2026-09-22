@@ -46,11 +46,23 @@ import time
 
 from qemu_test import QemuSystemTest, skipIfMissingEnv
 
-from lib_prom import (FIRMWARE_REL, file_record, file_sha256,
-                      fork_git_identity, resolve_asset, utc_now)
-from lib_prom_mdk import PROM_SHA256
+from lib_prom import (file_record, file_sha256, fork_git_identity,
+                      resolve_asset, utc_now)
 from lib_prom_pod import COMMANDS, LOCAL_POD_SWITCHES, verdict
+from lib_prom_sash import RELEASES
 from lib_translation_health import assert_translation_healthy
+
+
+# lib_prom_pod.ASSERTIONS requires the "SGI Version 6.11" banner, which
+# the fixture transcript the assertions were pinned from actually
+# printed. That banner belongs to the 6.5-base PROM, not lib_prom's own
+# FIRMWARE_REL (6.5.30, banner 6.156) -- booting 6.5.30 here can only
+# ever fail the banner assertion, so this test pins its own release
+# rather than sharing the other real-PROM tests' 6.5.30 default.
+RELEASE = "6.5-base"
+FIRMWARE_REL = os.path.join('assets', 'firmware', RELEASE,
+                            'ip27prom.payload.bin')
+PROM_SHA256 = RELEASES[RELEASE]['prom_sha256']
 
 
 # Boot to the POD prompt is about two minutes under a contended host and
