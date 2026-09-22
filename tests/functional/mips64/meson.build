@@ -97,19 +97,19 @@ test_mips64_timeouts = {
   # keeps a 60s margin under this.
   'irix_installed_boot' : 960,
   # A full multiuser boot of the installed IRIX 6.5.30 disk on the real
-  # PROM, then the eg (Alteon Tigon) adapter brought up and a 128 KiB
-  # payload pulled over it by TFTP and checked byte-for-byte. The boot is
-  # the long pole (real power-on diagnostics, kernel, init to a console
-  # login); LOGIN_BUDGET_SECONDS in test_irix_eg_net.py keeps a margin
-  # under this, with the transfer legs on their own fixed timeouts on top.
-  'irix_eg_net' : 1800,
-  # The same full multiuser boot of the installed IRIX 6.5.30 disk as
-  # irix_eg_net, with more on top: a byte-checked 1 MiB TCP transfer, then
-  # bulk TCP and UDP throughput runs through ttcp. The boot is still the long
-  # pole -- LOGIN_BUDGET_SECONDS in test_irix_eg_perf.py keeps a margin under
-  # this -- and the three traffic legs carry their own fixed timeouts on top
-  # of it, so this sits above irix_eg_net's budget rather than at it.
-  'irix_eg_perf' : 2400,
+  # PROM, then the eg (Alteon Tigon) adapter brought up and a
+  # byte-checked 1 MiB TCP transfer, bulk TCP and UDP throughput runs
+  # through ttcp, and eg0's own Ipkts receive counter read across the
+  # TCP transfer -- the device-level receive proof that was
+  # test_irix_eg_net.py's own distinguishing check, now folded onto
+  # this boot instead of repeated on a second one. The boot is still
+  # the long pole (real power-on diagnostics, kernel, init to a
+  # console login); LOGIN_BUDGET_SECONDS in test_irix_eg.py keeps a
+  # margin under this, and the traffic legs carry their own fixed
+  # timeouts on top of it. Before: two targets, 1800 (irix_eg_net) and
+  # 2400 (irix_eg_perf), summing 4200. After: one target, still 4200,
+  # one boot instead of two.
+  'irix_eg' : 4200,
   # The same full multiuser boot of the installed IRIX 6.5.30 disk, with the
   # tg (Broadcom BCM570x) adapter brought up instead, its link awaited, and
   # the SLIRP gateway pinged so tg1's own packet counters can be read back.
@@ -218,8 +218,7 @@ tests_mips64_system_thorough = [
   'irix_oltape',
   'irix_olcdrom',
   'irix_installed_boot',
-  'irix_eg_net',
-  'irix_eg_perf',
+  'irix_eg',
   'irix_tg',
   'irix_tg_perf',
   'openbsd_login',
