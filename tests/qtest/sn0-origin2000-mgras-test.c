@@ -1120,6 +1120,71 @@ static void test_fill_mask_reads_colormasklsbsa(void)
 }
 
 
+/*
+ * A rectangle fill takes BKGRD_RG when FILLMODE has bit 20 or bit 22 set
+ * and PACKEDCOLOR otherwise. The stock X server fills only through the
+ * first form, with PACKEDCOLOR left at zero.
+ */
+static void test_fill_color_follows_fillmode(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00445566));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BKGRD_RG, 0x00aabbcc));
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_FILLMODE, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (40u << 16) | 40u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (41u << 16) | 41u));
+    g_assert_cmphex(si_test_pixel(qts, 40, 40), ==, 0x00445566);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_FILLMODE, 0x00100000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (42u << 16) | 40u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (43u << 16) | 41u));
+    g_assert_cmphex(si_test_pixel(qts, 42, 40), ==, 0x00aabbcc);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_FILLMODE, 0x00400000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (44u << 16) | 40u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (45u << 16) | 41u));
+    g_assert_cmphex(si_test_pixel(qts, 44, 40), ==, 0x00aabbcc);
+
+    /* An unrelated FILLMODE bit leaves the fill on PACKEDCOLOR. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_FILLMODE, 0x10000060));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (46u << 16) | 40u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (47u << 16) | 41u));
+    g_assert_cmphex(si_test_pixel(qts, 46, 40), ==, 0x00445566);
+
+    /* The colour mask still applies to whichever register was chosen. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_COLORMASKLSBSA, 0xff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_FILLMODE, 0x10400008));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (48u << 16) | 40u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (49u << 16) | 41u));
+    g_assert_cmphex(si_test_pixel(qts, 48, 40), ==, 0xcc);
+
+    qtest_quit(qts);
+}
+
+
 static void test_ir_alias_execute(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
@@ -2898,6 +2963,8 @@ int main(int argc, char **argv)
                    test_reset_clears_context_acknowledgements);
     qtest_add_func("sn0/origin2000/mgras/fill-mask-reads-colormasklsbsa",
                    test_fill_mask_reads_colormasklsbsa);
+    qtest_add_func("sn0/origin2000/mgras/fill-color-follows-fillmode",
+                   test_fill_color_follows_fillmode);
     qtest_add_func("sn0/origin2000/mgras/ir-alias-execute",
                    test_ir_alias_execute);
     qtest_add_func("sn0/origin2000/mgras/direct-glyph-row",

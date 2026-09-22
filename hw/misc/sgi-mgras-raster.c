@@ -63,6 +63,15 @@
 #define SI_FILLMODE_GLYPH_ROW 0x10400008
 #define SI_FILLMODE_BYTE_XFER 0x10c00000
 
+/*
+ * FILLMODE bit 20 or 22 also sends a rectangle fill to BKGRD_RG instead of
+ * PACKEDCOLOR. Inferred: the stock X server sets one of them for every
+ * rectangle it fills and leaves PACKEDCOLOR zero, while OpenBSD fills with
+ * FILLMODE zero and its colour in PACKEDCOLOR. Which bit means what is
+ * unknown.
+ */
+#define SI_FILLMODE_BACKGROUND_COLOR 0x00500000
+
 typedef enum SGIMgrasRasterSubmissionForm {
     SGI_MGRAS_RASTER_DIRECT,
     SGI_MGRAS_RASTER_FIFO,
@@ -247,7 +256,9 @@ static void si_fill_rect(SGIMgrasState *s, uint32_t xy0, uint32_t xy1,
 
 static void si_draw_fill(SGIMgrasState *s)
 {
-    uint32_t color = s->rss[SI_REG_PACKEDCOLOR] & 0x00ffffff;
+    bool background = s->rss[SI_REG_FILLMODE] & SI_FILLMODE_BACKGROUND_COLOR;
+    uint32_t color = (background ? s->rss[SI_REG_BKGRD_RG] :
+                      s->rss[SI_REG_PACKEDCOLOR]) & 0x00ffffff;
     uint32_t mask = s->rss[SI_REG_COLORMASKLSBSA];
     uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 26;
 
