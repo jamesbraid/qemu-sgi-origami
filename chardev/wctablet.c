@@ -29,7 +29,6 @@
 #include "qemu/osdep.h"
 #include "qemu/module.h"
 #include "chardev/char-serial.h"
-#include "ui/console.h"
 #include "ui/input.h"
 #include "trace.h"
 #include "qom/object.h"
@@ -216,76 +215,83 @@ static int wctablet_chr_write(struct Chardev *chr,
     }
     tablet->query[tablet->query_index] = 0;
 
-    while (tablet->query_index > 0 && (tablet->query[0] == '@'  ||
-                                       tablet->query[0] == '\r' ||
-                                       tablet->query[0] == '\n')) {
-        wctablet_shift_input(tablet, 1);
-    }
-    if (!tablet->query_index) {
-        return len;
-    }
+    /*
+     * A single write() can deliver more than one complete command -- IRIX's
+     * wacom STREAMS module bursts several during its init handshake -- so
+     * keep answering until the buffer holds nothing more we recognize.
+     */
+    for (;;) {
+        while (tablet->query_index > 0 && (tablet->query[0] == '@'  ||
+                                           tablet->query[0] == '\r' ||
+                                           tablet->query[0] == '\n')) {
+            wctablet_shift_input(tablet, 1);
+        }
+        if (!tablet->query_index) {
+            break;
+        }
 
-    if (strncmp((char *)tablet->query, "~#", 2) == 0) {
-        /* init / detect sequence */
-        trace_wct_init();
-        wctablet_shift_input(tablet, 2);
-        wctablet_queue_output(tablet, WC_MODEL_STRING,
-                              WC_MODEL_STRING_LENGTH);
-        return len;
-    }
+        if (strncmp((char *)tablet->query, "~#", 2) == 0) {
+            /* init / detect sequence */
+            trace_wct_init();
+            wctablet_shift_input(tablet, 2);
+            wctablet_queue_output(tablet, WC_MODEL_STRING,
+                                  WC_MODEL_STRING_LENGTH);
+            continue;
+        }
 
-    /* detect line */
-    pos = strchr((char *)tablet->query, '\r');
-    if (!pos) {
-        pos = strchr((char *)tablet->query, '\n');
-    }
-    if (!pos) {
-        return len;
-    }
-    clen = pos - (char *)tablet->query;
+        /* detect line */
+        pos = strchr((char *)tablet->query, '\r');
+        if (!pos) {
+            pos = strchr((char *)tablet->query, '\n');
+        }
+        if (!pos) {
+            break;
+        }
+        clen = pos - (char *)tablet->query;
 
-    /* process commands */
-    if (strncmp((char *)tablet->query, "RE", 2) == 0 &&
-        clen == 2) {
-        trace_wct_cmd_re();
-        wctablet_shift_input(tablet, 3);
-        wctablet_queue_output(tablet, WC_CONFIG_STRING,
-                              WC_CONFIG_STRING_LENGTH);
+        /* process commands */
+        if (strncmp((char *)tablet->query, "RE", 2) == 0 &&
+            clen == 2) {
+            trace_wct_cmd_re();
+            wctablet_shift_input(tablet, 3);
+            wctablet_queue_output(tablet, WC_CONFIG_STRING,
+                                  WC_CONFIG_STRING_LENGTH);
 
-    } else if (strncmp((char *)tablet->query, "ST", 2) == 0 &&
-               clen == 2) {
-        trace_wct_cmd_st();
-        wctablet_shift_input(tablet, 3);
-        tablet->send_events = true;
-        wctablet_queue_event(tablet);
+        } else if (strncmp((char *)tablet->query, "ST", 2) == 0 &&
+                   clen == 2) {
+            trace_wct_cmd_st();
+            wctablet_shift_input(tablet, 3);
+            tablet->send_events = true;
+            wctablet_queue_event(tablet);
 
-    } else if (strncmp((char *)tablet->query, "SP", 2) == 0 &&
-               clen == 2) {
-        trace_wct_cmd_sp();
-        wctablet_shift_input(tablet, 3);
-        tablet->send_events = false;
+        } else if (strncmp((char *)tablet->query, "SP", 2) == 0 &&
+                   clen == 2) {
+            trace_wct_cmd_sp();
+            wctablet_shift_input(tablet, 3);
+            tablet->send_events = false;
 
-    } else if (strncmp((char *)tablet->query, "TS", 2) == 0 &&
-               clen == 3) {
-        unsigned int input = tablet->query[2];
-        uint8_t codes[7] = {
-            0xa3,
-            ((input & 0x80) == 0) ? 0x7e : 0x7f,
-            (((WC_H4(input) & 0x7) ^ 0x5) << 4) | (WC_L4(input) ^ 0x7),
-            0x03,
-            0x7f,
-            0x7f,
-            0x00,
-        };
-        trace_wct_cmd_ts(input);
-        wctablet_shift_input(tablet, 4);
-        wctablet_queue_output(tablet, codes, 7);
+        } else if (strncmp((char *)tablet->query, "TS", 2) == 0 &&
+                   clen == 3) {
+            unsigned int input = tablet->query[2];
+            uint8_t codes[7] = {
+                0xa3,
+                ((input & 0x80) == 0) ? 0x7e : 0x7f,
+                (((WC_H4(input) & 0x7) ^ 0x5) << 4) | (WC_L4(input) ^ 0x7),
+                0x03,
+                0x7f,
+                0x7f,
+                0x00,
+            };
+            trace_wct_cmd_ts(input);
+            wctablet_shift_input(tablet, 4);
+            wctablet_queue_output(tablet, codes, 7);
 
-    } else {
-        tablet->query[clen] = 0; /* terminate line for printing */
-        trace_wct_cmd_other((char *)tablet->query);
-        wctablet_shift_input(tablet, clen + 1);
+        } else {
+            tablet->query[clen] = 0; /* terminate line for printing */
+            trace_wct_cmd_other((char *)tablet->query);
+            wctablet_shift_input(tablet, clen + 1);
 
+        }
     }
 
     return len;

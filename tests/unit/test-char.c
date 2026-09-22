@@ -7,6 +7,7 @@
 #include "qemu/option.h"
 #include "qemu/sockets.h"
 #include "chardev/char-fe.h"
+#include "chardev/char-serial.h"
 #include "system/system.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-char.h"
@@ -1872,6 +1873,45 @@ static void char_hotswap_test(void)
     g_free(chr_args);
 }
 
+static void char_wctablet_burst_test(void)
+{
+    static const char expect[] = "~#CT-0045R,V1.3-5,96,N,8,0";
+    QEMUSerialSetParams ssp = { .speed = 9600, .parity = 'N',
+                                .data_bits = 8, .stop_bits = 1 };
+    Chardev *chr;
+    CharFrontend c;
+    FeHandler fe = { 0, };
+    int ret;
+
+    chr = qemu_chr_new("wctablet-burst-label", "wctablet", NULL);
+    g_assert_nonnull(chr);
+
+    qemu_chr_fe_init(&c, chr, &error_abort);
+    qemu_chr_fe_set_handlers(&c, fe_can_read, fe_read, fe_event, NULL,
+                             &fe, NULL, true);
+
+    /*
+     * drain the open-time Penpartner announce, then reset the counter so
+     * the assertion below sees only what the two commands below provoke
+     */
+    qemu_chr_fe_accept_input(&c);
+    fe.read_count = 0;
+
+    ret = qemu_chr_fe_ioctl(&c, CHR_IOCTL_SERIAL_SET_PARAMS, &ssp);
+    g_assert_cmpint(ret, ==, 0);
+
+    /*
+     * IRIX's wacom STREAMS module can burst "~#" and "RE\r" into the same
+     * write(); both commands must be answered, not just the first one.
+     */
+    ret = qemu_chr_fe_write_all(&c, (const uint8_t *)"~#RE\r", 5);
+    g_assert_cmpint(ret, ==, 5);
+
+    g_assert_cmpmem(fe.read_buf, fe.read_count, expect, strlen(expect));
+
+    qemu_chr_fe_deinit(&c, true);
+}
+
 static SocketAddress tcpaddr = {
     .type = SOCKET_ADDRESS_TYPE_INET,
     .u.inet.host = (char *)"127.0.0.1",
@@ -1993,6 +2033,7 @@ int main(int argc, char **argv)
 #endif
     g_test_add_func("/char/hotswap", char_hotswap_test);
     g_test_add_func("/char/websocket", char_websock_test);
+    g_test_add_func("/char/wctablet/burst", char_wctablet_burst_test);
 
 end:
     return g_test_run();
