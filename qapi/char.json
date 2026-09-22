@@ -350,6 +350,21 @@
   'base': 'ChardevCommon' }
 
 ##
+# @ChardevWctablet:
+#
+# Configuration info for Wacom serial tablet chardevs.
+#
+# @model: tablet identity to emulate.  The only supported value
+#     besides the default is "UD-1212-R" (a Wacom UD-series
+#     tablet).  Default: a Wacom Penpartner CT-0045R.
+#
+# Since: 11.2
+##
+{ 'struct': 'ChardevWctablet',
+  'data': { '*model': 'str' },
+  'base': 'ChardevCommon' }
+
+##
 # @ChardevSpiceChannel:
 #
 # Configuration info for spice vm channel chardevs.
@@ -512,7 +527,8 @@
 #
 # @msmouse: emulated Microsoft serial mouse (since 1.5)
 #
-# @wctablet: emulated Wacom Penpartner serial tablet (since 2.9)
+# @wctablet: emulated Wacom serial tablet, a Penpartner CT-0045R by
+#     default (since 2.9)
 #
 # @braille: Baum Braille device (since 1.5)
 #
@@ -648,6 +664,16 @@
   'data': { 'data': 'ChardevStdio' } }
 
 ##
+# @ChardevWctabletWrapper:
+#
+# @data: Configuration info for Wacom serial tablet chardevs
+#
+# Since: 11.2
+##
+{ 'struct': 'ChardevWctabletWrapper',
+  'data': { 'data': 'ChardevWctablet' } }
+
+##
 # @ChardevSpiceChannelWrapper:
 #
 # @data: Configuration info for spice vm channel chardevs
@@ -746,7 +772,7 @@
             'mux': 'ChardevMuxWrapper',
             'hub': 'ChardevHubWrapper',
             'msmouse': 'ChardevCommonWrapper',
-            'wctablet': 'ChardevCommonWrapper',
+            'wctablet': 'ChardevWctabletWrapper',
             'braille': { 'type': 'ChardevCommonWrapper',
                          'if': 'CONFIG_BRLAPI' },
             'testdev': 'ChardevCommonWrapper',

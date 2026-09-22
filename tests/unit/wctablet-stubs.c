@@ -8,10 +8,16 @@
 
 #include "qemu/osdep.h"
 #include "ui/input.h"
+#include "wctablet-stubs.h"
+
+DeviceState *wctablet_stub_dev;
+const QemuInputHandler *wctablet_stub_handler;
 
 QemuInputHandlerState *
 qemu_input_handler_register(DeviceState *dev, const QemuInputHandler *handler)
 {
+    wctablet_stub_dev = dev;
+    wctablet_stub_handler = handler;
     return NULL;
 }
 

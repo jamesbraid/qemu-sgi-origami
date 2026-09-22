@@ -8,6 +8,8 @@
 #include "qemu/sockets.h"
 #include "chardev/char-fe.h"
 #include "chardev/char-serial.h"
+#include "ui/input.h"
+#include "wctablet-stubs.h"
 #include "system/system.h"
 #include "qapi/error.h"
 #include "qapi/qapi-commands-char.h"
@@ -1912,6 +1914,165 @@ static void char_wctablet_burst_test(void)
     qemu_chr_fe_deinit(&c, true);
 }
 
+static void wctablet_send_abs(InputAxis axis, int value)
+{
+    QemuInputEvent evt = {
+        .type = INPUT_EVENT_KIND_ABS,
+        .abs = { .axis = axis, .value = value },
+    };
+
+    wctablet_stub_handler->event(wctablet_stub_dev, NULL, &evt);
+}
+
+static void wctablet_send_btn(InputButton button, bool down)
+{
+    QemuInputEvent evt = {
+        .type = INPUT_EVENT_KIND_BTN,
+        .btn = { .button = button, .down = down },
+    };
+
+    wctablet_stub_handler->event(wctablet_stub_dev, NULL, &evt);
+}
+
+static void wctablet_send_sync(void)
+{
+    wctablet_stub_handler->sync(wctablet_stub_dev);
+}
+
+static void char_wctablet_ud1212r_test(void)
+{
+    static const char id_reply[] = "~#UD-1212-R00 V1.3-5\r";
+    static const char max_reply[] = "~C15240,15240\r";
+    /*
+     * The rest of IRIX's init handshake (mode setters, no "~#"/"~C") gets
+     * no reply and must not desync the parser -- including the bare "$"
+     * and "#" framing bytes it sends with no line terminator.
+     */
+    static const char noop_burst[] =
+        "$#SP\r~*F203C000\rAS1\rPH1\rDE0\rHC0\rSP\rSP\r~M1\r~M5\rNR2540\rSU5\r";
+    QEMUSerialSetParams ssp = { .speed = 9600, .parity = 'N',
+                                .data_bits = 8, .stop_bits = 1 };
+    QemuOpts *opts;
+    Chardev *chr;
+    CharFrontend c;
+    FeHandler fe = { 0, };
+    int ret, rx, ry;
+
+    opts = qemu_opts_create(qemu_find_opts("chardev"), "wctablet-ud-label",
+                            1, &error_abort);
+    qemu_opt_set(opts, "backend", "wctablet", &error_abort);
+    qemu_opt_set(opts, "model", "UD-1212-R", &error_abort);
+    chr = qemu_chr_new_from_opts(opts, NULL, &error_abort);
+    g_assert_nonnull(chr);
+    qemu_opts_del(opts);
+
+    qemu_chr_fe_init(&c, chr, &error_abort);
+    qemu_chr_fe_set_handlers(&c, fe_can_read, fe_read, fe_event, NULL,
+                             &fe, NULL, true);
+
+    /*
+     * Unlike the Penpartner default, a UD-series tablet never announces
+     * itself -- IRIX's wacom module only rejects an identity it is not
+     * expecting, so an unsolicited one is fatal to the handshake.
+     */
+    qemu_chr_fe_accept_input(&c);
+    g_assert_cmpint(fe.read_count, ==, 0);
+
+    ret = qemu_chr_fe_ioctl(&c, CHR_IOCTL_SERIAL_SET_PARAMS, &ssp);
+    g_assert_cmpint(ret, ==, 0);
+
+    /* "~#" carries no line terminator; the real module never sends one */
+    ret = qemu_chr_fe_write_all(&c, (const uint8_t *)"~#", 2);
+    g_assert_cmpint(ret, ==, 2);
+    g_assert_cmpmem(fe.read_buf, fe.read_count, id_reply, strlen(id_reply));
+    fe.read_count = 0;
+
+    ret = qemu_chr_fe_write_all(&c, (const uint8_t *)"~C\r", 3);
+    g_assert_cmpint(ret, ==, 3);
+    g_assert_cmpmem(fe.read_buf, fe.read_count, max_reply, strlen(max_reply));
+    fe.read_count = 0;
+
+    ret = qemu_chr_fe_write_all(&c, (const uint8_t *)noop_burst,
+                                strlen(noop_burst));
+    g_assert_cmpint(ret, ==, strlen(noop_burst));
+    g_assert_cmpint(fe.read_count, ==, 0);
+
+    ret = qemu_chr_fe_write_all(&c, (const uint8_t *)"ST\r", 3);
+    g_assert_cmpint(ret, ==, 3);
+    fe.read_count = 0;
+
+    /*
+     * Coordinates must scale to the maximum the "~C" reply advertised
+     * (15240), not to the Penpartner's fixed 0.1537/0.1152 multipliers.
+     */
+    wctablet_send_abs(INPUT_AXIS_X, INPUT_EVENT_ABS_MAX);
+    wctablet_send_abs(INPUT_AXIS_Y, INPUT_EVENT_ABS_MAX);
+    wctablet_send_sync();
+
+    g_assert_cmpint(fe.read_count, ==, 7);
+    rx = ((fe.read_buf[0] & 0x03) << 14) |
+         ((fe.read_buf[1] & 0x7f) << 7) |
+         (fe.read_buf[2] & 0x7f);
+    ry = ((fe.read_buf[3] & 0x03) << 14) |
+         ((fe.read_buf[4] & 0x7f) << 7) |
+         (fe.read_buf[5] & 0x7f);
+    g_assert_cmpint(rx, ==, 15240);
+    g_assert_cmpint(ry, ==, 15240);
+
+    /*
+     * No button down: WACOM IV pressure mode (WTC-1002 manual, "4.1
+     * WACOM IV binary data format") reports proximity and stylus type
+     * with the Button Flag clear, no switch number, and no pressure.
+     */
+    g_assert_cmpint((fe.read_buf[0] & 0x40) >> 6, ==, 1); /* Proximity */
+    g_assert_cmpint((fe.read_buf[0] & 0x20) >> 5, ==, 1); /* Pointer: stylus */
+    g_assert_cmpint((fe.read_buf[0] & 0x08) >> 3, ==, 0); /* Button Flag */
+    g_assert_cmpint((fe.read_buf[3] & 0x78) >> 3, ==, 0); /* switch number */
+    g_assert_cmpint(fe.read_buf[6] & 0x7f, ==, 0); /* Sp + pressure */
+    fe.read_count = 0;
+
+    /*
+     * LEFT down is the tip switch alone -- switch number 1 in "4.2
+     * Table of button states" -- reported with a high pressure value,
+     * per the manual's own tip/pressure clamp example.
+     */
+    wctablet_send_btn(INPUT_BUTTON_LEFT, true);
+    wctablet_send_sync();
+    g_assert_cmpint(fe.read_count, ==, 7);
+    g_assert_cmpint((fe.read_buf[0] & 0x08) >> 3, ==, 1); /* Button Flag */
+    g_assert_cmpint((fe.read_buf[3] & 0x78) >> 3, ==, 1); /* switch: tip */
+    g_assert_cmpint(fe.read_buf[6] & 0x7f, ==, 60); /* high pressure */
+    fe.read_count = 0;
+
+    /*
+     * Releasing the tip and pressing the first side switch (MIDDLE) is
+     * switch number 2 -- a side switch alone carries no pressure.
+     */
+    wctablet_send_btn(INPUT_BUTTON_LEFT, false);
+    wctablet_send_btn(INPUT_BUTTON_MIDDLE, true);
+    wctablet_send_sync();
+    g_assert_cmpint(fe.read_count, ==, 7);
+    g_assert_cmpint((fe.read_buf[0] & 0x08) >> 3, ==, 1); /* Button Flag */
+    g_assert_cmpint((fe.read_buf[3] & 0x78) >> 3, ==, 2); /* 1st side switch */
+    g_assert_cmpint(fe.read_buf[6] & 0x7f, ==, 0); /* no pressure */
+
+    qemu_chr_fe_deinit(&c, true);
+}
+
+static void char_wctablet_bad_model_test(void)
+{
+    QemuOpts *opts;
+    Chardev *chr;
+
+    opts = qemu_opts_create(qemu_find_opts("chardev"), "wctablet-bad-label",
+                            1, &error_abort);
+    qemu_opt_set(opts, "backend", "wctablet", &error_abort);
+    qemu_opt_set(opts, "model", "SD-510", &error_abort);
+    chr = qemu_chr_new_from_opts(opts, NULL, NULL);
+    g_assert_null(chr);
+    qemu_opts_del(opts);
+}
+
 static SocketAddress tcpaddr = {
     .type = SOCKET_ADDRESS_TYPE_INET,
     .u.inet.host = (char *)"127.0.0.1",
@@ -2034,6 +2195,8 @@ int main(int argc, char **argv)
     g_test_add_func("/char/hotswap", char_hotswap_test);
     g_test_add_func("/char/websocket", char_websock_test);
     g_test_add_func("/char/wctablet/burst", char_wctablet_burst_test);
+    g_test_add_func("/char/wctablet/ud1212r", char_wctablet_ud1212r_test);
+    g_test_add_func("/char/wctablet/bad-model", char_wctablet_bad_model_test);
 
 end:
     return g_test_run();

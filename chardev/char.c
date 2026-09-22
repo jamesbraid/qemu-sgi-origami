@@ -997,6 +997,9 @@ QemuOptsList qemu_chardev_opts = {
             .name = "signal",
             .type = QEMU_OPT_BOOL,
         },{
+            .name = "model",
+            .type = QEMU_OPT_STRING,
+        },{
             .name = "name",
             .type = QEMU_OPT_STRING,
         },{
