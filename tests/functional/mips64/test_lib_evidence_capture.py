@@ -49,6 +49,18 @@ class LoginTest(unittest.TestCase):
         self.assertIn('sendkey shift-c', joined[username_end:])
         self.assertEqual(vm.command_lines.count('sendkey ret'), 2)
 
+    @patch('lib_input.type_text')
+    @patch('lib_input.time.sleep')
+    def test_forwards_key_settle_to_both_fields(self, _sleep, type_text):
+        vm = FakeVm()
+
+        evidence.login(vm, 'guest', 'Captur01', key_settle_seconds=0.25)
+
+        self.assertEqual(type_text.call_args_list, [
+            unittest.mock.call(vm, 'guest', key_settle_seconds=0.25),
+            unittest.mock.call(vm, 'Captur01', key_settle_seconds=0.25),
+        ])
+
 
 class OpenConsoleTest(unittest.TestCase):
 
@@ -113,6 +125,16 @@ class RunCommandTest(unittest.TestCase):
         self.assertIn('sendkey h', joined)
         self.assertIn('sendkey minus', joined)
 
+    @patch('lib_input.type_text')
+    @patch('lib_input.time.sleep')
+    def test_forwards_key_settle(self, _sleep, type_text):
+        vm = FakeVm()
+
+        evidence.run_command(vm, 'hinv -v', key_settle_seconds=0.25)
+
+        type_text.assert_called_once_with(
+            vm, 'hinv -v', key_settle_seconds=0.25)
+
 
 class ScreendumpTest(unittest.TestCase):
 
@@ -147,6 +169,21 @@ class CaptureEvidenceTest(unittest.TestCase):
         self.assertEqual(vm.command_lines.count('sendkey ret'), 3)
         self.assertEqual(vm.other_commands,
                          [('screendump', {'filename': '/tmp/out.ppm'})])
+
+    @patch('lib_input.type_text')
+    @patch('lib_input.time.sleep')
+    def test_forwards_key_settle_to_login_and_command(self, _sleep, type_text):
+        vm = FakeVm()
+
+        evidence.capture_evidence(
+            vm, username='guest', password='x', command='hinv -v',
+            out_path='/tmp/out.ppm', key_settle_seconds=0.25)
+
+        self.assertEqual(type_text.call_args_list, [
+            unittest.mock.call(vm, 'guest', key_settle_seconds=0.25),
+            unittest.mock.call(vm, 'x', key_settle_seconds=0.25),
+            unittest.mock.call(vm, 'hinv -v', key_settle_seconds=0.25),
+        ])
 
 
 if __name__ == '__main__':
