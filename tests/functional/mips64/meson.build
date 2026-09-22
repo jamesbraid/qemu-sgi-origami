@@ -36,21 +36,18 @@ test_mips64_timeouts = {
   # boot passed three runs in a row with no failure. 240 keeps well over
   # three times the measured total for a contended host.
   'origin300_prom' : 240,
-  # One test method per origin200-matrix row whose speed column says quick,
-  # in this one script (test_origin200_matrix.py). The synthesized-firmware
-  # axis is gone, so the manifest's one quick row now boots the real PROM
-  # too (prom_full_boot_mttcg, 180s budget): measured PASS in under 20s
-  # end to end (2026-09-14, a host already busy with other work), so 300
-  # keeps well over that plus VM launch/shutdown overhead and room for a
-  # second quick cell.
-  'origin200_matrix' : 300,
-  # The thorough rows of the same manifest, in test_origin200_matrix_thorough
-  # .py: two real firmware-boot cells (700s each -- 4-CPU and two-node;
-  # prom_full_boot_mttcg moved to the quick list above), worst case both
-  # running out their own budget in sequence, plus VM launch/shutdown
-  # overhead. Matches linux_kernel's own reasoning below for the same
-  # one-script, several-budgets-in-sequence shape.
-  'origin200_matrix_thorough' : 1800,
+  # One test method per origin200-matrix row, quick and thorough speeds
+  # alike, in this one script (test_origin200_prom.py) -- merged from
+  # what were four separate scripts (test_origin200_matrix.py,
+  # test_origin200_matrix_thorough.py, test_prom_boot.py,
+  # test_prom_copy_speed.py): every cell now boots the real PROM, so the
+  # two fixed single-cell checks are the manifest's own smallest cell
+  # (prom_full_boot_1cpu) with two more assertions on that one boot,
+  # not a separate launch. 3120 sums the four absorbed scripts' own
+  # budgets (300 + 1800 + 700 + 320) for the four cells now running in
+  # sequence in this one script, the same shape linux_kernel's own
+  # reasoning below keeps for several budgets run one after another.
+  'origin200_prom' : 3120,
   # graphics-matrix's two rows (rad4_login_screen, rad4_login_screen_smp2):
   # boot IRIX 6.5.30 with RAD4 at its vendor-documented PCI slot, one CPU
   # and two, drive each to the console login prompt, wait a fixed settle
@@ -68,8 +65,6 @@ test_mips64_timeouts = {
   # usually needed, matching origin200_matrix_thorough's own reasoning for
   # its two real-boot cells below.
   'graphics_matrix_thorough' : 1400,
-  'prom_boot' : 700,
-  'prom_copy_speed' : 320,
   'prom_diagnostics' : 1800,
   # A single netboot pass, smaller than the two-pass factory-diagnostics
   # check's 1800s: BOOT_TIMEOUT_SECONDS in test_prom_sash.py keeps a 60s
@@ -202,7 +197,6 @@ tests_mips64_system_quick = [
   'sn0_port_reset',
   'sn0_elsc_reset',
   'sn1_l1_reset',
-  'origin200_matrix',
   'origin2000_cache_reset',
   # graphics-matrix carries no quick row yet (see graphics_matrix_thorough's
   # own comment below); registered anyway so a future device's quick
@@ -211,11 +205,9 @@ tests_mips64_system_quick = [
 ]
 
 tests_mips64_system_thorough = [
-  'origin200_matrix_thorough',
+  'origin200_prom',
   'graphics_matrix_thorough',
   'origin300_prom',
-  'prom_boot',
-  'prom_copy_speed',
   'prom_diagnostics',
   'prom_sash',
   'prom_pod',

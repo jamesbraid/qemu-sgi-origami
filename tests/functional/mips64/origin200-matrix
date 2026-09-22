@@ -2,3 +2,4 @@
 prom_full_boot_mttcg | prom | full_boot | 2 | 1 | 64M | mttcg | quick | 180 | 1 | 1 | pass |  |
 prom_full_boot_1node | prom | full_boot | 2 | 1 | 64M | wallclock | thorough | 700 | 1 | 1 | pass |  |
 prom_full_boot_2node | prom | full_boot | 4 | 2 | 128M | wallclock | thorough | 700 | 1 | 1 | pass |  |
+prom_full_boot_1cpu | prom | full_boot | 1 | 1 | 64M | wallclock | thorough | 700 | 1 | 1 | pass |  |
