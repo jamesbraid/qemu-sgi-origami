@@ -139,6 +139,22 @@ BOOT_TIMEOUT_SECONDS = 240
 FOUR_CPU_BOOT_TIMEOUT_SECONDS = 900
 
 
+def _timeout_multiplier():
+    """TIMEOUT_MULTIPLIER, meson's own name and convention
+    (scripts/mtest2make.py: unset means 1) for scaling a registered
+    timeout under load. Nothing here runs through `meson test`, so
+    nothing multiplies this budget unless a caller (tools/linux-boot-check,
+    via functional_check.py) sets the variable itself; an unparseable or
+    non-positive value falls back to 1 rather than shrinking or zeroing a
+    real boot's deadline."""
+    raw = os.environ.get('TIMEOUT_MULTIPLIER', '1')
+    try:
+        value = float(raw)
+    except ValueError:
+        return 1.0
+    return value if value > 0 else 1.0
+
+
 def machine_props(cpus):
     """The -M origin200,... property string for a one-, two-, or
     four-CPU cell: four CPUs need the two-node topology, named
@@ -221,7 +237,7 @@ class LinuxKernel(QemuSystemTest):
 
         log_path = self.log_file(f'{name}.log')
         timeout = (FOUR_CPU_BOOT_TIMEOUT_SECONDS if cpus == 4
-                   else BOOT_TIMEOUT_SECONDS)
+                   else BOOT_TIMEOUT_SECONDS) * _timeout_multiplier()
         try:
             transcript, _reached = drive_console(
                 vm.console_socket, log_path, timeout, NETBOOT_STEPS,
