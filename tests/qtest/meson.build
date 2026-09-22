@@ -21,6 +21,13 @@ slow_qtests = {
   'sn0-module-management-test': 300,
   'qos-test': 120,
   'vmgenid-test': 610,
+  # Where a note below gives a measured figure, it is that test's wall time
+  # in one parallel check-qtest-mips64 run on a workstation at a load
+  # average of 58 with no TIMEOUT_MULTIPLIER, and its budget is three times
+  # that figure. Two of them, sn0-origin2000-test and sn1-address-map-test,
+  # were killed at the budgets they had in the three runs before this one,
+  # and CI does not see that only because it doubles every budget.
+  #
   # These SN0 device qtests run 50-59s under TCG; the 60s default leaves no
   # headroom and they time out under CI load. Give them the 120s slow budget.
   'sn0-pi-error-test': 120,
@@ -34,23 +41,27 @@ slow_qtests = {
   'sn0-qtest-cpu-test': 180,
   # The full 32-reset run took 265s under load. Keep headroom for all cycles.
   'sn0-warm-reset-test': 600,
-  # IOC3 took about 106s under load; keep twice that measured wall time.
-  'sn0-ioc3-test': 240,
-  # Hub's 115 cases took 212s alone and exceeded 240s in the parallel suite.
-  'sn0-hub-test': 600,
-  # Routed acceptance takes 44-60s; keep headroom under parallel CI load.
-  'sn0-origin2000-test': 120,
-  # The migration suite runs twenty sequential cases. Its intentional
-  # corrupt-ELSC-stream case also starts a third destination, and the added
-  # Origin 2000 responder migration brought the measured total near 60s.
-  'sn0-migration-test': 120,
+  # IOC3 shares one machine across the cases that want a plain origin200 and
+  # starts its own for the rest. Measured 82.99s.
+  'sn0-ioc3-test': 250,
+  # The Hub's cases share one machine, but the file's time is mostly its
+  # multi-processor rendezvous cases, which run a real guest under TCG and
+  # do not get faster for sharing anything. Measured 175.69s.
+  'sn0-hub-test': 540,
+  # Routed acceptance was killed at a 120s ceiling in every parallel run
+  # before this budget was raised. Measured 114.90s.
+  'sn0-origin2000-test': 350,
+  # The migration suite runs twenty sequential cases, each a pair of QEMU
+  # processes because a destination cannot share its source's. Its
+  # intentional corrupt-ELSC-stream case starts a third. Measured 58.27s.
+  'sn0-migration-test': 180,
   # Tigon reached 60.10s in the same loaded run without a failed assertion.
   'sn0-tigon-test': 120,
-  # Bridge reached 62s measured solo on a loaded workstation, and in CI it
-  # was the fourth most killed test over Aug 30 - Sep 3 (20 timeout kills
-  # at the 120s ceiling, zero failing subtests). Same treatment: twice the
-  # measured wall time.
-  'sn0-bridge-test': 240,
+  # Bridge was the fourth most killed test in CI over Aug 30 - Sep 3, with
+  # 20 timeout kills at what was then a 120s ceiling and zero failing
+  # subtests. It now shares one machine across the cases that want no card
+  # in any slot. Measured 48.58s.
+  'sn0-bridge-test': 150,
   # sn0-ioc3-serial-test itself finishes in 7-17s, but its own socket read/accept
   # deadline is 120s to tolerate scheduling delay (see
   # tests/qtest/sn0-ioc3-serial-test.c). This budget has to exceed that deadline,
@@ -70,20 +81,23 @@ slow_qtests = {
   # workstation that was also building and testing other trees. 180s leaves that
   # spread the same room the 120s left the figure it was set from.
   'sn0-isp12160-test': 180,
+  # sn1-address-map-test had no entry here, so it ran on the 60s default and
+  # was killed at it in every parallel run before this entry existed.
+  # Measured 54.23s.
+  'sn1-address-map-test': 170,
   # sn1-bedrock-flash-test rewrites a whole 64 KiB sector one flash word at a
   # time, which is four qtest round trips per word, and starts eight further
   # QEMU processes for the rejection and migration cases.
   'sn1-bedrock-flash-test': 180,
-  # The full register suite starts a fresh eight-CPU machine per subtest. It
-  # measured 174.86s before the discarded-FIFO migration case was added, and
-  # 250.31s after the CMAP byte-packing display-pixel case was added. Select
-  # one GLib test path for the normal edit/build/test loop.
-  'sn0-origin2000-mgras-test': 360,
-  # The timekeeper repair-store loop alone starts sixteen QEMU processes
-  # (two module boots per CPU across eight vCPUs), and io6g's two IOC3
-  # keyboard controllers add a second PS/2 probe beside it. Measured just
-  # over 60s unloaded; keep headroom under parallel CI load.
-  'sn0-baseio-test': 120,
+  # The register cases share one machine now; what is left is the eight
+  # migration cases, which start seventeen processes between them because a
+  # destination cannot share its source's. Measured 108.45s.
+  'sn0-origin2000-mgras-test': 330,
+  # Two machines, one per BaseIO preset, serve the whole file, but each is a
+  # four-node module with eight processors and 256 MB and the timekeeper
+  # repair-store loop resets one of them once per processor. Measured
+  # 41.05s.
+  'sn0-baseio-test': 150,
 }
 
 qtest_priorities = {
