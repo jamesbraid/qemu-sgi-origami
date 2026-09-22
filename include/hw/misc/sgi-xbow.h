@@ -185,4 +185,20 @@ bool sgi_xbow_attach_widget(SGIXbowState *s, unsigned int widget,
 bool sgi_xbow_mark_widget_alive(SGIXbowState *s, unsigned int widget,
                                 Error **errp);
 
+/*
+ * Attach a widget's endpoint faces after the Crossbow has realized and
+ * build the routes into it, the post-realize counterpart of
+ * sgi_xbow_attach_endpoint(): it makes the widget an inbound destination
+ * other ports and processors can address, where attach_endpoint() refuses
+ * once the Crossbow is realized. For a board that reaches its Crossbow only
+ * after machine init -- a `-device` expansion board plugged into the spare
+ * fabric proxy -- whose Crossbow is therefore already realized. The caller
+ * brings the widget's own link alive with sgi_xbow_mark_widget_alive().
+ * Fails if the widget already has a face, is out of range, or the crossbar
+ * is not realized or is quiesced.
+ */
+bool sgi_xbow_attach_endpoint_live(SGIXbowState *s, unsigned int widget,
+                                   MemoryRegion *cpu_face,
+                                   MemoryRegion *packet_face, Error **errp);
+
 #endif /* HW_MISC_SGI_XBOW_H */

@@ -205,7 +205,9 @@ MemoryRegion *sgi_xtalk_crossbow_link_prepare(SGIXtalkCrossbowLink *link,
     return &link->proxy;
 }
 
-void sgi_xtalk_crossbow_link_claim_fabric(MemoryRegion *fabric)
+void sgi_xtalk_crossbow_link_claim_fabric(MemoryRegion *fabric,
+                                          MemoryRegion *cpu_face,
+                                          MemoryRegion *packet_face)
 {
     SGIXtalkCrossbowLink *link;
 
@@ -224,6 +226,8 @@ void sgi_xtalk_crossbow_link_claim_fabric(MemoryRegion *fabric)
     }
     link = container_of(fabric, SGIXtalkCrossbowLink, proxy);
     link->fabric_claimed = true;
+    link->claimant_cpu_face = cpu_face;
+    link->claimant_packet_face = packet_face;
 }
 
 /*
