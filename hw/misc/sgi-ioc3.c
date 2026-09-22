@@ -401,9 +401,11 @@ static const MemoryRegionOps sgi_ioc3_main_ops = {
 
 /* The 16550's published layout; hw/char/serial.c's macros are private. */
 #define UART_RBR_THR    0
+#define UART_LCR        3
 #define UART_MCR        4
 #define UART_LSR        5
 #define UART_MSR        6
+#define UART_SCR        7
 
 #define UART_LSR_DR     0x01
 #define UART_LSR_OE     0x02
@@ -423,6 +425,58 @@ static const MemoryRegionOps sgi_ioc3_main_ops = {
 #define UART_MSR_DCD    0x80
 
 #define UART_LCR_DLAB   0x80
+
+/*
+ * docs/datasheets/ioc3.md, "IOC3 overloads the scratch register": while a
+ * port's divisor latch is selected, a write to its scratch register (offset
+ * 7) programs the 16550's clock pre-divider instead of storing a scratch
+ * byte. The value written is twice the divider wanted -- the PROM and IRIX
+ * write 6, for a divide of 3 -- and the reference clock the ordinary
+ * divisor latches then work from is the crystal divided by that divider.
+ *
+ * The datasheet states the header's crystal as 22,000,000 Hz, but argues,
+ * as an inference rather than a stated fact, that the real part is a
+ * 22.1184 MHz crystal: SGI's manual calls these 460,800-baud ports, and
+ * 22.1184 MHz / 3 / 16 lands exactly on 460,800 and on the standard rates
+ * below it (divisor 48 gives exactly 9600), where the header's rounded
+ * figure is half a percent off. A guest that only ever reads back its own
+ * writes cannot tell the two figures apart; it matters here because the
+ * emulated baud rate has to line up with a real host serial port.
+ */
+#define SGI_IOC3_UART_CRYSTAL_HZ 22118400
+
+/*
+ * Offset 7 always stores into the 16550 core's own scratch byte first (see
+ * the caller), so a guest reads back exactly what it wrote whether or not
+ * the divisor latch is selected. This is the overload on top of that: while
+ * it is selected, also derive the reference clock the port's baud rate is
+ * computed from. A written 0 or 1 would divide by zero; the datasheet
+ * describes no meaning for either, and no capture shows one written, so
+ * they are read as "leave the reference clock alone".
+ */
+static void sgi_ioc3_serial_program_predivider(SGIIOC3State *s,
+                                               unsigned int port,
+                                               uint8_t predivider)
+{
+    SerialState *serial = &s->serial[port];
+    unsigned int divider = predivider / 2;
+
+    if (divider == 0) {
+        return;
+    }
+
+    s->serial_predivider[port] = predivider;
+    serial->baudbase = SGI_IOC3_UART_CRYSTAL_HZ / divider / 16;
+
+    /*
+     * serial.c only recomputes the baud rate on a divisor-latch or
+     * line-control write. Re-issue the port's current line control so a
+     * pre-divider written after the divisor already latched takes effect
+     * at once, rather than waiting on whatever next touches either
+     * register.
+     */
+    serial_io_ops.write(serial, UART_LCR, serial->lcr, 1);
+}
 
 /*
  * Every character the chip hands a port's UART to transmit, written to a
@@ -454,11 +508,15 @@ static void sgi_ioc3_serial_write(void *opaque, hwaddr addr, uint64_t val,
     SGIIOC3SerialAlias *handle = opaque;
     SerialState *serial = &handle->chip->serial[handle->port];
     bool is_thr = addr == UART_RBR_THR && !(serial->lcr & UART_LCR_DLAB);
+    bool is_predivider = addr == UART_SCR && (serial->lcr & UART_LCR_DLAB);
 
     serial_io_ops.write(serial, addr, val & 0xff, 1);
 
     if (is_thr) {
         sgi_ioc3_serial_record(handle->chip, handle->port, val & 0xff);
+    } else if (is_predivider) {
+        sgi_ioc3_serial_program_predivider(handle->chip, handle->port,
+                                           val & 0xff);
     }
 }
 
@@ -1673,13 +1731,24 @@ static int sgi_ioc3_post_load(void *opaque, int version_id)
     sgi_ioc3_update_irq(s);
     for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
         sgi_ioc3_sdma_run(s, i);
+        /*
+         * baudbase is a realize-time property of the embedded SerialState,
+         * not a migrated field, so vmstate_serial's own post_load -- which
+         * already ran, nested inside the field load above -- computed the
+         * port's baud rate from the 16550 core's stock default rather than
+         * from the pre-divider this chip overloads the scratch register
+         * with. Rederive it now that serial_predivider[] has loaded.
+         * sgi_ioc3_serial_program_predivider() already treats 0 or 1 (never
+         * programmed, or absent on a pre-17 stream) as "leave it alone".
+         */
+        sgi_ioc3_serial_program_predivider(s, i, s->serial_predivider[i]);
     }
     return 0;
 }
 
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
-    .version_id = 16,
+    .version_id = 17,
     .minimum_version_id = 14,
     .pre_load = sgi_ioc3_pre_load,
     .post_load = sgi_ioc3_post_load,
@@ -1690,6 +1759,8 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
         VMSTATE_STRUCT_ARRAY_TEST(serial, SGIIOC3State, SGI_IOC3_SERIAL_PORTS,
                                   sgi_ioc3_serial_needed, 0, vmstate_serial,
                                   SerialState),
+        VMSTATE_UINT8_ARRAY_V(serial_predivider, SGIIOC3State,
+                              SGI_IOC3_SERIAL_PORTS, 17),
         VMSTATE_UINT32(microlan_control, SGIIOC3State),
         VMSTATE_UINT32(pin_control, SGIIOC3State),
         VMSTATE_UINT32(pin_data, SGIIOC3State),
