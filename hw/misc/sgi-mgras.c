@@ -870,6 +870,11 @@ static bool si_ge_lengths_valid(void *opaque, int version_id)
            s->ge_words[1] <= SGI_MGRAS_GE_WORDS;
 }
 
+/*
+ * Origami's unversioned machines support migration between identical builds
+ * only. Change both version_id and minimum_version_id when represented state
+ * changes.
+ */
 static const VMStateDescription vmstate_sgi_mgras = {
     .name = TYPE_SGI_MGRAS, .version_id = 4, .minimum_version_id = 4,
     .post_load = si_post_load,
