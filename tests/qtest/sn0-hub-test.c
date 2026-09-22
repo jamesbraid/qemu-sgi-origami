@@ -12,6 +12,7 @@
 #include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "qobject/qjson.h"
 #include "qobject/qlist.h"
 #include "sn0-user-image.h"
 #include "sgi-migrate.h"
@@ -289,6 +290,26 @@ static void pi_cpu_writeq(QTestState *qts, unsigned int cpu,
                           uint64_t reg, uint64_t value);
 static uint64_t pi_cpu_readq(QTestState *qts, unsigned int cpu, uint64_t reg);
 
+/*
+ * One plain origin200 serves every case that wants nothing special of the
+ * command line. Booting a machine per case cost more than a second each
+ * and was most of this file's running time.
+ */
+static QTestState *qts;
+
+/*
+ * Open such a case. The Hub's reset restores what these cases read, and
+ * reading the cached-alias size register's reset value here is what
+ * proves it, so a case cannot silently inherit the previous case's
+ * writes.
+ */
+static void hub_reset(void)
+{
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CALIAS_SIZE), ==,
+                    PI_CALIAS_SIZE_RESET);
+}
+
 static void sn0_hub_attach_ioc3(QTestState *qts)
 {
     qtest_writel(qts, BRIDGE_CFG0(PCI_IOC3_DEVICE) + PCI_BAR0, IOC3_PCI_MMIO);
@@ -447,7 +468,7 @@ static void test_origin2000_slot_and_processor_identity(const void *data)
 /* Exact ticks over a known clock step test the rate, not just movement. */
 static void test_the_real_time_counter_runs_at_its_rate(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     /* Zeroed as a guest does at boot, putting count and clock on one origin. */
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, 0);
@@ -455,8 +476,6 @@ static void test_the_real_time_counter_runs_at_its_rate(const void *data)
 
     qtest_clock_step(qts, PI_RT_NS_PER_SEC);
     g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT), ==, PI_RT_HZ);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -544,7 +563,7 @@ static void test_every_node_counter_runs_at_its_rate(const void *data)
  */
 static void test_a_guarded_rewrite_rearms_the_deadline(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, 0);
     qtest_clock_step(qts, PI_RT_NS_PER_SEC / 1000);
@@ -557,8 +576,6 @@ static void test_a_guarded_rewrite_rearms_the_deadline(const void *data)
 
     qtest_clock_step(qts, PI_RT_NS_PER_SEC / 1000);
     g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 1);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -568,8 +585,9 @@ static void test_a_guarded_rewrite_rearms_the_deadline(const void *data)
  */
 static void test_a_maximum_interval_arm_waits(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint64_t count;
+
+    hub_reset();
 
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, 0);
     qtest_clock_step(qts, PI_RT_NS_PER_SEC / 1000);
@@ -582,8 +600,6 @@ static void test_a_maximum_interval_arm_waits(const void *data)
 
     qtest_clock_step(qts, 4 * (PI_RT_NS_PER_SEC / 1000));
     g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 0);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -593,7 +609,7 @@ static void test_a_maximum_interval_arm_waits(const void *data)
  */
 static void test_the_wrap_reaches_a_zeroed_comparator(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     /* A millisecond short of the counter's wrap to zero. */
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, PI_RT_MASK + 1 - PI_RT_MS);
@@ -602,8 +618,6 @@ static void test_the_wrap_reaches_a_zeroed_comparator(const void *data)
 
     qtest_clock_step(qts, 2 * (PI_RT_NS_PER_SEC / 1000));
     g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 1);
-
-    qtest_quit(qts);
 }
 
 /* Moving the counter past a reset-zero comparator pends nothing. */
@@ -629,7 +643,7 @@ static void test_moving_the_counter_past_a_comparator_pends_nothing(
  */
 static void test_a_zeroed_comparator_stays_silent(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     /* A second up the counter, as any running guest is. */
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, PI_RT_HZ);
@@ -641,8 +655,6 @@ static void test_a_zeroed_comparator_stays_silent(const void *data)
     /* A few milliseconds is a few hundred of the measured storm's periods. */
     qtest_clock_step(qts, 4 * (PI_RT_NS_PER_SEC / 1000));
     g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 0);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -683,8 +695,9 @@ static void test_an_ahead_deadline_fires_once_and_the_ack_clears(
  */
 static void test_a_behind_comparator_does_not_match(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint64_t count;
+
+    hub_reset();
 
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, PI_RT_HZ);
     count = qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT);
@@ -695,8 +708,6 @@ static void test_a_behind_comparator_does_not_match(const void *data)
 
     qtest_clock_step(qts, 4 * (PI_RT_NS_PER_SEC / 1000));
     g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 0);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -723,17 +734,24 @@ static void test_the_real_time_counter_is_writable_and_keeps_running(
 /* Fifty-two bits wide: the top twelve of a written value do not come back. */
 static void test_the_real_time_counter_is_fifty_two_bits(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, ~0ULL);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT), ==, PI_RT_MASK);
-
-    qtest_quit(qts);
 }
 
 /*
  * Arm, pend, line up, acknowledge, line down. A line that latched high
  * instead of following the pending bit storms the guest on return.
+ */
+/*
+ * Every case that intercepts interrupt lines keeps a machine of its own.
+ * QEMU installs an intercept for one named GPIO group per process: the
+ * second irq_intercept_out on the same device answers OK and installs
+ * nothing (system/qtest.c, the irq_intercept_dev check). This file wants
+ * three groups -- the counter lines and both pending banks -- so a
+ * shared machine would hand whichever group ran first to every later
+ * case and quietly record no transitions at all.
  */
 static void test_the_comparator_raises_and_releases_the_line(const void *data)
 {
@@ -816,8 +834,11 @@ static void test_the_comparator_pends_with_its_interrupt_off(const void *data)
 
 static void test_addressing_mode(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
-    uint64_t status = qtest_readq(qts, HUB_LOCAL + NI_STATUS);
+    uint64_t status;
+
+    hub_reset();
+
+    status = qtest_readq(qts, HUB_LOCAL + NI_STATUS);
 
     /* Zero in the more-nodes bit is M mode. */
     g_assert_cmphex(status & NI_MORE_NODES, ==, 0);
@@ -827,8 +848,6 @@ static void test_addressing_mode(const void *data)
 
     /* One region per node, which is what the field resets to. */
     g_assert_cmphex(status & NI_REGION_SIZE, ==, NI_REGION_SIZE);
-
-    qtest_quit(qts);
 }
 
 static void test_network_link_presence(const void *data)
@@ -877,7 +896,7 @@ static void test_a_node_with_no_link_reads_down(const void *data)
 
 static void test_processor_number(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     /* The first processor; everything per-processor is selected from this. */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_PROCESSOR_NUMBER), ==, 0);
@@ -885,8 +904,6 @@ static void test_processor_number(const void *data)
     /* Firmware writes here as a debug convention; the answer must not move. */
     qtest_writeq(qts, HUB_LOCAL + PI_PROCESSOR_NUMBER, 0x1111111111111111ULL);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_PROCESSOR_NUMBER), ==, 0);
-
-    qtest_quit(qts);
 }
 
 /* The one-wire master's own register; the part on its bus is tested below. */
@@ -902,7 +919,7 @@ static void test_processor_number(const void *data)
 /* A slot armed before reset must not complete after it. */
 static void test_a_reset_cancels_a_running_slot(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     qtest_writeq(qts, HUB_LOCAL + MD_ONEWIRE, MD_ONEWIRE_RESET);
     qtest_system_reset(qts);
@@ -911,19 +928,15 @@ static void test_a_reset_cancels_a_running_slot(const void *data)
     qtest_clock_step(qts, 10000);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_ONEWIRE), ==,
                     MD_ONEWIRE_RESET);
-
-    qtest_quit(qts);
 }
 
 static void test_the_one_wire_master_resets_to_its_timing(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     /* The whole word, not merely non-zero, and not merely the phase fields. */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_ONEWIRE), ==,
                     MD_ONEWIRE_RESET);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -932,9 +945,10 @@ static void test_the_one_wire_master_resets_to_its_timing(const void *data)
  */
 static void test_the_one_wire_master_keeps_its_wide_field(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint64_t wide = (44ULL << 27) | (0x2cULL << 20) | (0x321ULL << 10) |
                     (0x04ULL << 2);
+
+    hub_reset();
 
     /* 44 sets bit 32; truncated to a word it reads back as 12. */
     g_assert_cmphex(wide & (1ULL << 32), ==, 1ULL << 32);
@@ -944,8 +958,6 @@ static void test_the_one_wire_master_keeps_its_wide_field(const void *data)
                       MD_ONEWIRE_PHASE_HI) >> 27, ==, 44);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_ONEWIRE) &
                     MD_ONEWIRE_PHASE_LO, ==, 0x2cULL << 20);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -954,8 +966,9 @@ static void test_the_one_wire_master_keeps_its_wide_field(const void *data)
  */
 static void test_starting_a_slot_does_not_report_it_finished(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint64_t after;
+
+    hub_reset();
 
     qtest_writeq(qts, HUB_LOCAL + MD_ONEWIRE,
                  MD_ONEWIRE_RESET | (0x321ULL << 10));
@@ -967,8 +980,6 @@ static void test_starting_a_slot_does_not_report_it_finished(const void *data)
     /* Still clear: the virtual clock does not advance on its own in a qtest. */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_ONEWIRE) &
                     MD_ONEWIRE_DONE, ==, 0);
-
-    qtest_quit(qts);
 }
 
 /* How long this model makes a slot last. A modelling choice, not a measured
@@ -985,8 +996,9 @@ static void test_starting_a_slot_does_not_report_it_finished(const void *data)
  */
 static void test_a_slot_finishes_on_the_clock(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint64_t after;
+
+    hub_reset();
 
     /* A read slot on the empty local bus: the wire floats, so it samples one. */
     qtest_writeq(qts, HUB_LOCAL + MD_ONEWIRE,
@@ -1005,8 +1017,6 @@ static void test_a_slot_finishes_on_the_clock(const void *data)
     /* The timing fields the write programmed are untouched by completion. */
     g_assert_cmphex(after & (MD_ONEWIRE_PHASE_LO | MD_ONEWIRE_PHASE_HI), ==,
                     MD_ONEWIRE_RESET);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -1172,7 +1182,7 @@ static void onewire_cpu_search_for_identity(QTestState *qts,
  */
 static void test_a_bus_reset_reports_presence(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     g_assert_cmphex(onewire_slot(qts, HUB_LOCAL, ONEWIRE_PULSE_RESET),
                     ==, 0);
@@ -1182,22 +1192,21 @@ static void test_a_bus_reset_reports_presence(const void *data)
     /* The programmed timing is untouched by running the slots. */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_ONEWIRE) &
                     MD_ONEWIRE_PHASE_HI, ==, 0x31ULL << 27);
-
-    qtest_quit(qts);
 }
 
 /* The search yields the synthetic identity, family and check byte valid. */
 static void test_the_search_reads_a_valid_identity(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
-    uint64_t identity = onewire_search_identity(qts, HUB_LOCAL);
+    uint64_t identity;
+
+    hub_reset();
+
+    identity = onewire_search_identity(qts, HUB_LOCAL);
 
     g_assert_cmphex(identity & 0xff, ==, ONEWIRE_FAMILY_DS2505);
     g_assert_cmphex(identity >> 56, ==, onewire_crc8(identity, 7));
     g_assert_cmphex(identity, ==,
                     onewire_expected_identity(HUB_ONEWIRE_SERIAL(0)));
-
-    qtest_quit(qts);
 }
 
 /* Per-unit identity: each node's part carries its own serial. */
@@ -1292,11 +1301,12 @@ static void onewire_assert_crc16(QTestState *qts, uint64_t hub, uint16_t crc)
  */
 static void test_a_status_read_frames_the_redirection_map(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t request[3] = { ONEWIRE_CMD_READ_STATUS, 0x00, 0x01 };
     uint8_t page[8];
     uint16_t crc;
     unsigned int i;
+
+    hub_reset();
 
     onewire_select(qts, HUB_LOCAL);
     onewire_write_byte(qts, HUB_LOCAL, request[0]);
@@ -1318,8 +1328,6 @@ static void test_a_status_read_frames_the_redirection_map(const void *data)
     }
     onewire_assert_crc16(qts, HUB_LOCAL,
                          onewire_crc16(0, page, sizeof(page)));
-
-    qtest_quit(qts);
 }
 
 /*
@@ -1338,11 +1346,12 @@ static void test_a_status_read_frames_the_redirection_map(const void *data)
  */
 static void test_a_status_read_past_the_redirection_bytes(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t request[3] = { ONEWIRE_CMD_READ_STATUS, 0x40, 0x01 };
     uint8_t page[8];
     uint16_t crc;
     unsigned int i;
+
+    hub_reset();
 
     onewire_select(qts, HUB_LOCAL);
     onewire_write_byte(qts, HUB_LOCAL, request[0]);
@@ -1356,8 +1365,6 @@ static void test_a_status_read_past_the_redirection_bytes(const void *data)
     crc = onewire_crc16(0, request, sizeof(request));
     onewire_assert_crc16(qts, HUB_LOCAL,
                          onewire_crc16(crc, page, sizeof(page)));
-
-    qtest_quit(qts);
 }
 
 /*
@@ -1367,10 +1374,11 @@ static void test_a_status_read_past_the_redirection_bytes(const void *data)
  */
 static void test_an_extended_read_serves_a_blank_page(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t request[4] = { ONEWIRE_CMD_READ_EXT, 0x00, 0x00, 0 };
     uint8_t page[32];
     unsigned int i;
+
+    hub_reset();
 
     onewire_select(qts, HUB_LOCAL);
     onewire_write_byte(qts, HUB_LOCAL, request[0]);
@@ -1388,8 +1396,6 @@ static void test_an_extended_read_serves_a_blank_page(const void *data)
     }
     onewire_assert_crc16(qts, HUB_LOCAL,
                          onewire_crc16(0, page, sizeof(page)));
-
-    qtest_quit(qts);
 }
 
 /*
@@ -1400,11 +1406,12 @@ static void test_an_extended_read_serves_a_blank_page(const void *data)
  */
 static void test_a_memory_read_ends_with_its_crc(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t request[3] = { ONEWIRE_CMD_READ_MEM, 0xf8, 0x07 };
     uint8_t tail[8];
     uint16_t crc;
     unsigned int i;
+
+    hub_reset();
 
     onewire_select(qts, HUB_LOCAL);
     onewire_write_byte(qts, HUB_LOCAL, request[0]);
@@ -1421,13 +1428,11 @@ static void test_a_memory_read_ends_with_its_crc(const void *data)
 
     /* Past the CRC the part has left the bus and the line reads one. */
     g_assert_cmphex(onewire_read_byte(qts, HUB_LOCAL), ==, 0xff);
-
-    qtest_quit(qts);
 }
 
 static void test_reset_values(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     /* An unprogrammed Hub claims every memory region exists. */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_REGION_PRESENT), ==,
@@ -1439,14 +1444,13 @@ static void test_reset_values(const void *data)
     /* Nothing is pending before anything is wired up. */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND1), ==, 0);
-
-    qtest_quit(qts);
 }
 
 static void test_network_ageing_controls(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     unsigned int i;
+
+    hub_reset();
 
     for (i = 0; i < NI_AGEING_COUNT; i++) {
         g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_AGEING_BASE +
@@ -1470,7 +1474,6 @@ static void test_network_ageing_controls(const void *data)
         g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_AGEING_BASE +
                                     i * NI_AGEING_STRIDE), ==, 0);
     }
-    qtest_quit(qts);
 }
 
 /*
@@ -1481,7 +1484,7 @@ static void test_network_ageing_controls(const void *data)
  */
 static void test_graphics_flow_control_registers_round_trip(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     /* The page register keeps a full doubleword, including low bits. */
     qtest_writeq(qts, HUB_LOCAL + PI_GFX_PAGE_A, 0x0123456789abcdefULL);
@@ -1539,8 +1542,6 @@ static void test_graphics_flow_control_registers_round_trip(const void *data)
                     0);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_GFX_INIT_0), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_GFX_INIT_1), ==, 0);
-
-    qtest_quit(qts);
 }
 
 /* A value wider than a register's own field reads back masked to it. */
@@ -1644,11 +1645,12 @@ static void test_graphics_flow_control_does_not_disturb_rt_compare(
 
 static void test_writes_the_guest_makes(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     const uint64_t masks[] = {
         PI_INT_MASK0_A, PI_INT_MASK1_A, PI_INT_MASK0_B, PI_INT_MASK1_B,
     };
     unsigned i;
+
+    hub_reset();
 
     /* The masks store what is written; the IRIX table's read-only is wrong. */
     for (i = 0; i < ARRAY_SIZE(masks); i++) {
@@ -1667,8 +1669,6 @@ static void test_writes_the_guest_makes(const void *data)
 
     qtest_writeq(qts, HUB_LOCAL + PI_CALIAS_SIZE, 0);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_CALIAS_SIZE), ==, 0);
-
-    qtest_quit(qts);
 }
 
 static void test_the_error_spool_registers_hold_a_masked_value(
@@ -1737,38 +1737,36 @@ static void test_pi_error_register_shell(const void *data)
 /* Nothing times out here: both read zero and a write has nothing to clear. */
 static void test_pi_timedout_buffers(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     static const uint64_t regs[] = {
         PI_TIMEDOUT_BUF_A, PI_TIMEDOUT_BUF_B,
     };
     size_t i;
+
+    hub_reset();
 
     for (i = 0; i < ARRAY_SIZE(regs); i++) {
         g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + regs[i]), ==, 0);
         qtest_writeq(qts, HUB_LOCAL + regs[i], ~0ULL);
         g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + regs[i]), ==, 0);
     }
-
-    qtest_quit(qts);
 }
 
 /* Nothing in flight: all zero; the deallocation polls need the bit clear. */
 static void test_io_queue_registers(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     static const uint64_t regs[] = {
         IO_PIO_DEALLOC, IO_CRB_DEALLOC, IO_IOQ_FIFO_DEPTH,
         IO_CRB_MGMT, IO_CRB_CONTROL,
     };
     size_t i;
 
+    hub_reset();
+
     for (i = 0; i < ARRAY_SIZE(regs); i++) {
         g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + regs[i]), ==, 0);
         qtest_writeq(qts, HUB_LOCAL + regs[i], ~0ULL);
         g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + regs[i]), ==, 0);
     }
-
-    qtest_quit(qts);
 }
 
 static void build_cpu_enable_heartbeat_image(SN0Image *p)
@@ -2589,13 +2587,23 @@ static void emit_wait_for_go(SN0Image *p)
     sn0_patch_branch(p, branch, loop);
 }
 
-/* Poll a register from outside until it holds a value; 30 s at most. */
+/*
+ * Poll a register from outside until it holds a value; 30 s at most. The
+ * wait is on the wall clock because what it waits for is the guest's own
+ * processors executing, which no amount of stepping the virtual clock
+ * makes happen any sooner.
+ */
 static void wait_for_register(QTestState *qts, uint64_t addr, uint64_t value)
 {
     int64_t deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    uint64_t seen;
 
-    while (qtest_readq(qts, addr) != value) {
-        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+    while ((seen = qtest_readq(qts, addr)) != value) {
+        if (g_get_monotonic_time() >= deadline) {
+            g_test_message("0x%" PRIx64 " held 0x%" PRIx64 " for 30 s, "
+                           "waiting for 0x%" PRIx64, addr, seen, value);
+            g_assert_not_reached();
+        }
         g_usleep(1000);
     }
 }
@@ -3453,14 +3461,13 @@ static void junkuart_presence_probe(QTestState *qts, uint8_t *readback)
  */
 static void test_junk_uart_absent_by_default(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t readback[8];
     static const uint8_t absent[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
 
+    hub_reset();
+
     junkuart_presence_probe(qts, readback);
     g_assert_cmpmem(readback, sizeof(readback), absent, sizeof(absent));
-
-    qtest_quit(qts);
 }
 
 /*
@@ -3594,14 +3601,12 @@ static void assert_hub_nvram_pages(QTestState *qts,
 
 static void test_the_default_population_remains_fitted(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     g_assert_true(hub_has_child(qts, "i2c"));
     g_assert_true(hub_has_child(qts, "elsc"));
     g_assert_true(hub_has_child(qts, "onewire-part"));
     assert_hub_nvram_pages(qts, 8);
-
-    qtest_quit(qts);
 }
 
 static void test_model_population_overrides_class_globals(const void *data)
@@ -3804,8 +3809,9 @@ static void test_every_chardev_claim_is_distinct(const void *data)
 
 static void test_status_field_access(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint64_t status;
+
+    hub_reset();
 
     /* Firmware assigns node numbers through this register. */
     qtest_writeq(qts, HUB_LOCAL + NI_STATUS, NI_NODE_MASK);
@@ -3814,8 +3820,6 @@ static void test_status_field_access(const void *data)
 
     /* The machine's configured revision is fixed and is not writable. */
     g_assert_cmphex(status & NI_IDENTITY, ==, 3 << 4);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -3824,8 +3828,11 @@ static void test_status_field_access(const void *data)
  */
 static void test_a_32_bit_access_selects_the_big_endian_half(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
-    uint64_t status = qtest_readq(qts, HUB_LOCAL + NI_STATUS);
+    uint64_t status;
+
+    hub_reset();
+
+    status = qtest_readq(qts, HUB_LOCAL + NI_STATUS);
 
     /* The reset value is all in the low word, so the halves cannot swap. */
     g_assert_cmphex(status, !=, 0);
@@ -3856,8 +3863,6 @@ static void test_a_32_bit_access_selects_the_big_endian_half(const void *data)
     qtest_writel(qts, HUB_LOCAL + PI_ERR_SPOOL_A, 0xffffffff);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_SPOOL_A), ==,
                     0xdeadbee8);
-
-    qtest_quit(qts);
 }
 
 
@@ -3867,7 +3872,7 @@ static void test_a_32_bit_access_selects_the_big_endian_half(const void *data)
  */
 static void test_a_local_port_reset_resets_the_machine(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     qtest_writeq(qts, HUB_LOCAL + PI_CALIAS_SIZE, 0);
     qtest_writeq(qts, HUB_LOCAL + PI_ERR_SPOOL_B, 0xdeadbee0ULL);
@@ -3893,13 +3898,11 @@ static void test_a_local_port_reset_resets_the_machine(const void *data)
                     PI_CALIAS_SIZE_RESET);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_SPOOL_B), ==,
                     0x600df00ULL);
-
-    qtest_quit(qts);
 }
 
 static void test_both_windows(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     /* One device through both halves: a write via one is read via the other. */
     g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + NI_STATUS), ==,
@@ -3910,14 +3913,13 @@ static void test_both_windows(const void *data)
     qtest_writeq(qts, HUB_BY_NODE + PI_INT_MASK0_A, 0xfedcba9876543210ULL);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_MASK0_A), ==,
                     0xfedcba9876543210ULL);
-
-    qtest_quit(qts);
 }
 
 static void test_translation_entries_decode(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     unsigned n;
+
+    hub_reset();
 
     /* Distinct values in all seven separate seven registers from one alias. */
     for (n = 0; n < IO_BWIN_ENTRIES; n++) {
@@ -3936,24 +3938,20 @@ static void test_translation_entries_decode(const void *data)
     g_assert_cmphex(qtest_readq(qts,
                                 HUB_LOCAL + IO_BWIN_ENTRY(IO_BWIN_ENTRIES)),
                     ==, 0);
-
-    qtest_quit(qts);
 }
 
 static void test_translation_entry_width(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     /* Thirteen bits; there is no valid bit above them to invent. */
     qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(0), ~0ULL);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_BWIN_ENTRY(0)), ==, 0x1fff);
-
-    qtest_quit(qts);
 }
 
 static void test_big_window_follows_its_entry(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     sn0_hub_attach_ioc3(qts);
 
@@ -3969,13 +3967,11 @@ static void test_big_window_follows_its_entry(const void *data)
     qtest_writeb(qts, BIG_WINDOW(0) + IOC3_SCRATCH, 0xa5);
     g_assert_cmphex(qtest_readb(qts, SMALL_WINDOW(CONSOLE_WIDGET) +
                                 IOC3_SCRATCH), ==, 0xa5);
-
-    qtest_quit(qts);
 }
 
 static void test_big_window_follows_the_slice_too(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     sn0_hub_attach_ioc3(qts);
 
@@ -3995,8 +3991,6 @@ static void test_big_window_follows_the_slice_too(const void *data)
                  IO_BWIN_WIDGET(CONSOLE_WIDGET) |
                  IO_BWIN_SLICE(0));
     g_assert_cmphex(qtest_readb(qts, BIG_WINDOW(1) + IOC3_SCRATCH), ==, 0x3c);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -4005,8 +3999,9 @@ static void test_big_window_follows_the_slice_too(const void *data)
  */
 static void test_a_big_window_may_name_widget_zero(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint32_t named, by_reset;
+
+    hub_reset();
 
     qtest_writeq(qts, HUB_LOCAL + IO_BWIN_ENTRY(0),
                  IO_BWIN_WIDGET(0) | IO_BWIN_SLICE(0));
@@ -4016,13 +4011,11 @@ static void test_a_big_window_may_name_widget_zero(const void *data)
 
     g_assert_cmphex(named, ==, by_reset);
     g_assert_cmphex(named, !=, BWIN_REACHING_NOTHING);
-
-    qtest_quit(qts);
 }
 
 static void test_big_window_naming_an_absent_widget(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     sn0_hub_attach_ioc3(qts);
 
@@ -4045,8 +4038,6 @@ static void test_big_window_naming_an_absent_widget(const void *data)
     g_assert_cmphex(qtest_readb(qts, BIG_WINDOW(3) + IOC3_SCRATCH), !=, 0x77);
 
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_PROCESSOR_NUMBER), ==, 0);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -4081,7 +4072,7 @@ static void test_big_window_empty_access_is_not_chunked(const void *data)
 
 static void test_interrupt_modify_sets_and_clears(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     /* The only way a bit gets set or cleared; nothing reads it back. */
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 12);
@@ -4092,8 +4083,6 @@ static void test_interrupt_modify_sets_and_clears(const void *data)
 
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, 12);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 0);
-
-    qtest_quit(qts);
 }
 
 static void test_interrupt_number_selects_the_bank(const void *data)
@@ -4203,15 +4192,13 @@ static void test_pending_banks_are_masked_per_processor(const void *data)
 
 static void test_the_pending_banks_reject_writes(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     /* Read-only; a writable model passes any modify-register-only guest. */
     qtest_writeq(qts, HUB_LOCAL + PI_INT_PEND0, ~0ULL);
     qtest_writeq(qts, HUB_LOCAL + PI_INT_PEND1, ~0ULL);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND1), ==, 0);
-
-    qtest_quit(qts);
 }
 
 static void pi_cpu_writeq(QTestState *qts, unsigned int cpu,
@@ -4356,9 +4343,13 @@ static void test_pi_pending_reaches_cpu_cause(const void *data)
 
 static void test_the_crosstalk_link_reports_up(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
-    uint64_t link = qtest_readq(qts, HUB_LOCAL + IO_LINK_STATUS);
-    unsigned int state = (link >> 12) & 3;
+    uint64_t link;
+    unsigned int state;
+
+    hub_reset();
+
+    link = qtest_readq(qts, HUB_LOCAL + IO_LINK_STATUS);
+    state = (link >> 12) & 3;
 
     /* Linux drops its probe on a clear high bit; two or three both mean up. */
     g_assert_cmpuint(state, >=, 2);
@@ -4368,13 +4359,11 @@ static void test_the_crosstalk_link_reports_up(const void *data)
     g_assert_cmphex(link & 0x3fc00000000ULL, ==, 0x3fc00000000ULL);
     g_assert_cmphex(link & 0x3ff0000ULL, ==, 0x3ff0000ULL);
     g_assert_cmphex(link & 0x3fULL, ==, 0xa);
-
-    qtest_quit(qts);
 }
 
 static void test_a_guest_cannot_write_the_link_state(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     /* A guest must not be able to tell this machine its link is down. */
     qtest_writeq(qts, HUB_LOCAL + IO_LINK_STATUS, 0);
@@ -4385,13 +4374,11 @@ static void test_a_guest_cannot_write_the_link_state(const void *data)
     qtest_writeq(qts, HUB_LOCAL + IO_LINK_STATUS, 0x15);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_LINK_STATUS) & 0x3f, ==,
                     0x15);
-
-    qtest_quit(qts);
 }
 
 static void test_the_link_log_serves_a_clean_link(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     /* Both LLP error counts zero: the emulated link commits no errors. */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_LLP_LOG), ==, 0);
@@ -4406,14 +4393,13 @@ static void test_the_link_log_serves_a_clean_link(const void *data)
     /* The consumer's read-then-write-zero interval close stays clean. */
     qtest_writeq(qts, HUB_LOCAL + IO_LLP_LOG, 0);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_LLP_LOG), ==, 0);
-
-    qtest_quit(qts);
 }
 
 static void test_a_guest_can_write_the_link_enabled_bit(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint64_t link;
+
+    hub_reset();
 
     /* Unset at reset; firmware sets it itself in hubii_llp_enable(). */
     link = qtest_readq(qts, HUB_LOCAL + IO_LINK_STATUS);
@@ -4431,8 +4417,6 @@ static void test_a_guest_can_write_the_link_enabled_bit(const void *data)
     g_assert_cmphex(link & (1ULL << 10), ==, 1ULL << 10);
     g_assert_cmphex(link & (1ULL << 11), ==, 0);
     g_assert_cmpuint((link >> 12) & 3, >=, 2);
-
-    qtest_quit(qts);
 }
 
 /* The crossbar's per-link reset, arriving on the crosstalk link. */
@@ -4451,9 +4435,10 @@ static void hub_link_reset(QTestState *qts)
  */
 static void test_an_inbound_link_reset_leaves_the_link_alone(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint64_t before;
     uint64_t after;
+
+    hub_reset();
 
     /* Every writable field away from its reset, all before any is read. */
     qtest_writeq(qts, HUB_LOCAL + IO_LINK_STATUS,
@@ -4486,8 +4471,6 @@ static void test_an_inbound_link_reset_leaves_the_link_alone(const void *data)
     g_assert_cmphex(after & 0x3ff0000ULL, ==, 0);
     g_assert_cmphex(after & 0x3fULL, ==, 0x15);
     g_assert_cmpuint((after >> 12) & 3, >=, 2);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -4623,12 +4606,13 @@ static uint64_t route_value(unsigned int i)
 
 static void test_an_inbound_link_reset_leaves_the_block_alone(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint64_t power_up[ARRAY_SIZE(hub_block)];
     uint64_t before[ARRAY_SIZE(hub_block)];
     uint64_t route_before[NI_ROUTES];
     uint64_t route_power_up[NI_ROUTES];
     unsigned int i;
+
+    hub_reset();
 
     /* What every row powers up as, before anything has written one. */
     for (i = 0; i < ARRAY_SIZE(hub_block); i++) {
@@ -4699,8 +4683,6 @@ static void test_an_inbound_link_reset_leaves_the_block_alone(const void *data)
                     route_before[i], after);
         }
     }
-
-    qtest_quit(qts);
 }
 
 /*
@@ -4787,8 +4769,11 @@ static void test_model_revisions_survive_reset(const void *data)
 
 static void test_the_widget_control_reset_values(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
-    uint64_t control = qtest_readq(qts, HUB_LOCAL + IO_WIDGET_CONTROL);
+    uint64_t control;
+
+    hub_reset();
+
+    control = qtest_readq(qts, HUB_LOCAL + IO_WIDGET_CONTROL);
 
     /* Widget 1, the address map's counterpart; no guest reads it. */
     g_assert_cmphex(control & 0xf, ==, 1);
@@ -4802,13 +4787,11 @@ static void test_the_widget_control_reset_values(const void *data)
     /* Firmware clears this at power-on; all ones so a refusal is measured. */
     qtest_writeq(qts, HUB_LOCAL + IO_WIDGET_STATUS, ~0ULL);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_WIDGET_STATUS), ==, 0);
-
-    qtest_quit(qts);
 }
 
 static void test_the_crosstalk_timeouts(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     /* Linux's first two writes must be accepted at reset, with no unlock. */
     qtest_writeq(qts, HUB_LOCAL + IO_XTALK_PRESCALE, 0x800);
@@ -4816,13 +4799,11 @@ static void test_the_crosstalk_timeouts(const void *data)
 
     qtest_writeq(qts, HUB_LOCAL + IO_XTALK_TIMEOUT, 0xff);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_XTALK_TIMEOUT), ==, 0xff);
-
-    qtest_quit(qts);
 }
 
 static void test_io_scratch_registers(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     /* Masked storage; both public sources agree on the mask. */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_SCRATCH_0), ==, 0);
@@ -4841,13 +4822,11 @@ static void test_io_scratch_registers(const void *data)
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_SCRATCH_0), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_SCRATCH_1), ==,
                     IO_SCRATCH_MASK);
-
-    qtest_quit(qts);
 }
 
 static void test_network_scratch_registers(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     /* Identity and discovery state; an unimplemented zero looks headless. */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_SCRATCH_0), ==, 0);
@@ -4859,8 +4838,6 @@ static void test_network_scratch_registers(const void *data)
                     0x0123456789abcdefULL);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_SCRATCH_1), ==,
                     0xfedcba9876543210ULL);
-
-    qtest_quit(qts);
 }
 
 static uint64_t vector_operation(QTestState *qts, uint64_t hub,
@@ -4961,8 +4938,9 @@ static void test_vector_pio_reaches_the_direct_peer(const void *data)
  */
 static void test_vector_launch_with_no_fabric_stays_silent(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint64_t status;
+
+    hub_reset();
 
     status = vector_operation(qts, HUB_LOCAL, NI_SCRATCH_0, PIOTYPE_READ);
     g_assert_cmphex(status & NVS_VALID, ==, 0);
@@ -4971,8 +4949,6 @@ static void test_vector_launch_with_no_fabric_stays_silent(const void *data)
     qtest_writeq(qts, HUB_LOCAL + NI_VECTOR_DATA, 0x0123456789abcdefULL);
     status = vector_operation(qts, HUB_LOCAL, NI_SCRATCH_1, PIOTYPE_WRITE);
     g_assert_cmphex(status, ==, 0);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -4986,8 +4962,11 @@ static void test_vector_launch_with_no_fabric_stays_silent(const void *data)
  */
 static void test_llp_port_registers(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
-    uint64_t parms = qtest_readq(qts, HUB_LOCAL + NI_PORT_PARMS);
+    uint64_t parms;
+
+    hub_reset();
+
+    parms = qtest_readq(qts, HUB_LOCAL + NI_PORT_PARMS);
 
     g_assert_cmphex(parms, ==, NI_PORT_PARMS_RESET);
     g_assert_cmphex((parms >> 10) & 0x3f, ==, 6);
@@ -5002,8 +4981,6 @@ static void test_llp_port_registers(const void *data)
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_PORT_ERROR_CLEAR),
                     ==, 0);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_PORT_ERROR), ==, 0);
-
-    qtest_quit(qts);
 }
 
 static void test_llp_port_error_clear_contract(const void *data)
@@ -5157,7 +5134,7 @@ static void test_vector_writes_land_only_on_rows_that_store(
  */
 static void test_io_protect_registers(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_IO_PROTECT), ==,
                     ~0ULL);
@@ -5170,8 +5147,6 @@ static void test_io_protect_registers(const void *data)
     qtest_writeq(qts, HUB_LOCAL + NI_IO_PROT_OVRRD, NI_PROT_PASSWORD);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_IO_PROTECT), ==,
                     0x0123456789abcdefULL);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -5239,7 +5214,7 @@ static void test_io_protect_registers_answer_the_vector_decode(
  */
 static void test_protection_config_register(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_PROTECTION), ==, 1);
 
@@ -5249,8 +5224,6 @@ static void test_protection_config_register(const void *data)
     /* One-bit storage. */
     qtest_writeq(qts, HUB_LOCAL + NI_PROTECTION, 0xffULL);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_PROTECTION), ==, 1);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -5262,7 +5235,7 @@ static void test_protection_config_register(const void *data)
  */
 static void test_diag_parms_register(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_DIAG_PARMS), ==, 0);
 
@@ -5270,8 +5243,6 @@ static void test_diag_parms_register(const void *data)
     qtest_writeq(qts, HUB_LOCAL + NI_DIAG_PARMS, 0xfffa5a5aULL);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_DIAG_PARMS), ==,
                     0xfffa5a5aULL & NI_DIAG_PARMS_MASK);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -5354,7 +5325,7 @@ static void test_a_32_bit_vector_clear_read_leaves_the_status(
 /* Route tables must clear on a later reset, not only at power-on. */
 static void test_network_routes_reset_to_zero(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     qtest_writeq(qts, HUB_LOCAL + NI_LOCAL_TABLE, 0x1b);
     qtest_writeq(qts, HUB_LOCAL + NI_META_TABLE_LAST, 0x16);
@@ -5365,8 +5336,6 @@ static void test_network_routes_reset_to_zero(const void *data)
 
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_LOCAL_TABLE), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_META_TABLE_LAST), ==, 0);
-
-    qtest_quit(qts);
 }
 
 static void test_stock_prom_hubs_start_unnumbered(const void *data)
@@ -5427,7 +5396,11 @@ static bool cpu_view_readq(QTestState *qts, unsigned int cpu, uint64_t phys,
                          "  'arguments': { 'command-line': %s,"
                          "                 'cpu-index': %u } }",
                          command, cpu);
-    g_assert(qdict_haskey(response, "return"));
+    if (!qdict_haskey(response, "return")) {
+        g_autoptr(GString) text = qobject_to_json(QOBJECT(response));
+
+        g_error("%s failed: %s", command, text->str);
+    }
     dumped = qdict_get_str(response, "return");
     if (strstr(dumped, "Cannot access memory")) {
         return false;
@@ -5785,7 +5758,7 @@ static void test_the_hub_special_window_stays_reader_local(const void *data)
 
 static void test_md_perf_cnt0(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     /* Storage that never counts; a self-test's reset-and-check is honest. */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_PERF_CNT0), ==, 0);
@@ -5793,13 +5766,11 @@ static void test_md_perf_cnt0(const void *data)
     qtest_writeq(qts, HUB_LOCAL + MD_PERF_CNT0, ~0ULL);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_PERF_CNT0), ==,
                     MD_PERF_CNT_MASK);
-
-    qtest_quit(qts);
 }
 
 static void test_md_config(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     /* The non-zero reset value is the fact; firmware also round-trips it. */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_CONFIG), ==,
@@ -5811,14 +5782,13 @@ static void test_md_config(const void *data)
 
     qtest_writeq(qts, HUB_LOCAL + MD_CONFIG, 0);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_CONFIG), ==, 0);
-
-    qtest_quit(qts);
 }
 
 static void test_md_error_cluster(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint64_t addr;
+
+    hub_reset();
 
     /* All eight read zero, as firmware's memory test needs; writes refused. */
     for (addr = MD_ERROR_BASE; addr <= MD_ERROR_LAST_OFF;
@@ -5827,24 +5797,20 @@ static void test_md_error_cluster(const void *data)
         qtest_writeq(qts, HUB_LOCAL + addr, ~0ULL);
         g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + addr), ==, 0);
     }
-
-    qtest_quit(qts);
 }
 
 static void test_md_dimm_init(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     /* Write-only: nothing to read back, so only acceptance is asserted. */
     qtest_writeq(qts, HUB_LOCAL + MD_MEM_DIMM_INIT, 0xf00000029ULL);
     qtest_writeq(qts, HUB_LOCAL + MD_DIR_DIMM_INIT, 0xf00000029ULL);
-
-    qtest_quit(qts);
 }
 
 static void test_pi_rt_local_ctrl(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     /* Bit 16 resets set; the network-clock bits stay outside the mask. */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_RT_LOCAL_CTRL), ==,
@@ -5857,14 +5823,13 @@ static void test_pi_rt_local_ctrl(const void *data)
     qtest_writeq(qts, HUB_LOCAL + PI_RT_LOCAL_CTRL, ~0ULL);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_RT_LOCAL_CTRL), ==,
                     PI_RT_LOCAL_CTRL_MASK);
-
-    qtest_quit(qts);
 }
 
 static void test_io_icrb_c_family(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint64_t addr;
+
+    hub_reset();
 
     /*
      * Slots 7-14's C register reads zero and refuses writes; all ones, since
@@ -5876,15 +5841,14 @@ static void test_io_icrb_c_family(const void *data)
         qtest_writeq(qts, HUB_LOCAL + addr, ~0ULL);
         g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + addr), ==, 0);
     }
-
-    qtest_quit(qts);
 }
 
 static void test_bte_registers_reset_to_zero(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     unsigned int e;
     uint64_t reg;
+
+    hub_reset();
 
     /* Zero at reset, and back to zero after a reset from a programmed state. */
     for (e = 0; e < 2; e++) {
@@ -5912,14 +5876,13 @@ static void test_bte_registers_reset_to_zero(const void *data)
             g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + reg), ==, 0);
         }
     }
-
-    qtest_quit(qts);
 }
 
 static void test_bte_length_status_field_access(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     unsigned int e;
+
+    hub_reset();
 
     /*
      * Masked storage, not writable-everything. The error bit is left out:
@@ -5933,15 +5896,14 @@ static void test_bte_length_status_field_access(const void *data)
         qtest_writeq(qts, HUB_LOCAL + BTE_LENGTH(e), 0);
         g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_LENGTH(e)), ==, 0);
     }
-
-    qtest_quit(qts);
 }
 
 static void test_bte_address_truncation(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     static const uint64_t regs[] = { 0x08, 0x10, 0x20 }; /* src, dst, notify */
     unsigned int e, i;
+
+    hub_reset();
 
     /* Bits 39:7 survive; the PROM stores cached-window addresses. */
     for (e = 0; e < 2; e++) {
@@ -5958,14 +5920,13 @@ static void test_bte_address_truncation(const void *data)
                             BTE_ADDR_MASK);
         }
     }
-
-    qtest_quit(qts);
 }
 
 static void test_bte_interrupt_address_fields(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     unsigned int e;
+
+    hub_reset();
 
     /* Level at bits 22:16 and node at 8:0 hold; reserved bits read zero. */
     for (e = 0; e < 2; e++) {
@@ -5979,14 +5940,13 @@ static void test_bte_interrupt_address_fields(const void *data)
         g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_INTERRUPT(e)), ==,
                         BTE_INT_LEVEL(63 - e));
     }
-
-    qtest_quit(qts);
 }
 
 static void test_bte_control_mode_bits(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     unsigned int e;
+
+    hub_reset();
 
     /* Mode bits hold, reserved bits read zero, and a load returns the bits. */
     for (e = 0; e < 2; e++) {
@@ -5997,16 +5957,15 @@ static void test_bte_control_mode_bits(const void *data)
         qtest_writeq(qts, HUB_LOCAL + BTE_CONTROL(e), 0);
         g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_CONTROL(e)), ==, 0);
     }
-
-    qtest_quit(qts);
 }
 
 static void test_bte_interrupt_mode_copy(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     enum { LINES = 3, SIZE = LINES * BTE_LINE };
     uint8_t expect[SIZE], got[SIZE], notify[8];
     unsigned int i;
+
+    hub_reset();
 
     for (i = 0; i < SIZE; i++) {
         expect[i] = 0xc3 ^ i;
@@ -6050,13 +6009,10 @@ static void test_bte_interrupt_mode_copy(const void *data)
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND1), ==,
                     1ULL << 6);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 0);
-
-    qtest_quit(qts);
 }
 
 static void test_bte_both_engines_the_diagnostic_shape(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     enum { SIZE = 0x80000 };  /* 4,096 cache lines, 512 KB */
     static const uint64_t src[2] = { 0x01500000, 0x01580000 };
     static const uint64_t dst[2] = { 0x01600000, 0x01680000 };
@@ -6065,6 +6021,8 @@ static void test_bte_both_engines_the_diagnostic_shape(const void *data)
     g_autofree uint8_t *expect = g_malloc(SIZE);
     uint64_t pend;
     unsigned int e;
+
+    hub_reset();
 
     /* The diagnostic's sequence: it tests both pending bits together, once. */
     for (e = 0; e < 2; e++) {
@@ -6098,16 +6056,15 @@ static void test_bte_both_engines_the_diagnostic_shape(const void *data)
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, 63);
     qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, 62);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, 0);
-
-    qtest_quit(qts);
 }
 
 static void test_bte_notify_mode_copy(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     enum { LINES = 2, SIZE = LINES * BTE_LINE };
     uint8_t expect[SIZE], got[SIZE], line[16];
     unsigned int i;
+
+    hub_reset();
 
     for (i = 0; i < SIZE; i++) {
         expect[i] = 0x35 + i;
@@ -6140,15 +6097,14 @@ static void test_bte_notify_mode_copy(const void *data)
 
     qtest_bufread(qts, BTE_TEST_DST, got, SIZE);
     g_assert_cmpmem(got, SIZE, expect, SIZE);
-
-    qtest_quit(qts);
 }
 
 static void test_bte_zero_fill(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     enum { LINES = 2, SIZE = LINES * BTE_LINE };
     uint8_t got[SIZE], zeros[SIZE];
+
+    hub_reset();
 
     /*
      * The source is zeroed first so the test holds whether or not zero-fill
@@ -6171,17 +6127,16 @@ static void test_bte_zero_fill(const void *data)
     memset(zeros, 0, SIZE);
     qtest_bufread(qts, BTE_TEST_DST, got, SIZE);
     g_assert_cmpmem(got, SIZE, zeros, SIZE);
-
-    qtest_quit(qts);
 }
 
 static void test_bte_error_latches_and_no_store_clears_it(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     enum { LINES = 4 };
     uint8_t notify[8];
     uint64_t status;
     unsigned int i;
+
+    hub_reset();
 
     qtest_memset(qts, BTE_TEST_SRC, 0x44, LINES * BTE_LINE);
     qtest_memset(qts, BTE_TEST_NOTIFY, 0xff, sizeof(notify));
@@ -6220,8 +6175,6 @@ static void test_bte_error_latches_and_no_store_clears_it(const void *data)
                     BTE_ERROR);
     qtest_writeq(qts, HUB_LOCAL + IO_ERROR_CLEAR, 1ULL << 17);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + BTE_LENGTH(0)), ==, 0);
-
-    qtest_quit(qts);
 }
 
 static void test_bte_physical_node_ownership(const void *data)
@@ -6545,9 +6498,10 @@ static void test_bte_unclaimed_addresses_fail(const void *data)
 
 static void test_bte_zero_length_and_misalignment(const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint8_t got[BTE_LINE];
     unsigned int i;
+
+    hub_reset();
 
     /* Misaligned programming must not crash; bits 39:7 survive. */
     qtest_writeq(qts, HUB_LOCAL + BTE_SOURCE(0), BTE_TEST_SRC | 0x44);
@@ -6568,13 +6522,15 @@ static void test_bte_zero_length_and_misalignment(const void *data)
     for (i = 0; i < sizeof(got); i++) {
         g_assert_cmphex(got[i], ==, 0x66);
     }
-
-    qtest_quit(qts);
 }
 
 int main(int argc, char **argv)
 {
+    int ret;
+
     g_test_init(&argc, &argv, NULL);
+
+    qts = qtest_init("-M origin200");
 
     qtest_add_data_func("sn0/hub/addressing-mode", NULL, test_addressing_mode);
     qtest_add_data_func("sn0/hub/network-link-presence", NULL,
@@ -6890,5 +6846,8 @@ int main(int argc, char **argv)
                         NULL,
                         test_graphics_flow_control_does_not_disturb_rt_compare);
 
-    return g_test_run();
+    ret = g_test_run();
+    qtest_quit(qts);
+
+    return ret;
 }
