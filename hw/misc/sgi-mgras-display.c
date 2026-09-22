@@ -8,17 +8,19 @@
 #define SI_CURSOR_CMAP_INDEX 0x1c
 
 
-/* CMAP entries use the native 0x00BBGGRR packing. */
-static uint32_t si_cmap_rgb(SGIMgrasState *s, uint8_t index)
+/* Bank selection and native 0x00BBGGRR lookup are explicit approximations. */
+static uint32_t si_cmap_rgb(SGIMgrasState *s, uint8_t visual, uint8_t index)
 {
-    return s->cmap[index] & 0x00ffffff;
+    uint32_t bank = (s->xmap_mode[visual & 0x1f] >> 5) & 0x1f;
+
+    return s->cmap[bank * 256 + index] & 0x00ffffff;
 }
 
 /* The cursor uses mask and select planes from VC3 SRAM. */
 static void si_composite_cursor(SGIMgrasState *s)
 {
     uint32_t base = s->vc3_reg[1];
-    uint32_t ink = si_cmap_rgb(s, SI_CURSOR_CMAP_INDEX);
+    uint32_t ink = si_cmap_rgb(s, 0, SI_CURSOR_CMAP_INDEX);
     uint32_t bg = 0x00ffffff;
 
     for (unsigned row = 0; row < 32; row++) {
@@ -72,7 +74,8 @@ static bool si_gfx_update(void *opaque)
 
     for (int i = 0; i < SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT; i++) {
         uint32_t v = s->front[i];
-        uint32_t rgb = s->wid[i] ? si_cmap_rgb(s, v & 0xff) : v;
+        uint32_t rgb = s->indexed[i] ?
+                       si_cmap_rgb(s, s->wid[i], v & 0xff) : v;
 
         s->display_buffer[i] = ((rgb & 0xff) << 16) | (rgb & 0x00ff00) |
                                ((rgb >> 16) & 0xff);

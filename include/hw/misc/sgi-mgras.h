@@ -14,6 +14,8 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 #define SGI_MGRAS_MMIO_SIZE (2 * MiB)
 #define SGI_MGRAS_WIDTH 1280
 #define SGI_MGRAS_HEIGHT 1024
+#define SGI_MGRAS_CMAP_ENTRIES 8192
+#define SGI_MGRAS_XMAP_ENTRIES 32
 
 /* Uploaded program state is retained. Its protocol is unsupported. */
 #define SGI_MGRAS_GE_WORDS (59392 * 3)
@@ -197,8 +199,9 @@ struct SGIMgrasState {
     uint32_t *back;
     uint32_t front_count;
     uint32_t back_count;
-    /* Separate WID storage preserves the unresolved native plane boundary. */
+    /* WID and indexed state remain separate approximation inputs. */
     uint8_t *wid;
+    uint8_t *indexed;
     uint32_t hq[5120];
     uint32_t *ge[2];
     uint32_t ge_write_ptr[2];
@@ -232,8 +235,9 @@ struct SGIMgrasState {
     uint8_t cursor[256];
     uint32_t cursor_x;
     uint32_t cursor_y;
-    uint32_t cmap_index;
-    uint32_t cmap[256];
+    uint16_t cmap_selector;
+    uint8_t cmap_position;
+    uint32_t cmap[SGI_MGRAS_CMAP_ENTRIES];
     /* Bounded raster state persists across synchronous operations. */
     uint32_t rss[0x200];
     /* Internal cursors implement the bounded raster approximation. */
@@ -247,7 +251,8 @@ struct SGIMgrasState {
     uint32_t cmd_token_payload[SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS];
     uint32_t cmd_token_payload_count;
     uint64_t retraces;
-    uint32_t xmap_mode;
+    uint8_t xmap_index;
+    uint32_t xmap_mode[SGI_MGRAS_XMAP_ENTRIES];
     uint16_t vc3_reg[32];
     uint8_t vc3_index;
     uint16_t vc3_ram_addr;

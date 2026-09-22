@@ -257,7 +257,15 @@ static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
         si_error(s, addr, size, "unsupported read width");
         return 0;
     }
-    if (size == 1 && addr != SGI_MGRAS_I2C_SCRATCH && addr != 0x071208) {
+    if ((addr == 0x071c88 && size != 1) ||
+        (addr == SGI_MGRAS_XMAP_MAIN_MODE && size != 4) ||
+        (addr == 0x070c30 && size != 2) ||
+        (addr == 0x070d18 && size != 4)) {
+        si_error(s, addr, size, "unsupported register read width");
+        return 0;
+    }
+    if (size == 1 && addr != SGI_MGRAS_I2C_SCRATCH && addr != 0x071208 &&
+        addr != 0x071c88) {
         si_error(s, addr, size, "unsupported byte read");
         return 0;
     }
@@ -297,8 +305,8 @@ static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
     case SGI_MGRAS_BRINGUP_ARG_3: return s->bringup_arg_3;
     case SGI_MGRAS_VC3_ARG: return s->vc3_arg;
     case SGI_MGRAS_RE_ARG: return s->re_arg;
-    /* Store and echo the unresolved XMAP mode value. */
-    case SGI_MGRAS_XMAP_MAIN_MODE: return s->xmap_mode;
+    /* XMAP selection and per-visual modes are an approximation. */
+    case SGI_MGRAS_XMAP_MAIN_MODE: return s->xmap_mode[s->xmap_index];
     case SGI_MGRAS_I2C_SCRATCH: return s->i2c_scratch;
     case SGI_MGRAS_REPP_STATUS_1: return s->repp_status[0];
     case SGI_MGRAS_REPP_STATUS_3: return s->repp_status[1];
@@ -344,7 +352,7 @@ static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
     case 0x02c578: return 0x100;
     /* Preserve the approximated status bit across supported access widths. */
     case 0x071208: return size == 1 ? 0x08 : 0x08000000;
-    case 0x071c88: return s->cmap_index;
+    case 0x071c88: return s->xmap_index << 2;
     case 0x071f00: return 1;
     /* Fixed functional-approximation synchronization value. */
     case SGI_MGRAS_REPP_SYNC: return 0x101;
@@ -365,7 +373,13 @@ static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
         return size == 2 ? v : (uint32_t)v << 16;
     }
     case 0x130500: return s->entry;
-    case 0x070d18: return s->cmap[s->cmap_index & 255];
+    case 0x070d18: {
+        uint32_t address = (s->cmap_selector & 0x1f) * 256 +
+                           ((s->cmap_selector >> 13) & 7) * 32 +
+                           s->cmap_position;
+
+        return s->cmap[address];
+    }
     case 0x120400: return s->ready ? 0xf400 : 0;
     /* GE readback order is a functional approximation over opaque uploads. */
     case SGI_MGRAS_GE_READ_1:
@@ -436,8 +450,16 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         si_error(s, addr, size, "unsupported or unaligned write");
         return;
     }
+    if ((addr == 0x071c88 && size != 1) ||
+        (addr == SGI_MGRAS_XMAP_MAIN_MODE && size != 4) ||
+        (addr == 0x070c30 && size != 2) ||
+        (addr == 0x070d18 && size != 4)) {
+        si_error(s, addr, size, "unsupported register write width");
+        return;
+    }
     if (size == 1 && addr != SGI_MGRAS_I2C_SCRATCH &&
-        addr != SGI_MGRAS_I2C_STROBE && addr != SGI_MGRAS_VC3_INDEX) {
+        addr != SGI_MGRAS_I2C_STROBE && addr != SGI_MGRAS_VC3_INDEX &&
+        addr != 0x071c88) {
         si_error(s, addr, size, "unsupported byte write");
         return;
     }
@@ -468,14 +490,18 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         return;
     case SGI_MGRAS_VC3_ARG: s->vc3_arg = value; return;
     case SGI_MGRAS_RE_ARG: s->re_arg = value; return;
-    /* Mode changes require a full scanout refresh in this synchronous model. */
-    case SGI_MGRAS_XMAP_MAIN_MODE: s->xmap_mode = value; s->dirty = true; return;
+    /* Per-visual mode storage and scanout interpretation are approximate. */
+    case SGI_MGRAS_XMAP_MAIN_MODE:
+        s->xmap_mode[s->xmap_index] = value;
+        s->dirty = true;
+        return;
     case SGI_MGRAS_RESET_CONTROL: s->reset_control = value; return;
     case SGI_MGRAS_I2C_SCRATCH: s->i2c_scratch = value; return;
     case SGI_MGRAS_I2C_STROBE: return;
     case SGI_MGRAS_REPP_STATUS_1: s->repp_status[0] = value; return;
-    /* This register is already handled as the color-map index. */
-    case 0x071c88: return;
+    case 0x071c88:
+        s->xmap_index = (value >> 2) & 0x1f;
+        return;
     case SGI_MGRAS_REPP_STATUS_3: s->repp_status[1] = value; return;
     case SGI_MGRAS_REPP_STATUS_4: s->repp_status[2] = value; return;
     case SGI_MGRAS_SYNC_STATUS: s->sync_status = value; return;
@@ -545,14 +571,21 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
             si_error(s, addr, size, "unsupported context width");
         }
         return;
-    /* The color-map index occupies the upper half of a widened write. */
+    /* Target-first selector decoding is a retained-trace approximation. */
     case 0x070c30:
-        s->cmap_index = (size == 2 ? value : value >> 16) & 255;
+        s->cmap_selector = value;
+        s->cmap_position = 0;
         return;
-    case 0x070d18:
-        s->cmap[s->cmap_index & 255] = value;
+    case 0x070d18: {
+        uint32_t address = (s->cmap_selector & 0x1f) * 256 +
+                           ((s->cmap_selector >> 13) & 7) * 32 +
+                           s->cmap_position;
+
+        s->cmap[address] = value;
+        s->cmap_position = (s->cmap_position + 1) & 0x1f;
         s->dirty = true;
         return;
+    }
     case 0x071f00: return;
     /* The unresolved synchronization selector is accepted but not stored. */
     case SGI_MGRAS_REPP_SYNC: return;
@@ -665,6 +698,7 @@ static void si_reset_enter(Object *obj, ResetType type)
     memset(s->front, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT * sizeof(*s->front));
     memset(s->back, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT * sizeof(*s->back));
     memset(s->wid, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
+    memset(s->indexed, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
     memset(s->hq, 0, sizeof(s->hq));
     for (int slot = 0; slot < 2; slot++) {
         memset(s->ge[slot], 0, sizeof(uint32_t) * SGI_MGRAS_GE_WORDS);
@@ -690,7 +724,14 @@ static void si_reset_enter(Object *obj, ResetType type)
     s->display_enabled = s->cursor_enabled = false;
     /* Redraw because reset changes display state and pixel storage. */
     s->dirty = true;
-    s->xmap_mode = 0x7a4; s->cmap_index = 0; s->retraces = 0;
+    for (int i = 0; i < SGI_MGRAS_XMAP_ENTRIES; i++) {
+        s->xmap_mode[i] = 0x7a4;
+    }
+    s->xmap_index = 0;
+    s->cmap_selector = 0;
+    s->cmap_position = 0;
+    memset(s->cmap, 0, sizeof(s->cmap));
+    s->retraces = 0;
     s->int_dest_upper = s->int_dest_lower = 0;
     s->widget_control = 0;
     s->reset_arg = s->reset_control = s->i2c_scratch = 0;
@@ -754,6 +795,7 @@ static void si_realize(DeviceState *dev, Error **errp)
     s->back = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
     s->front_count = s->back_count = SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT;
     s->wid = g_new0(uint8_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
+    s->indexed = g_new0(uint8_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
     s->ge[SGI_MGRAS_GE_SLOT_A] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
     s->ge[SGI_MGRAS_GE_SLOT_B] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
     s->display_buffer = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
@@ -772,7 +814,7 @@ static void si_unrealize(DeviceState *dev)
     timer_del(s->retrace_timer); timer_free(s->retrace_timer);
     address_space_destroy(&s->fabric_as);
     qemu_graphic_console_close(s->con);
-    g_free(s->front); g_free(s->back); g_free(s->wid);
+    g_free(s->front); g_free(s->back); g_free(s->wid); g_free(s->indexed);
     g_free(s->ge[SGI_MGRAS_GE_SLOT_A]); g_free(s->ge[SGI_MGRAS_GE_SLOT_B]);
     g_free(s->display_buffer);
 }
@@ -793,7 +835,9 @@ static int si_post_load(void *opaque, int version_id)
          SGI_MGRAS_CMD_TOKEN_MAX_DISCARD_WORDS) ||
         (s->cmd_token_class != SGI_MGRAS_CMD_TOKEN_DISCARD &&
          s->cmd_token_words_remaining > ARRAY_SIZE(s->cmd_token_payload)) ||
-        s->pio_x > SGI_MGRAS_WIDTH || s->pio_y > SGI_MGRAS_HEIGHT) {
+        s->pio_x > SGI_MGRAS_WIDTH || s->pio_y > SGI_MGRAS_HEIGHT ||
+        s->xmap_index >= SGI_MGRAS_XMAP_ENTRIES ||
+        s->cmap_position >= 32) {
         return -EINVAL;
     }
 
@@ -827,7 +871,7 @@ static bool si_ge_lengths_valid(void *opaque, int version_id)
 }
 
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 3, .minimum_version_id = 1,
+    .name = TYPE_SGI_MGRAS, .version_id = 4, .minimum_version_id = 4,
     .post_load = si_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -840,6 +884,8 @@ static const VMStateDescription vmstate_sgi_mgras = {
                               vmstate_info_uint32, uint32_t),
         /* The WID plane has the same dimensions as the front color plane. */
         VMSTATE_VARRAY_UINT32(wid, SGIMgrasState, front_count, 0,
+                              vmstate_info_uint8, uint8_t),
+        VMSTATE_VARRAY_UINT32(indexed, SGIMgrasState, front_count, 0,
                               vmstate_info_uint8, uint8_t),
         VMSTATE_UINT32_ARRAY(hq, SGIMgrasState, 5120),
         VMSTATE_UINT32_V(hq_words, SGIMgrasState, 2),
@@ -866,8 +912,11 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_BOOL(ready, SGIMgrasState),
         VMSTATE_UINT32(pending, SGIMgrasState), VMSTATE_UINT32(irq_mask, SGIMgrasState),
         VMSTATE_UINT32(error, SGIMgrasState), VMSTATE_UINT32(error_addr, SGIMgrasState),
-        VMSTATE_UINT32(error_width, SGIMgrasState), VMSTATE_UINT32(cmap_index, SGIMgrasState),
-        VMSTATE_UINT32_ARRAY(cmap, SGIMgrasState, 256), VMSTATE_UINT64(retraces, SGIMgrasState),
+        VMSTATE_UINT32(error_width, SGIMgrasState),
+        VMSTATE_UINT16(cmap_selector, SGIMgrasState),
+        VMSTATE_UINT8(cmap_position, SGIMgrasState),
+        VMSTATE_UINT32_ARRAY(cmap, SGIMgrasState, SGI_MGRAS_CMAP_ENTRIES),
+        VMSTATE_UINT64(retraces, SGIMgrasState),
         VMSTATE_UINT32_V(cursor_x, SGIMgrasState, 2),
         VMSTATE_UINT32_V(cursor_y, SGIMgrasState, 2),
         VMSTATE_BOOL_V(display_enabled, SGIMgrasState, 3),
@@ -929,7 +978,9 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT16(vc3_ram_addr, SGIMgrasState),
         VMSTATE_UINT16_ARRAY(vc3_sram, SGIMgrasState,
                              SGI_MGRAS_VC3_SRAM_WORDS),
-        VMSTATE_UINT32(xmap_mode, SGIMgrasState),
+        VMSTATE_UINT8(xmap_index, SGIMgrasState),
+        VMSTATE_UINT32_ARRAY(xmap_mode, SGIMgrasState,
+                             SGI_MGRAS_XMAP_ENTRIES),
         VMSTATE_TIMER_PTR_V(retrace_timer, SGIMgrasState, 2),
         VMSTATE_END_OF_LIST()
     }
