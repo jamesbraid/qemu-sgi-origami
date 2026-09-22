@@ -971,7 +971,7 @@ static void test_elsc_legacy_rotation_position_migrates(const void *data)
     qtest_qmp_assert_success(
         to, "{ 'execute': 'migrate-incoming', "
             "'arguments': { 'uri': %s } }", uri);
-    sgi_wait_migration_status(to, "completed");
+    sgi_wait_migration_status(to, "completed", 30);
     qtest_clock_step(to, ARB_SLOT0_NS);
     g_assert_cmphex(cpu_readq(to, 0, HUB_LOCAL + I2C_DATA), ==,
                     ARB_SIGNAL1 + 2);

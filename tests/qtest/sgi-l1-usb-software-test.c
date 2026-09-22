@@ -279,8 +279,8 @@ static void test_migration(void)
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed");
-    sgi_wait_migration_status(to, "completed");
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
     expect_state(to, "unset");
     expect_result(to, "none");
     expect_descriptor(to, "none");

@@ -747,9 +747,9 @@ static void test_migration(void)
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed");
+    sgi_wait_migration_status(from, "completed", 30);
     /* The source completes when its state is sent, not when it is loaded. */
-    sgi_wait_migration_status(to, "completed");
+    sgi_wait_migration_status(to, "completed", 30);
     g_assert_cmphex(qtest_readq(to, BASE + 0x18), ==, 3);
     g_assert_cmpuint(receive(to, reply), ==, 16);
     for (unsigned i = 4; i < sizeof(request); i++) {
@@ -797,8 +797,8 @@ static void test_eeprom_migration(void)
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed");
-    sgi_wait_migration_status(to, "completed");
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
     g_assert_cmpuint(eeprom_read(to, 0, 2, 0, 64, reply), ==, 15);
     g_assert_cmpmem(reply + 12, 3, source_bytes, 3);
     qtest_quit(from);
@@ -865,8 +865,8 @@ static void test_selected_migration(void)
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed");
-    sgi_wait_migration_status(to, "completed");
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
     expect_format(to, 0, board_ok, G_N_ELEMENTS(board_ok));
     g_assert_cmpuint(eeprom_read(to, 0, 3, 0, 8, reply), ==, 20);
     g_assert_cmpmem(reply + 12, 8, iua, sizeof(iua));
@@ -1484,8 +1484,8 @@ static void test_lifecycle_migration(void)
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed");
-    sgi_wait_migration_status(to, "completed");
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
     assert_display(to, "moved");
     {
         uint8_t reply[131];
@@ -2249,8 +2249,8 @@ static void test_uart_irq_migration(void)
             "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
         qtest_qmp_assert_success(from,
             "{'execute':'migrate','arguments':{'uri':%s}}", uri);
-        sgi_wait_migration_status(from, "completed");
-        sgi_wait_migration_status(to, "completed");
+        sgi_wait_migration_status(from, "completed", 30);
+        sgi_wait_migration_status(to, "completed", 30);
         g_assert_cmpint(qtest_get_irq(to, 0), ==, state != 0);
         if (state == 2) {
             g_assert_cmphex(qtest_readq(to, BASE + 0x10), ==, 4);
@@ -2435,8 +2435,8 @@ static void test_node_position_migration(void)
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate','arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed");
-    sgi_wait_migration_status(to, "completed");
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
     g_assert_cmpuint(node_position(to, 0x0ffff006), ==, 3);
     qtest_quit(from);
     qtest_quit(to);

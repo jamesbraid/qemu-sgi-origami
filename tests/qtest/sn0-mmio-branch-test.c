@@ -919,7 +919,7 @@ static QTestState *drive_stack_switch(QTestState *qts, const TestCase *tc,
         cmdline = case_cmdline(tc, bios, tail);
         to = qtest_init(cmdline);
         sgi_migrate_stopped(qts, uri);
-        sgi_wait_migration_status(to, "completed");
+        sgi_wait_migration_status(to, "completed", 30);
         qtest_quit(qts);
         qts = to;
         /* The destination removes its listening socket once it is done. */

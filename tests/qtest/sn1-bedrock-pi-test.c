@@ -1033,9 +1033,9 @@ static void test_migration_recomputes_outputs(void)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed");
+    sgi_wait_migration_status(from, "completed", 30);
     /* The source completes when its state is sent, not when it is loaded. */
-    sgi_wait_migration_status(to, "completed");
+    sgi_wait_migration_status(to, "completed", 30);
     ensure_clock_running(to);
     g_assert_cmphex(qtest_readq(to, PI(0, PENDING_0)), ==, 1ULL << 7);
     g_assert_cmphex(qtest_readq(to, PI(1, PENDING_1)), ==,
@@ -1094,8 +1094,8 @@ static void test_migration_preserves_counter_phase(void)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed");
-    sgi_wait_migration_status(to, "completed");
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
     ensure_clock_running(to);
     qtest_irq_intercept_out_named(to, BEDROCK_PATH, "hardware-irq");
     g_assert_cmphex(qtest_readq(to, PI(0, RT_COUNTER)), ==, 0);
@@ -1175,8 +1175,8 @@ static void test_cpu_enable_migration(void)
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
         "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
-    sgi_wait_migration_status(from, "completed");
-    sgi_wait_migration_status(to, "completed");
+    sgi_wait_migration_status(from, "completed", 30);
+    sgi_wait_migration_status(to, "completed", 30);
     g_assert_cmphex(qtest_readq(to, PI(0, CPU_ENABLE_A)), ==, 1);
     g_assert_true(qtest_get_irq(to, 0));
     g_assert_false(qtest_get_irq(to, 1));
