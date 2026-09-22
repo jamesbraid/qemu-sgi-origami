@@ -5,27 +5,13 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 import re
-import struct
 import time
-from pathlib import Path
 
 from qemu_test import QemuSystemTest
 
-
-R_ZERO = 0
-R_AT = 1
-R_A0 = 4
-R_A1 = 5
-R_A2 = 6
-R_T0 = 8
-R_T1 = 9
-R_T2 = 10
-R_T3 = 11
-R_T4 = 12
-R_S0 = 16
-R_S1 = 17
-R_S2 = 18
-R_S3 = 19
+from lib_mips import (R_A0, R_A2, R_AT, R_S0, R_S1, R_S2, R_S3, R_T0, R_T1,
+                      R_T2, R_T3, R_T4, R_ZERO, MipsProgram, mips_i, mips_r)
+from lib_prom import MACHINES
 
 TEST_STATE = 0x00030000
 STATE_STARTED = 0x00
@@ -193,14 +179,6 @@ DUAL_NODE_ORDER_ROUNDS_ICOUNT = 4
 DUAL_NODE_MAILBOX_ROUNDS_ICOUNT = 4
 
 
-def mips_i(op, rs, rt, immediate):
-    return op << 26 | rs << 21 | rt << 16 | immediate & 0xffff
-
-
-def mips_r(rs, rt, rd, shift, function):
-    return rs << 21 | rt << 16 | rd << 11 | shift << 6 | function
-
-
 def load_u32(program, register, value):
     assert 0 <= value <= 0xffffffff
     program.emit(mips_i(0x0f, R_ZERO, register, value >> 16))
@@ -335,34 +313,6 @@ def emit_dual_node_page_base(program, reg, explicit):
     else:
         program.emit(mips_i(0x0f, R_ZERO, R_AT, DUAL_NODE_PAGE))
         program.emit(mips_r(reg, R_AT, reg, 0, 0x25))       # or reg,reg,at
-
-
-class MipsProgram:
-    def __init__(self):
-        self.instructions = []
-
-    def emit(self, instruction):
-        self.instructions.append(instruction)
-
-    def branch(self, op, rs, rt):
-        branch = len(self.instructions)
-        self.emit(mips_i(op, rs, rt, 0))
-        self.emit(0)                 # delay slot
-        return branch
-
-    def patch(self, branch, target):
-        displacement = target - branch - 1
-        assert -(1 << 15) <= displacement < (1 << 15)
-        self.instructions[branch] |= displacement & 0xffff
-
-    def address_prefix(self, register, high):
-        self.emit(mips_i(0x0f, R_ZERO, register, high))
-        self.emit(mips_r(R_ZERO, register, register, 0, 0x3c))  # dsll32
-
-    def write(self, path):
-        image = b''.join(struct.pack('>I', instruction)
-                         for instruction in self.instructions)
-        Path(path).write_bytes(image)
 
 
 def load_xkphys_address(program, register, prefix, offset):
@@ -1278,8 +1228,7 @@ class SN0SMPMachine(QemuSystemTest):
         firmware = self.scratch_file('rtc-rendezvous.bin')
         build_rtc_rendezvous().write(firmware)
 
-        self.vm.set_machine(
-            'origin200,debug-leds=off')
+        self.vm.set_machine(MACHINES['origin200'])
         self.vm.add_args('-accel', 'tcg,thread=single',
                          '-icount', 'shift=2,align=off,sleep=on',
                          '-smp', '2', '-bios', firmware)
@@ -1310,8 +1259,7 @@ class SN0SMPMachine(QemuSystemTest):
         firmware = self.scratch_file('promdata-cache-bypass.bin')
         build_promdata_cache_bypass().write(firmware)
 
-        self.vm.set_machine(
-            'origin200,debug-leds=off')
+        self.vm.set_machine(MACHINES['origin200'])
         self.vm.add_args('-accel', 'tcg,thread=single',
                          '-smp', '2', '-bios', firmware)
         self.vm.launch()
@@ -1335,8 +1283,7 @@ class SN0SMPMachine(QemuSystemTest):
         firmware = self.scratch_file('rr-kick-deadline.bin')
         build_rr_kick_deadline().write(firmware)
 
-        self.vm.set_machine(
-            'origin200,debug-leds=off')
+        self.vm.set_machine(MACHINES['origin200'])
         self.vm.add_args(
             '-accel', 'tcg,thread=single,rr-kick-period-ns=1000',
             '-icount', 'shift=2,align=off,sleep=on',
@@ -1374,8 +1321,7 @@ class SN0SMPMachine(QemuSystemTest):
         # Wall-clock RR without icount: a slice is only given up there.
         # The long kick period makes a yielded quantum (12500 ticks)
         # unmistakable against a window that kept its slice.
-        self.vm.set_machine(
-            'origin200,debug-leds=off')
+        self.vm.set_machine(MACHINES['origin200'])
         self.vm.add_args(
             '-accel',
             f'tcg,thread=single,rr-kick-period-ns='
@@ -1404,7 +1350,7 @@ class SN0SMPMachine(QemuSystemTest):
         firmware = self.scratch_file('slice-b-console-boundary.bin')
         build_slice_b_console_boundary().write(firmware)
 
-        self.vm.set_machine('origin200,debug-leds=off')
+        self.vm.set_machine(MACHINES['origin200'])
         self.vm.add_args('-accel', 'tcg,thread=single',
                          '-m', '64M', '-smp', '2', '-bios', firmware)
         self.vm.launch()
@@ -1429,8 +1375,7 @@ class SN0SMPMachine(QemuSystemTest):
         firmware = self.scratch_file('four-cpu-rendezvous.bin')
         build_four_cpu_rendezvous().write(firmware)
 
-        self.vm.set_machine(
-            'origin200,topology=origin200-dual,debug-leds=off')
+        self.vm.set_machine(MACHINES['origin200_dual'])
         # icount is the deterministic reference: a bounded instruction
         # budget per CPU under the single-threaded scheduler.
         # test_four_cpu_two_node_rendezvous_thread_multi is the twin that
@@ -1487,8 +1432,7 @@ class SN0SMPMachine(QemuSystemTest):
         build_four_cpu_rendezvous(
             wait_limit=FOUR_CPU_WAIT_LIMIT_UNBOUNDED).write(firmware)
 
-        self.vm.set_machine(
-            'origin200,topology=origin200-dual,debug-leds=off')
+        self.vm.set_machine(MACHINES['origin200_dual'])
         # No -icount: QEMU hard-errors combining it with thread=multi.
         self.vm.add_args(
             '-accel', 'tcg,thread=multi',
@@ -1539,8 +1483,7 @@ class SN0SMPMachine(QemuSystemTest):
         firmware = self.scratch_file('dual-node-stress-thread-multi.bin')
         build_dual_node_stress().write(firmware)
 
-        self.vm.set_machine(
-            'origin200,topology=origin200-dual,debug-leds=off')
+        self.vm.set_machine(MACHINES['origin200_dual'])
         self.vm.add_args(
             '-accel', 'tcg,thread=multi',
             '-m', '128M',
@@ -1573,8 +1516,7 @@ class SN0SMPMachine(QemuSystemTest):
             order_rounds=DUAL_NODE_ORDER_ROUNDS_ICOUNT,
             mailbox_rounds=DUAL_NODE_MAILBOX_ROUNDS_ICOUNT).write(firmware)
 
-        self.vm.set_machine(
-            'origin200,topology=origin200-dual,debug-leds=off')
+        self.vm.set_machine(MACHINES['origin200_dual'])
         # The deterministic test-of-the-test: the same ROM, a reduced
         # budget, and the single-threaded round-robin scheduler icount
         # requires, proving the ROM's correctness does not depend on

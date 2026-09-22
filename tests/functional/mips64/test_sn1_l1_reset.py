@@ -67,24 +67,19 @@ import struct
 import time
 from pathlib import Path
 
-from lib_prom import resolve_asset
+from lib_mips import (R_S0, R_S2, R_T0, R_T1, R_T2, R_T3, R_T4, R_T5,
+                      R_ZERO, RESET_RE, TRACE_RE, WRITE_RE, MipsProgram,
+                      mips_i, reset_windows)
+from lib_prom import MACHINES, require_assets
 
 from qemu_test import QemuSystemTest
 from qemu_test import exec_command_and_wait_for_pattern
 from qemu_test import skipIfMissingEnv
 from qemu_test import wait_for_console_pattern
 
-
-R_ZERO = 0
-R_AT = 1
-R_T0 = 8
-R_T1 = 9
-R_T2 = 10
-R_T3 = 11
-R_T4 = 12
-R_T5 = 13
-R_S0 = 16
-R_S2 = 18
+# The Origin 300's own stock PROM, under ORIGAMI_ASSETS.
+IP35_FIRMWARE_REL = os.path.join('assets', 'firmware', '6.5.30',
+                                 'ip35prom.payload.bin')
 
 # Shared uncached RAM, reached through the plain-memory xkphys window
 # (attribute 3, window zero). Persists across the resets this test drives,
@@ -165,14 +160,6 @@ L1_REQUEST_RESET = 0x2001
 L1_REQUESTER_CPU = 0
 
 
-def mips_i(op, rs, rt, immediate):
-    return op << 26 | rs << 21 | rt << 16 | immediate & 0xffff
-
-
-def mips_r(rs, rt, rd, shift, function):
-    return rs << 21 | rt << 16 | rd << 11 | shift << 6 | function
-
-
 def l1_fcs(value, byte):
     """The controller's own frame check sequence (hw/misc/sgi-l1.c,
     l1_fcs): CRC-16/CCITT-FCS, the standard PPP async-HDLC checksum."""
@@ -214,41 +201,9 @@ def l1_reset_request(cpu_index):
     return l1_frame(payload)
 
 
-class MipsProgram:
-    def __init__(self):
-        self.instructions = []
-
-    def emit(self, instruction):
-        self.instructions.append(instruction)
-
-    def here(self):
-        return len(self.instructions)
-
-    def branch(self, op, rs, rt):
-        branch = self.here()
-        self.emit(mips_i(op, rs, rt, 0))
-        self.emit(0)                      # branch delay slot
-        return branch
-
-    def patch(self, branch, target):
-        displacement = target - branch - 1
-        assert -(1 << 15) <= displacement < (1 << 15)
-        self.instructions[branch] |= displacement & 0xffff
-
-    def spin(self):
-        spin = self.here()
-        self.patch(self.branch(0x04, R_ZERO, R_ZERO), spin)
-
-    def address(self, register, prefix, offset):
-        """register = (prefix << 48) | offset -- the xkphys form every
-        R10000-family board reaches its uncached windows through
-        (test_sn0_elsc_reset.py's address(), test_sn0_smp.py's
-        address_prefix()/load_xkphys_address())."""
-        self.emit(mips_i(0x0f, R_ZERO, register, prefix))
-        self.emit(mips_r(R_ZERO, register, register, 0, 0x3c))   # dsll32
-        self.emit(mips_i(0x0f, R_ZERO, R_AT, offset >> 16))
-        self.emit(mips_i(0x0d, R_AT, R_AT, offset & 0xffff))
-        self.emit(mips_r(register, R_AT, register, 0, 0x25))     # or
+class L1Program(MipsProgram):
+    """lib_mips's assembler plus the two sequences every program in this
+    exercise opens with."""
 
     def write_reg(self, base, value):
         """*base = value, an 8-bit immediate the caller has already
@@ -265,17 +220,12 @@ class MipsProgram:
         self.emit(0x40800000 | R_T0 << 16 | 12 << 11)             # mtc0
         self.emit(0)
 
-    def write(self, path):
-        Path(path).write_bytes(b''.join(
-            struct.pack('>I', instruction)
-            for instruction in self.instructions))
-
 
 def build_slice_a():
     """CPU 0: waits for CPU 1 to reach each cycle, then sends the L1's
     framed 0x2001 request -- real guest instructions, not a register
     poke -- CYCLES times over."""
-    program = MipsProgram()
+    program = L1Program()
     program.status_kx_kernel()
     program.address(R_S0, 0x9600, STATE)
     program.address(R_S2, 0x9000, L1_UART_DATA)
@@ -314,7 +264,7 @@ def build_slice_b():
     """CPU 1: marks the cycle it has reached and spins incrementing a
     counter, so any execution it is given after the closing frame byte
     lands in the log and in memory."""
-    program = MipsProgram()
+    program = L1Program()
     program.status_kx_kernel()
     program.address(R_S0, 0x9600, STATE)
     program.emit(mips_i(0x19, R_ZERO, R_T1, 1))                  # t1 = 1
@@ -341,7 +291,7 @@ def build_slice_b():
 def build_console_spinner(counter_offset):
     """A processor that continuously writes, so every scheduled block is
     visible in the execution log while a console action is pending."""
-    program = MipsProgram()
+    program = L1Program()
     program.status_kx_kernel()
     program.address(R_S0, 0x9600, STATE)
     program.emit(mips_i(0x19, R_ZERO, R_T1, 0))
@@ -352,19 +302,15 @@ def build_console_spinner(counter_offset):
     return program
 
 
-WRITE_RE = re.compile(
-    r"memory_region_ops_write cpu (-?\d+) mr \S+ addr 0x([0-9a-f]+) "
-    r"value 0x([0-9a-f]+) size \d+ name '([^']*)'")
-TRACE_RE = re.compile(r"^Trace (\d+):")
-RESET_RE = re.compile(r"^cpu_reset (\d+)")
 SHUTDOWN_RE = re.compile(r"^qemu_system_shutdown_request reason=6$")
 
 
 def committing_write(line):
     """The requesting processor, if this line is a flag-byte write to the
     L1 UART's data register. Both the opening and the closing flag of a
-    frame carry the same 0x7e value; reset_windows() below picks whichever
-    one is nearest a given reset, which the closing flag always is."""
+    frame carry the same 0x7e value; lib_mips.reset_windows() picks
+    whichever one is nearest a given reset, which the closing flag always
+    is."""
     match = WRITE_RE.match(line)
     if not match:
         return None
@@ -374,48 +320,6 @@ def committing_write(line):
     if int(value, 16) != 0x7e:
         return None
     return int(cpu)
-
-
-def reset_windows(log):
-    """One entry per machine reset: the requesting processor (the nearest
-    preceding flag-byte write) and the log lines showing another processor
-    entering a translation block before the reset that followed.
-
-    A reset resets every CPU object, so more than one "cpu_reset" line can
-    report one reset event; a run of consecutive lines collapses to its
-    first. The board's own reset at machine start happens before either
-    guest program has written anything -- a leading run with no preceding
-    write is that startup reset, not one this exercise asked for, and is
-    skipped rather than treated as a window."""
-    lines = log.splitlines()
-    resets = []
-    last_reset_line = None
-    for i, line in enumerate(lines):
-        if RESET_RE.match(line):
-            if last_reset_line is None or i != last_reset_line + 1:
-                resets.append(i)
-            last_reset_line = i
-
-    windows = []
-    search_from = 0
-    for reset_index in resets:
-        requester = None
-        write_index = None
-        for i in range(reset_index - 1, search_from - 1, -1):
-            cpu = committing_write(lines[i])
-            if cpu is not None:
-                requester, write_index = cpu, i
-                break
-        search_from = reset_index + 1
-        if requester is None:
-            continue
-        entered = []
-        for line in lines[write_index + 1:reset_index]:
-            trace = TRACE_RE.match(line)
-            if trace and int(trace.group(1)) != requester:
-                entered.append(line)
-        windows.append((requester, entered))
-    return windows
 
 
 def shutdown_windows(log):
@@ -456,26 +360,16 @@ class SN1L1Reset(QemuSystemTest):
         self.fail(f'the machine did not run {CYCLES} resets: {state}')
 
     def run_resets(self, *accelerator):
-        assets_root = os.environ.get('ORIGAMI_ASSETS')
-        prom = resolve_asset(
-            assets_root,
-            os.path.join('assets', 'firmware', '6.5.30',
-                         'ip35prom.payload.bin'))
-        if prom is None:
-            self.fail(
-                'ORIGAMI_ASSETS is set but the Origin 300 stock PROM is '
-                'missing at <ORIGAMI_ASSETS>/assets/firmware/6.5.30/'
-                'ip35prom.payload.bin -- provision it rather than '
-                'silently skipping a real check')
+        prom = require_assets(self, IP35_FIRMWARE_REL)[IP35_FIRMWARE_REL]
 
-        self.set_machine('origin300')
+        self.set_machine(MACHINES['origin300'])
         slice_a = self.scratch_file('sn1-l1-reset-a.bin')
         slice_b = self.scratch_file('sn1-l1-reset-b.bin')
         build_slice_a().write(slice_a)
         build_slice_b().write(slice_b)
         log = self.log_file('qemu-exec.log')
 
-        self.vm.set_machine('origin300')
+        self.vm.set_machine(MACHINES['origin300'])
         self.vm.add_args(
             *accelerator, '-smp', '2', '-m', '512M', '-bios', str(prom),
             '-device',
@@ -503,19 +397,9 @@ class SN1L1Reset(QemuSystemTest):
         return Path(log).read_text(errors='replace')
 
     def run_console_power_cycles(self):
-        assets_root = os.environ.get('ORIGAMI_ASSETS')
-        prom = resolve_asset(
-            assets_root,
-            os.path.join('assets', 'firmware', '6.5.30',
-                         'ip35prom.payload.bin'))
-        if prom is None:
-            self.fail(
-                'ORIGAMI_ASSETS is set but the Origin 300 stock PROM is '
-                'missing at <ORIGAMI_ASSETS>/assets/firmware/6.5.30/'
-                'ip35prom.payload.bin -- provision it rather than '
-                'silently skipping a real check')
+        prom = require_assets(self, IP35_FIRMWARE_REL)[IP35_FIRMWARE_REL]
 
-        self.set_machine('origin300')
+        self.set_machine(MACHINES['origin300'])
         slice_a = self.scratch_file('sn1-l1-console-a.bin')
         slice_b = self.scratch_file('sn1-l1-console-b.bin')
         build_console_spinner(STATE_A_DONE).write(slice_a)
@@ -551,7 +435,7 @@ class SN1L1Reset(QemuSystemTest):
         return Path(log).read_text(errors='replace')
 
     def assert_only_the_requester_ran(self, log):
-        windows = reset_windows(log)
+        windows = reset_windows(log, committing_write)
         self.assertEqual(len(windows), CYCLES,
                          f'{len(windows)} of {CYCLES} resets are in the log')
         ran = [(requester, entered) for requester, entered in windows
@@ -586,7 +470,7 @@ class SN1L1Reset(QemuSystemTest):
         so this only requires that every reset still completes and both
         slices resume."""
         log = self.run_resets('-accel', 'tcg,thread=multi')
-        self.assertEqual(len(reset_windows(log)), CYCLES)
+        self.assertEqual(len(reset_windows(log, committing_write)), CYCLES)
 
     @skipIfMissingEnv('ORIGAMI_ASSETS')
     def test_console_power_down_stops_every_cpu(self):
