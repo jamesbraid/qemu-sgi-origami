@@ -350,6 +350,39 @@ static void si_write_cmap_position(QTestState *qts, uint16_t selector,
     qtest_writel(qts, REG_CMAP_DATA, color);
 }
 
+/* Address one entry directly: bits 15:8 are the entry, bits 4:0 the map. */
+static void si_write_cmap_entry(QTestState *qts, unsigned int map,
+                                unsigned int entry, uint32_t color)
+{
+    qtest_writew(qts, REG_CMAP_WRITE_INDEX, (entry << 8) | map);
+    qtest_writel(qts, REG_CMAP_DATA, color);
+}
+
+/*
+ * Tag a rectangle's WID without touching its colour: COLORMASKMSBS masks
+ * the WID plane and COLORMASKLSBSA the colour, so a fill with the first
+ * set and the second clear writes only the tag. Leaves the colour mask
+ * open for the paints that follow.
+ */
+static void si_tag_wid(QTestState *qts, uint32_t x0, uint32_t y0,
+                       uint32_t x1, uint32_t y1, uint8_t wid)
+{
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_COLORMASKLSBSA, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_COLORMASKMSBS, 0xf0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_DRBPOINTERS, (uint32_t)wid << 16));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (x0 << 16) | y0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (x1 << 16) | y1));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_COLORMASKMSBS, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+}
+
 static void test_identity_and_aperture(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
@@ -1040,6 +1073,9 @@ static void test_direct_fill_and_reset(void)
     g_assert_cmphex(si_test_pixel(qts, 20, 11), ==, 0);
     g_assert_cmphex(si_test_pixel(qts, 9, 9), ==, 0);
 
+    /* A colour fill leaves the WID plane where it found it. */
+    g_assert_cmphex(si_test_wid(qts, 11, 11), ==, 0);
+
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_PP1FILLMODE, SI_LOGIC_OP_XOR << 26));
@@ -1115,6 +1151,98 @@ static void test_fill_mask_reads_colormasklsbsa(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND_EXEC(REG_BLOCK_END, (41u << 16) | 41u));
     g_assert_cmphex(si_test_pixel(qts, 40, 40), ==, 0);
+
+    /* With COLORMASKMSBS also zero the fill writes nothing at all. */
+    g_assert_cmphex(si_test_wid(qts, 40, 40), ==, 0);
+
+    qtest_quit(qts);
+}
+
+
+/*
+ * A rectangle fill reaches the WID plane when COLORMASKMSBS is nonzero,
+ * taking DRBPOINTERS bits 23:16, whether or not it also writes colour.
+ * Every paint with COLORMASKMSBS clear leaves the plane alone, whatever
+ * DRBPOINTERS holds at the time.
+ */
+static void test_wid_plane_fill_rule(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_COLORMASKMSBS, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_DRBPOINTERS, 7 << 16));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00445566));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (60u << 16) | 60u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (63u << 16) | 63u));
+    g_assert_cmphex(si_test_pixel(qts, 61, 61), ==, 0x00445566);
+    g_assert_cmphex(si_test_wid(qts, 61, 61), ==, 0);
+
+    /* The plane fill writes WID and leaves the colour it found. */
+    si_tag_wid(qts, 60, 60, 63, 63, 7);
+    g_assert_cmphex(si_test_wid(qts, 61, 61), ==, 7);
+    g_assert_cmphex(si_test_pixel(qts, 61, 61), ==, 0x00445566);
+    g_assert_cmphex(si_test_wid(qts, 64, 61), ==, 0);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_DRBPOINTERS, 2 << 16));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00112233));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (60u << 16) | 60u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (63u << 16) | 63u));
+    g_assert_cmphex(si_test_pixel(qts, 61, 61), ==, 0x00112233);
+    g_assert_cmphex(si_test_wid(qts, 61, 61), ==, 7);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BKGRD_RG, 0x00778899));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (60u << 16) | 60u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (63u << 16) | 63u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
+    g_assert_cmphex(si_test_pixel(qts, 61, 61), ==, 0x00778899);
+    g_assert_cmphex(si_test_wid(qts, 61, 61), ==, 7);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_FILLMODE, SI_FILLMODE_GLYPH_ROW));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00010203));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_CHAR_L, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (60u << 16) | 60u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (63u << 16) | 63u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_CHAR_H, 0x80000000));
+    g_assert_cmphex(si_test_pixel(qts, 60, 60), ==, 0x00010203);
+    g_assert_cmphex(si_test_pixel(qts, 61, 60), ==, 0x00778899);
+    g_assert_cmphex(si_test_wid(qts, 60, 60), ==, 7);
+    g_assert_cmphex(si_test_wid(qts, 61, 60), ==, 7);
+
+    /* A fill with both masks open writes the colour and the tag. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_FILLMODE, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_COLORMASKMSBS, 0xff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_DRBPOINTERS, 4 << 16));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00abcdef));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (60u << 16) | 60u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (63u << 16) | 63u));
+    g_assert_cmphex(si_test_pixel(qts, 61, 61), ==, 0x00abcdef);
+    g_assert_cmphex(si_test_wid(qts, 61, 61), ==, 4);
 
     qtest_quit(qts);
 }
@@ -1397,6 +1525,8 @@ static void test_direct_byte_row(void)
 
     si_enter_context(qts);
 
+    /* The transfer paints colour only; the WID comes from a plane fill. */
+    si_tag_wid(qts, 120, 120, 137, 121, 5);
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_FILLMODE, SI_FILLMODE_BYTE_XFER));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -1489,12 +1619,20 @@ static void test_direct_pio_pixel_pairs(void)
 }
 
 
+/*
+ * There is no direct-colour path: a fill's low byte indexes the map its
+ * WID's XMAP mode selects, and the conversion to the host surface puts
+ * entry bits 31:24, 23:16 and 15:8 out as red, green and blue.
+ */
 static void test_display_surface_conversion(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
 
     si_enter_context(qts);
 
+    /* WID 0 resolves through the reset mode 0x7a4, which selects map 29. */
+    si_write_cmap_entry(qts, 29, 0x33, 0x33221100);
+    si_write_cmap_entry(qts, 29, 0xcc, 0xccbbaa00);
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_PACKEDCOLOR, 0x00112233));
@@ -1537,6 +1675,7 @@ static void test_reset_refreshes_display_surface(void)
 
     si_enter_context(qts);
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    si_write_cmap_entry(qts, 29, 0x33, 0x33221100);
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_PACKEDCOLOR, 0x00112233));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -1564,6 +1703,7 @@ static void test_pseudocolor_scanout_looks_up_cmap(void)
 
 
     si_write_cmap_position(qts, 0x001d, 17, 0xecec0000);
+    si_write_cmap_entry(qts, 29, 0x33, 0x44556600);
 
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_BKGRD_RG, 0x11));
@@ -1572,32 +1712,33 @@ static void test_pseudocolor_scanout_looks_up_cmap(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
     g_assert_cmphex(si_test_pixel(qts, 5, 5), ==, 0x11);
-    g_assert_cmphex(si_screendump_pixel(qts, 5, 5), ==, 0x0000ecec);
-    g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x0000ecec);
+    g_assert_cmphex(si_screendump_pixel(qts, 5, 5), ==, 0x00ecec00);
+    g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x00ecec00);
 
     si_write_cmap_position(qts, 0x001d, 17, 0x11223300);
-    g_assert_cmphex(si_screendump_pixel(qts, 5, 5), ==, 0x00332211);
-    g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x00332211);
+    g_assert_cmphex(si_screendump_pixel(qts, 5, 5), ==, 0x00112233);
+    g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x00112233);
 
 
     qtest_writel(qts, REG_XMAP_MAIN_MODE, 0x7a4);
-    g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x00332211);
+    g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x00112233);
 
 
+    /* A PACKEDCOLOR fill indexes too: 0x33 is an index, not a blue byte. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_PACKEDCOLOR, 0x00112233));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BLOCK_START, (6u << 16) | 6u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND_EXEC(REG_BLOCK_END, (6u << 16) | 6u));
-    g_assert_cmphex(si_test_display_pixel(qts, 6, 6), ==, 0x00332211);
+    g_assert_cmphex(si_test_display_pixel(qts, 6, 6), ==, 0x00445566);
 
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BLOCK_START, (5u << 16) | 5u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND_EXEC(REG_BLOCK_END, (5u << 16) | 5u));
-    g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x00332211);
+    g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x00445566);
 
     qtest_quit(qts);
 }
@@ -1618,9 +1759,8 @@ static void test_cmap_high_byte_packing(void)
 
     si_write_cmap_position(qts, 0x0011, 17, 0xffffff00);
 
+    si_tag_wid(qts, 7, 7, 7, 7, 3);
     qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_BKGRD_RG, 0x11));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_DRBPOINTERS, 3 << 16));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BLOCK_START, (7u << 16) | 7u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -1632,6 +1772,11 @@ static void test_cmap_high_byte_packing(void)
     qtest_quit(qts);
 }
 
+/*
+ * Two tagged pixels, two XMAP modes, two colour maps, one shared index.
+ * Each resolves through its own map, and a palette write to one map
+ * leaves the other pixel alone.
+ */
 static void test_target_first_cmap_visual_selection(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
@@ -1661,20 +1806,16 @@ static void test_target_first_cmap_visual_selection(void)
     }
     qtest_writel(qts, REG_CMAP_DATA, 0xa1b2c300);
 
+    si_tag_wid(qts, 20, 20, 20, 20, 3);
+    si_tag_wid(qts, 21, 20, 21, 20, 9);
+
+    /* The paints carry a third DRBPOINTERS value and must not re-tag. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_DRBPOINTERS, 0x1f << 16));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BKGRD_RG, 0xf0));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_DRBPOINTERS, 3 << 16));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BLOCK_START, (20u << 16) | 20u));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_BLOCK_END, (20u << 16) | 20u));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_DRBPOINTERS, 9 << 16));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_BLOCK_START, (21u << 16) | 20u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BLOCK_END, (21u << 16) | 20u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -1688,8 +1829,8 @@ static void test_target_first_cmap_visual_selection(void)
     g_assert_cmphex(native_b, ==, 0xf0);
     g_assert_cmphex(wid_a, ==, 3);
     g_assert_cmphex(wid_b, ==, 9);
-    g_assert_cmphex(si_test_display_pixel(qts, 20, 20), ==, 0x00332211);
-    g_assert_cmphex(si_test_display_pixel(qts, 21, 20), ==, 0x00c3b2a1);
+    g_assert_cmphex(si_test_display_pixel(qts, 20, 20), ==, 0x00112233);
+    g_assert_cmphex(si_test_display_pixel(qts, 21, 20), ==, 0x00a1b2c3);
 
     qtest_writew(qts, REG_CMAP_WRITE_INDEX, 0xe00f);
     for (int position = 0; position < 16; position++) {
@@ -1700,14 +1841,19 @@ static void test_target_first_cmap_visual_selection(void)
     g_assert_cmphex(si_test_pixel(qts, 21, 20), ==, native_b);
     g_assert_cmphex(si_test_wid(qts, 20, 20), ==, wid_a);
     g_assert_cmphex(si_test_wid(qts, 21, 20), ==, wid_b);
-    g_assert_cmphex(si_test_display_pixel(qts, 20, 20), ==, 0x00030201);
-    g_assert_cmphex(si_test_display_pixel(qts, 21, 20), ==, 0x00c3b2a1);
+    g_assert_cmphex(si_test_display_pixel(qts, 20, 20), ==, 0x00010203);
+    g_assert_cmphex(si_test_display_pixel(qts, 21, 20), ==, 0x00a1b2c3);
 
     qtest_quit(qts);
 }
 
 
-static void test_masked_out_paint_keeps_index_tag(void)
+/*
+ * A paint that writes nothing -- a zero colour mask, or a logic operation
+ * that reproduces the destination -- leaves the native colour, the WID and
+ * therefore the displayed pixel exactly as they were.
+ */
+static void test_masked_out_paint_keeps_the_visual(void)
 {
     QTestState *qts = qtest_init(MACHINE_ARGS);
 
@@ -1715,6 +1861,7 @@ static void test_masked_out_paint_keeps_index_tag(void)
 
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
     si_write_cmap_position(qts, 0x001d, 17, 0xecec0000);
+    si_write_cmap_entry(qts, 29, 0x33, 0x33221100);
 
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -1730,12 +1877,14 @@ static void test_masked_out_paint_keeps_index_tag(void)
                  SI_COMMAND(REG_BLOCK_END, (767u << 16) | 767u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
     g_assert_cmphex(si_test_pixel(qts, 640, 512), ==, 0x11);
-    g_assert_cmphex(si_test_display_pixel(qts, 640, 512), ==, 0x0000ecec);
+    g_assert_cmphex(si_test_display_pixel(qts, 640, 512), ==, 0x00ecec00);
 
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_COLORMASKLSBSA, 0));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_COLORMASKMSBS, 0xf0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_DRBPOINTERS, 0));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_PP1FILLMODE, 0x0013f500));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -1743,14 +1892,14 @@ static void test_masked_out_paint_keeps_index_tag(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND_EXEC(REG_BLOCK_END, (1279u << 16) | 1023u));
     g_assert_cmphex(si_test_pixel(qts, 640, 512), ==, 0x11);
-    g_assert_cmphex(si_test_display_pixel(qts, 640, 512), ==, 0x0000ecec);
+    g_assert_cmphex(si_test_display_pixel(qts, 640, 512), ==, 0x00ecec00);
 
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_PP1FILLMODE, SI_LOGIC_OP_COPY << 26));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND_EXEC(REG_BLOCK_END, (1279u << 16) | 1023u));
-    g_assert_cmphex(si_test_display_pixel(qts, 640, 512), ==, 0x0000ecec);
+    g_assert_cmphex(si_test_display_pixel(qts, 640, 512), ==, 0x00ecec00);
 
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -1764,7 +1913,7 @@ static void test_masked_out_paint_keeps_index_tag(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  (uint64_t)SI_EXEC_TOKEN(REG_RE_LINE, 0) << 32);
     g_assert_cmphex(si_test_pixel(qts, 640, 512), ==, 0x11);
-    g_assert_cmphex(si_test_display_pixel(qts, 640, 512), ==, 0x0000ecec);
+    g_assert_cmphex(si_test_display_pixel(qts, 640, 512), ==, 0x00ecec00);
 
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -1791,6 +1940,7 @@ static void test_cursor_composites_when_enabled(void)
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
 
 
+    /* Entry bits 15:8 are blue, so this cursor ink is blue, not red. */
     si_write_cmap_position(qts, 0x001d, 28, 0x0000ff00);
 
 
@@ -1818,15 +1968,15 @@ static void test_cursor_composites_when_enabled(void)
 
 
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1d, 0x0002));
-    g_assert_cmphex(si_screendump_pixel(qts, 50, 60), ==, 0x00ff0000);
-    g_assert_cmphex(si_test_display_pixel(qts, 50, 60), ==, 0x00ff0000);
+    g_assert_cmphex(si_screendump_pixel(qts, 50, 60), ==, 0x000000ff);
+    g_assert_cmphex(si_test_display_pixel(qts, 50, 60), ==, 0x000000ff);
     g_assert_cmphex(si_test_display_pixel(qts, 51, 61), ==, 0x00ffffff);
     g_assert_cmphex(si_test_display_pixel(qts, 52, 62), ==, 0);
 
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x01, 0x0200));
     g_assert_cmphex(si_test_display_pixel(qts, 50, 60), ==, 0);
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x01, 0x0100));
-    g_assert_cmphex(si_test_display_pixel(qts, 50, 60), ==, 0x00ff0000);
+    g_assert_cmphex(si_test_display_pixel(qts, 50, 60), ==, 0x000000ff);
 
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x07, 0x0100));
     qtest_writew(qts, REG_VC3_RAM, 0x0000);
@@ -2421,8 +2571,9 @@ static void test_fifo_re_blockcopy_unsupported(void)
     si_enter_context(qts);
 
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    si_write_cmap_entry(qts, 29, 0x56, 0x12345600);
 
-    /* Direct 0x045 remains the indexed fill form. */
+    /* Direct 0x045 remains the alias fill form. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BKGRD_RG, 0x00123456));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -2514,6 +2665,7 @@ static void test_migration(void)
     g_assert_cmphex(qtest_readl(from, REG_GE_READ_1), ==, 0);
     g_assert_cmphex(qtest_readl(from, REG_GE_READ_1), ==, 0);
 
+    si_write_cmap_entry(from, 29, 0x66, 0x66554400);
     qtest_writeq(from, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_PACKEDCOLOR, 0x00445566));
     qtest_writeq(from, REG_CONTEXT_COMMAND,
@@ -2652,6 +2804,7 @@ static void si_begin_partial_fifo_fill(QTestState *qts)
 {
     si_enter_context(qts);
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    si_write_cmap_entry(qts, 29, 0x99, 0x99663300);
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  ((uint64_t)SI_STATE_TOKEN(REG_PACKEDCOLOR, 4) << 32) |
                  0x00336699);
@@ -2799,49 +2952,40 @@ static void test_visual_state_migration(void)
     si_write_cmap_position(from, 0xe01d, 16, 0xa1b2c300);
     si_write_cmap_position(from, 0xe00f, 16, 0x11223300);
 
+    si_tag_wid(from, 30, 30, 30, 30, 3);
+    si_tag_wid(from, 31, 30, 31, 30, 9);
     qtest_writeq(from, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BKGRD_RG, 0xf0));
     qtest_writeq(from, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_DRBPOINTERS, 3 << 16));
-    qtest_writeq(from, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BLOCK_START, (30u << 16) | 30u));
-    qtest_writeq(from, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_BLOCK_END, (30u << 16) | 30u));
-    qtest_writeq(from, REG_CONTEXT_COMMAND,
-                 SI_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
-    qtest_writeq(from, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_DRBPOINTERS, 9 << 16));
-    qtest_writeq(from, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_BLOCK_START, (31u << 16) | 30u));
     qtest_writeq(from, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BLOCK_END, (31u << 16) | 30u));
     qtest_writeq(from, REG_CONTEXT_COMMAND,
                  SI_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
 
-    g_assert_cmphex(si_test_display_pixel(from, 30, 30), ==, 0x00332211);
-    g_assert_cmphex(si_test_display_pixel(from, 31, 30), ==, 0x00c3b2a1);
+    g_assert_cmphex(si_test_display_pixel(from, 30, 30), ==, 0x00112233);
+    g_assert_cmphex(si_test_display_pixel(from, 31, 30), ==, 0x00a1b2c3);
 
     si_migrate(from, uri);
 
     g_assert_cmphex(qtest_readb(to, REG_XMAP_INDEX), ==, 9 << 2);
-    g_assert_cmphex(si_test_display_pixel(to, 30, 30), ==, 0x00332211);
-    g_assert_cmphex(si_test_display_pixel(to, 31, 30), ==, 0x00c3b2a1);
+    g_assert_cmphex(si_test_display_pixel(to, 30, 30), ==, 0x00112233);
+    g_assert_cmphex(si_test_display_pixel(to, 31, 30), ==, 0x00a1b2c3);
 
-    /* Continue the bank-15 upload at the migrated position, index 0xf1. */
+    /* Continue the map-15 load at the migrated position, entry 0xf1. */
     qtest_writel(to, REG_CMAP_DATA, 0x04050600);
+    si_tag_wid(to, 32, 30, 32, 30, 3);
     qtest_writeq(to, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BKGRD_RG, 0xf1));
-    qtest_writeq(to, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_DRBPOINTERS, 3 << 16));
     qtest_writeq(to, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BLOCK_START, (32u << 16) | 30u));
     qtest_writeq(to, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_BLOCK_END, (32u << 16) | 30u));
     qtest_writeq(to, REG_CONTEXT_COMMAND,
                  SI_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
-    g_assert_cmphex(si_test_display_pixel(to, 32, 30), ==, 0x00060504);
-    g_assert_cmphex(si_test_display_pixel(to, 30, 30), ==, 0x00332211);
-    g_assert_cmphex(si_test_display_pixel(to, 31, 30), ==, 0x00c3b2a1);
+    g_assert_cmphex(si_test_display_pixel(to, 32, 30), ==, 0x00040506);
+    g_assert_cmphex(si_test_display_pixel(to, 30, 30), ==, 0x00112233);
+    g_assert_cmphex(si_test_display_pixel(to, 31, 30), ==, 0x00a1b2c3);
 
     qtest_quit(to);
     qtest_quit(from);
@@ -2879,11 +3023,11 @@ static void test_cursor_migration(void)
     qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x02, 50));
     qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x03, 60));
     qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1d, 0x0002));
-    g_assert_cmphex(si_test_display_pixel(from, 50, 60), ==, 0x00ff0000);
+    g_assert_cmphex(si_test_display_pixel(from, 50, 60), ==, 0x000000ff);
 
     si_migrate(from, uri);
 
-    g_assert_cmphex(si_test_display_pixel(to, 50, 60), ==, 0x00ff0000);
+    g_assert_cmphex(si_test_display_pixel(to, 50, 60), ==, 0x000000ff);
     g_assert_cmphex(si_test_display_pixel(to, 51, 61), ==, 0x00ffffff);
     g_assert_cmphex(si_test_display_pixel(to, 52, 62), ==, 0);
 
@@ -2963,6 +3107,8 @@ int main(int argc, char **argv)
                    test_reset_clears_context_acknowledgements);
     qtest_add_func("sn0/origin2000/mgras/fill-mask-reads-colormasklsbsa",
                    test_fill_mask_reads_colormasklsbsa);
+    qtest_add_func("sn0/origin2000/mgras/wid-plane-fill-rule",
+                   test_wid_plane_fill_rule);
     qtest_add_func("sn0/origin2000/mgras/fill-color-follows-fillmode",
                    test_fill_color_follows_fillmode);
     qtest_add_func("sn0/origin2000/mgras/ir-alias-execute",
@@ -2985,8 +3131,8 @@ int main(int argc, char **argv)
                    test_cmap_high_byte_packing);
     qtest_add_func("sn0/origin2000/mgras/target-first-cmap-visual-selection",
                    test_target_first_cmap_visual_selection);
-    qtest_add_func("sn0/origin2000/mgras/masked-out-paint-keeps-index-tag",
-                   test_masked_out_paint_keeps_index_tag);
+    qtest_add_func("sn0/origin2000/mgras/masked-out-paint-keeps-the-visual",
+                   test_masked_out_paint_keeps_the_visual);
     qtest_add_func("sn0/origin2000/mgras/cursor-composites-when-enabled",
                    test_cursor_composites_when_enabled);
     qtest_add_func("sn0/origin2000/mgras/direct-pio-pixel-pairs",

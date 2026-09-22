@@ -4,6 +4,11 @@
 # 'write 8 0x120400' word below is the guest's own 64-bit command word,
 # copied from qemu.trace by line number, not re-encoded.
 #
+# The wid assertions below are all zero: no CHAR_H/CHAR_L execute writes
+# the WID plane, which only a rectangle fill with a nonzero COLORMASKMSBS
+# does (see cmap-xmap-wid.replay). They fail on a model that tags a pixel
+# from the operation that painted it.
+#
 # FILLMODE == 0x10c00000 selects byte-pixel transfer mode: one CHAR_L
 # execute (CHAR_H is staged first and never itself executes) delivers
 # eight 8-bit indexed pixels of the current row, CHAR_H bytes MSB to LSB
@@ -320,11 +325,11 @@ pixels 102 56 2 1 0x10
 pixels 86 57 6 1 0x10
 pixels 92 57 10 1 0x1a
 pixels 102 57 2 1 0x10
-wid 86 42 0x9
-wid 90 42 0x9
-wid 88 43 0x9
-wid 90 43 0x9
-wid 103 57 0x9
+wid 86 42 0x0
+wid 90 42 0x0
+wid 88 43 0x0
+wid 90 43 0x0
+wid 103 57 0x0
 # nothing painted right of the rectangle (where 24-pixel rows would spill) or below it
 pixels 104 42 6 16 0x0
 wid 104 42 0x0
@@ -568,15 +573,15 @@ pixels 39 658 64 1 0x1c
 pixels 39 659 64 1 0x1c
 pixels 39 660 64 1 0x1c
 pixels 39 661 64 1 0x1c
-wid 39 647 0x9
-wid 102 647 0x9
+wid 39 647 0x0
+wid 102 647 0x0
 wid 39 651 0x0
-wid 40 651 0x9
+wid 40 651 0x0
 wid 57 648 0x0
-wid 56 648 0x9
+wid 56 648 0x0
 wid 81 648 0x0
 wid 82 648 0x0
-wid 102 657 0x9
+wid 102 657 0x0
 # row 15 lies outside the rectangle: untouched
 pixels 39 662 64 1 0x0
 wid 39 662 0x0

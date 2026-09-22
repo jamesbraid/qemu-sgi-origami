@@ -1,0 +1,183 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# CMAP, XMAP and WID the way the stock IRIX 6.5.30 X server programs them,
+# reduced from the desktop session of trace irix-20260922T133830-79813f:
+#  - a CMAP selector carries the map in bits 4:0 and the first entry in
+#    bits 15:8, and the data port advances one entry per write
+#  - the two masks are a pair, COLORMASKLSBSA over the colour and
+#    COLORMASKMSBS over the WID: a rectangle fill with a nonzero
+#    COLORMASKMSBS writes DRBPOINTERS bits 23:16 into the WID plane,
+#    whether or not it also writes colour, and nothing else touches it
+#  - scanout resolves every pixel through
+#    cmap[(xmap_mode[wid] >> 5 & 0x1f) * 256 + (native & 0xff)], with entry
+#    bits 31:24, 23:16 and 15:8 as red, green and blue
+#  - a rectangle fill with FILLMODE bit 20 or 22 set takes BKGRD_RG; the
+#    guest always sets one of them and leaves PACKEDCOLOR zero
+
+# --- palette: map 17 entries 0,1 then 16,17 through the start-entry selector ---
+write 2 0x070c30 0x0011
+write 4 0x070d18 0x00000000
+write 4 0x070d18 0xff000000
+write 2 0x070c30 0x1011
+write 4 0x070d18 0xc1c1c100
+write 4 0x070d18 0x80808000
+
+# --- XMAP: entry 1 = 0x621 (map 17), entry 9 = 0x7a4 (map 29), as the guest writes them ---
+write 1 0x071c88 0x04
+write 4 0x071e00 0x00000621
+write 1 0x071c88 0x24
+write 4 0x071e00 0x000007a4
+
+# --- FIFO/context preamble, copied from fill.replay ---
+write 1 0x073c08 0x55
+read 1 0x073c08 0x55
+write 4 0x072038 0x06246800
+write 1 0x072008 0x06
+read 2 0x0720b0 0x2468
+read 4 0x008000 0x0
+write 4 0x011000 0x0
+write 4 0x130500 0x000004fc
+read 4 0x011020 0x00080000
+write 4 0x011028 0x00080000
+read 4 0x011020 0x0
+write 4 0x120400 0
+write 4 0x120400 1
+write 4 0x120400 2
+write 4 0x120400 3
+write 4 0x120400 4
+write 4 0x120400 5
+write 4 0x120400 6
+write 4 0x120400 7
+write 4 0x120400 8
+write 4 0x120400 9
+write 4 0x120400 10
+write 4 0x120400 11
+write 4 0x120400 12
+write 4 0x120400 13
+write 4 0x120400 14
+write 4 0x120400 15
+write 4 0x120400 16
+write 4 0x120400 17
+write 4 0x120400 18
+write 4 0x120400 19
+write 4 0x120400 20
+write 4 0x120400 21
+write 4 0x120400 22
+write 4 0x120400 23
+write 4 0x120400 24
+write 4 0x120400 25
+write 4 0x120400 26
+write 4 0x120400 27
+write 4 0x120400 28
+write 4 0x120400 29
+write 4 0x120400 30
+write 4 0x120400 31
+write 4 0x120400 32
+write 4 0x120400 33
+write 4 0x120400 34
+write 4 0x120400 35
+write 4 0x120400 36
+write 4 0x120400 37
+write 4 0x120400 38
+write 4 0x120400 39
+write 4 0x120400 40
+write 4 0x120400 41
+write 4 0x120400 42
+write 4 0x120400 43
+write 4 0x120400 44
+write 4 0x120400 45
+write 4 0x120400 46
+write 4 0x120400 47
+write 4 0x120400 48
+write 4 0x120400 49
+write 4 0x120400 50
+write 4 0x120400 51
+write 4 0x120400 52
+write 4 0x120400 53
+write 4 0x120400 54
+write 4 0x120400 55
+write 4 0x120400 56
+write 4 0x120400 57
+write 4 0x120400 58
+write 4 0x120400 59
+write 4 0x120400 60
+write 4 0x120400 61
+write 4 0x120400 62
+read 4 0x011020 0x10000000
+write 4 0x011028 0x10000000
+write 8 0x130400 0x123456789abcdef0
+read 8 0x130400 0x123456789abcdef0
+write 4 0x120400 0x0000f400
+read 4 0x120400 0x0000f400
+
+# --- display enable ---
+write 4 0x072038 0x1e000400
+
+# --- WID plane: (0,0)-(63,63) gets WID 1 (zero colour mask, MSBS 0xf0, DRBPOINTERS 0x0101c0) ---
+write 8 0x120400 0x0019630400000000
+write 8 0x120400 0x00196204000000f0
+write 8 0x120400 0x00196404ffffffff
+write 8 0x120400 0x00196d04000101c0
+write 8 0x120400 0x001961040013f500
+write 8 0x120400 0x0019100400100000
+write 8 0x120400 0x0019400400000011
+write 8 0x120400 0x0018460400000000
+write 8 0x120400 0x001c4704003f003f
+wid 10 10 1
+pixels 8 8 8 8 0x0
+
+# --- BLOCKXYENDI fill of the Toolchest kind: PACKEDCOLOR 0, BKGRD_RG 0x10, mask 0xff, DRBPOINTERS 0x090240 ---
+write 8 0x120400 0x00196304000000ff
+write 8 0x120400 0x0019620400000000
+write 8 0x120400 0x00196404000000ff
+write 8 0x120400 0x00196d0400090240
+write 8 0x120400 0x001961040c004504
+write 8 0x120400 0x0019100400100000
+write 8 0x120400 0x00185b0400000000
+write 8 0x120400 0x0019400400000010
+write 8 0x120400 0x0019410400000ff0
+write 8 0x120400 0x0018460400080008
+write 8 0x120400 0x001c4704000f000f
+pixels 8 8 8 8 0x10
+wid 10 10 1
+display-pixel 10 10 0x00c1c1c1
+
+# --- IR_ALIAS fill of the backdrop kind: index 17 ---
+write 8 0x120400 0x0019100411400000
+write 8 0x120400 0x0019400400000011
+write 8 0x120400 0x0018460400100008
+write 8 0x120400 0x001847040017000f
+write 8 0x120400 0x001c450400000018
+pixels 16 8 8 8 0x11
+wid 20 10 1
+display-pixel 20 10 0x00808080
+
+# --- IR_ALIAS fill of index 1: the IRIS red entry must display red ---
+write 8 0x120400 0x0019400400000001
+write 8 0x120400 0x0018460400180008
+write 8 0x120400 0x00184704001f000f
+write 8 0x120400 0x001c450400000018
+pixels 24 8 8 8 0x1
+display-pixel 28 10 0x00ff0000
+
+# --- glyph row: set bits ink PACKEDCOLOR 0, clear bits BKGRD_RG 0x10, both through WID 1 ---
+write 8 0x120400 0x0019100410400008
+write 8 0x120400 0x0019400400000010
+write 8 0x120400 0x0018460400200008
+write 8 0x120400 0x0018470400270008
+write 8 0x120400 0x001c7004f0000000
+pixel 32 8 0x0
+pixel 36 8 0x10
+wid 32 8 1
+wid 36 8 1
+display-pixel 32 8 0x0
+display-pixel 36 8 0x00c1c1c1
+
+# --- a paint outside the WID-1 region resolves through entry 0 (reset 0x7a4 -> map 29, zero here) ---
+write 8 0x120400 0x0019100411400000
+write 8 0x120400 0x0019400400000010
+write 8 0x120400 0x0018460400640064
+write 8 0x120400 0x0018470400670067
+write 8 0x120400 0x001c450400000018
+pixels 100 100 4 4 0x10
+wid 100 100 0
+display-pixel 100 100 0x0

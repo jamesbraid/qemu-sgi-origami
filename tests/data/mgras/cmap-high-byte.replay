@@ -5,7 +5,7 @@
 # index 7. Loads bank 17 index 17 with that same white value and reuses
 # the fill.replay FIFO preamble to paint through it.
 
-# --- palette setup: bank 17 index 17 = white, WID 5 -> bank 17 ---
+# --- palette setup: map 17 entry 17 = white, XMAP entry 5 -> map 17 ---
 write 2 0x070c30 0x0011
 write 4 0x070d18 0x0
 write 4 0x070d18 0x0
@@ -109,6 +109,14 @@ write 8 0x130400 0x123456789abcdef0
 read 8 0x130400 0x123456789abcdef0
 write 4 0x120400 0x0000f400
 read 4 0x120400 0x0000f400
+# --- tag the target rectangle WID 5 with a zero-colour-mask plane fill ---
+write 8 0x120400 0x0019630400000000
+write 8 0x120400 0x00196204000000f0
+write 8 0x120400 0x00196d0400050000
+write 8 0x120400 0x00184604000a000a
+write 8 0x120400 0x001c4704000d000d
+write 8 0x120400 0x0019620400000000
+
 write 8 0x120400 0x0019630400ffffff
 write 8 0x120400 0x001961040c000000
 write 8 0x120400 0x0019400400000011

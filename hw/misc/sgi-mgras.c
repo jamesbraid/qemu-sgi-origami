@@ -699,7 +699,6 @@ static void si_reset_enter(Object *obj, ResetType type)
     memset(s->front, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT * sizeof(*s->front));
     memset(s->back, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT * sizeof(*s->back));
     memset(s->wid, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
-    memset(s->indexed, 0, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
     memset(s->hq, 0, sizeof(s->hq));
     for (int slot = 0; slot < 2; slot++) {
         memset(s->ge[slot], 0, sizeof(uint32_t) * SGI_MGRAS_GE_WORDS);
@@ -796,7 +795,6 @@ static void si_realize(DeviceState *dev, Error **errp)
     s->back = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
     s->front_count = s->back_count = SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT;
     s->wid = g_new0(uint8_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
-    s->indexed = g_new0(uint8_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
     s->ge[SGI_MGRAS_GE_SLOT_A] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
     s->ge[SGI_MGRAS_GE_SLOT_B] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
     s->display_buffer = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
@@ -815,7 +813,7 @@ static void si_unrealize(DeviceState *dev)
     timer_del(s->retrace_timer); timer_free(s->retrace_timer);
     address_space_destroy(&s->fabric_as);
     qemu_graphic_console_close(s->con);
-    g_free(s->front); g_free(s->back); g_free(s->wid); g_free(s->indexed);
+    g_free(s->front); g_free(s->back); g_free(s->wid);
     g_free(s->ge[SGI_MGRAS_GE_SLOT_A]); g_free(s->ge[SGI_MGRAS_GE_SLOT_B]);
     g_free(s->display_buffer);
 }
@@ -876,7 +874,7 @@ static bool si_ge_lengths_valid(void *opaque, int version_id)
  * changes.
  */
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 5, .minimum_version_id = 5,
+    .name = TYPE_SGI_MGRAS, .version_id = 6, .minimum_version_id = 6,
     .post_load = si_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -889,8 +887,6 @@ static const VMStateDescription vmstate_sgi_mgras = {
                               vmstate_info_uint32, uint32_t),
         /* The WID plane has the same dimensions as the front color plane. */
         VMSTATE_VARRAY_UINT32(wid, SGIMgrasState, front_count, 0,
-                              vmstate_info_uint8, uint8_t),
-        VMSTATE_VARRAY_UINT32(indexed, SGIMgrasState, front_count, 0,
                               vmstate_info_uint8, uint8_t),
         VMSTATE_UINT32_ARRAY(hq, SGIMgrasState, 5120),
         VMSTATE_UINT32_V(hq_words, SGIMgrasState, 2),
