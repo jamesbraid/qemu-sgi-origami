@@ -42,14 +42,60 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIXBridgeState, SGI_XBRIDGE)
 #define SGI_XBRIDGE_EXTERNAL_PORTS 6
 
 /*
+ * Which of those six the model lets a widget be attached to, as the
+ * "xio-port" property's default. No source binds the Origin 300's rear
+ * XIO connector to a port number: its own manual records the connector
+ * and the XBridge specification records the six ports, and nothing read
+ * so far joins the two (docs/datasheets/xbridge.md, "Role"). 0xb is the
+ * lowest external port left once the Bedrock takes 0xa, chosen for that
+ * and nothing else. A machine sets the property from its own topology,
+ * so an observed number replaces this in one place.
+ */
+#define SGI_XBRIDGE_XIO_PORT_DEFAULT 0xb
+
+/*
+ * Put a widget on the chip's external crosstalk port. Until this is
+ * called the port reports no widget present and its link not alive, and
+ * a processor access to that widget number reaches nothing -- what an
+ * empty connector answers. Afterwards the widget answers processor
+ * traffic at its own widget position inside the chip's crosstalk space,
+ * a peer's packet addressed to that widget reaches packet_face, and the
+ * crossbar reports the link populated and alive, which is what firmware
+ * walks before it addresses a port at all.
+ *
+ * cpu_face and packet_face are the widget's own two faces
+ * (hw/mips/sgi-xio-port.h); a leaf widget passes the same region
+ * twice. Callable before or after the chip realizes: what the two faces
+ * are installed in exists from instance init, so a board that only
+ * arrives once the machine is built attaches the same way an onboard
+ * one does.
+ */
+bool sgi_xbridge_attach_xio(SGIXBridgeState *s, MemoryRegion *cpu_face,
+                            MemoryRegion *packet_face, Error **errp);
+
+/*
+ * Where an attached widget's own outbound packets go: the chip's link
+ * to its host, the same region both bridge heads send their interrupts
+ * and their cards' DMA through. NULL before the chip realizes.
+ */
+MemoryRegion *sgi_xbridge_xio_host_face(SGIXBridgeState *s);
+
+/* The widget number the external port answers on. */
+unsigned int sgi_xbridge_xio_port(SGIXBridgeState *s);
+
+/*
  * What a machine wires, keyed by XIO widget number: 0 is the
- * crossbar as the host's port sees it, 0xe and 0xf are the heads.
+ * crossbar as the host's port sees it, 0xe and 0xf are the heads, and
+ * "xio-port" is the one external port a widget can be attached to.
  *
  * A widget view covers the widget's whole 16 TB slot, so an access past
- * a head's 16 MB face reaches nothing there too. The views exist from
- * instance init, so a host can link them before either side is realized,
- * and are also SysBus MMIO regions 1 to 3 in that order; region 0 is the
- * whole XIO space. A head's PCI bus exists once the chip is realized.
+ * a head's 16 MB face reaches nothing there too. The views for 0, 0xe and
+ * 0xf exist from instance init, so a host can link them before either
+ * side is realized, and are also SysBus MMIO regions 1 to 3 in that
+ * order; region 0 is the whole XIO space. The external port's view
+ * is region 4 and exists once the chip is realized, because which widget
+ * it covers is a property. A head's PCI bus exists once the chip is
+ * realized.
  *
  * GPIO groups, all on the chip:
  *   "head-e-pci-intx", "head-f-pci-intx": 32 outputs each, slot * 4 + pin,

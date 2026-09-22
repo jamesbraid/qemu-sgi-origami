@@ -11,6 +11,16 @@
 #define CHIP "/machine/peripheral/xbridge"
 #define HOST_PORT 0xb
 
+/*
+ * The external crosstalk port these tests attach to. Not the chip's own
+ * default, which HOST_PORT has already taken here, and deliberately not
+ * the port the Origin 300 model names either: what the tests check is the
+ * property, not a fixed port hidden behind it.
+ */
+#define XIO_PORT 0xc
+#define XIO_SIZE 0x10000
+#define XIO_WIDGET "/machine/peripheral/xio"
+
 /* The chip's XIO space: sixteen 16 TB widget slots. */
 #define BASE 0x100000000000ULL
 #define WIDGET(n) (BASE + ((uint64_t)(n) << 44))
@@ -32,9 +42,9 @@ static QTestState *chip_start(const char *extra)
     QTestState *qts = qtest_initf("-M none -cpu R10000 -S "
         "-d unimp,guest_errors "
         "-device sgi-xio-test-target,id=fabric "
-        "-device sgi-xbridge,id=xbridge,host-port=0x%x,"
+        "-device sgi-xbridge,id=xbridge,host-port=0x%x,xio-port=0x%x,"
         "fabric=/machine/peripheral/fabric/fabric.ram[0] %s",
-        HOST_PORT, extra);
+        HOST_PORT, XIO_PORT, extra);
 
     qtest_sysbus_mmio_map(qts, CHIP, 0, BASE);
     qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 0, FABRIC);
@@ -50,6 +60,53 @@ static void reg_write(QTestState *qts, unsigned widget, unsigned off,
                       uint32_t value)
 {
     qtest_writel(qts, WIDGET(widget) + off + 4, value);
+}
+
+static char *qom_get_str(QTestState *qts, const char *path, const char *prop)
+{
+    QDict *resp = qtest_qmp(qts, "{'execute': 'qom-get', 'arguments': "
+                            "{'path': %s, 'property': %s}}", path, prop);
+    char *value = g_strdup(qdict_get_str(resp, "return"));
+
+    qobject_unref(resp);
+    return value;
+}
+
+static uint32_t link_status(QTestState *qts, unsigned port)
+{
+    return reg_read(qts, 0, 0x100 + (port - 8) * 0x40 + 0x10);
+}
+
+static uint32_t link_aux(QTestState *qts, unsigned port)
+{
+    return reg_read(qts, 0, 0x100 + (port - 8) * 0x40 + 0x38);
+}
+
+/*
+ * The same chip with a widget on its external port. The widget is an
+ * sgi-xio-test-target's RAM, handed over as one region for both faces
+ * the way a leaf widget answers. It is created before the chip so the
+ * chip's own link property can name it, and its sysbus alias over the
+ * same RAM is mapped apart, so a test can see from outside the chip what
+ * an access through the port actually reached.
+ */
+#define XIO_ALIAS 0x30000000ULL
+
+static QTestState *chip_start_with_xio_widget(void)
+{
+    QTestState *qts = qtest_initf("-M none -cpu R10000 -S "
+        "-d unimp,guest_errors "
+        "-device sgi-xio-test-target,id=fabric "
+        "-device sgi-xio-test-target,id=xio,size=0x%x "
+        "-device sgi-xbridge,id=xbridge,host-port=0x%x,xio-port=0x%x,"
+        "fabric=/machine/peripheral/fabric/fabric.ram[0],"
+        "xio-widget=" XIO_WIDGET "/xio.ram[0]",
+        XIO_SIZE, HOST_PORT, XIO_PORT);
+
+    qtest_sysbus_mmio_map(qts, CHIP, 0, BASE);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 0, FABRIC);
+    qtest_sysbus_mmio_map(qts, XIO_WIDGET, 0, XIO_ALIAS);
+    return qts;
 }
 
 static void test_widgets(void)
@@ -342,6 +399,129 @@ static void test_warm_reset_external_ports(void)
     qtest_quit(qts);
 }
 
+/*
+ * The chip's fifth region: the external port's own widget view, the
+ * counterpart of regions 1 to 3 for the crossbar and the two heads.
+ */
+#define XIO_VIEW 0x2100000000000ULL
+
+/*
+ * Firmware walks the crossbar's populated links and addresses only those,
+ * so an empty external port has to read as empty: the link's aux status
+ * reports no widget present and failure mode instead, and its status
+ * reports the link not alive. The position itself still decodes -- the
+ * chip answers for it rather than leaving the widget number silent.
+ */
+static void test_xio_port_unpopulated(void)
+{
+    QTestState *qts = chip_start("");
+
+    qtest_sysbus_mmio_map(qts, CHIP, 4, XIO_VIEW);
+    g_assert_cmphex(link_aux(qts, XIO_PORT) & (1U << 5), ==, 0);
+    g_assert_cmphex(link_aux(qts, XIO_PORT) & (1U << 6), ==, 1U << 6);
+    g_assert_cmphex(link_status(qts, XIO_PORT) & (1U << 31), ==, 0);
+    /* The reset fence and link control the datasheet gives the port. */
+    g_assert_cmphex(reg_read(qts, 0, 0x80 + (XIO_PORT - 8) * 8), ==, 0xff);
+    g_assert_cmphex(reg_read(qts, 0, 0x100 + (XIO_PORT - 8) * 0x40 + 0x08),
+                    ==, 0x00080000);
+    /* Nothing answers there, through the widget slot or through the view. */
+    g_assert_cmphex(qtest_readl(qts, WIDGET(XIO_PORT) + 4), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, XIO_VIEW + 4), ==, 0);
+    qtest_quit(qts);
+}
+
+/*
+ * With a widget attached the same link reports present and alive -- what
+ * a discovery walk needs to see before it addresses the port -- and a
+ * processor reaches the widget at its own widget number inside the chip's
+ * crosstalk space and through the chip's view of that widget.
+ */
+static void test_xio_widget_is_reachable(void)
+{
+    QTestState *qts = chip_start_with_xio_widget();
+
+    qtest_sysbus_mmio_map(qts, CHIP, 4, XIO_VIEW);
+    g_assert_cmphex(link_aux(qts, XIO_PORT) & (1U << 5), ==, 1U << 5);
+    g_assert_cmphex(link_aux(qts, XIO_PORT) & (1U << 6), ==, 0);
+    g_assert_cmphex(link_status(qts, XIO_PORT) & (1U << 31), ==, 1U << 31);
+    /* The other external ports are untouched by the one attachment. */
+    g_assert_cmphex(link_aux(qts, 8) & (1U << 5), ==, 0);
+    g_assert_cmphex(link_aux(qts, 9) & (1U << 5), ==, 0);
+
+    qtest_writel(qts, WIDGET(XIO_PORT) + 0x40, 0xa5a5f00d);
+    g_assert_cmphex(qtest_readl(qts, XIO_ALIAS + 0x40), ==, 0xa5a5f00d);
+    g_assert_cmphex(qtest_readl(qts, XIO_VIEW + 0x40), ==, 0xa5a5f00d);
+    qtest_writel(qts, XIO_VIEW + 0x80, 0x12345678);
+    g_assert_cmphex(qtest_readl(qts, WIDGET(XIO_PORT) + 0x80), ==,
+                    0x12345678);
+    /* Past the widget's own face the port reaches nothing, as a head does. */
+    g_assert_cmphex(qtest_readl(qts, WIDGET(XIO_PORT) + XIO_SIZE + 4), ==, 0);
+    qtest_quit(qts);
+}
+
+/* A peer's packet addressed to the attached widget lands on it. */
+static void test_xio_widget_takes_a_peer_packet(void)
+{
+    QTestState *qts = chip_start_with_xio_widget();
+
+    reg_write(qts, 0xe, 0x30, XIO_PORT << 16);
+    reg_write(qts, 0xe, 0x38, SCRATCH);
+    reg_write(qts, 0xe, 0x148, 0x85);
+    reg_write(qts, 0xe, 0x108, 8);
+    qtest_set_irq_in(qts, CHIP "/head-e", NULL, 3, 1);
+    g_assert_cmphex(qtest_readq(qts, XIO_ALIAS + SCRATCH), ==, 0x185);
+    /* The host's own scratch is untouched: the packet went to the port. */
+    g_assert_cmphex(qtest_readq(qts, FABRIC + SCRATCH), ==, 0);
+    qtest_quit(qts);
+}
+
+/*
+ * What the chip offers an attached widget for its own outbound packets is
+ * the chip's link to its host -- the same region both heads send their
+ * interrupts through, not a second path of the external port's own.
+ */
+static void test_xio_host_face_is_the_chip_fabric(void)
+{
+    QTestState *qts = chip_start_with_xio_widget();
+    g_autofree char *fabric = qom_get_str(qts, CHIP, "fabric");
+    g_autofree char *host_face = qom_get_str(qts, CHIP, "xio-host-face");
+
+    g_assert_cmpstr(host_face, ==, fabric);
+    qtest_quit(qts);
+}
+
+static void test_xio_port_is_not_a_head(void)
+{
+    if (g_test_subprocess()) {
+        QTestState *qts = qtest_init("-M none -cpu R10000 -S "
+            "-device sgi-xio-test-target,id=fabric "
+            "-device sgi-xbridge,id=xbridge,host-port=0xa,xio-port=0xe,"
+            "fabric=/machine/peripheral/fabric/fabric.ram[0]");
+
+        qtest_quit(qts);
+        return;
+    }
+    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr("*external port must be 8 to 0xd*");
+}
+
+static void test_xio_port_is_not_the_host_port(void)
+{
+    if (g_test_subprocess()) {
+        QTestState *qts = qtest_init("-M none -cpu R10000 -S "
+            "-device sgi-xio-test-target,id=fabric "
+            "-device sgi-xbridge,id=xbridge,host-port=0xa,xio-port=0xa,"
+            "fabric=/machine/peripheral/fabric/fabric.ram[0]");
+
+        qtest_quit(qts);
+        return;
+    }
+    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    g_test_trap_assert_failed();
+    g_test_trap_assert_stderr("*is the host's own port*");
+}
+
 static void test_realize_checks(void)
 {
     if (g_test_subprocess()) {
@@ -392,6 +572,18 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge-chip/head-pins", test_head_pins);
     qtest_add_func("/sn1/xbridge-chip/warm-reset-external-ports",
                    test_warm_reset_external_ports);
+    qtest_add_func("/sn1/xbridge-chip/xio-port-unpopulated",
+                   test_xio_port_unpopulated);
+    qtest_add_func("/sn1/xbridge-chip/xio-widget-is-reachable",
+                   test_xio_widget_is_reachable);
+    qtest_add_func("/sn1/xbridge-chip/xio-widget-takes-a-peer-packet",
+                   test_xio_widget_takes_a_peer_packet);
+    qtest_add_func("/sn1/xbridge-chip/xio-host-face-is-the-chip-fabric",
+                   test_xio_host_face_is_the_chip_fabric);
+    qtest_add_func("/sn1/xbridge-chip/xio-port-is-not-a-head",
+                   test_xio_port_is_not_a_head);
+    qtest_add_func("/sn1/xbridge-chip/xio-port-is-not-the-host-port",
+                   test_xio_port_is_not_the_host_port);
     qtest_add_func("/sn1/xbridge-chip/realize-checks", test_realize_checks);
     qtest_add_func("/sn1/xbridge-chip/realize-needs-fabric",
                    test_realize_needs_fabric);

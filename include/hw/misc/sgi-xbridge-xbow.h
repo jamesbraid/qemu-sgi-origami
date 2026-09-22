@@ -33,5 +33,16 @@ struct SGIXBridgeXbowState {
     AddressSpace target_as[16];
 };
 
+/*
+ * Board wiring, not guest-writable state: whether a link has a widget on
+ * the other end, which is what its status register's alive bit and its
+ * aux-status widget-present bit report. The "links-present" property is
+ * the same mask for a chip whose wiring is fixed before realize; this is
+ * for a port a machine attaches to after that, and takes a widget number
+ * (8 to 0xf) rather than a link index.
+ */
+void sgi_xbridge_xbow_set_link_present(SGIXBridgeXbowState *s,
+                                       unsigned int widget, bool present);
+
 
 #endif
