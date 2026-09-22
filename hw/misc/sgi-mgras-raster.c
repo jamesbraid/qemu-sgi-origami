@@ -217,39 +217,61 @@ static uint32_t si_paint_pixel(uint8_t op, uint32_t dst, uint32_t src,
     return (result & mask) | (dst & ~mask);
 }
 
-/* Keep the indexed/direct tag when no modelled colour plane is enabled. */
+/* A paint writes colour only. The WID plane keeps whatever tagged it. */
 static void si_put_pixel(SGIMgrasState *s, unsigned int idx, uint32_t color,
-                         uint8_t op, uint32_t mask, bool is_index)
+                         uint8_t op, uint32_t mask)
 {
     if (!(mask & 0x00ffffff)) {
         return;
     }
     s->front[idx] = si_paint_pixel(op, s->front[idx], color, mask);
-    s->indexed[idx] = is_index;
-    s->wid[idx] = is_index ? s->rss[SI_REG_DRBPOINTERS] >> 16 : 0;
 }
 
 
-/* Normalize corners and retain indexed/direct state and visual separately. */
-static void si_fill_rect(SGIMgrasState *s, uint32_t xy0, uint32_t xy1,
-                         uint32_t color, uint8_t op, uint32_t mask,
-                         bool is_index)
+/* Normalize corners and clip. Returns false when nothing is visible. */
+static bool si_rect_bounds(uint32_t xy0, uint32_t xy1, int *x_lo, int *y_lo,
+                           int *x_hi, int *y_hi)
 {
     int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
     int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
-    int x_lo = MIN(x0, x1), x_hi = MAX(x0, x1);
-    int y_lo = MIN(y0, y1), y_hi = MAX(y0, y1);
 
-    if (x_lo >= SGI_MGRAS_WIDTH || y_lo >= SGI_MGRAS_HEIGHT) {
+    *x_lo = MIN(x0, x1);
+    *y_lo = MIN(y0, y1);
+    if (*x_lo >= SGI_MGRAS_WIDTH || *y_lo >= SGI_MGRAS_HEIGHT) {
+        return false;
+    }
+    *x_hi = MIN(MAX(x0, x1), SGI_MGRAS_WIDTH - 1);
+    *y_hi = MIN(MAX(y0, y1), SGI_MGRAS_HEIGHT - 1);
+    return true;
+}
+
+
+static void si_fill_rect(SGIMgrasState *s, uint32_t xy0, uint32_t xy1,
+                         uint32_t color, uint8_t op, uint32_t mask)
+{
+    int x_lo, y_lo, x_hi, y_hi;
+
+    if (!si_rect_bounds(xy0, xy1, &x_lo, &y_lo, &x_hi, &y_hi)) {
         return;
     }
-    x_hi = MIN(x_hi, SGI_MGRAS_WIDTH - 1);
-    y_hi = MIN(y_hi, SGI_MGRAS_HEIGHT - 1);
     for (int y = y_lo; y <= y_hi; y++) {
         for (int x = x_lo; x <= x_hi; x++) {
-            si_put_pixel(s, y * SGI_MGRAS_WIDTH + x, color, op, mask,
-                         is_index);
+            si_put_pixel(s, y * SGI_MGRAS_WIDTH + x, color, op, mask);
         }
+    }
+}
+
+
+static void si_fill_wid_rect(SGIMgrasState *s, uint32_t xy0, uint32_t xy1,
+                             uint8_t wid)
+{
+    int x_lo, y_lo, x_hi, y_hi;
+
+    if (!si_rect_bounds(xy0, xy1, &x_lo, &y_lo, &x_hi, &y_hi)) {
+        return;
+    }
+    for (int y = y_lo; y <= y_hi; y++) {
+        memset(&s->wid[y * SGI_MGRAS_WIDTH + x_lo], wid, x_hi - x_lo + 1);
     }
 }
 
@@ -262,8 +284,28 @@ static void si_draw_fill(SGIMgrasState *s)
     uint32_t mask = s->rss[SI_REG_COLORMASKLSBSA];
     uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 26;
 
+    /*
+     * COLORMASKLSBSA masks the colour and COLORMASKMSBS the WID plane, so
+     * a fill writes DRBPOINTERS bits 23:16 over its rectangle whether or
+     * not it also writes colour. A nonzero COLORMASKMSBS enables the whole
+     * WID byte; it is not applied as a bit mask over it. The capture rules
+     * that out: nine of its fills carry COLORMASKMSBS 0x70 and write WID
+     * 1, and 0x70 masked over 1 would change no bit, leaving the root
+     * window on the WID the preceding clear gave it and sending it through
+     * the wrong colour map. Inferred from the 21 fills with a nonzero
+     * COLORMASKMSBS in the retained desktop capture: 19 write no colour
+     * and tag the root window, and the whole-screen clear that both paints
+     * and tags leaves the two windows on a different entry. Where the
+     * value physically comes from is unknown, and no other primitive in
+     * the capture carries a nonzero COLORMASKMSBS.
+     */
+    if (s->rss[SI_REG_COLORMASKMSBS]) {
+        si_fill_wid_rect(s, s->rss[SI_REG_BLOCKXYSTARTI],
+                         s->rss[SI_REG_BLOCKXYENDI],
+                         s->rss[SI_REG_DRBPOINTERS] >> 16);
+    }
     si_fill_rect(s, s->rss[SI_REG_BLOCKXYSTARTI], s->rss[SI_REG_BLOCKXYENDI],
-                color, op, mask, false);
+                color, op, mask);
 }
 
 
@@ -274,7 +316,7 @@ static void si_draw_ir_alias_fill(SGIMgrasState *s)
     uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 26;
 
     si_fill_rect(s, s->rss[SI_REG_BLOCKXYSTARTI], s->rss[SI_REG_BLOCKXYENDI],
-                color, op, mask, true);
+                color, op, mask);
 }
 
 
@@ -285,8 +327,8 @@ static void si_draw_ir_alias_fill(SGIMgrasState *s)
  * can trigger the same paint. A CHAR_H-only execute (rows of 32 columns or
  * fewer) reads CHAR_L's possibly-stale value too, but the width clamp below
  * never indexes past column 31 in that case, so no stale bit is ever
- * painted. Colour roles (set bit -> PACKEDCOLOR direct, clear bit ->
- * BKGRD_RG indexed) carry over from the narrower rule this replaces.
+ * painted. Colour roles (set bit -> PACKEDCOLOR, clear bit -> BKGRD_RG)
+ * carry over from the narrower rule this replaces.
  */
 static void si_draw_glyph_row(SGIMgrasState *s)
 {
@@ -316,7 +358,7 @@ static void si_draw_glyph_row(SGIMgrasState *s)
     for (int i = 0; i < width; i++) {
         bool set = (bits >> (63 - i)) & 1;
         si_put_pixel(s, y * SGI_MGRAS_WIDTH + x0 + i, set ? fg : bg, op,
-                     mask, !set);
+                     mask);
     }
 }
 
@@ -370,7 +412,7 @@ static void si_draw_byte_row(SGIMgrasState *s)
                 continue;
             }
             si_put_pixel(s, y * SGI_MGRAS_WIDTH + x0 + col, bytes[i], op,
-                         mask, true);
+                         mask);
         }
     }
     s->glyph_unit++;
@@ -428,7 +470,7 @@ static void si_draw_pio_pixel_pair(SGIMgrasState *s)
             y >= SGI_MGRAS_HEIGHT) {
             return;
         }
-        si_put_pixel(s, y * SGI_MGRAS_WIDTH + x, pixels[i], op, mask, true);
+        si_put_pixel(s, y * SGI_MGRAS_WIDTH + x, pixels[i], op, mask);
         s->pio_x++;
         if (x0 + s->pio_x > x1) {
             s->pio_x = 0;
@@ -449,7 +491,7 @@ static void si_draw_point(SGIMgrasState *s)
     if (x >= SGI_MGRAS_WIDTH || y >= SGI_MGRAS_HEIGHT) {
         return;
     }
-    si_put_pixel(s, y * SGI_MGRAS_WIDTH + x, color, op, mask, false);
+    si_put_pixel(s, y * SGI_MGRAS_WIDTH + x, color, op, mask);
 }
 
 
@@ -472,8 +514,7 @@ static void si_draw_line(SGIMgrasState *s)
         int e2;
 
         if (x0 < SGI_MGRAS_WIDTH && y0 < SGI_MGRAS_HEIGHT) {
-            si_put_pixel(s, y0 * SGI_MGRAS_WIDTH + x0, color, op, mask,
-                         false);
+            si_put_pixel(s, y0 * SGI_MGRAS_WIDTH + x0, color, op, mask);
         }
         if (x0 == x1 && y0 == y1) {
             break;

@@ -8,19 +8,20 @@
 #define SI_CURSOR_CMAP_INDEX 0x1c
 
 
-/* Bank selection and native 0x00BBGGRR lookup are explicit approximations. */
 /*
- * Retained guest CMAP traffic packs the 24-bit colour left-justified,
- * 0xRRGGBB00: every one of 24,708 observed live writes to the CMAP data
- * register has a zero low byte, and re-reading bits 31:8 recovers an
- * exact textbook IRIS default palette. The low byte's meaning stays
- * unknown.
+ * A WID selects an XMAP mode, whose bits 9:5 select the colour map. The
+ * guest packs each entry left-justified, 0xRRGGBB00: every one of the
+ * 24,708 observed live data-port writes has a zero low byte, and its
+ * palette reads as an exact IRIS default when bits 31:24, 23:16 and 15:8
+ * are taken as red, green and blue. The low byte's meaning is unknown.
+ * Return the entry in the native 0x00BBGGRR order the callers convert.
  */
 static uint32_t si_cmap_rgb(SGIMgrasState *s, uint8_t visual, uint8_t index)
 {
-    uint32_t bank = (s->xmap_mode[visual & 0x1f] >> 5) & 0x1f;
+    uint32_t map = (s->xmap_mode[visual & 0x1f] >> 5) & 0x1f;
+    uint32_t entry = s->cmap[map * 256 + index];
 
-    return (s->cmap[bank * 256 + index] >> 8) & 0x00ffffff;
+    return ((entry & 0xff00) << 8) | ((entry >> 8) & 0xff00) | (entry >> 24);
 }
 
 /* The cursor uses mask and select planes from VC3 SRAM. */
@@ -79,10 +80,13 @@ static bool si_gfx_update(void *opaque)
         return true;
     }
 
+    /*
+     * Every pixel resolves through the map its WID selects. Direct-colour
+     * scanout is unknown and unsupported: no XMAP mode bit is known to
+     * select it, so a direct-colour mode indexes here like any other.
+     */
     for (int i = 0; i < SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT; i++) {
-        uint32_t v = s->front[i];
-        uint32_t rgb = s->indexed[i] ?
-                       si_cmap_rgb(s, s->wid[i], v & 0xff) : v;
+        uint32_t rgb = si_cmap_rgb(s, s->wid[i], s->front[i] & 0xff);
 
         s->display_buffer[i] = ((rgb & 0xff) << 16) | (rgb & 0x00ff00) |
                                ((rgb >> 16) & 0xff);

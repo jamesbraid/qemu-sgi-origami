@@ -199,9 +199,8 @@ struct SGIMgrasState {
     uint32_t *back;
     uint32_t front_count;
     uint32_t back_count;
-    /* WID and indexed state remain separate approximation inputs. */
+    /* Per-pixel visual tag. Only a plane fill writes it. */
     uint8_t *wid;
-    uint8_t *indexed;
     uint32_t hq[5120];
     uint32_t *ge[2];
     uint32_t ge_write_ptr[2];
