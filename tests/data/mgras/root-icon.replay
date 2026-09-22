@@ -1,0 +1,952 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# xdm chooser "root" icon fixture, built from the guest's own 64-bit command
+# words in the retained replay mgras-target-first-rerun-20260921.codex/qemu/
+# xsgi-mask-dynamic-0x81.replay (group ROOT, lines 1681546-1681847), plus a
+# companion Toolchest cascade-arrow box (group TOOLCHEST, from the separate
+# capture irix-20260922T055519-8b72de/qemu.trace, lines 2915440-2915586, the
+# same group already covered by wp5/charl-rule/charl-rule.md/charl-rule.replay)
+# placed beside it so both halves of the reported defect are in one file. Every
+# 'write 8 0x120400' word is the guest's own command word, copied by line
+# number from its source, never re-encoded.
+#
+# Both groups use FILLMODE byte-transfer mode (0x110 bit 23 set), but submit
+# different guest-side conventions under it. ROOT: exactly ceil(width/2)
+# (state CHAR_H, exec CHAR_L) pairs per row, two indexed pixels per pair
+# (pixel0=CHAR_H&0xff, pixel1=CHAR_L&0xff, skip=0) -- confirmed by machine-
+# decoding all 128 execs of this group with wp2/decode_replay.py's own
+# selector arithmetic: exactly 8 pairs/row x 16 rows, low bytes alternating
+# 0xc0/0xc1 by row parity, giving a checkerboard dither pixel(r,c) = 0xc0 if
+# (r+c) even else 0xc1. TOOLCHEST: 8 independent bytes per CHAR_L execute,
+# row advancing every ceil((skip+w)/8) executes with skip=(row*4*ceil(w/4))%8
+# -- the rule already landed to trunk in commit e84435d2a3 ("paint CHAR_H/
+# CHAR_L by FILLMODE", verified present in hw/misc/sgi-mgras-raster.c's
+# si_draw_byte_row at trunk-qemu HEAD 26214bc227), which post-dates and already
+# implements charl-rule.md's independently-derived formula for this exact box.
+#
+# Register 0x159 (ROOT=0x00000080, TOOLCHEST=0x00008000) is now modelled as
+# the guest's own selector between these two byte-transfer conventions --
+# si_draw_byte_row in hw/misc/sgi-mgras-raster.c dispatches on it (0x0080 =
+# two indexed pixels per CHAR_L execute, 0x8000 = the existing eight-pixel
+# path). This discriminator is INFERRED from exactly these two observed
+# values, not from an independent datasheet or manual citation; any other
+# 0x159 value in byte-transfer mode is LOG_UNIMP and inert. 0x102 (2 in both
+# groups) and 0x153/0x158 (both restate (h<<16)|w) were considered and ruled
+# out as the selector. See wp5/chooser-icons/chooser-icons.md.
+#
+# Both groups now PASS on trunk after that change: ROOT via the new two-
+# pixel-pair path, TOOLCHEST unchanged via the existing eight-pixel path
+# (0x159 == 0x8000 keeps that path, verified by a qtest asserting both
+# conventions side by side). Before the change, group ROOT failed exactly as
+# described below; group TOOLCHEST already passed.
+#
+# Pre-fix behaviour (kept for record): the landed eight-pixel formula treated
+# each exec as 8 independent columns, so its own row counter advanced 4x too
+# fast at width 16 and each visible row showed the registers' stray leading
+# 0x00 byte as a near-black column every 4th pixel -- the reported vertical
+# hatch.
+#
+# The 'wid' assertions in both groups below are all 0x0: no CHAR_H/CHAR_L
+# execute (byte-transfer or otherwise) writes the WID plane, which only a
+# rectangle fill with a nonzero COLORMASKMSBS does (si_draw_fill, triggered
+# by a BLOCKXYENDI exec -- see hw/misc/sgi-mgras-raster.c and the sibling
+# fixture tests/data/mgras/char-modes.replay, which covers the same
+# TOOLCHEST box at the same DRBPOINTERS setup and asserts the same 0x0).
+# This file's WID values were originally generated as (DRBPOINTERS >> 16)
+# by wp5/chooser-icons/build_root_fixture.py, an assumption never checked
+# against char-modes.replay or against si_draw_fill's actual gating; that
+# was wrong and has been corrected here.
+#
+# 'pixels'/'wid' assertions read the raw indexed framebuffer/WID plane
+# through the qtest-only x-test-pixel/x-test-wid properties, not through the
+# console's colour-mapped display surface (x-test-display-pixel). This
+# replay's handshake never loads a CMAP/XMAP, so a --screendump of it (or of
+# the already-landed sibling char-modes.replay, checked for comparison) is
+# uniform black; that is expected for a whitebox raw-plane fixture and is
+# not evidence about on-screen colour, which cmap-xmap-wid.replay covers
+# separately.
+
+# --- command-channel handshake, copied from tests/data/mgras/fill.replay ---
+read 4 0x008000 0x0
+write 4 0x011000 0x0
+write 4 0x130500 0x000004fc
+read 4 0x011020 0x00080000
+write 4 0x011028 0x00080000
+read 4 0x011020 0x0
+write 4 0x120400 0
+write 4 0x120400 1
+write 4 0x120400 2
+write 4 0x120400 3
+write 4 0x120400 4
+write 4 0x120400 5
+write 4 0x120400 6
+write 4 0x120400 7
+write 4 0x120400 8
+write 4 0x120400 9
+write 4 0x120400 10
+write 4 0x120400 11
+write 4 0x120400 12
+write 4 0x120400 13
+write 4 0x120400 14
+write 4 0x120400 15
+write 4 0x120400 16
+write 4 0x120400 17
+write 4 0x120400 18
+write 4 0x120400 19
+write 4 0x120400 20
+write 4 0x120400 21
+write 4 0x120400 22
+write 4 0x120400 23
+write 4 0x120400 24
+write 4 0x120400 25
+write 4 0x120400 26
+write 4 0x120400 27
+write 4 0x120400 28
+write 4 0x120400 29
+write 4 0x120400 30
+write 4 0x120400 31
+write 4 0x120400 32
+write 4 0x120400 33
+write 4 0x120400 34
+write 4 0x120400 35
+write 4 0x120400 36
+write 4 0x120400 37
+write 4 0x120400 38
+write 4 0x120400 39
+write 4 0x120400 40
+write 4 0x120400 41
+write 4 0x120400 42
+write 4 0x120400 43
+write 4 0x120400 44
+write 4 0x120400 45
+write 4 0x120400 46
+write 4 0x120400 47
+write 4 0x120400 48
+write 4 0x120400 49
+write 4 0x120400 50
+write 4 0x120400 51
+write 4 0x120400 52
+write 4 0x120400 53
+write 4 0x120400 54
+write 4 0x120400 55
+write 4 0x120400 56
+write 4 0x120400 57
+write 4 0x120400 58
+write 4 0x120400 59
+write 4 0x120400 60
+write 4 0x120400 61
+write 4 0x120400 62
+read 4 0x011020 0x10000000
+write 4 0x011028 0x10000000
+write 8 0x130400 0x123456789abcdef0
+read 8 0x130400 0x123456789abcdef0
+write 4 0x120400 0x0000f400
+read 4 0x120400 0x0000f400
+
+# --- group ROOT: 16x16 byte-transfer "root" chooser icon at (326,198)-(341,213), 0x110=0x10c00000, 128 CHAR_L executes (8 pairs/row x 16 rows) ---
+write 8 0x120400 0x00196d0400090240
+write 8 0x120400 0x00184604014600c6
+write 8 0x120400 0x00184704015500d5
+write 8 0x120400 0x0019100410c00000
+write 8 0x120400 0x0019590400000080
+write 8 0x120400 0x0019530400100010
+write 8 0x120400 0x0019580400100010
+write 8 0x120400 0x00180c0400000001
+write 8 0x120400 0x001c450400000018
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x0019020400000002
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c0c0c0
+write 8 0x120400 0x001c710400c1c1c1
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x0018700400c1c1c1
+write 8 0x120400 0x001c710400c0c0c0
+write 8 0x120400 0x00180c0400000000
+write 8 0x120400 0x00195f0400000000
+write 8 0x120400 0x00194f0400000000
+# expected under the confirmed pair rule: a clean 2x2 checkerboard dither of
+# indexed 0xc0/0xc1, WID 0x9 (DRBPOINTERS=0x00090240 established at line 1681546)
+pixels 326 198 1 1 0xc0
+pixels 327 198 1 1 0xc1
+pixels 328 198 1 1 0xc0
+pixels 329 198 1 1 0xc1
+pixels 330 198 1 1 0xc0
+pixels 331 198 1 1 0xc1
+pixels 332 198 1 1 0xc0
+pixels 333 198 1 1 0xc1
+pixels 334 198 1 1 0xc0
+pixels 335 198 1 1 0xc1
+pixels 336 198 1 1 0xc0
+pixels 337 198 1 1 0xc1
+pixels 338 198 1 1 0xc0
+pixels 339 198 1 1 0xc1
+pixels 340 198 1 1 0xc0
+pixels 341 198 1 1 0xc1
+pixels 326 199 1 1 0xc1
+pixels 327 199 1 1 0xc0
+pixels 328 199 1 1 0xc1
+pixels 329 199 1 1 0xc0
+pixels 330 199 1 1 0xc1
+pixels 331 199 1 1 0xc0
+pixels 332 199 1 1 0xc1
+pixels 333 199 1 1 0xc0
+pixels 334 199 1 1 0xc1
+pixels 335 199 1 1 0xc0
+pixels 336 199 1 1 0xc1
+pixels 337 199 1 1 0xc0
+pixels 338 199 1 1 0xc1
+pixels 339 199 1 1 0xc0
+pixels 340 199 1 1 0xc1
+pixels 341 199 1 1 0xc0
+pixels 326 200 1 1 0xc0
+pixels 327 200 1 1 0xc1
+pixels 328 200 1 1 0xc0
+pixels 329 200 1 1 0xc1
+pixels 330 200 1 1 0xc0
+pixels 331 200 1 1 0xc1
+pixels 332 200 1 1 0xc0
+pixels 333 200 1 1 0xc1
+pixels 334 200 1 1 0xc0
+pixels 335 200 1 1 0xc1
+pixels 336 200 1 1 0xc0
+pixels 337 200 1 1 0xc1
+pixels 338 200 1 1 0xc0
+pixels 339 200 1 1 0xc1
+pixels 340 200 1 1 0xc0
+pixels 341 200 1 1 0xc1
+pixels 326 201 1 1 0xc1
+pixels 327 201 1 1 0xc0
+pixels 328 201 1 1 0xc1
+pixels 329 201 1 1 0xc0
+pixels 330 201 1 1 0xc1
+pixels 331 201 1 1 0xc0
+pixels 332 201 1 1 0xc1
+pixels 333 201 1 1 0xc0
+pixels 334 201 1 1 0xc1
+pixels 335 201 1 1 0xc0
+pixels 336 201 1 1 0xc1
+pixels 337 201 1 1 0xc0
+pixels 338 201 1 1 0xc1
+pixels 339 201 1 1 0xc0
+pixels 340 201 1 1 0xc1
+pixels 341 201 1 1 0xc0
+pixels 326 202 1 1 0xc0
+pixels 327 202 1 1 0xc1
+pixels 328 202 1 1 0xc0
+pixels 329 202 1 1 0xc1
+pixels 330 202 1 1 0xc0
+pixels 331 202 1 1 0xc1
+pixels 332 202 1 1 0xc0
+pixels 333 202 1 1 0xc1
+pixels 334 202 1 1 0xc0
+pixels 335 202 1 1 0xc1
+pixels 336 202 1 1 0xc0
+pixels 337 202 1 1 0xc1
+pixels 338 202 1 1 0xc0
+pixels 339 202 1 1 0xc1
+pixels 340 202 1 1 0xc0
+pixels 341 202 1 1 0xc1
+pixels 326 203 1 1 0xc1
+pixels 327 203 1 1 0xc0
+pixels 328 203 1 1 0xc1
+pixels 329 203 1 1 0xc0
+pixels 330 203 1 1 0xc1
+pixels 331 203 1 1 0xc0
+pixels 332 203 1 1 0xc1
+pixels 333 203 1 1 0xc0
+pixels 334 203 1 1 0xc1
+pixels 335 203 1 1 0xc0
+pixels 336 203 1 1 0xc1
+pixels 337 203 1 1 0xc0
+pixels 338 203 1 1 0xc1
+pixels 339 203 1 1 0xc0
+pixels 340 203 1 1 0xc1
+pixels 341 203 1 1 0xc0
+pixels 326 204 1 1 0xc0
+pixels 327 204 1 1 0xc1
+pixels 328 204 1 1 0xc0
+pixels 329 204 1 1 0xc1
+pixels 330 204 1 1 0xc0
+pixels 331 204 1 1 0xc1
+pixels 332 204 1 1 0xc0
+pixels 333 204 1 1 0xc1
+pixels 334 204 1 1 0xc0
+pixels 335 204 1 1 0xc1
+pixels 336 204 1 1 0xc0
+pixels 337 204 1 1 0xc1
+pixels 338 204 1 1 0xc0
+pixels 339 204 1 1 0xc1
+pixels 340 204 1 1 0xc0
+pixels 341 204 1 1 0xc1
+pixels 326 205 1 1 0xc1
+pixels 327 205 1 1 0xc0
+pixels 328 205 1 1 0xc1
+pixels 329 205 1 1 0xc0
+pixels 330 205 1 1 0xc1
+pixels 331 205 1 1 0xc0
+pixels 332 205 1 1 0xc1
+pixels 333 205 1 1 0xc0
+pixels 334 205 1 1 0xc1
+pixels 335 205 1 1 0xc0
+pixels 336 205 1 1 0xc1
+pixels 337 205 1 1 0xc0
+pixels 338 205 1 1 0xc1
+pixels 339 205 1 1 0xc0
+pixels 340 205 1 1 0xc1
+pixels 341 205 1 1 0xc0
+pixels 326 206 1 1 0xc0
+pixels 327 206 1 1 0xc1
+pixels 328 206 1 1 0xc0
+pixels 329 206 1 1 0xc1
+pixels 330 206 1 1 0xc0
+pixels 331 206 1 1 0xc1
+pixels 332 206 1 1 0xc0
+pixels 333 206 1 1 0xc1
+pixels 334 206 1 1 0xc0
+pixels 335 206 1 1 0xc1
+pixels 336 206 1 1 0xc0
+pixels 337 206 1 1 0xc1
+pixels 338 206 1 1 0xc0
+pixels 339 206 1 1 0xc1
+pixels 340 206 1 1 0xc0
+pixels 341 206 1 1 0xc1
+pixels 326 207 1 1 0xc1
+pixels 327 207 1 1 0xc0
+pixels 328 207 1 1 0xc1
+pixels 329 207 1 1 0xc0
+pixels 330 207 1 1 0xc1
+pixels 331 207 1 1 0xc0
+pixels 332 207 1 1 0xc1
+pixels 333 207 1 1 0xc0
+pixels 334 207 1 1 0xc1
+pixels 335 207 1 1 0xc0
+pixels 336 207 1 1 0xc1
+pixels 337 207 1 1 0xc0
+pixels 338 207 1 1 0xc1
+pixels 339 207 1 1 0xc0
+pixels 340 207 1 1 0xc1
+pixels 341 207 1 1 0xc0
+pixels 326 208 1 1 0xc0
+pixels 327 208 1 1 0xc1
+pixels 328 208 1 1 0xc0
+pixels 329 208 1 1 0xc1
+pixels 330 208 1 1 0xc0
+pixels 331 208 1 1 0xc1
+pixels 332 208 1 1 0xc0
+pixels 333 208 1 1 0xc1
+pixels 334 208 1 1 0xc0
+pixels 335 208 1 1 0xc1
+pixels 336 208 1 1 0xc0
+pixels 337 208 1 1 0xc1
+pixels 338 208 1 1 0xc0
+pixels 339 208 1 1 0xc1
+pixels 340 208 1 1 0xc0
+pixels 341 208 1 1 0xc1
+pixels 326 209 1 1 0xc1
+pixels 327 209 1 1 0xc0
+pixels 328 209 1 1 0xc1
+pixels 329 209 1 1 0xc0
+pixels 330 209 1 1 0xc1
+pixels 331 209 1 1 0xc0
+pixels 332 209 1 1 0xc1
+pixels 333 209 1 1 0xc0
+pixels 334 209 1 1 0xc1
+pixels 335 209 1 1 0xc0
+pixels 336 209 1 1 0xc1
+pixels 337 209 1 1 0xc0
+pixels 338 209 1 1 0xc1
+pixels 339 209 1 1 0xc0
+pixels 340 209 1 1 0xc1
+pixels 341 209 1 1 0xc0
+pixels 326 210 1 1 0xc0
+pixels 327 210 1 1 0xc1
+pixels 328 210 1 1 0xc0
+pixels 329 210 1 1 0xc1
+pixels 330 210 1 1 0xc0
+pixels 331 210 1 1 0xc1
+pixels 332 210 1 1 0xc0
+pixels 333 210 1 1 0xc1
+pixels 334 210 1 1 0xc0
+pixels 335 210 1 1 0xc1
+pixels 336 210 1 1 0xc0
+pixels 337 210 1 1 0xc1
+pixels 338 210 1 1 0xc0
+pixels 339 210 1 1 0xc1
+pixels 340 210 1 1 0xc0
+pixels 341 210 1 1 0xc1
+pixels 326 211 1 1 0xc1
+pixels 327 211 1 1 0xc0
+pixels 328 211 1 1 0xc1
+pixels 329 211 1 1 0xc0
+pixels 330 211 1 1 0xc1
+pixels 331 211 1 1 0xc0
+pixels 332 211 1 1 0xc1
+pixels 333 211 1 1 0xc0
+pixels 334 211 1 1 0xc1
+pixels 335 211 1 1 0xc0
+pixels 336 211 1 1 0xc1
+pixels 337 211 1 1 0xc0
+pixels 338 211 1 1 0xc1
+pixels 339 211 1 1 0xc0
+pixels 340 211 1 1 0xc1
+pixels 341 211 1 1 0xc0
+pixels 326 212 1 1 0xc0
+pixels 327 212 1 1 0xc1
+pixels 328 212 1 1 0xc0
+pixels 329 212 1 1 0xc1
+pixels 330 212 1 1 0xc0
+pixels 331 212 1 1 0xc1
+pixels 332 212 1 1 0xc0
+pixels 333 212 1 1 0xc1
+pixels 334 212 1 1 0xc0
+pixels 335 212 1 1 0xc1
+pixels 336 212 1 1 0xc0
+pixels 337 212 1 1 0xc1
+pixels 338 212 1 1 0xc0
+pixels 339 212 1 1 0xc1
+pixels 340 212 1 1 0xc0
+pixels 341 212 1 1 0xc1
+pixels 326 213 1 1 0xc1
+pixels 327 213 1 1 0xc0
+pixels 328 213 1 1 0xc1
+pixels 329 213 1 1 0xc0
+pixels 330 213 1 1 0xc1
+pixels 331 213 1 1 0xc0
+pixels 332 213 1 1 0xc1
+pixels 333 213 1 1 0xc0
+pixels 334 213 1 1 0xc1
+pixels 335 213 1 1 0xc0
+pixels 336 213 1 1 0xc1
+pixels 337 213 1 1 0xc0
+pixels 338 213 1 1 0xc1
+pixels 339 213 1 1 0xc0
+pixels 340 213 1 1 0xc1
+pixels 341 213 1 1 0xc0
+# No CHAR_H/CHAR_L execute writes the WID plane -- only a rectangle fill
+# with a nonzero COLORMASKMSBS does, see tests/data/mgras/char-modes.replay
+# and hw/misc/sgi-mgras-raster.c's si_draw_fill. DRBPOINTERS=0x90240 is
+# staged here exactly as it is for that landed fixture's own Toolchest box
+# (compare wid 86 42 below), so the built-fixture script's WID DRBPOINTERS
+# >> 16 assumption for every painted pixel was wrong for this path; these
+# lines originally asserted 0x9 and were corrected against the already-
+# landed, already-passing char-modes.replay evidence.
+wid 326 198 0x0
+wid 327 198 0x0
+wid 326 199 0x0
+wid 341 213 0x0
+wid 340 213 0x0
+wid 333 205 0x0
+# nothing painted right of or below the rectangle
+pixels 342 198 4 16 0x0
+wid 342 198 0x0
+pixels 326 214 16 2 0x0
+
+# --- group TOOLCHEST: 18x16 byte-transfer Toolchest cascade box at (86,42)-(103,57), 0x110=0x10c00000, 48 CHAR_L executes ---
+write 8 0x120400 0x00180c0400000000
+write 8 0x120400 0x00195f0400000000
+write 8 0x120400 0x001961040c004504
+write 8 0x120400 0x00196304000000ff
+write 8 0x120400 0x00196404000000ff
+write 8 0x120400 0x0019620400000000
+write 8 0x120400 0x00185b0400000000
+write 8 0x120400 0x00185c0400000000
+write 8 0x120400 0x00196d0400090240
+write 8 0x120400 0x001846040056002a
+write 8 0x120400 0x0018470400670039
+write 8 0x120400 0x0019100410c00000
+write 8 0x120400 0x0019590400008000
+write 8 0x120400 0x0019530400100012
+write 8 0x120400 0x0019580400100012
+write 8 0x120400 0x00180c0400000001
+write 8 0x120400 0x001c450400000018
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x00185f0400000000
+write 8 0x120400 0x0019020400000002
+write 8 0x120400 0x0018700410101010
+write 8 0x120400 0x001c71041a1a1a1a
+write 8 0x120400 0x001870041a1a1a1a
+write 8 0x120400 0x001c71041a1a1a10
+write 8 0x120400 0x0018700410100000
+write 8 0x120400 0x001c710410101010
+write 8 0x120400 0x0018700410100000
+write 8 0x120400 0x001c710410101010
+write 8 0x120400 0x001870041a101010
+write 8 0x120400 0x001c710410101010
+write 8 0x120400 0x0018700410101a10
+write 8 0x120400 0x001c710410104000
+write 8 0x120400 0x0018700410101010
+write 8 0x120400 0x001c71041a101010
+write 8 0x120400 0x0018700410101010
+write 8 0x120400 0x001c710410101a1a
+write 8 0x120400 0x0018700410100000
+write 8 0x120400 0x001c710410101010
+write 8 0x120400 0x0018700410100000
+write 8 0x120400 0x001c710410101010
+write 8 0x120400 0x001870041a1a1a1a
+write 8 0x120400 0x001c71041a1a1a1a
+write 8 0x120400 0x001870041a1a1a1a
+write 8 0x120400 0x001c710410100000
+write 8 0x120400 0x0018700410101010
+write 8 0x120400 0x001c710410101a1a
+write 8 0x120400 0x001870041a1a1a1a
+write 8 0x120400 0x001c71041a1a1a1a
+write 8 0x120400 0x0018700410100800
+write 8 0x120400 0x001c710410101010
+write 8 0x120400 0x0018700410100800
+write 8 0x120400 0x001c710410101010
+write 8 0x120400 0x001870041a1a1a1a
+write 8 0x120400 0x001c71041a1a1a1a
+write 8 0x120400 0x001870041a1a1a10
+write 8 0x120400 0x001c710410100000
+write 8 0x120400 0x0018700410101010
+write 8 0x120400 0x001c71041a101010
+write 8 0x120400 0x0018700410101010
+write 8 0x120400 0x001c710410101a10
+write 8 0x120400 0x0018700410100000
+write 8 0x120400 0x001c710410101010
+write 8 0x120400 0x0018700410100000
+write 8 0x120400 0x001c710410101010
+write 8 0x120400 0x001870041a101010
+write 8 0x120400 0x001c710410101010
+write 8 0x120400 0x0018700410101a1a
+write 8 0x120400 0x001c710410100800
+write 8 0x120400 0x0018700410101010
+write 8 0x120400 0x001c71041a101010
+write 8 0x120400 0x0018700410101010
+write 8 0x120400 0x001c710410101a1a
+write 8 0x120400 0x0018700410100200
+write 8 0x120400 0x001c710410101010
+write 8 0x120400 0x0018700410100200
+write 8 0x120400 0x001c710410101010
+write 8 0x120400 0x001870041a101010
+write 8 0x120400 0x001c710410101010
+write 8 0x120400 0x0018700410101a1a
+write 8 0x120400 0x001c710410100000
+write 8 0x120400 0x0018700410101010
+write 8 0x120400 0x001c71041a101010
+write 8 0x120400 0x0018700410101010
+write 8 0x120400 0x001c710410101a1a
+write 8 0x120400 0x0018700410104200
+write 8 0x120400 0x001c710410101010
+write 8 0x120400 0x0018700410104200
+write 8 0x120400 0x001c710410101010
+write 8 0x120400 0x001870041a101010
+write 8 0x120400 0x001c710410101010
+write 8 0x120400 0x0018700410101a1a
+write 8 0x120400 0x001c710410100000
+write 8 0x120400 0x0018700410101010
+write 8 0x120400 0x001c71041a101010
+write 8 0x120400 0x0018700410101010
+write 8 0x120400 0x001c710410101a1a
+write 8 0x120400 0x0018700410100000
+write 8 0x120400 0x001c710410101010
+write 8 0x120400 0x0018700410100000
+write 8 0x120400 0x001c710410101010
+write 8 0x120400 0x001870041a101010
+write 8 0x120400 0x001c710410101010
+write 8 0x120400 0x0018700410101a1a
+write 8 0x120400 0x001c710410104200
+write 8 0x120400 0x0018700410101010
+write 8 0x120400 0x001c71041a1a1a1a
+write 8 0x120400 0x001870041a1a1a1a
+write 8 0x120400 0x001c71041a1a1a1a
+write 8 0x120400 0x0018700410100000
+write 8 0x120400 0x001c710410101010
+write 8 0x120400 0x0018700410100000
+write 8 0x120400 0x001c710410101010
+write 8 0x120400 0x0018700410101a1a
+write 8 0x120400 0x001c71041a1a1a1a
+write 8 0x120400 0x001870041a1a1a1a
+write 8 0x120400 0x001c710410100000
+# expected under the currently landed si_draw_byte_row rule (already correct
+# for this box): indexed 0x10 face with 0x1a bevel edge, WID 0x0 (PACKEDCOLOR)
+pixels 86 42 4 1 0x10
+pixels 90 42 11 1 0x1a
+pixels 101 42 3 1 0x10
+pixels 86 43 4 1 0x10
+pixels 90 43 1 1 0x1a
+pixels 91 43 9 1 0x10
+pixels 100 43 1 1 0x1a
+pixels 101 43 3 1 0x10
+pixels 86 44 4 1 0x10
+pixels 90 44 1 1 0x1a
+pixels 91 44 9 1 0x10
+pixels 100 44 2 1 0x1a
+pixels 102 44 2 1 0x10
+pixels 86 45 4 1 0x10
+pixels 90 45 12 1 0x1a
+pixels 102 45 2 1 0x10
+pixels 86 46 6 1 0x10
+pixels 92 46 10 1 0x1a
+pixels 102 46 2 1 0x10
+pixels 86 47 4 1 0x10
+pixels 90 47 11 1 0x1a
+pixels 101 47 3 1 0x10
+pixels 86 48 4 1 0x10
+pixels 90 48 1 1 0x1a
+pixels 91 48 9 1 0x10
+pixels 100 48 1 1 0x1a
+pixels 101 48 3 1 0x10
+pixels 86 49 4 1 0x10
+pixels 90 49 1 1 0x1a
+pixels 91 49 9 1 0x10
+pixels 100 49 2 1 0x1a
+pixels 102 49 2 1 0x10
+pixels 86 50 4 1 0x10
+pixels 90 50 1 1 0x1a
+pixels 91 50 9 1 0x10
+pixels 100 50 2 1 0x1a
+pixels 102 50 2 1 0x10
+pixels 86 51 4 1 0x10
+pixels 90 51 1 1 0x1a
+pixels 91 51 9 1 0x10
+pixels 100 51 2 1 0x1a
+pixels 102 51 2 1 0x10
+pixels 86 52 4 1 0x10
+pixels 90 52 1 1 0x1a
+pixels 91 52 9 1 0x10
+pixels 100 52 2 1 0x1a
+pixels 102 52 2 1 0x10
+pixels 86 53 4 1 0x10
+pixels 90 53 1 1 0x1a
+pixels 91 53 9 1 0x10
+pixels 100 53 2 1 0x1a
+pixels 102 53 2 1 0x10
+pixels 86 54 4 1 0x10
+pixels 90 54 1 1 0x1a
+pixels 91 54 9 1 0x10
+pixels 100 54 2 1 0x1a
+pixels 102 54 2 1 0x10
+pixels 86 55 4 1 0x10
+pixels 90 55 1 1 0x1a
+pixels 91 55 9 1 0x10
+pixels 100 55 2 1 0x1a
+pixels 102 55 2 1 0x10
+pixels 86 56 4 1 0x10
+pixels 90 56 12 1 0x1a
+pixels 102 56 2 1 0x10
+pixels 86 57 6 1 0x10
+pixels 92 57 10 1 0x1a
+pixels 102 57 2 1 0x10
+# Same correction as group ROOT above: no CHAR_L execute writes WID.
+wid 86 42 0x0
+wid 90 42 0x0
+wid 88 43 0x0
+wid 90 43 0x0
+wid 103 57 0x0
+# nothing painted right of the rectangle (where 24-pixel rows would spill) or below it
+pixels 104 42 6 16 0x0
+wid 104 42 0x0
+pixels 86 58 18 2 0x0

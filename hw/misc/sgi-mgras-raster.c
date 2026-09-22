@@ -64,6 +64,20 @@
 #define SI_FILLMODE_BYTE_XFER 0x10c00000
 
 /*
+ * Byte-transfer mode's own register 0x159 picks which of two guest-side
+ * packings a CHAR_L execute uses. Inferred from exactly two observed
+ * values, not read hardware state: 0x8000 selects the eight-pixel path
+ * below (the Toolchest boxes and the desktop's larger transfers, see
+ * tests/data/mgras/char-modes.replay) and 0x0080 selects two indexed
+ * pixels per execute (the xdm chooser's own icons, see
+ * tests/data/mgras/root-icon.replay). Any other value stays unimplemented
+ * and inert.
+ */
+#define SI_REG_BYTE_XFER_PACKING 0x159
+#define SI_BYTE_XFER_PACKING_BYTES 0x8000
+#define SI_BYTE_XFER_PACKING_PAIRS 0x0080
+
+/*
  * FILLMODE bit 20 or 22 also sends a rectangle fill to BKGRD_RG instead of
  * PACKEDCOLOR. Inferred: the stock X server sets one of them for every
  * rectangle it fills and leaves PACKEDCOLOR zero, while OpenBSD fills with
@@ -370,39 +384,27 @@ static void si_draw_glyph_row(SGIMgrasState *s)
  * it reaches the raster, so a row's first unit can start with padding
  * bytes rather than pixel 0, and the row only advances once enough units
  * have covered its width. `skip` is that row's offset from the 8-byte unit
- * boundary; the register carrying it was not identified in the capture
- * (0x159 is a candidate), so this is a stated approximation of the X
- * server's 32-bit scanline padding, derived by matching the painted pixel
- * positions in a live capture (tests/data/mgras/char-modes.replay):
+ * boundary; the register carrying it was not identified in the capture, so
+ * this is a stated approximation of the X server's 32-bit scanline
+ * padding, derived by matching the painted pixel positions in a live
+ * capture (tests/data/mgras/char-modes.replay):
  * skip = (row * 4 * ceil(width / 4)) % 8. It is not read from hardware
  * state.
  */
-static void si_draw_byte_row(SGIMgrasState *s)
+static void si_draw_byte_row_bytes(SGIMgrasState *s, int x0, int x1,
+                                   int y0, int y1, uint32_t mask, uint8_t op)
 {
-    uint32_t xy0 = s->rss[SI_REG_BLOCKXYSTARTI];
-    uint32_t xy1 = s->rss[SI_REG_BLOCKXYENDI];
-    int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
-    int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
-    uint32_t mask = s->rss[SI_REG_COLORMASKLSBSA];
-    uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 26;
     uint32_t char_h = s->rss[SI_REG_CHAR_H];
     uint32_t char_l = s->rss[SI_REG_CHAR_L];
     uint8_t bytes[8] = {
         char_h >> 24, char_h >> 16, char_h >> 8, char_h,
         char_l >> 24, char_l >> 16, char_l >> 8, char_l,
     };
-    int width, row, y, skip, units_per_row;
-
-    if (x0 > x1 || y0 > y1 || x0 >= SGI_MGRAS_WIDTH || y0 >= SGI_MGRAS_HEIGHT) {
-        return;
-    }
-    x1 = MIN(x1, SGI_MGRAS_WIDTH - 1);
-    y1 = MIN(y1, SGI_MGRAS_HEIGHT - 1);
-    width = x1 - x0 + 1;
-    row = s->glyph_row;
-    y = y0 + row;
-    skip = (row * 4 * DIV_ROUND_UP(width, 4)) % 8;
-    units_per_row = DIV_ROUND_UP(skip + width, 8);
+    int width = x1 - x0 + 1;
+    int row = s->glyph_row;
+    int y = y0 + row;
+    int skip = (row * 4 * DIV_ROUND_UP(width, 4)) % 8;
+    int units_per_row = DIV_ROUND_UP(skip + width, 8);
 
     if (y <= y1 && y < SGI_MGRAS_HEIGHT) {
         for (int i = 0; i < 8; i++) {
@@ -419,6 +421,78 @@ static void si_draw_byte_row(SGIMgrasState *s)
     if (s->glyph_unit >= units_per_row) {
         s->glyph_unit = 0;
         s->glyph_row++;
+    }
+}
+
+/*
+ * The chooser icons' own packing (register 0x159 == 0x0080): each CHAR_L
+ * execute delivers two indexed pixels rather than eight. Pixel 0 is
+ * CHAR_H bits 7:0, pixel 1 is CHAR_L bits 7:0; a live capture's other
+ * bytes did not reliably replicate that value, so only bits 7:0 are read
+ * (tests/data/mgras/root-icon.replay). ceil(width / 2) executes cover a
+ * row, no skip, and the row advances after the last unit.
+ */
+static void si_draw_byte_row_pairs(SGIMgrasState *s, int x0, int x1,
+                                   int y0, int y1, uint32_t mask, uint8_t op)
+{
+    uint8_t pixels[2] = {
+        (uint8_t)s->rss[SI_REG_CHAR_H],
+        (uint8_t)s->rss[SI_REG_CHAR_L],
+    };
+    int width = x1 - x0 + 1;
+    int row = s->glyph_row;
+    int y = y0 + row;
+    int units_per_row = DIV_ROUND_UP(width, 2);
+
+    if (y <= y1 && y < SGI_MGRAS_HEIGHT) {
+        for (int i = 0; i < 2; i++) {
+            int col = s->glyph_unit * 2 + i;
+
+            if (col >= width || x0 + col >= SGI_MGRAS_WIDTH) {
+                continue;
+            }
+            si_put_pixel(s, y * SGI_MGRAS_WIDTH + x0 + col, pixels[i], op,
+                         mask);
+        }
+    }
+    s->glyph_unit++;
+    if (s->glyph_unit >= units_per_row) {
+        s->glyph_unit = 0;
+        s->glyph_row++;
+    }
+}
+
+/*
+ * Byte-transfer mode's packing is register 0x159, not FILLMODE; see the
+ * SI_REG_BYTE_XFER_PACKING comment above.
+ */
+static void si_draw_byte_row(SGIMgrasState *s)
+{
+    uint32_t xy0 = s->rss[SI_REG_BLOCKXYSTARTI];
+    uint32_t xy1 = s->rss[SI_REG_BLOCKXYENDI];
+    int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
+    int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
+    uint32_t mask = s->rss[SI_REG_COLORMASKLSBSA];
+    uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 26;
+    uint32_t packing = s->rss[SI_REG_BYTE_XFER_PACKING];
+
+    if (x0 > x1 || y0 > y1 || x0 >= SGI_MGRAS_WIDTH || y0 >= SGI_MGRAS_HEIGHT) {
+        return;
+    }
+    x1 = MIN(x1, SGI_MGRAS_WIDTH - 1);
+    y1 = MIN(y1, SGI_MGRAS_HEIGHT - 1);
+
+    switch (packing) {
+    case SI_BYTE_XFER_PACKING_BYTES:
+        si_draw_byte_row_bytes(s, x0, x1, y0, y1, mask, op);
+        return;
+    case SI_BYTE_XFER_PACKING_PAIRS:
+        si_draw_byte_row_pairs(s, x0, x1, y0, y1, mask, op);
+        return;
+    default:
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: unimplemented byte-transfer "
+                      "packing, register 0x159 value 0x%08x\n", packing);
+        return;
     }
 }
 
