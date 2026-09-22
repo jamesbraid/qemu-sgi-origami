@@ -82,6 +82,11 @@ LOGIN_PASSWORD_CLICK = (560, 755)
 # derived bound.
 LOGIN_SETTLE_SECONDS = 3.0
 
+# Delay between typed key presses. The existing 50 ms pace works for the
+# original capture targets, while callers can raise it for input models that
+# drain queued scancodes more slowly.
+KEY_SETTLE_SECONDS = 0.05
+
 # The stock desktop's Console icon, centered in pixels. It is a fixed
 # desktop icon (present at every fresh login, independent of which
 # windows -- if any -- a previous session left open), not something a
@@ -125,16 +130,19 @@ RESIZE_SETTLE_SECONDS = 1.5
 COMMAND_SETTLE_SECONDS = 2.0
 
 
-def login(vm, username, password, settle_seconds=LOGIN_SETTLE_SECONDS):
+def login(vm, username, password, settle_seconds=LOGIN_SETTLE_SECONDS,
+          key_settle_seconds=KEY_SETTLE_SECONDS):
     """Log in through the stock xdm greeter: click the Login name
     field, type `username`, Return, click the Password field, type
     `password`, Return, then wait `settle_seconds` for the desktop."""
     lib_input.click_at(vm, *LOGIN_NAME_CLICK)
-    lib_input.type_text(vm, username)
+    lib_input.type_text(vm, username,
+                        key_settle_seconds=key_settle_seconds)
     lib_input.send_key(vm, 'ret')
     time.sleep(0.5)
     lib_input.click_at(vm, *LOGIN_PASSWORD_CLICK)
-    lib_input.type_text(vm, password)
+    lib_input.type_text(vm, password,
+                        key_settle_seconds=key_settle_seconds)
     lib_input.send_key(vm, 'ret')
     time.sleep(settle_seconds)
 
@@ -160,11 +168,13 @@ def resize_console(vm, *, width_delta=CONSOLE_WIDTH_DELTA,
     time.sleep(settle_seconds)
 
 
-def run_command(vm, command, settle_seconds=COMMAND_SETTLE_SECONDS):
+def run_command(vm, command, settle_seconds=COMMAND_SETTLE_SECONDS,
+                key_settle_seconds=KEY_SETTLE_SECONDS):
     """Click inside the Console body to focus it, type `command`, press
     Return, and wait `settle_seconds` for its output."""
     lib_input.click_at(vm, *CONSOLE_BODY_CLICK)
-    lib_input.type_text(vm, command)
+    lib_input.type_text(vm, command,
+                        key_settle_seconds=key_settle_seconds)
     lib_input.send_key(vm, 'ret')
     time.sleep(settle_seconds)
 
@@ -187,6 +197,7 @@ def capture_evidence(vm, *, username, password, command, out_path,
                      open_settle_seconds=OPEN_SETTLE_SECONDS,
                      resize_settle_seconds=RESIZE_SETTLE_SECONDS,
                      command_settle_seconds=COMMAND_SETTLE_SECONDS,
+                     key_settle_seconds=KEY_SETTLE_SECONDS,
                      width_delta=CONSOLE_WIDTH_DELTA,
                      height_delta=CONSOLE_HEIGHT_DELTA):
     """The whole sequence this module exists for: log in, open Console,
@@ -200,9 +211,11 @@ def capture_evidence(vm, *, username, password, command, out_path,
     future graphics-matrix scenario needing the same sequence should
     too, rather than reimplementing it.
     """
-    login(vm, username, password, settle_seconds=login_settle_seconds)
+    login(vm, username, password, settle_seconds=login_settle_seconds,
+          key_settle_seconds=key_settle_seconds)
     open_console(vm, settle_seconds=open_settle_seconds)
     resize_console(vm, width_delta=width_delta, height_delta=height_delta,
                    settle_seconds=resize_settle_seconds)
-    run_command(vm, command, settle_seconds=command_settle_seconds)
+    run_command(vm, command, settle_seconds=command_settle_seconds,
+                key_settle_seconds=key_settle_seconds)
     screendump(vm, out_path, image_format=image_format)
