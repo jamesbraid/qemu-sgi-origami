@@ -1491,7 +1491,20 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
                          [s->rgb_reserved_phase] = v;
             rad4_recognizer_feed(s, offset, v);
             rad4_rgb_reserved_advance(s, index, 3);
-            rad4_cursor_update_image(s);
+            /*
+             * Each cursor LUT entry is three bus cycles (R, G, B).
+             * Rebuilding the sprite after the first or second cycle would
+             * render a torn colour -- two channels from the new write and
+             * one still holding the previous entry's byte -- and, unlike
+             * on real hardware where that only lasts a fraction of a
+             * frame, push it to the UI/VNC layer as a stable cursor
+             * definition that persists until the next trigger. Wait for
+             * rad4_rgb_reserved_advance() to wrap the phase counter back
+             * to 0, marking the entry complete.
+             */
+            if (s->rgb_reserved_phase == 0) {
+                rad4_cursor_update_image(s);
+            }
         } else if (rad4_index_in_wat(index)) {
             uint16_t wid = index - RAD4_WAT_BASE;
 
