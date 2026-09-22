@@ -37,3 +37,7 @@ config LASIPS2
 config SGI_IOC3_KBC
     bool
     select PS2
+
+config PSITECH_RAD4_KM
+    bool
+    select PS2
