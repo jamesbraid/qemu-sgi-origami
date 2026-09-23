@@ -64,8 +64,10 @@ slow_qtests = {
   # Bridge was the fourth most killed test in CI over Aug 30 - Sep 3, with
   # 20 timeout kills at what was then a 120s ceiling and zero failing
   # subtests. It now shares one machine across the cases that want no card
-  # in any slot. Measured 48.58s.
-  'sn0-bridge-test': 150,
+  # in any slot, plus the widget-addressing and PIO-translated-window cases
+  # folded in later, each on its own private launch. Measured 50.70s for
+  # 88 subtests.
+  'sn0-bridge-test': 160,
   # sn0-ioc3-serial-test itself finishes in 7-17s, but its own socket read/accept
   # deadline is 120s to tolerate scheduling delay (see
   # tests/qtest/sn0-ioc3-serial-test.c). This budget has to exceed that deadline,
@@ -406,8 +408,6 @@ qtests_mips64 = \
                                                    'sn0-elsc-test',
                                                    'sn0-widget-decode-test',
                                                    'sn0-bridge-invalid-addr-test',
-                                                   'sn0-bridge-widget-test',
-                                                   'sn0-bridge-pio-xlate-test',
                                                    'sgi-bridge-bus-test',
                                                    'sn0-bridge-flash-test',
                                                    'sn0-origin2000-test',
