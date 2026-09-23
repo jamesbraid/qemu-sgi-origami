@@ -41,13 +41,13 @@ slow_qtests = {
   'sn0-qtest-cpu-test': 180,
   # The full 32-reset run took 265s under load. Keep headroom for all cycles.
   'sn0-warm-reset-test': 600,
-  # IOC3 shares one machine across the cases that want a plain origin200 and
-  # starts its own for the rest. Measured 82.99s.
-  'sn0-ioc3-test': 250,
+  # IOC3 shares one machine across every case that wants a plain origin200
+  # and starts its own for the rest. Measured 58.74s.
+  'sn0-ioc3-test': 180,
   # The Hub's cases share one machine, but the file's time is mostly its
   # multi-processor rendezvous cases, which run a real guest under TCG and
-  # do not get faster for sharing anything. Measured 175.69s.
-  'sn0-hub-test': 540,
+  # do not get faster for sharing anything. Measured 138.14s.
+  'sn0-hub-test': 415,
   # Routed acceptance was killed at a 120s ceiling in every parallel run
   # before this budget was raised. Measured 114.90s.
   'sn0-origin2000-test': 350,
@@ -97,7 +97,7 @@ slow_qtests = {
   # four-node module with eight processors and 256 MB and the timekeeper
   # repair-store loop resets one of them once per processor. Measured
   # 41.05s.
-  'sn0-baseio-test': 150,
+  'sn0-baseio-test': 125,
 }
 
 qtest_priorities = {

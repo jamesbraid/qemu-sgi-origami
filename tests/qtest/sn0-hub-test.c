@@ -624,15 +624,13 @@ static void test_the_wrap_reaches_a_zeroed_comparator(const void *data)
 static void test_moving_the_counter_past_a_comparator_pends_nothing(
     const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     qtest_writeq(qts, HUB_LOCAL + PI_RT_PENDING_A, 0);
     /* Comparators still at their reset value; step the origin past them. */
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, PI_RT_HZ);
 
     g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 0);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -664,8 +662,9 @@ static void test_a_zeroed_comparator_stays_silent(const void *data)
 static void test_an_ahead_deadline_fires_once_and_the_ack_clears(
     const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint64_t count;
+
+    hub_reset();
 
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, PI_RT_HZ);
     count = qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT);
@@ -684,8 +683,6 @@ static void test_an_ahead_deadline_fires_once_and_the_ack_clears(
     /* Once: nothing pends again after the acknowledgement. */
     qtest_clock_step(qts, 2 * (PI_RT_NS_PER_SEC / 1000));
     g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 0);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -717,8 +714,9 @@ static void test_a_behind_comparator_does_not_match(const void *data)
 static void test_the_real_time_counter_is_writable_and_keeps_running(
     const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     const uint64_t start = 1000;
+
+    hub_reset();
 
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, start);
     g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT), ==, start);
@@ -727,8 +725,6 @@ static void test_the_real_time_counter_is_writable_and_keeps_running(
     qtest_clock_step(qts, PI_RT_NS_PER_SEC / 1000);
     g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT), ==,
                      start + PI_RT_HZ / 1000);
-
-    qtest_quit(qts);
 }
 
 /* Fifty-two bits wide: the top twelve of a written value do not come back. */
@@ -1548,7 +1544,7 @@ static void test_graphics_flow_control_registers_round_trip(const void *data)
 static void test_graphics_flow_control_registers_mask_wide_writes(
     const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     qtest_writeq(qts, HUB_LOCAL + PI_GFX_CREDIT_A, ~0ULL);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_CREDIT_A), ==,
@@ -1569,8 +1565,6 @@ static void test_graphics_flow_control_registers_mask_wide_writes(
     /* The page register alone keeps the full doubleword, unmasked. */
     qtest_writeq(qts, HUB_LOCAL + PI_GFX_PAGE_A, ~0ULL);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_PAGE_A), ==, ~0ULL);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -1584,8 +1578,9 @@ static void test_graphics_flow_control_registers_mask_wide_writes(
 static void test_graphics_flow_control_replays_the_attach_sequence(
     const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
     uint64_t page = 0x0000000012340000ULL;
+
+    hub_reset();
 
     qtest_writeq(qts, HUB_LOCAL + PI_GFX_BIAS_A, 0);
     qtest_writeq(qts, HUB_LOCAL + PI_GFX_CREDIT_A, 0x65);
@@ -1600,8 +1595,6 @@ static void test_graphics_flow_control_replays_the_attach_sequence(
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_GFX_PAGE_A), ==,
                     page | PI_GFX_PAGE_ENABLE);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + IO_GFX_INIT_0), ==, 0x100001);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -1613,7 +1606,7 @@ static void test_graphics_flow_control_replays_the_attach_sequence(
 static void test_graphics_flow_control_does_not_disturb_rt_compare(
     const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    hub_reset();
 
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A, 0x123456789abcdULL);
 
@@ -1640,7 +1633,6 @@ static void test_graphics_flow_control_does_not_disturb_rt_compare(
                     PI_GFX_CREDIT_MASK);
 
     qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A, 0);
-    qtest_quit(qts);
 }
 
 static void test_writes_the_guest_makes(const void *data)
