@@ -1328,6 +1328,12 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
      * io8bt writes 0x146 there and expects it back.
      */
     pci_word_test_and_set_mask(dev->wmask + PCI_COMMAND, PCI_COMMAND_PARITY);
+    /*
+     * The latency timer is writable on this part (docs/datasheets/ioc3.md);
+     * the PCI core leaves it read-only by default, and io8bt writes 0xff00
+     * over the cache-line-size word and reads it back.
+     */
+    dev->wmask[PCI_LATENCY_TIMER] = 0xff;
 
     memory_region_init(&s->bar, OBJECT(dev), "sgi-ioc3.bar",
                        SGI_IOC3_BAR_SIZE);

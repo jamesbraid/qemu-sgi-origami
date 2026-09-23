@@ -212,6 +212,13 @@ static void test_io8bt_configuration_reads_and_writes(const void *data)
     qtest_writel(qts, IO8_IOC3_CFG + PCI_COMMAND, 0x146);
     g_assert_cmphex(qtest_readl(qts, IO8_IOC3_CFG + PCI_COMMAND) & 0xffff,
                     ==, 0x146);
+    /*
+     * The latency timer, the high byte of the word at 0x0c. Cache line
+     * size below it takes the zero written with it, and header type and
+     * built-in self test above it stay zero.
+     */
+    qtest_writel(qts, IO8_IOC3_CFG + 0x0c, 0xff00);
+    g_assert_cmphex(qtest_readl(qts, IO8_IOC3_CFG + 0x0c), ==, 0xff00);
 
     qtest_quit(qts);
 }
