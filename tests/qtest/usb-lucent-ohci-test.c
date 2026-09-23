@@ -6,18 +6,23 @@
  * wrapper's PCI identity and port count, plus enough DMA, interrupt, reset,
  * and migration state to prove that the subtype retains the parent's PCI and
  * lifecycle behavior.
+ *
+ * The controller is soldered onto the Origin 200's base I/O board, so it is
+ * driven there, over the Bridge's configuration window, device window and
+ * translation entries.  This ran on an x86 PC as well until the fork stopped
+ * building SGI devices for that target; the two hosts asserted the same
+ * things through different accessors, and the PC is not a machine this part
+ * ships on.
  */
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
-#include "libqos/pci-pc.h"
 #include "qobject/qdict.h"
 #include "hw/pci/pci_regs.h"
 #include "sgi-migrate.h"
 #include <glib/gstdio.h>
 
 #define LUCENT_OHCI_SLOT           5
-#define LUCENT_OHCI_DEVFN          QPCI_DEVFN(LUCENT_OHCI_SLOT, 0)
 
 #define LUCENT_VENDOR_ID           0x11c1
 #define LUCENT_DEVICE_ID           0x5802
@@ -64,7 +69,6 @@
 #define OHCI_HCCA_SIZE             0x100
 #define OHCI_HCCA_FRAME_OFFSET     0x80
 #define OHCI_DMA_PHYS              0x00100000
-#define OHCI_X86_BAR               0xe0000000
 
 /* Origin 200's SGI Bridge supplies the PCI host used by the mips64 test. */
 #define SGI_XTALK_SPACE            0x20000000000ULL
@@ -104,91 +108,50 @@
 
 typedef struct LucentOHCI {
     QTestState *qts;
-    QPCIBus *bus;
-    QPCIDevice *dev;
     uint64_t mmio;
     uint32_t pci_bar;
-    bool is_mips64;
 } LucentOHCI;
-
-static bool lucent_ohci_is_mips64(void)
-{
-    return g_str_equal(qtest_get_arch(), "mips64");
-}
 
 static QTestState *lucent_ohci_start(const char *type, const char *extra)
 {
-    const char *machine = lucent_ohci_is_mips64() ?
-                          "-nodefaults -machine origin200" :
-                          "-nodefaults -machine pc";
-
-    return qtest_initf("%s -device %s,id=ohci,addr=%02x.0%s",
-                       machine, type, LUCENT_OHCI_SLOT,
-                       extra ? extra : "");
+    return qtest_initf("-nodefaults -machine origin200"
+                       " -device %s,id=ohci,addr=%02x.0%s",
+                       type, LUCENT_OHCI_SLOT, extra ? extra : "");
 }
 
 static void lucent_ohci_open(LucentOHCI *ohci, QTestState *qts)
 {
     ohci->qts = qts;
-    ohci->is_mips64 = lucent_ohci_is_mips64();
-    if (ohci->is_mips64) {
-        ohci->pci_bar = OHCI_SGI_BAR;
-        ohci->mmio = SGI_DEVICE_WINDOW;
-        return;
-    }
-
-    ohci->pci_bar = OHCI_X86_BAR;
-    ohci->mmio = OHCI_X86_BAR;
-    ohci->bus = qpci_new_pc(qts, NULL);
-    ohci->dev = qpci_device_find(ohci->bus, LUCENT_OHCI_DEVFN);
-    g_assert_nonnull(ohci->dev);
+    ohci->pci_bar = OHCI_SGI_BAR;
+    ohci->mmio = SGI_DEVICE_WINDOW;
 }
 
 static uint32_t lucent_ohci_config_readl(LucentOHCI *ohci, uint8_t offset)
 {
-    if (ohci->is_mips64) {
-        return qtest_readl(ohci->qts, SGI_CFG0 + (offset & ~3));
-    }
-    return qpci_config_readl(ohci->dev, offset);
+    return qtest_readl(ohci->qts, SGI_CFG0 + (offset & ~3));
 }
 
 static uint16_t lucent_ohci_config_readw(LucentOHCI *ohci, uint8_t offset)
 {
-    if (ohci->is_mips64) {
-        return lucent_ohci_config_readl(ohci, offset) >>
-               (8 * (offset & 3));
-    }
-    return qpci_config_readw(ohci->dev, offset);
+    return lucent_ohci_config_readl(ohci, offset) >> (8 * (offset & 3));
 }
 
 static uint8_t lucent_ohci_config_readb(LucentOHCI *ohci, uint8_t offset)
 {
-    if (ohci->is_mips64) {
-        return lucent_ohci_config_readl(ohci, offset) >>
-               (8 * (offset & 3));
-    }
-    return qpci_config_readb(ohci->dev, offset);
+    return lucent_ohci_config_readl(ohci, offset) >> (8 * (offset & 3));
 }
 
 static void lucent_ohci_config_writel(LucentOHCI *ohci, uint8_t offset,
                                       uint32_t value)
 {
-    if (ohci->is_mips64) {
-        qtest_writel(ohci->qts, SGI_CFG0 + offset, value);
-    } else {
-        qpci_config_writel(ohci->dev, offset, value);
-    }
+    qtest_writel(ohci->qts, SGI_CFG0 + offset, value);
 }
 
 static void lucent_ohci_config_writew(LucentOHCI *ohci, uint8_t offset,
                                       uint16_t value)
 {
-    if (ohci->is_mips64) {
-        g_assert_cmphex(offset, ==, PCI_COMMAND);
-        qtest_writel(ohci->qts, SGI_CFG0 + offset, value);
-    } else {
-        qpci_config_writew(ohci->dev, offset, value);
-    }
+    g_assert_cmphex(offset, ==, PCI_COMMAND);
+    qtest_writel(ohci->qts, SGI_CFG0 + offset, value);
 }
 
 static void lucent_ohci_map_bar(LucentOHCI *ohci)
@@ -196,36 +159,26 @@ static void lucent_ohci_map_bar(LucentOHCI *ohci)
     lucent_ohci_config_writel(ohci, PCI_BASE_ADDRESS_0, ohci->pci_bar);
     lucent_ohci_config_writew(ohci, PCI_COMMAND,
                               PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
-
-    if (ohci->is_mips64) {
-        qtest_writel(ohci->qts, SGI_BRIDGE_DEVICE,
-                     SGI_DEVICE_MEMORY | SGI_DEVICE_SWAP_DMA |
-                     (ohci->pci_bar >> 20));
-    }
+    qtest_writel(ohci->qts, SGI_BRIDGE_DEVICE,
+                 SGI_DEVICE_MEMORY | SGI_DEVICE_SWAP_DMA |
+                 (ohci->pci_bar >> 20));
 }
 
 static void lucent_ohci_configure_dma(LucentOHCI *ohci)
 {
     uint8_t hcca[OHCI_HCCA_SIZE] = { 0 };
 
-    if (ohci->is_mips64) {
-        qtest_writeq(ohci->qts, SGI_BRIDGE_ATE,
-                     SGI_ATE_ENTRY(OHCI_DMA_PHYS));
-    }
+    qtest_writeq(ohci->qts, SGI_BRIDGE_ATE, SGI_ATE_ENTRY(OHCI_DMA_PHYS));
     qtest_memwrite(ohci->qts, OHCI_DMA_PHYS, hcca, sizeof(hcca));
 }
 
 static uint32_t lucent_ohci_hcca_address(const LucentOHCI *ohci)
 {
-    return ohci->is_mips64 ? SGI_DMA_IOVA : OHCI_DMA_PHYS;
+    return SGI_DMA_IOVA;
 }
 
 static void lucent_ohci_close(LucentOHCI *ohci)
 {
-    if (!ohci->is_mips64) {
-        g_free(ohci->dev);
-        qpci_free_pc(ohci->bus);
-    }
     qtest_quit(ohci->qts);
 }
 
