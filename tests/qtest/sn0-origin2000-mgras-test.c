@@ -2494,6 +2494,51 @@ static void test_command_fifo_rejects_malformed_payload_lengths(void)
 }
 
 
+/*
+ * destroy2.trace shows the guest driving classes (0x8, 0xa, 0xc) the model
+ * does not implement, each framed like a STATE/EXEC header with a
+ * one-word payload (see docs/analysis's class-decode notes). The model
+ * must still consume that declared payload so the FIFO re-syncs on the
+ * next real header.
+ *
+ * The payload word below (0x00180004) is not an observed guest value: it
+ * is chosen so that, without the fix, the pre-fix parser reads it as a
+ * second bogus STATE header that swallows the next real header token as
+ * its own payload, corrupting the PACKEDCOLOR write that follows and
+ * making the corruption observable in a paint. Any nonzero payload_bytes
+ * this class might carry has to be consumed the same way.
+ */
+static void test_command_fifo_unrecognized_class_resyncs(void)
+{
+    si_reset();
+
+    si_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x00080404 << 32) | 0x00180004);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)SI_STATE_TOKEN(REG_PACKEDCOLOR, 4) << 32) |
+                 0x00223344);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)SI_STATE_TOKEN(REG_BLOCK_START, 4) << 32) |
+                 ((62u << 16) | 62u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)SI_STATE_TOKEN(REG_COLORMASKLSBSA, 4) << 32) |
+                 0xffffffff);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)SI_STATE_TOKEN(REG_PP1FILLMODE, 4) << 32) |
+                 ((uint32_t)SI_LOGIC_OP_COPY << 26));
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_BLOCK_END, (63u << 16) | 63u));
+    g_assert_cmphex(si_test_pixel(qts, 62, 62), ==, 0x00223344);
+    g_assert_cmphex(si_test_pixel(qts, 63, 63), ==, 0x00223344);
+    g_assert_cmphex(si_test_pixel(qts, 61, 61), ==, 0);
+}
+
+
 static void test_re_point_execute(void)
 {
     si_reset();
@@ -3214,6 +3259,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "command-fifo-rejects-malformed-payload-lengths",
                    test_command_fifo_rejects_malformed_payload_lengths);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "command-fifo-unrecognized-class-resyncs",
+                   test_command_fifo_unrecognized_class_resyncs);
     qtest_add_func("sn0/origin2000/mgras/re-point-execute",
                    test_re_point_execute);
     qtest_add_func("sn0/origin2000/mgras/"
