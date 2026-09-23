@@ -58,6 +58,113 @@
 #define MIO_IOC3_MMIO 0x11000000u
 #define MIO_IOC3_WINDOW 0xa00000
 
+/*
+ * The MediaIO daughtercard's RAD1 audio ASIC, io6g only. Device 5's own
+ * 1 MB window (this file's own BRIDGE_DEVICE(5) window) with BAR0, the
+ * 0x2000-byte register file, at the window's base. IRIX's rad_attach maps
+ * exactly that much through BAR0 and stores the result as the register
+ * base every later access uses; a smaller BAR leaves it NULL.
+ */
+#define MIO_RAD1_DEVICE 5
+#define MIO_RAD1_MMIO 0x12000000u
+#define MIO_RAD1_WINDOW 0x900000
+#define MIO_RAD1_BAR0_SIZE 0x2000u
+
+#define MIO_RAD1_VENDOR_ID 0x10a9
+#define MIO_RAD1_DEVICE_ID 0x0005
+#define MIO_RAD1_ID_PAIR \
+    (((uint32_t)MIO_RAD1_DEVICE_ID << 16) | MIO_RAD1_VENDOR_ID)
+
+/*
+ * The revision byte's high nibble is the board mode rad_create_subsys
+ * dispatches on (7: MediaIO), its low nibble a sub-revision; hinv prints
+ * them as "RAD revision 7.0".
+ */
+#define MIO_RAD1_REVISION 0x70
+
+/*
+ * BAR0's documented register offsets, from
+ * docs/datasheets/mediaio-rad1-audio.md's register map and restated
+ * independently from hw/audio/sgi-rad1-audio.h's own names, matching
+ * this file's convention of not sharing offset macros with the model.
+ */
+#define RAD1_REG_PREDISPATCH_A    0x44
+#define RAD1_REG_PREDISPATCH_B    0x48
+#define RAD1_REG_SHIFT_LOAD_CLOCK 0x4c
+#define RAD1_REG_PREDISPATCH_C    0x50
+#define RAD1_REG_PREDISPATCH_D    0x54
+#define RAD1_REG_PREDISPATCH_E    0x58
+#define RAD1_REG_STATUS_DMA_CTRL  0x5c
+#define RAD1_REG_HALT_TEARDOWN    0x70
+#define RAD1_REG_BRINGUP_FIXED_A  0x74
+#define RAD1_REG_BRINGUP_FIXED_B  0x78
+#define RAD1_REG_MUX_CLOCK_SELECT 0x7c
+#define RAD1_REG_SHADOW_MASKED    0x80
+#define RAD1_REG_MODE_GATED_A     0x84
+#define RAD1_REG_LATCH_PULSE      0x88
+#define RAD1_REG_SHIFT_LOAD_DATA  0x8c
+#define RAD1_REG_MODE_GATED_B     0x90
+#define RAD1_REG_BRINGUP_FINAL    0xa0
+#define RAD1_REG_CONVERGENCE_A    0xb8
+#define RAD1_REG_CONVERGENCE_B    0xbc
+
+/* A gap the register map documents nothing for, between 0x5c and 0x70. */
+#define RAD1_REG_UNDOCUMENTED_GAP 0x60
+
+/*
+ * The status-DMA descriptor-ring base/limit registers rad_start_status_dma
+ * and rad_one_shot_status program, plus the parallel second set, in the
+ * 0x400..0x528 DMA bank. Restated independently from the model's own names.
+ */
+#define RAD1_REG_STATUS_BASE2_LO  0x4b4
+#define RAD1_REG_STATUS_BASE2_HI  0x4b8
+#define RAD1_REG_STATUS_LIMIT2    0x4bc
+#define RAD1_REG_STATUS_BASE_LO   0x500
+#define RAD1_REG_STATUS_LIMIT     0x504
+#define RAD1_REG_STATUS_BASE_HI   0x528
+
+/* The read-only per-channel sample-position bank, 0x04..0x2c step 4. */
+#define RAD1_REG_SAMPLE_POS_FIRST 0x04
+#define RAD1_REG_SAMPLE_POS_LAST  0x2c
+
+/*
+ * The free-running UST counter rad_set_ust_offset polls for advancement,
+ * read-only, one tick per RAD1_UST_NS_PER_TICK ns of virtual time.
+ */
+#define RAD1_REG_UST_COUNTER      0x30
+#define RAD1_UST_NS_PER_TICK      800
+
+/*
+ * Status-DMA control values written to 0x5c: the ring-engine start, the
+ * one-shot start, and the stop, and the descriptor-slot layout the engine
+ * marks done -- bit 31 of each processed slot's +0x7c word and the frame
+ * bits in its +0x78 word. From rad_start_status_dma/rad_one_shot_status/
+ * rad_update_subsys and docs/datasheets/mediaio-rad1-audio.md.
+ */
+#define RAD1_STATUS_START         0x40003u
+#define RAD1_STATUS_ONESHOT_START 0x40001u
+#define RAD1_STATUS_STOP          0x1fffcu
+#define RAD1_SLOT_STRIDE          0x80
+#define RAD1_SLOT_DONE_OFFSET     0x7c
+#define RAD1_SLOT_FLAGS_OFFSET    0x78
+#define RAD1_SLOT_DONE_BIT        0x80000000u
+#define RAD1_SLOT_FRAME_BITS      0x180u
+#define RAD1_LIMIT_BASE           0x78
+
+/*
+ * To land the RAD1's status-DMA in node-0 RAM the ring's PCI address uses
+ * the Bridge's 64-bit direct form: bits 63:60 name the local Hub widget
+ * (9 on crossbar 0), bits 47:0 pass through as the crosstalk offset, which
+ * carries node 0's programmed nasid in bits 39:32 and the RAM offset below.
+ * The RAD1 is not byte-lane self-ordered, so its Device register needs the
+ * verbatim-transfer bit or the Bridge byte-reverses each DMA word; bus
+ * mastering must also be enabled. Node-0 RAM offset P is CPU-physical
+ * module_nasids[0] * NODE_STRIDE + P.
+ */
+#define RAD1_LOCAL_HUB_WIDGET     9
+#define RAD1_DEV_SWAP_DIRECT      (1u << 19)
+#define RAD1_PCI_COMMAND_MASTER   0x0004u
+
 /* Chip-relative; combine with an IOC3's own window, e.g. IOC3_WINDOW. */
 #define KBC_CONTROL 0x09c
 #define KBC_KBD_RECEIVE 0x0a0
@@ -368,6 +475,16 @@ static void program_mio_ioc3(QTestState *qts)
                         BRIDGE_DEV_MEMORY_SPACE | (MIO_IOC3_MMIO >> 20));
 }
 
+static void program_rad1(QTestState *qts)
+{
+    baseio_window_write(qts, BRIDGE_CFG0(MIO_RAD1_DEVICE) + PCI_BAR0,
+                        MIO_RAD1_MMIO);
+    baseio_window_write(qts, BRIDGE_CFG0(MIO_RAD1_DEVICE) + PCI_COMMAND,
+                        PCI_COMMAND_MEMORY);
+    baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XTALK_REG_DATA,
+                        BRIDGE_DEV_MEMORY_SPACE | (MIO_RAD1_MMIO >> 20));
+}
+
 static void test_baseio_timekeeper_storage_reset(void)
 {
     QTestState *qts = start_module();
@@ -498,6 +615,264 @@ static void test_mio_ioc3_subsystem_id(void)
     g_assert_cmphex(baseio_window_read(qts, BRIDGE_CFG0(MIO_IOC3_DEVICE) +
                                        PCI_SUBSYSTEM),
                     ==, SUBSYSTEM(0xc301));
+}
+
+static void test_io6g_rad1_identity(void)
+{
+    QTestState *qts = start_module_io6g();
+
+    program_module(qts);
+    g_assert_cmphex(baseio_window_read(qts, BRIDGE_CFG0(MIO_RAD1_DEVICE) +
+                                       PCI_VENDOR_ID),
+                    ==, MIO_RAD1_ID_PAIR);
+    g_assert_cmphex(baseio_window_read(qts, BRIDGE_CFG0(MIO_RAD1_DEVICE) +
+                                       PCI_CLASS_REVISION) & 0xffu,
+                    ==, MIO_RAD1_REVISION);
+
+    /* Size BAR0 the way a PCI enumerator does: all ones, read the mask. */
+    baseio_window_write(qts, BRIDGE_CFG0(MIO_RAD1_DEVICE) + PCI_BAR0,
+                        0xffffffffu);
+    g_assert_cmphex(baseio_window_read(qts, BRIDGE_CFG0(MIO_RAD1_DEVICE) +
+                                       PCI_BAR0) & ~0xfu,
+                    ==, (uint32_t)-MIO_RAD1_BAR0_SIZE);
+}
+
+/*
+ * Every offset docs/datasheets/mediaio-rad1-audio.md's register map
+ * documents stores whatever the guest last wrote and answers it back on
+ * a later read (hw/audio/sgi-rad1-audio.c's own register-store
+ * approximation, not a captured reset/read contract). An undocumented
+ * BAR0 offset accepts no store at all, so a write there never surfaces on
+ * a later read -- confirming the model keeps unestablished offsets
+ * observable rather than silently absorbing them.
+ */
+static void test_io6g_rad1_registers(void)
+{
+    static const uint32_t bar0_offsets[] = {
+        RAD1_REG_PREDISPATCH_A, RAD1_REG_PREDISPATCH_B,
+        RAD1_REG_SHIFT_LOAD_CLOCK, RAD1_REG_PREDISPATCH_C,
+        RAD1_REG_PREDISPATCH_D, RAD1_REG_PREDISPATCH_E,
+        RAD1_REG_STATUS_DMA_CTRL, RAD1_REG_HALT_TEARDOWN,
+        RAD1_REG_BRINGUP_FIXED_A, RAD1_REG_BRINGUP_FIXED_B,
+        RAD1_REG_MUX_CLOCK_SELECT, RAD1_REG_SHADOW_MASKED,
+        RAD1_REG_MODE_GATED_A, RAD1_REG_LATCH_PULSE,
+        RAD1_REG_SHIFT_LOAD_DATA, RAD1_REG_MODE_GATED_B,
+        RAD1_REG_BRINGUP_FINAL, RAD1_REG_CONVERGENCE_A,
+        RAD1_REG_CONVERGENCE_B,
+    };
+    QTestState *qts = start_module_io6g();
+
+    program_module(qts);
+    program_rad1(qts);
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(bar0_offsets); i++) {
+        uint32_t value = 0xa5000000u | (i << 4);
+
+        baseio_window_write(qts, MIO_RAD1_WINDOW + bar0_offsets[i], value);
+        g_assert_cmphex(baseio_window_read(qts, MIO_RAD1_WINDOW +
+                                           bar0_offsets[i]),
+                        ==, value);
+    }
+
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_UNDOCUMENTED_GAP,
+                        0xdeadbeef);
+    g_assert_cmphex(baseio_window_read(qts, MIO_RAD1_WINDOW +
+                                       RAD1_REG_UNDOCUMENTED_GAP),
+                    ==, 0);
+}
+
+/*
+ * The status-DMA register bank the completion handshake reads. The ring
+ * base/limit registers (both sets) store and answer back like the bring-up
+ * offsets above; the read-only sample-position bank answers its fixed
+ * modeled value whatever is written (the model has no audio data path to
+ * advance it yet); and the 0x5c control register takes a non-start value
+ * (the stop word) as a plain store, exercised here without triggering a DMA.
+ */
+static void test_io6g_rad1_status_dma_registers(void)
+{
+    static const uint32_t bank_offsets[] = {
+        RAD1_REG_STATUS_BASE2_LO, RAD1_REG_STATUS_BASE2_HI,
+        RAD1_REG_STATUS_LIMIT2, RAD1_REG_STATUS_BASE_LO,
+        RAD1_REG_STATUS_LIMIT, RAD1_REG_STATUS_BASE_HI,
+    };
+    QTestState *qts = start_module_io6g();
+    uint32_t pos;
+
+    program_module(qts);
+    program_rad1(qts);
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(bank_offsets); i++) {
+        uint32_t value = 0x5c000000u | (i << 8) | 0x11u;
+
+        baseio_window_write(qts, MIO_RAD1_WINDOW + bank_offsets[i], value);
+        g_assert_cmphex(baseio_window_read(qts, MIO_RAD1_WINDOW +
+                                           bank_offsets[i]),
+                        ==, value);
+    }
+
+    /* Read-only bank: a fixed modeled value, and a write leaves it fixed. */
+    for (pos = RAD1_REG_SAMPLE_POS_FIRST; pos <= RAD1_REG_SAMPLE_POS_LAST;
+         pos += 4) {
+        g_assert_cmphex(baseio_window_read(qts, MIO_RAD1_WINDOW + pos),
+                        ==, 0);
+    }
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_SAMPLE_POS_FIRST,
+                        0x12345678);
+    g_assert_cmphex(baseio_window_read(qts, MIO_RAD1_WINDOW +
+                                       RAD1_REG_SAMPLE_POS_FIRST),
+                    ==, 0);
+
+    /* The stop word is a plain store; only a start word kicks a DMA. */
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_DMA_CTRL,
+                        RAD1_STATUS_STOP);
+    g_assert_cmphex(baseio_window_read(qts, MIO_RAD1_WINDOW +
+                                       RAD1_REG_STATUS_DMA_CTRL),
+                    ==, RAD1_STATUS_STOP);
+}
+
+/* The device reads its descriptors big-endian; ring words move as raw bytes. */
+static void rad1_ring_write(QTestState *qts, uint64_t ram, uint32_t value)
+{
+    uint8_t bytes[sizeof(uint32_t)];
+
+    stl_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, 0, ram, bytes, sizeof(bytes)));
+}
+
+static uint32_t rad1_ring_read(QTestState *qts, uint64_t ram)
+{
+    uint8_t bytes[sizeof(uint32_t)];
+
+    g_assert_true(qtest_memread_cpu(qts, 0, ram, bytes, sizeof(bytes)));
+    return ldl_be_p(bytes);
+}
+
+/*
+ * The status-DMA completion handshake. rad_start_status_dma programs the
+ * host-memory descriptor ring's PCI base into the status base registers, a
+ * count-encoding limit, and a start word into 0x5c; the engine then marks
+ * each processed slot done -- bit 31 of its +0x7c word and the frame bits in
+ * its +0x78 word -- which rad_update_subsys counts to advance the UST/MSC
+ * rate. This places a ring in node-0 RAM, kicks the engine, and confirms the
+ * model set those bits without disturbing the slots' other bits, then that
+ * the one-shot form marks a single slot at the base. Without the handshake
+ * the driver's frame count stays zero and it reports "RAD UST not
+ * incrementing".
+ */
+static void test_io6g_rad1_status_dma_handshake(void)
+{
+    QTestState *qts = start_module_io6g();
+    const uint64_t ring_off = 0x02000000;
+    const uint64_t ring_ram = module_nasids[0] * NODE_STRIDE + ring_off;
+    const uint64_t ring_pci =
+        ((uint64_t)RAD1_LOCAL_HUB_WIDGET << 60) | ring_ram;
+    const uint64_t slot1 = ring_ram + RAD1_SLOT_STRIDE;
+    const unsigned int nslots = 4;
+    const uint32_t limit = RAD1_LIMIT_BASE - nslots * RAD1_SLOT_STRIDE;
+    unsigned int i;
+
+    program_module(qts);
+    program_rad1(qts);
+
+    /*
+     * Bus mastering plus verbatim byte transfer, so the device's big-endian
+     * descriptor writes reach node-0 RAM unswapped (the RAD1 is not byte-lane
+     * self-ordered, so the Bridge would otherwise byte-reverse each word).
+     */
+    baseio_window_write(qts, BRIDGE_CFG0(MIO_RAD1_DEVICE) + PCI_COMMAND,
+                        PCI_COMMAND_MEMORY | RAD1_PCI_COMMAND_MASTER);
+    baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XTALK_REG_DATA,
+                        RAD1_DEV_SWAP_DIRECT | BRIDGE_DEV_MEMORY_SPACE |
+                        (MIO_RAD1_MMIO >> 20));
+
+    /*
+     * Seed each slot's completion words with a distinct not-done pattern, so
+     * the handshake's read-modify-write (bits OR'd in, the rest preserved) is
+     * visible rather than a blind overwrite.
+     */
+    for (i = 0; i < nslots; i++) {
+        uint64_t slot = ring_ram + (uint64_t)i * RAD1_SLOT_STRIDE;
+
+        rad1_ring_write(qts, slot + RAD1_SLOT_DONE_OFFSET, 0x00000010u + i);
+        rad1_ring_write(qts, slot + RAD1_SLOT_FLAGS_OFFSET, 0x00000020u + i);
+    }
+
+    /* Program the ring base and the count-encoding limit, then start. */
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_BASE_LO,
+                        (uint32_t)ring_pci);
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_BASE_HI,
+                        (uint32_t)(ring_pci >> 32));
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_LIMIT, limit);
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_DMA_CTRL,
+                        RAD1_STATUS_START);
+
+    /* The control register took the start word. */
+    g_assert_cmphex(baseio_window_read(qts, MIO_RAD1_WINDOW +
+                                       RAD1_REG_STATUS_DMA_CTRL),
+                    ==, RAD1_STATUS_START);
+
+    /* Every ring slot is marked done, with its seeded low bits preserved. */
+    for (i = 0; i < nslots; i++) {
+        uint64_t slot = ring_ram + (uint64_t)i * RAD1_SLOT_STRIDE;
+
+        g_assert_cmphex(rad1_ring_read(qts, slot + RAD1_SLOT_DONE_OFFSET),
+                        ==, RAD1_SLOT_DONE_BIT | (0x00000010u + i));
+        g_assert_cmphex(rad1_ring_read(qts, slot + RAD1_SLOT_FLAGS_OFFSET),
+                        ==, RAD1_SLOT_FRAME_BITS | (0x00000020u + i));
+    }
+
+    /*
+     * The one-shot form (start word without the ring bit) marks a single slot
+     * at the base. Clear slot 0's done word and confirm the one-shot re-sets
+     * bit 31 there, and leaves the second slot alone.
+     */
+    rad1_ring_write(qts, ring_ram + RAD1_SLOT_DONE_OFFSET, 0);
+    rad1_ring_write(qts, slot1 + RAD1_SLOT_DONE_OFFSET, 0);
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_LIMIT,
+                        0xfffffffcu);
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_DMA_CTRL,
+                        RAD1_STATUS_ONESHOT_START);
+    g_assert_cmphex(rad1_ring_read(qts, ring_ram + RAD1_SLOT_DONE_OFFSET) &
+                    RAD1_SLOT_DONE_BIT, ==, RAD1_SLOT_DONE_BIT);
+    g_assert_cmphex(rad1_ring_read(qts, slot1 +
+                                   RAD1_SLOT_DONE_OFFSET) & RAD1_SLOT_DONE_BIT,
+                    ==, 0);
+}
+
+/*
+ * The free-running UST counter at 0x30. rad_set_ust_offset reads it twice a
+ * fixed delay apart and warns "RAD UST not incrementing" if it moved by fewer
+ * than three ticks; the model derives it from the virtual clock, so stepping
+ * that clock advances it in proportion. Confirm it advances by about the
+ * expected tick count across a clock step (not a constant, not a fixed
+ * just-past-threshold value), and that a write cannot change it.
+ */
+static void test_io6g_rad1_ust_counter(void)
+{
+    QTestState *qts = start_module_io6g();
+    const int64_t step_ns = 80000;                       /* 80 us */
+    const uint32_t expect = step_ns / RAD1_UST_NS_PER_TICK; /* 100 ticks */
+    uint32_t before, after, again;
+
+    program_module(qts);
+    program_rad1(qts);
+
+    before = baseio_window_read(qts, MIO_RAD1_WINDOW + RAD1_REG_UST_COUNTER);
+    qtest_clock_step(qts, step_ns);
+    after = baseio_window_read(qts, MIO_RAD1_WINDOW + RAD1_REG_UST_COUNTER);
+
+    /* Advanced with the clock, by about step_ns/tick (allow flooring slop). */
+    g_assert_cmpuint(after, >, before);
+    g_assert_cmpuint(after - before, >=, expect - 2);
+    g_assert_cmpuint(after - before, <=, expect + 2);
+
+    /* Read-only: a write neither sticks nor rewinds the clock-derived count. */
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_UST_COUNTER,
+                        0xdeadbeef);
+    again = baseio_window_read(qts, MIO_RAD1_WINDOW + RAD1_REG_UST_COUNTER);
+    g_assert_cmphex(again, !=, 0xdeadbeef);
+    g_assert_cmpuint(again, >=, after);
 }
 
 /*
@@ -930,6 +1305,16 @@ int main(int argc, char **argv)
                    test_baseio_timekeeper_backing_reopen);
     qtest_add_func("sn0/baseio/mio-ioc3-subsystem-id",
                    test_mio_ioc3_subsystem_id);
+    qtest_add_func("sn0/baseio/io6g-rad1-identity",
+                   test_io6g_rad1_identity);
+    qtest_add_func("sn0/baseio/io6g-rad1-registers",
+                   test_io6g_rad1_registers);
+    qtest_add_func("sn0/baseio/io6g-rad1-status-dma-registers",
+                   test_io6g_rad1_status_dma_registers);
+    qtest_add_func("sn0/baseio/io6g-rad1-status-dma-handshake",
+                   test_io6g_rad1_status_dma_handshake);
+    qtest_add_func("sn0/baseio/io6g-rad1-ust-counter",
+                   test_io6g_rad1_ust_counter);
     qtest_add_func("sn0/baseio/io6g-ps2", test_io6g_ps2);
     qtest_add_func("sn0/baseio/io6g-mio-keyboard-reaches-bridge-pin-6",
                    test_io6g_mio_keyboard_reaches_bridge_pin_6);
