@@ -16,6 +16,31 @@
 /* The Origin 300 machine carrier of the memory-special space, node zero. */
 #define FETCHOP_MACHINE_BASE UINT64_C(0x30000000000)
 #define FETCHOP_DIAGNOSTIC "sgi-bedrock-md: fetch-and-op "
+#define MEMORY_ERROR 0x60010
+#define MEMORY_ERROR_CLEAR 0x60018
+#define ECC_CONFIG 0x60000
+#define MEMORY_ERROR_READ_CE_VALID (UINT64_C(1) << 52)
+#define MEMORY_ERROR_READ_CE_OVERRUN (UINT64_C(1) << 53)
+#define MEMORY_ERROR_READ_UCE_VALID (UINT64_C(1) << 60)
+#define MEMORY_ERROR_READ_UCE_OVERRUN (UINT64_C(1) << 61)
+#define MEMORY_ERROR_SYNDROME(_s) ((uint64_t)(_s) << 40)
+#define PI_PENDING_MODIFY 0x90
+#define PI_PENDING_1 0xa0
+#define PI1_OFFSET 0x200000
+#define MEMORY_CORRECTABLE (UINT64_C(1) << 61)
+/* The Origin 300's node-named Bedrock register window, crosstalk space. */
+#define BEDROCK_NODE_REGISTERS UINT64_C(0x20001800000)
+#define DIRECTORY_CONFIG 0x40000
+#define DIRECTORY_ERROR 0x40010
+#define DIRECTORY_ERROR_CLEAR 0x40018
+#define DIRECTORY_ERROR_UCE_VALID (UINT64_C(1) << 63)
+#define DIRECTORY_ERROR_CE_VALID (UINT64_C(1) << 61)
+#define DIRECTORY_ERROR_UCE_OVERRUN (UINT64_C(1) << 59)
+#define DIRECTORY_ERROR_CE_OVERRUN (UINT64_C(1) << 57)
+#define DIRECTORY_ERROR_SYNDROME(_s) ((uint64_t)(_s) << 40)
+#define DIRECTORY_HSPEC UINT64_C(0x1c0000000)
+#define DIRECTORY_ERROR_ADDRESS(_offset) \
+    ((DIRECTORY_HSPEC + (_offset)) & (((UINT64_C(1) << 30) - 1) << 3))
 #define MEMORY_BANK_SIZE UINT64_C(0x40000000)
 #define DIRECTORY_BANK_SIZE UINT64_C(0x08000000)
 #define BEDROCK_BASE UINT64_C(0x70000000)
@@ -557,6 +582,8 @@ static void test_backdoors_installed_population(void)
         config |= memory_bank_config(bank, 3);
     }
     qtest_writeq(s, MD(0x8), config);
+    /* Raw patterns need directory ECC ignored, as the PROM's walk has. */
+    qtest_writeq(s, MD(0x40000), 2);
     qtest_writeq(s, DIRECTORY(0), 0x13579bdf);
     qtest_writeq(s, DIRECTORY(DIRECTORY_BANK_SIZE), 0x2468ace0);
     qtest_writeb(s, ECC(7), 0x35);
@@ -850,6 +877,8 @@ static void test_directory_bank_translation(void)
 
     /* Selector one maps software bank one to locational bank zero. */
     qtest_writeq(s, MD(0x8), (UINT64_C(1) << 32) | config);
+    /* Raw patterns need directory ECC ignored, as the PROM's walk has. */
+    qtest_writeq(s, MD(0x40000), 2);
     qtest_writeq(s, DIRECTORY(DIRECTORY_BANK_SIZE + 0x20), value);
     g_assert_cmphex(qtest_readq(s,
                     DIRECTORY(DIRECTORY_BANK_SIZE + 0x20)), ==, value);
@@ -1108,6 +1137,8 @@ static void test_reset(void)
     program_all(s);
     qtest_writeq(s, MD(0x8), memory_bank_config(0, 5) |
                               memory_bank_config(1, 5));
+    /* Raw patterns need directory ECC ignored, as the PROM's walk has. */
+    qtest_writeq(s, MD(0x40000), 2);
     qtest_writeq(s, DIRECTORY(DIRECTORY_LINE_01A00000), 0x76543210);
     qtest_writeq(s, DIRECTORY(DIRECTORY_LINE_01A00000 + 8),
                  UINT64_C(0x0123456789abcdef));
@@ -1246,6 +1277,8 @@ static void test_directory_storage(void)
     QTestState *s = start("");
 
     qtest_writeq(s, MD(0x8), memory_bank_config(0, 4));
+    /* Raw patterns need directory ECC ignored, as the PROM's walk has. */
+    qtest_writeq(s, MD(0x40000), 2);
     g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LINE_01A00000)),
                     ==, 0);
     g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LINE_01A00000 + 8)),
@@ -1287,7 +1320,7 @@ static void test_directory_storage(void)
                                DIRECTORY(DIRECTORY_LINE_01A00000 + 0x18)),
                     ==, UINT64_C(0x0123456789abcdef));
 
-    qtest_writeq(s, MD(0x40000), 1);
+    qtest_writeq(s, MD(0x40000), 3);
     qtest_writeq(s, DIRECTORY(DIRECTORY_OTHER_LINE),
                  UINT64_C(0x89abcdef01234567));
     g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_OTHER_LINE)),
@@ -1305,6 +1338,8 @@ static void test_directory_compatibility_storage(void)
 
     qtest_writeq(s, MD(0x8), memory_bank_config(0, 5) |
                               memory_bank_config(1, 5));
+    /* Raw patterns need directory ECC ignored, as the PROM's walk has. */
+    qtest_writeq(s, MD(0x40000), 2);
     qtest_writeq(s, DIRECTORY(offsets[0]),
                  UINT64_C(0x89abcdef01234567));
     g_assert_cmphex(qtest_readq(s, DIRECTORY(offsets[0])), ==, 0x01234567);
@@ -1313,7 +1348,7 @@ static void test_directory_compatibility_storage(void)
     g_assert_cmphex(qtest_readq(s, DIRECTORY(offsets[1])), ==,
                     UINT64_C(0xfedcba9876543210));
 
-    qtest_writeq(s, MD(0x40000), 1);
+    qtest_writeq(s, MD(0x40000), 3);
     for (unsigned i = 0; i < count; i++) {
         uint64_t value = UINT64_C(0xa500000000000000) | i;
 
@@ -1325,9 +1360,9 @@ static void test_directory_compatibility_storage(void)
     }
     qtest_writeq(s, DIRECTORY(offsets[0]),
                  UINT64_C(0x89abcdef01234567));
-    qtest_writeq(s, MD(0x40000), 0);
+    qtest_writeq(s, MD(0x40000), 2);
     g_assert_cmphex(qtest_readq(s, DIRECTORY(offsets[0])), ==, 0x01234567);
-    qtest_writeq(s, MD(0x40000), 1);
+    qtest_writeq(s, MD(0x40000), 3);
     g_assert_cmphex(qtest_readq(s, DIRECTORY(offsets[0])), ==,
                     UINT64_C(0x89abcdef01234567));
     qtest_quit(s);
@@ -1345,7 +1380,7 @@ static void test_directory_compatibility_capacity(void)
 
     qtest_writeq(s, MD(0x8), memory_bank_config(0, 5) |
                               memory_bank_config(1, 5));
-    qtest_writeq(s, MD(0x40000), 1);
+    qtest_writeq(s, MD(0x40000), 3);
     qtest_writeq(s, DIRECTORY(0x04001230), UINT64_C(0xfeedfacecafebeef));
     for (unsigned i = 0; i < count - 1; i++) {
         qtest_writeq(s, DIRECTORY(offsets[i]), admitted++);
@@ -1390,6 +1425,8 @@ static void test_directory_installed_absent_bank_compat(void)
     /* Locational bank 0 is absent; within stays inside the declared size. */
     s = start_with_installed_memory(admitted_extra);
     qtest_writeq(s, MD(0x8), memory_bank_config(0, 3));
+    /* Raw patterns need directory ECC ignored, as the PROM's walk has. */
+    qtest_writeq(s, MD(0x40000), 2);
     qtest_writeq(s, DIRECTORY(0x20), UINT64_C(0x89abcdef01234567));
     g_assert_cmphex(qtest_readq(s, DIRECTORY(0x20)), ==, 0x01234567);
     qtest_quit(s);
@@ -1431,7 +1468,9 @@ static void test_directory_access_policy(void)
     };
 
     qtest_writeq(s, MD(0x8), memory_bank_config(0, 4));
-    qtest_writeq(s, MD(0x40000), 1);
+    /* Raw patterns need directory ECC ignored, as the PROM's walk has. */
+    qtest_writeq(s, MD(0x40000), 2);
+    qtest_writeq(s, MD(0x40000), 3);
     for (unsigned i = 0; i < ARRAY_SIZE(addr); i++) {
         qtest_writeq(s, addr[i], value[i]);
         qtest_writeb(s, addr[i], 0);
@@ -1474,6 +1513,8 @@ static void test_directory_fitted_memory(void)
     QTestState *s = start_with_memory("256M", "");
 
     qtest_writeq(s, MD(0x8), memory_bank_config(0, 3));
+    /* Raw patterns need directory ECC ignored, as the PROM's walk has. */
+    qtest_writeq(s, MD(0x40000), 2);
     qtest_writeq(s, DIRECTORY(DIRECTORY_LAST_256M), 0x2468ace0);
     g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LAST_256M)),
                     ==, 0x2468ace0);
@@ -1494,6 +1535,8 @@ static void test_parent_exports_directory(void)
     QTestState *s = start_parent();
 
     qtest_writeq(s, BEDROCK_MD(0x8), memory_bank_config(0, 4));
+    /* Raw patterns need directory ECC ignored, as the PROM's walk has. */
+    qtest_writeq(s, BEDROCK_MD(0x40000), 2);
     qtest_writeq(s, DIRECTORY(DIRECTORY_LINE_01A00000), 0x13579bdf);
     g_assert_cmphex(qtest_readq(s, DIRECTORY(DIRECTORY_LINE_01A00000)),
                     ==, 0x13579bdf);
@@ -1962,12 +2005,13 @@ static void test_ecc_carrier(void)
     g_assert_cmphex(qtest_readw(s, ECC(6)), ==, 0);
     qtest_writew(s, ECC(6), 0xa55a);
     g_assert_cmphex(qtest_readw(s, ECC(6)), ==, 0xa55a);
-    g_assert_cmphex(qtest_readb(s, ECC(7)), ==, 0xa5);
-    g_assert_cmphex(qtest_readb(s, ECC(6)), ==, 0x5a);
+    /* Byte carrier 7 is doubleword 0's, the halfword's low half. */
+    g_assert_cmphex(qtest_readb(s, ECC(7)), ==, 0x5a);
+    g_assert_cmphex(qtest_readb(s, ECC(6)), ==, 0xa5);
 
     qtest_writeb(s, ECC(7), 0x12);
     qtest_writeb(s, ECC(6), 0x34);
-    g_assert_cmphex(qtest_readw(s, ECC(6)), ==, 0x1234);
+    g_assert_cmphex(qtest_readw(s, ECC(6)), ==, 0x3412);
 
     qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD_LOW), 0x5aa5);
     qtest_writew(s, ECC(ECC_ADMITTED_HALFWORD_HIGH), 0x9999);
@@ -1975,7 +2019,7 @@ static void test_ecc_carrier(void)
                     0x5aa5);
     g_assert_cmphex(qtest_readw(s, ECC(ECC_ADMITTED_HALFWORD_HIGH)), ==,
                     0x9999);
-    g_assert_cmphex(qtest_readw(s, ECC(6)), ==, 0x1234);
+    g_assert_cmphex(qtest_readw(s, ECC(6)), ==, 0x3412);
     qtest_quit(s);
 }
 
@@ -2200,6 +2244,12 @@ static void test_fetchop_operations(void)
     g_assert_cmphex(qtest_readq(s, FETCHOP(0x1010)), ==, 0);
     g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==, UINT64_MAX);
 
+    /* A store at the increment and decrement offsets ignores its data. */
+    qtest_writeq(s, FETCHOP(0x1008), UINT64_C(0x1234));
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==, 0);
+    qtest_writeq(s, FETCHOP(0x1010), UINT64_C(0x1234));
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==, UINT64_MAX);
+
     /* Store-and and store-or. */
     qtest_writeq(s, FETCHOP(0x1018), UINT64_C(0x0f0f0f0f0f0f0f0f));
     g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==,
@@ -2207,6 +2257,36 @@ static void test_fetchop_operations(void)
     qtest_writeq(s, FETCHOP(0x1020), UINT64_C(0xf000000000000000));
     g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==,
                     UINT64_C(0xff0f0f0f0f0f0f0f));
+
+    /*
+     * 32-bit forms: bit 2 names the high (0) or low (4) word; a plain store
+     * reaches that word alone, an operation returns that word of the old
+     * value, and-or masks apply to it, increment and decrement are whole.
+     */
+    qtest_writel(s, FETCHOP(0x1004), 0xfffffffe);
+    qtest_writel(s, FETCHOP(0x1000), 0x11223344);
+    g_assert_cmphex(qtest_readl(s, FETCHOP(0x1004)), ==, 0xfffffffe);
+    g_assert_cmphex(qtest_readl(s, FETCHOP(0x1000)), ==, 0x11223344);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==,
+                    UINT64_C(0x11223344fffffffe));
+    g_assert_cmphex(qtest_readl(s, FETCHOP(0x100c)), ==, 0xfffffffe);
+    g_assert_cmphex(qtest_readl(s, FETCHOP(0x1008)), ==, 0x11223344);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==,
+                    UINT64_C(0x1122334500000000));
+    qtest_writel(s, FETCHOP(0x1014), 0);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==,
+                    UINT64_C(0x11223344ffffffff));
+    g_assert_cmphex(qtest_readl(s, FETCHOP(0x1010)), ==, 0x11223344);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==,
+                    UINT64_C(0x11223344fffffffe));
+    qtest_writel(s, FETCHOP(0x101c), 0x0000ffff);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==,
+                    UINT64_C(0x112233440000fffe));
+    qtest_writel(s, FETCHOP(0x1020), 0xf0000000);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==,
+                    UINT64_C(0xf12233440000fffe));
+    g_assert_cmphex(qtest_readl(s, FETCHOP(0x101c)), ==, 0x0000fffe);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==, 0);
 
     /* The next block is its own variable; the rest of a block is unreached. */
     g_assert_cmphex(qtest_readq(s, FETCHOP(0x1048)), ==,
@@ -2228,16 +2308,18 @@ static void test_fetchop_rejections(void)
 
     qtest_writeq(s, MD(0x8), memory_bank_config(0, 1));
     qtest_writeq(s, MEMORY(0x2000), 0x55);
-    /* Offsets that name no operation, in each direction. */
+    /* Offsets that name no operation, in each direction and width. */
     g_assert_cmphex(qtest_readq(s, FETCHOP(0x2020)), ==, 0);
     g_assert_cmphex(qtest_readq(s, FETCHOP(0x2038)), ==, 0);
-    qtest_writeq(s, FETCHOP(0x2008), 1);
+    g_assert_cmphex(qtest_readl(s, FETCHOP(0x2024)), ==, 0);
+    qtest_writeq(s, FETCHOP(0x2028), 1);
     qtest_writeq(s, FETCHOP(0x2038), 1);
     /* Narrow and unaligned accesses. */
-    g_assert_cmphex(qtest_readl(s, FETCHOP(0x2000)), ==, 0);
-    qtest_writel(s, FETCHOP(0x2000), 0x99);
+    g_assert_cmphex(qtest_readw(s, FETCHOP(0x2000)), ==, 0);
+    qtest_writew(s, FETCHOP(0x2000), 0x99);
     qtest_writeb(s, FETCHOP(0x2008), 1);
     g_assert_cmphex(qtest_readq(s, FETCHOP(0x2004)), ==, 0);
+    g_assert_cmphex(qtest_readl(s, FETCHOP(0x2002)), ==, 0);
     /* A block in a bank the memory decoder does not answer. */
     g_assert_cmphex(qtest_readq(s, FETCHOP(MEMORY_BANK_SIZE + 8)), ==, 0);
     g_assert_cmphex(qtest_readq(s, MEMORY(0x2000)), ==, 0x55);
@@ -2245,30 +2327,36 @@ static void test_fetchop_rejections(void)
 
     contents = log_file_take(log);
     g_assert_nonnull(strstr(contents,
-        "sgi-bedrock-md: fetch-and-op read at offset 0x000002020 size 8 "
+        "sgi-bedrock-md: fetch-and-op read at offset 0x000002020 "
         "rejected: no such operation"));
     g_assert_nonnull(strstr(contents,
-        "sgi-bedrock-md: fetch-and-op read at offset 0x000002038 size 8 "
+        "sgi-bedrock-md: fetch-and-op read at offset 0x000002038 "
         "rejected: no such operation"));
     g_assert_nonnull(strstr(contents,
-        "sgi-bedrock-md: fetch-and-op write at offset 0x000002008 size 8 "
+        "sgi-bedrock-md: fetch-and-op read at offset 0x000002024 "
         "rejected: no such operation"));
     g_assert_nonnull(strstr(contents,
-        "sgi-bedrock-md: fetch-and-op write at offset 0x000002038 size 8 "
+        "sgi-bedrock-md: fetch-and-op write at offset 0x000002028 "
         "rejected: no such operation"));
     g_assert_nonnull(strstr(contents,
-        "sgi-bedrock-md: fetch-and-op read at offset 0x000002000 size 4 "
-        "rejected: not a 64-bit access"));
+        "sgi-bedrock-md: fetch-and-op write at offset 0x000002038 "
+        "rejected: no such operation"));
     g_assert_nonnull(strstr(contents,
-        "sgi-bedrock-md: fetch-and-op write at offset 0x000002000 size 4 "
-        "rejected: not a 64-bit access"));
+        "sgi-bedrock-md: fetch-and-op read at offset 0x000002000 size 2 "
+        "rejected: not a 64-bit or 32-bit access"));
+    g_assert_nonnull(strstr(contents,
+        "sgi-bedrock-md: fetch-and-op write at offset 0x000002000 size 2 "
+        "rejected: not a 64-bit or 32-bit access"));
     g_assert_nonnull(strstr(contents,
         "sgi-bedrock-md: fetch-and-op write at offset 0x000002008 size 1 "
-        "rejected: not a 64-bit access"));
+        "rejected: not a 64-bit or 32-bit access"));
     g_assert_nonnull(strstr(contents,
         "sgi-bedrock-md: fetch-and-op read at offset 0x000002004 size 8 "
         "rejected: unaligned"));
-    g_assert_cmpuint(log_count(contents, FETCHOP_DIAGNOSTIC), ==, 8);
+    g_assert_nonnull(strstr(contents,
+        "sgi-bedrock-md: fetch-and-op read at offset 0x000002002 size 4 "
+        "rejected: unaligned"));
+    g_assert_cmpuint(log_count(contents, FETCHOP_DIAGNOSTIC), ==, 10);
     g_assert_nonnull(strstr(contents,
         "sgi-bedrock-md: memory read at offset 0x40000000 rejected: "
         "locational bank 1 is disabled"));
@@ -2313,9 +2401,474 @@ static void test_origin300_fetchop(void)
     unlink(prom);
 }
 
+/*
+ * The memory ECC code's column table as the Origin 300's memory diagnostic
+ * carries it (docs/datasheets/bedrock-memory-directory.md, "Memory ECC").
+ * Kept here in full so the check is judged against the code, not against
+ * whatever the model happens to compute.
+ */
+static const uint8_t ecc_column[72] = {
+    0x13, 0x23, 0x43, 0x83, 0x2f, 0xf1, 0x0d, 0x07,
+    0xd0, 0x70, 0x4f, 0xf8, 0x61, 0x62, 0x64, 0x68,
+    0x1c, 0x2c, 0x4c, 0x8c, 0x15, 0x25, 0x45, 0x85,
+    0x19, 0x29, 0x49, 0x89, 0x1a, 0x2a, 0x4a, 0x8a,
+    0x51, 0x52, 0x54, 0x58, 0x91, 0x92, 0x94, 0x98,
+    0xa1, 0xa2, 0xa4, 0xa8, 0x31, 0x32, 0x34, 0x38,
+    0x16, 0x26, 0x46, 0x86, 0x1f, 0xf2, 0x0b, 0x0e,
+    0xb0, 0xe0, 0x8f, 0xf4, 0xc1, 0xc2, 0xc4, 0xc8,
+    0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80,
+};
+
+static uint8_t ecc_of(uint64_t data)
+{
+    uint8_t ecc = 0;
+
+    for (unsigned bit = 0; bit < 64; bit++) {
+        if (data & (UINT64_C(1) << bit)) {
+            ecc ^= ecc_column[bit];
+        }
+    }
+    return ecc;
+}
+
+/* The byte carrier of doubleword @index's ECC byte in software bank 0. */
+#define ECC_BYTE(_index) ECC((_index) ^ 7)
+
+/*
+ * A doubleword whose backdoor-written ECC byte disagrees with its data is
+ * checked on every read: a single-bit error is corrected and latched with
+ * its syndrome and address, a check-bit error latched without changing the
+ * data, and a double-bit error latched as uncorrectable and refused. A data
+ * write regenerates the ECC and ends the checking; the ignore bit suspends it.
+ */
+static void test_ecc_check_on_read(void)
+{
+    const uint64_t data = UINT64_C(0x0123456789abcdef);
+    const uint64_t address = 0x100;
+    const unsigned index = address / 8;
+    QTestState *s = start("");
+
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 1));
+    qtest_writeq(s, MEMORY(address), data);
+    /* The backdoor reads the code's own byte for data it never overrode. */
+    g_assert_cmphex(qtest_readb(s, ECC_BYTE(index)), ==, ecc_of(data));
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR)), ==, 0);
+
+    /*
+     * Data bit 5 flipped: the read returns the corrected word, latches the
+     * syndrome and address, and scrubs the word and its check byte, so the
+     * next read is clean and the backdoor shows the code's byte again.
+     */
+    qtest_writeb(s, ECC_BYTE(index), ecc_of(data) ^ ecc_column[5]);
+    g_assert_cmphex(qtest_readb(s, ECC_BYTE(index)), ==,
+                    ecc_of(data) ^ ecc_column[5]);
+    g_assert_cmphex(qtest_readl(s, MEMORY(address + 4)), ==,
+                    (uint32_t)(data ^ (UINT64_C(1) << 5)));
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR)), ==,
+                    MEMORY_ERROR_READ_CE_VALID |
+                    MEMORY_ERROR_SYNDROME(ecc_column[5]) | address);
+    g_assert_cmphex(qtest_readq(s, MEMORY(address)), ==,
+                    data ^ (UINT64_C(1) << 5));
+    g_assert_cmphex(qtest_readb(s, ECC_BYTE(index)), ==,
+                    ecc_of(data ^ (UINT64_C(1) << 5)));
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR)), ==,
+                    MEMORY_ERROR_READ_CE_VALID |
+                    MEMORY_ERROR_SYNDROME(ecc_column[5]) | address);
+    /* A second correctable error while the first is recorded: overrun. */
+    qtest_writeb(s, ECC_BYTE(index + 1), ecc_column[0]);
+    g_assert_cmphex(qtest_readb(s, MEMORY(address + 15)), ==, 1);
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR_CLEAR)), ==,
+                    MEMORY_ERROR_READ_CE_VALID | MEMORY_ERROR_READ_CE_OVERRUN |
+                    MEMORY_ERROR_SYNDROME(ecc_column[5]) | address);
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR_CLEAR)), ==, 0);
+    qtest_writeq(s, MEMORY(address), data);
+
+    /* The ignore bit returns the raw word, latches and scrubs nothing. */
+    qtest_writeb(s, ECC_BYTE(index), ecc_of(data) ^ ecc_column[5]);
+    qtest_writeq(s, MD(ECC_CONFIG), 1);
+    g_assert_cmphex(qtest_readq(s, MEMORY(address)), ==, data);
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR)), ==, 0);
+    g_assert_cmphex(qtest_readb(s, ECC_BYTE(index)), ==,
+                    ecc_of(data) ^ ecc_column[5]);
+    qtest_writeq(s, MD(ECC_CONFIG), 0);
+    g_assert_cmphex(qtest_readq(s, MEMORY(address)), ==,
+                    data ^ (UINT64_C(1) << 5));
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR_CLEAR)), ==,
+                    MEMORY_ERROR_READ_CE_VALID |
+                    MEMORY_ERROR_SYNDROME(ecc_column[5]) | address);
+    qtest_writeq(s, MEMORY(address), data);
+
+    /* Check bit 4 flipped: the data is right, the syndrome names the bit. */
+    qtest_writeb(s, ECC_BYTE(index), ecc_of(data) ^ ecc_column[64 + 4]);
+    g_assert_cmphex(qtest_readq(s, MEMORY(address)), ==, data);
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR_CLEAR)), ==,
+                    MEMORY_ERROR_READ_CE_VALID |
+                    MEMORY_ERROR_SYNDROME(ecc_column[64 + 4]) | address);
+    g_assert_cmphex(qtest_readb(s, ECC_BYTE(index)), ==, ecc_of(data));
+
+    /* A write regenerates the ECC: no error, and the backdoor agrees. */
+    qtest_writeb(s, ECC_BYTE(index), ecc_of(data) ^ ecc_column[9]);
+    qtest_writeq(s, MEMORY(address), ~data);
+    g_assert_cmphex(qtest_readq(s, MEMORY(address)), ==, ~data);
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR)), ==, 0);
+    g_assert_cmphex(qtest_readb(s, ECC_BYTE(index)), ==, ecc_of(~data));
+
+    /* A narrow write merges into the doubleword and regenerates as well. */
+    qtest_writeb(s, ECC_BYTE(index), ecc_of(~data) ^ ecc_column[63]);
+    qtest_writeb(s, MEMORY(address + 7), 0xa5);
+    g_assert_cmphex(qtest_readq(s, MEMORY(address)), ==,
+                    (~data & ~UINT64_C(0xff)) | 0xa5);
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR)), ==, 0);
+
+    /* Two bits flipped: uncorrectable, refused, latched, not scrubbed. */
+    qtest_writeb(s, ECC_BYTE(index),
+                 ecc_of((~data & ~UINT64_C(0xff)) | 0xa5) ^
+                 ecc_column[1] ^ ecc_column[2]);
+    g_assert_cmphex(qtest_readq(s, MEMORY(address)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR)), ==,
+                    MEMORY_ERROR_READ_UCE_VALID |
+                    MEMORY_ERROR_SYNDROME(ecc_column[1] ^ ecc_column[2]) |
+                    address);
+    g_assert_cmphex(qtest_readq(s, MEMORY(address)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR)), ==,
+                    MEMORY_ERROR_READ_UCE_VALID |
+                    MEMORY_ERROR_READ_UCE_OVERRUN |
+                    MEMORY_ERROR_SYNDROME(ecc_column[1] ^ ecc_column[2]) |
+                    address);
+    /* A correctable error after it keeps the uncorrectable record. */
+    qtest_writeq(s, MEMORY(address + 8), 1);
+    qtest_writeb(s, ECC_BYTE(index + 1), ecc_of(1) ^ ecc_column[0]);
+    g_assert_cmphex(qtest_readq(s, MEMORY(address + 8)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR_CLEAR)), ==,
+                    MEMORY_ERROR_READ_UCE_VALID |
+                    MEMORY_ERROR_READ_UCE_OVERRUN |
+                    MEMORY_ERROR_READ_CE_VALID | MEMORY_ERROR_READ_CE_OVERRUN |
+                    MEMORY_ERROR_SYNDROME(ecc_column[1] ^ ecc_column[2]) |
+                    address);
+    /* The uncorrectable word is written over: clean again. */
+    qtest_writeq(s, MEMORY(address), 0);
+    g_assert_cmphex(qtest_readq(s, MEMORY(address)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR)), ==, 0);
+    /* Writes to the error registers change nothing. */
+    qtest_writeq(s, MD(MEMORY_ERROR), UINT64_MAX);
+    qtest_writeq(s, MD(MEMORY_ERROR_CLEAR), UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR)), ==, 0);
+    qtest_quit(s);
+}
+
+/* A halfword carrier write overrides two doublewords' bytes at once. */
+static void test_ecc_halfword_injection(void)
+{
+    QTestState *s = start("");
+
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 1));
+    /* The low half is doubleword 0's byte, the high half doubleword 1's. */
+    qtest_writew(s, ECC(6), (ecc_column[63] << 8) | ecc_column[0]);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0)), ==, 1);
+    g_assert_cmphex(qtest_readq(s, MEMORY(8)), ==, UINT64_C(1) << 63);
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR_CLEAR)), ==,
+                    MEMORY_ERROR_READ_CE_VALID | MEMORY_ERROR_READ_CE_OVERRUN |
+                    MEMORY_ERROR_SYNDROME(ecc_column[0]));
+    /* Both words were scrubbed to the codewords the corrections made. */
+    g_assert_cmphex(qtest_readw(s, ECC(6)), ==,
+                    (ecc_column[63] << 8) | ecc_column[0]);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0)), ==, 1);
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR)), ==, 0);
+    qtest_writeq(s, MEMORY(0), 0);
+    g_assert_cmphex(qtest_readw(s, ECC(6)), ==, ecc_column[63] << 8);
+    qtest_quit(s);
+}
+
+/* The checked doubleword follows a bank-select relocation of its bank. */
+static void test_ecc_check_follows_bank_select(void)
+{
+    QTestState *s = start_with_installed_memory("");
+
+    qtest_writeq(s, MD(0x8), (UINT64_C(2) << 32) | memory_bank_config(2, 3) |
+                              memory_bank_config(3, 3));
+    qtest_writeq(s, MEMORY(0x1000), 0x30);
+    qtest_writeb(s, ECC_BYTE(0x1000 / 8), ecc_of(0x30) ^ ecc_column[0]);
+    qtest_writeq(s, MD(0x8), memory_bank_config(2, 3) |
+                              memory_bank_config(3, 3));
+    g_assert_cmphex(qtest_readq(s, MEMORY(2 * MEMORY_BANK_SIZE + 0x1000)),
+                    ==, 0x31);
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR_CLEAR)), ==,
+                    MEMORY_ERROR_READ_CE_VALID |
+                    MEMORY_ERROR_SYNDROME(ecc_column[0]) |
+                    (2 * MEMORY_BANK_SIZE + 0x1000));
+    qtest_quit(s);
+}
+
+/* Cold reset ends every check and clears the error record. */
+static void test_ecc_check_reset(void)
+{
+    QTestState *s = start("");
+
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 1));
+    qtest_writeq(s, MEMORY(0x40), 2);
+    qtest_writeb(s, ECC_BYTE(8), ecc_of(2) ^ ecc_column[0]);
+    qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 1));
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x40)), ==, 2);
+    g_assert_cmphex(qtest_readb(s, ECC_BYTE(8)), ==, ecc_of(2));
+    qtest_quit(s);
+}
+
+/* A correctable error raises bank-1 bit 61 on both processor interfaces. */
+static void test_parent_ecc_interrupt(void)
+{
+    QTestState *s = start_parent();
+
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/bedrock", 6, ECC_BASE);
+    qtest_writeq(s, BEDROCK_MD(0x8), memory_bank_config(0, 1));
+    g_assert_cmphex(qtest_readq(s, BEDROCK_BASE + PI_PENDING_1) &
+                    MEMORY_CORRECTABLE, ==, 0);
+    qtest_writeq(s, MEMORY(0x80), 0);
+    qtest_writeb(s, ECC_BYTE(0x10), ecc_column[7]);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x80)), ==, 0x80);
+    g_assert_cmphex(qtest_readq(s, BEDROCK_BASE + PI_PENDING_1) &
+                    MEMORY_CORRECTABLE, ==, MEMORY_CORRECTABLE);
+    g_assert_cmphex(qtest_readq(s, BEDROCK_BASE + PI1_OFFSET + PI_PENDING_1) &
+                    MEMORY_CORRECTABLE, ==, MEMORY_CORRECTABLE);
+    /* Software clears it through the pending-modify register. */
+    qtest_writeq(s, BEDROCK_BASE + PI_PENDING_MODIFY, (1 << 6) | 61);
+    g_assert_cmphex(qtest_readq(s, BEDROCK_BASE + PI_PENDING_1) &
+                    MEMORY_CORRECTABLE, ==, 0);
+    g_assert_cmphex(qtest_readq(s, BEDROCK_BASE + PI1_OFFSET + PI_PENDING_1) &
+                    MEMORY_CORRECTABLE, ==, MEMORY_CORRECTABLE);
+    qtest_quit(s);
+}
+
+/*
+ * The Origin 300's memory diagnostic injects at physical 0x506000 through
+ * the machine's ECC carrier and expects the corrected word, the error
+ * record through the local register window and the interrupt.
+ */
+static void test_origin300_ecc_check(void)
+{
+    g_autofree char *prom = empty_prom_new();
+    g_autofree char *quoted_prom = g_shell_quote(prom);
+    QTestState *s = qtest_initf("-M origin300 -cpu R14000 -smp 2 "
+                                "-m 512M -bios %s -S", quoted_prom);
+    const uint64_t address = 0x506000;
+    const uint64_t carrier = UINT64_C(0x10140000000) + ((address / 8) ^ 7);
+
+    qtest_writeq(s, SELFTEST_MACHINE(0x8),
+                 (UINT64_C(2) << 32) | memory_bank_config(2, 3) |
+                 memory_bank_config(3, 3));
+    qtest_writeq(s, address, 0);
+    g_assert_cmphex(qtest_readb(s, carrier), ==, 0);
+    qtest_writeb(s, carrier, ecc_column[0]);
+    g_assert_cmphex(qtest_readq(s, address), ==, 1);
+    g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(MEMORY_ERROR)), ==,
+                    MEMORY_ERROR_READ_CE_VALID |
+                    MEMORY_ERROR_SYNDROME(ecc_column[0]) | address);
+    g_assert_cmphex(qtest_readq(s, BEDROCK_NODE_REGISTERS + PI_PENDING_1) &
+                    MEMORY_CORRECTABLE, ==, MEMORY_CORRECTABLE);
+    g_assert_cmphex(qtest_readq(s, BEDROCK_NODE_REGISTERS + PI1_OFFSET +
+                                PI_PENDING_1) & MEMORY_CORRECTABLE, ==,
+                    MEMORY_CORRECTABLE);
+    qtest_writeq(s, address, 0);
+    g_assert_cmphex(qtest_readq(s, address), ==, 0);
+    g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(MEMORY_ERROR_CLEAR)), ==,
+                    MEMORY_ERROR_READ_CE_VALID |
+                    MEMORY_ERROR_SYNDROME(ecc_column[0]) | address);
+    g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(MEMORY_ERROR)), ==, 0);
+    qtest_quit(s);
+    unlink(prom);
+}
+
+/*
+ * The directory word carries its own check field (premium: bits 37:32 and
+ * 48; standard: 21:16). A backdoor write regenerates it unless directory
+ * ECC is ignored, in which case a non-codeword is stored as written and the
+ * next read of its memory line checks it: a single-bit error is corrected
+ * in the stored word and latched with the syndrome and the word's Hub
+ * special address, a double-bit error latched as uncorrectable and refused.
+ * The syndromes are the Origin 300 directory diagnostic's own columns.
+ */
+static void test_directory_ecc_check(void)
+{
+    const uint64_t line = 0x2000;
+    const uint64_t word = (line >> 3) & UINT64_C(0x3ffffff0);
+    QTestState *s = start("");
+
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 1));
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 1);
+    qtest_writeq(s, DIRECTORY(word), 0);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(word)), ==, 0);
+    qtest_writeq(s, DIRECTORY(word), 1);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(word)), ==,
+                    UINT64_C(0x0000001f00000001));
+    g_assert_cmphex(qtest_readq(s, MD(DIRECTORY_ERROR)), ==, 0);
+
+    /* Data bit 0 flipped: the read corrects the stored word and latches. */
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 3);
+    qtest_writeq(s, DIRECTORY(word), UINT64_C(0x0000001f00000000));
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(word)), ==,
+                    UINT64_C(0x0000001f00000000));
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 1);
+    qtest_readq(s, MEMORY(line));
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(word)), ==,
+                    UINT64_C(0x0000001f00000001));
+    g_assert_cmphex(qtest_readq(s, MD(DIRECTORY_ERROR)), ==,
+                    DIRECTORY_ERROR_CE_VALID | DIRECTORY_ERROR_SYNDROME(0x1f) |
+                    DIRECTORY_ERROR_ADDRESS(word));
+    qtest_readq(s, MEMORY(line + 0x78));
+    g_assert_cmphex(qtest_readq(s, MD(DIRECTORY_ERROR_CLEAR)), ==,
+                    DIRECTORY_ERROR_CE_VALID | DIRECTORY_ERROR_SYNDROME(0x1f) |
+                    DIRECTORY_ERROR_ADDRESS(word));
+    g_assert_cmphex(qtest_readq(s, MD(DIRECTORY_ERROR)), ==, 0);
+
+    /* Check bit 0 flipped: the word becomes the zero codeword. */
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 3);
+    qtest_writeq(s, DIRECTORY(word), UINT64_C(1) << 32);
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 1);
+    qtest_readb(s, MEMORY(line + 1));
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(word)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MD(DIRECTORY_ERROR_CLEAR)), ==,
+                    DIRECTORY_ERROR_CE_VALID | DIRECTORY_ERROR_SYNDROME(0x01) |
+                    DIRECTORY_ERROR_ADDRESS(word));
+
+    /* With directory ECC ignored a read checks nothing. */
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 3);
+    qtest_writeq(s, DIRECTORY(word), UINT64_C(0x0000001f00000000));
+    qtest_readq(s, MEMORY(line));
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(word)), ==,
+                    UINT64_C(0x0000001f00000000));
+    g_assert_cmphex(qtest_readq(s, MD(DIRECTORY_ERROR)), ==, 0);
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 1);
+    qtest_readq(s, MEMORY(line));
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(word)), ==,
+                    UINT64_C(0x0000001f00000001));
+    g_assert_cmphex(qtest_readq(s, MD(DIRECTORY_ERROR_CLEAR)), ==,
+                    DIRECTORY_ERROR_CE_VALID | DIRECTORY_ERROR_SYNDROME(0x1f) |
+                    DIRECTORY_ERROR_ADDRESS(word));
+
+    /* Two data bits: uncorrectable, refused, latched, left as stored. */
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 3);
+    qtest_writeq(s, DIRECTORY(word), 3);
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 1);
+    qtest_writeq(s, MEMORY(line), UINT64_C(0x1234));
+    g_assert_cmphex(qtest_readq(s, MEMORY(line)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MD(DIRECTORY_ERROR)), ==,
+                    DIRECTORY_ERROR_UCE_VALID | DIRECTORY_ERROR_SYNDROME(0x30) |
+                    DIRECTORY_ERROR_ADDRESS(word));
+    g_assert_cmphex(qtest_readq(s, MEMORY(line)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MD(DIRECTORY_ERROR)), ==,
+                    DIRECTORY_ERROR_UCE_VALID | DIRECTORY_ERROR_UCE_OVERRUN |
+                    DIRECTORY_ERROR_SYNDROME(0x30) |
+                    DIRECTORY_ERROR_ADDRESS(word));
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(word)), ==, 3);
+    /* A correctable error elsewhere keeps the uncorrectable record. */
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 3);
+    qtest_writeq(s, DIRECTORY(word + 0x10), UINT64_C(0x0000001f00000000));
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 1);
+    qtest_readq(s, MEMORY(line + 0x80));
+    g_assert_cmphex(qtest_readq(s, MD(DIRECTORY_ERROR_CLEAR)), ==,
+                    DIRECTORY_ERROR_UCE_VALID | DIRECTORY_ERROR_UCE_OVERRUN |
+                    DIRECTORY_ERROR_CE_VALID | DIRECTORY_ERROR_CE_OVERRUN |
+                    DIRECTORY_ERROR_SYNDROME(0x30) |
+                    DIRECTORY_ERROR_ADDRESS(word));
+    /* Rewriting the word with ECC in force ends the checking. */
+    qtest_writeq(s, DIRECTORY(word), 3);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(word)), ==,
+                    UINT64_C(0x0000003000000003));
+    g_assert_cmphex(qtest_readq(s, MEMORY(line)), ==, UINT64_C(0x1234));
+    g_assert_cmphex(qtest_readq(s, MD(DIRECTORY_ERROR)), ==, 0);
+    qtest_writeq(s, MD(DIRECTORY_ERROR), UINT64_MAX);
+    qtest_writeq(s, MD(DIRECTORY_ERROR_CLEAR), UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, MD(DIRECTORY_ERROR)), ==, 0);
+
+    /* Standard flavor: six check bits at 21:16 over the low word. */
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 0);
+    qtest_writeq(s, DIRECTORY(word + 0x20), 1);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(word + 0x20)), ==, 0x001f0001);
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 2);
+    qtest_writeq(s, DIRECTORY(word + 0x20), 0x00010000);
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 0);
+    qtest_readq(s, MEMORY(line + 0x100));
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(word + 0x20)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MD(DIRECTORY_ERROR_CLEAR)), ==,
+                    DIRECTORY_ERROR_CE_VALID | DIRECTORY_ERROR_SYNDROME(0x01) |
+                    DIRECTORY_ERROR_ADDRESS(word + 0x20));
+    qtest_quit(s);
+}
+
+/* Cold reset ends every directory check and clears the record. */
+static void test_directory_ecc_check_reset(void)
+{
+    QTestState *s = start("");
+
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 1));
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 3);
+    qtest_writeq(s, DIRECTORY(0x400), UINT64_C(0x0000001f00000000));
+    qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 1));
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 1);
+    qtest_readq(s, MEMORY(0x2000));
+    g_assert_cmphex(qtest_readq(s, MD(DIRECTORY_ERROR)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(0x400)), ==, 0);
+    qtest_quit(s);
+}
+
+/*
+ * The Origin 300's directory diagnostic injects at the word for physical
+ * 0x506000 through the machine's directory carrier and expects the
+ * corrected word and the error record through the local window.
+ */
+static void test_origin300_directory_ecc_check(void)
+{
+    g_autofree char *prom = empty_prom_new();
+    g_autofree char *quoted_prom = g_shell_quote(prom);
+    QTestState *s = qtest_initf("-M origin300 -cpu R14000 -smp 2 "
+                                "-m 512M -bios %s -S", quoted_prom);
+    const uint64_t line = 0x506000;
+    const uint64_t word = (line >> 3) & UINT64_C(0x3ffffff0);
+    const uint64_t carrier = PROTECTION_MACHINE_BASE + word;
+
+    qtest_writeq(s, SELFTEST_MACHINE(0x8),
+                 (UINT64_C(2) << 32) | memory_bank_config(2, 3) |
+                 memory_bank_config(3, 3));
+    qtest_writeq(s, SELFTEST_MACHINE(DIRECTORY_CONFIG), 3);
+    qtest_writeq(s, carrier, UINT64_C(0x0000001f00000000));
+    qtest_writeq(s, SELFTEST_MACHINE(DIRECTORY_CONFIG), 1);
+    qtest_writeq(s, line, UINT64_C(0xabcd));
+    g_assert_cmphex(qtest_readq(s, line), ==, UINT64_C(0xabcd));
+    g_assert_cmphex(qtest_readq(s, carrier), ==,
+                    UINT64_C(0x0000001f00000001));
+    g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(DIRECTORY_ERROR_CLEAR)),
+                    ==, DIRECTORY_ERROR_CE_VALID |
+                    DIRECTORY_ERROR_SYNDROME(0x1f) |
+                    DIRECTORY_ERROR_ADDRESS(word));
+    g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(DIRECTORY_ERROR)), ==,
+                    0);
+    qtest_quit(s);
+    unlink(prom);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("sn1/bedrock-md/directory-ecc-check",
+                   test_directory_ecc_check);
+    qtest_add_func("sn1/bedrock-md/directory-ecc-check-reset",
+                   test_directory_ecc_check_reset);
+    qtest_add_func("sn1/bedrock-md/origin300-directory-ecc-check",
+                   test_origin300_directory_ecc_check);
+    qtest_add_func("sn1/bedrock-md/ecc-check-on-read",
+                   test_ecc_check_on_read);
+    qtest_add_func("sn1/bedrock-md/ecc-halfword-injection",
+                   test_ecc_halfword_injection);
+    qtest_add_func("sn1/bedrock-md/ecc-check-follows-bank-select",
+                   test_ecc_check_follows_bank_select);
+    qtest_add_func("sn1/bedrock-md/ecc-check-reset", test_ecc_check_reset);
+    qtest_add_func("sn1/bedrock-md/parent-ecc-interrupt",
+                   test_parent_ecc_interrupt);
+    qtest_add_func("sn1/bedrock-md/origin300-ecc-check",
+                   test_origin300_ecc_check);
     qtest_add_func("sn1/bedrock-md/fetchop-operations",
                    test_fetchop_operations);
     qtest_add_func("sn1/bedrock-md/fetchop-rejections",

@@ -183,6 +183,12 @@ void sgi_bedrock_hold_scratch1_write(SGIBedrockState *s, uint64_t value);
  * is called from lb_write() when a processor clears the lock, to wake it.
  */
 void sgi_bedrock_perf_counter_access(SGIBedrockState *s);
+/*
+ * The memory-directory unit latched a correctable read error: raise the
+ * memory-correctable bit, pending bank 1 bit 61, on both processor
+ * interfaces (docs/datasheets/bedrock-processor-interface.md).
+ */
+void sgi_bedrock_memory_correctable_error(SGIBedrockState *s);
 void sgi_bedrock_scratch3_acquire(SGIBedrockState *s, uint64_t observed);
 void sgi_bedrock_scratch3_released(SGIBedrockState *s);
 

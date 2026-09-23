@@ -253,6 +253,13 @@ void sgi_bedrock_pi_set_uart_irq(SGIBedrockPIState *s, bool level)
     sgi_bedrock_pi_recompute(s);
 }
 
+void sgi_bedrock_pi_set_pending(SGIBedrockPIState *s, unsigned bank,
+                                unsigned bit)
+{
+    s->pending[bank] |= 1ULL << bit;
+    sgi_bedrock_pi_recompute(s);
+}
+
 static void pi_modify(SGIBedrockPIState *s, uint64_t value)
 {
     unsigned bank = (value >> 6) & 1;
