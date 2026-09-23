@@ -152,6 +152,39 @@
 #define RAD1_LIMIT_BASE           0x78
 
 /*
+ * The main audio-data DMA, output-only on the master channel. rad_start_dma
+ * programs the master channel's set-A and set-B address-low/high and control
+ * registers in the 0x400..0x528 bank, sets the channel's enable bit in the
+ * enable register at 0x50, then writes central control 0x80 with the ~0xc0
+ * DMA-enable pattern -- the kick. The offsets are the master channel's own
+ * (device type 4): rad_create_device loads them from a per-type table, read
+ * out of rad_dd.o's .data and its store-back sequence; restated here from the
+ * disasm independent of the model's names. Set-A address-low/high are 0x4e8/
+ * 0x51c and control 0x4ec; set-B are 0x43c/0x440 and control 0x444. The
+ * channel's sample-position registers (index A 0x04, index B 0x08) advance by
+ * (frames << 18) as samples transfer. The control word carries the transfer
+ * length as a negated count of 128-byte units in bits [31:7]. Sample
+ * format/rate are undecoded in the driver; the model streams a fixed
+ * big-endian 16-bit stereo voice (4 bytes/frame), a stated approximation, so
+ * the frame count a length implies is length / 4.
+ */
+#define RAD1_MAIN_A_ADDR_LO       0x4e8
+#define RAD1_MAIN_A_ADDR_HI       0x51c
+#define RAD1_MAIN_A_CTRL          0x4ec
+#define RAD1_MAIN_B_ADDR_LO       0x43c
+#define RAD1_MAIN_B_ADDR_HI       0x440
+#define RAD1_MAIN_B_CTRL          0x444
+#define RAD1_MAIN_ENABLE          0x50
+#define RAD1_MAIN_ENABLE_BIT      0x1u
+#define RAD1_REG_CENTRAL_CTRL     0x80
+#define RAD1_CENTRAL_KICK         0xffe20000u /* shadow & ~0xc0 */
+#define RAD1_MAIN_POS_A           0x04
+#define RAD1_MAIN_POS_B           0x08
+#define RAD1_MAIN_UNIT_BYTES      128
+#define RAD1_MAIN_FRAME_BYTES     4           /* 16-bit stereo, approximated */
+#define RAD1_MAIN_POS_SHIFT       18
+
+/*
  * To land the RAD1's status-DMA in node-0 RAM the ring's PCI address uses
  * the Bridge's 64-bit direct form: bits 63:60 name the local Hub widget
  * (9 on crossbar 0), bits 47:0 pass through as the crosstalk offset, which
@@ -841,6 +874,114 @@ static void test_io6g_rad1_status_dma_handshake(void)
 }
 
 /*
+ * The main audio-data DMA: output-only streaming on the master channel.
+ * This mirrors what rad_start_dma does at a stream start -- it starts the
+ * status ring (whose completion handshake this suite already covers), then
+ * programs the master channel's main-DMA address/control registers, sets the
+ * channel's enable bit, and kicks central control 0x80. On the kick the model
+ * DMA-reads the programmed buffer out to its audio backend and advances the
+ * channel's sample-position registers by (frames << 18), so the driver's MSC
+ * tracks. rad_stop_dma clearing the enable bit halts it: a later kick with no
+ * enable moves nothing. The audio bytes themselves reach a host sink only
+ * through -audiodev (the wav backend), checked by the end-to-end boot test,
+ * not here; this asserts the register-visible contract -- position advance,
+ * ring completion, and the stop -- with no audio device.
+ */
+static void test_io6g_rad1_main_dma_stream(void)
+{
+    QTestState *qts = start_module_io6g();
+    const uint64_t ring_off = 0x02000000;
+    const uint64_t ring_ram = module_nasids[0] * NODE_STRIDE + ring_off;
+    const uint64_t ring_pci =
+        ((uint64_t)RAD1_LOCAL_HUB_WIDGET << 60) | ring_ram;
+    const uint64_t buf_off = 0x02100000;
+    const uint64_t buf_ram = module_nasids[0] * NODE_STRIDE + buf_off;
+    const uint64_t buf_pci = ((uint64_t)RAD1_LOCAL_HUB_WIDGET << 60) | buf_ram;
+    const uint32_t nframes = 128;
+    const uint32_t length = nframes * RAD1_MAIN_FRAME_BYTES;   /* 512 bytes */
+    const uint32_t units = length / RAD1_MAIN_UNIT_BYTES;      /* 4 units */
+    /* Control word: negated 128-byte-unit count in bits [31:7], tag 0. */
+    const uint32_t ctrl = ((0u - units) & 0x1ffffffu) << 7;
+    const uint32_t expect_adv = nframes << RAD1_MAIN_POS_SHIFT;
+    const uint32_t stop_limit = 0xfffffffcu;
+    uint32_t pos_a_before, pos_a_after, pos_b_after, pos_a_stopped;
+    unsigned int i;
+
+    program_module(qts);
+    program_rad1(qts);
+
+    /*
+     * Bus mastering plus verbatim byte transfer, so the device's DMA reaches
+     * node-0 RAM without the Bridge byte-reversing each word (as in the
+     * status-DMA handshake test).
+     */
+    baseio_window_write(qts, BRIDGE_CFG0(MIO_RAD1_DEVICE) + PCI_COMMAND,
+                        PCI_COMMAND_MEMORY | RAD1_PCI_COMMAND_MASTER);
+    baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XTALK_REG_DATA,
+                        RAD1_DEV_SWAP_DIRECT | BRIDGE_DEV_MEMORY_SPACE |
+                        (MIO_RAD1_MMIO >> 20));
+
+    /* A single-slot status ring, its completion word cleared. */
+    rad1_ring_write(qts, ring_ram + RAD1_SLOT_DONE_OFFSET, 0);
+
+    /* A known PCM buffer in guest RAM for the main DMA to move. */
+    for (i = 0; i < length; i += 4) {
+        rad1_ring_write(qts, buf_ram + i, 0xa5a50000u | i);
+    }
+
+    /* The sample-position bank reads its base value before any DMA runs. */
+    pos_a_before = baseio_window_read(qts, MIO_RAD1_WINDOW + RAD1_MAIN_POS_A);
+    g_assert_cmphex(pos_a_before, ==, 0);
+
+    /* Start the status ring; its slot is marked done (the completion). */
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_BASE_LO,
+                        (uint32_t)ring_pci);
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_BASE_HI,
+                        (uint32_t)(ring_pci >> 32));
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_LIMIT,
+                        stop_limit);
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_DMA_CTRL,
+                        RAD1_STATUS_ONESHOT_START);
+    g_assert_cmphex(rad1_ring_read(qts, ring_ram + RAD1_SLOT_DONE_OFFSET) &
+                    RAD1_SLOT_DONE_BIT, ==, RAD1_SLOT_DONE_BIT);
+
+    /* Program the master channel's set-A and set-B triplets. */
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_MAIN_A_ADDR_LO,
+                        (uint32_t)buf_pci);
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_MAIN_A_ADDR_HI,
+                        (uint32_t)(buf_pci >> 32));
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_MAIN_A_CTRL, ctrl);
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_MAIN_B_ADDR_LO,
+                        (uint32_t)buf_pci);
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_MAIN_B_ADDR_HI,
+                        (uint32_t)(buf_pci >> 32));
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_MAIN_B_CTRL, ctrl);
+
+    /* Set the channel's enable bit, then kick central control 0x80. */
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_MAIN_ENABLE,
+                        RAD1_MAIN_ENABLE_BIT);
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_CENTRAL_CTRL,
+                        RAD1_CENTRAL_KICK);
+
+    /* Both of the channel's position registers advanced by (frames << 18). */
+    pos_a_after = baseio_window_read(qts, MIO_RAD1_WINDOW + RAD1_MAIN_POS_A);
+    pos_b_after = baseio_window_read(qts, MIO_RAD1_WINDOW + RAD1_MAIN_POS_B);
+    g_assert_cmphex(pos_a_after - pos_a_before, ==, expect_adv);
+    g_assert_cmphex(pos_b_after, ==, expect_adv);
+
+    /*
+     * rad_stop_dma clears the channel's enable bit (a write to 0x50 with the
+     * bit clear). A later kick with the address still programmed then moves
+     * nothing -- the position holds.
+     */
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_MAIN_ENABLE, 0);
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_CENTRAL_CTRL,
+                        RAD1_CENTRAL_KICK);
+    pos_a_stopped = baseio_window_read(qts, MIO_RAD1_WINDOW + RAD1_MAIN_POS_A);
+    g_assert_cmphex(pos_a_stopped, ==, pos_a_after);
+}
+
+/*
  * The free-running UST counter at 0x30. rad_set_ust_offset reads it twice a
  * fixed delay apart and warns "RAD UST not incrementing" if it moved by fewer
  * than three ticks; the model derives it from the virtual clock, so stepping
@@ -1313,6 +1454,8 @@ int main(int argc, char **argv)
                    test_io6g_rad1_status_dma_registers);
     qtest_add_func("sn0/baseio/io6g-rad1-status-dma-handshake",
                    test_io6g_rad1_status_dma_handshake);
+    qtest_add_func("sn0/baseio/io6g-rad1-main-dma-stream",
+                   test_io6g_rad1_main_dma_stream);
     qtest_add_func("sn0/baseio/io6g-rad1-ust-counter",
                    test_io6g_rad1_ust_counter);
     qtest_add_func("sn0/baseio/io6g-ps2", test_io6g_ps2);

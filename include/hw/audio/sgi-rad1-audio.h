@@ -11,6 +11,7 @@
 #define HW_AUDIO_SGI_RAD1_AUDIO_H
 
 #include "hw/pci/pci_device.h"
+#include "qemu/audio.h"
 #include "qom/object.h"
 
 #define TYPE_SGI_RAD1_AUDIO "sgi-rad1-audio"
@@ -63,14 +64,23 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
  * Sample-position bank: a read-only 32-bit register per channel, at BAR0
  * 0x04 through 0x2c step 4. rad_start_dma reads one of these as the media
  * stream counter's hardware term (value >> 18, masked to 14 bits). On real
- * hardware the upper bits advance while the audio DMA transfers; this model
- * has no audio data path yet, so the bank reads a fixed value -- a stated
- * approximation (see the read handler). It does not drive the "UST not
+ * hardware the upper bits advance while the audio DMA transfers, and the
+ * driver reconstructs a monotonic sample count from them. The model backs
+ * each register with a stored value that starts at zero and, while the main
+ * DMA runs (see the streaming path in hw/audio/sgi-rad1-audio.c), advances by
+ * (frames << SAMPLE_POS_SHIFT) so the driver's MSC tracks; a static bank
+ * would leave the MSC fixed. This bank does not drive the "UST not
  * incrementing" report, which the status-DMA completion handshake does.
  */
 #define SGI_RAD1_AUDIO_REG_SAMPLE_POS_FIRST 0x04
 #define SGI_RAD1_AUDIO_REG_SAMPLE_POS_LAST  0x2c
-#define SGI_RAD1_AUDIO_SAMPLE_POS_VALUE     0
+#define SGI_RAD1_AUDIO_SAMPLE_POS_WORDS \
+    (((SGI_RAD1_AUDIO_REG_SAMPLE_POS_LAST - \
+       SGI_RAD1_AUDIO_REG_SAMPLE_POS_FIRST) / 4) + 1)
+#define SGI_RAD1_AUDIO_SAMPLE_POS_SHIFT     18
+/* Word index into sample_pos[] for a sample-position BAR0 offset. */
+#define SGI_RAD1_AUDIO_POS_IDX(off) \
+    (((off) - SGI_RAD1_AUDIO_REG_SAMPLE_POS_FIRST) / 4)
 
 /*
  * Free-running UST (unadjusted system time) counter at BAR0 0x30, read-only.
@@ -160,6 +170,61 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_AUDIO_LIMIT_BASE           0x78
 
 /*
+ * Main audio-data DMA, output-only on the master channel. Separate from the
+ * status ring: rad_start_dma programs a per-channel address/control pair
+ * directly, then kicks central control 0x80. The offsets below are the master
+ * channel's (rad_dd.o's channel type 4, the one rad_start_dma treats as the
+ * DMA master), loaded by rad_create_device from a per-device-type table read
+ * out of the shipped object's .data and store-back sequence:
+ *
+ *   set A: address-low 0x4e8, address-high 0x51c, control 0x4ec
+ *   set B: address-low 0x43c, address-high 0x440, control 0x444
+ *
+ * Both sets are programmed with the same address and control at start (a
+ * ping-pong double buffer). The address is a 64-bit PCI address split low/
+ * high; the control word carries the transfer length as a negated count of
+ * 128-byte units in bits [31:7] (a small tag rides bits [6:3]). All six live
+ * in the store-backed 0x400..0x528 DMA bank.
+ *
+ * The channel's DMA enable is a bit in the register at 0x50 (the same BAR0
+ * offset the bring-up writes as PREDISPATCH_C): rad_start_dma sets bit 0
+ * before the kick, rad_stop_dma clears it. Central control 0x80 (the same
+ * register the bring-up converges and rad_check_adat_rx toggles) is the kick:
+ * rad_start_dma writes it with the 0xc0 DMA/ADAT-enable pair cleared. The
+ * model treats a 0x80 write that clears 0xc0, made while the enable bit is
+ * set and a non-zero length is programmed, as the point the transfer starts.
+ * The 0xc0 bits and the control-word tag are otherwise undecoded.
+ */
+#define SGI_RAD1_AUDIO_REG_MAIN_A_ADDR_LO   0x4e8
+#define SGI_RAD1_AUDIO_REG_MAIN_A_ADDR_HI   0x51c
+#define SGI_RAD1_AUDIO_REG_MAIN_A_CTRL      0x4ec
+#define SGI_RAD1_AUDIO_REG_MAIN_B_ADDR_LO   0x43c
+#define SGI_RAD1_AUDIO_REG_MAIN_B_ADDR_HI   0x440
+#define SGI_RAD1_AUDIO_REG_MAIN_B_CTRL      0x444
+#define SGI_RAD1_AUDIO_MAIN_ENABLE_BIT      0x1u   /* master channel */
+#define SGI_RAD1_AUDIO_DMA_ENABLE_MASK      0xc0u  /* 0x80 write clears these */
+#define SGI_RAD1_AUDIO_CTRL_LEN_SHIFT       7
+#define SGI_RAD1_AUDIO_CTRL_LEN_MASK        0x1ffffffu
+#define SGI_RAD1_AUDIO_DMA_UNIT_BYTES       128
+/* Cap a single transfer so a garbage length cannot loop unboundedly. */
+#define SGI_RAD1_AUDIO_DMA_MAX_BYTES        (1u << 20)
+/* The master channel's two sample-position registers (index A, index B). */
+#define SGI_RAD1_AUDIO_REG_MAIN_POS_A       0x04
+#define SGI_RAD1_AUDIO_REG_MAIN_POS_B       0x08
+
+/*
+ * Output voice format. The driver leaves the sample format and rate to the
+ * clock-generator and interface-parameter registers, whose bits this model
+ * does not decode, so the streamed voice is a fixed big-endian 16-bit stereo
+ * PCM voice -- a stated approximation, not a captured contract. The frame
+ * count a transfer length implies (and the sample-position advance) follows
+ * from this frame size; changing the assumed format changes that count.
+ */
+#define SGI_RAD1_AUDIO_OUT_FREQ             48000
+#define SGI_RAD1_AUDIO_OUT_CHANNELS         2
+#define SGI_RAD1_AUDIO_OUT_FRAME_BYTES      4
+
+/*
  * A named field per documented offset rather than an array over the whole
  * 0x44..0xbc span: the span has gaps no source documents (for example
  * 0x60..0x6c), and those must still log as unimplemented instead of
@@ -193,8 +258,25 @@ struct SGIRad1AudioState {
 
     uint32_t dma_bank[SGI_RAD1_AUDIO_DMA_BANK_WORDS]; /* 0x400..0x528 */
 
+    /*
+     * Sample-position bank 0x04..0x2c: stored per register, advanced by the
+     * main DMA. streaming tracks whether the master channel's output voice is
+     * active, so the enable-clear stop deactivates it once.
+     */
+    uint32_t sample_pos[SGI_RAD1_AUDIO_SAMPLE_POS_WORDS];
+    bool streaming;
+
     /* Virtual-clock time captured at reset; the 0x30 UST counter's origin. */
     int64_t ust_base_ns;
+
+    /*
+     * Host audio backend and the output voice the main DMA pushes to. The
+     * backend comes from the audiodev property (or the default); the voice is
+     * opened on the first stream and is runtime-only, reopened after migration
+     * rather than migrated.
+     */
+    AudioBackend *audio_be;
+    SWVoiceOut *dac_voice;
 };
 
 #endif
