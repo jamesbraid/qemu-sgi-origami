@@ -418,6 +418,8 @@ static const MemoryRegionOps sgi_ioc3_main_ops = {
 #define UART_MCR_OUT1   0x04
 #define UART_MCR_OUT2   0x08
 #define UART_MCR_LOOP   0x10
+/* Auto-RTS/CTS enable, which the shared 16550 core has no bit for. */
+#define UART_MCR_AFE    0x20
 
 #define UART_MSR_DCTS   0x01
 #define UART_MSR_DDCD   0x08
@@ -498,8 +500,14 @@ static void sgi_ioc3_serial_record(SGIIOC3State *s, unsigned int port,
 static uint64_t sgi_ioc3_serial_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIIOC3SerialAlias *handle = opaque;
+    uint64_t val = serial_io_ops.read(&handle->chip->serial[handle->port],
+                                      addr, 1);
 
-    return serial_io_ops.read(&handle->chip->serial[handle->port], addr, 1);
+    if (addr == UART_MCR) {
+        val |= handle->chip->serial_mcr_autoflow[handle->port];
+    }
+
+    return val;
 }
 
 static void sgi_ioc3_serial_write(void *opaque, hwaddr addr, uint64_t val,
@@ -509,6 +517,11 @@ static void sgi_ioc3_serial_write(void *opaque, hwaddr addr, uint64_t val,
     SerialState *serial = &handle->chip->serial[handle->port];
     bool is_thr = addr == UART_RBR_THR && !(serial->lcr & UART_LCR_DLAB);
     bool is_predivider = addr == UART_SCR && (serial->lcr & UART_LCR_DLAB);
+
+    /* The one modem-control bit the shared 16550 core masks away. */
+    if (addr == UART_MCR) {
+        handle->chip->serial_mcr_autoflow[handle->port] = val & UART_MCR_AFE;
+    }
 
     serial_io_ops.write(serial, addr, val & 0xff, 1);
 
@@ -1637,6 +1650,8 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
         s->sdma_packed[i] = 0;
         memset(s->sdma_packer[i], 0, SGI_IOC3_SDMA_ENTRY_SIZE);
         s->sdma_delivered[i] = false;
+        /* Reset clears the rest of modem control, so it clears this too. */
+        s->serial_mcr_autoflow[i] = 0;
     }
 
     /* The buffer RAM is memory: reset does not clear it. */
@@ -1780,7 +1795,7 @@ static int sgi_ioc3_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
-    .version_id = 17,
+    .version_id = 18,
     .minimum_version_id = 14,
     .pre_load = sgi_ioc3_pre_load,
     .post_load = sgi_ioc3_post_load,
@@ -1793,6 +1808,8 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
                                   SerialState),
         VMSTATE_UINT8_ARRAY_V(serial_predivider, SGIIOC3State,
                               SGI_IOC3_SERIAL_PORTS, 17),
+        VMSTATE_UINT8_ARRAY_V(serial_mcr_autoflow, SGIIOC3State,
+                              SGI_IOC3_SERIAL_PORTS, 18),
         VMSTATE_UINT32(microlan_control, SGIIOC3State),
         VMSTATE_UINT32(pin_control, SGIIOC3State),
         VMSTATE_UINT32(pin_data, SGIIOC3State),

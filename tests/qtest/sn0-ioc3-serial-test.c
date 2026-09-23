@@ -198,6 +198,7 @@ static uint64_t sdma_alias(unsigned int port, unsigned int reg)
 #define MCR_DTR         0x01
 #define MCR_RTS         0x02
 #define MCR_LOOPBACK    0x10
+#define MCR_AUTOFLOW    0x20
 
 /* The receive consume index's top bit arms the port's receive timer. */
 #define CONSUME_ARM_TIMER (1u << 31)
@@ -601,6 +602,43 @@ static void test_the_alias_refuses_the_registers_hardware_owns(const void *data)
         shadow = qtest_readl(qts, sdma(port, SDMA_SHADOW));
         qtest_writel(qts, sdma_alias(port, SDMA_SHADOW), 0xffffffff);
         g_assert_cmphex(qtest_readl(qts, sdma(port, SDMA_SHADOW)), ==, shadow);
+    }
+}
+
+/*
+ * Modem control carries a sixth bit, the automatic-flow-control enable a
+ * TI-style 16550 has where National's PC16550D reads a hardwired zero. The
+ * Origin 300 board test writes 0x3f and requires all six back, and the
+ * shared 16550 core this chip embeds masks that bit away. Bits 6 and 7 stay
+ * zero: the test never writes them, so neither does this.
+ *
+ * Only the bit is modelled, not automatic flow control itself -- see the
+ * datasheet for what that leaves out.
+ */
+static void test_modem_control_holds_the_autoflow_bit(const void *data)
+{
+    unsigned int port;
+
+    serial_reset();
+
+    sn0_ioc3_attach(qts);
+
+    for (port = 0; port < 2; port++) {
+        uint64_t mcr = serial_port(port) + REG_MCR;
+
+        qtest_writeb(qts, mcr, 0x3f);
+        g_assert_cmphex(qtest_readb(qts, mcr), ==, 0x3f);
+
+        /* It clears on its own, and clearing it leaves the rest alone. */
+        qtest_writeb(qts, mcr, MCR_DTR | MCR_RTS);
+        g_assert_cmphex(qtest_readb(qts, mcr), ==, MCR_DTR | MCR_RTS);
+
+        qtest_writeb(qts, mcr, MCR_AUTOFLOW);
+        g_assert_cmphex(qtest_readb(qts, mcr), ==, MCR_AUTOFLOW);
+
+        /* An all-ones write settles at the six bits, not eight. */
+        qtest_writeb(qts, mcr, 0xff);
+        g_assert_cmphex(qtest_readb(qts, mcr), ==, 0x3f);
     }
 }
 
@@ -2395,6 +2433,8 @@ int main(int argc, char **argv)
                         test_the_receive_timer_keeps_twelve_bits);
     qtest_add_data_func("sn0/ioc3-serial/alias-pages-are-views", NULL,
                         test_the_alias_pages_are_views_of_the_main_block);
+    qtest_add_data_func("sn0/ioc3-serial/modem-control-holds-autoflow", NULL,
+                        test_modem_control_holds_the_autoflow_bit);
     qtest_add_data_func("sn0/ioc3-serial/main-block-places-engine-indexes",
                         NULL, test_the_main_block_places_the_engine_indexes);
     qtest_add_data_func("sn0/ioc3-serial/alias-refuses-hardware-registers",
