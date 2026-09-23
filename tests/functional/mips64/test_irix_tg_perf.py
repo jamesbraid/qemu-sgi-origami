@@ -29,8 +29,11 @@ probe). Guarded and asset-gated exactly like test_irix_eg_net.py.
 import os
 import re
 import socket
+import subprocess
 import sys
+import tempfile
 import time
+import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_irix_tg as base  # noqa: E402
@@ -190,6 +193,23 @@ def _parse_ttcp_rate(text):
     nbytes, secs = int(m.group(1)), float(m.group(2))
     mbps = (nbytes * 8.0) / secs / 1e6 if secs > 0 else 0.0
     return mbps, nbytes, secs
+
+
+class HelpersTest(unittest.TestCase):
+    """base._host_cksum is only reached once a live run gets as far as the
+    TCP byte-verify step, so a run without ORIGAMI_ASSETS skips straight
+    past a regression here (test_irix_tg.py never defined it, unlike
+    test_irix_eg_net.py, which test_irix_eg_perf.py's own copy of this
+    call relies on). No boot needed to catch it."""
+
+    def test_host_cksum_matches_cksum1(self):
+        with tempfile.NamedTemporaryFile() as f:
+            f.write(b"origami tg_perf host_cksum regression\n")
+            f.flush()
+            crc, size = base._host_cksum(f.name)
+            want = subprocess.run(["cksum", f.name], capture_output=True,
+                                   text=True, check=True).stdout.split()
+        self.assertEqual((crc, size), (want[0], int(want[1])))
 
 
 if base.QemuSystemTest is not None:

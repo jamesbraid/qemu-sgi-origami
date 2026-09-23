@@ -54,6 +54,7 @@ miniroot kernel are provisioned out of band.
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 
@@ -234,6 +235,16 @@ def _drive_to_shell(con, budget):
     con.send("exec /bin/sh")
     con.run("PATH=/usr/sbin:/usr/bin:/sbin:/bin:/usr/etc:/usr/bsd:$PATH; "
             "export PATH", "shinit", timeout=int(left(120)))
+
+
+def _host_cksum(path):
+    """The POSIX cksum CRC and byte count of a file, computed by the host's
+    own cksum(1) (coreutils' default algorithm is the POSIX CRC IRIX's
+    cksum implements). Returns (crc, size) as (str, int)."""
+    out = subprocess.run(["cksum", path], capture_output=True, text=True,
+                         check=True).stdout
+    crc, size = out.split()[0:2]
+    return crc, int(size)
 
 
 if QemuSystemTest is not None:
