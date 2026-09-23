@@ -2341,6 +2341,15 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
         }
         pci_set_word(dev->config + pm_cap + PCI_PM_PMC,
                      QLOGIC_ISP12160_PM_VERSION);
+        /*
+         * The board test writes the power-management event enable and
+         * reads it back, so the part holds it; the PCI core makes a
+         * capability read-only in full (docs/datasheets/isp12160.md).
+         * Nothing observed covers the rest of this register, so the rest
+         * stays read-only.
+         */
+        pci_word_test_and_set_mask(dev->wmask + pm_cap + PCI_PM_CTRL,
+                                   PCI_PM_CTRL_PME_ENABLE);
     }
 
     /* The memory BAR is an alias of the I/O BAR: one register file. */

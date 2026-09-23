@@ -77,6 +77,8 @@
 #define PCI_CACHE_LINE_SIZE 0x0c
 #define PCI_SUBSYSTEM_VENDOR_ID 0x2c
 #define PCI_INTERRUPT_LINE 0x3c
+/* The power-management control word, inside the capability at 0x44. */
+#define PCI_PM_CTRL 0x48
 
 /* Class 0x01 mass storage, subclass 0x00 SCSI, programming interface 0. */
 #define PCI_CLASS_SCSI 0x010000
@@ -713,6 +715,26 @@ static void test_io8bt_latency_timer(const void *data)
 }
 
 /*
+ * And its last configuration register: the power-management control word
+ * at 0x48, inside the capability at 0x44. The test zeroes it, writes the
+ * event enable and requires 0x100 back, so that one bit is writable where
+ * the PCI core makes a whole capability read-only. Nothing observed says
+ * the power state or data-select fields take a write, so nothing here
+ * writes them.
+ */
+static void test_io8bt_power_management(const void *data)
+{
+    QTestState *qts = machine_start();
+
+    qtest_writel(qts, IO8_SCSI_CFG + PCI_PM_CTRL, 0);
+    g_assert_cmphex(qtest_readl(qts, IO8_SCSI_CFG + PCI_PM_CTRL), ==, 0);
+    qtest_writel(qts, IO8_SCSI_CFG + PCI_PM_CTRL, 0x100);
+    g_assert_cmphex(qtest_readl(qts, IO8_SCSI_CFG + PCI_PM_CTRL), ==, 0x100);
+
+    qtest_quit(qts);
+}
+
+/*
  * The register file through the head's slot-1 window. The identity pair
  * and the reset signature say the window reaches the adapter at all; the
  * mailbox register test writes a different pattern into each of seven
@@ -1008,6 +1030,8 @@ int main(int argc, char **argv)
                         test_io8bt_command_register);
     qtest_add_data_func("origin300/io8-scsi/io8bt-latency-timer", NULL,
                         test_io8bt_latency_timer);
+    qtest_add_data_func("origin300/io8-scsi/io8bt-power-management", NULL,
+                        test_io8bt_power_management);
     qtest_add_data_func("origin300/io8-scsi/registers-through-the-fabric",
                         NULL, test_registers_through_the_fabric);
     qtest_add_data_func("origin300/io8-scsi/command-reaches-memory", NULL,
