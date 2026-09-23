@@ -1139,166 +1139,201 @@ static void assert_qemu_rejects(const char *const args[], const char *message)
     g_assert_nonnull(strstr(error_output, message));
 }
 
-static void assert_machine_property_rejected(const char *value,
-                                             const char *property)
-{
-    g_autofree char *machine = g_strdup_printf("origin200,%s", value);
-    g_autofree char *message = g_strdup_printf(
-        "Property 'origin200-machine.%s' not found", property);
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", machine, "-display", "none", NULL
-    };
+typedef struct MachineRejectionCase {
+    const char *subtest;
+    const char *const *args;
+    const char *message;
+    bool needs_config_fixture;
+    const char *skip_if_missing_device;
+} MachineRejectionCase;
 
-    assert_qemu_rejects(args, message);
-}
+static const char *const reject_io_bridge_property_args[] = {
+    "-M", "origin200,io-bridge=off", "-display", "none", NULL
+};
 
-static void test_reject_removed_topology_properties(const void *data)
-{
-    assert_machine_property_rejected("io-bridge=off", "io-bridge");
-    assert_machine_property_rejected("widget0-revision=3",
-                                     "widget0-revision");
-}
+static const char *const reject_widget0_revision_property_args[] = {
+    "-M", "origin200,widget0-revision=3", "-display", "none", NULL
+};
 
-static void test_reject_non_r10000_cpu(const void *data)
-{
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200", "-cpu", "R4000",
-        "-display", "none", NULL
-    };
+static const char *const reject_non_r10000_cpu_args[] = {
+    "-M", "origin200", "-cpu", "R4000", "-display", "none", NULL
+};
 
-    assert_qemu_rejects(args, "Invalid CPU model: R4000");
-}
+static const char *const reject_numa_on_dual_topology_args[] = {
+    "-M", "origin200,topology=origin200-dual", "-m", "128M",
+    "-object", "memory-backend-ram,id=ram0,size=64M",
+    "-object", "memory-backend-ram,id=ram1,size=64M",
+    "-numa", "node,nodeid=0,cpus=0-1,memdev=ram0",
+    "-numa", "node,nodeid=1,cpus=2-3,memdev=ram1",
+    "-smp", "4", "-display", "none", NULL
+};
 
-static void test_reject_numa_on_the_dual_topology(const void *data)
-{
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200,topology=origin200-dual",
-        "-m", "128M",
-        "-object", "memory-backend-ram,id=ram0,size=64M",
-        "-object", "memory-backend-ram,id=ram1,size=64M",
-        "-numa", "node,nodeid=0,cpus=0-1,memdev=ram0",
-        "-numa", "node,nodeid=1,cpus=2-3,memdev=ram1",
-        "-smp", "4",
-        "-display", "none", NULL
-    };
+static const char *const reject_invalid_node_memory_args[] = {
+    "-M", "origin200,topology=origin200-dual", "-m", "36M", "-smp", "4",
+    "-display", "none", NULL
+};
 
-    assert_qemu_rejects(args,
-                        "origin200: -numa is refused; topology= selects "
-                        "the wiring, -smp and -m select the population "
-                        "within it");
-}
+static const char *const
+reject_dual_population_on_one_node_topology_args[] = {
+    "-M", "origin200", "-smp", "4", "-display", "none", NULL
+};
 
-/*
- * 18 MiB per node is not one of origin200-dual's accepted populations
- * either; see test_invalid_memory_size for why the message names the
- * accepted-population check rather than the IP29 bank-fitting one.
- */
-static void test_reject_invalid_node_memory(const void *data)
-{
-    g_autofree char *path = write_config_block_fixture();
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200,topology=origin200-dual",
-        "-m", "36M", "-smp", "4",
-        "-display", "none", "-bios", path, NULL
-    };
+static const char *const reject_three_cores_one_socket_args[] = {
+    "-M", "origin200", "-smp", "3,sockets=1,cores=3,threads=1",
+    "-display", "none", NULL
+};
 
-    assert_qemu_rejects(args,
-                        "topology 'origin200-dual' does not accept 18 "
-                        "MiB per node");
-    g_assert_cmpint(unlink(path), ==, 0);
-}
+static const char *const reject_three_single_core_sockets_args[] = {
+    "-M", "origin200", "-smp", "3,sockets=3,cores=1,threads=1",
+    "-display", "none", NULL
+};
 
-static void test_reject_dual_population_on_one_node_topology(
-    const void *data)
-{
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200",
-        "-smp", "4",
-        "-display", "none", NULL
-    };
+static const char *const reject_uneven_no_numa_split_args[] = {
+    "-M", "origin200,topology=origin200-dual", "-m", "129M", "-smp", "4",
+    "-display", "none", NULL
+};
 
+static const char *const reject_device_beyond_bridge_slots_args[] = {
+    "-M", "origin200", "-device", "sgi-bridge-dma-test,addr=8",
+    "-display", "none", NULL
+};
+
+static const char *const reject_one_node_numa_args[] = {
+    "-M", "origin200", "-m", "64M",
+    "-object", "memory-backend-ram,id=ram0,size=64M",
+    "-numa", "node,nodeid=0,cpus=0-1,memdev=ram0",
+    "-smp", "2", "-display", "none", NULL
+};
+
+static const MachineRejectionCase machine_rejection_cases[] = {
+    {
+        .subtest = "reject-io-bridge-property",
+        .args = reject_io_bridge_property_args,
+        .message = "Property 'origin200-machine.io-bridge' not found",
+    },
+    {
+        .subtest = "reject-widget0-revision-property",
+        .args = reject_widget0_revision_property_args,
+        .message =
+            "Property 'origin200-machine.widget0-revision' not found",
+    },
+    {
+        .subtest = "reject-non-r10000-cpu",
+        .args = reject_non_r10000_cpu_args,
+        .message = "Invalid CPU model: R4000",
+    },
+    {
+        .subtest = "reject-numa-on-dual-topology",
+        .args = reject_numa_on_dual_topology_args,
+        .message = "origin200: -numa is refused; topology= selects the "
+                   "wiring, -smp and -m select the population within it",
+    },
+    /*
+     * 18 MiB per node is not one of origin200-dual's accepted populations
+     * either; see test_invalid_memory_size for why the message names the
+     * accepted-population check rather than the IP29 bank-fitting one.
+     */
+    {
+        .subtest = "reject-invalid-node-memory",
+        .args = reject_invalid_node_memory_args,
+        .message = "topology 'origin200-dual' does not accept 18 MiB "
+                   "per node",
+        .needs_config_fixture = true,
+    },
     /*
      * topology= selects the wiring explicitly now; naming the dual
      * topology's four-processor population alone does not switch the
      * default one-node topology to the two-node one that accepts it --
      * the two-chassis topology must be named.
      */
-    assert_qemu_rejects(args,
-                        "origin200: topology 'origin200' accepts 1 or "
-                        "2 CPUs, not 4");
-}
-
-static void test_reject_three_cores_one_socket(const void *data)
-{
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200",
-        "-smp", "3,sockets=1,cores=3,threads=1",
-        "-display", "none", NULL
-    };
-
-    assert_qemu_rejects(args,
-                        "origin200: every processor is its own "
-                        "single-core socket; pass -smp N alone, not "
-                        "cores= or threads=");
-}
-
-static void test_reject_three_single_core_sockets(const void *data)
-{
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200",
-        "-smp", "3,sockets=3,cores=1,threads=1",
-        "-display", "none", NULL
-    };
-
+    {
+        .subtest = "reject-dual-population-on-one-node-topology",
+        .args = reject_dual_population_on_one_node_topology_args,
+        .message = "origin200: topology 'origin200' accepts 1 or 2 "
+                   "CPUs, not 4",
+    },
+    {
+        .subtest = "reject-three-cores-one-socket",
+        .args = reject_three_cores_one_socket_args,
+        .message = "origin200: every processor is its own single-core "
+                   "socket; pass -smp N alone, not cores= or threads=",
+    },
     /*
      * Three single-core sockets is the shape the new rule asks for, but
      * three is still not one of origin200's accepted totals: naming the
      * shape explicitly and correctly does not excuse an unsupported
      * population.
      */
-    assert_qemu_rejects(args,
-                        "origin200: topology 'origin200' accepts 1 or "
-                        "2 CPUs, not 3");
-}
+    {
+        .subtest = "reject-three-single-core-sockets",
+        .args = reject_three_single_core_sockets_args,
+        .message = "origin200: topology 'origin200' accepts 1 or 2 "
+                   "CPUs, not 3",
+    },
+    {
+        .subtest = "reject-uneven-no-numa-split",
+        .args = reject_uneven_no_numa_split_args,
+        .message = "origin200: topology 'origin200-dual' splits -m "
+                   "evenly across 2 nodes",
+    },
+    /*
+     * The Bridge wires eight slots to eight interrupt pins; nothing past
+     * slot 7 exists on the chip. A device placed there must be refused
+     * when it is added -- accepted, it would sit unreachable until its
+     * first interrupt asserted a pin the bus never wired and aborted the
+     * emulator.
+     */
+    {
+        .subtest = "reject-device-beyond-bridge-slots",
+        .args = reject_device_beyond_bridge_slots_args,
+        .message = "not available for sgi-bridge-dma-test, reserved",
+        .needs_config_fixture = true,
+        .skip_if_missing_device = "sgi-bridge-dma-test",
+    },
+    /*
+     * -numa is refused outright now, even the one-node form that used to
+     * pick a memory backend explicitly: topology= names the wiring and
+     * -smp/-m name the population, so a NUMA description is never
+     * needed.
+     */
+    {
+        .subtest = "reject-one-node-numa",
+        .args = reject_one_node_numa_args,
+        .message = "origin200: -numa is refused; topology= selects the "
+                   "wiring, -smp and -m select the population within it",
+    },
+};
 
-static void test_reject_uneven_no_numa_split(const void *data)
+static void test_machine_configuration_is_rejected(const void *data)
 {
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200,topology=origin200-dual",
-        "-m", "129M",
-        "-smp", "4",
-        "-display", "none", NULL
-    };
+    const MachineRejectionCase *tc = data;
+    g_autoptr(GPtrArray) args = g_ptr_array_new_with_free_func(g_free);
+    g_autofree char *fixture_path = NULL;
+    size_t i;
 
-    assert_qemu_rejects(args,
-                        "origin200: topology 'origin200-dual' splits -m "
-                        "evenly across 2 nodes");
-}
-
-/*
- * The Bridge wires eight slots to eight interrupt pins; nothing past slot 7
- * exists on the chip. A device placed there must be refused when it is
- * added -- accepted, it would sit unreachable until its first interrupt
- * asserted a pin the bus never wired and aborted the emulator.
- */
-static void test_reject_a_device_beyond_the_bridge_slots(const void *data)
-{
-    g_autofree char *path = write_config_block_fixture();
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200",
-        "-device", "sgi-bridge-dma-test,addr=8",
-        "-display", "none", "-bios", path, NULL
-    };
-
-    if (!qtest_has_device("sgi-bridge-dma-test")) {
-        g_test_skip("sgi-bridge-dma-test is not in this build");
-        g_assert_cmpint(unlink(path), ==, 0);
+    if (tc->skip_if_missing_device &&
+        !qtest_has_device(tc->skip_if_missing_device)) {
+        g_autofree char *reason = g_strdup_printf(
+            "%s is not in this build", tc->skip_if_missing_device);
+        g_test_skip(reason);
         return;
     }
 
-    assert_qemu_rejects(args,
-                        "not available for sgi-bridge-dma-test, reserved");
-    g_assert_cmpint(unlink(path), ==, 0);
+    g_ptr_array_add(args, g_strdup(qtest_qemu_binary(NULL)));
+    for (i = 0; tc->args[i]; i++) {
+        g_ptr_array_add(args, g_strdup(tc->args[i]));
+    }
+    if (tc->needs_config_fixture) {
+        fixture_path = write_config_block_fixture();
+        g_ptr_array_add(args, g_strdup("-bios"));
+        g_ptr_array_add(args, g_strdup(fixture_path));
+    }
+    g_ptr_array_add(args, NULL);
+
+    assert_qemu_rejects((const char *const *)args->pdata, tc->message);
+    if (fixture_path) {
+        g_assert_cmpint(unlink(fixture_path), ==, 0);
+    }
 }
 
 /*
@@ -1388,34 +1423,6 @@ static void test_one_node_cpu_topology(const void *data)
     qobject_unref(response);
     qtest_quit(qts);
     g_assert_cmpint(unlink(path), ==, 0);
-}
-
-/*
- * An explicit NUMA description is the operator-facing way to select
- * physical Origin 200 nodes. Even the one-node form matters: it proves
- * that a memory backend survives QEMU's generic NUMA setup and that the
- * standard CPU-topology callbacks attach both IP29 slices to the declared
- * node.
- */
-/*
- * -numa is refused outright now, even the one-node form that used to
- * pick a memory backend explicitly: topology= names the wiring and
- * -smp/-m name the population, so a NUMA description is never needed.
- */
-static void test_reject_one_node_numa(const void *data)
-{
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "origin200", "-m", "64M",
-        "-object", "memory-backend-ram,id=ram0,size=64M",
-        "-numa", "node,nodeid=0,cpus=0-1,memdev=ram0",
-        "-smp", "2",
-        "-display", "none", NULL
-    };
-
-    assert_qemu_rejects(args,
-                        "origin200: -numa is refused; topology= selects "
-                        "the wiring, -smp and -m select the population "
-                        "within it");
 }
 
 static void test_dual_chassis_cpu_topology(const void *data)
@@ -1586,6 +1593,7 @@ static void test_default_drive_reaches_the_first_scsi_adapter(
 int main(int argc, char **argv)
 {
     int ret;
+    size_t i;
 
     g_test_init(&argc, &argv, NULL);
 
@@ -1639,31 +1647,21 @@ int main(int argc, char **argv)
                         test_backdoor_accesses_trace);
     qtest_add_data_func("sn0/address-map/backdoor-reads-bypass-dispatch",
                         NULL, test_backdoor_reads_bypass_dispatch);
-    qtest_add_data_func("sn0/address-map/reject-removed-topology-properties",
-                        NULL, test_reject_removed_topology_properties);
-    qtest_add_data_func("sn0/address-map/reject-non-r10000-cpu", NULL,
-                        test_reject_non_r10000_cpu);
-    qtest_add_data_func("sn0/address-map/reject-numa-on-dual-topology", NULL,
-                        test_reject_numa_on_the_dual_topology);
-    qtest_add_data_func("sn0/address-map/reject-invalid-node-memory", NULL,
-                        test_reject_invalid_node_memory);
-    qtest_add_data_func(
-        "sn0/address-map/reject-dual-population-on-one-node-topology",
-        NULL, test_reject_dual_population_on_one_node_topology);
-    qtest_add_data_func("sn0/address-map/reject-three-cores-one-socket",
-                        NULL, test_reject_three_cores_one_socket);
-    qtest_add_data_func("sn0/address-map/reject-three-single-core-sockets",
-                        NULL, test_reject_three_single_core_sockets);
-    qtest_add_data_func("sn0/address-map/reject-uneven-no-numa-split", NULL,
-                        test_reject_uneven_no_numa_split);
-    qtest_add_data_func("sn0/address-map/reject-device-beyond-bridge-slots",
-                        NULL, test_reject_a_device_beyond_the_bridge_slots);
+    for (i = 0; i < G_N_ELEMENTS(machine_rejection_cases); i++) {
+        const MachineRejectionCase *tc = &machine_rejection_cases[i];
+
+        /*
+         * Not freed: qtest_add_data_func() keeps the path for the life
+         * of the suite, which is the life of this process.
+         */
+        qtest_add_data_func(
+            g_strdup_printf("sn0/address-map/%s", tc->subtest),
+            tc, test_machine_configuration_is_rejected);
+    }
     qtest_add_data_func("sn0/address-map/no-origin200-ioc3-compat-global",
                         NULL, test_origin200_has_no_ioc3_compat_global);
     qtest_add_data_func("sn0/address-map/one-node-cpu-topology", NULL,
                         test_one_node_cpu_topology);
-    qtest_add_data_func("sn0/address-map/reject-one-node-numa", NULL,
-                        test_reject_one_node_numa);
     qtest_add_data_func("sn0/address-map/dual-chassis-cpu-topology", NULL,
                         test_dual_chassis_cpu_topology);
     qtest_add_data_func("sn0/address-map/bridge-root-bus-names", NULL,
