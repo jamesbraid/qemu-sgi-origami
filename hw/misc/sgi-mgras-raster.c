@@ -854,29 +854,26 @@ static void si_raster_rss_write(SGIMgrasState *s, uint32_t reg, uint32_t value)
 
 
 /*
- * Exactly one DMA-mapping slot (0x130400's class-0x48 register file) is
- * expected to be mapped at a kick: every capture that reaches a kick has
- * one slot with a nonzero page count. Nothing in the descriptor names a
- * slot, so this scan-for-the-only-mapped-one choice is an approximation;
- * log and take no transfer if zero or more than one slot qualifies.
+ * The kick byte (0x20000 register 11, low byte) names the DMA-mapping
+ * slot (0x130400's class-0x48 register file) directly: bits 2:1 are the
+ * slot index and bit 3 the transfer direction. The DDX keeps a
+ * long-lived slot 0 mapping for its small-copy bounce buffer alongside a
+ * per-transfer slot 3 mapping for larger copies, both open at once, so a
+ * scan for "the only mapped slot" picks the wrong one whenever both are
+ * live. Log and take no transfer if the named slot has no mapped pages.
  */
-static bool si_raster_dma_select_slot(SGIMgrasState *s, unsigned int *out_slot)
+static bool si_raster_dma_select_slot(SGIMgrasState *s, uint32_t kick_byte,
+                                      unsigned int *out_slot)
 {
-    unsigned int found = 0, matches = 0;
+    unsigned int slot = (kick_byte >> 1) & 3;
 
-    for (unsigned int slot = 0; slot < SGI_MGRAS_DMA_MAP_SLOTS; slot++) {
-        if (si_dma_map_slot_count(s, slot) > 0) {
-            found = slot;
-            matches++;
-        }
-    }
-    if (matches != 1) {
+    if (si_dma_map_slot_count(s, slot) == 0) {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA image transfer kicked "
-                      "with %u mapped source slots; expected exactly one\n",
-                      matches);
+                      "(kick byte 0x%02x) naming slot %u, which has no "
+                      "mapped pages\n", kick_byte, slot);
         return false;
     }
-    *out_slot = found;
+    *out_slot = slot;
     return true;
 }
 
@@ -891,7 +888,7 @@ static bool si_raster_dma_select_slot(SGIMgrasState *s, unsigned int *out_slot)
  * is deliberate: consecutive page-list entries need not be adjacent, so a
  * row's bytes can span a page boundary at an arbitrary offset.
  */
-static void si_raster_dma_draw_image(SGIMgrasState *s)
+static void si_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
 {
     unsigned int slot, widget;
     uint64_t base;
@@ -910,7 +907,7 @@ static void si_raster_dma_draw_image(SGIMgrasState *s)
     unsigned int width, bpp;
     uint64_t *page_list;
 
-    if (!si_raster_dma_select_slot(s, &slot)) {
+    if (!si_raster_dma_select_slot(s, kick_byte, &slot)) {
         return;
     }
     if (rows == 0 || bpr == 0 || x0 > x1 || y0 > y1 ||
@@ -1005,13 +1002,15 @@ static void si_raster_dma_draw_image(SGIMgrasState *s)
 
 static void si_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
 {
+    uint32_t kick_byte = kick_word & 0xff;
+
     if (kick_word & SI_DMA_KICK_DIRECTION_READ) {
         /* Screen-to-host read is an unimplemented follow-up. */
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: unimplemented screen-to-host "
-                      "DMA read (kick byte 0x%02x)\n", kick_word & 0xff);
+                      "DMA read (kick byte 0x%02x)\n", kick_byte);
         return;
     }
-    si_raster_dma_draw_image(s);
+    si_raster_dma_draw_image(s, kick_byte);
     /*
      * This model is synchronous: the transfer above already ran to
      * completion (or was a no-op on malformed descriptor state) by the

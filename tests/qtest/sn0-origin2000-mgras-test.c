@@ -848,6 +848,110 @@ static void test_dma_image_transfer_paints_from_host_memory(void)
 #undef DMA_XFER_LIST_PA
 #undef DMA_XFER_SRC_VA
 
+/*
+ * Two source-mapping slots held open at once, as every capture that
+ * reaches a copy does (FIX-SPEC.md section 1): the DDX keeps a
+ * long-lived slot 0 mapping for its small-copy bounce buffer alongside a
+ * per-transfer slot 3 mapping for larger copies. The kick byte's bits
+ * 2:1 name which one a given transfer reads; a scan for "the only
+ * mapped slot" (the model's old behaviour) cannot tell them apart.
+ */
+#define DMA_SLOT_TEST_NODE   0u
+#define DMA_SLOT_TEST_WIDGET 9u
+
+static uint64_t dma_slot_test_node_addr(uint32_t offset)
+{
+    return ((uint64_t)DMA_SLOT_TEST_NODE << 32) | offset;
+}
+
+static void test_dma_image_transfer_kick_byte_selects_slot(void)
+{
+    static const uint8_t list0[8] = { 0, 0, 0, 0, 0, 0, 0, 0x07 };
+    static const uint8_t list3[8] = { 0, 0, 0, 0, 0, 0, 0, 0x09 };
+    static const uint8_t pixels0[4] = { 0x00, 0x11, 0x22, 0x33 };
+    static const uint8_t pixels3[4] = { 0x00, 0x55, 0x66, 0x77 };
+
+    si_reset();
+    si_enter_context(qts);
+
+    qtest_memwrite(qts, dma_slot_test_node_addr(0x2000), list0, 8);
+    qtest_memwrite(qts, dma_slot_test_node_addr(0x7000), pixels0, 4);
+    qtest_memwrite(qts, dma_slot_test_node_addr(0x3000), list3, 8);
+    qtest_memwrite(qts, dma_slot_test_node_addr(0x9000), pixels3, 4);
+
+    /* DMA-map slot 0: node 0's list at 0x2000, one page, widget 9. */
+    qtest_writel(qts, SI_REG(0x130400), 0x00482008);
+    qtest_writeq(qts, SI_REG(0x130400), dma_slot_test_node_addr(0x2000));
+    qtest_writeq(qts, SI_REG(0x130400), ((uint64_t)0x00483004 << 32) | 1);
+    qtest_writeq(qts, SI_REG(0x130400),
+                ((uint64_t)0x00484b04 << 32) | (DMA_SLOT_TEST_WIDGET << 16));
+
+    /* DMA-map slot 3: node 0's list at 0x3000, one page, widget 9. */
+    qtest_writel(qts, SI_REG(0x130400), 0x00482608);
+    qtest_writeq(qts, SI_REG(0x130400), dma_slot_test_node_addr(0x3000));
+    qtest_writeq(qts, SI_REG(0x130400), ((uint64_t)0x00483304 << 32) | 1);
+    qtest_writeq(qts, SI_REG(0x130400),
+                ((uint64_t)0x00484e04 << 32) | (DMA_SLOT_TEST_WIDGET << 16));
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_COLORMASKMSBS, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_PP1FILLMODE, SI_LOGIC_OP_COPY << 26));
+
+    /* Kick byte 0xb1 (write, bits 2:1 == 0): slot 0's pixel at (10,10). */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_BLOCK_START, (10u << 16) | 10u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND_EXEC(REG_BLOCK_END, (10u << 16) | 10u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080404 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080504 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080604 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080704 << 32) | 1);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080804 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080b04 << 32) | 0xb1);
+
+    g_assert_cmphex(si_test_pixel(qts, 10, 10), ==, 0x00112233);
+
+    /* Kick byte 0xb7 (write, bits 2:1 == 3): slot 3's pixel at (11,10). */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_BLOCK_START, (11u << 16) | 10u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND_EXEC(REG_BLOCK_END, (11u << 16) | 10u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080404 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080504 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080604 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080704 << 32) | 1);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080804 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080b04 << 32) | 0xb7);
+
+    g_assert_cmphex(si_test_pixel(qts, 11, 10), ==, 0x00556677);
+
+    /*
+     * Kick byte 0xb3 (write, bits 2:1 == 1) names slot 1, never mapped:
+     * no transfer, no crash, and the write handshake still completes so
+     * the guest's 0x020010 poll returns.
+     */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_BLOCK_START, (12u << 16) | 10u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND_EXEC(REG_BLOCK_END, (12u << 16) | 10u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080404 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080504 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080604 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080704 << 32) | 1);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080804 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080b04 << 32) | 0xb3);
+
+    g_assert_cmphex(si_test_pixel(qts, 12, 10), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & SI_HQ_FLAG_FENCE, ==,
+                    SI_HQ_FLAG_FENCE);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+#undef DMA_SLOT_TEST_NODE
+#undef DMA_SLOT_TEST_WIDGET
+
 static void test_board_bringup_byte_poll_bit_position(void)
 {
     si_reset();
@@ -3497,6 +3601,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "dma-image-transfer-paints-from-host-memory",
                    test_dma_image_transfer_paints_from_host_memory);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "dma-image-transfer-kick-byte-selects-slot",
+                   test_dma_image_transfer_kick_byte_selects_slot);
     qtest_add_func("sn0/origin2000/mgras/board-bringup-byte-poll-bit-position",
                    test_board_bringup_byte_poll_bit_position);
     qtest_add_func("sn0/origin2000/mgras/board-info-byte-read-no-error",
