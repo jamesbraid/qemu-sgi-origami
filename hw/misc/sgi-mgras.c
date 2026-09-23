@@ -491,7 +491,10 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     case SGI_MGRAS_BRINGUP_BLOCK_1: s->bringup_block[0] = value; return;
     case SGI_MGRAS_BRINGUP_BLOCK_2: s->bringup_block[1] = value; return;
     case SGI_MGRAS_BRINGUP_BLOCK_3: s->bringup_block[2] = value; return;
-    case SGI_MGRAS_SCRATCH_COMMAND: s->scratch_command = value; return;
+    case SGI_MGRAS_SCRATCH_COMMAND:
+        s->scratch_command = value;
+        si_dma_map_write(s, value, size);
+        return;
     /* Clear modeled low-water state when its enable is cleared. */
     case SGI_MGRAS_BRINGUP_ARG_3:
         s->bringup_arg_3 = value;
@@ -753,6 +756,8 @@ static void si_reset_enter(Object *obj, ResetType type)
     s->bringup_arg_2 = 0;
     memset(s->bringup_block, 0, sizeof(s->bringup_block));
     s->scratch_command = 0;
+    memset(s->dma_map_regs, 0, sizeof(s->dma_map_regs));
+    s->dma_map_reg = s->dma_map_words_remaining = 0;
     s->bringup_arg_3 = 0;
     s->vc3_arg = 0;
     s->re_arg = 0;
@@ -841,6 +846,7 @@ static int si_post_load(void *opaque, int version_id)
          SGI_MGRAS_CMD_TOKEN_MAX_DISCARD_WORDS) ||
         (s->cmd_token_class != SGI_MGRAS_CMD_TOKEN_DISCARD &&
          s->cmd_token_words_remaining > ARRAY_SIZE(s->cmd_token_payload)) ||
+        s->dma_map_words_remaining > SGI_MGRAS_CMD_TOKEN_MAX_DISCARD_WORDS ||
         s->pio_x > SGI_MGRAS_WIDTH || s->pio_y > SGI_MGRAS_HEIGHT ||
         s->xmap_index >= SGI_MGRAS_XMAP_ENTRIES) {
         return -EINVAL;
@@ -881,7 +887,7 @@ static bool si_ge_lengths_valid(void *opaque, int version_id)
  * changes.
  */
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 6, .minimum_version_id = 6,
+    .name = TYPE_SGI_MGRAS, .version_id = 7, .minimum_version_id = 7,
     .post_load = si_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -950,6 +956,10 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32(bringup_arg_2, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(bringup_block, SGIMgrasState, 3),
         VMSTATE_UINT64(scratch_command, SGIMgrasState),
+        VMSTATE_UINT32_ARRAY(dma_map_regs, SGIMgrasState,
+                             SGI_MGRAS_DMA_MAP_REGS),
+        VMSTATE_UINT32(dma_map_reg, SGIMgrasState),
+        VMSTATE_UINT32(dma_map_words_remaining, SGIMgrasState),
         VMSTATE_UINT32(bringup_arg_3, SGIMgrasState),
         VMSTATE_UINT32(vc3_arg, SGIMgrasState),
         VMSTATE_UINT32(re_arg, SGIMgrasState),
@@ -1063,6 +1073,50 @@ static void si_test_get_wid(Object *obj, Visitor *v, const char *name,
     visit_type_uint32(v, name, &value, errp);
 }
 
+/*
+ * Host-only qtest access to the DMA source-mapping slot x-test-dma-map-slot
+ * currently selects.
+ */
+static void si_test_get_dma_map_base(Object *obj, Visitor *v,
+                                     const char *name, void *opaque,
+                                     Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint64_t value = si_dma_map_slot_base(s, s->test_dma_map_slot);
+
+    visit_type_uint64(v, name, &value, errp);
+}
+
+static void si_test_get_dma_map_count(Object *obj, Visitor *v,
+                                      const char *name, void *opaque,
+                                      Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint32_t value = si_dma_map_slot_count(s, s->test_dma_map_slot);
+
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void si_test_get_dma_map_width(Object *obj, Visitor *v,
+                                      const char *name, void *opaque,
+                                      Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint32_t value = si_dma_map_slot_width(s, s->test_dma_map_slot);
+
+    visit_type_uint32(v, name, &value, errp);
+}
+
+static void si_test_get_dma_map_control(Object *obj, Visitor *v,
+                                        const char *name, void *opaque,
+                                        Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint32_t value = si_dma_map_slot_control(s, s->test_dma_map_slot);
+
+    visit_type_uint32(v, name, &value, errp);
+}
+
 static void si_instance_init(Object *obj)
 {
     SGIMgrasState *s = SGI_MGRAS(obj);
@@ -1101,6 +1155,17 @@ static void si_instance_init(Object *obj)
                                    &s->int_dest_upper, OBJ_PROP_FLAG_READ);
     object_property_add_uint32_ptr(obj, "x-test-int-dest-lower",
                                    &s->int_dest_lower, OBJ_PROP_FLAG_READ);
+    object_property_add_uint32_ptr(obj, "x-test-dma-map-slot",
+                                   &s->test_dma_map_slot,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_add(obj, "x-test-dma-map-base", "uint64",
+                        si_test_get_dma_map_base, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-dma-map-count", "uint32",
+                        si_test_get_dma_map_count, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-dma-map-width", "uint32",
+                        si_test_get_dma_map_width, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-dma-map-control", "uint32",
+                        si_test_get_dma_map_control, NULL, NULL, NULL);
 }
 
 static void si_class_init(ObjectClass *oc, const void *data)
