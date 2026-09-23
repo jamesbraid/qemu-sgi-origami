@@ -1,0 +1,777 @@
+/*
+ * SPDX-License-Identifier: GPL-2.0-or-later
+ *
+ * R10000 processor behavior that does not depend on the Hub or XIO
+ * topology around it: the external NMI input, the Status.RE unimplemented-
+ * feature log, and the deterministic LL/SC link breakers.  Each fragment
+ * runs on the Origin 200, the only machine this fork builds that carries
+ * the R10000, with the synthesized firmware off so the fragment owns the
+ * reset vector and low memory outright.
+ */
+
+#include "qemu/osdep.h"
+#include "qemu/bswap.h"
+#include "libqtest.h"
+#include "sgi-migrate.h"
+#include "sgi-mips-emit.h"
+#include "sgi-test.h"
+
+/* Guest images share one fixed-size flash window and result area. */
+#define IMAGE_SIZE          0x1000
+#define STATE_PHYS          0x00100000
+#define STATE_KSEG1_HI      0xa010
+#define POLL_INTERVAL_US    1000
+#define POLL_TRIES          10000
+
+/*
+ * Boot-exception vectors, shared by the status-re and llsc fragments: both
+ * install fault stubs so an unexpected exception reports loudly instead of
+ * wandering off and looking like a hang.
+ */
+#define VEC_TLB_REFILL      0x200
+#define VEC_XTLB_REFILL     0x280
+#define VEC_CACHE_ERROR     0x300
+#define VEC_GENERAL         0x380
+#define FAULT_MAGIC         0x0bad
+
+/* Instruction encodings, named as in target/mips/tcg/translate.c. */
+#define OPC_SPECIAL         (0x00u << 26)
+#define OPC_BEQ             (0x04u << 26)
+#define OPC_BNE             (0x05u << 26)
+#define OPC_SYNC            (0x0fu | OPC_SPECIAL)
+#define OPC_ERET            0x42000018u
+
+#define R_ZERO              0
+#define R_T0                8
+#define R_T1                9
+#define R_T2                10
+#define R_T3                11
+
+#define CP0_STATUS          12
+
+typedef struct GuestImage {
+    uint8_t *code;
+    unsigned int pos;
+} GuestImage;
+
+static void emit(GuestImage *img, uint32_t insn)
+{
+    g_assert_cmpuint(img->pos + 4, <=, IMAGE_SIZE);
+    stl_be_p(img->code + img->pos, insn);
+    img->pos += 4;
+}
+
+static void emit_nop(GuestImage *img)
+{
+    emit(img, mips_nop());
+}
+
+static void emit_branch(GuestImage *img, uint32_t opcode, int rs, int rt,
+                        unsigned int target)
+{
+    int32_t off = ((int32_t)target - (int32_t)(img->pos + 4)) / 4;
+
+    emit(img, mips_branch(opcode, rs, rt, off));
+}
+
+static void emit_lui(GuestImage *img, int rt, uint16_t imm)
+{
+    emit(img, mips_lui(rt, imm));
+}
+
+static void emit_addiu(GuestImage *img, int rt, int rs, int16_t imm)
+{
+    emit(img, mips_addiu(rt, rs, imm));
+}
+
+static void emit_and(GuestImage *img, int rd, int rs, int rt)
+{
+    emit(img, mips_and(rd, rs, rt));
+}
+
+static void emit_ld(GuestImage *img, int rt, int base, int16_t off)
+{
+    emit(img, mips_ld(rt, base, off));
+}
+
+static void emit_sd(GuestImage *img, int rt, int base, int16_t off)
+{
+    emit(img, mips_sd(rt, base, off));
+}
+
+static void emit_mfc0(GuestImage *img, int rt, int rd)
+{
+    emit(img, mips_mfc0(rt, rd));
+}
+
+static void emit_mtc0(GuestImage *img, int rt, int rd)
+{
+    emit(img, mips_mtc0(rt, rd));
+}
+
+/* EHB is SLL $0, $0, 3: a hazard barrier on R2, a no-op before it. */
+static void emit_ehb(GuestImage *img)
+{
+    emit(img, OPC_SPECIAL | (3 << 6));
+}
+
+/* Report a value and spin.  The branch needs a delay slot, hence the nop. */
+static void emit_report_and_spin(GuestImage *img, uint16_t magic,
+                                 int16_t off)
+{
+    unsigned int spin;
+
+    emit_lui(img, R_T2, STATE_KSEG1_HI);
+    emit_addiu(img, R_T3, R_ZERO, magic);
+    emit_sd(img, R_T3, R_T2, off);
+    emit(img, OPC_SYNC);
+    spin = img->pos;
+    emit_branch(img, OPC_BEQ, R_ZERO, R_ZERO, spin);
+    emit_nop(img);
+}
+
+/*
+ * NMI: exercise the external MIPS NMI input.  A tiny guest records the
+ * architectural state seen at the boot exception vector, returns through
+ * ErrorEPC, and acknowledges each completed entry from its main loop.  The
+ * NMI line is driven straight on the CPU, so the test stays about
+ * target/mips rather than the Hub's interrupt routing.
+ */
+
+#define NMI_HANDLER         0x480
+#define MAIN_LOOP           0x500
+
+#define READY_OFF           0x00
+#define COUNT_OFF           0x08
+#define ACK_OFF             0x10
+#define STATUS_OFF          0x18
+#define ERROREPC_OFF        0x20
+
+#define READY_MAGIC         0x1400
+
+#define CP0_ERROREPC        30
+#define STATUS_SR           (1u << 20)
+#define STATUS_NMI          (1u << 19)
+#define STATUS_ERL          (1u << 2)
+#define STATUS_BEV          (1u << 22)
+
+static void nmi_write_guest_image(int fd)
+{
+    uint8_t image[IMAGE_SIZE] = { };
+    GuestImage img = { .code = image, .pos = 0 };
+    ssize_t written;
+
+    /* Branch clear of the low words so seeded board data cannot matter. */
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, CODE_START);
+    emit_nop(&img);
+
+    img.pos = CODE_START;
+    emit_mfc0(&img, R_T0, CP0_STATUS);
+    emit_lui(&img, R_T1, STATUS_NMI >> 16);
+    emit_and(&img, R_T2, R_T0, R_T1);
+    emit_branch(&img, OPC_BNE, R_T2, R_ZERO, NMI_HANDLER);
+    emit_nop(&img);
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, MAIN_LOOP);
+    emit_nop(&img);
+
+    img.pos = NMI_HANDLER;
+    emit_lui(&img, R_T2, STATE_KSEG1_HI);
+    emit_sd(&img, R_T0, R_T2, STATUS_OFF);
+    emit_mfc0(&img, R_T1, CP0_ERROREPC);
+    emit_sd(&img, R_T1, R_T2, ERROREPC_OFF);
+    emit_ld(&img, R_T3, R_T2, COUNT_OFF);
+    emit_addiu(&img, R_T3, R_T3, 1);
+    emit_sd(&img, R_T3, R_T2, COUNT_OFF);
+    emit(&img, OPC_SYNC);
+    emit(&img, OPC_ERET);
+    emit_nop(&img);
+
+    img.pos = MAIN_LOOP;
+    emit_lui(&img, R_T2, STATE_KSEG1_HI);
+    emit_addiu(&img, R_T3, R_ZERO, READY_MAGIC);
+    emit_sd(&img, R_T3, R_T2, READY_OFF);
+    emit_ld(&img, R_T3, R_T2, COUNT_OFF);
+    emit_sd(&img, R_T3, R_T2, ACK_OFF);
+    emit(&img, OPC_SYNC);
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, MAIN_LOOP);
+    emit_nop(&img);
+
+    written = write(fd, image, sizeof(image));
+    g_assert_cmpint(written, ==, sizeof(image));
+}
+
+static uint64_t state_word(QTestState *qts, uint64_t off)
+{
+    return qtest_readq(qts, STATE_PHYS + off);
+}
+
+static void wait_for_state(QTestState *qts, uint64_t off, uint64_t expected)
+{
+    /*
+     * A generous host-schedule margin, not a guest timing bound: under a
+     * loaded runner the guest still needs real wall-clock time to reach
+     * the next state. A guest state machine that never advances still
+     * fails, just not on host contention alone.
+     */
+    int64_t deadline = g_get_monotonic_time() + 60 * G_TIME_SPAN_SECOND;
+
+    while (state_word(qts, off) != expected) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(POLL_INTERVAL_US);
+    }
+}
+
+static char *cpu_qom_path(QTestState *qts)
+{
+    QDict *response = qtest_qmp(qts, "{ 'execute': 'query-cpus-fast' }");
+    QList *cpus = qdict_get_qlist(response, "return");
+    QDict *cpu = qobject_to(QDict, qlist_peek(cpus));
+    char *path = g_strdup(qdict_get_str(cpu, "qom-path"));
+
+    qobject_unref(response);
+    return path;
+}
+
+static void test_nmi_entry_and_retrigger(void)
+{
+    g_autofree char *image = NULL;
+    g_autofree char *cpu_path = NULL;
+    QTestState *qts;
+    uint64_t status, error_epc;
+    int fd;
+
+    fd = g_file_open_tmp("mips64-r10k-nmi-image-XXXXXX", &image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    nmi_write_guest_image(fd);
+    close(fd);
+
+    qts = qtest_initf("-M origin200 -m 64M "
+                      "-cpu R10000 -bios %s -accel tcg "
+                      "-no-reboot -no-shutdown", image);
+    unlink(image);
+    wait_for_state(qts, READY_OFF, READY_MAGIC);
+    cpu_path = cpu_qom_path(qts);
+
+    qtest_set_irq_in(qts, cpu_path, "nmi", 0, 1);
+    wait_for_state(qts, ACK_OFF, 1);
+    status = state_word(qts, STATUS_OFF);
+    g_assert_cmphex(status & (STATUS_SR | STATUS_NMI | STATUS_ERL | STATUS_BEV),
+                    ==, STATUS_SR | STATUS_NMI | STATUS_ERL | STATUS_BEV);
+    error_epc = state_word(qts, ERROREPC_OFF);
+    g_assert_cmphex(error_epc, >=, 0xffffffffbfc00000ULL + MAIN_LOOP);
+    g_assert_cmphex(error_epc, <, 0xffffffffbfc00000ULL + MAIN_LOOP + 0x20);
+
+    /* A held assertion is one event; lowering it rearms the next edge. */
+    qtest_set_irq_in(qts, cpu_path, "nmi", 0, 1);
+    g_usleep(10 * POLL_INTERVAL_US);
+    g_assert_cmphex(state_word(qts, COUNT_OFF), ==, 1);
+    qtest_set_irq_in(qts, cpu_path, "nmi", 0, 0);
+    g_assert_cmphex(state_word(qts, COUNT_OFF), ==, 1);
+    qtest_set_irq_in(qts, cpu_path, "nmi", 0, 1);
+    wait_for_state(qts, ACK_OFF, 2);
+    qtest_set_irq_in(qts, cpu_path, "nmi", 0, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_nmi_reset_rearms(void)
+{
+    g_autofree char *image = NULL;
+    g_autofree char *cpu_path = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("mips64-r10k-nmi-image-XXXXXX", &image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    nmi_write_guest_image(fd);
+    close(fd);
+    qts = qtest_initf("-M origin200 -m 64M "
+                      "-cpu R10000 -bios %s -accel tcg "
+                      "-no-shutdown", image);
+    unlink(image);
+    wait_for_state(qts, READY_OFF, READY_MAGIC);
+    cpu_path = cpu_qom_path(qts);
+
+    qtest_set_irq_in(qts, cpu_path, "nmi", 0, 1);
+    wait_for_state(qts, ACK_OFF, 1);
+
+    /*
+     * QMP system_reset only requests a reset; QEMU applies it at the next
+     * main-loop turn, after this command's reply. Stop the vCPU first so it
+     * cannot keep spinning through the old MAIN_LOOP and rewriting READY_OFF
+     * back to READY_MAGIC in that gap: a poll landing in that window would
+     * pass on the pre-reset guest's own write and go on to fire the next
+     * NMI before the real reset has run, catching the CPU still at the
+     * reset vector instead of parked in the post-reset MAIN_LOOP. cont
+     * resumes only once the reset above is known to have been applied.
+     */
+    qtest_qmp_assert_success(qts, "{'execute':'stop'}");
+    qtest_writeq(qts, STATE_PHYS + READY_OFF, 0);
+    qtest_qmp_assert_success(qts, "{'execute':'system_reset'}");
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    wait_for_state(qts, READY_OFF, READY_MAGIC);
+    qtest_set_irq_in(qts, cpu_path, "nmi", 0, 1);
+    wait_for_state(qts, ACK_OFF, 2);
+    qtest_set_irq_in(qts, cpu_path, "nmi", 0, 0);
+
+    qtest_quit(qts);
+}
+
+static void test_nmi_latch_migration(void)
+{
+    g_autofree char *image = NULL;
+    g_autofree char *directory = NULL;
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *source_args = NULL;
+    g_autofree char *dest_args = NULL;
+    g_autofree char *source_path = NULL;
+    g_autofree char *dest_path = NULL;
+    GError *error = NULL;
+    QTestState *from, *to;
+    int fd;
+
+    fd = g_file_open_tmp("mips64-r10k-nmi-image-XXXXXX", &image, &error);
+    g_assert_no_error(error);
+    nmi_write_guest_image(fd);
+    close(fd);
+    directory = g_dir_make_tmp("mips64-r10k-nmi-migration-XXXXXX", &error);
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    source_args = g_strdup_printf(
+        "-M origin200 -m 64M -cpu R10000 -bios %s "
+        "-accel tcg -no-reboot -no-shutdown", image);
+    dest_args = g_strdup_printf(
+        "-M origin200 -m 64M -cpu R10000 -bios %s "
+        "-accel tcg -no-reboot -no-shutdown -incoming defer", image);
+    from = qtest_init(source_args);
+    to = qtest_init(dest_args);
+    unlink(image);
+    wait_for_state(from, READY_OFF, READY_MAGIC);
+    source_path = cpu_qom_path(from);
+    dest_path = cpu_qom_path(to);
+    qtest_set_irq_in(from, source_path, "nmi", 0, 1);
+    wait_for_state(from, ACK_OFF, 1);
+    qtest_qmp_assert_success(from, "{'execute':'stop'}");
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate', 'arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(from, "completed", 60);
+    qtest_qmp_assert_success(to, "{'execute':'cont'}");
+
+    qtest_set_irq_in(to, dest_path, "nmi", 0, 1);
+    g_usleep(10 * POLL_INTERVAL_US);
+    g_assert_cmphex(state_word(to, COUNT_OFF), ==, 1);
+    qtest_set_irq_in(to, dest_path, "nmi", 0, 0);
+    qtest_set_irq_in(to, dest_path, "nmi", 0, 1);
+    wait_for_state(to, ACK_OFF, 2);
+    qtest_set_irq_in(to, dest_path, "nmi", 0, 0);
+
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(directory), ==, 0);
+}
+
+/*
+ * status-re: Status.RE promises reverse-endian user-mode loads and stores
+ * (user's manual version 2.0, section 14.10).  The model stores the bit
+ * and implements none of the semantics, so raising it has to be loud
+ * rather than silent: helper_mtc0_status() logs a LOG_UNIMP line when a
+ * guest sets RE on an R10000-family processor.  The case boots a fragment
+ * that sets RE from kernel mode and reads the -d unimp log back; the line
+ * must appear.
+ */
+
+#define SRE_DONE_OFF        0x00
+#define SRE_FAULT_OFF       0x08
+#define SRE_DONE_MAGIC      0x0d04
+
+#define OPC_ORI             (0x0du << 26)
+#define OPC_OR              (0x25u | OPC_SPECIAL)
+
+#define STATUS_RE_HI        0x0200  /* bit 25, as a LUI immediate */
+
+static void emit_or(GuestImage *img, int rd, int rs, int rt)
+{
+    emit(img, OPC_OR | (rs << 21) | (rt << 16) | (rd << 11));
+}
+
+/*
+ * Any exception says so instead of wandering off and looking like a hang.
+ * The fragment runs entirely in kernel mode from flash, so nothing should
+ * fault; the stub exists to make it diagnosable if something does.
+ */
+static void sre_emit_fault_stub(GuestImage *img)
+{
+    emit_report_and_spin(img, FAULT_MAGIC, SRE_FAULT_OFF);
+}
+
+static void sre_write_guest_image(int fd)
+{
+    uint8_t image[IMAGE_SIZE] = { };
+    GuestImage img = { .code = image, .pos = 0 };
+    ssize_t written;
+
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, CODE_START);
+    emit_nop(&img);
+
+    img.pos = VEC_TLB_REFILL;
+    sre_emit_fault_stub(&img);
+    img.pos = VEC_XTLB_REFILL;
+    sre_emit_fault_stub(&img);
+    img.pos = VEC_CACHE_ERROR;
+    sre_emit_fault_stub(&img);
+    img.pos = VEC_GENERAL;
+    sre_emit_fault_stub(&img);
+
+    /*
+     * Read Status, raise RE (bit 25), write it back.  Reset state - ERL
+     * and BEV set - is preserved, so the fragment stays in kernel mode
+     * and the write is an ordinary read-modify-write of a live register,
+     * the shape a real guest's write would have.
+     */
+    img.pos = CODE_START;
+    emit_mfc0(&img, R_T0, CP0_STATUS);
+    emit_lui(&img, R_T1, STATUS_RE_HI);
+    emit_or(&img, R_T0, R_T0, R_T1);
+    emit_mtc0(&img, R_T0, CP0_STATUS);
+    emit_ehb(&img);
+    emit_report_and_spin(&img, SRE_DONE_MAGIC, SRE_DONE_OFF);
+
+    written = write(fd, image, sizeof(image));
+    g_assert_cmpint(written, ==, sizeof(image));
+}
+
+/*
+ * Boot the fragment on the R10000 with the unimp log captured to a file,
+ * wait for the guest's report, and return the log contents.
+ */
+static char *run_fragment(void)
+{
+    g_autofree char *image = NULL;
+    g_autofree char *log_path = NULL;
+    QTestState *qts;
+    unsigned int tries;
+    uint64_t done = 0, fault = 0;
+    char *log = NULL;
+    int fd;
+
+    fd = g_file_open_tmp("mips64-r10k-status-re-image-XXXXXX", &image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    sre_write_guest_image(fd);
+    close(fd);
+
+    fd = g_file_open_tmp("mips64-r10k-status-re-log-XXXXXX", &log_path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+
+    qts = qtest_initf("-M origin200 -m 64M "
+                      "-cpu R10000 -bios %s -accel tcg "
+                      "-d unimp -D %s -no-reboot -no-shutdown",
+                      image, log_path);
+    unlink(image);
+
+    for (tries = 0; tries < POLL_TRIES; tries++) {
+        done = qtest_readq(qts, STATE_PHYS + SRE_DONE_OFF);
+        fault = qtest_readq(qts, STATE_PHYS + SRE_FAULT_OFF);
+        if (done || fault) {
+            break;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+    g_assert_cmphex(fault, ==, 0);
+    g_assert_cmphex(done, ==, SRE_DONE_MAGIC);
+
+    /* Quitting flushes the log file before it is read. */
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
+    unlink(log_path);
+    return log;
+}
+
+static void test_r10000_logs_unimp(void)
+{
+    g_autofree char *log = run_fragment();
+
+    g_assert_nonnull(strstr(log, "Status.RE"));
+}
+
+/*
+ * llsc: the R10000's deterministic load-linked link breakers.  The
+ * processor requires SC to fail if an LL/SC sequence contains another
+ * load or store, SYNC, CACHE, PREF, an exception, or ERET.
+ */
+
+#define RESULT_BASE         0x00
+#define RESULT_STRIDE       0x10
+#define TARGET_OFF          0x100
+#define OTHER_OFF           0x108
+#define LLSC_DONE_OFF       0x1f0
+#define EXC_COUNT_OFF       0x1f8
+#define LLSC_FAULT_OFF      0x200
+
+#define OLD_VALUE           0x11
+#define NEW_VALUE           0x22
+#define OTHER_VALUE         0x44
+#define LLSC_DONE_MAGIC     0x10c5
+
+#define OPC_CACHE           (0x2fu << 26)
+#define OPC_PREF            (0x33u << 26)
+#define OPC_LLD             (0x34u << 26)
+#define OPC_SCD             (0x3cu << 26)
+#define OPC_JR              (0x08u | OPC_SPECIAL)
+#define OPC_SYSCALL         (0x0cu | OPC_SPECIAL)
+
+#define R_S0                16
+#define R_S6                22
+#define R_S7                23
+#define R_K0                26
+
+#define CP0_EPC             14
+#define STATUS_ERL_CLEAR    (-5)
+#define STATUS_EXL_CLEAR    (-3)
+
+typedef enum LinkBreaker {
+    BREAK_LOAD,
+    BREAK_STORE,
+    BREAK_SYNC,
+    BREAK_CACHE,
+    BREAK_PREF,
+    BREAK_EXCEPTION,
+    BREAK_ERET,
+    BREAK_COUNT,
+} LinkBreaker;
+
+typedef struct CPUCase {
+    const char *name;
+    bool has_pref;
+    uint32_t success_mask;
+} CPUCase;
+
+static const CPUCase cpu_cases[] = {
+    { "R10000", true, 0 },
+};
+
+static const char *const breaker_names[] = {
+    [BREAK_LOAD] = "load",
+    [BREAK_STORE] = "store",
+    [BREAK_SYNC] = "sync",
+    [BREAK_CACHE] = "cache",
+    [BREAK_PREF] = "pref",
+    [BREAK_EXCEPTION] = "exception",
+    [BREAK_ERET] = "eret",
+};
+
+static void emit_lld(GuestImage *img, int rt, int base, int16_t off)
+{
+    emit(img, OPC_LLD | (base << 21) | (rt << 16) | (uint16_t)off);
+}
+
+static void emit_scd(GuestImage *img, int rt, int base, int16_t off)
+{
+    emit(img, OPC_SCD | (base << 21) | (rt << 16) | (uint16_t)off);
+}
+
+static void llsc_emit_fault_stub(GuestImage *img)
+{
+    emit_report_and_spin(img, FAULT_MAGIC, LLSC_FAULT_OFF);
+}
+
+static void emit_general_handler(GuestImage *img)
+{
+    unsigned int eret_path = VEC_GENERAL + 0x1c;
+
+    emit_addiu(img, R_S6, R_S6, 1);
+    emit_branch(img, OPC_BNE, R_S7, R_ZERO, eret_path);
+    emit_nop(img);
+    emit_mfc0(img, R_K0, CP0_EPC);
+    emit_addiu(img, R_K0, R_K0, 4);
+    emit(img, OPC_JR | (R_K0 << 21));
+    emit_nop(img);
+
+    g_assert_cmpuint(img->pos, ==, eret_path);
+    emit_mfc0(img, R_K0, CP0_EPC);
+    emit_addiu(img, R_K0, R_K0, 4);
+    emit_mtc0(img, R_K0, CP0_EPC);
+    emit_ehb(img);
+    emit(img, OPC_ERET);
+    emit_nop(img);
+}
+
+static void emit_sequence_start(GuestImage *img)
+{
+    emit_addiu(img, R_T0, R_ZERO, OLD_VALUE);
+    emit_sd(img, R_T0, R_S0, TARGET_OFF);
+    emit_addiu(img, R_T1, R_ZERO, NEW_VALUE);
+    emit_lld(img, R_T2, R_S0, TARGET_OFF);
+}
+
+static void emit_sequence_result(GuestImage *img, LinkBreaker breaker)
+{
+    int16_t result = RESULT_BASE + breaker * RESULT_STRIDE;
+
+    emit_scd(img, R_T1, R_S0, TARGET_OFF);
+    emit_sd(img, R_T1, R_S0, result);
+    emit_ld(img, R_T3, R_S0, TARGET_OFF);
+    emit_sd(img, R_T3, R_S0, result + 8);
+}
+
+static void emit_clear_status_bit(GuestImage *img, int16_t mask)
+{
+    emit_mfc0(img, R_T0, CP0_STATUS);
+    emit_addiu(img, R_T1, R_ZERO, mask);
+    emit_and(img, R_T0, R_T0, R_T1);
+    emit_mtc0(img, R_T0, CP0_STATUS);
+    emit_ehb(img);
+}
+
+static void llsc_write_guest_image(int fd, bool has_pref)
+{
+    uint8_t image[IMAGE_SIZE] = { };
+    GuestImage img = { .code = image, .pos = 0 };
+    ssize_t written;
+
+    emit_branch(&img, OPC_BEQ, R_ZERO, R_ZERO, CODE_START);
+    emit_nop(&img);
+
+    img.pos = VEC_TLB_REFILL;
+    llsc_emit_fault_stub(&img);
+    img.pos = VEC_XTLB_REFILL;
+    llsc_emit_fault_stub(&img);
+    img.pos = VEC_CACHE_ERROR;
+    llsc_emit_fault_stub(&img);
+    img.pos = VEC_GENERAL;
+    emit_general_handler(&img);
+
+    img.pos = CODE_START;
+    emit_lui(&img, R_S0, STATE_KSEG1_HI);
+    emit_clear_status_bit(&img, STATUS_ERL_CLEAR);
+    emit_addiu(&img, R_T0, R_ZERO, OTHER_VALUE);
+    emit_sd(&img, R_T0, R_S0, OTHER_OFF);
+
+    emit_sequence_start(&img);
+    emit_ld(&img, R_T3, R_S0, OTHER_OFF);
+    emit_sequence_result(&img, BREAK_LOAD);
+
+    emit_sequence_start(&img);
+    emit_sd(&img, R_T0, R_S0, OTHER_OFF);
+    emit_sequence_result(&img, BREAK_STORE);
+
+    emit_sequence_start(&img);
+    emit(&img, OPC_SYNC);
+    emit_sequence_result(&img, BREAK_SYNC);
+
+    emit_sequence_start(&img);
+    emit(&img, OPC_CACHE | (R_S0 << 21) | TARGET_OFF);
+    emit_sequence_result(&img, BREAK_CACHE);
+
+    emit_sequence_start(&img);
+    if (has_pref) {
+        emit(&img, OPC_PREF | (R_S0 << 21) | TARGET_OFF);
+    } else {
+        emit_nop(&img);
+    }
+    emit_sequence_result(&img, BREAK_PREF);
+
+    emit_sequence_start(&img);
+    emit_addiu(&img, R_S7, R_ZERO, 0);
+    emit(&img, OPC_SYSCALL);
+    emit_sequence_result(&img, BREAK_EXCEPTION);
+    emit_clear_status_bit(&img, STATUS_EXL_CLEAR);
+
+    emit_sequence_start(&img);
+    emit_addiu(&img, R_S7, R_ZERO, 1);
+    emit(&img, OPC_SYSCALL);
+    emit_sequence_result(&img, BREAK_ERET);
+
+    emit_sd(&img, R_S6, R_S0, EXC_COUNT_OFF);
+    emit_report_and_spin(&img, LLSC_DONE_MAGIC, LLSC_DONE_OFF);
+
+    written = write(fd, image, sizeof(image));
+    g_assert_cmpint(written, ==, sizeof(image));
+}
+
+static void wait_for_done(QTestState *qts)
+{
+    unsigned int tries;
+
+    for (tries = 0; tries < POLL_TRIES; tries++) {
+        uint64_t done = qtest_readq(qts, STATE_PHYS + LLSC_DONE_OFF);
+        uint64_t fault = qtest_readq(qts, STATE_PHYS + LLSC_FAULT_OFF);
+
+        if (done || fault) {
+            g_assert_cmphex(fault, ==, 0);
+            g_assert_cmphex(done, ==, LLSC_DONE_MAGIC);
+            return;
+        }
+        g_usleep(POLL_INTERVAL_US);
+    }
+    g_assert_cmphex(qtest_readq(qts, STATE_PHYS + LLSC_DONE_OFF), ==,
+                    LLSC_DONE_MAGIC);
+}
+
+static void test_cpu(gconstpointer opaque)
+{
+    const CPUCase *cpu_case = opaque;
+    g_autofree char *image = NULL;
+    QTestState *qts;
+    uint32_t invalid_mask = 0;
+    uint32_t observed_success_mask = 0;
+    uint32_t wrong_value_mask = 0;
+    int fd;
+
+    fd = g_file_open_tmp("mips64-r10k-llsc-image-XXXXXX", &image, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    llsc_write_guest_image(fd, cpu_case->has_pref);
+    close(fd);
+
+    qts = qtest_initf("-M origin200 -m 64M "
+                      "-cpu %s -bios %s -accel tcg "
+                      "-no-reboot -no-shutdown", cpu_case->name, image);
+    unlink(image);
+    wait_for_done(qts);
+
+    for (LinkBreaker breaker = 0; breaker < BREAK_COUNT; breaker++) {
+        uint64_t result = qtest_readq(qts, STATE_PHYS + RESULT_BASE +
+                                      breaker * RESULT_STRIDE);
+        uint64_t value = qtest_readq(qts, STATE_PHYS + RESULT_BASE +
+                                     breaker * RESULT_STRIDE + 8);
+        uint64_t expected_value;
+
+        g_test_message("%s after %s", cpu_case->name,
+                       breaker_names[breaker]);
+        if (result > 1) {
+            invalid_mask |= 1u << breaker;
+        }
+        if (result == 1) {
+            observed_success_mask |= 1u << breaker;
+        }
+        expected_value = result == 1 ? NEW_VALUE : OLD_VALUE;
+        if (value != expected_value) {
+            wrong_value_mask |= 1u << breaker;
+        }
+    }
+    g_assert_cmphex(invalid_mask, ==, 0);
+    g_assert_cmphex(wrong_value_mask, ==, 0);
+    g_assert_cmphex(observed_success_mask, ==, cpu_case->success_mask);
+    g_assert_cmphex(qtest_readq(qts, STATE_PHYS + EXC_COUNT_OFF), ==, 2);
+    qtest_quit(qts);
+}
+
+int main(int argc, char **argv)
+{
+    g_test_init(&argc, &argv, NULL);
+
+    qtest_add_func("/sn0/nmi/entry-and-retrigger",
+                   test_nmi_entry_and_retrigger);
+    qtest_add_func("/sn0/nmi/reset-rearms", test_nmi_reset_rearms);
+    qtest_add_func("/sn0/nmi/latch-migration", test_nmi_latch_migration);
+    qtest_add_func("/status-re/r10000-logs-unimp", test_r10000_logs_unimp);
+    g_test_add_data_func("/r10k-llsc/r10000", &cpu_cases[0], test_cpu);
+
+    return g_test_run();
+}
