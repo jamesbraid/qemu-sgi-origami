@@ -1,5 +1,17 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Writable node PROMs use test-owned bytes and the existing flash commands. */
+/*
+ * The Origin 2000's node PROMs: test-owned bytes through the flash chip's own
+ * command set.
+ *
+ * Each node carries one byte-wide AMD-style part (hw/block/pflash_cfi02.c),
+ * so this file owns both what the machine does with four of them -- one
+ * store per node, kept apart, written back to its own file -- and what the
+ * chip itself does that only a machine wiring one up can show: the reset
+ * back to read-array mapping, and a read-only backing store turning every
+ * mutation into a logged no-op instead of a silent one. Those last three
+ * cases were qualified on the sh4 r2d board, the only other in-tree machine
+ * with this part on it, which cost a whole second emulator to run.
+ */
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
@@ -11,6 +23,19 @@
 static char *directory;
 static char *input;
 static char *stores[4];
+
+/* The part's identity and command set (hw/mips/sgi/sn0.c, sn0_flash). */
+#define FLASH_MANUFACTURER_ID 0x01
+#define SECTOR_SIZE (64 * 1024)
+#define CMD_AUTOSELECT 0x90
+#define CMD_PROGRAM 0xa0
+#define CMD_ERASE 0x80
+#define CMD_SECTOR_ERASE 0x30
+#define CMD_CHIP_ERASE 0x10
+#define CMD_RESET 0xf0
+#define CMD_CFI_QUERY 0x98
+#define CFI_QUERY_ADDR 0x55
+#define STATUS_DQ6 0x40
 
 static void flash_write(QTestState *qts, unsigned int node, uint32_t offset,
                         uint8_t value)
@@ -42,6 +67,45 @@ static void flash_program(QTestState *qts, unsigned int node, uint32_t offset,
     flash_write(qts, node, offset, value);
 }
 
+static void flash_erase_prefix(QTestState *qts, unsigned int node)
+{
+    flash_unlock(qts, node, CMD_ERASE);
+    flash_write(qts, node, 0x555, 0xaa);
+    flash_write(qts, node, 0x2aa, 0x55);
+}
+
+static void flash_sector_erase(QTestState *qts, unsigned int node,
+                               uint32_t offset)
+{
+    flash_erase_prefix(qts, node);
+    flash_write(qts, node, offset, CMD_SECTOR_ERASE);
+}
+
+static void flash_chip_erase(QTestState *qts, unsigned int node)
+{
+    flash_erase_prefix(qts, node);
+    flash_write(qts, node, 0x555, CMD_CHIP_ERASE);
+}
+
+/*
+ * An erase in progress toggles DQ6 on every read, so two reads in a row agree
+ * only once it has finished. The part publishes its own deadlines: a sector
+ * erase waits 50 us for further sector commands and then 512 us per sector, a
+ * chip erase 4096 ms. Step the virtual clock past the one asked for -- this
+ * machine's real-time counter ticks throughout, so stepping to the next timer
+ * deadline arrives at that counter rather than at the flash.
+ */
+#define SECTOR_ERASE_NS (1ULL * 1000 * 1000)
+#define CHIP_ERASE_NS (5ULL * 1000 * 1000 * 1000)
+
+static void wait_for_completion(QTestState *qts, unsigned int node,
+                                uint32_t offset, uint64_t nanoseconds)
+{
+    qtest_clock_step(qts, nanoseconds);
+    g_assert_cmphex(flash_read(qts, node, offset), ==,
+                    flash_read(qts, node, offset));
+}
+
 static void prepare_stores(void)
 {
     g_autofree char *bytes = g_malloc(FLASH_SIZE);
@@ -55,7 +119,9 @@ static void prepare_stores(void)
     }
 }
 
-static QTestState *start_stores(const char *machine, const char *extra)
+static QTestState *start_stores_with(const char *machine,
+                                     const char *drive_options,
+                                     const char *extra)
 {
     g_autoptr(GString) args = g_string_new(NULL);
 
@@ -63,10 +129,72 @@ static QTestState *start_stores(const char *machine, const char *extra)
 
     for (unsigned int i = 0; i < G_N_ELEMENTS(stores); i++) {
         g_string_append_printf(args,
-            " -drive if=pflash,index=%u,file=%s,format=raw", i, stores[i]);
+            " -drive if=pflash,index=%u,file=%s,format=raw%s", i, stores[i],
+            drive_options);
     }
     g_string_append_printf(args, " %s", extra);
     return qtest_init(args->str);
+}
+
+static QTestState *start_stores(const char *machine, const char *extra)
+{
+    return start_stores_with(machine, "", extra);
+}
+
+/*
+ * Stores filled with a pattern no erase or program could leave behind, so an
+ * unchanged read means the mutation really was refused rather than landing on
+ * bytes that already held the value.
+ */
+static void prepare_patterned_stores(void)
+{
+    g_autofree char *bytes = g_malloc(FLASH_SIZE);
+
+    for (size_t i = 0; i < FLASH_SIZE; i++) {
+        bytes[i] = (char)(0x5a + i);
+    }
+    g_assert_true(g_file_set_contents(input, bytes, FLASH_SIZE, NULL));
+    for (unsigned int i = 0; i < G_N_ELEMENTS(stores); i++) {
+        g_assert_true(g_file_set_contents(stores[i], bytes, FLASH_SIZE, NULL));
+    }
+}
+
+static char *make_log_path(const char *stem)
+{
+    g_autofree char *path = g_strdup_printf("%s/%s.log", directory, stem);
+    int fd = g_open(path, O_CREAT | O_TRUNC | O_WRONLY, 0600);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    return g_steal_pointer(&path);
+}
+
+/*
+ * Whether one node's chip is mapped read-array, as the machine itself
+ * reports it: a part in read-array answers fetches from its own storage and
+ * the flat view calls that romd; any command mode takes the mapping away.
+ */
+static void assert_flash_read_array(QTestState *qts, unsigned int node,
+                                    bool read_array)
+{
+    g_autofree char *mtree = qtest_hmp(qts, "info mtree -f");
+    g_autofree char *name = g_strdup_printf(": sn0.node%u.flash", node);
+    g_autofree char *line = NULL;
+    const char *hit;
+    const char *start;
+
+    /* The chip itself, not the controller views whose names extend it. */
+    for (hit = strstr(mtree, name); hit; hit = strstr(hit + 1, name)) {
+        if (hit[strlen(name)] != '.') {
+            break;
+        }
+    }
+    g_assert_nonnull(hit);
+    for (start = hit; start > mtree && start[-1] != '\n'; start--) {
+        continue;
+    }
+    line = g_strndup(start, (size_t)(hit - start));
+    g_assert_cmpint(strstr(line, "romd") != NULL, ==, read_array);
 }
 
 static void assert_file_byte(const char *path, uint32_t offset, uint8_t value)
@@ -172,6 +300,133 @@ static void test_migration(void)
     unlink(state);
 }
 
+/*
+ * A system reset must return the chip to read-array mapping. Data reads answer
+ * identically either way, so the observable difference is the mapping mode
+ * itself: read it from the machine's own flat view rather than inferring it
+ * from data.
+ */
+static void test_reset_to_read_array(void)
+{
+    QTestState *qts;
+
+    prepare_stores();
+    qts = start_stores("origin2000", "");
+
+    assert_flash_read_array(qts, 0, true);
+
+    /* Leave read-array mapping by entering autoselect. */
+    flash_unlock(qts, 0, CMD_AUTOSELECT);
+    g_assert_cmphex(flash_read(qts, 0, 0), ==, FLASH_MANUFACTURER_ID);
+    assert_flash_read_array(qts, 0, false);
+
+    qtest_system_reset(qts);
+    assert_flash_read_array(qts, 0, true);
+    qtest_quit(qts);
+}
+
+/*
+ * A read-only backing store makes every mutation a no-op. The device used to
+ * swallow them without a word, which reads from the guest side exactly like a
+ * chip that programmed fine, so the diagnostic is the only way to tell an
+ * ignored write from a successful one. Attempt each of the three mutations and
+ * require both the complaint and the untouched bytes.
+ */
+static void test_readonly_mutations_diagnosed(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    g_autofree char *before = NULL;
+    g_autofree char *after = NULL;
+    g_autofree char *arguments = NULL;
+    gsize before_length, after_length;
+    uint8_t byte0, byte1;
+    QTestState *qts;
+
+    prepare_patterned_stores();
+    log = make_log_path("readonly-mutations");
+    arguments = g_strdup_printf("-d guest_errors -D %s", log);
+    g_assert_true(g_file_get_contents(stores[0], &before, &before_length,
+                                      NULL));
+    qts = start_stores_with("origin2000", ",readonly=on", arguments);
+
+    byte0 = flash_read(qts, 0, 0);
+    byte1 = flash_read(qts, 0, SECTOR_SIZE);
+
+    /* The pattern, not an erased chip: an unchanged read must mean something */
+    g_assert_cmphex(byte0, !=, 0xff);
+
+    flash_program(qts, 0, 0, 0x12);
+    g_assert_cmphex(flash_read(qts, 0, 0), ==, byte0);
+
+    /* Sector erase, run to completion so reads return data again. */
+    flash_sector_erase(qts, 0, 0);
+    wait_for_completion(qts, 0, 0, SECTOR_ERASE_NS);
+    g_assert_cmphex(flash_read(qts, 0, 0), ==, byte0);
+
+    flash_chip_erase(qts, 0);
+    wait_for_completion(qts, 0, 0, CHIP_ERASE_NS);
+    g_assert_cmphex(flash_read(qts, 0, 0), ==, byte0);
+    g_assert_cmphex(flash_read(qts, 0, SECTOR_SIZE), ==, byte1);
+
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+    g_assert_nonnull(strstr(found, "word program ignored: backing store is "
+                                   "read-only"));
+    g_assert_nonnull(strstr(found, "sector erase ignored: backing store is "
+                                   "read-only"));
+    g_assert_nonnull(strstr(found, "chip erase ignored: backing store is "
+                                   "read-only"));
+    g_assert_cmpint(unlink(log), ==, 0);
+
+    /* The backing file itself is byte-for-byte what we wrote. */
+    g_assert_true(g_file_get_contents(stores[0], &after, &after_length, NULL));
+    g_assert_cmpuint(after_length, ==, before_length);
+    g_assert_cmpint(memcmp(before, after, before_length), ==, 0);
+}
+
+/*
+ * The complaint belongs to the mutation, not to the command decoder. Query,
+ * autoselect and reset never reach a mutation, so a read-only backend must
+ * leave the log empty for them. Every message is flushed as it is written, so
+ * the log can be read back while the machine is still up: program afterwards
+ * and the same instance proves the backend really was read-only, rather than
+ * leaving the silence to be explained by a writable drive.
+ */
+static void test_readonly_queries_silent(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *quiet = NULL;
+    g_autofree char *noisy = NULL;
+    g_autofree char *arguments = NULL;
+    gsize length = 0;
+    QTestState *qts;
+
+    prepare_patterned_stores();
+    log = make_log_path("readonly-queries");
+    arguments = g_strdup_printf("-d guest_errors -D %s", log);
+    qts = start_stores_with("origin2000", ",readonly=on", arguments);
+
+    flash_unlock(qts, 0, CMD_AUTOSELECT);
+    g_assert_cmphex(flash_read(qts, 0, 0), ==, FLASH_MANUFACTURER_ID);
+    flash_write(qts, 0, CFI_QUERY_ADDR, CMD_CFI_QUERY);
+    g_assert_cmphex(flash_read(qts, 0, 0x10), ==, 'Q');
+    flash_write(qts, 0, 0, CMD_RESET);
+    flash_write(qts, 0, 0, CMD_RESET);
+
+    g_assert_true(g_file_get_contents(log, &quiet, &length, NULL));
+    g_assert_cmpuint(length, ==, 0);
+
+    flash_program(qts, 0, 0, 0x12);
+    g_assert_true(g_file_get_contents(log, &noisy, NULL, NULL));
+    g_assert_nonnull(strstr(noisy, "word program ignored: backing store is "
+                                   "read-only"));
+
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(log), ==, 0);
+}
+
 static void test_launch_selection(gconstpointer data)
 {
     unsigned int which = GPOINTER_TO_UINT(data);
@@ -267,6 +522,12 @@ int main(int argc, char **argv)
      * reads, so there is no second order left to test against.
      */
     qtest_add_func("sn0/origin2000/pflash/migration", test_migration);
+    qtest_add_func("sn0/origin2000/pflash/reset-to-read-array",
+                   test_reset_to_read_array);
+    qtest_add_func("sn0/origin2000/pflash/readonly-mutations-diagnosed",
+                   test_readonly_mutations_diagnosed);
+    qtest_add_func("sn0/origin2000/pflash/readonly-queries-silent",
+                   test_readonly_queries_silent);
     qtest_add_data_func("sn0/origin2000/pflash/normal-launch",
                         GUINT_TO_POINTER(0), test_launch_selection);
     qtest_add_data_func("sn0/origin2000/pflash/partial-drives",
