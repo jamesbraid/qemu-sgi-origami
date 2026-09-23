@@ -77,7 +77,7 @@ LOGIN_PASSWORD_CLICK = (560, 755)
 # How long after submitting the password to wait before the desktop is
 # assumed ready. The serial console's own login prompt and the parallel
 # xdm/4Dwm startup race each other (test_graphics_matrix.py's own
-# _SCREEN_SETTLE_SECONDS documents the same race for the login screen
+# screendump settle poll documents the same race for the login screen
 # itself); this is the same kind of conservative fixed margin, not a
 # derived bound.
 LOGIN_SETTLE_SECONDS = 3.0

@@ -80,13 +80,19 @@ def read_ppm(path):
     return width, height, data
 
 
-def _region_average(width, data, rect):
+def region_average(width, data, rect):
     """The (r, g, b) average of the rectangle (x, y, w, h) in data.
 
     Raises ScreenCheckError if the rectangle reaches outside the image --
     a check whose rectangle no longer fits (a resolution change) must
     fail with a clear reason, not silently average a truncated or wrong
     slice.
+
+    Public (not just RegionColorCheck.evaluate()'s own helper): a caller
+    polling a region across several screendumps for its expected color
+    before evaluate_screendump() ever runs -- test_graphics_matrix.py's
+    settle poll -- needs the same average, not a second implementation
+    of it.
     """
     x, y, rw, rh = rect
     height = len(data) // (width * 3)
@@ -141,8 +147,8 @@ class RegionColorCheck:
     max_rgb: tuple
 
     def evaluate(self, width, height, data):
-        del height  # only used by _region_average via len(data)
-        average = _region_average(width, data, self.rect)
+        del height  # only used by region_average via len(data)
+        average = region_average(width, data, self.rect)
         in_range = all(lo <= value <= hi for value, lo, hi in
                        zip(average, self.min_rgb, self.max_rgb))
         rounded = tuple(round(value, 1) for value in average)
