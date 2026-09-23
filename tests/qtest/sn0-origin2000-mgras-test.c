@@ -1874,6 +1874,72 @@ static void test_direct_byte_row_with_row_pad_bits(void)
 }
 
 
+/*
+ * The desktop backdrop's 4x4 seed weave: register 0x159 == 0 (neither bit
+ * 15 nor bit 7 set), a value si_draw_byte_row() used to route to the
+ * unimplemented default and drop. FIX-SPEC.md section 0's trace values:
+ * box (0,0)-(3,3), then four STATE CHAR_H / EXEC CHAR_L pairs painting the
+ * X root window's weave (one set pixel per row, colour index 7 on 0):
+ *
+ *   0 0 0 7
+ *   0 7 0 0
+ *   0 0 7 0
+ *   7 0 0 0
+ *
+ * with the existing eight-byte path's skip = (row * 4 * ceil(width/4)) % 8
+ * rule alternating which half of each CHAR_H/CHAR_L pair lands on which
+ * row, exactly as the real capture painted it.
+ */
+static void test_direct_byte_row_seed_packing(void)
+{
+    static const uint8_t weave[4][4] = {
+        { 0, 0, 0, 7 },
+        { 0, 7, 0, 0 },
+        { 0, 0, 7, 0 },
+        { 7, 0, 0, 0 },
+    };
+
+    si_reset();
+
+    si_enter_context(qts);
+
+    si_tag_wid(qts, 0, 0, 3, 3, 5);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_FILLMODE, SI_FILLMODE_BYTE_XFER));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BYTE_XFER_PACKING, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (0u << 16) | 0u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (3u << 16) | 3u));
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_CHAR_H, 0x00000007u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_CHAR_L, 0x00070000u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_CHAR_H, 0x00000007u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_CHAR_L, 0x00070000u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_CHAR_H, 0x00000700u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_CHAR_L, 0x07000000u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_CHAR_H, 0x00000700u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_CHAR_L, 0x07000000u));
+
+    for (int row = 0; row < 4; row++) {
+        for (int col = 0; col < 4; col++) {
+            g_assert_cmphex(si_test_pixel(qts, col, row), ==,
+                            weave[row][col]);
+        }
+    }
+    g_assert_cmphex(si_test_wid(qts, 0, 0), ==, 5);
+}
+
+
 static void test_direct_pio_pixel_pairs(void)
 {
     static const uint32_t image[4][4] = {
@@ -3491,6 +3557,8 @@ int main(int argc, char **argv)
                    test_direct_byte_row_pairs_row_pad_bits);
     qtest_add_func("sn0/origin2000/mgras/direct-byte-row-with-row-pad-bits",
                    test_direct_byte_row_with_row_pad_bits);
+    qtest_add_func("sn0/origin2000/mgras/direct-byte-row-seed-packing",
+                   test_direct_byte_row_seed_packing);
     qtest_add_func("sn0/origin2000/mgras/display-surface-conversion",
                    test_display_surface_conversion);
     qtest_add_func("sn0/origin2000/mgras/reset-refreshes-display-surface",

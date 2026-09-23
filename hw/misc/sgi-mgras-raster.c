@@ -87,16 +87,16 @@
 
 /*
  * Byte-transfer mode's own register 0x159 picks which of two guest-side
- * packings a CHAR_L execute uses. Inferred from exactly two observed
- * values, not read hardware state: 0x8000 selects the eight-pixel path
- * below (the Toolchest boxes and the desktop's larger transfers, see
- * tests/data/mgras/char-modes.replay) and 0x0080 selects two indexed
+ * packings a CHAR_L execute uses. Bit 7 (0x0080) selects two indexed
  * pixels per execute (the xdm chooser's own icons, see
- * tests/data/mgras/root-icon.replay). Any other value stays unimplemented
- * and inert.
+ * tests/data/mgras/root-icon.replay); every other value, including the
+ * desktop backdrop's 4x4 seed weave (0x159 == 0) and its icons (0x400,
+ * 0x10000), takes the eight-pixel path (see
+ * tests/data/mgras/char-modes.replay). Bits 16:14 are a row-padding count
+ * a capture also carries in this word (blockcopy-grammar.md) and do not
+ * change which path runs.
  */
 #define SI_REG_BYTE_XFER_PACKING 0x159
-#define SI_BYTE_XFER_PACKING_BYTES 0x8000
 #define SI_BYTE_XFER_PACKING_PAIRS 0x0080
 
 /*
@@ -678,17 +678,16 @@ static void si_draw_byte_row(SGIMgrasState *s)
      * The real xdm chooser ORs a row-padding field (bits 16:14) into this
      * word alongside the packing selector bit, e.g. 0x00010080 or
      * 0x00018000 rather than the bare selector value (blockcopy-grammar.md).
-     * Test the selector bits, not the whole register, so those padded
-     * values still match their packing mode instead of falling through to
-     * the unimplemented default.
+     * Test the selector bit, not the whole register, so those padded
+     * values still match their packing mode. Bit 7 set is the only value
+     * that selects the pair packing; every other value, including 0 (the
+     * desktop backdrop's seed weave) and values with neither bit 15 nor
+     * bit 7 set, takes the eight-pixel path rather than being dropped.
      */
-    if (packing & SI_BYTE_XFER_PACKING_BYTES) {
-        si_draw_byte_row_bytes(s, x0, x1, y0, y1, mask, op);
-    } else if (packing & SI_BYTE_XFER_PACKING_PAIRS) {
+    if (packing & SI_BYTE_XFER_PACKING_PAIRS) {
         si_draw_byte_row_pairs(s, x0, x1, y0, y1, mask, op);
     } else {
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: unimplemented byte-transfer "
-                      "packing, register 0x159 value 0x%08x\n", packing);
+        si_draw_byte_row_bytes(s, x0, x1, y0, y1, mask, op);
     }
 }
 
