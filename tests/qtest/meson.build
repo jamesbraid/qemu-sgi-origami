@@ -15,8 +15,9 @@ slow_qtests = {
   'pxe-test': 610,
   'prom-env-test': 360,
   'boot-serial-test': 360,
-  # Complete one-wire memory reads transfer every bit through QMP.
-  'sn0-router-nic-test': 300,
+  # Complete one-wire memory reads transfer every bit through QMP, on top
+  # of sn0-router-test's own register and BIST cases.
+  'sn0-router-test': 400,
   # Complete one-wire reads plus module identity and migration exceed 120s.
   'sn0-module-management-test': 300,
   'qos-test': 120,
@@ -325,7 +326,7 @@ endif
 
 sn0_router_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ?
-    ['sn0-router-test', 'sn0-router-nic-test'] : [])
+    ['sn0-router-test'] : [])
 if not config_all_devices.has_key('CONFIG_SGI_ROUTER_TEST')
   sn0_router_qtests = []
 endif
