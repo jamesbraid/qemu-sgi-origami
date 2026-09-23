@@ -1,40 +1,46 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The IOC3 ethernet engine on a plain PCI machine: a behaviour reproduced
- * here belongs to the device, not the SGI fabric. The backend's reply is
- * the one assertion independent of our own understanding.
+ * The IOC3 ethernet engine on the Bridge head: a behaviour reproduced here
+ * belongs to the device, not to a populated SGI machine. The head is one
+ * Bridge and the memory a card transfers into, so there is no node, no
+ * crossbar and no board around the chip. The backend's reply is the one
+ * assertion independent of our own understanding.
  */
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "libqos/pci.h"
+#include "libqos/pci-sgi-bridge.h"
 #include "hw/pci/pci_regs.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 
-/* The chip's window in the PCI hole; scratch in RAM nothing uses. */
-#define IOC3_BAR_ADDR   0xc0000000u
+/*
+ * Scratch inside the memory the head hands a card, and the first address
+ * past it: a transfer that runs off the end has nothing to land in.
+ */
 #define RAM_SCRATCH     0x02000000u
-#define PC_RAM_END      0x08000000u
+#define RAM_END         0x03000000u
 
 #define IOC3_PCI_SLOT   4
 
 /* The ethernet block's registers, at their offsets in the chip's window. */
-#define ENET_MAC_CONTROL  (IOC3_BAR_ADDR + 0x0f0)
-#define ENET_INT_STATUS   (IOC3_BAR_ADDR + 0x0f4)
-#define ENET_INT_ENABLE   (IOC3_BAR_ADDR + 0x0f8)
-#define ENET_RX_CONTROL   (IOC3_BAR_ADDR + 0x0fc)
-#define ENET_RX_RING_HI   (IOC3_BAR_ADDR + 0x100)
-#define ENET_RX_RING_LO   (IOC3_BAR_ADDR + 0x104)
-#define ENET_RX_CONSUME   (IOC3_BAR_ADDR + 0x10c)
-#define ENET_RX_PRODUCE   (IOC3_BAR_ADDR + 0x110)
-#define ENET_RX_TIMER     (IOC3_BAR_ADDR + 0x114)
-#define ENET_TX_RING_HI   (IOC3_BAR_ADDR + 0x128)
-#define ENET_TX_RING_LO   (IOC3_BAR_ADDR + 0x12c)
-#define ENET_TX_CONSUME   (IOC3_BAR_ADDR + 0x130)
-#define ENET_TX_PRODUCE   (IOC3_BAR_ADDR + 0x134)
-#define ENET_MII_CONTROL  (IOC3_BAR_ADDR + 0x148)
-#define ENET_MII_DATA_R   (IOC3_BAR_ADDR + 0x14c)
-#define ENET_MII_DATA_W   (IOC3_BAR_ADDR + 0x150)
+#define ENET_MAC_CONTROL  0x0f0
+#define ENET_INT_STATUS   0x0f4
+#define ENET_INT_ENABLE   0x0f8
+#define ENET_RX_CONTROL   0x0fc
+#define ENET_RX_RING_HI   0x100
+#define ENET_RX_RING_LO   0x104
+#define ENET_RX_CONSUME   0x10c
+#define ENET_RX_PRODUCE   0x110
+#define ENET_RX_TIMER     0x114
+#define ENET_TX_RING_HI   0x128
+#define ENET_TX_RING_LO   0x12c
+#define ENET_TX_CONSUME   0x130
+#define ENET_TX_PRODUCE   0x134
+#define ENET_MII_CONTROL  0x148
+#define ENET_MII_DATA_R   0x14c
+#define ENET_MII_DATA_W   0x150
 
 #define MCR_PROMISC       (1u << 1)
 #define MCR_RXOFF_SHIFT   3
@@ -154,15 +160,29 @@
 #define RXE_LONGEVENT     0x10000000u
 #define RXE_BADPKT        0x20000000u
 
-/* The window's byte order lives here and nowhere else. */
-static void ioc3_writel(QTestState *qts, uint64_t addr, uint32_t val)
+/*
+ * One machine at a time here, so the bus the head builds and the card found
+ * on it live beside the file rather than being threaded through every case.
+ */
+static QPCIBus *ioc3_bus;
+static QPCIDevice *ioc3_dev;
+static QPCIBar ioc3_window;
+
+/*
+ * The window's byte order lives here and nowhere else. The machine stays in
+ * the signature although the bus now carries it, so a caller still says
+ * which one it is reaching and a second machine cannot creep in unnoticed.
+ */
+static void ioc3_writel(QTestState *qts, uint64_t off, uint32_t val)
 {
-    qtest_writel(qts, addr, val);
+    g_assert(qts == ioc3_bus->qts);
+    qpci_io_writel(ioc3_dev, ioc3_window, off, val);
 }
 
-static uint32_t ioc3_readl(QTestState *qts, uint64_t addr)
+static uint32_t ioc3_readl(QTestState *qts, uint64_t off)
 {
-    return qtest_readl(qts, addr);
+    g_assert(qts == ioc3_bus->qts);
+    return qpci_io_readl(ioc3_dev, ioc3_window, off);
 }
 
 /* The device reads rings big-endian everywhere: write them as bytes. */
@@ -182,17 +202,13 @@ static uint32_t dma_ldl_be(QTestState *qts, uint64_t addr)
            ((uint32_t)b[2] << 8) | b[3];
 }
 
-/* Configuration space through the ports; no firmware ran. */
-static uint32_t pci_cfg_addr(uint8_t slot, uint8_t offset)
+/* Nothing else in this file quits a machine: the bus goes with it. */
+static void ioc3_quit(QTestState *qts)
 {
-    return 0x80000000u | ((uint32_t)slot << 11) | (offset & 0xfcu);
-}
-
-static void pci_cfg_writel(QTestState *qts, uint8_t slot, uint8_t offset,
-                           uint32_t val)
-{
-    qtest_outl(qts, 0xcf8, pci_cfg_addr(slot, offset));
-    qtest_outl(qts, 0xcfc, val);
+    g_clear_pointer(&ioc3_dev, g_free);
+    qpci_free_sgi_bridge(ioc3_bus);
+    ioc3_bus = NULL;
+    qtest_quit(qts);
 }
 
 /*
@@ -205,12 +221,14 @@ static void ioc3_bring_up(QTestState *qts, uint32_t ring, uint32_t rxbuf,
 {
     unsigned int i;
 
-    qtest_outl(qts, 0xcf8, pci_cfg_addr(IOC3_PCI_SLOT, PCI_VENDOR_ID));
-    g_assert_cmphex(qtest_inl(qts, 0xcfc), ==, 0x000310a9u);
+    ioc3_bus = qpci_init_sgi_bridge(qts, NULL);
+    ioc3_dev = qpci_device_find(ioc3_bus, QPCI_DEVFN(IOC3_PCI_SLOT, 0));
+    g_assert_nonnull(ioc3_dev);
+    g_assert_cmphex(qpci_config_readl(ioc3_dev, PCI_VENDOR_ID), ==,
+                    0x000310a9u);
 
-    pci_cfg_writel(qts, IOC3_PCI_SLOT, PCI_BASE_ADDRESS_0, IOC3_BAR_ADDR);
-    pci_cfg_writel(qts, IOC3_PCI_SLOT, PCI_COMMAND,
-                   PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    ioc3_window = qpci_iomap(ioc3_dev, 0, NULL);
+    qpci_device_enable(ioc3_dev);
 
     /* The one reset value that is not the same forwards and backwards. */
     g_assert_cmphex(ioc3_readl(qts, ENET_MII_DATA_R), ==, 0xffff);
@@ -234,9 +252,10 @@ static QTestState *ioc3_start(uint32_t ring, uint32_t rxbuf,
     QTestState *qts;
 
     /* -nic would be claimed by the machine's own default device. */
-    qts = qtest_initf("-M pc -m 128M -display none "
+    qts = qtest_initf("-M none " QPCI_SGI_BRIDGE_HEAD "-display none "
                       "-netdev user,id=n0 "
-                      "-device sgi-ioc3,addr=%02x.0,netdev=n0", IOC3_PCI_SLOT);
+                      "-device sgi-ioc3,bus=pci,addr=%02x.0,netdev=n0",
+                      IOC3_PCI_SLOT);
     ioc3_bring_up(qts, ring, rxbuf, buffers);
     return qts;
 }
@@ -249,9 +268,9 @@ static QTestState *ioc3_attach_socket(int guest_fd, unsigned int buffers)
 {
     QTestState *qts;
 
-    qts = qtest_initf("-M pc -display none "
+    qts = qtest_initf("-M none " QPCI_SGI_BRIDGE_HEAD "-display none "
                       "-netdev socket,fd=%d,id=n0 "
-                      "-device sgi-ioc3,addr=%02x.0,netdev=n0",
+                      "-device sgi-ioc3,bus=pci,addr=%02x.0,netdev=n0",
                       guest_fd, IOC3_PCI_SLOT);
     ioc3_bring_up(qts, RAM_SCRATCH + 0x8000, RAM_SCRATCH + 0xc000, buffers);
     return qts;
@@ -266,9 +285,10 @@ static QTestState *ioc3_attach_socket_dp83843(int guest_fd,
 {
     QTestState *qts;
 
-    qts = qtest_initf("-M pc -display none "
+    qts = qtest_initf("-M none " QPCI_SGI_BRIDGE_HEAD "-display none "
                       "-netdev socket,fd=%d,id=n0 "
-                      "-device sgi-ioc3,addr=%02x.0,netdev=n0,phy-dp83843=on",
+                      "-device sgi-ioc3,bus=pci,addr=%02x.0,netdev=n0,"
+                      "phy-dp83843=on",
                       guest_fd, IOC3_PCI_SLOT);
     ioc3_bring_up(qts, RAM_SCRATCH + 0x8000, RAM_SCRATCH + 0xc000, buffers);
     return qts;
@@ -402,7 +422,7 @@ static void test_the_inline_path_off_the_fabric(const void *data)
     ioc3_writel(qts, ENET_TX_PRODUCE, 128);
 
     assert_reply_landed(qts, rxbuf);
-    qtest_quit(qts);
+    ioc3_quit(qts);
 }
 
 /* The pointer path, split across both buffers. */
@@ -439,7 +459,7 @@ static void test_the_pointer_path_off_the_fabric(const void *data)
     ioc3_writel(qts, ENET_TX_PRODUCE, 128);
 
     assert_reply_landed(qts, rxbuf);
-    qtest_quit(qts);
+    ioc3_quit(qts);
 }
 
 /*
@@ -520,7 +540,7 @@ static void test_the_inline_area_boundary(const void *data)
         g_assert_cmpint(len, ==, expect);
         g_assert_cmpmem(got, len, frame, expect);
 
-        qtest_quit(qts);
+        ioc3_quit(qts);
         close(sv[0]);
     }
 }
@@ -563,7 +583,7 @@ static void test_the_assembled_frame_limit(const void *data)
             g_assert_cmpmem(got, len, frame, wire);
         }
 
-        qtest_quit(qts);
+        ioc3_quit(qts);
         close(sv[0]);
     }
 }
@@ -593,7 +613,7 @@ static void test_a_frame_split_on_the_dma_boundary(const void *data)
     g_assert_cmpint(len, ==, sizeof(frame));
     g_assert_cmpmem(got, len, frame, sizeof(frame));
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
     close(sv[0]);
 }
 
@@ -678,7 +698,7 @@ static void test_the_reported_count_at_the_guest_gates(const void *data)
         g_assert_cmpmem(landed, sizes[n], frame, sizes[n]);
     }
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
     close(sv[0]);
 }
 
@@ -720,7 +740,7 @@ static void test_the_delivery_truncation_point(const void *data)
                                          : RXE_LONGEVENT | RXE_BADPKT);
     }
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
     close(sv[0]);
 }
 
@@ -803,7 +823,7 @@ static void test_the_receive_ring_wraps_three_times(const void *data)
     g_assert_cmphex(dma_ldl_be(qts, rxbuf + ((RX_RING_ENTRIES - 1) % BUFFERS) *
                                0x1000) & RXH_VALID, ==, RXH_VALID);
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
     close(sv[0]);
 }
 
@@ -857,7 +877,7 @@ static void test_the_receive_ring_runs_dry_and_recovers(const void *data)
     g_assert_cmphex(dma_ldl_be(qts, rxbuf + BUFFERS * 0x1000) & RXH_VALID,
                     ==, RXH_VALID);
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
     close(sv[0]);
 }
 
@@ -920,7 +940,7 @@ static void test_a_burst_behind_one_doorbell(const void *data)
     g_assert_cmphex(ioc3_readl(qts, ENET_TX_CONSUME), ==,
                     (BURST * TX_DESC_SIZE) | TX_CONSUME_IDLE);
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
     close(sv[0]);
 }
 
@@ -958,7 +978,7 @@ static void test_a_transmit_descriptor_that_cannot_be_read(const void *data)
     g_assert_cmphex(ioc3_readl(qts, ENET_TX_CONSUME), ==,
                     TX_DESC_SIZE | TX_CONSUME_IDLE);
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
     close(sv[0]);
 }
 
@@ -1009,7 +1029,7 @@ static void test_a_transmit_buffer_that_cannot_be_read(const void *data)
     g_assert_cmpint(net_socket_recv_frame(sv[0], got, sizeof(got)), ==, LEN);
     g_assert_cmpmem(got, LEN, frame, LEN);
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
     close(sv[0]);
 }
 
@@ -1052,7 +1072,7 @@ static void test_the_transmit_ring_wraps_three_times(const void *data)
     g_assert_cmphex(ioc3_readl(qts, ENET_TX_CONSUME) & TX_CONSUME_MASK,
                     ==, 0);
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
     close(sv[0]);
 }
 
@@ -1097,7 +1117,7 @@ static void test_the_ring_select_bit_moves_the_wrap(const void *data)
     g_assert_cmphex(ioc3_readl(qts, ENET_TX_CONSUME) & TX_CONSUME_MASK,
                     ==, COUNT * TX_DESC_SIZE);
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
     close(sv[0]);
 }
 
@@ -1247,7 +1267,7 @@ static void test_a_reply_after_the_walk_at_one_size(const void *data)
 
     }
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
 }
 
 static const uint32_t walk_sizes[] = { 74, 104, 105, 170, 554, 1042,
@@ -1294,7 +1314,7 @@ static void test_the_backend_link_reaches_the_status_word(const void *data)
     g_assert_cmphex(mii_read(qts, PHY_BMSR) & (BMSR_LINK | BMSR_AN_COMP),
                     ==, BMSR_LINK | BMSR_AN_COMP);
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
 }
 
 /*
@@ -1332,7 +1352,7 @@ static void test_a_queued_frame_lands_when_phy_loopback_clears(const void *data)
     wait_for_rx_consume(qts, RX_RING_STRIDE);
     g_assert_cmphex(dma_ldl_be(qts, rxbuf) & RXH_VALID, ==, RXH_VALID);
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
     close(sv[0]);
 }
 
@@ -1375,7 +1395,7 @@ static void test_a_frame_whose_ring_entry_cannot_be_read(const void *data)
     qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(landed));
     g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
 }
 
 static void assert_receive_not_published(QTestState *qts, uint32_t rxbuf)
@@ -1396,7 +1416,7 @@ static void test_a_status_failure_does_not_publish_valid(const void *data)
     uint8_t frame[60];
     uint32_t base = RAM_SCRATCH;
     uint32_t ring = RAM_SCRATCH + 0x8000;
-    uint32_t rxbuf = PC_RAM_END - sizeof(uint32_t);
+    uint32_t rxbuf = RAM_END - sizeof(uint32_t);
 
     build_arp_request(frame, sizeof(frame));
     qts = ioc3_start(ring, rxbuf, 1);
@@ -1411,7 +1431,7 @@ static void test_a_status_failure_does_not_publish_valid(const void *data)
 
     assert_receive_not_published(qts, rxbuf);
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
 }
 
 /* The status fits, but a MAC-looped payload crosses the end of RAM. */
@@ -1421,7 +1441,7 @@ static void test_a_payload_failure_does_not_publish_valid(const void *data)
     uint8_t frame[96];
     uint32_t base = RAM_SCRATCH;
     uint32_t ring = RAM_SCRATCH + 0x8000;
-    uint32_t rxbuf = PC_RAM_END - 128;
+    uint32_t rxbuf = RAM_END - 128;
     unsigned int i;
 
     for (i = 0; i < sizeof(frame); i++) {
@@ -1441,7 +1461,7 @@ static void test_a_payload_failure_does_not_publish_valid(const void *data)
     g_assert_cmphex(dma_ldl_be(qts, rxbuf + 4), ==, 0);
     assert_receive_not_published(qts, rxbuf);
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
 }
 
 /* The complete payload fits; only the following FCS write crosses RAM. */
@@ -1452,7 +1472,7 @@ static void test_an_fcs_failure_does_not_publish_valid(const void *data)
     uint8_t frame[60];
     uint8_t landed[sizeof(frame)];
     uint32_t ring = RAM_SCRATCH + 0x8000;
-    uint32_t rxbuf = PC_RAM_END - 128;
+    uint32_t rxbuf = RAM_END - 128;
     uint32_t status = 0x55667788;
     unsigned int attempt, i;
 
@@ -1461,9 +1481,9 @@ static void test_an_fcs_failure_does_not_publish_valid(const void *data)
     }
     memset(frame, 0xff, 6);
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M pc -m 128M -display none "
+    qts = qtest_initf("-M none " QPCI_SGI_BRIDGE_HEAD "-display none "
                       "-netdev socket,fd=%d,id=n0 "
-                      "-device sgi-ioc3,addr=%02x.0,netdev=n0",
+                      "-device sgi-ioc3,bus=pci,addr=%02x.0,netdev=n0",
                       sv[1], IOC3_PCI_SLOT);
     ioc3_bring_up(qts, ring, rxbuf, 1);
     dma_stl_be(qts, rxbuf, 0x11223344);
@@ -1483,7 +1503,7 @@ static void test_an_fcs_failure_does_not_publish_valid(const void *data)
     g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
     assert_receive_not_published(qts, rxbuf);
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
     close(sv[0]);
 }
 
@@ -1519,9 +1539,9 @@ static void test_a_receive_burst_asserts_the_irq_once(const void *data)
     path = g_strdup_printf("sgi-ioc3-rx-irq-%u-%u.trace",
                            (unsigned int)getpid(), g_random_int());
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = qtest_initf("-M pc -m 128M -display none "
+    qts = qtest_initf("-M none " QPCI_SGI_BRIDGE_HEAD "-display none "
                       "-netdev socket,fd=%d,id=n0 "
-                      "-device sgi-ioc3,addr=%02x.0,netdev=n0 "
+                      "-device sgi-ioc3,bus=pci,addr=%02x.0,netdev=n0 "
                       "-trace file=%s",
                       sv[1], IOC3_PCI_SLOT, path);
     ioc3_bring_up(qts, ring, rxbuf, BURST);
@@ -1536,7 +1556,7 @@ static void test_a_receive_burst_asserts_the_irq_once(const void *data)
         net_socket_send_frame(sv[0], frame, sizeof(frame));
     }
     wait_for_rx_consume(qts, BURST * RX_RING_STRIDE);
-    qtest_quit(qts);
+    ioc3_quit(qts);
 
     g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
     g_assert_cmpuint(count_trace_events(trace, "sgi_ioc3_eth_irq"), ==, 1);
@@ -1561,9 +1581,9 @@ static void test_a_transmit_with_no_reply_raises_nothing(const void *data)
 
     path = g_strdup_printf("sgi-ioc3-rx-flush-%u-%u.trace",
                            (unsigned int)getpid(), g_random_int());
-    qts = qtest_initf("-M pc -m 128M -display none "
+    qts = qtest_initf("-M none " QPCI_SGI_BRIDGE_HEAD "-display none "
                       "-netdev user,id=n0 "
-                      "-device sgi-ioc3,addr=%02x.0,netdev=n0 "
+                      "-device sgi-ioc3,bus=pci,addr=%02x.0,netdev=n0 "
                       "-trace sgi_ioc3_eth_rx_flush,file=%s",
                       IOC3_PCI_SLOT, path);
     ioc3_bring_up(qts, ring, rxbuf, 2);
@@ -1583,7 +1603,7 @@ static void test_a_transmit_with_no_reply_raises_nothing(const void *data)
                     ==, 0);
     g_assert_cmphex(status & ENET_INT_TX_COMPLETE, ==, ENET_INT_TX_COMPLETE);
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
 
     g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
     /*
@@ -1607,9 +1627,9 @@ static void test_deferred_receive_delivers_without_reset(const void *data)
 
     path = g_strdup_printf("sgi-ioc3-rx-deferred-%u-%u.trace",
                            (unsigned int)getpid(), g_random_int());
-    qts = qtest_initf("-M pc -m 128M -display none "
+    qts = qtest_initf("-M none " QPCI_SGI_BRIDGE_HEAD "-display none "
                       "-netdev user,id=n0 "
-                      "-device sgi-ioc3,addr=%02x.0,netdev=n0 "
+                      "-device sgi-ioc3,bus=pci,addr=%02x.0,netdev=n0 "
                       "-trace sgi_ioc3_eth_rx_flush,file=%s",
                       IOC3_PCI_SLOT, path);
     ioc3_bring_up(qts, ring, rxbuf, 2);
@@ -1621,9 +1641,9 @@ static void test_deferred_receive_delivers_without_reset(const void *data)
     dma_stl_be(qts, desc + 4, sizeof(frame));
     qtest_memwrite(qts, desc + TXD_DATA_OFFSET, frame, sizeof(frame));
 
-    qtest_writel(qts, ENET_TX_PRODUCE, 128);
+    ioc3_writel(qts, ENET_TX_PRODUCE, 128);
     wait_for_rx_consume(qts, RX_RING_STRIDE);
-    qtest_quit(qts);
+    ioc3_quit(qts);
 
     g_assert_true(g_file_get_contents(path, &trace, NULL, NULL));
     g_assert_nonnull(strstr(trace, "sgi_ioc3_eth_rx_flush"));
@@ -1691,7 +1711,7 @@ static void test_a_receive_waits_for_its_arrival_deadline(const void *data)
     g_assert_cmphex(ioc3_readl(qts, ENET_INT_STATUS) & ENET_INT_RX_TIMER,
                     ==, ENET_INT_RX_TIMER);
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
     close(sv[0]);
 }
 
@@ -1782,7 +1802,7 @@ static void test_a_reused_buffer_waits_for_its_held_completion(const void *data)
     memset(frame + 6, 0x99, sizeof(frame) - 6);
     g_assert_cmpint(memcmp(landed, frame, sizeof(frame)), ==, 0);
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
     close(sv[0]);
 }
 
@@ -1873,7 +1893,7 @@ static void test_loopback_respects_a_full_arrival_line(const void *data)
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==,
                     RX_LATENCY_LINE_DEPTH * RX_RING_STRIDE);
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
     close(sv[0]);
 }
 
@@ -1962,7 +1982,7 @@ static void test_loopback_respects_a_held_completion(const void *data)
     qtest_memread(qts, rxbuf + RXD_BUF_OFFSET, landed, sizeof(seed));
     g_assert_cmpint(memcmp(landed, seed, sizeof(seed)), ==, 0);
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
     close(sv[0]);
 }
 
@@ -2018,7 +2038,7 @@ static void test_dp83843_twister_loopback_turns_a_frame_round(const void *data)
     /* The whole point: nothing of this crossed to the backend. */
     net_socket_expect_no_frame(sv[0]);
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
     close(sv[0]);
 }
 
@@ -2060,7 +2080,7 @@ static void test_dp83843_loopback_requires_the_tw_lben_bit(const void *data)
     g_assert_cmpmem(got, len, frame, sizeof(frame));
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
     close(sv[0]);
 }
 
@@ -2102,7 +2122,7 @@ static void test_dp83840a_bit5_does_not_select_loopback(const void *data)
     g_assert_cmpmem(got, len, frame, sizeof(frame));
     g_assert_cmphex(ioc3_readl(qts, ENET_RX_CONSUME), ==, 0);
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
     close(sv[0]);
 }
 
@@ -2144,7 +2164,7 @@ static void test_dp83843_reset_clears_lbr_and_reopens_the_backend(
     wait_for_rx_consume(qts, RX_RING_STRIDE);
     g_assert_cmphex(dma_ldl_be(qts, rxbuf) & RXH_VALID, ==, RXH_VALID);
 
-    qtest_quit(qts);
+    ioc3_quit(qts);
     close(sv[0]);
 }
 
