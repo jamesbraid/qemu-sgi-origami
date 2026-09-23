@@ -1,18 +1,19 @@
 /*
- * Alteon Tigon 2 (the SGI "eg" gigabit board) on a generic PCI host.
+ * Alteon Tigon 2 (the SGI "eg" gigabit board) on the Bridge head.
  *
- * This is the device's contract test: it runs on a plain x86 PC PCI bus,
- * with no Origin 200 Bridge in the path, proving the model is a general-purpose
- * PCI card that works on any host. It owns config identity, the register
+ * This is the device's contract test. It owns config identity, the register
  * contract, the firmware-mediated ring engine (transmit and receive over host
  * DRAM), ring producer-index safety, the interrupt controls, and -- the point
  * of running here -- the descriptor/data DMA byte order, pinned with golden
  * fixed-byte-layout assertions rather than a self-round-trip (a round trip is
  * self-consistent for both polarities and cannot see the swap direction).
  *
- * The composition of this device's native-order DMA with the Bridge's per-slot
- * DEV_SWAP correction is a separate Origin 200 integration test that genuinely
- * needs the Bridge; it lives in tests/qtest/sn0-tigon-test.c. See
+ * The head is one Bridge on the "none" machine with the memory a card
+ * transfers into beside it. The card is therefore reached over the chip it
+ * ships behind, but nothing here is an Origin 200 claim: no node, no
+ * crossbar, no fabric. The composition of this device's native-order DMA with
+ * a populated machine's per-slot DEV_SWAP correction is a separate Origin 200
+ * integration test; it lives in tests/qtest/sn0-tigon-test.c. See
  * docs/library/nic-on-bridge-conventions.md.
  *
  * Register offsets, ring/descriptor layouts and byte-swap controls come from
@@ -23,7 +24,7 @@
  */
 
 #include "qemu/osdep.h"
-#include "libqos/libqos-pc.h"
+#include "libqos/libqos-sgi-bridge.h"
 #include "libqtest.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_regs.h"
@@ -160,7 +161,7 @@ static void tigon_boot_cmd(TigonTest *t, const char *cmd)
     uint64_t barsize;
 
     memset(t, 0, sizeof(*t));
-    t->qs = qtest_pc_boot("%s", cmd);
+    t->qs = qtest_sgi_bridge_boot("%s", cmd);
     t->dev = find_tigon(t->qs->pcibus);
     g_assert(t->dev != NULL);
 
@@ -324,7 +325,7 @@ static void test_config_identity(void)
 
 static void test_bar0_shape(void)
 {
-    QOSState *qs = qtest_pc_boot("-device tigon,mac=" TIGON_MAC);
+    QOSState *qs = qtest_sgi_bridge_boot("-device tigon,mac=" TIGON_MAC);
     QPCIDevice *dev = find_tigon(qs->pcibus);
 
     g_assert(dev != NULL);
@@ -926,7 +927,15 @@ static void test_receive_waits_for_its_arrival_deadline(void)
     close(sv[0]);
 }
 
-/* Compare flat delivery with a two-descriptor transmit split inside IPv4. */
+/*
+ * Compare flat delivery with a two-descriptor transmit split inside IPv4.
+ *
+ * The fragmented half needs a card that hands the net core a scattered
+ * frame, and the only one libqos can drive is an Intel PCI Express part. The
+ * Bridge is a conventional PCI chip and mips64-softmmu builds no PCI Express
+ * at all, so on that machine there is nothing on the bus to originate the
+ * split. Say so rather than compare a fragmented delivery against itself.
+ */
 static void test_receive_iov_matches_flat(void)
 {
     static const uint8_t frame[60] = {
@@ -953,6 +962,12 @@ static void test_receive_iov_matches_flat(void)
     g_autofree char *cmd = NULL;
     uint64_t flat_buf2, fragmented_buf2, tx_ring, tx_buf, barsize;
     int flat_sv[2], trace_fd, attempt;
+
+    if (!qtest_has_device("e1000e")) {
+        g_test_skip("no PCI Express endpoint on this machine to originate a "
+                    "fragmented frame");
+        return;
+    }
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, flat_sv), ==, 0);
     tigon_boot_netdev(&flat, flat_sv[1]);

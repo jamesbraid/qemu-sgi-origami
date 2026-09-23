@@ -157,7 +157,6 @@ qtests_i386 = \
   (slirp.found() and config_all_devices.has_key('CONFIG_SGI_IOC3') ?
     ['sgi-ioc3-eth-test'] : []) + \
   (config_all_devices.has_key('CONFIG_XFRAME_PCI') ? ['xframe-test'] : []) + \
-  (config_all_devices.has_key('CONFIG_TIGON') ? ['tigon-test'] : []) + \
   qtests_filter + \
   (config_all_devices.has_key('CONFIG_ACPI_VMGENID') ? ['vmgenid-test'] : []) +             \
   (config_all_devices.has_key('CONFIG_AHCI_ICH9') and have_tools ? ['ahci-test'] : []) +    \
@@ -354,12 +353,23 @@ sgi_board_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_BOARD_TEST') ?
     ['sgi-board-test', 'sgi-board-backend-test'] : [])
 
+# Cards that ship behind a Bridge, on the libqos head: one Bridge and the
+# memory a card transfers into, under -M none.  Each card carries its own
+# device guard; drop the lot if the head's two devices are not configured.
+sgi_bridge_card_qtests = \
+  (config_all_devices.has_key('CONFIG_TIGON') ? ['tigon-test'] : [])
+if not config_all_devices.has_key('CONFIG_SGI_BRIDGE') or \
+   not config_all_devices.has_key('CONFIG_SGI_XTALK_TEST_TARGET')
+  sgi_bridge_card_qtests = []
+endif
+
 # The Origin 200 is a 64-bit machine, so its tests cannot be shared with the
 # 32-bit mips targets, where the machine does not exist.
 qtests_mips64 = \
   qtests_mips + \
   sn0_router_qtests + \
   sn0_ohci_qtests + \
+  sgi_bridge_card_qtests + \
   (config_all_devices.has_key('CONFIG_SGI_L1') ?
     ['sn1-l1-test', 'sgi-l1-usb-software-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_BEDROCK_MD') ?

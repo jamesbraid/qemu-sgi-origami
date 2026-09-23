@@ -1516,6 +1516,8 @@ F: qapi/misc-mips.json
 F: tests/functional/mips64/
 F: tests/qtest/mips64-*.c
 F: tests/qtest/qlogic-isp-test.c
+F: tests/qtest/libqos/libqos-sgi-bridge.c
+F: tests/qtest/libqos/libqos-sgi-bridge.h
 F: tests/qtest/libqos/pci-sgi-bridge.c
 F: tests/qtest/libqos/pci-sgi-bridge.h
 F: tests/qtest/libqos/sgi-bridge-machine.c
