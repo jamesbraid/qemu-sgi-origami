@@ -27,6 +27,28 @@
 #define SI_CMD_HDR_CLASS_EXEC 0x001c
 #define SI_CMD_HDR_CLASS_DISCARD SGI_MGRAS_CMD_TOKEN_DISCARD
 
+/*
+ * Host-memory DMA image-transfer descriptor banks, main-port command-FIFO
+ * classes 0x0008/0x000a/0x000c (bank_base >> 14). Unlike STATE/EXEC these
+ * are plain register writes: a header names a starting register and
+ * payload_bytes/4 consecutive words are stored there as they arrive,
+ * mirroring si_dma_map_token's framing on the kernel mapping port. Writing
+ * 0x20000 register 11 (the kick) starts a transfer: bit 3 of the low byte
+ * selects direction (0 = draw a host image into the framebuffer, the path
+ * implemented here; 1 = read the framebuffer back to host memory, an
+ * unimplemented follow-up).
+ */
+#define SI_CMD_HDR_CLASS_DESC_20000 0x0008
+#define SI_CMD_HDR_CLASS_DESC_28000 0x000a
+#define SI_CMD_HDR_CLASS_DESC_30000 0x000c
+#define SI_DESC_20000_REG_ADDR_LOW 5
+#define SI_DESC_20000_REG_ADDR_HIGH 6
+#define SI_DESC_20000_REG_PITCH 4
+#define SI_DESC_20000_REG_ROWS 7
+#define SI_DESC_20000_REG_BPR 8
+#define SI_DESC_20000_REG_KICK 11
+#define SI_DMA_KICK_DIRECTION_READ 0x08
+
 
 #define SI_REG_BLOCKXYSTARTI 0x046
 #define SI_REG_BLOCKXYENDI 0x047
@@ -133,6 +155,34 @@ static void si_command_fifo_token(SGIMgrasState *s, uint32_t token)
     if (cmd_class == SI_CMD_FIFO_FENCE_CLASS && reg == SI_CMD_FIFO_FENCE_REG &&
         payload_bytes == 0) {
         s->hq_flags |= SI_HQ_FLAG_FENCE;
+        return;
+    }
+
+    if (cmd_class == SI_CMD_HDR_CLASS_DESC_20000 ||
+        cmd_class == SI_CMD_HDR_CLASS_DESC_28000 ||
+        cmd_class == SI_CMD_HDR_CLASS_DESC_30000) {
+        if (payload_bytes % sizeof(uint32_t)) {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: descriptor command-FIFO "
+                          "header, class 0x%04x reg 0x%02x has unaligned "
+                          "payload %u bytes\n", cmd_class, reg, payload_bytes);
+            return;
+        }
+        s->cmd_token_class = cmd_class;
+        s->cmd_token_reg = reg;
+        s->cmd_token_payload_count = 0;
+        s->cmd_token_words_remaining = payload_bytes / 4;
+        if (s->cmd_token_words_remaining >
+            SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS) {
+            qemu_log_mask(LOG_UNIMP, "sgi-mgras: command-FIFO header, "
+                          "class 0x%04x reg 0x%02x payload %u bytes "
+                          "exceeds %zu-byte limit\n", cmd_class, reg,
+                          payload_bytes, sizeof(s->cmd_token_payload));
+            s->cmd_token_class = SI_CMD_HDR_CLASS_DISCARD;
+            return;
+        }
+        if (s->cmd_token_words_remaining == 0) {
+            si_raster_command_fifo_dispatch(s);
+        }
         return;
     }
 
@@ -332,6 +382,16 @@ void si_raster_command(SGIMgrasState *s, uint64_t word)
 
     si_command_fifo_token(s, (uint32_t)(word >> 32));
     si_command_fifo_token(s, (uint32_t)word);
+}
+
+/*
+ * Post-handshake 4-byte writes to the main port (0x120400) carry command-
+ * FIFO tokens too: the kick header and the read path's payload word both
+ * arrive this way. si_context_write() only handles the pre-ready handshake.
+ */
+void si_raster_command_token(SGIMgrasState *s, uint32_t token)
+{
+    si_command_fifo_token(s, token);
 }
 
 static uint32_t si_logic_op(uint8_t op, uint32_t dst, uint32_t src)
@@ -794,9 +854,227 @@ static void si_raster_rss_write(SGIMgrasState *s, uint32_t reg, uint32_t value)
 }
 
 
+/*
+ * Exactly one DMA-mapping slot (0x130400's class-0x48 register file) is
+ * expected to be mapped at a kick: every capture that reaches a kick has
+ * one slot with a nonzero page count. Nothing in the descriptor names a
+ * slot, so this scan-for-the-only-mapped-one choice is an approximation;
+ * log and take no transfer if zero or more than one slot qualifies.
+ */
+static bool si_raster_dma_select_slot(SGIMgrasState *s, unsigned int *out_slot)
+{
+    unsigned int found = 0, matches = 0;
+
+    for (unsigned int slot = 0; slot < SGI_MGRAS_DMA_MAP_SLOTS; slot++) {
+        if (si_dma_map_slot_count(s, slot) > 0) {
+            found = slot;
+            matches++;
+        }
+    }
+    if (matches != 1) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA image transfer kicked "
+                      "with %u mapped source slots; expected exactly one\n",
+                      matches);
+        return false;
+    }
+    *out_slot = found;
+    return true;
+}
+
+/*
+ * Host-memory source address formula (see docs/notebooks and the DMA-src
+ * capture evidence this model is built from): va = addr_low + addr_high +
+ * row*pitch + byte, page_ix = va >> 12, and the source page's physical
+ * address is (list_node << 32) | (pagelist[page_ix] << 12) | (va & 0xfff).
+ * The page list itself is `count` big-endian 64-bit page-frame-number
+ * entries at (list_node << 32) | list_pa, both taken from the selected
+ * mapping slot. Reading byte-by-byte (rather than the whole row at once)
+ * is deliberate: consecutive page-list entries need not be adjacent, so a
+ * row's bytes can span a page boundary at an arbitrary offset.
+ */
+static void si_raster_dma_draw_image(SGIMgrasState *s)
+{
+    unsigned int slot, widget;
+    uint64_t base;
+    uint32_t list_node, list_pa, count;
+    uint32_t pitch = s->dma_desc_20000[SI_DESC_20000_REG_PITCH];
+    uint64_t addr = (uint64_t)s->dma_desc_20000[SI_DESC_20000_REG_ADDR_LOW] +
+                    s->dma_desc_20000[SI_DESC_20000_REG_ADDR_HIGH];
+    uint32_t rows = s->dma_desc_20000[SI_DESC_20000_REG_ROWS];
+    uint32_t bpr = s->dma_desc_20000[SI_DESC_20000_REG_BPR];
+    uint32_t xy0 = s->rss[SI_REG_BLOCKXYSTARTI];
+    uint32_t xy1 = s->rss[SI_REG_BLOCKXYENDI];
+    int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
+    int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
+    uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 26;
+    uint32_t mask = s->rss[SI_REG_COLORMASKLSBSA];
+    unsigned int width, bpp;
+    uint64_t *page_list;
+
+    if (!si_raster_dma_select_slot(s, &slot)) {
+        return;
+    }
+    if (rows == 0 || bpr == 0 || x0 > x1 || y0 > y1 ||
+        x0 >= SGI_MGRAS_WIDTH || y0 >= SGI_MGRAS_HEIGHT) {
+        return;
+    }
+    x1 = MIN(x1, SGI_MGRAS_WIDTH - 1);
+    y1 = MIN(y1, SGI_MGRAS_HEIGHT - 1);
+    width = x1 - x0 + 1;
+    if (bpr % width) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA image transfer, %u "
+                      "bytes/row does not divide destination width %u\n",
+                      bpr, width);
+        return;
+    }
+    bpp = bpr / width;
+    if (bpp != 1 && bpp != 4) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: unimplemented DMA image "
+                      "transfer pixel width %u bytes\n", bpp);
+        return;
+    }
+
+    base = si_dma_map_slot_base(s, slot);
+    list_node = (uint32_t)(base >> 32) & 0xff;
+    list_pa = (uint32_t)base & ~0xfffu;
+    count = si_dma_map_slot_count(s, slot);
+    widget = (si_dma_map_slot_control(s, slot) >> 16) & 0xf;
+
+    if (count == 0 || count > (1u << 20)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA source mapping has "
+                      "unusable page count %u\n", count);
+        return;
+    }
+
+    page_list = g_new0(uint64_t, count);
+    for (uint32_t i = 0; i < count; i++) {
+        hwaddr fabric;
+
+        if (!si_compose_xtalk(s, widget,
+                              ((uint64_t)list_node << 32) | (list_pa + i * 8),
+                              &fabric)) {
+            g_free(page_list);
+            return;
+        }
+        page_list[i] = address_space_ldq_be(&s->fabric_as, fabric,
+                                            MEMTXATTRS_UNSPECIFIED,
+                                            NULL) & 0xffff;
+    }
+
+    rows = MIN(rows, (uint32_t)(y1 - y0 + 1));
+    for (uint32_t row = 0; row < rows; row++) {
+        int y = y0 + (int)row;
+        uint8_t pixel_bytes[4];
+
+        for (uint32_t b = 0; b < bpr; b++) {
+            uint64_t va = addr + (uint64_t)row * pitch + b;
+            uint64_t page_ix = va >> 12;
+            uint64_t src_pa;
+            hwaddr fabric;
+
+            if (page_ix >= count) {
+                qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA image transfer "
+                              "source page %" PRIu64 " exceeds mapped "
+                              "count %u\n", page_ix, count);
+                continue;
+            }
+            src_pa = ((uint64_t)list_node << 32) |
+                     (page_list[page_ix] << 12) | (va & 0xfff);
+            if (!si_compose_xtalk(s, widget, src_pa, &fabric)) {
+                continue;
+            }
+            pixel_bytes[b % bpp] = address_space_ldub(&s->fabric_as, fabric,
+                                                       MEMTXATTRS_UNSPECIFIED,
+                                                       NULL);
+            if (b % bpp == bpp - 1) {
+                uint32_t col = b / bpp;
+                uint32_t color = bpp == 1 ? pixel_bytes[0] :
+                    ((uint32_t)pixel_bytes[0] << 24) |
+                    ((uint32_t)pixel_bytes[1] << 16) |
+                    ((uint32_t)pixel_bytes[2] << 8) | pixel_bytes[3];
+
+                if (x0 + (int)col <= x1) {
+                    si_put_pixel(s, y * SGI_MGRAS_WIDTH + x0 + (int)col,
+                                 color, op, mask);
+                }
+            }
+        }
+    }
+    g_free(page_list);
+    s->dirty = true;
+}
+
+static void si_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
+{
+    if (kick_word & SI_DMA_KICK_DIRECTION_READ) {
+        /* Screen-to-host read is an unimplemented follow-up. */
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: unimplemented screen-to-host "
+                      "DMA read (kick byte 0x%02x)\n", kick_word & 0xff);
+        return;
+    }
+    si_raster_dma_draw_image(s);
+    /*
+     * This model is synchronous: the transfer above already ran to
+     * completion (or was a no-op on malformed descriptor state) by the
+     * time this returns. The guest polls this bit after a kick before
+     * reusing the descriptor/source buffer, mirroring the explicit FENCE
+     * command-FIFO token above; without it a poller spins forever.
+     */
+    s->hq_flags |= SI_HQ_FLAG_FENCE;
+}
+
+static void si_raster_desc_bank_store(SGIMgrasState *s, uint32_t cmd_class,
+                                      uint32_t reg, const uint32_t *payload,
+                                      uint32_t payload_words)
+{
+    uint32_t *regs;
+    uint32_t regs_count;
+
+    switch (cmd_class) {
+    case SI_CMD_HDR_CLASS_DESC_20000:
+        regs = s->dma_desc_20000;
+        regs_count = ARRAY_SIZE(s->dma_desc_20000);
+        break;
+    case SI_CMD_HDR_CLASS_DESC_28000:
+        regs = s->dma_desc_28000;
+        regs_count = ARRAY_SIZE(s->dma_desc_28000);
+        break;
+    case SI_CMD_HDR_CLASS_DESC_30000:
+        regs = s->dma_desc_30000;
+        regs_count = ARRAY_SIZE(s->dma_desc_30000);
+        break;
+    default:
+        return;
+    }
+
+    for (uint32_t i = 0; i < payload_words; i++) {
+        uint32_t r = reg + i;
+
+        if (r < regs_count) {
+            regs[r] = payload[i];
+        }
+    }
+
+    if (cmd_class == SI_CMD_HDR_CLASS_DESC_20000 &&
+        reg <= SI_DESC_20000_REG_KICK &&
+        SI_DESC_20000_REG_KICK < reg + payload_words) {
+        si_raster_dma_kick(s, s->dma_desc_20000[SI_DESC_20000_REG_KICK]);
+    }
+}
+
 static void si_raster_command_fifo_dispatch(SGIMgrasState *s)
 {
     uint32_t reg = s->cmd_token_reg;
+
+    if (s->cmd_token_class == SI_CMD_HDR_CLASS_DESC_20000 ||
+        s->cmd_token_class == SI_CMD_HDR_CLASS_DESC_28000 ||
+        s->cmd_token_class == SI_CMD_HDR_CLASS_DESC_30000) {
+        si_raster_desc_bank_store(s, s->cmd_token_class, reg,
+                                  s->cmd_token_payload,
+                                  s->cmd_token_payload_count);
+        return;
+    }
+
     /* Rebuild the accepted header from parser fields already in VMState. */
     SGIMgrasRasterSubmission submission = {
         .form = SGI_MGRAS_RASTER_FIFO,
