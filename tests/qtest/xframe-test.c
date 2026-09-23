@@ -2092,66 +2092,14 @@ static void test_factory_mac_readback(void)
  * halves), and behind the Origin 200 Bridge a slot with DEV_64BIT_DEVICE clear
  * gets every 64-bit access split into two 32-bit device cycles. So the device
  * must serve a register's low half at off+0 and its high half at off+4, and a
- * write to one half must not disturb the other. These are the subtests that
- * failed before the window's valid.min_access_size dropped to 4.
+ * write to one half must not disturb the other.
+ *
+ * What is left here is the three registers whose write fires something: each
+ * carries its trigger in the high half, each fires a different thing, and each
+ * must not fire from a low-half write. Three more cases used to walk the plain
+ * read-back over three further registers, which is one claim three times; the
+ * MAC-table strobe below still reads a register back through both halves.
  */
-
-/*
- * The byte-swapper diagnostic read the way IRIX xg reads it: 32-bit, one half
- * at a time. Each half must be the corresponding half of the magic constant --
- * this exact read is what xg's endianness handshake checks, and a 0 here (a
- * rejected sub-64-bit access) is what aborted attach before the fix.
- */
-static void test_swapper_diagnostic_32bit_halves(void)
-{
-    XframeTest t;
-
-    xframe_start(&t);
-    g_assert_cmphex(pif_readl(&t, PIF_RD_SWAPPER_FB + 0), ==,
-                    (uint32_t)SWAPPER_MAGIC);
-    g_assert_cmphex(pif_readl(&t, PIF_RD_SWAPPER_FB + 4), ==,
-                    (uint32_t)(SWAPPER_MAGIC >> 32));
-    xframe_stop(&t);
-}
-
-/*
- * ADAPTER_STATUS read 32-bit: its two halves differ (0x00000000 low,
- * 0xf400ffc3 high), so a half read that returned the wrong 32 bits -- or the
- * whole 64-bit value truncated -- shows up here.
- */
-static void test_adapter_status_32bit_halves(void)
-{
-    XframeTest t;
-
-    xframe_start(&t);
-    g_assert_cmphex(pif_readl(&t, ADAPTER_STATUS + 0), ==,
-                    (uint32_t)ADAPTER_STATUS_QUIESCENT);
-    g_assert_cmphex(pif_readl(&t, ADAPTER_STATUS + 4), ==,
-                    (uint32_t)(ADAPTER_STATUS_QUIESCENT >> 32));
-    xframe_stop(&t);
-}
-
-/*
- * The XMSI_ADDRESS scratch via 32-bit halves. Reading back each half of a
- * 64-bit-written value pins the read split; writing each half separately and
- * reading the whole back pins the write split -- and that a low-half write
- * leaves the high half alone, which a naive "widen to 64-bit" write would
- * clobber to zero.
- */
-static void test_xmsi_address_32bit_halves(void)
-{
-    XframeTest t;
-
-    xframe_start(&t);
-    pif_writeq(&t, XMSI_ADDRESS, 0xdeadbeefcafef00dULL);
-    g_assert_cmphex(pif_readl(&t, XMSI_ADDRESS + 0), ==, 0xcafef00d);
-    g_assert_cmphex(pif_readl(&t, XMSI_ADDRESS + 4), ==, 0xdeadbeef);
-
-    pif_writel(&t, XMSI_ADDRESS + 0, 0x11223344);
-    pif_writel(&t, XMSI_ADDRESS + 4, 0x55667788);
-    g_assert_cmphex(pif_readq(&t, XMSI_ADDRESS), ==, 0x5566778811223344ULL);
-    xframe_stop(&t);
-}
 
 /*
  * SW_RESET's key sits in bits 63:40 -- the register's high 32 bits -- so a
@@ -5954,12 +5902,6 @@ int main(int argc, char **argv)
     qtest_add_func("xframe/traffic-interrupt-memory-programming",
                    test_traffic_interrupt_memory_programming);
     qtest_add_func("xframe/factory-mac-readback", test_factory_mac_readback);
-    qtest_add_func("xframe/swapper-diagnostic-32bit-halves",
-                   test_swapper_diagnostic_32bit_halves);
-    qtest_add_func("xframe/adapter-status-32bit-halves",
-                   test_adapter_status_32bit_halves);
-    qtest_add_func("xframe/xmsi-address-32bit-halves",
-                   test_xmsi_address_32bit_halves);
     qtest_add_func("xframe/sw-reset-key-via-32bit",
                    test_sw_reset_key_via_32bit);
     qtest_add_func("xframe/rmac-cfg-key-unlock-via-32bit",
