@@ -492,6 +492,11 @@ sgi_bedrock_hold_yield(int cpu, uint64_t id, int64_t held_us) "cpu %d id %" PRIu
 sgi_bedrock_hold_end(int cpu, const char *outcome, int64_t held_us, uint64_t id) "cpu %d hold %s after %" PRId64 " us id %" PRIu64
 sgi_bedrock_hold_kick(int cpu, int target, const char *kind) "cpu %d target %d kind %s"
 
+sgi_bedrock_local_reset(int cpu) "local reset pulse by cpu %d"
+
+# sgi-bedrock-pi.c
+sgi_bedrock_pi_mask_write(unsigned interface, uint64_t offset, uint64_t value, int cpu) "pi%u mask 0x%" PRIx64 " <- 0x%" PRIx64 " by cpu %d"
+
 # sgi-ioc3.c
 sgi_ioc3_sdma_read(uint32_t reg, uint32_t val) "reg 0x%03x -> 0x%08x"
 sgi_ioc3_sdma_write(uint32_t reg, uint32_t val) "reg 0x%03x <- 0x%08x"

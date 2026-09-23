@@ -7,6 +7,7 @@
 #include "migration/vmstate.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
+#include "trace.h"
 
 #define PI_CPU_PROTECT       0x000
 #define PI_CPU_OVERRIDE      0x008
@@ -406,6 +407,7 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
                      unsigned size)
 {
     SGIBedrockPIState *s = opaque;
+    int cpu = current_cpu ? current_cpu->cpu_index : -1;
 
     switch (offset) {
     case PI_CPU_PROTECT:
@@ -490,15 +492,19 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
                       " ignored\n", value, offset);
         return;
     case PI_MASK_0_A:
+        trace_sgi_bedrock_pi_mask_write(s->interface, offset, value, cpu);
         s->mask[0][0] = value;
         break;
     case PI_MASK_1_A:
+        trace_sgi_bedrock_pi_mask_write(s->interface, offset, value, cpu);
         s->mask[0][1] = value;
         break;
     case PI_MASK_0_B:
+        trace_sgi_bedrock_pi_mask_write(s->interface, offset, value, cpu);
         s->mask[1][0] = value;
         break;
     case PI_MASK_1_B:
+        trace_sgi_bedrock_pi_mask_write(s->interface, offset, value, cpu);
         s->mask[1][1] = value;
         break;
     /*
