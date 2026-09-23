@@ -2439,7 +2439,6 @@ S: Maintained
 F: hw/block/pflash_cfi*.c
 F: include/hw/block/flash.h
 F: tests/qtest/pflash-cfi02-test.c
-F: tests/qtest/sgi-pflash-cfi02-test.c
 
 SCSI
 M: Paolo Bonzini <pbonzini@redhat.com>
