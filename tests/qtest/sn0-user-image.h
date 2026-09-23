@@ -15,6 +15,7 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "sgi-mips-emit.h"
 
 #define SN0_IMAGE_SIZE      0x2000
 #define SN0_IMAGE_BASE      0xbfc00000u
@@ -134,7 +135,7 @@ static inline void sn0_emit(SN0Image *p, uint32_t word)
 static inline void sn0_emit_i(SN0Image *p, unsigned int op, unsigned int rs,
                               unsigned int rt, uint16_t imm)
 {
-    sn0_emit(p, (op << 26) | (rs << 21) | (rt << 16) | imm);
+    sn0_emit(p, mips_branch(op << 26, rs, rt, imm));
 }
 
 static inline void sn0_emit_nop(SN0Image *p)
@@ -162,7 +163,7 @@ static inline void sn0_emit_li64(SN0Image *p, unsigned int rt, uint64_t value)
 
 static inline void sn0_emit_mtc0(SN0Image *p, unsigned int rt, unsigned int rd)
 {
-    sn0_emit(p, 0x40800000 | (rt << 16) | (rd << 11));
+    sn0_emit(p, mips_mtc0(rt, rd));
     for (unsigned int i = 0; i < 4; i++) {
         sn0_emit_nop(p);
     }
@@ -171,7 +172,7 @@ static inline void sn0_emit_mtc0(SN0Image *p, unsigned int rt, unsigned int rd)
 static inline void sn0_emit_dmtc0(SN0Image *p, unsigned int rt,
                                   unsigned int rd)
 {
-    sn0_emit(p, 0x40a00000 | (rt << 16) | (rd << 11));
+    sn0_emit(p, mips_dmtc0(rt, rd));
     for (unsigned int i = 0; i < 4; i++) {
         sn0_emit_nop(p);
     }
@@ -179,7 +180,7 @@ static inline void sn0_emit_dmtc0(SN0Image *p, unsigned int rt,
 
 static inline void sn0_emit_mfc0(SN0Image *p, unsigned int rt, unsigned int rd)
 {
-    sn0_emit(p, 0x40000000 | (rt << 16) | (rd << 11));
+    sn0_emit(p, mips_mfc0(rt, rd));
 }
 
 static inline void sn0_emit_or(SN0Image *p, unsigned int rd, unsigned int rs,
