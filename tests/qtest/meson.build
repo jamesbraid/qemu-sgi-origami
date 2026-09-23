@@ -405,6 +405,7 @@ qtests_mips64 = \
                                                    'sn0-bridge-invalid-addr-test',
                                                    'sn0-bridge-widget-test',
                                                    'sn0-bridge-pio-xlate-test',
+                                                   'sgi-bridge-bus-test',
                                                    'sn0-bridge-flash-test',
                                                    'sn0-origin2000-test',
                                                    'sn0-baseio-test',

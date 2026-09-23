@@ -22,6 +22,9 @@ libqos_srcs = files(
         'libqos-pc.c',
         'ahci.c',
 
+        # sgi
+        'pci-sgi-bridge.c',
+
         # usb
         'usb.c',
 
@@ -58,6 +61,7 @@ libqos_srcs = files(
         'arm-xilinx-zynq-a9-machine.c',
         'ppc64_pseries-machine.c',
         'x86_64_pc-machine.c',
+        'sgi-bridge-machine.c',
         'riscv-virt-machine.c',
         'loongarch-virt-machine.c',
 
