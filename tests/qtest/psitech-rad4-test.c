@@ -1129,6 +1129,80 @@ static void test_gfx_update_dirty_tracking(void)
     }
 }
 
+/*
+ * A pixel's displayed color depends on more than its own raw framebuffer
+ * word: rad4_pixel_to_rgb() also consults the written window's FB_WAT
+ * entry and, in Index mode, the color LUT. Neither table lives in
+ * s->framebuffer, so a write to either one never touched the dirty
+ * tracking above -- a guest that reprograms colors or a window's
+ * interpretation without also touching the framebuffer got no visible
+ * update at all until some unrelated pixel write came along. This drives
+ * one FB_WAT entry through its full two-cycle write with no framebuffer
+ * write anywhere nearby, and expects the completed write alone to push a
+ * frame rather than leave the next refresh idle.
+ */
+static void test_gfx_update_palette_change_without_fb_write(void)
+{
+    g_autofree char *trace_path = NULL;
+    g_autofree char *trace_contents = NULL;
+    g_autoptr(GError) error = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("psitech-rad4-palette-dirty-XXXXXX.trace",
+                         &trace_path, &error);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+
+    qts = qtest_initf(MACHINE_WITH_BRIDGE
+                      " -trace enable=rad4_gfx_update_push"
+                      " -trace enable=rad4_gfx_update_idle"
+                      " -D %s", trace_path);
+    rad4_configure_bars(qts);
+
+    rad4_play_mode0(qts);
+    rad4_force_refresh(qts); /* First paint: consumes the full-frame range. */
+
+    bar2_write(qts, 100 * TEST_FB_STRIDE, 0x00ff0080u);
+    rad4_force_refresh(qts); /* Pushes row 100 alone, clearing the range. */
+
+    /* FB_WAT entry 5's full two-cycle write; no framebuffer write at all. */
+    rad4_set_rgb_index(qts, WAT_BASE + 5);
+    bar2_write(qts, B_RGB_RESERVED, 0xd8);
+    bar2_write(qts, B_RGB_RESERVED, 0x00);
+    rad4_force_refresh(qts);
+
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(trace_path, &trace_contents, NULL,
+                                      &error));
+    unlink(trace_path);
+
+    {
+        g_auto(GStrv) lines = g_strsplit(trace_contents, "\n", -1);
+        int push_count = 0, idle_count = 0, last_push_at = -1;
+
+        for (int i = 0; lines[i]; i++) {
+            if (strstr(lines[i], "rad4_gfx_update_push")) {
+                push_count++;
+                last_push_at = i;
+            } else if (strstr(lines[i], "rad4_gfx_update_idle")) {
+                idle_count++;
+            }
+        }
+
+        /*
+         * Three refreshes, three pushes: the full first paint, row 100
+         * alone, then the FB_WAT write alone -- never an idle refresh,
+         * which is what the old code, with no dirty-marking on this write
+         * path, would have produced for the third one.
+         */
+        g_assert_cmpint(push_count, ==, 3);
+        g_assert_cmpint(idle_count, ==, 0);
+        g_assert_nonnull(strstr(lines[last_push_at], "rows 0-1023"));
+    }
+}
+
 static void test_interrupt_acknowledge(void)
 {
     QTestState *qts = rad4_init();
@@ -1571,6 +1645,77 @@ static void test_reset(void)
     qtest_quit(qts);
 }
 
+/*
+ * Reset zeroes the framebuffer but, before the fix in rad4_reset_hold(),
+ * left the dirty range exactly as reset found it. A display that was
+ * already recognized and idle at reset time -- the ordinary case, since
+ * recognition survives no reset path -- would then see rad4_gfx_update()
+ * take the empty-range idle fast path forever, keeping the pre-reset
+ * frame on screen instead of showing the cleared card the guest actually
+ * has.
+ *
+ * Note this test drives the only qtest-reachable route back to a
+ * recognized, refreshable state: replaying the mode-0 grammar. That
+ * replay's own completion unconditionally calls rad4_mark_all_dirty()
+ * (so does vmstate load on migration), independently of what reset left
+ * behind, so this test cannot by itself isolate reset's own dirty-marking
+ * line from its absence -- it pins the guest-visible behavior ("the
+ * display always repaints in full after a reset"), not that specific
+ * line. The FB_WAT/color-LUT test above has no such masking and is the
+ * one that actually falls over without its fix.
+ */
+static void test_gfx_update_reset_forces_full_repaint(void)
+{
+    g_autofree char *trace_path = NULL;
+    g_autofree char *trace_contents = NULL;
+    g_autoptr(GError) error = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("psitech-rad4-reset-repaint-XXXXXX.trace",
+                         &trace_path, &error);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+
+    qts = qtest_initf(MACHINE_WITH_BRIDGE
+                      " -trace enable=rad4_gfx_update_push"
+                      " -trace enable=rad4_gfx_update_idle"
+                      " -D %s", trace_path);
+    rad4_configure_bars(qts);
+
+    rad4_play_mode0(qts);
+    rad4_force_refresh(qts); /* First paint: consumes the full-frame range. */
+
+    qtest_system_reset(qts);
+    rad4_configure_bars(qts);
+    rad4_play_mode0(qts);
+    rad4_force_refresh(qts);
+
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(trace_path, &trace_contents, NULL,
+                                      &error));
+    unlink(trace_path);
+
+    {
+        g_auto(GStrv) lines = g_strsplit(trace_contents, "\n", -1);
+        int push_count = 0, idle_count = 0, last_push_at = -1;
+
+        for (int i = 0; lines[i]; i++) {
+            if (strstr(lines[i], "rad4_gfx_update_push")) {
+                push_count++;
+                last_push_at = i;
+            } else if (strstr(lines[i], "rad4_gfx_update_idle")) {
+                idle_count++;
+            }
+        }
+
+        g_assert_cmpint(push_count, ==, 2);
+        g_assert_cmpint(idle_count, ==, 0);
+        g_assert_nonnull(strstr(lines[last_push_at], "rows 0-1023"));
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1595,6 +1740,8 @@ int main(int argc, char **argv)
                    test_mode_recognition_rejects_mutation);
     qtest_add_func("/psitech-rad4/gfx-update-dirty-tracking",
                    test_gfx_update_dirty_tracking);
+    qtest_add_func("/psitech-rad4/gfx-update-palette-change-without-fb-write",
+                   test_gfx_update_palette_change_without_fb_write);
     qtest_add_func("/psitech-rad4/interrupt-acknowledge",
                    test_interrupt_acknowledge);
     qtest_add_func("/psitech-rad4/dma-registers-before-start",
@@ -1622,6 +1769,8 @@ int main(int argc, char **argv)
     qtest_add_func("/psitech-rad4/cursor-lut-tri-write",
                    test_cursor_lut_tri_write);
     qtest_add_func("/psitech-rad4/reset", test_reset);
+    qtest_add_func("/psitech-rad4/gfx-update-reset-forces-full-repaint",
+                   test_gfx_update_reset_forces_full_repaint);
 
     qtest_add_func("/psitech-rad4-km/pci-identity", test_km_pci_identity);
     qtest_add_func("/psitech-rad4-km/bar0-register-round-trip",

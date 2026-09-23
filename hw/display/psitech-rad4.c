@@ -1647,10 +1647,29 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
                                   RAD4_WAT_CYCLE1_MASK;
             }
             rad4_rgb_reserved_advance(s, index, RAD4_WAT_CYCLES);
+            /*
+             * A window's FB_WAT entry selects how rad4_pixel_to_rgb()
+             * interprets every pixel tagged with that window ID. That
+             * changes what the existing scanout data means without
+             * touching s->framebuffer, so the raw-write dirty tracking
+             * above never sees it. Repaint the whole frame once this
+             * entry is fully written.
+             */
+            if (s->rgb_reserved_phase == 0) {
+                rad4_mark_all_dirty(s);
+            }
         } else if (rad4_index_in_color_lut(index)) {
             s->color_lut[index - RAD4_COLOR_LUT_BASE]
                         [s->rgb_reserved_phase] = v;
             rad4_rgb_reserved_advance(s, index, RAD4_COLOR_LUT_CYCLES);
+            /*
+             * Indexed-mode pixels resolve through this LUT in
+             * rad4_pixel_to_rgb(); same reasoning as the FB_WAT case
+             * above.
+             */
+            if (s->rgb_reserved_phase == 0) {
+                rad4_mark_all_dirty(s);
+            }
         } else {
             qemu_log_mask(LOG_UNIMP,
                          "psitech-rad4: RGB561 multi-cycle write to "
@@ -1711,8 +1730,13 @@ static void rad4_reset_hold(Object *obj, ResetType type)
 
     memset(s->framebuffer, 0, RAD4_FB_SIZE);
     s->mask = 0xffffffffu;
-    s->dirty_y_start = RAD4_MODE0_HEIGHT;
-    s->dirty_y_end = -1;
+    /*
+     * The framebuffer just went to zero; an already-recognized display
+     * needs the next refresh to repaint the whole frame from that, not
+     * take the idle fast path and keep showing the pre-reset
+     * display_buffer indefinitely.
+     */
+    rad4_mark_all_dirty(s);
 
     s->rgb_index_low = 0;
     s->rgb_index_high = 0;
