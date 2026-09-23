@@ -1024,6 +1024,111 @@ static void test_mode_recognition_rejects_mutation(void)
     qtest_quit(qts);
 }
 
+/*
+ * Mode-zero geometry restated for the dirty-tracking test below, the way
+ * this file restates every other register layout rather than including
+ * hw/display/psitech-rad4.c's own RAD4_MODE0_* constants
+ * (docs/designs/rad4-one-mode-functional-approximation.md).
+ */
+#define TEST_FB_WIDTH   1280
+#define TEST_FB_HEIGHT  1024
+#define TEST_FB_STRIDE  (TEST_FB_WIDTH * 4)
+
+/*
+ * rad4_gfx_update() (the GraphicHwOps refresh callback) only runs when
+ * something calls graphic_hw_update(); QMP screendump is the qtest-reachable
+ * way to force that without a real display backend attached.
+ */
+static void rad4_force_refresh(QTestState *qts)
+{
+    g_autofree char *path = NULL;
+    g_autoptr(GError) error = NULL;
+    int fd = g_file_open_tmp("psitech-rad4-screendump-XXXXXX.ppm", &path,
+                             &error);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'screendump', 'arguments': {'filename': %s}}", path);
+    unlink(path);
+}
+
+/*
+ * rad4_gfx_update() used to reconvert and push the whole 1280x1024 frame on
+ * every refresh regardless of whether the guest had written anything since
+ * the last one, which saturated the VNC path into flicker, blackout and
+ * laggy input on an otherwise-static screen. It now tracks which scanlines
+ * were actually written and pushes only those, doing nothing at all when
+ * idle; the rad4_gfx_update_push/rad4_gfx_update_idle trace events (only
+ * built for this test's own use, not otherwise consumed) are the
+ * qtest-reachable window into that, since the refresh callback has no other
+ * externally visible effect besides the pixels it composes into the
+ * surface -- and a static framebuffer reconverts to identical pixels
+ * whether or not this fix is present, so a screendump alone cannot tell
+ * the two apart.
+ */
+static void test_gfx_update_dirty_tracking(void)
+{
+    g_autofree char *trace_path = NULL;
+    g_autofree char *trace_contents = NULL;
+    g_autoptr(GError) error = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("psitech-rad4-gfx-update-XXXXXX.trace", &trace_path,
+                         &error);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+
+    qts = qtest_initf(MACHINE_WITH_BRIDGE
+                      " -trace enable=rad4_gfx_update_push"
+                      " -trace enable=rad4_gfx_update_idle"
+                      " -D %s", trace_path);
+    rad4_configure_bars(qts);
+
+    /* Recognizing the mode marks the whole frame dirty for its first paint. */
+    rad4_play_mode0(qts);
+    rad4_force_refresh(qts);
+
+    /* Nothing has changed since: the next refresh finds nothing dirty. */
+    rad4_force_refresh(qts);
+
+    /* A write into row 5 alone should only dirty row 5. */
+    bar2_write(qts, 5 * TEST_FB_STRIDE, 0x00ff0080u);
+    rad4_force_refresh(qts);
+
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(trace_path, &trace_contents, NULL,
+                                      &error));
+    unlink(trace_path);
+
+    {
+        g_auto(GStrv) lines = g_strsplit(trace_contents, "\n", -1);
+        int full_push_at = -1, idle_at = -1, row_push_at = -1;
+
+        for (int i = 0; lines[i]; i++) {
+            if (strstr(lines[i], "rad4_gfx_update_push")) {
+                if (full_push_at < 0) {
+                    full_push_at = i;
+                    /* TEST_FB_HEIGHT - 1: the whole frame, first paint. */
+                    g_assert_nonnull(strstr(lines[i], "rows 0-1023"));
+                } else {
+                    row_push_at = i;
+                }
+            } else if (strstr(lines[i], "rad4_gfx_update_idle") &&
+                      idle_at < 0) {
+                idle_at = i;
+            }
+        }
+
+        g_assert_cmpint(full_push_at, >=, 0);
+        g_assert_cmpint(idle_at, >, full_push_at);
+        g_assert_cmpint(row_push_at, >, idle_at);
+        g_assert_nonnull(strstr(lines[row_push_at], "rows 5-5"));
+    }
+}
+
 static void test_interrupt_acknowledge(void)
 {
     QTestState *qts = rad4_init();
@@ -1488,6 +1593,8 @@ int main(int argc, char **argv)
     qtest_add_func("/psitech-rad4/mode-recognition", test_mode_recognition);
     qtest_add_func("/psitech-rad4/mode-recognition-mutation",
                    test_mode_recognition_rejects_mutation);
+    qtest_add_func("/psitech-rad4/gfx-update-dirty-tracking",
+                   test_gfx_update_dirty_tracking);
     qtest_add_func("/psitech-rad4/interrupt-acknowledge",
                    test_interrupt_acknowledge);
     qtest_add_func("/psitech-rad4/dma-registers-before-start",
