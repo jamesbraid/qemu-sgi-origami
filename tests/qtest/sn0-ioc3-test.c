@@ -368,8 +368,9 @@ static void test_undefined_int_out_modes_keep_periodic_output(const void *data)
         0x00020000u,
         0x00030000u,
     };
-    QTestState *qts = qtest_init("-M origin200");
     size_t i;
+
+    ioc3_reset();
 
     sn0_ioc3_attach(qts);
 
@@ -377,8 +378,6 @@ static void test_undefined_int_out_modes_keep_periodic_output(const void *data)
         assert_rejected_int_out_keeps_periodic(qts,
                                                undefined_modes[i] | 0x0009);
     }
-
-    qtest_quit(qts);
 }
 
 static void test_diagnostic_int_out_keeps_periodic_output(const void *data)
@@ -400,8 +399,9 @@ static void test_unsupported_int_out_counts_keep_periodic_output(
         0x0002,
         0xffff,
     };
-    QTestState *qts = qtest_init("-M origin200");
     size_t i;
+
+    ioc3_reset();
 
     sn0_ioc3_attach(qts);
 
@@ -409,14 +409,12 @@ static void test_unsupported_int_out_counts_keep_periodic_output(
         assert_rejected_int_out_keeps_periodic(
             qts, INT_OUT_MODE_PERIODIC | unsupported_counts[i]);
     }
-
-    qtest_quit(qts);
 }
 
 static void test_fixed_interrupt_output_commands_change_the_state(
     const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    ioc3_reset();
 
     sn0_ioc3_attach(qts);
 
@@ -428,14 +426,12 @@ static void test_fixed_interrupt_output_commands_change_the_state(
     qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_LOW);
     qtest_clock_step(qts, 1);
     g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==, 0);
-
-    qtest_quit(qts);
 }
 
 static void test_one_shot_interrupt_output_has_three_tick_width(
     const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    ioc3_reset();
 
     sn0_ioc3_attach(qts);
 
@@ -450,8 +446,6 @@ static void test_one_shot_interrupt_output_has_three_tick_width(
 
     qtest_clock_step(qts, 1);
     g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==, 0);
-
-    qtest_quit(qts);
 }
 
 static void test_count_zero_output_pulse_interrupt(const void *data)
@@ -715,7 +709,7 @@ static void test_a_one_wire_slot_always_finishes(const void *data)
 static void test_a_one_wire_reset_finds_the_ethernet_address_part(
     const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    ioc3_reset();
 
     sn0_ioc3_attach(qts);
     /* Route the MicroLAN engine onto its pin, as a driver does before use. */
@@ -728,8 +722,6 @@ static void test_a_one_wire_reset_finds_the_ethernet_address_part(
     qtest_writel(qts, MICROLAN_CONTROL, MICROLAN_RESET_SLOT);
     g_assert_cmphex(qtest_readl(qts, MICROLAN_CONTROL) & MICROLAN_LEVEL, ==,
                     0);
-
-    qtest_quit(qts);
 }
 
 static void test_the_one_wire_bus_is_dead_until_enabled(const void *data)
@@ -969,8 +961,9 @@ static void test_the_ps2_keyboard_acks_set_key_type(const void *data)
     const uint32_t one_ack = 0x80fa0000;
     const uint8_t all_keys[] = { 0xf7, 0xf8, 0xf9, 0xfa };
     const uint8_t one_key[] = { 0xfb, 0xfc, 0xfd };
-    QTestState *qts = qtest_init("-M origin200");
     unsigned int i;
+
+    ioc3_reset();
 
     sn0_ioc3_attach(qts);
 
@@ -987,8 +980,6 @@ static void test_the_ps2_keyboard_acks_set_key_type(const void *data)
         qtest_writel(qts, KBC_KBD_TRANSMIT, 0x1c);
         g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, one_ack);
     }
-
-    qtest_quit(qts);
 }
 
 /*
@@ -4416,7 +4407,7 @@ static void test_the_buffer_ram_reports_bad_parity(const void *data)
 static void test_the_buffer_ram_ignores_a_written_parity_report(
     const void *data)
 {
-    QTestState *qts = qtest_init("-M origin200");
+    ioc3_reset();
 
     sn0_ioc3_attach(qts);
 
@@ -4428,8 +4419,6 @@ static void test_the_buffer_ram_ignores_a_written_parity_report(
 
     qtest_writel(qts, SSRAM_FIRST, SSRAM_PARITY_ERROR | 0x0101u);
     g_assert_cmphex(qtest_readl(qts, SSRAM_FIRST), ==, 0x0101u);
-
-    qtest_quit(qts);
 }
 
 static void test_the_size_probe_survives_parity_checking(const void *data)
