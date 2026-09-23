@@ -9,6 +9,7 @@
 #include "qemu/osdep.h"
 #include "qemu/log.h"
 #include "hw/misc/sgi-mgras-raster.h"
+#include "system/dma.h"
 
 
 
@@ -888,6 +889,47 @@ static bool si_raster_dma_select_slot(SGIMgrasState *s, uint32_t kick_byte,
  * is deliberate: consecutive page-list entries need not be adjacent, so a
  * row's bytes can span a page boundary at an arbitrary offset.
  */
+
+/*
+ * Fetch and byte-swap a slot's whole big-endian page-frame-number list,
+ * shared by the draw and read paths. On success, *page_list is a freshly
+ * allocated `count`-entry array the caller owns. On any composed fabric
+ * address or DMA failure, this has already logged the guest error and
+ * freed the partial list; the caller must stop the transfer rather than
+ * paint or write anything from it.
+ */
+static bool si_raster_dma_load_page_list(SGIMgrasState *s, unsigned int widget,
+                                         uint32_t list_node, uint32_t list_pa,
+                                         uint32_t count, uint64_t **page_list)
+{
+    uint64_t *list = g_new0(uint64_t, count);
+
+    for (uint32_t i = 0; i < count; i++) {
+        hwaddr fabric;
+        uint8_t entry[sizeof(uint64_t)];
+        MemTxResult result;
+
+        if (!si_compose_xtalk(s, widget,
+                              ((uint64_t)list_node << 32) | (list_pa + i * 8),
+                              &fabric)) {
+            g_free(list);
+            return false;
+        }
+        result = dma_memory_read(&s->fabric_as, fabric, entry, sizeof(entry),
+                                 MEMTXATTRS_UNSPECIFIED);
+        if (result != MEMTX_OK) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA image transfer "
+                          "page-list entry %u read at 0x%" PRIx64 " failed "
+                          "(result %d)\n", i, (uint64_t)fabric, result);
+            g_free(list);
+            return false;
+        }
+        list[i] = ldq_be_p(entry) & 0xffff;
+    }
+    *page_list = list;
+    return true;
+}
+
 static void si_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
 {
     unsigned int slot, widget;
@@ -951,19 +993,9 @@ static void si_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
         return;
     }
 
-    page_list = g_new0(uint64_t, count);
-    for (uint32_t i = 0; i < count; i++) {
-        hwaddr fabric;
-
-        if (!si_compose_xtalk(s, widget,
-                              ((uint64_t)list_node << 32) | (list_pa + i * 8),
-                              &fabric)) {
-            g_free(page_list);
-            return;
-        }
-        page_list[i] = address_space_ldq_be(&s->fabric_as, fabric,
-                                            MEMTXATTRS_UNSPECIFIED,
-                                            NULL) & 0xffff;
+    if (!si_raster_dma_load_page_list(s, widget, list_node, list_pa, count,
+                                      &page_list)) {
+        return;
     }
 
     rows = MIN(rows, (uint32_t)(y1 - y0 + 1));
@@ -976,6 +1008,8 @@ static void si_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
             uint64_t page_ix = va >> 12;
             uint64_t src_pa;
             hwaddr fabric;
+            uint8_t byte;
+            MemTxResult result;
 
             if (page_ix >= count) {
                 qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA image transfer "
@@ -988,9 +1022,16 @@ static void si_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
             if (!si_compose_xtalk(s, widget, src_pa, &fabric)) {
                 continue;
             }
-            pixel_bytes[b % bpp] = address_space_ldub(&s->fabric_as, fabric,
-                                                       MEMTXATTRS_UNSPECIFIED,
-                                                       NULL);
+            result = dma_memory_read(&s->fabric_as, fabric, &byte,
+                                     sizeof(byte), MEMTXATTRS_UNSPECIFIED);
+            if (result != MEMTX_OK) {
+                qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA image "
+                              "transfer source read at 0x%" PRIx64 " failed "
+                              "(result %d)\n", (uint64_t)fabric, result);
+                g_free(page_list);
+                return;
+            }
+            pixel_bytes[b % bpp] = byte;
             if (b % bpp == bpp - 1) {
                 uint32_t col = b / bpp;
                 uint32_t color = bpp == 1 ? pixel_bytes[0] :
@@ -1085,19 +1126,9 @@ static void si_raster_dma_read_image(SGIMgrasState *s, uint32_t kick_byte)
         return;
     }
 
-    page_list = g_new0(uint64_t, count);
-    for (uint32_t i = 0; i < count; i++) {
-        hwaddr fabric;
-
-        if (!si_compose_xtalk(s, widget,
-                              ((uint64_t)list_node << 32) | (list_pa + i * 8),
-                              &fabric)) {
-            g_free(page_list);
-            return;
-        }
-        page_list[i] = address_space_ldq_be(&s->fabric_as, fabric,
-                                            MEMTXATTRS_UNSPECIFIED,
-                                            NULL) & 0xffff;
+    if (!si_raster_dma_load_page_list(s, widget, list_node, list_pa, count,
+                                      &page_list)) {
+        return;
     }
 
     for (uint32_t row = 0; row < rows; row++) {
@@ -1111,6 +1142,7 @@ static void si_raster_dma_read_image(SGIMgrasState *s, uint32_t kick_byte)
             hwaddr fabric;
             uint32_t stored;
             uint8_t byte;
+            MemTxResult result;
 
             if (x > x1) {
                 continue;
@@ -1132,8 +1164,16 @@ static void si_raster_dma_read_image(SGIMgrasState *s, uint32_t kick_byte)
             if (!si_compose_xtalk(s, widget, src_pa, &fabric)) {
                 continue;
             }
-            address_space_stb(&s->fabric_as, fabric, byte,
-                              MEMTXATTRS_UNSPECIFIED, NULL);
+            result = dma_memory_write(&s->fabric_as, fabric, &byte,
+                                      sizeof(byte), MEMTXATTRS_UNSPECIFIED);
+            if (result != MEMTX_OK) {
+                qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA image "
+                              "transfer destination write at 0x%" PRIx64
+                              " failed (result %d)\n", (uint64_t)fabric,
+                              result);
+                g_free(page_list);
+                return;
+            }
         }
     }
     g_free(page_list);
