@@ -46,10 +46,42 @@ enum {
 #define MD_SELFTEST_COMMAND_BITS 0x7
 #define MD_SELFTEST_PASSED 0x1
 #define MD_SELFTEST_DONE 0x2
+/* Memory error register: valid and overrun pairs, syndrome and address. */
+#define MD_MEMORY_ERROR_READ_CE_VALID (UINT64_C(1) << 52)
+#define MD_MEMORY_ERROR_READ_CE_OVERRUN (UINT64_C(1) << 53)
+#define MD_MEMORY_ERROR_WRITE_UCE_VALID (UINT64_C(1) << 56)
+#define MD_MEMORY_ERROR_READ_UCE_VALID (UINT64_C(1) << 60)
+#define MD_MEMORY_ERROR_READ_UCE_OVERRUN (UINT64_C(1) << 61)
+#define MD_MEMORY_ERROR_SYNDROME_SHIFT 40
+#define MD_MEMORY_ERROR_SYNDROME_MASK \
+    (UINT64_C(0xff) << MD_MEMORY_ERROR_SYNDROME_SHIFT)
+#define MD_MEMORY_ERROR_ADDRESS_MASK (((UINT64_C(1) << 30) - 1) << 3)
+#define MD_ECC_DATA_BITS 64
+#define MD_ECC_CHECK_BITS 8
+/* Directory error register: UCE, AE, CE and ACE valid and overrun pairs. */
+#define MD_DIRECTORY_ERROR_UCE_VALID (UINT64_C(1) << 63)
+#define MD_DIRECTORY_ERROR_CE_VALID (UINT64_C(1) << 61)
+#define MD_DIRECTORY_ERROR_UCE_OVERRUN (UINT64_C(1) << 59)
+#define MD_DIRECTORY_ERROR_CE_OVERRUN (UINT64_C(1) << 57)
+#define MD_DIRECTORY_ERROR_SYNDROME_SHIFT 40
+#define MD_DIRECTORY_ERROR_SYNDROME_MASK \
+    (UINT64_C(0x7f) << MD_DIRECTORY_ERROR_SYNDROME_SHIFT)
+#define MD_DIRECTORY_ERROR_ADDRESS_MASK MD_MEMORY_ERROR_ADDRESS_MASK
+/* The directory backdoor's node offset: seven eighths of the 8 GiB node. */
+#define MD_DIRECTORY_HSPEC_BASE UINT64_C(0x1c0000000)
+#define MD_DIRECTORY_PREMIUM_CHECK_MASK \
+    ((UINT64_C(0x3f) << 32) | (UINT64_C(1) << 48))
+#define MD_DIRECTORY_STANDARD_CHECK_MASK (UINT64_C(0x3f) << 16)
+#define MD_DIRECTORY_LINE 128
 
 static void md_selftest_command(SGIBedrockMDState *s, uint64_t value);
 static void md_selftest_complete(void *opaque);
 static void md_update_memory_aliases(SGIBedrockMDState *s);
+static void md_ecc_injections_place(SGIBedrockMDState *s);
+static void md_directory_injections_place(SGIBedrockMDState *s);
+static uint64_t md_directory_word_written(SGIBedrockMDState *s,
+                                          uint64_t value, hwaddr offset,
+                                          const uint32_t *index);
 
 static bool md_storage(hwaddr offset, unsigned *index, uint64_t *mask)
 {
@@ -121,10 +153,9 @@ static bool md_idle(hwaddr offset)
     case 0x20: case 0x28: case 0x40: case 0x48: case 0x58:
     case 0x20010: case 0x20018: case 0x20020: case 0x20028:
     case 0x20030: case 0x20040: case 0x20048:
-    case 0x40010: case 0x40018: case 0x40020: case 0x40028:
+    case 0x40020: case 0x40028:
     case 0x40030: case 0x40038: case 0x40058:
-    case 0x60010: case 0x60018: case 0x60020: case 0x60028:
-    case 0x60030: case 0x60038:
+    case 0x60020: case 0x60028: case 0x60030: case 0x60038:
         return true;
     default:
         return false;
@@ -136,6 +167,7 @@ static uint64_t md_read(void *opaque, hwaddr offset, unsigned size)
     SGIBedrockMDState *s = opaque;
     unsigned index;
     uint64_t mask;
+    uint64_t value;
 
     switch (offset) {
     case 0: return s->current_cell;
@@ -146,6 +178,17 @@ static uint64_t md_read(void *opaque, hwaddr offset, unsigned size)
     case 0x20048: return s->selftest_status;
     case 0x40000: return s->directory_config;
     case 0x40050: return MD_REQUEST_QUEUE;
+    case 0x60010: return s->memory_error;
+    case 0x60018:
+        /* Read-to-clear is model policy; the header names no mechanism. */
+        value = s->memory_error;
+        s->memory_error = 0;
+        return value;
+    case 0x40010: return s->directory_error;
+    case 0x40018:
+        value = s->directory_error;
+        s->directory_error = 0;
+        return value;
     }
     if (md_storage(offset, &index, &mask)) {
         /*
@@ -202,6 +245,13 @@ static void md_write(void *opaque, hwaddr offset, uint64_t value,
         return;
     case 0x20030:
         md_selftest_command(s, value);
+        return;
+    case 0x40010:
+    case 0x40018:
+    case 0x60010:
+    case 0x60018:
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-md: error register "
+                      "write at 0x%" HWADDR_PRIx " ignored\n", offset);
         return;
     }
     if (md_storage(offset, &index, &mask)) {
@@ -303,6 +353,7 @@ static void md_update_memory_aliases(SGIBedrockMDState *s)
         uint64_t bank_size;
 
         memory_region_set_enabled(&s->memory_alias[software_bank], false);
+        s->bank_alias_size[software_bank] = 0;
         if (!md_memory_bank_enabled(s, locational_bank) ||
             size_code == 0 || size_code > 5 ||
             !md_installed_bank(s, locational_bank, &bank_base, &bank_size)) {
@@ -317,7 +368,11 @@ static void md_update_memory_aliases(SGIBedrockMDState *s)
                                        bank_base);
         memory_region_set_size(&s->memory_alias[software_bank], bank_size);
         memory_region_set_enabled(&s->memory_alias[software_bank], true);
+        s->bank_alias_base[software_bank] = bank_base;
+        s->bank_alias_size[software_bank] = bank_size;
     }
+    md_ecc_injections_place(s);
+    md_directory_injections_place(s);
     memory_region_transaction_commit();
 }
 
@@ -552,6 +607,9 @@ static void md_directory_write(void *opaque, hwaddr offset, uint64_t value,
     }
     if (!md_directory_translate(s, offset, &index, NULL)) {
         index = md_directory_compat_get(s, offset);
+        if (!(offset & 8)) {
+            value = md_directory_word_written(s, value, offset, NULL);
+        }
         s->directory_compat_values[index] =
             value & ((offset & 8) ? UINT64_MAX : md_directory_mask(s));
         return;
@@ -559,7 +617,9 @@ static void md_directory_write(void *opaque, hwaddr offset, uint64_t value,
     if (offset & 8) {
         s->page_counters[index] = value;
     } else {
-        s->directory[index] = value & md_directory_mask(s);
+        s->directory[index] =
+            md_directory_word_written(s, value, offset, &index) &
+            md_directory_mask(s);
     }
 }
 
@@ -574,6 +634,645 @@ static const MemoryRegionOps md_directory_ops = {
         .accepts = md_directory_accepts,
     },
     .impl = { .min_access_size = 8, .max_access_size = 8 },
+};
+
+/*
+ * The directory ECC codes' column tables, one column per word bit, read
+ * from the Origin 300's directory diagnostic (its tables at 0x100187d8 and
+ * 0x100188d8; docs/datasheets/bedrock-memory-directory.md). A premium word
+ * keeps seven check bits at 37:32 and 48, a standard word six at 21:16, and
+ * those positions' columns are the unit vectors.
+ */
+static const uint8_t md_directory_premium_column[64] = {
+    0x1f, 0x2f, 0x37, 0x3b, 0x3d, 0x3e, 0x07, 0x0b,
+    0x0d, 0x0e, 0x13, 0x15, 0x16, 0x19, 0x1a, 0x1c,
+    0x7f, 0x4f, 0x57, 0x5b, 0x5d, 0x5e, 0x67, 0x6b,
+    0x6d, 0x6e, 0x73, 0x75, 0x76, 0x79, 0x7a, 0x7c,
+    0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x23, 0x25,
+    0x26, 0x29, 0x2a, 0x2c, 0x31, 0x32, 0x34, 0x38,
+    0x40, 0x43, 0x45, 0x46, 0x49, 0x4a, 0x4c, 0x51,
+    0x52, 0x54, 0x58, 0x61, 0x62, 0x64, 0x68, 0x70,
+};
+
+static const uint8_t md_directory_standard_column[32] = {
+    0x1f, 0x2f, 0x37, 0x3b, 0x3d, 0x3e, 0x07, 0x0b,
+    0x0d, 0x0e, 0x13, 0x15, 0x16, 0x19, 0x1a, 0x1c,
+    0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x23, 0x25,
+    0x26, 0x29, 0x2a, 0x2c, 0x31, 0x32, 0x34, 0x38,
+};
+
+static bool md_directory_premium(const SGIBedrockMDState *s)
+{
+    return s->directory_config & 1;
+}
+
+static uint64_t md_directory_check_mask(bool premium)
+{
+    return premium ? MD_DIRECTORY_PREMIUM_CHECK_MASK :
+                     MD_DIRECTORY_STANDARD_CHECK_MASK;
+}
+
+/* Zero for a codeword; otherwise the column of the bit in error, or none. */
+static uint8_t md_directory_syndrome(uint64_t word, bool premium)
+{
+    const uint8_t *column = premium ? md_directory_premium_column :
+                                      md_directory_standard_column;
+    uint8_t syndrome = 0;
+
+    if (!premium) {
+        word = (uint32_t)word;
+    }
+    while (word) {
+        syndrome ^= column[ctz64(word)];
+        word &= word - 1;
+    }
+    return syndrome;
+}
+
+static int md_directory_syndrome_bit(uint8_t syndrome, bool premium)
+{
+    const uint8_t *column = premium ? md_directory_premium_column :
+                                      md_directory_standard_column;
+    unsigned bits = premium ? 64 : 32;
+
+    for (unsigned bit = 0; bit < bits; bit++) {
+        if (column[bit] == syndrome) {
+            return bit;
+        }
+    }
+    return -1;
+}
+
+uint64_t sgi_bedrock_md_directory_encode(uint64_t word, bool premium)
+{
+    uint64_t mask = md_directory_check_mask(premium);
+    uint8_t check;
+
+    word &= ~mask;
+    check = md_directory_syndrome(word, premium);
+    if (premium) {
+        return word | ((uint64_t)(check & 0x3f) << 32) |
+               ((uint64_t)(check >> 6) << 48);
+    }
+    return word | ((uint64_t)check << 16);
+}
+
+enum {
+    MD_DIRECTORY_ERROR_CE,
+    MD_DIRECTORY_ERROR_UCE,
+};
+
+/* Same rules as the memory error record: UCE above CE. */
+static void md_directory_error_latch(SGIBedrockMDState *s, int kind,
+                                     uint64_t address, uint8_t syndrome)
+{
+    uint64_t valid = kind == MD_DIRECTORY_ERROR_UCE ?
+                     MD_DIRECTORY_ERROR_UCE_VALID : MD_DIRECTORY_ERROR_CE_VALID;
+    uint64_t overrun = kind == MD_DIRECTORY_ERROR_UCE ?
+                       MD_DIRECTORY_ERROR_UCE_OVERRUN :
+                       MD_DIRECTORY_ERROR_CE_OVERRUN;
+    uint64_t recorded = MD_DIRECTORY_ERROR_UCE_VALID |
+                        (kind == MD_DIRECTORY_ERROR_CE ?
+                         MD_DIRECTORY_ERROR_CE_VALID : 0);
+
+    if (s->directory_error & recorded) {
+        s->directory_error |= overrun;
+    } else {
+        s->directory_error &= ~(MD_DIRECTORY_ERROR_ADDRESS_MASK |
+                                MD_DIRECTORY_ERROR_SYNDROME_MASK);
+        s->directory_error |= (address & MD_DIRECTORY_ERROR_ADDRESS_MASK) |
+                              ((uint64_t)syndrome <<
+                               MD_DIRECTORY_ERROR_SYNDROME_SHIFT);
+    }
+    s->directory_error |= valid;
+}
+
+static SGIBedrockMDDirectoryInjection *
+md_directory_injection_find(SGIBedrockMDState *s, uint32_t index)
+{
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_DIRECTORY_INJECTIONS; i++) {
+        if (s->directory_injection[i].active &&
+            s->directory_injection[i].index == index) {
+            return &s->directory_injection[i];
+        }
+    }
+    return NULL;
+}
+
+/*
+ * Place an overlay of @size bytes over the memory the raw offset @raw backs,
+ * at the software-bank address the bank aliases give it, or leave it
+ * unplaced when no enabled bank reaches it. A bank-select change moves it.
+ */
+static bool md_overlay_place(SGIBedrockMDState *s, MemoryRegion *mr,
+                             uint64_t raw, uint64_t *address, bool *placed)
+{
+    if (*placed) {
+        memory_region_del_subregion(&s->ecc_overlay, mr);
+        *placed = false;
+    }
+    for (unsigned bank = 0; bank < 8; bank++) {
+        if (s->bank_alias_size[bank] &&
+            raw >= s->bank_alias_base[bank] &&
+            raw - s->bank_alias_base[bank] < s->bank_alias_size[bank]) {
+            *address = bank * MD_MEMORY_BANK_SIZE +
+                       (raw - s->bank_alias_base[bank]);
+            memory_region_add_subregion_overlap(&s->ecc_overlay, *address,
+                                                mr, memory_region_size(mr) ==
+                                                8 ? 1 : 0);
+            *placed = true;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void md_directory_injection_unplace(
+    SGIBedrockMDDirectoryInjection *injection)
+{
+    if (injection->placed) {
+        memory_region_del_subregion(&injection->md->ecc_overlay,
+                                    &injection->mr);
+        injection->placed = false;
+    }
+}
+
+static void md_directory_injection_place(
+    SGIBedrockMDState *s, SGIBedrockMDDirectoryInjection *injection)
+{
+    md_overlay_place(s, &injection->mr,
+                     (uint64_t)injection->index * MD_DIRECTORY_LINE,
+                     &injection->address, &injection->placed);
+}
+
+static void md_directory_injections_place(SGIBedrockMDState *s)
+{
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_DIRECTORY_INJECTIONS; i++) {
+        if (s->directory_injection[i].active) {
+            md_directory_injection_place(s, &s->directory_injection[i]);
+        }
+    }
+}
+
+static void md_directory_injection_clear(SGIBedrockMDState *s,
+                                         uint32_t index)
+{
+    SGIBedrockMDDirectoryInjection *injection =
+        md_directory_injection_find(s, index);
+
+    if (injection) {
+        md_directory_injection_unplace(injection);
+        injection->active = false;
+    }
+}
+
+static void md_directory_injections_clear(SGIBedrockMDState *s)
+{
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_DIRECTORY_INJECTIONS; i++) {
+        md_directory_injection_unplace(&s->directory_injection[i]);
+        s->directory_injection[i].active = false;
+    }
+}
+
+static void md_directory_injection_add(SGIBedrockMDState *s, uint32_t index,
+                                       hwaddr offset)
+{
+    SGIBedrockMDDirectoryInjection *injection =
+        md_directory_injection_find(s, index);
+
+    if (injection) {
+        injection->offset = offset;
+        return;
+    }
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_DIRECTORY_INJECTIONS; i++) {
+        injection = &s->directory_injection[i];
+        if (!injection->active) {
+            injection->active = true;
+            injection->index = index;
+            injection->offset = offset;
+            md_directory_injection_place(s, injection);
+            return;
+        }
+    }
+    qemu_log_mask(LOG_UNIMP, "sgi-bedrock-md: directory injection table "
+                  "full; reads of line %u are not checked\n", index);
+}
+
+/*
+ * A backdoor write of the +0 word: with directory ECC ignored the word is
+ * stored as written and a non-codeword starts checking its line; otherwise
+ * the check field is regenerated.
+ */
+static uint64_t md_directory_word_written(SGIBedrockMDState *s,
+                                          uint64_t value, hwaddr offset,
+                                          const uint32_t *index)
+{
+    bool premium = md_directory_premium(s);
+
+    if (s->directory_config & 2) {
+        if (index) {
+            if (md_directory_syndrome(value, premium)) {
+                md_directory_injection_add(s, *index, offset);
+            } else {
+                md_directory_injection_clear(s, *index);
+            }
+        }
+        return value;
+    }
+    if (index) {
+        md_directory_injection_clear(s, *index);
+    }
+    return sgi_bedrock_md_directory_encode(value, premium);
+}
+
+/* Read a checked line: @offset and @size name the bytes wanted from it. */
+static MemTxResult md_directory_checked_read(
+    SGIBedrockMDDirectoryInjection *injection, hwaddr offset,
+    uint64_t *value, unsigned size, MemTxAttrs attrs)
+{
+    SGIBedrockMDState *s = injection->md;
+    uint64_t raw = (uint64_t)injection->index * MD_DIRECTORY_LINE + offset;
+    bool premium = md_directory_premium(s);
+    MemTxResult result;
+
+    *value = 0;
+    if (!(s->directory_config & 2)) {
+        uint64_t word = s->directory[injection->index];
+        uint8_t syndrome = md_directory_syndrome(word, premium);
+        uint64_t address = MD_DIRECTORY_HSPEC_BASE + injection->offset;
+
+        if (syndrome) {
+            int bit = md_directory_syndrome_bit(syndrome, premium);
+
+            if (bit < 0) {
+                md_directory_error_latch(s, MD_DIRECTORY_ERROR_UCE, address,
+                                         syndrome);
+                return MEMTX_ERROR;
+            }
+            /* The corrected word is written back: the backdoor shows it. */
+            s->directory[injection->index] = word ^ (UINT64_C(1) << bit);
+            md_directory_injection_clear(s, injection->index);
+            md_directory_error_latch(s, MD_DIRECTORY_ERROR_CE, address,
+                                     syndrome);
+        }
+    }
+    switch (size) {
+    case 1:
+        *value = address_space_ldub(&s->node_as, raw, attrs, &result);
+        break;
+    case 2:
+        *value = address_space_lduw_be(&s->node_as, raw, attrs, &result);
+        break;
+    case 4:
+        *value = address_space_ldl_be(&s->node_as, raw, attrs, &result);
+        break;
+    default:
+        *value = address_space_ldq_be(&s->node_as, raw, attrs, &result);
+        break;
+    }
+    return result;
+}
+
+static MemTxResult md_directory_overlay_read(void *opaque, hwaddr offset,
+                                             uint64_t *value, unsigned size,
+                                             MemTxAttrs attrs)
+{
+    return md_directory_checked_read(opaque, offset, value, size, attrs);
+}
+
+/* The line's data is written through; the directory word stays checked. */
+static MemTxResult md_directory_overlay_write(void *opaque, hwaddr offset,
+                                              uint64_t value, unsigned size,
+                                              MemTxAttrs attrs)
+{
+    SGIBedrockMDDirectoryInjection *injection = opaque;
+    SGIBedrockMDState *s = injection->md;
+    uint64_t raw = (uint64_t)injection->index * MD_DIRECTORY_LINE + offset;
+    MemTxResult result;
+
+    switch (size) {
+    case 1:
+        address_space_stb(&s->node_as, raw, value, attrs, &result);
+        break;
+    case 2:
+        address_space_stw_be(&s->node_as, raw, value, attrs, &result);
+        break;
+    case 4:
+        address_space_stl_be(&s->node_as, raw, value, attrs, &result);
+        break;
+    default:
+        address_space_stq_be(&s->node_as, raw, value, attrs, &result);
+        break;
+    }
+    return result;
+}
+
+static const MemoryRegionOps md_directory_overlay_ops = {
+    .read_with_attrs = md_directory_overlay_read,
+    .write_with_attrs = md_directory_overlay_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
+};
+
+/*
+ * The memory ECC code's column table: the syndrome each of the 64 data bits
+ * produces alone, then the eight check bits' unit vectors. Read from the
+ * Origin 300's own memory diagnostic, which walks it to inject one
+ * single-bit error per entry (docs/datasheets/bedrock-memory-directory.md).
+ * Every column has odd weight and no two differ by a column, so a
+ * single-bit error is named by its syndrome and a double-bit error is
+ * detected and not corrected.
+ */
+static const uint8_t md_ecc_column[MD_ECC_DATA_BITS + MD_ECC_CHECK_BITS] = {
+    0x13, 0x23, 0x43, 0x83, 0x2f, 0xf1, 0x0d, 0x07,
+    0xd0, 0x70, 0x4f, 0xf8, 0x61, 0x62, 0x64, 0x68,
+    0x1c, 0x2c, 0x4c, 0x8c, 0x15, 0x25, 0x45, 0x85,
+    0x19, 0x29, 0x49, 0x89, 0x1a, 0x2a, 0x4a, 0x8a,
+    0x51, 0x52, 0x54, 0x58, 0x91, 0x92, 0x94, 0x98,
+    0xa1, 0xa2, 0xa4, 0xa8, 0x31, 0x32, 0x34, 0x38,
+    0x16, 0x26, 0x46, 0x86, 0x1f, 0xf2, 0x0b, 0x0e,
+    0xb0, 0xe0, 0x8f, 0xf4, 0xc1, 0xc2, 0xc4, 0xc8,
+    0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80,
+};
+
+uint8_t sgi_bedrock_md_ecc_compute(uint64_t data)
+{
+    uint8_t ecc = 0;
+
+    while (data) {
+        ecc ^= md_ecc_column[ctz64(data)];
+        data &= data - 1;
+    }
+    return ecc;
+}
+
+/* The bit a nonzero syndrome names: a data bit, 64 + a check bit, or -1. */
+static int md_ecc_syndrome_bit(uint8_t syndrome)
+{
+    for (unsigned bit = 0; bit < ARRAY_SIZE(md_ecc_column); bit++) {
+        if (md_ecc_column[bit] == syndrome) {
+            return bit;
+        }
+    }
+    return -1;
+}
+
+enum {
+    MD_MEMORY_ERROR_READ_CE,
+    MD_MEMORY_ERROR_WRITE_UCE,
+    MD_MEMORY_ERROR_READ_UCE,
+};
+
+/*
+ * Latch an error the way the header describes: each kind's valid bit is
+ * set whenever it occurs; the address and syndrome belong to the earliest
+ * error of the highest priority so far, and a kind that finds one of equal
+ * or higher priority already recorded sets its overrun bit instead.
+ */
+static void md_memory_error_latch(SGIBedrockMDState *s, int kind,
+                                  uint64_t address, uint8_t syndrome)
+{
+    static const uint64_t valid[] = {
+        MD_MEMORY_ERROR_READ_CE_VALID, MD_MEMORY_ERROR_WRITE_UCE_VALID,
+        MD_MEMORY_ERROR_READ_UCE_VALID,
+    };
+    uint64_t recorded = 0;
+
+    for (int higher = kind; higher <= MD_MEMORY_ERROR_READ_UCE; higher++) {
+        recorded |= valid[higher];
+    }
+    if (kind != MD_MEMORY_ERROR_READ_CE &&
+        (s->memory_error & (MD_MEMORY_ERROR_WRITE_UCE_VALID |
+                            MD_MEMORY_ERROR_READ_UCE_VALID)) &&
+        ((s->memory_error ^ address) & MD_MEMORY_ERROR_ADDRESS_MASK & ~0x7f)) {
+        s->memory_error |= UINT64_C(1) << 63;
+    }
+    if (s->memory_error & recorded) {
+        s->memory_error |= valid[kind] << 1;
+    } else {
+        s->memory_error &= ~(MD_MEMORY_ERROR_ADDRESS_MASK |
+                             MD_MEMORY_ERROR_SYNDROME_MASK);
+        s->memory_error |= (address & MD_MEMORY_ERROR_ADDRESS_MASK) |
+                           ((uint64_t)syndrome <<
+                            MD_MEMORY_ERROR_SYNDROME_SHIFT);
+    }
+    s->memory_error |= valid[kind];
+    if (kind == MD_MEMORY_ERROR_READ_CE && s->bedrock) {
+        sgi_bedrock_memory_correctable_error(s->bedrock);
+    }
+}
+
+static SGIBedrockMDECCInjection *md_ecc_injection_find(SGIBedrockMDState *s,
+                                                       uint64_t raw)
+{
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_ECC_INJECTIONS; i++) {
+        if (s->ecc_injection[i].active && s->ecc_injection[i].raw == raw) {
+            return &s->ecc_injection[i];
+        }
+    }
+    return NULL;
+}
+
+static void md_ecc_injection_unplace(SGIBedrockMDECCInjection *injection)
+{
+    if (injection->placed) {
+        memory_region_del_subregion(&injection->md->ecc_overlay,
+                                    &injection->mr);
+        injection->placed = false;
+    }
+}
+
+/*
+ * A raw doubleword shows through whichever software bank's alias covers it;
+ * the overlay goes at that software-bank address so the processor's read
+ * of the doubleword is the one checked. A bank-select change moves it.
+ */
+static void md_ecc_injection_place(SGIBedrockMDState *s,
+                                   SGIBedrockMDECCInjection *injection)
+{
+    md_overlay_place(s, &injection->mr, injection->raw * 8,
+                     &injection->address, &injection->placed);
+}
+
+static void md_ecc_injections_place(SGIBedrockMDState *s)
+{
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_ECC_INJECTIONS; i++) {
+        if (s->ecc_injection[i].active) {
+            md_ecc_injection_place(s, &s->ecc_injection[i]);
+        }
+    }
+}
+
+static void md_ecc_injection_clear(SGIBedrockMDState *s, uint64_t raw)
+{
+    SGIBedrockMDECCInjection *injection = md_ecc_injection_find(s, raw);
+
+    if (injection) {
+        md_ecc_injection_unplace(injection);
+        injection->active = false;
+    }
+}
+
+static void md_ecc_injections_clear(SGIBedrockMDState *s)
+{
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_ECC_INJECTIONS; i++) {
+        md_ecc_injection_unplace(&s->ecc_injection[i]);
+        s->ecc_injection[i].active = false;
+    }
+}
+
+static void md_ecc_injection_add(SGIBedrockMDState *s, uint64_t raw)
+{
+    SGIBedrockMDECCInjection *injection = md_ecc_injection_find(s, raw);
+
+    if (injection) {
+        return;
+    }
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_ECC_INJECTIONS; i++) {
+        injection = &s->ecc_injection[i];
+        if (!injection->active) {
+            injection->active = true;
+            injection->raw = raw;
+            md_ecc_injection_place(s, injection);
+            return;
+        }
+    }
+    qemu_log_mask(LOG_UNIMP, "sgi-bedrock-md: ECC injection table full; "
+                  "reads of doubleword 0x%" PRIx64 " are not checked\n",
+                  raw * 8);
+}
+
+/*
+ * The ECC byte a backdoor read returns: the byte written through the
+ * backdoor while it disagrees with the data, otherwise the code's own value
+ * for the data, as a controller that regenerates ECC on every write holds.
+ */
+static uint8_t md_ecc_byte(SGIBedrockMDState *s, uint64_t raw)
+{
+    MemTxResult result;
+    uint64_t data;
+
+    if (md_ecc_injection_find(s, raw)) {
+        return s->ecc[raw];
+    }
+    data = address_space_ldq_be(&s->node_as, raw * 8, MEMTXATTRS_UNSPECIFIED,
+                                &result);
+    return result == MEMTX_OK ? sgi_bedrock_md_ecc_compute(data) : 0;
+}
+
+/* A backdoor write that disagrees with the data starts checking it. */
+static void md_ecc_written(SGIBedrockMDState *s, uint64_t raw)
+{
+    MemTxResult result;
+    uint64_t data = address_space_ldq_be(&s->node_as, raw * 8,
+                                         MEMTXATTRS_UNSPECIFIED, &result);
+
+    if (result != MEMTX_OK) {
+        return;
+    }
+    if (sgi_bedrock_md_ecc_compute(data) != s->ecc[raw]) {
+        md_ecc_injection_add(s, raw);
+    } else {
+        md_ecc_injection_clear(s, raw);
+    }
+}
+
+/*
+ * Read a checked doubleword: @address is the software-bank address the
+ * error record names, @offset and @size the bytes wanted from it.
+ */
+static MemTxResult md_ecc_checked_read(SGIBedrockMDECCInjection *injection,
+                                       uint64_t address, hwaddr offset,
+                                       uint64_t *value, unsigned size,
+                                       MemTxAttrs attrs)
+{
+    SGIBedrockMDState *s = injection->md;
+    MemTxResult result;
+    uint64_t data = address_space_ldq_be(&s->node_as, injection->raw * 8,
+                                         attrs, &result);
+
+    *value = 0;
+    if (result != MEMTX_OK) {
+        return result;
+    }
+    if (!(s->storage[MD_ECC_CONFIG] & 1)) {
+        uint64_t raw = injection->raw;
+        uint8_t syndrome = s->ecc[raw] ^ sgi_bedrock_md_ecc_compute(data);
+
+        if (syndrome) {
+            int bit = md_ecc_syndrome_bit(syndrome);
+
+            if (bit < 0) {
+                md_memory_error_latch(s, MD_MEMORY_ERROR_READ_UCE, address,
+                                      syndrome);
+                return MEMTX_ERROR;
+            }
+            /*
+             * The corrected word and its check byte are written back, so
+             * the next read and a backdoor read both see the codeword. The
+             * Origin 300's memory diagnostic requires the check byte to be
+             * right after the correcting read (its section 2 compares it).
+             */
+            if (bit < MD_ECC_DATA_BITS) {
+                data ^= UINT64_C(1) << bit;
+                address_space_stq_be(&s->node_as, raw * 8, data, attrs,
+                                     &result);
+                if (result != MEMTX_OK) {
+                    return result;
+                }
+            }
+            s->ecc[raw] = sgi_bedrock_md_ecc_compute(data);
+            md_ecc_injection_clear(s, raw);
+            md_memory_error_latch(s, MD_MEMORY_ERROR_READ_CE, address,
+                                  syndrome);
+        }
+    }
+    *value = extract64(data, (8 - offset - size) * 8, size * 8);
+    return MEMTX_OK;
+}
+
+static MemTxResult md_ecc_overlay_read(void *opaque, hwaddr offset,
+                                       uint64_t *value, unsigned size,
+                                       MemTxAttrs attrs)
+{
+    SGIBedrockMDECCInjection *injection = opaque;
+
+    return md_ecc_checked_read(injection, injection->address, offset, value,
+                               size, attrs);
+}
+
+/* A write regenerates the ECC, so the doubleword no longer needs checking. */
+static MemTxResult md_ecc_overlay_write(void *opaque, hwaddr offset,
+                                        uint64_t value, unsigned size,
+                                        MemTxAttrs attrs)
+{
+    SGIBedrockMDECCInjection *injection = opaque;
+    SGIBedrockMDState *s = injection->md;
+    uint64_t raw = injection->raw;
+    MemTxResult result;
+    uint64_t data = address_space_ldq_be(&s->node_as, raw * 8, attrs,
+                                         &result);
+
+    if (result != MEMTX_OK) {
+        return result;
+    }
+    data = deposit64(data, (8 - offset - size) * 8, size * 8, value);
+    address_space_stq_be(&s->node_as, raw * 8, data, attrs, &result);
+    if (result != MEMTX_OK) {
+        return result;
+    }
+    s->ecc[raw] = sgi_bedrock_md_ecc_compute(data);
+    md_ecc_injection_clear(s, raw);
+    return MEMTX_OK;
+}
+
+static const MemoryRegionOps md_ecc_overlay_ops = {
+    .read_with_attrs = md_ecc_overlay_read,
+    .write_with_attrs = md_ecc_overlay_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
 };
 
 /*
@@ -700,9 +1399,16 @@ static uint64_t md_ecc_read(void *opaque, hwaddr offset, unsigned size)
         return s->ecc_admitted_halfword;
     }
     if (size == 1) {
-        return s->ecc[index];
+        return md_ecc_byte(s, index);
     }
-    return lduw_be_p(&s->ecc[index]);
+    /*
+     * The halfword carrier at 6 modulo 8 holds the even doubleword's byte in
+     * its low half and the odd doubleword's in its high half: plain
+     * big-endian byte addressing of the ^7 byte carriers, and the lane the
+     * Origin 300's memory diagnostic selects (the memory-directory
+     * datasheet's ECC backdoor section).
+     */
+    return ((uint16_t)md_ecc_byte(s, index + 1) << 8) | md_ecc_byte(s, index);
 }
 
 static void md_ecc_write(void *opaque, hwaddr offset, uint64_t value,
@@ -725,7 +1431,11 @@ static void md_ecc_write(void *opaque, hwaddr offset, uint64_t value,
     if (size == 1) {
         s->ecc[index] = value;
     } else {
-        stw_be_p(&s->ecc[index], value);
+        s->ecc[index] = value;
+        s->ecc[index + 1] = value >> 8;
+    }
+    for (unsigned byte = 0; byte < size; byte++) {
+        md_ecc_written(s, index + byte);
     }
 }
 
@@ -985,10 +1695,23 @@ static MemTxResult md_memory_translate(SGIBedrockMDState *s, hwaddr offset,
     return MEMTX_OK;
 }
 
+/* A checked doubleword reached through the decoder rather than an alias. */
+static SGIBedrockMDECCInjection *md_ecc_injection_within(SGIBedrockMDState *s,
+                                                         hwaddr raw,
+                                                         unsigned size)
+{
+    if (raw / 8 != (raw + size - 1) / 8) {
+        return NULL;
+    }
+    return md_ecc_injection_find(s, raw / 8);
+}
+
 static MemTxResult md_memory_read(void *opaque, hwaddr offset, uint64_t *value,
                                   unsigned size, MemTxAttrs attrs)
 {
     SGIBedrockMDState *s = opaque;
+    SGIBedrockMDECCInjection *injection;
+    SGIBedrockMDDirectoryInjection *line;
     hwaddr raw_offset;
     MemTxResult result;
 
@@ -996,6 +1719,16 @@ static MemTxResult md_memory_read(void *opaque, hwaddr offset, uint64_t *value,
     if (result != MEMTX_OK) {
         *value = 0;
         return result;
+    }
+    injection = md_ecc_injection_within(s, raw_offset, size);
+    if (injection) {
+        return md_ecc_checked_read(injection, offset & ~UINT64_C(7),
+                                   raw_offset % 8, value, size, attrs);
+    }
+    line = md_directory_injection_find(s, raw_offset / MD_DIRECTORY_LINE);
+    if (line && raw_offset % MD_DIRECTORY_LINE + size <= MD_DIRECTORY_LINE) {
+        return md_directory_checked_read(line, raw_offset % MD_DIRECTORY_LINE,
+                                         value, size, attrs);
     }
     switch (size) {
     case 1:
@@ -1021,12 +1754,18 @@ static MemTxResult md_memory_write(void *opaque, hwaddr offset, uint64_t value,
                                    unsigned size, MemTxAttrs attrs)
 {
     SGIBedrockMDState *s = opaque;
+    SGIBedrockMDECCInjection *injection;
     hwaddr raw_offset;
     MemTxResult result;
 
     result = md_memory_translate(s, offset, size, true, &raw_offset);
     if (result != MEMTX_OK) {
         return result;
+    }
+    injection = md_ecc_injection_within(s, raw_offset, size);
+    if (injection) {
+        return md_ecc_overlay_write(injection, raw_offset % 8, value, size,
+                                    attrs);
     }
     switch (size) {
     case 1:
@@ -1066,8 +1805,9 @@ static const MemoryRegionOps md_memory_ops = {
 /*
  * Memory-special space: a fetch-and-op variable is the first doubleword of
  * each 64-byte block of node memory, and the offset inside the block names
- * the atomic operation. Only aligned 64-bit accesses reach the variable;
- * anything else, and an offset with no operation, is refused as a bus error.
+ * the atomic operation. Only aligned 64-bit and 32-bit accesses reach the
+ * variable; anything else, and an offset with no operation, is refused as a
+ * bus error.
  */
 static bool md_fetchop_variable(SGIBedrockMDState *s, hwaddr offset,
                                 unsigned size, bool is_write, hwaddr *raw)
@@ -1075,9 +1815,9 @@ static bool md_fetchop_variable(SGIBedrockMDState *s, hwaddr offset,
     const char *access = is_write ? "write" : "read";
     const char *reason = NULL;
 
-    if (size != 8) {
-        reason = "not a 64-bit access";
-    } else if (offset % 8) {
+    if (size != 8 && size != 4) {
+        reason = "not a 64-bit or 32-bit access";
+    } else if (offset % size) {
         reason = "unaligned";
     }
     if (reason) {
@@ -1095,8 +1835,21 @@ static void md_fetchop_refuse_operation(hwaddr offset, bool is_write)
 {
     qemu_log_mask(LOG_GUEST_ERROR,
                   "sgi-bedrock-md: fetch-and-op %s at offset 0x%09"
-                  HWADDR_PRIx " size 8 rejected: no such operation\n",
+                  HWADDR_PRIx " rejected: no such operation\n",
                   is_write ? "write" : "read", offset);
+}
+
+/*
+ * A 32-bit access names one word of the variable with address bit 2 (the
+ * high word at 0, the low word at 4, in the big-endian order the memory
+ * holds); the operation is still the block offset's, bits 5:3.
+ */
+static uint64_t md_fetchop_word(hwaddr offset, unsigned size, uint64_t value)
+{
+    if (size == 8) {
+        return value;
+    }
+    return offset & 4 ? (uint32_t)value : value >> 32;
 }
 
 static MemTxResult md_fetchop_read(void *opaque, hwaddr offset,
@@ -1117,9 +1870,9 @@ static MemTxResult md_fetchop_read(void *opaque, hwaddr offset,
     if (result != MEMTX_OK) {
         return result;
     }
-    switch (offset % SGI_BEDROCK_MD_FETCHOP_BLOCK) {
+    switch (offset % SGI_BEDROCK_MD_FETCHOP_BLOCK & ~7) {
     case 0:
-        *value = old;
+        *value = md_fetchop_word(offset, size, old);
         return MEMTX_OK;
     case 8:
         new = old + 1;
@@ -1136,11 +1889,12 @@ static MemTxResult md_fetchop_read(void *opaque, hwaddr offset,
     }
     address_space_stq_be(&s->node_as, raw, new, attrs, &result);
     if (result == MEMTX_OK) {
-        *value = old;
+        *value = md_fetchop_word(offset, size, old);
     }
     return result;
 }
 
+/* The stored data reaches the addressed word only; the other is unchanged. */
 static MemTxResult md_fetchop_write(void *opaque, hwaddr offset,
                                     uint64_t value, unsigned size,
                                     MemTxAttrs attrs)
@@ -1149,21 +1903,34 @@ static MemTxResult md_fetchop_write(void *opaque, hwaddr offset,
     MemTxResult result = MEMTX_OK;
     hwaddr raw;
     uint64_t old;
+    uint64_t mask = UINT64_MAX;
 
     if (!md_fetchop_variable(s, offset, size, true, &raw)) {
         return MEMTX_DECODE_ERROR;
     }
-    switch (offset % SGI_BEDROCK_MD_FETCHOP_BLOCK) {
+    old = address_space_ldq_be(&s->node_as, raw, attrs, &result);
+    if (result != MEMTX_OK) {
+        return result;
+    }
+    if (size == 4) {
+        mask = offset & 4 ? UINT64_C(0xffffffff) : ~UINT64_C(0xffffffff);
+        value = offset & 4 ? (uint32_t)value : value << 32;
+    }
+    switch (offset % SGI_BEDROCK_MD_FETCHOP_BLOCK & ~7) {
     case 0:
+        value = (old & ~mask) | (value & mask);
+        break;
+    case 8:
+        value = old + 1;
+        break;
+    case 16:
+        value = old - 1;
         break;
     case 24:
+        value = old & (value | ~mask);
+        break;
     case 32:
-        old = address_space_ldq_be(&s->node_as, raw, attrs, &result);
-        if (result != MEMTX_OK) {
-            return result;
-        }
-        value = offset % SGI_BEDROCK_MD_FETCHOP_BLOCK == 24 ?
-                old & value : old | value;
+        value = old | (value & mask);
         break;
     default:
         md_fetchop_refuse_operation(offset, true);
@@ -1184,6 +1951,10 @@ static const MemoryRegionOps md_fetchop_ops = {
 static void md_reset_registers(SGIBedrockMDState *s)
 {
     md_selftest_cancel(s);
+    md_ecc_injections_clear(s);
+    md_directory_injections_clear(s);
+    s->memory_error = 0;
+    s->directory_error = 0;
     s->current_cell = UINT64_MAX;
     s->memory_config = 0;
     md_update_memory_aliases(s);
@@ -1249,8 +2020,29 @@ static int md_post_load(void *opaque, int version_id)
     return 0;
 }
 
+static const VMStateDescription vmstate_md_ecc_injection = {
+    .name = TYPE_SGI_BEDROCK_MD "-ecc-injection",
+    .version_id = 1, .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT64(raw, SGIBedrockMDECCInjection),
+        VMSTATE_BOOL(active, SGIBedrockMDECCInjection),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription vmstate_md_directory_injection = {
+    .name = TYPE_SGI_BEDROCK_MD "-directory-injection",
+    .version_id = 1, .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT64(offset, SGIBedrockMDDirectoryInjection),
+        VMSTATE_UINT32(index, SGIBedrockMDDirectoryInjection),
+        VMSTATE_BOOL(active, SGIBedrockMDDirectoryInjection),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_md = {
-    .name = TYPE_SGI_BEDROCK_MD, .version_id = 7, .minimum_version_id = 1,
+    .name = TYPE_SGI_BEDROCK_MD, .version_id = 8, .minimum_version_id = 1,
     .post_load = md_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(current_cell, SGIBedrockMDState),
@@ -1284,6 +2076,16 @@ static const VMStateDescription vmstate_md = {
         VMSTATE_UINT64_V(selftest_error_address, SGIBedrockMDState, 7),
         VMSTATE_UINT8_V(selftest_status, SGIBedrockMDState, 5),
         VMSTATE_TIMER_PTR_V(selftest_timer, SGIBedrockMDState, 5),
+        VMSTATE_UINT64_V(memory_error, SGIBedrockMDState, 8),
+        VMSTATE_STRUCT_ARRAY(ecc_injection, SGIBedrockMDState,
+                             SGI_BEDROCK_MD_ECC_INJECTIONS, 8,
+                             vmstate_md_ecc_injection,
+                             SGIBedrockMDECCInjection),
+        VMSTATE_UINT64_V(directory_error, SGIBedrockMDState, 8),
+        VMSTATE_STRUCT_ARRAY(directory_injection, SGIBedrockMDState,
+                             SGI_BEDROCK_MD_DIRECTORY_INJECTIONS, 8,
+                             vmstate_md_directory_injection,
+                             SGIBedrockMDDirectoryInjection),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -1311,6 +2113,29 @@ static void md_init(Object *obj)
                           TYPE_SGI_BEDROCK_MD "-memory-decoder",
                           SGI_BEDROCK_MD_MEMORY_SIZE);
     memory_region_add_subregion(&s->memory_mr, 0, &s->memory_mmio);
+    /* Checked doublewords sit above the bank aliases inside the window. */
+    memory_region_init(&s->ecc_overlay, obj, TYPE_SGI_BEDROCK_MD "-ecc-overlay",
+                       SGI_BEDROCK_MD_MEMORY_SIZE);
+    memory_region_add_subregion_overlap(&s->memory_mr, 0, &s->ecc_overlay, 2);
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_ECC_INJECTIONS; i++) {
+        g_autofree char *name =
+            g_strdup_printf(TYPE_SGI_BEDROCK_MD "-ecc-injection%u", i);
+
+        s->ecc_injection[i].md = s;
+        memory_region_init_io(&s->ecc_injection[i].mr, obj,
+                              &md_ecc_overlay_ops, &s->ecc_injection[i],
+                              name, 8);
+    }
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_DIRECTORY_INJECTIONS; i++) {
+        g_autofree char *name =
+            g_strdup_printf(TYPE_SGI_BEDROCK_MD "-directory-injection%u", i);
+
+        s->directory_injection[i].md = s;
+        memory_region_init_io(&s->directory_injection[i].mr, obj,
+                              &md_directory_overlay_ops,
+                              &s->directory_injection[i], name,
+                              MD_DIRECTORY_LINE);
+    }
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->memory_mr);
     memory_region_init_io(&s->fetchop_mmio, obj, &md_fetchop_ops, s,
                           TYPE_SGI_BEDROCK_MD "-fetch-and-op",
@@ -1374,6 +2199,8 @@ static void md_unrealize(DeviceState *dev)
     SGIBedrockMDState *s = SGI_BEDROCK_MD(dev);
 
     timer_del(s->selftest_timer);
+    md_ecc_injections_clear(s);
+    md_directory_injections_clear(s);
     if (s->memory_alias_initialized) {
         for (unsigned bank = 0; bank < 8; bank++) {
             memory_region_del_subregion(&s->memory_mr,

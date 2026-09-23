@@ -83,6 +83,13 @@ void sgi_bedrock_pi_set_lb_error(SGIBedrockPIState *s, bool level);
 void sgi_bedrock_pi_set_ni_error(SGIBedrockPIState *s, bool level);
 void sgi_bedrock_pi_set_xb_error(SGIBedrockPIState *s, bool level);
 void sgi_bedrock_pi_set_uart_irq(SGIBedrockPIState *s, bool level);
+/*
+ * Set one bit a Bedrock unit raises directly in a pending bank, which
+ * software then clears through the pending-modify register: the memory
+ * unit's correctable-error bit, bank 1 bit 61.
+ */
+void sgi_bedrock_pi_set_pending(SGIBedrockPIState *s, unsigned bank,
+                                unsigned bit);
 void sgi_bedrock_pi_recompute(SGIBedrockPIState *s);
 /*
  * An I/O-issued write to the interrupt-pending-modify register from a
