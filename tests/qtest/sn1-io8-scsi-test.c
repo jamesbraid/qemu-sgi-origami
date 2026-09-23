@@ -74,6 +74,7 @@
 
 #define PCI_VENDOR_ID 0x00
 #define PCI_CLASS_REVISION 0x08
+#define PCI_CACHE_LINE_SIZE 0x0c
 #define PCI_SUBSYSTEM_VENDOR_ID 0x2c
 #define PCI_INTERRUPT_LINE 0x3c
 
@@ -693,6 +694,25 @@ static void test_io8bt_command_register(const void *data)
 }
 
 /*
+ * The same section's next register. The word at configuration offset 0x0c
+ * is cache line size, Latency Timer, header type and built-in self test;
+ * the test writes 0xf8ff and reads it back, so the Latency Timer byte has
+ * to take a write the PCI core leaves read-only. The exact value is the
+ * diagnostic's, not a round number: nothing observed says whether the
+ * timer's low three bits are writable, so nothing here asks.
+ */
+static void test_io8bt_latency_timer(const void *data)
+{
+    QTestState *qts = machine_start();
+
+    qtest_writel(qts, IO8_SCSI_CFG + PCI_CACHE_LINE_SIZE, 0xf8ff);
+    g_assert_cmphex(qtest_readl(qts, IO8_SCSI_CFG + PCI_CACHE_LINE_SIZE),
+                    ==, 0xf8ff);
+
+    qtest_quit(qts);
+}
+
+/*
  * The register file through the head's slot-1 window. The identity pair
  * and the reset signature say the window reaches the adapter at all; the
  * mailbox register test writes a different pattern into each of seven
@@ -986,6 +1006,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("origin300/io8-scsi/identity", NULL, test_identity);
     qtest_add_data_func("origin300/io8-scsi/io8bt-command-register", NULL,
                         test_io8bt_command_register);
+    qtest_add_data_func("origin300/io8-scsi/io8bt-latency-timer", NULL,
+                        test_io8bt_latency_timer);
     qtest_add_data_func("origin300/io8-scsi/registers-through-the-fabric",
                         NULL, test_registers_through_the_fabric);
     qtest_add_data_func("origin300/io8-scsi/command-reaches-memory", NULL,
