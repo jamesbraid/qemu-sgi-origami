@@ -26,8 +26,6 @@
  *
  * The cases:
  *
- *   mttcg/rendezvous  LL/SC atomicity and cross-thread visibility.  Two CPUs
- *                     rendezvous, then contend for one word with lld/scd.
  *   tlb/shootdown     A vCPU's own tlbwi remap must be coherent with data a
  *                     peer just wrote.  Underneath: r4k_invalidate_tlb's
  *                     tlb_flush_page on the remapping vCPU.
@@ -42,11 +40,11 @@
  *                     mips_cpu_exec_interrupt() and the re-assert every
  *                     own-CPU unmask makes.
  *
- * ABA: QEMU lowers SC to a compare-exchange against the value LL read, so it
- * cannot tell a word that never changed from one that changed and changed
- * back.  That is accepted QEMU-wide behaviour, and this test does not probe
- * it.  What the rendezvous case asserts is that the total is exact, which a
- * lost update breaks whether or not ABA is detectable.
+ * LL/SC atomicity and cross-thread visibility used to be checked here too,
+ * with two CPUs rendezvousing then contending for one word with lld/scd.
+ * tests/functional/mips64/test_sn0_smp.py's
+ * test_four_cpu_two_node_rendezvous_thread_multi asserts the same claim on
+ * a real machine, so the duplicate qtest was dropped.
  */
 
 #include "qemu/osdep.h"
@@ -103,14 +101,10 @@
 #define OPC_SPECIAL         (0x00u << 26)
 #define OPC_BEQ             (0x04u << 26)
 #define OPC_BNE             (0x05u << 26)
-#define OPC_SLTIU           (0x0bu << 26)
 #define OPC_ANDI            (0x0cu << 26)
 #define OPC_ORI             (0x0du << 26)
-#define OPC_DADDIU          (0x19u << 26)
 #define OPC_LW              (0x23u << 26)
 #define OPC_SW              (0x2bu << 26)
-#define OPC_LLD             (0x34u << 26)
-#define OPC_SCD             (0x3cu << 26)
 #define OPC_SLL             (0x00u | OPC_SPECIAL)
 #define OPC_SYNC            (0x0fu | OPC_SPECIAL)
 #define OPC_ADDU            (0x21u | OPC_SPECIAL)
@@ -226,16 +220,6 @@ static void emit_addiu(GuestImage *img, int rt, int rs, int16_t imm)
     emit(img, mips_addiu(rt, rs, imm));
 }
 
-static void emit_daddiu(GuestImage *img, int rt, int rs, int16_t imm)
-{
-    emit_immediate(img, OPC_DADDIU, rs, rt, (uint16_t)imm);
-}
-
-static void emit_sltiu(GuestImage *img, int rt, int rs, uint16_t imm)
-{
-    emit_immediate(img, OPC_SLTIU, rs, rt, imm);
-}
-
 static void emit_ld(GuestImage *img, int rt, int base, uint16_t off)
 {
     emit(img, mips_ld(rt, base, off));
@@ -254,16 +238,6 @@ static void emit_sw(GuestImage *img, int rt, int base, uint16_t off)
 static void emit_lw(GuestImage *img, int rt, int base, uint16_t off)
 {
     emit_immediate(img, OPC_LW, base, rt, off);
-}
-
-static void emit_lld(GuestImage *img, int rt, int base, uint16_t off)
-{
-    emit_immediate(img, OPC_LLD, base, rt, off);
-}
-
-static void emit_scd(GuestImage *img, int rt, int base, uint16_t off)
-{
-    emit_immediate(img, OPC_SCD, base, rt, off);
 }
 
 static void emit_sll(GuestImage *img, int rd, int rt, int sa)
@@ -655,82 +629,6 @@ static void write_r10k_guest_image(int fd, void (*build)(GuestImage *img))
 {
     write_guest_image_with_setup(fd, emit_r10k_exception_handler,
                                  emit_r10k_preamble, build);
-}
-
-/* ---------------------------------------------------------------- */
-/* Case: mttcg/rendezvous                                           */
-/* ---------------------------------------------------------------- */
-
-#define RV_SLOT_OFF         0x100
-#define RV_COUNTER_OFF      0x120
-
-/* The phase a CPU has published once its increments are all retired. */
-#define RV_PROGRESS_COUNTED 4
-
-static unsigned int rv_increments;
-
-static void emit_progress(GuestImage *img, int phase)
-{
-    emit_addiu(img, R_T4, R_ZERO, phase);
-    emit_publish(img, R_T4, PROGRESS_OFF);
-}
-
-static void build_rendezvous(GuestImage *img)
-{
-    unsigned int spin, retry, i;
-
-    g_assert_cmpuint(rv_increments, <=, 0x7fff);
-
-    emit_progress(img, 1);
-
-    /* Claim slot CPUNum by writing CPUNum + 1 into it. */
-    emit_addiu(img, R_T3, R_K0, 1);
-    emit_publish(img, R_T3, RV_SLOT_OFF);
-    emit_progress(img, 2);
-
-    /* Wait until every slot has been claimed. */
-    spin = img->pos;
-    for (i = 0; i < NR_CPUS; i++) {
-        emit_ld(img, R_T5, R_T0, RV_SLOT_OFF + 8 * i);
-        emit_beq(img, R_T5, R_ZERO, spin);
-        emit_nop(img);
-    }
-    emit_sync(img);
-
-    /* Every CPU increments the one shared word, N times each. */
-    emit_progress(img, 3);
-    emit_addiu(img, R_T6, R_ZERO, rv_increments);
-    retry = img->pos;
-    emit_lld(img, R_T7, R_T0, RV_COUNTER_OFF);
-    emit_daddiu(img, R_T7, R_T7, 1);
-    emit_scd(img, R_T7, R_T0, RV_COUNTER_OFF);
-    /* SC leaves 0 in its source register when the store did not happen. */
-    emit_beq(img, R_T7, R_ZERO, retry);
-    emit_nop(img);
-    emit_addiu(img, R_T6, R_T6, -1);
-    emit_bne(img, R_T6, R_ZERO, retry);
-    emit_nop(img);
-    emit_sync(img);
-
-    /*
-     * Wait until every CPU has retired its increments, so that the DONE words
-     * the host waits on can only appear once the count is final.  The test is
-     * "reached at least this phase" rather than "is at this phase", because a
-     * CPU that leaves the rendezvous first goes on to publish a later phase
-     * while the others are still watching it.
-     */
-    emit_progress(img, RV_PROGRESS_COUNTED);
-    spin = img->pos;
-    for (i = 0; i < NR_CPUS; i++) {
-        emit_ld(img, R_T5, R_T0, PROGRESS_OFF + 8 * i);
-        emit_sltiu(img, R_T8, R_T5, RV_PROGRESS_COUNTED);
-        emit_bne(img, R_T8, R_ZERO, spin);
-        emit_nop(img);
-    }
-    emit_sync(img);
-
-    emit_progress(img, RV_PROGRESS_COUNTED + 1);
-    emit_done_and_halt(img);
 }
 
 /* ---------------------------------------------------------------- */
@@ -1166,74 +1064,6 @@ static void assert_common(QTestState *qts)
     }
 }
 
-static bool rendezvous_state_ok(QTestState *qts)
-{
-    unsigned int i;
-
-    for (i = 0; i < NR_CPUS; i++) {
-        if (state_word(qts, ALIVE_OFF + 8 * i) != ALIVE_MAGIC ||
-            state_word(qts, EXC_MARK_OFF + 8 * i) != 0 ||
-            state_word(qts, RV_SLOT_OFF + 8 * i) != i + 1) {
-            return false;
-        }
-    }
-    return state_word(qts, RV_COUNTER_OFF) ==
-           (uint64_t)NR_CPUS * rv_increments;
-}
-
-static void run_rendezvous(const char *accel, unsigned int increments)
-{
-    QTestState *qts;
-    unsigned int i;
-    bool done;
-
-    if (!qtest_has_accel("tcg")) {
-        g_test_skip("TCG is unavailable");
-        return;
-    }
-
-    rv_increments = increments;
-    qts = boot_case(accel, build_rendezvous);
-    done = wait_for_done(qts);
-
-    if (!done || !rendezvous_state_ok(qts)) {
-        report_common(qts);
-        for (i = 0; i < NR_CPUS; i++) {
-            g_test_message("cpu %u: slot %" PRIu64, i,
-                           state_word(qts, RV_SLOT_OFF + 8 * i));
-        }
-        g_test_message("shared counter %" PRIu64,
-                       state_word(qts, RV_COUNTER_OFF));
-    }
-
-    g_assert_true(done);
-    assert_common(qts);
-    for (i = 0; i < NR_CPUS; i++) {
-        /* Slot i is claimed by CPUNum i, so this is not a permutation claim. */
-        g_assert_cmpuint(state_word(qts, RV_SLOT_OFF + 8 * i), ==, i + 1);
-    }
-    g_assert_cmpuint(state_word(qts, RV_COUNTER_OFF), ==,
-                     (uint64_t)NR_CPUS * increments);
-
-    qtest_quit(qts);
-}
-
-static void test_rendezvous_thread_multi(const void *data)
-{
-    run_rendezvous("tcg,thread=multi", 10000);
-}
-
-static void test_rendezvous_round_robin(const void *data)
-{
-    /*
-     * The same program under the default single-threaded TCG, which
-     * interleaves the CPUs instead of running them at once.  Fewer
-     * increments, because this one is a deterministic baseline showing the
-     * program is scheduler-agnostic rather than a contention test.
-     */
-    run_rendezvous("tcg", 500);
-}
-
 static void test_tlb_shootdown(const void *data)
 {
     QTestState *qts;
@@ -1660,10 +1490,6 @@ static void test_tlb_random_global(const void *data)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
-    qtest_add_data_func("mttcg/rendezvous/thread-multi", NULL,
-                        test_rendezvous_thread_multi);
-    qtest_add_data_func("mttcg/rendezvous/round-robin", NULL,
-                        test_rendezvous_round_robin);
     qtest_add_data_func("mttcg/tlb/shootdown", NULL, test_tlb_shootdown);
     qtest_add_data_func("mttcg/tlb/asid", NULL, test_tlb_asid);
     qtest_add_data_func("mttcg/tlb/random-global", NULL,
