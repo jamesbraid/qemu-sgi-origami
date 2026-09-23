@@ -888,7 +888,19 @@ static bool si_raster_dma_select_slot(SGIMgrasState *s, uint32_t kick_byte,
  * mapping slot. Reading byte-by-byte (rather than the whole row at once)
  * is deliberate: consecutive page-list entries need not be adjacent, so a
  * row's bytes can span a page boundary at an arbitrary offset.
+ *
+ * A page-frame number wider than 20 bits would collide with the node
+ * identifier this formula ORs in at bit 32 (PFN << 12 would reach bit 32
+ * at PFN 0x100000): 20 bits is both the formula's own ceiling and what a
+ * node's up-to-4-GiB RAM needs for a 4 KiB page (2**32 / 2**12 = 2**20
+ * frames). The observed captures only exercise page-frame numbers under
+ * 0x4000 (64 MiB/node) and show every entry's top six bytes zero, which
+ * is consistent with a plain PFN field carrying no flag bits -- unlike
+ * the unrelated DMA-map base pair, whose low word packs flags into bits
+ * 2:0 -- but does not by itself distinguish a 16-bit field from a wider
+ * one. Mask to the formula's 20-bit ceiling rather than guess narrower.
  */
+#define SI_DMA_PAGE_LIST_PFN_MASK 0xfffffu
 
 /*
  * Fetch and byte-swap a slot's whole big-endian page-frame-number list,
@@ -924,7 +936,7 @@ static bool si_raster_dma_load_page_list(SGIMgrasState *s, unsigned int widget,
             g_free(list);
             return false;
         }
-        list[i] = ldq_be_p(entry) & 0xffff;
+        list[i] = ldq_be_p(entry) & SI_DMA_PAGE_LIST_PFN_MASK;
     }
     *page_list = list;
     return true;
