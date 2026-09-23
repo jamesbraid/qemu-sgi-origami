@@ -753,6 +753,100 @@ static void test_dma_map_close_marker_and_discard(void)
     g_assert_cmphex(slot.count, ==, 7);
 }
 
+/*
+ * Host-memory DMA image transfer: plant a one-entry page list and eight
+ * source bytes in node 0's own memory, the node MGRAS itself sits behind
+ * (sn-catalogue.json: xio-slot-3, MGRAS's own attachment, is
+ * controlling-node 0 -- the same node qtest's first CPU boots on, so no
+ * inter-Hub claim needs programming before the plant writes or the
+ * engine's own read land). Map that node through DMA-map slot 0 with the
+ * Hub's own canonical widget number (9, the same HUB_WIDGET later tests
+ * in this file use to reach a Hub's register space by widget-shifted
+ * fabric address), since si_compose_xtalk()'s widget-shifted address
+ * targets a Hub, not an XIO card, for a host-memory read. Then kick a
+ * class-0x0008 write-direction transfer. This exercises
+ * si_raster_dma_draw_image()'s host-memory read path end to end: the
+ * page-list lookup, si_compose_xtalk()'s widget-shifted fabric
+ * address, and the existing 32-bit pixel paint. It also confirms the
+ * write kick sets the FENCE completion bit the IRIX X server polls
+ * after every DMA kick.
+ */
+#define DMA_XFER_NODE    0u
+#define DMA_XFER_WIDGET  9u
+#define DMA_XFER_LIST_PA 0x2000u
+#define DMA_XFER_SRC_VA  0x7000u
+
+static uint64_t dma_xfer_node_addr(uint32_t offset)
+{
+    return ((uint64_t)DMA_XFER_NODE << 32) | offset;
+}
+
+static void test_dma_image_transfer_paints_from_host_memory(void)
+{
+    static const uint8_t list_entry[8] = { 0, 0, 0, 0, 0, 0, 0, 0x07 };
+    static const uint8_t src_pixels[8] = {
+        0x00, 0x11, 0x22, 0x33, 0x00, 0x44, 0x55, 0x66,
+    };
+
+    si_reset();
+    si_enter_context(qts);
+
+    /*
+     * Page list: one entry, page-frame 7 (0x7000 >> 12). Source pixels
+     * live at page 7, offset 0 -- the same bytes the va = 0..7 formula
+     * resolves to for pitch=8, addr=0, rows=1, bpr=8 below.
+     */
+    qtest_memwrite(qts, dma_xfer_node_addr(DMA_XFER_LIST_PA), list_entry, 8);
+    qtest_memwrite(qts, dma_xfer_node_addr(DMA_XFER_SRC_VA), src_pixels, 8);
+
+    /*
+     * Destination paint state: copy op, full colour mask, rectangle
+     * (50,50)-(51,50).
+     */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_COLORMASKMSBS, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_PP1FILLMODE, SI_LOGIC_OP_COPY << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_BLOCK_START, (50u << 16) | 50u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND_EXEC(REG_BLOCK_END, (51u << 16) | 50u));
+
+    /* DMA-map slot 0: base = node 0's list address, one page, widget 9. */
+    qtest_writel(qts, SI_REG(0x130400), 0x00482008);
+    qtest_writeq(qts, SI_REG(0x130400), dma_xfer_node_addr(DMA_XFER_LIST_PA));
+    qtest_writeq(qts, SI_REG(0x130400),
+                ((uint64_t)0x00483004 << 32) | 1);
+    qtest_writeq(qts, SI_REG(0x130400),
+                ((uint64_t)0x00484b04 << 32) | (DMA_XFER_WIDGET << 16));
+
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & SI_HQ_FLAG_FENCE, ==, 0);
+
+    /*
+     * DESC_20000 bank: pitch, addr low/high, rows, bytes/row, then a
+     * write-direction kick (bit 3 clear).
+     */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080404 << 32) | 8);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080504 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080604 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080704 << 32) | 1);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080804 << 32) | 8);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080b04 << 32) | 0);
+
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & SI_HQ_FLAG_FENCE, ==,
+                    SI_HQ_FLAG_FENCE);
+
+    g_assert_cmphex(si_test_pixel(qts, 50, 50), ==, 0x00112233);
+    g_assert_cmphex(si_test_pixel(qts, 51, 50), ==, 0x00445566);
+}
+
+#undef DMA_XFER_NODE
+#undef DMA_XFER_WIDGET
+#undef DMA_XFER_LIST_PA
+#undef DMA_XFER_SRC_VA
 
 static void test_board_bringup_byte_poll_bit_position(void)
 {
@@ -2679,11 +2773,13 @@ static void test_command_fifo_rejects_malformed_payload_lengths(void)
 
 
 /*
- * destroy2.trace shows the guest driving classes (0x8, 0xa, 0xc) the model
- * does not implement, each framed like a STATE/EXEC header with a
- * one-word payload (see docs/analysis's class-decode notes). The model
- * must still consume that declared payload so the FIFO re-syncs on the
- * next real header.
+ * destroy2.trace shows the guest driving classes (0x8, 0xa, 0xc) framed
+ * like a STATE/EXEC header with a one-word payload (see docs/analysis's
+ * class-decode notes); those are now implemented as the host-memory DMA
+ * image-transfer descriptor banks (si_raster_desc_bank_store()). This
+ * test instead covers a class the model still does not implement, to
+ * confirm the FIFO still consumes a still-unimplemented header's
+ * declared payload and re-syncs on the next real header.
  *
  * The payload word below (0x00180004) is not an observed guest value: it
  * is chosen so that, without the fix, the pre-fix parser reads it as a
@@ -2699,7 +2795,7 @@ static void test_command_fifo_unrecognized_class_resyncs(void)
     si_enter_context(qts);
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 ((uint64_t)0x00080404 << 32) | 0x00180004);
+                 ((uint64_t)0x00020404 << 32) | 0x00180004);
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  ((uint64_t)SI_STATE_TOKEN(REG_PACKEDCOLOR, 4) << 32) |
@@ -3332,6 +3428,9 @@ int main(int argc, char **argv)
                    test_dma_map_slot_registers);
     qtest_add_func("sn0/origin2000/mgras/dma-map-close-and-discard",
                    test_dma_map_close_marker_and_discard);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "dma-image-transfer-paints-from-host-memory",
+                   test_dma_image_transfer_paints_from_host_memory);
     qtest_add_func("sn0/origin2000/mgras/board-bringup-byte-poll-bit-position",
                    test_board_bringup_byte_poll_bit_position);
     qtest_add_func("sn0/origin2000/mgras/board-info-byte-read-no-error",

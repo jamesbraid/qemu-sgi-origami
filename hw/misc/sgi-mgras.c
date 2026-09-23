@@ -54,8 +54,8 @@ static void si_send_packet(SGIMgrasState *s, hwaddr where, uint8_t vector,
 }
 
 /* Compose the fabric address without folding the widget into its payload. */
-static bool si_compose_xtalk(SGIMgrasState *s, unsigned int widget,
-                             uint64_t address, hwaddr *fabric)
+bool si_compose_xtalk(SGIMgrasState *s, unsigned int widget,
+                      uint64_t address, hwaddr *fabric)
 {
     if (s->fabric_widget_shift) {
         if (widget >= (1u << SI_INT_DEST_WIDGET_BITS) ||
@@ -208,7 +208,11 @@ static void si_context_write(SGIMgrasState *s, uint32_t value)
         }
         return;
     }
-    /* Post-completion words remain opaque because their grammar is unknown. */
+    /*
+     * Reachable only if a future protocol value is added without a
+     * matching write path. Ready-state words route to the command-FIFO
+     * token parser instead of this function; see the 0x120400 case below.
+     */
 }
 
 /*
@@ -576,7 +580,9 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         s->context_words = 0;
         s->pending |= SI_PENDING_FLAGS; si_update_irq(s); return;
     case 0x120400:
-        if (size == 4) {
+        if (size == 4 && s->ready) {
+            si_raster_command_token(s, value);
+        } else if (size == 4) {
             si_context_write(s, value);
         } else if (size == 8 && s->ready) {
             si_raster_command(s, value);
@@ -758,6 +764,9 @@ static void si_reset_enter(Object *obj, ResetType type)
     s->scratch_command = 0;
     memset(s->dma_map_regs, 0, sizeof(s->dma_map_regs));
     s->dma_map_reg = s->dma_map_words_remaining = 0;
+    memset(s->dma_desc_20000, 0, sizeof(s->dma_desc_20000));
+    memset(s->dma_desc_28000, 0, sizeof(s->dma_desc_28000));
+    memset(s->dma_desc_30000, 0, sizeof(s->dma_desc_30000));
     s->bringup_arg_3 = 0;
     s->vc3_arg = 0;
     s->re_arg = 0;
@@ -887,7 +896,7 @@ static bool si_ge_lengths_valid(void *opaque, int version_id)
  * changes.
  */
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 7, .minimum_version_id = 7,
+    .name = TYPE_SGI_MGRAS, .version_id = 8, .minimum_version_id = 8,
     .post_load = si_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -960,6 +969,9 @@ static const VMStateDescription vmstate_sgi_mgras = {
                              SGI_MGRAS_DMA_MAP_REGS),
         VMSTATE_UINT32(dma_map_reg, SGIMgrasState),
         VMSTATE_UINT32(dma_map_words_remaining, SGIMgrasState),
+        VMSTATE_UINT32_ARRAY(dma_desc_20000, SGIMgrasState, 12),
+        VMSTATE_UINT32_ARRAY(dma_desc_28000, SGIMgrasState, 7),
+        VMSTATE_UINT32_ARRAY(dma_desc_30000, SGIMgrasState, 1),
         VMSTATE_UINT32(bringup_arg_3, SGIMgrasState),
         VMSTATE_UINT32(vc3_arg, SGIMgrasState),
         VMSTATE_UINT32(re_arg, SGIMgrasState),

@@ -151,6 +151,15 @@ struct SGIMgrasClass {
     ResettablePhases parent_phases;
 };
 
+/*
+ * Composes a guest-visible widget/address pair into a fabric address space
+ * offset, matching whichever addressing mode the machine wired up (packet
+ * widget-shift or flat fabric base). Shared with hw/misc/sgi-mgras-raster.c
+ * so host-memory DMA reads use the same routing as interrupt packets.
+ */
+bool si_compose_xtalk(SGIMgrasState *s, unsigned int widget,
+                      uint64_t address, hwaddr *fabric);
+
 struct SGIMgrasState {
     SysBusDevice parent_obj;
     MemoryRegion regs;
@@ -183,6 +192,15 @@ struct SGIMgrasState {
     uint32_t dma_map_regs[SGI_MGRAS_DMA_MAP_REGS];
     uint32_t dma_map_reg;
     uint32_t dma_map_words_remaining;
+    /*
+     * Host-memory DMA image-transfer descriptor banks, main-port FIFO
+     * classes 0x0008/0x000a/0x000c, stored as plain registers indexed by
+     * the header's register number. 0x20000 uses registers 0, 4-8 and 11
+     * (kick); 0x28000 uses 2 and 6; 0x30000 uses only register 0.
+     */
+    uint32_t dma_desc_20000[12];
+    uint32_t dma_desc_28000[7];
+    uint32_t dma_desc_30000[1];
     uint32_t bringup_arg_3;
     uint32_t vc3_arg;
     uint32_t re_arg;
