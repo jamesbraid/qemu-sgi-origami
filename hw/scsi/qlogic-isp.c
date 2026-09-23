@@ -337,6 +337,7 @@ typedef struct QLogicISPInfo {
     bool flat_ram_transfers;        /* 0x0001/0x0003 RAM pair is in the set */
     bool missing_target_timeout;    /* absent target's status has 0x0040 */
     bool pm_cap_v1;                 /* PCI Power Management version 1 */
+    uint16_t command_wmask;         /* Command bits past the PCI core's own */
     uint16_t fw_version[3];         /* about-firmware mailboxes 1, 2, 3 */
 } QLogicISPInfo;
 
@@ -2318,6 +2319,13 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
     /* IRIX fails the slot unless Status reads medium DEVSEL at reset. */
     pci_set_word(dev->config + PCI_STATUS, PCI_STATUS_DEVSEL_MEDIUM);
 
+    /*
+     * Command bits the part implements beyond the handful the PCI core
+     * makes writable for every device (docs/datasheets/isp12160.md).
+     */
+    pci_word_test_and_set_mask(dev->wmask + PCI_COMMAND,
+                               info->command_wmask);
+
     if (info->pm_cap_v1) {
         pci_set_word(dev->config + PCI_STATUS,
                      QLOGIC_ISP12160_PCI_STATUS);
@@ -2595,6 +2603,7 @@ static const QLogicISPInfo qlogic_isp_infos[] = {
       .flat_ram_transfers = true,
       .missing_target_timeout = true,
       .pm_cap_v1 = true,
+      .command_wmask = PCI_COMMAND_PARITY | PCI_COMMAND_INVALIDATE,
       .fw_version = { 10, 4, 0 } },
 };
 

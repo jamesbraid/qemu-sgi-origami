@@ -675,6 +675,24 @@ static void test_identity(const void *data)
 }
 
 /*
+ * What io8bt's first section writes into this slot's Command register
+ * (its sec0_0.c line 262, docs/datasheets/isp12160.md): SERR enable,
+ * parity-error response, memory write and invalidate, bus master and
+ * memory space, all five reading back. The two the PCI core leaves
+ * read-only for every device are the point of the case.
+ */
+static void test_io8bt_command_register(const void *data)
+{
+    QTestState *qts = machine_start();
+
+    qtest_writel(qts, IO8_SCSI_CFG + PCI_COMMAND, 0x156);
+    g_assert_cmphex(qtest_readl(qts, IO8_SCSI_CFG + PCI_COMMAND) & 0xffff,
+                    ==, 0x156);
+
+    qtest_quit(qts);
+}
+
+/*
  * The register file through the head's slot-1 window. The identity pair
  * and the reset signature say the window reaches the adapter at all; the
  * mailbox register test writes a different pattern into each of seven
@@ -966,6 +984,8 @@ int main(int argc, char **argv)
     prom_path = create_prom();
 
     qtest_add_data_func("origin300/io8-scsi/identity", NULL, test_identity);
+    qtest_add_data_func("origin300/io8-scsi/io8bt-command-register", NULL,
+                        test_io8bt_command_register);
     qtest_add_data_func("origin300/io8-scsi/registers-through-the-fabric",
                         NULL, test_registers_through_the_fabric);
     qtest_add_data_func("origin300/io8-scsi/command-reaches-memory", NULL,
