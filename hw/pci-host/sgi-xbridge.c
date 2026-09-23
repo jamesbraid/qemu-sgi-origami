@@ -607,19 +607,34 @@ static MemTxResult xbridge_pio(SGIXBridgeHeadState *s, hwaddr addr,
     return result;
 }
 
+static uint64_t xbridge_config_read(SGIXBridgeHeadState *s, hwaddr addr,
+                                    unsigned size)
+{
+    uint32_t cfg = xbridge_config_address(s, addr, size);
+    PCIBus *bus = PCI_HOST_BRIDGE(s)->bus;
+
+    if (!pci_find_device(bus, cfg >> 16, (cfg >> 8) & 0xff)) {
+        REG(s, 0x170) |= 1U << 11;
+    }
+    return pci_data_read(bus, cfg, size);
+}
+
 static uint64_t xbridge_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIXBridgeHeadState *s = opaque;
     uint8_t bytes[8] = { 0 };
 
-    if (addr >= 0x20000 && addr < 0x29000 && size <= 4) {
-        uint32_t cfg = xbridge_config_address(s, addr, size);
-        PCIBus *bus = PCI_HOST_BRIDGE(s)->bus;
-
-        if (!pci_find_device(bus, cfg >> 16, (cfg >> 8) & 0xff)) {
-            REG(s, 0x170) |= 1U << 11;
+    if (addr >= 0x20000 && addr < 0x29000) {
+        if (size <= 4) {
+            return xbridge_config_read(s, addr, size);
         }
-        return pci_data_read(PCI_HOST_BRIDGE(s)->bus, cfg, size);
+        /*
+         * A doubleword is two configuration words, the lower address in
+         * the upper half: what the Origin 300's io8bt reads a header as
+         * and compares with the two word reads (docs/datasheets/xbridge.md).
+         */
+        return xbridge_config_read(s, addr, 4) << 32 |
+               xbridge_config_read(s, addr + 4, 4);
     }
     if (addr >= 0x200000 && addr < 0xc00000) {
         xbridge_pio(s, addr, bytes, size, false);
@@ -654,9 +669,19 @@ static void xbridge_write(void *opaque, hwaddr addr, uint64_t value,
     uint32_t mask;
     uint8_t bytes[8];
 
-    if (addr >= 0x20000 && addr < 0x29000 && size <= 4) {
+    if (addr >= 0x20000 && addr < 0x29000) {
+        if (size <= 4) {
+            pci_data_write(PCI_HOST_BRIDGE(s)->bus,
+                           xbridge_config_address(s, addr, size), value,
+                           size);
+            return;
+        }
+        /* The read's split, inferred for a write; no guest issues one. */
         pci_data_write(PCI_HOST_BRIDGE(s)->bus,
-                       xbridge_config_address(s, addr, size), value, size);
+                       xbridge_config_address(s, addr, 4), value >> 32, 4);
+        pci_data_write(PCI_HOST_BRIDGE(s)->bus,
+                       xbridge_config_address(s, addr + 4, 4),
+                       (uint32_t)value, 4);
         return;
     }
     if (addr >= 0x200000 && addr < 0xc00000) {

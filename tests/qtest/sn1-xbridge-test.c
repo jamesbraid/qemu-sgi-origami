@@ -119,6 +119,32 @@ static void test_config_pio(void)
     qtest_quit(qts);
 }
 
+static void test_config_doubleword(void)
+{
+    QTestState *qts = qtest_init("-M none -cpu R10000 -S "
+        "-device sgi-xbridge-head,id=head "
+        "-device sgi-bridge-dma-test,bus=head.0,addr=0");
+    uint64_t header;
+
+    qtest_sysbus_mmio_map(qts, HEAD, 0, BASE);
+    /*
+     * io8bt reads a device's configuration header as one 64-bit load and
+     * compares it with the two 32-bit words: identity high, command and
+     * status low. Both halves must be the same words a 32-bit read gets.
+     */
+    qtest_writel(qts, BASE + 0x20004, 6);
+    header = qtest_readq(qts, BASE + 0x20000);
+    g_assert_cmphex(header >> 32, ==, qtest_readl(qts, BASE + 0x20000));
+    g_assert_cmphex(header >> 32, ==, 0x00051b36);
+    g_assert_cmphex((uint32_t)header, ==, qtest_readl(qts, BASE + 0x20004));
+    g_assert_cmphex((uint32_t)header & 0xffff, ==, 6);
+    /* A doubleword write lands as two words, in the same order. */
+    qtest_writeq(qts, BASE + 0x20010, 0x0100000000000000ULL);
+    g_assert_cmphex(qtest_readl(qts, BASE + 0x20010), ==, 0x01000000);
+    g_assert_cmphex(qtest_readl(qts, BASE + 0x20014), ==, 0);
+    qtest_quit(qts);
+}
+
 static void test_config_type1(void)
 {
     QTestState *qts = qtest_init("-M none -cpu R10000 -S "
@@ -854,6 +880,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge/registers", test_registers);
     qtest_add_func("/sn1/xbridge/ate", test_ate);
     qtest_add_func("/sn1/xbridge/config-pio", test_config_pio);
+    qtest_add_func("/sn1/xbridge/config-doubleword", test_config_doubleword);
     qtest_add_func("/sn1/xbridge/config-type1", test_config_type1);
     qtest_add_func("/sn1/xbridge/dma-routes", test_dma_routes);
     qtest_add_func("/sn1/xbridge/interrupt-packets", test_interrupt_packets);
