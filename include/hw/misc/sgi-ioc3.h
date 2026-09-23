@@ -403,6 +403,14 @@ struct SGIIOC3State {
      */
     uint8_t serial_predivider[SGI_IOC3_SERIAL_PORTS];
 
+    /*
+     * Modem control bit 5, the automatic-flow-control enable a TI-style
+     * 16550 has where National's PC16550D reads a hardwired zero. Kept at
+     * the chip level because the shared 16550 core drops it, and only the
+     * bit is modelled: see the datasheet for what that does not cover.
+     */
+    uint8_t serial_mcr_autoflow[SGI_IOC3_SERIAL_PORTS];
+
     /* Optional transmit record, independent of the port's own backend. */
     CharFrontend serial_record[SGI_IOC3_SERIAL_PORTS];
 
