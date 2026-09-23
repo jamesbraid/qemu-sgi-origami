@@ -654,6 +654,106 @@ static void test_board_bringup_scratch_registers(void)
 }
 
 
+typedef struct SIDmaMapSlot {
+    uint64_t base;
+    uint32_t count;
+    uint32_t width;
+    uint32_t control;
+} SIDmaMapSlot;
+
+/* Selects a DMA source-mapping slot and reads back its stored fields. */
+static SIDmaMapSlot si_test_dma_map_slot(uint32_t slot)
+{
+    SIDmaMapSlot result;
+
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-dma-map-slot', 'value': %u}}", SI_VIZ_QOM_PATH,
+        slot);
+    result.base = si_qom_get_uint(qts, "x-test-dma-map-base");
+    result.count = si_qom_get_uint(qts, "x-test-dma-map-count");
+    result.width = si_qom_get_uint(qts, "x-test-dma-map-width");
+    result.control = si_qom_get_uint(qts, "x-test-dma-map-control");
+    return result;
+}
+
+/*
+ * The kernel-privileged mapping port (0x130400) shares 0x120400's
+ * class/reg/len token framing. A class-0x48 header names a starting
+ * register and payload_bytes/4 consecutive words land there as they
+ * arrive; see si_dma_map_write() in hw/misc/sgi-mgras-raster.c.
+ */
+static void test_dma_map_slot_registers(void)
+{
+    SIDmaMapSlot slot;
+
+    si_reset();
+
+    /*
+     * Slot 3's base pair: a header (class 0x48, reg 0x26, 8-byte
+     * payload) naming the two consecutive registers 0x26/0x27, then its
+     * two payload words as one 8-byte write, high word first.
+     */
+    qtest_writel(qts, SI_REG(0x130400), 0x00482608);
+    qtest_writeq(qts, SI_REG(0x130400),
+                ((uint64_t)0x00000005 << 32) | 0x77abc000);
+    /*
+     * Count (reg 0x33), width (reg 0x2e) and control (reg 0x4e): header
+     * and single payload word combined into one 8-byte write, header
+     * first -- the same framing test_board_bringup_scratch_registers
+     * already exercises for this port.
+     */
+    qtest_writeq(qts, SI_REG(0x130400),
+                ((uint64_t)0x00483304 << 32) | 0x0000000a);
+    qtest_writeq(qts, SI_REG(0x130400),
+                ((uint64_t)0x00482e04 << 32) | 0x00000004);
+    qtest_writeq(qts, SI_REG(0x130400),
+                ((uint64_t)0x00484e04 << 32) | 0x00000001);
+
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 0);
+
+    slot = si_test_dma_map_slot(3);
+    g_assert_cmphex(slot.base, ==, 0x577abc000ULL);
+    g_assert_cmphex(slot.count, ==, 0xa);
+    g_assert_cmphex(slot.width, ==, 4);
+    g_assert_cmphex(slot.control, ==, 1);
+
+    /* An unrelated slot stays at its post-reset value. */
+    slot = si_test_dma_map_slot(0);
+    g_assert_cmphex(slot.base, ==, 0);
+    g_assert_cmphex(slot.count, ==, 0);
+}
+
+static void test_dma_map_close_marker_and_discard(void)
+{
+    SIDmaMapSlot slot;
+
+    si_reset();
+
+    /*
+     * The kernel-sequence close marker (class 0x0e reg 0x01, no
+     * payload) is accepted and ignored on this port.
+     */
+    qtest_writel(qts, SI_REG(0x130400), 0x000e0100);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 0);
+
+    /*
+     * An unrecognized class frames and discards its declared payload
+     * instead of letting the next word be mis-parsed as a header: the
+     * word after this burst is still read as a fresh header.
+     */
+    qtest_writel(qts, SI_REG(0x130400), 0x00010004);
+    qtest_writel(qts, SI_REG(0x130400), 0xdeadbeef);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 0);
+
+    qtest_writeq(qts, SI_REG(0x130400),
+                ((uint64_t)0x00483004 << 32) | 0x00000007);
+    slot = si_test_dma_map_slot(0);
+    g_assert_cmphex(slot.count, ==, 7);
+}
+
+
 static void test_board_bringup_byte_poll_bit_position(void)
 {
     si_reset();
@@ -3228,6 +3328,10 @@ int main(int argc, char **argv)
                    test_write_path_fixes_dont_raise_the_sticky_error);
     qtest_add_func("sn0/origin2000/mgras/board-bringup-scratch-registers",
                    test_board_bringup_scratch_registers);
+    qtest_add_func("sn0/origin2000/mgras/dma-map-slot-registers",
+                   test_dma_map_slot_registers);
+    qtest_add_func("sn0/origin2000/mgras/dma-map-close-and-discard",
+                   test_dma_map_close_marker_and_discard);
     qtest_add_func("sn0/origin2000/mgras/board-bringup-byte-poll-bit-position",
                    test_board_bringup_byte_poll_bit_position);
     qtest_add_func("sn0/origin2000/mgras/board-info-byte-read-no-error",

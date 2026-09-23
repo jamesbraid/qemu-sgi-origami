@@ -190,6 +190,117 @@ static void si_command_fifo_token(SGIMgrasState *s, uint32_t token)
     }
 }
 
+/*
+ * The kernel-privileged mapping port (0x130400) shares the class/reg/len
+ * token framing above, but a class-0x48 header writes straight into a
+ * flat register file instead of buffering a payload for dispatch: it
+ * names a starting register, and payload_bytes/4 consecutive words are
+ * stored there as they arrive. Five identical slots hold a DMA source
+ * mapping: base pair (registers 0x20+2k/0x21+2k), page count (0x30+k),
+ * index width (0x2b+k) and control (0x4b+k). Extra registers 0x2a, 0x3a
+ * and 0x4a are written once per kernel sequence and are retained even
+ * though their meaning is unresolved.
+ */
+#define SI_DMA_MAP_CLASS 0x0048
+#define SI_DMA_MAP_CLOSE_CLASS 0x000e
+#define SI_DMA_MAP_CLOSE_REG 0x01
+#define SI_DMA_MAP_SLOT_BASE_HI 0x20
+#define SI_DMA_MAP_SLOT_BASE_LO 0x21
+#define SI_DMA_MAP_SLOT_WIDTH 0x2b
+#define SI_DMA_MAP_SLOT_COUNT 0x30
+#define SI_DMA_MAP_SLOT_CONTROL 0x4b
+
+static void si_dma_map_token(SGIMgrasState *s, uint32_t token)
+{
+    uint32_t cmd_class, reg, payload_bytes;
+
+    if (s->dma_map_words_remaining > 0) {
+        if (s->dma_map_reg < SGI_MGRAS_DMA_MAP_REGS) {
+            s->dma_map_regs[s->dma_map_reg] = token;
+        }
+        s->dma_map_reg++;
+        s->dma_map_words_remaining--;
+        return;
+    }
+
+    cmd_class = token >> 16;
+    reg = (token >> 8) & 0xff;
+    payload_bytes = token & 0xff;
+
+    if (cmd_class == SI_DMA_MAP_CLOSE_CLASS && reg == SI_DMA_MAP_CLOSE_REG &&
+        payload_bytes == 0) {
+        /* Closes a kernel sequence on this port; accepted and ignored. */
+        return;
+    }
+
+    if (payload_bytes % sizeof(uint32_t)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA-mapping command-FIFO "
+                      "header, class 0x%04x reg 0x%02x has unaligned "
+                      "payload %u bytes\n", cmd_class, reg, payload_bytes);
+        return;
+    }
+
+    if (cmd_class != SI_DMA_MAP_CLASS || reg >= SGI_MGRAS_DMA_MAP_REGS) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: unimplemented DMA-mapping "
+                      "command-FIFO token, class 0x%04x reg 0x%02x "
+                      "payload %u bytes\n", cmd_class, reg, payload_bytes);
+        /*
+         * Frame and discard the declared payload so the next word is not
+         * mis-parsed as a header, mirroring si_command_fifo_token's
+         * discard path above.
+         */
+        s->dma_map_reg = SGI_MGRAS_DMA_MAP_REGS;
+        s->dma_map_words_remaining = payload_bytes / 4;
+        return;
+    }
+
+    s->dma_map_reg = reg;
+    s->dma_map_words_remaining = payload_bytes / 4;
+}
+
+void si_dma_map_write(SGIMgrasState *s, uint64_t value, unsigned int size)
+{
+    if (size == 8) {
+        si_dma_map_token(s, (uint32_t)(value >> 32));
+        si_dma_map_token(s, (uint32_t)value);
+    } else {
+        si_dma_map_token(s, (uint32_t)value);
+    }
+}
+
+uint64_t si_dma_map_slot_base(SGIMgrasState *s, unsigned int slot)
+{
+    if (slot >= SGI_MGRAS_DMA_MAP_SLOTS) {
+        return 0;
+    }
+    return ((uint64_t)s->dma_map_regs[SI_DMA_MAP_SLOT_BASE_HI + 2 * slot]
+             << 32) | s->dma_map_regs[SI_DMA_MAP_SLOT_BASE_LO + 2 * slot];
+}
+
+uint32_t si_dma_map_slot_count(SGIMgrasState *s, unsigned int slot)
+{
+    if (slot >= SGI_MGRAS_DMA_MAP_SLOTS) {
+        return 0;
+    }
+    return s->dma_map_regs[SI_DMA_MAP_SLOT_COUNT + slot];
+}
+
+uint32_t si_dma_map_slot_width(SGIMgrasState *s, unsigned int slot)
+{
+    if (slot >= SGI_MGRAS_DMA_MAP_SLOTS) {
+        return 0;
+    }
+    return s->dma_map_regs[SI_DMA_MAP_SLOT_WIDTH + slot];
+}
+
+uint32_t si_dma_map_slot_control(SGIMgrasState *s, unsigned int slot)
+{
+    if (slot >= SGI_MGRAS_DMA_MAP_SLOTS) {
+        return 0;
+    }
+    return s->dma_map_regs[SI_DMA_MAP_SLOT_CONTROL + slot];
+}
+
 void si_raster_command(SGIMgrasState *s, uint64_t word)
 {
     uint32_t selector = (word >> 34) & 0xffffff;

@@ -79,8 +79,17 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 #define SGI_MGRAS_BRINGUP_BLOCK_2 0x040920
 #define SGI_MGRAS_BRINGUP_BLOCK_3 0x040928
 
-/* Secondary FIFO routing is unsupported. Writes retain opaque state. */
+/*
+ * Kernel-privileged DMA source-mapping command port. Shares 0x120400's
+ * class/reg/len token framing, but a class-0x48 header writes straight
+ * into a flat register file instead of buffering a payload for dispatch;
+ * see si_dma_map_write() in hw/misc/sgi-mgras-raster.c. Raw writes are
+ * also retained so a plain readback still round-trips, matching the
+ * approximation used before the mapping registers were understood.
+ */
 #define SGI_MGRAS_SCRATCH_COMMAND 0x130400
+#define SGI_MGRAS_DMA_MAP_SLOTS 5
+#define SGI_MGRAS_DMA_MAP_REGS 0x50
 
 #define SGI_MGRAS_BRINGUP_ARG_3 0x011058
 
@@ -166,6 +175,14 @@ struct SGIMgrasState {
     uint32_t bringup_arg_2;
     uint32_t bringup_block[3];
     uint64_t scratch_command;
+    /*
+     * Class-0x48 kernel DMA source-mapping register file, indexed by the
+     * 0x130400 FIFO token's register number: five slots' base pair, page
+     * count, index width and control, plus three unresolved extras.
+     */
+    uint32_t dma_map_regs[SGI_MGRAS_DMA_MAP_REGS];
+    uint32_t dma_map_reg;
+    uint32_t dma_map_words_remaining;
     uint32_t bringup_arg_3;
     uint32_t vc3_arg;
     uint32_t re_arg;
@@ -192,6 +209,7 @@ struct SGIMgrasState {
     uint32_t test_pixel_y;
     uint64_t test_last_interrupt_addr;
     uint64_t test_last_interrupt_value;
+    uint32_t test_dma_map_slot;
     /* Host-only event ordering. Not guest state and not migrated. */
     uint64_t trace_sequence;
     QEMUTimer *retrace_timer;
