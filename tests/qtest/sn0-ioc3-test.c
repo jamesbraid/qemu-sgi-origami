@@ -1313,26 +1313,42 @@ static void test_the_ps2_control_masks_writes(const void *data)
 #define SDMA_A_SHADOW     (IOC3_BASE + 0x0d0)
 #define SDMA_B_SHADOW     (IOC3_BASE + 0x0ec)
 
-static void test_the_serial_dma_indices_by_owner(const void *data)
+static void test_the_serial_dma_indices_take_a_write(const void *data)
 {
     ioc3_reset();
 
     sn0_ioc3_attach(qts);
 
     /*
-     * Two of the four adjacent indices take a write and two refuse it.
-     * Both directions are asserted so neither an all-writable nor an
-     * all-read-only model passes.
+     * All four adjacent indices store a write, including the two the
+     * engine advances: this chip lets software place them, which is what
+     * the Origin 300 board test requires of it. An earlier model refused
+     * the engine's two, so both of those are asserted with a value that
+     * cannot be mistaken for the zero a refusal leaves.
      */
     qtest_writel(qts, SDMA_A_TX_PRODUCE, 0x40);
     g_assert_cmphex(qtest_readl(qts, SDMA_A_TX_PRODUCE), ==, 0x40);
     qtest_writel(qts, SDMA_A_RX_CONSUME, 0x48);
     g_assert_cmphex(qtest_readl(qts, SDMA_A_RX_CONSUME), ==, 0x48);
+    qtest_writel(qts, SDMA_A_TX_CONSUME, 0x50);
+    g_assert_cmphex(qtest_readl(qts, SDMA_A_TX_CONSUME), ==, 0x50);
+    qtest_writel(qts, SDMA_A_RX_PRODUCE, 0x58);
+    g_assert_cmphex(qtest_readl(qts, SDMA_A_RX_PRODUCE), ==, 0x58);
 
+    /*
+     * What still separates them is what else the write carries. Only the
+     * receive consume index keeps bit 31, the receive timer's arm; an
+     * all-ones write to the other three keeps the pointer field alone, so
+     * a model that stored the whole word anywhere fails here.
+     */
+    qtest_writel(qts, SDMA_A_RX_CONSUME, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, SDMA_A_RX_CONSUME), ==, 0x800003f8);
+    qtest_writel(qts, SDMA_A_TX_PRODUCE, 0xffffffff);
+    g_assert_cmphex(qtest_readl(qts, SDMA_A_TX_PRODUCE), ==, 0x3f8);
     qtest_writel(qts, SDMA_A_TX_CONSUME, 0xffffffff);
-    g_assert_cmphex(qtest_readl(qts, SDMA_A_TX_CONSUME), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, SDMA_A_TX_CONSUME), ==, 0x3f8);
     qtest_writel(qts, SDMA_A_RX_PRODUCE, 0xffffffff);
-    g_assert_cmphex(qtest_readl(qts, SDMA_A_RX_PRODUCE), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, SDMA_A_RX_PRODUCE), ==, 0x3f8);
 }
 
 static void test_the_serial_dma_ports_are_distinct(const void *data)
@@ -1350,9 +1366,11 @@ static void test_the_serial_dma_ports_are_distinct(const void *data)
     g_assert_cmphex(qtest_readl(qts, SDMA_A_TX_PRODUCE), ==, 0x18);
     g_assert_cmphex(qtest_readl(qts, SDMA_B_TX_PRODUCE), ==, 0x28);
 
-    /* The ownership split repeats on the second port, at its own offsets. */
-    qtest_writel(qts, SDMA_B_TX_CONSUME, 0xffffffff);
-    g_assert_cmphex(qtest_readl(qts, SDMA_B_TX_CONSUME), ==, 0);
+    /* The engine's own index is per port too, and placeable on each. */
+    qtest_writel(qts, SDMA_A_TX_CONSUME, 0x20);
+    qtest_writel(qts, SDMA_B_TX_CONSUME, 0x30);
+    g_assert_cmphex(qtest_readl(qts, SDMA_A_TX_CONSUME), ==, 0x20);
+    g_assert_cmphex(qtest_readl(qts, SDMA_B_TX_CONSUME), ==, 0x30);
 
     /* The ring base is shared by both ports and is software's to set. */
     qtest_writel(qts, SDMA_RING_LO, 0x00003000);
@@ -4873,8 +4891,8 @@ int main(int argc, char **argv)
                         test_the_ps2_clamp_after_one_splits_a_reply);
     qtest_add_data_func("sn0/ioc3/ps2-backlog-survives-a-migration", NULL,
                         test_the_ps2_backlog_survives_a_migration);
-    qtest_add_data_func("sn0/ioc3/serial-dma-indices-by-owner", NULL,
-                        test_the_serial_dma_indices_by_owner);
+    qtest_add_data_func("sn0/ioc3/serial-dma-indices-take-a-write", NULL,
+                        test_the_serial_dma_indices_take_a_write);
     qtest_add_data_func("sn0/ioc3/serial-dma-ports-are-distinct", NULL,
                         test_the_serial_dma_ports_are_distinct);
     qtest_add_data_func("sn0/ioc3/serial-dma-shadow-is-read-only", NULL,

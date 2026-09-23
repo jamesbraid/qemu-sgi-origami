@@ -605,6 +605,48 @@ static void test_the_alias_refuses_the_registers_hardware_owns(const void *data)
 }
 
 /*
+ * What the alias refuses, the main block takes. The engine advances these
+ * two indexes, but software can still place them, and the Origin 300 board
+ * test is what says so: it writes the transmit consume index and reads it
+ * back, with the produce index cleared and nothing transmitting, so no
+ * engine advance could have put the value there. Only the pointer field
+ * stores -- the bits above it report engine state and a write cannot forge
+ * them. Both sizes, because the pointer is as wide as the ring.
+ */
+static void test_the_main_block_places_the_engine_indexes(const void *data)
+{
+    static const uint32_t ring[] = { 0, RING_4K };
+    unsigned int size;
+    unsigned int port;
+
+    serial_reset();
+
+    sn0_ioc3_attach(qts);
+
+    for (size = 0; size < ARRAY_SIZE(ring); size++) {
+        uint32_t pointer = ring[size] ? 0xff8 : 0x3f8;
+
+        qtest_writel(qts, SDMA_RING_LO, ring[size]);
+
+        for (port = 0; port < 2; port++) {
+            qtest_writel(qts, sdma(port, SDMA_TX_CONSUME), 0xffffffff);
+            g_assert_cmphex(qtest_readl(qts, sdma(port, SDMA_TX_CONSUME)),
+                            ==, pointer);
+            qtest_writel(qts, sdma(port, SDMA_RX_PRODUCE), 0xffffffff);
+            g_assert_cmphex(qtest_readl(qts, sdma(port, SDMA_RX_PRODUCE))
+                            & 0xffffff, ==, pointer);
+
+            qtest_writel(qts, sdma(port, SDMA_TX_CONSUME), 0);
+            g_assert_cmphex(qtest_readl(qts, sdma(port, SDMA_TX_CONSUME)),
+                            ==, 0);
+            qtest_writel(qts, sdma(port, SDMA_RX_PRODUCE), 0);
+            g_assert_cmphex(qtest_readl(qts, sdma(port, SDMA_RX_PRODUCE))
+                            & 0xffffff, ==, 0);
+        }
+    }
+}
+
+/*
  * The DMA console driver reads carrier from the shadow; a shadow of zero
  * cached a carrier-down at console open and hung the console, and the
  * firmware's loopback diagnostic never reads carrier -- only this does.
@@ -2353,6 +2395,8 @@ int main(int argc, char **argv)
                         test_the_receive_timer_keeps_twelve_bits);
     qtest_add_data_func("sn0/ioc3-serial/alias-pages-are-views", NULL,
                         test_the_alias_pages_are_views_of_the_main_block);
+    qtest_add_data_func("sn0/ioc3-serial/main-block-places-engine-indexes",
+                        NULL, test_the_main_block_places_the_engine_indexes);
     qtest_add_data_func("sn0/ioc3-serial/alias-refuses-hardware-registers",
                         NULL,
                         test_the_alias_refuses_the_registers_hardware_owns);
