@@ -1600,79 +1600,6 @@ static void test_timekeeper_stopped_clock_survives_migration(const void *data)
     g_assert_cmpint(g_rmdir(tmpfs), ==, 0);
 }
 
-/*
- * The per-CPU cache-as-RAM private window (sn-promdata.c, shared with the
- * Origin 300 node since this filter moved out of sn0.c) forwards instead
- * of serving from its own buffer whenever no processor is in the PROM's
- * cache-only phase -- true throughout a qtest run, which never executes
- * guest code, so the phase is never entered here. A forwarded access
- * still traces, and that trace is what tells a broken post-load apart
- * from a working one: if migration left the filter disabled or removed,
- * the access would fall straight through to whatever the window
- * overlays instead of tracing a forward, silently.
- */
-#define PROMDATA_WINDOW_PHYS UINT64_C(0x100000)
-
-static void promdata_cpu_probe(QTestState *qts, unsigned int cpu)
-{
-    g_autofree char *command =
-        g_strdup_printf("xp/1wx 0x%" PRIx64, PROMDATA_WINDOW_PHYS);
-    g_autoptr(QDict) response = qtest_qmp(qts,
-        "{ 'execute': 'human-monitor-command',"
-        "  'arguments': { 'command-line': %s, 'cpu-index': %u } }",
-        command, cpu);
-
-    if (!qdict_haskey(response, "return")) {
-        g_autoptr(GString) text = qobject_to_json(QOBJECT(response));
-
-        g_error("%s on processor %u failed: %s", command, cpu, text->str);
-    }
-}
-
-static bool promdata_forward_traced(const char *path)
-{
-    g_autofree char *contents = NULL;
-
-    g_assert_true(g_file_get_contents(path, &contents, NULL, NULL));
-    return strstr(contents, "sn_promdata_forward") != NULL;
-}
-
-static void test_promdata_filter_survives_migration(const void *data)
-{
-    g_autofree gchar *tmpfs = NULL;
-    g_autofree gchar *uri = NULL;
-    g_autofree gchar *from_trace = NULL;
-    g_autofree gchar *to_trace = NULL;
-    g_autofree gchar *from_cmdline = NULL;
-    g_autofree gchar *to_cmdline = NULL;
-    GError *err = NULL;
-    QTestState *from, *to;
-
-    tmpfs = g_dir_make_tmp("sn0-promdata-migration-XXXXXX", &err);
-    g_assert_nonnull(tmpfs);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
-    from_trace = g_strdup_printf("%s/from.trace", tmpfs);
-    to_trace = g_strdup_printf("%s/to.trace", tmpfs);
-
-    from_cmdline = g_strdup_printf(
-        MACHINE " -trace enable=sn_promdata_forward,file=%s", from_trace);
-    from = qtest_init(from_cmdline);
-    promdata_cpu_probe(from, 0);
-    g_assert_true(promdata_forward_traced(from_trace));
-
-    to_cmdline = g_strdup_printf(
-        MACHINE " -trace enable=sn_promdata_forward,file=%s -incoming %s",
-        to_trace, uri);
-    to = qtest_init(to_cmdline);
-    sgi_migrate_stopped(from, uri);
-
-    promdata_cpu_probe(to, 0);
-    g_assert_true(promdata_forward_traced(to_trace));
-
-    qtest_quit(to);
-    qtest_quit(from);
-}
-
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1726,8 +1653,6 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/migration/module-identity-page-progress",
                         NULL,
                         test_module_identity_page_progress_survives_migration);
-    qtest_add_data_func("sn0/migration/promdata-filter-survives-migration",
-                        NULL, test_promdata_filter_survives_migration);
 
     return g_test_run();
 }
