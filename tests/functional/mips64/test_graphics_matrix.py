@@ -35,7 +35,8 @@ from lib_matrix import (AttemptResult, MatrixError, matrix_rows, qemu_args,
 from lib_graphics_matrix import (SCENARIOS, disk_rel, peek_row, parse_row)
 from lib_input import run_script
 from lib_prom import FIRMWARE_REL, drive_console, resolve_asset
-from lib_screen import evaluate_screendump
+from lib_screen import (RegionColorCheck, ScreenCheckError,
+                        evaluate_screendump, read_ppm, region_average)
 
 
 MATRIX_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -56,40 +57,110 @@ _START_SYSTEM_STEPS = ((r"Option\?", "1\n"),)
 # short input script's worth of HMP round trips) can still show only the
 # root window's stipple pattern, not yet the rendered login dialog, on a
 # run where the same manifest cell reliably shows the dialog complete a
-# few seconds later. This fixed settle absorbs that race; it is a
-# conservative margin around one observed measurement, not a derived
-# bound, and a device whose own scenario needs a tighter or looser
-# margin can grow a per-scenario override here without disturbing this
-# one.
+# few seconds later.
 #
-# Re-measured live once 3.0s started reproducing rad4_login_screen's own
-# failure under today's host load: the saved screendump's login-dialog-
-# chrome region averaged (63.75, 63.75, 63.75), the stipple's own value,
-# matching this comment's own description of an unsettled dump rather
-# than the dialog's measured (217, 217, 217). 10.0s cleared it in a live
-# rerun of the same cell; 15.0s keeps the same margin over that observed
-# pass point the multi-CPU constant below keeps over its own (1.5x).
-_SCREEN_SETTLE_SECONDS = 15.0
+# A fixed sleep before the one screendump this test used to take (3.0s,
+# then 15.0s/30.0s once 3.0s started reproducing rad4_login_screen's own
+# failure under host load -- both still just a conservative margin around
+# an observed measurement, not a derived bound, and both paying that
+# margin in full even on a host fast enough to have redrawn already)
+# guesses at a number instead of asking the framebuffer whether it is
+# still changing. _poll_screendump_until_settled() below asks instead:
+# take a screendump every _POLL_INTERVAL_SECONDS, for up to
+# _POLL_TIMEOUT_SECONDS / _POLL_INTERVAL_SECONDS attempts, and stop as
+# soon as the scenario's checked region (its RegionColorCheck's own rect
+# and expected range) reads inside that range. Each attempt's own
+# screendump-and-read cost is on top of the interval, so the real
+# wall-clock ceiling runs somewhat past the nominal
+# _POLL_TIMEOUT_SECONDS -- confirmed live, where the multi-CPU cell (see
+# below) needed 11 of its 15 allowed attempts and 21.6s wall-clock to
+# settle. That is still well inside the old 30s fixed sleep multi-CPU
+# once needed, and, unlike a fixed sleep, is paid only when the guest is
+# actually still redrawing. One mechanism and one timeout constant for
+# every cpu count: the former single-CPU/multi-CPU split existed only
+# because the two fixed sleeps were measured separately, not because
+# settling itself depends on cpu count.
+#
+# A same-value-twice stability rule (settle once the mean stops changing
+# between two consecutive dumps, without needing to know the target
+# color) was tried first and live testing disproved it: a poll instrumented
+# to log every attempt's mean showed attempt 1 (0.02s after console_wait
+# matched) reading a transitional frame -- (45.7, 45.7, 45.7) in one
+# capture -- then attempts 2 and 3 both reading (63.75, 63.75, 63.75), the
+# root window's own unpainted stipple average, not yet xdm's redrawn
+# dialog. Two consecutive dumps agreeing is true there at 2.4s, well
+# before the real redraw, because the stipple pattern is itself perfectly
+# static; bare equality cannot tell "hasn't redrawn yet" from "finished
+# redrawing" when both are static. There is no way to tell those apart by
+# watching this one rectangle's own history alone -- only reaching the
+# color the redraw is known to produce says the redraw happened, so that
+# is the sole early-exit condition below. A region that never reaches its
+# expected range within the timeout still exhausts every attempt and
+# raises, carrying the last two observed means for diagnosis.
+_POLL_INTERVAL_SECONDS = 1.0
+_POLL_TIMEOUT_SECONDS = 15.0
 
-# The round-robin regimes (wallclock, roundrobin) pin rr-kick-period-ns once a
-# cell carries more than one CPU (lib_matrix.qemu_args): a fixed, deliberately
-# short 100us kick, needed for a reliable cross-CPU rendezvous, that trades
-# away a lot of host wall-clock per unit of guest progress once the boot
-# itself is over. It is a binary switch on cell.cpus > 1, not a smoothly
-# scaling cost, so a multi-CPU cell gets its own separately measured settle
-# rather than a multiple of the single-CPU number above. Measured live
-# adding this manifest's first 2-CPU cell: the single-CPU settle (3s) and
-# twice that (6s) both reproducibly left the screendump showing the root
-# window's stipple, byte-identical each time, never the dialog; 20s passed.
-# 30s keeps margin above that observed pass point for a more heavily loaded
-# host, the same reasoning the single-CPU constant's own comment gives for
-# its margin.
-_MULTI_CPU_SCREEN_SETTLE_SECONDS = 30.0
+
+def _checked_region(screen_checks):
+    """The first RegionColorCheck's rect and (min_rgb, max_rgb) among
+    screen_checks, or (None, None) if the scenario has no region check --
+    NotAllBlackCheck alone gives the poll below no smaller-than-whole-
+    frame signal to judge stability from."""
+    for check in screen_checks:
+        if isinstance(check, RegionColorCheck):
+            return check.rect, (check.min_rgb, check.max_rgb)
+    return None, None
 
 
-def _settle_seconds(cell):
-    return (_SCREEN_SETTLE_SECONDS if cell.cpus == 1
-           else _MULTI_CPU_SCREEN_SETTLE_SECONDS)
+def _poll_screendump_until_settled(test, vm, screendump_path, screen_checks):
+    """Take a screendump every _POLL_INTERVAL_SECONDS, for up to
+    _POLL_TIMEOUT_SECONDS / _POLL_INTERVAL_SECONDS attempts, replacing the
+    fixed pre-dump sleep this file used to guess with (see the comment
+    above). Stops as soon as the
+    checked region falls inside its RegionColorCheck's expected range --
+    the only signal live testing found that actually distinguishes "xdm
+    has redrawn" from "still showing the root window's own static stipple
+    pattern" (see the comment above _POLL_INTERVAL_SECONDS).
+
+    A scenario with no RegionColorCheck (NotAllBlackCheck alone) has no
+    region or expected range to poll for, so it gets a single dump:
+    whether the whole frame is non-black doesn't change with a further
+    wait once the guest has painted anything.
+
+    Logs the observed settle time via test.log.info, matching
+    replay_kernel.py's own 'elapsed time %.2f sec' convention, so a live
+    run's actual timing is on record rather than only asserted in a commit
+    message. Raises ScreenCheckError, with the last two observed means and
+    the elapsed time, if the checked region never reaches its expected
+    range before the timeout.
+    """
+    rect, expected_range = _checked_region(screen_checks)
+    if rect is None:
+        vm.cmd('screendump', filename=screendump_path)
+        return
+
+    min_rgb, max_rgb = expected_range
+    start = time.time()
+    attempts = int(_POLL_TIMEOUT_SECONDS / _POLL_INTERVAL_SECONDS)
+    last_two = []
+    for attempt in range(1, attempts + 1):
+        vm.cmd('screendump', filename=screendump_path)
+        width, _height, data = read_ppm(screendump_path)
+        mean = region_average(width, data, rect)
+        last_two = (last_two + [mean])[-2:]
+        elapsed = time.time() - start
+        if all(lo <= value <= hi for value, lo, hi in
+              zip(mean, min_rgb, max_rgb)):
+            test.log.info('region %r settled (in expected range) after '
+                          '%.2fs (%d dump(s))', rect, elapsed, attempt)
+            return
+        if attempt < attempts:
+            time.sleep(_POLL_INTERVAL_SECONDS)
+    elapsed = time.time() - start
+    raise ScreenCheckError(
+        f'region {rect!r} did not reach its expected range within '
+        f'{_POLL_TIMEOUT_SECONDS}s ({elapsed:.2f}s elapsed): last two '
+        f'means {last_two}')
 
 
 def _boot_one_attempt(test, cell, attempt_index):
@@ -160,11 +231,14 @@ def _boot_one_attempt(test, cell, attempt_index):
         if not reached:
             return AttemptResult(reached_pass=False, signature='timeout')
 
-        time.sleep(_settle_seconds(cell))
         run_script(vm, scenario.input_steps)
 
         screendump_path = test.scratch_file(f'{name}.ppm')
-        vm.cmd('screendump', filename=screendump_path)
+        try:
+            _poll_screendump_until_settled(test, vm, screendump_path,
+                                           scenario.screen_checks)
+        except ScreenCheckError as exc:
+            return AttemptResult(reached_pass=False, signature=str(exc))
         passed, messages = evaluate_screendump(screendump_path,
                                                scenario.screen_checks)
         return AttemptResult(reached_pass=passed,

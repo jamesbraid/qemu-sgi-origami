@@ -118,14 +118,14 @@ class Scenario:
     processes racing out of the same multiuser boot, not synchronized by
     anything visible on the console, so this text match is a necessary
     but not sufficient readiness signal: test_graphics_matrix.py's own
-    _SCREEN_SETTLE_SECONDS absorbs the remaining gap with a fixed wait
-    before anything below runs, rather than this field promising a
+    _poll_screendump_until_settled() absorbs the remaining gap by
+    polling the screendump itself, rather than this field promising a
     stronger guarantee than a console-text match can actually make.
     `input_steps` is a lib_input.run_script() step list (empty for a
     scenario that only needs to look at the screen as booted).
     `screen_checks` is a list of lib_screen check objects (NotAllBlackCheck,
-    RegionColorCheck, ...) evaluated against the screendump taken after
-    the settle and input_steps both run.
+    RegionColorCheck, ...) evaluated against the screendump taken once
+    input_steps has run and the checked region has settled.
     """
     console_wait: bytes
     input_steps: list
@@ -136,12 +136,12 @@ class Scenario:
 # were measured live against this fork's own tip while building this
 # test (a2546528e2 and successors): booting IRIX 6.5.30 with
 # `-device psitech-rad4,addr=5` (the vendor-documented slot), waiting for
-# "... console login:" on the plain text console, then a further
-# _SCREEN_SETTLE_SECONDS (test_graphics_matrix.py) for xdm's own,
-# independently-timed redraw to catch up, shows a screendump with the
-# rendered login screen; the plain gray area of that dialog (below the
-# four user-face icons, above the login-name field) reads
-# (217, 217, 217) there. Without that settle, a screendump can still
+# "... console login:" on the plain text console, then polling the
+# screendump (test_graphics_matrix.py's _poll_screendump_until_settled())
+# until xdm's own, independently-timed redraw catches up, shows a
+# screendump with the rendered login screen; the plain gray area of that
+# dialog (below the four user-face icons, above the login-name field)
+# reads (217, 217, 217) there. Before it settles, a screendump can still
 # show only the root window's stipple pattern (confirmed live: this
 # scenario's own region then averages close to (64, 64, 64), the
 # stipple's own measured value, not the dialog's). The input steps below
