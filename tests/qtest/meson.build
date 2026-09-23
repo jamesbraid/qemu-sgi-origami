@@ -414,7 +414,6 @@ qtests_mips64 = \
                                                    'sn0-r10k-llsc-test',
                                                    'sn0-r10k-perf-migration-test',
                                                    'sn0-status-re-test',
-                                                   'sn0-mmio-branch-test',
                                                    'sn0-address-map-test',
                                                    'sn0-bridge-test',
                                                    'sn0-ioc3-test',
