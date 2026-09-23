@@ -75,21 +75,14 @@ test_mips64_timeouts = {
   # this, the same margin test_prom_sash.py keeps against its own timeout.
   'irix_miniroot' : 900,
   # Boot the installed IRIX disk on two chassis (four CPUs across two nodes,
-  # 128 MiB) and run SGI's oldisk and olmem online diagnostics to a RSLT PASS.
-  # The two-node boot and both diagnostics are the long pole; oldisk ~256s and
-  # olmem ~430s of quiet on top of the boot. BOOT_TIMEOUT_SECONDS in
-  # test_irix_diag.py keeps a 60s margin under this.
-  'irix_diag' : 3600,
-  # Boot the installed IRIX disk with a scsi-tape attached and run SGI's
-  # oltape rw/thrash/block to a RSLT PASS (seconds on a fresh image). The
-  # boot is the long pole, same as irix_diag; BOOT_TIMEOUT_SECONDS in
-  # test_irix_oltape.py keeps a 60s margin under this.
-  'irix_oltape' : 1560,
-  # Boot the installed IRIX disk with a scsi-cd holding the generated data
-  # CD and run olcdrom -device over it (pattern and random-access passes).
-  # Above irix_oltape's budget for the CD read passes on top of the boot;
-  # BOOT_TIMEOUT_SECONDS in test_irix_olcdrom.py keeps a margin under this.
-  'irix_olcdrom' : 1800,
+  # 128 MiB) with a scsi-tape and a scsi-cd attached, and run SGI's oldisk,
+  # olmem, oltape and olcdrom online diagnostics in sequence on that one
+  # boot, each to its own RSLT PASS. The two-node boot and all four
+  # diagnostics are the long pole; BOOT_TIMEOUT_SECONDS in test_irix_diag.py
+  # keeps a 60s margin under this -- the sum of this test's own former
+  # budget (3600) plus the two absorbed oltape (1560) and olcdrom (1800)
+  # legs, now run on the one boot instead of three.
+  'irix_diag' : 6960,
   # Boot the plain installed IRIX disk (same 265s to root login as
   # irix_diag above -- root.qcow2 is the base root-diags.qcow2 is built
   # from) and require who -r/uname -aR to show run level 2 under the
@@ -215,8 +208,6 @@ tests_mips64_system_thorough = [
   'prom_mdk_router',
   'irix_miniroot',
   'irix_diag',
-  'irix_oltape',
-  'irix_olcdrom',
   'irix_installed_boot',
   'irix_eg',
   'irix_tg',
