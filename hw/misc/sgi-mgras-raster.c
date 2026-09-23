@@ -930,9 +930,18 @@ static void si_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
         return;
     }
 
+    /*
+     * The base pair's low word is entry 0's byte address, not a
+     * page-aligned address plus flag bits: every observed mapping's low
+     * word ends in 0x18 or 0x19 (three zero header words before the
+     * page-frame-number entries begin), so only bits 2:0 are flag-like.
+     * Masking to the page (as this used to) reads the header's first
+     * zero word as page-frame number 0 and drops every transfer 24 bytes
+     * short.
+     */
     base = si_dma_map_slot_base(s, slot);
     list_node = (uint32_t)(base >> 32) & 0xff;
-    list_pa = (uint32_t)base & ~0xfffu;
+    list_pa = (uint32_t)base & ~0x7u;
     count = si_dma_map_slot_count(s, slot);
     widget = (si_dma_map_slot_control(s, slot) >> 16) & 0xf;
 
