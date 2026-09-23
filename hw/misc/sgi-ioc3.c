@@ -421,6 +421,9 @@ static const MemoryRegionOps sgi_ioc3_main_ops = {
 /* Auto-RTS/CTS enable, which the shared 16550 core has no bit for. */
 #define UART_MCR_AFE    0x20
 
+/* What a factory-test write to line status reaches: everything but bit 7. */
+#define SGI_IOC3_UART_LSR_TEST_MASK 0x7f
+
 #define UART_MSR_DCTS   0x01
 #define UART_MSR_DDCD   0x08
 #define UART_MSR_CTS    0x10
@@ -507,6 +510,16 @@ static uint64_t sgi_ioc3_serial_read(void *opaque, hwaddr addr, unsigned size)
         val |= handle->chip->serial_mcr_autoflow[handle->port];
     }
 
+    /*
+     * A factory-test write shows up in the read that follows it and no
+     * later one: reading line status is what clears the error bits it
+     * names, so nothing here outlives its own read.
+     */
+    if (addr == UART_LSR) {
+        val |= handle->chip->serial_lsr_test[handle->port];
+        handle->chip->serial_lsr_test[handle->port] = 0;
+    }
+
     return val;
 }
 
@@ -521,6 +534,15 @@ static void sgi_ioc3_serial_write(void *opaque, hwaddr addr, uint64_t val,
     /* The one modem-control bit the shared 16550 core masks away. */
     if (addr == UART_MCR) {
         handle->chip->serial_mcr_autoflow[handle->port] = val & UART_MCR_AFE;
+    }
+
+    /*
+     * Line status takes a write for factory testing, which the shared core
+     * has nowhere to put. Bit 7 is not one of them.
+     */
+    if (addr == UART_LSR) {
+        handle->chip->serial_lsr_test[handle->port] =
+            val & SGI_IOC3_UART_LSR_TEST_MASK;
     }
 
     serial_io_ops.write(serial, addr, val & 0xff, 1);
@@ -1652,6 +1674,7 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
         s->sdma_delivered[i] = false;
         /* Reset clears the rest of modem control, so it clears this too. */
         s->serial_mcr_autoflow[i] = 0;
+        s->serial_lsr_test[i] = 0;
     }
 
     /* The buffer RAM is memory: reset does not clear it. */
@@ -1795,7 +1818,7 @@ static int sgi_ioc3_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
-    .version_id = 18,
+    .version_id = 19,
     .minimum_version_id = 14,
     .pre_load = sgi_ioc3_pre_load,
     .post_load = sgi_ioc3_post_load,
@@ -1810,6 +1833,8 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
                               SGI_IOC3_SERIAL_PORTS, 17),
         VMSTATE_UINT8_ARRAY_V(serial_mcr_autoflow, SGIIOC3State,
                               SGI_IOC3_SERIAL_PORTS, 18),
+        VMSTATE_UINT8_ARRAY_V(serial_lsr_test, SGIIOC3State,
+                              SGI_IOC3_SERIAL_PORTS, 19),
         VMSTATE_UINT32(microlan_control, SGIIOC3State),
         VMSTATE_UINT32(pin_control, SGIIOC3State),
         VMSTATE_UINT32(pin_data, SGIIOC3State),

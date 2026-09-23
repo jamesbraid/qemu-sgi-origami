@@ -411,6 +411,14 @@ struct SGIIOC3State {
      */
     uint8_t serial_mcr_autoflow[SGI_IOC3_SERIAL_PORTS];
 
+    /*
+     * Line status bits a factory-test write has set and no read has taken
+     * away yet. The shared 16550 core drops writes to that register, and
+     * this holds them for the one read that follows: see the datasheet for
+     * how far the modelling goes.
+     */
+    uint8_t serial_lsr_test[SGI_IOC3_SERIAL_PORTS];
+
     /* Optional transmit record, independent of the port's own backend. */
     CharFrontend serial_record[SGI_IOC3_SERIAL_PORTS];
 
