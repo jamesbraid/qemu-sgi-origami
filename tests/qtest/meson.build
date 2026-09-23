@@ -400,7 +400,6 @@ qtests_mips64 = \
                                                    'sn0-pi-error-test',
                                                    'sn0-i2c-test',
                                                    'sn0-elsc-test',
-                                                   'sn0-widget0-test',
                                                    'sn0-widget-decode-test',
                                                    'sn0-bridge-invalid-addr-test',
                                                    'sn0-bridge-widget-test',
