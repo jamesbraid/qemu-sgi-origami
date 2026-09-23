@@ -228,7 +228,24 @@ def evaluate_run(log, expected_failures=(), nvram_warnings="expected"):
         "problems": problems,
     }
 
-    if len(passes) != 2:
+    # PROM 6.11 (6.5-base) needs two passes: a cold pass that discovers no
+    # module id, prints the assignment box and warm resets, then a second
+    # pass that accepts the now-nonzero id. PROM 6.156 (6.5.30) does not:
+    # it accepts its factory id (observed as 0, never reassigned) and runs
+    # the whole sequence in one pass, with no box and no warm reset.
+    # Confirmed on docs/library/nvram-inventory-characterization.md and
+    # docs/boot-logs/firmware.nvram-6.5.30.2026-08-22T19:53-07:00, and
+    # reproduced again since -- a real release difference, not a defect.
+    # A transcript that only got through the box-and-reset half of a
+    # genuine two-pass boot still needs both markers absent to qualify, so
+    # it stays a wrong-pass-count failure below.
+    single_full_pass = (
+        len(passes) == 1
+        and MODULE_BOX_MARKER not in passes[0]
+        and WARM_RESET_MARKER not in passes[0]
+    )
+
+    if len(passes) != 2 and not single_full_pass:
         problems.append(
             f"expected exactly 2 PROM boot passes, saw {len(passes)}"
         )
@@ -240,15 +257,19 @@ def evaluate_run(log, expected_failures=(), nvram_warnings="expected"):
         report["verdict"] = "FAIL"
         return report
 
-    first, second = passes
-    ids1 = module_ids(first)
+    if single_full_pass:
+        first, second = None, passes[0]
+    else:
+        first, second = passes
+    ids1 = module_ids(first) if first is not None else None
     ids2 = module_ids(second)
-    report["pass1"] = {
-        "rslt": parse_rslt_lines(first),
-        "module_ids": ids1,
-        "module_box": MODULE_BOX_MARKER in first,
-        "warm_reset": WARM_RESET_MARKER in first,
-    }
+    if first is not None:
+        report["pass1"] = {
+            "rslt": parse_rslt_lines(first),
+            "module_ids": ids1,
+            "module_box": MODULE_BOX_MARKER in first,
+            "warm_reset": WARM_RESET_MARKER in first,
+        }
     report["pass2"] = {
         "rslt": parse_rslt_lines(second),
         "module_ids": ids2,
@@ -260,27 +281,43 @@ def evaluate_run(log, expected_failures=(), nvram_warnings="expected"):
         ],
     }
 
-    if not report["pass1"]["module_box"]:
-        problems.append("pass 1 did not print the module-id assignment box")
-    if not report["pass1"]["warm_reset"]:
-        problems.append("pass 1 did not warm reset after the factory boot")
-    if ids1 != [0]:
-        problems.append(
-            f"pass 1 hardware paths used module ids {ids1} rather than [0]"
-        )
-    if MENU_MARKER in first:
-        problems.append(
-            "pass 1 reached the System Maintenance Menu before the warm reset"
-        )
+    if first is not None:
+        if not report["pass1"]["module_box"]:
+            problems.append("pass 1 did not print the module-id assignment box")
+        if not report["pass1"]["warm_reset"]:
+            problems.append("pass 1 did not warm reset after the factory boot")
+        if ids1 != [0]:
+            problems.append(
+                f"pass 1 hardware paths used module ids {ids1} rather than [0]"
+            )
+        if MENU_MARKER in first:
+            problems.append(
+                "pass 1 reached the System Maintenance Menu before the warm reset"
+            )
 
     if report["pass2"]["module_box"]:
         problems.append("pass 2 repeated the module-id assignment box")
     if WARM_RESET_MARKER in second:
         problems.append("pass 2 warm reset again")
-    if len(ids2) != 1 or ids2 == [0]:
+    if first is not None:
+        if len(ids2) != 1 or ids2 == [0]:
+            problems.append(
+                f"pass 2 hardware paths used module ids {ids2} rather than the "
+                "single assigned nonzero module id"
+            )
+    elif len(ids2) not in (1, 2) or (len(ids2) == 2 and ids2[0] != 0):
+        # A single-pass boot has no box-and-reset boundary, but both real
+        # captures of it (docs/boot-logs/firmware.nvram-6.5.30
+        # .2026-08-22T19:53-07:00 and this test's own boot) still show the
+        # same two-id split as the two-pass contract, compressed into one
+        # pass: "Global master is /hw/module/0/..." prints before
+        # assignment, then every later path -- the SCSI adapter walk,
+        # ConsolePath -- uses the single id assigned after it. A third,
+        # unrelated id or a nonzero-only pair with no 0 has no such
+        # explanation in either capture.
         problems.append(
-            f"pass 2 hardware paths used module ids {ids2} rather than the "
-            "single assigned nonzero module id"
+            f"pass 2 hardware paths used module ids {ids2} rather than "
+            "module id 0 before assignment and a single id after"
         )
     if not report["pass2"]["menu"]:
         problems.append("pass 2 did not reach the System Maintenance Menu")
@@ -303,14 +340,21 @@ def evaluate_run(log, expected_failures=(), nvram_warnings="expected"):
                 "no RSLT failure was observed"
             )
 
+    if first is not None:
+        after = ids2[0] if len(ids2) == 1 else None
+    else:
+        # The single-pass shape's own last (highest) id is the one
+        # assigned after "Global master is /hw/module/0/..." -- see the
+        # module-id check above.
+        after = ids2[-1] if ids2 else None
     report["module_id"] = {
-        "before": ids1[0] if len(ids1) == 1 else None,
-        "after": ids2[0] if len(ids2) == 1 else None,
+        "before": ids1[0] if ids1 and len(ids1) == 1 else None,
+        "after": after,
     }
 
     report["failures"]["observed"] = {
         "pass1": [entry for entry in report["pass1"]["rslt"]
-                  if entry["verdict"] == "FAIL"],
+                  if entry["verdict"] == "FAIL"] if report["pass1"] else [],
         "pass2": [entry for entry in report["pass2"]["rslt"]
                   if entry["verdict"] == "FAIL"],
     }
@@ -322,7 +366,7 @@ def evaluate_run(log, expected_failures=(), nvram_warnings="expected"):
                 problems.append(
                     f"pass 2 did not print the expected warning: {warning}"
                 )
-            if warning in first:
+            if first is not None and warning in first:
                 problems.append(
                     f"pass 1 printed a warning expected only on pass 2: "
                     f"{warning}"

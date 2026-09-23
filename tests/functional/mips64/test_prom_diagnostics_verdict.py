@@ -83,6 +83,40 @@ file and what, if anything, was changed):
       on the assigned id. Every RSLT-format line, summary field, and
       sash inventory string in this fixture is copied unmodified from a
       real capture; nothing was invented from scratch.
+
+  REAL_SINGLE_PASS_TRANSCRIPT
+      Real, not synthetic: test_prom_diagnostics's own console capture
+      of PROM 6.156 (6.5.30), the release this test actually boots on
+      the current tree (build/tests/functional/mips64/
+      test_prom_diagnostics.PromDiagnostics.test_prom_diagnostics/
+      diag.log, 2026-09-22). Unlike PROM 6.11 above, 6.156 never prints
+      the module-id assignment box or warm resets: it runs the whole
+      factory sequence, sash netboot included, in one pass. The same
+      single-pass shape was already measured independently a month
+      earlier in docs/boot-logs/firmware.nvram-6.5.30
+      .2026-08-22T19:53-07:00, so this is a second, cleaner
+      confirmation, not the only one. module_ids() still reads {0, 1}
+      from this one pass, the same two ids REAL_TWO_PASS_TRANSCRIPT's
+      pass 2 shows split across the warm reset: "Global master is
+      /hw/module/0/..." prints during discovery, before an id is
+      assigned, and every path after that -- the SCSI adapter walk,
+      oldConsolePath/ConsolePath -- already agrees on 1. Only one
+      transformation was made to the raw capture: its own
+      progress-spinner backspace bytes (0x08), which erase and redraw
+      dots and counters mid-line and match nothing evaluate_run()
+      parses, were stripped. Every remaining character, including the
+      real \\r line endings and the mid-transcript switch from trailing
+      \\r to leading \\r that REAL_SUMMARY_EXCERPT's own paragraph above
+      describes, is exactly what the guest printed, including the
+      capture's own lack of a trailing newline after its last "sash: "
+      prompt (why this fixture's closing quote sits on that same line
+      rather than a new one like the fixtures above); this port's own
+      editing tools do not reliably keep bare trailing spaces at a
+      line's end distinct from no trailing space at all, so a source
+      line ending in one or more spaces before its \\r or newline may
+      carry fewer than the real capture's own count -- a whitespace
+      transcription gap with no parsing effect, called out here rather
+      than silently left to look more exact than it is.
 """
 
 import unittest
@@ -399,6 +433,121 @@ dlserver=192.0.2.2
 """
 
 
+REAL_SINGLE_PASS_TRANSCRIPT = """\
+IP27 PROM SGI Version 6.156  built 11:27:56 AM Nov 18, 2003\r
+using BaseIO nic\r
+Testing/Initializing memory ...............		DONE\r
+Copying PROM code to memory ...............		DONE\r
+Discovering local IO ......................		DONE\r
+update_klcfg_cpuinfo: Couldn't find my structure.\r
+Discovering NUMAlink connectivity .........		\r
+Local hub NUMAlink is down.\r
+*** Local network link down\r
+DONE\r
+Found 1 objects (1 hubs, 0 routers) in 830 usec\r
+Waiting for peers to complete discovery....		DONE\r
+No other nodes present; becoming global master\r
+Global master is /hw/module/0/slot/MotherBoard\r
+Testing/Initializing all memory ...........		DONE\r
+Checking partitioning information .........		DONE\r
+No other nodes present; becoming partition master\r
+Loading BASEIO prom .......................		DONE\r
+\r
+BASEIO PROM Monitor SGI Version 6.156  built 11:05:48 AM Nov 18, 2003 (BE64)\r
+1 CPUs on 1 nodes found.\r
+\r
+NVRAM checksum is incorrect: reinitializing.\r
+Installing PROM Device drivers ............             \r
+Base I/O Ethernet set to /dev/ethernet/ef0\r
+\r
+Walking SCSI Adapter 0 (/hw/module/1/slot/MotherBoard), (pci id 0)\r
+1- 2+ 3- 4- 5- 6- 7- 8- 9- 10- 11- 12- 13- 14- 15- = 1 device(s)\r
+\r
+\r
+Walking SCSI Adapter 1 (/hw/module/1/slot/MotherBoard), (pci id 1)\r
+1- 2- 3- 4- 5- 6- 7- 8- 9- 10- 11- 12- 13- 14- 15- = 0 device(s)\r
+\r
+Initializing PROM Device drivers ..........             DONE\r
+Checking hardware inventory ...............
+\rWARNING: hardware inventory is invalid.  Reinitializing...
+\rWriting 2 records.. DONE
+\rUpdated new configuration. Wrote 2 records.
+\r
+\r**** System Configuration and Diagnostics Summary ****
+\rCONFIG:
+\r         No. of NODEs enabled    = 1
+\r         No. of NODEs disabled   = 0
+\r         No. of CPUs enabled     = 1
+\r         No. of CPUs disabled    = 0
+\r         Mem enabled             = 64 MB
+\r         Mem disabled            = 0 MB
+\r         No. of RTRs enabled     = 0
+\r         No. of RTRs disabled    = 0
+\r
+\rDIAG RESULTS:
+\r         ALL DIAGS PASSED.
+\r**** End System Configuration and Diagnostics Summary ****
+\r\r
+\r
+System Maintenance Menu\r
+\r
+1) Start System\r
+2) Install System Software\r
+3) Run Diagnostics\r
+4) Recover System\r
+5) Enter Command Monitor\r
+
+\rOption? 5\r
+Command Monitor.  Type "exit" to return to the menu.
+\r>> unsetenv netaddr\r
+>> boot -f bootp()/sash64\r
+Setting $netaddr to 192.0.2.15 (from server )
+\rObtaining sash64 from server
+\r      896   |/-\\|/-\\|/-\\|/-\\|+111764Setting $netaddr to 192.0.2.15 (from server )
+\r   |/-\\|/-+16853   |+3848      |/-\\Setting $netaddr to 192.0.2.15 (from server )
+\r   |/-\\|/-\\      |/-\\      |/- entry: 0xa8000000012a6ee4
+\rStandalone Shell SGI Version 6.5 ARCS   Jul 20, 2006 (64 Bit)
+\rsash: hinv\r
+System  SGI-IP27
+\r1 180 MHz IP27 Processors
+\rMain memory size: 64 Mbytes
+\rIntegral SCSI controller 0
+\rIntegral SCSI controller 1
+\rIntegral Fast Ethernet
+\rIOC3 serial port
+\r    CDROM: unit 2 on SCSI Controller 0, (cdrom(0,2,7))
+\rsash: printenv\r
+AutoLoad=No
+\rdbgtty=/dev/tty/ioc30
+\rroot=dks0d1s0
+\rnonstop=0
+\rrbaud=19200
+\rSystemPartition=dksc(0,1,8)
+\rOSLoadPartition=dksc(0,1,0)
+\rOSLoader=sash
+\rOSLoadFilename=unix
+\rTimeZone=PST8PDT
+\rconsole=d
+\rgConsoleIn=default
+\rgConsoleOut=default
+\rdiskless=0
+\rscsihostid=00
+\rProbeAllScsi=n
+\rRestorePartEnv=y
+\rdbaud=9600
+\rvolume=80
+\rsgilogo=y
+\rConsoleOut=/dev/tty/ioc30
+\rConsoleIn=/dev/tty/ioc30
+\rcpufreq=180
+\roldConsolePath=/hw/module/1/slot/MotherBoard
+\rConsolePath=/hw/module/1/slot/MotherBoard
+\rkernname=bootp()/sash64
+\rnetaddr=192.0.2.15
+\rdlserver=192.0.2.2
+\rsash: """
+
+
 class ParseExpectedFailuresTest(unittest.TestCase):
 
     def test_ported_ledger_parses_to_the_empty_acceptance_list(self):
@@ -500,6 +649,29 @@ class TwoPassInvariantsTest(unittest.TestCase):
         self.assertIn("System Maintenance Menu", second)
 
 
+class SinglePassInvariantsTest(unittest.TestCase):
+    """PROM 6.156's single-pass invariant against
+    REAL_SINGLE_PASS_TRANSCRIPT: one factory pass, no module-id assignment
+    box, no warm reset, and both module ids diag-gate's two-pass contract
+    would otherwise expect split across a reset -- 0 during discovery, then
+    the single id assigned after it -- present together in the one pass."""
+
+    def setUp(self):
+        self.passes = split_passes(REAL_SINGLE_PASS_TRANSCRIPT)
+
+    def test_exactly_one_pass(self):
+        self.assertEqual(len(self.passes), 1)
+
+    def test_no_module_box_or_warm_reset(self):
+        only = self.passes[0]
+        self.assertNotIn("did not have module id", only)
+        self.assertNotIn("Resetting the system...", only)
+        self.assertIn("System Maintenance Menu", only)
+
+    def test_module_ids_are_zero_then_a_single_nonzero_id(self):
+        self.assertEqual(module_ids(self.passes[0]), [0, 1])
+
+
 class EvaluateRunTest(unittest.TestCase):
 
     # The red-baseline ledger as it stood before the 2026-08-27 run
@@ -545,6 +717,20 @@ class EvaluateRunTest(unittest.TestCase):
         self.assertEqual(report["failures"]["unexpected"], [])
         self.assertEqual(report["failures"]["stale"], [])
         self.assertEqual(report["sash_missing"], [])
+
+    def test_real_single_pass_transcript_passes(self):
+        # func-mips64-prom_diagnostics's real failure: PROM 6.156's own
+        # single-pass factory sequence, no box, no warm reset, one pass,
+        # ALL DIAGS PASSED and a full sash netboot -- a clean PASS once
+        # evaluate_run() accepts the single-pass shape rather than treating
+        # it as the wrong number of boot passes.
+        report = evaluate_run(REAL_SINGLE_PASS_TRANSCRIPT, ())
+        self.assertEqual(report["verdict"], "PASS", report["problems"])
+        self.assertEqual(report["passes"], 1)
+        self.assertEqual(report["failures"]["unexpected"], [])
+        self.assertEqual(report["failures"]["stale"], [])
+        self.assertEqual(report["sash_missing"], [])
+        self.assertEqual(report["module_id"], {"before": None, "after": 1})
 
     def test_a_summary_without_the_positive_verdict_is_not_a_pass(self):
         # The synthetic clean transcript minus the firmware's own ALL DIAGS
