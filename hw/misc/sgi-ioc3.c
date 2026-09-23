@@ -1027,13 +1027,16 @@ static void sgi_ioc3_sdma_write_port(SGIIOC3State *s, unsigned int port,
         /* Discarded silently: OpenBSD writes zero here on every boot. */
         return;
 
+    /*
+     * The engine advances these two, and software can still place them:
+     * the board test writes each and reads it back (docs/datasheets/ioc3.md).
+     * Only the pointer field stores, so a write cannot forge the held
+     * counts the engine reports in the bits above it.
+     */
     case SGI_IOC3_SDMA_TX_CONSUME:
     case SGI_IOC3_SDMA_RX_PRODUCE:
-        /* The engine's side; refused and traced -- firmware writes zeroes. */
-        trace_sgi_ioc3_sdma_write_refused(
-            (uint32_t)(SGI_IOC3_SDMA_PORT_A +
-                       port * SGI_IOC3_SDMA_PORT_STRIDE + offset),
-            (uint32_t)val);
+        *sgi_ioc3_sdma_port_reg(s, port, offset) = val & mask;
+        sgi_ioc3_sdma_run(s, port);
         return;
     }
 }
@@ -1111,6 +1114,23 @@ static void sgi_ioc3_sdma_alias_write(void *opaque, hwaddr addr, uint64_t val,
                       "sgi-ioc3: write of 0x%08x to serial DMA alias offset 0x%"
                       HWADDR_PRIx " which is past the seven registers a page "
                       "exposes\n", (uint32_t)val, addr);
+        return;
+    }
+
+    /*
+     * Three of the seven are read-only through a page, which is the whole
+     * point of exposing one to a user process: the two indexes the engine
+     * advances and the 16550 shadow (docs/datasheets/ioc3.md). The main
+     * block takes writes to the first two.
+     */
+    if (addr == SGI_IOC3_SDMA_TX_CONSUME ||
+        addr == SGI_IOC3_SDMA_RX_PRODUCE ||
+        addr == SGI_IOC3_SDMA_SHADOW) {
+        trace_sgi_ioc3_sdma_write_refused(
+            (uint32_t)(SGI_IOC3_SDMA_ALIAS_A +
+                       alias->port * (SGI_IOC3_SDMA_ALIAS_B -
+                                      SGI_IOC3_SDMA_ALIAS_A) + addr),
+            (uint32_t)val);
         return;
     }
 
