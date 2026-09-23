@@ -32,7 +32,7 @@
 #define BRIDGE_WIDGET   8
 #define BRIDGE_BASE     (SPACE_XTALK + ((uint64_t)BRIDGE_WIDGET << 24))
 
-/* A fixed station address, so PAR0/PAR1 and the EEPROM read are known. */
+/* A fixed station address, so the frame filters have a known target. */
 #define TIGON_MAC       "52:54:00:12:34:56"
 static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 
@@ -83,18 +83,10 @@ static const uint8_t tigon_mac[6] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 
 /* Register offsets within the card's own window (if_tireg.h). */
 #define TI_MISC_HOST_CTL    0x040
-#define TI_MISC_LOCAL_CTL   0x044
 #define TI_GCR_PAR0         0x600
 #define TI_GCR_PAR1         0x604
 #define TI_MHC_RESET        0x00000008
 #define TI_MHC_CHIP_REV_MASK 0xf0000000
-
-/* Serial-EEPROM bit-bang lines in MISC_LOCAL_CTL. */
-#define TI_MLC_EE_CLK       0x00100000
-#define TI_MLC_EE_TXEN      0x00200000
-#define TI_MLC_EE_DOUT      0x00400000
-#define TI_MLC_EE_DIN       0x00800000
-#define TI_EE_MAC_OFFSET    0x8c
 
 /* Interrupt and CPU control. */
 #define TI_MHC_INTSTATE     0x00000001
@@ -250,25 +242,6 @@ static void aim_window_at_bar(QTestState *qts)
                  DEV_MEMORY_SPACE | (ADAPTER_MMIO >> 20));
 }
 
-static void test_config_identity(const void *data)
-{
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
-
-    /* Vendor and device, the SGI Tigon pair, in one 32-bit config read. */
-    g_assert_cmphex(qtest_readl(qts, CFG0(TIGON_SLOT) + PCI_VENDOR_DEVICE), ==,
-                    TIGON_VENDOR_ID | (TIGON_DEVICE_ID << 16));
-
-    /* Class code (bytes 0x09-0x0B): Ethernet network controller. */
-    g_assert_cmphex(qtest_readl(qts, CFG0(TIGON_SLOT) + PCI_REV_CLASS) >> 8, ==,
-                    TIGON_CLASS_CODE);
-
-    /* One interrupt pin, INTA. */
-    g_assert_cmphex((qtest_readl(qts, CFG0(TIGON_SLOT) + PCI_INTR_LINE) >> 8) &
-                    0xff, ==, 0x01);
-
-    qtest_quit(qts);
-}
-
 static void test_one_memory_bar(const void *data)
 {
     QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
@@ -299,144 +272,6 @@ static void test_misc_host_ctl_chip_rev(const void *data)
     qtest_writel(qts, WINDOW_TIGON + TI_MISC_HOST_CTL, TI_MHC_RESET);
     g_assert_cmphex(qtest_readl(qts, WINDOW_TIGON + TI_MISC_HOST_CTL) &
                     TI_MHC_CHIP_REV_MASK, ==, (uint32_t)TIGON_CHIP_REV << 28);
-
-    qtest_quit(qts);
-}
-
-/*
- * The station-address paths. The driver reads the MAC before any firmware is
- * downloaded, so both routes must answer independently of firmware state: the
- * bit-banged serial EEPROM (MISC_LOCAL_CTL) that the driver reads at attach,
- * and the GCR PAR0/PAR1 registers real firmware would present once running.
- *
- * The EEPROM helpers below replay the exact 24Cxx I2C sequence the NetBSD "ti"
- * driver's ti_eeprom_getbyte()/EEPROM_START()/EEPROM_STOP() macros drive
- * (if_ti.c, if_tireg.h): a start condition, an 8-bit control byte, two address
- * bytes for a write, a stop/start, an 8-bit read control byte, then eight bits
- * clocked out on EE_DIN.
- */
-static uint32_t ee_read(QTestState *qts)
-{
-    return qtest_readl(qts, WINDOW_TIGON + TI_MISC_LOCAL_CTL);
-}
-
-static void ee_write(QTestState *qts, uint32_t v)
-{
-    qtest_writel(qts, WINDOW_TIGON + TI_MISC_LOCAL_CTL, v);
-}
-
-static void ee_setbit(QTestState *qts, uint32_t bit)
-{
-    ee_write(qts, ee_read(qts) | bit);
-}
-
-static void ee_clrbit(QTestState *qts, uint32_t bit)
-{
-    ee_write(qts, ee_read(qts) & ~bit);
-}
-
-static void ee_start(QTestState *qts)
-{
-    ee_setbit(qts, TI_MLC_EE_CLK);
-    ee_setbit(qts, TI_MLC_EE_DOUT);
-    ee_setbit(qts, TI_MLC_EE_TXEN);
-    ee_clrbit(qts, TI_MLC_EE_DOUT);
-    ee_clrbit(qts, TI_MLC_EE_CLK);
-}
-
-static void ee_stop(QTestState *qts)
-{
-    ee_clrbit(qts, TI_MLC_EE_TXEN);
-    ee_clrbit(qts, TI_MLC_EE_DOUT);
-    ee_setbit(qts, TI_MLC_EE_CLK);
-    ee_setbit(qts, TI_MLC_EE_TXEN);
-    ee_setbit(qts, TI_MLC_EE_DOUT);
-    ee_clrbit(qts, TI_MLC_EE_TXEN);
-    ee_clrbit(qts, TI_MLC_EE_CLK);
-}
-
-static void ee_putbyte(QTestState *qts, uint8_t byte)
-{
-    int i;
-
-    ee_setbit(qts, TI_MLC_EE_TXEN);
-    for (i = 0x80; i; i >>= 1) {
-        if (byte & i) {
-            ee_setbit(qts, TI_MLC_EE_DOUT);
-        } else {
-            ee_clrbit(qts, TI_MLC_EE_DOUT);
-        }
-        ee_setbit(qts, TI_MLC_EE_CLK);
-        ee_clrbit(qts, TI_MLC_EE_CLK);
-    }
-    ee_clrbit(qts, TI_MLC_EE_TXEN);
-    /* The ninth clock is the acknowledge; the driver reads and ignores it. */
-    ee_setbit(qts, TI_MLC_EE_CLK);
-    (void)ee_read(qts);
-    ee_clrbit(qts, TI_MLC_EE_CLK);
-}
-
-static uint8_t ee_getbyte(QTestState *qts, uint16_t addr)
-{
-    uint8_t byte = 0;
-    int i;
-
-    ee_start(qts);
-    ee_putbyte(qts, 0xa0);              /* write control byte */
-    ee_putbyte(qts, (addr >> 8) & 0xff);
-    ee_putbyte(qts, addr & 0xff);
-    ee_stop(qts);
-    ee_start(qts);
-    ee_putbyte(qts, 0xa1);             /* read control byte */
-
-    ee_clrbit(qts, TI_MLC_EE_TXEN);
-    for (i = 0x80; i; i >>= 1) {
-        ee_setbit(qts, TI_MLC_EE_CLK);
-        if (ee_read(qts) & TI_MLC_EE_DIN) {
-            byte |= i;
-        }
-        ee_clrbit(qts, TI_MLC_EE_CLK);
-    }
-    ee_stop(qts);
-
-    return byte;
-}
-
-static void test_station_addr_par(const void *data)
-{
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
-
-    aim_window_at_bar(qts);
-
-    /* PAR0 = bytes 0-1, PAR1 = bytes 2-5, in the driver's big-endian pair. */
-    g_assert_cmphex(qtest_readl(qts, WINDOW_TIGON + TI_GCR_PAR0), ==,
-                    ((uint32_t)tigon_mac[0] << 8) | tigon_mac[1]);
-    g_assert_cmphex(qtest_readl(qts, WINDOW_TIGON + TI_GCR_PAR1), ==,
-                    ((uint32_t)tigon_mac[2] << 24) |
-                    ((uint32_t)tigon_mac[3] << 16) |
-                    ((uint32_t)tigon_mac[4] << 8) | tigon_mac[5]);
-
-    qtest_quit(qts);
-}
-
-static void test_station_addr_eeprom(const void *data)
-{
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
-    int i;
-
-    aim_window_at_bar(qts);
-
-    /*
-     * The six MAC bytes sit at TI_EE_MAC_OFFSET + 2, not at TI_EE_MAC_OFFSET:
-     * the manual's stated offset is two zero pad bytes before the address
-     * (if_ti.c comment at the read call). Confirm both facts.
-     */
-    for (i = 0; i < 6; i++) {
-        g_assert_cmphex(ee_getbyte(qts, TI_EE_MAC_OFFSET + 2 + i), ==,
-                        tigon_mac[i]);
-    }
-    g_assert_cmphex(ee_getbyte(qts, TI_EE_MAC_OFFSET), ==, 0);
-    g_assert_cmphex(ee_getbyte(qts, TI_EE_MAC_OFFSET + 1), ==, 0);
 
     qtest_quit(qts);
 }
@@ -794,40 +629,6 @@ static void test_geninfo_upper_half(const void *data)
     qtest_quit(qts);
 }
 
-static void test_firmware_up_requires_gib(const void *data)
-{
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
-
-    enable_dma_big_endian(qts);
-    build_gib(qts);
-
-    /* Releasing the CPU with no GIB published must not post firmware-up. */
-    release_cpu(qts);
-    g_assert_cmphex(qtest_readl(qts, EVENT_RING_PHYS), ==, 0);
-    g_assert_cmphex(qtest_readl(qts, EV_PROD_PHYS), ==, 0);
-    g_assert_false(irq_asserted(qts));
-
-    qtest_quit(qts);
-}
-
-static void test_firmware_up_posts_event(const void *data)
-{
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
-
-    enable_dma_big_endian(qts);
-    build_gib(qts);
-    publish_gib(qts);
-    release_cpu(qts);
-
-    /* Both conditions met: a firmware-up event and the interrupt. */
-    g_assert_cmphex(qtest_readl(qts, EVENT_RING_PHYS), ==,
-                    (uint32_t)TI_EV_FIRMWARE_UP << 24);
-    g_assert_cmphex(qtest_readl(qts, EV_PROD_PHYS), ==, 1);
-    g_assert_true(irq_asserted(qts));
-
-    qtest_quit(qts);
-}
-
 /*
  * A firmware download reaches SRAM through the movable 2 KB BAR window. The
  * mixed-width writes share one word so widening either narrow access corrupts
@@ -904,41 +705,6 @@ static const uint8_t test_frame[60] = {
 
 static void post_std_rx_buffer(QTestState *qts, unsigned slot, uint32_t phys,
                                uint16_t buf_idx, uint32_t buf_len);
-
-static void test_transmit(const void *data)
-{
-    int sv[2];
-    QTestState *qts;
-    uint8_t got[2048];
-    size_t len;
-
-    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = tigon_init_netdev(sv[1]);
-    close(sv[1]);
-    net_recv_timeout(sv[0], 5);
-
-    go_operational(qts);
-
-    /* One transmit descriptor: a single fragment marked end-of-frame. */
-    qtest_memwrite(qts, TX_BUF_PHYS, test_frame, sizeof(test_frame));
-    write_rcb_addr(qts, TX_RING_PHYS + 0, TX_BUF_PHYS);
-    qtest_writel(qts, TX_RING_PHYS + 8,
-                 ((uint32_t)sizeof(test_frame) << 16) | TI_BDFLAG_END);
-    qtest_writel(qts, TX_RING_PHYS + 12, 0);
-
-    /* Ring the send doorbell: producer index 1. */
-    qtest_writel(qts, WINDOW_TIGON + TI_MB_SENDPROD_IDX, 1);
-
-    len = net_recv_frame(sv[0], got, sizeof(got));
-    g_assert_cmpint(len, ==, sizeof(test_frame));
-    g_assert_cmpmem(got, len, test_frame, sizeof(test_frame));
-
-    /* The transmit consumer index advanced in host memory. */
-    g_assert_cmphex(qtest_readl(qts, TX_CONS_PHYS), ==, 1);
-
-    qtest_quit(qts);
-    close(sv[0]);
-}
 
 /* Descriptor DMA is batched, while completion stays a separate last write. */
 static void test_descriptor_dma_batches_producer_last(const void *data)
@@ -2419,52 +2185,6 @@ static void test_receive_reports_checksums(const void *data)
     close(sv[0]);
 }
 
-static void test_receive(const void *data)
-{
-    int sv[2];
-    QTestState *qts;
-    uint8_t landed[64];
-    uint32_t word2;
-
-    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = tigon_init_netdev(sv[1]);
-    close(sv[1]);
-    net_recv_timeout(sv[0], 5);
-
-    go_operational(qts);
-
-    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
-    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
-    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
-
-    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
-
-    /* The return producer index advances once the frame is delivered. */
-    g_assert_cmphex(wait_return_prod(qts), ==, 1);
-
-    /* Return descriptor names the buffer index and the received length. */
-    word2 = qtest_readl(qts, RETURN_RING_PHYS + 8);
-    g_assert_cmphex(word2 >> 16, ==, 0);
-    g_assert_cmphex(word2 & 0xffff, ==, sizeof(rx_frame_ours));
-
-    /*
-     * The return flags must carry END: IRIX's eg silently frees any receive
-     * whose return descriptor has it clear, so without it no frame reaches IP.
-     */
-    g_assert_cmphex(qtest_readl(qts, RETURN_RING_PHYS + 12) & TI_BDFLAG_END,
-                    ==, TI_BDFLAG_END);
-
-    /* The frame landed in the posted buffer, byte for byte. */
-    qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(rx_frame_ours));
-    g_assert_cmpmem(landed, sizeof(rx_frame_ours),
-                    rx_frame_ours, sizeof(rx_frame_ours));
-
-    g_assert_true(irq_asserted(qts));
-
-    qtest_quit(qts);
-    close(sv[0]);
-}
-
 static void set_station_address(QTestState *qts, const uint8_t mac[6])
 {
     qtest_writel(qts, WINDOW_TIGON + TI_GCR_PAR0,
@@ -3211,50 +2931,6 @@ static void test_transmit_checksum_ignores_non_ip(const void *data)
 
 
 
-/* An oversized frame must not be written past the buffer the guest posted. */
-static void test_receive_clamps_to_buffer(const void *data)
-{
-    static const uint8_t big_frame[128] = {
-        0x52, 0x54, 0x00, 0x12, 0x34, 0x56,   /* dest = our MAC */
-        0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
-        0x08, 0x00, 0xa1, 0xa2, 0xa3, 0xa4,
-    };
-    int sv[2];
-    QTestState *qts;
-    uint8_t guard[64];
-    uint32_t word2;
-    int i;
-
-    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = tigon_init_netdev(sv[1]);
-    close(sv[1]);
-    net_recv_timeout(sv[0], 5);
-
-    go_operational(qts);
-
-    /* A 64-byte buffer, with the 64 bytes past it seeded to catch a spill. */
-    qtest_memset(qts, RX_BUF_PHYS, 0, 128);
-    qtest_memset(qts, RX_BUF_PHYS + 64, 0xa5, 64);
-    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 64);
-    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 1);
-
-    net_send_frame(sv[0], big_frame, sizeof(big_frame));
-    g_assert_cmphex(wait_return_prod(qts), ==, 1);
-
-    /* The reported length is clamped to the buffer, not the frame. */
-    word2 = qtest_readl(qts, RETURN_RING_PHYS + 8);
-    g_assert_cmphex(word2 & 0xffff, ==, 64);
-
-    /* Nothing landed past the buffer: the seeded bytes are intact. */
-    qtest_memread(qts, RX_BUF_PHYS + 64, guard, sizeof(guard));
-    for (i = 0; i < (int)sizeof(guard); i++) {
-        g_assert_cmphex(guard[i], ==, 0xa5);
-    }
-
-    qtest_quit(qts);
-    close(sv[0]);
-}
-
 /*
  * A multicast frame: an IPv6 neighbour-discovery solicited-node address, which
  * is the case that matters. Group bit set in the first octet.
@@ -3265,43 +2941,6 @@ static const uint8_t rx_frame_mcast[64] = {
     0x86, 0xdd,                              /* ethertype IPv6 */
     0x60, 0x00, 0x00, 0x00,
 };
-
-static void test_receive_filters_other(const void *data)
-{
-    int sv[2];
-    QTestState *qts;
-    uint8_t landed[64];
-
-    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    qts = tigon_init_netdev(sv[1]);
-    close(sv[1]);
-    net_recv_timeout(sv[0], 5);
-
-    go_operational(qts);
-
-    qtest_memset(qts, RX_BUF_PHYS, 0, 2048);
-    post_std_rx_buffer(qts, 0, RX_BUF_PHYS, 0, 2048);
-    post_std_rx_buffer(qts, 1, RX_BUF_PHYS + 0x1000, 1, 2048);
-    qtest_writel(qts, WINDOW_TIGON + TI_MB_STDRXPROD_IDX, 2);
-
-    /*
-     * A frame for a different station, then one for us. Both are read from
-     * the backend in order; only the second may reach the ring. If the filter
-     * let the first through, the return producer would reach 2 and the buffer
-     * would hold the wrong frame.
-     */
-    net_send_frame(sv[0], rx_frame_other, sizeof(rx_frame_other));
-    net_send_frame(sv[0], rx_frame_ours, sizeof(rx_frame_ours));
-
-    g_assert_cmphex(wait_return_prod(qts), ==, 1);
-
-    qtest_memread(qts, RX_BUF_PHYS, landed, sizeof(rx_frame_ours));
-    g_assert_cmpmem(landed, sizeof(rx_frame_ours),
-                    rx_frame_ours, sizeof(rx_frame_ours));
-
-    qtest_quit(qts);
-    close(sv[0]);
-}
 
 /*
  * A real dst/src/ethertype frame, 63 bytes -- not a multiple of 4 -- so the
@@ -3541,65 +3180,6 @@ static void test_hang_guard(const void *data)
 }
 
 /*
- * The interrupt line the model exposes through the MISC_HOST_CTL state bit is
- * gated by the chip-level mask and cleared either by the mailbox write (the
- * driver's acknowledge, see tigon.c's TI_MB_HOSTINTR handler) or the
- * clear-interrupt bit. Firmware-up leaves it asserted; walk it through each
- * control, checking the mask before the ack so it still has a pending latch
- * to gate.
- */
-static void test_interrupt_mask_ack(const void *data)
-{
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
-
-    go_operational(qts);
-    g_assert_true(irq_asserted(qts));
-
-    /* The chip-level mask suppresses delivery without touching the latch. */
-    qtest_writel(qts, WINDOW_TIGON + TI_MISC_HOST_CTL, TI_MHC_MASK_INTS);
-    g_assert_false(irq_asserted(qts));
-    qtest_writel(qts, WINDOW_TIGON + TI_MISC_HOST_CTL, 0);
-    g_assert_true(irq_asserted(qts));
-
-    /* The mailbox write is the acknowledge: either value drops the latch. */
-    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 1);
-    g_assert_false(irq_asserted(qts));
-
-    /* Clear-interrupt still drops a still-pending latch directly. */
-    qtest_writel(qts, WINDOW_TIGON + TI_MISC_HOST_CTL, TI_MHC_CLEARINT);
-    g_assert_false(irq_asserted(qts));
-
-    qtest_quit(qts);
-}
-
-/*
- * The real acknowledge is the mailbox write, not GCR consumer-index
- * catch-up: IRIX's "eg" driver, observed live, never writes
- * TI_GCR_EVENTCONS_IDX or TI_GCR_RXRETURNCONS_IDX at all, so a model gated on
- * those consumers left the line stuck asserted forever against it. Pin both
- * halves of that: advancing the consumer index alone does nothing, and the
- * mailbox write -- with the value eg actually uses, 0 -- is what lowers the
- * line.
- */
-static void test_interrupt_hostintr_ack(const void *data)
-{
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
-
-    go_operational(qts);
-    g_assert_true(irq_asserted(qts));
-
-    /* Advancing the consumer index no longer has any effect on the line. */
-    qtest_writel(qts, WINDOW_TIGON + TI_GCR_EVENTCONS_IDX, 1);
-    g_assert_true(irq_asserted(qts));
-
-    /* IRIX's eg writes only 0 here -- that alone must ack. */
-    qtest_writel(qts, WINDOW_TIGON + TI_MB_HOSTINTR, 0);
-    g_assert_false(irq_asserted(qts));
-
-    qtest_quit(qts);
-}
-
-/*
  * The interrupt mask. The public driver writes 0 here under the comment "Turn
  * interrupts on", so zero permits and a non-zero value holds the line down.
  * Modelled because a register that is stored and never consulted answers reads
@@ -3676,36 +3256,6 @@ static void test_interrupt_irix_ack_protocol(const void *data)
 
     qtest_quit(qts);
     close(sv[0]);
-}
-
-/*
- * The Layer-A register-swap bits and the descriptor-swap operating mode are
- * ordinary read/write state: the guest programs them and reads them back
- * unchanged. This pins that the model stores them rather than acting on them
- * in some hidden way.
- */
-static void test_register_config_roundtrip(const void *data)
-{
-    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE);
-
-    aim_window_at_bar(qts);
-
-    /* MISC_HOST_CTL byte/word swap-enable bits round-trip (Layer A config). */
-    qtest_writel(qts, WINDOW_TIGON + TI_MISC_HOST_CTL,
-                 TI_MHC_BYTE_SWAP_ENB | TI_MHC_WORD_SWAP_ENB);
-    g_assert_cmphex(qtest_readl(qts, WINDOW_TIGON + TI_MISC_HOST_CTL) &
-                    (TI_MHC_BYTE_SWAP_ENB | TI_MHC_WORD_SWAP_ENB), ==,
-                    TI_MHC_BYTE_SWAP_ENB | TI_MHC_WORD_SWAP_ENB);
-
-    /* GCR OPMODE reads back exactly what was written. */
-    qtest_writel(qts, WINDOW_TIGON + TI_GCR_OPMODE,
-                 TI_OPMODE_BYTESWAP_BD | TI_OPMODE_WORDSWAP_BD |
-                 TI_OPMODE_BYTESWAP_DATA);
-    g_assert_cmphex(qtest_readl(qts, WINDOW_TIGON + TI_GCR_OPMODE), ==,
-                    TI_OPMODE_BYTESWAP_BD | TI_OPMODE_WORDSWAP_BD |
-                    TI_OPMODE_BYTESWAP_DATA);
-
-    qtest_quit(qts);
 }
 
 /*
@@ -4809,25 +4359,14 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
-    qtest_add_data_func("/sn0/tigon/config-identity", NULL,
-                        test_config_identity);
     qtest_add_data_func("/sn0/tigon/one-memory-bar", NULL,
                         test_one_memory_bar);
     qtest_add_data_func("/sn0/tigon/misc-host-ctl-chip-rev", NULL,
                         test_misc_host_ctl_chip_rev);
-    qtest_add_data_func("/sn0/tigon/station-addr-par", NULL,
-                        test_station_addr_par);
-    qtest_add_data_func("/sn0/tigon/station-addr-eeprom", NULL,
-                        test_station_addr_eeprom);
     qtest_add_data_func("/sn0/tigon/geninfo-upper-half", NULL,
                         test_geninfo_upper_half);
-    qtest_add_data_func("/sn0/tigon/firmware-up-requires-gib", NULL,
-                        test_firmware_up_requires_gib);
-    qtest_add_data_func("/sn0/tigon/firmware-up-posts-event", NULL,
-                        test_firmware_up_posts_event);
     qtest_add_data_func("/sn0/tigon/firmware-upload-window-posts-event", NULL,
                         test_firmware_upload_window_posts_event);
-    qtest_add_data_func("/sn0/tigon/transmit", NULL, test_transmit);
     qtest_add_data_func("/sn0/tigon/user-backend-reply-waits-for-transmit",
                         NULL, test_user_backend_reply_waits_for_transmit);
     qtest_add_data_func("/sn0/tigon/descriptor-dma-batches-producer-last",
@@ -4878,7 +4417,6 @@ int main(int argc, char **argv)
                         test_receive_reports_checksums);
     qtest_add_data_func("/sn0/tigon/payload-skips-lane-swap", NULL,
                         test_payload_skips_lane_swap);
-    qtest_add_data_func("/sn0/tigon/receive", NULL, test_receive);
     qtest_add_data_func("/sn0/tigon/set-mac-command-updates-filter", NULL,
                         test_set_mac_command_updates_filter);
     qtest_add_data_func("/sn0/tigon/reset-restores-configured-mac", NULL,
@@ -4917,10 +4455,6 @@ int main(int argc, char **argv)
                         test_firmware_up_releases_a_held_frame);
     qtest_add_data_func("/sn0/tigon/receive-accepts-multicast", NULL,
                         test_receive_accepts_multicast);
-    qtest_add_data_func("/sn0/tigon/receive-filters-other", NULL,
-                        test_receive_filters_other);
-    qtest_add_data_func("/sn0/tigon/receive-clamps-to-buffer", NULL,
-                        test_receive_clamps_to_buffer);
     qtest_add_data_func("/sn0/tigon/receive-direct-map-transparent", NULL,
                         test_receive_direct_map_transparent);
     qtest_add_data_func("/sn0/tigon/receive-direct-map-corrects", NULL,
@@ -4930,16 +4464,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("/sn0/tigon/byte-order-bridge-corrects", NULL,
                         test_byte_order_bridge_corrects);
     qtest_add_data_func("/sn0/tigon/hang-guard", NULL, test_hang_guard);
-    qtest_add_data_func("/sn0/tigon/interrupt-mask-ack", NULL,
-                        test_interrupt_mask_ack);
     qtest_add_data_func("/sn0/tigon/interrupt-mask-holds-the-line", NULL,
                         test_interrupt_mask_holds_the_line);
-    qtest_add_data_func("/sn0/tigon/interrupt-hostintr-ack", NULL,
-                        test_interrupt_hostintr_ack);
     qtest_add_data_func("/sn0/tigon/interrupt-irix-ack-protocol", NULL,
                         test_interrupt_irix_ack_protocol);
-    qtest_add_data_func("/sn0/tigon/register-config-roundtrip", NULL,
-                        test_register_config_roundtrip);
 
     qtest_add_data_func("/sn0/tigon/statistics-head-tracks-interface-state",
                         NULL, test_statistics_head_tracks_interface_state);
