@@ -1322,6 +1322,12 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
     /* IRIX's configuration diagnostic fails the slot on a zero Status. */
     pci_set_word(dev->config + PCI_STATUS,
                  PCI_STATUS_DEVSEL_MEDIUM | PCI_STATUS_FAST_BACK);
+    /*
+     * Parity-error response lives in the Command half beside the enables
+     * the PCI core already lets a guest write (docs/datasheets/ioc3.md):
+     * io8bt writes 0x146 there and expects it back.
+     */
+    pci_word_test_and_set_mask(dev->wmask + PCI_COMMAND, PCI_COMMAND_PARITY);
 
     memory_region_init(&s->bar, OBJECT(dev), "sgi-ioc3.bar",
                        SGI_IOC3_BAR_SIZE);
