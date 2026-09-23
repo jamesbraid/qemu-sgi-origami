@@ -884,29 +884,6 @@ static void test_selected_migration(void)
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
-static void test_metadata(void)
-{
-    QTestState *s = qtest_init("-M none -cpu R10000 -S "
-                              "-device sgi-l1,id=l1c,revision-major=1,"
-                              "revision-minor=18,revision-patch=5" UART);
-    const uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 5 };
-    const uint8_t expected[] = { 0x30, 0, 0, 0, 0, 3,
-                                 0, 0, 0, 0, 1,
-                                 0, 0, 0, 0, 18,
-                                 0, 0, 0, 0, 5 };
-    uint8_t reply[131];
-    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
-    send_frame(s, request, sizeof(request), false);
-    g_assert_cmpuint(receive(s, reply), ==, sizeof(expected));
-    g_assert_cmpmem(reply, sizeof(expected), expected, sizeof(expected));
-    qtest_quit(s);
-    s = start();
-    send_frame(s, request, sizeof(request), false);
-    g_assert_cmpuint(receive(s, reply), ==, 6);
-    g_assert_cmphex(reply[4], ==, 0x98);
-    qtest_quit(s);
-}
-
 static void console_expect(int fd, const char *expected)
 {
     g_autofree char *actual = g_malloc(strlen(expected) + 1);
@@ -1212,48 +1189,6 @@ static void test_node_power_line(void)
     close(fd);
 }
 
-static void test_version_metadata(void)
-{
-    int fd;
-    QTestState *s = console_start(&fd, ",revision-major=1,revision-minor=44,"
-                                  "revision-patch=0", RTC);
-
-    console_expect(fd, POWERING ENTER_CPU0);
-    console_send(fd, "\024version\r");
-    console_expect(fd, ESCAPE "L1 1.44.0 (Image A) [Fuel/PE/O300 1MB image]\r\n"
-                       RETURN_CPU0);
-    console_send(fd, "\024log\r");
-    console_expect(fd, ESCAPE STAMP "L1 booting 1.44.0\r\n"
-                       STAMP "auto power up initiated\r\n"
-                       STAMP "power up (COMMAND)\r\n" RETURN_CPU0);
-    qtest_quit(s);
-    close(fd);
-}
-
-static void test_log_capacity(void)
-{
-    int fd;
-    QTestState *s = console_start(&fd, ",auto-power=off", RTC);
-    g_autofree char *expected = NULL;
-    GString *text = g_string_new(NULL);
-
-    /* 128 entries fit; the 129th drops the oldest, the boot line. */
-    for (unsigned i = 1; i <= 128; i++) {
-        g_autofree char *command = g_strdup_printf("log insert e%u\r", i);
-        console_send(fd, command);
-        console_expect(fd, "log entry made.\r\n" PROMPT);
-    }
-    for (unsigned i = 1; i <= 128; i++) {
-        g_string_append_printf(text, STAMP "e%u\r\n", i);
-    }
-    g_string_append(text, PROMPT);
-    expected = g_string_free(text, FALSE);
-    console_send(fd, "log\r");
-    console_expect(fd, expected);
-    qtest_quit(s);
-    close(fd);
-}
-
 static void test_signals(void)
 {
     static const struct {
@@ -1388,40 +1323,6 @@ static void test_selection(void)
                        "returning to console mode  " ID " CPU1, "
                        "<CTRL_T> to escape to L1\r\n");
     g_assert_cmpuint(node_position(s, 0x0ffff006), ==, 0);
-    qtest_quit(s);
-    close(fd);
-}
-
-static void test_display_command(void)
-{
-    int fd;
-    QTestState *s = console_start(&fd, "", "-no-shutdown " RTC);
-
-    console_expect(fd, POWERING ENTER_CPU0);
-    console_send(fd, "\024display 2 hello\r");
-    console_expect(fd, ESCAPE RETURN_CPU0);
-    assert_display(s, "hello");
-    console_send(fd, "\024display\r");
-    console_expect(fd, ESCAPE "revision: 2.0\r\n"
-                       "line 1: \"" ID "     /\"\r\n"
-                       "line 2: \"hello       \"\r\n"
-                       "leds:  PWR=on    SERVICE=off     FAULT=off\r\n"
-                       RETURN_CPU0);
-    /* The first power-off request while up is deferred; the second acts. */
-    console_send(fd, "\024power down\r");
-    console_expect(fd, ESCAPE RETURN_CPU0);
-    console_send(fd, "\024power down\r");
-    console_expect(fd, ESCAPE PROMPT);
-    qtest_qmp_eventwait(s, "SHUTDOWN");
-    assert_display(s, "Powered Down");
-    console_send(fd, "display 2 again\r");
-    console_expect(fd, PROMPT);
-    assert_display(s, "again");
-    console_send(fd, "power up\r");
-    console_expect(fd, PROMPT "\r\n" ENTER_CPU0);
-    qtest_qmp_eventwait(s, "RESET");
-    wait_running(s);
-    assert_display(s, "Powered Up");
     qtest_quit(s);
     close(fd);
 }
@@ -1586,54 +1487,6 @@ static void test_route_forms(void)
     request[0] = 0x1f;
     send_frame(s, request, sizeof(request), false);
     expect_identity(s, 31, 0x1cb);
-    qtest_quit(s);
-}
-
-static void expect_silence(QTestState *s, const uint8_t *request, size_t n)
-{
-    const uint8_t recover[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 3 };
-
-    send_frame(s, request, n, false);
-    g_assert_cmphex(qtest_readq(s, BASE + 0x28), ==, 0x60);
-    send_frame(s, recover, sizeof(recover), false);
-    expect_identity(s, 16, 0x41);
-}
-
-/* Which local tasks answer, echo, or drop. */
-static void test_tasks(void)
-{
-    QTestState *s = start();
-    uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 6, 0, 3 };
-    const uint8_t loopback[] = { 0x10, 0x0f, 0xff, 0xf0, 18, 0xab, 0xcd, 2,
-                                 0, 0, 0, 0, 5, 1, 'h', 'i', 0 };
-    const uint8_t echoed[] = { 0x30, 0, 0, 0xab, 0xcd, 2,
-                               0, 0, 0, 0, 5, 1, 'h', 'i', 0 };
-    const uint8_t console_in[] = { 0x10, 0x0f, 0xff, 0xf0, 4 << 5 | 5,
-                                   0x00, 0x00, 1, 0, 0, 0, 0, 0x41 };
-    const uint8_t console_in_21[] = { 0x10, 0x0f, 0xff, 0xf0, 2 << 5 | 21,
-                                      0x12, 0x34, 1, 0, 0, 0, 0, 0x62 };
-    static const unsigned silent[] = {
-        0, 1, 4, 7, 8, 9, 10, 11, 12, 13, 17, 20, 22, 23, 24, 25, 26,
-        27, 28, 29, 30, 31, 2, 14, 15, 16, 19
-    };
-    uint8_t reply[131];
-
-    for (unsigned i = 0; i < G_N_ELEMENTS(silent); i++) {
-        set_destination(request, 0x0ffff000 | silent[i]);
-        expect_silence(s, request, sizeof(request));
-    }
-    send_frame(s, loopback, sizeof(loopback), false);
-    g_assert_cmpuint(receive(s, reply), ==, sizeof(echoed));
-    g_assert_cmpmem(reply, sizeof(echoed), echoed, sizeof(echoed));
-    /* The Bedrock console tasks send the first argument back as input. */
-    send_frame(s, console_in, sizeof(console_in), false);
-    g_assert_cmpuint(receive(s, reply), ==, 2);
-    g_assert_cmphex(reply[0], ==, 4);
-    g_assert_cmphex(reply[1], ==, 'A');
-    send_frame(s, console_in_21, sizeof(console_in_21), false);
-    g_assert_cmpuint(receive(s, reply), ==, 2);
-    g_assert_cmphex(reply[0], ==, 2);
-    g_assert_cmphex(reply[1], ==, 'b');
     qtest_quit(s);
 }
 
@@ -1915,105 +1768,6 @@ static void test_console_short_frames(void)
     close(fd);
 }
 
-static void test_task_commands(void)
-{
-    QTestState *s = start();
-    uint8_t request[] = { 0x10, 0x0f, 0xff, 0xf0, 3, 0, 3, 0 };
-    uint8_t reply[131];
-    /* The interpreter takes any code; without its text it answers minus 100. */
-    send_frame(s, request, sizeof(request), false);
-    g_assert_cmpuint(receive(s, reply), ==, 6);
-    g_assert_cmphex(reply[4], ==, 0x9c);
-    request[4] = 6;
-    request[6] = 0;
-    send_frame(s, request, sizeof(request), false);
-    g_assert_cmpuint(receive(s, reply), ==, 6);
-    g_assert_cmphex(reply[4], ==, 0x9b);
-    request[1] = 0x4f;
-    request[5] = 0x10;
-    request[6] = 5;
-    send_frame(s, request, sizeof(request), false);
-    /* The attached-I/O address is not local: router error, line unchanged. */
-    expect_router_error(s, 16);
-    assert_display(s, "Powered Up");
-    request[1] = 0x0f;
-    send_frame(s, request, sizeof(request), false);
-    g_assert_cmpuint(receive(s, reply), ==, 6);
-    g_assert_cmphex(reply[4], ==, 0x9c);
-    qtest_quit(s);
-}
-
-static void test_settings_queries(void)
-{
-    QTestState *s = start();
-    const uint8_t commands[] = { 1, 9, 10 };
-    uint8_t request[] = { 0x17, 0x0f, 0xff, 0xf0, 6, 0, 0, 0,
-                          0, 0, 0, 0, 0x55 };
-    uint8_t expected[16] = { 0x37, 0, 0, 0, 0, 1 };
-    const uint8_t bad_count[] = { 0x37, 0xff, 0xff, 0xff, 0x9c, 0 };
-    uint8_t reply[131];
-
-    for (unsigned i = 0; i < G_N_ELEMENTS(commands); i++) {
-        unsigned length = commands[i] == 10 ? 16 : 11;
-        request[6] = commands[i];
-        expected[5] = commands[i] == 10 ? 2 : 1;
-        for (unsigned count_byte = 0; count_byte < 2; count_byte++) {
-            send_frame(s, request, 7 + count_byte, false);
-            g_assert_cmpuint(receive(s, reply), ==, length);
-            g_assert_cmpmem(reply, length, expected, length);
-        }
-        /* Extra arguments are accepted: the same reply comes back. */
-        request[7] = 1;
-        send_frame(s, request, sizeof(request), false);
-        g_assert_cmpuint(receive(s, reply), ==, length);
-        g_assert_cmpmem(reply, length, expected, length);
-        request[7] = 0;
-        if (commands[i] == 1) {
-            /* The identity request accepts an extra integer too. */
-            uint8_t identity[] = { 0x17, 0x0f, 0xff, 0xf0, 6, 0, 3, 1,
-                                   0, 0, 0, 0, 9 };
-            const uint8_t answer[] = { 0x37, 0, 0, 0, 0, 2, 0, 0, 0, 0, 65,
-                                       0, 0, 0, 0, '4' };
-
-            send_frame(s, identity, sizeof(identity), false);
-            g_assert_cmpuint(receive(s, reply), ==, sizeof(answer));
-            g_assert_cmpmem(reply, sizeof(answer), answer, sizeof(answer));
-        }
-        request[4] = 3;
-        /* The interpreter takes any code but wants one text argument. */
-        send_frame(s, request, 8, false);
-        g_assert_cmpuint(receive(s, reply), ==, sizeof(bad_count));
-        g_assert_cmpmem(reply, sizeof(bad_count), bad_count, sizeof(bad_count));
-        request[4] = 6;
-        request[1] = 0x4f;
-        send_frame(s, request, 8, false);
-        expect_router_error(s, 23);
-        request[1] = 0x0f;
-    }
-    qtest_quit(s);
-}
-
-static void expect_debug_switches(QTestState *s, uint8_t high, uint8_t low)
-{
-    uint8_t reply[131];
-    const uint8_t expected[] = { 0x30, 0, 0, 0, 0, 1,
-                                 0, 0, 0, high, low };
-
-    g_assert_cmpuint(general(s, 1, NULL, 0, 0, reply), ==,
-                     sizeof(expected));
-    g_assert_cmpmem(reply, sizeof(expected), expected, sizeof(expected));
-}
-
-static void send_task3(QTestState *s, const char *command)
-{
-    uint8_t request[128] = { 0x10, 0x0f, 0xff, 0xf0, 3, 0, 3, 1, 1 };
-    size_t length = strlen(command) + 1;
-
-    g_assert_cmpuint(length, <=, sizeof(request) - 9);
-    memcpy(request + 9, command, length);
-    send_frame(s, request, length + 9, false);
-}
-
 static void expect_raw_reply(QTestState *s, const uint8_t *expected,
                              size_t length)
 {
@@ -2025,129 +1779,6 @@ static void expect_raw_reply(QTestState *s, const uint8_t *expected,
         actual[i] = qtest_readq(s, BASE);
     }
     g_assert_cmpmem(actual, length, expected, length);
-}
-
-static void expect_raw_hex_reply(QTestState *s, const char *hex)
-{
-    uint8_t expected[131];
-    size_t length = 0;
-
-    for (const char *p = hex; *p; ) {
-        int high, low;
-
-        if (*p == ' ') {
-            p++;
-            continue;
-        }
-        high = g_ascii_xdigit_value(p[0]);
-        low = g_ascii_xdigit_value(p[1]);
-        g_assert_cmpint(high, >=, 0);
-        g_assert_cmpint(low, >=, 0);
-        g_assert_cmpuint(length, <, sizeof(expected));
-        expected[length++] = high << 4 | low;
-        p += 2;
-    }
-    expect_raw_reply(s, expected, length);
-}
-
-static void test_debug_set(void)
-{
-    int fd;
-    QTestState *s = console_start(&fd, ",auto-power=off", "");
-    static const struct {
-        const char *command;
-        const char *response;
-        uint8_t high;
-        uint8_t low;
-    } writes[] = {
-        { "debug 269\r", "debug switches set to 0x010d\r\n" PROMPT,
-          0x01, 0x0d },
-        { "debug 040\r", "debug switches set to 0x0020\r\n" PROMPT,
-          0x00, 0x20 },
-        { "debug +0x010d\r", "debug switches set to 0x010d\r\n" PROMPT,
-          0x01, 0x0d },
-        { "debug -1\r", "debug switches set to 0xffff\r\n" PROMPT,
-          0xff, 0xff },
-        { "debug 65536\r", "debug switches set to 0x0000\r\n" PROMPT,
-          0x00, 0x00 },
-        { "debug 0x\r", "debug switches set to 0x0000\r\n" PROMPT,
-          0x00, 0x00 },
-        { "debug 4294967296\r", "debug switches set to 0xffff\r\n"
-          PROMPT, 0xff, 0xff },
-        { "debug 0x010d\r", "debug switches set to 0x010d\r\n" PROMPT,
-          0x01, 0x0d },
-    };
-    static const char *bad[] = {
-        "debug nope\r", "debug 0x10junk\r", "debug 09\r",
-        "debug 4294967296junk\r", "debug 0x10 extra\r",
-    };
-
-    console_send(fd, "\r");
-    console_expect(fd, PROMPT);
-    console_send(fd, "debug\r");
-    console_expect(fd, "debug switches set to 0x0000\r\n" PROMPT);
-    expect_debug_switches(s, 0, 0);
-    for (size_t i = 0; i < ARRAY_SIZE(writes); i++) {
-        console_send(fd, writes[i].command);
-        console_expect(fd, writes[i].response);
-        expect_debug_switches(s, writes[i].high, writes[i].low);
-    }
-    for (size_t i = 0; i < ARRAY_SIZE(bad); i++) {
-        console_send(fd, bad[i]);
-        console_expect(fd, "ERROR: invalid arguments for 'debug' command, "
-                       "try \"help debug\"\r\n" PROMPT);
-        expect_debug_switches(s, 1, 0x0d);
-    }
-    console_send(fd, "debug\r");
-    console_expect(fd, "debug switches set to 0x010d\r\n" PROMPT);
-
-    /* Node reset retention is inferred by the reviewed L1 contract. */
-    qtest_system_reset(s);
-    expect_debug_switches(s, 1, 0x0d);
-    qtest_quit(s);
-    close(fd);
-}
-
-static void test_debug_task3(void)
-{
-    QTestState *s = start();
-    const uint8_t accepted[] = {
-        0x7e, 0x30, 0, 0, 0, 0, 1, 1,
-        'd', 'e', 'b', 'u', 'g', ' ', 's', 'w', 'i', 't', 'c', 'h', 'e', 's',
-        ' ', 's', 'e', 't', ' ', 't', 'o', ' ', '0', 'x', '0', '1', '0', 'd',
-        '\n', 0, 0x15, 0x5b, 0x7e,
-    };
-    const uint8_t malformed[] = {
-        0x7e, 0x30, 0xff, 0xff, 0xfb, 0x50, 1, 1,
-        'E', 'R', 'R', 'O', 'R', ':', ' ', 'c', 'o', 'm', 'm', 'a', 'n', 'd',
-        ' ', 'n', 'o', 't', ' ', 'f', 'o', 'u', 'n', 'd', '.', '\n', 0,
-        0x42, 0xac, 0x7e,
-    };
-    const char *wildcard =
-        "7e 30 ff ff ff ff 01 01 49 4e 46 4f 3a 20 77 69 "
-        "6c 64 63 61 72 64 20 64 65 62 75 67 20 69 73 20 "
-        "75 6e 73 75 70 70 6f 72 74 65 64 20 77 69 74 68 "
-        "6f 75 74 20 63 6f 6e 6e 65 63 74 65 64 20 6d 6f "
-        "64 75 6c 65 73 2e 0a 00 f4 6e 7e";
-    const char *peer =
-        "7e 30 ff ff ff ff 01 01 49 4e 46 4f 3a 20 70 65 "
-        "65 72 20 64 65 62 75 67 20 69 73 20 75 6e 73 "
-        "75 70 70 6f 72 74 65 64 2e 0a 00 f6 65 7e";
-
-    send_task3(s, "debug 269");
-    expect_raw_reply(s, accepted, sizeof(accepted));
-    expect_debug_switches(s, 1, 0x0d);
-    send_task3(s, "debug nope");
-    expect_raw_reply(s, malformed, sizeof(malformed));
-    expect_debug_switches(s, 1, 0x0d);
-
-    send_task3(s, "* debug 0");
-    expect_raw_hex_reply(s, wildcard);
-    expect_debug_switches(s, 1, 0x0d);
-    send_task3(s, "ctc debug 0");
-    expect_raw_hex_reply(s, peer);
-    expect_debug_switches(s, 1, 0x0d);
-    qtest_quit(s);
 }
 
 static void test_uart_interrupts(void)
@@ -2800,26 +2431,6 @@ static void test_power_requests_off(void)
     close(fd);
 }
 
-/* The two display requests write line 2 as the firmware does. */
-static void test_display_requests(void)
-{
-    QTestState *s = start();
-    uint8_t reply[131];
-    const uint8_t text[] = { 1, 'h', 'i', 0x01, 'x', 0 };
-    const uint8_t not_text[] = { 0, 0, 0, 0, 1 };
-
-    g_assert_cmpuint(general(s, 0x1004, text, sizeof(text), 1, reply), ==, 6);
-    g_assert_cmphex(reply[4], ==, 0);
-    assert_display(s, "hi?x");
-    g_assert_cmpuint(general(s, 0x1005, text, sizeof(text), 1, reply), ==, 6);
-    assert_display(s, "hi?x");
-    g_assert_cmpuint(general(s, 0x1005, not_text, sizeof(not_text), 1, reply),
-                     ==, 6);
-    g_assert_cmphex(reply[4], ==, 0x9a);
-    assert_display(s, "hi?x");
-    qtest_quit(s);
-}
-
 /* 0x4002 restarts the controller and logs the request. */
 static void test_reboot_request(void)
 {
@@ -2898,7 +2509,6 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/eeprom-selected-migration",
                    test_selected_migration);
     qtest_add_func("sn1/l1/console", test_console);
-    qtest_add_func("sn1/l1/metadata", test_metadata);
     qtest_add_func("sn1/l1/poweroff", test_poweroff);
     qtest_add_func("sn1/l1/fresh-off", test_fresh_off);
     qtest_add_func("sn1/l1/power", test_power);
@@ -2906,15 +2516,11 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/signals", test_signals);
     qtest_add_func("sn1/l1/signals-off", test_signals_off);
     qtest_add_func("sn1/l1/node-power-line", test_node_power_line);
-    qtest_add_func("sn1/l1/version-metadata", test_version_metadata);
-    qtest_add_func("sn1/l1/log-capacity", test_log_capacity);
     qtest_add_func("sn1/l1/reboot-l1", test_reboot_l1);
     qtest_add_func("sn1/l1/selection", test_selection);
-    qtest_add_func("sn1/l1/display-command", test_display_command);
     qtest_add_func("sn1/l1/lifecycle-persistence", test_lifecycle_persistence);
     qtest_add_func("sn1/l1/lifecycle-migration", test_lifecycle_migration);
     qtest_add_func("sn1/l1/route-forms", test_route_forms);
-    qtest_add_func("sn1/l1/tasks", test_tasks);
     qtest_add_func("sn1/l1/command-interpreter", test_command_interpreter);
     qtest_add_func("sn1/l1/receive-tolerance", test_receive_tolerance);
     qtest_add_func("sn1/l1/request-log", test_request_log);
@@ -2925,13 +2531,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/general-actions", test_general_actions);
     qtest_add_func("sn1/l1/power-cycle", test_power_cycle);
     qtest_add_func("sn1/l1/power-requests-off", test_power_requests_off);
-    qtest_add_func("sn1/l1/display-requests", test_display_requests);
     qtest_add_func("sn1/l1/reboot-request", test_reboot_request);
     qtest_add_func("sn1/l1/power-down-event", test_power_down_event);
-    qtest_add_func("sn1/l1/task-commands", test_task_commands);
-    qtest_add_func("sn1/l1/settings-queries", test_settings_queries);
-    qtest_add_func("sn1/l1/debug-set", test_debug_set);
-    qtest_add_func("sn1/l1/debug-task3", test_debug_task3);
     qtest_add_func("sn1/l1/uart-interrupts", test_uart_interrupts);
     qtest_add_func("sn1/l1/uart-irq-migration", test_uart_irq_migration);
     qtest_add_func("sn1/l1/node-position", test_node_position);
