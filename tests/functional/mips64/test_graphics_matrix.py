@@ -61,7 +61,15 @@ _START_SYSTEM_STEPS = ((r"Option\?", "1\n"),)
 # bound, and a device whose own scenario needs a tighter or looser
 # margin can grow a per-scenario override here without disturbing this
 # one.
-_SCREEN_SETTLE_SECONDS = 3.0
+#
+# Re-measured live once 3.0s started reproducing rad4_login_screen's own
+# failure under today's host load: the saved screendump's login-dialog-
+# chrome region averaged (63.75, 63.75, 63.75), the stipple's own value,
+# matching this comment's own description of an unsettled dump rather
+# than the dialog's measured (217, 217, 217). 10.0s cleared it in a live
+# rerun of the same cell; 15.0s keeps the same margin over that observed
+# pass point the multi-CPU constant below keeps over its own (1.5x).
+_SCREEN_SETTLE_SECONDS = 15.0
 
 # The round-robin regimes (wallclock, roundrobin) pin rr-kick-period-ns once a
 # cell carries more than one CPU (lib_matrix.qemu_args): a fixed, deliberately
