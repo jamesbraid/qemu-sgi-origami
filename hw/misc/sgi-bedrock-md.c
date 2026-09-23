@@ -1439,6 +1439,81 @@ static void md_ecc_write(void *opaque, hwaddr offset, uint64_t value,
     }
 }
 
+/*
+ * The scrub carrier at four eighths of the node (BDECC_SCRUB in the public
+ * SN1 address header) indexes the ECC bytes the way the entry carrier does.
+ * A byte or halfword read returns the byte; an aligned 64-bit store scrubs
+ * the 64-byte block whose eight bytes the carrier word holds, checking and
+ * correcting each doubleword the way a read would. The Origin 300's memory
+ * diagnostic stores zero here before reading a corrected word back and
+ * reads the check byte through it (its 0x100138f0 and 0x10013950).
+ */
+static bool md_ecc_scrub_accepts(void *opaque, hwaddr offset, unsigned size,
+                                 bool is_write, MemTxAttrs attrs)
+{
+    SGIBedrockMDState *s = opaque;
+    const char *reason;
+
+    if (!is_write) {
+        return md_ecc_accepts(opaque, offset, size, false, attrs);
+    }
+    if (size != 8) {
+        reason = "unsupported width";
+    } else if (offset % 8) {
+        reason = "unaligned doubleword";
+    } else {
+        unsigned index;
+
+        reason = md_ecc_translate(s, offset ^ 7, 1, &index) ? NULL :
+                 "outside fitted memory";
+    }
+    if (reason) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bedrock-md: ECC scrub write offset 0x%08"
+                      HWADDR_PRIx " size %u rejected: %s\n", offset, size,
+                      reason);
+        return false;
+    }
+    return true;
+}
+
+static void md_ecc_scrub_write(void *opaque, hwaddr offset, uint64_t value,
+                               unsigned size)
+{
+    SGIBedrockMDState *s = opaque;
+    uint64_t block = (offset / MD_ECC_BANK_SIZE) * MD_MEMORY_BANK_SIZE +
+                     (offset % MD_ECC_BANK_SIZE) * 8;
+
+    /* Doubleword j of the block has its byte at carrier offset 7 - j. */
+    for (unsigned j = 0; j < 8; j++) {
+        SGIBedrockMDECCInjection *injection;
+        unsigned index;
+        uint64_t data;
+
+        if (!md_ecc_translate(s, offset + (7 - j), 1, &index)) {
+            continue;
+        }
+        injection = md_ecc_injection_find(s, index);
+        if (injection) {
+            md_ecc_checked_read(injection, block + j * 8, 0, &data, 8,
+                                MEMTXATTRS_UNSPECIFIED);
+        }
+    }
+}
+
+static const MemoryRegionOps md_ecc_scrub_ops = {
+    .read = md_ecc_read,
+    .write = md_ecc_scrub_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = {
+        .min_access_size = 1,
+        .max_access_size = 8,
+        .unaligned = true,
+        .accepts = md_ecc_scrub_accepts,
+    },
+    .impl = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
+};
+
 uint64_t sgi_bedrock_md_ecc_store_value(hwaddr offset, uint64_t value,
                                         unsigned size)
 {
@@ -2107,6 +2182,9 @@ static void md_init(Object *obj)
                           TYPE_SGI_BEDROCK_MD "-ecc",
                           SGI_BEDROCK_MD_ECC_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->ecc_mmio);
+    memory_region_init_io(&s->ecc_scrub_mmio, obj, &md_ecc_scrub_ops, s,
+                          TYPE_SGI_BEDROCK_MD "-ecc-scrub",
+                          SGI_BEDROCK_MD_ECC_SIZE);
     memory_region_init(&s->memory_mr, obj, TYPE_SGI_BEDROCK_MD "-memory",
                        SGI_BEDROCK_MD_MEMORY_SIZE);
     memory_region_init_io(&s->memory_mmio, obj, &md_memory_ops, s,
@@ -2141,6 +2219,8 @@ static void md_init(Object *obj)
                           TYPE_SGI_BEDROCK_MD "-fetch-and-op",
                           SGI_BEDROCK_MD_FETCHOP_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->fetchop_mmio);
+    /* Region 5: the ECC scrub carrier, four eighths of the node. */
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->ecc_scrub_mmio);
     qdev_init_gpio_in_named(DEVICE(obj), md_soft_reset_input, "soft-reset", 1);
 }
 

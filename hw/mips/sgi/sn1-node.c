@@ -66,6 +66,7 @@
 #define SN1_HUB_LOCAL_HIGH_BOOT (SN1_SPACE_HUB + UINT64_C(0x1fc00000))
 #define SN1_HUB_REMOTE_BOOT (SN1_SPACE_HUB + UINT64_C(0x38000000))
 #define SN1_HUB_ECC (SN1_SPACE_HUB + UINT64_C(0x140000000))
+#define SN1_HUB_ECC_SCRUB (SN1_SPACE_HUB + UINT64_C(0x100000000))
 #define SN1_HUB_DIRECTORY (SN1_SPACE_HUB + UINT64_C(0x1c0000000))
 #define SN1_PROM_RESET UINT64_C(0x1fc00000)
 #define SN1_PROM_RAM_COPY UINT64_C(0x01a00000)
@@ -1098,6 +1099,10 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     memory_region_add_subregion(
         system, sn1_node_address(node, SN1_HUB_ECC),
         sysbus_mmio_get_region(bedrock, 6));
+    /* The scrub carrier indexes the same bytes from four eighths. */
+    memory_region_add_subregion(
+        system, sn1_node_address(node, SN1_HUB_ECC_SCRUB),
+        sysbus_mmio_get_region(bedrock, 10));
     memory_region_add_subregion_overlap(
         system, sn1_node_address(node, SN1_RAM_ADDRESS),
         sysbus_mmio_get_region(bedrock, 7), 0);

@@ -86,6 +86,8 @@
  */
 #define ECC_BASE UINT64_C(0x10140000000)
 #define ECC(_x) (ECC_BASE + (_x))
+#define ECC_SCRUB_BASE UINT64_C(0x10100000000)
+#define ECC_SCRUB(_x) (ECC_SCRUB_BASE + (_x))
 #define ECC_FIRST_ABSENT_BYTE_512M 0x4000007
 #define ECC_ADMITTED_HALFWORD_LOW 0x4000006
 #define ECC_ADMITTED_HALFWORD_HIGH 0x8000006
@@ -185,6 +187,7 @@ static QTestState *start_with_memory(const char *size, const char *extra)
     qtest_sysbus_mmio_map(s, MD_PATH, 2, ECC_BASE);
     qtest_sysbus_mmio_map(s, MD_PATH, 3, MEMORY_BASE);
     qtest_sysbus_mmio_map(s, MD_PATH, 4, FETCHOP_BASE);
+    qtest_sysbus_mmio_map(s, MD_PATH, 5, ECC_SCRUB_BASE);
     return s;
 }
 
@@ -2557,6 +2560,53 @@ static void test_ecc_check_on_read(void)
     qtest_quit(s);
 }
 
+/*
+ * The scrub carrier reads the same bytes from four eighths of the node and
+ * an aligned doubleword store there scrubs the 64-byte block: the
+ * corrections a read would make, latched the same way.
+ */
+static void test_ecc_scrub_carrier(void)
+{
+    g_autofree char *log = log_file_new();
+    g_autofree char *extra = g_strdup_printf(ECC_LOG_OPTIONS "%s", log);
+    g_autofree char *contents = NULL;
+    QTestState *s = start(extra);
+
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 1));
+    qtest_writeq(s, MEMORY(0x1000), 0);
+    qtest_writeq(s, MEMORY(0x1038), 0);
+    qtest_writeb(s, ECC_BYTE(0x200), ecc_column[0]);
+    qtest_writeb(s, ECC(0x200), ecc_column[3]);
+    g_assert_cmphex(qtest_readb(s, ECC_SCRUB(0x200 ^ 7)), ==, ecc_column[0]);
+    g_assert_cmphex(qtest_readw(s, ECC_SCRUB(0x200 ^ 6)), ==, ecc_column[0]);
+    qtest_writeq(s, ECC_SCRUB(0x200), 0);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==, 1);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1038)), ==, 8);
+    g_assert_cmphex(qtest_readb(s, ECC_SCRUB(0x200 ^ 7)), ==, ecc_of(1));
+    g_assert_cmphex(qtest_readb(s, ECC_BYTE(0x207)), ==, ecc_of(8));
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR_CLEAR)), ==,
+                    MEMORY_ERROR_READ_CE_VALID | MEMORY_ERROR_READ_CE_OVERRUN |
+                    MEMORY_ERROR_SYNDROME(ecc_column[0]) | 0x1000);
+    /* Rejected: a narrow or unaligned store, one outside fitted memory. */
+    qtest_writel(s, ECC_SCRUB(0x200), 0);
+    qtest_writeq(s, ECC_SCRUB(0x204), 0);
+    qtest_writeq(s, ECC_SCRUB(ECC_FIRST_ABSENT_BYTE_512M & ~7), 0);
+    qtest_writel(s, ECC_SCRUB(0x204), 0);
+    qtest_quit(s);
+
+    contents = log_file_take(log);
+    g_assert_nonnull(strstr(contents,
+        "sgi-bedrock-md: ECC scrub write offset 0x00000200 size 4 "
+        "rejected: unsupported width"));
+    g_assert_nonnull(strstr(contents,
+        "sgi-bedrock-md: ECC scrub write offset 0x00000204 size 8 "
+        "rejected: unaligned doubleword"));
+    g_assert_nonnull(strstr(contents,
+        "sgi-bedrock-md: ECC scrub write offset 0x04000000 size 8 "
+        "rejected: outside fitted memory"));
+    g_assert_cmpuint(log_count(contents, "ECC scrub write"), ==, 4);
+}
+
 /* A halfword carrier write overrides two doublewords' bytes at once. */
 static void test_ecc_halfword_injection(void)
 {
@@ -2670,6 +2720,10 @@ static void test_origin300_ecc_check(void)
     g_assert_cmphex(qtest_readq(s, BEDROCK_NODE_REGISTERS + PI1_OFFSET +
                                 PI_PENDING_1) & MEMORY_CORRECTABLE, ==,
                     MEMORY_CORRECTABLE);
+    /* The diagnostic's scrub store and check-byte read at four eighths. */
+    qtest_writeq(s, UINT64_C(0x10100000000) + (address / 8), 0);
+    g_assert_cmphex(qtest_readb(s, UINT64_C(0x10100000000) +
+                                ((address / 8) ^ 7)), ==, ecc_of(1));
     qtest_writeq(s, address, 0);
     g_assert_cmphex(qtest_readq(s, address), ==, 0);
     g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(MEMORY_ERROR_CLEAR)), ==,
@@ -2862,6 +2916,7 @@ int main(int argc, char **argv)
                    test_ecc_check_on_read);
     qtest_add_func("sn1/bedrock-md/ecc-halfword-injection",
                    test_ecc_halfword_injection);
+    qtest_add_func("sn1/bedrock-md/ecc-scrub-carrier", test_ecc_scrub_carrier);
     qtest_add_func("sn1/bedrock-md/ecc-check-follows-bank-select",
                    test_ecc_check_follows_bank_select);
     qtest_add_func("sn1/bedrock-md/ecc-check-reset", test_ecc_check_reset);
