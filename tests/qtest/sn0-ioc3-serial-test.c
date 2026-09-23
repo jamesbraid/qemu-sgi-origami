@@ -606,6 +606,46 @@ static void test_the_alias_refuses_the_registers_hardware_owns(const void *data)
 }
 
 /*
+ * Line status takes a write, which the PC16550D datasheet describes as a
+ * factory-test facility and the Origin 300 board test uses: it writes 0x7f
+ * and requires all seven low bits back, where the shared 16550 core this
+ * chip embeds drops the write entirely. Bit 7 is not one of them.
+ *
+ * Reading line status is what clears the error bits it reports, so the
+ * written bits last exactly one read -- see the datasheet for what that
+ * models and what it does not.
+ */
+static void test_line_status_takes_a_factory_test_write(const void *data)
+{
+    unsigned int port;
+
+    serial_reset();
+
+    sn0_ioc3_attach(qts);
+
+    for (port = 0; port < 2; port++) {
+        uint64_t lsr = serial_port(port) + REG_LSR;
+
+        /* Idle: the transmitter is empty and nothing has arrived. */
+        g_assert_cmphex(qtest_readb(qts, lsr), ==, LSR_THRE | LSR_TEMT);
+
+        qtest_writeb(qts, lsr, 0x7f);
+        g_assert_cmphex(qtest_readb(qts, lsr), ==, 0x7f);
+
+        /* That read took them away again. */
+        g_assert_cmphex(qtest_readb(qts, lsr), ==, LSR_THRE | LSR_TEMT);
+
+        /* Bit 7 stays clear however it is written. */
+        qtest_writeb(qts, lsr, 0xff);
+        g_assert_cmphex(qtest_readb(qts, lsr), ==, 0x7f);
+
+        /* A zero write leaves the live bits alone. */
+        qtest_writeb(qts, lsr, 0);
+        g_assert_cmphex(qtest_readb(qts, lsr), ==, LSR_THRE | LSR_TEMT);
+    }
+}
+
+/*
  * Modem control carries a sixth bit, the automatic-flow-control enable a
  * TI-style 16550 has where National's PC16550D reads a hardwired zero. The
  * Origin 300 board test writes 0x3f and requires all six back, and the
@@ -2433,6 +2473,8 @@ int main(int argc, char **argv)
                         test_the_receive_timer_keeps_twelve_bits);
     qtest_add_data_func("sn0/ioc3-serial/alias-pages-are-views", NULL,
                         test_the_alias_pages_are_views_of_the_main_block);
+    qtest_add_data_func("sn0/ioc3-serial/line-status-factory-test-write",
+                        NULL, test_line_status_takes_a_factory_test_write);
     qtest_add_data_func("sn0/ioc3-serial/modem-control-holds-autoflow", NULL,
                         test_modem_control_holds_the_autoflow_bit);
     qtest_add_data_func("sn0/ioc3-serial/main-block-places-engine-indexes",
