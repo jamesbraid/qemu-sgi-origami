@@ -69,6 +69,7 @@ struct SGIBedrockMDState {
     SGIBedrockState *bedrock;
     MemoryRegion directory_mmio;
     MemoryRegion ecc_mmio;
+    MemoryRegion ecc_scrub_mmio;
     MemoryRegion memory_mr;
     MemoryRegion memory_mmio;
     MemoryRegion memory_alias[8];
