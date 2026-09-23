@@ -75,6 +75,7 @@
 #include "qemu/osdep.h"
 #include "hw/mips/sgi/baseio.h"
 #include "chardev/char.h"
+#include "hw/audio/sgi-rad1-audio.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "hw/core/sysbus.h"
@@ -423,6 +424,18 @@ static bool baseio_build_io6(SGIBaseioState *s, Error **errp)
 #define BASEIO_G_MIO_ONEWIRE_SERIAL 0x0c0b0a090807ULL
 
 /*
+ * The MediaIO daughtercard's RAD1 audio ASIC. No source establishes which
+ * Bridge slot the daughtercard wires it to, so device 5 is this model's
+ * own placement, chosen only because it is the sole slot devices 0-2 and
+ * 6 above leave free on this board's Bridge -- an inference flagged here
+ * rather than a captured fact, per docs/datasheets/mediaio-rad1-audio.md.
+ * It carries no interrupt wiring: the datasheet establishes no interrupt
+ * behavior for this device, and no guest install this model was built
+ * against installs a handler or enables one for it.
+ */
+#define BASEIO_G_RAD1_DEVICE 5
+
+/*
  * io6g: the io6 core with its device-2 IOC3 carrying a
  * keyboard/mouse pair of its own (BASEIO_G_IOC3_POPULATION), plus the
  * MediaIO daughtercard's own board-part record and second IOC3 at
@@ -435,11 +448,12 @@ static bool baseio_build_io6(SGIBaseioState *s, Error **errp)
  * already owns "chardev-a"/"chardev-b"/"record-a"/"record-b" for this
  * board's chosen console and record backends -- so they claim their
  * backend through this device's own "mio-chardev-a"/"mio-chardev-b"
- * instead, with no record counterpart.
+ * instead, with no record counterpart. The daughtercard's RAD1 audio
+ * ASIC rides the same Bridge at device 5 (BASEIO_G_RAD1_DEVICE above).
  */
 static bool baseio_build_io6g(SGIBaseioState *s, Error **errp)
 {
-    PCIDevice *ioc3;
+    PCIDevice *ioc3, *rad1;
 
     if (!baseio_build_baseio_core(s, BASEIO_G_IOC3_POPULATION, errp)) {
         return false;
@@ -472,6 +486,11 @@ static bool baseio_build_io6g(SGIBaseioState *s, Error **errp)
     qdev_connect_gpio_out(DEVICE(ioc3), 0,
                           qdev_get_gpio_in(baseio_bus_host(s->pci_bus),
                                            BASEIO_G_MIO_IOC3_IRQ_PIN));
+
+    rad1 = pci_new(PCI_DEVFN(BASEIO_G_RAD1_DEVICE, 0), TYPE_SGI_RAD1_AUDIO);
+    object_property_add_child(OBJECT(s), "rad1", OBJECT(rad1));
+    pci_realize_and_unref(rad1, s->pci_bus, &error_abort);
+
     return true;
 }
 
