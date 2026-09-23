@@ -63,6 +63,7 @@
 #include "ui/console.h"
 #include "ui/qemu-pixman.h"
 #include "qom/object.h"
+#include "trace.h"
 
 #include "psitech-rad4-mode0-fixture.h"
 
@@ -475,6 +476,20 @@ struct PsitechRad4State {
     uint32_t mask;
 
     /*
+     * Scanlines of the framebuffer written since the last rad4_gfx_update(),
+     * inclusive and empty when dirty_y_start > dirty_y_end. framebuffer is a
+     * plain buffer behind a masked-write MMIO trap, not a RAM MemoryRegion,
+     * so it cannot use the region dirty-bitmap helpers in
+     * hw/display/framebuffer.c; rad4_bar2_write() and rad4_dma_run()'s
+     * upload branch mark rows by hand as they write, and rad4_gfx_update()
+     * converts and pushes only this range instead of the whole frame every
+     * refresh. Not migrated: rad4_post_load() marks the whole frame dirty
+     * instead, since display_buffer below is not itself part of VMState.
+     */
+    int dirty_y_start;
+    int dirty_y_end;
+
+    /*
      * Displayed color, converted from the raw framebuffer through each
      * pixel's window ID and FB_WAT entry (rad4_convert_scanout()). A
      * plain, host-owned buffer -- not qemu_create_displaysurface()'s
@@ -636,6 +651,56 @@ static void rad4_recognizer_reset(PsitechRad4State *s)
     s->rec_index = 0;
 }
 
+/* Mark [y_start, y_end] (inclusive, clipped to the visible image) dirty. */
+static void rad4_mark_dirty_rows(PsitechRad4State *s, int y_start, int y_end)
+{
+    if (y_start < 0) {
+        y_start = 0;
+    }
+    if (y_end >= RAD4_MODE0_HEIGHT) {
+        y_end = RAD4_MODE0_HEIGHT - 1;
+    }
+    if (y_start > y_end) {
+        return;
+    }
+    if (s->dirty_y_start > s->dirty_y_end) {
+        s->dirty_y_start = y_start;
+        s->dirty_y_end = y_end;
+        return;
+    }
+    s->dirty_y_start = MIN(s->dirty_y_start, y_start);
+    s->dirty_y_end = MAX(s->dirty_y_end, y_end);
+}
+
+/*
+ * Mark every scanline dirty: the first paint after mode recognition,
+ * post-migration repaint and reset all need a full frame, not an
+ * incremental one.
+ */
+static void rad4_mark_all_dirty(PsitechRad4State *s)
+{
+    rad4_mark_dirty_rows(s, 0, RAD4_MODE0_HEIGHT - 1);
+}
+
+/*
+ * Mark the scanlines touched by a raw-framebuffer byte range dirty. offset
+ * and len are relative to s->framebuffer; a range outside the visible
+ * mode-zero image (the RAD4_FB_SIZE allocation is larger than
+ * RAD4_MODE0_STRIDE * RAD4_MODE0_HEIGHT) contributes nothing, matching how
+ * rad4_convert_scanout() never reads past the visible image either.
+ */
+static void rad4_mark_dirty_range(PsitechRad4State *s, uint32_t offset,
+                                  uint32_t len)
+{
+    uint32_t visible = (uint32_t)RAD4_MODE0_STRIDE * RAD4_MODE0_HEIGHT;
+
+    if (len == 0 || offset >= visible) {
+        return;
+    }
+    rad4_mark_dirty_rows(s, offset / RAD4_MODE0_STRIDE,
+                         (offset + len - 1) / RAD4_MODE0_STRIDE);
+}
+
 static void rad4_disable_scanout(PsitechRad4State *s)
 {
     if (s->rec_state == RAD4_REC_RECOGNIZED) {
@@ -689,6 +754,7 @@ static void rad4_recognizer_feed(PsitechRad4State *s, uint32_t offset,
             s->rec_index++;
             if (s->rec_index == RAD4_MODE0_EVENT_COUNT) {
                 s->rec_state = RAD4_REC_RECOGNIZED;
+                rad4_mark_all_dirty(s);
                 timer_mod(s->frame_timer,
                          qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                          NANOSECONDS_PER_SECOND / RAD4_FRAME_HZ);
@@ -722,6 +788,7 @@ static void rad4_recognizer_feed(PsitechRad4State *s, uint32_t offset,
             s->rec_index = 2;
             if (s->rec_index == RAD4_MODE0_EVENT_COUNT) {
                 s->rec_state = RAD4_REC_RECOGNIZED;
+                rad4_mark_all_dirty(s);
             }
         } else {
             /*
@@ -738,6 +805,7 @@ static void rad4_recognizer_feed(PsitechRad4State *s, uint32_t offset,
             s->rec_index++;
             if (s->rec_index == RAD4_MODE0_EVENT_COUNT) {
                 s->rec_state = RAD4_REC_RECOGNIZED;
+                rad4_mark_all_dirty(s);
                 timer_mod(s->frame_timer,
                          qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                          NANOSECONDS_PER_SECOND / RAD4_FRAME_HZ);
@@ -778,20 +846,21 @@ static void rad4_recognizer_feed(PsitechRad4State *s, uint32_t offset,
 }
 
 /*
- * Convert the raw guest framebuffer into displayed color, one pixel at a
- * time through rad4_pixel_to_rgb(). This can no longer alias guest memory
- * directly (qemu_create_displaysurface_from()'s previous role): a pixel's
- * displayed color depends on its window ID's FB_WAT entry and, in Index
- * mode, the color LUT, both of which the guest can reprogram after the
- * pixel data underneath is already written.
+ * Convert rows [y_start, y_end] (inclusive) of the raw guest framebuffer
+ * into displayed color, one pixel at a time through rad4_pixel_to_rgb().
+ * This can no longer alias guest memory directly
+ * (qemu_create_displaysurface_from()'s previous role): a pixel's displayed
+ * color depends on its window ID's FB_WAT entry and, in Index mode, the
+ * color LUT, both of which the guest can reprogram after the pixel data
+ * underneath is already written.
  */
-static void rad4_convert_scanout(PsitechRad4State *s)
+static void rad4_convert_scanout(PsitechRad4State *s, int y_start, int y_end)
 {
-    uint32_t *dst = s->display_buffer;
     int x, y;
 
-    for (y = 0; y < RAD4_MODE0_HEIGHT; y++) {
+    for (y = y_start; y <= y_end; y++) {
         uint32_t row = (uint32_t)y * RAD4_MODE0_STRIDE;
+        uint32_t *dst = s->display_buffer + (size_t)y * RAD4_MODE0_WIDTH;
 
         for (x = 0; x < RAD4_MODE0_WIDTH; x++) {
             uint32_t word = ldl_be_p(s->framebuffer + row + x * 4);
@@ -801,6 +870,15 @@ static void rad4_convert_scanout(PsitechRad4State *s)
     }
 }
 
+/*
+ * Convert and push only the scanlines the guest actually touched since the
+ * last refresh, instead of the whole 1280x1024 frame every ~30 Hz tick
+ * regardless of change. The old unconditional full-frame path made VNC
+ * re-encode and send a full frame continuously even for a static screen,
+ * which saturates the VNC path into flicker, blackout and laggy input; an
+ * idle screen with no writes since the last tick now does no conversion
+ * work and sends nothing.
+ */
 static bool rad4_gfx_update(void *opaque)
 {
     PsitechRad4State *s = opaque;
@@ -808,8 +886,16 @@ static bool rad4_gfx_update(void *opaque)
     if (s->rec_state != RAD4_REC_RECOGNIZED) {
         return true;
     }
-    rad4_convert_scanout(s);
-    qemu_console_update_full(s->con);
+    if (s->dirty_y_start > s->dirty_y_end) {
+        trace_rad4_gfx_update_idle();
+        return true;
+    }
+    trace_rad4_gfx_update_push(s->dirty_y_start, s->dirty_y_end);
+    rad4_convert_scanout(s, s->dirty_y_start, s->dirty_y_end);
+    qemu_console_update(s->con, 0, s->dirty_y_start, RAD4_MODE0_WIDTH,
+                        s->dirty_y_end - s->dirty_y_start + 1);
+    s->dirty_y_start = RAD4_MODE0_HEIGHT;
+    s->dirty_y_end = -1;
     return true;
 }
 
@@ -1219,6 +1305,7 @@ static bool rad4_dma_run(PsitechRad4State *s)
                 old = ldl_be_p(s->framebuffer + local_addr + off);
                 stl_be_p(s->framebuffer + local_addr + off,
                         (old & ~s->mask) | (incoming & s->mask));
+                rad4_mark_dirty_range(s, local_addr + off, 4);
             }
         }
 
@@ -1452,6 +1539,7 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
         uint32_t old = ldl_be_p(s->framebuffer + offset);
 
         stl_be_p(s->framebuffer + offset, (old & ~s->mask) | (v & s->mask));
+        rad4_mark_dirty_range(s, offset, size);
         return;
     }
     if (offset >= RAD4_BAR2_VERT &&
@@ -1623,6 +1711,8 @@ static void rad4_reset_hold(Object *obj, ResetType type)
 
     memset(s->framebuffer, 0, RAD4_FB_SIZE);
     s->mask = 0xffffffffu;
+    s->dirty_y_start = RAD4_MODE0_HEIGHT;
+    s->dirty_y_end = -1;
 
     s->rgb_index_low = 0;
     s->rgb_index_high = 0;
@@ -1738,6 +1828,15 @@ static int rad4_post_load(void *opaque, int version_id)
 {
     PsitechRad4State *s = opaque;
 
+    /*
+     * display_buffer is not itself part of VMState (only the raw
+     * framebuffer it is converted from is); dirty_y_start/dirty_y_end
+     * are not migrated either, and on the destination are whatever a
+     * fresh realize() left them. Without an explicit full repaint here,
+     * a migrated-in guest whose refresh finds nothing newly dirty would
+     * show a stale or blank display_buffer until the guest next writes.
+     */
+    rad4_mark_all_dirty(s);
     rad4_ensure_surface(s);
     rad4_update_irq(s);
     rad4_cursor_update_position(s);

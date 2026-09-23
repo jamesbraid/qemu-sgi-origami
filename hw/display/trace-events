@@ -226,3 +226,7 @@ apple_gfx_iosfc_unmap_memory(void *a, void *b, void *c, void *d, void *e, void *
 apple_gfx_iosfc_unmap_memory_region(void* mem, void *region) "unmapping @ %p from memory region %p"
 apple_gfx_iosfc_raise_irq(uint32_t vector) "vector=0x%x"
 
+# psitech-rad4.c
+rad4_gfx_update_push(int y_start, int y_end) "rows %d-%d"
+rad4_gfx_update_idle(void) ""
+
