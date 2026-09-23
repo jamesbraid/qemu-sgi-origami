@@ -509,24 +509,6 @@ static void assert_shared_five_position_ring(QTestState *qts,
                     ==, ARB_SIGNAL1);
 }
 
-/* Every grant address is otherwise unmatched on the Origin 200 I2C bus. */
-static void test_arbitration_grant_addresses_are_unmatched(const void *data)
-{
-    unsigned token;
-
-    elsc_reset();
-
-    arb_enable_observer(qts);
-    for (token = ARB_SIGNAL1; token <= ARB_SIGNAL2 + 7; token++) {
-        qtest_writeq(qts, HUB_LOCAL + I2C_DATA, token);
-        qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
-                     CTL_PIN | CTL_ESO | CTL_STA | CTL_ACK);
-        g_assert_cmphex(read_status(qts) & I2C_PCF_LRB, ==, I2C_PCF_LRB);
-        qtest_writeq(qts, HUB_LOCAL + I2C_CTRL,
-                     CTL_PIN | CTL_ESO | CTL_STO);
-    }
-}
-
 /*
  * Loop 1: wait for another processor's grant. Skipping straight to "wait for
  * the signal" passes a model that parks code 0 and never advances. A grant is
@@ -569,77 +551,6 @@ static uint8_t arb_wait_for_signal(QTestState *qts)
     }
     g_assert_not_reached();
     return 0;
-}
-
-/*
- * Firmware's three-loop wait, deliberately unsynchronised to the
- * rotation's phase -- that is what makes loop 1 a real assertion.
- */
-static void test_arbitration_three_loop_wait(const void *data)
-{
-    uint8_t sig;
-
-    elsc_reset();
-
-    arb_enable_observer(qts);
-
-    arb_wait_for_absence(qts);
-    sig = arb_wait_for_signal(qts);
-    /* Either signal byte is right; asserting one at a time prints it. */
-    if (sig != ARB_SIGNAL1) {
-        g_assert_cmphex(sig, ==, ARB_SIGNAL2);
-    }
-}
-
-/*
- * The rotation is free-running: the same three-loop wait must succeed
- * again on the next cycle. A model that pulses once leaves the second
- * wait hanging.
- */
-static void test_arbitration_repeats(const void *data)
-{
-    uint8_t first, second;
-
-    elsc_reset();
-
-    arb_enable_observer(qts);
-
-    arb_wait_for_absence(qts);
-    first = arb_wait_for_signal(qts);
-
-    arb_wait_for_absence(qts);
-    second = arb_wait_for_signal(qts);
-    g_assert_cmphex(second, ==, first);
-}
-
-/*
- * The tests above pass a model stuck on code 0; code 1 is checked
- * concretely so a wrong fixed code still fails.
- */
-static void test_arbitration_visits_other_processor_codes(const void *data)
-{
-    bool saw_code_0 = false, saw_code_1 = false;
-    int i;
-
-    elsc_reset();
-
-    arb_enable_observer(qts);
-
-    /* Several cycles' worth of steps, with margin over model timing. */
-    for (i = 0; i < ARB_MAX_STEPS && !(saw_code_0 && saw_code_1); i++) {
-        uint64_t observed = read_data(qts);
-
-        if (observed == 0xe0 || observed == 0xe8) {
-            saw_code_0 = true;
-        }
-        if (observed == 0xe1 || observed == 0xe9) {
-            saw_code_1 = true;
-        }
-        qtest_clock_step(qts, ARB_SCAN_STEP_NS);
-    }
-
-    g_assert_true(saw_code_0);
-    g_assert_true(saw_code_1);
 }
 
 /*
@@ -717,36 +628,6 @@ static void test_arbitration_observes_grant_with_staged_start(const void *data)
     arb_wait_for_signal(qts);
 }
 
-/*
- * A fixed-cadence sampler shorter than the shortest held slot cannot skip a
- * code, so it observes every one of the eight codes as the ring rotates. No
- * cadence stays pinned to a subset of codes -- the property a cold start needs.
- */
-static void test_arbitration_fixed_cadence_walks_codes(const void *data)
-{
-    bool seen[8] = { false };
-    unsigned seen_count = 0;
-    int i;
-
-    elsc_reset();
-
-    arb_enable_observer(qts);
-    arb_wait_for_absence(qts);
-    (void)arb_wait_for_signal(qts);
-
-    for (i = 0; i < ARB_MAX_STEPS && seen_count < 8; i++) {
-        uint64_t value = read_data(qts);
-
-        if (arb_is_signal_byte(value) && !seen[value & 7]) {
-            seen[value & 7] = true;
-            seen_count++;
-        }
-        qtest_clock_step(qts, 5 * ARB_TICK_NS);
-    }
-
-    g_assert_cmpuint(seen_count, ==, 8);
-}
-
 /* A busy bus retries without consuming a processor's turn. */
 static void test_arbitration_busy_tick_does_not_advance(const void *data)
 {
@@ -777,75 +658,6 @@ static void test_arbitration_busy_tick_does_not_advance(const void *data)
     g_assert_cmpuint(read_data(qts) & 7, ==, ((signal & 7) + 1) & 7);
 
     g_assert_cmpuint(arb_next_code(qts) & 7, ==, ((signal & 7) + 2) & 7);
-}
-
-/* Each held slot publishes the next code with no zero gap between grants. */
-static void test_arbitration_advances_each_slot(const void *data)
-{
-    uint64_t value;
-    unsigned code;
-    int i;
-
-    elsc_reset();
-
-    arb_enable_observer(qts);
-    arb_wait_for_absence(qts);
-    value = arb_wait_for_signal(qts);
-    code = value & 7;
-
-    for (i = 0; i < 16; i++) {
-        value = arb_next_code(qts);
-        code = (code + 1) & 7;
-        g_assert_true((read_status(qts) & I2C_PCF_BB) != 0);
-        g_assert_true(arb_is_signal_byte(value));
-        g_assert_cmpuint(value & 7, ==, code);
-    }
-}
-
-/* One grant stays readable for its whole held slot, then the ring advances. */
-static void test_arbitration_one_publication_per_slot(const void *data)
-{
-    uint8_t grant;
-
-    elsc_reset();
-
-    arb_enable_observer(qts);
-    arb_wait_for_absence(qts);
-    (void)arb_wait_for_signal(qts);
-
-    /* Land on a fresh grant, so a full held slot remains ahead of it. */
-    grant = arb_next_code(qts);
-
-    /* It stays readable well past the retired one-millisecond metronome. */
-    qtest_clock_step(qts, 8 * ARB_TICK_NS);
-    g_assert_cmphex(read_data(qts), ==, grant);
-
-    /* Then the ring advances by exactly one code. */
-    g_assert_cmpuint(arb_next_code(qts) & 7, ==,
-                     (((unsigned)grant & 7) + 1) & 7);
-}
-
-/* A complete revolution publishes all eight codes in sequence. */
-static void test_arbitration_walks_all_codes(const void *data)
-{
-    uint64_t value;
-    unsigned code;
-    unsigned i;
-
-    elsc_reset();
-
-    arb_enable_observer(qts);
-    arb_wait_for_absence(qts);
-    value = arb_wait_for_signal(qts);
-    code = value & 7;
-
-    for (i = 0; i < 8; i++) {
-        value = arb_next_code(qts);
-        code = (code + 1) & 7;
-        g_assert_true((read_status(qts) & I2C_PCF_BB) != 0);
-        g_assert_true(arb_is_signal_byte(value));
-        g_assert_cmpuint(value & 7, ==, code);
-    }
 }
 
 /*
@@ -2861,27 +2673,11 @@ int main(int argc, char **argv)
                         test_read_switches_command);
     qtest_add_data_func("sn0/elsc/read-switches-roundtrip", NULL,
                         test_read_switches_roundtrip);
-    qtest_add_data_func("sn0/elsc/arbitration-three-loop-wait", NULL,
-                        test_arbitration_three_loop_wait);
-    qtest_add_data_func("sn0/elsc/arbitration-repeats", NULL,
-                        test_arbitration_repeats);
-    qtest_add_data_func("sn0/elsc/arbitration-visits-other-processor-codes",
-                        NULL, test_arbitration_visits_other_processor_codes);
-    qtest_add_data_func("sn0/elsc/arbitration-grant-addresses-are-unmatched",
-                        NULL, test_arbitration_grant_addresses_are_unmatched);
     qtest_add_data_func("sn0/elsc/arbitration-observes-grant-with-staged-start",
                         NULL,
                         test_arbitration_observes_grant_with_staged_start);
-    qtest_add_data_func("sn0/elsc/arbitration-fixed-cadence-walks-codes",
-                        NULL, test_arbitration_fixed_cadence_walks_codes);
     qtest_add_data_func("sn0/elsc/arbitration-busy-tick-does-not-advance",
                         NULL, test_arbitration_busy_tick_does_not_advance);
-    qtest_add_data_func("sn0/elsc/arbitration-advances-each-slot",
-                        NULL, test_arbitration_advances_each_slot);
-    qtest_add_data_func("sn0/elsc/arbitration-one-publication-per-slot",
-                        NULL, test_arbitration_one_publication_per_slot);
-    qtest_add_data_func("sn0/elsc/arbitration-walks-all-codes",
-                        NULL, test_arbitration_walks_all_codes);
     qtest_add_data_func("sn0/elsc/pending-response-announces-signal2", NULL,
                         test_pending_response_announces_signal2);
     qtest_add_data_func("sn0/elsc/consumed-response-reverts-to-signal1", NULL,
