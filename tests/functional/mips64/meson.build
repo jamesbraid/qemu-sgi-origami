@@ -26,11 +26,16 @@ test_mips64_timeouts = {
   # flagged) per reset rather than a register poke. Same reasoning as
   # sn0_elsc_reset's budget for the same shape of exercise.
   'sn1_l1_reset' : 300,
-  # One VM launch, waiting only for the IP35 PROM's first console line:
-  # measured PASS in about a second end to end (2026-09-16, real boot
-  # against the stock 6.5.30 PROM). 60 keeps well over that plus launch/
-  # shutdown overhead, the same order of margin sn1_l1_reset keeps.
-  'origin300_prom' : 60,
+  # Four methods in this one script now: the original two first-line-only
+  # smoke boots (about a second each) plus two real boots through a
+  # writable boot flash and the chassis/board/SPD identity records
+  # (lib_origin300.py) to the stock PROM's own "ALL DIAGS PASSED" and
+  # System Maintenance Menu -- the path the installed IRIX disk boots
+  # through. Measured end to end against an already-built binary
+  # (2026-09-22): all four methods together in 72s; the four-CPU menu
+  # boot passed three runs in a row with no failure. 240 keeps well over
+  # three times the measured total for a contended host.
+  'origin300_prom' : 240,
   # One test method per origin200-matrix row whose speed column says quick,
   # in this one script (test_origin200_matrix.py). The synthesized-firmware
   # axis is gone, so the manifest's one quick row now boots the real PROM
@@ -197,7 +202,6 @@ tests_mips64_system_quick = [
   'sn0_port_reset',
   'sn0_elsc_reset',
   'sn1_l1_reset',
-  'origin300_prom',
   'origin200_matrix',
   'origin2000_cache_reset',
   # graphics-matrix carries no quick row yet (see graphics_matrix_thorough's
@@ -209,6 +213,7 @@ tests_mips64_system_quick = [
 tests_mips64_system_thorough = [
   'origin200_matrix_thorough',
   'graphics_matrix_thorough',
+  'origin300_prom',
   'prom_boot',
   'prom_copy_speed',
   'prom_diagnostics',

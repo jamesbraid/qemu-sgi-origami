@@ -39,11 +39,21 @@ rendezvous question of its own, tracked apart from this smoke check
 (see the known two-processor MTTCG rendezvous issue this shares a
 family with), not a defect this test's narrow first-line bar claims to
 rule out.
+
+test_two_cpus_reach_the_menu_with_all_diags_passed and its four-CPU
+twin go past that first line, through a writable boot flash and real
+chassis/board/SPD identity records (lib_origin300.py, ported from
+tools/origami_lib/prom.py and tools/origami_lib/io8_eeprom.py's own
+seeding), to the stock PROM's "ALL DIAGS PASSED" and System Maintenance
+Menu -- the path the installed IRIX disk boots through.
 """
 
 import os
 
+from lib_prom import require_assets
 from lib_prom import resolve_asset
+
+import lib_origin300
 
 from qemu_test import QemuSystemTest
 from qemu_test import skipIfMissingEnv
@@ -85,6 +95,29 @@ class Origin300Prom(QemuSystemTest):
     @skipIfMissingEnv('ORIGAMI_ASSETS')
     def test_origin300_prom_four_cpus(self):
         self.boot_to_first_line(4)
+
+    def boot_to_menu(self, cpus):
+        assets_root = os.environ.get('ORIGAMI_ASSETS')
+        require_assets(self, *lib_origin300.ASSET_SPECS)
+        machine, argv = lib_origin300.launch_args(
+            assets_root, cpus, self.workdir)
+
+        self.set_machine('origin300')
+        self.vm.set_console()
+        self.vm.set_machine(machine)
+        self.vm.add_args(*argv)
+        self.vm.launch()
+        wait_for_console_pattern(self, 'ALL DIAGS PASSED')
+        wait_for_console_pattern(self, 'System Maintenance Menu')
+        self.vm.shutdown()
+
+    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    def test_two_cpus_reach_the_menu_with_all_diags_passed(self):
+        self.boot_to_menu(2)
+
+    @skipIfMissingEnv('ORIGAMI_ASSETS')
+    def test_four_cpus_reach_the_menu_with_all_diags_passed(self):
+        self.boot_to_menu(4)
 
 
 if __name__ == '__main__':
