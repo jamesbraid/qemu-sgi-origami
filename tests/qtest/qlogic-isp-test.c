@@ -2843,6 +2843,7 @@ static void qlogic_isp_register_nodes(void)
 
     qos_node_create_driver("qlogic-isp1040", qlogic_isp_create);
     qos_node_consumes("qlogic-isp1040", "pci-bus", &opts);
+    qos_node_consumes("qlogic-isp1040", "sgi-pci-bus", &opts);
     qos_node_produces("qlogic-isp1040", "pci-device");
 
     qos_add_test("identity", "qlogic-isp1040", test_identity, NULL);
