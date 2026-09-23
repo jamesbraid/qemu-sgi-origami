@@ -190,6 +190,32 @@ static void test_transceiver_answers_at_one_address(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * What io8bt's first section checks on this slot (sec0_0.c lines 119 and
+ * 262, docs/datasheets/xbridge.md and ioc3.md): a doubleword read of the
+ * configuration header is the identity word above the command and status
+ * word, and the Command half takes parity-error response along with the
+ * enables.
+ */
+static void test_io8bt_configuration_reads_and_writes(const void *data)
+{
+    g_autofree char *prom = g_shell_quote(prom_path);
+    QTestState *qts = qtest_initf(MACHINE_ARGS " -bios %s", prom);
+    uint64_t header;
+
+    header = qtest_readq(qts, IO8_IOC3_CFG);
+    g_assert_cmphex(header >> 32, ==, qtest_readl(qts, IO8_IOC3_CFG));
+    g_assert_cmphex(header >> 32, ==, 0x000310a9);
+    g_assert_cmphex((uint32_t)header, ==,
+                    qtest_readl(qts, IO8_IOC3_CFG + PCI_COMMAND));
+    /* SERR enable, parity-error response, bus master, memory space. */
+    qtest_writel(qts, IO8_IOC3_CFG + PCI_COMMAND, 0x146);
+    g_assert_cmphex(qtest_readl(qts, IO8_IOC3_CFG + PCI_COMMAND) & 0xffff,
+                    ==, 0x146);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int result;
@@ -206,6 +232,8 @@ int main(int argc, char **argv)
         test_transceiver_answers_at_one_address);
     qtest_add_data_func("origin300/io8-ioc3/register-0x17-reads-back", NULL,
                         test_register_0x17_reads_back_a_written_value);
+    qtest_add_data_func("origin300/io8-ioc3/io8bt-configuration", NULL,
+                        test_io8bt_configuration_reads_and_writes);
 
     result = g_test_run();
     g_assert_cmpint(g_unlink(prom_path), ==, 0);
