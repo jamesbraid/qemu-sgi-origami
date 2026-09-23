@@ -51,3 +51,8 @@ config VIRTIO_SND
     bool
     default y
     depends on VIRTIO
+
+config SGI_RAD1_AUDIO
+    bool
+    default y if PCI_DEVICES
+    depends on PCI

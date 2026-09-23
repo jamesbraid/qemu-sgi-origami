@@ -1489,6 +1489,7 @@ F: hw/mips/sgi/
 F: include/hw/mips/sn0*
 F: include/hw/mips/sgi/
 F: hw/1wire/
+F: hw/audio/sgi-rad1-audio.c
 F: hw/i2c/pcf8584.c
 F: hw/i2c/i2c-wire.c
 F: hw/input/sgi-ioc3-kbc.c
@@ -1501,6 +1502,7 @@ F: hw/pci-host/sgi-xbridge.c
 F: hw/rtc/m48t35.c
 F: hw/scsi/qlogic-isp.c
 F: include/hw/1wire/
+F: include/hw/audio/sgi-rad1-audio.h
 F: include/hw/i2c/pcf8584.h
 F: include/hw/i2c/i2c-wire.h
 F: include/hw/input/sgi-ioc3-kbc.h
