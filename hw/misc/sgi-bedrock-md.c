@@ -1063,6 +1063,124 @@ static const MemoryRegionOps md_memory_ops = {
     },
 };
 
+/*
+ * Memory-special space: a fetch-and-op variable is the first doubleword of
+ * each 64-byte block of node memory, and the offset inside the block names
+ * the atomic operation. Only aligned 64-bit accesses reach the variable;
+ * anything else, and an offset with no operation, is refused as a bus error.
+ */
+static bool md_fetchop_variable(SGIBedrockMDState *s, hwaddr offset,
+                                unsigned size, bool is_write, hwaddr *raw)
+{
+    const char *access = is_write ? "write" : "read";
+    const char *reason = NULL;
+
+    if (size != 8) {
+        reason = "not a 64-bit access";
+    } else if (offset % 8) {
+        reason = "unaligned";
+    }
+    if (reason) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-bedrock-md: fetch-and-op %s at offset 0x%09"
+                      HWADDR_PRIx " size %u rejected: %s\n",
+                      access, offset, size, reason);
+        return false;
+    }
+    return md_memory_translate(s, offset & ~(SGI_BEDROCK_MD_FETCHOP_BLOCK - 1),
+                               8, is_write, raw) == MEMTX_OK;
+}
+
+static void md_fetchop_refuse_operation(hwaddr offset, bool is_write)
+{
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-bedrock-md: fetch-and-op %s at offset 0x%09"
+                  HWADDR_PRIx " size 8 rejected: no such operation\n",
+                  is_write ? "write" : "read", offset);
+}
+
+static MemTxResult md_fetchop_read(void *opaque, hwaddr offset,
+                                   uint64_t *value, unsigned size,
+                                   MemTxAttrs attrs)
+{
+    SGIBedrockMDState *s = opaque;
+    MemTxResult result = MEMTX_OK;
+    hwaddr raw;
+    uint64_t old;
+    uint64_t new;
+
+    *value = 0;
+    if (!md_fetchop_variable(s, offset, size, false, &raw)) {
+        return MEMTX_DECODE_ERROR;
+    }
+    old = address_space_ldq_be(&s->node_as, raw, attrs, &result);
+    if (result != MEMTX_OK) {
+        return result;
+    }
+    switch (offset % SGI_BEDROCK_MD_FETCHOP_BLOCK) {
+    case 0:
+        *value = old;
+        return MEMTX_OK;
+    case 8:
+        new = old + 1;
+        break;
+    case 16:
+        new = old - 1;
+        break;
+    case 24:
+        new = 0;
+        break;
+    default:
+        md_fetchop_refuse_operation(offset, false);
+        return MEMTX_DECODE_ERROR;
+    }
+    address_space_stq_be(&s->node_as, raw, new, attrs, &result);
+    if (result == MEMTX_OK) {
+        *value = old;
+    }
+    return result;
+}
+
+static MemTxResult md_fetchop_write(void *opaque, hwaddr offset,
+                                    uint64_t value, unsigned size,
+                                    MemTxAttrs attrs)
+{
+    SGIBedrockMDState *s = opaque;
+    MemTxResult result = MEMTX_OK;
+    hwaddr raw;
+    uint64_t old;
+
+    if (!md_fetchop_variable(s, offset, size, true, &raw)) {
+        return MEMTX_DECODE_ERROR;
+    }
+    switch (offset % SGI_BEDROCK_MD_FETCHOP_BLOCK) {
+    case 0:
+        break;
+    case 24:
+    case 32:
+        old = address_space_ldq_be(&s->node_as, raw, attrs, &result);
+        if (result != MEMTX_OK) {
+            return result;
+        }
+        value = offset % SGI_BEDROCK_MD_FETCHOP_BLOCK == 24 ?
+                old & value : old | value;
+        break;
+    default:
+        md_fetchop_refuse_operation(offset, true);
+        return MEMTX_DECODE_ERROR;
+    }
+    address_space_stq_be(&s->node_as, raw, value, attrs, &result);
+    return result;
+}
+
+static const MemoryRegionOps md_fetchop_ops = {
+    .read_with_attrs = md_fetchop_read,
+    .write_with_attrs = md_fetchop_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
+    .impl = { .min_access_size = 1, .max_access_size = 8, .unaligned = true },
+};
+
 static void md_reset_registers(SGIBedrockMDState *s)
 {
     md_selftest_cancel(s);
@@ -1194,6 +1312,10 @@ static void md_init(Object *obj)
                           SGI_BEDROCK_MD_MEMORY_SIZE);
     memory_region_add_subregion(&s->memory_mr, 0, &s->memory_mmio);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->memory_mr);
+    memory_region_init_io(&s->fetchop_mmio, obj, &md_fetchop_ops, s,
+                          TYPE_SGI_BEDROCK_MD "-fetch-and-op",
+                          SGI_BEDROCK_MD_FETCHOP_SIZE);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->fetchop_mmio);
     qdev_init_gpio_in_named(DEVICE(obj), md_soft_reset_input, "soft-reset", 1);
 }
 

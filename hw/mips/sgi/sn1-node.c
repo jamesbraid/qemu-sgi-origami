@@ -87,6 +87,7 @@
 #define SN1_HUB_LOCAL_REGISTERS_ADDRESS (SN1_SPACE_HUB + UINT64_C(0x10000000))
 #define SN1_HUB_LOCAL_REGISTERS_SIZE UINT64_C(0x8000000)
 #define SN1_XTALK_ADDRESS UINT64_C(0x20000000000)
+#define SN1_MEMORY_SPECIAL_ADDRESS UINT64_C(0x30000000000)
 #define SN1_BEDROCK_LOCAL_ADDRESS UINT64_C(0x20001000000)
 #define SN1_BEDROCK_NODE_ADDRESS UINT64_C(0x20001800000)
 #define SN1_BEDROCK_NODE_SIZE UINT64_C(0x800000)
@@ -1100,6 +1101,14 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     memory_region_add_subregion_overlap(
         system, sn1_node_address(node, SN1_RAM_ADDRESS),
         sysbus_mmio_get_region(bedrock, 7), 0);
+    /*
+     * The memory-special space (uncached attribute 2, the processor's
+     * third window) reaches the same node memory through the Bedrock's
+     * fetch-and-op operations instead of plain loads and stores.
+     */
+    memory_region_add_subregion(
+        system, sn1_node_address(node, SN1_MEMORY_SPECIAL_ADDRESS),
+        sysbus_mmio_get_region(bedrock, 9));
 
     for (cpu = 0; cpu < node->nr_cpus; cpu++) {
         MIPSCPU *mips_cpu = node->cpu[cpu];

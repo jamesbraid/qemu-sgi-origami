@@ -11,6 +11,11 @@
 #define DIRECTORY(_x) (DIRECTORY_BASE + (_x))
 #define MEMORY_BASE UINT64_C(0x400000000)
 #define MEMORY(_x) (MEMORY_BASE + (_x))
+#define FETCHOP_BASE UINT64_C(0x800000000)
+#define FETCHOP(_x) (FETCHOP_BASE + (_x))
+/* The Origin 300 machine carrier of the memory-special space, node zero. */
+#define FETCHOP_MACHINE_BASE UINT64_C(0x30000000000)
+#define FETCHOP_DIAGNOSTIC "sgi-bedrock-md: fetch-and-op "
 #define MEMORY_BANK_SIZE UINT64_C(0x40000000)
 #define DIRECTORY_BANK_SIZE UINT64_C(0x08000000)
 #define BEDROCK_BASE UINT64_C(0x70000000)
@@ -154,6 +159,7 @@ static QTestState *start_with_memory(const char *size, const char *extra)
     qtest_sysbus_mmio_map(s, MD_PATH, 1, DIRECTORY_BASE);
     qtest_sysbus_mmio_map(s, MD_PATH, 2, ECC_BASE);
     qtest_sysbus_mmio_map(s, MD_PATH, 3, MEMORY_BASE);
+    qtest_sysbus_mmio_map(s, MD_PATH, 4, FETCHOP_BASE);
     return s;
 }
 
@@ -2164,9 +2170,160 @@ static void test_parent_exports_ecc(void)
     qtest_quit(s);
 }
 
+/*
+ * The memory-special space (docs/datasheets/bedrock-memory-directory.md,
+ * "Memory special space"): the doubleword at the base of each 64-byte block
+ * of node memory is a fetch-and-op variable and the offset inside the block
+ * names the operation. What separates this from a plain alias of memory is
+ * the value returned before the variable changes.
+ */
+static void test_fetchop_operations(void)
+{
+    QTestState *s = start("");
+
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 1));
+    qtest_writeq(s, MEMORY(0x1000), 5);
+    qtest_writeq(s, MEMORY(0x1040), UINT64_C(0x1122334455667788));
+
+    /* Offset 0 is a plain load or store of the variable. */
+    g_assert_cmphex(qtest_readq(s, FETCHOP(0x1000)), ==, 5);
+    qtest_writeq(s, FETCHOP(0x1000), 7);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==, 7);
+
+    /* Fetch-and-increment, -decrement and -clear return the old value. */
+    g_assert_cmphex(qtest_readq(s, FETCHOP(0x1008)), ==, 7);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==, 8);
+    g_assert_cmphex(qtest_readq(s, FETCHOP(0x1010)), ==, 8);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==, 7);
+    g_assert_cmphex(qtest_readq(s, FETCHOP(0x1018)), ==, 7);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, FETCHOP(0x1010)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==, UINT64_MAX);
+
+    /* Store-and and store-or. */
+    qtest_writeq(s, FETCHOP(0x1018), UINT64_C(0x0f0f0f0f0f0f0f0f));
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==,
+                    UINT64_C(0x0f0f0f0f0f0f0f0f));
+    qtest_writeq(s, FETCHOP(0x1020), UINT64_C(0xf000000000000000));
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==,
+                    UINT64_C(0xff0f0f0f0f0f0f0f));
+
+    /* The next block is its own variable; the rest of a block is unreached. */
+    g_assert_cmphex(qtest_readq(s, FETCHOP(0x1048)), ==,
+                    UINT64_C(0x1122334455667788));
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1040)), ==,
+                    UINT64_C(0x1122334455667789));
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1008)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1018)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1020)), ==, 0);
+    qtest_quit(s);
+}
+
+static void test_fetchop_rejections(void)
+{
+    g_autofree char *log = log_file_new();
+    g_autofree char *extra = g_strdup_printf(MEMORY_LOG_OPTIONS "%s", log);
+    g_autofree char *contents = NULL;
+    QTestState *s = start(extra);
+
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 1));
+    qtest_writeq(s, MEMORY(0x2000), 0x55);
+    /* Offsets that name no operation, in each direction. */
+    g_assert_cmphex(qtest_readq(s, FETCHOP(0x2020)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, FETCHOP(0x2038)), ==, 0);
+    qtest_writeq(s, FETCHOP(0x2008), 1);
+    qtest_writeq(s, FETCHOP(0x2038), 1);
+    /* Narrow and unaligned accesses. */
+    g_assert_cmphex(qtest_readl(s, FETCHOP(0x2000)), ==, 0);
+    qtest_writel(s, FETCHOP(0x2000), 0x99);
+    qtest_writeb(s, FETCHOP(0x2008), 1);
+    g_assert_cmphex(qtest_readq(s, FETCHOP(0x2004)), ==, 0);
+    /* A block in a bank the memory decoder does not answer. */
+    g_assert_cmphex(qtest_readq(s, FETCHOP(MEMORY_BANK_SIZE + 8)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x2000)), ==, 0x55);
+    qtest_quit(s);
+
+    contents = log_file_take(log);
+    g_assert_nonnull(strstr(contents,
+        "sgi-bedrock-md: fetch-and-op read at offset 0x000002020 size 8 "
+        "rejected: no such operation"));
+    g_assert_nonnull(strstr(contents,
+        "sgi-bedrock-md: fetch-and-op read at offset 0x000002038 size 8 "
+        "rejected: no such operation"));
+    g_assert_nonnull(strstr(contents,
+        "sgi-bedrock-md: fetch-and-op write at offset 0x000002008 size 8 "
+        "rejected: no such operation"));
+    g_assert_nonnull(strstr(contents,
+        "sgi-bedrock-md: fetch-and-op write at offset 0x000002038 size 8 "
+        "rejected: no such operation"));
+    g_assert_nonnull(strstr(contents,
+        "sgi-bedrock-md: fetch-and-op read at offset 0x000002000 size 4 "
+        "rejected: not a 64-bit access"));
+    g_assert_nonnull(strstr(contents,
+        "sgi-bedrock-md: fetch-and-op write at offset 0x000002000 size 4 "
+        "rejected: not a 64-bit access"));
+    g_assert_nonnull(strstr(contents,
+        "sgi-bedrock-md: fetch-and-op write at offset 0x000002008 size 1 "
+        "rejected: not a 64-bit access"));
+    g_assert_nonnull(strstr(contents,
+        "sgi-bedrock-md: fetch-and-op read at offset 0x000002004 size 8 "
+        "rejected: unaligned"));
+    g_assert_cmpuint(log_count(contents, FETCHOP_DIAGNOSTIC), ==, 8);
+    g_assert_nonnull(strstr(contents,
+        "sgi-bedrock-md: memory read at offset 0x40000000 rejected: "
+        "locational bank 1 is disabled"));
+}
+
+static void test_parent_exports_fetchop(void)
+{
+    QTestState *s = start_parent();
+
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/bedrock", 9, FETCHOP_BASE);
+    qtest_writeq(s, BEDROCK_MD(0x8), memory_bank_config(0, 1));
+    qtest_writeq(s, MEMORY(0x40), 41);
+    g_assert_cmphex(qtest_readq(s, FETCHOP(0x48)), ==, 41);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x40)), ==, 42);
+    qtest_quit(s);
+}
+
+/*
+ * The two addresses the Origin 300's own diagnostics reach through the
+ * space: nmem's section 3 pattern word and scct's processor barrier, both
+ * in software bank 0, which the PROM's bank-select 2 places on installed
+ * locational bank 2.
+ */
+static void test_origin300_fetchop(void)
+{
+    g_autofree char *prom = empty_prom_new();
+    g_autofree char *quoted_prom = g_shell_quote(prom);
+    QTestState *s = qtest_initf("-M origin300 -cpu R14000 -smp 2 "
+                                "-m 512M -bios %s -S", quoted_prom);
+
+    qtest_writeq(s, SELFTEST_MACHINE(0x8),
+                 (UINT64_C(2) << 32) | memory_bank_config(2, 3) |
+                 memory_bank_config(3, 3));
+    qtest_writeq(s, UINT64_C(0x506000), 3);
+    g_assert_cmphex(qtest_readq(s, FETCHOP_MACHINE_BASE + 0x506000), ==, 3);
+    qtest_writeq(s, FETCHOP_MACHINE_BASE + 0x506000, 9);
+    g_assert_cmphex(qtest_readq(s, UINT64_C(0x506000)), ==, 9);
+    g_assert_cmphex(qtest_readq(s, FETCHOP_MACHINE_BASE + 0x38c008), ==, 0);
+    g_assert_cmphex(qtest_readq(s, FETCHOP_MACHINE_BASE + 0x38c008), ==, 1);
+    g_assert_cmphex(qtest_readq(s, UINT64_C(0x38c000)), ==, 2);
+    qtest_quit(s);
+    unlink(prom);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("sn1/bedrock-md/fetchop-operations",
+                   test_fetchop_operations);
+    qtest_add_func("sn1/bedrock-md/fetchop-rejections",
+                   test_fetchop_rejections);
+    qtest_add_func("sn1/bedrock-md/parent-fetchop-export",
+                   test_parent_exports_fetchop);
+    qtest_add_func("sn1/bedrock-md/origin300-fetchop",
+                   test_origin300_fetchop);
     qtest_add_func("sn1/bedrock-md/register-contract", test_register_contract);
     qtest_add_func("sn1/bedrock-md/selftest-phases", test_selftest_phases);
     qtest_add_func("sn1/bedrock-md/selftest-bank-remap",
