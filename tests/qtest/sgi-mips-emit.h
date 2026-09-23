@@ -14,9 +14,15 @@
  * owning the write would force every other caller onto one pointer
  * type instead of just removing the duplicated encoding.
  *
- * mfc0/mtc0 take no select register: no caller here ever names one,
- * so all five agree on sel 0. A caller needing another select stays
- * on its own local encoding.
+ * mfc0/mtc0/dmtc0 take no select register: no caller here ever names
+ * one, so every caller agrees on sel 0. A caller needing another
+ * select stays on its own local encoding.
+ *
+ * sn0-user-image.h's sn0_emit_i(), sn0_emit_mtc0(), sn0_emit_dmtc0()
+ * and sn0_emit_mfc0() delegate their word computation here too, kept
+ * as a second file because their SN0Image writer, and the fixed
+ * four-nop delay each CP0 write appends for the R10000's missing EHB,
+ * are policy this header still leaves to each caller.
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -35,6 +41,7 @@
 #define MIPS_OPC_CP0      (0x10u << 26)
 #define MIPS_OPC_MFC0     (MIPS_OPC_CP0 | (0x00u << 21))
 #define MIPS_OPC_MTC0     (MIPS_OPC_CP0 | (0x04u << 21))
+#define MIPS_OPC_DMTC0    (MIPS_OPC_CP0 | (0x05u << 21))
 
 static inline uint32_t mips_lui(int rt, uint16_t imm)
 {
@@ -69,6 +76,11 @@ static inline uint32_t mips_mfc0(int rt, int rd)
 static inline uint32_t mips_mtc0(int rt, int rd)
 {
     return MIPS_OPC_MTC0 | (rt << 16) | (rd << 11);
+}
+
+static inline uint32_t mips_dmtc0(int rt, int rd)
+{
+    return MIPS_OPC_DMTC0 | (rt << 16) | (rd << 11);
 }
 
 /*
