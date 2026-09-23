@@ -167,6 +167,27 @@ static void si_command_fifo_token(SGIMgrasState *s, uint32_t token)
     qemu_log_mask(LOG_UNIMP, "sgi-mgras: unimplemented command-FIFO token, "
                   "class 0x%04x reg 0x%02x payload %u bytes\n", cmd_class,
                   reg, payload_bytes);
+
+    if (payload_bytes % sizeof(uint32_t)) {
+        return;
+    }
+
+    /*
+     * This class is not implemented, but its header still declares
+     * payload_bytes/4 words in the same framing as STATE/EXEC. Frame and
+     * discard them instead of leaving the next FIFO word to be mis-parsed
+     * as a new header: that mis-parse is what corrupted the rest of the
+     * burst before this fix.
+     */
+    s->cmd_token_class = SI_CMD_HDR_CLASS_DISCARD;
+    s->cmd_token_payload_count = 0;
+    s->cmd_token_words_remaining = payload_bytes / 4;
+    if (s->cmd_token_words_remaining > SGI_MGRAS_CMD_TOKEN_MAX_PAYLOAD_WORDS) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: command-FIFO token, class "
+                      "0x%04x reg 0x%02x payload %u bytes exceeds %zu-byte "
+                      "limit\n", cmd_class, reg, payload_bytes,
+                      sizeof(s->cmd_token_payload));
+    }
 }
 
 void si_raster_command(SGIMgrasState *s, uint64_t word)
