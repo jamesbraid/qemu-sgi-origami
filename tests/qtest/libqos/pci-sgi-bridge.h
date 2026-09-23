@@ -15,9 +15,14 @@
  * The head: a Bridge with nothing above it but the "none" machine, and the
  * memory a card transfers into. Neither is placed by a board, so the bus
  * maps both itself and is the only thing that decides where they sit.
+ *
+ * The machine is left running, as a PC head is. Under the qtest accelerator
+ * the processor never executes either way, but the run state is not inert:
+ * a stopped machine hands nothing to a network backend, and a migration
+ * destination started with -S stays stopped after the transfer arrives.
  */
 #define QPCI_SGI_BRIDGE_HEAD \
-    "-cpu R10000 -S " \
+    "-cpu R10000 " \
     "-device sgi-xtalk-test-target,id=transfer-ram,size=16M " \
     "-device sgi-bridge,id=bridge,board-part=030-1244-001," \
     "fabric=/machine/unattached/system[0] "

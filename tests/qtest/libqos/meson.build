@@ -24,6 +24,7 @@ libqos_srcs = files(
 
         # sgi
         'pci-sgi-bridge.c',
+        'libqos-sgi-bridge.c',
 
         # usb
         'usb.c',
