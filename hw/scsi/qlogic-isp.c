@@ -338,6 +338,7 @@ typedef struct QLogicISPInfo {
     bool missing_target_timeout;    /* absent target's status has 0x0040 */
     bool pm_cap_v1;                 /* PCI Power Management version 1 */
     uint16_t command_wmask;         /* Command bits past the PCI core's own */
+    uint8_t latency_wmask;          /* writable Latency Timer bits */
     uint16_t fw_version[3];         /* about-firmware mailboxes 1, 2, 3 */
 } QLogicISPInfo;
 
@@ -2325,6 +2326,11 @@ static void qlogic_isp_realize(PCIDevice *dev, Error **errp)
      */
     pci_word_test_and_set_mask(dev->wmask + PCI_COMMAND,
                                info->command_wmask);
+    /*
+     * The PCI core leaves the Latency Timer read-only; this part takes a
+     * write (docs/datasheets/isp12160.md).
+     */
+    dev->wmask[PCI_LATENCY_TIMER] = info->latency_wmask;
 
     if (info->pm_cap_v1) {
         pci_set_word(dev->config + PCI_STATUS,
@@ -2604,6 +2610,7 @@ static const QLogicISPInfo qlogic_isp_infos[] = {
       .missing_target_timeout = true,
       .pm_cap_v1 = true,
       .command_wmask = PCI_COMMAND_PARITY | PCI_COMMAND_INVALIDATE,
+      .latency_wmask = 0xff,
       .fw_version = { 10, 4, 0 } },
 };
 
