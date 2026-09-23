@@ -1050,6 +1050,152 @@ static void test_dma_image_transfer_reads_list_entry_at_0x18(void)
 #undef DMA_LIST_BASE_REAL_PFN
 #undef DMA_LIST_BASE_REAL_PAGE
 
+/*
+ * Screen-to-host read (FIX-SPEC.md section 3): the trace's own read
+ * descriptor, hw-y box (0,1023)-(3,1020), pitch 4, over the seed weave
+ * (FIX-SPEC.md section 0) painted directly at screen (0,0)-(3,3). Checks
+ * the read lands the box top-down at pitch 4 in host memory and leaves
+ * 0x020010 bit 16 alone, then replays the paired 0xb1 write -- the same
+ * host bytes, reusing the read's page-list mapping -- to confirm the
+ * round trip reproduces the weave beside itself, the same doubling
+ * mgrasCopyPixels..OC's first kick pair does in the capture.
+ */
+#define DMA_READ_NODE      0u
+#define DMA_READ_WIDGET    9u
+#define DMA_READ_LIST_PAGE 0x6000u
+#define DMA_READ_LIST_BASE (DMA_READ_LIST_PAGE | 0x18u)
+#define DMA_READ_DATA_PFN  0x30u
+#define DMA_READ_DATA_PAGE (DMA_READ_DATA_PFN << 12)
+
+static uint64_t dma_read_node_addr(uint32_t offset)
+{
+    return ((uint64_t)DMA_READ_NODE << 32) | offset;
+}
+
+static void test_dma_image_transfer_reads_screen_to_host(void)
+{
+    static const uint8_t list_header[24] = { 0 };
+    static const uint8_t list_entry[8] = {
+        0, 0, 0, 0, 0, 0, 0, DMA_READ_DATA_PFN,
+    };
+    /* FIX-SPEC.md section 0's seed weave: one set pixel per row. */
+    static const uint8_t weave[16] = {
+        0x00, 0x00, 0x00, 0x07,
+        0x00, 0x07, 0x00, 0x00,
+        0x00, 0x00, 0x07, 0x00,
+        0x07, 0x00, 0x00, 0x00,
+    };
+    uint8_t got[16];
+
+    si_reset();
+    si_enter_context(qts);
+
+    qtest_memwrite(qts, dma_read_node_addr(DMA_READ_LIST_PAGE),
+                  list_header, sizeof(list_header));
+    qtest_memwrite(qts, dma_read_node_addr(DMA_READ_LIST_BASE),
+                  list_entry, 8);
+
+    /* Paint the weave directly at screen (0,0)-(3,3): base 0, then 7s. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_COLORMASKMSBS, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_PP1FILLMODE, SI_LOGIC_OP_COPY << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_PACKEDCOLOR, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_BLOCK_START, (0u << 16) | 0u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND_EXEC(REG_BLOCK_END, (3u << 16) | 3u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_PACKEDCOLOR, 7));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_BLOCK_START, (3u << 16) | 0u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND_EXEC(REG_BLOCK_END, (3u << 16) | 0u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_BLOCK_START, (1u << 16) | 1u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND_EXEC(REG_BLOCK_END, (1u << 16) | 1u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_BLOCK_START, (2u << 16) | 2u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND_EXEC(REG_BLOCK_END, (2u << 16) | 2u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_BLOCK_START, (0u << 16) | 3u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND_EXEC(REG_BLOCK_END, (0u << 16) | 3u));
+
+    g_assert_cmphex(si_test_pixel(qts, 3, 0), ==, 7);
+    g_assert_cmphex(si_test_pixel(qts, 1, 1), ==, 7);
+    g_assert_cmphex(si_test_pixel(qts, 2, 2), ==, 7);
+    g_assert_cmphex(si_test_pixel(qts, 0, 3), ==, 7);
+    g_assert_cmphex(si_test_pixel(qts, 0, 0), ==, 0);
+
+    /* DMA-map slot 0: node 0's list entry 0 at 0x6018, one page, widget 9. */
+    qtest_writel(qts, SI_REG(0x130400), 0x00482008);
+    qtest_writeq(qts, SI_REG(0x130400),
+                dma_read_node_addr(DMA_READ_LIST_BASE));
+    qtest_writeq(qts, SI_REG(0x130400), ((uint64_t)0x00483004 << 32) | 1);
+    qtest_writeq(qts, SI_REG(0x130400),
+                ((uint64_t)0x00484b04 << 32) | (DMA_READ_WIDGET << 16));
+
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & SI_HQ_FLAG_FENCE, ==, 0);
+
+    /*
+     * Read descriptor: the trace's own values (FIX-SPEC.md section 3
+     * table), hw-y box (0,1023)-(3,1020), pitch 4, kick 0xb9 (slot 0,
+     * read).
+     */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_BLOCK_START, (0u << 16) | 1023u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND_EXEC(REG_BLOCK_END, (3u << 16) | 1020u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080404 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080504 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080604 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080704 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080804 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                ((uint64_t)0x00080b04 << 32) | 0xb9);
+
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & SI_HQ_FLAG_FENCE, ==, 0);
+
+    qtest_memread(qts, dma_read_node_addr(DMA_READ_DATA_PAGE),
+                 got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), weave, sizeof(weave));
+
+    /*
+     * Paired write (FIX-SPEC.md section 3, step 6): reuses pitch (reg 4)
+     * from the read unwritten, same host bytes, box (4,0)-(7,3) -- the
+     * capture's first doubling, weave beside itself.
+     */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_BLOCK_START, (4u << 16) | 0u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND_EXEC(REG_BLOCK_END, (7u << 16) | 3u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080504 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080604 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080704 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080804 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                ((uint64_t)0x00080b04 << 32) | 0xb1);
+
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & SI_HQ_FLAG_FENCE, ==,
+                    SI_HQ_FLAG_FENCE);
+    g_assert_cmphex(si_test_pixel(qts, 7, 0), ==, 7);
+    g_assert_cmphex(si_test_pixel(qts, 5, 1), ==, 7);
+    g_assert_cmphex(si_test_pixel(qts, 6, 2), ==, 7);
+    g_assert_cmphex(si_test_pixel(qts, 4, 3), ==, 7);
+    g_assert_cmphex(si_test_pixel(qts, 4, 0), ==, 0);
+}
+
+#undef DMA_READ_NODE
+#undef DMA_READ_WIDGET
+#undef DMA_READ_LIST_PAGE
+#undef DMA_READ_LIST_BASE
+#undef DMA_READ_DATA_PFN
+#undef DMA_READ_DATA_PAGE
+
 static void test_board_bringup_byte_poll_bit_position(void)
 {
     si_reset();
@@ -3705,6 +3851,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "dma-image-transfer-reads-list-entry-at-0x18",
                    test_dma_image_transfer_reads_list_entry_at_0x18);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "dma-image-transfer-reads-screen-to-host",
+                   test_dma_image_transfer_reads_screen_to_host);
     qtest_add_func("sn0/origin2000/mgras/board-bringup-byte-poll-bit-position",
                    test_board_bringup_byte_poll_bit_position);
     qtest_add_func("sn0/origin2000/mgras/board-info-byte-read-no-error",

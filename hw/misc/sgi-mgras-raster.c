@@ -1009,14 +1009,142 @@ static void si_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
     s->dirty = true;
 }
 
+/*
+ * Screen-to-host read: the inverse transfer of si_raster_dma_draw_image,
+ * sharing its source-address formula and page-list layout. The box
+ * arrives hardware-y and bottom-up rather than the draw's top-down
+ * x0<=x1, y0<=y1 rectangle: BLOCKXYSTARTI's y is the box's hardware-y
+ * bottom (screen row HEIGHT-1-y0) and BLOCKXYENDI's y is its top (screen
+ * row HEIGHT-1-y1). Refuse a descriptor whose rows count does not match
+ * that box height instead of guessing which end to trust.
+ *
+ * A stored pixel is si_put_pixel()'s COLORMASKLSBSA-masked 24-bit value;
+ * the byte extraction below is the exact inverse of the draw path's
+ * pixel_bytes[0]<<24 | pixel_bytes[1]<<16 | pixel_bytes[2]<<8 |
+ * pixel_bytes[3] assembly, most-significant byte first, so byte 0 of a
+ * 4-byte pixel always reads back zero (the draw path's mask never lets
+ * that byte reach the framebuffer).
+ */
+static void si_raster_dma_read_image(SGIMgrasState *s, uint32_t kick_byte)
+{
+    unsigned int slot, widget;
+    uint64_t base;
+    uint32_t list_node, list_pa, count;
+    uint32_t pitch = s->dma_desc_20000[SI_DESC_20000_REG_PITCH];
+    uint64_t addr = (uint64_t)s->dma_desc_20000[SI_DESC_20000_REG_ADDR_LOW] +
+                    s->dma_desc_20000[SI_DESC_20000_REG_ADDR_HIGH];
+    uint32_t rows = s->dma_desc_20000[SI_DESC_20000_REG_ROWS];
+    uint32_t bpr = s->dma_desc_20000[SI_DESC_20000_REG_BPR];
+    uint32_t xy0 = s->rss[SI_REG_BLOCKXYSTARTI];
+    uint32_t xy1 = s->rss[SI_REG_BLOCKXYENDI];
+    int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
+    int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
+    int y_top, y_bottom;
+    unsigned int width, bpp;
+    uint64_t *page_list;
+
+    if (!si_raster_dma_select_slot(s, kick_byte, &slot)) {
+        return;
+    }
+    if (rows == 0 || bpr == 0 || x0 > x1 || x0 >= SGI_MGRAS_WIDTH ||
+        y0 >= SGI_MGRAS_HEIGHT || y1 >= SGI_MGRAS_HEIGHT) {
+        return;
+    }
+    x1 = MIN(x1, SGI_MGRAS_WIDTH - 1);
+    width = x1 - x0 + 1;
+    if (bpr % width) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA image transfer, %u "
+                      "bytes/row does not divide destination width %u\n",
+                      bpr, width);
+        return;
+    }
+    bpp = bpr / width;
+    if (bpp != 1 && bpp != 4) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: unimplemented DMA image "
+                      "transfer pixel width %u bytes\n", bpp);
+        return;
+    }
+
+    y_top = SGI_MGRAS_HEIGHT - 1 - y0;
+    y_bottom = SGI_MGRAS_HEIGHT - 1 - y1;
+    if (y_top > y_bottom || rows != (uint32_t)(y_bottom - y_top + 1)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA image transfer read box "
+                      "does not match rows %u\n", rows);
+        return;
+    }
+
+    base = si_dma_map_slot_base(s, slot);
+    list_node = (uint32_t)(base >> 32) & 0xff;
+    list_pa = (uint32_t)base & ~0x7u;
+    count = si_dma_map_slot_count(s, slot);
+    widget = (si_dma_map_slot_control(s, slot) >> 16) & 0xf;
+
+    if (count == 0 || count > (1u << 20)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA source mapping has "
+                      "unusable page count %u\n", count);
+        return;
+    }
+
+    page_list = g_new0(uint64_t, count);
+    for (uint32_t i = 0; i < count; i++) {
+        hwaddr fabric;
+
+        if (!si_compose_xtalk(s, widget,
+                              ((uint64_t)list_node << 32) | (list_pa + i * 8),
+                              &fabric)) {
+            g_free(page_list);
+            return;
+        }
+        page_list[i] = address_space_ldq_be(&s->fabric_as, fabric,
+                                            MEMTXATTRS_UNSPECIFIED,
+                                            NULL) & 0xffff;
+    }
+
+    for (uint32_t row = 0; row < rows; row++) {
+        int y = y_top + (int)row;
+
+        for (uint32_t b = 0; b < bpr; b++) {
+            uint32_t col = b / bpp;
+            int x = x0 + (int)col;
+            uint64_t va, src_pa;
+            uint64_t page_ix;
+            hwaddr fabric;
+            uint32_t stored;
+            uint8_t byte;
+
+            if (x > x1) {
+                continue;
+            }
+            stored = s->front[y * SGI_MGRAS_WIDTH + x];
+            byte = bpp == 1 ? (uint8_t)stored :
+                (uint8_t)(stored >> (24 - 8 * (b % bpp)));
+
+            va = addr + (uint64_t)row * pitch + b;
+            page_ix = va >> 12;
+            if (page_ix >= count) {
+                qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA image transfer "
+                              "destination page %" PRIu64 " exceeds mapped "
+                              "count %u\n", page_ix, count);
+                continue;
+            }
+            src_pa = ((uint64_t)list_node << 32) |
+                     (page_list[page_ix] << 12) | (va & 0xfff);
+            if (!si_compose_xtalk(s, widget, src_pa, &fabric)) {
+                continue;
+            }
+            address_space_stb(&s->fabric_as, fabric, byte,
+                              MEMTXATTRS_UNSPECIFIED, NULL);
+        }
+    }
+    g_free(page_list);
+}
+
 static void si_raster_dma_kick(SGIMgrasState *s, uint32_t kick_word)
 {
     uint32_t kick_byte = kick_word & 0xff;
 
     if (kick_word & SI_DMA_KICK_DIRECTION_READ) {
-        /* Screen-to-host read is an unimplemented follow-up. */
-        qemu_log_mask(LOG_UNIMP, "sgi-mgras: unimplemented screen-to-host "
-                      "DMA read (kick byte 0x%02x)\n", kick_byte);
+        si_raster_dma_read_image(s, kick_byte);
         return;
     }
     si_raster_dma_draw_image(s, kick_byte);
