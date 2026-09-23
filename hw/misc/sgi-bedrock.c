@@ -884,6 +884,8 @@ static void bedrock_local_reset(void *opaque, int n, int level)
     SGIBedrockState *s = opaque;
 
     if (level) {
+        trace_sgi_bedrock_local_reset(current_cpu ? current_cpu->cpu_index
+                                      : -1);
         device_cold_reset(DEVICE(&s->pi[0]));
         device_cold_reset(DEVICE(&s->pi[1]));
         device_cold_reset(DEVICE(&s->io));
