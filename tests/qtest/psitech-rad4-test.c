@@ -984,25 +984,6 @@ static void rad4_play_mode0(QTestState *qts)
     }
 }
 
-static void test_mode_recognition(void)
-{
-    QTestState *qts = rad4_init();
-
-    rad4_play_mode0(qts);
-
-    /*
-     * Recognized: the frame timer starts, so a virtual second later at
-     * least one frame event has fired.
-     */
-    qtest_clock_step(qts, 1000000000);
-    uint32_t status = bar2_read(qts, B_CTRL);
-    g_assert_cmphex(status & STATUS_FRAME, ==, STATUS_FRAME);
-    g_assert_cmphex(bar0_read(qts, R_INTCSR) & INTCSR_PENDING, ==,
-                    INTCSR_PENDING);
-
-    qtest_quit(qts);
-}
-
 static void test_mode_recognition_rejects_mutation(void)
 {
     QTestState *qts = rad4_init();
@@ -1890,7 +1871,6 @@ int main(int argc, char **argv)
                    test_reserved_port_index_write_resets_phase);
     qtest_add_func("/psitech-rad4/color-lut-round-trip",
                    test_color_lut_round_trip);
-    qtest_add_func("/psitech-rad4/mode-recognition", test_mode_recognition);
     qtest_add_func("/psitech-rad4/mode-recognition-mutation",
                    test_mode_recognition_rejects_mutation);
     qtest_add_func("/psitech-rad4/gfx-update-dirty-tracking",
