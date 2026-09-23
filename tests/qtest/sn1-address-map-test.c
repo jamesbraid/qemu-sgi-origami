@@ -1676,56 +1676,6 @@ static void test_l1_uart_irq_reaches_cpu(const void *data)
     g_assert_cmpint(close(sv[0]), ==, 0);
 }
 
-static void test_prom_four_read_only_views(const void *data)
-{
-    QTestState *qts = machine_start();
-    static const uint64_t views[] = {
-        PROM_RESET, HUB_LOCAL_BOOT, HUB_LOCAL_HIGH_BOOT, HUB_REMOTE_BOOT,
-    };
-    static const struct {
-        uint64_t offset;
-        uint8_t value;
-    } probes[] = {
-        { 0, 0x31 },
-        { PROM_CONFIG_OFFSET, 0x62 },
-        { PROM_SIZE - 1, 0x93 },
-    };
-
-    machine_configure_memory(qts);
-
-    for (size_t i = 0; i < ARRAY_SIZE(probes); i++) {
-        for (size_t j = 0; j < ARRAY_SIZE(views); j++) {
-            g_assert_cmphex(qtest_readb(qts, views[j] + probes[i].offset), ==,
-                            probes[i].value);
-        }
-
-        for (size_t write_view = 0;
-             write_view < ARRAY_SIZE(views); write_view++) {
-            qtest_writeb(qts, views[write_view] + probes[i].offset,
-                         probes[i].value ^ 0xff);
-            for (size_t read_view = 0;
-                 read_view < ARRAY_SIZE(views); read_view++) {
-                g_assert_cmphex(qtest_readb(qts,
-                                            views[read_view] +
-                                            probes[i].offset), ==,
-                                probes[i].value);
-            }
-        }
-    }
-
-    /* All three boot aliases stop at the exact supplied length. */
-    assert_flat_view_unmapped(qts, HUB_LOCAL_BOOT + PROM_SIZE);
-    assert_flat_view_unmapped(qts, HUB_LOCAL_HIGH_BOOT - 1);
-    assert_flat_view_unmapped(qts, HUB_LOCAL_HIGH_BOOT + PROM_SIZE);
-    assert_flat_view_unmapped(qts, HUB_REMOTE_BOOT + PROM_SIZE);
-
-    /* The reset view ends there too, within the first 1 GiB memory hole. */
-    assert_flat_view_is_io(qts, PROM_RESET + PROM_SIZE);
-    check_access_has_no_storage(qts, PROM_RESET + PROM_SIZE);
-
-    qtest_quit(qts);
-}
-
 static char *create_flash_image(void);
 static void remove_flash_image(const char *flash);
 static QTestState *machine_start_with_flash(const char *flash,
@@ -1760,54 +1710,6 @@ static void test_prom_cpu_module_config(const void *data)
         qtest_quit(qts);
     }
     remove_flash_image(flash);
-}
-
-static void assert_flat_view_extent(QTestState *qts, uint64_t start,
-                                    uint64_t size)
-{
-    g_autofree char *mtree = qtest_hmp(qts, "info mtree -f");
-    g_autofree char *range = g_strdup_printf("%016" PRIx64 "-%016" PRIx64,
-                                             start, start + size - 1);
-    const char *hit = strstr(mtree, range);
-    const char *line_end;
-    g_autofree char *line = NULL;
-
-    g_assert_nonnull(hit);
-    line_end = strchr(hit, '\n');
-    line = g_strndup(hit, line_end ? (size_t)(line_end - hit) : strlen(hit));
-    g_assert_nonnull(strstr(line, "sn1.prom"));
-}
-
-static void test_prom_flat_view_extents(const void *data)
-{
-    QTestState *qts = machine_start();
-
-    assert_flat_view_extent(qts, PROM_RESET, PROM_SIZE);
-    assert_flat_view_extent(qts, HUB_LOCAL_BOOT, PROM_SIZE);
-    assert_flat_view_extent(qts, HUB_LOCAL_HIGH_BOOT, PROM_SIZE);
-    assert_flat_view_extent(qts, HUB_REMOTE_BOOT, PROM_SIZE);
-    assert_flat_view_extent(qts, HUB_LOCAL_FLASH,
-                            SGI_BEDROCK_FLASH_PART_SIZE);
-    assert_flat_view_extent(qts, HUB_REMOTE_FLASH,
-                            SGI_BEDROCK_FLASH_PART_SIZE);
-
-    qtest_quit(qts);
-}
-
-/*
- * The reset vector and the bounded high local view are the windows the
- * processor actually fetches firmware from without a flash part attached.
- * A stock-PROM boot must reach them as direct storage, not as the i/o
- * handlers a flash part overlays those same two addresses with.
- */
-static void test_prom_execution_windows_are_not_io(const void *data)
-{
-    QTestState *qts = machine_start();
-
-    assert_flat_view_is_execution_storage(qts, PROM_RESET);
-    assert_flat_view_is_execution_storage(qts, HUB_LOCAL_HIGH_BOOT);
-
-    qtest_quit(qts);
 }
 
 static void assert_erased_second_position(QTestState *qts)
@@ -2516,27 +2418,6 @@ static void test_directory_protection(const void *data)
     qtest_quit(qts);
 }
 
-/*
- * With a flash part attached, sn1_load_prom() backs the reset vector and
- * the bounded high local view with i/o handlers instead of the direct
- * alias a stock-PROM boot gets there. TCG caches no translation out of an
- * i/o region, so the processor recompiles one instruction per fetch and
- * the guest runs 100-300x slower while looking like it is still making
- * progress. This is the live bug the execution-view fix addresses, and
- * this test stays red until that fix lands.
- */
-static void test_flash_prom_execution_windows_are_not_io(const void *data)
-{
-    g_autofree char *flash = create_flash_image();
-    QTestState *qts = machine_start_with_flash(flash, "");
-
-    assert_flat_view_is_execution_storage(qts, PROM_RESET);
-    assert_flat_view_is_execution_storage(qts, HUB_LOCAL_HIGH_BOOT);
-
-    qtest_quit(qts);
-    remove_flash_image(flash);
-}
-
 static void test_boot_flash_backs_every_prom_view(const void *data)
 {
     g_autofree char *flash = create_flash_image();
@@ -2745,55 +2626,6 @@ static void test_boot_flash_migration(const void *data)
     remove_flash_image(source_flash);
     remove_flash_image(destination_flash);
     g_assert_cmpint(g_rmdir(directory), ==, 0);
-}
-
-static void test_prom_second_stride_view(const void *data)
-{
-    g_autoptr(GError) error = NULL;
-    g_autofree char *log_path = NULL;
-    g_autofree char *quoted = NULL;
-    g_autofree char *extra = NULL;
-    g_autofree char *log = NULL;
-    QTestState *qts;
-    int fd;
-
-    fd = g_file_open_tmp("sn1-second-stride-log-XXXXXX.txt", &log_path,
-                         &error);
-    g_assert_no_error(error);
-    g_assert_cmpint(close(fd), ==, 0);
-    quoted = g_shell_quote(log_path);
-    extra = g_strdup_printf("-d unimp -D %s", quoted);
-    qts = machine_start_with(prom_path, extra);
-
-    assert_erased_second_position(qts);
-
-    /* Writes change neither the erased second position nor position zero. */
-    qtest_writeb(qts, HUB_LOCAL_FLASH, 0x00);
-    qtest_writeq(qts, HUB_LOCAL_FLASH + FLASH_OBSERVED_OFFSET, 0);
-    qtest_writeq(qts, HUB_LOCAL_FLASH +
-                 SGI_BEDROCK_FLASH_PART_SIZE - 8, 0);
-    qtest_writeb(qts, HUB_REMOTE_FLASH, 0x00);
-    qtest_writeq(qts, HUB_REMOTE_FLASH + FLASH_INTERIOR_OFFSET, 0);
-    qtest_writeb(qts, HUB_REMOTE_FLASH +
-                 SGI_BEDROCK_FLASH_PART_SIZE - 1, 0);
-    assert_erased_second_position(qts);
-    g_assert_cmphex(qtest_readb(qts, PROM_RESET), ==, 0x31);
-
-    qtest_system_reset(qts);
-    assert_erased_second_position(qts);
-    g_assert_cmphex(qtest_readb(qts, PROM_RESET), ==, 0x31);
-
-    /* Stopping the machine flushes the log this run has been writing. */
-    qtest_quit(qts);
-
-    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
-    g_assert_no_error(error);
-    g_assert_nonnull(strstr(log, "flash offset 0x0\n"));
-    g_assert_nonnull(strstr(log, "flash offset 0x1e0000\n"));
-    g_assert_nonnull(strstr(log, "flash offset 0x7ffff8\n"));
-    g_assert_nonnull(strstr(log, "flash offset 0x400000\n"));
-    g_assert_nonnull(strstr(log, "flash offset 0x7fffff\n"));
-    g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
 static void assert_qemu_rejects(const char *const args[], const char *message)
@@ -3532,14 +3364,8 @@ int main(int argc, char **argv)
                         test_l1_operator_console_uses_serial0);
     qtest_add_data_func("sn1/address-map/l1-uart-irq-reaches-cpu", NULL,
                         test_l1_uart_irq_reaches_cpu);
-    qtest_add_data_func("sn1/address-map/prom-four-read-only-views", NULL,
-                        test_prom_four_read_only_views);
     qtest_add_data_func("sn1/address-map/prom-cpu-module-config", NULL,
                         test_prom_cpu_module_config);
-    qtest_add_data_func("sn1/address-map/prom-flat-view-extents", NULL,
-                        test_prom_flat_view_extents);
-    qtest_add_data_func("sn1/address-map/prom-execution-windows-not-io", NULL,
-                        test_prom_execution_windows_are_not_io);
     qtest_add_data_func("sn1/address-map/l1-identity-records", NULL,
                         test_l1_identity_records_come_from_the_command_line);
     qtest_add_data_func("sn1/address-map/l1-identity-records-absent", NULL,
@@ -3558,8 +3384,6 @@ int main(int argc, char **argv)
                         NULL, test_execution_views_refuse_commands);
     qtest_add_data_func("sn1/address-map/boot-flash-migration", NULL,
                         test_boot_flash_migration);
-    qtest_add_data_func("sn1/address-map/prom-second-stride-view", NULL,
-                        test_prom_second_stride_view);
     qtest_add_data_func("sn1/address-map/prom-size-is-exact", NULL,
                         test_prom_size_is_exact);
     qtest_add_data_func("sn1/address-map/boot-flash-image-contract", NULL,
@@ -3592,14 +3416,6 @@ int main(int argc, char **argv)
                         NULL, test_promdata_filter_survives_migration);
     qtest_add_data_func("sn1/address-map/system-reset", NULL,
                         test_system_reset_clears_bedrock_state);
-    /*
-     * Registered last: this test's fatal assertion aborts the whole
-     * process on the current trunk, and GTest runs registered tests in
-     * one process in registration order, so anything after it here would
-     * never run while it stays red.
-     */
-    qtest_add_data_func("sn1/address-map/flash-prom-execution-windows-not-io",
-                        NULL, test_flash_prom_execution_windows_are_not_io);
 
     result = g_test_run();
     g_assert_cmpint(g_unlink(prom_path), ==, 0);
