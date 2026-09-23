@@ -503,17 +503,21 @@ static void si_draw_byte_row(SGIMgrasState *s)
     x1 = MIN(x1, SGI_MGRAS_WIDTH - 1);
     y1 = MIN(y1, SGI_MGRAS_HEIGHT - 1);
 
-    switch (packing) {
-    case SI_BYTE_XFER_PACKING_BYTES:
+    /*
+     * The real xdm chooser ORs a row-padding field (bits 16:14) into this
+     * word alongside the packing selector bit, e.g. 0x00010080 or
+     * 0x00018000 rather than the bare selector value (blockcopy-grammar.md).
+     * Test the selector bits, not the whole register, so those padded
+     * values still match their packing mode instead of falling through to
+     * the unimplemented default.
+     */
+    if (packing & SI_BYTE_XFER_PACKING_BYTES) {
         si_draw_byte_row_bytes(s, x0, x1, y0, y1, mask, op);
-        return;
-    case SI_BYTE_XFER_PACKING_PAIRS:
+    } else if (packing & SI_BYTE_XFER_PACKING_PAIRS) {
         si_draw_byte_row_pairs(s, x0, x1, y0, y1, mask, op);
-        return;
-    default:
+    } else {
         qemu_log_mask(LOG_UNIMP, "sgi-mgras: unimplemented byte-transfer "
                       "packing, register 0x159 value 0x%08x\n", packing);
-        return;
     }
 }
 

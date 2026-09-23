@@ -1596,6 +1596,90 @@ static void test_direct_byte_row_pairs(void)
 }
 
 
+/*
+ * The real xdm chooser ORs the row-padding field (bits 16:14) into the
+ * same 0x159 word as the packing selector bit, e.g. 0x00010080 rather
+ * than the bare 0x0080 the test above drives (blockcopy-grammar.md's
+ * field table: "row padding to 8 bytes in bits 16:14, caller flags in
+ * bits 7:4 and 3:0"). si_draw_byte_row()'s packing switch used an exact
+ * match against the whole register value, so every one of these calls
+ * fell to the LOG_UNIMP default and was dropped -- 252 drops in a single
+ * capture, wiping icon glyph and button/field content
+ * (dropped_byte_row_geometry.json). The switch must read the selector
+ * bits only.
+ */
+static void test_direct_byte_row_pairs_row_pad_bits(void)
+{
+    QTestState *qts = qtest_init(MACHINE_ARGS);
+
+    si_enter_context(qts);
+
+    si_tag_wid(qts, 500, 200, 505, 200, 9);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_FILLMODE, SI_FILLMODE_BYTE_XFER));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BYTE_XFER_PACKING,
+                            SI_BYTE_XFER_PACKING_PAIRS | 0x00010000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (500u << 16) | 200u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (505u << 16) | 200u));
+
+    for (int unit = 0; unit < 3; unit++) {
+        uint8_t pixel0 = 0x10 + unit * 2;
+        uint8_t pixel1 = pixel0 + 1;
+
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     SI_COMMAND(REG_CHAR_H, 0x12345600u | pixel0));
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     SI_COMMAND_EXEC(REG_CHAR_L, 0xabcdef00u | pixel1));
+    }
+
+    for (int col = 0; col < 6; col++) {
+        g_assert_cmphex(si_test_pixel(qts, 500 + col, 200), ==, 0x10 + col);
+    }
+    g_assert_cmphex(si_test_wid(qts, 500, 200), ==, 9);
+
+    qtest_quit(qts);
+}
+
+
+/*
+ * Same masking bug, the eight-pixel path: register 0x159 = 0x00018000,
+ * observed 120x in the same capture over rectangle (454,700)-(459,719)
+ * (a button/field-row glyph).
+ */
+static void test_direct_byte_row_with_row_pad_bits(void)
+{
+    si_reset();
+
+    si_enter_context(qts);
+
+    si_tag_wid(qts, 500, 210, 507, 210, 5);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_FILLMODE, SI_FILLMODE_BYTE_XFER));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BYTE_XFER_PACKING,
+                            SI_BYTE_XFER_PACKING_BYTES | 0x00010000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_DRBPOINTERS, 5u << 16));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_START, (500u << 16) | 210u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_BLOCK_END, (507u << 16) | 210u));
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_CHAR_H, 0x00010203u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_CHAR_L, 0x04050607u));
+
+    g_assert_cmphex(si_test_pixel(qts, 500, 210), ==, 0x00);
+    g_assert_cmphex(si_test_pixel(qts, 503, 210), ==, 0x03);
+    g_assert_cmphex(si_test_pixel(qts, 507, 210), ==, 0x07);
+    g_assert_cmphex(si_test_wid(qts, 500, 210), ==, 5);
+}
+
+
 static void test_direct_pio_pixel_pairs(void)
 {
     static const uint32_t image[4][4] = {
@@ -3200,6 +3284,10 @@ int main(int argc, char **argv)
                    test_direct_byte_row);
     qtest_add_func("sn0/origin2000/mgras/direct-byte-row-pairs",
                    test_direct_byte_row_pairs);
+    qtest_add_func("sn0/origin2000/mgras/direct-byte-row-pairs-row-pad-bits",
+                   test_direct_byte_row_pairs_row_pad_bits);
+    qtest_add_func("sn0/origin2000/mgras/direct-byte-row-with-row-pad-bits",
+                   test_direct_byte_row_with_row_pad_bits);
     qtest_add_func("sn0/origin2000/mgras/display-surface-conversion",
                    test_display_surface_conversion);
     qtest_add_func("sn0/origin2000/mgras/reset-refreshes-display-surface",
