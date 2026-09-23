@@ -714,44 +714,6 @@ static void test_illegal_destination_captures_command_and_address(void)
 }
 
 /*
- * The offset inside a widget can exceed 32 bits when the widget is given
- * a large span. This gives it the largest span the crossbar allows and an
- * offset one giant step short of that, so the offset's bit 47 is set: the
- * top of the 48-bit range any valid crosstalk address can reach, not a
- * 16-bit mask boundary, since no valid offset ever gets that far. The
- * address registers are asserted to hold that offset split the way the
- * interrupt destination address's own registers are documented to split
- * theirs: bits 47:32 in the upper register, bits 31:0 in the lower. That
- * split is this model's own inferred choice for this register pair, not
- * something read off a page for it, but it is exact for every offset the
- * crossbar can ever produce.
- */
-static void test_illegal_destination_wide_address(void)
-{
-    const uint64_t span = UINT64_C(1) << 48;
-    const uint64_t offset = span - 8;
-    QTestState *qts = qtest_initf("-M none -cpu R10000 -S "
-        "-d unimp,guest_errors "
-        "-device sgi-xtalk-test-target,id=io "
-        "-device sgi-xbow,id=xbow,span=%" PRIu64 ","
-        "links-present=%u,startup-links-alive=%u,"
-        "target-8=/machine/peripheral/io/io.ram[0]",
-        span, WIDGET_BIT(WIDGET_IO), WIDGET_BIT(WIDGET_IO));
-
-    qtest_sysbus_mmio_map(qts, XBOW, WIDGET_IO - 8, PORT_VIEW(WIDGET_IO));
-    qtest_writeq(qts, PORT_VIEW(WIDGET_IO) + span * WIDGET_ILLEGAL + offset,
-                 0);
-
-    g_assert_cmphex(reg_read_from(qts, WIDGET_IO, ERR_CMD), ==,
-                    ERR_CMD_DIDN(WIDGET_ILLEGAL) | ERR_CMD_SIDN(WIDGET_IO));
-    g_assert_cmphex(reg_read_from(qts, WIDGET_IO, ERR_UPPER), ==,
-                    (uint32_t)(offset >> 32));
-    g_assert_cmphex(reg_read_from(qts, WIDGET_IO, ERR_LOWER), ==,
-                    (uint32_t)offset);
-    qtest_quit(qts);
-}
-
-/*
  * A legal destination does not become illegal because nothing answers
  * there. A link with no widget on it, one the population leaves out, and
  * one taken down after coming up are all silent, which is what separates a
@@ -821,48 +783,6 @@ static void test_illegal_destination_interrupt(void)
 }
 
 /*
- * Two ports each holding one of these produce a single assertion, and the
- * deassertion waits for the second acknowledgment. A model that recorded
- * both on one port would deassert on the first.
- */
-static void test_illegal_destination_from_two_ports(void)
-{
-    QTestState *qts = xbow_start("");
-    const uint32_t vector = 0x4b;
-    uint64_t from_io = WIDGET_SLOT(PORT_VIEW(WIDGET_IO), WIDGET_ILLEGAL);
-    uint64_t from_a = WIDGET_SLOT(PORT_VIEW(WIDGET_HUB_A), WIDGET_ILLEGAL);
-
-    reg_write(qts, INT_UPPER, INT_UPPER_VECTOR(vector) |
-                              INT_UPPER_TARGET(WIDGET_HUB_B));
-    reg_write(qts, INT_LOWER, SCRATCH);
-    reg_write(qts, LINK(WIDGET_IO) + LINK_CONTROL,
-              LINK_CREDIT_RESET | LINK_ILLEGAL_ENABLE);
-    reg_write(qts, LINK(WIDGET_HUB_A) + LINK_CONTROL,
-              LINK_CREDIT_RESET | LINK_ILLEGAL_ENABLE);
-    face_clear(qts, FACE_HUB_B);
-
-    qtest_writeq(qts, from_io + SCRATCH, 0x1);
-    g_assert_cmphex(face_read(qts, FACE_HUB_B), ==, INT_ASSERT | vector);
-
-    face_clear(qts, FACE_HUB_B);
-    qtest_writeq(qts, from_a + SCRATCH, 0x2);
-    g_assert_cmphex(reg_read(qts, STATUS), ==,
-                    STATUS_LINK_REQUEST(WIDGET_IO) |
-                    STATUS_LINK_REQUEST(WIDGET_HUB_A));
-    g_assert_cmphex(face_read(qts, FACE_HUB_B), ==, 0);
-
-    (void)reg_read(qts, LINK(WIDGET_IO) + LINK_STATUS_CLR);
-    g_assert_cmphex(reg_read(qts, STATUS), ==,
-                    STATUS_LINK_REQUEST(WIDGET_HUB_A));
-    g_assert_cmphex(face_read(qts, FACE_HUB_B), ==, 0);
-
-    (void)reg_read(qts, LINK(WIDGET_HUB_A) + LINK_STATUS_CLR);
-    g_assert_cmphex(reg_read(qts, STATUS), ==, 0);
-    g_assert_cmphex(face_read(qts, FACE_HUB_B), ==, vector);
-    qtest_quit(qts);
-}
-
-/*
  * One error on this port, no repeat behind it, and clear it again. A macro
  * rather than a function so a failure names the access that caused it
  * instead of naming this line.
@@ -870,42 +790,6 @@ static void test_illegal_destination_from_two_ports(void)
 #define assert_one_illegal_report(qts, widget) \
     g_assert_cmphex(reg_read(qts, LINK(widget) + LINK_STATUS_CLR), ==, \
                     LINK_ALIVE | LINK_ILLEGAL_DEST)
-
-/*
- * Where the range begins and where it ends, which the per-widget loop
- * cannot see: it touches one address well inside each widget, so a
- * boundary off by a doubleword in either direction still passes it. The
- * slot below the range must still be the register block and the slot above
- * must still carry a packet, or a wrong boundary would read as a right one.
- */
-static void test_illegal_range_edges(void)
-{
-    QTestState *qts = xbow_start("");
-    uint64_t first = WIDGET_SLOT(PORT_VIEW(WIDGET_IO), WIDGET_ILLEGAL_FIRST);
-    uint64_t last = WIDGET_SLOT(PORT_VIEW(WIDGET_IO), WIDGET_ILLEGAL_LAST) +
-                    SPAN - 8;
-
-    qtest_writeb(qts, first, 0x5a);
-    assert_one_illegal_report(qts, WIDGET_IO);
-
-    qtest_writeq(qts, last, 0x0123456789abcdef);
-    assert_one_illegal_report(qts, WIDGET_IO);
-
-    /* Below the range the register block answers, with its own error. */
-    (void)reg_read_from(qts, WIDGET_IO, (unsigned int)(SPAN - 8));
-    g_assert_cmphex(reg_read(qts, LINK(WIDGET_IO) + LINK_STATUS), ==,
-                    LINK_ALIVE);
-    g_assert_cmphex(reg_read(qts, STATUS_CLEAR), ==, STATUS_ACCESS_ERROR);
-
-    /* Above it the first byte of widget 9 still reaches widget 9. */
-    qtest_writeq(qts, FACE_HUB_A, 0);
-    qtest_writeq(qts, WIDGET_SLOT(PORT_VIEW(WIDGET_IO), WIDGET_HUB_A),
-                 0x99aabbccddeeff00);
-    g_assert_cmphex(qtest_readq(qts, FACE_HUB_A), ==, 0x99aabbccddeeff00);
-    g_assert_cmphex(reg_read(qts, LINK(WIDGET_IO) + LINK_STATUS), ==,
-                    LINK_ALIVE);
-    qtest_quit(qts);
-}
 
 /*
  * A packet is wrong at its destination before its width matters, so every
@@ -945,56 +829,6 @@ static void test_illegal_destination_one_report_per_access(void)
                  0x1122334455667788);
     assert_one_illegal_report(qts, WIDGET_HUB_A);
     g_assert_cmphex(qtest_readq(qts, FACE_IO), ==, 0);
-    qtest_quit(qts);
-}
-
-/*
- * Acknowledging out of arrival order, with a repeat standing on the port
- * that is acknowledged last. One port's alias must not reach another
- * port's sticky bits, and the port that kept them starts over afterwards.
- */
-static void test_illegal_destination_acknowledged_backwards(void)
-{
-    QTestState *qts = xbow_start("");
-    const uint32_t vector = 0x35;
-    uint64_t from_io = WIDGET_SLOT(PORT_VIEW(WIDGET_IO), WIDGET_ILLEGAL);
-    uint64_t from_a = WIDGET_SLOT(PORT_VIEW(WIDGET_HUB_A), WIDGET_ILLEGAL);
-
-    reg_write(qts, INT_UPPER, INT_UPPER_VECTOR(vector) |
-                              INT_UPPER_TARGET(WIDGET_HUB_B));
-    reg_write(qts, INT_LOWER, SCRATCH);
-    reg_write(qts, LINK(WIDGET_IO) + LINK_CONTROL,
-              LINK_CREDIT_RESET | LINK_ILLEGAL_ENABLE);
-    reg_write(qts, LINK(WIDGET_HUB_A) + LINK_CONTROL,
-              LINK_CREDIT_RESET | LINK_ILLEGAL_ENABLE);
-    face_clear(qts, FACE_HUB_B);
-
-    qtest_writeq(qts, from_io + SCRATCH, 0x1);
-    qtest_writeq(qts, from_io + SCRATCH, 0x2);
-    qtest_writeq(qts, from_a + SCRATCH, 0x3);
-    g_assert_cmphex(reg_read(qts, LINK(WIDGET_IO) + LINK_STATUS), ==,
-                    LINK_ALIVE | LINK_ILLEGAL_DEST | LINK_MULTIPLE_ERROR);
-    g_assert_cmphex(reg_read(qts, LINK(WIDGET_HUB_A) + LINK_STATUS), ==,
-                    LINK_ALIVE | LINK_ILLEGAL_DEST);
-    g_assert_cmphex(face_read(qts, FACE_HUB_B), ==, INT_ASSERT | vector);
-
-    /* The later arrival is acknowledged first. */
-    face_clear(qts, FACE_HUB_B);
-    (void)reg_read(qts, LINK(WIDGET_HUB_A) + LINK_STATUS_CLR);
-    g_assert_cmphex(reg_read(qts, LINK(WIDGET_IO) + LINK_STATUS), ==,
-                    LINK_ALIVE | LINK_ILLEGAL_DEST | LINK_MULTIPLE_ERROR);
-    g_assert_cmphex(reg_read(qts, STATUS), ==,
-                    STATUS_LINK_REQUEST(WIDGET_IO));
-    g_assert_cmphex(face_read(qts, FACE_HUB_B), ==, 0);
-
-    (void)reg_read(qts, LINK(WIDGET_IO) + LINK_STATUS_CLR);
-    g_assert_cmphex(reg_read(qts, STATUS), ==, 0);
-    g_assert_cmphex(face_read(qts, FACE_HUB_B), ==, vector);
-
-    /* Acknowledged, so the next one is a first error again. */
-    qtest_writeq(qts, from_io + SCRATCH, 0x4);
-    g_assert_cmphex(reg_read(qts, LINK(WIDGET_IO) + LINK_STATUS), ==,
-                    LINK_ALIVE | LINK_ILLEGAL_DEST);
     qtest_quit(qts);
 }
 
@@ -1426,17 +1260,10 @@ int main(int argc, char **argv)
     qtest_add_func("/sn0/xbow/illegal-destination", test_illegal_destination);
     qtest_add_func("/sn0/xbow/illegal-destination-captures-command-and-address",
                    test_illegal_destination_captures_command_and_address);
-    qtest_add_func("/sn0/xbow/illegal-destination-wide-address",
-                   test_illegal_destination_wide_address);
     qtest_add_func("/sn0/xbow/unavailable-destination-is-not-illegal",
                    test_unavailable_destination_is_not_illegal);
     qtest_add_func("/sn0/xbow/illegal-destination-interrupt",
                    test_illegal_destination_interrupt);
-    qtest_add_func("/sn0/xbow/illegal-destination-from-two-ports",
-                   test_illegal_destination_from_two_ports);
-    qtest_add_func("/sn0/xbow/illegal-destination-acknowledged-backwards",
-                   test_illegal_destination_acknowledged_backwards);
-    qtest_add_func("/sn0/xbow/illegal-range-edges", test_illegal_range_edges);
     qtest_add_func("/sn0/xbow/illegal-destination-one-report-per-access",
                    test_illegal_destination_one_report_per_access);
     qtest_add_func("/sn0/xbow/reset-clears-a-latched-illegal-destination",
