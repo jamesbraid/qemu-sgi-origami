@@ -771,10 +771,11 @@ static void test_dma_map_close_marker_and_discard(void)
  * write kick sets the FENCE completion bit the IRIX X server polls
  * after every DMA kick.
  */
-#define DMA_XFER_NODE    0u
-#define DMA_XFER_WIDGET  9u
-#define DMA_XFER_LIST_PA 0x2000u
-#define DMA_XFER_SRC_VA  0x7000u
+#define DMA_XFER_NODE       0u
+#define DMA_XFER_WIDGET     9u
+#define DMA_XFER_LIST_PAGE  0x2000u
+#define DMA_XFER_LIST_BASE  (DMA_XFER_LIST_PAGE | 0x18u)
+#define DMA_XFER_SRC_VA     0x7000u
 
 static uint64_t dma_xfer_node_addr(uint32_t offset)
 {
@@ -783,6 +784,7 @@ static uint64_t dma_xfer_node_addr(uint32_t offset)
 
 static void test_dma_image_transfer_paints_from_host_memory(void)
 {
+    static const uint8_t list_header[24] = { 0 };
     static const uint8_t list_entry[8] = { 0, 0, 0, 0, 0, 0, 0, 0x07 };
     static const uint8_t src_pixels[8] = {
         0x00, 0x11, 0x22, 0x33, 0x00, 0x44, 0x55, 0x66,
@@ -792,11 +794,15 @@ static void test_dma_image_transfer_paints_from_host_memory(void)
     si_enter_context(qts);
 
     /*
-     * Page list: one entry, page-frame 7 (0x7000 >> 12). Source pixels
-     * live at page 7, offset 0 -- the same bytes the va = 0..7 formula
-     * resolves to for pitch=8, addr=0, rows=1, bpr=8 below.
+     * Page list: the kernel's own layout (FIX-SPEC.md section 2) -- three
+     * zero 8-byte header words, then page-frame-number entries starting
+     * at byte 0x18. One entry here, page-frame 7 (0x7000 >> 12). Source
+     * pixels live at page 7, offset 0 -- the same bytes the va = 0..7
+     * formula resolves to for pitch=8, addr=0, rows=1, bpr=8 below.
      */
-    qtest_memwrite(qts, dma_xfer_node_addr(DMA_XFER_LIST_PA), list_entry, 8);
+    qtest_memwrite(qts, dma_xfer_node_addr(DMA_XFER_LIST_PAGE),
+                  list_header, sizeof(list_header));
+    qtest_memwrite(qts, dma_xfer_node_addr(DMA_XFER_LIST_BASE), list_entry, 8);
     qtest_memwrite(qts, dma_xfer_node_addr(DMA_XFER_SRC_VA), src_pixels, 8);
 
     /*
@@ -814,9 +820,9 @@ static void test_dma_image_transfer_paints_from_host_memory(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                 SI_COMMAND_EXEC(REG_BLOCK_END, (51u << 16) | 50u));
 
-    /* DMA-map slot 0: base = node 0's list address, one page, widget 9. */
+    /* DMA-map slot 0: node 0's list entry-0 address, one page, widget 9. */
     qtest_writel(qts, SI_REG(0x130400), 0x00482008);
-    qtest_writeq(qts, SI_REG(0x130400), dma_xfer_node_addr(DMA_XFER_LIST_PA));
+    qtest_writeq(qts, SI_REG(0x130400), dma_xfer_node_addr(DMA_XFER_LIST_BASE));
     qtest_writeq(qts, SI_REG(0x130400),
                 ((uint64_t)0x00483004 << 32) | 1);
     qtest_writeq(qts, SI_REG(0x130400),
@@ -845,7 +851,8 @@ static void test_dma_image_transfer_paints_from_host_memory(void)
 
 #undef DMA_XFER_NODE
 #undef DMA_XFER_WIDGET
-#undef DMA_XFER_LIST_PA
+#undef DMA_XFER_LIST_PAGE
+#undef DMA_XFER_LIST_BASE
 #undef DMA_XFER_SRC_VA
 
 /*
@@ -866,6 +873,7 @@ static uint64_t dma_slot_test_node_addr(uint32_t offset)
 
 static void test_dma_image_transfer_kick_byte_selects_slot(void)
 {
+    static const uint8_t list_header[24] = { 0 };
     static const uint8_t list0[8] = { 0, 0, 0, 0, 0, 0, 0, 0x07 };
     static const uint8_t list3[8] = { 0, 0, 0, 0, 0, 0, 0, 0x09 };
     static const uint8_t pixels0[4] = { 0x00, 0x11, 0x22, 0x33 };
@@ -874,21 +882,30 @@ static void test_dma_image_transfer_kick_byte_selects_slot(void)
     si_reset();
     si_enter_context(qts);
 
-    qtest_memwrite(qts, dma_slot_test_node_addr(0x2000), list0, 8);
+    /*
+     * Each list is the kernel's own layout (FIX-SPEC.md section 2): three
+     * zero header words at the mapped page's start, then the entry at
+     * byte 0x18.
+     */
+    qtest_memwrite(qts, dma_slot_test_node_addr(0x2000),
+                  list_header, sizeof(list_header));
+    qtest_memwrite(qts, dma_slot_test_node_addr(0x2018), list0, 8);
     qtest_memwrite(qts, dma_slot_test_node_addr(0x7000), pixels0, 4);
-    qtest_memwrite(qts, dma_slot_test_node_addr(0x3000), list3, 8);
+    qtest_memwrite(qts, dma_slot_test_node_addr(0x3000),
+                  list_header, sizeof(list_header));
+    qtest_memwrite(qts, dma_slot_test_node_addr(0x3018), list3, 8);
     qtest_memwrite(qts, dma_slot_test_node_addr(0x9000), pixels3, 4);
 
-    /* DMA-map slot 0: node 0's list at 0x2000, one page, widget 9. */
+    /* DMA-map slot 0: node 0's list entry 0 at 0x2018, one page, widget 9. */
     qtest_writel(qts, SI_REG(0x130400), 0x00482008);
-    qtest_writeq(qts, SI_REG(0x130400), dma_slot_test_node_addr(0x2000));
+    qtest_writeq(qts, SI_REG(0x130400), dma_slot_test_node_addr(0x2018));
     qtest_writeq(qts, SI_REG(0x130400), ((uint64_t)0x00483004 << 32) | 1);
     qtest_writeq(qts, SI_REG(0x130400),
                 ((uint64_t)0x00484b04 << 32) | (DMA_SLOT_TEST_WIDGET << 16));
 
-    /* DMA-map slot 3: node 0's list at 0x3000, one page, widget 9. */
+    /* DMA-map slot 3: node 0's list entry 0 at 0x3018, one page, widget 9. */
     qtest_writel(qts, SI_REG(0x130400), 0x00482608);
-    qtest_writeq(qts, SI_REG(0x130400), dma_slot_test_node_addr(0x3000));
+    qtest_writeq(qts, SI_REG(0x130400), dma_slot_test_node_addr(0x3018));
     qtest_writeq(qts, SI_REG(0x130400), ((uint64_t)0x00483304 << 32) | 1);
     qtest_writeq(qts, SI_REG(0x130400),
                 ((uint64_t)0x00484e04 << 32) | (DMA_SLOT_TEST_WIDGET << 16));
@@ -951,6 +968,87 @@ static void test_dma_image_transfer_kick_byte_selects_slot(void)
 
 #undef DMA_SLOT_TEST_NODE
 #undef DMA_SLOT_TEST_WIDGET
+
+/*
+ * Page-list base regression (FIX-SPEC.md section 2): the base pair's low
+ * word is entry 0's byte address, three zero 8-byte header words then
+ * page-frame-number entries from byte 0x18, not a page-aligned address
+ * with flag bits. Plant different pixel bytes at the real page-frame
+ * number's page and at physical page 0, so masking the base down to its
+ * page (the old bug -- it reads the header's first zero word as
+ * page-frame number 0) paints page 0's bytes instead of the real page's.
+ */
+#define DMA_LIST_BASE_NODE      0u
+#define DMA_LIST_BASE_WIDGET    9u
+#define DMA_LIST_BASE_LIST_PAGE 0x5000u
+#define DMA_LIST_BASE_LIST_BASE (DMA_LIST_BASE_LIST_PAGE | 0x18u)
+#define DMA_LIST_BASE_REAL_PFN  0x0bu
+#define DMA_LIST_BASE_REAL_PAGE (DMA_LIST_BASE_REAL_PFN << 12)
+
+static uint64_t dma_list_base_node_addr(uint32_t offset)
+{
+    return ((uint64_t)DMA_LIST_BASE_NODE << 32) | offset;
+}
+
+static void test_dma_image_transfer_reads_list_entry_at_0x18(void)
+{
+    static const uint8_t list_header[24] = { 0 };
+    static const uint8_t list_entry[8] = {
+        0, 0, 0, 0, 0, 0, 0, DMA_LIST_BASE_REAL_PFN,
+    };
+    static const uint8_t real_page_pixels[4] = { 0x00, 0xaa, 0xbb, 0xcc };
+    static const uint8_t page0_pixels[4] = { 0x00, 0x11, 0x22, 0x33 };
+
+    si_reset();
+    si_enter_context(qts);
+
+    qtest_memwrite(qts, dma_list_base_node_addr(DMA_LIST_BASE_LIST_PAGE),
+                  list_header, sizeof(list_header));
+    qtest_memwrite(qts, dma_list_base_node_addr(DMA_LIST_BASE_LIST_BASE),
+                  list_entry, 8);
+    qtest_memwrite(qts, dma_list_base_node_addr(DMA_LIST_BASE_REAL_PAGE),
+                  real_page_pixels, 4);
+    qtest_memwrite(qts, dma_list_base_node_addr(0), page0_pixels, 4);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_COLORMASKMSBS, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_PP1FILLMODE, SI_LOGIC_OP_COPY << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_BLOCK_START, (20u << 16) | 20u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND_EXEC(REG_BLOCK_END, (20u << 16) | 20u));
+
+    /* DMA-map slot 0: base names entry 0 at byte 0x18, one page, widget 9. */
+    qtest_writel(qts, SI_REG(0x130400), 0x00482008);
+    qtest_writeq(qts, SI_REG(0x130400),
+                dma_list_base_node_addr(DMA_LIST_BASE_LIST_BASE));
+    qtest_writeq(qts, SI_REG(0x130400), ((uint64_t)0x00483004 << 32) | 1);
+    qtest_writeq(qts, SI_REG(0x130400),
+                ((uint64_t)0x00484b04 << 32) | (DMA_LIST_BASE_WIDGET << 16));
+
+    /*
+     * DESC_20000 bank: pitch, addr low/high, rows, bytes/row, then a
+     * write-direction kick naming slot 0 (bits 2:1 clear).
+     */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080404 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080504 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080604 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080704 << 32) | 1);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080804 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080b04 << 32) | 0xb1);
+
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 20, 20), ==, 0x00aabbcc);
+}
+
+#undef DMA_LIST_BASE_NODE
+#undef DMA_LIST_BASE_WIDGET
+#undef DMA_LIST_BASE_LIST_PAGE
+#undef DMA_LIST_BASE_LIST_BASE
+#undef DMA_LIST_BASE_REAL_PFN
+#undef DMA_LIST_BASE_REAL_PAGE
 
 static void test_board_bringup_byte_poll_bit_position(void)
 {
@@ -3604,6 +3702,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "dma-image-transfer-kick-byte-selects-slot",
                    test_dma_image_transfer_kick_byte_selects_slot);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "dma-image-transfer-reads-list-entry-at-0x18",
+                   test_dma_image_transfer_reads_list_entry_at_0x18);
     qtest_add_func("sn0/origin2000/mgras/board-bringup-byte-poll-bit-position",
                    test_board_bringup_byte_poll_bit_position);
     qtest_add_func("sn0/origin2000/mgras/board-info-byte-read-no-error",
