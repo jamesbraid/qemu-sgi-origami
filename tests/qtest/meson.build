@@ -49,7 +49,10 @@ slow_qtests = {
   # do not get faster for sharing anything. Measured 138.14s.
   'sn0-hub-test': 415,
   # Routed acceptance was killed at a 120s ceiling in every parallel run
-  # before this budget was raised. Measured 114.90s.
+  # before this budget was raised. Measured 114.90s at 27 cases; merging in
+  # the outgoing-hub-io and xtalk-owner cases added three more
+  # private-launch boots (30 total) and measured 115.09s under the same
+  # parallel CI load, so keep the same three-times-measured budget.
   'sn0-origin2000-test': 350,
   # The migration suite runs twenty sequential cases, each a pair of QEMU
   # processes because a destination cannot share its source's. Its
@@ -408,8 +411,6 @@ qtests_mips64 = \
                                                    'sn0-bridge-flash-test',
                                                    'sn0-origin2000-test',
                                                    'sn0-baseio-test',
-                                                   'sn0-origin2000-outgoing-hub-io-test',
-                                                   'sn0-origin2000-xtalk-owner-test',
                                                    'sn0-module-management-test',
                                                    'sn0-origin2000-pflash-test',
                                                    'sn0-cross-node-test',
