@@ -528,6 +528,36 @@ static void test_the_receive_consume_keeps_its_arming_bit(const void *data)
 }
 
 /*
+ * Writing the reload loads the count too, and a timer that is not running
+ * holds it there. The Origin 300 IO-8 board test resets the channel, writes
+ * 0xfff with the timer unarmed and requires 0x0fff0fff back under a mask of
+ * 0x0fff0fff: reload and count both. A count that read zero whenever the
+ * timer was idle answered 0x00000fff.
+ */
+static void test_a_reload_write_loads_the_idle_count(const void *data)
+{
+    serial_reset();
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), CTRL_RESET);
+    qtest_writel(qts, sdma(0, SDMA_CONTROL), 0);
+    qtest_writel(qts, sdma(0, SDMA_RX_TIMER), 0xfff);
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_TIMER)) & 0x0fff0fff,
+                    ==, 0x0fff0fff);
+
+    /* Unarmed, it does not count: time passing leaves it where it was. */
+    qtest_clock_step(qts, 0x10 * RX_TIMER_TICK_NS);
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_TIMER)) & 0x0fff0fff,
+                    ==, 0x0fff0fff);
+
+    /* A new reload replaces it. */
+    qtest_writel(qts, sdma(0, SDMA_RX_TIMER), 0x140);
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_RX_TIMER)) & 0x0fff0fff,
+                    ==, 0x01400140);
+}
+
+/*
  * Twelve-bit reload, count read back in bits 16-27; the ethernet block's
  * timer keeps eleven bits, so a shared width is wrong for one of the two.
  */
@@ -2600,6 +2630,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3-serial/receive-consume-keeps-arming-bit",
                         NULL,
                         test_the_receive_consume_keeps_its_arming_bit);
+    qtest_add_data_func("sn0/ioc3-serial/reload-write-loads-idle-count", NULL,
+                        test_a_reload_write_loads_the_idle_count);
     qtest_add_data_func("sn0/ioc3-serial/receive-timer-keeps-twelve-bits", NULL,
                         test_the_receive_timer_keeps_twelve_bits);
     qtest_add_data_func("sn0/ioc3-serial/alias-pages-are-views", NULL,

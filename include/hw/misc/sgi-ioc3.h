@@ -470,6 +470,8 @@ struct SGIIOC3State {
     bool sdma_delivered[SGI_IOC3_SERIAL_PORTS];
 
     QEMUTimer *sdma_rx_timer[SGI_IOC3_SERIAL_PORTS];
+    /* The receive timer's count while it is not running. */
+    uint16_t sdma_rx_idle_count[SGI_IOC3_SERIAL_PORTS];
 
     AddressSpace *dma_as;   /* ring transfers go through the Bridge */
 

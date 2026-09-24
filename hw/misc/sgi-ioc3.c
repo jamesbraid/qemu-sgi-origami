@@ -717,6 +717,8 @@ static void sgi_ioc3_sdma_rx_timer_start(SGIIOC3State *s, unsigned int port)
     uint32_t reload = *sgi_ioc3_sdma_port_reg(s, port, SGI_IOC3_SDMA_RX_TIMER)
                       & SGI_IOC3_SDMA_TIMER_RELOAD;
 
+    /* Once it has run, the count it held from the reload write is spent. */
+    s->sdma_rx_idle_count[port] = 0;
     timer_mod(s->sdma_rx_timer[port],
               qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
               (int64_t)reload * SGI_IOC3_SDMA_TIMER_TICK_NS);
@@ -733,6 +735,8 @@ static void sgi_ioc3_sdma_rx_timer_expired(void *opaque)
     uint32_t *consume = sgi_ioc3_sdma_port_reg(s, port,
                                                SGI_IOC3_SDMA_RX_CONSUME);
     uint32_t mask = sgi_ioc3_sdma_pointer_mask(s);
+
+    s->sdma_rx_idle_count[port] = 0;
 
     /* A still-packed entry means the ring was full; retry now. */
     if (s->sdma_packed[port] &&
@@ -962,6 +966,7 @@ static void sgi_ioc3_sdma_reset_port(SGIIOC3State *s, unsigned int port)
     s->sdma_tx_slot[port] = 0;
 
     timer_del(s->sdma_rx_timer[port]);
+    s->sdma_rx_idle_count[port] = 0;
 }
 
 /*
@@ -1038,14 +1043,20 @@ static uint32_t sgi_ioc3_sdma_read_port(SGIIOC3State *s, unsigned int port,
         val |= (uint32_t)s->sdma_packed[port] << SGI_IOC3_SDMA_HELD_SHIFT;
     }
 
-    /* Ticks left while running; an idle timer's count reads zero. */
-    if (offset == SGI_IOC3_SDMA_RX_TIMER &&
-        timer_pending(s->sdma_rx_timer[port])) {
-        int64_t left = timer_expire_time_ns(s->sdma_rx_timer[port]) -
-                       qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-        uint32_t ticks = MIN(MAX(left, 0) / SGI_IOC3_SDMA_TIMER_TICK_NS,
-                             SGI_IOC3_SDMA_TIMER_RELOAD);
+    /*
+     * Ticks left while running. Idle, the count is whatever a reload write
+     * last loaded, until the timer runs or the channel resets.
+     */
+    if (offset == SGI_IOC3_SDMA_RX_TIMER) {
+        uint32_t ticks = s->sdma_rx_idle_count[port];
 
+        if (timer_pending(s->sdma_rx_timer[port])) {
+            int64_t left = timer_expire_time_ns(s->sdma_rx_timer[port]) -
+                           qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+            ticks = MIN(MAX(left, 0) / SGI_IOC3_SDMA_TIMER_TICK_NS,
+                        SGI_IOC3_SDMA_TIMER_RELOAD);
+        }
         val |= ticks << SGI_IOC3_SDMA_TIMER_COUNT_SHIFT;
     }
 
@@ -1099,6 +1110,8 @@ static void sgi_ioc3_sdma_write_port(SGIIOC3State *s, unsigned int port,
     case SGI_IOC3_SDMA_RX_TIMER:
         *sgi_ioc3_sdma_port_reg(s, port, offset) =
             val & SGI_IOC3_SDMA_TIMER_RELOAD;
+        /* The write loads the count as well; a running timer keeps its own. */
+        s->sdma_rx_idle_count[port] = val & SGI_IOC3_SDMA_TIMER_RELOAD;
         return;
 
     case SGI_IOC3_SDMA_SHADOW:
@@ -1711,6 +1724,7 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
     memset(s->sdma_reg, 0, sizeof(s->sdma_reg));
     for (i = 0; i < SGI_IOC3_SERIAL_PORTS; i++) {
         timer_del(s->sdma_rx_timer[i]);
+        s->sdma_rx_idle_count[i] = 0;
         s->sdma_tx_slot[i] = 0;
         s->sdma_packed[i] = 0;
         memset(s->sdma_packer[i], 0, SGI_IOC3_SDMA_ENTRY_SIZE);
@@ -1862,7 +1876,7 @@ static int sgi_ioc3_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
-    .version_id = 20,
+    .version_id = 21,
     .minimum_version_id = 14,
     .pre_load = sgi_ioc3_pre_load,
     .post_load = sgi_ioc3_post_load,
@@ -1881,6 +1895,8 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
                               SGI_IOC3_SERIAL_PORTS, 19),
         VMSTATE_UINT8_ARRAY_V(serial_msr_test, SGIIOC3State,
                               SGI_IOC3_SERIAL_PORTS, 20),
+        VMSTATE_UINT16_ARRAY_V(sdma_rx_idle_count, SGIIOC3State,
+                               SGI_IOC3_SERIAL_PORTS, 21),
         VMSTATE_UINT32(microlan_control, SGIIOC3State),
         VMSTATE_UINT32(pin_control, SGIIOC3State),
         VMSTATE_UINT32(pin_data, SGIIOC3State),
