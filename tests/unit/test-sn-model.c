@@ -234,7 +234,8 @@ static void check_io_board_presets(const SGIModelTopology *t)
         g_assert_true(preset == SGI_MODEL_IO_BOARD_PRESET_IP29_IO ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_IO6 ||
                       preset == SGI_MODEL_IO_BOARD_PRESET_IO6G ||
-                      preset == SGI_MODEL_IO_BOARD_PRESET_IO8);
+                      preset == SGI_MODEL_IO_BOARD_PRESET_IO8 ||
+                      preset == SGI_MODEL_IO_BOARD_PRESET_PCI_SHOEHORN);
     }
 }
 

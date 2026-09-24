@@ -411,10 +411,14 @@
 #
 # @io9: the IO-9
 #
+# @pci-shoehorn: the Origin 2000 PCI-XTALK ADAPTER (PCI shoehorn), a
+#     removable XIO card carrying one PCI card, fitted with an SGI Cad
+#     Duo input card
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelIoBoardPreset',
-  'data': ['ip29-io', 'io6', 'io6g', 'io8', 'io9'] }
+  'data': ['ip29-io', 'io6', 'io6g', 'io8', 'io9', 'pci-shoehorn'] }
 
 ##
 # @SGIModelIoBoardCarrier:

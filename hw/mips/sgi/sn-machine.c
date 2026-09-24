@@ -977,6 +977,53 @@ static bool sgi_machine_instantiate_ip29_io(
  * "io6g" for the variant whose MediaIO daughtercard fits a second
  * IOC3.
  */
+/*
+ * Give a Crossbow-attached XIO card @dev its fabric, realize it and attach
+ * it at @attachment's widget. The Crossbow itself realizes later, once
+ * every board and node that attaches to it has (see
+ * sgi_machine_realize_crossbars()).
+ */
+static bool sgi_machine_attach_xio_card(
+    SGIMachineState *s, DeviceState *dev, unsigned int board_index,
+    const SGIModelXtalkAttachment *attachment, Error **errp)
+{
+    /*
+     * A switched fabric carries the destination widget in its own packet
+     * header, so the Bridge keeps it in bits 51:48 of the address it
+     * composes rather than spending address bits on a node number the
+     * switch would not read. This Crossbow's own packet ingress does not
+     * exist until it realizes, so the link's own proxy stands in;
+     * sgi_xtalk_crossbow_link_finish() aliases the real ingress onto it
+     * once the Crossbow is built.
+     */
+    g_autofree char *proxy_name =
+        g_strdup_printf("io-board%u-packet-proxy", board_index);
+    SGIXtalkCrossbowLink *crossbow_link =
+        &s->crossbow_links[s->num_nodes + board_index];
+    SGIXioBoardState *board;
+
+    object_property_set_link(
+        OBJECT(dev), "fabric",
+        OBJECT(sgi_xtalk_crossbow_link_prepare(crossbow_link, OBJECT(s),
+                                               proxy_name)),
+        &error_fatal);
+    qdev_prop_set_uint32(dev, "fabric-widget-shift",
+                         SGI_BRIDGE_PACKET_ADDRESS_BITS);
+
+    sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
+    board = SGI_XIO_BOARD(dev);
+    s->io_boards[board_index] = board;
+
+    if (!sgi_xtalk_crossbow_link_attach_widget(
+            crossbow_link, OBJECT(board),
+            s->crossbars[attachment->crossbar_index],
+            attachment->widget, errp)) {
+        return false;
+    }
+    board->attached = true;
+    return true;
+}
+
 static bool sgi_machine_instantiate_baseio_card(
     SGIMachineState *s, const SGIModelTopology *t,
     const SGIModelIoBoard *record, unsigned int board_index,
@@ -1010,20 +1057,6 @@ static bool sgi_machine_instantiate_baseio_card(
         { SN0_IOC3_RECORD_A_CHARDEV, "record-a" },
         { SN0_IOC3_RECORD_B_CHARDEV, "record-b" },
     };
-    /*
-     * A switched fabric carries the destination widget in its own packet
-     * header, so the Bridge keeps it in bits 51:48 of the address it
-     * composes rather than spending address bits on a node number the
-     * switch would not read. This Crossbow's own packet ingress does not
-     * exist until it realizes, so the link's own proxy stands in;
-     * sgi_xtalk_crossbow_link_finish() aliases the real ingress onto it
-     * once the Crossbow is built.
-     */
-    g_autofree char *proxy_name =
-        g_strdup_printf("io-board%u-packet-proxy", board_index);
-    SGIXtalkCrossbowLink *crossbow_link =
-        &s->crossbow_links[s->num_nodes + board_index];
-    SGIXioBoardState *board;
     size_t i;
 
     object_property_add_child(OBJECT(s), name, OBJECT(dev));
@@ -1062,25 +1095,44 @@ static bool sgi_machine_instantiate_baseio_card(
         qdev_prop_set_string(dev, "parallel-chardev",
                              parallel_hds[board_index]->label);
     }
-    object_property_set_link(
-        OBJECT(dev), "fabric",
-        OBJECT(sgi_xtalk_crossbow_link_prepare(crossbow_link, OBJECT(s),
-                                               proxy_name)),
-        &error_fatal);
-    qdev_prop_set_uint32(dev, "fabric-widget-shift",
-                         SGI_BRIDGE_PACKET_ADDRESS_BITS);
+    return sgi_machine_attach_xio_card(s, dev, board_index, attachment, errp);
+}
 
-    sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
-    board = SGI_XIO_BOARD(dev);
-    s->io_boards[board_index] = board;
+/*
+ * The Origin 2000 PCI shoehorn: a removable XIO card like the BaseIO,
+ * carrying one PCI card position, which this preset fills with an SGI Cad
+ * Duo. The preset fits the card at PCI device 1, where real Origin 2000
+ * hardware graphs show cards behind this adapter: a Cad Duo's keyboard at
+ * /hw/module/1/slot/io5/xtalk_pci/pci/1/pckb (nekonomicon thread 5749) and
+ * a SCSI card at .../io5/xtalk_pci/pci/1/scsi_ctlr/0 (thread 16727716).
+ * docs/machines/layers/modules/pci-shoehorn.yaml records the same. The
+ * board's own identity and the card's one-wire part come from the record.
+ */
+#define SGI_MACHINE_PCI_SHOEHORN_CAD_DUO_SLOT 1
 
-    if (!sgi_xtalk_crossbow_link_attach_widget(
-            crossbow_link, OBJECT(board), s->crossbars[attachment->crossbar_index],
-            attachment->widget, errp)) {
-        return false;
+static bool sgi_machine_instantiate_pci_shoehorn(
+    SGIMachineState *s, const SGIModelIoBoard *record,
+    unsigned int board_index, const SGIModelXtalkAttachment *attachment,
+    Error **errp)
+{
+    DeviceState *dev = qdev_new(TYPE_SGI_PCI_SHOEHORN);
+    g_autofree char *name = g_strdup_printf("io-board%u", board_index);
+    g_autofree char *bus_name = g_strdup_printf("pci.shoehorn%u", board_index);
+
+    object_property_add_child(OBJECT(s), name, OBJECT(dev));
+    object_unref(OBJECT(dev));
+
+    qdev_prop_set_uint32(dev, "module", record->module_index);
+    qdev_prop_set_uint32(dev, "slot", attachment->widget);
+    qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
+    qdev_prop_set_string(dev, "pci-bus-name", bus_name);
+    qdev_prop_set_uint32(dev, "cad-duo-slot",
+                         SGI_MACHINE_PCI_SHOEHORN_CAD_DUO_SLOT);
+    if (record->has_ioc3_serial) {
+        qdev_prop_set_uint64(dev, "cad-duo-onewire-serial",
+                             record->ioc3_serial);
     }
-    board->attached = true;
-    return true;
+    return sgi_machine_attach_xio_card(s, dev, board_index, attachment, errp);
 }
 
 /*
@@ -1242,6 +1294,9 @@ static bool sgi_machine_instantiate_io_board(
     case SGI_MODEL_IO_BOARD_PRESET_IO8:
         return sgi_machine_instantiate_io8(s, t, record, board_index,
                                            attachment, errp);
+    case SGI_MODEL_IO_BOARD_PRESET_PCI_SHOEHORN:
+        return sgi_machine_instantiate_pci_shoehorn(s, record, board_index,
+                                                    attachment, errp);
     default:
         error_setg(errp, "topology '%s' io board %u names an unsupported "
                   "preset for this family", t->name, board_index);
