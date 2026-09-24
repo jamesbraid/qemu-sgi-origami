@@ -280,7 +280,10 @@ static PCIDevice *baseio_build_ioc3(SGIBaseioState *s, const char *child_name,
     if (population & SGI_IOC3_POPULATION_PARALLEL) {
         s->parallel_claimed = true;
     }
-    pci_realize_and_unref(ioc3, s->pci_bus, &error_abort);
+    if (!pci_realize_and_unref(ioc3, s->pci_bus, errp)) {
+        object_unparent(OBJECT(ioc3));
+        return NULL;
+    }
     pci_set_byte(ioc3->config + PCI_REVISION_ID, revision);
     return ioc3;
 }
@@ -304,13 +307,17 @@ static bool baseio_build_ip29(SGIBaseioState *s, Error **errp)
 
     isp0 = pci_new(PCI_DEVFN(IP29_ISP_DEVICE_0, 0), "qlogic-isp1040");
     object_property_add_child(OBJECT(s), "isp0", OBJECT(isp0));
-    pci_realize_and_unref(isp0, s->pci_bus, &error_abort);
+    if (!pci_realize_and_unref(isp0, s->pci_bus, errp)) {
+        return false;
+    }
     pci_set_byte(isp0->config + PCI_REVISION_ID, IP29_ISP_REVISION);
     qlogic_isp_handle_legacy_cmdline(DEVICE(isp0));
 
     isp1 = pci_new(PCI_DEVFN(IP29_ISP_DEVICE_1, 0), "qlogic-isp1040");
     object_property_add_child(OBJECT(s), "isp1", OBJECT(isp1));
-    pci_realize_and_unref(isp1, s->pci_bus, &error_abort);
+    if (!pci_realize_and_unref(isp1, s->pci_bus, errp)) {
+        return false;
+    }
     pci_set_byte(isp1->config + PCI_REVISION_ID, IP29_ISP_REVISION);
     qlogic_isp_handle_legacy_cmdline(DEVICE(isp1));
 
@@ -356,13 +363,17 @@ static bool baseio_build_baseio_core(SGIBaseioState *s,
 
     scsi0 = pci_new(PCI_DEVFN(BASEIO_SCSI0_DEVICE, 0), "qlogic-isp1040");
     object_property_add_child(OBJECT(s), "scsi0", OBJECT(scsi0));
-    pci_realize_and_unref(scsi0, s->pci_bus, &error_abort);
+    if (!pci_realize_and_unref(scsi0, s->pci_bus, errp)) {
+        return false;
+    }
     pci_set_byte(scsi0->config + PCI_REVISION_ID, BASEIO_SCSI_REVISION);
     qlogic_isp_handle_legacy_cmdline(DEVICE(scsi0));
 
     scsi1 = pci_new(PCI_DEVFN(BASEIO_SCSI1_DEVICE, 0), "qlogic-isp1040");
     object_property_add_child(OBJECT(s), "scsi1", OBJECT(scsi1));
-    pci_realize_and_unref(scsi1, s->pci_bus, &error_abort);
+    if (!pci_realize_and_unref(scsi1, s->pci_bus, errp)) {
+        return false;
+    }
     pci_set_byte(scsi1->config + PCI_REVISION_ID, BASEIO_SCSI_REVISION);
     qlogic_isp_handle_legacy_cmdline(DEVICE(scsi1));
 
@@ -560,7 +571,9 @@ static bool baseio_build_io8(SGIBaseioState *s, Error **errp)
 
     scsi = pci_new(PCI_DEVFN(IO8_SCSI_DEVICE, 0), "qlogic-isp12160");
     object_property_add_child(OBJECT(s), "scsi", OBJECT(scsi));
-    pci_realize_and_unref(scsi, s->pci_bus, &error_abort);
+    if (!pci_realize_and_unref(scsi, s->pci_bus, errp)) {
+        return false;
+    }
     pci_set_byte(scsi->config + PCI_REVISION_ID, IO8_SCSI_REVISION);
     pci_set_word(scsi->config + PCI_SUBSYSTEM_VENDOR_ID,
                 IO8_SCSI_SUBSYSTEM_VENDOR);
@@ -588,7 +601,9 @@ static bool baseio_build_io8(SGIBaseioState *s, Error **errp)
 
     usb = pci_new(PCI_DEVFN(IO8_USB_DEVICE, 0), "lucent-ohci");
     object_property_add_child(OBJECT(s), "usb", OBJECT(usb));
-    pci_realize_and_unref(usb, s->pci_bus, &error_abort);
+    if (!pci_realize_and_unref(usb, s->pci_bus, errp)) {
+        return false;
+    }
     pci_set_byte(usb->config + PCI_REVISION_ID, IO8_USB_REVISION);
     pci_set_word(usb->config + PCI_SUBSYSTEM_VENDOR_ID,
                 IO8_USB_SUBSYSTEM_VENDOR);

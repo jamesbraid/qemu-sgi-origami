@@ -585,6 +585,42 @@ static void program_rad1(QTestState *qts)
                         BRIDGE_DEV_MEMORY_SPACE | (MIO_RAD1_MMIO >> 20));
 }
 
+/*
+ * A device the BaseIO builders create that fails to realize, here for want
+ * of its option ROM, must stop the machine with that device's own error
+ * and a failure exit, not a SIGABRT from the builder. One case per preset
+ * builder that realizes the device: the board IOC3 and QLogic ISP1040s of
+ * io6g and of IP29, and the io8 ISP12160, IOC3 and OHCI.
+ */
+static void test_baseio_rejects_bad_romfile(void)
+{
+    static const struct {
+        const char *machine;
+        const char *global;
+    } cases[] = {
+        { "origin2000,baseio-preset=io6g", "sgi-ioc3.romfile" },
+        { "origin2000,baseio-preset=io6g", "qlogic-isp1040.romfile" },
+        { "origin200", "sgi-ioc3.romfile" },
+        { "origin200", "qlogic-isp1040.romfile" },
+        { "origin300", "qlogic-isp12160.romfile" },
+        { "origin300", "sgi-ioc3.romfile" },
+        { "origin300", "lucent-ohci.romfile" },
+    };
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autofree char *global = g_strdup_printf("%s=/nonexistent.rom",
+                                                  cases[i].global);
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M", cases[i].machine,
+            "-accel", "qtest", "-display", "none", "-S", "-nodefaults",
+            "-qmp", "stdio", "-global", global, NULL,
+        };
+
+        assert_launch_rejected(args,
+                               "failed to find romfile \"/nonexistent.rom\"");
+    }
+}
+
 static void test_baseio_timekeeper_storage_reset(void)
 {
     QTestState *qts = start_module();
@@ -3310,6 +3346,8 @@ int main(int argc, char **argv)
     int ret;
 
     g_test_init(&argc, &argv, NULL);
+    qtest_add_func("sn0/baseio/baseio-rejects-bad-romfile",
+                   test_baseio_rejects_bad_romfile);
     qtest_add_func("sn0/baseio/baseio-timekeeper-storage-reset",
                    test_baseio_timekeeper_storage_reset);
     qtest_add_func("sn0/baseio/baseio-timekeeper-repair-stores",
