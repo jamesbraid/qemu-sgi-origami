@@ -246,12 +246,8 @@ static void xbow_write(void *opaque, hwaddr addr, uint64_t value,
         }
         REG(s, off) = (value & 0xffffc) | 2;
         break;
-    case 0x78:
+    case 0x78 ... 0xb8:
         REG(s, off) = value & 0xff;
-        break;
-    case 0x80 ... 0xb8:
-        /* A link keeps its own bit in its fence set. */
-        REG(s, off) = (value & 0xff) | (1U << ((off - 0x80) / 8));
         break;
     case 0xc0:
         if (!REG(s, 0xc0)) {

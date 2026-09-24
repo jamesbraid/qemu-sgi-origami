@@ -170,17 +170,20 @@ static void test_lock(void)
 static void test_fences(void)
 {
     QTestState *qts = xbow_start("");
+    unsigned off;
 
-    reg_write(qts, 0x78, 0);
-    g_assert_cmphex(reg_read(qts, 0x78), ==, 0);
-    reg_write(qts, 0x78, UINT32_MAX);
-    g_assert_cmphex(reg_read(qts, 0x78), ==, 0xff);
-    /* A link's own bit in its fence is kept set whatever is written. */
-    reg_write(qts, 0x80 + (PORT_A - 8) * 8, 0);
-    g_assert_cmphex(reg_read(qts, 0x80 + (PORT_A - 8) * 8), ==,
-                    1U << (PORT_A - 8));
-    reg_write(qts, 0xb8, 0x0f);
-    g_assert_cmphex(reg_read(qts, 0xb8), ==, 0x8f);
+    /*
+     * Every fence bit is read/write, the link's own bit included: that a
+     * link should admit itself is advice to software, not a fixed bit.
+     */
+    for (off = 0x78; off <= 0xb8; off += 8) {
+        reg_write(qts, off, 0);
+        g_assert_cmphex(reg_read(qts, off), ==, 0);
+        reg_write(qts, off, off);
+        g_assert_cmphex(reg_read(qts, off), ==, off);
+        reg_write(qts, off, UINT32_MAX);
+        g_assert_cmphex(reg_read(qts, off), ==, 0xff);
+    }
     qtest_quit(qts);
 }
 
