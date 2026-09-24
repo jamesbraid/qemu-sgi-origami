@@ -118,14 +118,21 @@ def _boot_one_attempt(test, cell, attempt_index, first_seen=None):
         return AttemptResult(reached_pass=False, infra_error=str(exc))
 
     log_path = test.log_file(f'{name}.log')
-    result = _wait_for_pass(test, vm, cell, log_path, first_seen)
-    # A VM that crashed mid-boot has already exited on its own. A
-    # graceful shutdown() against an already-dead process still raises
-    # AbnormalShutdown even though qemu is in fact gone -- uncaught,
-    # that would abort test_cell() before a multi-attempt cell's later
-    # attempts run, defeating the retry loop on exactly the crash path
-    # retries exist for. hard=True skips the graceful attempt instead.
-    vm.shutdown(hard=vm.exitcode() is not None)
+    try:
+        result = _wait_for_pass(test, vm, cell, log_path, first_seen)
+    finally:
+        # _wait_for_pass() can itself raise (assert_translation_healthy()
+        # failing a regression check) without ever reaching the shutdown
+        # below; finally covers that path too; a VM leaked here keeps
+        # running underneath a multi-attempt cell's later attempts.
+        #
+        # A VM that crashed mid-boot has already exited on its own. A
+        # graceful shutdown() against an already-dead process still raises
+        # AbnormalShutdown even though qemu is in fact gone -- uncaught,
+        # that would abort test_cell() before a multi-attempt cell's later
+        # attempts run, defeating the retry loop on exactly the crash path
+        # retries exist for. hard=True skips the graceful attempt instead.
+        vm.shutdown(hard=vm.exitcode() is not None)
     return result
 
 
