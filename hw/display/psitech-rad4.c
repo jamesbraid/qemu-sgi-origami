@@ -58,10 +58,8 @@
 #include "hw/core/sysbus.h"
 #include "hw/input/psitech-rad4-km.h"
 #include "migration/vmstate.h"
-#include "qapi/error.h"
 #include "qemu/timer.h"
 #include "ui/console.h"
-#include "ui/qemu-pixman.h"
 #include "qom/object.h"
 #include "trace.h"
 
@@ -498,6 +496,16 @@ struct PsitechRad4State {
      */
     uint32_t *display_buffer;
 
+    /*
+     * Rows of display_buffer the hardware cursor sprite is composited
+     * over, inclusive and empty when cursor_shown_y_start >
+     * cursor_shown_y_end. Recomputed from the RGB561 cursor registers at
+     * each refresh, so not migrated: rad4_post_load() repaints the whole
+     * frame and that refresh sets it again.
+     */
+    int cursor_shown_y_start;
+    int cursor_shown_y_end;
+
     /* RGB561 indexed register file. */
     uint8_t rgb_index_low;
     uint8_t rgb_index_high;
@@ -846,6 +854,125 @@ static void rad4_recognizer_feed(PsitechRad4State *s, uint32_t offset,
 }
 
 /*
+ * The cursor location as the guest wrote it. IBM page 38's location
+ * registers are a 16-bit two's complement pair with a documented valid
+ * range of -256 to +2047; bits 14-11 of the high byte are specified to
+ * read back the sign value regardless of what was written there. This
+ * model stores and reports the full 16 bits as an ordinary signed value
+ * without independently forcing that readback behavior -- the qualified
+ * guest workload here never reads this register back, so the difference
+ * is not guest-visible in that workload, but a guest that did read it
+ * back could observe a difference from real hardware. That is this
+ * approximation's one disclosed limitation.
+ */
+static void rad4_cursor_location(PsitechRad4State *s, int *x, int *y)
+{
+    *x = (int16_t)(((uint16_t)s->rgb_store[RAD4_RGB_CURSOR_X_HIGH] << 8) |
+                   s->rgb_store[RAD4_RGB_CURSOR_X_LOW]);
+    *y = (int16_t)(((uint16_t)s->rgb_store[RAD4_RGB_CURSOR_Y_HIGH] << 8) |
+                   s->rgb_store[RAD4_RGB_CURSOR_Y_LOW]);
+}
+
+/*
+ * Where the 64x64 pixel map's top-left corner lands on screen: the
+ * location registers position the hot spot (page 38), so the map starts
+ * hot_x cells left and hot_y cells above it. Returns whether the cursor
+ * is enabled at all (page 37's CE bit).
+ */
+static bool rad4_cursor_origin(PsitechRad4State *s, int *x0, int *y0)
+{
+    int x, y;
+
+    rad4_cursor_location(s, &x, &y);
+    *x0 = x - (s->rgb_store[RAD4_RGB_CURSOR_HOTSPOT_X] &
+               RAD4_CURSOR_HOTSPOT_MASK);
+    *y0 = y - (s->rgb_store[RAD4_RGB_CURSOR_HOTSPOT_Y] &
+               RAD4_CURSOR_HOTSPOT_MASK);
+    return (s->rgb_store[RAD4_RGB_CURSOR_CONTROL] &
+            RAD4_CURSOR_CONTROL_CE) != 0;
+}
+
+/*
+ * Something about the cursor changed: position, hot spot, enable, pixel
+ * map or look-up table. The rows the sprite was last painted over need
+ * their framebuffer content back and the rows it now covers need the
+ * sprite; both ride the same dirty tracking as guest framebuffer writes,
+ * so the next refresh repaints exactly that span.
+ */
+static void rad4_cursor_invalidate(PsitechRad4State *s)
+{
+    int x0, y0;
+
+    rad4_mark_dirty_rows(s, s->cursor_shown_y_start, s->cursor_shown_y_end);
+    if (rad4_cursor_origin(s, &x0, &y0)) {
+        rad4_mark_dirty_rows(s, y0, y0 + RAD4_CURSOR_HEIGHT - 1);
+    }
+}
+
+/*
+ * Overlay the cursor sprite onto the freshly converted rows [y_start,
+ * y_end] of display_buffer. The RGB561 overlays its cursor onto the pixel
+ * stream it sends to the monitor, so the cursor is part of what the
+ * display shows and belongs in the scanout, not in a UI-layer cursor
+ * handed to the console: QEMU's VNC server has no protocol message to
+ * place one (ui/vnc.c's vnc_mouse_set() is a stub), so a VNC client
+ * draws that kind at its own pointer rather than where the guest put it,
+ * and a screendump never shows it at all.
+ *
+ * The IBM RGB561 Architecture spec (Preliminary Rev 1.1, page 3, "Cursor
+ * Pixel Map" / Table 4) packs the first (leftmost) of each four-pixel
+ * group into bits[7:6] and the last (rightmost) into bits[1:0] --
+ * most-significant pair first, not least-significant pair first. Value 0
+ * is transparent; the other three select cursor look-up table entries
+ * whose three bytes are (red, green, blue), matching the framebuffer's
+ * own palette upload helper in rad4_pixel_to_rgb() above
+ * (docs/datasheets/psitech-rad4.md, "Cursor: bound to the public
+ * specification and implemented"). Cursor and cross-hair blinking (page
+ * 37's CB/XB/BT bits, and the blink-rate/duty-cycle registers at
+ * 0x0032-0x0033) are not modeled: the sprite always shows the
+ * primary-color entries, never the blink entries or a transparent blink
+ * phase. Cross-hair display is not modeled at all, matching the driver's
+ * own cursor-only observed usage
+ * (docs/research/graphics/rad4-xserver-nodma-audit-20260915.md).
+ */
+static void rad4_cursor_compose(PsitechRad4State *s, int y_start, int y_end)
+{
+    int x0, y0, row, col;
+
+    s->cursor_shown_y_start = RAD4_MODE0_HEIGHT;
+    s->cursor_shown_y_end = -1;
+    if (!rad4_cursor_origin(s, &x0, &y0)) {
+        return;
+    }
+    for (row = 0; row < RAD4_CURSOR_HEIGHT; row++) {
+        int y = y0 + row;
+        uint32_t *dst;
+
+        if (y < y_start || y > y_end || y < 0 || y >= RAD4_MODE0_HEIGHT) {
+            continue;
+        }
+        dst = s->display_buffer + (size_t)y * RAD4_MODE0_WIDTH;
+        for (col = 0; col < RAD4_CURSOR_WIDTH; col++) {
+            int x = x0 + col;
+            uint8_t byte = s->rgb_store[RAD4_RGB_CURSOR_PIXMAP_BASE +
+                                        row * RAD4_CURSOR_PIXMAP_STRIDE +
+                                        col / 4];
+            unsigned val = (byte >> (6 - (col % 4) * 2)) & 0x3;
+
+            if (val == 0 || x < 0 || x >= RAD4_MODE0_WIDTH) {
+                continue;
+            }
+            dst[x] = ((uint32_t)s->cursor_lut[val][0] << 16) |
+                     ((uint32_t)s->cursor_lut[val][1] << 8) |
+                     s->cursor_lut[val][2];
+        }
+    }
+    s->cursor_shown_y_start = MAX(y0, 0);
+    s->cursor_shown_y_end = MIN(y0 + RAD4_CURSOR_HEIGHT - 1,
+                                RAD4_MODE0_HEIGHT - 1);
+}
+
+/*
  * Convert rows [y_start, y_end] (inclusive) of the raw guest framebuffer
  * into displayed color, one pixel at a time through rad4_pixel_to_rgb().
  * This can no longer alias guest memory directly
@@ -892,6 +1019,7 @@ static bool rad4_gfx_update(void *opaque)
     }
     trace_rad4_gfx_update_push(s->dirty_y_start, s->dirty_y_end);
     rad4_convert_scanout(s, s->dirty_y_start, s->dirty_y_end);
+    rad4_cursor_compose(s, s->dirty_y_start, s->dirty_y_end);
     qemu_console_update(s->con, 0, s->dirty_y_start, RAD4_MODE0_WIDTH,
                         s->dirty_y_end - s->dirty_y_start + 1);
     s->dirty_y_start = RAD4_MODE0_HEIGHT;
@@ -930,90 +1058,6 @@ static bool rad4_index_is_cursor_lut(uint16_t index)
 {
     return index >= RAD4_RGB_CURSOR_LUT_BASE &&
            index <= RAD4_RGB_CURSOR_LUT_LAST;
-}
-
-/*
- * Push the cursor's board-visible position and enable state to the UI
- * layer. IBM page 38's location registers are a 16-bit two's complement
- * pair with a documented valid range of -256 to +2047; bits 14-11 of the
- * high byte are specified to read back the sign value regardless of what
- * was written there. This model stores and reports the full 16 bits as an
- * ordinary signed value without independently forcing that readback
- * behavior -- the qualified guest workload here never reads this register
- * back, so the difference is not guest-visible in that workload, but a
- * guest that did read it back could observe a difference from real
- * hardware. That is this approximation's one disclosed limitation.
- */
-static void rad4_cursor_update_position(PsitechRad4State *s)
-{
-    uint8_t ctrl = s->rgb_store[RAD4_RGB_CURSOR_CONTROL];
-    uint16_t xu = ((uint16_t)s->rgb_store[RAD4_RGB_CURSOR_X_HIGH] << 8) |
-                  s->rgb_store[RAD4_RGB_CURSOR_X_LOW];
-    uint16_t yu = ((uint16_t)s->rgb_store[RAD4_RGB_CURSOR_Y_HIGH] << 8) |
-                  s->rgb_store[RAD4_RGB_CURSOR_Y_LOW];
-    int16_t x = (int16_t)xu;
-    int16_t y = (int16_t)yu;
-
-    qemu_console_set_mouse(s->con, x, y, (ctrl & RAD4_CURSOR_CONTROL_CE) != 0);
-}
-
-/*
- * Rebuild the cursor sprite from the pixel map and look-up table and hand
- * it to the UI layer. Cursor and cross-hair blinking (page 37's CB/XB/BT
- * bits, and the blink-rate/duty-cycle registers at 0x0032-0x0033) are not
- * modeled: the sprite always shows the primary-color entries, never the
- * blink entries or a transparent blink phase. Cross-hair display is not
- * modeled at all, matching the driver's own cursor-only observed usage
- * (docs/research/graphics/rad4-xserver-nodma-audit-20260915.md).
- */
-static void rad4_cursor_update_image(PsitechRad4State *s)
-{
-    QEMUCursor *cursor = cursor_alloc(RAD4_CURSOR_WIDTH, RAD4_CURSOR_HEIGHT);
-    int row, col;
-
-    cursor->hot_x = s->rgb_store[RAD4_RGB_CURSOR_HOTSPOT_X] &
-                    RAD4_CURSOR_HOTSPOT_MASK;
-    cursor->hot_y = s->rgb_store[RAD4_RGB_CURSOR_HOTSPOT_Y] &
-                    RAD4_CURSOR_HOTSPOT_MASK;
-
-    for (row = 0; row < RAD4_CURSOR_HEIGHT; row++) {
-        for (col = 0; col < RAD4_CURSOR_WIDTH; col += 4) {
-            uint8_t byte = s->rgb_store[RAD4_RGB_CURSOR_PIXMAP_BASE +
-                                        row * RAD4_CURSOR_PIXMAP_STRIDE +
-                                        col / 4];
-            int sub;
-
-            for (sub = 0; sub < 4; sub++) {
-                /*
-                 * The IBM RGB561 Architecture spec (Preliminary Rev 1.1,
-                 * page 3, "Cursor Pixel Map" / Table 4) packs the first
-                 * (leftmost) of each four-pixel group into bits[7:6] and
-                 * the last (rightmost) into bits[1:0] -- most-significant
-                 * pair first, not least-significant pair first.
-                 */
-                unsigned val = (byte >> (6 - sub * 2)) & 0x3;
-                uint32_t pixel = 0; /* Transparent (QEMUCursor alpha is 0). */
-
-                if (val != 0) {
-                    const uint8_t *rgb = s->cursor_lut[val];
-
-                    /*
-                     * Component order within each three-byte entry is
-                     * (red, green, blue), matching the framebuffer's own
-                     * palette upload helper in rad4_pixel_to_rgb() above
-                     * (docs/datasheets/psitech-rad4.md, "Cursor: bound to
-                     * the public specification and implemented").
-                     */
-                    pixel = (0xffu << 24) | ((uint32_t)rgb[0] << 16) |
-                           ((uint32_t)rgb[1] << 8) | rgb[2];
-                }
-                cursor->data[row * RAD4_CURSOR_WIDTH + col + sub] = pixel;
-            }
-        }
-    }
-
-    qemu_console_set_cursor(s->con, cursor);
-    cursor_unref(cursor);
 }
 
 static uint64_t rad4_bar0_read(void *opaque, hwaddr addr, unsigned size)
@@ -1598,12 +1642,17 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
 
         if (index >= RAD4_RGB_CURSOR_CONTROL &&
             index <= RAD4_RGB_CURSOR_Y_HIGH) {
-            rad4_cursor_update_position(s);
-            rad4_cursor_update_image(s);
+            int x, y;
+
+            rad4_cursor_location(s, &x, &y);
+            trace_rad4_cursor_position(x, y,
+                                       (s->rgb_store[RAD4_RGB_CURSOR_CONTROL]
+                                        & RAD4_CURSOR_CONTROL_CE) != 0);
+            rad4_cursor_invalidate(s);
         } else if (index >= RAD4_RGB_CURSOR_PIXMAP_BASE &&
                   index < RAD4_RGB_CURSOR_PIXMAP_BASE +
                           RAD4_CURSOR_PIXMAP_SIZE) {
-            rad4_cursor_update_image(s);
+            rad4_cursor_invalidate(s);
         }
 
         /* Documented auto-increment on data-port access. */
@@ -1623,17 +1672,16 @@ static void rad4_bar2_write(void *opaque, hwaddr addr, uint64_t val,
             rad4_rgb_reserved_advance(s, index, 3);
             /*
              * Each cursor LUT entry is three bus cycles (R, G, B).
-             * Rebuilding the sprite after the first or second cycle would
-             * render a torn colour -- two channels from the new write and
-             * one still holding the previous entry's byte -- and, unlike
-             * on real hardware where that only lasts a fraction of a
-             * frame, push it to the UI/VNC layer as a stable cursor
-             * definition that persists until the next trigger. Wait for
+             * Repainting the sprite after the first or second cycle
+             * would show a torn colour -- two channels from the new
+             * write and one still holding the previous entry's byte --
+             * for a whole refresh interval rather than the fraction of a
+             * frame real hardware would. Wait for
              * rad4_rgb_reserved_advance() to wrap the phase counter back
              * to 0, marking the entry complete.
              */
             if (s->rgb_reserved_phase == 0) {
-                rad4_cursor_update_image(s);
+                rad4_cursor_invalidate(s);
             }
         } else if (rad4_index_in_wat(index)) {
             uint16_t wid = index - RAD4_WAT_BASE;
@@ -1774,8 +1822,9 @@ static void rad4_reset_hold(Object *obj, ResetType type)
     }
 
     rad4_update_irq(s);
-    rad4_cursor_update_position(s);
-    rad4_cursor_update_image(s);
+    /* The full repaint above recomputes where the (now disabled) cursor is. */
+    s->cursor_shown_y_start = RAD4_MODE0_HEIGHT;
+    s->cursor_shown_y_end = -1;
 }
 
 static void rad4_realize(PCIDevice *dev, Error **errp)
@@ -1861,10 +1910,10 @@ static int rad4_post_load(void *opaque, int version_id)
      * show a stale or blank display_buffer until the guest next writes.
      */
     rad4_mark_all_dirty(s);
+    s->cursor_shown_y_start = RAD4_MODE0_HEIGHT;
+    s->cursor_shown_y_end = -1;
     rad4_ensure_surface(s);
     rad4_update_irq(s);
-    rad4_cursor_update_position(s);
-    rad4_cursor_update_image(s);
     if (s->rec_state == RAD4_REC_RECOGNIZED && s->frame_timer &&
         !timer_pending(s->frame_timer)) {
         timer_mod(s->frame_timer,

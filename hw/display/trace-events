@@ -229,4 +229,5 @@ apple_gfx_iosfc_raise_irq(uint32_t vector) "vector=0x%x"
 # psitech-rad4.c
 rad4_gfx_update_push(int y_start, int y_end) "rows %d-%d"
 rad4_gfx_update_idle(void) ""
+rad4_cursor_position(int x, int y, bool on) "x %d y %d on %d"
 
