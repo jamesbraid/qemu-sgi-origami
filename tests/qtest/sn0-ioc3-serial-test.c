@@ -1487,6 +1487,43 @@ static void test_a_modem_entry_reaches_the_modem_register(const void *data)
 }
 
 /*
+ * And it ends the entry wherever it sits, not only after the last character:
+ * the slots behind an empty one are not sent, and the walk goes on with the
+ * next entry. The Origin 300 IO-8 board test's DMA check hands the engine
+ * an entry typed character, empty, character, character, and expects the
+ * next entry's first character straight after the first slot's.
+ */
+static void test_an_empty_slot_ends_the_entry_mid_way(const void *data)
+{
+    static const uint8_t first[4] = { 'a', 'b', 'c', 'd' };
+    static const uint8_t first_ctrl[4] = {
+        TX_CHARACTER, TX_EMPTY, TX_CHARACTER, TX_CHARACTER,
+    };
+    static const uint8_t second[4] = { 'e', 'f', 'g', 'h' };
+    static const uint8_t second_ctrl[4] = {
+        TX_CHARACTER, TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
+    };
+    static const uint8_t sent[5] = { 'a', 'e', 'f', 'g', 'h' };
+    uint8_t status[5];
+    uint8_t got[5];
+
+    serial_reset();
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 0);
+    set_loopback(qts, 0);
+    enable_dma(qts, 0);
+
+    write_transmit_entry(qts, RING_TX(0), 0, first, first_ctrl);
+    write_transmit_entry(qts, RING_TX(0), 8, second, second_ctrl);
+    qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 16);
+    collect_rx_chars(qts, 0, sizeof(got), got, status);
+
+    g_assert_cmpmem(got, sizeof(got), sent, sizeof(sent));
+    g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_TX_CONSUME)) & 0xff8, ==, 16);
+}
+
+/*
  * The empty type ends the entry; sending all four slots regardless emits
  * memory garbage after every short write.
  */
@@ -2624,6 +2661,8 @@ int main(int argc, char **argv)
                         test_a_reset_returns_the_channels_to_the_start);
     qtest_add_data_func("sn0/ioc3-serial/modem-entry-reaches-modem-register",
                         NULL, test_a_modem_entry_reaches_the_modem_register);
+    qtest_add_data_func("sn0/ioc3-serial/empty-slot-ends-the-entry-mid-way",
+                        NULL, test_an_empty_slot_ends_the_entry_mid_way);
     qtest_add_data_func("sn0/ioc3-serial/empty-slot-ends-the-entry", NULL,
                         test_an_empty_slot_ends_the_entry);
     qtest_add_data_func("sn0/ioc3-serial/walk-wraps-at-the-ring-end", NULL,

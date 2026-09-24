@@ -884,11 +884,14 @@ static void sgi_ioc3_sdma_transmit(SGIIOC3State *s, unsigned int port)
         for (i = s->sdma_tx_slot[port];
              i < SGI_IOC3_SDMA_ENTRY_CHARS; i++) {
             uint8_t control = entry[SGI_IOC3_SDMA_ENTRY_CHARS + i];
+            uint8_t type = control & SGI_IOC3_SDMA_TX_TYPE;
 
-            switch (control & SGI_IOC3_SDMA_TX_TYPE) {
-            case SGI_IOC3_SDMA_TX_NOTHING:
-                s->sdma_tx_slot[port] = i + 1;
-                continue;
+            /* Wherever it sits: the slots behind it are not sent. */
+            if (type == SGI_IOC3_SDMA_TX_NOTHING) {
+                break;
+            }
+
+            switch (type) {
             case SGI_IOC3_SDMA_TX_CHARACTER:
                 if (!s->sdma_tx_ready[port]) {
                     return;
