@@ -153,6 +153,7 @@ static uint64_t sdma_alias(unsigned int port, unsigned int reg)
 
 /* The port control register's fields. */
 #define CTRL_HIGH_WATER(n) ((n) & 0x1ffu)
+#define CTRL_FLOW_CONTROL (1u << 17)
 #define CTRL_RX_DRAIN   (1u << 27)
 #define CTRL_DMA_ENABLE (1u << 28)
 #define CTRL_PAUSE      (1u << 29)
@@ -789,6 +790,61 @@ static void test_the_shadow_mirrors_the_port(const void *data)
         shadow = qtest_readl(qts, sdma(port, SDMA_SHADOW));
         g_assert_cmphex(shadow & SHADOW_DTR, ==, SHADOW_DTR);
         g_assert_cmphex(shadow & SHADOW_RTS, ==, SHADOW_RTS);
+    }
+}
+
+/*
+ * Looped back with hardware flow control on, a port reports clear-to-send
+ * although software left request-to-send clear. The Origin 300 IO-8 board
+ * test sets exactly that -- modem control 0x11, data-terminal-ready and
+ * loopback, then control 0x10120020 -- sends "abcd" and requires each
+ * status byte to read 0xd0 once carrier-detect is masked away. Without the
+ * flow-control bit the port is an ordinary 16550 in loopback, where
+ * clear-to-send follows request-to-send, and that half pins the condition
+ * rather than a port that always claims clear-to-send.
+ */
+static void test_loopback_flow_control_reports_clear_to_send(const void *data)
+{
+    static const uint8_t out[4] = { 'a', 'b', 'c', 'd' };
+    static const uint8_t control[4] = {
+        TX_CHARACTER, TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
+    };
+    uint8_t status[4];
+    uint8_t got[4];
+    unsigned int i;
+    int flow;
+
+    for (flow = 0; flow < 2; flow++) {
+        uint8_t cts = flow ? RX_CTS : 0;
+
+        serial_reset();
+
+        sn0_ioc3_attach(qts);
+        configure_line(qts, 0);
+        qtest_writeb(qts, serial_port(0) + REG_MCR, MCR_LOOPBACK | MCR_DTR);
+        enable_dma(qts, 0);
+        qtest_writel(qts, sdma(0, SDMA_CONTROL),
+                     CTRL_DMA_ENABLE | (flow ? CTRL_FLOW_CONTROL : 0));
+
+        write_transmit_entry(qts, RING_TX(0), 0, out, control);
+        qtest_writel(qts, sdma(0, SDMA_TX_PRODUCE), 8);
+        collect_rx_chars(qts, 0, sizeof(got), got, status);
+
+        g_assert_cmpint(memcmp(got, out, sizeof(out)), ==, 0);
+        for (i = 0; i < 4; i++) {
+            g_assert_cmphex(status[i] & ~RX_CD, ==,
+                            RX_DATA_VALID | RX_MODEM_VALID | cts);
+        }
+
+        /* The two other views of the same line agree with the ring. */
+        g_assert_cmphex(qtest_readl(qts, sdma(0, SDMA_SHADOW)) & SHADOW_CTS,
+                        ==, flow ? SHADOW_CTS : 0);
+        g_assert_cmphex(qtest_readb(qts, serial_port(0) + REG_MSR) & 0x10,
+                        ==, cts);
+
+        /* Software's request-to-send is left as it wrote it. */
+        g_assert_cmphex(qtest_readb(qts, serial_port(0) + REG_MCR) & MCR_RTS,
+                        ==, 0);
     }
 }
 
@@ -2524,6 +2580,8 @@ int main(int argc, char **argv)
                         test_the_alias_refuses_the_registers_hardware_owns);
     qtest_add_data_func("sn0/ioc3-serial/shadow-mirrors-the-port", NULL,
                         test_the_shadow_mirrors_the_port);
+    qtest_add_data_func("sn0/ioc3-serial/loopback-flow-control-reports-cts",
+                        NULL, test_loopback_flow_control_reports_clear_to_send);
     qtest_add_data_func("sn0/ioc3-serial/transmit-entry-sends-four", NULL,
                         test_a_transmit_entry_sends_its_four_characters);
     qtest_add_data_func("sn0/ioc3-serial/blocked-backend-keeps-every-character",
