@@ -349,11 +349,61 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 
 /*
  * Register 0x34, which the driver reads only through slot +0x74, carries
- * per-input sync-present flags whose polarity is unknown. With no video
- * reference modeled it is held constant; zero is a placeholder until the
- * polarity is settled.
+ * per-input sync-present flags whose polarity is unknown. It is held
+ * constant whatever the genlock property says; zero is a placeholder until
+ * the polarity is settled, so a model with a reference connected shows
+ * the field events below but not a sync-present flag.
  */
 #define SGI_RAD1_AUDIO_SYNC_STATUS          0x0u
+
+/*
+ * Video reference, from the datasheet's "Video-clock / genlock". The
+ * driver counts status slots carrying +0x78 bit 0x80 or 0x100, divides
+ * elapsed time by the count, and classifies the period as a 59.94 Hz or
+ * 50 Hz video field rate. So a model presents a locked reference by
+ * emitting one of those bits once per video field, and nothing for none.
+ *
+ * What is cabled to the genlock daughtercard's "Video Sync" inputs is the
+ * host's to say, through the "genlock" property: "none" (the default),
+ * "ntsc" (59.94 Hz fields, 16.683 ms) or "pal" (50 Hz fields, 20 ms). It
+ * describes the cable, like the digital receiver properties, and like them
+ * is not migrated: both ends of a migration must set it alike.
+ *
+ * Fields are counted from reset on the virtual clock. Each completion
+ * carries one bit for each field that began since the last completion, at
+ * most two; the completions are 250 us apart and fields at least 16 ms, so
+ * two happen only after a gap in the status engine. Which bit belongs to
+ * which field is not established: the datasheet reads them, as plausible,
+ * as one bit per field parity. The model alternates them, 0x80 on even
+ * fields and 0x100 on odd, a stated choice.
+ */
+#define SGI_RAD1_AUDIO_SLOT_FIELD_EVEN      0x80u
+#define SGI_RAD1_AUDIO_SLOT_FIELD_ODD       0x100u
+/* Fields per ns as a ratio: 60/1.001 per s for NTSC, 50 per s for PAL. */
+#define SGI_RAD1_AUDIO_NTSC_FIELDS          60u
+#define SGI_RAD1_AUDIO_NTSC_NS              1001000000u
+#define SGI_RAD1_AUDIO_PAL_FIELDS           50u
+#define SGI_RAD1_AUDIO_PAL_NS               1000000000u
+
+typedef enum SGIRad1AudioGenlock {
+    SGI_RAD1_AUDIO_GENLOCK_NONE,
+    SGI_RAD1_AUDIO_GENLOCK_NTSC,
+    SGI_RAD1_AUDIO_GENLOCK_PAL,
+} SGIRad1AudioGenlock;
+
+/*
+ * The mux serial word, datasheet "The mux serial word (MIO, mode 7)". The
+ * driver shifts 16 bits out most significant first: each bit as 0x8c bit
+ * 0, clocked by 0x4c bit 27 going from clear to set, then latches the word
+ * with 0x88 = 2 followed by 0x88 = 3. What the word selects on the
+ * daughtercard is only partly known, so the model decodes it for tracing
+ * and for the read-only "mux-word" property and does nothing else with it.
+ */
+#define SGI_RAD1_AUDIO_MUX_CLOCK            0x08000000u
+#define SGI_RAD1_AUDIO_MUX_DATA             0x1u
+#define SGI_RAD1_AUDIO_MUX_LATCH_ARM        2u
+#define SGI_RAD1_AUDIO_MUX_LATCH_FIRE       3u
+#define SGI_RAD1_AUDIO_MUX_BITS             16
 
 /*
  * Continuous status-DMA engine. The one-shot start (0x40001) fills a single
@@ -597,6 +647,18 @@ struct SGIRad1AudioState {
     /* The host's description of the digital input cables; see above. */
     uint32_t aes_input_rate;
     bool adat_input;
+
+    /*
+     * The video reference cabled to the genlock inputs; see above.
+     * genlock_fields counts the fields already reported in a completion.
+     */
+    char *genlock;
+    SGIRad1AudioGenlock genlock_mode;
+    uint64_t genlock_fields;
+
+    /* The mux serial word: bits shifted in so far, and the last latched. */
+    uint32_t mux_shift;
+    uint32_t mux_word;
 };
 
 #endif

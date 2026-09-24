@@ -2514,6 +2514,195 @@ static void test_io6g_rad1_digital_migration(void)
 }
 
 /*
+ * Genlock. The driver measures the period of status slots carrying +0x78
+ * bit 0x80 or 0x100 and classifies it as a video field rate: 16 393 442 to
+ * 16 949 152 ns for 59.94 Hz, 19 607 843 to 20 407 139 ns for 50 Hz. The
+ * "genlock" property says what is cabled to the video sync inputs: nothing
+ * by default, which must never produce an event, or an NTSC or PAL
+ * reference, which must produce one event per field. The model alternates
+ * the two bits by field, its stated choice. Register 0x34, mirrored at slot
+ * +0x74, stays constant either way: its polarity is unknown.
+ */
+#define RAD1_SLOT_FIELD_BITS      0x180u
+#define RAD1_SLOT_SYNC_STATUS     (RAD1_SLOT_MIRROR_OFFSET + 0x34)
+#define RAD1_NTSC_BAND_LO         16393442
+#define RAD1_NTSC_BAND_HI         16949152
+#define RAD1_PAL_BAND_LO          19607843
+#define RAD1_PAL_BAND_HI          20407139
+#define RAD1_RAD1_QOM_PATH        "/machine/module0/slot8/baseio/rad1"
+
+/*
+ * Walk @n completions from a fresh continuous start and collect the ones
+ * carrying a field event: their due times into @times and their bits into
+ * @bits, returning how many. Every slot's 0x34 mirror must read 0.
+ */
+static unsigned int rad1_collect_field_events(QTestState *qts, unsigned int n,
+                                              int64_t *times, uint32_t *bits,
+                                              unsigned int max)
+{
+    const unsigned int nslots = 8;
+    int64_t t_status = rad1_start_status(qts, nslots);
+    unsigned int k, events = 0;
+
+    for (k = 1; k <= n; k++) {
+        uint64_t slot = RAD1_TEST_STATUS_RAM + (k % nslots) * RAD1_SLOT_STRIDE;
+        uint32_t flags;
+
+        rad1_step_to(qts, t_status, rad1_status_due(k));
+        g_assert_cmphex(rad1_ring_read(qts, slot + RAD1_SLOT_DONE_OFFSET),
+                        ==, RAD1_SLOT_DONE_WORD);
+        g_assert_cmphex(rad1_ring_read(qts, slot + RAD1_SLOT_SYNC_STATUS),
+                        ==, 0);
+        rad1_ring_write(qts, slot + RAD1_SLOT_DONE_OFFSET, 0);
+        flags = rad1_ring_read(qts, slot + RAD1_SLOT_FLAGS_OFFSET);
+        if (flags & RAD1_SLOT_FIELD_BITS) {
+            g_assert_cmpuint(events, <, max);
+            times[events] = rad1_status_due(k);
+            bits[events] = flags & RAD1_SLOT_FIELD_BITS;
+            events++;
+        }
+    }
+    rad1_write(qts, RAD1_REG_STATUS_DMA_CTRL, RAD1_STATUS_STOP);
+    return events;
+}
+
+/* No reference connected: 800 completions, 200 ms, carry no field event. */
+static void test_io6g_rad1_genlock_absent(void)
+{
+    QTestState *qts = start_module_io6g();
+    int64_t times[1];
+    uint32_t bits[1];
+
+    rad1_prepare_output(qts, RAD1_SAMPLE_LEFT_WORD, RAD1_SAMPLE_RIGHT_WORD);
+    g_assert_cmpuint(rad1_collect_field_events(qts, 800, times, bits, 1),
+                     ==, 0);
+}
+
+/*
+ * A reference connected: over 200 ms of completions, the events alternate
+ * between the two bits, one per slot, each a field period apart to within
+ * one completion interval, and the driver's measurement, elapsed time over
+ * the event count, falls inside the field rate's band.
+ */
+static void rad1_check_genlock(const char *standard, int64_t field_ns,
+                               int64_t band_lo, int64_t band_hi)
+{
+    g_autofree char *extra =
+        g_strdup_printf("-global sgi-rad1-audio.genlock=%s", standard);
+    QTestState *qts = start_module_with(",baseio-preset=io6g", extra);
+    int64_t times[16], interval = rad1_status_due(1), measured;
+    uint32_t bits[16];
+    unsigned int events, i;
+
+    rad1_prepare_output(qts, RAD1_SAMPLE_LEFT_WORD, RAD1_SAMPLE_RIGHT_WORD);
+    events = rad1_collect_field_events(qts, 800, times, bits,
+                                       G_N_ELEMENTS(times));
+    g_assert_cmpuint(events, >=, 200000000 / field_ns - 1);
+    g_assert_cmpuint(events, <=, 200000000 / field_ns + 1);
+    for (i = 0; i < events; i++) {
+        g_assert_true(bits[i] == 0x80 || bits[i] == 0x100);
+        if (i) {
+            g_assert_cmphex(bits[i], !=, bits[i - 1]);
+            g_assert_cmpint(times[i] - times[i - 1], >=, field_ns - interval);
+            g_assert_cmpint(times[i] - times[i - 1], <=, field_ns + interval);
+        }
+    }
+    measured = (times[events - 1] - times[0]) / (events - 1);
+    g_assert_cmpint(measured, >=, band_lo);
+    g_assert_cmpint(measured, <=, band_hi);
+    qtest_quit(qts);
+}
+
+static void test_io6g_rad1_genlock_ntsc(void)
+{
+    rad1_check_genlock("ntsc", 16683333, RAD1_NTSC_BAND_LO, RAD1_NTSC_BAND_HI);
+}
+
+static void test_io6g_rad1_genlock_pal(void)
+{
+    rad1_check_genlock("pal", 20000000, RAD1_PAL_BAND_LO, RAD1_PAL_BAND_HI);
+}
+
+/* "genlock" names a real video standard; anything else is refused. */
+static void test_io6g_rad1_rejects_genlock(void)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin2000,baseio-preset=io6g",
+        "-accel", "qtest", "-display", "none", "-S", "-nodefaults",
+        "-qmp", "stdio", "-global", "sgi-rad1-audio.genlock=secam", NULL,
+    };
+
+    assert_launch_rejected(args, "genlock must be none, ntsc or pal, "
+                                 "not secam");
+}
+
+static uint32_t rad1_mux_word(QTestState *qts)
+{
+    QDict *resp = qtest_qmp(qts, "{ 'execute': 'qom-get', 'arguments': "
+                            "{ 'path': %s, 'property': 'mux-word' } }",
+                            RAD1_RAD1_QOM_PATH);
+    uint32_t word;
+
+    g_assert_true(qdict_haskey(resp, "return"));
+    word = qdict_get_int(resp, "return");
+    qobject_unref(resp);
+    return word;
+}
+
+/*
+ * The mux serial word, shifted out as rad_vl_write_MUX_SEL_MIO does: for
+ * each bit, most significant first, 0x8c = bit | 2, then 0x4c from its
+ * shadow with bit 27 clear, then set; then 0x88 = 2, 0x88 = 3 to latch,
+ * and 0x8c restored. The model decodes the word into its read-only
+ * "mux-word" property. The shadow here keeps bit 0 of 0x4c set, as the
+ * driver's does with the analog input running, and the input keeps
+ * running on its clock through it. A second word replaces the first only
+ * at its own latch.
+ */
+static void rad1_send_mux_word(QTestState *qts, uint32_t shadow, uint16_t word)
+{
+    int i;
+
+    for (i = 15; i >= 0; i--) {
+        rad1_write(qts, RAD1_REG_SHIFT_LOAD_DATA, ((word >> i) & 1) | 2);
+        rad1_write(qts, RAD1_REG_SHIFT_LOAD_CLOCK, shadow & ~RAD1_IN_MUX_CLOCK);
+        rad1_write(qts, RAD1_REG_SHIFT_LOAD_CLOCK, shadow | RAD1_IN_MUX_CLOCK);
+    }
+}
+
+static void test_io6g_rad1_mux_word(void)
+{
+    QTestState *qts = start_module_io6g();
+    int64_t t_enable;
+    uint32_t a;
+
+    rad1_prepare_output(qts, RAD1_SAMPLE_LEFT_WORD, RAD1_SAMPLE_RIGHT_WORD);
+    rad1_prepare_input(qts);
+    rad1_write(qts, RAD1_REG_SHIFT_LOAD_CLOCK, RAD1_IN_ENABLE_RUN);
+    t_enable = rad1_clock_now(qts);
+    g_assert_cmphex(rad1_mux_word(qts), ==, 0);
+
+    rad1_send_mux_word(qts, RAD1_IN_ENABLE_RUN, 0xa5c3);
+    /* Not latched yet: the word only appears at 0x88 = 2 then 3. */
+    g_assert_cmphex(rad1_mux_word(qts), ==, 0);
+    rad1_write(qts, RAD1_REG_LATCH_PULSE, 2);
+    rad1_write(qts, RAD1_REG_LATCH_PULSE, 3);
+    rad1_write(qts, RAD1_REG_SHIFT_LOAD_DATA, 2);
+    g_assert_cmphex(rad1_mux_word(qts), ==, 0xa5c3);
+
+    rad1_send_mux_word(qts, RAD1_IN_ENABLE_RUN, 0x1001);
+    g_assert_cmphex(rad1_mux_word(qts), ==, 0xa5c3);
+    rad1_write(qts, RAD1_REG_LATCH_PULSE, 2);
+    rad1_write(qts, RAD1_REG_LATCH_PULSE, 3);
+    g_assert_cmphex(rad1_mux_word(qts), ==, 0x1001);
+
+    rad1_step_to(qts, t_enable, 5000000);
+    a = rad1_read(qts, RAD1_IN_POS_A);
+    g_assert_cmpuint(RAD1_POS_A_FRAMES(a), ==, rad1_out_frames_due(5000000));
+    rad1_write(qts, RAD1_REG_SHIFT_LOAD_CLOCK, RAD1_IN_ENABLE_IDLE);
+}
+
+/*
  * The free-running UST counter at 0x30. rad_set_ust_offset reads it twice a
  * fixed delay apart and warns "RAD UST not incrementing" if it moved by fewer
  * than three ticks; the model derives it from the virtual clock, so stepping
@@ -3019,6 +3208,16 @@ int main(int argc, char **argv)
                    test_io6g_rad1_subcode_64bit);
     qtest_add_func("sn0/baseio/io6g-rad1-rejects-aes-input-rate",
                    test_io6g_rad1_rejects_aes_input_rate);
+    qtest_add_func("sn0/baseio/io6g-rad1-genlock-absent",
+                   test_io6g_rad1_genlock_absent);
+    qtest_add_func("sn0/baseio/io6g-rad1-genlock-ntsc",
+                   test_io6g_rad1_genlock_ntsc);
+    qtest_add_func("sn0/baseio/io6g-rad1-genlock-pal",
+                   test_io6g_rad1_genlock_pal);
+    qtest_add_func("sn0/baseio/io6g-rad1-mux-word",
+                   test_io6g_rad1_mux_word);
+    qtest_add_func("sn0/baseio/io6g-rad1-rejects-genlock",
+                   test_io6g_rad1_rejects_genlock);
     qtest_add_func("sn0/baseio/io6g-rad1-ust-counter",
                    test_io6g_rad1_ust_counter);
     qtest_add_func("sn0/baseio/io6g-ps2", test_io6g_ps2);

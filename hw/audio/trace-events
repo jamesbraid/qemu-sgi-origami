@@ -67,3 +67,5 @@ sgi_rad1_audio_start(unsigned int ch, uint64_t base, uint32_t len, uint32_t tag)
 sgi_rad1_audio_stop(unsigned int ch, uint32_t ptr, uint64_t frames) "ch %u ptr 0x%08x after %"PRIu64" frames"
 sgi_rad1_audio_wrap(unsigned int ch, uint64_t base) "ch %u ring 0x%"PRIx64
 sgi_rad1_audio_position(unsigned int ch, uint32_t frames, uint32_t pos_a, uint32_t pos_b) "ch %u +%u frames, A=0x%08x B=0x%08x"
+sgi_rad1_audio_field_events(uint64_t fields, uint32_t bits) "field %"PRIu64" slot bits 0x%x"
+sgi_rad1_audio_mux_word(uint32_t word) "mux word 0x%04x"
