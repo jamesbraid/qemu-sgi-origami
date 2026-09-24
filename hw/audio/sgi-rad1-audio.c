@@ -3,21 +3,24 @@
  * SGI MediaIO RAD1 digital/analog/genlock audio ASIC.
  *
  * Register-file bring-up, the free-running UST counter, the status DMA, and
- * the analog channels' streaming engine (channel types 0 and 1). IRIX's
- * rad_dd.o programs a documented set of BAR0 offsets during
- * rad_start_subsys, gated by the board mode it reads from the PCI revision
- * byte (see the header), so this model needs no mode-selection logic of its
- * own -- it accepts whatever the guest's mode-driven dispatch writes and
- * answers with the value last stored there. Modeled pieces of the audio data
- * path: the free-running UST counter at 0x30, whose advancing value clears
- * the driver's "RAD UST not incrementing" report; the status DMA, which
- * fills the driver's host-memory descriptor-ring slots with a register
- * mirror, each running channel's DMA pointer and a completion word; and the
- * analog output and input, each of which from its enable edge walks a guest
- * ring buffer at the sample rate, moving frames to or from a host audio
- * backend, and advances its position registers. The digital channels,
- * genlock and the interface-parameter registers are not modeled -- those
- * registers accept and shadow writes with no signal path. See
+ * the audio channels' streaming engine: analog input and output (channel
+ * types 0 and 1), AES3 input and output (2 and 3) and ADAT input and output
+ * (4 and 5). IRIX's rad_dd.o programs a documented set of BAR0 offsets
+ * during rad_start_subsys, gated by the board mode it reads from the PCI
+ * revision byte (see the header), so this model needs no mode-selection
+ * logic of its own -- it accepts whatever the guest's mode-driven dispatch
+ * writes and answers with the value last stored there. Modeled pieces of
+ * the audio data path: the free-running UST counter at 0x30, whose
+ * advancing value clears the driver's "RAD UST not incrementing" report;
+ * the status DMA, which fills the driver's host-memory descriptor-ring
+ * slots with a register mirror, each running channel's DMA pointer, and
+ * receiver words that present the digital inputs the host says are
+ * connected; and the six data channels, each of which from its enable edge
+ * walks a guest ring buffer at its sample rate, moving frames to or from a
+ * host audio backend, and advances its position registers. The subcode
+ * channels, genlock and the interface-parameter registers are not modeled
+ * -- those registers, and the output subcode windows, accept and shadow
+ * writes with no signal path. See
  * docs/datasheets/mediaio-rad1-audio.md.
  */
 
@@ -30,6 +33,8 @@
 #include "hw/audio/sgi-rad1-audio.h"
 #include "hw/audio/sgi-rad1-audio-pcm.h"
 #include "hw/pci/pci.h"
+#include "hw/core/qdev-properties.h"
+#include "qapi/error.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
 #include "trace.h"
@@ -57,15 +62,25 @@ static uint32_t sgi_rad1_audio_ust_counter(SGIRad1AudioState *s)
 #define SGI_RAD1_AUDIO_DMA_IDX(off) \
     (((off) - SGI_RAD1_AUDIO_REG_DMA_BANK_FIRST) / 4)
 
+/* The host interface a channel's voice belongs to, and so its audiodev. */
+typedef enum SGIRad1AudioIface {
+    SGI_RAD1_AUDIO_IFACE_ANALOG,
+    SGI_RAD1_AUDIO_IFACE_AES,
+    SGI_RAD1_AUDIO_IFACE_ADAT,
+} SGIRad1AudioIface;
+
 /*
- * What distinguishes one analog channel from the other: its set-A
- * registers, tag, direction, position registers and status-slot pointer
- * word, all from the datasheet's per-type table. Set B is stored in the
+ * What distinguishes one channel from another: its set-A registers, tag,
+ * direction, position registers, status-slot pointer word and frame width,
+ * all from the datasheet's per-type table and the flagged frame defaults,
+ * and its rate and host interface (see the header). Set B is stored in the
  * DMA bank but not consumed: every captured start wrote it identical to
- * set A, and the datasheet only infers that the hardware alternates.
+ * set A, and the datasheet only infers that the hardware alternates. A
+ * rate of 0 means the AES3 input's, which follows the connected source.
  */
 typedef struct SGIRad1AudioChannelInfo {
     const char *name;
+    const char *voice;
     bool output;
     uint32_t tag;
     hwaddr addr_lo;
@@ -75,13 +90,17 @@ typedef struct SGIRad1AudioChannelInfo {
     hwaddr pos_b;
     unsigned int pos_b_shift;
     hwaddr slot_ptr;
+    unsigned int words_per_frame;
+    uint32_t freq;
+    SGIRad1AudioIface iface;
 } SGIRad1AudioChannelInfo;
 
 static const SGIRad1AudioChannelInfo sgi_rad1_audio_channel_info[] = {
     [SGI_RAD1_AUDIO_CH_IN] = {
         .name = "analog input",
+        .voice = "sgi-rad1-audio.analog-in",
         .output = false,
-        .tag = SGI_RAD1_AUDIO_IN_TAG,
+        .tag = SGI_RAD1_AUDIO_CH_IN,
         .addr_lo = SGI_RAD1_AUDIO_REG_IN_A_ADDR_LO,
         .addr_hi = SGI_RAD1_AUDIO_REG_IN_A_ADDR_HI,
         .ctrl = SGI_RAD1_AUDIO_REG_IN_A_CTRL,
@@ -89,11 +108,15 @@ static const SGIRad1AudioChannelInfo sgi_rad1_audio_channel_info[] = {
         .pos_b = SGI_RAD1_AUDIO_REG_ANALOG_POS_B,
         .pos_b_shift = SGI_RAD1_AUDIO_IN_POS_B_SHIFT,
         .slot_ptr = SGI_RAD1_AUDIO_SLOT_IN_PTR_OFFSET,
+        .words_per_frame = SGI_RAD1_AUDIO_ANALOG_WORDS,
+        .freq = SGI_RAD1_AUDIO_FREQ,
+        .iface = SGI_RAD1_AUDIO_IFACE_ANALOG,
     },
     [SGI_RAD1_AUDIO_CH_OUT] = {
         .name = "analog output",
+        .voice = "sgi-rad1-audio.analog-out",
         .output = true,
-        .tag = SGI_RAD1_AUDIO_OUT_TAG,
+        .tag = SGI_RAD1_AUDIO_CH_OUT,
         .addr_lo = SGI_RAD1_AUDIO_REG_OUT_A_ADDR_LO,
         .addr_hi = SGI_RAD1_AUDIO_REG_OUT_A_ADDR_HI,
         .ctrl = SGI_RAD1_AUDIO_REG_OUT_A_CTRL,
@@ -101,8 +124,108 @@ static const SGIRad1AudioChannelInfo sgi_rad1_audio_channel_info[] = {
         .pos_b = SGI_RAD1_AUDIO_REG_ANALOG_POS_B,
         .pos_b_shift = SGI_RAD1_AUDIO_OUT_POS_B_SHIFT,
         .slot_ptr = SGI_RAD1_AUDIO_SLOT_OUT_PTR_OFFSET,
+        .words_per_frame = SGI_RAD1_AUDIO_ANALOG_WORDS,
+        .freq = SGI_RAD1_AUDIO_FREQ,
+        .iface = SGI_RAD1_AUDIO_IFACE_ANALOG,
+    },
+    [SGI_RAD1_AUDIO_CH_AES_IN] = {
+        .name = "AES3 input",
+        .voice = "sgi-rad1-audio.aes-in",
+        .output = false,
+        .tag = SGI_RAD1_AUDIO_CH_AES_IN,
+        .addr_lo = SGI_RAD1_AUDIO_REG_AES_IN_A_ADDR_LO,
+        .addr_hi = SGI_RAD1_AUDIO_REG_AES_IN_A_ADDR_HI,
+        .ctrl = SGI_RAD1_AUDIO_REG_AES_IN_A_CTRL,
+        .pos_a = SGI_RAD1_AUDIO_REG_AES_IN_POS_A,
+        .pos_b = SGI_RAD1_AUDIO_REG_AES_IN_POS_B,
+        .pos_b_shift = SGI_RAD1_AUDIO_DIGITAL_POS_B_SHIFT,
+        .slot_ptr = SGI_RAD1_AUDIO_SLOT_AES_IN_PTR_OFFSET,
+        .words_per_frame = SGI_RAD1_AUDIO_AES_WORDS,
+        .freq = 0,
+        .iface = SGI_RAD1_AUDIO_IFACE_AES,
+    },
+    [SGI_RAD1_AUDIO_CH_AES_OUT] = {
+        .name = "AES3 output",
+        .voice = "sgi-rad1-audio.aes-out",
+        .output = true,
+        .tag = SGI_RAD1_AUDIO_CH_AES_OUT,
+        .addr_lo = SGI_RAD1_AUDIO_REG_AES_OUT_A_ADDR_LO,
+        .addr_hi = SGI_RAD1_AUDIO_REG_AES_OUT_A_ADDR_HI,
+        .ctrl = SGI_RAD1_AUDIO_REG_AES_OUT_A_CTRL,
+        .pos_a = SGI_RAD1_AUDIO_REG_AES_OUT_POS_A,
+        .pos_b = SGI_RAD1_AUDIO_REG_AES_OUT_POS_B,
+        .pos_b_shift = SGI_RAD1_AUDIO_DIGITAL_POS_B_SHIFT,
+        .slot_ptr = SGI_RAD1_AUDIO_SLOT_AES_OUT_PTR_OFFSET,
+        .words_per_frame = SGI_RAD1_AUDIO_AES_WORDS,
+        .freq = SGI_RAD1_AUDIO_FREQ,
+        .iface = SGI_RAD1_AUDIO_IFACE_AES,
+    },
+    [SGI_RAD1_AUDIO_CH_ADAT_IN] = {
+        .name = "ADAT input",
+        .voice = "sgi-rad1-audio.adat-in",
+        .output = false,
+        .tag = SGI_RAD1_AUDIO_CH_ADAT_IN,
+        .addr_lo = SGI_RAD1_AUDIO_REG_ADAT_IN_A_ADDR_LO,
+        .addr_hi = SGI_RAD1_AUDIO_REG_ADAT_IN_A_ADDR_HI,
+        .ctrl = SGI_RAD1_AUDIO_REG_ADAT_IN_A_CTRL,
+        .pos_a = SGI_RAD1_AUDIO_REG_ADAT_IN_POS_A,
+        .pos_b = SGI_RAD1_AUDIO_REG_ADAT_IN_POS_B,
+        .pos_b_shift = SGI_RAD1_AUDIO_DIGITAL_POS_B_SHIFT,
+        .slot_ptr = SGI_RAD1_AUDIO_SLOT_ADAT_IN_PTR_OFFSET,
+        .words_per_frame = SGI_RAD1_AUDIO_ADAT_WORDS,
+        .freq = SGI_RAD1_AUDIO_ADAT_IN_FREQ,
+        .iface = SGI_RAD1_AUDIO_IFACE_ADAT,
+    },
+    [SGI_RAD1_AUDIO_CH_ADAT_OUT] = {
+        .name = "ADAT output",
+        .voice = "sgi-rad1-audio.adat-out",
+        .output = true,
+        .tag = SGI_RAD1_AUDIO_CH_ADAT_OUT,
+        .addr_lo = SGI_RAD1_AUDIO_REG_ADAT_OUT_A_ADDR_LO,
+        .addr_hi = SGI_RAD1_AUDIO_REG_ADAT_OUT_A_ADDR_HI,
+        .ctrl = SGI_RAD1_AUDIO_REG_ADAT_OUT_A_CTRL,
+        .pos_a = SGI_RAD1_AUDIO_REG_ADAT_OUT_POS_A,
+        .pos_b = SGI_RAD1_AUDIO_REG_ADAT_OUT_POS_B,
+        .pos_b_shift = SGI_RAD1_AUDIO_DIGITAL_POS_B_SHIFT,
+        .slot_ptr = SGI_RAD1_AUDIO_SLOT_ADAT_OUT_PTR_OFFSET,
+        .words_per_frame = SGI_RAD1_AUDIO_ADAT_WORDS,
+        .freq = SGI_RAD1_AUDIO_FREQ,
+        .iface = SGI_RAD1_AUDIO_IFACE_ADAT,
     },
 };
+
+/*
+ * The completion word for the connected AES3 source: done with bit 19
+ * set when nothing is connected, else done with the datasheet's rate code
+ * for a locked input. The property is checked at realize.
+ */
+static uint32_t sgi_rad1_audio_done_word(SGIRad1AudioState *s)
+{
+    uint32_t code;
+
+    switch (s->aes_input_rate) {
+    case 48000:
+        code = SGI_RAD1_AUDIO_AES_CODE_48000;
+        break;
+    case 44100:
+        code = SGI_RAD1_AUDIO_AES_CODE_44100;
+        break;
+    case 32000:
+        code = SGI_RAD1_AUDIO_AES_CODE_32000;
+        break;
+    default:
+        return SGI_RAD1_AUDIO_SLOT_DONE_WORD;
+    }
+    return SGI_RAD1_AUDIO_SLOT_DONE_BIT |
+           (code << SGI_RAD1_AUDIO_SLOT_AES_RATE_SHIFT);
+}
+
+/* The flag word: ADAT present when the host says a source is connected. */
+static uint32_t sgi_rad1_audio_flags_word(SGIRad1AudioState *s)
+{
+    return SGI_RAD1_AUDIO_SLOT_FLAGS_WORD |
+           (s->adat_input ? SGI_RAD1_AUDIO_SLOT_ADAT_PRESENT : 0);
+}
 
 static void sgi_rad1_audio_sync_all(SGIRad1AudioState *s);
 
@@ -119,12 +242,13 @@ static uint32_t sgi_rad1_audio_chan_pointer(SGIRad1AudioChannel *c)
  *   and the sync status, as they read now. The channel engines are brought
  *   up to the present first, so the positions and pointers are those of
  *   this completion, not of an engine's last timer step.
- * - +0x10 and +0x38: the analog input's and output's DMA pointers, each
- *   once its channel has been started since reset. The other channels'
- *   pointer words and the odd words are left alone: no other channel runs,
- *   and the driver does not read the odd words.
- * - +0x78 and +0x7c: no ADAT, AES3 or video reference, and done. The done
- *   word goes last, so the driver never sees a done slot with a stale body.
+ * - the even words of +0x00..+0x38: each channel's DMA pointer, once the
+ *   channel has been started since reset. The subcode channels' words and
+ *   the odd words are left alone: those channels do not run, and the
+ *   driver does not read the odd words.
+ * - +0x78 and +0x7c: the digital receivers as the host describes them (no
+ *   video reference, ever), and done. The done word goes last, so the
+ *   driver never sees a done slot with a stale body.
  *
  * Every word goes through the device's own PCI DMA address space, written
  * little-endian. The RAD1 is a little-endian PCI device that is not
@@ -173,10 +297,10 @@ static bool sgi_rad1_audio_fill_slot(SGIRad1AudioState *s, uint64_t slot)
         }
     }
 
-    stl_le_p(word, SGI_RAD1_AUDIO_SLOT_FLAGS_WORD);
+    stl_le_p(word, sgi_rad1_audio_flags_word(s));
     pci_dma_write(dev, slot + SGI_RAD1_AUDIO_SLOT_FLAGS_OFFSET,
                   word, sizeof(word));
-    stl_le_p(word, SGI_RAD1_AUDIO_SLOT_DONE_WORD);
+    stl_le_p(word, sgi_rad1_audio_done_word(s));
     pci_dma_write(dev, slot + SGI_RAD1_AUDIO_SLOT_DONE_OFFSET,
                   word, sizeof(word));
     return true;
@@ -337,14 +461,6 @@ static void sgi_rad1_audio_in_callback(void *opaque, int avail)
 {
 }
 
-/* Fixed voice format; see the header for why it is an approximation. */
-static const struct audsettings sgi_rad1_audio_settings = {
-    .freq = SGI_RAD1_AUDIO_FREQ,
-    .nchannels = SGI_RAD1_AUDIO_CHANNELS,
-    .fmt = AUDIO_FORMAT_S16,
-    .big_endian = false,
-};
-
 static unsigned int sgi_rad1_audio_chan_index(SGIRad1AudioChannel *c)
 {
     return c - c->dev->chan;
@@ -356,57 +472,114 @@ sgi_rad1_audio_chan_info(SGIRad1AudioChannel *c)
     return &sgi_rad1_audio_channel_info[sgi_rad1_audio_chan_index(c)];
 }
 
+/* A channel's sample rate; see the header for why each is what it is. */
+static uint32_t sgi_rad1_audio_chan_freq(SGIRad1AudioChannel *c)
+{
+    const SGIRad1AudioChannelInfo *ci = sgi_rad1_audio_chan_info(c);
+
+    if (ci->freq) {
+        return ci->freq;
+    }
+    return c->dev->aes_input_rate ?: SGI_RAD1_AUDIO_AES_DEFAULT_FREQ;
+}
+
+static unsigned int sgi_rad1_audio_frame_bytes(SGIRad1AudioChannel *c)
+{
+    return sgi_rad1_audio_chan_info(c)->words_per_frame *
+           SGI_RAD1_AUDIO_WORD_BYTES;
+}
+
+/* The backend a channel's voice lives on, or NULL for none. */
+static AudioBackend *sgi_rad1_audio_chan_be(SGIRad1AudioChannel *c)
+{
+    switch (sgi_rad1_audio_chan_info(c)->iface) {
+    case SGI_RAD1_AUDIO_IFACE_AES:
+        return c->dev->aes_be;
+    case SGI_RAD1_AUDIO_IFACE_ADAT:
+        return c->dev->adat_be;
+    default:
+        return c->dev->audio_be;
+    }
+}
+
+/* The voice format: stereo 16-bit little-endian at the channel's rate. */
+static struct audsettings sgi_rad1_audio_chan_settings(SGIRad1AudioChannel *c)
+{
+    return (struct audsettings) {
+        .freq = sgi_rad1_audio_chan_freq(c),
+        .nchannels = SGI_RAD1_AUDIO_HOST_CHANNELS,
+        .fmt = AUDIO_FORMAT_S16,
+        .big_endian = false,
+    };
+}
+
+/* An output channel's voice, opened at realize when it has a backend. */
+static void sgi_rad1_audio_open_out(SGIRad1AudioChannel *c)
+{
+    AudioBackend *be = sgi_rad1_audio_chan_be(c);
+    struct audsettings as = sgi_rad1_audio_chan_settings(c);
+
+    if (be) {
+        c->out_voice = audio_be_open_out(be, NULL,
+                                         sgi_rad1_audio_chan_info(c)->voice,
+                                         c, sgi_rad1_audio_out_callback, &as);
+    }
+}
+
 /*
- * The input voice opens the first time the input runs and then stays open
- * for the device's lifetime, like the output voice. Opening it at realize
+ * An input voice opens the first time its channel runs and then stays open
+ * for the device's lifetime, like an output voice. Opening it at realize
  * would make a backend with no input, such as wav, report an error on
  * every boot whether or not the guest ever records; this way it reports
  * once, when a recording starts.
  */
-static void sgi_rad1_audio_open_in(SGIRad1AudioState *s)
+static void sgi_rad1_audio_open_in(SGIRad1AudioChannel *c)
 {
-    if (s->adc_voice || s->adc_open_tried) {
+    AudioBackend *be = sgi_rad1_audio_chan_be(c);
+    struct audsettings as = sgi_rad1_audio_chan_settings(c);
+
+    if (!be || c->in_voice || c->in_open_tried) {
         return;
     }
-    s->adc_open_tried = true;
-    s->adc_voice = audio_be_open_in(s->audio_be, NULL, "sgi-rad1-audio.in",
-                                    s, sgi_rad1_audio_in_callback,
-                                    &sgi_rad1_audio_settings);
+    c->in_open_tried = true;
+    c->in_voice = audio_be_open_in(be, NULL,
+                                   sgi_rad1_audio_chan_info(c)->voice, c,
+                                   sgi_rad1_audio_in_callback, &as);
 }
 
 static void sgi_rad1_audio_set_voice(SGIRad1AudioChannel *c, bool on)
 {
-    SGIRad1AudioState *s = c->dev;
+    AudioBackend *be = sgi_rad1_audio_chan_be(c);
 
-    if (!s->audio_be) {
+    if (!be) {
         return;
     }
     if (sgi_rad1_audio_chan_info(c)->output) {
-        if (s->dac_voice) {
-            audio_be_set_active_out(s->audio_be, s->dac_voice, on);
+        if (c->out_voice) {
+            audio_be_set_active_out(be, c->out_voice, on);
         }
         return;
     }
     if (on) {
-        sgi_rad1_audio_open_in(s);
+        sgi_rad1_audio_open_in(c);
     }
-    if (s->adc_voice) {
-        audio_be_set_active_in(s->audio_be, s->adc_voice, on);
+    if (c->in_voice) {
+        audio_be_set_active_in(be, c->in_voice, on);
     }
 }
 
 /*
- * Credit frames to a channel's position registers. Both count frames, two
- * ring words each: the datasheet's flagged default.
+ * Credit frames to a channel's position registers. Both count frames, not
+ * words: the datasheet's flagged default.
  *
- * A (0x14 input, 0x2c output): the frame count in bits [31:18], with
- * natural 32-bit wrap, and the 0x30 counter mod 2^18 latched into bits
- * [17:0] as the count moves. rad_sync_device_ust splices those low bits
- * into its UST.
+ * A: the frame count in bits [31:18], with natural 32-bit wrap, and the
+ * 0x30 counter mod 2^18 latched into bits [17:0] as the count moves.
+ * rad_sync_device_ust splices those low bits into its UST.
  *
- * B, 0x18, shared: the input's count is bits [31:18], the output's bits
- * [17:4], each 14 bits. rad_start_dma's post-enable poll waits for the
- * channel's field to change. Each channel moves only its own field.
+ * B: a 14-bit count at the channel's shift, 4 for the analog output and 18
+ * for every other type. rad_start_dma's post-enable poll waits for it to
+ * change. Only that field moves: the rest of each B register belongs to
+ * another channel or to subcode (see the header).
  */
 static void sgi_rad1_audio_advance_pos(SGIRad1AudioChannel *c,
                                        uint32_t frames)
@@ -445,50 +618,54 @@ static void sgi_rad1_audio_chan_stop(SGIRad1AudioChannel *c)
 }
 
 /*
- * One step of an output: read the ring words at the pointer and push them
- * to the voice, each 24-bit channel sample as a 16-bit one from its bits
- * [23:8]. The read happens whatever the backend accepts, so the pointer
- * and positions advance the same with or without an audio device; a
- * backend that takes less drops the rest.
+ * One step of an output: read the ring frames at the pointer and push them
+ * to the voice as stereo 16-bit frames (sgi-rad1-audio-pcm.h). The read
+ * happens whatever the backend accepts, so the pointer and positions
+ * advance the same with or without an audio device; a backend that takes
+ * less drops the rest.
  */
 static bool sgi_rad1_audio_out_chunk(SGIRad1AudioChannel *c, uint8_t *ring,
-                                     size_t words)
+                                     size_t frames)
 {
-    SGIRad1AudioState *s = c->dev;
+    AudioBackend *be = sgi_rad1_audio_chan_be(c);
     uint8_t pcm[SGI_RAD1_AUDIO_CHUNK_BYTES / 2];
 
-    if (pci_dma_read(PCI_DEVICE(s), c->base + c->offset, ring,
-                     words * SGI_RAD1_AUDIO_WORD_BYTES) != MEMTX_OK) {
+    if (pci_dma_read(PCI_DEVICE(c->dev), c->base + c->offset, ring,
+                     frames * sgi_rad1_audio_frame_bytes(c)) != MEMTX_OK) {
         return false;
     }
-    if (s->audio_be && s->dac_voice) {
-        sgi_rad1_audio_words_to_pcm(ring, pcm, words);
-        audio_be_write(s->audio_be, s->dac_voice, pcm, words * 2);
+    if (be && c->out_voice) {
+        sgi_rad1_audio_frames_to_pcm(ring, pcm, frames,
+                                     sgi_rad1_audio_chan_info(c)->
+                                     words_per_frame);
+        audio_be_write(be, c->out_voice, pcm,
+                       frames * SGI_RAD1_AUDIO_HOST_CHANNELS * 2);
     }
     return true;
 }
 
 /*
- * One step of an input: take samples from the voice and write them into
- * the ring at the pointer, each 16-bit sample into bits [23:8] of its
- * word, sign-extended through [31:24], with [7:0] zero. Whatever the
- * voice does not supply is silence, so the pointer and positions advance
- * at the sample rate with or without an audio device.
+ * One step of an input: take stereo frames from the voice and write them
+ * into the ring at the pointer (sgi-rad1-audio-pcm.h). Whatever the voice
+ * does not supply is silence, so the pointer and positions advance at the
+ * sample rate with or without an audio device.
  */
 static bool sgi_rad1_audio_in_chunk(SGIRad1AudioChannel *c, uint8_t *ring,
-                                    size_t words)
+                                    size_t frames)
 {
-    SGIRad1AudioState *s = c->dev;
+    AudioBackend *be = sgi_rad1_audio_chan_be(c);
     uint8_t pcm[SGI_RAD1_AUDIO_CHUNK_BYTES / 2];
+    size_t want = frames * SGI_RAD1_AUDIO_HOST_CHANNELS * 2;
     size_t got = 0;
 
-    if (s->audio_be && s->adc_voice) {
-        got = audio_be_read(s->audio_be, s->adc_voice, pcm, words * 2);
+    if (be && c->in_voice) {
+        got = audio_be_read(be, c->in_voice, pcm, want);
     }
-    memset(pcm + got, 0, words * 2 - got);
-    sgi_rad1_audio_pcm_to_words(pcm, ring, words);
-    return pci_dma_write(PCI_DEVICE(s), c->base + c->offset, ring,
-                         words * SGI_RAD1_AUDIO_WORD_BYTES) == MEMTX_OK;
+    memset(pcm + got, 0, want - got);
+    sgi_rad1_audio_pcm_to_frames(pcm, ring, frames,
+                                 sgi_rad1_audio_chan_info(c)->words_per_frame);
+    return pci_dma_write(PCI_DEVICE(c->dev), c->base + c->offset, ring,
+                         frames * sgi_rad1_audio_frame_bytes(c)) == MEMTX_OK;
 }
 
 /*
@@ -499,15 +676,15 @@ static bool sgi_rad1_audio_in_chunk(SGIRad1AudioChannel *c, uint8_t *ring,
 static bool sgi_rad1_audio_chan_move(SGIRad1AudioChannel *c, uint64_t frames)
 {
     const SGIRad1AudioChannelInfo *ci = sgi_rad1_audio_chan_info(c);
+    unsigned int frame_bytes = sgi_rad1_audio_frame_bytes(c);
     uint8_t ring[SGI_RAD1_AUDIO_CHUNK_BYTES];
 
     while (frames) {
-        uint64_t bytes = MIN(frames * SGI_RAD1_AUDIO_FRAME_BYTES,
-                             c->len - c->offset);
+        uint64_t bytes = MIN(frames * frame_bytes, c->len - c->offset);
         size_t chunk = MIN(bytes, sizeof(ring));
-        size_t words = chunk / SGI_RAD1_AUDIO_WORD_BYTES;
-        bool ok = ci->output ? sgi_rad1_audio_out_chunk(c, ring, words)
-                             : sgi_rad1_audio_in_chunk(c, ring, words);
+        size_t n = chunk / frame_bytes;
+        bool ok = ci->output ? sgi_rad1_audio_out_chunk(c, ring, n)
+                             : sgi_rad1_audio_in_chunk(c, ring, n);
 
         if (!ok) {
             qemu_log_mask(LOG_GUEST_ERROR,
@@ -517,7 +694,7 @@ static bool sgi_rad1_audio_chan_move(SGIRad1AudioChannel *c, uint64_t frames)
             return false;
         }
         c->offset += chunk;
-        frames -= chunk / SGI_RAD1_AUDIO_FRAME_BYTES;
+        frames -= n;
         if (c->offset >= c->len) {
             c->offset = 0;
             trace_sgi_rad1_audio_wrap(sgi_rad1_audio_chan_index(c), c->base);
@@ -543,7 +720,7 @@ static void sgi_rad1_audio_chan_sync(SGIRad1AudioChannel *c)
         return;
     }
 
-    due = muldiv64(now - c->start_ns, SGI_RAD1_AUDIO_FREQ,
+    due = muldiv64(now - c->start_ns, sgi_rad1_audio_chan_freq(c),
                    NANOSECONDS_PER_SECOND);
     if (due > c->frames) {
         frames = due - c->frames;
@@ -571,7 +748,8 @@ static void sgi_rad1_audio_chan_arm(SGIRad1AudioChannel *c)
     /* Round up, so the frames due when it fires are never one short. */
     timer_mod(c->timer, c->start_ns +
               muldiv64_round_up(c->frames + SGI_RAD1_AUDIO_TICK_FRAMES,
-                                NANOSECONDS_PER_SECOND, SGI_RAD1_AUDIO_FREQ));
+                                NANOSECONDS_PER_SECOND,
+                                sgi_rad1_audio_chan_freq(c)));
 }
 
 /* Engine step: catch up, then re-arm. */
@@ -763,11 +941,17 @@ static void sgi_rad1_audio_bar0_write(void *opaque, hwaddr addr, uint64_t val,
                       "sgi-rad1-audio: write of 0x%" PRIx64 " to read-only "
                       "UST counter 0x%" HWADDR_PRIx "\n", val, addr);
         break;
+    /*
+     * The digital channels' enables, bit 0 of each; the other bits (the
+     * subcode enables, bring-up values) are shadowed and start nothing.
+     */
     case SGI_RAD1_AUDIO_REG_PREDISPATCH_A:
         s->predispatch_a = val;
+        sgi_rad1_audio_enable_write(&s->chan[SGI_RAD1_AUDIO_CH_ADAT_IN], val);
         break;
     case SGI_RAD1_AUDIO_REG_PREDISPATCH_B:
         s->predispatch_b = val;
+        sgi_rad1_audio_enable_write(&s->chan[SGI_RAD1_AUDIO_CH_AES_IN], val);
         break;
     case SGI_RAD1_AUDIO_REG_SHIFT_LOAD_CLOCK:
         /*
@@ -781,9 +965,11 @@ static void sgi_rad1_audio_bar0_write(void *opaque, hwaddr addr, uint64_t val,
         break;
     case SGI_RAD1_AUDIO_REG_PREDISPATCH_C:
         s->predispatch_c = val;
+        sgi_rad1_audio_enable_write(&s->chan[SGI_RAD1_AUDIO_CH_ADAT_OUT], val);
         break;
     case SGI_RAD1_AUDIO_REG_PREDISPATCH_D:
         s->predispatch_d = val;
+        sgi_rad1_audio_enable_write(&s->chan[SGI_RAD1_AUDIO_CH_AES_OUT], val);
         break;
     case SGI_RAD1_AUDIO_REG_ANALOG_OUT_EN:
         /*
@@ -866,6 +1052,62 @@ static void sgi_rad1_audio_bar0_write(void *opaque, hwaddr addr, uint64_t val,
     }
 }
 
+/*
+ * The output subcode windows, 0x1000..0x121f. The driver only stores
+ * here; a read answers from the shadow like the register file's other
+ * stores. The undocumented doubleword between the ADAT and AES3 windows
+ * logs as unimplemented.
+ */
+static bool sgi_rad1_audio_subcode_gap(hwaddr addr, unsigned size)
+{
+    hwaddr first = SGI_RAD1_AUDIO_SUBCODE_FIRST + addr;
+    hwaddr last = first + size - 1;
+
+    return last >= SGI_RAD1_AUDIO_SUBCODE_GAP_FIRST &&
+           first <= SGI_RAD1_AUDIO_SUBCODE_GAP_LAST;
+}
+
+static uint64_t sgi_rad1_audio_subcode_read(void *opaque, hwaddr addr,
+                                            unsigned size)
+{
+    SGIRad1AudioState *s = opaque;
+
+    if (sgi_rad1_audio_subcode_gap(addr, size)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-rad1-audio: read of BAR0 offset 0x%" HWADDR_PRIx
+                      " which this model does not implement\n",
+                      SGI_RAD1_AUDIO_SUBCODE_FIRST + addr);
+        return 0;
+    }
+    return ldn_le_p(s->subcode + addr, size);
+}
+
+static void sgi_rad1_audio_subcode_write(void *opaque, hwaddr addr,
+                                         uint64_t val, unsigned size)
+{
+    SGIRad1AudioState *s = opaque;
+
+    if (sgi_rad1_audio_subcode_gap(addr, size)) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-rad1-audio: write of 0x%" PRIx64
+                      " to BAR0 offset 0x%" HWADDR_PRIx
+                      " which this model does not implement\n",
+                      val, SGI_RAD1_AUDIO_SUBCODE_FIRST + addr);
+        return;
+    }
+    stn_le_p(s->subcode + addr, size, val);
+}
+
+static const MemoryRegionOps sgi_rad1_audio_subcode_ops = {
+    .read = sgi_rad1_audio_subcode_read,
+    .write = sgi_rad1_audio_subcode_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid.min_access_size = 4,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 4,
+    .impl.max_access_size = 8,
+};
+
 static const MemoryRegionOps sgi_rad1_audio_bar0_ops = {
     .read = sgi_rad1_audio_bar0_read,
     .write = sgi_rad1_audio_bar0_write,
@@ -901,6 +1143,7 @@ static void sgi_rad1_audio_reset_hold(Object *obj, ResetType type)
     s->convergence_a = 0;
     s->convergence_b = 0;
     memset(s->dma_bank, 0, sizeof(s->dma_bank));
+    memset(s->subcode, 0, sizeof(s->subcode));
 
     /* Stop the channel engines and forget their rings; voices stay open. */
     for (i = 0; i < SGI_RAD1_AUDIO_NUM_CH; i++) {
@@ -945,19 +1188,31 @@ static void sgi_rad1_audio_realize(PCIDevice *dev, Error **errp)
      * the register file and the DMA position advance still work, only the
      * samples to and from the host are skipped.
      */
+    switch (s->aes_input_rate) {
+    case 0:
+    case 32000:
+    case 44100:
+    case 48000:
+        break;
+    default:
+        error_setg(errp, "sgi-rad1-audio: aes-input-rate must be 0 (none), "
+                   "32000, 44100 or 48000, not %u", s->aes_input_rate);
+        return;
+    }
+
     if (!audio_be_check(&s->audio_be, &audio_err)) {
         warn_report_err(audio_err);
         s->audio_be = NULL;
     }
-    if (s->audio_be) {
-        s->dac_voice = audio_be_open_out(s->audio_be, NULL,
-                                         "sgi-rad1-audio.out", s,
-                                         sgi_rad1_audio_out_callback,
-                                         &sgi_rad1_audio_settings);
-    }
 
     memory_region_init_io(&s->bar0, OBJECT(dev), &sgi_rad1_audio_bar0_ops, s,
                           "sgi-rad1-audio.bar0", SGI_RAD1_AUDIO_BAR0_SIZE);
+    memory_region_init_io(&s->subcode_mr, OBJECT(dev),
+                          &sgi_rad1_audio_subcode_ops, s,
+                          "sgi-rad1-audio.subcode",
+                          SGI_RAD1_AUDIO_SUBCODE_BYTES);
+    memory_region_add_subregion(&s->bar0, SGI_RAD1_AUDIO_SUBCODE_FIRST,
+                                &s->subcode_mr);
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar0);
 
     /* The continuous status-DMA completion timer; armed on a 0x40003 start. */
@@ -965,9 +1220,14 @@ static void sgi_rad1_audio_realize(PCIDevice *dev, Error **errp)
                                    sgi_rad1_audio_status_tick, s);
     /* Each channel's pacing timer; armed on its enable edge. */
     for (i = 0; i < SGI_RAD1_AUDIO_NUM_CH; i++) {
-        s->chan[i].dev = s;
-        s->chan[i].timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
-                                        sgi_rad1_audio_chan_tick, &s->chan[i]);
+        SGIRad1AudioChannel *c = &s->chan[i];
+
+        c->dev = s;
+        c->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sgi_rad1_audio_chan_tick,
+                                c);
+        if (sgi_rad1_audio_channel_info[i].output) {
+            sgi_rad1_audio_open_out(c);
+        }
     }
 }
 
@@ -981,27 +1241,32 @@ static void sgi_rad1_audio_exit(PCIDevice *dev)
         s->status_timer = NULL;
     }
     for (i = 0; i < SGI_RAD1_AUDIO_NUM_CH; i++) {
-        if (s->chan[i].timer) {
-            timer_free(s->chan[i].timer);
-            s->chan[i].timer = NULL;
+        SGIRad1AudioChannel *c = &s->chan[i];
+        AudioBackend *be = sgi_rad1_audio_chan_be(c);
+
+        if (c->timer) {
+            timer_free(c->timer);
+            c->timer = NULL;
         }
-    }
-    if (s->audio_be && s->dac_voice) {
-        audio_be_close_out(s->audio_be, s->dac_voice);
-        s->dac_voice = NULL;
-    }
-    if (s->audio_be && s->adc_voice) {
-        audio_be_close_in(s->audio_be, s->adc_voice);
-        s->adc_voice = NULL;
+        if (be && c->out_voice) {
+            audio_be_close_out(be, c->out_voice);
+            c->out_voice = NULL;
+        }
+        if (be && c->in_voice) {
+            audio_be_close_in(be, c->in_voice);
+            c->in_voice = NULL;
+        }
     }
 }
 
 /* Refuse a channel whose ring geometry would misdirect DMA. */
 static bool sgi_rad1_audio_chan_valid(SGIRad1AudioChannel *c)
 {
+    unsigned int frame_bytes = sgi_rad1_audio_frame_bytes(c);
+
     return c->len <= SGI_RAD1_AUDIO_DMA_MAX_BYTES &&
-           !(c->len % SGI_RAD1_AUDIO_FRAME_BYTES) &&
-           !(c->offset % SGI_RAD1_AUDIO_FRAME_BYTES) &&
+           !(c->len % frame_bytes) &&
+           !(c->offset % frame_bytes) &&
            (!c->len || c->offset < c->len) &&
            (!c->running || c->len);
 }
@@ -1048,8 +1313,8 @@ static const VMStateDescription vmstate_sgi_rad1_audio_channel = {
 
 static const VMStateDescription vmstate_sgi_rad1_audio = {
     .name = "sgi-rad1-audio",
-    .version_id = 7,
-    .minimum_version_id = 7,
+    .version_id = 8,
+    .minimum_version_id = 8,
     .post_load = sgi_rad1_audio_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIRad1AudioState),
@@ -1074,6 +1339,8 @@ static const VMStateDescription vmstate_sgi_rad1_audio = {
         VMSTATE_UINT32(convergence_b, SGIRad1AudioState),
         VMSTATE_UINT32_ARRAY(dma_bank, SGIRad1AudioState,
                              SGI_RAD1_AUDIO_DMA_BANK_WORDS),
+        VMSTATE_UINT8_ARRAY(subcode, SGIRad1AudioState,
+                            SGI_RAD1_AUDIO_SUBCODE_BYTES),
         VMSTATE_UINT32_ARRAY(sample_pos, SGIRad1AudioState,
                              SGI_RAD1_AUDIO_SAMPLE_POS_WORDS),
         VMSTATE_STRUCT_ARRAY(chan, SGIRad1AudioState, SGI_RAD1_AUDIO_NUM_CH,
@@ -1093,6 +1360,10 @@ static const VMStateDescription vmstate_sgi_rad1_audio = {
 
 static const Property sgi_rad1_audio_properties[] = {
     DEFINE_AUDIO_PROPERTIES(SGIRad1AudioState, audio_be),
+    DEFINE_PROP_AUDIODEV("aes-audiodev", SGIRad1AudioState, aes_be),
+    DEFINE_PROP_AUDIODEV("adat-audiodev", SGIRad1AudioState, adat_be),
+    DEFINE_PROP_UINT32("aes-input-rate", SGIRad1AudioState, aes_input_rate, 0),
+    DEFINE_PROP_BOOL("adat-input", SGIRad1AudioState, adat_input, false),
 };
 
 static void sgi_rad1_audio_class_init(ObjectClass *klass, const void *data)

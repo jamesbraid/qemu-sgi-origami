@@ -1135,6 +1135,8 @@ static uint64_t rad1_out_frames_due(int64_t t_ns)
 #define RAD1_TEST_STATUS_RAM  (module_nasids[0] * NODE_STRIDE + 0x02000000)
 #define RAD1_TEST_RING_RAM    (module_nasids[0] * NODE_STRIDE + 0x02100000)
 #define RAD1_TEST_IN_RAM      (module_nasids[0] * NODE_STRIDE + 0x02200000)
+#define RAD1_TEST_DIG_RAM     (module_nasids[0] * NODE_STRIDE + 0x02300000)
+#define RAD1_TEST_DIG2_RAM    (module_nasids[0] * NODE_STRIDE + 0x02400000)
 #define RAD1_TEST_PCI(ram)    (((uint64_t)RAD1_LOCAL_HUB_WIDGET << 60) | (ram))
 
 /*
@@ -1935,6 +1937,512 @@ static void test_io6g_rad1_input_without_host_input(void)
 }
 
 /*
+ * The digital channels, types 2 to 5, from the datasheet's per-type table
+ * and its AES3 and ADAT sections. Each enable is bit 0 of a register
+ * whose bring-up value has it clear; each reads A and B at shift 18. The
+ * frame widths (two words for AES3, eight for ADAT) and the rates are the
+ * model's flagged defaults: the outputs at the analog output's 44.1 kHz,
+ * the ADAT input at its clock's fixed 48 kHz, the AES3 input at the
+ * connected source's rate or 48 kHz with none. The control word carries
+ * the type as its tag and the ring as a negated count of 128-byte units:
+ * 4 KiB for AES3, 16 KiB for ADAT.
+ */
+typedef struct Rad1DigitalChannel {
+    const char *name;
+    bool output;
+    uint32_t enable_reg;
+    uint32_t enable_idle;
+    uint32_t a_lo, a_hi, a_ctrl;
+    uint32_t b_lo, b_hi, b_ctrl;
+    uint32_t ctrl;
+    uint32_t ring_bytes;
+    uint32_t pos_a, pos_b;
+    uint32_t slot_ptr;
+    unsigned int words;
+    uint32_t freq;
+} Rad1DigitalChannel;
+
+static const Rad1DigitalChannel rad1_aes_in = {
+    "AES3 input", false, 0x48, 0x10,
+    0x4c8, 0x50c, 0x4cc, 0x418, 0x41c, 0x420,
+    0xfffff010u, 4096, 0x0c, 0x10, 0x08, 2, 48000,
+};
+static const Rad1DigitalChannel rad1_aes_out = {
+    "AES3 output", true, 0x54, 0x40000000u,
+    0x4f0, 0x520, 0x4f4, 0x424, 0x428, 0x42c,
+    0xfffff018u, 4096, 0x24, 0x28, 0x30, 2, 44100,
+};
+static const Rad1DigitalChannel rad1_adat_in = {
+    "ADAT input", false, 0x44, 0xa0000008u,
+    0x4c0, 0x508, 0x4c4, 0x430, 0x434, 0x438,
+    0xffffc020u, 16384, 0x04, 0x08, 0x00, 8, 48000,
+};
+static const Rad1DigitalChannel rad1_adat_out = {
+    "ADAT output", true, 0x50, 0x60000000u,
+    0x4e8, 0x51c, 0x4ec, 0x43c, 0x440, 0x444,
+    0xffffc028u, 16384, 0x1c, 0x20, 0x28, 8, 44100,
+};
+
+#define RAD1_POS_B_LOW(v)         ((v) & 0x3ffffu)
+#define RAD1_AES_LOCK_48000       0x81000000u
+#define RAD1_AES_LOCK_44100       0x82000000u
+#define RAD1_AES_LOCK_32000       0x83000000u
+#define RAD1_SLOT_ADAT_PRESENT    0x40u
+#define RAD1_SUBCODE_AES          0x1100
+#define RAD1_SUBCODE_AES_LAST     0x1218
+#define RAD1_SUBCODE_ADAT         0x1000
+
+static uint64_t rad1_frames_due(int64_t t_ns, uint32_t freq)
+{
+    return (uint64_t)t_ns * freq / 1000000000u;
+}
+
+/*
+ * Program a digital channel's two register sets for a ring at @ram, and
+ * fill the ring: an output's every frame is (left, right, then distinct
+ * words for any further channels); an input's every word is poison.
+ */
+static void rad1_prepare_digital(QTestState *qts, const Rad1DigitalChannel *d,
+                                 uint64_t ram)
+{
+    const uint64_t pci = RAD1_TEST_PCI(ram);
+    unsigned int i;
+
+    for (i = 0; i < d->ring_bytes / 4; i++) {
+        unsigned int w = i % d->words;
+        uint32_t v = !d->output ? RAD1_IN_POISON :
+                     w == 0 ? RAD1_SAMPLE_LEFT_WORD :
+                     w == 1 ? RAD1_SAMPLE_RIGHT_WORD : 0x00770000u + w;
+
+        rad1_ring_write(qts, ram + i * 4, v);
+    }
+    rad1_write(qts, d->enable_reg, d->enable_idle);
+    rad1_write(qts, d->a_lo, (uint32_t)pci);
+    rad1_write(qts, d->a_hi, (uint32_t)(pci >> 32));
+    rad1_write(qts, d->a_ctrl, d->ctrl);
+    rad1_write(qts, d->b_lo, (uint32_t)pci);
+    rad1_write(qts, d->b_hi, (uint32_t)(pci >> 32));
+    rad1_write(qts, d->b_ctrl, d->ctrl);
+}
+
+/* A doubleword store and load through the BaseIO window. */
+static void rad1_write64(QTestState *qts, uint32_t reg, uint64_t value)
+{
+    uint8_t bytes[8];
+
+    stq_be_p(bytes, value);
+    g_assert_true(qtest_memwrite_cpu(qts, 0, XTALK_BASE +
+                                     module_nasids[0] * NODE_STRIDE +
+                                     BASEIO_WIDGET * XTALK_WIDGET_SIZE +
+                                     MIO_RAD1_WINDOW + reg,
+                                     bytes, sizeof(bytes)));
+}
+
+static uint64_t rad1_read64(QTestState *qts, uint32_t reg)
+{
+    uint8_t bytes[8];
+
+    g_assert_true(qtest_memread_cpu(qts, 0, XTALK_BASE +
+                                    module_nasids[0] * NODE_STRIDE +
+                                    BASEIO_WIDGET * XTALK_WIDGET_SIZE +
+                                    MIO_RAD1_WINDOW + reg,
+                                    bytes, sizeof(bytes)));
+    return ldq_be_p(bytes);
+}
+
+/* Assert the channel's A and B count @due frames and A latches 0x30. */
+static void rad1_check_digital_pos(QTestState *qts,
+                                   const Rad1DigitalChannel *d, uint64_t due)
+{
+    uint32_t a = rad1_read(qts, d->pos_a);
+    uint32_t b = rad1_read(qts, d->pos_b);
+    uint32_t ust = rad1_read(qts, RAD1_REG_UST_COUNTER);
+
+    g_assert_cmpuint(RAD1_POS_A_FRAMES(a), ==, due & 0x3fff);
+    g_assert_cmpuint(RAD1_POS_A_FRAMES(b), ==, due & 0x3fff);
+    g_assert_cmphex(RAD1_POS_A_LATCH(a), ==, RAD1_POS_A_LATCH(ust));
+    /* B's low bits belong to subcode or another channel: untouched. */
+    g_assert_cmphex(RAD1_POS_B_LOW(b), ==, 0);
+}
+
+/*
+ * Stream one digital channel on the shared machine and check what the
+ * driver sees, as for the analog pair:
+ *
+ * - a write of the enable register's other bits (the subcode enables of
+ *   0x44 and 0x48, 0x54's subcode bits) starts nothing;
+ * - B ticks inside the 500 us poll;
+ * - A and B count frames at the channel's rate, A latches 0x30, and B's
+ *   low 18 bits, which hold subcode fields or another channel's count,
+ *   stay zero;
+ * - an input writes silence (no digital audiodev is bound, so no host
+ *   voice) from the ring's start, and nothing past the frames due;
+ * - each status completion carries the channel's pointer at its slot
+ *   word, agreeing with A's mirror, and it wraps; the analog pair's
+ *   pointer words stay untouched;
+ * - @disturb, if given, runs while the channel streams and must not move
+ *   it off the sample clock;
+ * - clearing bit 0 stops the registers and the pointer.
+ */
+static void rad1_check_digital_stream(const Rad1DigitalChannel *d,
+                                      void (*disturb)(QTestState *))
+{
+    QTestState *qts = start_module_io6g();
+    const unsigned int nslots = 8;
+    const uint32_t ring_lo = (uint32_t)RAD1_TEST_PCI(RAD1_TEST_DIG_RAM);
+    const uint32_t frame_bytes = d->words * 4;
+    const uint64_t per_lo = (uint64_t)rad1_status_due(1) * d->freq /
+                            1000000000u;
+    uint32_t a, b, ptr, prev_ptr = 0, stop_ptr;
+    int64_t t_status, t_enable, t;
+    uint64_t due, k;
+    unsigned int i, wraps = 0;
+
+    rad1_prepare_output(qts, RAD1_SAMPLE_LEFT_WORD, RAD1_SAMPLE_RIGHT_WORD);
+    rad1_prepare_digital(qts, d, RAD1_TEST_DIG_RAM);
+    for (i = 0; i < nslots; i++) {
+        uint64_t slot = RAD1_TEST_STATUS_RAM + i * RAD1_SLOT_STRIDE;
+
+        rad1_ring_write(qts, slot + RAD1_SLOT_IN_PTR, 0);
+        rad1_ring_write(qts, slot + RAD1_SLOT_OUT_PTR, 0);
+    }
+
+    /* The register's other bits start nothing. */
+    rad1_write(qts, d->enable_reg, d->enable_idle | 0xcu);
+    qtest_clock_step(qts, 2000000);
+    g_assert_cmphex(rad1_read(qts, d->pos_a), ==, 0);
+    g_assert_cmphex(rad1_read(qts, d->pos_b), ==, 0);
+    rad1_write(qts, d->enable_reg, d->enable_idle);
+
+    t_status = rad1_start_status(qts, nslots);
+    rad1_write(qts, d->enable_reg, d->enable_idle | 1);
+    t_enable = rad1_clock_now(qts);
+
+    rad1_step_to(qts, t_enable, 500000);
+    b = rad1_read(qts, d->pos_b);
+    g_assert_cmphex(RAD1_POS_A_FRAMES(b), !=, 0);
+
+    rad1_step_to(qts, t_enable, 10000000);
+    due = rad1_frames_due(10000000, d->freq);
+    rad1_check_digital_pos(qts, d, due);
+
+    if (!d->output) {
+        g_assert_cmpuint(due * frame_bytes, <, d->ring_bytes);
+        for (i = 0; i < due * d->words; i++) {
+            g_assert_cmphex(rad1_ring_read(qts, RAD1_TEST_DIG_RAM + i * 4),
+                            ==, 0);
+        }
+        for (; i < d->ring_bytes / 4; i++) {
+            g_assert_cmphex(rad1_ring_read(qts, RAD1_TEST_DIG_RAM + i * 4),
+                            ==, RAD1_IN_POISON);
+        }
+    }
+
+    if (disturb) {
+        disturb(qts);
+        rad1_step_to(qts, t_enable, 12000000);
+        rad1_check_digital_pos(qts, d, rad1_frames_due(12000000, d->freq));
+    }
+
+    t = rad1_clock_now(qts);
+    k = 1;
+    while (t_status + rad1_status_due(k) <= t + 1) {
+        k++;
+    }
+    for (i = 0; i < 100; i++, k++) {
+        uint64_t slot = RAD1_TEST_STATUS_RAM + (k % nslots) * RAD1_SLOT_STRIDE;
+        uint32_t m_a, frames;
+
+        rad1_step_to(qts, t_status, rad1_status_due(k));
+        g_assert_cmphex(rad1_ring_read(qts, slot + RAD1_SLOT_DONE_OFFSET),
+                        ==, RAD1_SLOT_DONE_WORD);
+        ptr = rad1_ring_read(qts, slot + d->slot_ptr);
+        m_a = rad1_ring_read(qts, slot + RAD1_SLOT_MIRROR_OFFSET + d->pos_a);
+        frames = RAD1_POS_A_FRAMES(m_a);
+        g_assert_cmphex(ptr, >=, ring_lo);
+        g_assert_cmphex(ptr, <, ring_lo + d->ring_bytes);
+        g_assert_cmphex(ptr - ring_lo, ==,
+                        frames * frame_bytes % d->ring_bytes);
+        if (prev_ptr) {
+            uint32_t moved = ((ptr - prev_ptr) % d->ring_bytes) / frame_bytes;
+
+            g_assert_cmpuint(moved, >=, per_lo);
+            g_assert_cmpuint(moved, <=, per_lo + 1);
+            if (ptr < prev_ptr) {
+                wraps++;
+            }
+        }
+        prev_ptr = ptr;
+        g_assert_cmphex(rad1_ring_read(qts, slot + RAD1_SLOT_IN_PTR), ==, 0);
+        g_assert_cmphex(rad1_ring_read(qts, slot + RAD1_SLOT_OUT_PTR), ==, 0);
+    }
+    g_assert_cmpuint(wraps, >=, 2);
+
+    rad1_step_to(qts, t_status,
+                 (rad1_status_due(k - 1) + rad1_status_due(k)) / 2);
+    rad1_write(qts, d->enable_reg, d->enable_idle);
+    a = rad1_read(qts, d->pos_a);
+    b = rad1_read(qts, d->pos_b);
+    rad1_step_to(qts, t_status, rad1_status_due(k));
+    stop_ptr = rad1_ring_read(qts, RAD1_TEST_STATUS_RAM +
+                              (k % nslots) * RAD1_SLOT_STRIDE + d->slot_ptr);
+    g_assert_cmphex(stop_ptr - ring_lo, ==,
+                    RAD1_POS_A_FRAMES(a) * frame_bytes % d->ring_bytes);
+    k += 3;
+    rad1_step_to(qts, t_status, rad1_status_due(k));
+    g_assert_cmphex(rad1_read(qts, d->pos_a), ==, a);
+    g_assert_cmphex(rad1_read(qts, d->pos_b), ==, b);
+    g_assert_cmphex(rad1_ring_read(qts, RAD1_TEST_STATUS_RAM +
+                                   (k % nslots) * RAD1_SLOT_STRIDE +
+                                   d->slot_ptr), ==, stop_ptr);
+
+    rad1_write(qts, RAD1_REG_STATUS_DMA_CTRL, RAD1_STATUS_STOP);
+}
+
+/*
+ * Checklist item 18: AES3 output subcode traffic while type 3 streams.
+ * 64-bit stores across 0x1100..0x121f and toggles of 0x54 bits 2 and 3
+ * are accepted and shadowed, and the stream stays on its sample clock.
+ */
+static void rad1_disturb_aes_subcode(QTestState *qts)
+{
+    uint32_t reg;
+
+    for (reg = RAD1_SUBCODE_AES; reg <= RAD1_SUBCODE_AES_LAST; reg += 8) {
+        rad1_write64(qts, reg, 0xff00000000000000ull | reg);
+    }
+    for (reg = RAD1_SUBCODE_AES; reg <= RAD1_SUBCODE_AES_LAST; reg += 8) {
+        g_assert_cmphex(rad1_read64(qts, reg), ==,
+                        0xff00000000000000ull | reg);
+    }
+    rad1_write(qts, rad1_aes_out.enable_reg,
+               rad1_aes_out.enable_idle | 1 | 0x4);
+    rad1_write(qts, rad1_aes_out.enable_reg,
+               rad1_aes_out.enable_idle | 1 | 0x8);
+    rad1_write(qts, rad1_aes_out.enable_reg, rad1_aes_out.enable_idle | 1);
+}
+
+/*
+ * Checklist item 17's controls: the ADAT receiver's 0x80 sequence (bits
+ * 0xc0 set, 0x40 left set, a 0x80 pulse) and ADAT subcode stores, made
+ * while type 5 streams, move nothing. Type 5 itself was started with no
+ * ADAT input and no 0x80 write.
+ */
+static void rad1_disturb_adat_control(QTestState *qts)
+{
+    rad1_write(qts, RAD1_REG_CENTRAL_CTRL, RAD1_CENTRAL_ADAT_OFF | 0xc0);
+    rad1_write(qts, RAD1_REG_CENTRAL_CTRL, RAD1_CENTRAL_ADAT_OFF | 0x40);
+    rad1_write(qts, RAD1_REG_CENTRAL_CTRL, RAD1_CENTRAL_ADAT_OFF | 0xc0);
+    rad1_write(qts, RAD1_REG_CENTRAL_CTRL, RAD1_CENTRAL_ADAT_OFF | 0x40);
+    g_assert_cmphex(rad1_read(qts, RAD1_REG_CENTRAL_CTRL),
+                    ==, RAD1_CENTRAL_ADAT_OFF | 0x40);
+    rad1_write64(qts, RAD1_SUBCODE_ADAT, 0x0123456789abcdefull);
+    g_assert_cmphex(rad1_read64(qts, RAD1_SUBCODE_ADAT),
+                    ==, 0x0123456789abcdefull);
+}
+
+static void test_io6g_rad1_aes_in_stream(void)
+{
+    rad1_check_digital_stream(&rad1_aes_in, NULL);
+}
+
+static void test_io6g_rad1_aes_out_stream(void)
+{
+    rad1_check_digital_stream(&rad1_aes_out, rad1_disturb_aes_subcode);
+}
+
+static void test_io6g_rad1_adat_in_stream(void)
+{
+    rad1_check_digital_stream(&rad1_adat_in, NULL);
+}
+
+static void test_io6g_rad1_adat_out_stream(void)
+{
+    rad1_check_digital_stream(&rad1_adat_out, rad1_disturb_adat_control);
+}
+
+/*
+ * Checklist items 16 and 17: the receivers as the host describes them.
+ * A machine told "aes-input-rate" and "adat-input" presents, on every
+ * completion and without change, the datasheet's AES3 lock word for that
+ * rate and the ADAT-present bit; the AES3 input then runs at the source's
+ * rate. The default machine's absent receivers are covered by
+ * io6g-rad1-status-dma-continuous.
+ */
+static void rad1_check_receivers(uint32_t rate, bool adat, uint32_t done)
+{
+    g_autofree char *extra = g_strdup_printf(
+        "-global sgi-rad1-audio.aes-input-rate=%u "
+        "-global sgi-rad1-audio.adat-input=%s", rate, adat ? "on" : "off");
+    QTestState *qts = start_module_with(",baseio-preset=io6g", extra);
+    const unsigned int nslots = 8;
+    Rad1DigitalChannel aes_in = rad1_aes_in;
+    int64_t t_status, t_enable;
+    unsigned int k;
+
+    aes_in.freq = rate;
+    rad1_prepare_output(qts, RAD1_SAMPLE_LEFT_WORD, RAD1_SAMPLE_RIGHT_WORD);
+    rad1_prepare_digital(qts, &aes_in, RAD1_TEST_DIG_RAM);
+    t_status = rad1_start_status(qts, nslots);
+    rad1_write(qts, aes_in.enable_reg, aes_in.enable_idle | 1);
+    t_enable = rad1_clock_now(qts);
+
+    for (k = 1; k <= 36; k++) {
+        uint64_t slot = RAD1_TEST_STATUS_RAM + (k % nslots) * RAD1_SLOT_STRIDE;
+
+        rad1_step_to(qts, t_status, rad1_status_due(k));
+        g_assert_cmphex(rad1_ring_read(qts, slot + RAD1_SLOT_DONE_OFFSET),
+                        ==, done);
+        g_assert_cmphex(rad1_ring_read(qts, slot + RAD1_SLOT_FLAGS_OFFSET),
+                        ==, adat ? RAD1_SLOT_ADAT_PRESENT : 0);
+        rad1_ring_write(qts, slot + RAD1_SLOT_DONE_OFFSET, 0);
+    }
+
+    rad1_step_to(qts, t_enable, 10000000);
+    rad1_check_digital_pos(qts, &aes_in, rad1_frames_due(10000000, rate));
+    qtest_quit(qts);
+}
+
+static void test_io6g_rad1_receivers_44100_adat(void)
+{
+    rad1_check_receivers(44100, true, RAD1_AES_LOCK_44100);
+}
+
+static void test_io6g_rad1_receivers_48000(void)
+{
+    rad1_check_receivers(48000, false, RAD1_AES_LOCK_48000);
+}
+
+static void test_io6g_rad1_receivers_32000(void)
+{
+    rad1_check_receivers(32000, false, RAD1_AES_LOCK_32000);
+}
+
+/*
+ * The digital outputs' samples, read back through a wav audiodev bound to
+ * each interface. Every AES3 frame is (0x00123456, 0xffabcd12); every ADAT
+ * frame starts with the same pair and carries distinct nonzero words in
+ * channels 3 to 8. Both captures must hold (0x1234, -0x5433) and silence
+ * only: ADAT channels 1 and 2 reach the host voice, left first, and 3 to 8
+ * are dropped. The analog output keeps its own binding and is not started.
+ */
+static void test_io6g_rad1_digital_output_samples(void)
+{
+    g_autofree char *dir = NULL;
+    g_autofree char *aes_wav = NULL;
+    g_autofree char *adat_wav = NULL;
+    g_autofree char *extra = NULL;
+    GError *err = NULL;
+    QTestState *qts;
+
+    dir = g_dir_make_tmp("sn0-baseio-rad1-digital-XXXXXX", &err);
+    g_assert_no_error(err);
+    aes_wav = g_strdup_printf("%s/aes.wav", dir);
+    adat_wav = g_strdup_printf("%s/adat.wav", dir);
+    extra = g_strdup_printf(
+        "-audiodev wav,id=aeswav,path=%s,out.frequency=%u,out.channels=2,"
+        "out.format=s16 "
+        "-audiodev wav,id=adatwav,path=%s,out.frequency=%u,out.channels=2,"
+        "out.format=s16 "
+        "-global sgi-rad1-audio.aes-audiodev=aeswav "
+        "-global sgi-rad1-audio.adat-audiodev=adatwav",
+        aes_wav, rad1_aes_out.freq, adat_wav, rad1_adat_out.freq);
+
+    qts = start_module_with(",baseio-preset=io6g", extra);
+    rad1_prepare_output(qts, RAD1_SAMPLE_LEFT_WORD, RAD1_SAMPLE_RIGHT_WORD);
+    rad1_prepare_digital(qts, &rad1_aes_out, RAD1_TEST_DIG_RAM);
+    rad1_prepare_digital(qts, &rad1_adat_out, RAD1_TEST_DIG2_RAM);
+    rad1_write(qts, rad1_aes_out.enable_reg, rad1_aes_out.enable_idle | 1);
+    rad1_write(qts, rad1_adat_out.enable_reg, rad1_adat_out.enable_idle | 1);
+    qtest_clock_step(qts, 50000000);
+    rad1_write(qts, rad1_aes_out.enable_reg, rad1_aes_out.enable_idle);
+    rad1_write(qts, rad1_adat_out.enable_reg, rad1_adat_out.enable_idle);
+    qtest_quit(qts);
+
+    g_assert_cmpuint(rad1_wav_seeded_frames(aes_wav), >=, 1500);
+    g_assert_cmpuint(rad1_wav_seeded_frames(adat_wav), >=, 1500);
+    g_assert_cmpint(g_unlink(aes_wav), ==, 0);
+    g_assert_cmpint(g_unlink(adat_wav), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
+/*
+ * Save and restore with the ADAT output and the AES3 input running and a
+ * subcode doubleword stored. On the destination, with its clock set to the
+ * source's, both channels' A registers read as they did, the next status
+ * completion lands on the source's schedule carrying both pointers of an
+ * uninterrupted stream, and the subcode shadow survived.
+ */
+static void test_io6g_rad1_digital_migration(void)
+{
+    const unsigned int nslots = 8;
+    g_autofree char *dir = NULL;
+    g_autofree char *uri = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    uint32_t a_out, a_in;
+    int64_t t_status, t_enable, t_src;
+    uint64_t k, slot, frames;
+
+    dir = g_dir_make_tmp("sn0-baseio-rad1-digital-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+
+    from = start_module_with(",baseio-preset=io6g", "");
+    rad1_prepare_output(from, RAD1_SAMPLE_LEFT_WORD, RAD1_SAMPLE_RIGHT_WORD);
+    rad1_prepare_digital(from, &rad1_adat_out, RAD1_TEST_DIG_RAM);
+    rad1_prepare_digital(from, &rad1_aes_in, RAD1_TEST_DIG2_RAM);
+    rad1_write64(from, RAD1_SUBCODE_AES, 0xfedcba9876543210ull);
+    t_status = rad1_start_status(from, nslots);
+    rad1_write(from, rad1_adat_out.enable_reg,
+               rad1_adat_out.enable_idle | 1);
+    rad1_write(from, rad1_aes_in.enable_reg, rad1_aes_in.enable_idle | 1);
+    t_enable = rad1_clock_now(from);
+
+    rad1_step_to(from, t_status,
+                 (rad1_status_due(60) + rad1_status_due(61)) / 2);
+    t_src = rad1_clock_now(from);
+    a_out = rad1_read(from, rad1_adat_out.pos_a);
+    a_in = rad1_read(from, rad1_aes_in.pos_a);
+
+    to = qtest_initf("-M origin2000,baseio-preset=io6g -smp 8 -m 256M "
+                     "-d unimp,guest_errors -incoming %s", uri);
+    sgi_migrate_stopped(from, uri);
+    qtest_clock_set(to, t_src);
+
+    g_assert_cmphex(rad1_read(to, rad1_adat_out.pos_a), ==, a_out);
+    g_assert_cmphex(rad1_read(to, rad1_aes_in.pos_a), ==, a_in);
+    g_assert_cmphex(rad1_read64(to, RAD1_SUBCODE_AES),
+                    ==, 0xfedcba9876543210ull);
+
+    k = 61;
+    slot = RAD1_TEST_STATUS_RAM + (k % nslots) * RAD1_SLOT_STRIDE;
+    rad1_ring_write(to, slot + RAD1_SLOT_DONE_OFFSET, 0);
+    rad1_step_to(to, t_status, rad1_status_due(k) - 1);
+    g_assert_cmphex(rad1_ring_read(to, slot + RAD1_SLOT_DONE_OFFSET) &
+                    RAD1_SLOT_DONE_BIT, ==, 0);
+    qtest_clock_step(to, 1);
+    g_assert_cmphex(rad1_ring_read(to, slot + RAD1_SLOT_DONE_OFFSET),
+                    ==, RAD1_SLOT_DONE_WORD);
+
+    frames = rad1_frames_due(t_status + rad1_status_due(k) - t_enable,
+                             rad1_adat_out.freq);
+    g_assert_cmphex(rad1_ring_read(to, slot + rad1_adat_out.slot_ptr) -
+                    (uint32_t)RAD1_TEST_PCI(RAD1_TEST_DIG_RAM), ==,
+                    frames * rad1_adat_out.words * 4 %
+                    rad1_adat_out.ring_bytes);
+    frames = rad1_frames_due(t_status + rad1_status_due(k) - t_enable,
+                             rad1_aes_in.freq);
+    g_assert_cmphex(rad1_ring_read(to, slot + rad1_aes_in.slot_ptr) -
+                    (uint32_t)RAD1_TEST_PCI(RAD1_TEST_DIG2_RAM), ==,
+                    frames * rad1_aes_in.words * 4 % rad1_aes_in.ring_bytes);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
+/*
  * The free-running UST counter at 0x30. rad_set_ust_offset reads it twice a
  * fixed delay apart and warns "RAD UST not incrementing" if it moved by fewer
  * than three ticks; the model derives it from the virtual clock, so stepping
@@ -2422,6 +2930,24 @@ int main(int argc, char **argv)
                    test_io6g_rad1_input_migration);
     qtest_add_func("sn0/baseio/io6g-rad1-input-without-host-input",
                    test_io6g_rad1_input_without_host_input);
+    qtest_add_func("sn0/baseio/io6g-rad1-aes-in-stream",
+                   test_io6g_rad1_aes_in_stream);
+    qtest_add_func("sn0/baseio/io6g-rad1-aes-out-stream",
+                   test_io6g_rad1_aes_out_stream);
+    qtest_add_func("sn0/baseio/io6g-rad1-adat-in-stream",
+                   test_io6g_rad1_adat_in_stream);
+    qtest_add_func("sn0/baseio/io6g-rad1-adat-out-stream",
+                   test_io6g_rad1_adat_out_stream);
+    qtest_add_func("sn0/baseio/io6g-rad1-receivers-44100-adat",
+                   test_io6g_rad1_receivers_44100_adat);
+    qtest_add_func("sn0/baseio/io6g-rad1-receivers-48000",
+                   test_io6g_rad1_receivers_48000);
+    qtest_add_func("sn0/baseio/io6g-rad1-receivers-32000",
+                   test_io6g_rad1_receivers_32000);
+    qtest_add_func("sn0/baseio/io6g-rad1-digital-output-samples",
+                   test_io6g_rad1_digital_output_samples);
+    qtest_add_func("sn0/baseio/io6g-rad1-digital-migration",
+                   test_io6g_rad1_digital_migration);
     qtest_add_func("sn0/baseio/io6g-rad1-ust-counter",
                    test_io6g_rad1_ust_counter);
     qtest_add_func("sn0/baseio/io6g-ps2", test_io6g_ps2);
