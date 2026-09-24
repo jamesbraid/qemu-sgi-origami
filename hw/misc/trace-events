@@ -497,7 +497,7 @@ sgi_bedrock_local_reset(int cpu) "local reset pulse by cpu %d"
 
 # sgi-bedrock-pi.c
 sgi_bedrock_pi_mask_write(unsigned interface, uint64_t offset, uint64_t value, int cpu) "pi%u mask 0x%" PRIx64 " <- 0x%" PRIx64 " by cpu %d"
-sgi_bedrock_pi_pending_modify(unsigned interface, int cpu, uint64_t value, uint64_t pending1) "pi%u cpu %d pending modify 0x%" PRIx64 ": pending1 now 0x%" PRIx64
+sgi_bedrock_pi_pending_modify(unsigned interface, int cpu, uint64_t value, unsigned bank, uint64_t pending) "pi%u cpu %d pending modify 0x%" PRIx64 ": pending%u now 0x%" PRIx64
 sgi_bedrock_pi_pending_read(unsigned interface, int cpu, unsigned bank, uint64_t value) "pi%u cpu %d pending%u read: 0x%" PRIx64
 
 # sgi-bedrock-io.c

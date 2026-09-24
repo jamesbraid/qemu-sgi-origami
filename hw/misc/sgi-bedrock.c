@@ -314,11 +314,8 @@ static bool bedrock_presence_other_pending(SGIBedrockState *s,
     return false;
 }
 
-/*
- * A publisher is never held for a publication, its own interface's least
- * of all: it is the processor whose next stores end the wait.
- */
-static bool bedrock_presence_exempt(SGIBedrockState *s, unsigned int slot)
+/* Whether this slot is its own interface's publisher. */
+static bool bedrock_presence_publisher(SGIBedrockState *s, unsigned int slot)
 {
     return bedrock_publisher_slot(s, slot / SGI_BEDROCK_PI_PROCESSORS) ==
            (int)slot;
@@ -654,7 +651,7 @@ void sgi_bedrock_scratch3_released(SGIBedrockState *s)
      * interface's. Nothing to wait for once the join is over.
      */
     cslot = bedrock_h3_slot(s);
-    if (cslot < 0 || !bedrock_presence_exempt(s, (unsigned int)cslot) ||
+    if (cslot < 0 || !bedrock_presence_publisher(s, (unsigned int)cslot) ||
         !s->presence_seen[cslot / SGI_BEDROCK_PI_PROCESSORS] ||
         !bedrock_presence_other_pending(s, (unsigned int)cslot)) {
         return;
@@ -1324,7 +1321,8 @@ static int bedrock_post_load(void *opaque, int version_id)
  * guest's own polling, and never itself a value the guest reads. That state
  * -- hold_cpu, hold_scratch1_seen, hold_scratch1_withheld_valid,
  * hold_scratch1_withheld, perf_last_slot, perf_run, hold_id, hold_kind,
- * hold_seq -- stays out of this description on purpose, the way
+ * hold_seq, presence_seen, presence_abandoned -- stays out of this
+ * description on purpose, the way
  * sgi-hub.c's vmstate_sgi_hub omits its own pi_rt_hold family; post_load
  * puts it through the same reset path a cold reset does.
  *

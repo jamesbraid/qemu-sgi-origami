@@ -304,6 +304,7 @@ static void lb_write(void *opaque, hwaddr offset, uint64_t value,
          * node (s->bedrock is only set by sgi-bedrock.c's bedrock_realize())
          * and stores the value directly, as before.
          */
+        /* The value as issued: before the hold below, and scratch 3's mask. */
         trace_sgi_bedrock_lb_scratch_write(
             current_cpu ? current_cpu->cpu_index : -1, index, value);
         if (index == 1 && s->bedrock) {
