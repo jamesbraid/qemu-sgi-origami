@@ -220,11 +220,56 @@ static uint32_t sgi_rad1_audio_done_word(SGIRad1AudioState *s)
            (code << SGI_RAD1_AUDIO_SLOT_AES_RATE_SHIFT);
 }
 
-/* The flag word: ADAT present when the host says a source is connected. */
+/* The field-event bit for video field @n: even and odd alternate. */
+static uint32_t sgi_rad1_audio_field_bit(uint64_t n)
+{
+    return (n & 1) ? SGI_RAD1_AUDIO_SLOT_FIELD_ODD
+                   : SGI_RAD1_AUDIO_SLOT_FIELD_EVEN;
+}
+
+/*
+ * The field events for a completion now: one bit for each video field that
+ * began since the last completion reported one, at most the two a slot can
+ * carry. None with no reference connected. See the header.
+ */
+static uint32_t sgi_rad1_audio_field_events(SGIRad1AudioState *s)
+{
+    int64_t elapsed = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->ust_base_ns;
+    uint64_t fields;
+    uint32_t bits = 0;
+
+    switch (s->genlock_mode) {
+    case SGI_RAD1_AUDIO_GENLOCK_NTSC:
+        fields = elapsed > 0 ? muldiv64(elapsed, SGI_RAD1_AUDIO_NTSC_FIELDS,
+                                        SGI_RAD1_AUDIO_NTSC_NS) : 0;
+        break;
+    case SGI_RAD1_AUDIO_GENLOCK_PAL:
+        fields = elapsed > 0 ? muldiv64(elapsed, SGI_RAD1_AUDIO_PAL_FIELDS,
+                                        SGI_RAD1_AUDIO_PAL_NS) : 0;
+        break;
+    default:
+        return 0;
+    }
+    if (fields > s->genlock_fields) {
+        bits = sgi_rad1_audio_field_bit(fields);
+        if (fields - s->genlock_fields > 1) {
+            bits |= sgi_rad1_audio_field_bit(fields - 1);
+        }
+        trace_sgi_rad1_audio_field_events(fields, bits);
+        s->genlock_fields = fields;
+    }
+    return bits;
+}
+
+/*
+ * The flag word: ADAT present when the host says a source is connected,
+ * and the video field events of a connected reference.
+ */
 static uint32_t sgi_rad1_audio_flags_word(SGIRad1AudioState *s)
 {
     return SGI_RAD1_AUDIO_SLOT_FLAGS_WORD |
-           (s->adat_input ? SGI_RAD1_AUDIO_SLOT_ADAT_PRESENT : 0);
+           (s->adat_input ? SGI_RAD1_AUDIO_SLOT_ADAT_PRESENT : 0) |
+           sgi_rad1_audio_field_events(s);
 }
 
 static void sgi_rad1_audio_sync_all(SGIRad1AudioState *s);
@@ -246,8 +291,8 @@ static uint32_t sgi_rad1_audio_chan_pointer(SGIRad1AudioChannel *c)
  *   channel has been started since reset. The subcode channels' words and
  *   the odd words are left alone: those channels do not run, and the
  *   driver does not read the odd words.
- * - +0x78 and +0x7c: the digital receivers as the host describes them (no
- *   video reference, ever), and done. The done word goes last, so the
+ * - +0x78 and +0x7c: the digital receivers and the video reference as
+ *   the host describes them, and done. The done word goes last, so the
  *   driver never sees a done slot with a stale body.
  *
  * Every word goes through the device's own PCI DMA address space, written
@@ -960,6 +1005,12 @@ static void sgi_rad1_audio_bar0_write(void *opaque, hwaddr addr, uint64_t val,
          * driver's shadow keeps bit 0, so those writes leave the input as it
          * was.
          */
+        /* Bit 27 clear to set clocks the next mux word bit in from 0x8c. */
+        if (!(s->shift_load_clock & SGI_RAD1_AUDIO_MUX_CLOCK) &&
+            (val & SGI_RAD1_AUDIO_MUX_CLOCK)) {
+            s->mux_shift = (s->mux_shift << 1) |
+                           (s->shift_load_data & SGI_RAD1_AUDIO_MUX_DATA);
+        }
         s->shift_load_clock = val;
         sgi_rad1_audio_enable_write(&s->chan[SGI_RAD1_AUDIO_CH_IN], val);
         break;
@@ -1026,6 +1077,13 @@ static void sgi_rad1_audio_bar0_write(void *opaque, hwaddr addr, uint64_t val,
         s->mode_gated_a = val;
         break;
     case SGI_RAD1_AUDIO_REG_LATCH_PULSE:
+        /* 2 then 3 latches the mux word shifted in so far. */
+        if (s->latch_pulse == SGI_RAD1_AUDIO_MUX_LATCH_ARM &&
+            val == SGI_RAD1_AUDIO_MUX_LATCH_FIRE) {
+            s->mux_word = s->mux_shift &
+                          MAKE_64BIT_MASK(0, SGI_RAD1_AUDIO_MUX_BITS);
+            trace_sgi_rad1_audio_mux_word(s->mux_word);
+        }
         s->latch_pulse = val;
         break;
     case SGI_RAD1_AUDIO_REG_SHIFT_LOAD_DATA:
@@ -1170,6 +1228,9 @@ static void sgi_rad1_audio_reset_hold(Object *obj, ResetType type)
 
     /* The UST counter reads zero at reset and advances with the clock. */
     s->ust_base_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    s->genlock_fields = 0;
+    s->mux_shift = 0;
+    s->mux_word = 0;
 }
 
 static void sgi_rad1_audio_realize(PCIDevice *dev, Error **errp)
@@ -1199,6 +1260,19 @@ static void sgi_rad1_audio_realize(PCIDevice *dev, Error **errp)
                    "32000, 44100 or 48000, not %u", s->aes_input_rate);
         return;
     }
+    if (!s->genlock || !strcmp(s->genlock, "none")) {
+        s->genlock_mode = SGI_RAD1_AUDIO_GENLOCK_NONE;
+    } else if (!strcmp(s->genlock, "ntsc")) {
+        s->genlock_mode = SGI_RAD1_AUDIO_GENLOCK_NTSC;
+    } else if (!strcmp(s->genlock, "pal")) {
+        s->genlock_mode = SGI_RAD1_AUDIO_GENLOCK_PAL;
+    } else {
+        error_setg(errp, "sgi-rad1-audio: genlock must be none, ntsc or pal, "
+                   "not %s", s->genlock);
+        return;
+    }
+    object_property_add_uint32_ptr(OBJECT(dev), "mux-word", &s->mux_word,
+                                   OBJ_PROP_FLAG_READ);
 
     if (!audio_be_check(&s->audio_be, &audio_err)) {
         warn_report_err(audio_err);
@@ -1313,8 +1387,8 @@ static const VMStateDescription vmstate_sgi_rad1_audio_channel = {
 
 static const VMStateDescription vmstate_sgi_rad1_audio = {
     .name = "sgi-rad1-audio",
-    .version_id = 8,
-    .minimum_version_id = 8,
+    .version_id = 9,
+    .minimum_version_id = 9,
     .post_load = sgi_rad1_audio_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIRad1AudioState),
@@ -1354,6 +1428,9 @@ static const VMStateDescription vmstate_sgi_rad1_audio = {
         VMSTATE_INT64(status_start_ns, SGIRad1AudioState),
         VMSTATE_UINT64(status_done, SGIRad1AudioState),
         VMSTATE_INT64(ust_base_ns, SGIRad1AudioState),
+        VMSTATE_UINT64(genlock_fields, SGIRad1AudioState),
+        VMSTATE_UINT32(mux_shift, SGIRad1AudioState),
+        VMSTATE_UINT32(mux_word, SGIRad1AudioState),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -1364,6 +1441,7 @@ static const Property sgi_rad1_audio_properties[] = {
     DEFINE_PROP_AUDIODEV("adat-audiodev", SGIRad1AudioState, adat_be),
     DEFINE_PROP_UINT32("aes-input-rate", SGIRad1AudioState, aes_input_rate, 0),
     DEFINE_PROP_BOOL("adat-input", SGIRad1AudioState, adat_input, false),
+    DEFINE_PROP_STRING("genlock", SGIRad1AudioState, genlock),
 };
 
 static void sgi_rad1_audio_class_init(ObjectClass *klass, const void *data)
