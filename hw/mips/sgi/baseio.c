@@ -70,6 +70,11 @@
  * record role of their own -- they are peripheral connections (a serial
  * tablet, an RS-422 deck), so this device offers only a plain chardev
  * id for each, no record backend and no board-level default.
+ * "parallel-chardev" reaches whichever of the preset's chips fits a
+ * parallel port: the onboard IOC3 on ip29 and io8, the MediaIO chip on
+ * io6g, whose board IOC3 has none. A preset with no parallel port at
+ * all (io6) refuses the id rather than leave the host backend silently
+ * unconnected.
  */
 
 #include "qemu/osdep.h"
@@ -108,6 +113,7 @@ struct SGIBaseioState {
     char *parallel_chardev_id;
     char *mio_chardev_a_id;
     char *mio_chardev_b_id;
+    bool parallel_claimed;
 };
 
 typedef bool (*SGIBaseioBuildFn)(SGIBaseioState *s, Error **errp);
@@ -270,6 +276,9 @@ static PCIDevice *baseio_build_ioc3(SGIBaseioState *s, const char *child_name,
                              s->parallel_chardev_id, errp)) {
         object_unparent(OBJECT(ioc3));
         return NULL;
+    }
+    if (population & SGI_IOC3_POPULATION_PARALLEL) {
+        s->parallel_claimed = true;
     }
     pci_realize_and_unref(ioc3, s->pci_bus, &error_abort);
     pci_set_byte(ioc3->config + PCI_REVISION_ID, revision);
@@ -665,7 +674,13 @@ static void baseio_realize(DeviceState *dev, Error **errp)
                   "populates");
         return;
     }
-    preset->build(s, errp);
+    if (!preset->build(s, errp)) {
+        return;
+    }
+    if (s->parallel_chardev_id && !s->parallel_claimed) {
+        error_setg(errp, "sgi-baseio: preset '%s' fits no parallel port for "
+                  "parallel-chardev '%s'", s->preset, s->parallel_chardev_id);
+    }
 }
 
 static const Property baseio_properties[] = {

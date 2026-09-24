@@ -892,6 +892,132 @@ static void test_a_board_fits_the_port_or_does_not(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The Origin 2000 BaseIO-G, whose parallel port is on the MediaIO
+ * daughtercard's IOC3 at Bridge device 6 rather than on the board IOC3 at
+ * device 2. The BaseIO's Bridge answers at the same widget as the Origin
+ * 200's, so the same crosstalk addresses reach it.
+ */
+#define IO6G_MACHINE     "-M origin2000,baseio-preset=io6g -smp 8 " \
+                         "-display none"
+#define IO6_MACHINE      "-M origin2000 -smp 8 -display none"
+#define MIO_IOC3_DEVICE  6
+#define MIO_IOC3_PCI_MMIO 0x11000000u
+#define BRIDGE_DEVICE6   0xa00000
+#define MIO_IOC3_BASE    (BRIDGE_BASE + BRIDGE_DEVICE6)
+#define MIO_ECP_FIFO     (MIO_IOC3_BASE + 0x20150 + 0x08)
+#define MIO_ECP_EXTENDED (MIO_IOC3_BASE + 0x20150 + 0x0a)
+
+static void mio_ioc3_attach(QTestState *qts)
+{
+    qtest_writel(qts, CFG0(MIO_IOC3_DEVICE) + PCI_BAR0, MIO_IOC3_PCI_MMIO);
+    qtest_writel(qts, CFG0(MIO_IOC3_DEVICE) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, BRIDGE_DEVICE(MIO_IOC3_DEVICE),
+                 DEV_MEMORY_SPACE | (MIO_IOC3_PCI_MMIO >> 20));
+}
+
+/* The driver's probe, answered by the MediaIO chip. */
+static void test_io6g_mio_presence_check_reads_out_of_reset(const void *data)
+{
+    QTestState *qts = qtest_init(IO6G_MACHINE);
+
+    mio_ioc3_attach(qts);
+
+    g_assert_cmphex(qtest_readb(qts, MIO_ECP_EXTENDED), ==, ECR_FIFO_EMPTY);
+
+    qtest_quit(qts);
+}
+
+/* The same hardware-owned FIFO flags as the Origin 200's port. */
+static void test_io6g_mio_fifo_flags_are_not_writable(const void *data)
+{
+    QTestState *qts = qtest_init(IO6G_MACHINE);
+
+    mio_ioc3_attach(qts);
+
+    qtest_writeb(qts, MIO_ECP_EXTENDED, ECR_FIFO_FULL);
+    g_assert_cmphex(qtest_readb(qts, MIO_ECP_EXTENDED), ==, ECR_FIFO_EMPTY);
+
+    qtest_writeb(qts, MIO_ECP_EXTENDED, 0);
+    g_assert_cmphex(qtest_readb(qts, MIO_ECP_EXTENDED), ==, ECR_FIFO_EMPTY);
+
+    qtest_quit(qts);
+}
+
+/*
+ * "-parallel" reaches the MediaIO chip's port: bytes written to its
+ * transmit FIFO land in the host file. Without the machine binding the
+ * port has no backend and the file stays empty.
+ */
+static void test_io6g_mio_fifo_reaches_the_host(const void *data)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *args = NULL;
+    int fd = g_file_open_tmp("qtest-sn0-mio-plp-XXXXXX", &path, NULL);
+    QTestState *qts;
+    size_t i;
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    args = g_strdup_printf(IO6G_MACHINE " -chardev file,id=plp0,path=%s "
+                           "-parallel chardev:plp0", path);
+    qts = qtest_init(args);
+
+    mio_ioc3_attach(qts);
+    qtest_writeb(qts, MIO_ECP_EXTENDED, ECR_MODE(MODE_COMPAT_FIFO));
+    for (i = 0; i < PLP_PAYLOAD_LEN; i++) {
+        qtest_writeb(qts, MIO_ECP_FIFO, PLP_PAYLOAD[i]);
+    }
+
+    plp_assert_the_file_holds(path, PLP_PAYLOAD);
+
+    qtest_quit(qts);
+    unlink(path);
+}
+
+/*
+ * The plain BaseIO's only IOC3 fits no parallel port (docs/datasheets/
+ * baseio.md), so its register file swallows a write and reads zero. Its
+ * serial A scratch register holding a byte first shows the window is
+ * attached, so the zero is the missing port and not a missing chip.
+ */
+#define IO6_SERIAL_A_SCRATCH (IOC3_BASE + 0x020178 + 7)
+
+static void test_io6_board_ioc3_fits_no_port(const void *data)
+{
+    QTestState *qts = qtest_init(IO6_MACHINE);
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writeb(qts, IO6_SERIAL_A_SCRATCH, 0xa5);
+    g_assert_cmphex(qtest_readb(qts, IO6_SERIAL_A_SCRATCH), ==, 0xa5);
+
+    qtest_writeb(qts, IOC3_BASE + 0x20150, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, IOC3_BASE + 0x20150), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * A host backend aimed at that missing port is refused rather than left
+ * connected to nothing.
+ */
+static void test_io6_refuses_a_parallel_backend(const void *data)
+{
+    QTestState *qts;
+
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 0, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr("*fits no parallel port*");
+        return;
+    }
+    qts = qtest_init(IO6_MACHINE " -chardev null,id=plp0 "
+                     "-global sgi-xio-baseio.parallel-chardev=plp0 -S");
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     unsigned int i;
@@ -946,6 +1072,17 @@ int main(int argc, char **argv)
                         test_an_unreadable_buffer_faults_and_keeps_its_count);
     qtest_add_data_func("sn0/ioc3/parallel-dma-registers-four-bytes-apart",
                         NULL, test_the_dma_registers_are_four_bytes_apart);
+
+    qtest_add_data_func("sn0/ioc3/parallel-io6g-mio-presence-check", NULL,
+                        test_io6g_mio_presence_check_reads_out_of_reset);
+    qtest_add_data_func("sn0/ioc3/parallel-io6g-mio-fifo-flags", NULL,
+                        test_io6g_mio_fifo_flags_are_not_writable);
+    qtest_add_data_func("sn0/ioc3/parallel-io6g-mio-fifo-reaches-the-host",
+                        NULL, test_io6g_mio_fifo_reaches_the_host);
+    qtest_add_data_func("sn0/ioc3/parallel-io6-board-ioc3-fits-no-port", NULL,
+                        test_io6_board_ioc3_fits_no_port);
+    qtest_add_data_func("sn0/ioc3/parallel-io6-refuses-a-backend", NULL,
+                        test_io6_refuses_a_parallel_backend);
 
     for (i = 0; i < ARRAY_SIZE(ioc3_boards); i++) {
         g_autofree char *path =
