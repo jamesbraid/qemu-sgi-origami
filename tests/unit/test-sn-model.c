@@ -312,6 +312,25 @@ static void check_xtalk_slots(const SGIModelTopology *t)
     }
 }
 
+/*
+ * An Origin 2000 node board sits in node slot 1 through 4. The Hub
+ * reports that slot in a three-bit reversed-sense field, and sgi-hub
+ * takes slot 0 to mean the Origin 200's field layout, which the stock
+ * PROM decodes as node slot 3 and so aims I/O at the wrong Crossbow port.
+ */
+static void check_origin2000_node_slots(const SGIModelTopology *t)
+{
+    const SGIModelNodeList *entry;
+
+    if (!g_str_equal(t->product, "origin2000")) {
+        return;
+    }
+    for (entry = t->nodes; entry; entry = entry->next) {
+        g_assert_cmpuint(entry->value->slot, >=, 1);
+        g_assert_cmpuint(entry->value->slot, <=, 4);
+    }
+}
+
 static void check_origin2000_io3(const SGIModelTopology *t)
 {
     const SGIModelXtalkSlotList *slot_entry;
@@ -409,6 +428,7 @@ static void test_every_topology_is_well_formed(void)
         check_io_board_presets(t);
         check_xtalk_attachments(t);
         check_xtalk_slots(t);
+        check_origin2000_node_slots(t);
         check_origin2000_io3(t);
         check_bedrock_has_populated_io8(t);
     }

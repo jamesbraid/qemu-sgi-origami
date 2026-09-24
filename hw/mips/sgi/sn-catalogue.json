@@ -525,6 +525,119 @@
         }
       ],
       "cpus-per-node": [
+        2
+      ],
+      "default-cpu-model": "R10000",
+      "default-topology": "origin2000-module",
+      "dimms-per-node": [
+        2
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Origin 2000 one-node module",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip27prom.payload.bin",
+        "kind": "ip27-prom",
+        "per-node-flash": true,
+        "size": 1048576
+      },
+      "identity-inputs": [],
+      "install-media": [
+        "disk-image"
+      ],
+      "memory-per-node-mib": {
+        "accepted": [
+          64
+        ],
+        "default": 64
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "ioc3-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "kind": "ioc3-ethernet"
+        }
+      ],
+      "nodes": 1,
+      "processor": {
+        "cache-mib": 1,
+        "clock-hz": 180000000,
+        "part": "R10000"
+      },
+      "product": "origin2000",
+      "prom-dialogue": "ip27-menu",
+      "resources": [
+        {
+          "argument": "-drive if=mtd,index=N",
+          "count": 1,
+          "kind": "nvram",
+          "scope": "board",
+          "size": 32768
+        },
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 1,
+          "kind": "boot-flash",
+          "scope": "node",
+          "size": 1048576
+        }
+      ],
+      "smp": 2,
+      "storage": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "type": "scsi"
+        }
+      ],
+      "supported-guests": [
+        "irix"
+      ],
+      "synthesized-firmware-toggle": false,
+      "topology": "origin2000-one-node"
+    },
+    {
+      "console": "ioc3-serial-a",
+      "consoles": [
+        {
+          "argument": "-serial chardev:ioc3_a",
+          "kind": "console",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:ioc3_b",
+          "kind": "second-port",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:elsc",
+          "kind": "system-controller",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
         2,
         2,
         2,
@@ -1850,6 +1963,151 @@
           "crossbar-index": 1,
           "id": "xio-slot-12",
           "widget": 13
+        }
+      ]
+    },
+    {
+      "cables": [],
+      "console": 0,
+      "controllers": [
+        {
+          "id": "module-msc",
+          "kind": "msc",
+          "module-index": 0
+        }
+      ],
+      "crossbars": [
+        {
+          "id": "crossbow-0",
+          "kind": "xbow",
+          "module-index": 0,
+          "widget-revision": 2
+        }
+      ],
+      "description": "SGI Origin 2000 one-node module",
+      "generation": "sn0",
+      "io-boards": [
+        {
+          "attachment": 1,
+          "carrier": "xio-slot",
+          "id": "baseio",
+          "ioc3-serial": 17592186044424,
+          "module-index": 0,
+          "part": "030-0734-002",
+          "preset": "io6g",
+          "revision": 4,
+          "serial": 17592186044423
+        }
+      ],
+      "junk-uart": -1,
+      "modules": [
+        {
+          "controller-index": 0,
+          "id": "compute-module",
+          "initial-module-number": 1,
+          "nodes": [
+            0
+          ],
+          "serial": "KORIGAMI02"
+        }
+      ],
+      "name": "origin2000-one-node",
+      "nodes": [
+        {
+          "accepted-memory-mib": [
+            64
+          ],
+          "asic-kind": "hub",
+          "bank-mib": [
+            64,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-clock-hz": 90000000,
+                "cache-mib": 1,
+                "clock-hz": 180000000,
+                "fpu-prid": 2304,
+                "id": "r10000-180mhz",
+                "kind": "R10000",
+                "mode-bits": 303146885,
+                "prid": 2342
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 90000000,
+                "cache-mib": 1,
+                "clock-hz": 180000000,
+                "fpu-prid": 2304,
+                "id": "r10000-180mhz",
+                "kind": "R10000",
+                "mode-bits": 303146885,
+                "prid": 2342
+              },
+              "interface": 0,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1048576
+          },
+          "id": "node-board-1-hub",
+          "identity": {
+            "i2c-controller": true,
+            "ni-revision": 5,
+            "serial": 17592186044417,
+            "system-controller": false,
+            "widget-revision": 1
+          },
+          "module-index": 0,
+          "slave-role": false,
+          "slot": 1
+        }
+      ],
+      "product": "origin2000",
+      "routers": [],
+      "supported-cpu-populations": [
+        {
+          "cpus-per-node": [
+            2
+          ]
+        }
+      ],
+      "xtalk-attachments": [
+        {
+          "crossbar-index": 0,
+          "node-index": 0,
+          "widget": 9
+        },
+        {
+          "crossbar-index": 0,
+          "node-index": 0,
+          "widget": 8
+        }
+      ],
+      "xtalk-slots": [
+        {
+          "controlling-node": 0,
+          "crossbar-index": 0,
+          "id": "xio-slot-3",
+          "widget": 15
+        },
+        {
+          "controlling-node": 0,
+          "crossbar-index": 0,
+          "id": "xio-slot-5",
+          "widget": 14
         }
       ]
     },
