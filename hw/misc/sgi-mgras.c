@@ -890,7 +890,8 @@ static int si_post_load(void *opaque, int version_id)
          s->cmd_token_words_remaining > ARRAY_SIZE(s->cmd_token_payload)) ||
         s->dma_map_words_remaining > SGI_MGRAS_CMD_TOKEN_MAX_DISCARD_WORDS ||
         s->pio_x > SGI_MGRAS_WIDTH || s->pio_y > SGI_MGRAS_HEIGHT ||
-        s->xmap_index >= SGI_MGRAS_XMAP_ENTRIES) {
+        s->xmap_index >= SGI_MGRAS_XMAP_ENTRIES ||
+        s->dac_lut_load_channel >= 3) {
         return -EINVAL;
     }
 
