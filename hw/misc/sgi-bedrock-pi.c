@@ -341,8 +341,17 @@ static uint64_t pi_read(void *opaque, hwaddr offset, unsigned size)
         return !!(mask & (1U << (s->interface * 2 + 1)));
     case PI_CPU_ENABLE_A: return s->cpu_enable[0];
     case PI_CPU_ENABLE_B: return s->cpu_enable[1];
-    case PI_PENDING_0: return pi_pending0(s);
-    case PI_PENDING_1: return pi_pending1(s);
+    case PI_PENDING_0:
+    case PI_PENDING_1: {
+        uint64_t value = offset == PI_PENDING_0 ? pi_pending0(s)
+                                                : pi_pending1(s);
+
+        trace_sgi_bedrock_pi_pending_read(s->interface,
+                                          current_cpu ? current_cpu->cpu_index
+                                                      : -1,
+                                          offset == PI_PENDING_1, value);
+        return value;
+    }
     case PI_MASK_0_A: return s->mask[0][0];
     case PI_MASK_1_A: return s->mask[0][1];
     case PI_MASK_0_B: return s->mask[1][0];
@@ -477,6 +486,8 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
     case PI_PENDING_MODIFY:
     case PI_PENDING_ALIAS:
         pi_modify(s, value);
+        trace_sgi_bedrock_pi_pending_modify(s->interface, cpu, value,
+                                            s->pending[1]);
         return;
     case PI_PENDING_0:
     case PI_PENDING_1:

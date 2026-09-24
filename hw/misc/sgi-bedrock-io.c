@@ -9,6 +9,8 @@
 #include "qemu/main-loop.h"
 #include "qemu/module.h"
 #include "system/dma.h"
+#include "hw/core/cpu.h"
+#include "trace.h"
 
 #define II_WIDGET_ID       0x00000
 #define II_WIDGET_STATUS   0x00008
@@ -256,8 +258,15 @@ static uint64_t ii_read(void *opaque, hwaddr offset, unsigned size)
     case II_LINK_STATUS: return s->link_status;
     case II_LINK_LOG: return s->link_log;
     case II_INTERRUPT_DEST: return s->interrupt_destination & ~(1 << 28);
-    case II_SCRATCH0: return s->scratch[0];
-    case II_SCRATCH0 + 8: return s->scratch[1];
+    case II_SCRATCH0:
+    case II_SCRATCH0 + 8: {
+        unsigned scratch = (offset - II_SCRATCH0) / 8;
+
+        trace_sgi_bedrock_io_scratch_read(current_cpu ? current_cpu->cpu_index
+                                                      : -1,
+                                          scratch, s->scratch[scratch]);
+        return s->scratch[scratch];
+    }
     case II_MISC_ERROR_MASK: return s->misc_error_mask;
     case II_CREDIT_TIMEOUT: return s->credit_timeout;
     case II_TAIL_TIMEOUT: return s->tail_timeout;
@@ -395,11 +404,15 @@ static void ii_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
         s->interrupt_destination = value & UINT64_C(0x101ff7f);
         return;
     case II_SCRATCH0:
-        s->scratch[0] = value;
+    case II_SCRATCH0 + 8: {
+        unsigned scratch = (offset - II_SCRATCH0) / 8;
+
+        s->scratch[scratch] = value;
+        trace_sgi_bedrock_io_scratch_write(current_cpu ? current_cpu->cpu_index
+                                                       : -1,
+                                           scratch, value);
         return;
-    case II_SCRATCH0 + 8:
-        s->scratch[1] = value;
-        return;
+    }
     case II_MISC_ERROR_MASK:
         s->misc_error_mask |= value & 0x1111;
         return;
