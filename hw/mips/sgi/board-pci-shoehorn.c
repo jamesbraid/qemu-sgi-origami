@@ -49,16 +49,19 @@
  * 0). Left unwired -- as it is for the bare add-in card on Origin 200
  * (docs/datasheets/sgi-cad-duo-pci-card.md) -- those interrupts are dead, so
  * a keystroke never reaches the guest. A real Cad Duo is a plug-in PCI card,
- * not a soldered board, so its single interrupt can only leave on the card
- * edge's INTA..INTD; a single-function card uses INTA, which the SGI Bridge
- * maps to the interrupt pin of the card's own slot number (slot N INTA ->
- * pin N, SGI_BRIDGE_PINS in hw/pci-host/sgi-bridge.h, sgi_bridge_map_irq()).
- * This board therefore wires the fitted card's SuperIO output to that same
- * pin, matching the landed BaseIO-G precedent for a no-ethernet IOC3
- * (hw/mips/sgi/baseio.c, the io6g MediaIO at device 6 -> Bridge pin 6). The
- * exact SuperIO-output-to-Bridge-pin wire is an inferred approximation, not a
- * captured measurement: see the reviewed datasheet for the stated limitation
- * and the discriminating test.
+ * not a soldered board, so its interrupts can only leave on the card edge's
+ * INTA..INTD. The ethernet uses INTA; an add-in IOC3 raises SuperIO on INTB
+ * (OpenBSD sys/arch/sgi/pci/ioc.c). The Bridge routes a slot's INTA/INTC to
+ * pin slot and its INTB/INTD to pin slot ^ 4 (OpenBSD
+ * sys/arch/sgi/xbow/xbridge.c, xbridge_intr_map(); Linux
+ * arch/mips/pci/pci-xtalk-bridge.c, int_mapping[slot][1]; Linux 2.5.0
+ * arch/ia64/sn/io/pcibr.c). This board therefore wires
+ * the fitted card's SuperIO output to pin slot ^ 4. IRIX 6.5.30 agrees: with
+ * the card at device 1 it enables Bridge pins 1 and 5. Earlier, with the card
+ * at device 0 and SuperIO sharing its INTA pin, it looped in the ethernet
+ * handler, which never clears a SuperIO source. Which card-edge line the
+ * real Cad Duo drives is inferred from those drivers, not captured: see the
+ * datasheet for the stated limitation and the discriminating test.
  *
  * Once wired, the SuperIO interrupt takes the same Bridge->Crossbow->Hub
  * path any card interrupt does: the Bridge composes an interrupt packet for
@@ -121,7 +124,7 @@ struct SGIPciShoehornState {
 
 /*
  * Fit an SGI Cad Duo card at cad_duo_slot on the internal Bridge's bus and
- * wire its SuperIO interrupt to the Bridge pin its own slot's INTA maps to.
+ * wire its SuperIO interrupt to the Bridge pin its own slot's INTB maps to.
  * The subsystem id is the "not observed" placeholder the reviewed datasheet
  * establishes; left at the class default the chip resolves through
  * sgi_ioc3_board()'s fall-through to the CAD DUO population.
@@ -142,13 +145,13 @@ static bool pci_shoehorn_fit_cad_duo(SGIPciShoehornState *s, Error **errp)
     }
 
     /*
-     * SuperIO GPIO-out index 0 to the Bridge interrupt pin of the card's own
-     * slot: a plug-in card's single interrupt is its INTA, and the Bridge
-     * maps slot N's INTA to pin N (sgi_bridge_map_irq()). Inferred, not
-     * captured -- see this file's header and the datasheet.
+     * SuperIO GPIO-out index 0 leaves on the card's INTB, which the Bridge
+     * routes to pin slot ^ 4. Inferred from drivers, not captured -- see
+     * this file's header and the datasheet.
      */
     qdev_connect_gpio_out(DEVICE(ioc3), 0,
-                          qdev_get_gpio_in(DEVICE(s->bridge), s->cad_duo_slot));
+                          qdev_get_gpio_in(DEVICE(s->bridge),
+                                           s->cad_duo_slot ^ 4));
     return true;
 }
 
