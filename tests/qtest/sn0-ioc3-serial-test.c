@@ -51,6 +51,12 @@
  */
 #define SN0_NODE_STRIDE  0x100000000ULL
 
+/*
+ * What the IP27 and IP35 PROMs leave in chip control: ports A and B at
+ * 0x178 and 0x170, strobe field 0xf.
+ */
+#define CHIP_CONTROL_PROM 0x0007ae5eu
+
 static void sn0_ioc3_attach_node(QTestState *qts, uint64_t node_base)
 {
     qtest_writel(qts, node_base + CFG0(PCI_IOC3_DEVICE) + PCI_BAR0,
@@ -59,6 +65,8 @@ static void sn0_ioc3_attach_node(QTestState *qts, uint64_t node_base)
                  PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
     qtest_writel(qts, node_base + BRIDGE_DEVICE(PCI_IOC3_DEVICE),
                  DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
+    /* As the PROM does at console setup, before any serial DMA. */
+    qtest_writel(qts, node_base + IOC3_BASE + 0x28, CHIP_CONTROL_PROM);
 }
 
 static void sn0_ioc3_attach(QTestState *qts)
@@ -876,6 +884,49 @@ static void test_loopback_flow_control_reports_clear_to_send(const void *data)
         g_assert_cmphex(qtest_readb(qts, serial_port(0) + REG_MCR) & MCR_RTS,
                         ==, 0);
     }
+}
+
+/*
+ * Chip control tells each serial DMA engine where its 16550 sits in the
+ * SuperIO window; an engine aimed anywhere else does not reach the port.
+ * The Origin 300 IO-8 board test leaves port B's ring DMA enabled from its
+ * DMA checks, writes chip control 0x38000 -- both port fields zero -- and
+ * then runs a byte-wide loopback test on port B, requiring the character
+ * it sent to wait in the 16550 for it.
+ */
+static void test_an_unaimed_engine_leaves_its_port_alone(const void *data)
+{
+    static const uint8_t out[4] = { 'a', 'i', 'm', 'd' };
+    static const uint8_t control[4] = {
+        TX_CHARACTER, TX_CHARACTER, TX_CHARACTER, TX_CHARACTER,
+    };
+    uint8_t landed[8];
+
+    serial_reset();
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, 1);
+    set_loopback(qts, 1);
+    enable_dma(qts, 1);
+
+    qtest_writel(qts, CHIP_CONTROL, 0x00038000u);
+    qtest_writeb(qts, serial_port(1) + REG_RBR, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, serial_port(1) + REG_LSR) & LSR_DR, ==,
+                    LSR_DR);
+    g_assert_cmphex(qtest_readb(qts, serial_port(1) + REG_RBR), ==, 0x5a);
+    g_assert_cmphex(qtest_readl(qts, sdma(1, SDMA_RX_PRODUCE)), ==, 0);
+
+    /* An entry queued while unaimed waits: the engine cannot reach it. */
+    write_transmit_entry(qts, RING_TX(1), 0, out, control);
+    qtest_writel(qts, sdma(1, SDMA_TX_PRODUCE), 8);
+    g_assert_cmphex(qtest_readl(qts, sdma(1, SDMA_TX_CONSUME)) & 0xff8, ==, 0);
+
+    /* Aiming the engine starts it on what was waiting. */
+    qtest_writel(qts, CHIP_CONTROL, CHIP_CONTROL_PROM);
+    g_assert_cmphex(qtest_readl(qts, sdma(1, SDMA_TX_CONSUME)) & 0xff8, ==, 8);
+    g_assert_cmphex(qtest_readl(qts, sdma(1, SDMA_RX_PRODUCE)) & 0xff8, ==, 8);
+    qtest_memread(qts, RING_RX(1), landed, sizeof(landed));
+    g_assert_cmpmem(landed, 4, out, 4);
 }
 
 /*
@@ -2651,6 +2702,8 @@ int main(int argc, char **argv)
                         test_the_shadow_mirrors_the_port);
     qtest_add_data_func("sn0/ioc3-serial/loopback-flow-control-reports-cts",
                         NULL, test_loopback_flow_control_reports_clear_to_send);
+    qtest_add_data_func("sn0/ioc3-serial/unaimed-engine-leaves-port-alone",
+                        NULL, test_an_unaimed_engine_leaves_its_port_alone);
     qtest_add_data_func("sn0/ioc3-serial/transmit-entry-sends-four", NULL,
                         test_a_transmit_entry_sends_its_four_characters);
     qtest_add_data_func("sn0/ioc3-serial/blocked-backend-keeps-every-character",

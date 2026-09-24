@@ -95,6 +95,10 @@ struct SGIIOC3BusState {
 #define SGI_IOC3_CHIP_CONTROL   0x28
 /* Bit 22 is arbiter-idle status, polled by the kernel's console setup. */
 #define SGI_IOC3_CHIP_CTRL_MASK 0x0007ffffu
+/* Where each DMA engine finds its 16550: byte offset in the window, / 8. */
+#define SGI_IOC3_CHIP_CTRL_PORT_A_SHIFT 1
+#define SGI_IOC3_CHIP_CTRL_PORT_B_SHIFT 8
+#define SGI_IOC3_CHIP_CTRL_PORT_FIELD   0x7fu
 #define SGI_IOC3_CHIP_CTRL_ARB_IDLE 0x00400000u
 
 /*
