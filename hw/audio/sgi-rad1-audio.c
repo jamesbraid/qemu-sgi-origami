@@ -1103,9 +1103,9 @@ static const MemoryRegionOps sgi_rad1_audio_subcode_ops = {
     .write = sgi_rad1_audio_subcode_write,
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid.min_access_size = 4,
-    .valid.max_access_size = 8,
+    .valid.max_access_size = 4,
     .impl.min_access_size = 4,
-    .impl.max_access_size = 8,
+    .impl.max_access_size = 4,
 };
 
 static const MemoryRegionOps sgi_rad1_audio_bar0_ops = {

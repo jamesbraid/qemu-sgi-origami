@@ -43,6 +43,12 @@
 #define BRIDGE_DEVICE(n) (0x0200 + 8 * (n))
 #define BRIDGE_CFG0(n) (0x020000 + (n) * 0x1000)
 #define BRIDGE_DEV_MEMORY_SPACE (1u << 12)
+/*
+ * The Bridge device register's byte-swap and 64-bit-device bits, restated
+ * from hw/pci-host/sgi-bridge.c's DEV_SWAP_PROGRAMMED and DEV_64BIT_DEVICE.
+ */
+#define BRIDGE_DEV_SWAP (1u << 13)
+#define BRIDGE_DEV_64BIT (1u << 22)
 #define PCI_SUBSYSTEM 0x2c
 #define SUBSYSTEM_SGI 0x10a9u
 #define SUBSYSTEM(id) (((uint32_t)(id) << 16) | SUBSYSTEM_SGI)
@@ -2368,6 +2374,51 @@ static void test_io6g_rad1_digital_output_samples(void)
 }
 
 /*
+ * The subcode windows' doubleword path. By default the Bridge splits a
+ * doubleword store to this slot into two 4-byte writes, which the stream
+ * tests exercise. With the slot's device register marking it 64-bit, the
+ * Bridge instead makes one 8-byte access, byte-swapped when the swap bit
+ * is set, which reaches the model's 4-byte window as two accesses in
+ * address order. In both settings a doubleword stored in each window reads
+ * back whole. A doubleword stored with swap set and read back without it
+ * arrives byte-reversed: the device kept the eight bytes in order, as one
+ * little-endian doubleword, not as two words swapped.
+ */
+static void test_io6g_rad1_subcode_64bit(void)
+{
+    static const uint32_t regs[] = {
+        RAD1_SUBCODE_ADAT, RAD1_SUBCODE_ADAT + 0xf0,
+        RAD1_SUBCODE_AES, RAD1_SUBCODE_AES_LAST,
+    };
+    const uint32_t dev = BRIDGE_DEV_MEMORY_SPACE | BRIDGE_DEV_64BIT |
+                         (MIO_RAD1_MMIO >> 20);
+    const uint64_t value = 0x0123456789abcdefull;
+    QTestState *qts = start_module_io6g();
+    unsigned int i, swap;
+
+    program_module(qts);
+    program_rad1(qts);
+
+    for (swap = 0; swap < 2; swap++) {
+        baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) +
+                            XTALK_REG_DATA,
+                            dev | (swap ? BRIDGE_DEV_SWAP : 0));
+        for (i = 0; i < G_N_ELEMENTS(regs); i++) {
+            rad1_write64(qts, regs[i], value + i + swap * 16);
+            g_assert_cmphex(rad1_read64(qts, regs[i]),
+                            ==, value + i + swap * 16);
+        }
+    }
+
+    baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XTALK_REG_DATA,
+                        dev | BRIDGE_DEV_SWAP);
+    rad1_write64(qts, RAD1_SUBCODE_AES, value);
+    baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XTALK_REG_DATA,
+                        dev);
+    g_assert_cmphex(rad1_read64(qts, RAD1_SUBCODE_AES), ==, bswap64(value));
+}
+
+/*
  * "aes-input-rate" describes a real AES3 source, so realize refuses a rate
  * the driver's rate table cannot report, and QEMU exits with the error
  * rather than starting or aborting. The qtest accelerator stands in for a
@@ -2964,6 +3015,8 @@ int main(int argc, char **argv)
                    test_io6g_rad1_digital_output_samples);
     qtest_add_func("sn0/baseio/io6g-rad1-digital-migration",
                    test_io6g_rad1_digital_migration);
+    qtest_add_func("sn0/baseio/io6g-rad1-subcode-64bit",
+                   test_io6g_rad1_subcode_64bit);
     qtest_add_func("sn0/baseio/io6g-rad1-rejects-aes-input-rate",
                    test_io6g_rad1_rejects_aes_input_rate);
     qtest_add_func("sn0/baseio/io6g-rad1-ust-counter",
