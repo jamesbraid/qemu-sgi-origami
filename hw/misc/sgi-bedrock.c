@@ -134,6 +134,48 @@ bool sgi_bedrock_hub_registers_permitted(SGIBedrockState *s)
 #define SGI_BEDROCK_YIELD_MS 2       /* a fairness quantum, not a join bound */
 #define SGI_BEDROCK_PERF_SPIN 8192   /* one-sided accesses before a yield */
 
+/*
+ * The presence publication (H4). Right after H1's join the stock PROM's
+ * processors set off for their first barrier, and the lowest fitted
+ * processor of each interface first publishes its interface's fitted
+ * processors as bits 4 to 7 of II scratch 0 (A writes A and B, C writes C
+ * and D), under the hub lock. Every barrier and pair-master decision from
+ * then on reads those bits, and a processor whose bit is clear is treated
+ * as absent: its partner does not wait for it, and a processor on the other
+ * interface takes the handshake role it would otherwise leave to it. On
+ * hardware the publisher, running continuously from the same reset edge,
+ * reaches its two stores long before any other processor reaches its first
+ * such read. Under multi-threaded TCG the publisher's host thread can be
+ * left unscheduled for that whole window, so its peers read the bits as
+ * still clear, pass their first barrier without it, and stay one barrier
+ * ahead of it for the rest of the boot: the two sides' barriers then pair
+ * off by one, harmlessly until the copy barrier, where the peers switch to
+ * the PROM's RAM copy while the publisher is still making it and fetch
+ * zeros (docs/known-issues.md, "The presence-publication join";
+ * docs/notebooks/origin300-copy-phase-stall-presence-race-20260924.md).
+ *
+ * H4 restores that ordering for a bounded time, in the same queued-work
+ * shape as H1, and never fabricates a value the guest reads. Two parks:
+ *
+ *   - A processor that is not its interface's publisher is parked at its
+ *     second LB scratch 1 write -- H1's own point, which precedes its first
+ *     presence read -- until every populated interface has published, on
+ *     top of H1's own join. This is H1's hold with a wider join.
+ *
+ *   - A publisher whose own interface has published is parked at the hub
+ *     lock release that follows, until the other populated interface has
+ *     published too (SGI_BEDROCK_HOLD_PRESENCE). Parking it at the release
+ *     rather than at its stores keeps the hub lock free for the other
+ *     publisher, whose stores are what the park waits for, so the two
+ *     publishers cannot wait on each other.
+ *
+ * The join is over once every populated interface has published, so
+ * neither park can fire again until reset; and a park that times out
+ * abandons the join for the rest of the reset rather than parking every
+ * later access for the bound again, since a publisher that never comes is
+ * a processor the PROM's own console will report as failed.
+ */
+
 typedef struct SGIBedrockHold {
     SGIBedrockState *bedrock;
     unsigned int slot;
@@ -203,6 +245,80 @@ static bool bedrock_hold_applicable(SGIBedrockState *s)
     return running >= 2;
 }
 
+/* Whether any present, running processor sits on this interface. */
+static bool bedrock_interface_populated(SGIBedrockState *s,
+                                        unsigned int interface)
+{
+    for (unsigned int p = 0; p < SGI_BEDROCK_PI_PROCESSORS; p++) {
+        if (bedrock_hold_slot_running(s, interface *
+                                      SGI_BEDROCK_PI_PROCESSORS + p)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * The interface's publisher: its lowest present, running processor, the
+ * same rule the PROM's pair-master decision uses (slot A, or B with A
+ * absent). -1 for an unpopulated interface.
+ */
+static int bedrock_publisher_slot(SGIBedrockState *s, unsigned int interface)
+{
+    for (unsigned int p = 0; p < SGI_BEDROCK_PI_PROCESSORS; p++) {
+        unsigned int physical = interface * SGI_BEDROCK_PI_PROCESSORS + p;
+
+        if (bedrock_hold_slot_running(s, physical)) {
+            return (int)physical;
+        }
+    }
+    return -1;
+}
+
+/* H4's join: every populated interface has published, or the join is over. */
+static bool bedrock_presence_pending(SGIBedrockState *s)
+{
+    if (s->presence_abandoned) {
+        return false;
+    }
+    for (unsigned int i = 0; i < SGI_BEDROCK_PROCESSORS /
+         SGI_BEDROCK_PI_PROCESSORS; i++) {
+        if (bedrock_interface_populated(s, i) && !s->presence_seen[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The same, for every populated interface but this slot's own. */
+static bool bedrock_presence_other_pending(SGIBedrockState *s,
+                                           unsigned int slot)
+{
+    unsigned int own = slot / SGI_BEDROCK_PI_PROCESSORS;
+
+    if (s->presence_abandoned) {
+        return false;
+    }
+    for (unsigned int i = 0; i < SGI_BEDROCK_PROCESSORS /
+         SGI_BEDROCK_PI_PROCESSORS; i++) {
+        if (i != own && bedrock_interface_populated(s, i) &&
+            !s->presence_seen[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * A publisher is never held for a publication, its own interface's least
+ * of all: it is the processor whose next stores end the wait.
+ */
+static bool bedrock_presence_exempt(SGIBedrockState *s, unsigned int slot)
+{
+    return bedrock_publisher_slot(s, slot / SGI_BEDROCK_PI_PROCESSORS) ==
+           (int)slot;
+}
+
 /*
  * H1's join: every other present, running processor has made its first
  * scratch-1 write since reset.
@@ -227,9 +343,18 @@ static bool bedrock_hold_ready(SGIBedrockState *s, unsigned int slot,
     case SGI_BEDROCK_HOLD_PERF_YIELD:
         /* A fairness quantum: nothing to wait for but the bound below. */
         return false;
+    case SGI_BEDROCK_HOLD_PRESENCE:
+        /* A publisher, parked until the other interface publishes too. */
+        return !bedrock_presence_other_pending(s, slot);
     case SGI_BEDROCK_HOLD_SCRATCH1:
     default:
-        return bedrock_hold_scratch1_ready(s);
+        /*
+         * H1's join, widened by H4's for a processor that is not its
+         * interface's publisher: its first presence read follows this write.
+         */
+        return bedrock_hold_scratch1_ready(s) &&
+               (bedrock_presence_exempt(s, slot) ||
+                !bedrock_presence_pending(s));
     }
 }
 
@@ -255,6 +380,8 @@ static const char *bedrock_hold_kind_name(SGIBedrockHoldKind kind)
         return "scratch3-held";
     case SGI_BEDROCK_HOLD_PERF_YIELD:
         return "perf-yield";
+    case SGI_BEDROCK_HOLD_PRESENCE:
+        return "presence";
     case SGI_BEDROCK_HOLD_SCRATCH1:
     default:
         return "scratch1";
@@ -312,6 +439,7 @@ static void bedrock_hold_run(CPUState *cs, run_on_cpu_data data)
     int64_t deadline;
     const char *outcome;
     bool yield = false;
+    bool timed_out = false;
     int wait_ms;
 
     if (!hold->start) {
@@ -342,6 +470,7 @@ static void bedrock_hold_run(CPUState *cs, run_on_cpu_data data)
             yield = true;
         } else if (now >= deadline) {
             outcome = "timed out";
+            timed_out = true;
         } else {
             outcome = NULL;
         }
@@ -362,6 +491,20 @@ static void bedrock_hold_run(CPUState *cs, run_on_cpu_data data)
 
     if (s->hold_id[slot] == hold->id) {
         s->hold_id[slot] = 0;
+    }
+    /*
+     * A join that timed out is over for this reset: the processor it
+     * waited for is not coming, and parking every later access for the
+     * bound again would only stretch the boot the PROM is about to report
+     * on. Wake the others parked on it so they give it up too.
+     */
+    if (timed_out && !s->presence_abandoned &&
+        (kind == SGI_BEDROCK_HOLD_SCRATCH1 ||
+         kind == SGI_BEDROCK_HOLD_PRESENCE) &&
+        bedrock_presence_pending(s)) {
+        s->presence_abandoned = true;
+        bedrock_hold_wake_kind(s, SGI_BEDROCK_HOLD_SCRATCH1);
+        bedrock_hold_wake_kind(s, SGI_BEDROCK_HOLD_PRESENCE);
     }
     /*
      * Whatever ended it, a withheld scratch-1 write lands before this
@@ -427,7 +570,15 @@ void sgi_bedrock_hold_scratch1_write(SGIBedrockState *s, uint64_t value)
         return;
     }
 
-    if (!bedrock_hold_applicable(s) || bedrock_hold_scratch1_ready(s)) {
+    /*
+     * H4 widens H1's join for a processor that is not its interface's
+     * publisher, under multi-threaded TCG only: round-robin hands slices
+     * around itself and a kick means nothing for a publication.
+     */
+    if (!bedrock_hold_applicable(s) ||
+        (bedrock_hold_scratch1_ready(s) &&
+         (!qemu_tcg_mttcg_enabled() || bedrock_presence_exempt(s, slot) ||
+          !bedrock_presence_pending(s)))) {
         s->lb.scratch[1] = value;
         return;
     }
@@ -504,8 +655,41 @@ void sgi_bedrock_scratch3_acquire(SGIBedrockState *s, uint64_t observed)
 
 void sgi_bedrock_scratch3_released(SGIBedrockState *s)
 {
+    int cslot;
+
     /* Wake every peer parked on the hub lock so each re-checks its release. */
     bedrock_hold_wake_kind(s, SGI_BEDROCK_HOLD_SCRATCH3_HELD);
+
+    /*
+     * H4's publisher park: a publisher releasing the hub lock after its own
+     * interface's publication waits here, with the lock free, for the other
+     * interface's. Nothing to wait for once the join is over.
+     */
+    cslot = bedrock_h3_slot(s);
+    if (cslot < 0 || !bedrock_presence_exempt(s, (unsigned int)cslot) ||
+        !s->presence_seen[cslot / SGI_BEDROCK_PI_PROCESSORS] ||
+        !bedrock_presence_other_pending(s, (unsigned int)cslot)) {
+        return;
+    }
+    bedrock_hold_start(s, (unsigned int)cslot, SGI_BEDROCK_HOLD_PRESENCE);
+}
+
+void sgi_bedrock_presence_published(SGIBedrockState *s)
+{
+    int cslot = bedrock_hold_current_slot(s);
+    unsigned int interface;
+
+    if (cslot < 0) {
+        /* qtest, DMA, or an access this node did not issue: no bookkeeping. */
+        return;
+    }
+    interface = (unsigned int)cslot / SGI_BEDROCK_PI_PROCESSORS;
+    s->presence_seen[interface] = true;
+    trace_sgi_bedrock_presence_published(current_cpu->cpu_index, interface,
+                                         bedrock_presence_pending(s));
+    /* Processors parked on either of H4's joins re-check them. */
+    bedrock_hold_wake_kind(s, SGI_BEDROCK_HOLD_SCRATCH1);
+    bedrock_hold_wake_kind(s, SGI_BEDROCK_HOLD_PRESENCE);
 }
 
 /*
@@ -529,6 +713,11 @@ void sgi_bedrock_hold_reset(SGIBedrockState *s)
     }
     s->perf_last_slot = -1;
     s->perf_run = 0;
+    for (unsigned int i = 0; i < SGI_BEDROCK_PROCESSORS /
+         SGI_BEDROCK_PI_PROCESSORS; i++) {
+        s->presence_seen[i] = false;
+    }
+    s->presence_abandoned = false;
 }
 
 /* True when the window refuses the access, with the reason logged. */
@@ -1071,6 +1260,7 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
     }
     s->lb.bedrock = s;
     s->md.bedrock = s;
+    s->io.bedrock = s;
     qdev_prop_set_uint32(DEVICE(&s->lb), "revision", s->revision);
     /*
      * The local block's vector engine reads a hub register for a routed read;

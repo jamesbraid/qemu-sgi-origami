@@ -491,6 +491,7 @@ sgi_bedrock_hold_wake(int cpu, int held_cpu, uint64_t id) "cpu %d held_cpu %d id
 sgi_bedrock_hold_yield(int cpu, uint64_t id, int64_t held_us) "cpu %d id %" PRIu64 " yields to queued work after %" PRId64 " us"
 sgi_bedrock_hold_end(int cpu, const char *outcome, int64_t held_us, uint64_t id) "cpu %d hold %s after %" PRId64 " us id %" PRIu64
 sgi_bedrock_hold_kick(int cpu, int target, const char *kind) "cpu %d target %d kind %s"
+sgi_bedrock_presence_published(int cpu, unsigned interface, int pending) "cpu %d published interface %u presence; join pending %d"
 
 sgi_bedrock_local_reset(int cpu) "local reset pulse by cpu %d"
 
