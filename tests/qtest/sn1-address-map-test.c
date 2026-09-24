@@ -898,8 +898,11 @@ static void test_ram_and_hub_alias(const void *data)
     qtest_writeq(qts, 512 * MiB, UINT64_C(0x599a599a599a599a));
     g_assert_cmphex(qtest_readq(qts, 512 * MiB), !=,
                     UINT64_C(0x599a599a599a599a));
-    /* Memory-special has no mapping in this skeleton. */
-    assert_flat_view_unmapped(qts, SPACE_MEMORY_SPECIAL + 0x1000);
+    /*
+     * Memory-special reaches node memory through the memory unit's
+     * fetch-and-op operations, never as plain RAM.
+     */
+    assert_flat_view_is_io(qts, SPACE_MEMORY_SPECIAL + 0x1000);
 
     qtest_quit(qts);
 }
@@ -2644,10 +2647,11 @@ static void test_ecc_backdoor_window(const void *data)
     qtest_readb(qts, HUB_ECC + ECC_EXTENT);
 
     /*
-     * Neither the word below the base nor the far side of the aperture is
-     * mapped, so the region has not been stretched to fill the space.
+     * The far side of the aperture is not mapped, so the region has not
+     * been stretched to fill the space. The word below the base belongs to
+     * the scrub carrier at four eighths of the node, not to this region.
      */
-    assert_flat_view_unmapped(qts, HUB_ECC - 8);
+    assert_flat_view_is_io(qts, HUB_ECC - 8);
     assert_flat_view_unmapped(qts, HUB_ECC + ECC_APERTURE);
 
     qtest_quit(qts);
@@ -2662,8 +2666,12 @@ static void test_ecc_backdoor_window(const void *data)
 static void test_directory_backdoor_window(const void *data)
 {
     QTestState *qts = machine_start();
-    /* A format-masked word beside an opaque one, both distinctive. */
-    const uint64_t entry = UINT64_C(0xc001d00d);
+    /*
+     * A format-masked word beside an opaque one, both distinctive. The
+     * entry is a standard-format codeword (check field 0x0f at bits 21:16),
+     * so the check field the unit regenerates on a write leaves it as is.
+     */
+    const uint64_t entry = UINT64_C(0xc00fd00d);
     const uint64_t counter = UINT64_C(0x0123456789abcdef);
     const uint64_t carrier = HUB_DIRECTORY + DIRECTORY_LINE_1A00000;
     const uint64_t last = HUB_DIRECTORY + DIRECTORY_LAST_FITTED;
