@@ -292,11 +292,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
  *   locked AES3 source at that rate. Every completion word then carries
  *   the datasheet's lock value, done plus the rate code with bit 19 clear:
  *   0x83000000, 0x82000000 or 0x81000000, held steady so the driver's
- *   500-pass debounce settles.
+ *   500-pass debounce settles. Codes 3, 2 and 1 are the model's choice:
+ *   the driver's rate table gives codes 7, 5 and 4 the same rates, and
+ *   what bit 26, which tells the two sets apart, means in hardware is
+ *   unknown.
  * - "adat-input", a present ADAT source: every completion sets +0x78 bit
  *   0x40, with no gaps, as the driver's ADAT state machine needs.
  * The driver's 0x80 writes for that state machine are accepted and
  * shadowed like any other.
+ *
+ * Neither property is migrated: like any device configuration, both must
+ * be the same on the source and destination of a migration, or the
+ * receivers change under the guest as it resumes.
  */
 #define SGI_RAD1_AUDIO_SLOT_MIRROR_OFFSET   0x40
 #define SGI_RAD1_AUDIO_SLOT_MIRROR_FIRST    0x04
@@ -447,7 +454,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
  * Rates, approximations:
  * - The AES3 and ADAT outputs follow master clock +0x498 by default, as
  *   the analog pair does, so they use the analog output's measured
- *   44.1 kHz.
+ *   44.1 kHz. Their own clock generators' rates have not been read.
  * - The ADAT input follows the ADAT clock, whose rate is 48 kHz from
  *   creation and never written in the driver.
  * - The AES3 input follows the AES3 clock, which takes the rate of the
