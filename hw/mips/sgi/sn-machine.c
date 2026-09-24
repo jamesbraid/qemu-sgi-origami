@@ -1110,6 +1110,34 @@ static bool sgi_machine_instantiate_baseio_card(
  */
 #define SGI_MACHINE_PCI_SHOEHORN_CAD_DUO_SLOT 1
 
+/*
+ * The Origin 2000 PCI Carrier Assembly: three PCI slots for third-party
+ * cards (007-3456-003 printed page 34), empty until a -device fills one on
+ * bus pci.carrier<N>. The slots take PCI devices 0 to 2, an approximation:
+ * no source gives the carrier's device wiring.
+ */
+#define SGI_MACHINE_PCI_CARRIER_SLOTS 3
+
+static bool sgi_machine_instantiate_pci_carrier(
+    SGIMachineState *s, const SGIModelIoBoard *record,
+    unsigned int board_index, const SGIModelXtalkAttachment *attachment,
+    Error **errp)
+{
+    DeviceState *dev = qdev_new(TYPE_SGI_PCI_EXPANSION);
+    g_autofree char *name = g_strdup_printf("io-board%u", board_index);
+    g_autofree char *bus_name = g_strdup_printf("pci.carrier%u", board_index);
+
+    object_property_add_child(OBJECT(s), name, OBJECT(dev));
+    object_unref(OBJECT(dev));
+
+    qdev_prop_set_uint32(dev, "module", record->module_index);
+    qdev_prop_set_uint32(dev, "slot", attachment->widget);
+    qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
+    qdev_prop_set_string(dev, "pci-bus-name", bus_name);
+    qdev_prop_set_uint32(dev, "slots", SGI_MACHINE_PCI_CARRIER_SLOTS);
+    return sgi_machine_attach_xio_card(s, dev, board_index, attachment, errp);
+}
+
 static bool sgi_machine_instantiate_pci_shoehorn(
     SGIMachineState *s, const SGIModelIoBoard *record,
     unsigned int board_index, const SGIModelXtalkAttachment *attachment,
@@ -1297,6 +1325,9 @@ static bool sgi_machine_instantiate_io_board(
     case SGI_MODEL_IO_BOARD_PRESET_PCI_SHOEHORN:
         return sgi_machine_instantiate_pci_shoehorn(s, record, board_index,
                                                     attachment, errp);
+    case SGI_MODEL_IO_BOARD_PRESET_PCI_CARRIER:
+        return sgi_machine_instantiate_pci_carrier(s, record, board_index,
+                                                   attachment, errp);
     default:
         error_setg(errp, "topology '%s' io board %u names an unsupported "
                   "preset for this family", t->name, board_index);
