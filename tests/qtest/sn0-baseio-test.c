@@ -2076,8 +2076,9 @@ static void rad1_check_digital_pos(QTestState *qts,
  * Stream one digital channel on the shared machine and check what the
  * driver sees, as for the analog pair:
  *
- * - a write of the enable register's other bits (the subcode enables of
- *   0x44 and 0x48, 0x54's subcode bits) starts nothing;
+ * - a write of the enable register's bit 3, which starts nothing on any of
+ *   the four, starts nothing (bit 2 of 0x44 and 0x48 is the input subcode
+ *   channels', checked by rad1_check_subcode_stream);
  * - B ticks inside the 500 us poll;
  * - A and B count frames at the channel's rate, A latches 0x30, and B's
  *   low 18 bits, which hold subcode fields or another channel's count,
@@ -2114,8 +2115,8 @@ static void rad1_check_digital_stream(const Rad1DigitalChannel *d,
         rad1_ring_write(qts, slot + RAD1_SLOT_OUT_PTR, 0);
     }
 
-    /* The register's other bits start nothing. */
-    rad1_write(qts, d->enable_reg, d->enable_idle | 0xcu);
+    /* The register's bit 3 starts nothing. */
+    rad1_write(qts, d->enable_reg, d->enable_idle | 0x8u);
     qtest_clock_step(qts, 2000000);
     g_assert_cmphex(rad1_read(qts, d->pos_a), ==, 0);
     g_assert_cmphex(rad1_read(qts, d->pos_b), ==, 0);
@@ -2511,6 +2512,160 @@ static void test_io6g_rad1_digital_migration(void)
     qtest_quit(to);
     qtest_quit(from);
     g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
+/*
+ * The input subcode DMA channels: type 6 on bit 2 of 0x48 beside the AES3
+ * input's bit 0, type 7 on bit 2 of 0x44 beside the ADAT input's. Each
+ * reads one register as A at shift 4, bits [17:4], and B at shift 18, bits
+ * [31:18], which is also its parent's B count. The model moves only the
+ * A field, writes zero subcode, and borrows the parent's rate and frame
+ * width, stated approximations. The control word's tag is the type.
+ */
+typedef struct Rad1SubcodeChannel {
+    const char *name;
+    uint32_t a_lo, a_hi, a_ctrl;
+    uint32_t b_lo, b_hi, b_ctrl;
+    uint32_t ctrl;
+    uint32_t ring_bytes;
+    uint32_t pos;
+    uint32_t slot_ptr;
+    unsigned int words;
+    uint32_t freq;
+    const Rad1DigitalChannel *parent;
+} Rad1SubcodeChannel;
+
+static const Rad1SubcodeChannel rad1_aes_sub = {
+    "AES3-input subcode", 0x4e0, 0x518, 0x4e4, 0x448, 0x44c, 0x450,
+    0xfffff030u, 4096, 0x10, 0x20, 2, 48000, &rad1_aes_in,
+};
+static const Rad1SubcodeChannel rad1_adat_sub = {
+    "ADAT-input subcode", 0x4d8, 0x514, 0x4dc, 0x454, 0x458, 0x45c,
+    0xfffff038u, 4096, 0x08, 0x18, 8, 48000, &rad1_adat_in,
+};
+
+#define RAD1_SUB_FIELD(v)         (((v) >> 4) & 0x3fffu)
+#define RAD1_SUB_ENABLE           0x4u
+
+/*
+ * Run a subcode channel with and without its parent and check each moves
+ * only its own fields:
+ *
+ * - bit 2 alone starts the subcode channel and not the parent: the
+ *   register's [17:4] counts frames, [31:18] and [3:0] stay zero, the
+ *   parent's A and ring stay untouched, and the subcode ring is written
+ *   with zeros from its start;
+ * - setting bit 0 as well starts the parent without restarting the subcode
+ *   channel, and each field counts its own channel's frames;
+ * - each status completion carries both pointers, each agreeing with its
+ *   channel's count;
+ * - clearing bit 0 stops only the parent, clearing bit 2 then stops the
+ *   subcode channel.
+ */
+static void rad1_check_subcode_stream(const Rad1SubcodeChannel *d)
+{
+    const Rad1DigitalChannel *p = d->parent;
+    QTestState *qts = start_module_io6g();
+    const unsigned int nslots = 8;
+    const uint64_t sub_pci = RAD1_TEST_PCI(RAD1_TEST_DIG2_RAM);
+    const uint32_t sub_lo = (uint32_t)sub_pci;
+    const uint32_t par_lo = (uint32_t)RAD1_TEST_PCI(RAD1_TEST_DIG_RAM);
+    uint32_t reg, pa, frozen, par_frozen;
+    int64_t t_status, t_sub, t_par, t;
+    uint64_t k, due;
+    unsigned int i;
+
+    rad1_prepare_output(qts, RAD1_SAMPLE_LEFT_WORD, RAD1_SAMPLE_RIGHT_WORD);
+    rad1_prepare_digital(qts, p, RAD1_TEST_DIG_RAM);
+    for (i = 0; i < d->ring_bytes; i += 4) {
+        rad1_ring_write(qts, RAD1_TEST_DIG2_RAM + i, RAD1_IN_POISON);
+    }
+    rad1_write(qts, d->a_lo, sub_lo);
+    rad1_write(qts, d->a_hi, (uint32_t)(sub_pci >> 32));
+    rad1_write(qts, d->a_ctrl, d->ctrl);
+    rad1_write(qts, d->b_lo, sub_lo);
+    rad1_write(qts, d->b_hi, (uint32_t)(sub_pci >> 32));
+    rad1_write(qts, d->b_ctrl, d->ctrl);
+
+    t_status = rad1_start_status(qts, nslots);
+    rad1_write(qts, p->enable_reg, p->enable_idle | RAD1_SUB_ENABLE);
+    t_sub = rad1_clock_now(qts);
+
+    rad1_step_to(qts, t_sub, 2000000);
+    due = rad1_frames_due(2000000, d->freq);
+    reg = rad1_read(qts, d->pos);
+    g_assert_cmpuint(RAD1_SUB_FIELD(reg), ==, due & 0x3fff);
+    g_assert_cmphex(reg & ~(0x3fffu << 4), ==, 0);
+    g_assert_cmphex(rad1_read(qts, p->pos_a), ==, 0);
+    g_assert_cmpuint(due * d->words * 4, <, d->ring_bytes);
+    for (i = 0; i < d->ring_bytes / 4; i++) {
+        g_assert_cmphex(rad1_ring_read(qts, RAD1_TEST_DIG2_RAM + i * 4), ==,
+                        i < due * d->words ? 0 : RAD1_IN_POISON);
+    }
+    for (i = 0; i < p->ring_bytes / 4; i++) {
+        g_assert_cmphex(rad1_ring_read(qts, RAD1_TEST_DIG_RAM + i * 4),
+                        ==, RAD1_IN_POISON);
+    }
+
+    /* The parent joins; the subcode channel keeps its own clock. */
+    rad1_write(qts, p->enable_reg,
+               p->enable_idle | RAD1_SUB_ENABLE | 1);
+    t_par = rad1_clock_now(qts);
+    rad1_step_to(qts, t_sub, 8000000);
+    t = rad1_clock_now(qts);
+    reg = rad1_read(qts, d->pos);
+    pa = rad1_read(qts, p->pos_a);
+    g_assert_cmpuint(RAD1_SUB_FIELD(reg), ==,
+                     rad1_frames_due(t - t_sub, d->freq) & 0x3fff);
+    g_assert_cmpuint(RAD1_POS_A_FRAMES(reg), ==,
+                     rad1_frames_due(t - t_par, p->freq) & 0x3fff);
+    g_assert_cmpuint(RAD1_POS_A_FRAMES(pa), ==,
+                     rad1_frames_due(t - t_par, p->freq) & 0x3fff);
+    g_assert_cmphex(reg & 0xfu, ==, 0);
+
+    k = 1;
+    while (t_status + rad1_status_due(k) <= t + 1) {
+        k++;
+    }
+    for (i = 0; i < 40; i++, k++) {
+        uint64_t slot = RAD1_TEST_STATUS_RAM + (k % nslots) * RAD1_SLOT_STRIDE;
+        uint32_t m_a;
+
+        rad1_step_to(qts, t_status, rad1_status_due(k));
+        reg = rad1_ring_read(qts, slot + RAD1_SLOT_MIRROR_OFFSET + d->pos);
+        m_a = rad1_ring_read(qts, slot + RAD1_SLOT_MIRROR_OFFSET + p->pos_a);
+        g_assert_cmphex(rad1_ring_read(qts, slot + d->slot_ptr) - sub_lo, ==,
+                        RAD1_SUB_FIELD(reg) * d->words * 4 % d->ring_bytes);
+        g_assert_cmphex(rad1_ring_read(qts, slot + p->slot_ptr) - par_lo, ==,
+                        RAD1_POS_A_FRAMES(m_a) * p->words * 4 %
+                        p->ring_bytes);
+    }
+
+    /* Clearing bit 0 stops only the parent. */
+    rad1_write(qts, p->enable_reg, p->enable_idle | RAD1_SUB_ENABLE);
+    par_frozen = rad1_read(qts, p->pos_a);
+    t = qtest_clock_step(qts, 2000000);
+    g_assert_cmphex(rad1_read(qts, p->pos_a), ==, par_frozen);
+    g_assert_cmpuint(RAD1_SUB_FIELD(rad1_read(qts, d->pos)), ==,
+                     rad1_frames_due(t - t_sub, d->freq) & 0x3fff);
+
+    /* Clearing bit 2 stops the subcode channel. */
+    rad1_write(qts, p->enable_reg, p->enable_idle);
+    frozen = rad1_read(qts, d->pos);
+    qtest_clock_step(qts, 2000000);
+    g_assert_cmphex(rad1_read(qts, d->pos), ==, frozen);
+
+    rad1_write(qts, RAD1_REG_STATUS_DMA_CTRL, RAD1_STATUS_STOP);
+}
+
+static void test_io6g_rad1_aes_subcode_stream(void)
+{
+    rad1_check_subcode_stream(&rad1_aes_sub);
+}
+
+static void test_io6g_rad1_adat_subcode_stream(void)
+{
+    rad1_check_subcode_stream(&rad1_adat_sub);
 }
 
 /*
@@ -3208,6 +3363,10 @@ int main(int argc, char **argv)
                    test_io6g_rad1_subcode_64bit);
     qtest_add_func("sn0/baseio/io6g-rad1-rejects-aes-input-rate",
                    test_io6g_rad1_rejects_aes_input_rate);
+    qtest_add_func("sn0/baseio/io6g-rad1-aes-subcode-stream",
+                   test_io6g_rad1_aes_subcode_stream);
+    qtest_add_func("sn0/baseio/io6g-rad1-adat-subcode-stream",
+                   test_io6g_rad1_adat_subcode_stream);
     qtest_add_func("sn0/baseio/io6g-rad1-genlock-absent",
                    test_io6g_rad1_genlock_absent);
     qtest_add_func("sn0/baseio/io6g-rad1-genlock-ntsc",

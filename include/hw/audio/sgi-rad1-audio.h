@@ -137,8 +137,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
  * The digital channels' enables share these bring-up registers: bit 0 of
  * 0x44 starts the ADAT input (type 4), of 0x48 the AES3 input (type 2), of
  * 0x50 the ADAT output (type 5) and of 0x54 the AES3 output (type 3). Bit 2
- * of 0x44 and 0x48 enables the input subcode DMA channels, types 7 and 6,
- * which the model accepts and does not run; bits 2 and 3 of 0x54 are AES3
+ * of 0x44 and 0x48 starts the input subcode DMA channels, types 7 and 6,
+ * independently of bit 0; bits 2 and 3 of 0x54 are AES3
  * output subcode controls, accepted and shadowed.
  */
 #define SGI_RAD1_AUDIO_REG_PREDISPATCH_A    0x44 /* bring-up 0xa0000008 */
@@ -220,6 +220,37 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_AUDIO_REG_ADAT_OUT_A_ADDR_LO   0x4e8
 #define SGI_RAD1_AUDIO_REG_ADAT_OUT_A_ADDR_HI   0x51c
 #define SGI_RAD1_AUDIO_REG_ADAT_OUT_A_CTRL      0x4ec
+
+/*
+ * The input subcode DMA channels, types 6 and 7, from the per-type table:
+ * AES3-input subcode on bit 2 of 0x48, set A 0x4e0/0x518/0x4e4, and
+ * ADAT-input subcode on bit 2 of 0x44, set A 0x4d8/0x514/0x4dc; each shares
+ * its enable register with its parent input's bit 0. Their DMA pointers
+ * sit at slot +0x20 and +0x18.
+ *
+ * Each reads a single position register as both A and B: 0x10 for type 6,
+ * 0x08 for type 7, A at shift 4 and B at shift 18. That B field, bits
+ * [31:18], is also the parent input's B count, so the model credits a
+ * subcode channel's frames to its A field, bits [17:4], only and leaves
+ * [31:18] to the parent. A subcode channel started alone therefore sees
+ * its B stay still. The datasheet's latch in [17:0] applies to fields at
+ * shift 18, so no latch is written here.
+ *
+ * What a subcode record holds is known only in part, and nothing on the
+ * host supplies AES3 channel status or ADAT user bits, so both channels
+ * write zeros. Their rate and frame width are not given; the model uses
+ * the parent's, a stated approximation: AES3-input subcode at the AES3
+ * input's rate with two-word frames, ADAT-input subcode at 48 kHz with
+ * eight-word frames.
+ */
+#define SGI_RAD1_AUDIO_SUBCODE_ENABLE_BIT       0x4u
+#define SGI_RAD1_AUDIO_REG_AES_SUB_A_ADDR_LO    0x4e0
+#define SGI_RAD1_AUDIO_REG_AES_SUB_A_ADDR_HI    0x518
+#define SGI_RAD1_AUDIO_REG_AES_SUB_A_CTRL       0x4e4
+#define SGI_RAD1_AUDIO_REG_ADAT_SUB_A_ADDR_LO   0x4d8
+#define SGI_RAD1_AUDIO_REG_ADAT_SUB_A_ADDR_HI   0x514
+#define SGI_RAD1_AUDIO_REG_ADAT_SUB_A_CTRL      0x4dc
+#define SGI_RAD1_AUDIO_SUB_POS_A_SHIFT          4
 #define SGI_RAD1_AUDIO_REG_OUT_A_ADDR_LO    0x4f8
 #define SGI_RAD1_AUDIO_REG_OUT_A_ADDR_HI    0x524
 #define SGI_RAD1_AUDIO_REG_OUT_A_CTRL       0x4fc
@@ -272,7 +303,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
  *   offset + 0x40), the copy rad_update_dev works from;
  * - the even words of +0x00..+0x38 hold each active channel's current DMA
  *   address, low 32 bits: +0x00 type 4, +0x08 type 2, +0x10 type 0,
- *   +0x28 type 5, +0x30 type 3, +0x38 type 1;
+ *   +0x18 type 7, +0x20 type 6, +0x28 type 5, +0x30 type 3, +0x38 type 1;
  * - +0x78 carries the ADAT-present bit (0x40) and the two bits the driver
  *   counts into a period it classifies against video field rates
  *   (0x80/0x100);
@@ -315,6 +346,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_AUDIO_SLOT_AES_IN_PTR_OFFSET   0x08
 #define SGI_RAD1_AUDIO_SLOT_IN_PTR_OFFSET   0x10
 #define SGI_RAD1_AUDIO_SLOT_ADAT_OUT_PTR_OFFSET 0x28
+#define SGI_RAD1_AUDIO_SLOT_ADAT_SUB_PTR_OFFSET 0x18
+#define SGI_RAD1_AUDIO_SLOT_AES_SUB_PTR_OFFSET  0x20
 #define SGI_RAD1_AUDIO_SLOT_AES_OUT_PTR_OFFSET  0x30
 #define SGI_RAD1_AUDIO_SLOT_OUT_PTR_OFFSET  0x38
 #define SGI_RAD1_AUDIO_SLOT_ADAT_PRESENT    0x40u
@@ -537,6 +570,8 @@ enum {
     SGI_RAD1_AUDIO_CH_AES_OUT,   /* type 3, AES3 output */
     SGI_RAD1_AUDIO_CH_ADAT_IN,   /* type 4, ADAT input */
     SGI_RAD1_AUDIO_CH_ADAT_OUT,  /* type 5, ADAT output */
+    SGI_RAD1_AUDIO_CH_AES_SUB,   /* type 6, AES3-input subcode */
+    SGI_RAD1_AUDIO_CH_ADAT_SUB,  /* type 7, ADAT-input subcode */
     SGI_RAD1_AUDIO_NUM_CH,
 };
 

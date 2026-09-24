@@ -67,6 +67,7 @@ typedef enum SGIRad1AudioIface {
     SGI_RAD1_AUDIO_IFACE_ANALOG,
     SGI_RAD1_AUDIO_IFACE_AES,
     SGI_RAD1_AUDIO_IFACE_ADAT,
+    SGI_RAD1_AUDIO_IFACE_NONE,   /* no host voice: subcode */
 } SGIRad1AudioIface;
 
 /*
@@ -86,9 +87,12 @@ typedef struct SGIRad1AudioChannelInfo {
     hwaddr addr_lo;
     hwaddr addr_hi;
     hwaddr ctrl;
+    uint32_t enable_bit;
     hwaddr pos_a;
+    unsigned int pos_a_shift;
     hwaddr pos_b;
     unsigned int pos_b_shift;
+    bool pos_b_parent;
     hwaddr slot_ptr;
     unsigned int words_per_frame;
     uint32_t freq;
@@ -104,7 +108,9 @@ static const SGIRad1AudioChannelInfo sgi_rad1_audio_channel_info[] = {
         .addr_lo = SGI_RAD1_AUDIO_REG_IN_A_ADDR_LO,
         .addr_hi = SGI_RAD1_AUDIO_REG_IN_A_ADDR_HI,
         .ctrl = SGI_RAD1_AUDIO_REG_IN_A_CTRL,
+        .enable_bit = SGI_RAD1_AUDIO_ENABLE_BIT,
         .pos_a = SGI_RAD1_AUDIO_REG_IN_POS_A,
+        .pos_a_shift = SGI_RAD1_AUDIO_SAMPLE_POS_SHIFT,
         .pos_b = SGI_RAD1_AUDIO_REG_ANALOG_POS_B,
         .pos_b_shift = SGI_RAD1_AUDIO_IN_POS_B_SHIFT,
         .slot_ptr = SGI_RAD1_AUDIO_SLOT_IN_PTR_OFFSET,
@@ -120,7 +126,9 @@ static const SGIRad1AudioChannelInfo sgi_rad1_audio_channel_info[] = {
         .addr_lo = SGI_RAD1_AUDIO_REG_OUT_A_ADDR_LO,
         .addr_hi = SGI_RAD1_AUDIO_REG_OUT_A_ADDR_HI,
         .ctrl = SGI_RAD1_AUDIO_REG_OUT_A_CTRL,
+        .enable_bit = SGI_RAD1_AUDIO_ENABLE_BIT,
         .pos_a = SGI_RAD1_AUDIO_REG_OUT_POS_A,
+        .pos_a_shift = SGI_RAD1_AUDIO_SAMPLE_POS_SHIFT,
         .pos_b = SGI_RAD1_AUDIO_REG_ANALOG_POS_B,
         .pos_b_shift = SGI_RAD1_AUDIO_OUT_POS_B_SHIFT,
         .slot_ptr = SGI_RAD1_AUDIO_SLOT_OUT_PTR_OFFSET,
@@ -136,7 +144,9 @@ static const SGIRad1AudioChannelInfo sgi_rad1_audio_channel_info[] = {
         .addr_lo = SGI_RAD1_AUDIO_REG_AES_IN_A_ADDR_LO,
         .addr_hi = SGI_RAD1_AUDIO_REG_AES_IN_A_ADDR_HI,
         .ctrl = SGI_RAD1_AUDIO_REG_AES_IN_A_CTRL,
+        .enable_bit = SGI_RAD1_AUDIO_ENABLE_BIT,
         .pos_a = SGI_RAD1_AUDIO_REG_AES_IN_POS_A,
+        .pos_a_shift = SGI_RAD1_AUDIO_SAMPLE_POS_SHIFT,
         .pos_b = SGI_RAD1_AUDIO_REG_AES_IN_POS_B,
         .pos_b_shift = SGI_RAD1_AUDIO_DIGITAL_POS_B_SHIFT,
         .slot_ptr = SGI_RAD1_AUDIO_SLOT_AES_IN_PTR_OFFSET,
@@ -152,7 +162,9 @@ static const SGIRad1AudioChannelInfo sgi_rad1_audio_channel_info[] = {
         .addr_lo = SGI_RAD1_AUDIO_REG_AES_OUT_A_ADDR_LO,
         .addr_hi = SGI_RAD1_AUDIO_REG_AES_OUT_A_ADDR_HI,
         .ctrl = SGI_RAD1_AUDIO_REG_AES_OUT_A_CTRL,
+        .enable_bit = SGI_RAD1_AUDIO_ENABLE_BIT,
         .pos_a = SGI_RAD1_AUDIO_REG_AES_OUT_POS_A,
+        .pos_a_shift = SGI_RAD1_AUDIO_SAMPLE_POS_SHIFT,
         .pos_b = SGI_RAD1_AUDIO_REG_AES_OUT_POS_B,
         .pos_b_shift = SGI_RAD1_AUDIO_DIGITAL_POS_B_SHIFT,
         .slot_ptr = SGI_RAD1_AUDIO_SLOT_AES_OUT_PTR_OFFSET,
@@ -168,7 +180,9 @@ static const SGIRad1AudioChannelInfo sgi_rad1_audio_channel_info[] = {
         .addr_lo = SGI_RAD1_AUDIO_REG_ADAT_IN_A_ADDR_LO,
         .addr_hi = SGI_RAD1_AUDIO_REG_ADAT_IN_A_ADDR_HI,
         .ctrl = SGI_RAD1_AUDIO_REG_ADAT_IN_A_CTRL,
+        .enable_bit = SGI_RAD1_AUDIO_ENABLE_BIT,
         .pos_a = SGI_RAD1_AUDIO_REG_ADAT_IN_POS_A,
+        .pos_a_shift = SGI_RAD1_AUDIO_SAMPLE_POS_SHIFT,
         .pos_b = SGI_RAD1_AUDIO_REG_ADAT_IN_POS_B,
         .pos_b_shift = SGI_RAD1_AUDIO_DIGITAL_POS_B_SHIFT,
         .slot_ptr = SGI_RAD1_AUDIO_SLOT_ADAT_IN_PTR_OFFSET,
@@ -184,13 +198,53 @@ static const SGIRad1AudioChannelInfo sgi_rad1_audio_channel_info[] = {
         .addr_lo = SGI_RAD1_AUDIO_REG_ADAT_OUT_A_ADDR_LO,
         .addr_hi = SGI_RAD1_AUDIO_REG_ADAT_OUT_A_ADDR_HI,
         .ctrl = SGI_RAD1_AUDIO_REG_ADAT_OUT_A_CTRL,
+        .enable_bit = SGI_RAD1_AUDIO_ENABLE_BIT,
         .pos_a = SGI_RAD1_AUDIO_REG_ADAT_OUT_POS_A,
+        .pos_a_shift = SGI_RAD1_AUDIO_SAMPLE_POS_SHIFT,
         .pos_b = SGI_RAD1_AUDIO_REG_ADAT_OUT_POS_B,
         .pos_b_shift = SGI_RAD1_AUDIO_DIGITAL_POS_B_SHIFT,
         .slot_ptr = SGI_RAD1_AUDIO_SLOT_ADAT_OUT_PTR_OFFSET,
         .words_per_frame = SGI_RAD1_AUDIO_ADAT_WORDS,
         .freq = SGI_RAD1_AUDIO_FREQ,
         .iface = SGI_RAD1_AUDIO_IFACE_ADAT,
+    },
+    [SGI_RAD1_AUDIO_CH_AES_SUB] = {
+        .name = "AES3-input subcode",
+        .voice = "sgi-rad1-audio.aes-sub",
+        .output = false,
+        .tag = SGI_RAD1_AUDIO_CH_AES_SUB,
+        .addr_lo = SGI_RAD1_AUDIO_REG_AES_SUB_A_ADDR_LO,
+        .addr_hi = SGI_RAD1_AUDIO_REG_AES_SUB_A_ADDR_HI,
+        .ctrl = SGI_RAD1_AUDIO_REG_AES_SUB_A_CTRL,
+        .enable_bit = SGI_RAD1_AUDIO_SUBCODE_ENABLE_BIT,
+        .pos_a = SGI_RAD1_AUDIO_REG_AES_IN_POS_B,
+        .pos_a_shift = SGI_RAD1_AUDIO_SUB_POS_A_SHIFT,
+        .pos_b = SGI_RAD1_AUDIO_REG_AES_IN_POS_B,
+        .pos_b_shift = SGI_RAD1_AUDIO_DIGITAL_POS_B_SHIFT,
+        .pos_b_parent = true,
+        .slot_ptr = SGI_RAD1_AUDIO_SLOT_AES_SUB_PTR_OFFSET,
+        .words_per_frame = SGI_RAD1_AUDIO_AES_WORDS,
+        .freq = 0,
+        .iface = SGI_RAD1_AUDIO_IFACE_NONE,
+    },
+    [SGI_RAD1_AUDIO_CH_ADAT_SUB] = {
+        .name = "ADAT-input subcode",
+        .voice = "sgi-rad1-audio.adat-sub",
+        .output = false,
+        .tag = SGI_RAD1_AUDIO_CH_ADAT_SUB,
+        .addr_lo = SGI_RAD1_AUDIO_REG_ADAT_SUB_A_ADDR_LO,
+        .addr_hi = SGI_RAD1_AUDIO_REG_ADAT_SUB_A_ADDR_HI,
+        .ctrl = SGI_RAD1_AUDIO_REG_ADAT_SUB_A_CTRL,
+        .enable_bit = SGI_RAD1_AUDIO_SUBCODE_ENABLE_BIT,
+        .pos_a = SGI_RAD1_AUDIO_REG_ADAT_IN_POS_B,
+        .pos_a_shift = SGI_RAD1_AUDIO_SUB_POS_A_SHIFT,
+        .pos_b = SGI_RAD1_AUDIO_REG_ADAT_IN_POS_B,
+        .pos_b_shift = SGI_RAD1_AUDIO_DIGITAL_POS_B_SHIFT,
+        .pos_b_parent = true,
+        .slot_ptr = SGI_RAD1_AUDIO_SLOT_ADAT_SUB_PTR_OFFSET,
+        .words_per_frame = SGI_RAD1_AUDIO_ADAT_WORDS,
+        .freq = SGI_RAD1_AUDIO_ADAT_IN_FREQ,
+        .iface = SGI_RAD1_AUDIO_IFACE_NONE,
     },
 };
 
@@ -288,9 +342,8 @@ static uint32_t sgi_rad1_audio_chan_pointer(SGIRad1AudioChannel *c)
  *   up to the present first, so the positions and pointers are those of
  *   this completion, not of an engine's last timer step.
  * - the even words of +0x00..+0x38: each channel's DMA pointer, once the
- *   channel has been started since reset. The subcode channels' words and
- *   the odd words are left alone: those channels do not run, and the
- *   driver does not read the odd words.
+ *   channel has been started since reset. The odd words are left alone:
+ *   the driver does not read them.
  * - +0x78 and +0x7c: the digital receivers and the video reference as
  *   the host describes them, and done. The done word goes last, so the
  *   driver never sees a done slot with a stale body.
@@ -542,6 +595,8 @@ static AudioBackend *sgi_rad1_audio_chan_be(SGIRad1AudioChannel *c)
         return c->dev->aes_be;
     case SGI_RAD1_AUDIO_IFACE_ADAT:
         return c->dev->adat_be;
+    case SGI_RAD1_AUDIO_IFACE_NONE:
+        return NULL;
     default:
         return c->dev->audio_be;
     }
@@ -626,6 +681,16 @@ static void sgi_rad1_audio_set_voice(SGIRad1AudioChannel *c, bool on)
  * change. Only that field moves: the rest of each B register belongs to
  * another channel or to subcode (see the header).
  */
+/* Add @frames to the 14-bit count at @shift in *@reg, wrapping in place. */
+static void sgi_rad1_audio_add_field(uint32_t *reg, unsigned int shift,
+                                     uint32_t frames)
+{
+    uint32_t mask = SGI_RAD1_AUDIO_POS_FIELD_MASK << shift;
+    uint32_t field = ((*reg >> shift) + frames) & SGI_RAD1_AUDIO_POS_FIELD_MASK;
+
+    *reg = (*reg & ~mask) | (field << shift);
+}
+
 static void sgi_rad1_audio_advance_pos(SGIRad1AudioChannel *c,
                                        uint32_t frames)
 {
@@ -633,16 +698,16 @@ static void sgi_rad1_audio_advance_pos(SGIRad1AudioChannel *c,
     const SGIRad1AudioChannelInfo *ci = sgi_rad1_audio_chan_info(c);
     uint32_t *pos_a = &s->sample_pos[SGI_RAD1_AUDIO_POS_IDX(ci->pos_a)];
     uint32_t *pos_b = &s->sample_pos[SGI_RAD1_AUDIO_POS_IDX(ci->pos_b)];
-    uint32_t field_mask = SGI_RAD1_AUDIO_POS_FIELD_MASK << ci->pos_b_shift;
-    uint32_t b_field;
 
-    *pos_a = ((*pos_a & ~SGI_RAD1_AUDIO_UST_LATCH_MASK) +
-              (frames << SGI_RAD1_AUDIO_SAMPLE_POS_SHIFT)) |
-             (sgi_rad1_audio_ust_counter(s) & SGI_RAD1_AUDIO_UST_LATCH_MASK);
-
-    b_field = ((*pos_b >> ci->pos_b_shift) + frames) &
-              SGI_RAD1_AUDIO_POS_FIELD_MASK;
-    *pos_b = (*pos_b & ~field_mask) | (b_field << ci->pos_b_shift);
+    sgi_rad1_audio_add_field(pos_a, ci->pos_a_shift, frames);
+    if (ci->pos_a_shift == SGI_RAD1_AUDIO_SAMPLE_POS_SHIFT) {
+        *pos_a = (*pos_a & ~SGI_RAD1_AUDIO_UST_LATCH_MASK) |
+                 (sgi_rad1_audio_ust_counter(s) &
+                  SGI_RAD1_AUDIO_UST_LATCH_MASK);
+    }
+    if (!ci->pos_b_parent) {
+        sgi_rad1_audio_add_field(pos_b, ci->pos_b_shift, frames);
+    }
 
     trace_sgi_rad1_audio_position(sgi_rad1_audio_chan_index(c), frames,
                                   *pos_a, *pos_b);
@@ -861,13 +926,14 @@ static void sgi_rad1_audio_chan_start(SGIRad1AudioChannel *c)
 }
 
 /*
- * A write to a channel's enable register. Bit 0 starts and stops the
- * channel; the register's other bits never do. Rewriting a set bit while
- * the engine runs does not restart it.
+ * A write to a channel's enable register. The channel's own bit, bit 0 or
+ * for an input subcode channel bit 2, starts and stops it; the register's
+ * other bits never do. Rewriting a set bit while the engine runs does not
+ * restart it.
  */
 static void sgi_rad1_audio_enable_write(SGIRad1AudioChannel *c, uint32_t val)
 {
-    if (val & SGI_RAD1_AUDIO_ENABLE_BIT) {
+    if (val & sgi_rad1_audio_chan_info(c)->enable_bit) {
         if (!c->running) {
             sgi_rad1_audio_chan_start(c);
         }
@@ -987,16 +1053,19 @@ static void sgi_rad1_audio_bar0_write(void *opaque, hwaddr addr, uint64_t val,
                       "UST counter 0x%" HWADDR_PRIx "\n", val, addr);
         break;
     /*
-     * The digital channels' enables, bit 0 of each; the other bits (the
-     * subcode enables, bring-up values) are shadowed and start nothing.
+     * The digital channels' enables, bit 0 of each, and the input subcode
+     * channels', bit 2 of 0x44 and 0x48; the other bits (output subcode
+     * controls, bring-up values) are shadowed and start nothing.
      */
     case SGI_RAD1_AUDIO_REG_PREDISPATCH_A:
         s->predispatch_a = val;
         sgi_rad1_audio_enable_write(&s->chan[SGI_RAD1_AUDIO_CH_ADAT_IN], val);
+        sgi_rad1_audio_enable_write(&s->chan[SGI_RAD1_AUDIO_CH_ADAT_SUB], val);
         break;
     case SGI_RAD1_AUDIO_REG_PREDISPATCH_B:
         s->predispatch_b = val;
         sgi_rad1_audio_enable_write(&s->chan[SGI_RAD1_AUDIO_CH_AES_IN], val);
+        sgi_rad1_audio_enable_write(&s->chan[SGI_RAD1_AUDIO_CH_AES_SUB], val);
         break;
     case SGI_RAD1_AUDIO_REG_SHIFT_LOAD_CLOCK:
         /*
@@ -1387,8 +1456,8 @@ static const VMStateDescription vmstate_sgi_rad1_audio_channel = {
 
 static const VMStateDescription vmstate_sgi_rad1_audio = {
     .name = "sgi-rad1-audio",
-    .version_id = 9,
-    .minimum_version_id = 9,
+    .version_id = 10,
+    .minimum_version_id = 10,
     .post_load = sgi_rad1_audio_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIRad1AudioState),
