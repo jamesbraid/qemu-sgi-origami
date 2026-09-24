@@ -20,9 +20,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockMDState, SGI_BEDROCK_MD)
 /*
  * Doublewords whose backdoor-written ECC byte disagrees with their data.
  * Each is overlaid on the memory window so a read is checked; a data write
- * regenerates the ECC and lifts the overlay.
+ * regenerates the ECC and lifts the overlay. The stock PROM's memory test
+ * holds 259 at once on a two-bank node (docs/datasheets/bedrock-memory-
+ * directory.md), so the bound leaves an eight-bank node room to spare.
  */
-#define SGI_BEDROCK_MD_ECC_INJECTIONS 128
+#define SGI_BEDROCK_MD_ECC_INJECTIONS 4096
 #define SGI_BEDROCK_MD_PROTECTION_ENTRIES (1 << 21)
 #define SGI_BEDROCK_MD_DIRECTORY_COMPAT_ENTRIES 74
 
@@ -41,10 +43,11 @@ typedef struct SGIBedrockMDECCInjection {
 /*
  * Memory lines whose directory word, written through the backdoor with
  * directory ECC ignored, is not a codeword. Each is overlaid on the memory
- * window so a read of the line checks the word; the overlay covers the
- * whole 128-byte line.
+ * window so a read of the line checks the word and a write rewrites it; the
+ * overlay covers the whole 128-byte line. The stock PROM's directory walk
+ * holds 45 at once on a two-bank node.
  */
-#define SGI_BEDROCK_MD_DIRECTORY_INJECTIONS 32
+#define SGI_BEDROCK_MD_DIRECTORY_INJECTIONS 1024
 
 typedef struct SGIBedrockMDDirectoryInjection {
     MemoryRegion mr;
