@@ -397,6 +397,18 @@ static void test_lifetime(void)
     qtest_quit(qts);
 }
 
+/*
+ * The endpoints this fixture attached, widgets 8 and 10, and none of the
+ * attempts the bounds test above shows refused.
+ */
+static void test_endpoint_widgets(void)
+{
+    QTestState *qts = start("");
+
+    g_assert_cmphex(qtest_readq(qts, CONTROL + 0xf0), ==, 0x500);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -423,5 +435,7 @@ int main(int argc, char **argv)
                    test_default_reset_load);
     qtest_add_func("/sn0/xbow-transport/running-refusal", test_running_refusal);
     qtest_add_func("/sn0/xbow-transport/lifetime", test_lifetime);
+    qtest_add_func("/sn0/xbow-transport/endpoint-widgets",
+                   test_endpoint_widgets);
     return g_test_run();
 }

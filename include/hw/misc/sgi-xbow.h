@@ -175,6 +175,14 @@ bool sgi_xbow_attach_widget(SGIXbowState *s, unsigned int widget,
                             MemoryRegion *face, Error **errp);
 
 /*
+ * The widgets with an endpoint attached, as a widget mask in the same form
+ * as "links-present" (bit N for widget N). A machine compares the two to
+ * keep what it reports attached and what it actually attached from drifting
+ * apart; the device itself allows a face on an absent port.
+ */
+uint16_t sgi_xbow_endpoint_widgets(const SGIXbowState *s);
+
+/*
  * Marks a present-but-not-yet-alive widget's own link alive after realize,
  * the same operational transition "links-alive" drives from the register
  * side, without requiring an attached endpoint: a widget with no face can
