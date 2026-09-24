@@ -214,9 +214,13 @@ static void test_cpu_halfword_stores_top_line(void)
     g_assert_cmphex(qtest_readw(s, HUB_ECC + 0x9fffffc), ==, 0x5555);
     g_assert_cmphex(qtest_readw(s, HUB_ECC + 0x9fffffa), ==, 0xaaaa);
     g_assert_cmphex(qtest_readw(s, HUB_ECC + 0x9fffff8), ==, 0x1357);
-    /* Big-endian byte view of the residue 0x30 word. */
-    g_assert_cmphex(qtest_readb(s, HUB_ECC + 0x9fffff9), ==, 0x13);
-    g_assert_cmphex(qtest_readb(s, HUB_ECC + 0x9fffff8), ==, 0x57);
+    /*
+     * Big-endian byte view of the residue 0x30 word: the halfword carrier
+     * keeps the even doubleword's byte (0x9fffffe, at byte carrier
+     * 0x9fffffe ^ 7) in its low half.
+     */
+    g_assert_cmphex(qtest_readb(s, HUB_ECC + 0x9fffff8), ==, 0x13);
+    g_assert_cmphex(qtest_readb(s, HUB_ECC + 0x9fffff9), ==, 0x57);
     /* The adjacent lower carrier word was never written. */
     g_assert_cmphex(qtest_readw(s, HUB_ECC + 0x9fffff0), ==, 0);
 
