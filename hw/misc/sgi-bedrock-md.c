@@ -2075,14 +2075,33 @@ static void md_fetchop_refuse_operation(hwaddr offset, bool is_write)
 /*
  * A 32-bit access names one word of the variable with address bit 2 (the
  * high word at 0, the low word at 4, in the big-endian order the memory
- * holds); the operation is still the block offset's, bits 5:3.
+ * holds) and operates on that word alone, as a 32-bit variable; the
+ * operation is still the block offset's, bits 5:3. A 64-bit access
+ * operates on the whole doubleword.
  */
-static uint64_t md_fetchop_word(hwaddr offset, unsigned size, uint64_t value)
+static unsigned md_fetchop_shift(hwaddr offset, unsigned size)
 {
-    if (size == 8) {
-        return value;
-    }
-    return offset & 4 ? (uint32_t)value : value >> 32;
+    return size == 8 || offset & 4 ? 0 : 32;
+}
+
+static uint64_t md_fetchop_mask(unsigned size)
+{
+    return size == 8 ? UINT64_MAX : UINT32_MAX;
+}
+
+static uint64_t md_fetchop_get(hwaddr offset, unsigned size, uint64_t variable)
+{
+    return (variable >> md_fetchop_shift(offset, size)) &
+           md_fetchop_mask(size);
+}
+
+static uint64_t md_fetchop_put(hwaddr offset, unsigned size,
+                               uint64_t variable, uint64_t operand)
+{
+    unsigned shift = md_fetchop_shift(offset, size);
+    uint64_t mask = md_fetchop_mask(size) << shift;
+
+    return (variable & ~mask) | ((operand << shift) & mask);
 }
 
 static MemTxResult md_fetchop_read(void *opaque, hwaddr offset,
@@ -2093,7 +2112,7 @@ static MemTxResult md_fetchop_read(void *opaque, hwaddr offset,
     MemTxResult result = MEMTX_OK;
     hwaddr raw;
     uint64_t old;
-    uint64_t new;
+    uint64_t operand;
 
     *value = 0;
     if (!md_fetchop_variable(s, offset, size, false, &raw)) {
@@ -2103,29 +2122,30 @@ static MemTxResult md_fetchop_read(void *opaque, hwaddr offset,
     if (result != MEMTX_OK) {
         return result;
     }
+    operand = md_fetchop_get(offset, size, old);
     switch (offset % SGI_BEDROCK_MD_FETCHOP_BLOCK & ~7) {
     case 0:
-        *value = md_fetchop_word(offset, size, old);
+        *value = operand;
         return MEMTX_OK;
     case 8:
-        new = old + 1;
+        operand++;
         break;
     case 16:
-        new = old - 1;
+        operand--;
         break;
     case 24:
-        new = 0;
+        operand = 0;
         break;
     default:
         md_fetchop_refuse_operation(offset, false);
         return MEMTX_DECODE_ERROR;
     }
-    address_space_stq_be(&s->node_as, raw, new, attrs, &result);
+    address_space_stq_be(&s->node_as, raw,
+                         md_fetchop_put(offset, size, old, operand), attrs,
+                         &result);
     if (result == MEMTX_OK) {
         md_node_memory_written(s, raw, 8);
-    }
-    if (result == MEMTX_OK) {
-        *value = md_fetchop_word(offset, size, old);
+        *value = md_fetchop_get(offset, size, old);
     }
     return result;
 }
@@ -2139,7 +2159,7 @@ static MemTxResult md_fetchop_write(void *opaque, hwaddr offset,
     MemTxResult result = MEMTX_OK;
     hwaddr raw;
     uint64_t old;
-    uint64_t mask = UINT64_MAX;
+    uint64_t operand;
 
     if (!md_fetchop_variable(s, offset, size, true, &raw)) {
         return MEMTX_DECODE_ERROR;
@@ -2148,31 +2168,30 @@ static MemTxResult md_fetchop_write(void *opaque, hwaddr offset,
     if (result != MEMTX_OK) {
         return result;
     }
-    if (size == 4) {
-        mask = offset & 4 ? UINT64_C(0xffffffff) : ~UINT64_C(0xffffffff);
-        value = offset & 4 ? (uint32_t)value : value << 32;
-    }
+    operand = md_fetchop_get(offset, size, old);
     switch (offset % SGI_BEDROCK_MD_FETCHOP_BLOCK & ~7) {
     case 0:
-        value = (old & ~mask) | (value & mask);
+        operand = value;
         break;
     case 8:
-        value = old + 1;
+        operand++;
         break;
     case 16:
-        value = old - 1;
+        operand--;
         break;
     case 24:
-        value = old & (value | ~mask);
+        operand &= value;
         break;
     case 32:
-        value = old | (value & mask);
+        operand |= value;
         break;
     default:
         md_fetchop_refuse_operation(offset, true);
         return MEMTX_DECODE_ERROR;
     }
-    address_space_stq_be(&s->node_as, raw, value, attrs, &result);
+    address_space_stq_be(&s->node_as, raw,
+                         md_fetchop_put(offset, size, old, operand), attrs,
+                         &result);
     if (result == MEMTX_OK) {
         md_node_memory_written(s, raw, 8);
     }
