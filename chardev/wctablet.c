@@ -105,6 +105,7 @@ DECLARE_INSTANCE_CHECKER(TabletChardev, WCTABLET_CHARDEV,
 
 
 static void wctablet_chr_accept_input(Chardev *chr);
+static void wctablet_stop_streaming(TabletChardev *tablet);
 
 static void wctablet_shift_input(TabletChardev *tablet, int count)
 {
@@ -131,6 +132,7 @@ static void wctablet_reset(TabletChardev *tablet)
     tablet->outlen = 0;
     /* reset state */
     tablet->send_events = false;
+    wctablet_stop_streaming(tablet);
 }
 
 /*
@@ -250,6 +252,31 @@ static const QemuInputHandler wctablet_handler = {
     .sync  = wctablet_input_sync,
 };
 
+/*
+ * A real tablet stays silent until told to start, so hold off claiming
+ * the console's pointer until this one is: registering unconditionally
+ * at chardev open made every console absolute even when no guest driver
+ * had the port open, starving PS/2 of mouse events. Activating on every
+ * call, not only a fresh registration, keeps this handler ahead of any
+ * relative pointer already in the list regardless of creation order.
+ */
+static void wctablet_start_streaming(TabletChardev *tablet)
+{
+    if (!tablet->hs) {
+        tablet->hs = qemu_input_handler_register((DeviceState *)tablet,
+                                                  &wctablet_handler);
+    }
+    qemu_input_handler_activate(tablet->hs);
+}
+
+static void wctablet_stop_streaming(TabletChardev *tablet)
+{
+    if (tablet->hs) {
+        qemu_input_handler_unregister(tablet->hs);
+        tablet->hs = NULL;
+    }
+}
+
 static void wctablet_chr_accept_input(Chardev *chr)
 {
     TabletChardev *tablet = WCTABLET_CHARDEV(chr);
@@ -359,6 +386,7 @@ static int wctablet_chr_write(struct Chardev *chr,
                    clen == 2) {
             trace_wct_cmd_st();
             wctablet_shift_input(tablet, 3);
+            wctablet_start_streaming(tablet);
             tablet->send_events = true;
             wctablet_queue_event(tablet);
 
@@ -367,6 +395,7 @@ static int wctablet_chr_write(struct Chardev *chr,
             trace_wct_cmd_sp();
             wctablet_shift_input(tablet, 3);
             tablet->send_events = false;
+            wctablet_stop_streaming(tablet);
 
         } else if (strncmp((char *)tablet->query, "TS", 2) == 0 &&
                    clen == 3) {
@@ -419,9 +448,7 @@ static void wctablet_chr_finalize(Object *obj)
 {
     TabletChardev *tablet = WCTABLET_CHARDEV(obj);
 
-    if (tablet->hs) {
-        qemu_input_handler_unregister(tablet->hs);
-    }
+    wctablet_stop_streaming(tablet);
     g_free(tablet->model);
 }
 
@@ -457,9 +484,7 @@ static bool wctablet_chr_open(Chardev *chr,
     }
     tablet->query_index = 0;
 
-    tablet->hs = qemu_input_handler_register((DeviceState *)tablet,
-                                             &wctablet_handler);
-
+    /* stays off the console's pointer until "ST" asks for it */
     qemu_chr_be_event(chr, CHR_EVENT_OPENED);
     return true;
 }

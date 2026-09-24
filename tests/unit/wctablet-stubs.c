@@ -12,15 +12,25 @@
 
 DeviceState *wctablet_stub_dev;
 const QemuInputHandler *wctablet_stub_handler;
+bool wctablet_stub_registered;
+
+/* an opaque handle for wctablet.c to hold and hand back; never dereferenced */
+static int wctablet_stub_handle;
 
 QemuInputHandlerState *
 qemu_input_handler_register(DeviceState *dev, const QemuInputHandler *handler)
 {
     wctablet_stub_dev = dev;
     wctablet_stub_handler = handler;
-    return NULL;
+    wctablet_stub_registered = true;
+    return (QemuInputHandlerState *)&wctablet_stub_handle;
+}
+
+void qemu_input_handler_activate(QemuInputHandlerState *s)
+{
 }
 
 void qemu_input_handler_unregister(QemuInputHandlerState *s)
 {
+    wctablet_stub_registered = false;
 }

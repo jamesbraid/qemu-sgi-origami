@@ -2173,6 +2173,60 @@ static void char_wctablet_reentrant_accept_test(void)
     qemu_chr_fe_deinit(&c, true);
 }
 
+static void char_wctablet_lazy_pointer_test(void)
+{
+    QEMUSerialSetParams ssp = { .speed = 9600, .parity = 'N',
+                                .data_bits = 8, .stop_bits = 1 };
+    Chardev *chr;
+    CharFrontend c;
+    FeHandler fe = { 0, };
+    int ret;
+
+    wctablet_stub_registered = false;
+
+    chr = qemu_chr_new("wctablet-lazy-label", "wctablet", NULL);
+    g_assert_nonnull(chr);
+
+    qemu_chr_fe_init(&c, chr, &error_abort);
+    qemu_chr_fe_set_handlers(&c, fe_can_read, fe_read, fe_event, NULL,
+                             &fe, NULL, true);
+    qemu_chr_fe_accept_input(&c);
+    fe.read_count = 0;
+
+    ret = qemu_chr_fe_ioctl(&c, CHR_IOCTL_SERIAL_SET_PARAMS, &ssp);
+    g_assert_cmpint(ret, ==, 0);
+
+    /*
+     * The live symptom this guards against: opening the port grabbed
+     * the console's pointer unconditionally, so VNC sent every guest
+     * absolute events even though IRIX's wacom module never opens this
+     * port -- starving the PS/2 mouse an X server on that guest reads.
+     */
+    g_assert_false(wctablet_stub_registered);
+
+    ret = qemu_chr_fe_write_all(&c, (const uint8_t *)"ST\r", 3);
+    g_assert_cmpint(ret, ==, 3);
+    g_assert_true(wctablet_stub_registered);
+
+    ret = qemu_chr_fe_write_all(&c, (const uint8_t *)"SP\r", 3);
+    g_assert_cmpint(ret, ==, 3);
+    g_assert_false(wctablet_stub_registered);
+
+    /* ST again after SP must re-register, not reuse a stale handle. */
+    ret = qemu_chr_fe_write_all(&c, (const uint8_t *)"ST\r", 3);
+    g_assert_cmpint(ret, ==, 3);
+    g_assert_true(wctablet_stub_registered);
+
+    /* A line-speed change mid-stream drops the pointer like SP does. */
+    ssp.speed = 300;
+    ret = qemu_chr_fe_ioctl(&c, CHR_IOCTL_SERIAL_SET_PARAMS, &ssp);
+    g_assert_cmpint(ret, ==, 0);
+    g_assert_false(wctablet_stub_registered);
+
+    qemu_chr_fe_deinit(&c, true);
+    g_assert_false(wctablet_stub_registered);
+}
+
 static SocketAddress tcpaddr = {
     .type = SOCKET_ADDRESS_TYPE_INET,
     .u.inet.host = (char *)"127.0.0.1",
@@ -2299,6 +2353,8 @@ int main(int argc, char **argv)
     g_test_add_func("/char/wctablet/bad-model", char_wctablet_bad_model_test);
     g_test_add_func("/char/wctablet/reentrant-accept",
                     char_wctablet_reentrant_accept_test);
+    g_test_add_func("/char/wctablet/lazy-pointer",
+                    char_wctablet_lazy_pointer_test);
 
 end:
     return g_test_run();
