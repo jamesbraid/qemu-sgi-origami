@@ -905,6 +905,11 @@ static MemTxResult md_directory_checked_read(
             int bit = md_directory_syndrome_bit(syndrome, premium);
 
             if (bit < 0) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "sgi-bedrock-md: uncorrectable directory ECC "
+                              "error for line %u (word 0x%016" PRIx64
+                              "), syndrome 0x%02x\n", injection->index,
+                              word, syndrome);
                 md_directory_error_latch(s, MD_DIRECTORY_ERROR_UCE, address,
                                          syndrome);
                 return MEMTX_ERROR;
@@ -1204,6 +1209,10 @@ static MemTxResult md_ecc_checked_read(SGIBedrockMDECCInjection *injection,
             int bit = md_ecc_syndrome_bit(syndrome);
 
             if (bit < 0) {
+                qemu_log_mask(LOG_GUEST_ERROR,
+                              "sgi-bedrock-md: uncorrectable memory ECC "
+                              "error at 0x%09" PRIx64 ", syndrome 0x%02x\n",
+                              address, syndrome);
                 md_memory_error_latch(s, MD_MEMORY_ERROR_READ_UCE, address,
                                       syndrome);
                 return MEMTX_ERROR;
