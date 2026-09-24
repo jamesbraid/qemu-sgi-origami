@@ -798,15 +798,6 @@ static unsigned int sgi_machine_compute_serial_line(
 }
 
 /*
- * Every widget position a Crossbow physically wires (docs/datasheets/
- * xbow.md: one or two host connections plus six I/O ports), regardless
- * of what boot populates: sgi_xbow_realize requires startup-links-alive
- * (below) to stay within this. startup-links-alive reports only what is
- * actually populated.
- */
-#define SGI_MACHINE_CROSSBAR_LINKS_PRESENT 0xff00
-
-/*
  * A crossbar's manufacturer id and part number are fixed by which chip
  * it is (docs/designs/sn-machine-model-architecture.md's own
  * SGIModelCrossbarKind split: a standalone Crossbow versus an XBridge's
@@ -848,7 +839,16 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
         uint16_t startup_alive = 0;
         size_t attachment_index;
 
-        /* The populated widgets reported alive at startup. */
+        /*
+         * The widgets this topology attaches: the only ports with a
+         * widget physically present, and each reported alive at startup.
+         * An empty XIO slot has no widget, so its port reads presence
+         * clear (docs/datasheets/xbow.md, link auxiliary status bit 5);
+         * reporting it present would make the PROM find a widget whose
+         * link never came up and diagnose it as a bad IO link. The spare
+         * widget held back below becomes present only when a board
+         * claims it (sgi_machine_done()).
+         */
         for (attachment_index = 0; attachment_index < attachment_count;
              attachment_index++) {
             const SGIModelXtalkAttachment *attachment =
@@ -874,8 +874,7 @@ static void sgi_machine_build_crossbars(SGIMachineState *s,
                              sgi_machine_crossbar_part(descriptor->kind));
         qdev_prop_set_uint32(crossbow, "manufacturer",
                              SGI_MACHINE_CROSSBAR_MANUFACTURER);
-        qdev_prop_set_uint16(crossbow, "links-present",
-                             SGI_MACHINE_CROSSBAR_LINKS_PRESENT);
+        qdev_prop_set_uint16(crossbow, "links-present", startup_alive);
         qdev_prop_set_uint16(crossbow, "startup-links-alive", startup_alive);
         /*
          * Stock PROM resets populated links and expects one alive before
@@ -2411,10 +2410,12 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
  * board's own Bridge has built, and fabric_claimed here is what tells
  * this loop to finish the attachment. For a claimed proxy this loop first
  * registers the board's own faces as the spare widget's inbound
- * destination (sgi_xbow_attach_endpoint_live()) -- the post-realize
- * counterpart of the sgi_xbow_attach_endpoint() every onboard board uses
- * before its Crossbow realizes, which refuses once the Crossbow is
- * realized and every Crossbow this machine builds is by now -- then brings
+ * destination (sgi_xbow_attach_endpoint_live(), which also turns the
+ * port from an empty slot into one reporting a widget present) -- the
+ * post-realize counterpart of the sgi_xbow_attach_endpoint() every
+ * onboard board uses before its Crossbow realizes, which refuses once the
+ * Crossbow is realized and every Crossbow this machine builds is by now --
+ * then brings
  * the widget's own link alive (sgi_xbow_mark_widget_alive()) so both
  * directions carry. A processor or peer widget now reaches the board's own
  * Bridge through the Crossbow's real routing, and a packet the board's
