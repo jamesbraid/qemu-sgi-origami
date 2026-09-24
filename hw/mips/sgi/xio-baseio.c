@@ -23,10 +23,11 @@
  * discovery); "ioc3-onewire-serial" is the onboard IOC3's separate
  * one-wire identity, forwarded to the internal sgi-baseio's own
  * "onewire-serial" property. "nvram-drive", "chardev-a", "chardev-b",
- * "record-a" and "record-b" forward the same way, unset by default;
- * BaseIO has no parallel function, so this class exposes no
- * "parallel-chardev" (the internal sgi-baseio's "io6" preset never
- * wires one either). "mio-chardev-a" and "mio-chardev-b" forward the
+ * "record-a" and "record-b" forward the same way, unset by default.
+ * "parallel-chardev" forwards the same way too, to the MediaIO
+ * daughtercard's parallel port the "io6g" preset fits; the plain BaseIO
+ * has no parallel function, and the internal sgi-baseio refuses the id
+ * under "io6". "mio-chardev-a" and "mio-chardev-b" forward the
  * same way to the internal sgi-baseio's own same-named properties, the
  * MediaIO daughtercard's two serial ports the "io6g" preset fits --
  * peripheral connections, not a console or record backend, so neither
@@ -101,6 +102,7 @@ struct SGIXioBaseioState {
     char *record_b_id;
     char *mio_chardev_a_id;
     char *mio_chardev_b_id;
+    char *parallel_chardev_id;
 
     SGIBridgeState *bridge;
     SGIBaseioState *baseio;
@@ -237,6 +239,10 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
     if (s->mio_chardev_b_id) {
         qdev_prop_set_string(baseio, "mio-chardev-b", s->mio_chardev_b_id);
     }
+    if (s->parallel_chardev_id) {
+        qdev_prop_set_string(baseio, "parallel-chardev",
+                             s->parallel_chardev_id);
+    }
     if (!qdev_realize(DEVICE(baseio), NULL, errp)) {
         return false;
     }
@@ -286,6 +292,8 @@ static const Property xio_baseio_properties[] = {
     DEFINE_PROP_STRING("record-b", SGIXioBaseioState, record_b_id),
     DEFINE_PROP_STRING("mio-chardev-a", SGIXioBaseioState, mio_chardev_a_id),
     DEFINE_PROP_STRING("mio-chardev-b", SGIXioBaseioState, mio_chardev_b_id),
+    DEFINE_PROP_STRING("parallel-chardev", SGIXioBaseioState,
+                       parallel_chardev_id),
 };
 
 /* No state of its own outside the children the Bridge and baseio own. */

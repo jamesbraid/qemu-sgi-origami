@@ -1052,6 +1052,17 @@ static bool sgi_machine_instantiate_baseio_card(
             qdev_prop_set_string(dev, serial_bindings[i].prop, chr->label);
         }
     }
+    /*
+     * The MediaIO daughtercard's parallel port, by board index the way
+     * sgi_machine_instantiate_ip29_io() binds the Origin 200's. The plain
+     * card has no parallel port, and QEMU's default "-parallel" backend
+     * exists whether or not one was asked for, so only io6g takes it.
+     */
+    if (g_str_equal(preset, "io6g") && board_index < MAX_PARALLEL_PORTS &&
+        parallel_hds[board_index]) {
+        qdev_prop_set_string(dev, "parallel-chardev",
+                             parallel_hds[board_index]->label);
+    }
     object_property_set_link(
         OBJECT(dev), "fabric",
         OBJECT(sgi_xtalk_crossbow_link_prepare(crossbow_link, OBJECT(s),
