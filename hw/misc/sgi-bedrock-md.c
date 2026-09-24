@@ -46,6 +46,8 @@ enum {
 #define MD_SELFTEST_COMMAND_BITS 0x7
 #define MD_SELFTEST_PASSED 0x1
 #define MD_SELFTEST_DONE 0x2
+/* Self-test data: write control, initial pattern zero, no other control. */
+#define MD_SELFTEST_DATA_WRITE_ZERO 0x80
 /* Memory error register: valid and overrun pairs, syndrome and address. */
 #define MD_MEMORY_ERROR_READ_CE_VALID (UINT64_C(1) << 52)
 #define MD_MEMORY_ERROR_READ_CE_OVERRUN (UINT64_C(1) << 53)
@@ -1592,9 +1594,14 @@ static unsigned md_memory_remap_bank(const SGIBedrockMDState *s,
     return bank ^ extract64(s->memory_config, 32, 2);
 }
 
+/*
+ * Whether the selected bank is fitted and backed, and if so the raw range
+ * its configured size covers: @base and @size.
+ */
 static bool md_selftest_bank_fits(const SGIBedrockMDState *s,
                                   unsigned selector,
-                                  unsigned configured_bank)
+                                  unsigned configured_bank,
+                                  uint64_t *base, uint64_t *size)
 {
     uint64_t dense_base = 0;
     uint64_t raw_size;
@@ -1608,6 +1615,7 @@ static bool md_selftest_bank_fits(const SGIBedrockMDState *s,
     if (size_code < 1 || size_code > 5) {
         return false;
     }
+    *size = md_memory_bank_size(size_code);
     if (md_has_installed_bank_sizes(s)) {
         uint64_t installed_size;
 
@@ -1616,21 +1624,23 @@ static bool md_selftest_bank_fits(const SGIBedrockMDState *s,
             return false;
         }
         raw_size = memory_region_size(s->node_mr);
+        *base = dense_base;
         return dense_base <= raw_size &&
                installed_size <= raw_size - dense_base;
     }
 
     for (unsigned bank = 0; bank < configured_bank; bank++) {
+        unsigned earlier_code;
         uint64_t bank_size;
 
         if (!md_memory_bank_enabled(s, bank)) {
             continue;
         }
-        size_code = md_memory_size_code(s, bank);
-        if (size_code < 1 || size_code > 5) {
+        earlier_code = md_memory_size_code(s, bank);
+        if (earlier_code < 1 || earlier_code > 5) {
             return false;
         }
-        bank_size = md_memory_bank_size(size_code);
+        bank_size = md_memory_bank_size(earlier_code);
         if (dense_base > UINT64_MAX - bank_size) {
             return false;
         }
@@ -1638,6 +1648,7 @@ static bool md_selftest_bank_fits(const SGIBedrockMDState *s,
     }
 
     raw_size = memory_region_size(s->node_mr);
+    *base = dense_base;
     return dense_base <= raw_size &&
            md_memory_bank_size(size_code) <= raw_size - dense_base;
 }
@@ -1653,8 +1664,55 @@ static void md_selftest_cancel(SGIBedrockMDState *s)
     s->selftest_status = 0;
 }
 
+/*
+ * A write phase with initial pattern zero and no nibble, byte or cycle
+ * control writes zero through the whole bank, check bytes included, so it
+ * leaves no doubleword the ECC backdoor had marked; like any data write it
+ * rewrites the entry of each marked directory line. The stock PROM runs one
+ * over each bank before and after its memory test; the test leaves check
+ * bytes that disagree with their data behind it, and this fill is what
+ * clears them before a diagnostic reads the bank. The other patterns'
+ * transformation rules are not published, so their phases leave memory as
+ * it is.
+ */
+static void md_selftest_fill(SGIBedrockMDState *s, uint64_t base,
+                             uint64_t size)
+{
+    if (address_space_set(&s->node_as, base, 0, size,
+                          MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-md: self-test fill of "
+                      "raw 0x%09" PRIx64 " size 0x%09" PRIx64 " failed\n",
+                      base, size);
+    }
+    memory_region_transaction_begin();
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_ECC_INJECTIONS; i++) {
+        SGIBedrockMDECCInjection *injection = &s->ecc_injection[i];
+
+        if (injection->active && injection->raw >= base / 8 &&
+            injection->raw - base / 8 < size / 8) {
+            s->ecc[injection->raw] = 0;
+            md_ecc_injection_unplace(injection);
+            injection->active = false;
+        }
+    }
+    /* A data write rewrites the entry of every marked line it covers. */
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_DIRECTORY_INJECTIONS; i++) {
+        SGIBedrockMDDirectoryInjection *line = &s->directory_injection[i];
+
+        if (line->active &&
+            (uint64_t)line->index >= base / MD_DIRECTORY_LINE &&
+            line->index - base / MD_DIRECTORY_LINE < size / MD_DIRECTORY_LINE) {
+            md_directory_line_written(s, line->index);
+        }
+    }
+    memory_region_transaction_commit();
+}
+
 static void md_selftest_command(SGIBedrockMDState *s, uint64_t value)
 {
+    uint64_t base = 0;
+    uint64_t size = 0;
+
     if (value == 0x4 || value == 0x2) {
         md_selftest_cancel(s);
         return;
@@ -1674,7 +1732,12 @@ static void md_selftest_command(SGIBedrockMDState *s, uint64_t value)
         (s->installed_memory_bank_mask & (1U << s->selftest_selector)) &&
         md_selftest_bank_fits(s, s->selftest_selector,
                               md_memory_remap_bank(
-                                  s, s->selftest_selector));
+                                  s, s->selftest_selector),
+                              &base, &size);
+    if (s->selftest_result &&
+        s->storage[MD_SELFTEST_DATA] == MD_SELFTEST_DATA_WRITE_ZERO) {
+        md_selftest_fill(s, base, size);
+    }
     s->selftest_error_address = 0;
     s->selftest_status = 0;
     timer_mod_ns(s->selftest_timer,

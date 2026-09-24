@@ -2823,6 +2823,79 @@ static void test_origin300_ecc_check(void)
 }
 
 /*
+ * A self-test write phase with pattern zero fills its bank with zero, check
+ * bytes included. The stock PROM runs one over each bank after its memory
+ * test, which leaves backdoor check bytes that disagree with their data;
+ * the Origin 300's cache-coherency and directory diagnostics later read
+ * those doublewords without writing them first. The doubleword here is the
+ * one the coherency diagnostic read, left the way the memory test leaves
+ * it: data 0x0f0f..., check byte 0x81, with a directory non-codeword on its
+ * line. A phase with another pattern leaves memory alone, the fill rewrites
+ * the line's directory entry as any data write does, and it stays inside
+ * the selected bank.
+ */
+static void test_origin300_selftest_fill(void)
+{
+    g_autofree char *prom = empty_prom_new();
+    g_autofree char *quoted_prom = g_shell_quote(prom);
+    QTestState *s = qtest_initf("-M origin300 -cpu R14000 -smp 2 "
+                                "-m 512M -bios %s -S", quoted_prom);
+    /*
+     * Bank select 0, as the PROM has it for the test: selector 3 is
+     * locational and software bank 3. The PROM later selects 2, which puts
+     * this doubleword at 0x40800008, where the coherency diagnostic read it.
+     */
+    const uint64_t address = 3 * MEMORY_BANK_SIZE + 0x800008;
+    const uint64_t carrier = ECC_BASE + ((address / 8) ^ 7);
+    const uint64_t other_bank = 2 * MEMORY_BANK_SIZE + 0x506000;
+    const uint64_t directory = PROTECTION_MACHINE_BASE +
+                               3 * DIRECTORY_BANK_SIZE +
+                               ((address & (MEMORY_BANK_SIZE - 1)) >> 3 &
+                                ~UINT64_C(0xf));
+    const uint64_t data = UINT64_C(0x0f0f0f0f0f0f0f0f);
+
+    ensure_clock_running(s);
+    qtest_writeq(s, SELFTEST_MACHINE(0x8),
+                 memory_bank_config(2, 3) | memory_bank_config(3, 3));
+    qtest_writeq(s, address, data);
+    qtest_writeq(s, other_bank, UINT64_C(0x0123456789abcdef));
+    qtest_writeb(s, carrier, 0x81);
+    g_assert_cmphex(qtest_readb(s, carrier), ==, 0x81);
+    /* A directory non-codeword on the line, stored with ECC ignored. */
+    qtest_writeq(s, SELFTEST_MACHINE(DIRECTORY_CONFIG), 3);
+    qtest_writeq(s, directory, UINT64_C(0x0000001f00000000));
+    qtest_writeq(s, SELFTEST_MACHINE(DIRECTORY_CONFIG), 1);
+
+    /* A nonzero pattern's write phase leaves the mark and the data. */
+    qtest_writeq(s, SELFTEST_MACHINE(SELFTEST_DATA), 0xc5);
+    qtest_writeq(s, SELFTEST_MACHINE(SELFTEST_CONTROL), (3 << 4) | 1);
+    qtest_clock_step(s, SELFTEST_INTERVAL_NS);
+    g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(SELFTEST_STATUS)), ==,
+                    SELFTEST_DONE | SELFTEST_PASSED);
+    g_assert_cmphex(qtest_readb(s, carrier), ==, 0x81);
+
+    /* The zero-pattern write phase clears the bank, mark and data. */
+    qtest_writeq(s, SELFTEST_MACHINE(SELFTEST_DATA), 0x80);
+    qtest_writeq(s, SELFTEST_MACHINE(SELFTEST_CONTROL), (3 << 4) | 1);
+    qtest_clock_step(s, SELFTEST_INTERVAL_NS);
+    g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(SELFTEST_STATUS)), ==,
+                    SELFTEST_DONE | SELFTEST_PASSED);
+    g_assert_cmphex(qtest_readb(s, carrier), ==, 0);
+    g_assert_cmphex(qtest_readq(s, address), ==, 0);
+    g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(MEMORY_ERROR)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, BEDROCK_NODE_REGISTERS +
+                                PI_ERROR_PENDING) & MEMORY_UNCORRECTABLE,
+                    ==, 0);
+    /* The line's directory entry was rewritten, so the read checks none. */
+    g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(DIRECTORY_ERROR)), ==, 0);
+    /* The fill stays in selector 3's bank; bank 2 keeps its data. */
+    g_assert_cmphex(qtest_readq(s, other_bank), ==,
+                    UINT64_C(0x0123456789abcdef));
+    qtest_quit(s);
+    unlink(prom);
+}
+
+/*
  * The directory word carries its own check field (premium: bits 37:32 and
  * 48; standard: 21:16). A backdoor write regenerates it unless directory
  * ECC is ignored, in which case a non-codeword is stored as written and the
@@ -3129,6 +3202,8 @@ int main(int argc, char **argv)
                    test_parent_ecc_uncorrectable_interrupt);
     qtest_add_func("sn1/bedrock-md/origin300-ecc-check",
                    test_origin300_ecc_check);
+    qtest_add_func("sn1/bedrock-md/origin300-selftest-fill",
+                   test_origin300_selftest_fill);
     qtest_add_func("sn1/bedrock-md/fetchop-operations",
                    test_fetchop_operations);
     qtest_add_func("sn1/bedrock-md/fetchop-rejections",
