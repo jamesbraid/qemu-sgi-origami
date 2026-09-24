@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-bedrock-io.h"
+#include "hw/misc/sgi-bedrock.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/mips/sgi-xtalk-port.h"
 #include "migration/vmstate.h"
@@ -411,6 +412,16 @@ static void ii_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
         trace_sgi_bedrock_io_scratch_write(current_cpu ? current_cpu->cpu_index
                                                        : -1,
                                            scratch, value);
+        /*
+         * Scratch 0 is where the stock PROM publishes an interface's
+         * fitted processors; the owning node joins its processors on that
+         * publication under multi-threaded TCG (sgi_bedrock_presence_
+         * published, docs/known-issues.md). The value is already stored. A
+         * standalone device has no owning node.
+         */
+        if (scratch == 0 && s->bedrock) {
+            sgi_bedrock_presence_published(s->bedrock);
+        }
         return;
     }
     case II_MISC_ERROR_MASK:

@@ -77,6 +77,14 @@ struct SGIBedrockIOState {
     uint64_t misc_error_mask;
     uint64_t scratch[2];
     uint64_t itte[7];
+    /*
+     * The owning node, when this device is one of sgi-bedrock's children:
+     * a plain pointer, as the local block's is, because this child's
+     * lifetime is enclosed by its parent's. Scratch 0 writes are reported
+     * to sgi_bedrock_presence_published(), which owns the processor
+     * bookkeeping; see sgi-bedrock.h. NULL for a standalone device.
+     */
+    struct SGIBedrockState *bedrock;
     uint64_t request_buffer[9];
     uint64_t retained[96];
     SGIBedrockIOBTE bte[2];

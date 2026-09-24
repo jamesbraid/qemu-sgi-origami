@@ -26,6 +26,7 @@ typedef enum SGIBedrockHoldKind {
     SGI_BEDROCK_HOLD_SCRATCH1 = 1,       /* H1: LB scratch 1's withheld write */
     SGI_BEDROCK_HOLD_SCRATCH3_HELD = 2,  /* H3: the hub lock a peer holds */
     SGI_BEDROCK_HOLD_PERF_YIELD = 3,     /* H3: a monopoliser cedes a quantum */
+    SGI_BEDROCK_HOLD_PRESENCE = 4,       /* H4: a publisher awaits its peer's */
 } SGIBedrockHoldKind;
 
 struct SGIBedrockState {
@@ -140,6 +141,18 @@ struct SGIBedrockState {
     uint64_t hold_id[SGI_BEDROCK_PROCESSORS];
     uint8_t hold_kind[SGI_BEDROCK_PROCESSORS];
     uint64_t hold_seq;
+
+    /*
+     * The presence-publication join (H4), host-only like the holds above
+     * and reset with them. presence_seen: whether a processor of that
+     * interface has written II scratch 0 since reset -- the stock PROM's
+     * publication of the interface's fitted processors. presence_abandoned:
+     * a hold on the join timed out, so the join is over for this reset
+     * whether or not a publication ever arrives. See the H4 comment in
+     * sgi-bedrock.c and docs/known-issues.md.
+     */
+    bool presence_seen[SGI_BEDROCK_PROCESSORS / 2];
+    bool presence_abandoned;
 };
 
 bool sgi_bedrock_hub_registers_permitted(SGIBedrockState *s);
@@ -172,5 +185,13 @@ void sgi_bedrock_hold_scratch1_write(SGIBedrockState *s, uint64_t value);
 void sgi_bedrock_perf_counter_access(SGIBedrockState *s);
 void sgi_bedrock_scratch3_acquire(SGIBedrockState *s, uint64_t observed);
 void sgi_bedrock_scratch3_released(SGIBedrockState *s);
+
+/*
+ * The presence-publication join (H4), docs/known-issues.md: called from
+ * ii_write() after a processor's write to II scratch 0 has landed. It only
+ * records which interface has published and wakes processors parked on the
+ * join; no value the guest reads changes.
+ */
+void sgi_bedrock_presence_published(SGIBedrockState *s);
 
 #endif
