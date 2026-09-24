@@ -10,9 +10,11 @@
  * into the real ui/input.c dispatch queue -- a standalone chardev
  * test does not link that. It records what was registered here
  * instead, so the test can drive handler->event()/handler->sync()
- * directly, the way ui/input.c would.
+ * directly, the way ui/input.c would, and can check whether the
+ * handler is currently registered without a real handler list to ask.
  */
 extern DeviceState *wctablet_stub_dev;
 extern const QemuInputHandler *wctablet_stub_handler;
+extern bool wctablet_stub_registered;
 
 #endif
