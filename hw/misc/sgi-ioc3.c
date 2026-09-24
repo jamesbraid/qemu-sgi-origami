@@ -501,6 +501,24 @@ static void sgi_ioc3_serial_record(SGIIOC3State *s, unsigned int port,
     qemu_chr_fe_write_all(&s->serial_record[port], &ch, 1);
 }
 
+/*
+ * docs/datasheets/ioc3.md, "Clear-to-send in loopback under hardware flow
+ * control": looped back with the engine's hardware flow control on, the
+ * port reports clear-to-send asserted even with request-to-send clear. The
+ * board test observes the level, not the mechanism behind it, so this
+ * supplies the level alone and leaves the modem-control register as
+ * software wrote it.
+ */
+static bool sgi_ioc3_serial_flow_cts(SGIIOC3State *s, unsigned int port)
+{
+    hwaddr control = SGI_IOC3_SDMA_PORT_A + port * SGI_IOC3_SDMA_PORT_STRIDE +
+                     SGI_IOC3_SDMA_CONTROL;
+
+    return (s->serial[port].mcr & UART_MCR_LOOP) &&
+           (s->sdma_reg[(control - SGI_IOC3_SDMA_BASE) / 4] &
+            SGI_IOC3_SDMA_FLOW_CONTROL);
+}
+
 /* Byte-wide only; both guests place their own byte lanes -- add none here. */
 static uint64_t sgi_ioc3_serial_read(void *opaque, hwaddr addr, unsigned size)
 {
@@ -526,6 +544,9 @@ static uint64_t sgi_ioc3_serial_read(void *opaque, hwaddr addr, unsigned size)
     if (addr == UART_MSR) {
         val |= handle->chip->serial_msr_test[handle->port];
         handle->chip->serial_msr_test[handle->port] = 0;
+        if (sgi_ioc3_serial_flow_cts(handle->chip, handle->port)) {
+            val |= UART_MSR_CTS;
+        }
     }
 
     return val;
@@ -802,6 +823,9 @@ static void sgi_ioc3_sdma_receive(SGIIOC3State *s, unsigned int port)
         s->sdma_packer[port][s->sdma_packed[port]] =
             serial_io_ops.read(serial, UART_RBR_THR, 1);
         msr = serial_io_ops.read(serial, UART_MSR, 1);
+        if (sgi_ioc3_serial_flow_cts(s, port)) {
+            msr |= UART_MSR_CTS;
+        }
 
         status = SGI_IOC3_SDMA_RX_DATA_OK | SGI_IOC3_SDMA_RX_MODEM_OK;
         if (lsr & UART_LSR_OE) {
@@ -954,6 +978,9 @@ static uint32_t sgi_ioc3_sdma_shadow(SGIIOC3State *s, unsigned int port)
         msr = ((mcr & 0x0c) << 4) | ((mcr & 0x02) << 3) | ((mcr & 0x01) << 5);
     } else {
         msr = serial->msr;
+    }
+    if (sgi_ioc3_serial_flow_cts(s, port)) {
+        msr |= UART_MSR_CTS;
     }
 
     shadow = lsr & SGI_IOC3_SHADOW_LSR_MASK;
