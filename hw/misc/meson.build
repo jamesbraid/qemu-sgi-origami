@@ -208,3 +208,7 @@ system_ss.add(when: 'CONFIG_SGI_BEDROCK',
               if_true: files('sgi-bedrock.c', 'sgi-bedrock-pi.c'))
 
 system_ss.add(when: 'CONFIG_SGI_XBOW_TRANSPORT_TEST', if_true: files('sgi-xbow-transport-test.c'))
+
+system_ss.add(when: 'CONFIG_SGI_COMMAND_PORT', if_true: files('sgi-command-port.c'))
+system_ss.add(when: 'CONFIG_SGI_COMMAND_PORT_TEST',
+              if_true: files('sgi-command-port-test.c'))

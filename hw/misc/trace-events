@@ -527,3 +527,8 @@ sgi_elsc_arb_step(uint32_t cpu_base, uint32_t ring_position, uint8_t signal, boo
 sgi_elsc_rx_enqueue(uint8_t byte, uint32_t rx_queue_len) "rx_queue enqueue 0x%02x, len now %u"
 sgi_elsc_rx_dequeue(unsigned int count, uint32_t rx_queue_len) "rx_queue dequeue %u byte(s), len now %u"
 sgi_elsc_nic(uint32_t pulse, uint32_t sample, uint32_t delay, bool routed, bool level) "one-wire slot pulse=%u sample=%u delay=%u routed=%d level=%d"
+
+# sgi-command-port.c
+sgi_command_port_word(unsigned int port_id, uint32_t word) "port %u word 0x%08x"
+sgi_command_port_packet(unsigned int port_id, uint32_t selector, unsigned int argc) "port %u selector 0x%08x argc %u"
+sgi_command_port_unsupported(unsigned int port_id, uint32_t word) "port %u unsupported selector 0x%08x"
