@@ -29,6 +29,7 @@
         2
       ],
       "default-cpu-model": "R10000",
+      "default-topology": "origin200",
       "dimms-per-node": [
         2,
         2
@@ -177,6 +178,7 @@
         1
       ],
       "default-cpu-model": "R10000",
+      "default-topology": "origin200",
       "dimms-per-node": [
         2
       ],
@@ -294,6 +296,7 @@
         2
       ],
       "default-cpu-model": "R10000",
+      "default-topology": "origin200",
       "dimms-per-node": [
         2
       ],
@@ -409,6 +412,7 @@
         2
       ],
       "default-cpu-model": "R10000",
+      "default-topology": "origin2000-module",
       "dimms-per-node": [
         2,
         2,
@@ -514,6 +518,7 @@
         2
       ],
       "default-cpu-model": "R14000",
+      "default-topology": "origin300",
       "dimms-per-node": [
         2
       ],
@@ -637,6 +642,7 @@
         4
       ],
       "default-cpu-model": "R14000",
+      "default-topology": "origin300",
       "dimms-per-node": [
         2
       ],
