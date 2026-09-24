@@ -178,50 +178,58 @@ static void sgi_ioc3_int_out_hold_high(SGIIOC3State *s)
     timer_del(s->int_out_timer);
 }
 
+/*
+ * Every rising edge of the output posts the output-pulse source, whatever
+ * mode produced it (docs/datasheets/ioc3.md); the mask only decides the pin.
+ */
+static void sgi_ioc3_int_out_drive(SGIIOC3State *s, bool level)
+{
+    if (level && !s->int_out_state) {
+        s->int_status |= SGI_IOC3_INT_RT_OUTPUT_PULSE;
+        sgi_ioc3_update_irq(s);
+    }
+    s->int_out_state = level;
+}
+
 static void sgi_ioc3_int_out_expire(void *opaque)
 {
     SGIIOC3State *s = opaque;
 
     switch (s->int_out_active & SGI_IOC3_INT_OUT_MODE) {
     case SGI_IOC3_INT_OUT_LOW:
-        s->int_out_state = false;
+        sgi_ioc3_int_out_drive(s, false);
         s->int_out_pulse_end = false;
         break;
     case SGI_IOC3_INT_OUT_HIGH:
-        s->int_out_state = true;
+        sgi_ioc3_int_out_drive(s, true);
         s->int_out_pulse_end = false;
         break;
     case SGI_IOC3_INT_OUT_ONE_SHOT:
         if (!s->int_out_pulse_end) {
-            bool rising = !s->int_out_state;
-
-            s->int_out_state = true;
+            sgi_ioc3_int_out_drive(s, true);
             s->int_out_pulse_end = true;
-            if (rising) {
-                s->int_status |= SGI_IOC3_INT_RT_OUTPUT_PULSE;
-                sgi_ioc3_update_irq(s);
-            }
             timer_mod(s->int_out_timer,
                       qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                       SGI_IOC3_INT_OUT_PULSE_TICKS *
                       SGI_IOC3_INT_OUT_TICK_NS);
         } else {
-            s->int_out_state = false;
+            sgi_ioc3_int_out_drive(s, false);
             s->int_out_pulse_end = false;
         }
         break;
     case SGI_IOC3_INT_OUT_PERIODIC:
         if (sgi_ioc3_int_out_periodic_has_no_low_phase(s->int_out_active)) {
+            sgi_ioc3_int_out_drive(s, true);
             sgi_ioc3_int_out_hold_high(s);
         } else if (!s->int_out_pulse_end) {
-            s->int_out_state = true;
+            sgi_ioc3_int_out_drive(s, true);
             s->int_out_pulse_end = true;
             timer_mod(s->int_out_timer,
                       qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                       SGI_IOC3_INT_OUT_PULSE_TICKS *
                       SGI_IOC3_INT_OUT_TICK_NS);
         } else {
-            s->int_out_state = false;
+            sgi_ioc3_int_out_drive(s, false);
             s->int_out_pulse_end = false;
             timer_mod(s->int_out_timer,
                       qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
@@ -232,7 +240,7 @@ static void sgi_ioc3_int_out_expire(void *opaque)
         break;
     case SGI_IOC3_INT_OUT_SQUARE:
         if (s->int_out_square_started) {
-            s->int_out_state = !s->int_out_state;
+            sgi_ioc3_int_out_drive(s, !s->int_out_state);
         } else {
             s->int_out_square_started = true;
         }
