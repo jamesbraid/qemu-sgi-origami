@@ -2448,8 +2448,11 @@ static uint8_t ecc_of(uint64_t data)
  * A doubleword whose backdoor-written ECC byte disagrees with its data is
  * checked on every read: a single-bit error is corrected and latched with
  * its syndrome and address, a check-bit error latched without changing the
- * data, and a double-bit error latched as uncorrectable and refused. A data
- * write regenerates the ECC and ends the checking; the ignore bit suspends it.
+ * data, and a double-bit error latched as uncorrectable. A read with no
+ * cache attribute, this test's, completes with the word as stored, as a
+ * processor's cached read does; the uncached read that fails is the
+ * processor's (sn1-bedrock-ecc-cpu-test). A data write regenerates the ECC
+ * and ends the checking; the ignore bit suspends it.
  */
 static void test_ecc_check_on_read(void)
 {
@@ -2531,16 +2534,25 @@ static void test_ecc_check_on_read(void)
                     (~data & ~UINT64_C(0xff)) | 0xa5);
     g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR)), ==, 0);
 
-    /* Two bits flipped: uncorrectable, refused, latched, not scrubbed. */
+    /*
+     * Two bits flipped: uncorrectable. The read completes with the word as
+     * stored and latches the record; neither the word nor its check byte is
+     * scrubbed, so the next read latches an overrun.
+     */
     qtest_writeb(s, ECC_BYTE(index),
                  ecc_of((~data & ~UINT64_C(0xff)) | 0xa5) ^
                  ecc_column[1] ^ ecc_column[2]);
-    g_assert_cmphex(qtest_readq(s, MEMORY(address)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MEMORY(address)), ==,
+                    (~data & ~UINT64_C(0xff)) | 0xa5);
     g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR)), ==,
                     MEMORY_ERROR_READ_UCE_VALID |
                     MEMORY_ERROR_SYNDROME(ecc_column[1] ^ ecc_column[2]) |
                     address);
-    g_assert_cmphex(qtest_readq(s, MEMORY(address)), ==, 0);
+    g_assert_cmphex(qtest_readb(s, ECC_BYTE(index)), ==,
+                    ecc_of((~data & ~UINT64_C(0xff)) | 0xa5) ^
+                    ecc_column[1] ^ ecc_column[2]);
+    g_assert_cmphex(qtest_readq(s, MEMORY(address)), ==,
+                    (~data & ~UINT64_C(0xff)) | 0xa5);
     g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR)), ==,
                     MEMORY_ERROR_READ_UCE_VALID |
                     MEMORY_ERROR_READ_UCE_OVERRUN |
@@ -2845,12 +2857,19 @@ static void test_origin300_ecc_check(void)
                     MEMORY_ERROR_SYNDROME(ecc_column[0]) | address);
     g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(MEMORY_ERROR)), ==, 0);
 
-    /* Syndrome 0x03: two check bits, uncorrectable, refused, interrupting. */
+    /*
+     * Syndrome 0x03: two check bits, uncorrectable, latched, interrupting.
+     * A read with no cache attribute completes with the word as stored; the
+     * uncached read the diagnostic makes, and its bus error, are the
+     * processor's (sn1-bedrock-ecc-cpu-test).
+     */
     g_assert_cmphex(qtest_readq(s, BEDROCK_NODE_REGISTERS +
                                 PI_ERROR_PENDING) & MEMORY_UNCORRECTABLE,
                     ==, 0);
-    qtest_writeb(s, carrier, 0x03);
-    g_assert_cmphex(qtest_readq(s, address), ==, 0);
+    qtest_writeq(s, address, UINT64_C(0x0123456789abcdef));
+    qtest_writeb(s, carrier, qtest_readb(s, carrier) ^ 0x03);
+    g_assert_cmphex(qtest_readq(s, address), ==,
+                    UINT64_C(0x0123456789abcdef));
     g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(MEMORY_ERROR)), ==,
                     MEMORY_ERROR_READ_UCE_VALID | MEMORY_ERROR_SYNDROME(0x03) |
                     address);
