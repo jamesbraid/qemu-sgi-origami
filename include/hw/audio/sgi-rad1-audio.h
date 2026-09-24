@@ -326,8 +326,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
  * 0x1000..0x10f7 (two buffers of 15 doublewords), AES3 at 0x1100..0x121f
  * (two of 16, then two more doublewords each). The model accepts and
  * shadows them; no signal path consumes them. The Bridge delivers a
- * doubleword to a 32-bit device as two 4-byte writes, so both widths are
- * taken. 0x10f8..0x10ff, between the two, is not documented.
+ * doubleword as two 4-byte writes to a slot it treats as 32-bit, and as
+ * one 8-byte access, byte-swapped or not, to a slot whose device register
+ * marks it 64-bit; which IRIX sets up for RAD1 is unknown. The window
+ * takes 4-byte accesses only, and QEMU's memory core splits an 8-byte one
+ * into two in address order. The shadow is byte-addressed little-endian,
+ * so the split stores the same bytes a native 8-byte write would, and the
+ * wider access would add no behavior. 0x10f8..0x10ff, between the two, is
+ * not documented.
  */
 #define SGI_RAD1_AUDIO_SUBCODE_FIRST        0x1000
 #define SGI_RAD1_AUDIO_SUBCODE_BYTES        0x220
