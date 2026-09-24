@@ -226,7 +226,9 @@ alive clear) and stays there. Link control's force-bad-packet bit is
 a one-shot that reads zero. A warm reset arriving on a port that the
 widget-0 fence admits resets the core and goes out on every other
 port whose fence admits the source, judged by the fences as they
-stood before the reset returned them to all ones.
+stood before the reset. The model then returns the fences to all
+ones; that is its choice, since whether the chip keeps their
+programmed values across a warm reset is unknown.
 
 A read of a write-only link-reset register is a register-access
 error like the others, condition and interrupt; what data the chip

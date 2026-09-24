@@ -297,7 +297,9 @@ static void xbow_reset_core(SGIXBridgeXbowState *s)
 /*
  * A warm reset arriving on a port resets the core and goes out on every
  * other port whose fence admits the source, using the fences as they were
- * programmed before the core reset returned them to all ones.
+ * programmed before the core reset. Returning the fences to all ones on
+ * that reset is the model's choice: whether the chip keeps their programmed
+ * values is unknown (docs/datasheets/xbridge.md).
  */
 static void xbow_warm_reset(void *opaque, int line, int level)
 {
