@@ -189,6 +189,13 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
     s->bridge = SGI_BRIDGE(bridge);
     qdev_prop_set_uint32(bridge, "revision", identity->bridge_revision);
     qdev_prop_set_string(bridge, "board-part", identity->board_part);
+    if (identity->board_name) {
+        qdev_prop_set_string(bridge, "board-barcode",
+                             identity->board_barcode);
+        qdev_prop_set_string(bridge, "board-revision",
+                             identity->board_revision);
+        qdev_prop_set_string(bridge, "board-name", identity->board_name);
+    }
     qdev_prop_set_uint64(bridge, "onewire-serial", s->onewire_serial);
     if (s->pci_bus_name) {
         qdev_prop_set_string(bridge, "pci-bus-name", s->pci_bus_name);

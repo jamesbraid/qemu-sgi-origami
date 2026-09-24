@@ -2789,44 +2789,28 @@ static uint64_t nic_search_pass(QTestState *qts, uint64_t rom,
 }
 
 /*
- * The scanning reader: find "name" within the first `len` bytes and copy
- * everything up to the next ';' delimiter, exactly -- the same helper
- * sn1-xbridge-onewire-test.c's page_field() implements, duplicated rather
- * than shared per this project's other qtest files.
+ * The part number as Linux's Bridge probe assembles it: bytes 11-29 and
+ * 32-37 of the record, spaces dropped (docs/datasheets/bridge.md, "The
+ * record layout, and every constraint on building it").
  */
-static bool page_field(const uint8_t *page, unsigned int len,
-                       const char *name, char *out)
+static void page_part(const uint8_t *page, char *out)
 {
-    unsigned int pos = 0, n = strlen(name);
+    unsigned int i, j = 0;
 
-    while (pos < len) {
-        unsigned int i;
-
-        if (pos + n <= len && memcmp(&page[pos], name, n) == 0) {
-            unsigned int j = 0;
-
-            for (i = pos + n; i < len && page[i] != ';'; i++) {
-                out[j++] = page[i];
-            }
-            out[j] = 0;
-            return true;
+    for (i = 11; i < 38; i++) {
+        if (i != 30 && i != 31 && page[i] != ' ') {
+            out[j++] = page[i];
         }
-        for (i = pos; i < len && page[i] != ';'; i++) {
-            /* skip to the next delimiter */
-        }
-        if (i >= len) {
-            return false;
-        }
-        pos = i + 1;
     }
-    return false;
+    out[j] = 0;
 }
 
-/* Select `rom` by Match ROM, then read its part-number page back. */
+/* Select `rom` by Match ROM, then read its record's two pages back. */
 static void nic_read_part(QTestState *qts, uint64_t rom, char *part)
 {
     uint8_t exchange[6];
-    uint8_t page[34];
+    uint8_t redirect[3];
+    uint8_t page[66];
     unsigned int i;
 
     g_assert_cmphex(nic_crc8(0, rom), ==, 0);
@@ -2848,13 +2832,25 @@ static void nic_read_part(QTestState *qts, uint64_t rom, char *part)
     }
     g_assert_cmphex(nic_crc(0, exchange, 6), ==, NIC_CRC_RESIDUE);
 
-    for (i = 0; i < sizeof(page); i++) {
+    for (i = 0; i < 34; i++) {
         page[i] = nic_read_byte(qts);
     }
-    g_assert_cmphex(nic_crc(0, page, sizeof(page)), ==, NIC_CRC_RESIDUE);
+    g_assert_cmphex(nic_crc(0, page, 34), ==, NIC_CRC_RESIDUE);
 
-    g_assert_cmpmem(&page[6], 5, "Part:", 5);
-    g_assert_true(page_field(page, 30, "Part:", part));
+    /*
+     * Page 1 opens with its own redirection byte and check, then its data
+     * lands over page 0's framing check so the record reads contiguously.
+     */
+    for (i = 0; i < sizeof(redirect); i++) {
+        redirect[i] = nic_read_byte(qts);
+    }
+    g_assert_cmphex(nic_crc(0, redirect, sizeof(redirect)), ==,
+                    NIC_CRC_RESIDUE);
+    for (i = 32; i < sizeof(page); i++) {
+        page[i] = nic_read_byte(qts);
+    }
+    g_assert_cmphex(nic_crc(0, &page[32], 34), ==, NIC_CRC_RESIDUE);
+    page_part(page, part);
 }
 
 /*

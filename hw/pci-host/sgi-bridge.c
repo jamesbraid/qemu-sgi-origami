@@ -908,10 +908,13 @@ static uint64_t sgi_bridge_read(void *opaque, hwaddr addr, unsigned size)
 }
 
 /*
- * One page, two readers: one positional from offset 11, one scanning for
- * name:value; fields -- the field name at 6-10 puts its value at 11 for
- * both. Byte 5's semicolon is LOAD-BEARING: without it the scanner
- * overshoots the field name and the lookup silently returns empty.
+ * The older text layout: `;Part:` and the part number from byte 11. Linux
+ * finds its part number there, but IRIX reads the page at fixed offsets
+ * and prints the barcode as "?Part?" and the revision and name as NUL
+ * (docs/datasheets/bridge.md, "The page is a fixed-offset binary
+ * record"). Boards whose barcode, revision and name the datasheets do not
+ * yet give still use it; a board with a board name set uses the record
+ * sgi_bridge_onewire_build_record() stores instead.
  */
 static const char sgi_bridge_onewire_image[NIC_ROM_SIZE] = {
     [0]  = 0x01, ' ', ' ', ' ', ' ', ';',
@@ -922,20 +925,88 @@ static const char sgi_bridge_onewire_image[NIC_ROM_SIZE] = {
 };
 
 /*
- * The two pages the identity readers take a part number out of. The check
- * in each page's last two bytes is image content, not device behaviour: a
- * part's own check always covers a whole page, so a check stored inside
- * one is a software record convention. It is stored inverted, so a guest
- * shifting a page and its check through the generator lands on the fixed
- * residue every one-wire CRC-16 stream ends on.
+ * The fixed-offset board-identity record (docs/datasheets/bridge.md, "The
+ * record layout, and every constraint on building it"). The part number
+ * is split around page 0's check value: spaces then the nine-character
+ * base number at 11-29, spaces then the three-digit dash number at 32-37.
  */
-static void sgi_bridge_onewire_build_rom(uint8_t rom[NIC_ROM_SIZE],
-                                         const char *board_part)
+#define NIC_RECORD_FORMAT        0x01
+#define NIC_RECORD_BARCODE       1
+#define NIC_RECORD_BARCODE_LEN   10
+#define NIC_RECORD_PART_BASE     21
+#define NIC_RECORD_PART_BASE_LEN 9
+#define NIC_RECORD_PART_DASH     35
+#define NIC_RECORD_PART_DASH_LEN 3
+#define NIC_RECORD_REVISION      38
+#define NIC_RECORD_REVISION_LEN  4
+#define NIC_RECORD_FLAGS         42  /* group, capability, variety */
+#define NIC_RECORD_FLAGS_LEN     6
+#define NIC_RECORD_NAME          48
+#define NIC_RECORD_NAME_LEN      14
+
+/*
+ * The formatter IRIX shows these fields through substitutes '?' for ':'
+ * and ';', and a NUL shows as '.' or '_', so a field is printable ASCII
+ * other than those two.
+ */
+static const char *sgi_bridge_record_field_error(const char *field,
+                                                 size_t width)
+{
+    const char *c;
+
+    if (!field || !*field || strlen(field) > width) {
+        return "is required and must fit its field";
+    }
+    for (c = field; *c; c++) {
+        if (*c < 0x20 || *c > 0x7e || *c == ':' || *c == ';') {
+            return "must be printable, without ':' or ';'";
+        }
+    }
+    return NULL;
+}
+
+static bool sgi_bridge_board_record_check(const SGIBridgeBoardRecord *record,
+                                          Error **errp)
+{
+    const struct {
+        const char *what;
+        const char *value;
+        size_t width;
+    } fields[] = {
+        { "barcode", record->barcode, NIC_RECORD_BARCODE_LEN },
+        { "revision", record->revision, NIC_RECORD_REVISION_LEN },
+        { "name", record->name, NIC_RECORD_NAME_LEN },
+    };
+    const char *error = sgi_bridge_board_part_error(record->part);
+    unsigned int i;
+
+    if (error) {
+        error_setg(errp, "%s", error);
+        return false;
+    }
+    for (i = 0; i < ARRAY_SIZE(fields); i++) {
+        error = sgi_bridge_record_field_error(fields[i].value,
+                                              fields[i].width);
+        if (error) {
+            error_setg(errp, "the I/O bridge board %s %s (at most %zu "
+                       "characters)", fields[i].what, error, fields[i].width);
+            return false;
+        }
+    }
+    return true;
+}
+
+/*
+ * The check in each page's last two bytes is image content, not device
+ * behaviour: a part's own check always covers a whole page, so a check
+ * stored inside one is a software record convention. It is stored
+ * inverted, so a guest shifting a page and its check through the
+ * generator lands on the fixed residue every one-wire CRC-16 stream ends
+ * on.
+ */
+static void sgi_bridge_onewire_seal_pages(uint8_t rom[NIC_ROM_SIZE])
 {
     unsigned int page;
-
-    memcpy(rom, sgi_bridge_onewire_image, NIC_ROM_SIZE);
-    memcpy(&rom[11], board_part, 12);
 
     for (page = 0; page < NIC_PAGES; page++) {
         uint8_t *at = &rom[page * NIC_PAGE_SIZE];
@@ -946,24 +1017,58 @@ static void sgi_bridge_onewire_build_rom(uint8_t rom[NIC_ROM_SIZE],
     }
 }
 
+static void sgi_bridge_onewire_build_rom(uint8_t rom[NIC_ROM_SIZE],
+                                         const char *board_part)
+{
+    memcpy(rom, sgi_bridge_onewire_image, NIC_ROM_SIZE);
+    memcpy(&rom[11], board_part, 12);
+    sgi_bridge_onewire_seal_pages(rom);
+}
+
+static void sgi_bridge_onewire_build_record(uint8_t rom[NIC_ROM_SIZE],
+                                            const SGIBridgeBoardRecord *record)
+{
+    memset(rom, ' ', NIC_ROM_SIZE);
+    rom[0] = NIC_RECORD_FORMAT;
+    memcpy(&rom[NIC_RECORD_BARCODE], record->barcode,
+           strlen(record->barcode));
+    memcpy(&rom[NIC_RECORD_PART_BASE], record->part,
+           NIC_RECORD_PART_BASE_LEN);
+    memcpy(&rom[NIC_RECORD_PART_DASH],
+           record->part + NIC_RECORD_PART_BASE_LEN, NIC_RECORD_PART_DASH_LEN);
+    memcpy(&rom[NIC_RECORD_REVISION], record->revision,
+           strlen(record->revision));
+    memset(&rom[NIC_RECORD_FLAGS], 0xff, NIC_RECORD_FLAGS_LEN);
+    memcpy(&rom[NIC_RECORD_NAME], record->name, strlen(record->name));
+    sgi_bridge_onewire_seal_pages(rom);
+}
+
 /*
  * Realize one DS2505 board-identity part onto the bus and give it
  * `child_name`, so the realize-time board record and a later
  * sgi_bridge_add_onewire_board_part() attach can share this without QOM
- * child-name collisions. `s->onewire_bus` must already exist.
+ * child-name collisions. A record with no name stores the older text
+ * layout from its part number alone. `s->onewire_bus` must already exist.
  */
 static bool sgi_bridge_onewire_attach_part(SGIBridgeState *s,
                                            const char *child_name,
-                                           const char *board_part,
+                                           const SGIBridgeBoardRecord *record,
                                            uint64_t serial, Error **errp)
 {
-    const char *board_part_error = sgi_bridge_board_part_error(board_part);
     uint8_t rom[NIC_ROM_SIZE];
     DeviceState *part;
 
-    if (board_part_error) {
-        error_setg(errp, "%s", board_part_error);
-        return false;
+    if (record->name) {
+        if (!sgi_bridge_board_record_check(record, errp)) {
+            return false;
+        }
+    } else {
+        const char *error = sgi_bridge_board_part_error(record->part);
+
+        if (error) {
+            error_setg(errp, "%s", error);
+            return false;
+        }
     }
     if (serial & ~NIC_ROM_SERIAL_MASK) {
         error_setg(errp, "the I/O bridge one-wire serial 0x%" PRIx64
@@ -971,7 +1076,11 @@ static bool sgi_bridge_onewire_attach_part(SGIBridgeState *s,
         return false;
     }
 
-    sgi_bridge_onewire_build_rom(rom, board_part);
+    if (record->name) {
+        sgi_bridge_onewire_build_record(rom, record);
+    } else {
+        sgi_bridge_onewire_build_rom(rom, record->part);
+    }
     part = qdev_new(TYPE_ONEWIRE_DS2505);
     object_property_add_child(OBJECT(s), child_name, OBJECT(part));
     qdev_prop_set_uint8(part, "family", NIC_ROM_FAMILY);
@@ -981,12 +1090,17 @@ static bool sgi_bridge_onewire_attach_part(SGIBridgeState *s,
 }
 
 bool sgi_bridge_add_onewire_board_part(DeviceState *bridge,
-                                       const char *board_part,
+                                       const SGIBridgeBoardRecord *record,
                                        uint64_t serial, Error **errp)
 {
     SGIBridgeState *s = SGI_BRIDGE(bridge);
 
-    return sgi_bridge_onewire_attach_part(s, "onewire-part-2", board_part,
+    if (!record->name) {
+        error_setg(errp, "a daughtercard's board-identity record needs a "
+                   "board name");
+        return false;
+    }
+    return sgi_bridge_onewire_attach_part(s, "onewire-part-2", record,
                                           serial, errp);
 }
 
@@ -1989,15 +2103,28 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     SGIBridgeState *s = SGI_BRIDGE(dev);
     PCIHostState *phb = PCI_HOST_BRIDGE(dev);
     Object *obj = OBJECT(dev);
-    const char *board_part;
+    const SGIBridgeBoardRecord record = {
+        .barcode = s->board_barcode,
+        .part = s->board_part,
+        .revision = s->board_revision,
+        .name = s->board_name,
+    };
     const char *board_part_error;
     unsigned int slot;
 
     /* Refuse property errors before the first region exists. */
-    board_part = s->board_part;
-    board_part_error = sgi_bridge_board_part_error(board_part);
+    board_part_error = sgi_bridge_board_part_error(record.part);
     if (board_part_error) {
         error_setg(errp, "%s", board_part_error);
+        return;
+    }
+    if (record.name) {
+        if (!sgi_bridge_board_record_check(&record, errp)) {
+            return;
+        }
+    } else if (record.barcode || record.revision) {
+        error_setg(errp, "the I/O bridge board-barcode and board-revision "
+                   "properties need board-name");
         return;
     }
     if (s->onewire_serial & ~NIC_ROM_SERIAL_MASK) {
@@ -2037,7 +2164,7 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
      * itself, so the ordering was never the hazard.
      */
     s->onewire_bus = onewire_create_bus(dev, "onewire");
-    if (!sgi_bridge_onewire_attach_part(s, "onewire-part", board_part,
+    if (!sgi_bridge_onewire_attach_part(s, "onewire-part", &record,
                                         s->onewire_serial, errp)) {
         return;
     }
@@ -2299,6 +2426,9 @@ static const Property sgi_bridge_properties[] = {
     DEFINE_PROP_UINT64("onewire-serial", SGIBridgeState, onewire_serial,
                        NIC_ROM_SERIAL_DEFAULT),
     DEFINE_PROP_STRING("board-part", SGIBridgeState, board_part),
+    DEFINE_PROP_STRING("board-barcode", SGIBridgeState, board_barcode),
+    DEFINE_PROP_STRING("board-revision", SGIBridgeState, board_revision),
+    DEFINE_PROP_STRING("board-name", SGIBridgeState, board_name),
     DEFINE_PROP_STRING("pci-bus-name", SGIBridgeState, pci_bus_name),
     /*
      * The part on the flash port's base chip select, a 16-bit region of

@@ -31,11 +31,19 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBaseioState, SGI_BASEIO)
  * sgi_bridge_board_part_error()); bridge_revision is the silicon
  * revision a Bridge-based preset's carrier sets on its own "revision"
  * property, 0 for the io8 preset, whose XBridge exposes no equivalent
- * property of its own.
+ * property of its own. board_barcode, board_revision and board_name are
+ * the rest of the board's identity record, which the carrier sets on its
+ * Bridge's "board-barcode", "board-revision" and "board-name" properties;
+ * board_revision is the board's revision letter, not the chip's. They
+ * are NULL for a preset whose record the datasheets do not yet give,
+ * which keeps its Bridge's older text layout.
  */
 typedef struct SGIBaseioPresetIdentity {
     const char *board_part;
     uint32_t bridge_revision;
+    const char *board_barcode;
+    const char *board_revision;
+    const char *board_name;
 } SGIBaseioPresetIdentity;
 
 /* NULL if name is not a preset this class knows. */

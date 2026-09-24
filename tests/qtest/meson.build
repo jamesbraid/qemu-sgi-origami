@@ -438,6 +438,7 @@ qtests_mips64 = \
                                                    'sn0-bridge-flash-test',
                                                    'sn0-origin2000-test',
                                                    'sn0-baseio-test',
+                                                   'sn0-bridge-identity-test',
                                                    'sn0-module-management-test',
                                                    'sn0-origin2000-pflash-test',
                                                    'sn0-cross-node-test',
