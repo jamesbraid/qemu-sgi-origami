@@ -1,71 +1,136 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * The SGI MediaIO RAD1 model's conversions between ring words and 16-bit
- * host samples (include/hw/audio/sgi-rad1-audio-pcm.h), pinned here
+ * The SGI MediaIO RAD1 model's conversions between ring frames and 16-bit
+ * stereo host frames (include/hw/audio/sgi-rad1-audio-pcm.h), pinned here
  * because no QEMU audio backend can feed a qtest known capture samples:
  * the only input a qtest can bind is silence, which every placement of a
  * sample turns into the same zero word.
  *
- * Each case puts a positive sample in one channel and a negative one in
- * the other, so a wrong bit position, a lost sign extension and swapped
- * channels each change the result.
+ * The cases put a positive sample in one channel and a negative one in the
+ * other, and use two frames, so a wrong bit position, a lost sign
+ * extension, swapped channels and a wrong frame stride each change the
+ * result. The eight-word cases are ADAT's frame; the two-word ones the
+ * analog and AES3 frame.
  */
 
 #include "qemu/osdep.h"
 #include "hw/audio/sgi-rad1-audio-pcm.h"
 
-/* One frame: the left word, then the right. */
-static const uint32_t ring_frame[2] = { 0x00123456u, 0xffabcd12u };
-/* What the output plays for it: bits [23:8] of each, left first. */
-static const int16_t played[2] = { 0x1234, (int16_t)0xabcd };
+#define ADAT_WORDS 8
 
-static void test_words_to_pcm(void)
+static void test_word_to_sample(void)
 {
-    uint8_t ring[8], pcm[4];
-
-    stl_le_p(ring, ring_frame[0]);
-    stl_le_p(ring + 4, ring_frame[1]);
-    sgi_rad1_audio_words_to_pcm(ring, pcm, 2);
-
-    g_assert_cmpint((int16_t)lduw_le_p(pcm), ==, played[0]);
-    g_assert_cmpint((int16_t)lduw_le_p(pcm + 2), ==, played[1]);
+    g_assert_cmpint(sgi_rad1_audio_word_to_sample(0x00123456u), ==, 0x1234);
+    g_assert_cmpint(sgi_rad1_audio_word_to_sample(0xffabcd12u),
+                    ==, (int16_t)0xabcd);
+    g_assert_cmpint(sgi_rad1_audio_word_to_sample(0xff800000u),
+                    ==, (int16_t)0x8000);
+    g_assert_cmpint(sgi_rad1_audio_word_to_sample(0x007fffffu), ==, 0x7fff);
 }
 
-static void test_pcm_to_words(void)
+static void test_sample_to_word(void)
 {
-    static const struct {
-        int16_t left, right;
-        uint32_t left_word, right_word;
-    } cases[] = {
-        { 0x1234, (int16_t)0xabcd, 0x00123400u, 0xffabcd00u },
-        { (int16_t)0x8000, 0x7fff, 0xff800000u, 0x007fff00u },
-        { -1, 1, 0xffffff00u, 0x00000100u },
-        { 0, 0, 0, 0 },
-    };
-    unsigned int i;
+    g_assert_cmphex(sgi_rad1_audio_sample_to_word(0x1234), ==, 0x00123400u);
+    g_assert_cmphex(sgi_rad1_audio_sample_to_word((int16_t)0xabcd),
+                    ==, 0xffabcd00u);
+    g_assert_cmphex(sgi_rad1_audio_sample_to_word((int16_t)0x8000),
+                    ==, 0xff800000u);
+    g_assert_cmphex(sgi_rad1_audio_sample_to_word(0x7fff), ==, 0x007fff00u);
+    g_assert_cmphex(sgi_rad1_audio_sample_to_word(-1), ==, 0xffffff00u);
+    g_assert_cmphex(sgi_rad1_audio_sample_to_word(0), ==, 0);
+}
 
-    for (i = 0; i < G_N_ELEMENTS(cases); i++) {
-        uint8_t pcm[4], ring[8];
+/* Two ring frames of @words words: frame f, word w holds a distinct value. */
+static void fill_ring(uint8_t *ring, unsigned int words)
+{
+    static const uint32_t left[2] = { 0x00123456u, 0xff876543u };
+    static const uint32_t right[2] = { 0xffabcd12u, 0x00345678u };
+    unsigned int f, w;
 
-        stw_le_p(pcm, (uint16_t)cases[i].left);
-        stw_le_p(pcm + 2, (uint16_t)cases[i].right);
-        sgi_rad1_audio_pcm_to_words(pcm, ring, 2);
+    for (f = 0; f < 2; f++) {
+        for (w = 0; w < words; w++) {
+            uint32_t v = w == 0 ? left[f] :
+                         w == 1 ? right[f] : 0x00111100u * (w + 1);
 
-        g_assert_cmphex((uint32_t)ldl_le_p(ring), ==, cases[i].left_word);
-        g_assert_cmphex((uint32_t)ldl_le_p(ring + 4), ==,
-                        cases[i].right_word);
+            stl_le_p(ring + (f * words + w) * 4, v);
+        }
     }
 }
 
-/* A recorded sample plays back unchanged. */
+static void check_pcm(const uint8_t *pcm)
+{
+    g_assert_cmpint((int16_t)lduw_le_p(pcm), ==, 0x1234);
+    g_assert_cmpint((int16_t)lduw_le_p(pcm + 2), ==, (int16_t)0xabcd);
+    g_assert_cmpint((int16_t)lduw_le_p(pcm + 4), ==, (int16_t)0x8765);
+    g_assert_cmpint((int16_t)lduw_le_p(pcm + 6), ==, 0x3456);
+}
+
+/* Output: left then right, from each frame's first two words. */
+static void test_frames_to_pcm(void)
+{
+    uint8_t ring[2 * ADAT_WORDS * 4], pcm[8];
+
+    fill_ring(ring, 2);
+    sgi_rad1_audio_frames_to_pcm(ring, pcm, 2, 2);
+    check_pcm(pcm);
+
+    /* ADAT: channels 1 and 2 reach the host, 3 to 8 are dropped. */
+    fill_ring(ring, ADAT_WORDS);
+    sgi_rad1_audio_frames_to_pcm(ring, pcm, 2, ADAT_WORDS);
+    check_pcm(pcm);
+}
+
+/* Input: two host frames, (0x1234, -0x5433) and (-0x8000, 0x7fff). */
+static void test_pcm_to_frames(void)
+{
+    static const uint32_t words[2][2] = {
+        { 0x00123400u, 0xffabcd00u },
+        { 0xff800000u, 0x007fff00u },
+    };
+    uint8_t pcm[8], ring[2 * ADAT_WORDS * 4];
+    unsigned int f, w;
+
+    stw_le_p(pcm, 0x1234);
+    stw_le_p(pcm + 2, 0xabcd);
+    stw_le_p(pcm + 4, 0x8000);
+    stw_le_p(pcm + 6, 0x7fff);
+
+    memset(ring, 0xa5, sizeof(ring));
+    sgi_rad1_audio_pcm_to_frames(pcm, ring, 2, 2);
+    for (f = 0; f < 2; f++) {
+        for (w = 0; w < 2; w++) {
+            g_assert_cmphex((uint32_t)ldl_le_p(ring + (f * 2 + w) * 4),
+                            ==, words[f][w]);
+        }
+    }
+    /* Nothing past the two frames is written. */
+    g_assert_cmphex((uint32_t)ldl_le_p(ring + 16), ==, 0xa5a5a5a5u);
+
+    /* ADAT: channels 1 and 2 from the host, 3 to 8 silence. */
+    memset(ring, 0xa5, sizeof(ring));
+    sgi_rad1_audio_pcm_to_frames(pcm, ring, 2, ADAT_WORDS);
+    for (f = 0; f < 2; f++) {
+        for (w = 0; w < ADAT_WORDS; w++) {
+            uint32_t want = w < 2 ? words[f][w] : 0;
+
+            g_assert_cmphex((uint32_t)ldl_le_p(ring +
+                                               (f * ADAT_WORDS + w) * 4),
+                            ==, want);
+        }
+    }
+}
+
+/* A recorded frame plays back unchanged. */
 static void test_round_trip(void)
 {
-    uint8_t pcm[4], ring[8], back[4];
+    uint8_t pcm[8], ring[2 * ADAT_WORDS * 4], back[8];
 
-    stw_le_p(pcm, (uint16_t)played[0]);
-    stw_le_p(pcm + 2, (uint16_t)played[1]);
-    sgi_rad1_audio_pcm_to_words(pcm, ring, 2);
-    sgi_rad1_audio_words_to_pcm(ring, back, 2);
+    stw_le_p(pcm, 0x1234);
+    stw_le_p(pcm + 2, 0xabcd);
+    stw_le_p(pcm + 4, 0x8000);
+    stw_le_p(pcm + 6, 0x7fff);
+    sgi_rad1_audio_pcm_to_frames(pcm, ring, 2, ADAT_WORDS);
+    sgi_rad1_audio_frames_to_pcm(ring, back, 2, ADAT_WORDS);
 
     g_assert_cmpmem(back, sizeof(back), pcm, sizeof(pcm));
 }
@@ -73,8 +138,10 @@ static void test_round_trip(void)
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
-    g_test_add_func("/sgi-rad1-audio/pcm/words-to-pcm", test_words_to_pcm);
-    g_test_add_func("/sgi-rad1-audio/pcm/pcm-to-words", test_pcm_to_words);
+    g_test_add_func("/sgi-rad1-audio/pcm/word-to-sample", test_word_to_sample);
+    g_test_add_func("/sgi-rad1-audio/pcm/sample-to-word", test_sample_to_word);
+    g_test_add_func("/sgi-rad1-audio/pcm/frames-to-pcm", test_frames_to_pcm);
+    g_test_add_func("/sgi-rad1-audio/pcm/pcm-to-frames", test_pcm_to_frames);
     g_test_add_func("/sgi-rad1-audio/pcm/round-trip", test_round_trip);
     return g_test_run();
 }

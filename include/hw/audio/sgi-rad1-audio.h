@@ -95,6 +95,27 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_AUDIO_REG_ANALOG_POS_B     0x18
 #define SGI_RAD1_AUDIO_IN_POS_B_SHIFT       18
 #define SGI_RAD1_AUDIO_OUT_POS_B_SHIFT      4
+
+/*
+ * The digital channels' pairs, from the same per-type table. Every one
+ * reads A and B at shift 18, so each count is bits [31:18]; the lower bits
+ * of each B belong to something else and are left alone:
+ * - AES3 input, type 2: A = 0x0c, B = 0x10 (bits [17:4] are the AES3-input
+ *   subcode channel's, type 6);
+ * - AES3 output, type 3: A = 0x24, B = 0x28 (bit 0 is the subcode buffer
+ *   half, held constant, and bits [17:4] a subcode block count);
+ * - ADAT input, type 4: A = 0x04, B = 0x08 (bits [17:4] are type 7's);
+ * - ADAT output, type 5: A = 0x1c, B = 0x20 (as 0x28 for AES3 output).
+ */
+#define SGI_RAD1_AUDIO_REG_AES_IN_POS_A     0x0c
+#define SGI_RAD1_AUDIO_REG_AES_IN_POS_B     0x10
+#define SGI_RAD1_AUDIO_REG_AES_OUT_POS_A    0x24
+#define SGI_RAD1_AUDIO_REG_AES_OUT_POS_B    0x28
+#define SGI_RAD1_AUDIO_REG_ADAT_IN_POS_A    0x04
+#define SGI_RAD1_AUDIO_REG_ADAT_IN_POS_B    0x08
+#define SGI_RAD1_AUDIO_REG_ADAT_OUT_POS_A   0x1c
+#define SGI_RAD1_AUDIO_REG_ADAT_OUT_POS_B   0x20
+#define SGI_RAD1_AUDIO_DIGITAL_POS_B_SHIFT  18
 /* Word index into sample_pos[] for a sample-position BAR0 offset. */
 #define SGI_RAD1_AUDIO_POS_IDX(off) \
     (((off) - SGI_RAD1_AUDIO_REG_SAMPLE_POS_FIRST) / 4)
@@ -112,6 +133,14 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_AUDIO_REG_UST_COUNTER      0x30
 #define SGI_RAD1_AUDIO_UST_NS_PER_TICK      800
 
+/*
+ * The digital channels' enables share these bring-up registers: bit 0 of
+ * 0x44 starts the ADAT input (type 4), of 0x48 the AES3 input (type 2), of
+ * 0x50 the ADAT output (type 5) and of 0x54 the AES3 output (type 3). Bit 2
+ * of 0x44 and 0x48 enables the input subcode DMA channels, types 7 and 6,
+ * which the model accepts and does not run; bits 2 and 3 of 0x54 are AES3
+ * output subcode controls, accepted and shadowed.
+ */
 #define SGI_RAD1_AUDIO_REG_PREDISPATCH_A    0x44 /* bring-up 0xa0000008 */
 #define SGI_RAD1_AUDIO_REG_PREDISPATCH_B    0x48 /* bring-up 0x10 */
 /*
@@ -179,7 +208,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_AUDIO_REG_IN_B_ADDR_LO     0x400
 #define SGI_RAD1_AUDIO_REG_IN_B_ADDR_HI     0x404
 #define SGI_RAD1_AUDIO_REG_IN_B_CTRL        0x408
-#define SGI_RAD1_AUDIO_IN_TAG               0
+#define SGI_RAD1_AUDIO_REG_AES_IN_A_ADDR_LO     0x4c8
+#define SGI_RAD1_AUDIO_REG_AES_IN_A_ADDR_HI     0x50c
+#define SGI_RAD1_AUDIO_REG_AES_IN_A_CTRL        0x4cc
+#define SGI_RAD1_AUDIO_REG_AES_OUT_A_ADDR_LO    0x4f0
+#define SGI_RAD1_AUDIO_REG_AES_OUT_A_ADDR_HI    0x520
+#define SGI_RAD1_AUDIO_REG_AES_OUT_A_CTRL       0x4f4
+#define SGI_RAD1_AUDIO_REG_ADAT_IN_A_ADDR_LO    0x4c0
+#define SGI_RAD1_AUDIO_REG_ADAT_IN_A_ADDR_HI    0x508
+#define SGI_RAD1_AUDIO_REG_ADAT_IN_A_CTRL       0x4c4
+#define SGI_RAD1_AUDIO_REG_ADAT_OUT_A_ADDR_LO   0x4e8
+#define SGI_RAD1_AUDIO_REG_ADAT_OUT_A_ADDR_HI   0x51c
+#define SGI_RAD1_AUDIO_REG_ADAT_OUT_A_CTRL      0x4ec
 #define SGI_RAD1_AUDIO_REG_OUT_A_ADDR_LO    0x4f8
 #define SGI_RAD1_AUDIO_REG_OUT_A_ADDR_HI    0x524
 #define SGI_RAD1_AUDIO_REG_OUT_A_CTRL       0x4fc
@@ -187,7 +227,6 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_AUDIO_REG_OUT_B_ADDR_HI    0x410
 #define SGI_RAD1_AUDIO_REG_OUT_B_CTRL       0x414
 #define SGI_RAD1_AUDIO_ENABLE_BIT           0x1u
-#define SGI_RAD1_AUDIO_OUT_TAG              1
 #define SGI_RAD1_AUDIO_CTRL_TAG_SHIFT       3
 #define SGI_RAD1_AUDIO_CTRL_TAG_MASK        0xfu
 #define SGI_RAD1_AUDIO_CTRL_LEN_SHIFT       7
@@ -232,18 +271,32 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
  * - bytes +0x44..+0x74 mirror registers 0x04..0x34 (slot byte = register
  *   offset + 0x40), the copy rad_update_dev works from;
  * - the even words of +0x00..+0x38 hold each active channel's current DMA
- *   address, low 32 bits; type 0's is +0x10 and type 1's is +0x38;
+ *   address, low 32 bits: +0x00 type 4, +0x08 type 2, +0x10 type 0,
+ *   +0x28 type 5, +0x30 type 3, +0x38 type 1;
  * - +0x78 carries the ADAT-present bit (0x40) and the two bits the driver
  *   counts into a period it classifies against video field rates
  *   (0x80/0x100);
  * - +0x7c is the completion word: bit 31 done, bit 19 "no valid AES3
  *   input", bits [26:24] an AES3 rate code.
  *
- * The model presents no ADAT input, no AES3 input and no video reference:
- * +0x78 is written 0, which leaves 0x40, 0x80 and 0x100 clear, and +0x7c is
- * 0x80080000. Setting 0x80/0x100 on every completion would present a
- * synthetic 60 Hz genlock. The other +0x78 bits are undecoded; zero is the
- * model's choice, not a captured value.
+ * By default the model presents no ADAT input, no AES3 input and no video
+ * reference: +0x78 is written 0, which leaves 0x40, 0x80 and 0x100 clear,
+ * and +0x7c is 0x80080000. Setting 0x80/0x100 on every completion would
+ * present a synthetic 60 Hz genlock. The other +0x78 bits are undecoded;
+ * zero is the model's choice, not a captured value.
+ *
+ * What is plugged into the digital inputs is the host's to say, through two
+ * properties that describe the cable, not guest-visible behavior of the
+ * chip's own:
+ * - "aes-input-rate", 0 (nothing connected), 32000, 44100 or 48000: a
+ *   locked AES3 source at that rate. Every completion word then carries
+ *   the datasheet's lock value, done plus the rate code with bit 19 clear:
+ *   0x83000000, 0x82000000 or 0x81000000, held steady so the driver's
+ *   500-pass debounce settles.
+ * - "adat-input", a present ADAT source: every completion sets +0x78 bit
+ *   0x40, with no gaps, as the driver's ADAT state machine needs.
+ * The driver's 0x80 writes for that state machine are accepted and
+ * shadowed like any other.
  */
 #define SGI_RAD1_AUDIO_SLOT_MIRROR_OFFSET   0x40
 #define SGI_RAD1_AUDIO_SLOT_MIRROR_FIRST    0x04
@@ -251,12 +304,35 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_AUDIO_SLOT_MIRROR_WORDS \
     (((SGI_RAD1_AUDIO_SLOT_MIRROR_LAST - SGI_RAD1_AUDIO_SLOT_MIRROR_FIRST) \
       / 4) + 1)
+#define SGI_RAD1_AUDIO_SLOT_ADAT_IN_PTR_OFFSET  0x00
+#define SGI_RAD1_AUDIO_SLOT_AES_IN_PTR_OFFSET   0x08
 #define SGI_RAD1_AUDIO_SLOT_IN_PTR_OFFSET   0x10
+#define SGI_RAD1_AUDIO_SLOT_ADAT_OUT_PTR_OFFSET 0x28
+#define SGI_RAD1_AUDIO_SLOT_AES_OUT_PTR_OFFSET  0x30
 #define SGI_RAD1_AUDIO_SLOT_OUT_PTR_OFFSET  0x38
+#define SGI_RAD1_AUDIO_SLOT_ADAT_PRESENT    0x40u
+#define SGI_RAD1_AUDIO_SLOT_AES_RATE_SHIFT  24
+#define SGI_RAD1_AUDIO_AES_CODE_48000       1
+#define SGI_RAD1_AUDIO_AES_CODE_44100       2
+#define SGI_RAD1_AUDIO_AES_CODE_32000       3
 #define SGI_RAD1_AUDIO_SLOT_AES_NO_INPUT    0x00080000u
 #define SGI_RAD1_AUDIO_SLOT_DONE_WORD \
     (SGI_RAD1_AUDIO_SLOT_DONE_BIT | SGI_RAD1_AUDIO_SLOT_AES_NO_INPUT)
 #define SGI_RAD1_AUDIO_SLOT_FLAGS_WORD      0x0u
+
+/*
+ * Output subcode windows. The driver writes AES3 and ADAT output subcode
+ * into BAR0 with 64-bit stores and never reads it back: ADAT at
+ * 0x1000..0x10f7 (two buffers of 15 doublewords), AES3 at 0x1100..0x121f
+ * (two of 16, then two more doublewords each). The model accepts and
+ * shadows them; no signal path consumes them. The Bridge delivers a
+ * doubleword to a 32-bit device as two 4-byte writes, so both widths are
+ * taken. 0x10f8..0x10ff, between the two, is not documented.
+ */
+#define SGI_RAD1_AUDIO_SUBCODE_FIRST        0x1000
+#define SGI_RAD1_AUDIO_SUBCODE_BYTES        0x220
+#define SGI_RAD1_AUDIO_SUBCODE_GAP_FIRST    0x10f8
+#define SGI_RAD1_AUDIO_SUBCODE_GAP_LAST     0x10ff
 
 /*
  * Register 0x34, which the driver reads only through slot +0x74, carries
@@ -313,7 +389,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 
 
 /*
- * The analog channels' streaming engine, shared by both directions. From
+ * The audio channels' streaming engine, shared by all six and both
+ * directions; the numbers below are the analog pair's. From
  * the enable edge to its clear it walks the ring [start, start + count *
  * 128) a frame at a time and wraps to the start, with no per-chunk re-arm,
  * paced by a virtual-clock timer at the sample rate. The output reads each
@@ -350,18 +427,53 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
  * of B inside the driver's 500 us poll window.
  */
 #define SGI_RAD1_AUDIO_FREQ                 44100
-#define SGI_RAD1_AUDIO_CHANNELS             2
 #define SGI_RAD1_AUDIO_WORD_BYTES           4
-#define SGI_RAD1_AUDIO_FRAME_BYTES \
-    (SGI_RAD1_AUDIO_CHANNELS * SGI_RAD1_AUDIO_WORD_BYTES)
 #define SGI_RAD1_AUDIO_TICK_FRAMES          8
-/* Ring bytes moved per DMA access; a whole number of frames. */
+/* Ring bytes moved per DMA access; a whole number of frames of any type. */
 #define SGI_RAD1_AUDIO_CHUNK_BYTES          1024
 
-/* The modeled DMA channels, indices into SGIRad1AudioState's chan[]. */
+/*
+ * The digital channels, flagged defaults from the datasheet's AES3 and
+ * ADAT sections, where the words per frame are set outside the driver:
+ * - AES3 frames are two words, left then right, like the analog ones.
+ * - ADAT frames are eight words, one channel each, 24 bits in bits [23:0].
+ *
+ * Rates, approximations:
+ * - The AES3 and ADAT outputs follow master clock +0x498 by default, as
+ *   the analog pair does, so they use the analog output's measured
+ *   44.1 kHz.
+ * - The ADAT input follows the ADAT clock, whose rate is 48 kHz from
+ *   creation and never written in the driver.
+ * - The AES3 input follows the AES3 clock, which takes the rate of the
+ *   locked source: "aes-input-rate", or the clock's creation default of
+ *   48 kHz when nothing is connected.
+ *
+ * Each digital interface binds its own optional audiodev, "aes-audiodev"
+ * and "adat-audiodev"; the analog pair keeps "audiodev". An unbound
+ * digital interface has no host voices: its outputs are dropped and its
+ * inputs record silence. QEMU's mixer carries at most two channels a
+ * voice, so each digital interface gets a stereo voice: AES3's two
+ * channels, or ADAT channels 1 and 2. ADAT channels 3 to 8 are dropped on
+ * output and record silence on input.
+ */
+#define SGI_RAD1_AUDIO_ANALOG_WORDS         2
+#define SGI_RAD1_AUDIO_AES_WORDS            2
+#define SGI_RAD1_AUDIO_ADAT_WORDS           8
+#define SGI_RAD1_AUDIO_ADAT_IN_FREQ         48000
+#define SGI_RAD1_AUDIO_AES_DEFAULT_FREQ     48000
+#define SGI_RAD1_AUDIO_HOST_CHANNELS        2
+
+/*
+ * The modeled DMA channels, indices into SGIRad1AudioState's chan[]; each
+ * index is the driver's channel type.
+ */
 enum {
-    SGI_RAD1_AUDIO_CH_IN,    /* channel type 0, analog input */
-    SGI_RAD1_AUDIO_CH_OUT,   /* channel type 1, analog output */
+    SGI_RAD1_AUDIO_CH_IN,        /* type 0, analog input */
+    SGI_RAD1_AUDIO_CH_OUT,       /* type 1, analog output */
+    SGI_RAD1_AUDIO_CH_AES_IN,    /* type 2, AES3 input */
+    SGI_RAD1_AUDIO_CH_AES_OUT,   /* type 3, AES3 output */
+    SGI_RAD1_AUDIO_CH_ADAT_IN,   /* type 4, ADAT input */
+    SGI_RAD1_AUDIO_CH_ADAT_OUT,  /* type 5, ADAT output */
     SGI_RAD1_AUDIO_NUM_CH,
 };
 
@@ -374,6 +486,18 @@ enum {
  */
 typedef struct SGIRad1AudioChannel {
     SGIRad1AudioState *dev;
+    /*
+     * The channel's host voice, output or input, not migrated. An output
+     * voice opens at realize, an input voice the first time the input runs;
+     * each then stays open and is only toggled active while its channel
+     * runs, as closing and reopening an output would make the wav backend
+     * truncate its file on each stream. A backend with no input, such as
+     * wav, leaves in_voice NULL, and the input then records silence;
+     * in_open_tried keeps that failed open from repeating on every enable.
+     */
+    SWVoiceOut *out_voice;
+    SWVoiceIn *in_voice;
+    bool in_open_tried;
     QEMUTimer *timer;
     bool running;
     uint64_t base;
@@ -417,6 +541,10 @@ struct SGIRad1AudioState {
 
     uint32_t dma_bank[SGI_RAD1_AUDIO_DMA_BANK_WORDS]; /* 0x400..0x528 */
 
+    /* Output subcode shadow, 0x1000..0x121f, and its BAR0 subregion. */
+    MemoryRegion subcode_mr;
+    uint8_t subcode[SGI_RAD1_AUDIO_SUBCODE_BYTES];
+
     /* Sample-position bank 0x04..0x2c, advanced by the channel engines. */
     uint32_t sample_pos[SGI_RAD1_AUDIO_SAMPLE_POS_WORDS];
 
@@ -444,19 +572,18 @@ struct SGIRad1AudioState {
     int64_t ust_base_ns;
 
     /*
-     * Host audio backend and the two voices the channels use. The backend
-     * comes from the audiodev property (or the default). The output voice
-     * opens at realize, the input voice the first time the input runs; each
-     * then stays open and is only toggled active while its channel runs, as
-     * closing and reopening the output would make the wav backend truncate
-     * its file on each stream. A backend with no input, such as wav, leaves
-     * adc_voice NULL, and the input then records silence. adc_open_tried
-     * keeps that failed open from repeating on every enable.
+     * Host audio backends. audio_be, the "audiodev" property, serves the
+     * analog pair and falls back to the default backend; aes_be and
+     * adat_be, "aes-audiodev" and "adat-audiodev", serve the digital
+     * interfaces only when set.
      */
     AudioBackend *audio_be;
-    SWVoiceOut *dac_voice;
-    SWVoiceIn *adc_voice;
-    bool adc_open_tried;
+    AudioBackend *aes_be;
+    AudioBackend *adat_be;
+
+    /* The host's description of the digital input cables; see above. */
+    uint32_t aes_input_rate;
+    bool adat_input;
 };
 
 #endif
