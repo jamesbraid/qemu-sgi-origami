@@ -96,9 +96,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIPciShoehornState, SGI_PCI_SHOEHORN)
 #define PCI_SHOEHORN_SERIAL_PLACEHOLDER 0x060504030201ULL
 
 /*
- * The fitted Cad Duo's own one-wire identity part serial. No real value is
- * captured, so this is the same descending-byte placeholder idiom used for
- * an unobserved NIC ROM serial elsewhere.
+ * The fitted Cad Duo's own one-wire identity part serial when nothing sets
+ * "cad-duo-onewire-serial". No real value is captured, so this is the same
+ * descending-byte placeholder idiom used for an unobserved NIC ROM serial
+ * elsewhere; a catalogue-placed board sets the topology's own synthetic
+ * identity instead.
  */
 #define PCI_SHOEHORN_CAD_DUO_ONEWIRE 0x0d0c0b0a0908ULL
 
@@ -112,6 +114,7 @@ struct SGIPciShoehornState {
     uint64_t onewire_serial;
     char *pci_bus_name;
     uint32_t cad_duo_slot;
+    uint64_t cad_duo_onewire_serial;
 
     SGIBridgeState *bridge;
 };
@@ -133,7 +136,7 @@ static bool pci_shoehorn_fit_cad_duo(SGIPciShoehornState *s, Error **errp)
     qdev_prop_set_uint16(DEVICE(ioc3), "subsystem-id",
                          SGI_IOC3_SUBSYS_CAD_DUO_PCI_CARD_UNCAPTURED);
     qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial",
-                         PCI_SHOEHORN_CAD_DUO_ONEWIRE);
+                         s->cad_duo_onewire_serial);
     if (!pci_realize_and_unref(ioc3, bus, errp)) {
         return false;
     }
@@ -212,6 +215,8 @@ static const Property pci_shoehorn_properties[] = {
     DEFINE_PROP_STRING("pci-bus-name", SGIPciShoehornState, pci_bus_name),
     DEFINE_PROP_UINT32("cad-duo-slot", SGIPciShoehornState, cad_duo_slot,
                        SGI_PCI_SHOEHORN_NO_CARD),
+    DEFINE_PROP_UINT64("cad-duo-onewire-serial", SGIPciShoehornState,
+                       cad_duo_onewire_serial, PCI_SHOEHORN_CAD_DUO_ONEWIRE),
 };
 
 /* No state of its own outside the internal Bridge and IOC3, which carry it. */
