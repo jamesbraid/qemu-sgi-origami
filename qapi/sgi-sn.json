@@ -792,6 +792,10 @@
 #
 # @topology: `topology=` value this offering is for
 #
+# @default-topology: the topology @product builds with no `topology=`,
+#     so a launcher can pick a product's default when none of its
+#     topologies is named for it
+#
 # @display-name: human-readable name of this configuration
 #
 # @nodes: node count of this configuration
@@ -845,6 +849,7 @@
 { 'struct': 'SGIModelOffering',
   'data': { 'product': 'str',
             'topology': 'str',
+            '*default-topology': 'str',
             'display-name': 'str',
             'nodes': 'uint32',
             'cpus-per-node': ['uint32'],
