@@ -55,94 +55,173 @@ static uint32_t sgi_rad1_audio_ust_counter(SGIRad1AudioState *s)
     (((off) - SGI_RAD1_AUDIO_REG_DMA_BANK_FIRST) / 4)
 
 /*
- * Status-DMA completion handshake. rad_start_status_dma (ring engine) and
- * rad_one_shot_status (single transfer) each program a host-memory
- * descriptor ring's PCI base into the status base registers and then write
- * a start value to 0x5c; the hardware then transfers status into the ring
- * and marks every slot it processes done -- bit 31 of the slot's +0x7c word
- * and the frame-completion bits in its +0x78 word. rad_one_shot_status
- * busy-polls the first slot's +0x7c bit 31, and rad_update_subsys walks the
- * ring counting slots whose +0x7c bit 31 is set, incrementing a frame
- * counter for each +0x78 completion bit; with no completed slots the driver
- * computes a zero rate and reports "RAD UST not incrementing". This routine
- * performs that marking so those counters advance.
+ * Mark one descriptor-ring slot completed: OR the done bit (and any extra
+ * status bits) into its +0x7c word and the frame/status bits into its +0x78
+ * word, through the device's own PCI DMA address space (pci_dma_*) so the
+ * Bridge's address translation and byte-lane correction are honored.
  *
- * The done bit is the observable hardware contract; it is set because that
- * is what the engine does on a start, not as a guest-specific reply. The
- * exact meaning of the +0x78 bits (0x80 and 0x100) beyond "they bump the
- * driver's frame counters", and of the individual 0x40003/0x40001 control
- * bits, is not decoded (see docs/datasheets/mediaio-rad1-audio.md); the
- * known behavior -- mark the processed slots done -- is implemented and the
- * unknowns left as-is.
+ * Byte order: the RAD1 is a little-endian PCI device that is not byte-lane
+ * self-ordered, so the Bridge byte-reverses its DMA into the big-endian host's
+ * memory (the driver reads each descriptor word with a plain big-endian load).
+ * The model therefore writes the words little-endian and lets the Bridge
+ * correction deliver them big-endian to the driver -- writing big-endian here
+ * would reach the driver byte-reversed, its done bit landing in the low byte
+ * where the driver's bit-31 test never sees it.
+ *
+ * Read-modify-write preserves the slot's other bits; the completion is
+ * idempotent, which is what the continuous engine relies on as it re-marks
+ * slots the driver's servicer has cleared.
  */
-static void sgi_rad1_audio_status_dma_complete(SGIRad1AudioState *s,
-                                               uint32_t ctrl)
+static bool sgi_rad1_audio_mark_slot(SGIRad1AudioState *s, uint64_t slot,
+                                     uint32_t done_bits, uint32_t flags_bits)
 {
     PCIDevice *dev = PCI_DEVICE(s);
+    uint8_t word[4];
+    uint32_t value;
+
+    if (pci_dma_read(dev, slot + SGI_RAD1_AUDIO_SLOT_DONE_OFFSET,
+                     word, sizeof(word)) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-rad1-audio: status-DMA descriptor read at 0x%"
+                      PRIx64 " failed; ring base unmapped?\n",
+                      slot + SGI_RAD1_AUDIO_SLOT_DONE_OFFSET);
+        return false;
+    }
+    value = ldl_le_p(word) | done_bits;
+    stl_le_p(word, value);
+    pci_dma_write(dev, slot + SGI_RAD1_AUDIO_SLOT_DONE_OFFSET,
+                  word, sizeof(word));
+
+    if (pci_dma_read(dev, slot + SGI_RAD1_AUDIO_SLOT_FLAGS_OFFSET,
+                     word, sizeof(word)) != MEMTX_OK) {
+        return false;
+    }
+    value = ldl_le_p(word) | flags_bits;
+    stl_le_p(word, value);
+    pci_dma_write(dev, slot + SGI_RAD1_AUDIO_SLOT_FLAGS_OFFSET,
+                  word, sizeof(word));
+    return true;
+}
+
+/* The descriptor ring's host-memory PCI base, from the status base regs. */
+static uint64_t sgi_rad1_audio_status_ring_base(SGIRad1AudioState *s)
+{
     uint32_t base_lo = s->dma_bank[SGI_RAD1_AUDIO_DMA_IDX(
         SGI_RAD1_AUDIO_REG_STATUS_BASE_LO)];
     uint32_t base_hi = s->dma_bank[SGI_RAD1_AUDIO_DMA_IDX(
         SGI_RAD1_AUDIO_REG_STATUS_BASE_HI)];
+
+    return ((uint64_t)base_hi << 32) | base_lo;
+}
+
+/*
+ * The ring's slot count, recovered from the limit register.
+ * rad_start_status_dma encodes it as LIMIT = 0x78 - count * 0x80. A limit that
+ * does not decode to a whole ring falls back to a single slot, so a caller that
+ * programmed the ring differently than the driver still sees a completion.
+ */
+static unsigned int sgi_rad1_audio_status_ring_slots(SGIRad1AudioState *s)
+{
     uint32_t limit = s->dma_bank[SGI_RAD1_AUDIO_DMA_IDX(
         SGI_RAD1_AUDIO_REG_STATUS_LIMIT)];
-    uint64_t base = ((uint64_t)base_hi << 32) | base_lo;
-    unsigned int slots, i;
+    int64_t span = (int64_t)SGI_RAD1_AUDIO_LIMIT_BASE - (int32_t)limit;
+    unsigned int slots;
 
-    if (ctrl & SGI_RAD1_AUDIO_STATUS_RING) {
-        /*
-         * Ring engine: rad_start_status_dma encoded the ring's slot count in
-         * the limit as LIMIT = 0x78 - count * 0x80. Recover it and clamp to
-         * the ring's documented maximum. A limit that does not decode to a
-         * whole slot still marks one slot, so a caller that programmed the
-         * ring differently than the driver does still sees a completion.
-         */
-        int64_t span = (int64_t)SGI_RAD1_AUDIO_LIMIT_BASE - (int32_t)limit;
-
-        if (span >= SGI_RAD1_AUDIO_SLOT_STRIDE) {
-            slots = span / SGI_RAD1_AUDIO_SLOT_STRIDE;
-            if (slots > SGI_RAD1_AUDIO_SLOT_MAX) {
-                slots = SGI_RAD1_AUDIO_SLOT_MAX;
-            }
-        } else {
-            slots = 1;
+    if (span >= SGI_RAD1_AUDIO_SLOT_STRIDE) {
+        slots = span / SGI_RAD1_AUDIO_SLOT_STRIDE;
+        if (slots > SGI_RAD1_AUDIO_SLOT_MAX) {
+            slots = SGI_RAD1_AUDIO_SLOT_MAX;
         }
     } else {
-        /* One-shot: a single transfer into the slot at the ring base. */
         slots = 1;
     }
+    return slots;
+}
 
-    for (i = 0; i < slots; i++) {
-        uint64_t slot = base + (uint64_t)i * SGI_RAD1_AUDIO_SLOT_STRIDE;
-        uint8_t word[4];
-        uint32_t value;
+/*
+ * One-shot status transfer. rad_one_shot_status programs the ring base and a
+ * -4 limit, writes 0x40001 to 0x5c, and busy-polls the base slot's +0x7c bit
+ * 31; the hardware transfers status into that one slot and marks it done. This
+ * is the boot-liveness handshake -- a single completion, not the streaming
+ * rate. It marks only the slot at the ring base, with the plain done and frame
+ * bits (no ADAT/AES status, which only the continuous flow feeds).
+ */
+static void sgi_rad1_audio_one_shot_status(SGIRad1AudioState *s)
+{
+    sgi_rad1_audio_mark_slot(s, sgi_rad1_audio_status_ring_base(s),
+                             SGI_RAD1_AUDIO_SLOT_DONE_BIT,
+                             SGI_RAD1_AUDIO_SLOT_FRAME_BITS);
+}
 
-        /*
-         * The guest reads the descriptor words with big-endian loads, so set
-         * the bits in the guest's byte order. Read-modify-write goes through
-         * the device's own PCI DMA address space (pci_dma_*), honoring the
-         * Bridge's translation, rather than any core address space.
-         */
-        if (pci_dma_read(dev, slot + SGI_RAD1_AUDIO_SLOT_DONE_OFFSET,
-                         word, sizeof(word)) != MEMTX_OK) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "sgi-rad1-audio: status-DMA descriptor read at 0x%"
-                          PRIx64 " failed; ring base unmapped?\n",
-                          slot + SGI_RAD1_AUDIO_SLOT_DONE_OFFSET);
-            return;
-        }
-        value = ldl_be_p(word) | SGI_RAD1_AUDIO_SLOT_DONE_BIT;
-        stl_be_p(word, value);
-        pci_dma_write(dev, slot + SGI_RAD1_AUDIO_SLOT_DONE_OFFSET,
-                      word, sizeof(word));
+/*
+ * Continuous-engine tick. rad_start_status_dma's ring engine keeps producing
+ * completions around the ring; the model completes the next slot each period,
+ * with the same done and frame bits the one-shot writes. Each completion's
+ * +0x78 frame bits advance the driver's frame counters, so the servicing pass
+ * measures a nonzero rate and rad_update_ksync locks the clock.
+ *
+ * The +0x78 word must leave the ADAT-present bit (0x40) clear.
+ * rad_update_subsys copies the last completed slot into the subsystem struct,
+ * and rad_start_dma gates the master channel's output kick on that copy's ADAT
+ * bit being clear (it writes central control 0x80 only when subsystem[0x2c0] &
+ * 0x40 == 0, else takes the ADAT branch and never starts the analog output).
+ * Reporting ADAT
+ * present would therefore lock the clock but leave sfplay's analog playback
+ * silent -- the frame bits give the rate, the clear ADAT bit lets the output
+ * start.
+ *
+ * The cursor advances sequentially with wrap: the driver's servicer consumes
+ * consecutive done slots starting just past its own consumer index and clears
+ * each done bit, so producing the next slot in ring order each tick keeps it
+ * finding fresh completions. The timer re-arms itself for the next period.
+ */
+static void sgi_rad1_audio_status_tick(void *opaque)
+{
+    SGIRad1AudioState *s = opaque;
+    uint64_t base = sgi_rad1_audio_status_ring_base(s);
+    uint64_t slot = base + (uint64_t)s->status_ring_cursor *
+                    SGI_RAD1_AUDIO_SLOT_STRIDE;
 
-        if (pci_dma_read(dev, slot + SGI_RAD1_AUDIO_SLOT_FLAGS_OFFSET,
-                         word, sizeof(word)) != MEMTX_OK) {
-            return;
-        }
-        value = ldl_be_p(word) | SGI_RAD1_AUDIO_SLOT_FRAME_BITS;
-        stl_be_p(word, value);
-        pci_dma_write(dev, slot + SGI_RAD1_AUDIO_SLOT_FLAGS_OFFSET,
-                      word, sizeof(word));
+    if (!s->status_running) {
+        return;
+    }
+
+    if (!sgi_rad1_audio_mark_slot(s, slot, SGI_RAD1_AUDIO_SLOT_DONE_BIT,
+                                  SGI_RAD1_AUDIO_SLOT_FRAME_BITS)) {
+        /* Ring base unmapped: stop rather than spin on a failing DMA. */
+        s->status_running = false;
+        return;
+    }
+
+    if (s->status_ring_slots) {
+        s->status_ring_cursor =
+            (s->status_ring_cursor + 1) % s->status_ring_slots;
+    }
+
+    timer_mod(s->status_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+              SGI_RAD1_AUDIO_STATUS_PERIOD_NS);
+}
+
+/*
+ * Start the continuous engine. rad_start_status_dma resets the consumer index
+ * to 0 and starts producing; the model starts its cursor one past that (the
+ * first slot the servicer checks) and arms the periodic timer.
+ */
+static void sgi_rad1_audio_status_ring_start(SGIRad1AudioState *s)
+{
+    s->status_ring_slots = sgi_rad1_audio_status_ring_slots(s);
+    s->status_ring_cursor = s->status_ring_slots > 1 ? 1 : 0;
+    s->status_running = true;
+    timer_mod(s->status_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+              SGI_RAD1_AUDIO_STATUS_PERIOD_NS);
+}
+
+/* Stop the continuous engine: rad_stop_status_dma's 0x1fffc, or a reset. */
+static void sgi_rad1_audio_status_ring_stop(SGIRad1AudioState *s)
+{
+    s->status_running = false;
+    if (s->status_timer) {
+        timer_del(s->status_timer);
     }
 }
 
@@ -397,13 +476,24 @@ static void sgi_rad1_audio_bar0_write(void *opaque, hwaddr addr, uint64_t val,
     case SGI_RAD1_AUDIO_REG_STATUS_DMA_CTRL:
         s->status_dma_ctrl = val;
         /*
-         * Start bits set (0x40003 ring engine or 0x40001 one-shot) kicks the
-         * completion handshake; the stop value (0x1fffc) and any other write
-         * only records the register.
+         * The ring bit (0x2) tells the continuous ring engine (0x40003) from
+         * the one-shot (0x40001); the interval field in bits [16:2] is masked
+         * off first. The continuous start arms the periodic completion timer;
+         * the one-shot marks a single slot now; the stop word (0x1fffc) halts
+         * the timer; any other write only records the register.
          */
-        if ((val & SGI_RAD1_AUDIO_STATUS_START_BITS) ==
-            SGI_RAD1_AUDIO_STATUS_START_BITS) {
-            sgi_rad1_audio_status_dma_complete(s, val);
+        switch (val & SGI_RAD1_AUDIO_STATUS_CTRL_MASK) {
+        case SGI_RAD1_AUDIO_STATUS_START:      /* 0x40003: continuous */
+            sgi_rad1_audio_status_ring_start(s);
+            break;
+        case SGI_RAD1_AUDIO_STATUS_ONESHOT_START: /* 0x40001: one-shot */
+            sgi_rad1_audio_one_shot_status(s);
+            break;
+        default:
+            if (val == SGI_RAD1_AUDIO_STATUS_STOP) {
+                sgi_rad1_audio_status_ring_stop(s);
+            }
+            break;
         }
         break;
     case SGI_RAD1_AUDIO_REG_HALT_TEARDOWN:
@@ -506,6 +596,11 @@ static void sgi_rad1_audio_reset_hold(Object *obj, ResetType type)
     }
     s->streaming = false;
 
+    /* Halt the continuous status-DMA engine and clear its cursor. */
+    sgi_rad1_audio_status_ring_stop(s);
+    s->status_ring_cursor = 0;
+    s->status_ring_slots = 0;
+
     /* The UST counter reads zero at reset and advances with the clock. */
     s->ust_base_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 }
@@ -533,12 +628,20 @@ static void sgi_rad1_audio_realize(PCIDevice *dev, Error **errp)
     memory_region_init_io(&s->bar0, OBJECT(dev), &sgi_rad1_audio_bar0_ops, s,
                           "sgi-rad1-audio.bar0", SGI_RAD1_AUDIO_BAR0_SIZE);
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar0);
+
+    /* The continuous status-DMA completion timer; armed on a 0x40003 start. */
+    s->status_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                   sgi_rad1_audio_status_tick, s);
 }
 
 static void sgi_rad1_audio_exit(PCIDevice *dev)
 {
     SGIRad1AudioState *s = SGI_RAD1_AUDIO(dev);
 
+    if (s->status_timer) {
+        timer_free(s->status_timer);
+        s->status_timer = NULL;
+    }
     if (s->audio_be && s->dac_voice) {
         audio_be_close_out(s->audio_be, s->dac_voice);
         s->dac_voice = NULL;
@@ -547,8 +650,8 @@ static void sgi_rad1_audio_exit(PCIDevice *dev)
 
 static const VMStateDescription vmstate_sgi_rad1_audio = {
     .name = "sgi-rad1-audio",
-    .version_id = 4,
-    .minimum_version_id = 4,
+    .version_id = 5,
+    .minimum_version_id = 5,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIRad1AudioState),
         VMSTATE_UINT32(predispatch_a, SGIRad1AudioState),
@@ -575,6 +678,10 @@ static const VMStateDescription vmstate_sgi_rad1_audio = {
         VMSTATE_UINT32_ARRAY(sample_pos, SGIRad1AudioState,
                              SGI_RAD1_AUDIO_SAMPLE_POS_WORDS),
         VMSTATE_BOOL(streaming, SGIRad1AudioState),
+        VMSTATE_TIMER_PTR(status_timer, SGIRad1AudioState),
+        VMSTATE_UINT32(status_ring_cursor, SGIRad1AudioState),
+        VMSTATE_UINT32(status_ring_slots, SGIRad1AudioState),
+        VMSTATE_BOOL(status_running, SGIRad1AudioState),
         VMSTATE_INT64(ust_base_ns, SGIRad1AudioState),
         VMSTATE_END_OF_LIST()
     }
