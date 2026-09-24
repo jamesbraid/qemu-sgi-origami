@@ -858,6 +858,14 @@ class SN1L1Reset(_ResetCycleMixin, QemuSystemTest):
             '-device',
             f'loader,file={slice_b},force-raw=on,addr={SLICE_B_LOAD:#x}',
             '-device', f'loader,addr={SLICE_B_PC:#x},cpu-num=1',
+            # The spinner's counter lives at STATE, in the same bank
+            # run_resets() above enables by hand -- without this loader
+            # here too, the bank stays disabled and the spinner's own
+            # first access to STATE faults instead of spinning.
+            '-device',
+            f'loader,addr={MD_MEMORY_CONFIG:#x},'
+            f'data={MD_MEMORY_CONFIG_VALUE:#x},data-len=8,data-be=on,'
+            'cpu-num=0',
             '-d', 'exec,trace:qemu_system_shutdown_request,trace:cpu_reset',
             '-D', log)
         self.vm.launch()
