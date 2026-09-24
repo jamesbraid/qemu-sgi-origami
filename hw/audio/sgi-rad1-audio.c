@@ -3,21 +3,21 @@
  * SGI MediaIO RAD1 digital/analog/genlock audio ASIC.
  *
  * Register-file bring-up, the free-running UST counter, the status DMA, and
- * the analog output's streaming engine (channel type 1). IRIX's rad_dd.o
- * programs a documented set of BAR0 offsets during rad_start_subsys, gated
- * by the board mode it reads from the PCI revision byte (see the header),
- * so this model needs no mode-selection logic of its
+ * the analog channels' streaming engine (channel types 0 and 1). IRIX's
+ * rad_dd.o programs a documented set of BAR0 offsets during
+ * rad_start_subsys, gated by the board mode it reads from the PCI revision
+ * byte (see the header), so this model needs no mode-selection logic of its
  * own -- it accepts whatever the guest's mode-driven dispatch writes and
  * answers with the value last stored there. Modeled pieces of the audio data
  * path: the free-running UST counter at 0x30, whose advancing value clears
  * the driver's "RAD UST not incrementing" report; the status DMA, which
  * fills the driver's host-memory descriptor-ring slots with a register
  * mirror, each running channel's DMA pointer and a completion word; and the
- * analog output, which from its enable edge walks a guest ring buffer at
- * the sample rate, feeds a host audio backend and advances its position
- * registers. The analog input, the digital channels, genlock and the
- * interface-parameter registers are not modeled -- those registers accept
- * and shadow writes with no signal path. See
+ * analog output and input, each of which from its enable edge walks a guest
+ * ring buffer at the sample rate, moving frames to or from a host audio
+ * backend, and advances its position registers. The digital channels,
+ * genlock and the interface-parameter registers are not modeled -- those
+ * registers accept and shadow writes with no signal path. See
  * docs/datasheets/mediaio-rad1-audio.md.
  */
 
@@ -28,6 +28,7 @@
 #include "qemu/error-report.h"
 #include "qemu/timer.h"
 #include "hw/audio/sgi-rad1-audio.h"
+#include "hw/audio/sgi-rad1-audio-pcm.h"
 #include "hw/pci/pci.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
@@ -56,25 +57,72 @@ static uint32_t sgi_rad1_audio_ust_counter(SGIRad1AudioState *s)
 #define SGI_RAD1_AUDIO_DMA_IDX(off) \
     (((off) - SGI_RAD1_AUDIO_REG_DMA_BANK_FIRST) / 4)
 
-static void sgi_rad1_audio_out_sync(SGIRad1AudioState *s);
+/*
+ * What distinguishes one analog channel from the other: its set-A
+ * registers, tag, direction, position registers and status-slot pointer
+ * word, all from the datasheet's per-type table. Set B is stored in the
+ * DMA bank but not consumed: every captured start wrote it identical to
+ * set A, and the datasheet only infers that the hardware alternates.
+ */
+typedef struct SGIRad1AudioChannelInfo {
+    const char *name;
+    bool output;
+    uint32_t tag;
+    hwaddr addr_lo;
+    hwaddr addr_hi;
+    hwaddr ctrl;
+    hwaddr pos_a;
+    hwaddr pos_b;
+    unsigned int pos_b_shift;
+    hwaddr slot_ptr;
+} SGIRad1AudioChannelInfo;
 
-/* The analog output's current DMA pointer, low 32 bits of the PCI address. */
-static uint32_t sgi_rad1_audio_out_pointer(SGIRad1AudioState *s)
+static const SGIRad1AudioChannelInfo sgi_rad1_audio_channel_info[] = {
+    [SGI_RAD1_AUDIO_CH_IN] = {
+        .name = "analog input",
+        .output = false,
+        .tag = SGI_RAD1_AUDIO_IN_TAG,
+        .addr_lo = SGI_RAD1_AUDIO_REG_IN_A_ADDR_LO,
+        .addr_hi = SGI_RAD1_AUDIO_REG_IN_A_ADDR_HI,
+        .ctrl = SGI_RAD1_AUDIO_REG_IN_A_CTRL,
+        .pos_a = SGI_RAD1_AUDIO_REG_IN_POS_A,
+        .pos_b = SGI_RAD1_AUDIO_REG_ANALOG_POS_B,
+        .pos_b_shift = SGI_RAD1_AUDIO_IN_POS_B_SHIFT,
+        .slot_ptr = SGI_RAD1_AUDIO_SLOT_IN_PTR_OFFSET,
+    },
+    [SGI_RAD1_AUDIO_CH_OUT] = {
+        .name = "analog output",
+        .output = true,
+        .tag = SGI_RAD1_AUDIO_OUT_TAG,
+        .addr_lo = SGI_RAD1_AUDIO_REG_OUT_A_ADDR_LO,
+        .addr_hi = SGI_RAD1_AUDIO_REG_OUT_A_ADDR_HI,
+        .ctrl = SGI_RAD1_AUDIO_REG_OUT_A_CTRL,
+        .pos_a = SGI_RAD1_AUDIO_REG_OUT_POS_A,
+        .pos_b = SGI_RAD1_AUDIO_REG_ANALOG_POS_B,
+        .pos_b_shift = SGI_RAD1_AUDIO_OUT_POS_B_SHIFT,
+        .slot_ptr = SGI_RAD1_AUDIO_SLOT_OUT_PTR_OFFSET,
+    },
+};
+
+static void sgi_rad1_audio_sync_all(SGIRad1AudioState *s);
+
+/* A channel's current DMA pointer, low 32 bits of the PCI address. */
+static uint32_t sgi_rad1_audio_chan_pointer(SGIRad1AudioChannel *c)
 {
-    return (uint32_t)(s->out_base + s->out_offset);
+    return (uint32_t)(c->base + c->offset);
 }
 
 /*
  * Fill one descriptor-ring slot, as a completion of the status DMA.
  *
  * - +0x44..+0x74: registers 0x04..0x34, the position bank, the 0x30 counter
- *   and the sync status, as they read now. The output engine is brought up
- *   to the present first, so the positions and pointer are those of this
- *   completion, not of the engine's last timer step.
- * - +0x38: the analog output's DMA pointer, once the channel has been
- *   started since reset. The other channels' pointer words and the odd
- *   words are left alone: no other channel runs, and the driver does not
- *   read the odd words.
+ *   and the sync status, as they read now. The channel engines are brought
+ *   up to the present first, so the positions and pointers are those of
+ *   this completion, not of an engine's last timer step.
+ * - +0x10 and +0x38: the analog input's and output's DMA pointers, each
+ *   once its channel has been started since reset. The other channels'
+ *   pointer words and the odd words are left alone: no other channel runs,
+ *   and the driver does not read the odd words.
  * - +0x78 and +0x7c: no ADAT, AES3 or video reference, and done. The done
  *   word goes last, so the driver never sees a done slot with a stale body.
  *
@@ -91,7 +139,7 @@ static bool sgi_rad1_audio_fill_slot(SGIRad1AudioState *s, uint64_t slot)
     uint8_t word[4];
     unsigned int i;
 
-    sgi_rad1_audio_out_sync(s);
+    sgi_rad1_audio_sync_all(s);
 
     for (i = 0; i < SGI_RAD1_AUDIO_SLOT_MIRROR_WORDS; i++) {
         hwaddr reg = SGI_RAD1_AUDIO_SLOT_MIRROR_FIRST + i * 4;
@@ -115,10 +163,14 @@ static bool sgi_rad1_audio_fill_slot(SGIRad1AudioState *s, uint64_t slot)
         return false;
     }
 
-    if (s->out_len) {
-        stl_le_p(word, sgi_rad1_audio_out_pointer(s));
-        pci_dma_write(dev, slot + SGI_RAD1_AUDIO_SLOT_OUT_PTR_OFFSET,
-                      word, sizeof(word));
+    for (i = 0; i < SGI_RAD1_AUDIO_NUM_CH; i++) {
+        SGIRad1AudioChannel *c = &s->chan[i];
+
+        if (c->len) {
+            stl_le_p(word, sgi_rad1_audio_chan_pointer(c));
+            pci_dma_write(dev, slot + sgi_rad1_audio_channel_info[i].slot_ptr,
+                          word, sizeof(word));
+        }
     }
 
     stl_le_p(word, SGI_RAD1_AUDIO_SLOT_FLAGS_WORD);
@@ -274,191 +326,277 @@ static void sgi_rad1_audio_status_ring_stop(SGIRad1AudioState *s)
 }
 
 /*
- * The backend calls this when the output voice has room for more samples.
- * The engine pushes on its own timer instead, so nothing is written here.
+ * The backend calls these when a voice has room or has samples. The
+ * engines move frames on their own timers instead, so nothing happens here.
  */
 static void sgi_rad1_audio_out_callback(void *opaque, int avail)
 {
 }
 
-/* Fixed output-voice format; see the header for why it is an approximation. */
-static const struct audsettings sgi_rad1_audio_out_settings = {
-    .freq = SGI_RAD1_AUDIO_OUT_FREQ,
-    .nchannels = SGI_RAD1_AUDIO_OUT_CHANNELS,
+static void sgi_rad1_audio_in_callback(void *opaque, int avail)
+{
+}
+
+/* Fixed voice format; see the header for why it is an approximation. */
+static const struct audsettings sgi_rad1_audio_settings = {
+    .freq = SGI_RAD1_AUDIO_FREQ,
+    .nchannels = SGI_RAD1_AUDIO_CHANNELS,
     .fmt = AUDIO_FORMAT_S16,
     .big_endian = false,
 };
 
-static void sgi_rad1_audio_out_set_voice(SGIRad1AudioState *s, bool on)
+static unsigned int sgi_rad1_audio_chan_index(SGIRad1AudioChannel *c)
 {
-    if (s->audio_be && s->dac_voice) {
-        audio_be_set_active_out(s->audio_be, s->dac_voice, on);
+    return c - c->dev->chan;
+}
+
+static const SGIRad1AudioChannelInfo *
+sgi_rad1_audio_chan_info(SGIRad1AudioChannel *c)
+{
+    return &sgi_rad1_audio_channel_info[sgi_rad1_audio_chan_index(c)];
+}
+
+/*
+ * The input voice opens the first time the input runs and then stays open
+ * for the device's lifetime, like the output voice. Opening it at realize
+ * would make a backend with no input, such as wav, report an error on
+ * every boot whether or not the guest ever records; this way it reports
+ * once, when a recording starts.
+ */
+static void sgi_rad1_audio_open_in(SGIRad1AudioState *s)
+{
+    if (s->adc_voice || s->adc_open_tried) {
+        return;
+    }
+    s->adc_open_tried = true;
+    s->adc_voice = audio_be_open_in(s->audio_be, NULL, "sgi-rad1-audio.in",
+                                    s, sgi_rad1_audio_in_callback,
+                                    &sgi_rad1_audio_settings);
+}
+
+static void sgi_rad1_audio_set_voice(SGIRad1AudioChannel *c, bool on)
+{
+    SGIRad1AudioState *s = c->dev;
+
+    if (!s->audio_be) {
+        return;
+    }
+    if (sgi_rad1_audio_chan_info(c)->output) {
+        if (s->dac_voice) {
+            audio_be_set_active_out(s->audio_be, s->dac_voice, on);
+        }
+        return;
+    }
+    if (on) {
+        sgi_rad1_audio_open_in(s);
+    }
+    if (s->adc_voice) {
+        audio_be_set_active_in(s->audio_be, s->adc_voice, on);
     }
 }
 
 /*
- * Credit frames to type 1's position registers. Both count frames, two
+ * Credit frames to a channel's position registers. Both count frames, two
  * ring words each: the datasheet's flagged default.
  *
- * A, 0x2c: the frame count in bits [31:18], with natural 32-bit wrap, and
- * the 0x30 counter mod 2^18 latched into bits [17:0] as the count moves.
- * rad_sync_device_ust splices those low bits into its UST.
+ * A (0x14 input, 0x2c output): the frame count in bits [31:18], with
+ * natural 32-bit wrap, and the 0x30 counter mod 2^18 latched into bits
+ * [17:0] as the count moves. rad_sync_device_ust splices those low bits
+ * into its UST.
  *
- * B, 0x18: type 1 reads bits [17:4], and rad_start_dma's post-enable poll
- * waits for them to change. The field counts the same frames, mod 2^14.
- * Type 0 owns bits [31:18] of the same register, so those and bits [3:0]
- * are left as they are.
+ * B, 0x18, shared: the input's count is bits [31:18], the output's bits
+ * [17:4], each 14 bits. rad_start_dma's post-enable poll waits for the
+ * channel's field to change. Each channel moves only its own field.
  */
-static void sgi_rad1_audio_out_advance_pos(SGIRad1AudioState *s,
-                                           uint32_t frames)
+static void sgi_rad1_audio_advance_pos(SGIRad1AudioChannel *c,
+                                       uint32_t frames)
 {
-    uint32_t *pos_a = &s->sample_pos[SGI_RAD1_AUDIO_POS_IDX(
-        SGI_RAD1_AUDIO_REG_OUT_POS_A)];
-    uint32_t *pos_b = &s->sample_pos[SGI_RAD1_AUDIO_POS_IDX(
-        SGI_RAD1_AUDIO_REG_OUT_POS_B)];
-    uint32_t field_mask = SGI_RAD1_AUDIO_POS_FIELD_MASK <<
-                          SGI_RAD1_AUDIO_OUT_POS_B_SHIFT;
+    SGIRad1AudioState *s = c->dev;
+    const SGIRad1AudioChannelInfo *ci = sgi_rad1_audio_chan_info(c);
+    uint32_t *pos_a = &s->sample_pos[SGI_RAD1_AUDIO_POS_IDX(ci->pos_a)];
+    uint32_t *pos_b = &s->sample_pos[SGI_RAD1_AUDIO_POS_IDX(ci->pos_b)];
+    uint32_t field_mask = SGI_RAD1_AUDIO_POS_FIELD_MASK << ci->pos_b_shift;
     uint32_t b_field;
 
     *pos_a = ((*pos_a & ~SGI_RAD1_AUDIO_UST_LATCH_MASK) +
               (frames << SGI_RAD1_AUDIO_SAMPLE_POS_SHIFT)) |
              (sgi_rad1_audio_ust_counter(s) & SGI_RAD1_AUDIO_UST_LATCH_MASK);
 
-    b_field = ((*pos_b >> SGI_RAD1_AUDIO_OUT_POS_B_SHIFT) + frames) &
+    b_field = ((*pos_b >> ci->pos_b_shift) + frames) &
               SGI_RAD1_AUDIO_POS_FIELD_MASK;
-    *pos_b = (*pos_b & ~field_mask) |
-             (b_field << SGI_RAD1_AUDIO_OUT_POS_B_SHIFT);
+    *pos_b = (*pos_b & ~field_mask) | (b_field << ci->pos_b_shift);
 
-    trace_sgi_rad1_audio_out_position(frames, *pos_a, *pos_b);
+    trace_sgi_rad1_audio_position(sgi_rad1_audio_chan_index(c), frames,
+                                  *pos_a, *pos_b);
 }
 
-static void sgi_rad1_audio_out_stop(SGIRad1AudioState *s)
+static void sgi_rad1_audio_chan_stop(SGIRad1AudioChannel *c)
 {
-    if (s->out_timer) {
-        timer_del(s->out_timer);
+    if (c->timer) {
+        timer_del(c->timer);
     }
-    if (!s->out_running) {
+    if (!c->running) {
         return;
     }
-    s->out_running = false;
-    sgi_rad1_audio_out_set_voice(s, false);
-    trace_sgi_rad1_audio_out_stop(sgi_rad1_audio_out_pointer(s),
-                                  s->out_frames);
+    c->running = false;
+    sgi_rad1_audio_set_voice(c, false);
+    trace_sgi_rad1_audio_stop(sgi_rad1_audio_chan_index(c),
+                              sgi_rad1_audio_chan_pointer(c), c->frames);
 }
 
 /*
- * Move frames from the ring to the voice, wrapping at the ring's end. The
- * words are read through the device's PCI DMA address space, so the
- * Bridge's translation and byte-lane reversal apply, and each 24-bit
- * channel sample becomes a 16-bit one from its bits [23:8]. The read
- * happens whatever the backend accepts, so the pointer and positions
- * advance the same with or without an audio device; a backend that takes
- * less drops the rest.
+ * One step of an output: read the ring words at the pointer and push them
+ * to the voice, each 24-bit channel sample as a 16-bit one from its bits
+ * [23:8]. The read happens whatever the backend accepts, so the pointer
+ * and positions advance the same with or without an audio device; a
+ * backend that takes less drops the rest.
  */
-static bool sgi_rad1_audio_out_move(SGIRad1AudioState *s, uint64_t frames)
+static bool sgi_rad1_audio_out_chunk(SGIRad1AudioChannel *c, uint8_t *ring,
+                                     size_t words)
 {
-    PCIDevice *dev = PCI_DEVICE(s);
-    uint8_t buf[1024];
-    uint8_t pcm[sizeof(buf) / 2];
+    SGIRad1AudioState *s = c->dev;
+    uint8_t pcm[SGI_RAD1_AUDIO_CHUNK_BYTES / 2];
+
+    if (pci_dma_read(PCI_DEVICE(s), c->base + c->offset, ring,
+                     words * SGI_RAD1_AUDIO_WORD_BYTES) != MEMTX_OK) {
+        return false;
+    }
+    if (s->audio_be && s->dac_voice) {
+        sgi_rad1_audio_words_to_pcm(ring, pcm, words);
+        audio_be_write(s->audio_be, s->dac_voice, pcm, words * 2);
+    }
+    return true;
+}
+
+/*
+ * One step of an input: take samples from the voice and write them into
+ * the ring at the pointer, each 16-bit sample into bits [23:8] of its
+ * word, sign-extended through [31:24], with [7:0] zero. Whatever the
+ * voice does not supply is silence, so the pointer and positions advance
+ * at the sample rate with or without an audio device.
+ */
+static bool sgi_rad1_audio_in_chunk(SGIRad1AudioChannel *c, uint8_t *ring,
+                                    size_t words)
+{
+    SGIRad1AudioState *s = c->dev;
+    uint8_t pcm[SGI_RAD1_AUDIO_CHUNK_BYTES / 2];
+    size_t got = 0;
+
+    if (s->audio_be && s->adc_voice) {
+        got = audio_be_read(s->audio_be, s->adc_voice, pcm, words * 2);
+    }
+    memset(pcm + got, 0, words * 2 - got);
+    sgi_rad1_audio_pcm_to_words(pcm, ring, words);
+    return pci_dma_write(PCI_DEVICE(s), c->base + c->offset, ring,
+                         words * SGI_RAD1_AUDIO_WORD_BYTES) == MEMTX_OK;
+}
+
+/*
+ * Move frames between the ring and the voice, wrapping at the ring's end.
+ * The ring is reached through the device's PCI DMA address space, so the
+ * Bridge's translation and byte-lane reversal apply.
+ */
+static bool sgi_rad1_audio_chan_move(SGIRad1AudioChannel *c, uint64_t frames)
+{
+    const SGIRad1AudioChannelInfo *ci = sgi_rad1_audio_chan_info(c);
+    uint8_t ring[SGI_RAD1_AUDIO_CHUNK_BYTES];
 
     while (frames) {
-        uint64_t bytes = MIN(frames * SGI_RAD1_AUDIO_OUT_FRAME_BYTES,
-                             s->out_len - s->out_offset);
-        size_t chunk = MIN(bytes, sizeof(buf));
+        uint64_t bytes = MIN(frames * SGI_RAD1_AUDIO_FRAME_BYTES,
+                             c->len - c->offset);
+        size_t chunk = MIN(bytes, sizeof(ring));
+        size_t words = chunk / SGI_RAD1_AUDIO_WORD_BYTES;
+        bool ok = ci->output ? sgi_rad1_audio_out_chunk(c, ring, words)
+                             : sgi_rad1_audio_in_chunk(c, ring, words);
 
-        if (pci_dma_read(dev, s->out_base + s->out_offset, buf,
-                         chunk) != MEMTX_OK) {
+        if (!ok) {
             qemu_log_mask(LOG_GUEST_ERROR,
-                          "sgi-rad1-audio: output DMA read at 0x%" PRIx64
+                          "sgi-rad1-audio: %s DMA at 0x%" PRIx64
                           " failed; ring address unmapped?\n",
-                          s->out_base + s->out_offset);
+                          ci->name, c->base + c->offset);
             return false;
         }
-        if (s->audio_be && s->dac_voice) {
-            size_t words = chunk / SGI_RAD1_AUDIO_OUT_WORD_BYTES;
-            size_t i;
-
-            for (i = 0; i < words; i++) {
-                uint32_t word = ldl_le_p(buf + i * 4);
-
-                stw_le_p(pcm + i * 2,
-                         (uint16_t)(word >> SGI_RAD1_AUDIO_OUT_SAMPLE_SHIFT));
-            }
-            audio_be_write(s->audio_be, s->dac_voice, pcm, words * 2);
-        }
-        s->out_offset += chunk;
-        frames -= chunk / SGI_RAD1_AUDIO_OUT_FRAME_BYTES;
-        if (s->out_offset >= s->out_len) {
-            s->out_offset = 0;
-            trace_sgi_rad1_audio_out_wrap(s->out_base);
+        c->offset += chunk;
+        frames -= chunk / SGI_RAD1_AUDIO_FRAME_BYTES;
+        if (c->offset >= c->len) {
+            c->offset = 0;
+            trace_sgi_rad1_audio_wrap(sgi_rad1_audio_chan_index(c), c->base);
         }
     }
     return true;
 }
 
 /*
- * Bring the engine up to the present. The frames due are those the sample
+ * Bring a channel up to the present. The frames due are those the sample
  * clock has produced since the enable edge; computing them from elapsed
  * virtual time keeps the rate exact however late a timer fires. A status
- * completion calls this too, so its slot carries the pointer as of that
- * completion.
+ * completion and a position-register read call this too, so each sees the
+ * pointer and positions as of that instant.
  */
-static void sgi_rad1_audio_out_sync(SGIRad1AudioState *s)
+static void sgi_rad1_audio_chan_sync(SGIRad1AudioChannel *c)
 {
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     uint64_t due, frames;
 
     /* Elapsed time at or below zero would become a huge unsigned count. */
-    if (!s->out_running || now <= s->out_start_ns) {
+    if (!c->running || now <= c->start_ns) {
         return;
     }
 
-    due = muldiv64(now - s->out_start_ns, SGI_RAD1_AUDIO_OUT_FREQ,
+    due = muldiv64(now - c->start_ns, SGI_RAD1_AUDIO_FREQ,
                    NANOSECONDS_PER_SECOND);
-    if (due > s->out_frames) {
-        frames = due - s->out_frames;
-        if (!sgi_rad1_audio_out_move(s, frames)) {
-            sgi_rad1_audio_out_stop(s);
+    if (due > c->frames) {
+        frames = due - c->frames;
+        if (!sgi_rad1_audio_chan_move(c, frames)) {
+            sgi_rad1_audio_chan_stop(c);
             return;
         }
-        s->out_frames = due;
-        sgi_rad1_audio_out_advance_pos(s, (uint32_t)frames);
+        c->frames = due;
+        sgi_rad1_audio_advance_pos(c, (uint32_t)frames);
     }
 }
 
-/* Engine step: catch up, then re-arm OUT_TICK_FRAMES frames on. */
-static void sgi_rad1_audio_out_tick(void *opaque)
+static void sgi_rad1_audio_sync_all(SGIRad1AudioState *s)
 {
-    SGIRad1AudioState *s = opaque;
+    unsigned int i;
 
-    sgi_rad1_audio_out_sync(s);
-    if (!s->out_running) {
-        return;
+    for (i = 0; i < SGI_RAD1_AUDIO_NUM_CH; i++) {
+        sgi_rad1_audio_chan_sync(&s->chan[i]);
     }
+}
 
+/* Arm a channel's timer TICK_FRAMES frames past what it has moved. */
+static void sgi_rad1_audio_chan_arm(SGIRad1AudioChannel *c)
+{
     /* Round up, so the frames due when it fires are never one short. */
-    timer_mod(s->out_timer, s->out_start_ns +
-              muldiv64_round_up(s->out_frames +
-                                SGI_RAD1_AUDIO_OUT_TICK_FRAMES,
-                                NANOSECONDS_PER_SECOND,
-                                SGI_RAD1_AUDIO_OUT_FREQ));
+    timer_mod(c->timer, c->start_ns +
+              muldiv64_round_up(c->frames + SGI_RAD1_AUDIO_TICK_FRAMES,
+                                NANOSECONDS_PER_SECOND, SGI_RAD1_AUDIO_FREQ));
+}
+
+/* Engine step: catch up, then re-arm. */
+static void sgi_rad1_audio_chan_tick(void *opaque)
+{
+    SGIRad1AudioChannel *c = opaque;
+
+    sgi_rad1_audio_chan_sync(c);
+    if (c->running) {
+        sgi_rad1_audio_chan_arm(c);
+    }
 }
 
 /*
- * The enable edge. rad_start_dma programs set A and set B with the same ring
- * and control word, then sets bit 0 of 0x58; that write alone starts the
- * channel. The engine latches set A. Set B is stored but not consumed
- * separately: every captured start wrote it identical to set A, and the
- * datasheet only infers that the hardware alternates between the two.
+ * The enable edge. rad_start_dma programs set A and set B with the same
+ * ring and control word, then sets bit 0 of the channel's enable register;
+ * that write alone starts the channel. The engine latches set A.
  */
-static void sgi_rad1_audio_out_start(SGIRad1AudioState *s)
+static void sgi_rad1_audio_chan_start(SGIRad1AudioChannel *c)
 {
-    uint32_t addr_lo = s->dma_bank[SGI_RAD1_AUDIO_DMA_IDX(
-        SGI_RAD1_AUDIO_REG_OUT_A_ADDR_LO)];
-    uint32_t addr_hi = s->dma_bank[SGI_RAD1_AUDIO_DMA_IDX(
-        SGI_RAD1_AUDIO_REG_OUT_A_ADDR_HI)];
-    uint32_t ctrl = s->dma_bank[SGI_RAD1_AUDIO_DMA_IDX(
-        SGI_RAD1_AUDIO_REG_OUT_A_CTRL)];
+    SGIRad1AudioState *s = c->dev;
+    const SGIRad1AudioChannelInfo *ci = sgi_rad1_audio_chan_info(c);
+    uint32_t addr_lo = s->dma_bank[SGI_RAD1_AUDIO_DMA_IDX(ci->addr_lo)];
+    uint32_t addr_hi = s->dma_bank[SGI_RAD1_AUDIO_DMA_IDX(ci->addr_hi)];
+    uint32_t ctrl = s->dma_bank[SGI_RAD1_AUDIO_DMA_IDX(ci->ctrl)];
     uint64_t base = ((uint64_t)addr_hi << 32) | addr_lo;
     uint32_t neg = (ctrl >> SGI_RAD1_AUDIO_CTRL_LEN_SHIFT) &
                    SGI_RAD1_AUDIO_CTRL_LEN_MASK;
@@ -469,36 +607,52 @@ static void sgi_rad1_audio_out_start(SGIRad1AudioState *s)
 
     if (base == 0 || len == 0) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-rad1-audio: analog output enabled with no ring "
-                      "programmed (address 0x%" PRIx64 ", control 0x%x)\n",
-                      base, ctrl);
+                      "sgi-rad1-audio: %s enabled with no ring programmed "
+                      "(address 0x%" PRIx64 ", control 0x%x)\n",
+                      ci->name, base, ctrl);
         return;
     }
     if (len > SGI_RAD1_AUDIO_DMA_MAX_BYTES) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-rad1-audio: output ring length 0x%" PRIx64
-                      " exceeds the modeled cap; clamping\n", len);
+                      "sgi-rad1-audio: %s ring length 0x%" PRIx64
+                      " exceeds the modeled cap; clamping\n", ci->name, len);
         len = SGI_RAD1_AUDIO_DMA_MAX_BYTES;
     }
-    if (tag != SGI_RAD1_AUDIO_OUT_TAG) {
+    if (tag != ci->tag) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-rad1-audio: analog output control word 0x%x "
-                      "carries tag %u, not the channel type %u\n",
-                      ctrl, tag, SGI_RAD1_AUDIO_OUT_TAG);
+                      "sgi-rad1-audio: %s control word 0x%x carries tag %u, "
+                      "not the channel type %u\n",
+                      ci->name, ctrl, tag, ci->tag);
     }
 
-    s->out_base = base;
-    s->out_len = len;
-    s->out_offset = 0;
-    s->out_frames = 0;
-    s->out_start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    s->out_running = true;
-    sgi_rad1_audio_out_set_voice(s, true);
-    trace_sgi_rad1_audio_out_start(base, s->out_len, tag);
-    timer_mod(s->out_timer, s->out_start_ns +
-              muldiv64_round_up(SGI_RAD1_AUDIO_OUT_TICK_FRAMES,
-                                NANOSECONDS_PER_SECOND,
-                                SGI_RAD1_AUDIO_OUT_FREQ));
+    c->base = base;
+    c->len = len;
+    c->offset = 0;
+    c->frames = 0;
+    c->start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    c->running = true;
+    sgi_rad1_audio_set_voice(c, true);
+    trace_sgi_rad1_audio_start(sgi_rad1_audio_chan_index(c), base, c->len,
+                               tag);
+    sgi_rad1_audio_chan_arm(c);
+}
+
+/*
+ * A write to a channel's enable register. Bit 0 starts and stops the
+ * channel; the register's other bits never do. Rewriting a set bit while
+ * the engine runs does not restart it.
+ */
+static void sgi_rad1_audio_enable_write(SGIRad1AudioChannel *c, uint32_t val)
+{
+    if (val & SGI_RAD1_AUDIO_ENABLE_BIT) {
+        if (!c->running) {
+            sgi_rad1_audio_chan_start(c);
+        }
+    } else {
+        /* Stop where the sample clock has got to, not the last step. */
+        sgi_rad1_audio_chan_sync(c);
+        sgi_rad1_audio_chan_stop(c);
+    }
 }
 
 /*
@@ -518,12 +672,12 @@ static uint64_t sgi_rad1_audio_bar0_read(void *opaque, hwaddr addr,
         addr <= SGI_RAD1_AUDIO_REG_SAMPLE_POS_LAST) {
         /*
          * The per-channel sample-position bank. Each register reads zero
-         * until a channel's engine advances it; only the analog output's pair
-         * (0x2c, 0x18) moves. Read-only, so a guest write never changes it.
-         * The output engine catches up first, so a read agrees with a status
-         * slot filled at the same instant.
+         * until a channel's engine advances it; only the analog channels'
+         * registers (0x14, 0x18, 0x2c) move. Read-only, so a guest write
+         * never changes it. The engines catch up first, so a read agrees
+         * with a status slot filled at the same instant.
          */
-        sgi_rad1_audio_out_sync(s);
+        sgi_rad1_audio_sync_all(s);
         return s->sample_pos[SGI_RAD1_AUDIO_POS_IDX(addr)];
     }
 
@@ -616,7 +770,14 @@ static void sgi_rad1_audio_bar0_write(void *opaque, hwaddr addr, uint64_t val,
         s->predispatch_b = val;
         break;
     case SGI_RAD1_AUDIO_REG_SHIFT_LOAD_CLOCK:
+        /*
+         * Bit 0 starts and stops the analog input. Bring-up writes 0x5000000
+         * with it clear, and the MIO mux bit-bang pulses bit 27 while the
+         * driver's shadow keeps bit 0, so those writes leave the input as it
+         * was.
+         */
         s->shift_load_clock = val;
+        sgi_rad1_audio_enable_write(&s->chan[SGI_RAD1_AUDIO_CH_IN], val);
         break;
     case SGI_RAD1_AUDIO_REG_PREDISPATCH_C:
         s->predispatch_c = val;
@@ -628,19 +789,10 @@ static void sgi_rad1_audio_bar0_write(void *opaque, hwaddr addr, uint64_t val,
         /*
          * Bit 0 starts and stops the analog output. Bring-up writes
          * 0x20000000 with it clear; rad_start_dma sets it and rad_stop_dma
-         * clears it, keeping bit 29 from the shadow. Rewriting a set bit
-         * while the engine runs does not restart it.
+         * clears it, keeping bit 29 from the shadow.
          */
         s->analog_out_en = val;
-        if (val & SGI_RAD1_AUDIO_OUT_ENABLE_BIT) {
-            if (!s->out_running) {
-                sgi_rad1_audio_out_start(s);
-            }
-        } else {
-            /* Stop where the sample clock has got to, not the last step. */
-            sgi_rad1_audio_out_sync(s);
-            sgi_rad1_audio_out_stop(s);
-        }
+        sgi_rad1_audio_enable_write(&s->chan[SGI_RAD1_AUDIO_CH_OUT], val);
         break;
     case SGI_RAD1_AUDIO_REG_STATUS_DMA_CTRL:
         s->status_dma_ctrl = val;
@@ -727,6 +879,7 @@ static const MemoryRegionOps sgi_rad1_audio_bar0_ops = {
 static void sgi_rad1_audio_reset_hold(Object *obj, ResetType type)
 {
     SGIRad1AudioState *s = SGI_RAD1_AUDIO(obj);
+    unsigned int i;
 
     s->predispatch_a = 0;
     s->predispatch_b = 0;
@@ -749,13 +902,17 @@ static void sgi_rad1_audio_reset_hold(Object *obj, ResetType type)
     s->convergence_b = 0;
     memset(s->dma_bank, 0, sizeof(s->dma_bank));
 
-    /* Stop the output engine and forget its ring; the voice stays open. */
-    sgi_rad1_audio_out_stop(s);
-    s->out_base = 0;
-    s->out_len = 0;
-    s->out_offset = 0;
-    s->out_start_ns = 0;
-    s->out_frames = 0;
+    /* Stop the channel engines and forget their rings; voices stay open. */
+    for (i = 0; i < SGI_RAD1_AUDIO_NUM_CH; i++) {
+        SGIRad1AudioChannel *c = &s->chan[i];
+
+        sgi_rad1_audio_chan_stop(c);
+        c->base = 0;
+        c->len = 0;
+        c->offset = 0;
+        c->start_ns = 0;
+        c->frames = 0;
+    }
 
     /* The sample-position bank reads zero until an engine advances it. */
     memset(s->sample_pos, 0, sizeof(s->sample_pos));
@@ -776,6 +933,7 @@ static void sgi_rad1_audio_realize(PCIDevice *dev, Error **errp)
 {
     SGIRad1AudioState *s = SGI_RAD1_AUDIO(dev);
     Error *audio_err = NULL;
+    unsigned int i;
 
     pci_set_word(dev->config + PCI_STATUS,
                  PCI_STATUS_DEVSEL_MEDIUM | PCI_STATUS_FAST_BACK);
@@ -783,9 +941,9 @@ static void sgi_rad1_audio_realize(PCIDevice *dev, Error **errp)
     /*
      * The MediaIO board always instantiates this device, so a missing audio
      * backend must not abort machine creation. Resolve the audiodev property
-     * (or the default); if none is available, warn and run without a voice --
+     * (or the default); if none is available, warn and run without voices --
      * the register file and the DMA position advance still work, only the
-     * sample push to a host sink is skipped.
+     * samples to and from the host are skipped.
      */
     if (!audio_be_check(&s->audio_be, &audio_err)) {
         warn_report_err(audio_err);
@@ -795,7 +953,7 @@ static void sgi_rad1_audio_realize(PCIDevice *dev, Error **errp)
         s->dac_voice = audio_be_open_out(s->audio_be, NULL,
                                          "sgi-rad1-audio.out", s,
                                          sgi_rad1_audio_out_callback,
-                                         &sgi_rad1_audio_out_settings);
+                                         &sgi_rad1_audio_settings);
     }
 
     memory_region_init_io(&s->bar0, OBJECT(dev), &sgi_rad1_audio_bar0_ops, s,
@@ -805,55 +963,93 @@ static void sgi_rad1_audio_realize(PCIDevice *dev, Error **errp)
     /* The continuous status-DMA completion timer; armed on a 0x40003 start. */
     s->status_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                    sgi_rad1_audio_status_tick, s);
-    /* The analog output's pacing timer; armed on the 0x58 enable edge. */
-    s->out_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
-                                sgi_rad1_audio_out_tick, s);
+    /* Each channel's pacing timer; armed on its enable edge. */
+    for (i = 0; i < SGI_RAD1_AUDIO_NUM_CH; i++) {
+        s->chan[i].dev = s;
+        s->chan[i].timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                        sgi_rad1_audio_chan_tick, &s->chan[i]);
+    }
 }
 
 static void sgi_rad1_audio_exit(PCIDevice *dev)
 {
     SGIRad1AudioState *s = SGI_RAD1_AUDIO(dev);
+    unsigned int i;
 
     if (s->status_timer) {
         timer_free(s->status_timer);
         s->status_timer = NULL;
     }
-    if (s->out_timer) {
-        timer_free(s->out_timer);
-        s->out_timer = NULL;
+    for (i = 0; i < SGI_RAD1_AUDIO_NUM_CH; i++) {
+        if (s->chan[i].timer) {
+            timer_free(s->chan[i].timer);
+            s->chan[i].timer = NULL;
+        }
     }
     if (s->audio_be && s->dac_voice) {
         audio_be_close_out(s->audio_be, s->dac_voice);
         s->dac_voice = NULL;
     }
+    if (s->audio_be && s->adc_voice) {
+        audio_be_close_in(s->audio_be, s->adc_voice);
+        s->adc_voice = NULL;
+    }
 }
 
-/* The voice is not migrated; match its activity to the engine. */
+/* Refuse a channel whose ring geometry would misdirect DMA. */
+static bool sgi_rad1_audio_chan_valid(SGIRad1AudioChannel *c)
+{
+    return c->len <= SGI_RAD1_AUDIO_DMA_MAX_BYTES &&
+           !(c->len % SGI_RAD1_AUDIO_FRAME_BYTES) &&
+           !(c->offset % SGI_RAD1_AUDIO_FRAME_BYTES) &&
+           (!c->len || c->offset < c->len) &&
+           (!c->running || c->len);
+}
+
+/* The voices are not migrated; match their activity to the engines. */
 static int sgi_rad1_audio_post_load(void *opaque, int version_id)
 {
     SGIRad1AudioState *s = opaque;
+    unsigned int i;
 
-    /* Refuse a stream whose ring geometry would misdirect DMA. */
-    if (s->out_len > SGI_RAD1_AUDIO_DMA_MAX_BYTES ||
-        s->out_len % SGI_RAD1_AUDIO_OUT_FRAME_BYTES ||
-        s->out_offset % SGI_RAD1_AUDIO_OUT_FRAME_BYTES ||
-        (s->out_len && s->out_offset >= s->out_len) ||
-        (s->out_running && !s->out_len) ||
-        s->status_ring_slots > SGI_RAD1_AUDIO_SLOT_MAX ||
+    for (i = 0; i < SGI_RAD1_AUDIO_NUM_CH; i++) {
+        if (!sgi_rad1_audio_chan_valid(&s->chan[i])) {
+            return -EINVAL;
+        }
+    }
+    if (s->status_ring_slots > SGI_RAD1_AUDIO_SLOT_MAX ||
         (s->status_ring_slots &&
          s->status_ring_cursor >= s->status_ring_slots) ||
         (s->status_running &&
          (!s->status_interval || !s->status_ring_slots))) {
         return -EINVAL;
     }
-    sgi_rad1_audio_out_set_voice(s, s->out_running);
+    for (i = 0; i < SGI_RAD1_AUDIO_NUM_CH; i++) {
+        sgi_rad1_audio_set_voice(&s->chan[i], s->chan[i].running);
+    }
     return 0;
 }
 
+static const VMStateDescription vmstate_sgi_rad1_audio_channel = {
+    .name = "sgi-rad1-audio/channel",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_TIMER_PTR(timer, SGIRad1AudioChannel),
+        VMSTATE_BOOL(running, SGIRad1AudioChannel),
+        VMSTATE_UINT64(base, SGIRad1AudioChannel),
+        VMSTATE_UINT32(len, SGIRad1AudioChannel),
+        VMSTATE_UINT32(offset, SGIRad1AudioChannel),
+        VMSTATE_INT64(start_ns, SGIRad1AudioChannel),
+        VMSTATE_UINT64(frames, SGIRad1AudioChannel),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_sgi_rad1_audio = {
     .name = "sgi-rad1-audio",
-    .version_id = 6,
-    .minimum_version_id = 6,
+    .version_id = 7,
+    .minimum_version_id = 7,
     .post_load = sgi_rad1_audio_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIRad1AudioState),
@@ -880,13 +1076,9 @@ static const VMStateDescription vmstate_sgi_rad1_audio = {
                              SGI_RAD1_AUDIO_DMA_BANK_WORDS),
         VMSTATE_UINT32_ARRAY(sample_pos, SGIRad1AudioState,
                              SGI_RAD1_AUDIO_SAMPLE_POS_WORDS),
-        VMSTATE_TIMER_PTR(out_timer, SGIRad1AudioState),
-        VMSTATE_BOOL(out_running, SGIRad1AudioState),
-        VMSTATE_UINT64(out_base, SGIRad1AudioState),
-        VMSTATE_UINT32(out_len, SGIRad1AudioState),
-        VMSTATE_UINT32(out_offset, SGIRad1AudioState),
-        VMSTATE_INT64(out_start_ns, SGIRad1AudioState),
-        VMSTATE_UINT64(out_frames, SGIRad1AudioState),
+        VMSTATE_STRUCT_ARRAY(chan, SGIRad1AudioState, SGI_RAD1_AUDIO_NUM_CH,
+                             1, vmstate_sgi_rad1_audio_channel,
+                             SGIRad1AudioChannel),
         VMSTATE_TIMER_PTR(status_timer, SGIRad1AudioState),
         VMSTATE_UINT32(status_ring_cursor, SGIRad1AudioState),
         VMSTATE_UINT32(status_ring_slots, SGIRad1AudioState),
