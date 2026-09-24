@@ -1,16 +1,24 @@
 /*
- * Neterion/S2io Xframe: the register-contract qtest, on a generic PCI machine.
+ * Neterion/S2io Xframe: the register-contract qtest, on the Bridge head.
  *
- * The Xframe is a plain PCI add-in card: its register contract and DMA are
- * machine-independent, so this test drives the device on a generic x86_64
- * host (q35/pc, the off-fabric suite), NOT behind the Origin 200 Bridge. On a
- * little-endian host an 8-byte register access is a single native cycle, so
- * the device's own 64-bit contract is exercised directly, with no Bridge
- * byte-swap or access-width composition in the way -- those are a separate
- * machine-level concern tested elsewhere (docs/library/
- * nic-on-bridge-conventions.md). A device that passes here is correct as a
- * general-purpose PCI endpoint; how it composes with the Bridge on the Origin
- * 200 is asserted by the on-Bridge harness, not here.
+ * The head is one Bridge on the "none" machine with the memory a card
+ * transfers into beside it, under -M none. The card is reached over the chip
+ * it ships behind, but nothing here is an Origin 200 claim: no node, no
+ * crossbar, no fabric. How the device composes with a populated machine's
+ * per-slot byte-lane correction and DMA routes is a separate integration
+ * test, tests/qtest/sn0-xframe-test.c (docs/library/
+ * nic-on-bridge-conventions.md).
+ *
+ * This ran on an x86 PC until the fork stopped building SGI devices for that
+ * target. One thing about the host changed with the move and is worth naming:
+ * the head reaches PCI memory through the Bridge's inbound translated window,
+ * which carries no per-slot register and so cannot declare a 64-bit device.
+ * A doubleword register access is therefore two 32-bit device cycles here,
+ * the same two the real machine uses for a slot with DEV_64BIT_DEVICE clear,
+ * and the model is written for exactly that (a trigger fires on the access
+ * covering its own half, once). The single eight-byte cycle a
+ * DEV_64BIT_DEVICE slot gets stays asserted by sn0-xframe-test.c, on the
+ * machine where such a slot exists.
  *
  * What this asserts:
  *  - PCI enumeration: identity (vendor/device, the device-id property
@@ -39,8 +47,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/iov.h"
-#include "libqos/libqos-pc.h"
-#include "libqos/qos-intel-iommu.h"
+#include "libqos/libqos-sgi-bridge.h"
 #include "libqtest.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_regs.h"
@@ -465,21 +472,6 @@
 #define RX_BUF_SMALL_CAPACITY    32   /* smaller than the test frames */
 
 /*
- * VT-d gives the device distinct descriptor and payload pages. The qtest
- * writes fixtures through their GPAs while Xframe reaches them through the
- * IOVAs in its descriptors and ring registers.
- */
-#define XFRAME_IOMMU_DESC_IOVA   (QVTD_IOVA & VTD_PAGE_MASK_4K)
-#define XFRAME_IOMMU_PAYLOAD_IOVA (XFRAME_IOMMU_DESC_IOVA + 0x1000)
-#define XFRAME_IOMMU_DESC_GPA    (TX_RAM_SCRATCH + 0x40000)
-#define XFRAME_IOMMU_PAYLOAD_GPA (XFRAME_IOMMU_DESC_GPA + 0x1000)
-#define XFRAME_IOMMU_DESC_END_OFFSET 0xfe0
-#define XFRAME_IOMMU_SECOND_DESC_IOVA (XFRAME_IOMMU_DESC_IOVA + 0x1000)
-#define XFRAME_IOMMU_GATHER_PAYLOAD_IOVA (XFRAME_IOMMU_DESC_IOVA + 0x2000)
-#define XFRAME_IOMMU_SECOND_DESC_GPA (XFRAME_IOMMU_DESC_GPA + 0x1000)
-#define XFRAME_IOMMU_GATHER_PAYLOAD_GPA (XFRAME_IOMMU_DESC_GPA + 0x2000)
-
-/*
  * The station address the -device mac= sets, in wire order -- what the receive
  * filter matches an incoming frame's destination against.
  */
@@ -516,7 +508,7 @@ static void xframe_start(XframeTest *t)
 {
     uint64_t barsize;
 
-    t->qs = qtest_pc_boot("%s", XFRAME_CARD);
+    t->qs = qtest_sgi_bridge_boot("%s", XFRAME_CARD);
     t->dev = find_xframe(t->qs->pcibus, XFRAME_DEVICE_XENA);
     g_assert(t->dev != NULL);
 
@@ -724,7 +716,7 @@ static void xframe_tx_start_args(XframeTx *t, const char *args)
     net_socket_set_recv_timeout(sv[0], 5);
     t->host_fd = sv[0];
 
-    t->qs = qtest_pc_boot("-netdev socket,fd=%d,id=n0 "
+    t->qs = qtest_sgi_bridge_boot("-netdev socket,fd=%d,id=n0 "
                           "-device xframe,netdev=n0,mac=" XFRAME_TEST_MAC
                           " %s", sv[1], args ? args : "");
     t->dev = find_xframe(t->qs->pcibus, XFRAME_DEVICE_XENA);
@@ -775,7 +767,7 @@ static bool xframe_tap_start(XframeTx *t, int *tap_fd, int *inject_fd,
     net_socket_set_recv_timeout(mirror[0], 5);
     t->host_fd = mirror[0];
     *inject_fd = inject[0];
-    t->qs = qtest_pc_boot(
+    t->qs = qtest_sgi_bridge_boot(
         "-netdev tap,fd=%d,id=n0 "
         "-device xframe,netdev=n0,mac=" XFRAME_TEST_MAC " "
         "-chardev socket,id=mirror0,fd=%d "
@@ -801,73 +793,6 @@ static bool xframe_vnet_tap_start(XframeTx *t, int *tap_fd, int *inject_fd)
     return xframe_tap_start(t, tap_fd, inject_fd, true);
 }
 #endif
-
-static void xframe_iommu_map(XframeTx *t, uint64_t iova, uint64_t gpa,
-                             bool writable)
-{
-    uint64_t pte = qvtd_make_leaf_pte(gpa, QVTD_TM_LEGACY_TRANS);
-
-    if (!writable) {
-        pte &= ~VTD_SS_W;
-    }
-    qtest_writeq(t->qs->qts, qvtd_leaf_pte_addr(iova), pte);
-}
-
-static void xframe_iommu_start(XframeTx *t)
-{
-    xframe_tx_start_args(t,
-                         "-machine q35 -m 512 -device intel-iommu");
-
-    qvtd_build_translation(t->qs->qts, QVTD_TM_LEGACY_TRANS,
-                            t->dev->devfn);
-    qvtd_setup_translation_tables(t->qs->qts, XFRAME_IOMMU_PAYLOAD_IOVA,
-                                  QVTD_TM_LEGACY_TRANS);
-    xframe_iommu_map(t, XFRAME_IOMMU_DESC_IOVA,
-                     XFRAME_IOMMU_DESC_GPA, false);
-    xframe_iommu_map(t, XFRAME_IOMMU_PAYLOAD_IOVA,
-                     XFRAME_IOMMU_PAYLOAD_GPA, true);
-    qvtd_program_regs(t->qs->qts, Q35_HOST_BRIDGE_IOMMU_ADDR,
-                      QVTD_TM_LEGACY_TRANS);
-}
-
-static void xframe_iommu_start_secondary_tx_fault(XframeTx *t)
-{
-    xframe_tx_start_args(t,
-                         "-machine q35 -m 512 -device intel-iommu");
-
-    qvtd_build_translation(t->qs->qts, QVTD_TM_LEGACY_TRANS,
-                            t->dev->devfn);
-    qvtd_setup_translation_tables(t->qs->qts,
-                                  XFRAME_IOMMU_GATHER_PAYLOAD_IOVA,
-                                  QVTD_TM_LEGACY_TRANS);
-    xframe_iommu_map(t, XFRAME_IOMMU_DESC_IOVA,
-                     XFRAME_IOMMU_DESC_GPA, true);
-    xframe_iommu_map(t, XFRAME_IOMMU_SECOND_DESC_IOVA,
-                     XFRAME_IOMMU_SECOND_DESC_GPA, false);
-    xframe_iommu_map(t, XFRAME_IOMMU_GATHER_PAYLOAD_IOVA,
-                     XFRAME_IOMMU_GATHER_PAYLOAD_GPA, true);
-    qvtd_program_regs(t->qs->qts, Q35_HOST_BRIDGE_IOMMU_ADDR,
-                      QVTD_TM_LEGACY_TRANS);
-}
-
-static void xframe_iommu_make_page_writable(XframeTx *t, uint64_t iova,
-                                             uint64_t gpa)
-{
-    uint32_t tail = 0;
-
-    xframe_iommu_map(t, iova, gpa, true);
-    tail = qvtd_submit_iotlb_page_inv(t->qs->qts,
-                                      Q35_HOST_BRIDGE_IOMMU_ADDR,
-                                      QVTD_DOMAIN_ID, iova, 0, tail);
-    qvtd_submit_inv_wait_and_poll(t->qs->qts,
-                                  Q35_HOST_BRIDGE_IOMMU_ADDR, tail);
-}
-
-static void xframe_iommu_make_descriptor_writable(XframeTx *t)
-{
-    xframe_iommu_make_page_writable(t, XFRAME_IOMMU_DESC_IOVA,
-                                    XFRAME_IOMMU_DESC_GPA);
-}
 
 static void xframe_tx_start_binary_args(XframeTx *t, const char *binary,
                                         const char *args)
@@ -897,7 +822,7 @@ static void xframe_user_start(XframeTx *t)
     uint64_t barsize;
 
     t->host_fd = -1;
-    t->qs = qtest_pc_boot("-netdev user,id=n0 "
+    t->qs = qtest_sgi_bridge_boot("-netdev user,id=n0 "
                           "-device xframe,netdev=n0,rx-arrival-latency-us=0,"
                           "mac=" XFRAME_TEST_MAC);
     t->dev = find_xframe(t->qs->pcibus, XFRAME_DEVICE_XENA);
@@ -1134,73 +1059,6 @@ static void test_receive_waits_for_its_arrival_deadline(void)
     g_assert_cmphex(dma_ldq_be(t.qs->qts, RX_RING_BASE + 8) & RXD_OWN, ==, 0);
     g_assert_cmphex(sock_pif_readq(&t, RX_TRAFFIC_INT), ==, RX_TRAFFIC_RING0);
     g_assert_true(xframe_intx_asserted(t.dev));
-
-    xframe_tx_stop(&t);
-}
-
-/*
- * A receive completion is published by the final control1 write that clears
- * OWN. If VT-d rejects descriptor writes after the payload DMA succeeds, the
- * ring must stay on that owned descriptor and retain the frame for retry.
- */
-static void test_receive_completion_write_failure_is_retryable(void)
-{
-    XframeTx t;
-    uint8_t frame[64];
-    uint8_t landed[64];
-    uint64_t pending;
-    unsigned i;
-
-    for (i = 0; i < sizeof(frame); i++) {
-        frame[i] = (uint8_t)(0x80 + i);
-    }
-    memcpy(frame, xframe_station_mac, sizeof(xframe_station_mac));
-
-    xframe_iommu_start(&t);
-    sock_pif_writeq(&t, GENERAL_INT_MASK, 0);
-    sock_pif_writeq(&t, RX_TRAFFIC_MASK, 0);
-    qtest_memset(t.qs->qts, XFRAME_IOMMU_PAYLOAD_GPA, 0,
-                 sizeof(frame));
-    xframe_program_rxd(&t, XFRAME_IOMMU_DESC_GPA,
-                       XFRAME_IOMMU_PAYLOAD_IOVA, RX_BUF_CAPACITY);
-    xframe_rx_ring_arm(&t, XFRAME_IOMMU_DESC_IOVA);
-
-    net_socket_send_frame(t.host_fd, frame, sizeof(frame));
-    for (i = 0; i < 5000; i++) {
-        if (qtest_readb(t.qs->qts, XFRAME_IOMMU_PAYLOAD_GPA) == frame[0]) {
-            break;
-        }
-        g_usleep(1000);
-    }
-    g_assert_cmpuint(i, <, 5000);
-
-    qtest_memread(t.qs->qts, XFRAME_IOMMU_PAYLOAD_GPA,
-                  landed, sizeof(landed));
-    g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
-    g_assert_cmphex(dma_ldq_be(t.qs->qts,
-                              XFRAME_IOMMU_DESC_GPA + 8) & RXD_OWN,
-                    ==, RXD_OWN);
-    g_assert_cmphex(sock_pif_readq(&t, RX_TRAFFIC_INT), ==, 0);
-    g_assert_false(xframe_intx_asserted(t.dev));
-
-    xframe_iommu_make_descriptor_writable(&t);
-    qtest_clock_step(t.qs->qts, RX_RECOVERY_STEP_NS);
-    g_assert_true(xframe_wait_rx_traffic(&t, 5000));
-
-    g_assert_cmphex(dma_ldq_be(t.qs->qts,
-                              XFRAME_IOMMU_DESC_GPA + 8) & RXD_OWN,
-                    ==, 0);
-    g_assert_cmphex(dma_ldq_be(t.qs->qts,
-                              XFRAME_IOMMU_DESC_GPA + 16) >>
-                    RXD_BUFSIZ_SHIFT, ==, sizeof(frame));
-    pending = sock_pif_readq(&t, RX_TRAFFIC_INT);
-    g_assert_cmphex(pending, ==, RX_TRAFFIC_RING0);
-    g_assert_true(xframe_intx_asserted(t.dev));
-
-    sock_pif_writeq(&t, RX_TRAFFIC_INT, pending);
-    qtest_clock_step(t.qs->qts, RX_RECOVERY_STEP_NS);
-    g_assert_cmphex(sock_pif_readq(&t, RX_TRAFFIC_INT), ==, 0);
-    g_assert_false(xframe_intx_asserted(t.dev));
 
     xframe_tx_stop(&t);
 }
@@ -1659,7 +1517,7 @@ static void test_receive_unicast_still_matches(void)
  */
 static void test_identity(void)
 {
-    QOSState *qs = qtest_pc_boot("%s", XFRAME_CARD);
+    QOSState *qs = qtest_sgi_bridge_boot("%s", XFRAME_CARD);
     QPCIDevice *dev = find_xframe(qs->pcibus, XFRAME_DEVICE_XENA);
 
     g_assert(dev != NULL);
@@ -1677,7 +1535,7 @@ static void test_identity(void)
  */
 static void test_device_id_selects_herc(void)
 {
-    QOSState *qs = qtest_pc_boot("-device xframe,device-id=0x5832");
+    QOSState *qs = qtest_sgi_bridge_boot("-device xframe,device-id=0x5832");
     QPCIDevice *dev = find_xframe(qs->pcibus, XFRAME_DEVICE_HERC);
 
     g_assert(dev != NULL);
@@ -1695,7 +1553,7 @@ static void test_device_id_selects_herc(void)
  */
 static void test_subsystem_is_unbranded_by_default(void)
 {
-    QOSState *qs = qtest_pc_boot("%s", XFRAME_CARD);
+    QOSState *qs = qtest_sgi_bridge_boot("%s", XFRAME_CARD);
     QPCIDevice *dev = find_xframe(qs->pcibus, XFRAME_DEVICE_XENA);
 
     g_assert(dev != NULL);
@@ -1714,7 +1572,8 @@ static void test_subsystem_is_unbranded_by_default(void)
  */
 static void test_subsystem_vendor_when_sgi_board(void)
 {
-    QOSState *qs = qtest_pc_boot("-device xframe,subsystem-vendor-id=0x10a9");
+    QOSState *qs = qtest_sgi_bridge_boot(
+        "-device xframe,subsystem-vendor-id=0x10a9");
     QPCIDevice *dev = find_xframe(qs->pcibus, XFRAME_DEVICE_XENA);
 
     g_assert(dev != NULL);
@@ -1729,7 +1588,7 @@ static void test_subsystem_vendor_when_sgi_board(void)
 /* BAR0: a 64-bit memory BAR (config 0x10/0x14), sized to cover the PIF map. */
 static void test_bar0_is_a_64bit_pif_window(void)
 {
-    QOSState *qs = qtest_pc_boot("%s", XFRAME_CARD);
+    QOSState *qs = qtest_sgi_bridge_boot("%s", XFRAME_CARD);
     QPCIDevice *dev = find_xframe(qs->pcibus, XFRAME_DEVICE_XENA);
     uint32_t bar0;
     uint64_t barsize;
@@ -1757,7 +1616,7 @@ static void test_bar0_is_a_64bit_pif_window(void)
  */
 static void test_bar2_is_the_txp_window(void)
 {
-    QOSState *qs = qtest_pc_boot("%s", XFRAME_CARD);
+    QOSState *qs = qtest_sgi_bridge_boot("%s", XFRAME_CARD);
     QPCIDevice *dev = find_xframe(qs->pcibus, XFRAME_DEVICE_XENA);
     uint32_t bar2;
     uint64_t barsize;
@@ -2228,152 +2087,6 @@ static void test_transmit_emits_a_frame(void)
     xframe_tx_stop(&t);
 }
 
-/*
- * The first descriptor's OWN release is the transmit publication point. If
- * VT-d rejects that write, no packet or completion may escape. Retrying the
- * same doorbell after restoring write permission must complete it once.
- */
-static void test_transmit_ownership_write_failure_is_retryable(void)
-{
-    XframeTx t;
-    uint8_t frame[64];
-    uint8_t got[128];
-    uint64_t pending;
-    size_t len;
-    unsigned i;
-
-    for (i = 0; i < sizeof(frame); i++) {
-        frame[i] = (uint8_t)(i + 1);
-    }
-    memset(frame, 0xff, 6);
-
-    xframe_iommu_start(&t);
-    sock_pif_writeq(&t, GENERAL_INT_MASK, 0);
-    sock_pif_writeq(&t, TX_TRAFFIC_MASK, 0);
-
-    qtest_memwrite(t.qs->qts, XFRAME_IOMMU_PAYLOAD_GPA,
-                   frame, sizeof(frame));
-    dma_stq_be(t.qs->qts, XFRAME_IOMMU_DESC_GPA + 0,
-               sizeof(frame) | TXD_OWN | TXD_GCF | TXD_GCL);
-    dma_stq_be(t.qs->qts, XFRAME_IOMMU_DESC_GPA + 8, 0);
-    dma_stq_be(t.qs->qts, XFRAME_IOMMU_DESC_GPA + 16,
-               XFRAME_IOMMU_PAYLOAD_IOVA);
-    dma_stq_be(t.qs->qts, XFRAME_IOMMU_DESC_GPA + 24, 0);
-
-    xframe_ring_doorbell(&t, XFRAME_IOMMU_DESC_IOVA);
-
-    g_assert_cmphex(dma_ldq_be(t.qs->qts,
-                              XFRAME_IOMMU_DESC_GPA) & TXD_OWN,
-                    ==, TXD_OWN);
-    g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT), ==, 0);
-    g_assert_false(xframe_intx_asserted(t.dev));
-    net_socket_expect_no_frame(t.host_fd);
-
-    xframe_iommu_make_descriptor_writable(&t);
-    net_socket_set_recv_timeout(t.host_fd, 5);
-    xframe_ring_doorbell(&t, XFRAME_IOMMU_DESC_IOVA);
-
-    len = net_socket_recv_frame(t.host_fd, got, sizeof(got));
-    g_assert_cmpuint(len, ==, sizeof(frame));
-    g_assert_cmpmem(got, len, frame, sizeof(frame));
-    net_socket_expect_no_frame(t.host_fd);
-
-    g_assert_cmphex(dma_ldq_be(t.qs->qts,
-                              XFRAME_IOMMU_DESC_GPA) & TXD_OWN,
-                    ==, 0);
-    pending = sock_pif_readq(&t, TX_TRAFFIC_INT);
-    g_assert_cmphex(pending, ==, TX_TRAFFIC_FIFO0);
-    g_assert_true(xframe_intx_asserted(t.dev));
-
-    sock_pif_writeq(&t, TX_TRAFFIC_INT, pending);
-    g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT), ==, 0);
-    g_assert_false(xframe_intx_asserted(t.dev));
-
-    xframe_tx_stop(&t);
-}
-
-/*
- * Releasing a secondary descriptor is preparation, not publication. Keep the
- * first descriptor owned until every later release succeeds, so a failed
- * gather-list release can be retried through the same doorbell.
- */
-static void test_transmit_secondary_ownership_write_failure_is_retryable(void)
-{
-    const uint64_t d0_iova = XFRAME_IOMMU_DESC_IOVA +
-                             XFRAME_IOMMU_DESC_END_OFFSET;
-    const uint64_t d0_gpa = XFRAME_IOMMU_DESC_GPA +
-                            XFRAME_IOMMU_DESC_END_OFFSET;
-    const uint64_t d1_gpa = XFRAME_IOMMU_SECOND_DESC_GPA;
-    XframeTx t;
-    uint8_t frame[64];
-    uint8_t got[128];
-    uint64_t pending;
-    size_t len;
-    unsigned i;
-
-    for (i = 0; i < sizeof(frame); i++) {
-        frame[i] = (uint8_t)(0x40 + i);
-    }
-    memset(frame, 0xff, 6);
-
-    xframe_iommu_start_secondary_tx_fault(&t);
-    sock_pif_writeq(&t, GENERAL_INT_MASK, 0);
-    sock_pif_writeq(&t, TX_TRAFFIC_MASK, 0);
-
-    qtest_memwrite(t.qs->qts, XFRAME_IOMMU_GATHER_PAYLOAD_GPA,
-                   frame, sizeof(frame));
-    dma_stq_be(t.qs->qts, d0_gpa,
-               24 | TXD_OWN | TXD_GCF);
-    dma_stq_be(t.qs->qts, d0_gpa + 8, 0);
-    dma_stq_be(t.qs->qts, d0_gpa + 16,
-               XFRAME_IOMMU_GATHER_PAYLOAD_IOVA);
-    dma_stq_be(t.qs->qts, d0_gpa + 24, 0);
-    dma_stq_be(t.qs->qts, d1_gpa,
-               40 | TXD_OWN | TXD_GCL);
-    dma_stq_be(t.qs->qts, d1_gpa + 8, 0);
-    dma_stq_be(t.qs->qts, d1_gpa + 16,
-               XFRAME_IOMMU_GATHER_PAYLOAD_IOVA + 24);
-    dma_stq_be(t.qs->qts, d1_gpa + 24, 0);
-
-    qpci_io_writeq(t.dev, t.txp, TXP_TXDL_PAR, d0_iova);
-    qpci_io_writeq(t.dev, t.txp, TXP_TXDL_LCR,
-                   TXDL_NUMTXD(1) | TXDL_LGC_FIRST | TXDL_LGC_LAST);
-
-    g_assert_cmphex(dma_ldq_be(t.qs->qts, d0_gpa) & TXD_OWN,
-                    ==, TXD_OWN);
-    g_assert_cmphex(dma_ldq_be(t.qs->qts, d1_gpa) & TXD_OWN,
-                    ==, TXD_OWN);
-    net_socket_expect_no_frame(t.host_fd);
-    g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT), ==, 0);
-    g_assert_false(xframe_intx_asserted(t.dev));
-
-    xframe_iommu_make_page_writable(&t, XFRAME_IOMMU_SECOND_DESC_IOVA,
-                                    XFRAME_IOMMU_SECOND_DESC_GPA);
-    net_socket_set_recv_timeout(t.host_fd, 5);
-    qpci_io_writeq(t.dev, t.txp, TXP_TXDL_LCR,
-                   TXDL_NUMTXD(1) | TXDL_LGC_FIRST | TXDL_LGC_LAST);
-
-    len = net_socket_recv_frame(t.host_fd, got, sizeof(got));
-    g_assert_cmpuint(len, ==, sizeof(frame));
-    g_assert_cmpmem(got, len, frame, sizeof(frame));
-    net_socket_expect_no_frame(t.host_fd);
-    g_assert_cmphex(dma_ldq_be(t.qs->qts, d0_gpa) & TXD_OWN, ==, 0);
-    g_assert_cmphex(dma_ldq_be(t.qs->qts, d1_gpa) & TXD_OWN, ==, 0);
-
-    pending = sock_pif_readq(&t, TX_TRAFFIC_INT);
-    g_assert_cmphex(pending, ==, TX_TRAFFIC_FIFO0);
-    g_assert_true(xframe_intx_asserted(t.dev));
-    sock_pif_writeq(&t, TX_TRAFFIC_INT, pending);
-
-    qpci_io_writeq(t.dev, t.txp, TXP_TXDL_LCR,
-                   TXDL_NUMTXD(1) | TXDL_LGC_FIRST | TXDL_LGC_LAST);
-    net_socket_expect_no_frame(t.host_fd);
-    g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT), ==, 0);
-    g_assert_false(xframe_intx_asserted(t.dev));
-
-    xframe_tx_stop(&t);
-}
-
 static void test_user_backend_reply_waits_for_transmit(void)
 {
     static const uint8_t gateway_ip[4] = { 10, 0, 2, 2 };
@@ -2404,10 +2117,9 @@ static void test_user_backend_reply_waits_for_transmit(void)
      * request, but the receive is deferred to a bottom half that the main loop
      * runs once the doorbell write returns. After it, the RxD hands ownership
      * back to the guest: its big-endian bit-56 ownership byte reads as 0
-     * through x86 qtest's readl.
+     * through a little-endian word read of the descriptor.
      */
-    qtest_writel(t.qs->qts, t.txp.addr + TXP_TXDL_LCR + 4,
-                 (uint32_t)(lcr >> 32));
+    qpci_io_writel(t.dev, t.txp, TXP_TXDL_LCR + 4, (uint32_t)(lcr >> 32));
     after_poll = qtest_readl(t.qs->qts, RX_RING_BASE + 8);
     g_assert_cmphex(after_poll & 1, ==, 0);
     g_assert_cmphex(sock_pif_readq(&t, TX_TRAFFIC_INT) & TX_TRAFFIC_FIFO0, ==,
@@ -3206,12 +2918,14 @@ static void test_xg_enable_path_transmit_via_block_masks(void)
 /*
  * Guest RAM for the traffic tests: well clear of the transmit/receive scratch
  * the register tests above use, and spaced for a full XFRAME_MAX_FRAME
- * (9600-byte) jumbo frame in each buffer.
+ * (9600-byte) jumbo frame in each buffer. All four sit inside the sixteen
+ * megabytes the head hands a card, which begins where the register tests'
+ * scratch does.
  */
-#define TRAFFIC_TXD_PAR    0x03000000u   /* transmit descriptor list */
-#define TRAFFIC_TX_BUF     0x03010000u   /* transmit frame buffer */
-#define TRAFFIC_RX_RING    0x03100000u   /* receive ring base (one page) */
-#define TRAFFIC_RX_BUF     0x03200000u   /* receive frame buffer */
+#define TRAFFIC_TXD_PAR    (TX_RAM_SCRATCH + 0x400000u) /* descriptor list */
+#define TRAFFIC_TX_BUF     (TX_RAM_SCRATCH + 0x410000u) /* transmit buffer */
+#define TRAFFIC_RX_RING    (TX_RAM_SCRATCH + 0x500000u) /* ring base, a page */
+#define TRAFFIC_RX_BUF     (TX_RAM_SCRATCH + 0x600000u) /* receive buffer */
 
 /* Header sizes and the frame max, from the public RFC layouts and the
  * device's own XFRAME_MAX_FRAME (9600). */
@@ -5083,52 +4797,6 @@ static void xframe_migration_cleanup(const char *directory,
     g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
-/* A destination derives INTx from the pending source and restored masks. */
-static void test_pending_interrupt_migration_recomputes_intx(void)
-{
-    g_autofree char *directory = xframe_migration_directory();
-    g_autofree char *socket = g_build_filename(directory, "migration.sock",
-                                                NULL);
-    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
-    g_autofree char *incoming = g_strdup_printf("-machine q35 -incoming %s",
-                                                 uri);
-    XframeTx from, to;
-    int irq;
-
-    xframe_tx_start_args(&from, "-machine q35");
-    sock_pif_writeq(&from, GENERAL_INT_MASK, ~GEN_INTR_TXPIC);
-    sock_pif_writeq(&from, PIC_INT_MASK, 0);
-    sock_pif_writeq(&from, TXPIC_INT_MASK, 0);
-    sock_pif_writeq(&from, SCHED_INT_CTRL,
-                    SCHED_INT_CTRL_TIMER_EN | SCHED_INT_TEST_PERIOD);
-    qtest_clock_step(from.qs->qts, SCHED_INT_STEP_NS);
-    g_assert_true(xframe_intx_asserted(from.dev));
-    for (irq = 16; irq < 24; irq++) {
-        if (qtest_get_irq(from.qs->qts, irq)) {
-            break;
-        }
-    }
-    g_assert_cmpint(irq, <, 24);
-
-    xframe_tx_start_args(&to, incoming);
-    g_assert_false(qtest_get_irq(to.qs->qts, irq));
-    xframe_migrate(from.qs->qts, uri);
-
-    g_assert_cmphex(sock_pif_readq(&to, GENERAL_INT_MASK), ==,
-                    ~GEN_INTR_TXPIC);
-    g_assert_cmphex(sock_pif_readq(&to, PIC_INT_MASK), ==, 0);
-    g_assert_cmphex(sock_pif_readq(&to, TXPIC_INT_MASK), ==, 0);
-    g_assert_true(xframe_intx_asserted(to.dev));
-    g_assert_true(qtest_get_irq(to.qs->qts, irq));
-
-    qpci_io_writel(to.dev, to.pif, TXPIC_INT_REG + 4, 0);
-    g_assert_false(xframe_intx_asserted(to.dev));
-
-    xframe_tx_stop(&to);
-    xframe_tx_stop(&from);
-    xframe_migration_cleanup(directory, socket);
-}
-
 /*
  * Version 7 gated PIC delivery through GENERAL_INT_MASK. Keep that behavior
  * after loading an old stream, including across a second migration between
@@ -5155,9 +4823,9 @@ static void test_interrupt_masking_migration_from_v7(void)
     first_dir = xframe_migration_directory();
     first_socket = g_build_filename(first_dir, "migration.sock", NULL);
     first_uri = g_strdup_printf("unix:%s", first_socket);
-    first_incoming = g_strdup_printf("-machine q35 -incoming %s", first_uri);
+    first_incoming = g_strdup_printf("-incoming %s", first_uri);
 
-    xframe_tx_start_binary_args(&from, v7_binary, "-machine q35");
+    xframe_tx_start_binary_args(&from, v7_binary, NULL);
     sock_pif_writeq(&from, PIC_INT_MASK, 0);
     sock_pif_writeq(&from, TXPIC_INT_MASK, 0);
     sock_pif_writeq(&from, SCHED_INT_CTRL,
@@ -5179,7 +4847,7 @@ static void test_interrupt_masking_migration_from_v7(void)
     second_dir = xframe_migration_directory();
     second_socket = g_build_filename(second_dir, "migration.sock", NULL);
     second_uri = g_strdup_printf("unix:%s", second_socket);
-    second_incoming = g_strdup_printf("-machine q35 -incoming %s", second_uri);
+    second_incoming = g_strdup_printf("-incoming %s", second_uri);
     xframe_tx_start_args(&to, second_incoming);
     xframe_migrate(middle.qs->qts, second_uri);
     g_assert_false(xframe_intx_asserted(to.dev));
@@ -5229,9 +4897,9 @@ static void test_gpio_interrupt_masking_migration_from_v7(void)
     directory = xframe_migration_directory();
     socket = g_build_filename(directory, "migration.sock", NULL);
     uri = g_strdup_printf("unix:%s", socket);
-    incoming = g_strdup_printf("-machine q35 -incoming %s", uri);
+    incoming = g_strdup_printf("-incoming %s", uri);
 
-    xframe_tx_start_binary_args(&from, v7_binary, "-machine q35");
+    xframe_tx_start_binary_args(&from, v7_binary, NULL);
     qtest_qmp_assert_success(from.qs->qts,
                              "{'execute': 'set_link', 'arguments': "
                              "{'name': 'n0', 'up': false}}");
@@ -5910,11 +5578,6 @@ int main(int argc, char **argv)
                    test_mac_table_strobe_via_32bit);
     qtest_add_func("xframe/transmit-emits-a-frame",
                    test_transmit_emits_a_frame);
-    qtest_add_func("xframe/transmit-ownership-write-failure-is-retryable",
-                   test_transmit_ownership_write_failure_is_retryable);
-    qtest_add_func(
-        "xframe/transmit-secondary-ownership-write-failure-is-retryable",
-        test_transmit_secondary_ownership_write_failure_is_retryable);
     qtest_add_func("xframe/user-backend-reply-waits-for-transmit",
                    test_user_backend_reply_waits_for_transmit);
     qtest_add_func("xframe/transmit-out-of-range-pointer-is-safe",
@@ -5985,8 +5648,6 @@ int main(int argc, char **argv)
                    test_receive_delivers_a_frame);
     qtest_add_func("xframe/receive-waits-for-arrival-deadline",
                    test_receive_waits_for_its_arrival_deadline);
-    qtest_add_func("xframe/receive-completion-write-failure-is-retryable",
-                   test_receive_completion_write_failure_is_retryable);
     qtest_add_func("xframe/receive-fetches-descriptor-once",
                    test_receive_fetches_descriptor_once);
     qtest_add_func("xframe/receive-recomputes-pending-irq-once",
@@ -6035,8 +5696,6 @@ int main(int argc, char **argv)
                    test_receive_frame_sizes_byte_exact);
     qtest_add_func("xframe/traffic-interrupt-moderation",
                    test_traffic_interrupt_moderation);
-    qtest_add_func("xframe/pending-interrupt-migration-recomputes-intx",
-                   test_pending_interrupt_migration_recomputes_intx);
     qtest_add_func("xframe/interrupt-masking-migration-from-v7",
                    test_interrupt_masking_migration_from_v7);
     qtest_add_func("xframe/gpio-interrupt-masking-migration-from-v7",
