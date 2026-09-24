@@ -1044,6 +1044,12 @@ void sgi_bedrock_memory_correctable_error(SGIBedrockState *s)
     sgi_bedrock_pi_set_pending(&s->pi[1], 1, 61);
 }
 
+void sgi_bedrock_memory_uncorrectable_error(SGIBedrockState *s)
+{
+    sgi_bedrock_pi_set_memory_uncorrectable(&s->pi[0]);
+    sgi_bedrock_pi_set_memory_uncorrectable(&s->pi[1]);
+}
+
 /*
  * The L1 controller's UART is one link per node, not one per processor
  * interface (docs/datasheets/l1-controller.md), so it is broadcast to both

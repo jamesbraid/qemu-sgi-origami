@@ -90,6 +90,13 @@ void sgi_bedrock_pi_set_uart_irq(SGIBedrockPIState *s, bool level);
  */
 void sgi_bedrock_pi_set_pending(SGIBedrockPIState *s, unsigned bank,
                                 unsigned bit);
+/*
+ * The memory unit found an uncorrectable error: raise the error-interrupt
+ * pending register's memory-uncorrectable bit, bit 24, the one bit of that
+ * register software cannot set through the writable view and clears by
+ * writing it back to the pending register.
+ */
+void sgi_bedrock_pi_set_memory_uncorrectable(SGIBedrockPIState *s);
 void sgi_bedrock_pi_recompute(SGIBedrockPIState *s);
 /*
  * An I/O-issued write to the interrupt-pending-modify register from a
