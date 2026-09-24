@@ -1078,7 +1078,7 @@ uint16_t sgi_xbow_endpoint_widgets(const SGIXbowState *s)
 }
 
 bool sgi_xbow_mark_widget_alive(SGIXbowState *s, unsigned int widget,
-                                Error **errp)
+                                bool restore_after_reset, Error **errp)
 {
     unsigned int link;
 
@@ -1119,6 +1119,15 @@ bool sgi_xbow_mark_widget_alive(SGIXbowState *s, unsigned int widget,
      * a widget that came up before startup-links-alive was ever read.
      */
     s->link_startup |= BIT(link);
+    /*
+     * The same holds for a guest-initiated link reset: a link configured
+     * alive at startup comes back from one only under the machine's
+     * "link-reset-restore-alive" policy, so a widget brought up here
+     * follows whichever policy the caller gives it.
+     */
+    if (restore_after_reset) {
+        s->link_reset_restore_alive_mask |= BIT(link);
+    }
     s->link_alive |= BIT(link);
     s->link_came_up |= BIT(link);
     s->link_event[link] |= XBOW_LINK_ALIVE;
