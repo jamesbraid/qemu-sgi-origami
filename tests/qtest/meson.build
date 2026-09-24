@@ -192,7 +192,6 @@ qtests_i386 = \
   (config_all_devices.has_key('CONFIG_TPM_TIS_ISA') ? ['tpm-tis-test'] : []) +              \
   (config_all_devices.has_key('CONFIG_TPM_TIS_ISA') ? ['tpm-tis-swtpm-test'] : []) +        \
   (config_all_devices.has_key('CONFIG_RTL8139_PCI') ? ['rtl8139-test'] : []) +              \
-  (config_all_devices.has_key('CONFIG_BCM570X') ? ['bcm570x-test'] : []) +                   \
   (config_all_devices.has_key('CONFIG_E1000E_PCI_EXPRESS') ? ['fuzz-e1000e-test'] : []) +   \
   (config_all_devices.has_key('CONFIG_MEGASAS_SCSI_PCI') ? ['fuzz-megasas-test'] : []) +    \
   (config_all_devices.has_key('CONFIG_LSI_SCSI_PCI') ? ['fuzz-lsi53c895a-test'] : []) +     \
@@ -355,6 +354,7 @@ sgi_board_qtests = \
 sgi_bridge_card_qtests = \
   (config_all_devices.has_key('CONFIG_TIGON') ? ['tigon-test'] : []) + \
   (config_all_devices.has_key('CONFIG_XFRAME_PCI') ? ['xframe-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_BCM570X') ? ['bcm570x-test'] : []) + \
   (slirp.found() and config_all_devices.has_key('CONFIG_SGI_IOC3') ?
     ['sgi-ioc3-eth-test'] : [])
 if not config_all_devices.has_key('CONFIG_SGI_BRIDGE') or \

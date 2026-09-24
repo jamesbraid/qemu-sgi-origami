@@ -1,15 +1,24 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * QTest for the Broadcom NetXtreme BCM570x adapter.
+ * QTest for the Broadcom NetXtreme BCM570x adapter, on the Bridge head.
  *
- * The bcm570x is a general-purpose little-endian PCI NIC. This test drives it
- * on a generic x86_64/i386 PC machine through the standard PCI config and BAR
- * mechanisms (libqos qpci) -- the device must work identically on any PCI host,
- * so its own register contract, ring engines, and DMA byte order are proven
- * here with no host-bridge assumption. The device's native little-endian DMA
- * composed with the SGI Origin 200 Bridge's per-slot byte-swap correction is a
- * separate machine-level concern, validated by sn0-bcm570x-test.c (see
+ * The head is one Bridge on the "none" machine with the memory a card
+ * transfers into beside it, under -M none. The card is reached over the chip
+ * it ships behind -- an Origin never has this adapter anywhere else -- but
+ * nothing here is an Origin 200 claim: no node, no crossbar, no fabric. How
+ * the device composes with a populated machine's DMA routes is a separate
+ * integration test, sn0-bcm570x-test.c (see
  * docs/library/nic-on-bridge-conventions.md).
+ *
+ * This ran on an x86 PC until the fork stopped building SGI devices for that
+ * target, and the move changes what the golden byte assertions below say. The
+ * model resolves the Bridge's plain DMA address space at realize and, behind
+ * any Bridge, delivers its DMA integer fields in the driver's own big-endian
+ * layout instead of native little-endian, with a 16-bit field in the other
+ * half of its 32-bit word (offset xor 2) because the word swap relocates
+ * halfwords. The packet payload is copied verbatim. That is the contract in
+ * docs/datasheets/bcm570x.md, "Byte order -- the exact bits", and it is the
+ * only byte order the product ever presents.
  *
  * The card carries the SGI IRIS Release 2 Gigabit board's PCI four-tuple:
  * IRIX's tg driver registers on the raw Broadcom primary vendor/device and then,
@@ -18,18 +27,17 @@
  * driver uses before it ever touches the BAR (docs/datasheets/bcm570x.md,
  * "three access paths" and the qtest checklist).
  *
- * Byte order is asserted as a golden fixed-byte-layout: the device delivers its
- * DMA in native little-endian, so a status flag of 0x00000001 lands in guest
- * memory as bytes 01 00 00 00. A self-round-trip through the model cannot see
- * the swap direction (swap-on-write and swap-on-read cancel), so every DMA
- * byte-order check reads the raw bytes and asserts the exact little-endian
- * placement.
+ * Byte order is asserted as a golden fixed-byte-layout: on this host a status
+ * flag of 0x00000001 lands in guest memory as bytes 00 00 00 01. A
+ * self-round-trip through the model cannot see the swap direction
+ * (swap-on-write and swap-on-read cancel), so every DMA byte-order check reads
+ * the raw bytes and asserts the exact placement.
  */
 
 #include "qemu/osdep.h"
 #include "qemu/iov.h"
 #include "libqtest.h"
-#include "libqos/pci-pc.h"
+#include "libqos/pci-sgi-bridge.h"
 #include "qapi/error.h"
 #include "qobject/qdict.h"
 #include "qobject/qjson.h"
@@ -46,15 +54,14 @@
 #endif
 
 /*
- * The card is placed at a free PCI slot on the PC root bus. Slots 0-2 hold the
- * host bridge, ISA bridge and VGA; slot 4 is free, matching the device's own
- * default probe slot in the machine.
+ * The Bridge decodes eight slots and the head places nothing else on them, so
+ * the card sits where it does on the base I/O board's first free slot.
  */
 #define BCM_SLOT                4
 #define BCM_DEVFN               QPCI_DEVFN(BCM_SLOT, 0)
 
 /* The base machine and network backend shared by most tests. */
-#define BCM_MACHINE             "-nodefaults -machine pc"
+#define BCM_MACHINE             "-nodefaults -M none " QPCI_SGI_BRIDGE_HEAD
 
 /* The single-port SGI IRIS Release 2 board's four-tuple (bcm5701, copper). */
 #define BCM_VENDOR_ID           0x14e4
@@ -226,17 +233,20 @@
 #define BCM_HEADER_MULTIFUNC    0x80u          /* PCI_HEADER_TYPE multi bit */
 
 /*
- * Guest-physical DMA scratch. There is no host IOMMU on the PC machine, so the
- * device DMAs to exactly the guest-physical address the driver programs; the
- * scratch sits above the first megabyte, in RAM nothing else uses under qtest.
+ * DMA scratch, inside the sixteen megabytes the head hands a card. A transfer
+ * below the Bridge's translated window reaches the fabric at the address it
+ * names, so each of these is both a PCI address the card writes to and an
+ * address qtest reads back.
  */
-#define TX_RING_PHYS            0x00200000ULL
-#define TX_BUF_PHYS             0x00210000ULL
-#define STATUS_PHYS             0x00220000ULL
-#define STD_RING_PHYS           0x00230000ULL
-#define RET_RING_PHYS           0x00240000ULL
-#define RX_BUF_PHYS             0x00250000ULL
-#define STATUS2_PHYS            0x00260000ULL
+#define DMA_BASE                0x02000000ULL
+#define DMA_END                 (DMA_BASE + 0x01000000ULL)
+#define TX_RING_PHYS            (DMA_BASE + 0x00200000ULL)
+#define TX_BUF_PHYS             (DMA_BASE + 0x00210000ULL)
+#define STATUS_PHYS             (DMA_BASE + 0x00220000ULL)
+#define STD_RING_PHYS           (DMA_BASE + 0x00230000ULL)
+#define RET_RING_PHYS           (DMA_BASE + 0x00240000ULL)
+#define RX_BUF_PHYS             (DMA_BASE + 0x00250000ULL)
+#define STATUS2_PHYS            (DMA_BASE + 0x00260000ULL)
 #define TX_RING_LEN            4u             /* descriptors in the test ring */
 #define RX_RING_LEN           4u
 /*
@@ -245,18 +255,18 @@
  * something like this; a frame that does not fit belongs on the jumbo ring.
  */
 #define STD_BUF_SIZE          1536u
-#define JUMBO_RING_PHYS       0x00260000ULL
-#define JUMBO_BUF_PHYS        0x00270000ULL
-#define STD_STALE_BUF_PHYS    0x00280000ULL
-#define JUMBO_STALE_BUF_PHYS  0x00290000ULL
+#define JUMBO_RING_PHYS       (DMA_BASE + 0x00260000ULL)
+#define JUMBO_BUF_PHYS        (DMA_BASE + 0x00270000ULL)
+#define STD_STALE_BUF_PHYS    (DMA_BASE + 0x00280000ULL)
+#define JUMBO_STALE_BUF_PHYS  (DMA_BASE + 0x00290000ULL)
 #define JUMBO_BUF_SIZE        9216u
-#define UNMAPPED_PHYS         0x02000000ULL
-#define RAM_END_16M           0x01000000ULL
+/* Past the transfer memory, short of the chip's face: nothing backs it. */
+#define UNMAPPED_PHYS         0x04000000ULL
 #define COAL_RING_LEN         64u            /* a ring long enough for a coalescing burst */
 
 /* A ring and buffer area big enough to time a burst rather than a packet. */
-#define BENCH_RING_PHYS       0x00300000ULL
-#define BENCH_BUF_PHYS        0x00400000ULL
+#define BENCH_RING_PHYS       (DMA_BASE + 0x00300000ULL)
+#define BENCH_BUF_PHYS        (DMA_BASE + 0x00400000ULL)
 #define BENCH_RING_LEN        256u
 #define BENCH_FRAMES          255u
 #define BENCH_FRAME_LEN       1472u
@@ -278,7 +288,7 @@ typedef struct {
 static void bcm_open_at(Bcm *b, QTestState *qts, unsigned devfn)
 {
     b->qts = qts;
-    b->bus = qpci_new_pc(qts, NULL);
+    b->bus = qpci_init_sgi_bridge(qts, NULL);
     b->dev = qpci_device_find(b->bus, devfn);
     g_assert_nonnull(b->dev);
     qpci_device_enable(b->dev);
@@ -294,7 +304,7 @@ static void bcm_close(Bcm *b)
 {
     qpci_iounmap(b->dev, b->bar);
     g_free(b->dev);
-    qpci_free_pc(b->bus);
+    qpci_free_sgi_bridge(b->bus);
     qtest_quit(b->qts);
 }
 
@@ -417,14 +427,16 @@ static void mii_write(Bcm *b, unsigned phy, unsigned reg, uint16_t val)
 }
 
 /*
- * Little-endian field access, matching the device's native DMA order. These
- * helpers build and decode the descriptors the test exchanges with the device;
- * the golden byte-layout assertions below read the raw bytes to pin the
- * direction the round trip alone cannot see.
+ * DMA field access in the order the model delivers behind a Bridge: every
+ * 32-bit word big-endian, the driver's own layout. Off a Bridge the same
+ * fields are little-endian, which is the whole difference the host makes.
+ * These helpers build and decode the descriptors the test exchanges with the
+ * device; the golden byte-layout assertions below read the raw bytes to pin
+ * the direction the round trip alone cannot see.
  */
-static void put32le(uint8_t *b, uint32_t v)
+static void put32dma(uint8_t *b, uint32_t v)
 {
-    b[0] = v; b[1] = v >> 8; b[2] = v >> 16; b[3] = v >> 24;
+    b[0] = v >> 24; b[1] = v >> 16; b[2] = v >> 8; b[3] = v;
 }
 
 /* Big-endian helpers: frame headers are big-endian wherever they appear. */
@@ -439,20 +451,35 @@ static uint16_t get16be_test(const uint8_t *p)
     return (uint16_t)((p[0] << 8) | p[1]);
 }
 
-static void put16le(uint8_t *b, uint16_t v)
+static uint32_t get32dma(const uint8_t *b)
 {
-    b[0] = v; b[1] = v >> 8;
+    return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
+           ((uint32_t)b[2] << 8) | (uint32_t)b[3];
 }
 
-static uint32_t get32le(const uint8_t *b)
+/*
+ * A 16-bit DMA field. The word swap puts it in the other half of its 32-bit
+ * word from where the little-endian layout does, so its byte offset within the
+ * structure is the model's offset xor 2 and the two bytes there are
+ * big-endian. Off a Bridge the same field is little-endian at the plain
+ * offset.
+ */
+#define DMA16(off)              ((off) ^ 2u)
+
+static uint16_t get16be(const uint8_t *b)
 {
-    return (uint32_t)b[0] | ((uint32_t)b[1] << 8) |
-           ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+    return ((uint16_t)b[0] << 8) | (uint16_t)b[1];
 }
 
-static uint16_t get16le(const uint8_t *b)
+static void put16dma(uint8_t *base, unsigned int off, uint16_t v)
 {
-    return (uint16_t)b[0] | ((uint16_t)b[1] << 8);
+    base[DMA16(off)] = v >> 8;
+    base[DMA16(off) + 1] = (uint8_t)v;
+}
+
+static uint16_t get16dma(const uint8_t *base, unsigned int off)
+{
+    return get16be(base + DMA16(off));
 }
 
 /* True when the card is driving its INTA line, as the driver reads it: the
@@ -629,15 +656,16 @@ static void wait_for_rx_prod(Bcm *b, uint16_t want)
     int attempt;
 
     for (attempt = 0; attempt < 200; attempt++) {
-        qtest_memread(b->qts, STATUS_PHYS + BCM_STATUS_RX_PROD_OFF, idx, 2);
-        if (get16le(idx) == want) {
+        qtest_memread(b->qts, STATUS_PHYS + DMA16(BCM_STATUS_RX_PROD_OFF),
+                      idx, 2);
+        if (get16be(idx) == want) {
             return;
         }
         g_usleep(5000);
         qtest_clock_step(b->qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
-    qtest_memread(b->qts, STATUS_PHYS + BCM_STATUS_RX_PROD_OFF, idx, 2);
-    g_assert_cmphex(get16le(idx), ==, want);
+    qtest_memread(b->qts, STATUS_PHYS + DMA16(BCM_STATUS_RX_PROD_OFF), idx, 2);
+    g_assert_cmphex(get16be(idx), ==, want);
 }
 
 /* The status tag the device bumps once per status-block DMA, so its delta over
@@ -647,7 +675,7 @@ static uint32_t read_status_tag(Bcm *b)
     uint8_t tag[4];
 
     qtest_memread(b->qts, STATUS_PHYS + BCM_STATUS_TAG_OFF, tag, sizeof(tag));
-    return get32le(tag);
+    return get32dma(tag);
 }
 
 /* Poll the return ring until the descriptor at idx is marked end-of-frame -- the
@@ -660,16 +688,16 @@ static void wait_for_ret_end(Bcm *b, unsigned int idx)
 
     for (attempt = 0; attempt < 200; attempt++) {
         qtest_memread(b->qts, RET_RING_PHYS + (uint64_t)idx * BCM_RXBD_SIZE +
-                      BCM_RXBD_FLAGS, flags, 2);
-        if (get16le(flags) & BCM_RXBDFLAG_END) {
+                      DMA16(BCM_RXBD_FLAGS), flags, 2);
+        if (get16be(flags) & BCM_RXBDFLAG_END) {
             return;
         }
         g_usleep(5000);
         qtest_clock_step(b->qts, RX_ARRIVAL_LATENCY_NS / 4);
     }
     qtest_memread(b->qts, RET_RING_PHYS + (uint64_t)idx * BCM_RXBD_SIZE +
-                  BCM_RXBD_FLAGS, flags, 2);
-    g_assert_cmphex(get16le(flags) & BCM_RXBDFLAG_END, ==, BCM_RXBDFLAG_END);
+                  DMA16(BCM_RXBD_FLAGS), flags, 2);
+    g_assert_cmphex(get16be(flags) & BCM_RXBDFLAG_END, ==, BCM_RXBDFLAG_END);
 }
 
 /*
@@ -1178,14 +1206,12 @@ static void test_phy_aux_status_link_up(const void *data)
 }
 
 /*
- * The load-bearing byte-order test, as a golden fixed-byte-layout assertion.
- * The chip DMAs the status block to guest memory; because the device is a
- * little-endian PCI part, a status flag of 0x00000001 must occupy bytes
- * 01 00 00 00 in guest memory, and a producer index of 1 must read {01, 00} --
- * NOT the big-endian {00, 00, 00, 01} / {00, 01}. A self-round-trip could not
- * tell the two apart, so the raw bytes are read and the exact placement pinned.
- * This runs on the generic PC host with no bridge in the path, so it asserts
- * the device's native delivery directly.
+ * The byte-order test the rest of the file rests on, as a golden
+ * fixed-byte-layout assertion. The chip DMAs the status block to guest memory;
+ * behind a Bridge the model delivers the driver's own big-endian layout, so a
+ * status flag of 0x00000001 must occupy bytes 00 00 00 01. A self-round-trip
+ * could not tell that from the other direction, so the raw bytes are read and
+ * the exact placement pinned.
  */
 static void test_status_block_byte_order(const void *data)
 {
@@ -1201,12 +1227,15 @@ static void test_status_block_byte_order(const void *data)
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
     qtest_memread(b.qts, STATUS_PHYS, sb, sizeof(sb));
 
-    /* The status flag, byte for byte: little-endian 1 is 01 00 00 00. */
-    g_assert_cmphex(sb[0], ==, 0x01);
+    /*
+     * The status flag, byte for byte. Off a Bridge the same flag lands
+     * little-endian, 01 00 00 00; on this host the word is big-endian.
+     */
+    g_assert_cmphex(sb[0], ==, 0x00);
     g_assert_cmphex(sb[1], ==, 0x00);
     g_assert_cmphex(sb[2], ==, 0x00);
-    g_assert_cmphex(sb[3], ==, 0x00);
-    g_assert_cmphex(get32le(sb + 0), ==, BCM_STATFLAG_UPDATED);
+    g_assert_cmphex(sb[3], ==, 0x01);
+    g_assert_cmphex(get32dma(sb + 0), ==, BCM_STATFLAG_UPDATED);
 
     bcm_close(&b);
 }
@@ -1216,13 +1245,15 @@ static void test_status_block_byte_order(const void *data)
  * writes each 64-bit host address as two 32-bit halves word-swapped -- the
  * intended low word into ADDR_HI, the intended high word into ADDR_LO -- so the
  * chip must swap them back when it composes the DMA target. Program a
- * status-block address of 0x01000000 word-swapped (HI <- 0x01000000, LO <- 0)
- * and confirm the block DMAs there. Composing (HI<<32)|LO raw would target
- * 0x0100000000000000, off the end of RAM, and land nothing.
+ * status-block address word-swapped (HI <- its low word, LO <- 0) and confirm
+ * the block DMAs there. Composing (HI<<32)|LO raw would target that low word
+ * shifted into the top half, off the end of the transfer memory, and land
+ * nothing.
  */
 static void test_status_block_hostaddr_wordswap(const void *data)
 {
-    const uint64_t intended = 0x01000000;   /* 16 MiB, within the 128 MiB RAM */
+    /* Eight megabytes into the sixteen the head hands a card. */
+    const uint64_t intended = DMA_BASE + 0x00800000ULL;
     Bcm b;
     uint32_t misc;
     uint8_t sb[BCM_STATUS_BLK_SIZE];
@@ -1249,7 +1280,7 @@ static void test_status_block_hostaddr_wordswap(const void *data)
 
     /* The swap honoured, the block lands at the intended address. */
     qtest_memread(b.qts, intended, sb, sizeof(sb));
-    g_assert_cmphex(get32le(sb + 0), ==, BCM_STATFLAG_UPDATED);
+    g_assert_cmphex(get32dma(sb + 0), ==, BCM_STATFLAG_UPDATED);
 
     bcm_close(&b);
 }
@@ -1257,11 +1288,10 @@ static void test_status_block_hostaddr_wordswap(const void *data)
 /*
  * The transmit round trip. With the driver's swap options written, a transmit
  * descriptor and its buffer are DMA'd, the frame reaches the backend
- * byte-for-byte, and the status block the chip writes back lands native
- * little-endian with its transmit consumer advanced. The frame pattern has
- * every byte distinct so a swap anywhere on the path shows. The status-block
- * bytes are checked as a golden little-endian layout, the direction a round
- * trip alone cannot see.
+ * byte-for-byte, and the status block the chip writes back carries its
+ * transmit consumer advanced. The frame pattern has every byte distinct so a
+ * swap anywhere on the path shows. The status-block bytes are checked as a
+ * golden layout, the direction a round trip alone cannot see.
  */
 static void test_transmit_round_trip(const void *data)
 {
@@ -1301,13 +1331,13 @@ static void test_transmit_round_trip(const void *data)
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
-    /* One transmit descriptor at ring index 0, built little-endian. */
+    /* One transmit descriptor at ring index 0, in the Bridge's order. */
     memset(bd, 0, sizeof(bd));
-    put32le(bd + 0, TX_BUF_PHYS >> 32);
-    put32le(bd + 4, TX_BUF_PHYS & 0xffffffff);
+    put32dma(bd + 0, TX_BUF_PHYS >> 32);
+    put32dma(bd + 4, TX_BUF_PHYS & 0xffffffff);
     /* len_flags: flags in the low 16 bits (0x08), length in the high (0x0a). */
-    put16le(bd + 8, BCM_TXBDFLAG_END);
-    put16le(bd + 10, sizeof(frame));
+    put16dma(bd, 8, BCM_TXBDFLAG_END);
+    put16dma(bd, 10, sizeof(frame));
     qtest_memwrite(b.qts, TX_RING_PHYS, bd, sizeof(bd));
     qtest_memwrite(b.qts, TX_BUF_PHYS, frame, sizeof(frame));
     qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
@@ -1320,14 +1350,17 @@ static void test_transmit_round_trip(const void *data)
     g_assert_cmpint(len, ==, sizeof(frame));
     g_assert_cmpmem(got, len, frame, sizeof(frame));
 
-    /* The status block landed little-endian with the transmit consumer
-     * advanced. */
+    /* The status block landed with the transmit consumer advanced. */
     qtest_memread(b.qts, STATUS_PHYS, sb, sizeof(sb));
-    g_assert_cmphex(get32le(sb + 0), ==, BCM_STATFLAG_UPDATED);
-    g_assert_cmphex(get16le(sb + BCM_STATUS_TX_CONS_OFF), ==, 1);
-    /* Raw bytes prove the order: little-endian 1 is {0x01, 0x00}. */
-    g_assert_cmphex(sb[BCM_STATUS_TX_CONS_OFF], ==, 0x01);
-    g_assert_cmphex(sb[BCM_STATUS_TX_CONS_OFF + 1], ==, 0x00);
+    g_assert_cmphex(get32dma(sb + 0), ==, BCM_STATFLAG_UPDATED);
+    g_assert_cmphex(get16dma(sb, BCM_STATUS_TX_CONS_OFF), ==, 1);
+    /*
+     * Raw bytes prove the order. Off a Bridge a consumer of 1 is {0x01, 0x00}
+     * at the field's own offset; here the word swap moves the halfword into
+     * the other half of its word and writes it big-endian.
+     */
+    g_assert_cmphex(sb[DMA16(BCM_STATUS_TX_CONS_OFF)], ==, 0x00);
+    g_assert_cmphex(sb[DMA16(BCM_STATUS_TX_CONS_OFF) + 1], ==, 0x01);
 
     bcm_close(&b);
     close(sv[0]);
@@ -1349,8 +1382,8 @@ static void test_user_backend_reply_waits_for_transmit(const void *data)
     uint8_t rx_bd[BCM_RXBD_SIZE] = { 0 };
     uint8_t ret[BCM_RXBD_SIZE];
     uint8_t landed[sizeof(arp_request)];
+    uint8_t sb[BCM_STATUS_BLK_SIZE];
     Bcm b;
-    uint32_t after_poll;
 
     /*
      * rx-arrival-latency-us=0 on purpose. This test asserts that a synchronous
@@ -1383,8 +1416,8 @@ static void test_user_backend_reply_waits_for_transmit(const void *data)
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
 
-    put32le(rx_bd + 0, RX_BUF_PHYS >> 32);
-    put32le(rx_bd + 4, RX_BUF_PHYS & 0xffffffff);
+    put32dma(rx_bd + 0, RX_BUF_PHYS >> 32);
+    put32dma(rx_bd + 4, RX_BUF_PHYS & 0xffffffff);
     qtest_memwrite(b.qts, STD_RING_PHYS, rx_bd, sizeof(rx_bd));
     qtest_memset(b.qts, RX_BUF_PHYS, 0, sizeof(landed));
     qtest_memset(b.qts, RET_RING_PHYS, 0, sizeof(ret));
@@ -1399,10 +1432,10 @@ static void test_user_backend_reply_waits_for_transmit(const void *data)
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
     g_assert_false(intr_line_up(b.dev));
 
-    put32le(tx_bd + 0, TX_BUF_PHYS >> 32);
-    put32le(tx_bd + 4, TX_BUF_PHYS & 0xffffffff);
-    put16le(tx_bd + 8, BCM_TXBDFLAG_END);
-    put16le(tx_bd + 10, sizeof(arp_request));
+    put32dma(tx_bd + 0, TX_BUF_PHYS >> 32);
+    put32dma(tx_bd + 4, TX_BUF_PHYS & 0xffffffff);
+    put16dma(tx_bd, 8, BCM_TXBDFLAG_END);
+    put16dma(tx_bd, 10, sizeof(arp_request));
     qtest_memwrite(b.qts, TX_RING_PHYS, tx_bd, sizeof(tx_bd));
     qtest_memwrite(b.qts, TX_BUF_PHYS, arp_request, sizeof(arp_request));
 
@@ -1412,14 +1445,16 @@ static void test_user_backend_reply_waits_for_transmit(const void *data)
      * the main loop, which runs that bottom half, so the status block then
      * reports the delivered frame and the interrupt is raised.
      */
-    qtest_writel(b.qts, b.bar.addr + BCM_MBX_TX_PROD_LO, 1);
-    after_poll = qtest_readl(b.qts, STATUS_PHYS + BCM_STATUS_RX_PROD_OFF);
-    g_assert_cmphex(after_poll, ==, 0x00010001);
+    bar_writel(&b, BCM_MBX_TX_PROD_LO, 1);
+    /* Both indices, read the instant the doorbell write returns. */
+    qtest_memread(b.qts, STATUS_PHYS, sb, sizeof(sb));
+    g_assert_cmphex(get16dma(sb, BCM_STATUS_RX_PROD_OFF), ==, 1);
+    g_assert_cmphex(get16dma(sb, BCM_STATUS_TX_CONS_OFF), ==, 1);
     g_assert_true(intr_line_up(b.dev));
 
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_IDX), ==, 0);
-    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_IDX), ==, 0);
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
                     BCM_RXBDFLAG_END);
     qtest_memread(b.qts, RX_BUF_PHYS, landed, sizeof(landed));
     g_assert_cmpmem(landed, 6, arp_request + 6, 6);
@@ -1447,7 +1482,6 @@ static void test_transmit_descriptor_dma_error(const void *data)
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     bcm_open(&b, qtest_initf(BCM_MACHINE
-                             " -m 16M"
                              " -netdev socket,fd=%d,id=n0"
                              " -device bcm570x,addr=%02x.0,netdev=n0",
                              sv[1], BCM_SLOT));
@@ -1467,10 +1501,10 @@ static void test_transmit_descriptor_dma_error(const void *data)
     net_socket_expect_no_frame(sv[0]);
     g_assert_cmphex(read_status_tag(&b), ==, 0);
 
-    put32le(bd + 0, TX_BUF_PHYS >> 32);
-    put32le(bd + 4, TX_BUF_PHYS & 0xffffffff);
-    put16le(bd + 8, BCM_TXBDFLAG_END);
-    put16le(bd + 10, sizeof(frame));
+    put32dma(bd + 0, TX_BUF_PHYS >> 32);
+    put32dma(bd + 4, TX_BUF_PHYS & 0xffffffff);
+    put16dma(bd, 8, BCM_TXBDFLAG_END);
+    put16dma(bd, 10, sizeof(frame));
     qtest_memwrite(b.qts, TX_RING_PHYS, bd, sizeof(bd));
     qtest_memwrite(b.qts, TX_BUF_PHYS, frame, sizeof(frame));
     ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 0, TX_RING_PHYS >> 32);
@@ -1511,19 +1545,18 @@ static void test_transmit_payload_dma_error(const void *data)
     g_assert_cmpint(logfd, >=, 0);
     close(logfd);
     bcm_open(&b, qtest_initf(BCM_MACHINE
-                             " -m 16M"
                              " -netdev socket,fd=%d,id=n0"
                              " -device bcm570x,addr=%02x.0,netdev=n0"
                              " -d guest_errors -D %s",
                              sv[1], BCM_SLOT, logfile));
 
-    put32le(ring, TX_BUF_PHYS >> 32);
-    put32le(ring + 4, TX_BUF_PHYS & 0xffffffff);
-    put16le(ring + 10, 28);
-    put32le(ring + BCM_TXBD_SIZE, UNMAPPED_PHYS >> 32);
-    put32le(ring + BCM_TXBD_SIZE + 4, UNMAPPED_PHYS & 0xffffffff);
-    put16le(ring + BCM_TXBD_SIZE + 8, BCM_TXBDFLAG_END);
-    put16le(ring + BCM_TXBD_SIZE + 10, 32);
+    put32dma(ring, TX_BUF_PHYS >> 32);
+    put32dma(ring + 4, TX_BUF_PHYS & 0xffffffff);
+    put16dma(ring, 10, 28);
+    put32dma(ring + BCM_TXBD_SIZE, UNMAPPED_PHYS >> 32);
+    put32dma(ring + BCM_TXBD_SIZE + 4, UNMAPPED_PHYS & 0xffffffff);
+    put16dma(ring + BCM_TXBD_SIZE, 8, BCM_TXBDFLAG_END);
+    put16dma(ring + BCM_TXBD_SIZE, 10, 32);
     qtest_memwrite(b.qts, TX_RING_PHYS, ring, sizeof(ring));
     qtest_memwrite(b.qts, TX_BUF_PHYS, frame, 28);
     qtest_memset(b.qts, STATUS_PHYS, 0, sizeof(status));
@@ -1542,18 +1575,18 @@ static void test_transmit_payload_dma_error(const void *data)
 
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 2);
     wait_for_log_marker(b.qts, logfile,
-                        "bcm570x: transmit payload read at 0x2000000 failed; "
+                        "bcm570x: transmit payload read at 0x4000000 failed; "
                         "frame left ready to retry");
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 0);
+    g_assert_cmphex(get16dma(status, BCM_STATUS_TX_CONS_OFF), ==, 0);
     g_assert_cmphex(read_status_tag(&b), ==, tag);
     g_assert_false(intr_line_up(b.dev));
     g_assert_cmpint(recv(sv[0], &byte, sizeof(byte), MSG_DONTWAIT), ==, -1);
     g_assert_true(errno == EAGAIN || errno == EWOULDBLOCK);
 
     /* Repair only fragment two; producer 2 must replay fragment one. */
-    put32le(ring + BCM_TXBD_SIZE, (TX_BUF_PHYS + 0x100) >> 32);
-    put32le(ring + BCM_TXBD_SIZE + 4,
+    put32dma(ring + BCM_TXBD_SIZE, (TX_BUF_PHYS + 0x100) >> 32);
+    put32dma(ring + BCM_TXBD_SIZE + 4,
             (TX_BUF_PHYS + 0x100) & 0xffffffff);
     qtest_memwrite(b.qts, TX_RING_PHYS + BCM_TXBD_SIZE,
                    ring + BCM_TXBD_SIZE, BCM_TXBD_SIZE);
@@ -1564,7 +1597,7 @@ static void test_transmit_payload_dma_error(const void *data)
     g_assert_cmpuint(len, ==, sizeof(frame));
     g_assert_cmpmem(got, len, frame, sizeof(frame));
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 2);
+    g_assert_cmphex(get16dma(status, BCM_STATUS_TX_CONS_OFF), ==, 2);
     g_assert_cmphex(read_status_tag(&b), ==, tag + 1);
     g_assert_true(intr_line_up(b.dev));
 
@@ -1602,23 +1635,22 @@ static void test_transmit_complete_then_fragment_dma_error_retry(
     g_assert_cmpint(logfd, >=, 0);
     close(logfd);
     bcm_open(&b, qtest_initf(BCM_MACHINE
-                             " -m 16M"
                              " -netdev socket,fd=%d,id=n0"
                              " -device bcm570x,addr=%02x.0,netdev=n0"
                              " -d guest_errors -D %s",
                              sv[1], BCM_SLOT, logfile));
 
-    put32le(ring, TX_BUF_PHYS >> 32);
-    put32le(ring + 4, TX_BUF_PHYS & 0xffffffff);
-    put16le(ring + 8, BCM_TXBDFLAG_END);
-    put16le(ring + 10, empty_first ? 0 : sizeof(first));
-    put32le(ring + 16, (TX_BUF_PHYS + 0x100) >> 32);
-    put32le(ring + 20, (TX_BUF_PHYS + 0x100) & 0xffffffff);
-    put16le(ring + 26, FIRST_FRAGMENT_LEN);
-    put32le(ring + 32, UNMAPPED_PHYS >> 32);
-    put32le(ring + 36, UNMAPPED_PHYS & 0xffffffff);
-    put16le(ring + 40, BCM_TXBDFLAG_END);
-    put16le(ring + 42, sizeof(second) - FIRST_FRAGMENT_LEN);
+    put32dma(ring, TX_BUF_PHYS >> 32);
+    put32dma(ring + 4, TX_BUF_PHYS & 0xffffffff);
+    put16dma(ring, 8, BCM_TXBDFLAG_END);
+    put16dma(ring, 10, empty_first ? 0 : sizeof(first));
+    put32dma(ring + 16, (TX_BUF_PHYS + 0x100) >> 32);
+    put32dma(ring + 20, (TX_BUF_PHYS + 0x100) & 0xffffffff);
+    put16dma(ring, 26, FIRST_FRAGMENT_LEN);
+    put32dma(ring + 32, UNMAPPED_PHYS >> 32);
+    put32dma(ring + 36, UNMAPPED_PHYS & 0xffffffff);
+    put16dma(ring, 40, BCM_TXBDFLAG_END);
+    put16dma(ring, 42, sizeof(second) - FIRST_FRAGMENT_LEN);
     qtest_memwrite(b.qts, TX_RING_PHYS, ring, sizeof(ring));
     qtest_memwrite(b.qts, TX_BUF_PHYS, first, sizeof(first));
     qtest_memwrite(b.qts, TX_BUF_PHYS + 0x100, second,
@@ -1639,7 +1671,7 @@ static void test_transmit_complete_then_fragment_dma_error_retry(
 
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 3);
     wait_for_log_marker(b.qts, logfile,
-                        "bcm570x: transmit payload read at 0x2000000 failed; "
+                        "bcm570x: transmit payload read at 0x4000000 failed; "
                         "frame left ready to retry");
     if (empty_first) {
         net_socket_expect_no_frame(sv[0]);
@@ -1649,15 +1681,15 @@ static void test_transmit_complete_then_fragment_dma_error_retry(
         g_assert_cmpmem(got, len, first, sizeof(first));
     }
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 1);
+    g_assert_cmphex(get16dma(status, BCM_STATUS_TX_CONS_OFF), ==, 1);
     g_assert_cmphex(read_status_tag(&b), ==, tag + 1);
     g_assert_true(intr_line_up(b.dev));
     net_socket_expect_no_frame(sv[0]);
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
 
-    put32le(ring + 32,
+    put32dma(ring + 32,
             (TX_BUF_PHYS + 0x100 + FIRST_FRAGMENT_LEN) >> 32);
-    put32le(ring + 36,
+    put32dma(ring + 36,
             (TX_BUF_PHYS + 0x100 + FIRST_FRAGMENT_LEN) & 0xffffffff);
     qtest_memwrite(b.qts, TX_RING_PHYS + 32, ring + 32, 16);
     qtest_memwrite(b.qts, TX_BUF_PHYS + 0x100 + FIRST_FRAGMENT_LEN,
@@ -1669,7 +1701,7 @@ static void test_transmit_complete_then_fragment_dma_error_retry(
     g_assert_cmpuint(len, ==, sizeof(second));
     g_assert_cmpmem(got, len, second, sizeof(second));
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 3);
+    g_assert_cmphex(get16dma(status, BCM_STATUS_TX_CONS_OFF), ==, 3);
     g_assert_cmphex(read_status_tag(&b), ==, tag + 2);
     g_assert_true(intr_line_up(b.dev));
     net_socket_expect_no_frame(sv[0]);
@@ -1684,8 +1716,8 @@ static void test_transmit_complete_then_fragment_dma_error_retry(
 static void test_transmit_complete_then_descriptor_dma_error_retry(
     const void *data)
 {
-    enum { RAM_END_PHYS = 0x01000000 };
-    const uint64_t initial_ring = RAM_END_PHYS - 16;
+    /* Straddling the top of the transfer memory: descriptor 1 is past it. */
+    const uint64_t initial_ring = DMA_END - 16;
     const uint64_t repaired_ring = TX_RING_PHYS - 16;
     g_autofree char *logfile = NULL;
     uint8_t first[60], second[60], got[sizeof(first)];
@@ -1709,16 +1741,15 @@ static void test_transmit_complete_then_descriptor_dma_error_retry(
     g_assert_cmpint(logfd, >=, 0);
     close(logfd);
     bcm_open(&b, qtest_initf(BCM_MACHINE
-                             " -m 16M"
                              " -netdev socket,fd=%d,id=n0"
                              " -device bcm570x,addr=%02x.0,netdev=n0"
                              " -d guest_errors -D %s",
                              sv[1], BCM_SLOT, logfile));
 
-    put32le(bd, TX_BUF_PHYS >> 32);
-    put32le(bd + 4, TX_BUF_PHYS & 0xffffffff);
-    put16le(bd + 8, BCM_TXBDFLAG_END);
-    put16le(bd + 10, sizeof(first));
+    put32dma(bd, TX_BUF_PHYS >> 32);
+    put32dma(bd + 4, TX_BUF_PHYS & 0xffffffff);
+    put16dma(bd, 8, BCM_TXBDFLAG_END);
+    put16dma(bd, 10, sizeof(first));
     qtest_memwrite(b.qts, initial_ring, bd, sizeof(bd));
     qtest_memwrite(b.qts, TX_BUF_PHYS, first, sizeof(first));
     qtest_memset(b.qts, STATUS_PHYS, 0, sizeof(status));
@@ -1743,7 +1774,7 @@ static void test_transmit_complete_then_descriptor_dma_error_retry(
     g_assert_cmpuint(len, ==, sizeof(first));
     g_assert_cmpmem(got, len, first, sizeof(first));
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 1);
+    g_assert_cmphex(get16dma(status, BCM_STATUS_TX_CONS_OFF), ==, 1);
     g_assert_cmphex(read_status_tag(&b), ==, tag + 1);
     g_assert_true(intr_line_up(b.dev));
     net_socket_expect_no_frame(sv[0]);
@@ -1751,10 +1782,10 @@ static void test_transmit_complete_then_descriptor_dma_error_retry(
 
     qtest_memwrite(b.qts, repaired_ring, bd, sizeof(bd));
     memset(bd, 0, sizeof(bd));
-    put32le(bd, (TX_BUF_PHYS + 0x100) >> 32);
-    put32le(bd + 4, (TX_BUF_PHYS + 0x100) & 0xffffffff);
-    put16le(bd + 8, BCM_TXBDFLAG_END);
-    put16le(bd + 10, sizeof(second));
+    put32dma(bd, (TX_BUF_PHYS + 0x100) >> 32);
+    put32dma(bd + 4, (TX_BUF_PHYS + 0x100) & 0xffffffff);
+    put16dma(bd, 8, BCM_TXBDFLAG_END);
+    put16dma(bd, 10, sizeof(second));
     qtest_memwrite(b.qts, TX_RING_PHYS, bd, sizeof(bd));
     qtest_memwrite(b.qts, TX_BUF_PHYS + 0x100, second, sizeof(second));
     ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB, repaired_ring >> 32);
@@ -1766,7 +1797,7 @@ static void test_transmit_complete_then_descriptor_dma_error_retry(
     g_assert_cmpuint(len, ==, sizeof(second));
     g_assert_cmpmem(got, len, second, sizeof(second));
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 2);
+    g_assert_cmphex(get16dma(status, BCM_STATUS_TX_CONS_OFF), ==, 2);
     g_assert_cmphex(read_status_tag(&b), ==, tag + 2);
     g_assert_true(intr_line_up(b.dev));
     net_socket_expect_no_frame(sv[0]);
@@ -1804,21 +1835,20 @@ static void test_transmit_partial_error_descriptor_coalescing(
     g_assert_cmpint(logfd, >=, 0);
     close(logfd);
     bcm_open(&b, qtest_initf(BCM_MACHINE
-                             " -m 16M"
                              " -netdev socket,fd=%d,id=n0"
                              " -device bcm570x,addr=%02x.0,netdev=n0"
                              " -d guest_errors -D %s",
                              sv[1], BCM_SLOT, logfile));
 
-    put32le(ring, TX_BUF_PHYS >> 32);
-    put32le(ring + 4, TX_BUF_PHYS & 0xffffffff);
-    put16le(ring + 8, BCM_TXBDFLAG_END);
-    put16le(ring + 10, sizeof(first));
-    put16le(ring + 24, BCM_TXBDFLAG_END);
-    put32le(ring + 32, UNMAPPED_PHYS >> 32);
-    put32le(ring + 36, UNMAPPED_PHYS & 0xffffffff);
-    put16le(ring + 40, BCM_TXBDFLAG_END);
-    put16le(ring + 42, sizeof(second));
+    put32dma(ring, TX_BUF_PHYS >> 32);
+    put32dma(ring + 4, TX_BUF_PHYS & 0xffffffff);
+    put16dma(ring, 8, BCM_TXBDFLAG_END);
+    put16dma(ring, 10, sizeof(first));
+    put16dma(ring, 24, BCM_TXBDFLAG_END);
+    put32dma(ring + 32, UNMAPPED_PHYS >> 32);
+    put32dma(ring + 36, UNMAPPED_PHYS & 0xffffffff);
+    put16dma(ring, 40, BCM_TXBDFLAG_END);
+    put16dma(ring, 42, sizeof(second));
     qtest_memwrite(b.qts, TX_RING_PHYS, ring, sizeof(ring));
     qtest_memwrite(b.qts, TX_BUF_PHYS, first, sizeof(first));
     qtest_memset(b.qts, STATUS_PHYS, 0, sizeof(status));
@@ -1837,20 +1867,20 @@ static void test_transmit_partial_error_descriptor_coalescing(
 
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 3);
     wait_for_log_marker(b.qts, logfile,
-                        "bcm570x: transmit payload read at 0x2000000 failed; "
+                        "bcm570x: transmit payload read at 0x4000000 failed; "
                         "frame left ready to retry");
     len = net_socket_recv_frame(sv[0], got, sizeof(got));
     g_assert_cmpuint(len, ==, sizeof(first));
     g_assert_cmpmem(got, len, first, sizeof(first));
     net_socket_expect_no_frame(sv[0]);
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 2);
+    g_assert_cmphex(get16dma(status, BCM_STATUS_TX_CONS_OFF), ==, 2);
     g_assert_cmphex(read_status_tag(&b), ==, tag + 1);
     g_assert_true(intr_line_up(b.dev));
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
 
-    put32le(ring + 32, (TX_BUF_PHYS + 0x100) >> 32);
-    put32le(ring + 36, (TX_BUF_PHYS + 0x100) & 0xffffffff);
+    put32dma(ring + 32, (TX_BUF_PHYS + 0x100) >> 32);
+    put32dma(ring + 36, (TX_BUF_PHYS + 0x100) & 0xffffffff);
     qtest_memwrite(b.qts, TX_RING_PHYS + 32, ring + 32, 16);
     qtest_memwrite(b.qts, TX_BUF_PHYS + 0x100, second, sizeof(second));
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 3);
@@ -1866,14 +1896,14 @@ static void test_transmit_partial_error_descriptor_coalescing(
      * happens rather than held for a fresh one.
      */
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 3);
+    g_assert_cmphex(get16dma(status, BCM_STATUS_TX_CONS_OFF), ==, 3);
     g_assert_cmphex(read_status_tag(&b), ==, tag + 2);
     g_assert_true(intr_line_up(b.dev));
 
     /* One update for the group, and no clock of its own behind it. */
     qtest_clock_step(b.qts, (int64_t)retry_ticks * 1000 + 1000);
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 3);
+    g_assert_cmphex(get16dma(status, BCM_STATUS_TX_CONS_OFF), ==, 3);
     g_assert_cmphex(read_status_tag(&b), ==, tag + 2);
     g_assert_true(intr_line_up(b.dev));
 
@@ -1957,10 +1987,10 @@ static void test_transmit_source_address(const void *data)
 
         qtest_memwrite(b.qts, buf, frame, sizeof(frame));
         memset(bd, 0, sizeof(bd));
-        put32le(bd + 0, buf >> 32);
-        put32le(bd + 4, buf & 0xffffffff);
-        put16le(bd + 8, flags);
-        put16le(bd + 10, sizeof(frame));
+        put32dma(bd + 0, buf >> 32);
+        put32dma(bd + 4, buf & 0xffffffff);
+        put16dma(bd, 8, flags);
+        put16dma(bd, 10, sizeof(frame));
         qtest_memwrite(b.qts, TX_RING_PHYS + (uint64_t)i * sizeof(bd),
                        bd, sizeof(bd));
 
@@ -1976,11 +2006,11 @@ static void test_transmit_source_address(const void *data)
     /* A nonzero selector without INSERT leaves the complete frame untouched. */
     qtest_memwrite(b.qts, TX_BUF_PHYS + 4 * 128, frame, sizeof(frame));
     memset(bd, 0, sizeof(bd));
-    put32le(bd + 0, (TX_BUF_PHYS + 4 * 128) >> 32);
-    put32le(bd + 4, (TX_BUF_PHYS + 4 * 128) & 0xffffffff);
-    put16le(bd + 8, BCM_TXBDFLAG_CHOOSE_SRC_ADDR(3) |
+    put32dma(bd + 0, (TX_BUF_PHYS + 4 * 128) >> 32);
+    put32dma(bd + 4, (TX_BUF_PHYS + 4 * 128) & 0xffffffff);
+    put16dma(bd, 8, BCM_TXBDFLAG_CHOOSE_SRC_ADDR(3) |
                        BCM_TXBDFLAG_END);
-    put16le(bd + 10, sizeof(frame));
+    put16dma(bd, 10, sizeof(frame));
     qtest_memwrite(b.qts, TX_RING_PHYS + 4 * sizeof(bd), bd, sizeof(bd));
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 5);
     g_assert_cmpuint(net_socket_recv_frame(sv[0], got, sizeof(got)), ==,
@@ -1992,19 +2022,19 @@ static void test_transmit_source_address(const void *data)
     qtest_memwrite(b.qts, TX_BUF_PHYS + 6 * 128, frame + 8,
                    sizeof(frame) - 8);
     memset(bd, 0, sizeof(bd));
-    put32le(bd + 0, (TX_BUF_PHYS + 5 * 128) >> 32);
-    put32le(bd + 4, (TX_BUF_PHYS + 5 * 128) & 0xffffffff);
-    put16le(bd + 8, BCM_TXBDFLAG_INSERT_SRC_ADDR |
+    put32dma(bd + 0, (TX_BUF_PHYS + 5 * 128) >> 32);
+    put32dma(bd + 4, (TX_BUF_PHYS + 5 * 128) & 0xffffffff);
+    put16dma(bd, 8, BCM_TXBDFLAG_INSERT_SRC_ADDR |
                        BCM_TXBDFLAG_CHOOSE_SRC_ADDR(2));
-    put16le(bd + 10, 8);
+    put16dma(bd, 10, 8);
     qtest_memwrite(b.qts, TX_RING_PHYS + 5 * sizeof(bd), bd, sizeof(bd));
     memset(bd, 0, sizeof(bd));
-    put32le(bd + 0, (TX_BUF_PHYS + 6 * 128) >> 32);
-    put32le(bd + 4, (TX_BUF_PHYS + 6 * 128) & 0xffffffff);
-    put16le(bd + 8, BCM_TXBDFLAG_INSERT_SRC_ADDR |
+    put32dma(bd + 0, (TX_BUF_PHYS + 6 * 128) >> 32);
+    put32dma(bd + 4, (TX_BUF_PHYS + 6 * 128) & 0xffffffff);
+    put16dma(bd, 8, BCM_TXBDFLAG_INSERT_SRC_ADDR |
                        BCM_TXBDFLAG_CHOOSE_SRC_ADDR(2) |
                        BCM_TXBDFLAG_END);
-    put16le(bd + 10, sizeof(frame) - 8);
+    put16dma(bd, 10, sizeof(frame) - 8);
     qtest_memwrite(b.qts, TX_RING_PHYS + 6 * sizeof(bd), bd, sizeof(bd));
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 7);
     g_assert_cmpuint(net_socket_recv_frame(sv[0], got, sizeof(got)), ==,
@@ -2072,11 +2102,11 @@ static void lso_open(Bcm *b, int fd, uint8_t *frame, unsigned int len,
     bar_writel(b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     memset(bd, 0, sizeof(bd));
-    put32le(bd + 0, TX_BUF_PHYS >> 32);
-    put32le(bd + 4, TX_BUF_PHYS & 0xffffffff);
-    put16le(bd + 8, flags | BCM_TXBDFLAG_END);
-    put16le(bd + 10, (uint16_t)len);
-    put16le(bd + 14, (uint16_t)mss);
+    put32dma(bd + 0, TX_BUF_PHYS >> 32);
+    put32dma(bd + 4, TX_BUF_PHYS & 0xffffffff);
+    put16dma(bd, 8, flags | BCM_TXBDFLAG_END);
+    put16dma(bd, 10, (uint16_t)len);
+    put16dma(bd, 14, (uint16_t)mss);
     qtest_memwrite(b->qts, TX_RING_PHYS, bd, sizeof(bd));
     qtest_memwrite(b->qts, TX_BUF_PHYS, frame, len);
     bar_writel(b, BCM_MBX_TX_PROD_LO, 1);
@@ -2443,10 +2473,10 @@ static void txc_write_bd_at(Bcm *b, unsigned int slot, uint64_t buf,
 
     g_assert_cmpuint(slot, <, TXC_RING);
     g_assert_cmpuint(len, <=, UINT16_MAX);
-    put32le(bd + 0, buf >> 32);
-    put32le(bd + 4, buf & 0xffffffff);
-    put16le(bd + 8, flags);
-    put16le(bd + 10, len);
+    put32dma(bd + 0, buf >> 32);
+    put32dma(bd + 4, buf & 0xffffffff);
+    put16dma(bd, 8, flags);
+    put16dma(bd, 10, len);
     qtest_memwrite(b->qts, TX_RING_PHYS + (uint64_t)slot * 16,
                    bd, sizeof(bd));
 }
@@ -2553,7 +2583,7 @@ static void test_transmit_coalescing_empty_and_dropped(const void *data)
     g_assert_cmpmem(got, len, frame, sizeof(frame));
     net_socket_expect_no_frame(sv[0]);
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 4);
+    g_assert_cmphex(get16dma(status, BCM_STATUS_TX_CONS_OFF), ==, 4);
     g_assert_cmphex(read_status_tag(&b), ==, tag + 1);
     g_assert_true(intr_line_up(b.dev));
 
@@ -2602,7 +2632,7 @@ static void test_transmit_coalescing_multidescriptor(const void *data)
     g_assert_cmpmem(got, len, frame, sizeof(frame));
     net_socket_expect_no_frame(sv[0]);
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 2);
+    g_assert_cmphex(get16dma(status, BCM_STATUS_TX_CONS_OFF), ==, 2);
     g_assert_cmphex(read_status_tag(&b), ==, tag + 1);
     g_assert_true(intr_line_up(b.dev));
 
@@ -2648,7 +2678,7 @@ static void test_transmit_split_doorbell(const void *data)
 
     net_socket_expect_no_frame(sv[0]);
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 0);
+    g_assert_cmphex(get16dma(status, BCM_STATUS_TX_CONS_OFF), ==, 0);
     g_assert_cmphex(read_status_tag(&b), ==, tag);
     g_assert_false(intr_line_up(b.dev));
 
@@ -2659,7 +2689,7 @@ static void test_transmit_split_doorbell(const void *data)
     g_assert_cmpmem(got, len, frame, sizeof(frame));
     net_socket_expect_no_frame(sv[0]);
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 2);
+    g_assert_cmphex(get16dma(status, BCM_STATUS_TX_CONS_OFF), ==, 2);
     g_assert_cmphex(read_status_tag(&b), ==, tag + 1);
     g_assert_true(intr_line_up(b.dev));
 
@@ -2712,7 +2742,7 @@ static void test_transmit_complete_then_split_doorbell(const void *data)
     g_assert_cmpmem(got, len, first, sizeof(first));
     net_socket_expect_no_frame(sv[0]);
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 1);
+    g_assert_cmphex(get16dma(status, BCM_STATUS_TX_CONS_OFF), ==, 1);
     g_assert_cmphex(read_status_tag(&b), ==, tag + 1);
     g_assert_true(intr_line_up(b.dev));
     bar_writel(&b, BCM_MBX_IRQ0_LO, 0);
@@ -2724,7 +2754,7 @@ static void test_transmit_complete_then_split_doorbell(const void *data)
     g_assert_cmpmem(got, len, second, sizeof(second));
     net_socket_expect_no_frame(sv[0]);
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 3);
+    g_assert_cmphex(get16dma(status, BCM_STATUS_TX_CONS_OFF), ==, 3);
     g_assert_cmphex(read_status_tag(&b), ==, tag + 2);
     g_assert_true(intr_line_up(b.dev));
 
@@ -2817,7 +2847,7 @@ static void test_transmit_coalescing_zero_ticks(const void *data)
                     sizeof(frame));
     g_assert_cmpuint(read_status_tag(&b), ==, 1);
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 2);
+    g_assert_cmphex(get16dma(status, BCM_STATUS_TX_CONS_OFF), ==, 2);
 
     bcm_close(&b);
     close(sv[0]);
@@ -2837,7 +2867,6 @@ static void test_transmit_coalescing_status_dma_retry(const void *data)
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     net_socket_set_recv_timeout(sv[0], 10);
     bcm_open(&b, qtest_initf(BCM_MACHINE
-                             " -m 16M"
                              " -netdev socket,fd=%d,id=n0"
                              " -device bcm570x,addr=%02x.0,netdev=n0",
                              sv[1], BCM_SLOT));
@@ -2851,14 +2880,14 @@ static void test_transmit_coalescing_status_dma_retry(const void *data)
                     sizeof(frame));
     g_assert_cmpmem(got, sizeof(got), frame, sizeof(frame));
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 0);
+    g_assert_cmphex(get16dma(status, BCM_STATUS_TX_CONS_OFF), ==, 0);
     g_assert_false(intr_line_up(b.dev));
 
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
     qtest_clock_step(b.qts, (int64_t)ticks * 1000 + 1000);
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 1);
+    g_assert_cmphex(get16dma(status, BCM_STATUS_TX_CONS_OFF), ==, 1);
     g_assert_cmphex(read_status_tag(&b), ==, 1);
     g_assert_true(intr_line_up(b.dev));
 
@@ -2967,10 +2996,10 @@ static size_t transmit_one(Bcm *b, int rx_fd, const uint8_t *frame,
     bar_writel(b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     memset(bd, 0, sizeof(bd));
-    put32le(bd + 0, TX_BUF_PHYS >> 32);
-    put32le(bd + 4, TX_BUF_PHYS & 0xffffffff);
-    put16le(bd + 8, flags);
-    put16le(bd + 10, frame_len);
+    put32dma(bd + 0, TX_BUF_PHYS >> 32);
+    put32dma(bd + 4, TX_BUF_PHYS & 0xffffffff);
+    put16dma(bd, 8, flags);
+    put16dma(bd, 10, frame_len);
     qtest_memwrite(b->qts, TX_RING_PHYS, bd, sizeof(bd));
     qtest_memwrite(b->qts, TX_BUF_PHYS, frame, frame_len);
 
@@ -3072,20 +3101,26 @@ static void test_transmit_checksum_bad_header(const void *data)
 }
 
 /*
- * Frame payload byte order under the endian word-swap. With ENDIAN_WORDSWAP set,
- * the big-endian driver lays each 32-bit DMA word down byte-reversed -- the same
- * reversal that lets it write descriptors little-endian -- so a payload it stores
- * reversed must reach the wire in order. Descriptors are read through the
- * little-endian accessors already; a payload is a raw byte stream, so the device
- * has to undo the reversal itself. Store the frame reversed per 32-bit word and
- * confirm the backend receives it straight.
+ * What ENDIAN_WORDSWAP reaches, and what it does not. The bit decides how
+ * the chip composes the register-programmed host addresses -- the driver
+ * writes each 64-bit address as two halves word-swapped, the low word into
+ * the HI slot -- and the DMA must still land where it was aimed.
+ *
+ * It does not reach the payload here. Behind a Bridge the byte-lane
+ * correction is the chip's job and the model copies packet payload verbatim
+ * on that route, which is the bounded Bridge-machine behavior recorded in
+ * docs/datasheets/bcm570x.md: what the card's own clear-data transformation
+ * does with these bits set is not known. Off a Bridge the same bits do
+ * reverse each 32-bit word of the payload, which is the regime this file
+ * asserted when it ran on a PC. So lay a word-reversed buffer down and
+ * require the wire to carry it unchanged.
  */
 static void test_transmit_frame_wordswap(const void *data)
 {
     int sv[2];
     Bcm b;
-    uint8_t frame[60];       /* what must reach the wire */
-    uint8_t swapped[60];     /* what the driver lays into the buffer */
+    uint8_t frame[60];       /* the driver's own byte order */
+    uint8_t swapped[60];     /* laid into the buffer word-reversed */
     uint8_t bd[16];
     uint8_t got[128];
     uint32_t misc;
@@ -3109,12 +3144,13 @@ static void test_transmit_frame_wordswap(const void *data)
                              " -device bcm570x,addr=%02x.0,netdev=n0",
                              sv[1], BCM_SLOT));
 
-    /* The driver arms ENDIAN_WORDSWAP for the big-endian host. It gates the
-     * frame swap and the control-block address composition alike, so the
-     * register-programmed host addresses are written word-swapped too: the low
+    /*
+     * The driver arms ENDIAN_WORDSWAP for the big-endian host, so the
+     * register-programmed host addresses are written word-swapped: the low
      * word into the HI slot, the high word into the LO slot. The descriptor's
      * own buffer address is not register-programmed -- it is read from the
-     * descriptor through the little-endian accessors -- so it stays in order. */
+     * descriptor through the DMA accessors -- so it stays in order.
+     */
     misc = qpci_config_readl(b.dev, BCM_PCI_MISC_CTL);
     qpci_config_writel(b.dev, BCM_PCI_MISC_CTL, misc | BCM_MISCCTL_WORDSWAP);
 
@@ -3127,20 +3163,24 @@ static void test_transmit_frame_wordswap(const void *data)
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     memset(bd, 0, sizeof(bd));
-    put32le(bd + 0, TX_BUF_PHYS >> 32);
-    put32le(bd + 4, TX_BUF_PHYS & 0xffffffff);
-    put16le(bd + 8, BCM_TXBDFLAG_END);
-    put16le(bd + 10, sizeof(frame));
+    put32dma(bd + 0, TX_BUF_PHYS >> 32);
+    put32dma(bd + 4, TX_BUF_PHYS & 0xffffffff);
+    put16dma(bd, 8, BCM_TXBDFLAG_END);
+    put16dma(bd, 10, sizeof(frame));
     qtest_memwrite(b.qts, TX_RING_PHYS, bd, sizeof(bd));
     qtest_memwrite(b.qts, TX_BUF_PHYS, swapped, sizeof(swapped));
     qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
 
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 1);
 
-    /* The chip undid the swap: the wire carries the frame in order. */
+    /*
+     * The addresses composed, so the descriptor and its buffer were found.
+     * The payload went out exactly as it lay in memory: the swap bit did not
+     * touch it. Off a Bridge this same buffer would arrive as `frame`.
+     */
     len = net_socket_recv_frame(sv[0], got, sizeof(got));
     g_assert_cmpint(len, ==, sizeof(frame));
-    g_assert_cmpmem(got, len, frame, sizeof(frame));
+    g_assert_cmpmem(got, len, swapped, sizeof(swapped));
 
     bcm_close(&b);
     close(sv[0]);
@@ -3177,11 +3217,11 @@ static void test_tx_producer_out_of_range(const void *data)
 /*
  * The receive round trip. A standard-ring buffer is posted, a broadcast frame
  * injected from the backend, and the chip DMAs it into the buffer, writes a
- * completed descriptor into the return ring little-endian, and advances the
- * status block's receive producer. The device-written descriptor's length field
- * is checked as a golden little-endian layout -- it proves the device's
- * descriptor-write direction, which the round trip alone cannot. Broadcast so
- * the address filter passes it regardless of the station address.
+ * completed descriptor into the return ring, and advances the status block's
+ * receive producer. The device-written descriptor's length field is checked as
+ * a golden byte layout -- it proves the device's descriptor-write direction,
+ * which the round trip alone cannot. Broadcast so the address filter passes it
+ * regardless of the station address.
  */
 /* SGI documents two MTUs for this adapter, 1500 and 9000. */
 #define BCM_JUMBO_FRAME_LEN     9000u
@@ -3215,8 +3255,8 @@ static void rx_open_one(Bcm *b, int fd)
     bar_writel(b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     memset(bd, 0, sizeof(bd));
-    put32le(bd + 0, RX_BUF_PHYS >> 32);
-    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    put32dma(bd + 0, RX_BUF_PHYS >> 32);
+    put32dma(bd + 4, RX_BUF_PHYS & 0xffffffff);
     qtest_memwrite(b->qts, STD_RING_PHYS, bd, sizeof(bd));
     qtest_memset(b->qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
     qtest_memset(b->qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
@@ -3251,8 +3291,8 @@ static void rx_criteria_open(Bcm *b, unsigned int buffers,
     bar_writel(b, BCM_MBX_IRQ0_LO, 0);
 
     memset(bd, 0, sizeof(bd));
-    put32le(bd + 0, RX_BUF_PHYS >> 32);
-    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    put32dma(bd + 0, RX_BUF_PHYS >> 32);
+    put32dma(bd + 4, RX_BUF_PHYS & 0xffffffff);
     for (i = 0; i < buffers; i++) {
         qtest_memwrite(b->qts, STD_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE,
                        bd, sizeof(bd));
@@ -3304,10 +3344,10 @@ static void write_jumbo_rx_bd(Bcm *b, uint64_t ring, unsigned int idx,
 {
     uint8_t bd[BCM_RXBD_SIZE] = { 0 };
 
-    put32le(bd + 0, buffer >> 32);
-    put32le(bd + 4, buffer & 0xffffffff);
-    put16le(bd + BCM_RXBD_LEN, buf_len);
-    put16le(bd + BCM_RXBD_FLAGS, BCM_RXBDFLAG_JUMBO_RING);
+    put32dma(bd + 0, buffer >> 32);
+    put32dma(bd + 4, buffer & 0xffffffff);
+    put16dma(bd, BCM_RXBD_LEN, buf_len);
+    put16dma(bd, BCM_RXBD_FLAGS, BCM_RXBDFLAG_JUMBO_RING);
     qtest_memwrite(b->qts, ring + (uint64_t)idx * BCM_RXBD_SIZE,
                    bd, sizeof(bd));
 }
@@ -3328,8 +3368,8 @@ static void write_rx_bd(Bcm *b, uint64_t ring, unsigned int idx,
 {
     uint8_t bd[BCM_RXBD_SIZE] = { 0 };
 
-    put32le(bd + 0, buffer >> 32);
-    put32le(bd + 4, buffer & 0xffffffff);
+    put32dma(bd + 0, buffer >> 32);
+    put32dma(bd + 4, buffer & 0xffffffff);
     qtest_memwrite(b->qts, ring + (uint64_t)idx * BCM_RXBD_SIZE,
                    bd, sizeof(bd));
 }
@@ -3338,9 +3378,9 @@ static uint16_t read_rx_prod(Bcm *b)
 {
     uint8_t idx[2];
 
-    qtest_memread(b->qts, STATUS_PHYS + BCM_STATUS_RX_PROD_OFF,
+    qtest_memread(b->qts, STATUS_PHYS + DMA16(BCM_STATUS_RX_PROD_OFF),
                   idx, sizeof(idx));
-    return get16le(idx);
+    return get16be(idx);
 }
 
 /*
@@ -3402,7 +3442,7 @@ static void test_receive_waits_for_its_arrival_deadline(const void *data)
 
     /* The return descriptor is written; the producer and the line are not. */
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
                     BCM_RXBDFLAG_END);
     g_assert_cmphex(read_rx_prod(&b), ==, 0);
     g_assert_false(intr_line_up(b.dev));
@@ -3507,9 +3547,9 @@ static void test_receive_jumbo_frame(const void *data)
 
     /* Reported whole, marked as the jumbo ring's, and landed byte for byte. */
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_LEN), ==,
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_LEN), ==,
                     BCM_JUMBO_FRAME_LEN + BCM_ETH_FCS_LEN);
-    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_JUMBO_RING,
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_FLAGS) & BCM_RXBDFLAG_JUMBO_RING,
                     ==, BCM_RXBDFLAG_JUMBO_RING);
     qtest_memread(b.qts, JUMBO_BUF_PHYS, got, BCM_JUMBO_FRAME_LEN);
     g_assert_cmpmem(got, BCM_JUMBO_FRAME_LEN, frame, BCM_JUMBO_FRAME_LEN);
@@ -3606,9 +3646,9 @@ static void test_receive_drops_standard_with_empty_standard_ring(
     qtest_memread(b.qts, JUMBO_BUF_PHYS, big_got, BCM_JUMBO_FRAME_LEN);
     g_assert_cmpmem(big_got, BCM_JUMBO_FRAME_LEN, big, BCM_JUMBO_FRAME_LEN);
     qtest_memread(b.qts, RET_RING_PHYS + BCM_RXBD_SIZE, ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_LEN), ==,
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_LEN), ==,
                     BCM_JUMBO_FRAME_LEN + BCM_ETH_FCS_LEN);
-    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) &
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_FLAGS) &
                     BCM_RXBDFLAG_JUMBO_RING, ==, BCM_RXBDFLAG_JUMBO_RING);
 
     /* Posting a standard buffer brings nothing back: that frame is gone. */
@@ -3714,9 +3754,9 @@ static void test_receive_drops_oversize_with_empty_jumbo_ring(const void *data)
     qtest_memread(b.qts, RX_BUF_PHYS, small_got, sizeof(small_got));
     g_assert_cmpmem(small_got, sizeof(small_got), small, sizeof(small));
     qtest_memread(b.qts, RET_RING_PHYS + BCM_RXBD_SIZE, ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_LEN), ==,
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_LEN), ==,
                     sizeof(small) + BCM_ETH_FCS_LEN);
-    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) &
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_FLAGS) &
                     BCM_RXBDFLAG_JUMBO_RING, ==, 0);
 
     /* Posting a jumbo buffer brings nothing back: that frame is gone. */
@@ -3791,15 +3831,15 @@ static void test_receive_checksum_offload(const void *data)
     wait_for_rx_prod(&b, 1);
 
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
-    flags = get16le(ret + BCM_RXBD_FLAGS);
+    flags = get16dma(ret, BCM_RXBD_FLAGS);
 
     /* Both results are reported... */
     g_assert_cmphex(flags & BCM_RXBDFLAG_IP_CKSUM, ==, BCM_RXBDFLAG_IP_CKSUM);
     g_assert_cmphex(flags & BCM_RXBDFLAG_TCP_UDP_CKSUM, ==,
                     BCM_RXBDFLAG_TCP_UDP_CKSUM);
     /* ...and both check out, which is what the sums come to when they do. */
-    g_assert_cmphex(get16le(ret + BCM_RXBD_IP_CSUM), ==, BCM_CSUM_GOOD);
-    g_assert_cmphex(get16le(ret + BCM_RXBD_TCP_CSUM), ==, BCM_CSUM_GOOD);
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_IP_CSUM), ==, BCM_CSUM_GOOD);
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_TCP_CSUM), ==, BCM_CSUM_GOOD);
 
     bcm_close(&b);
     close(sv[0]);
@@ -3835,7 +3875,7 @@ static void test_receive_checksum_not_ip(const void *data)
     wait_for_rx_prod(&b, 1);
 
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
-    flags = get16le(ret + BCM_RXBD_FLAGS);
+    flags = get16dma(ret, BCM_RXBD_FLAGS);
 
     g_assert_cmphex(flags & BCM_RXBDFLAG_IP_CKSUM, ==, 0);
     g_assert_cmphex(flags & BCM_RXBDFLAG_TCP_UDP_CKSUM, ==, 0);
@@ -3885,7 +3925,7 @@ static void test_receive_oversize_dropped(const void *data)
     wait_for_rx_prod(&b, 1);
 
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_LEN), ==,
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_LEN), ==,
                     sizeof(small) + BCM_ETH_FCS_LEN);
 
     bcm_close(&b);
@@ -3939,8 +3979,8 @@ static void test_receive_ring_laps(const void *data)
 
     /* Post standard-ring buffers, all pointing at one scratch buffer. */
     memset(bd, 0, sizeof(bd));
-    put32le(bd + 0, RX_BUF_PHYS >> 32);
-    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    put32dma(bd + 0, RX_BUF_PHYS >> 32);
+    put32dma(bd + 4, RX_BUF_PHYS & 0xffffffff);
     for (i = 0; i < LAP_STD_POSTED; i++) {
         qtest_memwrite(b.qts, STD_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE,
                        bd, sizeof(bd));
@@ -3962,7 +4002,7 @@ static void test_receive_ring_laps(const void *data)
 
         for (j = 0; j < 200 && !got; j++) {
             qtest_memread(b.qts, slot, ret, sizeof(ret));
-            if (get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END) {
+            if (get16dma(ret, BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END) {
                 got = true;
                 break;
             }
@@ -3970,7 +4010,7 @@ static void test_receive_ring_laps(const void *data)
             qtest_clock_step(b.qts, RX_ARRIVAL_LATENCY_NS / 4);
         }
         g_assert_true(got);
-        g_assert_cmphex(get16le(ret + BCM_RXBD_LEN), ==,
+        g_assert_cmphex(get16dma(ret, BCM_RXBD_LEN), ==,
                         sizeof(frame) + BCM_ETH_FCS_LEN);
 
         /* Release the entry, as the driver does once it has taken it. */
@@ -4027,8 +4067,8 @@ static void test_receive_ring_full_recovers(const void *data)
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     memset(bd, 0, sizeof(bd));
-    put32le(bd + 0, RX_BUF_PHYS >> 32);
-    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    put32dma(bd + 0, RX_BUF_PHYS >> 32);
+    put32dma(bd + 4, RX_BUF_PHYS & 0xffffffff);
     for (i = 0; i < LAP_STD_POSTED; i++) {
         qtest_memwrite(b.qts, STD_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE,
                        bd, sizeof(bd));
@@ -4056,7 +4096,7 @@ static void test_receive_ring_full_recovers(const void *data)
     qtest_memread(b.qts, RET_RING_PHYS +
                   (uint64_t)(LAP_RET_LEN - 1) * BCM_RXBD_SIZE,
                   ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
 
     /*
      * An interrupt cycle with the ring still full changes nothing: the frames
@@ -4071,7 +4111,7 @@ static void test_receive_ring_full_recovers(const void *data)
     qtest_memread(b.qts, RET_RING_PHYS +
                   (uint64_t)(LAP_RET_LEN - 1) * BCM_RXBD_SIZE,
                   ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
 
     /*
      * The driver now takes everything and says so. That consumer write is the
@@ -4089,7 +4129,7 @@ static void test_receive_ring_full_recovers(const void *data)
     qtest_memread(b.qts, RET_RING_PHYS +
                   (uint64_t)(LAP_RET_LEN - 2) * BCM_RXBD_SIZE,
                   ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
 
     /*
      * And again for the second ring's worth. Freeing return-ring space is the
@@ -4159,8 +4199,8 @@ static void test_receive_mac_enable(const void *data)
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
 
     memset(bd, 0, sizeof(bd));
-    put32le(bd + 0, RX_BUF_PHYS >> 32);
-    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    put32dma(bd + 0, RX_BUF_PHYS >> 32);
+    put32dma(bd + 4, RX_BUF_PHYS & 0xffffffff);
     for (i = 0; i < 8; i++) {
         qtest_memwrite(b.qts, STD_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE,
                        bd, sizeof(bd));
@@ -4189,7 +4229,7 @@ static void test_receive_mac_enable(const void *data)
     g_usleep(100000);
     g_assert_cmpuint(read_rx_prod(&b), ==, 0);
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
 
     /* Running now, so a frame sent now lands. */
     memset(frame, 0x5e, sizeof(frame));
@@ -4198,9 +4238,9 @@ static void test_receive_mac_enable(const void *data)
     wait_for_rx_prod(&b, 1);
     g_assert_true(intr_line_up(b.dev));
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
                     BCM_RXBDFLAG_END);
-    g_assert_cmphex(get16le(ret + BCM_RXBD_LEN), ==,
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_LEN), ==,
                     sizeof(frame) + BCM_ETH_FCS_LEN);
 
     /*
@@ -4222,7 +4262,7 @@ static void test_receive_mac_enable(const void *data)
     net_socket_send_frame(sv[0], frame, sizeof(frame));
     wait_for_rx_prod(&b, 2);
     qtest_memread(b.qts, RET_RING_PHYS + BCM_RXBD_SIZE, ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
                     BCM_RXBDFLAG_END);
 
     bcm_close(&b);
@@ -4286,7 +4326,7 @@ static void test_queued_receive_released_by_producer(const void *data)
     g_usleep(100000);
     g_assert_cmpuint(read_rx_prod(&b), ==, 0);
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
 
     /* The one event the guest makes: a buffer posted through the mailbox. */
     bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 1);
@@ -4295,8 +4335,8 @@ static void test_queued_receive_released_by_producer(const void *data)
     qtest_memread(b.qts, RX_BUF_PHYS, got, sizeof(got));
     g_assert_cmpmem(got, sizeof(got), frame, sizeof(frame));
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_IDX), ==, 0);
-    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_IDX), ==, 0);
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
                     BCM_RXBDFLAG_END);
 
     bcm_close(&b);
@@ -4353,95 +4393,6 @@ static void test_receive_queue_reset(const void *data)
     close(sv[0]);
 }
 
-/*
- * Ask for removal with a refused frame queued against the device, then let
- * reset finish the unplug. Queue teardown must release the backend and leave
- * the main loop responsive after the device state has gone away.
- */
-static void test_queued_receive_hot_unplug(const void *data)
-{
-    int sv[2];
-    Bcm b;
-    uint8_t frame[64];
-
-    memset(frame, 0xff, sizeof(frame));
-    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-
-    bcm_open(&b, qtest_initf(BCM_MACHINE
-                             " -netdev socket,fd=%d,id=n0"
-                             " -device bcm570x,id=tg0,addr=%02x.0,netdev=n0",
-                             sv[1], BCM_SLOT));
-
-    net_socket_send_frame(sv[0], frame, sizeof(frame));
-    g_usleep(100000);
-
-    qtest_qmp_device_del_send(b.qts, "tg0");
-    qtest_system_reset_nowait(b.qts);
-    qtest_qmp_eventwait(b.qts, "DEVICE_DELETED");
-    qtest_clock_step(b.qts, 1000);
-    qtest_qmp_assert_success(b.qts, "{ 'execute': 'query-status' }");
-    qtest_qmp_assert_success(b.qts,
-                             "{ 'execute': 'netdev_del',"
-                             "  'arguments': { 'id': 'n0' } }");
-
-    bcm_close(&b);
-    close(sv[0]);
-}
-
-/*
- * Removing the card must release every embedded helper with it. A child left
- * attached to a global bus outlives the card's allocation and makes QEMU's
- * final object-tree teardown access freed parent storage under ASan.
- */
-static void test_hot_unplug_exits_cleanly(const void *data)
-{
-    QTestState *qts = qtest_initf(BCM_MACHINE
-                                  " -device bcm570x,id=tg0,addr=%02x.0",
-                                  BCM_SLOT);
-
-    qtest_qmp_device_del_send(qts, "tg0");
-    qtest_system_reset_nowait(qts);
-    qtest_qmp_eventwait(qts, "DEVICE_DELETED");
-    qtest_quit(qts);
-}
-
-/*
- * Function 0 creates function 1 while it realizes. Occupy function 1 so that
- * the final step fails after the parent has otherwise initialized, and repeat
- * the failed hotplug. Neither attempt may retain the requested network backend.
- */
-static void test_failed_realize_releases_backend(const void *data)
-{
-    QTestState *qts = qtest_initf(BCM_MACHINE
-                                  " -netdev user,id=n0"
-                                  " -device pci-testdev,addr=%02x.1",
-                                  BCM_SLOT);
-    g_autofree char *addr = g_strdup_printf("%02x.0", BCM_SLOT);
-    unsigned int i;
-
-    for (i = 0; i < 2; i++) {
-        g_autofree char *id = g_strdup_printf("tg%u", i);
-        QDict *response;
-
-        response = qtest_qmp_assert_failure_ref(
-            qts,
-            "{ 'execute': 'device_add', 'arguments': {"
-            "  'driver': 'bcm570x', 'id': %s, 'addr': %s,"
-            "  'model': 'bcm5704', 'multifunction': true,"
-            "  'netdev': 'n0' } }",
-            id, addr);
-        g_assert_nonnull(strstr(qdict_get_str(response, "desc"),
-                                "in use by pci-testdev"));
-        qobject_unref(response);
-    }
-
-    qtest_qmp_assert_success(qts,
-                             "{ 'execute': 'netdev_del',"
-                             "  'arguments': { 'id': 'n0' } }");
-    qtest_qmp_assert_success(qts, "{ 'execute': 'query-status' }");
-    qtest_quit(qts);
-}
-
 static void test_receive_round_trip(const void *data)
 {
     int sv[2];
@@ -4478,10 +4429,10 @@ static void test_receive_round_trip(const void *data)
     bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
-    /* Post one standard-ring buffer at index 0, built little-endian. */
+    /* Post one standard-ring buffer at index 0, in the Bridge's order. */
     memset(bd, 0, sizeof(bd));
-    put32le(bd + 0, RX_BUF_PHYS >> 32);
-    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    put32dma(bd + 0, RX_BUF_PHYS >> 32);
+    put32dma(bd + 4, RX_BUF_PHYS & 0xffffffff);
     qtest_memwrite(b.qts, STD_RING_PHYS, bd, sizeof(bd));
     qtest_memset(b.qts, RX_BUF_PHYS, 0, sizeof(frame));
     qtest_memset(b.qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
@@ -4491,23 +4442,27 @@ static void test_receive_round_trip(const void *data)
     net_socket_send_frame(sv[0], frame, sizeof(frame));
     wait_for_rx_prod(&b, 1);
 
-    /* The completed descriptor landed in the return ring, little-endian. */
+    /* The completed descriptor landed in the return ring. */
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_IDX), ==, 0);
-    g_assert_cmphex(get16le(ret + BCM_RXBD_LEN), ==,
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_IDX), ==, 0);
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_LEN), ==,
                     sizeof(frame) + BCM_ETH_FCS_LEN);
-    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
                     BCM_RXBDFLAG_END);
-    /* Golden bytes on the length field: 64 payload + 4-byte FCS = 68 is
-     * {0x44, 0x00}, little-endian. */
-    g_assert_cmphex(ret[BCM_RXBD_LEN], ==, 0x44);
-    g_assert_cmphex(ret[BCM_RXBD_LEN + 1], ==, 0x00);
+    /*
+     * Golden bytes on the length field: 64 payload + a 4-byte FCS is 68. Off
+     * a Bridge those bytes are {0x44, 0x00} at the field's own offset; here
+     * the word swap puts the halfword in the other half of its word and
+     * writes it big-endian.
+     */
+    g_assert_cmphex(ret[DMA16(BCM_RXBD_LEN)], ==, 0x00);
+    g_assert_cmphex(ret[DMA16(BCM_RXBD_LEN) + 1], ==, 0x44);
 
-    /* The status block's receive producer advanced, little-endian. */
+    /* The status block's receive producer advanced, in the same order. */
     qtest_memread(b.qts, STATUS_PHYS, sb, sizeof(sb));
-    g_assert_cmphex(get16le(sb + BCM_STATUS_RX_PROD_OFF), ==, 1);
-    g_assert_cmphex(sb[BCM_STATUS_RX_PROD_OFF], ==, 0x01);
-    g_assert_cmphex(sb[BCM_STATUS_RX_PROD_OFF + 1], ==, 0x00);
+    g_assert_cmphex(get16dma(sb, BCM_STATUS_RX_PROD_OFF), ==, 1);
+    g_assert_cmphex(sb[DMA16(BCM_STATUS_RX_PROD_OFF)], ==, 0x00);
+    g_assert_cmphex(sb[DMA16(BCM_STATUS_RX_PROD_OFF) + 1], ==, 0x01);
 
     /* And the frame reached the posted buffer byte-for-byte. */
     qtest_memread(b.qts, RX_BUF_PHYS, got, sizeof(frame));
@@ -4545,7 +4500,6 @@ static void test_receive_descriptor_dma_error(const void *data)
     g_assert_cmpint(logfd, >=, 0);
     close(logfd);
     bcm_open(&b, qtest_initf(BCM_MACHINE
-                             " -m 16M"
                              " -netdev socket,fd=%d,id=n0"
                              " -device bcm570x,addr=%02x.0,netdev=n0"
                              " -d guest_errors -D %s",
@@ -4598,7 +4552,6 @@ static void test_receive_completion_dma_error(const void *data)
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     bcm_open(&b, qtest_initf(BCM_MACHINE
-                             " -m 16M"
                              " -netdev socket,fd=%d,id=n0"
                              " -device bcm570x,addr=%02x.0,netdev=n0",
                              sv[1], BCM_SLOT));
@@ -4625,7 +4578,7 @@ static void test_receive_completion_dma_error(const void *data)
     bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 1);
     wait_for_rx_prod(&b, 1);
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_IDX), ==, 0);
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_IDX), ==, 0);
 
     bcm_close(&b);
     close(sv[0]);
@@ -4654,7 +4607,6 @@ static void test_receive_payload_dma_error(const void *data)
     g_assert_cmpint(logfd, >=, 0);
     close(logfd);
     bcm_open(&b, qtest_initf(BCM_MACHINE
-                             " -m 16M"
                              " -netdev socket,fd=%d,id=n0"
                              " -device bcm570x,addr=%02x.0,netdev=n0"
                              " -d guest_errors -D %s",
@@ -4671,8 +4623,8 @@ static void test_receive_payload_dma_error(const void *data)
     bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
     qtest_memset(b.qts, RET_RING_PHYS, 0, sizeof(ret));
     qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
-    put32le(bd, UNMAPPED_PHYS >> 32);
-    put32le(bd + 4, UNMAPPED_PHYS & 0xffffffff);
+    put32dma(bd, UNMAPPED_PHYS >> 32);
+    put32dma(bd + 4, UNMAPPED_PHYS & 0xffffffff);
     qtest_memwrite(b.qts, STD_RING_PHYS, bd, sizeof(bd));
     /* One completed descriptor per update [57XX-PG105-R, printed page 454]. */
     bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, 1);
@@ -4684,22 +4636,22 @@ static void test_receive_payload_dma_error(const void *data)
 
     net_socket_send_frame(sv[0], frame, sizeof(frame));
     wait_for_log_marker(b.qts, logfile,
-                        "bcm570x: receive payload write at 0x2000000 failed");
+                        "bcm570x: receive payload write at 0x4000000 failed");
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
     g_assert_cmpmem(ret, sizeof(ret), zero, sizeof(zero));
     g_assert_cmphex(read_status_tag(&b), ==, tag);
     g_assert_false(intr_line_up(b.dev));
 
     /* Repair only the buffer address; the same ring entry remains posted. */
-    put32le(bd, RX_BUF_PHYS >> 32);
-    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    put32dma(bd, RX_BUF_PHYS >> 32);
+    put32dma(bd + 4, RX_BUF_PHYS & 0xffffffff);
     qtest_memwrite(b.qts, STD_RING_PHYS, bd, sizeof(bd));
     qtest_memset(b.qts, RX_BUF_PHYS, 0, sizeof(landed));
     bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, 1);
     wait_for_rx_prod(&b, 1);
     qtest_memread(b.qts, RET_RING_PHYS, ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_IDX), ==, 0);
-    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_IDX), ==, 0);
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
                     BCM_RXBDFLAG_END);
     qtest_memread(b.qts, RX_BUF_PHYS, landed, sizeof(landed));
     g_assert_cmpmem(landed, sizeof(landed), frame, sizeof(frame));
@@ -4732,12 +4684,12 @@ static void test_receive_dma_error_after_progress(const void *data)
         fault == RX_DMA_FAULT_DESCRIPTOR ?
         "bcm570x: receive descriptor 1 read failed" :
         fault == RX_DMA_FAULT_PAYLOAD ?
-        "bcm570x: receive payload write at 0x2000000 failed" :
+        "bcm570x: receive payload write at 0x4000000 failed" :
         "bcm570x: receive completion 1 write failed";
     uint64_t std_ring = fault == RX_DMA_FAULT_DESCRIPTOR ?
-                        RAM_END_16M - BCM_RXBD_SIZE : STD_RING_PHYS;
+                        DMA_END - BCM_RXBD_SIZE : STD_RING_PHYS;
     uint64_t ret_ring = fault == RX_DMA_FAULT_COMPLETION ?
-                        RAM_END_16M - BCM_RXBD_SIZE : RET_RING_PHYS;
+                        DMA_END - BCM_RXBD_SIZE : RET_RING_PHYS;
     uint64_t first_ret = ret_ring;
     uint64_t second_ret;
     uint8_t first[64], second[64], got[64];
@@ -4762,7 +4714,6 @@ static void test_receive_dma_error_after_progress(const void *data)
     g_assert_cmpint(logfd, >=, 0);
     close(logfd);
     bcm_open(&b, qtest_initf(BCM_MACHINE
-                             " -m 16M"
                              " -netdev socket,fd=%d,id=n0"
                              " -device bcm570x,addr=%02x.0,netdev=n0"
                              " -d guest_errors -D %s",
@@ -4803,8 +4754,8 @@ static void test_receive_dma_error_after_progress(const void *data)
     qtest_memread(b.qts, RX_BUF_PHYS, got, sizeof(got));
     g_assert_cmpmem(got, sizeof(got), first, sizeof(first));
     qtest_memread(b.qts, first_ret, ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_IDX), ==, 0);
-    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_IDX), ==, 0);
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
                     BCM_RXBDFLAG_END);
     tag = read_status_tag(&b);
     g_assert_true(intr_line_up(b.dev));
@@ -4844,8 +4795,8 @@ static void test_receive_dma_error_after_progress(const void *data)
     qtest_memread(b.qts, RX_BUF_PHYS + 0x100, got, sizeof(got));
     g_assert_cmpmem(got, sizeof(got), second, sizeof(second));
     qtest_memread(b.qts, second_ret, ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_IDX), ==, 1);
-    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_IDX), ==, 1);
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
                     BCM_RXBDFLAG_END);
     g_assert_cmphex(read_status_tag(&b), ==, tag + 1);
 
@@ -4918,8 +4869,8 @@ static void test_receive_interrupt_coalescing(const void *data)
     /* Post COAL_RING_LEN worth of standard-ring buffers -- one scratch buffer is
      * enough, the payload is irrelevant here, only the interrupt count is. */
     memset(bd, 0, sizeof(bd));
-    put32le(bd + 0, RX_BUF_PHYS >> 32);
-    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    put32dma(bd + 0, RX_BUF_PHYS >> 32);
+    put32dma(bd + 4, RX_BUF_PHYS & 0xffffffff);
     for (i = 0; i < frames; i++) {
         qtest_memwrite(b.qts, STD_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE,
                        bd, sizeof(bd));
@@ -5006,8 +4957,8 @@ static void test_receive_coalescing_timer(const void *data)
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     memset(bd, 0, sizeof(bd));
-    put32le(bd + 0, RX_BUF_PHYS >> 32);
-    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    put32dma(bd + 0, RX_BUF_PHYS >> 32);
+    put32dma(bd + 4, RX_BUF_PHYS & 0xffffffff);
     for (i = 0; i < frames; i++) {
         qtest_memwrite(b.qts, STD_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE,
                        bd, sizeof(bd));
@@ -5074,7 +5025,7 @@ static void test_receive_coalescing_zero_ticks(const void *data)
     wait_for_rx_prod(&b, 2);
     g_assert_cmpuint(read_status_tag(&b), ==, 1);
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get16le(status + BCM_STATUS_RX_PROD_OFF), ==, 2);
+    g_assert_cmphex(get16dma(status, BCM_STATUS_RX_PROD_OFF), ==, 2);
 
     bcm_close(&b);
     close(sv[0]);
@@ -5109,8 +5060,8 @@ static void test_receive_without_a_criterion_is_silent(const void *data)
 
     qtest_clock_step(b.qts, 1000 * 1000 * 1000);
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get32le(status), ==, 0);
-    g_assert_cmphex(get16le(status + BCM_STATUS_RX_PROD_OFF), ==, 0);
+    g_assert_cmphex(get32dma(status), ==, 0);
+    g_assert_cmphex(get16dma(status, BCM_STATUS_RX_PROD_OFF), ==, 0);
     g_assert_cmpuint(read_status_tag(&b), ==, 0);
     g_assert_false(intr_line_up(b.dev));
 
@@ -5145,8 +5096,8 @@ static void test_transmit_without_a_criterion_is_silent(const void *data)
 
     qtest_clock_step(b.qts, 1000 * 1000 * 1000);
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get32le(status), ==, 0);
-    g_assert_cmphex(get16le(status + BCM_STATUS_TX_CONS_OFF), ==, 0);
+    g_assert_cmphex(get32dma(status), ==, 0);
+    g_assert_cmphex(get16dma(status, BCM_STATUS_TX_CONS_OFF), ==, 0);
     g_assert_cmpuint(read_status_tag(&b), ==, 0);
     g_assert_false(intr_line_up(b.dev));
 
@@ -5262,17 +5213,17 @@ static void test_receive_producer_follows_its_completion(const void *data)
         /* The descriptor the producer just passed carries the frame... */
         qtest_memread(b.qts, RET_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE,
                       bd, sizeof(bd));
-        g_assert_cmphex(get16le(bd + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
+        g_assert_cmphex(get16dma(bd, BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==,
                         BCM_RXBDFLAG_END);
-        g_assert_cmphex(get16le(bd + BCM_RXBD_LEN), ==,
+        g_assert_cmphex(get16dma(bd, BCM_RXBD_LEN), ==,
                         sizeof(frame) + BCM_ETH_FCS_LEN);
 
         /* ...and the one it points at is still untouched. */
         qtest_memread(b.qts,
                       RET_RING_PHYS + (uint64_t)(i + 1) * BCM_RXBD_SIZE,
                       bd, sizeof(bd));
-        g_assert_cmphex(get16le(bd + BCM_RXBD_LEN), ==, 0);
-        g_assert_cmphex(get16le(bd + BCM_RXBD_FLAGS), ==, 0);
+        g_assert_cmphex(get16dma(bd, BCM_RXBD_LEN), ==, 0);
+        g_assert_cmphex(get16dma(bd, BCM_RXBD_FLAGS), ==, 0);
     }
 
     bcm_close(&b);
@@ -5293,7 +5244,6 @@ static void test_receive_coalescing_status_dma_retry(const void *data)
     memset(frame, 0xff, 6);
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     bcm_open(&b, qtest_initf(BCM_MACHINE
-                             " -m 16M"
                              " -netdev socket,fd=%d,id=n0"
                              " -device bcm570x,addr=%02x.0,netdev=n0",
                              sv[1], BCM_SLOT));
@@ -5305,8 +5255,8 @@ static void test_receive_coalescing_status_dma_retry(const void *data)
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4,
                    RET_RING_PHYS & 0xffffffff);
     ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
-    put32le(bd, RX_BUF_PHYS >> 32);
-    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    put32dma(bd, RX_BUF_PHYS >> 32);
+    put32dma(bd + 4, RX_BUF_PHYS & 0xffffffff);
     qtest_memwrite(b.qts, STD_RING_PHYS, bd, sizeof(bd));
     qtest_memset(b.qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
     qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
@@ -5322,7 +5272,7 @@ static void test_receive_coalescing_status_dma_retry(const void *data)
     net_socket_send_frame(sv[0], frame, sizeof(frame));
     wait_for_ret_end(&b, 0);
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get16le(status + BCM_STATUS_RX_PROD_OFF), ==, 0);
+    g_assert_cmphex(get16dma(status, BCM_STATUS_RX_PROD_OFF), ==, 0);
     g_assert_false(intr_line_up(b.dev));
 
     bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
@@ -5334,7 +5284,7 @@ static void test_receive_coalescing_status_dma_retry(const void *data)
     qtest_clock_step(b.qts,
                      RX_ARRIVAL_LATENCY_NS + (int64_t)ticks * 1000 + 1000);
     qtest_memread(b.qts, STATUS_PHYS, status, sizeof(status));
-    g_assert_cmphex(get16le(status + BCM_STATUS_RX_PROD_OFF), ==, 1);
+    g_assert_cmphex(get16dma(status, BCM_STATUS_RX_PROD_OFF), ==, 1);
     g_assert_cmphex(read_status_tag(&b), ==, 1);
     g_assert_true(intr_line_up(b.dev));
 
@@ -5442,17 +5392,17 @@ static void test_system_reset_cancels_transmit_coalescing(const void *data)
 }
 
 /*
- * Frame payload byte order on receive, the inverse of the transmit swap. With
- * ENDIAN_WORDSWAP set the chip lays the received frame into the buffer reversed
- * per 32-bit word, the layout the big-endian driver reverses back when it reads
- * it. Send a frame and confirm the buffer holds the word-reversed image.
+ * The receive half of the same claim. ENDIAN_WORDSWAP composes the
+ * register-programmed ring and status addresses, and the frame lands in the
+ * posted buffer byte for byte as it arrived on the wire: on this route the
+ * model does not transform payload, whatever the swap bits say. Off a Bridge
+ * the same bits would leave a word-reversed image in the buffer instead.
  */
 static void test_receive_frame_wordswap(const void *data)
 {
     int sv[2];
     Bcm b;
     uint8_t frame[64];       /* what arrives on the wire */
-    uint8_t swapped[64];     /* what the driver must find in the buffer */
     uint8_t bd[BCM_RXBD_SIZE];
     uint8_t got[64];
     uint32_t misc;
@@ -5462,12 +5412,6 @@ static void test_receive_frame_wordswap(const void *data)
         frame[i] = (uint8_t)(i * 5 + 3);
     }
     memset(frame, 0xff, 6);     /* broadcast destination */
-    for (i = 0; i < sizeof(frame); i += 4) {
-        swapped[i + 0] = frame[i + 3];
-        swapped[i + 1] = frame[i + 2];
-        swapped[i + 2] = frame[i + 1];
-        swapped[i + 3] = frame[i + 0];
-    }
 
     g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
     bcm_open(&b, qtest_initf(BCM_MACHINE
@@ -5475,11 +5419,13 @@ static void test_receive_frame_wordswap(const void *data)
                              " -device bcm570x,addr=%02x.0,netdev=n0",
                              sv[1], BCM_SLOT));
 
-    /* ENDIAN_WORDSWAP gates the frame swap and the control-block address
-     * composition alike, so the register-programmed host addresses are written
-     * word-swapped: the low word into the HI slot, the high word into the LO
-     * slot. The posted buffer's own address rides in the descriptor and is read
-     * through the little-endian accessors, so it stays in order. */
+    /*
+     * ENDIAN_WORDSWAP decides the control-block address composition, so the
+     * register-programmed host addresses are written word-swapped: the low
+     * word into the HI slot, the high word into the LO slot. The posted
+     * buffer's own address rides in the descriptor and is read through the
+     * DMA accessors, so it stays in order.
+     */
     misc = qpci_config_readl(b.dev, BCM_PCI_MISC_CTL);
     qpci_config_writel(b.dev, BCM_PCI_MISC_CTL, misc | BCM_MISCCTL_WORDSWAP);
 
@@ -5497,8 +5443,8 @@ static void test_receive_frame_wordswap(const void *data)
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     memset(bd, 0, sizeof(bd));
-    put32le(bd + 0, RX_BUF_PHYS >> 32);
-    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    put32dma(bd + 0, RX_BUF_PHYS >> 32);
+    put32dma(bd + 4, RX_BUF_PHYS & 0xffffffff);
     qtest_memwrite(b.qts, STD_RING_PHYS, bd, sizeof(bd));
     qtest_memset(b.qts, RX_BUF_PHYS, 0, sizeof(frame));
     qtest_memset(b.qts, RET_RING_PHYS, 0, BCM_RXBD_SIZE);
@@ -5509,7 +5455,7 @@ static void test_receive_frame_wordswap(const void *data)
     wait_for_rx_prod(&b, 1);
 
     qtest_memread(b.qts, RX_BUF_PHYS, got, sizeof(frame));
-    g_assert_cmpmem(got, sizeof(frame), swapped, sizeof(swapped));
+    g_assert_cmpmem(got, sizeof(frame), frame, sizeof(frame));
 
     bcm_close(&b);
     close(sv[0]);
@@ -5617,7 +5563,7 @@ static void test_status_block_gated_by_hcc(const void *data)
     /* Disabled: the status region stays zero and the line stays down. */
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
     qtest_memread(b.qts, STATUS_PHYS, sb, sizeof(sb));
-    g_assert_cmphex(get32le(sb), ==, 0);
+    g_assert_cmphex(get32dma(sb), ==, 0);
     g_assert_false(intr_line_up(b.dev));
 
     /* Enabled: the same doorbell now DMAs the status block, UPDATED set. */
@@ -5625,7 +5571,8 @@ static void test_status_block_gated_by_hcc(const void *data)
     bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
     bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
     qtest_memread(b.qts, STATUS_PHYS, sb, sizeof(sb));
-    g_assert_cmphex(get32le(sb) & BCM_STATFLAG_UPDATED, ==, BCM_STATFLAG_UPDATED);
+    g_assert_cmphex(get32dma(sb) & BCM_STATFLAG_UPDATED, ==,
+                    BCM_STATFLAG_UPDATED);
 
     bcm_close(&b);
 }
@@ -5636,7 +5583,6 @@ static void test_status_dma_error(const void *data)
     Bcm b;
 
     bcm_open(&b, qtest_initf(BCM_MACHINE
-                             " -m 16M"
                              " -netdev user,id=n0"
                              " -device bcm570x,addr=%02x.0,netdev=n0",
                              BCM_SLOT));
@@ -5709,12 +5655,14 @@ static void test_vmstate_versions_nested_phy(const void *data)
     close(fd);
 
     {
-        const char *args[] = {
-            qtest_qemu_binary(NULL), "-nodefaults", "-machine", "pc",
-            "-device", "bcm570x", "-dump-vmstate", dump_path, NULL
-        };
+        g_autofree char *command = g_strdup_printf(
+            "%s " BCM_MACHINE " -device bcm570x -dump-vmstate %s",
+            qtest_qemu_binary(NULL), dump_path);
+        g_auto(GStrv) args = NULL;
 
-        g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+        g_assert_true(g_shell_parse_argv(command, NULL, &args, &err));
+        g_assert_no_error(err);
+        g_assert_true(g_spawn_sync(NULL, args, NULL, 0, NULL, NULL,
                                    NULL, &error_output, &wait_status, &err));
     }
     g_assert_no_error(err);
@@ -5928,8 +5876,8 @@ static void test_arrival_line_migrates_only_what_it_holds(const void *data)
     bar_writel(&from, BCM_RX_MODE, BCM_RXMODE_ENABLE);
 
     memset(bd, 0, sizeof(bd));
-    put32le(bd + 0, RX_BUF_PHYS >> 32);
-    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    put32dma(bd + 0, RX_BUF_PHYS >> 32);
+    put32dma(bd + 4, RX_BUF_PHYS & 0xffffffff);
     for (i = 0; i < total; i++) {
         qtest_memwrite(from.qts, STD_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE,
                        bd, sizeof(bd));
@@ -6106,8 +6054,8 @@ static void test_masked_interrupt_survives_migration(const void *data)
     ind_mem_writel(&from, BCM_SRAM_RX_RETURN_RCB + 4,
                    RET_RING_PHYS & 0xffffffff);
     ind_mem_writel(&from, BCM_SRAM_RX_RETURN_RCB + 8, RX_RING_LEN << 16);
-    put32le(bd, RX_BUF_PHYS >> 32);
-    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
+    put32dma(bd, RX_BUF_PHYS >> 32);
+    put32dma(bd + 4, RX_BUF_PHYS & 0xffffffff);
     qtest_memwrite(from.qts, STD_RING_PHYS, bd, sizeof(bd));
     qtest_memset(from.qts, RET_RING_PHYS, 0, sizeof(ret));
     qtest_memset(from.qts, RX_BUF_PHYS, 0, sizeof(frame));
@@ -6134,7 +6082,7 @@ static void test_masked_interrupt_survives_migration(const void *data)
     net_socket_send_frame(dest_sv[0], frame, sizeof(frame));
     g_usleep(100000);
     qtest_memread(to.qts, RET_RING_PHYS, ret, sizeof(ret));
-    g_assert_cmphex(get16le(ret + BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
+    g_assert_cmphex(get16dma(ret, BCM_RXBD_FLAGS) & BCM_RXBDFLAG_END, ==, 0);
 
     bar_writel(&to, BCM_MBX_RX_STD_PROD_LO, 1);
     wait_for_rx_prod(&to, 1);
@@ -6180,7 +6128,7 @@ static void test_dual_port_present_and_independent(const void *data)
                                   " -netdev user,id=n0"
                                   " -device bcm570x,model=bcm5704,addr=%02x.0,"
                                   "netdev=n0", BCM_SLOT);
-    QPCIBus *bus = qpci_new_pc(qts, NULL);
+    QPCIBus *bus = qpci_init_sgi_bridge(qts, NULL);
     QPCIDevice *fn0 = qpci_device_find(bus, QPCI_DEVFN(BCM_SLOT, 0));
     QPCIDevice *fn1 = qpci_device_find(bus, QPCI_DEVFN(BCM_SLOT, 1));
     uint8_t sb0[BCM_STATUS_BLK_SIZE], sb1[BCM_STATUS_BLK_SIZE];
@@ -6236,19 +6184,21 @@ static void test_dual_port_present_and_independent(const void *data)
     ind_reg_writel_dev(fn0, BCM_MBX_TX_PROD_LO, 0);
     qtest_memread(qts, STATUS_PHYS, sb0, sizeof(sb0));
     qtest_memread(qts, STATUS2_PHYS, sb1, sizeof(sb1));
-    g_assert_cmphex(get32le(sb0) & BCM_STATFLAG_UPDATED, ==, BCM_STATFLAG_UPDATED);
-    g_assert_cmphex(get32le(sb1), ==, 0);
+    g_assert_cmphex(get32dma(sb0) & BCM_STATFLAG_UPDATED, ==,
+                    BCM_STATFLAG_UPDATED);
+    g_assert_cmphex(get32dma(sb1), ==, 0);
 
     /* And driving function 1 moves its own status block -- both work, apart. */
     ind_reg_writel_dev(fn1, BCM_MBX_TX_PROD_LO, 0);
     qtest_memread(qts, STATUS2_PHYS, sb1, sizeof(sb1));
-    g_assert_cmphex(get32le(sb1) & BCM_STATFLAG_UPDATED, ==, BCM_STATFLAG_UPDATED);
+    g_assert_cmphex(get32dma(sb1) & BCM_STATFLAG_UPDATED, ==,
+                    BCM_STATFLAG_UPDATED);
 
     qpci_iounmap(fn0, bars[0]);
     qpci_iounmap(fn1, bars[1]);
     g_free(fn0);
     g_free(fn1);
-    qpci_free_pc(bus);
+    qpci_free_sgi_bridge(bus);
     qtest_quit(qts);
 }
 
@@ -6279,7 +6229,7 @@ static void test_dual_port_survives_migration(const void *data)
                        " -netdev user,id=n0"
                        " -device bcm570x,model=bcm5704,addr=%02x.0,netdev=n0",
                        BCM_SLOT);
-    from_bus = qpci_new_pc(from, NULL);
+    from_bus = qpci_init_sgi_bridge(from, NULL);
     from0 = qpci_device_find(from_bus, QPCI_DEVFN(BCM_SLOT, 0));
     from1 = qpci_device_find(from_bus, QPCI_DEVFN(BCM_SLOT, 1));
     g_assert_nonnull(from0);
@@ -6300,7 +6250,7 @@ static void test_dual_port_survives_migration(const void *data)
                            " -device bcm570x,model=bcm5704,addr=%02x.0,netdev=n0"
                            " -incoming %s", BCM_SLOT, uri);
     to = qtest_init(dest);
-    to_bus = qpci_new_pc(to, NULL);
+    to_bus = qpci_init_sgi_bridge(to, NULL);
     to0 = qpci_device_find(to_bus, QPCI_DEVFN(BCM_SLOT, 0));
     to1 = qpci_device_find(to_bus, QPCI_DEVFN(BCM_SLOT, 1));
     g_assert_nonnull(to0);
@@ -6344,8 +6294,8 @@ static void test_dual_port_survives_migration(const void *data)
     g_free(from1);
     g_free(to0);
     g_free(to1);
-    qpci_free_pc(from_bus);
-    qpci_free_pc(to_bus);
+    qpci_free_sgi_bridge(from_bus);
+    qpci_free_sgi_bridge(to_bus);
     qtest_quit(to);
     qtest_quit(from);
 }
@@ -6504,12 +6454,6 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(0), test_receive_queue_reset);
     qtest_add_data_func("/bcm570x/receive-queue-system-reset",
                         GINT_TO_POINTER(1), test_receive_queue_reset);
-    qtest_add_data_func("/bcm570x/queued-receive-hot-unplug", NULL,
-                        test_queued_receive_hot_unplug);
-    qtest_add_data_func("/bcm570x/hot-unplug-exits-cleanly", NULL,
-                        test_hot_unplug_exits_cleanly);
-    qtest_add_data_func("/bcm570x/failed-realize-releases-backend", NULL,
-                        test_failed_realize_releases_backend);
     qtest_add_data_func("/bcm570x/receive-checksum-offload", NULL,
                         test_receive_checksum_offload);
     qtest_add_data_func("/bcm570x/receive-checksum-not-ip", NULL,
