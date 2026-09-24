@@ -16,6 +16,7 @@
 #include "qemu/bswap.h"
 #include "hw/pci/pci.h"
 #include "libqtest.h"
+#include "sgi-migrate.h"
 #include "sgi-test.h"
 
 #define HUB_BASE UINT64_C(0x20001000000)
@@ -93,7 +94,7 @@
 #define RAD1_REG_SHIFT_LOAD_CLOCK 0x4c
 #define RAD1_REG_PREDISPATCH_C    0x50
 #define RAD1_REG_PREDISPATCH_D    0x54
-#define RAD1_REG_PREDISPATCH_E    0x58
+#define RAD1_REG_ANALOG_OUT_EN    0x58
 #define RAD1_REG_STATUS_DMA_CTRL  0x5c
 #define RAD1_REG_HALT_TEARDOWN    0x70
 #define RAD1_REG_BRINGUP_FIXED_A  0x74
@@ -136,56 +137,85 @@
 
 /*
  * Status-DMA control values written to 0x5c: the ring-engine start, the
- * one-shot start, and the stop, and the descriptor-slot layout the engine
- * marks done -- bit 31 of each processed slot's +0x7c word and the frame
- * bits in its +0x78 word. From rad_start_status_dma/rad_one_shot_status/
- * rad_update_subsys and docs/datasheets/mediaio-rad1-audio.md.
+ * one-shot start, and the stop. From rad_start_status_dma,
+ * rad_one_shot_status and rad_stop_status_dma in
+ * docs/datasheets/mediaio-rad1-audio.md.
+ *
+ * What a completion leaves in its 0x80-byte slot, from the datasheet's
+ * streaming-engine contract and status-slot flag bits: registers 0x04..0x34
+ * mirrored at register + 0x40, type 1's DMA pointer at +0x38, the flag word
+ * at +0x78 and the completion word at +0x7c. With no ADAT, AES3 or video
+ * reference present, +0x78 has ADAT-present (0x40) and the two video-field
+ * bits (0x80, 0x100) clear, and +0x7c reads 0x80080000: done plus bit 19,
+ * "no valid AES3 input".
  */
 #define RAD1_STATUS_START         0x40003u
 #define RAD1_STATUS_ONESHOT_START 0x40001u
 #define RAD1_STATUS_STOP          0x1fffcu
 #define RAD1_SLOT_STRIDE          0x80
+#define RAD1_SLOT_MIRROR_OFFSET   0x40
+#define RAD1_SLOT_OUT_PTR         0x38
 #define RAD1_SLOT_DONE_OFFSET     0x7c
 #define RAD1_SLOT_FLAGS_OFFSET    0x78
 #define RAD1_SLOT_DONE_BIT        0x80000000u
-#define RAD1_SLOT_FRAME_BITS      0x180u
+#define RAD1_SLOT_DONE_WORD       0x80080000u
+#define RAD1_SLOT_INPUT_BITS      0x1c0u      /* +0x78: 0x40, 0x80, 0x100 */
 #define RAD1_LIMIT_BASE           0x78
-/* The continuous engine's cadence, matching the model. */
-#define RAD1_SLOT_ADAT_BIT        0x40u       /* +0x78: ADAT-present */
-#define RAD1_STATUS_PERIOD_NS     33333334
 
 /*
- * The main audio-data DMA, output-only on the master channel. rad_start_dma
- * programs the master channel's set-A and set-B address-low/high and control
- * registers in the 0x400..0x528 bank, sets the channel's enable bit in the
- * enable register at 0x50, then writes central control 0x80 with the ~0xc0
- * DMA-enable pattern -- the kick. The offsets are the master channel's own
- * (device type 4): rad_create_device loads them from a per-type table, read
- * out of rad_dd.o's .data and its store-back sequence; restated here from the
- * disasm independent of the model's names. Set-A address-low/high are 0x4e8/
- * 0x51c and control 0x4ec; set-B are 0x43c/0x440 and control 0x444. The
- * channel's sample-position registers (index A 0x04, index B 0x08) advance by
- * (frames << 18) as samples transfer. The control word carries the transfer
- * length as a negated count of 128-byte units in bits [31:7]. Sample
- * format/rate are undecoded in the driver; the model streams a fixed
- * big-endian 16-bit stereo voice (4 bytes/frame), a stated approximation, so
- * the frame count a length implies is length / 4.
+ * The continuous start word IRIX 6.5.30 writes: the start bits plus an
+ * interval field in bits [16:2] of 250 * 33 + 1 = 8251. The datasheet's
+ * timing contract infers the field counts 33 MHz PCI clocks, a completion
+ * about every 250 us, on an absolute schedule; the model follows that, so
+ * these tests assert a flagged approximation, not a hardware fact.
  */
-#define RAD1_MAIN_A_ADDR_LO       0x4e8
-#define RAD1_MAIN_A_ADDR_HI       0x51c
-#define RAD1_MAIN_A_CTRL          0x4ec
-#define RAD1_MAIN_B_ADDR_LO       0x43c
-#define RAD1_MAIN_B_ADDR_HI       0x440
-#define RAD1_MAIN_B_CTRL          0x444
-#define RAD1_MAIN_ENABLE          0x50
-#define RAD1_MAIN_ENABLE_BIT      0x1u
+#define RAD1_STATUS_INTERVAL      8251u
+#define RAD1_STATUS_START_IRIX    (RAD1_STATUS_START | \
+                                   (RAD1_STATUS_INTERVAL << 2))
+#define RAD1_STATUS_CLOCK_HZ      33000000u
+/* The model's host-protection floor: 330 clocks, 10 us. */
+#define RAD1_STATUS_FLOOR_NS      10000
+#define RAD1_UST_TICKS(ns)        ((ns) / RAD1_UST_NS_PER_TICK)
+
+/*
+ * The analog output, channel type 1, from the datasheet's per-type table:
+ * set A address-low/high/control at 0x4f8/0x524/0x4fc, set B at
+ * 0x40c/0x410/0x414, enable bit 0 of 0x58 (bring-up value 0x20000000),
+ * position registers A = 0x2c and B = 0x18. A holds the frame count in
+ * bits [31:18] and a 0x30 latch in [17:0]; type 1 reads B's bits [17:4],
+ * type 0 its bits [31:18]. The control word is (tag << 3) | (-count << 7),
+ * count in 128-byte units; the captured sfplay start wrote 0xfffff008, tag
+ * 1 and a 4 KiB ring. The analog input's (type 0) enable is 0x4c bit 0 and
+ * its A register is 0x14. A frame is two 32-bit ring words, one channel
+ * each. The rate (44.1 kHz) and the position registers counting frames are
+ * the datasheet's flagged approximations. The refill lead is 0xcc words:
+ * the pointer must move well under that between completions.
+ */
+#define RAD1_OUT_A_ADDR_LO        0x4f8
+#define RAD1_OUT_A_ADDR_HI        0x524
+#define RAD1_OUT_A_CTRL           0x4fc
+#define RAD1_OUT_B_ADDR_LO        0x40c
+#define RAD1_OUT_B_ADDR_HI        0x410
+#define RAD1_OUT_B_CTRL           0x414
+#define RAD1_OUT_CTRL_4K          0xfffff008u
+#define RAD1_OUT_RING_BYTES       4096
+#define RAD1_OUT_IDLE             0x20000000u
+#define RAD1_OUT_RUN              0x20000001u
+#define RAD1_OUT_POS_A            0x2c
+#define RAD1_OUT_POS_B            0x18
+#define RAD1_IN_POS_A             0x14
+#define RAD1_IN_ENABLE_IDLE       0x05000000u
+#define RAD1_IN_ENABLE_RUN        0x05000001u
 #define RAD1_REG_CENTRAL_CTRL     0x80
-#define RAD1_CENTRAL_KICK         0xffe20000u /* shadow & ~0xc0 */
-#define RAD1_MAIN_POS_A           0x04
-#define RAD1_MAIN_POS_B           0x08
-#define RAD1_MAIN_UNIT_BYTES      128
-#define RAD1_MAIN_FRAME_BYTES     4           /* 16-bit stereo, approximated */
-#define RAD1_MAIN_POS_SHIFT       18
+#define RAD1_CENTRAL_ADAT_OFF     0xffe20000u
+#define RAD1_OUT_FREQ             44100
+#define RAD1_OUT_FRAME_BYTES      8
+#define RAD1_OUT_REFILL_LEAD_WORDS 0xcc
+#define RAD1_OUT_TICK_FRAMES      8
+#define RAD1_POS_A_FRAMES(v)      ((v) >> 18)
+#define RAD1_POS_A_LATCH(v)       ((v) & 0x3ffffu)
+#define RAD1_POS_B_TYPE1(v)       (((v) >> 4) & 0x3fffu)
+#define RAD1_POS_B_TYPE0(v)       ((v) >> 18)
 
 /*
  * To land the RAD1's status-DMA in node-0 RAM the ring's PCI address uses
@@ -689,7 +719,7 @@ static void test_io6g_rad1_registers(void)
     static const uint32_t bar0_offsets[] = {
         RAD1_REG_PREDISPATCH_A, RAD1_REG_PREDISPATCH_B,
         RAD1_REG_SHIFT_LOAD_CLOCK, RAD1_REG_PREDISPATCH_C,
-        RAD1_REG_PREDISPATCH_D, RAD1_REG_PREDISPATCH_E,
+        RAD1_REG_PREDISPATCH_D, RAD1_REG_ANALOG_OUT_EN,
         RAD1_REG_STATUS_DMA_CTRL, RAD1_REG_HALT_TEARDOWN,
         RAD1_REG_BRINGUP_FIXED_A, RAD1_REG_BRINGUP_FIXED_B,
         RAD1_REG_MUX_CLOCK_SELECT, RAD1_REG_SHADOW_MASKED,
@@ -722,10 +752,10 @@ static void test_io6g_rad1_registers(void)
 /*
  * The status-DMA register bank the completion handshake reads. The ring
  * base/limit registers (both sets) store and answer back like the bring-up
- * offsets above; the read-only sample-position bank answers its fixed
- * modeled value whatever is written (the model has no audio data path to
- * advance it yet); and the 0x5c control register takes a non-start value
- * (the stop word) as a plain store, exercised here without triggering a DMA.
+ * offsets above; the read-only sample-position bank reads zero after reset
+ * and ignores a write (only a running channel moves it); and the 0x5c
+ * control register takes a non-start value (the stop word) as a plain
+ * store, exercised here without triggering a DMA.
  */
 static void test_io6g_rad1_status_dma_registers(void)
 {
@@ -749,7 +779,7 @@ static void test_io6g_rad1_status_dma_registers(void)
                         ==, value);
     }
 
-    /* Read-only bank: a fixed modeled value, and a write leaves it fixed. */
+    /* Read-only bank: zero after reset, and a write leaves it there. */
     for (pos = RAD1_REG_SAMPLE_POS_FIRST; pos <= RAD1_REG_SAMPLE_POS_LAST;
          pos += 4) {
         g_assert_cmphex(baseio_window_read(qts, MIO_RAD1_WINDOW + pos),
@@ -790,12 +820,11 @@ static uint32_t rad1_ring_read(QTestState *qts, uint64_t ram)
  * The one-shot status-DMA handshake. rad_one_shot_status programs the ring
  * base and a -4 limit, writes the one-shot start word (0x40001, ring bit
  * clear) to 0x5c, and busy-polls the base slot's +0x7c bit 31; the engine
- * transfers status into that single slot and marks it done -- bit 31 of its
- * +0x7c word and the frame bits in its +0x78 word. This places a ring in
- * node-0 RAM, kicks the one-shot, and confirms the model set those bits
- * without disturbing the slot's other bits, and left the adjacent slot alone.
- * This is the boot-liveness handshake; the continuous engine that advances the
- * streaming rate is exercised separately below.
+ * transfers status into that single slot and marks it done. This places a
+ * ring in node-0 RAM, seeds the slot with stale words, kicks the one-shot,
+ * and confirms the completion rewrote the flag and completion words to the
+ * no-input values, left the analog output's pointer word alone (the channel
+ * has not run since reset), and left the adjacent slot alone.
  */
 static void test_io6g_rad1_status_dma_handshake(void)
 {
@@ -821,12 +850,13 @@ static void test_io6g_rad1_status_dma_handshake(void)
                         BRIDGE_DEV_MEMORY_SPACE | (MIO_RAD1_MMIO >> 20));
 
     /*
-     * Seed the base slot and the next one with a distinct not-done pattern, so
-     * the handshake's read-modify-write (bits OR'd in, the rest preserved) is
-     * visible rather than a blind overwrite.
+     * Seed the base slot with stale words, including the ADAT and video-field
+     * bits a completion must not report, and the next slot with a marker.
      */
     rad1_ring_write(qts, ring_ram + RAD1_SLOT_DONE_OFFSET, 0x00000010u);
-    rad1_ring_write(qts, ring_ram + RAD1_SLOT_FLAGS_OFFSET, 0x00000020u);
+    rad1_ring_write(qts, ring_ram + RAD1_SLOT_FLAGS_OFFSET,
+                    0x00000020u | RAD1_SLOT_INPUT_BITS);
+    rad1_ring_write(qts, ring_ram + RAD1_SLOT_OUT_PTR, 0xdeadbeefu);
     rad1_ring_write(qts, slot1 + RAD1_SLOT_DONE_OFFSET, 0x00000011u);
 
     /* Program the ring base and a -4 limit, then the one-shot start. */
@@ -844,29 +874,75 @@ static void test_io6g_rad1_status_dma_handshake(void)
                                        RAD1_REG_STATUS_DMA_CTRL),
                     ==, RAD1_STATUS_ONESHOT_START);
 
-    /* The base slot is marked done, with its seeded low bits preserved. */
+    /* Done, with AES3 absent; no ADAT and no video-field events. */
     g_assert_cmphex(rad1_ring_read(qts, ring_ram + RAD1_SLOT_DONE_OFFSET),
-                    ==, RAD1_SLOT_DONE_BIT | 0x00000010u);
-    g_assert_cmphex(rad1_ring_read(qts, ring_ram + RAD1_SLOT_FLAGS_OFFSET),
-                    ==, RAD1_SLOT_FRAME_BITS | 0x00000020u);
+                    ==, RAD1_SLOT_DONE_WORD);
+    g_assert_cmphex(rad1_ring_read(qts, ring_ram + RAD1_SLOT_FLAGS_OFFSET) &
+                    RAD1_SLOT_INPUT_BITS, ==, 0);
+
+    /* The analog output has not run since reset, so its word is untouched. */
+    g_assert_cmphex(rad1_ring_read(qts, ring_ram + RAD1_SLOT_OUT_PTR),
+                    ==, 0xdeadbeefu);
 
     /* The one-shot touches only the base slot; the next one is untouched. */
     g_assert_cmphex(rad1_ring_read(qts, slot1 + RAD1_SLOT_DONE_OFFSET),
                     ==, 0x00000011u);
 }
 
+static uint32_t rad1_read(QTestState *qts, uint32_t reg)
+{
+    return baseio_window_read(qts, MIO_RAD1_WINDOW + reg);
+}
+
+static void rad1_write(QTestState *qts, uint32_t reg, uint32_t value)
+{
+    baseio_window_write(qts, MIO_RAD1_WINDOW + reg, value);
+}
+
 /*
- * The continuous status-DMA engine. rad_start_status_dma writes the ring-engine
- * start word (0x40003, ring bit set) to 0x5c; the engine then keeps producing
- * completions around the ring on its own, which rad_update_subsys counts into a
- * nonzero streaming rate that locks the audio clock. The model runs this from a
- * periodic timer that completes the next ring slot each period -- so, unlike
- * the one-shot, no slot completes on the register write itself; the completions
- * arrive as the virtual clock advances. This seeds a four-slot ring, starts the
- * engine, and confirms that stepping the clock completes successive distinct
- * slots (each with the done bit and the frame bits, and the ADAT-present bit
- * left clear so the analog output can start), and that the stop word halts the
- * engine so no further slot completes.
+ * The virtual time at which the previous register write landed. qtest
+ * refuses a zero step, so step one nanosecond and subtract it.
+ */
+static int64_t rad1_clock_now(QTestState *qts)
+{
+    return qtest_clock_step(qts, 1) - 1;
+}
+
+/* Nanoseconds from a continuous start to completion k (1-based). */
+static int64_t rad1_status_due(uint64_t k)
+{
+    return k * RAD1_STATUS_INTERVAL * 1000000000ull / RAD1_STATUS_CLOCK_HZ;
+}
+
+/* Step the clock to exactly t_start + offset, which must lie ahead. */
+static void rad1_step_to(QTestState *qts, int64_t t_start, int64_t offset)
+{
+    int64_t now = qtest_clock_step(qts, 1);
+
+    g_assert_cmpint(t_start + offset, >, now);
+    qtest_clock_step(qts, t_start + offset - now);
+}
+
+/*
+ * The continuous status-DMA engine. rad_start_status_dma writes the
+ * ring-engine start word, with the ring bit and an interval field, to 0x5c;
+ * the engine then keeps completing slots around the ring on its own, one
+ * per interval. So, unlike the one-shot, no slot completes on the register
+ * write itself. This checks, on a four-slot ring:
+ *
+ * - a start word with a zero interval runs nothing;
+ * - with IRIX's word, completions land on successive slots, each reporting
+ *   no ADAT, AES3 or video reference;
+ * - they are one decoded interval apart, going by the 0x30 counter each
+ *   slot mirrors;
+ * - they stay on the absolute schedule start + k intervals. qtest fires
+ *   timers exactly at their deadlines, so it cannot delay a callback; what
+ *   it can show is that completion 100 lands at exactly start + 100
+ *   intervals, not a nanosecond early, with no rounding carried from one
+ *   re-arm to the next;
+ * - a zero-interval start word stops a running engine;
+ * - an interval under the model's 10 us floor runs at the floor;
+ * - the stop word halts the engine.
  */
 static void test_io6g_rad1_status_dma_continuous(void)
 {
@@ -877,6 +953,9 @@ static void test_io6g_rad1_status_dma_continuous(void)
         ((uint64_t)RAD1_LOCAL_HUB_WIDGET << 60) | ring_ram;
     const unsigned int nslots = 4;
     const uint32_t limit = RAD1_LIMIT_BASE - nslots * RAD1_SLOT_STRIDE;
+    const uint64_t slot100 = ring_ram + (100 % nslots) * RAD1_SLOT_STRIDE;
+    uint32_t ust1, ust2, spacing;
+    int64_t t_start;
     unsigned int i;
 
     program_module(qts);
@@ -888,29 +967,25 @@ static void test_io6g_rad1_status_dma_continuous(void)
     baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XTALK_REG_DATA,
                         BRIDGE_DEV_MEMORY_SPACE | (MIO_RAD1_MMIO >> 20));
 
-    /* Clear every slot's completion words. */
+    /*
+     * Clear every slot's completion word and seed its flag word with the
+     * input bits, so a completion that fails to clear them shows up.
+     */
     for (i = 0; i < nslots; i++) {
         uint64_t slot = ring_ram + (uint64_t)i * RAD1_SLOT_STRIDE;
 
         rad1_ring_write(qts, slot + RAD1_SLOT_DONE_OFFSET, 0);
-        rad1_ring_write(qts, slot + RAD1_SLOT_FLAGS_OFFSET, 0);
+        rad1_ring_write(qts, slot + RAD1_SLOT_FLAGS_OFFSET,
+                        RAD1_SLOT_INPUT_BITS);
     }
 
-    /* Program the ring base and the count-encoding limit, then start. */
-    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_BASE_LO,
-                        (uint32_t)ring_pci);
-    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_BASE_HI,
-                        (uint32_t)(ring_pci >> 32));
-    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_LIMIT, limit);
-    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_DMA_CTRL,
-                        RAD1_STATUS_START);
+    rad1_write(qts, RAD1_REG_STATUS_BASE_LO, (uint32_t)ring_pci);
+    rad1_write(qts, RAD1_REG_STATUS_BASE_HI, (uint32_t)(ring_pci >> 32));
+    rad1_write(qts, RAD1_REG_STATUS_LIMIT, limit);
 
-    /* The control register took the start word. */
-    g_assert_cmphex(baseio_window_read(qts, MIO_RAD1_WINDOW +
-                                       RAD1_REG_STATUS_DMA_CTRL),
-                    ==, RAD1_STATUS_START);
-
-    /* The engine runs on the timer: nothing completes before a clock step. */
+    /* A zero interval names no period: nothing runs. */
+    rad1_write(qts, RAD1_REG_STATUS_DMA_CTRL, RAD1_STATUS_START);
+    qtest_clock_step(qts, 4 * rad1_status_due(1));
     for (i = 0; i < nslots; i++) {
         uint64_t slot = ring_ram + (uint64_t)i * RAD1_SLOT_STRIDE;
 
@@ -918,42 +993,86 @@ static void test_io6g_rad1_status_dma_continuous(void)
                         RAD1_SLOT_DONE_BIT, ==, 0);
     }
 
+    rad1_write(qts, RAD1_REG_STATUS_DMA_CTRL, RAD1_STATUS_START_IRIX);
+    t_start = rad1_clock_now(qts);
+    g_assert_cmphex(rad1_read(qts, RAD1_REG_STATUS_DMA_CTRL),
+                    ==, RAD1_STATUS_START_IRIX);
+
     /*
-     * Step across three periods. The engine completes the next slot each
-     * period, starting at slot 1 (one past the reset consumer index), so slots
-     * 1, 2 and 3 are now done with the done bit and the frame flags (and the
-     * ADAT-present bit clear) -- the multiple, distinct completions that prove
-     * the continuous engine, not a single burst.
+     * Three and a half intervals: slots 1, 2 and 3 are done, starting one
+     * past the reset consumer index, and the base slot is not yet reached.
      */
-    qtest_clock_step(qts, 7 * RAD1_STATUS_PERIOD_NS / 2); /* 3.5 periods */
+    rad1_step_to(qts, t_start, (rad1_status_due(3) + rad1_status_due(4)) / 2);
     for (i = 1; i <= 3; i++) {
         uint64_t slot = ring_ram + (uint64_t)i * RAD1_SLOT_STRIDE;
         uint32_t done = rad1_ring_read(qts, slot + RAD1_SLOT_DONE_OFFSET);
         uint32_t flags = rad1_ring_read(qts, slot + RAD1_SLOT_FLAGS_OFFSET);
 
-        g_assert_cmphex(done & RAD1_SLOT_DONE_BIT, ==, RAD1_SLOT_DONE_BIT);
-        g_assert_cmphex(flags & RAD1_SLOT_FRAME_BITS, ==, RAD1_SLOT_FRAME_BITS);
         /*
-         * The ADAT-present bit stays clear: rad_start_dma starts the master
-         * channel's analog output only when the last completed slot reports
-         * ADAT absent, so a set bit here would lock the clock but silence
-         * playback.
+         * AES3 absent (bit 19 set) and no ADAT or video-field bits: the
+         * datasheet's "genlock absent" model. Setting 0x80/0x100 on every
+         * completion would present a synthetic 60 Hz video reference.
          */
-        g_assert_cmphex(flags & RAD1_SLOT_ADAT_BIT, ==, 0);
+        g_assert_cmphex(done, ==, RAD1_SLOT_DONE_WORD);
+        g_assert_cmphex(flags & RAD1_SLOT_INPUT_BITS, ==, 0);
     }
-    /* Only three ticks: the base slot has not been reached yet. */
     g_assert_cmphex(rad1_ring_read(qts, ring_ram + RAD1_SLOT_DONE_OFFSET) &
                     RAD1_SLOT_DONE_BIT, ==, 0);
 
+    /* Slots 1 and 2 are one interval, about 250 us, apart. */
+    ust1 = rad1_ring_read(qts, ring_ram + RAD1_SLOT_STRIDE +
+                          RAD1_SLOT_MIRROR_OFFSET + RAD1_REG_UST_COUNTER);
+    ust2 = rad1_ring_read(qts, ring_ram + 2 * RAD1_SLOT_STRIDE +
+                          RAD1_SLOT_MIRROR_OFFSET + RAD1_REG_UST_COUNTER);
+    spacing = RAD1_UST_TICKS(rad1_status_due(2) - rad1_status_due(1));
+    g_assert_cmpuint(ust2 - ust1, >=, spacing - 1);
+    g_assert_cmpuint(ust2 - ust1, <=, spacing + 1);
+
+    /* Completion 100 is due at exactly start + 100 intervals. */
+    rad1_step_to(qts, t_start, rad1_status_due(99) + 1);
+    rad1_ring_write(qts, slot100 + RAD1_SLOT_DONE_OFFSET, 0);
+    rad1_step_to(qts, t_start, rad1_status_due(100) - 1);
+    g_assert_cmphex(rad1_ring_read(qts, slot100 + RAD1_SLOT_DONE_OFFSET) &
+                    RAD1_SLOT_DONE_BIT, ==, 0);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(rad1_ring_read(qts, slot100 + RAD1_SLOT_DONE_OFFSET),
+                    ==, RAD1_SLOT_DONE_WORD);
+
+    /* A zero-interval start stops the running schedule. */
+    rad1_write(qts, RAD1_REG_STATUS_DMA_CTRL, RAD1_STATUS_START);
+    for (i = 0; i < nslots; i++) {
+        rad1_ring_write(qts, ring_ram + (uint64_t)i * RAD1_SLOT_STRIDE +
+                        RAD1_SLOT_DONE_OFFSET, 0);
+    }
+    qtest_clock_step(qts, 4 * rad1_status_due(1));
+    for (i = 0; i < nslots; i++) {
+        g_assert_cmphex(rad1_ring_read(qts, ring_ram +
+                                       (uint64_t)i * RAD1_SLOT_STRIDE +
+                                       RAD1_SLOT_DONE_OFFSET) &
+                        RAD1_SLOT_DONE_BIT, ==, 0);
+    }
+
+    /* An interval of one clock runs at the 10 us floor instead. */
+    rad1_write(qts, RAD1_REG_STATUS_DMA_CTRL,
+               RAD1_STATUS_START | (1u << 2));
+    t_start = rad1_clock_now(qts);
+    rad1_step_to(qts, t_start, RAD1_STATUS_FLOOR_NS - 1);
+    g_assert_cmphex(rad1_ring_read(qts, ring_ram + RAD1_SLOT_STRIDE +
+                                   RAD1_SLOT_DONE_OFFSET) &
+                    RAD1_SLOT_DONE_BIT, ==, 0);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(rad1_ring_read(qts, ring_ram + RAD1_SLOT_STRIDE +
+                                   RAD1_SLOT_DONE_OFFSET),
+                    ==, RAD1_SLOT_DONE_WORD);
+
     /* Stop halts the engine: clear every slot, step, nothing completes. */
-    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_DMA_CTRL,
-                        RAD1_STATUS_STOP);
+    rad1_write(qts, RAD1_REG_STATUS_DMA_CTRL, RAD1_STATUS_STOP);
     for (i = 0; i < nslots; i++) {
         uint64_t slot = ring_ram + (uint64_t)i * RAD1_SLOT_STRIDE;
 
         rad1_ring_write(qts, slot + RAD1_SLOT_DONE_OFFSET, 0);
     }
-    qtest_clock_step(qts, 3 * RAD1_STATUS_PERIOD_NS);
+    qtest_clock_step(qts, 3 * rad1_status_due(1));
     for (i = 0; i < nslots; i++) {
         uint64_t slot = ring_ram + (uint64_t)i * RAD1_SLOT_STRIDE;
 
@@ -962,111 +1081,438 @@ static void test_io6g_rad1_status_dma_continuous(void)
     }
 }
 
-/*
- * The main audio-data DMA: output-only streaming on the master channel.
- * This mirrors what rad_start_dma does at a stream start -- it starts the
- * status ring (whose completion handshake this suite already covers), then
- * programs the master channel's main-DMA address/control registers, sets the
- * channel's enable bit, and kicks central control 0x80. On the kick the model
- * DMA-reads the programmed buffer out to its audio backend and advances the
- * channel's sample-position registers by (frames << 18), so the driver's MSC
- * tracks. rad_stop_dma clearing the enable bit halts it: a later kick with no
- * enable moves nothing. The audio bytes themselves reach a host sink only
- * through -audiodev (the wav backend), checked by the end-to-end boot test,
- * not here; this asserts the register-visible contract -- position advance,
- * ring completion, and the stop -- with no audio device.
- */
-static void test_io6g_rad1_main_dma_stream(void)
+/* Frames the output engine should have moved t_ns after its enable edge. */
+static uint64_t rad1_out_frames_due(int64_t t_ns)
 {
-    QTestState *qts = start_module_io6g();
-    const uint64_t ring_off = 0x02000000;
-    const uint64_t ring_ram = module_nasids[0] * NODE_STRIDE + ring_off;
-    const uint64_t ring_pci =
-        ((uint64_t)RAD1_LOCAL_HUB_WIDGET << 60) | ring_ram;
-    const uint64_t buf_off = 0x02100000;
-    const uint64_t buf_ram = module_nasids[0] * NODE_STRIDE + buf_off;
-    const uint64_t buf_pci = ((uint64_t)RAD1_LOCAL_HUB_WIDGET << 60) | buf_ram;
-    const uint32_t nframes = 128;
-    const uint32_t length = nframes * RAD1_MAIN_FRAME_BYTES;   /* 512 bytes */
-    const uint32_t units = length / RAD1_MAIN_UNIT_BYTES;      /* 4 units */
-    /* Control word: negated 128-byte-unit count in bits [31:7], tag 0. */
-    const uint32_t ctrl = ((0u - units) & 0x1ffffffu) << 7;
-    const uint32_t expect_adv = nframes << RAD1_MAIN_POS_SHIFT;
-    const uint32_t stop_limit = 0xfffffffcu;
-    uint32_t pos_a_before, pos_a_after, pos_b_after, pos_a_stopped;
+    return (uint64_t)t_ns * RAD1_OUT_FREQ / 1000000000u;
+}
+
+/*
+ * The addresses the output tests use in node-0 RAM, and the PCI forms the
+ * device reaches them by through the Bridge's direct 64-bit window.
+ */
+#define RAD1_TEST_STATUS_RAM  (module_nasids[0] * NODE_STRIDE + 0x02000000)
+#define RAD1_TEST_RING_RAM    (module_nasids[0] * NODE_STRIDE + 0x02100000)
+#define RAD1_TEST_PCI(ram)    (((uint64_t)RAD1_LOCAL_HUB_WIDGET << 60) | (ram))
+
+/*
+ * Program an io6g machine the way IRIX leaves it before an sfplay start:
+ * routing, RAD1's BAR and bus mastering, a ring whose every frame is the
+ * word pair (@left, @right), and both register sets of the analog output.
+ * The enable is left clear.
+ */
+static void rad1_prepare_output(QTestState *qts, uint32_t left,
+                                uint32_t right)
+{
+    const uint64_t ring_pci = RAD1_TEST_PCI(RAD1_TEST_RING_RAM);
     unsigned int i;
 
     program_module(qts);
     program_rad1(qts);
-
-    /*
-     * Bus mastering with the Bridge swap left on (as in the status-DMA
-     * handshake test): the device's little-endian DMA is byte-reversed into
-     * the big-endian words the guest reads.
-     */
     baseio_window_write(qts, BRIDGE_CFG0(MIO_RAD1_DEVICE) + PCI_COMMAND,
                         PCI_COMMAND_MEMORY | RAD1_PCI_COMMAND_MASTER);
     baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XTALK_REG_DATA,
                         BRIDGE_DEV_MEMORY_SPACE | (MIO_RAD1_MMIO >> 20));
 
-    /* A single-slot status ring, its completion word cleared. */
-    rad1_ring_write(qts, ring_ram + RAD1_SLOT_DONE_OFFSET, 0);
-
-    /* A known PCM buffer in guest RAM for the main DMA to move. */
-    for (i = 0; i < length; i += 4) {
-        rad1_ring_write(qts, buf_ram + i, 0xa5a50000u | i);
+    for (i = 0; i < RAD1_OUT_RING_BYTES; i += RAD1_OUT_FRAME_BYTES) {
+        rad1_ring_write(qts, RAD1_TEST_RING_RAM + i, left);
+        rad1_ring_write(qts, RAD1_TEST_RING_RAM + i + 4, right);
     }
 
-    /* The sample-position bank reads its base value before any DMA runs. */
-    pos_a_before = baseio_window_read(qts, MIO_RAD1_WINDOW + RAD1_MAIN_POS_A);
-    g_assert_cmphex(pos_a_before, ==, 0);
+    rad1_write(qts, RAD1_REG_ANALOG_OUT_EN, RAD1_OUT_IDLE);
+    rad1_write(qts, RAD1_OUT_A_ADDR_LO, (uint32_t)ring_pci);
+    rad1_write(qts, RAD1_OUT_A_ADDR_HI, (uint32_t)(ring_pci >> 32));
+    rad1_write(qts, RAD1_OUT_A_CTRL, RAD1_OUT_CTRL_4K);
+    rad1_write(qts, RAD1_OUT_B_ADDR_LO, (uint32_t)ring_pci);
+    rad1_write(qts, RAD1_OUT_B_ADDR_HI, (uint32_t)(ring_pci >> 32));
+    rad1_write(qts, RAD1_OUT_B_CTRL, RAD1_OUT_CTRL_4K);
+}
 
-    /* Start the status ring; its slot is marked done (the completion). */
-    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_BASE_LO,
-                        (uint32_t)ring_pci);
-    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_BASE_HI,
-                        (uint32_t)(ring_pci >> 32));
-    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_LIMIT,
-                        stop_limit);
-    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_DMA_CTRL,
-                        RAD1_STATUS_ONESHOT_START);
-    g_assert_cmphex(rad1_ring_read(qts, ring_ram + RAD1_SLOT_DONE_OFFSET) &
-                    RAD1_SLOT_DONE_BIT, ==, RAD1_SLOT_DONE_BIT);
+/*
+ * The analog output's continuous streaming engine, channel type 1. This
+ * mirrors a traced IRIX sfplay start: program set A and set B with the
+ * same ring and control word 0xfffff008 (tag 1, 4 KiB), then set bit 0 of
+ * 0x58 on top of its bring-up value. From that edge the engine walks the
+ * ring at the sample rate with no re-arm, and the status slots report its
+ * progress. The checks:
+ *
+ * - Neither a central-control 0x80 write nor the analog input's enable
+ *   (0x4c bit 0) starts the output.
+ * - 0x18 bits [17:4], type 1's B field, change inside the driver's 500 us
+ *   poll window, while type 0's bits [31:18] stay put.
+ * - 0x2c's frame field advances at the modeled 44.1 kHz and its low 18
+ *   bits latch the 0x30 counter; a read catches the engine up first.
+ * - Each status completion carries type 1's DMA pointer at +0x38 and the
+ *   position registers mirrored at register + 0x40, consistent with each
+ *   other: the pointer moves two ring words per frame counted, walks the
+ *   ring and wraps inside it.
+ * - Between consecutive completions the pointer moves 11 or 12 frames, 22
+ *   or 24 words, far inside the kernel mixer's 0xcc-word refill lead.
+ * - 0x14, type 0's A register, never moves.
+ * - Clearing the enable stops the pointer and both registers.
+ */
+static void test_io6g_rad1_type1_output_stream(void)
+{
+    QTestState *qts = start_module_io6g();
+    const uint64_t ring_ram = module_nasids[0] * NODE_STRIDE + 0x02000000;
+    const uint64_t ring_pci =
+        ((uint64_t)RAD1_LOCAL_HUB_WIDGET << 60) | ring_ram;
+    const unsigned int nslots = 8;
+    const uint32_t limit = RAD1_LIMIT_BASE - nslots * RAD1_SLOT_STRIDE;
+    const uint64_t buf_ram = module_nasids[0] * NODE_STRIDE + 0x02100000;
+    const uint64_t buf_pci = ((uint64_t)RAD1_LOCAL_HUB_WIDGET << 60) | buf_ram;
+    const uint32_t buf_lo = (uint32_t)buf_pci;
+    uint32_t a0, b0, a, b, ust, prev_ptr, ptr = 0, stop_ptr;
+    uint64_t due, moved;
+    int64_t t_status, t_enable, t;
+    unsigned int i, wraps = 0;
+    uint64_t k;
 
-    /* Program the master channel's set-A and set-B triplets. */
-    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_MAIN_A_ADDR_LO,
-                        (uint32_t)buf_pci);
-    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_MAIN_A_ADDR_HI,
-                        (uint32_t)(buf_pci >> 32));
-    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_MAIN_A_CTRL, ctrl);
-    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_MAIN_B_ADDR_LO,
-                        (uint32_t)buf_pci);
-    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_MAIN_B_ADDR_HI,
-                        (uint32_t)(buf_pci >> 32));
-    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_MAIN_B_CTRL, ctrl);
+    program_module(qts);
+    program_rad1(qts);
+    baseio_window_write(qts, BRIDGE_CFG0(MIO_RAD1_DEVICE) + PCI_COMMAND,
+                        PCI_COMMAND_MEMORY | RAD1_PCI_COMMAND_MASTER);
+    baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XTALK_REG_DATA,
+                        BRIDGE_DEV_MEMORY_SPACE | (MIO_RAD1_MMIO >> 20));
 
-    /* Set the channel's enable bit, then kick central control 0x80. */
-    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_MAIN_ENABLE,
-                        RAD1_MAIN_ENABLE_BIT);
-    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_CENTRAL_CTRL,
-                        RAD1_CENTRAL_KICK);
+    /* A known pattern in the output ring, and a cleared status ring. */
+    for (i = 0; i < RAD1_OUT_RING_BYTES; i += 4) {
+        rad1_ring_write(qts, buf_ram + i, 0x5a000000u | i);
+    }
+    for (i = 0; i < nslots; i++) {
+        uint64_t slot = ring_ram + (uint64_t)i * RAD1_SLOT_STRIDE;
 
-    /* Both of the channel's position registers advanced by (frames << 18). */
-    pos_a_after = baseio_window_read(qts, MIO_RAD1_WINDOW + RAD1_MAIN_POS_A);
-    pos_b_after = baseio_window_read(qts, MIO_RAD1_WINDOW + RAD1_MAIN_POS_B);
-    g_assert_cmphex(pos_a_after - pos_a_before, ==, expect_adv);
-    g_assert_cmphex(pos_b_after, ==, expect_adv);
+        rad1_ring_write(qts, slot + RAD1_SLOT_DONE_OFFSET, 0);
+        rad1_ring_write(qts, slot + RAD1_SLOT_OUT_PTR, 0);
+    }
+
+    /* Bring-up values, then the sfplay start's two register sets. */
+    rad1_write(qts, RAD1_REG_ANALOG_OUT_EN, RAD1_OUT_IDLE);
+    rad1_write(qts, RAD1_REG_SHIFT_LOAD_CLOCK, RAD1_IN_ENABLE_IDLE);
+    rad1_write(qts, RAD1_OUT_A_ADDR_LO, buf_lo);
+    rad1_write(qts, RAD1_OUT_A_ADDR_HI, (uint32_t)(buf_pci >> 32));
+    rad1_write(qts, RAD1_OUT_A_CTRL, RAD1_OUT_CTRL_4K);
+    rad1_write(qts, RAD1_OUT_B_ADDR_LO, buf_lo);
+    rad1_write(qts, RAD1_OUT_B_ADDR_HI, (uint32_t)(buf_pci >> 32));
+    rad1_write(qts, RAD1_OUT_B_CTRL, RAD1_OUT_CTRL_4K);
+
+    a0 = rad1_read(qts, RAD1_OUT_POS_A);
+    b0 = rad1_read(qts, RAD1_OUT_POS_B);
+    g_assert_cmphex(rad1_read(qts, RAD1_IN_POS_A), ==, 0);
+
+    /* Negative controls: the old 0x80 kick and type 0's enable. */
+    rad1_write(qts, RAD1_REG_CENTRAL_CTRL, RAD1_CENTRAL_ADAT_OFF);
+    qtest_clock_step(qts, 2000000);
+    g_assert_cmphex(rad1_read(qts, RAD1_OUT_POS_A), ==, a0);
+    g_assert_cmphex(rad1_read(qts, RAD1_OUT_POS_B), ==, b0);
+    rad1_write(qts, RAD1_REG_SHIFT_LOAD_CLOCK, RAD1_IN_ENABLE_RUN);
+    qtest_clock_step(qts, 2000000);
+    g_assert_cmphex(rad1_read(qts, RAD1_OUT_POS_A), ==, a0);
+    g_assert_cmphex(rad1_read(qts, RAD1_OUT_POS_B), ==, b0);
+    g_assert_cmphex(rad1_read(qts, RAD1_IN_POS_A), ==, 0);
+    rad1_write(qts, RAD1_REG_SHIFT_LOAD_CLOCK, RAD1_IN_ENABLE_IDLE);
+
+    /* Start the status ring, then the output. */
+    rad1_write(qts, RAD1_REG_STATUS_BASE_LO, (uint32_t)ring_pci);
+    rad1_write(qts, RAD1_REG_STATUS_BASE_HI, (uint32_t)(ring_pci >> 32));
+    rad1_write(qts, RAD1_REG_STATUS_LIMIT, limit);
+    rad1_write(qts, RAD1_REG_STATUS_DMA_CTRL, RAD1_STATUS_START_IRIX);
+    t_status = rad1_clock_now(qts);
+
+    rad1_write(qts, RAD1_REG_ANALOG_OUT_EN, RAD1_OUT_RUN);
+    t_enable = rad1_clock_now(qts);
+    g_assert_cmphex(rad1_read(qts, RAD1_REG_ANALOG_OUT_EN), ==, RAD1_OUT_RUN);
+
+    /* B's type 1 field ticks inside rad_start_dma's 50 x 10 us poll. */
+    qtest_clock_step(qts, 500000);
+    b = rad1_read(qts, RAD1_OUT_POS_B);
+    g_assert_cmphex(RAD1_POS_B_TYPE1(b), !=, RAD1_POS_B_TYPE1(b0));
+    g_assert_cmphex(RAD1_POS_B_TYPE0(b), ==, RAD1_POS_B_TYPE0(b0));
 
     /*
-     * rad_stop_dma clears the channel's enable bit (a write to 0x50 with the
-     * bit clear). A later kick with the address still programmed then moves
-     * nothing -- the position holds.
+     * A read catches the engine up, so A's frame field matches the sample
+     * clock exactly, and B's field counts the same frames.
      */
-    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_MAIN_ENABLE, 0);
-    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_CENTRAL_CTRL,
-                        RAD1_CENTRAL_KICK);
-    pos_a_stopped = baseio_window_read(qts, MIO_RAD1_WINDOW + RAD1_MAIN_POS_A);
-    g_assert_cmphex(pos_a_stopped, ==, pos_a_after);
+    t = qtest_clock_step(qts, 10000000);
+    a = rad1_read(qts, RAD1_OUT_POS_A);
+    b = rad1_read(qts, RAD1_OUT_POS_B);
+    ust = rad1_read(qts, RAD1_REG_UST_COUNTER);
+    due = rad1_out_frames_due(t - t_enable);
+    moved = (RAD1_POS_A_FRAMES(a) - RAD1_POS_A_FRAMES(a0)) & 0x3fff;
+    g_assert_cmpuint(moved, ==, due);
+    g_assert_cmpuint((RAD1_POS_B_TYPE1(b) - RAD1_POS_B_TYPE1(b0)) & 0x3fff,
+                     ==, moved);
+    g_assert_cmphex(RAD1_POS_B_TYPE0(b), ==, RAD1_POS_B_TYPE0(b0));
+
+    /* The latch is the 0x30 counter as of that catch-up, this instant. */
+    g_assert_cmphex(RAD1_POS_A_LATCH(a), ==, RAD1_POS_A_LATCH(ust));
+
+    /*
+     * Walk the status slots one completion at a time, stepping to each
+     * deadline. Completion k fills slot k mod nslots.
+     */
+    t = rad1_clock_now(qts);
+    k = 1;
+    while (t_status + rad1_status_due(k) <= t + 1) {
+        k++;
+    }
+    prev_ptr = 0;
+    for (i = 0; i < 120; i++, k++) {
+        uint64_t slot = ring_ram + (k % nslots) * RAD1_SLOT_STRIDE;
+        uint32_t m_a, m_b, frames;
+
+        rad1_step_to(qts, t_status, rad1_status_due(k));
+
+        g_assert_cmphex(rad1_ring_read(qts, slot + RAD1_SLOT_DONE_OFFSET),
+                        ==, RAD1_SLOT_DONE_WORD);
+        g_assert_cmphex(rad1_ring_read(qts, slot + RAD1_SLOT_FLAGS_OFFSET) &
+                        RAD1_SLOT_INPUT_BITS, ==, 0);
+        rad1_ring_write(qts, slot + RAD1_SLOT_DONE_OFFSET, 0);
+
+        ptr = rad1_ring_read(qts, slot + RAD1_SLOT_OUT_PTR);
+        g_assert_cmphex(ptr, >=, buf_lo);
+        g_assert_cmphex(ptr, <, buf_lo + RAD1_OUT_RING_BYTES);
+        if (prev_ptr) {
+            uint32_t words = ((ptr - prev_ptr) % RAD1_OUT_RING_BYTES) / 4;
+
+            g_assert_cmpuint(words, >=, 22);
+            g_assert_cmpuint(words, <=, 24);
+            g_assert_cmpuint(words, <, RAD1_OUT_REFILL_LEAD_WORDS);
+            if (ptr < prev_ptr) {
+                wraps++;
+            }
+        }
+        prev_ptr = ptr;
+
+        /* The mirror agrees with the pointer and with itself. */
+        m_a = rad1_ring_read(qts, slot + RAD1_SLOT_MIRROR_OFFSET +
+                             RAD1_OUT_POS_A);
+        m_b = rad1_ring_read(qts, slot + RAD1_SLOT_MIRROR_OFFSET +
+                             RAD1_OUT_POS_B);
+        frames = (RAD1_POS_A_FRAMES(m_a) - RAD1_POS_A_FRAMES(a0)) & 0x3fff;
+        g_assert_cmphex(ptr - buf_lo, ==,
+                        frames * RAD1_OUT_FRAME_BYTES % RAD1_OUT_RING_BYTES);
+        g_assert_cmpuint((RAD1_POS_B_TYPE1(m_b) - RAD1_POS_B_TYPE1(b0)) &
+                         0x3fff, ==, frames);
+        g_assert_cmphex(rad1_ring_read(qts, slot + RAD1_SLOT_MIRROR_OFFSET +
+                                       RAD1_IN_POS_A), ==, 0);
+    }
+    /* 30 ms against an 11.6 ms ring (512 frames): at least two laps. */
+    g_assert_cmpuint(wraps, >=, 2);
+    g_assert_cmphex(rad1_read(qts, RAD1_IN_POS_A), ==, 0);
+
+    /*
+     * Clearing the enable stops the registers and the pointer, midway
+     * between two completions.
+     */
+    rad1_step_to(qts, t_status,
+                 (rad1_status_due(k - 1) + rad1_status_due(k)) / 2);
+    rad1_write(qts, RAD1_REG_ANALOG_OUT_EN, RAD1_OUT_IDLE);
+    a = rad1_read(qts, RAD1_OUT_POS_A);
+    b = rad1_read(qts, RAD1_OUT_POS_B);
+    rad1_step_to(qts, t_status, rad1_status_due(k));
+    stop_ptr = rad1_ring_read(qts, ring_ram + (k % nslots) * RAD1_SLOT_STRIDE +
+                              RAD1_SLOT_OUT_PTR);
+    g_assert_cmphex(stop_ptr - buf_lo, ==,
+                    ((RAD1_POS_A_FRAMES(a) - RAD1_POS_A_FRAMES(a0)) & 0x3fff) *
+                    RAD1_OUT_FRAME_BYTES % RAD1_OUT_RING_BYTES);
+    k += 3;
+    rad1_step_to(qts, t_status, rad1_status_due(k));
+    g_assert_cmphex(rad1_read(qts, RAD1_OUT_POS_A), ==, a);
+    g_assert_cmphex(rad1_read(qts, RAD1_OUT_POS_B), ==, b);
+    g_assert_cmphex(rad1_ring_read(qts, ring_ram +
+                                   (k % nslots) * RAD1_SLOT_STRIDE +
+                                   RAD1_SLOT_OUT_PTR), ==, stop_ptr);
+    g_assert_cmphex(rad1_read(qts, RAD1_IN_POS_A), ==, 0);
+
+    rad1_write(qts, RAD1_REG_STATUS_DMA_CTRL, RAD1_STATUS_STOP);
+}
+
+/*
+ * One frame of the sample-readback tests. Bits [23:8] of each word, what
+ * the host voice takes, differ from bits [15:0], so taking the wrong bits
+ * shows; the two channels differ, so swapping them shows; the right word
+ * is negative, so the sign extension through [31:24] is exercised.
+ */
+#define RAD1_SAMPLE_LEFT_WORD     0x00123456u
+#define RAD1_SAMPLE_RIGHT_WORD    0xffabcd12u
+#define RAD1_SAMPLE_LEFT          0x1234
+#define RAD1_SAMPLE_RIGHT         ((int16_t)0xabcd)
+/* The canonical 44-byte header of QEMU's wav backend. */
+#define RAD1_WAV_HEADER_BYTES     44
+
+/*
+ * Bind the RAD1 voice to a wav audiodev at @path, at the voice's own
+ * format so the mixer does not resample.
+ */
+static char *rad1_wav_args(const char *path)
+{
+    g_autofree char *quoted = g_shell_quote(path);
+
+    return g_strdup_printf("-audiodev wav,id=rad1wav,path=%s,"
+                           "out.frequency=%u,out.channels=2,out.format=s16 "
+                           "-global sgi-rad1-audio.audiodev=rad1wav",
+                           quoted, RAD1_OUT_FREQ);
+}
+
+/*
+ * Count the frames of a wav capture that carry the seeded samples, and
+ * assert every other frame is silence. The backend's header lengths are
+ * only written when its voice closes, which a quit never does, so the
+ * payload is read from the fixed header size to the end of the file.
+ */
+static unsigned int rad1_wav_seeded_frames(const char *path)
+{
+    g_autofree gchar *wav = NULL;
+    gsize len;
+    unsigned int seeded = 0;
+    gsize off;
+
+    g_assert_true(g_file_get_contents(path, &wav, &len, NULL));
+    g_assert_cmpuint(len, >, RAD1_WAV_HEADER_BYTES);
+    g_assert_cmpmem(wav, 4, "RIFF", 4);
+
+    for (off = RAD1_WAV_HEADER_BYTES; off + 4 <= len; off += 4) {
+        int16_t left = (int16_t)lduw_le_p(wav + off);
+        int16_t right = (int16_t)lduw_le_p(wav + off + 2);
+
+        if (left == RAD1_SAMPLE_LEFT && right == RAD1_SAMPLE_RIGHT) {
+            seeded++;
+        } else {
+            g_assert_cmpint(left, ==, 0);
+            g_assert_cmpint(right, ==, 0);
+        }
+    }
+    return seeded;
+}
+
+/*
+ * The samples themselves, read back from the host voice through a wav
+ * audiodev. Every ring frame is the pair (0x00123456, 0xffabcd12), so a
+ * correct engine plays (0x1234, -0x5433) in left, right order, the
+ * datasheet's flagged left-first default, taking bits [23:8] of each
+ * word. 50 ms at 44.1 kHz is 2205 frames; the wav backend drains the
+ * voice on its own virtual-clock timer, so allow for the frames still
+ * buffered when the machine quits.
+ *
+ * This needs its own machine for the audiodev, and quits it to flush the
+ * file, unlike the shared io6g machine the other cases reset.
+ */
+static void test_io6g_rad1_output_samples(void)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn0-baseio-rad1-XXXXXX.wav", &path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    extra = rad1_wav_args(path);
+
+    qts = start_module_with(",baseio-preset=io6g", extra);
+    rad1_prepare_output(qts, RAD1_SAMPLE_LEFT_WORD, RAD1_SAMPLE_RIGHT_WORD);
+    rad1_write(qts, RAD1_REG_ANALOG_OUT_EN, RAD1_OUT_RUN);
+    qtest_clock_step(qts, 50000000);
+    rad1_write(qts, RAD1_REG_ANALOG_OUT_EN, RAD1_OUT_IDLE);
+    qtest_quit(qts);
+
+    g_assert_cmpuint(rad1_wav_seeded_frames(path), >=, 1500);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
+/*
+ * Save and restore with both engines running. The source streams for a
+ * while and migrates to a destination bound to a wav audiodev. qtest's
+ * clock is not part of the migration stream, so the destination's is
+ * first set to the source's. Then, on the destination:
+ *
+ * - the enable and both position registers read as they did on the
+ *   source, and keep counting frames at 44.1 kHz from the enable edge;
+ * - the next status completion lands at the source's schedule, not a
+ *   nanosecond early, and carries the pointer that frame count implies;
+ * - the voice is active again, so the capture holds the seeded samples.
+ */
+static void test_io6g_rad1_output_migration(void)
+{
+    const uint64_t status_pci = RAD1_TEST_PCI(RAD1_TEST_STATUS_RAM);
+    const uint32_t ring_lo = (uint32_t)RAD1_TEST_PCI(RAD1_TEST_RING_RAM);
+    const unsigned int nslots = 8;
+    const uint32_t limit = RAD1_LIMIT_BASE - nslots * RAD1_SLOT_STRIDE;
+    g_autofree char *dir = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *wav = NULL;
+    g_autofree char *extra = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    uint32_t a, b, a0, m_a, ptr;
+    int64_t t_status, t_enable, t_src;
+    uint64_t k, frames, slot;
+
+    dir = g_dir_make_tmp("sn0-baseio-rad1-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    wav = g_strdup_printf("%s/dest.wav", dir);
+    extra = rad1_wav_args(wav);
+
+    from = start_module_with(",baseio-preset=io6g", "");
+    rad1_prepare_output(from, RAD1_SAMPLE_LEFT_WORD, RAD1_SAMPLE_RIGHT_WORD);
+    a0 = rad1_read(from, RAD1_OUT_POS_A);
+    rad1_write(from, RAD1_REG_STATUS_BASE_LO, (uint32_t)status_pci);
+    rad1_write(from, RAD1_REG_STATUS_BASE_HI, (uint32_t)(status_pci >> 32));
+    rad1_write(from, RAD1_REG_STATUS_LIMIT, limit);
+    rad1_write(from, RAD1_REG_STATUS_DMA_CTRL, RAD1_STATUS_START_IRIX);
+    t_status = rad1_clock_now(from);
+    rad1_write(from, RAD1_REG_ANALOG_OUT_EN, RAD1_OUT_RUN);
+    t_enable = rad1_clock_now(from);
+
+    /* Stream past a ring lap and stop between two completions. */
+    rad1_step_to(from, t_status,
+                 (rad1_status_due(60) + rad1_status_due(61)) / 2);
+    t_src = rad1_clock_now(from);
+    a = rad1_read(from, RAD1_OUT_POS_A);
+    b = rad1_read(from, RAD1_OUT_POS_B);
+    g_assert_cmpuint((RAD1_POS_A_FRAMES(a) - RAD1_POS_A_FRAMES(a0)) & 0x3fff,
+                     ==, rad1_out_frames_due(t_src - t_enable));
+
+    to = qtest_initf("-M origin2000,baseio-preset=io6g -smp 8 -m 256M "
+                     "-d unimp,guest_errors %s -incoming %s", extra, uri);
+    sgi_migrate_stopped(from, uri);
+    qtest_clock_set(to, t_src);
+
+    g_assert_cmphex(rad1_read(to, RAD1_REG_ANALOG_OUT_EN), ==, RAD1_OUT_RUN);
+    g_assert_cmphex(rad1_read(to, RAD1_OUT_POS_A), ==, a);
+    g_assert_cmphex(rad1_read(to, RAD1_OUT_POS_B), ==, b);
+
+    /* Completion 61 lands on the source's schedule. */
+    k = 61;
+    slot = RAD1_TEST_STATUS_RAM + (k % nslots) * RAD1_SLOT_STRIDE;
+    rad1_ring_write(to, slot + RAD1_SLOT_DONE_OFFSET, 0);
+    rad1_step_to(to, t_status, rad1_status_due(k) - 1);
+    g_assert_cmphex(rad1_ring_read(to, slot + RAD1_SLOT_DONE_OFFSET) &
+                    RAD1_SLOT_DONE_BIT, ==, 0);
+    qtest_clock_step(to, 1);
+    g_assert_cmphex(rad1_ring_read(to, slot + RAD1_SLOT_DONE_OFFSET),
+                    ==, RAD1_SLOT_DONE_WORD);
+
+    /* It carries the frame count and pointer of an uninterrupted stream. */
+    frames = rad1_out_frames_due(t_status + rad1_status_due(k) - t_enable);
+    m_a = rad1_ring_read(to, slot + RAD1_SLOT_MIRROR_OFFSET + RAD1_OUT_POS_A);
+    ptr = rad1_ring_read(to, slot + RAD1_SLOT_OUT_PTR);
+    g_assert_cmpuint((RAD1_POS_A_FRAMES(m_a) - RAD1_POS_A_FRAMES(a0)) & 0x3fff,
+                     ==, frames & 0x3fff);
+    g_assert_cmphex(ptr - ring_lo, ==,
+                    frames * RAD1_OUT_FRAME_BYTES % RAD1_OUT_RING_BYTES);
+
+    /* The destination's voice plays the ring. */
+    qtest_clock_step(to, 50000000);
+    rad1_write(to, RAD1_REG_ANALOG_OUT_EN, RAD1_OUT_IDLE);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_assert_cmpuint(rad1_wav_seeded_frames(wav), >=, 1500);
+
+    g_assert_cmpint(g_unlink(wav), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
 /*
@@ -1544,8 +1990,12 @@ int main(int argc, char **argv)
                    test_io6g_rad1_status_dma_handshake);
     qtest_add_func("sn0/baseio/io6g-rad1-status-dma-continuous",
                    test_io6g_rad1_status_dma_continuous);
-    qtest_add_func("sn0/baseio/io6g-rad1-main-dma-stream",
-                   test_io6g_rad1_main_dma_stream);
+    qtest_add_func("sn0/baseio/io6g-rad1-type1-output-stream",
+                   test_io6g_rad1_type1_output_stream);
+    qtest_add_func("sn0/baseio/io6g-rad1-output-samples",
+                   test_io6g_rad1_output_samples);
+    qtest_add_func("sn0/baseio/io6g-rad1-output-migration",
+                   test_io6g_rad1_output_migration);
     qtest_add_func("sn0/baseio/io6g-rad1-ust-counter",
                    test_io6g_rad1_ust_counter);
     qtest_add_func("sn0/baseio/io6g-ps2", test_io6g_ps2);
