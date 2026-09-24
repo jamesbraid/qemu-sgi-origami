@@ -141,18 +141,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_AUDIO_REG_STATUS_BASE_HI   0x528
 
 /*
- * Status-DMA control values written to 0x5c. rad_start_status_dma starts the
- * ring engine with STATUS_START | a status-interval field; rad_one_shot_status
- * starts a single transfer with ONESHOT_START; rad_stop_status_dma stops with
- * STATUS_STOP. STATUS_RING distinguishes the ring engine from the one-shot.
- * The individual bit meanings beyond start/stop and ring/one-shot are not
- * decoded (see docs/datasheets/mediaio-rad1-audio.md).
+ * Status-DMA control values written to 0x5c, after masking off the interval
+ * field with CTRL_MASK (below). rad_start_status_dma starts the continuous ring
+ * engine with STATUS_START (the ring bit 0x2 set); rad_one_shot_status starts a
+ * single transfer with ONESHOT_START (ring bit clear); rad_stop_status_dma
+ * stops with STATUS_STOP. The individual bit meanings beyond start/stop and
+ * ring/one-shot are not decoded (see docs/datasheets/mediaio-rad1-audio.md).
  */
 #define SGI_RAD1_AUDIO_STATUS_START         0x40003u
 #define SGI_RAD1_AUDIO_STATUS_ONESHOT_START 0x40001u
 #define SGI_RAD1_AUDIO_STATUS_STOP          0x1fffcu
-#define SGI_RAD1_AUDIO_STATUS_START_BITS    0x40001u /* set by both starts */
-#define SGI_RAD1_AUDIO_STATUS_RING          0x2u
 
 /*
  * Descriptor-ring slot geometry, from rad_start_status_dma: slots are
@@ -168,6 +166,43 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_AUDIO_SLOT_DONE_BIT        0x80000000u
 #define SGI_RAD1_AUDIO_SLOT_FRAME_BITS      0x180u /* +0x78: 0x100 and 0x80 */
 #define SGI_RAD1_AUDIO_LIMIT_BASE           0x78
+
+/*
+ * Continuous status-DMA engine. The one-shot start (0x40001) marks a single
+ * slot done and rad_one_shot_status busy-polls it -- enough for the boot
+ * liveness poll but nothing more. rad_start_status_dma instead starts a
+ * ring engine (0x40003, the ring bit set) that keeps producing completions
+ * around the ring on its own; rad_update_subsys walks the ring, and for each
+ * completed slot advances the driver's frame counters (subsystem[0x2cc] on
+ * +0x78 bit 0x80, subsystem[0x2d0] on bit 0x100), clearing the done bit as it
+ * consumes. Once per servicing window it divides elapsed time by the frame
+ * total to a per-frame period (subsystem[0x72e8]) and, when that is nonzero,
+ * calls rad_update_ksync, which classifies the period against fixed thresholds
+ * and reprograms the clock generator -- the software clock lock the audio
+ * library waits on before it starts output (rad_start_dma). A single
+ * completion never advances the rate, so the model runs a periodic timer that
+ * completes the next ring slot each tick.
+ *
+ * The interval field encoded into the 0x40003 control word ([16:2], value
+ * ((subsystem[0x234]*33+1)&0x7fff)<<2) is stripped by CTRL_MASK; the ring bit
+ * (0x2) is what distinguishes the continuous start from the one-shot.
+ */
+#define SGI_RAD1_AUDIO_STATUS_CTRL_MASK     0x40003u /* interval masked out */
+
+/*
+ * Timer cadence. rad_update_subsys measures a per-frame period of
+ * elapsed_ns / frame_total, where frame_total counts both +0x78 bits per
+ * completion (so two per completion here). The model fires one completion
+ * every STATUS_PERIOD_NS, giving a measured period of STATUS_PERIOD_NS/2 =
+ * ~16.67 ms. That lands inside rad_update_ksync's 16.39-16.95 ms band (the
+ * 0xfa24e2..0x1029fa0 thresholds read from the driver), the ~60 Hz genlock
+ * field rate the driver classifies to a clock source and locks. The true
+ * status-frame rate is not pinned by any source -- the 0x5c interval field's
+ * unit is undecoded -- so this cadence is a stated approximation chosen to
+ * land in that classification band, not a captured hardware value.
+ */
+#define SGI_RAD1_AUDIO_STATUS_PERIOD_NS     33333334
+
 
 /*
  * Main audio-data DMA, output-only on the master channel. Separate from the
@@ -265,6 +300,19 @@ struct SGIRad1AudioState {
      */
     uint32_t sample_pos[SGI_RAD1_AUDIO_SAMPLE_POS_WORDS];
     bool streaming;
+
+    /*
+     * Continuous status-DMA engine. status_timer fires one completion per
+     * STATUS_PERIOD_NS while status_running; status_ring_cursor is the next
+     * slot to complete (advancing sequentially with wrap so the driver's
+     * consumer, which walks consecutive done slots, keeps finding the next
+     * one done), and status_ring_slots is the ring size recovered from the
+     * limit register at the continuous start.
+     */
+    QEMUTimer *status_timer;
+    uint32_t status_ring_cursor;
+    uint32_t status_ring_slots;
+    bool status_running;
 
     /* Virtual-clock time captured at reset; the 0x30 UST counter's origin. */
     int64_t ust_base_ns;

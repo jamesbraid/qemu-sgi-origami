@@ -150,6 +150,9 @@
 #define RAD1_SLOT_DONE_BIT        0x80000000u
 #define RAD1_SLOT_FRAME_BITS      0x180u
 #define RAD1_LIMIT_BASE           0x78
+/* The continuous engine's cadence, matching the model. */
+#define RAD1_SLOT_ADAT_BIT        0x40u       /* +0x78: ADAT-present */
+#define RAD1_STATUS_PERIOD_NS     33333334
 
 /*
  * The main audio-data DMA, output-only on the master channel. rad_start_dma
@@ -189,13 +192,15 @@
  * the Bridge's 64-bit direct form: bits 63:60 name the local Hub widget
  * (9 on crossbar 0), bits 47:0 pass through as the crosstalk offset, which
  * carries node 0's programmed nasid in bits 39:32 and the RAM offset below.
- * The RAD1 is not byte-lane self-ordered, so its Device register needs the
- * verbatim-transfer bit or the Bridge byte-reverses each DMA word; bus
- * mastering must also be enabled. Node-0 RAM offset P is CPU-physical
- * module_nasids[0] * NODE_STRIDE + P.
+ * The RAD1 is a little-endian PCI device that is not byte-lane self-ordered,
+ * so with its Device register left in the reset (swap-enabled) state the Bridge
+ * byte-reverses each DMA word -- exactly as IRIX runs it -- turning the model's
+ * little-endian descriptor writes into the big-endian words the driver reads.
+ * These tests therefore leave the swap bit clear (the guest reads each ring
+ * word big-endian) and only enable bus mastering. Node-0 RAM offset P is
+ * CPU-physical module_nasids[0] * NODE_STRIDE + P.
  */
 #define RAD1_LOCAL_HUB_WIDGET     9
-#define RAD1_DEV_SWAP_DIRECT      (1u << 19)
 #define RAD1_PCI_COMMAND_MASTER   0x0004u
 
 /* Chip-relative; combine with an IOC3's own window, e.g. IOC3_WINDOW. */
@@ -782,16 +787,15 @@ static uint32_t rad1_ring_read(QTestState *qts, uint64_t ram)
 }
 
 /*
- * The status-DMA completion handshake. rad_start_status_dma programs the
- * host-memory descriptor ring's PCI base into the status base registers, a
- * count-encoding limit, and a start word into 0x5c; the engine then marks
- * each processed slot done -- bit 31 of its +0x7c word and the frame bits in
- * its +0x78 word -- which rad_update_subsys counts to advance the UST/MSC
- * rate. This places a ring in node-0 RAM, kicks the engine, and confirms the
- * model set those bits without disturbing the slots' other bits, then that
- * the one-shot form marks a single slot at the base. Without the handshake
- * the driver's frame count stays zero and it reports "RAD UST not
- * incrementing".
+ * The one-shot status-DMA handshake. rad_one_shot_status programs the ring
+ * base and a -4 limit, writes the one-shot start word (0x40001, ring bit
+ * clear) to 0x5c, and busy-polls the base slot's +0x7c bit 31; the engine
+ * transfers status into that single slot and marks it done -- bit 31 of its
+ * +0x7c word and the frame bits in its +0x78 word. This places a ring in
+ * node-0 RAM, kicks the one-shot, and confirms the model set those bits
+ * without disturbing the slot's other bits, and left the adjacent slot alone.
+ * This is the boot-liveness handshake; the continuous engine that advances the
+ * streaming rate is exercised separately below.
  */
 static void test_io6g_rad1_status_dma_handshake(void)
 {
@@ -801,6 +805,76 @@ static void test_io6g_rad1_status_dma_handshake(void)
     const uint64_t ring_pci =
         ((uint64_t)RAD1_LOCAL_HUB_WIDGET << 60) | ring_ram;
     const uint64_t slot1 = ring_ram + RAD1_SLOT_STRIDE;
+
+    program_module(qts);
+    program_rad1(qts);
+
+    /*
+     * Enable bus mastering, and leave the Device register's swap bit clear so
+     * the Bridge byte-reverses the device's little-endian DMA into the
+     * big-endian words the guest reads -- the configuration IRIX runs, and the
+     * one the model's little-endian descriptor writes target.
+     */
+    baseio_window_write(qts, BRIDGE_CFG0(MIO_RAD1_DEVICE) + PCI_COMMAND,
+                        PCI_COMMAND_MEMORY | RAD1_PCI_COMMAND_MASTER);
+    baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XTALK_REG_DATA,
+                        BRIDGE_DEV_MEMORY_SPACE | (MIO_RAD1_MMIO >> 20));
+
+    /*
+     * Seed the base slot and the next one with a distinct not-done pattern, so
+     * the handshake's read-modify-write (bits OR'd in, the rest preserved) is
+     * visible rather than a blind overwrite.
+     */
+    rad1_ring_write(qts, ring_ram + RAD1_SLOT_DONE_OFFSET, 0x00000010u);
+    rad1_ring_write(qts, ring_ram + RAD1_SLOT_FLAGS_OFFSET, 0x00000020u);
+    rad1_ring_write(qts, slot1 + RAD1_SLOT_DONE_OFFSET, 0x00000011u);
+
+    /* Program the ring base and a -4 limit, then the one-shot start. */
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_BASE_LO,
+                        (uint32_t)ring_pci);
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_BASE_HI,
+                        (uint32_t)(ring_pci >> 32));
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_LIMIT,
+                        0xfffffffcu);
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_DMA_CTRL,
+                        RAD1_STATUS_ONESHOT_START);
+
+    /* The control register took the start word. */
+    g_assert_cmphex(baseio_window_read(qts, MIO_RAD1_WINDOW +
+                                       RAD1_REG_STATUS_DMA_CTRL),
+                    ==, RAD1_STATUS_ONESHOT_START);
+
+    /* The base slot is marked done, with its seeded low bits preserved. */
+    g_assert_cmphex(rad1_ring_read(qts, ring_ram + RAD1_SLOT_DONE_OFFSET),
+                    ==, RAD1_SLOT_DONE_BIT | 0x00000010u);
+    g_assert_cmphex(rad1_ring_read(qts, ring_ram + RAD1_SLOT_FLAGS_OFFSET),
+                    ==, RAD1_SLOT_FRAME_BITS | 0x00000020u);
+
+    /* The one-shot touches only the base slot; the next one is untouched. */
+    g_assert_cmphex(rad1_ring_read(qts, slot1 + RAD1_SLOT_DONE_OFFSET),
+                    ==, 0x00000011u);
+}
+
+/*
+ * The continuous status-DMA engine. rad_start_status_dma writes the ring-engine
+ * start word (0x40003, ring bit set) to 0x5c; the engine then keeps producing
+ * completions around the ring on its own, which rad_update_subsys counts into a
+ * nonzero streaming rate that locks the audio clock. The model runs this from a
+ * periodic timer that completes the next ring slot each period -- so, unlike
+ * the one-shot, no slot completes on the register write itself; the completions
+ * arrive as the virtual clock advances. This seeds a four-slot ring, starts the
+ * engine, and confirms that stepping the clock completes successive distinct
+ * slots (each with the done bit and the frame bits, and the ADAT-present bit
+ * left clear so the analog output can start), and that the stop word halts the
+ * engine so no further slot completes.
+ */
+static void test_io6g_rad1_status_dma_continuous(void)
+{
+    QTestState *qts = start_module_io6g();
+    const uint64_t ring_off = 0x02000000;
+    const uint64_t ring_ram = module_nasids[0] * NODE_STRIDE + ring_off;
+    const uint64_t ring_pci =
+        ((uint64_t)RAD1_LOCAL_HUB_WIDGET << 60) | ring_ram;
     const unsigned int nslots = 4;
     const uint32_t limit = RAD1_LIMIT_BASE - nslots * RAD1_SLOT_STRIDE;
     unsigned int i;
@@ -808,27 +882,18 @@ static void test_io6g_rad1_status_dma_handshake(void)
     program_module(qts);
     program_rad1(qts);
 
-    /*
-     * Bus mastering plus verbatim byte transfer, so the device's big-endian
-     * descriptor writes reach node-0 RAM unswapped (the RAD1 is not byte-lane
-     * self-ordered, so the Bridge would otherwise byte-reverse each word).
-     */
+    /* Bus mastering with the Bridge swap left on, as in the handshake test. */
     baseio_window_write(qts, BRIDGE_CFG0(MIO_RAD1_DEVICE) + PCI_COMMAND,
                         PCI_COMMAND_MEMORY | RAD1_PCI_COMMAND_MASTER);
     baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XTALK_REG_DATA,
-                        RAD1_DEV_SWAP_DIRECT | BRIDGE_DEV_MEMORY_SPACE |
-                        (MIO_RAD1_MMIO >> 20));
+                        BRIDGE_DEV_MEMORY_SPACE | (MIO_RAD1_MMIO >> 20));
 
-    /*
-     * Seed each slot's completion words with a distinct not-done pattern, so
-     * the handshake's read-modify-write (bits OR'd in, the rest preserved) is
-     * visible rather than a blind overwrite.
-     */
+    /* Clear every slot's completion words. */
     for (i = 0; i < nslots; i++) {
         uint64_t slot = ring_ram + (uint64_t)i * RAD1_SLOT_STRIDE;
 
-        rad1_ring_write(qts, slot + RAD1_SLOT_DONE_OFFSET, 0x00000010u + i);
-        rad1_ring_write(qts, slot + RAD1_SLOT_FLAGS_OFFSET, 0x00000020u + i);
+        rad1_ring_write(qts, slot + RAD1_SLOT_DONE_OFFSET, 0);
+        rad1_ring_write(qts, slot + RAD1_SLOT_FLAGS_OFFSET, 0);
     }
 
     /* Program the ring base and the count-encoding limit, then start. */
@@ -845,32 +910,56 @@ static void test_io6g_rad1_status_dma_handshake(void)
                                        RAD1_REG_STATUS_DMA_CTRL),
                     ==, RAD1_STATUS_START);
 
-    /* Every ring slot is marked done, with its seeded low bits preserved. */
+    /* The engine runs on the timer: nothing completes before a clock step. */
     for (i = 0; i < nslots; i++) {
         uint64_t slot = ring_ram + (uint64_t)i * RAD1_SLOT_STRIDE;
 
-        g_assert_cmphex(rad1_ring_read(qts, slot + RAD1_SLOT_DONE_OFFSET),
-                        ==, RAD1_SLOT_DONE_BIT | (0x00000010u + i));
-        g_assert_cmphex(rad1_ring_read(qts, slot + RAD1_SLOT_FLAGS_OFFSET),
-                        ==, RAD1_SLOT_FRAME_BITS | (0x00000020u + i));
+        g_assert_cmphex(rad1_ring_read(qts, slot + RAD1_SLOT_DONE_OFFSET) &
+                        RAD1_SLOT_DONE_BIT, ==, 0);
     }
 
     /*
-     * The one-shot form (start word without the ring bit) marks a single slot
-     * at the base. Clear slot 0's done word and confirm the one-shot re-sets
-     * bit 31 there, and leaves the second slot alone.
+     * Step across three periods. The engine completes the next slot each
+     * period, starting at slot 1 (one past the reset consumer index), so slots
+     * 1, 2 and 3 are now done with the done bit and the frame flags (and the
+     * ADAT-present bit clear) -- the multiple, distinct completions that prove
+     * the continuous engine, not a single burst.
      */
-    rad1_ring_write(qts, ring_ram + RAD1_SLOT_DONE_OFFSET, 0);
-    rad1_ring_write(qts, slot1 + RAD1_SLOT_DONE_OFFSET, 0);
-    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_LIMIT,
-                        0xfffffffcu);
-    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_DMA_CTRL,
-                        RAD1_STATUS_ONESHOT_START);
+    qtest_clock_step(qts, 7 * RAD1_STATUS_PERIOD_NS / 2); /* 3.5 periods */
+    for (i = 1; i <= 3; i++) {
+        uint64_t slot = ring_ram + (uint64_t)i * RAD1_SLOT_STRIDE;
+        uint32_t done = rad1_ring_read(qts, slot + RAD1_SLOT_DONE_OFFSET);
+        uint32_t flags = rad1_ring_read(qts, slot + RAD1_SLOT_FLAGS_OFFSET);
+
+        g_assert_cmphex(done & RAD1_SLOT_DONE_BIT, ==, RAD1_SLOT_DONE_BIT);
+        g_assert_cmphex(flags & RAD1_SLOT_FRAME_BITS, ==, RAD1_SLOT_FRAME_BITS);
+        /*
+         * The ADAT-present bit stays clear: rad_start_dma starts the master
+         * channel's analog output only when the last completed slot reports
+         * ADAT absent, so a set bit here would lock the clock but silence
+         * playback.
+         */
+        g_assert_cmphex(flags & RAD1_SLOT_ADAT_BIT, ==, 0);
+    }
+    /* Only three ticks: the base slot has not been reached yet. */
     g_assert_cmphex(rad1_ring_read(qts, ring_ram + RAD1_SLOT_DONE_OFFSET) &
-                    RAD1_SLOT_DONE_BIT, ==, RAD1_SLOT_DONE_BIT);
-    g_assert_cmphex(rad1_ring_read(qts, slot1 +
-                                   RAD1_SLOT_DONE_OFFSET) & RAD1_SLOT_DONE_BIT,
-                    ==, 0);
+                    RAD1_SLOT_DONE_BIT, ==, 0);
+
+    /* Stop halts the engine: clear every slot, step, nothing completes. */
+    baseio_window_write(qts, MIO_RAD1_WINDOW + RAD1_REG_STATUS_DMA_CTRL,
+                        RAD1_STATUS_STOP);
+    for (i = 0; i < nslots; i++) {
+        uint64_t slot = ring_ram + (uint64_t)i * RAD1_SLOT_STRIDE;
+
+        rad1_ring_write(qts, slot + RAD1_SLOT_DONE_OFFSET, 0);
+    }
+    qtest_clock_step(qts, 3 * RAD1_STATUS_PERIOD_NS);
+    for (i = 0; i < nslots; i++) {
+        uint64_t slot = ring_ram + (uint64_t)i * RAD1_SLOT_STRIDE;
+
+        g_assert_cmphex(rad1_ring_read(qts, slot + RAD1_SLOT_DONE_OFFSET) &
+                        RAD1_SLOT_DONE_BIT, ==, 0);
+    }
 }
 
 /*
@@ -911,15 +1000,14 @@ static void test_io6g_rad1_main_dma_stream(void)
     program_rad1(qts);
 
     /*
-     * Bus mastering plus verbatim byte transfer, so the device's DMA reaches
-     * node-0 RAM without the Bridge byte-reversing each word (as in the
-     * status-DMA handshake test).
+     * Bus mastering with the Bridge swap left on (as in the status-DMA
+     * handshake test): the device's little-endian DMA is byte-reversed into
+     * the big-endian words the guest reads.
      */
     baseio_window_write(qts, BRIDGE_CFG0(MIO_RAD1_DEVICE) + PCI_COMMAND,
                         PCI_COMMAND_MEMORY | RAD1_PCI_COMMAND_MASTER);
     baseio_window_write(qts, BRIDGE_DEVICE(MIO_RAD1_DEVICE) + XTALK_REG_DATA,
-                        RAD1_DEV_SWAP_DIRECT | BRIDGE_DEV_MEMORY_SPACE |
-                        (MIO_RAD1_MMIO >> 20));
+                        BRIDGE_DEV_MEMORY_SPACE | (MIO_RAD1_MMIO >> 20));
 
     /* A single-slot status ring, its completion word cleared. */
     rad1_ring_write(qts, ring_ram + RAD1_SLOT_DONE_OFFSET, 0);
@@ -1454,6 +1542,8 @@ int main(int argc, char **argv)
                    test_io6g_rad1_status_dma_registers);
     qtest_add_func("sn0/baseio/io6g-rad1-status-dma-handshake",
                    test_io6g_rad1_status_dma_handshake);
+    qtest_add_func("sn0/baseio/io6g-rad1-status-dma-continuous",
+                   test_io6g_rad1_status_dma_continuous);
     qtest_add_func("sn0/baseio/io6g-rad1-main-dma-stream",
                    test_io6g_rad1_main_dma_stream);
     qtest_add_func("sn0/baseio/io6g-rad1-ust-counter",
