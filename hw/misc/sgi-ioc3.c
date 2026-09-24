@@ -191,10 +191,12 @@ static void sgi_ioc3_int_out_drive(SGIIOC3State *s, bool level)
     s->int_out_state = level;
 }
 
-static void sgi_ioc3_int_out_expire(void *opaque)
+/*
+ * One transition due at @at. The next is scheduled from @at rather than
+ * from whenever this runs, so a late transition keeps the output's phase.
+ */
+static void sgi_ioc3_int_out_step(SGIIOC3State *s, int64_t at)
 {
-    SGIIOC3State *s = opaque;
-
     switch (s->int_out_active & SGI_IOC3_INT_OUT_MODE) {
     case SGI_IOC3_INT_OUT_LOW:
         sgi_ioc3_int_out_drive(s, false);
@@ -208,10 +210,8 @@ static void sgi_ioc3_int_out_expire(void *opaque)
         if (!s->int_out_pulse_end) {
             sgi_ioc3_int_out_drive(s, true);
             s->int_out_pulse_end = true;
-            timer_mod(s->int_out_timer,
-                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                      SGI_IOC3_INT_OUT_PULSE_TICKS *
-                      SGI_IOC3_INT_OUT_TICK_NS);
+            timer_mod(s->int_out_timer, at + SGI_IOC3_INT_OUT_PULSE_TICKS *
+                                             SGI_IOC3_INT_OUT_TICK_NS);
         } else {
             sgi_ioc3_int_out_drive(s, false);
             s->int_out_pulse_end = false;
@@ -224,18 +224,15 @@ static void sgi_ioc3_int_out_expire(void *opaque)
         } else if (!s->int_out_pulse_end) {
             sgi_ioc3_int_out_drive(s, true);
             s->int_out_pulse_end = true;
-            timer_mod(s->int_out_timer,
-                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                      SGI_IOC3_INT_OUT_PULSE_TICKS *
-                      SGI_IOC3_INT_OUT_TICK_NS);
+            timer_mod(s->int_out_timer, at + SGI_IOC3_INT_OUT_PULSE_TICKS *
+                                             SGI_IOC3_INT_OUT_TICK_NS);
         } else {
             sgi_ioc3_int_out_drive(s, false);
             s->int_out_pulse_end = false;
             timer_mod(s->int_out_timer,
-                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                      ((s->int_out_active & SGI_IOC3_INT_OUT_COUNT) + 1 -
-                       SGI_IOC3_INT_OUT_PULSE_TICKS) *
-                      SGI_IOC3_INT_OUT_TICK_NS);
+                      at + ((s->int_out_active & SGI_IOC3_INT_OUT_COUNT) + 1 -
+                            SGI_IOC3_INT_OUT_PULSE_TICKS) *
+                           SGI_IOC3_INT_OUT_TICK_NS);
         }
         break;
     case SGI_IOC3_INT_OUT_SQUARE:
@@ -245,10 +242,36 @@ static void sgi_ioc3_int_out_expire(void *opaque)
             s->int_out_square_started = true;
         }
         timer_mod(s->int_out_timer,
-                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                  ((s->int_out_active & SGI_IOC3_INT_OUT_COUNT) + 1) *
-                  SGI_IOC3_INT_OUT_TICK_NS);
+                  at + ((s->int_out_active & SGI_IOC3_INT_OUT_COUNT) + 1) *
+                       SGI_IOC3_INT_OUT_TICK_NS);
         break;
+    }
+}
+
+static void sgi_ioc3_int_out_expire(void *opaque)
+{
+    SGIIOC3State *s = opaque;
+
+    sgi_ioc3_int_out_step(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+}
+
+/*
+ * Transitions already due happen before a read, not whenever the main loop
+ * next services the timer: the IO-8 board test samples a periodic output in
+ * a tight loop and needs both levels.
+ */
+static void sgi_ioc3_int_out_catch_up(SGIIOC3State *s)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    while (timer_pending(s->int_out_timer)) {
+        int64_t due = timer_expire_time_ns(s->int_out_timer);
+
+        if (due > now) {
+            break;
+        }
+        timer_del(s->int_out_timer);
+        sgi_ioc3_int_out_step(s, due);
     }
 }
 
@@ -299,6 +322,7 @@ static uint64_t sgi_ioc3_main_read(void *opaque, hwaddr addr, unsigned size)
         /* Bit 22: arbiter idle, polled by the kernel's console setup. */
         return s->chip_control | SGI_IOC3_CHIP_CTRL_ARB_IDLE;
     case SGI_IOC3_INT_OUTPUT:
+        sgi_ioc3_int_out_catch_up(s);
         return s->int_out |
                (s->int_out_state ? SGI_IOC3_INT_OUT_STATE : 0);
     case SGI_IOC3_MICROLAN_CONTROL:

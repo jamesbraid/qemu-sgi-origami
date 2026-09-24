@@ -472,6 +472,50 @@ static void test_a_fixed_level_is_visible_to_the_next_read(const void *data)
     g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==, 0x00000001u);
 }
 
+/*
+ * A read sees the output as the clock says it is, even when the timer that
+ * moves it has not been serviced yet. The Origin 300 IO-8 board test writes
+ * 0x60005 -- periodic pulses, count 5 -- and at once reads the register 500
+ * times, requiring both levels among the reads; under host load the main
+ * loop can fall behind a loop like that. Stopping the VM reproduces the gap
+ * deterministically: the virtual clock still moves under qtest_clock_step,
+ * but no timer callback runs.
+ */
+static void test_a_read_catches_the_output_up_to_the_clock(const void *data)
+{
+    const int64_t tick = INT_OUT_TICK_NS;
+
+    ioc3_reset();
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_LOW);
+    qtest_writel(qts, INT_STATUS, INT_RT_OUTPUT_PULSE);
+
+    /* Period of ten ticks, high for the first three, from 1 ns on. */
+    qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_PERIODIC | 0x0009);
+    qtest_qmp_assert_success(qts, "{'execute': 'stop'}");
+
+    /* Into the third pulse: rises at 1 + 20 ticks, falls at 1 + 23. */
+    qtest_clock_step(qts, 1 + 21 * tick);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==,
+                    INT_OUT_MODE_PERIODIC | 0x0009 | INT_OUT_PIN);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_RT_OUTPUT_PULSE, ==,
+                    INT_RT_OUTPUT_PULSE);
+
+    /* Past its fall, still stopped: the clock sets the phase. */
+    qtest_clock_step(qts, 2 * tick);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==, 0);
+
+    /* Running again, the timer does not redo what the reads caught up. */
+    qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
+    qtest_clock_step(qts, 6 * tick);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==, 0);
+    qtest_clock_step(qts, tick);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==,
+                    INT_OUT_PIN);
+}
+
 static void test_one_shot_interrupt_output_has_three_tick_width(
     const void *data)
 {
@@ -5111,6 +5155,8 @@ int main(int argc, char **argv)
                         test_unsupported_int_out_counts_keep_periodic_output);
     qtest_add_data_func("sn0/ioc3/fixed-output-level-visible-at-once", NULL,
                         test_a_fixed_level_is_visible_to_the_next_read);
+    qtest_add_data_func("sn0/ioc3/read-catches-output-up-to-clock", NULL,
+                        test_a_read_catches_the_output_up_to_the_clock);
     qtest_add_data_func("sn0/ioc3/fixed-interrupt-output-commands", NULL,
                         test_fixed_interrupt_output_commands_change_the_state);
     qtest_add_data_func("sn0/ioc3/one-shot-interrupt-output-width", NULL,
