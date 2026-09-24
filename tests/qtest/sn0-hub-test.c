@@ -465,6 +465,28 @@ static void test_origin2000_slot_and_processor_identity(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The router-less module's lone node board sits in node slot 1, so its
+ * reversed-sense slot field reads 7, as node one's does in the four-node
+ * module. The stock PROM derives the node's slot name and its Hub's
+ * Crossbow port from this field: a node that fell back to the Origin 200
+ * layout read 5, the PROM took it for slot 3, aimed the BaseIO Bridge's
+ * DMA and the Crossbow's interrupts at the empty port slot 3's Hub would
+ * occupy, and every BaseIO DMA self-test timed out.
+ */
+static void test_origin2000_one_node_reads_node_slot_one(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000,topology=origin2000-one-node -smp 2 -m 64M");
+
+    g_assert_cmphex(pi_cpu_readq(qts, 0, MD_SLOT_ID_USTAT) & MD_SLOT_ID_MASK,
+                    ==, 7);
+    g_assert_cmphex(pi_cpu_readq(qts, 1, MD_SLOT_ID_USTAT) & MD_SLOT_ID_MASK,
+                    ==, 7);
+
+    qtest_quit(qts);
+}
+
 /* Exact ticks over a known clock step test the rate, not just movement. */
 static void test_the_real_time_counter_runs_at_its_rate(const void *data)
 {
@@ -6144,6 +6166,8 @@ int main(int argc, char **argv)
                         test_dual_node_master_slave_sense);
     qtest_add_data_func("sn0/hub/origin2000-slot-and-processor-identity", NULL,
                         test_origin2000_slot_and_processor_identity);
+    qtest_add_data_func("sn0/hub/origin2000-one-node-reads-node-slot-one",
+                        NULL, test_origin2000_one_node_reads_node_slot_one);
     qtest_add_data_func("sn0/hub/crosstalk-timeouts", NULL,
                         test_the_crosstalk_timeouts);
     qtest_add_data_func("sn0/hub/io-scratch-registers", NULL,

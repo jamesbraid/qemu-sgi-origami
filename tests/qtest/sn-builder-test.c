@@ -2,8 +2,9 @@
  * The format-2 builder (sn-machine.c): the command-line contract every
  * product shares -- -numa refused, an unsupported -smp or -m population
  * rejected, and a topology belonging to a different product refused --
- * checked against the real Origin 200, Origin 200 (dual) and Origin 2000
- * machines, whose every accepted population is also checked to build.
+ * checked against the real Origin 200, Origin 200 (dual), Origin 2000
+ * and Origin 2000 (one-node) machines, whose every accepted population
+ * is also checked to build.
  * The console field test drives tests/qtest/sn-builder-fault-test.c's
  * sn-builder-console-test machine, a real two-node build.
  *
@@ -21,6 +22,7 @@
 #include <sys/wait.h>
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "qobject/qlist.h"
 #include "sgi-test.h"
 
 static char *qom_get_str(QTestState *qts, const char *path, const char *prop)
@@ -742,6 +744,63 @@ static void test_origin2000_module_accepts_its_populations(const void *data)
     qtest_quit(qts);
 }
 
+static void test_origin2000_one_node_accepts_its_populations(const void *data)
+{
+    /*
+     * default_ram_size is origin2000's own shipped default (the
+     * four-node module's total), so -m must be named explicitly here
+     * the same way test_origin200_dual_accepts_its_populations names it
+     * for origin200's own two-node topology: left out, it would try
+     * this one node against the four-node module's default total and
+     * fail, not fall back to a value origin2000-one-node itself accepts.
+     */
+    QTestState *qts = qtest_init(
+        "-M origin2000,topology=origin2000-one-node -smp 2 -m 64M "
+        "-display none");
+
+    qtest_quit(qts);
+}
+
+/*
+ * origin2000-one-node's own node/CPU-count contract: the topology builds
+ * exactly the one node and two CPUs its own supported-cpu-populations
+ * entry names -- no node1 QOM child exists, and query-cpus-fast reports
+ * both sockets on node 0. sn0-origin2000-test.c's assert_cpu_inventory
+ * checks the same shape for the four-node module's own eight CPUs; this
+ * is that check scaled down to this topology's own population.
+ */
+static void test_origin2000_one_node_has_two_cpus_on_node_zero(
+    const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000,topology=origin2000-one-node -smp 2 -m 64M "
+        "-display none");
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{'execute': 'query-cpus-fast'}");
+    QList *cpus = qdict_get_qlist(response, "return");
+    const QListEntry *entry;
+    g_autofree char *node1 = qom_child_type(qts, "/machine", "node1");
+    unsigned int seen = 0;
+
+    g_assert_null(node1);
+    g_assert_cmpuint(qlist_size(cpus), ==, 2);
+    QLIST_FOREACH_ENTRY(cpus, entry) {
+        QDict *cpu = qobject_to(QDict, qlist_entry_obj(entry));
+        QDict *props = qdict_get_qdict(cpu, "props");
+        unsigned int index = qdict_get_int(cpu, "cpu-index");
+
+        g_assert_cmpuint(index, <, 2);
+        g_assert_false(seen & (1U << index));
+        seen |= 1U << index;
+        g_assert_cmpint(qdict_get_int(props, "node-id"), ==, 0);
+        /* Every processor is its own single-core socket. */
+        g_assert_cmpint(qdict_get_int(props, "socket-id"), ==, index);
+    }
+    g_assert_cmphex(seen, ==, 0x3);
+
+    qtest_quit(qts);
+}
+
 /*
  * sn-builder-console-test (sn-builder-fault-test.c) is a two-node topology
  * with console=1: node 1's IOC3 port A, not node 0's, must land on serial
@@ -831,6 +890,29 @@ static void test_origin2000_onboard_board_is_xio_baseio(const void *data)
     g_autofree char *type = qom_child_type(qts, "/machine/module0", "slot8");
 
     g_assert_cmpstr(type, ==, "sgi-xio-baseio");
+    qtest_quit(qts);
+}
+
+/*
+ * The one-node module's BaseIO in IO1 is the BaseIO-G, whose MediaIO
+ * daughtercard fits the second IOC3 with the keyboard and mouse, and its
+ * IO3 position carries the SI graphics head, as the four-node module's
+ * does.
+ */
+static void test_origin2000_one_node_onboard_board_is_xio_baseio(
+    const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000,topology=origin2000-one-node -smp 2 -m 64M "
+        "-display none");
+    g_autofree char *type = qom_child_type(qts, "/machine/module0", "slot8");
+    g_autofree char *preset = NULL;
+    g_autofree char *head = qom_child_type(qts, "/machine", "si-viz");
+
+    g_assert_cmpstr(type, ==, "sgi-xio-baseio");
+    preset = qom_get_str(qts, "/machine/module0/slot8", "preset");
+    g_assert_cmpstr(preset, ==, "io6g");
+    g_assert_cmpstr(head, ==, "sgi-mgras");
     qtest_quit(qts);
 }
 
@@ -991,10 +1073,19 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn/builder/origin2000-module-accepts-its-populations", NULL,
         test_origin2000_module_accepts_its_populations);
+    qtest_add_data_func(
+        "sn/builder/origin2000-one-node-accepts-its-populations", NULL,
+        test_origin2000_one_node_accepts_its_populations);
+    qtest_add_data_func(
+        "sn/builder/origin2000-one-node-has-two-cpus-on-node-zero", NULL,
+        test_origin2000_one_node_has_two_cpus_on_node_zero);
     qtest_add_data_func("sn/builder/origin200-onboard-board-is-ip29-preset",
                         NULL, test_origin200_onboard_board_is_ip29_preset);
     qtest_add_data_func("sn/builder/origin2000-onboard-board-is-xio-baseio",
                         NULL, test_origin2000_onboard_board_is_xio_baseio);
+    qtest_add_data_func(
+        "sn/builder/origin2000-one-node-onboard-board-is-xio-baseio", NULL,
+        test_origin2000_one_node_onboard_board_is_xio_baseio);
 
     return g_test_run();
 }
