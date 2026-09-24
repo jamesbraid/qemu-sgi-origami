@@ -2730,6 +2730,9 @@ static void test_parent_ecc_uncorrectable_interrupt(void)
                     MEMORY_UNCORRECTABLE);
     g_assert_cmphex(qtest_readq(s, BEDROCK_BASE + PI1_OFFSET +
                                 PI_ERROR_PENDING), ==, MEMORY_UNCORRECTABLE);
+    /* The sMDK monitor polls the bit through the writable view. */
+    g_assert_cmphex(qtest_readq(s, BEDROCK_BASE + PI_ERROR_SET), ==,
+                    MEMORY_UNCORRECTABLE);
     /* Interface 0's processor A and interface 1's processor B are masked in. */
     g_assert_true(qtest_get_irq(s, ERROR_LINE(0, 0)));
     g_assert_false(qtest_get_irq(s, ERROR_LINE(0, 1)));
