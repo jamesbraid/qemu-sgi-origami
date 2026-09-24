@@ -389,8 +389,6 @@ qtests_mips64 = \
     ['sn1-l1-test', 'sgi-l1-usb-software-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_BEDROCK_MD') ?
     ['sn1-bedrock-md-test'] : []) + \
-  (config_all_devices.has_key('CONFIG_SGI_BEDROCK_NI') ?
-    ['sn1-bedrock-ni-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_BEDROCK_IO') ?
     ['sn1-bedrock-io-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_BEDROCK_LB') ?
