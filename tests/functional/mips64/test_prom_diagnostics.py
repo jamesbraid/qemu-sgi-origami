@@ -27,13 +27,25 @@ evaluate_run() and the pure functions it calls (split_passes,
 parse_rslt_lines, parse_summary, module_ids, extract_identities,
 parse_expected_failures, _judge_failures) are a direct, close-to-verbatim
 port of diag-gate's own functions of the same names; they live in
-lib_prom_diagnostics.py beside this file. missing_sash_assertions there
-is the same port of tools/sash-gate's ASSERTIONS/missing_assertions that
-diag-gate itself called (via sash_gate) as the last stage of its own
-evaluate_run -- reimplemented, fixed at cpus=1 (the only population
-diag-gate ever drove), because this fork test must not import origami's
-tools/ (no sashlib). test_prom_diagnostics_verdict.py proves this port
-against real captured transcripts and the ported ledger, without booting
+lib_prom_diagnostics.py beside this file. That evaluate_run()'s last
+check calls lib_prom_sash.missing_assertions(log, cpus=1) directly,
+tools/sash-gate's own ASSERTIONS/missing_assertions port that diag-gate
+itself called (via sash_gate) as the last stage of its own evaluate_run,
+fixed at cpus=1 -- the only population diag-gate ever drove.
+
+This test also carries the coverage test_prom_sash.py used to check on
+its own separate 1-CPU netboot boot, since folded in here and deleted:
+lib_prom_sash.missing_assertions() folds in NETBOOT_PATH_ASSERTION,
+proof the PROM's netboot fetch named the path-structured boot/sash64
+this test serves rather than merely a netboot of some name, and
+test_prom_diagnostics() below runs lib_prom_sash.artifact_identity_
+problems() before launching, the same release-matched SHA-256 refusal
+test_prom_sash.py made. Neither check needed a second port:
+lib_prom_sash.py (test_prom_pod.py's own RELEASES import keeps it in
+the tree) already carries both, pure and importable without qemu_test,
+the same way lib_prom_diagnostics.py's own functions are.
+test_prom_diagnostics_verdict.py proves the port in that file against
+real captured transcripts and the ported ledger, without booting
 anything -- see that file's docstring.
 
 The QEMU argv lib_prom_diagnostics.py builds (diag_extra_args) was
@@ -63,6 +75,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 
 from qemu_test import QemuSystemTest, skipIfMissingEnv
 
@@ -71,6 +84,7 @@ from lib_prom import (FORK_ROOT, MACHINES, drive_console, file_record,
 from lib_prom_diagnostics import (EXPECTED_FAILURES, EXPECTED_FAILURES_TEXT,
                                   diag_extra_args, evaluate_run,
                                   extract_identities)
+from lib_prom_sash import NETBOOT_PATH, artifact_identity_problems
 
 
 # ---------------------------------------------------------------------------
@@ -81,13 +95,20 @@ from lib_prom_diagnostics import (EXPECTED_FAILURES, EXPECTED_FAILURES_TEXT,
 # lib_prom_diagnostics.py does.
 # ---------------------------------------------------------------------------
 
+# The release this test's real boot drives -- matching test_prom_boot.py's
+# own default (tools/sash-gate's CLI default is also 6.5.30).
+# lib_prom_sash.RELEASES carries 6.5-base too, for the verdict logic and
+# its own unit tests, but this one QemuSystemTest method drives one
+# release at a time, the same way test_prom_sash.py's own RELEASE did.
+RELEASE = "6.5.30"
+
 # Where ORIGAMI_ASSETS resolves the real firmware and boot tree, matching
 # test_prom_boot.py's FIRMWARE_REL and tools/sash-gate's RELEASES["6.5.30"]
 # in the project checkout: ORIGAMI_ASSETS names a CHECKOUT, not assets/
 # itself.
-FIRMWARE_REL = os.path.join('assets', 'firmware', '6.5.30',
+FIRMWARE_REL = os.path.join('assets', 'firmware', RELEASE,
                             'ip27prom.payload.bin')
-TFTP_REL = os.path.join('assets', 'boot', '6.5.30')
+TFTP_REL = os.path.join('assets', 'boot', RELEASE)
 
 # diag-gate's own default (tools/diag-gate's DEFAULT_TIMEOUT_SECONDS,
 # before that tool's retirement) covered both passes and the sash leg in
@@ -100,12 +121,17 @@ BOOT_TIMEOUT_SECONDS = 1740
 # response) fires once, the first time PATTERN matches the TAIL of
 # what has been received since the last match. The five steps drive the
 # PROM from the System Maintenance Menu through the command monitor to an
-# interactive sash prompt, matching diag-gate's own console_driver exactly
-# (tools/diag-gate's --expect list, before that tool's retirement).
+# interactive sash prompt, matching diag-gate's own console_driver
+# (tools/diag-gate's --expect list, before that tool's retirement) with
+# one departure absorbed from test_prom_sash.py: the boot command names
+# NETBOOT_PATH (`boot -f bootp()/boot/sash64`), not diag-gate's own flat
+# `boot -f bootp()/sash64` -- proof the PROM fetches the path-structured
+# file this test serves (see NETBOOT_PATH_ASSERTION's own comment in
+# lib_prom_sash.py).
 DRIVER_STEPS = (
     (r"Option\?", "5\n"),
     (r">>", "unsetenv netaddr\n"),
-    (r">>", "boot -f bootp()/sash64\n"),
+    (r">>", f"boot -f bootp()/{NETBOOT_PATH}\n"),
     (r"sash:", "hinv\n"),
     (r"sash:", "printenv\n"),
 )
@@ -124,12 +150,43 @@ class PromDiagnostics(QemuSystemTest):
     PromBoot.
     """
 
+    def _stage_netboot_tftp(self, sash):
+        """A fresh tftp root, under this test's own scratch directory,
+        with the real (already digest-checked) sash64 copied in at
+        NETBOOT_PATH -- e.g. <root>/boot/sash64. Ported from
+        test_prom_sash.py's own PromSash._stage_netboot_tftp: this is
+        what proves the netboot is PATH-STRUCTURED, since SLIRP's tftp=
+        serves whatever bootfile= names relative to this root.
+        """
+        root = self.scratch_file('netboot-tftp')
+        staged_sash = os.path.join(root, *NETBOOT_PATH.split('/'))
+        os.makedirs(os.path.dirname(staged_sash), exist_ok=True)
+        shutil.copyfile(sash, staged_sash)
+        return root
+
     @skipIfMissingEnv('ORIGAMI_ASSETS')
     def test_prom_diagnostics(self):
+        # sash64 comes from tools/sash-gate's own FLAT assets/boot/<release>
+        # layout (sash64 alongside sashARCS, unix.IP27, ...), shared
+        # read-only project state this test must not restructure -- see
+        # _stage_netboot_tftp() for the PATH-STRUCTURED copy this test's
+        # real boot actually serves.
         sash_rel = os.path.join(TFTP_REL, 'sash64')
         assets = require_assets(self, FIRMWARE_REL, sash_rel)
-        prom = assets[FIRMWARE_REL]
-        tftp = os.path.dirname(assets[sash_rel])
+        prom, sash = assets[FIRMWARE_REL], assets[sash_rel]
+
+        # tools/sash-gate itself refuses to launch against a PROM or
+        # sash64 that does not match the selected release's recorded
+        # digest -- the same refusal here, absorbed from
+        # test_prom_sash.py, before spending a boot on assets that would
+        # silently produce a meaningless pass or a confusing failure.
+        identity_problems = artifact_identity_problems(RELEASE, prom, sash)
+        if identity_problems:
+            self.fail(
+                f'release {RELEASE} asset identity problems: ' +
+                '; '.join(identity_problems))
+
+        tftp = self._stage_netboot_tftp(sash)
 
         vm = self.get_vm(name='prom_diagnostics')
         vm.set_machine(MACHINES['origin200'])
@@ -201,10 +258,9 @@ class PromDiagnostics(QemuSystemTest):
                     'fork': fork_git_identity(FORK_ROOT),
                     'qemu_binary': file_record(self.qemu_bin),
                     'firmware': {
-                        'release': '6.5.30',
+                        'release': RELEASE,
                         'prom': file_record(prom),
-                        'sash': file_record(
-                            os.path.join(tftp, 'sash64')),
+                        'sash': file_record(sash),
                     },
                 },
                 'verdict': report['verdict'],

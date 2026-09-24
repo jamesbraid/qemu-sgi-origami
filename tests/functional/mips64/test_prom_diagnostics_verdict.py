@@ -89,7 +89,11 @@ file and what, if anything, was changed):
       of PROM 6.156 (6.5.30), the release this test actually boots on
       the current tree (build/tests/functional/mips64/
       test_prom_diagnostics.PromDiagnostics.test_prom_diagnostics/
-      diag.log, 2026-09-22). Unlike PROM 6.11 above, 6.156 never prints
+      diag.log, 2026-09-24, recaptured after prom_sash's netboot-by-path
+      test was absorbed into this same test so the fixture again matches
+      what test_prom_diagnostics.py boots -- the boot now fetches
+      boot/sash64, not the flat sash64 the prior 2026-09-22 capture
+      showed). Unlike PROM 6.11 above, 6.156 never prints
       the module-id assignment box or warm resets: it runs the whole
       factory sequence, sash netboot included, in one pass. The same
       single-pass shape was already measured independently a month
@@ -104,7 +108,9 @@ file and what, if anything, was changed):
       transformation was made to the raw capture: its own
       progress-spinner backspace bytes (0x08), which erase and redraw
       dots and counters mid-line and match nothing evaluate_run()
-      parses, were stripped. Every remaining character, including the
+      parses, were stripped -- including the capture's own leading
+      blank \r\n\r\n pair before the PROM banner, kept here rather than
+      trimmed. Every remaining character, including the
       real \\r line endings and the mid-transcript switch from trailing
       \\r to leading \\r that REAL_SUMMARY_EXCERPT's own paragraph above
       describes, is exactly what the guest printed, including the
@@ -127,13 +133,13 @@ from lib_prom_diagnostics import (
     EXPECTED_FAILURES,
     EXPECTED_FAILURES_TEXT,
     extract_identities,
-    missing_sash_assertions,
     module_ids,
     parse_expected_failures,
     parse_rslt_lines,
     parse_summary,
     split_passes,
 )
+from lib_prom_sash import missing_assertions as missing_sash_assertions, NETBOOT_PATH
 
 
 REAL_TWO_PASS_TRANSCRIPT = """\
@@ -386,9 +392,9 @@ System Maintenance Menu
 Option? 5
 Command Monitor.  Type "exit" to return to the menu.
 >> unsetenv netaddr
->> boot -f bootp()/sash64
+>> boot -f bootp()/boot/sash64
 Setting $netaddr to 192.0.2.15 (from server )
-Obtaining sash64 from server 
+Obtaining boot/sash64 from server 
       896   |/-\\|/-\\|/-\\|/-\\|+111764Setting $netaddr to 192.0.2.15 (from server )
    |/-\\|/-+16853   |+3848      |/-\\Setting $netaddr to 192.0.2.15 (from server )
    |/-\\|/-\\      |/-\\      |/- entry: 0xa8000000012a6ee4
@@ -434,6 +440,8 @@ dlserver=192.0.2.2
 
 
 REAL_SINGLE_PASS_TRANSCRIPT = """\
+\r
+\r
 IP27 PROM SGI Version 6.156  built 11:27:56 AM Nov 18, 2003\r
 using BaseIO nic\r
 Testing/Initializing memory ...............		DONE\r
@@ -444,7 +452,7 @@ Discovering NUMAlink connectivity .........		\r
 Local hub NUMAlink is down.\r
 *** Local network link down\r
 DONE\r
-Found 1 objects (1 hubs, 0 routers) in 830 usec\r
+Found 1 objects (1 hubs, 0 routers) in 796 usec\r
 Waiting for peers to complete discovery....		DONE\r
 No other nodes present; becoming global master\r
 Global master is /hw/module/0/slot/MotherBoard\r
@@ -468,7 +476,7 @@ Walking SCSI Adapter 1 (/hw/module/1/slot/MotherBoard), (pci id 1)\r
 1- 2- 3- 4- 5- 6- 7- 8- 9- 10- 11- 12- 13- 14- 15- = 0 device(s)\r
 \r
 Initializing PROM Device drivers ..........             DONE\r
-Checking hardware inventory ...............
+Checking hardware inventory ...............              
 \rWARNING: hardware inventory is invalid.  Reinitializing...
 \rWriting 2 records.. DONE
 \rUpdated new configuration. Wrote 2 records.
@@ -500,12 +508,12 @@ System Maintenance Menu\r
 \rOption? 5\r
 Command Monitor.  Type "exit" to return to the menu.
 \r>> unsetenv netaddr\r
->> boot -f bootp()/sash64\r
+>> boot -f bootp()/boot/sash64\r
 Setting $netaddr to 192.0.2.15 (from server )
-\rObtaining sash64 from server
-\r      896   |/-\\|/-\\|/-\\|/-\\|+111764Setting $netaddr to 192.0.2.15 (from server )
-\r   |/-\\|/-+16853   |+3848      |/-\\Setting $netaddr to 192.0.2.15 (from server )
-\r   |/-\\|/-\\      |/-\\      |/- entry: 0xa8000000012a6ee4
+\rObtaining boot/sash64 from server 
+\r      896   |/-\|/-\|/-\|/-\|+111764Setting $netaddr to 192.0.2.15 (from server )
+\r   |/-\|/-+16853   |+3848      |/-\Setting $netaddr to 192.0.2.15 (from server )
+\r   |/-\|/-\      |/-\      |/- entry: 0xa8000000012a6ee4
 \rStandalone Shell SGI Version 6.5 ARCS   Jul 20, 2006 (64 Bit)
 \rsash: hinv\r
 System  SGI-IP27
@@ -542,7 +550,7 @@ AutoLoad=No
 \rcpufreq=180
 \roldConsolePath=/hw/module/1/slot/MotherBoard
 \rConsolePath=/hw/module/1/slot/MotherBoard
-\rkernname=bootp()/sash64
+\rkernname=bootp()/boot/sash64
 \rnetaddr=192.0.2.15
 \rdlserver=192.0.2.2
 \rsash: """
@@ -881,7 +889,7 @@ class DiagExtraArgsTest(unittest.TestCase):
         self.assertEqual(args[args.index("-bios") + 1], "/tmp/prom.bin")
         nic = args[args.index("-nic") + 1]
         self.assertIn("tftp=/tmp/tftp", nic)
-        self.assertIn("bootfile=sash64", nic)
+        self.assertIn(f"bootfile={NETBOOT_PATH}", nic)
         self.assertIn("dhcpstart=192.0.2.15", nic)
         # -serial none (IOC3 port B, unused) then -serial chardev:elsc
         # (the ELSC AUX port) -- set_console() already emits line 0

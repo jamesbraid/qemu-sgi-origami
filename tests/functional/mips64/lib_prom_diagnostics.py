@@ -12,6 +12,9 @@ module under a plain python3 or pytest run.
 
 import re
 
+from lib_prom_sash import (NETBOOT_PATH,
+                           missing_assertions as sash_missing_assertions)
+
 
 # ---------------------------------------------------------------------------
 # Verdict logic, ported from tools/diag-gate (project checkout). Kept as
@@ -68,32 +71,6 @@ ENV_VALUE_RES = {
     "dlserver": re.compile(r"dlserver=(\S+)"),
     "eaddr": re.compile(r"eaddr=(\S+)"),
 }
-
-# tools/sash-gate's ASSERTIONS, project checkout, fixed at cpus=1 -- the
-# only population diag-gate drove. diag-gate's own evaluate_run() called
-# sash_gate.missing_assertions(log, cpus=1) as its last check; this is that
-# same check, reimplemented so this file never imports tools/.
-_SASH_ASSERTIONS = (
-    ("1 CPU inventory", "1 180 MHz IP27 Processors"),
-    ("1 CPUs enabled", "No. of CPUs enabled     = 1"),
-    ("no CPUs disabled", "No. of CPUs disabled    = 0"),
-    ("64 MiB inventory", "Main memory size: 64 Mbytes"),
-    ("IP27 system inventory", "System  SGI-IP27"),
-    ("IOC3 Ethernet inventory", "Integral Fast Ethernet"),
-    ("IOC3 serial inventory", "IOC3 serial port"),
-    ("IOC3 output console", "ConsoleOut=/dev/tty/ioc30"),
-    ("leased guest address", "netaddr=192.0.2.15"),
-    ("download server address", "dlserver=192.0.2.2"),
-)
-
-
-def missing_sash_assertions(log):
-    """Which of sash's post-netboot one-CPU inventory lines never appeared.
-
-    See _SASH_ASSERTIONS above for provenance: this is tools/sash-gate's
-    own ASSERTIONS/missing_assertions(cpus=1), ported rather than imported.
-    """
-    return [name for name, evidence in _SASH_ASSERTIONS if evidence not in log]
 
 
 def split_passes(log):
@@ -379,7 +356,17 @@ def evaluate_run(log, expected_failures=(), nvram_warnings="expected"):
                     f"nvram_warnings=absent: {warning}"
                 )
 
-    report["sash_missing"] = missing_sash_assertions(log)
+    # lib_prom_sash.missing_assertions(log, cpus=1) is tools/sash-gate's own
+    # ASSERTIONS/missing_assertions port, fixed at cpus=1 (the only
+    # population diag-gate ever drove) -- diag-gate's own evaluate_run()
+    # called sash_gate.missing_assertions(log, cpus=1) as its last check.
+    # Absorbing test_prom_sash.py (its own separate 1-CPU netboot test,
+    # deleted once this file grew its coverage) into this same boot means
+    # this call now also carries NETBOOT_PATH_ASSERTION -- proof the PROM's
+    # netboot fetch named the path-structured boot/sash64 this test serves,
+    # not merely a netboot of some name -- rather than reimplementing a
+    # second, narrower copy of the same assertions here.
+    report["sash_missing"] = sash_missing_assertions(log, cpus=1)
     for name in report["sash_missing"]:
         problems.append(f"missing {name}")
 
@@ -424,6 +411,12 @@ def diag_extra_args(prom, tftp, elsc_log, capture):
     tools/sash-gate's qemu_command(cpus=1, skip_prom_diags=False) in the
     project checkout -- see this module's own docstring for exactly which
     call diag-gate made and why netinst-rig is not this argv's source.
+    `bootfile=` names lib_prom_sash.NETBOOT_PATH (boot/sash64), the
+    path-structured layout test_prom_sash.py's own netboot proved before
+    that test was absorbed here, not diag-gate's own flat "bootfile=
+    sash64" -- `tftp` must therefore be a directory that actually has a
+    boot/sash64 under it (test_prom_diagnostics.py stages one), not the
+    flat assets/boot/<release> tree directly.
 
     set_console() already emits "-serial chardev:console" for serial line
     0 (IOC3 port A, the primary console); the "-serial none" here fills
@@ -446,6 +439,6 @@ def diag_extra_args(prom, tftp, elsc_log, capture):
         '-serial', 'none',
         '-serial', 'chardev:elsc',
         '-nic', ('user,id=net0,net=192.0.2.0/24,host=192.0.2.2,'
-                 f'dhcpstart=192.0.2.15,tftp={tftp},bootfile=sash64'),
+                 f'dhcpstart=192.0.2.15,tftp={tftp},bootfile={NETBOOT_PATH}'),
         '-object', f'filter-dump,id=netcap,netdev=net0,file={capture}',
     ]

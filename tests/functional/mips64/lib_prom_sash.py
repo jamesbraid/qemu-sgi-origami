@@ -1,13 +1,17 @@
-# The sash netboot pass condition test_prom_sash.py boots against, and
-# the argv it boots with, factored out so test_prom_sash_verdict.py can
-# exercise them without booting
+# The sash netboot pass condition test_prom_diagnostics.py boots against,
+# and the argv it boots with, factored out so test_prom_diagnostics_verdict.py
+# can exercise them without booting
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
 Ported from tools/sash-gate and tools/sashlib.py in the project checkout;
-test_prom_sash.py's docstring gives the provenance of every name here and
-the one departure (NETBOOT_PATH). No qemu_test import, so the verdict
-companion can import this module under a plain python3 or pytest run.
+test_prom_diagnostics.py's own docstring gives the provenance of every name
+here and the one departure (NETBOOT_PATH) -- test_prom_sash.py, this
+module's original own consumer, carried that provenance until its separate
+1-CPU netboot coverage was folded into test_prom_diagnostics.py and it was
+deleted. test_prom_pod.py also imports RELEASES from here directly. No
+qemu_test import, so a verdict companion can import this module under a
+plain python3 or pytest run.
 """
 
 from lib_prom import file_sha256
