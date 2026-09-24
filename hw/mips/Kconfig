@@ -59,6 +59,7 @@ config SGI_SN0
     select SGI_NET_CABLE
     select SGI_MGRAS
     select SGI_PCI_EXPANSION
+    select SGI_PCI_SHOEHORN
     select SGI_ROUTER
     select SGI_XBOW
     select SGI_XIO_BASEIO
@@ -128,6 +129,13 @@ config SGI_PCI_EXPANSION
     bool
     select SGI_XIO_BOARD
     select SGI_BRIDGE
+
+config SGI_PCI_SHOEHORN
+    bool
+    select SGI_XIO_BOARD
+    select SGI_BRIDGE
+    select SGI_IOC3
+    select SGI_IOC3_ETH
 
 config SGI_BOARD_TEST
     bool

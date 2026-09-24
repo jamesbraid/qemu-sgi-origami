@@ -146,6 +146,7 @@ static uint64_t *sgi_model_array_uint64(const uint64List *list, size_t *count)
 
 #define TYPE_SGI_XIO_BASEIO "sgi-xio-baseio"
 #define TYPE_SGI_PCI_EXPANSION "sgi-pci-expansion"
+#define TYPE_SGI_PCI_SHOEHORN "sgi-pci-shoehorn"
 
 struct SGIMachineState {
     MachineState parent_obj;
@@ -2677,6 +2678,7 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
      * instance of either one plugs into.
      */
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_PCI_EXPANSION);
+    machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_PCI_SHOEHORN);
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_XIO_BASEIO);
 
     object_class_property_add_str(oc, "topology", sgi_machine_get_topology,

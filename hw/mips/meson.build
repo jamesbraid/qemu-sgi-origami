@@ -55,6 +55,11 @@ mips_ss.add(when: 'CONFIG_SGI_BASEIO', if_true: files('sgi/baseio.c'))
 mips_ss.add(when: 'CONFIG_SGI_XIO_BASEIO', if_true: files('sgi/xio-baseio.c'))
 mips_ss.add(when: 'CONFIG_SGI_PCI_EXPANSION',
             if_true: files('sgi/board-pci-expansion.c'))
+# The SGI PCI-XTALK ADAPTER (the "PCI shoehorn"), a single-XIO-slot
+# sgi-xio-board subclass that creates its own Bridge and can fit an SGI Cad
+# Duo input card behind it with its keyboard/mouse interrupt wired.
+mips_ss.add(when: 'CONFIG_SGI_PCI_SHOEHORN',
+            if_true: files('sgi/board-pci-shoehorn.c'))
 # Likewise for the board fixture: see the comment above.
 mips_ss.add(when: 'CONFIG_SGI_BOARD_TEST',
             if_true: files('../../tests/qtest/board-test-fixture.c'))
