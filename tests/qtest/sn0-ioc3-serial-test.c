@@ -14,6 +14,7 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
+#include "qemu/sockets.h"
 #include "sn0-user-image.h"
 #include "sgi-migrate.h"
 
@@ -2666,6 +2667,275 @@ static void test_the_scratch_predivider_survives_a_system_reset(
     qtest_quit(qts);
 }
 
+/*
+ * A guest's pointer never reaches wctablet directly: a VNC client's
+ * PointerEvent lands in ui/vnc.c's pointer_event(), which rescales the
+ * client's pixel coordinate through ui/input.c's qemu_input_scale_axis()
+ * before wctablet's own input handler ever sees it, and only once
+ * SetEncodings has run after "ST" activated that handler does the
+ * server latch itself into absolute mode at all --
+ * check_pointer_type_change(), called unconditionally at the tail of
+ * set_encodings(), sets vs->absolute from qemu_input_is_absolute()
+ * whether or not the client asked for the pointer-type-change encoding.
+ * The tests below drive that whole path with a hand-rolled synchronous
+ * RFB 3.8 client: gvnc, the option tests/qtest/vnc-display-test.c uses,
+ * is not part of this build (tests/qtest/meson.build only adds that
+ * test when gvnc is found), and a register-contract test has no
+ * business depending on it anyway. Each expected coordinate is computed
+ * here by replicating production's two independent rescales -- the VNC
+ * layer's and wctablet's own -- rather than by calling into either, so
+ * a real divergence in either rescale shows up as a mismatch instead of
+ * validating itself.
+ */
+#define RFB_SERVER_VERSION    "RFB 003.008\n"
+#define RFB_AUTH_NONE         1
+#define RFB_MSG_SET_ENCODINGS 2
+#define RFB_MSG_POINTER_EVENT 5
+
+/*
+ * ui/input.c's INPUT_EVENT_ABS_MAX: every absolute axis is rescaled onto
+ * this range before any input handler, wctablet included, ever sees it.
+ */
+#define TEST_INPUT_EVENT_ABS_MAX 0x7fff
+
+/* chardev/wctablet.c: the UD-1212-R's reported active area, its units. */
+#define TEST_UD1212R_MAX_AXIS 15240
+
+typedef struct RfbSession {
+    int fd;
+    int width;
+    int height;
+} RfbSession;
+
+static void write_exact(int fd, const uint8_t *buf, size_t len)
+{
+    size_t sent = 0;
+
+    while (sent < len) {
+        ssize_t n = write(fd, buf + sent, len - sent);
+
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        g_assert_cmpint(n, >, 0);
+        sent += n;
+    }
+}
+
+static uint16_t rfb_read_u16(int fd)
+{
+    uint8_t buf[2];
+
+    read_exact(fd, buf, sizeof(buf));
+    return (buf[0] << 8) | buf[1];
+}
+
+static uint32_t rfb_read_u32(int fd)
+{
+    uint8_t buf[4];
+
+    read_exact(fd, buf, sizeof(buf));
+    return ((uint32_t)buf[0] << 24) | ((uint32_t)buf[1] << 16) |
+           ((uint32_t)buf[2] << 8) | buf[3];
+}
+
+/*
+ * The RFB 3.8 handshake through ServerInit, ending with the server's
+ * negotiated framebuffer size -- the range pointer_event() scales every
+ * PointerEvent's coordinates against. These tests attach no graphics
+ * device, so that size comes from QEMU's placeholder display surface,
+ * not a modeled framebuffer; reading it back rather than assuming a
+ * fixed number keeps the tests correct if that placeholder ever changes.
+ */
+static void rfb_connect(QTestState *qts, RfbSession *rfb)
+{
+    int pair[2];
+    uint8_t version[12];
+    uint8_t numauth, authtype;
+    uint8_t shared = 1;
+    uint8_t pixel_format[16];
+    uint32_t namelen;
+    uint8_t name[256];
+
+    g_assert_cmpint(qemu_socketpair(AF_UNIX, SOCK_STREAM, 0, pair), ==, 0);
+    serial_socket_deadline(pair[0]);
+    qtest_qmp_add_client(qts, "vnc", pair[1]);
+    rfb->fd = pair[0];
+
+    read_exact(rfb->fd, version, sizeof(version));
+    g_assert_cmpint(memcmp(version, RFB_SERVER_VERSION, sizeof(version)),
+                    ==, 0);
+    write_exact(rfb->fd, version, sizeof(version));
+
+    read_exact(rfb->fd, &numauth, 1);
+    g_assert_cmpuint(numauth, ==, 1);
+    read_exact(rfb->fd, &authtype, 1);
+    g_assert_cmpuint(authtype, ==, RFB_AUTH_NONE);
+    write_exact(rfb->fd, &authtype, 1);
+    g_assert_cmpuint(rfb_read_u32(rfb->fd), ==, 0); /* SecurityResult: OK */
+
+    write_exact(rfb->fd, &shared, 1); /* ClientInit */
+
+    rfb->width = rfb_read_u16(rfb->fd);
+    rfb->height = rfb_read_u16(rfb->fd);
+    read_exact(rfb->fd, pixel_format, sizeof(pixel_format));
+    namelen = rfb_read_u32(rfb->fd);
+    g_assert_cmpuint(namelen, <=, sizeof(name));
+    read_exact(rfb->fd, name, namelen);
+}
+
+static void rfb_set_encodings(RfbSession *rfb)
+{
+    uint8_t msg[4] = { RFB_MSG_SET_ENCODINGS, 0, 0, 0 }; /* no encodings */
+
+    write_exact(rfb->fd, msg, sizeof(msg));
+}
+
+static void rfb_pointer_event(RfbSession *rfb, uint8_t button_mask,
+                              uint16_t x, uint16_t y)
+{
+    uint8_t msg[6] = {
+        RFB_MSG_POINTER_EVENT, button_mask,
+        x >> 8, x & 0xff,
+        y >> 8, y & 0xff,
+    };
+
+    write_exact(rfb->fd, msg, sizeof(msg));
+}
+
+/*
+ * ui/input.c's qemu_input_scale_axis(), the rescale every VNC PointerEvent
+ * goes through before any input handler runs: value's own [0, max_in)
+ * range maps onto [0, TEST_INPUT_EVENT_ABS_MAX], in 64-bit and truncated
+ * exactly as production computes it.
+ */
+static int scaled_axis_value(uint16_t value, int max_in)
+{
+    return (int)((int64_t)value * TEST_INPUT_EVENT_ABS_MAX / max_in);
+}
+
+/* chardev/wctablet.c's wctablet_queue_event(), the UD-1212-R branch. */
+static int expected_ud1212r_axis(int axis)
+{
+    return (int)((int64_t)axis * TEST_UD1212R_MAX_AXIS /
+                 TEST_INPUT_EVENT_ABS_MAX);
+}
+
+/* Same function's default-model branch: a literal double multiply. */
+static int expected_default_model_x(int axis)
+{
+    return axis * 0.1537;
+}
+
+static int expected_default_model_y(int axis)
+{
+    return axis * 0.1152;
+}
+
+/*
+ * Undoes WC_H2/WC_M7/WC_L7's packing of a coordinate into a 2/7/7-bit
+ * split across three bytes. Every PointerEvent below carries button_mask
+ * 0, so wctablet_set_ud_switch() never sets the switch-number bits that
+ * would otherwise share codes[0]/codes[3] with the coordinate's own top
+ * bit.
+ */
+static int decode_wacom_axis(uint8_t hi, uint8_t mid, uint8_t lo)
+{
+    return ((hi & 0x1) << 14) | ((mid & 0x7f) << 7) | (lo & 0x7f);
+}
+
+static void test_a_vnc_pointer_tracks_through_the_default_model(
+    const void *data)
+{
+    static const int fraction_numerators[] = { 1, 2, 3 };
+    QTestState *qts;
+    RfbSession rfb;
+    uint8_t reply[7];
+    size_t i;
+
+    qts = qtest_initf("-M origin200 -chardev wctablet,id=tab "
+                      "-serial chardev:tab -vnc none");
+    sn0_ioc3_attach(qts);
+
+    configure_line_at_divisor(qts, 0, WCTABLET_PREDIVIDE_BY_3,
+                              WCTABLET_DIVISOR_9600);
+    send_bytes(qts, 0, (const uint8_t *)"ST\r", 3);
+    g_assert_cmpuint(read_reply(qts, 0, reply, sizeof(reply)), ==,
+                     sizeof(reply));
+    g_assert_cmpint(decode_wacom_axis(reply[0], reply[1], reply[2]), ==, 0);
+    g_assert_cmpint(decode_wacom_axis(reply[3], reply[4], reply[5]), ==, 0);
+
+    rfb_connect(qts, &rfb);
+    rfb_set_encodings(&rfb);
+
+    for (i = 0; i < G_N_ELEMENTS(fraction_numerators); i++) {
+        int num = fraction_numerators[i];
+        uint16_t x = (uint16_t)((int64_t)(rfb.width - 1) * num / 4);
+        uint16_t y = (uint16_t)((int64_t)(rfb.height - 1) * num / 4);
+        int axis_x = scaled_axis_value(x, rfb.width);
+        int axis_y = scaled_axis_value(y, rfb.height);
+
+        rfb_pointer_event(&rfb, 0, x, y);
+        wait_for_receive_ready(qts, serial_port(0));
+        g_assert_cmpuint(read_reply(qts, 0, reply, sizeof(reply)), ==,
+                         sizeof(reply));
+
+        g_assert_cmpint(decode_wacom_axis(reply[0], reply[1], reply[2]), ==,
+                        expected_default_model_x(axis_x));
+        g_assert_cmpint(decode_wacom_axis(reply[3], reply[4], reply[5]), ==,
+                        expected_default_model_y(axis_y));
+    }
+
+    close(rfb.fd);
+    qtest_quit(qts);
+}
+
+static void test_a_vnc_pointer_tracks_through_the_ud1212r_model(
+    const void *data)
+{
+    static const int fraction_numerators[] = { 1, 2, 3 };
+    QTestState *qts;
+    RfbSession rfb;
+    uint8_t reply[7];
+    size_t i;
+
+    qts = qtest_initf("-M origin200 -chardev wctablet,id=tab,"
+                      "model=UD-1212-R -serial chardev:tab -vnc none");
+    sn0_ioc3_attach(qts);
+
+    configure_line_at_divisor(qts, 0, WCTABLET_PREDIVIDE_BY_3,
+                              WCTABLET_DIVISOR_9600);
+    send_bytes(qts, 0, (const uint8_t *)"ST\r", 3);
+    g_assert_cmpuint(read_reply(qts, 0, reply, sizeof(reply)), ==,
+                     sizeof(reply));
+    g_assert_cmpint(decode_wacom_axis(reply[0], reply[1], reply[2]), ==, 0);
+    g_assert_cmpint(decode_wacom_axis(reply[3], reply[4], reply[5]), ==, 0);
+
+    rfb_connect(qts, &rfb);
+    rfb_set_encodings(&rfb);
+
+    for (i = 0; i < G_N_ELEMENTS(fraction_numerators); i++) {
+        int num = fraction_numerators[i];
+        uint16_t x = (uint16_t)((int64_t)(rfb.width - 1) * num / 4);
+        uint16_t y = (uint16_t)((int64_t)(rfb.height - 1) * num / 4);
+        int axis_x = scaled_axis_value(x, rfb.width);
+        int axis_y = scaled_axis_value(y, rfb.height);
+
+        rfb_pointer_event(&rfb, 0, x, y);
+        wait_for_receive_ready(qts, serial_port(0));
+        g_assert_cmpuint(read_reply(qts, 0, reply, sizeof(reply)), ==,
+                         sizeof(reply));
+
+        g_assert_cmpint(decode_wacom_axis(reply[0], reply[1], reply[2]), ==,
+                        expected_ud1212r_axis(axis_x));
+        g_assert_cmpint(decode_wacom_axis(reply[3], reply[4], reply[5]), ==,
+                        expected_ud1212r_axis(axis_y));
+    }
+
+    close(rfb.fd);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -2814,6 +3084,12 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn0/ioc3-serial/scratch-predivider-survives-a-system-reset", NULL,
         test_the_scratch_predivider_survives_a_system_reset);
+    qtest_add_data_func(
+        "sn0/ioc3-serial/vnc-pointer-tracks-default-model", NULL,
+        test_a_vnc_pointer_tracks_through_the_default_model);
+    qtest_add_data_func(
+        "sn0/ioc3-serial/vnc-pointer-tracks-ud1212r-model", NULL,
+        test_a_vnc_pointer_tracks_through_the_ud1212r_model);
 
     ret = g_test_run();
     qtest_quit(qts);
