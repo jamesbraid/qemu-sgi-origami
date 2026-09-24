@@ -375,6 +375,44 @@ static void test_reset_reuse(void)
     lucent_ohci_close(&ohci);
 }
 
+/*
+ * OpenHCI 1.0a gives every HcInterruptEnable field, MasterInterruptEnable
+ * included, a reset value of 0 (section 7.1.5, printed page 115), and a
+ * HostControllerReset resets the operational registers it does not except
+ * (section 7.1.3, page 112). The Origin 300 IO-8 board test depends on it:
+ * it writes 0xc000007f, resets the controller and requires zero back.
+ */
+static void test_reset_clears_interrupt_enable(void)
+{
+    LucentOHCI ohci = { 0 };
+
+    lucent_ohci_open(&ohci, lucent_ohci_start("lucent-ohci", ""));
+    lucent_ohci_map_bar(&ohci);
+
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_INTERRUPT_ENABLE), ==, 0);
+
+    lucent_ohci_writel(&ohci, OHCI_HC_INTERRUPT_ENABLE, 0xc000007f);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_INTERRUPT_ENABLE), ==,
+                    0xc000007f);
+    lucent_ohci_writel(&ohci, OHCI_HC_COMMAND_STATUS,
+                       OHCI_COMMAND_STATUS_HCR);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_INTERRUPT_ENABLE), ==, 0);
+
+    /* The other command bits written with it still reach the controller. */
+    lucent_ohci_writel(&ohci, OHCI_HC_COMMAND_STATUS,
+                       OHCI_COMMAND_STATUS_CLF);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_COMMAND_STATUS) &
+                    OHCI_COMMAND_STATUS_CLF, ==, OHCI_COMMAND_STATUS_CLF);
+
+    lucent_ohci_writel(&ohci, OHCI_HC_INTERRUPT_ENABLE, OHCI_INTERRUPT_MIE);
+    qtest_qmp_assert_success(ohci.qts, "{'execute': 'system_reset'}");
+    qtest_qmp_eventwait(ohci.qts, "RESET");
+    lucent_ohci_map_bar(&ohci);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_INTERRUPT_ENABLE), ==, 0);
+
+    lucent_ohci_close(&ohci);
+}
+
 static void test_frame_number_tracks_clock_while_timer_starved(void)
 {
     LucentOHCI ohci = { 0 };
@@ -574,6 +612,8 @@ int main(int argc, char **argv)
     qtest_add_func("/lucent-ohci/dma-and-inta-reuse",
                    test_dma_and_inta_reuse);
     qtest_add_func("/lucent-ohci/reset-reuse", test_reset_reuse);
+    qtest_add_func("/lucent-ohci/reset-clears-interrupt-enable",
+                   test_reset_clears_interrupt_enable);
     qtest_add_func("/lucent-ohci/frame-number-tracks-clock-while-timer-starved",
                    test_frame_number_tracks_clock_while_timer_starved);
     qtest_add_func("/lucent-ohci/frame-number-never-lags-elapsed-time",
