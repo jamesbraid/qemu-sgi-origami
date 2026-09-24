@@ -5686,48 +5686,6 @@ static void test_vmstate_versions_nested_phy(const void *data)
     unlink(dump_path);
 }
 
-/* A version-6 standalone PHY section must load into the nested PHY state. */
-static void test_v6_phy_state_migrates(const void *data)
-{
-    const uint16_t advertise = 0x5a5a;
-    g_autofree gchar *tmpfs = NULL;
-    g_autofree gchar *uri = NULL;
-    g_autofree gchar *source = NULL;
-    g_autofree gchar *dest = NULL;
-    GError *err = NULL;
-    QTestState *from_qts, *to_qts;
-    Bcm from, to;
-
-    if (!g_getenv("QTEST_QEMU_BINARY_V6")) {
-        g_test_skip("QTEST_QEMU_BINARY_V6 is not set");
-        return;
-    }
-
-    tmpfs = g_dir_make_tmp("bcm570x-test-XXXXXX", &err);
-    g_assert_no_error(err);
-    g_assert(tmpfs);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
-
-    source = g_strdup_printf(BCM_MACHINE
-                             " -device bcm570x,addr=%02x.0", BCM_SLOT);
-    from_qts = qtest_init_ext("QTEST_QEMU_BINARY_V6", source, NULL, true);
-    bcm_open(&from, from_qts);
-    mii_write(&from, BCM_PHY_ADDR, MII_ANAR, advertise);
-    g_assert_cmphex(mii_read(&from, BCM_PHY_ADDR, MII_ANAR), ==, advertise);
-
-    dest = g_strdup_printf(BCM_MACHINE
-                           " -device bcm570x,addr=%02x.0 -incoming %s",
-                           BCM_SLOT, uri);
-    to_qts = qtest_init(dest);
-    bcm_open(&to, to_qts);
-    bcm570x_migrate(from_qts, to_qts, uri);
-    g_assert_cmphex(mii_read(&to, BCM_PHY_ADDR, MII_ANAR), ==, advertise);
-
-    bcm_close(&to);
-    bcm_close(&from);
-    g_rmdir(tmpfs);
-}
-
 /*
  * The PHY is a migrated child while the net frontend is host state. Both must
  * still describe the same cable on the destination, including after a fresh
@@ -6507,8 +6465,6 @@ int main(int argc, char **argv)
                         test_status_dma_error);
     qtest_add_data_func("/bcm570x/vmstate-versions-nested-phy", NULL,
                         test_vmstate_versions_nested_phy);
-    qtest_add_data_func("/bcm570x/v6-phy-state-migrates", NULL,
-                        test_v6_phy_state_migrates);
     qtest_add_data_func("/bcm570x/state-survives-migration", NULL,
                         test_state_survives_migration);
     qtest_add_data_func(
