@@ -35,6 +35,22 @@ static inline const char *sgi_bridge_board_part_error(const char *board_part)
 }
 
 /*
+ * The text fields of one board-identity record, stored at fixed byte
+ * offsets in the part's first two pages (docs/datasheets/bridge.md, "The
+ * record layout, and every constraint on building it"). `part` is the
+ * same twelve-character board part the "board-part" property takes; its
+ * first nine characters are the base number and its last three the dash
+ * number. The other fields are space-padded to their widths: ten for the
+ * barcode, four for the revision and fourteen for the board name.
+ */
+typedef struct SGIBridgeBoardRecord {
+    const char *barcode;
+    const char *part;
+    const char *revision;
+    const char *name;
+} SGIBridgeBoardRecord;
+
+/*
  * Aim a slot's window the way a guest write to BRIDGE_DEVICE(n) would --
  * for the machine's firmware emulation to arm the console slot before any
  * guest code exists to do it.
@@ -43,10 +59,11 @@ void sgi_bridge_assign_window(SGIBridgeState *s, unsigned int slot,
                               hwaddr pci_base, bool memory_space);
 
 /*
- * Add a second board-identity record to this Bridge's one-wire bus, for a
- * daughtercard fitted behind the same chip: the bus is architecturally
- * multi-drop, and a guest one-wire search finds every part on it, not only
- * the chip's own board record realize() already attaches. `bridge` takes
+ * Add a second board-identity record, stored as `record` gives it, to
+ * this Bridge's one-wire bus, for a daughtercard fitted behind the same
+ * chip: the bus is architecturally multi-drop, and a guest one-wire
+ * search finds every part on it, not only the chip's own board record
+ * realize() already attaches. `bridge` takes
  * the generic qdev pointer a carrier-agnostic caller already has (an
  * sgi-baseio preset reaches its host through baseio_bus_host(), which
  * stays decoupled from any one host-bridge type); the Bridge must already
@@ -55,7 +72,7 @@ void sgi_bridge_assign_window(SGIBridgeState *s, unsigned int slot,
  * one-wire search cannot tell the two records apart.
  */
 bool sgi_bridge_add_onewire_board_part(DeviceState *bridge,
-                                       const char *board_part,
+                                       const SGIBridgeBoardRecord *record,
                                        uint64_t serial, Error **errp);
 
 /*
@@ -323,6 +340,15 @@ struct SGIBridgeState {
 
     /* A property: the board part stored in the one-wire identity page. */
     char *board_part;
+
+    /*
+     * Properties: the rest of the board's identity record. With
+     * board-name set, the page is the fixed-offset record and all three
+     * are required; unset, the page keeps the older text layout.
+     */
+    char *board_barcode;
+    char *board_revision;
+    char *board_name;
 
     /*
      * The MicroLAN bus. Every Bridge has one and realizes its own

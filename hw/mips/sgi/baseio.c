@@ -417,19 +417,27 @@ static bool baseio_build_io6(SGIBaseioState *s, Error **errp)
                                   SGI_IOC3_POPULATION_KEYBOARD_MOUSE)
 
 /*
- * The MediaIO daughtercard's own board-part record on the Bridge's
- * one-wire bus (docs/datasheets/baseio.md's board-variant table). Without
- * it, device 6's IOC3 has no board record of its own on that bus, and
- * IRIX's one-wire dispatch falls back to a default population that turns
- * ethernet on for a chip that was never wired to one, driving pci/6 to
- * probe a PHY that does not exist. The serial only has to read back
- * distinct from the Bridge's own board record so a one-wire search can
- * tell the two apart; it names no real part, so it continues the same
- * placeholder descending-byte idiom as NIC_ROM_SERIAL_DEFAULT
+ * The MediaIO daughtercard's own board-identity record on the Bridge's
+ * one-wire bus (docs/datasheets/baseio.md, "Board-identity records on the
+ * Bridge one-wire bus"). Without it, device 6's IOC3 has no board record
+ * of its own on that bus, and IRIX's one-wire dispatch falls back to a
+ * default population that turns ethernet on for a chip that was never
+ * wired to one, driving pci/6 to probe a PHY that does not exist. The
+ * part number, revision and name are the real board's, from an owner's
+ * inventory; the barcode is a placeholder, since a real one names a
+ * single unit. The serial only has to read back distinct from the
+ * Bridge's own board record so a one-wire search can tell the two apart;
+ * it names no real part, so it continues the same placeholder
+ * descending-byte idiom as NIC_ROM_SERIAL_DEFAULT
  * (hw/pci-host/sgi-bridge.c) and SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL
  * (hw/pci-host/sgi-xbridge.c) one step further along it.
  */
-#define BASEIO_G_MIO_BOARD_PART     "030-0880-003"
+static const SGIBridgeBoardRecord baseio_g_mio_record = {
+    .barcode = "OMIO000001",
+    .part = "030-0880-003",
+    .revision = "G",
+    .name = "MIO",
+};
 #define BASEIO_G_MIO_ONEWIRE_SERIAL 0x0c0b0a090807ULL
 
 /*
@@ -468,7 +476,7 @@ static bool baseio_build_io6g(SGIBaseioState *s, Error **errp)
     }
 
     if (!sgi_bridge_add_onewire_board_part(baseio_bus_host(s->pci_bus),
-                                           BASEIO_G_MIO_BOARD_PART,
+                                           &baseio_g_mio_record,
                                            BASEIO_G_MIO_ONEWIRE_SERIAL,
                                            errp)) {
         return false;
@@ -589,7 +597,13 @@ static bool baseio_build_io8(SGIBaseioState *s, Error **errp)
 static const SGIBaseioPreset sgi_baseio_presets[] = {
     { "ip29", { "030-1244-001", 4 }, baseio_build_ip29 },
     { "io6", { "030-1124-002", 4 }, baseio_build_io6 },
-    { "io6g", { "030-0734-002", 4 }, baseio_build_io6g },
+    /*
+     * The BaseIO-G board's own record (docs/datasheets/baseio.md,
+     * "Board-identity records on the Bridge one-wire bus"): the real
+     * board's part, revision and name, and a placeholder barcode.
+     */
+    { "io6g", { "030-0734-002", 4, "OBASEIO001", "N", "BASEIO" },
+      baseio_build_io6g },
     { "io8", { "030-1673-003", 0 }, baseio_build_io8 },
 };
 
