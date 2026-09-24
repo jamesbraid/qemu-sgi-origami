@@ -42,8 +42,8 @@
 #define SI_CMD_HDR_CLASS_DESC_20000 0x0008
 #define SI_CMD_HDR_CLASS_DESC_28000 0x000a
 #define SI_CMD_HDR_CLASS_DESC_30000 0x000c
-#define SI_DESC_20000_REG_ADDR_LOW 5
-#define SI_DESC_20000_REG_ADDR_HIGH 6
+#define SI_DESC_20000_REG_SRC_OFF_LOW3 5
+#define SI_DESC_20000_REG_SRC_OFF_ALIGNED 6
 #define SI_DESC_20000_REG_PITCH 4
 #define SI_DESC_20000_REG_ROWS 7
 #define SI_DESC_20000_REG_BPR 8
@@ -942,14 +942,31 @@ static bool si_raster_dma_load_page_list(SGIMgrasState *s, unsigned int widget,
     return true;
 }
 
+/*
+ * Despite their register order, SRC_OFF_LOW3 and SRC_OFF_ALIGNED are not
+ * the low/high halves of a 64-bit address -- combining them that way
+ * would need SRC_OFF_ALIGNED shifted into bits 63:32, and would send any
+ * nonzero value there to a different node's memory entirely. Per the DMA
+ * source-mapping decode the source-address formula in the comment above
+ * si_raster_dma_load_page_list() already cites, they are non-overlapping
+ * parts of one byte offset into the page list: SRC_OFF_LOW3 carries the
+ * offset's low 3 bits (src & 7), SRC_OFF_ALIGNED carries the same
+ * offset's 8-aligned remainder (src & ~7). Addition reconstructs the
+ * offset; a shift-and-OR would not.
+ */
+static uint64_t si_raster_dma_src_offset(SGIMgrasState *s)
+{
+    return (uint64_t)s->dma_desc_20000[SI_DESC_20000_REG_SRC_OFF_LOW3] +
+           s->dma_desc_20000[SI_DESC_20000_REG_SRC_OFF_ALIGNED];
+}
+
 static void si_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
 {
     unsigned int slot, widget;
     uint64_t base;
     uint32_t list_node, list_pa, count;
     uint32_t pitch = s->dma_desc_20000[SI_DESC_20000_REG_PITCH];
-    uint64_t addr = (uint64_t)s->dma_desc_20000[SI_DESC_20000_REG_ADDR_LOW] +
-                    s->dma_desc_20000[SI_DESC_20000_REG_ADDR_HIGH];
+    uint64_t addr = si_raster_dma_src_offset(s);
     uint32_t rows = s->dma_desc_20000[SI_DESC_20000_REG_ROWS];
     uint32_t bpr = s->dma_desc_20000[SI_DESC_20000_REG_BPR];
     uint32_t xy0 = s->rss[SI_REG_BLOCKXYSTARTI];
@@ -1084,8 +1101,7 @@ static void si_raster_dma_read_image(SGIMgrasState *s, uint32_t kick_byte)
     uint64_t base;
     uint32_t list_node, list_pa, count;
     uint32_t pitch = s->dma_desc_20000[SI_DESC_20000_REG_PITCH];
-    uint64_t addr = (uint64_t)s->dma_desc_20000[SI_DESC_20000_REG_ADDR_LOW] +
-                    s->dma_desc_20000[SI_DESC_20000_REG_ADDR_HIGH];
+    uint64_t addr = si_raster_dma_src_offset(s);
     uint32_t rows = s->dma_desc_20000[SI_DESC_20000_REG_ROWS];
     uint32_t bpr = s->dma_desc_20000[SI_DESC_20000_REG_BPR];
     uint32_t xy0 = s->rss[SI_REG_BLOCKXYSTARTI];
