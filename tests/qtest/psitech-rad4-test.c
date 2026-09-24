@@ -1620,6 +1620,102 @@ static void test_cursor_lut_tri_write(void)
     qtest_quit(qts);
 }
 
+/* One displayed pixel, as 0xRRGGBB, from a fresh QMP screendump. */
+static uint32_t rad4_screendump_pixel(QTestState *qts, unsigned x, unsigned y)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *contents = NULL;
+    g_autoptr(GError) error = NULL;
+    char *pixels;
+    gsize length;
+    int fd;
+
+    fd = g_file_open_tmp("psitech-rad4-pixel-XXXXXX.ppm", &path, &error);
+    g_assert_no_error(error);
+    close(fd);
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'screendump', 'arguments': {'filename': %s}}", path);
+    g_assert_true(g_file_get_contents(path, &contents, &length, &error));
+    g_assert_no_error(error);
+    unlink(path);
+    g_assert_true(g_str_has_prefix(contents, "P6\n1280 1024\n255\n"));
+    pixels = g_strstr_len(contents, length, "\n255\n") + 5;
+    g_assert_cmpuint(x, <, TEST_FB_WIDTH);
+    g_assert_cmpuint(y, <, TEST_FB_HEIGHT);
+    g_assert_cmpuint((gsize)(pixels - contents) +
+                     TEST_FB_WIDTH * TEST_FB_HEIGHT * 3, <=, length);
+    pixels += (y * TEST_FB_WIDTH + x) * 3;
+    return ((uint8_t)pixels[0] << 16) | ((uint8_t)pixels[1] << 8) |
+           (uint8_t)pixels[2];
+}
+
+/*
+ * The RGB561 overlays its hardware cursor onto the pixel stream it sends
+ * to the monitor, so the sprite is part of what the display shows and the
+ * model composites it into the scanout the same way. That is also the
+ * only way a VNC client or a screendump can show where the guest's
+ * cursor actually is: QEMU's VNC server has no protocol message to place
+ * a UI-layer cursor, so a client draws that kind at its own pointer
+ * instead. Program a one-pixel sprite and expect the screendump to carry
+ * it at the hot spot; moving it must both paint the new spot and give the
+ * old one its framebuffer content back, which is the dirty tracking of
+ * both spans; the hot spot offsets the pixel map; disabling removes it.
+ */
+static void test_cursor_composited_into_scanout(void)
+{
+    QTestState *qts = rad4_init();
+    uint32_t under_first, under_second, under_shifted;
+
+    rad4_play_mode0(qts);
+
+    /* Cursor Primary Color 1 = white, through the three-cycle port. */
+    rgb_set_index(qts, RGB_CURSOR_LUT_BASE + 1);
+    bar2_write(qts, B_RGB_RESERVED, 0xff);
+    bar2_write(qts, B_RGB_RESERVED, 0xff);
+    bar2_write(qts, B_RGB_RESERVED, 0xff);
+    /*
+     * Pixel map row 0, first byte: the leftmost pixel of the four is the
+     * most-significant pair (IBM page 3, Table 4), so 0x40 makes pixel
+     * (0, 0) color 1 and leaves the rest of the sprite transparent.
+     */
+    rgb_write_byte(qts, RGB_CURSOR_PIXMAP_BASE, 0x40);
+    rgb_write_byte(qts, RGB_CURSOR_HOTSPOT_X, 0);
+    rgb_write_byte(qts, RGB_CURSOR_HOTSPOT_Y, 0);
+    rgb_write_byte(qts, RGB_CURSOR_X_LOW, 100);
+    rgb_write_byte(qts, RGB_CURSOR_X_HIGH, 0);
+    rgb_write_byte(qts, RGB_CURSOR_Y_LOW, 200);
+    rgb_write_byte(qts, RGB_CURSOR_Y_HIGH, 0);
+
+    /* Still disabled: the framebuffer shows through. */
+    under_first = rad4_screendump_pixel(qts, 100, 200);
+    g_assert_cmphex(under_first, !=, 0xffffff);
+
+    rgb_write_byte(qts, RGB_CURSOR_CONTROL, CURSOR_CONTROL_CE);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 100, 200), ==, 0xffffff);
+    /* A transparent sprite pixel leaves the framebuffer alone. */
+    g_assert_cmphex(rad4_screendump_pixel(qts, 101, 200), ==, under_first);
+    under_second = rad4_screendump_pixel(qts, 300, 400);
+    under_shifted = rad4_screendump_pixel(qts, 299, 400);
+
+    /* Move to (300, 400): the old spot reverts, the new one shows it. */
+    rgb_write_byte(qts, RGB_CURSOR_X_LOW, 300 & 0xff);
+    rgb_write_byte(qts, RGB_CURSOR_X_HIGH, 300 >> 8);
+    rgb_write_byte(qts, RGB_CURSOR_Y_LOW, 400 & 0xff);
+    rgb_write_byte(qts, RGB_CURSOR_Y_HIGH, 400 >> 8);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 100, 200), ==, under_first);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 300, 400), ==, 0xffffff);
+
+    /* The hot spot is the pixel-map cell placed at the location. */
+    rgb_write_byte(qts, RGB_CURSOR_HOTSPOT_X, 1);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 300, 400), ==, under_second);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 299, 400), ==, 0xffffff);
+
+    rgb_write_byte(qts, RGB_CURSOR_CONTROL, 0);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 299, 400), ==, under_shifted);
+
+    qtest_quit(qts);
+}
+
 static void test_reset(void)
 {
     QTestState *qts = rad4_init();
@@ -1768,6 +1864,8 @@ int main(int argc, char **argv)
                    test_cursor_pixmap_round_trip);
     qtest_add_func("/psitech-rad4/cursor-lut-tri-write",
                    test_cursor_lut_tri_write);
+    qtest_add_func("/psitech-rad4/cursor-composited-into-scanout",
+                   test_cursor_composited_into_scanout);
     qtest_add_func("/psitech-rad4/reset", test_reset);
     qtest_add_func("/psitech-rad4/gfx-update-reset-forces-full-repaint",
                    test_gfx_update_reset_forces_full_repaint);
