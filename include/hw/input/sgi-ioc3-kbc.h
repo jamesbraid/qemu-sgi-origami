@@ -6,6 +6,15 @@
  * bit-level PS/2 line engine, not an 8042 clone; it wraps two generic ps2
  * devices and presents SGI's five-register interface. The project tree's
  * IOC3 datasheet is the specification. See docs/specs/sgi-ioc3.rst.
+ *
+ * Host key events without a console binding reach whichever keyboard
+ * registered first, so a machine with two of these controllers (the
+ * BaseIO-G's board IOC3 and its MediaIO daughtercard's) only ever types on
+ * one. The write-only bool property "activate-keyboard" picks: setting it
+ * true on a controller sends later key events to its keyboard, and false
+ * moves that keyboard behind every other one. It is host input routing
+ * only and changes nothing the guest can read, e.g.
+ *   qom-set <ioc3-path>/kbc activate-keyboard true
  */
 
 #ifndef HW_INPUT_SGI_IOC3_KBC_H
