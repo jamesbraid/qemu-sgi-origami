@@ -370,8 +370,13 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
         sgi_ioc3_update_irq(s);
         break;
     case SGI_IOC3_CHIP_CONTROL:
-        /* Stored: every guest programs the offsets already implemented. */
+        /*
+         * The port offsets aim the serial DMA engines (sdma_aimed()); an
+         * engine aimed here may have work waiting that no event will start.
+         */
         s->chip_control = val & SGI_IOC3_CHIP_CTRL_MASK;
+        sgi_ioc3_sdma_run(s, 0);
+        sgi_ioc3_sdma_run(s, 1);
         break;
     case SGI_IOC3_INT_OUTPUT: {
         uint32_t int_out = val & SGI_IOC3_INT_OUT_MASK;
@@ -974,10 +979,32 @@ static void sgi_ioc3_sdma_transmit(SGIIOC3State *s, unsigned int port)
     }
 }
 
+/*
+ * Chip control places each port's 16550 for its DMA engine
+ * (docs/datasheets/ioc3.md). Aimed anywhere else, the engine does not reach
+ * the port; what it reaches instead is not modelled.
+ */
+static bool sgi_ioc3_sdma_aimed(SGIIOC3State *s, unsigned int port)
+{
+    static const hwaddr uart[SGI_IOC3_SERIAL_PORTS] = {
+        SGI_IOC3_SERIAL_A, SGI_IOC3_SERIAL_B,
+    };
+    unsigned int shift = port ? SGI_IOC3_CHIP_CTRL_PORT_B_SHIFT
+                              : SGI_IOC3_CHIP_CTRL_PORT_A_SHIFT;
+    uint32_t field = (s->chip_control >> shift) &
+                     SGI_IOC3_CHIP_CTRL_PORT_FIELD;
+
+    return field == (uart[port] & 0xfff) / 8;
+}
+
 static void sgi_ioc3_sdma_run(SGIIOC3State *s, unsigned int port)
 {
     /* The walk drives a 16550 the board may not have fitted. */
     if (!s->board->serial[port]) {
+        return;
+    }
+
+    if (!sgi_ioc3_sdma_aimed(s, port)) {
         return;
     }
 

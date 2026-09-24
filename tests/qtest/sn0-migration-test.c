@@ -424,6 +424,9 @@ static void attach_node_ioc3(QTestState *qts, unsigned int node)
     qtest_writel(qts, BRIDGE_BASE_FOR_NODE(node) + BRIDGE_DEVICE(IOC3_SLOT) +
                        REG_DATA,
                  DEV_MEMORY_SPACE | (IOC3_PCI_MMIO >> 20));
+    /* The PROMs' chip control, which aims the serial DMA engines. */
+    qtest_writel(qts, BRIDGE_BASE_FOR_NODE(node) + IOC3_WINDOW_OFFSET + 0x28,
+                 0x0007ae5e);
 }
 
 static void queue_ioc3_ethernet_tx(QTestState *qts, uint32_t desc,
