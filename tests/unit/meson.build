@@ -7,7 +7,7 @@ fork_unit_tests = [
   'test-onewire', 'test-i2c-masters', 'test-i2c-wire',
   'test-sgi-o2000-module-mgmt', 'test-sgi-o2000-module-mgmt-real',
   'test-sgi-router', 'test-sn0-fabric-routed', 'test-sn1-topology',
-  'test-sn-model', 'test-sgi-bedrock-ni',
+  'test-sn-model', 'test-sgi-bedrock-ni', 'test-sgi-rad1-audio-pcm',
 ]
 
 tests = {
@@ -113,6 +113,8 @@ tests = {
                             qom, hwcore, migration, io],
   'test-sn1-topology': ['../../hw/mips/sgi/sn1-topology.c'],
   'test-sn-model': [],
+  # all code tested by test-sgi-rad1-audio-pcm is inside sgi-rad1-audio-pcm.h
+  'test-sgi-rad1-audio-pcm': [],
   'test-logging': [],
   'test-qapi-util': [],
   'test-interval-tree': [],

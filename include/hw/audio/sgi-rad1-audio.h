@@ -70,13 +70,17 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
  * engine runs. This bank does not drive the "UST not incrementing" report,
  * which comes from the free-running counter at 0x30.
  *
- * The analog output, channel type 1, reads A = 0x2c and B = 0x18.
+ * The analog input, channel type 0, reads A = 0x14 and B = 0x18; the
+ * analog output, type 1, reads A = 0x2c and B = 0x18.
  * - A carries the frame count in bits [31:18] (the driver reads it >> 18,
  *   masked to 14 bits) and a latch of the 0x30 counter in bits [17:0].
- * - B is shared with the analog input, type 0. Type 0 reads its bits
- *   [31:18]; type 1 reads bits [17:4]. The driver's start routine polls
- *   those bits after the enable and needs them to change within about
- *   500 us.
+ * - B is shared by the two. Type 0 reads its bits [31:18]; type 1 reads
+ *   bits [17:4]. The driver's start routine polls those bits after the
+ *   enable and needs them to change within about 500 us.
+ *
+ * The datasheet puts a 0x30 latch in bits [17:0] of every register whose
+ * field is at shift 18, which for B would overlap type 1's field. The
+ * model latches only into A and leaves B's low bits to type 1.
  */
 #define SGI_RAD1_AUDIO_REG_SAMPLE_POS_FIRST 0x04
 #define SGI_RAD1_AUDIO_REG_SAMPLE_POS_LAST  0x2c
@@ -86,8 +90,10 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_AUDIO_SAMPLE_POS_SHIFT     18
 #define SGI_RAD1_AUDIO_UST_LATCH_MASK       0x3ffffu
 #define SGI_RAD1_AUDIO_POS_FIELD_MASK       0x3fffu
+#define SGI_RAD1_AUDIO_REG_IN_POS_A         0x14
 #define SGI_RAD1_AUDIO_REG_OUT_POS_A        0x2c
-#define SGI_RAD1_AUDIO_REG_OUT_POS_B        0x18
+#define SGI_RAD1_AUDIO_REG_ANALOG_POS_B     0x18
+#define SGI_RAD1_AUDIO_IN_POS_B_SHIFT       18
 #define SGI_RAD1_AUDIO_OUT_POS_B_SHIFT      4
 /* Word index into sample_pos[] for a sample-position BAR0 offset. */
 #define SGI_RAD1_AUDIO_POS_IDX(off) \
@@ -108,7 +114,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 
 #define SGI_RAD1_AUDIO_REG_PREDISPATCH_A    0x44 /* bring-up 0xa0000008 */
 #define SGI_RAD1_AUDIO_REG_PREDISPATCH_B    0x48 /* bring-up 0x10 */
-#define SGI_RAD1_AUDIO_REG_SHIFT_LOAD_CLOCK 0x4c /* mode-gated bring-up write */
+/*
+ * Mode-gated bring-up write. Bit 0 is the analog input's (type 0) DMA
+ * enable; bit 27 is the clock the MIO mux bit-bang pulses, and the driver
+ * keeps bit 0 in its shadow while it does, so only bit 0 starts or stops
+ * the input.
+ */
+#define SGI_RAD1_AUDIO_REG_SHIFT_LOAD_CLOCK 0x4c
 #define SGI_RAD1_AUDIO_REG_PREDISPATCH_C    0x50 /* mode-gated bring-up write */
 #define SGI_RAD1_AUDIO_REG_PREDISPATCH_D    0x54 /* mode-gated bring-up write */
 /* Bring-up 0x20000000; bit 0 is the analog output's (type 1) DMA enable. */
@@ -153,20 +165,28 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_AUDIO_REG_STATUS_BASE_HI   0x528
 
 /*
- * Main audio-data DMA for the analog output, channel type 1. rad_start_dma
- * writes the ring's PCI address and a control word into two identical
- * register sets, then sets bit 0 of the enable register at 0x58. The
- * control word is (tag << 3) | (-count << 7), count in 128-byte units; the
- * tag is the channel type. See the per-type table in the datasheet's
- * deferred bring-up section and its main-DMA streaming contract.
+ * Main audio-data DMA for the analog channels. rad_start_dma writes the
+ * ring's PCI address and a control word into two identical register sets,
+ * then sets bit 0 of the channel's enable register: 0x4c for the input,
+ * channel type 0, and 0x58 for the output, type 1. The control word is
+ * (tag << 3) | (-count << 7), count in 128-byte units; the tag is the
+ * channel type. See the per-type table in the datasheet's deferred
+ * bring-up section and its main-DMA streaming contract.
  */
+#define SGI_RAD1_AUDIO_REG_IN_A_ADDR_LO     0x4d0
+#define SGI_RAD1_AUDIO_REG_IN_A_ADDR_HI     0x510
+#define SGI_RAD1_AUDIO_REG_IN_A_CTRL        0x4d4
+#define SGI_RAD1_AUDIO_REG_IN_B_ADDR_LO     0x400
+#define SGI_RAD1_AUDIO_REG_IN_B_ADDR_HI     0x404
+#define SGI_RAD1_AUDIO_REG_IN_B_CTRL        0x408
+#define SGI_RAD1_AUDIO_IN_TAG               0
 #define SGI_RAD1_AUDIO_REG_OUT_A_ADDR_LO    0x4f8
 #define SGI_RAD1_AUDIO_REG_OUT_A_ADDR_HI    0x524
 #define SGI_RAD1_AUDIO_REG_OUT_A_CTRL       0x4fc
 #define SGI_RAD1_AUDIO_REG_OUT_B_ADDR_LO    0x40c
 #define SGI_RAD1_AUDIO_REG_OUT_B_ADDR_HI    0x410
 #define SGI_RAD1_AUDIO_REG_OUT_B_CTRL       0x414
-#define SGI_RAD1_AUDIO_OUT_ENABLE_BIT       0x1u
+#define SGI_RAD1_AUDIO_ENABLE_BIT           0x1u
 #define SGI_RAD1_AUDIO_OUT_TAG              1
 #define SGI_RAD1_AUDIO_CTRL_TAG_SHIFT       3
 #define SGI_RAD1_AUDIO_CTRL_TAG_MASK        0xfu
@@ -212,7 +232,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
  * - bytes +0x44..+0x74 mirror registers 0x04..0x34 (slot byte = register
  *   offset + 0x40), the copy rad_update_dev works from;
  * - the even words of +0x00..+0x38 hold each active channel's current DMA
- *   address, low 32 bits; type 1's is +0x38;
+ *   address, low 32 bits; type 0's is +0x10 and type 1's is +0x38;
  * - +0x78 carries the ADAT-present bit (0x40) and the two bits the driver
  *   counts into a period it classifies against video field rates
  *   (0x80/0x100);
@@ -231,6 +251,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_AUDIO_SLOT_MIRROR_WORDS \
     (((SGI_RAD1_AUDIO_SLOT_MIRROR_LAST - SGI_RAD1_AUDIO_SLOT_MIRROR_FIRST) \
       / 4) + 1)
+#define SGI_RAD1_AUDIO_SLOT_IN_PTR_OFFSET   0x10
 #define SGI_RAD1_AUDIO_SLOT_OUT_PTR_OFFSET  0x38
 #define SGI_RAD1_AUDIO_SLOT_AES_NO_INPUT    0x00080000u
 #define SGI_RAD1_AUDIO_SLOT_DONE_WORD \
@@ -292,34 +313,75 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 
 
 /*
- * The analog output's streaming engine. From the enable edge to its clear
- * it walks the ring [start, start + count * 128) a frame at a time and
- * wraps to the start, with no per-chunk re-arm, paced by a virtual-clock
- * timer at the sample rate. Each step adds the frames moved to both
- * position registers and pushes the samples to the audio backend.
+ * The analog channels' streaming engine, shared by both directions. From
+ * the enable edge to its clear it walks the ring [start, start + count *
+ * 128) a frame at a time and wraps to the start, with no per-chunk re-arm,
+ * paced by a virtual-clock timer at the sample rate. The output reads each
+ * frame from the ring and pushes it to the host voice; the input takes a
+ * frame from the host voice and writes it into the ring. Each step adds
+ * the frames moved to the channel's two position registers.
  *
  * Ring format, from the datasheet's "Analog output sample format": a frame
  * is two 32-bit words, one channel each, holding a 24-bit signed sample in
  * bits [23:0]. The words cross the Bridge's byte-lane reversal like the
  * status descriptors, so the device sees them little-endian. The host
- * voice is 16-bit, taking bits [23:8].
+ * voice is 16-bit: output takes bits [23:8], input fills bits [23:8],
+ * sign-extends through [31:24] and leaves [7:0] zero.
  *
- * Approximations, each flagged in the datasheet:
+ * The per-word conversions live in sgi-rad1-audio-pcm.h.
+ *
+ * Approximations, each flagged in the datasheet or stated here:
  * - 44.1 kHz, the software rate of type 1's clock generator in the live
  *   IRIX run. Which 0xa0/0xa4 bits select the hardware rate is unknown.
+ *   Type 0's own clock-generator rate has not been read at all; the input
+ *   uses 44.1 kHz because types 0 and 1 share master clock +0x498 and the
+ *   output's rate is the one measured.
  * - The first word of a frame is the left channel.
- * - Both position registers count frames, not words.
+ * - The position registers count frames, not words.
+ * - The input uses the output's frame layout. The datasheet records the
+ *   layout from output-ring content only; nothing yet shows input words.
+ * - A host input voice that delivers fewer frames than the sample clock
+ *   owes, or none at all, is padded with silence, so the ring and
+ *   positions advance at the sample rate whatever the host does. A host
+ *   input that runs slow therefore leaves silence gaps in the recording
+ *   rather than stretching it.
  *
- * OUT_TICK_FRAMES frames per timer step, about 181 us, keeps the first
- * change of 0x18 bits [17:4] inside the driver's 500 us poll window.
+ * TICK_FRAMES frames per timer step, about 181 us, keeps the first change
+ * of B inside the driver's 500 us poll window.
  */
-#define SGI_RAD1_AUDIO_OUT_FREQ             44100
-#define SGI_RAD1_AUDIO_OUT_CHANNELS         2
-#define SGI_RAD1_AUDIO_OUT_WORD_BYTES       4
-#define SGI_RAD1_AUDIO_OUT_FRAME_BYTES \
-    (SGI_RAD1_AUDIO_OUT_CHANNELS * SGI_RAD1_AUDIO_OUT_WORD_BYTES)
-#define SGI_RAD1_AUDIO_OUT_SAMPLE_SHIFT     8
-#define SGI_RAD1_AUDIO_OUT_TICK_FRAMES      8
+#define SGI_RAD1_AUDIO_FREQ                 44100
+#define SGI_RAD1_AUDIO_CHANNELS             2
+#define SGI_RAD1_AUDIO_WORD_BYTES           4
+#define SGI_RAD1_AUDIO_FRAME_BYTES \
+    (SGI_RAD1_AUDIO_CHANNELS * SGI_RAD1_AUDIO_WORD_BYTES)
+#define SGI_RAD1_AUDIO_TICK_FRAMES          8
+/* Ring bytes moved per DMA access; a whole number of frames. */
+#define SGI_RAD1_AUDIO_CHUNK_BYTES          1024
+
+/* The modeled DMA channels, indices into SGIRad1AudioState's chan[]. */
+enum {
+    SGI_RAD1_AUDIO_CH_IN,    /* channel type 0, analog input */
+    SGI_RAD1_AUDIO_CH_OUT,   /* channel type 1, analog output */
+    SGI_RAD1_AUDIO_NUM_CH,
+};
+
+/*
+ * One channel's engine. base and len are the ring latched from set A at
+ * the enable edge; offset is the next frame's byte offset in it, so
+ * base + offset is the DMA pointer the status slot reports, which holds
+ * its last value after a stop. frames counts frames moved since
+ * start_ns, the virtual time of the enable edge, and paces timer.
+ */
+typedef struct SGIRad1AudioChannel {
+    SGIRad1AudioState *dev;
+    QEMUTimer *timer;
+    bool running;
+    uint64_t base;
+    uint32_t len;
+    uint32_t offset;
+    int64_t start_ns;
+    uint64_t frames;
+} SGIRad1AudioChannel;
 
 /*
  * A named field per documented offset rather than an array over the whole
@@ -355,24 +417,10 @@ struct SGIRad1AudioState {
 
     uint32_t dma_bank[SGI_RAD1_AUDIO_DMA_BANK_WORDS]; /* 0x400..0x528 */
 
-    /* Sample-position bank 0x04..0x2c, advanced by the output engine. */
+    /* Sample-position bank 0x04..0x2c, advanced by the channel engines. */
     uint32_t sample_pos[SGI_RAD1_AUDIO_SAMPLE_POS_WORDS];
 
-    /*
-     * Analog-output engine. out_base and out_len are the ring latched from
-     * set A at the enable edge; out_offset is the next frame's byte offset
-     * in it, so out_base + out_offset is the DMA pointer the status slot
-     * reports, which holds its last value after a stop. out_frames counts
-     * frames moved since out_start_ns, the virtual time of the enable edge,
-     * and paces out_timer.
-     */
-    QEMUTimer *out_timer;
-    bool out_running;
-    uint64_t out_base;
-    uint32_t out_len;
-    uint32_t out_offset;
-    int64_t out_start_ns;
-    uint64_t out_frames;
+    SGIRad1AudioChannel chan[SGI_RAD1_AUDIO_NUM_CH];
 
     /*
      * Continuous status-DMA engine. status_timer fires one completion per
@@ -396,14 +444,19 @@ struct SGIRad1AudioState {
     int64_t ust_base_ns;
 
     /*
-     * Host audio backend and the output voice the engine pushes to. The
-     * backend comes from the audiodev property (or the default). The voice
-     * is opened once at realize and only toggled active while the engine
-     * runs: closing and reopening it would make the wav backend truncate its
-     * file on each stream.
+     * Host audio backend and the two voices the channels use. The backend
+     * comes from the audiodev property (or the default). The output voice
+     * opens at realize, the input voice the first time the input runs; each
+     * then stays open and is only toggled active while its channel runs, as
+     * closing and reopening the output would make the wav backend truncate
+     * its file on each stream. A backend with no input, such as wav, leaves
+     * adc_voice NULL, and the input then records silence. adc_open_tried
+     * keeps that failed open from repeating on every enable.
      */
     AudioBackend *audio_be;
     SWVoiceOut *dac_voice;
+    SWVoiceIn *adc_voice;
+    bool adc_open_tried;
 };
 
 #endif

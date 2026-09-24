@@ -63,7 +63,7 @@ virtio_snd_handle_tx_xfer(void) "tx queue callback called"
 virtio_snd_handle_rx_xfer(void) "rx queue callback called"
 
 # sgi-rad1-audio.c
-sgi_rad1_audio_out_start(uint64_t base, uint32_t len, uint32_t tag) "ring 0x%"PRIx64" len 0x%x tag %u"
-sgi_rad1_audio_out_stop(uint32_t ptr, uint64_t frames) "ptr 0x%08x after %"PRIu64" frames"
-sgi_rad1_audio_out_wrap(uint64_t base) "ring 0x%"PRIx64
-sgi_rad1_audio_out_position(uint32_t frames, uint32_t pos_a, uint32_t pos_b) "+%u frames, 0x2c=0x%08x 0x18=0x%08x"
+sgi_rad1_audio_start(unsigned int ch, uint64_t base, uint32_t len, uint32_t tag) "ch %u ring 0x%"PRIx64" len 0x%x tag %u"
+sgi_rad1_audio_stop(unsigned int ch, uint32_t ptr, uint64_t frames) "ch %u ptr 0x%08x after %"PRIu64" frames"
+sgi_rad1_audio_wrap(unsigned int ch, uint64_t base) "ch %u ring 0x%"PRIx64
+sgi_rad1_audio_position(unsigned int ch, uint32_t frames, uint32_t pos_a, uint32_t pos_b) "ch %u +%u frames, A=0x%08x B=0x%08x"

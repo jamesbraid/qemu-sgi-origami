@@ -210,6 +210,27 @@
 #define RAD1_IN_POS_A             0x14
 #define RAD1_IN_ENABLE_IDLE       0x05000000u
 #define RAD1_IN_ENABLE_RUN        0x05000001u
+/* 0x4c bit 27, the clock the MIO mux bit-bang pulses. */
+#define RAD1_IN_MUX_CLOCK         0x08000000u
+
+/*
+ * The analog input, channel type 0, from the same per-type table: set A
+ * address-low/high/control at 0x4d0/0x510/0x4d4, set B at
+ * 0x400/0x404/0x408, enable bit 0 of 0x4c, position registers A = 0x14
+ * and B = 0x18 bits [31:18], status-slot pointer word +0x10. Its control
+ * word for a 4 KiB ring carries tag 0. The model writes each 16-bit host
+ * sample into bits [23:8] of a ring word, sign-extended, low byte zero:
+ * the output's layout, which the datasheet records for output only.
+ */
+#define RAD1_IN_A_ADDR_LO         0x4d0
+#define RAD1_IN_A_ADDR_HI         0x510
+#define RAD1_IN_A_CTRL            0x4d4
+#define RAD1_IN_B_ADDR_LO         0x400
+#define RAD1_IN_B_ADDR_HI         0x404
+#define RAD1_IN_B_CTRL            0x408
+#define RAD1_IN_CTRL_4K           0xfffff000u
+#define RAD1_SLOT_IN_PTR          0x10
+#define RAD1_IN_POISON            0xdeadbeefu
 #define RAD1_REG_CENTRAL_CTRL     0x80
 #define RAD1_CENTRAL_ADAT_OFF     0xffe20000u
 #define RAD1_OUT_FREQ             44100
@@ -1113,6 +1134,7 @@ static uint64_t rad1_out_frames_due(int64_t t_ns)
  */
 #define RAD1_TEST_STATUS_RAM  (module_nasids[0] * NODE_STRIDE + 0x02000000)
 #define RAD1_TEST_RING_RAM    (module_nasids[0] * NODE_STRIDE + 0x02100000)
+#define RAD1_TEST_IN_RAM      (module_nasids[0] * NODE_STRIDE + 0x02200000)
 #define RAD1_TEST_PCI(ram)    (((uint64_t)RAD1_LOCAL_HUB_WIDGET << 60) | (ram))
 
 /*
@@ -1225,6 +1247,12 @@ static void test_io6g_rad1_type1_output_stream(void)
     qtest_clock_step(qts, 2000000);
     g_assert_cmphex(rad1_read(qts, RAD1_OUT_POS_A), ==, a0);
     g_assert_cmphex(rad1_read(qts, RAD1_OUT_POS_B), ==, b0);
+    /*
+     * With no input ring programmed this 0x4c enable starts nothing at
+     * all, so it only shows the output ignores it. A running input's
+     * effect on the output's registers is checked by
+     * io6g-rad1-type0-input-stream.
+     */
     rad1_write(qts, RAD1_REG_SHIFT_LOAD_CLOCK, RAD1_IN_ENABLE_RUN);
     qtest_clock_step(qts, 2000000);
     g_assert_cmphex(rad1_read(qts, RAD1_OUT_POS_A), ==, a0);
@@ -1533,6 +1561,377 @@ static void test_io6g_rad1_output_migration(void)
 
     g_assert_cmpint(g_unlink(wav), ==, 0);
     g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
+/*
+ * Fill the input ring with a poison word no sample can equal, and program
+ * both of the input's register sets for it, as rad_start_dma does. The
+ * enable is left alone.
+ */
+static void rad1_prepare_input(QTestState *qts)
+{
+    const uint64_t ring_pci = RAD1_TEST_PCI(RAD1_TEST_IN_RAM);
+    unsigned int i;
+
+    for (i = 0; i < RAD1_OUT_RING_BYTES; i += 4) {
+        rad1_ring_write(qts, RAD1_TEST_IN_RAM + i, RAD1_IN_POISON);
+    }
+    rad1_write(qts, RAD1_IN_A_ADDR_LO, (uint32_t)ring_pci);
+    rad1_write(qts, RAD1_IN_A_ADDR_HI, (uint32_t)(ring_pci >> 32));
+    rad1_write(qts, RAD1_IN_A_CTRL, RAD1_IN_CTRL_4K);
+    rad1_write(qts, RAD1_IN_B_ADDR_LO, (uint32_t)ring_pci);
+    rad1_write(qts, RAD1_IN_B_ADDR_HI, (uint32_t)(ring_pci >> 32));
+    rad1_write(qts, RAD1_IN_B_CTRL, RAD1_IN_CTRL_4K);
+}
+
+/*
+ * Whether a ring word has the input's layout: a 16-bit sample in bits
+ * [23:8], sign-extended through [31:24], bits [7:0] zero. The poison word
+ * fails both tests.
+ */
+static bool rad1_is_input_word(uint32_t w)
+{
+    return (w & 0xff) == 0 && (uint32_t)((int32_t)(w << 8) >> 8) == w;
+}
+
+/* Start the status ring at RAD1_TEST_STATUS_RAM with IRIX's start word. */
+static int64_t rad1_start_status(QTestState *qts, unsigned int nslots)
+{
+    const uint64_t status_pci = RAD1_TEST_PCI(RAD1_TEST_STATUS_RAM);
+    unsigned int i;
+
+    for (i = 0; i < nslots; i++) {
+        rad1_ring_write(qts, RAD1_TEST_STATUS_RAM + i * RAD1_SLOT_STRIDE +
+                        RAD1_SLOT_DONE_OFFSET, 0);
+    }
+    rad1_write(qts, RAD1_REG_STATUS_BASE_LO, (uint32_t)status_pci);
+    rad1_write(qts, RAD1_REG_STATUS_BASE_HI, (uint32_t)(status_pci >> 32));
+    rad1_write(qts, RAD1_REG_STATUS_LIMIT,
+               RAD1_LIMIT_BASE - nslots * RAD1_SLOT_STRIDE);
+    rad1_write(qts, RAD1_REG_STATUS_DMA_CTRL, RAD1_STATUS_START_IRIX);
+    return rad1_clock_now(qts);
+}
+
+/*
+ * The analog input's continuous streaming engine, channel type 0. It
+ * shares the output's engine, with the direction reversed: from the 0x4c
+ * bit 0 edge it writes frames into the ring at the sample rate and wraps.
+ * The checks:
+ *
+ * - Neither the output's enable (0x58) nor 0x4c's other bits, the bring-up
+ *   value and the mux clock at bit 27, start the input; pulsing bit 27
+ *   while bit 0 stays set does not restart it.
+ * - 0x14's frame field and 0x18's bits [31:18] advance at 44.1 kHz, and
+ *   0x14's low bits latch the 0x30 counter. The output's registers, 0x2c
+ *   and 0x18 bits [17:4], set to nonzero values by a short output run
+ *   first, stay exactly as they were.
+ * - The ring is written from its start, one frame per sample period, every
+ *   word in the input layout, and nothing past the frames due is touched.
+ *   Which samples arrive depends on the host backend, so this checks the
+ *   layout, not the content; the migration case below pins silence to
+ *   zero words.
+ * - Each status completion carries the input's pointer at +0x10, agreeing
+ *   with the 0x14 mirror; it walks the ring in 22 to 24 words per
+ *   completion and wraps.
+ * - Clearing bit 0 stops the pointer, both registers and the ring writes.
+ */
+static void test_io6g_rad1_type0_input_stream(void)
+{
+    QTestState *qts = start_module_io6g();
+    const unsigned int nslots = 8;
+    const uint32_t in_lo = (uint32_t)RAD1_TEST_PCI(RAD1_TEST_IN_RAM);
+    uint32_t a0, b1, a_out, a, b, ust, prev_ptr, ptr, stop_ptr, stop_off;
+    uint64_t due, moved, k;
+    int64_t t_status, t_enable, t;
+    unsigned int i, wraps = 0;
+
+    rad1_prepare_output(qts, RAD1_SAMPLE_LEFT_WORD, RAD1_SAMPLE_RIGHT_WORD);
+    rad1_prepare_input(qts);
+    rad1_write(qts, RAD1_REG_SHIFT_LOAD_CLOCK, RAD1_IN_ENABLE_IDLE);
+
+    /*
+     * Negative controls. The output's enable runs the output, and a 0x4c
+     * write with the mux clock but not bit 0 runs nothing; neither touches
+     * the input's registers or ring. The output run also leaves nonzero
+     * values in 0x2c and 0x18 bits [17:4] for the input to leave alone.
+     */
+    rad1_write(qts, RAD1_REG_ANALOG_OUT_EN, RAD1_OUT_RUN);
+    qtest_clock_step(qts, 1000000);
+    rad1_write(qts, RAD1_REG_ANALOG_OUT_EN, RAD1_OUT_IDLE);
+    rad1_write(qts, RAD1_REG_SHIFT_LOAD_CLOCK,
+               RAD1_IN_ENABLE_IDLE | RAD1_IN_MUX_CLOCK);
+    qtest_clock_step(qts, 2000000);
+    rad1_write(qts, RAD1_REG_SHIFT_LOAD_CLOCK, RAD1_IN_ENABLE_IDLE);
+
+    a0 = rad1_read(qts, RAD1_IN_POS_A);
+    a_out = rad1_read(qts, RAD1_OUT_POS_A);
+    b1 = rad1_read(qts, RAD1_OUT_POS_B);
+    g_assert_cmphex(a0, ==, 0);
+    g_assert_cmphex(RAD1_POS_B_TYPE0(b1), ==, 0);
+    g_assert_cmphex(RAD1_POS_B_TYPE1(b1), !=, 0);
+    g_assert_cmphex(RAD1_POS_A_FRAMES(a_out), !=, 0);
+    for (i = 0; i < RAD1_OUT_RING_BYTES; i += 4) {
+        g_assert_cmphex(rad1_ring_read(qts, RAD1_TEST_IN_RAM + i),
+                        ==, RAD1_IN_POISON);
+    }
+
+    t_status = rad1_start_status(qts, nslots);
+    rad1_write(qts, RAD1_REG_SHIFT_LOAD_CLOCK, RAD1_IN_ENABLE_RUN);
+    t_enable = rad1_clock_now(qts);
+
+    /* A mux clock pulse with bit 0 held does not restart the input. */
+    qtest_clock_step(qts, 100000);
+    rad1_write(qts, RAD1_REG_SHIFT_LOAD_CLOCK,
+               RAD1_IN_ENABLE_RUN | RAD1_IN_MUX_CLOCK);
+    rad1_write(qts, RAD1_REG_SHIFT_LOAD_CLOCK, RAD1_IN_ENABLE_RUN);
+
+    /* B's type 0 field ticks inside rad_start_dma's 50 x 10 us poll. */
+    rad1_step_to(qts, t_enable, 500000);
+    b = rad1_read(qts, RAD1_OUT_POS_B);
+    g_assert_cmphex(RAD1_POS_B_TYPE0(b), !=, 0);
+    g_assert_cmphex(RAD1_POS_B_TYPE1(b), ==, RAD1_POS_B_TYPE1(b1));
+
+    /* 10 ms after the edge: every register exactly where it should be. */
+    rad1_step_to(qts, t_enable, 10000000);
+    t = rad1_clock_now(qts);
+    a = rad1_read(qts, RAD1_IN_POS_A);
+    b = rad1_read(qts, RAD1_OUT_POS_B);
+    ust = rad1_read(qts, RAD1_REG_UST_COUNTER);
+    due = rad1_out_frames_due(t - t_enable);
+    moved = (RAD1_POS_A_FRAMES(a) - RAD1_POS_A_FRAMES(a0)) & 0x3fff;
+    g_assert_cmpuint(moved, ==, due);
+    g_assert_cmpuint(RAD1_POS_B_TYPE0(b), ==, due & 0x3fff);
+    g_assert_cmphex(RAD1_POS_B_TYPE1(b), ==, RAD1_POS_B_TYPE1(b1));
+    g_assert_cmphex(RAD1_POS_A_LATCH(a), ==, RAD1_POS_A_LATCH(ust));
+    g_assert_cmphex(rad1_read(qts, RAD1_OUT_POS_A), ==, a_out);
+
+    /* 441 frames written from the ring's start, nothing beyond. */
+    g_assert_cmpuint(due, <, RAD1_OUT_RING_BYTES / RAD1_OUT_FRAME_BYTES);
+    for (i = 0; i < due * 2; i++) {
+        uint32_t w = rad1_ring_read(qts, RAD1_TEST_IN_RAM + i * 4);
+
+        g_assert_true(rad1_is_input_word(w));
+    }
+    for (; i < RAD1_OUT_RING_BYTES / 4; i++) {
+        g_assert_cmphex(rad1_ring_read(qts, RAD1_TEST_IN_RAM + i * 4),
+                        ==, RAD1_IN_POISON);
+    }
+
+    /* Walk the status slots one completion at a time. */
+    k = 1;
+    while (t_status + rad1_status_due(k) <= t + 1) {
+        k++;
+    }
+    prev_ptr = 0;
+    for (i = 0; i < 120; i++, k++) {
+        uint64_t slot = RAD1_TEST_STATUS_RAM + (k % nslots) * RAD1_SLOT_STRIDE;
+        uint32_t m_a, m_b, frames;
+
+        rad1_step_to(qts, t_status, rad1_status_due(k));
+        g_assert_cmphex(rad1_ring_read(qts, slot + RAD1_SLOT_DONE_OFFSET),
+                        ==, RAD1_SLOT_DONE_WORD);
+        rad1_ring_write(qts, slot + RAD1_SLOT_DONE_OFFSET, 0);
+
+        ptr = rad1_ring_read(qts, slot + RAD1_SLOT_IN_PTR);
+        g_assert_cmphex(ptr, >=, in_lo);
+        g_assert_cmphex(ptr, <, in_lo + RAD1_OUT_RING_BYTES);
+        if (prev_ptr) {
+            uint32_t words = ((ptr - prev_ptr) % RAD1_OUT_RING_BYTES) / 4;
+
+            g_assert_cmpuint(words, >=, 22);
+            g_assert_cmpuint(words, <=, 24);
+            if (ptr < prev_ptr) {
+                wraps++;
+            }
+        }
+        prev_ptr = ptr;
+
+        m_a = rad1_ring_read(qts, slot + RAD1_SLOT_MIRROR_OFFSET +
+                             RAD1_IN_POS_A);
+        m_b = rad1_ring_read(qts, slot + RAD1_SLOT_MIRROR_OFFSET +
+                             RAD1_OUT_POS_B);
+        frames = (RAD1_POS_A_FRAMES(m_a) - RAD1_POS_A_FRAMES(a0)) & 0x3fff;
+        g_assert_cmphex(ptr - in_lo, ==,
+                        frames * RAD1_OUT_FRAME_BYTES % RAD1_OUT_RING_BYTES);
+        g_assert_cmpuint(RAD1_POS_B_TYPE0(m_b), ==, frames);
+        g_assert_cmphex(RAD1_POS_B_TYPE1(m_b), ==, RAD1_POS_B_TYPE1(b1));
+        g_assert_cmphex(rad1_ring_read(qts, slot + RAD1_SLOT_MIRROR_OFFSET +
+                                       RAD1_OUT_POS_A), ==, a_out);
+    }
+    g_assert_cmpuint(wraps, >=, 2);
+
+    /* Clearing bit 0 stops the registers, the pointer and the writes. */
+    rad1_step_to(qts, t_status,
+                 (rad1_status_due(k - 1) + rad1_status_due(k)) / 2);
+    rad1_write(qts, RAD1_REG_SHIFT_LOAD_CLOCK, RAD1_IN_ENABLE_IDLE);
+    a = rad1_read(qts, RAD1_IN_POS_A);
+    b = rad1_read(qts, RAD1_OUT_POS_B);
+    rad1_step_to(qts, t_status, rad1_status_due(k));
+    stop_ptr = rad1_ring_read(qts, RAD1_TEST_STATUS_RAM +
+                              (k % nslots) * RAD1_SLOT_STRIDE +
+                              RAD1_SLOT_IN_PTR);
+    stop_off = stop_ptr - in_lo;
+    g_assert_cmphex(stop_off, ==,
+                    ((RAD1_POS_A_FRAMES(a) - RAD1_POS_A_FRAMES(a0)) & 0x3fff) *
+                    RAD1_OUT_FRAME_BYTES % RAD1_OUT_RING_BYTES);
+    for (i = 0; i < 16; i++) {
+        rad1_ring_write(qts, RAD1_TEST_IN_RAM +
+                        (stop_off + i * 4) % RAD1_OUT_RING_BYTES,
+                        RAD1_IN_POISON);
+    }
+    k += 3;
+    rad1_step_to(qts, t_status, rad1_status_due(k));
+    g_assert_cmphex(rad1_read(qts, RAD1_IN_POS_A), ==, a);
+    g_assert_cmphex(rad1_read(qts, RAD1_OUT_POS_B), ==, b);
+    g_assert_cmphex(rad1_ring_read(qts, RAD1_TEST_STATUS_RAM +
+                                   (k % nslots) * RAD1_SLOT_STRIDE +
+                                   RAD1_SLOT_IN_PTR), ==, stop_ptr);
+    for (i = 0; i < 16; i++) {
+        g_assert_cmphex(rad1_ring_read(qts, RAD1_TEST_IN_RAM +
+                                       (stop_off + i * 4) %
+                                       RAD1_OUT_RING_BYTES),
+                        ==, RAD1_IN_POISON);
+    }
+
+    rad1_write(qts, RAD1_REG_STATUS_DMA_CTRL, RAD1_STATUS_STOP);
+}
+
+/* Assert every word of the input ring is zero: silence, in the layout. */
+static void rad1_assert_input_ring_silent(QTestState *qts)
+{
+    unsigned int i;
+
+    for (i = 0; i < RAD1_OUT_RING_BYTES; i += 4) {
+        g_assert_cmphex(rad1_ring_read(qts, RAD1_TEST_IN_RAM + i), ==, 0);
+    }
+}
+
+/*
+ * Save and restore with the input running, both machines bound to the
+ * none audiodev, whose input voice delivers silence. That pins content
+ * where the backend is known: once the ring has lapped, every word of it
+ * is zero. On the destination, with its clock set to the source's:
+ *
+ * - 0x4c and both position registers read as they did on the source;
+ * - the next status completion lands on the source's schedule and carries
+ *   the +0x10 pointer and 0x14 mirror of an uninterrupted stream;
+ * - the engine keeps writing: a re-poisoned ring is silent again a lap
+ *   later.
+ */
+static void test_io6g_rad1_input_migration(void)
+{
+    const char *none = "-audiodev none,id=rad1none "
+                       "-global sgi-rad1-audio.audiodev=rad1none";
+    const uint32_t in_lo = (uint32_t)RAD1_TEST_PCI(RAD1_TEST_IN_RAM);
+    const unsigned int nslots = 8;
+    g_autofree char *dir = NULL;
+    g_autofree char *uri = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    uint32_t a, b, a0, m_a, ptr;
+    int64_t t_status, t_enable, t_src;
+    uint64_t k, frames, slot;
+    unsigned int i;
+
+    dir = g_dir_make_tmp("sn0-baseio-rad1-input-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+
+    from = start_module_with(",baseio-preset=io6g", none);
+    rad1_prepare_output(from, RAD1_SAMPLE_LEFT_WORD, RAD1_SAMPLE_RIGHT_WORD);
+    rad1_prepare_input(from);
+    a0 = rad1_read(from, RAD1_IN_POS_A);
+    t_status = rad1_start_status(from, nslots);
+    rad1_write(from, RAD1_REG_SHIFT_LOAD_CLOCK, RAD1_IN_ENABLE_RUN);
+    t_enable = rad1_clock_now(from);
+
+    /* 15 ms is past a 11.6 ms lap: the whole ring now holds silence. */
+    rad1_step_to(from, t_status,
+                 (rad1_status_due(60) + rad1_status_due(61)) / 2);
+    rad1_assert_input_ring_silent(from);
+    t_src = rad1_clock_now(from);
+    a = rad1_read(from, RAD1_IN_POS_A);
+    b = rad1_read(from, RAD1_OUT_POS_B);
+    g_assert_cmpuint((RAD1_POS_A_FRAMES(a) - RAD1_POS_A_FRAMES(a0)) & 0x3fff,
+                     ==, rad1_out_frames_due(t_src - t_enable));
+
+    to = qtest_initf("-M origin2000,baseio-preset=io6g -smp 8 -m 256M "
+                     "-d unimp,guest_errors %s -incoming %s", none, uri);
+    sgi_migrate_stopped(from, uri);
+    qtest_clock_set(to, t_src);
+
+    g_assert_cmphex(rad1_read(to, RAD1_REG_SHIFT_LOAD_CLOCK),
+                    ==, RAD1_IN_ENABLE_RUN);
+    g_assert_cmphex(rad1_read(to, RAD1_IN_POS_A), ==, a);
+    g_assert_cmphex(rad1_read(to, RAD1_OUT_POS_B), ==, b);
+
+    for (i = 0; i < RAD1_OUT_RING_BYTES; i += 4) {
+        rad1_ring_write(to, RAD1_TEST_IN_RAM + i, RAD1_IN_POISON);
+    }
+
+    /* Completion 61 lands on the source's schedule. */
+    k = 61;
+    slot = RAD1_TEST_STATUS_RAM + (k % nslots) * RAD1_SLOT_STRIDE;
+    rad1_ring_write(to, slot + RAD1_SLOT_DONE_OFFSET, 0);
+    rad1_step_to(to, t_status, rad1_status_due(k) - 1);
+    g_assert_cmphex(rad1_ring_read(to, slot + RAD1_SLOT_DONE_OFFSET) &
+                    RAD1_SLOT_DONE_BIT, ==, 0);
+    qtest_clock_step(to, 1);
+    g_assert_cmphex(rad1_ring_read(to, slot + RAD1_SLOT_DONE_OFFSET),
+                    ==, RAD1_SLOT_DONE_WORD);
+
+    frames = rad1_out_frames_due(t_status + rad1_status_due(k) - t_enable);
+    m_a = rad1_ring_read(to, slot + RAD1_SLOT_MIRROR_OFFSET + RAD1_IN_POS_A);
+    ptr = rad1_ring_read(to, slot + RAD1_SLOT_IN_PTR);
+    g_assert_cmpuint((RAD1_POS_A_FRAMES(m_a) - RAD1_POS_A_FRAMES(a0)) & 0x3fff,
+                     ==, frames & 0x3fff);
+    g_assert_cmphex(ptr - in_lo, ==,
+                    frames * RAD1_OUT_FRAME_BYTES % RAD1_OUT_RING_BYTES);
+
+    /* A lap later the destination has written silence over the poison. */
+    qtest_clock_step(to, 15000000);
+    rad1_assert_input_ring_silent(to);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
+/*
+ * The input with no host input voice: a machine bound to the wav audiodev,
+ * which has none. The engine still runs on its own clock and fills the
+ * ring with silence, so the positions advance at 44.1 kHz and every word
+ * of a lapped ring is zero.
+ */
+static void test_io6g_rad1_input_without_host_input(void)
+{
+    g_autofree char *path = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    uint32_t a;
+    int64_t t_enable;
+    int fd;
+
+    fd = g_file_open_tmp("sn0-baseio-rad1-XXXXXX.wav", &path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    extra = rad1_wav_args(path);
+
+    qts = start_module_with(",baseio-preset=io6g", extra);
+    rad1_prepare_output(qts, RAD1_SAMPLE_LEFT_WORD, RAD1_SAMPLE_RIGHT_WORD);
+    rad1_prepare_input(qts);
+    rad1_write(qts, RAD1_REG_SHIFT_LOAD_CLOCK, RAD1_IN_ENABLE_RUN);
+    t_enable = rad1_clock_now(qts);
+
+    rad1_step_to(qts, t_enable, 15000000);
+    a = rad1_read(qts, RAD1_IN_POS_A);
+    g_assert_cmpuint(RAD1_POS_A_FRAMES(a), ==,
+                     rad1_out_frames_due(15000000));
+    rad1_assert_input_ring_silent(qts);
+
+    rad1_write(qts, RAD1_REG_SHIFT_LOAD_CLOCK, RAD1_IN_ENABLE_IDLE);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
 }
 
 /*
@@ -2017,6 +2416,12 @@ int main(int argc, char **argv)
                    test_io6g_rad1_output_samples);
     qtest_add_func("sn0/baseio/io6g-rad1-output-migration",
                    test_io6g_rad1_output_migration);
+    qtest_add_func("sn0/baseio/io6g-rad1-type0-input-stream",
+                   test_io6g_rad1_type0_input_stream);
+    qtest_add_func("sn0/baseio/io6g-rad1-input-migration",
+                   test_io6g_rad1_input_migration);
+    qtest_add_func("sn0/baseio/io6g-rad1-input-without-host-input",
+                   test_io6g_rad1_input_without_host_input);
     qtest_add_func("sn0/baseio/io6g-rad1-ust-counter",
                    test_io6g_rad1_ust_counter);
     qtest_add_func("sn0/baseio/io6g-ps2", test_io6g_ps2);
