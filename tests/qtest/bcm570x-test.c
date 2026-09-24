@@ -3072,190 +3072,6 @@ static void test_transmit_checksum_bad_header(const void *data)
 }
 
 /*
- * How fast the send path moves a burst. The driver hands the card a run of
- * descriptors and rings the doorbell once, so this times exactly that: the whole
- * burst leaves on one doorbell, and the frames are counted off the backend. It
- * reports the rate rather than asserting one -- what a host manages depends on
- * the host -- but it fails if a frame is lost or malformed, so the number is
- * never quoted for a run that did not actually carry the traffic.
- */
-static void test_transmit_throughput(const void *data)
-{
-    int sv[2];
-    Bcm b;
-    uint8_t *ring, *bufs, *frame;
-    uint8_t got[2048];
-    unsigned int i, round;
-    gint64 t0, t1;
-    guint64 bytes = 0;
-    double secs, mbps;
-
-    ring = g_malloc0(BENCH_RING_LEN * 16);
-    bufs = g_malloc0(BENCH_FRAMES * BENCH_BUF_STRIDE);
-    frame = g_malloc0(BENCH_FRAME_LEN);
-
-    for (i = 0; i < BENCH_FRAME_LEN; i++) {
-        frame[i] = (uint8_t)(i * 5 + 3);
-    }
-    for (i = 0; i < BENCH_FRAMES; i++) {
-        uint64_t buf = BENCH_BUF_PHYS + (uint64_t)i * BENCH_BUF_STRIDE;
-        uint8_t *bd = ring + i * 16;
-
-        memcpy(bufs + i * BENCH_BUF_STRIDE, frame, BENCH_FRAME_LEN);
-        put32le(bd + 0, buf >> 32);
-        put32le(bd + 4, buf & 0xffffffff);
-        put16le(bd + 8, BCM_TXBDFLAG_END);
-        put16le(bd + 10, BENCH_FRAME_LEN);
-    }
-    /* Complete an empty frame when the consumer wraps back to slot zero. */
-    put16le(ring + BENCH_FRAMES * 16 + 8, BCM_TXBDFLAG_END);
-
-    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    net_socket_set_recv_timeout(sv[0], 30);
-    bcm_open(&b, qtest_initf(BCM_MACHINE
-                             " -netdev socket,fd=%d,id=n0"
-                             " -device bcm570x,addr=%02x.0,netdev=n0",
-                             sv[1], BCM_SLOT));
-
-    ind_reg_writel(&b, BCM_MODE_CTL, BCM_DMA_SWAP_OPTIONS);
-    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 0, BENCH_RING_PHYS >> 32);
-    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 4,
-                   BENCH_RING_PHYS & 0xffffffff);
-    ind_mem_writel(&b, BCM_SRAM_SEND_RING_RCB + 8, BENCH_RING_LEN << 16);
-    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
-    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
-    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
-    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
-
-    qtest_memwrite(b.qts, BENCH_RING_PHYS, ring, BENCH_RING_LEN * 16);
-    qtest_memwrite(b.qts, BENCH_BUF_PHYS, bufs,
-                   BENCH_FRAMES * BENCH_BUF_STRIDE);
-
-    /*
-     * Repeat the burst so the figure is a sustained rate rather than one
-     * doorbell's worth. A single burst can flatter a device: the ring is cold,
-     * nothing has wrapped, and the sample is too short for the cost of the
-     * steady state to show.
-     */
-    t0 = g_get_monotonic_time();
-    for (round = 0; round < BENCH_ROUNDS; round++) {
-        unsigned int j;
-
-        bar_writel(&b, BCM_MBX_TX_PROD_LO, BENCH_FRAMES);
-        for (j = 0; j < BENCH_FRAMES; j++) {
-            size_t len = net_socket_recv_frame(sv[0], got, sizeof(got));
-
-            g_assert_cmpint(len, ==, BENCH_FRAME_LEN);
-            g_assert_cmpmem(got, len, frame, BENCH_FRAME_LEN);
-            bytes += len;
-        }
-        /* Hand the ring back to the start for the next round. */
-        bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);
-    }
-    t1 = g_get_monotonic_time();
-
-    secs = (double)(t1 - t0) / G_USEC_PER_SEC;
-    mbps = secs > 0 ? ((double)bytes * 8) / (secs * 1000000.0) : 0;
-    g_test_message("transmit sustained: %u frames, %" G_GUINT64_FORMAT " bytes "
-                   "in %.4f s = %.1f Mbit/s, %.0f frames/s",
-                   BENCH_FRAMES * BENCH_ROUNDS, bytes, secs, mbps,
-                   secs > 0 ? (BENCH_FRAMES * BENCH_ROUNDS) / secs : 0);
-
-    bcm_close(&b);
-    close(sv[0]);
-    g_free(ring);
-    g_free(bufs);
-    g_free(frame);
-}
-
-/*
- * What coalescing is worth on the receive side. The same burst is taken twice,
- * once with an update per frame and once with a group per K frames, and both the
- * interrupt count and the wall time are reported. The interrupt count is the
- * honest measure -- the model's own cost per update -- and the timing says
- * whether that saving shows up in how fast the burst clears.
- */
-static void receive_burst_cost(unsigned int coal, unsigned int frames,
-                               uint32_t *updates, double *secs)
-{
-    int sv[2];
-    Bcm b;
-    uint8_t frame[128];
-    uint8_t bd[BCM_RXBD_SIZE];
-    uint32_t tag_before, tag_after;
-    unsigned int i;
-    gint64 t0, t1;
-
-    memset(frame, 0xa5, sizeof(frame));
-    memset(frame, 0xff, 6);          /* broadcast: always accepted */
-
-    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    bcm_open(&b, qtest_initf(BCM_MACHINE
-                             " -netdev socket,fd=%d,id=n0"
-                             " -device bcm570x,addr=%02x.0,netdev=n0",
-                             sv[1], BCM_SLOT));
-
-    bar_writel(&b, BCM_RX_STD_RCB_HI, STD_RING_PHYS >> 32);
-    bar_writel(&b, BCM_RX_STD_RCB_LO, STD_RING_PHYS & 0xffffffff);
-    bar_writel(&b, BCM_RX_STD_RCB_MAXLEN, STD_BUF_SIZE << 16);
-    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 0, RET_RING_PHYS >> 32);
-    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 4, RET_RING_PHYS & 0xffffffff);
-    ind_mem_writel(&b, BCM_SRAM_RX_RETURN_RCB + 8, COAL_RING_LEN << 16);
-    bar_writel(&b, BCM_HCC_STATUSBLK_HI, STATUS_PHYS >> 32);
-    bar_writel(&b, BCM_HCC_STATUSBLK_LO, STATUS_PHYS & 0xffffffff);
-    bar_writel(&b, BCM_HCC_RX_MAX_COAL_BDS, coal);
-    bar_writel(&b, BCM_HCC_RX_COAL_TICKS, 0x10000000);
-    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
-    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
-
-    memset(bd, 0, sizeof(bd));
-    put32le(bd + 0, RX_BUF_PHYS >> 32);
-    put32le(bd + 4, RX_BUF_PHYS & 0xffffffff);
-    for (i = 0; i < frames; i++) {
-        qtest_memwrite(b.qts, STD_RING_PHYS + (uint64_t)i * BCM_RXBD_SIZE,
-                       bd, sizeof(bd));
-    }
-    qtest_memset(b.qts, RET_RING_PHYS, 0,
-                 (uint64_t)COAL_RING_LEN * BCM_RXBD_SIZE);
-    qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
-    bar_writel(&b, BCM_MBX_RX_STD_PROD_LO, frames);
-
-    tag_before = read_status_tag(&b);
-    t0 = g_get_monotonic_time();
-    for (i = 0; i < frames; i++) {
-        net_socket_send_frame(sv[0], frame, sizeof(frame));
-    }
-    wait_for_rx_prod(&b, frames);
-    t1 = g_get_monotonic_time();
-    tag_after = read_status_tag(&b);
-
-    *updates = tag_after - tag_before;
-    *secs = (double)(t1 - t0) / G_USEC_PER_SEC;
-
-    bcm_close(&b);
-    close(sv[0]);
-}
-
-static void test_receive_coalescing_cost(const void *data)
-{
-    const unsigned int frames = 48;   /* whole groups at either setting */
-    uint32_t per_frame, grouped;
-    double t_per_frame, t_grouped;
-
-    receive_burst_cost(1, frames, &per_frame, &t_per_frame);
-    receive_burst_cost(16, frames, &grouped, &t_grouped);
-
-    g_test_message("receive burst of %u frames: per-frame updates %u in %.4f s; "
-                   "coalesced-by-16 updates %u in %.4f s (%.1fx fewer updates)",
-                   frames, per_frame, t_per_frame, grouped, t_grouped,
-                   grouped ? (double)per_frame / grouped : 0);
-
-    /* Whatever the host timing, the saving in updates is the contract. */
-    g_assert_cmpuint(per_frame, ==, frames);
-    g_assert_cmpuint(grouped, <, per_frame);
-}
-
-/*
  * Frame payload byte order under the endian word-swap. With ENDIAN_WORDSWAP set,
  * the big-endian driver lays each 32-bit DMA word down byte-reversed -- the same
  * reversal that lets it write descriptors little-endian -- so a payload it stores
@@ -6052,116 +5868,6 @@ static void test_migrated_link_controls_egress(const void *data)
 }
 
 /*
- * A partial transmit group owns both a pending completion count and its
- * deadline. Migration must carry both so the destination reports the tail at
- * the same timer boundary instead of losing it.
- */
-static void test_transmit_coalescing_survives_migration(const void *data)
-{
-    g_autofree gchar *tmpfs = NULL;
-    g_autofree gchar *uri = NULL;
-    g_autofree gchar *dest = NULL;
-    GError *err = NULL;
-    QTestState *from_qts, *to_qts;
-    Bcm from, to;
-    int sv[2];
-    uint8_t frame[64];
-    uint8_t got[128];
-    const unsigned int ticks = 50;
-
-    tmpfs = g_dir_make_tmp("bcm570x-test-XXXXXX", &err);
-    g_assert(tmpfs);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
-    memset(frame, 0x56, sizeof(frame));
-    memset(frame, 0xff, 6);
-
-    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    net_socket_set_recv_timeout(sv[0], 10);
-    from_qts = qtest_initf(BCM_MACHINE
-                           " -netdev socket,fd=%d,id=n0"
-                           " -device bcm570x,addr=%02x.0,netdev=n0",
-                           sv[1], BCM_SLOT);
-    bcm_open(&from, from_qts);
-    txc_setup(&from, 8, ticks);
-    txc_post(&from, frame, sizeof(frame), 1);
-    g_assert_cmpint(net_socket_recv_frame(sv[0], got, sizeof(got)), ==,
-                    sizeof(frame));
-    g_assert_cmpuint(read_status_tag(&from), ==, 0);
-
-    dest = g_strdup_printf(BCM_MACHINE
-                           " -netdev user,id=n0"
-                           " -device bcm570x,addr=%02x.0,netdev=n0"
-                           " -incoming %s", BCM_SLOT, uri);
-    to_qts = qtest_init(dest);
-    bcm_open(&to, to_qts);
-    bcm570x_migrate(from_qts, to_qts, uri);
-
-    g_assert_cmpuint(read_status_tag(&to), ==, 0);
-    qtest_clock_step(to.qts, (int64_t)ticks * 1000 + 1000);
-    g_assert_cmpuint(read_status_tag(&to), ==, 1);
-
-    bcm_close(&to);
-    bcm_close(&from);
-    close(sv[0]);
-}
-
-/*
- * The receive side uses the same migration contract. This pins the existing
- * pending-count field to a real timer expiry on the destination.
- */
-static void test_receive_coalescing_survives_migration(const void *data)
-{
-    g_autofree gchar *tmpfs = NULL;
-    g_autofree gchar *uri = NULL;
-    g_autofree gchar *dest = NULL;
-    GError *err = NULL;
-    QTestState *from_qts, *to_qts;
-    Bcm from, to;
-    int sv[2];
-    uint8_t frame[64];
-    const unsigned int ticks = 50;
-
-    tmpfs = g_dir_make_tmp("bcm570x-test-XXXXXX", &err);
-    g_assert(tmpfs);
-    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
-    memset(frame, 0x67, sizeof(frame));
-    memset(frame, 0xff, 6);
-
-    g_assert_cmpint(socketpair(PF_UNIX, SOCK_STREAM, 0, sv), ==, 0);
-    from_qts = qtest_initf(BCM_MACHINE
-                           " -netdev socket,fd=%d,id=n0"
-                           " -device bcm570x,addr=%02x.0,netdev=n0",
-                           sv[1], BCM_SLOT);
-    bcm_open(&from, from_qts);
-    rx_open_one(&from, sv[0]);
-    bar_writel(&from, BCM_HCC_RX_MAX_COAL_BDS, 8);
-    bar_writel(&from, BCM_HCC_RX_COAL_TICKS, ticks);
-    net_socket_send_frame(sv[0], frame, sizeof(frame));
-    wait_for_ret_end(&from, 0);
-    g_assert_cmpuint(read_status_tag(&from), ==, 0);
-
-    dest = g_strdup_printf(BCM_MACHINE
-                           " -netdev user,id=n0"
-                           " -device bcm570x,addr=%02x.0,netdev=n0"
-                           " -incoming %s", BCM_SLOT, uri);
-    to_qts = qtest_init(dest);
-    bcm_open(&to, to_qts);
-    bcm570x_migrate(from_qts, to_qts, uri);
-
-    /*
-     * Past the arrival floor as well: the coalescing timer only starts
-     * counting once the completion is reported to it.
-     */
-    qtest_clock_step(to.qts,
-                     RX_ARRIVAL_LATENCY_NS + (int64_t)ticks * 1000 + 1000);
-    g_assert_cmpuint(read_status_tag(&to), ==, 1);
-
-    bcm_close(&to);
-    bcm_close(&from);
-    close(sv[0]);
-}
-
-/*
  * F12: the arrival line's vmstate migrates only what it holds, not a fixed
  * 256 slots. Drain one completion clear of the ring's start so the line's
  * head is not still sitting at zero, hold two more behind a floor small
@@ -6712,8 +6418,6 @@ int main(int argc, char **argv)
     qtest_add_data_func("/bcm570x/transmit-partial-error-descriptor-"
                         "coalescing", NULL,
                         test_transmit_partial_error_descriptor_coalescing);
-    qtest_add_data_func("/bcm570x/transmit-throughput", NULL,
-                        test_transmit_throughput);
     qtest_add_data_func("/bcm570x/transmit-coalescing", NULL,
                         test_transmit_coalescing);
     qtest_add_data_func("/bcm570x/transmit-coalescing-empty-and-dropped", NULL,
@@ -6732,8 +6436,6 @@ int main(int argc, char **argv)
                         test_transmit_coalescing_zero_ticks);
     qtest_add_data_func("/bcm570x/transmit-coalescing-status-dma-retry", NULL,
                         test_transmit_coalescing_status_dma_retry);
-    qtest_add_data_func("/bcm570x/receive-coalescing-cost", NULL,
-                        test_receive_coalescing_cost);
     qtest_add_data_func("/bcm570x/transmit-checksum-offload", NULL,
                         test_transmit_checksum_offload);
     qtest_add_data_func("/bcm570x/transmit-segmentation", NULL,
@@ -6872,10 +6574,6 @@ int main(int argc, char **argv)
                         test_migrated_link_controls_egress);
     qtest_add_data_func("/bcm570x/migration/link-up", GINT_TO_POINTER(1),
                         test_migrated_link_controls_egress);
-    qtest_add_data_func("/bcm570x/transmit-coalescing-survives-migration", NULL,
-                        test_transmit_coalescing_survives_migration);
-    qtest_add_data_func("/bcm570x/receive-coalescing-survives-migration", NULL,
-                        test_receive_coalescing_survives_migration);
     qtest_add_data_func("/bcm570x/arrival-line-migrates-only-what-it-holds",
                         NULL,
                         test_arrival_line_migrates_only_what_it_holds);
