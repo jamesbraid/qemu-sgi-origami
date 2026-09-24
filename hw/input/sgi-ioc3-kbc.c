@@ -27,6 +27,7 @@
 #include "hw/input/sgi-ioc3-kbc.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
+#include "ui/input.h"
 #include "trace.h"
 
 static PS2State *sgi_ioc3_kbc_ps2(SGIIOC3KBCState *s, unsigned int port)
@@ -364,6 +365,34 @@ static const VMStateDescription vmstate_sgi_ioc3_kbc = {
     }
 };
 
+/*
+ * Host input only: point QEMU's unbound key events at this controller's
+ * keyboard, or away from it. Nothing the guest can see changes, and the
+ * routing lives in the input layer's handler list rather than here, so
+ * there is nothing to migrate or reset.
+ */
+static void sgi_ioc3_kbc_set_activate_keyboard(Object *obj, bool value,
+                                               Error **errp)
+{
+    SGIIOC3KBCState *s = SGI_IOC3_KBC(obj);
+    QemuInputHandlerState *hs = PS2_DEVICE(&s->kbd)->hs;
+    g_autofree char *path = NULL;
+
+    if (!hs) {
+        error_setg(errp, "the keyboard has no input handler until realized");
+        return;
+    }
+
+    if (value) {
+        qemu_input_handler_activate(hs);
+    } else {
+        qemu_input_handler_deactivate(hs);
+    }
+
+    path = object_get_canonical_path(obj);
+    trace_sgi_ioc3_kbc_activate_keyboard(path, value);
+}
+
 static void sgi_ioc3_kbc_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -376,6 +405,12 @@ static void sgi_ioc3_kbc_class_init(ObjectClass *oc, const void *data)
     dc->user_creatable = false;
     rc->phases.hold = sgi_ioc3_kbc_reset_hold;
     set_bit(DEVICE_CATEGORY_INPUT, dc->categories);
+
+    object_class_property_add_bool(oc, "activate-keyboard", NULL,
+                                   sgi_ioc3_kbc_set_activate_keyboard);
+    object_class_property_set_description(oc, "activate-keyboard",
+        "Set true to send host key events to this controller's keyboard, "
+        "false to move it behind every other keyboard");
 }
 
 static const TypeInfo sgi_ioc3_kbc_types[] = {
