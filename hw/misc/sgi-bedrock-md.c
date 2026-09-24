@@ -1084,8 +1084,13 @@ static void md_memory_error_latch(SGIBedrockMDState *s, int kind,
                             MD_MEMORY_ERROR_SYNDROME_SHIFT);
     }
     s->memory_error |= valid[kind];
-    if (kind == MD_MEMORY_ERROR_READ_CE && s->bedrock) {
+    if (!s->bedrock) {
+        return;
+    }
+    if (kind == MD_MEMORY_ERROR_READ_CE) {
         sgi_bedrock_memory_correctable_error(s->bedrock);
+    } else {
+        sgi_bedrock_memory_uncorrectable_error(s->bedrock);
     }
 }
 

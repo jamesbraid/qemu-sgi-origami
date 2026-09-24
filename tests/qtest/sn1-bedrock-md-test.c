@@ -26,8 +26,15 @@
 #define MEMORY_ERROR_SYNDROME(_s) ((uint64_t)(_s) << 40)
 #define PI_PENDING_MODIFY 0x90
 #define PI_PENDING_1 0xa0
+#define PI_ERROR_SET 0x3f8
+#define PI_ERROR_PENDING 0x400
+#define PI_ERROR_MASK_A 0x408
+#define PI_ERROR_MASK_B 0x410
 #define PI1_OFFSET 0x200000
 #define MEMORY_CORRECTABLE (UINT64_C(1) << 61)
+#define MEMORY_UNCORRECTABLE (UINT64_C(1) << 24)
+/* The parent's hardware-irq lines: interface, processor, then the line. */
+#define ERROR_LINE(_pi, _cpu) ((_pi) * 10 + (_cpu) * 5 + 4)
 /* The Origin 300's node-named Bedrock register window, crosstalk space. */
 #define BEDROCK_NODE_REGISTERS UINT64_C(0x20001800000)
 #define DIRECTORY_CONFIG 0x40000
@@ -2692,9 +2699,71 @@ static void test_parent_ecc_interrupt(void)
 }
 
 /*
+ * An uncorrectable error raises error-interrupt pending bit 24, memory
+ * uncorrectable, on both processor interfaces, and each processor's error
+ * line follows it through that processor's error mask. The bit is not the
+ * writable view's to set or clear; a write of it to the pending register
+ * clears it, on that interface alone.
+ */
+static void test_parent_ecc_uncorrectable_interrupt(void)
+{
+    QTestState *s = start_parent();
+
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/bedrock", 6, ECC_BASE);
+    qtest_irq_intercept_out_named(s, "/machine/peripheral/bedrock",
+                                  "hardware-irq");
+    qtest_writeq(s, BEDROCK_MD(0x8), memory_bank_config(0, 1));
+    qtest_writeq(s, BEDROCK_BASE + PI_ERROR_MASK_A, MEMORY_UNCORRECTABLE);
+    qtest_writeq(s, BEDROCK_BASE + PI1_OFFSET + PI_ERROR_MASK_B,
+                 MEMORY_UNCORRECTABLE);
+    g_assert_cmphex(qtest_readq(s, BEDROCK_BASE + PI_ERROR_PENDING), ==, 0);
+    g_assert_false(qtest_get_irq(s, ERROR_LINE(0, 0)));
+
+    qtest_writeq(s, MEMORY(0x80), 0);
+    qtest_writeb(s, ECC_BYTE(0x10), ecc_column[64] ^ ecc_column[65]);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x80)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, BEDROCK_MD(MEMORY_ERROR)), ==,
+                    MEMORY_ERROR_READ_UCE_VALID |
+                    MEMORY_ERROR_SYNDROME(ecc_column[64] ^ ecc_column[65]) |
+                    0x80);
+    g_assert_cmphex(qtest_readq(s, BEDROCK_BASE + PI_ERROR_PENDING), ==,
+                    MEMORY_UNCORRECTABLE);
+    g_assert_cmphex(qtest_readq(s, BEDROCK_BASE + PI1_OFFSET +
+                                PI_ERROR_PENDING), ==, MEMORY_UNCORRECTABLE);
+    /* Interface 0's processor A and interface 1's processor B are masked in. */
+    g_assert_true(qtest_get_irq(s, ERROR_LINE(0, 0)));
+    g_assert_false(qtest_get_irq(s, ERROR_LINE(0, 1)));
+    g_assert_false(qtest_get_irq(s, ERROR_LINE(1, 0)));
+    g_assert_true(qtest_get_irq(s, ERROR_LINE(1, 1)));
+
+    /* The writable view leaves the bit alone. */
+    qtest_writeq(s, BEDROCK_BASE + PI_ERROR_SET, 0);
+    g_assert_cmphex(qtest_readq(s, BEDROCK_BASE + PI_ERROR_PENDING), ==,
+                    MEMORY_UNCORRECTABLE);
+    g_assert_true(qtest_get_irq(s, ERROR_LINE(0, 0)));
+    /* Writing it back to the pending register clears that interface's. */
+    qtest_writeq(s, BEDROCK_BASE + PI_ERROR_PENDING, MEMORY_UNCORRECTABLE);
+    g_assert_cmphex(qtest_readq(s, BEDROCK_BASE + PI_ERROR_PENDING), ==, 0);
+    g_assert_false(qtest_get_irq(s, ERROR_LINE(0, 0)));
+    g_assert_cmphex(qtest_readq(s, BEDROCK_BASE + PI1_OFFSET +
+                                PI_ERROR_PENDING), ==, MEMORY_UNCORRECTABLE);
+    g_assert_true(qtest_get_irq(s, ERROR_LINE(1, 1)));
+    /* The writable view cannot raise it either. */
+    qtest_writeq(s, BEDROCK_BASE + PI_ERROR_SET, MEMORY_UNCORRECTABLE);
+    g_assert_cmphex(qtest_readq(s, BEDROCK_BASE + PI_ERROR_PENDING), ==, 0);
+    g_assert_false(qtest_get_irq(s, ERROR_LINE(0, 0)));
+    qtest_quit(s);
+}
+
+/*
  * The Origin 300's memory diagnostic injects at physical 0x506000 through
  * the machine's ECC carrier and expects the corrected word, the error
- * record through the local register window and the interrupt.
+ * record through the local register window and the interrupt. Its SECDED
+ * verification then sweeps the uncorrectable syndromes the same way,
+ * beginning with 0x03, reads the word uncached expecting a bus error, and
+ * waits for the error interrupt whose handler reads the memory error
+ * register; that interrupt is error pending bit 24, which its error mask
+ * admits.
  */
 static void test_origin300_ecc_check(void)
 {
@@ -2730,6 +2799,22 @@ static void test_origin300_ecc_check(void)
                     MEMORY_ERROR_READ_CE_VALID |
                     MEMORY_ERROR_SYNDROME(ecc_column[0]) | address);
     g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(MEMORY_ERROR)), ==, 0);
+
+    /* Syndrome 0x03: two check bits, uncorrectable, refused, interrupting. */
+    g_assert_cmphex(qtest_readq(s, BEDROCK_NODE_REGISTERS +
+                                PI_ERROR_PENDING) & MEMORY_UNCORRECTABLE,
+                    ==, 0);
+    qtest_writeb(s, carrier, 0x03);
+    g_assert_cmphex(qtest_readq(s, address), ==, 0);
+    g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(MEMORY_ERROR)), ==,
+                    MEMORY_ERROR_READ_UCE_VALID | MEMORY_ERROR_SYNDROME(0x03) |
+                    address);
+    g_assert_cmphex(qtest_readq(s, BEDROCK_NODE_REGISTERS +
+                                PI_ERROR_PENDING) & MEMORY_UNCORRECTABLE,
+                    ==, MEMORY_UNCORRECTABLE);
+    g_assert_cmphex(qtest_readq(s, BEDROCK_NODE_REGISTERS + PI1_OFFSET +
+                                PI_ERROR_PENDING) & MEMORY_UNCORRECTABLE,
+                    ==, MEMORY_UNCORRECTABLE);
     qtest_quit(s);
     unlink(prom);
 }
@@ -3037,6 +3122,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-md/ecc-check-reset", test_ecc_check_reset);
     qtest_add_func("sn1/bedrock-md/parent-ecc-interrupt",
                    test_parent_ecc_interrupt);
+    qtest_add_func("sn1/bedrock-md/parent-ecc-uncorrectable-interrupt",
+                   test_parent_ecc_uncorrectable_interrupt);
     qtest_add_func("sn1/bedrock-md/origin300-ecc-check",
                    test_origin300_ecc_check);
     qtest_add_func("sn1/bedrock-md/fetchop-operations",
