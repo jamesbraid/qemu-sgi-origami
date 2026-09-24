@@ -52,6 +52,13 @@
  * already established for an XBridge head with no board behind it
  * (hw/pci-host/sgi-xbridge.h, SGI_XBRIDGE_NIC_PLACEHOLDER_PART).
  *
+ * "slots" limits the PCI device positions a card may take to 0 .. slots-1,
+ * for a carrier with fewer physical slots than the Bridge has device
+ * positions: the Origin 2000 PCI Carrier Assembly has three (its owner's
+ * guide, 007-3456-003 printed page 34). Which device number each physical
+ * slot is wired to is not captured, so the first three are an
+ * approximation. 0, the default, leaves every Bridge device position open.
+ *
  * "fabric", "fabric-base", "fabric-node-shift" and "fabric-widget-shift"
  * pass straight through to the internal Bridge; see sgi-ip29-io's header
  * for why this board does not fix them itself.
@@ -62,6 +69,8 @@
 #include "hw/mips/sgi/xtalk-link.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
+#include "hw/pci/pci.h"
+#include "hw/pci/pci_host.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci-host/sgi-xbridge.h"
 #include "migration/vmstate.h"
@@ -84,6 +93,7 @@ struct SGIPciExpansionState {
     uint32_t fabric_widget_shift;
     uint64_t onewire_serial;
     char *pci_bus_name;
+    uint32_t slots;
 
     SGIBridgeState *bridge;
 };
@@ -97,6 +107,11 @@ static bool pci_expansion_build_widget(SGIXioBoardState *board,
     if (!s->fabric) {
         error_setg(errp, "sgi-pci-expansion requires the fabric its "
                   "interrupt packets travel");
+        return false;
+    }
+    if (s->slots > SGI_BRIDGE_PINS) {
+        error_setg(errp, "sgi-pci-expansion slots must be 0 to %u",
+                   SGI_BRIDGE_PINS);
         return false;
     }
 
@@ -117,6 +132,10 @@ static bool pci_expansion_build_widget(SGIXioBoardState *board,
                          s->fabric_widget_shift);
     if (!sysbus_realize(SYS_BUS_DEVICE(bridge), errp)) {
         return false;
+    }
+    if (s->slots) {
+        pci_bus_set_slot_reserved_mask(PCI_HOST_BRIDGE(bridge)->bus,
+                                       ~MAKE_64BIT_MASK(0, s->slots));
     }
 
     board->cpu_face = sysbus_mmio_get_region(SYS_BUS_DEVICE(bridge), 0);
@@ -146,6 +165,7 @@ static const Property pci_expansion_properties[] = {
     DEFINE_PROP_UINT64("onewire-serial", SGIPciExpansionState,
                        onewire_serial, PCI_EXPANSION_SERIAL_PLACEHOLDER),
     DEFINE_PROP_STRING("pci-bus-name", SGIPciExpansionState, pci_bus_name),
+    DEFINE_PROP_UINT32("slots", SGIPciExpansionState, slots, 0),
 };
 
 /* No state of its own outside the internal Bridge, which carries its own. */
