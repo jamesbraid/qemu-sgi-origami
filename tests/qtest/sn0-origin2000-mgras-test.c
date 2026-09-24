@@ -856,6 +856,108 @@ static void test_dma_image_transfer_paints_from_host_memory(void)
 #undef DMA_XFER_SRC_VA
 
 /*
+ * SRC_OFF_LOW3 and SRC_OFF_ALIGNED are non-overlapping parts of one byte
+ * offset (src & 7, src & ~7), not the low/high halves of a 64-bit
+ * address: every other DMA image-transfer test in this file leaves
+ * SRC_OFF_ALIGNED at its post-reset zero, so none of them can tell
+ * addition from `(aligned << 32) | low3` -- both combine to the same
+ * value when the high word is zero. Give SRC_OFF_ALIGNED a nonzero,
+ * page-relative, 8-aligned value that lands several pages into the
+ * mapping (page-frame index 3 of 4) and SRC_OFF_LOW3 a nonzero
+ * sub-8 remainder, so only correct addition selects the fourth
+ * page-list entry and the right byte within it; a shift-and-OR would
+ * push SRC_OFF_ALIGNED into bits 63:32, produce a page index far past
+ * `count`, and leave the destination pixel unpainted.
+ */
+#define DMA_SRCOFF_NODE       0u
+#define DMA_SRCOFF_WIDGET     9u
+#define DMA_SRCOFF_LIST_PAGE  0xa000u
+#define DMA_SRCOFF_LIST_BASE  (DMA_SRCOFF_LIST_PAGE | 0x18u)
+#define DMA_SRCOFF_LOW3       5u
+#define DMA_SRCOFF_ALIGNED    0x3000u
+#define DMA_SRCOFF_TARGET_PFN 0x37u
+
+static uint64_t dma_srcoff_node_addr(uint32_t offset)
+{
+    return ((uint64_t)DMA_SRCOFF_NODE << 32) | offset;
+}
+
+static void test_dma_image_transfer_src_off_aligned_selects_page(void)
+{
+    static const uint8_t list_header[24] = { 0 };
+    static const uint8_t list_entries[32] = {
+        0, 0, 0, 0, 0, 0, 0, 0,          /* index 0: unused */
+        0, 0, 0, 0, 0, 0, 0, 0,          /* index 1: unused */
+        0, 0, 0, 0, 0, 0, 0, 0,          /* index 2: unused */
+        0, 0, 0, 0, 0, 0, 0, DMA_SRCOFF_TARGET_PFN, /* index 3: target */
+    };
+    static const uint8_t src_pixel[4] = { 0x00, 0x77, 0x88, 0x99 };
+
+    si_reset();
+    si_enter_context(qts);
+
+    /*
+     * SRC_OFF_LOW3 + SRC_OFF_ALIGNED = 5 + 0x3000 = 0x3005, so
+     * page_ix = 0x3005 >> 12 = 3 and the source byte offset within
+     * that page is 0x3005 & 0xfff = 5. Plant the pixel at page-frame
+     * DMA_SRCOFF_TARGET_PFN, byte offset 5.
+     */
+    qtest_memwrite(qts, dma_srcoff_node_addr(DMA_SRCOFF_LIST_PAGE),
+                  list_header, sizeof(list_header));
+    qtest_memwrite(qts, dma_srcoff_node_addr(DMA_SRCOFF_LIST_BASE),
+                  list_entries, sizeof(list_entries));
+    qtest_memwrite(qts,
+                  dma_srcoff_node_addr((DMA_SRCOFF_TARGET_PFN << 12) + 5),
+                  src_pixel, sizeof(src_pixel));
+
+    /* Destination paint state: copy op, full colour mask, pixel (30,30). */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_COLORMASKMSBS, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_PP1FILLMODE, SI_LOGIC_OP_COPY << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_BLOCK_START, (30u << 16) | 30u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND_EXEC(REG_BLOCK_END, (30u << 16) | 30u));
+
+    /* DMA-map slot 0: node 0's list entry-0 address, four pages, widget 9. */
+    qtest_writel(qts, SI_REG(0x130400), 0x00482008);
+    qtest_writeq(qts, SI_REG(0x130400),
+                dma_srcoff_node_addr(DMA_SRCOFF_LIST_BASE));
+    qtest_writeq(qts, SI_REG(0x130400),
+                ((uint64_t)0x00483004 << 32) | 4);
+    qtest_writeq(qts, SI_REG(0x130400),
+                ((uint64_t)0x00484b04 << 32) | (DMA_SRCOFF_WIDGET << 16));
+
+    /*
+     * DESC_20000 bank: pitch (unused, one row), SRC_OFF_LOW3,
+     * SRC_OFF_ALIGNED, rows, bytes/row, then a write-direction kick
+     * naming slot 0 (bits 2:1 clear).
+     */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080404 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                ((uint64_t)0x00080504 << 32) | DMA_SRCOFF_LOW3);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                ((uint64_t)0x00080604 << 32) | DMA_SRCOFF_ALIGNED);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080704 << 32) | 1);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080804 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080b04 << 32) | 0);
+
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 0);
+    g_assert_cmphex(si_test_pixel(qts, 30, 30), ==, 0x00778899);
+}
+
+#undef DMA_SRCOFF_NODE
+#undef DMA_SRCOFF_WIDGET
+#undef DMA_SRCOFF_LIST_PAGE
+#undef DMA_SRCOFF_LIST_BASE
+#undef DMA_SRCOFF_LOW3
+#undef DMA_SRCOFF_ALIGNED
+#undef DMA_SRCOFF_TARGET_PFN
+
+/*
  * Two source-mapping slots held open at once, as every capture that
  * reaches a copy does (FIX-SPEC.md section 1): the DDX keeps a
  * long-lived slot 0 mapping for its small-copy bounce buffer alongside a
@@ -3848,6 +3950,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "dma-image-transfer-kick-byte-selects-slot",
                    test_dma_image_transfer_kick_byte_selects_slot);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "dma-image-transfer-src-off-aligned-selects-page",
+                   test_dma_image_transfer_src_off_aligned_selects_page);
     qtest_add_func("sn0/origin2000/mgras/"
                    "dma-image-transfer-reads-list-entry-at-0x18",
                    test_dma_image_transfer_reads_list_entry_at_0x18);
