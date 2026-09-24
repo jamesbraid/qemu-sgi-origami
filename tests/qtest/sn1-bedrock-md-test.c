@@ -2269,9 +2269,11 @@ static void test_fetchop_operations(void)
                     UINT64_C(0xff0f0f0f0f0f0f0f));
 
     /*
-     * 32-bit forms: bit 2 names the high (0) or low (4) word; a plain store
-     * reaches that word alone, an operation returns that word of the old
-     * value, and-or masks apply to it, increment and decrement are whole.
+     * 32-bit forms: bit 2 names the high (0) or low (4) word, and every
+     * operation acts on that word alone as a 32-bit variable and returns
+     * that word of the old value. An increment or decrement wraps inside
+     * its word without carrying into the other, as the Origin 300 memory
+     * diagnostic's word tests require (its 0x1000c100 and 0x1000caa0).
      */
     qtest_writel(s, FETCHOP(0x1004), 0xfffffffe);
     qtest_writel(s, FETCHOP(0x1000), 0x11223344);
@@ -2280,13 +2282,21 @@ static void test_fetchop_operations(void)
     g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==,
                     UINT64_C(0x11223344fffffffe));
     g_assert_cmphex(qtest_readl(s, FETCHOP(0x100c)), ==, 0xfffffffe);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==,
+                    UINT64_C(0x11223344ffffffff));
     g_assert_cmphex(qtest_readl(s, FETCHOP(0x1008)), ==, 0x11223344);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==,
+                    UINT64_C(0x11223345ffffffff));
+    g_assert_cmphex(qtest_readl(s, FETCHOP(0x100c)), ==, 0xffffffff);
     g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==,
                     UINT64_C(0x1122334500000000));
     qtest_writel(s, FETCHOP(0x1014), 0);
     g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==,
+                    UINT64_C(0x11223345ffffffff));
+    g_assert_cmphex(qtest_readl(s, FETCHOP(0x1010)), ==, 0x11223345);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==,
                     UINT64_C(0x11223344ffffffff));
-    g_assert_cmphex(qtest_readl(s, FETCHOP(0x1010)), ==, 0x11223344);
+    qtest_writel(s, FETCHOP(0x1014), 0);
     g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==,
                     UINT64_C(0x11223344fffffffe));
     qtest_writel(s, FETCHOP(0x101c), 0x0000ffff);
@@ -2296,6 +2306,9 @@ static void test_fetchop_operations(void)
     g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==,
                     UINT64_C(0xf12233440000fffe));
     g_assert_cmphex(qtest_readl(s, FETCHOP(0x101c)), ==, 0x0000fffe);
+    g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==,
+                    UINT64_C(0xf122334400000000));
+    g_assert_cmphex(qtest_readl(s, FETCHOP(0x1018)), ==, 0xf1223344);
     g_assert_cmphex(qtest_readq(s, MEMORY(0x1000)), ==, 0);
 
     /* The next block is its own variable; the rest of a block is unreached. */
