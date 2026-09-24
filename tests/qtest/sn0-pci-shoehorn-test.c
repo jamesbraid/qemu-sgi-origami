@@ -14,10 +14,10 @@
  * answers through the widget window, the same config accesses a driver's own
  * probe issues. Second, its PS/2 keyboard interrupt reaches the guest: the
  * chip's SuperIO interrupt output must be wired to a Bridge pin for a
- * keystroke to be delivered, and the shoehorn wires it (to the pin the card's
- * own slot maps to). A Cad Duo behind a plain sgi-pci-expansion, which does
- * no such wiring, leaves that interrupt dead -- the RED baseline the
- * shoehorn's wiring turns GREEN.
+ * keystroke to be delivered, and the shoehorn wires it (to the card's INTB,
+ * which the Bridge routes to pin slot ^ 4). A Cad Duo behind a plain
+ * sgi-pci-expansion, which does no such wiring, leaves that interrupt dead
+ * -- the RED baseline the shoehorn's wiring turns GREEN.
  *
  * The same checks then run on the board the origin2000-pci-shoehorn
  * topology places itself: the compiled catalogue fits the shoehorn into
@@ -92,8 +92,17 @@ typedef struct {
 #define BRIDGE_INT_ENABLE(c)     (WIDGET_BASE((c)->widget) + 0x108 + REG_DATA)
 #define BRIDGE_INT_DEST_UPPER(c) (WIDGET_BASE((c)->widget) + 0x030 + REG_DATA)
 #define BRIDGE_INT_DEST_LOWER(c) (WIDGET_BASE((c)->widget) + 0x038 + REG_DATA)
-#define BRIDGE_INT_HOST(c)       (WIDGET_BASE((c)->widget) + 0x130 + \
-                                  8 * (c)->device + REG_DATA)
+#define BRIDGE_INT_STATUS(c)     (WIDGET_BASE((c)->widget) + 0x100 + REG_DATA)
+#define BRIDGE_INT_HOST(c, pin)  (WIDGET_BASE((c)->widget) + 0x130 + \
+                                  8 * (pin) + REG_DATA)
+
+/*
+ * A plug-in card's second interrupt leaves on its INTB, which the Bridge
+ * routes to pin (slot ^ 4); INTA goes to pin slot. Public Linux SN Bridge
+ * driver (Linux 2.5.0 arch/ia64/sn/io/pcibr.c, the INTB/INTD case); an
+ * add-in IOC3 raises SuperIO on INTB (OpenBSD sys/arch/sgi/pci/ioc.c).
+ */
+#define SUPERIO_PIN(c)           ((c)->device ^ 4)
 
 /*
  * Node 0's Hub sits at widget 9 on crossbow0; a packet-I/O host address with
@@ -143,19 +152,18 @@ static void cad_duo_map(QTestState *qts, const ShoehornCase *c)
 }
 
 /*
- * Arm the adapter Bridge so the card's own pin (its device number) sends an
- * interrupt packet to node 0's Hub latching CAD_DUO_INT_NUMBER, and enable
- * the Cad Duo's keyboard interrupt so a PS/2 reply raises its SuperIO
- * output.
+ * Arm the adapter Bridge so the card's SuperIO pin sends an interrupt
+ * packet to node 0's Hub latching CAD_DUO_INT_NUMBER, and enable the Cad
+ * Duo's keyboard interrupt so a PS/2 reply raises its SuperIO output.
  */
 static void arm_interrupt(QTestState *qts, const ShoehornCase *c)
 {
     qtest_writel(qts, CD_INT_ENABLE_SET(c), INT_KEYBOARD);
     qtest_writel(qts, BRIDGE_INT_DEST_UPPER(c), HUB_WIDGET_ON_XBOW << 16);
     qtest_writel(qts, BRIDGE_INT_DEST_LOWER(c), HUB_INT_MODIFY_OFFSET);
-    qtest_writel(qts, BRIDGE_INT_HOST(c),
+    qtest_writel(qts, BRIDGE_INT_HOST(c, SUPERIO_PIN(c)),
                  (INT_HOST_PACKET_IO_NASID0 << 8) | CAD_DUO_INT_NUMBER);
-    qtest_writel(qts, BRIDGE_INT_ENABLE(c), 1u << c->device);
+    qtest_writel(qts, BRIDGE_INT_ENABLE(c), 1u << SUPERIO_PIN(c));
 }
 
 /* Send a keyboard byte and report whether node 0's Hub latched it. */
@@ -205,9 +213,10 @@ static void test_cad_duo_ps2_interrupt_dead_bare(const void *data)
 
 /*
  * The GREEN result: the same Cad Duo fitted in the shoehorn, which wires the
- * chip's SuperIO output to the Bridge pin of the card's own slot. A keyboard
- * reply now raises that pin, the Bridge forwards an interrupt packet up
- * through crossbow0 to node 0's Hub, and PI_INT_PEND0 latches the number.
+ * chip's SuperIO output to the card's INTB, Bridge pin (slot ^ 4). A
+ * keyboard reply now raises that pin, the Bridge forwards an interrupt
+ * packet up through crossbow0 to node 0's Hub, and PI_INT_PEND0 latches
+ * the number.
  */
 static void test_cad_duo_ps2_interrupt_reaches_hub(const void *data)
 {
@@ -219,6 +228,13 @@ static void test_cad_duo_ps2_interrupt_reaches_hub(const void *data)
                     (1ULL << CAD_DUO_INT_NUMBER), ==, 0);
     arm_interrupt(qts, c);
     g_assert_true(keystroke_reaches_hub(qts, c));
+    /*
+     * The keystroke must not also hold the card's INTA pin, which a guest
+     * services with the Ethernet handler alone: IRIX 6.5.30 looped in that
+     * handler forever when SuperIO shared the pin.
+     */
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_INT_STATUS(c)) &
+                    (1u << c->device), ==, 0);
     qtest_quit(qts);
 }
 
