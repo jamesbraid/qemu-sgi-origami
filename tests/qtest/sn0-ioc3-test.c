@@ -339,6 +339,10 @@ static void test_the_interrupt_output_stores_its_configuration(const void *data)
                     INT_OUT_MODE_SQUARE | 0xfffe);
 }
 
+/*
+ * A command with no defined behaviour is still stored, so it reads back as
+ * written, but the output carries on with the mode already running.
+ */
 static void assert_rejected_int_out_keeps_periodic(QTestState *qts,
                                                    uint32_t rejected)
 {
@@ -351,14 +355,35 @@ static void assert_rejected_int_out_keeps_periodic(QTestState *qts,
 
     qtest_writel(qts, INT_OUTPUT, rejected);
     g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==,
-                    accepted | INT_OUT_PIN);
+                    rejected | INT_OUT_PIN);
 
     qtest_clock_step(qts, 3 * INT_OUT_TICK_NS);
-    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==, accepted);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==, rejected);
 
     qtest_clock_step(qts, 7 * INT_OUT_TICK_NS);
     g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==,
-                    accepted | INT_OUT_PIN);
+                    rejected | INT_OUT_PIN);
+}
+
+/*
+ * The Origin 300 IO-8 board test writes 0x4007ffff -- diagnostic mode,
+ * square wave, count 0xffff -- and requires those bits back under the same
+ * mask. None of that has a defined behaviour, and the model used to refuse
+ * such a write outright, so it read back zero.
+ */
+static void test_int_out_stores_a_command_it_does_not_run(const void *data)
+{
+    ioc3_reset();
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writel(qts, INT_OUTPUT, 0x4007ffffu);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & 0x4007ffffu, ==,
+                    0x4007ffffu);
+
+    /* It started nothing: the output stays low. */
+    qtest_clock_step(qts, 0x10000 * INT_OUT_TICK_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==, 0);
 }
 
 static void test_undefined_int_out_modes_keep_periodic_output(const void *data)
@@ -5018,6 +5043,8 @@ int main(int argc, char **argv)
                         test_the_arbiter_reports_idle);
     qtest_add_data_func("sn0/ioc3/interrupt-output-stores-configuration", NULL,
                         test_the_interrupt_output_stores_its_configuration);
+    qtest_add_data_func("sn0/ioc3/interrupt-output-stores-unrun-command", NULL,
+                        test_int_out_stores_a_command_it_does_not_run);
     qtest_add_data_func("sn0/ioc3/undefined-output-mode-keeps-periodic", NULL,
                         test_undefined_int_out_modes_keep_periodic_output);
     qtest_add_data_func("sn0/ioc3/diagnostic-output-keeps-periodic", NULL,

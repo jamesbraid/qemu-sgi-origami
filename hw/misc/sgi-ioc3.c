@@ -344,11 +344,15 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
     case SGI_IOC3_INT_OUTPUT: {
         uint32_t int_out = val & SGI_IOC3_INT_OUT_MASK;
 
+        /*
+         * Stored as written, as the IO-8 board test requires; a command
+         * with no defined behaviour leaves the running output alone.
+         */
+        s->int_out = int_out;
         if (!sgi_ioc3_int_out_command_valid(int_out)) {
             break;
         }
 
-        s->int_out = int_out;
         timer_del(s->int_out_timer);
         s->int_out_active = s->int_out & (SGI_IOC3_INT_OUT_MODE |
                                           SGI_IOC3_INT_OUT_COUNT);
