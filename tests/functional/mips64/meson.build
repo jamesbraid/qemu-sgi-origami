@@ -98,6 +98,15 @@ test_mips64_timeouts = {
   # each shell step its own 180s, and 5400 covers all three boots
   # running out their login budget in sequence.
   'irix_origin2000_topologies' : 5400,
+  # Boot the installed IRIX 6.5.30 disk on the Origin 2000's one-node
+  # module (two CPUs, 256 MiB) with SI/MGRAS graphics to the xdm
+  # icon-chooser greeter (no login) and check the resulting screendump.
+  # Two variable-cost phases in sequence, each with its own budget in
+  # test_mgras_greeter.py: BOOT_TIMEOUT_SECONDS to the serial login:
+  # prompt, then SETTLE_TIMEOUT_SECONDS=180 polling the screendump for
+  # the xdm greeter's own paint -- see those constants' own comments in
+  # test_mgras_greeter.py for the measurements this budget is based on.
+  'mgras_greeter' : 1560,
   # A full multiuser boot of the installed IRIX 6.5.30 disk on the real
   # PROM, then the eg (Alteon Tigon) adapter brought up and a
   # byte-checked 1 MiB TCP transfer, bulk TCP and UDP throughput runs
@@ -218,6 +227,7 @@ tests_mips64_system_thorough = [
   'irix_diag',
   'irix_installed_boot',
   'irix_origin2000_topologies',
+  'mgras_greeter',
   'irix_eg',
   'irix_tg',
   'irix_tg_perf',
