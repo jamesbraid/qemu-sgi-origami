@@ -89,8 +89,11 @@ slow_qtests = {
   'sn0-isp12160-test': 180,
   # sn1-address-map-test had no entry here, so it ran on the 60s default and
   # was killed at it in every parallel run before this entry existed.
-  # Measured 54.23s.
-  'sn1-address-map-test': 170,
+  # Measured 54.23s at 53 cases; merging in the io8-ioc3 transceiver, mac
+  # record and migration cases (six more, several starting their own QEMU
+  # processes) raised a standalone measurement to 91.75s at 59 cases, so
+  # keep the same three-times-measured budget.
+  'sn1-address-map-test': 280,
   # sn1-bedrock-flash-test rewrites a whole 64 KiB sector one flash word at a
   # time, which is four qtest round trips per word, and starts eight further
   # QEMU processes for the rejection and migration cases.
@@ -408,9 +411,7 @@ qtests_mips64 = \
   (config_all_devices.has_key('CONFIG_SGI_SN1') ?
     ['sn1-address-map-test',
      'sn1-cpu-identity-test', 'sn1-hub-lock-test', 'sn1-presence-test',
-     'sn1-io8-mac-test',
-     'sn1-io8-scsi-test', 'sn1-io8-ioc3-test',
-     'sn1-migration-test'] : []) + \
+     'sn1-io8-scsi-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-mttcg-test',
                                                    'sn0-forward-progress-test',
                                                    'mips64-r10k-test',

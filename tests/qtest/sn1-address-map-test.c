@@ -222,6 +222,25 @@
 #define IOC3_RX_RING_IOVA 0x40000000
 #define IOC3_RX_BUFFER_IOVA 0x40001000
 
+/* The ENET block's MII management registers (include/hw/net/sgi-ioc3-eth.h). */
+#define MII_CONTROL (IO8_IOC3_WINDOW + 0x148)
+#define MII_DATA_R  (IO8_IOC3_WINDOW + 0x14c)
+#define MII_DATA_W  (IO8_IOC3_WINDOW + 0x150)
+#define MII_READ    (1u << 10)
+
+/* What the BASEIO PROM's MII helpers hard-code, and Origin 200's default. */
+#define PHY_ADDRESS       1
+#define ORIGIN200_ADDRESS 31
+
+/*
+ * The IO-8's fixed devices are an sgi-baseio (the "io8" preset) on the
+ * XBridge's own head F; the XBridge itself is a fitted part of the IP45
+ * node board (sn1-node.c creates it directly, as a QOM child of the node
+ * object) rather than a removable board.
+ */
+#define IOC3_PATH "/machine/node0/baseio/ioc3"
+#define MAC "02:00:5d:aa:bb:cc"
+
 #define XBRIDGE_ATE0 0x10000
 #define XBRIDGE_DEVICE(n) (0x200 + (n) * 8)
 #define XBRIDGE_DEVICE_MEMORY (1U << 12)
@@ -1011,6 +1030,19 @@ static void io8_ioc3_attach(QTestState *qts)
                     XBRIDGE_DEVICE_MEMORY | (IO8_IOC3_BAR >> 20));
 }
 
+static uint16_t phy_read(QTestState *qts, unsigned int phy, unsigned int reg)
+{
+    qtest_writel(qts, MII_CONTROL, MII_READ | (phy << 5) | reg);
+    return qtest_readl(qts, MII_DATA_R) & 0xffff;
+}
+
+static void phy_write(QTestState *qts, unsigned int phy, unsigned int reg,
+                      uint16_t val)
+{
+    qtest_writel(qts, MII_DATA_W, val);
+    qtest_writel(qts, MII_CONTROL, (phy << 5) | reg);
+}
+
 static void io8_route_interrupt(QTestState *qts, unsigned int pin,
                                 unsigned int pending_bit)
 {
@@ -1504,6 +1536,99 @@ static void test_io8_ioc3_migration(const void *data)
     qtest_quit(to);
     g_unlink(socket);
     g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
+/*
+ * The DP83843 at MII address 1, the BASEIO PROM's diagnostic hard-code,
+ * not the Origin 200's 31. hw/net/dp83840.c keeps 31 as its default;
+ * hw/mips/sgi/sn1.c threads this board's address through sn1-model.h's
+ * per-device descriptor into the eth child's "phy-addr" property, a
+ * "sgi-ioc3" -> "sgi-ioc3-eth" -> "dp83840" alias chain whose last hop
+ * already backs Origin 200's own default (tests/qtest/sn0-ioc3-test.c).
+ *
+ * A real Origin 300's OpenBSD capture confirms the address: "nsphyter0
+ * at iec0 phy 1: DP83843 10/100 PHY" (docs/datasheets/dp83840.md). The
+ * board's transceiver is also a different part, a DP83843 rather than
+ * the Origin 200's DP83840A, selected the same way through a
+ * "phy-dp83843" alias chain; this file pins its identity register and
+ * that register 0x17 (its Loopback Register there) reads back what is
+ * written. The behaviour that register selects -- turning a frame back
+ * without reaching the backend -- is tests/qtest/sgi-ioc3-eth-test.c's,
+ * reached through a plain sgi-ioc3 device rather than this board's full
+ * crosstalk wiring. The rest of the transceiver's own register contract
+ * -- reset, autonegotiation -- belongs to sn0-ioc3-test.c and is not
+ * repeated here; this file pins only where and as what the IO-8 board's
+ * copy answers.
+ */
+static void test_transceiver_identity(const void *data)
+{
+    QTestState *qts = machine_start();
+
+    io8_ioc3_attach(qts);
+
+    /*
+     * PHYIDR1 is the OUI's upper bits, the same on every National
+     * Semiconductor PHY this project models, so it stays 0x2000 on both
+     * parts. PHYIDR2 is this board's own: 0x5c10 is the DP83843's, not
+     * the Origin 200 DP83840A's 0x5c01 (docs/datasheets/dp83840.md). The
+     * transceiver's own register contract otherwise belongs to
+     * sn0-ioc3-test.c.
+     */
+    g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 2), ==, 0x2000);
+    g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 3), ==, 0x5c10);
+
+    qtest_quit(qts);
+}
+
+/*
+ * Read-after-write only: the loopback behaviour this register selects on
+ * the DP83843 belongs to tests/qtest/sgi-ioc3-eth-test.c, which reaches
+ * the register through a plain sgi-ioc3 device rather than this board's
+ * full crosstalk wiring.
+ */
+static void test_register_0x17_reads_back_a_written_value(const void *data)
+{
+    QTestState *qts = machine_start();
+
+    io8_ioc3_attach(qts);
+    phy_write(qts, PHY_ADDRESS, 0x17, 0x20);
+    g_assert_cmphex(phy_read(qts, PHY_ADDRESS, 0x17), ==, 0x20);
+
+    qtest_quit(qts);
+}
+
+static void test_origin200_address_is_silent(const void *data)
+{
+    QTestState *qts = machine_start();
+
+    io8_ioc3_attach(qts);
+    /* The Origin 200's address answers nothing on this board. */
+    g_assert_cmphex(phy_read(qts, ORIGIN200_ADDRESS, 2), ==, 0xffff);
+
+    qtest_quit(qts);
+}
+
+static void test_transceiver_answers_at_one_address(const void *data)
+{
+    QTestState *qts = machine_start();
+    unsigned int phy, answered = 0;
+
+    io8_ioc3_attach(qts);
+
+    /*
+     * Every address: both IRIX and the BASEIO PROM stop at the first
+     * that answers, so a model answering everywhere would be found at
+     * address zero and no boot notices. The count is the assertion.
+     */
+    for (phy = 0; phy < 32; phy++) {
+        if (phy_read(qts, phy, 2) != 0xffff) {
+            g_assert_cmpuint(phy, ==, PHY_ADDRESS);
+            answered++;
+        }
+    }
+    g_assert_cmpuint(answered, ==, 1);
+
+    qtest_quit(qts);
 }
 
 static void test_hub_special_register_windows(const void *data)
@@ -2125,6 +2250,129 @@ static void test_l1_has_no_identity_records_by_default(const void *data)
     }
 
     qtest_quit(qts);
+}
+
+/* The 16-byte CIA and 80-byte BIA use the documented field boundaries. */
+static const uint8_t cia[16] = {
+    0x00, 0x02, 0x17, 0xc2, 0x51, 0x41, 0xc2, 0x5a,
+    0x5a, 0xc1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x5c,
+};
+
+static const uint8_t bia[80] = {
+    0x00, 0x0a, 0x00, 0x00, 0x01, 0x00, 0xc9, 0x54,
+    0x45, 0x53, 0x54, 0x4c, 0x41, 0x42, 0x30, 0x31,
+    0xc3, 0x49, 0x4f, 0x38, 0xc6, 0x51, 0x53, 0x54,
+    0x30, 0x30, 0x31, 0xcc, 0x30, 0x30, 0x30, 0x5f,
+    0x54, 0x45, 0x53, 0x54, 0x5f, 0x42, 0x52, 0x44,
+    0x00, 0xc2, 0x51, 0x41, 0x00, 0x00, 0xc2, 0x30,
+    0x31, 0x04, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00,
+    0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00,
+    0xcc, 0x30, 0x32, 0x30, 0x30, 0x35, 0x44, 0x41,
+    0x41, 0x42, 0x42, 0x43, 0x43, 0xc1, 0x00, 0xd1,
+};
+
+static uint8_t sum_bytes(const uint8_t *bytes, size_t length)
+{
+    uint8_t sum = 0;
+
+    for (size_t i = 0; i < length; i++) {
+        sum += bytes[i];
+    }
+    return sum;
+}
+
+/* The 12-character address field starts after byte 64's ASCII tag. */
+static bool board_matches_mac(const uint8_t *board, const char *mac)
+{
+    char parsed[18];
+
+    if (board[64] != 0xcc || board[77] != 0xc1 || board[78] != 0 ||
+        sum_bytes(board, 80) != 0) {
+        return false;
+    }
+    for (unsigned i = 0; i < 12; i++) {
+        if (!g_ascii_isxdigit(board[65 + i])) {
+            return false;
+        }
+    }
+    g_snprintf(parsed, sizeof(parsed), "%c%c:%c%c:%c%c:%c%c:%c%c:%c%c",
+               board[65], board[66], board[67], board[68],
+               board[69], board[70], board[71], board[72],
+               board[73], board[74], board[75], board[76]);
+    return g_ascii_strcasecmp(parsed, mac) == 0;
+}
+
+/*
+ * A second module's chassis and board records, read back through the same
+ * framed protocol l1_eeprom_read() already drives for module zero.
+ */
+static void test_configured_mac_in_board_record(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *directory = g_dir_make_tmp("sn1-io8-mac-XXXXXX", &error);
+    g_autofree char *blank_prom_path = NULL;
+    g_autofree char *chassis_path = NULL;
+    g_autofree char *board_path = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree uint8_t *prom = g_malloc0(PROM_SIZE);
+    uint8_t record[sizeof(bia)], reply[131], board[sizeof(bia)];
+    g_autoptr(QDict) result = NULL;
+    QTestState *qts;
+    const char *actual_mac;
+
+    g_assert_no_error(error);
+    memcpy(record, bia, sizeof(record));
+    blank_prom_path = write_record(directory, "prom.bin", prom, PROM_SIZE);
+    chassis_path = write_record(directory, "chassis.bin", cia, sizeof(cia));
+    board_path = write_record(directory, "board.bin", record,
+                              sizeof(record));
+    extra = g_strdup_printf(
+        "-M origin300,chassis-eeprom.0=,chassis-eeprom.1=%s,"
+        "board-eeprom.0=,board-eeprom.1=%s "
+        "-cpu R14000 -smp 2 -bios %s -display none -S "
+        "-nic user,mac=" MAC,
+        chassis_path, board_path, blank_prom_path);
+    qts = qtest_init(extra);
+
+    /* This property reports -nic's configured MAC, not a BIA-derived value. */
+    result = qtest_qmp(qts, "{'execute':'qom-get','arguments':"
+                           "{'path':'" IOC3_PATH "','property':'mac'}}");
+    g_assert_true(qdict_haskey(result, "return"));
+    actual_mac = qdict_get_str(result, "return");
+    g_assert_cmpstr(actual_mac, ==, MAC);
+
+    g_assert_cmpuint(l1_eeprom_read(qts, 1, L1_EEPROM_CHASSIS, 0, sizeof(cia),
+                                    reply), ==, 12 + sizeof(cia));
+    g_assert_cmphex(reply[4], ==, 0);
+    g_assert_cmphex(reply[5], ==, 2);
+    g_assert_cmphex(reply[10], ==, 0);
+    g_assert_cmphex(reply[11], ==, 0x80 | sizeof(cia));
+    g_assert_cmpmem(reply + 12, sizeof(cia), cia, sizeof(cia));
+    g_assert_cmphex(reply[12 + 9], ==, 0xc1);
+    g_assert_cmphex(sum_bytes(reply + 12, sizeof(cia)), ==, 0);
+
+    g_assert_cmpuint(l1_eeprom_read(qts, 1, L1_EEPROM_BOARD, 0, sizeof(bia),
+                                    reply), ==, 12 + sizeof(bia));
+    g_assert_cmphex(reply[4], ==, 0);
+    g_assert_cmphex(reply[5], ==, 2);
+    g_assert_cmphex(reply[10], ==, 0);
+    g_assert_cmphex(reply[11], ==, 0x80 | sizeof(bia));
+    g_assert_cmpmem(reply + 12, sizeof(bia), record, sizeof(record));
+    memcpy(board, reply + 12, sizeof(board));
+    g_assert_cmphex(board[49], ==, 0x04);
+    g_assert_cmphex(board[54], ==, 0x04);
+    g_assert_cmphex(board[59], ==, 0x04);
+    g_assert_cmphex(board[64], ==, 0xcc);
+    g_assert_cmphex(board[77], ==, 0xc1);
+    g_assert_cmphex(board[78], ==, 0);
+    g_assert_cmphex(sum_bytes(board, sizeof(board)), ==, 0);
+    g_assert_true(board_matches_mac(board, actual_mac));
+
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(blank_prom_path), ==, 0);
+    g_assert_cmpint(g_unlink(chassis_path), ==, 0);
+    g_assert_cmpint(g_unlink(board_path), ==, 0);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
 static char *create_flash_image(void)
@@ -3287,6 +3535,65 @@ static void test_promdata_filter_survives_migration(const void *data)
     g_assert_cmpint(g_rmdir(directory), ==, 0);
 }
 
+/*
+ * The Bedrock node's object graph hangs off sgi-sn1-node (sn1-node.c)
+ * rather than a standalone machine state, so this proves migration still
+ * completes and the moved devices still answer afterward, the same
+ * concern sn0-migration-test.c's own docstring names, applied here to the
+ * node-types and Origin 300 steps' re-parenting instead of a derived
+ * register value.
+ */
+static char *write_prom_image(const char *directory)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *prom = g_malloc0(PROM_SIZE);
+    char *path = g_build_filename(directory, "prom.bin", NULL);
+
+    g_assert_true(g_file_set_contents(path, (const char *)prom, PROM_SIZE,
+                                      &error));
+    g_assert_no_error(error);
+    return path;
+}
+
+static void test_board_id_and_l1_uart_survive_migration(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *directory = g_dir_make_tmp("sn1-migration-XXXXXX",
+                                                &error);
+    g_autofree char *prom_path = write_prom_image(directory);
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *cmdline = NULL;
+    g_autofree char *to_cmdline = NULL;
+    QTestState *from, *to;
+    uint64_t l1_status_before;
+
+    g_assert_no_error(error);
+    tmpfs = g_dir_make_tmp("sn1-migration-sock-XXXXXX", &error);
+    g_assert_no_error(error);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    cmdline = g_strdup_printf(
+        "-M origin300 -cpu R14000 -smp 2 -bios %s -display none -S",
+        prom_path);
+    from = qtest_init(cmdline);
+    g_assert_cmphex(qtest_readq(from, BOARD_ID_LOCAL), ==, BOARD_ID_VALUE);
+    l1_status_before = qtest_readq(from, L1_UART_BASE + L1_UART_STATUS);
+
+    to_cmdline = g_strdup_printf("%s -incoming %s", cmdline, uri);
+    to = qtest_init(to_cmdline);
+    sgi_migrate_stopped(from, uri);
+
+    g_assert_cmphex(qtest_readq(to, BOARD_ID_LOCAL), ==, BOARD_ID_VALUE);
+    g_assert_cmphex(qtest_readq(to, L1_UART_BASE + L1_UART_STATUS), ==,
+                    l1_status_before);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_assert_cmpint(g_unlink(prom_path), ==, 0);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
 static void test_system_reset_clears_bedrock_state(const void *data)
 {
     QTestState *qts = machine_start();
@@ -3296,6 +3603,36 @@ static void test_system_reset_clears_bedrock_state(const void *data)
     g_assert_cmphex(qtest_readq(qts, address), ==, UINT64_C(0x0ead0040));
     qtest_system_reset(qts);
     g_assert_cmphex(qtest_readq(qts, address), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * IO-8's IOC3 slot returns its PCI identity through a doubleword read and
+ * accepts parity-error response and latency-timer writes through the
+ * configuration window (docs/datasheets/xbridge.md and ioc3.md).
+ */
+static void test_io8bt_configuration_reads_and_writes(const void *data)
+{
+    QTestState *qts = machine_start();
+    uint64_t header;
+
+    header = qtest_readq(qts, IO8_IOC3_CFG);
+    g_assert_cmphex(header >> 32, ==, qtest_readl(qts, IO8_IOC3_CFG));
+    g_assert_cmphex(header >> 32, ==, 0x000310a9);
+    g_assert_cmphex((uint32_t)header, ==,
+                    qtest_readl(qts, IO8_IOC3_CFG + PCI_COMMAND));
+    /* SERR enable, parity-error response, bus master, memory space. */
+    qtest_writel(qts, IO8_IOC3_CFG + PCI_COMMAND, 0x146);
+    g_assert_cmphex(qtest_readl(qts, IO8_IOC3_CFG + PCI_COMMAND) & 0xffff,
+                    ==, 0x146);
+    /*
+     * The latency timer, the high byte of the word at 0x0c. Cache line
+     * size below it takes the zero written with it, and header type and
+     * built-in self test above it stay zero.
+     */
+    qtest_writel(qts, IO8_IOC3_CFG + 0x0c, 0xff00);
+    g_assert_cmphex(qtest_readl(qts, IO8_IOC3_CFG + 0x0c), ==, 0xff00);
 
     qtest_quit(qts);
 }
@@ -3351,6 +3688,19 @@ int main(int argc, char **argv)
                         test_io8_ioc3_ethernet_dma_interrupt);
     qtest_add_data_func("origin300/ioc3/identical-build-migration", NULL,
                         test_io8_ioc3_migration);
+    qtest_add_data_func("origin300/io8-ioc3/transceiver-identity", NULL,
+                        test_transceiver_identity);
+    qtest_add_data_func("origin300/io8-ioc3/origin200-address-is-silent",
+                        NULL, test_origin200_address_is_silent);
+    qtest_add_data_func(
+        "origin300/io8-ioc3/transceiver-answers-at-one-address", NULL,
+        test_transceiver_answers_at_one_address);
+    qtest_add_data_func("origin300/io8-ioc3/register-0x17-reads-back", NULL,
+                        test_register_0x17_reads_back_a_written_value);
+    qtest_add_data_func("origin300/io8-ioc3/io8bt-configuration", NULL,
+                        test_io8bt_configuration_reads_and_writes);
+    qtest_add_data_func("origin300/io8/mac/record-matches-configured-mac",
+                        NULL, test_configured_mac_in_board_record);
     qtest_add_data_func("sn1/address-map/hub-special-register-windows", NULL,
                         test_hub_special_register_windows);
     qtest_add_data_func(
@@ -3416,6 +3766,8 @@ int main(int argc, char **argv)
                         NULL, test_promdata_filter_survives_migration);
     qtest_add_data_func("sn1/address-map/system-reset", NULL,
                         test_system_reset_clears_bedrock_state);
+    qtest_add_data_func("sn1/migration/board-id-and-l1-uart-survive", NULL,
+                        test_board_id_and_l1_uart_survive_migration);
 
     result = g_test_run();
     g_assert_cmpint(g_unlink(prom_path), ==, 0);
