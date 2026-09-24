@@ -1064,6 +1064,19 @@ bool sgi_xbow_attach_widget(SGIXbowState *s, unsigned int widget,
     return sgi_xbow_attach_endpoint(s, widget, face, face, errp);
 }
 
+uint16_t sgi_xbow_endpoint_widgets(const SGIXbowState *s)
+{
+    uint8_t links = 0;
+    unsigned int link;
+
+    for (link = 0; link < SGI_XBOW_LINKS; link++) {
+        if (s->face[link]) {
+            links |= BIT(link);
+        }
+    }
+    return sgi_xbow_widgets_of(links);
+}
+
 bool sgi_xbow_mark_widget_alive(SGIXbowState *s, unsigned int widget,
                                 Error **errp)
 {

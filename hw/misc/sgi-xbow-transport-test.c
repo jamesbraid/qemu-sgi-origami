@@ -239,6 +239,7 @@ static uint64_t control_read(void *opaque, hwaddr addr, unsigned size)
     case 0xa8: return s->reset_low;
     case 0xb0: return timer_expire_time_ns(s->xbow.link_reset_timer[0]);
     case 0xe0: return endpoint_finalizations;
+    case 0xf0: return sgi_xbow_endpoint_widgets(&s->xbow);
     default: return addr == 0x80 ? s->result : s->guards;
     }
 }

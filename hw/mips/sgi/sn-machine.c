@@ -1280,6 +1280,17 @@ static bool sgi_machine_realize_crossbars(
                                                     &attachment_count);
 
     for (i = 0; i < crossbar_count; i++) {
+        /*
+         * Builder invariant: "links-present" and every endpoint the
+         * builders above attached both come from the topology's xtalk
+         * attachments plus the graphics slot, so nothing a user supplies
+         * can make them differ. An endpoint on a port reported empty would
+         * carry traffic to a widget firmware is told is not there.
+         */
+        uint16_t present = object_property_get_uint(
+            OBJECT(s->crossbars[i]), "links-present", &error_abort);
+
+        g_assert(!(sgi_xbow_endpoint_widgets(s->crossbars[i]) & ~present));
         if (!sysbus_realize(SYS_BUS_DEVICE(s->crossbars[i]), errp)) {
             return false;
         }
