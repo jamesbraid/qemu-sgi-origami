@@ -487,7 +487,8 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
     case PI_PENDING_ALIAS:
         pi_modify(s, value);
         trace_sgi_bedrock_pi_pending_modify(s->interface, cpu, value,
-                                            s->pending[1]);
+                                            (value >> 6) & 1,
+                                            s->pending[(value >> 6) & 1]);
         return;
     case PI_PENDING_0:
     case PI_PENDING_1:

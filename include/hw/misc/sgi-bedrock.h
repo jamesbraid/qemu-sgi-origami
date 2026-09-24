@@ -151,7 +151,7 @@ struct SGIBedrockState {
      * whether or not a publication ever arrives. See the H4 comment in
      * sgi-bedrock.c and docs/known-issues.md.
      */
-    bool presence_seen[SGI_BEDROCK_PROCESSORS / 2];
+    bool presence_seen[SGI_BEDROCK_PROCESSORS / SGI_BEDROCK_PI_PROCESSORS];
     bool presence_abandoned;
 };
 
