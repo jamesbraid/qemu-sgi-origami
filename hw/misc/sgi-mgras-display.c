@@ -24,11 +24,29 @@ static uint32_t si_cmap_rgb(SGIMgrasState *s, uint8_t visual, uint8_t index)
     return ((entry & 0xff00) << 8) | ((entry >> 8) & 0xff00) | (entry >> 24);
 }
 
+/*
+ * The IRIX desktop session's DDX loads a post-CMAP gamma-correction
+ * table into the DAC after login (mgrasLoadICOGammaRamps/ico_progdac;
+ * see the header comment above SGI_MGRAS_DAC_LUT_INDEX in sgi-mgras.h
+ * for the captured load protocol). Apply it as a final stage over any
+ * resolved colour, so indexed and, once modeled, direct-colour pixels
+ * see the same correction. Operates on si_cmap_rgb()'s native
+ * 0x00BBGGRR order.
+ */
+static uint32_t si_gamma_apply(SGIMgrasState *s, uint32_t bgr)
+{
+    uint32_t b = s->dac_gamma[2][(bgr >> 16) & 0xff];
+    uint32_t g = s->dac_gamma[1][(bgr >> 8) & 0xff];
+    uint32_t r = s->dac_gamma[0][bgr & 0xff];
+
+    return (b << 16) | (g << 8) | r;
+}
+
 /* The cursor uses mask and select planes from VC3 SRAM. */
 static void si_composite_cursor(SGIMgrasState *s)
 {
     uint32_t base = s->vc3_reg[1];
-    uint32_t ink = si_cmap_rgb(s, 0, SI_CURSOR_CMAP_INDEX);
+    uint32_t ink = si_gamma_apply(s, si_cmap_rgb(s, 0, SI_CURSOR_CMAP_INDEX));
     uint32_t bg = 0x00ffffff;
 
     for (unsigned row = 0; row < 32; row++) {
@@ -86,7 +104,8 @@ static bool si_gfx_update(void *opaque)
      * select it, so a direct-colour mode indexes here like any other.
      */
     for (int i = 0; i < SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT; i++) {
-        uint32_t rgb = si_cmap_rgb(s, s->wid[i], s->front[i] & 0xff);
+        uint32_t rgb = si_gamma_apply(s, si_cmap_rgb(s, s->wid[i],
+                                                     s->front[i] & 0xff));
 
         s->display_buffer[i] = ((rgb & 0xff) << 16) | (rgb & 0x00ff00) |
                                ((rgb >> 16) & 0xff);

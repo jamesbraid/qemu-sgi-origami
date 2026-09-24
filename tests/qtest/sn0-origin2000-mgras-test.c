@@ -62,10 +62,11 @@ static QTestState *qts;
 #define REG_REPP_STATUS_4      SI_REG(0x071d08)
 #define REG_SYNC_STATUS        SI_REG(0x061038)
 #define REG_REPP_SYNC          SI_REG(0x071f80)
-#define REG_DAC_LUT_INDEX      SI_REG(0x071890)
-#define REG_DAC_LUT_DATA_1     SI_REG(0x071810)
+#define REG_DAC_LUT_INDEX      SI_REG(0x071810)
+#define REG_DAC_LUT_DATA       SI_REG(0x071890)
 #define REG_DAC_LUT_DATA_2     SI_REG(0x071910)
 #define REG_DAC_CONFIG         SI_REG(0x071988)
+#define REG_DAC_LUT_INDEX_LOW  SI_REG(0x071811)
 #define REG_HQ_UPLOAD           SI_REG(0x050000)
 #define REG_GE_DATA_A           SI_REG(0x058048)
 #define REG_GE_CTRL_A           SI_REG(0x05804c)
@@ -373,6 +374,23 @@ static void si_write_cmap_entry(QTestState *qts, unsigned int map,
 }
 
 /*
+ * Replay a captured gamma-table load: a halfword reset to REG_DAC_LUT_INDEX,
+ * then 256 rows of three halfword writes to REG_DAC_LUT_DATA (red, green,
+ * blue), matching the 768-write bursts a desktop session's login sends. Each
+ * write's high byte is the stored gamma output; the low byte is unused.
+ */
+static void si_load_dac_gamma(QTestState *qts, const uint8_t ramp[3][256])
+{
+    qtest_writew(qts, REG_DAC_LUT_INDEX, 0);
+    for (unsigned int row = 0; row < 256; row++) {
+        for (unsigned int channel = 0; channel < 3; channel++) {
+            qtest_writew(qts, REG_DAC_LUT_DATA,
+                         (uint16_t)ramp[channel][row] << 8);
+        }
+    }
+}
+
+/*
  * Tag a rectangle's WID without touching its colour: COLORMASKMSBS masks
  * the WID plane and COLORMASKLSBSA the colour, so a fill with the first
  * set and the second clear writes only the tag. Leaves the colour mask
@@ -591,22 +609,131 @@ static void test_hq_status_independent_of_sticky_error(void)
 }
 
 
+/*
+ * A captured desktop session brackets each gamma-table load with writes to
+ * these three registers at the widths it actually uses (byte, confirmed
+ * against the capture); their role is otherwise unconfirmed, so the model
+ * keeps them as opaque flat storage. REG_DAC_LUT_INDEX takes the halfword
+ * width the capture uses and resets the load position that
+ * test_dac_gamma_identity_ramp_leaves_colors_unchanged and
+ * test_dac_gamma_curve_applies_to_scanout exercise through the data port,
+ * since the position itself has no readable register.
+ */
 static void test_dac_lut_load(void)
 {
     si_reset();
 
-    qtest_writel(qts, REG_DAC_CONFIG, 0x1c);
+    qtest_writeb(qts, REG_DAC_CONFIG, 0x1c);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 0);
     g_assert_cmphex(qtest_readl(qts, REG_DAC_CONFIG), ==, 0x1c);
 
-    qtest_writel(qts, REG_DAC_LUT_INDEX, 0x7300);
-    qtest_writel(qts, REG_DAC_LUT_DATA_1, 0xff);
-    qtest_writel(qts, REG_DAC_LUT_DATA_2, 0x01);
+    /*
+     * REG_DAC_LUT_INDEX_LOW sits at an odd address: no read width is both
+     * aligned to it and within the read-side whitelist, so unlike the
+     * other bracketing registers its write cannot be confirmed by a
+     * readback. A captured session never reads it either.
+     */
+    qtest_writeb(qts, REG_DAC_LUT_INDEX_LOW, 0xff);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 0);
+
+    qtest_writeb(qts, REG_DAC_LUT_DATA_2, 0x01);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_DAC_LUT_DATA_2), ==, 0x01);
+
+    qtest_writew(qts, REG_DAC_LUT_INDEX, 0);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_DAC_LUT_INDEX), ==, 0);
 
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+}
 
-    g_assert_cmphex(qtest_readl(qts, REG_DAC_LUT_INDEX), ==, 0x7300);
-    g_assert_cmphex(qtest_readl(qts, REG_DAC_LUT_DATA_1), ==, 0xff);
-    g_assert_cmphex(qtest_readl(qts, REG_DAC_LUT_DATA_2), ==, 0x01);
+static void test_dac_gamma_identity_ramp_leaves_colors_unchanged(void)
+{
+    uint8_t ramp[3][256];
+
+    si_reset();
+    si_enter_context(qts);
+
+    for (unsigned int channel = 0; channel < 3; channel++) {
+        for (unsigned int i = 0; i < 256; i++) {
+            ramp[channel][i] = i;
+        }
+    }
+
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    si_write_cmap_entry(qts, 29, 0x40, 0x11223300);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_PACKEDCOLOR, 0x40));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_BLOCK_START, (5u << 16) | 5u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND_EXEC(REG_BLOCK_END, (5u << 16) | 5u));
+    g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x00112233);
+
+    si_load_dac_gamma(qts, ramp);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 0);
+
+    g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x00112233);
+}
+
+/*
+ * The captured post-login desktop session's gamma table matches a
+ * gamma-1.7 correction curve, 255*(i/255)^(1/1.7) rounded to the nearest
+ * integer, at every one of its 256 captured entries within 1 and exactly
+ * at the spot-checked entries 85 (-> 134) and 142 (-> 181). Only entry
+ * 0x40's colour is asserted below; the rest of the curve stands in for
+ * the untested majority of a real load.
+ */
+static const uint8_t si_test_gamma_1_7_curve[256] = {
+    0, 10, 15, 19, 22, 25, 28, 31, 33, 36, 38, 40,
+    42, 44, 46, 48, 50, 52, 54, 55, 57, 59, 60, 62,
+    64, 65, 67, 68, 70, 71, 72, 74, 75, 77, 78, 79,
+    81, 82, 83, 84, 86, 87, 88, 89, 91, 92, 93, 94,
+    95, 97, 98, 99, 100, 101, 102, 103, 105, 106, 107, 108,
+    109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120,
+    121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132,
+    133, 134, 135, 135, 136, 137, 138, 139, 140, 141, 142, 143,
+    144, 144, 145, 146, 147, 148, 149, 150, 150, 151, 152, 153,
+    154, 155, 156, 156, 157, 158, 159, 160, 160, 161, 162, 163,
+    164, 164, 165, 166, 167, 168, 168, 169, 170, 171, 172, 172,
+    173, 174, 175, 175, 176, 177, 178, 178, 179, 180, 181, 181,
+    182, 183, 184, 184, 185, 186, 187, 187, 188, 189, 190, 190,
+    191, 192, 192, 193, 194, 195, 195, 196, 197, 197, 198, 199,
+    199, 200, 201, 202, 202, 203, 204, 204, 205, 206, 206, 207,
+    208, 208, 209, 210, 210, 211, 212, 212, 213, 214, 214, 215,
+    216, 216, 217, 218, 218, 219, 220, 220, 221, 222, 222, 223,
+    224, 224, 225, 226, 226, 227, 227, 228, 229, 229, 230, 231,
+    231, 232, 233, 233, 234, 234, 235, 236, 236, 237, 238, 238,
+    239, 239, 240, 241, 241, 242, 242, 243, 244, 244, 245, 245,
+    246, 247, 247, 248, 248, 249, 250, 250, 251, 251, 252, 253,
+    253, 254, 254, 255,
+};
+
+static void test_dac_gamma_curve_applies_to_scanout(void)
+{
+    uint8_t ramp[3][256];
+
+    si_reset();
+    si_enter_context(qts);
+
+    for (unsigned int channel = 0; channel < 3; channel++) {
+        memcpy(ramp[channel], si_test_gamma_1_7_curve, 256);
+    }
+
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    si_write_cmap_entry(qts, 29, 0x40, 0x55555500);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_COMMAND(REG_PACKEDCOLOR, 0x40));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND(REG_BLOCK_START, (5u << 16) | 5u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                SI_COMMAND_EXEC(REG_BLOCK_END, (5u << 16) | 5u));
+    g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x00555555);
+
+    si_load_dac_gamma(qts, ramp);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 0);
+
+    g_assert_cmphex(si_test_display_pixel(qts, 5, 5), ==, 0x00868686);
 }
 
 
@@ -3936,6 +4063,10 @@ int main(int argc, char **argv)
                    test_hq_status_independent_of_sticky_error);
     qtest_add_func("sn0/origin2000/mgras/dac-lut-load",
                    test_dac_lut_load);
+    qtest_add_func("sn0/origin2000/mgras/dac-gamma-identity-ramp-noop",
+                   test_dac_gamma_identity_ramp_leaves_colors_unchanged);
+    qtest_add_func("sn0/origin2000/mgras/dac-gamma-curve-applies-to-scanout",
+                   test_dac_gamma_curve_applies_to_scanout);
     qtest_add_func("sn0/origin2000/mgras/write-path-fixes-dont-raise-error",
                    test_write_path_fixes_dont_raise_the_sticky_error);
     qtest_add_func("sn0/origin2000/mgras/board-bringup-scratch-registers",

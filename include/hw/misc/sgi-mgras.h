@@ -58,14 +58,26 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 
 #define SGI_MGRAS_SYNC_STATUS 0x061038
 
-/* Unknown display-table fields retain opaque state. */
-#define SGI_MGRAS_DAC_LUT_INDEX 0x071890
-#define SGI_MGRAS_DAC_LUT_DATA_1 0x071810
+/*
+ * A captured post-login desktop session loads a 256-row, three-channel
+ * gamma-correction table through these two ports (docs/notebooks
+ * records the capture). 0x071810 is written once per load, always with
+ * value zero, immediately before the row writes start: it resets the
+ * load position to row 0, channel 0. 0x071890 is a data port, not an
+ * index: each write stores its high byte into the current row/channel
+ * and advances channel (red, green, blue), then row. The prior names
+ * (DAC_LUT_INDEX for the data port, DAC_LUT_DATA_1 for the reset) had
+ * the roles backwards; a real guest never accesses either at the width
+ * those names' first implementation assumed. 0x071910's role bracketing
+ * a load is observed but unconfirmed, so it retains opaque state.
+ */
+#define SGI_MGRAS_DAC_LUT_INDEX 0x071810
+#define SGI_MGRAS_DAC_LUT_DATA 0x071890
 #define SGI_MGRAS_DAC_LUT_DATA_2 0x071910
 
 #define SGI_MGRAS_DAC_CONFIG 0x071988
 
-#define SGI_MGRAS_DAC_LUT_DATA_1_LOW 0x071811
+#define SGI_MGRAS_DAC_LUT_INDEX_LOW 0x071811
 
 /* Unknown board-configuration fields retain opaque state. */
 #define SGI_MGRAS_CONFIG_TABLE_BASE 0x061000
@@ -178,7 +190,12 @@ struct SGIMgrasState {
     uint32_t dac_lut_index;
     uint32_t dac_lut_data[2];
     uint32_t dac_config;
-    uint32_t dac_lut_data_1_low;
+    uint32_t dac_lut_index_low;
+    /* Gamma-table load position: row 0-255, channel 0=R, 1=G, 2=B. */
+    uint8_t dac_lut_load_pos;
+    uint8_t dac_lut_load_channel;
+    /* Post-CMAP gamma-correction table. Identity at reset. */
+    uint8_t dac_gamma[3][256];
     uint32_t config_table[SGI_MGRAS_CONFIG_TABLE_WORDS];
     uint32_t bringup_flag;
     uint32_t bringup_arg_2;

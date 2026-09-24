@@ -337,10 +337,10 @@ static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
     case SGI_MGRAS_SYNC_STATUS: return s->sync_status;
     case SGI_MGRAS_BRINGUP_FLAG: return s->bringup_flag;
     case SGI_MGRAS_DAC_LUT_INDEX: return s->dac_lut_index;
-    case SGI_MGRAS_DAC_LUT_DATA_1: return s->dac_lut_data[0];
+    case SGI_MGRAS_DAC_LUT_DATA: return s->dac_lut_data[0];
     case SGI_MGRAS_DAC_LUT_DATA_2: return s->dac_lut_data[1];
     case SGI_MGRAS_DAC_CONFIG: return s->dac_config;
-    case SGI_MGRAS_DAC_LUT_DATA_1_LOW: return s->dac_lut_data_1_low;
+    case SGI_MGRAS_DAC_LUT_INDEX_LOW: return s->dac_lut_index_low;
     case 0x008000: return 0;
     /* Keep unresolved status bits separate from modeled pending sources. */
     case 0x011020: return s->pending | s->hq_status_extra;
@@ -457,11 +457,6 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     if (addr != SI_MGRAS_CONTEXT_COMMAND && addr != SGI_MGRAS_SCRATCH_COMMAND) {
         trace_sgi_mgras_control_mmio(sequence, addr, value, size, true);
     }
-    /* Handle this supported misaligned port before the alignment check. */
-    if (addr == SGI_MGRAS_DAC_LUT_DATA_1_LOW && size == 4) {
-        s->dac_lut_data_1_low = value;
-        return;
-    }
     if ((size != 1 && size != 2 && size != 4 && size != 8) ||
         (addr & (size - 1))) {
         si_error(s, addr, size, "unsupported or unaligned write");
@@ -474,13 +469,21 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         si_error(s, addr, size, "unsupported register write width");
         return;
     }
+    /*
+     * A captured desktop session writes the gamma-table load registers at
+     * these widths: byte for DAC_LUT_INDEX_LOW and DAC_LUT_DATA_2, and
+     * halfword for DAC_LUT_INDEX and DAC_LUT_DATA. See the header comment
+     * above SGI_MGRAS_DAC_LUT_INDEX.
+     */
     if (size == 1 && addr != SGI_MGRAS_I2C_SCRATCH &&
         addr != SGI_MGRAS_I2C_STROBE && addr != SGI_MGRAS_VC3_INDEX &&
-        addr != 0x071c88) {
+        addr != 0x071c88 && addr != SGI_MGRAS_DAC_LUT_INDEX_LOW &&
+        addr != SGI_MGRAS_DAC_LUT_DATA_2 && addr != SGI_MGRAS_DAC_CONFIG) {
         si_error(s, addr, size, "unsupported byte write");
         return;
     }
-    if (size == 2 && addr != 0x070c30 && addr != SGI_MGRAS_VC3_RAM) {
+    if (size == 2 && addr != 0x070c30 && addr != SGI_MGRAS_VC3_RAM &&
+        addr != SGI_MGRAS_DAC_LUT_INDEX && addr != SGI_MGRAS_DAC_LUT_DATA) {
         si_error(s, addr, size, "unsupported halfword write");
         return;
     }
@@ -526,10 +529,35 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     case SGI_MGRAS_REPP_STATUS_4: s->repp_status[2] = value; return;
     case SGI_MGRAS_SYNC_STATUS: s->sync_status = value; return;
     case SGI_MGRAS_BRINGUP_FLAG: s->bringup_flag = value; return;
-    case SGI_MGRAS_DAC_LUT_INDEX: s->dac_lut_index = value; return;
-    case SGI_MGRAS_DAC_LUT_DATA_1: s->dac_lut_data[0] = value; return;
+    /*
+     * A write resets the gamma-table load position to row 0, channel 0.
+     * Every captured reset writes zero; the value itself is only echoed
+     * back, not otherwise interpreted.
+     */
+    case SGI_MGRAS_DAC_LUT_INDEX:
+        s->dac_lut_index = value;
+        s->dac_lut_load_pos = 0;
+        s->dac_lut_load_channel = 0;
+        return;
+    /*
+     * Each write's high byte loads the current row/channel of the gamma
+     * table, then advances: red, then green, then blue, then the next
+     * row. See the header comment above SGI_MGRAS_DAC_LUT_INDEX.
+     */
+    case SGI_MGRAS_DAC_LUT_DATA:
+        s->dac_lut_data[0] = value;
+        s->dac_gamma[s->dac_lut_load_channel][s->dac_lut_load_pos] = value >> 8;
+        if (++s->dac_lut_load_channel == 3) {
+            s->dac_lut_load_channel = 0;
+            s->dac_lut_load_pos++;
+        }
+        s->dirty = true;
+        return;
     case SGI_MGRAS_DAC_LUT_DATA_2: s->dac_lut_data[1] = value; return;
     case SGI_MGRAS_DAC_CONFIG: s->dac_config = value; return;
+    case SGI_MGRAS_DAC_LUT_INDEX_LOW:
+        s->dac_lut_index_low = value;
+        return;
     case 0x011000:
         /* Retain the unresolved prefix and use only its presence. */
         s->prefix = value;
@@ -756,7 +784,12 @@ static void si_reset_enter(Object *obj, ResetType type)
     s->dac_lut_index = 0;
     memset(s->dac_lut_data, 0, sizeof(s->dac_lut_data));
     s->dac_config = 0;
-    s->dac_lut_data_1_low = 0;
+    s->dac_lut_index_low = 0;
+    s->dac_lut_load_pos = 0;
+    s->dac_lut_load_channel = 0;
+    for (int i = 0; i < 256; i++) {
+        s->dac_gamma[0][i] = s->dac_gamma[1][i] = s->dac_gamma[2][i] = i;
+    }
     memset(s->config_table, 0, sizeof(s->config_table));
     s->bringup_flag = 0;
     s->bringup_arg_2 = 0;
@@ -896,7 +929,7 @@ static bool si_ge_lengths_valid(void *opaque, int version_id)
  * changes.
  */
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 8, .minimum_version_id = 8,
+    .name = TYPE_SGI_MGRAS, .version_id = 9, .minimum_version_id = 9,
     .post_load = si_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -958,7 +991,10 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32(dac_lut_index, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(dac_lut_data, SGIMgrasState, 2),
         VMSTATE_UINT32(dac_config, SGIMgrasState),
-        VMSTATE_UINT32(dac_lut_data_1_low, SGIMgrasState),
+        VMSTATE_UINT32(dac_lut_index_low, SGIMgrasState),
+        VMSTATE_UINT8_V(dac_lut_load_pos, SGIMgrasState, 9),
+        VMSTATE_UINT8_V(dac_lut_load_channel, SGIMgrasState, 9),
+        VMSTATE_UINT8_2DARRAY_V(dac_gamma, SGIMgrasState, 3, 256, 9),
         VMSTATE_UINT32_ARRAY(config_table, SGIMgrasState,
                              SGI_MGRAS_CONFIG_TABLE_WORDS),
         VMSTATE_UINT32(bringup_flag, SGIMgrasState),
