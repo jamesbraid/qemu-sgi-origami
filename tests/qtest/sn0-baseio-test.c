@@ -60,15 +60,19 @@
 #define MIO_IOC3_WINDOW 0xa00000
 
 /*
- * The MediaIO daughtercard's RAD1 audio ASIC, io6g only. Device 5's own
- * 1 MB window (this file's own BRIDGE_DEVICE(5) window) with BAR0, the
- * 0x2000-byte register file, at the window's base. IRIX's rad_attach maps
- * exactly that much through BAR0 and stores the result as the register
- * base every later access uses; a smaller BAR leaves it NULL.
+ * The MediaIO daughtercard's RAD1 audio ASIC, io6g only, at Bridge PCI
+ * device 7, where a real BaseIO-G owner's hinv -v lists it
+ * (docs/datasheets/baseio.md). Device 7's own 1 MB window (this file's own
+ * BRIDGE_DEVICE(7) window) with BAR0, the 0x2000-byte register file, at the
+ * window's base. IRIX's rad_attach maps exactly that much through BAR0 and
+ * stores the result as the register base every later access uses; a
+ * smaller BAR leaves it NULL. The same inventory shows no function at
+ * device 5.
  */
-#define MIO_RAD1_DEVICE 5
+#define MIO_RAD1_DEVICE 7
 #define MIO_RAD1_MMIO 0x12000000u
-#define MIO_RAD1_WINDOW 0x900000
+#define MIO_RAD1_WINDOW 0xb00000
+#define MIO_EMPTY_DEVICE 5
 #define MIO_RAD1_BAR0_SIZE 0x2000u
 
 #define MIO_RAD1_VENDOR_ID 0x10a9
@@ -683,6 +687,22 @@ static void test_mio_ioc3_subsystem_id(void)
     g_assert_cmphex(baseio_window_read(qts, BRIDGE_CFG0(MIO_IOC3_DEVICE) +
                                        PCI_SUBSYSTEM),
                     ==, SUBSYSTEM(0xc301));
+}
+
+/*
+ * The owner inventory's placement: RAD1's identity at device 7 and no
+ * function at device 5. An empty slot reads all ones.
+ */
+static void test_io6g_rad1_slot(void)
+{
+    QTestState *qts = start_module_io6g();
+
+    program_module(qts);
+    g_assert_cmphex(baseio_window_read(qts, BRIDGE_CFG0(7) + PCI_VENDOR_ID),
+                    ==, MIO_RAD1_ID_PAIR);
+    g_assert_cmphex(baseio_window_read(qts, BRIDGE_CFG0(MIO_EMPTY_DEVICE) +
+                                       PCI_VENDOR_ID),
+                    ==, 0xffffffffu);
 }
 
 static void test_io6g_rad1_identity(void)
@@ -1980,6 +2000,7 @@ int main(int argc, char **argv)
                    test_baseio_timekeeper_backing_reopen);
     qtest_add_func("sn0/baseio/mio-ioc3-subsystem-id",
                    test_mio_ioc3_subsystem_id);
+    qtest_add_func("sn0/baseio/io6g-rad1-slot", test_io6g_rad1_slot);
     qtest_add_func("sn0/baseio/io6g-rad1-identity",
                    test_io6g_rad1_identity);
     qtest_add_func("sn0/baseio/io6g-rad1-registers",

@@ -424,16 +424,15 @@ static bool baseio_build_io6(SGIBaseioState *s, Error **errp)
 #define BASEIO_G_MIO_ONEWIRE_SERIAL 0x0c0b0a090807ULL
 
 /*
- * The MediaIO daughtercard's RAD1 audio ASIC. No source establishes which
- * Bridge slot the daughtercard wires it to, so device 5 is this model's
- * own placement, chosen only because it is the sole slot devices 0-2 and
- * 6 above leave free on this board's Bridge -- an inference flagged here
- * rather than a captured fact, per docs/datasheets/mediaio-rad1-audio.md.
- * It carries no interrupt wiring: the datasheet establishes no interrupt
- * behavior for this device, and no guest install this model was built
- * against installs a handler or enables one for it.
+ * The MediaIO daughtercard's RAD1 audio ASIC sits at Bridge PCI device 7.
+ * A real BaseIO-G owner's hinv -v lists the RAD1 identity 0x10a9:0x0005 at
+ * PCI slot 7 of this board's Bridge, beside the SCSI controllers at 0 and
+ * 1 and the IOC3s at 2 and 6, with nothing at slot 5
+ * (docs/datasheets/baseio.md, "BaseIO-G and MediaIO boundary").
+ * It carries no interrupt wiring: the RAD1 driver registers no data-path
+ * interrupt (docs/datasheets/mediaio-rad1-audio.md, "Interrupts").
  */
-#define BASEIO_G_RAD1_DEVICE 5
+#define BASEIO_G_RAD1_DEVICE 7
 
 /*
  * io6g: the io6 core with its device-2 IOC3 carrying a
@@ -449,7 +448,7 @@ static bool baseio_build_io6(SGIBaseioState *s, Error **errp)
  * board's chosen console and record backends -- so they claim their
  * backend through this device's own "mio-chardev-a"/"mio-chardev-b"
  * instead, with no record counterpart. The daughtercard's RAD1 audio
- * ASIC rides the same Bridge at device 5 (BASEIO_G_RAD1_DEVICE above).
+ * ASIC rides the same Bridge at device 7 (BASEIO_G_RAD1_DEVICE above).
  */
 static bool baseio_build_io6g(SGIBaseioState *s, Error **errp)
 {
