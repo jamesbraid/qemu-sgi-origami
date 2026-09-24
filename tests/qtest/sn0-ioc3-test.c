@@ -473,6 +473,42 @@ static void test_one_shot_interrupt_output_has_three_tick_width(
     g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==, 0);
 }
 
+/*
+ * Any rising edge of the output posts the output-pulse source, not only a
+ * one-shot's. The Origin 300 IO-8 board test masks every source, clears
+ * the status, commands the output high (0x40005) and then low (0x5), and
+ * requires bit 27 in the status afterwards.
+ */
+static void test_a_fixed_high_command_posts_the_output_pulse(const void *data)
+{
+    ioc3_reset();
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_LOW);
+    qtest_clock_step(qts, 1);
+    qtest_writel(qts, INT_STATUS, 0xffffffffu);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_RT_OUTPUT_PULSE, ==, 0);
+
+    qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_HIGH | 0x0005);
+    qtest_clock_step(qts, 1);
+    qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_LOW | 0x0005);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_RT_OUTPUT_PULSE, ==,
+                    INT_RT_OUTPUT_PULSE);
+
+    /*
+     * A fall alone posts nothing. The board test cannot tell a rise from a
+     * fall; this follows the one-shot contract, where the rise posts.
+     */
+    qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_HIGH);
+    qtest_clock_step(qts, 1);
+    qtest_writel(qts, INT_STATUS, INT_RT_OUTPUT_PULSE);
+    qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_LOW);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_RT_OUTPUT_PULSE, ==, 0);
+}
+
 static void test_count_zero_output_pulse_interrupt(const void *data)
 {
     ioc3_reset();
@@ -484,6 +520,8 @@ static void test_count_zero_output_pulse_interrupt(const void *data)
     qtest_clock_step(qts, 1);
     g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==,
                     INT_OUT_PIN);
+    /* That rising edge posted the source too; clear it to see the strobe's. */
+    qtest_writel(qts, INT_STATUS, INT_RT_OUTPUT_PULSE);
 
     /* The exact internal-test strobe still emits a new rising edge. */
     qtest_writel(qts, INT_OUTPUT, INT_OUT_MODE_ONE_SHOT);
@@ -5056,6 +5094,8 @@ int main(int argc, char **argv)
                         test_fixed_interrupt_output_commands_change_the_state);
     qtest_add_data_func("sn0/ioc3/one-shot-interrupt-output-width", NULL,
                         test_one_shot_interrupt_output_has_three_tick_width);
+    qtest_add_data_func("sn0/ioc3/fixed-high-posts-output-pulse", NULL,
+                        test_a_fixed_high_command_posts_the_output_pulse);
     qtest_add_data_func("sn0/ioc3/count-zero-output-pulse-interrupt", NULL,
                         test_count_zero_output_pulse_interrupt);
     qtest_add_data_func("sn0/ioc3/periodic-interrupt-output-min-interval",
