@@ -584,6 +584,40 @@ static void test_expansion_card_enumerates_inbound(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The spare widget is an empty XIO slot until a board claims it: its
+ * Crossbow port reports no widget and the failed-initialization state,
+ * so firmware passes over it. A board taking the proxy is a widget
+ * physically attached to that port, which then reads present and alive
+ * (docs/datasheets/xbow.md, link auxiliary status bit 5 and link status
+ * bit 31). Crossbow 0's own registers are widget 0 of its small windows.
+ */
+#define SPARE_LINK_STATUS       (SMALL_WINDOW(0) + 0x110 + \
+                                (SPARE_WIDGET - 8) * 0x40 + REG_DATA)
+#define SPARE_LINK_AUX          (SMALL_WINDOW(0) + 0x138 + \
+                                (SPARE_WIDGET - 8) * 0x40 + REG_DATA)
+#define LINK_ALIVE              (1u << 31)
+#define LINK_MAX_RETRY          (1u << 5)
+#define AUX_FAILURE_MODE        (1u << 6)
+#define AUX_PRESENT             (1u << 5)
+
+static void test_spare_widget_present_only_when_claimed(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin2000 -display none");
+
+    g_assert_cmphex(qtest_readl(qts, SPARE_LINK_AUX), ==, AUX_FAILURE_MODE);
+    g_assert_cmphex(qtest_readl(qts, SPARE_LINK_STATUS), ==, LINK_MAX_RETRY);
+    qtest_quit(qts);
+
+    qts = qtest_init(
+        "-M origin2000 -display none -device sgi-pci-expansion,"
+        "module=99,slot=11,fabric=/machine/crossbow0-spare-fabric[0],"
+        "fabric-widget-shift=48");
+    g_assert_cmphex(qtest_readl(qts, SPARE_LINK_AUX), ==, AUX_PRESENT);
+    g_assert_cmphex(qtest_readl(qts, SPARE_LINK_STATUS), ==, LINK_ALIVE);
+    qtest_quit(qts);
+}
+
 static void test_unsupported_smp_population_rejected(const void *data)
 {
     const char *args[] = {
@@ -903,6 +937,8 @@ int main(int argc, char **argv)
                         test_pci_expansion_delivers_card_interrupt_to_hub);
     qtest_add_data_func("sn/builder/expansion-card-enumerates-inbound",
                         NULL, test_expansion_card_enumerates_inbound);
+    qtest_add_data_func("sn/builder/spare-widget-present-only-when-claimed",
+                        NULL, test_spare_widget_present_only_when_claimed);
     qtest_add_data_func("sn/builder/unsupported-smp-population-rejected",
                         NULL, test_unsupported_smp_population_rejected);
     qtest_add_data_func("sn/builder/topology-from-another-product-refused",

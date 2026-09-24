@@ -192,8 +192,10 @@ bool sgi_xbow_mark_widget_alive(SGIXbowState *s, unsigned int widget,
  * other ports and processors can address, where attach_endpoint() refuses
  * once the Crossbow is realized. For a board that reaches its Crossbow only
  * after machine init -- a `-device` expansion board plugged into the spare
- * fabric proxy -- whose Crossbow is therefore already realized. The caller
- * brings the widget's own link alive with sgi_xbow_mark_widget_alive().
+ * fabric proxy -- whose Crossbow is therefore already realized. The port
+ * reports a widget present from here on, whatever "links-present" said at
+ * realize. The caller brings the widget's own link alive with
+ * sgi_xbow_mark_widget_alive().
  * Fails if the widget already has a face, is out of range, or the crossbar
  * is not realized or is quiesced.
  */

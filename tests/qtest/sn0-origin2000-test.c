@@ -60,6 +60,10 @@
 #define XBOW_STATUS_CLEAR 0x0050
 #define XBOW_LINK8_STATUS 0x0110
 #define XBOW_LINK8_RESET 0x0130
+#define XBOW_LINK_STATUS(w) (0x0110 + ((w) - 8) * 0x40)
+#define XBOW_LINK_AUX(w) (0x0138 + ((w) - 8) * 0x40)
+#define XBOW_AUX_FAILURE_MODE (1u << 6)
+#define XBOW_AUX_PRESENT (1u << 5)
 #define XBOW_STATUS_REQUEST (1u << 23)
 #define XBOW_STATUS_ACCESS_ERROR (1u << 5)
 #define XBOW_CONTROL_ACCESS_ENABLE (1u << 5)
@@ -2032,7 +2036,8 @@ static void assert_crossbow(QTestState *qts, const char *crossbow,
 
     g_assert_cmphex(xtalk_uint(qts, crossbow, "span"), ==,
                     UINT64_C(0x400000000));
-    g_assert_cmphex(xtalk_uint(qts, crossbow, "links-present"), ==, 0xff00);
+    g_assert_cmphex(xtalk_uint(qts, crossbow, "links-present"), ==,
+                    startup_alive);
     g_assert_cmphex(xtalk_uint(qts, crossbow, "startup-links-alive"), ==,
                     startup_alive);
     g_assert_false(qtest_qom_get_bool(qts, path, "stop-on-link-reset"));
@@ -2066,6 +2071,56 @@ static void test_xtalk_owner(void)
     qtest_quit(qts);
 }
 
+static uint32_t crossbow_read(QTestState *qts, unsigned int cpu,
+                              uint64_t offset)
+{
+    uint8_t bytes[sizeof(uint32_t)];
+
+    g_assert_true(qtest_memread_cpu(qts, cpu,
+                                    XTALK_BASE + offset + XTALK_REG_DATA,
+                                    bytes, sizeof(bytes)));
+    return ldl_be_p(bytes);
+}
+
+/*
+ * Only the ports the module wires to something report a widget. The PROM
+ * reads auxiliary status bit 5 for each port and, for one that says a
+ * widget is there, link status bit 31; a port claiming a widget whose link
+ * never came up is what it reports as a bad IO link. An empty XIO slot has
+ * no widget, so it reads presence clear and the failed-initialization state
+ * (docs/datasheets/xbow.md, link auxiliary status and the port state model).
+ */
+static void assert_crossbow_ports(QTestState *qts, unsigned int cpu,
+                                  uint16_t attached)
+{
+    for (unsigned int widget = 8; widget < 16; widget++) {
+        uint32_t aux = crossbow_read(qts, cpu, XBOW_LINK_AUX(widget));
+        uint32_t status = crossbow_read(qts, cpu, XBOW_LINK_STATUS(widget));
+
+        if (attached & (1u << widget)) {
+            g_assert_cmphex(aux & XBOW_AUX_PRESENT, ==, XBOW_AUX_PRESENT);
+            g_assert_cmphex(status & XBOW_LINK_ALIVE, ==, XBOW_LINK_ALIVE);
+        } else {
+            g_assert_cmphex(aux, ==, XBOW_AUX_FAILURE_MODE);
+            g_assert_cmphex(status, ==, XBOW_LINK_MAX_RETRY);
+        }
+    }
+}
+
+/*
+ * The shipped module's two Crossbows: crossbow0 wires BaseIO, its two host
+ * nodes and SI Viz; crossbow1 only its two host nodes. Node 0 (CPU 0) is a
+ * host of crossbow0 and node 1 (CPU 2) of crossbow1.
+ */
+static void test_xbow_absent_links(void)
+{
+    QTestState *qts = start_control_module("");
+
+    assert_crossbow_ports(qts, 0, 0x8700);
+    assert_crossbow_ports(qts, 2, 0x0600);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2086,6 +2141,8 @@ int main(int argc, char **argv)
                    test_xtalk_switch_visible);
     qtest_add_func("sn0/origin2000/xbow-prom-error-writes",
                    test_xbow_prom_error_writes);
+    qtest_add_func("sn0/origin2000/xbow-absent-links",
+                   test_xbow_absent_links);
     qtest_add_func("sn0/origin2000/xbow-baseio-link-reset",
                    test_xbow_baseio_link_reset);
     qtest_add_func("sn0/origin2000/mutated-reset", test_mutated_reset);

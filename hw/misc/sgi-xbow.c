@@ -1163,7 +1163,12 @@ bool sgi_xbow_attach_endpoint_live(SGIXbowState *s, unsigned int widget,
      * own link alive next (sgi_xbow_mark_widget_alive()), whose
      * sgi_xbow_sync_routes() settles these routes to the enabled state a
      * live destination has.
+     *
+     * Attaching a widget is what makes its port report one present
+     * (auxiliary status bit 5), independently of whether the link has
+     * trained yet, so the port stops reading as an empty slot here.
      */
+    s->link_present |= BIT(link);
     s->face[link] = cpu_face;
     s->packet_face[link] = packet_face;
     name = g_strdup_printf("sgi-xbow.widget%u.packets", widget);
