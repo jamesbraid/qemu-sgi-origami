@@ -231,16 +231,20 @@ DRIVER_STEPS = (
     (r"[#$] ", DIAG_CMD + "\n"),
 )
 # olcdrom's own RSLT line, the whole chain's end condition since it is
-# the last command in DIAG_CMD. This cannot be the generic "LOOP
+# the last command in DIAG_CMD. This cannot be the bare generic "LOOP
 # Completed Loop N of M" line: oldisk and oltape each print that same
 # banner for themselves too, well before olcdrom ever runs, so a
 # console driver watching for it stops at oldisk's own loop line and
-# never lets olmem, oltape or olcdrom run at all. "RSLT olcdrom" is the
-# one banner unique to this diagnostic; an abort ("ABRT ...") that
-# prints no RSLT at all is also caught so a hung run there does not
-# spend the whole timeout unattributed.
+# never lets olmem, oltape or olcdrom run at all. On a pass, olcdrom's
+# own "LOOP Completed" line prints after its RSLT line, and the
+# "olcdrom loop completed" assertion needs that line captured too, so
+# the pass alternative waits for both, in order, rather than stopping
+# at RSLT and truncating the transcript before it. "RSLT olcdrom FAIL"
+# and an abort ("ABRT ...") that prints no RSLT at all end things
+# immediately: neither prints a LOOP line to wait for.
 DIAG_DONE_RE = re.compile(
-    rb"(RSLT\s+olcdrom\s+(PASS|FAIL)|ABRT\s+\w)")
+    rb"(RSLT\s+olcdrom\s+PASS[\s\S]*?LOOP\s+Completed Loop\s+\d+\s+of\s+\d+"
+    rb"|RSLT\s+olcdrom\s+FAIL|ABRT\s+\w)")
 
 
 if QemuSystemTest is not None:
