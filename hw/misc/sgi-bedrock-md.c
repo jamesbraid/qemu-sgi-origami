@@ -1253,30 +1253,53 @@ static MemTxResult md_ecc_checked_read(SGIBedrockMDECCInjection *injection,
             if (bit < 0) {
                 qemu_log_mask(LOG_GUEST_ERROR,
                               "sgi-bedrock-md: uncorrectable memory ECC "
-                              "error at 0x%09" PRIx64 ", syndrome 0x%02x\n",
-                              address, syndrome);
+                              "error at 0x%09" PRIx64 ", syndrome 0x%02x, "
+                              "%s read\n", address, syndrome,
+                              attrs.mips_uncached ? "uncached" : "cached");
                 md_memory_error_latch(s, MD_MEMORY_ERROR_READ_UCE, address,
                                       syndrome);
-                return MEMTX_ERROR;
-            }
-            /*
-             * The corrected word and its check byte are written back, so
-             * the next read and a backdoor read both see the codeword. The
-             * Origin 300's memory diagnostic requires the check byte to be
-             * right after the correcting read (its section 2 compares it).
-             */
-            if (bit < MD_ECC_DATA_BITS) {
-                data ^= UINT64_C(1) << bit;
-                address_space_stq_be(&s->node_as, raw * 8, data, attrs,
-                                     &result);
-                if (result != MEMTX_OK) {
-                    return result;
+                /*
+                 * An uncached processor read fails, which the load reports
+                 * as a bus error: the R10000 family posts one when a
+                 * double, single or partial-word response carries the
+                 * uncorrectable-error indication, and the Origin 300's
+                 * memory diagnostic reads each uncorrectable syndrome
+                 * uncached under a bus-error handler. A cached read is a
+                 * block read, for which the processor posts a Cache Error
+                 * exception instead, and the public SN1 header gives the
+                 * processor interface separate error bits for an
+                 * uncorrectable error on an uncached read and during a
+                 * cached load. The model does not raise the Cache Error
+                 * exception: a cached read completes with the word as
+                 * stored and the error reaches software only through the
+                 * record and its interrupt. The attribute marks only a
+                 * processor's uncached or uncached-accelerated reference,
+                 * so a DMA engine's read completes too.
+                 */
+                if (attrs.mips_uncached) {
+                    return MEMTX_ERROR;
                 }
+            } else {
+                /*
+                 * The corrected word and its check byte are written back,
+                 * so the next read and a backdoor read both see the
+                 * codeword. The Origin 300's memory diagnostic requires the
+                 * check byte to be right after the correcting read (its
+                 * section 2 compares it).
+                 */
+                if (bit < MD_ECC_DATA_BITS) {
+                    data ^= UINT64_C(1) << bit;
+                    address_space_stq_be(&s->node_as, raw * 8, data, attrs,
+                                         &result);
+                    if (result != MEMTX_OK) {
+                        return result;
+                    }
+                }
+                s->ecc[raw] = sgi_bedrock_md_ecc_compute(data);
+                md_ecc_injection_clear(s, raw);
+                md_memory_error_latch(s, MD_MEMORY_ERROR_READ_CE, address,
+                                      syndrome);
             }
-            s->ecc[raw] = sgi_bedrock_md_ecc_compute(data);
-            md_ecc_injection_clear(s, raw);
-            md_memory_error_latch(s, MD_MEMORY_ERROR_READ_CE, address,
-                                  syndrome);
         }
     }
     *value = extract64(data, (8 - offset - size) * 8, size * 8);
