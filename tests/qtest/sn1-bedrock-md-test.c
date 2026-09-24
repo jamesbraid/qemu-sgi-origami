@@ -2805,7 +2805,6 @@ static void test_directory_ecc_check(void)
     qtest_writeq(s, MD(DIRECTORY_CONFIG), 3);
     qtest_writeq(s, DIRECTORY(word), 3);
     qtest_writeq(s, MD(DIRECTORY_CONFIG), 1);
-    qtest_writeq(s, MEMORY(line), UINT64_C(0x1234));
     g_assert_cmphex(qtest_readq(s, MEMORY(line)), ==, 0);
     g_assert_cmphex(qtest_readq(s, MD(DIRECTORY_ERROR)), ==,
                     DIRECTORY_ERROR_UCE_VALID | DIRECTORY_ERROR_SYNDROME(0x30) |
@@ -2826,11 +2825,25 @@ static void test_directory_ecc_check(void)
                     DIRECTORY_ERROR_CE_VALID | DIRECTORY_ERROR_CE_OVERRUN |
                     DIRECTORY_ERROR_SYNDROME(0x30) |
                     DIRECTORY_ERROR_ADDRESS(word));
-    /* Rewriting the word with ECC in force ends the checking. */
+    /*
+     * A data write inside the line rewrites its entry: the word keeps its
+     * bits under a fresh check field, the data lands, and the next read is
+     * clean. The stock PROM relies on this after its own directory walk.
+     */
+    qtest_writeq(s, MEMORY(line + 0x40), UINT64_C(0x1234));
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(word)), ==,
+                    UINT64_C(0x0000003000000003));
+    g_assert_cmphex(qtest_readq(s, MEMORY(line + 0x40)), ==, UINT64_C(0x1234));
+    g_assert_cmphex(qtest_readq(s, MEMORY(line)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MD(DIRECTORY_ERROR)), ==, 0);
+    /* Rewriting the word with ECC in force ends the checking as well. */
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 3);
+    qtest_writeq(s, DIRECTORY(word), 3);
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 1);
     qtest_writeq(s, DIRECTORY(word), 3);
     g_assert_cmphex(qtest_readq(s, DIRECTORY(word)), ==,
                     UINT64_C(0x0000003000000003));
-    g_assert_cmphex(qtest_readq(s, MEMORY(line)), ==, UINT64_C(0x1234));
+    g_assert_cmphex(qtest_readq(s, MEMORY(line)), ==, 0);
     g_assert_cmphex(qtest_readq(s, MD(DIRECTORY_ERROR)), ==, 0);
     qtest_writeq(s, MD(DIRECTORY_ERROR), UINT64_MAX);
     qtest_writeq(s, MD(DIRECTORY_ERROR_CLEAR), UINT64_MAX);
@@ -2865,6 +2878,60 @@ static void test_directory_ecc_check_reset(void)
     qtest_readq(s, MEMORY(0x2000));
     g_assert_cmphex(qtest_readq(s, MD(DIRECTORY_ERROR)), ==, 0);
     g_assert_cmphex(qtest_readq(s, DIRECTORY(0x400)), ==, 0);
+    qtest_quit(s);
+}
+
+/*
+ * A data write rewrites the entry of every marked line it touches whichever
+ * path carries it: the doubleword overlay that shadows the line's own, the
+ * decoder, and the unit's fetch-and-op stores, which regenerate the
+ * doubleword's ECC the way any write does.
+ */
+static void test_directory_rewritten_by_data_write(void)
+{
+    const uint64_t line = 0x4000;
+    const uint64_t word = (line >> 3) & UINT64_C(0x3ffffff0);
+    const unsigned index = line / 8;
+    QTestState *s = start("");
+
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 1));
+
+    /* Through an ECC overlay on a doubleword of the line. */
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 3);
+    qtest_writeq(s, DIRECTORY(word), 3);
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 1);
+    qtest_writeb(s, ECC_BYTE(index + 1), ecc_column[2]);
+    qtest_writeq(s, MEMORY(line + 8), 0x55);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(word)), ==,
+                    UINT64_C(0x0000003000000003));
+    g_assert_cmphex(qtest_readq(s, MEMORY(line)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MEMORY(line + 8)), ==, 0x55);
+    g_assert_cmphex(qtest_readb(s, ECC_BYTE(index + 1)), ==, ecc_of(0x55));
+    g_assert_cmphex(qtest_readq(s, MD(DIRECTORY_ERROR)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR)), ==, 0);
+
+    /* Through a fetch-and-op store, which regenerates the ECC as well. */
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 3);
+    qtest_writeq(s, DIRECTORY(word), 3);
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 1);
+    qtest_writeb(s, ECC_BYTE(index), ecc_column[4]);
+    qtest_writeq(s, FETCHOP(line), 0x77);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(word)), ==,
+                    UINT64_C(0x0000003000000003));
+    g_assert_cmphex(qtest_readq(s, MEMORY(line)), ==, 0x77);
+    g_assert_cmphex(qtest_readb(s, ECC_BYTE(index)), ==, ecc_of(0x77));
+    g_assert_cmphex(qtest_readq(s, MD(DIRECTORY_ERROR)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR)), ==, 0);
+
+    /* A fetch-and-increment writes too. */
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 3);
+    qtest_writeq(s, DIRECTORY(word), 3);
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 1);
+    g_assert_cmphex(qtest_readq(s, FETCHOP(line + 8)), ==, 0x77);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY(word)), ==,
+                    UINT64_C(0x0000003000000003));
+    g_assert_cmphex(qtest_readq(s, MEMORY(line)), ==, 0x78);
+    g_assert_cmphex(qtest_readq(s, MD(DIRECTORY_ERROR)), ==, 0);
     qtest_quit(s);
 }
 
@@ -2931,10 +2998,10 @@ static void test_origin300_directory_ecc_check(void)
     qtest_writeq(s, SELFTEST_MACHINE(0x8),
                  (UINT64_C(2) << 32) | memory_bank_config(2, 3) |
                  memory_bank_config(3, 3));
+    qtest_writeq(s, line, UINT64_C(0xabcd));
     qtest_writeq(s, SELFTEST_MACHINE(DIRECTORY_CONFIG), 3);
     qtest_writeq(s, carrier, UINT64_C(0x0000001f00000000));
     qtest_writeq(s, SELFTEST_MACHINE(DIRECTORY_CONFIG), 1);
-    qtest_writeq(s, line, UINT64_C(0xabcd));
     g_assert_cmphex(qtest_readq(s, line), ==, UINT64_C(0xabcd));
     g_assert_cmphex(qtest_readq(s, carrier), ==,
                     UINT64_C(0x0000001f00000001));
@@ -2955,6 +3022,8 @@ int main(int argc, char **argv)
                    test_directory_ecc_check);
     qtest_add_func("sn1/bedrock-md/directory-ecc-check-reset",
                    test_directory_ecc_check_reset);
+    qtest_add_func("sn1/bedrock-md/directory-rewritten-by-data-write",
+                   test_directory_rewritten_by_data_write);
     qtest_add_func("sn1/bedrock-md/ecc-check-many", test_ecc_check_many);
     qtest_add_func("sn1/bedrock-md/origin300-directory-ecc-check",
                    test_origin300_directory_ecc_check);

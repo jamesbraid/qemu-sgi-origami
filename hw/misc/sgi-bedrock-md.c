@@ -79,6 +79,8 @@ static void md_selftest_complete(void *opaque);
 static void md_update_memory_aliases(SGIBedrockMDState *s);
 static void md_ecc_injections_place(SGIBedrockMDState *s);
 static void md_directory_injections_place(SGIBedrockMDState *s);
+static void md_node_memory_written(SGIBedrockMDState *s, uint64_t raw,
+                                   unsigned size);
 static uint64_t md_directory_word_written(SGIBedrockMDState *s,
                                           uint64_t value, hwaddr offset,
                                           const uint32_t *index);
@@ -945,7 +947,23 @@ static MemTxResult md_directory_overlay_read(void *opaque, hwaddr offset,
     return md_directory_checked_read(opaque, offset, value, size, attrs);
 }
 
-/* The line's data is written through; the directory word stays checked. */
+/*
+ * A write to any part of a marked line rewrites its directory entry, as the
+ * unit does on every access it serves: the stored word keeps its bits and
+ * gets a fresh check field, so the line is no longer checked. The stock
+ * PROM leaves non-codewords behind its directory walk with checking on,
+ * then writes and reads inside such lines while it copies itself to memory.
+ */
+static void md_directory_line_written(SGIBedrockMDState *s, uint32_t index)
+{
+    if (md_directory_injection_find(s, index)) {
+        s->directory[index] =
+            sgi_bedrock_md_directory_encode(s->directory[index],
+                                            md_directory_premium(s));
+        md_directory_injection_clear(s, index);
+    }
+}
+
 static MemTxResult md_directory_overlay_write(void *opaque, hwaddr offset,
                                               uint64_t value, unsigned size,
                                               MemTxAttrs attrs)
@@ -968,6 +986,9 @@ static MemTxResult md_directory_overlay_write(void *opaque, hwaddr offset,
     default:
         address_space_stq_be(&s->node_as, raw, value, attrs, &result);
         break;
+    }
+    if (result == MEMTX_OK) {
+        md_node_memory_written(s, raw, size);
     }
     return result;
 }
@@ -1273,6 +1294,7 @@ static MemTxResult md_ecc_overlay_write(void *opaque, hwaddr offset,
     }
     s->ecc[raw] = sgi_bedrock_md_ecc_compute(data);
     md_ecc_injection_clear(s, raw);
+    md_node_memory_written(s, raw * 8, 8);
     return MEMTX_OK;
 }
 
@@ -1790,6 +1812,25 @@ static SGIBedrockMDECCInjection *md_ecc_injection_within(SGIBedrockMDState *s,
     return md_ecc_injection_find(s, raw / 8);
 }
 
+/*
+ * Node memory was written outside the overlays' own paths, by the decoder
+ * or a fetch-and-op store: the write regenerated the ECC of the doublewords
+ * it covered and rewrote the directory entry of every line it touched.
+ */
+static void md_node_memory_written(SGIBedrockMDState *s, uint64_t raw,
+                                   unsigned size)
+{
+    uint64_t last = raw + size - 1;
+
+    for (uint64_t index = raw / 8; index <= last / 8; index++) {
+        md_ecc_injection_clear(s, index);
+    }
+    for (uint64_t line = raw / MD_DIRECTORY_LINE;
+         line <= last / MD_DIRECTORY_LINE; line++) {
+        md_directory_line_written(s, line);
+    }
+}
+
 static MemTxResult md_memory_read(void *opaque, hwaddr offset, uint64_t *value,
                                   unsigned size, MemTxAttrs attrs)
 {
@@ -1866,6 +1907,9 @@ static MemTxResult md_memory_write(void *opaque, hwaddr offset, uint64_t value,
         break;
     default:
         g_assert_not_reached();
+    }
+    if (result == MEMTX_OK) {
+        md_node_memory_written(s, raw_offset, size);
     }
     return result;
 }
@@ -1973,6 +2017,9 @@ static MemTxResult md_fetchop_read(void *opaque, hwaddr offset,
     }
     address_space_stq_be(&s->node_as, raw, new, attrs, &result);
     if (result == MEMTX_OK) {
+        md_node_memory_written(s, raw, 8);
+    }
+    if (result == MEMTX_OK) {
         *value = md_fetchop_word(offset, size, old);
     }
     return result;
@@ -2021,6 +2068,9 @@ static MemTxResult md_fetchop_write(void *opaque, hwaddr offset,
         return MEMTX_DECODE_ERROR;
     }
     address_space_stq_be(&s->node_as, raw, value, attrs, &result);
+    if (result == MEMTX_OK) {
+        md_node_memory_written(s, raw, 8);
+    }
     return result;
 }
 
