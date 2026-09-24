@@ -189,6 +189,13 @@ void sgi_bedrock_perf_counter_access(SGIBedrockState *s);
  * interfaces (docs/datasheets/bedrock-processor-interface.md).
  */
 void sgi_bedrock_memory_correctable_error(SGIBedrockState *s);
+/*
+ * The memory-directory unit latched an uncorrectable error: raise the
+ * memory-uncorrectable bit, error-interrupt pending bit 24, on both
+ * processor interfaces, whose error lines follow it through each
+ * processor's error mask (docs/datasheets/bedrock-processor-interface.md).
+ */
+void sgi_bedrock_memory_uncorrectable_error(SGIBedrockState *s);
 void sgi_bedrock_scratch3_acquire(SGIBedrockState *s, uint64_t observed);
 void sgi_bedrock_scratch3_released(SGIBedrockState *s);
 
