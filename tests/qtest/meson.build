@@ -104,6 +104,22 @@ slow_qtests = {
   # repair-store loop resets one of them once per processor. Measured
   # 41.05s.
   'sn0-baseio-test': 125,
+  # The BCM570x drives ninety-nine cases, nearly all of them on a machine of
+  # their own with a socket or user-mode backend behind the card, and eight of
+  # them migrate, which is a second process each. Measured 44.99s.
+  'bcm570x-test': 135,
+  # The flash file gained the chip's read-array and read-only cases, each
+  # starting a four-node Origin 2000 with four backing files. Measured 44.75s,
+  # and killed at the 60s default in a parallel run of the whole suite.
+  'sn0-origin2000-pflash-test': 135,
+  # Neither of these changed, but both were killed at the 60s default once the
+  # four card tests joined this suite and its parallel load went up. They are
+  # far more load-sensitive than their own work suggests: 34s and 36s with
+  # nothing else running, and 153.68s for sn-builder-test with four other
+  # tests in flight. Budget three times the loaded figure, the way the rest of
+  # this table does.
+  'sgi-mgras-replay-test': 330,
+  'sn-builder-test': 460,
 }
 
 qtest_priorities = {

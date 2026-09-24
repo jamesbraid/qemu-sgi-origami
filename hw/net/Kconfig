@@ -64,7 +64,7 @@ config SGI_NET_RX_LATENCY
 
 config XFRAME_PCI
     bool
-    default y if PCI_DEVICES
+    default y if SGI_DEVICES
     depends on PCI
     select SGI_NET_RX_LATENCY
 
@@ -81,13 +81,13 @@ config SGI_IOC3_ETH
 
 config TIGON
     bool
-    default y if PCI_DEVICES
+    default y if SGI_DEVICES
     depends on PCI
     select SGI_NET_RX_LATENCY
 
 config BCM570X
     bool
-    default y if PCI_DEVICES
+    default y if SGI_DEVICES
     depends on PCI
     select SGI_NET_RX_LATENCY
 
