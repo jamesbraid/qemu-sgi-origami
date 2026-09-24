@@ -18,10 +18,18 @@
  * own slot maps to). A Cad Duo behind a plain sgi-pci-expansion, which does
  * no such wiring, leaves that interrupt dead -- the RED baseline the
  * shoehorn's wiring turns GREEN.
+ *
+ * The same checks then run on the board the origin2000-pci-shoehorn
+ * topology places itself: the compiled catalogue fits the shoehorn into
+ * Origin 2000's IO2 position, crossbow0 widget 12, as a startup-attached
+ * board, with its Cad Duo at PCI device 0. That widget must be alive from
+ * reset like the BaseIO's, which is what the stock PROM needs to discover
+ * it rather than report the link bad.
  */
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
 #include "sgi-test.h"
 
 /*
@@ -30,16 +38,43 @@
  * free). Its own small window reaches the board's Bridge and the Cad Duo.
  */
 #define SHOEHORN_WIDGET     11
-#define BRIDGE_BASE         (SPACE_XTALK + ((uint64_t)SHOEHORN_WIDGET << 24))
+
+/*
+ * The catalogue's own placement: Origin 2000 IO2, crossbow0 widget 12
+ * (docs/machines/layers/modules/origin2000-module.yaml, the pci-expansion
+ * connector), with the Cad Duo at PCI device 1, where real Origin 2000
+ * hardware graphs show a card behind this adapter
+ * (.../slot/io5/xtalk_pci/pci/1/pckb in nekonomicon thread 5749).
+ */
+#define PLACED_WIDGET       12
+#define PLACED_CAD_DUO      1
+
+/*
+ * One fixture: which widget the board answers at and which PCI device its
+ * Cad Duo occupies.
+ */
+typedef struct {
+    const char *args;
+    unsigned int widget;
+    unsigned int device;
+} ShoehornCase;
+
+#define WIDGET_BASE(w)      (SPACE_XTALK + ((uint64_t)(w) << 24))
 
 /* The Bridge's own chip registers sit at a slot's upper half (+REG_DATA). */
 #define REG_DATA            4
-#define CFG0(dev)           (BRIDGE_BASE + 0x020000 + (dev) * 0x1000)
-#define BRIDGE_DEVICE(n)    (BRIDGE_BASE + 0x200 + 8 * (n) + REG_DATA)
+#define CFG0(c)             (WIDGET_BASE((c)->widget) + 0x020000 + \
+                             (c)->device * 0x1000)
+#define BRIDGE_DEVICE(c)    (WIDGET_BASE((c)->widget) + 0x200 + \
+                             8 * (c)->device + REG_DATA)
 
 /* The Cad Duo's PCI slot in the adapter and its own 1 MB MMIO window. */
 #define CAD_DUO_DEVICE      2
-#define CAD_DUO_WINDOW      (BRIDGE_BASE + 0x600000)  /* device 2's window */
+/* Bridge device windows: 2 MB for devices 0 and 1, then 1 MB each. */
+#define DEVIO_OFFSET(d)     ((d) < 2 ? 0x200000 + (d) * 0x200000 : \
+                             0x600000 + ((d) - 2) * 0x100000)
+#define CAD_DUO_WINDOW(c)   (WIDGET_BASE((c)->widget) + \
+                             DEVIO_OFFSET((c)->device))
 #define CAD_DUO_PCI_MMIO    0x1c000000u
 
 /* The Cad Duo (sgi-ioc3) PCI identity: SGI 0x10a9, IOC3 0x0003. */
@@ -48,16 +83,17 @@
 #define CAD_DUO_SUBSYSTEM   0xffff10a9u   /* subsystem id 0xffff (uncaptured) */
 
 /* IOC3 registers in the chip's own MMIO window (no +REG_DATA skew). */
-#define CD_INT_STATUS       (CAD_DUO_WINDOW + 0x1c)
-#define CD_INT_ENABLE_SET   (CAD_DUO_WINDOW + 0x20)
-#define CD_KBD_TRANSMIT     (CAD_DUO_WINDOW + 0x0a8)
+#define CD_INT_STATUS(c)     (CAD_DUO_WINDOW(c) + 0x1c)
+#define CD_INT_ENABLE_SET(c) (CAD_DUO_WINDOW(c) + 0x20)
+#define CD_KBD_TRANSMIT(c)   (CAD_DUO_WINDOW(c) + 0x0a8)
 #define INT_KEYBOARD        (1u << 22)   /* SuperIO keyboard/mouse status bit */
 
 /* The adapter Bridge's own interrupt-forwarding registers. */
-#define BRIDGE_INT_ENABLE     (BRIDGE_BASE + 0x108 + REG_DATA)
-#define BRIDGE_INT_DEST_UPPER (BRIDGE_BASE + 0x030 + REG_DATA)
-#define BRIDGE_INT_DEST_LOWER (BRIDGE_BASE + 0x038 + REG_DATA)
-#define BRIDGE_INT_HOST(n)    (BRIDGE_BASE + 0x130 + 8 * (n) + REG_DATA)
+#define BRIDGE_INT_ENABLE(c)     (WIDGET_BASE((c)->widget) + 0x108 + REG_DATA)
+#define BRIDGE_INT_DEST_UPPER(c) (WIDGET_BASE((c)->widget) + 0x030 + REG_DATA)
+#define BRIDGE_INT_DEST_LOWER(c) (WIDGET_BASE((c)->widget) + 0x038 + REG_DATA)
+#define BRIDGE_INT_HOST(c)       (WIDGET_BASE((c)->widget) + 0x130 + \
+                                  8 * (c)->device + REG_DATA)
 
 /*
  * Node 0's Hub sits at widget 9 on crossbow0; a packet-I/O host address with
@@ -82,45 +118,69 @@
     "module=99,slot=11,fabric=/machine/crossbow0-spare-fabric[0]," \
     "fabric-widget-shift=48,cad-duo-slot=" G_STRINGIFY(CAD_DUO_DEVICE)
 
+#define PLACED_ARGS \
+    "-M origin2000,topology=origin2000-pci-shoehorn -display none"
+
+static const ShoehornCase expansion_case = {
+    EXPANSION_ARGS, SHOEHORN_WIDGET, CAD_DUO_DEVICE,
+};
+static const ShoehornCase device_case = {
+    SHOEHORN_ARGS, SHOEHORN_WIDGET, CAD_DUO_DEVICE,
+};
+static const ShoehornCase placed_case = {
+    PLACED_ARGS, PLACED_WIDGET, PLACED_CAD_DUO,
+};
+
 /*
  * Program the Cad Duo's BAR0, enable memory, and aim the Bridge window at it.
  */
-static void cad_duo_map(QTestState *qts)
+static void cad_duo_map(QTestState *qts, const ShoehornCase *c)
 {
-    qtest_writel(qts, CFG0(CAD_DUO_DEVICE) + PCI_BAR0, CAD_DUO_PCI_MMIO);
-    qtest_writel(qts, CFG0(CAD_DUO_DEVICE) + PCI_COMMAND, PCI_COMMAND_MEMORY);
-    qtest_writel(qts, BRIDGE_DEVICE(CAD_DUO_DEVICE),
+    qtest_writel(qts, CFG0(c) + PCI_BAR0, CAD_DUO_PCI_MMIO);
+    qtest_writel(qts, CFG0(c) + PCI_COMMAND, PCI_COMMAND_MEMORY);
+    qtest_writel(qts, BRIDGE_DEVICE(c),
                  DEV_MEMORY_SPACE | (CAD_DUO_PCI_MMIO >> 20));
 }
 
 /*
- * Arm the adapter Bridge so pin @pin's interrupt packet targets node 0's
- * Hub and latches CAD_DUO_INT_NUMBER, and enable the Cad Duo's keyboard
- * interrupt so a PS/2 reply raises its SuperIO output.
+ * Arm the adapter Bridge so the card's own pin (its device number) sends an
+ * interrupt packet to node 0's Hub latching CAD_DUO_INT_NUMBER, and enable
+ * the Cad Duo's keyboard interrupt so a PS/2 reply raises its SuperIO
+ * output.
  */
-static void arm_interrupt(QTestState *qts, unsigned int pin)
+static void arm_interrupt(QTestState *qts, const ShoehornCase *c)
 {
-    qtest_writel(qts, CD_INT_ENABLE_SET, INT_KEYBOARD);
-    qtest_writel(qts, BRIDGE_INT_DEST_UPPER, HUB_WIDGET_ON_XBOW << 16);
-    qtest_writel(qts, BRIDGE_INT_DEST_LOWER, HUB_INT_MODIFY_OFFSET);
-    qtest_writel(qts, BRIDGE_INT_HOST(pin),
+    qtest_writel(qts, CD_INT_ENABLE_SET(c), INT_KEYBOARD);
+    qtest_writel(qts, BRIDGE_INT_DEST_UPPER(c), HUB_WIDGET_ON_XBOW << 16);
+    qtest_writel(qts, BRIDGE_INT_DEST_LOWER(c), HUB_INT_MODIFY_OFFSET);
+    qtest_writel(qts, BRIDGE_INT_HOST(c),
                  (INT_HOST_PACKET_IO_NASID0 << 8) | CAD_DUO_INT_NUMBER);
-    qtest_writel(qts, BRIDGE_INT_ENABLE, 1u << pin);
+    qtest_writel(qts, BRIDGE_INT_ENABLE(c), 1u << c->device);
+}
+
+/* Send a keyboard byte and report whether node 0's Hub latched it. */
+static bool keystroke_reaches_hub(QTestState *qts, const ShoehornCase *c)
+{
+    qtest_writel(qts, CD_KBD_TRANSMIT(c), 0xff);
+    g_assert_cmphex(qtest_readl(qts, CD_INT_STATUS(c)) & INT_KEYBOARD, ==,
+                    INT_KEYBOARD);
+    return qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0) &
+           (1ULL << CAD_DUO_INT_NUMBER);
 }
 
 /*
  * The Cad Duo's PCI identity answers through the widget window: the board
- * attaches, the spare widget is an inbound destination, and a bus scan reads
- * the chip's own vendor/device and subsystem dwords.
+ * attaches, its widget is an inbound destination, and a bus scan reads the
+ * chip's own vendor/device and subsystem dwords.
  */
-static void test_cad_duo_enumerates_through_shoehorn(const void *data)
+static void test_cad_duo_enumerates(const void *data)
 {
-    QTestState *qts = qtest_init(SHOEHORN_ARGS);
+    const ShoehornCase *c = data;
+    QTestState *qts = qtest_init(c->args);
 
-    g_assert_cmphex(qtest_readl(qts, CFG0(CAD_DUO_DEVICE)), ==,
-                    CAD_DUO_ID_PAIR);
-    g_assert_cmphex(qtest_readl(qts, CFG0(CAD_DUO_DEVICE) + PCI_SUBSYSTEM),
-                    ==, CAD_DUO_SUBSYSTEM);
+    g_assert_cmphex(qtest_readl(qts, CFG0(c)), ==, CAD_DUO_ID_PAIR);
+    g_assert_cmphex(qtest_readl(qts, CFG0(c) + PCI_SUBSYSTEM), ==,
+                    CAD_DUO_SUBSYSTEM);
     qtest_quit(qts);
 }
 
@@ -129,21 +189,17 @@ static void test_cad_duo_enumerates_through_shoehorn(const void *data)
  * board does not wire the chip's SuperIO interrupt to any Bridge pin. The
  * keyboard reply raises the chip's own SuperIO output, but with nothing
  * carrying it to a Bridge pin the packet never leaves and the Hub never
- * latches. (The card's ethernet INTA is idle -- no network traffic -- so pin
- * 2 stays low.)
+ * latches. (The card's ethernet INTA is idle -- no network traffic -- so its
+ * pin stays low.)
  */
 static void test_cad_duo_ps2_interrupt_dead_bare(const void *data)
 {
-    QTestState *qts = qtest_init(EXPANSION_ARGS);
+    const ShoehornCase *c = data;
+    QTestState *qts = qtest_init(c->args);
 
-    cad_duo_map(qts);
-    arm_interrupt(qts, CAD_DUO_DEVICE);
-
-    qtest_writel(qts, CD_KBD_TRANSMIT, 0xff);
-    g_assert_cmphex(qtest_readl(qts, CD_INT_STATUS) & INT_KEYBOARD, ==,
-                    INT_KEYBOARD);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0) &
-                    (1ULL << CAD_DUO_INT_NUMBER), ==, 0);
+    cad_duo_map(qts, c);
+    arm_interrupt(qts, c);
+    g_assert_false(keystroke_reaches_hub(qts, c));
     qtest_quit(qts);
 }
 
@@ -155,21 +211,35 @@ static void test_cad_duo_ps2_interrupt_dead_bare(const void *data)
  */
 static void test_cad_duo_ps2_interrupt_reaches_hub(const void *data)
 {
-    QTestState *qts = qtest_init(SHOEHORN_ARGS);
+    const ShoehornCase *c = data;
+    QTestState *qts = qtest_init(c->args);
 
-    cad_duo_map(qts);
-
+    cad_duo_map(qts, c);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0) &
                     (1ULL << CAD_DUO_INT_NUMBER), ==, 0);
+    arm_interrupt(qts, c);
+    g_assert_true(keystroke_reaches_hub(qts, c));
+    qtest_quit(qts);
+}
 
-    arm_interrupt(qts, CAD_DUO_DEVICE);
+/*
+ * The catalogue-placed board's widget is alive from reset, like the BaseIO
+ * at widget 8, the two host nodes at 9 and 10 and SI Viz at 15: it is part
+ * of crossbow0's configured startup population, not a link brought up after
+ * machine init the way a `-device` board's spare widget is. That is the
+ * difference the stock PROM sees between a board it enumerates and "IO link
+ * bad".
+ */
+static void test_placed_widget_is_alive_at_startup(const void *data)
+{
+    QTestState *qts = qtest_init(PLACED_ARGS);
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{'execute': 'qom-get', 'arguments': {'path': '/machine/crossbow0',"
+        "'property': 'startup-links-alive'}}");
 
-    qtest_writel(qts, CD_KBD_TRANSMIT, 0xff);
-    g_assert_cmphex(qtest_readl(qts, CD_INT_STATUS) & INT_KEYBOARD, ==,
-                    INT_KEYBOARD);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0) &
-                    (1ULL << CAD_DUO_INT_NUMBER), ==,
-                    1ULL << CAD_DUO_INT_NUMBER);
+    g_assert_false(qdict_haskey(response, "error"));
+    g_assert_cmphex(qdict_get_int(response, "return"), ==,
+                    0x8700 | (1u << PLACED_WIDGET));
     qtest_quit(qts);
 }
 
@@ -177,13 +247,19 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
 
-    qtest_add_data_func("sn0/pci-shoehorn/cad-duo-enumerates", NULL,
-                        test_cad_duo_enumerates_through_shoehorn);
+    qtest_add_data_func("sn0/pci-shoehorn/cad-duo-enumerates", &device_case,
+                        test_cad_duo_enumerates);
     qtest_add_data_func("sn0/pci-shoehorn/cad-duo-ps2-interrupt-dead-bare",
-                        NULL,
+                        &expansion_case,
                         test_cad_duo_ps2_interrupt_dead_bare);
     qtest_add_data_func("sn0/pci-shoehorn/cad-duo-ps2-interrupt-reaches-hub",
-                        NULL,
+                        &device_case,
                         test_cad_duo_ps2_interrupt_reaches_hub);
+    qtest_add_data_func("sn0/pci-shoehorn/placed/widget-alive-at-startup",
+                        NULL, test_placed_widget_is_alive_at_startup);
+    qtest_add_data_func("sn0/pci-shoehorn/placed/cad-duo-enumerates",
+                        &placed_case, test_cad_duo_enumerates);
+    qtest_add_data_func("sn0/pci-shoehorn/placed/cad-duo-interrupt-reaches-hub",
+                        &placed_case, test_cad_duo_ps2_interrupt_reaches_hub);
     return g_test_run();
 }
