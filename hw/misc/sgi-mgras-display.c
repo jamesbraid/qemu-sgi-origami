@@ -26,12 +26,13 @@ static uint32_t si_cmap_rgb(SGIMgrasState *s, uint8_t visual, uint8_t index)
 
 /*
  * The IRIX desktop session's DDX loads a post-CMAP gamma-correction
- * table into the DAC after login (mgrasLoadICOGammaRamps/ico_progdac;
- * see the header comment above SGI_MGRAS_DAC_LUT_INDEX in sgi-mgras.h
- * for the captured load protocol). Apply it as a final stage over any
- * resolved colour, so indexed and, once modeled, direct-colour pixels
- * see the same correction. Operates on si_cmap_rgb()'s native
- * 0x00BBGGRR order.
+ * table into the DAC after login. The shipped impactsr.so's dynamic
+ * symbol table names the responsible routines mgrasLoadICOGammaRamps
+ * and ico_progdac; see the header comment above SGI_MGRAS_DAC_LUT_INDEX
+ * in sgi-mgras.h for the captured load protocol. Apply the table as a
+ * final stage over any resolved colour, so indexed and, once modeled,
+ * direct-colour pixels see the same correction. Operates on
+ * si_cmap_rgb()'s native 0x00BBGGRR order.
  */
 static uint32_t si_gamma_apply(SGIMgrasState *s, uint32_t bgr)
 {

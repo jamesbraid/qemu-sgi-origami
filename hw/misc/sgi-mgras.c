@@ -530,9 +530,12 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     case SGI_MGRAS_SYNC_STATUS: s->sync_status = value; return;
     case SGI_MGRAS_BRINGUP_FLAG: s->bringup_flag = value; return;
     /*
-     * A write resets the gamma-table load position to row 0, channel 0.
-     * Every captured reset writes zero; the value itself is only echoed
-     * back, not otherwise interpreted.
+     * A write resets the gamma-table load position to row 0, channel 0,
+     * regardless of value. Only the final write before each load's row
+     * writes is confirmed to always be zero; two of the three captured
+     * loads precede that with seven more writes of other values (see
+     * the header comment above SGI_MGRAS_DAC_LUT_INDEX). The value
+     * itself is only echoed back, not otherwise interpreted.
      */
     case SGI_MGRAS_DAC_LUT_INDEX:
         s->dac_lut_index = value;
