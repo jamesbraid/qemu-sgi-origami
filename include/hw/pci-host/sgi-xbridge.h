@@ -16,7 +16,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIXBridgeState, SGI_XBRIDGE)
 #define SGI_XBRIDGE_HEAD_PINS 8
 #define SGI_XBRIDGE_HEAD_RAW_PCI_IRQS 32
 #define SGI_XBRIDGE_HEAD_REG_COUNT (0x300 / 8)
-#define SGI_XBRIDGE_HEAD_ATE_COUNT 512
+/*
+ * Revision B's table: 1024 entries of storage, of which the page mapper
+ * uses the first 512 (docs/datasheets/xbridge.md, "Translation RAM by chip
+ * revision").
+ */
+#define SGI_XBRIDGE_HEAD_ATE_COUNT 1024
+#define SGI_XBRIDGE_HEAD_ATE_MAPPED 512
 
 /*
  * A head's "board-part"/"onewire-serial" properties (and the machine's

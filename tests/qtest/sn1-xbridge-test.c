@@ -71,26 +71,53 @@ static void test_registers(void)
     qtest_quit(qts);
 }
 
+/*
+ * Revision B's table as the SN1 header lays it out (docs/datasheets/
+ * xbridge.md, "Translation RAM by chip revision"): 1024 entries written
+ * as doublewords from 0x1_0000 to 0x1_1fff, upper words read at each
+ * entry's +4, lower words read from a separate view at 0x1_2000. SGI's
+ * xbg writes ~i:i to the first 512 and reads the lower word at 0x1_2004.
+ */
 static void test_ate(void)
 {
     QTestState *qts = head_start();
-    const unsigned indices[] = { 0, 127, 128, 511 };
+    const unsigned indices[] = { 0, 1, 127, 511, 512, 1023 };
     unsigned i;
 
     for (i = 0; i < G_N_ELEMENTS(indices); i++) {
         unsigned off = indices[i] * 8;
-        uint64_t value = 0xabcd123456780021ULL + (i << 12);
+        uint64_t value = 0xabcd123456780021ULL + ((uint64_t)i << 12);
 
         qtest_writeq(qts, BASE + 0x10000 + off, value);
         /* Bits 63:48 are unresolved and not asserted; 47:32 must hold. */
         g_assert_cmphex(qtest_readl(qts, BASE + 0x10004 + off) & 0xffff, ==,
                         (value >> 32) & 0xffff);
-        g_assert_cmphex(qtest_readl(qts, BASE + 0x11004 + off), ==,
-                        (uint32_t)value);
-        qtest_writeq(qts, BASE + 0x11000 + off, 0);
-        g_assert_cmphex(qtest_readl(qts, BASE + 0x11004 + off), ==,
+        g_assert_cmphex(qtest_readl(qts, BASE + 0x12004 + off), ==,
                         (uint32_t)value);
     }
+
+    /* The upper half of the table is its own storage, not a view. */
+    qtest_writeq(qts, BASE + 0x10000, 0x0000000100000002ULL);
+    qtest_writeq(qts, BASE + 0x11000, 0x0000000300000004ULL);
+    g_assert_cmphex(qtest_readl(qts, BASE + 0x10004), ==, 1);
+    g_assert_cmphex(qtest_readl(qts, BASE + 0x12004), ==, 2);
+    g_assert_cmphex(qtest_readl(qts, BASE + 0x11004), ==, 3);
+    g_assert_cmphex(qtest_readl(qts, BASE + 0x13004), ==, 4);
+
+    /*
+     * The view is read-only and the RAM takes only doubleword writes: a
+     * write into the view, or a word write into the RAM, is an invalid
+     * address, interrupt status bit 24, and changes no entry.
+     */
+    g_assert_cmphex(reg_read(qts, 0x100) & (1U << 24), ==, 0);
+    qtest_writeq(qts, BASE + 0x12000, 0x0000000500000006ULL);
+    g_assert_cmphex(reg_read(qts, 0x100) & (1U << 24), ==, 1U << 24);
+    g_assert_cmphex(qtest_readl(qts, BASE + 0x12004), ==, 2);
+    reg_write(qts, 0x110, 0xffffffff);
+    g_assert_cmphex(reg_read(qts, 0x100) & (1U << 24), ==, 0);
+    qtest_writel(qts, BASE + 0x11004, 7);
+    g_assert_cmphex(reg_read(qts, 0x100) & (1U << 24), ==, 1U << 24);
+    g_assert_cmphex(qtest_readl(qts, BASE + 0x11004), ==, 3);
     qtest_quit(qts);
 }
 
@@ -449,6 +476,8 @@ static void test_migration_reset(void)
     reg_write(from, 0x118, 8);
     qtest_set_irq_in(from, HEAD, NULL, 3, 1);
     qtest_writeq(from, BASE + 0x10ff8, 0x123456780021ULL);
+    /* Entry 1023, from the half of the table that migration version 2 adds. */
+    qtest_writeq(from, BASE + 0x11ff8, 0x4321876500a1ULL);
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
     qtest_qmp_assert_success(from,
@@ -462,7 +491,9 @@ static void test_migration_reset(void)
     g_assert_cmphex(reg_read(to, 0x20), ==, 0x0f00320e);
     g_assert_cmphex(reg_read(to, 0x100) & 8, ==, 8);
     g_assert_cmphex(qtest_readl(to, BASE + 0x10ffc), ==, 0x1234);
-    g_assert_cmphex(qtest_readl(to, BASE + 0x11ffc), ==, 0x56780021);
+    g_assert_cmphex(qtest_readl(to, BASE + 0x12ffc), ==, 0x56780021);
+    g_assert_cmphex(qtest_readl(to, BASE + 0x11ffc), ==, 0x4321);
+    g_assert_cmphex(qtest_readl(to, BASE + 0x13ffc), ==, 0x876500a1);
     qtest_set_irq_in(to, HEAD, NULL, 3, 0);
     g_assert_cmphex(qtest_readq(to, TARGET_C + SCRATCH), ==, 0x85);
     dma_fill(to, 0x80008000, 0x60);
@@ -767,6 +798,12 @@ static void test_page_faults(void)
     /* The flush range completes; the rest of local space gets no response. */
     g_assert_cmphex(tx_run(qts, 0x3fff8000), ==, 0);
     g_assert_cmphex(tx_run(qts, 0x00008000), ==, 0xdead0002);
+    /*
+     * Index 512 now has storage (a valid entry reads back), but the page
+     * mapper keeps the reviewed 512-entry rule, so it still faults.
+     */
+    ate_write(qts, 512, 0x8a21);
+    g_assert_cmphex(qtest_readl(qts, BASE + 0x12004 + 512 * 8), ==, 0x8a21);
     for (unsigned i = 0; i < G_N_ELEMENTS(faults); i++) {
         qtest_writeq(qts, TARGET_A + 0x8000, 0x1122334455667788ULL);
         g_assert_cmphex(tx_run(qts, faults[i]), ==, 0xdead0002);

@@ -25,6 +25,15 @@
 #define RAW_PCI_IRQS SGI_XBRIDGE_HEAD_RAW_PCI_IRQS
 #define REG_COUNT SGI_XBRIDGE_HEAD_REG_COUNT
 #define ATE_COUNT SGI_XBRIDGE_HEAD_ATE_COUNT
+
+/*
+ * The table's write range and the lower-word read view revision B adds; the
+ * upper words read back at +4 in the write range itself.
+ */
+#define ATE_RAM         0x10000
+#define ATE_RAM_END     (ATE_RAM + ATE_COUNT * 8)
+#define ATE_LOW_VIEW    ATE_RAM_END
+#define ATE_LOW_VIEW_END (ATE_LOW_VIEW + ATE_COUNT * 8)
 #define REG(s, off) ((s)->reg[(off) / 8])
 
 static void xbridge_packet(SGIXBridgeHeadState *s, unsigned pin, bool set)
@@ -187,7 +196,7 @@ static IOMMUTLBEntry xbridge_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
 
         entry.addr_mask = (1ULL << shift) - 1;
         entry.iova = addr & ~entry.addr_mask;
-        if (index >= G_N_ELEMENTS(s->ate) || !(s->ate[index] & 1)) {
+        if (index >= SGI_XBRIDGE_HEAD_ATE_MAPPED || !(s->ate[index] & 1)) {
             REG(s, 0x100) |= 1U << 30;
             REG(s, 0x170) |= 1U << 30;
             qemu_log_mask(LOG_GUEST_ERROR,
@@ -641,11 +650,11 @@ static uint64_t xbridge_read(void *opaque, hwaddr addr, unsigned size)
         return ldn_le_p(bytes, size);
     }
     if (size == 4 && (addr & 7) == 4) {
-        if (addr >= 0x10000 && addr < 0x11000) {
-            return s->ate[(addr - 0x10000) / 8] >> 32;
+        if (addr >= ATE_RAM && addr < ATE_RAM_END) {
+            return s->ate[(addr - ATE_RAM) / 8] >> 32;
         }
-        if (addr >= 0x11000 && addr < 0x12000) {
-            return (uint32_t)s->ate[(addr - 0x11000) / 8];
+        if (addr >= ATE_LOW_VIEW && addr < ATE_LOW_VIEW_END) {
+            return (uint32_t)s->ate[(addr - ATE_LOW_VIEW) / 8];
         }
         if (addr < 0x300 && xbridge_register_defined(addr & ~7)) {
             return REG(s, addr);
@@ -689,12 +698,9 @@ static void xbridge_write(void *opaque, hwaddr addr, uint64_t value,
         xbridge_pio(s, addr, bytes, size, true);
         return;
     }
-    if (addr >= 0x11000 && addr < 0x12000) {
-        return;
-    }
     if (size == 8 && !(addr & 7) &&
-        addr >= 0x10000 && addr < 0x11000) {
-        s->ate[(addr - 0x10000) / 8] = value & 0x0000ffffffffffffULL;
+        addr >= ATE_RAM && addr < ATE_RAM_END) {
+        s->ate[(addr - ATE_RAM) / 8] = value & 0x0000ffffffffffffULL;
         return;
     }
     if (xbridge_deferred(addr)) {
@@ -993,14 +999,20 @@ static int xbridge_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_xbridge = {
     .name = TYPE_SGI_XBRIDGE_HEAD,
-    .version_id = 1,
+    .version_id = 2,
     .post_load = xbridge_post_load,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(pci_levels, SGIXBridgeHeadState),
         VMSTATE_UINT8(pins, SGIXBridgeHeadState),
         VMSTATE_UINT32_ARRAY(reg, SGIXBridgeHeadState, REG_COUNT),
-        VMSTATE_UINT64_ARRAY(ate, SGIXBridgeHeadState, ATE_COUNT),
+        VMSTATE_UINT64_SUB_ARRAY(ate, SGIXBridgeHeadState, 0,
+                                 SGI_XBRIDGE_HEAD_ATE_MAPPED),
+        /* Version 2 added revision B's second 512 entries. */
+        VMSTATE_SUB_ARRAY(ate, SGIXBridgeHeadState,
+                          SGI_XBRIDGE_HEAD_ATE_MAPPED,
+                          ATE_COUNT - SGI_XBRIDGE_HEAD_ATE_MAPPED, 2,
+                          vmstate_info_uint64, uint64_t),
         VMSTATE_END_OF_LIST()
     }
 };
