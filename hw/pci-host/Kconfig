@@ -122,6 +122,6 @@ config SGI_BRIDGE
 
 config SGI_XBRIDGE
     bool
-    default y if TEST_DEVICES
+    default y if SGI_DEVICES
     select PCI
     select SGI_XBRIDGE_XBOW

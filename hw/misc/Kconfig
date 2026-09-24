@@ -287,7 +287,7 @@ config SGI_O2000_MODULE_MGMT
 
 config SGI_IOC3
     bool
-    default y if PCI_DEVICES
+    default y if SGI_DEVICES
     depends on PCI
     select DS1685
     select M48T35
@@ -299,13 +299,13 @@ config SGI_IOC3
 
 config SGI_ROUTER_TEST
     bool
-    default y if TEST_DEVICES
+    default y if SGI_DEVICES
     depends on TEST_DEVICES && SGI_SN0
     select SGI_ROUTER
 
 config SGI_HUB_TEST
     bool
-    default y if TEST_DEVICES
+    default y if SGI_DEVICES
     depends on TEST_DEVICES && SGI_SN0
     select SGI_HUB
 
@@ -323,67 +323,65 @@ config SGI_XBOW
 
 config SGI_XBRIDGE_XBOW
     bool
-    default y if TEST_DEVICES
+    default y if SGI_DEVICES
 
 config SGI_MGRAS
     bool
 
 config SGI_BRIDGE_DMA_TEST
     bool
-    default y if TEST_DEVICES
+    default y if SGI_DEVICES
     depends on PCI
 
 config SGI_L1
     bool
-    default y if TEST_DEVICES
+    default y if SGI_DEVICES
 
 config SGI_XTALK_TEST_TARGET
     bool
-    default y if TEST_DEVICES
-    depends on TEST_DEVICES
+    default y if SGI_DEVICES
 
 config SGI_IOMMU_NOTIFIER_TEST
     bool
-    default y if TEST_DEVICES
-    depends on TEST_DEVICES
+    default y if SGI_DEVICES
 
 config SGI_BEDROCK_NI
     bool
-    default y if TEST_DEVICES
+    default y if SGI_DEVICES
 
 config SGI_BEDROCK_MD
     bool
-    default y if TEST_DEVICES
+    default y if SGI_DEVICES
 
 config SGI_BEDROCK_IO
     bool
-    default y if TEST_DEVICES
+    default y if SGI_DEVICES
 
 config SGI_BEDROCK_LB
     bool
     select ONEWIRE
-    default y if TEST_DEVICES
+    default y if SGI_DEVICES
 
 config SGI_BEDROCK_XB
     bool
-    default y if TEST_DEVICES
+    default y if SGI_DEVICES
 
 config SGI_BEDROCK_FLASH
     bool
-    default y if TEST_DEVICES
+    default y if SGI_DEVICES
     select PFLASH_CFI02
 
 config SGI_BEDROCK
     bool
     select SGI_BEDROCK_IO
     select SGI_BEDROCK_MD
-    default y if TEST_DEVICES
+    default y if SGI_DEVICES
     select SGI_BEDROCK_LB
     select SGI_BEDROCK_NI
     select SGI_BEDROCK_XB
 
 config SGI_XBOW_TRANSPORT_TEST
     bool
-    default y if TEST_DEVICES
+    default y if SGI_DEVICES
     depends on TEST_DEVICES && SGI_SN0
     select SGI_XBOW

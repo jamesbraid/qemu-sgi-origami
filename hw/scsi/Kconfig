@@ -26,7 +26,7 @@ config MEGASAS_SCSI_PCI
 
 config QLOGIC_ISP_SCSI_PCI
     bool
-    default y if PCI_DEVICES
+    default y if SGI_DEVICES
     depends on PCI
     select SCSI
 

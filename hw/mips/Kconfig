@@ -35,6 +35,14 @@ config JAZZ
     select DS1225Y
     select JAZZ_LED
 
+# The parts this fork models. They are built for the target that runs
+# them and for no other: nothing outside a big-endian 64-bit MIPS guest
+# has an SGI machine to put them on, and their tests all run there.
+config SGI_DEVICES
+    bool
+    default y
+    depends on MIPS64 && TARGET_BIG_ENDIAN
+
 config SGI_SN0
     bool
     default y
@@ -102,8 +110,7 @@ config SGI_XIO_BOARD
 
 config SGI_XIO_BOARD_TEST
     bool
-    default y if TEST_DEVICES
-    depends on TEST_DEVICES
+    default y if SGI_DEVICES
     select SGI_XIO_BOARD
     select SGI_XTALK_TEST_TARGET
 
@@ -139,8 +146,7 @@ config SGI_PCI_SHOEHORN
 
 config SGI_BOARD_TEST
     bool
-    default y if TEST_DEVICES
-    depends on TEST_DEVICES
+    default y if SGI_DEVICES
     select SGI_BASEIO
     select SGI_XIO_BASEIO
     select SGI_PCI_EXPANSION
