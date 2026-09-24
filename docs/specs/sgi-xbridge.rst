@@ -148,11 +148,15 @@ plain address space whatever its DMA swap control contains.
 Translation table
 =================
 
-The table holds 512 entries of 64 bits, written whole and read back
-as two 32-bit words through a second region; writes to that region
-are ignored. The specification says 512 in three places; both public
-headers say 1024, and the model serves 512 and ignores writes to the
-next 4 KB rather than guessing which is right.
+The model presents revision B, which the Origin 300 carries, and
+lays the table out as the SN1 header does for it: 1024 entries of 64
+bits, written whole from ``0x1_0000`` to ``0x1_1fff``, with each
+entry's upper word read back at its own ``+4`` and its lower word at
+``+4`` in a separate view from ``0x1_2000`` to ``0x1_3fff``. SGI's
+``xbg`` reads the lower words there. The specification, which covers
+revision A, gives 512 entries and the Bridge's view at ``0x1_1000``;
+the datasheet records the difference by revision. Only the first 512
+entries map pages; the rest are stored and read back.
 
 Translation is per page, 4 KB or 16 KB by control bit 21: the index
 is PCI bits 29:12 or 29:14 and is rejected above 511 rather than
