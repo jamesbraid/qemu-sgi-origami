@@ -60,16 +60,23 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 
 /*
  * A captured post-login desktop session loads a 256-row, three-channel
- * gamma-correction table through these two ports (docs/notebooks
- * records the capture). 0x071810 is written once per load, always with
- * value zero, immediately before the row writes start: it resets the
- * load position to row 0, channel 0. 0x071890 is a data port, not an
- * index: each write stores its high byte into the current row/channel
- * and advances channel (red, green, blue), then row. The prior names
- * (DAC_LUT_INDEX for the data port, DAC_LUT_DATA_1 for the reset) had
- * the roles backwards; a real guest never accesses either at the width
- * those names' first implementation assumed. 0x071910's role bracketing
- * a load is observed but unconfirmed, so it retains opaque state.
+ * gamma-correction table through these two ports
+ * (docs/notebooks/si-dac-gamma-20260924.md in the Origami repository
+ * records the capture). The capture holds three such loads. In the
+ * first two, 0x071810 sees eight writes immediately before the row
+ * writes start (0xd00, 0x400, 0x500, 0x600, 0x700, 0x800, 0x402, then
+ * 0); the third load writes it only once. Only the final write in
+ * every case is confirmed zero and resets the load position to row 0,
+ * channel 0; the earlier values in the first two loads are unexplained.
+ * The model resets the load position on any write to this port, zero
+ * or not, matching every captured write's observed effect. 0x071890 is
+ * a data port, not an index: each write stores its high byte into the
+ * current row/channel and advances channel (red, green, blue), then
+ * row. The prior names (DAC_LUT_INDEX for the data port, DAC_LUT_DATA_1
+ * for the reset) had the roles backwards; a real guest never accesses
+ * either at the width those names' first implementation assumed.
+ * 0x071910's role bracketing a load is observed but unconfirmed, so it
+ * retains opaque state.
  */
 #define SGI_MGRAS_DAC_LUT_INDEX 0x071810
 #define SGI_MGRAS_DAC_LUT_DATA 0x071890
@@ -194,7 +201,12 @@ struct SGIMgrasState {
     /* Gamma-table load position: row 0-255, channel 0=R, 1=G, 2=B. */
     uint8_t dac_lut_load_pos;
     uint8_t dac_lut_load_channel;
-    /* Post-CMAP gamma-correction table. Identity at reset. */
+    /*
+     * Post-CMAP gamma-correction table. Reset seeds an identity ramp;
+     * no capture can show the DAC's own power-on/reset state (a write
+     * trace only observes writes), so identity is an inferred default,
+     * not an observed one.
+     */
     uint8_t dac_gamma[3][256];
     uint32_t config_table[SGI_MGRAS_CONFIG_TABLE_WORDS];
     uint32_t bringup_flag;
