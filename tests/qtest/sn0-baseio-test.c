@@ -16,6 +16,7 @@
 #include "qemu/bswap.h"
 #include "hw/pci/pci.h"
 #include "libqtest.h"
+#include "sgi-launch.h"
 #include "sgi-migrate.h"
 #include "sgi-test.h"
 
@@ -2367,6 +2368,25 @@ static void test_io6g_rad1_digital_output_samples(void)
 }
 
 /*
+ * "aes-input-rate" describes a real AES3 source, so realize refuses a rate
+ * the driver's rate table cannot report, and QEMU exits with the error
+ * rather than starting or aborting. The qtest accelerator stands in for a
+ * PROM, which the machine otherwise requires before it gets that far.
+ */
+static void test_io6g_rad1_rejects_aes_input_rate(void)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin2000,baseio-preset=io6g",
+        "-accel", "qtest", "-display", "none", "-S", "-nodefaults",
+        "-qmp", "stdio",
+        "-global", "sgi-rad1-audio.aes-input-rate=22050", NULL,
+    };
+
+    assert_launch_rejected(args, "aes-input-rate must be 0 (none), 32000, "
+                                 "44100 or 48000, not 22050");
+}
+
+/*
  * Save and restore with the ADAT output and the AES3 input running and a
  * subcode doubleword stored. On the destination, with its clock set to the
  * source's, both channels' A registers read as they did, the next status
@@ -2944,6 +2964,8 @@ int main(int argc, char **argv)
                    test_io6g_rad1_digital_output_samples);
     qtest_add_func("sn0/baseio/io6g-rad1-digital-migration",
                    test_io6g_rad1_digital_migration);
+    qtest_add_func("sn0/baseio/io6g-rad1-rejects-aes-input-rate",
+                   test_io6g_rad1_rejects_aes_input_rate);
     qtest_add_func("sn0/baseio/io6g-rad1-ust-counter",
                    test_io6g_rad1_ust_counter);
     qtest_add_func("sn0/baseio/io6g-ps2", test_io6g_ps2);
