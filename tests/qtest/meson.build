@@ -154,7 +154,6 @@ qtests_filter = \
 
 qtests_i386 = \
   (slirp.found() ? ['pxe-test'] : []) + \
-  (config_all_devices.has_key('CONFIG_XFRAME_PCI') ? ['xframe-test'] : []) + \
   qtests_filter + \
   (config_all_devices.has_key('CONFIG_ACPI_VMGENID') ? ['vmgenid-test'] : []) +             \
   (config_all_devices.has_key('CONFIG_AHCI_ICH9') and have_tools ? ['ahci-test'] : []) +    \
@@ -355,6 +354,7 @@ sgi_board_qtests = \
 # device guard; drop the lot if the head's two devices are not configured.
 sgi_bridge_card_qtests = \
   (config_all_devices.has_key('CONFIG_TIGON') ? ['tigon-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_XFRAME_PCI') ? ['xframe-test'] : []) + \
   (slirp.found() and config_all_devices.has_key('CONFIG_SGI_IOC3') ?
     ['sgi-ioc3-eth-test'] : [])
 if not config_all_devices.has_key('CONFIG_SGI_BRIDGE') or \
