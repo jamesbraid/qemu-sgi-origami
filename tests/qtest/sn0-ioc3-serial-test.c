@@ -185,6 +185,7 @@ static uint64_t sdma_alias(unsigned int port, unsigned int reg)
 #define REG_LCR         3
 #define REG_MCR         4
 #define REG_LSR         5
+#define REG_MSR         6
 #define REG_SCR         7
 
 #define LCR_DLAB        0x80
@@ -602,6 +603,43 @@ static void test_the_alias_refuses_the_registers_hardware_owns(const void *data)
         shadow = qtest_readl(qts, sdma(port, SDMA_SHADOW));
         qtest_writel(qts, sdma_alias(port, SDMA_SHADOW), 0xffffffff);
         g_assert_cmphex(qtest_readl(qts, sdma(port, SDMA_SHADOW)), ==, shadow);
+    }
+}
+
+/*
+ * Modem status takes a write into its four change indicators, and the live
+ * line levels above them are untouched by it. Unlike line status, the
+ * PC16550D datasheet does not describe a write to this register at all --
+ * the Origin 300 board test is the whole of the evidence, and it writes 0x0f
+ * and requires those four bits back. A read clears them, which is the
+ * datasheet's own rule for the indicators.
+ */
+static void test_modem_status_takes_a_factory_test_write(const void *data)
+{
+    unsigned int port;
+
+    serial_reset();
+
+    sn0_ioc3_attach(qts);
+
+    for (port = 0; port < 2; port++) {
+        uint64_t msr = serial_port(port) + REG_MSR;
+        uint8_t live;
+
+        /* Whatever the lines carry, with no change pending. */
+        live = qtest_readb(qts, msr);
+        g_assert_cmphex(live & 0x0f, ==, 0);
+
+        qtest_writeb(qts, msr, 0x0f);
+        g_assert_cmphex(qtest_readb(qts, msr), ==, (live | 0x0f));
+
+        /* That read took them away again, and left the levels alone. */
+        g_assert_cmphex(qtest_readb(qts, msr), ==, live);
+
+        /* The live levels take no write: all ones reaches four bits. */
+        qtest_writeb(qts, msr, 0xff);
+        g_assert_cmphex(qtest_readb(qts, msr), ==, (live | 0x0f));
+        g_assert_cmphex(qtest_readb(qts, msr), ==, live);
     }
 }
 
@@ -2473,6 +2511,8 @@ int main(int argc, char **argv)
                         test_the_receive_timer_keeps_twelve_bits);
     qtest_add_data_func("sn0/ioc3-serial/alias-pages-are-views", NULL,
                         test_the_alias_pages_are_views_of_the_main_block);
+    qtest_add_data_func("sn0/ioc3-serial/modem-status-factory-test-write",
+                        NULL, test_modem_status_takes_a_factory_test_write);
     qtest_add_data_func("sn0/ioc3-serial/line-status-factory-test-write",
                         NULL, test_line_status_takes_a_factory_test_write);
     qtest_add_data_func("sn0/ioc3-serial/modem-control-holds-autoflow", NULL,

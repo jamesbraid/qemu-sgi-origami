@@ -419,6 +419,13 @@ struct SGIIOC3State {
      */
     uint8_t serial_lsr_test[SGI_IOC3_SERIAL_PORTS];
 
+    /*
+     * The same for modem status, whose four change indicators a write can
+     * also set. Only the diagnostic establishes that one, not the 16550
+     * datasheet: see the datasheet for the difference.
+     */
+    uint8_t serial_msr_test[SGI_IOC3_SERIAL_PORTS];
+
     /* Optional transmit record, independent of the port's own backend. */
     CharFrontend serial_record[SGI_IOC3_SERIAL_PORTS];
 
