@@ -2869,6 +2869,51 @@ static void test_directory_ecc_check_reset(void)
 }
 
 /*
+ * The stock PROM's memory test holds 259 checked doublewords and 45 checked
+ * lines at once on a two-bank node. A marked set bounded at 128 or 32 drops
+ * the writes past its bound, and the PROM then reads the code's bytes where
+ * its own patterns should be and fails the bank.
+ */
+static void test_ecc_check_many(void)
+{
+    const unsigned doublewords = 1024;
+    const unsigned lines = 256;
+    QTestState *s = start("");
+
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 1));
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 1);
+    for (unsigned i = 0; i < doublewords; i++) {
+        qtest_writeb(s, ECC_BYTE(i), ecc_column[i % 64]);
+    }
+    for (unsigned i = 0; i < doublewords; i++) {
+        g_assert_cmphex(qtest_readb(s, ECC_BYTE(i)), ==, ecc_column[i % 64]);
+    }
+    g_assert_cmphex(qtest_readq(s, MEMORY((doublewords - 1) * 8)), ==,
+                    UINT64_C(1) << ((doublewords - 1) % 64));
+    g_assert_cmphex(qtest_readq(s, MD(MEMORY_ERROR_CLEAR)), ==,
+                    MEMORY_ERROR_READ_CE_VALID |
+                    MEMORY_ERROR_SYNDROME(ecc_column[(doublewords - 1) % 64]) |
+                    (doublewords - 1) * 8);
+
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 3);
+    for (unsigned i = 0; i < lines; i++) {
+        qtest_writeq(s, DIRECTORY(i * 0x10), UINT64_C(0x0000001f00000000));
+    }
+    qtest_writeq(s, MD(DIRECTORY_CONFIG), 1);
+    for (unsigned i = 0; i < lines; i++) {
+        g_assert_cmphex(qtest_readq(s, DIRECTORY(i * 0x10)), ==,
+                        UINT64_C(0x0000001f00000000));
+    }
+    qtest_readq(s, MEMORY((lines - 1) * 128));
+    g_assert_cmphex(qtest_readq(s, DIRECTORY((lines - 1) * 0x10)), ==,
+                    UINT64_C(0x0000001f00000001));
+    g_assert_cmphex(qtest_readq(s, MD(DIRECTORY_ERROR_CLEAR)), ==,
+                    DIRECTORY_ERROR_CE_VALID | DIRECTORY_ERROR_SYNDROME(0x1f) |
+                    DIRECTORY_ERROR_ADDRESS((lines - 1) * 0x10));
+    qtest_quit(s);
+}
+
+/*
  * The Origin 300's directory diagnostic injects at the word for physical
  * 0x506000 through the machine's directory carrier and expects the
  * corrected word and the error record through the local window.
@@ -2910,6 +2955,7 @@ int main(int argc, char **argv)
                    test_directory_ecc_check);
     qtest_add_func("sn1/bedrock-md/directory-ecc-check-reset",
                    test_directory_ecc_check_reset);
+    qtest_add_func("sn1/bedrock-md/ecc-check-many", test_ecc_check_many);
     qtest_add_func("sn1/bedrock-md/origin300-directory-ecc-check",
                    test_origin300_directory_ecc_check);
     qtest_add_func("sn1/bedrock-md/ecc-check-on-read",
