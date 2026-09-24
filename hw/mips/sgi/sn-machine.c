@@ -2426,12 +2426,16 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
  * post-realize counterpart of the sgi_xbow_attach_endpoint() every
  * onboard board uses before its Crossbow realizes, which refuses once the
  * Crossbow is realized and every Crossbow this machine builds is by now --
- * then brings
- * the widget's own link alive (sgi_xbow_mark_widget_alive()) so both
- * directions carry. A processor or peer widget now reaches the board's own
- * Bridge through the Crossbow's real routing, and a packet the board's
- * Bridge sends out lands on whichever populated widget it addresses, the
- * same as any onboard board's traffic in either direction. Onboard and
+ * then brings the widget's own link alive (sgi_xbow_mark_widget_alive())
+ * so both directions carry, with the same pre-reset health restore every
+ * topology link gets (sgi_machine_build_crossbars()'s
+ * "link-reset-restore-alive"): the stock PROM resets each link it finds
+ * attached and expects it back alive, and without the restore the claimed
+ * widget would stay in initialization after that reset. A processor or
+ * peer widget now reaches the board's own Bridge through the Crossbow's
+ * real routing, and a packet the board's Bridge sends out lands on
+ * whichever populated widget it addresses, the same as any onboard
+ * board's traffic in either direction. Onboard and
  * topology-built boards still attach and route before the synchronous
  * Crossbow realize; only the spare widget, which no board may exist to
  * claim until after machine init, takes this later path.
@@ -2461,7 +2465,7 @@ static void sgi_machine_done(Notifier *notifier, void *data)
                 s->spare_fabric_links[i].claimant_cpu_face,
                 s->spare_fabric_links[i].claimant_packet_face, &error_fatal);
             sgi_xbow_mark_widget_alive(s->crossbars[i],
-                                       s->spare_fabric_widget[i],
+                                       s->spare_fabric_widget[i], true,
                                        &error_fatal);
         }
     }

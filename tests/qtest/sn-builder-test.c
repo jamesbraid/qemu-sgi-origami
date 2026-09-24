@@ -618,6 +618,32 @@ static void test_spare_widget_present_only_when_claimed(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The stock PROM resets every link it finds attached and expects one that
+ * was alive before the reset to come back after the pulse; the machine
+ * gives every topology link that restore. A board claimed on the spare
+ * widget is attached the same way, so a link reset of its port must bring
+ * it back present and alive rather than leave it initializing.
+ */
+#define SPARE_LINK_RESET        (SMALL_WINDOW(0) + 0x130 + \
+                                (SPARE_WIDGET - 8) * 0x40 + REG_DATA)
+#define LINK_RESET_NS           20
+
+static void test_claimed_spare_widget_survives_link_reset(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000 -display none -device sgi-pci-expansion,"
+        "module=99,slot=11,fabric=/machine/crossbow0-spare-fabric[0],"
+        "fabric-widget-shift=48");
+
+    qtest_writel(qts, SPARE_LINK_RESET, 0);
+    g_assert_cmphex(qtest_readl(qts, SPARE_LINK_STATUS), ==, 0);
+    qtest_clock_step(qts, LINK_RESET_NS);
+    g_assert_cmphex(qtest_readl(qts, SPARE_LINK_AUX), ==, AUX_PRESENT);
+    g_assert_cmphex(qtest_readl(qts, SPARE_LINK_STATUS), ==, LINK_ALIVE);
+    qtest_quit(qts);
+}
+
 static void test_unsupported_smp_population_rejected(const void *data)
 {
     const char *args[] = {
@@ -939,6 +965,8 @@ int main(int argc, char **argv)
                         NULL, test_expansion_card_enumerates_inbound);
     qtest_add_data_func("sn/builder/spare-widget-present-only-when-claimed",
                         NULL, test_spare_widget_present_only_when_claimed);
+    qtest_add_data_func("sn/builder/claimed-spare-widget-survives-link-reset",
+                        NULL, test_claimed_spare_widget_survives_link_reset);
     qtest_add_data_func("sn/builder/unsupported-smp-population-rejected",
                         NULL, test_unsupported_smp_population_rejected);
     qtest_add_data_func("sn/builder/topology-from-another-product-refused",

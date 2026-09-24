@@ -93,7 +93,13 @@ struct SGIXbowState {
     uint32_t part;
     uint32_t manufacturer;
 
-    /* Widget masks, as the properties and the descriptor spell them. */
+    /*
+     * Widget masks, as the properties and the descriptor spell them. These
+     * are realize-time configuration inputs only: realize copies them into
+     * the link masks below, and a widget attached and brought up after
+     * realize (sgi_xbow_attach_endpoint_live(), sgi_xbow_mark_widget_alive())
+     * changes the link masks without being reflected here.
+     */
     uint16_t links_present_prop;
     uint16_t startup_links_alive_prop;
     uint16_t link_reset_restore_alive_prop;
@@ -187,11 +193,14 @@ uint16_t sgi_xbow_endpoint_widgets(const SGIXbowState *s);
  * the same operational transition "links-alive" drives from the register
  * side, without requiring an attached endpoint: a widget with no face can
  * still send, since sgi_xbow_routed() only reads face[] for a destination,
- * never for a source. Fails if the widget is already alive, not present,
- * or the crossbar is not yet realized or is quiesced.
+ * never for a source. With @restore_after_reset the widget also joins the
+ * "link-reset-restore-alive" set, so a later link reset returns it to the
+ * health it had before the reset, as it does for a link configured there.
+ * Fails if the widget is already alive, not present, or the crossbar is
+ * not yet realized or is quiesced.
  */
 bool sgi_xbow_mark_widget_alive(SGIXbowState *s, unsigned int widget,
-                                Error **errp);
+                                bool restore_after_reset, Error **errp);
 
 /*
  * Attach a widget's endpoint faces after the Crossbow has realized and
