@@ -505,7 +505,10 @@ static bool baseio_build_io6g(SGIBaseioState *s, Error **errp)
 
     rad1 = pci_new(PCI_DEVFN(BASEIO_G_RAD1_DEVICE, 0), TYPE_SGI_RAD1_AUDIO);
     object_property_add_child(OBJECT(s), "rad1", OBJECT(rad1));
-    pci_realize_and_unref(rad1, s->pci_bus, &error_abort);
+    /* A bad property, such as an unsupported aes-input-rate, is the user's. */
+    if (!pci_realize_and_unref(rad1, s->pci_bus, errp)) {
+        return false;
+    }
 
     return true;
 }
