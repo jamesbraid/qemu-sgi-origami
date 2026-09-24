@@ -2759,6 +2759,48 @@ static void test_parent_ecc_uncorrectable_interrupt(void)
 }
 
 /*
+ * A directory error raises the memory errors' interrupts: a correctable one
+ * pending bank 1 bit 61, an uncorrectable one error-interrupt bit 24, on
+ * both processor interfaces. The Origin 300's directory diagnostic waits
+ * for each and then reads the directory error register.
+ */
+static void test_parent_directory_ecc_interrupt(void)
+{
+    const uint64_t line = 0x2000;
+    const uint64_t word = (line >> 3) & UINT64_C(0x3ffffff0);
+    QTestState *s = start_parent();
+
+    qtest_writeq(s, BEDROCK_MD(0x8), memory_bank_config(0, 1));
+    qtest_writeq(s, BEDROCK_MD(DIRECTORY_CONFIG), 3);
+    qtest_writeq(s, DIRECTORY(word), UINT64_C(0x0000001f00000000));
+    qtest_writeq(s, BEDROCK_MD(DIRECTORY_CONFIG), 1);
+    g_assert_cmphex(qtest_readq(s, BEDROCK_BASE + PI_PENDING_1) &
+                    MEMORY_CORRECTABLE, ==, 0);
+    qtest_readq(s, MEMORY(line));
+    g_assert_cmphex(qtest_readq(s, BEDROCK_MD(DIRECTORY_ERROR)), ==,
+                    DIRECTORY_ERROR_CE_VALID | DIRECTORY_ERROR_SYNDROME(0x1f) |
+                    DIRECTORY_ERROR_ADDRESS(word));
+    g_assert_cmphex(qtest_readq(s, BEDROCK_BASE + PI_PENDING_1) &
+                    MEMORY_CORRECTABLE, ==, MEMORY_CORRECTABLE);
+    g_assert_cmphex(qtest_readq(s, BEDROCK_BASE + PI1_OFFSET + PI_PENDING_1) &
+                    MEMORY_CORRECTABLE, ==, MEMORY_CORRECTABLE);
+    g_assert_cmphex(qtest_readq(s, BEDROCK_BASE + PI_ERROR_PENDING), ==, 0);
+
+    /* Two data bits: uncorrectable. */
+    qtest_writeq(s, BEDROCK_MD(DIRECTORY_CONFIG), 3);
+    qtest_writeq(s, DIRECTORY(word + 0x10), 3);
+    qtest_writeq(s, BEDROCK_MD(DIRECTORY_CONFIG), 1);
+    qtest_readq(s, MEMORY(line + 0x80));
+    g_assert_cmphex(qtest_readq(s, BEDROCK_MD(DIRECTORY_ERROR)) &
+                    DIRECTORY_ERROR_UCE_VALID, ==, DIRECTORY_ERROR_UCE_VALID);
+    g_assert_cmphex(qtest_readq(s, BEDROCK_BASE + PI_ERROR_PENDING), ==,
+                    MEMORY_UNCORRECTABLE);
+    g_assert_cmphex(qtest_readq(s, BEDROCK_BASE + PI1_OFFSET +
+                                PI_ERROR_PENDING), ==, MEMORY_UNCORRECTABLE);
+    qtest_quit(s);
+}
+
+/*
  * The Origin 300's memory diagnostic injects at physical 0x506000 through
  * the machine's ECC carrier and expects the corrected word, the error
  * record through the local register window and the interrupt. Its SECDED
@@ -3200,6 +3242,8 @@ int main(int argc, char **argv)
                    test_parent_ecc_interrupt);
     qtest_add_func("sn1/bedrock-md/parent-ecc-uncorrectable-interrupt",
                    test_parent_ecc_uncorrectable_interrupt);
+    qtest_add_func("sn1/bedrock-md/parent-directory-ecc-interrupt",
+                   test_parent_directory_ecc_interrupt);
     qtest_add_func("sn1/bedrock-md/origin300-ecc-check",
                    test_origin300_ecc_check);
     qtest_add_func("sn1/bedrock-md/origin300-selftest-fill",

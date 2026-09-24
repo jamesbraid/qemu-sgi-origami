@@ -749,6 +749,20 @@ static void md_directory_error_latch(SGIBedrockMDState *s, int kind,
                                MD_DIRECTORY_ERROR_SYNDROME_SHIFT);
     }
     s->directory_error |= valid;
+    /*
+     * The unit's error interrupts are the memory ones: the Origin 300's
+     * directory diagnostic waits for the correctable one and then reads
+     * this register's correctable bit, and waits for error-interrupt bit
+     * 24 before reading its uncorrectable bit.
+     */
+    if (!s->bedrock) {
+        return;
+    }
+    if (kind == MD_DIRECTORY_ERROR_CE) {
+        sgi_bedrock_memory_correctable_error(s->bedrock);
+    } else {
+        sgi_bedrock_memory_uncorrectable_error(s->bedrock);
+    }
 }
 
 static SGIBedrockMDDirectoryInjection *
