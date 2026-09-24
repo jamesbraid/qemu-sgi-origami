@@ -4,6 +4,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "sgi-migrate.h"
+#include "sgi-test.h"
 
 #define BASE 0x10000000ULL
 #define HEAD "/machine/peripheral/head"
@@ -911,8 +912,358 @@ static void test_space_above_face(void)
     qtest_quit(qts);
 }
 
+/*
+ * The bridge-half board-identity NIC (BRIDGE_NIC, offset 0xb0), which the
+ * stock IP35 PROM and the loaded BASEIO PROM both read while attaching the
+ * IO-8's bridge object -- see the widget-15 amendment in
+ * docs/datasheets/xbridge.md, "Stock-PROM IO-8 identity access".
+ */
+#define BRIDGE_NIC 0xb0
+
+#define NIC_LEVEL (1u << 0)
+#define NIC_DONE  (1u << 1)
+#define NIC_PULSE(n)  ((uint32_t)(n) << 10)
+#define NIC_SAMPLE(n) ((uint32_t)(n) << 2)
+
+/*
+ * The placeholder identity docs/datasheets/xbridge.md and hw/mips/sn1.c
+ * cite.
+ */
+#define PLACEHOLDER_PART "NOT-OBSERVED"
+#define PLACEHOLDER_FAMILY 0x0b
+#define PLACEHOLDER_SERIAL 0x060504030201ULL
+
+/*
+ * head_start() above already covers the no-board-part case this fixture
+ * also needs; only the board-part-supplied case is new here.
+ */
+static QTestState *head_start_with_board_part(const char *board_part)
+{
+    g_autofree char *args = g_strdup_printf(
+        "-M none -cpu R10000 -S "
+        "-device sgi-xbridge-head,id=head,board-part=%s", board_part);
+    QTestState *qts = qtest_init(args);
+
+    qtest_sysbus_mmio_map(qts, HEAD, 0, BASE);
+    return qts;
+}
+
+/*
+ * One bit slot, mainline's widths: a long reset, a short write-one/read,
+ * a middling write-zero.
+ */
+static bool nic_slot(QTestState *qts, unsigned int pulse, unsigned int sample)
+{
+    reg_write(qts, BRIDGE_NIC, NIC_PULSE(pulse) | NIC_SAMPLE(sample));
+
+    uint32_t nic = reg_read(qts, BRIDGE_NIC);
+
+    g_assert_cmphex(nic & NIC_DONE, ==, NIC_DONE);
+    return nic & NIC_LEVEL;
+}
+
+#define NIC_RESET(q)      nic_slot((q), 520, 65)
+#define NIC_READ(q)       nic_slot((q), 6, 13)
+#define NIC_WRITE_ONE(q)  nic_slot((q), 6, 13)
+#define NIC_WRITE_ZERO(q) nic_slot((q), 80, 30)
+
+static void nic_write_byte(QTestState *qts, uint8_t byte)
+{
+    unsigned int i;
+
+    for (i = 0; i < 8; i++) {
+        if ((byte >> i) & 1) {
+            NIC_WRITE_ONE(qts);
+        } else {
+            NIC_WRITE_ZERO(qts);
+        }
+    }
+}
+
+static uint8_t nic_read_byte(QTestState *qts)
+{
+    unsigned int i;
+    uint8_t byte = 0;
+
+    for (i = 0; i < 8; i++) {
+        if (NIC_READ(qts)) {
+            byte |= 1u << i;
+        }
+    }
+    return byte;
+}
+
+static uint16_t nic_crc(uint16_t crc, const uint8_t *data, unsigned int len)
+{
+    unsigned int i, bit;
+
+    for (i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? (crc >> 1) ^ 0xa001 : crc >> 1;
+        }
+    }
+    return crc;
+}
+#define NIC_CRC_RESIDUE 0xb001
+
+static uint8_t nic_crc8(uint8_t crc, uint64_t rom)
+{
+    unsigned int byte, bit;
+
+    for (byte = 0; byte < 8; byte++) {
+        crc ^= rom >> (byte * 8);
+        for (bit = 0; bit < 8; bit++) {
+            crc = (crc & 1) ? (crc >> 1) ^ 0x8c : crc >> 1;
+        }
+    }
+    return crc;
+}
+
+/* Drive a search and return the identity the part hands back. */
+static uint64_t nic_search_for_identity(QTestState *qts)
+{
+    uint64_t rom = 0;
+    unsigned int i;
+
+    nic_write_byte(qts, 0xf0);
+    for (i = 0; i < 64; i++) {
+        bool bit = NIC_READ(qts);
+        bool complement = NIC_READ(qts);
+
+        g_assert_cmpint(complement, ==, !bit);
+        if (bit) {
+            rom |= 1ULL << i;
+            NIC_WRITE_ONE(qts);
+        } else {
+            NIC_WRITE_ZERO(qts);
+        }
+    }
+    return rom;
+}
+
+/*
+ * The scanning reader: find "name" within the first `len` bytes and copy
+ * everything up to the next ';' delimiter, exactly -- unlike the fixed-span
+ * positional reader (sn0-bridge-test.c's partnum_from_page(), not reused
+ * here), this never collects the delimiter itself or reads past what it
+ * was told to scan.
+ */
+static bool page_field(const uint8_t *page, unsigned int len,
+                       const char *name, char *out)
+{
+    unsigned int pos = 0, n = strlen(name);
+
+    while (pos < len) {
+        unsigned int i;
+
+        if (pos + n <= len && memcmp(&page[pos], name, n) == 0) {
+            unsigned int j = 0;
+
+            for (i = pos + n; i < len && page[i] != ';'; i++) {
+                out[j++] = page[i];
+            }
+            out[j] = 0;
+            return true;
+        }
+        for (i = pos; i < len && page[i] != ';'; i++) {
+            /* skip to the next delimiter */
+        }
+        if (i >= len) {
+            return false;
+        }
+        pos = i + 1;
+    }
+    return false;
+}
+
+/*
+ * The identity the search returns and the part-number page it reads back:
+ * the discriminator the datasheet's checklist asks for, exercised on this
+ * head's own offset rather than widget 0's crossbar NIC (a separate,
+ * unmodelled register the stock PROM never uses for the IO-8).
+ */
+static void test_placeholder_identity_reads_back(void)
+{
+    QTestState *qts = head_start_with_board_part(PLACEHOLDER_PART);
+    uint64_t rom;
+    uint8_t exchange[6];
+    uint8_t page[34];
+    char part[13];
+    unsigned int i;
+
+    g_assert_false(NIC_RESET(qts));         /* pulled low: the part answers */
+
+    rom = nic_search_for_identity(qts);
+    g_assert_cmphex(rom & 0xff, ==, PLACEHOLDER_FAMILY);
+    g_assert_cmphex((rom >> 8) & 0xffffffffffffULL, ==, PLACEHOLDER_SERIAL);
+    g_assert_cmphex(nic_crc8(0, rom), ==, 0);
+
+    g_assert_false(NIC_RESET(qts));
+    nic_write_byte(qts, 0xcc);              /* one part on the bus: skip ROM */
+
+    exchange[0] = 0xa5;                     /* read memory */
+    exchange[1] = 0x00;
+    exchange[2] = 0x00;
+    for (i = 0; i < 3; i++) {
+        nic_write_byte(qts, exchange[i]);
+    }
+    for (i = 3; i < 6; i++) {
+        exchange[i] = nic_read_byte(qts);
+    }
+    g_assert_cmphex(nic_crc(0, exchange, 6), ==, NIC_CRC_RESIDUE);
+
+    for (i = 0; i < sizeof(page); i++) {
+        page[i] = nic_read_byte(qts);
+    }
+    g_assert_cmphex(nic_crc(0, page, sizeof(page)), ==, NIC_CRC_RESIDUE);
+
+    g_assert_cmpmem(&page[6], 5, "Part:", 5);
+    g_assert_cmpint(page[11 + 12], ==, ';');
+    /*
+     * Scan the field by name over page 1 alone (30 bytes, short of its own
+     * CRC), exactly as sn0-bridge-test.c's page_field() does: never
+     * collecting the ';' delimiter, unlike the fixed-span positional
+     * reader that field also has to satisfy on a real driver.
+     */
+    g_assert_true(page_field(page, 30, "Part:", part));
+    g_assert_cmpstr(part, ==, PLACEHOLDER_PART);
+
+    qtest_quit(qts);
+}
+
+/*
+ * A head a machine gives no board-part keeps BRIDGE_NIC exactly as inert as
+ * the reviewed rev-A contract recorded: no board behind that widget (like
+ * the empty option slot at widget 14) must not gain a responder.
+ */
+static void test_no_board_stays_inert(void)
+{
+    QTestState *qts = head_start();
+
+    g_assert_cmphex(reg_read(qts, BRIDGE_NIC), ==, 0);
+    reg_write(qts, BRIDGE_NIC, NIC_PULSE(520) | NIC_SAMPLE(65));
+    /* No onewire_bus for this head: the write is dropped, same as before. */
+    g_assert_cmphex(reg_read(qts, BRIDGE_NIC), ==, 0);
+
+    qtest_quit(qts);
+}
+
+/*
+ * The XBridge head's own error interrupt on the Origin 300, provoked the
+ * way the Bridge datasheet records the Origin 200 PROM's bridge_sanity
+ * provoking it: a 32-bit store to a register slot the map does not
+ * define, with the error interrupt enabled and the destination registers
+ * naming the Bedrock's interrupt-pending modify register. The IP35 PROM's
+ * diagnostic expects the same status bit and pending bit; which slot it
+ * stores to is not observed. What this file pins is the machine path from
+ * the head's status bit to the processor interface's pending bit, for
+ * both heads; the head's own error contract belongs to this file's own
+ * tests above.
+ */
+#define MACHINE_ARGS "-M origin300 -cpu R14000 -smp 2"
+
+#define XTALK_WIDGET(w) (SPACE_XTALK + (uint64_t)(w) * UINT64_C(0x1000000))
+#define BEDROCK_LOCAL (SPACE_XTALK + UINT64_C(0x01000000))
+
+#define XBRIDGE_HOST_PORT 0xa
+#define XBRIDGE_ERROR_ADDRESS_LOWER 0x18
+#define XBRIDGE_INT_UPPER 0x30
+#define XBRIDGE_INT_LOWER 0x38
+#define XBRIDGE_INT_STATUS 0x100
+#define XBRIDGE_INT_ENABLE 0x108
+#define XBRIDGE_INT_RESET 0x110
+#define XBRIDGE_HOST_ERROR 0x128
+#define XBRIDGE_INVALID_ADDRESS (1U << 24)
+#define XBRIDGE_RESET_INVALID_ADDRESS (1U << 3)
+/* A slot the register map does not define; the Origin 200 PROM's choice. */
+#define XBRIDGE_UNDEFINED_SLOT 0x78
+
+/*
+ * Where an interrupt packet lands: the node's hub-register window with the
+ * register flag at crosstalk address bit 47, which the head takes from bit
+ * 15 of the destination-upper register.
+ */
+#define PI_REMOTE_WINDOW 0x1800000
+#define PI_PENDING_MODIFY 0x90
+#define PI_PENDING_0 0x98
+#define DESTINATION_UPPER ((XBRIDGE_HOST_PORT << 16) | (1U << 15))
+
+static char *prom_path;
+
+static char *create_prom(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    char *path = NULL;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-xbridge-host-error-prom-XXXXXX.bin", &path,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    return path;
+}
+
+static uint32_t xtalk_reg_read(QTestState *qts, unsigned widget,
+                               uint64_t offset)
+{
+    return qtest_readl(qts, XTALK_WIDGET(widget) + offset + 4);
+}
+
+static void xtalk_reg_write(QTestState *qts, unsigned widget,
+                            uint64_t offset, uint32_t value)
+{
+    qtest_writel(qts, XTALK_WIDGET(widget) + offset + 4, value);
+}
+
+static void test_error_reaches_pending(void)
+{
+    g_autofree char *prom = g_shell_quote(prom_path);
+    QTestState *qts = qtest_initf(MACHINE_ARGS " -bios %s", prom);
+    static const struct {
+        unsigned widget;
+        unsigned bit;
+    } head[2] = { { 0xe, 5 }, { 0xf, 6 } };
+    unsigned i;
+
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0), ==, 0);
+    for (i = 0; i < 2; i++) {
+        unsigned w = head[i].widget;
+
+        xtalk_reg_write(qts, w, XBRIDGE_INT_UPPER, DESTINATION_UPPER);
+        xtalk_reg_write(qts, w, XBRIDGE_INT_LOWER,
+                        PI_REMOTE_WINDOW + PI_PENDING_MODIFY);
+        xtalk_reg_write(qts, w, XBRIDGE_HOST_ERROR, head[i].bit);
+        xtalk_reg_write(qts, w, XBRIDGE_INT_ENABLE, XBRIDGE_INVALID_ADDRESS);
+        g_assert_cmphex(xtalk_reg_read(qts, w, XBRIDGE_INT_STATUS) &
+                        XBRIDGE_INVALID_ADDRESS, ==, 0);
+        /* The provoke: a store the head must post and report, not fault. */
+        xtalk_reg_write(qts, w, XBRIDGE_UNDEFINED_SLOT, 0);
+        g_assert_cmphex(xtalk_reg_read(qts, w, XBRIDGE_INT_STATUS) &
+                        XBRIDGE_INVALID_ADDRESS, ==, XBRIDGE_INVALID_ADDRESS);
+        g_assert_cmphex(xtalk_reg_read(qts, w, XBRIDGE_ERROR_ADDRESS_LOWER),
+                        ==, XBRIDGE_UNDEFINED_SLOT + 4);
+        /* And the interrupt reaches the pending bit the host field names. */
+        g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0) &
+                        (1ULL << head[i].bit), ==, 1ULL << head[i].bit);
+        xtalk_reg_write(qts, w, XBRIDGE_INT_RESET,
+                        XBRIDGE_RESET_INVALID_ADDRESS);
+        g_assert_cmphex(xtalk_reg_read(qts, w, XBRIDGE_INT_STATUS) &
+                        XBRIDGE_INVALID_ADDRESS, ==, 0);
+    }
+    /* Each head named its own bit; neither named the other's. */
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0) &
+                    ((1ULL << 5) | (1ULL << 6)), ==, (1ULL << 5) | (1ULL << 6));
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
+    int ret;
+
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/sn1/xbridge/registers", test_registers);
     qtest_add_func("/sn1/xbridge/ate", test_ate);
@@ -938,5 +1289,15 @@ int main(int argc, char **argv)
     qtest_add_func("/sn1/xbridge/page-boundaries", test_page_boundaries);
     qtest_add_func("/sn1/xbridge/page-faults", test_page_faults);
     qtest_add_func("/sn1/xbridge/space-above-face", test_space_above_face);
-    return g_test_run();
+    qtest_add_func("/sn1/xbridge/onewire/placeholder-identity-reads-back",
+                   test_placeholder_identity_reads_back);
+    qtest_add_func("/sn1/xbridge/onewire/no-board-stays-inert",
+                   test_no_board_stays_inert);
+    prom_path = create_prom();
+    qtest_add_func("origin300/xbridge/error-reaches-pending",
+                   test_error_reaches_pending);
+    ret = g_test_run();
+    unlink(prom_path);
+    g_free(prom_path);
+    return ret;
 }
