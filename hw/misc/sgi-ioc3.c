@@ -370,9 +370,17 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
             SGI_IOC3_INT_OUT_ONE_SHOT) {
             s->int_out_state = false;
         }
-        /* Queue command completion after the MMIO write returns. */
-        timer_mod(s->int_out_timer,
-                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1);
+        /*
+         * A fixed level is there for the next read, which the IO-8 board
+         * test checks; a timed mode starts after the MMIO write returns.
+         */
+        if ((int_out & SGI_IOC3_INT_OUT_MODE) == SGI_IOC3_INT_OUT_LOW ||
+            (int_out & SGI_IOC3_INT_OUT_MODE) == SGI_IOC3_INT_OUT_HIGH) {
+            sgi_ioc3_int_out_expire(s);
+        } else {
+            timer_mod(s->int_out_timer,
+                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1);
+        }
         break;
     }
     case SGI_IOC3_MICROLAN_CONTROL:

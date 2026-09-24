@@ -453,6 +453,25 @@ static void test_fixed_interrupt_output_commands_change_the_state(
     g_assert_cmphex(qtest_readl(qts, INT_OUTPUT) & INT_OUT_PIN, ==, 0);
 }
 
+/*
+ * A fixed-level command's new state is there for the very next read. The
+ * Origin 300 IO-8 board test writes 0x80040001 -- output high -- and at
+ * once reads the register 500 times, requiring bit 31 set on every read;
+ * then the same with 0x00000001 for low.
+ */
+static void test_a_fixed_level_is_visible_to_the_next_read(const void *data)
+{
+    ioc3_reset();
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writel(qts, INT_OUTPUT, 0x80040001u);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==, 0x80040001u);
+
+    qtest_writel(qts, INT_OUTPUT, 0x00000001u);
+    g_assert_cmphex(qtest_readl(qts, INT_OUTPUT), ==, 0x00000001u);
+}
+
 static void test_one_shot_interrupt_output_has_three_tick_width(
     const void *data)
 {
@@ -5090,6 +5109,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3/unsupported-output-count-keeps-periodic",
                         NULL,
                         test_unsupported_int_out_counts_keep_periodic_output);
+    qtest_add_data_func("sn0/ioc3/fixed-output-level-visible-at-once", NULL,
+                        test_a_fixed_level_is_visible_to_the_next_read);
     qtest_add_data_func("sn0/ioc3/fixed-interrupt-output-commands", NULL,
                         test_fixed_interrupt_output_commands_change_the_state);
     qtest_add_data_func("sn0/ioc3/one-shot-interrupt-output-width", NULL,
