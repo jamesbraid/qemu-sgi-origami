@@ -354,19 +354,15 @@ if not config_all_devices.has_key('CONFIG_SGI_XBOW_TRANSPORT_TEST')
   sn0_xbow_transport_qtests = []
 endif
 
-# The XIO board base class has no machine of its own yet; its qtest
-# builds a Crossbow and a test board straight from their device types under
-# -M none, so it needs only its own test fixture guard, not SGI_SN0/SGI_SN1.
-sgi_xtalk_board_qtests = \
-  (config_all_devices.has_key('CONFIG_SGI_XIO_BOARD_TEST') ?
-    ['sgi-xtalk-board-test'] : [])
-
-# sgi-baseio's presets and sgi-pci-expansion: same reasoning as
-# sgi_xtalk_board_qtests above, gated on their own combined test config
-# rather than SGI_SN0/SGI_SN1.
+# sgi-baseio's presets, sgi-pci-expansion, and the XIO board base class
+# share this file: none of them has a machine of its own yet, so each
+# needs only its own test fixture guard rather than SGI_SN0/SGI_SN1, and
+# the merged file needs both guards since it exercises fixtures built
+# under each.
 sgi_board_qtests = \
-  (config_all_devices.has_key('CONFIG_SGI_BOARD_TEST') ?
-    ['sgi-board-test', 'sgi-board-backend-test'] : [])
+  (config_all_devices.has_key('CONFIG_SGI_BOARD_TEST') and
+   config_all_devices.has_key('CONFIG_SGI_XIO_BOARD_TEST') ?
+    ['sgi-board-test'] : [])
 
 # Cards that ship behind a Bridge, on the libqos head: one Bridge and the
 # memory a card transfers into, under -M none.  Each card carries its own
@@ -462,7 +458,6 @@ qtests_mips64 = \
   sn0_xbow_transport_qtests + \
   sn1_xbridge_qtests + \
   sn0_mgras_qtests + \
-  sgi_xtalk_board_qtests + \
   sgi_board_qtests
 
 qtests_mips64el = qtests_mips
