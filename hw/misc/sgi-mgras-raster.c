@@ -750,9 +750,19 @@ static void si_draw_pio_pixel_pair(SGIMgrasState *s)
 }
 
 
+/*
+ * RE_POINT paints at its own command value, not at BLOCKXYSTARTI: nothing
+ * in the retained Toolchest capture writes BLOCKXYSTARTI before an
+ * RE_POINT execute, and every one of its 12 point executes there instead
+ * carries the drawn coordinate in the low 32 bits of the command word,
+ * which si_raster_command() already stores at rss[SI_REG_RE_POINT] like
+ * any other register (see si_raster_rss_write()). That latched value also
+ * serves as RE_LINE's start point below: RE_POINT is a moveto that leaves
+ * a pen position for a following RE_LINE to draw from.
+ */
 static void si_draw_point(SGIMgrasState *s)
 {
-    uint32_t xy0 = s->rss[SI_REG_BLOCKXYSTARTI];
+    uint32_t xy0 = s->rss[SI_REG_RE_POINT];
     uint32_t color = s->rss[SI_REG_PACKEDCOLOR] & 0x00ffffff;
     uint32_t mask = s->rss[SI_REG_COLORMASKLSBSA];
     uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 26;
@@ -765,10 +775,24 @@ static void si_draw_point(SGIMgrasState *s)
 }
 
 
+/*
+ * RE_LINE's own command value is the line's end point, not BLOCKXYENDI,
+ * and its start is the pen position the previous RE_POINT or RE_LINE left
+ * at rss[SI_REG_RE_POINT], not BLOCKXYSTARTI: of the 2,862 RE_LINE
+ * executes in the retained Toolchest capture, 2,861 draw from exactly the
+ * previous RE_POINT/RE_LINE's own end point to this command's own value,
+ * tracing closed button and glyph-drawer outlines (the one exception is
+ * the capture's first line event, whose true predecessor point falls
+ * outside the recording window). BLOCKXYSTARTI/BLOCKXYENDI instead sit
+ * frozen on a stale, unrelated rectangle across thousands of consecutive
+ * point/line draws there. Advancing rss[SI_REG_RE_POINT] to this line's
+ * end point chains a run of RE_LINEs into a polyline the same way the
+ * capture chains them.
+ */
 static void si_draw_line(SGIMgrasState *s)
 {
-    uint32_t xy0 = s->rss[SI_REG_BLOCKXYSTARTI];
-    uint32_t xy1 = s->rss[SI_REG_BLOCKXYENDI];
+    uint32_t xy0 = s->rss[SI_REG_RE_POINT];
+    uint32_t xy1 = s->rss[SI_REG_RE_LINE];
     uint32_t color = s->rss[SI_REG_PACKEDCOLOR] & 0x00ffffff;
     uint32_t mask = s->rss[SI_REG_COLORMASKLSBSA];
     uint8_t op = s->rss[SI_REG_PP1FILLMODE] >> 26;
@@ -799,6 +823,7 @@ static void si_draw_line(SGIMgrasState *s)
             y0 += sy;
         }
     }
+    s->rss[SI_REG_RE_POINT] = xy1;
 }
 
 static void si_raster_command_execute(

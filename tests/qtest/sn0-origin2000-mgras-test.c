@@ -2834,11 +2834,9 @@ static void test_masked_out_paint_keeps_the_visual(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_COLORMASKMSBS, 0x70));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_BLOCK_START, (630u << 16) | 512u));
+                 SI_COMMAND_EXEC(REG_RE_POINT, (630u << 16) | 512u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_BLOCK_END, (650u << 16) | 512u));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 (uint64_t)SI_EXEC_TOKEN(REG_RE_LINE, 0) << 32);
+                 SI_COMMAND_EXEC(REG_RE_LINE, (650u << 16) | 512u));
     g_assert_cmphex(si_test_pixel(qts, 640, 512), ==, 0x11);
     g_assert_cmphex(si_test_display_pixel(qts, 640, 512), ==, 0x00ecec00);
 
@@ -3406,7 +3404,7 @@ static void test_command_fifo_rejects_malformed_payload_lengths(void)
     }
     qtest_writeq(qts, REG_CONTEXT_COMMAND, (uint64_t)0xdeadbeef << 32);
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND_EXEC(REG_RE_POINT, 0));
+                 SI_COMMAND_EXEC(REG_RE_POINT, (70u << 16) | 70u));
     g_assert_cmphex(si_test_pixel(qts, 70, 70), ==, 0x00112233);
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_FENCE_TOKEN);
@@ -3462,6 +3460,10 @@ static void test_command_fifo_unrecognized_class_resyncs(void)
 }
 
 
+/*
+ * RE_POINT paints at its own command value, not at BLOCKXYSTARTI: a stale
+ * BLOCK_START must not steer the paint (see si_draw_point()).
+ */
 static void test_re_point_execute(void)
 {
     si_reset();
@@ -3471,17 +3473,27 @@ static void test_re_point_execute(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_PACKEDCOLOR, 0x00abcdef));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_BLOCK_START, (70u << 16) | 80u));
+                 SI_COMMAND(REG_BLOCK_START, (10u << 16) | 10u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 (uint64_t)SI_EXEC_TOKEN(REG_RE_POINT, 0) << 32);
+                 SI_COMMAND_EXEC(REG_RE_POINT, (70u << 16) | 80u));
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 
     g_assert_cmphex(si_test_pixel(qts, 70, 80), ==, 0x00abcdef);
+    g_assert_cmphex(si_test_pixel(qts, 10, 10), ==, 0);
 
     g_assert_cmphex(si_test_pixel(qts, 71, 80), ==, 0);
     g_assert_cmphex(si_test_pixel(qts, 70, 81), ==, 0);
 }
 
+/*
+ * A command-FIFO EXEC token's own declared payload is not evidenced (the
+ * retained Toolchest capture drives RE_POINT only by direct form) and is
+ * not read for position; it still has to be framed and consumed so it
+ * cannot desync the parser or leak into the next command. Latch the pen
+ * with a real RE_POINT state write first, then trigger it with a bounded
+ * (8-byte) EXEC token carrying garbage payload words that must not reach
+ * rss[] or the paint.
+ */
 static void test_re_point_execute_after_bounded_payload(void)
 {
     si_reset();
@@ -3491,17 +3503,24 @@ static void test_re_point_execute_after_bounded_payload(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_PACKEDCOLOR, 0x00556677));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_BLOCK_START, (72u << 16) | 80u));
+                 ((uint64_t)SI_STATE_TOKEN(REG_RE_POINT, 4) << 32) |
+                 ((72u << 16) | 80u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  ((uint64_t)SI_EXEC_TOKEN(REG_RE_POINT, 8) << 32) |
                  0xdeadbeef);
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  ((uint64_t)0xcafebabe << 32) | 0);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 
     g_assert_cmphex(si_test_pixel(qts, 72, 80), ==, 0x00556677);
 }
 
 
+/*
+ * RE_LINE paints from the pen position RE_POINT last latched to RE_LINE's
+ * own command value, not from BLOCKXYSTARTI to BLOCKXYENDI: a stale
+ * BLOCK_START/BLOCK_END must not steer the draw (see si_draw_line()).
+ */
 static void test_re_line_execute(void)
 {
     si_reset();
@@ -3511,11 +3530,13 @@ static void test_re_line_execute(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_PACKEDCOLOR, 0x00112233));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_BLOCK_START, (100u << 16) | 100u));
+                 SI_COMMAND(REG_BLOCK_START, (1u << 16) | 1u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_BLOCK_END, (105u << 16) | 105u));
+                 SI_COMMAND(REG_BLOCK_END, (2u << 16) | 2u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 (uint64_t)SI_EXEC_TOKEN(REG_RE_LINE, 0) << 32);
+                 SI_COMMAND_EXEC(REG_RE_POINT, (100u << 16) | 100u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_RE_LINE, (105u << 16) | 105u));
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 
 
@@ -3523,7 +3544,44 @@ static void test_re_line_execute(void)
     g_assert_cmphex(si_test_pixel(qts, 102, 102), ==, 0x00112233);
     g_assert_cmphex(si_test_pixel(qts, 105, 105), ==, 0x00112233);
 
+    g_assert_cmphex(si_test_pixel(qts, 1, 1), ==, 0);
     g_assert_cmphex(si_test_pixel(qts, 100, 105), ==, 0);
+}
+
+/*
+ * A run of RE_LINEs chains: each one draws from the previous RE_POINT or
+ * RE_LINE's own end point, not from the original RE_POINT every time.
+ * 2,861 of the 2,862 RE_LINE executes in the retained Toolchest capture
+ * chain exactly this way, tracing closed button and glyph outlines (see
+ * "RE_POINT and RE_LINE addressing" in docs/datasheets/mgras-raster-
+ * display.md). A vertical leg from (10,10) to (10,20) followed by a
+ * horizontal leg to (20,20) must start its second leg at (10,20), not
+ * back at the original (10,10): a direct diagonal from (10,10) to
+ * (20,20) would also light (15,15), which this checks stays unpainted.
+ */
+static void test_re_line_chains_from_re_point(void)
+{
+    si_reset();
+
+    si_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND(REG_PACKEDCOLOR, 0x00998877));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_RE_POINT, (10u << 16) | 10u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_RE_LINE, (10u << 16) | 20u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 SI_COMMAND_EXEC(REG_RE_LINE, (20u << 16) | 20u));
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    g_assert_cmphex(si_test_pixel(qts, 10, 10), ==, 0x00998877);
+    g_assert_cmphex(si_test_pixel(qts, 10, 15), ==, 0x00998877);
+    g_assert_cmphex(si_test_pixel(qts, 10, 20), ==, 0x00998877);
+    g_assert_cmphex(si_test_pixel(qts, 15, 20), ==, 0x00998877);
+    g_assert_cmphex(si_test_pixel(qts, 20, 20), ==, 0x00998877);
+
+    g_assert_cmphex(si_test_pixel(qts, 15, 15), ==, 0);
 }
 
 
@@ -3612,7 +3670,8 @@ static void test_fifo_re_blockcopy_unsupported(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_PACKEDCOLOR, 0x00abcdef));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_BLOCK_START, (90u << 16) | 90u));
+                 ((uint64_t)SI_STATE_TOKEN(REG_RE_POINT, 4) << 32) |
+                 ((90u << 16) | 90u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  (uint64_t)SI_EXEC_TOKEN(REG_RE_POINT, 0) << 32);
     g_assert_cmphex(si_test_pixel(qts, 90, 90), ==, 0x00abcdef);
@@ -3626,7 +3685,8 @@ static void test_fifo_re_blockcopy_unsupported(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  SI_COMMAND(REG_PACKEDCOLOR, 0x00abcdef));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 SI_COMMAND(REG_BLOCK_START, (90u << 16) | 90u));
+                 ((uint64_t)SI_STATE_TOKEN(REG_RE_POINT, 4) << 32) |
+                 ((90u << 16) | 90u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  (uint64_t)SI_EXEC_TOKEN(REG_RE_POINT, 0) << 32);
     g_assert_cmphex(si_test_pixel(qts, 90, 90), ==, 0x00abcdef);
@@ -4221,6 +4281,8 @@ int main(int argc, char **argv)
                    test_re_point_execute_after_bounded_payload);
     qtest_add_func("sn0/origin2000/mgras/re-line-execute",
                    test_re_line_execute);
+    qtest_add_func("sn0/origin2000/mgras/re-line-chains-from-re-point",
+                   test_re_line_chains_from_re_point);
     qtest_add_func("sn0/origin2000/mgras/re-char-h-execute",
                    test_re_char_h_execute);
     qtest_add_func("sn0/origin2000/mgras/fifo-re-blockcopy-unsupported",
