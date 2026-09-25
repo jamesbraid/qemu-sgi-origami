@@ -49,4 +49,12 @@ typedef struct SGIBaseioPresetIdentity {
 /* NULL if name is not a preset this class knows. */
 const SGIBaseioPresetIdentity *sgi_baseio_preset_lookup(const char *name);
 
+/*
+ * Set a Bridge-based preset's identity on the carrier's unrealized
+ * Bridge: its silicon revision, board part and the rest of the board's
+ * identity record.
+ */
+void sgi_baseio_preset_set_bridge_identity(
+    DeviceState *bridge, const SGIBaseioPresetIdentity *identity);
+
 #endif
