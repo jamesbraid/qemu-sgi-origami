@@ -47,6 +47,9 @@ test_mips64_timeouts = {
   # sequence in this one script, the same shape linux_kernel's own
   # reasoning below keeps for several budgets run one after another.
   'origin200_prom' : 3120,
+  # Two stock-PROM boots to "ALL DIAGS PASSED", each a few minutes on a
+  # loaded host; 900 is the test class's own budget per boot.
+  'origin200_gigachannel_prom' : 1800,
   # graphics-matrix's two rows (rad4_login_screen, rad4_login_screen_smp2):
   # boot IRIX 6.5.30 with RAD4 at its vendor-documented PCI slot, one CPU
   # and two, drive each to the console login prompt, wait a fixed settle
@@ -201,6 +204,7 @@ tests_mips64_system_quick = [
 
 tests_mips64_system_thorough = [
   'origin200_prom',
+  'origin200_gigachannel_prom',
   'graphics_matrix_thorough',
   'origin300_prom',
   'prom_diagnostics',
