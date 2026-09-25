@@ -223,7 +223,7 @@ static const SGIRad1AudioChannelInfo sgi_rad1_audio_channel_info[] = {
         .pos_b_shift = SGI_RAD1_AUDIO_DIGITAL_POS_B_SHIFT,
         .pos_b_parent = true,
         .slot_ptr = SGI_RAD1_AUDIO_SLOT_AES_SUB_PTR_OFFSET,
-        .words_per_frame = SGI_RAD1_AUDIO_AES_WORDS,
+        .words_per_frame = SGI_RAD1_AUDIO_AES_SUB_WORDS,
         .freq = 0,
         .iface = SGI_RAD1_AUDIO_IFACE_NONE,
     },
@@ -242,7 +242,7 @@ static const SGIRad1AudioChannelInfo sgi_rad1_audio_channel_info[] = {
         .pos_b_shift = SGI_RAD1_AUDIO_DIGITAL_POS_B_SHIFT,
         .pos_b_parent = true,
         .slot_ptr = SGI_RAD1_AUDIO_SLOT_ADAT_SUB_PTR_OFFSET,
-        .words_per_frame = SGI_RAD1_AUDIO_ADAT_WORDS,
+        .words_per_frame = SGI_RAD1_AUDIO_ADAT_SUB_WORDS,
         .freq = SGI_RAD1_AUDIO_ADAT_IN_FREQ,
         .iface = SGI_RAD1_AUDIO_IFACE_NONE,
     },
@@ -905,6 +905,18 @@ static void sgi_rad1_audio_chan_start(SGIRad1AudioChannel *c)
                       "sgi-rad1-audio: %s ring length 0x%" PRIx64
                       " exceeds the modeled cap; clamping\n", ci->name, len);
         len = SGI_RAD1_AUDIO_DMA_MAX_BYTES;
+    }
+    /*
+     * The length comes in 128-byte units, which a 256-byte subcode frame
+     * need not divide. What hardware does with a partial frame is unknown;
+     * the model starts nothing. The driver's rings are whole frames.
+     */
+    if (len % sgi_rad1_audio_frame_bytes(c)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-rad1-audio: %s ring length 0x%" PRIx64
+                      " is not a whole number of %u-byte frames\n",
+                      ci->name, len, sgi_rad1_audio_frame_bytes(c));
+        return;
     }
     if (tag != ci->tag) {
         qemu_log_mask(LOG_GUEST_ERROR,

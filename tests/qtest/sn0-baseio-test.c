@@ -2557,8 +2557,9 @@ static void test_io6g_rad1_digital_migration(void)
  * input's bit 0, type 7 on bit 2 of 0x44 beside the ADAT input's. Each
  * reads one register as A at shift 4, bits [17:4], and B at shift 18, bits
  * [31:18], which is also its parent's B count. The model moves only the
- * A field, writes zero subcode, and borrows the parent's rate and frame
- * width, stated approximations. The control word's tag is the type.
+ * A field and writes zero subcode. Frames are the driver's widths, 64
+ * words for type 6 and 32 for type 7; the rate, one frame per parent
+ * frame, is a flagged model policy. The control word's tag is the type.
  */
 typedef struct Rad1SubcodeChannel {
     const char *name;
@@ -2575,11 +2576,11 @@ typedef struct Rad1SubcodeChannel {
 
 static const Rad1SubcodeChannel rad1_aes_sub = {
     "AES3-input subcode", 0x4e0, 0x518, 0x4e4, 0x448, 0x44c, 0x450,
-    0xfffff030u, 4096, 0x10, 0x20, 2, 48000, &rad1_aes_in,
+    0xfffff030u, 4096, 0x10, 0x20, 64, 48000, &rad1_aes_in,
 };
 static const Rad1SubcodeChannel rad1_adat_sub = {
     "ADAT-input subcode", 0x4d8, 0x514, 0x4dc, 0x454, 0x458, 0x45c,
-    0xfffff038u, 4096, 0x08, 0x18, 8, 48000, &rad1_adat_in,
+    0xfffff038u, 4096, 0x08, 0x18, 32, 48000, &rad1_adat_in,
 };
 
 #define RAD1_SUB_FIELD(v)         (((v) >> 4) & 0x3fffu)
@@ -2629,8 +2630,9 @@ static void rad1_check_subcode_stream(const Rad1SubcodeChannel *d)
     rad1_write(qts, p->enable_reg, p->enable_idle | RAD1_SUB_ENABLE);
     t_sub = rad1_clock_now(qts);
 
-    rad1_step_to(qts, t_sub, 2000000);
-    due = rad1_frames_due(2000000, d->freq);
+    /* Short enough that the frames written fit the ring unwrapped. */
+    rad1_step_to(qts, t_sub, 200000);
+    due = rad1_frames_due(200000, d->freq);
     reg = rad1_read(qts, d->pos);
     g_assert_cmpuint(RAD1_SUB_FIELD(reg), ==, due & 0x3fff);
     g_assert_cmphex(reg & ~(0x3fffu << 4), ==, 0);
@@ -2704,6 +2706,67 @@ static void test_io6g_rad1_aes_subcode_stream(void)
 static void test_io6g_rad1_adat_subcode_stream(void)
 {
     rad1_check_subcode_stream(&rad1_adat_sub);
+}
+
+/*
+ * A ring length comes in 128-byte units, and three of them are not a whole
+ * number of 256-byte AES3-input subcode frames. The model starts nothing
+ * for such a ring: the position holds and the ring is untouched. Four
+ * units, programmed the same way, do start, so the refusal is the length's.
+ * Positions persist on the shared machine, so each check is relative.
+ */
+static void rad1_program_subcode_ring(QTestState *qts,
+                                      const Rad1SubcodeChannel *d,
+                                      uint32_t ctrl)
+{
+    const uint64_t sub_pci = RAD1_TEST_PCI(RAD1_TEST_DIG2_RAM);
+
+    rad1_write(qts, d->a_lo, (uint32_t)sub_pci);
+    rad1_write(qts, d->a_hi, (uint32_t)(sub_pci >> 32));
+    rad1_write(qts, d->a_ctrl, ctrl);
+    rad1_write(qts, d->b_lo, (uint32_t)sub_pci);
+    rad1_write(qts, d->b_hi, (uint32_t)(sub_pci >> 32));
+    rad1_write(qts, d->b_ctrl, ctrl);
+}
+
+static void test_io6g_rad1_subcode_rejects_partial_frame(void)
+{
+    const Rad1SubcodeChannel *d = &rad1_aes_sub;
+    const Rad1DigitalChannel *p = d->parent;
+    QTestState *qts = start_module_io6g();
+    uint32_t before;
+    int64_t t_sub;
+    unsigned int i;
+
+    rad1_prepare_output(qts, RAD1_SAMPLE_LEFT_WORD, RAD1_SAMPLE_RIGHT_WORD);
+    for (i = 0; i < d->ring_bytes; i += 4) {
+        rad1_ring_write(qts, RAD1_TEST_DIG2_RAM + i, RAD1_IN_POISON);
+    }
+
+    /* Three units, tag 6: 384 bytes, a frame and a half. */
+    rad1_program_subcode_ring(qts, d, 0xfffffeb0u);
+    before = rad1_read(qts, d->pos);
+    rad1_write(qts, p->enable_reg, p->enable_idle | RAD1_SUB_ENABLE);
+    qtest_clock_step(qts, 1000000);
+    g_assert_cmphex(rad1_read(qts, d->pos), ==, before);
+    for (i = 0; i < d->ring_bytes; i += 4) {
+        g_assert_cmphex(rad1_ring_read(qts, RAD1_TEST_DIG2_RAM + i), ==,
+                        RAD1_IN_POISON);
+    }
+    rad1_write(qts, p->enable_reg, p->enable_idle);
+
+    /* Four units, 512 bytes: two whole frames, so the channel runs. */
+    rad1_program_subcode_ring(qts, d, 0xfffffe30u);
+    rad1_write(qts, p->enable_reg, p->enable_idle | RAD1_SUB_ENABLE);
+    t_sub = rad1_clock_now(qts);
+    rad1_step_to(qts, t_sub, 1000000);
+    g_assert_cmpuint(RAD1_SUB_FIELD(rad1_read(qts, d->pos)), ==,
+                     (RAD1_SUB_FIELD(before) +
+                      rad1_frames_due(1000000, d->freq)) & 0x3fff);
+    g_assert_cmphex(rad1_ring_read(qts, RAD1_TEST_DIG2_RAM), ==, 0);
+    g_assert_cmphex(rad1_ring_read(qts, RAD1_TEST_DIG2_RAM + 512), ==,
+                    RAD1_IN_POISON);
+    rad1_write(qts, p->enable_reg, p->enable_idle);
 }
 
 /*
@@ -3438,6 +3501,8 @@ int main(int argc, char **argv)
                    test_io6g_rad1_aes_subcode_stream);
     qtest_add_func("sn0/baseio/io6g-rad1-adat-subcode-stream",
                    test_io6g_rad1_adat_subcode_stream);
+    qtest_add_func("sn0/baseio/io6g-rad1-subcode-rejects-partial-frame",
+                   test_io6g_rad1_subcode_rejects_partial_frame);
     qtest_add_func("sn0/baseio/io6g-rad1-genlock-absent",
                    test_io6g_rad1_genlock_absent);
     qtest_add_func("sn0/baseio/io6g-rad1-genlock-ntsc",

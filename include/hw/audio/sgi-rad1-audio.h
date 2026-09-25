@@ -238,10 +238,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
  *
  * What a subcode record holds is known only in part, and nothing on the
  * host supplies AES3 channel status or ADAT user bits, so both channels
- * write zeros. Their rate and frame width are not given; the model uses
- * the parent's, a stated approximation: AES3-input subcode at the AES3
- * input's rate with two-word frames, ADAT-input subcode at 48 kHz with
- * eight-word frames.
+ * write zeros. The driver's own device fields give the frame widths, read
+ * live: 64 words (256 bytes) for type 6 and 32 words (128 bytes) for
+ * type 7. How many audio frames one record covers is unknown, so the rate
+ * is a flagged model policy: one record per parent frame, AES3-input
+ * subcode at the AES3 input's rate and ADAT-input subcode at 48 kHz. A
+ * capture of a running subcode channel's position against its parent's
+ * would settle it.
  */
 #define SGI_RAD1_AUDIO_SUBCODE_ENABLE_BIT       0x4u
 #define SGI_RAD1_AUDIO_REG_AES_SUB_A_ADDR_LO    0x4e0
@@ -251,6 +254,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_AUDIO_REG_ADAT_SUB_A_ADDR_HI   0x514
 #define SGI_RAD1_AUDIO_REG_ADAT_SUB_A_CTRL      0x4dc
 #define SGI_RAD1_AUDIO_SUB_POS_A_SHIFT          4
+#define SGI_RAD1_AUDIO_AES_SUB_WORDS            64
+#define SGI_RAD1_AUDIO_ADAT_SUB_WORDS           32
 #define SGI_RAD1_AUDIO_REG_OUT_A_ADDR_LO    0x4f8
 #define SGI_RAD1_AUDIO_REG_OUT_A_ADDR_HI    0x524
 #define SGI_RAD1_AUDIO_REG_OUT_A_CTRL       0x4fc
