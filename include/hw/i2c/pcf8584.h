@@ -126,6 +126,7 @@ struct PCF8584State {
     bool wire_grant_pending;    /* publish the observed module grant at STOP */
     uint8_t wire_grant;         /* unmatched module grant awaiting STOP */
     bool wire_start_waiting;    /* compatibility START held until bus free */
+    bool wire_stop_pending;     /* STOP written mid-byte, placed at its end */
     bool wire_scl, wire_sda;    /* line levels as this adapter last saw them */
     int64_t wire_free_at;       /* earliest fresh START after the last STOP */
 };

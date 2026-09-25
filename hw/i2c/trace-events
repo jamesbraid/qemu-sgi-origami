@@ -74,3 +74,4 @@ pcf8584_send(uint32_t master, uint8_t value, int success) "master:%" PRIu32 " se
 pcf8584_recv(uint32_t master, uint8_t value) "master:%" PRIu32 " recv byte: 0x%02x"
 pcf8584_nack(uint32_t master) "master:%" PRIu32 " nacking"
 pcf8584_stop(uint32_t master) "master:%" PRIu32 " stopping"
+pcf8584_stop_deferred(uint32_t master, uint8_t phase) "master:%" PRIu32 " STOP written in wire phase %u, placed after the byte"
