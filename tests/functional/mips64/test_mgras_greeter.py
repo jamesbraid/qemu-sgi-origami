@@ -29,18 +29,49 @@ redraw are two unsynchronized events, not one -- see
 poll_screendump_until_checks_pass's own docstring in lib_screen.py, which
 this test reuses rather than reimplementing the same wait.
 
-Machine profile: `origin2000,baseio-preset=io6g` (SI attaches to the
-topology's own xio-slot-3 automatically -- sgi_machine_build_mgras() in
-hw/mips/sgi/sn-machine.c -- unlike a `-device`-plugged card, and io6g's
-second IOC3 is what carries keyboard/mouse for an interactive session),
-`-cpu R10000 -smp 8 -m 256`, multi-threaded TCG. This is the same profile
-docs/notebooks/si-target-first-chooser-20260921.md's "Live chooser"
-recorded reaching this same chooser (run irix-20260922T032556-b7eda4,
-`origin2000` compatibility composition, BaseIO6G, eight R10000s); that
-notebook's own run record shows the profile actually renders correctly on
-landed code (PR 717/732/735), not just under replay instrumentation.
+Machine profile: `origin2000,topology=origin2000-one-node,debug-leds=off`
+(SI attaches to the topology's own xio-slot-3 automatically --
+sgi_machine_build_mgras() in hw/mips/sgi/sn-machine.c -- unlike a
+`-device`-plugged card; the one-node module's own catalogue entry in
+hw/mips/sgi/sn-catalogue.json already bakes in an io6g BaseIO, so unlike
+the default four-node topology this needs no `baseio-preset=` override
+for the second IOC3 an interactive session's mouse needs), `-cpu R10000
+-smp 2 -m 256`, multi-threaded TCG, `-S` then a `cont` once the machine
+has launched (test_irix_origin2000_topologies.py's own `_boot()` uses the
+same pause-then-continue for every Origin 2000 topology it starts,
+including this one, against the RESET event a quick early PROM reset can
+raise before the QMP client's capabilities reply lands). This test ran on
+the default four-node topology (`baseio-preset=io6g`, `-smp 8`) until
+QEMU commit 2324ead1d3 ("hw/misc/sgi-xbow: keep a restored link's routes
+open through its reset", landed as PR 833): a guest link reset withdrew
+the link's routes for the whole reset pulse, and IRIX 6.5.30's SI reset
+path does not poll link status the way its generic widget-reset path
+does, so a board access during that window could fall through to the
+Hub's error floor. That was an intermittent, host-timing-sensitive fault
+on any topology carrying the SI head, including this one; independently
+observed against this exact one-node profile as a data bus error at PC
+0xc000000000377ebc, widget 0xf offset 0x20100 -- an exact match to the
+commit's own cited fault. With the fix landed, this test moves to the
+simpler one-node module rather than staying on the four-node one.
 tools/origami_lib/irix.py's own general Origin 2000 launch path uses the
-same `tcg,thread=multi` for any multi-CPU IRIX boot.
+same `tcg,thread=multi` for any multi-CPU IRIX boot; its interactive
+`node_prom_drives()` path additionally wires a per-node pflash drive so
+PROM state survives between separate launches, which this test does not
+need (each run starts from the same golden, unwritten disk) and does not
+use -- QEMU's own Hub flash loader (sgi_machine_load_flash() in
+hw/mips/sgi/sn-machine.c) fills a node's boot flash from `-bios` whenever
+no pflash drive already backs it, the same plain path
+test_irix_origin2000_topologies.py's own already-landed `test_one_node`
+uses against this identical topology.
+docs/notebooks/si-target-first-chooser-20260921.md's "Live chooser" first
+recorded reaching this same chooser on the four-node profile (run
+irix-20260922T032556-b7eda4, `origin2000` compatibility composition,
+BaseIO6G, eight R10000s); that notebook's own run record shows the paint
+pipeline renders correctly on landed code (PR 717/732/735), not just
+under replay instrumentation. The screendump geometry this file checks
+(see below) is SI's own framebuffer layout, independent of node or CPU
+count, so the four-node capture's measurements still apply here; this
+test's own qualification runs are the evidence for the one-node case.
 
 root.qcow2, the generic install disk this test used at first, has no SI
 graphics configured and produced exactly the degenerate capture the
@@ -143,29 +174,40 @@ FIRMWARE_REL = os.path.join('assets', 'firmware', RELEASE,
 # skipping, the same as any other unprovisioned asset.
 DISK_REL = os.path.join('assets', 'irix', RELEASE, 'root-si.qcow2')
 
-# The Origin 2000's default topology: four nodes, two CPUs each, matching
-# docs/notebooks/si-2d-model-rules-20260922.md's own working "-smp 8"
-# milestone boot. baseio-preset=io6g adds the second IOC3 an interactive
-# session's keyboard and mouse need; SI itself attaches automatically to
-# the topology's xio-slot-3 (sgi_machine_build_mgras() in
-# hw/mips/sgi/sn-machine.c), independent of this preset.
-MACHINE = MACHINES['origin2000'] + ',baseio-preset=io6g'
-SMP = '8'
+# The Origin 2000's one-node module: one node, two CPUs, matching
+# test_irix_origin2000_topologies.py's own already-landed test_one_node.
+# The one-node topology's own catalogue entry in sn-catalogue.json
+# already bakes in an io6g BaseIO, so unlike the default four-node
+# topology this machine string needs no baseio-preset= override for the
+# second IOC3 an interactive session's keyboard and mouse need; SI itself
+# attaches automatically to the topology's xio-slot-3
+# (sgi_machine_build_mgras() in hw/mips/sgi/sn-machine.c), independent of
+# that preset either way. This test ran on the default four-node topology
+# (baseio-preset=io6g, -smp 8) until QEMU commit 2324ead1d3 fixed the
+# Crossbow link-reset race that made any SI-carrying topology intermittently
+# fault during boot -- see this file's own docstring.
+MACHINE = MACHINES['origin2000'] + ',topology=origin2000-one-node,debug-leds=off'
+SMP = '2'
 MEMORY_MIB = 256
 
-# BOOT_TIMEOUT_SECONDS for this profile (four nodes, eight CPUs, 256 MiB,
-# the graphics stack initializing before the console even prints its
-# login prompt). This branch's own attempt-3 run of this test (the real
-# container harness, the debug_tcg build/ binary CI tests against, this
-# exact machine profile) reached the login prompt in about 282s real,
-# under concurrent host load from several sibling background agents -- not
-# a quiet-host figure. attempt-4, under similarly heavy load, took about
-# 12 minutes (roughly 2.2x attempt-3) to the same prompt, so this figure
-# moves with host contention, not just with this profile.
-# test_irix_installed_boot.py's own much lighter single-CPU/64 MiB profile
-# measured about 265s real on a quiet host, for comparison. 1200 keeps
-# comfortable headroom above both observations for further host
-# contention.
+# BOOT_TIMEOUT_SECONDS for this profile (one node, two CPUs, 256 MiB, the
+# graphics stack initializing before the console even prints its login
+# prompt). test_irix_origin2000_topologies.py's own test_one_node -- the
+# same topology, a lighter root-diags.qcow2 disk and no graphical greeter
+# to wait for -- runs under that file's own file-wide 1500s budget.
+# This test's own four-node predecessor measured 282s-12min real to the
+# same login: prompt across host-load conditions on eight CPUs. Measured
+# against this one-node profile instead (three qualification runs on the
+# rebased tree, after QEMU commit 2324ead1d3 fixed the link-reset race
+# noted above): whole-test wall time, boot through the final screendump
+# check, was 124s, 126s and 142s -- well under even the four-node
+# profile's own best case, not just its worst. One node with a quarter
+# the CPUs boots faster here, not slower: this profile skips the other
+# three nodes' own SMP bring-up and link-up entirely rather than doing
+# proportionally less of it. 1200 keeps roughly 8x headroom above the
+# slowest of those three runs for host-load variance rather than shaving
+# to the observed minimum; see the meson.build entry for this test's own
+# overall budget.
 BOOT_TIMEOUT_SECONDS = 1200
 
 # Drive the PROM menu to Start System, then wait for the serial console's
@@ -267,9 +309,10 @@ SCREEN_CHECKS = (
 if QemuSystemTest is not None:
 
     class MgrasGreeter(QemuSystemTest):
-        """Boots the installed IRIX disk on a four-node Origin 2000 with
-        SI/MGRAS graphics to the icon-chooser greeter and requires the 2D
-        engine to have actually painted the account icon and its label."""
+        """Boots the installed IRIX disk on the Origin 2000's one-node
+        module with SI/MGRAS graphics to the icon-chooser greeter and
+        requires the 2D engine to have actually painted the account icon
+        and its label."""
 
         @skipBigDataTest()
         @skipSlowTest()
@@ -289,10 +332,12 @@ if QemuSystemTest is not None:
                 '-drive',
                 f'if=none,id=disk0,file={disk},format=qcow2,snapshot=on',
                 '-device', 'scsi-hd,bus=scsi.0,scsi-id=1,lun=0,drive=disk0',
-                '-nic', 'user,id=net0')
+                '-nic', 'user,id=net0',
+                '-S')
 
             started = utc_now()
             vm.launch()
+            vm.cmd('cont')
             log_path = self.log_file('mgras-greeter.log')
             try:
                 transcript, reached = drive_console(
