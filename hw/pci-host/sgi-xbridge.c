@@ -860,8 +860,9 @@ static void xbridge_realize(DeviceState *dev, Error **errp)
 {
     SGIXBridgeHeadState *s = SGI_XBRIDGE_HEAD(dev);
     /* Two heads in one chip cannot both be "head.0". */
-    g_autofree char *bus_name = g_strdup_printf("%s.0",
-        dev->id ? dev->id : object_get_canonical_path_component(OBJECT(s)));
+    g_autofree char *bus_name = s->bus_name ? g_strdup(s->bus_name) :
+        g_strdup_printf("%s.0", dev->id ? dev->id :
+                        object_get_canonical_path_component(OBJECT(s)));
     unsigned i;
 
     if (s->speed > 3) {
@@ -1049,6 +1050,7 @@ static bool xbridge_is_hotpluggable_bus(const HotplugHandler *handler, BusState 
 static const Property xbridge_properties[] = {
     DEFINE_PROP_UINT8("pci-speed", SGIXBridgeHeadState, speed, 0),
     DEFINE_PROP_STRING("board-part", SGIXBridgeHeadState, board_part),
+    DEFINE_PROP_STRING("bus-name", SGIXBridgeHeadState, bus_name),
     DEFINE_PROP_UINT64("onewire-serial", SGIXBridgeHeadState, onewire_serial,
                        SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL),
 };
@@ -1129,6 +1131,11 @@ struct SGIXBridgeState {
     uint8_t host_port;
     uint8_t pci_speed[2];
     char *board_part[2];
+    /*
+     * Prefixed to each head's bus name, so a second chip in one machine
+     * (a two-chassis Origin 300's second IO-8) names its buses apart.
+     */
+    char *bus_prefix;
     uint64_t onewire_serial[2];
 };
 
@@ -1270,6 +1277,12 @@ static void chip_realize(DeviceState *dev, Error **errp)
         }
         qdev_prop_set_uint64(DEVICE(&s->head[i]), "onewire-serial",
                              s->onewire_serial[i]);
+        if (s->bus_prefix) {
+            g_autofree char *bus_name = g_strdup_printf(
+                "%shead-%c.0", s->bus_prefix, i ? 'f' : 'e');
+
+            qdev_prop_set_string(DEVICE(&s->head[i]), "bus-name", bus_name);
+        }
         if (!chip_link_host(OBJECT(&s->head[i]), s->host_port, s->fabric,
                             errp) ||
             !sysbus_realize(SYS_BUS_DEVICE(&s->head[i]), errp)) {
@@ -1318,6 +1331,7 @@ static const Property chip_properties[] = {
      * unset leaves that head's register inert, matching a widget with no
      * board behind it (the empty option slot at widget 14, by default).
      */
+    DEFINE_PROP_STRING("bus-prefix", SGIXBridgeState, bus_prefix),
     DEFINE_PROP_STRING("board-part-e", SGIXBridgeState, board_part[0]),
     DEFINE_PROP_STRING("board-part-f", SGIXBridgeState, board_part[1]),
     DEFINE_PROP_UINT64("onewire-serial-e", SGIXBridgeState,
