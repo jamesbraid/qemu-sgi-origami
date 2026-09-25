@@ -20,10 +20,10 @@
 #define MACHINE_ARGS "-M origin300 -cpu R14000 -smp 2"
 
 #define XTALK_WIDGET(w) (SPACE_XTALK + (uint64_t)(w) * UINT64_C(0x1000000))
-#define HUB_LOCAL_IO (SPACE_HUB + UINT64_C(0x10000000) + 0x400000)
 #define IO_INBOUND_ACCESS 0x118
 
 #define BEDROCK_NODE0 (SPACE_XTALK + UINT64_C(0x01800000))
+#define BEDROCK_IO (BEDROCK_NODE0 + 0x400000)
 #define MD_MEMORY_CONFIG UINT64_C(0x780008)
 /*
  * Origin 300's installed memory occupies locational banks 2 and 3, not
@@ -867,7 +867,7 @@ static void test_scsi_dma_with_inbound_mask(const void *data)
     absorb_unit_attention(qts, 0, 0xd1);
     qtest_memset(qts, BUF_PHYS, BUFFER_SENTINEL, SECTOR_BYTES);
     memset(sentinel, BUFFER_SENTINEL, sizeof(sentinel));
-    qtest_writeq(qts, HUB_LOCAL_IO + IO_INBOUND_ACCESS,
+    qtest_writeq(qts, BEDROCK_IO + IO_INBOUND_ACCESS,
                  UINT64_MAX & ~mask_case->denied_widget);
 
     submit_command(qts, 0xd2, 0, DISK_TARGET, 0, cdb, sizeof(cdb),

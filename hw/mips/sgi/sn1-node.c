@@ -25,6 +25,7 @@
 #include "qemu/osdep.h"
 #include "qemu/units.h"
 #include "qemu/host-utils.h"
+#include "qemu/cutils.h"
 #include "qemu/datadir.h"
 #include "qemu/log.h"
 #include "qapi/error.h"
@@ -72,12 +73,15 @@
 #define SN1_PROM_RAM_COPY UINT64_C(0x01a00000)
 #define SN1_PROM_RAM_COPY_SIZE UINT64_C(0x00200000)
 /*
- * The register window's own split, the same in both forms: a PI head
- * below the L1 UART's 0x80 offset, the UART itself, then a PI tail. See
- * sn1_node_create_bedrock's remote and local construction below.
+ * The register window's own blocks, the same in both forms: an
+ * unidentified block below the L1 UART's 0x80 offset, the UART itself,
+ * then the per-processor LEDs. See sn1_node_create_bedrock below.
  */
 #define SN1_HUB_REGISTER_HEAD_SIZE UINT64_C(0x80)
 #define SN1_HUB_REGISTER_UART_END (SN1_HUB_REGISTER_HEAD_SIZE + SGI_L1_SIZE)
+/* One eight-byte LED register per processor slice, just above the UART. */
+#define SN1_HUB_LED_OFFSET SN1_HUB_REGISTER_UART_END
+#define SN1_HUB_LED_SIZE (SGI_SN1_NODE_MAX_CPUS * 8)
 #define SN1_PROM_SECOND_SELECTION (SN1_SPACE_HUB + UINT64_C(0x1a000000))
 #define SN1_PROM_SECOND_SELECTION_SIZE UINT64_C(0x800000)
 #define SN1_HUB_REMOTE_FLASH (SN1_SPACE_HUB + UINT64_C(0x3a000000))
@@ -971,6 +975,126 @@ static const MemoryRegionOps sn1_board_id_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 8 },
 };
 
+/*
+ * The Hub-special register windows hold no processor-interface registers
+ * (docs/datasheets/ip35-address-map.md, "Hub special space"). Below the L1
+ * UART sits a block no public source names: the stock PROM stores sixteen
+ * doublewords there through the remote form while it initializes memory,
+ * and what the device does with them is not modelled. Accept and ignore
+ * the stores, read zero, and log every access so a consumer that depends
+ * on the block shows up.
+ */
+static MemTxResult sn1_hub_unidentified_read(void *opaque, hwaddr offset,
+                                             uint64_t *value, unsigned size,
+                                             MemTxAttrs attrs)
+{
+    SN1NodeState *node = opaque;
+    SGIBedrockState *bedrock = SGI_BEDROCK(node->bedrock);
+
+    *value = 0;
+    if (!sgi_bedrock_hub_registers_permitted(bedrock)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sn1: Hub-special register window read at 0x%"
+                      HWADDR_PRIx " denied for region %u\n", offset,
+                      (unsigned)bedrock->initiator_region);
+        return MEMTX_DECODE_ERROR;
+    }
+    qemu_log_mask(LOG_UNIMP, "sn1: unidentified Hub-special register "
+                  "window block read of %u byte%s at offset 0x%"
+                  HWADDR_PRIx " returns 0\n", size, size == 1 ? "" : "s",
+                  offset);
+    return MEMTX_OK;
+}
+
+static MemTxResult sn1_hub_unidentified_write(void *opaque, hwaddr offset,
+                                              uint64_t value, unsigned size,
+                                              MemTxAttrs attrs)
+{
+    SN1NodeState *node = opaque;
+    SGIBedrockState *bedrock = SGI_BEDROCK(node->bedrock);
+
+    if (!sgi_bedrock_hub_registers_permitted(bedrock)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sn1: Hub-special register window write at 0x%"
+                      HWADDR_PRIx " denied for region %u\n", offset,
+                      (unsigned)bedrock->initiator_region);
+        return MEMTX_DECODE_ERROR;
+    }
+    qemu_log_mask(LOG_UNIMP, "sn1: unidentified Hub-special register "
+                  "window block ignores a %u-byte write of 0x%" PRIx64
+                  " at offset 0x%" HWADDR_PRIx "\n", size, value, offset);
+    return MEMTX_OK;
+}
+
+static const MemoryRegionOps sn1_hub_unidentified_ops = {
+    .read_with_attrs = sn1_hub_unidentified_read,
+    .write_with_attrs = sn1_hub_unidentified_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8 },
+    .impl = { .min_access_size = 1, .max_access_size = 8 },
+};
+
+/*
+ * One LED register per processor slice at 0xc0 + 8 * slice of either
+ * register window: the public SN1 kernel's heartbeat LED, the stock PROM's
+ * progress code, and IRIX's heartbeat. The LED bank is eight bits wide, so
+ * a store keeps bits 7:0. What a load returns on hardware is unknown; the
+ * model returns the kept byte. Only the aligned eight-byte access every
+ * observed consumer makes is answered.
+ */
+static MemTxResult sn1_hub_led_check(SN1NodeState *node, hwaddr offset,
+                                     unsigned size, const char *access)
+{
+    SGIBedrockState *bedrock = SGI_BEDROCK(node->bedrock);
+
+    if (!sgi_bedrock_hub_registers_permitted(bedrock)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sn1: processor LED %s denied for region %u\n",
+                      access, (unsigned)bedrock->initiator_region);
+        return MEMTX_DECODE_ERROR;
+    }
+    if ((offset & 7) || size != 8) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sn1: processor LEDs answer only an aligned eight-byte "
+                      "access; refusing a %u-byte %s at offset 0x%"
+                      HWADDR_PRIx "\n", size, access, offset);
+        return MEMTX_ERROR;
+    }
+    return MEMTX_OK;
+}
+
+static MemTxResult sn1_hub_led_read(void *opaque, hwaddr offset,
+                                    uint64_t *value, unsigned size,
+                                    MemTxAttrs attrs)
+{
+    SN1NodeState *node = opaque;
+    MemTxResult result = sn1_hub_led_check(node, offset, size, "read");
+
+    *value = result == MEMTX_OK ? node->led[offset / 8] : 0;
+    return result;
+}
+
+static MemTxResult sn1_hub_led_write(void *opaque, hwaddr offset,
+                                     uint64_t value, unsigned size,
+                                     MemTxAttrs attrs)
+{
+    SN1NodeState *node = opaque;
+    MemTxResult result = sn1_hub_led_check(node, offset, size, "write");
+
+    if (result == MEMTX_OK) {
+        node->led[offset / 8] = value;
+    }
+    return result;
+}
+
+static const MemoryRegionOps sn1_hub_led_ops = {
+    .read_with_attrs = sn1_hub_led_read,
+    .write_with_attrs = sn1_hub_led_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8 },
+    .impl = { .min_access_size = 1, .max_access_size = 8 },
+};
+
 static void sn1_node_map_memory(SN1NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
@@ -1103,7 +1227,6 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     MemoryRegion *system = get_system_memory();
     MemoryRegion *l1_uart;
     DeviceState *l1_uart_dev;
-    MemoryRegion *hub_registers;
     SysBusDevice *bedrock;
     unsigned int cpu;
     uint32_t slot_order;
@@ -1334,7 +1457,6 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     sysbus_realize(SYS_BUS_DEVICE(node->bedrock), &error_fatal);
     object_unref(OBJECT(node->bedrock));
     bedrock = SYS_BUS_DEVICE(node->bedrock);
-    hub_registers = &SGI_BEDROCK(node->bedrock)->hub_special_registers;
 
     memory_region_add_subregion(
         system, sn1_node_address(node, SN1_XTALK_ADDRESS),
@@ -1350,36 +1472,30 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
         system, sn1_node_address(node, SN1_BEDROCK_NODE_ADDRESS),
         &node->bedrock_node, 1);
     /*
-     * The local register window is a plain, non-overlapping partition of
-     * the same three parts the remote window already answers below: a PI
-     * head, the L1 UART's own dedicated region at 0x80
-     * (docs/datasheets/l1-controller.md), and a PI tail. sMDK, the Origin
-     * 300 field-diagnostic kernel, polls the UART's line status through
-     * this local form under the stock PROM's console=d
-     * (docs/datasheets/ip35-address-map.md); before this split, the whole
-     * window aliased the general PI register file straight through, so
-     * the same offset served a PI mask register instead and sMDK's console
-     * write loop never saw the ready bit. SN1_HUB_REGISTER_HEAD_SIZE and
-     * SN1_HUB_REGISTER_UART_END are the same constants the remote window's
-     * own head/tail split below uses, so the two forms cannot drift apart.
+     * Both register-window forms hold the same three blocks around the
+     * board-identification register: the unidentified block below 0x80,
+     * the L1 UART's own region at 0x80 (docs/datasheets/l1-controller.md),
+     * and the per-processor LEDs at 0xc0. The UART is the one sMDK, the
+     * Origin 300 field-diagnostic kernel, polls through the local form
+     * under the stock PROM's console=d. Nothing in either window reaches
+     * the processor-interface registers: that is the crosstalk form's job
+     * alone, and the LED offsets used to land on PI interrupt mask 1 B
+     * and the cross-call-pending registers when it did
+     * (docs/datasheets/ip35-address-map.md). Every other offset is left
+     * undecoded.
      */
-    memory_region_init_alias(&node->hub_local_register_head, OBJECT(node),
-                             "sn1.hub.local-register-head",
-                             hub_registers, 0,
-                             SN1_HUB_REGISTER_HEAD_SIZE);
+    memory_region_init_io(&node->hub_unidentified, OBJECT(node),
+                          &sn1_hub_unidentified_ops, node,
+                          "sn1.hub.unidentified", SN1_HUB_REGISTER_HEAD_SIZE);
     memory_region_add_subregion(&node->hub_local_registers, 0,
-                                &node->hub_local_register_head);
+                                &node->hub_unidentified);
     memory_region_add_subregion(&node->hub_local_registers,
                                 SN1_HUB_REGISTER_HEAD_SIZE,
                                 sysbus_mmio_get_region(bedrock, 8));
-    memory_region_init_alias(&node->hub_local_register_tail, OBJECT(node),
-                             "sn1.hub.local-register-tail",
-                             hub_registers,
-                             SN1_HUB_REGISTER_UART_END,
-                             SGI_BEDROCK_SIZE - SN1_HUB_REGISTER_UART_END);
+    memory_region_init_io(&node->hub_leds, OBJECT(node), &sn1_hub_led_ops,
+                          node, "sn1.hub.leds", SN1_HUB_LED_SIZE);
     memory_region_add_subregion(&node->hub_local_registers,
-                                SN1_HUB_REGISTER_UART_END,
-                                &node->hub_local_register_tail);
+                                SN1_HUB_LED_OFFSET, &node->hub_leds);
     /*
      * OpenBSD expects local PI accesses to select the requester's
      * interface. Every realized processor whose physical slot sits on
@@ -1410,57 +1526,30 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
         memory_region_init_alias(&node->cpu_local_pi_xtalk[cpu], OBJECT(node),
                                  "sn1.cpu.local-pi-xtalk", pi1, 0,
                                  SGI_BEDROCK_PI_SIZE);
+        /* Above the claim layer's reader-local register form (priority 1). */
         memory_region_add_subregion_overlap(&node->cpu_sysmem[cpu],
                                             SN1_BEDROCK_LOCAL_ADDRESS,
                                             &node->cpu_local_pi_xtalk[cpu], 2);
-        /*
-         * This processor's own local-window PI1 overlay is split the
-         * same way as the machine-wide window above, but leaves the
-         * 0x80-0xbf gap between its head and tail unclaimed instead of
-         * overlaying its own UART alias there: with nothing at
-         * priority 2 over that one range, its access falls through to
-         * the claim layer's local Hub special form underneath, which
-         * reaches this node's own container and its UART region, the
-         * same as every other processor of the node. The overlays sit
-         * above that form (priority 1), so they take priority 2.
-         */
-        memory_region_init_alias(&node->cpu_local_pi_hub_head[cpu],
-                                 OBJECT(node), "sn1.cpu.local-pi-hub-head",
-                                 pi1, 0, SN1_HUB_REGISTER_HEAD_SIZE);
-        memory_region_add_subregion_overlap(
-            &node->cpu_sysmem[cpu], SN1_HUB_LOCAL_REGISTERS_ADDRESS,
-            &node->cpu_local_pi_hub_head[cpu], 2);
-        memory_region_init_alias(&node->cpu_local_pi_hub_tail[cpu],
-                                 OBJECT(node), "sn1.cpu.local-pi-hub-tail",
-                                 pi1, SN1_HUB_REGISTER_UART_END,
-                                 SGI_BEDROCK_PI_SIZE -
-                                 SN1_HUB_REGISTER_UART_END);
-        memory_region_add_subregion_overlap(
-            &node->cpu_sysmem[cpu],
-            SN1_HUB_LOCAL_REGISTERS_ADDRESS + SN1_HUB_REGISTER_UART_END,
-            &node->cpu_local_pi_hub_tail[cpu], 2);
     }
     memory_region_add_subregion(
         system, sn1_node_address(node, SN1_HUB_REMOTE_REGISTERS_ADDRESS),
         sysbus_mmio_get_region(bedrock, 3));
-    /* Preserve the remote L1 UART decoder between the register aliases. */
-    memory_region_init_alias(&node->hub_remote_register_head, OBJECT(node),
-                             "sn1.hub.remote-register-head",
-                             hub_registers, 0,
+    /* The remote form keeps its own L1 UART decoder between the two. */
+    memory_region_init_alias(&node->hub_unidentified_remote, OBJECT(node),
+                             "sn1.hub.unidentified-remote",
+                             &node->hub_unidentified, 0,
                              SN1_HUB_REGISTER_HEAD_SIZE);
     memory_region_add_subregion_overlap(
         system, sn1_node_address(node, SN1_HUB_REMOTE_REGISTERS_ADDRESS),
-        &node->hub_remote_register_head, 1);
-    memory_region_init_alias(&node->hub_remote_register_tail, OBJECT(node),
-                             "sn1.hub.remote-register-tail",
-                             hub_registers,
-                             SN1_HUB_REGISTER_UART_END,
-                             SGI_BEDROCK_SIZE - SN1_HUB_REGISTER_UART_END);
+        &node->hub_unidentified_remote, 1);
+    memory_region_init_alias(&node->hub_leds_remote, OBJECT(node),
+                             "sn1.hub.leds-remote", &node->hub_leds, 0,
+                             SN1_HUB_LED_SIZE);
     memory_region_add_subregion_overlap(
         system,
         sn1_node_address(node, SN1_HUB_REMOTE_REGISTERS_ADDRESS +
-                              SN1_HUB_REGISTER_UART_END),
-        &node->hub_remote_register_tail, 1);
+                              SN1_HUB_LED_OFFSET),
+        &node->hub_leds_remote, 1);
     /*
      * The directory back door is the last part of the node's address space,
      * one word per fitted memory line. Firmware initialises it before it
@@ -1575,6 +1664,24 @@ static const VMStateDescription vmstate_sn1_node_promdata = {
     }
 };
 
+static bool sn1_leds_needed(void *opaque)
+{
+    SN1NodeState *node = opaque;
+
+    return !buffer_is_zero(node->led, sizeof(node->led));
+}
+
+static const VMStateDescription vmstate_sn1_node_leds = {
+    .name = "sn1-node/leds",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sn1_leds_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8_ARRAY(led, SN1NodeState, SGI_SN1_NODE_MAX_CPUS),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_sn1_node = {
     .name = "sn1-node",
     .version_id = 1,
@@ -1584,6 +1691,7 @@ static const VMStateDescription vmstate_sn1_node = {
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sn1_node_promdata,
+        &vmstate_sn1_node_leds,
         NULL
     }
 };
@@ -1624,9 +1732,18 @@ static const Property sn1_node_properties[] = {
     DEFINE_PROP_BOOL("promdata-fast", SN1NodeState, promdata_fast, false),
 };
 
+/* No source gives the LEDs' reset value; start them dark. */
+static void sn1_node_reset_hold(Object *obj, ResetType type)
+{
+    SN1NodeState *node = SN1_NODE(obj);
+
+    memset(node->led, 0, sizeof(node->led));
+}
+
 static void sn1_node_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
+    ResettableClass *rc = RESETTABLE_CLASS(oc);
 
     dc->realize = sn1_node_realize;
     dc->unrealize = sn1_node_unrealize;
@@ -1634,6 +1751,7 @@ static void sn1_node_class_init(ObjectClass *oc, const void *data)
     device_class_set_props(dc, sn1_node_properties);
     /* The machine wires a node's RAM and clock; -device cannot. */
     dc->user_creatable = false;
+    rc->phases.hold = sn1_node_reset_hold;
 }
 
 static const TypeInfo sn1_node_types[] = {

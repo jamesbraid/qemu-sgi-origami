@@ -101,8 +101,16 @@ typedef struct SN1NodeState {
     DeviceState *xbridge;
     DeviceState *boot_flash;
     MemoryRegion bedrock_node;
-    MemoryRegion hub_local_register_head;
-    MemoryRegion hub_local_register_tail;
+    /*
+     * The Hub-special register windows' own blocks, shared by the local
+     * and remote forms: the unidentified block below the L1 UART and the
+     * per-processor LEDs above it (sn1_node_create_bedrock()).
+     */
+    MemoryRegion hub_unidentified;
+    MemoryRegion hub_unidentified_remote;
+    MemoryRegion hub_leds;
+    MemoryRegion hub_leds_remote;
+    uint8_t led[SGI_SN1_NODE_MAX_CPUS];
     /*
      * OpenBSD expects a local PI access to select the requester's own
      * interface (sn1_node_create_bedrock()); indexed by logical CPU, one
@@ -112,10 +120,6 @@ typedef struct SN1NodeState {
      * fits one).
      */
     MemoryRegion cpu_local_pi_xtalk[SGI_SN1_NODE_MAX_CPUS];
-    MemoryRegion cpu_local_pi_hub_head[SGI_SN1_NODE_MAX_CPUS];
-    MemoryRegion cpu_local_pi_hub_tail[SGI_SN1_NODE_MAX_CPUS];
-    MemoryRegion hub_remote_register_head;
-    MemoryRegion hub_remote_register_tail;
 
     /* The node's own address-space views; see sn1-node.c. */
     MemoryRegion hub_memory;
