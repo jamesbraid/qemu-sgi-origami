@@ -60,6 +60,7 @@ config SGI_SN0
     select SGI_BASEIO
     select SGI_BRIDGE
     select SGI_ELSC
+    select SGI_GIGACHANNEL
     select SGI_HUB
     select SGI_O2000_MODULE_MGMT
     select SGI_IOC3
@@ -133,6 +134,11 @@ config SGI_XIO_BASEIO
     select SGI_BASEIO
 
 config SGI_PCI_EXPANSION
+    bool
+    select SGI_XIO_BOARD
+    select SGI_BRIDGE
+
+config SGI_GIGACHANNEL
     bool
     select SGI_XIO_BOARD
     select SGI_BRIDGE
