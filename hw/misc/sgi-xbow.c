@@ -184,6 +184,21 @@ static bool sgi_xbow_alive(const SGIXbowState *s, unsigned int link)
     return s->link_alive & BIT(link);
 }
 
+/*
+ * A link carries traffic while alive, and also through a reset pulse the
+ * machine's restore policy will end alive: its routes in both directions
+ * and the Crossbow's own interrupt packets to it. The pulse is two core
+ * cycles on hardware but ends on a QEMU timer, which the main loop can run
+ * milliseconds of guest time late under multi-threaded TCG. IRIX resets
+ * the SI graphics link, waits a fixed millisecond without reading link
+ * status and programs the board; withdrawing the route for longer than
+ * that turned the wait into a bus error. Only the status shows the pulse.
+ */
+static bool sgi_xbow_carries(const SGIXbowState *s, unsigned int link)
+{
+    return sgi_xbow_alive(s, link) || (s->link_reset_restore_alive & BIT(link));
+}
+
 static uint32_t sgi_xbow_identification(const SGIXbowState *s)
 {
     return (s->revision << XBOW_ID_REVISION_SHIFT) |
@@ -302,16 +317,16 @@ static bool sgi_xbow_deliver_at(SGIXbowState *s, uint32_t upper,
 }
 
 /*
- * The same packet, not sent when the link it would leave by is not up. A
- * widget that is unreachable does not receive, and nothing here invents a
- * failure response for the sender.
+ * The same packet, not sent when the link it would leave by does not carry
+ * traffic (sgi_xbow_carries()). A widget that is unreachable does not
+ * receive, and nothing here invents a failure response for the sender.
  */
 static bool sgi_xbow_deliver(SGIXbowState *s, bool raise)
 {
     unsigned int target = (s->int_upper >> XBOW_INT_UPPER_TARGET_SHIFT) & 0xf;
 
     if (target >= SGI_XBOW_FIRST_WIDGET &&
-        !sgi_xbow_alive(s, target - SGI_XBOW_FIRST_WIDGET)) {
+        !sgi_xbow_carries(s, target - SGI_XBOW_FIRST_WIDGET)) {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-xbow: widget %u is not reachable, so its "
                       "interrupt packet goes nowhere\n", target);
@@ -370,15 +385,16 @@ static void sgi_xbow_sync_routes(SGIXbowState *s)
     }
     memory_region_transaction_begin();
     for (port = 0; port < SGI_XBOW_LINKS; port++) {
-        memory_region_set_enabled(&s->ingress[port], sgi_xbow_alive(s, port));
+        memory_region_set_enabled(&s->ingress[port],
+                                  sgi_xbow_carries(s, port));
         memory_region_set_enabled(&s->packet_ingress[port],
-                                  sgi_xbow_alive(s, port));
+                                  sgi_xbow_carries(s, port));
         for (link = 0; link < SGI_XBOW_LINKS; link++) {
             if (sgi_xbow_routed(s, port, link)) {
                 memory_region_set_enabled(&s->route[port][link],
-                                          sgi_xbow_alive(s, link));
+                                          sgi_xbow_carries(s, link));
                 memory_region_set_enabled(&s->packet_route[port][link],
-                                          sgi_xbow_alive(s, link));
+                                          sgi_xbow_carries(s, link));
             }
         }
     }
