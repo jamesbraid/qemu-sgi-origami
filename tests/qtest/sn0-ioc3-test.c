@@ -16,6 +16,7 @@
 #include "qobject/qlist.h"
 #include "sn0-user-image.h"
 #include "sgi-migrate.h"
+#include "sgi-launch.h"
 #include "sgi-test.h"
 
 /*
@@ -4262,7 +4263,8 @@ static void test_the_clock_february_follows_the_part(const void *data)
  * elapsed time with it.
  */
 #define RTC_IMAGE_BYTES   0x8000
-#define RTC_REF_BYTES     512
+/* The smallest reference drive the model takes, what a launcher creates. */
+#define RTC_REF_BYTES     16
 #define RTC_BASE          "2026-08-11T12:30:05"
 #define RTC_SENTINEL      0x0100
 
@@ -4346,6 +4348,41 @@ static void rtc_files_save(const RtcFiles *f, const RtcTime *t,
         stq_le_p(record + 8, rtc_base_seconds(saved_at));
         g_assert_true(g_file_set_contents(f->ref, (gchar *)record,
                                           sizeof(record), NULL));
+    }
+}
+
+/*
+ * A reference drive too small for its 16-byte record would fail every save
+ * and lose the elapsed time without saying so; realize refuses it instead.
+ * The block layer reports a raw file's length in whole 512-byte sectors,
+ * and reads past the end of a short file as zeros, so the one size it
+ * can see as too small is an empty file.
+ */
+static void test_the_clock_refuses_a_short_reference(const void *data)
+{
+    static const size_t sizes[] = { 0 };
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(sizes); i++) {
+        g_autofree char *image = rtc_tmp_file("sn0-ioc3-nvram-XXXXXX",
+                                              RTC_IMAGE_BYTES);
+        g_autofree char *ref = rtc_tmp_file("sn0-ioc3-clock-XXXXXX",
+                                            sizes[i]);
+        g_autofree char *image_drive = g_strdup_printf(
+            "if=none,id=sgi-nvram0,file=%s,format=raw", image);
+        g_autofree char *ref_drive = g_strdup_printf(
+            "if=none,id=sgi-nvram0-clock,file=%s,format=raw", ref);
+        g_autofree char *message = g_strdup_printf(
+            "clock reference drive is %zu bytes, less than the 16 its "
+            "record needs", sizes[i]);
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M", "origin200", "-accel", "qtest",
+            "-display", "none", "-S", "-nodefaults", "-qmp", "stdio",
+            "-drive", image_drive, "-drive", ref_drive, NULL,
+        };
+
+        assert_launch_rejected(args, message);
+        unlink(image);
+        unlink(ref);
     }
 }
 
@@ -5424,6 +5461,8 @@ int main(int argc, char **argv)
                         test_the_storage_persists_across_a_process_with_a_drive);
     qtest_add_data_func("sn0/ioc3/clock-february-follows-the-part", NULL,
                         test_the_clock_february_follows_the_part);
+    qtest_add_data_func("sn0/ioc3/clock-refuses-a-short-reference", NULL,
+                        test_the_clock_refuses_a_short_reference);
     qtest_add_data_func("sn0/ioc3/clock-persists-across-a-process", NULL,
                         test_the_clock_persists_across_a_process);
     qtest_add_data_func("sn0/ioc3/clock-restore-follows-the-part", NULL,
