@@ -183,9 +183,12 @@ static void m48t35_follow_host(M48T35State *s)
     s->time_offset = m48t35_host_part_seconds() - m48t35_host_seconds();
 }
 
-/* The part's running time, frozen or not. */
+/* The part's counters, whether or not a read has frozen the cells. */
 static int64_t m48t35_running(M48T35State *s)
 {
+    if (s->stopped) {
+        return s->stopped_epoch;
+    }
     return m48t35_wrap(m48t35_host_seconds() + s->time_offset);
 }
 
@@ -203,7 +206,7 @@ static uint64_t m48t35_read_clock(M48T35State *s, hwaddr addr)
 
     switch (addr) {
     case M48T35_SECONDS:
-        return to_bcd(c.sec);
+        return to_bcd(c.sec) | (s->stopped ? M48T35_SECONDS_STOP : 0);
     case M48T35_MINUTES:
         return to_bcd(c.min);
     case M48T35_HOURS:
@@ -247,8 +250,9 @@ static void m48t35_save_clock(M48T35State *s)
     if (!s->blk) {
         return;
     }
-    m48t35_part_calendar(host + s->time_offset, &c);
-    s->cell[M48T35_SECONDS] = to_bcd(c.sec);
+    m48t35_part_calendar(m48t35_running(s), &c);
+    s->cell[M48T35_SECONDS] = to_bcd(c.sec) |
+                              (s->stopped ? M48T35_SECONDS_STOP : 0);
     s->cell[M48T35_MINUTES] = to_bcd(c.min);
     s->cell[M48T35_HOURS] = to_bcd(c.hour);
     s->cell[M48T35_DAY] = to_bcd(c.mday);
@@ -296,7 +300,7 @@ static bool m48t35_clock_reference(M48T35State *s, int64_t *saved_at)
  * - clock cells all zero, or not a valid date in BCD: never saved, so the
  *   clock follows the host, as it did before images carried one;
  * - the stop bit set in the saved seconds: the oscillator was stopped, so
- *   the saved calendar comes back with no time added;
+ *   the saved calendar comes back with no time added, still stopped;
  * - no reference record: the saved calendar with no time added, logged;
  * - otherwise the saved calendar plus the time since the save, counted in
  *   the part's calendar, so it rolls over February as the part would.
@@ -333,7 +337,11 @@ static void m48t35_restore_clock(M48T35State *s)
     };
     if (stopped) {
         trace_m48t35_clock_restore("stopped: no time added", 0);
-    } else if (m48t35_clock_reference(s, &saved_at)) {
+        s->stopped = true;
+        s->stopped_epoch = m48t35_part_seconds(&c);
+        return;
+    }
+    if (m48t35_clock_reference(s, &saved_at)) {
         elapsed = MAX(host - saved_at, 0);
         trace_m48t35_clock_restore("saved time plus elapsed", elapsed);
     } else {
@@ -350,7 +358,8 @@ static void m48t35_write_clock(M48T35State *s, hwaddr addr, uint8_t val)
     /* Collected while the write bit is set, applied when it clears. */
     switch (addr) {
     case M48T35_SECONDS:
-        s->staged_sec = from_bcd(val);
+        s->staged_sec = from_bcd(val & ~M48T35_SECONDS_STOP);
+        s->staged_stop = val & M48T35_SECONDS_STOP;
         break;
     case M48T35_MINUTES:
         s->staged_min = from_bcd(val);
@@ -400,6 +409,7 @@ static void m48t35_write_control(M48T35State *s, uint8_t val)
         s->staged_mday = c.mday;
         s->staged_mon = c.mon;
         s->staged_year = c.year;
+        s->staged_stop = s->stopped;
         s->staging = true;
     } else if (!(val & M48T35_CSR_WRITE) && (was & M48T35_CSR_WRITE)) {
         M48T35Calendar c = {
@@ -416,7 +426,9 @@ static void m48t35_write_control(M48T35State *s, uint8_t val)
          * ends stay on the same clock.
          */
         s->staging = false;
-        s->time_offset = m48t35_part_seconds(&c) - m48t35_host_seconds();
+        s->stopped = s->staged_stop;
+        s->stopped_epoch = m48t35_part_seconds(&c);
+        s->time_offset = s->stopped_epoch - m48t35_host_seconds();
         m48t35_store(s, M48T35_CONTROL, val);
         m48t35_save_clock(s);
         return;
@@ -610,11 +622,12 @@ static void m48t35_unrealize(DeviceState *dev)
 /*
  * Version 2: time_offset and frozen_epoch count the part's own calendar,
  * and staged_year the year cell, where version 1 counted the real calendar.
+ * Version 3: the stop bit.
  */
 static const VMStateDescription vmstate_m48t35 = {
     .name = "m48t35",
-    .version_id = 2,
-    .minimum_version_id = 2,
+    .version_id = 3,
+    .minimum_version_id = 3,
     .fields = (const VMStateField[]) {
         VMSTATE_BUFFER_POINTER_UNSAFE(cell, M48T35State, 0, M48T35_SIZE),
         VMSTATE_INT64(time_offset, M48T35State),
@@ -627,6 +640,9 @@ static const VMStateDescription vmstate_m48t35 = {
         VMSTATE_INT32(staged_mday, M48T35State),
         VMSTATE_INT32(staged_mon, M48T35State),
         VMSTATE_INT32(staged_year, M48T35State),
+        VMSTATE_BOOL(stopped, M48T35State),
+        VMSTATE_INT64(stopped_epoch, M48T35State),
+        VMSTATE_BOOL(staged_stop, M48T35State),
         VMSTATE_END_OF_LIST()
     }
 };

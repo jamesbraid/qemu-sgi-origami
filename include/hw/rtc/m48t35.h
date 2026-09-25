@@ -63,9 +63,11 @@ OBJECT_DECLARE_SIMPLE_TYPE(M48T35State, M48T35)
     ((int64_t)M48T35_CENTURY_DAYS * M48T35_DAY_SECONDS)
 
 /*
- * Bit 7 of the seconds cell stops the part's oscillator. The model does not
- * run a stopped clock; it only honours the bit in a saved image, restoring
- * that calendar with no time added (see "The clock across power loss").
+ * Bit 7 of the seconds cell stops the part's oscillator: a stopped clock
+ * does not count, the bit reads back, and it is battery-backed, so a save
+ * keeps it and a restore adds no time (see "The clock across power loss").
+ * The model takes it, like the rest of the seconds register, when a guest
+ * clock write completes.
  */
 #define M48T35_SECONDS_STOP 0x80
 
@@ -129,6 +131,13 @@ struct M48T35State {
     bool frozen;
     int64_t frozen_epoch;
 
+    /*
+     * The oscillator stopped, and the instant it stopped at in the part's
+     * seconds; time_offset is not used while it is.
+     */
+    bool stopped;
+    int64_t stopped_epoch;
+
     /* Fields staged while the write bit is set, applied when it clears. */
     bool staging;
     int32_t staged_sec;
@@ -137,6 +146,7 @@ struct M48T35State {
     int32_t staged_mday;
     int32_t staged_mon;
     int32_t staged_year;
+    bool staged_stop;
 };
 
 #endif /* HW_RTC_M48T35_H */
