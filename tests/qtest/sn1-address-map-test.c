@@ -735,7 +735,7 @@ static void test_origin300_cpu_c_initial_enable(const void *data)
 {
     QTestState *qts = machine_start();
 
-    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + 0x50), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + 0x50), ==, 1);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 0);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + BEDROCK_PI1 +
                                 0x50), ==, 1);
@@ -753,18 +753,17 @@ static void test_origin300_cpu_c_initial_enable(const void *data)
 }
 
 /*
- * The four-processor population fits both slots of processor interface 1,
- * and both come out of reset granted. The stock PROM never writes either
- * CPU-enable register of that interface (hw/mips/sgi/sn1-node.c states what
- * it does write), so a slot the model leaves clear there is a slot the
- * firmware reports as having failed its early initialisation.
+ * The four-processor population fits every slot, and every one comes out of
+ * reset granted. The stock PROM's boot path never sets a CPU-enable
+ * register (hw/mips/sgi/sn1-node.c says what it does), so a slot the model
+ * leaves clear is a slot the firmware does not count.
  */
 static void test_origin300_four_cpu_initial_enable(const void *data)
 {
     QTestState *qts = machine_start_bare("-cpu R14000 -smp 4");
 
-    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_A), ==, 0);
-    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_A), ==, 1);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 1);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + BEDROCK_PI1 +
                                 PI_CPU_ENABLE_A), ==, 1);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + BEDROCK_PI1 +
@@ -3108,6 +3107,11 @@ static void test_cpu_enable_read_is_per_cpu(const void *data)
 
     path = create_cpu_number_prom();
     qts = machine_start_with(path, "-accel tcg,thread=multi -no-shutdown -S");
+    /*
+     * Both fitted slots come out of reset granted; clear A's so the two
+     * processors' reads of "their own" register can be told apart.
+     */
+    qtest_writeq(qts, BEDROCK_NODE0 + PI_CPU_ENABLE_A, 0);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + PI_CPU_ENABLE_A), ==, 0);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_NODE0 + PI_CPU_ENABLE_C), ==, 1);
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
