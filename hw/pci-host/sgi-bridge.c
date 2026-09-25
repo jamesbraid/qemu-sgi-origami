@@ -984,6 +984,16 @@ static bool sgi_bridge_board_record_check(const SGIBridgeBoardRecord *record,
         error_setg(errp, "%s", error);
         return false;
     }
+    /*
+     * OpenBSD's reader rejects a record whose part, bytes 21-29 and 35-37,
+     * holds anything but digits and dashes; that also keeps out the ':'
+     * the formatter IRIX prints it through would change.
+     */
+    if (strspn(record->part, "0123456789-") != strlen(record->part)) {
+        error_setg(errp, "the I/O bridge board part in a board record must "
+                   "be digits and dashes");
+        return false;
+    }
     for (i = 0; i < ARRAY_SIZE(fields); i++) {
         error = sgi_bridge_record_field_error(fields[i].value,
                                               fields[i].width);

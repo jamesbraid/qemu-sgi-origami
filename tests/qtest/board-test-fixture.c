@@ -101,11 +101,16 @@ static bool board_test_fixture_realize_baseio(SGIBoardTestFixtureState *s,
             qdev_prop_set_string(chip, "board-part", identity->board_part);
             qdev_prop_set_uint32(chip, "revision",
                                  identity->bridge_revision);
-            if (identity->board_name) {
+            /* Only the record fields the preset names, as xio-baseio.c. */
+            if (identity->board_barcode) {
                 qdev_prop_set_string(chip, "board-barcode",
                                      identity->board_barcode);
+            }
+            if (identity->board_revision) {
                 qdev_prop_set_string(chip, "board-revision",
                                      identity->board_revision);
+            }
+            if (identity->board_name) {
                 qdev_prop_set_string(chip, "board-name",
                                      identity->board_name);
             }
