@@ -68,6 +68,11 @@ struct SGIBedrockFlashState {
      */
     void (*programmed)(void *opaque, unsigned position);
     void *programmed_opaque;
+    /*
+     * Which node's flash this is: node 0's positions keep the RAM names
+     * their snapshots carry, a later node's carry its index as well.
+     */
+    uint32_t node;
 };
 
 #endif

@@ -208,8 +208,10 @@ static void flash_realize(DeviceState *dev, Error **errp)
     for (unsigned i = 0; i < SGI_BEDROCK_FLASH_POSITIONS; i++) {
         g_autofree char *drive =
             object_property_get_str(OBJECT(s->flash[i]), "drive", NULL);
-        g_autofree char *name = g_strdup_printf("%s.prom%u",
-                                                TYPE_SGI_BEDROCK_FLASH, i);
+        g_autofree char *name = s->node ?
+            g_strdup_printf("%s.node%u.prom%u", TYPE_SGI_BEDROCK_FLASH,
+                            s->node, i) :
+            g_strdup_printf("%s.prom%u", TYPE_SGI_BEDROCK_FLASH, i);
 
         if (!drive || !drive[0]) {
             error_setg(errp, "sgi-bedrock-flash needs a %" PRIu64
@@ -274,6 +276,10 @@ static void flash_init(Object *obj)
     }
 }
 
+static const Property flash_properties[] = {
+    DEFINE_PROP_UINT32("node", SGIBedrockFlashState, node, 0),
+};
+
 static void flash_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -281,6 +287,7 @@ static void flash_class_init(ObjectClass *klass, const void *data)
     dc->desc = "SGI Origin 300 boot flash";
     dc->realize = flash_realize;
     dc->vmsd = &vmstate_flash;
+    device_class_set_props(dc, flash_properties);
     dc->user_creatable = true;
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
 }
