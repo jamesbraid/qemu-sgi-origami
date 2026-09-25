@@ -13,6 +13,11 @@ FAMILIES = ("sn0-", "sn1-", "sgi-", "mips64-")
 BRIDGE_CARD_TESTS = ("bcm570x-test", "tigon-test", "xframe-test",
                      "usb-lucent-ohci-test")
 QOS_CARD_SOURCES = ("qlogic-isp-test.c", "scsi-tape-test.c")
+FAMILY_GUARDS = {
+    "sn0-": r"CONFIG_SGI_SN0",
+    "sn1-": r"CONFIG_SGI_(?:SN1|BEDROCK(?:_[A-Z0-9_]+)?|L1|XBRIDGE)",
+    "mips64-": r"CONFIG_MALTA",
+}
 
 
 def registration_names(meson: str) -> set[str]:
@@ -24,6 +29,17 @@ def registration_names(meson: str) -> set[str]:
     return set(re.findall(r"'([^']+)'", text))
 
 
+def guarded_names(meson: str, config_pattern: str) -> set[str]:
+    """Names in a test list selected by the expected device guard."""
+    meson = "\n".join(line for line in meson.splitlines()
+                      if not line.lstrip().startswith("#"))
+    blocks = re.finditer(
+        rf"(?:{config_pattern})'\s*\)\s*\?\s*\[(.*?)\]", meson, re.S
+    )
+    return {name for block in blocks
+            for name in re.findall(r"'([^']+)'", block.group(1))}
+
+
 def main() -> int:
     meson = (QTEST / "meson.build").read_text()
     names = registration_names(meson)
@@ -33,6 +49,10 @@ def main() -> int:
         registered = {n for n in names if n.startswith(prefix)}
         problems.extend(f"{n}.c is not registered" for n in sources - registered)
         problems.extend(f"{n} has no source" for n in registered - sources)
+        if prefix in FAMILY_GUARDS:
+            guarded = guarded_names(meson, FAMILY_GUARDS[prefix])
+            problems.extend(f"{n} is outside its device guard"
+                            for n in (sources & registered) - guarded)
     for name in BRIDGE_CARD_TESTS:
         if (QTEST / f"{name}.c").is_file() and name not in names:
             problems.append(f"{name}.c is not registered")
