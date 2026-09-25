@@ -3,6 +3,8 @@
 #define HW_MISC_SGI_BEDROCK_H
 
 #include "hw/core/sysbus.h"
+#include "hw/mips/sgi-net-port.h"
+#include "hw/mips/sgi/net-cable.h"
 #include "hw/misc/sgi-bedrock-lb.h"
 #include "hw/misc/sgi-bedrock-io.h"
 #include "hw/misc/sgi-bedrock-md.h"
@@ -33,10 +35,12 @@ struct SGIBedrockState {
     SysBusDevice parent_obj;
     MemoryRegion mmio;
     /*
-     * A zero-based view of the register window for the vector engine, so a
-     * routed read addresses hub registers wherever mmio itself is mapped.
+     * A zero-based view of the register window, so a vector request from a
+     * peer addresses hub registers wherever mmio itself is mapped: a
+     * container over two aliases of mmio (see bedrock_init()).
      */
     MemoryRegion hub_window;
+    MemoryRegion hub_window_part[2];
     MemoryRegion hub_special_registers;
     MemoryRegion remote_registers;
     /*
@@ -97,6 +101,14 @@ struct SGIBedrockState {
     bool l1_uart_as_initialized;
     uint8_t initiator_region;
     MemoryRegion *widget_mr[16];
+    /*
+     * The NUMAlink 3 cable on this node's one network port, or NULL. A
+     * machine wires it the way it wires a Hub's; the link may also be set
+     * after realize, which is how a two-node register test joins two
+     * standalone Bedrocks. Nothing is cached from it: link-up and a vector
+     * request both consult the cable when they happen.
+     */
+    SGINetCableState *net_cable;
 
     /*
      * Cached CPUState resolution per physical processor slot (0..3: A, B,
@@ -159,6 +171,17 @@ bool sgi_bedrock_hub_registers_permitted(SGIBedrockState *s);
 
 /* The node number this Bedrock decodes by: the local block's latched one. */
 uint8_t sgi_bedrock_node_number(SGIBedrockState *s);
+
+/* Whether this node's port has a peer at the other end of an up cable. */
+bool sgi_bedrock_link_up(SGIBedrockState *s);
+
+/*
+ * Send a vector request out of this node's network port. The device at the
+ * other end of the cable consumes packet->vector; SGI_NET_PACKET_NONE when no
+ * device answers.
+ */
+SGINetPacketResult sgi_bedrock_vector_send(SGIBedrockState *s,
+                                           SGINetPacket *packet);
 
 /*
  * The rendezvous hold's entry point, called from lb_write() for LB scratch 1

@@ -15,9 +15,9 @@
                      "node-number=0x5a,region-size=0,request-region=7"
 #define MACHINE MACHINE_BASE " -S"
 /*
- * The block's own register window stands in for the node's hub window: a local
- * vector route resolves to this node's own hub, and the window aliases the
- * block. The link points the engine back at these registers.
+ * The block's own register window stands in for the node's hub window, the
+ * one a peer's vector request would reach. A standalone block has no cable,
+ * so its own launches must still reach nothing.
  */
 #define MACHINE_HUB MACHINE_BASE \
                     ",hub-registers=" LB_PATH "/sgi-bedrock-lb[0] -S"
@@ -103,7 +103,7 @@ static QTestState *lb_start(const char *extra)
 
 /*
  * The block stands in for its own hub, mapped at zero so a register's window
- * offset is the address the vector engine reads. The 21-bit address field
+ * offset is the address a vector request names. The 21-bit address field
  * cannot carry a high base, and a composed node reaches the window through a
  * zero-based alias for the same reason.
  */
@@ -429,11 +429,12 @@ static void test_scratch1_second_write_no_hold(void)
 
 /*
  * The vector registers as the datasheet's checklist states them: parameters
- * keep their fields with busy reading clear, a status-clear write is
- * accepted, and route and data are plain storage. With no hub register window
- * linked a launch cannot resolve a route, so it is logged as unimplemented and
- * status, return route and read data hold no reply. test_vector_local_read
- * covers a launch that does complete.
+ * keep their fields with busy reading clear, route and data are plain
+ * storage, the PROM's power-on zero writes to status, return route and read
+ * data are accepted, and a read of status clear is not an unimplemented
+ * access. A nonzero status write is ignored and logged: nothing but a reply
+ * may set status. A standalone block has no cable, so a launch reaches no
+ * device and is logged; sn1-bedrock-link-test covers launches that do.
  */
 static void test_vector_registers(void)
 {
@@ -449,6 +450,9 @@ static void test_vector_registers(void)
     extra = g_strdup_printf("-d unimp,guest_errors -D %s", log);
     s = lb_start(extra);
 
+    qtest_writeq(s, LB_BASE + VECTOR_STATUS, 0);
+    qtest_writeq(s, LB_BASE + VECTOR_RETURN, 0);
+    qtest_writeq(s, LB_BASE + VECTOR_READ, 0);
     qtest_writeq(s, LB_BASE + VECTOR_ROUTE, 0xfedcba9876543210ULL);
     qtest_writeq(s, LB_BASE + VECTOR_DATA, 0x1020304050607080ULL);
     qtest_writeq(s, LB_BASE + VECTOR_PARAMS, UINT64_MAX);
@@ -462,81 +466,56 @@ static void test_vector_registers(void)
     g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_STATUS), ==, 0);
     g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_RETURN), ==, 0);
     g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_READ), ==, 0);
-    qtest_writeq(s, LB_BASE + VECTOR_STATUS_CLEAR, UINT64_MAX);
-    /* Read-clear is the family precedent and open here; status never sets. */
     g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_STATUS_CLEAR), ==, 0);
+    qtest_writeq(s, LB_BASE + VECTOR_STATUS_CLEAR, UINT64_MAX);
     qtest_writeq(s, LB_BASE + VECTOR_STATUS, UINT64_MAX);
-    qtest_writeq(s, LB_BASE + VECTOR_RETURN, UINT64_MAX);
-    qtest_writeq(s, LB_BASE + VECTOR_READ, UINT64_MAX);
+    qtest_writeq(s, LB_BASE + VECTOR_RETURN, 0x1111222233334444ULL);
+    qtest_writeq(s, LB_BASE + VECTOR_READ, 0xdeadbeefdeadbeefULL);
     g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_STATUS), ==, 0);
-    g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_RETURN), ==, 0);
-    g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_READ), ==, 0);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_RETURN), ==,
+                    0x1111222233334444ULL);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + VECTOR_READ), ==,
+                    0xdeadbeefdeadbeefULL);
     qtest_quit(s);
 
     g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
-    g_assert_nonnull(strstr(found, "vector launch with no hub register "
-                                   "window linked"));
+    g_assert_nonnull(strstr(found, "vector write of 0x"));
+    g_assert_nonnull(strstr(found, "reached no device"));
+    g_assert_nonnull(strstr(found, "nonzero write 0xffffffffffffffff to "
+                                   "the vector status is ignored"));
     g_assert_null(strstr(found, "unsupported write at 0xc000"));
     g_assert_null(strstr(found, "unsupported read at 0xc020"));
     g_assert_null(strstr(found, "unsupported read at 0xc028"));
     g_assert_null(strstr(found, "unsupported read at 0xc030"));
     g_assert_null(strstr(found, "unsupported write at 0xc038"));
     g_assert_null(strstr(found, "unsupported read at 0xc038"));
+    g_assert_null(strstr(found, "status-clear alias"));
     g_assert_null(strstr(found, "read from write-only register 0xc038"));
-    g_assert_nonnull(strstr(found, "write to read-only register 0xc020"));
-    g_assert_nonnull(strstr(found, "write to read-only register 0xc028"));
-    g_assert_nonnull(strstr(found, "write to read-only register 0xc030"));
+    g_assert_null(strstr(found, "write to read-only register 0xc02"));
+    g_assert_null(strstr(found, "write to read-only register 0xc03"));
     g_assert_cmpint(unlink(log), ==, 0);
 }
 
 /*
- * The acceptance case NUMAlink discovery depends on: a local (self) route read
- * returns the addressed hub register's current value with status valid,
- * completing at once. The target is set through the normal register window
- * first, so a fixed reply or a stuck sentinel fails, and a second probe of a
- * different register with a different value fails a model that latches one
- * value. Read data resets clear, so returning the real nonzero value also
- * shows the launch ran rather than leaving the register untouched.
+ * The stock PROM launches nothing without a link, and route 0 names the
+ * device across the cable, never this node. So a launch from a block with a
+ * hub window but no cable must not answer from that window: status stays not
+ * valid and read data keeps the sentinel the firmware seeds. The self-route
+ * reply this replaces made a node its own neighbour.
  */
-static void test_vector_local_read(void)
+static void test_vector_no_link(void)
 {
     QTestState *s = lb_start_hub("");
-    const uint64_t write_id = 0x5aULL << 32;
-    const uint64_t request_id = 0x2abULL << 40;
-    static const struct {
-        uint64_t offset;
-        uint64_t value;
-    } probes[] = {
-        { SCRATCH(0), 0x0123456789abcdefULL },
-        { SCRATCH(1), 0xfedcba9876543210ULL },
-    };
 
-    g_assert_cmphex(qtest_readq(s, LB_HUB_BASE + VECTOR_READ), ==, 0);
-
-    for (size_t i = 0; i < ARRAY_SIZE(probes); i++) {
-        uint64_t status;
-
-        qtest_writeq(s, LB_HUB_BASE + probes[i].offset, probes[i].value);
-        /* Clear the last reply, then launch: route, then parameters last. */
-        qtest_writeq(s, LB_HUB_BASE + VECTOR_STATUS_CLEAR, UINT64_MAX);
-        qtest_writeq(s, LB_HUB_BASE + VECTOR_ROUTE, 0);
-        qtest_writeq(s, LB_HUB_BASE + VECTOR_PARAMS,
-                     probes[i].offset | write_id | request_id);
-
-        /* Completes at once, so busy reads clear. */
-        g_assert_cmphex(qtest_readq(s, LB_HUB_BASE + VECTOR_PARAMS) &
-                        (1ULL << 63), ==, 0);
-        /* Status valid, no error type, address and identifiers echoed. */
-        status = qtest_readq(s, LB_HUB_BASE + VECTOR_STATUS);
-        g_assert_cmphex(status & (1ULL << 63), ==, 1ULL << 63);
-        g_assert_cmphex(status & 7, ==, 0);
-        g_assert_cmphex(status & (0x1fffffULL << 3), ==, probes[i].offset);
-        g_assert_cmphex(status & (0xffULL << 32), ==, write_id);
-        g_assert_cmphex(status & (0x7ffULL << 40), ==, request_id);
-        /* The addressed register's current value, not a sentinel. */
-        g_assert_cmphex(qtest_readq(s, LB_HUB_BASE + VECTOR_READ), ==,
-                        probes[i].value);
-    }
+    qtest_writeq(s, LB_HUB_BASE + SCRATCH(0), 0x0123456789abcdefULL);
+    (void)qtest_readq(s, LB_HUB_BASE + VECTOR_STATUS_CLEAR);
+    qtest_writeq(s, LB_HUB_BASE + VECTOR_READ, 0xdeadbeefdeadbeefULL);
+    qtest_writeq(s, LB_HUB_BASE + VECTOR_ROUTE, 0);
+    qtest_writeq(s, LB_HUB_BASE + VECTOR_PARAMS,
+                 SCRATCH(0) | (0x1c8ULL << 40));
+    g_assert_cmphex(qtest_readq(s, LB_HUB_BASE + VECTOR_STATUS), ==, 0);
+    g_assert_cmphex(qtest_readq(s, LB_HUB_BASE + VECTOR_READ), ==,
+                    0xdeadbeefdeadbeefULL);
     qtest_quit(s);
 }
 
@@ -719,6 +698,8 @@ static void test_migration(void)
           0x5a5a5a5a5a5a5a5aULL & VECTOR_PARAMS_MASK },
         { VECTOR_ROUTE, 0x123456789abcdef0ULL, 0x123456789abcdef0ULL },
         { VECTOR_DATA, 0xfedcba9876543210ULL, 0xfedcba9876543210ULL },
+        { VECTOR_RETURN, 0x0123012301230123ULL, 0x0123012301230123ULL },
+        { VECTOR_READ, 0xdeadbeefdeadbeefULL, 0xdeadbeefdeadbeefULL },
         /* The latched node number and region size, over the identity. */
         { REVISION, (0x33ULL << 32) | (1ULL << 46),
           (0x36ULL << 1) | (0x3012ULL << 12) | (2ULL << 28) |
@@ -826,7 +807,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-lb/scratch1-second-write-no-hold",
                    test_scratch1_second_write_no_hold);
     qtest_add_func("sn1/bedrock-lb/vector-registers", test_vector_registers);
-    qtest_add_func("sn1/bedrock-lb/vector-local-read", test_vector_local_read);
+    qtest_add_func("sn1/bedrock-lb/vector-no-link", test_vector_no_link);
     qtest_add_func("sn1/bedrock-lb/microlan-slot", test_microlan_slot);
     qtest_add_func("sn1/bedrock-lb/microlan-narrow-access",
                    test_microlan_rejects_a_narrow_access);

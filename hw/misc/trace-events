@@ -507,6 +507,7 @@ sgi_bedrock_io_scratch_write(int cpu, unsigned index, uint64_t value) "cpu %d II
 # sgi-bedrock-lb.c
 sgi_bedrock_lb_scratch_twin_read(int cpu, unsigned index, uint64_t old) "cpu %d LB scratch %u read-set-if-zero: was 0x%" PRIx64
 sgi_bedrock_lb_scratch_write(int cpu, unsigned index, uint64_t value) "cpu %d LB scratch %u <- 0x%" PRIx64
+sgi_bedrock_lb_vector_launch(uint64_t route, uint64_t params, int result, uint64_t value) "route 0x%" PRIx64 " params 0x%" PRIx64 " result %d value 0x%" PRIx64
 
 # sgi-bedrock-md.c
 sgi_bedrock_md_perf0_read(int cpu, uint64_t value) "cpu %d MD perf counter 0 read: 0x%" PRIx64

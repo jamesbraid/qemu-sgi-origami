@@ -379,6 +379,8 @@ config SGI_BEDROCK
     select SGI_BEDROCK_LB
     select SGI_BEDROCK_NI
     select SGI_BEDROCK_XB
+    # The node's one network port takes a cable, as the Hub's does.
+    select SGI_NET_CABLE
 
 config SGI_XBOW_TRANSPORT_TEST
     bool
