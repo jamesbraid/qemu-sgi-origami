@@ -921,11 +921,33 @@ static const uint64_t *sgi_machine_io_board_ioc3_serial(
 }
 
 /*
+ * The GIGAchannel's Crosstown extension board, fitted in place of the
+ * XTalk jumper, and its own board record (docs/datasheets/
+ * sgi-gigachannel.md, "Product identity"): part 030-1264-001 rev C, named
+ * XBOX_EXT, which real inventories list beside the IP29 record under
+ * io1/MotherBoard. That it answers on the IP29 Bridge's own one-wire line
+ * is inferred from that grouping, the way the BaseIO-G's MIO record shares
+ * its Bridge's line. The upgrade guide's one loopback example prints a rev
+ * B board as 2G_MPLN; this model fits the rev C board whichever way the
+ * module is cabled. The barcode is a placeholder, and the serial only has
+ * to read back distinct from the IP29 record's; it continues the
+ * descending-byte placeholder idiom past the MIO's and the Cad Duo's.
+ */
+static const SGIBridgeBoardRecord sgi_machine_crosstown_record = {
+    .barcode = "OXBOXEXT01",
+    .part = "030-1264-001",
+    .revision = "C",
+    .name = "XBOX_EXT",
+};
+#define SGI_MACHINE_CROSSTOWN_ONEWIRE_SERIAL 0x0e0d0c0b0a09ULL
+
+/*
  * IP29's onboard I/O: direct-attach, one per Origin 200 node. sn0.c owns
  * the Bridge, the sgi-baseio behind it and the direct-link wiring (see
  * sn0_node_build_baseio()'s own comment for why); this function resolves
  * every fitted-part value and backend id the descriptor and command line
- * carry, the same policy the Crossbow-attached BaseIO card below applies.
+ * carry, the same policy the Crossbow-attached BaseIO card below applies,
+ * and adds the Crosstown board's record where one is fitted.
  */
 static bool sgi_machine_instantiate_ip29_io(
     SGIMachineState *s, const SGIModelTopology *t,
@@ -933,6 +955,7 @@ static bool sgi_machine_instantiate_ip29_io(
     const SGIModelXtalkAttachment *attachment, Error **errp)
 {
     SN0NodeState *node = s->nodes[attachment->node_index];
+    DeviceState *bridge;
     const uint64_t *ioc3_serial = sgi_machine_io_board_ioc3_serial(record);
     /*
      * "pci" for the first onboard board, "pci.<N>" for a second: a
@@ -956,14 +979,23 @@ static bool sgi_machine_instantiate_ip29_io(
     const char *parallel_id = board_index < MAX_PARALLEL_PORTS &&
         parallel_hds[board_index] ? parallel_hds[board_index]->label : NULL;
 
-    return sn0_node_build_baseio(
-        node, OBJECT(s), &s->direct_links[board_index], record->serial,
-        ioc3_serial, bus_name, nvram_blk ? blk_name(nvram_blk) : NULL,
-        chardev_a ? chardev_a->label : NULL,
-        chardev_b ? chardev_b->label : NULL,
-        record_a ? record_a->label : NULL,
-        record_b ? record_b->label : NULL, parallel_id,
-        attachment->widget, errp);
+    if (!sn0_node_build_baseio(
+            node, OBJECT(s), &s->direct_links[board_index], record->serial,
+            ioc3_serial, bus_name, nvram_blk ? blk_name(nvram_blk) : NULL,
+            chardev_a ? chardev_a->label : NULL,
+            chardev_b ? chardev_b->label : NULL,
+            record_a ? record_a->label : NULL,
+            record_b ? record_b->label : NULL, parallel_id,
+            attachment->widget, errp)) {
+        return false;
+    }
+    if (record->preset != SGI_MODEL_IO_BOARD_PRESET_IP29_IO_CROSSTOWN) {
+        return true;
+    }
+    bridge = DEVICE(object_resolve_path_component(OBJECT(node), "bridge"));
+    return sgi_bridge_add_onewire_board_part(
+        bridge, &sgi_machine_crosstown_record,
+        SGI_MACHINE_CROSSTOWN_ONEWIRE_SERIAL, errp);
 }
 
 /*
@@ -1332,6 +1364,7 @@ static bool sgi_machine_instantiate_io_board(
 {
     switch (record->preset) {
     case SGI_MODEL_IO_BOARD_PRESET_IP29_IO:
+    case SGI_MODEL_IO_BOARD_PRESET_IP29_IO_CROSSTOWN:
         return sgi_machine_instantiate_ip29_io(s, t, record, board_index,
                                                attachment, errp);
     case SGI_MODEL_IO_BOARD_PRESET_IO6:

@@ -465,7 +465,8 @@ qtests_mips64 = \
                                                    'sgi-debug-tools-test',
                                                    'sn-builder-test',
                                                    'sn0-pci-shoehorn-test',
-                                                   'sn0-pci-carrier-test'] : []) + \
+                                                   'sn0-pci-carrier-test',
+                                                   'sn0-gigachannel-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_SN0') and
    config_all_devices.has_key('CONFIG_SGI_SN1') ?
     ['sn-promdata-window-test'] : []) + \
