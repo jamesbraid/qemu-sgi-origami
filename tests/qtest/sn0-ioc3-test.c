@@ -4545,7 +4545,7 @@ static void test_the_clock_restore_fallbacks(const void *data)
     rtc_files_new(&f, true);
     rtc_files_save(&f, &stopped, "2026-08-11T12:30:08");
     qts = rtc_start(&f, "2026-08-11T12:30:18");
-    rtc_assert(qts, &saved);
+    rtc_assert(qts, &stopped);
     qtest_quit(qts);
     rtc_files_free(&f);
 
@@ -4563,6 +4563,108 @@ static void test_the_clock_restore_fallbacks(const void *data)
     rtc_files_save(&f, &bad_month, "2026-08-11T12:30:00");
     qts = rtc_start(&f, RTC_BASE);
     rtc_assert(qts, &host);
+    qtest_quit(qts);
+    rtc_files_free(&f);
+}
+
+/* The clock cells a stopped process left in the image. */
+static void rtc_image_assert(const RtcFiles *f, const RtcTime *t)
+{
+    g_autofree gchar *image = NULL;
+    gsize len;
+
+    g_assert_true(g_file_get_contents(f->image, &image, &len, NULL));
+    g_assert_cmpuint(len, ==, RTC_IMAGE_BYTES);
+    g_assert_cmphex((uint8_t)image[0x7ff9], ==, t->sec);
+    g_assert_cmphex((uint8_t)image[0x7ffa], ==, t->min);
+    g_assert_cmphex((uint8_t)image[0x7ffb], ==, t->hour);
+    g_assert_cmphex((uint8_t)image[0x7ffd], ==, t->day);
+    g_assert_cmphex((uint8_t)image[0x7ffe], ==, t->month);
+    g_assert_cmphex((uint8_t)image[0x7fff], ==, t->year);
+}
+
+/*
+ * The stop bit, bit 7 of the seconds register, stops the oscillator
+ * (M48T35 datasheet, section 3.3 and Table 5). A stopped part neither
+ * counts while the machine runs nor while it is off, and the bit is part
+ * of the battery-backed register, so it reads back and a save keeps it.
+ * Restored stopped, run five seconds, stop: the image still holds the
+ * stopped calendar with the bit set, and a restart twenty seconds of host
+ * time later adds nothing.
+ */
+static void test_the_clock_stays_stopped_across_a_save(const void *data)
+{
+    static const RtcTime stopped = { 0x60, 0x01, 0x01, 0x12, 0x00, 0xb3 };
+    RtcFiles f;
+    QTestState *qts;
+
+    rtc_files_new(&f, true);
+    rtc_files_save(&f, &stopped, "2026-08-11T12:30:08");
+    qts = rtc_start(&f, "2026-08-11T12:30:18");
+    qtest_clock_step(qts, 5 * 1000000000LL);
+    qtest_quit(qts);
+    rtc_image_assert(&f, &stopped);
+
+    qts = rtc_start(&f, "2026-08-11T12:30:43");
+    rtc_assert(qts, &stopped);
+    qtest_quit(qts);
+    rtc_files_free(&f);
+}
+
+/* A restored stopped clock reads its calendar, bit set, and does not count. */
+static void test_the_clock_restored_stopped_does_not_count(const void *data)
+{
+    static const RtcTime stopped = { 0x60, 0x01, 0x01, 0x12, 0x00, 0xb3 };
+    RtcFiles f;
+    QTestState *qts;
+
+    rtc_files_new(&f, true);
+    rtc_files_save(&f, &stopped, "2026-08-11T12:30:08");
+    qts = rtc_start(&f, "2026-08-11T12:30:18");
+    rtc_assert(qts, &stopped);
+    qtest_clock_step(qts, 5 * 1000000000LL);
+    rtc_assert(qts, &stopped);
+    qtest_quit(qts);
+    rtc_files_free(&f);
+}
+
+/*
+ * A guest stops the clock by writing the seconds register with bit 7 set
+ * and starts it by writing it clear. A completed write that leaves the
+ * seconds register alone leaves the bit as it was.
+ */
+static void test_the_clock_stop_bit_a_guest_writes(const void *data)
+{
+    static const RtcTime set = { 0x60, 0x01, 0x01, 0x12, 0x00, 0xb0 };
+    static const RtcTime moved = { 0x61, 0x01, 0x01, 0x12, 0x00, 0xb0 };
+    static const RtcTime start = { 0x61, 0x01, 0x01, 0x12, 0x00, 0x40 };
+    static const RtcTime ticked = { 0x61, 0x01, 0x01, 0x12, 0x00, 0x41 };
+    RtcFiles f;
+    QTestState *qts;
+
+    rtc_files_new(&f, true);
+    qts = rtc_start(&f, RTC_BASE);
+    rtc_set(qts, &set);
+    /* The completed write is saved at once, bit and all. */
+    rtc_image_assert(&f, &set);
+    qtest_clock_step(qts, 3 * 1000000000LL);
+    rtc_assert(qts, &set);
+
+    /* A write of the year alone: the oscillator stays stopped. */
+    qtest_writeb(qts, RTC_CONTROL, RTC_CSR_WRITE);
+    qtest_writeb(qts, RTC_YEAR, moved.year);
+    qtest_writeb(qts, RTC_CONTROL, 0);
+    qtest_clock_step(qts, 3 * 1000000000LL);
+    rtc_assert(qts, &moved);
+    qtest_quit(qts);
+    rtc_image_assert(&f, &moved);
+
+    /* Ten seconds off: none of them counted. */
+    qts = rtc_start(&f, "2026-08-11T12:30:30");
+    rtc_assert(qts, &moved);
+    rtc_set(qts, &start);
+    qtest_clock_step(qts, 1000000000LL);
+    rtc_assert(qts, &ticked);
     qtest_quit(qts);
     rtc_files_free(&f);
 }
@@ -5520,6 +5622,12 @@ int main(int argc, char **argv)
                         test_the_clock_restore_follows_the_part);
     qtest_add_data_func("sn0/ioc3/clock-restore-fallbacks", NULL,
                         test_the_clock_restore_fallbacks);
+    qtest_add_data_func("sn0/ioc3/clock-stays-stopped-across-a-save", NULL,
+                        test_the_clock_stays_stopped_across_a_save);
+    qtest_add_data_func("sn0/ioc3/clock-restored-stopped-does-not-count",
+                        NULL, test_the_clock_restored_stopped_does_not_count);
+    qtest_add_data_func("sn0/ioc3/clock-stop-bit-a-guest-writes", NULL,
+                        test_the_clock_stop_bit_a_guest_writes);
     qtest_add_data_func("sn0/ioc3/each-node-has-its-own-storage", NULL,
                         test_each_node_has_its_own_storage);
     qtest_add_data_func("sn0/ioc3/clock-storage-holds-a-write", NULL,

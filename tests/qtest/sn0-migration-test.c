@@ -1555,6 +1555,52 @@ static void test_timekeeper_backed_clock_survives_migration(const void *data)
 }
 
 /*
+ * A stopped oscillator stays stopped across a migration: the destination
+ * reads the stopped time, stop bit set, however long it runs.
+ */
+static void test_timekeeper_stopped_clock_survives_migration(const void *data)
+{
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree gchar *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    tmpfs = g_dir_make_tmp("sn0-timekeeper-stop-migration-XXXXXX", &err);
+    g_assert_nonnull(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init(MACHINE);
+    attach_node_ioc3(from, 0);
+    qtest_writeb(from, TIMEKEEPER_CONTROL, TIMEKEEPER_CSR_WRITE);
+    qtest_writeb(from, TIMEKEEPER_SECONDS, 0x80 | 0x30);
+    qtest_writeb(from, TIMEKEEPER_MINUTES, 0x00);
+    qtest_writeb(from, TIMEKEEPER_HOURS, 0x12);
+    qtest_writeb(from, TIMEKEEPER_DAY, 0x01);
+    qtest_writeb(from, TIMEKEEPER_MONTH, 0x01);
+    qtest_writeb(from, TIMEKEEPER_YEAR, 0x60);
+    qtest_writeb(from, TIMEKEEPER_CONTROL, 0);
+
+    dest_cmdline = g_strdup_printf(MACHINE " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+    sgi_migrate_stopped(from, uri);
+    qtest_clock_step(to, 5 * 1000000000LL);
+
+    qtest_writeb(to, TIMEKEEPER_CONTROL, TIMEKEEPER_CSR_READ);
+    g_assert_cmphex(qtest_readb(to, TIMEKEEPER_YEAR), ==, 0x60);
+    g_assert_cmphex(qtest_readb(to, TIMEKEEPER_MONTH), ==, 0x01);
+    g_assert_cmphex(qtest_readb(to, TIMEKEEPER_DAY), ==, 0x01);
+    g_assert_cmphex(qtest_readb(to, TIMEKEEPER_HOURS), ==, 0x12);
+    g_assert_cmphex(qtest_readb(to, TIMEKEEPER_MINUTES), ==, 0x00);
+    g_assert_cmphex(qtest_readb(to, TIMEKEEPER_SECONDS), ==, 0x80 | 0x30);
+    qtest_writeb(to, TIMEKEEPER_CONTROL, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_assert_cmpint(g_rmdir(tmpfs), ==, 0);
+}
+
+/*
  * The per-CPU cache-as-RAM private window (sn-promdata.c, shared with the
  * Origin 300 node since this filter moved out of sn0.c) forwards instead
  * of serving from its own buffer whenever no processor is in the PROM's
@@ -1674,6 +1720,9 @@ int main(int argc, char **argv)
                         test_timekeeper_images_survive_migration);
     qtest_add_data_func("sn0/migration/timekeeper-backed-clock-survives", NULL,
                         test_timekeeper_backed_clock_survives_migration);
+    qtest_add_data_func("sn0/migration/timekeeper-stopped-clock-survives",
+                        NULL,
+                        test_timekeeper_stopped_clock_survives_migration);
     qtest_add_data_func("sn0/migration/module-identity-page-progress",
                         NULL,
                         test_module_identity_page_progress_survives_migration);
