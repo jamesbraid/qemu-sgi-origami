@@ -14,6 +14,7 @@
 #ifndef HW_MIPS_SGI_NET_CABLE_H
 #define HW_MIPS_SGI_NET_CABLE_H
 
+#include "qemu/notify.h"
 #include "qom/object.h"
 #include "hw/core/qdev.h"
 
@@ -62,5 +63,14 @@ bool sgi_net_cable_up(SGINetCableState *cable);
 bool sgi_net_cable_neighbor(SGINetCableState *cable, Object *port,
                             unsigned int index, Object **peer_port,
                             unsigned int *peer_index);
+
+/*
+ * Call notifier whenever this cable goes down or up, or is loaded: for an
+ * end whose owner caches reachability outside its SGI_NET_PORT
+ * peer_changed hook (the Bedrock's node, whose address decode sn1-node.c
+ * keeps).
+ */
+void sgi_net_cable_add_change_notifier(SGINetCableState *cable,
+                                       Notifier *notifier);
 
 #endif /* HW_MIPS_SGI_NET_CABLE_H */
