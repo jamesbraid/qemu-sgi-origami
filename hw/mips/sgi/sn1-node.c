@@ -130,6 +130,314 @@ static uint64_t sn1_node_address(const SN1NodeState *node, uint64_t address)
     return shifted;
 }
 
+uint64_t sn1_node_canonical_address(const SN1NodeState *node,
+                                    uint64_t address)
+{
+    return sn1_node_address(node, address);
+}
+
+/*
+ * The claim layer: which node an access reaches.
+ *
+ * Every node's regions sit in the global map at its own placement,
+ * nasid << 33 in each space, where qtests and the machine address them.
+ * A processor does not see that map directly. Its view (and the fabric
+ * view the Bedrock's DMA and BTE use) hides each space behind a floor that
+ * answers a decode error, and over it places one alias of each reachable
+ * node's window at the number that node's local block carries: the node
+ * itself, and its cabled peer while the link is up and the two numbers
+ * differ. A number nobody reachable carries is the decode error. On top,
+ * a processor's view maps the reader-relative forms, which always reach
+ * its own node whatever its number: the reset view, the Hub special local
+ * space (uncached alias, local registers and L1 UART, local boot window),
+ * the Bedrock's own register alias in crosstalk small window 1, and the
+ * cached alias, sized from the processor interface's cached-alias
+ * register. docs/designs/2026-09-25-origin300-two-node-addressing.md
+ * states the rule and marks what is established and what is inferred.
+ *
+ * On one node with number 0 every alias lands where the global map
+ * already is, so the one-chassis machine decodes as before.
+ */
+#define SN1_NODE_WINDOW_SIZE (UINT64_C(1) << SN1_NODE_ADDRESS_SHIFT)
+#define SN1_NODE_SPACE_SIZE UINT64_C(0x10000000000)
+/* Seven node bits in M mode, the only mode an Origin 300 runs. */
+#define SN1_NODE_NUMBER_MASK 0x7f
+#define SN1_HUB_LOCAL_FORMS_SIZE UINT64_C(0x20000000)
+#define SN1_CACHED_ALIAS_MAX (64 * MiB)
+
+static const uint64_t sn1_node_space_base[SN1_NODE_SPACES] = {
+    0, SN1_SPACE_HUB, SN1_XTALK_ADDRESS, SN1_MEMORY_SPECIAL_ADDRESS,
+};
+
+static MemTxResult sn1_claim_floor_read(void *opaque, hwaddr offset,
+                                        uint64_t *value, unsigned size,
+                                        MemTxAttrs attrs)
+{
+    qemu_log_mask(LOG_GUEST_ERROR, "sn1: no reachable node carries number "
+                  "%u (space offset 0x%" HWADDR_PRIx ")\n",
+                  (unsigned)(offset >> SN1_NODE_ADDRESS_SHIFT), offset);
+    *value = 0;
+    return MEMTX_DECODE_ERROR;
+}
+
+static MemTxResult sn1_claim_floor_write(void *opaque, hwaddr offset,
+                                         uint64_t value, unsigned size,
+                                         MemTxAttrs attrs)
+{
+    qemu_log_mask(LOG_GUEST_ERROR, "sn1: write to number %u reaches no "
+                  "node (space offset 0x%" HWADDR_PRIx ")\n",
+                  (unsigned)(offset >> SN1_NODE_ADDRESS_SHIFT), offset);
+    return MEMTX_DECODE_ERROR;
+}
+
+static const MemoryRegionOps sn1_claim_floor_ops = {
+    .read_with_attrs = sn1_claim_floor_read,
+    .write_with_attrs = sn1_claim_floor_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 1, .max_access_size = 8 },
+    .impl = { .min_access_size = 1, .max_access_size = 8 },
+};
+
+static unsigned int sn1_node_number(SN1NodeState *node)
+{
+    return sgi_bedrock_node_number(SGI_BEDROCK(node->bedrock)) &
+           SN1_NODE_NUMBER_MASK;
+}
+
+static SN1NodeState *sn1_node_peer(SN1NodeState *node)
+{
+    SGIBedrockState *bedrock = SGI_BEDROCK(node->bedrock);
+    Object *peer;
+    unsigned int index;
+
+    if (!bedrock->net_cable ||
+        !sgi_net_cable_neighbor(bedrock->net_cable, OBJECT(bedrock), 0,
+                                &peer, &index)) {
+        return NULL;
+    }
+    return (SN1NodeState *)object_dynamic_cast(peer->parent,
+                                               TYPE_SGI_SN1_NODE);
+}
+
+SN1NodeState *sn1_node_claimant(SN1NodeState *node, unsigned int number)
+{
+    SN1NodeState *peer = sn1_node_peer(node);
+    unsigned int own = sn1_node_number(node);
+
+    if (number == own) {
+        return node;
+    }
+    if (peer && peer->claims_ready && sn1_node_number(peer) == number) {
+        return peer;
+    }
+    return NULL;
+}
+
+static uint64_t sn1_cached_alias_bytes(uint8_t code)
+{
+    return code ? 4 * KiB << (code - 1) : 0;
+}
+
+static void sn1_node_place_claims(SN1NodeState *node)
+{
+    SN1NodeState *peer = sn1_node_peer(node);
+    unsigned int own = sn1_node_number(node);
+    unsigned int other = peer ? sn1_node_number(peer) : 0;
+    bool peer_reachable = peer && peer->claims_ready && other != own;
+    unsigned int view, space;
+
+    if (peer && peer->claims_ready && other == own) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sn1: node %u and its peer both carry "
+                      "number %u; each reaches only itself there\n",
+                      node->nasid, own);
+    }
+    for (view = 0; view < SN1_NODE_VIEWS; view++) {
+        if (view < SN1_NODE_FABRIC_VIEW && view >= node->nr_cpus) {
+            continue;
+        }
+        for (space = 0; space < SN1_NODE_SPACES; space++) {
+            uint64_t base = sn1_node_space_base[space];
+            MemoryRegion *mine = &node->claim[view][space][0];
+            MemoryRegion *theirs = &node->claim[view][space][1];
+
+            memory_region_set_address(
+                mine, base + ((uint64_t)own << SN1_NODE_ADDRESS_SHIFT));
+            memory_region_set_enabled(theirs, peer_reachable);
+            if (peer_reachable) {
+                memory_region_set_alias_offset(
+                    theirs, sn1_node_address(peer, base));
+                memory_region_set_address(
+                    theirs,
+                    base + ((uint64_t)other << SN1_NODE_ADDRESS_SHIFT));
+            }
+        }
+    }
+    for (view = 0; view < node->nr_cpus; view++) {
+        unsigned physical = sn1_cpu_slot(node->model_node, view);
+        SGIBedrockState *bedrock = SGI_BEDROCK(node->bedrock);
+        unsigned pi = physical / (SGI_BEDROCK_PROCESSORS / 2);
+        uint64_t size = sn1_cached_alias_bytes(bedrock->pi[pi].cached_alias);
+        MemoryRegion *calias = &node->local_form[view][3];
+
+        if (size) {
+            memory_region_set_size(calias, size);
+        }
+        memory_region_set_enabled(calias, size != 0);
+    }
+}
+
+void sn1_node_update_claims(SN1NodeState *node)
+{
+    SGIBedrockState *bedrock = SGI_BEDROCK(node->bedrock);
+    SN1NodeState *peer;
+
+    if (!node->claims_ready) {
+        return;
+    }
+    if (bedrock->net_cable && !node->cable_notifier_added) {
+        sgi_net_cable_add_change_notifier(bedrock->net_cable,
+                                          &node->cable_notifier);
+        node->cable_notifier_added = true;
+    }
+    memory_region_transaction_begin();
+    sn1_node_place_claims(node);
+    peer = sn1_node_peer(node);
+    if (peer && peer->claims_ready) {
+        sn1_node_place_claims(peer);
+    }
+    memory_region_transaction_commit();
+}
+
+static void sn1_node_number_changed(Notifier *notifier, void *data)
+{
+    sn1_node_update_claims(container_of(notifier, SN1NodeState,
+                                        node_notifier));
+}
+
+static void sn1_node_cable_changed(Notifier *notifier, void *data)
+{
+    SN1NodeState *node = container_of(notifier, SN1NodeState,
+                                      cable_notifier);
+
+    /* A cable going down no longer names the peer; rebuild both ends. */
+    sn1_node_update_claims(node);
+    if (!sn1_node_peer(node)) {
+        memory_region_transaction_begin();
+        sn1_node_place_claims(node);
+        memory_region_transaction_commit();
+    }
+}
+
+static void sn1_node_view_claims(SN1NodeState *node, unsigned int view,
+                                 MemoryRegion *container)
+{
+    MemoryRegion *system = get_system_memory();
+    unsigned int space;
+
+    for (space = 0; space < SN1_NODE_SPACES; space++) {
+        uint64_t base = sn1_node_space_base[space];
+        g_autofree char *floor_name =
+            g_strdup_printf("sn1.node%u.view%u.floor%u", node->nasid, view,
+                            space);
+        unsigned int slot;
+
+        memory_region_init_alias(&node->claim_floor_alias[view][space],
+                                 OBJECT(node), floor_name,
+                                 &node->claim_floor[space], 0,
+                                 SN1_NODE_SPACE_SIZE);
+        memory_region_add_subregion_overlap(
+            container, base, &node->claim_floor_alias[view][space], -1);
+        for (slot = 0; slot < SN1_NODE_CLAIMS; slot++) {
+            g_autofree char *name =
+                g_strdup_printf("sn1.node%u.view%u.claim%u.%s", node->nasid,
+                                view, space, slot ? "peer" : "own");
+
+            memory_region_init_alias(&node->claim[view][space][slot],
+                                     OBJECT(node), name, system,
+                                     sn1_node_address(node, base),
+                                     SN1_NODE_WINDOW_SIZE);
+            memory_region_set_enabled(&node->claim[view][space][slot],
+                                      slot == 0);
+            memory_region_add_subregion_overlap(
+                container, sn1_node_address(node, base),
+                &node->claim[view][space][slot], 0);
+        }
+    }
+}
+
+static void sn1_node_local_form(SN1NodeState *node, unsigned int cpu,
+                                unsigned int form, const char *what,
+                                uint64_t address, uint64_t size)
+{
+    g_autofree char *name = g_strdup_printf("sn1.node%u.cpu%u.local-%s",
+                                            node->nasid, cpu, what);
+
+    memory_region_init_alias(&node->local_form[cpu][form], OBJECT(node), name,
+                             get_system_memory(),
+                             sn1_node_address(node, address), size);
+    memory_region_add_subregion_overlap(&node->cpu_sysmem[cpu], address,
+                                        &node->local_form[cpu][form], 1);
+}
+
+/* The I/O interface a register packet or completion for a number reaches. */
+static SGIBedrockIOState *sn1_node_io_claimant(void *opaque,
+                                               unsigned int number)
+{
+    SN1NodeState *target = sn1_node_claimant(opaque, number);
+
+    return target ? &SGI_BEDROCK(target->bedrock)->io : NULL;
+}
+
+static void sn1_node_cached_alias_changed(Notifier *notifier, void *data)
+{
+    SGIBedrockPIState *pi = data;
+    SN1NodeState *node = container_of(notifier - pi->interface, SN1NodeState,
+                                      cached_alias_notifier[0]);
+
+    sn1_node_update_claims(node);
+}
+
+static void sn1_node_init_claims(SN1NodeState *node)
+{
+    unsigned int space, cpu, i;
+
+    for (space = 0; space < SN1_NODE_SPACES; space++) {
+        g_autofree char *name = g_strdup_printf("sn1.node%u.floor%u",
+                                                node->nasid, space);
+
+        memory_region_init_io(&node->claim_floor[space], OBJECT(node),
+                              &sn1_claim_floor_ops, node, name,
+                              SN1_NODE_SPACE_SIZE);
+    }
+    for (cpu = 0; cpu < node->nr_cpus; cpu++) {
+        sn1_node_view_claims(node, cpu, &node->cpu_sysmem[cpu]);
+        sn1_node_local_form(node, cpu, 0, "reset", SN1_PROM_RESET,
+                            node->model_node->flash->size);
+        sn1_node_local_form(node, cpu, 1, "hub-special", SN1_SPACE_HUB,
+                            SN1_HUB_LOCAL_FORMS_SIZE);
+        sn1_node_local_form(node, cpu, 2, "registers",
+                            SN1_BEDROCK_LOCAL_ADDRESS, SN1_BEDROCK_NODE_SIZE);
+        sn1_node_local_form(node, cpu, 3, "cached-alias", SN1_RAM_ADDRESS,
+                            SN1_CACHED_ALIAS_MAX);
+        memory_region_set_enabled(&node->local_form[cpu][3], false);
+    }
+    sn1_node_view_claims(node, SN1_NODE_FABRIC_VIEW, &node->fabric);
+    node->node_notifier.notify = sn1_node_number_changed;
+    node->cable_notifier.notify = sn1_node_cable_changed;
+    sgi_bedrock_lb_add_node_notifier(&SGI_BEDROCK(node->bedrock)->lb,
+                                     &node->node_notifier);
+    sgi_bedrock_io_set_claimant(&SGI_BEDROCK(node->bedrock)->io,
+                                sn1_node_io_claimant, node);
+    for (i = 0; i < ARRAY_SIZE(node->cached_alias_notifier); i++) {
+        node->cached_alias_notifier[i].notify = sn1_node_cached_alias_changed;
+        sgi_bedrock_pi_add_cached_alias_notifier(
+            &SGI_BEDROCK(node->bedrock)->pi[i],
+            &node->cached_alias_notifier[i]);
+    }
+    node->claims_ready = true;
+    sn1_node_update_claims(node);
+}
+
 static BlockDriverState *sn1_node_open_flash_slice(BlockDriverState *backing,
                                                     int64_t offset,
                                                     int flags, Error **errp)
@@ -418,6 +726,7 @@ void sn1_node_release_cpus(SN1NodeState *node)
     if (node->boot_flash) {
         sn1_refresh_prom_views(node, true);
     }
+    sn1_node_update_claims(node);
     for (i = 0; i < node->nr_cpus; i++) {
         CPUState *cs = CPU(node->cpu[i]);
 
@@ -435,7 +744,9 @@ void sn1_node_full_reset(SN1NodeState *node, ResetType type)
      * qemu_devices_reset() resetting Bedrock/L1/XBridge first would let a
      * CPU race a device that assumes it is not running yet. The Hub takes
      * the opposite order and releases through sgi_hub_set_cpu_enable
-     * instead, which carries no such constraint.
+     * instead, which carries no such constraint. The release re-derives
+     * the claims, which the local block's reset already did through its
+     * node-number notifier; doing it again is harmless.
      */
     sn1_node_reset_cpus(node);
     qemu_devices_reset(type);
@@ -913,8 +1224,18 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
             bank_entry = bank_entry->next;
         }
     }
+    /*
+     * The Bedrock's DMA and BTE reach nodes by number, as a processor
+     * does, but without the reader-relative forms: the fabric view.
+     */
+    memory_region_init(&node->fabric, OBJECT(node), "sn1.node.fabric",
+                       UINT64_MAX);
+    memory_region_init_alias(&node->fabric_sysmem, OBJECT(node),
+                             "sn1.node.fabric.system", system, 0, UINT64_MAX);
+    memory_region_add_subregion_overlap(&node->fabric, 0,
+                                        &node->fabric_sysmem, -2);
     object_property_set_link(OBJECT(node->bedrock), "dma-memory",
-                             OBJECT(system), &error_abort);
+                             OBJECT(&node->fabric), &error_abort);
     object_property_set_link(OBJECT(node->bedrock), "node-memory",
                              OBJECT(node->ram), &error_abort);
     object_property_set_link(OBJECT(node->bedrock), "l1-uart",
@@ -1096,23 +1417,24 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                                  SGI_BEDROCK_PI_SIZE);
         memory_region_add_subregion_overlap(&node->cpu_sysmem[cpu],
                                             SN1_BEDROCK_LOCAL_ADDRESS,
-                                            &node->cpu_local_pi_xtalk[cpu], 1);
+                                            &node->cpu_local_pi_xtalk[cpu], 2);
         /*
          * This processor's own local-window PI1 overlay is split the
          * same way as the machine-wide window above, but leaves the
          * 0x80-0xbf gap between its head and tail unclaimed instead of
          * overlaying its own UART alias there: with nothing at
-         * priority 1 over that one range, its access falls through to
-         * the lower-priority system alias underneath, which reaches
-         * the same machine-wide container and its UART region above,
-         * the same as every other processor.
+         * priority 2 over that one range, its access falls through to
+         * the claim layer's local Hub special form underneath, which
+         * reaches this node's own container and its UART region, the
+         * same as every other processor of the node. The overlays sit
+         * above that form (priority 1), so they take priority 2.
          */
         memory_region_init_alias(&node->cpu_local_pi_hub_head[cpu],
                                  OBJECT(node), "sn1.cpu.local-pi-hub-head",
                                  pi1, 0, SN1_HUB_REGISTER_HEAD_SIZE);
         memory_region_add_subregion_overlap(
             &node->cpu_sysmem[cpu], SN1_HUB_LOCAL_REGISTERS_ADDRESS,
-            &node->cpu_local_pi_hub_head[cpu], 1);
+            &node->cpu_local_pi_hub_head[cpu], 2);
         memory_region_init_alias(&node->cpu_local_pi_hub_tail[cpu],
                                  OBJECT(node), "sn1.cpu.local-pi-hub-tail",
                                  pi1, SN1_HUB_REGISTER_UART_END,
@@ -1121,7 +1443,7 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
         memory_region_add_subregion_overlap(
             &node->cpu_sysmem[cpu],
             SN1_HUB_LOCAL_REGISTERS_ADDRESS + SN1_HUB_REGISTER_UART_END,
-            &node->cpu_local_pi_hub_tail[cpu], 1);
+            &node->cpu_local_pi_hub_tail[cpu], 2);
     }
     memory_region_add_subregion(
         system, sn1_node_address(node, SN1_HUB_REMOTE_REGISTERS_ADDRESS),
@@ -1209,6 +1531,7 @@ static void sn1_node_realize(DeviceState *dev, Error **errp)
     if (!sn1_node_create_bedrock(node, machine, errp)) {
         return;
     }
+    sn1_node_init_claims(node);
 }
 
 static void sn1_node_unrealize(DeviceState *dev)

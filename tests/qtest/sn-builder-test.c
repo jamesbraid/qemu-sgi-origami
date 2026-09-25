@@ -925,56 +925,46 @@ static void test_origin2000_one_node_onboard_board_is_xio_baseio(
 }
 
 /*
- * The node-types step lets a Bedrock topology carry more than one node in
- * the descriptor: nothing in the builder asserts node_count == 1 for
- * Bedrock any more. No shipped product exercises this yet (the
- * two-chassis Origin 300 stays reference-only in the compiled
- * catalogue), so this drives the real builder over
- * sn-builder-fault-test.c's own synthetic two-node fixture instead: two
+ * The builder builds a Bedrock topology of more than one node. This drives
+ * it over sn-builder-fault-test.c's own synthetic two-node fixture: two
  * Bedrock nodes, each with its own populated IO-8 board at its own
- * attachment, no controllers. The builder's population/memory
- * validation and the node loop's per-node board/widget selection both
- * run for two nodes here -- proving neither one is hardcoded to a
- * single Bedrock node any more -- and every node becomes a real,
- * configured device, each already at its own nasid-strided
- * address-space window (sn1-node.c), so realize no longer collides.
- * What still refuses, by name, is the cross-node NUMAlink fabric: no
- * code sources or models link traffic between Bedrock nodes, so a
- * second node would realize with no way to reach, or be reached by,
- * the first. This is the expected, current boundary, not a crash: the
- * machine reports it and exits cleanly.
+ * attachment, no controllers and no cable. Population and memory
+ * validation, the node loop's per-node board and widget selection, and
+ * each node's realize all run for two nodes, and the machine comes up with
+ * both nodes as devices. With no cable each node reaches only itself;
+ * sn1-cross-node-test covers the cabled pair.
  */
 static void test_bedrock_topology_accepts_two_nodes(const void *data)
 {
-    const char *args[] = {
-        qtest_qemu_binary(NULL), "-M", "sn-builder-bedrock-test,activate=on",
-        "-m", "128M", "-smp", "2,sockets=2,cores=1,threads=1",
-        "-display", "none", NULL
-    };
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(0x100000);
+    g_autofree char *path = NULL;
+    g_autofree char *node1 = NULL;
+    QTestState *qts;
+    int fd;
 
-    assert_qemu_rejects(args, "names 2 Bedrock nodes; the cross-node "
-                        "NUMAlink fabric between Bedrock nodes is not "
-                        "modeled yet");
+    fd = g_file_open_tmp("sn-builder-bedrock-prom-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, 0x100000), ==, 0x100000);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf("-M sn-builder-bedrock-test,activate=on -m 128M "
+                      "-smp 2,sockets=2,cores=1,threads=1 -bios %s "
+                      "-display none", path);
+    node1 = qom_child_type(qts, "/machine", "node1");
+    g_assert_cmpstr(node1, ==, "sgi-sn1-node");
+    qtest_quit(qts);
+    g_unlink(path);
 }
 
 /*
- * The topology-acceptance test above proves the builder no longer
- * refuses a two-node Bedrock descriptor on structure; it cannot prove
- * the two nodes' address-space windows actually land clear of each
- * other, because the machine-level refusal (still in place for the
- * unmodeled cross-node NUMAlink fabric) stops every such topology
- * before any node past the first realizes. sn-builder-bedrock-nasid-
- * test (sn-builder-fault-test.c) bypasses that refusal by building two
- * sgi-sn1-node devices directly, at nasid 0 and nasid 1, the same way
- * sn-machine.c's own per-node loop would. Both nodes' board-
- * identification register -- one of the fixed windows sn1-node.c
- * strides by nasid -- must answer 0x8001 at its own node's address, and
- * node 0's answer must still be correct with node 1 realized alongside
- * it: if the two nodes' windows collided instead of landing at their
- * own nasid-strided addresses, realizing the second node would either
- * abort on the resulting overlapping memory region or leave one node's
- * register reachable at the other's expense, not answer both correctly
- * from two distinct addresses the way real per-nasid decoding does.
+ * sn-builder-bedrock-nasid-test (sn-builder-fault-test.c) builds two
+ * sgi-sn1-node devices directly, at placements 0 and 1, the way
+ * sn-machine.c's own per-node loop would, with no cable. Each node's own
+ * processor must read its own board-identification register through the
+ * Hub special local window, one of the reader-relative forms, and node 0's
+ * processor must reach nothing at node field 1: node 1 carries number 0
+ * from reset and is not cabled. Collided placements would abort realize,
+ * and a local form shared between the nodes would answer only one of them.
  */
 #define NASID_TEST_SPACE_HUB UINT64_C(0x10000000000)
 #define NASID_TEST_HUB_LOCAL_REGISTERS \
@@ -985,31 +975,66 @@ static void test_bedrock_topology_accepts_two_nodes(const void *data)
 /* M mode's node field sits at physical address bit 33 (ip35-address-map.md). */
 #define NASID_TEST_NODE_ADDRESS_SHIFT 33
 
+static bool nasid_test_cpu_readq(QTestState *qts, unsigned int cpu,
+                                 uint64_t address, uint64_t *value)
+{
+    g_autofree char *command = g_strdup_printf("xp/1gx 0x%" PRIx64, address);
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{ 'execute': 'human-monitor-command',"
+        "  'arguments': { 'command-line': %s, 'cpu-index': %u } }",
+        command, cpu);
+    const char *text = qdict_get_str(response, "return");
+    const char *colon = strchr(text, ':');
+
+    if (strstr(text, "Cannot access memory") || !colon) {
+        return false;
+    }
+    return sscanf(colon + 1, "%" SCNx64, value) == 1;
+}
+
 static void test_bedrock_nodes_answer_at_their_own_nasid_window(
     const void *data)
 {
-    /*
-     * -nodefaults: each node's L1 unconditionally takes serial_hd(0)
-     * for its console (sn1_node_create_bedrock); the default machine
-     * would hand both nodes the same backend and the second qdev_realize
-     * would refuse it as already in use. Real per-node console routing
-     * is unmodeled and out of this fixture's addressing-only scope.
-     */
+    /* -nodefaults: no L1 console backend is needed for addressing alone. */
     QTestState *qts = qtest_init(
         "-M sn-builder-bedrock-nasid-test,activate=on -cpu R14000 "
         "-smp 2 -nodefaults -display none");
     uint64_t node1_offset = UINT64_C(1) << NASID_TEST_NODE_ADDRESS_SHIFT;
+    uint64_t value = 0;
+    unsigned int cpu;
 
-    g_assert_cmphex(qtest_readq(qts, NASID_TEST_BOARD_ID_LOCAL), ==,
-                    NASID_TEST_BOARD_ID_VALUE);
-    g_assert_cmphex(qtest_readq(qts, NASID_TEST_BOARD_ID_LOCAL +
-                                node1_offset), ==,
-                    NASID_TEST_BOARD_ID_VALUE);
-    /* Node 0 must still answer correctly with node 1 realized too. */
-    g_assert_cmphex(qtest_readq(qts, NASID_TEST_BOARD_ID_LOCAL), ==,
-                    NASID_TEST_BOARD_ID_VALUE);
+    for (cpu = 0; cpu < 2; cpu++) {
+        g_assert_true(nasid_test_cpu_readq(qts, cpu,
+                                           NASID_TEST_BOARD_ID_LOCAL,
+                                           &value));
+        g_assert_cmphex(value, ==, NASID_TEST_BOARD_ID_VALUE);
+    }
+    g_assert_false(nasid_test_cpu_readq(qts, 0,
+                                        NASID_TEST_BOARD_ID_LOCAL +
+                                        node1_offset, &value));
 
     qtest_quit(qts);
+}
+
+/*
+ * Each chassis's L1 takes an even share of every identity-record list, in
+ * node order; a list that does not divide evenly names no one chassis's
+ * parts, so the builder refuses it rather than giving it whole to both.
+ */
+static void test_origin300_two_chassis_refuses_an_uneven_record_list(
+    const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M",
+        "origin300,topology=origin300-two-chassis,"
+        "chassis-eeprom.0=/nonexistent/a,chassis-eeprom.1=/nonexistent/b,"
+        "chassis-eeprom.2=/nonexistent/c",
+        "-cpu", "R14000", "-smp", "4", "-m", "1024",
+        "-nodefaults", "-display", "none", NULL
+    };
+
+    assert_qemu_rejects(args, "chassis-eeprom lists 3 files, which do not "
+                        "divide evenly across the 2 chassis L1s");
 }
 
 static void test_unsupported_memory_population_rejected(const void *data)
@@ -1072,6 +1097,9 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn/builder/bedrock-nodes-answer-at-their-own-nasid-window", NULL,
         test_bedrock_nodes_answer_at_their_own_nasid_window);
+    qtest_add_data_func(
+        "sn/builder/origin300-two-chassis-refuses-an-uneven-record-list",
+        NULL, test_origin300_two_chassis_refuses_an_uneven_record_list);
     qtest_add_data_func("sn/builder/origin200-accepts-its-cpu-populations",
                         NULL, test_origin200_accepts_its_cpu_populations);
     qtest_add_data_func("sn/builder/origin200-accepts-its-memory-populations",

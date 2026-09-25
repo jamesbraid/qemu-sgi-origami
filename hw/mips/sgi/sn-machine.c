@@ -223,6 +223,8 @@ struct SGIMachineState {
      * synthetic two-node fixture).
      */
     DeviceState **bedrock_nodes;
+    /* Each Bedrock node's share of machine->ram, in node order. */
+    MemoryRegion *bedrock_ram;
 
     /*
      * The Origin 300/350 L1's identity-record file lists. One machine
@@ -442,6 +444,28 @@ static unsigned int sgi_machine_topology_nasid(const SGIModelTopology *t,
         slot_min = MIN(slot_min, nodes[i]->slot);
     }
     return nodes[node_index]->slot - slot_min;
+}
+
+/* The module whose node list names this node, or NULL. */
+static const SGIModelModule *sgi_machine_node_module(const SGIModelTopology *t,
+                                                     unsigned int node_index)
+{
+    g_autofree const SGIModelModule **modules = NULL;
+    size_t module_count, i, j;
+
+    modules = sgi_model_module_array(t->modules, &module_count);
+    for (i = 0; i < module_count; i++) {
+        g_autofree unsigned int *nodes = NULL;
+        size_t node_count;
+
+        nodes = sgi_model_array_uint32(modules[i]->nodes, &node_count);
+        for (j = 0; j < node_count; j++) {
+            if (nodes[j] == node_index) {
+                return modules[i];
+            }
+        }
+    }
+    return NULL;
 }
 
 uint64_t sgi_machine_topology_default_ram(const SGIModelTopology *t)
@@ -1321,16 +1345,19 @@ static bool sgi_machine_instantiate_io8(
     qdev_prop_set_uint64(baseio, "onewire-serial", record->ioc3_serial);
     /*
      * The onboard IOC3's Timekeeper storage: an indexed `-drive if=mtd`
-     * first, else a bare `-drive if=none,id=sgi-nvram0` by name -- one
-     * Bedrock node ships today, so always index/id zero, unlike the Hub
-     * path's per-board index. Passed as the resolved backend's own name,
+     * first, else a bare `-drive if=none,id=sgi-nvramN` by name, N the
+     * IO-8's own node (each chassis carries one IO-8). Passed as the
+     * resolved backend's own name,
      * not the backend itself, for the claim-timing reason sgi-baseio's
      * own header comment gives.
      */
     {
-        DriveInfo *nvram_dinfo = drive_get(IF_MTD, 0, 0);
+        unsigned int node_index = attachment->node_index;
+        DriveInfo *nvram_dinfo = drive_get(IF_MTD, 0, node_index);
+        g_autofree char *nvram_name = g_strdup_printf("sgi-nvram%u",
+                                                      node_index);
         BlockBackend *nvram_blk = nvram_dinfo ?
-            blk_by_legacy_dinfo(nvram_dinfo) : blk_by_name("sgi-nvram0");
+            blk_by_legacy_dinfo(nvram_dinfo) : blk_by_name(nvram_name);
 
         if (nvram_blk) {
             qdev_prop_set_string(baseio, "nvram-drive", blk_name(nvram_blk));
@@ -1338,30 +1365,32 @@ static bool sgi_machine_instantiate_io8(
     }
     /*
      * The onboard IOC3's serial and parallel backends, named by chardev
-     * id for the same claim-timing reason. serial_hd(0) is the L1
-     * console -- the node's own controller, not this board's -- so the
-     * onboard IOC3 takes indices one through four.
+     * id for the same claim-timing reason. Each node's block of lines
+     * starts with its L1 -- the node's own controller, not this board's --
+     * so the onboard IOC3 takes the block's next four
+     * (sgi_sn1_serial_line()). The one parallel port is node 0's.
      */
     {
+        unsigned int node_index = attachment->node_index;
         Chardev *chr;
 
-        chr = serial_hd(1);
+        chr = serial_hd(sgi_sn1_serial_line(node_index, 1));
         if (chr) {
             qdev_prop_set_string(baseio, "chardev-a", chr->label);
         }
-        chr = serial_hd(2);
+        chr = serial_hd(sgi_sn1_serial_line(node_index, 2));
         if (chr) {
             qdev_prop_set_string(baseio, "chardev-b", chr->label);
         }
-        chr = serial_hd(3);
+        chr = serial_hd(sgi_sn1_serial_line(node_index, 3));
         if (chr) {
             qdev_prop_set_string(baseio, "record-a", chr->label);
         }
-        chr = serial_hd(4);
+        chr = serial_hd(sgi_sn1_serial_line(node_index, 4));
         if (chr) {
             qdev_prop_set_string(baseio, "record-b", chr->label);
         }
-        if (parallel_hds[0]) {
+        if (node_index == 0 && parallel_hds[0]) {
             qdev_prop_set_string(baseio, "parallel-chardev",
                                  parallel_hds[0]->label);
         }
@@ -1764,6 +1793,44 @@ static void sgi_machine_build_fabric_links(SGIMachineState *s,
         sgi_machine_wire_fabric_vertex(s, end0, net_cable);
         sgi_machine_wire_fabric_vertex(s, end1, net_cable);
         qdev_realize_and_unref(dev, NULL, &error_fatal);
+    }
+}
+
+/*
+ * The Bedrock counterpart of the loop above: one sgi-net-cable per cable
+ * record, each end a realized node's Bedrock at its one port, and each
+ * Bedrock's own cable reference set to it.
+ */
+static void sgi_machine_build_bedrock_links(SGIMachineState *s,
+                                            const SGIModelTopology *t)
+{
+    g_autofree const SGIModelCable **cables = NULL;
+    size_t cable_count, i;
+
+    cables = sgi_model_cable_array(t->cables, &cable_count);
+    for (i = 0; i < cable_count; i++) {
+        const SGIModelCable *cable = cables[i];
+        const SGIModelLinkEnd *ends[2] = {
+            cable->ends->value, cable->ends->next->value,
+        };
+        DeviceState *dev = qdev_new(TYPE_SGI_NET_CABLE);
+        unsigned int side;
+
+        object_property_add_child(OBJECT(s), cable->name, OBJECT(dev));
+        qdev_prop_set_uint32(dev, "kind", cable->kind);
+        for (side = 0; side < 2; side++) {
+            g_assert(ends[side]->kind == SGI_MODEL_LINK_END_KIND_NODE);
+            sgi_net_cable_set_end(
+                SGI_NET_CABLE(dev), side,
+                OBJECT(SN1_NODE(s->bedrock_nodes[ends[side]->index])->bedrock),
+                ends[side]->port);
+        }
+        qdev_realize_and_unref(dev, NULL, &error_fatal);
+        for (side = 0; side < 2; side++) {
+            object_property_set_link(
+                OBJECT(SN1_NODE(s->bedrock_nodes[ends[side]->index])->bedrock),
+                "net-cable", OBJECT(dev), &error_fatal);
+        }
     }
 }
 
@@ -2192,6 +2259,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         s->nodes = g_new0(SN0NodeState *, node_count);
     } else {
         s->bedrock_nodes = g_new0(DeviceState *, node_count);
+        s->bedrock_ram = g_new0(MemoryRegion, node_count);
     }
     for (node_index = 0; node_index < node_count; node_index++) {
         g_autofree char *name = g_strdup_printf("node%u", node_index);
@@ -2210,6 +2278,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     if (kind != SGI_MODEL_ASIC_KIND_HUB) {
         g_autofree const SGIModelXtalkAttachment **attachments = NULL;
         size_t attachment_count;
+
+        uint64_t node_ram = machine->ram_size / node_count;
 
         attachments = sgi_model_xtalk_attachment_array(t->xtalk_attachments,
                                                         &attachment_count);
@@ -2241,31 +2311,33 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             node->model_node = nodes[node_index];
             node->xbridge_widgets = g_steal_pointer(&widgets);
             node->xbridge_widget_count = widget_count;
-            object_property_set_link(OBJECT(node), "ram",
-                                     OBJECT(machine->ram), &error_abort);
+            /*
+             * Each node's memory is its own share of machine->ram: one
+             * region cannot sit at two node placements, and the claim
+             * layer aliases each node's window by number anyway.
+             */
+            if (node_count == 1) {
+                object_property_set_link(OBJECT(node), "ram",
+                                         OBJECT(machine->ram), &error_abort);
+            } else {
+                memory_region_init_alias(&s->bedrock_ram[node_index],
+                                         OBJECT(node), "sn1.node.ram",
+                                         machine->ram,
+                                         (uint64_t)node_index * node_ram,
+                                         node_ram);
+                object_property_set_link(OBJECT(node), "ram",
+                                         OBJECT(&s->bedrock_ram[node_index]),
+                                         &error_abort);
+            }
             qdev_prop_set_uint32(DEVICE(node), "nr-cpus",
                                  requested[node_index]);
+            qdev_prop_set_bit(DEVICE(node), "last-node",
+                              node_index == node_count - 1);
+            qdev_prop_set_uint32(DEVICE(node), "l1-bay",
+                                 sgi_machine_node_module(t, node_index) ?
+                                 sgi_machine_node_module(t, node_index)->
+                                 initial_module_number : 0);
             qdev_connect_clock_in(DEVICE(node), "cpu-refclk", s->cpu_refclk);
-        }
-
-        /*
-         * Every node above is a real device now, its own descriptor
-         * record and I/O board resolved, and each already sits at its
-         * own nasid-strided address-space window (sn1-node.c), so a
-         * second node's realize no longer collides with the first's
-         * memory regions. What stops here is the cross-node NUMAlink
-         * fabric a real multi-chassis Origin 300 pair needs: nothing
-         * sources or models link traffic between Bedrock nodes, so a
-         * second node would realize with no way to reach the first one
-         * or be reached by it. Refuse explicitly rather than let the
-         * topology through to a fabric no code drives.
-         */
-        if (node_count > 1) {
-            error_setg(errp, "%s: topology '%s' names %u Bedrock nodes; "
-                      "the cross-node NUMAlink fabric between Bedrock "
-                      "nodes is not modeled yet", mc->name, t->name,
-                      node_count);
-            return false;
         }
 
         for (node_index = 0; node_index < node_count; node_index++) {
@@ -2279,6 +2351,15 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
             }
         }
         g_assert(cpu_index == machine->smp.cpus);
+        /*
+         * The NUMAlink cables join realized Bedrocks: each node creates its
+         * Bedrock while it realizes, and a Bedrock's cable reference may be
+         * set afterwards. Then every node derives which numbers it reaches.
+         */
+        sgi_machine_build_bedrock_links(s, t);
+        for (node_index = 0; node_index < node_count; node_index++) {
+            sn1_node_update_claims(SN1_NODE(s->bedrock_nodes[node_index]));
+        }
 
         /*
          * Every node is realized now, so a head's PCI bus link property
@@ -2709,8 +2790,16 @@ static void sgi_machine_reset(MachineState *machine, ResetType type)
     if (t && sgi_machine_topology_node0(t)->asic_kind != SGI_MODEL_ASIC_KIND_HUB) {
         unsigned int i;
 
+        if (s->num_nodes == 1) {
+            sn1_node_full_reset(SN1_NODE(s->bedrock_nodes[0]), type);
+            return;
+        }
         for (i = 0; i < s->num_nodes; i++) {
-            sn1_node_full_reset(SN1_NODE(s->bedrock_nodes[i]), type);
+            sn1_node_reset_cpus(SN1_NODE(s->bedrock_nodes[i]));
+        }
+        qemu_devices_reset(type);
+        for (i = 0; i < s->num_nodes; i++) {
+            sn1_node_release_cpus(SN1_NODE(s->bedrock_nodes[i]));
         }
         return;
     }

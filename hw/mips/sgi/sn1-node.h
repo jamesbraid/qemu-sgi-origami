@@ -29,6 +29,20 @@
 #define SGI_SN1_NODE_MAX_CPUS 4
 
 /*
+ * The four processor-selected spaces a node's window appears in (memory,
+ * Hub special, crosstalk, memory special), each a 1 TiB carrier of 128
+ * node windows; see sn1-node.c's claim layer.
+ */
+#define SN1_NODE_SPACES 4
+/* A node's own window and its one cabled peer's. */
+#define SN1_NODE_CLAIMS 2
+/* The claim views: one per processor, then the node's own fabric view. */
+#define SN1_NODE_VIEWS (SGI_SN1_NODE_MAX_CPUS + 1)
+#define SN1_NODE_FABRIC_VIEW SGI_SN1_NODE_MAX_CPUS
+/* The reader-relative forms a processor view overlays; see sn1-node.c. */
+#define SN1_NODE_LOCAL_FORMS 4
+
+/*
  * A cacheable ROM device mirroring the boot flash's current storage. Stores
  * still reach its write callback and are refused; its RAM block migrates.
  */
@@ -116,6 +130,24 @@ typedef struct SN1NodeState {
     SN1PromView prom_view_reset;
     SN1PromView prom_view_local_high;
     char *prom_view_names[2];
+
+    /*
+     * The claim layer (sn1-node.c): which node each processor's and the
+     * Bedrock's DMA accesses reach, keyed by the node numbers the local
+     * blocks carry. Views 0..3 are the processors', view 4 the fabric
+     * view the Bedrock's DMA and BTE use.
+     */
+    MemoryRegion fabric;
+    MemoryRegion fabric_sysmem;
+    MemoryRegion claim_floor[SN1_NODE_SPACES];
+    MemoryRegion claim_floor_alias[SN1_NODE_VIEWS][SN1_NODE_SPACES];
+    MemoryRegion claim[SN1_NODE_VIEWS][SN1_NODE_SPACES][SN1_NODE_CLAIMS];
+    MemoryRegion local_form[SGI_SN1_NODE_MAX_CPUS][SN1_NODE_LOCAL_FORMS];
+    Notifier node_notifier;
+    Notifier cable_notifier;
+    Notifier cached_alias_notifier[2];
+    bool cable_notifier_added;
+    bool claims_ready;
 } SN1NodeState;
 
 #define TYPE_SGI_SN1_NODE "sgi-sn1-node"
@@ -170,5 +202,23 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
  * a board-owning attachment builds. The node must already be realized.
  */
 PCIBus *sn1_node_xbridge_pci_bus(SN1NodeState *node, unsigned int widget);
+
+/*
+ * Re-derive this node's claim layer and its cabled peer's: which node each
+ * number reaches. The machine calls it once the cable is wired; the local
+ * block's number changes and the cable's state changes call it themselves.
+ */
+void sn1_node_update_claims(SN1NodeState *node);
+
+/*
+ * The node whose local block currently carries this number and that this
+ * node can reach (itself, or its peer over an up cable), or NULL.
+ */
+SN1NodeState *sn1_node_claimant(SN1NodeState *node, unsigned int number);
+
+/* The node's placement in the global map: its windows sit at this << 33. */
+uint64_t sn1_node_canonical_address(const SN1NodeState *node,
+                                    uint64_t address);
+
 
 #endif /* HW_MIPS_SGI_SN1_NODE_H */

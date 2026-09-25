@@ -570,10 +570,9 @@ static const TypeInfo bank_test_type = {
 };
 
 /*
- * Two-node Bedrock fixture: the second plan's node-types step lets a
- * Bedrock topology carry more than one node in the descriptor, with no
- * shipped product exercising it yet (the two-chassis Origin 300 stays
- * reference-only in the catalogue). This fixture proves the builder's
+ * Two-node Bedrock fixture: a Bedrock topology may carry more than one
+ * node in the descriptor (the two-chassis Origin 300 is the shipped one,
+ * with a cable this fixture leaves out). This fixture proves the builder's
  * validation and its node loop accept a two-node Bedrock topology and
  * build both nodes through it: each node carries its own populated IO-8
  * board, at its own attachment, so the node loop's per-node widget and
