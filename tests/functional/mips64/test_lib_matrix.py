@@ -69,21 +69,21 @@ class _ManifestTest(unittest.TestCase):
 class StarterManifestTest(unittest.TestCase):
 
     def test_parses_the_config_cells(self):
-        # The three real firmware-boot cells the manifest carries: one
-        # chassis, two chassis, and mttcg -- every cell boots the real
-        # PROM now that the synthesized-firmware axis is gone (needs the
-        # provisioned PROM, so it skips rather than xfails when absent),
-        # and each is expect=pass, never xfail: a config that does not
-        # boot must fail red. One chassis tops out at 2 CPUs (the Hub's
-        # cpu_slots_per_node in the origin200 model): the model itself
-        # refuses more, so this cell's population matches the mttcg
-        # cell's and differs only in accelerator regime. mttcg is the
-        # cheapest of the three, so it is the manifest's one quick cell;
-        # the other two stay thorough.
+        # Keep the one-CPU boot, both chassis shapes, and mttcg visible.
+        # Every row boots the real PROM and must be an expected pass.
         cells = parse_matrix(STARTER_MANIFEST)
         by_id = {cell.id: cell for cell in cells}
 
-        self.assertEqual(len(cells), 3)
+        self.assertEqual(set(by_id), {
+            'prom_full_boot_1cpu', 'prom_full_boot_1node',
+            'prom_full_boot_2node', 'prom_full_boot_mttcg',
+        })
+
+        one_cpu = by_id['prom_full_boot_1cpu']
+        self.assertEqual(
+            (one_cpu.scenario, one_cpu.cpus, one_cpu.nodes,
+             one_cpu.accel, one_cpu.mem),
+            ('full_boot', 1, 1, 'wallclock', '64M'))
 
         one_node = by_id['prom_full_boot_1node']
         self.assertEqual(
@@ -105,13 +105,13 @@ class StarterManifestTest(unittest.TestCase):
             (mttcg.scenario, mttcg.cpus, mttcg.nodes, mttcg.accel),
             ('full_boot', 2, 1, 'mttcg'))
 
-        for cell in (one_node, two_node):
+        for cell in (one_cpu, one_node, two_node):
             self.assertEqual(cell.speed, 'thorough')
             self.assertEqual(cell.timeout, 700)
         self.assertEqual(mttcg.speed, 'quick')
         self.assertEqual(mttcg.timeout, 180)
 
-        for cell in (one_node, two_node, mttcg):
+        for cell in (one_cpu, one_node, two_node, mttcg):
             self.assertEqual(cell.guest, 'prom')
             self.assertEqual(cell.expect, 'pass')
             self.assertEqual(cell.xfail_mark, '')
