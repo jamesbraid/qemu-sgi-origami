@@ -2112,9 +2112,10 @@ static void rad1_check_digital_pos(QTestState *qts,
  * Stream one digital channel on the shared machine and check what the
  * driver sees, as for the analog pair:
  *
- * - a write of the enable register's bit 3, which starts nothing on any of
- *   the four, starts nothing (bit 2 of 0x44 and 0x48 is the input subcode
- *   channels', checked by rad1_check_subcode_stream);
+ * - a write of the enable register's bits that start nothing, starts
+ *   nothing: bit 3 on all four, and bit 2 on the outputs' 0x50 and 0x54,
+ *   which have no subcode DMA channel (bit 2 of 0x44 and 0x48 is the
+ *   input subcode channels', checked by rad1_check_subcode_stream);
  * - B ticks inside the 500 us poll;
  * - A and B count frames at the channel's rate, A latches 0x30, and B's
  *   low 18 bits, which hold subcode fields or another channel's count,
@@ -2151,8 +2152,9 @@ static void rad1_check_digital_stream(const Rad1DigitalChannel *d,
         rad1_ring_write(qts, slot + RAD1_SLOT_OUT_PTR, 0);
     }
 
-    /* The register's bit 3 starts nothing. */
-    rad1_write(qts, d->enable_reg, d->enable_idle | 0x8u);
+    /* Bit 3 starts nothing, nor does bit 2 on an output. */
+    rad1_write(qts, d->enable_reg,
+               d->enable_idle | (d->output ? 0xcu : 0x8u));
     qtest_clock_step(qts, 2000000);
     g_assert_cmphex(rad1_read(qts, d->pos_a), ==, 0);
     g_assert_cmphex(rad1_read(qts, d->pos_b), ==, 0);
@@ -2814,6 +2816,37 @@ static void test_io6g_rad1_genlock_pal(void)
     rad1_check_genlock("pal", 20000000, RAD1_PAL_BAND_LO, RAD1_PAL_BAND_HI);
 }
 
+/*
+ * A slot carries both field bits when two fields began since the previous
+ * completion, which takes a gap in the status engine longer than a field.
+ * Stop the engine for three NTSC fields and restart it: the first
+ * completion carries both bits, and the next event, a field later, one.
+ */
+static void test_io6g_rad1_genlock_two_event_slot(void)
+{
+    const int64_t field_ns = 16683333;
+    QTestState *qts = start_module_with(",baseio-preset=io6g",
+                                        "-global sgi-rad1-audio.genlock=ntsc");
+    int64_t times[16], interval = rad1_status_due(1);
+    uint32_t bits[16];
+    unsigned int events;
+
+    rad1_prepare_output(qts, RAD1_SAMPLE_LEFT_WORD, RAD1_SAMPLE_RIGHT_WORD);
+    events = rad1_collect_field_events(qts, 400, times, bits,
+                                       G_N_ELEMENTS(times));
+    g_assert_cmpuint(events, >=, 1);
+
+    qtest_clock_step(qts, 3 * field_ns);
+    events = rad1_collect_field_events(qts, 200, times, bits,
+                                       G_N_ELEMENTS(times));
+    g_assert_cmpuint(events, >=, 2);
+    g_assert_cmpint(times[0], ==, rad1_status_due(1));
+    g_assert_cmphex(bits[0], ==, 0x180);
+    g_assert_true(bits[1] == 0x80 || bits[1] == 0x100);
+    g_assert_cmpint(times[1] - times[0], <=, field_ns + interval);
+    qtest_quit(qts);
+}
+
 /* "genlock" names a real video standard; anything else is refused. */
 static void test_io6g_rad1_rejects_genlock(void)
 {
@@ -3411,6 +3444,8 @@ int main(int argc, char **argv)
                    test_io6g_rad1_genlock_ntsc);
     qtest_add_func("sn0/baseio/io6g-rad1-genlock-pal",
                    test_io6g_rad1_genlock_pal);
+    qtest_add_func("sn0/baseio/io6g-rad1-genlock-two-event-slot",
+                   test_io6g_rad1_genlock_two_event_slot);
     qtest_add_func("sn0/baseio/io6g-rad1-mux-word",
                    test_io6g_rad1_mux_word);
     qtest_add_func("sn0/baseio/io6g-rad1-rejects-genlock",
