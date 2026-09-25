@@ -1340,6 +1340,630 @@
           "argument": "-serial chardev:l1",
           "kind": "console",
           "node": 0
+        },
+        {
+          "argument": "-serial chardev:l1_node1",
+          "kind": "system-controller",
+          "node": 1
+        }
+      ],
+      "cpus-per-node": [
+        2,
+        2
+      ],
+      "default-cpu-model": "R14000",
+      "default-topology": "origin300",
+      "dimms-per-node": [
+        2,
+        2
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Two-chassis Origin 300",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "identity-inputs": [
+        "chassis-eeprom",
+        "board-eeprom",
+        "spd-eeprom",
+        "brick-serial",
+        "l1-debug-switches"
+      ],
+      "install-media": [
+        "disk-image",
+        "netboot"
+      ],
+      "memory-per-node-mib": {
+        "accepted": [
+          512
+        ],
+        "default": 512
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "ioc3-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "kind": "ioc3-ethernet"
+        },
+        {
+          "argument": "-netdev ...,id=net1",
+          "kind": "ioc3-ethernet"
+        }
+      ],
+      "nodes": 2,
+      "processor": {
+        "cache-mib": 2,
+        "clock-hz": 500000000,
+        "part": "R14000"
+      },
+      "product": "origin300",
+      "prom-dialogue": "ip35-l1-prompt",
+      "resources": [
+        {
+          "argument": "-drive if=mtd,index=N",
+          "count": 2,
+          "kind": "nvram",
+          "scope": "board",
+          "size": 32768
+        },
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 2,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        },
+        {
+          "argument": "chassis-eeprom.N=",
+          "count": 4,
+          "kind": "identity-eeprom",
+          "scope": "board"
+        },
+        {
+          "argument": "board-eeprom.N=",
+          "count": 4,
+          "kind": "identity-eeprom",
+          "scope": "board"
+        },
+        {
+          "argument": "spd-eeprom.N=",
+          "count": 4,
+          "kind": "spd-eeprom",
+          "scope": "dimm"
+        }
+      ],
+      "smp": 4,
+      "storage": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
+      "supported-guests": [
+        "irix"
+      ],
+      "synthesized-firmware-toggle": false,
+      "topology": "origin300-two-chassis"
+    },
+    {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:l1_node1",
+          "kind": "system-controller",
+          "node": 1
+        }
+      ],
+      "cpus-per-node": [
+        4,
+        2
+      ],
+      "default-cpu-model": "R14000",
+      "default-topology": "origin300",
+      "dimms-per-node": [
+        2,
+        2
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Two-chassis Origin 300",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "identity-inputs": [
+        "chassis-eeprom",
+        "board-eeprom",
+        "spd-eeprom",
+        "brick-serial",
+        "l1-debug-switches"
+      ],
+      "install-media": [
+        "disk-image",
+        "netboot"
+      ],
+      "memory-per-node-mib": {
+        "accepted": [
+          512
+        ],
+        "default": 512
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "ioc3-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "kind": "ioc3-ethernet"
+        },
+        {
+          "argument": "-netdev ...,id=net1",
+          "kind": "ioc3-ethernet"
+        }
+      ],
+      "nodes": 2,
+      "processor": {
+        "cache-mib": 2,
+        "clock-hz": 500000000,
+        "part": "R14000"
+      },
+      "product": "origin300",
+      "prom-dialogue": "ip35-l1-prompt",
+      "resources": [
+        {
+          "argument": "-drive if=mtd,index=N",
+          "count": 2,
+          "kind": "nvram",
+          "scope": "board",
+          "size": 32768
+        },
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 2,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        },
+        {
+          "argument": "chassis-eeprom.N=",
+          "count": 4,
+          "kind": "identity-eeprom",
+          "scope": "board"
+        },
+        {
+          "argument": "board-eeprom.N=",
+          "count": 4,
+          "kind": "identity-eeprom",
+          "scope": "board"
+        },
+        {
+          "argument": "spd-eeprom.N=",
+          "count": 4,
+          "kind": "spd-eeprom",
+          "scope": "dimm"
+        }
+      ],
+      "smp": 6,
+      "storage": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
+      "supported-guests": [
+        "irix"
+      ],
+      "synthesized-firmware-toggle": false,
+      "topology": "origin300-two-chassis"
+    },
+    {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:l1_node1",
+          "kind": "system-controller",
+          "node": 1
+        }
+      ],
+      "cpus-per-node": [
+        2,
+        4
+      ],
+      "default-cpu-model": "R14000",
+      "default-topology": "origin300",
+      "dimms-per-node": [
+        2,
+        2
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Two-chassis Origin 300",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "identity-inputs": [
+        "chassis-eeprom",
+        "board-eeprom",
+        "spd-eeprom",
+        "brick-serial",
+        "l1-debug-switches"
+      ],
+      "install-media": [
+        "disk-image",
+        "netboot"
+      ],
+      "memory-per-node-mib": {
+        "accepted": [
+          512
+        ],
+        "default": 512
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "ioc3-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "kind": "ioc3-ethernet"
+        },
+        {
+          "argument": "-netdev ...,id=net1",
+          "kind": "ioc3-ethernet"
+        }
+      ],
+      "nodes": 2,
+      "processor": {
+        "cache-mib": 2,
+        "clock-hz": 500000000,
+        "part": "R14000"
+      },
+      "product": "origin300",
+      "prom-dialogue": "ip35-l1-prompt",
+      "resources": [
+        {
+          "argument": "-drive if=mtd,index=N",
+          "count": 2,
+          "kind": "nvram",
+          "scope": "board",
+          "size": 32768
+        },
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 2,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        },
+        {
+          "argument": "chassis-eeprom.N=",
+          "count": 4,
+          "kind": "identity-eeprom",
+          "scope": "board"
+        },
+        {
+          "argument": "board-eeprom.N=",
+          "count": 4,
+          "kind": "identity-eeprom",
+          "scope": "board"
+        },
+        {
+          "argument": "spd-eeprom.N=",
+          "count": 4,
+          "kind": "spd-eeprom",
+          "scope": "dimm"
+        }
+      ],
+      "smp": 6,
+      "storage": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
+      "supported-guests": [
+        "irix"
+      ],
+      "synthesized-firmware-toggle": false,
+      "topology": "origin300-two-chassis"
+    },
+    {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "node": 0
+        },
+        {
+          "argument": "-serial chardev:l1_node1",
+          "kind": "system-controller",
+          "node": 1
+        }
+      ],
+      "cpus-per-node": [
+        4,
+        4
+      ],
+      "default-cpu-model": "R14000",
+      "default-topology": "origin300",
+      "dimms-per-node": [
+        2,
+        2
+      ],
+      "disk-bus": "scsi.0",
+      "display-name": "Two-chassis Origin 300",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/6.5.30/ip35prom.payload.bin",
+        "kind": "ip35-prom",
+        "per-node-flash": false,
+        "sha256": "554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b",
+        "size": 1476264
+      },
+      "identity-inputs": [
+        "chassis-eeprom",
+        "board-eeprom",
+        "spd-eeprom",
+        "brick-serial",
+        "l1-debug-switches"
+      ],
+      "install-media": [
+        "disk-image",
+        "netboot"
+      ],
+      "memory-per-node-mib": {
+        "accepted": [
+          512
+        ],
+        "default": 512
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "ioc3-ethernet",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "kind": "ioc3-ethernet"
+        },
+        {
+          "argument": "-netdev ...,id=net1",
+          "kind": "ioc3-ethernet"
+        }
+      ],
+      "nodes": 2,
+      "processor": {
+        "cache-mib": 2,
+        "clock-hz": 500000000,
+        "part": "R14000"
+      },
+      "product": "origin300",
+      "prom-dialogue": "ip35-l1-prompt",
+      "resources": [
+        {
+          "argument": "-drive if=mtd,index=N",
+          "count": 2,
+          "kind": "nvram",
+          "scope": "board",
+          "size": 32768
+        },
+        {
+          "argument": "-drive if=pflash,unit=N",
+          "count": 2,
+          "kind": "boot-flash",
+          "scope": "board",
+          "size": 16777216
+        },
+        {
+          "argument": "chassis-eeprom.N=",
+          "count": 4,
+          "kind": "identity-eeprom",
+          "scope": "board"
+        },
+        {
+          "argument": "board-eeprom.N=",
+          "count": 4,
+          "kind": "identity-eeprom",
+          "scope": "board"
+        },
+        {
+          "argument": "spd-eeprom.N=",
+          "count": 4,
+          "kind": "spd-eeprom",
+          "scope": "dimm"
+        }
+      ],
+      "smp": 8,
+      "storage": [
+        {
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.1",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        }
+      ],
+      "supported-guests": [
+        "irix"
+      ],
+      "synthesized-firmware-toggle": false,
+      "topology": "origin300-two-chassis"
+    },
+    {
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "node": 0
         }
       ],
       "cpus-per-node": [
@@ -3899,6 +4523,339 @@
           "widget": 13
         }
       ]
+    },
+    {
+      "cables": [
+        {
+          "ends": [
+            {
+              "index": 0,
+              "kind": "node",
+              "port": 0
+            },
+            {
+              "index": 1,
+              "kind": "node",
+              "port": 0
+            }
+          ],
+          "kind": "cable",
+          "name": "numalink-cable"
+        }
+      ],
+      "console": 0,
+      "controllers": [
+        {
+          "id": "master-l1",
+          "kind": "l1",
+          "module-index": 0
+        },
+        {
+          "id": "slave-l1",
+          "kind": "l1",
+          "module-index": 1
+        }
+      ],
+      "crossbars": [],
+      "description": "SGI Origin 300 (IP45), two chassis",
+      "generation": "sn1",
+      "io-boards": [
+        {
+          "attachment": 0,
+          "carrier": "machine-placed",
+          "id": "master-xbridge-bridge-e",
+          "module-index": 0,
+          "part": "030-1673-003",
+          "preset": "io8",
+          "revision": 2,
+          "serial": 47413004295
+        },
+        {
+          "attachment": 1,
+          "carrier": "machine-placed",
+          "id": "master-xbridge-bridge-f",
+          "ioc3-serial": 103835129348098,
+          "module-index": 0,
+          "part": "030-1673-003",
+          "preset": "io8",
+          "revision": 2,
+          "serial": 47413004295
+        },
+        {
+          "attachment": 2,
+          "carrier": "machine-placed",
+          "id": "slave-xbridge-bridge-e",
+          "module-index": 1,
+          "part": "030-1673-003",
+          "preset": "io8",
+          "revision": 2,
+          "serial": 47413004296
+        },
+        {
+          "attachment": 3,
+          "carrier": "machine-placed",
+          "id": "slave-xbridge-bridge-f",
+          "ioc3-serial": 103835129348099,
+          "module-index": 1,
+          "part": "030-1673-003",
+          "preset": "io8",
+          "revision": 2,
+          "serial": 47413004296
+        }
+      ],
+      "junk-uart": -1,
+      "modules": [
+        {
+          "controller-index": 0,
+          "id": "master-module",
+          "initial-module-number": 1,
+          "nodes": [
+            0
+          ],
+          "serial": ""
+        },
+        {
+          "controller-index": 1,
+          "id": "slave-module",
+          "initial-module-number": 2,
+          "nodes": [
+            1
+          ],
+          "serial": ""
+        }
+      ],
+      "name": "origin300-two-chassis",
+      "nodes": [
+        {
+          "accepted-memory-mib": [
+            512
+          ],
+          "asic-kind": "bedrock",
+          "bank-mib": [
+            0,
+            0,
+            256,
+            256,
+            0,
+            0,
+            0,
+            0
+          ],
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-clock-hz": 250000000,
+                "cache-mib": 2,
+                "clock-hz": 500000000,
+                "fpu-prid": 0,
+                "id": "r14000-500mhz",
+                "kind": "R14000",
+                "mode-bits": 10135941,
+                "prid": 3876
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 250000000,
+                "cache-mib": 2,
+                "clock-hz": 500000000,
+                "fpu-prid": 0,
+                "id": "r14000-500mhz",
+                "kind": "R14000",
+                "mode-bits": 10135941,
+                "prid": 3876
+              },
+              "interface": 0,
+              "slot": 1
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 250000000,
+                "cache-mib": 2,
+                "clock-hz": 500000000,
+                "fpu-prid": 0,
+                "id": "r14000-500mhz",
+                "kind": "R14000",
+                "mode-bits": 10135941,
+                "prid": 3876
+              },
+              "interface": 1,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 250000000,
+                "cache-mib": 2,
+                "clock-hz": 500000000,
+                "fpu-prid": 0,
+                "id": "r14000-500mhz",
+                "kind": "R14000",
+                "mode-bits": 10135941,
+                "prid": 3876
+              },
+              "interface": 1,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1476264
+          },
+          "id": "master-bedrock",
+          "identity": {
+            "i2c-controller": false,
+            "ni-revision": 2,
+            "serial": 14345375975688,
+            "system-controller": false,
+            "widget-revision": 2
+          },
+          "module-index": 0,
+          "slave-role": false,
+          "slot": 0
+        },
+        {
+          "accepted-memory-mib": [
+            512
+          ],
+          "asic-kind": "bedrock",
+          "bank-mib": [
+            0,
+            0,
+            256,
+            256,
+            0,
+            0,
+            0,
+            0
+          ],
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-clock-hz": 250000000,
+                "cache-mib": 2,
+                "clock-hz": 500000000,
+                "fpu-prid": 0,
+                "id": "r14000-500mhz",
+                "kind": "R14000",
+                "mode-bits": 10135941,
+                "prid": 3876
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 250000000,
+                "cache-mib": 2,
+                "clock-hz": 500000000,
+                "fpu-prid": 0,
+                "id": "r14000-500mhz",
+                "kind": "R14000",
+                "mode-bits": 10135941,
+                "prid": 3876
+              },
+              "interface": 0,
+              "slot": 1
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 250000000,
+                "cache-mib": 2,
+                "clock-hz": 500000000,
+                "fpu-prid": 0,
+                "id": "r14000-500mhz",
+                "kind": "R14000",
+                "mode-bits": 10135941,
+                "prid": 3876
+              },
+              "interface": 1,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-clock-hz": 250000000,
+                "cache-mib": 2,
+                "clock-hz": 500000000,
+                "fpu-prid": 0,
+                "id": "r14000-500mhz",
+                "kind": "R14000",
+                "mode-bits": 10135941,
+                "prid": 3876
+              },
+              "interface": 1,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "am29f080",
+            "size": 1476264
+          },
+          "id": "slave-bedrock",
+          "identity": {
+            "i2c-controller": false,
+            "ni-revision": 2,
+            "serial": 14345375975689,
+            "system-controller": false,
+            "widget-revision": 2
+          },
+          "module-index": 1,
+          "slave-role": true,
+          "slot": 0
+        }
+      ],
+      "product": "origin300",
+      "routers": [],
+      "supported-cpu-populations": [
+        {
+          "cpus-per-node": [
+            2,
+            2
+          ]
+        },
+        {
+          "cpus-per-node": [
+            4,
+            2
+          ]
+        },
+        {
+          "cpus-per-node": [
+            2,
+            4
+          ]
+        },
+        {
+          "cpus-per-node": [
+            4,
+            4
+          ]
+        }
+      ],
+      "xtalk-attachments": [
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 14
+        },
+        {
+          "crossbar-index": -1,
+          "node-index": 0,
+          "widget": 15
+        },
+        {
+          "crossbar-index": -1,
+          "node-index": 1,
+          "widget": 14
+        },
+        {
+          "crossbar-index": -1,
+          "node-index": 1,
+          "widget": 15
+        }
+      ],
+      "xtalk-slots": []
     },
     {
       "cables": [],

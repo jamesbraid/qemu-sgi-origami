@@ -94,6 +94,10 @@ slow_qtests = {
   # processes) raised a standalone measurement to 91.75s at 59 cases, so
   # keep the same three-times-measured budget.
   'sn1-address-map-test': 280,
+  # sn1-cross-node-test starts the two-chassis machine for each of its
+  # thirteen cases. Measured 27.53s beside two other suites at host load
+  # 60; allow three times that, rounded up.
+  'sn1-cross-node-test': 90,
   # The merged 75-case MD file measured 79.48s alone under a 136 host load.
   # Its 60s default timed out during a six-test run. Allow three times that.
   'sn1-bedrock-md-test': 240,
@@ -421,7 +425,7 @@ qtests_mips64 = \
     ['sn1-bedrock-pi-test', 'sn1-bedrock-test', 'sn1-bedrock-link-test'] :
     []) + \
   (config_all_devices.has_key('CONFIG_SGI_SN1') ?
-    ['sn1-address-map-test',
+    ['sn1-address-map-test', 'sn1-cross-node-test',
      'sn1-cpu-identity-test', 'sn1-hub-lock-test', 'sn1-presence-test',
      'sn1-io8-scsi-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-mttcg-test',
