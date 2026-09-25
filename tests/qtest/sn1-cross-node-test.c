@@ -41,6 +41,10 @@
 #define WORD1 UINT64_C(0x0000000000000b11)
 #define SCRATCH0 UINT64_C(0x5c0)
 #define SCRATCH1 UINT64_C(0x5c1)
+/* Slice A's LED in the Hub-special local register window, bits 7:0. */
+#define HUB_LED0 (HUB_LOCAL_REGISTERS + UINT64_C(0xc0))
+#define LED0 UINT64_C(0xa0)
+#define LED1 UINT64_C(0xa1)
 
 static char *prom_path;
 
@@ -124,8 +128,10 @@ static QTestState *machine_start(void)
     peer_access(qts, LB_SCRATCH2, true, SCRATCH1);
     qtest_writeq(qts, BEDROCK_LOCAL + LB_SCRATCH2, SCRATCH0);
     qtest_writeq(qts, PROBE, WORD0);
+    qtest_writeq(qts, HUB_LED0, LED0);
     set_node_number(qts, 1, 1);
     qtest_writeq(qts, NODE(1) + PROBE, WORD1);
+    qtest_writeq(qts, NODE(1) + HUB_LED0, LED1);
     set_node_number(qts, 1, 0);
     return qts;
 }
@@ -224,7 +230,8 @@ static void test_renumbering_moves_the_claim(void)
 
 /*
  * The Bedrock's own register alias and the Hub special local register
- * window reach the reader's node, whatever number it carries.
+ * window (read here through a processor LED) reach the reader's node,
+ * whatever number it carries.
  */
 static void test_local_forms_are_the_readers(void)
 {
@@ -236,12 +243,8 @@ static void test_local_forms_are_the_readers(void)
                         SCRATCH0);
         g_assert_cmphex(cpu_read_ok(qts, 3, BEDROCK_LOCAL + LB_SCRATCH2), ==,
                         SCRATCH1);
-        g_assert_cmphex(cpu_read_ok(qts, 1,
-                                    HUB_LOCAL_REGISTERS + LB_SCRATCH2), ==,
-                        SCRATCH0);
-        g_assert_cmphex(cpu_read_ok(qts, 2,
-                                    HUB_LOCAL_REGISTERS + LB_SCRATCH2), ==,
-                        SCRATCH1);
+        g_assert_cmphex(cpu_read_ok(qts, 1, HUB_LED0), ==, LED0);
+        g_assert_cmphex(cpu_read_ok(qts, 2, HUB_LED0), ==, LED1);
         /* The uncached alias of the reader's own memory. */
         g_assert_cmphex(cpu_read_ok(qts, 2, SPACE_HUB + PROBE), ==, WORD1);
         /* Again after node 1 takes a number of its own. */

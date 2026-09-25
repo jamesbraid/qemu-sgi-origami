@@ -80,6 +80,7 @@
 #define HUB_REMOTE_BOOT (SPACE_HUB + UINT64_C(0x38000000))
 #define HUB_REMOTE_FLASH (SPACE_HUB + UINT64_C(0x3a000000))
 #define L1_UART UINT64_C(0x80)
+#define HUB_LED(slice) (UINT64_C(0xc0) + 8 * (slice))
 #define L1_SCRATCH UINT64_C(0x38)
 #define L1_UART_BASE (HUB_REMOTE_REGISTERS + L1_UART)
 #define L1_UART_LOCAL_BASE (HUB_LOCAL_REGISTERS + L1_UART)
@@ -772,38 +773,191 @@ static void test_origin300_four_cpu_initial_enable(const void *data)
     qtest_quit(qts);
 }
 
-static void test_hub_local_reaches_bedrock(const void *data)
+/*
+ * Neither Hub-special register window is a view of Bedrock's own register
+ * block: that is the crosstalk form's job alone
+ * (docs/datasheets/ip35-address-map.md, "Hub special space"). A store at
+ * the local-block scratch register's offset through either window must not
+ * reach the local block.
+ */
+static void test_hub_windows_omit_bedrock_registers(const void *data)
 {
     QTestState *qts = machine_start();
     const uint64_t scratch = UINT64_C(0x1234abcd5678ef90);
 
+    qtest_writeq(qts, BEDROCK_LOCAL + BEDROCK_LB + LB_SCRATCH2, scratch);
     qtest_writeq(qts, HUB_LOCAL_REGISTERS + BEDROCK_LB + LB_SCRATCH2,
-                 scratch);
-    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + BEDROCK_LB +
-                                LB_SCRATCH2), ==, scratch);
-
-    qtest_quit(qts);
-}
-
-static void test_hub_remote_reaches_bedrock_tail(const void *data)
-{
-    QTestState *qts = machine_start();
-    const uint64_t scratch = UINT64_C(0x90ef7856cdab3412);
-
+                 ~scratch);
     qtest_writeq(qts, HUB_REMOTE_REGISTERS + BEDROCK_LB + LB_SCRATCH2,
-                 scratch);
+                 ~scratch);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + BEDROCK_LB +
                                 LB_SCRATCH2), ==, scratch);
 
     qtest_quit(qts);
 }
 
-static void test_hub_remote_reaches_processor_interface(const void *data)
+/*
+ * The stock PROM stores 0x2000, 0x100, 0x2b and 0x29 to the sixteen
+ * doublewords below the L1 UART while it initializes a node's memory. They
+ * land in an unidentified block that keeps nothing, not on the processor
+ * interface's CPU enable, region-present and cached-alias registers that
+ * share those offsets in the crosstalk form.
+ */
+static void test_hub_unidentified_block_keeps_nothing(const void *data)
 {
     QTestState *qts = machine_start();
+    uint64_t pi[16];
 
-    qtest_writeq(qts, HUB_REMOTE_REGISTERS + PI_CPU_ENABLE_B, 1);
-    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 1);
+    for (unsigned int i = 0; i < ARRAY_SIZE(pi); i++) {
+        pi[i] = qtest_readq(qts, BEDROCK_LOCAL + 8 * i);
+    }
+    for (unsigned int i = 0; i < ARRAY_SIZE(pi); i++) {
+        qtest_writeq(qts, HUB_REMOTE_REGISTERS + 8 * i,
+                     i < 8 ? 0x2b : 0x29);
+        qtest_writeq(qts, HUB_LOCAL_REGISTERS + 8 * i, 0x2000);
+    }
+    for (unsigned int i = 0; i < ARRAY_SIZE(pi); i++) {
+        if (8 * i == PI_CPU_NUMBER) {
+            continue; /* answers with the reading slot, not stored state */
+        }
+        g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + 8 * i), ==, pi[i]);
+        g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + 8 * i), ==, 0);
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + 8 * i), ==, 0);
+    }
+
+    qtest_quit(qts);
+}
+
+/*
+ * What the Hub-special windows refuse, and that each refusal is said out
+ * loud: offsets past the LEDs decode to nothing in either form, an LED
+ * answers only an aligned eight-byte access, the unidentified block logs
+ * what it ignores, and both blocks honour the current-cell access rule.
+ */
+static void test_hub_window_refusals(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *log_path = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    g_autofree char *log = NULL;
+    const uint64_t md_cell = BEDROCK_LOCAL + BEDROCK_MD_CURRENT_CELL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn1-hub-window-log-XXXXXX.txt", &log_path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(close(fd), ==, 0);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf("-d unimp,guest_errors -D %s", quoted);
+    qts = machine_start_with(prom_path, extra);
+
+    /* Past the LEDs: nothing in the local form, a logged refusal remotely. */
+    assert_flat_view_unmapped(qts, HUB_LOCAL_REGISTERS + 0xe0);
+    assert_flat_view_unmapped(qts, HUB_LOCAL_REGISTERS + 0x1000);
+    qtest_readq(qts, HUB_REMOTE_REGISTERS + 0xe0);
+    qtest_readq(qts, HUB_REMOTE_REGISTERS + 0x1000);
+
+    /* A narrow LED access is refused and leaves the LED alone. */
+    qtest_writeq(qts, HUB_LOCAL_REGISTERS + HUB_LED(1), 0x5d);
+    g_assert_cmphex(qtest_readl(qts, HUB_LOCAL_REGISTERS + HUB_LED(1) + 4),
+                    ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + HUB_LED(1)), ==,
+                    0x5d);
+
+    /* The unidentified block logs what it reads as zero and ignores. */
+    qtest_writeq(qts, HUB_REMOTE_REGISTERS + PI_CACHED_ALIAS, 0x2b);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + PI_CACHED_ALIAS),
+                    ==, 0);
+
+    /* With the region's current-cell bit clear, both blocks refuse. */
+    qtest_writeq(qts, md_cell, 0);
+    qtest_writeq(qts, HUB_LOCAL_REGISTERS + PI_CACHED_ALIAS, 0x29);
+    qtest_writeq(qts, HUB_LOCAL_REGISTERS + HUB_LED(1), 0x11);
+    qtest_writeq(qts, md_cell, 1);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + HUB_LED(1)), ==,
+                    0x5d);
+
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
+    g_assert_no_error(error);
+    g_assert_nonnull(strstr(log, "remote register window read at 0xe0 is "
+                                 "not decoded"));
+    g_assert_nonnull(strstr(log, "remote register window read at 0x1000 is "
+                                 "not decoded"));
+    g_assert_nonnull(strstr(log, "refusing a 4-byte read at offset 0xc"));
+    g_assert_nonnull(strstr(log, "ignores a 8-byte write of 0x2b at offset "
+                                 "0x28"));
+    g_assert_nonnull(strstr(log, "block read of 8 bytes at offset 0x28 "
+                                 "returns 0"));
+    g_assert_nonnull(strstr(log, "Hub-special register window write at 0x28 "
+                                 "denied"));
+    g_assert_nonnull(strstr(log, "processor LED write denied"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/* PI state a Hub-special window store could disturb: masks and cross-calls. */
+static void read_pi_interrupt_state(QTestState *qts, uint64_t base,
+                                    uint64_t state[9])
+{
+    for (unsigned int i = 0; i < 9; i++) {
+        state[i] = qtest_readq(qts, base + PI_MASK_0_A + 8 * i);
+    }
+}
+
+/*
+ * One LED register per processor slice at 0xc0 + 8 * slice of both
+ * windows. Before this decode existed those offsets were PI interrupt mask
+ * 1 B and the cross-call-pending set A, set B and clear A registers, so
+ * every PROM progress code and IRIX heartbeat rewrote a mask or raised or
+ * cleared a cross-call; this test fails on that decode.
+ */
+static void test_hub_special_leds(const void *data)
+{
+    QTestState *qts = machine_start_bare("-cpu R14000 -smp 4");
+    uint64_t pi0[9], pi1[9], after[9];
+
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_MASK_1_B, 0x5a5a);
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_PI1 + PI_MASK_1_B, 0xa5a5);
+    read_pi_interrupt_state(qts, BEDROCK_LOCAL, pi0);
+    read_pi_interrupt_state(qts, BEDROCK_NODE0 + BEDROCK_PI1, pi1);
+
+    for (unsigned int slice = 0; slice < 4; slice++) {
+        qtest_writeq(qts, HUB_LOCAL_REGISTERS + HUB_LED(slice), 0x5d + slice);
+    }
+    for (unsigned int slice = 0; slice < 4; slice++) {
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + HUB_LED(slice)),
+                        ==, 0x5d + slice);
+        g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS +
+                                    HUB_LED(slice)), ==, 0x5d + slice);
+        qtest_writeq(qts, HUB_REMOTE_REGISTERS + HUB_LED(slice), 0xf0 + slice);
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + HUB_LED(slice)),
+                        ==, 0xf0 + slice);
+    }
+
+    read_pi_interrupt_state(qts, BEDROCK_LOCAL, after);
+    g_assert_cmpmem(after, sizeof(after), pi0, sizeof(pi0));
+    read_pi_interrupt_state(qts, BEDROCK_NODE0 + BEDROCK_PI1, after);
+    g_assert_cmpmem(after, sizeof(after), pi1, sizeof(pi1));
+
+    /* The LED bank is eight bits wide. */
+    qtest_writeq(qts, HUB_LOCAL_REGISTERS + HUB_LED(0), 0x1a5);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + HUB_LED(0)), ==,
+                    0xa5);
+    /* Only the aligned eight-byte access every consumer makes answers. */
+    qtest_writel(qts, HUB_LOCAL_REGISTERS + HUB_LED(1) + 4, 0x11);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + HUB_LED(1)), ==,
+                    0xf1);
+    g_assert_cmphex(qtest_readl(qts, HUB_LOCAL_REGISTERS + HUB_LED(1) + 4),
+                    ==, 0);
+
+    /* No source gives a reset value; the model starts them dark. */
+    qtest_system_reset(qts);
+    for (unsigned int slice = 0; slice < 4; slice++) {
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + HUB_LED(slice)),
+                        ==, 0);
+    }
 
     qtest_quit(qts);
 }
@@ -816,13 +970,14 @@ static void test_hub_registers_refuse_denied_region(const void *data)
 
     qtest_writeq(qts, BEDROCK_LOCAL + BEDROCK_LB + LB_SCRATCH2, scratch);
     qtest_writeq(qts, HUB_REMOTE_REGISTERS + L1_UART + L1_SCRATCH, 0x5a);
+    qtest_writeq(qts, HUB_LOCAL_REGISTERS + HUB_LED(2), 0x5d);
     qtest_writeq(qts, md_cell, 0);
     g_assert_cmphex(qtest_readq(qts, md_cell), ==, 0);
 
     qtest_writeq(qts, HUB_LOCAL_REGISTERS + PI_CPU_ENABLE_B, 1);
     qtest_writeq(qts, HUB_REMOTE_REGISTERS + PI_CPU_ENABLE_B, 1);
-    qtest_writeq(qts, HUB_LOCAL_REGISTERS + BEDROCK_LB + LB_SCRATCH2, 0xaa);
-    qtest_writeq(qts, HUB_REMOTE_REGISTERS + BEDROCK_LB + LB_SCRATCH2, 0xbb);
+    qtest_writeq(qts, HUB_LOCAL_REGISTERS + HUB_LED(2), 0xaa);
+    qtest_writeq(qts, HUB_REMOTE_REGISTERS + HUB_LED(2), 0xbb);
     qtest_writeq(qts, HUB_REMOTE_REGISTERS + L1_UART + L1_SCRATCH, 0xcc);
     qtest_writeq(qts, HUB_LOCAL_REGISTERS + L1_UART + L1_SCRATCH, 0xdd);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 0);
@@ -830,8 +985,9 @@ static void test_hub_registers_refuse_denied_region(const void *data)
                                 LB_SCRATCH2), ==, scratch);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + PI_CPU_ENABLE_B),
                     ==, 0);
-    g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + BEDROCK_LB +
-                                LB_SCRATCH2), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + HUB_LED(2)), ==,
+                    0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + HUB_LED(2)), ==, 0);
     g_assert_cmphex(qtest_readq(qts, BOARD_ID_LOCAL), ==, 0);
     g_assert_cmphex(qtest_readq(qts, BOARD_ID_REMOTE), ==, 0);
     g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + L1_UART +
@@ -845,8 +1001,10 @@ static void test_hub_registers_refuse_denied_region(const void *data)
                                 L1_SCRATCH), ==, 0x5a);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + L1_UART +
                                 L1_SCRATCH), ==, 0x5a);
-    g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + BEDROCK_LB +
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + BEDROCK_LB +
                                 LB_SCRATCH2), ==, scratch);
+    g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + HUB_LED(2)), ==,
+                    0x5d);
     g_assert_cmphex(qtest_readq(qts, BOARD_ID_LOCAL), ==, BOARD_ID_VALUE);
     g_assert_cmphex(qtest_readq(qts, BOARD_ID_REMOTE), ==, BOARD_ID_VALUE);
     qtest_quit(qts);
@@ -1647,30 +1805,29 @@ static void test_hub_special_register_windows(const void *data)
      */
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + L1_UART +
                                 L1_SCRATCH), ==, scratch);
-    /* NMI stores reach the remote PI head, not the UART at its 0x80 edge. */
+    /*
+     * The PROM's stores just below the UART's 0x80 edge land in the
+     * unidentified block, not the UART and not the PI registers.
+     */
     qtest_writeq(qts, HUB_REMOTE_REGISTERS + PI_NMI_A, 0x100);
     qtest_writeq(qts, HUB_REMOTE_REGISTERS + PI_NMI_B, 0x100);
+    qtest_writeq(qts, HUB_REMOTE_REGISTERS + PI_CACHED_ALIAS, 0x2b);
     g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + L1_UART +
                                 L1_SCRATCH), ==, scratch);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CACHED_ALIAS), ==,
                     cached_alias);
     g_assert_cmphex(qtest_readq(qts, HUB_REMOTE_REGISTERS + PI_CACHED_ALIAS),
-                    ==, cached_alias);
+                    ==, 0);
     check_access_has_no_storage(qts, HUB_REMOTE_REGISTERS + 0x1000);
 
     qtest_quit(qts);
 }
 
 /*
- * The local window's own decode is now a plain, non-overlapping partition
- * (see sn1_node_create_bedrock): a PI head, the UART's own dedicated
- * region, then a PI tail. It is no longer a whole-file alias of the PI
- * register file, so a PI register written through the crosstalk form must
- * not leak through when read back at the same relative offset in the
- * local window -- only the UART lives there now. Restoring the old
- * whole-file alias (hub_local_register_block) makes this fail: the
- * pre-fix model answered the crosstalk write's value, not the UART's line
- * status, at that offset.
+ * The local window holds its own blocks (see sn1_node_create_bedrock),
+ * not the PI register file, so a PI register written through the crosstalk
+ * form must not leak through when read back at the same relative offset in
+ * the local window, and a store there must not reach the PI.
  */
 static void test_hub_local_register_window_omits_pi_registers(
     const void *data)
@@ -1690,12 +1847,14 @@ static void test_hub_local_register_window_omits_pi_registers(
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_PENDING_0) & 0x80,
                     ==, 0x80);
 
-    /* Head and tail still reach the PI register file around the UART. */
+    /* Neither side of the UART reaches the PI register file. */
+    qtest_writeq(qts, BEDROCK_LOCAL + PI_MASK_1_B, 0x3c);
     qtest_writeq(qts, HUB_LOCAL_REGISTERS + PI_CPU_ENABLE_B, 1);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + PI_CPU_ENABLE_B),
-                    ==, 1);
+                    ==, 0);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CPU_ENABLE_B), ==, 0);
     qtest_writeq(qts, HUB_LOCAL_REGISTERS + PI_MASK_1_B, 0x5a);
-    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_MASK_1_B), ==, 0x5a);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_MASK_1_B), ==, 0x3c);
 
     qtest_quit(qts);
 }
@@ -2099,12 +2258,10 @@ static void test_hub_local_l1_uart_reaches_cpu_c(const void *data)
     stop_vm(qts);
 
     /*
-     * CPU C (logical index 1, physical slot C) has its own local-window
-     * PI1 overlay (sn1.cpu-c.local-pi-hub-head/tail) around this same
-     * offset, split the same way the machine-wide window is; the gap
-     * between the two halves must still fall through to the machine-wide
-     * UART underneath, the same as CPU A, which has no per-slot override
-     * at all and reaches the UART through that container directly.
+     * CPU C (logical index 1, physical slot C) sits on the second
+     * processor interface and has its own crosstalk-form PI1 overlay; the
+     * Hub-special window has no per-slot view, so C reaches the same
+     * machine-wide UART as CPU A.
      */
     g_assert_cmphex(cpu_gpr(qts, 0, "s3") & 0xff, ==, 0x60);
     g_assert_cmphex(cpu_gpr(qts, 1, "s3") & 0xff, ==, 0x60);
@@ -2141,25 +2298,19 @@ static void test_hub_local_reaches_l1_uart(const void *data)
                                 L1_SCRATCH), ==, scratch);
 
     /*
-     * PI head (below 0x80): a stored register round-trips, and a write to
-     * the write-only NMI B register there does not disturb the UART
-     * scratch just proven above (NMI_B itself reads back 0, write-only,
-     * the same as every other consumer of it in this file).
+     * The blocks on either side of the UART do not disturb the scratch
+     * just proven above: a store at its 0x78 edge lands in the
+     * unidentified block, and one at its 0xc0 edge in slice 0's LED.
      */
-    cached_alias = qtest_readq(qts, HUB_LOCAL_REGISTERS + PI_CACHED_ALIAS);
-    qtest_writeq(qts, HUB_LOCAL_REGISTERS + PI_CACHED_ALIAS,
-                (cached_alias + 1) & 0xf);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + PI_CACHED_ALIAS),
-                    ==, (cached_alias + 1) & 0xf);
-    qtest_writeq(qts, HUB_LOCAL_REGISTERS + PI_CACHED_ALIAS, cached_alias);
+    cached_alias = qtest_readq(qts, BEDROCK_LOCAL + PI_CACHED_ALIAS);
     qtest_writeq(qts, HUB_LOCAL_REGISTERS + PI_NMI_B, 0x100);
+    qtest_writeq(qts, HUB_LOCAL_REGISTERS + HUB_LED(0), 0x5a);
     g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + L1_UART +
                                 L1_SCRATCH), ==, scratch);
-
-    /* PI tail (0xc0 and up): a mask register round-trips there too. */
-    qtest_writeq(qts, HUB_LOCAL_REGISTERS + PI_MASK_1_B, 0x5a);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + PI_MASK_1_B), ==,
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL_REGISTERS + HUB_LED(0)), ==,
                     0x5a);
+    g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + PI_CACHED_ALIAS), ==,
+                    cached_alias);
 
     qtest_quit(qts);
 }
@@ -3583,6 +3734,8 @@ static void test_board_id_and_l1_uart_survive_migration(const void *data)
     from = qtest_init(cmdline);
     g_assert_cmphex(qtest_readq(from, BOARD_ID_LOCAL), ==, BOARD_ID_VALUE);
     l1_status_before = qtest_readq(from, L1_UART_BASE + L1_UART_STATUS);
+    /* Slot C's processor LED is node state and travels too. */
+    qtest_writeq(from, HUB_LOCAL_REGISTERS + HUB_LED(2), 0x5d);
 
     to_cmdline = g_strdup_printf("%s -incoming %s", cmdline, uri);
     to = qtest_init(to_cmdline);
@@ -3591,6 +3744,8 @@ static void test_board_id_and_l1_uart_survive_migration(const void *data)
     g_assert_cmphex(qtest_readq(to, BOARD_ID_LOCAL), ==, BOARD_ID_VALUE);
     g_assert_cmphex(qtest_readq(to, L1_UART_BASE + L1_UART_STATUS), ==,
                     l1_status_before);
+    g_assert_cmphex(qtest_readq(to, HUB_LOCAL_REGISTERS + HUB_LED(2)), ==,
+                    0x5d);
 
     qtest_quit(to);
     qtest_quit(from);
@@ -3658,12 +3813,14 @@ int main(int argc, char **argv)
                         test_origin300_cpu_c_initial_enable);
     qtest_add_data_func("sn1/address-map/origin300-four-cpu-initial-enable",
                         NULL, test_origin300_four_cpu_initial_enable);
-    qtest_add_data_func("sn1/address-map/hub-local-reaches-bedrock", NULL,
-                        test_hub_local_reaches_bedrock);
-    qtest_add_data_func("sn1/address-map/hub-remote-reaches-bedrock-tail", NULL,
-                        test_hub_remote_reaches_bedrock_tail);
-    qtest_add_data_func("sn1/address-map/hub-remote-reaches-processor-interface",
-                        NULL, test_hub_remote_reaches_processor_interface);
+    qtest_add_data_func("sn1/address-map/hub-windows-omit-bedrock-registers",
+                        NULL, test_hub_windows_omit_bedrock_registers);
+    qtest_add_data_func("sn1/address-map/hub-unidentified-block-keeps-nothing",
+                        NULL, test_hub_unidentified_block_keeps_nothing);
+    qtest_add_data_func("sn1/address-map/hub-special-leds", NULL,
+                        test_hub_special_leds);
+    qtest_add_data_func("sn1/address-map/hub-window-refusals", NULL,
+                        test_hub_window_refusals);
     qtest_add_data_func("sn1/address-map/hub-registers-refuse-denied-region",
                         NULL, test_hub_registers_refuse_denied_region);
     qtest_add_data_func("sn1/address-map/crosstalk-big-window", NULL,
