@@ -465,6 +465,101 @@ static void test_masked_read(void)
     run_replay(MASKED_READ, false);
 }
 
+/*
+ * MGRAS_START_LINE/MGRAS_END_LINE are plain line numbers with no
+ * cross-check against an unrelated checkpoint file's own boundary --
+ * resuming at the line a checkpoint was saved from, instead of the line
+ * after it, would silently replay that line's write a second time. Prove
+ * the documented N/N+1 contract instead: save after line two of a tiny
+ * fixture, resume at line three, and confirm line two's write appears
+ * exactly once across the combined trace of both runs.
+ */
+static void test_checkpoint_boundary_runs_once(void)
+{
+    static const char fixture[] =
+        "write 1 0x073c08 0xaa\n"
+        "write 1 0x073c08 0xbb\n"
+        "read 1 0x073c08 0xbb\n";
+    static const char needle[] = "offset 0x73c08 value 0xbb size 1 write=1";
+    g_autofree char *fixture_path = NULL;
+    g_autofree char *checkpoint_path = NULL;
+    g_autofree char *trace_save_path = NULL;
+    g_autofree char *trace_load_path = NULL;
+    g_autofree char *trace_save = NULL;
+    g_autofree char *trace_load = NULL;
+    g_autofree char *combined = NULL;
+    g_auto(GStrv) combined_lines = NULL;
+    g_autoptr(GError) error = NULL;
+    unsigned int seen = 0;
+    int fd;
+
+    fd = g_file_open_tmp("sgi-mgras-boundary-XXXXXX.replay", &fixture_path,
+                         &error);
+    g_assert_no_error(error);
+    close(fd);
+    g_assert_true(g_file_set_contents(fixture_path, fixture,
+                                      strlen(fixture), &error));
+    g_assert_no_error(error);
+
+    fd = g_file_open_tmp("sgi-mgras-boundary-XXXXXX.state", &checkpoint_path,
+                         &error);
+    g_assert_no_error(error);
+    close(fd);
+    unlink(checkpoint_path);
+    fd = g_file_open_tmp("sgi-mgras-boundary-save-XXXXXX.trace",
+                         &trace_save_path, &error);
+    g_assert_no_error(error);
+    close(fd);
+    fd = g_file_open_tmp("sgi-mgras-boundary-load-XXXXXX.trace",
+                         &trace_load_path, &error);
+    g_assert_no_error(error);
+    close(fd);
+
+    g_setenv("MGRAS_END_LINE", "2", true);
+    g_setenv("MGRAS_CHECKPOINT_SAVE", checkpoint_path, true);
+    g_setenv("MGRAS_TRACE", trace_save_path, true);
+    run_replay(fixture_path, false);
+    g_unsetenv("MGRAS_CHECKPOINT_SAVE");
+
+    g_setenv("MGRAS_CHECKPOINT_LOAD", checkpoint_path, true);
+    g_setenv("MGRAS_START_LINE", "3", true);
+    g_setenv("MGRAS_END_LINE", "3", true);
+    g_setenv("MGRAS_TRACE", trace_load_path, true);
+    run_replay(fixture_path, false);
+    g_unsetenv("MGRAS_CHECKPOINT_LOAD");
+    g_unsetenv("MGRAS_START_LINE");
+    g_unsetenv("MGRAS_END_LINE");
+    g_unsetenv("MGRAS_TRACE");
+
+    g_assert_true(g_file_get_contents(trace_save_path, &trace_save, NULL,
+                                      &error));
+    g_assert_no_error(error);
+    g_assert_true(g_file_get_contents(trace_load_path, &trace_load, NULL,
+                                      &error));
+    g_assert_no_error(error);
+    combined = g_strconcat(trace_save, trace_load, NULL);
+
+    /*
+     * Every MMIO access fires both sgi_mgras_mmio and, for the control
+     * window this offset falls in, sgi_mgras_control_mmio -- one real
+     * access, two trace lines. Count only the plain event, the same way
+     * check_default_trace's own scan above filters to one event name.
+     */
+    combined_lines = g_strsplit(combined, "\n", -1);
+    for (unsigned int i = 0; combined_lines[i]; i++) {
+        if (g_str_has_prefix(combined_lines[i], "sgi_mgras_mmio ") &&
+            strstr(combined_lines[i], needle)) {
+            seen++;
+        }
+    }
+    g_assert_cmpuint(seen, ==, 1);
+
+    unlink(fixture_path);
+    unlink(checkpoint_path);
+    unlink(trace_save_path);
+    unlink(trace_load_path);
+}
+
 static void test_cmap_high_byte(void)
 {
     run_replay(CMAP_HIGH_BYTE, false);
@@ -563,6 +658,8 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-mgras/replay-screendump", test_replay_screendump);
     qtest_add_func("sgi-mgras/minimal-replay", test_minimal_replay);
     qtest_add_func("sgi-mgras/masked-read", test_masked_read);
+    qtest_add_func("sgi-mgras/checkpoint-boundary-once",
+                   test_checkpoint_boundary_runs_once);
     qtest_add_func("sgi-mgras/cmap-high-byte", test_cmap_high_byte);
     qtest_add_func("sgi-mgras/char-modes", test_char_modes);
     qtest_add_func("sgi-mgras/cmap-xmap-wid", test_cmap_xmap_wid);
