@@ -197,8 +197,10 @@ static void si_context_write(SGIMgrasState *s, uint32_t value)
          * Established (mgras-hq4.md, "Context switch and HQ flags"):
          * MgrasCtxsw stores exactly 63 words and never reads or writes a
          * closing token at 0x120400 -- the transaction completes as soon
-         * as the 63rd word lands. Reachable only if a write races the
-         * completion interrupt.
+         * as the 63rd word lands. Defensive only: completion moves
+         * protocol off the image state, so si_write() already routes any
+         * later word to the command parser and this branch is unreachable
+         * through it.
          */
         si_error(s, 0x120400, 4, "context write after image is complete");
         return;
