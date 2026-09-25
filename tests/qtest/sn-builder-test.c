@@ -884,12 +884,20 @@ static void test_origin200_onboard_board_is_ip29_preset(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * The default four-node module keeps the plain BaseIO: only the one-node
+ * topology below declares BaseIO-G, so without baseio-preset= the default
+ * must still build io6.
+ */
 static void test_origin2000_onboard_board_is_xio_baseio(const void *data)
 {
     QTestState *qts = qtest_init("-M origin2000 -display none");
     g_autofree char *type = qom_child_type(qts, "/machine/module0", "slot8");
+    g_autofree char *preset = NULL;
 
     g_assert_cmpstr(type, ==, "sgi-xio-baseio");
+    preset = qom_get_str(qts, "/machine/module0/slot8", "preset");
+    g_assert_cmpstr(preset, ==, "io6");
     qtest_quit(qts);
 }
 
