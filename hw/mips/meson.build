@@ -55,6 +55,11 @@ mips_ss.add(when: 'CONFIG_SGI_BASEIO', if_true: files('sgi/baseio.c'))
 mips_ss.add(when: 'CONFIG_SGI_XIO_BASEIO', if_true: files('sgi/xio-baseio.c'))
 mips_ss.add(when: 'CONFIG_SGI_PCI_EXPANSION',
             if_true: files('sgi/board-pci-expansion.c'))
+# The Origin 200 GIGAchannel expansion cabinet's own I/O: the Bridge its
+# Crossbow reaches on link 8, and the cabinet's system-controller status
+# word on that Bridge's external-flash port.
+mips_ss.add(when: 'CONFIG_SGI_GIGACHANNEL',
+            if_true: files('sgi/board-gigachannel.c'))
 # The SGI PCI-XTALK ADAPTER (the "PCI shoehorn"), a single-XIO-slot
 # sgi-xio-board subclass that creates its own Bridge and can fit an SGI Cad
 # Duo input card behind it with its keyboard/mouse interrupt wired.

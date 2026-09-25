@@ -1263,9 +1263,19 @@ void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
  * descriptor and the command line -- this file owns only the Hub
  * address-map facts (fabric-base, fabric-node-shift, the PROM probe's
  * fixed widget and offset) and the direct-link wiring itself.
+ *
+ * A GIGAchannel cabinet takes the Hub's link instead and cables this
+ * Bridge to one of the cabinet Crossbow's ports
+ * (docs/datasheets/sgi-gigachannel.md, "Crossbow link assignment"). Then
+ * crossbow_fabric is that Crossbow link's proxy, the Bridge addresses its
+ * packets by widget as every Crossbow-attached Bridge does, no direct link
+ * is wired, and the caller attaches the Bridge it gets back through
+ * bridge_out to the Crossbow.
  */
 bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
-                           SGIXtalkDirectLink *link, uint64_t bridge_serial,
+                           SGIXtalkDirectLink *link,
+                           MemoryRegion *crossbow_fabric,
+                           uint64_t bridge_serial,
                            const uint64_t *ioc3_serial, const char *pci_bus_name,
                            const char *nvram_drive_id,
                            const char *chardev_a_id,
@@ -1273,7 +1283,8 @@ bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
                            const char *record_a_id,
                            const char *record_b_id,
                            const char *parallel_chardev_id,
-                           unsigned int widget, Error **errp)
+                           unsigned int widget, DeviceState **bridge_out,
+                           Error **errp)
 {
     const SN0ModelAddressMap *map = sn0_node_address_map();
     const SGIBaseioPresetIdentity *identity = sgi_baseio_preset_lookup("ip29");
@@ -1287,16 +1298,24 @@ bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
     if (pci_bus_name) {
         qdev_prop_set_string(bridge, "pci-bus-name", pci_bus_name);
     }
-    /*
-     * Interrupt packets travel a processor's claim view, which resolves
-     * a node-qualified address by programmed number, not by the board's
-     * position. View zero speaks for the node; a node always has a
-     * processor.
-     */
-    object_property_set_link(OBJECT(bridge), "fabric",
-                             OBJECT(&node->claim_view[0]), &error_abort);
-    qdev_prop_set_uint64(bridge, "fabric-base", map->xtalk.carrier_base);
-    qdev_prop_set_uint32(bridge, "fabric-node-shift", ctz64(map->node_stride));
+    if (crossbow_fabric) {
+        object_property_set_link(OBJECT(bridge), "fabric",
+                                 OBJECT(crossbow_fabric), &error_abort);
+        qdev_prop_set_uint32(bridge, "fabric-widget-shift",
+                             SGI_BRIDGE_PACKET_ADDRESS_BITS);
+    } else {
+        /*
+         * Interrupt packets travel a processor's claim view, which
+         * resolves a node-qualified address by programmed number, not
+         * by the board's position. View zero speaks for the node; a
+         * node always has a processor.
+         */
+        object_property_set_link(OBJECT(bridge), "fabric",
+                                 OBJECT(&node->claim_view[0]), &error_abort);
+        qdev_prop_set_uint64(bridge, "fabric-base", map->xtalk.carrier_base);
+        qdev_prop_set_uint32(bridge, "fabric-node-shift",
+                             ctz64(map->node_stride));
+    }
     if (!sysbus_realize(SYS_BUS_DEVICE(bridge), errp)) {
         return false;
     }
@@ -1332,6 +1351,10 @@ bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
         return false;
     }
 
+    *bridge_out = bridge;
+    if (crossbow_fabric) {
+        return true;
+    }
     return sgi_xtalk_direct_link_connect(
         link, owner, node, OBJECT(bridge), SN0_IP29_IO_DISCOVERY_WIDGET,
         widget, SN0_IP29_IO_DECODED_WIDGET_MASK, SN0_PROM_PI_PROBE_WIDGET,

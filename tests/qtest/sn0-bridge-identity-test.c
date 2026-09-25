@@ -5,8 +5,11 @@
  * compared byte for byte with the page images docs/datasheets/baseio.md
  * gives in "Board-identity records on the Bridge one-wire bus" and
  * docs/datasheets/bridge.md gives in "The Origin 200's IP29 record".
- * An Origin 200 converted for a GIGAchannel cabinet and run in loopback
- * adds the Crosstown board's record beside the IP29's at widget 8.
+ * An Origin 200 with a GIGAchannel cabinet adds the Crosstown board's
+ * record beside the IP29's, on the IP29 Bridge now at Crossbow widget 9,
+ * and the cabinet interface board's record on the cabinet Bridge at
+ * widget 8; in loopback the Crosstown record sits beside the IP29's at
+ * widget 8.
  *
  * The PCI shoehorn's and PCI carrier's Bridges carry records too,
  * compared with the page images docs/datasheets/sgi-pci-shoehorn.md and
@@ -125,10 +128,11 @@ static const uint8_t ip29_record[RECORD_SIZE] = {
 };
 
 /*
- * The GIGAchannel Crosstown board's record (docs/datasheets/
- * sgi-gigachannel.md, "Product identity"), laid out by
- * docs/datasheets/bridge.md's record rules: XBOX_EXT, part 030-1264-001
- * rev C. The barcode is a placeholder.
+ * The GIGAchannel's two records (docs/datasheets/sgi-gigachannel.md,
+ * "Product identity"), laid out by docs/datasheets/bridge.md's record
+ * rules: the Crosstown board's XBOX_EXT, part 030-1264-001 rev C, and the
+ * cabinet interface board's XBOX_DUALXTOWN, part 030-1252-001 rev F. The
+ * barcodes are placeholders.
  */
 static const uint8_t crosstown_record[RECORD_SIZE] = {
     0x01, 0x4f, 0x58, 0x42, 0x4f, 0x58, 0x45, 0x58,
@@ -141,6 +145,16 @@ static const uint8_t crosstown_record[RECORD_SIZE] = {
     0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x09, 0x6f,
 };
 
+static const uint8_t gigachannel_record[RECORD_SIZE] = {
+    0x01, 0x4f, 0x58, 0x42, 0x4f, 0x58, 0x44, 0x58,
+    0x54, 0x30, 0x31, 0x20, 0x20, 0x20, 0x20, 0x20,
+    0x20, 0x20, 0x20, 0x20, 0x20, 0x30, 0x33, 0x30,
+    0x2d, 0x31, 0x32, 0x35, 0x32, 0x2d, 0x20, 0xbe,
+    0x20, 0x20, 0x20, 0x30, 0x30, 0x31, 0x46, 0x20,
+    0x20, 0x20, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0x58, 0x42, 0x4f, 0x58, 0x5f, 0x44, 0x55, 0x41,
+    0x4c, 0x58, 0x54, 0x4f, 0x57, 0x4e, 0x8a, 0x70,
+};
 
 /*
  * One machine's Bridge line and the records on it. An Origin 2000's
@@ -169,6 +183,14 @@ static const IdentityCase identity_cases[] = {
     {
         "ip29", "-M origin200",
         false, 1, { ip29_record },
+    },
+    {
+        "gigachannel-ip29", "-M origin200,topology=origin200-gigachannel",
+        false, 2, { ip29_record, crosstown_record }, 9,
+    },
+    {
+        "gigachannel-cabinet", "-M origin200,topology=origin200-gigachannel",
+        false, 1, { gigachannel_record },
     },
     {
         "gigachannel-loopback",

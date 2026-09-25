@@ -147,6 +147,7 @@ static uint64_t *sgi_model_array_uint64(const uint64List *list, size_t *count)
 #define TYPE_SGI_XIO_BASEIO "sgi-xio-baseio"
 #define TYPE_SGI_PCI_EXPANSION "sgi-pci-expansion"
 #define TYPE_SGI_PCI_SHOEHORN "sgi-pci-shoehorn"
+#define TYPE_SGI_GIGACHANNEL "sgi-gigachannel"
 
 struct SGIMachineState {
     MachineState parent_obj;
@@ -942,12 +943,13 @@ static const SGIBridgeBoardRecord sgi_machine_crosstown_record = {
 #define SGI_MACHINE_CROSSTOWN_ONEWIRE_SERIAL 0x0e0d0c0b0a09ULL
 
 /*
- * IP29's onboard I/O: direct-attach, one per Origin 200 node. sn0.c owns
- * the Bridge, the sgi-baseio behind it and the direct-link wiring (see
+ * IP29's onboard I/O, one per Origin 200 node: direct-attach, or on a
+ * GIGAchannel cabinet's Crossbow port. sn0.c owns the Bridge, the
+ * sgi-baseio behind it and the direct-link wiring (see
  * sn0_node_build_baseio()'s own comment for why); this function resolves
  * every fitted-part value and backend id the descriptor and command line
  * carry, the same policy the Crossbow-attached BaseIO card below applies,
- * and adds the Crosstown board's record where one is fitted.
+ * and attaches a Crossbow-cabled Bridge to its port.
  */
 static bool sgi_machine_instantiate_ip29_io(
     SGIMachineState *s, const SGIModelTopology *t,
@@ -955,6 +957,8 @@ static bool sgi_machine_instantiate_ip29_io(
     const SGIModelXtalkAttachment *attachment, Error **errp)
 {
     SN0NodeState *node = s->nodes[attachment->node_index];
+    SGIXtalkCrossbowLink *crossbow_link = NULL;
+    MemoryRegion *crossbow_fabric = NULL;
     DeviceState *bridge;
     const uint64_t *ioc3_serial = sgi_machine_io_board_ioc3_serial(record);
     /*
@@ -979,23 +983,38 @@ static bool sgi_machine_instantiate_ip29_io(
     const char *parallel_id = board_index < MAX_PARALLEL_PORTS &&
         parallel_hds[board_index] ? parallel_hds[board_index]->label : NULL;
 
+    if (attachment->crossbar_index >= 0) {
+        g_autofree char *proxy_name =
+            g_strdup_printf("io-board%u-packet-proxy", board_index);
+
+        crossbow_link = &s->crossbow_links[s->num_nodes + board_index];
+        crossbow_fabric = sgi_xtalk_crossbow_link_prepare(
+            crossbow_link, OBJECT(s), proxy_name);
+    }
     if (!sn0_node_build_baseio(
-            node, OBJECT(s), &s->direct_links[board_index], record->serial,
-            ioc3_serial, bus_name, nvram_blk ? blk_name(nvram_blk) : NULL,
+            node, OBJECT(s), &s->direct_links[board_index], crossbow_fabric,
+            record->serial, ioc3_serial, bus_name,
+            nvram_blk ? blk_name(nvram_blk) : NULL,
             chardev_a ? chardev_a->label : NULL,
             chardev_b ? chardev_b->label : NULL,
             record_a ? record_a->label : NULL,
             record_b ? record_b->label : NULL, parallel_id,
-            attachment->widget, errp)) {
+            attachment->widget, &bridge, errp)) {
         return false;
     }
-    if (record->preset != SGI_MODEL_IO_BOARD_PRESET_IP29_IO_CROSSTOWN) {
-        return true;
+    if (record->preset == SGI_MODEL_IO_BOARD_PRESET_IP29_IO_CROSSTOWN &&
+        !sgi_bridge_add_onewire_board_part(
+            bridge, &sgi_machine_crosstown_record,
+            SGI_MACHINE_CROSSTOWN_ONEWIRE_SERIAL, errp)) {
+        return false;
     }
-    bridge = DEVICE(object_resolve_path_component(OBJECT(node), "bridge"));
-    return sgi_bridge_add_onewire_board_part(
-        bridge, &sgi_machine_crosstown_record,
-        SGI_MACHINE_CROSSTOWN_ONEWIRE_SERIAL, errp);
+    if (crossbow_link) {
+        return sgi_xtalk_crossbow_link_attach_widget(
+            crossbow_link, OBJECT(bridge),
+            s->crossbars[attachment->crossbar_index], attachment->widget,
+            errp);
+    }
+    return true;
 }
 
 /*
@@ -1193,6 +1212,31 @@ static bool sgi_machine_instantiate_pci_carrier(
     return sgi_machine_attach_xio_card(s, dev, board_index, attachment, errp);
 }
 
+/*
+ * The GIGAchannel cabinet's own I/O on Crossbow link 8, software position
+ * io7: an sgi-gigachannel (board-gigachannel.c), which owns the cabinet
+ * Bridge, its board record and the cabinet's status word.
+ */
+static bool sgi_machine_instantiate_gigachannel(
+    SGIMachineState *s, const SGIModelIoBoard *record,
+    unsigned int board_index, const SGIModelXtalkAttachment *attachment,
+    Error **errp)
+{
+    DeviceState *dev = qdev_new(TYPE_SGI_GIGACHANNEL);
+    g_autofree char *name = g_strdup_printf("io-board%u", board_index);
+    g_autofree char *bus_name =
+        g_strdup_printf("pci.gigachannel%u", board_index);
+
+    object_property_add_child(OBJECT(s), name, OBJECT(dev));
+    object_unref(OBJECT(dev));
+
+    qdev_prop_set_uint32(dev, "module", record->module_index);
+    qdev_prop_set_uint32(dev, "slot", attachment->widget);
+    qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
+    qdev_prop_set_string(dev, "pci-bus-name", bus_name);
+    return sgi_machine_attach_xio_card(s, dev, board_index, attachment, errp);
+}
+
 static bool sgi_machine_instantiate_pci_shoehorn(
     SGIMachineState *s, const SGIModelIoBoard *record,
     unsigned int board_index, const SGIModelXtalkAttachment *attachment,
@@ -1383,6 +1427,9 @@ static bool sgi_machine_instantiate_io_board(
                                                     attachment, errp);
     case SGI_MODEL_IO_BOARD_PRESET_PCI_CARRIER:
         return sgi_machine_instantiate_pci_carrier(s, record, board_index,
+                                                   attachment, errp);
+    case SGI_MODEL_IO_BOARD_PRESET_GIGACHANNEL:
+        return sgi_machine_instantiate_gigachannel(s, record, board_index,
                                                    attachment, errp);
     default:
         error_setg(errp, "topology '%s' io board %u names an unsupported "

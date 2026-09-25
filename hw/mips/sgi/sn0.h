@@ -267,14 +267,18 @@ void sn0_map_cpu_big_windows(Object *owner, SN0NodeState **nodes,
 
 /*
  * Builds node's onboard base I/O (a Bridge and an sgi-baseio behind it,
- * the "ip29" preset) and connects it through the direct link -- see the
- * definition's own comment. Called once node has realized. link is the
- * caller's own storage (SGIMachineState's direct_links[]); the various
- * ids are resolved backend names, not claimed backends, for the
- * claim-timing reason sgi-baseio's own header explains.
+ * the "ip29" preset), returns the Bridge through bridge_out, and connects
+ * it through the direct link, or leaves it for the caller to attach to a
+ * Crossbow when crossbow_fabric is set -- see the definition's own
+ * comment. Called once node has realized. link is the caller's own
+ * storage (SGIMachineState's direct_links[]); the various ids are
+ * resolved backend names, not claimed backends, for the claim-timing
+ * reason sgi-baseio's own header explains.
  */
 bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
-                           SGIXtalkDirectLink *link, uint64_t bridge_serial,
+                           SGIXtalkDirectLink *link,
+                           MemoryRegion *crossbow_fabric,
+                           uint64_t bridge_serial,
                            const uint64_t *ioc3_serial, const char *pci_bus_name,
                            const char *nvram_drive_id,
                            const char *chardev_a_id,
@@ -282,7 +286,8 @@ bool sn0_node_build_baseio(SN0NodeState *node, Object *owner,
                            const char *record_a_id,
                            const char *record_b_id,
                            const char *parallel_chardev_id,
-                           unsigned int widget, Error **errp);
+                           unsigned int widget, DeviceState **bridge_out,
+                           Error **errp);
 
 extern const SN0FlashImplementation sn0_flash;
 
