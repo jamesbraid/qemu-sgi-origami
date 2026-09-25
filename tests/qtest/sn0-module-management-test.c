@@ -812,6 +812,64 @@ static void test_lost_arbitration_drops_a_held_stop(void)
     qtest_quit(qts);
 }
 
+/*
+ * A STOP from adapter 1 lands in the gap between the owner's STOP releasing
+ * its queued START and that START reaching the line. Adapter 0's queued
+ * START gets there first, which returns adapter 1's to the queue. The STOP
+ * was written against a START that is now waiting, not a transfer adapter 1
+ * owns, and a STOP from a waiting adapter withdraws its request.
+ *
+ * Adapter 2's STOP is on the line about 5.6 us after it is written, and the
+ * released STARTs go out 4.7 us of bus-free time after that, so a STOP from
+ * adapter 1 7 us after adapter 2's falls inside the gap. This returns with
+ * adapter 0 holding the bus after its address byte.
+ */
+static void stop_against_a_released_start(QTestState *qts)
+{
+    wait_for_global_grant(qts, GRANT_BASE);
+    g_assert_true(start_transfer(qts, 2, NVRAM_FIRST, false));
+    for (unsigned node = 0; node < 2; node++) {
+        adapter_write(qts, node, I2C_CTRL, CTL_RUN);
+        adapter_write(qts, node, I2C_DATA, NVRAM_FIRST << 1);
+        adapter_write(qts, node, I2C_CTRL, CTL_START);
+        g_assert_cmphex(adapter_read(qts, node, I2C_CTRL) &
+                        (STS_PIN | STS_BB | STS_BER | STS_LAB), ==, STS_PIN);
+    }
+    adapter_write(qts, 2, I2C_CTRL, CTL_STOP);
+    qtest_clock_step(qts, 7000);
+    g_assert_cmphex(adapter_read(qts, 1, I2C_CTRL) & STS_BB, ==, STS_BB);
+    adapter_write(qts, 1, I2C_CTRL, CTL_STOP);
+
+    g_assert_true(wait_done(qts, 0));
+    g_assert_cmphex(adapter_read(qts, 0, I2C_CTRL) &
+                    (STS_LRB | STS_BB | STS_BER | STS_LAB), ==, 0);
+}
+
+/*
+ * Once the bus frees, adapter 1 must not run the START it withdrew: its PIN
+ * stays inactive, which it would not if an address byte of its own ran.
+ */
+static void assert_withdrawn_start_stays_withdrawn(QTestState *qts)
+{
+    stop_transfer(qts, 0);
+    for (unsigned step = 0; step < 150; step++) {
+        g_assert_cmphex(adapter_read(qts, 1, I2C_CTRL) &
+                        (STS_PIN | STS_BER | STS_LAB), ==, STS_PIN);
+        qtest_clock_step(qts, POLL_STEP_NS);
+    }
+    wait_for_next_global_grant(qts, GRANT_BASE);
+    assert_fresh_transfer_stays_open(qts, 1);
+}
+
+static void test_stop_withdraws_a_released_start(void)
+{
+    QTestState *qts = start_module();
+
+    stop_against_a_released_start(qts);
+    assert_withdrawn_start_stays_withdrawn(qts);
+    qtest_quit(qts);
+}
+
 /* One logical NVRAM space, not one per node. */
 static void test_nvram_is_shared(void)
 {
@@ -1267,6 +1325,27 @@ static void test_module_serial_migration_in_progress(void)
     qtest_quit(to);
 }
 
+/*
+ * The state a released START leaves behind when a STOP was written against
+ * it must be one the destination accepts, and must carry on there as it
+ * would have at home.
+ */
+static void test_withdrawn_start_migration(void)
+{
+    QTestState *from = start_module();
+    QTestState *to = qtest_init(MACHINE_ARGS " -incoming defer");
+    int64_t departed;
+
+    stop_against_a_released_start(from);
+    departed = qtest_clock_step(from, 1);
+    migrate_module(from, to);
+    wait_until_running(to);
+    qtest_clock_set(to, departed);
+    assert_withdrawn_start_stays_withdrawn(to);
+    qtest_quit(from);
+    qtest_quit(to);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1293,6 +1372,8 @@ int main(int argc, char **argv)
                    test_held_stop_follows_the_finished_byte);
     qtest_add_func("/sn0/o2000-module-management/lost-arbitration-held-stop",
                    test_lost_arbitration_drops_a_held_stop);
+    qtest_add_func("/sn0/o2000-module-management/stop-withdraws-released-start",
+                   test_stop_withdraws_a_released_start);
     qtest_add_func("/sn0/o2000-module-management/shared-nvram",
                    test_nvram_is_shared);
     qtest_add_func("/sn0/o2000-module-management/initial-identity",
@@ -1324,5 +1405,7 @@ int main(int argc, char **argv)
                    test_late_grant_service);
     qtest_add_func("/sn0/o2000-module-management/module-serial-migration",
                    test_module_serial_migration_in_progress);
+    qtest_add_func("/sn0/o2000-module-management/withdrawn-start-migration",
+                   test_withdrawn_start_migration);
     return g_test_run();
 }

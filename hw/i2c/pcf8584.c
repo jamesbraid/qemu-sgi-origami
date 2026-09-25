@@ -97,6 +97,8 @@ static int pcf8584_current_cpu_index(void)
     return current_cpu ? current_cpu->cpu_index : -1;
 }
 
+static void pcf8584_wire_request_stop(PCF8584State *s);
+
 /*
  * Stage one line transition. The virtual clock keeps running while an event
  * is being delivered, so a deadline derived from that event's own timestamp
@@ -114,6 +116,14 @@ static void pcf8584_wire_stage(PCF8584State *s, int64_t at, bool sda,
                       "transition (%d); this transfer is abandoned\n", rc);
         s->wire_phase = PCF8584_WIRE_IDLE;
         s->wire_active = false;
+        if (s->wire_stop_pending) {
+            /*
+             * The host's STOP now meets a bus this adapter does not own, so
+             * it only withdraws what the adapter still has queued locally.
+             */
+            s->wire_stop_pending = false;
+            pcf8584_wire_request_stop(s);
+        }
     }
 }
 
@@ -361,6 +371,15 @@ static void pcf8584_wire_event(void *opaque, const I2CWireEvent *event)
             s->wire_active = false;
             s->wire_address_byte = false;
             i2c_wire_reset_master(s->bus, s->wire_master);
+            if (s->wire_stop_pending) {
+                /*
+                 * The host wrote STOP against this START while it was still
+                 * heading for the line. It is waiting again, so that is a
+                 * STOP from a waiting adapter, which withdraws the request.
+                 */
+                s->wire_stop_pending = false;
+                pcf8584_wire_request_stop(s);
+            }
             break;
         }
         s->wire_bit = 0;
