@@ -2410,16 +2410,27 @@ static void md_init(Object *obj)
 static void md_realize(DeviceState *dev, Error **errp)
 {
     SGIBedrockMDState *s = SGI_BEDROCK_MD(dev);
-    uint64_t node_size;
+    MemoryRegion *ram;
+    uint64_t node_size, offset = 0;
 
     s->protection_entries = SGI_BEDROCK_MD_PROTECTION_ENTRIES;
     s->protection = g_new0(uint64_t, s->protection_entries);
     if (!s->node_mr) {
         return;
     }
-    if (!memory_region_is_ram(s->node_mr)) {
+    /*
+     * A node of a several-node machine links its own share of the
+     * machine's RAM, an alias of it; one node links the RAM itself. Find
+     * the RAM under any aliases and the share's offset into it.
+     */
+    ram = s->node_mr;
+    while (ram->alias) {
+        offset += ram->alias_offset;
+        ram = ram->alias;
+    }
+    if (!memory_region_is_ram(ram)) {
         error_setg(errp, TYPE_SGI_BEDROCK_MD
-                   " 'node-memory' must link a RAM region");
+                   " 'node-memory' must link a RAM region or an alias of one");
         return;
     }
     node_size = memory_region_size(s->node_mr);
@@ -2433,7 +2444,19 @@ static void md_realize(DeviceState *dev, Error **errp)
                    " node memory exceeds the directory aperture");
         return;
     }
-    address_space_init(&s->node_as, s->node_mr,
+    /*
+     * Root the address space at an unplaced alias of that RAM, not at
+     * node_mr: rendering an address space adds its root region's own
+     * address (render_memory_region() in system/memory.c), and a node's
+     * share sits at the node's placement, 2^33 for a second node. An
+     * unplaced alias of node_mr itself would not do either, since the
+     * memory core looks through an alias that covers its target whole
+     * from offset zero when it picks the root it renders.
+     */
+    memory_region_init_alias(&s->node_root, OBJECT(s),
+                             TYPE_SGI_BEDROCK_MD "-node-root", ram,
+                             offset, node_size);
+    address_space_init(&s->node_as, &s->node_root,
                        TYPE_SGI_BEDROCK_MD "-node-memory");
     s->node_as_initialized = true;
     for (unsigned bank = 0; bank < 8; bank++) {

@@ -86,6 +86,12 @@ struct SGIBedrockMDState {
     uint64_t bank_alias_base[8];
     uint64_t bank_alias_size[8];
     MemoryRegion *node_mr;
+    /*
+     * node_as's root: the node's memory from offset zero wherever node_mr
+     * itself is mapped, since an address space renders its root at the
+     * root's own address in its container.
+     */
+    MemoryRegion node_root;
     AddressSpace node_as;
     bool node_as_initialized;
     bool memory_alias_initialized;
