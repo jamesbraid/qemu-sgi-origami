@@ -913,10 +913,9 @@ static void test_space_above_face(void)
 }
 
 /*
- * The bridge-half board-identity NIC (BRIDGE_NIC, offset 0xb0), which the
- * stock IP35 PROM and the loaded BASEIO PROM both read while attaching the
- * IO-8's bridge object -- see the widget-15 amendment in
- * docs/datasheets/xbridge.md, "Stock-PROM IO-8 identity access".
+ * QEMU's optional, synthetic board-identity responder at the bridge-half
+ * NIC register. The XBridge specification calls this register unused in
+ * XBridge mode; Origami's docs/datasheets/xbridge.md records the limitation.
  */
 #define BRIDGE_NIC 0xb0
 
@@ -1078,10 +1077,8 @@ static bool page_field(const uint8_t *page, unsigned int len,
 }
 
 /*
- * The identity the search returns and the part-number page it reads back:
- * the discriminator the datasheet's checklist asks for, exercised on this
- * head's own offset rather than widget 0's crossbar NIC (a separate,
- * unmodelled register the stock PROM never uses for the IO-8).
+ * Check QEMU's placeholder record and its CRC. This says nothing about the
+ * identity or one-wire routing of a physical Origin 300 IO-8 board.
  */
 static void test_placeholder_identity_reads_back(void)
 {
