@@ -967,6 +967,17 @@ static void rad4_cursor_compose(PsitechRad4State *s, int y_start, int y_end)
                      s->cursor_lut[val][2];
         }
     }
+    /*
+     * Record the sprite's full displayed span from the cursor registers, not
+     * from the rows this pass happened to repaint. A refresh whose dirty
+     * interval misses the cursor -- an unrelated framebuffer write elsewhere --
+     * repaints none of these rows but leaves the sprite standing in
+     * display_buffer, so the span it occupies must be re-recorded every
+     * refresh regardless. Narrowing it to the intersected rows would drop the
+     * record on such a refresh, and the next cursor change with no new rows of
+     * its own (a disable, or a hot-spot or look-up-table edit) would then fail
+     * to dirty the old rows in rad4_cursor_invalidate() and strand a ghost.
+     */
     s->cursor_shown_y_start = MAX(y0, 0);
     s->cursor_shown_y_end = MIN(y0 + RAD4_CURSOR_HEIGHT - 1,
                                 RAD4_MODE0_HEIGHT - 1);
