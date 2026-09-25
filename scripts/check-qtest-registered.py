@@ -7,21 +7,45 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 QTEST = ROOT / "tests" / "qtest"
-FAMILIES = ("sn0-", "sn1-", "mips64-")
+FAMILIES = ("sn0-", "sn1-", "sgi-", "mips64-")
+# These device tests kept their upstream-style names when they moved onto
+# the SGI Bridge test fixture. New SGI tests use the sgi- family above.
+BRIDGE_CARD_TESTS = ("bcm570x-test", "tigon-test", "xframe-test",
+                     "usb-lucent-ohci-test")
+QOS_CARD_SOURCES = ("qlogic-isp-test.c", "scsi-tape-test.c")
+
+
+def registration_names(meson: str) -> set[str]:
+    text = "\n".join(line for line in meson.splitlines()
+                     if not line.lstrip().startswith("#"))
+    # A timeout or scheduling entry does not put a binary in a test suite.
+    for table in ("slow_qtests", "qtest_priorities"):
+        text = re.sub(rf"(?ms)^{table}\s*=\s*\{{.*?^\}}", "", text)
+    return set(re.findall(r"'([^']+)'", text))
 
 
 def main() -> int:
-    text = "\n".join(
-        line for line in (QTEST / "meson.build").read_text().splitlines()
-        if not line.lstrip().startswith("#")
-    )
-    names = set(re.findall(r"'([^']+)'", text))
+    meson = (QTEST / "meson.build").read_text()
+    names = registration_names(meson)
     problems = []
     for prefix in FAMILIES:
         sources = {p.stem for p in QTEST.glob(f"{prefix}*-test.c") if p.is_file()}
         registered = {n for n in names if n.startswith(prefix)}
         problems.extend(f"{n}.c is not registered" for n in sources - registered)
         problems.extend(f"{n} has no source" for n in registered - sources)
+    for name in BRIDGE_CARD_TESTS:
+        if (QTEST / f"{name}.c").is_file() and name not in names:
+            problems.append(f"{name}.c is not registered")
+        if name in names and not (QTEST / f"{name}.c").is_file():
+            problems.append(f"{name} has no source")
+    qos_sources = re.search(r"(?s)qos_test_ss\.add\(\s*(.*?)\n\)", meson)
+    qos_names = set(re.findall(r"'([^']+)'", qos_sources.group(1))) \
+        if qos_sources else set()
+    for name in QOS_CARD_SOURCES:
+        if (QTEST / name).is_file() and name not in qos_names:
+            problems.append(f"{name} is not in the qos-test sources")
+        if name in qos_names and not (QTEST / name).is_file():
+            problems.append(f"{name} has no source")
     for problem in sorted(problems):
         print(f"FAIL {problem}")
     if problems:
