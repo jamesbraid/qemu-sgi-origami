@@ -13,6 +13,10 @@
  * 0xc0_0000). The Origin 200's onboard Bridge fits no part, so the same
  * offset there fails the way it always has.
  *
+ * A board may also fit a part on the port's second chip select, 2 MB into
+ * the window. That decode is checked on a bare Bridge the board test
+ * fixture builds, with a stand-in part in place of whatever a board fits.
+ *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
@@ -322,6 +326,81 @@ static void test_unbacked_part(void)
     qtest_quit(qts);
 }
 
+/*
+ * A part on the second chip select: the fixture's Bridge mapped at a fixed
+ * address, a 64 KiB part whose bytes hold their own offsets.
+ */
+#define FIXTURE_BRIDGE_BASE UINT64_C(0x10000000)
+#define SELECT1_PART_SIZE 0x10000
+
+static QTestState *start_fixture_select1(void)
+{
+    QTestState *qts;
+
+    truncate_log();
+    qts = qtest_initf("-M none -cpu R10000 -S -d guest_errors -D %s "
+                      "-device sgi-board-test-fixture,id=wrap,"
+                      "board-type=sgi-baseio,preset=ip29,"
+                      "flash-select1-size=%u", logfile, SELECT1_PART_SIZE);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/wrap/chip", 0,
+                          FIXTURE_BRIDGE_BASE);
+    return qts;
+}
+
+static uint64_t fixture_flash_read(QTestState *qts, uint32_t offset,
+                                   unsigned size)
+{
+    uint8_t bytes[8] = { 0 };
+
+    qtest_memread(qts, FIXTURE_BRIDGE_BASE + FLASH_WINDOW + offset,
+                  bytes + 8 - size, size);
+    return ldq_be_p(bytes);
+}
+
+/*
+ * The second chip select answers with its own part, a read of any width
+ * as 16-bit cycles, repeating above the part's own lines; the first chip
+ * select, with nothing on it, fails.
+ */
+static void test_second_chip_select(void)
+{
+    QTestState *qts = start_fixture_select1();
+
+    g_assert_cmphex(fixture_flash_read(qts, FLASH_SELECT_SIZE + 0x40, 2), ==,
+                    0x4041);
+    g_assert_cmphex(fixture_flash_read(qts, FLASH_SELECT_SIZE + 0x41, 1), ==,
+                    0x41);
+    g_assert_cmphex(fixture_flash_read(qts, FLASH_SELECT_SIZE + 0x10, 8), ==,
+                    UINT64_C(0x1011121314151617));
+    g_assert_cmphex(fixture_flash_read(qts, FLASH_SELECT_SIZE +
+                                       SELECT1_PART_SIZE + 0x40, 2), ==,
+                    0x4041);
+    fixture_flash_read(qts, 0x40, 8);
+    wait_for_log_marker("sgi-bridge: flash read at window offset 0x40 "
+                        "with no part there");
+    qtest_quit(qts);
+}
+
+/* Writes reach the second chip select's part only with the enable set. */
+static void test_second_chip_select_write_enable(void)
+{
+    QTestState *qts = start_fixture_select1();
+    uint64_t control = FIXTURE_BRIDGE_BASE + BRIDGE_CONTROL + REG_DATA;
+    uint8_t word[2] = { 0xbe, 0xef };
+
+    qtest_memwrite(qts, FIXTURE_BRIDGE_BASE + FLASH_WINDOW +
+                   FLASH_SELECT_SIZE + 0x80, word, sizeof(word));
+    g_assert_cmphex(fixture_flash_read(qts, FLASH_SELECT_SIZE + 0x80, 2), ==,
+                    0x8081);
+    qtest_writel(qts, control,
+                 qtest_readl(qts, control) | CONTROL_FLASH_WRITE_EN);
+    qtest_memwrite(qts, FIXTURE_BRIDGE_BASE + FLASH_WINDOW +
+                   FLASH_SELECT_SIZE + 0x80, word, sizeof(word));
+    g_assert_cmphex(fixture_flash_read(qts, FLASH_SELECT_SIZE + 0x80, 2), ==,
+                    0xbeef);
+    qtest_quit(qts);
+}
+
 /* The Origin 200's onboard Bridge fits no part: the window fails as before. */
 static void test_origin200_unpopulated(void)
 {
@@ -355,6 +434,10 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/bridge/flash/write-width", test_write_width);
     qtest_add_func("sn0/bridge/flash/program-word", test_program_word);
     qtest_add_func("sn0/bridge/flash/unbacked-part", test_unbacked_part);
+    qtest_add_func("sn0/bridge/flash/second-chip-select",
+                   test_second_chip_select);
+    qtest_add_func("sn0/bridge/flash/second-chip-select-write-enable",
+                   test_second_chip_select_write_enable);
     qtest_add_func("sn0/bridge/flash/origin200-unpopulated",
                    test_origin200_unpopulated);
     ret = g_test_run();

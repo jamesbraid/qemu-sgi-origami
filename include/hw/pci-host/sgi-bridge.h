@@ -210,10 +210,12 @@ struct SGIBridgeState {
      * "flash" and it answers the chip select strapped to the base; the
      * window carries a read of any width as 16-bit chip cycles and a
      * write only while the control register's flash write enable is set.
-     * The other chip select is unpopulated.
+     * The other chip select is unpopulated unless a board links what it
+     * fits there as "flash-select1".
      */
     MemoryRegion flash_window;
     MemoryRegion *flash;
+    MemoryRegion *flash_select1;
 
     /* Configuration space window, type 0 only: no PCI-to-PCI bridge here. */
     MemoryRegion cfg0;
