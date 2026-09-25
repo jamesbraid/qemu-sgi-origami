@@ -464,7 +464,10 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
         s->region_present = value;
         return;
     case PI_CACHED_ALIAS:
-        s->cached_alias = value & 0xf;
+        if (s->cached_alias != (value & 0xf)) {
+            s->cached_alias = value & 0xf;
+            notifier_list_notify(&s->cached_alias_notifiers, s);
+        }
         return;
     /*
      * The coherency request-buffer timeout: the maximum count a valid
@@ -765,7 +768,14 @@ static int pi_post_load(void *opaque, int version_id)
     pi_rearm_timers(s);
     sgi_bedrock_pi_recompute(s);
     pi_drive_cpu_enable(s);
+    notifier_list_notify(&s->cached_alias_notifiers, s);
     return 0;
+}
+
+void sgi_bedrock_pi_add_cached_alias_notifier(SGIBedrockPIState *s,
+                                              Notifier *notifier)
+{
+    notifier_list_add(&s->cached_alias_notifiers, notifier);
 }
 
 static int pi_pre_save(void *opaque)
@@ -856,6 +866,7 @@ static void pi_init(Object *obj)
     s->cpu_protect = UINT64_MAX;
     s->io_protect = UINT64_MAX;
     s->region_present = UINT64_MAX;
+    notifier_list_init(&s->cached_alias_notifiers);
     for (unsigned cpu = 0; cpu < 2; cpu++) {
         s->rt_line[cpu].pi = s;
         s->rt_line[cpu].cpu = cpu;
