@@ -1,7 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Disconnected Bedrock NI register state; no link protocol is implemented. */
+/* Bedrock NI register state; no link protocol is implemented. */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-bedrock-ni-regs.h"
+
+/* Port errors' defined fields end at bit 52; sideband's at bit 19. */
+#define NI_PORT_ERRORS_MASK   ((1ULL << 53) - 1)
+#define NI_PORT_SIDEBAND_MASK ((1ULL << 20) - 1)
 
 static uint64_t control_mask(uint64_t offset)
 {
@@ -104,11 +108,20 @@ SGIBedrockNIWriteResult sgi_bedrock_ni_regs_write(SGIBedrockNIRegs *s,
     case 0x2000:
         s->global_route = value & 0x1f;
         return SGI_BEDROCK_NI_WRITTEN;
-    case 0:
     case 0x100:
+        /*
+         * The stock PROM zeroes port errors and sideband at power-on. What a
+         * write does on hardware is unknown; storing it is the model's
+         * choice, so those zero writes clear.
+         */
+        s->errors = value & NI_PORT_ERRORS_MASK;
+        return SGI_BEDROCK_NI_WRITTEN;
+    case 0x118:
+        s->sideband = value & NI_PORT_SIDEBAND_MASK;
+        return SGI_BEDROCK_NI_WRITTEN;
+    case 0:
     case 0x108:
     case 0x110:
-    case 0x118:
     case 0x120:
         return SGI_BEDROCK_NI_READ_ONLY;
     default:

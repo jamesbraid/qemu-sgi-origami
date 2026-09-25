@@ -105,17 +105,39 @@ static void test_read_only_writes(void)
     SGIBedrockNIRegs s = {
         .errors = 1ULL << 30, .header = { 0x11, 0x22 }, .sideband = 0x33,
     };
-    static const uint64_t offsets[] = { 0, 0x100, 0x108, 0x110, 0x118, 0x120 };
+    static const uint64_t offsets[] = { 0, 0x108, 0x110, 0x120 };
 
     for (size_t i = 0; i < ARRAY_SIZE(offsets); i++) {
         g_assert_cmpint(sgi_bedrock_ni_regs_write(&s, offsets[i], UINT64_MAX),
                         ==, SGI_BEDROCK_NI_READ_ONLY);
     }
     g_assert_cmphex(read_reg(&s, 0), ==, 0);
-    g_assert_cmphex(read_reg(&s, 0x100), ==, 1ULL << 30);
     g_assert_cmphex(read_reg(&s, 0x108), ==, 0x11);
     g_assert_cmphex(read_reg(&s, 0x110), ==, 0x22);
-    g_assert_cmphex(read_reg(&s, 0x118), ==, 0x33);
+    /* Error clear is the read-to-clear alias, so read it last. */
+    g_assert_cmphex(read_reg(&s, 0x120), ==, 1ULL << 30);
+}
+
+/*
+ * The stock PROM zeroes port errors and sideband at power-on. The hardware
+ * effect of a write is unknown; the model stores it through the defined
+ * fields, so those writes clear and a nonzero one reads back.
+ */
+static void test_error_and_sideband_writes(void)
+{
+    SGIBedrockNIRegs s = { .errors = 1ULL << 30, .sideband = 0x33 };
+
+    g_assert_cmpint(sgi_bedrock_ni_regs_write(&s, 0x100, 0), ==,
+                    SGI_BEDROCK_NI_WRITTEN);
+    g_assert_cmpint(sgi_bedrock_ni_regs_write(&s, 0x118, 0), ==,
+                    SGI_BEDROCK_NI_WRITTEN);
+    g_assert_cmphex(read_reg(&s, 0x100), ==, 0);
+    g_assert_cmphex(read_reg(&s, 0x118), ==, 0);
+    g_assert_cmphex(read_reg(&s, 0x120), ==, 0);
+    sgi_bedrock_ni_regs_write(&s, 0x100, UINT64_MAX);
+    sgi_bedrock_ni_regs_write(&s, 0x118, UINT64_MAX);
+    g_assert_cmphex(read_reg(&s, 0x100), ==, (1ULL << 53) - 1);
+    g_assert_cmphex(read_reg(&s, 0x118), ==, (1ULL << 20) - 1);
 }
 
 /*
@@ -166,6 +188,8 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-bedrock-ni/error-clear", test_error_clear);
     g_test_add_func("/sgi-bedrock-ni/reset-retention", test_reset_retention);
     g_test_add_func("/sgi-bedrock-ni/read-only-writes", test_read_only_writes);
+    g_test_add_func("/sgi-bedrock-ni/error-and-sideband-writes",
+                    test_error_and_sideband_writes);
     g_test_add_func("/sgi-bedrock-ni/error-level", test_error_level);
     g_test_add_func("/sgi-bedrock-ni/unimplemented", test_unimplemented);
     return g_test_run();
