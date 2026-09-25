@@ -6,6 +6,10 @@
  * gives in "Board-identity records on the Bridge one-wire bus" and
  * docs/datasheets/bridge.md gives in "The Origin 200's IP29 record".
  *
+ * A Bridge given no board name still stores the older text layout, the
+ * part number alone; the PCI shoehorn and PCI expansion boards are read
+ * back for that layout's fields.
+ *
  * The machine bring-up and one-wire helpers are duplicated from
  * sn0-baseio-test.c rather than shared, matching this project's other
  * qtest files that each carry their own.
@@ -34,6 +38,12 @@
 #define XTALK_WIDGET_SIZE UINT64_C(0x1000000)
 #define BASEIO_WIDGET 8
 #define BASEIO_NASID 0x11
+
+/*
+ * crossbow0's first spare fabric widget, where a `-device` XIO board
+ * lands on an Origin 2000 (sn0-pci-shoehorn-test.c).
+ */
+#define SPARE_WIDGET 11
 
 /* The Bridge's one-wire bus master and the bits a driver uses. */
 #define BRIDGE_NIC 0x0b0
@@ -131,6 +141,25 @@ static const IdentityCase identity_cases[] = {
     },
 };
 
+/*
+ * A board whose Bridge has a part number and no board name, fitted at
+ * the spare widget, and the part number its text layout carries.
+ */
+typedef struct TextLayoutCase {
+    const char *name;
+    const char *machine;
+    const char *part;
+} TextLayoutCase;
+
+#define SPARE_BOARD(type) \
+    "-M origin2000 -display none -device " type ",module=99,slot=11," \
+    "fabric=/machine/crossbow0-spare-fabric[0],fabric-widget-shift=48"
+
+static const TextLayoutCase text_layout_cases[] = {
+    { "pci-shoehorn", SPARE_BOARD("sgi-pci-shoehorn"), "030-1275-002" },
+    { "pci-expansion", SPARE_BOARD("sgi-pci-expansion"), "NOT-OBSERVED" },
+};
+
 /* Set by start_machine(): where the one-wire master sits, and how. */
 static uint64_t nic_address;
 static bool nic_via_cpu;
@@ -154,12 +183,13 @@ static void hub_write(QTestState *qts, unsigned int node, uint64_t offset,
                                      bytes, sizeof(bytes)));
 }
 
-static QTestState *start_machine(const IdentityCase *c)
+static QTestState *start_machine(const char *machine, bool numbered,
+                                 unsigned int widget)
 {
-    QTestState *qts = qtest_initf("%s -d unimp,guest_errors", c->machine);
+    QTestState *qts = qtest_initf("%s -d unimp,guest_errors", machine);
     uint64_t nasid = 0;
 
-    if (c->numbered) {
+    if (numbered) {
         /* Number node 0 so its own crosstalk space has an address. */
         nasid = BASEIO_NASID;
         hub_write(qts, 0, NI_STATUS, NI_REGION_SIZE | (nasid << 8));
@@ -167,9 +197,8 @@ static QTestState *start_machine(const IdentityCase *c)
                         nasid);
     }
     nic_address = XTALK_BASE + nasid * NODE_STRIDE +
-                  BASEIO_WIDGET * XTALK_WIDGET_SIZE + BRIDGE_NIC +
-                  XTALK_REG_DATA;
-    nic_via_cpu = c->numbered;
+                  widget * XTALK_WIDGET_SIZE + BRIDGE_NIC + XTALK_REG_DATA;
+    nic_via_cpu = numbered;
     return qts;
 }
 
@@ -370,7 +399,7 @@ static void check_record_pages_leave_the_residue(const uint8_t *memory)
 static void test_records_match_the_datasheet(const void *data)
 {
     const IdentityCase *c = data;
-    QTestState *qts = start_machine(c);
+    QTestState *qts = start_machine(c->machine, c->numbered, BASEIO_WIDGET);
     uint8_t memory[RECORD_SIZE + RECORD_PAGE];
     bool seen[2] = { false, false };
     uint64_t rom[4];
@@ -391,6 +420,7 @@ static void test_records_match_the_datasheet(const void *data)
             /* No match: show the difference from the first record. */
             g_assert_cmpmem(memory, RECORD_SIZE, c->records[0], RECORD_SIZE);
         }
+        g_assert_cmpuint(j, <, G_N_ELEMENTS(seen));
         g_assert_false(seen[j]);
         seen[j] = true;
         for (j = RECORD_SIZE; j < sizeof(memory); j++) {
@@ -553,6 +583,37 @@ static void test_record_refuses_a_partial_record(void)
     }
 }
 
+/*
+ * The text layout: the format byte, `;Part:` ending where the part number
+ * begins at byte 11, a `;` after its twelve characters, each page's check
+ * leaving the residue, and unprogrammed memory past the two pages.
+ */
+static void test_text_layout_reads_back(const void *data)
+{
+    const TextLayoutCase *c = data;
+    QTestState *qts = start_machine(c->machine, false, SPARE_WIDGET);
+    uint8_t memory[RECORD_SIZE + RECORD_PAGE];
+    uint64_t rom[4];
+    unsigned int i;
+
+    g_assert_cmpuint(nic_search_all(qts, rom, G_N_ELEMENTS(rom)), ==, 1);
+    nic_read_memory(qts, rom[0], memory, sizeof(memory));
+
+    g_assert_cmphex(memory[0], ==, 0x01);
+    g_assert_cmpmem(&memory[5], 6, ";Part:", 6);
+    g_assert_cmpmem(&memory[11], 12, c->part, 12);
+    g_assert_cmphex(memory[23], ==, ';');
+    for (i = 0; i < RECORD_SIZE; i += RECORD_PAGE) {
+        g_assert_cmphex(nic_crc16(0, &memory[i], RECORD_PAGE), ==,
+                        NIC_CRC_RESIDUE);
+    }
+    for (i = RECORD_SIZE; i < sizeof(memory); i++) {
+        g_assert_cmphex(memory[i], ==, 0xff);
+    }
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     unsigned int i;
@@ -575,5 +636,12 @@ int main(int argc, char **argv)
                    test_record_refuses_a_part_not_digits_and_dashes);
     qtest_add_func("sn0/bridge-identity/record-refuses-a-partial-record",
                    test_record_refuses_a_partial_record);
+    for (i = 0; i < G_N_ELEMENTS(text_layout_cases); i++) {
+        const TextLayoutCase *c = &text_layout_cases[i];
+        g_autofree char *path = g_strdup_printf(
+            "sn0/bridge-identity/%s-text-layout-reads-back", c->name);
+
+        qtest_add_data_func(path, c, test_text_layout_reads_back);
+    }
     return g_test_run();
 }
