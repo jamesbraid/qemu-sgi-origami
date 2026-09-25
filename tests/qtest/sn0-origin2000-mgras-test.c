@@ -344,15 +344,16 @@ static void si_enter_context(QTestState *qts)
     qtest_writel(qts, REG_PENDING_ACK, SI_PENDING_FLAGS);
     g_assert_cmphex(qtest_readl(qts, REG_PENDING) & SI_PENDING_FLAGS, ==, 0);
 
+    /*
+     * No closing word exists at 0x120400: the image completes as soon as
+     * the 63rd word lands (mgras-hq4.md, "Context switch and HQ flags").
+     */
     for (int i = 0; i < SI_CONTEXT_WORDS; i++) {
         qtest_writel(qts, REG_CONTEXT_COMMAND, i);
     }
     g_assert_cmphex(qtest_readl(qts, REG_PENDING) & SI_PENDING_CONTEXT, ==,
                      SI_PENDING_CONTEXT);
     qtest_writel(qts, REG_PENDING_ACK, SI_PENDING_CONTEXT);
-
-    qtest_writel(qts, REG_CONTEXT_COMMAND, SI_FINAL_TOKEN);
-    g_assert_cmphex(qtest_readl(qts, REG_CONTEXT_COMMAND), ==, SI_FINAL_TOKEN);
 }
 
 static void si_write_cmap_position(QTestState *qts, uint16_t selector,
@@ -1583,8 +1584,6 @@ static void test_prefix_rewrite_after_entry_selection_does_not_poison_context(vo
                      SI_PENDING_CONTEXT);
     qtest_writel(qts, REG_PENDING_ACK, SI_PENDING_CONTEXT);
 
-    qtest_writel(qts, REG_CONTEXT_COMMAND, SI_FINAL_TOKEN);
-    g_assert_cmphex(qtest_readl(qts, REG_CONTEXT_COMMAND), ==, SI_FINAL_TOKEN);
     g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
 }
 
@@ -1596,17 +1595,25 @@ static void test_context_recognizer_ordering(void)
 }
 
 /*
- * A second context switch must restart the context word count. Entry
- * selection resets the acknowledgement flags but must also restart the
- * word count, or the next switch's first word lands on a stale count
- * left over from the previous switch and is misread as the completion
- * token.
+ * A second context switch must restart the context word count and must
+ * route its image words to the context store, not the command-FIFO
+ * parser. Entry selection resets the acknowledgement flags and the word
+ * count, but the port has been ready (able to parse command-FIFO tokens)
+ * since the first switch completed, so the dispatch at 0x120400 cannot
+ * gate on readiness alone or the second switch's image lands on the
+ * wrong parser.
  */
 static void test_second_context_switch_restarts_word_count(void)
 {
     si_reset();
 
     si_enter_context(qts);
+    /*
+     * Clear the first switch's completion bit so the assertion below can
+     * only pass if the second switch raises it again -- otherwise a
+     * leftover bit from the first switch masks a misrouted second image.
+     */
+    qtest_writel(qts, REG_PENDING_ACK, SI_PENDING_CONTEXT);
 
     qtest_writel(qts, REG_ENTRY, SI_ENTRY_WORD);
     g_assert_cmphex(qtest_readl(qts, REG_PENDING) & SI_PENDING_FLAGS, ==,
@@ -1631,7 +1638,13 @@ static void test_entry_requires_prefix(void)
     g_assert_cmphex(qtest_readl(qts, REG_ENTRY), ==, 0);
 }
 
-static void test_context_rejects_wrong_final_token(void)
+/*
+ * Established (mgras-hq4.md): MgrasCtxsw never writes or reads a closing
+ * word at 0x120400 -- the image completes on the 63rd word alone. A word
+ * written afterward is ordinary command-FIFO traffic, parsed like any
+ * other command token rather than checked against a fixed value.
+ */
+static void test_context_command_after_image_is_ordinary_token(void)
 {
     si_reset();
 
@@ -1641,11 +1654,27 @@ static void test_context_rejects_wrong_final_token(void)
     for (int i = 0; i < SI_CONTEXT_WORDS; i++) {
         qtest_writel(qts, REG_CONTEXT_COMMAND, i);
     }
+    g_assert_cmphex(qtest_readl(qts, REG_PENDING) & SI_PENDING_CONTEXT, ==,
+                     SI_PENDING_CONTEXT);
     qtest_writel(qts, REG_PENDING_ACK, SI_PENDING_CONTEXT);
 
+    /*
+     * An arbitrary zero-length header, not a recognized class or opcode:
+     * falls to the command-FIFO parser's LOG_UNIMP default rather than
+     * being checked against a closing-token value. Zero length so it does
+     * not itself consume the fence write below as payload.
+     */
+    qtest_writel(qts, REG_CONTEXT_COMMAND, 0x12345600);
+    g_assert_cmphex(si_qom_get_uint(qts, "x-test-error"), ==, 0);
 
-    qtest_writel(qts, REG_CONTEXT_COMMAND, 0x12345678);
-    g_assert_cmphex(qtest_readl(qts, REG_CONTEXT_COMMAND), !=, 0xf400);
+    /*
+     * The fence token is a recognized class-0 command; it must still be
+     * parsed normally as a command word after the image, not treated as
+     * context data.
+     */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, SI_FENCE_TOKEN);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & SI_HQ_FLAG_FENCE, ==,
+                     SI_HQ_FLAG_FENCE);
 }
 
 static void test_pending_mask_and_reassert(void)
@@ -3770,8 +3799,6 @@ static void test_context_ack_migration(void)
     g_assert_cmphex(qtest_readl(to, REG_PENDING) & SI_PENDING_CONTEXT, ==,
                      SI_PENDING_CONTEXT);
     qtest_writel(to, REG_PENDING_ACK, SI_PENDING_CONTEXT);
-    qtest_writel(to, REG_CONTEXT_COMMAND, SI_FINAL_TOKEN);
-    g_assert_cmphex(qtest_readl(to, REG_CONTEXT_COMMAND), ==, SI_FINAL_TOKEN);
 
     qtest_quit(to);
     qtest_quit(from);
@@ -3811,8 +3838,6 @@ static void test_context_payload_migration(void)
     g_assert_cmphex(qtest_readl(to, REG_PENDING) & SI_PENDING_CONTEXT, ==,
                     SI_PENDING_CONTEXT);
     qtest_writel(to, REG_PENDING_ACK, SI_PENDING_CONTEXT);
-    qtest_writel(to, REG_CONTEXT_COMMAND, SI_FINAL_TOKEN);
-    g_assert_cmphex(qtest_readl(to, REG_CONTEXT_COMMAND), ==, SI_FINAL_TOKEN);
     g_assert_cmphex(si_qom_get_uint(to, "x-test-error"), ==, 0);
 
     qtest_quit(to);
@@ -4172,8 +4197,8 @@ int main(int argc, char **argv)
                    test_second_context_switch_restarts_word_count);
     qtest_add_func("sn0/origin2000/mgras/entry-requires-prefix",
                    test_entry_requires_prefix);
-    qtest_add_func("sn0/origin2000/mgras/context-rejects-wrong-token",
-                   test_context_rejects_wrong_final_token);
+    qtest_add_func("sn0/origin2000/mgras/context-command-after-image",
+                   test_context_command_after_image_is_ordinary_token);
     qtest_add_func("sn0/origin2000/mgras/pending-mask-and-reassert",
                    test_pending_mask_and_reassert);
     qtest_add_func("sn0/origin2000/mgras/general-interrupt-vector",
