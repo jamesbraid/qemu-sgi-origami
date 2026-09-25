@@ -89,11 +89,26 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIPciShoehornState, SGI_PCI_SHOEHORN)
 #define SGI_PCI_SHOEHORN_NO_CARD UINT32_MAX
 
 /*
- * The Bridge's board-part is its NIC ROM identity register, exactly twelve
- * characters (hw/pci-host/sgi-bridge.h, sgi_bridge_board_part_error()). The
- * adapter's own SGI assembly number, from the ingested product photographs.
+ * The adapter's board-identity record on its Bridge's one-wire bus
+ * (docs/datasheets/sgi-pci-shoehorn.md, "Board-identity record"). The
+ * part is the SGI assembly number on the photographed board's label, and
+ * the revision the REV B beside it: the label is not the record, so the
+ * revision is inferred. Real Origin 2000 inventories name the board
+ * XTALK_PCI. The barcode is a placeholder, since a real one names a
+ * physical unit. The part is exactly twelve characters
+ * (hw/pci-host/sgi-bridge.h, sgi_bridge_board_part_error()).
  */
-#define SGI_SHOEHORN_BRIDGE_BOARD_PART "030-1275-002"
+#define SGI_SHOEHORN_BRIDGE_BOARD_PART     "030-1275-002"
+#define SGI_SHOEHORN_BRIDGE_BOARD_REVISION "B"
+#define SGI_SHOEHORN_BRIDGE_BOARD_NAME     "XTALK_PCI"
+#define SGI_SHOEHORN_BRIDGE_BOARD_BARCODE  "OXTPCI0001"
+
+/*
+ * The photographed board's Bridge is marked "Bridge Rev D", widget
+ * revision 4, and real Origin 2000 inventories list the Bridge behind an
+ * XTALK_PCI board as Rev 4.
+ */
+#define SGI_SHOEHORN_BRIDGE_REVISION 4
 
 /* Placeholder; see sgi-ip29-io's own identical constant. */
 #define PCI_SHOEHORN_SERIAL_PLACEHOLDER 0x060504030201ULL
@@ -175,8 +190,15 @@ static bool pci_shoehorn_build_widget(SGIXioBoardState *board, Error **errp)
     bridge = qdev_new(TYPE_SGI_BRIDGE);
     object_property_add_child(OBJECT(board), "bridge", OBJECT(bridge));
     s->bridge = SGI_BRIDGE(bridge);
+    qdev_prop_set_uint32(bridge, "revision", SGI_SHOEHORN_BRIDGE_REVISION);
     qdev_prop_set_string(bridge, "board-part",
                          SGI_SHOEHORN_BRIDGE_BOARD_PART);
+    qdev_prop_set_string(bridge, "board-barcode",
+                         SGI_SHOEHORN_BRIDGE_BOARD_BARCODE);
+    qdev_prop_set_string(bridge, "board-revision",
+                         SGI_SHOEHORN_BRIDGE_BOARD_REVISION);
+    qdev_prop_set_string(bridge, "board-name",
+                         SGI_SHOEHORN_BRIDGE_BOARD_NAME);
     qdev_prop_set_uint64(bridge, "onewire-serial", s->onewire_serial);
     if (s->pci_bus_name) {
         qdev_prop_set_string(bridge, "pci-bus-name", s->pci_bus_name);

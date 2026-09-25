@@ -6,9 +6,14 @@
  * gives in "Board-identity records on the Bridge one-wire bus" and
  * docs/datasheets/bridge.md gives in "The Origin 200's IP29 record".
  *
+ * The PCI shoehorn's Bridge carries a record too, compared with the page
+ * image docs/datasheets/sgi-pci-shoehorn.md gives in "Board-identity
+ * record", along with the part and name the firmware formats from it and
+ * the Bridge chip revision the board is fitted with.
+ *
  * A Bridge given no board name still stores the older text layout, the
- * part number alone; the PCI shoehorn and PCI expansion boards are read
- * back for that layout's fields.
+ * part number alone; the bare PCI expansion board is read back for that
+ * layout's fields.
  *
  * The machine bring-up and one-wire helpers are duplicated from
  * sn0-baseio-test.c rather than shared, matching this project's other
@@ -44,6 +49,10 @@
  * lands on an Origin 2000 (sn0-pci-shoehorn-test.c).
  */
 #define SPARE_WIDGET 11
+
+/* The widget identification register: the chip revision in bits 31:28. */
+#define WIDGET_ID 0x000
+#define WIDGET_ID_REVISION_SHIFT 28
 
 /* The Bridge's one-wire bus master and the bits a driver uses. */
 #define BRIDGE_NIC 0x0b0
@@ -156,8 +165,51 @@ typedef struct TextLayoutCase {
     "fabric=/machine/crossbow0-spare-fabric[0],fabric-widget-shift=48"
 
 static const TextLayoutCase text_layout_cases[] = {
-    { "pci-shoehorn", SPARE_BOARD("sgi-pci-shoehorn"), "030-1275-002" },
     { "pci-expansion", SPARE_BOARD("sgi-pci-expansion"), "NOT-OBSERVED" },
+};
+
+/*
+ * One board whose Bridge carries a single identity part, fitted by an
+ * Origin 2000 topology on node 0 without numbering it: the machine, the
+ * crosstalk widget its Bridge answers at, the record the board's
+ * datasheet gives, the part number and name the firmware's formatter
+ * must print from it, and the Bridge chip revision the board is fitted
+ * with.
+ */
+typedef struct BoardCase {
+    const char *name;
+    const char *machine;
+    unsigned int widget;
+    const uint8_t *record;
+    const char *part;
+    const char *board_name;
+    uint32_t bridge_revision;
+} BoardCase;
+
+/*
+ * The PCI shoehorn (docs/datasheets/sgi-pci-shoehorn.md, "Board-identity
+ * record"): assembly 030-1275-002, the REV B its photographed label reads,
+ * the XTALK_PCI name real Origin 2000 inventories print, a placeholder
+ * barcode, and the Bridge D the photographed board carries. The
+ * origin2000-pci-shoehorn topology fits it in IO2, crossbow0 widget 12.
+ */
+static const uint8_t shoehorn_record[RECORD_SIZE] = {
+    0x01, 0x4f, 0x58, 0x54, 0x50, 0x43, 0x49, 0x30,
+    0x30, 0x30, 0x31, 0x20, 0x20, 0x20, 0x20, 0x20,
+    0x20, 0x20, 0x20, 0x20, 0x20, 0x30, 0x33, 0x30,
+    0x2d, 0x31, 0x32, 0x37, 0x35, 0x2d, 0xef, 0xbf,
+    0x20, 0x20, 0x20, 0x30, 0x30, 0x32, 0x42, 0x20,
+    0x20, 0x20, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0x58, 0x54, 0x41, 0x4c, 0x4b, 0x5f, 0x50, 0x43,
+    0x49, 0x20, 0x20, 0x20, 0x20, 0x20, 0xa8, 0x7e,
+};
+
+static const BoardCase board_cases[] = {
+    {
+        "pci-shoehorn",
+        "-M origin2000,topology=origin2000-pci-shoehorn -display none",
+        12, shoehorn_record, "030-1275-002", "XTALK_PCI", 4,
+    },
 };
 
 /* Set by start_machine(): where the one-wire master sits, and how. */
@@ -614,6 +666,84 @@ static void test_text_layout_reads_back(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * One field as the IP27 PROM's formatter renders it into the
+ * "Part:...;Name:..." string: ':' and ';' become '?', 0xff a space,
+ * spaces are dropped, and any other control or high byte becomes '.'.
+ */
+static void record_field(const uint8_t *bytes, unsigned int len, GString *out)
+{
+    unsigned int i;
+
+    for (i = 0; i < len; i++) {
+        uint8_t c = bytes[i];
+
+        if (c == ':' || c == ';') {
+            c = '?';
+        } else if (c == 0xff) {
+            c = ' ';
+        }
+        if (c == ' ') {
+            continue;
+        }
+        g_string_append_c(out, (c < 0x20 || c >= 0x80) ? '.' : c);
+    }
+}
+
+/*
+ * The board's one part holds its datasheet record exactly, unprogrammed
+ * memory after it, and a record every reader accepts: format 1, text
+ * fields with no ':', ';' or NUL, 0xff flag bytes, both pages leaving the
+ * CRC residue, and a part number and name that format without a stray
+ * '?' or '.'. The Bridge reports the board's chip revision.
+ */
+static void test_board_record(const void *data)
+{
+    const BoardCase *c = data;
+    QTestState *qts = start_machine(c->machine, false, c->widget);
+    uint8_t memory[RECORD_SIZE + RECORD_PAGE];
+    g_autoptr(GString) part = g_string_new(NULL);
+    g_autoptr(GString) name = g_string_new(NULL);
+    uint64_t rom[4];
+    uint32_t id;
+    unsigned int i;
+
+    g_assert_cmpuint(nic_search_all(qts, rom, G_N_ELEMENTS(rom)), ==, 1);
+    nic_read_memory(qts, rom[0], memory, sizeof(memory));
+
+    g_assert_cmpmem(memory, RECORD_SIZE, c->record, RECORD_SIZE);
+    for (i = RECORD_SIZE; i < sizeof(memory); i++) {
+        g_assert_cmphex(memory[i], ==, 0xff);
+    }
+
+    g_assert_cmphex(memory[0], ==, 0x01);
+    for (i = 1; i < RECORD_SIZE - 2; i++) {
+        if (i == 30 || i == 31) {
+            continue;                       /* page 0's check value */
+        }
+        if (i >= 42 && i < 48) {
+            g_assert_cmphex(memory[i], ==, 0xff);
+            continue;
+        }
+        g_assert_cmphex(memory[i], !=, ':');
+        g_assert_cmphex(memory[i], !=, ';');
+        g_assert_cmphex(memory[i], !=, 0x00);
+    }
+    check_record_pages_leave_the_residue(memory);
+
+    record_field(&memory[11], 19, part);
+    record_field(&memory[32], 6, part);
+    g_assert_cmpstr(part->str, ==, c->part);
+    record_field(&memory[48], 14, name);
+    g_assert_cmpstr(name->str, ==, c->board_name);
+
+    id = qtest_readl(qts, XTALK_BASE + c->widget * XTALK_WIDGET_SIZE +
+                          WIDGET_ID + XTALK_REG_DATA);
+    g_assert_cmpuint(id >> WIDGET_ID_REVISION_SHIFT, ==, c->bridge_revision);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     unsigned int i;
@@ -625,6 +755,13 @@ int main(int argc, char **argv)
             "sn0/bridge-identity/%s-records-match-the-datasheet", c->name);
 
         qtest_add_data_func(path, c, test_records_match_the_datasheet);
+    }
+    for (i = 0; i < G_N_ELEMENTS(board_cases); i++) {
+        const BoardCase *c = &board_cases[i];
+        g_autofree char *path = g_strdup_printf(
+            "sn0/bridge-identity/%s-record", c->name);
+
+        qtest_add_data_func(path, c, test_board_record);
     }
     qtest_add_func("sn0/bridge-identity/record-accepted-reaches-the-preset",
                    test_record_accepted_reaches_the_preset);
