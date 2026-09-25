@@ -27,6 +27,10 @@ DECLARE_CLASS_CHECKERS(LucentOHCIClass, LUCENT_OHCI, TYPE_LUCENT_OHCI)
 
 /* The operational register a HostControllerReset is requested through. */
 #define LUCENT_OHCI_COMMAND_STATUS  0x08
+/* Root-hub power and over-current configuration. */
+#define LUCENT_OHCI_RH_DESCRIPTOR_A 0x48
+/* NPS, PSM, OCPM, NOCP and POTPGT: the driver-written fields. */
+#define LUCENT_OHCI_RHA_WRITABLE    0xff001b00u
 /* Root-hub DeviceRemovable and PortPowerControlMask. */
 #define LUCENT_OHCI_RH_DESCRIPTOR_B 0x4c
 /* HostControllerFunctionalState, which a write can take to USBRESET. */
@@ -136,6 +140,42 @@ static const MemoryRegionOps lucent_ohci_rhdesc_b_ops = {
 };
 
 /*
+ * HcRhDescriptorA: OpenHCI 1.0a makes NoPowerSwitching, PowerSwitchingMode,
+ * OverCurrentProtectionMode, NoOverCurrentProtection and
+ * PowerOnToPowerGoodTime writable by the driver (section 7.4.1); the shared
+ * core discards writes to them. The core's power commands act whatever the
+ * register says, so this stores what the driver wrote and changes no port
+ * behaviour. Reads, the port count and the power-on value stay the core's.
+ */
+static uint64_t lucent_ohci_rhdesc_a_read(void *opaque, hwaddr addr,
+                                          unsigned size)
+{
+    OHCIState *ohci = opaque;
+
+    return ohci->mem.ops->read(ohci->mem.opaque,
+                               LUCENT_OHCI_RH_DESCRIPTOR_A + addr, size);
+}
+
+static void lucent_ohci_rhdesc_a_write(void *opaque, hwaddr addr,
+                                       uint64_t val, unsigned size)
+{
+    OHCIState *ohci = opaque;
+
+    ohci->mem.ops->write(ohci->mem.opaque, LUCENT_OHCI_RH_DESCRIPTOR_A + addr,
+                         val, size);
+    if (addr == 0 && size == 4) {
+        ohci->rhdesc_a = (ohci->rhdesc_a & ~LUCENT_OHCI_RHA_WRITABLE) |
+                         (val & LUCENT_OHCI_RHA_WRITABLE);
+    }
+}
+
+static const MemoryRegionOps lucent_ohci_rhdesc_a_ops = {
+    .read = lucent_ohci_rhdesc_a_read,
+    .write = lucent_ohci_rhdesc_a_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+};
+
+/*
  * Entering USBRESET resets the root hub, and the shared core takes
  * HcRhDescriptorB back to its power-on zero with it. OpenHCI 1.0a leaves
  * the root-hub registers out of those USBRESET preserves and says the root
@@ -207,6 +247,9 @@ static void lucent_ohci_realize(PCIDevice *dev, Error **errp)
     lucent_ohci_overlay(dev, ohci, LUCENT_OHCI_RH_DESCRIPTOR_B,
                         &lucent_ohci_rhdesc_b_ops,
                         "lucent-ohci.rh-descriptor-b");
+    lucent_ohci_overlay(dev, ohci, LUCENT_OHCI_RH_DESCRIPTOR_A,
+                        &lucent_ohci_rhdesc_a_ops,
+                        "lucent-ohci.rh-descriptor-a");
     lucent_ohci_overlay(dev, ohci, LUCENT_OHCI_CONTROL,
                         &lucent_ohci_control_ops, "lucent-ohci.control");
     lucent_ohci_reset_values(ohci);

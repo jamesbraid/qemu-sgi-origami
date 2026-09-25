@@ -511,6 +511,33 @@ static void test_usb_reset_keeps_root_hub_descriptor_b(void)
     lucent_ohci_close(&ohci);
 }
 
+/*
+ * HcRhDescriptorA's NoPowerSwitching, PowerSwitchingMode,
+ * OverCurrentProtectionMode, NoOverCurrentProtection and
+ * PowerOnToPowerGoodTime are written by the driver (OpenHCI 1.0a section
+ * 7.4.1); NumberDownstreamPorts and DeviceType are read-only. The Origin
+ * 300 IO-8 board test writes zero and requires the writable fields back
+ * as zero, where the shared core kept NoPowerSwitching set.
+ */
+static void test_root_hub_descriptor_a_is_writable(void)
+{
+    LucentOHCI ohci = { 0 };
+
+    lucent_ohci_open(&ohci, lucent_ohci_start("lucent-ohci", ""));
+    lucent_ohci_map_bar(&ohci);
+
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_RH_DESCRIPTOR_A), ==,
+                    0x202);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_DESCRIPTOR_A, 0);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_RH_DESCRIPTOR_A), ==,
+                    0x002);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_DESCRIPTOR_A, 0xffffffff);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_RH_DESCRIPTOR_A), ==,
+                    0xff001b02);
+
+    lucent_ohci_close(&ohci);
+}
+
 static void test_frame_number_tracks_clock_while_timer_starved(void)
 {
     LucentOHCI ohci = { 0 };
@@ -722,6 +749,8 @@ int main(int argc, char **argv)
                    test_root_hub_descriptor_b_is_writable);
     qtest_add_func("/lucent-ohci/usb-reset-keeps-root-hub-descriptor-b",
                    test_usb_reset_keeps_root_hub_descriptor_b);
+    qtest_add_func("/lucent-ohci/root-hub-descriptor-a-is-writable",
+                   test_root_hub_descriptor_a_is_writable);
     qtest_add_func("/lucent-ohci/frame-number-tracks-clock-while-timer-starved",
                    test_frame_number_tracks_clock_while_timer_starved);
     qtest_add_func("/lucent-ohci/frame-number-never-lags-elapsed-time",
