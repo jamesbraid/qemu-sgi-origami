@@ -20,7 +20,14 @@ struct SGINetCableState {
     SGINetCableEnd end[2];
     uint32_t kind;
     bool down;
+    NotifierList changed;
 };
+
+void sgi_net_cable_add_change_notifier(SGINetCableState *cable,
+                                       Notifier *notifier)
+{
+    notifier_list_add(&cable->changed, notifier);
+}
 
 void sgi_net_cable_set_end(SGINetCableState *cable, unsigned int side,
                            Object *port, unsigned int index)
@@ -93,6 +100,7 @@ static void sgi_net_cable_set_down(Object *obj, bool value, Error **errp)
             sgi_net_port_peer_changed(end->port, end->index);
         }
     }
+    notifier_list_notify(&cable->changed, cable);
 }
 
 static bool sgi_net_cable_get_down(Object *obj, Error **errp)
@@ -129,6 +137,7 @@ static int sgi_net_cable_post_load(void *opaque, int version_id)
         sgi_net_port_peer_changed(cable->end[side].port,
                                   cable->end[side].index);
     }
+    notifier_list_notify(&cable->changed, cable);
     return 0;
 }
 
@@ -181,11 +190,17 @@ static void sgi_net_cable_class_init(ObjectClass *klass, const void *data)
         "it as the physical link would");
 }
 
+static void sgi_net_cable_init(Object *obj)
+{
+    notifier_list_init(&SGI_NET_CABLE(obj)->changed);
+}
+
 static const TypeInfo sgi_net_cable_types[] = {
     {
         .name = TYPE_SGI_NET_CABLE,
         .parent = TYPE_DEVICE,
         .instance_size = sizeof(SGINetCableState),
+        .instance_init = sgi_net_cable_init,
         .class_init = sgi_net_cable_class_init,
     },
 };
