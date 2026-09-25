@@ -36,8 +36,19 @@ static inline void assert_launch_rejected(const char *const args[],
     sigemptyset(&ignore.sa_mask);
     g_assert_cmpint(sigaction(SIGPIPE, &ignore, &previous), ==, 0);
     length = qemu_write_full(input_fd, commands, sizeof(commands) - 1);
+    /*
+     * qemu_write_full() returns the count actually written, not -1, even
+     * when one of its write() calls fails -- so a rejected launch that
+     * exits and closes its end of the pipe after accepting only part of
+     * the buffer (or none of it) shows up here as a short count with
+     * errno left at EPIPE, not as a -1 return. Any such count is fine:
+     * this write only delivers the QMP commands, it does not prove the
+     * rejection. That proof is the exit status and expected stderr text
+     * checked below, which still catch a launch QEMU wrongly accepted.
+     */
     g_assert_true(length == sizeof(commands) - 1 ||
-                  (length == -1 && errno == EPIPE));
+                  (length >= 0 && length < sizeof(commands) - 1 &&
+                   errno == EPIPE));
     g_assert_cmpint(sigaction(SIGPIPE, &previous, NULL), ==, 0);
     close(input_fd);
     g_assert_cmpint(waitpid(pid, &status, 0), ==, pid);
