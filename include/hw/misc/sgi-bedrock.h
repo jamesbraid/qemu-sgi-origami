@@ -29,6 +29,7 @@ typedef enum SGIBedrockHoldKind {
     SGI_BEDROCK_HOLD_SCRATCH3_HELD = 2,  /* H3: the hub lock a peer holds */
     SGI_BEDROCK_HOLD_PERF_YIELD = 3,     /* H3: a monopoliser cedes a quantum */
     SGI_BEDROCK_HOLD_PRESENCE = 4,       /* H4: a publisher awaits its peer's */
+    SGI_BEDROCK_HOLD_PARTNER = 5,        /* H4: partner awaits its publisher */
 } SGIBedrockHoldKind;
 
 struct SGIBedrockState {
@@ -162,9 +163,19 @@ struct SGIBedrockState {
      * a hold on the join timed out, so the join is over for this reset
      * whether or not a publication ever arrives. See the H4 comment in
      * sgi-bedrock.c and docs/known-issues.md.
+     *
+     * The partner park's state, the same lifetime. hold_scratch1_joined: the
+     * processor has made a scratch-1 write after its first, so it is past
+     * the reset-edge join. presence_posted: its first write to its own
+     * real-time compare register after that, the post the PROM's pair
+     * liveness handshake exchanges. presence_released: the interface's
+     * publisher has released the hub lock after publishing.
      */
     bool presence_seen[SGI_BEDROCK_PROCESSORS / SGI_BEDROCK_PI_PROCESSORS];
     bool presence_abandoned;
+    bool hold_scratch1_joined[SGI_BEDROCK_PROCESSORS];
+    bool presence_posted[SGI_BEDROCK_PROCESSORS];
+    bool presence_released[SGI_BEDROCK_PROCESSORS / SGI_BEDROCK_PI_PROCESSORS];
 };
 
 bool sgi_bedrock_hub_registers_permitted(SGIBedrockState *s);
@@ -232,5 +243,18 @@ void sgi_bedrock_scratch3_released(SGIBedrockState *s);
  * join; no value the guest reads changes.
  */
 void sgi_bedrock_presence_published(SGIBedrockState *s);
+
+/*
+ * The presence join's partner park (H4), docs/known-issues.md: called from
+ * pi_write() after a real-time compare write of processor @slot of
+ * @interface has landed, and from pi_read() after a real-time counter read
+ * has been sampled. They record the pair's liveness posts and park an
+ * interface's second processor at its timed wait until its publisher has
+ * published; no value the guest reads changes.
+ */
+void sgi_bedrock_rt_compare_written(SGIBedrockState *s,
+                                    unsigned int interface,
+                                    unsigned int slot);
+void sgi_bedrock_rt_counter_read(SGIBedrockState *s);
 
 #endif

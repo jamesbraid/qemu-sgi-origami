@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-bedrock-pi.h"
+#include "hw/misc/sgi-bedrock.h"
 #include "hw/core/cpu.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
@@ -408,7 +409,15 @@ static uint64_t pi_read(void *opaque, hwaddr offset, unsigned size)
     case PI_SPOOL_MASK: return s->spool_mask;
     case PI_SPURIOUS_HEADER_0: return s->spurious_header[0];
     case PI_SPURIOUS_HEADER_1: return s->spurious_header[1];
-    case PI_RT_COUNTER: return pi_rt_count(s);
+    case PI_RT_COUNTER: {
+        uint64_t count = pi_rt_count(s);
+
+        /* Sampled first: a park the report starts cannot change it. */
+        if (s->bedrock) {
+            sgi_bedrock_rt_counter_read(s->bedrock);
+        }
+        return count;
+    }
     case PI_CPU_OVERRIDE:
     case PI_NMI_A:
     case PI_NMI_B:
@@ -565,13 +574,16 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
         }
         break;
     case PI_RT_COMPARE_A:
-        s->rt_compare[0] = value & PI_RT_MASK;
-        pi_arm_rt(s, 0);
+    case PI_RT_COMPARE_B: {
+        unsigned slot = offset == PI_RT_COMPARE_B;
+
+        s->rt_compare[slot] = value & PI_RT_MASK;
+        pi_arm_rt(s, slot);
+        if (s->bedrock) {
+            sgi_bedrock_rt_compare_written(s->bedrock, s->interface, slot);
+        }
         return;
-    case PI_RT_COMPARE_B:
-        s->rt_compare[1] = value & PI_RT_MASK;
-        pi_arm_rt(s, 1);
-        return;
+    }
     case PI_PROFILE_COMPARE:
         s->profile_compare = value;
         pi_arm_profile(s);

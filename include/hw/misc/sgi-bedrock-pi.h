@@ -77,6 +77,15 @@ struct SGIBedrockPIState {
     bool ni_error;
     bool xb_error;
     bool uart_irq;
+    /*
+     * The owning node, when this device is one of sgi-bedrock's children:
+     * a plain pointer, as the I/O interface's is. Real-time compare writes
+     * and real-time counter reads are reported to the presence join's
+     * partner park (sgi_bedrock_rt_compare_written(),
+     * sgi_bedrock_rt_counter_read()); see sgi-bedrock.h. NULL for a
+     * standalone device.
+     */
+    struct SGIBedrockState *bedrock;
 };
 
 void sgi_bedrock_pi_set_lb_error(SGIBedrockPIState *s, bool level);
