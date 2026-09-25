@@ -9,12 +9,19 @@
  * sn0-baseio-test.c rather than shared, matching this project's other
  * qtest files that each carry their own.
  *
+ * The refusal cases check that realize turns away a record the Bridge
+ * datasheet's rules forbid ("The record layout, and every constraint on
+ * building it"): a ':' or ';' in a text field, a field too long for its
+ * bytes, a part that is not digits and dashes, and a barcode or revision
+ * with no board name.
+ *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
 
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "sgi-launch.h"
 #include "sgi-test.h"
 
 #define HUB_BASE UINT64_C(0x20001000000)
@@ -338,6 +345,158 @@ static void test_io6g_record_pages_leave_the_residue(void)
     qtest_quit(qts);
 }
 
+/*
+ * A Bridge whose four record fields all come from the command line.
+ * sgi-board-test-fixture builds the Bridge the way a BaseIO
+ * carrier does; naming no known preset leaves each record property to
+ * -global, and a Bridge that accepts its record hands the launch on to
+ * sgi-baseio, which refuses the preset with its own error.
+ */
+typedef struct RecordCase {
+    const char *part;
+    const char *barcode;
+    const char *revision;
+    const char *name;
+    const char *message;
+} RecordCase;
+
+#define GOOD_PART     "030-0734-002"
+#define GOOD_BARCODE  "OBASEIO001"
+#define GOOD_REVISION "N"
+#define GOOD_NAME     "BASEIO"
+#define REFUSED_FIELD "must be printable, without ':' or ';'"
+#define REFUSED_WIDTH "is required and must fit its field"
+#define REFUSED_PART  "board part in a board record must be digits and dashes"
+#define REFUSED_BARE  "board-barcode and board-revision properties need " \
+                      "board-name"
+
+static void assert_record_launch(const RecordCase *c)
+{
+    const struct {
+        const char *property;
+        const char *value;
+    } fields[] = {
+        { "board-part", c->part },
+        { "board-barcode", c->barcode },
+        { "board-revision", c->revision },
+        { "board-name", c->name },
+    };
+    g_autoptr(GPtrArray) args = g_ptr_array_new_with_free_func(g_free);
+    unsigned int i;
+
+    g_ptr_array_add(args, g_strdup(qtest_qemu_binary(NULL)));
+    g_ptr_array_add(args, g_strdup("-M"));
+    g_ptr_array_add(args, g_strdup("none"));
+    g_ptr_array_add(args, g_strdup("-accel"));
+    g_ptr_array_add(args, g_strdup("qtest"));
+    g_ptr_array_add(args, g_strdup("-display"));
+    g_ptr_array_add(args, g_strdup("none"));
+    g_ptr_array_add(args, g_strdup("-nodefaults"));
+    g_ptr_array_add(args, g_strdup("-qmp"));
+    g_ptr_array_add(args, g_strdup("stdio"));
+    g_ptr_array_add(args, g_strdup("-device"));
+    g_ptr_array_add(args, g_strdup("sgi-board-test-fixture,"
+                                   "board-type=sgi-baseio,preset=none"));
+    for (i = 0; i < G_N_ELEMENTS(fields); i++) {
+        if (fields[i].value) {
+            g_ptr_array_add(args, g_strdup("-global"));
+            g_ptr_array_add(args, g_strdup_printf("sgi-bridge.%s=%s",
+                                                  fields[i].property,
+                                                  fields[i].value));
+        }
+    }
+    g_ptr_array_add(args, NULL);
+    assert_launch_rejected((const char *const *)args->pdata, c->message);
+}
+
+/* The control: a good record gets past the Bridge to sgi-baseio. */
+static void test_record_accepted_reaches_the_preset(void)
+{
+    const RecordCase c = {
+        GOOD_PART, GOOD_BARCODE, GOOD_REVISION, GOOD_NAME,
+        "sgi-baseio: 'none' names no known preset",
+    };
+
+    assert_record_launch(&c);
+}
+
+static void test_record_refuses_separators(void)
+{
+    const RecordCase cases[] = {
+        { GOOD_PART, "OBASE:O001", GOOD_REVISION, GOOD_NAME,
+          "board barcode " REFUSED_FIELD },
+        { GOOD_PART, "OBASE;O001", GOOD_REVISION, GOOD_NAME,
+          "board barcode " REFUSED_FIELD },
+        { GOOD_PART, GOOD_BARCODE, "N:", GOOD_NAME,
+          "board revision " REFUSED_FIELD },
+        { GOOD_PART, GOOD_BARCODE, "N;", GOOD_NAME,
+          "board revision " REFUSED_FIELD },
+        { GOOD_PART, GOOD_BARCODE, GOOD_REVISION, "BASE:IO",
+          "board name " REFUSED_FIELD },
+        { GOOD_PART, GOOD_BARCODE, GOOD_REVISION, "BASE;IO",
+          "board name " REFUSED_FIELD },
+    };
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(cases); i++) {
+        assert_record_launch(&cases[i]);
+    }
+}
+
+/* One character past each field's width: ten, four and fourteen. */
+static void test_record_refuses_overlong_fields(void)
+{
+    const RecordCase cases[] = {
+        { GOOD_PART, "OBASEIO0012", GOOD_REVISION, GOOD_NAME,
+          "board barcode " REFUSED_WIDTH " (at most 10 characters)" },
+        { GOOD_PART, GOOD_BARCODE, "NNNNN", GOOD_NAME,
+          "board revision " REFUSED_WIDTH " (at most 4 characters)" },
+        { GOOD_PART, GOOD_BARCODE, GOOD_REVISION, "BASEIOBASEIOBAS",
+          "board name " REFUSED_WIDTH " (at most 14 characters)" },
+    };
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(cases); i++) {
+        assert_record_launch(&cases[i]);
+    }
+}
+
+/*
+ * A board record's part must be digits and dashes; the older text layout's
+ * twelve-character check alone lets a ':' or a letter through.
+ */
+static void test_record_refuses_a_part_not_digits_and_dashes(void)
+{
+    const RecordCase cases[] = {
+        { "030-0734:002", GOOD_BARCODE, GOOD_REVISION, GOOD_NAME,
+          REFUSED_PART },
+        { "030-0734-00A", GOOD_BARCODE, GOOD_REVISION, GOOD_NAME,
+          REFUSED_PART },
+    };
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(cases); i++) {
+        assert_record_launch(&cases[i]);
+    }
+}
+
+/*
+ * A barcode or revision needs a name, which selects the record layout;
+ * a name needs the barcode and revision to go with it.
+ */
+static void test_record_refuses_a_partial_record(void)
+{
+    const RecordCase cases[] = {
+        { GOOD_PART, GOOD_BARCODE, NULL, NULL, REFUSED_BARE },
+        { GOOD_PART, NULL, GOOD_REVISION, NULL, REFUSED_BARE },
+        { GOOD_PART, NULL, GOOD_REVISION, GOOD_NAME,
+          "board barcode " REFUSED_WIDTH },
+        { GOOD_PART, GOOD_BARCODE, NULL, GOOD_NAME,
+          "board revision " REFUSED_WIDTH },
+    };
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(cases); i++) {
+        assert_record_launch(&cases[i]);
+    }
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -345,5 +504,15 @@ int main(int argc, char **argv)
                    test_io6g_records_match_the_datasheet);
     qtest_add_func("sn0/bridge-identity/io6g-record-pages-leave-the-residue",
                    test_io6g_record_pages_leave_the_residue);
+    qtest_add_func("sn0/bridge-identity/record-accepted-reaches-the-preset",
+                   test_record_accepted_reaches_the_preset);
+    qtest_add_func("sn0/bridge-identity/record-refuses-separators",
+                   test_record_refuses_separators);
+    qtest_add_func("sn0/bridge-identity/record-refuses-overlong-fields",
+                   test_record_refuses_overlong_fields);
+    qtest_add_func("sn0/bridge-identity/record-refuses-a-bad-part",
+                   test_record_refuses_a_part_not_digits_and_dashes);
+    qtest_add_func("sn0/bridge-identity/record-refuses-a-partial-record",
+                   test_record_refuses_a_partial_record);
     return g_test_run();
 }
