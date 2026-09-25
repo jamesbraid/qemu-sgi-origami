@@ -165,6 +165,10 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 #define SGI_MGRAS_CMD_TOKEN_MAX_DISCARD_WORDS \
     (UINT8_MAX / sizeof(uint32_t))
 
+/* Values for the per-pixel format tag; see the "format" field below. */
+#define SGI_MGRAS_PIXEL_FORMAT_CI8 0
+#define SGI_MGRAS_PIXEL_FORMAT_RGB 1
+
 struct SGIMgrasClass {
     SysBusDeviceClass parent_class;
     ResettablePhases parent_phases;
@@ -266,6 +270,17 @@ struct SGIMgrasState {
     uint32_t back_count;
     /* Per-pixel visual tag. Only a plane fill writes it. */
     uint8_t *wid;
+    /*
+     * Per-pixel colour-format tag, one of the SGI_MGRAS_PIXEL_FORMAT_*
+     * values above: CI8 selects the indexed plane (front holds an 8-bit
+     * CMAP index), RGB selects packed colour (front holds 0x00RRGGBB
+     * directly). No register exposes a stored per-pixel format; painting
+     * code derives it from PP1FILLMODE bit 13 at the time each pixel is
+     * written and records it here so scanout can resolve mixed-format
+     * content within one WID. Approximation: see
+     * docs/datasheets/mgras-raster-display.md.
+     */
+    uint8_t *format;
     uint32_t hq[5120];
     uint32_t *ge[2];
     uint32_t ge_write_ptr[2];

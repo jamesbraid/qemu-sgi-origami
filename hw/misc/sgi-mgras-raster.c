@@ -54,6 +54,7 @@
 #define MGRAS_RSS_BLOCKXYSTARTI 0x046
 #define MGRAS_RSS_BLOCKXYENDI 0x047
 #define MGRAS_RSS_PACKEDCOLOR 0x05b
+#define MGRAS_RSS_RED 0x05c
 #define MGRAS_RSS_CHAR_H 0x070
 #define MGRAS_RSS_CHAR_L 0x071
 #define MGRAS_RSS_BKGRD_RG 0x140
@@ -67,13 +68,35 @@
 #define MGRAS_RSS_IR_ALIAS 0x045
 
 
-#define MGRAS_RSS_ALPHA 0x05f
+/*
+ * Register 0x05f: function unknown. The DDX writes it 32 times with
+ * value 0 immediately before the PIO draw-pixel row loop
+ * (mgrasDrawPixels..C, 0x577e68-0x577ee8) in every observed capture. No
+ * read, branch or paint result has been tied to it, so it is not treated
+ * as a colour or alpha register here; that would assert a meaning the
+ * evidence does not establish. Latched silently by the generic
+ * mgras_raster_rss_write() store like every other unmodelled register.
+ */
+#define MGRAS_RSS_UNK_05F 0x05f
 #define MGRAS_RSS_COLORMASKLSBSA 0x163
 #define MGRAS_RSS_GLINE_XSTARTF 0x00c
 #define MGRAS_RSS_DRBPOINTERS 0x16d
 
 
 #define MGRAS_RSS_COLORMASKLSBSB 0x164
+
+/*
+ * Rectangle-fill colour source, register offsets 0x176-0x178. No public
+ * name is known for these three; the DDX only ever writes them
+ * immediately before a BLOCKXYENDI fill execute. Under CI8 (PP1FILLMODE
+ * bit 13 clear) only FILLCOLOR_R is read, as a bare 8-bit CMAP index in
+ * its low byte. Under RGB (bit 13 set) all three are read, each holding
+ * an 8-bit channel in its top byte: the channel value is the register
+ * value >> 4.
+ */
+#define MGRAS_RSS_FILLCOLOR_R 0x176
+#define MGRAS_RSS_FILLCOLOR_G 0x177
+#define MGRAS_RSS_FILLCOLOR_B 0x178
 
 /*
  * FILLMODE (OpenBSD impact(4) driver name) picks what a CHAR_H/CHAR_L
@@ -101,13 +124,14 @@
 #define MGRAS_BYTE_XFER_PACKING_PAIRS 0x0080
 
 /*
- * FILLMODE bit 20 or 22 also sends a rectangle fill to BKGRD_RG instead of
- * PACKEDCOLOR. Inferred: the stock X server sets one of them for every
- * rectangle it fills and leaves PACKEDCOLOR zero, while OpenBSD fills with
- * FILLMODE zero and its colour in PACKEDCOLOR. Which bit means what is
- * unknown.
+ * A BLOCKXYENDI execute paints a solid rectangle only when FILLMODE has
+ * bit 20 set and bit 22 clear (MGRAS_FILLMODE_GLYPH_ROW, which sets both
+ * bits, is a glyph-row latch and never a rectangle fill, so this mask
+ * naturally excludes it). Any other FILLMODE value leaves the raster
+ * unchanged; only the WID plane still tags.
  */
-#define MGRAS_FILLMODE_BACKGROUND_COLOR 0x00500000
+#define MGRAS_FILLMODE_RECT_FILL_MASK 0x00500000
+#define MGRAS_FILLMODE_RECT_FILL_VALUE 0x00100000
 
 typedef enum SGIMgrasRasterSubmissionForm {
     SGI_MGRAS_RASTER_DIRECT,
@@ -427,14 +451,31 @@ static uint32_t mgras_paint_pixel(uint8_t op, uint32_t dst, uint32_t src,
     return (result & mask) | (dst & ~mask);
 }
 
-/* A paint writes colour only. The WID plane keeps whatever tagged it. */
+/*
+ * PP1FILLMODE bit 13 picks whether a paint's source colour is a CI8
+ * CMAP index or a packed RGB triple; see the FILLCOLOR_R/G/B comment
+ * above. Painting code reads this at the moment of each paint and
+ * records it in the per-pixel format plane (sgi-mgras.h) so scanout can
+ * resolve mixed-format content within one WID.
+ */
+static uint8_t mgras_pixel_format(SGIMgrasState *s)
+{
+    return (s->rss[MGRAS_RSS_PP1FILLMODE] & 0x2000) ? SGI_MGRAS_PIXEL_FORMAT_RGB :
+                                                    SGI_MGRAS_PIXEL_FORMAT_CI8;
+}
+
+/*
+ * A paint writes colour and its format tag together. The WID plane keeps
+ * whatever tagged it.
+ */
 static void mgras_put_pixel(SGIMgrasState *s, unsigned int idx, uint32_t color,
-                         uint8_t op, uint32_t mask)
+                         uint8_t op, uint32_t mask, uint8_t format)
 {
     if (!(mask & 0x00ffffff)) {
         return;
     }
     s->front[idx] = mgras_paint_pixel(op, s->front[idx], color, mask);
+    s->format[idx] = format;
 }
 
 
@@ -457,7 +498,8 @@ static bool mgras_rect_bounds(uint32_t xy0, uint32_t xy1, int *x_lo, int *y_lo,
 
 
 static void mgras_fill_rect(SGIMgrasState *s, uint32_t xy0, uint32_t xy1,
-                         uint32_t color, uint8_t op, uint32_t mask)
+                         uint32_t color, uint8_t op, uint32_t mask,
+                         uint8_t format)
 {
     int x_lo, y_lo, x_hi, y_hi;
 
@@ -466,7 +508,7 @@ static void mgras_fill_rect(SGIMgrasState *s, uint32_t xy0, uint32_t xy1,
     }
     for (int y = y_lo; y <= y_hi; y++) {
         for (int x = x_lo; x <= x_hi; x++) {
-            mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x, color, op, mask);
+            mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x, color, op, mask, format);
         }
     }
 }
@@ -488,12 +530,10 @@ static void mgras_fill_wid_rect(SGIMgrasState *s, uint32_t xy0, uint32_t xy1,
 
 static void mgras_draw_fill(SGIMgrasState *s)
 {
-    bool background = s->rss[MGRAS_RSS_FILLMODE] &
-                       MGRAS_FILLMODE_BACKGROUND_COLOR;
-    uint32_t color = (background ? s->rss[MGRAS_RSS_BKGRD_RG] :
-                      s->rss[MGRAS_RSS_PACKEDCOLOR]) & 0x00ffffff;
     uint32_t mask = s->rss[MGRAS_RSS_COLORMASKLSBSA];
     uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
+    uint8_t format = mgras_pixel_format(s);
+    uint32_t color;
 
     /*
      * COLORMASKLSBSA masks the colour and COLORMASKMSBS the WID plane, so
@@ -515,19 +555,26 @@ static void mgras_draw_fill(SGIMgrasState *s)
                          s->rss[MGRAS_RSS_BLOCKXYENDI],
                          s->rss[MGRAS_RSS_DRBPOINTERS] >> 16);
     }
-    mgras_fill_rect(s, s->rss[MGRAS_RSS_BLOCKXYSTARTI],
-                    s->rss[MGRAS_RSS_BLOCKXYENDI], color, op, mask);
-}
 
+    if ((s->rss[MGRAS_RSS_FILLMODE] & MGRAS_FILLMODE_RECT_FILL_MASK) !=
+        MGRAS_FILLMODE_RECT_FILL_VALUE) {
+        return;
+    }
 
-static void mgras_draw_ir_alias_fill(SGIMgrasState *s)
-{
-    uint32_t color = s->rss[MGRAS_RSS_BKGRD_RG] & 0x00ffffff;
-    uint32_t mask = s->rss[MGRAS_RSS_COLORMASKLSBSA];
-    uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
-
-    mgras_fill_rect(s, s->rss[MGRAS_RSS_BLOCKXYSTARTI],
-                    s->rss[MGRAS_RSS_BLOCKXYENDI], color, op, mask);
+    /*
+     * FILLCOLOR_R/G/B, not BKGRD_RG/PACKEDCOLOR: the DDX writes a
+     * rectangle's colour there before every BLOCKXYENDI fill execute
+     * (see the FILLCOLOR_R/G/B comment above). CI8 reads only the low
+     * byte of FILLCOLOR_R as a bare CMAP index; RGB reads all three,
+     * each >> 4 to an 8-bit channel.
+     */
+    color = format == SGI_MGRAS_PIXEL_FORMAT_CI8 ?
+        s->rss[MGRAS_RSS_FILLCOLOR_R] & 0xff :
+        (((s->rss[MGRAS_RSS_FILLCOLOR_R] >> 4) & 0xff) << 16) |
+        (((s->rss[MGRAS_RSS_FILLCOLOR_G] >> 4) & 0xff) << 8) |
+        ((s->rss[MGRAS_RSS_FILLCOLOR_B] >> 4) & 0xff);
+    mgras_fill_rect(s, s->rss[MGRAS_RSS_BLOCKXYSTARTI], s->rss[MGRAS_RSS_BLOCKXYENDI],
+                color, op, mask, format);
 }
 
 
@@ -538,8 +585,9 @@ static void mgras_draw_ir_alias_fill(SGIMgrasState *s)
  * can trigger the same paint. A CHAR_H-only execute (rows of 32 columns or
  * fewer) reads CHAR_L's possibly-stale value too, but the width clamp below
  * never indexes past column 31 in that case, so no stale bit is ever
- * painted. Colour roles (set bit -> PACKEDCOLOR, clear bit -> BKGRD_RG)
- * carry over from the narrower rule this replaces.
+ * painted. Only a set bit paints, its ink RED>>12 (CI8) or PACKEDCOLOR
+ * (RGB); a clear bit leaves the pixel untouched rather than painting a
+ * background colour.
  */
 static void mgras_draw_glyph_row(SGIMgrasState *s)
 {
@@ -547,8 +595,10 @@ static void mgras_draw_glyph_row(SGIMgrasState *s)
     uint32_t xy1 = s->rss[MGRAS_RSS_BLOCKXYENDI];
     int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
     int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
-    uint32_t fg = s->rss[MGRAS_RSS_PACKEDCOLOR] & 0x00ffffff;
-    uint32_t bg = s->rss[MGRAS_RSS_BKGRD_RG] & 0x00ffffff;
+    uint8_t format = mgras_pixel_format(s);
+    uint32_t ink = format == SGI_MGRAS_PIXEL_FORMAT_CI8 ?
+        (s->rss[MGRAS_RSS_RED] >> 12) & 0xff :
+        s->rss[MGRAS_RSS_PACKEDCOLOR] & 0x00ffffff;
     uint32_t mask = s->rss[MGRAS_RSS_COLORMASKLSBSA];
     uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
     uint64_t bits = ((uint64_t)s->rss[MGRAS_RSS_CHAR_H] << 32) |
@@ -568,8 +618,11 @@ static void mgras_draw_glyph_row(SGIMgrasState *s)
     width = MIN(x1 - x0 + 1, 64);
     for (int i = 0; i < width; i++) {
         bool set = (bits >> (63 - i)) & 1;
-        mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x0 + i, set ? fg : bg, op,
-                     mask);
+
+        if (set) {
+            mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x0 + i, ink, op, mask,
+                        format);
+        }
     }
 }
 
@@ -586,7 +639,10 @@ static void mgras_draw_glyph_row(SGIMgrasState *s)
  * padding, derived by matching the painted pixel positions in a live
  * capture (tests/data/mgras/char-modes.replay):
  * skip = (row * 4 * ceil(width / 4)) % 8. It is not read from hardware
- * state.
+ * state. Painted bytes are always CI8 CMAP indices regardless of
+ * PP1FILLMODE: this path (and mgras_draw_byte_row_pairs()) carries its own
+ * 8-bit index data rather than a register-selected colour, so there is
+ * no RGB form to select between.
  */
 static void mgras_draw_byte_row_bytes(SGIMgrasState *s, int x0, int x1,
                                    int y0, int y1, uint32_t mask, uint8_t op)
@@ -611,7 +667,7 @@ static void mgras_draw_byte_row_bytes(SGIMgrasState *s, int x0, int x1,
                 continue;
             }
             mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x0 + col, bytes[i], op,
-                         mask);
+                         mask, SGI_MGRAS_PIXEL_FORMAT_CI8);
         }
     }
     s->glyph_unit++;
@@ -649,7 +705,7 @@ static void mgras_draw_byte_row_pairs(SGIMgrasState *s, int x0, int x1,
                 continue;
             }
             mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x0 + col, pixels[i], op,
-                         mask);
+                         mask, SGI_MGRAS_PIXEL_FORMAT_CI8);
         }
     }
     s->glyph_unit++;
@@ -729,6 +785,7 @@ static void mgras_draw_pio_pixel_pair(SGIMgrasState *s)
     };
     uint32_t mask = s->rss[MGRAS_RSS_COLORMASKLSBSA];
     uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
+    uint8_t format = mgras_pixel_format(s);
 
     if (x0 > x1 || y0 > y1 || x0 >= SGI_MGRAS_WIDTH || y0 >= SGI_MGRAS_HEIGHT) {
         return;
@@ -744,7 +801,7 @@ static void mgras_draw_pio_pixel_pair(SGIMgrasState *s)
             y >= SGI_MGRAS_HEIGHT) {
             return;
         }
-        mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x, pixels[i], op, mask);
+        mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x, pixels[i], op, mask, format);
         s->pio_x++;
         if (x0 + s->pio_x > x1) {
             s->pio_x = 0;
@@ -768,7 +825,10 @@ static void mgras_draw_pio_pixel_pair(SGIMgrasState *s)
 static void mgras_draw_point(SGIMgrasState *s)
 {
     uint32_t xy0 = s->rss[MGRAS_RSS_RE_POINT];
-    uint32_t color = s->rss[MGRAS_RSS_PACKEDCOLOR] & 0x00ffffff;
+    uint8_t format = mgras_pixel_format(s);
+    uint32_t color = format == SGI_MGRAS_PIXEL_FORMAT_CI8 ?
+        (s->rss[MGRAS_RSS_RED] >> 12) & 0xff :
+        s->rss[MGRAS_RSS_PACKEDCOLOR] & 0x00ffffff;
     uint32_t mask = s->rss[MGRAS_RSS_COLORMASKLSBSA];
     uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
     int x = (xy0 >> 16) & 0xffff, y = xy0 & 0xffff;
@@ -776,7 +836,7 @@ static void mgras_draw_point(SGIMgrasState *s)
     if (x >= SGI_MGRAS_WIDTH || y >= SGI_MGRAS_HEIGHT) {
         return;
     }
-    mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x, color, op, mask);
+    mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x, color, op, mask, format);
 }
 
 
@@ -798,7 +858,10 @@ static void mgras_draw_line(SGIMgrasState *s)
 {
     uint32_t xy0 = s->rss[MGRAS_RSS_RE_POINT];
     uint32_t xy1 = s->rss[MGRAS_RSS_RE_LINE];
-    uint32_t color = s->rss[MGRAS_RSS_PACKEDCOLOR] & 0x00ffffff;
+    uint8_t format = mgras_pixel_format(s);
+    uint32_t color = format == SGI_MGRAS_PIXEL_FORMAT_CI8 ?
+        (s->rss[MGRAS_RSS_RED] >> 12) & 0xff :
+        s->rss[MGRAS_RSS_PACKEDCOLOR] & 0x00ffffff;
     uint32_t mask = s->rss[MGRAS_RSS_COLORMASKLSBSA];
     uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
     int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
@@ -813,7 +876,8 @@ static void mgras_draw_line(SGIMgrasState *s)
         int e2;
 
         if (x0 < SGI_MGRAS_WIDTH && y0 < SGI_MGRAS_HEIGHT) {
-            mgras_put_pixel(s, y0 * SGI_MGRAS_WIDTH + x0, color, op, mask);
+            mgras_put_pixel(s, y0 * SGI_MGRAS_WIDTH + x0, color, op, mask,
+                        format);
         }
         if (x0 == x1 && y0 == y1) {
             break;
@@ -853,8 +917,14 @@ static void mgras_raster_command_execute(
                           "execute, register 0x%03x\n", submission->reg);
             return;
         }
-        mgras_draw_ir_alias_fill(s);
-        s->dirty = true;
+        /*
+         * A direct-command IR_ALIAS execute paints nothing. The DMA and
+         * PIO paths that deliver its pixels (mgras_raster_dma_draw_image(),
+         * mgras_draw_pio_pixel_pair()) already paint their own data; this
+         * execute only latches the register write mgras_raster_rss_write()
+         * already applied. This is established behaviour, not an
+         * unimplemented command, so it is not logged.
+         */
         return;
     case MGRAS_RSS_CHAR_H:
     case MGRAS_RSS_CHAR_L:
@@ -1096,14 +1166,23 @@ static void mgras_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
             pixel_bytes[b % bpp] = byte;
             if (b % bpp == bpp - 1) {
                 uint32_t col = b / bpp;
+                /*
+                 * bpp 1 is a bare CI8 CMAP index. bpp 4 assembles an
+                 * MSB-first 32-bit pixel, but mgras_put_pixel()/
+                 * mgras_paint_pixel() mask to the low 24 bits, so byte 0
+                 * (the MSB) is discarded and bytes 1-3 survive as an
+                 * 0x00RRGGBB triple: an RGB pixel.
+                 */
                 uint32_t color = bpp == 1 ? pixel_bytes[0] :
                     ((uint32_t)pixel_bytes[0] << 24) |
                     ((uint32_t)pixel_bytes[1] << 16) |
                     ((uint32_t)pixel_bytes[2] << 8) | pixel_bytes[3];
+                uint8_t format = bpp == 1 ? SGI_MGRAS_PIXEL_FORMAT_CI8 :
+                                            SGI_MGRAS_PIXEL_FORMAT_RGB;
 
                 if (x0 + (int)col <= x1) {
                     mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x0 + (int)col,
-                                 color, op, mask);
+                                 color, op, mask, format);
                 }
             }
         }
