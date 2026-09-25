@@ -49,6 +49,8 @@ m48t35_nvram_read(uint64_t addr, uint64_t value) "nvram read addr:0x%04" PRIx64 
 m48t35_nvram_write(uint64_t addr, uint64_t value) "nvram write addr:0x%04" PRIx64 " value:0x%02" PRIx64
 m48t35_clock_read(uint64_t addr, uint64_t value) "clock read addr:0x%04" PRIx64 " value:0x%02" PRIx64
 m48t35_clock_write(uint64_t addr, uint64_t value) "clock write addr:0x%04" PRIx64 " value:0x%02" PRIx64
+m48t35_clock_saved(int year, int mon, int mday, int hour, int min, int sec, int64_t host) "saved cell year %02d %02d-%02d %02d:%02d:%02d at host %" PRId64
+m48t35_clock_restore(const char *how, int64_t elapsed) "%s, %" PRId64 " s"
 
 # ds1685.c
 ds1685_select(uint8_t reg) "select reg:0x%02x"

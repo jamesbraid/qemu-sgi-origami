@@ -9,6 +9,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bswap.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qjson.h"
@@ -4189,6 +4190,299 @@ static void test_the_storage_persists_across_a_process_with_a_drive(
     unlink(path);
 }
 
+/* A time in the part's cells: BCD, the year less 1970. */
+typedef struct RtcTime {
+    uint8_t year, month, day, hour, min, sec;
+} RtcTime;
+
+static void rtc_set(QTestState *qts, const RtcTime *t)
+{
+    qtest_writeb(qts, RTC_CONTROL, RTC_CSR_WRITE);
+    qtest_writeb(qts, RTC_SECONDS, t->sec);
+    qtest_writeb(qts, RTC_MINUTES, t->min);
+    qtest_writeb(qts, RTC_HOURS, t->hour);
+    qtest_writeb(qts, RTC_DAY, t->day);
+    qtest_writeb(qts, RTC_MONTH, t->month);
+    qtest_writeb(qts, RTC_YEAR, t->year);
+    qtest_writeb(qts, RTC_CONTROL, 0);
+}
+
+static void rtc_assert(QTestState *qts, const RtcTime *t)
+{
+    qtest_writeb(qts, RTC_CONTROL, RTC_CSR_READ);
+    g_assert_cmphex(qtest_readb(qts, RTC_YEAR), ==, t->year);
+    g_assert_cmphex(qtest_readb(qts, RTC_MONTH), ==, t->month);
+    g_assert_cmphex(qtest_readb(qts, RTC_DAY), ==, t->day);
+    g_assert_cmphex(qtest_readb(qts, RTC_HOURS), ==, t->hour);
+    g_assert_cmphex(qtest_readb(qts, RTC_MINUTES), ==, t->min);
+    g_assert_cmphex(qtest_readb(qts, RTC_SECONDS), ==, t->sec);
+    qtest_writeb(qts, RTC_CONTROL, 0);
+}
+
+/*
+ * February follows the part's rule, not the calendar's: 29 days when the
+ * year cell is a multiple of four (docs/datasheets/timekeeper.md, "The
+ * part's calendar and leap-year rule", inferred strongly there). One second
+ * after 28 February 23:59:59 is the 29th in cell years 0x56 and 0x60 (2026
+ * and 2030, not leap years) and 1 March in 0x54 and 0x58 (2024 and 2028,
+ * which are).
+ */
+static void test_the_clock_february_follows_the_part(const void *data)
+{
+    static const struct {
+        uint8_t year;
+        uint8_t day, month;
+    } cases[] = {
+        { 0x56, 0x29, 0x02 },
+        { 0x54, 0x01, 0x03 },
+        { 0x60, 0x29, 0x02 },
+        { 0x58, 0x01, 0x03 },
+    };
+    QTestState *qts = qtest_init(RTC_ARGS);
+
+    sn0_ioc3_attach(qts);
+    for (unsigned int i = 0; i < G_N_ELEMENTS(cases); i++) {
+        RtcTime set = { cases[i].year, 0x02, 0x28, 0x23, 0x59, 0x59 };
+        RtcTime next = { cases[i].year, cases[i].month, cases[i].day,
+                         0x00, 0x00, 0x00 };
+
+        rtc_set(qts, &set);
+        qtest_clock_step(qts, 1000000000LL);
+        rtc_assert(qts, &next);
+    }
+    qtest_quit(qts);
+}
+
+/*
+ * The clock across a stopped emulator ("The clock across power loss and
+ * host restarts"). The storage image is 32 KB; beside it, the reference
+ * drive the model finds by the name "<storage drive>-clock" holds the time
+ * of the save. Every case runs under a fixed -rtc base on the virtual
+ * clock, so the host time a second process starts at is chosen, and the
+ * elapsed time with it.
+ */
+#define RTC_IMAGE_BYTES   0x8000
+#define RTC_REF_BYTES     512
+#define RTC_BASE          "2026-08-11T12:30:05"
+#define RTC_SENTINEL      0x0100
+
+typedef struct RtcFiles {
+    char *image;
+    char *ref;
+} RtcFiles;
+
+static char *rtc_tmp_file(const char *tmpl, size_t size)
+{
+    char *path = NULL;
+    int fd = g_file_open_tmp(tmpl, &path, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, size), ==, 0);
+    close(fd);
+    return path;
+}
+
+static void rtc_files_new(RtcFiles *f, bool with_ref)
+{
+    f->image = rtc_tmp_file("sn0-ioc3-nvram-XXXXXX", RTC_IMAGE_BYTES);
+    f->ref = with_ref ? rtc_tmp_file("sn0-ioc3-clock-XXXXXX", RTC_REF_BYTES)
+                      : NULL;
+}
+
+static void rtc_files_free(RtcFiles *f)
+{
+    unlink(f->image);
+    g_free(f->image);
+    if (f->ref) {
+        unlink(f->ref);
+        g_free(f->ref);
+    }
+}
+
+static QTestState *rtc_start(const RtcFiles *f, const char *base)
+{
+    g_autofree char *ref = f->ref ?
+        g_strdup_printf("-drive if=none,id=sgi-nvram0-clock,file=%s,"
+                        "format=raw", f->ref) : g_strdup("");
+    QTestState *qts = qtest_initf("-M origin200 -rtc base=%s,clock=vm "
+                                  "-drive if=none,id=sgi-nvram0,file=%s,"
+                                  "format=raw %s", base, f->image, ref);
+
+    sn0_ioc3_attach(qts);
+    return qts;
+}
+
+/* Seconds since 1970 of an -rtc base, the clock the reference counts in. */
+static int64_t rtc_base_seconds(const char *base)
+{
+    g_autoptr(GTimeZone) utc = g_time_zone_new_utc();
+    g_autoptr(GDateTime) dt = g_date_time_new_from_iso8601(base, utc);
+
+    g_assert_nonnull(dt);
+    return g_date_time_to_unix(dt);
+}
+
+/* Write an image's clock cells and, if given, its reference record. */
+static void rtc_files_save(const RtcFiles *f, const RtcTime *t,
+                           const char *saved_at)
+{
+    g_autofree gchar *image = NULL;
+    gsize len;
+
+    g_assert_true(g_file_get_contents(f->image, &image, &len, NULL));
+    g_assert_cmpuint(len, ==, RTC_IMAGE_BYTES);
+    image[0x7ff9] = t->sec;
+    image[0x7ffa] = t->min;
+    image[0x7ffb] = t->hour;
+    image[0x7ffd] = t->day;
+    image[0x7ffe] = t->month;
+    image[0x7fff] = t->year;
+    g_assert_true(g_file_set_contents(f->image, image, len, NULL));
+
+    if (saved_at) {
+        uint8_t record[RTC_REF_BYTES] = { 0 };
+
+        memcpy(record, "M48TREF1", 8);
+        stq_le_p(record + 8, rtc_base_seconds(saved_at));
+        g_assert_true(g_file_set_contents(f->ref, (gchar *)record,
+                                          sizeof(record), NULL));
+    }
+}
+
+/*
+ * Set a time, stop, restart ten seconds of host time later. The image holds
+ * the written calendar as soon as the write completes, and the running
+ * calendar once the process stops, in the part's format, with every storage
+ * byte as the guest left it; the second process reads the saved time plus
+ * the ten seconds.
+ */
+static void test_the_clock_persists_across_a_process(const void *data)
+{
+    static const RtcTime set = { 0x60, 0x01, 0x01, 0x12, 0x00, 0x30 };
+    static const RtcTime saved = { 0x60, 0x01, 0x01, 0x12, 0x00, 0x33 };
+    static const RtcTime later = { 0x60, 0x01, 0x01, 0x12, 0x00, 0x43 };
+    g_autofree gchar *image = NULL;
+    RtcFiles f;
+    QTestState *qts;
+    gsize len;
+
+    rtc_files_new(&f, true);
+    qts = rtc_start(&f, RTC_BASE);
+    qtest_writeb(qts, RTC_LEAP_CYCLE, 2);
+    qtest_writeb(qts, RTC_CHECKSUM, 0xad);
+    qtest_writeb(qts, BYTEBUS_DEV0 + RTC_SENTINEL, 0xc3);
+    rtc_set(qts, &set);
+
+    /* The completed write is saved at once, before anything stops. */
+    g_assert_true(g_file_get_contents(f.image, &image, &len, NULL));
+    g_assert_cmphex((uint8_t)image[0x7ff9], ==, set.sec);
+    g_assert_cmphex((uint8_t)image[0x7fff], ==, set.year);
+    g_clear_pointer(&image, g_free);
+
+    qtest_clock_step(qts, 3 * 1000000000LL);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(f.image, &image, &len, NULL));
+    g_assert_cmpuint(len, ==, RTC_IMAGE_BYTES);
+    g_assert_cmphex((uint8_t)image[0x7ff9], ==, saved.sec);
+    g_assert_cmphex((uint8_t)image[0x7ffa], ==, saved.min);
+    g_assert_cmphex((uint8_t)image[0x7ffb], ==, saved.hour);
+    g_assert_cmphex((uint8_t)image[0x7ffd], ==, saved.day);
+    g_assert_cmphex((uint8_t)image[0x7ffe], ==, saved.month);
+    g_assert_cmphex((uint8_t)image[0x7fff], ==, saved.year);
+    for (unsigned int i = 0; i < 0x7ff9; i++) {
+        uint8_t want = i == 0x3883 ? 2 : i == 0x4bc ? 0xad :
+                       i == RTC_SENTINEL ? 0xc3 : 0;
+
+        g_assert_cmphex((uint8_t)image[i], ==, want);
+    }
+
+    /* Saved at 12:30:08 by the first process's clock; restarted at :18. */
+    qts = rtc_start(&f, "2026-08-11T12:30:18");
+    rtc_assert(qts, &later);
+    g_assert_cmphex(qtest_readb(qts, RTC_LEAP_CYCLE), ==, 2);
+    g_assert_cmphex(qtest_readb(qts, RTC_CHECKSUM), ==, 0xad);
+    qtest_quit(qts);
+    rtc_files_free(&f);
+}
+
+/*
+ * The restore counts elapsed time in the part's calendar: twenty seconds
+ * after 28 February 23:59:50 in cell year 0x56 is the 29th.
+ */
+static void test_the_clock_restore_follows_the_part(const void *data)
+{
+    static const RtcTime saved = { 0x56, 0x02, 0x28, 0x23, 0x59, 0x50 };
+    static const RtcTime later = { 0x56, 0x02, 0x29, 0x00, 0x00, 0x10 };
+    RtcFiles f;
+    QTestState *qts;
+
+    rtc_files_new(&f, true);
+    rtc_files_save(&f, &saved, RTC_BASE);
+    qts = rtc_start(&f, "2026-08-11T12:30:25");
+    rtc_assert(qts, &later);
+    qtest_quit(qts);
+    rtc_files_free(&f);
+}
+
+/*
+ * The fallbacks. Without a reference the saved calendar comes back as it
+ * was; with the stop bit set in the saved seconds the oscillator was
+ * stopped, so no time passes; clock cells all zero, or not a date in BCD,
+ * were never saved, so the clock follows the host and storage is left
+ * alone.
+ */
+static void test_the_clock_restore_fallbacks(const void *data)
+{
+    static const RtcTime saved = { 0x60, 0x01, 0x01, 0x12, 0x00, 0x33 };
+    static const RtcTime stopped = { 0x60, 0x01, 0x01, 0x12, 0x00, 0xb3 };
+    static const RtcTime bad_month = { 0x60, 0x13, 0x01, 0x12, 0x00, 0x33 };
+    static const RtcTime host = { 0x56, 0x08, 0x11, 0x12, 0x30, 0x05 };
+    RtcFiles f;
+    QTestState *qts;
+
+    /* No reference drive at all. */
+    rtc_files_new(&f, false);
+    rtc_files_save(&f, &saved, NULL);
+    qts = rtc_start(&f, "2026-08-11T12:30:18");
+    rtc_assert(qts, &saved);
+    qtest_quit(qts);
+    rtc_files_free(&f);
+
+    /* A reference drive that was never written. */
+    rtc_files_new(&f, true);
+    rtc_files_save(&f, &saved, NULL);
+    qts = rtc_start(&f, "2026-08-11T12:30:18");
+    rtc_assert(qts, &saved);
+    qtest_quit(qts);
+    rtc_files_free(&f);
+
+    /* The stop bit: ten seconds pass on the host, none on the part. */
+    rtc_files_new(&f, true);
+    rtc_files_save(&f, &stopped, "2026-08-11T12:30:08");
+    qts = rtc_start(&f, "2026-08-11T12:30:18");
+    rtc_assert(qts, &saved);
+    qtest_quit(qts);
+    rtc_files_free(&f);
+
+    /* Never saved: all zero, and an impossible month. */
+    rtc_files_new(&f, true);
+    qts = rtc_start(&f, RTC_BASE);
+    rtc_assert(qts, &host);
+    for (unsigned int i = 0; i < 0x7ff9; i += 0x7f) {
+        g_assert_cmphex(qtest_readb(qts, BYTEBUS_DEV0 + i), ==, 0);
+    }
+    qtest_quit(qts);
+    rtc_files_free(&f);
+
+    rtc_files_new(&f, true);
+    rtc_files_save(&f, &bad_month, "2026-08-11T12:30:00");
+    qts = rtc_start(&f, RTC_BASE);
+    rtc_assert(qts, &host);
+    qtest_quit(qts);
+    rtc_files_free(&f);
+}
+
 /*
  * Battery-backed: firmware initializes storage, warm-resets, and expects
  * its records on the next pass. What a reset must clear is only an
@@ -5128,6 +5422,14 @@ int main(int argc, char **argv)
                         test_the_storage_survives_a_system_reset);
     qtest_add_data_func("sn0/ioc3/clock-storage-persists-with-a-drive", NULL,
                         test_the_storage_persists_across_a_process_with_a_drive);
+    qtest_add_data_func("sn0/ioc3/clock-february-follows-the-part", NULL,
+                        test_the_clock_february_follows_the_part);
+    qtest_add_data_func("sn0/ioc3/clock-persists-across-a-process", NULL,
+                        test_the_clock_persists_across_a_process);
+    qtest_add_data_func("sn0/ioc3/clock-restore-follows-the-part", NULL,
+                        test_the_clock_restore_follows_the_part);
+    qtest_add_data_func("sn0/ioc3/clock-restore-fallbacks", NULL,
+                        test_the_clock_restore_fallbacks);
     qtest_add_data_func("sn0/ioc3/each-node-has-its-own-storage", NULL,
                         test_each_node_has_its_own_storage);
     qtest_add_data_func("sn0/ioc3/clock-storage-holds-a-write", NULL,
