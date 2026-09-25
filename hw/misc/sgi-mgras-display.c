@@ -43,6 +43,27 @@ static uint32_t mgras_gamma_apply(SGIMgrasState *s, uint32_t bgr)
     return (b << 16) | (g << 8) | r;
 }
 
+/*
+ * Resolve one pixel to mgras_cmap_rgb()'s native 0x00BBGGRR order, keyed by
+ * the per-pixel format tag (sgi-mgras.h). CI8 indexes through the WID's
+ * colour map as before. RGB is a direct 0x00RRGGBB triple a paint wrote
+ * (see mgras_draw_fill() and its siblings in hw/misc/sgi-mgras-raster.c)
+ * and bypasses the CMAP entirely; only its R and B bytes need swapping
+ * to this function's native order. The WID plane still tags an RGB
+ * pixel (fills tag it unconditionally, see mgras_draw_fill()), but nothing
+ * here reads that tag: no register or capture is known to source a map
+ * a direct-colour pixel would use.
+ */
+static uint32_t mgras_resolve_pixel_bgr(SGIMgrasState *s, int i)
+{
+    if (s->format[i] == SGI_MGRAS_PIXEL_FORMAT_RGB) {
+        uint32_t rgb = s->front[i] & 0x00ffffff;
+
+        return ((rgb & 0xff) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 0xff);
+    }
+    return mgras_cmap_rgb(s, s->wid[i], s->front[i] & 0xff);
+}
+
 /* The cursor uses mask and select planes from VC3 SRAM. */
 static void mgras_composite_cursor(SGIMgrasState *s)
 {
@@ -101,13 +122,12 @@ static bool mgras_gfx_update(void *opaque)
     }
 
     /*
-     * Every pixel resolves through the map its WID selects. Direct-colour
-     * scanout is unknown and unsupported: no XMAP mode bit is known to
-     * select it, so a direct-colour mode indexes here like any other.
+     * A CI8 pixel resolves through the map its WID selects; an RGB pixel
+     * bypasses the map. Either way the gamma table applies uniformly, so
+     * every pixel reaches the display through the same final stage.
      */
     for (int i = 0; i < SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT; i++) {
-        uint32_t rgb = mgras_gamma_apply(s, mgras_cmap_rgb(s, s->wid[i],
-                                                     s->front[i] & 0xff));
+        uint32_t rgb = mgras_gamma_apply(s, mgras_resolve_pixel_bgr(s, i));
 
         s->display_buffer[i] = ((rgb & 0xff) << 16) | (rgb & 0x00ff00) |
                                ((rgb >> 16) & 0xff);

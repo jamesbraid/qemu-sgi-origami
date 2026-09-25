@@ -139,6 +139,7 @@ static QTestState *qts;
 #define REG_BLOCK_START         0x46
 #define REG_BLOCK_END           0x47
 #define REG_PACKEDCOLOR         0x05b
+#define REG_RED                 0x05c
 #define REG_CHAR_H              0x070
 #define REG_CHAR_L              0x071
 #define REG_BKGRD_RG            0x140
@@ -162,6 +163,17 @@ static QTestState *qts;
 #define REG_FILLMODE             0x110
 #define MGRAS_FILLMODE_GLYPH_ROW    0x10400008
 #define MGRAS_FILLMODE_BYTE_XFER    0x10c00000
+#define MGRAS_FILLMODE_RECT_FILL_MASK  0x00500000
+#define MGRAS_FILLMODE_RECT_FILL_VALUE 0x00100000
+
+/*
+ * A rect fill's colour comes from these registers, not PACKEDCOLOR: CI8
+ * masks FILLCOLOR_R to a CMAP index byte, RGB packs the low byte of each
+ * of the three high nibbles; see mgras_draw_fill() in hw/misc/sgi-mgras-raster.c.
+ */
+#define REG_FILLCOLOR_R          0x176
+#define REG_FILLCOLOR_G          0x177
+#define REG_FILLCOLOR_B          0x178
 
 /*
  * Byte-transfer mode's own packing register; see
@@ -174,6 +186,13 @@ static QTestState *qts;
 
 #define MGRAS_LOGIC_OP_COPY        0x3
 #define MGRAS_LOGIC_OP_XOR         0x6
+
+/* PP1FILLMODE bit 13; see MGRAS_RSS_FILLCOLOR_R's comment in the raster model. */
+#define MGRAS_PP1FILLMODE_RGB      0x2000
+
+/* x-test-format values; see SGI_MGRAS_PIXEL_FORMAT_* in sgi-mgras.h. */
+#define MGRAS_PIXEL_FORMAT_CI8     0
+#define MGRAS_PIXEL_FORMAT_RGB     1
 
 
 #define MGRAS_STATE_TOKEN(reg, payload_bytes) \
@@ -293,6 +312,17 @@ static uint32_t mgras_test_wid(QTestState *qts, uint32_t x, uint32_t y)
         "{'execute': 'qom-set', 'arguments': {'path': %s, "
         "'property': 'x-test-pixel-y', 'value': %u}}", MGRAS_QOM_PATH, y);
     return mgras_qom_get_uint(qts, "x-test-wid");
+}
+
+static uint32_t mgras_test_format(QTestState *qts, uint32_t x, uint32_t y)
+{
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-x', 'value': %u}}", MGRAS_QOM_PATH, x);
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-y', 'value': %u}}", MGRAS_QOM_PATH, y);
+    return mgras_qom_get_uint(qts, "x-test-format");
 }
 
 static uint32_t mgras_screendump_pixel(QTestState *qts, uint32_t x, uint32_t y)
@@ -668,7 +698,8 @@ static void test_dac_gamma_identity_ramp_leaves_colors_unchanged(void)
     mgras_write_cmap_entry(qts, 29, 0x40, 0x11223300);
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                MGRAS_COMMAND(REG_PACKEDCOLOR, 0x40));
+                MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLCOLOR_R, 0x40));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                 MGRAS_COMMAND(REG_BLOCK_START, (5u << 16) | 5u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -729,7 +760,8 @@ static void test_dac_gamma_curve_applies_to_scanout(void)
     mgras_write_cmap_entry(qts, 29, 0x40, 0x55555500);
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                MGRAS_COMMAND(REG_PACKEDCOLOR, 0x40));
+                MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLCOLOR_R, 0x40));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                 MGRAS_COMMAND(REG_BLOCK_START, (5u << 16) | 5u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -1339,12 +1371,14 @@ static void test_dma_image_transfer_reads_screen_to_host(void)
                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                 MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_LOGIC_OP_COPY << 26));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_PACKEDCOLOR, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLCOLOR_R, 0));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                 MGRAS_COMMAND(REG_BLOCK_START, (0u << 16) | 0u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (3u << 16) | 3u));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_PACKEDCOLOR, 7));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLCOLOR_R, 7));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                 MGRAS_COMMAND(REG_BLOCK_START, (3u << 16) | 0u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -1850,14 +1884,16 @@ static void test_direct_fill_and_reset(void)
 
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00112233));
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x33));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (10u << 16) | 10u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND_EXEC(REG_BLOCK_END, (13u << 16) | 13u));
 
-    g_assert_cmphex(mgras_test_pixel(qts, 11, 11), ==, 0x00112233);
-    g_assert_cmphex(mgras_test_pixel(qts, 13, 13), ==, 0x00112233);
+    g_assert_cmphex(mgras_test_pixel(qts, 11, 11), ==, 0x33);
+    g_assert_cmphex(mgras_test_pixel(qts, 13, 13), ==, 0x33);
 
     g_assert_cmphex(mgras_test_pixel(qts, 20, 11), ==, 0);
     g_assert_cmphex(mgras_test_pixel(qts, 9, 9), ==, 0);
@@ -1919,18 +1955,20 @@ static void test_fill_mask_reads_colormasklsbsa(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00aa5533));
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x33));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (30u << 16) | 30u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND_EXEC(REG_BLOCK_END, (31u << 16) | 31u));
-    g_assert_cmphex(mgras_test_pixel(qts, 30, 30), ==, 0x00aa5533);
+    g_assert_cmphex(mgras_test_pixel(qts, 30, 30), ==, 0x33);
 
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_COLORMASKLSBSA, 0));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00112233));
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x22));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (40u << 16) | 40u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -1944,9 +1982,9 @@ static void test_fill_mask_reads_colormasklsbsa(void)
 
 /*
  * A rectangle fill reaches the WID plane when COLORMASKMSBS is nonzero,
- * taking DRBPOINTERS bits 23:16, whether or not it also writes colour.
- * Every paint with COLORMASKMSBS clear leaves the plane alone, whatever
- * DRBPOINTERS holds at the time.
+ * taking DRBPOINTERS bits 23:16, whether or not FILLMODE also permits a
+ * colour paint. Every paint with COLORMASKMSBS clear leaves the plane
+ * alone, whatever DRBPOINTERS holds at the time.
  */
 static void test_wid_plane_fill_rule(void)
 {
@@ -1960,42 +1998,57 @@ static void test_wid_plane_fill_rule(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_DRBPOINTERS, 7 << 16));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00445566));
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x66));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (60u << 16) | 60u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND_EXEC(REG_BLOCK_END, (63u << 16) | 63u));
-    g_assert_cmphex(mgras_test_pixel(qts, 61, 61), ==, 0x00445566);
+    g_assert_cmphex(mgras_test_pixel(qts, 61, 61), ==, 0x66);
     g_assert_cmphex(mgras_test_wid(qts, 61, 61), ==, 0);
 
     /* The plane fill writes WID and leaves the colour it found. */
     mgras_tag_wid(qts, 60, 60, 63, 63, 7);
     g_assert_cmphex(mgras_test_wid(qts, 61, 61), ==, 7);
-    g_assert_cmphex(mgras_test_pixel(qts, 61, 61), ==, 0x00445566);
+    g_assert_cmphex(mgras_test_pixel(qts, 61, 61), ==, 0x66);
     g_assert_cmphex(mgras_test_wid(qts, 64, 61), ==, 0);
 
+    /* A colour-only fill (COLORMASKMSBS still 0) leaves WID untouched. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_DRBPOINTERS, 2 << 16));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00112233));
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x33));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (60u << 16) | 60u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND_EXEC(REG_BLOCK_END, (63u << 16) | 63u));
-    g_assert_cmphex(mgras_test_pixel(qts, 61, 61), ==, 0x00112233);
+    g_assert_cmphex(mgras_test_pixel(qts, 61, 61), ==, 0x33);
     g_assert_cmphex(mgras_test_wid(qts, 61, 61), ==, 7);
 
+    /*
+     * The WID tag is unconditional on the colour-paint gate: FILLMODE
+     * here excludes the rect-fill value, so no colour paints, but a
+     * nonzero COLORMASKMSBS still retags the plane.
+     */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLMODE, 0));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_BKGRD_RG, 0x00778899));
+                 MGRAS_COMMAND(REG_COLORMASKMSBS, 0xff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_DRBPOINTERS, 5 << 16));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x11));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (60u << 16) | 60u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_BLOCK_END, (63u << 16) | 63u));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
-    g_assert_cmphex(mgras_test_pixel(qts, 61, 61), ==, 0x00778899);
-    g_assert_cmphex(mgras_test_wid(qts, 61, 61), ==, 7);
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (63u << 16) | 63u));
+    g_assert_cmphex(mgras_test_pixel(qts, 61, 61), ==, 0x33);
+    g_assert_cmphex(mgras_test_wid(qts, 61, 61), ==, 5);
 
+    /* Glyph mode paints per set bit, from PACKEDCOLOR under RGB, and
+     * never touches the WID plane (it does not run through mgras_draw_fill()). */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_GLYPH_ROW));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -2008,33 +2061,39 @@ static void test_wid_plane_fill_rule(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND_EXEC(REG_CHAR_H, 0x80000000));
     g_assert_cmphex(mgras_test_pixel(qts, 60, 60), ==, 0x00010203);
-    g_assert_cmphex(mgras_test_pixel(qts, 61, 60), ==, 0x00778899);
-    g_assert_cmphex(mgras_test_wid(qts, 60, 60), ==, 7);
-    g_assert_cmphex(mgras_test_wid(qts, 61, 60), ==, 7);
+    g_assert_cmphex(mgras_test_pixel(qts, 61, 60), ==, 0x33);
+    g_assert_cmphex(mgras_test_wid(qts, 60, 60), ==, 5);
+    g_assert_cmphex(mgras_test_wid(qts, 61, 60), ==, 5);
 
     /* A fill with both masks open writes the colour and the tag. */
-    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLMODE, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_LOGIC_OP_COPY << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_COLORMASKMSBS, 0xff));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_DRBPOINTERS, 4 << 16));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00abcdef));
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0xef));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (60u << 16) | 60u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND_EXEC(REG_BLOCK_END, (63u << 16) | 63u));
-    g_assert_cmphex(mgras_test_pixel(qts, 61, 61), ==, 0x00abcdef);
+    g_assert_cmphex(mgras_test_pixel(qts, 61, 61), ==, 0xef);
     g_assert_cmphex(mgras_test_wid(qts, 61, 61), ==, 4);
 }
 
 
 /*
- * A rectangle fill takes BKGRD_RG when FILLMODE has bit 20 or bit 22 set
- * and PACKEDCOLOR otherwise. The stock X server fills only through the
- * first form, with PACKEDCOLOR left at zero.
+ * A rectangle fill (a BLOCKXYENDI execute) paints only when FILLMODE's
+ * bits 22:20 read exactly the rect-fill encoding (bit 20 set, bit 22
+ * clear); any other encoding, including the glyph-row encoding, leaves
+ * the destination untouched when reached this way. The colour itself
+ * comes from FILLCOLOR_R (CI8, masked to a CMAP index byte) rather than
+ * PACKEDCOLOR, which rect fills never read.
  */
-static void test_fill_color_follows_fillmode(void)
+static void test_fill_color_reads_fillcolor_registers(void)
 {
     mgras_reset();
 
@@ -2043,89 +2102,90 @@ static void test_fill_color_follows_fillmode(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00445566));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_BKGRD_RG, 0x00aabbcc));
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x66));
 
+    /* FILLMODE 0 fails the gate: no colour paints. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLMODE, 0));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (40u << 16) | 40u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND_EXEC(REG_BLOCK_END, (41u << 16) | 41u));
-    g_assert_cmphex(mgras_test_pixel(qts, 40, 40), ==, 0x00445566);
+    g_assert_cmphex(mgras_test_pixel(qts, 40, 40), ==, 0);
 
+    /* The exact rect-fill encoding passes the gate. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_FILLMODE, 0x00100000));
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (42u << 16) | 40u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND_EXEC(REG_BLOCK_END, (43u << 16) | 41u));
-    g_assert_cmphex(mgras_test_pixel(qts, 42, 40), ==, 0x00aabbcc);
+    g_assert_cmphex(mgras_test_pixel(qts, 42, 40), ==, 0x66);
 
+    /* Bits outside the gate mask do not disturb a passing encoding. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_FILLMODE, 0x00400000));
+                 MGRAS_COMMAND(REG_FILLMODE,
+                            MGRAS_FILLMODE_RECT_FILL_VALUE | 0x10000000));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (44u << 16) | 40u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND_EXEC(REG_BLOCK_END, (45u << 16) | 41u));
-    g_assert_cmphex(mgras_test_pixel(qts, 44, 40), ==, 0x00aabbcc);
+    g_assert_cmphex(mgras_test_pixel(qts, 44, 40), ==, 0x66);
 
-    /* An unrelated FILLMODE bit leaves the fill on PACKEDCOLOR. */
+    /* Bit 22 alone (the glyph-row encoding's bit) fails the gate. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_FILLMODE, 0x10000060));
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_GLYPH_ROW));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (46u << 16) | 40u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND_EXEC(REG_BLOCK_END, (47u << 16) | 41u));
-    g_assert_cmphex(mgras_test_pixel(qts, 46, 40), ==, 0x00445566);
-
-    /* The colour mask still applies to whichever register was chosen. */
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0xff));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_FILLMODE, 0x10400008));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_BLOCK_START, (48u << 16) | 40u));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (49u << 16) | 41u));
-    g_assert_cmphex(mgras_test_pixel(qts, 48, 40), ==, 0xcc);
+    g_assert_cmphex(mgras_test_pixel(qts, 46, 40), ==, 0);
 }
 
 
-static void test_ir_alias_execute(void)
+/*
+ * A direct-command IR_ALIAS execute paints nothing (contract rule 5): its
+ * pixels arrive over the DMA and PIO paths that already paint their own
+ * data, so this execute only latches whichever register write preceded
+ * it. Confirm it leaves both untouched and already-painted destinations
+ * exactly as it found them.
+ */
+static void test_ir_alias_execute_paints_nothing(void)
 {
     mgras_reset();
 
     mgras_enter_context(qts);
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_BKGRD_RG, 0x00aabbcc));
-
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x55));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (10u << 16) | 23u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_BLOCK_END, (13u << 16) | 20u));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (13u << 16) | 20u));
+    g_assert_cmphex(mgras_test_pixel(qts, 11, 21), ==, 0x55);
 
-    g_assert_cmphex(mgras_test_pixel(qts, 11, 21), ==, 0x00aabbcc);
-    g_assert_cmphex(mgras_test_pixel(qts, 13, 20), ==, 0x00aabbcc);
-    g_assert_cmphex(mgras_test_pixel(qts, 10, 23), ==, 0x00aabbcc);
-
-    g_assert_cmphex(mgras_test_pixel(qts, 20, 21), ==, 0);
-    g_assert_cmphex(mgras_test_pixel(qts, 10, 24), ==, 0);
-
-
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00ffffff));
+    /* An IR_ALIAS execute over an untouched region paints nothing. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (30u << 16) | 31u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_END, (31u << 16) | 30u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
-    g_assert_cmphex(mgras_test_pixel(qts, 30, 30), ==, 0x00aabbcc);
-    g_assert_cmphex(mgras_test_pixel(qts, 31, 31), ==, 0x00aabbcc);
+    g_assert_cmphex(mgras_test_pixel(qts, 30, 30), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 31, 31), ==, 0);
+
+    /* An IR_ALIAS execute over an already-painted region leaves it be. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (10u << 16) | 23u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_END, (13u << 16) | 20u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
+    g_assert_cmphex(mgras_test_pixel(qts, 11, 21), ==, 0x55);
+    g_assert_cmphex(mgras_test_pixel(qts, 13, 20), ==, 0x55);
 }
 
 
@@ -2139,6 +2199,10 @@ static void test_direct_glyph_row(void)
 
     mgras_enter_context(qts);
 
+    /* A glyph row reads PACKEDCOLOR only once PP1FILLMODE selects RGB. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                            (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00ffffff));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -2186,6 +2250,10 @@ static void test_direct_glyph_row_char_h_only(void)
 
     mgras_enter_context(qts);
 
+    /* A glyph row reads PACKEDCOLOR only once PP1FILLMODE selects RGB. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                            (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00ffffff));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -2242,6 +2310,10 @@ static void test_direct_glyph_row_char_l_execute(void)
 
     mgras_enter_context(qts);
 
+    /* A glyph row reads PACKEDCOLOR only once PP1FILLMODE selects RGB. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                            (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00ffffff));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -2281,6 +2353,52 @@ static void test_direct_glyph_row_char_l_execute(void)
 
     /* The 64-column row is exactly this rect's width; nothing past it. */
     g_assert_cmphex(mgras_test_pixel(qts, 264, 200), ==, 0);
+}
+
+
+/*
+ * A glyph row's CI8 ink is RED>>12&0xff (contract rule 2), not FILLCOLOR_R:
+ * the reset default format is already CI8, so no PP1FILLMODE write is
+ * needed here. A clear bit paints nothing at all, distinct from painting a
+ * zero background: pre-paint the destination row to a nonzero value with a
+ * plain rect fill, then confirm a glyph row's clear-bit columns still read
+ * that pre-painted value afterward while its set-bit columns take the ink.
+ */
+static void test_direct_glyph_row_ci8_reads_red_channel(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x22));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (40u << 16) | 40u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (47u << 16) | 47u));
+    g_assert_cmphex(mgras_test_pixel(qts, 40, 40), ==, 0x22);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_RED, 0x9a000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_GLYPH_ROW));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (40u << 16) | 40u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_END, (47u << 16) | 47u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_CHAR_H, 0x30000000u));
+
+    /* Set-bit columns (2 and 3) take the RED>>12 ink, 0x9a. */
+    g_assert_cmphex(mgras_test_pixel(qts, 42, 40), ==, 0x9a);
+    g_assert_cmphex(mgras_test_pixel(qts, 43, 40), ==, 0x9a);
+
+    /* Clear-bit columns keep the fill's 0x22 untouched, not a bg colour. */
+    g_assert_cmphex(mgras_test_pixel(qts, 40, 40), ==, 0x22);
+    g_assert_cmphex(mgras_test_pixel(qts, 41, 40), ==, 0x22);
+    g_assert_cmphex(mgras_test_pixel(qts, 44, 40), ==, 0x22);
+    g_assert_cmphex(mgras_test_pixel(qts, 47, 40), ==, 0x22);
 }
 
 
@@ -2611,12 +2729,14 @@ static void test_display_surface_conversion(void)
     mgras_write_cmap_entry(qts, 29, 0xcc, 0xccbbaa00);
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00112233));
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x33));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (10u << 16) | 10u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND_EXEC(REG_BLOCK_END, (13u << 16) | 13u));
-    g_assert_cmphex(mgras_test_pixel(qts, 11, 11), ==, 0x00112233);
+    g_assert_cmphex(mgras_test_pixel(qts, 11, 11), ==, 0x33);
     g_assert_cmphex(mgras_test_display_pixel(qts, 11, 11), ==, 0);
 
 
@@ -2627,7 +2747,7 @@ static void test_display_surface_conversion(void)
 
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00aabbcc));
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0xcc));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (30u << 16) | 30u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -2640,7 +2760,7 @@ static void test_display_surface_conversion(void)
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x0));
     g_assert_cmphex(mgras_test_display_pixel(qts, 11, 11), ==, 0);
     g_assert_cmphex(mgras_test_display_pixel(qts, 30, 30), ==, 0);
-    g_assert_cmphex(mgras_test_pixel(qts, 30, 30), ==, 0x00aabbcc);
+    g_assert_cmphex(mgras_test_pixel(qts, 30, 30), ==, 0xcc);
 }
 
 static void test_reset_refreshes_display_surface(void)
@@ -2651,7 +2771,9 @@ static void test_reset_refreshes_display_surface(void)
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
     mgras_write_cmap_entry(qts, 29, 0x33, 0x33221100);
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00112233));
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x33));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (14u << 16) | 14u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -2678,11 +2800,13 @@ static void test_pseudocolor_scanout_looks_up_cmap(void)
     mgras_write_cmap_entry(qts, 29, 0x33, 0x44556600);
 
 
-    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_BKGRD_RG, 0x11));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLCOLOR_R, 0x11));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (5u << 16) | 5u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (5u << 16) | 5u));
     g_assert_cmphex(mgras_test_pixel(qts, 5, 5), ==, 0x11);
     g_assert_cmphex(mgras_screendump_pixel(qts, 5, 5), ==, 0x00ecec00);
     g_assert_cmphex(mgras_test_display_pixel(qts, 5, 5), ==, 0x00ecec00);
@@ -2696,9 +2820,9 @@ static void test_pseudocolor_scanout_looks_up_cmap(void)
     g_assert_cmphex(mgras_test_display_pixel(qts, 5, 5), ==, 0x00112233);
 
 
-    /* A PACKEDCOLOR fill indexes too: 0x33 is an index, not a blue byte. */
+    /* A rect fill indexes too: 0x33 is an index, not a blue byte. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00112233));
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x33));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (6u << 16) | 6u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -2730,14 +2854,68 @@ static void test_cmap_high_byte_packing(void)
     mgras_write_cmap_position(qts, 0x0011, 17, 0xffffff00);
 
     mgras_tag_wid(qts, 7, 7, 7, 7, 3);
-    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_BKGRD_RG, 0x11));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLCOLOR_R, 0x11));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (7u << 16) | 7u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (7u << 16) | 7u));
     g_assert_cmphex(mgras_test_pixel(qts, 7, 7), ==, 0x11);
     g_assert_cmphex(mgras_test_wid(qts, 7, 7), ==, 3);
     g_assert_cmphex(mgras_test_display_pixel(qts, 7, 7), ==, 0x00ffffff);
+}
+
+/*
+ * A CI8 pixel's format tag routes scanout through the WID's colour map; an
+ * RGB pixel's tag bypasses it entirely (contract rule 6's gamma still
+ * applies to both). Paint one of each at different locations under one
+ * WID and confirm each keeps its own tag and resolves independently: the
+ * RGB pixel's FILLCOLOR bytes do not coincide with the CI8 index or its
+ * mapped entry, so a display pixel that matched the CMAP entry instead of
+ * the direct colour would show the map leaked into the RGB path.
+ */
+static void test_pixel_format_tag_resolves_independently(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+
+    /* WID 0 resolves through the reset mode 0x7a4, which selects map 29. */
+    mgras_write_cmap_entry(qts, 29, 0x40, 0x99887700);
+
+    /* A CI8 fill: reset default format, FILLCOLOR_R read as a bare index. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLCOLOR_R, 0x40));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (10u << 16) | 10u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (10u << 16) | 10u));
+    g_assert_cmphex(mgras_test_pixel(qts, 10, 10), ==, 0x40);
+    g_assert_cmphex(mgras_test_format(qts, 10, 10), ==, MGRAS_PIXEL_FORMAT_CI8);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 10, 10), ==, 0x00998877);
+
+    /* An RGB fill elsewhere: FILLCOLOR_R/G/B each >> 4, no CMAP lookup. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                            (MGRAS_LOGIC_OP_COPY << 26) | MGRAS_PP1FILLMODE_RGB));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLCOLOR_R, 0x100));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLCOLOR_G, 0x200));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLCOLOR_B, 0x300));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (20u << 16) | 20u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (20u << 16) | 20u));
+    g_assert_cmphex(mgras_test_pixel(qts, 20, 20), ==, 0x00102030);
+    g_assert_cmphex(mgras_test_format(qts, 20, 20), ==, MGRAS_PIXEL_FORMAT_RGB);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 20, 20), ==, 0x00102030);
+
+    /* Switching the live format register does not retag the CI8 pixel. */
+    g_assert_cmphex(mgras_test_format(qts, 10, 10), ==, MGRAS_PIXEL_FORMAT_CI8);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 10, 10), ==, 0x00998877);
 }
 
 /*
@@ -2778,17 +2956,17 @@ static void test_target_first_cmap_visual_selection(void)
     mgras_tag_wid(qts, 20, 20, 20, 20, 3);
     mgras_tag_wid(qts, 21, 20, 21, 20, 9);
 
-    /* The paints carry a third DRBPOINTERS value and must not re-tag. */
+    /* The paint carries a third DRBPOINTERS value and must not re-tag. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_DRBPOINTERS, 0x1f << 16));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_BKGRD_RG, 0xf0));
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0xf0));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (20u << 16) | 20u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_BLOCK_END, (21u << 16) | 20u));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (21u << 16) | 20u));
 
     native_a = mgras_test_pixel(qts, 20, 20);
     native_b = mgras_test_pixel(qts, 21, 20);
@@ -2834,16 +3012,15 @@ static void test_masked_out_paint_keeps_the_visual(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_LOGIC_OP_COPY << 26));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_COLORMASKLSBSA, 0xff));
     qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_COLORMASKMSBS, 0));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_PACKEDCOLOR, 0));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_BKGRD_RG, 0x11));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLCOLOR_R, 0x11));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (512u << 16) | 512u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_BLOCK_END, (767u << 16) | 767u));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (767u << 16) | 767u));
     g_assert_cmphex(mgras_test_pixel(qts, 640, 512), ==, 0x11);
     g_assert_cmphex(mgras_test_display_pixel(qts, 640, 512), ==, 0x00ecec00);
 
@@ -2888,7 +3065,7 @@ static void test_masked_out_paint_keeps_the_visual(void)
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_COLORMASKLSBSA, 0xffffff));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00112233));
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x33));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (640u << 16) | 512u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -2920,7 +3097,8 @@ static void test_paint_variants_refresh_the_surface(void)
     /* Baseline: a colour fill tagged WID 2, index 0x22 through map 5. */
     mgras_tag_wid(qts, 200, 200, 207, 207, 2);
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x22));
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLCOLOR_R, 0x22));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (200u << 16) | 200u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -2938,17 +3116,15 @@ static void test_paint_variants_refresh_the_surface(void)
     g_assert_cmphex(mgras_screendump_pixel(qts, 203, 203), ==,
                     mgras_test_display_pixel(qts, 203, 203));
 
-    /* (b) An IR_ALIAS fill masked to the colour's low byte only. */
+    /* (b) A rect fill masked to the colour's low byte only. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_BKGRD_RG, 0x99887766));
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x66));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_COLORMASKLSBSA, 0xff));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (200u << 16) | 200u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_BLOCK_END, (207u << 16) | 207u));
-    qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (207u << 16) | 207u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
     g_assert_cmphex(mgras_screendump_pixel(qts, 203, 203), ==,
@@ -3373,6 +3549,11 @@ static void test_context_write_accepted_after_completion(void)
 }
 
 
+/*
+ * The command-FIFO STATE-token header path reaches mgras_raster_rss_write()
+ * the same way a direct MGRAS_COMMAND write does, so a fill it stages still
+ * has to clear the rect-fill FILLMODE gate and read FILLCOLOR_R.
+ */
 static void test_command_fifo_state_write_headers(void)
 {
     mgras_reset();
@@ -3380,8 +3561,11 @@ static void test_command_fifo_state_write_headers(void)
     mgras_enter_context(qts);
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 ((uint64_t)MGRAS_STATE_TOKEN(REG_PACKEDCOLOR, 4) << 32) |
-                 0x00223344);
+                 ((uint64_t)MGRAS_STATE_TOKEN(REG_FILLMODE, 4) << 32) |
+                 MGRAS_FILLMODE_RECT_FILL_VALUE);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)MGRAS_STATE_TOKEN(REG_FILLCOLOR_R, 4) << 32) |
+                 0x44);
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  ((uint64_t)MGRAS_STATE_TOKEN(REG_BLOCK_START, 4) << 32) |
                  ((60u << 16) | 60u));
@@ -3396,8 +3580,8 @@ static void test_command_fifo_state_write_headers(void)
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND_EXEC(REG_BLOCK_END, (61u << 16) | 61u));
-    g_assert_cmphex(mgras_test_pixel(qts, 60, 60), ==, 0x00223344);
-    g_assert_cmphex(mgras_test_pixel(qts, 61, 61), ==, 0x00223344);
+    g_assert_cmphex(mgras_test_pixel(qts, 60, 60), ==, 0x44);
+    g_assert_cmphex(mgras_test_pixel(qts, 61, 61), ==, 0x44);
     g_assert_cmphex(mgras_test_pixel(qts, 59, 59), ==, 0);
 }
 
@@ -3439,8 +3623,9 @@ static void test_command_fifo_rejects_malformed_payload_lengths(void)
                  MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00112233));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_COLORMASKLSBSA, 0xffffff));
+    /* RGB format: RE_POINT reads PACKEDCOLOR only under this format. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_LOGIC_OP_COPY << 26));
+                 MGRAS_COMMAND(REG_PP1FILLMODE, (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (70u << 16) | 70u));
 
@@ -3488,8 +3673,11 @@ static void test_command_fifo_unrecognized_class_resyncs(void)
                  ((uint64_t)0x00020404 << 32) | 0x00180004);
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 ((uint64_t)MGRAS_STATE_TOKEN(REG_PACKEDCOLOR, 4) << 32) |
-                 0x00223344);
+                 ((uint64_t)MGRAS_STATE_TOKEN(REG_FILLMODE, 4) << 32) |
+                 MGRAS_FILLMODE_RECT_FILL_VALUE);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)MGRAS_STATE_TOKEN(REG_FILLCOLOR_R, 4) << 32) |
+                 0x44);
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  ((uint64_t)MGRAS_STATE_TOKEN(REG_BLOCK_START, 4) << 32) |
                  ((62u << 16) | 62u));
@@ -3503,8 +3691,8 @@ static void test_command_fifo_unrecognized_class_resyncs(void)
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND_EXEC(REG_BLOCK_END, (63u << 16) | 63u));
-    g_assert_cmphex(mgras_test_pixel(qts, 62, 62), ==, 0x00223344);
-    g_assert_cmphex(mgras_test_pixel(qts, 63, 63), ==, 0x00223344);
+    g_assert_cmphex(mgras_test_pixel(qts, 62, 62), ==, 0x44);
+    g_assert_cmphex(mgras_test_pixel(qts, 63, 63), ==, 0x44);
     g_assert_cmphex(mgras_test_pixel(qts, 61, 61), ==, 0);
 }
 
@@ -3519,6 +3707,9 @@ static void test_re_point_execute(void)
 
     mgras_enter_context(qts);
 
+    /* RGB format: RE_POINT reads PACKEDCOLOR only under this format. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00abcdef));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -3549,6 +3740,9 @@ static void test_re_point_execute_after_bounded_payload(void)
 
     mgras_enter_context(qts);
 
+    /* RGB format: RE_POINT reads PACKEDCOLOR only under this format. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00556677));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -3576,6 +3770,9 @@ static void test_re_line_execute(void)
 
     mgras_enter_context(qts);
 
+    /* RGB format: RE_LINE reads PACKEDCOLOR only under this format. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00112233));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -3614,6 +3811,9 @@ static void test_re_line_chains_from_re_point(void)
 
     mgras_enter_context(qts);
 
+    /* RGB format: RE_LINE/RE_POINT read PACKEDCOLOR only under this format. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00998877));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -3634,12 +3834,62 @@ static void test_re_line_chains_from_re_point(void)
 }
 
 
+/*
+ * RE_POINT's CI8 ink is RED>>12&0xff (contract rule 4), not PACKEDCOLOR:
+ * the reset default format is already CI8, so no PP1FILLMODE write is
+ * needed here.
+ */
+static void test_re_point_ci8_reads_red_channel(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_RED, 0xab000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_POINT, (70u << 16) | 80u));
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    g_assert_cmphex(mgras_test_pixel(qts, 70, 80), ==, 0xab);
+    g_assert_cmphex(mgras_test_pixel(qts, 71, 80), ==, 0);
+}
+
+
+/*
+ * RE_LINE's CI8 ink is RED>>12&0xff (contract rule 4), not PACKEDCOLOR:
+ * the reset default format is already CI8, so no PP1FILLMODE write is
+ * needed here.
+ */
+static void test_re_line_ci8_reads_red_channel(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_RED, 0xcd000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_POINT, (100u << 16) | 100u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_LINE, (105u << 16) | 105u));
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    g_assert_cmphex(mgras_test_pixel(qts, 100, 100), ==, 0xcd);
+    g_assert_cmphex(mgras_test_pixel(qts, 102, 102), ==, 0xcd);
+    g_assert_cmphex(mgras_test_pixel(qts, 105, 105), ==, 0xcd);
+
+    g_assert_cmphex(mgras_test_pixel(qts, 100, 105), ==, 0);
+}
+
+
 static void test_re_char_h_execute(void)
 {
     mgras_reset();
 
     mgras_enter_context(qts);
 
+    /* RGB format: a glyph row reads PACKEDCOLOR only under this format. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00ffffff));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -3676,29 +3926,31 @@ static void test_fifo_re_blockcopy_unsupported(void)
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
     mgras_write_cmap_entry(qts, 29, 0x56, 0x12345600);
 
-    /* Direct 0x045 remains the alias fill form. */
+    /* A real rect fill establishes native_before at the CI8 index above. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_BKGRD_RG, 0x00123456));
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x56));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (50u << 16) | 50u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (50u << 16) | 50u));
     native_before = mgras_test_pixel(qts, 50, 50);
     wid_before = mgras_test_wid(qts, 50, 50);
     display_before = mgras_test_display_pixel(qts, 50, 50);
     surface_before = mgras_screendump_pixel(qts, 50, 50);
-    g_assert_cmphex(native_before, ==, 0x00123456);
+    g_assert_cmphex(native_before, ==, 0x56);
     g_assert_cmphex(wid_before, ==, 0);
     g_assert_cmphex(display_before, ==, surface_before);
 
     /* A source rectangle makes the rejected copy request meaningful. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00654321));
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x21));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (10u << 16) | 10u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND_EXEC(REG_BLOCK_END, (11u << 16) | 11u));
-    g_assert_cmphex(mgras_test_pixel(qts, 10, 10), ==, 0x00654321);
+    g_assert_cmphex(mgras_test_pixel(qts, 10, 10), ==, 0x21);
 
     /* The bounded parser accepts the payload but does not execute 0x045. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -3715,7 +3967,12 @@ static void test_fifo_re_blockcopy_unsupported(void)
     g_assert_cmphex(mgras_screendump_pixel(qts, 50, 50), ==, surface_before);
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 
-    /* Parser continuation still works after the unsupported submission. */
+    /*
+     * Parser continuation still works after the unsupported submission.
+     * RGB format: RE_POINT reads PACKEDCOLOR only under this format.
+     */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00abcdef));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -3732,6 +3989,8 @@ static void test_fifo_re_blockcopy_unsupported(void)
                  ((uint64_t)((10u << 16) | 10u) << 32));
     qtest_system_reset(qts);
     mgras_enter_context(qts);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00abcdef));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -3771,7 +4030,9 @@ static void test_migration(void)
 
     mgras_write_cmap_entry(from, 29, 0x66, 0x66554400);
     qtest_writeq(from, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00445566));
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(from, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x66));
     qtest_writeq(from, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (2u << 16) | 2u));
 
@@ -3785,12 +4046,82 @@ static void test_migration(void)
                     MGRAS_FINAL_TOKEN);
     qtest_writeq(to, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND_EXEC(REG_BLOCK_END, (3u << 16) | 3u));
-    g_assert_cmphex(mgras_test_pixel(to, 2, 2), ==, 0x00445566);
+    g_assert_cmphex(mgras_test_pixel(to, 2, 2), ==, 0x66);
 
     g_assert_cmphex(mgras_test_display_pixel(to, 2, 2), ==, 0x00665544);
 
     qtest_quit(to);
     qtest_quit(from);
+}
+
+static void test_migration_from_v9_format_default(void)
+{
+    g_autofree char *tmpfs = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest_cmdline = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+
+    /*
+     * A v9 source has no per-pixel format array to send: vmstate_sgi_mgras
+     * gates the "format" field at version 10, and minimum_version_id stays
+     * at 9 so a v9 stream is still accepted. Confirms the destination's
+     * post_load leaves a migrated-in pixel at its zero default,
+     * SGI_MGRAS_PIXEL_FORMAT_CI8, matching what a v9 source always
+     * painted -- not misread as RGB, which would corrupt every CI8 pixel
+     * already on screen when an old-stream guest migrates onto this code.
+     * Skipped unless a v9 reference binary is available; see
+     * sn0-migration-test.c's QTEST_QEMU_BINARY_IOC3_V15 for the same
+     * pattern.
+     *
+     * v9's rect fill has no FILLCOLOR_R/G/B: this exact FILLMODE value
+     * (0x00100000) has bit 20 set, which v9's background check
+     * (FILLMODE & 0x00500000, bits 20 and 22) reads as true, so v9 paints
+     * from BKGRD_RG instead. Both v9 and v10 then resolve front[]'s low
+     * byte through CMAP map 29 the same way, so the two binaries reach
+     * the same display pixel by different, version-appropriate paths.
+     * Byte-for-byte front[] equality across the migration, not visual
+     * equivalence, is the actual claim under test: v9's raw plane and
+     * v10's CI8-indexed plane are different storage conventions in
+     * general, and only happen to coincide for a plain CI8 paint here.
+     */
+    if (!g_getenv("QTEST_QEMU_BINARY_MGRAS_V9")) {
+        g_test_skip("QTEST_QEMU_BINARY_MGRAS_V9 is not set");
+        return;
+    }
+
+    tmpfs = g_dir_make_tmp("sn0-mgras-v9-migration-XXXXXX", &err);
+    g_assert_no_error(err);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+
+    from = qtest_init_ext("QTEST_QEMU_BINARY_MGRAS_V9", MIGRATION_ARGS,
+                          NULL, true);
+    dest_cmdline = g_strdup_printf(MIGRATION_ARGS " -incoming %s", uri);
+    to = qtest_init(dest_cmdline);
+
+    mgras_enter_context(from);
+    qtest_writel(from, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    mgras_write_cmap_entry(from, 29, 0x66, 0x66554400);
+    qtest_writeq(from, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(from, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND(REG_BKGRD_RG, 0x66));
+    qtest_writeq(from, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND(REG_BLOCK_START, (5u << 16) | 5u));
+    qtest_writeq(from, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND_EXEC(REG_BLOCK_END, (5u << 16) | 5u));
+    g_assert_cmphex(mgras_test_pixel(from, 5, 5), ==, 0x66);
+    g_assert_cmphex(mgras_test_display_pixel(from, 5, 5), ==, 0x00665544);
+
+    sgi_migrate_stopped(from, uri);
+
+    g_assert_cmphex(mgras_test_format(to, 5, 5), ==, MGRAS_PIXEL_FORMAT_CI8);
+    g_assert_cmphex(mgras_test_pixel(to, 5, 5), ==, 0x66);
+    g_assert_cmphex(mgras_test_display_pixel(to, 5, 5), ==, 0x00665544);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    g_rmdir(tmpfs);
 }
 
 static void test_context_ack_migration(void)
@@ -3891,6 +4222,10 @@ static void test_discarded_fifo_migration(void)
     for (int i = 0; i < 31; i++) {
         qtest_writeq(to, REG_CONTEXT_COMMAND, 0);
     }
+    /* RE_POINT reads PACKEDCOLOR only once PP1FILLMODE selects RGB. */
+    qtest_writeq(to, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                            (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
     qtest_writeq(to, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00112233));
     qtest_writeq(to, REG_CONTEXT_COMMAND,
@@ -3906,9 +4241,13 @@ static void mgras_begin_partial_fifo_fill(QTestState *qts)
     mgras_enter_context(qts);
     qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
     mgras_write_cmap_entry(qts, 29, 0x99, 0x99663300);
+    /* A rect fill reads FILLCOLOR_R, never PACKEDCOLOR, and needs the gate. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 ((uint64_t)MGRAS_STATE_TOKEN(REG_PACKEDCOLOR, 4) << 32) |
-                 0x00336699);
+                 ((uint64_t)MGRAS_STATE_TOKEN(REG_FILLMODE, 4) << 32) |
+                 MGRAS_FILLMODE_RECT_FILL_VALUE);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)MGRAS_STATE_TOKEN(REG_FILLCOLOR_R, 4) << 32) |
+                 0x99);
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  ((uint64_t)MGRAS_STATE_TOKEN(REG_BLOCK_START, 4) << 32) |
                  ((96u << 16) | 88u));
@@ -3968,7 +4307,7 @@ static void test_partial_fifo_fill_migration(void)
     migrated_surface = mgras_screendump_pixel(to, 96, 88);
 
     g_assert_cmphex(expected_surface, ==, 0x00996633);
-    g_assert_cmphex(mgras_test_pixel(expected, 96, 88), ==, 0x00336699);
+    g_assert_cmphex(mgras_test_pixel(expected, 96, 88), ==, 0x99);
     g_assert_cmphex(mgras_test_wid(expected, 96, 88), ==, 0);
     g_assert_cmphex(mgras_test_pixel(expected, 98, 90), ==, 0);
     g_assert_cmphex(mgras_test_pixel(to, 96, 88), ==,
@@ -4056,13 +4395,13 @@ static void test_visual_state_migration(void)
     mgras_tag_wid(from, 30, 30, 30, 30, 3);
     mgras_tag_wid(from, 31, 30, 31, 30, 9);
     qtest_writeq(from, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_BKGRD_RG, 0xf0));
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(from, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0xf0));
     qtest_writeq(from, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (30u << 16) | 30u));
     qtest_writeq(from, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_BLOCK_END, (31u << 16) | 30u));
-    qtest_writeq(from, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (31u << 16) | 30u));
 
     g_assert_cmphex(mgras_test_display_pixel(from, 30, 30), ==, 0x00112233);
     g_assert_cmphex(mgras_test_display_pixel(from, 31, 30), ==, 0x00a1b2c3);
@@ -4077,13 +4416,13 @@ static void test_visual_state_migration(void)
     qtest_writel(to, REG_CMAP_DATA, 0x04050600);
     mgras_tag_wid(to, 32, 30, 32, 30, 3);
     qtest_writeq(to, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_BKGRD_RG, 0xf1));
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(to, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0xf1));
     qtest_writeq(to, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (32u << 16) | 30u));
     qtest_writeq(to, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_BLOCK_END, (32u << 16) | 30u));
-    qtest_writeq(to, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND_EXEC(REG_IR_ALIAS, 0x18));
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (32u << 16) | 30u));
     g_assert_cmphex(mgras_test_display_pixel(to, 32, 30), ==, 0x00040506);
     g_assert_cmphex(mgras_test_display_pixel(to, 30, 30), ==, 0x00112233);
     g_assert_cmphex(mgras_test_display_pixel(to, 31, 30), ==, 0x00a1b2c3);
@@ -4239,16 +4578,19 @@ int main(int argc, char **argv)
                    test_fill_mask_reads_colormasklsbsa);
     qtest_add_func("sn0/origin2000/mgras/wid-plane-fill-rule",
                    test_wid_plane_fill_rule);
-    qtest_add_func("sn0/origin2000/mgras/fill-color-follows-fillmode",
-                   test_fill_color_follows_fillmode);
-    qtest_add_func("sn0/origin2000/mgras/ir-alias-execute",
-                   test_ir_alias_execute);
+    qtest_add_func("sn0/origin2000/mgras/fill-color-reads-fillcolor-registers",
+                   test_fill_color_reads_fillcolor_registers);
+    qtest_add_func("sn0/origin2000/mgras/ir-alias-execute-paints-nothing",
+                   test_ir_alias_execute_paints_nothing);
     qtest_add_func("sn0/origin2000/mgras/direct-glyph-row",
                    test_direct_glyph_row);
     qtest_add_func("sn0/origin2000/mgras/direct-glyph-row-char-h-only",
                    test_direct_glyph_row_char_h_only);
     qtest_add_func("sn0/origin2000/mgras/direct-glyph-row-char-l-execute",
                    test_direct_glyph_row_char_l_execute);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "direct-glyph-row-ci8-reads-red-channel",
+                   test_direct_glyph_row_ci8_reads_red_channel);
     qtest_add_func("sn0/origin2000/mgras/direct-byte-row",
                    test_direct_byte_row);
     qtest_add_func("sn0/origin2000/mgras/direct-byte-row-pairs",
@@ -4267,6 +4609,9 @@ int main(int argc, char **argv)
                    test_pseudocolor_scanout_looks_up_cmap);
     qtest_add_func("sn0/origin2000/mgras/cmap-high-byte-packing",
                    test_cmap_high_byte_packing);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "pixel-format-tag-resolves-independently",
+                   test_pixel_format_tag_resolves_independently);
     qtest_add_func("sn0/origin2000/mgras/target-first-cmap-visual-selection",
                    test_target_first_cmap_visual_selection);
     qtest_add_func("sn0/origin2000/mgras/masked-out-paint-keeps-the-visual",
@@ -4330,11 +4675,17 @@ int main(int argc, char **argv)
                    test_re_line_execute);
     qtest_add_func("sn0/origin2000/mgras/re-line-chains-from-re-point",
                    test_re_line_chains_from_re_point);
+    qtest_add_func("sn0/origin2000/mgras/re-point-ci8-reads-red-channel",
+                   test_re_point_ci8_reads_red_channel);
+    qtest_add_func("sn0/origin2000/mgras/re-line-ci8-reads-red-channel",
+                   test_re_line_ci8_reads_red_channel);
     qtest_add_func("sn0/origin2000/mgras/re-char-h-execute",
                    test_re_char_h_execute);
     qtest_add_func("sn0/origin2000/mgras/fifo-re-blockcopy-unsupported",
                    test_fifo_re_blockcopy_unsupported);
     qtest_add_func("sn0/origin2000/mgras/migration", test_migration);
+    qtest_add_func("sn0/origin2000/mgras/migration-from-v9-format-default",
+                   test_migration_from_v9_format_default);
     qtest_add_func("sn0/origin2000/mgras/context-ack-migration",
                    test_context_ack_migration);
     qtest_add_func("sn0/origin2000/mgras/context-payload-migration",
