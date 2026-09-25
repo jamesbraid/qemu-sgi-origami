@@ -495,6 +495,7 @@ sgi_bedrock_hold_kick(int cpu, int target, const char *kind) "cpu %d target %d k
 sgi_bedrock_presence_published(int cpu, unsigned interface, int pending) "cpu %d published interface %u presence; join pending %d"
 
 sgi_bedrock_local_reset(int cpu) "local reset pulse by cpu %d"
+sgi_bedrock_port_reset_arrives(unsigned node, int enabled) "port reset over the link reaches node %u, reset enable %d"
 
 # sgi-bedrock-pi.c
 sgi_bedrock_pi_mask_write(unsigned interface, uint64_t offset, uint64_t value, int cpu) "pi%u mask 0x%" PRIx64 " <- 0x%" PRIx64 " by cpu %d"

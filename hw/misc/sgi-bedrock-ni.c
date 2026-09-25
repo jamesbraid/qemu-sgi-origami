@@ -38,6 +38,13 @@ static void ni_write(void *opaque, hwaddr offset, uint64_t value,
 {
     SGIBedrockNIState *s = opaque;
 
+    /*
+     * Port reset, bit 1 of the reset register, sends a warm reset over the
+     * link; a composed Bedrock delivers it to the node at the other end.
+     */
+    if (offset == 0x08 && (value & 2) && s->bedrock) {
+        sgi_bedrock_port_reset_send(s->bedrock);
+    }
     switch (sgi_bedrock_ni_regs_write(&s->regs, offset, value)) {
     case SGI_BEDROCK_NI_LOCAL_RESET:
         qemu_irq_pulse(s->local_reset);

@@ -194,6 +194,13 @@ uint8_t sgi_bedrock_node_number(SGIBedrockState *s);
 bool sgi_bedrock_link_up(SGIBedrockState *s);
 
 /*
+ * A warm reset sent over this node's link (network-interface port reset):
+ * the Bedrock at the other end of an up cable resets if its reset enable
+ * permits it. Nothing happens with no link.
+ */
+void sgi_bedrock_port_reset_send(SGIBedrockState *s);
+
+/*
  * Send a vector request out of this node's network port. The device at the
  * other end of the cable consumes packet->vector; SGI_NET_PACKET_NONE when no
  * device answers.
