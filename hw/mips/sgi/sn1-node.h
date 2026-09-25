@@ -45,6 +45,8 @@ typedef struct SN1NodeState {
     MemoryRegion *ram;
     uint32_t nr_cpus;
     uint32_t nasid;
+    uint32_t l1_bay;
+    bool last_node;
     bool promdata_filter;
     bool promdata_fast;
 
@@ -113,6 +115,7 @@ typedef struct SN1NodeState {
     /* Used in place of the aliases above once a flash part is attached. */
     SN1PromView prom_view_reset;
     SN1PromView prom_view_local_high;
+    char *prom_view_names[2];
 } SN1NodeState;
 
 #define TYPE_SGI_SN1_NODE "sgi-sn1-node"
@@ -131,6 +134,15 @@ DECLARE_INSTANCE_CHECKER(SN1NodeState, SN1_NODE, TYPE_SGI_SN1_NODE)
  * constraint.
  */
 void sn1_node_full_reset(SN1NodeState *node, ResetType type);
+
+/*
+ * The two halves of sn1_node_full_reset() for a machine of several nodes,
+ * which resets every node's processors, then every device once, then
+ * releases every node's processors: the same order, with the device reset
+ * shared rather than repeated per node.
+ */
+void sn1_node_reset_cpus(SN1NodeState *node);
+void sn1_node_release_cpus(SN1NodeState *node);
 
 /*
  * Attaches the node's boot flash: a pflash part from -drive if=pflash at

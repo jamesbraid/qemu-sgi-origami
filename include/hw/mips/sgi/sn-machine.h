@@ -81,10 +81,27 @@ uint64_t sgi_machine_topology_default_ram(const SGIModelTopology *t);
  * Copies the machine's own chassis-eeprom/board-eeprom/spd-eeprom
  * identity-record file lists onto an L1 device before it is realized.
  * Takes the L1 explicitly because it lives on the node (sgi-sn1-node),
- * while the file lists it reads are machine properties -- one identity
- * per machine, one L1 per node.
+ * while the file lists it reads are machine properties. With several
+ * Bedrock nodes each list splits evenly, node_index taking its own share
+ * in order, since each chassis's L1 reads only its own chassis's parts; a
+ * list that does not divide evenly is refused.
  */
-void sgi_machine_set_l1_identity_records(MachineState *machine,
-                                         DeviceState *l1);
+bool sgi_machine_set_l1_identity_records(MachineState *machine,
+                                         DeviceState *l1,
+                                         unsigned int node_index,
+                                         Error **errp);
+
+/*
+ * The -serial lines a Bedrock node takes, a block of this many per node in
+ * node order: its L1, then its IO-8's IOC3 port A, port B, and the two
+ * record lines. Node 0's block is the one-chassis machine's lines 0 to 4.
+ */
+#define SGI_SN1_SERIAL_LINES_PER_NODE 5
+
+static inline unsigned int sgi_sn1_serial_line(unsigned int node_index,
+                                               unsigned int line)
+{
+    return node_index * SGI_SN1_SERIAL_LINES_PER_NODE + line;
+}
 
 #endif /* HW_MIPS_SGI_SN_MACHINE_H */
