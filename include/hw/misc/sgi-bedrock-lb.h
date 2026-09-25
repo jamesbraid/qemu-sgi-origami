@@ -4,6 +4,7 @@
 
 #include "hw/1wire/onewire.h"
 #include "hw/core/sysbus.h"
+#include "qemu/notify.h"
 #include "qemu/timer.h"
 
 #define TYPE_SGI_BEDROCK_LB "sgi-bedrock-lb"
@@ -58,6 +59,12 @@ struct SGIBedrockLBState {
     /* The revision word's two fields as the firmware last wrote them. */
     uint8_t programmed_node;
     uint8_t programmed_region;
+    /*
+     * Told whenever programmed_node changes, by a write, a reset or a
+     * load: whoever decodes addresses by this node's number (sn1-node.c's
+     * claim layer) re-derives it. Not migrated; listeners re-register.
+     */
+    NotifierList node_notifiers;
 
     uint64_t cpu_permission;
     uint64_t io_permission;
@@ -81,6 +88,10 @@ struct SGIBedrockLBState {
 
 /* The node number the revision word currently carries. */
 uint8_t sgi_bedrock_lb_node_number(SGIBedrockLBState *s);
+
+/* Call notifier whenever the node number the revision word carries moves. */
+void sgi_bedrock_lb_add_node_notifier(SGIBedrockLBState *s,
+                                      Notifier *notifier);
 
 /*
  * One aligned 64-bit access to this node's hub register window at a

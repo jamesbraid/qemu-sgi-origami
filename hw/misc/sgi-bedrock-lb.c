@@ -126,6 +126,17 @@ uint8_t sgi_bedrock_lb_node_number(SGIBedrockLBState *s)
     return s->programmed_node;
 }
 
+void sgi_bedrock_lb_add_node_notifier(SGIBedrockLBState *s,
+                                      Notifier *notifier)
+{
+    notifier_list_add(&s->node_notifiers, notifier);
+}
+
+static void lb_node_changed(SGIBedrockLBState *s)
+{
+    notifier_list_notify(&s->node_notifiers, s);
+}
+
 /*
  * The stock PROM assigns the node number by storing the whole revision word
  * (the local-block datasheet, "Node number assignment"): zero at hub
@@ -138,6 +149,7 @@ static void lb_revision_write(SGIBedrockLBState *s, uint64_t value)
 {
     unsigned region = extract64(value, LB_REVISION_REGION_SHIFT,
                                 LB_REVISION_REGION_WIDTH);
+    uint8_t before = s->programmed_node;
 
     if (region == LB_REGION_SIZE_INVALID) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-lb: revision write of "
@@ -148,6 +160,9 @@ static void lb_revision_write(SGIBedrockLBState *s, uint64_t value)
     s->programmed_node = extract64(value, LB_REVISION_NODE_SHIFT,
                                    LB_REVISION_NODE_WIDTH);
     s->programmed_region = region;
+    if (s->programmed_node != before) {
+        lb_node_changed(s);
+    }
 }
 
 MemTxResult sgi_bedrock_lb_hub_access(SGIBedrockLBState *s, hwaddr addr,
@@ -582,12 +597,17 @@ static void lb_reset_enter(Object *obj, ResetType type)
 
 static void lb_reset_hold(Object *obj, ResetType type)
 {
-    lb_update_irq(SGI_BEDROCK_LB(obj));
+    SGIBedrockLBState *s = SGI_BEDROCK_LB(obj);
+
+    lb_update_irq(s);
+    /* The enter phase restored the realized number; decode follows it. */
+    lb_node_changed(s);
 }
 
 static int lb_post_load(void *opaque, int version_id)
 {
     lb_update_irq(opaque);
+    lb_node_changed(opaque);
     return 0;
 }
 
@@ -679,6 +699,7 @@ static void lb_init(Object *obj)
 {
     SGIBedrockLBState *s = SGI_BEDROCK_LB(obj);
 
+    notifier_list_init(&s->node_notifiers);
     memory_region_init_io(&s->mmio, obj, &lb_ops, s, TYPE_SGI_BEDROCK_LB,
                           SGI_BEDROCK_LB_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
