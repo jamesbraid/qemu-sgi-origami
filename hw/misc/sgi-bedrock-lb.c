@@ -12,6 +12,7 @@
 #include "qemu/module.h"
 #include "qemu/timer.h"
 #include "hw/core/cpu.h"
+#include "hw/mips/sgi-net-port.h"
 #include "trace.h"
 
 #define LB_REVISION        0x0000
@@ -56,6 +57,8 @@
 #define LB_VECTOR_ECHO         (LB_VECTOR_ADDR | LB_VECTOR_WRITE_ID | \
                                 LB_VECTOR_REQUEST_ID)
 #define LB_VECTOR_PARAMS_MASK  (1ULL | LB_VECTOR_ECHO)
+/* Parameters bit 0: the stock PROM launches reads with 0, writes with 1. */
+#define LB_VECTOR_TYPE_WRITE   1ULL
 /* Status type-or-error 2:0: 4 is an address error. Then overrun and valid. */
 #define LB_VECTOR_ADDR_ERROR   4ULL
 #define LB_VECTOR_OVERRUN      (1ULL << 62)
@@ -147,6 +150,28 @@ static void lb_revision_write(SGIBedrockLBState *s, uint64_t value)
     s->programmed_region = region;
 }
 
+MemTxResult sgi_bedrock_lb_hub_access(SGIBedrockLBState *s, hwaddr addr,
+                                      uint64_t *value, bool write)
+{
+    uint8_t buffer[8];
+    MemTxResult result;
+
+    if (!s->hub_as_initialized) {
+        return MEMTX_DECODE_ERROR;
+    }
+    if (write) {
+        stq_be_p(buffer, *value);
+        return address_space_write(&s->hub_as, addr, MEMTXATTRS_UNSPECIFIED,
+                                   buffer, sizeof(buffer));
+    }
+    result = address_space_read(&s->hub_as, addr, MEMTXATTRS_UNSPECIFIED,
+                                buffer, sizeof(buffer));
+    if (result == MEMTX_OK) {
+        *value = ldq_be_p(buffer);
+    }
+    return result;
+}
+
 static void lb_update_irq(SGIBedrockLBState *s)
 {
     qemu_set_irq(s->error, s->errors != 0);
@@ -192,30 +217,29 @@ static void lb_microlan_write(SGIBedrockLBState *s, uint64_t value)
 }
 
 /*
- * A vector launch. The engine reads or writes a register along an explicit
- * port-by-port route (datasheet "vector operations"); the firmware drives it
- * during NUMAlink discovery to read each hub before building KLCONFIG, and the
- * block replies to the parameters write at once.
+ * A vector launch. The engine reads or writes a hub register at the end of an
+ * explicit route, one port number per hop from the least significant nybble
+ * (the local-block datasheet, "Vector engine on the boot path"). Route 0 is
+ * the device at the other end of this node's cable; the owning Bedrock sends
+ * the request there and the peer performs it on its own registers.
  *
- * This models the routed READ on the local route. A one-chassis node has no
- * NUMAlink peer, so every route resolves to this node's own hub, read from the
- * linked hub register window -- the block aliased into the local register
- * space. Kept out of the model until a boot trace or the header settles them:
- * the self-vs-remote route encoding (not decoded; there is no remote peer to
- * route to), the type field's read/write polarity (discovery reads only, so a
- * launch completes as a read), and write-transaction behavior.
+ * What hardware answers with no link, or for a nonzero route on a direct
+ * pair, is unknown. Such a launch latches no reply, so the status stays not
+ * valid and the firmware's own poll times out, and the launch is logged. The
+ * return route and source are not established either and read 0.
  */
 static void lb_vector_launch(SGIBedrockLBState *s)
 {
     uint64_t reply = s->vector_params & LB_VECTOR_ECHO;
-    hwaddr addr = s->vector_params & LB_VECTOR_ADDR;
-    uint8_t buffer[8];
+    SGINetPacket packet = {
+        .op = (s->vector_params & LB_VECTOR_TYPE_WRITE) ?
+              SGI_NET_PACKET_WRITE : SGI_NET_PACKET_READ,
+        .addr = s->vector_params & LB_VECTOR_ADDR,
+        .data = s->vector_data,
+        .vector = s->vector_route,
+    };
+    SGINetPacketResult result = SGI_NET_PACKET_NONE;
 
-    if (!s->hub_as_initialized) {
-        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-lb: vector launch with no hub "
-                      "register window linked\n");
-        return;
-    }
     /*
      * Software clears the status before launching; a launch over an unread
      * reply is an overrun, not a reload.
@@ -224,15 +248,36 @@ static void lb_vector_launch(SGIBedrockLBState *s)
         s->vector_status |= LB_VECTOR_OVERRUN;
         return;
     }
-    if (address_space_read(&s->hub_as, addr, MEMTXATTRS_UNSPECIFIED,
-                           buffer, sizeof(buffer)) != MEMTX_OK) {
+    if (s->bedrock) {
+        result = sgi_bedrock_vector_send(s->bedrock, &packet);
+    }
+    trace_sgi_bedrock_lb_vector_launch(s->vector_route, s->vector_params,
+                                       result, packet.value);
+    switch (result) {
+    case SGI_NET_PACKET_NONE:
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-lb: vector %s of 0x%" HWADDR_PRIx
+                      " on route 0x%" PRIx64 " reached no device; no reply "
+                      "is latched\n",
+                      packet.op == SGI_NET_PACKET_WRITE ? "write" : "read",
+                      packet.addr, s->vector_route);
+        return;
+    case SGI_NET_PACKET_ERROR:
+        s->vector_return = 0;
         s->vector_status = reply | LB_VECTOR_VALID | LB_VECTOR_ADDR_ERROR;
         return;
+    case SGI_NET_PACKET_OK:
+        if (packet.op == SGI_NET_PACKET_READ) {
+            s->vector_read = packet.value;
+        }
+        s->vector_return = 0;
+        /*
+         * Bits 2:0 carry the request type on success: the stock PROM's
+         * write primitive accepts only 1 there, its read primitive only 0.
+         */
+        s->vector_status = reply | LB_VECTOR_VALID |
+                           (s->vector_params & LB_VECTOR_TYPE_WRITE);
+        return;
     }
-    s->vector_read = ldq_be_p(buffer);
-    /* The self-route return path is not pinned; report none. */
-    s->vector_return = 0;
-    s->vector_status = reply | LB_VECTOR_VALID;
 }
 
 static uint64_t lb_read(void *opaque, hwaddr offset, unsigned size)
@@ -303,11 +348,16 @@ static uint64_t lb_read(void *opaque, hwaddr offset, unsigned size)
         return s->vector_return;
     case LB_VECTOR_READ:
         return s->vector_read;
-    case LB_VECTOR_STATUS_CLEAR:
-        /* Whether a read or a write clears is open; here a write clears. */
-        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-lb: read of the vector "
-                      "status-clear alias; read-and-clear is not modelled\n");
-        return 0;
+    case LB_VECTOR_STATUS_CLEAR: {
+        /*
+         * The stock PROM reads this before every launch and never writes it,
+         * then fails the operation if status is still valid: the read clears.
+         */
+        uint64_t status = s->vector_status;
+
+        s->vector_status = 0;
+        return status;
+    }
     case LB_CPU_OVERRIDE:
     case LB_SOFT_RESET:
     case LB_ERROR_CLEAR:
@@ -438,21 +488,31 @@ static void lb_write(void *opaque, hwaddr offset, uint64_t value,
         s->vector_data = value;
         return;
     case LB_VECTOR_STATUS_CLEAR:
-        /*
-         * The model's chosen semantics while the header is silent on read
-         * versus write: a write clears the return status before a launch.
-         */
+        /* No consumer writes it; clearing on a write too is the model's. */
         s->vector_status = 0;
         return;
     case LB_REVISION:
         lb_revision_write(s, value);
         return;
     case LB_VECTOR_STATUS:
+        /*
+         * The stock PROM zeroes status at hub initialisation. What any write
+         * does on hardware is unknown; zero clears, and nothing else may
+         * fabricate a reply.
+         */
+        if (value) {
+            qemu_log_mask(LOG_UNIMP, "sgi-bedrock-lb: nonzero write 0x%"
+                          PRIx64 " to the vector status is ignored\n", value);
+            return;
+        }
+        s->vector_status = 0;
+        return;
     case LB_VECTOR_RETURN:
+        s->vector_return = value;
+        return;
     case LB_VECTOR_READ:
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-bedrock-lb: write to read-only register 0x%"
-                      HWADDR_PRIx "\n", offset);
+        /* The PROM zeroes it, then seeds a sentinel before each launch. */
+        s->vector_read = value;
         return;
     case LB_DEBUG_PINS:
     default:
@@ -621,14 +681,6 @@ static void lb_init(Object *obj)
 
     memory_region_init_io(&s->mmio, obj, &lb_ops, s, TYPE_SGI_BEDROCK_LB,
                           SGI_BEDROCK_LB_SIZE);
-    /*
-     * A vector read dispatches into the hub register window, which aliases
-     * this block, so a self-route read lands back on these registers while
-     * the launching write is still in flight. The per-device re-entrancy
-     * guard would block that nested access. The read is bounded -- one
-     * register, no further dispatch -- so opting out cannot recurse.
-     */
-    s->mmio.disable_reentrancy_guard = true;
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
     qdev_init_gpio_out_named(DEVICE(obj), &s->soft_reset, "soft-reset", 1);
     qdev_init_gpio_out_named(DEVICE(obj), &s->error, "error", 1);

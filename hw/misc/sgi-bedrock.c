@@ -1257,10 +1257,11 @@ static void bedrock_realize(DeviceState *dev, Error **errp)
     s->lb.bedrock = s;
     s->md.bedrock = s;
     s->io.bedrock = s;
+    s->ni.bedrock = s;
     qdev_prop_set_uint32(DEVICE(&s->lb), "revision", s->revision);
     /*
-     * The local block's vector engine reads a hub register for a routed read;
-     * the node's own register window is where a local route resolves.
+     * A vector request from a peer reads or writes this node's registers
+     * through the local block, at their window offset.
      */
     if (!object_property_set_link(OBJECT(&s->lb), "hub-registers",
                                   OBJECT(&s->hub_window), errp)) {
@@ -1414,6 +1415,9 @@ static const Property bedrock_properties[] = {
 #undef BEDROCK_WIDGET_PROP
 };
 
+/* Where the zero-based hub window's two aliases meet: the I/O interface. */
+#define BEDROCK_HUB_WINDOW_SPLIT 0x400000
+
 static void bedrock_init(Object *obj)
 {
     SGIBedrockState *s = SGI_BEDROCK(obj);
@@ -1428,13 +1432,26 @@ static void bedrock_init(Object *obj)
     object_initialize_child(obj, "xb", &s->xb, TYPE_SGI_BEDROCK_XB);
     memory_region_init(&s->mmio, obj, TYPE_SGI_BEDROCK, SGI_BEDROCK_SIZE);
     /*
-     * The vector engine reads a hub register by its window offset. This alias
-     * is never mapped, so it presents the window at offset zero however the
-     * machine places mmio itself.
+     * A vector request from a peer names a hub register by its window
+     * offset, so the local block needs the window at offset zero however
+     * the machine places mmio. A lone alias of the whole window is not
+     * enough: the memory core renders an address space from the aliased
+     * region itself when an alias covers all of it, and that region carries
+     * its mapped address, so every offset would miss. Two aliases, split at
+     * the I/O interface, keep this container the root.
      */
-    memory_region_init_alias(&s->hub_window, obj,
-                             TYPE_SGI_BEDROCK "-hub-window", &s->mmio, 0,
-                             SGI_BEDROCK_SIZE);
+    memory_region_init(&s->hub_window, obj, TYPE_SGI_BEDROCK "-hub-window",
+                       SGI_BEDROCK_SIZE);
+    memory_region_init_alias(&s->hub_window_part[0], obj,
+                             TYPE_SGI_BEDROCK "-hub-window-low", &s->mmio, 0,
+                             BEDROCK_HUB_WINDOW_SPLIT);
+    memory_region_init_alias(&s->hub_window_part[1], obj,
+                             TYPE_SGI_BEDROCK "-hub-window-high", &s->mmio,
+                             BEDROCK_HUB_WINDOW_SPLIT,
+                             SGI_BEDROCK_SIZE - BEDROCK_HUB_WINDOW_SPLIT);
+    memory_region_add_subregion(&s->hub_window, 0, &s->hub_window_part[0]);
+    memory_region_add_subregion(&s->hub_window, BEDROCK_HUB_WINDOW_SPLIT,
+                                &s->hub_window_part[1]);
     memory_region_init_io(&s->hub_special_registers, obj,
                           &bedrock_hub_special_ops, s,
                           TYPE_SGI_BEDROCK "-hub-special-registers",
@@ -1486,11 +1503,106 @@ static void bedrock_init(Object *obj)
     qdev_init_gpio_in_named(dev, bedrock_xb_error, "xb-error", 1);
     qdev_init_gpio_in_named(dev, bedrock_uart_irq, "uart-irq", 1);
     qdev_init_gpio_in_named(dev, bedrock_local_reset, "local-reset", 1);
+    /*
+     * Settable after realize as well as before: a machine wires it before
+     * realize, while a -M none register test can only name a cable after
+     * both Bedrocks and the cable exist. Weak, because the cable refers
+     * back to this device.
+     */
+    object_property_add_link(obj, "net-cable", TYPE_SGI_NET_CABLE,
+                             (Object **)&s->net_cable,
+                             object_property_allow_set_link, 0);
 }
 
 uint8_t sgi_bedrock_node_number(SGIBedrockState *s)
 {
     return sgi_bedrock_lb_node_number(&s->lb);
+}
+
+static bool bedrock_neighbor(SGIBedrockState *s, Object **peer,
+                             unsigned int *peer_index)
+{
+    return s->net_cable &&
+           sgi_net_cable_neighbor(s->net_cable, OBJECT(s), 0, peer,
+                                  peer_index);
+}
+
+bool sgi_bedrock_link_up(SGIBedrockState *s)
+{
+    Object *peer;
+    unsigned int peer_index;
+
+    return bedrock_neighbor(s, &peer, &peer_index);
+}
+
+SGINetPacketResult sgi_bedrock_vector_send(SGIBedrockState *s,
+                                           SGINetPacket *packet)
+{
+    Object *peer;
+    unsigned int peer_index;
+
+    if (!bedrock_neighbor(s, &peer, &peer_index)) {
+        return SGI_NET_PACKET_NONE;
+    }
+    return sgi_net_port_receive(peer, peer_index, packet, &error_abort);
+}
+
+static const char *bedrock_net_describe(Object *port, unsigned int index)
+{
+    return "a Bedrock network port";
+}
+
+/*
+ * A vector request that arrived over this node's cable. A Bedrock has one
+ * port and does not forward, so only a route with nothing left in it ends
+ * here, and the local block performs the access on this node's register
+ * window. That path applies no CPU permission check, and a register with a
+ * per-processor view sees whichever processor launched on the other node;
+ * the firmware's targets (the revision word and the scratch registers)
+ * depend on neither.
+ *
+ * A request that makes this node launch back into the sender while the
+ * sender's own launch is in flight re-enters the sender's local block,
+ * which the memory core's per-device re-entrancy guard refuses: that access
+ * fails, so the inner launch latches an address error and QEMU warns once.
+ * The firmware never builds such a bounce.
+ */
+static SGINetPacketResult bedrock_net_receive(Object *port,
+                                              unsigned int index,
+                                              SGINetPacket *packet,
+                                              Error **errp)
+{
+    SGIBedrockState *s = SGI_BEDROCK(port);
+    bool write;
+
+    if (packet->vector) {
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock: vector route 0x%" PRIx64
+                      " continues past a Bedrock, which does not forward\n",
+                      packet->vector);
+        return SGI_NET_PACKET_NONE;
+    }
+    switch (packet->op) {
+    case SGI_NET_PACKET_READ:
+        write = false;
+        break;
+    case SGI_NET_PACKET_WRITE:
+        write = true;
+        break;
+    default:
+        qemu_log_mask(LOG_UNIMP, "sgi-bedrock: vector request type %d is "
+                      "not modelled\n", packet->op);
+        return SGI_NET_PACKET_NONE;
+    }
+    if (sgi_bedrock_lb_hub_access(&s->lb, packet->addr,
+                                  write ? &packet->data : &packet->value,
+                                  write) != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock: vector %s of hub "
+                      "offset 0x%" HWADDR_PRIx " refused\n",
+                      write ? "write" : "read", packet->addr);
+        return SGI_NET_PACKET_ERROR;
+    }
+    packet->source = sgi_bedrock_node_number(s);
+    return SGI_NET_PACKET_OK;
 }
 
 static void bedrock_reset_enter(Object *obj, ResetType type)
@@ -1519,6 +1631,7 @@ static void bedrock_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
+    SGINetPortClass *npc = SGI_NET_PORT_CLASS(klass);
 
     dc->desc = "SGI Bedrock node controller";
     dc->realize = bedrock_realize;
@@ -1527,6 +1640,8 @@ static void bedrock_class_init(ObjectClass *klass, const void *data)
     dc->user_creatable = true;
     device_class_set_props(dc, bedrock_properties);
     rc->phases.enter = bedrock_reset_enter;
+    npc->describe = bedrock_net_describe;
+    npc->receive = bedrock_net_receive;
 }
 
 static const TypeInfo bedrock_info = {
@@ -1536,6 +1651,10 @@ static const TypeInfo bedrock_info = {
     .instance_init = bedrock_init,
     .instance_finalize = bedrock_finalize,
     .class_init = bedrock_class_init,
+    .interfaces = (const InterfaceInfo[]) {
+        { TYPE_SGI_NET_PORT },
+        { }
+    },
 };
 
 static void bedrock_register_types(void)

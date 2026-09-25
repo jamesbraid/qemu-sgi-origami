@@ -111,6 +111,11 @@ static void sgi_net_cable_realize(DeviceState *dev, Error **errp)
                        "before realize");
             return;
         }
+        if (!object_dynamic_cast(cable->end[side].port, TYPE_SGI_NET_PORT)) {
+            error_setg(errp, "a network cable's end %u is not a network "
+                       "port", side);
+            return;
+        }
     }
 }
 
@@ -141,6 +146,8 @@ static const VMStateDescription vmstate_sgi_net_cable = {
 static const Property sgi_net_cable_properties[] = {
     DEFINE_PROP_UINT32("kind", SGINetCableState, kind,
                        SGI_NET_CABLE_KIND_CABLE),
+    DEFINE_PROP_UINT32("end0-index", SGINetCableState, end[0].index, 0),
+    DEFINE_PROP_UINT32("end1-index", SGINetCableState, end[1].index, 0),
 };
 
 static void sgi_net_cable_class_init(ObjectClass *klass, const void *data)
@@ -150,8 +157,23 @@ static void sgi_net_cable_class_init(ObjectClass *klass, const void *data)
     dc->desc = "SGI network cable";
     dc->realize = sgi_net_cable_realize;
     dc->vmsd = &vmstate_sgi_net_cable;
-    dc->user_creatable = false;
+    dc->user_creatable = true;
     device_class_set_props(dc, sgi_net_cable_properties);
+    /*
+     * The ends as properties, for a register test that joins two standalone
+     * devices from the command line; a machine sets them with
+     * sgi_net_cable_set_end() instead. Either way each end device's own
+     * cable reference is wired separately. Weak, as the C setter's plain
+     * pointer is: each end usually refers back to this cable.
+     */
+    object_class_property_add_link(klass, "end0", TYPE_SGI_NET_PORT,
+                                   offsetof(SGINetCableState, end[0].port),
+                                   qdev_prop_allow_set_link_before_realize,
+                                   0);
+    object_class_property_add_link(klass, "end1", TYPE_SGI_NET_PORT,
+                                   offsetof(SGINetCableState, end[1].port),
+                                   qdev_prop_allow_set_link_before_realize,
+                                   0);
     object_class_property_add_bool(klass, "down", sgi_net_cable_get_down,
                                    sgi_net_cable_set_down);
     object_class_property_set_description(klass, "down",

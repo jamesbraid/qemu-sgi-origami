@@ -2,6 +2,7 @@
 /* Bedrock NI, composed by the parent without owning node reset policy. */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-bedrock-ni.h"
+#include "hw/misc/sgi-bedrock.h"
 #include "hw/core/irq.h"
 #include "migration/vmstate.h"
 #include "qemu/log.h"
@@ -20,6 +21,13 @@ static uint64_t ni_read(void *opaque, hwaddr offset, unsigned size)
     if (!sgi_bedrock_ni_regs_read(&s->regs, offset, &value)) {
         qemu_log_mask(LOG_UNIMP, "sgi-bedrock-ni: unimplemented read at "
                       "0x%" HWADDR_PRIx "\n", offset);
+    }
+    /*
+     * Link-up needs no software step: the stock PROM programs the port once
+     * and then only polls this bit, so it follows the cable from reset.
+     */
+    if (offset == 0 && s->bedrock && sgi_bedrock_link_up(s->bedrock)) {
+        value |= SGI_BEDROCK_NI_LINK_UP;
     }
     ni_update_irq(s);
     return value;
@@ -116,7 +124,7 @@ static void ni_class_init(ObjectClass *klass, const void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
 
-    dc->desc = "SGI Bedrock disconnected network interface";
+    dc->desc = "SGI Bedrock network interface";
     dc->vmsd = &vmstate_ni;
     dc->user_creatable = true;
     rc->phases.enter = ni_reset_enter;

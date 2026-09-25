@@ -41,9 +41,8 @@ struct SGIBedrockLBState {
     bool microlan_level;
 
     /*
-     * This node's hub register window, so the vector engine can read a hub
-     * register for a routed read. The window aliases this block, so a self
-     * route lands back on these registers.
+     * This node's hub register window, where a vector request arriving over
+     * the link from a peer reads or writes (sgi_bedrock_lb_hub_access()).
      */
     MemoryRegion *hub_registers;
     AddressSpace hub_as;
@@ -82,5 +81,13 @@ struct SGIBedrockLBState {
 
 /* The node number the revision word currently carries. */
 uint8_t sgi_bedrock_lb_node_number(SGIBedrockLBState *s);
+
+/*
+ * One aligned 64-bit access to this node's hub register window at a
+ * hub-relative offset, as a vector request arriving over the link performs
+ * it. A block with no window linked answers MEMTX_DECODE_ERROR.
+ */
+MemTxResult sgi_bedrock_lb_hub_access(SGIBedrockLBState *s, hwaddr addr,
+                                      uint64_t *value, bool write);
 
 #endif
