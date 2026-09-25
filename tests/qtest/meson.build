@@ -317,13 +317,11 @@ endif
 # are not present in a minimal device build. sn1-xbridge-test also carries a
 # private origin300 host-error case that needs the full SN1 board, unlike
 # its other cases' bare test-only head; gate that name on CONFIG_SGI_SN1 too.
-sn1_xbridge_qtests = []
-if config_all_devices.has_key('CONFIG_SGI_XBRIDGE')
-  sn1_xbridge_qtests = ['sn1-xbridge-chip-test', 'sn1-xbridge-xbow-test']
-  if config_all_devices.has_key('CONFIG_SGI_SN1')
-    sn1_xbridge_qtests = ['sn1-xbridge-test'] + sn1_xbridge_qtests
-  endif
-endif
+sn1_xbridge_qtests = \
+  (config_all_devices.has_key('CONFIG_SGI_XBRIDGE') ?
+    ['sn1-xbridge-chip-test', 'sn1-xbridge-xbow-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_SN1') ?
+    ['sn1-xbridge-test'] : [])
 if not config_all_devices.has_key('CONFIG_SGI_XTALK_TEST_TARGET')
   sn1_xbridge_qtests = []
 elif not config_all_devices.has_key('CONFIG_SGI_BRIDGE_DMA_TEST')
@@ -417,7 +415,7 @@ qtests_mips64 = \
      'sn1-io8-scsi-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-mttcg-test',
                                                    'sn0-forward-progress-test',
-                                                   'mips64-r10k-test',
+                                                   'sn0-r10k-test',
                                                    'sn0-r10k-perf-migration-test',
                                                    'sn0-address-map-test',
                                                    'sn0-bridge-test',
