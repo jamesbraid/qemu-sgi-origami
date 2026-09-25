@@ -63,6 +63,7 @@ config SGI_SN0
     select SGI_GIGACHANNEL
     select SGI_HUB
     select SGI_O2000_MODULE_MGMT
+    select SGI_KONA
     select SGI_IOC3
     select SGI_IOC3_ETH
     select SGI_NET_CABLE
