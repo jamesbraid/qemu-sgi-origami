@@ -92,6 +92,8 @@ struct SGIXBridgeHeadState {
      */
     OneWireBus *onewire_bus;
     char *board_part;
+    /* The root PCI bus's name; unset names it after the head. */
+    char *bus_name;
     uint64_t onewire_serial;
     qemu_irq pci_irq[SGI_XBRIDGE_HEAD_RAW_PCI_IRQS];
     uint32_t pci_levels;
