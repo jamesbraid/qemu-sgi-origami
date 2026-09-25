@@ -1716,6 +1716,65 @@ static void test_cursor_composited_into_scanout(void)
     qtest_quit(qts);
 }
 
+/*
+ * A refresh whose dirty rows lie entirely outside the sprite must not lose
+ * the record of where the sprite is currently painted. The compose pass runs
+ * on every refresh, including ones driven by a framebuffer write far from the
+ * cursor; if such a pass forgot the sprite's displayed span, a later cursor
+ * change that has no new rows of its own to repaint -- a disable, or a hot
+ * spot or look-up-table change that leaves the location alone -- would fail to
+ * dirty the old rows and leave a ghost sprite behind in the scanout.
+ *
+ * Disabling is the sharpest case: it dirties the recorded displayed span and
+ * nothing else, so it clears the sprite only if that span survived the
+ * unrelated refresh. (A plain position move would mask the bug: moving takes
+ * four separate byte writes, and the intermediate locations re-dirty the old
+ * rows by coincidence.) Compose the sprite, write a framebuffer row the 64-row
+ * sprite does not cover and refresh, then disable the cursor and confirm the
+ * old spot gets its framebuffer content back.
+ */
+static void test_cursor_no_ghost_after_far_fb_update(void)
+{
+    QTestState *qts = rad4_init();
+    uint32_t under_old;
+
+    rad4_play_mode0(qts);
+
+    /* Cursor Primary Color 1 = white; one sprite pixel at map (0, 0). */
+    rgb_set_index(qts, RGB_CURSOR_LUT_BASE + 1);
+    bar2_write(qts, B_RGB_RESERVED, 0xff);
+    bar2_write(qts, B_RGB_RESERVED, 0xff);
+    bar2_write(qts, B_RGB_RESERVED, 0xff);
+    rgb_write_byte(qts, RGB_CURSOR_PIXMAP_BASE, 0x40);
+    rgb_write_byte(qts, RGB_CURSOR_HOTSPOT_X, 0);
+    rgb_write_byte(qts, RGB_CURSOR_HOTSPOT_Y, 0);
+    rgb_write_byte(qts, RGB_CURSOR_X_LOW, 100);
+    rgb_write_byte(qts, RGB_CURSOR_X_HIGH, 0);
+    rgb_write_byte(qts, RGB_CURSOR_Y_LOW, 200);
+    rgb_write_byte(qts, RGB_CURSOR_Y_HIGH, 0);
+
+    under_old = rad4_screendump_pixel(qts, 100, 200);
+    g_assert_cmphex(under_old, !=, 0xffffff);
+
+    /* Enable it and compose it once, so its displayed span is on record. */
+    rgb_write_byte(qts, RGB_CURSOR_CONTROL, CURSOR_CONTROL_CE);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 100, 200), ==, 0xffffff);
+
+    /*
+     * An unrelated framebuffer write on row 900 -- far below the sprite's
+     * rows 200..263 -- then a refresh. This refresh's dirty interval never
+     * touches the cursor, which is exactly the case that must not forget it.
+     */
+    bar2_write(qts, 900 * TEST_FB_STRIDE, 0x00112233u);
+    rad4_force_refresh(qts);
+
+    /* Disabling restores the sprite's rows only if the span was preserved. */
+    rgb_write_byte(qts, RGB_CURSOR_CONTROL, 0);
+    g_assert_cmphex(rad4_screendump_pixel(qts, 100, 200), ==, under_old);
+
+    qtest_quit(qts);
+}
+
 static void test_reset(void)
 {
     QTestState *qts = rad4_init();
@@ -1866,6 +1925,8 @@ int main(int argc, char **argv)
                    test_cursor_lut_tri_write);
     qtest_add_func("/psitech-rad4/cursor-composited-into-scanout",
                    test_cursor_composited_into_scanout);
+    qtest_add_func("/psitech-rad4/cursor-no-ghost-after-far-fb-update",
+                   test_cursor_no_ghost_after_far_fb_update);
     qtest_add_func("/psitech-rad4/reset", test_reset);
     qtest_add_func("/psitech-rad4/gfx-update-reset-forces-full-repaint",
                    test_gfx_update_reset_forces_full_repaint);
