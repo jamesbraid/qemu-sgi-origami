@@ -85,6 +85,16 @@ test_mips64_timeouts = {
   # expected release. BOOT_TIMEOUT_SECONDS in test_irix_installed_boot.py
   # keeps a 60s margin under this.
   'irix_installed_boot' : 960,
+  # Three IRIX boots of root-diags.qcow2 in sequence, one per Origin 2000
+  # topology: the four-node PCI shoehorn and PCI carrier modules (eight
+  # CPUs, 256 MiB) and the two-CPU, 256 MiB one-node module, each to a
+  # root shell and a few commands, plus a typed-keystroke read on the
+  # shoehorn.
+  # LOGIN_BUDGET_SECONDS in test_irix_origin2000_topologies.py records
+  # the measured boot times; each boot gets that 1500s to its shell and
+  # each shell step its own 180s, and 5400 covers all three boots
+  # running out their login budget in sequence.
+  'irix_origin2000_topologies' : 5400,
   # A full multiuser boot of the installed IRIX 6.5.30 disk on the real
   # PROM, then the eg (Alteon Tigon) adapter brought up and a
   # byte-checked 1 MiB TCP transfer, bulk TCP and UDP throughput runs
@@ -203,6 +213,7 @@ tests_mips64_system_thorough = [
   'irix_miniroot',
   'irix_diag',
   'irix_installed_boot',
+  'irix_origin2000_topologies',
   'irix_eg',
   'irix_tg',
   'irix_tg_perf',
