@@ -1268,7 +1268,8 @@ typedef struct CPUArchState {
  * The R10000 family's performance control register layout: an event
  * number, an interrupt enable, and one count enable per processor mode.
  */
-#define CP0PC_EVENT   5        /* 8..5 the event counted */
+#define CP0PC_EVENT   5        /* 8..5 the event counted, 9..5 on R12000 */
+#define CP0PC_EVENT_R12K (0x1f << CP0PC_EVENT)
 #define CP0PC_IE      (1 << 4) /* assert IP[7] while counter bit 31 is set */
 #define CP0PC_U       (1 << 3) /* count in user mode, EXL and ERL clear */
 #define CP0PC_S       (1 << 2) /* count in supervisor mode, EXL and ERL clear */
