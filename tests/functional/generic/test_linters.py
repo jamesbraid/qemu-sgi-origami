@@ -34,7 +34,11 @@ class LinterTest(QemuBaseTest):
                     self.log.warning(msg.format(fmt))
                 else:
                     self.log.info(msg.format(fmt))
-            self.fail("Pylint failed, see base.log for details.")
+            shown = [msg.format(fmt) for msg in reporter.messages[:20]]
+            omitted = len(reporter.messages) - len(shown)
+            if omitted:
+                shown.append(f"... {omitted} more messages in base.log")
+            self.fail("Pylint failed:\n" + "\n".join(shown))
 
 
 if __name__ == '__main__':
