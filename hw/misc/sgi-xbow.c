@@ -598,6 +598,38 @@ static void sgi_xbow_link_reset_expire(void *opaque)
 }
 
 /*
+ * End every link reset whose pulse is already over. The timer that ends a
+ * pulse runs from the main loop, and a processor polling link status
+ * straight after a reset can outpace it: the IP27 PROM gives a link 100
+ * polls ten microseconds apart to come back, and in stock-PROM boots of
+ * the Origin 200 GIGAchannel it ran out of them with the pulse's 20 ns
+ * long past and its timer still waiting, then faulted on the widget. Any
+ * access to this chip's own registers first ends the pulses the virtual
+ * clock says are over, so what the guest sees there follows that clock,
+ * not host scheduling.
+ *
+ * Only register accesses catch up. An access routed straight through the
+ * switch to a widget does not come here, so if nothing has read or written
+ * the registers since the pulse ended and the timer is still late, it
+ * still finds that widget's route disabled. The PROM polls link status
+ * before it touches the widget, which is what makes this enough for it.
+ */
+static void sgi_xbow_link_reset_catch_up(SGIXbowState *s)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    unsigned int link;
+
+    for (link = 0; link < SGI_XBOW_LINKS; link++) {
+        QEMUTimer *timer = s->link_reset_timer[link];
+
+        if (timer_pending(timer) && timer_expire_time_ns(timer) <= now) {
+            timer_del(timer);
+            sgi_xbow_link_reset_expire(&s->link_context[link]);
+        }
+    }
+}
+
+/*
  * The write is a one-shot: link reset is asserted locally and driven at the
  * remote end for two core cycles, and mode arbitration is forced. The
  * force-eight-bit control deliberately survives it. What ends initialization
@@ -662,6 +694,7 @@ static MemTxResult sgi_xbow_read(void *opaque, hwaddr addr, uint64_t *data,
     if (s->quiesced) {
         return MEMTX_ERROR;
     }
+    sgi_xbow_link_reset_catch_up(s);
     *data = 0;
     if (!sgi_xbow_decode(addr, size, &slot) ||
         !sgi_xbow_accessible(slot, false)) {
@@ -782,6 +815,7 @@ static MemTxResult sgi_xbow_write(void *opaque, hwaddr addr, uint64_t value,
     if (s->quiesced) {
         return MEMTX_ERROR;
     }
+    sgi_xbow_link_reset_catch_up(s);
     if (!sgi_xbow_decode(addr, size, &slot)) {
         return sgi_xbow_refuse(s, addr, size, true);
     }
