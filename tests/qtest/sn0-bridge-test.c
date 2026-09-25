@@ -2479,8 +2479,8 @@ static void test_the_unframed_read_matches_the_framed_one(const void *data)
     g_assert_cmphex(plain[0], ==, 0x01);
 
     /*
-     * The positional reader reproduced; never watched failing, kept because
-     * it survives a layout rearrangement the offset checks would not.
+     * Linux assembles the part number from bytes 11-29 and 32-37 with the
+     * spaces dropped; the record splits it around page 0's check.
      */
     partnum_from_page(plain, partnum);
     g_assert_cmpstr(partnum, ==, "030-1244-001");
