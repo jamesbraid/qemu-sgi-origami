@@ -428,11 +428,17 @@
 # @menet: the Origin 2000/Onyx2 MENET XIO card, four IOC3s giving four
 #     Fast Ethernet ports and six serial ports
 #
+# @kona: KONA, the Origin 2000/Onyx2 InfiniteReality graphics pipe,
+#     an XIO card carrying no PCI function or IOC3 of its own; unlike
+#     every other preset here its board record carries no live @part/
+#     @revision/@serial (the widget's own identity is fixed, not
+#     catalogue-driven), so no shipped topology names this preset yet
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelIoBoardPreset',
   'data': ['ip29-io', 'ip29-io-crosstown', 'io6', 'io6g', 'io8', 'io9',
-           'pci-shoehorn', 'pci-carrier', 'gigachannel', 'menet'] }
+           'pci-shoehorn', 'pci-carrier', 'gigachannel', 'menet', 'kona'] }
 
 ##
 # @SGIModelIoBoardCarrier:

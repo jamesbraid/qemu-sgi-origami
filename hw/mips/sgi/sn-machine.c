@@ -52,6 +52,7 @@
 #include "hw/mips/sgi/xtalk-link.h"
 #include "hw/misc/sgi-elsc.h"
 #include "hw/misc/sgi-hub.h"
+#include "hw/misc/sgi-kona.h"
 #include "hw/misc/sgi-mgras.h"
 #include "hw/misc/sgi-router.h"
 #include "hw/misc/sgi-sn0-module-management.h"
@@ -1373,6 +1374,53 @@ static bool sgi_machine_instantiate_menet(
 }
 
 /*
+ * The Origin 2000/Onyx2 InfiniteReality graphics pipe's KONA widget:
+ * Crossbow-attached like the BaseIO card above, but an sgi-kona instance
+ * carries no PCI function, IOC3 or onewire-serial property of its own --
+ * increment 1 is identity only, so this function sets only what
+ * sgi-xio-board's base class and sgi-kona's own "fabric" property
+ * require. No sn-catalogue.json record selects this preset yet
+ * (qapi/sgi-sn.json's own @kona doc comment says so), so this path is
+ * reachable only through a manual topology or a `-device sgi-kona`.
+ */
+static bool sgi_machine_instantiate_kona(
+    SGIMachineState *s, const SGIModelTopology *t,
+    const SGIModelIoBoard *record, unsigned int board_index,
+    const SGIModelXtalkAttachment *attachment, Error **errp)
+{
+    DeviceState *dev = qdev_new(TYPE_SGI_KONA);
+    g_autofree char *name = g_strdup_printf("io-board%u", board_index);
+    g_autofree char *proxy_name =
+        g_strdup_printf("io-board%u-packet-proxy", board_index);
+    SGIXtalkCrossbowLink *crossbow_link =
+        &s->crossbow_links[s->num_nodes + board_index];
+    SGIXioBoardState *board;
+
+    object_property_add_child(OBJECT(s), name, OBJECT(dev));
+    object_unref(OBJECT(dev));
+
+    qdev_prop_set_uint32(dev, "module", record->module_index);
+    qdev_prop_set_uint32(dev, "slot", attachment->widget);
+    object_property_set_link(
+        OBJECT(dev), "fabric",
+        OBJECT(sgi_xtalk_crossbow_link_prepare(crossbow_link, OBJECT(s),
+                                               proxy_name)),
+        &error_fatal);
+
+    sysbus_realize(SYS_BUS_DEVICE(dev), &error_fatal);
+    board = SGI_XIO_BOARD(dev);
+    s->io_boards[board_index] = board;
+
+    if (!sgi_xtalk_crossbow_link_attach_widget(
+            crossbow_link, OBJECT(board), s->crossbars[attachment->crossbar_index],
+            attachment->widget, errp)) {
+        return false;
+    }
+    board->attached = true;
+    return true;
+}
+
+/*
  * The IO-8's fixed devices: an sgi-baseio (the "io8" preset) on the
  * Bedrock node's own XBridge head F, reached through
  * sn1_node_xbridge_pci_bus() (sn1-node.c) with this attachment's own
@@ -1549,6 +1597,9 @@ static bool sgi_machine_instantiate_io_board(
     case SGI_MODEL_IO_BOARD_PRESET_MENET:
         return sgi_machine_instantiate_menet(s, record, board_index,
                                              attachment, errp);
+    case SGI_MODEL_IO_BOARD_PRESET_KONA:
+        return sgi_machine_instantiate_kona(s, t, record, board_index,
+                                            attachment, errp);
     default:
         error_setg(errp, "topology '%s' io board %u names an unsupported "
                   "preset for this family", t->name, board_index);
@@ -3118,6 +3169,7 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_PCI_EXPANSION);
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_PCI_SHOEHORN);
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_XIO_BASEIO);
+    machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_KONA);
 
     object_class_property_add_str(oc, "topology", sgi_machine_get_topology,
                                   sgi_machine_set_topology);
