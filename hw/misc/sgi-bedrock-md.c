@@ -78,6 +78,7 @@ enum {
 
 static void md_selftest_command(SGIBedrockMDState *s, uint64_t value);
 static void md_selftest_complete(void *opaque);
+static void md_selftest_sync(SGIBedrockMDState *s);
 static void md_update_memory_aliases(SGIBedrockMDState *s);
 static void md_ecc_injections_place(SGIBedrockMDState *s);
 static void md_directory_injections_place(SGIBedrockMDState *s);
@@ -178,8 +179,12 @@ static uint64_t md_read(void *opaque, hwaddr offset, unsigned size)
     case 0x8: return s->memory_config;
     case 0x60: return MD_REPLY_QUEUE;
     case 0x20000: return s->refresh;
-    case 0x20040: return s->selftest_error_address;
-    case 0x20048: return s->selftest_status;
+    case 0x20040:
+        md_selftest_sync(s);
+        return s->selftest_error_address;
+    case 0x20048:
+        md_selftest_sync(s);
+        return s->selftest_status;
     case 0x40000: return s->directory_config;
     case 0x40050: return MD_REQUEST_QUEUE;
     case 0x60010: return s->memory_error;
@@ -1749,6 +1754,7 @@ static void md_selftest_command(SGIBedrockMDState *s, uint64_t value)
 {
     uint64_t base = 0;
     uint64_t size = 0;
+    int64_t start_ns;
 
     if (value == 0x4 || value == 0x2) {
         md_selftest_cancel(s);
@@ -1762,6 +1768,12 @@ static void md_selftest_command(SGIBedrockMDState *s, uint64_t value)
         return;
     }
 
+    /*
+     * The interval runs from the start command, not from the end of the
+     * fill below: the fill is part of the test, and its host cost must not
+     * push the completion past a deadline firmware sampled before the start.
+     */
+    start_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     s->selftest_running = true;
     s->selftest_selector = extract64(value, 4, 3);
     s->selftest_phase = s->storage[MD_SELFTEST_DATA] & 0x80;
@@ -1777,9 +1789,7 @@ static void md_selftest_command(SGIBedrockMDState *s, uint64_t value)
     }
     s->selftest_error_address = 0;
     s->selftest_status = 0;
-    timer_mod_ns(s->selftest_timer,
-                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                 MD_SELFTEST_INTERVAL_NS);
+    timer_mod_ns(s->selftest_timer, start_ns + MD_SELFTEST_INTERVAL_NS);
 }
 
 static void md_selftest_complete(void *opaque)
@@ -1793,6 +1803,22 @@ static void md_selftest_complete(void *opaque)
     s->selftest_error_address = s->selftest_result ? 0 : UINT64_C(1) << 48;
     s->selftest_status = MD_SELFTEST_DONE |
                          (s->selftest_result ? MD_SELFTEST_PASSED : 0);
+}
+
+/*
+ * A read at or after the completion time sees the result even if the main
+ * loop has not yet run the timer. Otherwise a processor polling status
+ * could find the test still running after its own clock had passed the
+ * completion, for as long as the host kept the main loop from running.
+ */
+static void md_selftest_sync(SGIBedrockMDState *s)
+{
+    if (s->selftest_running &&
+        timer_expired(s->selftest_timer,
+                      qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL))) {
+        timer_del(s->selftest_timer);
+        md_selftest_complete(s);
+    }
 }
 
 static MemTxResult md_memory_translate(SGIBedrockMDState *s, hwaddr offset,
