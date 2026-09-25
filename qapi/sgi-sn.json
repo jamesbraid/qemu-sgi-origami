@@ -400,6 +400,10 @@
 #
 # @ip29-io: Origin 200's integrated IP29 System Board I/O
 #
+# @ip29-io-crosstown: the same IP29 I/O with the GIGAchannel's
+#     Crosstown extension board fitted in place of the XTalk jumper,
+#     which adds its own board record beside the IP29's
+#
 # @io6: the Origin 2000/Onyx2 plain BaseIO XIO card
 #
 # @io6g: the Origin 2000/Onyx2 BaseIO-G XIO card, whose MediaIO
@@ -421,8 +425,8 @@
 # Since: 11.2
 ##
 { 'enum': 'SGIModelIoBoardPreset',
-  'data': ['ip29-io', 'io6', 'io6g', 'io8', 'io9', 'pci-shoehorn',
-           'pci-carrier'] }
+  'data': ['ip29-io', 'ip29-io-crosstown', 'io6', 'io6g', 'io8', 'io9',
+           'pci-shoehorn', 'pci-carrier'] }
 
 ##
 # @SGIModelIoBoardCarrier:

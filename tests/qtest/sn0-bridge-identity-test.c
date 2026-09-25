@@ -5,6 +5,8 @@
  * compared byte for byte with the page images docs/datasheets/baseio.md
  * gives in "Board-identity records on the Bridge one-wire bus" and
  * docs/datasheets/bridge.md gives in "The Origin 200's IP29 record".
+ * An Origin 200 converted for a GIGAchannel cabinet and run in loopback
+ * adds the Crosstown board's record beside the IP29's at widget 8.
  *
  * The PCI shoehorn's and PCI carrier's Bridges carry records too,
  * compared with the page images docs/datasheets/sgi-pci-shoehorn.md and
@@ -123,6 +125,24 @@ static const uint8_t ip29_record[RECORD_SIZE] = {
 };
 
 /*
+ * The GIGAchannel Crosstown board's record (docs/datasheets/
+ * sgi-gigachannel.md, "Product identity"), laid out by
+ * docs/datasheets/bridge.md's record rules: XBOX_EXT, part 030-1264-001
+ * rev C. The barcode is a placeholder.
+ */
+static const uint8_t crosstown_record[RECORD_SIZE] = {
+    0x01, 0x4f, 0x58, 0x42, 0x4f, 0x58, 0x45, 0x58,
+    0x54, 0x30, 0x31, 0x20, 0x20, 0x20, 0x20, 0x20,
+    0x20, 0x20, 0x20, 0x20, 0x20, 0x30, 0x33, 0x30,
+    0x2d, 0x31, 0x32, 0x36, 0x34, 0x2d, 0x8e, 0x8b,
+    0x20, 0x20, 0x20, 0x30, 0x30, 0x31, 0x43, 0x20,
+    0x20, 0x20, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0x58, 0x42, 0x4f, 0x58, 0x5f, 0x45, 0x58, 0x54,
+    0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x09, 0x6f,
+};
+
+
+/*
  * One machine's Bridge line and the records on it. An Origin 2000's
  * crosstalk space has an address only once its node is numbered, and
  * is reached through a processor; an Origin 200's Bridge answers at
@@ -134,6 +154,7 @@ typedef struct IdentityCase {
     bool numbered;
     unsigned int parts;
     const uint8_t *records[2];
+    unsigned int widget;    /* 0: the base I/O's own widget 8 */
 } IdentityCase;
 
 static const IdentityCase identity_cases[] = {
@@ -148,6 +169,11 @@ static const IdentityCase identity_cases[] = {
     {
         "ip29", "-M origin200",
         false, 1, { ip29_record },
+    },
+    {
+        "gigachannel-loopback",
+        "-M origin200,topology=origin200-gigachannel-loopback",
+        false, 2, { ip29_record, crosstown_record },
     },
 };
 
@@ -476,7 +502,8 @@ static void check_record_pages_leave_the_residue(const uint8_t *memory)
 static void test_records_match_the_datasheet(const void *data)
 {
     const IdentityCase *c = data;
-    QTestState *qts = start_machine(c->machine, c->numbered, BASEIO_WIDGET);
+    QTestState *qts = start_machine(c->machine, c->numbered,
+                                    c->widget ? c->widget : BASEIO_WIDGET);
     uint8_t memory[RECORD_SIZE + RECORD_PAGE];
     bool seen[2] = { false, false };
     uint64_t rom[4];
