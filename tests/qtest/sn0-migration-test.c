@@ -189,6 +189,9 @@
 #define TIMEKEEPER_DAY           (IOC3_TIMEKEEPER + 0x7ffd)
 #define TIMEKEEPER_MONTH         (IOC3_TIMEKEEPER + 0x7ffe)
 #define TIMEKEEPER_YEAR          (IOC3_TIMEKEEPER + 0x7fff)
+#define TIMEKEEPER_SECONDS       (IOC3_TIMEKEEPER + 0x7ff9)
+#define TIMEKEEPER_MINUTES       (IOC3_TIMEKEEPER + 0x7ffa)
+#define TIMEKEEPER_HOURS         (IOC3_TIMEKEEPER + 0x7ffb)
 #define TIMEKEEPER_CSR_READ      0x40
 #define TIMEKEEPER_CSR_WRITE     0x80
 
@@ -1468,6 +1471,90 @@ static void test_timekeeper_images_survive_migration(const void *data)
 }
 
 /*
+ * Restored state wins over a realize-time clock restore. Both ends back
+ * their Timekeeper with an image and a clock reference. The destination's
+ * image holds a different saved time, which its realize restores, and the
+ * migration stream must replace it: after the transfer the destination
+ * reads the source's clock and storage, not its own image's.
+ */
+static char *timekeeper_backing_file(const char *dir, const char *name,
+                                     size_t size, const uint8_t *cells)
+{
+    g_autofree uint8_t *bytes = g_malloc0(size);
+    char *path = g_strdup_printf("%s/%s", dir, name);
+
+    if (cells) {
+        memcpy(bytes + 0x7ff9, cells, 7);
+    }
+    g_assert_true(g_file_set_contents(path, (gchar *)bytes, size, NULL));
+    return path;
+}
+
+static void test_timekeeper_backed_clock_survives_migration(const void *data)
+{
+    /* 7FF9..7FFF: seconds, minutes, hours, weekday, day, month, year. */
+    static const uint8_t dest_saved[7] = {
+        0x45, 0x21, 0x09, 0x00, 0x07, 0x03, 0x40,
+    };
+    const char *rtc = "-rtc base=2026-08-11T12:30:05,clock=vm";
+    g_autofree gchar *tmpfs = NULL;
+    g_autofree gchar *uri = NULL;
+    g_autofree char *src_image = NULL, *src_ref = NULL;
+    g_autofree char *dst_image = NULL, *dst_ref = NULL;
+    GError *err = NULL;
+    QTestState *from, *to;
+    int64_t source_time;
+
+    tmpfs = g_dir_make_tmp("sn0-timekeeper-clock-migration-XXXXXX", &err);
+    g_assert_nonnull(tmpfs);
+    uri = g_strdup_printf("unix:%s/migrate.sock", tmpfs);
+    src_image = timekeeper_backing_file(tmpfs, "src.raw", 0x8000, NULL);
+    src_ref = timekeeper_backing_file(tmpfs, "src.clock", 16, NULL);
+    dst_image = timekeeper_backing_file(tmpfs, "dst.raw", 0x8000, dest_saved);
+    dst_ref = timekeeper_backing_file(tmpfs, "dst.clock", 16, NULL);
+
+    from = qtest_initf(MACHINE " %s -drive if=none,id=sgi-nvram0,file=%s,"
+                       "format=raw -drive if=none,id=sgi-nvram0-clock,"
+                       "file=%s,format=raw", rtc, src_image, src_ref);
+    attach_node_ioc3(from, 0);
+    qtest_writeb(from, IOC3_TIMEKEEPER + 0x0100, 0xc3);
+    qtest_writeb(from, TIMEKEEPER_CONTROL, TIMEKEEPER_CSR_WRITE);
+    qtest_writeb(from, TIMEKEEPER_SECONDS, 0x30);
+    qtest_writeb(from, TIMEKEEPER_MINUTES, 0x00);
+    qtest_writeb(from, TIMEKEEPER_HOURS, 0x12);
+    qtest_writeb(from, TIMEKEEPER_DAY, 0x01);
+    qtest_writeb(from, TIMEKEEPER_MONTH, 0x01);
+    qtest_writeb(from, TIMEKEEPER_YEAR, 0x60);
+    qtest_writeb(from, TIMEKEEPER_CONTROL, 0);
+    source_time = qtest_clock_step(from, 2 * 1000000000LL);
+
+    to = qtest_initf(MACHINE " %s -drive if=none,id=sgi-nvram0,file=%s,"
+                     "format=raw -drive if=none,id=sgi-nvram0-clock,"
+                     "file=%s,format=raw -incoming %s",
+                     rtc, dst_image, dst_ref, uri);
+    sgi_migrate_stopped(from, uri);
+    qtest_clock_set(to, source_time);
+
+    g_assert_cmphex(qtest_readb(to, IOC3_TIMEKEEPER + 0x0100), ==, 0xc3);
+    qtest_writeb(to, TIMEKEEPER_CONTROL, TIMEKEEPER_CSR_READ);
+    g_assert_cmphex(qtest_readb(to, TIMEKEEPER_YEAR), ==, 0x60);
+    g_assert_cmphex(qtest_readb(to, TIMEKEEPER_MONTH), ==, 0x01);
+    g_assert_cmphex(qtest_readb(to, TIMEKEEPER_DAY), ==, 0x01);
+    g_assert_cmphex(qtest_readb(to, TIMEKEEPER_HOURS), ==, 0x12);
+    g_assert_cmphex(qtest_readb(to, TIMEKEEPER_MINUTES), ==, 0x00);
+    g_assert_cmphex(qtest_readb(to, TIMEKEEPER_SECONDS), ==, 0x32);
+    qtest_writeb(to, TIMEKEEPER_CONTROL, 0);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    unlink(src_image);
+    unlink(src_ref);
+    unlink(dst_image);
+    unlink(dst_ref);
+    g_assert_cmpint(g_rmdir(tmpfs), ==, 0);
+}
+
+/*
  * The per-CPU cache-as-RAM private window (sn-promdata.c, shared with the
  * Origin 300 node since this filter moved out of sn0.c) forwards instead
  * of serving from its own buffer whenever no processor is in the PROM's
@@ -1585,6 +1672,8 @@ int main(int argc, char **argv)
                         test_ethernet_interrupt_reasserts_after_migration);
     qtest_add_data_func("sn0/migration/timekeeper-images-survive", NULL,
                         test_timekeeper_images_survive_migration);
+    qtest_add_data_func("sn0/migration/timekeeper-backed-clock-survives", NULL,
+                        test_timekeeper_backed_clock_survives_migration);
     qtest_add_data_func("sn0/migration/module-identity-page-progress",
                         NULL,
                         test_module_identity_page_progress_survives_migration);

@@ -4255,6 +4255,47 @@ static void test_the_clock_february_follows_the_part(const void *data)
 }
 
 /*
+ * The year cell wraps at the century: one second after 31 December 23:59:59
+ * in cell year 0x99 is 1 January of 0x00. On this machine that is the start
+ * of 2070 ("The part's calendar and leap-year rule").
+ */
+static void test_the_clock_century_rolls_over(const void *data)
+{
+    static const RtcTime set = { 0x99, 0x12, 0x31, 0x23, 0x59, 0x59 };
+    static const RtcTime next = { 0x00, 0x01, 0x01, 0x00, 0x00, 0x00 };
+    QTestState *qts = qtest_init(RTC_ARGS);
+
+    sn0_ioc3_attach(qts);
+    rtc_set(qts, &set);
+    qtest_clock_step(qts, 1000000000LL);
+    rtc_assert(qts, &next);
+    qtest_quit(qts);
+}
+
+/*
+ * A month cell outside 1-12 is a guest error the part's documentation does
+ * not cover. The model carries it into the year, as mktime() would, and
+ * keeps the clock in range: month 13 of cell year 0x56 is January of 0x57,
+ * and month 0 is December of 0x55. That is the model's policy, not a fact
+ * about the part.
+ */
+static void test_the_clock_month_carries_into_the_year(const void *data)
+{
+    static const RtcTime over = { 0x56, 0x13, 0x01, 0x12, 0x00, 0x00 };
+    static const RtcTime over_read = { 0x57, 0x01, 0x01, 0x12, 0x00, 0x00 };
+    static const RtcTime under = { 0x56, 0x00, 0x01, 0x12, 0x00, 0x00 };
+    static const RtcTime under_read = { 0x55, 0x12, 0x01, 0x12, 0x00, 0x00 };
+    QTestState *qts = qtest_init(RTC_ARGS);
+
+    sn0_ioc3_attach(qts);
+    rtc_set(qts, &over);
+    rtc_assert(qts, &over_read);
+    rtc_set(qts, &under);
+    rtc_assert(qts, &under_read);
+    qtest_quit(qts);
+}
+
+/*
  * The clock across a stopped emulator ("The clock across power loss and
  * host restarts"). The storage image is 32 KB; beside it, the reference
  * drive the model finds by the name "<storage drive>-clock" holds the time
@@ -4408,11 +4449,15 @@ static void test_the_clock_persists_across_a_process(const void *data)
     qtest_writeb(qts, RTC_LEAP_CYCLE, 2);
     qtest_writeb(qts, RTC_CHECKSUM, 0xad);
     qtest_writeb(qts, BYTEBUS_DEV0 + RTC_SENTINEL, 0xc3);
+    /* The weekday is storage the save writes back; it must keep its value. */
+    qtest_writeb(qts, RTC_CONTROL, RTC_CSR_WRITE);
+    qtest_writeb(qts, RTC_WEEKDAY, 0x05);
     rtc_set(qts, &set);
 
     /* The completed write is saved at once, before anything stops. */
     g_assert_true(g_file_get_contents(f.image, &image, &len, NULL));
     g_assert_cmphex((uint8_t)image[0x7ff9], ==, set.sec);
+    g_assert_cmphex((uint8_t)image[0x7ffc], ==, 0x05);
     g_assert_cmphex((uint8_t)image[0x7fff], ==, set.year);
     g_clear_pointer(&image, g_free);
 
@@ -4424,6 +4469,7 @@ static void test_the_clock_persists_across_a_process(const void *data)
     g_assert_cmphex((uint8_t)image[0x7ff9], ==, saved.sec);
     g_assert_cmphex((uint8_t)image[0x7ffa], ==, saved.min);
     g_assert_cmphex((uint8_t)image[0x7ffb], ==, saved.hour);
+    g_assert_cmphex((uint8_t)image[0x7ffc], ==, 0x05);
     g_assert_cmphex((uint8_t)image[0x7ffd], ==, saved.day);
     g_assert_cmphex((uint8_t)image[0x7ffe], ==, saved.month);
     g_assert_cmphex((uint8_t)image[0x7fff], ==, saved.year);
@@ -4437,6 +4483,7 @@ static void test_the_clock_persists_across_a_process(const void *data)
     /* Saved at 12:30:08 by the first process's clock; restarted at :18. */
     qts = rtc_start(&f, "2026-08-11T12:30:18");
     rtc_assert(qts, &later);
+    g_assert_cmphex(qtest_readb(qts, RTC_WEEKDAY), ==, 0x05);
     g_assert_cmphex(qtest_readb(qts, RTC_LEAP_CYCLE), ==, 2);
     g_assert_cmphex(qtest_readb(qts, RTC_CHECKSUM), ==, 0xad);
     qtest_quit(qts);
@@ -5461,6 +5508,10 @@ int main(int argc, char **argv)
                         test_the_storage_persists_across_a_process_with_a_drive);
     qtest_add_data_func("sn0/ioc3/clock-february-follows-the-part", NULL,
                         test_the_clock_february_follows_the_part);
+    qtest_add_data_func("sn0/ioc3/clock-century-rolls-over", NULL,
+                        test_the_clock_century_rolls_over);
+    qtest_add_data_func("sn0/ioc3/clock-month-carries-into-the-year", NULL,
+                        test_the_clock_month_carries_into_the_year);
     qtest_add_data_func("sn0/ioc3/clock-refuses-a-short-reference", NULL,
                         test_the_clock_refuses_a_short_reference);
     qtest_add_data_func("sn0/ioc3/clock-persists-across-a-process", NULL,
