@@ -630,6 +630,31 @@ static void test_256m_memory(const void *data)
 }
 
 /*
+ * An IP27 node board has no 256 MB bank: its DIMMs give 64 or 128 MB
+ * banks, or 512 MB ones, and the stock PROM disables a 256 MB bank on
+ * this board. So 256 MiB on the one-node Origin 2000 is two 128 MiB
+ * banks, each wholly in its bank's first slot, where the Origin 200 rule
+ * above would build one bank split over four 64 MiB runs.
+ */
+static void test_origin2000_256m_memory(const void *data)
+{
+    QTestState *qts = qtest_init(
+        "-M origin2000,topology=origin2000-one-node -smp 2 -m 256M");
+    unsigned int bank;
+
+    for (bank = 0; bank < 2; bank++) {
+        uint64_t base = NODE0 + bank * MEM_BANK_SIZE;
+
+        check_ram(qts, base, 0x1280000000000000ULL + bank);
+        check_ram(qts, base + 128 * MiB - 8, 0x128fffffffffff00ULL + bank);
+        check_not_ram(qts, base + 128 * MiB);
+    }
+    check_not_ram(qts, NODE0 + 2 * MEM_BANK_SIZE);
+
+    qtest_quit(qts);
+}
+
+/*
  * The explicit 512 MiB configuration is two 256 MiB banks, with the boot
  * flash's own addresses left out of the RAM map.
  */
@@ -1594,6 +1619,8 @@ int main(int argc, char **argv)
                         test_256m_memory);
     qtest_add_data_func("sn0/address-map/memory-512m", NULL,
                         test_512m_memory);
+    qtest_add_data_func("sn0/address-map/origin2000-memory-256m", NULL,
+                        test_origin2000_256m_memory);
     qtest_add_data_func("sn0/address-map/hub-local-memory-alias", NULL,
                         test_hub_local_memory_alias);
     qtest_add_data_func("sn0/address-map/invalid-memory-size", NULL,

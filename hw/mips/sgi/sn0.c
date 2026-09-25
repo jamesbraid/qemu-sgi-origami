@@ -114,16 +114,45 @@ const SN0ModelAddressMap sn0_hub_address_map = {
     .bridge_registers = { .offset = 0x8000000ULL, .size = 0x1000000ULL },
 };
 
-/* The Hub's memory-bank geometry: also identical across every SN0 node. */
+/*
+ * The Hub's bank decode is the same on every SN0 node; which banks a
+ * board wires and which sizes its DIMMs make is the board's. This is
+ * the Origin 200 (IP29) board: four banks.
+ */
 static const uint64_t sn0_hub_memory_sizes_mib[] = {
     0x200ULL, 0x100ULL, 0x80ULL, 0x40ULL,
 };
 
 const SN0ModelMemory sn0_hub_memory = {
+    .board = "IP29",
     .physical_banks = 4,
     .architectural_banks = 8,
     .supported_mib = sn0_hub_memory_sizes_mib,
     .supported_size_count = ARRAY_SIZE(sn0_hub_memory_sizes_mib),
+    .first_bank_max_mib = 0x100ULL,
+    .bank_stride_mib = 0x200ULL,
+    .interleave_slot_stride_mib = 0x80ULL,
+    .interleave_slots_per_bank = 4,
+};
+
+/*
+ * The Origin 2000 node board (IP27) wires eight banks, each a DIMM pair.
+ * 16-Mb parts make 64 or 128 MB banks and 64-Mb parts 512 MB ones (SGI
+ * 007-3439-002, page 35); no part makes a 256 MB bank, and the stock
+ * IP27 PROM disables one ("256 MB dimm banks not allowed on IP27 node
+ * boards"). The bank-zero limit is the Origin 200's, carried over
+ * unestablished for this board; no accepted Origin 2000 total reaches it.
+ */
+static const uint64_t sn0_ip27_memory_sizes_mib[] = {
+    0x200ULL, 0x80ULL, 0x40ULL,
+};
+
+const SN0ModelMemory sn0_ip27_memory = {
+    .board = "IP27",
+    .physical_banks = 8,
+    .architectural_banks = 8,
+    .supported_mib = sn0_ip27_memory_sizes_mib,
+    .supported_size_count = ARRAY_SIZE(sn0_ip27_memory_sizes_mib),
     .first_bank_max_mib = 0x100ULL,
     .bank_stride_mib = 0x200ULL,
     .interleave_slot_stride_mib = 0x80ULL,
@@ -570,9 +599,9 @@ static const SN0ModelAddressMap *sn0_node_address_map(void)
     return &sn0_hub_address_map;
 }
 
-static const SN0ModelMemory *sn0_node_memory_geometry(void)
+static const SN0ModelMemory *sn0_node_memory_geometry(SN0NodeState *node)
 {
-    return &sn0_hub_memory;
+    return node->memory ? node->memory : &sn0_hub_memory;
 }
 
 static unsigned int sn0_node_cpu_slots(void)
@@ -738,7 +767,7 @@ static void sn0_node_map_memory(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
     const SN0ModelAddressMap *map = sn0_node_address_map();
-    const SN0ModelMemory *geometry = sn0_node_memory_geometry();
+    const SN0ModelMemory *geometry = sn0_node_memory_geometry(node);
     const SN0ModelRegion *local_memory = &map->hub_local_memory;
     const SN0ModelRegion *remote_memory = &map->hub_remote_memory;
     hwaddr node_base = sn0_model_node_address(
@@ -832,7 +861,7 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
     const SN0ModelRegion *flash_rboot = &map->rboot;
     const SN0ModelRegion *ecc = &map->backdoor_ecc;
     const SN0ModelRegion *directory = &map->backdoor_directory;
-    const SN0ModelMemory *geometry = sn0_node_memory_geometry();
+    const SN0ModelMemory *geometry = sn0_node_memory_geometry(node);
     hwaddr node_base = sn0_model_node_address(
         map, &map->memory, node->nasid, 0);
     hwaddr hub_base = sn0_model_node_address(
@@ -1322,9 +1351,9 @@ static void sn0_node_realize(DeviceState *dev, Error **errp)
         return;
     }
     if (node->nr_banks_mb < 1 ||
-        node->nr_banks_mb > sn0_node_memory_geometry()->physical_banks) {
+        node->nr_banks_mb > sn0_node_memory_geometry(node)->physical_banks) {
         error_setg(errp, "a node fills one to %u memory banks, not %u",
-                   sn0_node_memory_geometry()->physical_banks,
+                   sn0_node_memory_geometry(node)->physical_banks,
                    node->nr_banks_mb);
         return;
     }

@@ -1886,6 +1886,8 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     SGIMachineClass *smc = SGI_MACHINE_GET_CLASS(machine);
     MachineClass *mc = MACHINE_GET_CLASS(machine);
     const SGIModelTopology *t = sgi_machine_topology(machine);
+    const SN0ModelMemory *node_memory =
+        smc->node_memory ? smc->node_memory : &sn0_hub_memory;
     g_autofree unsigned int *requested = NULL;
     g_autofree unsigned int *node_attachment = NULL;
     g_autofree unsigned int *board_attachment = NULL;
@@ -2261,11 +2263,11 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         unsigned int bank;
         Chardev *aux_chr;
 
-        if (!sn0_model_memory_layout(&sn0_hub_memory, ram_size,
+        if (!sn0_model_memory_layout(node_memory, ram_size,
                                      bank_mb, &populated_banks)) {
             error_setg(errp, "%s: node %u's %" PRIu64 " MiB cannot be "
-                      "populated from IP29 memory banks", mc->name,
-                      node_index, ram_size / MiB);
+                      "populated from %s memory banks", mc->name,
+                      node_index, ram_size / MiB, node_memory->board);
             return false;
         }
         banks_mb = qlist_new();
@@ -2278,6 +2280,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                              sgi_machine_topology_nasid(t, node_index));
         node->flash_drive = flash_drives[node_index];
         node->model_node = model_node;
+        node->memory = node_memory;
         node->slave_role = model_node->slave_role;
         qdev_prop_set_uint32(DEVICE(node), "cpu-base", cpu_base);
         qdev_prop_set_uint32(DEVICE(node), "nr-cpus", requested[node_index]);
@@ -2857,6 +2860,7 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
     g_assert(t);
     smc->product = "origin200";
     smc->default_topology = "origin200";
+    smc->node_memory = &sn0_hub_memory;
     /* sn0-origin200-model.c's own values, real IP27 PROM fields. */
     smc->firmware_machine_type = 1;
     smc->flash_read_cycles = 15;
@@ -2878,6 +2882,7 @@ static void origin2000_class_init(ObjectClass *oc, const void *data)
     g_assert(t);
     smc->product = "origin2000";
     smc->default_topology = "origin2000-module";
+    smc->node_memory = &sn0_ip27_memory;
     mc->desc = t->description;
     mc->valid_cpu_types = sgi_sn0_r10000_cpu_types;
     mc->default_cpus = sgi_machine_topology_default_cpus(t);

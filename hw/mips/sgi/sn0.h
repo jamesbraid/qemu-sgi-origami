@@ -62,6 +62,7 @@ typedef struct SN0ModelAddressMap {
 } SN0ModelAddressMap;
 
 typedef struct SN0ModelMemory {
+    const char *board;
     unsigned int physical_banks;
     unsigned int architectural_banks;
     const uint64_t *supported_mib;
@@ -157,6 +158,12 @@ typedef struct SN0NodeState {
      * (qapi/sgi-sn.json).
      */
     const SGIModelNode *model_node;
+
+    /*
+     * The node board's bank wiring and sizes, set by the machine before
+     * realize; NULL keeps the Origin 200 board's.
+     */
+    const SN0ModelMemory *memory;
 
     /*
      * Properties. promdata-filter installs the PROM's cache-as-RAM
@@ -282,6 +289,7 @@ extern const SN0FlashImplementation sn0_flash;
 /* The Hub's physical address map and memory-bank geometry, defined once. */
 extern const SN0ModelAddressMap sn0_hub_address_map;
 extern const SN0ModelMemory sn0_hub_memory;
+extern const SN0ModelMemory sn0_ip27_memory;
 
 /* The Hub's two fixed clock rates: hardwired, not configuration. */
 #define SN0_HUB_CLOCK_HZ     0x55d4a80ULL
