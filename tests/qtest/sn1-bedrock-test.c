@@ -574,6 +574,34 @@ static void test_parent_widget_interrupt_write(void)
 }
 
 /*
+ * The I/O interface decodes crosstalk register packets against the node
+ * number the local block's revision word carries, the one the firmware
+ * writes when it assigns the node (the local-block datasheet, "Node number
+ * assignment"; one number per chip is the model's choice). Before the write
+ * a packet for node 3 arrives nowhere; after it, that packet reaches the
+ * interrupt-pending register and one for node 0 no longer does.
+ */
+static void test_parent_node_number_follows_revision(void)
+{
+    QTestState *s = bedrock_start("");
+    const uint64_t identity = (0x36ULL << 1) | (0x3012ULL << 12) |
+                              (2ULL << 28);
+
+    qtest_writeq(s, IO_BASE + 0x118, UINT64_MAX);
+    qtest_writeq(s, BASE + 0xa8, 1ULL << 7);
+    qtest_writeq(s, HUB_INTERRUPT_SEND(3, 0), 0x107);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x98), ==, 0);
+
+    qtest_writeq(s, LB_BASE, identity | (3ULL << 32));
+    g_assert_cmphex(qtest_readq(s, LB_BASE), ==, identity | (3ULL << 32));
+    qtest_writeq(s, HUB_INTERRUPT_SEND(0, 0), 0x107);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x98), ==, 0);
+    qtest_writeq(s, HUB_INTERRUPT_SEND(3, 0), 0x107);
+    g_assert_cmphex(qtest_readq(s, BASE + 0x98), ==, 1ULL << 7);
+    qtest_quit(s);
+}
+
+/*
  * The parent's cpu-enable group has four lines, interface times two plus
  * processor, fanned out from the two interfaces' own groups.
  */
@@ -621,6 +649,8 @@ int main(int argc, char **argv)
                    test_parent_l1_protection);
     qtest_add_func("sn1/bedrock/composition/md-decode-reset",
                    test_parent_md_decode_and_reset);
+    qtest_add_func("sn1/bedrock/composition/node-number-follows-revision",
+                   test_parent_node_number_follows_revision);
     qtest_add_func("sn1/bedrock/composition/cpu-enable-lines",
                    test_parent_cpu_enable_lines);
     return g_test_run();

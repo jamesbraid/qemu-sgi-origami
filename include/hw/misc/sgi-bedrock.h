@@ -157,6 +157,9 @@ struct SGIBedrockState {
 
 bool sgi_bedrock_hub_registers_permitted(SGIBedrockState *s);
 
+/* The node number this Bedrock decodes by: the local block's latched one. */
+uint8_t sgi_bedrock_node_number(SGIBedrockState *s);
+
 /*
  * The rendezvous hold's entry point, called from lb_write() for LB scratch 1
  * (docs/known-issues.md and docs/datasheets/bedrock-local-block.md). It

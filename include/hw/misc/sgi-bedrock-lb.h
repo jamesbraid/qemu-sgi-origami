@@ -52,9 +52,13 @@ struct SGIBedrockLBState {
     uint32_t manufacturer;
     uint32_t part_number;
     uint32_t revision;
+    /* The realized node number and region size, restored by every reset. */
     uint32_t node_number;
     uint32_t region_size;
     uint32_t request_region;
+    /* The revision word's two fields as the firmware last wrote them. */
+    uint8_t programmed_node;
+    uint8_t programmed_region;
 
     uint64_t cpu_permission;
     uint64_t io_permission;
@@ -75,5 +79,8 @@ struct SGIBedrockLBState {
     uint64_t vector_return;
     uint64_t vector_read;
 };
+
+/* The node number the revision word currently carries. */
+uint8_t sgi_bedrock_lb_node_number(SGIBedrockLBState *s);
 
 #endif

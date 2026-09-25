@@ -61,6 +61,12 @@
 #define LB_VECTOR_OVERRUN      (1ULL << 62)
 #define LB_VECTOR_VALID        (1ULL << 63)
 #define LB_ERROR_MASK 0x7ffULL
+/* The revision word's two writable fields; 3 is an invalid region size. */
+#define LB_REVISION_NODE_SHIFT   32
+#define LB_REVISION_NODE_WIDTH   8
+#define LB_REVISION_REGION_SHIFT 46
+#define LB_REVISION_REGION_WIDTH 2
+#define LB_REGION_SIZE_INVALID   3
 #define LB_NODES_ABSENT_MASK 0x80ff80ff80ff80ffULL
 #define LB_RTC_LOCAL_MASK (1ULL | (0x3ffULL << 4) | (0x3ffULL << 16) | \
                            (1ULL << 28) | (1ULL << 32))
@@ -108,8 +114,37 @@ static uint64_t lb_identity(SGIBedrockLBState *s)
     return ((uint64_t)s->manufacturer << 1) |
            ((uint64_t)s->part_number << 12) |
            ((uint64_t)s->revision << 28) |
-           ((uint64_t)s->node_number << 32) |
-           ((uint64_t)s->region_size << 46);
+           ((uint64_t)s->programmed_node << LB_REVISION_NODE_SHIFT) |
+           ((uint64_t)s->programmed_region << LB_REVISION_REGION_SHIFT);
+}
+
+uint8_t sgi_bedrock_lb_node_number(SGIBedrockLBState *s)
+{
+    return s->programmed_node;
+}
+
+/*
+ * The stock PROM assigns the node number by storing the whole revision word
+ * (the local-block datasheet, "Node number assignment"): zero at hub
+ * initialisation, then the word it read with bits 39:32 and 47:46 replaced.
+ * It addresses itself afterwards by the number it reads back, so the two
+ * fields latch; manufacturer, part and revision stay the device's identity,
+ * which the early store of zero must not clear.
+ */
+static void lb_revision_write(SGIBedrockLBState *s, uint64_t value)
+{
+    unsigned region = extract64(value, LB_REVISION_REGION_SHIFT,
+                                LB_REVISION_REGION_WIDTH);
+
+    if (region == LB_REGION_SIZE_INVALID) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-lb: revision write of "
+                      "0x%" PRIx64 " names the invalid region size 3; "
+                      "ignored\n", value);
+        return;
+    }
+    s->programmed_node = extract64(value, LB_REVISION_NODE_SHIFT,
+                                   LB_REVISION_NODE_WIDTH);
+    s->programmed_region = region;
 }
 
 static void lb_update_irq(SGIBedrockLBState *s)
@@ -410,6 +445,8 @@ static void lb_write(void *opaque, hwaddr offset, uint64_t value,
         s->vector_status = 0;
         return;
     case LB_REVISION:
+        lb_revision_write(s, value);
+        return;
     case LB_VECTOR_STATUS:
     case LB_VECTOR_RETURN:
     case LB_VECTOR_READ:
@@ -440,6 +477,12 @@ static void lb_reset_enter(Object *obj, ResetType type)
 
     s->cpu_permission = UINT64_MAX;
     s->io_permission = UINT64_MAX;
+    /*
+     * The node number's hardware reset value is unknown; the realized
+     * properties stand in for it, and the firmware rewrites both fields.
+     */
+    s->programmed_node = s->node_number;
+    s->programmed_region = s->region_size;
     s->region_present = 0;
     s->nodes_absent = 0;
     /*
@@ -490,8 +533,8 @@ static int lb_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_lb = {
     .name = TYPE_SGI_BEDROCK_LB,
-    .version_id = 3,
-    .minimum_version_id = 3,
+    .version_id = 4,
+    .minimum_version_id = 4,
     .post_load = lb_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(cpu_permission, SGIBedrockLBState),
@@ -515,6 +558,8 @@ static const VMStateDescription vmstate_lb = {
         VMSTATE_UINT64(vector_status, SGIBedrockLBState),
         VMSTATE_UINT64(vector_return, SGIBedrockLBState),
         VMSTATE_UINT64(vector_read, SGIBedrockLBState),
+        VMSTATE_UINT8(programmed_node, SGIBedrockLBState),
+        VMSTATE_UINT8(programmed_region, SGIBedrockLBState),
         VMSTATE_END_OF_LIST()
     },
 };

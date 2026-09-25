@@ -108,6 +108,17 @@ static SGIBedrockIOBTE *ii_bte(SGIBedrockIOState *s, hwaddr *offset)
 }
 
 /*
+ * The node number crosstalk register packets are decoded against. Composed
+ * into a Bedrock it is the one the local block's revision word carries, which
+ * the firmware writes when it assigns the node (the local-block datasheet,
+ * "Node number assignment"); a standalone unit keeps its property.
+ */
+static unsigned ii_node_number(SGIBedrockIOState *s)
+{
+    return s->bedrock ? sgi_bedrock_node_number(s->bedrock) : s->node_number;
+}
+
+/*
  * The engine's interrupt-address register names where its completion
  * interrupt lands: bit 0 selects the processor interface, bits 8:1 the node
  * and bits 22:16 the level.  The hub delivers it by setting that level in the
@@ -128,7 +139,7 @@ static void ii_bte_interrupt(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
                       "with no hub registers linked\n");
         return;
     }
-    if (node != s->node_number) {
+    if (node != ii_node_number(s)) {
         qemu_log_mask(LOG_UNIMP, "sgi-bedrock-io: BTE completion interrupt to "
                       "node %u off this node is unsupported\n", node);
         return;
@@ -559,7 +570,7 @@ static MemTxResult ii_inbound_register(SGIBedrockIOState *s, hwaddr address,
     unsigned node = extract64(address, II_XIO_NODE_SHIFT, II_XIO_NODE_WIDTH);
     hwaddr window = extract64(address, 0, II_XIO_NODE_SHIFT);
 
-    if (node != s->node_number) {
+    if (node != ii_node_number(s)) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-io: crosstalk register "
                       "access to node %u arrives nowhere\n", node);
         return MEMTX_DECODE_ERROR;
