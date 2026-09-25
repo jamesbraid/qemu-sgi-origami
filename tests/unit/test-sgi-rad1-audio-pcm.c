@@ -10,13 +10,16 @@
  * other, and use two frames, so a wrong bit position, a lost sign
  * extension, swapped channels and a wrong frame stride each change the
  * result. The eight-word cases are ADAT's frame; the two-word ones the
- * analog and AES3 frame.
+ * analog and AES3 frame; the 64- and 32-word ones the AES3-input and
+ * ADAT-input subcode records, which the model fills from silence.
  */
 
 #include "qemu/osdep.h"
 #include "hw/audio/sgi-rad1-audio-pcm.h"
 
 #define ADAT_WORDS 8
+#define AES_SUB_WORDS 64
+#define ADAT_SUB_WORDS 32
 
 static void test_word_to_sample(void)
 {
@@ -80,14 +83,18 @@ static void test_frames_to_pcm(void)
     check_pcm(pcm);
 }
 
-/* Input: two host frames, (0x1234, -0x5433) and (-0x8000, 0x7fff). */
-static void test_pcm_to_frames(void)
+/*
+ * Input: two host frames, (0x1234, -0x5433) and (-0x8000, 0x7fff), into
+ * frames of @nwords words. The host pair fills words 0 and 1, the rest are
+ * silence, and nothing past the two frames is written.
+ */
+static void check_pcm_to_frames(unsigned int nwords)
 {
     static const uint32_t words[2][2] = {
         { 0x00123400u, 0xffabcd00u },
         { 0xff800000u, 0x007fff00u },
     };
-    uint8_t pcm[8], ring[2 * ADAT_WORDS * 4];
+    uint8_t pcm[8], ring[3 * AES_SUB_WORDS * 4];
     unsigned int f, w;
 
     stw_le_p(pcm, 0x1234);
@@ -96,28 +103,26 @@ static void test_pcm_to_frames(void)
     stw_le_p(pcm + 6, 0x7fff);
 
     memset(ring, 0xa5, sizeof(ring));
-    sgi_rad1_audio_pcm_to_frames(pcm, ring, 2, 2);
+    sgi_rad1_audio_pcm_to_frames(pcm, ring, 2, nwords);
     for (f = 0; f < 2; f++) {
-        for (w = 0; w < 2; w++) {
-            g_assert_cmphex((uint32_t)ldl_le_p(ring + (f * 2 + w) * 4),
-                            ==, words[f][w]);
-        }
-    }
-    /* Nothing past the two frames is written. */
-    g_assert_cmphex((uint32_t)ldl_le_p(ring + 16), ==, 0xa5a5a5a5u);
-
-    /* ADAT: channels 1 and 2 from the host, 3 to 8 silence. */
-    memset(ring, 0xa5, sizeof(ring));
-    sgi_rad1_audio_pcm_to_frames(pcm, ring, 2, ADAT_WORDS);
-    for (f = 0; f < 2; f++) {
-        for (w = 0; w < ADAT_WORDS; w++) {
+        for (w = 0; w < nwords; w++) {
             uint32_t want = w < 2 ? words[f][w] : 0;
 
-            g_assert_cmphex((uint32_t)ldl_le_p(ring +
-                                               (f * ADAT_WORDS + w) * 4),
+            g_assert_cmphex((uint32_t)ldl_le_p(ring + (f * nwords + w) * 4),
                             ==, want);
         }
     }
+    g_assert_cmphex((uint32_t)ldl_le_p(ring + 2 * nwords * 4),
+                    ==, 0xa5a5a5a5u);
+}
+
+static void test_pcm_to_frames(void)
+{
+    check_pcm_to_frames(2);
+    /* ADAT: channels 1 and 2 from the host, 3 to 8 silence. */
+    check_pcm_to_frames(ADAT_WORDS);
+    check_pcm_to_frames(ADAT_SUB_WORDS);
+    check_pcm_to_frames(AES_SUB_WORDS);
 }
 
 /* A recorded frame plays back unchanged. */
