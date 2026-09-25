@@ -101,9 +101,13 @@ slow_qtests = {
   'sn0-origin2000-mgras-test': 330,
   # Two machines, one per BaseIO preset, serve the whole file, but each is a
   # four-node module with eight processors and 256 MB and the timekeeper
-  # repair-store loop resets one of them once per processor. Measured
-  # 41.05s.
-  'sn0-baseio-test': 125,
+  # repair-store loop resets one of them once per processor. It has grown
+  # past the measurement above: alone on this host, at a load average of
+  # 120-155 -- well above the load of 58 the rest of this table was set
+  # from -- 3 runs measured 273.64s-361.37s, and it was already hitting
+  # this budget at an ordinary load of 65 (85-112s alone). Budget three
+  # times the highest of those three loaded runs.
+  'sn0-baseio-test': 1090,
   # The BCM570x drives ninety-nine cases, nearly all of them on a machine of
   # their own with a socket or user-mode backend behind the card, and eight of
   # them migrate, which is a second process each. Measured 44.99s.
