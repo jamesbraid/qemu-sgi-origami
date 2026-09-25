@@ -655,6 +655,28 @@ const SGIBaseioPresetIdentity *sgi_baseio_preset_lookup(const char *name)
     return preset ? &preset->identity : NULL;
 }
 
+void sgi_baseio_preset_set_bridge_identity(
+    DeviceState *bridge, const SGIBaseioPresetIdentity *identity)
+{
+    qdev_prop_set_uint32(bridge, "revision", identity->bridge_revision);
+    qdev_prop_set_string(bridge, "board-part", identity->board_part);
+    /*
+     * Set only the record fields the preset names: one that names a board
+     * but leaves out its barcode or revision then meets the Bridge's own
+     * refusal instead of a NULL string property.
+     */
+    if (identity->board_barcode) {
+        qdev_prop_set_string(bridge, "board-barcode", identity->board_barcode);
+    }
+    if (identity->board_revision) {
+        qdev_prop_set_string(bridge, "board-revision",
+                             identity->board_revision);
+    }
+    if (identity->board_name) {
+        qdev_prop_set_string(bridge, "board-name", identity->board_name);
+    }
+}
+
 static char *baseio_get_part(Object *obj, Error **errp)
 {
     SGIBaseioState *s = SGI_BASEIO(obj);

@@ -187,23 +187,7 @@ static bool xio_baseio_build_widget(SGIXioBoardState *board, Error **errp)
     bridge = qdev_new(TYPE_SGI_BRIDGE);
     object_property_add_child(OBJECT(board), "bridge", OBJECT(bridge));
     s->bridge = SGI_BRIDGE(bridge);
-    qdev_prop_set_uint32(bridge, "revision", identity->bridge_revision);
-    qdev_prop_set_string(bridge, "board-part", identity->board_part);
-    /*
-     * Set only the record fields the preset names: one that names a board
-     * but leaves out its barcode or revision then meets the Bridge's own
-     * refusal instead of a NULL string property.
-     */
-    if (identity->board_barcode) {
-        qdev_prop_set_string(bridge, "board-barcode", identity->board_barcode);
-    }
-    if (identity->board_revision) {
-        qdev_prop_set_string(bridge, "board-revision",
-                             identity->board_revision);
-    }
-    if (identity->board_name) {
-        qdev_prop_set_string(bridge, "board-name", identity->board_name);
-    }
+    sgi_baseio_preset_set_bridge_identity(bridge, identity);
     qdev_prop_set_uint64(bridge, "onewire-serial", s->onewire_serial);
     if (s->pci_bus_name) {
         qdev_prop_set_string(bridge, "pci-bus-name", s->pci_bus_name);
