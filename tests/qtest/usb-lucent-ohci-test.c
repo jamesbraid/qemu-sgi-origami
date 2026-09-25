@@ -476,6 +476,41 @@ static void test_root_hub_descriptor_b_is_writable(void)
     lucent_ohci_close(&ohci);
 }
 
+/*
+ * Entering USBRESET keeps HcRhDescriptorB as well. OpenHCI 1.0a lists the
+ * root-hub registers as the exception to the registers USBRESET preserves
+ * (section 5.1.2.1) without saying what becomes of them, so this rests on
+ * the Origin 300 IO-8 board test alone: it writes the register, commands
+ * USBRESET through HcControl, resets the controller and requires the
+ * written port bits back.
+ */
+static void test_usb_reset_keeps_root_hub_descriptor_b(void)
+{
+    LucentOHCI ohci = { 0 };
+
+    lucent_ohci_open(&ohci, lucent_ohci_start("lucent-ohci", ""));
+    lucent_ohci_map_bar(&ohci);
+
+    /* A controller reset leaves it in USBSUSPEND, so USBRESET is a change. */
+    lucent_ohci_writel(&ohci, OHCI_HC_COMMAND_STATUS,
+                       OHCI_COMMAND_STATUS_HCR);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_DESCRIPTOR_B, 0x3ffff);
+    lucent_ohci_writel(&ohci, OHCI_HC_CONTROL, 0x0c);
+    lucent_ohci_writel(&ohci, OHCI_HC_CONTROL, 0);
+    lucent_ohci_writel(&ohci, OHCI_HC_COMMAND_STATUS,
+                       OHCI_COMMAND_STATUS_HCR);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_RH_DESCRIPTOR_B), ==,
+                    0x20006);
+
+    /* The device's own reset is a hardware reset and clears it. */
+    qtest_qmp_assert_success(ohci.qts, "{'execute': 'system_reset'}");
+    qtest_qmp_eventwait(ohci.qts, "RESET");
+    lucent_ohci_map_bar(&ohci);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_RH_DESCRIPTOR_B), ==, 0);
+
+    lucent_ohci_close(&ohci);
+}
+
 static void test_frame_number_tracks_clock_while_timer_starved(void)
 {
     LucentOHCI ohci = { 0 };
@@ -685,6 +720,8 @@ int main(int argc, char **argv)
                    test_reset_clears_largest_data_packet);
     qtest_add_func("/lucent-ohci/root-hub-descriptor-b-is-writable",
                    test_root_hub_descriptor_b_is_writable);
+    qtest_add_func("/lucent-ohci/usb-reset-keeps-root-hub-descriptor-b",
+                   test_usb_reset_keeps_root_hub_descriptor_b);
     qtest_add_func("/lucent-ohci/frame-number-tracks-clock-while-timer-starved",
                    test_frame_number_tracks_clock_while_timer_starved);
     qtest_add_func("/lucent-ohci/frame-number-never-lags-elapsed-time",
