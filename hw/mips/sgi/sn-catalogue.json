@@ -2237,9 +2237,9 @@
           "carrier": "xio-slot",
           "id": "io2-pci-carrier",
           "module-index": 0,
-          "part": "",
+          "part": "030-1062-002",
           "preset": "pci-carrier",
-          "revision": 4,
+          "revision": 3,
           "serial": 17592186044429
         }
       ],

@@ -6,10 +6,11 @@
  * gives in "Board-identity records on the Bridge one-wire bus" and
  * docs/datasheets/bridge.md gives in "The Origin 200's IP29 record".
  *
- * The PCI shoehorn's Bridge carries a record too, compared with the page
- * image docs/datasheets/sgi-pci-shoehorn.md gives in "Board-identity
- * record", along with the part and name the firmware formats from it and
- * the Bridge chip revision the board is fitted with.
+ * The PCI shoehorn's and PCI carrier's Bridges carry records too,
+ * compared with the page images docs/datasheets/sgi-pci-shoehorn.md and
+ * docs/datasheets/sgi-pci-shoebox.md give in "Board-identity record",
+ * along with the part and name the firmware formats from each and the
+ * Bridge chip revision each board is fitted with.
  *
  * A Bridge given no board name still stores the older text layout, the
  * part number alone; the bare PCI expansion board is read back for that
@@ -204,11 +205,35 @@ static const uint8_t shoehorn_record[RECORD_SIZE] = {
     0x49, 0x20, 0x20, 0x20, 0x20, 0x20, 0xa8, 0x7e,
 };
 
+/*
+ * The PCI Carrier Assembly the origin2000-pci-carrier topology fits in
+ * IO2, crossbow0 widget 12 (docs/datasheets/sgi-pci-shoebox.md,
+ * "Board-identity record"): the Origin 2000 PCI cardcage's part
+ * 030-1062-002, revision C and name PCI-XIO, as a real Origin 2000's
+ * inventory prints them, with a placeholder barcode, on the Bridge
+ * revision 3 both real PCI_XIO boards report.
+ */
+static const uint8_t carrier_record[RECORD_SIZE] = {
+    0x01, 0x4f, 0x50, 0x43, 0x49, 0x58, 0x49, 0x4f,
+    0x30, 0x30, 0x31, 0x20, 0x20, 0x20, 0x20, 0x20,
+    0x20, 0x20, 0x20, 0x20, 0x20, 0x30, 0x33, 0x30,
+    0x2d, 0x31, 0x30, 0x36, 0x32, 0x2d, 0x6e, 0x29,
+    0x20, 0x20, 0x20, 0x30, 0x30, 0x32, 0x43, 0x20,
+    0x20, 0x20, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0x50, 0x43, 0x49, 0x2d, 0x58, 0x49, 0x4f, 0x20,
+    0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0xde, 0x5f,
+};
+
 static const BoardCase board_cases[] = {
     {
         "pci-shoehorn",
         "-M origin2000,topology=origin2000-pci-shoehorn -display none",
         12, shoehorn_record, "030-1275-002", "XTALK_PCI", 4,
+    },
+    {
+        "pci-carrier",
+        "-M origin2000,topology=origin2000-pci-carrier -display none",
+        12, carrier_record, "030-1062-002", "PCI-XIO", 3,
     },
 };
 

@@ -47,10 +47,16 @@
  *
  * Bridge's own "board-part" is a required, exactly-12-character identity
  * register value (hw/pci-host/sgi-bridge.h,
- * sgi_bridge_board_part_error()); with no observed part number for this
- * board, the class exposes the same explicit "not observed" placeholder
- * already established for an XBridge head with no board behind it
- * (hw/pci-host/sgi-xbridge.h, SGI_XBRIDGE_NIC_PLACEHOLDER_PART).
+ * sgi_bridge_board_part_error()); with no observed part number for the
+ * bare board, the class defaults to the same explicit "not observed"
+ * placeholder already established for an XBridge head with no board
+ * behind it (hw/pci-host/sgi-xbridge.h, SGI_XBRIDGE_NIC_PLACEHOLDER_PART).
+ * A product built on this class sets "board-part", "board-barcode",
+ * "board-revision" and "board-name" to its own board-identity record and
+ * "bridge-revision" to its Bridge chip's revision; they pass straight
+ * through to the internal Bridge. With "board-name" unset the Bridge
+ * keeps its older text page, and with "bridge-revision" 0 its own
+ * default revision.
  *
  * "slots" limits the PCI device positions a card may take to 0 .. slots-1,
  * for a carrier with fewer physical slots than the Bridge has device
@@ -94,6 +100,11 @@ struct SGIPciExpansionState {
     uint64_t onewire_serial;
     char *pci_bus_name;
     uint32_t slots;
+    char *board_part;
+    char *board_barcode;
+    char *board_revision;
+    char *board_name;
+    uint32_t bridge_revision;
 
     SGIBridgeState *bridge;
 };
@@ -118,8 +129,21 @@ static bool pci_expansion_build_widget(SGIXioBoardState *board,
     bridge = qdev_new(TYPE_SGI_BRIDGE);
     object_property_add_child(OBJECT(board), "bridge", OBJECT(bridge));
     s->bridge = SGI_BRIDGE(bridge);
+    if (s->bridge_revision) {
+        qdev_prop_set_uint32(bridge, "revision", s->bridge_revision);
+    }
     qdev_prop_set_string(bridge, "board-part",
+                         s->board_part ? s->board_part :
                          SGI_XBRIDGE_NIC_PLACEHOLDER_PART);
+    if (s->board_barcode) {
+        qdev_prop_set_string(bridge, "board-barcode", s->board_barcode);
+    }
+    if (s->board_revision) {
+        qdev_prop_set_string(bridge, "board-revision", s->board_revision);
+    }
+    if (s->board_name) {
+        qdev_prop_set_string(bridge, "board-name", s->board_name);
+    }
     qdev_prop_set_uint64(bridge, "onewire-serial", s->onewire_serial);
     if (s->pci_bus_name) {
         qdev_prop_set_string(bridge, "pci-bus-name", s->pci_bus_name);
@@ -166,6 +190,13 @@ static const Property pci_expansion_properties[] = {
                        onewire_serial, PCI_EXPANSION_SERIAL_PLACEHOLDER),
     DEFINE_PROP_STRING("pci-bus-name", SGIPciExpansionState, pci_bus_name),
     DEFINE_PROP_UINT32("slots", SGIPciExpansionState, slots, 0),
+    DEFINE_PROP_STRING("board-part", SGIPciExpansionState, board_part),
+    DEFINE_PROP_STRING("board-barcode", SGIPciExpansionState, board_barcode),
+    DEFINE_PROP_STRING("board-revision", SGIPciExpansionState,
+                       board_revision),
+    DEFINE_PROP_STRING("board-name", SGIPciExpansionState, board_name),
+    DEFINE_PROP_UINT32("bridge-revision", SGIPciExpansionState,
+                       bridge_revision, 0),
 };
 
 /* No state of its own outside the internal Bridge, which carries its own. */
