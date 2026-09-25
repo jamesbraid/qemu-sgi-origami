@@ -413,6 +413,36 @@ static void test_reset_clears_interrupt_enable(void)
     lucent_ohci_close(&ohci);
 }
 
+/*
+ * OpenHCI 1.0a leaves HcFmInterval's FSLargestDataPacket reset value "TBD"
+ * (section 7.3.1), for the part to choose; FrameInterval resets to 0x2edf
+ * and FrameIntervalToggle to 0. The Origin 300 IO-8 board test requires
+ * the whole register to read 0x2edf after a HostControllerReset, so this
+ * part's choice is taken to be zero.
+ */
+static void test_reset_clears_largest_data_packet(void)
+{
+    LucentOHCI ohci = { 0 };
+
+    lucent_ohci_open(&ohci, lucent_ohci_start("lucent-ohci", ""));
+    lucent_ohci_map_bar(&ohci);
+
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_FM_INTERVAL), ==, 0x2edf);
+
+    lucent_ohci_writel(&ohci, OHCI_HC_FM_INTERVAL, 0xa7782ee0);
+    lucent_ohci_writel(&ohci, OHCI_HC_COMMAND_STATUS,
+                       OHCI_COMMAND_STATUS_HCR);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_FM_INTERVAL), ==, 0x2edf);
+
+    lucent_ohci_writel(&ohci, OHCI_HC_FM_INTERVAL, 0x27782edf);
+    qtest_qmp_assert_success(ohci.qts, "{'execute': 'system_reset'}");
+    qtest_qmp_eventwait(ohci.qts, "RESET");
+    lucent_ohci_map_bar(&ohci);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_FM_INTERVAL), ==, 0x2edf);
+
+    lucent_ohci_close(&ohci);
+}
+
 static void test_frame_number_tracks_clock_while_timer_starved(void)
 {
     LucentOHCI ohci = { 0 };
@@ -449,10 +479,14 @@ static void test_frame_number_tracks_clock_while_timer_starved(void)
     g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_FM_NUMBER), ==, 3);
     g_assert_cmphex(lucent_ohci_dma_frame(&ohci), ==, 3);
 
-    /* Frame remaining must reflect the caught-up frame, not the stale one. */
+    /*
+     * Frame remaining must reflect the caught-up frame, not the stale one:
+     * its count, bits 13:0, lies within the frame interval.
+     */
     remaining = lucent_ohci_readl(&ohci, OHCI_HC_FM_REMAINING);
     interval = lucent_ohci_readl(&ohci, OHCI_HC_FM_INTERVAL);
-    g_assert_cmphex(remaining, <, interval);
+    /* Field to field: the words' upper bits are unrelated fields. */
+    g_assert_cmphex(remaining & 0x3fff, <=, interval & 0x3fff);
 
     /*
      * Resume the clock and let the real timer run. It must find nothing
@@ -614,6 +648,8 @@ int main(int argc, char **argv)
     qtest_add_func("/lucent-ohci/reset-reuse", test_reset_reuse);
     qtest_add_func("/lucent-ohci/reset-clears-interrupt-enable",
                    test_reset_clears_interrupt_enable);
+    qtest_add_func("/lucent-ohci/reset-clears-largest-data-packet",
+                   test_reset_clears_largest_data_packet);
     qtest_add_func("/lucent-ohci/frame-number-tracks-clock-while-timer-starved",
                    test_frame_number_tracks_clock_while_timer_starved);
     qtest_add_func("/lucent-ohci/frame-number-never-lags-elapsed-time",

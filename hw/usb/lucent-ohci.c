@@ -30,14 +30,24 @@ DECLARE_CLASS_CHECKERS(LucentOHCIClass, LUCENT_OHCI, TYPE_LUCENT_OHCI)
 #define LUCENT_OHCI_COMMAND_HCR     0x01
 
 /*
- * OpenHCI 1.0a's reset tables give every HcInterruptEnable field,
- * MasterInterruptEnable included, a reset value of 0 (sections 7.1.5 and
- * 7.1.6), and a HostControllerReset resets the operational registers it
- * does not except (section 7.1.3). One sentence in 7.1.6 says the master
- * bit is set after a reset instead; the Lucent OHCI datasheet records why
- * zero is taken, which SGI's IO-8 board test also expects. The shared core
- * leaves the bit set after either reset, so this part clears it.
+ * The reset values this part holds where the shared core's differ, after
+ * the device's reset and after a HostControllerReset, which resets the
+ * operational registers it does not except (OpenHCI 1.0a section 7.1.3):
+ *
+ * - HcInterruptEnable: every field resets to 0 in the reset tables of
+ *   sections 7.1.5 and 7.1.6, MasterInterruptEnable included. One sentence
+ *   in 7.1.6 says the master bit is set after a reset instead; the Lucent
+ *   OHCI datasheet records why zero is taken, which SGI's IO-8 board test
+ *   also expects.
+ * - HcFmInterval's FSLargestDataPacket: the specification leaves it to the
+ *   part ("TBD", section 7.3.1); zero rests on the board test alone.
  */
+static void lucent_ohci_reset_values(OHCIState *ohci)
+{
+    ohci->intr = 0;
+    ohci->fsmps = 0;
+}
+
 static OHCIState *lucent_ohci_core(PCIDevice *dev)
 {
     return container_of(dev->io_regions[0].memory, OHCIState, mem);
@@ -65,7 +75,7 @@ static void lucent_ohci_command_write(void *opaque, hwaddr addr,
     ohci->mem.ops->write(ohci->mem.opaque, LUCENT_OHCI_COMMAND_STATUS + addr,
                          val, size);
     if (addr == 0 && (val & LUCENT_OHCI_COMMAND_HCR)) {
-        ohci->intr = 0;
+        lucent_ohci_reset_values(ohci);
     }
 }
 
@@ -110,7 +120,7 @@ static void lucent_ohci_realize(PCIDevice *dev, Error **errp)
                           ohci, "lucent-ohci.command-status", 4);
     memory_region_add_subregion_overlap(&ohci->mem, LUCENT_OHCI_COMMAND_STATUS,
                                         command, 1);
-    ohci->intr = 0;
+    lucent_ohci_reset_values(ohci);
 }
 
 static void lucent_ohci_reset(DeviceState *d)
@@ -118,7 +128,7 @@ static void lucent_ohci_reset(DeviceState *d)
     LucentOHCIClass *lc = LUCENT_OHCI_GET_CLASS(d);
 
     lc->parent_reset(d);
-    lucent_ohci_core(PCI_DEVICE(d))->intr = 0;
+    lucent_ohci_reset_values(lucent_ohci_core(PCI_DEVICE(d)));
 }
 
 static void lucent_ohci_class_init(ObjectClass *klass, const void *data)
