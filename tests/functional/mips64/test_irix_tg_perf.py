@@ -376,7 +376,7 @@ if base.QemuSystemTest is not None:
 
             summary = self.log_file('irix-tg-perf-summary.json')
             import json
-            with open(summary, 'w') as f:
+            with open(summary, 'w', encoding='utf-8') as f:
                 json.dump({"login": login, "tg_up": tg_up,
                            "results": results}, f, indent=2, default=str)
                 f.write("\n")

@@ -136,7 +136,7 @@ def _boot_one_attempt(test, cell, attempt_index, first_seen=None):
     return result
 
 
-def _wait_for_pass(test, vm, cell, log_path, first_seen=None):
+def _wait_for_pass(_test, vm, cell, log_path, first_seen=None):
     """Poll for cell's pass condition for up to cell.timeout seconds.
 
     The recorded firmware-boot progress mark (lib_prom.MARK) must be a

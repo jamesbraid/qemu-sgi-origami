@@ -363,7 +363,8 @@ def _drive_to_shell(con, budget):
     """Drive the PROM menu, log in as root, answer TERM, and switch to
     /bin/sh. Returns once a Bourne shell is confirmed responsive."""
     deadline = time.monotonic() + budget
-    left = lambda cap: max(1.0, min(cap, deadline - time.monotonic()))
+    def left(cap):
+        return max(1.0, min(cap, deadline - time.monotonic()))
 
     con.expect(rb"Option\?", left(budget), what="the maintenance menu")
     con.send("1")
@@ -616,6 +617,7 @@ def _parallel_send(host_ports, payloads):
                 done[i] = len(payload)
             except OSError as error:
                 errors[i] = str(error)
+        # pylint: disable-next=broad-exception-caught
         except Exception as error:  # make worker failures visible to the test
             errors[i] = str(error)
 
@@ -955,7 +957,7 @@ if QemuSystemTest is not None:
                     import json as _json
                     _sum = self.log_file('irix-eg-perf-summary.json')
                     _report = eg_perf_verdict(login, eg_up, results)
-                    with open(_sum, 'w') as _f:
+                    with open(_sum, 'w', encoding='utf-8') as _f:
                         _json.dump({"login": login, "eg_up": eg_up,
                                     "results": results, "report": _report},
                                    _f, indent=2,
@@ -1193,7 +1195,7 @@ if QemuSystemTest is not None:
 
             summary = self.log_file('irix-eg-perf-summary.json')
             import json
-            with open(summary, 'w') as f:
+            with open(summary, 'w', encoding='utf-8') as f:
                 json.dump({"login": login, "eg_up": eg_up,
                            "results": results}, f, indent=2, default=str)
                 f.write("\n")
