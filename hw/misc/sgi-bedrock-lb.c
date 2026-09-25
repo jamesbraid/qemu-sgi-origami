@@ -300,7 +300,13 @@ static uint64_t lb_read(void *opaque, hwaddr offset, unsigned size)
     SGIBedrockLBState *s = opaque;
 
     if (offset >= LB_SCRATCH_BASE && offset < LB_SCRATCH_BASE + 5 * 8) {
-        return s->scratch[(offset - LB_SCRATCH_BASE) / 8];
+        unsigned index = (offset - LB_SCRATCH_BASE) / 8;
+
+        /* An outside reader sees the node's withheld scratch-1 posts. */
+        if (index == 1 && s->bedrock) {
+            sgi_bedrock_scratch1_read(s->bedrock);
+        }
+        return s->scratch[index];
     }
     if (offset >= LB_SCRATCH_RS_BASE && offset < LB_SCRATCH_RS_BASE + 2 * 8) {
         unsigned index = 3 + (offset - LB_SCRATCH_RS_BASE) / 8;
