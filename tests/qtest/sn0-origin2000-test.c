@@ -61,6 +61,7 @@
 #define XBOW_LINK8_STATUS 0x0110
 #define XBOW_LINK8_RESET 0x0130
 #define XBOW_LINK_STATUS(w) (0x0110 + ((w) - 8) * 0x40)
+#define XBOW_LINK_RESET(w) (0x0130 + ((w) - 8) * 0x40)
 #define XBOW_LINK_AUX(w) (0x0138 + ((w) - 8) * 0x40)
 #define XBOW_AUX_FAILURE_MODE (1u << 6)
 #define XBOW_AUX_PRESENT (1u << 5)
@@ -760,6 +761,63 @@ static void test_xbow_baseio_link_reset(void)
     qtest_clock_step(qts, XBOW_LINK_RESET_NS);
     g_assert_cmphex(xbow_read(qts, XBOW_LINK8_STATUS), ==,
                     XBOW_LINK_MAX_RETRY);
+    qtest_quit(qts);
+}
+
+/*
+ * A link the machine restores keeps carrying traffic while its reset pulse
+ * runs; only its status shows the pulse. The pulse ends on a timer, and
+ * under multi-threaded TCG a loaded host ran that timer milliseconds of
+ * guest time late: IRIX waits a fixed millisecond after resetting the SI
+ * graphics link, and its next access found the route withdrawn. A link
+ * that was down before the reset stays unreachable through it.
+ */
+static void test_xbow_link_reset_route_stays_open(void)
+{
+    QTestState *qts = start_control_module("");
+    uint32_t id;
+
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    id = baseio_read(qts, 0);
+    xbow_write(qts, XBOW_LINK8_RESET, 0);
+    g_assert_cmphex(xbow_read(qts, XBOW_LINK8_STATUS) & XBOW_LINK_ALIVE, ==, 0);
+    g_assert_cmphex(baseio_read(qts, 0), ==, id);
+    qtest_clock_step(qts, XBOW_LINK_RESET_NS);
+    g_assert_cmphex(xbow_read(qts, XBOW_LINK8_STATUS) & XBOW_LINK_ALIVE,
+                    ==, XBOW_LINK_ALIVE);
+    g_assert_cmphex(baseio_read(qts, 0), ==, id);
+
+    set_crossbow0_links_alive(qts,
+                              CROSSBOW0_PRESENT & ~(1u << BASEIO_WIDGET));
+    g_assert_cmphex(baseio_read(qts, 0), ==, 0);
+    xbow_write(qts, XBOW_LINK8_RESET, 0);
+    g_assert_cmphex(baseio_read(qts, 0), ==, 0);
+    qtest_clock_step(qts, XBOW_LINK_RESET_NS);
+    g_assert_cmphex(baseio_read(qts, 0), ==, 0);
+    qtest_quit(qts);
+}
+
+/*
+ * The Crossbow's own interrupt packet reaches a restored link inside its
+ * reset pulse, as the link's routes do: here the Hub's link is reset and
+ * the access error raised before the pulse ends.
+ */
+static void test_xbow_link_reset_interrupt_delivered(void)
+{
+    QTestState *qts = start_control_module("");
+
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    xbow_write(qts, XBOW_INT_UPPER,
+               XBOW_INT_UPPER_VECTOR(16) |
+               XBOW_INT_UPPER_TARGET(LOCAL_HUB_WIDGET) |
+               XBOW_INT_UPPER_IO_ADDRESS);
+    xbow_write(qts, XBOW_INT_LOWER, HUB_PACKET_INT_MODIFY);
+    xbow_write(qts, XBOW_CONTROL, XBOW_CONTROL_ACCESS_ENABLE);
+    xbow_write(qts, XBOW_LINK_RESET(LOCAL_HUB_WIDGET), 0);
+    g_assert_cmphex(xbow_read(qts, XBOW_LINK_STATUS(LOCAL_HUB_WIDGET)) &
+                    XBOW_LINK_ALIVE, ==, 0);
+    xbow_write(qts, XBOW_ERR_UPPER, 0);
+    g_assert_cmphex(hub_read(qts, 0, HUB_PI_INT_PEND0), ==, 1u << 16);
     qtest_quit(qts);
 }
 
@@ -2145,6 +2203,10 @@ int main(int argc, char **argv)
                    test_xbow_absent_links);
     qtest_add_func("sn0/origin2000/xbow-baseio-link-reset",
                    test_xbow_baseio_link_reset);
+    qtest_add_func("sn0/origin2000/xbow-link-reset-route-stays-open",
+                   test_xbow_link_reset_route_stays_open);
+    qtest_add_func("sn0/origin2000/xbow-link-reset-interrupt-delivered",
+                   test_xbow_link_reset_interrupt_delivered);
     qtest_add_func("sn0/origin2000/mutated-reset", test_mutated_reset);
     qtest_add_func("sn0/origin2000/asic-identity-reset",
                    test_asic_identity_reset);
