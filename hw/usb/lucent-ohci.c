@@ -29,6 +29,8 @@ DECLARE_CLASS_CHECKERS(LucentOHCIClass, LUCENT_OHCI, TYPE_LUCENT_OHCI)
 #define LUCENT_OHCI_COMMAND_STATUS  0x08
 /* Root-hub DeviceRemovable and PortPowerControlMask. */
 #define LUCENT_OHCI_RH_DESCRIPTOR_B 0x4c
+/* HostControllerFunctionalState, which a write can take to USBRESET. */
+#define LUCENT_OHCI_CONTROL         0x04
 #define LUCENT_OHCI_COMMAND_HCR     0x01
 
 /*
@@ -133,6 +135,43 @@ static const MemoryRegionOps lucent_ohci_rhdesc_b_ops = {
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
+/*
+ * Entering USBRESET resets the root hub, and the shared core takes
+ * HcRhDescriptorB back to its power-on zero with it. OpenHCI 1.0a leaves
+ * the root-hub registers out of those USBRESET preserves and says the root
+ * hub "is being reset" there (section 5.1.2.1), but gives the descriptor
+ * registers' reset column as "Power-On Reset" and says they are written
+ * during initialization (section 7.4). The IO-8 board test requires the
+ * written port bits back afterwards, so this part keeps them; the Lucent
+ * OHCI datasheet marks that inferred from the test. Everything else about
+ * the write, the port resets included, is the core's.
+ */
+static uint64_t lucent_ohci_control_read(void *opaque, hwaddr addr,
+                                         unsigned size)
+{
+    OHCIState *ohci = opaque;
+
+    return ohci->mem.ops->read(ohci->mem.opaque, LUCENT_OHCI_CONTROL + addr,
+                               size);
+}
+
+static void lucent_ohci_control_write(void *opaque, hwaddr addr,
+                                      uint64_t val, unsigned size)
+{
+    OHCIState *ohci = opaque;
+    uint32_t rhdesc_b = ohci->rhdesc_b;
+
+    ohci->mem.ops->write(ohci->mem.opaque, LUCENT_OHCI_CONTROL + addr, val,
+                         size);
+    ohci->rhdesc_b = rhdesc_b;
+}
+
+static const MemoryRegionOps lucent_ohci_control_ops = {
+    .read = lucent_ohci_control_read,
+    .write = lucent_ohci_control_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+};
+
 /* One of the core's registers, overlaid for as long as the device lives. */
 static void lucent_ohci_overlay(PCIDevice *dev, OHCIState *ohci, hwaddr at,
                                 const MemoryRegionOps *ops, const char *name)
@@ -168,6 +207,8 @@ static void lucent_ohci_realize(PCIDevice *dev, Error **errp)
     lucent_ohci_overlay(dev, ohci, LUCENT_OHCI_RH_DESCRIPTOR_B,
                         &lucent_ohci_rhdesc_b_ops,
                         "lucent-ohci.rh-descriptor-b");
+    lucent_ohci_overlay(dev, ohci, LUCENT_OHCI_CONTROL,
+                        &lucent_ohci_control_ops, "lucent-ohci.control");
     lucent_ohci_reset_values(ohci);
 }
 
