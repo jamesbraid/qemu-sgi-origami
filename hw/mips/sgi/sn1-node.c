@@ -157,7 +157,8 @@ static MemoryRegion *sn1_node_create_boot_flash(SN1NodeState *node,
                                                 Error **errp)
 {
     DriveInfo *dinfo = drive_get(IF_PFLASH, 0, node_index);
-    DriveInfo *extra = drive_get(IF_PFLASH, 0, node_index + 1);
+    DriveInfo *extra = node->last_node ?
+        drive_get(IF_PFLASH, 0, node_index + 1) : NULL;
     BlockBackend *blk;
     BlockDriverState *backing;
     BlockDriverState *lower;
@@ -206,6 +207,7 @@ static MemoryRegion *sn1_node_create_boot_flash(SN1NodeState *node,
     node->boot_flash = qdev_new(TYPE_SGI_BEDROCK_FLASH);
     object_property_add_child(OBJECT(node), "boot-flash",
                               OBJECT(node->boot_flash));
+    qdev_prop_set_uint32(node->boot_flash, "node", node_index);
     if (!qdev_prop_set_drive_err(node->boot_flash, "drive0", blk, errp) ||
         !object_property_set_str(OBJECT(node->boot_flash), "drive1",
                                  bdrv_get_node_name(upper), errp)) {
@@ -387,22 +389,12 @@ static void sn1_prom_flash_programmed(void *opaque, unsigned position)
  */
 #define SN1_PROCESSOR_MODE_MASK 0x01ffffff
 
-void sn1_node_full_reset(SN1NodeState *node, ResetType type)
+void sn1_node_reset_cpus(SN1NodeState *node)
 {
     uint32_t mode_bits =
         node->model_node->cpu_slots->value->assembly->mode_bits;
     unsigned int i;
 
-    /*
-     * cpu_reset() must run before qemu_devices_reset(): each CPU's
-     * "start-powered-off" property re-halts it on every cpu_reset(),
-     * not only at creation, so releasing them (below) has to follow
-     * both, and qemu_devices_reset() resetting Bedrock/L1/XBridge
-     * first would let a CPU race a device that assumes it is not
-     * running yet. The Hub takes the opposite order and releases
-     * through sgi_hub_set_cpu_enable instead, which carries no such
-     * constraint.
-     */
     for (i = 0; i < node->nr_cpus; i++) {
         CPUState *cs = CPU(node->cpu[i]);
         CPUMIPSState *env = &node->cpu[i]->env;
@@ -412,22 +404,42 @@ void sn1_node_full_reset(SN1NodeState *node, ResetType type)
                            SN1_PROCESSOR_MODE_MASK) |
                            (mode_bits & SN1_PROCESSOR_MODE_MASK);
     }
-    qemu_devices_reset(type);
+}
+
+/*
+ * Every CPU exists now. Release them back-to-back under BQL; generic vCPU
+ * resume can still skew their first fetch, and this is not a claim about
+ * physical reset-edge timing.
+ */
+void sn1_node_release_cpus(SN1NodeState *node)
+{
+    unsigned int i;
+
     if (node->boot_flash) {
         sn1_refresh_prom_views(node, true);
     }
-
-    /*
-     * Every CPU exists now. Release them back-to-back under BQL; generic
-     * vCPU resume can still skew their first fetch, and this is not a
-     * claim about physical reset-edge timing.
-     */
     for (i = 0; i < node->nr_cpus; i++) {
         CPUState *cs = CPU(node->cpu[i]);
 
         cs->halted = false;
         qemu_cpu_kick(cs);
     }
+}
+
+void sn1_node_full_reset(SN1NodeState *node, ResetType type)
+{
+    /*
+     * cpu_reset() must run before qemu_devices_reset(): each CPU's
+     * "start-powered-off" property re-halts it on every cpu_reset(),
+     * not only at creation, so releasing them has to follow both, and
+     * qemu_devices_reset() resetting Bedrock/L1/XBridge first would let a
+     * CPU race a device that assumes it is not running yet. The Hub takes
+     * the opposite order and releases through sgi_hub_set_cpu_enable
+     * instead, which carries no such constraint.
+     */
+    sn1_node_reset_cpus(node);
+    qemu_devices_reset(type);
+    sn1_node_release_cpus(node);
 }
 
 /*
@@ -471,6 +483,7 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
 {
     uint64_t prom_size = node->model_node->flash->size;
     MemoryRegion *system = get_system_memory();
+    g_autofree char *prom_name = NULL;
     MemoryRegion *stored;
     size_t i;
 
@@ -494,10 +507,18 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
          */
         sn1_apply_cpu_config(memory_region_get_ram_ptr(stored));
         memory_region_set_log(stored, true, DIRTY_MEMORY_VGA);
+        /* Node 0 keeps the RAM names its snapshots carry. */
+        node->prom_view_names[0] = node->nasid ?
+            g_strdup_printf("sn1.node%u.prom.reset", node->nasid) :
+            g_strdup("sn1.prom.reset");
+        node->prom_view_names[1] = node->nasid ?
+            g_strdup_printf("sn1.node%u.prom.local-high", node->nasid) :
+            g_strdup("sn1.prom.local-high");
         if (!sn1_init_prom_view(&node->prom_view_reset, OBJECT(node),
-                                "sn1.prom.reset", stored, prom_size, errp) ||
+                                node->prom_view_names[0], stored, prom_size,
+                                errp) ||
             !sn1_init_prom_view(&node->prom_view_local_high, OBJECT(node),
-                                "sn1.prom.local-high", stored, prom_size,
+                                node->prom_view_names[1], stored, prom_size,
                                 errp)) {
             return false;
         }
@@ -520,8 +541,12 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
         return true;
     }
 
+    /* Node 0 keeps the name its snapshots carry; later nodes add theirs. */
+    prom_name = node->nasid ?
+        g_strdup_printf("sn1.prom.node%u", node->nasid) : g_strdup("sn1.prom");
+
     if (!memory_region_init_ram_flags_nomigrate(&node->prom, OBJECT(node),
-                                                "sn1.prom", prom_size, 0,
+                                                prom_name, prom_size, 0,
                                                 errp)) {
         return false;
     }
@@ -738,10 +763,17 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
             g_autofree char *promdata_prefix =
                 g_strdup_printf("sn1.node%u.cpu%u", node->nasid, i);
 
-            /* The IP35 PROM's RAM copy executes within one 2 MiB TLB span. */
+            /*
+             * The IP35 PROM's RAM copy executes within one 2 MiB TLB span.
+             * The phase forwards to and aliases the node's own memory, at
+             * its placement in the global map: a second node's is not at
+             * zero. The window runs before any node number is assigned, so
+             * a processor names its memory with node field zero then.
+             */
             sn_promdata_init(&node->promdata[i], OBJECT(node), cpu,
                              &node->promdata_poll, node->promdata_fast,
-                             0, memory_region_size(node->ram), SN1_PROM_RESET,
+                             sn1_node_address(node, SN1_RAM_ADDRESS),
+                             memory_region_size(node->ram), SN1_PROM_RESET,
                              prom_size, SN1_PROM_RAM_COPY,
                              SN1_PROM_RAM_COPY_SIZE,
                              &node->cpu_sysmem[i], 0,
@@ -755,7 +787,8 @@ static void sn1_node_create_cpus(SN1NodeState *node, MachineState *machine)
 static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                                     Error **errp)
 {
-    Chardev *l1_console = serial_hd(0);
+    /* The builder numbers nodes in order, so nasid is this node's index. */
+    Chardev *l1_console = serial_hd(sgi_sn1_serial_line(node->nasid, 0));
     MemoryRegion *system = get_system_memory();
     MemoryRegion *l1_uart;
     DeviceState *l1_uart_dev;
@@ -770,7 +803,18 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     if (l1_console) {
         qdev_prop_set_chr(node->l1, "chardev", l1_console);
     }
-    sgi_machine_set_l1_identity_records(machine, node->l1);
+    if (!sgi_machine_set_l1_identity_records(machine, node->l1, node->nasid,
+                                             errp)) {
+        return false;
+    }
+    /*
+     * The chassis's brick slot, the operator's setting the L1 keeps in its
+     * non-volatile memory (a two-chassis slave carries 02); zero leaves
+     * the controller's own default.
+     */
+    if (node->l1_bay) {
+        qdev_prop_set_uint32(node->l1, "bay", node->l1_bay);
+    }
     /* The revision every retained Origin 300 capture pairs with PROM 6.210. */
     qdev_prop_set_int32(node->l1, "revision-major", 1);
     qdev_prop_set_int32(node->l1, "revision-minor", 18);
@@ -789,6 +833,14 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     node->bedrock = qdev_new(TYPE_SGI_BEDROCK);
     object_property_add_child(OBJECT(node), "bedrock", OBJECT(node->bedrock));
     qdev_prop_set_uint32(node->bedrock, "processor-count", node->nr_cpus);
+    /*
+     * The Bedrock tells its processors apart by QEMU CPU index; a second
+     * node's processors are numbered after the first node's.
+     */
+    if (node->nr_cpus) {
+        qdev_prop_set_uint32(node->bedrock, "cpu-base",
+                             CPU(node->cpu[0])->cpu_index);
+    }
     qdev_prop_set_uint32(node->bedrock, "processor-mask",
                         sn1_cpu_population_mask(node->model_node,
                                                node->nr_cpus));
@@ -898,6 +950,16 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     node->xbridge = qdev_new(TYPE_SGI_XBRIDGE);
     object_property_add_child(OBJECT(node), "xbridge", OBJECT(node->xbridge));
     qdev_prop_set_uint8(node->xbridge, "host-port", SN1_XBRIDGE_HOST_PORT);
+    /*
+     * The first node's buses keep the names they have always had; a second
+     * node's carry its index, since PCI devices on same-named buses collide
+     * in the migration stream.
+     */
+    if (node->nasid) {
+        g_autofree char *prefix = g_strdup_printf("node%u-", node->nasid);
+
+        qdev_prop_set_string(node->xbridge, "bus-prefix", prefix);
+    }
     qdev_prop_set_string(node->xbridge, "board-part-f",
                          sgi_baseio_preset_lookup("io8")->board_part);
     qdev_prop_set_uint64(node->xbridge, "onewire-serial-f",
@@ -1222,6 +1284,8 @@ static void sn1_node_instance_finalize(Object *obj)
 
     g_free(node->prom_views);
     g_free(node->xbridge_widgets);
+    g_free(node->prom_view_names[0]);
+    g_free(node->prom_view_names[1]);
 }
 
 static const Property sn1_node_properties[] = {
@@ -1229,6 +1293,9 @@ static const Property sn1_node_properties[] = {
                      MemoryRegion *),
     DEFINE_PROP_UINT32("nr-cpus", SN1NodeState, nr_cpus, 0),
     DEFINE_PROP_UINT32("nasid", SN1NodeState, nasid, 0),
+    DEFINE_PROP_UINT32("l1-bay", SN1NodeState, l1_bay, 0),
+    /* Set on a machine's last node: a pflash unit past it has no node. */
+    DEFINE_PROP_BOOL("last-node", SN1NodeState, last_node, true),
     DEFINE_PROP_BOOL("promdata-filter", SN1NodeState, promdata_filter, true),
     /*
      * Off by default: the fast path (sn-promdata.c) is proven on sgi-sn0-

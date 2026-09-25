@@ -298,29 +298,50 @@ static bool sgi_machine_has_identity_records(SGIMachineState *s)
  * Copies the machine's own identity-record file lists onto an L1 device
  * before it is realized. Takes the L1 explicitly because it lives on the
  * node (sgi-sn1-node), while the file lists it reads are machine
- * properties -- one identity per machine, one L1 per node.
+ * properties. With several nodes each list splits evenly, node_index
+ * taking its own share in order; a list that does not divide evenly is
+ * refused, since no share of it names one chassis's parts.
  */
-void sgi_machine_set_l1_identity_records(MachineState *machine,
-                                         DeviceState *l1)
+bool sgi_machine_set_l1_identity_records(MachineState *machine,
+                                         DeviceState *l1,
+                                         unsigned int node_index,
+                                         Error **errp)
 {
     SGIMachineState *s = SGI_MACHINE(machine);
+    unsigned int nodes = MAX(s->num_nodes, 1);
     size_t i;
 
     for (i = 0; i < ARRAY_SIZE(sgi_machine_identity_records); i++) {
         const SGIMachineIdentityRecords *records =
             &sgi_machine_identity_records[i];
-        strList *file = *sgi_machine_identity_slot(OBJECT(s), (void *)records);
+        strList *head = *sgi_machine_identity_slot(OBJECT(s), (void *)records);
+        strList *file;
+        size_t count = 0, share, position = 0;
         QList *files;
 
-        if (!file) {
+        if (!head) {
             continue;
         }
+        for (file = head; file; file = file->next) {
+            count++;
+        }
+        if (count % nodes) {
+            error_setg(errp, "%s: %s lists %zu files, which do not divide "
+                       "evenly across the %u chassis L1s",
+                       MACHINE_GET_CLASS(machine)->name, records->name,
+                       count, nodes);
+            return false;
+        }
+        share = count / nodes;
         files = qlist_new();
-        for (; file; file = file->next) {
-            qlist_append_str(files, file->value);
+        for (file = head; file; file = file->next, position++) {
+            if (position / share == node_index) {
+                qlist_append_str(files, file->value);
+            }
         }
         qdev_prop_set_array(l1, records->name, files);
     }
+    return true;
 }
 
 /* ---- Topology resolution and the CPU-population contract ---- */
