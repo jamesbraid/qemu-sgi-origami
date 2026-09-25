@@ -118,6 +118,30 @@ static unsigned ii_node_number(SGIBedrockIOState *s)
     return s->bedrock ? sgi_bedrock_node_number(s->bedrock) : s->node_number;
 }
 
+void sgi_bedrock_io_set_claimant(SGIBedrockIOState *s,
+                                 SGIBedrockIOState *(*claimant)(void *opaque,
+                                                                unsigned int),
+                                 void *opaque)
+{
+    s->claimant = claimant;
+    s->claimant_opaque = opaque;
+}
+
+/* The interface serving this number: this one, another node's, or none. */
+static SGIBedrockIOState *ii_serving(SGIBedrockIOState *s, unsigned number)
+{
+    SGIBedrockIOState *other;
+
+    if (number == ii_node_number(s)) {
+        return s;
+    }
+    if (!s->claimant) {
+        return NULL;
+    }
+    other = s->claimant(s->claimant_opaque, number);
+    return other && ii_node_number(other) == number ? other : NULL;
+}
+
 /*
  * The engine's interrupt-address register names where its completion
  * interrupt lands: bit 0 selects the processor interface, bits 8:1 the node
@@ -132,20 +156,21 @@ static void ii_bte_interrupt(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
     unsigned node = extract64(bte->interrupt, 1, 8);
     unsigned level = extract64(bte->interrupt, 16, 7);
     hwaddr offset = (bte->interrupt & 1) ? 0x200090 : 0x90;
+    SGIBedrockIOState *target = ii_serving(s, node);
     uint8_t buffer[8];
 
-    if (!s->hub_as_initialized) {
+    if (!target) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-io: BTE completion "
+                      "interrupt to node %u reaches no node\n", node);
+        return;
+    }
+    if (!target->hub_as_initialized) {
         qemu_log_mask(LOG_UNIMP, "sgi-bedrock-io: BTE completion interrupt "
                       "with no hub registers linked\n");
         return;
     }
-    if (node != ii_node_number(s)) {
-        qemu_log_mask(LOG_UNIMP, "sgi-bedrock-io: BTE completion interrupt to "
-                      "node %u off this node is unsupported\n", node);
-        return;
-    }
     stq_be_p(buffer, (UINT64_C(1) << 8) | level);
-    if (address_space_write(&s->hub_as, offset, MEMTXATTRS_UNSPECIFIED,
+    if (address_space_write(&target->hub_as, offset, MEMTXATTRS_UNSPECIFIED,
                             buffer, sizeof(buffer)) != MEMTX_OK) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-bedrock-io: BTE completion interrupt not delivered\n");
@@ -569,12 +594,15 @@ static MemTxResult ii_inbound_register(SGIBedrockIOState *s, hwaddr address,
 {
     unsigned node = extract64(address, II_XIO_NODE_SHIFT, II_XIO_NODE_WIDTH);
     hwaddr window = extract64(address, 0, II_XIO_NODE_SHIFT);
+    SGIBedrockIOState *target = ii_serving(s, node);
 
-    if (node != ii_node_number(s)) {
+    if (!target) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock-io: crosstalk register "
                       "access to node %u arrives nowhere\n", node);
         return MEMTX_DECODE_ERROR;
     }
+    /* Another node's packet: that node's interface serves it as its own. */
+    s = target;
     if ((window & ~II_XIO_HUB_MASK) != II_XIO_HUB_WINDOW) {
         qemu_log_mask(LOG_UNIMP, "sgi-bedrock-io: unsupported crosstalk "
                       "register access at 0x%" HWADDR_PRIx "\n", window);

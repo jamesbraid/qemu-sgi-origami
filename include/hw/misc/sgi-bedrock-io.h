@@ -46,6 +46,12 @@ struct SGIBedrockIOState {
     uint8_t node_number;
     uint8_t revision;
     /*
+     * The I/O interface of the node that carries a given number, when that
+     * is another node this one reaches; see sgi_bedrock_io_set_claimant().
+     */
+    SGIBedrockIOState *(*claimant)(void *opaque, unsigned int number);
+    void *claimant_opaque;
+    /*
      * Which crosstalk widget numbers a request arriving at the shared
      * inbound window may credibly have come from, one bit per widget.  The
      * window itself carries no source-widget field to read back, so all
@@ -91,6 +97,18 @@ struct SGIBedrockIOState {
 };
 
 void sgi_bedrock_io_set_dma_as(SGIBedrockIOState *s, AddressSpace *as);
+
+/*
+ * How this interface finds another node's: a crosstalk register packet or a
+ * BTE completion interrupt naming a number other than this node's own goes
+ * to the interface claimant() returns for it, which serves it as its own;
+ * with none, or NULL back, it arrives nowhere. The machine that joins nodes
+ * supplies it (sn1-node.c's claim layer); a standalone unit has none.
+ */
+void sgi_bedrock_io_set_claimant(SGIBedrockIOState *s,
+                                 SGIBedrockIOState *(*claimant)(void *opaque,
+                                                                unsigned int),
+                                 void *opaque);
 MemTxResult sgi_bedrock_io_inbound_rw(SGIBedrockIOState *s, unsigned widget,
                                       unsigned device, hwaddr address,
                                       void *buffer, size_t size, bool write);
