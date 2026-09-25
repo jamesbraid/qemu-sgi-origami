@@ -2783,6 +2783,13 @@ static uint64_t sgi_hub_read_err_status_clear(SGIHubState *s, hwaddr addr,
     return value;
 }
 
+/*
+ * Either clearing alias retires the processor's whole record. IRIX never
+ * stores to the status 0 alias: it clears through status 1, both in its
+ * per-Hub error setup and after taking a valid status 0 record from its
+ * error-stack walker, which then asks again and stops only when status 0
+ * reads not valid. Status 0 has to fall for that walk to end.
+ */
 static void sgi_hub_write_err_status_clear(SGIHubState *s, hwaddr addr,
                                            unsigned arg, uint64_t val,
                                            unsigned size)
@@ -3313,6 +3320,7 @@ static const SGIHubRegDef sgi_hub_registers[] = {
     /*
      * Error status and its read-to-clear aliases; only the first doubleword
      * of each record is modelled, and the aliases clear on full width only.
+     * Status 1 reads zero, but a zero store to its alias ends the record.
      */
     { .offset = HUB_PI_ERR_STATUS_BASE, .arg = 0,
       .field = offsetof(SGIHubState, pi_err_status0[0]), .width = 8 },
@@ -3323,8 +3331,9 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .write = sgi_hub_write_err_status_clear },
     { .offset = HUB_PI_ERR_STATUS_BASE + 0x10,
       .read = sgi_hub_read_zero },
-    { .offset = HUB_PI_ERR_STATUS_BASE + 0x18,
-      .read = sgi_hub_read_zero },
+    { .offset = HUB_PI_ERR_STATUS_BASE + 0x18, .arg = 0,
+      .read = sgi_hub_read_zero,
+      .write = sgi_hub_write_err_status_clear },
     { .offset = HUB_PI_ERR_STATUS_BASE + 0x20, .arg = 1,
       .field = offsetof(SGIHubState, pi_err_status0[1]), .width = 8 },
     { .offset = HUB_PI_ERR_STATUS_BASE + 0x28, .arg = 1,
@@ -3334,8 +3343,9 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .write = sgi_hub_write_err_status_clear },
     { .offset = HUB_PI_ERR_STATUS_BASE + 0x30,
       .read = sgi_hub_read_zero },
-    { .offset = HUB_PI_ERR_STATUS_BASE + 0x38,
-      .read = sgi_hub_read_zero },
+    { .offset = HUB_PI_ERR_STATUS_BASE + 0x38, .arg = 1,
+      .read = sgi_hub_read_zero,
+      .write = sgi_hub_write_err_status_clear },
     /* No processor-interface request buffer times out on this model. */
     { .offset = HUB_PI_TIMEDOUT_BUF_A,
       .read = sgi_hub_read_zero, .write = sgi_hub_write_timedout },
