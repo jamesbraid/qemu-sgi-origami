@@ -15,36 +15,36 @@
 #include "ui/console.h"
 #include "trace.h"
 
-#define SI_PENDING_FLAGS 0x00080000
-#define SI_PENDING_CONTEXT 0x10000000
-#define SI_PENDING_RETRACE 0x00000001
-#define SI_PENDING_ERROR 0x00000002
+#define MGRAS_PENDING_FLAGS 0x00080000
+#define MGRAS_PENDING_CONTEXT 0x10000000
+#define MGRAS_PENDING_RETRACE 0x00000001
+#define MGRAS_PENDING_ERROR 0x00000002
 /* FIFO occupancy is not modeled, so low-water readiness is immediate. */
-#define SI_PENDING_LOWATER 0x00000004
-#define SI_HQ_ENABLE_LOWATER 0x10
+#define MGRAS_PENDING_LOWATER 0x00000004
+#define MGRAS_HQ_ENABLE_LOWATER 0x10
 
 /* Data bit 8 selects assertion in the interrupt-modify write. */
-#define SI_HUB_INT_MODIFY_SET 0x100
-#define SI_INT_DEST_WIDGET_SHIFT 16
-#define SI_INT_DEST_WIDGET_BITS 4
-#define SI_INT_DEST_VECTOR_SHIFT 24
+#define MGRAS_HUB_INT_MODIFY_SET 0x100
+#define MGRAS_INT_DEST_WIDGET_SHIFT 16
+#define MGRAS_INT_DEST_WIDGET_BITS 4
+#define MGRAS_INT_DEST_VECTOR_SHIFT 24
 
 /* The HQ vector destination uses bits 27:24 for the target widget. */
-#define SI_HQ_VECTOR_WIDGET_SHIFT 24
-#define SI_HQ_VECTOR_WIDGET_BITS 4
+#define MGRAS_HQ_VECTOR_WIDGET_SHIFT 24
+#define MGRAS_HQ_VECTOR_WIDGET_BITS 4
 
 /* Byte offsets within the stored HQ vector word. */
-#define SI_HQ_VECTOR_LOWATER_SHIFT 0
-#define SI_HQ_VECTOR_GENERAL_SHIFT 8
-#define SI_HQ_VECTOR_RETRACE_SHIFT 16
+#define MGRAS_HQ_VECTOR_LOWATER_SHIFT 0
+#define MGRAS_HQ_VECTOR_GENERAL_SHIFT 8
+#define MGRAS_HQ_VECTOR_RETRACE_SHIFT 16
 
-#define SI_MGRAS_CONTEXT_COMMAND 0x120400
+#define MGRAS_CONTEXT_COMMAND 0x120400
 
 /* Send an interrupt-modify write to the selected fabric address. */
-static void si_send_packet(SGIMgrasState *s, hwaddr where, uint8_t vector,
+static void mgras_send_packet(SGIMgrasState *s, hwaddr where, uint8_t vector,
                            bool set)
 {
-    uint64_t value = vector | (set ? SI_HUB_INT_MODIFY_SET : 0);
+    uint64_t value = vector | (set ? MGRAS_HUB_INT_MODIFY_SET : 0);
 
     /* Retain the packet for host-only qtest inspection. */
     s->test_last_interrupt_addr = where;
@@ -54,11 +54,11 @@ static void si_send_packet(SGIMgrasState *s, hwaddr where, uint8_t vector,
 }
 
 /* Compose the fabric address without folding the widget into its payload. */
-bool si_compose_xtalk(SGIMgrasState *s, unsigned int widget,
+bool sgi_mgras_xio_compose(SGIMgrasState *s, unsigned int widget,
                       uint64_t address, hwaddr *fabric)
 {
     if (s->fabric_widget_shift) {
-        if (widget >= (1u << SI_INT_DEST_WIDGET_BITS) ||
+        if (widget >= (1u << MGRAS_INT_DEST_WIDGET_BITS) ||
             address >> s->fabric_widget_shift) {
             qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: packet fabric cannot "
                           "encode widget %u address 0x%" PRIx64 "\n", widget,
@@ -73,13 +73,13 @@ bool si_compose_xtalk(SGIMgrasState *s, unsigned int widget,
 }
 
 /* Widget errors use the generic destination and its embedded vector. */
-static void si_deliver_widget_error(SGIMgrasState *s, bool set)
+static void mgras_deliver_widget_error(SGIMgrasState *s, bool set)
 {
-    unsigned int widget = (s->int_dest_upper >> SI_INT_DEST_WIDGET_SHIFT) &
-                          ((1u << SI_INT_DEST_WIDGET_BITS) - 1);
+    unsigned int widget = (s->int_dest_upper >> MGRAS_INT_DEST_WIDGET_SHIFT) &
+                          ((1u << MGRAS_INT_DEST_WIDGET_BITS) - 1);
     uint64_t addr = ((uint64_t)(s->int_dest_upper & 0xffff) << 32) |
                     s->int_dest_lower;
-    uint8_t vector = s->int_dest_upper >> SI_INT_DEST_VECTOR_SHIFT;
+    uint8_t vector = s->int_dest_upper >> MGRAS_INT_DEST_VECTOR_SHIFT;
     hwaddr where;
 
     if (!s->int_dest_upper && !s->int_dest_lower) {
@@ -88,19 +88,19 @@ static void si_deliver_widget_error(SGIMgrasState *s, bool set)
                       set ? "raised" : "lowered");
         return;
     }
-    if (!si_compose_xtalk(s, widget, addr, &where)) {
+    if (!sgi_mgras_xio_compose(s, widget, addr, &where)) {
         return;
     }
-    si_send_packet(s, where, vector, set);
+    mgras_send_packet(s, where, vector, set);
 }
 
 /* HQ roles share one destination and select separate stored vectors. */
-static void si_deliver_hq_role(SGIMgrasState *s, bool set, uint8_t vector,
+static void mgras_deliver_hq_role(SGIMgrasState *s, bool set, uint8_t vector,
                                const char *role)
 {
     unsigned int widget = (s->hq_vector_dest_upper >>
-                           SI_HQ_VECTOR_WIDGET_SHIFT) &
-                          ((1u << SI_HQ_VECTOR_WIDGET_BITS) - 1);
+                           MGRAS_HQ_VECTOR_WIDGET_SHIFT) &
+                          ((1u << MGRAS_HQ_VECTOR_WIDGET_BITS) - 1);
     uint64_t addr = ((uint64_t)(s->hq_vector_dest_upper & 0xffff) << 32) |
                     s->hq_vector_dest_lower;
     hwaddr where;
@@ -111,85 +111,86 @@ static void si_deliver_hq_role(SGIMgrasState *s, bool set, uint8_t vector,
                       role, set ? "raised" : "lowered");
         return;
     }
-    if (!si_compose_xtalk(s, widget, addr, &where)) {
+    if (!sgi_mgras_xio_compose(s, widget, addr, &where)) {
         return;
     }
-    si_send_packet(s, where, vector, set);
+    mgras_send_packet(s, where, vector, set);
 }
 
-static void si_update_irq(SGIMgrasState *s)
+static void mgras_update_irq(SGIMgrasState *s)
 {
     /* The low-water top-level mask bit is unknown and remains unsupported. */
-    bool lowater = !!(s->pending & SI_PENDING_LOWATER);
+    bool lowater = !!(s->pending & MGRAS_PENDING_LOWATER);
     bool general = !!(s->pending & s->irq_mask &
-                      (SI_PENDING_FLAGS | SI_PENDING_CONTEXT));
-    bool retrace = !!(s->pending & s->irq_mask & SI_PENDING_RETRACE);
-    bool error = !!(s->pending & s->irq_mask & SI_PENDING_ERROR);
+                      (MGRAS_PENDING_FLAGS | MGRAS_PENDING_CONTEXT));
+    bool retrace = !!(s->pending & s->irq_mask & MGRAS_PENDING_RETRACE);
+    bool error = !!(s->pending & s->irq_mask & MGRAS_PENDING_ERROR);
 
-    uint8_t lowater_vector = s->hq_vectors >> SI_HQ_VECTOR_LOWATER_SHIFT;
-    uint8_t general_vector = s->hq_vectors >> SI_HQ_VECTOR_GENERAL_SHIFT;
-    uint8_t retrace_vector = s->hq_vectors >> SI_HQ_VECTOR_RETRACE_SHIFT;
+    uint8_t lowater_vector = s->hq_vectors >> MGRAS_HQ_VECTOR_LOWATER_SHIFT;
+    uint8_t general_vector = s->hq_vectors >> MGRAS_HQ_VECTOR_GENERAL_SHIFT;
+    uint8_t retrace_vector = s->hq_vectors >> MGRAS_HQ_VECTOR_RETRACE_SHIFT;
 
     /* This approximation sends one packet for each modeled transition. */
     if (lowater != s->lowater_asserted) {
         s->lowater_asserted = lowater;
-        si_deliver_hq_role(s, lowater, lowater_vector, "low-water");
+        mgras_deliver_hq_role(s, lowater, lowater_vector, "low-water");
     }
     if (general != s->general_asserted) {
         s->general_asserted = general;
-        si_deliver_hq_role(s, general, general_vector, "general");
+        mgras_deliver_hq_role(s, general, general_vector, "general");
     }
     if (retrace != s->retrace_asserted) {
         s->retrace_asserted = retrace;
-        si_deliver_hq_role(s, retrace, retrace_vector, "retrace");
+        mgras_deliver_hq_role(s, retrace, retrace_vector, "retrace");
     }
     if (error != s->error_asserted) {
         s->error_asserted = error;
-        si_deliver_widget_error(s, error);
+        mgras_deliver_widget_error(s, error);
     }
 }
 
-static void si_error(SGIMgrasState *s, hwaddr addr, unsigned size,
+static void mgras_error(SGIMgrasState *s, hwaddr addr, unsigned size,
                      const char *why)
 {
     s->error = 1;
     s->error_addr = addr;
     s->error_width = size;
     s->protocol = 0xff;
-    s->pending |= SI_PENDING_ERROR;
-    si_update_irq(s);
+    s->pending |= MGRAS_PENDING_ERROR;
+    mgras_update_irq(s);
     qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: %s at 0x%" HWADDR_PRIx
                   " width %u\n", why, addr, size);
 }
 
-static void si_retrace(void *opaque)
+static void mgras_retrace(void *opaque)
 {
     SGIMgrasState *s = opaque;
     if (s->display_enabled) {
         s->retraces++;
-        s->pending |= SI_PENDING_RETRACE;
-        si_update_irq(s);
+        s->pending |= MGRAS_PENDING_RETRACE;
+        mgras_update_irq(s);
     }
     timer_mod(s->retrace_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
               NANOSECONDS_PER_SECOND / 60);
 }
 
-static void si_complete_context(SGIMgrasState *s)
+static void mgras_complete_context(SGIMgrasState *s)
 {
     s->ready = true;
     s->protocol = 3;
-    s->pending |= SI_PENDING_CONTEXT;
-    si_update_irq(s);
+    s->pending |= MGRAS_PENDING_CONTEXT;
+    mgras_update_irq(s);
 }
 
-static void si_context_write(SGIMgrasState *s, uint32_t value)
+static void mgras_context_write(SGIMgrasState *s, uint32_t value)
 {
     if (!s->entry_selected || s->protocol != 1) {
-        si_error(s, 0x120400, 4, "context write in invalid state");
+        mgras_error(s, 0x120400, 4, "context write in invalid state");
         return;
     }
     if (!s->first_ack) {
-        si_error(s, 0x120400, 4, "context write before first acknowledgement");
+        mgras_error(s, 0x120400, 4,
+                    "context write before first acknowledgement");
         return;
     }
     if (s->context_words >= 63) {
@@ -198,16 +199,16 @@ static void si_context_write(SGIMgrasState *s, uint32_t value)
          * MgrasCtxsw stores exactly 63 words and never reads or writes a
          * closing token at 0x120400 -- the transaction completes as soon
          * as the 63rd word lands. Defensive only: completion moves
-         * protocol off the image state, so si_write() already routes any
+         * protocol off the image state, so mgras_write() already routes any
          * later word to the command parser and this branch is unreachable
          * through it.
          */
-        si_error(s, 0x120400, 4, "context write after image is complete");
+        mgras_error(s, 0x120400, 4, "context write after image is complete");
         return;
     }
     s->context[s->context_words++] = value;
     if (s->context_words == 63) {
-        si_complete_context(s);
+        mgras_complete_context(s);
     }
 }
 
@@ -215,7 +216,7 @@ static void si_context_write(SGIMgrasState *s, uint32_t value)
  * This approximation stores uploaded GE words without interpreting them.
  * Other control values end the upload, and bit 31 rewinds its read pointer.
  */
-static void si_ge_control_write(SGIMgrasState *s, unsigned int slot,
+static void mgras_ge_control_write(SGIMgrasState *s, unsigned int slot,
                                 uint32_t value)
 {
     s->ge_active_slot = slot;
@@ -233,7 +234,7 @@ static void si_ge_control_write(SGIMgrasState *s, unsigned int slot,
 }
 
 /* Data writes append only while this approximation considers upload active. */
-static void si_ge_data_write(SGIMgrasState *s, hwaddr addr, unsigned size,
+static void mgras_ge_data_write(SGIMgrasState *s, hwaddr addr, unsigned size,
                              unsigned int slot, uint32_t value)
 {
     uint32_t ptr;
@@ -243,7 +244,7 @@ static void si_ge_data_write(SGIMgrasState *s, hwaddr addr, unsigned size,
     }
     ptr = s->ge_write_ptr[slot];
     if (ptr >= SGI_MGRAS_GE_WORDS) {
-        si_error(s, addr, size, "GE upload overflow");
+        mgras_error(s, addr, size, "GE upload overflow");
         return;
     }
     s->ge[slot][ptr] = value;
@@ -257,33 +258,34 @@ static void si_ge_data_write(SGIMgrasState *s, hwaddr addr, unsigned size,
  * the 256-entry map. Bits 7:5 are zero in every selector the stock X
  * server writes. Established from the retained desktop capture.
  */
-static uint32_t si_cmap_address(SGIMgrasState *s)
+static uint32_t mgras_cmap_address(SGIMgrasState *s)
 {
     return (s->cmap_selector & 0x1f) * 256 +
            (((s->cmap_selector >> 8) + s->cmap_position) & 0xff);
 }
 
-static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
+static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
+                                     unsigned size)
 {
     if (size != 1 && size != 2 && size != 4 && size != 8) {
-        si_error(s, addr, size, "unsupported read width");
+        mgras_error(s, addr, size, "unsupported read width");
         return 0;
     }
     if ((addr == 0x071c88 && size != 1) ||
         (addr == SGI_MGRAS_XMAP_MAIN_MODE && size != 4) ||
         (addr == 0x070c30 && size != 2) ||
         (addr == 0x070d18 && size != 4)) {
-        si_error(s, addr, size, "unsupported register read width");
+        mgras_error(s, addr, size, "unsupported register read width");
         return 0;
     }
     if (size == 1 && addr != SGI_MGRAS_I2C_SCRATCH && addr != 0x071208 &&
         addr != 0x071c88 && addr != 0x071308) {
-        si_error(s, addr, size, "unsupported byte read");
+        mgras_error(s, addr, size, "unsupported byte read");
         return 0;
     }
     if (size == 2 && addr != SGI_MGRAS_VC3_DATA &&
         addr != SGI_MGRAS_VC3_RAM) {
-        si_error(s, addr, size, "unsupported halfword read");
+        mgras_error(s, addr, size, "unsupported halfword read");
         return 0;
     }
     switch (addr) {
@@ -392,7 +394,7 @@ static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
         return size == 2 ? v : (uint32_t)v << 16;
     }
     case 0x130500: return s->entry;
-    case 0x070d18: return s->cmap[si_cmap_address(s)];
+    case 0x070d18: return s->cmap[mgras_cmap_address(s)];
     case 0x120400: return s->ready ? 0xf400 : 0;
     /* GE readback order is a functional approximation over opaque uploads. */
     case SGI_MGRAS_GE_READ_1:
@@ -426,43 +428,44 @@ static uint64_t si_read_internal(SGIMgrasState *s, hwaddr addr, unsigned size)
             return s->fifo_threshold[(addr - SGI_MGRAS_FIFO_THRESHOLD_BASE)
                                       >> 2];
         }
-        si_error(s, addr, size, "unsupported read");
+        mgras_error(s, addr, size, "unsupported read");
         return 0;
     }
 }
 
-static uint64_t si_read(void *opaque, hwaddr addr, unsigned size)
+static uint64_t mgras_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIMgrasState *s = opaque;
-    uint64_t value = si_read_internal(s, addr, size);
+    uint64_t value = mgras_read_internal(s, addr, size);
     uint64_t sequence = s->trace_sequence++;
 
     trace_sgi_mgras_mmio(sequence, addr, value, size, false);
-    if (addr != SI_MGRAS_CONTEXT_COMMAND && addr != SGI_MGRAS_SCRATCH_COMMAND) {
+    if (addr != MGRAS_CONTEXT_COMMAND && addr != SGI_MGRAS_SCRATCH_COMMAND) {
         trace_sgi_mgras_control_mmio(sequence, addr, value, size, false);
     }
     return value;
 }
 
-static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
+static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
+                         unsigned size)
 {
     SGIMgrasState *s = opaque;
     uint64_t sequence = s->trace_sequence++;
 
     trace_sgi_mgras_mmio(sequence, addr, value, size, true);
-    if (addr != SI_MGRAS_CONTEXT_COMMAND && addr != SGI_MGRAS_SCRATCH_COMMAND) {
+    if (addr != MGRAS_CONTEXT_COMMAND && addr != SGI_MGRAS_SCRATCH_COMMAND) {
         trace_sgi_mgras_control_mmio(sequence, addr, value, size, true);
     }
     if ((size != 1 && size != 2 && size != 4 && size != 8) ||
         (addr & (size - 1))) {
-        si_error(s, addr, size, "unsupported or unaligned write");
+        mgras_error(s, addr, size, "unsupported or unaligned write");
         return;
     }
     if ((addr == 0x071c88 && size != 1) ||
         (addr == SGI_MGRAS_XMAP_MAIN_MODE && size != 4) ||
         (addr == 0x070c30 && size != 2) ||
         (addr == 0x070d18 && size != 4)) {
-        si_error(s, addr, size, "unsupported register write width");
+        mgras_error(s, addr, size, "unsupported register write width");
         return;
     }
     /*
@@ -475,12 +478,12 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         addr != SGI_MGRAS_I2C_STROBE && addr != SGI_MGRAS_VC3_INDEX &&
         addr != 0x071c88 && addr != SGI_MGRAS_DAC_LUT_INDEX_LOW &&
         addr != SGI_MGRAS_DAC_LUT_DATA_2 && addr != SGI_MGRAS_DAC_CONFIG) {
-        si_error(s, addr, size, "unsupported byte write");
+        mgras_error(s, addr, size, "unsupported byte write");
         return;
     }
     if (size == 2 && addr != 0x070c30 && addr != SGI_MGRAS_VC3_RAM &&
         addr != SGI_MGRAS_DAC_LUT_INDEX && addr != SGI_MGRAS_DAC_LUT_DATA) {
-        si_error(s, addr, size, "unsupported halfword write");
+        mgras_error(s, addr, size, "unsupported halfword write");
         return;
     }
     switch (addr) {
@@ -496,16 +499,16 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     case SGI_MGRAS_BRINGUP_BLOCK_3: s->bringup_block[2] = value; return;
     case SGI_MGRAS_SCRATCH_COMMAND:
         s->scratch_command = value;
-        si_dma_map_write(s, value, size);
+        sgi_mgras_dma_map_write(s, value, size);
         return;
     /* Clear modeled low-water state when its enable is cleared. */
     case SGI_MGRAS_BRINGUP_ARG_3:
         s->bringup_arg_3 = value;
-        if ((value & s->hq_enable) & SI_HQ_ENABLE_LOWATER) {
-            s->pending &= ~SI_PENDING_LOWATER;
+        if ((value & s->hq_enable) & MGRAS_HQ_ENABLE_LOWATER) {
+            s->pending &= ~MGRAS_PENDING_LOWATER;
         }
         s->hq_enable &= ~(uint32_t)value;
-        si_update_irq(s);
+        mgras_update_irq(s);
         return;
     case SGI_MGRAS_VC3_ARG: s->vc3_arg = value; return;
     case SGI_MGRAS_RE_ARG: s->re_arg = value; return;
@@ -564,22 +567,26 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         return;
     case 0x011028:
         s->pending &= ~(uint32_t)value;
-        if (value & SI_PENDING_FLAGS) s->first_ack = true;
-        if (value & SI_PENDING_CONTEXT) s->second_ack = true;
-        si_update_irq(s); return;
+        if (value & MGRAS_PENDING_FLAGS) s->first_ack = true;
+        if (value & MGRAS_PENDING_CONTEXT) s->second_ack = true;
+        mgras_update_irq(s); return;
     /* Store unresolved status bits separately from pending sources. */
     case 0x011020: s->hq_status_extra = value; return;
-    case 0x011040: s->irq_mask = value; si_update_irq(s); return;
-    case 0x011048: s->error = 0; s->pending &= ~SI_PENDING_ERROR; si_update_irq(s); return;
+    case 0x011040: s->irq_mask = value; mgras_update_irq(s); return;
+    case 0x011048:
+        s->error = 0;
+        s->pending &= ~MGRAS_PENDING_ERROR;
+        mgras_update_irq(s);
+        return;
     case SGI_MGRAS_HQ_CONFIG_A: s->hq_config_a = value; return;
     case SGI_MGRAS_HQ_CONFIG_B: s->hq_config_b = value; return;
     case SGI_MGRAS_HQ_ENABLE:
         /* Immediate readiness raises the modeled low-water source. */
-        if ((value & ~s->hq_enable) & SI_HQ_ENABLE_LOWATER) {
-            s->pending |= SI_PENDING_LOWATER;
+        if ((value & ~s->hq_enable) & MGRAS_HQ_ENABLE_LOWATER) {
+            s->pending |= MGRAS_PENDING_LOWATER;
         }
         s->hq_enable = value;
-        si_update_irq(s);
+        mgras_update_irq(s);
         return;
     case SGI_MGRAS_HQ_VECTOR_DEST_UPPER: s->hq_vector_dest_upper = value; return;
     case SGI_MGRAS_HQ_VECTOR_DEST_LOWER: s->hq_vector_dest_lower = value; return;
@@ -599,33 +606,33 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
     case 0x020000: return;
     case 0x130500:
         if (size != 4 || value != 0x4fc || !s->prefix_written) {
-            si_error(s, addr, size, "invalid HQ entry"); return;
+            mgras_error(s, addr, size, "invalid HQ entry"); return;
         }
         s->entry = value; s->entry_selected = true; s->protocol = 1;
         s->first_ack = s->second_ack = false;
         /* A new transaction restarts the context word count. */
         s->context_words = 0;
-        s->pending |= SI_PENDING_FLAGS; si_update_irq(s); return;
+        s->pending |= MGRAS_PENDING_FLAGS; mgras_update_irq(s); return;
     case 0x120400:
         /*
          * s->ready alone cannot gate this dispatch: it latches true after
          * the first context switch and stays true, but a later switch's
          * image words (protocol == 1, mid-transaction) must still reach
-         * si_context_write() even though the port has been ready since an
+         * mgras_context_write() even though the port has been ready since an
          * earlier switch. Only route to the command-FIFO parsers once a
          * transaction is not in its image-upload phase.
          */
         if (size == 4 && s->ready && s->protocol != 1) {
-            si_raster_command_token(s, value);
+            sgi_mgras_raster_command_token(s, value);
         } else if (size == 4) {
-            si_context_write(s, value);
+            mgras_context_write(s, value);
         } else if (size == 8 && s->ready && s->protocol != 1) {
-            si_raster_command(s, value);
+            sgi_mgras_raster_command(s, value);
         } else if (size == 8 && !s->entry_selected) {
             /* Pre-selection traffic is opaque and has no modeled effect. */
             return;
         } else {
-            si_error(s, addr, size, "unsupported context width");
+            mgras_error(s, addr, size, "unsupported context width");
         }
         return;
     case 0x070c30:
@@ -633,7 +640,7 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         s->cmap_position = 0;
         return;
     case 0x070d18:
-        s->cmap[si_cmap_address(s)] = value;
+        s->cmap[mgras_cmap_address(s)] = value;
         /* The position is an 8-bit count a selector write resets. */
         s->cmap_position++;
         s->dirty = true;
@@ -714,32 +721,32 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         return;
     }
     if (addr == SGI_MGRAS_GE_CTRL_A) {
-        si_ge_control_write(s, SGI_MGRAS_GE_SLOT_A, value);
+        mgras_ge_control_write(s, SGI_MGRAS_GE_SLOT_A, value);
         return;
     }
     if (addr == SGI_MGRAS_GE_CTRL_B) {
-        si_ge_control_write(s, SGI_MGRAS_GE_SLOT_B, value);
+        mgras_ge_control_write(s, SGI_MGRAS_GE_SLOT_B, value);
         return;
     }
     if (addr == SGI_MGRAS_GE_DATA_A) {
-        si_ge_data_write(s, addr, size, SGI_MGRAS_GE_SLOT_A, value);
+        mgras_ge_data_write(s, addr, size, SGI_MGRAS_GE_SLOT_A, value);
         return;
     }
     if (addr == SGI_MGRAS_GE_DATA_B) {
-        si_ge_data_write(s, addr, size, SGI_MGRAS_GE_SLOT_B, value);
+        mgras_ge_data_write(s, addr, size, SGI_MGRAS_GE_SLOT_B, value);
         return;
     }
-    si_error(s, addr, size, "unsupported write");
+    mgras_error(s, addr, size, "unsupported write");
 }
 
-static const MemoryRegionOps si_ops = {
-    .read = si_read, .write = si_write, .endianness = DEVICE_BIG_ENDIAN,
+static const MemoryRegionOps mgras_ops = {
+    .read = mgras_read, .write = mgras_write, .endianness = DEVICE_BIG_ENDIAN,
     .valid = { .min_access_size = 1, .max_access_size = 8 },
     /* Preserve 64-bit FIFO words instead of splitting them into callbacks. */
     .impl = { .min_access_size = 1, .max_access_size = 8 },
 };
 
-static void si_reset_enter(Object *obj, ResetType type)
+static void mgras_reset_enter(Object *obj, ResetType type)
 {
     SGIMgrasClass *mc = SGI_MGRAS_GET_CLASS(obj);
     SGIMgrasState *s = SGI_MGRAS(obj);
@@ -820,7 +827,7 @@ static void si_reset_enter(Object *obj, ResetType type)
         s->error_asserted = false;
 }
 
-static void si_reset_hold(Object *obj, ResetType type)
+static void mgras_reset_hold(Object *obj, ResetType type)
 {
     SGIMgrasClass *mc = SGI_MGRAS_GET_CLASS(obj);
     SGIMgrasState *s = SGI_MGRAS(obj);
@@ -828,10 +835,10 @@ static void si_reset_hold(Object *obj, ResetType type)
     if (mc->parent_phases.hold) {
         mc->parent_phases.hold(obj, type);
     }
-    si_update_irq(s);
+    mgras_update_irq(s);
 }
 
-static void si_reset_exit(Object *obj, ResetType type)
+static void mgras_reset_exit(Object *obj, ResetType type)
 {
     SGIMgrasClass *mc = SGI_MGRAS_GET_CLASS(obj);
     SGIMgrasState *s = SGI_MGRAS(obj);
@@ -844,7 +851,7 @@ static void si_reset_exit(Object *obj, ResetType type)
               NANOSECONDS_PER_SECOND / 60);
 }
 
-static void si_realize(DeviceState *dev, Error **errp)
+static void mgras_realize(DeviceState *dev, Error **errp)
 {
     SGIMgrasState *s = SGI_MGRAS(dev);
     if (!s->fabric) {
@@ -859,16 +866,17 @@ static void si_realize(DeviceState *dev, Error **errp)
     s->ge[SGI_MGRAS_GE_SLOT_A] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
     s->ge[SGI_MGRAS_GE_SLOT_B] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
     s->display_buffer = g_new0(uint32_t, SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT);
-    s->con = qemu_graphic_console_create(dev, 0, &si_mgras_display_ops, s);
-    memory_region_init_io(&s->regs, OBJECT(dev), &si_ops, s, "sgi-mgras.regs", SGI_MGRAS_MMIO_SIZE);
+    s->con = qemu_graphic_console_create(dev, 0, &sgi_mgras_display_ops, s);
+    memory_region_init_io(&s->regs, OBJECT(dev), &mgras_ops, s,
+                           "sgi-mgras.regs", SGI_MGRAS_MMIO_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(dev), &s->regs);
     address_space_init(&s->fabric_as, s->fabric, "sgi-mgras.fabric");
-    s->retrace_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, si_retrace, s);
+    s->retrace_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, mgras_retrace, s);
     device_cold_reset(dev);
-    si_mgras_display_ensure_surface(s);
+    sgi_mgras_display_ensure_surface(s);
 }
 
-static void si_unrealize(DeviceState *dev)
+static void mgras_unrealize(DeviceState *dev)
 {
     SGIMgrasState *s = SGI_MGRAS(dev);
     timer_del(s->retrace_timer); timer_free(s->retrace_timer);
@@ -880,7 +888,7 @@ static void si_unrealize(DeviceState *dev)
 }
 
 /* Rebuild host-only display state from migrated VC3 state and redraw it. */
-static int si_post_load(void *opaque, int version_id)
+static int mgras_post_load(void *opaque, int version_id)
 {
     SGIMgrasState *s = opaque;
 
@@ -902,28 +910,28 @@ static int si_post_load(void *opaque, int version_id)
         return -EINVAL;
     }
 
-    si_mgras_display_ensure_surface(s);
+    sgi_mgras_display_ensure_surface(s);
     s->display_enabled = (s->vc3_reg[0x1e] & 0x4) != 0;
     s->cursor_enabled = (s->vc3_reg[0x1d] & 0x2) != 0;
     s->dirty = true;
     return 0;
 }
 
-static bool si_front_count_valid(void *opaque, int version_id)
+static bool mgras_front_count_valid(void *opaque, int version_id)
 {
     SGIMgrasState *s = opaque;
 
     return s->front_count == SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT;
 }
 
-static bool si_back_count_valid(void *opaque, int version_id)
+static bool mgras_back_count_valid(void *opaque, int version_id)
 {
     SGIMgrasState *s = opaque;
 
     return s->back_count == SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT;
 }
 
-static bool si_ge_lengths_valid(void *opaque, int version_id)
+static bool mgras_ge_lengths_valid(void *opaque, int version_id)
 {
     SGIMgrasState *s = opaque;
 
@@ -938,14 +946,15 @@ static bool si_ge_lengths_valid(void *opaque, int version_id)
  */
 static const VMStateDescription vmstate_sgi_mgras = {
     .name = TYPE_SGI_MGRAS, .version_id = 9, .minimum_version_id = 9,
-    .post_load = si_post_load,
+    .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
-        VMSTATE_VALIDATE("front plane length is fixed", si_front_count_valid),
+        VMSTATE_VALIDATE("front plane length is fixed",
+                         mgras_front_count_valid),
         VMSTATE_VARRAY_UINT32(front, SGIMgrasState, front_count, 0,
                               vmstate_info_uint32, uint32_t),
         VMSTATE_UINT32(back_count, SGIMgrasState),
-        VMSTATE_VALIDATE("back plane length is fixed", si_back_count_valid),
+        VMSTATE_VALIDATE("back plane length is fixed", mgras_back_count_valid),
         VMSTATE_VARRAY_UINT32(back, SGIMgrasState, back_count, 0,
                               vmstate_info_uint32, uint32_t),
         /* The WID plane has the same dimensions as the front color plane. */
@@ -955,7 +964,8 @@ static const VMStateDescription vmstate_sgi_mgras = {
         VMSTATE_UINT32_V(hq_words, SGIMgrasState, 2),
         VMSTATE_UINT32_V(hq_hash, SGIMgrasState, 2),
         VMSTATE_UINT32_ARRAY_V(ge_words, SGIMgrasState, 2, 2),
-        VMSTATE_VALIDATE("GE upload lengths are in range", si_ge_lengths_valid),
+        VMSTATE_VALIDATE("GE upload lengths are in range",
+                         mgras_ge_lengths_valid),
         VMSTATE_VARRAY_UINT32(ge[0], SGIMgrasState, ge_words[0], 2,
                               vmstate_info_uint32, uint32_t),
         VMSTATE_VARRAY_UINT32(ge[1], SGIMgrasState, ge_words[1], 2,
@@ -1061,7 +1071,7 @@ static const VMStateDescription vmstate_sgi_mgras = {
     }
 };
 
-static const Property si_properties[] = {
+static const Property mgras_properties[] = {
     DEFINE_PROP_UINT32("revision", SGIMgrasState, revision, 0),
     DEFINE_PROP_UINT32("part", SGIMgrasState, part, 0xc003),
     DEFINE_PROP_UINT32("manufacturer", SGIMgrasState, manufacturer, 0x02aa),
@@ -1072,18 +1082,18 @@ static const Property si_properties[] = {
                        fabric_widget_shift, 0),
 };
 
-static bool si_test_get_first_ack(Object *obj, Error **errp)
+static bool mgras_test_get_first_ack(Object *obj, Error **errp)
 {
     return SGI_MGRAS(obj)->first_ack;
 }
 
-static bool si_test_get_second_ack(Object *obj, Error **errp)
+static bool mgras_test_get_second_ack(Object *obj, Error **errp)
 {
     return SGI_MGRAS(obj)->second_ack;
 }
 
 /* Host-only qtest access to native pixel storage. */
-static void si_test_get_pixel(Object *obj, Visitor *v, const char *name,
+static void mgras_test_get_pixel(Object *obj, Visitor *v, const char *name,
                               void *opaque, Error **errp)
 {
     SGIMgrasState *s = SGI_MGRAS(obj);
@@ -1097,7 +1107,7 @@ static void si_test_get_pixel(Object *obj, Visitor *v, const char *name,
 }
 
 /* Update scanout before exposing a display pixel to qtests. */
-static void si_test_get_display_pixel(Object *obj, Visitor *v,
+static void mgras_test_get_display_pixel(Object *obj, Visitor *v,
                                       const char *name, void *opaque,
                                       Error **errp)
 {
@@ -1116,7 +1126,7 @@ static void si_test_get_display_pixel(Object *obj, Visitor *v,
 }
 
 /* Expose the current model WID tag for replay diagnostics. */
-static void si_test_get_wid(Object *obj, Visitor *v, const char *name,
+static void mgras_test_get_wid(Object *obj, Visitor *v, const char *name,
                             void *opaque, Error **errp)
 {
     SGIMgrasState *s = SGI_MGRAS(obj);
@@ -1133,47 +1143,47 @@ static void si_test_get_wid(Object *obj, Visitor *v, const char *name,
  * Host-only qtest access to the DMA source-mapping slot x-test-dma-map-slot
  * currently selects.
  */
-static void si_test_get_dma_map_base(Object *obj, Visitor *v,
+static void mgras_test_get_dma_map_base(Object *obj, Visitor *v,
                                      const char *name, void *opaque,
                                      Error **errp)
 {
     SGIMgrasState *s = SGI_MGRAS(obj);
-    uint64_t value = si_dma_map_slot_base(s, s->test_dma_map_slot);
+    uint64_t value = sgi_mgras_dma_map_slot_base(s, s->test_dma_map_slot);
 
     visit_type_uint64(v, name, &value, errp);
 }
 
-static void si_test_get_dma_map_count(Object *obj, Visitor *v,
+static void mgras_test_get_dma_map_count(Object *obj, Visitor *v,
                                       const char *name, void *opaque,
                                       Error **errp)
 {
     SGIMgrasState *s = SGI_MGRAS(obj);
-    uint32_t value = si_dma_map_slot_count(s, s->test_dma_map_slot);
+    uint32_t value = sgi_mgras_dma_map_slot_count(s, s->test_dma_map_slot);
 
     visit_type_uint32(v, name, &value, errp);
 }
 
-static void si_test_get_dma_map_width(Object *obj, Visitor *v,
+static void mgras_test_get_dma_map_width(Object *obj, Visitor *v,
                                       const char *name, void *opaque,
                                       Error **errp)
 {
     SGIMgrasState *s = SGI_MGRAS(obj);
-    uint32_t value = si_dma_map_slot_width(s, s->test_dma_map_slot);
+    uint32_t value = sgi_mgras_dma_map_slot_width(s, s->test_dma_map_slot);
 
     visit_type_uint32(v, name, &value, errp);
 }
 
-static void si_test_get_dma_map_control(Object *obj, Visitor *v,
+static void mgras_test_get_dma_map_control(Object *obj, Visitor *v,
                                         const char *name, void *opaque,
                                         Error **errp)
 {
     SGIMgrasState *s = SGI_MGRAS(obj);
-    uint32_t value = si_dma_map_slot_control(s, s->test_dma_map_slot);
+    uint32_t value = sgi_mgras_dma_map_slot_control(s, s->test_dma_map_slot);
 
     visit_type_uint32(v, name, &value, errp);
 }
 
-static void si_instance_init(Object *obj)
+static void mgras_instance_init(Object *obj)
 {
     SGIMgrasState *s = SGI_MGRAS(obj);
 
@@ -1181,11 +1191,11 @@ static void si_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add_uint32_ptr(obj, "x-test-pixel-y", &s->test_pixel_y,
                                    OBJ_PROP_FLAG_READWRITE);
-    object_property_add(obj, "x-test-pixel", "uint32", si_test_get_pixel,
+    object_property_add(obj, "x-test-pixel", "uint32", mgras_test_get_pixel,
                         NULL, NULL, NULL);
     object_property_add(obj, "x-test-display-pixel", "uint32",
-                        si_test_get_display_pixel, NULL, NULL, NULL);
-    object_property_add(obj, "x-test-wid", "uint32", si_test_get_wid,
+                        mgras_test_get_display_pixel, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-wid", "uint32", mgras_test_get_wid,
                         NULL, NULL, NULL);
     object_property_add_uint64_ptr(obj, "x-test-last-interrupt-addr",
                                    &s->test_last_interrupt_addr,
@@ -1204,9 +1214,9 @@ static void si_instance_init(Object *obj)
     object_property_add_uint32_ptr(obj, "x-test-hq-enable", &s->hq_enable,
                                    OBJ_PROP_FLAG_READ);
     object_property_add_bool(obj, "x-test-first-ack",
-                             si_test_get_first_ack, NULL);
+                             mgras_test_get_first_ack, NULL);
     object_property_add_bool(obj, "x-test-second-ack",
-                             si_test_get_second_ack, NULL);
+                             mgras_test_get_second_ack, NULL);
     object_property_add_uint32_ptr(obj, "x-test-int-dest-upper",
                                    &s->int_dest_upper, OBJ_PROP_FLAG_READ);
     object_property_add_uint32_ptr(obj, "x-test-int-dest-lower",
@@ -1215,31 +1225,32 @@ static void si_instance_init(Object *obj)
                                    &s->test_dma_map_slot,
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add(obj, "x-test-dma-map-base", "uint64",
-                        si_test_get_dma_map_base, NULL, NULL, NULL);
+                        mgras_test_get_dma_map_base, NULL, NULL, NULL);
     object_property_add(obj, "x-test-dma-map-count", "uint32",
-                        si_test_get_dma_map_count, NULL, NULL, NULL);
+                        mgras_test_get_dma_map_count, NULL, NULL, NULL);
     object_property_add(obj, "x-test-dma-map-width", "uint32",
-                        si_test_get_dma_map_width, NULL, NULL, NULL);
+                        mgras_test_get_dma_map_width, NULL, NULL, NULL);
     object_property_add(obj, "x-test-dma-map-control", "uint32",
-                        si_test_get_dma_map_control, NULL, NULL, NULL);
+                        mgras_test_get_dma_map_control, NULL, NULL, NULL);
 }
 
-static void si_class_init(ObjectClass *oc, const void *data)
+static void mgras_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     ResettableClass *rc = RESETTABLE_CLASS(oc);
     SGIMgrasClass *mc = SGI_MGRAS_CLASS(oc);
 
-    dc->realize = si_realize;
-    dc->unrealize = si_unrealize;
-    resettable_class_set_parent_phases(rc, si_reset_enter, si_reset_hold,
-                                       si_reset_exit, &mc->parent_phases);
-    dc->vmsd = &vmstate_sgi_mgras; dc->desc = "SGI MGRAS SI functional endpoint";
-    device_class_set_props(dc, si_properties);
+    dc->realize = mgras_realize;
+    dc->unrealize = mgras_unrealize;
+    resettable_class_set_parent_phases(rc, mgras_reset_enter, mgras_reset_hold,
+                                       mgras_reset_exit, &mc->parent_phases);
+    dc->vmsd = &vmstate_sgi_mgras; dc->desc = "SGI MGRAS functional endpoint";
+    device_class_set_props(dc, mgras_properties);
 }
 
-static const TypeInfo si_types[] = {{ .name = TYPE_SGI_MGRAS, .parent = TYPE_SYS_BUS_DEVICE,
+static const TypeInfo mgras_types[] = {{
+    .name = TYPE_SGI_MGRAS, .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(SGIMgrasState), .class_size = sizeof(SGIMgrasClass),
-    .instance_init = si_instance_init,
-    .class_init = si_class_init }};
-DEFINE_TYPES(si_types)
+    .instance_init = mgras_instance_init,
+    .class_init = mgras_class_init }};
+DEFINE_TYPES(mgras_types)

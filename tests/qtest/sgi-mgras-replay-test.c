@@ -13,10 +13,10 @@
 #include "sgi-migrate.h"
 #include "sgi-test.h"
 
-#define SI_BASE           (SPACE_XTALK + (0xfULL << 24))
-#define SI_REG(offset)    (SI_BASE + (offset))
+#define MGRAS_BASE           (SPACE_XTALK + (0xfULL << 24))
+#define MGRAS_REG(offset)    (MGRAS_BASE + (offset))
 #define MACHINE_ARGS      "-M origin2000 -smp 8 -m 256M"
-#define SI_VIZ_QOM_PATH   "/machine/si-viz"
+#define MGRAS_QOM_PATH   "/machine/mgras"
 #define DEFAULT_REPLAY    "../tests/data/mgras/fill.replay"
 #define MINIMAL_REPLAY    "../tests/data/mgras/minimal.replay"
 #define MASKED_READ       "../tests/data/mgras/masked-read.replay"
@@ -36,7 +36,7 @@
 #define INVALID_OVERFLOW  "../tests/data/mgras/invalid-overflow.replay"
 #define INVALID_WID_BOUNDS "../tests/data/mgras/invalid-wid-bounds.replay"
 #define INVALID_MISMATCH  "../tests/data/mgras/invalid-mismatch.replay"
-#define SI_MMIO_SIZE      (2 * MiB)
+#define MGRAS_MMIO_SIZE      (2 * MiB)
 #define SI_NATIVE_WIDTH   1280
 #define SI_NATIVE_HEIGHT  1024
 
@@ -62,7 +62,7 @@ static uint64_t qom_get_uint(QTestState *qts, const char *property)
 {
     QDict *response = qtest_qmp(qts,
         "{'execute': 'qom-get', 'arguments': {'path': %s, "
-        "'property': %s}}", SI_VIZ_QOM_PATH, property);
+        "'property': %s}}", MGRAS_QOM_PATH, property);
     uint64_t value;
 
     if (!qdict_haskey(response, "return")) {
@@ -80,11 +80,11 @@ static uint32_t pixel(QTestState *qts, uint32_t x, uint32_t y,
     qtest_qmp_assert_success(qts,
         "{'execute': 'qom-set', 'arguments': {'path': %s, "
         "'property': 'x-test-pixel-x', 'value': %u}}",
-        SI_VIZ_QOM_PATH, x);
+        MGRAS_QOM_PATH, x);
     qtest_qmp_assert_success(qts,
         "{'execute': 'qom-set', 'arguments': {'path': %s, "
         "'property': 'x-test-pixel-y', 'value': %u}}",
-        SI_VIZ_QOM_PATH, y);
+        MGRAS_QOM_PATH, y);
     return qom_get_uint(qts, display ? "x-test-display-pixel" :
                                       "x-test-pixel");
 }
@@ -94,11 +94,11 @@ static uint32_t wid(QTestState *qts, uint32_t x, uint32_t y)
     qtest_qmp_assert_success(qts,
         "{'execute': 'qom-set', 'arguments': {'path': %s, "
         "'property': 'x-test-pixel-x', 'value': %u}}",
-        SI_VIZ_QOM_PATH, x);
+        MGRAS_QOM_PATH, x);
     qtest_qmp_assert_success(qts,
         "{'execute': 'qom-set', 'arguments': {'path': %s, "
         "'property': 'x-test-pixel-y', 'value': %u}}",
-        SI_VIZ_QOM_PATH, y);
+        MGRAS_QOM_PATH, y);
     return qom_get_uint(qts, "x-test-wid");
 }
 
@@ -121,7 +121,7 @@ static void replay_mmio(QTestState *qts, const char *path, unsigned int line,
     if (width != 1 && width != 2 && width != 4 && width != 8) {
         g_error("%s:%u: unsupported MMIO width %" PRIu64, path, line, width);
     }
-    if (offset >= SI_MMIO_SIZE || offset + width > SI_MMIO_SIZE) {
+    if (offset >= MGRAS_MMIO_SIZE || offset + width > MGRAS_MMIO_SIZE) {
         g_error("%s:%u: MMIO access is outside the MGRAS aperture", path,
                 line);
     }
@@ -135,25 +135,25 @@ static void replay_mmio(QTestState *qts, const char *path, unsigned int line,
     }
     if (write) {
         if (width == 1) {
-            qtest_writeb(qts, SI_REG(offset), value);
+            qtest_writeb(qts, MGRAS_REG(offset), value);
         } else if (width == 2) {
-            qtest_writew(qts, SI_REG(offset), value);
+            qtest_writew(qts, MGRAS_REG(offset), value);
         } else if (width == 4) {
-            qtest_writel(qts, SI_REG(offset), value);
+            qtest_writel(qts, MGRAS_REG(offset), value);
         } else {
-            qtest_writeq(qts, SI_REG(offset), value);
+            qtest_writeq(qts, MGRAS_REG(offset), value);
         }
         return;
     }
 
     if (width == 1) {
-        actual = qtest_readb(qts, SI_REG(offset));
+        actual = qtest_readb(qts, MGRAS_REG(offset));
     } else if (width == 2) {
-        actual = qtest_readw(qts, SI_REG(offset));
+        actual = qtest_readw(qts, MGRAS_REG(offset));
     } else if (width == 4) {
-        actual = qtest_readl(qts, SI_REG(offset));
+        actual = qtest_readl(qts, MGRAS_REG(offset));
     } else {
-        actual = qtest_readq(qts, SI_REG(offset));
+        actual = qtest_readq(qts, MGRAS_REG(offset));
     }
     if ((actual ^ value) & mask) {
         if (masked) {

@@ -915,7 +915,7 @@ static void test_origin2000_one_node_onboard_board_is_xio_baseio(
         "-display none");
     g_autofree char *type = qom_child_type(qts, "/machine/module0", "slot8");
     g_autofree char *preset = NULL;
-    g_autofree char *head = qom_child_type(qts, "/machine", "si-viz");
+    g_autofree char *head = qom_child_type(qts, "/machine", "mgras");
 
     g_assert_cmpstr(type, ==, "sgi-xio-baseio");
     preset = qom_get_str(qts, "/machine/module0/slot8", "preset");

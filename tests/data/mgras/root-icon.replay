@@ -20,12 +20,12 @@
 # row advancing every ceil((skip+w)/8) executes with skip=(row*4*ceil(w/4))%8
 # -- the rule already landed to trunk in commit e84435d2a3 ("paint CHAR_H/
 # CHAR_L by FILLMODE", verified present in hw/misc/sgi-mgras-raster.c's
-# si_draw_byte_row at trunk-qemu HEAD 26214bc227), which post-dates and already
+# mgras_draw_byte_row at trunk-qemu HEAD 26214bc227), which post-dates and already
 # implements charl-rule.md's independently-derived formula for this exact box.
 #
 # Register 0x159 (ROOT=0x00000080, TOOLCHEST=0x00008000) is now modelled as
 # the guest's own selector between these two byte-transfer conventions --
-# si_draw_byte_row in hw/misc/sgi-mgras-raster.c dispatches on it (0x0080 =
+# mgras_draw_byte_row in hw/misc/sgi-mgras-raster.c dispatches on it (0x0080 =
 # two indexed pixels per CHAR_L execute, 0x8000 = the existing eight-pixel
 # path). This discriminator is INFERRED from exactly these two observed
 # values, not from an independent datasheet or manual citation; any other
@@ -47,13 +47,13 @@
 #
 # The 'wid' assertions in both groups below are all 0x0: no CHAR_H/CHAR_L
 # execute (byte-transfer or otherwise) writes the WID plane, which only a
-# rectangle fill with a nonzero COLORMASKMSBS does (si_draw_fill, triggered
+# rectangle fill with a nonzero COLORMASKMSBS does (mgras_draw_fill, triggered
 # by a BLOCKXYENDI exec -- see hw/misc/sgi-mgras-raster.c and the sibling
 # fixture tests/data/mgras/char-modes.replay, which covers the same
 # TOOLCHEST box at the same DRBPOINTERS setup and asserts the same 0x0).
 # This file's WID values were originally generated as (DRBPOINTERS >> 16)
 # by wp5/chooser-icons/build_root_fixture.py, an assumption never checked
-# against char-modes.replay or against si_draw_fill's actual gating; that
+# against char-modes.replay or against mgras_draw_fill's actual gating; that
 # was wrong and has been corrected here.
 #
 # 'pixels'/'wid' assertions read the raw indexed framebuffer/WID plane
@@ -705,7 +705,7 @@ pixels 340 213 1 1 0xc1
 pixels 341 213 1 1 0xc0
 # No CHAR_H/CHAR_L execute writes the WID plane -- only a rectangle fill
 # with a nonzero COLORMASKMSBS does, see tests/data/mgras/char-modes.replay
-# and hw/misc/sgi-mgras-raster.c's si_draw_fill. DRBPOINTERS=0x90240 is
+# and hw/misc/sgi-mgras-raster.c's mgras_draw_fill. DRBPOINTERS=0x90240 is
 # staged here exactly as it is for that landed fixture's own Toolchest box
 # (compare wid 86 42 below), so the built-fixture script's WID DRBPOINTERS
 # >> 16 assumption for every painted pixel was wrong for this path; these
@@ -870,7 +870,7 @@ write 8 0x120400 0x0018700410101a1a
 write 8 0x120400 0x001c71041a1a1a1a
 write 8 0x120400 0x001870041a1a1a1a
 write 8 0x120400 0x001c710410100000
-# expected under the currently landed si_draw_byte_row rule (already correct
+# expected under the currently landed mgras_draw_byte_row rule (already correct
 # for this box): indexed 0x10 face with 0x1a bevel edge, WID 0x0 (PACKEDCOLOR)
 pixels 86 42 4 1 0x10
 pixels 90 42 11 1 0x1a

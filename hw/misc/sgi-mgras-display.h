@@ -5,7 +5,7 @@
 #include "hw/misc/sgi-mgras.h"
 #include "ui/console.h"
 
-extern const GraphicHwOps si_mgras_display_ops;
-void si_mgras_display_ensure_surface(SGIMgrasState *s);
+extern const GraphicHwOps sgi_mgras_display_ops;
+void sgi_mgras_display_ensure_surface(SGIMgrasState *s);
 
 #endif
