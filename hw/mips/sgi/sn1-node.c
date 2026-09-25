@@ -1170,29 +1170,24 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     }
     qdev_prop_set_uint32(node->bedrock, "processor-slot-order", slot_order);
     /*
-     * Every fitted slot on processor interface 1 comes out of reset with
-     * its bus grant. This is a model approximation; the silicon's reset
-     * value is unknown. What the stock PROM does with these registers is
-     * measured: the boot master rewrites the whole register head of
-     * interface 0 during startup, the last pass leaving bit 0 set in both
-     * of that interface's CPU-enable registers, and it never writes
-     * either CPU-enable register of interface 1. Nothing in the firmware
-     * grants a processor on interface 1, so without this the
-     * two-processor board's slot C and the four-processor board's slot D
-     * both fail the PROM's early initialisation. A two-processor
-     * population fits only C on that interface, so its grant is
-     * unchanged. docs/datasheets/bedrock-processor-interface.md,
-     * "Selected Origin 300 PI1/A boot grant", records the runs.
+     * Every fitted slot comes out of reset with its bus grant. This is a
+     * model approximation; the silicon's reset value is unknown. What the
+     * stock PROM does with these registers is measured: on its boot path
+     * it only ever clears one, for a partner that fails its early liveness
+     * check, and never sets one (only an operator's enable command in its
+     * monitor does), so a fitted processor it counts must already be
+     * granted. The store loop once read as the boot master granting
+     * interface 0 writes the Hub-special register window, not these
+     * registers (docs/datasheets/ip35-address-map.md), so without this
+     * the BaseIO PROM finds only the processors on interface 1.
+     * docs/datasheets/bedrock-processor-interface.md, "Selected Origin
+     * 300 PI1/A boot grant", records the runs.
      */
     if (node->nr_cpus > 1) {
         uint32_t grant = 0;
 
         for (cpu = 0; cpu < node->nr_cpus; cpu++) {
-            unsigned physical = sn1_cpu_slot(node->model_node, cpu);
-
-            if (physical >= SGI_BEDROCK_PROCESSORS / 2) {
-                grant |= 1U << physical;
-            }
+            grant |= 1U << sn1_cpu_slot(node->model_node, cpu);
         }
         qdev_prop_set_uint32(node->bedrock, "cpu-enable-initial-mask", grant);
     }
