@@ -7,8 +7,9 @@
  * replaces (sgi-ip29-io, sgi-baseio's own predecessor board-baseio.c,
  * and sgi-io8):
  *
- *   - ip29: Bridge revision 4, board part "030-1244-001". ISP1040 at
- *     devices 0 and 1, revision 5. IOC3 at device 2, revision 1, PCI
+ *   - ip29: Bridge revision 4, board part "030-1244-001", board
+ *     revision H, name IP29. ISP1040 at devices 0 and 1, revision 5.
+ *     IOC3 at device 2, revision 1, PCI
  *     subsystem device id left at the chip's own "IP29 System Board"
  *     default (docs/datasheets/ioc3.md's board-variant table). Full
  *     population -- Ethernet, both serial ports, keyboard/mouse,
@@ -18,8 +19,9 @@
  *     ISP1040s use the chip's own ordinary per-slot INTA rule.
  *     (docs/machines/layers/modules/ip29.yaml; hw/mips/sn0-origin200-model.c
  *     base_io and pci[], carried into the deleted board-ip29-io.c.)
- *   - io6: Bridge revision 4, board part "030-1124-002". ISP1040 at
- *     devices 0 and 1, revision 5. IOC3 at device 2, revision 1,
+ *   - io6: Bridge revision 4, board part "030-1124-002", board
+ *     revision J, name BASEIO. ISP1040 at devices 0 and 1, revision 5.
+ *     IOC3 at device 2, revision 1,
  *     population Ethernet, both serial ports and the one-wire identity
  *     part (no keyboard/mouse or parallel), an M48T35-compatible
  *     Timekeeper, and the explicit "not observed" subsystem id 0xffff
@@ -612,14 +614,20 @@ static bool baseio_build_io8(SGIBaseioState *s, Error **errp)
     return true;
 }
 
+/*
+ * Each Bridge-based board's own record carries the real board's part,
+ * revision and name, and a placeholder barcode: the IP29's in
+ * docs/datasheets/bridge.md ("The Origin 200's IP29 record"), the plain
+ * BaseIO's and BaseIO-G's in docs/datasheets/baseio.md ("Board-identity
+ * records on the Bridge one-wire bus"). The io8's XBridge placeholder
+ * keeps the older text layout (docs/datasheets/xbridge.md, "What an IO8
+ * record would hold").
+ */
 static const SGIBaseioPreset sgi_baseio_presets[] = {
-    { "ip29", { "030-1244-001", 4 }, baseio_build_ip29 },
-    { "io6", { "030-1124-002", 4 }, baseio_build_io6 },
-    /*
-     * The BaseIO-G board's own record (docs/datasheets/baseio.md,
-     * "Board-identity records on the Bridge one-wire bus"): the real
-     * board's part, revision and name, and a placeholder barcode.
-     */
+    { "ip29", { "030-1244-001", 4, "OIP2900001", "H", "IP29" },
+      baseio_build_ip29 },
+    { "io6", { "030-1124-002", 4, "OBASEIO002", "J", "BASEIO" },
+      baseio_build_io6 },
     { "io6g", { "030-0734-002", 4, "OBASEIO001", "N", "BASEIO" },
       baseio_build_io6g },
     { "io8", { "030-1673-003", 0 }, baseio_build_io8 },

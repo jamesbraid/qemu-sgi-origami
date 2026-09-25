@@ -35,8 +35,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBaseioState, SGI_BASEIO)
  * the rest of the board's identity record, which the carrier sets on its
  * Bridge's "board-barcode", "board-revision" and "board-name" properties;
  * board_revision is the board's revision letter, not the chip's. They
- * are NULL for a preset whose record the datasheets do not yet give,
- * which keeps its Bridge's older text layout.
+ * are NULL for the io8 preset, whose XBridge carries no such properties
+ * and keeps the older text layout.
  */
 typedef struct SGIBaseioPresetIdentity {
     const char *board_part;

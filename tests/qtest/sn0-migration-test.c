@@ -1047,15 +1047,23 @@ static uint16_t nic_crc(uint16_t crc, const uint8_t *data, unsigned int len)
     return crc;
 }
 
+static const uint8_t ip29_record_page0[32] = {
+    0x01, 0x4f, 0x49, 0x50, 0x32, 0x39, 0x30, 0x30,
+    0x30, 0x30, 0x31, 0x20, 0x20, 0x20, 0x20, 0x20,
+    0x20, 0x20, 0x20, 0x20, 0x20, 0x30, 0x33, 0x30,
+    0x2d, 0x31, 0x32, 0x34, 0x34, 0x2d, 0x34, 0x1e,
+};
+
 /*
  * The board identity part is driven one bit per register write, so its
  * conversation state lives between accesses and in no register -- a
  * snapshot at rest restores it correctly by accident. Read half a page on
- * the source and half on the destination, checked as one page: the part
- * number spans the boundary and the page's check covers all of it, so a
- * destination that forgot the conversation answers the idle wire (ones)
- * and cannot pass. Snapshot-at-rest-only migration testing certifies a
- * weaker property than the one that must hold.
+ * the source and half on the destination, checked as one page: the
+ * barcode and the part number sit either side of the boundary and the
+ * page's check covers all of it, so a destination that forgot the
+ * conversation answers the idle wire (ones) and cannot pass.
+ * Snapshot-at-rest-only migration testing certifies a weaker property
+ * than the one that must hold.
  */
 static void test_a_conversation_survives_migration(const void *data)
 {
@@ -1102,8 +1110,13 @@ static void test_a_conversation_survives_migration(const void *data)
         page[i] = nic_read_byte(to);
     }
 
-    /* One page, not bytes: the whole value rather than a property of it. */
-    g_assert_cmpmem(&page[11], 12, "030-1244-001", 12);
+    /*
+     * One page, not bytes: the whole value rather than a property of it,
+     * the IP29 record's page 0 (docs/datasheets/bridge.md, "The Origin
+     * 200's IP29 record").
+     */
+    g_assert_cmpmem(page, sizeof(page), ip29_record_page0,
+                    sizeof(ip29_record_page0));
     g_assert_cmphex(nic_crc(0, page, sizeof(page)), ==, NIC_CRC_RESIDUE);
 
     qtest_quit(to);
