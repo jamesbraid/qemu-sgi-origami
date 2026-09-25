@@ -198,12 +198,31 @@ static void pcf8584_wire_request_stop(PCF8584State *s)
         s->wire_start_waiting = false;
         return;
     }
-    if (s->wire_phase != PCF8584_WIRE_PAUSED) {
+    switch (s->wire_phase) {
+    case PCF8584_WIRE_PAUSED:
+        break;
+    case PCF8584_WIRE_START_SDA:
+    case PCF8584_WIRE_START_HOLD:
+    case PCF8584_WIRE_BITS:
+    case PCF8584_WIRE_ACK:
+        /*
+         * Compatibility approximation, not measured silicon behaviour: the
+         * specification's STOP entry names no byte boundary. Stock firmware
+         * writes STOP here when its transaction deadline passes with PIN
+         * still inactive, and a request dropped here would leave the
+         * transfer open and the shared bus busy for good. Place it after
+         * the byte in flight, where the chip would next wait for its host.
+         */
+        trace_pcf8584_stop_deferred(s->wire_master, s->wire_phase);
+        s->wire_stop_pending = true;
+        return;
+    default:
         qemu_log_mask(LOG_UNIMP, "pcf8584: STOP requested part way through a "
-                      "byte is unsupported\n");
+                      "repeated START or STOP is unsupported\n");
         return;
     }
     trace_pcf8584_stop(s->wire_master);
+    s->wire_stop_pending = false;
     s->start_pending = false;
     s->wire_phase = PCF8584_WIRE_STOP_SCL;
     pcf8584_wire_stage(s, pcf8584_now() + 1, false, true);
@@ -229,6 +248,7 @@ static void pcf8584_wire_bus_error(PCF8584State *s)
     s->wire_active = false;
     s->wire_phase = PCF8584_WIRE_IDLE;
     s->start_pending = false;
+    s->wire_stop_pending = false;
     if (i2c_wire_reset_master(s->bus, s->wire_master) == -ENOTSUP) {
         qemu_log_mask(LOG_UNIMP, "pcf8584: recovery from a misplaced START or "
                       "STOP while driving is unmodelled\n");
@@ -261,6 +281,9 @@ static void pcf8584_wire_byte_done(PCF8584State *s)
     }
     s->wire_phase = PCF8584_WIRE_PAUSED;
     pcf8584_complete(s, nacked);
+    if (s->wire_stop_pending) {
+        pcf8584_wire_request_stop(s);
+    }
 }
 
 static void pcf8584_wire_event(void *opaque, const I2CWireEvent *event)
@@ -283,6 +306,7 @@ static void pcf8584_wire_event(void *opaque, const I2CWireEvent *event)
         s->wire_active = false;
         s->wire_grant_pending = false;
         s->wire_start_waiting = false;
+        s->wire_stop_pending = false;
         return;
     }
     if (event->lost & (1ULL << s->wire_master)) {
@@ -294,6 +318,7 @@ static void pcf8584_wire_event(void *opaque, const I2CWireEvent *event)
         s->status |= PCF8584_STS_LAB;
         s->wire_active = false;
         s->start_pending = false;
+        s->wire_stop_pending = false;
         s->wire_phase = PCF8584_WIRE_LOST;
     }
 
@@ -1053,6 +1078,7 @@ static void pcf8584_reset_hold(Object *obj, ResetType type)
     s->wire_grant_pending = false;
     s->wire_grant = 0;
     s->wire_start_waiting = false;
+    s->wire_stop_pending = false;
     s->wire_free_at = 0;
     s->wire_scl = s->wire_sda = true;
     if (pcf8584_on_wire(s) && s->bus) {
@@ -1149,6 +1175,9 @@ static int pcf8584_post_load(void *opaque, int version_id)
     if (version_id < 6) {
         s->wire_start_waiting = false;
     }
+    if (version_id < 7) {
+        s->wire_stop_pending = false;
+    }
 
     if (s->wire_phase >= PCF8584_WIRE_PHASE_COUNT ||
         s->wire_hold_release >= PCF8584_HOLD_COUNT ||
@@ -1158,7 +1187,8 @@ static int pcf8584_post_load(void *opaque, int version_id)
          (s->wire_active || s->wire_phase != PCF8584_WIRE_IDLE ||
           !s->start_address_staged)) ||
         (s->wire_grant_pending &&
-         (s->wire_grant < 0xe0 || s->wire_grant > 0xef))) {
+         (s->wire_grant < 0xe0 || s->wire_grant > 0xef)) ||
+        (s->wire_stop_pending && !s->wire_active)) {
         return -EINVAL;
     }
     if (!pcf8584_on_wire(s)) {
@@ -1166,7 +1196,8 @@ static int pcf8584_post_load(void *opaque, int version_id)
         if (s->wire_phase != PCF8584_WIRE_IDLE || s->wire_active ||
             s->wire_address_byte || s->wire_bit ||
             s->wire_hold_release != PCF8584_HOLD_NONE ||
-            s->wire_grant_pending || s->wire_start_waiting) {
+            s->wire_grant_pending || s->wire_start_waiting ||
+            s->wire_stop_pending) {
             return -EINVAL;
         }
         return 0;
@@ -1188,7 +1219,7 @@ static int pcf8584_post_load(void *opaque, int version_id)
 
 static const VMStateDescription vmstate_pcf8584 = {
     .name = "pcf8584",
-    .version_id = 6,
+    .version_id = 7,
     .minimum_version_id = 1,
     .post_load = pcf8584_post_load,
     .fields = (const VMStateField[]) {
@@ -1215,6 +1246,7 @@ static const VMStateDescription vmstate_pcf8584 = {
         VMSTATE_BOOL_V(wire_grant_pending, PCF8584State, 5),
         VMSTATE_UINT8_V(wire_grant, PCF8584State, 5),
         VMSTATE_BOOL_V(wire_start_waiting, PCF8584State, 6),
+        VMSTATE_BOOL_V(wire_stop_pending, PCF8584State, 7),
         VMSTATE_BOOL_V(wire_scl, PCF8584State, 3),
         VMSTATE_BOOL_V(wire_sda, PCF8584State, 3),
         VMSTATE_INT64_V(wire_free_at, PCF8584State, 3),
