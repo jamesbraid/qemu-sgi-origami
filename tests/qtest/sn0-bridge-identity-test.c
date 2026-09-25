@@ -1,9 +1,10 @@
 /*
- * SGI Origin 2000 BaseIO-G board-identity records: the two DS2505 parts
- * on the BaseIO Bridge's one-wire bus, read back through the Bridge's
- * one-wire master register and compared byte for byte with the page
- * images docs/datasheets/baseio.md gives in "Board-identity records on
- * the Bridge one-wire bus".
+ * SGI Bridge board-identity records: the DS2505 parts on the Origin 2000
+ * BaseIO's and BaseIO-G's Bridge one-wire bus and on the Origin 200
+ * IP29's, read back through the Bridge's one-wire master register and
+ * compared byte for byte with the page images docs/datasheets/baseio.md
+ * gives in "Board-identity records on the Bridge one-wire bus" and
+ * docs/datasheets/bridge.md gives in "The Origin 200's IP29 record".
  *
  * The machine bring-up and one-wire helpers are duplicated from
  * sn0-baseio-test.c rather than shared, matching this project's other
@@ -77,6 +78,63 @@ static const uint8_t mio_record[RECORD_SIZE] = {
     0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0xc9, 0x3b,
 };
 
+/* docs/datasheets/baseio.md, "The plain BaseIO's record". */
+static const uint8_t plain_baseio_record[RECORD_SIZE] = {
+    0x01, 0x4f, 0x42, 0x41, 0x53, 0x45, 0x49, 0x4f,
+    0x30, 0x30, 0x32, 0x20, 0x20, 0x20, 0x20, 0x20,
+    0x20, 0x20, 0x20, 0x20, 0x20, 0x30, 0x33, 0x30,
+    0x2d, 0x31, 0x31, 0x32, 0x34, 0x2d, 0xef, 0x3e,
+    0x20, 0x20, 0x20, 0x30, 0x30, 0x32, 0x4a, 0x20,
+    0x20, 0x20, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0x42, 0x41, 0x53, 0x45, 0x49, 0x4f, 0x20, 0x20,
+    0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x41, 0x6e,
+};
+
+/* docs/datasheets/bridge.md, "The Origin 200's IP29 record". */
+static const uint8_t ip29_record[RECORD_SIZE] = {
+    0x01, 0x4f, 0x49, 0x50, 0x32, 0x39, 0x30, 0x30,
+    0x30, 0x30, 0x31, 0x20, 0x20, 0x20, 0x20, 0x20,
+    0x20, 0x20, 0x20, 0x20, 0x20, 0x30, 0x33, 0x30,
+    0x2d, 0x31, 0x32, 0x34, 0x34, 0x2d, 0x34, 0x1e,
+    0x20, 0x20, 0x20, 0x30, 0x30, 0x31, 0x48, 0x20,
+    0x20, 0x20, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0x49, 0x50, 0x32, 0x39, 0x20, 0x20, 0x20, 0x20,
+    0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0xe3, 0x24,
+};
+
+/*
+ * One machine's Bridge line and the records on it. An Origin 2000's
+ * crosstalk space has an address only once its node is numbered, and
+ * is reached through a processor; an Origin 200's Bridge answers at
+ * node 0's space directly.
+ */
+typedef struct IdentityCase {
+    const char *name;
+    const char *machine;
+    bool numbered;
+    unsigned int parts;
+    const uint8_t *records[2];
+} IdentityCase;
+
+static const IdentityCase identity_cases[] = {
+    {
+        "io6g", "-M origin2000,baseio-preset=io6g -smp 8 -m 256M",
+        true, 2, { baseio_record, mio_record },
+    },
+    {
+        "io6", "-M origin2000 -smp 8 -m 256M",
+        true, 1, { plain_baseio_record },
+    },
+    {
+        "ip29", "-M origin200",
+        false, 1, { ip29_record },
+    },
+};
+
+/* Set by start_machine(): where the one-wire master sits, and how. */
+static uint64_t nic_address;
+static bool nic_via_cpu;
+
 static uint64_t hub_read(QTestState *qts, unsigned int node, uint64_t offset)
 {
     uint8_t bytes[8];
@@ -96,23 +154,23 @@ static void hub_write(QTestState *qts, unsigned int node, uint64_t offset,
                                      bytes, sizeof(bytes)));
 }
 
-/* Number node 0 so its own crosstalk space has an address. */
-static QTestState *start_io6g(void)
+static QTestState *start_machine(const IdentityCase *c)
 {
-    QTestState *qts = qtest_init("-M origin2000,baseio-preset=io6g -smp 8 "
-                                 "-m 256M -d unimp,guest_errors");
+    QTestState *qts = qtest_initf("%s -d unimp,guest_errors", c->machine);
+    uint64_t nasid = 0;
 
-    hub_write(qts, 0, NI_STATUS,
-              NI_REGION_SIZE | ((uint64_t)BASEIO_NASID << 8));
-    g_assert_cmphex((hub_read(qts, 0, NI_STATUS) >> 8) & 0xff, ==,
-                    BASEIO_NASID);
+    if (c->numbered) {
+        /* Number node 0 so its own crosstalk space has an address. */
+        nasid = BASEIO_NASID;
+        hub_write(qts, 0, NI_STATUS, NI_REGION_SIZE | (nasid << 8));
+        g_assert_cmphex((hub_read(qts, 0, NI_STATUS) >> 8) & 0xff, ==,
+                        nasid);
+    }
+    nic_address = XTALK_BASE + nasid * NODE_STRIDE +
+                  BASEIO_WIDGET * XTALK_WIDGET_SIZE + BRIDGE_NIC +
+                  XTALK_REG_DATA;
+    nic_via_cpu = c->numbered;
     return qts;
-}
-
-static uint64_t bridge_nic_address(void)
-{
-    return XTALK_BASE + BASEIO_NASID * NODE_STRIDE +
-           BASEIO_WIDGET * XTALK_WIDGET_SIZE + BRIDGE_NIC + XTALK_REG_DATA;
 }
 
 /*
@@ -124,12 +182,17 @@ static bool nic_slot(QTestState *qts, unsigned int pulse, unsigned int sample)
     uint8_t bytes[sizeof(uint32_t)];
     uint32_t nic;
 
-    stl_be_p(bytes, NIC_PULSE(pulse) | NIC_SAMPLE(sample));
-    g_assert_true(qtest_memwrite_cpu(qts, 0, bridge_nic_address(),
-                                     bytes, sizeof(bytes)));
-    g_assert_true(qtest_memread_cpu(qts, 0, bridge_nic_address(),
-                                    bytes, sizeof(bytes)));
-    nic = ldl_be_p(bytes);
+    if (nic_via_cpu) {
+        stl_be_p(bytes, NIC_PULSE(pulse) | NIC_SAMPLE(sample));
+        g_assert_true(qtest_memwrite_cpu(qts, 0, nic_address,
+                                         bytes, sizeof(bytes)));
+        g_assert_true(qtest_memread_cpu(qts, 0, nic_address,
+                                        bytes, sizeof(bytes)));
+        nic = ldl_be_p(bytes);
+    } else {
+        qtest_writel(qts, nic_address, NIC_PULSE(pulse) | NIC_SAMPLE(sample));
+        nic = qtest_readl(qts, nic_address);
+    }
     g_assert_cmphex(nic & NIC_DONE, ==, NIC_DONE);
     return nic & NIC_LEVEL;
 }
@@ -277,68 +340,61 @@ static unsigned int nic_search_all(QTestState *qts, uint64_t *rom,
 }
 
 /*
- * Both records read back exactly as the datasheet gives them, and the
- * memory past them reads unprogrammed. Which part the search finds first
- * is not asserted: that order is an open question the datasheet settles
- * by a live boot, not a register contract.
- */
-static void test_io6g_records_match_the_datasheet(void)
-{
-    QTestState *qts = start_io6g();
-    uint8_t memory[2][RECORD_SIZE + RECORD_PAGE];
-    bool seen_baseio = false, seen_mio = false;
-    uint64_t rom[4];
-    unsigned int i, j;
-
-    g_assert_cmpuint(nic_search_all(qts, rom, G_N_ELEMENTS(rom)), ==, 2);
-
-    for (i = 0; i < 2; i++) {
-        const uint8_t *record = memory[i];
-
-        nic_read_memory(qts, rom[i], memory[i], sizeof(memory[i]));
-        if (memcmp(record, baseio_record, RECORD_SIZE) == 0) {
-            seen_baseio = true;
-        } else {
-            g_assert_cmpmem(record, RECORD_SIZE, mio_record, RECORD_SIZE);
-            seen_mio = true;
-        }
-        for (j = RECORD_SIZE; j < sizeof(memory[i]); j++) {
-            g_assert_cmphex(record[j], ==, 0xff);
-        }
-    }
-    g_assert_true(seen_baseio);
-    g_assert_true(seen_mio);
-
-    qtest_quit(qts);
-}
-
-/*
  * Each stored page, check value included, leaves the residue Linux's
  * Bridge probe requires, and a single changed field byte does not: the
  * check is over the field bytes, so the residue alone catches a record
  * whose fields and check value disagree.
  */
-static void test_io6g_record_pages_leave_the_residue(void)
+static void check_record_pages_leave_the_residue(const uint8_t *memory)
 {
-    QTestState *qts = start_io6g();
     uint8_t record[RECORD_SIZE];
+    unsigned int page;
+
+    memcpy(record, memory, sizeof(record));
+    for (page = 0; page < 2; page++) {
+        uint8_t *at = &record[page * RECORD_PAGE];
+
+        g_assert_cmphex(nic_crc16(0, at, RECORD_PAGE), ==, NIC_CRC_RESIDUE);
+        /* The revision letter on page 1, the barcode on page 0. */
+        at[page ? 38 - RECORD_PAGE : 1] ^= 0x01;
+        g_assert_cmphex(nic_crc16(0, at, RECORD_PAGE), !=, NIC_CRC_RESIDUE);
+    }
+}
+
+/*
+ * Every record on the line reads back exactly as the datasheet gives it,
+ * and the memory past it reads unprogrammed. Which part the search finds
+ * first is not asserted: on the BaseIO-G that order is an open question
+ * the datasheet settles by a live boot, not a register contract.
+ */
+static void test_records_match_the_datasheet(const void *data)
+{
+    const IdentityCase *c = data;
+    QTestState *qts = start_machine(c);
+    uint8_t memory[RECORD_SIZE + RECORD_PAGE];
+    bool seen[2] = { false, false };
     uint64_t rom[4];
-    unsigned int count, i, page;
+    unsigned int i, j;
 
-    count = nic_search_all(qts, rom, G_N_ELEMENTS(rom));
-    g_assert_cmpuint(count, ==, 2);
+    g_assert_cmpuint(nic_search_all(qts, rom, G_N_ELEMENTS(rom)), ==,
+                     c->parts);
 
-    for (i = 0; i < count; i++) {
-        nic_read_memory(qts, rom[i], record, sizeof(record));
-        for (page = 0; page < 2; page++) {
-            uint8_t *at = &record[page * RECORD_PAGE];
-
-            g_assert_cmphex(nic_crc16(0, at, RECORD_PAGE), ==,
-                            NIC_CRC_RESIDUE);
-            /* The revision letter on page 1, the barcode on page 0. */
-            at[page ? 38 - RECORD_PAGE : 1] ^= 0x01;
-            g_assert_cmphex(nic_crc16(0, at, RECORD_PAGE), !=,
-                            NIC_CRC_RESIDUE);
+    for (i = 0; i < c->parts; i++) {
+        nic_read_memory(qts, rom[i], memory, sizeof(memory));
+        check_record_pages_leave_the_residue(memory);
+        for (j = 0; j < c->parts; j++) {
+            if (memcmp(memory, c->records[j], RECORD_SIZE) == 0) {
+                break;
+            }
+        }
+        if (j == c->parts) {
+            /* No match: show the difference from the first record. */
+            g_assert_cmpmem(memory, RECORD_SIZE, c->records[0], RECORD_SIZE);
+        }
+        g_assert_false(seen[j]);
+        seen[j] = true;
+        for (j = RECORD_SIZE; j < sizeof(memory); j++) {
+            g_assert_cmphex(memory[j], ==, 0xff);
         }
     }
 
@@ -499,11 +555,16 @@ static void test_record_refuses_a_partial_record(void)
 
 int main(int argc, char **argv)
 {
+    unsigned int i;
+
     g_test_init(&argc, &argv, NULL);
-    qtest_add_func("sn0/bridge-identity/io6g-records-match-the-datasheet",
-                   test_io6g_records_match_the_datasheet);
-    qtest_add_func("sn0/bridge-identity/io6g-record-pages-leave-the-residue",
-                   test_io6g_record_pages_leave_the_residue);
+    for (i = 0; i < G_N_ELEMENTS(identity_cases); i++) {
+        const IdentityCase *c = &identity_cases[i];
+        g_autofree char *path = g_strdup_printf(
+            "sn0/bridge-identity/%s-records-match-the-datasheet", c->name);
+
+        qtest_add_data_func(path, c, test_records_match_the_datasheet);
+    }
     qtest_add_func("sn0/bridge-identity/record-accepted-reaches-the-preset",
                    test_record_accepted_reaches_the_preset);
     qtest_add_func("sn0/bridge-identity/record-refuses-separators",

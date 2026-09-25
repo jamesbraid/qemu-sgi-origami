@@ -1954,6 +1954,23 @@ static uint16_t nic_crc(uint16_t crc, const uint8_t *data, unsigned int len)
 #define NIC_CRC_RESIDUE 0xb001
 
 /*
+ * The IP29 board's identity record, page 0 then page 1, check values
+ * included (docs/datasheets/bridge.md, "The Origin 200's IP29 record"),
+ * restated as bytes so the comparison does not share the model's
+ * construction.
+ */
+static const uint8_t ip29_record[64] = {
+    0x01, 0x4f, 0x49, 0x50, 0x32, 0x39, 0x30, 0x30,
+    0x30, 0x30, 0x31, 0x20, 0x20, 0x20, 0x20, 0x20,
+    0x20, 0x20, 0x20, 0x20, 0x20, 0x30, 0x33, 0x30,
+    0x2d, 0x31, 0x32, 0x34, 0x34, 0x2d, 0x34, 0x1e,
+    0x20, 0x20, 0x20, 0x30, 0x30, 0x31, 0x48, 0x20,
+    0x20, 0x20, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0x49, 0x50, 0x32, 0x39, 0x20, 0x20, 0x20, 0x20,
+    0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0xe3, 0x24,
+};
+
+/*
  * All three residue checks a guest runs; only the stored-bytes one proves
  * the embedded check -- framing passes whatever the last two bytes hold.
  */
@@ -2018,16 +2035,8 @@ static void test_a_page_reads_back_with_its_checks(const void *data)
      */
     g_assert_cmphex(nic_crc(0, page, sizeof(page) - 2), ==, NIC_CRC_RESIDUE);
 
-    /*
-     * Two readers asserted separately: a layout can satisfy one and be
-     * invisible to the other, which is the state this page was in.
-     */
-    /*
-     * The field name must end where the positional read begins, or one of
-     * the two readers loses.
-     */
-    g_assert_cmpmem(&page[6], 5, "Part:", 5);
-    g_assert_cmpint(page[11 + 12], ==, ';');
+    /* The stored page itself, every field at its fixed offset. */
+    g_assert_cmpmem(page, sizeof(page) - 2, ip29_record, sizeof(page) - 2);
 }
 
 /* Drive a search and return the identity the part hands back. */
@@ -2201,7 +2210,7 @@ static void nic_read_first_page(QTestState *qts)
     }
     g_assert_cmphex(nic_crc(0, page, sizeof(page)), ==, NIC_CRC_RESIDUE);
     g_assert_cmphex(nic_crc(0, page, sizeof(page) - 2), ==, NIC_CRC_RESIDUE);
-    g_assert_cmpmem(&page[11], 12, "030-1244-001", 12);
+    g_assert_cmpmem(page, sizeof(page) - 2, ip29_record, sizeof(page) - 2);
 }
 
 /*
@@ -2435,38 +2444,6 @@ static void nic_extended_page(QTestState *qts, uint16_t offset, uint8_t *out)
  * read and hands this one text with holes. Crossing the page boundary
  * proves the stream puts nothing between pages.
  */
-/*
- * The scanning reader's own loop, transcribed -- the assertion byte
- * comparisons cannot make.
- */
-static bool page_field(const uint8_t *page, unsigned int len,
-                       const char *name, char *out)
-{
-    unsigned int pos = 0, n = strlen(name);
-
-    while (pos < len) {
-        unsigned int i;
-
-        if (pos + n <= len && memcmp(&page[pos], name, n) == 0) {
-            unsigned int j = 0;
-
-            for (i = pos + n; i < len && page[i] != ';'; i++) {
-                out[j++] = page[i];
-            }
-            out[j] = 0;
-            return true;
-        }
-        for (i = pos; i < len && page[i] != ';'; i++) {
-            /* skip to the next delimiter */
-        }
-        if (i >= len) {
-            return false;
-        }
-        pos = i + 1;
-    }
-    return false;
-}
-
 static void test_the_unframed_read_matches_the_framed_one(const void *data)
 {
     uint8_t framed[64];
@@ -2506,23 +2483,9 @@ static void test_the_unframed_read_matches_the_framed_one(const void *data)
      * it survives a layout rearrangement the offset checks would not.
      */
     partnum_from_page(plain, partnum);
-    g_assert_true(g_str_has_prefix(partnum, "030-1244-"));
-
-    /*
-     * The field name must end exactly where the positional read begins:
-     * the arithmetic this page is built on.
-     */
-    g_assert_cmpmem(&plain[6], 5, "Part:", 5);
-    g_assert_cmpint(plain[23], ==, ';');
-
-    /*
-     * Byte five is a semicolon so the scanner's first miss resumes at six
-     * -- invisible to every assertion above.
-     */
-    g_assert_true(page_field(plain, 30, "Part:", partnum));
     g_assert_cmpstr(partnum, ==, "030-1244-001");
 
-    g_assert_cmpmem(&plain[11], 12, "030-1244-001", 12);
+    g_assert_cmpmem(plain, sizeof(plain), ip29_record, sizeof(ip29_record));
     g_assert_cmphex(nic_crc(0, &plain[0], 32), ==, NIC_CRC_RESIDUE);
     g_assert_cmphex(nic_crc(0, &plain[32], 32), ==, NIC_CRC_RESIDUE);
 }
@@ -2538,9 +2501,9 @@ static void test_the_model_board_part_overrides_class_global(const void *data)
     nic_extended_page(qts, 0, &image[0]);
     nic_extended_page(qts, 32, &image[32]);
 
-    g_assert_true(page_field(image, 30, "Part:", partnum));
+    partnum_from_page(image, partnum);
     g_assert_cmpstr(partnum, ==, "030-1244-001");
-    g_assert_cmpmem(&image[11], 12, "030-1244-001", 12);
+    g_assert_cmpmem(image, sizeof(image), ip29_record, sizeof(ip29_record));
     g_assert_cmphex(nic_crc(0, &image[0], 32), ==, NIC_CRC_RESIDUE);
     g_assert_cmphex(nic_crc(0, &image[32], 32), ==, NIC_CRC_RESIDUE);
 
