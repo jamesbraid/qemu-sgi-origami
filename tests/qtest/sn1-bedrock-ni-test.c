@@ -168,7 +168,9 @@ static void test_disconnected(void)
  * error, so a guest driving the link's status or error capture leaves a
  * trace instead of vanishing into accepted storage. The register-core unit
  * test checks the unchanged state with seeded values; here every register
- * is idle, so the log is what discriminates.
+ * is idle, so the log is what discriminates. Port errors and sideband are
+ * not in the list: the stock PROM writes them, and test_power_on_programming
+ * covers that.
  */
 static void test_read_only_writes(void)
 {
@@ -176,7 +178,7 @@ static void test_read_only_writes(void)
                                            g_get_tmp_dir());
     g_autofree char *extra = NULL;
     g_autofree char *found = NULL;
-    static const uint64_t offsets[] = { 0, 0x100, 0x108, 0x110, 0x118, 0x120 };
+    static const uint64_t offsets[] = { 0, 0x108, 0x110, 0x120 };
     QTestState *s;
     int fd = g_mkstemp(log);
 
@@ -198,6 +200,71 @@ static void test_read_only_writes(void)
         g_assert_nonnull(strstr(found, line));
     }
     g_assert_cmpint(unlink(log), ==, 0);
+}
+
+/*
+ * The stock IP35 PROM's one power-on programming pass, in its own order and
+ * with its own values (the network-interface datasheet, "Link bring-up"):
+ * each reads back through its register's defined bits, and the zero writes to
+ * port errors and sideband are accepted without a guest error, after which
+ * error clear reads 0. Port parameters is a sign-extended 32-bit constant, so
+ * the virtual-channel error enables in bits 34:32 come from the extension.
+ */
+static void test_power_on_programming(void)
+{
+    g_autofree char *log = g_strdup_printf("%s/sn1-ni-power-on-XXXXXX.log",
+                                           g_get_tmp_dir());
+    g_autofree char *extra = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s;
+    int fd = g_mkstemp(log);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    extra = g_strdup_printf("-d guest_errors,unimp -D %s", log);
+    s = ni_start(extra);
+    qtest_writeq(s, NI_BASE + 0x10, 1);
+    qtest_writeq(s, NI_BASE + 0x18, 0);
+    qtest_writeq(s, NI_BASE + 0x20, 0x166);
+    qtest_writeq(s, NI_BASE + 0x30, 0xffffffffa3ff1990ULL);
+    qtest_writeq(s, NI_BASE + 0x38, 0xc800);
+    qtest_writeq(s, NI_BASE + 0x100, 0);
+    (void)qtest_readq(s, NI_BASE + 0x120);
+    qtest_writeq(s, NI_BASE + 0x118, 0);
+
+    g_assert_cmphex(qtest_readq(s, NI_BASE + 0x10), ==, 1);
+    g_assert_cmphex(qtest_readq(s, NI_BASE + 0x18), ==, 0);
+    g_assert_cmphex(qtest_readq(s, NI_BASE + 0x20), ==, 0x166);
+    g_assert_cmphex(qtest_readq(s, NI_BASE + 0x30), ==, 0x7a3ff1990ULL);
+    g_assert_cmphex(qtest_readq(s, NI_BASE + 0x38), ==, 0xc800);
+    g_assert_cmphex(qtest_readq(s, NI_BASE + 0x100), ==, 0);
+    g_assert_cmphex(qtest_readq(s, NI_BASE + 0x118), ==, 0);
+    g_assert_cmphex(qtest_readq(s, NI_BASE + 0x120), ==, 0);
+    qtest_quit(s);
+
+    g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
+    g_assert_null(strstr(found, "sgi-bedrock-ni"));
+    g_assert_cmpint(unlink(log), ==, 0);
+}
+
+/*
+ * A stored port-errors word drives the error line through its interrupting
+ * bits 52:24, as a latched error would; the PROM's zero write drops it.
+ */
+static void test_port_errors_write_drives_error_line(void)
+{
+    QTestState *s = ni_start("");
+
+    qtest_irq_intercept_out_named(s, NI_PATH, "error");
+    qtest_writeq(s, NI_BASE + 0x100, 1ULL << 30);
+    g_assert_true(qtest_get_irq(s, 0));
+    qtest_writeq(s, NI_BASE + 0x100, 0xff);
+    g_assert_false(qtest_get_irq(s, 0));
+    qtest_writeq(s, NI_BASE + 0x100, 1ULL << 52);
+    g_assert_true(qtest_get_irq(s, 0));
+    qtest_writeq(s, NI_BASE + 0x100, 0);
+    g_assert_false(qtest_get_irq(s, 0));
+    qtest_quit(s);
 }
 
 /*
@@ -275,6 +342,10 @@ int main(int argc, char **argv)
                    test_composed_consumer_resets);
     qtest_add_func("sn1/bedrock-ni/disconnected", test_disconnected);
     qtest_add_func("sn1/bedrock-ni/read-only-writes", test_read_only_writes);
+    qtest_add_func("sn1/bedrock-ni/power-on-programming",
+                   test_power_on_programming);
+    qtest_add_func("sn1/bedrock-ni/port-errors-write-drives-error-line",
+                   test_port_errors_write_drives_error_line);
     qtest_add_func("sn1/bedrock-ni/reset-model-policy",
                    test_reset_model_policy);
     qtest_add_func("sn1/bedrock-ni/migration", test_migration);

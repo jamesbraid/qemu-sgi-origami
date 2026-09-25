@@ -46,6 +46,7 @@ static void ni_write(void *opaque, hwaddr offset, uint64_t value,
     case SGI_BEDROCK_NI_WRITTEN:
         break;
     }
+    ni_update_irq(s);
 }
 
 static const MemoryRegionOps ni_ops = {
