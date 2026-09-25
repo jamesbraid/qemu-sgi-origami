@@ -10,6 +10,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qjson.h"
+#include "sgi-migrate.h"
 #include "sgi-test.h"
 
 #define SI_BASE           (SPACE_XTALK + (0xfULL << 24))
@@ -247,6 +248,24 @@ static void replay_wid(QTestState *qts, const char *path, unsigned int line,
     }
 }
 
+/*
+ * A line number given through MGRAS_START_LINE/MGRAS_END_LINE, not one
+ * read out of a replay file -- parse_number()'s own messages assume the
+ * latter, so this reports the offending environment variable instead.
+ */
+static unsigned int parse_env_line(const char *name, const char *value)
+{
+    char *end;
+    uint64_t parsed;
+
+    errno = 0;
+    parsed = g_ascii_strtoull(value, &end, 0);
+    if (errno || end == value || *end || !parsed || parsed > UINT_MAX) {
+        g_error("%s: invalid line number '%s'", name, value);
+    }
+    return (unsigned int)parsed;
+}
+
 static void replay_line(QTestState *qts, const char *path, unsigned int line,
                         char *text)
 {
@@ -284,16 +303,39 @@ static void replay_line(QTestState *qts, const char *path, unsigned int line,
     }
 }
 
+/*
+ * Replay @path against a fresh machine, or, with MGRAS_CHECKPOINT_LOAD set,
+ * against one restored from an earlier run's MGRAS_CHECKPOINT_SAVE. Either
+ * way MGRAS_START_LINE/MGRAS_END_LINE (1-based, inclusive, default the
+ * whole file) select which lines of @path this process actually replays --
+ * a checkpoint stands in for the lines before it, so a save at line N and a
+ * load replaying N+1..M skip re-executing 1..N through the model.
+ *
+ * The checkpoint file itself is plain QEMU migration state (RAM and every
+ * device's VMState, not just sgi-mgras' own), written and read the same way
+ * sn0-migration-test.c's file-URI case does: "-incoming defer" plus a
+ * migrate-incoming QMP command on the load side, sgi_migrate_stopped() on
+ * the save side, both through sgi-migrate.h. qtest's dummy CPUs and frozen
+ * QEMU_CLOCK_VIRTUAL mean the two sides never need an explicit stop.
+ */
 static void run_replay(const char *path, bool check_default_trace)
 {
     const char *trace = g_getenv("MGRAS_TRACE");
     const char *screendump = g_getenv("MGRAS_SCREENDUMP");
+    const char *checkpoint_load = g_getenv("MGRAS_CHECKPOINT_LOAD");
+    const char *checkpoint_save = g_getenv("MGRAS_CHECKPOINT_SAVE");
+    const char *start_line_env = g_getenv("MGRAS_START_LINE");
+    const char *end_line_env = g_getenv("MGRAS_END_LINE");
     g_autofree char *contents = NULL;
     g_autofree char *trace_contents = NULL;
     g_autofree char *temporary_trace = NULL;
+    g_autofree char *args = NULL;
+    g_autofree char *load_uri = NULL;
+    g_autofree char *save_uri = NULL;
     g_auto(GStrv) lines = NULL;
     g_autoptr(GError) error = NULL;
     bool remove_trace = false;
+    unsigned int line_count, start_line, end_line;
     QTestState *qts;
     int fd;
 
@@ -310,13 +352,37 @@ static void run_replay(const char *path, bool check_default_trace)
         trace = temporary_trace;
         remove_trace = true;
     }
-    qts = qtest_initf(MACHINE_ARGS
-                      " -trace enable=sgi_mgras_mmio"
-                      " -trace enable=sgi_mgras_control_mmio"
-                      " -D %s", trace);
+    args = g_strdup_printf(MACHINE_ARGS
+                           " -trace enable=sgi_mgras_mmio"
+                           " -trace enable=sgi_mgras_control_mmio"
+                           " -D %s%s", trace,
+                           checkpoint_load && *checkpoint_load ?
+                           " -incoming defer" : "");
+    qts = qtest_init(args);
+    if (checkpoint_load && *checkpoint_load) {
+        load_uri = g_strdup_printf("file:%s", checkpoint_load);
+        qtest_qmp_assert_success(qts,
+            "{'execute': 'migrate-incoming', 'arguments': {'uri': %s}}",
+            load_uri);
+        sgi_wait_migration_status(qts, "completed", 30);
+    }
+
     lines = g_strsplit(contents, "\n", -1);
-    for (unsigned int i = 0; lines[i]; i++) {
-        replay_line(qts, path, i + 1, lines[i]);
+    line_count = g_strv_length(lines);
+    start_line = start_line_env && *start_line_env ?
+                 parse_env_line("MGRAS_START_LINE", start_line_env) : 1;
+    end_line = end_line_env && *end_line_env ?
+               parse_env_line("MGRAS_END_LINE", end_line_env) : line_count;
+    if (start_line < 1 || end_line < start_line || end_line > line_count) {
+        g_error("%s: line range %u..%u is outside 1..%u", path,
+                start_line, end_line, line_count);
+    }
+    for (unsigned int i = start_line; i <= end_line; i++) {
+        replay_line(qts, path, i, lines[i - 1]);
+    }
+    if (checkpoint_save && *checkpoint_save) {
+        save_uri = g_strdup_printf("file:%s", checkpoint_save);
+        sgi_migrate_stopped(qts, save_uri);
     }
     if (screendump && *screendump) {
         qtest_qmp_assert_success(qts,
