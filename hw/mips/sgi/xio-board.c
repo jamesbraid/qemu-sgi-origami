@@ -115,7 +115,8 @@ static void sgi_xio_board_realize(DeviceState *dev, Error **errp)
     }
     g_assert(bc->build_widget);
     if (!bc->build_widget(board, errp) ||
-        !sgi_xio_board_reparent(board, errp)) {
+        !sgi_xio_board_reparent(board, errp) ||
+        (bc->finish_realize && !bc->finish_realize(board, errp))) {
         QTAILQ_REMOVE(&sgi_xio_board_all, board, node);
         board->queued = false;
         return;
