@@ -913,8 +913,10 @@ static uint64_t sgi_bridge_read(void *opaque, hwaddr addr, unsigned size)
  * and prints the barcode as "?Part?" and the revision and name as NUL
  * (docs/datasheets/bridge.md, "The page is a fixed-offset binary
  * record"). Boards whose barcode, revision and name the datasheets do not
- * yet give still use it; a board with a board name set uses the record
- * sgi_bridge_onewire_build_record() stores instead.
+ * yet give still use it: the PCI shoehorn (board-pci-shoehorn.c) and the
+ * PCI expansion board (board-pci-expansion.c). The IO-8's XBridge keeps
+ * its own copy of this layout in sgi-xbridge.c. A board with a board name
+ * set uses the record sgi_bridge_onewire_build_record() stores instead.
  */
 static const char sgi_bridge_onewire_image[NIC_ROM_SIZE] = {
     [0]  = 0x01, ' ', ' ', ' ', ' ', ';',
