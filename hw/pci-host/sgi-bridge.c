@@ -1271,21 +1271,26 @@ static const MemoryRegionOps sgi_bridge_ssram_ops = {
 /*
  * The flash port is 16 bits wide, so a crosstalk read of any size is the
  * part's words read one cycle at a time with the requested byte lanes
- * kept, and the part repeats across its chip select above the address
- * lines it decodes. Nothing answers on the other chip select, or on a
- * Bridge with no part fitted: those fail the way an unpopulated widget
- * address does.
+ * kept, and a part repeats across its chip select above the address lines
+ * it decodes. A chip select with nothing on it, including the whole window
+ * on a Bridge with no part fitted, fails the way an unpopulated widget
+ * address does. Returns the part the window offset selects and the offset
+ * within its chip select.
  */
-static bool sgi_bridge_flash_populated(SGIBridgeState *s, hwaddr addr,
-                                       bool is_write)
+static MemoryRegion *sgi_bridge_flash_part(SGIBridgeState *s, hwaddr addr,
+                                           bool is_write, hwaddr *offset)
 {
-    if (s->flash && addr < BRIDGE_FLASH_SELECT_SIZE) {
-        return true;
+    MemoryRegion *part = addr < BRIDGE_FLASH_SELECT_SIZE ? s->flash :
+                                                           s->flash_select1;
+
+    if (part) {
+        *offset = addr % BRIDGE_FLASH_SELECT_SIZE;
+        return part;
     }
     qemu_log_mask(LOG_GUEST_ERROR,
                   "sgi-bridge: flash %s at window offset 0x%" HWADDR_PRIx
                   " with no part there\n", is_write ? "write" : "read", addr);
-    return false;
+    return NULL;
 }
 
 static MemTxResult sgi_bridge_flash_read(void *opaque, hwaddr addr,
@@ -1293,20 +1298,23 @@ static MemTxResult sgi_bridge_flash_read(void *opaque, hwaddr addr,
                                          MemTxAttrs attrs)
 {
     SGIBridgeState *s = opaque;
+    MemoryRegion *part;
     uint64_t part_size;
     uint64_t result = 0;
+    hwaddr offset;
     unsigned i;
 
-    if (!sgi_bridge_flash_populated(s, addr, false)) {
+    part = sgi_bridge_flash_part(s, addr, false, &offset);
+    if (!part) {
         return MEMTX_DECODE_ERROR;
     }
-    part_size = memory_region_size(s->flash);
+    part_size = memory_region_size(part);
     for (i = 0; i < size; i++) {
-        hwaddr byte = (addr + i) % part_size;
+        hwaddr byte = (offset + i) % part_size;
         uint64_t word;
         MemTxResult r;
 
-        r = memory_region_dispatch_read(s->flash, byte & ~(hwaddr)1, &word,
+        r = memory_region_dispatch_read(part, byte & ~(hwaddr)1, &word,
                                         MO_BEUW, attrs);
         if (r != MEMTX_OK) {
             return r;
@@ -1328,9 +1336,11 @@ static MemTxResult sgi_bridge_flash_write(void *opaque, hwaddr addr,
                                           MemTxAttrs attrs)
 {
     SGIBridgeState *s = opaque;
-    hwaddr byte;
+    MemoryRegion *part;
+    hwaddr offset;
 
-    if (!sgi_bridge_flash_populated(s, addr, true)) {
+    part = sgi_bridge_flash_part(s, addr, true, &offset);
+    if (!part) {
         return MEMTX_DECODE_ERROR;
     }
     if (!(s->reg[SGI_BRIDGE_SLOT(BRIDGE_CONTROL)] & CONTROL_FLASH_WRITE_EN)) {
@@ -1348,8 +1358,8 @@ static MemTxResult sgi_bridge_flash_write(void *opaque, hwaddr addr,
                       addr);
         return MEMTX_OK;
     }
-    byte = addr % memory_region_size(s->flash);
-    return memory_region_dispatch_write(s->flash, byte & ~(hwaddr)1, value,
+    offset %= memory_region_size(part);
+    return memory_region_dispatch_write(part, offset & ~(hwaddr)1, value,
                                         MO_BEUW, attrs);
 }
 
@@ -2195,11 +2205,12 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
     memory_region_init_io(&s->ssram, obj, &sgi_bridge_ssram_ops, s,
                           "sgi-bridge.ssram", BRIDGE_SSRAM_SIZE);
     memory_region_add_subregion(&s->widget, BRIDGE_SSRAM_BASE, &s->ssram);
-    if (s->flash) {
-        uint64_t part_size = memory_region_size(s->flash);
+    for (unsigned int select = 0; select < 2; select++) {
+        MemoryRegion *part = select ? s->flash_select1 : s->flash;
+        uint64_t part_size = part ? memory_region_size(part) : 0;
 
-        if (!is_power_of_2(part_size) ||
-            part_size > BRIDGE_FLASH_SELECT_SIZE) {
+        if (part && (!is_power_of_2(part_size) ||
+                     part_size > BRIDGE_FLASH_SELECT_SIZE)) {
             error_setg(errp, "the I/O bridge flash part must be a power of "
                        "two of at most 2 MB, not %" PRIu64 " bytes",
                        part_size);
@@ -2449,6 +2460,12 @@ static const Property sgi_bridge_properties[] = {
      */
     DEFINE_PROP_LINK("flash", SGIBridgeState, flash, TYPE_MEMORY_REGION,
                      MemoryRegion *),
+    /*
+     * Whatever a board fits on the port's other chip select, answering 2 MB
+     * into the window with the same 16-bit cycles; unset where it is empty.
+     */
+    DEFINE_PROP_LINK("flash-select1", SGIBridgeState, flash_select1,
+                     TYPE_MEMORY_REGION, MemoryRegion *),
     /*
      * Forces slots exempt whatever their cards say, for a test or a debug
      * run that wants the answer a card cannot be asked for. Cards declare
