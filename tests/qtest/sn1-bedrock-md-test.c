@@ -415,6 +415,41 @@ static void test_selftest_phases(void)
     qtest_quit(s);
 }
 
+/*
+ * A read at or after the completion time sees the result whether or not
+ * the host has run the completion timer yet. The machine here stays
+ * stopped, so stepping the clock runs no timer: that stands in for a host
+ * too loaded to run the main loop while a processor polls. The stock PROM
+ * samples its clock before the start, reads status, then checks the clock,
+ * and reports a hang if that read showed done clear and the clock has
+ * passed its deadline. The zero-pattern phase is the one whose fill made
+ * that window long. The fill takes no virtual time under qtest, so this
+ * covers publication on read, not counting the interval from the start.
+ */
+static void test_selftest_completion_without_timer(void)
+{
+    uint64_t config = (UINT64_C(3) << 32) | memory_bank_config(0, 1);
+    QTestState *s = start_with_memory("64M", "");
+
+    qtest_writeq(s, MD(0x8), config);
+    selftest_start(s, 3, 0x80);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, 0);
+    qtest_clock_step(s, SELFTEST_INTERVAL_NS - 1);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, 0);
+    qtest_clock_step(s, 1);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==,
+                    SELFTEST_DONE | SELFTEST_PASSED);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_ERROR_ADDRESS)), ==, 0);
+
+    /* A failed selector's error address is published by its own read. */
+    selftest_start(s, 1, 0x5a);
+    qtest_clock_step(s, SELFTEST_INTERVAL_NS);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_ERROR_ADDRESS)), ==,
+                    SELFTEST_MEMORY_ERROR);
+    g_assert_cmphex(qtest_readq(s, MD(SELFTEST_STATUS)), ==, SELFTEST_DONE);
+    qtest_quit(s);
+}
+
 static void test_selftest_bank_remap(void)
 {
     uint64_t config = (UINT64_C(3) << 32) | memory_bank_config(2, 1);
@@ -3543,6 +3578,8 @@ int main(int argc, char **argv)
                    test_origin300_fetchop);
     qtest_add_func("sn1/bedrock-md/register-contract", test_register_contract);
     qtest_add_func("sn1/bedrock-md/selftest-phases", test_selftest_phases);
+    qtest_add_func("sn1/bedrock-md/selftest-completion-without-timer",
+                   test_selftest_completion_without_timer);
     qtest_add_func("sn1/bedrock-md/selftest-bank-remap",
                    test_selftest_bank_remap);
     qtest_add_func("sn1/bedrock-md/selftest-negative-carriers",
