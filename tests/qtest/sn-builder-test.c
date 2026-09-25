@@ -1037,6 +1037,37 @@ static void test_origin300_two_chassis_refuses_an_uneven_record_list(
                         "divide evenly across the 2 chassis L1s");
 }
 
+/*
+ * The cable between the two chassis also carries their L1s' RS-422 pair,
+ * so the builder makes each chassis's L1 the other's peer when it wires
+ * the cable.
+ */
+static void test_origin300_two_chassis_l1s_are_peers(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    g_autofree char *path = NULL;
+    g_autofree char *peer0 = NULL;
+    g_autofree char *peer1 = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn-builder-o300-pair-prom-XXXXXX.bin", &path,
+                         &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    qts = qtest_initf("-M origin300,topology=origin300-two-chassis "
+                      "-cpu R14000 -smp 4 -m 1024 -bios %s -nodefaults "
+                      "-display none", path);
+    peer0 = qom_get_str(qts, "/machine/node0/l1", "peer");
+    peer1 = qom_get_str(qts, "/machine/node1/l1", "peer");
+    g_assert_cmpstr(peer0, ==, "/machine/node1/l1");
+    g_assert_cmpstr(peer1, ==, "/machine/node0/l1");
+    qtest_quit(qts);
+    g_unlink(path);
+}
+
 static void test_unsupported_memory_population_rejected(const void *data)
 {
     /*
@@ -1100,6 +1131,8 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn/builder/origin300-two-chassis-refuses-an-uneven-record-list",
         NULL, test_origin300_two_chassis_refuses_an_uneven_record_list);
+    qtest_add_data_func("sn/builder/origin300-two-chassis-l1s-are-peers",
+                        NULL, test_origin300_two_chassis_l1s_are_peers);
     qtest_add_data_func("sn/builder/origin200-accepts-its-cpu-populations",
                         NULL, test_origin200_accepts_its_cpu_populations);
     qtest_add_data_func("sn/builder/origin200-accepts-its-memory-populations",
