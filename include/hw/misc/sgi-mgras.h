@@ -102,7 +102,7 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
  * Kernel-privileged DMA source-mapping command port. Shares 0x120400's
  * class/reg/len token framing, but a class-0x48 header writes straight
  * into a flat register file instead of buffering a payload for dispatch;
- * see si_dma_map_write() in hw/misc/sgi-mgras-raster.c. Raw writes are
+ * see sgi_mgras_dma_map_write() in hw/misc/sgi-mgras-raster.c. Raw writes are
  * also retained so a plain readback still round-trips, matching the
  * approximation used before the mapping registers were understood.
  */
@@ -176,7 +176,7 @@ struct SGIMgrasClass {
  * widget-shift or flat fabric base). Shared with hw/misc/sgi-mgras-raster.c
  * so host-memory DMA reads use the same routing as interrupt packets.
  */
-bool si_compose_xtalk(SGIMgrasState *s, unsigned int widget,
+bool sgi_mgras_xio_compose(SGIMgrasState *s, unsigned int widget,
                       uint64_t address, hwaddr *fabric);
 
 struct SGIMgrasState {

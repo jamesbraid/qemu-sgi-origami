@@ -132,5 +132,5 @@ wid 10 10 5
 # --- display-enable, mirroring fill.replay's own late placement ---
 write 4 0x072038 0x1e000400
 
-# --- discriminating check: fails on unmodified si_cmap_rgb ---
+# --- discriminating check: fails on unmodified mgras_cmap_rgb ---
 display-pixel 10 10 0x00ffffff

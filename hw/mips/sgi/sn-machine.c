@@ -1288,12 +1288,12 @@ static bool sgi_machine_build_mgras(SGIMachineState *s, Error **errp)
 {
     DeviceState *dev = qdev_new(TYPE_SGI_MGRAS);
 
-    object_property_add_child(OBJECT(s), "si-viz", OBJECT(dev));
+    object_property_add_child(OBJECT(s), "mgras", OBJECT(dev));
     s->mgras = SGI_MGRAS(dev);
     object_unref(OBJECT(dev));
 
     memory_region_init(&s->mgras_packet_proxy, OBJECT(s),
-                       "si-viz-packet-proxy",
+                       "mgras-packet-proxy",
                        SGI_XBOW_WIDGETS * SGI_XBOW_PACKET_SIZE);
     memory_region_set_enabled(&s->mgras_packet_proxy, false);
     if (!object_property_set_link(OBJECT(dev), "fabric",
@@ -1441,7 +1441,7 @@ static bool sgi_machine_realize_crossbars(
             sgi_xbow_packet_ingress(crossbow, s->mgras_slot->widget);
 
         memory_region_init_alias(&s->mgras_packet_alias, OBJECT(s),
-                                 "si-viz-packet-ingress", packet, 0,
+                                 "mgras-packet-ingress", packet, 0,
                                  memory_region_size(packet));
         memory_region_add_subregion(&s->mgras_packet_proxy, 0,
                                     &s->mgras_packet_alias);

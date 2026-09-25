@@ -5,7 +5,7 @@
 #include "hw/misc/sgi-mgras-display.h"
 
 
-#define SI_CURSOR_CMAP_INDEX 0x1c
+#define MGRAS_CURSOR_CMAP_INDEX 0x1c
 
 
 /*
@@ -16,7 +16,7 @@
  * are taken as red, green and blue. The low byte's meaning is unknown.
  * Return the entry in the native 0x00BBGGRR order the callers convert.
  */
-static uint32_t si_cmap_rgb(SGIMgrasState *s, uint8_t visual, uint8_t index)
+static uint32_t mgras_cmap_rgb(SGIMgrasState *s, uint8_t visual, uint8_t index)
 {
     uint32_t map = (s->xmap_mode[visual & 0x1f] >> 5) & 0x1f;
     uint32_t entry = s->cmap[map * 256 + index];
@@ -32,9 +32,9 @@ static uint32_t si_cmap_rgb(SGIMgrasState *s, uint8_t visual, uint8_t index)
  * in sgi-mgras.h for the captured load protocol. Apply the table as a
  * final stage over any resolved colour, so indexed and, once modeled,
  * direct-colour pixels see the same correction. Operates on
- * si_cmap_rgb()'s native 0x00BBGGRR order.
+ * mgras_cmap_rgb()'s native 0x00BBGGRR order.
  */
-static uint32_t si_gamma_apply(SGIMgrasState *s, uint32_t bgr)
+static uint32_t mgras_gamma_apply(SGIMgrasState *s, uint32_t bgr)
 {
     uint32_t b = s->dac_gamma[2][(bgr >> 16) & 0xff];
     uint32_t g = s->dac_gamma[1][(bgr >> 8) & 0xff];
@@ -44,10 +44,11 @@ static uint32_t si_gamma_apply(SGIMgrasState *s, uint32_t bgr)
 }
 
 /* The cursor uses mask and select planes from VC3 SRAM. */
-static void si_composite_cursor(SGIMgrasState *s)
+static void mgras_composite_cursor(SGIMgrasState *s)
 {
     uint32_t base = s->vc3_reg[1];
-    uint32_t ink = si_gamma_apply(s, si_cmap_rgb(s, 0, SI_CURSOR_CMAP_INDEX));
+    uint32_t ink =
+        mgras_gamma_apply(s, mgras_cmap_rgb(s, 0, MGRAS_CURSOR_CMAP_INDEX));
     uint32_t bg = 0x00ffffff;
 
     for (unsigned row = 0; row < 32; row++) {
@@ -84,7 +85,7 @@ static void si_composite_cursor(SGIMgrasState *s)
 
 
 /* Convert native pixels to the host surface and blank when disabled. */
-static bool si_gfx_update(void *opaque)
+static bool mgras_gfx_update(void *opaque)
 {
     SGIMgrasState *s = opaque;
 
@@ -105,27 +106,27 @@ static bool si_gfx_update(void *opaque)
      * select it, so a direct-colour mode indexes here like any other.
      */
     for (int i = 0; i < SGI_MGRAS_WIDTH * SGI_MGRAS_HEIGHT; i++) {
-        uint32_t rgb = si_gamma_apply(s, si_cmap_rgb(s, s->wid[i],
+        uint32_t rgb = mgras_gamma_apply(s, mgras_cmap_rgb(s, s->wid[i],
                                                      s->front[i] & 0xff));
 
         s->display_buffer[i] = ((rgb & 0xff) << 16) | (rgb & 0x00ff00) |
                                ((rgb >> 16) & 0xff);
     }
     if (s->cursor_enabled) {
-        si_composite_cursor(s);
+        mgras_composite_cursor(s);
     }
     qemu_console_update_full(s->con);
     s->dirty = false;
     return true;
 }
 
-const GraphicHwOps si_mgras_display_ops = {
-    .gfx_update = si_gfx_update,
+const GraphicHwOps sgi_mgras_display_ops = {
+    .gfx_update = mgras_gfx_update,
 };
 
 
 /* The host surface wraps display_buffer without changing guest state. */
-void si_mgras_display_ensure_surface(SGIMgrasState *s)
+void sgi_mgras_display_ensure_surface(SGIMgrasState *s)
 {
     DisplaySurface *ds = qemu_console_surface(s->con);
 
