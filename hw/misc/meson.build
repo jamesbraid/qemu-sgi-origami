@@ -212,3 +212,4 @@ system_ss.add(when: 'CONFIG_SGI_XBOW_TRANSPORT_TEST', if_true: files('sgi-xbow-t
 system_ss.add(when: 'CONFIG_SGI_COMMAND_PORT', if_true: files('sgi-command-port.c'))
 system_ss.add(when: 'CONFIG_SGI_COMMAND_PORT_TEST',
               if_true: files('sgi-command-port-test.c'))
+system_ss.add(when: 'CONFIG_SGI_KONA_PORTS', if_true: files('sgi-kona-ports.c'))

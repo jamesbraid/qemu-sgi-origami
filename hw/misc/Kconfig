@@ -398,3 +398,11 @@ config SGI_COMMAND_PORT_TEST
     default y if TEST_DEVICES
     depends on TEST_DEVICES
     select SGI_COMMAND_PORT
+
+# InfiniteReality/KONA's own port roles and selector tables: data only,
+# no device or MemoryRegion of its own. sgi-kona (increment 1,
+# identity only) does not select this yet; a future FIFO/textport/
+# doorbell increment will.
+config SGI_KONA_PORTS
+    bool
+    select SGI_COMMAND_PORT
