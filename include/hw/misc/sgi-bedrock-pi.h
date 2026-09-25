@@ -3,6 +3,7 @@
 #define HW_MISC_SGI_BEDROCK_PI_H
 
 #include "hw/core/sysbus.h"
+#include "qemu/notify.h"
 #include "qemu/timer.h"
 
 #define TYPE_SGI_BEDROCK_PI "sgi-bedrock-pi"
@@ -41,6 +42,11 @@ struct SGIBedrockPIState {
     uint64_t io_protect;
     uint64_t region_present;
     uint8_t cached_alias;
+    /*
+     * Told when the cached-alias size changes, by a write or a load: the
+     * node's address decode (sn1-node.c) sizes the alias window from it.
+     */
+    NotifierList cached_alias_notifiers;
     uint8_t rq_timeout_max;
     uint32_t rq_timeout_scale;
     uint8_t cpu_enable[2];
@@ -114,5 +120,9 @@ void sgi_bedrock_pi_recompute(SGIBedrockPIState *s);
  */
 bool sgi_bedrock_pi_io_modify(SGIBedrockPIState *s, uint64_t value,
                               unsigned region);
+
+/* Call notifier whenever the cached-alias size register changes. */
+void sgi_bedrock_pi_add_cached_alias_notifier(SGIBedrockPIState *s,
+                                              Notifier *notifier);
 
 #endif
