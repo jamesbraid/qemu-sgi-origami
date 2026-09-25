@@ -29,6 +29,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/cutils.h"
 #include "qemu/units.h"
 #include "qemu/host-utils.h"
 #include "qemu/datadir.h"
@@ -153,6 +154,13 @@ struct SGIMachineState {
     MachineState parent_obj;
 
     char *topology_name;
+    /*
+     * population=: the per-node processor counts, colon-separated in node
+     * order, naming one of the topology's accepted populations when -smp
+     * alone matches more than one (a two-chassis Origin 300 fits six as
+     * 4:2 or 2:4). NULL leaves -smp to choose.
+     */
+    char *population;
     char *baseio_preset;
 
     unsigned int num_nodes;
@@ -537,17 +545,41 @@ static size_t sgi_machine_topology_crossbar_count(const SGIModelTopology *t)
     return count;
 }
 
+/* Whether @population's per-node counts are exactly @text's (e.g. "4:2"). */
+static bool sgi_machine_population_named(
+    const SGIModelCpuPopulation *population, const char *text)
+{
+    g_auto(GStrv) counts = g_strsplit(text, ":", -1);
+    g_autofree unsigned int *cpus_per_node = NULL;
+    size_t n, i;
+
+    cpus_per_node = sgi_model_array_uint32(population->cpus_per_node, &n);
+    if (g_strv_length(counts) != n) {
+        return false;
+    }
+    for (i = 0; i < n; i++) {
+        unsigned long value;
+
+        if (qemu_strtoul(counts[i], NULL, 10, &value) ||
+            value != cpus_per_node[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /*
  * Every R10000 and R14000 is a single-core socket, so -smp N names a
  * total, never a shape: which node each of the N sockets sits on comes
  * from the topology's own accepted population, the way the population
  * table already records it. Find the population whose total is
- * total_cpus; *second names a second match so the caller can refuse an
+ * total_cpus, and whose per-node counts are @named's when @named is
+ * given; *second names a second match so the caller can refuse an
  * ambiguous total instead of guessing between them.
  */
 static const SGIModelCpuPopulation *sgi_machine_find_population_by_total(
     const SGIModelTopology *t, unsigned int total_cpus,
-    const SGIModelCpuPopulation **second)
+    const char *named, const SGIModelCpuPopulation **second)
 {
     size_t node_count = sgi_machine_topology_node_count(t);
     const SGIModelCpuPopulation *match = NULL;
@@ -565,6 +597,9 @@ static const SGIModelCpuPopulation *sgi_machine_find_population_by_total(
             continue;
         }
         if (sgi_machine_population_total(population) != total_cpus) {
+            continue;
+        }
+        if (named && !sgi_machine_population_named(population, named)) {
             continue;
         }
         if (!match) {
@@ -672,8 +707,8 @@ static const CPUArchIdList *sgi_machine_possible_cpu_arch_ids(
     if (t) {
         const SGIModelCpuPopulation *second;
 
-        population = sgi_machine_find_population_by_total(t, max_cpus,
-                                                           &second);
+        population = sgi_machine_find_population_by_total(
+            t, max_cpus, SGI_MACHINE(machine)->population, &second);
     }
     if (population) {
         cpus_per_node = sgi_model_array_uint32(population->cpus_per_node,
@@ -2189,11 +2224,17 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
         size_t population_node_count;
 
         population = sgi_machine_find_population_by_total(
-            t, machine->smp.cpus, &second);
+            t, machine->smp.cpus, s->population, &second);
         if (second) {
             error_setg(errp, "%s: topology '%s' accepts %u CPUs as more "
-                      "than one population; a future topology= selector "
-                      "will name which one", mc->name, t->name,
+                      "than one population; name one with population=, "
+                      "per-node counts in node order such as 4:2",
+                      mc->name, t->name, machine->smp.cpus);
+            return false;
+        }
+        if (!population && s->population) {
+            error_setg(errp, "%s: topology '%s' accepts no population %s "
+                      "of %u CPUs", mc->name, t->name, s->population,
                       machine->smp.cpus);
             return false;
         }
@@ -2836,6 +2877,21 @@ static void sgi_machine_reset(MachineState *machine, ResetType type)
 
 /* ---- Machine properties (once, on the family base) ---- */
 
+static char *sgi_machine_get_population(Object *obj, Error **errp)
+{
+    return g_strdup(SGI_MACHINE(obj)->population ?
+                    SGI_MACHINE(obj)->population : "");
+}
+
+static void sgi_machine_set_population(Object *obj, const char *value,
+                                       Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+
+    g_free(s->population);
+    s->population = *value ? g_strdup(value) : NULL;
+}
+
 static char *sgi_machine_get_topology(Object *obj, Error **errp)
 {
     SGIMachineState *s = SGI_MACHINE(obj);
@@ -2982,6 +3038,7 @@ static void sgi_machine_instance_finalize(Object *obj)
     g_free(s->spare_fabric_links);
     g_free(s->spare_fabric_widget);
     g_free(s->topology_name);
+    g_free(s->population);
     g_free(s->baseio_preset);
     for (i = 0; i < ARRAY_SIZE(sgi_machine_identity_records); i++) {
         qapi_free_strList(*sgi_machine_identity_slot(
@@ -3027,6 +3084,14 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
         "population. Defaults to the product's shipped configuration; "
         "an unrecognized name (including 'help') reports every topology "
         "this product accepts.");
+
+    object_class_property_add_str(oc, "population",
+                                  sgi_machine_get_population,
+                                  sgi_machine_set_population);
+    object_class_property_set_description(oc, "population",
+        "Per-node processor counts in node order, colon-separated (4:2), "
+        "naming one of the topology's accepted populations. Needed only "
+        "where -smp alone matches more than one.");
 
     object_class_property_add_bool(oc, "debug-leds", sgi_machine_get_debug_leds,
                                    sgi_machine_set_debug_leds);

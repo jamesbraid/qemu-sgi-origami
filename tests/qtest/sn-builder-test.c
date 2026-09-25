@@ -735,6 +735,79 @@ static void test_origin200_dual_accepts_its_populations(const void *data)
     }
 }
 
+/* Processors per node, from query-cpus-fast's node-id properties. */
+static void count_cpus_per_node(QTestState *qts, unsigned int *counts,
+                                unsigned int nodes)
+{
+    g_autoptr(QDict) response = qtest_qmp(qts,
+                                          "{'execute':'query-cpus-fast'}");
+    QList *cpus = qdict_get_qlist(response, "return");
+    const QListEntry *entry;
+
+    memset(counts, 0, nodes * sizeof(*counts));
+    QLIST_FOREACH_ENTRY(cpus, entry) {
+        QDict *cpu = qobject_to(QDict, qlist_entry_obj(entry));
+        int64_t node = qdict_get_int(qdict_get_qdict(cpu, "props"), "node-id");
+
+        g_assert_cmpint(node, <, nodes);
+        counts[node]++;
+    }
+}
+
+/*
+ * A two-chassis Origin 300 fits six processors as 4:2 or 2:4, so -smp 6
+ * alone is refused and population= names the one wanted; -smp 4 and 8 have
+ * one population each and need no name.
+ */
+static void test_origin300_two_chassis_population(const void *data)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree uint8_t *image = g_malloc0(PROM_SIZE);
+    g_autofree char *path = NULL;
+    g_autofree char *bios = NULL;
+    unsigned int counts[2];
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("sn-builder-o300-prom-XXXXXX.bin", &path, &error);
+    g_assert_no_error(error);
+    g_assert_cmpint(write(fd, image, PROM_SIZE), ==, (ssize_t)PROM_SIZE);
+    g_assert_cmpint(close(fd), ==, 0);
+    bios = g_strdup_printf("-bios %s", path);
+
+    {
+        const char *args[] = {
+            qtest_qemu_binary(NULL), "-M",
+            "origin300,topology=origin300-two-chassis", "-cpu", "R14000",
+            "-smp", "6", "-m", "1024", "-bios", path, "-display", "none",
+            NULL
+        };
+
+        assert_qemu_rejects(args, "name one with population=");
+    }
+    qts = qtest_initf("-M origin300,topology=origin300-two-chassis,"
+                      "population=4:2 -cpu R14000 -smp 6 -m 1024 %s "
+                      "-display none", bios);
+    count_cpus_per_node(qts, counts, 2);
+    g_assert_cmpuint(counts[0], ==, 4);
+    g_assert_cmpuint(counts[1], ==, 2);
+    qtest_quit(qts);
+    qts = qtest_initf("-M origin300,topology=origin300-two-chassis,"
+                      "population=2:4 -cpu R14000 -smp 6 -m 1024 %s "
+                      "-display none", bios);
+    count_cpus_per_node(qts, counts, 2);
+    g_assert_cmpuint(counts[0], ==, 2);
+    g_assert_cmpuint(counts[1], ==, 4);
+    qtest_quit(qts);
+    qts = qtest_initf("-M origin300,topology=origin300-two-chassis "
+                      "-cpu R14000 -smp 8 -m 1024 %s -display none", bios);
+    count_cpus_per_node(qts, counts, 2);
+    g_assert_cmpuint(counts[0], ==, 4);
+    g_assert_cmpuint(counts[1], ==, 4);
+    qtest_quit(qts);
+    g_unlink(path);
+}
+
 static void test_origin2000_module_accepts_its_populations(const void *data)
 {
     QTestState *qts = qtest_init("-M origin2000 -smp 8 -display none");
@@ -1139,6 +1212,8 @@ int main(int argc, char **argv)
                         NULL, test_origin200_accepts_its_memory_populations);
     qtest_add_data_func("sn/builder/origin200-dual-accepts-its-populations",
                         NULL, test_origin200_dual_accepts_its_populations);
+    qtest_add_data_func("sn/builder/origin300-two-chassis-population",
+                        NULL, test_origin300_two_chassis_population);
     qtest_add_data_func(
         "sn/builder/origin2000-module-accepts-its-populations", NULL,
         test_origin2000_module_accepts_its_populations);
