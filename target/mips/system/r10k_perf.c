@@ -45,6 +45,16 @@ static uint32_t mips_r10k_perf_cycles(CPUMIPSState *env)
 }
 
 /*
+ * The event a control register selects. The field is four bits on the
+ * R10000 and five on the R12000 family; each model's writable mask keeps
+ * the bits its field lacks at zero, so reading five serves both.
+ */
+static unsigned mips_r10k_perf_event(uint32_t ctl)
+{
+    return extract32(ctl, CP0PC_EVENT, 5);
+}
+
+/*
  * Whether counter @ctr advances right now: its event is Cycles and its
  * control register enables the current mode. The manual's qualifiers: U,
  * S and K each pair their mode with EXL and ERL clear, the EXL enable
@@ -55,7 +65,7 @@ static bool mips_r10k_perf_counting(CPUMIPSState *env, unsigned ctr)
     uint32_t ctl = env->CP0_Performance[ctr * 2];
     uint32_t st = env->CP0_Status;
 
-    if (((ctl >> CP0PC_EVENT) & 0xf) != 0) {
+    if (mips_r10k_perf_event(ctl) != 0) {
         return false;
     }
     if (st & (1 << CP0St_ERL)) {
@@ -95,7 +105,7 @@ bool cpu_mips_r10k_perf_mode_sensitive(CPUMIPSState *env)
     for (ctr = 0; ctr < env->cfg.performance_counter_pairs; ctr++) {
         uint32_t ctl = env->CP0_Performance[ctr * 2];
 
-        if (((ctl >> CP0PC_EVENT) & 0xf) == 0 &&
+        if (mips_r10k_perf_event(ctl) == 0 &&
             (ctl & (CP0PC_U | CP0PC_S | CP0PC_K | CP0PC_EXL))) {
             return true;
         }

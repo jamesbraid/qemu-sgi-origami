@@ -789,7 +789,7 @@ const mips_def_t mips_defs[] =
             .has_cache_diagnostics = true,
             .has_branch_prediction_table = true,
             .performance_counter_pairs = 4,
-            .performance_control_rw_bitmask =
+            .performance_control_rw_bitmask = CP0PC_EVENT_R12K |
                 CP0PC_IE | CP0PC_U | CP0PC_K | CP0PC_EXL,
             /* Counter overflow interrupt behavior remains outside the model. */
             .performance_counter_interrupts = false,
