@@ -51,6 +51,10 @@
 #define PI_ERR_STATUS0_CLR_A   0x438
 #define PI_ERR_STATUS0_B       0x450
 #define PI_ERR_STATUS0_CLR_B   0x458
+#define PI_ERR_STATUS1_A       0x440
+#define PI_ERR_STATUS1_CLR_A   0x448
+#define PI_ERR_STATUS1_B       0x460
+#define PI_ERR_STATUS1_CLR_B   0x468
 #define PI_STATUS_VALID        (1ULL << 63)
 #define PI_STATUS_ADDRESS      (0x480041ULL << 25)
 #define PI_STATUS_EXPECTED     (PI_STATUS_VALID | PI_STATUS_ADDRESS)
@@ -652,6 +656,75 @@ static void test_pi_status_reset_clears_both_slices(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * IRIX 6.5.30 retires a processor's error record with one 64-bit zero store
+ * to that processor's status 1 clearing alias, never to the status 0 one:
+ * its per-Hub error setup does it for both processors on Hub 2.1 and later,
+ * and its error-stack walker does it after taking a valid status 0 record,
+ * then asks again and stops only once status 0 reads not valid. That walker
+ * would loop on one record forever if the store left status 0 valid, so the
+ * store must end the whole record. As with the status 0 alias, only the
+ * observed 64-bit zero store is modelled as clearing.
+ */
+static void test_status1_clear_alias_retires_the_record(const void *data)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    build_probe_image(image);
+    path = sn0_image_write(image, "sn0-pi-error-status1");
+    qts = qtest_initf("-M origin200 -m 64M -smp 2 "
+                      "-bios %s -accel tcg,thread=multi "
+                      "-no-reboot -no-shutdown -S", path);
+    unlink(path);
+    qtest_writeq(qts, START_A, 0);
+    qtest_writeq(qts, LAUNCH_B, 0);
+    qtest_writeq(qts, REPROBE_B, 0);
+    qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
+    wait_for_marker(qts, NARROW_MARKER);
+    qtest_writeq(qts, START_A, 1);
+    wait_for_marker(qts, MARKER_A);
+    qtest_writeq(qts, LAUNCH_B, 1);
+    wait_for_marker(qts, MARKER_B);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS0_A), ==,
+                    PI_STATUS_EXPECTED);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS0_B), ==,
+                    PI_STATUS_EXPECTED);
+
+    /* A nonzero or narrow store is unobserved and clears nothing. */
+    qtest_writeq(qts, HUB_LOCAL + PI_ERR_STATUS1_CLR_A, 1);
+    qtest_writel(qts, HUB_LOCAL + PI_ERR_STATUS1_CLR_A, 0);
+    qtest_writel(qts, HUB_LOCAL + PI_ERR_STATUS1_CLR_A + 4, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS0_A), ==,
+                    PI_STATUS_EXPECTED);
+
+    /* Each processor's alias retires its own record and not the other's. */
+    qtest_writeq(qts, HUB_LOCAL + PI_ERR_STATUS1_CLR_A, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS0_A), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS1_A), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS0_B), ==,
+                    PI_STATUS_EXPECTED);
+    qtest_writeq(qts, HUB_LOCAL + PI_ERR_STATUS1_CLR_B, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS0_B), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS1_B), ==, 0);
+
+    /* The alias is not a one-shot: a fresh probe latches again. */
+    qtest_writeq(qts, REPROBE_B, 1);
+    wait_for_marker(qts, MARKER_B2);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS0_B), ==,
+                    PI_STATUS_EXPECTED);
+    qtest_writeq(qts, HUB_LOCAL + PI_ERR_STATUS1_CLR_B, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_ERR_STATUS0_B), ==, 0);
+
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -665,5 +738,7 @@ int main(int argc, char **argv)
                         test_pi_status_reset_clears_both_slices);
     qtest_add_data_func("sn0/pi-error/origin2000-local-issuing-hub", NULL,
                         test_origin2000_probe_is_local_to_issuing_hub);
+    qtest_add_data_func("sn0/pi-error/status1-clear-alias-retires-record",
+                        NULL, test_status1_clear_alias_retires_the_record);
     return g_test_run();
 }
