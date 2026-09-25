@@ -2,6 +2,7 @@
 """Reject qtest sources that are absent from the Meson test lists."""
 
 from pathlib import Path
+from collections import Counter
 import re
 import sys
 
@@ -40,10 +41,36 @@ def guarded_names(meson: str, config_pattern: str) -> set[str]:
             for name in re.findall(r"'([^']+)'", block.group(1))}
 
 
+def registration_occurrences(meson: str) -> Counter[str]:
+    """Count names in top-level qtest lists, excluding conditional rewrites.
+
+    A conditional rewrite such as the XBridge fixture's indented
+    `sn1_xbridge_qtests = [...]` narrows an earlier list. It does not add a
+    second registration. A second name in a top-level list does.
+    """
+    counts: Counter[str] = Counter()
+    lines = meson.splitlines()
+    collecting = False
+    for line in lines:
+        if line and not line[0].isspace():
+            assignment = re.match(r"([A-Za-z_]\w*)\s*=", line)
+            name = assignment.group(1) if assignment else ""
+            collecting = (name.startswith("qtests_") or name.endswith("_qtests")) \
+                and name not in ("slow_qtests", "qtest_priorities")
+        if collecting and not line.lstrip().startswith("#"):
+            counts.update(name for name in re.findall(r"'([^']+)'", line)
+                          if name.endswith("-test") and
+                          (name.startswith(FAMILIES) or name in BRIDGE_CARD_TESTS))
+    return counts
+
+
 def main() -> int:
     meson = (QTEST / "meson.build").read_text()
     names = registration_names(meson)
     problems = []
+    problems.extend(f"{n} is registered more than once"
+                    for n, count in registration_occurrences(meson).items()
+                    if count > 1)
     for prefix in FAMILIES:
         sources = {p.stem for p in QTEST.glob(f"{prefix}*-test.c") if p.is_file()}
         registered = {n for n in names if n.startswith(prefix)}
