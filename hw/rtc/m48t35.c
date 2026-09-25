@@ -12,6 +12,7 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/bcd.h"
+#include "qemu/bswap.h"
 #include "qemu/log.h"
 #include "hw/rtc/m48t35.h"
 #include "hw/core/qdev-properties.h"
@@ -72,43 +73,151 @@ static void m48t35_install_factory_image(M48T35State *s)
     s->cell[M48T35_CHECKSUM] = m48t35_factory_checksum(s->cell);
 }
 
-/* Both paths share the offset, so releasing a freeze cannot jump the clock. */
-static void m48t35_now(M48T35State *s, struct tm *tm)
-{
-    if (s->frozen) {
-        time_t frozen = s->frozen_epoch;
+/* A date in the part's own terms: cell year 0-99, month 0-11. */
+typedef struct M48T35Calendar {
+    int sec;
+    int min;
+    int hour;
+    int mday;
+    int mon;
+    int year;
+} M48T35Calendar;
 
-        gmtime_r(&frozen, tm);
-    } else {
-        qemu_get_timedate(tm, s->time_offset);
+static const uint16_t m48t35_days_before_month[12] = {
+    0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334,
+};
+
+static const uint8_t m48t35_days_in_month[12] = {
+    31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+};
+
+/* The part's rule: a year cell that is a multiple of four has 29 February. */
+static bool m48t35_leap_year(int year)
+{
+    return year % 4 == 0;
+}
+
+static int m48t35_month_length(int year, int mon)
+{
+    return m48t35_days_in_month[mon] + (mon == 1 && m48t35_leap_year(year));
+}
+
+static int64_t m48t35_wrap(int64_t seconds)
+{
+    seconds %= M48T35_CENTURY_SECONDS;
+    return seconds < 0 ? seconds + M48T35_CENTURY_SECONDS : seconds;
+}
+
+/*
+ * The part's seconds for a date. A day past its month's end runs on into the
+ * next month, as the arithmetic falls; a month outside 1-12 carries into the
+ * year the way mktime() would, so a guest's nonsense stays in range.
+ */
+static int64_t m48t35_part_seconds(const M48T35Calendar *c)
+{
+    int year = c->year + c->mon / 12 - (c->mon % 12 < 0);
+    int mon = (c->mon % 12 + 12) % 12;
+    int64_t days;
+
+    year = (year % M48T35_CELL_YEARS + M48T35_CELL_YEARS) % M48T35_CELL_YEARS;
+    days = (int64_t)year * 365 + (year + 3) / 4 +
+           m48t35_days_before_month[mon] +
+           (mon > 1 && m48t35_leap_year(year)) + c->mday - 1;
+    return m48t35_wrap(days * M48T35_DAY_SECONDS + c->hour * 3600 +
+                       c->min * 60 + c->sec);
+}
+
+static void m48t35_part_calendar(int64_t seconds, M48T35Calendar *c)
+{
+    int64_t days;
+    int rest, length;
+
+    seconds = m48t35_wrap(seconds);
+    days = seconds / M48T35_DAY_SECONDS;
+    rest = seconds % M48T35_DAY_SECONDS;
+    c->hour = rest / 3600;
+    c->min = rest / 60 % 60;
+    c->sec = rest % 60;
+    for (c->year = 0;
+         days >= (length = 365 + m48t35_leap_year(c->year)); c->year++) {
+        days -= length;
     }
+    for (c->mon = 0;
+         days >= (length = m48t35_month_length(c->year, c->mon)); c->mon++) {
+        days -= length;
+    }
+    c->mday = days + 1;
+}
+
+/* Seconds of the clock -rtc selects, the model's running reference. */
+static int64_t m48t35_host_seconds(void)
+{
+    struct tm tm;
+
+    qemu_get_timedate(&tm, 0);
+    return mktimegm(&tm);
+}
+
+/* The host's date written as the part would hold it. */
+static int64_t m48t35_host_part_seconds(void)
+{
+    struct tm tm;
+    M48T35Calendar c;
+
+    qemu_get_timedate(&tm, 0);
+    c = (M48T35Calendar) {
+        .sec = tm.tm_sec,
+        .min = tm.tm_min,
+        .hour = tm.tm_hour,
+        .mday = tm.tm_mday,
+        .mon = tm.tm_mon,
+        /* +100: C's remainder keeps the sign, and 1969 is cell 99. */
+        .year = ((tm.tm_year + 1900 - M48T35_YEAR_BASE) % 100 + 100) % 100,
+    };
+    return m48t35_part_seconds(&c);
+}
+
+/* Start the part at the host's date. */
+static void m48t35_follow_host(M48T35State *s)
+{
+    s->time_offset = m48t35_host_part_seconds() - m48t35_host_seconds();
+}
+
+/* The part's running time, frozen or not. */
+static int64_t m48t35_running(M48T35State *s)
+{
+    return m48t35_wrap(m48t35_host_seconds() + s->time_offset);
+}
+
+/* Both paths share the offset, so releasing a freeze cannot jump the clock. */
+static void m48t35_now(M48T35State *s, M48T35Calendar *c)
+{
+    m48t35_part_calendar(s->frozen ? s->frozen_epoch : m48t35_running(s), c);
 }
 
 static uint64_t m48t35_read_clock(M48T35State *s, hwaddr addr)
 {
-    struct tm tm;
+    M48T35Calendar c;
 
-    m48t35_now(s, &tm);
+    m48t35_now(s, &c);
 
     switch (addr) {
     case M48T35_SECONDS:
-        return to_bcd(tm.tm_sec);
+        return to_bcd(c.sec);
     case M48T35_MINUTES:
-        return to_bcd(tm.tm_min);
+        return to_bcd(c.min);
     case M48T35_HOURS:
-        return to_bcd(tm.tm_hour);
+        return to_bcd(c.hour);
     case M48T35_WEEKDAY:
         /* Stored, not counted; no driver here reads it back. */
         return s->cell[M48T35_WEEKDAY];
     case M48T35_DAY:
-        return to_bcd(tm.tm_mday);
+        return to_bcd(c.mday);
     case M48T35_MONTH:
-        /* One through twelve, where the C library counts from zero. */
-        return to_bcd(tm.tm_mon + 1);
+        /* One through twelve, where the calendar counts from zero. */
+        return to_bcd(c.mon + 1);
     case M48T35_YEAR:
-        /* +100: C's remainder keeps the sign; to_bcd(negative) is not BCD. */
-        return to_bcd(((tm.tm_year + 1900 - M48T35_YEAR_BASE) % 100 + 100)
-                      % 100);
+        return to_bcd(c.year);
     default:
         g_assert_not_reached();
     }
@@ -121,6 +230,119 @@ static void m48t35_store(M48T35State *s, hwaddr addr, uint8_t val)
     if (s->blk && blk_pwrite(s->blk, addr, 1, &s->cell[addr], 0) < 0) {
         error_report("m48t35: write to backing store failed");
     }
+}
+
+/*
+ * Save the running calendar into the backing image's clock cells, in the
+ * part's format, and the moment of the save into the reference record. The
+ * weekday cell between them is storage and keeps what the guest wrote; no
+ * other cell is touched. See the header.
+ */
+static void m48t35_save_clock(M48T35State *s)
+{
+    uint8_t record[M48T35_CLOCK_REF_BYTES];
+    int64_t host = m48t35_host_seconds();
+    M48T35Calendar c;
+
+    if (!s->blk) {
+        return;
+    }
+    m48t35_part_calendar(host + s->time_offset, &c);
+    s->cell[M48T35_SECONDS] = to_bcd(c.sec);
+    s->cell[M48T35_MINUTES] = to_bcd(c.min);
+    s->cell[M48T35_HOURS] = to_bcd(c.hour);
+    s->cell[M48T35_DAY] = to_bcd(c.mday);
+    s->cell[M48T35_MONTH] = to_bcd(c.mon + 1);
+    s->cell[M48T35_YEAR] = to_bcd(c.year);
+    if (blk_pwrite(s->blk, M48T35_SECONDS, M48T35_YEAR - M48T35_SECONDS + 1,
+                   &s->cell[M48T35_SECONDS], 0) < 0) {
+        error_report("m48t35: saving the clock to the backing store failed");
+    }
+    trace_m48t35_clock_saved(c.year, c.mon + 1, c.mday, c.hour, c.min, c.sec,
+                             host);
+
+    if (s->clock_blk) {
+        memcpy(record, M48T35_CLOCK_REF_MAGIC, 8);
+        stq_le_p(record + 8, host);
+        if (blk_pwrite(s->clock_blk, 0, sizeof(record), record, 0) < 0) {
+            error_report("m48t35: saving the clock reference failed");
+        }
+    }
+}
+
+static bool m48t35_is_bcd(uint8_t v, int lo, int hi)
+{
+    return (v & 0xf) <= 9 && (v >> 4) <= 9 &&
+           from_bcd(v) >= lo && from_bcd(v) <= hi;
+}
+
+/* The time the reference record says the image was saved, if it has one. */
+static bool m48t35_clock_reference(M48T35State *s, int64_t *saved_at)
+{
+    uint8_t record[M48T35_CLOCK_REF_BYTES];
+
+    if (!s->clock_blk ||
+        blk_getlength(s->clock_blk) < M48T35_CLOCK_REF_BYTES ||
+        blk_pread(s->clock_blk, 0, sizeof(record), record, 0) < 0 ||
+        memcmp(record, M48T35_CLOCK_REF_MAGIC, 8)) {
+        return false;
+    }
+    *saved_at = ldq_le_p(record + 8);
+    return true;
+}
+
+/*
+ * Restore the clock from a backing image, per the contract's rules:
+ * - clock cells all zero, or not a valid date in BCD: never saved, so the
+ *   clock follows the host, as it did before images carried one;
+ * - the stop bit set in the saved seconds: the oscillator was stopped, so
+ *   the saved calendar comes back with no time added;
+ * - no reference record: the saved calendar with no time added, logged;
+ * - otherwise the saved calendar plus the time since the save, counted in
+ *   the part's calendar, so it rolls over February as the part would.
+ */
+static void m48t35_restore_clock(M48T35State *s)
+{
+    const uint8_t *cell = s->cell;
+    uint8_t sec = cell[M48T35_SECONDS] & ~M48T35_SECONDS_STOP;
+    bool stopped = cell[M48T35_SECONDS] & M48T35_SECONDS_STOP;
+    int64_t host = m48t35_host_seconds();
+    int64_t elapsed = 0, saved_at;
+    M48T35Calendar c;
+
+    if (!(cell[M48T35_SECONDS] | cell[M48T35_MINUTES] | cell[M48T35_HOURS] |
+          cell[M48T35_DAY] | cell[M48T35_MONTH] | cell[M48T35_YEAR]) ||
+        !m48t35_is_bcd(sec, 0, 59) ||
+        !m48t35_is_bcd(cell[M48T35_MINUTES], 0, 59) ||
+        !m48t35_is_bcd(cell[M48T35_HOURS], 0, 23) ||
+        !m48t35_is_bcd(cell[M48T35_DAY], 1, 31) ||
+        !m48t35_is_bcd(cell[M48T35_MONTH], 1, 12) ||
+        !m48t35_is_bcd(cell[M48T35_YEAR], 0, 99)) {
+        trace_m48t35_clock_restore("never saved: following the host", 0);
+        m48t35_follow_host(s);
+        return;
+    }
+
+    c = (M48T35Calendar) {
+        .sec = from_bcd(sec),
+        .min = from_bcd(cell[M48T35_MINUTES]),
+        .hour = from_bcd(cell[M48T35_HOURS]),
+        .mday = from_bcd(cell[M48T35_DAY]),
+        .mon = from_bcd(cell[M48T35_MONTH]) - 1,
+        .year = from_bcd(cell[M48T35_YEAR]),
+    };
+    if (stopped) {
+        trace_m48t35_clock_restore("stopped: no time added", 0);
+    } else if (m48t35_clock_reference(s, &saved_at)) {
+        elapsed = MAX(host - saved_at, 0);
+        trace_m48t35_clock_restore("saved time plus elapsed", elapsed);
+    } else {
+        qemu_log_mask(LOG_UNIMP, "m48t35: no clock reference beside the "
+                      "backing image; restoring the saved time with no "
+                      "time added\n");
+        trace_m48t35_clock_restore("no reference: no time added", 0);
+    }
+    s->time_offset = m48t35_part_seconds(&c) + elapsed - host;
 }
 
 static void m48t35_write_clock(M48T35State *s, hwaddr addr, uint8_t val)
@@ -147,7 +369,7 @@ static void m48t35_write_clock(M48T35State *s, hwaddr addr, uint8_t val)
         s->staged_mon = from_bcd(val) - 1;
         break;
     case M48T35_YEAR:
-        s->staged_year = from_bcd(val) + M48T35_YEAR_BASE - 1900;
+        s->staged_year = from_bcd(val);
         break;
     default:
         g_assert_not_reached();
@@ -161,10 +383,7 @@ static void m48t35_write_control(M48T35State *s, uint8_t val)
 
     if ((val & M48T35_CSR_READ) && !(was & M48T35_CSR_READ)) {
         /* Every read until the bit clears reports this instant. */
-        struct tm tm;
-
-        qemu_get_timedate(&tm, s->time_offset);
-        s->frozen_epoch = mktimegm(&tm);
+        s->frozen_epoch = m48t35_running(s);
         s->frozen = true;
     } else if (!(val & M48T35_CSR_READ) && (was & M48T35_CSR_READ)) {
         s->frozen = false;
@@ -172,37 +391,35 @@ static void m48t35_write_control(M48T35State *s, uint8_t val)
 
     if ((val & M48T35_CSR_WRITE) && !(was & M48T35_CSR_WRITE)) {
         /* Start from the current time so unwritten fields keep their value. */
-        struct tm tm;
+        M48T35Calendar c;
 
-        m48t35_now(s, &tm);
-        s->staged_sec = tm.tm_sec;
-        s->staged_min = tm.tm_min;
-        s->staged_hour = tm.tm_hour;
-        s->staged_mday = tm.tm_mday;
-        s->staged_mon = tm.tm_mon;
-        s->staged_year = tm.tm_year;
+        m48t35_now(s, &c);
+        s->staged_sec = c.sec;
+        s->staged_min = c.min;
+        s->staged_hour = c.hour;
+        s->staged_mday = c.mday;
+        s->staged_mon = c.mon;
+        s->staged_year = c.year;
         s->staging = true;
     } else if (!(val & M48T35_CSR_WRITE) && (was & M48T35_CSR_WRITE)) {
-        struct tm tm = {
-            .tm_sec = s->staged_sec,
-            .tm_min = s->staged_min,
-            .tm_hour = s->staged_hour,
-            .tm_mday = s->staged_mday,
-            .tm_mon = s->staged_mon,
-            .tm_year = s->staged_year,
+        M48T35Calendar c = {
+            .sec = s->staged_sec,
+            .min = s->staged_min,
+            .hour = s->staged_hour,
+            .mday = s->staged_mday,
+            .mon = s->staged_mon,
+            .year = s->staged_year,
         };
 
-        struct tm now;
-
         /*
-         * Not qemu_timedate_diff(): that subtracts the host clock
-         * unconditionally, while reads use whichever clock -rtc clock=
-         * selected. Differencing through qemu_get_timedate() keeps both
-         * ends on the same clock.
+         * Differenced against the clock -rtc selects, as reads are, so both
+         * ends stay on the same clock.
          */
         s->staging = false;
-        qemu_get_timedate(&now, 0);
-        s->time_offset = mktimegm(&tm) - mktimegm(&now);
+        s->time_offset = m48t35_part_seconds(&c) - m48t35_host_seconds();
+        m48t35_store(s, M48T35_CONTROL, val);
+        m48t35_save_clock(s);
+        return;
     }
 
     m48t35_store(s, M48T35_CONTROL, val);
@@ -285,6 +502,37 @@ static void m48t35_reset_hold(Object *obj, ResetType type)
     s->cell[M48T35_CONTROL] &= ~(M48T35_CSR_READ | M48T35_CSR_WRITE);
 }
 
+/* The VM stopping is the teardown the image's clock cells are saved at. */
+static void m48t35_vm_state_change(void *opaque, bool running,
+                                   RunState state)
+{
+    if (!running) {
+        m48t35_save_clock(opaque);
+    }
+}
+
+/* The reference drive, by the "<storage drive>-clock" convention if unset. */
+static bool m48t35_attach_clock_drive(M48T35State *s, Error **errp)
+{
+    g_autofree char *id = NULL;
+    BlockBackend *blk;
+
+    if (!s->clock_blk && *blk_name(s->blk)) {
+        id = g_strdup_printf("%s-clock", blk_name(s->blk));
+        blk = blk_by_name(id);
+        if (blk &&
+            !qdev_prop_set_drive_err(DEVICE(s), "clock-drive", blk, errp)) {
+            return false;
+        }
+    }
+    if (s->clock_blk &&
+        blk_set_perm(s->clock_blk, BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE,
+                     BLK_PERM_ALL, errp) < 0) {
+        return false;
+    }
+    return true;
+}
+
 static void m48t35_realize(DeviceState *dev, Error **errp)
 {
     M48T35State *s = M48T35(dev);
@@ -316,8 +564,15 @@ static void m48t35_realize(DeviceState *dev, Error **errp)
                       "file");
             return;
         }
+        if (!m48t35_attach_clock_drive(s, errp)) {
+            return;
+        }
+        m48t35_restore_clock(s);
+        s->vmstate_change =
+            qemu_add_vm_change_state_handler(m48t35_vm_state_change, s);
     } else {
         m48t35_install_factory_image(s);
+        m48t35_follow_host(s);
     }
 
     memory_region_init_io(&s->iomem, OBJECT(dev), &m48t35_ops, s,
@@ -329,18 +584,23 @@ static void m48t35_unrealize(DeviceState *dev)
 {
     M48T35State *s = M48T35(dev);
 
+    if (s->vmstate_change) {
+        m48t35_save_clock(s);
+        qemu_del_vm_change_state_handler(s->vmstate_change);
+        s->vmstate_change = NULL;
+    }
     g_free(s->cell);
     s->cell = NULL;
 }
 
 /*
- * The cell buffer is heap-allocated but a uint8 array and a buffer serialise
- * identically, so version 1 streams load unchanged.
+ * Version 2: time_offset and frozen_epoch count the part's own calendar,
+ * and staged_year the year cell, where version 1 counted the real calendar.
  */
 static const VMStateDescription vmstate_m48t35 = {
     .name = "m48t35",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_BUFFER_POINTER_UNSAFE(cell, M48T35State, 0, M48T35_SIZE),
         VMSTATE_INT64(time_offset, M48T35State),
@@ -359,6 +619,7 @@ static const VMStateDescription vmstate_m48t35 = {
 
 static const Property m48t35_properties[] = {
     DEFINE_PROP_DRIVE("drive", M48T35State, blk),
+    DEFINE_PROP_DRIVE("clock-drive", M48T35State, clock_blk),
 };
 
 static void m48t35_class_init(ObjectClass *oc, const void *data)

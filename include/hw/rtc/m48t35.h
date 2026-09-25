@@ -10,6 +10,7 @@
 #define HW_RTC_M48T35_H
 
 #include "hw/core/sysbus.h"
+#include "system/runstate.h"
 #include "qom/object.h"
 
 #define TYPE_M48T35 "m48t35"
@@ -46,6 +47,48 @@ OBJECT_DECLARE_SIMPLE_TYPE(M48T35State, M48T35)
  */
 #define M48T35_YEAR_BASE    1970
 
+/*
+ * The part's calendar, from docs/datasheets/timekeeper.md's "The part's
+ * calendar and leap-year rule": two BCD year digits and no century, with
+ * February 29 days long when the year cell is a multiple of four ("inferred,
+ * strongly" there). On this machine that puts the leap day in 2022, 2026 and
+ * 2030 and none in 2024 or 2028. The model counts the part's time as seconds
+ * since 1 January of cell year 00 under that rule, wrapping every hundred
+ * cell years, so reads, writes and the restore after a stop all agree with it.
+ */
+#define M48T35_CELL_YEARS   100
+#define M48T35_CENTURY_DAYS (M48T35_CELL_YEARS * 365 + M48T35_CELL_YEARS / 4)
+#define M48T35_DAY_SECONDS  86400
+#define M48T35_CENTURY_SECONDS \
+    ((int64_t)M48T35_CENTURY_DAYS * M48T35_DAY_SECONDS)
+
+/*
+ * Bit 7 of the seconds cell stops the part's oscillator. The model does not
+ * run a stopped clock; it only honours the bit in a saved image, restoring
+ * that calendar with no time added (see "The clock across power loss").
+ */
+#define M48T35_SECONDS_STOP 0x80
+
+/*
+ * The clock across a stopped emulator, from docs/datasheets/timekeeper.md's
+ * "The clock across power loss and host restarts". With a backing image the
+ * model writes the calendar into the image's own clock cells, in the part's
+ * format, whenever a guest clock write completes and when the VM stops, and
+ * restores it at realize with the time that passed in between.
+ *
+ * That elapsed time needs a reference the 32 KB image cannot hold without
+ * changing what the guest reads. Model policy: it lives in a second, small
+ * raw drive, the "clock-drive" property. If that is not set and the storage
+ * drive is named, a drive named "<storage drive>-clock" is used, so
+ * "-drive if=none,id=sgi-nvram0-clock,file=...,format=raw" beside the
+ * machine's "sgi-nvram0" is all a launcher adds. The record is a magic
+ * value and the time of the save, as seconds of the clock QEMU's -rtc
+ * option selects. A missing or unwritten record restores the saved calendar
+ * with no time added.
+ */
+#define M48T35_CLOCK_REF_MAGIC  "M48TREF1"
+#define M48T35_CLOCK_REF_BYTES  16
+
 struct M48T35State {
     SysBusDevice parent_obj;
 
@@ -64,12 +107,20 @@ struct M48T35State {
      */
     BlockBackend *blk;
 
-    /* Guest-set time as an offset from the host clock, in seconds. */
+    /* The saved-time reference for the clock across a stop; see above. */
+    BlockBackend *clock_blk;
+    VMChangeStateEntry *vmstate_change;
+
+    /*
+     * The part's time, in seconds of its own calendar (above), less the
+     * clock -rtc selects: the part reads (host seconds + time_offset) wrapped
+     * to a century of cell years.
+     */
     int64_t time_offset;
 
     /*
-     * The frozen instant, one number so the six fields read from it cannot
-     * disagree -- the point of the freeze.
+     * The frozen instant, in the part's seconds, one number so the six
+     * fields read from it cannot disagree -- the point of the freeze.
      */
     bool frozen;
     int64_t frozen_epoch;
