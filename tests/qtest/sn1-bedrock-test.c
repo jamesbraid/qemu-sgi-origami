@@ -793,7 +793,7 @@ static void test_disconnected(void)
  */
 static void test_read_only_writes(void)
 {
-    g_autofree char *log = g_strdup_printf("%s/sn1-ni-readonly-XXXXXX.log",
+    g_autofree char *log = g_strdup_printf("%s/sn1-ni-readonly-XXXXXX",
                                            g_get_tmp_dir());
     g_autofree char *extra = NULL;
     g_autofree char *found = NULL;
@@ -831,7 +831,7 @@ static void test_read_only_writes(void)
  */
 static void test_power_on_programming(void)
 {
-    g_autofree char *log = g_strdup_printf("%s/sn1-ni-power-on-XXXXXX.log",
+    g_autofree char *log = g_strdup_printf("%s/sn1-ni-power-on-XXXXXX",
                                            g_get_tmp_dir());
     g_autofree char *extra = NULL;
     g_autofree char *found = NULL;
