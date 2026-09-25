@@ -1717,6 +1717,36 @@ bool sgi_bedrock_link_up(SGIBedrockState *s)
     return bedrock_neighbor(s, &peer, &peer_index);
 }
 
+void sgi_bedrock_port_reset_send(SGIBedrockState *s)
+{
+    SGIBedrockState *peer;
+    Object *port;
+    unsigned int index;
+    uint64_t enable = 0;
+
+    if (!bedrock_neighbor(s, &port, &index)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock: port reset with no "
+                      "link reaches nothing\n");
+        return;
+    }
+    peer = (SGIBedrockState *)object_dynamic_cast(port, TYPE_SGI_BEDROCK);
+    if (!peer) {
+        return;
+    }
+    /*
+     * Reset enable bit 0, "warm reset enable", lets a reset arriving over
+     * the link reset the Bedrock (the network-interface datasheet). The
+     * arriving reset is the same one a local reset request makes, on the
+     * model's reset equation.
+     */
+    sgi_bedrock_ni_regs_read(&peer->ni.regs, 0x10, &enable);
+    trace_sgi_bedrock_port_reset_arrives(sgi_bedrock_node_number(peer),
+                                         enable & 1);
+    if (enable & 1) {
+        bedrock_local_reset(peer, 0, 1);
+    }
+}
+
 SGINetPacketResult sgi_bedrock_vector_send(SGIBedrockState *s,
                                            SGINetPacket *packet)
 {

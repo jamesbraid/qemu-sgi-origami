@@ -342,6 +342,37 @@ static void test_peer_scratch1_write_follows_withheld_posts(void)
     qtest_quit(s);
 }
 
+#define NI_PORT_RESET  0x0008
+#define NI_RESET_ENABLE 0x0010
+
+/*
+ * Port reset, bit 1 of A's reset register, sends a warm reset over the
+ * link. B resets (its LB scratch 0 clears, the reset equation the
+ * network-interface datasheet's checklist uses) only while B's reset enable
+ * permits it, and not when the cable is down; A is untouched by bit 1.
+ */
+static void test_port_reset_crosses_the_link(void)
+{
+    QTestState *s = pair_start("");
+
+    qtest_writeq(s, LB(A_BASE, SCRATCH(0)), 0xa0);
+    qtest_writeq(s, LB(B_BASE, SCRATCH(0)), 0xb0);
+    qtest_writeq(s, NI(B_BASE, NI_RESET_ENABLE), 0);
+    qtest_writeq(s, NI(A_BASE, NI_PORT_RESET), 2);
+    g_assert_cmphex(qtest_readq(s, LB(B_BASE, SCRATCH(0))), ==, 0xb0);
+
+    qtest_writeq(s, NI(B_BASE, NI_RESET_ENABLE), 1);
+    set_down(s, true);
+    qtest_writeq(s, NI(A_BASE, NI_PORT_RESET), 2);
+    g_assert_cmphex(qtest_readq(s, LB(B_BASE, SCRATCH(0))), ==, 0xb0);
+
+    set_down(s, false);
+    qtest_writeq(s, NI(A_BASE, NI_PORT_RESET), 2);
+    g_assert_cmphex(qtest_readq(s, LB(B_BASE, SCRATCH(0))), ==, 0);
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, SCRATCH(0))), ==, 0xa0);
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -353,6 +384,8 @@ int main(int argc, char **argv)
                    test_route_zero_reads_the_peer);
     qtest_add_func("sn1/bedrock-link/peer-scratch1-write-follows-withheld-"
                    "posts", test_peer_scratch1_write_follows_withheld_posts);
+    qtest_add_func("sn1/bedrock-link/port-reset-crosses-the-link",
+                   test_port_reset_crosses_the_link);
     qtest_add_func("sn1/bedrock-link/route-zero-writes-the-peer",
                    test_route_zero_writes_the_peer);
     qtest_add_func("sn1/bedrock-link/unroutable-launch-latches-nothing",
