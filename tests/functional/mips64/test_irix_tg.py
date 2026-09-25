@@ -217,7 +217,8 @@ def _drive_to_shell(con, budget):
     """Drive the PROM menu, log in as root, answer TERM, and switch to /bin/sh.
     Returns once a Bourne shell is confirmed responsive."""
     deadline = time.monotonic() + budget
-    left = lambda cap: max(1.0, min(cap, deadline - time.monotonic()))
+    def left(cap):
+        return max(1.0, min(cap, deadline - time.monotonic()))
 
     con.expect(rb"Option\?", left(budget), what="the maintenance menu")
     con.send("1")

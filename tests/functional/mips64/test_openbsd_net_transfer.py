@@ -263,7 +263,8 @@ def _drive_login(con, budget):
     against this file's own console rather than a bare socket loop.
     """
     deadline = time.monotonic() + budget
-    left = lambda cap: max(1.0, min(cap, deadline - time.monotonic()))
+    def left(cap):
+        return max(1.0, min(cap, deadline - time.monotonic()))
     for pattern, response in LOGIN_STEPS:
         con.expect(pattern, left(budget), what=f"{pattern!r}")
         con.send(response.rstrip("\n"))
@@ -291,7 +292,8 @@ def _start_http(directory):
     """Serve @directory over HTTP on an OS-assigned loopback port. Ports
     net-transfer-diag's own start_http(): "NO DAEMON WE HAD TO WRITE" --
     a stock library HTTP server, fetched by the guest's own ftp(1)."""
-    handler = lambda *a, **kw: _QuietHTTPHandler(*a, directory=str(directory), **kw)
+    def handler(*args, **kwargs):
+        return _QuietHTTPHandler(*args, directory=str(directory), **kwargs)
     srv = socketserver.ThreadingTCPServer(("127.0.0.1", 0), handler)
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()

@@ -382,11 +382,11 @@ def fork_git_identity(tree):
     try:
         commit = subprocess.run(
             ["git", "-C", str(tree), "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, timeout=30, check=False)
         status = subprocess.run(
             ["git", "-C", str(tree), "status", "--porcelain=v1",
              "--untracked-files=normal"],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, timeout=30, check=False)
     except (OSError, subprocess.TimeoutExpired):
         return None
     if commit.returncode != 0 or status.returncode != 0:

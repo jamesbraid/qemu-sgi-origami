@@ -556,7 +556,7 @@ class OpenbsdInstall(QemuSystemTest):
         sets_img = self.scratch_file('sets.img')
         # makefs writes into an existing file; touch it first (mirrors
         # tools/mk-disk.py's own image.touch(exist_ok=True)).
-        open(sets_img, 'a').close()
+        open(sets_img, 'a', encoding='utf-8').close()
         subprocess.run(
             [makefs_bin, '-t', 'ffs', '-B', 'be',
              '-o', 'bsize=8192,fsize=1024,minfree=5',

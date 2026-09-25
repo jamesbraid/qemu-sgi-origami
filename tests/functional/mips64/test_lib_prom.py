@@ -247,7 +247,8 @@ class _Subject(unittest.TestCase):
     """A stand-in for the boot test require_assets() is called against:
     skipTest() and fail() are the only two things it uses."""
 
-    def runTest(self):
+    def runTest(self):  # pylint: disable=invalid-name
+        # unittest.TestCase requires this name for its default test method.
         pass
 
 

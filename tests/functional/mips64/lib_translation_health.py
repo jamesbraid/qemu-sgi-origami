@@ -126,19 +126,19 @@ def evaluate(text: str) -> TranslationHealth:
     gen_code_size = int(gen_match.group(1)) if gen_match else None
     gen_code_capacity = int(gen_match.group(2)) if gen_match else None
 
-    common = dict(
-        tb_count=tb_count,
-        avg_target_size=avg_target_size,
-        max_target_size=max_target_size,
-        hash_used_buckets=hash_used,
-        hash_total_buckets=hash_total,
-        hash_occupancy_percent=hash_occupancy,
-        tb_flush_count=tb_flush_count,
-        gen_code_size=gen_code_size,
-        gen_code_capacity=gen_code_capacity,
-        one_insn_per_tb=one_insn_per_tb,
-        icount_enabled=icount_enabled,
-    )
+    common = {
+        "tb_count": tb_count,
+        "avg_target_size": avg_target_size,
+        "max_target_size": max_target_size,
+        "hash_used_buckets": hash_used,
+        "hash_total_buckets": hash_total,
+        "hash_occupancy_percent": hash_occupancy,
+        "tb_flush_count": tb_flush_count,
+        "gen_code_size": gen_code_size,
+        "gen_code_capacity": gen_code_capacity,
+        "one_insn_per_tb": one_insn_per_tb,
+        "icount_enabled": icount_enabled,
+    }
 
     if one_insn_per_tb:
         return TranslationHealth(
