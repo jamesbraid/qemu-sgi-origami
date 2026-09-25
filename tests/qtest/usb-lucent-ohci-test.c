@@ -50,6 +50,7 @@
 #define OHCI_HC_PERIODIC_START     0x40
 #define OHCI_HC_LS_THRESHOLD       0x44
 #define OHCI_HC_RH_DESCRIPTOR_A    0x48
+#define OHCI_HC_RH_DESCRIPTOR_B    0x4c
 #define OHCI_HC_RH_PORT_STATUS(n)  (0x54 + 4 * (n))
 
 #define OHCI_CONTROL_OPERATIONAL   0x00000080
@@ -443,6 +444,38 @@ static void test_reset_clears_largest_data_packet(void)
     lucent_ohci_close(&ohci);
 }
 
+/*
+ * HcRhDescriptorB's DeviceRemovable and PortPowerControlMask are written by
+ * the driver (OpenHCI 1.0a section 7.4.2), one bit per root-hub port from
+ * bit 1 of each half, and a HostControllerReset does not reset the root
+ * hub (section 7.1.3), so a written value survives it. This two-port part
+ * has bits 1 and 2 of each half. The Origin 300 IO-8 board test writes
+ * 0x3ffff, resets the controller and requires 0x20006.
+ */
+static void test_root_hub_descriptor_b_is_writable(void)
+{
+    LucentOHCI ohci = { 0 };
+
+    lucent_ohci_open(&ohci, lucent_ohci_start("lucent-ohci", ""));
+    lucent_ohci_map_bar(&ohci);
+
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_DESCRIPTOR_B, 0x3ffff);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_RH_DESCRIPTOR_B), ==,
+                    0x20006);
+    lucent_ohci_writel(&ohci, OHCI_HC_COMMAND_STATUS,
+                       OHCI_COMMAND_STATUS_HCR);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_RH_DESCRIPTOR_B), ==,
+                    0x20006);
+
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_DESCRIPTOR_B, 0xffffffff);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_RH_DESCRIPTOR_B), ==,
+                    0x60006);
+    lucent_ohci_writel(&ohci, OHCI_HC_RH_DESCRIPTOR_B, 0);
+    g_assert_cmphex(lucent_ohci_readl(&ohci, OHCI_HC_RH_DESCRIPTOR_B), ==, 0);
+
+    lucent_ohci_close(&ohci);
+}
+
 static void test_frame_number_tracks_clock_while_timer_starved(void)
 {
     LucentOHCI ohci = { 0 };
@@ -650,6 +683,8 @@ int main(int argc, char **argv)
                    test_reset_clears_interrupt_enable);
     qtest_add_func("/lucent-ohci/reset-clears-largest-data-packet",
                    test_reset_clears_largest_data_packet);
+    qtest_add_func("/lucent-ohci/root-hub-descriptor-b-is-writable",
+                   test_root_hub_descriptor_b_is_writable);
     qtest_add_func("/lucent-ohci/frame-number-tracks-clock-while-timer-starved",
                    test_frame_number_tracks_clock_while_timer_starved);
     qtest_add_func("/lucent-ohci/frame-number-never-lags-elapsed-time",

@@ -27,6 +27,8 @@ DECLARE_CLASS_CHECKERS(LucentOHCIClass, LUCENT_OHCI, TYPE_LUCENT_OHCI)
 
 /* The operational register a HostControllerReset is requested through. */
 #define LUCENT_OHCI_COMMAND_STATUS  0x08
+/* Root-hub DeviceRemovable and PortPowerControlMask. */
+#define LUCENT_OHCI_RH_DESCRIPTOR_B 0x4c
 #define LUCENT_OHCI_COMMAND_HCR     0x01
 
 /*
@@ -80,8 +82,8 @@ static void lucent_ohci_command_write(void *opaque, hwaddr addr,
 }
 
 /*
- * Only HcCommandStatus is overlaid; every other register is the core's.
- * Access sizes pass through as the core's own region would take them.
+ * Access sizes pass through as the core's own region would take them; the
+ * other overlays below follow the same pattern.
  */
 static const MemoryRegionOps lucent_ohci_command_ops = {
     .read = lucent_ohci_command_read,
@@ -94,11 +96,57 @@ static void lucent_ohci_instance_init(Object *obj)
     qdev_prop_set_uint32(DEVICE(obj), "num-ports", 2);
 }
 
+/*
+ * HcRhDescriptorB: OpenHCI 1.0a makes DeviceRemovable (bits 15:0) and
+ * PortPowerControlMask (bits 31:16) writable by the driver, one bit per
+ * root-hub port from bit 1 of each half (section 7.4.2), and a
+ * HostControllerReset leaves the root hub alone (section 7.1.3). The shared
+ * core discards writes; this part keeps the bits for the ports it has.
+ * Reads, and the power-on value, stay the core's.
+ */
+static uint64_t lucent_ohci_rhdesc_b_read(void *opaque, hwaddr addr,
+                                          unsigned size)
+{
+    OHCIState *ohci = opaque;
+
+    return ohci->mem.ops->read(ohci->mem.opaque,
+                               LUCENT_OHCI_RH_DESCRIPTOR_B + addr, size);
+}
+
+static void lucent_ohci_rhdesc_b_write(void *opaque, hwaddr addr,
+                                       uint64_t val, unsigned size)
+{
+    OHCIState *ohci = opaque;
+    uint32_t ports = MAKE_64BIT_MASK(1, ohci->num_ports);
+
+    /* The core's handler still sees it, for its trace and checks. */
+    ohci->mem.ops->write(ohci->mem.opaque, LUCENT_OHCI_RH_DESCRIPTOR_B + addr,
+                         val, size);
+    if (addr == 0 && size == 4) {
+        ohci->rhdesc_b = val & (ports | ports << 16);
+    }
+}
+
+static const MemoryRegionOps lucent_ohci_rhdesc_b_ops = {
+    .read = lucent_ohci_rhdesc_b_read,
+    .write = lucent_ohci_rhdesc_b_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+};
+
+/* One of the core's registers, overlaid for as long as the device lives. */
+static void lucent_ohci_overlay(PCIDevice *dev, OHCIState *ohci, hwaddr at,
+                                const MemoryRegionOps *ops, const char *name)
+{
+    MemoryRegion *mr = g_new0(MemoryRegion, 1);
+
+    memory_region_init_io(mr, OBJECT(dev), ops, ohci, name, 4);
+    memory_region_add_subregion_overlap(&ohci->mem, at, mr, 1);
+}
+
 static void lucent_ohci_realize(PCIDevice *dev, Error **errp)
 {
     LucentOHCIClass *lc = LUCENT_OHCI_GET_CLASS(dev);
     Error *err = NULL;
-    MemoryRegion *command;
     OHCIState *ohci;
 
     lc->parent_realize(dev, &err);
@@ -110,16 +158,16 @@ static void lucent_ohci_realize(PCIDevice *dev, Error **errp)
     pci_set_word(dev->config + PCI_STATUS, PCI_STATUS_DEVSEL_MEDIUM);
 
     /*
-     * The parent's instance struct is private to its file, so this part's
-     * one region is allocated rather than embedded; the device lives as
-     * long as the machine.
+     * The parent's instance struct is private to its file, so the overlay
+     * regions are allocated rather than embedded.
      */
     ohci = lucent_ohci_core(dev);
-    command = g_new0(MemoryRegion, 1);
-    memory_region_init_io(command, OBJECT(dev), &lucent_ohci_command_ops,
-                          ohci, "lucent-ohci.command-status", 4);
-    memory_region_add_subregion_overlap(&ohci->mem, LUCENT_OHCI_COMMAND_STATUS,
-                                        command, 1);
+    lucent_ohci_overlay(dev, ohci, LUCENT_OHCI_COMMAND_STATUS,
+                        &lucent_ohci_command_ops,
+                        "lucent-ohci.command-status");
+    lucent_ohci_overlay(dev, ohci, LUCENT_OHCI_RH_DESCRIPTOR_B,
+                        &lucent_ohci_rhdesc_b_ops,
+                        "lucent-ohci.rh-descriptor-b");
     lucent_ohci_reset_values(ohci);
 }
 
