@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "qemu/osdep.h"
+#include "qapi/visitor.h"
+#include "qemu/cutils.h"
 #include "hw/misc/sgi-bedrock.h"
 #include "hw/misc/sgi-l1.h"
 #include "hw/core/cpu.h"
@@ -385,6 +387,46 @@ static void bedrock_hold_flush_scratch1(SGIBedrockState *s,
     s->hold_scratch1_withheld_valid[slot] = false;
 }
 
+/*
+ * An access to scratch 1 from outside this node's processors: the peer's
+ * vector engine, which is how the global master tells a node its NASID
+ * (the local-block datasheet, "Node number assignment"), or a qtest. The
+ * hold only delays when a local post becomes visible; on hardware that post
+ * reached the register before anything that arrives now. So every withheld
+ * value lands first, in the order its processor wrote it, and the external
+ * access is ordered after all of them: a write is not overwritten by a
+ * local value released later, and a read sees the local posts. The held
+ * processors stay parked until their own join completes; only the values
+ * move.
+ */
+static void bedrock_scratch1_external(SGIBedrockState *s)
+{
+    for (;;) {
+        int oldest = -1;
+
+        for (unsigned int slot = 0; slot < SGI_BEDROCK_PROCESSORS; slot++) {
+            if (s->hold_scratch1_withheld_valid[slot] &&
+                (oldest < 0 || s->hold_scratch1_withheld_seq[slot] <
+                               s->hold_scratch1_withheld_seq[oldest])) {
+                oldest = slot;
+            }
+        }
+        if (oldest < 0) {
+            return;
+        }
+        trace_sgi_bedrock_hold_external_flush(oldest,
+            s->hold_scratch1_withheld[oldest]);
+        bedrock_hold_flush_scratch1(s, oldest);
+    }
+}
+
+void sgi_bedrock_scratch1_read(SGIBedrockState *s)
+{
+    if (bedrock_hold_current_slot(s) < 0) {
+        bedrock_scratch1_external(s);
+    }
+}
+
 static const char *bedrock_hold_kind_name(SGIBedrockHoldKind kind)
 {
     switch (kind) {
@@ -567,9 +609,10 @@ void sgi_bedrock_hold_scratch1_write(SGIBedrockState *s, uint64_t value)
 
     if (cslot < 0) {
         /*
-         * qtest, DMA, or an access this node did not issue: ordinary
-         * storage, no hold bookkeeping.
+         * qtest, the peer's vector engine, or another access this node did
+         * not issue: ordinary storage after every withheld local value.
          */
+        bedrock_scratch1_external(s);
         s->lb.scratch[1] = value;
         return;
     }
@@ -591,6 +634,7 @@ void sgi_bedrock_hold_scratch1_write(SGIBedrockState *s, uint64_t value)
 
     s->hold_scratch1_withheld[slot] = value;
     s->hold_scratch1_withheld_valid[slot] = true;
+    s->hold_scratch1_withheld_seq[slot] = ++s->hold_scratch1_seq;
     if (qemu_tcg_mttcg_enabled()) {
         bedrock_hold_start(s, slot, SGI_BEDROCK_HOLD_SCRATCH1);
     } else {
@@ -1504,6 +1548,54 @@ static const Property bedrock_properties[] = {
 /* Where the zero-based hub window's two aliases meet: the I/O interface. */
 #define BEDROCK_HUB_WINDOW_SPLIT 0x400000
 
+/*
+ * Test-only: a register-contract qtest cannot be a processor of the node,
+ * so it cannot make a real hold withhold a value, and a guest-code test
+ * that does races the hold's own wall-clock bound. These two properties
+ * place and end that state directly and nothing else. They are not
+ * hardware and no machine sets them.
+ *
+ * x-test-withhold-scratch1 "SLOT:VALUE" records VALUE as slot SLOT's
+ * withheld scratch-1 write, as a held processor's second post would be.
+ * x-test-release-scratch1 SLOT lands it as the end of that hold does.
+ */
+static void bedrock_test_withhold_scratch1(Object *obj, const char *value,
+                                           Error **errp)
+{
+    SGIBedrockState *s = SGI_BEDROCK(obj);
+    unsigned long slot;
+    uint64_t word;
+    const char *rest;
+
+    if (qemu_strtoul(value, &rest, 0, &slot) || *rest != ':' ||
+        slot >= SGI_BEDROCK_PROCESSORS ||
+        qemu_strtou64(rest + 1, NULL, 0, &word)) {
+        error_setg(errp, "x-test-withhold-scratch1 takes SLOT:VALUE");
+        return;
+    }
+    s->hold_scratch1_withheld[slot] = word;
+    s->hold_scratch1_withheld_valid[slot] = true;
+    s->hold_scratch1_withheld_seq[slot] = ++s->hold_scratch1_seq;
+}
+
+static void bedrock_test_release_scratch1(Object *obj, Visitor *v,
+                                          const char *name, void *opaque,
+                                          Error **errp)
+{
+    SGIBedrockState *s = SGI_BEDROCK(obj);
+    uint32_t slot;
+
+    if (!visit_type_uint32(v, name, &slot, errp)) {
+        return;
+    }
+    if (slot >= SGI_BEDROCK_PROCESSORS) {
+        error_setg(errp, "x-test-release-scratch1 takes a slot below %u",
+                   SGI_BEDROCK_PROCESSORS);
+        return;
+    }
+    bedrock_hold_flush_scratch1(s, slot);
+}
+
 static void bedrock_init(Object *obj)
 {
     SGIBedrockState *s = SGI_BEDROCK(obj);
@@ -1595,6 +1687,10 @@ static void bedrock_init(Object *obj)
      * both Bedrocks and the cable exist. Weak, because the cable refers
      * back to this device.
      */
+    object_property_add_str(obj, "x-test-withhold-scratch1", NULL,
+                            bedrock_test_withhold_scratch1);
+    object_property_add(obj, "x-test-release-scratch1", "uint32", NULL,
+                        bedrock_test_release_scratch1, NULL, NULL);
     object_property_add_link(obj, "net-cable", TYPE_SGI_NET_CABLE,
                              (Object **)&s->net_cable,
                              object_property_allow_set_link, 0);

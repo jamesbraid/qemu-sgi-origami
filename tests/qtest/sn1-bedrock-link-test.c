@@ -288,6 +288,60 @@ static void test_refused_offset_is_an_address_error(void)
     qtest_quit(s);
 }
 
+static void withhold_scratch1(QTestState *s, const char *bedrock,
+                              unsigned int slot, uint64_t value)
+{
+    g_autofree char *spec = g_strdup_printf("%u:0x%" PRIx64, slot, value);
+
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':"
+        "{'path':%s,'property':'x-test-withhold-scratch1','value':%s}}",
+        bedrock, spec);
+}
+
+static void release_scratch1(QTestState *s, const char *bedrock,
+                             unsigned int slot)
+{
+    qtest_qmp_assert_success(s,
+        "{'execute':'qom-set','arguments':"
+        "{'path':%s,'property':'x-test-release-scratch1','value':%u}}",
+        bedrock, slot);
+}
+
+/*
+ * The master tells a peer its NASID by a vector write of the peer's scratch
+ * 1, while the peer's own processors may still be parked with a withheld
+ * post there (the rendezvous hold, sgi-bedrock.c). Those posts reached the
+ * register first on hardware, so they land before the write, oldest first,
+ * and the hold ending later changes nothing: the NASID stays. A vector read
+ * sees the posts the same way. The withheld state is placed through the
+ * test-only properties, since no processor of B runs here.
+ */
+static void test_peer_scratch1_write_follows_withheld_posts(void)
+{
+    QTestState *s = pair_start("");
+    const uint64_t write = HUB_SCRATCH(1) | REQUEST_ID(0x7b) | TYPE_WRITE;
+    const uint64_t read = HUB_SCRATCH(1) | REQUEST_ID(0x1c8);
+    uint64_t status;
+
+    qtest_writeq(s, LB(B_BASE, SCRATCH(1)), 0x4000000fffULL);
+    withhold_scratch1(s, B_PATH, 2, 0x2222);
+    withhold_scratch1(s, B_PATH, 0, 0x4000001fffULL);
+    status = vector_launch(s, A_BASE, 0, read, 0);
+    assert_good_reply(status, read);
+    /* Both posts landed, slot 2's first: slot 0's is the value read. */
+    g_assert_cmphex(qtest_readq(s, LB(A_BASE, VECTOR_READ)), ==,
+                    0x4000001fffULL);
+
+    withhold_scratch1(s, B_PATH, 1, 0x4000002fffULL);
+    status = vector_launch(s, A_BASE, 0, write, 0x4000000001ULL);
+    assert_good_reply(status, write);
+    release_scratch1(s, B_PATH, 1);
+    g_assert_cmphex(qtest_readq(s, LB(B_BASE, SCRATCH(1))), ==,
+                    0x4000000001ULL);
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -297,6 +351,8 @@ int main(int argc, char **argv)
                    test_unwired_port_has_no_link);
     qtest_add_func("sn1/bedrock-link/route-zero-reads-the-peer",
                    test_route_zero_reads_the_peer);
+    qtest_add_func("sn1/bedrock-link/peer-scratch1-write-follows-withheld-"
+                   "posts", test_peer_scratch1_write_follows_withheld_posts);
     qtest_add_func("sn1/bedrock-link/route-zero-writes-the-peer",
                    test_route_zero_writes_the_peer);
     qtest_add_func("sn1/bedrock-link/unroutable-launch-latches-nothing",

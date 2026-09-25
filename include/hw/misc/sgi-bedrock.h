@@ -149,6 +149,13 @@ struct SGIBedrockState {
     bool hold_scratch1_seen[SGI_BEDROCK_PROCESSORS];
     bool hold_scratch1_withheld_valid[SGI_BEDROCK_PROCESSORS];
     uint64_t hold_scratch1_withheld[SGI_BEDROCK_PROCESSORS];
+    /*
+     * The order the withheld values were written in: an access from
+     * outside the node lands them all, oldest first, before its own
+     * (sgi_bedrock_scratch1_external in sgi-bedrock.c).
+     */
+    uint64_t hold_scratch1_withheld_seq[SGI_BEDROCK_PROCESSORS];
+    uint64_t hold_scratch1_seq;
     int perf_last_slot;
     uint64_t perf_run;
     uint64_t hold_id[SGI_BEDROCK_PROCESSORS];
@@ -201,6 +208,13 @@ SGINetPacketResult sgi_bedrock_vector_send(SGIBedrockState *s,
  */
 void sgi_bedrock_hold_reset(SGIBedrockState *s);
 void sgi_bedrock_hold_scratch1_write(SGIBedrockState *s, uint64_t value);
+
+/*
+ * Called from lb_read() before it returns LB scratch 1: a read from outside
+ * the node sees every value the node's own processors have written, withheld
+ * or not.
+ */
+void sgi_bedrock_scratch1_read(SGIBedrockState *s);
 
 /*
  * The second rendezvous's holds (H3), docs/known-issues.md and
