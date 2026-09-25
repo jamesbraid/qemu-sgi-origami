@@ -45,6 +45,17 @@ typedef struct SGIL1USBTestState {
 struct SGIL1State {
     DeviceState parent_obj;
     SGIL1UARTState *uart;
+    /*
+     * The other chassis's controller across the RS-422 pair in a
+     * two-chassis Origin 300's NUMAlink cable (the datasheet's
+     * "Two-chassis pair"), or NULL. The link carries no wire format: a
+     * forwarded request is an in-process call. It works only while both
+     * controllers' network mode is 422.
+     */
+    struct SGIL1State *peer;
+    bool network_422;
+    /* While answering a peer's forwarded request, where its replies go. */
+    struct SGIL1State *reply_to;
     CharFrontend chr;
     qemu_irq node_power_out;
     qemu_irq node_reset_out;
@@ -71,6 +82,8 @@ struct SGIL1State {
     char *brick_type;
     uint32_t processors;
     GString *capture;
+    /* Running a command the cabled peer relayed with ctc; not migrated. */
+    bool serving_peer;
     uint8_t command[128];
     uint32_t command_len;
     char **chassis_files;

@@ -60,6 +60,12 @@ static bool l1_uart_queue(SGIL1UARTState *u, const uint8_t *bytes, unsigned n)
     return true;
 }
 
+/* The RS-422 pair is usable: a peer is cabled and both run network 422. */
+static SGIL1State *l1_linked_peer(SGIL1State *s)
+{
+    return s->peer && s->network_422 && s->peer->network_422 ? s->peer : NULL;
+}
+
 /* The controller side: operator console text, display and log. */
 
 static void G_GNUC_PRINTF(2, 3) l1_printf(SGIL1State *s, const char *fmt, ...)
@@ -391,6 +397,9 @@ static void l1_emit(SGIL1State *s, const uint8_t *payload, unsigned length)
 
     /* The firmware's frame is 128 payload bytes including the header. */
     assert(length <= 128);
+    if (s->reply_to) {
+        s = s->reply_to;
+    }
     if (!s->uart) {
         qemu_log_mask(LOG_UNIMP, "sgi-l1: no UART window attached\n");
         return;
@@ -668,6 +677,35 @@ static void l1_version(SGIL1State *s)
 }
 
 /*
+ * The peer's side of a broadcast power or reset command. Both chassis are
+ * one QEMU machine here, so the requesting L1's own action already powers
+ * or resets every node; the peer only records the state and log entry a
+ * real peer would, and does not request a second machine action. What a
+ * real pair exchanges to propagate it is unknown (the datasheet's
+ * "Two-chassis pair").
+ */
+static void l1_peer_power(SGIL1State *peer, bool up)
+{
+    if (up == peer->node_power) {
+        return;
+    }
+    peer->node_power = up;
+    peer->power_down_pending = false;
+    l1_display_set(peer, 1, up ? "Powered Up" : "Powered Down");
+    l1_log(peer, "power %s (COMMAND)", up ? "up" : "down");
+    qemu_set_irq(peer->node_power_out, up);
+}
+
+static void l1_peer_reset(SGIL1State *peer)
+{
+    if (!peer->node_power) {
+        return;
+    }
+    l1_display_set(peer, 1, "Reset done");
+    l1_log(peer, "reset (COMMAND)");
+}
+
+/*
  * Run one command line. Return the task-3 result code. When @console is set,
  * the prompt or the return to console mode follows; the request interpreter
  * collects the output instead.
@@ -683,6 +721,8 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
     bool own_prompt = false;
     int result = 0;
     unsigned int debug_value;
+    bool broadcast = false;
+    SGIL1State *peer = l1_linked_peer(s);
 
     pstrcpy(line, sizeof(line), text);
     pstrcpy(original, sizeof(original), text);
@@ -706,6 +746,7 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
         }
     }
     if (argc && !strcmp(argv[0], "*")) {
+        broadcast = true;
         if (argc > 1 && !strcmp(argv[1], "debug")) {
             qemu_log_mask(LOG_UNIMP,
                           "sgi-l1: wildcard debug needs connected modules\n");
@@ -724,6 +765,33 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
         }
         return 0;
     }
+    if (!strcmp(argv[0], "ctc") && argc > 1 && s->serving_peer) {
+        /*
+         * A command the peer relayed here names its own chassis as the
+         * peer again. Whether a real L1 relays it back is unknown; the
+         * model refuses it rather than capture into the relaying L1's
+         * collection while that L1 is still collecting (a model choice).
+         */
+        qemu_log_mask(LOG_UNIMP, "sgi-l1: nested ctc is unsupported\n");
+        l1_printf(s, "INFO: nested ctc is unsupported.%s",
+                  console ? "\r\n" : "\n");
+        result = -1;
+        goto complete;
+    }
+    if (!strcmp(argv[0], "ctc") && argc > 1 && peer) {
+        g_autofree char *output = NULL;
+
+        /* The peer runs it; its brick id line comes first. */
+        peer->capture = g_string_new(NULL);
+        peer->serving_peer = true;
+        result = l1_run_line(peer, original + (argv[1] - line), false);
+        peer->serving_peer = false;
+        output = g_string_free(peer->capture, FALSE);
+        peer->capture = NULL;
+        /* One line of its own, so a task-3 reply carries it as a field. */
+        l1_printf(s, "%03uc%02u:\r\n%s", peer->rack, peer->bay, output);
+        goto complete;
+    }
     if (!strcmp(argv[0], "ctc") && argc > 1 &&
         !strcmp(argv[1], "debug")) {
         qemu_log_mask(LOG_UNIMP, "sgi-l1: peer debug is unsupported\n");
@@ -734,6 +802,9 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
     }
     if (l1_word(argv[0], "power", "pwr")) {
         if (argc == 2 && l1_word(argv[1], "up", "u")) {
+            if (broadcast && peer) {
+                l1_peer_power(peer, true);
+            }
             if (s->node_power) {
                 l1_printf(s, "Power is already on\r\n");
             } else {
@@ -742,12 +813,23 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
             }
         } else if (argc == 2 && l1_word(argv[1], "down", "d")) {
             l1_power_down(s, 1, true);
+            /*
+             * The peer follows only once this chassis has gone down: a
+             * first request that is waiting for its confirmation leaves
+             * both chassis up.
+             */
+            if (broadcast && peer && !s->node_power) {
+                l1_peer_power(peer, false);
+            }
         } else if (argc == 2 && !strcmp(argv[1], "check")) {
             l1_printf(s, "power appears %s\r\n", s->node_power ? "on" : "off");
         } else {
             l1_invalid(s, "power");
         }
     } else if (l1_word(argv[0], "reset", "rst")) {
+        if (broadcast && peer) {
+            l1_peer_reset(peer);
+        }
         l1_node_reset(s, 1);
     } else if (l1_word(argv[0], "softreset", "softrst")) {
         if (s->node_power) {
@@ -1059,10 +1141,47 @@ static bool l1_task_command(uint16_t command)
     }
 }
 
+static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length);
+
+/*
+ * A request the local router cannot deliver: the catch-all tries the cabled
+ * peer. A type-0 request for the peer's own rack and bay goes there as it
+ * is; a type-3 (attached C-brick) request is rewritten to type 0 and tried
+ * on the link (the addressing section's routing table). The peer answers as
+ * itself, on the requester's subchannel, through the requester's UART.
+ * Returns false when nothing across the link takes it.
+ */
+static bool l1_forward_to_peer(SGIL1State *s, const uint8_t *p,
+                               unsigned length, uint32_t address)
+{
+    SGIL1State *peer = l1_linked_peer(s);
+    unsigned type = address >> 28;
+    uint32_t key = (address >> 12) & 0xffff;
+    uint8_t copy[SGI_L1_FRAME_SIZE];
+
+    if (!peer || length > sizeof(copy)) {
+        return false;
+    }
+    if (type == 3) {
+        address &= ~(UINT32_C(0xf) << 28);
+    } else if (type != 0 || key != ((peer->rack << 6) | peer->bay)) {
+        return false;
+    }
+    memcpy(copy, p, length);
+    stl_be_p(copy + 1, address);
+    peer->reply_to = s;
+    l1_request_frame(peer, copy, length);
+    peer->reply_to = NULL;
+    return true;
+}
+
 static void l1_request(SGIL1State *s)
 {
-    const uint8_t *p = s->frame;
-    unsigned length = s->frame_len - 2;
+    l1_request_frame(s, s->frame, s->frame_len - 2);
+}
+
+static void l1_request_frame(SGIL1State *s, const uint8_t *p, unsigned length)
+{
     uint8_t channel = p[0] & 0x1f;
     uint32_t address;
     uint16_t command;
@@ -1089,6 +1208,9 @@ static void l1_request(SGIL1State *s)
     address = ldl_be_p(p + 1);
     command = lduw_be_p(p + 5);
     if (!l1_local(s, address)) {
+        if (!s->reply_to && l1_forward_to_peer(s, p, length, address)) {
+            return;
+        }
         qemu_log_mask(LOG_UNIMP,
                       "sgi-l1: no receiver for destination 0x%08x\n", address);
         l1_router_error(s, channel);
@@ -2231,6 +2353,12 @@ static const Property l1_properties[] = {
     DEFINE_PROP_STRING("brick-serial", SGIL1State, brick_serial),
     DEFINE_PROP_UINT32("processors", SGIL1State, processors, 2),
     DEFINE_PROP_STRING("brick-type", SGIL1State, brick_type),
+    /*
+     * The network mode the L1 keeps in non-volatile memory. 422 is the mode
+     * the Origin 300 User's Guide requires for a cabled pair; the factory
+     * default is unknown.
+     */
+    DEFINE_PROP_BOOL("network-422", SGIL1State, network_422, true),
 };
 
 static void l1_init(Object *obj)
@@ -2261,6 +2389,12 @@ static void l1_init(Object *obj)
     qdev_init_gpio_out_named(DEVICE(obj), &s->nmi_out, "nmi", 1);
     object_property_add_uint8_ptr(obj, "event-subchannel", &s->event_subchannel,
                                   OBJ_PROP_FLAG_READ);
+    /*
+     * Settable after realize: each chassis's node realizes its own L1, so
+     * the machine can only join the two once both exist.
+     */
+    object_property_add_link(obj, "peer", TYPE_SGI_L1, (Object **)&s->peer,
+                             object_property_allow_set_link, 0);
 }
 
 static void l1_class_init(ObjectClass *klass, const void *data)

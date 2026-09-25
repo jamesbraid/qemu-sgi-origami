@@ -1503,6 +1503,153 @@ static void text_request(uint8_t *request, size_t *n, uint16_t code,
     *n = 10 + strlen(text);
 }
 
+/*
+ * Two chassis's L1s over the RS-422 pair in the NUMAlink cable (the
+ * datasheet's "Two-chassis pair"): a request for the peer's own rack and
+ * bay, or a type-3 attached-C-brick request, is answered by the peer as
+ * itself on the requester's subchannel. Either controller's network mode
+ * other than 422 leaves the link unusable and the router error stands.
+ * "ctc" runs a command on the peer and prints its brick id first.
+ */
+static void test_peer_pair(void)
+{
+    QTestState *s = qtest_init("-M none -cpu R10000 -S "
+                               "-device sgi-l1,id=l1c,rack=1,bay=1" UART
+                               " -device sgi-l1,id=l1d,rack=1,bay=2");
+    uint8_t request[] = { 0x12, 0, 0, 0, 0, 0, 3 };
+    const uint8_t command[] = { 0x11, 0x0f, 0xff, 0xf0, 3, 0, 0, 1,
+                                1, 'c', 't', 'c', ' ', 'v', 'e', 'r', 0 };
+    const char peer_id[] = "001c02:";
+    uint8_t reply[131];
+    size_t n;
+
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    /* Unlinked: a peer's address is foreign. */
+    set_destination(request, (1 << 18) | (2 << 12) | 6);
+    send_frame(s, request, sizeof(request), false);
+    expect_router_error(s, 18);
+
+    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':"
+        "{'path':%s,'property':'peer','value':'/machine/peripheral/l1d'}}",
+        L1);
+    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':"
+        "{'path':'/machine/peripheral/l1d','property':'peer','value':%s}}",
+        L1);
+    send_frame(s, request, sizeof(request), false);
+    expect_identity(s, 18, 0x42);
+    set_destination(request, 0x3ffff006);
+    send_frame(s, request, sizeof(request), false);
+    expect_identity(s, 18, 0x42);
+    /* The requester's own address is still its own. */
+    set_destination(request, 0x0ffff006);
+    send_frame(s, request, sizeof(request), false);
+    expect_identity(s, 18, 0x41);
+
+    send_frame(s, command, sizeof(command), false);
+    n = receive(s, reply);
+    g_assert_cmpuint(n, >, 6 + sizeof(peer_id));
+    g_assert_cmphex(reply[5], >=, 2);
+    g_assert_cmphex(reply[6], ==, 1);
+    g_assert_cmpmem(reply + 7, sizeof(peer_id), peer_id, sizeof(peer_id));
+
+    qtest_quit(s);
+
+    s = qtest_init("-M none -cpu R10000 -S "
+                   "-device sgi-l1,id=l1c,rack=1,bay=1" UART
+                   " -device sgi-l1,id=l1d,rack=1,bay=2,network-422=off");
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':"
+        "{'path':%s,'property':'peer','value':'/machine/peripheral/l1d'}}",
+        L1);
+    set_destination(request, 0x3ffff006);
+    send_frame(s, request, sizeof(request), false);
+    expect_router_error(s, 18);
+    qtest_quit(s);
+}
+
+#define PEER "/machine/peripheral/l1d"
+
+static void link_peers(QTestState *s)
+{
+    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':"
+        "{'path':%s,'property':'peer','value':%s}}", L1, PEER);
+    qtest_qmp_assert_success(s, "{'execute':'qom-set','arguments':"
+        "{'path':%s,'property':'peer','value':%s}}", PEER, L1);
+}
+
+static void assert_peer_display(QTestState *s, const char *expected)
+{
+    g_autoptr(QDict) result = qtest_qmp(s,
+        "{'execute':'qom-get','arguments':"
+        "{'path':%s,'property':'display-line-2'}}", PEER);
+    g_assert_cmpstr(qdict_get_str(result, "return"), ==, expected);
+}
+
+/*
+ * A broadcast power command reaches the peer only as up or down, and a
+ * power-down reaches it only once this chassis has gone down: the first
+ * request, waiting for its confirmation, leaves both chassis up.
+ */
+static void test_peer_power(void)
+{
+    int fd;
+    QTestState *s = console_start(&fd, "", "-no-shutdown " RTC
+                                  " -device sgi-l1,id=l1d,rack=1,bay=2");
+
+    console_expect(fd, POWERING ENTER_CPU0);
+    link_peers(s);
+    assert_peer_display(s, "Powered Up");
+    console_send(fd, "\024* power check\r");
+    console_expect(fd, ESCAPE "power appears on\r\n" RETURN_CPU0);
+    assert_peer_display(s, "Powered Up");
+    console_send(fd, "\024* power down\r");
+    console_expect(fd, ESCAPE RETURN_CPU0);
+    assert_display(s, "Powered Up");
+    assert_peer_display(s, "Powered Up");
+    console_send(fd, "\024* power down\r");
+    console_expect(fd, ESCAPE PROMPT);
+    qtest_qmp_eventwait(s, "SHUTDOWN");
+    assert_display(s, "Powered Down");
+    assert_peer_display(s, "Powered Down");
+    qtest_quit(s);
+    close(fd);
+}
+
+/*
+ * A command relayed to the peer with ctc cannot be relayed back: the peer
+ * refuses a nested ctc and the requester's own collection survives, so a
+ * later request still answers.
+ */
+static void test_peer_nested_ctc(void)
+{
+    QTestState *s = qtest_init("-M none -cpu R10000 -S "
+                               "-device sgi-l1,id=l1c,rack=1,bay=1" UART
+                               " -device sgi-l1,id=l1d,rack=1,bay=2");
+    const uint8_t nested[] = { 0x30, 0xff, 0xff, 0xff, 0xff, 2,
+                               1, '0', '0', '1', 'c', '0', '2', ':', 0,
+                               1, 'I', 'N', 'F', 'O', ':', ' ', 'n', 'e',
+                               's', 't', 'e', 'd', ' ', 'c', 't', 'c', ' ',
+                               'i', 's', ' ', 'u', 'n', 's', 'u', 'p', 'p',
+                               'o', 'r', 't', 'e', 'd', '.', '\n', 0 };
+    uint8_t request[128], reply[129];
+    size_t n;
+
+    qtest_sysbus_mmio_map(s, PATH, 0, BASE);
+    link_peers(s);
+    text_request(request, &n, 0, "ctc ctc version");
+    send_frame(s, request, n, false);
+    g_assert_cmpuint(receive(s, reply), ==, sizeof(nested));
+    g_assert_cmpmem(reply, sizeof(nested), nested, sizeof(nested));
+    text_request(request, &n, 0, "ctc version");
+    send_frame(s, request, n, false);
+    n = receive(s, reply);
+    g_assert_cmphex(reply[0], ==, 0x30);
+    g_assert_cmphex(reply[4], ==, 0);
+    g_assert_cmpmem(reply + 7, 8, "001c02:", 8);
+    qtest_quit(s);
+}
+
+
 /* The command interpreter runs any code's text and returns its lines. */
 static void test_command_interpreter(void)
 {
@@ -2521,6 +2668,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/l1/lifecycle-persistence", test_lifecycle_persistence);
     qtest_add_func("sn1/l1/lifecycle-migration", test_lifecycle_migration);
     qtest_add_func("sn1/l1/route-forms", test_route_forms);
+    qtest_add_func("sn1/l1/peer-pair", test_peer_pair);
+    qtest_add_func("sn1/l1/peer-power", test_peer_power);
+    qtest_add_func("sn1/l1/peer-nested-ctc", test_peer_nested_ctc);
     qtest_add_func("sn1/l1/command-interpreter", test_command_interpreter);
     qtest_add_func("sn1/l1/receive-tolerance", test_receive_tolerance);
     qtest_add_func("sn1/l1/request-log", test_request_log);
