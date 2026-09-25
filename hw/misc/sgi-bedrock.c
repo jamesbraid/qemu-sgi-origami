@@ -1488,6 +1488,11 @@ static void bedrock_init(Object *obj)
     qdev_init_gpio_in_named(dev, bedrock_local_reset, "local-reset", 1);
 }
 
+uint8_t sgi_bedrock_node_number(SGIBedrockState *s)
+{
+    return sgi_bedrock_lb_node_number(&s->lb);
+}
+
 static void bedrock_reset_enter(Object *obj, ResetType type)
 {
     sgi_bedrock_hold_reset(SGI_BEDROCK(obj));

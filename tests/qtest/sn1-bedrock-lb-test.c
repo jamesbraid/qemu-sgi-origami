@@ -165,8 +165,6 @@ static void test_identity_and_permissions(void)
                               (2ULL << 28) | (0x5aULL << 32);
 
     g_assert_cmphex(qtest_readq(s, LB_BASE + REVISION), ==, identity);
-    qtest_writeq(s, LB_BASE + REVISION, UINT64_MAX);
-    g_assert_cmphex(qtest_readq(s, LB_BASE + REVISION), ==, identity);
 
     qtest_writeq(s, LB_BASE + CPU_PERMISSION, 0);
     qtest_writeq(s, LB_BASE + CPU_OVERRIDE, 0x1234);
@@ -197,15 +195,22 @@ static void test_default_identity(void)
     qtest_quit(s);
 }
 
-/* A write to the identity register is refused, and the refusal is logged. */
-static void test_identity_write_logged(void)
+/*
+ * The stock PROM assigns the node number by storing the whole revision word:
+ * zero at hub initialisation, then the word with bits 39:32 and 47:46
+ * replaced, and it uses the value it reads back. The two fields latch; the
+ * identity fields do not, so the early zero store must leave them intact.
+ * Region size 3 is invalid and refused with a log, and a reset restores the
+ * realized number, the model's stand-in for an unknown reset value.
+ */
+static void test_revision_write_latches_node(void)
 {
     g_autofree char *log = g_strdup_printf("%s/sn1-lb-identity-XXXXXX.log",
                                            g_get_tmp_dir());
     g_autofree char *extra = NULL;
     g_autofree char *found = NULL;
     const uint64_t identity = (0x36ULL << 1) | (0x3012ULL << 12) |
-                              (2ULL << 28) | (0x5aULL << 32);
+                              (2ULL << 28);
     QTestState *s;
     int fd = g_mkstemp(log);
 
@@ -213,12 +218,29 @@ static void test_identity_write_logged(void)
     close(fd);
     extra = g_strdup_printf("-d guest_errors -D %s", log);
     s = lb_start(extra);
-    qtest_writeq(s, LB_BASE + REVISION, UINT64_MAX);
+
+    qtest_writeq(s, LB_BASE + REVISION, 0);
     g_assert_cmphex(qtest_readq(s, LB_BASE + REVISION), ==, identity);
+    qtest_writeq(s, LB_BASE + REVISION, identity | (0x21ULL << 32) |
+                 (1ULL << 46));
+    g_assert_cmphex(qtest_readq(s, LB_BASE + REVISION), ==,
+                    identity | (0x21ULL << 32) | (1ULL << 46));
+    /* Identity bits in the write do not take: only the two fields latch. */
+    qtest_writeq(s, LB_BASE + REVISION, (0x7ffULL << 1) | (0x44ULL << 32));
+    g_assert_cmphex(qtest_readq(s, LB_BASE + REVISION), ==,
+                    identity | (0x44ULL << 32));
+    qtest_writeq(s, LB_BASE + REVISION, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + REVISION), ==,
+                    identity | (0x44ULL << 32));
+
+    qtest_writeq(s, LB_BASE + SOFT_RESET, 1);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + REVISION), ==,
+                    identity | (0x5aULL << 32));
     qtest_quit(s);
 
     g_assert_true(g_file_get_contents(log, &found, NULL, NULL));
-    g_assert_nonnull(strstr(found, "write to read-only register 0x0\n"));
+    g_assert_nonnull(strstr(found, "names the invalid region size 3"));
+    g_assert_null(strstr(found, "write to read-only register 0x0\n"));
     g_assert_cmpint(unlink(log), ==, 0);
 }
 
@@ -697,6 +719,10 @@ static void test_migration(void)
           0x5a5a5a5a5a5a5a5aULL & VECTOR_PARAMS_MASK },
         { VECTOR_ROUTE, 0x123456789abcdef0ULL, 0x123456789abcdef0ULL },
         { VECTOR_DATA, 0xfedcba9876543210ULL, 0xfedcba9876543210ULL },
+        /* The latched node number and region size, over the identity. */
+        { REVISION, (0x33ULL << 32) | (1ULL << 46),
+          (0x36ULL << 1) | (0x3012ULL << 12) | (2ULL << 28) |
+          (0x33ULL << 32) | (1ULL << 46) },
     };
 
     g_assert_no_error(error);
@@ -787,8 +813,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-lb/identity-permissions",
                    test_identity_and_permissions);
     qtest_add_func("sn1/bedrock-lb/default-identity", test_default_identity);
-    qtest_add_func("sn1/bedrock-lb/identity-write-logged",
-                   test_identity_write_logged);
+    qtest_add_func("sn1/bedrock-lb/revision-write-latches-node",
+                   test_revision_write_latches_node);
     qtest_add_func("sn1/bedrock-lb/permissive-reset", test_permissive_reset);
     qtest_add_func("sn1/bedrock-lb/rtc-reset", test_rtc_reset);
     qtest_add_func("sn1/bedrock-lb/storage-masks-error",
