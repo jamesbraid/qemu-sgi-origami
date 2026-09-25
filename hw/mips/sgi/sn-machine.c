@@ -1118,6 +1118,21 @@ static bool sgi_machine_instantiate_baseio_card(
  */
 #define SGI_MACHINE_PCI_CARRIER_SLOTS 3
 
+/*
+ * The carrier's board-identity record and Bridge revision
+ * (docs/datasheets/sgi-pci-shoebox.md, "Board-identity record"). A real
+ * Origin 2000's PCI XIO board in slot 2 prints part 030-1062-002,
+ * revision C and name PCI-XIO, and SGI's part table names 030-1062-002
+ * the Origin 2000 PCI cardcage. That this carrier is that cardcage is
+ * inferred: the owner's guide names no part. Both real PCI_XIO boards
+ * observed report Bridge revision 3. The barcode is a placeholder.
+ */
+#define SGI_MACHINE_PCI_CARRIER_PART     "030-1062-002"
+#define SGI_MACHINE_PCI_CARRIER_REVISION "C"
+#define SGI_MACHINE_PCI_CARRIER_NAME     "PCI-XIO"
+#define SGI_MACHINE_PCI_CARRIER_BARCODE  "OPCIXIO001"
+#define SGI_MACHINE_PCI_CARRIER_BRIDGE_REVISION 3
+
 static bool sgi_machine_instantiate_pci_carrier(
     SGIMachineState *s, const SGIModelIoBoard *record,
     unsigned int board_index, const SGIModelXtalkAttachment *attachment,
@@ -1135,6 +1150,14 @@ static bool sgi_machine_instantiate_pci_carrier(
     qdev_prop_set_uint64(dev, "onewire-serial", record->serial);
     qdev_prop_set_string(dev, "pci-bus-name", bus_name);
     qdev_prop_set_uint32(dev, "slots", SGI_MACHINE_PCI_CARRIER_SLOTS);
+    qdev_prop_set_string(dev, "board-part", SGI_MACHINE_PCI_CARRIER_PART);
+    qdev_prop_set_string(dev, "board-barcode",
+                         SGI_MACHINE_PCI_CARRIER_BARCODE);
+    qdev_prop_set_string(dev, "board-revision",
+                         SGI_MACHINE_PCI_CARRIER_REVISION);
+    qdev_prop_set_string(dev, "board-name", SGI_MACHINE_PCI_CARRIER_NAME);
+    qdev_prop_set_uint32(dev, "bridge-revision",
+                         SGI_MACHINE_PCI_CARRIER_BRIDGE_REVISION);
     return sgi_machine_attach_xio_card(s, dev, board_index, attachment, errp);
 }
 
