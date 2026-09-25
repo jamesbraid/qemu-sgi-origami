@@ -516,6 +516,7 @@ static bool m48t35_attach_clock_drive(M48T35State *s, Error **errp)
 {
     g_autofree char *id = NULL;
     BlockBackend *blk;
+    int64_t len;
 
     if (!s->clock_blk && *blk_name(s->blk)) {
         id = g_strdup_printf("%s-clock", blk_name(s->blk));
@@ -525,12 +526,25 @@ static bool m48t35_attach_clock_drive(M48T35State *s, Error **errp)
             return false;
         }
     }
-    if (s->clock_blk &&
-        blk_set_perm(s->clock_blk, BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE,
-                     BLK_PERM_ALL, errp) < 0) {
+    if (!s->clock_blk) {
+        return true;
+    }
+    /* Too small to hold the record would fail every save; say so now. */
+    len = blk_getlength(s->clock_blk);
+    if (len < 0) {
+        error_setg_errno(errp, -len, "m48t35: could not get the length of "
+                         "the clock reference drive");
         return false;
     }
-    return true;
+    if (len < M48T35_CLOCK_REF_BYTES) {
+        error_setg(errp, "m48t35: clock reference drive is %" PRId64
+                   " bytes, less than the %u its record needs",
+                   len, M48T35_CLOCK_REF_BYTES);
+        return false;
+    }
+    return blk_set_perm(s->clock_blk,
+                        BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE,
+                        BLK_PERM_ALL, errp) >= 0;
 }
 
 static void m48t35_realize(DeviceState *dev, Error **errp)

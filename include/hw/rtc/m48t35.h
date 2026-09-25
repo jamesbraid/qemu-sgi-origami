@@ -83,8 +83,12 @@ OBJECT_DECLARE_SIMPLE_TYPE(M48T35State, M48T35)
  * "-drive if=none,id=sgi-nvram0-clock,file=...,format=raw" beside the
  * machine's "sgi-nvram0" is all a launcher adds. The record is a magic
  * value and the time of the save, as seconds of the clock QEMU's -rtc
- * option selects. A missing or unwritten record restores the saved calendar
- * with no time added.
+ * option selects, so the drive must hold at least M48T35_CLOCK_REF_BYTES,
+ * 16. Realize refuses one the block layer reports as smaller, rather than
+ * fail every save. It reports a raw file's length in whole 512-byte
+ * sectors, so in practice that is an empty file; a shorter nonempty one
+ * reads as zeros past its end and grows on the first save. A missing or
+ * unwritten record restores the saved calendar with no time added.
  */
 #define M48T35_CLOCK_REF_MAGIC  "M48TREF1"
 #define M48T35_CLOCK_REF_BYTES  16
