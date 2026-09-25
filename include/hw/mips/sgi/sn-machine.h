@@ -44,6 +44,11 @@ struct SGIMachineClass {
     uint32_t flash_read_cycles;
     uint32_t flash_write_cycles;
     /*
+     * The SN0 node board's bank wiring and sizes (sn0.h): Origin 200's
+     * IP29 or Origin 2000's IP27. NULL, as a fixture leaves it, is IP29.
+     */
+    const struct SN0ModelMemory *node_memory;
+    /*
      * A fixture's own descriptor, bypassing the name lookup in the
      * compiled catalogue entirely. Set only by a qtest machine type that
      * needs the real builder over a topology no product ships (a

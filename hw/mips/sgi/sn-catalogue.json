@@ -530,7 +530,7 @@
       "default-cpu-model": "R10000",
       "default-topology": "origin2000-module",
       "dimms-per-node": [
-        2
+        4
       ],
       "disk-bus": "scsi.0",
       "display-name": "Origin 2000 one-node module",
@@ -547,9 +547,10 @@
       ],
       "memory-per-node-mib": {
         "accepted": [
-          64
+          64,
+          256
         ],
-        "default": 64
+        "default": 256
       },
       "needs-debug-leds-off": false,
       "netboot-adapter": "ioc3-ethernet",
@@ -2015,12 +2016,13 @@
       "nodes": [
         {
           "accepted-memory-mib": [
-            64
+            64,
+            256
           ],
           "asic-kind": "hub",
           "bank-mib": [
-            64,
-            0,
+            128,
+            128,
             0,
             0,
             0,
