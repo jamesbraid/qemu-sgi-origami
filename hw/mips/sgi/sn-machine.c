@@ -1799,7 +1799,8 @@ static void sgi_machine_build_fabric_links(SGIMachineState *s,
 /*
  * The Bedrock counterpart of the loop above: one sgi-net-cable per cable
  * record, each end a realized node's Bedrock at its one port, and each
- * Bedrock's own cable reference set to it.
+ * Bedrock's own cable reference set to it. The two chassis's L1s become
+ * each other's peer over the same cable.
  */
 static void sgi_machine_build_bedrock_links(SGIMachineState *s,
                                             const SGIModelTopology *t)
@@ -1827,9 +1828,18 @@ static void sgi_machine_build_bedrock_links(SGIMachineState *s,
         }
         qdev_realize_and_unref(dev, NULL, &error_fatal);
         for (side = 0; side < 2; side++) {
-            object_property_set_link(
-                OBJECT(SN1_NODE(s->bedrock_nodes[ends[side]->index])->bedrock),
-                "net-cable", OBJECT(dev), &error_fatal);
+            SN1NodeState *node = SN1_NODE(s->bedrock_nodes[ends[side]->index]);
+            SN1NodeState *other =
+                SN1_NODE(s->bedrock_nodes[ends[side ^ 1]->index]);
+
+            object_property_set_link(OBJECT(node->bedrock), "net-cable",
+                                     OBJECT(dev), &error_fatal);
+            /*
+             * The same cable carries the two L1s' RS-422 pair between the
+             * chassis (108-0240-002 printed page 2-47).
+             */
+            object_property_set_link(OBJECT(node->l1), "peer",
+                                     OBJECT(other->l1), &error_fatal);
         }
     }
 }
