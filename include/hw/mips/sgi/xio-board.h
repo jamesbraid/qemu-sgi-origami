@@ -107,8 +107,26 @@ struct SGIXioBoardClass {
      * this device re-parents under its module. A widget built here is
      * owned by the board (add it as a QOM child of `board`) so it is
      * released along with a board that never attaches.
+     *
+     * Do not create a qdev bus directly on `board` here (onewire_create_bus(
+     * DEVICE(board), ...) or similar): the base class's own realize still
+     * has to move this device under its module after build_widget()
+     * returns, and object_unparent() tears down every child bus a device
+     * owns as a side effect of that move. Use finish_realize() instead for
+     * anything that needs a child bus of its own.
      */
     bool (*build_widget)(SGIXioBoardState *board, Error **errp);
+
+    /*
+     * Optional. Runs once build_widget() has succeeded and this device has
+     * already re-parented under its module, so a qdev bus created here
+     * (again, DEVICE(board) is now a safe parent) is never subject to the
+     * child-bus teardown a later re-parent would otherwise inflict on it --
+     * there is only ever one. Most boards need nothing here; BaseIO's own
+     * Bridge child, for one, already owns its one-wire bus on itself rather
+     * than on the board, so it never needed this hook.
+     */
+    bool (*finish_realize)(SGIXioBoardState *board, Error **errp);
 };
 
 /*

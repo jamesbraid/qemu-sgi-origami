@@ -239,18 +239,6 @@ static bool sgi_kona_build_widget(SGIXioBoardState *board,
     board->cpu_face = &s->regs;
     board->packet_face = &s->regs;
 
-    s->onewire_bus = onewire_create_bus(DEVICE(s), "onewire");
-    if (!sgi_kona_onewire_attach_part(
-            s, "onewire-geometry", sgi_kona_geometry_record,
-            SGI_KONA_GEOMETRY_SERIAL, errp)) {
-        return false;
-    }
-    if (!sgi_kona_onewire_attach_part(
-            s, "onewire-ktown", sgi_kona_ktown_record,
-            SGI_KONA_KTOWN_SERIAL, errp)) {
-        return false;
-    }
-
     /*
      * Claim the spare fabric proxy now this widget's own faces exist, so
      * sgi_machine_done() both brings the spare widget's link alive for
@@ -261,6 +249,30 @@ static bool sgi_kona_build_widget(SGIXioBoardState *board,
     sgi_xtalk_crossbow_link_claim_fabric(s->fabric, board->cpu_face,
                                          board->packet_face);
     return true;
+}
+
+/*
+ * The one-wire bus is a qdev child bus of this board (DEVICE(s) doubles as
+ * DEVICE(board): SGIKonaState has no separate widget device the way
+ * xio-baseio.c's Bridge does), so it must not exist yet when build_widget()
+ * returns -- the base class's own realize still has to re-parent this
+ * board under its module, and that tears down every child bus a device
+ * owns as a side effect. finish_realize() runs after that move, so the bus
+ * this creates is never subject to it.
+ */
+static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
+{
+    SGIKonaState *s = SGI_KONA(board);
+
+    s->onewire_bus = onewire_create_bus(DEVICE(s), "onewire");
+    if (!sgi_kona_onewire_attach_part(
+            s, "onewire-geometry", sgi_kona_geometry_record,
+            SGI_KONA_GEOMETRY_SERIAL, errp)) {
+        return false;
+    }
+    return sgi_kona_onewire_attach_part(
+        s, "onewire-ktown", sgi_kona_ktown_record,
+        SGI_KONA_KTOWN_SERIAL, errp);
 }
 
 static const Property sgi_kona_properties[] = {
@@ -305,6 +317,7 @@ static void sgi_kona_class_init(ObjectClass *oc, const void *data)
     dc->user_creatable = true;
     device_class_set_props(dc, sgi_kona_properties);
     bc->build_widget = sgi_kona_build_widget;
+    bc->finish_realize = sgi_kona_finish_realize;
 }
 
 static const TypeInfo sgi_kona_type = {
