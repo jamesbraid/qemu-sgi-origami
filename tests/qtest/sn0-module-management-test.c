@@ -698,6 +698,120 @@ static void test_mid_byte_stop_releases_wire(void)
     g_assert_not_reached();
 }
 
+static bool bus_free_everywhere(QTestState *qts)
+{
+    for (unsigned node = 0; node < ADAPTER_COUNT; node++) {
+        if (!(adapter_read(qts, node, I2C_CTRL) & STS_BB)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/*
+ * A held STOP goes out after the byte, not in place of its completion: the
+ * host that wrote it still sees PIN go active for that byte, and sees it
+ * while the transfer is open, before the STOP reaches the line.
+ */
+static void test_held_stop_follows_the_finished_byte(void)
+{
+    QTestState *qts = start_module();
+
+    wait_for_global_grant(qts, GRANT_BASE);
+    g_assert_true(start_transfer(qts, 0, NVRAM_FIRST, false));
+    adapter_write(qts, 0, I2C_DATA, 0x10);
+    adapter_write(qts, 0, I2C_CTRL, CTL_STOP);
+    g_assert_cmphex(adapter_read(qts, 0, I2C_CTRL) & (STS_PIN | STS_BB), ==,
+                    STS_PIN);
+
+    for (unsigned step = 0; step < POLL_STEPS; step++) {
+        uint8_t status = adapter_read(qts, 0, I2C_CTRL);
+
+        g_assert_cmphex(status & (STS_BER | STS_LAB), ==, 0);
+        if (!(status & STS_PIN)) {
+            /* The byte is done and acknowledged; the STOP is still to come. */
+            g_assert_cmphex(status & (STS_LRB | STS_BB), ==, 0);
+            for (unsigned node = 1; node < ADAPTER_COUNT; node++) {
+                g_assert_cmphex(adapter_read(qts, node, I2C_CTRL) & STS_BB,
+                                ==, 0);
+            }
+            for (step = 0; step < POLL_STEPS; step++) {
+                if (bus_free_everywhere(qts)) {
+                    qtest_quit(qts);
+                    return;
+                }
+                qtest_clock_step(qts, POLL_STEP_NS);
+            }
+            g_assert_not_reached();
+        }
+        /* Finer than the STOP's own clock, so the gap cannot be missed. */
+        qtest_clock_step(qts, POLL_STEP_NS / 2);
+    }
+    g_assert_not_reached();
+}
+
+/*
+ * A fresh transfer from an adapter that once had a STOP held against it:
+ * its address byte must leave the transfer open. A leftover held STOP would
+ * close the bus right behind that byte.
+ */
+static void assert_fresh_transfer_stays_open(QTestState *qts, unsigned node)
+{
+    unsigned other = (node + 1) % ADAPTER_COUNT;
+
+    g_assert_true(start_transfer(qts, node, NVRAM_FIRST, false));
+    for (unsigned step = 0; step < 25; step++) {
+        g_assert_cmphex(adapter_read(qts, node, I2C_CTRL) &
+                        (STS_PIN | STS_BB | STS_BER | STS_LAB), ==, 0);
+        g_assert_cmphex(adapter_read(qts, other, I2C_CTRL) & STS_BB, ==, 0);
+        qtest_clock_step(qts, POLL_STEP_NS);
+    }
+    stop_transfer(qts, node);
+}
+
+/*
+ * A STOP written while the adapter's own address byte is being arbitrated,
+ * by an adapter that then loses that byte, belongs to a transfer that never
+ * became its own. The loss drops it with the rest of the attempt, so neither
+ * the winner's transfer nor the loser's next one is closed by it.
+ */
+static void test_lost_arbitration_drops_a_held_stop(void)
+{
+    QTestState *qts = start_module();
+
+    wait_for_global_grant(qts, GRANT_BASE);
+    adapter_write(qts, 0, I2C_CTRL, CTL_RUN);
+    adapter_write(qts, 1, I2C_CTRL, CTL_RUN);
+    /* 0xa0 against 0xa2: adapter 1 sends a one on bit 6 and loses there. */
+    adapter_write(qts, 0, I2C_DATA, NVRAM_FIRST << 1);
+    adapter_write(qts, 1, I2C_DATA, (NVRAM_FIRST + 1) << 1);
+    adapter_write(qts, 0, I2C_CTRL, CTL_START);
+    adapter_write(qts, 1, I2C_CTRL, CTL_START);
+
+    /* Past the START hold and into the address bits, well ahead of bit 6. */
+    qtest_clock_step(qts, 20000);
+    g_assert_cmphex(adapter_read(qts, 1, I2C_CTRL) &
+                    (STS_PIN | STS_BB | STS_LAB), ==, STS_PIN);
+    adapter_write(qts, 1, I2C_CTRL, CTL_STOP);
+
+    g_assert_true(wait_done(qts, 0));
+    g_assert_cmphex(adapter_read(qts, 0, I2C_CTRL) & (STS_LRB | STS_BB), ==, 0);
+    g_assert_cmphex(adapter_read(qts, 1, I2C_CTRL) & (STS_LAB | STS_BB), ==,
+                    STS_LAB);
+
+    /* The winner's transfer stays open: nothing the loser held reaches it. */
+    qtest_clock_step(qts, 25 * POLL_STEP_NS);
+    for (unsigned node = 0; node < ADAPTER_COUNT; node++) {
+        g_assert_cmphex(adapter_read(qts, node, I2C_CTRL) & STS_BB, ==, 0);
+    }
+    stop_transfer(qts, 0);
+
+    adapter_write(qts, 1, I2C_CTRL, CTL_RUN);
+    wait_for_next_global_grant(qts, GRANT_BASE);
+    assert_fresh_transfer_stays_open(qts, 1);
+    qtest_quit(qts);
+}
+
 /* One logical NVRAM space, not one per node. */
 static void test_nvram_is_shared(void)
 {
@@ -1175,6 +1289,10 @@ int main(int argc, char **argv)
                    test_invalid_address_stop_releases_wire);
     qtest_add_func("/sn0/o2000-module-management/mid-byte-stop",
                    test_mid_byte_stop_releases_wire);
+    qtest_add_func("/sn0/o2000-module-management/held-stop-after-byte",
+                   test_held_stop_follows_the_finished_byte);
+    qtest_add_func("/sn0/o2000-module-management/lost-arbitration-held-stop",
+                   test_lost_arbitration_drops_a_held_stop);
     qtest_add_func("/sn0/o2000-module-management/shared-nvram",
                    test_nvram_is_shared);
     qtest_add_func("/sn0/o2000-module-management/initial-identity",
