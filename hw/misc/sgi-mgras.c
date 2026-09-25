@@ -184,35 +184,29 @@ static void si_complete_context(SGIMgrasState *s)
 
 static void si_context_write(SGIMgrasState *s, uint32_t value)
 {
-    if (!s->entry_selected || s->protocol == 0xff) {
+    if (!s->entry_selected || s->protocol != 1) {
         si_error(s, 0x120400, 4, "context write in invalid state");
         return;
     }
-    if (s->protocol == 1) {
-        if (!s->first_ack) {
-            si_error(s, 0x120400, 4, "context write before first acknowledgement");
-            return;
-        }
-        if (s->context_words == 63) {
-            if (!s->second_ack || value != 0x0000f400) {
-                si_error(s, 0x120400, 4, "context token missing");
-                return;
-            }
-            si_complete_context(s);
-            return;
-        }
-        s->context[s->context_words++] = value;
-        if (s->context_words == 63) {
-            s->pending |= SI_PENDING_CONTEXT;
-            si_update_irq(s);
-        }
+    if (!s->first_ack) {
+        si_error(s, 0x120400, 4, "context write before first acknowledgement");
         return;
     }
-    /*
-     * Reachable only if a future protocol value is added without a
-     * matching write path. Ready-state words route to the command-FIFO
-     * token parser instead of this function; see the 0x120400 case below.
-     */
+    if (s->context_words >= 63) {
+        /*
+         * Established (mgras-hq4.md, "Context switch and HQ flags"):
+         * MgrasCtxsw stores exactly 63 words and never reads or writes a
+         * closing token at 0x120400 -- the transaction completes as soon
+         * as the 63rd word lands. Reachable only if a write races the
+         * completion interrupt.
+         */
+        si_error(s, 0x120400, 4, "context write after image is complete");
+        return;
+    }
+    s->context[s->context_words++] = value;
+    if (s->context_words == 63) {
+        si_complete_context(s);
+    }
 }
 
 /*
@@ -611,11 +605,19 @@ static void si_write(void *opaque, hwaddr addr, uint64_t value, unsigned size)
         s->context_words = 0;
         s->pending |= SI_PENDING_FLAGS; si_update_irq(s); return;
     case 0x120400:
-        if (size == 4 && s->ready) {
+        /*
+         * s->ready alone cannot gate this dispatch: it latches true after
+         * the first context switch and stays true, but a later switch's
+         * image words (protocol == 1, mid-transaction) must still reach
+         * si_context_write() even though the port has been ready since an
+         * earlier switch. Only route to the command-FIFO parsers once a
+         * transaction is not in its image-upload phase.
+         */
+        if (size == 4 && s->ready && s->protocol != 1) {
             si_raster_command_token(s, value);
         } else if (size == 4) {
             si_context_write(s, value);
-        } else if (size == 8 && s->ready) {
+        } else if (size == 8 && s->ready && s->protocol != 1) {
             si_raster_command(s, value);
         } else if (size == 8 && !s->entry_selected) {
             /* Pre-selection traffic is opaque and has no modeled effect. */
