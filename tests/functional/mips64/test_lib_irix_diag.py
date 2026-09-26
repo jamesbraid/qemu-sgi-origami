@@ -34,6 +34,9 @@ from lib_net import Console, GuestFault, HarnessError
 
 HERE = Path(__file__).parent
 
+# A row file's registration, which may wrap after the class name.
+REGISTER_RE = r"register_irix_diag_row\(\w+,\s*'(\w+)'\)"
+
 
 def _line(row_id='origin200', cpus='2', mem='128', budget='1500', **cells):
     values = {check: RUN for check in CHECKS}
@@ -55,7 +58,7 @@ class ManifestTests(unittest.TestCase):
         registered = set()
         for path in HERE.glob('test_irix_diag*.py'):
             registered.update(re.findall(
-                r"register_irix_diag_row\(\w+, '(\w+)'\)",
+                REGISTER_RE,
                 path.read_text(encoding='utf-8')))
         self.assertEqual(registered, {r.id for r in parse_manifest()})
 
@@ -73,7 +76,7 @@ class ManifestTests(unittest.TestCase):
             target = path.stem[len('test_'):]
             timeout = int(re.search(rf"(?m)^\s*'{target}'\s*:\s*(\d+),",
                                     meson).group(1))
-            for row in re.findall(r"register_irix_diag_row\(\w+, '(\w+)'\)",
+            for row in re.findall(REGISTER_RE,
                                   path.read_text(encoding='utf-8')):
                 with self.subTest(row=row):
                     self.assertGreaterEqual(timeout, budgets[row] + 120)
@@ -203,8 +206,8 @@ PASSES = {
     'oldisk': 'RSLT async-direct   PASS\n'
               'META                TOTAL             1              0\n',
     'olmem': ''.join(f'RSLT {name:<14} PASS\n' for name in (
-        'tagram', 'l1cache', 'l2cache', 'addr-pattern', 'memaddr')) +
-             'META                TOTAL             5              0\n',
+        'tagram', 'l1cache', 'l2cache', 'addr-pattern', 'memaddr'))
+    + 'META                TOTAL             5              0\n',
     'oltape': 'Online Tape Test\nRSLT rw             PASS\n'
               'RSLT thrash         PASS\nRSLT block          PASS\n'
               'META                TOTAL             3              0\n',
@@ -269,7 +272,8 @@ class ParserTests(unittest.TestCase):
             '/hw/module/1/slot/io1/baseio/pci/4/tty/2/d': (0, 125)})
 
     def test_a_line_after_a_kernel_warning_still_parses(self):
-        console = (b"WARNING: CPU 5 hasn't seen a scheduler clock interrupt\n\r"
+        console = (b"WARNING: CPU 5 hasn't seen a scheduler clock "
+                   b'interrupt\n\r'
                    b'         Probable lost interrupt!\n\r'
                    b'crw-rw-rw-    1 root     sys         0,197 Sep 26 12:57 '
                    b'/hw/input1/keyboard\r\n')

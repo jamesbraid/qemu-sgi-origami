@@ -23,7 +23,8 @@ class IrixDiagOrigin2000PciShoehorn(IrixDiagMatrix):
     """the Origin 2000 four-node module with a PCI shoehorn"""
 
 
-register_irix_diag_row(IrixDiagOrigin2000PciShoehorn, 'origin2000_pci_shoehorn')
+register_irix_diag_row(IrixDiagOrigin2000PciShoehorn,
+                       'origin2000_pci_shoehorn')
 
 
 if __name__ == '__main__':
