@@ -86,6 +86,8 @@ typedef struct MIPSCPUConfig {
     uint64_t diagnostic_rw_bitmask;
     /* External secondary-cache capacity used by diagnostic operations. */
     uint32_t scache_size;
+    uint32_t scache_line_size;
+    uint32_t bpt_entries;
     /*
      * Count and Compare are compared continuously, so a write leaving them
      * equal raises the interrupt at once.
@@ -1226,6 +1228,10 @@ typedef struct CPUArchState {
  */
 #define CP0DI_WRITABLE ((3 << CP0DI_BPOp) | (0x1ff << CP0DI_BPIdx) | \
                         (3 << CP0DI_BPState) | (3 << CP0DI_BPMode))
+#define CP0DI_WRITABLE_R12K ((3 << CP0DI_BPOp) | \
+                             (0x7ff << CP0DI_BPIdx) | \
+                             (3 << CP0DI_BPState) | (3 << CP0DI_BPMode) | \
+                             (1ULL << 26))
 /*
  * CP0 Register 23
  */
@@ -1507,6 +1513,11 @@ struct ArchCPU {
 
     /* Properties */
     bool is_big_endian;
+    uint32_t r12000_values[5];
+    bool r12000_set[5];
+    uint32_t r12000_migration_profile[5];
+    mips_def_t *r12000_cpu_model;
+    bool r12000_profile_valid;
     /*
      * Where an uncached or uncached-accelerated reference resolves when a
      * board links one: a second address space, selected by the

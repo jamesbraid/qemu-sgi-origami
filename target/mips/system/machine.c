@@ -20,6 +20,10 @@ static int cpu_pre_save(void *opaque)
             now_ticks - cpu->env.timer_adjacent_start_ticks;
     }
 
+    if (cpu->r12000_profile_valid) {
+        memcpy(cpu->r12000_migration_profile, cpu->r12000_values,
+               sizeof(cpu->r12000_values));
+    }
     if (cpu->env.cfg.performance_counter_pairs == 4) {
         /* Serialize R14000 guest-visible values, not running clock biases. */
         cpu_mips_r10k_perf_freeze(&cpu->env);
@@ -48,6 +52,12 @@ static int cpu_post_load(void *opaque, int version_id)
 
         env->timer_adjacent_start_ticks =
             now_ticks - env->timer_adjacent_migration_age_ticks;
+    }
+
+    if (cpu->r12000_profile_valid &&
+        memcmp(cpu->r12000_migration_profile, cpu->r12000_values,
+               sizeof(cpu->r12000_values))) {
+        return -EINVAL;
     }
 
     restore_fp_status(env);
@@ -444,6 +454,22 @@ static bool mips_r14k_performance_needed(void *opaque)
     return cpu->env.cfg.performance_counter_pairs == 4;
 }
 
+static bool mips_r12000_profile_needed(void *opaque)
+{
+    return ((MIPSCPU *)opaque)->r12000_profile_valid;
+}
+
+static const VMStateDescription mips_vmstate_r12000_profile = {
+    .name = "cpu/r12000-profile",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mips_r12000_profile_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_ARRAY(r12000_migration_profile, MIPSCPU, 5),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription mips_vmstate_r14k_performance = {
     .name = "cpu/r14k-performance",
     .version_id = 1,
@@ -657,6 +683,7 @@ const VMStateDescription vmstate_mips_cpu = {
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {
+        &mips_vmstate_r12000_profile,
         &mips_vmstate_nmi,
         &mips_vmstate_timer,
         &mips_vmstate_timer_adjacent,
@@ -664,6 +691,7 @@ const VMStateDescription vmstate_mips_cpu = {
         &mips_vmstate_r14k_performance,
         &mips_vmstate_r10k,
         &mips_vmstate_r14k_scache,
+        &mips_vmstate_r12000_extra,
         &mips_vmstate_r10k_scache_4m,
         &mips_vmstate_octeon_multiplier,
         &mips_vmstate_octeon_crypto,

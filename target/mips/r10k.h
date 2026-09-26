@@ -74,6 +74,7 @@
  * eight entries named by the upper six index bits.
  */
 #define R10K_BPT_ENTRIES  512
+#define R12K_BPT_ENTRIES  2048
 #define R10K_BPT_LINE     8
 
 /*
@@ -153,7 +154,7 @@ typedef struct R10KState {
      * read and write. The model predicts no branches, so the entries hold
      * what the operations put there.
      */
-    uint8_t bpt[R10K_BPT_ENTRIES];
+    uint8_t bpt[R12K_BPT_ENTRIES];
 
     /*
      * A Watch exception the R10000 postponed because EXL or ERL was set when
