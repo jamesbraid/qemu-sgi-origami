@@ -101,11 +101,23 @@ Linux composes the register offset exclusive-or (4 - width), and the
 decode undoes exactly that. OpenBSD only issues 32-bit configuration
 reads, for which the correction is zero.
 
-An empty slot answers all ones. Linux treats the caught fault as an
-empty slot; OpenBSD substitutes all ones itself when its guarded
-load faults, so ones is the answer both PCI layers already read as
-"nothing there". The type 1 window is not modelled (no PCI-to-PCI
-bridge on this machine) but its steering register exists as storage.
+A configuration cycle no device claims -- an empty slot, or a
+function a card does not have -- is a master time-out. When the
+time-out's enable bit (interrupt enable bit 11) is set, the chip sets
+interrupt status bit 11, latches the cycle's PCI address (the
+device's ID select line, 24 plus the device number, with the
+function and register word) and the device number in the PCI error
+address registers, and sends the error interrupt. A second PCI-group
+error before software clears the group sets the multiple-error bit
+(31) and keeps the first address. With the enable clear nothing is
+recorded, which is how every guest probes. An unclaimed read also
+fails back to the processor as a bus error; the data floats all ones
+for a caller that sees a value without the failure. An unclaimed
+write posts. The IP27 PROM, IRIX, Linux and OpenBSD all read empty
+slots inside a bus-error guard and take the fault as "nothing
+there"; the PROM also tests bit 11 after a read that completed. The
+type 1 window is not modelled (no PCI-to-PCI bridge on this machine)
+but its steering register exists as storage.
 
 Interrupts
 ==========
