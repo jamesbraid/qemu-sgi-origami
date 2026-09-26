@@ -46,7 +46,10 @@ typedef struct SGICommandPortOps {
                     const uint32_t *args, unsigned argc);
     /*
      * A word seen while the port was between packets that does not
-     * match any entry in the owner's selector table.
+     * match any entry in the owner's selector table. A real device's
+     * callback must log the unrecognized selector with
+     * qemu_log_mask(LOG_GUEST_ERROR, ...) in addition to any trace
+     * event, so it stays visible without enabling tracing.
      */
     void (*unsupported)(void *opaque, unsigned port_id, uint32_t word);
     /* The kick/word-count register was written; value is what was written. */

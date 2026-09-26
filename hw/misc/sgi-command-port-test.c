@@ -64,6 +64,8 @@ static void test_unsupported(void *opaque, unsigned port_id, uint32_t word)
 {
     SGICommandPortTestState *s = opaque;
 
+    qemu_log_mask(LOG_GUEST_ERROR, "sgi-command-port-test: unsupported "
+                  "selector 0x%" PRIx32 " on port %u\n", word, port_id);
     s->unsupported_count++;
     s->last_unsupported = word;
 }
