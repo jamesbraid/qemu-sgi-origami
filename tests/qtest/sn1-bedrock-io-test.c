@@ -697,25 +697,7 @@ static void test_bte_copy_and_zero(void)
     qtest_writeq(s, REG_BASE + BTE0 + 0x10, 0x110000);
     qtest_writeq(s, REG_BASE + BTE0 + 0x20, 0x120000);
     qtest_writeq(s, REG_BASE + BTE0 + 0x18, 1 << 4);
-    qtest_writeq(s, REG_BASE + BTE0, 7 | (1 << 20));
-    qtest_writeq(s, REG_BASE + BTE0 + 8, 0x130000);
-    qtest_writeq(s, REG_BASE + BTE0 + 0x10, 0x140000);
-    qtest_writeq(s, REG_BASE + BTE0 + 0x20, 0x150000);
-    qtest_writeq(s, REG_BASE + BTE0 + 0x28, UINT64_MAX);
-    qtest_writeq(s, REG_BASE + BTE0 + 0x18, 1);
-    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 2 | (1 << 20));
-    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0 + 8), ==, 0x100000);
-    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0 + 0x10), ==, 0x110000);
-    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0 + 0x20), ==, 0x120000);
-    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0 + 0x28), ==, 0);
-    qtest_clock_step(s, 1);
-    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 1 | (1 << 20));
-    dma_read(s, 0x110000, actual, sizeof(actual));
-    g_assert_cmpmem(actual, 128, source, 128);
-    for (size_t i = 128; i < sizeof(actual); i++) {
-        g_assert_cmphex(actual[i], ==, 0xcc);
-    }
-    qtest_clock_step(s, 1);
+    /* Data and notification are in place with no virtual time passed. */
     dma_read(s, 0x110000, actual, sizeof(actual));
     g_assert_cmpmem(actual, sizeof(actual), source, sizeof(source));
     g_assert_cmphex(dma_readq(s, 0x120000), ==, 0);
@@ -723,12 +705,23 @@ static void test_bte_copy_and_zero(void)
     assert_ram_filled(s, 0x110000, 0xee, sizeof(source));
     assert_ram_filled(s, 0x120000, 0xee, 8);
 
+    /* A finished engine takes new programming. */
+    qtest_writeq(s, REG_BASE + BTE0, 7 | (1 << 20));
+    qtest_writeq(s, REG_BASE + BTE0 + 8, 0x130000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x10, 0x140000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x20, 0x150000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x28, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 7 | (1 << 20));
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0 + 8), ==, 0x130000);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0 + 0x10), ==, 0x140000);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0 + 0x20), ==, 0x150000);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0 + 0x28), ==, 0x7f01ff);
+
     dma_set(s, 0x130000, 0xcc, sizeof(zero));
     qtest_writeq(s, REG_BASE + BTE1, 1 | (1 << 20));
     qtest_writeq(s, REG_BASE + BTE1 + 0x10, 0x130000);
     qtest_writeq(s, REG_BASE + BTE1 + 0x20, 0x140000);
     qtest_writeq(s, REG_BASE + BTE1 + 0x18, 1 | (1 << 4));
-    qtest_clock_step(s, 1);
     dma_read(s, 0x130000, actual, sizeof(zero));
     g_assert_cmpmem(actual, sizeof(zero), zero, sizeof(zero));
     g_assert_cmphex(dma_readq(s, 0x140000), ==, 0);
@@ -750,8 +743,15 @@ static void test_bte_error_and_termination(void)
     qtest_writeq(s, REG_BASE + BTE0 + 8, 0x150000);
     qtest_writeq(s, REG_BASE + BTE0 + 0x10, 0x160000);
     qtest_writeq(s, REG_BASE + BTE0 + 0x18, 0);
+    /*
+     * A control read terminates a transfer in progress, but the transfer
+     * finished inside its starting write: nothing is left to stop.
+     */
     g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0 + 0x18), ==, 0);
-    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 2);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 0);
+    dma_read(s, 0x160000, actual, sizeof(actual));
+    g_assert_cmpmem(actual, sizeof(actual), source, sizeof(source));
+    dma_write(s, 0x160000, unchanged, sizeof(unchanged));
 
     /*
      * Interrupt mode: a notification address is programmed but notify is
@@ -766,8 +766,6 @@ static void test_bte_error_and_termination(void)
     qtest_writeq(s, REG_BASE + BTE1 + 0x10, 0x170000);
     qtest_writeq(s, REG_BASE + BTE1 + 0x20, 0x1e0000);
     qtest_writeq(s, REG_BASE + BTE1 + 0x18, 0);
-    qtest_clock_step(s, 1);
-    qtest_clock_step(s, 1);
     dma_read(s, 0x160000, actual, sizeof(actual));
     g_assert_cmpmem(actual, sizeof(actual), unchanged, sizeof(unchanged));
     dma_read(s, 0x170000, actual, sizeof(actual));
@@ -786,7 +784,6 @@ static void test_bte_error_and_termination(void)
     qtest_writeq(s, REG_BASE + BTE0 + 0x10, 0x160000);
     qtest_writeq(s, REG_BASE + BTE0 + 0x20, 0x180000);
     qtest_writeq(s, REG_BASE + BTE0 + 0x18, 1 << 4);
-    qtest_clock_step(s, 1);
     g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 2 | (1 << 16));
     g_assert_cmphex(dma_readq(s, 0x180000), ==, 2 | (1 << 16));
 
@@ -795,7 +792,6 @@ static void test_bte_error_and_termination(void)
     qtest_writeq(s, REG_BASE + BTE0 + 0x10, UINT64_C(0x80000000));
     qtest_writeq(s, REG_BASE + BTE0 + 0x20, 0x180080);
     qtest_writeq(s, REG_BASE + BTE0 + 0x18, 1 << 4);
-    qtest_clock_step(s, 1);
     g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 1 | (1 << 16));
     g_assert_cmphex(dma_readq(s, 0x180080), ==, 1 | (1 << 16));
 
@@ -805,7 +801,6 @@ static void test_bte_error_and_termination(void)
     qtest_writeq(s, REG_BASE + BTE0 + 0x10, 0x160000);
     qtest_writeq(s, REG_BASE + BTE0 + 0x20, UINT64_C(0x80000000));
     qtest_writeq(s, REG_BASE + BTE0 + 0x18, 1 << 4);
-    qtest_clock_step(s, 1);
     g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 0);
     dma_read(s, 0x160000, actual, 128);
     g_assert_cmpmem(actual, 128, source, 128);
@@ -931,41 +926,49 @@ static void test_itanium_probe_sequence(void)
     qtest_quit(s);
 }
 
-static void test_bte_termination_with_progress(void)
+/*
+ * The PROM's hub BTE check starts engine 0 and then engine 1 on equal copies,
+ * waits for engine 0's completion interrupt alone, and compares both copies.
+ * On hardware the two starting stores are nanoseconds apart and the engines
+ * run side by side.  Under TCG the host can take milliseconds between them,
+ * and without instruction counting that host time is virtual time: the step
+ * below stands for it, long enough for engine 0 to finish and raise its
+ * interrupt.  Engine 1's copy must still be whole when it is compared.
+ */
+static void test_bte_back_to_back(void)
 {
     QTestState *s = io_start("");
-    uint8_t source[384], actual[384], unchanged[384];
+    enum { LINES = 64, SIZE = LINES * 128 };
+    g_autofree uint8_t *first = g_malloc(SIZE);
+    g_autofree uint8_t *second = g_malloc(SIZE);
+    g_autofree uint8_t *actual = g_malloc(SIZE);
 
-    fill_pattern(source, sizeof(source), 0x2b);
-    memset(unchanged, 0x4e, sizeof(unchanged));
-    dma_write(s, 0x100000, source, sizeof(source));
-    dma_write(s, 0x110000, unchanged, sizeof(unchanged));
-    dma_writeq(s, 0x120000, UINT64_MAX);
-    qtest_writeq(s, REG_BASE + BTE0, 3 | (1 << 20));
+    fill_pattern(first, SIZE, 0xc3);
+    fill_pattern(second, SIZE, 0xa5);
+    dma_write(s, 0x100000, first, SIZE);
+    dma_write(s, 0x110000, second, SIZE);
+    dma_set(s, 0x120000, 0xde, SIZE);
+    dma_set(s, 0x130000, 0xde, SIZE);
+    /* Interrupt mode, node 0, interface 0: levels 0x3f and 0x3e. */
+    qtest_writeq(s, REG_BASE + BTE0, LINES | (1 << 20));
     qtest_writeq(s, REG_BASE + BTE0 + 8, 0x100000);
-    qtest_writeq(s, REG_BASE + BTE0 + 0x10, 0x110000);
-    qtest_writeq(s, REG_BASE + BTE0 + 0x20, 0x120000);
-    qtest_writeq(s, REG_BASE + BTE0 + 0x18, 1 << 4);
-    qtest_clock_step(s, 1);
-    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 2 | (1 << 20));
-    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0 + 0x18), ==, 1 << 4);
-    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 2);
-    qtest_clock_step(s, 2);
-    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 2);
-    dma_read(s, 0x110000, actual, sizeof(actual));
-    g_assert_cmpmem(actual, 128, source, 128);
-    g_assert_cmpmem(actual + 128, 256, unchanged + 128, 256);
-    g_assert_cmphex(dma_readq(s, 0x120000), ==, UINT64_MAX);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x10, 0x120000);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x28, 0x3f << 16);
+    qtest_writeq(s, REG_BASE + BTE1, LINES | (1 << 20));
+    qtest_writeq(s, REG_BASE + BTE1 + 8, 0x110000);
+    qtest_writeq(s, REG_BASE + BTE1 + 0x10, 0x130000);
+    qtest_writeq(s, REG_BASE + BTE1 + 0x28, 0x3e << 16);
 
-    qtest_writeq(s, REG_BASE + BTE0, 1 | (1 << 20));
-    qtest_writeq(s, REG_BASE + BTE0 + 8, 0x100000 + 256);
-    qtest_writeq(s, REG_BASE + BTE0 + 0x10, 0x110000 + 256);
-    qtest_writeq(s, REG_BASE + BTE0 + 0x18, 1 << 4);
-    qtest_clock_step(s, 1);
+    qtest_writeq(s, REG_BASE + BTE0 + 0x18, 0);
+    qtest_clock_step(s, 10 * LINES);
+    g_assert_cmphex(xio_readq(s, HUB_REMOTE + 0x90), ==, (1 << 8) | 0x3f);
+    qtest_writeq(s, REG_BASE + BTE1 + 0x18, 0);
+    dma_read(s, 0x120000, actual, SIZE);
+    g_assert_cmpmem(actual, SIZE, first, SIZE);
+    dma_read(s, 0x130000, actual, SIZE);
+    g_assert_cmpmem(actual, SIZE, second, SIZE);
     g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 0);
-    dma_read(s, 0x110000, actual, sizeof(actual));
-    g_assert_cmpmem(actual + 256, 128, source + 256, 128);
-    g_assert_cmphex(dma_readq(s, 0x120000), ==, 0);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE1), ==, 0);
     qtest_quit(s);
 }
 
@@ -985,44 +988,11 @@ static void test_bte_error_after_progress(void)
     qtest_writeq(s, REG_BASE + BTE0 + 0x10, 0x130000);
     qtest_writeq(s, REG_BASE + BTE0 + 0x20, 0x140000);
     qtest_writeq(s, REG_BASE + BTE0 + 0x18, 1 << 4);
-    qtest_clock_step(s, 1);
-    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 2 | (1 << 20));
-    qtest_clock_step(s, 1);
     g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 2 | (1 << 16));
     g_assert_cmphex(dma_readq(s, 0x140000), ==, 2 | (1 << 16));
     dma_read(s, 0x130000, actual, sizeof(actual));
     g_assert_cmpmem(actual, 128, source, 128);
     g_assert_cmpmem(actual + 128, 128, unchanged + 128, 128);
-    qtest_quit(s);
-}
-
-static void test_reset_during_transfer(void)
-{
-    QTestState *s = io_start("");
-    uint8_t source[384], actual[384], unchanged[384];
-
-    fill_pattern(source, sizeof(source), 0x66);
-    memset(unchanged, 0x25, sizeof(unchanged));
-    dma_write(s, 0x150000, source, sizeof(source));
-    dma_write(s, 0x160000, unchanged, sizeof(unchanged));
-    dma_writeq(s, 0x170000, UINT64_MAX);
-    qtest_writeq(s, REG_BASE + BTE1, 3 | (1 << 20));
-    qtest_writeq(s, REG_BASE + BTE1 + 8, 0x150000);
-    qtest_writeq(s, REG_BASE + BTE1 + 0x10, 0x160000);
-    qtest_writeq(s, REG_BASE + BTE1 + 0x20, 0x170000);
-    qtest_writeq(s, REG_BASE + BTE1 + 0x18, 1 << 4);
-    qtest_clock_step(s, 1);
-    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE1), ==, 2 | (1 << 20));
-    qtest_system_reset(s);
-    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE1), ==, 0);
-    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE1 + 8), ==, 0);
-    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE1 + 0x10), ==, 0);
-    qtest_clock_step(s, 2);
-    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE1), ==, 0);
-    dma_read(s, 0x160000, actual, sizeof(actual));
-    g_assert_cmpmem(actual, 128, source, 128);
-    g_assert_cmpmem(actual + 128, 256, unchanged + 128, 256);
-    g_assert_cmphex(dma_readq(s, 0x170000), ==, UINT64_MAX);
     qtest_quit(s);
 }
 
@@ -1104,7 +1074,7 @@ static void migrate_wait(QTestState *from)
     }
 }
 
-static void test_migration_inflight(void)
+static void test_migration(void)
 {
     GError *error = NULL;
     g_autofree char *directory = g_dir_make_tmp("sn1-io-migration-XXXXXX",
@@ -1112,7 +1082,7 @@ static void test_migration_inflight(void)
     g_autofree char *socket = NULL;
     g_autofree char *uri = NULL;
     QTestState *from, *to;
-    uint8_t source[256], prefill[256], actual[256];
+    uint8_t source[256], actual[256];
 
     g_assert_no_error(error);
     socket = g_build_filename(directory, "migration.sock", NULL);
@@ -1120,31 +1090,21 @@ static void test_migration_inflight(void)
     from = io_start("");
     to = io_start("-incoming defer");
     fill_pattern(source, sizeof(source), 0xc7);
-    memset(prefill, 0x3c, sizeof(prefill));
-    dma_write(from, 0x1a0000, source, sizeof(source));
-    dma_set(from, 0x1b0000, 0, sizeof(source));
     /*
-     * The DMA backend is not migrated RAM.  Seed the destination's copy
-     * so the resumed engine has a source, with a distinct fill in the
-     * destination line the source side already copied: the resumed
-     * transfer must continue at line 2 and leave line 1 alone.
+     * The DMA backend is not migrated RAM.  Seed the destination's copy so
+     * an engine programmed before migration and started after it has a
+     * source to move.
      */
     dma_write(to, 0x1a0000, source, sizeof(source));
-    dma_write(to, 0x1b0000, prefill, sizeof(prefill));
+    dma_set(to, 0x1b0000, 0, sizeof(source));
+    dma_writeq(to, 0x1c0000, UINT64_MAX);
     qtest_writeq(from, REG_BASE + SCRATCH0, UINT64_C(0x13579bdf2468ace0));
     qtest_writeq(from, REG_BASE + ITTE0, 0x1802);
     qtest_writeq(from, REG_BASE + BTE0, 2 | (1 << 20));
     qtest_writeq(from, REG_BASE + BTE0 + 8, 0x1a0000);
     qtest_writeq(from, REG_BASE + BTE0 + 0x10, 0x1b0000);
-    qtest_writeq(from, REG_BASE + BTE0 + 0x18, 0);
-    qtest_clock_step(from, 1);
-    g_assert_cmphex(qtest_readq(from, REG_BASE + BTE0), ==,
-                    1 | (1 << 20));
-    dma_read(from, 0x1b0000, actual, sizeof(actual));
-    g_assert_cmpmem(actual, 128, source, 128);
-    for (size_t i = 128; i < sizeof(actual); i++) {
-        g_assert_cmphex(actual[i], ==, 0);
-    }
+    qtest_writeq(from, REG_BASE + BTE0 + 0x20, 0x1c0000);
+    qtest_writeq(from, REG_BASE + BTE0 + 0x28, 0x3f << 16);
 
     qtest_qmp_assert_success(to,
         "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
@@ -1157,15 +1117,16 @@ static void test_migration_inflight(void)
     g_assert_cmphex(qtest_readq(to, REG_BASE + SCRATCH0), ==,
                     UINT64_C(0x13579bdf2468ace0));
     g_assert_cmphex(qtest_readq(to, REG_BASE + ITTE0), ==, 0x1802);
-    g_assert_cmphex(qtest_readq(to, REG_BASE + BTE0), ==,
-                    1 | (1 << 20));
-    g_assert_cmphex(qtest_readq(to, REG_BASE + BTE0 + 8), ==, 0x1a0080);
-    g_assert_cmphex(qtest_readq(to, REG_BASE + BTE0 + 0x10), ==, 0x1b0080);
-    qtest_clock_step_next(to);
+    g_assert_cmphex(qtest_readq(to, REG_BASE + BTE0), ==, 2 | (1 << 20));
+    g_assert_cmphex(qtest_readq(to, REG_BASE + BTE0 + 8), ==, 0x1a0000);
+    g_assert_cmphex(qtest_readq(to, REG_BASE + BTE0 + 0x10), ==, 0x1b0000);
+    g_assert_cmphex(qtest_readq(to, REG_BASE + BTE0 + 0x20), ==, 0x1c0000);
+    g_assert_cmphex(qtest_readq(to, REG_BASE + BTE0 + 0x28), ==, 0x3f << 16);
+    qtest_writeq(to, REG_BASE + BTE0 + 0x18, 1 << 4);
     g_assert_cmphex(qtest_readq(to, REG_BASE + BTE0), ==, 0);
+    g_assert_cmphex(dma_readq(to, 0x1c0000), ==, 0);
     dma_read(to, 0x1b0000, actual, sizeof(actual));
-    g_assert_cmpmem(actual, 128, prefill, 128);
-    g_assert_cmpmem(actual + 128, 128, source + 128, 128);
+    g_assert_cmpmem(actual, sizeof(actual), source, sizeof(source));
     qtest_quit(from);
     qtest_quit(to);
     unlink(socket);
@@ -1206,18 +1167,14 @@ int main(int argc, char **argv)
                    test_bte_programming_edges);
     qtest_add_func("sn1/bedrock-io/itanium-probe",
                    test_itanium_probe_sequence);
-    qtest_add_func("sn1/bedrock-io/bte-termination-progress",
-                   test_bte_termination_with_progress);
+    qtest_add_func("sn1/bedrock-io/bte-back-to-back", test_bte_back_to_back);
     qtest_add_func("sn1/bedrock-io/bte-error-after-progress",
                    test_bte_error_after_progress);
-    qtest_add_func("sn1/bedrock-io/reset-during-transfer",
-                   test_reset_during_transfer);
     qtest_add_func("sn1/bedrock-io/write-one-to-set",
                    test_write_one_to_set_masks);
     qtest_add_func("sn1/bedrock-io/pio-unlinked-widget",
                    test_pio_unlinked_widget);
     qtest_add_func("sn1/bedrock-io/reset", test_reset);
-    qtest_add_func("sn1/bedrock-io/migration-inflight",
-                   test_migration_inflight);
+    qtest_add_func("sn1/bedrock-io/migration", test_migration);
     return g_test_run();
 }
