@@ -1,344 +1,670 @@
 #!/usr/bin/env python3
 #
-# IRIX online diagnostic: boot the installed IRIX disk with the vendor's
-# online diagnostics, a SCSI tape and a SCSI CD-ROM attached, log in,
-# and require oldisk, olmem, oltape and olcdrom to all report PASS
+# IRIX online diagnostics and IOC3 port checks, one boot per machine
+# flavour: boot the installed IRIX disk with SGI's online diagnostics,
+# log in, and run every check irix-diag-matrix marks for the flavour
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
 The layer above the firmware. The MDK, POD and fx legs run diagnostics
-before or instead of IRIX; this one runs IRIX's own online diagnostics
+before or instead of IRIX; this runs IRIX's own online diagnostics
 (`/usr/diags/bin`) on a booted, multi-user system -- the diagnostic
-stack a field engineer uses on a live machine, and the one that
-exercises the hardware through IRIX's real drivers rather than the
-firmware's.
+stack a field engineer uses on a live machine, exercising the hardware
+through IRIX's real drivers -- and checks each IOC3 port the flavour
+brings out, on every machine flavour we model an IOC3 on.
 
-It boots the published golden-with-diagnostics disk
-(`assets/irix/6.5.30/root-diags.qcow2`: the installed IRIX 6.5.30 root
+irix-diag-matrix names the flavours and which checks each runs;
+lib_irix_diag.FLAVOURS holds how each is launched and the device names
+IRIX gives it on the diagnostics disk; lib_irix_diag.REASONS says why a
+flavour skips a check. Each flavour is one test method in its own meson
+target, so the nightly runs them side by side: this file owns the
+two-chassis Origin 200, the flavour this test began on, and each
+test_irix_diag_<flavour>.py beside it registers one more. A flavour boots
+once and runs every check in that session; only the reboot, persistence
+and parallel checks end it, by rebooting IRIX and then stopping and
+relaunching QEMU on the same NVRAM and disk images. Every check runs
+even after another fails, and the test fails at the end naming each
+failed check; the per-check results and the time each boot phase and
+check took are written to <flavour>-summary.json.
+
+The disks are the published golden-with-diagnostics images:
+`assets/irix/6.5.30/root-diags.qcow2`, the installed IRIX 6.5.30 root
 with the `field_diags_irix` product added and its environment loaded by
-a post-install reboot -- the project checkout's irix-online-diagnostics
-notebook records how the asset is built and why the reboot matters) on
-the TWO-CHASSIS machine (four CPUs across two nodes, 128 MiB), the
-fuller and newer of the two configurations: the diagnostics then run
-against a four-CPU SMP kernel and exercise both nodes' memory. The
-single-node install boots on it unchanged; IRIX autoconfigures to four
-processors and two nodes. It drives the maintenance menu to Start
-System, logs in as root, and runs the four online diagnostics that
-reach a clean, definitive PASS on this machine, one after another in
-one boot:
+a post-install reboot (the project checkout's irix-online-diagnostics
+notebook records how it is built and why the reboot matters), and
+`root-diags-origin300.qcow2`, the Origin 300 install with
+field_diags_irix 1.8 from Internal Support Tools 2.7. Each run writes to
+its own overlay in the test's scratch directory, never to the golden
+image. IRIX numbers devices from the disk's own /etc/ioconfig.conf
+history, not from the topology, so the device names in FLAVOURS hold for
+these disks and would differ on another.
+
+The diagnostics, and why these:
 
   - oldisk  -- a disk exerciser: asynchronous direct pattern read/write
-    through the qlogic controller (RSLT async-direct PASS);
-  - olmem   -- a memory and cache test: tagram, L1 cache, L2 cache,
-    address-pattern and moving-inversion memory (RSLT ... PASS, five);
-  - oltape  -- a tape exerciser against an emulated `scsi-tape` (rw,
-    thrash, block: RSLT ... PASS, three);
-  - olcdrom -- a CD-ROM confidence test against an emulated `scsi-cd`
-    holding a generated data CD (RSLT olcdrom PASS).
+    through the SCSI controller;
+  - olmem   -- tag RAM, L1 cache, L2 cache, address-pattern and
+    moving-inversion memory;
+  - oltape  -- rw, thrash and block against an emulated `scsi-tape`
+    carrying a composed `ARCHIVE Python 25601` identity IRIX's driver
+    recognizes as a DAT (the recorded real drive's own identity matches
+    nothing in IRIX's table and the extended-status ioctl it needs
+    refuses);
+  - olcdrom -- reads an emulated `scsi-cd` holding a generated data CD;
+  - olrti   -- the IOC3's real-time interrupt, internal loopback only:
+    the external test needs a cable from output to input;
+  - olenet  -- the IOC3 Ethernet probe, where the disk carries it.
 
-Together they exercise the disk, memory/cache, tape and CD-ROM paths
-through IRIX's own drivers -- the layer the firmware legs cannot reach.
-Each prints the RSLT-tagged output the field manual documents; oldisk,
-olmem and oltape each also print a META TOTAL <passes> 0 summary, and
-olcdrom prints a LOOP Completed Loop line instead (its own field manual
-does not document a META TOTAL for it).
-
-Why these four and not the other seven installed: olperi (the online
-random-instruction test) is not for IP29 and fails on it; torpedo (the
-FPU stress test) runs a fixed thousand-loop workload measured in guest
-time, which dilates many-fold under emulation, so a full run is
-impractical and a bounded one only duplicates the firmware MDK CPU and
-memory coverage; olvht, linktest and olrti need a HIPPI channel, a
-router topology or a device vertex this machine does not present.
-olvst, a socket-based network test, passes interactively but stalls
-under the container the functional tests run in, so it is left to
-manual runs. The project checkout's irix-online-diagnostics notebook
-characterizes all eleven.
-
-oltape and olcdrom were each their own boot until this merge. Neither
-needed a second boot for a hardware reason: the tape is a composed
-`ARCHIVE Python 25601` identity IRIX's driver recognizes as a DAT (the
-recorded real drive's own identity matches nothing in IRIX's table and
-the extended-status ioctl it needs refuses), and the CD-ROM's old boot
-hang (jamesb/qemu#367) was fixed in jamesb/qemu#379 before either test
-was written -- a `scsi-cd` attached at boot no longer stalls IRIX at
-failsoftd. Attaching both to this leg's own two-chassis boot, on the
-second SCSI adapter alongside the boot disk's first, needed no new
-device-model work, only proving the four diagnostics still reach their
-own PASS in sequence on the fuller machine -- confirmed by this test's
-own run.
-
-diag_verdict() below scores the transcript with lib_prom.verdict(),
-whose own unit tests pin that scoring without booting anything.
+olperi (the random-instruction test) is not for IP29 and fails on it;
+torpedo runs a thousand-loop FPU workload measured in guest time, which
+dilates many-fold under emulation, and a bounded run only duplicates the
+firmware MDK coverage; pandora is a thirty-minute stress run; olvht and
+linktest need a HIPPI channel or a router topology; olvst passes
+interactively but stalls under the container the functional tests run
+in. The project checkout's irix-online-diagnostics notebook
+characterizes each of them.
 """
 
+import calendar
 import json
 import os
 import re
+import subprocess
 import sys
-import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from lib_prom import (FORK_ROOT, MACHINES, drive_console, require_assets,
-                      run_record, strip_ansi, utc_now, verdict)
+from lib_irix_diag import (CHECKS, FLAVOURS, MANIFEST, REASONS,
+                           ClockReading, clock_error, device_numbers,
+                           diag_problems, guest_date, launch_args,
+                           link_targets, od_bytes, parse_row,
+                           command_output, drive_to_shell,
+                           processor_count, prom_facts,
+                           wav_nonzero_samples)
+from lib_matrix import MatrixError, matrix_rows
+from lib_net import GuestFault, HarnessError, IrixConsole
+from lib_prom import FORK_ROOT, require_assets, run_record
 
 try:
-    from qemu_test import QemuSystemTest
+    from qemu_test import QemuSystemTest, get_qemu_img
     from qemu_test import skipSlowTest, skipBigDataTest, skipIfMissingEnv
 except (ImportError, RuntimeError):
     QemuSystemTest = None
 
-# A pass requires the machine to have reached its IRIX release banner and
-# a root shell, and each of the four diagnostics -- oldisk (disk), olmem
-# (memory and cache, five subtests), oltape (tape, three subtests) and
-# olcdrom (CD-ROM) -- to have printed its own RSLT PASS, the three that
-# document one a META TOTAL summary of N passes and zero non-passes, and
-# olcdrom its own completed-loop line.
-ASSERTIONS = (
-    ("IRIX release banner", re.compile(r"IRIX Release 6\.5 IP27")),
-    ("root shell", re.compile(r"IRIX Release 6\.5 IP27 \w")),
-    # oldisk: the disk exerciser's async-direct pattern pass and its
-    # one-pass summary.
-    ("oldisk async-direct pass",
-     re.compile(r"RSLT\s+async-direct\s+PASS")),
-    ("oldisk summary all passed",
-     re.compile(r"META\s+TOTAL\s+1\s+0\b")),
-    # olmem: five memory and cache subtests, all passing.
-    ("olmem tagram pass", re.compile(r"RSLT\s+tagram\s+PASS")),
-    ("olmem l1cache pass", re.compile(r"RSLT\s+l1cache\s+PASS")),
-    ("olmem l2cache pass", re.compile(r"RSLT\s+l2cache\s+PASS")),
-    ("olmem addr-pattern pass",
-     re.compile(r"RSLT\s+addr-pattern\s+PASS")),
-    ("olmem memaddr pass", re.compile(r"RSLT\s+memaddr\s+PASS")),
-    ("olmem summary all passed",
-     re.compile(r"META\s+TOTAL\s+5\s+0\b")),
-    # oltape: three subtests against the composed ARCHIVE DAT identity.
-    ("oltape started", re.compile(r"Online Tape Test")),
-    ("oltape rw pass", re.compile(r"RSLT\s+rw\s+PASS")),
-    ("oltape thrash pass", re.compile(r"RSLT\s+thrash\s+PASS")),
-    ("oltape block pass", re.compile(r"RSLT\s+block\s+PASS")),
-    ("oltape summary all passed",
-     re.compile(r"META\s+TOTAL\s+3\s+0\b")),
-    # olcdrom: reads the generated data CD across the whole medium.
-    ("olcdrom started", re.compile(r"olcdrom version")),
-    ("olcdrom pass", re.compile(r"RSLT\s+olcdrom\s+PASS")),
-    ("olcdrom loop completed",
-     re.compile(r"LOOP\s+Completed Loop\s+\d+\s+of\s+\d+")),
-)
 
-# Kernel and diagnostic failure spellings. "NON-PASSES" is a column
-# header oldisk and oltape always print, so it is not a marker; a real
-# non-pass shows as a nonzero count in the META TOTAL line, which the
-# summary assertions catch. olcdrom aborts (rather than printing RSLT
-# FAIL) when it cannot open the device or find its generated data, so
-# those abort spellings are tripwires of their own.
-TRIPWIRES = (
-    ("oldisk async-direct failed", "RSLT async-direct   FAIL"),
-    ("pattern test failed", "Patterntest Fail"),
-    ("oltape rw failed", "RSLT rw             FAIL"),
-    ("oltape thrash failed", "RSLT thrash         FAIL"),
-    ("oltape block failed", "RSLT block          FAIL"),
-    ("the tape drive refused the extended-status request",
-     "ioctl(mtiocgetext) failed"),
-    ("olcdrom failed", "RSLT olcdrom        FAIL"),
-    ("the CD-ROM drive was not ready", "doesn't appear ready"),
-    ("the CD-ROM device would not open", "can't open device"),
-    ("the CD-ROM medium carried no diagnostic data",
-     "can't locate SGI diagnostic data"),
-    ("a CD-ROM read failed", "READ ERROR"),
-    ("the guest panicked", "PANIC"),
-    ("the guest took a bus error", "Bus error"),
-    ("the guest took a data bus error", "Data bus error"),
-)
+# The timeouts below are the slowest this matrix's runs measured on
+# 2026-09-26, debug_tcg build/ binaries under MTTCG beside a dozen other
+# emulators, times about two to four. Those runs include builds with the missed
+# Compare matches of jamesb/qemu#863, which slowed disk and CD-ROM I/O
+# several-fold; the slowest figures are theirs.
 
+# PROM power-on, kernel and init to a root shell: 1075s at most (the
+# four-node shoehorn, 391s PROM and 685s IRIX), 125 to 400s on the Origin
+# 200 and one-node machines.
+BOOT_BUDGET_SECONDS = 1500
 
-def diag_verdict(log, reached=True):
-    """PASS iff every required line appeared, no failure spelling did,
-    and the console driver saw olcdrom's own result line -- the last
-    diagnostic in the chain, so its line proves the other three already
-    ran to completion ahead of it."""
-    problems = verdict(strip_ansi(log), ASSERTIONS, TRIPWIRES)
-    if not reached:
-        problems.append(
-            "console driver did not see olcdrom's result line before "
-            "timeout -- the run never proved all four diagnostics "
-            "finished")
-    return {"verdict": "PASS" if not problems else "FAIL",
-            "problems": problems}
+# Ordinary shell commands: hinv, netstat and the like took 22s at most.
+STEP_TIMEOUT_SECONDS = 120
 
+# Each diagnostic's own budget, against the slowest measured: olrti 27s,
+# olenet 15s, oldisk 497s (one that did not finish in 600s was on the
+# four-node carrier under #863), olmem 1246s, oltape 12s, olcdrom 329s.
+DIAG_TIMEOUT_SECONDS = {
+    'olrti': 120,
+    'olenet': 120,
+    'oldisk': 1200,
+    'olmem': 1800,
+    'oltape': 120,
+    'olcdrom': 900,
+}
 
-RELEASE = "6.5.30"
-FIRMWARE_REL = os.path.join('assets', 'firmware', RELEASE,
-                            'ip27prom.payload.bin')
-DISK_REL = os.path.join('assets', 'irix', RELEASE, 'root-diags.qcow2')
-MEDIUM_REL = os.path.join('assets', 'irix', RELEASE, 'olcdrom-medium.raw')
+# After a timed-out diagnostic is interrupted it still prints its summary
+# before the shell answers again.
+RESYNC_TIMEOUT_SECONDS = 180
 
-# The recorded SHA-256 of the olcdrom -gendata medium. require_assets
-# raises AssetMismatch when a file at MEDIUM_REL is present but differs.
+# sfplay of the shipped confidence tone. Without icount the model's audio
+# stream stretches in time, so the check asserts samples arrived, not a
+# duration.
+CONFIDENCE_TONE = '/usr/lib/Confidence/audioOut44.aiff'
+# One play of that tone, 6.757 s of 44.1 kHz mono, reaches the stereo
+# output as this many sample words; the capture must hold at least that
+# many nonzero ones, not merely one.
+TONE_SAMPLE_WORDS = int(6.757 * 44100) * 2
+# Measured 39 to 171s.
+SFPLAY_TIMEOUT_SECONDS = 600
+
+# From IRIX's reboot command to the PROM's banner: 13 to 46s measured.
+REBOOT_TIMEOUT_SECONDS = 180
+
+# How long QEMU stays stopped between the launches that share the
+# Timekeeper image, and what the clock check allows beyond its measured
+# reading uncertainty (lib_irix_diag.clock_error). The guest keeps its
+# own time after reading the Timekeeper at boot, and on a timer that
+# misses no Compare match that time was measured +0.2 to -2.8s off the
+# host across the stop and relaunch; 3s covers it. A clock that dropped
+# the stopped interval is off by at least the whole stop, so the stop is
+# held at three times the tolerance and no longer.
+CLOCK_ALLOWANCE_SECONDS = 3
+STOPPED_SECONDS = 25
+
+# A fixed guest date, set in UTC: 2030-01-01 20:00:00. A fresh clock
+# reference makes the Timekeeper follow the host clock, so the check reads
+# the date back at once and requires the set instant plus the host's
+# elapsed time since the set; nothing depends on the host's own date.
+GUEST_DATE_SET = '-u 010120002030'
+GUEST_DATE_SET_EPOCH = calendar.timegm((2030, 1, 1, 20, 0, 0))
+
+# The nvram variable written before the reboot and read after the
+# relaunch: the graphics textport's background, which every PROM here
+# carries (the IP35 PROM has no speaker volume) and none of these
+# serial-console machines uses.
+NVRAM_VARIABLE = ('pagecolor', '2a2a2a')
+
+# "a" then "b", each pressed and released: the PS/2 make code of each
+# letter (0x1c, 0x32) and its break code, 0xf0 then the make code. Both
+# letters send the same bytes in scan-code sets 2 and 3.
+TYPED_KEYS = ('a', 'b')
+TYPED_BYTES = ['1c', 'f0', '1c', '32', 'f0', '32']
+
+MEDIUM_REL = os.path.join('assets', 'irix', '6.5.30', 'olcdrom-medium.raw')
 MEDIUM_SHA256 = \
     'ba0a1466d7125cd350ee4f047677d7a3d9f8a8ed8b13469c92042cfa0bd07829'
 
-# The installed IRIX two-chassis machine, the release's own PROM, and
-# user-mode networking so IRIX's network init completes without a
-# server (the diagnostics run locally and need none). topology= selects
-# the two-chassis wiring; -m splits evenly into 64 MiB per node.
-MEMORY_MIB = 128
-TWO_CHASSIS_ARGS = (
-    '-smp', '4',
-)
 
-# The tape node: no-rewind, so the diagnostic controls position itself.
-# The ARCHIVE Python DDS-1 identity IRIX recognizes as a DAT -- see this
-# module's docstring for why the recorded real drive's identity will not
-# do. The raw SCSI node olcdrom reads: adapter 1, target 6.
-TAPE_DEV = "/dev/rmt/tps1d5nr"
-TAPE_VENDOR = "ARCHIVE"
-TAPE_PRODUCT = "Python 25601"
-CD_DEV = "/dev/scsi/sc1d6l0"
+class CheckFailed(Exception):
+    """A check's own assertion did not hold."""
 
-# The whole two-chassis run -- boot plus oldisk and olmem against four
-# CPUs and 128 MiB -- took 2297s in the CI container on a first real
-# run, the slowest leg here after the OpenBSD install; oltape's rw,
-# thrash and block on a fresh tape and olcdrom's read passes over its
-# medium are each seconds by comparison. 6900 keeps the usual 60s
-# margin under the 6960s meson timeout registered in mips64/meson.build
-# -- the three absorbed scripts' own budgets, 3600, 1560 and 1800,
-# summed for all four diagnostics on the one boot.
-BOOT_TIMEOUT_SECONDS = 6900
 
-# The four diagnostics, run in sequence in one shell command. oldisk
-# exercises an 8 MiB scratch file; olmem takes no arguments; oltape and
-# olcdrom each take their own device. oltape gets --tapemark --eot as
-# before: those flags tell oltape to exclude the two subtests they
-# name, not to run them -- both need the tape configured down to a
-# second /dev/rmt node, and eot writes until the medium ends, which an
-# unbounded image never reaches.
-DIAG_CMD = (
-    "/usr/diags/bin/oldisk -filename /tmp/oldisk.tf -filesize 8; "
-    "/usr/diags/bin/olmem; "
-    f"/usr/diags/bin/oltape --tapemark --eot -d {TAPE_DEV}; "
-    f"/usr/diags/bin/olcdrom -device {CD_DEV}")
+class _Console(IrixConsole):
+    STEP_TIMEOUT = STEP_TIMEOUT_SECONDS
 
-# Drive the PROM menu to Start System, answer the login's TERM prompt,
-# log in as root, and run the diagnostics. IRIX's default root shell is
-# csh and the first login asks for TERM; a bare newline takes the
-# default. The steps fire once each, in order, on the first tail match.
-DRIVER_STEPS = (
-    (r"Option\?", "1\n"),
-    (r"login:", "root\n"),
-    (r"TERM = \(vt100\)", "\n"),
-    (r"[#$] ", DIAG_CMD + "\n"),
-)
-# olcdrom's own RSLT line, the whole chain's end condition since it is
-# the last command in DIAG_CMD. This cannot be the bare generic "LOOP
-# Completed Loop N of M" line: oldisk and oltape each print that same
-# banner for themselves too, well before olcdrom ever runs, so a
-# console driver watching for it stops at oldisk's own loop line and
-# never lets olmem, oltape or olcdrom run at all. On a pass, olcdrom's
-# own "LOOP Completed" line prints after its RSLT line, and the
-# "olcdrom loop completed" assertion needs that line captured too, so
-# the pass alternative waits for both, in order, rather than stopping
-# at RSLT and truncating the transcript before it. "RSLT olcdrom FAIL"
-# and an abort ("ABRT ...") that prints no RSLT at all end things
-# immediately: neither prints a LOOP line to wait for.
-DIAG_DONE_RE = re.compile(
-    rb"(RSLT\s+olcdrom\s+PASS[\s\S]*?LOOP\s+Completed Loop\s+\d+\s+of\s+\d+"
-    rb"|RSLT\s+olcdrom\s+FAIL|ABRT\s+\w)")
+
+class _Launch:
+    """One QEMU process of a flavour's run: its VM, console and log."""
+
+    def __init__(self, vm, con, log_path, prom):
+        self.vm = vm
+        self.con = con
+        self.log_path = log_path
+        self.prom = prom
+
+    def output(self, cmd, tag, timeout=None):
+        return command_output(self.con, cmd, tag, timeout)
+
+
+def _manifest_line(row_id):
+    for lineno, line in matrix_rows(MANIFEST):
+        if line.split('|', 1)[0].strip() == row_id:
+            return lineno, line
+    raise MatrixError(f'{MANIFEST} has no row {row_id!r}')
 
 
 if QemuSystemTest is not None:
 
-    class IrixDiag(QemuSystemTest):
-        """Boots the golden-with-diagnostics IRIX disk with a scsi-tape
-        and a scsi-cd attached, logs in, runs oldisk, olmem, oltape and
-        olcdrom in sequence, and requires diag_verdict() to be PASS."""
+    class IrixDiagMatrix(QemuSystemTest):
+        """One flavour's boot, checks and verdict. The test methods come
+        from register_irix_diag_row()."""
+
+        clock_before = None
+        tags = 0
+
+        # -- launching ---------------------------------------------------
+
+        def _prepare(self, flavour):
+            assets = require_assets(self, flavour.firmware, flavour.disk,
+                                    (MEDIUM_REL, MEDIUM_SHA256))
+            self.assets = {
+                'root': os.environ['ORIGAMI_ASSETS'],
+                'firmware': assets[flavour.firmware],
+                'disk': assets[flavour.disk],
+                'medium': assets[MEDIUM_REL],
+            }
+            scratch = self.scratch_file()
+            os.makedirs(scratch, exist_ok=True)
+            self.paths = {name: os.path.join(scratch, leaf)
+                          for name, leaf in (('tape', 'oltape.tap'),
+                                             ('nvram', 'nvram0.raw'),
+                                             ('clock', 'nvram0.clock'),
+                                             ('overlay', 'root.qcow2'),
+                                             ('wav', 'rad1.wav'))}
+            self.paths['scratch'] = scratch
+            self.paths['ports'] = {
+                port.name: os.path.join(scratch, f'{port.name}.out')
+                for port in flavour.serial_ports + flavour.mediaio_ports}
+            # A fresh tape for oltape to write, and a zeroed Timekeeper.
+            for name, size in (('tape', 0), ('nvram', 0x8000),
+                               ('clock', 16)):
+                with open(self.paths[name], 'wb') as image:
+                    image.write(bytes(size))
+            # The relaunch must see what the first boot wrote to the
+            # disk, so both open one overlay of the golden image.
+            subprocess.run(
+                [get_qemu_img(self), 'create', '-q', '-f', 'qcow2',
+                 '-F', 'qcow2', '-b', self.assets['disk'],
+                 self.paths['overlay']], check=True)
+
+        def _launch(self, name, relaunch=False):
+            machine, argv = launch_args(self.flavour, self.row, self.assets,
+                                        self.paths, quick_prom=relaunch)
+            vm = self.get_vm(name=name)
+            vm.set_machine(machine)
+            vm.set_console()
+            # Start paused: the four-node PROM can reset the machine
+            # within seconds of power-on, and the RESET event that raises
+            # can reach the QMP client ahead of its capabilities reply.
+            vm.add_args(*argv, '-S')
+            vm.launch()
+            vm.cmd('cont')
+            self.addCleanup(lambda: vm.shutdown(
+                hard=vm.exitcode() is not None))
+            log_path = self.log_file(f'{name}-console.log')
+            open(log_path, 'wb').close()
+            con = _Console(vm.console_socket, log_path,
+                           exited=lambda: vm.exitcode() is not None)
+            self.addCleanup(con.close)
+            phases = []
+            try:
+                prom = drive_to_shell(con, BOOT_BUDGET_SECONDS, phases,
+                                      menu=not relaunch)
+            finally:
+                for phase, seconds in phases:
+                    self._phase(f'{name}: {phase}', seconds)
+            return _Launch(vm, con, log_path, prom)
+
+        def _phase(self, name, seconds):
+            self.phases.append((name, seconds))
+            self.log.info('%s: %.1fs', name, seconds)
+
+        # -- the run -----------------------------------------------------
+
+        def _run_row(self, row_id):
+            lineno, line = _manifest_line(row_id)
+            try:
+                self.row = parse_row(MANIFEST, lineno, line)
+            except MatrixError as exc:
+                self.fail(str(exc))
+            self.flavour = FLAVOURS[self.row.id]
+            self.phases, self.results = [], {}
+            self._prepare(self.flavour)
+
+            started = time.monotonic()
+            try:
+                self.first = self._launch(self.row.id)
+            except HarnessError as exc:
+                self.fail(f'{self.row.id}: first boot: {exc} -- console '
+                          f'log: {self.log_file(self.row.id + "-console.log")}')
+            self.here = self.first
+
+            fault = None
+            for check in CHECKS:
+                if not self.row.runs(check):
+                    self.results[check] = ('n/a', self.row.reason(check), 0)
+                    continue
+                if fault is not None:
+                    self.results[check] = ('not run', fault, 0)
+                    continue
+                t0 = time.monotonic()
+                try:
+                    getattr(self, f'_check_{check}')()
+                    status, detail = 'pass', ''
+                except (CheckFailed, HarnessError) as exc:
+                    status, detail = 'fail', str(exc)
+                    if isinstance(exc, GuestFault):
+                        fault = f'the guest faulted during {check}'
+                    # A failed reboot leaves no shell to resynchronise;
+                    # the persistence check stops QEMU regardless.
+                    elif isinstance(exc, HarnessError) and \
+                            check != 'reboot' and not self._resync(check):
+                        fault = (f'the shell stopped answering after '
+                                 f'{check} timed out')
+                seconds = round(time.monotonic() - t0, 1)
+                self.results[check] = (status, detail, seconds)
+                self._phase(f'check {check} ({status})', seconds)
+            self._phase('whole run', round(time.monotonic() - started, 1))
+            self._report()
+
+        def _resync(self, check):
+            """After a timed-out command, interrupt it and see whether the
+            shell answers again, so one hung check does not time out every
+            check after it."""
+            self.here.con.sock.sendall(b'\x03\n')
+            try:
+                self.here.con.run('true', self._tag(f'resync-{check}'),
+                                  RESYNC_TIMEOUT_SECONDS)
+            except HarnessError:
+                return False
+            return True
+
+        def _report(self):
+            summary = self.log_file(f'{self.row.id}-summary.json')
+            with open(summary, 'w', encoding='utf-8') as out:
+                json.dump({
+                    'schema': 1, 'flavour': self.row.id,
+                    'results': {c: {'status': s, 'detail': d, 'seconds': t}
+                                for c, (s, d, t) in self.results.items()},
+                    'phases': self.phases,
+                    # The disk and medium by path and size: hashing
+                    # 2.7 GB after every run would add minutes, and the
+                    # medium's digest is already checked before launch.
+                    'identity': run_record(FORK_ROOT, self.qemu_bin,
+                                           prom=self.assets['firmware']),
+                    'disks': {name: {'path': self.assets[name],
+                                     'size_bytes': os.path.getsize(
+                                         self.assets[name])}
+                              for name in ('disk', 'medium')},
+                }, out, indent=2)
+                out.write('\n')
+            failed = [f'{c}: {d}' for c, (s, d, _t) in self.results.items()
+                      if s in ('fail', 'not run')]
+            if failed:
+                self.fail(f'{self.row.id}: ' + '; '.join(failed) +
+                          f' (summary: {summary})')
+
+        def _expect(self, condition, message):
+            if not condition:
+                raise CheckFailed(
+                    f'{message} -- console log: {self.here.log_path}')
+
+        def _tag(self, tag):
+            """tag made unique in this session: lib_net matches a command's
+            end marker anywhere in the console buffer, so a repeated tag
+            would match the earlier command's marker."""
+            self.tags += 1
+            return f'{tag}-{self.tags}'
+
+        def _out(self, cmd, tag, timeout=None):
+            return self.here.output(cmd, self._tag(tag), timeout)[0]
+
+        def _run(self, cmd, tag, timeout=None):
+            self._expect(
+                self.here.con.run(cmd, self._tag(tag), timeout) == 0,
+                f'{cmd!r} failed')
+
+        # -- the checks, in CHECKS order ----------------------------------
+
+        def _check_prom(self):
+            for what, pattern in prom_facts(self.flavour, self.row):
+                self._expect(re.search(pattern, self.first.prom),
+                             f'the PROM did not report {what}')
+
+        def _check_inventory(self):
+            hinv = self._out('hinv -v', 'hinv')
+            self._expect(processor_count(hinv) == self.row.cpus,
+                         f'hinv does not list {self.row.cpus} processors')
+            self._expect(re.search(
+                rf'Main memory size: {self.row.mem} Mbytes', hinv),
+                f'hinv does not list {self.row.mem} MB')
+            for what, pattern in self.flavour.hinv_facts:
+                self._expect(re.search(pattern, hinv),
+                             f'hinv -v lists no {what}')
+
+        def _check_ethernet(self):
+            netstat = self._out('netstat -ian', 'netstat')
+            for eth in self.flavour.ethernets:
+                # A trailing * marks an interface that is down.
+                self._expect(re.search(rf'(?m)^{eth.ifname}\*?\s', netstat),
+                             f'netstat -ian lists no {eth.ifname}')
+                self._expect(eth.mac in netstat,
+                             f'{eth.ifname} does not report {eth.mac}')
+                self._run(f'ifconfig {eth.ifname} alias {eth.subnet}.15 '
+                          'netmask 255.255.255.0 up', f'alias-{eth.ifname}')
+                ping = self._out(f'ping -c 5 {eth.subnet}.2',
+                                 f'ping-{eth.ifname}')
+                self._expect(
+                    re.search(r'\b5 packets transmitted, 5 packets received',
+                              ping),
+                    f'ping over {eth.ifname}: {ping!r}')
+
+        def _write_ports(self, ports):
+            """Prove each port's /dev name is its intended vertex by
+            device number, write a line to it, and wait for the line to
+            reach the port's host file."""
+            numbers = device_numbers(self._out(
+                'ls -lL ' + ' '.join(f'{p.dev} {p.vertex}' for p in ports),
+                'ttys'))
+            for port in ports:
+                self._expect(port.vertex in numbers, f'no {port.vertex}')
+                self._expect(numbers.get(port.dev) == numbers[port.vertex],
+                             f'{port.dev} is not {port.vertex}')
+                self._run(f'echo origami-{port.name} > {port.dev}',
+                          f'write-{port.name}')
+            deadline = time.monotonic() + 30
+            while True:
+                missing = []
+                for port in ports:
+                    with open(self.paths['ports'][port.name], 'rb') as out:
+                        if f'origami-{port.name}'.encode() not in out.read():
+                            missing.append(port.dev)
+                if not missing or time.monotonic() > deadline:
+                    break
+                time.sleep(1)
+            self._expect(not missing,
+                         f'lines written to {missing} never reached the host')
+
+        def _check_serial(self):
+            self._write_ports(self.flavour.serial_ports)
+
+        def _check_mediaio(self):
+            self._write_ports(self.flavour.mediaio_ports)
+
+        def _check_rad1(self):
+            self._run(f'/usr/sbin/sfplay {CONFIDENCE_TONE}', 'sfplay',
+                      timeout=SFPLAY_TIMEOUT_SECONDS)
+            with open(self.paths['wav'], 'rb') as wav:
+                samples = wav_nonzero_samples(wav.read())
+            self.log.info('RAD1 playback: %d nonzero samples', samples)
+            self._expect(samples >= TONE_SAMPLE_WORDS,
+                         f'RAD1 playback reached {self.paths["wav"]} as '
+                         f'{samples} nonzero samples, not the tone\'s '
+                         f'{TONE_SAMPLE_WORDS}')
+
+        def _check_keyboard(self):
+            for index, kbd in enumerate(self.flavour.keyboards):
+                self._type_on(kbd, index)
+
+        def _type_on(self, kbd, index):
+            """Prove kbd's input device is its card's PS/2 keyboard, then
+            type on it through QEMU and read the scan codes back."""
+            links = link_targets(self._out(f'ls -l {kbd.dev_dir}',
+                                           f'devinput{index}'))
+            self._expect(links.get('keyboard') == f'{kbd.hw_dir}/keyboard',
+                         f'{kbd.dev_dir}/keyboard is not {kbd.hw_dir}')
+            devices = device_numbers(self._out(
+                f'ls -l {kbd.hw_dir}/keyboard {kbd.card}/pckb',
+                f'hwinput{index}'))
+            card = [n for p, n in devices.items() if p.endswith('/pckb')]
+            self._expect(card, f'no pckb under {kbd.card}')
+            self._expect(devices.get(f'{kbd.hw_dir}/keyboard') == card[0],
+                         f'{kbd.hw_dir}/keyboard is not {kbd.card}/pckb')
+            # Open the keyboard for a read of exactly the expected byte
+            # count before any key is sent, so no byte can arrive while
+            # nothing has the device open.
+            self._run('rm -f /tmp/kbd.out; '
+                      f'(dd if={kbd.dev_dir}/keyboard bs=1 '
+                      f'count={len(TYPED_BYTES)} 2>/dev/null | '
+                      'od -An -tx1 > /tmp/kbd.out) & sleep 5',
+                      f'kbdopen{index}')
+            vm = self.here.vm
+            vm.cmd('qom-set', path=kbd.qom, property='activate-keyboard',
+                   value=True)
+            for key in TYPED_KEYS:
+                for down in (True, False):
+                    vm.cmd('input-send-event', events=[{
+                        'type': 'key',
+                        'data': {'down': down,
+                                 'key': {'type': 'qcode', 'data': key}}}])
+            # Up to 30 guest seconds for the bytes; an empty file means dd
+            # is still blocked and the keystrokes never arrived.
+            typed = self._out(
+                'i=0; while [ $i -lt 30 ]; do [ -s /tmp/kbd.out ] && break; '
+                'sleep 1; i=`expr $i + 1`; done; '
+                'echo KBD""-BEGIN; cat /tmp/kbd.out; echo KBD""-END',
+                f'kbdread{index}')
+            match = re.search(r'KBD-BEGIN\s*\n(.*?)KBD-END', typed, re.S)
+            got = od_bytes(match.group(1)) if match else None
+            self._expect(got == TYPED_BYTES, f'read {got} from '
+                         f'{kbd.dev_dir}/keyboard, not the typed keys')
+
+        def _check_scsi_card(self):
+            card = self.flavour.scsi_card
+            channels = re.findall(card.hinv, self._out('hinv', 'hinvscsi'))
+            self._expect(sorted(channels) == list(card.controllers),
+                         f'hinv lists the card\'s channels as controllers '
+                         f'{channels}, not {list(card.controllers)}')
+            links = link_targets(self._out('ls -l /hw/scsi_ctlr',
+                                           'scsictlr'))
+            for number, channel in zip(card.controllers, ('0', '1')):
+                self._expect(re.match(
+                    rf'^{card.vertex}/scsi_ctlr/{channel}$',
+                    links.get(number, '')),
+                    f'/hw/scsi_ctlr/{number} is not channel {channel} of '
+                    'the card')
+
+        def _diag(self, name, cmd):
+            output, status = self.here.output(
+                cmd, self._tag(name), timeout=DIAG_TIMEOUT_SECONDS[name])
+            problems = diag_problems(name, output)
+            self._expect(not problems,
+                         f'{name} exited {status}: ' + '; '.join(problems))
+
+        def _check_olrti(self):
+            for args in self.flavour.rti_args:
+                self._diag('olrti', f'/usr/diags/bin/olrti {args} -internal')
+
+        def _check_olenet(self):
+            self._diag('olenet', '/usr/diags/bin/olenet '
+                       f'-v {self.flavour.olenet_vertex}')
+
+        def _check_oldisk(self):
+            self._diag('oldisk', '/usr/diags/bin/oldisk '
+                       '-filename /tmp/oldisk.tf -filesize 8')
+
+        def _check_olmem(self):
+            self._diag('olmem', '/usr/diags/bin/olmem '
+                       f'{self.flavour.olmem_args}')
+
+        def _check_oltape(self):
+            self._diag('oltape', '/usr/diags/bin/oltape --tapemark --eot '
+                       f'-d {self.flavour.tape_dev}')
+
+        def _check_olcdrom(self):
+            self._expect(re.search(self.flavour.cd_hinv,
+                                   self._out('hinv -c scsi', 'cdrom')),
+                         'hinv -c scsi lists no CD-ROM where expected')
+            self._diag('olcdrom', '/usr/diags/bin/olcdrom -device '
+                       f'{self.flavour.cd_dev}')
+
+        def _check_timer(self):
+            # IRIX prints this when a scheduler tick arrives one whole
+            # Count wrap late: a Compare match the CPU model missed (see
+            # docs/known-issues.md in the project checkout). A stall of the
+            # emulator itself prints "Probably caused by splhi" instead.
+            misses = len(re.findall(rb'Probable lost interrupt!',
+                                    self.first.con.buf))
+            self._expect(misses == 0,
+                         f'IRIX reported {misses} lost scheduler clock '
+                         'interrupts')
+
+        # -- reboot, stop and relaunch ------------------------------------
+
+        def _before_reboot(self):
+            """Set up, in the first boot, everything the reboot, stop and
+            relaunch read back."""
+            if self.row.runs('parallel'):
+                stale, live, _plp = self.flavour.parallel
+                ioconfig = self._out('cat /etc/ioconfig.conf', 'ioconfig')
+                self._expect(re.search(stale, ioconfig),
+                             'the disk no longer carries the stale parallel '
+                             'entry this check removes')
+                self._expect(re.search(live, ioconfig),
+                             'IRIX recorded no live parallel entry')
+            self._run("grep -v '/ecpp$' /etc/ioconfig.conf > /tmp/ioc",
+                      'dropecpp')
+            self._run('cp /tmp/ioc /etc/ioconfig.conf', 'putioc')
+            self._run('nvram %s %s' % NVRAM_VARIABLE, 'nvramset')
+            sent = time.time()
+            self._run(f'date {GUEST_DATE_SET}', 'dateset')
+            clock_set = ClockReading(GUEST_DATE_SET_EPOCH, sent, time.time())
+            self.clock_before = self._clock('datebefore')
+            self._run('sync', 'sync')
+            error, bound = clock_error(clock_set, self.clock_before)
+            self._expect(abs(error) <= bound + CLOCK_ALLOWANCE_SECONDS,
+                         f'date {GUEST_DATE_SET} reads back {error:+.1f}s '
+                         'off the set instant')
+
+        def _clock(self, tag):
+            sent = time.time()
+            output = self._out("date -u '+DATE=%Y-%m-%d %H:%M:%S'", tag)
+            received = time.time()
+            guest = guest_date(output)
+            self._expect(guest is not None,
+                         f'date printed no DATE= line: {output!r}')
+            return ClockReading(guest, sent, received)
+
+        def _check_reboot(self):
+            self._before_reboot()
+            con = self.here.con
+            start = len(con.buf)
+            t0 = time.monotonic()
+            # uadmin's shutdown-and-reboot kills the processes, syncs and
+            # resets through the kernel's own reboot path, the part this
+            # checks, without reboot's two minutes of rc scripts.
+            con.send('/sbin/uadmin 2 1')
+            con.expect(self.flavour.prom_banner, REBOOT_TIMEOUT_SECONDS,
+                       what='the PROM banner after reboot', start=start)
+            self._phase('reboot to the PROM banner',
+                        round(time.monotonic() - t0, 1))
+
+        def _check_persistence(self):
+            if not self.row.runs('reboot'):
+                self._before_reboot()
+            if self.clock_before is None:
+                raise CheckFailed('the first boot set nothing to read back')
+            self.first.vm.shutdown()
+            time.sleep(STOPPED_SECONDS)
+            self.here = self._launch(f'{self.row.id}-relaunch',
+                                     relaunch=True)
+            after = self._clock('dateafter')
+            name, value = NVRAM_VARIABLE
+            self._expect(re.search(rf'(?m)^{value}\s*$',
+                                   self._out(f'nvram {name}', 'nvramget')),
+                         f'nvram {name} lost across the reboot and stop')
+            error, bound = clock_error(self.clock_before, after)
+            bound += CLOCK_ALLOWANCE_SECONDS
+            self.log.info('clock across the stop: %+.1fs off the host, '
+                          'allowed %.1fs', error, bound)
+            self._expect(bound <= STOPPED_SECONDS / 3,
+                         f'the clock check cannot tell a {STOPPED_SECONDS}s '
+                         f'loss from its own {bound:.1f}s tolerance')
+            self._expect(abs(error) <= bound,
+                         f'the guest clock is {error:+.1f}s off the host '
+                         f'across a {STOPPED_SECONDS}s stop (allowed '
+                         f'{bound:.1f}s)')
+
+        def _check_parallel(self):
+            plp = self.flavour.parallel[2]
+            self._expect(re.search(rf'parallel port: {plp}\b', self._out(
+                'hinv | grep parallel', 'plp')),
+                f'with no parallel history the port is not {plp}')
+
+    def register_irix_diag_row(cls, row_id):
+        """Attach test_<row_id> to cls: one flavour's boot and checks."""
 
         @skipBigDataTest()
         @skipSlowTest()
         @skipIfMissingEnv('ORIGAMI_ASSETS')
-        def test_irix_diag(self):
-            # A medium that is present but the wrong file raises
-            # AssetMismatch rather than resolving.
-            assets = require_assets(self, FIRMWARE_REL, DISK_REL,
-                                    (MEDIUM_REL, MEDIUM_SHA256))
-            prom, disk = assets[FIRMWARE_REL], assets[DISK_REL]
-            medium = assets[MEDIUM_REL]
+        def test_row(self):
+            self._run_row(row_id)
 
-            # A fresh empty tape image per run: oltape writes and reads
-            # it.
-            tape_fd, tape_path = tempfile.mkstemp(
-                prefix='oltape-', suffix='.tap', dir=self.workdir)
-            os.close(tape_fd)
+        test_row.__name__ = f'test_{row_id}'
+        test_row.__doc__ = f'irix-diag-matrix row {row_id}'
+        setattr(cls, test_row.__name__, test_row)
 
-            vm = self.get_vm(name='irix_diag')
-            vm.set_machine(MACHINES['origin200_dual'])
-            vm.set_console()
-            vm.add_args(
-                '-accel', 'tcg,thread=single',
-                '-cpu', 'R10000', '-m', str(MEMORY_MIB),
-                *TWO_CHASSIS_ARGS,
-                '-bios', str(prom),
-                '-audio', 'none',
-                '-drive',
-                f'if=none,id=disk0,file={disk},format=qcow2,snapshot=on',
-                '-device', 'scsi-hd,bus=scsi.0,scsi-id=1,lun=0,drive=disk0',
-                '-drive',
-                f'if=none,id=tape0,file={tape_path},format=raw',
-                '-device',
-                'scsi-tape,bus=scsi.1,scsi-id=5,lun=0,drive=tape0,'
-                f'vendor={TAPE_VENDOR},product={TAPE_PRODUCT}',
-                '-drive',
-                f'if=none,id=cd0,file={medium},format=raw,readonly=on',
-                '-device', 'scsi-cd,bus=scsi.1,scsi-id=6,lun=0,drive=cd0',
-                '-nic', 'user,id=net0')
+    class IrixDiag(IrixDiagMatrix):
+        """The two-chassis Origin 200."""
 
-            started = utc_now()
-            vm.launch()
-            log_path = self.log_file('irix-diag.log')
-            try:
-                transcript, reached = drive_console(
-                    vm.console_socket, log_path, BOOT_TIMEOUT_SECONDS,
-                    DRIVER_STEPS, reached_when=(
-                        lambda t: bool(DIAG_DONE_RE.search(t))), vm=vm)
-            finally:
-                vm.shutdown(hard=vm.exitcode() is not None)
-            ended = utc_now()
-
-            if not transcript:
-                self.fail(
-                    'the guest printed nothing at all -- a run that did not '
-                    'start, not a boot that failed early')
-
-            report = diag_verdict(transcript, reached=reached)
-
-            summary_path = self.log_file('irix-diag-summary.json')
-            with open(summary_path, 'w', encoding='utf-8') as summary_file:
-                json.dump({'schema': 1, 'diagnostics': DIAG_CMD,
-                           'reached_sentinel': reached, 'report': report},
-                          summary_file, indent=2, sort_keys=True)
-                summary_file.write('\n')
-
-            run_path = self.log_file('run.json')
-            with open(run_path, 'w', encoding='utf-8') as run_file:
-                json.dump({
-                    'schema': 1, 'started_utc': started, 'ended_utc': ended,
-                    'console_driver_reached_sentinel': reached,
-                    'timeout_seconds': BOOT_TIMEOUT_SECONDS,
-                    'diagnostics': DIAG_CMD,
-                    'identity': run_record(FORK_ROOT, self.qemu_bin,
-                                          prom=prom, disk=disk,
-                                          medium=medium),
-                    'verdict': report['verdict'],
-                    'problems': report['problems'],
-                }, run_file, indent=2, sort_keys=True)
-                run_file.write('\n')
-
-            self.assertEqual(
-                report['verdict'], 'PASS',
-                'IRIX online diagnostic problems: ' +
-                '; '.join(report['problems']) +
-                f' (full report: {summary_path})')
+    register_irix_diag_row(IrixDiag, 'origin200_dual')
 
 
 if __name__ == '__main__':

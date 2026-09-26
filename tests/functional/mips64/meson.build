@@ -77,45 +77,26 @@ test_mips64_timeouts = {
   # BOOT_TIMEOUT_SECONDS in test_irix_miniroot.py keeps a 60s margin under
   # this.
   'irix_miniroot' : 900,
-  # Boot the installed IRIX disk on two chassis (four CPUs across two nodes,
-  # 128 MiB) with a scsi-tape and a scsi-cd attached, and run SGI's oldisk,
-  # olmem, oltape and olcdrom online diagnostics in sequence on that one
-  # boot, each to its own RSLT PASS. The two-node boot and all four
-  # diagnostics are the long pole; BOOT_TIMEOUT_SECONDS in test_irix_diag.py
-  # keeps a 60s margin under this -- the sum of this test's own former
-  # budget (3600) plus the two absorbed oltape (1560) and olcdrom (1800)
-  # legs, now run on the one boot instead of three.
-  'irix_diag' : 6960,
-  # Boot the plain installed IRIX disk (same 265s to root login as
-  # irix_diag above -- root.qcow2 is the base root-diags.qcow2 is built
-  # from) and require who -r/uname -aR to show run level 2 under the
+  # One target per irix-diag-matrix flavour (test_irix_diag.py and the
+  # test_irix_diag_<flavour>.py beside it), so the flavours run side by
+  # side: one boot each for SGI's online diagnostics and the IOC3 port
+  # checks, an IRIX reboot, and a relaunch after a 25s stop. Each timeout
+  # is about twice the slowest whole run measured on 2026-09-26 (debug_tcg
+  # build/, beside a dozen other emulators): 1545s, 896s, 2210s, 3032s,
+  # 1934s and 2608s in this order. All stay under nightly.yml's 9000s job
+  # limit, so a hang is reported per test.
+  'irix_diag' : 3600,
+  'irix_diag_origin200' : 2400,
+  'irix_diag_origin2000_one_node' : 4800,
+  'irix_diag_origin2000_pci_shoehorn' : 6000,
+  'irix_diag_origin2000_pci_carrier' : 6000,
+  'irix_diag_origin300' : 5400,
+  # Boot the plain installed IRIX disk (265s to root login when last
+  # measured; root.qcow2 is the base root-diags.qcow2 is built from) and
+  # require who -r/uname -aR to show run level 2 under the
   # expected release. BOOT_TIMEOUT_SECONDS in test_irix_installed_boot.py
   # keeps a 60s margin under this.
   'irix_installed_boot' : 960,
-  # Three IRIX boots of root-diags.qcow2 in sequence, one per Origin 2000
-  # topology: the four-node PCI shoehorn and PCI carrier modules (eight
-  # CPUs, 256 MiB) and the two-CPU, 256 MiB one-node module, each to a
-  # root shell and a few commands, plus a typed-keystroke read on the
-  # shoehorn.
-  # LOGIN_BUDGET_SECONDS in test_irix_origin2000_topologies.py records
-  # the measured boot times; each boot gets that 1500s to its shell and
-  # each shell step its own 180s, and 5400 covers all three boots
-  # running out their login budget in sequence.
-  'irix_origin2000_topologies' : 5400,
-  # The one-node Origin 2000's BaseIO-G, split from
-  # irix_origin2000_topologies and from each other, the way irix_tg_perf
-  # is split from irix_tg, so meson runs them in parallel and each stays
-  # inside the nightly functional job's 150 minutes (9000s). Each boot
-  # gets the topology file's LOGIN_BUDGET_SECONDS, 1500s, to reach a
-  # shell. One-node boots have reached a shell in 95 to 500s on earlier
-  # trees and in 722 to 740s on sgi-origami d0fffaad41, where IRIX also
-  # reports missed scheduler clock interrupts; neither figure is settled.
-  # Ports: one boot (1500), olrti 600s and sfplay 900s: 3000, and 3300
-  # leaves 300s for the ordinary shell steps, which take seconds each.
-  'irix_baseio_g_ports' : 3300,
-  # Persistence: a boot, an IRIX reboot and a relaunch (4500) and the
-  # 120s stop: 4620, and 5000 leaves 380s for the shell steps.
-  'irix_baseio_g_persistence' : 5000,
   # Boot the installed IRIX 6.5.30 disk on the Origin 2000's one-node
   # module (two CPUs, 256 MiB) with SI/MGRAS graphics to the xdm
   # icon-chooser greeter (no login) and check the resulting screendump.
@@ -244,10 +225,12 @@ tests_mips64_system_thorough = [
   'prom_mdk_router',
   'irix_miniroot',
   'irix_diag',
+  'irix_diag_origin200',
+  'irix_diag_origin2000_one_node',
+  'irix_diag_origin2000_pci_shoehorn',
+  'irix_diag_origin2000_pci_carrier',
+  'irix_diag_origin300',
   'irix_installed_boot',
-  'irix_origin2000_topologies',
-  'irix_baseio_g_ports',
-  'irix_baseio_g_persistence',
   'mgras_greeter',
   'irix_eg',
   'irix_tg',
@@ -270,6 +253,7 @@ tests_mips64_unit = [
   'lib_evidence_capture',
   'lib_graphics_matrix',
   'lib_input',
+  'lib_irix_diag',
   'lib_matrix',
   'lib_mips',
   'lib_net',

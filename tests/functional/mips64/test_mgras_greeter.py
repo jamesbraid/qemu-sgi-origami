@@ -37,7 +37,7 @@ hw/mips/sgi/sn-catalogue.json already bakes in an io6g BaseIO, so unlike
 the default four-node topology this needs no `baseio-preset=` override
 for the second IOC3 an interactive session's mouse needs), `-cpu R10000
 -smp 2 -m 256`, multi-threaded TCG, `-S` then a `cont` once the machine
-has launched (test_irix_origin2000_topologies.py's own `_boot()` uses the
+has launched (test_irix_diag.py's own `_launch()` uses the
 same pause-then-continue for every Origin 2000 topology it starts,
 including this one, against the RESET event a quick early PROM reset can
 raise before the QMP client's capabilities reply lands). This test ran on
@@ -61,8 +61,8 @@ need (each run starts from the same golden, unwritten disk) and does not
 use -- QEMU's own Hub flash loader (sgi_machine_load_flash() in
 hw/mips/sgi/sn-machine.c) fills a node's boot flash from `-bios` whenever
 no pflash drive already backs it, the same plain path
-test_irix_origin2000_topologies.py's own already-landed `test_one_node`
-uses against this identical topology.
+test_irix_diag_origin2000_one_node.py's boot uses against this
+identical topology.
 docs/notebooks/si-target-first-chooser-20260921.md's "Live chooser" first
 recorded reaching this same chooser on the four-node profile (run
 irix-20260922T032556-b7eda4, `origin2000` compatibility composition,
@@ -175,7 +175,7 @@ FIRMWARE_REL = os.path.join('assets', 'firmware', RELEASE,
 DISK_REL = os.path.join('assets', 'irix', RELEASE, 'root-si.qcow2')
 
 # The Origin 2000's one-node module: one node, two CPUs, matching
-# test_irix_origin2000_topologies.py's own already-landed test_one_node.
+# the origin2000_one_node row of irix-diag-matrix.
 # The one-node topology's own catalogue entry in sn-catalogue.json
 # already bakes in an io6g BaseIO, so unlike the default four-node
 # topology this machine string needs no baseio-preset= override for the
@@ -192,9 +192,9 @@ MEMORY_MIB = 256
 
 # BOOT_TIMEOUT_SECONDS for this profile (one node, two CPUs, 256 MiB, the
 # graphics stack initializing before the console even prints its login
-# prompt). test_irix_origin2000_topologies.py's own test_one_node -- the
-# same topology, a lighter root-diags.qcow2 disk and no graphical greeter
-# to wait for -- runs under that file's own file-wide 1500s budget.
+# prompt). test_irix_diag_origin2000_one_node.py -- the same topology,
+# a lighter root-diags.qcow2 disk and no graphical greeter to wait for --
+# gives its boot a 1500s budget.
 # This test's own four-node predecessor measured 282s-12min real to the
 # same login: prompt across host-load conditions on eight CPUs. Measured
 # against this one-node profile instead (three qualification runs on the
