@@ -123,6 +123,9 @@ struct SGIBaseioState {
     char *mio_chardev_a_id;
     char *mio_chardev_b_id;
     bool parallel_claimed;
+    /* Which of the backend ids above some chip of the preset took. */
+    const char *claimed[7];
+    unsigned int n_claimed;
 };
 
 typedef bool (*SGIBaseioBuildFn)(SGIBaseioState *s, Error **errp);
@@ -178,6 +181,31 @@ static bool baseio_pass_chardev(DeviceState *dev, const char *prop,
     }
     qdev_prop_set_chr(dev, prop, chr);
     return true;
+}
+
+/*
+ * Record that a chip took the backend this device holds as id, so realize
+ * can refuse an id the preset has no function for, as it does a parallel
+ * id: a console or record line, NVRAM or MediaIO port named for a board
+ * that fits none would otherwise be dropped without a word.
+ */
+static void baseio_note_claim(SGIBaseioState *s, const char *id)
+{
+    if (id && s->n_claimed < ARRAY_SIZE(s->claimed)) {
+        s->claimed[s->n_claimed++] = id;
+    }
+}
+
+static bool baseio_id_claimed(SGIBaseioState *s, const char *id)
+{
+    unsigned int i;
+
+    for (i = 0; i < s->n_claimed; i++) {
+        if (s->claimed[i] == id) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static bool baseio_pass_drive(DeviceState *dev, const char *id, Error **errp)
@@ -292,6 +320,13 @@ static PCIDevice *baseio_build_ioc3(SGIBaseioState *s, const char *child_name,
     if (population & SGI_IOC3_POPULATION_PARALLEL) {
         s->parallel_claimed = true;
     }
+    if (timekeeper != SGI_IOC3_TIMEKEEPER_NONE) {
+        baseio_note_claim(s, s->nvram_drive_id);
+    }
+    baseio_note_claim(s, chardev_a_id);
+    baseio_note_claim(s, chardev_b_id);
+    baseio_note_claim(s, record_a_id);
+    baseio_note_claim(s, record_b_id);
     if (!pci_realize_and_unref(ioc3, s->pci_bus, errp)) {
         object_unparent(OBJECT(ioc3));
         return NULL;
@@ -812,6 +847,30 @@ static void baseio_realize(DeviceState *dev, Error **errp)
     if (s->parallel_chardev_id && !s->parallel_claimed) {
         error_setg(errp, "sgi-baseio: preset '%s' fits no parallel port for "
                   "parallel-chardev '%s'", s->preset, s->parallel_chardev_id);
+        return;
+    }
+    {
+        const struct {
+            const char *prop;
+            const char *id;
+        } ids[] = {
+            { "nvram-drive", s->nvram_drive_id },
+            { "chardev-a", s->chardev_a_id },
+            { "chardev-b", s->chardev_b_id },
+            { "record-a", s->record_a_id },
+            { "record-b", s->record_b_id },
+            { "mio-chardev-a", s->mio_chardev_a_id },
+            { "mio-chardev-b", s->mio_chardev_b_id },
+        };
+        size_t i;
+
+        for (i = 0; i < ARRAY_SIZE(ids); i++) {
+            if (ids[i].id && !baseio_id_claimed(s, ids[i].id)) {
+                error_setg(errp, "sgi-baseio: preset '%s' fits nothing to "
+                          "take %s '%s'", s->preset, ids[i].prop, ids[i].id);
+                return;
+            }
+        }
     }
 }
 
