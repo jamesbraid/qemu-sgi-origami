@@ -572,15 +572,10 @@ L1_UART_DATA = 0x30000080
 
 # The Bedrock memory/directory chip's memory-configuration register
 # (docs/datasheets/bedrock-memory-directory.md, register 0x780008),
-# reached through the same Hub-special window as the L1 UART:
-# hw/misc/sgi-bedrock.c embeds the MD's own register file into the
-# node's register window at local offset 0x780000, and
-# hw/mips/sgi/sn1-node.c maps that window at SN1_SPACE_HUB
-# (0x10000000000) plus offset 0x30000000 -- the same base the L1 UART's
-# own attribute-0 access above resolves to through the CPU's xkphys
-# decode. A -device loader write goes straight to the machine bus and
-# skips that decode, so it needs the sum as a plain physical address.
-MD_MEMORY_CONFIG = 0x10000000000 + 0x30000000 + 0x780008
+# reached through the Bedrock node register window mapped at
+# SN1_BEDROCK_NODE_ADDRESS in hw/mips/sgi/sn1-node.c. A -device loader
+# writes to that physical address without the CPU's xkphys decode.
+MD_MEMORY_CONFIG = 0x20001800000 + 0x780008
 
 # The shipped Origin 300 installs two 256 MiB DIMM banks at locational
 # banks two and three, not locational bank zero (hw/mips/sgi/sn1-node.c,
@@ -870,6 +865,15 @@ class SN1L1Reset(_ResetCycleMixin, QemuSystemTest):
             '-D', log)
         self.vm.launch()
         wait_for_console_pattern(self, '<CTRL_T> to escape to L1')
+
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            state = self.read_state()
+            if state[STATE_A_DONE // 8] and state[STATE_B_DONE // 8]:
+                break
+            time.sleep(0.1)
+        else:
+            self.fail(f'console spinners did not both run: {state}')
 
         for _ in range(CYCLES):
             exec_command_and_wait_for_pattern(
