@@ -6,6 +6,19 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
+#include "sgi-migrate.h"
+
+#define R12000_CPU_1 "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567," \
+    "r12000-reset-mode=0x198683,r12000-scache-bytes=1048576," \
+    "r12000-scache-block-words=16"
+#define R12000_CPU_2 "R12000,r12000-prid=0xe24,r12000-fpu-id=0x7654," \
+    "r12000-reset-mode=0x1aa683,r12000-scache-bytes=2097152," \
+    "r12000-scache-block-words=32"
+#define R12000_CPU_1_32 "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567," \
+    "r12000-reset-mode=0x19a683,r12000-scache-bytes=1048576," \
+    "r12000-scache-block-words=32"
+#define R12000_MAILBOX 0x00200000
 
 #define DATA_BASE 0x20001220000ULL
 #define MACHINE_SINGLE \
@@ -801,6 +814,282 @@ static void test_r14000_timer(void)
     run_cpu_timer_test("-M malta -m 64M -nic none -vga none", "R14000");
 }
 
+static void r12000_emit_reg(UserCode *p, unsigned int rt, unsigned int rd,
+                           unsigned int offset)
+{
+    user_mfc0(p, rt, rd);
+    for (unsigned int i = 0; i < 4; i++) {
+        user_emit(p, 0);
+    }
+    user_i(p, 43, 26, rt, offset);
+}
+
+static void r12000_build_probe(UserCode *p, bool wide_block)
+{
+    uint32_t upper = wide_block ? 0xa00f : 0xa007;
+    uint16_t lower = 0xff81;
+    unsigned int loop;
+
+    user_li(p, 26, 0xa0000000 | R12000_MAILBOX);
+    r12000_emit_reg(p, 8, 15, 0);
+    r12000_emit_reg(p, 8, 16, 4);
+    user_mfc0(p, 9, 12);
+    user_li(p, 10, 0x20000000);
+    user_emit(p, (9 << 21) | (10 << 16) | (9 << 11) | 0x25);
+    user_mtc0(p, 9, 12);
+    user_emit(p, 0);
+    user_emit(p, 0x44480000); /* cfc1 t0, fcr0 */
+    user_i(p, 43, 26, 8, 8);
+
+    /* Use the upper half of the diagnostic table, beyond R10000's 512. */
+    user_li(p, 8, (1536 << 3) | (2 << 14) | 1);
+    user_mtc0(p, 8, 22);
+    user_li(p, 8, 1536 << 3);
+    user_mtc0(p, 8, 22);
+    r12000_emit_reg(p, 8, 22, 12);
+
+    /* Two addresses occupy one 128-byte line but two 64-byte lines. */
+    user_i(p, 15, 0, 9, upper);
+    user_i(p, 13, 9, 9, lower);
+    user_li(p, 8, 0x11111111);
+    user_mtc0(p, 8, 28);
+    user_li(p, 8, 0x80000002);
+    user_mtc0(p, 8, 29);
+    user_i(p, 47, 9, 0x0b, 0);
+    user_i(p, 9, 9, 9, 64);
+    user_li(p, 8, 0x22222222);
+    user_mtc0(p, 8, 28);
+    user_i(p, 47, 9, 0x0b, 0);
+    user_i(p, 9, 9, 9, (uint16_t)-64);
+    user_i(p, 47, 9, 0x07, 0);
+    r12000_emit_reg(p, 8, 28, 16);
+    user_i(p, 9, 9, 9, 64);
+    user_i(p, 47, 9, 0x07, 0);
+    r12000_emit_reg(p, 8, 28, 20);
+    user_i(p, 9, 0, 8, 1);
+    user_i(p, 43, 26, 8, 24);
+    loop = p->pos;
+    user_i(p, 35, 26, 8, 28);
+    user_i(p, 4, 8, 0, (uint16_t)-2);
+    user_emit(p, 0);
+    user_li(p, 8, 1536 << 3);
+    user_mtc0(p, 8, 22);
+    r12000_emit_reg(p, 8, 22, 32);
+    user_i(p, 15, 0, 9, upper);
+    user_i(p, 13, 9, 9, lower);
+    user_i(p, 47, 9, 0x07, 0);
+    r12000_emit_reg(p, 8, 28, 36);
+    user_i(p, 9, 0, 8, 1);
+    user_i(p, 43, 26, 8, 40);
+    user_park(p);
+    g_assert_cmpuint(loop, <, p->pos);
+}
+
+static void r12000_run_profile(const char *profile, bool wide_block,
+                              uint32_t expected_prid, uint32_t expected_mode,
+                              uint32_t expected_fpu)
+{
+    g_autofree UserCode *image = g_new0(UserCode, 1);
+    g_autofree char *path = NULL;
+    uint8_t mailbox[28] = { 0 };
+    QTestState *qts;
+    int64_t deadline;
+    int fd;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    r12000_build_probe(image, wide_block);
+    fd = g_file_open_tmp("r12000-probe-XXXXXX", &path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image->bytes, sizeof(image->bytes)), ==,
+                    sizeof(image->bytes));
+    close(fd);
+    qts = qtest_initf("-M malta -m 64M -nic none -vga none -cpu %s "
+                      "-bios %s -accel tcg -S", profile, path);
+    unlink(path);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    deadline = g_get_monotonic_time() + 20 * G_TIME_SPAN_SECOND;
+    do {
+        qtest_memread(qts, R12000_MAILBOX, mailbox, sizeof(mailbox));
+        if (ldl_be_p(mailbox + 24)) {
+            break;
+        }
+        g_usleep(1000);
+    } while (g_get_monotonic_time() < deadline);
+    qtest_quit(qts);
+    g_assert_cmphex(ldl_be_p(mailbox + 24), ==, 1);
+    g_assert_cmphex(ldl_be_p(mailbox), ==, expected_prid);
+    g_assert_cmphex(ldl_be_p(mailbox + 4) & 0x1ffffff, ==, expected_mode);
+    g_assert_cmphex(ldl_be_p(mailbox + 4) >> 26, ==, 0x1b);
+    g_assert_cmphex(ldl_be_p(mailbox + 8), ==, expected_fpu);
+    g_assert_cmphex((ldl_be_p(mailbox + 12) >> 14) & 3, ==, 2);
+    g_assert_cmphex(ldl_be_p(mailbox + 16), ==, wide_block ? 0x22220022 :
+                                                      0x11110111);
+    g_assert_cmphex(ldl_be_p(mailbox + 20), ==, 0x22220022);
+}
+
+static void test_r12000_profile_16(void)
+{
+    r12000_run_profile(R12000_CPU_1, false, 0xe12, 0x198683, 0x4567);
+}
+
+static void test_r12000_profile_32(void)
+{
+    r12000_run_profile(R12000_CPU_2, true, 0xe24, 0x1aa683, 0x7654);
+}
+
+static void test_r12000_requires_profile(void)
+{
+    const char *const args[] = { qtest_qemu_binary(NULL), "-M", "malta",
+        "-cpu", "R12000", "-display", "none", "-S", NULL };
+    g_autofree char *stderr_text = NULL;
+    int status;
+
+    g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                               NULL, &stderr_text, &status, NULL));
+    g_assert_false(g_spawn_check_exit_status(status, NULL));
+    g_assert_nonnull(strstr(stderr_text, "r12000-prid"));
+}
+
+static void test_r12000_rejects_inconsistent_profile(void)
+{
+    static const struct {
+        const char *profile;
+        const char *error;
+    } cases[] = {
+        { "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567,"
+          "r12000-reset-mode=0x198683,r12000-scache-bytes=2097152,"
+          "r12000-scache-block-words=16", "Config SS" },
+        { "R12000,r12000-prid=0xe12,r12000-fpu-id=0x4567,"
+          "r12000-reset-mode=0x198683,r12000-scache-bytes=1048576,"
+          "r12000-scache-block-words=32", "Config SB" },
+        { "R12000,r12000-prid=0xd12,r12000-fpu-id=0x4567,"
+          "r12000-reset-mode=0x198683,r12000-scache-bytes=1048576,"
+          "r12000-scache-block-words=16", "implementation 0x0e" },
+    };
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(cases); i++) {
+        const char *const args[] = { qtest_qemu_binary(NULL), "-M", "malta",
+            "-cpu", cases[i].profile, "-display", "none", "-S", NULL };
+        g_autofree char *stderr_text = NULL;
+        int status;
+
+        g_assert_true(g_spawn_sync(NULL, (char **)args, NULL, 0, NULL, NULL,
+                                   NULL, &stderr_text, &status, NULL));
+        g_assert_false(g_spawn_check_exit_status(status, NULL));
+        g_assert_nonnull(strstr(stderr_text, cases[i].error));
+    }
+}
+
+static char *r12000_probe_image(bool wide_block)
+{
+    g_autofree UserCode *image = g_new0(UserCode, 1);
+    char *path = NULL;
+    int fd;
+
+    r12000_build_probe(image, wide_block);
+    fd = g_file_open_tmp("r12000-migrate-XXXXXX", &path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image->bytes, sizeof(image->bytes)), ==,
+                    sizeof(image->bytes));
+    close(fd);
+    return path;
+}
+
+static void r12000_wait_mailbox(QTestState *qts, unsigned int offset)
+{
+    uint8_t value[4];
+    int64_t deadline = g_get_monotonic_time() + 20 * G_TIME_SPAN_SECOND;
+
+    do {
+        qtest_memread(qts, R12000_MAILBOX + offset, value, sizeof(value));
+        if (ldl_be_p(value) == 1) {
+            return;
+        }
+        g_usleep(1000);
+    } while (g_get_monotonic_time() < deadline);
+    g_assert_not_reached();
+}
+
+static void r12000_migrate_profile(const char *profile, bool wide_block)
+{
+    g_autofree char *image = r12000_probe_image(wide_block);
+    g_autofree char *dir = g_dir_make_tmp("r12000-migrate-XXXXXX", NULL);
+    g_autofree char *socket = g_build_filename(dir, "state.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    uint8_t value[4];
+    QTestState *from, *to;
+
+    from = qtest_initf("-M malta -m 64M -nic none -vga none -cpu %s "
+                       "-bios %s -accel tcg -S", profile, image);
+    to = qtest_initf("-M malta -m 64M -nic none -vga none -cpu %s "
+                     "-bios %s -accel tcg -incoming %s -S",
+                     profile, image, uri);
+    qtest_qmp_assert_success(from, "{ 'execute': 'cont' }");
+    r12000_wait_mailbox(from, 24);
+    qtest_qmp_assert_success(from, "{ 'execute': 'stop' }");
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    stl_be_p(value, 1);
+    qtest_memwrite(to, R12000_MAILBOX + 28, value, sizeof(value));
+    qtest_qmp_assert_success(to, "{ 'execute': 'cont' }");
+    r12000_wait_mailbox(to, 40);
+    qtest_memread(to, R12000_MAILBOX + 32, value, sizeof(value));
+    g_assert_cmphex((ldl_be_p(value) >> 14) & 3, ==, 2);
+    qtest_memread(to, R12000_MAILBOX + 36, value, sizeof(value));
+    g_assert_cmphex(ldl_be_p(value), ==, wide_block ? 0x22220022 :
+                                                0x11110111);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(image);
+    g_unlink(socket);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
+static void test_r12000_migrate_16(void)
+{
+    r12000_migrate_profile(R12000_CPU_1, false);
+}
+
+static void test_r12000_migrate_32(void)
+{
+    r12000_migrate_profile(R12000_CPU_2, true);
+}
+
+static void test_r12000_migrate_rejects_different_block_size(void)
+{
+    g_autofree char *image = r12000_probe_image(false);
+    g_autofree char *dir = g_dir_make_tmp("r12000-mismatch-XXXXXX", NULL);
+    g_autofree char *socket = g_build_filename(dir, "state.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from, *to;
+    int64_t deadline;
+
+    from = qtest_initf("-M malta -m 64M -nic none -vga none -cpu %s "
+                       "-bios %s -accel tcg -S", R12000_CPU_1, image);
+    to = qtest_initf("-M malta -m 64M -nic none -vga none -cpu %s "
+                     "-bios %s -accel tcg -incoming %s -S",
+                     R12000_CPU_1_32, image, uri);
+    qtest_qmp_assert_success(from, "{ 'execute': 'cont' }");
+    r12000_wait_mailbox(from, 24);
+    qtest_qmp_assert_success(from, "{ 'execute': 'stop' }");
+    qtest_set_expected_status(to, 1);
+    qtest_qmp_assert_success(from,
+        "{ 'execute': 'migrate', 'arguments': { 'uri': %s } }", uri);
+    deadline = g_get_monotonic_time() + 30 * G_TIME_SPAN_SECOND;
+    while (qtest_probe_child(to)) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_usleep(1000);
+    }
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(image);
+    g_unlink(socket);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -816,6 +1105,16 @@ int main(int argc, char **argv)
     qtest_add_func("/sn0/qtest/r10000-timer", test_r10000_timer);
     if (qtest_has_machine("malta")) {
         qtest_add_func("/sn0/qtest/r14000-timer", test_r14000_timer);
+        qtest_add_func("/r12000/profile-required",
+                       test_r12000_requires_profile);
+        qtest_add_func("/r12000/profile-inconsistent",
+                       test_r12000_rejects_inconsistent_profile);
+        qtest_add_func("/r12000/profile-16-words", test_r12000_profile_16);
+        qtest_add_func("/r12000/profile-32-words", test_r12000_profile_32);
+        qtest_add_func("/r12000/migrate-16-words", test_r12000_migrate_16);
+        qtest_add_func("/r12000/migrate-32-words", test_r12000_migrate_32);
+        qtest_add_func("/r12000/migrate-incompatible-block",
+                       test_r12000_migrate_rejects_different_block_size);
     }
     return g_test_run();
 }

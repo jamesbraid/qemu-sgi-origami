@@ -36,9 +36,15 @@ static unsigned int r10k_scache_size(const CPUMIPSState *env)
     return env->cfg.scache_size;
 }
 
+static unsigned int r10k_scache_line_size(const CPUMIPSState *env)
+{
+    return env->cfg.scache_line_size ? env->cfg.scache_line_size :
+           R10K_SCACHE_LINE_SIZE;
+}
+
 static unsigned int r10k_scache_sets(const CPUMIPSState *env)
 {
-    return r10k_scache_size(env) / R10K_SCACHE_LINE_SIZE /
+    return r10k_scache_size(env) / r10k_scache_line_size(env) /
            R10K_SCACHE_WAYS;
 }
 
@@ -103,7 +109,7 @@ static void r10k_scache_invalidate_subsets(CPUMIPSState *env, uint64_t block,
 {
     unsigned int i, w;
 
-    for (i = 0; i < R10K_SCACHE_LINE_SIZE / R10K_ICACHE_LINE_SIZE; i++) {
+    for (i = 0; i < r10k_scache_line_size(env) / R10K_ICACHE_LINE_SIZE; i++) {
         uint64_t sub = block + i * R10K_ICACHE_LINE_SIZE;
         unsigned int set = (pidx << 6) | extract64(sub, 6, 6);
 
@@ -116,7 +122,7 @@ static void r10k_scache_invalidate_subsets(CPUMIPSState *env, uint64_t block,
             }
         }
     }
-    for (i = 0; i < R10K_SCACHE_LINE_SIZE / R10K_DCACHE_LINE_SIZE; i++) {
+    for (i = 0; i < r10k_scache_line_size(env) / R10K_DCACHE_LINE_SIZE; i++) {
         uint64_t sub = block + i * R10K_DCACHE_LINE_SIZE;
         unsigned int set = (pidx << 7) | extract64(sub, 5, 7);
 
@@ -147,10 +153,11 @@ static void r10k_scache_invalidate(CPUMIPSState *env, unsigned int set,
                                    target_ulong vaddr)
 {
     unsigned int tag = set * R10K_SCACHE_WAYS + way;
+    unsigned int line_mask = r10k_scache_line_size(env) - 1;
 
     r10k_scache_invalidate_subsets(env,
                                    (r10k_scache_tag_pa(env, tag) << 18) |
-                                   (paddr & 0x3ff80),
+                                   (paddr & (0x3ffff & ~line_mask)),
                                    extract32(env->r10k->scache_taglo[tag],
                                              7, 2));
     env->r10k->scache_taglo[tag] =
@@ -407,7 +414,7 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
          * rewrite, and the MRU bit stays where it was.
          */
         unsigned int way = paddr & 1;
-        unsigned int set = (paddr / R10K_SCACHE_LINE_SIZE) &
+        unsigned int set = (paddr / r10k_scache_line_size(env)) &
                            (r10k_scache_sets(env) - 1);
 
         /*
@@ -433,7 +440,7 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
          * cleared on a miss — which is what tells a diagnostic whether
          * its operation found the block.
          */
-        unsigned int set = (paddr / R10K_SCACHE_LINE_SIZE) &
+        unsigned int set = (paddr / r10k_scache_line_size(env)) &
                            (r10k_scache_sets(env) - 1);
         unsigned int w;
         bool hit = r10k_system_request(env, cache_operation == 0b101 ?
@@ -471,7 +478,7 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
         unsigned int way = paddr & 1;
 
         if (cache_operation == 0b001 || cache_operation == 0b010) {
-            unsigned int set = (paddr / R10K_SCACHE_LINE_SIZE) &
+            unsigned int set = (paddr / r10k_scache_line_size(env)) &
                                (r10k_scache_sets(env) - 1);
             unsigned int tag = set * R10K_SCACHE_WAYS + way;
 
@@ -787,7 +794,8 @@ void helper_mtc0_r10k_diagnostic(CPUMIPSState *env, target_ulong arg1)
 
     env->r10k->CP0_Diagnostic = arg1 & env->cfg.diagnostic_rw_bitmask;
 
-    idx = extract64(env->r10k->CP0_Diagnostic, CP0DI_BPIdx, 9);
+    idx = extract64(env->r10k->CP0_Diagnostic, CP0DI_BPIdx,
+                    env->cfg.bpt_entries == R12K_BPT_ENTRIES ? 11 : 9);
     switch (extract64(env->r10k->CP0_Diagnostic, CP0DI_BPOp, 2)) {
     case 0: /* table read */
         env->r10k->CP0_Diagnostic =

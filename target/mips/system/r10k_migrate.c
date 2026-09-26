@@ -48,7 +48,7 @@ static const VMStateDescription vmstate_r10k_state = {
         VMSTATE_UINT8_ARRAY(dcache_parity, R10KState, R10K_PCACHE_WORDS),
         VMSTATE_INT32(CP0_CacheErr, R10KState),
         VMSTATE_UINT64(CP0_Diagnostic, R10KState),
-        VMSTATE_UINT8_ARRAY(bpt, R10KState, R10K_BPT_ENTRIES),
+        VMSTATE_UINT8_SUB_ARRAY(bpt, R10KState, 0, R10K_BPT_ENTRIES),
         VMSTATE_UINT32(CP0_R10K_DelayedWatch, R10KState),
         VMSTATE_END_OF_LIST()
     }
@@ -103,9 +103,49 @@ static bool mips_r14k_scache_needed(void *opaque)
 {
     const MIPSCPU *cpu = opaque;
 
-    return cpu->env.cfg.scache_size == R14K_SCACHE_SIZE ||
+    return (!cpu->r12000_profile_valid &&
+            cpu->env.cfg.scache_size == R14K_SCACHE_SIZE) ||
            mips_r10k_scache_is_4m(cpu);
 }
+
+static bool mips_r12000_extra_needed(void *opaque)
+{
+    return ((MIPSCPU *)opaque)->r12000_profile_valid;
+}
+
+static const VMStateDescription vmstate_r12000_extra = {
+    .name = "mips/r12000-extra",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32_SUB_ARRAY(scache_taglo, R10KState, R10K_SCACHE_TAGS,
+                                 R10K_SCACHE_4M_TAGS - R10K_SCACHE_TAGS),
+        VMSTATE_UINT8_SUB_ARRAY(scache_taghi, R10KState, R10K_SCACHE_TAGS,
+                                R10K_SCACHE_4M_TAGS - R10K_SCACHE_TAGS),
+        VMSTATE_UINT8_SUB_ARRAY(scache_mru, R10KState, R10K_SCACHE_SETS,
+                                R10K_SCACHE_4M_SETS - R10K_SCACHE_SETS),
+        VMSTATE_UINT64_SUB_ARRAY(scache_data, R10KState, R10K_SCACHE_DWORDS,
+                                 R14K_SCACHE_DWORDS - R10K_SCACHE_DWORDS),
+        VMSTATE_UINT16_SUB_ARRAY(scache_ecc, R10KState,
+                                 R10K_SCACHE_QUADWORDS,
+                                 R14K_SCACHE_QUADWORDS - R10K_SCACHE_QUADWORDS),
+        VMSTATE_UINT8_SUB_ARRAY(bpt, R10KState, R10K_BPT_ENTRIES,
+                                R12K_BPT_ENTRIES - R10K_BPT_ENTRIES),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+const VMStateDescription mips_vmstate_r12000_extra = {
+    .name = "cpu/r12000-extra",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mips_r12000_extra_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT_POINTER(env.r10k, MIPSCPU, vmstate_r12000_extra,
+                               R10KState),
+        VMSTATE_END_OF_LIST()
+    }
+};
 
 const VMStateDescription mips_vmstate_r14k_scache = {
     .name = "cpu/r14k-scache",
