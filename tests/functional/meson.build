@@ -89,6 +89,10 @@ foreach speed : ['quick', 'thorough']
 
     foreach test : target_tests
       testname = '@0@-@1@'.format(target_base, test)
+      test_suites = suites
+      if testname == 'mips64-openbsd_install'
+        test_suites = suites + ['func-install']
+      endif
       if fs.exists('generic' / 'test_' + test + '.py')
         testfile = 'generic' / 'test_' + test + '.py'
       else
@@ -133,7 +137,7 @@ foreach speed : ['quick', 'thorough']
            protocol: 'tap',
            timeout: time_out,
            priority: time_out,
-           suite: suites)
+           suite: test_suites)
     endforeach
   endforeach
 endforeach
