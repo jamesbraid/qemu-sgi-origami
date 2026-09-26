@@ -1,20 +1,33 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
- * SGI KONA register-contract and one-wire identity qtests.
+ * SGI KONA register-contract, one-wire identity and textport qtests.
  *
  * Increment 1 is identity only: a widget-ID/probe register set and the
  * DS2502 identity parts a stock PROM reads while classifying the
- * InfiniteReality graphics pipe (hw/misc/sgi-kona.c). KONA has no onboard
- * preset of its own yet, so this fixture attaches it the same way
- * sn-builder-test.c's boards reach an origin2000 machine's spare crosstalk
- * fabric: as a `-device` proxied through crossbow0's spare-fabric link at
- * widget 11, the lowest widget the default topology's
- * startup-links-alive (BaseIO at 8, the two host-node Hubs at 9 and 10, SI
- * Viz at 15) leaves free.
+ * InfiniteReality graphics pipe (hw/misc/sgi-kona.c). Increment 2 adds the
+ * `+0x800xxx` register window, the `+0xc10000` textport command port and a
+ * native display surface; see docs/designs/
+ * infinitereality-host-command-approximation.md for what each case below
+ * approximates and why. KONA has no onboard preset of its own yet, so this
+ * fixture attaches it the same way sn-builder-test.c's boards reach an
+ * origin2000 machine's spare crosstalk fabric: as a `-device` proxied
+ * through crossbow0's spare-fabric link at widget 11, the lowest widget the
+ * default topology's startup-links-alive (BaseIO at 8, the two host-node
+ * Hubs at 9 and 10, SI Viz at 15) leaves free. It takes a fixed `id=kona0`
+ * so the increment-2 cases can reach its `x-test-pixel` QOM properties --
+ * but unlike a plain `-device` that stays where device_add put it,
+ * hw/mips/sgi/xio-board.c's own sgi_xio_board_reparent() moves every
+ * sgi-xtalk-board subclass out from under /machine/peripheral and into a
+ * container named after its `module=` property once build_widget()
+ * returns, keeping the `id=` name (confirmed against a live qom-list: a
+ * board given `module=99` lands at /machine/module99/kona0, not
+ * /machine/peripheral/kona0).
  */
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
+#include "qobject/qjson.h"
 #include "sgi-test.h"
 
 #define SMALL_WINDOW_SIZE UINT64_C(0x1000000)
@@ -35,9 +48,102 @@
 #define REG_PROBE          KONA_REG(0x000064)
 #define REG_ONEWIRE        KONA_REG(0x000098)
 
+/*
+ * Increment 2: the register window and textport command port, offsets
+ * per include/hw/misc/sgi-kona.h.
+ */
+#define REG_LOW_WINDOW_WRITE KONA_REG(0x00007c)
+#define REG_CREDIT           KONA_REG(0x800208)
+#define REG_RESET_ARG        KONA_REG(0x800220)
+#define REG_INT_CAUSE        KONA_REG(0x800238)
+#define REG_MAILBOX          KONA_REG(0x800240)
+#define REG_RESET_STROBE     KONA_REG(0x800300)
+#define REG_EEPROM_ENABLE    KONA_REG(0x800308)
+#define REG_EEPROM_ADDR      KONA_REG(0x8003e8)
+#define REG_EEPROM_DATA      KONA_REG(0x8003f0)
+#define REG_TEXTPORT         KONA_REG(0xc10000)
+
+#define KONA_INT_CAUSE_MAILBOX (1u << 4)
+#define KONA_EEPROM_CHECKED_ADDR  0x87ff1c
+#define KONA_EEPROM_CHECKED_VALUE 2
+
 #define MACHINE_ARGS \
-    "-M origin2000 -device sgi-kona,module=99,slot=8," \
+    "-M origin2000 -device sgi-kona,id=kona0,module=99,slot=8," \
     "fabric=/machine/crossbow0-spare-fabric[0]"
+
+#define KONA_QOM_PATH "/machine/module99/kona0"
+
+/*
+ * hw/misc/sgi-mgras.c's own qtest fixture hand-rolls this same helper
+ * (mgras_qom_get_uint()): libqtest.h has no generic uint getter, only
+ * qtest_qom_get_bool()/qtest_qom_set_bool().
+ */
+static uint64_t kona_qom_get_uint(QTestState *s, const char *property)
+{
+    QDict *resp = qtest_qmp(s,
+        "{'execute': 'qom-get', 'arguments': {'path': %s, "
+        "'property': %s}}", KONA_QOM_PATH, property);
+    uint64_t value;
+
+    if (!qdict_haskey(resp, "return")) {
+        g_autoptr(GString) str = qobject_to_json(QOBJECT(resp));
+        g_error("qom-get %s failed: %s", property, str->str);
+    }
+    value = qdict_get_int(resp, "return");
+    qobject_unref(resp);
+    return value;
+}
+
+static uint32_t kona_test_pixel(QTestState *s, uint32_t x, uint32_t y)
+{
+    qtest_qmp_assert_success(s,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-x', 'value': %u}}", KONA_QOM_PATH, x);
+    qtest_qmp_assert_success(s,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-pixel-y', 'value': %u}}", KONA_QOM_PATH, y);
+    return kona_qom_get_uint(s, "x-test-pixel");
+}
+
+/*
+ * Push one textport wire word: the fixed leading sync word `1`, then a
+ * selector, then its argc argument words -- hw/misc/sgi-kona.c's own
+ * sgi_kona_textport_push()/sgi_command_port_write() framing. Callers
+ * push a whole command in one call so a failed assertion never leaves a
+ * later case mid-packet.
+ */
+static void kona_textport_push(QTestState *s, uint32_t selector,
+                               const uint32_t *args, unsigned argc)
+{
+    unsigned i;
+
+    qtest_writel(s, REG_TEXTPORT, 1);
+    qtest_writel(s, REG_TEXTPORT, selector);
+    for (i = 0; i < argc; i++) {
+        qtest_writel(s, REG_TEXTPORT, args[i]);
+    }
+}
+
+/*
+ * Drain one already-queued mailbox reply word: read it, consume it, then
+ * acknowledge the cause bit. A reply queued behind it re-arms the cause
+ * bit synchronously (hw/misc/sgi-kona.c's sgi_kona_write()), so the
+ * caller learns whether more remain from this call's return value
+ * instead of a poll loop -- the mailbox's own queue length is always
+ * known up front, so no case needs one.
+ */
+static uint32_t kona_mailbox_drain_one(QTestState *s, bool *more_pending)
+{
+    uint32_t value = qtest_readl(s, REG_MAILBOX);
+
+    uint32_t cause;
+
+    qtest_writel(s, REG_MAILBOX, 0);
+    qtest_writel(s, REG_INT_CAUSE, KONA_INT_CAUSE_MAILBOX);
+    cause = qtest_readl(s, REG_INT_CAUSE);
+    *more_pending = (cause & KONA_INT_CAUSE_MAILBOX) != 0;
+    return value;
+}
 
 #define ID_PART(v)         (((v) >> 12) & 0xffff)
 #define ID_MANUFACTURER(v) (((v) >> 1) & 0x7ff)
@@ -341,6 +447,240 @@ static void test_probe_reads_documented_reset_state(void)
     g_assert_cmphex(qtest_readl(qts, REG_PROBE), ==, 0);
 }
 
+/*
+ * Increment 2 has no reset method of its own either (see kona_reset()'s
+ * own comment): a case's own mailbox/textport/framebuffer state can still
+ * be sitting there for the next one. Mailbox and framing state are always
+ * self-contained regardless -- sgi_kona_mailbox_enqueue() fully replaces
+ * the queue and length on every push, and every packet handler finishes
+ * by rearming textport_expect_sync -- but the framebuffer is never
+ * cleared, so pixel-rendering cases below each use their own previously
+ * untouched coordinates rather than assuming a blank buffer.
+ */
+
+static void test_credit_register_reads_fixed_zero(void)
+{
+    kona_reset();
+    /* The command port's own credit hook is left NULL. */
+    g_assert_cmphex(qtest_readl(qts, REG_CREDIT), ==, 0);
+}
+
+static void test_low_window_write_is_plain_storage(void)
+{
+    kona_reset();
+    qtest_writel(qts, REG_LOW_WINDOW_WRITE, 0x23);
+    g_assert_cmphex(qtest_readl(qts, REG_LOW_WINDOW_WRITE), ==, 0x23);
+}
+
+static void test_reset_and_eeprom_control_registers_are_plain_storage(void)
+{
+    kona_reset();
+
+    qtest_writel(qts, REG_RESET_ARG, 3);
+    g_assert_cmphex(qtest_readl(qts, REG_RESET_ARG), ==, 3);
+    qtest_writel(qts, REG_RESET_ARG, 2);
+    g_assert_cmphex(qtest_readl(qts, REG_RESET_ARG), ==, 2);
+
+    qtest_writel(qts, REG_RESET_STROBE, 1);
+    g_assert_cmphex(qtest_readl(qts, REG_RESET_STROBE), ==, 1);
+    qtest_writel(qts, REG_RESET_STROBE, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_RESET_STROBE), ==, 0);
+
+    qtest_writel(qts, REG_EEPROM_ENABLE, 1);
+    g_assert_cmphex(qtest_readl(qts, REG_EEPROM_ENABLE), ==, 1);
+}
+
+static void test_eeprom_data_answers_checked_address_and_zero_elsewhere(void)
+{
+    kona_reset();
+
+    qtest_writel(qts, REG_EEPROM_ADDR, KONA_EEPROM_CHECKED_ADDR);
+    g_assert_cmphex(qtest_readl(qts, REG_EEPROM_ADDR), ==,
+                    KONA_EEPROM_CHECKED_ADDR);
+    g_assert_cmphex(qtest_readl(qts, REG_EEPROM_DATA), ==,
+                    KONA_EEPROM_CHECKED_VALUE);
+
+    qtest_writel(qts, REG_EEPROM_ADDR, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_EEPROM_DATA), ==, 0);
+}
+
+/*
+ * Sync probe: "1,9,0" on the wire. The mailbox's own single reply word
+ * (0x1234abcd) drains in one step with no more pending behind it -- the
+ * full read/consume/acknowledge sequence, needing no poll loop since the
+ * queue length here is always exactly one.
+ */
+static void test_textport_sync_probe_mailbox_protocol(void)
+{
+    uint32_t reply;
+    bool more_pending;
+
+    kona_reset();
+
+    kona_textport_push(qts, 0x9, (uint32_t[]){ 0 }, 1);
+    g_assert_cmphex(qtest_readl(qts, REG_INT_CAUSE) & KONA_INT_CAUSE_MAILBOX,
+                    ==, KONA_INT_CAUSE_MAILBOX);
+
+    reply = kona_mailbox_drain_one(qts, &more_pending);
+    g_assert_cmphex(reply, ==, 0x1234abcd);
+    g_assert_false(more_pending);
+}
+
+/*
+ * Graphics info: "1,0xc,0" on the wire, replying five words -- width and
+ * height (established) at indices 3 and 4, the other three approximated
+ * zero. The cause bit re-arms synchronously behind each of the first four
+ * drains and clears only after the fifth.
+ */
+static void test_textport_graphics_info_mailbox_protocol(void)
+{
+    static const uint32_t expected[5] = { 0, 0, 0, 1280, 1024 };
+    unsigned i;
+    bool more_pending = true;
+
+    kona_reset();
+
+    kona_textport_push(qts, 0xc, (uint32_t[]){ 0 }, 1);
+    g_assert_cmphex(qtest_readl(qts, REG_INT_CAUSE) & KONA_INT_CAUSE_MAILBOX,
+                    ==, KONA_INT_CAUSE_MAILBOX);
+
+    for (i = 0; i < 5; i++) {
+        g_assert_cmphex(kona_mailbox_drain_one(qts, &more_pending), ==,
+                        expected[i]);
+        g_assert_true(more_pending == (i < 4));
+    }
+}
+
+/*
+ * Set color (0x2) then point (0x6): the only two textport selectors with
+ * a confirmed rendering role beyond the bitmap blit (docs/datasheets/
+ * infinitereality-display.md). Each point uses a coordinate no earlier
+ * case in this file touches.
+ */
+static void test_textport_set_color_and_point_render_pixels(void)
+{
+    kona_reset();
+
+    kona_textport_push(qts, 0x2, (uint32_t[]){ 0x00ff0000 }, 1);
+    kona_textport_push(qts, 0x6, (uint32_t[]){ 100, 50 }, 2);
+    g_assert_cmphex(kona_test_pixel(qts, 100, 50), ==, 0x00ff0000);
+
+    kona_textport_push(qts, 0x2, (uint32_t[]){ 0x0000ff00 }, 1);
+    kona_textport_push(qts, 0x6, (uint32_t[]){ 200, 150 }, 2);
+    g_assert_cmphex(kona_test_pixel(qts, 200, 150), ==, 0x0000ff00);
+    /* The first point's own color is untouched by the second. */
+    g_assert_cmphex(kona_test_pixel(qts, 100, 50), ==, 0x00ff0000);
+}
+
+/*
+ * Screen size (0x8): accepted and traced only. The framebuffer's own
+ * dimensions, read back through a graphics-info reply, stay fixed at
+ * 1280x1024 regardless of what this command asked for.
+ */
+static void test_textport_screen_size_is_traced_only(void)
+{
+    static const uint32_t expected[5] = { 0, 0, 0, 1280, 1024 };
+    unsigned i;
+    bool more_pending = true;
+
+    kona_reset();
+
+    kona_textport_push(qts, 0x8, (uint32_t[]){ 640, 480 }, 2);
+
+    kona_textport_push(qts, 0xc, (uint32_t[]){ 0 }, 1);
+    for (i = 0; i < 5; i++) {
+        g_assert_cmphex(kona_mailbox_drain_one(qts, &more_pending), ==,
+                        expected[i]);
+    }
+}
+
+/*
+ * Bitmap/glyph blit (0xa): six header words (x, y, width, height, then
+ * two unconfirmed fields), then a packed 1-bpp payload, one bit per
+ * pixel, MSB-first, row-major -- hw/misc/sgi-kona.c's own
+ * sgi_kona_bitmap_blit(). A 4x2 bitmap needs one payload word; only its
+ * top byte (0xa5 = 1010 0101) is meaningful; second row is (0,1,0,1).
+ */
+static void test_textport_bitmap_blit_renders_payload(void)
+{
+    kona_reset();
+
+    kona_textport_push(qts, 0x2, (uint32_t[]){ 0x00abcdef }, 1);
+    kona_textport_push(qts, 0xa, (uint32_t[]){ 300, 400, 4, 2, 0, 0 }, 6);
+    qtest_writel(qts, REG_TEXTPORT, 0xa5000000);
+
+    g_assert_cmphex(kona_test_pixel(qts, 300, 400), ==, 0x00abcdef);
+    g_assert_cmphex(kona_test_pixel(qts, 301, 400), ==, 0);
+    g_assert_cmphex(kona_test_pixel(qts, 302, 400), ==, 0x00abcdef);
+    g_assert_cmphex(kona_test_pixel(qts, 303, 400), ==, 0);
+    g_assert_cmphex(kona_test_pixel(qts, 300, 401), ==, 0);
+    g_assert_cmphex(kona_test_pixel(qts, 301, 401), ==, 0x00abcdef);
+    g_assert_cmphex(kona_test_pixel(qts, 302, 401), ==, 0);
+    g_assert_cmphex(kona_test_pixel(qts, 303, 401), ==, 0x00abcdef);
+}
+
+/*
+ * Selectors 1, 3, 4, 5 and 7 have an established argument shape but no
+ * confirmed rendering, blanking or cursor role (docs/datasheets/
+ * infinitereality-display.md's "Textport-era blanking and cursor
+ * commands"): that same evidence leaves kona_unblank() itself unread, so
+ * which command number, if any, it pushes to +0xc10000 is unknown, and
+ * none of these five may be assumed to carry it. This model frames and
+ * traces all five only.
+ */
+static void test_textport_reserved_selectors_have_no_render_effect(void)
+{
+    static const uint32_t args1[1] = { 0 };
+    static const uint32_t args2[2] = { 0, 0 };
+    static const uint32_t args4[4] = { 0, 0, 0, 0 };
+
+    kona_reset();
+
+    g_assert_cmphex(kona_test_pixel(qts, 900, 900), ==, 0);
+
+    kona_textport_push(qts, 0x1, args1, 1);
+    kona_textport_push(qts, 0x3, args4, 4);
+    kona_textport_push(qts, 0x4, args2, 2);
+    kona_textport_push(qts, 0x5, args4, 4);
+    kona_textport_push(qts, 0x7, args2, 2);
+
+    g_assert_cmphex(kona_test_pixel(qts, 900, 900), ==, 0);
+
+    /*
+     * The port is left ready for a fresh sync-prefixed command, not stuck
+     * framing one of these -- proven by a probe right after completing
+     * correctly.
+     */
+    kona_textport_push(qts, 0x9, (uint32_t[]){ 0 }, 1);
+    g_assert_cmphex(qtest_readl(qts, REG_INT_CAUSE) & KONA_INT_CAUSE_MAILBOX,
+                    ==, KONA_INT_CAUSE_MAILBOX);
+}
+
+/*
+ * A selector outside sgi_kona_textport_selectors[] reaches the command
+ * port's own unsupported() path (sgi_kona_textport_unsupported()), which
+ * resynchronizes the textport instead of assuming an argument count for
+ * an unknown code -- proven the same way as the reserved-selector case
+ * above, by a probe completing correctly right after.
+ */
+static void test_textport_unknown_selector_resynchronizes(void)
+{
+    uint32_t reply;
+    bool more_pending;
+
+    kona_reset();
+
+    qtest_writel(qts, REG_TEXTPORT, 1);
+    qtest_writel(qts, REG_TEXTPORT, 0xff);
+
+    kona_textport_push(qts, 0x9, (uint32_t[]){ 0 }, 1);
+    g_assert_cmphex(qtest_readl(qts, REG_INT_CAUSE) & KONA_INT_CAUSE_MAILBOX,
+                    ==, KONA_INT_CAUSE_MAILBOX);
+    reply = kona_mailbox_drain_one(qts, &more_pending);
+    g_assert_cmphex(reply, ==, 0x1234abcd);
+    g_assert_false(more_pending);
+}
+
 static void test_unknown_offset_reads_zero_and_accepts_writes(void)
 {
     uint32_t control_before;
@@ -452,6 +792,34 @@ int main(int argc, char **argv)
                    test_onewire_ktown_identity);
     qtest_add_func("sn0/origin2000/kona/reset-clears-plain-storage",
                    test_reset_clears_plain_storage);
+    qtest_add_func("sn0/origin2000/kona/credit-register-reads-fixed-zero",
+                   test_credit_register_reads_fixed_zero);
+    qtest_add_func("sn0/origin2000/kona/low-window-write-is-plain-storage",
+                   test_low_window_write_is_plain_storage);
+    qtest_add_func("sn0/origin2000/kona/"
+                   "reset-and-eeprom-control-registers-are-plain-storage",
+                   test_reset_and_eeprom_control_registers_are_plain_storage);
+    qtest_add_func("sn0/origin2000/kona/"
+                   "eeprom-data-answers-checked-address-and-zero-elsewhere",
+                   test_eeprom_data_answers_checked_address_and_zero_elsewhere);
+    qtest_add_func("sn0/origin2000/kona/textport-sync-probe-mailbox-protocol",
+                   test_textport_sync_probe_mailbox_protocol);
+    qtest_add_func("sn0/origin2000/kona/"
+                   "textport-graphics-info-mailbox-protocol",
+                   test_textport_graphics_info_mailbox_protocol);
+    qtest_add_func("sn0/origin2000/kona/"
+                   "textport-set-color-and-point-render-pixels",
+                   test_textport_set_color_and_point_render_pixels);
+    qtest_add_func("sn0/origin2000/kona/textport-screen-size-is-traced-only",
+                   test_textport_screen_size_is_traced_only);
+    qtest_add_func("sn0/origin2000/kona/textport-bitmap-blit-renders-payload",
+                   test_textport_bitmap_blit_renders_payload);
+    qtest_add_func("sn0/origin2000/kona/"
+                   "textport-reserved-selectors-have-no-render-effect",
+                   test_textport_reserved_selectors_have_no_render_effect);
+    qtest_add_func("sn0/origin2000/kona/"
+                   "textport-unknown-selector-resynchronizes",
+                   test_textport_unknown_selector_resynchronizes);
 
     ret = g_test_run();
     qtest_quit(qts);
