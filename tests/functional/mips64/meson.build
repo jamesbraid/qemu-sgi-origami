@@ -102,16 +102,20 @@ test_mips64_timeouts = {
   # each shell step its own 180s, and 5400 covers all three boots
   # running out their login budget in sequence.
   'irix_origin2000_topologies' : 5400,
-  # Four IRIX boots of root-diags.qcow2 on the one-node Origin 2000 for
-  # its BaseIO-G: one for the port checks, and a boot, an IRIX reboot and
-  # a relaunch after a 120s stop for the NVRAM and clock checks. Split
-  # from irix_origin2000_topologies, the way irix_tg_perf is split from
-  # irix_tg, so it runs beside that file and keeps its timeout inside the
-  # nightly functional job's 150 minutes. LOGIN_BUDGET_SECONDS in
-  # test_irix_baseio_g.py gives each boot 900s (3600), the stop takes
-  # 120s, olrti 600s and sfplay 900s: 5220, and 6600 leaves 1380s for
-  # the ordinary shell steps, which take seconds each.
-  'irix_baseio_g' : 6600,
+  # The one-node Origin 2000's BaseIO-G, split from
+  # irix_origin2000_topologies and from each other, the way irix_tg_perf
+  # is split from irix_tg, so meson runs them in parallel and each stays
+  # inside the nightly functional job's 150 minutes (9000s). Each boot
+  # gets the topology file's LOGIN_BUDGET_SECONDS, 1500s, to reach a
+  # shell. One-node boots have reached a shell in 95 to 500s on earlier
+  # trees and in 722 to 740s on sgi-origami d0fffaad41, where IRIX also
+  # reports missed scheduler clock interrupts; neither figure is settled.
+  # Ports: one boot (1500), olrti 600s and sfplay 900s: 3000, and 3300
+  # leaves 300s for the ordinary shell steps, which take seconds each.
+  'irix_baseio_g_ports' : 3300,
+  # Persistence: a boot, an IRIX reboot and a relaunch (4500) and the
+  # 120s stop: 4620, and 5000 leaves 380s for the shell steps.
+  'irix_baseio_g_persistence' : 5000,
   # Boot the installed IRIX 6.5.30 disk on the Origin 2000's one-node
   # module (two CPUs, 256 MiB) with SI/MGRAS graphics to the xdm
   # icon-chooser greeter (no login) and check the resulting screendump.
@@ -242,7 +246,8 @@ tests_mips64_system_thorough = [
   'irix_diag',
   'irix_installed_boot',
   'irix_origin2000_topologies',
-  'irix_baseio_g',
+  'irix_baseio_g_ports',
+  'irix_baseio_g_persistence',
   'mgras_greeter',
   'irix_eg',
   'irix_tg',
