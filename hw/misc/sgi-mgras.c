@@ -290,6 +290,16 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
         return 0;
     }
     switch (addr) {
+    /*
+     * Inferred: reserved halves of the 64-bit-aligned widget-register
+     * slots (the real registers use only the second word, at 0x000004
+     * and 0x000024). No public source documents guest behavior at these
+     * offsets; treat them as read-zero rather than raising a guest error
+     * a real access hits.
+     */
+    case 0x000000:
+    case 0x000020:
+        return 0;
     case 0x000004:
         return (s->revision << 28) | (s->part << 12) |
                (s->manufacturer << 1) | 1;
@@ -504,6 +514,16 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
         return;
     }
     switch (addr) {
+    /*
+     * Inferred: reserved halves of the 64-bit-aligned widget-register
+     * slots (the real registers use only the second word, at 0x000004
+     * and 0x000024). No public source documents guest behavior at these
+     * offsets; ignore writes rather than raising a guest error a real
+     * access hits.
+     */
+    case 0x000000:
+    case 0x000020:
+        return;
     case SGI_MGRAS_INT_DEST_UPPER: s->int_dest_upper = value; return;
     case SGI_MGRAS_INT_DEST_LOWER: s->int_dest_lower = value; return;
     case SGI_MGRAS_INT_DEST_UPPER_ALT: s->int_dest_upper = value; return;
