@@ -57,6 +57,8 @@
 #define PI_CALIAS_SIZE      0x000028
 #define PI_CALIAS_SIZE_4K   1
 #define NI_STATUS_LINK_UP   (1ULL << 29)
+#define NI_STATUS_NEVER_OUT_OF_RESET (1ULL << 28)
+#define NI_STATUS_LINK      (NI_STATUS_LINK_UP | NI_STATUS_NEVER_OUT_OF_RESET)
 
 #define BTE_BASE(e)         (0x410000 + (e) * 0x10000)
 #define BTE_LENGTH(e)       (BTE_BASE(e) + 0x00)
@@ -527,18 +529,24 @@ static void test_link_status_follows_the_fabric(const void *data)
     g_assert_cmphex(qtest_readq(qts, hub1 + NI_STATUS) & NI_STATUS_LINK_UP,
                     ==, NI_STATUS_LINK_UP);
 
+    /* A link that came up and then went down failed: reason bit zero. */
     cable_set_down(qts, "peer-craylink", true);
     g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + NI_STATUS) &
-                    NI_STATUS_LINK_UP, ==, 0);
-    g_assert_cmphex(qtest_readq(qts, hub1 + NI_STATUS) & NI_STATUS_LINK_UP,
+                    NI_STATUS_LINK, ==, 0);
+    g_assert_cmphex(qtest_readq(qts, hub1 + NI_STATUS) & NI_STATUS_LINK,
                     ==, 0);
     /* With the link down a vector to the peer latches no success. */
     g_assert_cmphex(vector_operation(qts, HUB_BY_NODE, NI_SCRATCH_0,
                                      PIOTYPE_READ) & NVS_VALID, ==, 0);
 
+    /* Reset with the cable still down: the link never comes out of it. */
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + NI_STATUS) &
+                    NI_STATUS_LINK, ==, NI_STATUS_NEVER_OUT_OF_RESET);
+
     cable_set_down(qts, "peer-craylink", false);
     g_assert_cmphex(qtest_readq(qts, HUB_BY_NODE + NI_STATUS) &
-                    NI_STATUS_LINK_UP, ==, NI_STATUS_LINK_UP);
+                    NI_STATUS_LINK, ==, NI_STATUS_LINK_UP);
 
     qtest_quit(qts);
 }

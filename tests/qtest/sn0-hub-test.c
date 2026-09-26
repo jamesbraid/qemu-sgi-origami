@@ -227,6 +227,7 @@
 #define MD_JUNKUART_ABOVE    (MD_JUNKUART_BASE + 0x40)  /* one stride past index 7 */
 
 #define NI_LINK_UP      (1ULL << 29)
+#define NI_NEVER_OUT_OF_RESET (1ULL << 28)  /* down reason, link-up clear */
 #define NI_MORE_NODES   (1ULL << 18)
 #define NI_REGION_SIZE  (1ULL << 17)
 #define NI_NODE_MASK    (0x1ffULL << 8)
@@ -888,7 +889,8 @@ static void test_network_link_presence(const void *data)
     for (node = 0; node < 2; node++) {
         uint64_t hub = NODE_STRIDE * node + HUB_LOCAL;
 
-        g_assert_cmphex(qtest_readq(qts, hub + NI_STATUS) & NI_LINK_UP,
+        g_assert_cmphex(qtest_readq(qts, hub + NI_STATUS) &
+                        (NI_LINK_UP | NI_NEVER_OUT_OF_RESET),
                         ==, NI_LINK_UP);
     }
     qtest_quit(qts);
@@ -900,14 +902,27 @@ static void test_a_node_with_no_link_reads_down(const void *data)
      * A single-node machine's Hub is an endpoint on a fabric with no link,
      * so its status register reads link-down, at boot and across a reset.
      * Live link state is the fabric's; there is no property to force it.
+     *
+     * With no peer the link never comes out of reset, so the down-reason
+     * bit reads one. Zero would say the link came up and then failed,
+     * which IRIX's bus-error handler takes as a fatal CrayLink loss while
+     * the firmware leaves NI protection permitting reset.
      */
-    QTestState *qts = qtest_init("-M origin200");
+    const char *machine = data;
+    QTestState *qts = qtest_init(machine);
 
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_STATUS) & NI_LINK_UP,
-                    ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_STATUS) &
+                    (NI_LINK_UP | NI_NEVER_OUT_OF_RESET),
+                    ==, NI_NEVER_OUT_OF_RESET);
     qtest_system_reset(qts);
-    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_STATUS) & NI_LINK_UP,
-                    ==, 0);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_STATUS) &
+                    (NI_LINK_UP | NI_NEVER_OUT_OF_RESET),
+                    ==, NI_NEVER_OUT_OF_RESET);
+
+    /* Read-only: a guest write cannot claim the link failed. */
+    qtest_writeq(qts, HUB_LOCAL + NI_STATUS, NI_REGION_SIZE);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + NI_STATUS) &
+                    NI_NEVER_OUT_OF_RESET, ==, NI_NEVER_OUT_OF_RESET);
 
     qtest_quit(qts);
 }
@@ -6071,7 +6086,11 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/hub/addressing-mode", NULL, test_addressing_mode);
     qtest_add_data_func("sn0/hub/network-link-presence", NULL,
                         test_network_link_presence);
-    qtest_add_data_func("sn0/hub/a-node-with-no-link-reads-down", NULL,
+    qtest_add_data_func("sn0/hub/a-node-with-no-link-reads-down",
+                        "-M origin200",
+                        test_a_node_with_no_link_reads_down);
+    qtest_add_data_func("sn0/hub/a-one-node-origin2000-link-reads-down",
+                        "-M origin2000,topology=origin2000-one-node -smp 2",
                         test_a_node_with_no_link_reads_down);
     qtest_add_data_func("sn0/hub/processor-number", NULL,
                         test_processor_number);

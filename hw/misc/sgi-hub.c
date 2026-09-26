@@ -466,16 +466,25 @@
 /*
  * Status: M mode, link-up per the product's wiring, the node field programmed
  * by firmware (or the nasid property), region-size resetting set.
+ *
+ * With the link down, bit 28 gives the reason: one if the link never came
+ * out of reset, zero if it came up and then failed. Reset sets it and the
+ * link coming up clears it, so a Hub with no cabled peer (Origin 200, the
+ * one-node Origin 2000) reads one. IRIX 6.5.30 treats down-and-zero as a
+ * fatal CrayLink loss on every bus error while NI protection permits reset,
+ * and the stock PROM leaves protection permitting it.
  */
 #define NI_STATUS_MORE_NODES    (1ULL << 18)
 #define NI_STATUS_LINK_UP       (1ULL << 29)
+#define NI_STATUS_NEVER_OUT_OF_RESET (1ULL << 28)
 #define NI_STATUS_REGION_SIZE   (1ULL << 17)
 #define NI_STATUS_NODE_SHIFT    8
 #define NI_STATUS_NODE_MASK     (0x1ffULL << NI_STATUS_NODE_SHIFT)
 #define NI_STATUS_REVISION_SHIFT 4
 #define NI_STATUS_REVISION_MAX  0xf
 
-#define NI_STATUS_RESET         NI_STATUS_REGION_SIZE
+#define NI_STATUS_RESET         (NI_STATUS_REGION_SIZE | \
+                                 NI_STATUS_NEVER_OUT_OF_RESET)
 #define NI_STATUS_WRITABLE      (NI_STATUS_MORE_NODES | \
                                  NI_STATUS_REGION_SIZE | \
                                  NI_STATUS_NODE_MASK)
@@ -881,6 +890,8 @@ static void sgi_hub_claim_apply(SGIHubState *s)
  * with the peer port enabled (sgi_net_cable_neighbor() also requires
  * this Hub's own side enabled, always true -- a Hub has no admin-disable
  * diagnostic). It is read-only to the guest and set again at every reset.
+ * The link coming up clears the never-out-of-reset reason for good, until
+ * the next reset; a later loss reads as a failure.
  */
 static void sgi_hub_link_refresh(SGIHubState *s)
 {
@@ -888,8 +899,11 @@ static void sgi_hub_link_refresh(SGIHubState *s)
     unsigned int peer_index;
     bool up = sgi_hub_net_neighbor(s, &peer_port, &peer_index);
 
-    s->ni_status = (s->ni_status & ~NI_STATUS_LINK_UP) |
-                   (up ? NI_STATUS_LINK_UP : 0);
+    s->ni_status &= ~NI_STATUS_LINK_UP;
+    if (up) {
+        s->ni_status = (s->ni_status & ~NI_STATUS_NEVER_OUT_OF_RESET) |
+                       NI_STATUS_LINK_UP;
+    }
 }
 
 /* This Hub's own derived state (link-up bit, claim aliases) needs
@@ -4651,7 +4665,7 @@ static int sgi_hub_pre_save(void *opaque)
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 29,
+    .version_id = 30,
     .minimum_version_id = 1,
     .pre_save = sgi_hub_pre_save,
     .post_load = sgi_hub_post_load,
@@ -4780,6 +4794,16 @@ static int sgi_hub_post_load(void *opaque, int version_id)
     if (version_id < 24) {
         s->ni_meta_route_written = 0;
         s->ni_local_route_written = 0;
+    }
+
+    /*
+     * An older stream carries no down reason. Take a down link as never
+     * having come out of reset, the peerless machines' state. The
+     * sgi_hub_report_number() call below re-derives the link through
+     * sgi_hub_link_refresh(), which clears the reason for a link that is up.
+     */
+    if (version_id < 30 && !(s->ni_status & NI_STATUS_LINK_UP)) {
+        s->ni_status |= NI_STATUS_NEVER_OUT_OF_RESET;
     }
 
     for (n = 0; n < SGI_HUB_BWIN_ENTRIES; n++) {
