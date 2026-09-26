@@ -79,6 +79,9 @@
 #define BRIDGE_PCI_ERR_UPPER    0x0d0
 #define BRIDGE_PCI_ERR_LOWER    0x0d8
 
+/* The PCI error upper address: device number above PCI address 47:32. */
+#define PCI_ERR_DEVICE_SHIFT    16
+
 /* The multiple-error flag at bit 31 has no enable bit. */
 #define BRIDGE_INT_STATUS       0x100
 #define BRIDGE_INT_ENABLE       0x108
@@ -93,17 +96,28 @@
 
 /* The eight device pins live at the bottom of the status and enable words. */
 #define INT_DEVICE_PINS         0xffu
-/* Bit 24, "address invalid for this widget": set when a guest touches an
- * undefined address inside the register window. The one error bit this model
- * raises. */
+/*
+ * Bit 24, "address invalid for this widget": set when a guest touches an
+ * undefined address inside the register window.
+ */
 #define INT_INVALID_ADDR        (1u << 24)
+/* Bit 11: a configuration cycle no PCI device claimed (a master time-out). */
+#define INT_PCI_MASTER_TIMEOUT  (1u << 11)
+/* The PCI group: abort, the three parity errors, master time-out, retries. */
+#define INT_PCI_GROUP           (0x3fu << 10)
+/* A second error in a group before the first was cleared. */
+#define INT_MULTI_ERR           (1u << 31)
 /* All a guest may enable: bit 31, the multiple-error flag, has no bit. */
 #define INT_ENABLE_WRITABLE     0x7fffffffu
 /* Seven group bits, each clearing one group of error conditions at once. */
 #define INT_RESET_GROUPS        0x7fu
+/* Bit 0 clears the PCI group and rearms its error address capture. */
+#define INT_RESET_PCI_GRP       (1u << 0)
 /* Bit 3 is the request-dispatch group's strobe. The invalid-address error is
  * in that group, so it alone clears it; a strobe for any other group does not. */
 #define INT_RESET_REQ_DSP_GRP   (1u << 3)
+/* Bit 6 clears the multiple-error flag. */
+#define INT_RESET_MULTI_ERR     (1u << 6)
 /* One bit per pin: send a clearing packet when that pin falls. */
 #define INT_MODE_WRITABLE       0xffu
 /* Three bits per pin naming the device that owns it, eight pins. */
@@ -1154,10 +1168,17 @@ static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
                       "register at 0x%" HWADDR_PRIx "\n", val, reg->name, addr);
         return;
     case SGI_BRIDGE_WO:
-        /* Only the request-dispatch group's strobe clears our one error. */
-        if (addr - SGI_BRIDGE_REG_DATA == BRIDGE_INT_RESET &&
-            ((uint32_t)val & INT_RESET_REQ_DSP_GRP)) {
-            s->int_error &= ~INT_INVALID_ADDR;
+        /* A group's strobe clears that group's errors and no other's. */
+        if (addr - SGI_BRIDGE_REG_DATA == BRIDGE_INT_RESET) {
+            if ((uint32_t)val & INT_RESET_PCI_GRP) {
+                s->int_error &= ~INT_PCI_GROUP;
+            }
+            if ((uint32_t)val & INT_RESET_REQ_DSP_GRP) {
+                s->int_error &= ~INT_INVALID_ADDR;
+            }
+            if ((uint32_t)val & INT_RESET_MULTI_ERR) {
+                s->int_error &= ~INT_MULTI_ERR;
+            }
         }
         return;
     case SGI_BRIDGE_RW:
@@ -1479,28 +1500,101 @@ static uint32_t sgi_bridge_config_address(hwaddr addr, unsigned size)
     return (devfn << 8) | reg;
 }
 
-static uint64_t sgi_bridge_config_read(void *opaque, hwaddr addr, unsigned size)
+/*
+ * No device drives device select: the specification's master time-out.
+ * A device model present at the function's number is the one that claims
+ * the cycle; one absent is an empty slot, or a function a card does not
+ * have.
+ */
+static bool sgi_bridge_config_claimed(SGIBridgeState *s, uint32_t address)
 {
-    PCIHostState *phb = PCI_HOST_BRIDGE(opaque);
+    PCIBus *bus = PCI_HOST_BRIDGE(s)->bus;
 
-    /* All ones: what an empty slot reads as; zero would be a device. */
-    trace_sgi_bridge_config_read(addr, size);
-    return pci_data_read(phb->bus, sgi_bridge_config_address(addr, size), size);
+    return pci_find_device(bus, pci_bus_num(bus), address >> 8) != NULL;
 }
 
-static void sgi_bridge_config_write(void *opaque, hwaddr addr, uint64_t val,
-                                    unsigned size)
+/*
+ * The first enabled error in the PCI group owns its capture registers
+ * until software clears the group; a later one only adds its status bit
+ * and the multiple-error flag. A disabled error leaves no trace at all.
+ */
+static void sgi_bridge_pci_error(SGIBridgeState *s, uint32_t bit,
+                                 unsigned int device, uint32_t pci_address)
 {
+    if (!(s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_ENABLE)] & bit)) {
+        return;
+    }
+
+    if (s->int_error & INT_PCI_GROUP) {
+        s->int_error |= INT_MULTI_ERR;
+    } else {
+        s->reg[SGI_BRIDGE_SLOT(BRIDGE_PCI_ERR_UPPER)] =
+            device << PCI_ERR_DEVICE_SHIFT;
+        s->reg[SGI_BRIDGE_SLOT(BRIDGE_PCI_ERR_LOWER)] = pci_address;
+    }
+    s->int_error |= bit;
+    sgi_bridge_raise_host_error(s);
+}
+
+/*
+ * The cycle's PCI address: the device's ID select, one address line per
+ * device from line 24, then the function and the register's word.
+ */
+static void sgi_bridge_master_timeout(SGIBridgeState *s, uint32_t address)
+{
+    unsigned int devfn = address >> 8;
+    unsigned int device = PCI_SLOT(devfn);
+
+    sgi_bridge_pci_error(s, INT_PCI_MASTER_TIMEOUT, device,
+                         (1u << (24 + device)) | (address & 0x7fc));
+}
+
+/*
+ * An unclaimed read fails back to the requester: the guests read empty
+ * slots only inside a bus-error guard, and the IP27 PROM's probe takes a
+ * fault as an empty slot. The data half floats high for a caller, such
+ * as qtest, that sees the value without the failure.
+ */
+static MemTxResult sgi_bridge_config_read(void *opaque, hwaddr addr,
+                                          uint64_t *data, unsigned size,
+                                          MemTxAttrs attrs)
+{
+    SGIBridgeState *s = opaque;
     PCIHostState *phb = PCI_HOST_BRIDGE(opaque);
+    uint32_t address = sgi_bridge_config_address(addr, size);
+
+    trace_sgi_bridge_config_read(addr, size);
+    if (!sgi_bridge_config_claimed(s, address)) {
+        sgi_bridge_master_timeout(s, address);
+        *data = MAKE_64BIT_MASK(0, size * 8);
+        return MEMTX_ERROR;
+    }
+    *data = pci_data_read(phb->bus, address, size);
+    return MEMTX_OK;
+}
+
+/* A store posts: it has no response to carry the failure back. */
+static MemTxResult sgi_bridge_config_write(void *opaque, hwaddr addr,
+                                           uint64_t val, unsigned size,
+                                           MemTxAttrs attrs)
+{
+    SGIBridgeState *s = opaque;
+    PCIHostState *phb = PCI_HOST_BRIDGE(opaque);
+    uint32_t address = sgi_bridge_config_address(addr, size);
 
     trace_sgi_bridge_config_write(addr, size, val);
-    pci_data_write(phb->bus, sgi_bridge_config_address(addr, size), val, size);
+    if (!sgi_bridge_config_claimed(s, address)) {
+        sgi_bridge_master_timeout(s, address);
+        return MEMTX_OK;
+    }
+    pci_data_write(phb->bus, address, val, size);
+    return MEMTX_OK;
 }
 
 /* The issued width is a term in the correction; no reshaping allowed. */
 static const MemoryRegionOps sgi_bridge_config_ops = {
-    .read = sgi_bridge_config_read,
-    .write = sgi_bridge_config_write,
+    .read_with_attrs = sgi_bridge_config_read,
+    .write_with_attrs = sgi_bridge_config_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid.min_access_size = 1,
     .valid.max_access_size = 4,
@@ -1636,7 +1730,7 @@ static void sgi_bridge_raise_host_error(SGIBridgeState *s)
      */
     if (!dest) {
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "sgi-bridge: invalid-address error with no destination "
+                      "sgi-bridge: error interrupt with no destination "
                       "programmed; no packet sent\n");
         return;
     }

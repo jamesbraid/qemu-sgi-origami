@@ -453,6 +453,7 @@ qtests_mips64 = \
                                                    'sn0-elsc-test',
                                                    'sn0-widget-decode-test',
                                                    'sn0-bridge-invalid-addr-test',
+                                                   'sn0-bridge-master-timeout-test',
                                                    'sgi-bridge-bus-test',
                                                    'sn0-bridge-flash-test',
                                                    'sn0-origin2000-test',
