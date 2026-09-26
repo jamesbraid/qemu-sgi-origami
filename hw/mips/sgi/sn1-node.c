@@ -937,7 +937,8 @@ bool sn1_node_attach_prom(SN1NodeState *node, unsigned int node_index,
 /*
  * The board-identification register both consumers read: OpenBSD through the
  * remote form and the stock firmware through the local one, each taking the
- * product code from bits 15 through 12. One stateless response serves both.
+ * product code from bits 15 through 12. Fuel's full response is an explicit
+ * experimental launch input because its physical reset value is unknown.
  * Only the aligned 64-bit read is answered; everything else is refused and
  * said out loud, because nothing establishes what the other bits or widths
  * do.
@@ -964,7 +965,7 @@ static MemTxResult sn1_board_id_read(void *opaque, hwaddr offset,
         *value = 0;
         return MEMTX_ERROR;
     }
-    *value = SN1_BOARD_ID_VALUE;
+    *value = node->board_id_word;
     return MEMTX_OK;
 }
 
@@ -1450,6 +1451,9 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
 
     node->l1 = qdev_new(TYPE_SGI_L1);
     object_property_add_child(OBJECT(node), "l1", OBJECT(node->l1));
+    if (node->fuel_experiment) {
+        qdev_prop_set_string(node->l1, "brick-type", "unknown");
+    }
     if (l1_console) {
         qdev_prop_set_chr(node->l1, "chardev", l1_console);
     }
@@ -1465,10 +1469,12 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     if (node->l1_bay) {
         qdev_prop_set_uint32(node->l1, "bay", node->l1_bay);
     }
-    /* The L1 revision Origin 300 systems report alongside PROM 6.210. */
-    qdev_prop_set_int32(node->l1, "revision-major", 1);
-    qdev_prop_set_int32(node->l1, "revision-minor", 18);
-    qdev_prop_set_int32(node->l1, "revision-patch", 5);
+    /* The revision every retained Origin 300 capture pairs with PROM 6.210. */
+    if (!node->fuel_experiment) {
+        qdev_prop_set_int32(node->l1, "revision-major", 1);
+        qdev_prop_set_int32(node->l1, "revision-minor", 18);
+        qdev_prop_set_int32(node->l1, "revision-patch", 5);
+    }
     qdev_realize(node->l1, NULL, &error_fatal);
     object_unref(OBJECT(node->l1));
 
@@ -1532,18 +1538,22 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                         SN1_BEDROCK_LOCAL_REGION);
     qdev_prop_set_uint8(node->bedrock, "initiator-region",
                         SN1_BEDROCK_INITIATOR_REGION);
-    /*
-     * The shipped Origin 300 inventory installs two 256 MiB banks at
-     * locational banks two and three; the compiled origin300 topology's node
-     * bank-mib now carries that placement, since bank placement is
-     * fitted-part data and belongs in the descriptor, not a literal here.
-     * installed-bank-mask stays a literal: which banks are wired for the one
-     * shipped configuration is not a fact the catalogue carries on its, only
-     * recoverable from bank-mib's zero entries, so restating it directly is
-     * clearer than deriving it.
-     */
-    qdev_prop_set_uint8(node->bedrock, "installed-bank-mask",
-                        SN1_INSTALLED_BANK_MASK);
+    /* Fuel's provisional bank placement is explicit in its descriptor. */
+    if (node->fuel_experiment) {
+        const uint64List *bank = node->model_node->bank_mib;
+        uint8_t mask = 0;
+
+        for (i = 0; i < SN1_ARCHITECTURAL_MEMORY_BANKS; i++) {
+            if (bank->value) {
+                mask |= 1U << i;
+            }
+            bank = bank->next;
+        }
+        qdev_prop_set_uint8(node->bedrock, "installed-bank-mask", mask);
+    } else {
+        qdev_prop_set_uint8(node->bedrock, "installed-bank-mask",
+                            SN1_INSTALLED_BANK_MASK);
+    }
     {
         const uint64List *bank_entry = node->model_node->bank_mib;
 
@@ -1614,10 +1624,12 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
 
         qdev_prop_set_string(node->xbridge, "bus-prefix", prefix);
     }
-    qdev_prop_set_string(node->xbridge, "board-part-f",
-                         sgi_baseio_preset_lookup("io8")->board_part);
-    qdev_prop_set_uint64(node->xbridge, "onewire-serial-f",
-                         SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL);
+    if (!node->fuel_experiment) {
+        qdev_prop_set_string(node->xbridge, "board-part-f",
+                             sgi_baseio_preset_lookup("io8")->board_part);
+        qdev_prop_set_uint64(node->xbridge, "onewire-serial-f",
+                             SGI_XBRIDGE_NIC_PLACEHOLDER_SERIAL);
+    }
     sgi_xio_link_init(&node->xbridge_link, OBJECT(node), "xbridge-link",
                       OBJECT(&SGI_BEDROCK(node->bedrock)->io), 0,
                       OBJECT(node->xbridge), SN1_XBRIDGE_HOST_PORT);
@@ -1983,6 +1995,9 @@ static const Property sn1_node_properties[] = {
     DEFINE_PROP_UINT32("nr-cpus", SN1NodeState, nr_cpus, 0),
     DEFINE_PROP_UINT32("nasid", SN1NodeState, nasid, 0),
     DEFINE_PROP_UINT32("l1-bay", SN1NodeState, l1_bay, 0),
+    DEFINE_PROP_UINT64("board-id-word", SN1NodeState, board_id_word,
+                       SN1_BOARD_ID_VALUE),
+    DEFINE_PROP_BOOL("fuel-experiment", SN1NodeState, fuel_experiment, false),
     /* Set on a machine's last node: a pflash unit past it has no node. */
     DEFINE_PROP_BOOL("last-node", SN1NodeState, last_node, true),
     DEFINE_PROP_BOOL("promdata-filter", SN1NodeState, promdata_filter, true),

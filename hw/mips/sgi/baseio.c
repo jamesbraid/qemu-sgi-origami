@@ -77,6 +77,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/error-report.h"
 #include "hw/mips/sgi/baseio.h"
 #include "chardev/char.h"
 #include "hw/audio/sgi-rad1-audio.h"
@@ -104,6 +105,7 @@ struct SGIBaseioState {
     bool revision_set;
     uint32_t revision_override;
     uint64_t onewire_serial;
+    uint32_t fuel_subsystem_id;
     char *nvram_drive_id;
     char *chardev_a_id;
     char *chardev_b_id;
@@ -728,6 +730,64 @@ static bool baseio_build_mscsi(SGIBaseioState *s, Error **errp)
     return true;
 }
 
+static bool baseio_build_fuel(SGIBaseioState *s, Error **errp)
+{
+    PCIDevice *scsi;
+    PCIDevice *ioc3;
+
+    if (s->fuel_subsystem_id > UINT16_MAX) {
+        error_setg(errp, "fuel preset requires an experimental IOC3 "
+                   "subsystem ID");
+        return false;
+    }
+
+    scsi = pci_new(PCI_DEVFN(1, 0), "qlogic-isp12160");
+    object_property_add_child(OBJECT(s), "scsi", OBJECT(scsi));
+    if (!pci_realize_and_unref(scsi, s->pci_bus, errp)) {
+        return false;
+    }
+    qlogic_isp_handle_legacy_cmdline(DEVICE(scsi));
+
+    ioc3 = pci_new(PCI_DEVFN(4, 0), TYPE_SGI_IOC3);
+    object_property_add_child(OBJECT(s), "ioc3", OBJECT(ioc3));
+    qdev_prop_set_uint32(DEVICE(ioc3), "population",
+                         SGI_IOC3_POPULATION_ETHERNET |
+                         SGI_IOC3_POPULATION_SERIAL_A |
+                         SGI_IOC3_POPULATION_SERIAL_B |
+                         SGI_IOC3_POPULATION_PARALLEL);
+    qdev_prop_set_uint8(DEVICE(ioc3), "timekeeper-kind",
+                        SGI_IOC3_TIMEKEEPER_NONE);
+    qdev_prop_set_uint16(DEVICE(ioc3), "subsystem-id",
+                         s->fuel_subsystem_id);
+    if (!baseio_pass_chardev(DEVICE(ioc3), "chardev-a", s->chardev_a_id,
+                             errp) ||
+        !baseio_pass_chardev(DEVICE(ioc3), "chardev-b", s->chardev_b_id,
+                             errp) ||
+        !baseio_pass_chardev(DEVICE(ioc3), "record-a", s->record_a_id,
+                             errp) ||
+        !baseio_pass_chardev(DEVICE(ioc3), "record-b", s->record_b_id,
+                             errp) ||
+        !baseio_pass_chardev(DEVICE(ioc3), "parallel-chardev",
+                             s->parallel_chardev_id,
+                             errp)) {
+        object_unparent(OBJECT(ioc3));
+        return false;
+    }
+    if (!pci_realize_and_unref(ioc3, s->pci_bus, errp)) {
+        object_unparent(OBJECT(ioc3));
+        return false;
+    }
+    s->parallel_claimed = true;
+    baseio_note_claim(s, s->chardev_a_id);
+    baseio_note_claim(s, s->chardev_b_id);
+    baseio_note_claim(s, s->record_a_id);
+    baseio_note_claim(s, s->record_b_id);
+    warn_report("fuel: IOC3 subsystem ID is an experimental launch input; "
+                "PCI interrupt routing, RTC, keyboard and USB "
+                "are not implemented");
+    return true;
+}
+
 /*
  * Each Bridge-based board's own record carries the real board's part,
  * revision and name, and a placeholder barcode. The io8's XBridge
@@ -751,6 +811,7 @@ static const SGIBaseioPreset sgi_baseio_presets[] = {
     { "mscsi", { "030-1243-001", 3, "OMSCSI0001", "F", "MSCSI",
                  SGI_BASEIO_XIO_ANY_WIDGET, false },
       baseio_build_mscsi },
+    { "fuel", { NULL, 0 }, baseio_build_fuel },
 };
 
 static const SGIBaseioPreset *baseio_preset_find(const char *name)
@@ -847,7 +908,7 @@ static void baseio_realize(DeviceState *dev, Error **errp)
 
     if (!preset) {
         error_setg(errp, "sgi-baseio: '%s' names no known preset; expected "
-                  "ip29, io6, io6g, io8, menet or mscsi",
+                  "ip29, io6, io6g, io8, menet, mscsi or fuel",
                   s->preset ? s->preset : "(unset)");
         return;
     }
@@ -895,6 +956,8 @@ static const Property baseio_properties[] = {
                      PCIBus *),
     DEFINE_PROP_UINT64("onewire-serial", SGIBaseioState, onewire_serial,
                        SGI_IOC3_ONEWIRE_SERIAL),
+    DEFINE_PROP_UINT32("fuel-subsystem-id", SGIBaseioState, fuel_subsystem_id,
+                       UINT32_MAX),
     DEFINE_PROP_STRING("nvram-drive", SGIBaseioState, nvram_drive_id),
     DEFINE_PROP_STRING("chardev-a", SGIBaseioState, chardev_a_id),
     DEFINE_PROP_STRING("chardev-b", SGIBaseioState, chardev_b_id),
