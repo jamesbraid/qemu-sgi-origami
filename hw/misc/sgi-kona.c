@@ -40,6 +40,7 @@
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/core/cpu.h"
 #include "hw/core/qdev-properties.h"
+#include "hw/core/resettable.h"
 #include "migration/vmstate.h"
 #include "qom/object.h"
 #include "trace.h"
@@ -254,6 +255,23 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
         SGI_KONA_KTOWN_SERIAL, errp);
 }
 
+/*
+ * The plain stored fields a guest write can change: widget_control through
+ * SGI_KONA_WIDGET_CONTROL, onewire_reg through one bit slot's worth of
+ * SGI_KONA_ONEWIRE transaction state. manufacturer/part/revision/
+ * probe_value are qdev properties fixed at construction, not guest state,
+ * so reset leaves them alone -- matching how sgi-bridge.c's own
+ * sgi_bridge_reset_core() recomputes its identification register from
+ * properties rather than clearing them.
+ */
+static void sgi_kona_reset_hold(Object *obj, ResetType type)
+{
+    SGIKonaState *s = SGI_KONA(obj);
+
+    s->widget_control = 0;
+    s->onewire_reg = 0;
+}
+
 static const Property sgi_kona_properties[] = {
     DEFINE_PROP_LINK("fabric", SGIKonaState, fabric,
                      TYPE_MEMORY_REGION, MemoryRegion *),
@@ -283,6 +301,7 @@ static void sgi_kona_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     SGIXioBoardClass *bc = SGI_XIO_BOARD_CLASS(oc);
+    ResettableClass *rc = RESETTABLE_CLASS(oc);
 
     dc->desc = "SGI KONA: InfiniteReality graphics pipe (identity only)";
     dc->vmsd = &vmstate_sgi_kona;
@@ -297,6 +316,7 @@ static void sgi_kona_class_init(ObjectClass *oc, const void *data)
     device_class_set_props(dc, sgi_kona_properties);
     bc->build_widget = sgi_kona_build_widget;
     bc->finish_realize = sgi_kona_finish_realize;
+    rc->phases.hold = sgi_kona_reset_hold;
 }
 
 static const TypeInfo sgi_kona_type = {
