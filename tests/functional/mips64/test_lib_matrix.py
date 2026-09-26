@@ -73,6 +73,7 @@ class StarterManifestTest(unittest.TestCase):
         # Every row boots the real PROM and must be an expected pass.
         cells = parse_matrix(STARTER_MANIFEST)
         by_id = {cell.id: cell for cell in cells}
+        self.assertEqual(len(cells), len(by_id))
 
         self.assertEqual(set(by_id), {
             'prom_full_boot_1cpu', 'prom_full_boot_1node',
