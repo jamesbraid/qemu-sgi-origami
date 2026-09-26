@@ -445,9 +445,10 @@ static void mgras_load_dac_gamma(QTestState *qts, const uint8_t ramp[3][256])
  * scanline pointing at a run list of (column << 5 | WID) entries ended by a
  * column past the screen. Each tagged row is read back from SRAM, the
  * rectangle laid over it, and a fresh run list appended, so earlier tags on
- * the row survive, including ones a migration carried over. A zero frame
- * entry is taken as an untagged row of WID 0: no test here writes SRAM
- * word 0, which a reset leaves at zero.
+ * the row survive, including ones a migration carried over. An untagged
+ * row's frame entry is still its post-reset zero, which points at SRAM word
+ * 0 like any other row would: seed a run list there the first time it is
+ * read, rather than treating a zero frame entry as a special empty case.
  */
 #define MGRAS_DID_FRAME_BASE 0x0500
 #define MGRAS_DID_NEXT_ADDR  (MGRAS_DID_FRAME_BASE + 1024)
@@ -467,7 +468,17 @@ static void mgras_did_read_row(QTestState *qts, uint32_t y, uint8_t *did)
 
     memset(did, 0, 1280);
     if (!ptr) {
-        return;
+        /*
+         * A frame entry of zero is not a special case: it points at SRAM
+         * word 0 like any other row would. Seed a one-entry run list there
+         * (WID 0, then the screen-edge terminator) so the walk below
+         * follows an ordinary pointer instead of relying on word 0
+         * happening to still hold its post-reset zero.
+         */
+        qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x07, 0));
+        qtest_writew(qts, REG_VC3_RAM, 0);
+        qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x07, 1));
+        qtest_writew(qts, REG_VC3_RAM, 0xffe0);
     }
     run = mgras_vc3_sram_read(qts, ptr);
     current = run & 0x1f;
