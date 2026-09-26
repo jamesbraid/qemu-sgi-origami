@@ -9,27 +9,16 @@
 
 /*
  * The VC3 takes each pixel's window ID (the XMAP entry it resolves
- * through) from display-ID tables in its SRAM, one for the main planes and
- * one for the overlay. Register 4 or 5 points at a frame table with one
- * word per scanline; each word points at that line's run list, whose
- * 16-bit entries carry a starting column in bits 15:5 and a window ID in
- * bits 4:0. The first entry applies from column 0 and each later one from
- * its own column; a column past the screen edge (0xffe0) ends the line.
- * This table layout is inferred, not published: MAME's Newport model
- * walks its display-ID table this way (refs/mame
- * b1da4a1b278cf41300e95cce35b4d1f03a22023e), and every table the IRIX
- * 6.5.30 X server builds matches a walk under that layout. It is not the
- * VC2's published DENTRY register: on the VC2, register 5 is DENTRY but
- * register 4 is CCURSX, the hardware cursor's X position (Linux
- * include/video/newport.h), a different purpose entirely. Which VC3
- * register serves which planes -- 4 for the main planes, 5 for the
- * overlay -- likewise comes from the traces, not from the VC2's register
- * roles: the X server rebuilds the table at register 5's address with a
- * menu's own ID over exactly the menu's rectangle when it posts a popup
- * or Toolchest menu on its overlay visual, and loads that ID's overlay
- * colour map just before; it rebuilds register 4's table with ID 9,
- * whose main mode is an RGB mode, over its RGB windows and ID 1 (the
- * root window's map) everywhere else.
+ * through) from display-ID tables in its SRAM: register 4 points at the
+ * main planes' frame table, register 5 at the overlay's. A frame table
+ * holds one word per scanline, and each word points at that line's run
+ * list, whose 16-bit entries carry a starting column in bits 15:5 and a
+ * window ID in bits 4:0. The first entry applies from column 0 and each
+ * later one from its own column; a column past the screen edge (0xffe0)
+ * ends the line. Table layout and register assignment: MAME's Newport
+ * model (refs/mame b1da4a1b278cf41300e95cce35b4d1f03a22023e). See
+ * docs/datasheets/mgras-raster-display.md in the Origami repository for
+ * the supporting evidence.
  */
 #define MGRAS_VC3_MAIN_DID_ENTRY 0x04
 #define MGRAS_VC3_OVERLAY_DID_ENTRY 0x05
