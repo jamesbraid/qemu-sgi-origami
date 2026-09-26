@@ -25,6 +25,7 @@ from pathlib import Path
 
 import lib_origin300
 from lib_matrix import MatrixError, matrix_rows
+from lib_net import GuestFault, HarnessError
 from lib_prom import strip_ansi, verdict
 
 
@@ -78,6 +79,14 @@ REASONS = {
     'no-parallel-connector':
         'the IO8 IOC3\'s parallel function has no rear-panel connector '
         '(007-4365-002) and IRIX lists no parallel port',
+    'four-node-relaunch':
+        'a reboot and relaunch of the four-node module would add 560 to '
+        '900s of boot to a row that already takes most of a nightly job; '
+        'the one-node row covers the same BaseIO Timekeeper model',
+    'four-node-relaunch':
+        'a reboot and relaunch of the four-node module would add 560 to '
+        '900s of boot to a row that already takes most of a nightly job; '
+        'the one-node row covers the same BaseIO Timekeeper model',
     'parallel-own-history':
         'the disk was installed on this machine, so its parallel-port '
         'history already names this port and clearing it renumbers nothing',
@@ -97,7 +106,7 @@ TAPE_PRODUCT = 'Python 25601'
 QUICK_PROM_SWITCHES = 1
 
 _ID_RE = re.compile(r'^[a-z0-9_]+$')
-_FIXED = ('id', 'cpus', 'mem')
+_FIXED = ('id', 'cpus', 'mem', 'budget')
 
 # The flavour field a check reads; a flavour without it cannot run it.
 _NEEDS = {
@@ -117,6 +126,8 @@ class Row:
     id: str
     cpus: int
     mem: int
+    # Seconds the whole row may take, from the test's start to its report.
+    budget: int
     cells: dict = field(default_factory=dict)
 
     def runs(self, check):
@@ -147,7 +158,7 @@ def parse_row(path, lineno, line, flavours=None):
     if flavour is None:
         raise MatrixError(f'{where}: no flavour named {values["id"]!r}')
     ints = {}
-    for name in ('cpus', 'mem'):
+    for name in ('cpus', 'mem', 'budget'):
         try:
             ints[name] = int(values[name])
         except ValueError:
@@ -175,7 +186,8 @@ def parse_row(path, lineno, line, flavours=None):
             raise MatrixError(
                 f'{where}: {check} runs, but persistence, which relaunches '
                 'the machine for it, does not')
-    return Row(values['id'], ints['cpus'], ints['mem'], cells)
+    return Row(values['id'], ints['cpus'], ints['mem'], ints['budget'],
+               cells)
 
 
 def parse_manifest(path=MANIFEST, flavours=None):
@@ -188,6 +200,57 @@ def parse_manifest(path=MANIFEST, flavours=None):
         seen.add(row.id)
         rows.append(row)
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Running a row's checks.
+
+class CheckFailed(Exception):
+    """A check's own assertion did not hold."""
+
+
+class OutOfTime(CheckFailed):
+    """The row's budget ran out before a check could finish."""
+
+
+class NoConsole(CheckFailed):
+    """The machine the remaining checks need never reached a shell."""
+
+
+def run_checks(row, run_one, resync, now=time.monotonic):
+    """Run each of row's checks in CHECKS order with run_one(check) and
+    return {check: (status, detail, seconds)}.
+
+    Status is pass, fail, n/a (with the manifest's reason) or not run.
+    Every check runs even after another fails, except after a guest
+    fault, a spent budget, a machine with no shell, or a timed-out
+    command after which resync(check) reports the shell still busy: the
+    checks after those are not run, and say why."""
+    results = {}
+    stop = None
+    for check in CHECKS:
+        if not row.runs(check):
+            results[check] = ('n/a', row.reason(check), 0)
+            continue
+        if stop is not None:
+            results[check] = ('not run', stop, 0)
+            continue
+        began = now()
+        status, detail = 'pass', ''
+        try:
+            run_one(check)
+        except (CheckFailed, HarnessError) as exc:
+            status, detail = 'fail', str(exc)
+            if isinstance(exc, GuestFault):
+                stop = f'the guest faulted during {check}'
+            elif isinstance(exc, OutOfTime):
+                stop = f"the row's budget ran out during {check}"
+            elif isinstance(exc, NoConsole):
+                stop = f'no shell after {check}: {exc}'
+            elif isinstance(exc, HarnessError) and not resync(check):
+                stop = f'the shell stopped answering after {check} timed out'
+        results[check] = (status, detail, round(now() - began, 1))
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -671,6 +734,8 @@ FLAVOURS = {
                      '/hw/input1', '/dev/input1'),),
         # The Cad Duo has no serial ports and no real-time interrupt.
         rti_args=(f'-vertex {_IO6}/4',),
+        # Bounded like the one-node's, to fit the row in a nightly job.
+        olmem_args='MEM=128',
     ),
     'origin2000_pci_carrier': Flavour(
         title='Origin 2000 four-node module: the plain BaseIO, and an '
@@ -689,6 +754,8 @@ FLAVOURS = {
                      '/hw/input1', '/dev/input1'),),
         # The Cad Duo has no serial ports and no real-time interrupt.
         rti_args=(f'-vertex {_IO6}/4',),
+        # Bounded like the one-node's, to fit the row in a nightly job.
+        olmem_args='MEM=128',
         scsi_card=ScsiCard(r'SCSI controller (\d+): Version QL12160',
                            ('2', '3'), f'{_CARRIER}/0'),
         # The carrier's slots are empty; fit an ISP12160 and a Cad Duo,
