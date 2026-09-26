@@ -337,6 +337,7 @@ config SGI_KONA
     bool
     select SGI_XIO_BOARD
     select ONEWIRE
+    select SGI_BRIDGE
 
 config SGI_BRIDGE_DMA_TEST
     bool
