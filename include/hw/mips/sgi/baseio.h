@@ -37,13 +37,25 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBaseioState, SGI_BASEIO)
  * board_revision is the board's revision letter, not the chip's. They
  * are NULL for the io8 preset, whose XBridge carries no such properties
  * and keeps the older text layout.
+ *
+ * xio_widget and bridge_flash describe a preset the XIO card carrier
+ * (sgi-xio-baseio) builds: the one crosstalk widget the card must sit
+ * at, SGI_BASEIO_XIO_ANY_WIDGET for a card that fits any XIO slot, or 0
+ * for a preset that is not an XIO card at all (ip29, io8), and whether
+ * the card's Bridge carries the BASEIO PROM flash part. The BaseIO
+ * presets are fixed at IO1 and carry the flash; the MENET fits any slot
+ * and has none.
  */
+#define SGI_BASEIO_XIO_ANY_WIDGET UINT32_MAX
+
 typedef struct SGIBaseioPresetIdentity {
     const char *board_part;
     uint32_t bridge_revision;
     const char *board_barcode;
     const char *board_revision;
     const char *board_name;
+    uint32_t xio_widget;
+    bool bridge_flash;
 } SGIBaseioPresetIdentity;
 
 /* NULL if name is not a preset this class knows. */

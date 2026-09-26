@@ -262,8 +262,9 @@ static void test_pci_expansion_attaches_via_spare_fabric(const void *data)
 }
 
 /*
- * sgi-xio-baseio additionally refuses any slot but 8: BaseIO is fixed at
- * IO1, crosstalk widget 8 (xio-baseio.c, XIO_BASEIO_WIDGET), a real
+ * sgi-xio-baseio additionally refuses any slot but 8 for its default io6
+ * preset: BaseIO is fixed at IO1, crosstalk widget 8 (the preset's own
+ * xio_widget in baseio.c), a real
  * hardware fact rather than the free QOM-path choice "slot" is for
  * sgi-pci-expansion above -- slot=8 here satisfies that check, not a
  * coincidence with the sibling test's own unrelated choice. The same
@@ -289,7 +290,7 @@ static void test_xio_baseio_attaches_via_spare_fabric(const void *data)
  * SPACE_XTALK plus a widget's small-window stride plus a register's own
  * offset reaches that widget's real chip registers through the real
  * Crossbow. Reused here read-only, on the machine's own onboard BaseIO
- * (crosstalk widget 8, xio-baseio.c's XIO_BASEIO_WIDGET), to observe
+ * (crosstalk widget 8, the io6 preset's own xio_widget), to observe
  * whatever the spare-fabric board below actually delivers to it.
  */
 #define SMALL_WINDOW_SIZE       UINT64_C(0x1000000)

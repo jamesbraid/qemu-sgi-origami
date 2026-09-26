@@ -52,6 +52,13 @@
  *     origin300-base.yaml; hw/mips/sn1-origin300-model.c
  *     sn1_origin300_pci_devices[], carried into the deleted
  *     board-io8.c.)
+ *   - menet: the MENET XIO board, Bridge revision 4, board part
+ *     "030-0873-003", board revision J, name MENET. Four IOC3s at devices
+ *     0-3, revision 1, no Timekeeper: devices 0-2 carry Ethernet, both
+ *     serial ports and the one-wire MAC part, device 3 Ethernet and its
+ *     MAC part alone. Each serial-carrying chip's SuperIO output reaches
+ *     Bridge pin device + 4; Ethernet uses the ordinary per-slot rule.
+ *     (docs/datasheets/sgi-ioc3-boards.md in the Origami tree.)
  *
  * "onewire-serial" is the onboard IOC3's own one-wire identity part, a
  * fact about this specific fitted unit distinct from the carrier's own
@@ -199,7 +206,10 @@ static bool baseio_pass_drive(DeviceState *dev, const char *id, Error **errp)
  * and setting one after realize is refused outright. has_phy is true
  * only for io8, whose IOC3 answers through a DP83843 at a fixed MII
  * address rather than the Origin 200/2000 boards' own DP83840A default,
- * for the same before-realize reason. timekeeper names the chip's own
+ * for the same before-realize reason. onewire_serial is the chip's own
+ * one-wire MAC part serial: this device's "onewire-serial" on every board
+ * but the MENET, which carries one part per port and so one serial per
+ * chip. timekeeper names the chip's own
  * Timekeeper part, SGI_IOC3_TIMEKEEPER_NONE for a chip that carries
  * none; nvram-drive is only ever forwarded to a chip that has one, so
  * an unrelated Timekeeper backend cannot be claimed by a chip that will
@@ -236,7 +246,7 @@ static PCIDevice *baseio_build_ioc3(SGIBaseioState *s, const char *child_name,
                                     uint32_t population, uint8_t timekeeper,
                                     bool has_subsystem_id,
                                     uint16_t subsystem_id, bool has_phy,
-                                    uint8_t phy_addr,
+                                    uint8_t phy_addr, uint64_t onewire_serial,
                                     const char *chardev_a_id,
                                     const char *chardev_b_id,
                                     const char *record_a_id,
@@ -248,7 +258,7 @@ static PCIDevice *baseio_build_ioc3(SGIBaseioState *s, const char *child_name,
     object_property_add_child(OBJECT(s), child_name, OBJECT(ioc3));
     qdev_prop_set_uint32(DEVICE(ioc3), "population", population);
     qdev_prop_set_uint8(DEVICE(ioc3), "timekeeper-kind", timekeeper);
-    qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial", s->onewire_serial);
+    qdev_prop_set_uint64(DEVICE(ioc3), "onewire-serial", onewire_serial);
     if (has_subsystem_id) {
         qdev_prop_set_uint16(DEVICE(ioc3), "subsystem-id", subsystem_id);
     }
@@ -326,7 +336,8 @@ static bool baseio_build_ip29(SGIBaseioState *s, Error **errp)
     ioc3 = baseio_build_ioc3(s, "ioc3", IP29_IOC3_DEVICE, IP29_IOC3_REVISION,
                              IP29_IOC3_POPULATION,
                              SGI_IOC3_TIMEKEEPER_M48T35, false, 0, false, 0,
-                             s->chardev_a_id, s->chardev_b_id,
+                             s->onewire_serial, s->chardev_a_id,
+                             s->chardev_b_id,
                              s->record_a_id, s->record_b_id, errp);
     if (!ioc3) {
         return false;
@@ -383,7 +394,8 @@ static bool baseio_build_baseio_core(SGIBaseioState *s,
                              BASEIO_IOC3_REVISION, ioc3_population,
                              SGI_IOC3_TIMEKEEPER_M48T35, true,
                              BASEIO_IOC3_SUBSYSTEM_ID_NOT_OBSERVED, false, 0,
-                             s->chardev_a_id, s->chardev_b_id,
+                             s->onewire_serial, s->chardev_a_id,
+                             s->chardev_b_id,
                              s->record_a_id, s->record_b_id, errp);
     if (!ioc3) {
         return false;
@@ -500,7 +512,8 @@ static bool baseio_build_io6g(SGIBaseioState *s, Error **errp)
                              BASEIO_G_MIO_IOC3_POPULATION,
                              SGI_IOC3_TIMEKEEPER_NONE, true,
                              BASEIO_G_MIO_IOC3_SUBSYSTEM_ID, false, 0,
-                             s->mio_chardev_a_id, s->mio_chardev_b_id,
+                             s->onewire_serial, s->mio_chardev_a_id,
+                             s->mio_chardev_b_id,
                              NULL, NULL, errp);
     if (!ioc3) {
         return false;
@@ -585,7 +598,7 @@ static bool baseio_build_io8(SGIBaseioState *s, Error **errp)
     ioc3 = baseio_build_ioc3(s, "ioc3", IO8_IOC3_DEVICE, IO8_IOC3_REVISION,
                              IO8_IOC3_POPULATION,
                              SGI_IOC3_TIMEKEEPER_M48T35, false, 0, true,
-                             IO8_IOC3_PHY_ADDR,
+                             IO8_IOC3_PHY_ADDR, s->onewire_serial,
                              s->chardev_a_id, s->chardev_b_id,
                              s->record_a_id, s->record_b_id, errp);
     if (!ioc3) {
@@ -614,6 +627,58 @@ static bool baseio_build_io8(SGIBaseioState *s, Error **errp)
     return true;
 }
 
+#define MENET_IOC3S             4
+#define MENET_IOC3_REVISION     1
+/* IRIX pairs device d with second slot d + 4 for its SuperIO interrupt. */
+#define MENET_SUPERIO_PIN(d)    ((d) + 4)
+#define MENET_IOC3_POPULATION (SGI_IOC3_POPULATION_ETHERNET | \
+                               SGI_IOC3_POPULATION_SERIAL_A | \
+                               SGI_IOC3_POPULATION_SERIAL_B | \
+                               SGI_IOC3_POPULATION_ONEWIRE_IDENTITY)
+#define MENET4_IOC3_POPULATION (SGI_IOC3_POPULATION_ETHERNET | \
+                                SGI_IOC3_POPULATION_ONEWIRE_IDENTITY)
+
+/*
+ * menet: four IOC3s at devices 0-3. Real IRIX inventories list them
+ * there, and IRIX 6.5.30's MENET setup enables Ethernet and both serial
+ * ports on devices 0-2 and Ethernet alone on device 3, which the board's
+ * manual draws with no serial transceiver. The last chip's SuperIO output
+ * stays unconnected: nothing on it raises one. The subsystem ids are the
+ * values Linux substitutes for this board; the chips' own register value
+ * is not captured. A real board has one MAC part per port, so each chip
+ * takes its own one-wire serial, the board's plus its device number. The
+ * chips' serial ports take no host backend: the console belongs to the
+ * module's BaseIO.
+ */
+static bool baseio_build_menet(SGIBaseioState *s, Error **errp)
+{
+    unsigned int d;
+
+    for (d = 0; d < MENET_IOC3S; d++) {
+        bool superio = d < MENET_IOC3S - 1;
+        g_autofree char *name = g_strdup_printf("ioc3-%u", d);
+        PCIDevice *ioc3;
+
+        ioc3 = baseio_build_ioc3(s, name, d, MENET_IOC3_REVISION,
+                                 superio ? MENET_IOC3_POPULATION :
+                                           MENET4_IOC3_POPULATION,
+                                 SGI_IOC3_TIMEKEEPER_NONE, true,
+                                 superio ? SGI_IOC3_SUBSYS_MENET :
+                                           SGI_IOC3_SUBSYS_MENET4,
+                                 false, 0, s->onewire_serial + d,
+                                 NULL, NULL, NULL, NULL, errp);
+        if (!ioc3) {
+            return false;
+        }
+        if (superio) {
+            qdev_connect_gpio_out(DEVICE(ioc3), 0,
+                                  qdev_get_gpio_in(baseio_bus_host(s->pci_bus),
+                                                   MENET_SUPERIO_PIN(d)));
+        }
+    }
+    return true;
+}
+
 /*
  * Each Bridge-based board's own record carries the real board's part,
  * revision and name, and a placeholder barcode: the IP29's in
@@ -621,16 +686,21 @@ static bool baseio_build_io8(SGIBaseioState *s, Error **errp)
  * BaseIO's and BaseIO-G's in docs/datasheets/baseio.md ("Board-identity
  * records on the Bridge one-wire bus"). The io8's XBridge placeholder
  * keeps the older text layout (docs/datasheets/xbridge.md, "What an IO8
- * record would hold").
+ * record would hold"). The MENET's part, revision and name are a real
+ * board's, paired with the Bridge revision that board reports
+ * (docs/datasheets/sgi-ioc3-boards.md in the Origami tree).
  */
 static const SGIBaseioPreset sgi_baseio_presets[] = {
     { "ip29", { "030-1244-001", 4, "OIP2900001", "H", "IP29" },
       baseio_build_ip29 },
-    { "io6", { "030-1124-002", 4, "OBASEIO002", "J", "BASEIO" },
+    { "io6", { "030-1124-002", 4, "OBASEIO002", "J", "BASEIO", 8, true },
       baseio_build_io6 },
-    { "io6g", { "030-0734-002", 4, "OBASEIO001", "N", "BASEIO" },
+    { "io6g", { "030-0734-002", 4, "OBASEIO001", "N", "BASEIO", 8, true },
       baseio_build_io6g },
     { "io8", { "030-1673-003", 0 }, baseio_build_io8 },
+    { "menet", { "030-0873-003", 4, "OMENET0001", "J", "MENET",
+                 SGI_BASEIO_XIO_ANY_WIDGET, false },
+      baseio_build_menet },
 };
 
 static const SGIBaseioPreset *baseio_preset_find(const char *name)
@@ -727,7 +797,7 @@ static void baseio_realize(DeviceState *dev, Error **errp)
 
     if (!preset) {
         error_setg(errp, "sgi-baseio: '%s' names no known preset; expected "
-                  "ip29, io6, io6g or io8",
+                  "ip29, io6, io6g, io8 or menet",
                   s->preset ? s->preset : "(unset)");
         return;
     }
