@@ -67,6 +67,7 @@ characterizes each of them.
 
 import calendar
 import json
+import math
 import os
 import re
 import subprocess
@@ -137,14 +138,14 @@ SFPLAY_TIMEOUT_SECONDS = 600
 # From IRIX's reboot command to the PROM's banner: 13 to 46s measured.
 REBOOT_TIMEOUT_SECONDS = 180
 
-# How long QEMU stays stopped between the launches that share the
-# Timekeeper image, and what the clock check allows beyond its measured
-# reading uncertainty (lib_irix_diag.clock_error). The guest keeps its
-# own time after reading the Timekeeper at boot, and on a timer that
-# misses no Compare match that time was measured +0.2 to -2.8s off the
-# host across the stop and relaunch; 3s covers it. A clock that dropped
-# the stopped interval is off by at least the whole stop, so the stop is
-# held at three times the tolerance and no longer.
+# The clock check allows the mean console round trip of its two
+# readings, 3s of whole-second resolution (lib_irix_diag.clock_error),
+# and CLOCK_ALLOWANCE_SECONDS for the guest's own time, which it keeps
+# from the Timekeeper read at boot: on a timer that misses no Compare
+# match it measured +0.2 to -2.8s off the host across a stop and
+# relaunch. A clock that dropped the stopped interval is off by at least
+# the whole stop, so the stop is three times that tolerance, sized from
+# the round trip measured before it, and never under STOPPED_SECONDS.
 CLOCK_ALLOWANCE_SECONDS = 3
 STOPPED_SECONDS = 25
 
@@ -203,6 +204,8 @@ if QemuSystemTest is not None:
         from register_irix_diag_row()."""
 
         clock_before = None
+        rebooted_at = None
+        stopped = 0
         tags = 0
 
         # -- launching ---------------------------------------------------
@@ -326,9 +329,10 @@ if QemuSystemTest is not None:
             check after it."""
             if self.here is None:
                 return False
-            # A failed reboot leaves no shell to resynchronise; the
-            # persistence check stops the machine and relaunches it.
-            if check == 'reboot':
+            # A failed reboot or warm boot leaves no shell to
+            # resynchronise; the persistence check stops the machine and
+            # relaunches it.
+            if check in ('reboot', 'warm_boot'):
                 return True
             try:
                 self.here.con.sock.sendall(b'\x03\n')
@@ -615,20 +619,55 @@ if QemuSystemTest is not None:
             # resets through the kernel's own reboot path, the part this
             # checks, without reboot's two minutes of rc scripts.
             con.send('/sbin/uadmin 2 1')
-            con.expect(self.flavour.prom_banner,
-                       self._left(REBOOT_TIMEOUT_SECONDS),
-                       what='the PROM banner after reboot', start=start)
+            banner = con.expect(self.flavour.prom_banner,
+                                self._left(REBOOT_TIMEOUT_SECONDS),
+                                what='the PROM banner after reboot',
+                                start=start)
+            self.rebooted_at = banner.start()
             self._phase('reboot to the PROM banner',
                         round(time.monotonic() - t0, 1))
+
+        def _check_warm_boot(self):
+            """IRIX boots again on the same machine after its own reset
+            (the PROM reports its configuration but, at the kernel's
+            request, runs no diagnostics), and reads back the nvram
+            variable, the clock and, where the row checks it, the parallel
+            port it had before."""
+            if self.rebooted_at is None:
+                raise CheckFailed('the reboot never reached the PROM')
+            phases = []
+            try:
+                prom = drive_to_shell(self.here.con,
+                                      self._left(BOOT_BUDGET_SECONDS),
+                                      phases, menu=False,
+                                      start=self.rebooted_at)
+            finally:
+                for phase, seconds in phases:
+                    self._phase(f'warm boot: {phase}', seconds)
+            for what, pattern in prom_facts(self.flavour, self.row,
+                                            diags=False):
+                self._expect(re.search(pattern, prom),
+                             f'the PROM after the reboot did not report '
+                             f'{what}')
+            self._read_back('the reboot')
+            if self.row.runs('parallel'):
+                self._check_parallel()
+            self._run('sync', 'syncwarm')
 
         def _check_persistence(self):
             if not self.row.runs('reboot'):
                 self._before_reboot()
             if self.clock_before is None:
                 raise CheckFailed('the first boot set nothing to read back')
+            # Size the stop from the console's round trip so far: three
+            # times the tolerance the reading after it will allow.
+            reading = self.clock_before
+            tolerance = clock_error(reading, reading)[1] + \
+                CLOCK_ALLOWANCE_SECONDS
+            self.stopped = max(STOPPED_SECONDS, math.ceil(3 * tolerance))
             self.first.vm.shutdown()
-            self._left(STOPPED_SECONDS)
-            time.sleep(STOPPED_SECONDS)
+            self._left(self.stopped)
+            time.sleep(self.stopped)
             try:
                 self.here = self._launch(f'{self.row.id}-relaunch',
                                          relaunch=True)
@@ -639,22 +678,29 @@ if QemuSystemTest is not None:
                 console = self.log_file(f'{self.row.id}-relaunch-console.log')
                 raise NoConsole(f'the relaunch did not reach a shell: {exc} '
                                 f'-- console log: {console}') from exc
+            self._read_back(f'a {self.stopped}s stop')
+
+        def _read_back(self, across):
+            """The nvram variable reads back, and the guest clock has
+            advanced by the host's elapsed time since the last reading."""
             after = self._clock('dateafter')
             name, value = NVRAM_VARIABLE
             self._expect(re.search(rf'(?m)^{value}\s*$',
                                    self._out(f'nvram {name}', 'nvramget')),
-                         f'nvram {name} lost across the reboot and stop')
+                         f'nvram {name} lost across {across}')
             error, bound = clock_error(self.clock_before, after)
             bound += CLOCK_ALLOWANCE_SECONDS
-            self.log.info('clock across the stop: %+.1fs off the host, '
-                          'allowed %.1fs', error, bound)
-            self._expect(bound <= STOPPED_SECONDS / 3,
-                         f'the clock check cannot tell a {STOPPED_SECONDS}s '
-                         f'loss from its own {bound:.1f}s tolerance')
+            if self.stopped:
+                self._expect(bound <= self.stopped / 3,
+                             f'the clock check cannot tell a '
+                             f'{self.stopped}s loss from its own '
+                             f'{bound:.1f}s tolerance')
+            self.log.info('clock across %s: %+.1fs off the host, allowed '
+                          '%.1fs', across, error, bound)
             self._expect(abs(error) <= bound,
                          f'the guest clock is {error:+.1f}s off the host '
-                         f'across a {STOPPED_SECONDS}s stop (allowed '
-                         f'{bound:.1f}s)')
+                         f'across {across} (allowed {bound:.1f}s)')
+            self.clock_before = after
 
         def _check_parallel(self):
             plp = self.flavour.parallel[2]

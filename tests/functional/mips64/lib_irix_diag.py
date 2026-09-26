@@ -51,6 +51,7 @@ CHECKS = (
     'olcdrom',
     'timer',         # no scheduler tick lost to a missed Compare match
     'reboot',        # an IRIX reboot restarts the PROM
+    'warm_boot',     # IRIX boots again after it, and keeps nvram and time
     'persistence',   # nvram and the Timekeeper clock across a full stop
     'parallel',      # parallel-port numbering from a clean ioconfig
 )
@@ -180,8 +181,10 @@ def parse_row(path, lineno, line, flavours=None):
                 f'{where}: {check} runs, but flavour {values["id"]!r} sets '
                 f'no {_NEEDS[check]}')
         cells[check] = cell
+    if cells['warm_boot'] == RUN and cells['reboot'] != RUN:
+        raise MatrixError(f'{where}: warm_boot runs, but reboot does not')
     # The reboot and parallel checks are read back by the relaunch.
-    for check in ('reboot', 'parallel'):
+    for check in ('reboot', 'warm_boot', 'parallel'):
         if cells[check] == RUN and cells['persistence'] != RUN:
             raise MatrixError(
                 f'{where}: {check} runs, but persistence, which relaunches '
@@ -445,14 +448,15 @@ def command_output(con, cmd, tag, timeout=None):
     return re.sub(r'(?m)^# ', '', body), status
 
 
-def drive_to_shell(con, budget, phases, menu=True):
+def drive_to_shell(con, budget, phases, menu=True, start=0):
     """Answer the System Maintenance Menu with Start System, log in as
     root and switch to /bin/sh. Returns the PROM's output up to the menu,
     and appends (phase, seconds) to phases.
 
     A power-on boot must reach the menu. With menu False, a PROM whose
     NVRAM says to autoboot may skip it: the login prompt then ends the PROM
-    output instead."""
+    output instead. start is the console offset the boot began at, so a
+    boot after a reboot cannot match the previous boot's prompts."""
     began = time.monotonic()
     deadline = began + budget
 
@@ -466,8 +470,8 @@ def drive_to_shell(con, budget, phases, menu=True):
 
     first = con.expect(
         re.compile(rb'Option\?' if menu else rb'Option\?|console login:'),
-        left(budget), what='the maintenance menu')
-    prom = text(con.buf[:first.start()])
+        left(budget), what='the maintenance menu', start=start)
+    prom = text(con.buf[start:first.start()])
     pos = first.end()
     if first.group(0) == b'Option?':
         at = mark('PROM power-on to menu', began)
@@ -486,11 +490,9 @@ def drive_to_shell(con, budget, phases, menu=True):
                start=pos)
     con.send('exec /bin/sh')
     con.run('PATH=/usr/sbin:/usr/bin:/sbin:/bin:/usr/etc:/usr/bsd:$PATH; '
-            'export PATH', 'shinit', timeout=int(left(120)))
+            'export PATH', f'shinit{start}', timeout=int(left(120)))
     mark('login to root shell', at)
     return prom
-
-
 
 
 def wav_nonzero_samples(data):
@@ -583,10 +585,12 @@ class Flavour:
     origin300: bool = False
 
 
-def prom_facts(flavour, row):
+def prom_facts(flavour, row, diags=True):
     """What the PROM's configuration summary must report, as (what,
-    regex)."""
-    return (
+    regex). diags False leaves out the diagnostics verdict: after IRIX
+    reboots the machine the PROM prints "Skipping diags as requested by
+    kernel" and "NO DIAGS WERE RUN!" instead."""
+    facts = (
         ('the processors and nodes',
          rf'\b{row.cpus} CPUs on {flavour.nodes} nodes found'),
         ('the enabled nodes',
@@ -594,8 +598,10 @@ def prom_facts(flavour, row):
         ('the enabled processors',
          rf'No\. of CPUs enabled\s*=\s*{row.cpus}\b'),
         ('the enabled memory', rf'Mem enabled\s*=\s*{row.mem} MB'),
-        ('every power-on diagnostic passing', r'ALL DIAGS PASSED'),
     )
+    if diags:
+        facts += (('every power-on diagnostic passing', r'ALL DIAGS PASSED'),)
+    return facts
 
 
 _O200 = '/hw/module/1/slot/MotherBoard/node/xtalk/8/pci'
