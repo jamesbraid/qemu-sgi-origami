@@ -9,6 +9,20 @@ sgi_mgras_control_mmio(uint64_t sequence, uint64_t offset, uint64_t value, unsig
 sgi_kona_pio_read(int cpu, uint64_t offset, uint64_t value, unsigned int size) "cpu %d offset 0x%" PRIx64 " value 0x%" PRIx64 " size %u"
 sgi_kona_pio_write(int cpu, uint64_t offset, uint64_t value, unsigned int size) "cpu %d offset 0x%" PRIx64 " value 0x%" PRIx64 " size %u"
 
+# sgi-mgras-raster.c
+# One event per contiguous run of guest-memory bytes a host-to-screen DMA
+# image transfer reads (the page-list fetch and the pixel source itself):
+# the plain node address dma_memory_read()'s source resolves from before
+# sgi_mgras_xio_compose() shifts a widget number into it, a length and the
+# bytes themselves as hex, capped so one run never spans more than a page.
+# The node address is what a replay's own preload must target: qtest's
+# memwrite reaches ordinary guest RAM at this address, never at the
+# widget-shifted fabric address the model composes only to route the read
+# through s->fabric_as. A replayed session with no guest RAM behind it
+# preloads these bytes at the recorded address before the kick that
+# consumes them.
+sgi_mgras_dma_chunk(uint64_t sequence, uint64_t addr, unsigned len, const char *hex) "seq %" PRIu64 " addr 0x%" PRIx64 " len %u hex %s"
+
 # allwinner-cpucfg.c
 allwinner_cpucfg_cpu_reset(uint8_t cpu_id, uint32_t reset_addr) "id %u, reset_addr 0x%" PRIx32
 allwinner_cpucfg_read(uint64_t offset, uint64_t data, unsigned size) "offset 0x%" PRIx64 " data 0x%" PRIx64 " size %" PRIu32
