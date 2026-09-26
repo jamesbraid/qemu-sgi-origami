@@ -81,6 +81,9 @@ struct SGIBedrockMDState {
     SGIBedrockMDECCInjection ecc_injection[SGI_BEDROCK_MD_ECC_INJECTIONS];
     SGIBedrockMDDirectoryInjection
         directory_injection[SGI_BEDROCK_MD_DIRECTORY_INJECTIONS];
+    /* The active slots above by doubleword and by line, for lookup. */
+    GHashTable *ecc_injection_by_raw;
+    GHashTable *directory_injection_by_index;
     uint64_t memory_error;
     uint64_t directory_error;
     uint64_t bank_alias_base[8];
