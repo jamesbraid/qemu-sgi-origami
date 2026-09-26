@@ -272,13 +272,13 @@ if base.QemuSystemTest is not None:
             udp_hp = _usernet_hostport(vm, 'udp', UDP_GUEST_PORT)
 
             log_path = self.log_file('irix-tg-perf.log')
-            con = base._Console(vm.console_socket, log_path,
-                                exited=lambda: vm.exitcode() is not None)
+            con = base.IrixConsole(vm.console_socket, log_path,
+                                   exited=lambda: vm.exitcode() is not None)
             results = {"tcp_verify": None, "tcp_mbps": None,
                        "udp_mbps": None, "udp_loss": None}
             login = tg_up = False
             try:
-                base._drive_to_shell(con, base.LOGIN_BUDGET_SECONDS)
+                base.drive_irix_to_shell(con, base.LOGIN_BUDGET_SECONDS)
                 login = True
                 con.run(f"ifconfig {base.IFACE} inet {base.GUEST_ADDR} "
                         "netmask 0xffffff00 up", "ifup", timeout=60)
