@@ -220,16 +220,16 @@ static void ii_bte_signal_bh(void *opaque)
  * A started engine moves its whole transfer, one 128-byte line at a time,
  * before the write that starts it returns.
  *
- * On hardware an engine runs alongside the processor that started it, and two
- * engines started back to back run side by side; neither gets far ahead of
- * the other.  The PROM's hub BTE check depends on that: it starts both
- * engines on equal copies, waits for engine 0's completion interrupt alone,
- * then compares both copies.  An engine paced by a timer instead runs on the
- * host's clock, in the main loop, and the processor can fall arbitrarily far
- * behind it: the store that starts engine 1 has landed milliseconds after
- * engine 0 started, and the check then compared engine 1's copy before it
- * was done.  Finishing the data inside the starting access puts every
- * engine's data ahead of anything a processor can observe.
+ * The PROM's hub BTE check starts both engines on equal copies, waits for
+ * engine 0's completion interrupt alone, then compares both copies.  It
+ * relies on engine 1 finishing close behind engine 0, which on hardware is
+ * inferred from the two starting stores issuing back to back, not measured.
+ * An engine paced by a timer instead runs on the host's clock, in the main
+ * loop, and the processor can fall arbitrarily far behind it: the store that
+ * starts engine 1 has landed milliseconds after engine 0 started, and the
+ * check then compared engine 1's copy before it was done.  Finishing the data
+ * inside the starting access means no register read or completion signal can
+ * show a transfer in progress.
  */
 static void ii_bte_run(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
 {

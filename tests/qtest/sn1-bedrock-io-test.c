@@ -702,6 +702,9 @@ static void test_bte_copy_and_zero(void)
     g_assert_cmpmem(actual, sizeof(actual), source, sizeof(source));
     g_assert_cmphex(dma_readq(s, 0x120000), ==, 0);
     g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0), ==, 0);
+    /* The model's choice: both addresses end one line past the last moved. */
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0 + 8), ==, 0x100100);
+    g_assert_cmphex(qtest_readq(s, REG_BASE + BTE0 + 0x10), ==, 0x110100);
     assert_ram_filled(s, 0x110000, 0xee, sizeof(source));
     assert_ram_filled(s, 0x120000, 0xee, 8);
 
@@ -929,8 +932,9 @@ static void test_itanium_probe_sequence(void)
 /*
  * The PROM's hub BTE check starts engine 0 and then engine 1 on equal copies,
  * waits for engine 0's completion interrupt alone, and compares both copies.
- * On hardware the two starting stores are nanoseconds apart and the engines
- * run side by side.  Under TCG the host can take milliseconds between them,
+ * On hardware the two starting stores issue back to back, so engine 1 is
+ * taken to finish close behind engine 0 (inferred, not measured).  Under TCG
+ * the host can take milliseconds between the stores,
  * and without instruction counting that host time is virtual time: the step
  * below stands for it, long enough for engine 0 to finish and raise its
  * interrupt.  Engine 1's copy must still be whole when it is compared.
