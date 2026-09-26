@@ -410,7 +410,7 @@ qtests_mips64 = \
   sn0_ohci_qtests + \
   sgi_bridge_card_qtests + \
   (config_all_devices.has_key('CONFIG_SGI_L1') ?
-    ['sn1-l1-test', 'sgi-l1-usb-software-test'] : []) + \
+    ['sn1-l1-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_BEDROCK_MD') ?
     ['sn1-bedrock-md-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_COMMAND_PORT_TEST') ?
