@@ -2219,12 +2219,22 @@ static void test_logic_op_truth_table(void)
 
     mgras_enter_context(qts);
 
+    /* A rect fill only paints once FILLMODE selects the rect-fill encoding. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+
     for (size_t i = 0; i < G_N_ELEMENTS(cases); i++) {
+        /* RGB format: a rect fill reads FILLCOLOR_R/G/B, each byte << 4. */
         qtest_writeq(qts, REG_CONTEXT_COMMAND,
                      MGRAS_COMMAND(REG_PP1FILLMODE,
-                                MGRAS_LOGIC_OP_COPY << 26));
+                                (MGRAS_LOGIC_OP_COPY << 26) |
+                                MGRAS_PP1FILLMODE_RGB));
         qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                     MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00f0f0f0));
+                     MGRAS_COMMAND(REG_FILLCOLOR_R, 0xf0 << 4));
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND(REG_FILLCOLOR_G, 0xf0 << 4));
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND(REG_FILLCOLOR_B, 0xf0 << 4));
         qtest_writeq(qts, REG_CONTEXT_COMMAND,
                      MGRAS_COMMAND(REG_BLOCK_START, (500u << 16) | 500u));
         qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -2233,9 +2243,14 @@ static void test_logic_op_truth_table(void)
 
         qtest_writeq(qts, REG_CONTEXT_COMMAND,
                      MGRAS_COMMAND(REG_PP1FILLMODE,
-                                (uint32_t)cases[i].op << 26));
+                                ((uint32_t)cases[i].op << 26) |
+                                MGRAS_PP1FILLMODE_RGB));
         qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                     MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00cccccc));
+                     MGRAS_COMMAND(REG_FILLCOLOR_R, 0xcc << 4));
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND(REG_FILLCOLOR_G, 0xcc << 4));
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND(REG_FILLCOLOR_B, 0xcc << 4));
         qtest_writeq(qts, REG_CONTEXT_COMMAND,
                      MGRAS_COMMAND(REG_BLOCK_START, (500u << 16) | 500u));
         qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -2257,10 +2272,21 @@ static void test_logic_op_xor_twice_restores_rect(void)
 
     mgras_enter_context(qts);
 
+    /* A rect fill only paints once FILLMODE selects the rect-fill encoding. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_LOGIC_OP_COPY << 26));
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+
+    /* RGB format: a rect fill reads FILLCOLOR_R/G/B, each byte << 4. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00654321));
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                            (MGRAS_LOGIC_OP_COPY << 26) |
+                            MGRAS_PP1FILLMODE_RGB));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x65 << 4));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_G, 0x43 << 4));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_B, 0x21 << 4));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_BLOCK_START, (50u << 16) | 60u));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -2268,9 +2294,15 @@ static void test_logic_op_xor_twice_restores_rect(void)
     g_assert_cmphex(mgras_test_pixel(qts, 51, 61), ==, 0x00654321);
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_LOGIC_OP_XOR << 26));
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                            (MGRAS_LOGIC_OP_XOR << 26) |
+                            MGRAS_PP1FILLMODE_RGB));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00ffffff));
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0xff << 4));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_G, 0xff << 4));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_B, 0xff << 4));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND_EXEC(REG_BLOCK_END, (53u << 16) | 63u));
     g_assert_cmphex(mgras_test_pixel(qts, 51, 61), ==, 0x00654321 ^ 0x00ffffff);
@@ -2295,8 +2327,11 @@ static void test_logic_op_xor_twice_restores_line(void)
 
     mgras_enter_context(qts);
 
+    /* RGB format: RE_POINT/RE_LINE read PACKEDCOLOR only under this format. */
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_LOGIC_OP_COPY << 26));
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                            (MGRAS_LOGIC_OP_COPY << 26) |
+                            MGRAS_PP1FILLMODE_RGB));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00123456));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
@@ -2306,7 +2341,9 @@ static void test_logic_op_xor_twice_restores_line(void)
     g_assert_cmphex(mgras_test_pixel(qts, 305, 300), ==, 0x00123456);
 
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
-                 MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_LOGIC_OP_XOR << 26));
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                            (MGRAS_LOGIC_OP_XOR << 26) |
+                            MGRAS_PP1FILLMODE_RGB));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
                  MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00ffffff));
     qtest_writeq(qts, REG_CONTEXT_COMMAND,
