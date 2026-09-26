@@ -1820,6 +1820,67 @@ static void test_the_receive_timer_raises_on_expiry(
 }
 
 /*
+ * An expiry the clock has passed is visible to the next read, whether or
+ * not the main loop has serviced the timer yet. The Origin 300 IO-8 board
+ * test loads a two-tick reload, arms the timer, sends one character in
+ * internal loopback, waits 10 ms and requires the source set; on a loaded
+ * host the source was still clear ("rx timer register interrupt bit (2^3)
+ * in SIO_IR reg of the IOC3 should have set", sec1_3.c line 1120). Stopping
+ * the VM reproduces that gap: the virtual clock still moves under
+ * qtest_clock_step, but no timer callback runs. The status register is
+ * read first, as the board test reads it, so its own catch-up is what
+ * passes.
+ */
+static void read_catches_the_receive_timer_up(unsigned int port)
+{
+    const uint8_t one[4] = { 'x', 0, 0, 0 };
+    const uint8_t one_ctrl[4] = { TX_CHARACTER, TX_EMPTY, TX_EMPTY, TX_EMPTY };
+    const uint32_t bit = SOURCE(port, SRC_RX_TIMER);
+
+    serial_reset();
+
+    sn0_ioc3_attach(qts);
+    configure_line(qts, port);
+    set_loopback(qts, port);
+    qtest_writel(qts, SDMA_RING_HI, 0);
+    qtest_writel(qts, SDMA_RING_LO, RING_BASE | RING_4K);
+    qtest_writel(qts, sdma(port, SDMA_RX_TIMER), 2);
+    qtest_writel(qts, sdma(port, SDMA_RX_CONSUME), CONSUME_ARM_TIMER);
+    qtest_writel(qts, sdma(port, SDMA_CONTROL), CTRL_DMA_ENABLE);
+    qtest_writel(qts, INT_STATUS, bit);
+
+    qtest_qmp_assert_success(qts, "{'execute': 'stop'}");
+
+    write_transmit_entry(qts, RING_TX(port), 0, one, one_ctrl);
+    qtest_writel(qts, sdma(port, SDMA_TX_PRODUCE), 8);
+    g_assert_cmphex(qtest_readl(qts, sdma(port, SDMA_RX_PRODUCE)) & 0xff8,
+                    ==, 8);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & bit, ==, 0);
+
+    /* The board test's 10 ms, well past the two ticks. */
+    qtest_clock_step(qts, 10 * 1000 * 1000);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & bit, ==, bit);
+    g_assert_cmphex((qtest_readl(qts, sdma(port, SDMA_RX_TIMER)) >> 16) &
+                    0xfff, ==, 0);
+
+    /* Acknowledged, it stays clear: the timer does not raise it again. */
+    qtest_writel(qts, INT_STATUS, bit);
+    qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
+    qtest_clock_step(qts, 4 * RX_TIMER_TICK_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & bit, ==, 0);
+}
+
+static void test_port_a_read_catches_the_receive_timer_up(const void *data)
+{
+    read_catches_the_receive_timer_up(0);
+}
+
+static void test_port_b_read_catches_the_receive_timer_up(const void *data)
+{
+    read_catches_the_receive_timer_up(1);
+}
+
+/*
  * Waiting characters count as published entries times four; the timer stays
  * unarmed, so anything raised came from the mark.
  */
@@ -3029,6 +3090,10 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3-serial/receive-timer-counts-and-raises",
                         NULL,
                         test_the_receive_timer_raises_on_expiry);
+    qtest_add_data_func("sn0/ioc3-serial/port-a-read-catches-receive-timer-up",
+                        NULL, test_port_a_read_catches_the_receive_timer_up);
+    qtest_add_data_func("sn0/ioc3-serial/port-b-read-catches-receive-timer-up",
+                        NULL, test_port_b_read_catches_the_receive_timer_up);
     qtest_add_data_func("sn0/ioc3-serial/high-water-mark-raises", NULL,
                         test_crossing_the_high_water_mark_raises_its_source);
     qtest_add_data_func("sn0/ioc3-serial/high-water-mark-drops-when-consumed",

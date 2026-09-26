@@ -35,6 +35,7 @@ static void sgi_ioc3_update_irq(SGIIOC3State *s)
 }
 
 static void sgi_ioc3_sdma_run(SGIIOC3State *s, unsigned int port);
+static void sgi_ioc3_sdma_rx_timer_catch_up(SGIIOC3State *s);
 
 static void sgi_ioc3_serial_irq(void *opaque, int port, int level)
 {
@@ -318,6 +319,7 @@ static uint64_t sgi_ioc3_main_read(void *opaque, hwaddr addr, unsigned size)
 
     switch (addr) {
     case SGI_IOC3_INT_STATUS:
+        sgi_ioc3_sdma_rx_timer_catch_up(s);
         return s->int_status;
     case SGI_IOC3_INT_ENABLE_SET:
         /* The set alias reads back the live mask; the clear alias does not. */
@@ -359,6 +361,8 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
 
     switch (addr) {
     case SGI_IOC3_INT_STATUS:
+        /* An acknowledgement must not be undone by a late expiry. */
+        sgi_ioc3_sdma_rx_timer_catch_up(s);
         /* Write-one-to-clear; the level-driven bits ignore the write. */
         s->int_status &= ~(val & ~(SGI_IOC3_INT_PASSTHROUGH |
                                    SGI_IOC3_INT_PARALLEL_SERVICE |
@@ -804,6 +808,28 @@ static void sgi_ioc3_sdma_rx_timer_expired(void *opaque)
 }
 
 /*
+ * An expiry already due happens before an access, not whenever the main
+ * loop next services the timer. The count field is read off the clock, so
+ * without this a guest can read a spent count while the source it raises
+ * is still clear: the IO-8 board test loads a two-tick reload, waits 10 ms
+ * and requires the source set (docs/datasheets/ioc3.md).
+ */
+static void sgi_ioc3_sdma_rx_timer_catch_up(SGIIOC3State *s)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    unsigned int port;
+
+    for (port = 0; port < SGI_IOC3_SERIAL_PORTS; port++) {
+        QEMUTimer *timer = s->sdma_rx_timer[port];
+
+        if (timer_pending(timer) && timer_expire_time_ns(timer) <= now) {
+            timer_del(timer);
+            sgi_ioc3_sdma_rx_timer_expired(&s->sdma_alias_port[port]);
+        }
+    }
+}
+
+/*
  * A level, recomputed wherever the waiting count moves: a latched raise
  * storms IRIX's ring console. The mark counts characters, not entries.
  */
@@ -1103,6 +1129,8 @@ static uint32_t sgi_ioc3_sdma_read_port(SGIIOC3State *s, unsigned int port,
 {
     uint32_t val;
 
+    sgi_ioc3_sdma_rx_timer_catch_up(s);
+
     if (offset == SGI_IOC3_SDMA_SHADOW) {
         return sgi_ioc3_sdma_shadow(s, port);
     }
@@ -1142,6 +1170,9 @@ static void sgi_ioc3_sdma_write_port(SGIIOC3State *s, unsigned int port,
                                      hwaddr offset, uint32_t val)
 {
     uint32_t mask = sgi_ioc3_sdma_pointer_mask(s);
+
+    /* A write that stops or rewinds the timer comes after an expiry due. */
+    sgi_ioc3_sdma_rx_timer_catch_up(s);
 
     switch (offset) {
     case SGI_IOC3_SDMA_CONTROL:
