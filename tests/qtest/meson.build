@@ -419,6 +419,7 @@ endif
 # 32-bit mips targets, where the machine does not exist.
 qtests_mips64 = \
   qtests_mips + \
+  ['ds1742-test'] + \
   sn0_router_qtests + \
   sn0_ohci_qtests + \
   sgi_bridge_card_qtests + \
