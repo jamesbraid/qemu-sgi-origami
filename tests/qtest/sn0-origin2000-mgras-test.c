@@ -186,8 +186,23 @@ static QTestState *qts;
 #define MGRAS_BYTE_XFER_PACKING_PAIRS 0x0080
 
 
-#define MGRAS_LOGIC_OP_COPY        0x3
-#define MGRAS_LOGIC_OP_XOR         0x6
+/* The full X11 GX raster-op encoding PP1FILLMODE bits 29:26 select. */
+#define MGRAS_LOGIC_OP_CLEAR         0x0
+#define MGRAS_LOGIC_OP_AND           0x1
+#define MGRAS_LOGIC_OP_AND_REVERSE   0x2
+#define MGRAS_LOGIC_OP_COPY          0x3
+#define MGRAS_LOGIC_OP_AND_INVERTED  0x4
+#define MGRAS_LOGIC_OP_NOOP          0x5
+#define MGRAS_LOGIC_OP_XOR           0x6
+#define MGRAS_LOGIC_OP_OR            0x7
+#define MGRAS_LOGIC_OP_NOR           0x8
+#define MGRAS_LOGIC_OP_EQUIV         0x9
+#define MGRAS_LOGIC_OP_INVERT        0xa
+#define MGRAS_LOGIC_OP_OR_REVERSE    0xb
+#define MGRAS_LOGIC_OP_COPY_INVERTED 0xc
+#define MGRAS_LOGIC_OP_OR_INVERTED   0xd
+#define MGRAS_LOGIC_OP_NAND          0xe
+#define MGRAS_LOGIC_OP_SET           0xf
 
 /* PP1FILLMODE bit 13; see MGRAS_RSS_FILLCOLOR_R's comment in the raster model. */
 #define MGRAS_PP1FILLMODE_RGB      0x2000
@@ -2160,6 +2175,215 @@ static void test_direct_fill_and_reset(void)
     g_assert_cmphex(qtest_readl(qts, REG_ENTRY), ==, 0);
     g_assert_cmphex(qtest_readl(qts, REG_CONTEXT_COMMAND), ==, 0);
     g_assert_cmphex(mgras_test_pixel(qts, 11, 11), ==, 0);
+}
+
+/*
+ * PP1FILLMODE bits 29:26 select one of the sixteen X11 GX raster ops
+ * (mgras_logic_op() in hw/misc/sgi-mgras-raster.c), applied as
+ * op(dst, src) with dst the current pixel and src the paint colour. Fill
+ * a known destination with plain COPY, then check every op against it
+ * with a distinct source, against the X11 protocol's own truth table.
+ */
+static void test_logic_op_truth_table(void)
+{
+    /*
+     * dst = 0x00f0f0f0, src = 0x00cccccc. Chosen so every one of the
+     * sixteen X11 GX ops yields a distinct byte value (0x00, 0x0c, 0x0f,
+     * 0x30, 0x33, 0x3c, 0x3f, 0xc0, 0xc3, 0xcf, 0xcc, 0xf0, 0xf3, 0xfc,
+     * 0xff), so a model bug that confuses one op for another is caught
+     * instead of hidden behind a coincidental match.
+     */
+    static const struct {
+        uint8_t op;
+        uint32_t expect;
+    } cases[] = {
+        { MGRAS_LOGIC_OP_CLEAR,         0x000000 },
+        { MGRAS_LOGIC_OP_AND,           0xc0c0c0 },
+        { MGRAS_LOGIC_OP_AND_REVERSE,   0x0c0c0c },
+        { MGRAS_LOGIC_OP_COPY,          0xcccccc },
+        { MGRAS_LOGIC_OP_AND_INVERTED,  0x303030 },
+        { MGRAS_LOGIC_OP_NOOP,          0xf0f0f0 },
+        { MGRAS_LOGIC_OP_XOR,           0x3c3c3c },
+        { MGRAS_LOGIC_OP_OR,            0xfcfcfc },
+        { MGRAS_LOGIC_OP_NOR,           0x030303 },
+        { MGRAS_LOGIC_OP_EQUIV,         0xc3c3c3 },
+        { MGRAS_LOGIC_OP_INVERT,        0x0f0f0f },
+        { MGRAS_LOGIC_OP_OR_REVERSE,    0xcfcfcf },
+        { MGRAS_LOGIC_OP_COPY_INVERTED, 0x333333 },
+        { MGRAS_LOGIC_OP_OR_INVERTED,   0xf3f3f3 },
+        { MGRAS_LOGIC_OP_NAND,          0x3f3f3f },
+        { MGRAS_LOGIC_OP_SET,           0xffffff },
+    };
+
+    mgras_reset();
+
+    mgras_enter_context(qts);
+
+    for (size_t i = 0; i < G_N_ELEMENTS(cases); i++) {
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND(REG_PP1FILLMODE,
+                                MGRAS_LOGIC_OP_COPY << 26));
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00f0f0f0));
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND(REG_BLOCK_START, (500u << 16) | 500u));
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND_EXEC(REG_BLOCK_END, (500u << 16) | 500u));
+        g_assert_cmphex(mgras_test_pixel(qts, 500, 500), ==, 0x00f0f0f0);
+
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND(REG_PP1FILLMODE,
+                                (uint32_t)cases[i].op << 26));
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00cccccc));
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND(REG_BLOCK_START, (500u << 16) | 500u));
+        qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                     MGRAS_COMMAND_EXEC(REG_BLOCK_END, (500u << 16) | 500u));
+        g_assert_cmphex(mgras_test_pixel(qts, 500, 500), ==, cases[i].expect);
+    }
+}
+
+/*
+ * A GXxor rubber band's border paints its ink over the destination once
+ * to show the band, then issues the identical command again on the next
+ * move or on release to erase it: op(op(dst, src), src) must equal dst
+ * for every primitive PP1FILLMODE reaches, or the band leaves a mark.
+ * This is the rectangle-fill path (BLOCKXYSTARTI/BLOCKXYENDI).
+ */
+static void test_logic_op_xor_twice_restores_rect(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_LOGIC_OP_COPY << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00654321));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (50u << 16) | 60u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (53u << 16) | 63u));
+    g_assert_cmphex(mgras_test_pixel(qts, 51, 61), ==, 0x00654321);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_LOGIC_OP_XOR << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (53u << 16) | 63u));
+    g_assert_cmphex(mgras_test_pixel(qts, 51, 61), ==, 0x00654321 ^ 0x00ffffff);
+
+    /* The rubber band's second, identical draw must restore the pixel. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (53u << 16) | 63u));
+    g_assert_cmphex(mgras_test_pixel(qts, 51, 61), ==, 0x00654321);
+}
+
+/*
+ * Same round trip on the RE_POINT/RE_LINE path. RE_LINE draws from
+ * whatever rss[MGRAS_RSS_RE_POINT] currently holds (mgras_draw_line()),
+ * so the pen is re-latched with a plain STATE write between the two XOR
+ * draws: a STATE write only stores the position, it does not paint (see
+ * test_re_point_execute_after_bounded_payload), so the endpoint is not
+ * struck a third time.
+ */
+static void test_logic_op_xor_twice_restores_line(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_LOGIC_OP_COPY << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00123456));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_POINT, (300u << 16) | 300u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_LINE, (310u << 16) | 300u));
+    g_assert_cmphex(mgras_test_pixel(qts, 305, 300), ==, 0x00123456);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_LOGIC_OP_XOR << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_RE_POINT, (300u << 16) | 300u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_LINE, (310u << 16) | 300u));
+    g_assert_cmphex(mgras_test_pixel(qts, 305, 300), ==, 0x00123456 ^ 0x00ffffff);
+
+    /* The rubber band's second, identical draw must restore the line. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_RE_POINT, (300u << 16) | 300u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_LINE, (310u << 16) | 300u));
+    g_assert_cmphex(mgras_test_pixel(qts, 305, 300), ==, 0x00123456);
+}
+
+/*
+ * Same round trip on the byte-transfer span path (mgras_draw_byte_row()),
+ * an eight-pixel-per-execute row rather than a filled block or a line. A
+ * BLOCKXYSTARTI write resets the row/unit counters (mgras_raster_rss_
+ * write()), so re-arming the span between draws is a plain re-issue of
+ * BLOCK_START/BLOCK_END.
+ */
+static void test_logic_op_xor_twice_restores_span(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_BYTE_XFER));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BYTE_XFER_PACKING,
+                            MGRAS_BYTE_XFER_PACKING_BYTES));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_LOGIC_OP_COPY << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (400u << 16) | 400u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_END, (407u << 16) | 400u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CHAR_H, 0x10203040u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_CHAR_L, 0x50607080u));
+    g_assert_cmphex(mgras_test_pixel(qts, 400, 400), ==, 0x10);
+    g_assert_cmphex(mgras_test_pixel(qts, 404, 400), ==, 0x50);
+    g_assert_cmphex(mgras_test_pixel(qts, 407, 400), ==, 0x80);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_LOGIC_OP_XOR << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (400u << 16) | 400u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_END, (407u << 16) | 400u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CHAR_H, 0xffffffffu));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_CHAR_L, 0xffffffffu));
+    g_assert_cmphex(mgras_test_pixel(qts, 400, 400), ==, (0x10 ^ 0xff));
+    g_assert_cmphex(mgras_test_pixel(qts, 404, 400), ==, (0x50 ^ 0xff));
+    g_assert_cmphex(mgras_test_pixel(qts, 407, 400), ==, (0x80 ^ 0xff));
+
+    /* The rubber band's second, identical draw must restore the span. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (400u << 16) | 400u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_END, (407u << 16) | 400u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_CHAR_H, 0xffffffffu));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_CHAR_L, 0xffffffffu));
+    g_assert_cmphex(mgras_test_pixel(qts, 400, 400), ==, 0x10);
+    g_assert_cmphex(mgras_test_pixel(qts, 404, 400), ==, 0x50);
+    g_assert_cmphex(mgras_test_pixel(qts, 407, 400), ==, 0x80);
 }
 
 static void test_reset_clears_context_acknowledgements(void)
@@ -4930,6 +5154,14 @@ int main(int argc, char **argv)
                    test_fifo_occupancy_always_drained);
     qtest_add_func("sn0/origin2000/mgras/direct-fill-and-reset",
                    test_direct_fill_and_reset);
+    qtest_add_func("sn0/origin2000/mgras/logic-op-truth-table",
+                   test_logic_op_truth_table);
+    qtest_add_func("sn0/origin2000/mgras/logic-op-xor-twice-restores-rect",
+                   test_logic_op_xor_twice_restores_rect);
+    qtest_add_func("sn0/origin2000/mgras/logic-op-xor-twice-restores-line",
+                   test_logic_op_xor_twice_restores_line);
+    qtest_add_func("sn0/origin2000/mgras/logic-op-xor-twice-restores-span",
+                   test_logic_op_xor_twice_restores_span);
     qtest_add_func("sn0/origin2000/mgras/reset-clears-context-acks",
                    test_reset_clears_context_acknowledgements);
     qtest_add_func("sn0/origin2000/mgras/fill-mask-reads-colormasklsbsa",
