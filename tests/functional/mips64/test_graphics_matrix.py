@@ -47,10 +47,10 @@ MATRIX_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 # test_irix_diag.py's own DRIVER_STEPS answers the same way.
 _START_SYSTEM_STEPS = ((r"Option\?", "1\n"),)
 
-# The serial login prompt can precede the graphical dialog. A prior two-CPU
-# run needed 21.62s to draw it, so keep a 30s elapsed-time limit while the
-# shared poll returns as soon as the screen checks pass.
-_SCREEN_SETTLE_TIMEOUT_SECONDS = 30.0
+# The serial login prompt can precede the graphical dialog. A two-CPU run
+# on a loaded host needed 30.14s to draw it, so allow 60s while the shared poll
+# returns as soon as the screen checks pass.
+_SCREEN_SETTLE_TIMEOUT_SECONDS = 60.0
 
 
 def _boot_one_attempt(test, cell, attempt_index):
