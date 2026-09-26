@@ -605,6 +605,7 @@ class OpenbsdInstall(QemuSystemTest):
         vm.set_machine(MACHINES['origin200'])
         vm.set_console()
         vm.add_args(
+            '-S',
             '-cpu', 'R10000', '-m', str(MEMORY_MIB),
             '-bios', firmware,
             '-nic', ('user,id=net0,'
@@ -615,6 +616,8 @@ class OpenbsdInstall(QemuSystemTest):
             '-drive', f'if=none,id=sets-disk,file={sets_disk},format=raw',
             '-device', 'scsi-hd,drive=sets-disk,bus=scsi.1,scsi-id=1')
         vm.launch()
+        # The PROM resets early; connect QMP before that event can arrive.
+        vm.qmp('cont')
 
         log_path = self.log_file('openbsd-install.log')
         try:
