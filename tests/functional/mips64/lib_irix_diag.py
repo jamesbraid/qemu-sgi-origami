@@ -49,11 +49,11 @@ CHECKS = (
     'olmem',
     'oltape',
     'olcdrom',
-    'timer',         # no scheduler tick lost to a missed Compare match
     'reboot',        # an IRIX reboot restarts the PROM
     'warm_boot',     # IRIX boots again after it, and keeps nvram and time
     'persistence',   # nvram and the Timekeeper clock across a full stop
     'parallel',      # parallel-port numbering from a clean ioconfig
+    'timer',         # no scheduler tick lost, over every boot of the row
 )
 
 RUN = 'run'
