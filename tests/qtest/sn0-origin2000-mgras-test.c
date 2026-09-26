@@ -2655,6 +2655,27 @@ static void test_wid_from_display_id_table(void)
     g_assert_cmphex(mgras_test_wid(qts, 72, 61), ==, 0);
 }
 
+/*
+ * A row whose main display-ID frame entry is still its reset value of
+ * zero was never tagged and must read WID 0 across the whole line, even
+ * when SRAM word 0 -- what the old code mistook the zero pointer for --
+ * holds a nonzero, well-formed-looking run-list entry. Row 2's own frame
+ * entry, at SRAM word 2, is untouched by this test and stays zero.
+ */
+static void test_wid_zero_frame_pointer_is_empty_row(void)
+{
+    mgras_reset();
+
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x07, 0));
+    qtest_writew(qts, REG_VC3_RAM, 5);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x07, 1));
+    qtest_writew(qts, REG_VC3_RAM, 0xffe0);
+
+    g_assert_cmphex(mgras_test_wid(qts, 0, 2), ==, 0);
+    g_assert_cmphex(mgras_test_wid(qts, 640, 2), ==, 0);
+    g_assert_cmphex(mgras_test_wid(qts, 1279, 2), ==, 0);
+}
+
 
 /*
  * A rectangle fill (a BLOCKXYENDI execute) paints only when FILLMODE's
@@ -5271,6 +5292,8 @@ int main(int argc, char **argv)
                    test_fill_mask_reads_colormasklsbsa);
     qtest_add_func("sn0/origin2000/mgras/wid-from-display-id-table",
                    test_wid_from_display_id_table);
+    qtest_add_func("sn0/origin2000/mgras/wid-zero-frame-pointer-is-empty-row",
+                   test_wid_zero_frame_pointer_is_empty_row);
     qtest_add_func("sn0/origin2000/mgras/fill-color-reads-fillcolor-registers",
                    test_fill_color_reads_fillcolor_registers);
     qtest_add_func("sn0/origin2000/mgras/ir-alias-execute-paints-nothing",
