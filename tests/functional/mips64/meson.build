@@ -169,11 +169,6 @@ test_mips64_timeouts = {
   # Two-chassis boot plus the router link test; red on current trunk (the
   # second hub is never discovered), bounded so the wedge costs one budget.
   'prom_mdk_router' : 1800,
-  # The installed OpenBSD 6.9 disk's own boot to an authenticated root
-  # login: a spike run took about 9 minutes under a contended host;
-  # BOOT_TIMEOUT_SECONDS in test_openbsd_login.py keeps a 60s margin
-  # under this.
-  'openbsd_login' : 900,
   # Three test methods (one, two, and four CPUs) run one after another in
   # this one script, each now netbooting the kernel through the real PROM
   # rather than a direct -kernel load. The one- and two-CPU boots are each
@@ -192,10 +187,9 @@ test_mips64_timeouts = {
   # keeps a margin over that plus the post-login sshd settle and the banner
   # probe, the same shape the other tests keep over their own budgets.
   'linux_multiuser' : 1320,
-  # The same boot as openbsd_login, with a network back end fitted, plus
-  # a DHCP lease and three transfer legs on top of it. LOGIN_BUDGET_SECONDS
-  # in test_openbsd_net_transfer.py keeps the same 840s login budget
-  # openbsd_login proved sufficient; the margin above that here is wider
+  # The OpenBSD boot reaches an authenticated root shell, then leases an
+  # address and runs three transfer legs. LOGIN_BUDGET_SECONDS in
+  # test_openbsd_net_transfer.py allows 840s for the login; the margin is wider
   # than the other tests' usual 60s, because the three legs each carry
   # their own fixed per-step timeout on top of the login budget (ported
   # from tools/net-transfer-diag) rather than sharing it.
@@ -253,7 +247,6 @@ tests_mips64_system_thorough = [
   'irix_eg',
   'irix_tg',
   'irix_tg_perf',
-  'openbsd_login',
   'linux_kernel',
   'linux_multiuser',
   'openbsd_net_transfer',

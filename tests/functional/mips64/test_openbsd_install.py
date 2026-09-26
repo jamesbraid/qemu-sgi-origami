@@ -9,7 +9,7 @@
 """
 Ports tools/openbsd-install (project checkout, just landed, read from
 fj/main) into this fork's own functional-test framework, the same way
-test_openbsd_login.py ports tools/net-transfer-diag's login_origin(). That
+test_openbsd_net_transfer.py ports the networked login. This
 tool drives the real, interactive OpenBSD/sgi 6.9 installer end to end: it
 creates a blank target disk and writes an OpenBSD struct disklabel into its
 sector 1 (no SGI volume header -- the installer itself writes one during
@@ -28,7 +28,7 @@ traced to a double-completion in the device model", and the golden
 transcript cited below).
 
 Netboots the ramdisk through the real 6.5.30 PROM rather than loading it
-with -kernel, the same conversion test_openbsd_login.py and
+with -kernel, the same conversion test_openbsd_net_transfer.py and
 test_xframe_pci.py make and for the same reason: commit b707094c18 made
 origin200 refuse -kernel outright at machine construction ("stock-PROM
 boot only; boot a kernel through the PROM's own TFTP netboot or a disk
@@ -73,8 +73,8 @@ just the prompt text), and driving the installer with bsd.IP27 itself on
 the sets disk (the installer never confirms complete without it -- see
 tools/openbsd-install's own docstring, "WHAT THIS PROMOTES"). Patterns are
 plain str regexes here rather than the tool's own bytes regexes, matching
-this framework's own str-decoded console transcript (test_openbsd_login.py
-and test_prom_sash.py both keep the same bytes-to-str conversion for the
+this framework's own str-decoded console transcript (the transfer and
+PROM tests both keep the same bytes-to-str conversion for the
 same reason). The disklabel struct-writing logic (_disklabel_bytes,
 _write_disklabel) is the same port of assets/openbsd/spike/
 make-disklabel.py's own build()/build_disklabel() -- see that file's own
@@ -106,12 +106,11 @@ default was established in the now-promoted tool; the CONTRACT this port
 checks (the ordered completion progression) is unaffected by memory size,
 only the argv is, so this test follows the current, landed tool's own
 authoritative default rather than the older capture's incidental one --
-the same reasoning test_openbsd_login.py's own docstring gives for why its
-own login boot is pinned to 128 MiB and not raised.
+the same reason the network transfer test uses 128 MiB.
 
 Guarded by @skipBigDataTest() (the install media total several hundred
 MB) and @skipSlowTest() (a full install is 20-30 minutes) -- the
-framework's own env-var-gated decorators, matching test_openbsd_login.py
+framework's own env-var-gated decorators, matching test_openbsd_net_transfer.py
 -- on top of @skipIfMissingEnv('ORIGAMI_ASSETS') for a developer with no
 assets at all. The install media are published to the forge asset store
 now (nightly provisioning for them is being added separately, out of
@@ -182,7 +181,7 @@ def install_verdict(transcript):
 
 
 # Where ORIGAMI_ASSETS resolves the install media, matching
-# test_openbsd_login.py's own KERNEL_REL/DISK_REL idiom: ORIGAMI_ASSETS
+# test_openbsd_net_transfer.py's own KERNEL_REL/DISK_REL idiom: ORIGAMI_ASSETS
 # names a CHECKOUT, not assets/ itself.
 RELEASE_REL = os.path.join('assets', 'openbsd', '6.9')
 # The install ramdisk. Also the TFTP bootfile name the PROM's netboot
@@ -383,7 +382,7 @@ _TAIL_MAX = 4096
 def _drive_install(sock, log_path, timeout, vm=None):
     """Answers the installer's prompts as install-driver.py proved,
     against a real framework console socket -- the same shape
-    test_openbsd_login.py's own _drive_login() and lib_prom.py's own
+    test_openbsd_net_transfer.py's own _drive_login() and lib_prom.py's own
     drive_console() use, adapted for install-driver.py's own generic
     "prompt went quiet, send a bare newline" fallback (FALLBACK_QUIET),
     which those two simpler drivers do not need: a real install passes
@@ -420,7 +419,7 @@ def _drive_install(sock, log_path, timeout, vm=None):
     Returns the full transcript captured (str) up to whichever comes
     first: the CONGRATULATIONS banner, a TRIPWIRES match, or timeout --
     install_verdict() is what actually decides PASS/FAIL from what was
-    captured either way (matching test_openbsd_login.py's own division:
+    captured either way (matching test_openbsd_net_transfer.py's own division:
     the early break here is a runtime-budget optimization, not a second,
     divergent judgment).
     """
@@ -531,7 +530,7 @@ class OpenbsdInstall(QemuSystemTest):
     """Drives a full, unattended OpenBSD/sgi 6.9 install and requires
     install_verdict() be PASS. See this module's docstring for the
     full contract; this class only wires it to a real install, the
-    same division test_openbsd_login.py and test_prom_sash.py keep
+    same division test_openbsd_net_transfer.py and test_prom_sash.py keep
     between their pure verdict logic and their own QemuSystemTest.
     """
 

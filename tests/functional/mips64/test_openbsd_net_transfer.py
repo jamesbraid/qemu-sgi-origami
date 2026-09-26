@@ -7,84 +7,18 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-Ports tools/net-transfer-diag's own --origin flow (project checkout, read
-from fj/main) into this fork's own functional-test framework, the same way
-test_openbsd_login.py ports that same tool's login_origin(). This test
-fits the network back end net-transfer-diag's own origin_argv() uses for
---origin and drives the rest of that tool's flow: DHCP lease, then three
-transfers -- read (host HTTP server -> guest ftp(1)), write (guest nc(1)
--> host TCP sink), inbound (host opens a forwarded port -> guest nc -l)
--- each checked by an independently-computed SHA-256 and byte count on
-both sides. See net_transfer_verdict()'s own docstring below for why a
-command exiting 0 is not evidence here.
+Boot OpenBSD/sgi 6.9 through the stock IP27 PROM, require an authenticated
+root shell, then check DHCP and three network transfers. The guest reads a
+host HTTP payload, writes to a host TCP sink, and receives a forwarded-port
+payload. Each transfer checks byte count and SHA-256 on both sides.
 
-Boots through the real 6.5.30 PROM's own netboot path rather than a
-direct -kernel load, the conversion test_openbsd_login.py and
-test_xframe_pci.py both make and for the same reason: commit b707094c18
-made origin200 refuse -kernel outright at machine construction ("stock-PROM
-boot only; boot a kernel through the PROM's own TFTP netboot or a disk
-image, not -kernel"), and this test's own -kernel command line had been
-refused, never running a single guest instruction, since that commit
-landed -- undetected because it is registered only in the thorough suite
-(mips64/meson.build), which an ordinary run never exercises. lib_prom's
-prom_netboot_steps() drives the System Maintenance Menu and command
-monitor to `boot -f bootp()/bsd.IP27` over the same SLIRP usermode
-network this test's own DHCP lease and three transfer legs already use --
-one `-nic user` back end serves the netboot TFTP request, the DHCP
-lease, and the forwarded port, the same way test_linux_multiuser.py's own
-`-nic` string already combines `tftp=`/`bootfile=` with `hostfwd=`.
+The test uses 128 MiB because the current Origin 200 model does not back the
+installed guest's memory map correctly above that size. The installed disk
+is opened with -snapshot. The network backend serves the kernel by TFTP and
+carries the transfer traffic.
 
-THIS IS A PASSING TEST: it asserts that login, the DHCP lease, and all
-three transfers actually complete and match. The IOC3 ethernet model
-used to preload a partial TCP/UDP checksum on transmit rather than
-computing the real one, and slirp silently dropped those frames -- fixed
-by 66c80d59e6 ("hw/net/sgi-ioc3-eth: honour the transmit checksum-insert
-bit"), which is why this port can now assert success rather than a
-known-broken transfer. Login alone is separately proven by
-test_openbsd_login.py at the same 128 MiB, on the same kernel and disk.
-
-128 MiB, not this machine's default: the same reason test_openbsd_login.py
-uses it (see that file's own docstring) -- at 128 MiB or below the guest's
-whole memory bank fits in the one slot the machine backs, so the filed
->128MiB memory-map defects have no address at which to appear, and this
-port needs the SAME login this fork's real boot has already proven at
-that size, not a fresh unproven one.
-
-_Console below is a small command/response idiom against this framework's
-own console socket (QemuSystemTest.get_vm().console_socket -- the same
-real API lib_prom.py's own drive_console() and
-test_openbsd_login.py's own _drive_login() drive), generalized to also
-carry net-transfer-diag's own run()/two_values()/capture_value() shape:
-every shell command sent to the guest carries its own end marker, split
-across a quote in the command so the shell's echo of the command line
-itself can never match it (net-transfer-diag's own run() docstring, ported
-here in spirit) -- the failure this replaces is a driver that matches its
-own typing and reports a command "finished" before the guest ever ran it.
-Not net-transfer-diag's own threaded Console class: this test drives the
-guest strictly synchronously (send, then wait), which the SELF-CONTAINED
-brief for this port and this framework's own socket-polling idiom both
-call for.
-
-The host side -- an HTTP server for the read leg, a TCP sink for the write
-leg, and the forwarded-port push for the inbound leg -- is net-transfer-diag's
-own design, ported: "NO DAEMON WE HAD TO WRITE" (that tool's own docstring)
--- the read leg is served by a stock library HTTP server and fetched by
-ftp(1), which is in the guest's base install and speaks HTTP; the write leg
-lands in a socket server that does nothing but write what it is given to a
-file. The forwarded port for the inbound leg is resolved dynamically after
-launch via this framework's own get_usernet_hostfwd_port() (tests/functional/
-generic/test_info_usernet.py's own pattern) rather than net-transfer-diag's
-own free_port()-then-bind trick, which races against anything else binding
-that port between the check and QEMU's own bind.
-
-Guarded by @skipBigDataTest() (the disk is 2 GiB) and @skipSlowTest() (the
-boot plus three transfers is minutes), on top of
-@skipIfMissingEnv('ORIGAMI_ASSETS') for a developer with no assets at all
--- matching test_openbsd_login.py's own guards exactly, since this test
-shares the same kernel and disk. ORIGAMI_ASSETS being set with either
-asset missing underneath it is a provisioning failure, not an
-absent-assets run, and fails the test loudly rather than skipping it,
-the same as test_openbsd_login.py.
+The ordered root-device, login, and shell checks use the same transcript as
+the network checks, so both outcomes need one guest boot.
 """
 
 import hashlib
@@ -102,18 +36,15 @@ from qemu_test import (QemuSystemTest, skipBigDataTest, skipIfMissingEnv,
                        skipSlowTest)
 from qemu_test.utils import get_usernet_hostfwd_port
 
-from lib_net import (LEASE_HANDSHAKE, OPENBSD_TRIPWIRES, Console,
+from lib_net import (LEASE_HANDSHAKE, OPENBSD_LOGIN_STAGES,
+                     OPENBSD_TRIPWIRES, Console,
                      HarnessError, lease_established, login_steps,
-                     summarise_pcap)
+                     ordered_stages, summarise_pcap)
 from lib_prom import (FIRMWARE_REL, MACHINES, prom_netboot_steps,
                       require_assets)
 
 
-# Where ORIGAMI_ASSETS resolves the kernel and installed disk -- the same
-# assets test_openbsd_login.py resolves, since this test boots the
-# identical kernel and disk with a network back end added. FIRMWARE_REL
-# comes from lib_prom.py; it names the same 6.5.30 PROM every origin200
-# netboot test loads with -bios.
+# ORIGAMI_ASSETS names the checkout containing these files.
 KERNEL_REL = os.path.join('assets', 'openbsd', '6.9', 'bsd.IP27')
 DISK_REL = os.path.join('assets', 'openbsd', 'spike', 'root.img')
 
@@ -137,21 +68,11 @@ HOME = "/root"
 # net-transfer-diag's own default payload size for each leg.
 PAYLOAD_BYTES = 65536
 
-# The PROM's netboot dialogue and the kernel's own ordered questions on
-# the way to a root shell -- the same sequence test_openbsd_login.py
-# drives, built by lib_net.login_steps(). Console.expect() only compiles
-# a pattern when it is bytes, so this driver asks for the bytes form; the
-# responses stay str either way.
-LOGIN_STEPS = login_steps(prom_netboot_steps(NETBOOT_BOOTFILE),
+PROM_STEPS = prom_netboot_steps(NETBOOT_BOOTFILE)
+LOGIN_STEPS = login_steps(PROM_STEPS,
                           ROOT_PASSWORD, as_bytes=True)
 
-# Kept equal to test_openbsd_login.py's own BOOT_TIMEOUT_SECONDS: reaching
-# a root shell here is the identical boot this fork has already proven at
-# 128 MiB (see this module's own docstring), so the same budget applies.
-# The DHCP lease and the three legs run AFTER this budget is spent, each
-# under its own fixed timeout below (net-transfer-diag's own per-step
-# values, which do not scale with host boot contention the way the boot
-# itself does).
+# The DHCP lease and transfers have their own deadlines after login.
 LOGIN_BUDGET_SECONDS = 840
 
 
@@ -207,8 +128,9 @@ def net_transfer_verdict(transcript, dhcp_counts, legs):
     Returns {"verdict": "PASS"|"FAIL", "problems": [...], "lease_ok":
     bool, "legs_ok": {name: bool}}.
     """
-    problems = [why for why, rx in OPENBSD_TRIPWIRES
-                if rx.search(transcript)]
+    problems = ordered_stages(transcript, OPENBSD_LOGIN_STAGES)
+    problems.extend(why for why, rx in OPENBSD_TRIPWIRES
+                    if rx.search(transcript))
 
     lease_ok = lease_established(dhcp_counts)
     if not lease_ok:
@@ -258,14 +180,21 @@ def net_transfer_verdict(transcript, dhcp_counts, legs):
 
 
 def _drive_login(con, budget):
-    """Answer the kernel's device questions, then log in -- the same
-    ordered sequence test_openbsd_login.py's own _drive_login() drives,
-    against this file's own console rather than a bare socket loop.
-    """
+    """Answer the kernel's device questions and log in on this console."""
     deadline = time.monotonic() + budget
     def left(cap):
         return max(1.0, min(cap, deadline - time.monotonic()))
-    for pattern, response in LOGIN_STEPS:
+    for pattern, response in LOGIN_STEPS[:len(PROM_STEPS)]:
+        con.expect(pattern, left(budget), what=f"{pattern!r}")
+        con.send(response.rstrip("\n"))
+    root = con.expect(rb"root device\s*:|root on sd0a\b", left(budget),
+                      what="root device selection")
+    if root.group().startswith(b"root device"):
+        con.send("sd0a")
+        con.expect(rb"swap device[^:]*:", left(budget),
+                   what="the swap device question")
+        con.send("")
+    for pattern, response in LOGIN_STEPS[len(PROM_STEPS):]:
         con.expect(pattern, left(budget), what=f"{pattern!r}")
         con.send(response.rstrip("\n"))
     con.expect(rb"# ", left(120), what="a root shell")

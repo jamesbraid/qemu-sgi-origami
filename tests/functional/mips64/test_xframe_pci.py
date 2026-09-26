@@ -8,7 +8,7 @@
 #
 # SPDX-License-Identifier: GPL-2.0-or-later
 """
-Boots the exact same kernel and installed disk test_openbsd_login.py boots
+Boots the same kernel and installed disk as the network transfer test
 (see that file's own docstring for where they come from and why 128 MiB),
 with one addition on the command line: `-device
 xframe,addr=4.0,subsystem-vendor-id=0x10a9,netdev=n1,mac=02:00:5d:00:00:01`
@@ -38,18 +38,18 @@ kernel and disk, every PCI device line appears before "boot device:
 'unknown' unrecognized." and "root device: sd0a", the first point that
 transcript ever needs an answer. This test only needs to read until
 XFRAME_UNCLAIMED_RE matches, a trip wire fires, or the timeout runs out;
-unlike test_openbsd_login.py's own _drive_login(), it never needs a login
+unlike test_openbsd_net_transfer.py's own _drive_login(), it never needs a login
 sequence at all.
 
 Boots through the real stock IP27 PROM's own netboot path rather than a
-direct `-kernel` load, the same conversion test_openbsd_login.py and
+direct `-kernel` load, the same conversion test_openbsd_net_transfer.py and
 test_linux_kernel.py make and for the same reason (the plan this test
 belongs to retires synthesized firmware): lib_prom's prom_netboot_steps()
 drives the System Maintenance Menu and command monitor to `boot -f
 bootp()/bsd.IP27` over a second SLIRP usermode network on the machine's
 onboard IOC3, separate from the xframe adapter's own -netdev n1. The
 onboard controller already exists in the machine model whether or not a
-backend is attached (test_openbsd_login.py's own reference boot with
+backend is attached (test_openbsd_net_transfer.py's own reference boot with
 `-nic none` already shows OpenBSD attaching it), so giving it a real
 netboot backend here changes nothing about the PCI topology OpenBSD's
 autoconfiguration reports -- the exact concern this test's own pass
@@ -66,13 +66,13 @@ that as it kept over the direct-`-kernel` measurement this timeout
 predates; the meson timeout entry for this test keeps the usual 60s
 margin over this budget.
 
-Guarded the same way test_openbsd_login.py is: @skipBigDataTest() (the
+Guarded the same way test_openbsd_net_transfer.py is: @skipBigDataTest() (the
 disk is 2 GiB), @skipSlowTest() (booting to firmware-plus-early-kernel is
 not instant even though this test stops well short of a full boot), and
 @skipIfMissingEnv('ORIGAMI_ASSETS') for a developer with no assets at
 all. ORIGAMI_ASSETS being set with either asset missing underneath it is
 a provisioning failure, not an absent-assets run, and fails the test
-loudly rather than skipping it, the same as test_openbsd_login.py.
+loudly rather than skipping it, the same as test_openbsd_net_transfer.py.
 """
 
 import os
@@ -120,7 +120,7 @@ def xframe_pci_verdict(transcript):
     }
 
 
-# The same kernel and installed disk test_openbsd_login.py resolves --
+# The same kernel and installed disk test_openbsd_net_transfer.py resolves --
 # this test boots the identical stock 6.9 GENERIC-IP27 image, only with
 # the xframe device added to the command line.
 KERNEL_REL = os.path.join('assets', 'openbsd', '6.9', 'bsd.IP27')
@@ -132,7 +132,7 @@ DISK_REL = os.path.join('assets', 'openbsd', 'spike', 'root.img')
 NETBOOT_BOOTFILE = 'bsd.IP27'
 NETBOOT_STEPS = prom_netboot_steps(NETBOOT_BOOTFILE)
 
-# Same reason test_openbsd_login.py uses it (see that file's own
+# Same reason test_openbsd_net_transfer.py uses it (see that file's own
 # docstring): at 128 MiB or below the guest's whole memory bank fits in
 # the one slot the machine backs.
 MEMORY_MIB = 128
@@ -172,7 +172,7 @@ class XframePci(QemuSystemTest):
     """Boots the stock OpenBSD 6.9 disk with an xframe adapter attached
     and requires xframe_pci_verdict() to be PASS. See this module's own
     docstring for the full contract; this class only wires it to a real
-    boot, the same division test_openbsd_login.py keeps between its pure
+    boot, the same division test_openbsd_net_transfer.py keeps between its pure
     verdict logic and its own QemuSystemTest.
     """
 
@@ -209,7 +209,6 @@ class XframePci(QemuSystemTest):
             # A VM that crashed or exited on its own has already left; a
             # graceful shutdown() against an already-dead process still
             # raises AbnormalShutdown even though qemu is in fact gone.
-            # Matches test_openbsd_login.py's own OpenbsdLogin.test_openbsd_login.
             vm.shutdown(hard=vm.exitcode() is not None)
 
         if not transcript:
