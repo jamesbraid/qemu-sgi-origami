@@ -646,7 +646,14 @@ static void test_invalid_replay(const char *path, const char *message)
         return;
     }
     g_setenv("MGRAS_INVALID_REPLAY", path, true);
-    g_test_trap_subprocess(NULL, 10 * G_TIME_SPAN_SECOND, 0);
+    /*
+     * The child boots a real 8-CPU origin2000 fixture before it ever
+     * reaches the invalid line, and that boot alone has been measured at
+     * 10.5-11s under load -- past the old 10s trap timeout with nothing
+     * left over for the parse itself. Give it the same order of headroom
+     * the rest of this suite's budget uses.
+     */
+    g_test_trap_subprocess(NULL, 60 * G_TIME_SPAN_SECOND, 0);
     g_unsetenv("MGRAS_INVALID_REPLAY");
     g_test_trap_assert_failed();
     g_test_trap_assert_stderr(message);
