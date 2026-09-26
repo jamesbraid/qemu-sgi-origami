@@ -84,6 +84,7 @@ static QTestState *qts;
 #define REG_CMAP_WRITE_INDEX    MGRAS_REG(0x070c30)
 #define REG_CMAP_DATA           MGRAS_REG(0x070d18)
 #define REG_XMAP_MAIN_MODE      MGRAS_REG(0x071e00)
+#define REG_XMAP_BUF_SELECT     MGRAS_REG(0x071d80)
 #define REG_INT_DEST_UPPER_ALT  MGRAS_REG(0x000030)
 #define REG_INT_DEST_LOWER_ALT  MGRAS_REG(0x000038)
 #define REG_HQ_CONFIG_A         MGRAS_REG(0x011030)
@@ -561,6 +562,41 @@ static void test_repp_sync_handshake(void)
     g_assert_cmphex(qtest_readb(qts, REG_XMAP_INDEX), ==, 0x1c);
     g_assert_cmphex(qtest_readl(qts, REG_REPP_SYNC) & 0x00000f0f, ==,
                      0x00000101);
+}
+
+/*
+ * XMAP_BUF_SELECT (docs/datasheets/mgras-hq4.md, "Swap scheduling") takes
+ * only a word write, indexed by REG_XMAP_INDEX the same way as
+ * REG_XMAP_MAIN_MODE. No public driver source ever reads this port back
+ * (see the header comment above SGI_MGRAS_XMAP_BUF_SELECT), so this
+ * proves the accepted write at two window-select indices, that other
+ * widths still raise the width exception, and that a read still errors --
+ * without touching swap/retrace behavior, which lives in
+ * hw/misc/sgi-mgras-raster.c.
+ */
+static void test_xmap_buf_select_write(void)
+{
+    mgras_reset();
+
+    qtest_writeb(qts, REG_XMAP_INDEX, 0);
+    qtest_writel(qts, REG_XMAP_BUF_SELECT, 0xffffffff);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+
+    qtest_writeb(qts, REG_XMAP_INDEX, 4);
+    qtest_writel(qts, REG_XMAP_BUF_SELECT, 0x0000ffff);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+
+    mgras_reset();
+    mgras_write_width(qts, REG_XMAP_BUF_SELECT, 1, 0xff);
+    mgras_assert_width_error(qts, REG_XMAP_BUF_SELECT);
+
+    mgras_reset();
+    mgras_write_width(qts, REG_XMAP_BUF_SELECT, 8, 0xff);
+    mgras_assert_width_error(qts, REG_XMAP_BUF_SELECT);
+
+    mgras_reset();
+    mgras_read_width(qts, REG_XMAP_BUF_SELECT, 4);
+    mgras_assert_width_error(qts, REG_XMAP_BUF_SELECT);
 }
 
 typedef struct SIVisualRegisterWidth {
@@ -4611,6 +4647,8 @@ int main(int argc, char **argv)
                    test_i2c_probe_loopback);
     qtest_add_func("sn0/origin2000/mgras/repp-sync-handshake",
                    test_repp_sync_handshake);
+    qtest_add_func("sn0/origin2000/mgras/xmap-buf-select-write",
+                   test_xmap_buf_select_write);
     qtest_add_func("sn0/origin2000/mgras/visual-register-read-widths",
                    test_visual_register_read_widths);
     qtest_add_func("sn0/origin2000/mgras/visual-register-write-widths",

@@ -116,6 +116,16 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 
 #define SGI_MGRAS_RE_ARG 0x071e80
 
+/*
+ * Established (docs/datasheets/mgras-hq4.md, "Swap scheduling"):
+ * MgrasSchedSwapBuf writes this XMAP-indexed port with the per-window swap
+ * mask that takes effect at the next retrace; windows 32 and up use a
+ * second mask word under index 4, which the same indexed array already
+ * covers. No public driver source reads this port back, so only the
+ * write side is modeled.
+ */
+#define SGI_MGRAS_XMAP_BUF_SELECT 0x071d80
+
 /* Visual selection remains approximate because WID encoding is unresolved. */
 #define SGI_MGRAS_XMAP_MAIN_MODE 0x071e00
 
@@ -333,6 +343,7 @@ struct SGIMgrasState {
     uint64_t retraces;
     uint8_t xmap_index;
     uint32_t xmap_mode[SGI_MGRAS_XMAP_ENTRIES];
+    uint32_t xmap_buf_select[SGI_MGRAS_XMAP_ENTRIES];
     uint16_t vc3_reg[32];
     uint8_t vc3_index;
     uint16_t vc3_ram_addr;
