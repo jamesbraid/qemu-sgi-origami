@@ -150,6 +150,7 @@ static QTestState *qts;
 #define REG_RE_POINT            0x040
 #define REG_RE_LINE             0x041
 #define REG_RE_BLOCKCOPY        0x045
+#define REG_XYWIN               0x115
 
 #define REG_IR_ALIAS            0x045
 #define REG_ALPHA               0x05f
@@ -4126,6 +4127,104 @@ static void test_re_line_ci8_reads_red_channel(void)
 }
 
 
+/*
+ * XYWIN (0x115) carries a per-window screen origin that RE_POINT/RE_LINE
+ * add to their own coordinate whenever its x field is nonzero: a retained
+ * greeter capture's icon-panel outlines otherwise land in a "ghost
+ * cluster" at the top-left instead of on their icons. OpenBSD's impact(4)
+ * driver (sys/arch/sgi/dev/impactreg.h) names it IMPACTSR_CMD_XYWIN and
+ * packs it through IMPACTSR_YXCOORDS(x, y) = (y << 16) | x. See
+ * mgras_apply_window_origin() in hw/misc/sgi-mgras-raster.c and
+ * "RE_POINT and RE_LINE addressing" in docs/datasheets/mgras-raster-
+ * display.md.
+ */
+static void test_re_point_execute_applies_xywin_origin(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+
+    /* RGB format: RE_LINE/RE_POINT read PACKEDCOLOR only under this format. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00abcdef));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_XYWIN, (200u << 16) | 300u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_POINT, (70u << 16) | 80u));
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    /* XYWIN's y field (200 here) is packed top-down; the origin applies
+     * it as SGI_MGRAS_HEIGHT - 1 - oy, not oy directly. */
+    g_assert_cmphex(mgras_test_pixel(qts, 70 + 300, 80 + (1023 - 200)), ==,
+                     0x00abcdef);
+    g_assert_cmphex(mgras_test_pixel(qts, 70, 80), ==, 0);
+}
+
+static void test_re_line_execute_applies_xywin_origin(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+
+    /* RGB format: RE_LINE/RE_POINT read PACKEDCOLOR only under this format. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00112233));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_XYWIN, (200u << 16) | 300u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_POINT, (100u << 16) | 100u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_LINE, (105u << 16) | 105u));
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    /* XYWIN's y field (200 here) is packed top-down; the origin applies
+     * it as SGI_MGRAS_HEIGHT - 1 - oy, not oy directly. */
+    g_assert_cmphex(mgras_test_pixel(qts, 100 + 300, 100 + (1023 - 200)), ==,
+                     0x00112233);
+    g_assert_cmphex(mgras_test_pixel(qts, 105 + 300, 105 + (1023 - 200)), ==,
+                     0x00112233);
+
+    g_assert_cmphex(mgras_test_pixel(qts, 100, 100), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 105, 105), ==, 0);
+}
+
+/*
+ * A live greeter capture's dominant XYWIN value packs a zero x field with
+ * a nonzero y field (0x03ff0000: x field 0, y field 1023); 1,456 of its
+ * 1,953 RE_LINE executes carry it and already paint at their correct
+ * absolute position. Adding the y field unconditionally would push those
+ * already-correct lines off-window, so the origin must stay gated on the
+ * x field alone, not on the whole register being nonzero.
+ */
+static void test_re_line_execute_ignores_zero_x_field_xywin(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+
+    /* RGB format: RE_LINE/RE_POINT read PACKEDCOLOR only under this format. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00445566));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_XYWIN, (1023u << 16) | 0u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_POINT, (100u << 16) | 100u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_LINE, (105u << 16) | 105u));
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    g_assert_cmphex(mgras_test_pixel(qts, 100, 100), ==, 0x00445566);
+    g_assert_cmphex(mgras_test_pixel(qts, 105, 105), ==, 0x00445566);
+    g_assert_cmphex(mgras_test_pixel(qts, 100, 100 + 1023), ==, 0);
+}
+
+
 static void test_re_char_h_execute(void)
 {
     mgras_reset();
@@ -4938,6 +5037,15 @@ int main(int argc, char **argv)
                    test_re_point_ci8_reads_red_channel);
     qtest_add_func("sn0/origin2000/mgras/re-line-ci8-reads-red-channel",
                    test_re_line_ci8_reads_red_channel);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "re-point-execute-applies-xywin-origin",
+                   test_re_point_execute_applies_xywin_origin);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "re-line-execute-applies-xywin-origin",
+                   test_re_line_execute_applies_xywin_origin);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "re-line-execute-ignores-zero-x-field-xywin",
+                   test_re_line_execute_ignores_zero_x_field_xywin);
     qtest_add_func("sn0/origin2000/mgras/re-char-h-execute",
                    test_re_char_h_execute);
     qtest_add_func("sn0/origin2000/mgras/fifo-re-blockcopy-unsupported",
