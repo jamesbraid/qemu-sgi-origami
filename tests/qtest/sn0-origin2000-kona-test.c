@@ -53,10 +53,14 @@ static QTestState *qts;
 static void kona_reset(void)
 {
     qtest_system_reset(qts);
-    /* The one register increment 1 gives no write path at all: an
-     * end-to-end decode check, not a claim that reset clears anything
-     * -- WIDGET_CONTROL and the one-wire register have no reset method
-     * of their own yet and are not asserted to any value here. */
+    /*
+     * An end-to-end decode check for PROBE, not a claim about the rest of
+     * the register file: WIDGET_CONTROL and the one-wire register do have
+     * their own reset method now (sgi_kona_reset_hold(), hw/misc/
+     * sgi-kona.c) and go back to zero on every reset this calls, but that
+     * is test_reset_clears_plain_storage()'s claim to check, not this
+     * helper's.
+     */
     g_assert_cmphex(qtest_readl(qts, REG_PROBE), ==, 0);
 }
 
@@ -335,10 +339,13 @@ static void test_unknown_offset_reads_zero_and_accepts_writes(void)
     kona_reset();
     g_assert_cmphex(qtest_readl(qts, KONA_REG(0x100000)), ==, 0);
 
-    /* Compare against whatever WIDGET_CONTROL already held, not a fixed
-     * value: it has no reset method yet, so an earlier case's write can
-     * still be sitting there (see kona_reset()). What this checks is that
-     * an unmapped write does not disturb it, not what it currently is. */
+    /*
+     * Compare against whatever WIDGET_CONTROL reads back after
+     * kona_reset(), not a hardcoded value: this checks that an unmapped
+     * write does not disturb it, independent of what value reset itself
+     * leaves there (test_reset_clears_plain_storage() checks that
+     * separately).
+     */
     control_before = qtest_readl(qts, REG_WIDGET_CONTROL);
     qtest_writel(qts, KONA_REG(0x100000), 0x12345678);
     g_assert_cmphex(qtest_readl(qts, KONA_REG(0x100000)), ==, 0);
@@ -393,6 +400,27 @@ static void test_onewire_ktown_identity(void)
                                  "KTOWN-BD");
 }
 
+/*
+ * Must-fix 2: a mutated WIDGET_CONTROL and a one-wire transaction left
+ * mid-slot both go back to zero on system reset (sgi_kona_reset_hold(),
+ * hw/misc/sgi-kona.c), matching hw/pci-host/sgi-bridge.c's own
+ * sgi_bridge_reset_hold(). KONA_ONEWIRE_RESET()'s pulse/sample bits are
+ * nonzero on their own, so onewire_reg reads back nonzero here whether or
+ * not a part answers the reset pulse.
+ */
+static void test_reset_clears_plain_storage(void)
+{
+    kona_reset();
+    qtest_writel(qts, REG_WIDGET_CONTROL, 0xdeadbeef);
+    KONA_ONEWIRE_RESET();
+    g_assert_cmphex(qtest_readl(qts, REG_WIDGET_CONTROL), !=, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_ONEWIRE), !=, 0);
+
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readl(qts, REG_WIDGET_CONTROL), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_ONEWIRE), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -412,6 +440,8 @@ int main(int argc, char **argv)
                    test_onewire_geometry_identity);
     qtest_add_func("sn0/origin2000/kona/onewire-ktown-identity",
                    test_onewire_ktown_identity);
+    qtest_add_func("sn0/origin2000/kona/reset-clears-plain-storage",
+                   test_reset_clears_plain_storage);
 
     ret = g_test_run();
     qtest_quit(qts);
