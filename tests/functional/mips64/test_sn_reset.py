@@ -796,6 +796,16 @@ def shutdown_windows(log):
 
 class SN1L1Reset(_ResetCycleMixin, QemuSystemTest):
 
+    def wait_for_spinners(self, previous):
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            state = self.read_state()
+            counters = (state[STATE_A_DONE // 8], state[STATE_B_DONE // 8])
+            if all(current != old for current, old in zip(counters, previous)):
+                return
+            time.sleep(0.1)
+        self.fail(f'console spinners did not advance from {previous}: {state}')
+
     def run_resets(self, *accelerator):
         prom = require_assets(self, IP35_FIRMWARE_REL)[IP35_FIRMWARE_REL]
 
@@ -865,15 +875,7 @@ class SN1L1Reset(_ResetCycleMixin, QemuSystemTest):
             '-D', log)
         self.vm.launch()
         wait_for_console_pattern(self, '<CTRL_T> to escape to L1')
-
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline:
-            state = self.read_state()
-            if state[STATE_A_DONE // 8] and state[STATE_B_DONE // 8]:
-                break
-            time.sleep(0.1)
-        else:
-            self.fail(f'console spinners did not both run: {state}')
+        self.wait_for_spinners((0, 0))
 
         for _ in range(CYCLES):
             exec_command_and_wait_for_pattern(
@@ -881,9 +883,12 @@ class SN1L1Reset(_ResetCycleMixin, QemuSystemTest):
             exec_command_and_wait_for_pattern(
                 self, '\x14power down', '001c01-L1> ')
             self.vm.event_wait('SHUTDOWN')
+            state = self.read_state()
+            stopped = (state[STATE_A_DONE // 8], state[STATE_B_DONE // 8])
             exec_command_and_wait_for_pattern(
                 self, 'power up', '<CTRL_T> to escape to L1')
             self.vm.event_wait('RESET')
+            self.wait_for_spinners(stopped)
 
         self.vm.shutdown()
         return Path(log).read_text(errors='replace')
