@@ -1136,7 +1136,8 @@ static void test_dma_map_close_marker_and_discard(void)
  * class-0x0008 write-direction transfer. This exercises
  * mgras_raster_dma_draw_image()'s host-memory read path end to end: the
  * page-list lookup, sgi_mgras_xio_compose()'s widget-shifted fabric
- * address, and the existing 32-bit pixel paint. It also confirms the
+ * address, and the 32-bit pixel paint, whose red is the pixel's low byte
+ * (see mgras_raster_dma_draw_image()). It also confirms the
  * write kick sets the FENCE completion bit the IRIX X server polls
  * after every DMA kick.
  */
@@ -1216,8 +1217,8 @@ static void test_dma_image_transfer_paints_from_host_memory(void)
     g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
                     MGRAS_HQ_FLAG_FENCE);
 
-    g_assert_cmphex(mgras_test_pixel(qts, 50, 50), ==, 0x00112233);
-    g_assert_cmphex(mgras_test_pixel(qts, 51, 50), ==, 0x00445566);
+    g_assert_cmphex(mgras_test_pixel(qts, 50, 50), ==, 0x00332211);
+    g_assert_cmphex(mgras_test_pixel(qts, 51, 50), ==, 0x00665544);
 }
 
 #undef DMA_XFER_NODE
@@ -1262,7 +1263,7 @@ static void test_dma_image_transfer_src_off_aligned_selects_page(void)
         0, 0, 0, 0, 0, 0, 0, 0,          /* index 2: unused */
         0, 0, 0, 0, 0, 0, 0, DMA_SRCOFF_TARGET_PFN, /* index 3: target */
     };
-    static const uint8_t src_pixel[4] = { 0x00, 0x77, 0x88, 0x99 };
+    static const uint8_t src_pixel[4] = { 0x00, 0x99, 0x88, 0x77 };
 
     mgras_reset();
     mgras_enter_context(qts);
@@ -1349,8 +1350,8 @@ static void test_dma_image_transfer_kick_byte_selects_slot(void)
     static const uint8_t list_header[24] = { 0 };
     static const uint8_t list0[8] = { 0, 0, 0, 0, 0, 0, 0, 0x07 };
     static const uint8_t list3[8] = { 0, 0, 0, 0, 0, 0, 0, 0x09 };
-    static const uint8_t pixels0[4] = { 0x00, 0x11, 0x22, 0x33 };
-    static const uint8_t pixels3[4] = { 0x00, 0x55, 0x66, 0x77 };
+    static const uint8_t pixels0[4] = { 0x00, 0x33, 0x22, 0x11 };
+    static const uint8_t pixels3[4] = { 0x00, 0x77, 0x66, 0x55 };
 
     mgras_reset();
     mgras_enter_context(qts);
@@ -1469,8 +1470,8 @@ static void test_dma_image_transfer_reads_list_entry_at_0x18(void)
     static const uint8_t list_entry[8] = {
         0, 0, 0, 0, 0, 0, 0, DMA_LIST_BASE_REAL_PFN,
     };
-    static const uint8_t real_page_pixels[4] = { 0x00, 0xaa, 0xbb, 0xcc };
-    static const uint8_t page0_pixels[4] = { 0x00, 0x11, 0x22, 0x33 };
+    static const uint8_t real_page_pixels[4] = { 0x00, 0xcc, 0xbb, 0xaa };
+    static const uint8_t page0_pixels[4] = { 0x00, 0x33, 0x22, 0x11 };
 
     mgras_reset();
     mgras_enter_context(qts);
@@ -1778,6 +1779,83 @@ static void test_byte_row_pairs_rgb_survives_dma_copy(void)
         }
     }
     g_assert_cmphex(mgras_test_display_pixel(qts, 4, 0), ==, 0x00c0c0c0);
+}
+
+/*
+ * A screen-to-host read of an RGB pixel is the inverse of the draw: bytes
+ * 1, 2 and 3 of each 4-byte pixel carry blue, green and red, and byte 0
+ * reads zero. A red-first read would send a copied colour image back with
+ * red and blue exchanged.
+ */
+static void test_dma_image_transfer_reads_rgb_red_in_low_byte(void)
+{
+    static const uint8_t list_header[24] = { 0 };
+    static const uint8_t list_entry[8] = {
+        0, 0, 0, 0, 0, 0, 0, DMA_READ_DATA_PFN,
+    };
+    static const uint8_t want[4] = { 0x00, 0x56, 0x34, 0x12 };
+    static const uint8_t poison[4] = { 0xee, 0xee, 0xee, 0xee };
+    uint8_t got[4];
+
+    mgras_reset();
+    mgras_enter_context(qts);
+
+    qtest_memwrite(qts, dma_read_node_addr(DMA_READ_LIST_PAGE),
+                  list_header, sizeof(list_header));
+    qtest_memwrite(qts, dma_read_node_addr(DMA_READ_LIST_BASE),
+                  list_entry, 8);
+    qtest_memwrite(qts, dma_read_node_addr(DMA_READ_DATA_PAGE),
+                  poison, sizeof(poison));
+
+    /* An RGB fill of red 0x12, green 0x34, blue 0x56 at (0,0). */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_COLORMASKMSBS, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND(REG_PP1FILLMODE, (MGRAS_LOGIC_OP_COPY << 26) |
+                                               MGRAS_PP1FILLMODE_RGB));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND(REG_FILLCOLOR_R, 0x12u << 4));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND(REG_FILLCOLOR_G, 0x34u << 4));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND(REG_FILLCOLOR_B, 0x56u << 4));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND(REG_BLOCK_START, (0u << 16) | 0u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND_EXEC(REG_BLOCK_END, (0u << 16) | 0u));
+    g_assert_cmphex(mgras_test_pixel(qts, 0, 0), ==, 0x00123456);
+
+    qtest_writel(qts, MGRAS_REG(0x130400), 0x00482008);
+    qtest_writeq(qts, MGRAS_REG(0x130400),
+                dma_read_node_addr(DMA_READ_LIST_BASE));
+    qtest_writeq(qts, MGRAS_REG(0x130400), ((uint64_t)0x00483004 << 32) | 1);
+    qtest_writeq(qts, MGRAS_REG(0x130400),
+                ((uint64_t)0x00484b04 << 32) | (DMA_READ_WIDGET << 16));
+
+    /* Read hw-y box (0,1023)-(0,1023): screen pixel (0,0), 4 bytes. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND(REG_FILLMODE, 0x01000000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND(REG_PP1FILLMODE, 0x00002200));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND(REG_BLOCK_START, (0u << 16) | 1023u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND_EXEC(REG_BLOCK_END, (0u << 16) | 1023u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080404 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080504 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080604 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080704 << 32) | 1);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080804 << 32) | 4);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                ((uint64_t)0x00080b04 << 32) | 0xb9);
+
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+    qtest_memread(qts, dma_read_node_addr(DMA_READ_DATA_PAGE),
+                 got, sizeof(got));
+    g_assert_cmpmem(got, sizeof(got), want, sizeof(want));
 }
 
 #undef DMA_READ_NODE
@@ -5407,6 +5485,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "dma-image-transfer-reads-screen-to-host",
                    test_dma_image_transfer_reads_screen_to_host);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "dma-image-transfer-reads-rgb-red-in-low-byte",
+                   test_dma_image_transfer_reads_rgb_red_in_low_byte);
     qtest_add_func("sn0/origin2000/mgras/byte-row-pairs-rgb-survives-dma-copy",
                    test_byte_row_pairs_rgb_survives_dma_copy);
     qtest_add_func("sn0/origin2000/mgras/board-bringup-byte-poll-bit-position",

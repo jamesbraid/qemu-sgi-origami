@@ -1422,16 +1422,20 @@ static void mgras_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
             if (b % bpp == bpp - 1) {
                 uint32_t col = b / bpp;
                 /*
-                 * bpp 1 is a bare CI8 CMAP index. bpp 4 assembles an
-                 * MSB-first 32-bit pixel, but mgras_put_pixel()/
-                 * mgras_paint_pixel() mask to the low 24 bits, so byte 0
-                 * (the MSB) is discarded and bytes 1-3 survive as an
-                 * 0x00RRGGBB triple: an RGB pixel.
+                 * bpp 1 is a bare CI8 CMAP index. bpp 4 is a big-endian
+                 * 32-bit pixel with red in its low byte: bytes 3, 2 and 1
+                 * are red, green and blue, and byte 0 is not stored. The
+                 * IRIX 6.5.30 greeter's EZsetup icon is the evidence: read
+                 * the other way round it shows cyan and blue-grey where
+                 * the same server dithers it to yellow and red on the
+                 * 8-bit RAD4 reference frame, and swapping red and blue
+                 * turns each of its main colours into the reference's
+                 * hue. Only greys cross the other RGB paths in the
+                 * captures, so their channel order is not settled.
                  */
                 uint32_t color = bpp == 1 ? pixel_bytes[0] :
-                    ((uint32_t)pixel_bytes[0] << 24) |
-                    ((uint32_t)pixel_bytes[1] << 16) |
-                    ((uint32_t)pixel_bytes[2] << 8) | pixel_bytes[3];
+                    ((uint32_t)pixel_bytes[3] << 16) |
+                    ((uint32_t)pixel_bytes[2] << 8) | pixel_bytes[1];
                 uint8_t format = bpp == 1 ? SGI_MGRAS_PIXEL_FORMAT_CI8 :
                                             SGI_MGRAS_PIXEL_FORMAT_RGB;
 
@@ -1455,12 +1459,11 @@ static void mgras_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
  * row HEIGHT-1-y1). Refuse a descriptor whose rows count does not match
  * that box height instead of guessing which end to trust.
  *
- * A stored pixel is mgras_put_pixel()'s COLORMASKLSBSA-masked 24-bit value;
- * the byte extraction below is the exact inverse of the draw path's
- * pixel_bytes[0]<<24 | pixel_bytes[1]<<16 | pixel_bytes[2]<<8 |
- * pixel_bytes[3] assembly, most-significant byte first, so byte 0 of a
- * 4-byte pixel always reads back zero (the draw path's mask never lets
- * that byte reach the framebuffer).
+ * A stored pixel is mgras_put_pixel()'s COLORMASKLSBSA-masked 0x00RRGGBB
+ * value; the byte extraction below is the exact inverse of the draw
+ * path's assembly, bytes 1, 2 and 3 of a 4-byte pixel carrying blue,
+ * green and red. Byte 0 always reads back zero: the draw path never
+ * stores it.
  */
 static void mgras_raster_dma_read_image(SGIMgrasState *s, uint32_t kick_byte)
 {
@@ -1544,7 +1547,7 @@ static void mgras_raster_dma_read_image(SGIMgrasState *s, uint32_t kick_byte)
             }
             stored = s->front[y * SGI_MGRAS_WIDTH + x];
             byte = bpp == 1 ? (uint8_t)stored :
-                (uint8_t)(stored >> (24 - 8 * (b % bpp)));
+                b % bpp == 0 ? 0 : (uint8_t)(stored >> (8 * (b % bpp - 1)));
 
             va = addr + (uint64_t)row * pitch + b;
             page_ix = va >> 12;
