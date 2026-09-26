@@ -51,7 +51,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from lib_net import Console, HarnessError
+from lib_net import HarnessError, IrixConsole
 from lib_prom import MACHINES, require_assets
 
 try:
@@ -107,15 +107,7 @@ LINK_LINE_RE = re.compile(r'^l\S+\s.*\s(\S+) -> (\S+)\s*$', re.MULTILINE)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
-class _Console(Console):
-    """lib_net's console driver, watching for the faults an IRIX guest
-    or its PROM shows when it wedges rather than answers."""
-
-    TRIPWIRES = (
-        (re.compile(rb"PANIC"), "the guest panicked"),
-        (re.compile(rb"Data bus error"), "the guest took a data bus error"),
-        (re.compile(rb"\bException\b\s*<"), "the PROM took an exception"),
-    )
+class _Console(IrixConsole):
     STEP_TIMEOUT = STEP_TIMEOUT_SECONDS
 
 
