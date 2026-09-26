@@ -25,7 +25,8 @@ import threading
 import unittest
 
 from lib_net import (DHCP_NAMES, OPENBSD_TRIPWIRES, Console, GuestFault,
-                     HarnessError, dhcp_kind, lease_established, login_steps,
+                     HarnessError, IrixConsole, dhcp_kind,
+                     drive_irix_to_shell, lease_established, login_steps,
                      ordered_stages, summarise_pcap)
 
 
@@ -419,6 +420,34 @@ class ConsoleTests(unittest.TestCase):
 
         with open(self.log_path, "rb") as log:
             self.assertIn(b"hello", log.read())
+
+
+    def test_irix_login_drives_the_prom_and_enters_a_bourne_shell(self):
+        guest = _ScriptedGuest(self.guest_end, [
+            b"login:", b"TERM = (vt100)", b"1# ", b"",
+            b"MARK-shinit-0\r\n",
+        ])
+        guest.start()
+        self.guest_end.sendall(b"Option? ")
+        console = IrixConsole(self.driver_end, self.log_path)
+        self.addCleanup(console.close)
+
+        drive_irix_to_shell(console, budget=30)
+
+        self.assertEqual(IrixConsole.STEP_TIMEOUT, 300)
+        self.assertEqual(guest.seen, [
+            b"1", b"root", b"", b"exec /bin/sh",
+            b'PATH=/usr/sbin:/usr/bin:/sbin:/bin:/usr/etc:/usr/bsd:$PATH; '
+            b'export PATH; echo "MARK""-shinit-$?"',
+        ])
+
+    def test_irix_console_reports_a_prom_exception(self):
+        console = IrixConsole(self.driver_end, self.log_path)
+        self.addCleanup(console.close)
+        self.guest_end.sendall(b"Exception <bus error>\r\n")
+
+        with self.assertRaisesRegex(GuestFault, "PROM took an exception"):
+            console.expect(rb"login:", timeout=1)
 
 
 if __name__ == "__main__":

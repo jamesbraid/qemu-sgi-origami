@@ -53,7 +53,6 @@ miniroot kernel are provisioned out of band.
 
 import json
 import os
-import re
 import subprocess
 import sys
 import time
@@ -62,7 +61,8 @@ import time
 # verdict module the same way the other functional tests here find theirs.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from lib_net import Console, HarnessError  # noqa: E402
+from lib_net import (HarnessError, IrixConsole,  # noqa: E402
+                     drive_irix_to_shell)
 from lib_prom import (MACHINES, file_sha256,  # noqa: E402
                       require_assets)
 
@@ -190,52 +190,10 @@ PING_COUNT = 8
 # in mips64/meson.build; the bring-up steps run after this budget under their
 # own fixed per-step timeouts below.
 LOGIN_BUDGET_SECONDS = 1200
-STEP_TIMEOUT_SECONDS = 300
 
 # The tg driver announces the link a short time after `ifconfig up`, once the
 # PHY negotiates. Generous headroom over the ~30-40s the captures showed.
 LINK_TIMEOUT_SECONDS = 180
-
-
-class _Console(Console):
-    """lib_net's console driver, watching for the faults an IRIX guest or
-    its PROM shows when it wedges rather than answers."""
-
-    TRIPWIRES = (
-        (re.compile(rb"PANIC"), "the guest panicked"),
-        (re.compile(rb"Data bus error"), "the guest took a data bus error"),
-        (re.compile(rb"\bException\b\s*<"), "the PROM took an exception"),
-    )
-    STEP_TIMEOUT = STEP_TIMEOUT_SECONDS
-
-
-# The System Maintenance Menu answer and the login exchange, each firing once
-# against the tail of what has arrived. "1" is Start System (boot the local SCSI
-# disk); root has no password on the installed image; the TERM prompt is
-# answered with the vt100 default. Identical to test_irix_eg_net.py.
-def _drive_to_shell(con, budget):
-    """Drive the PROM menu, log in as root, answer TERM, and switch to /bin/sh.
-    Returns once a Bourne shell is confirmed responsive."""
-    deadline = time.monotonic() + budget
-    def left(cap):
-        return max(1.0, min(cap, deadline - time.monotonic()))
-
-    con.expect(rb"Option\?", left(budget), what="the maintenance menu")
-    con.send("1")
-    con.expect(rb"login:", left(budget), what="the console login prompt")
-    con.send("root")
-    # First login sets TERM; accept the vt100 default. The prompt is answered
-    # before the shell appears.
-    con.expect(rb"TERM\s*=\s*\(", left(120), what="the TERM prompt")
-    con.send("")
-    # The login csh prints an "<hostname> <histnum># " prompt; the history
-    # number makes it distinctive enough not to match boot text.
-    con.expect(rb"[0-9]# ", left(120), what="the login csh prompt")
-    # One Bourne idiom for the rest of the drive; a wide PATH so the /usr/etc
-    # and /usr/bsd network tools are found by name.
-    con.send("exec /bin/sh")
-    con.run("PATH=/usr/sbin:/usr/bin:/sbin:/bin:/usr/etc:/usr/bsd:$PATH; "
-            "export PATH", "shinit", timeout=int(left(120)))
 
 
 def _host_cksum(path):
@@ -354,8 +312,8 @@ if QemuSystemTest is not None:
             vm.launch()
 
             log_path = self.log_file('irix-tg.log')
-            con = _Console(vm.console_socket, log_path,
-                          exited=lambda: vm.exitcode() is not None)
+            con = IrixConsole(vm.console_socket, log_path,
+                              exited=lambda: vm.exitcode() is not None)
             login_reached = False
             tg1_present = False
             tg_up = False
@@ -365,7 +323,7 @@ if QemuSystemTest is not None:
             counters_after = (None, None, None)
             try:
                 try:
-                    _drive_to_shell(con, LOGIN_BUDGET_SECONDS)
+                    drive_irix_to_shell(con, LOGIN_BUDGET_SECONDS)
                     login_reached = True
                     tg1_present, tg_up = self._configure_tg(con)
                     link_up, link_line = self._await_link(con)

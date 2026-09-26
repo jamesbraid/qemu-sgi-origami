@@ -172,6 +172,37 @@ class Console:
         self._log.close()
 
 
+class IrixConsole(Console):
+    """Watch the PROM and IRIX guest for faults while driving a shell."""
+
+    TRIPWIRES = (
+        (re.compile(rb"PANIC"), "the guest panicked"),
+        (re.compile(rb"Data bus error"), "the guest took a data bus error"),
+        (re.compile(rb"\bException\b\s*<"), "the PROM took an exception"),
+    )
+    STEP_TIMEOUT = 300
+
+
+def drive_irix_to_shell(con, budget):
+    """Boot the installed IRIX disk through the PROM and enter /bin/sh."""
+    deadline = time.monotonic() + budget
+
+    def left(cap):
+        return max(1.0, min(cap, deadline - time.monotonic()))
+
+    con.expect(rb"Option\?", left(budget), what="the maintenance menu")
+    con.send("1")
+    con.expect(rb"login:", left(budget), what="the console login prompt")
+    con.send("root")
+    # The first login asks for TERM before displaying the csh prompt.
+    con.expect(rb"TERM\s*=\s*\(", left(120), what="the TERM prompt")
+    con.send("")
+    con.expect(rb"[0-9]# ", left(120), what="the login csh prompt")
+    con.send("exec /bin/sh")
+    con.run("PATH=/usr/sbin:/usr/bin:/sbin:/bin:/usr/etc:/usr/bsd:$PATH; "
+            "export PATH", "shinit", timeout=int(left(120)))
+
+
 def login_steps(netboot_steps, password, as_bytes=False):
     """The PROM netboot dialogue followed by the questions an OpenBSD/IP27
     kernel asks on its way to a root shell: the root device, the swap
