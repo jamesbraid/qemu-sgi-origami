@@ -873,6 +873,95 @@ static void test_read_ack_arbitration(Fixture *f, gconstpointer unused)
     g_assert_cmpuint(a->stops, ==, 1);
 }
 
+/*
+ * A master receiver that acknowledges a byte and then tries to STOP meets
+ * the slave already sending the next one. A zero first bit keeps SDA low, so
+ * no STOP forms and the bus stays busy until the slave lets go.
+ */
+static void test_release_slave_completes_stop(Fixture *f,
+                                              gconstpointer unused)
+{
+    TestSlave *a = (TestSlave *)f->a;
+    const I2CWireEvent *last;
+
+    a->value = 0x21;
+    begin_bytes(f);
+    g_assert_true(write_byte(f, 0x41, 0x41, true));
+    g_assert_cmphex(read_byte(f, true, true), ==, 0x21);
+    stop_bytes(f);
+    g_assert_true(i2c_bus_busy(f->bus));
+    g_assert_true(i2c_wire_scl(f->bus));
+    g_assert_false(i2c_wire_sda(f->bus));
+
+    g_assert_cmpint(i2c_wire_release_slave(f->a), ==, 0);
+    last = &g_array_index(f->events, I2CWireEvent, f->events->len - 1);
+    g_assert_true(last->scl && last->sda);
+    g_assert_false(i2c_bus_busy(f->bus));
+    g_assert_cmphex(i2c_wire_contenders(f->bus), ==, 0);
+    g_assert_cmpuint(a->reads, ==, 2);
+    g_assert_cmpint(i2c_wire_release_slave(f->a), ==, 0);
+}
+
+typedef struct ReleasingObserver {
+    I2CSlave *slave;
+    int64_t from;
+    unsigned releases;
+    int64_t released_at;
+} ReleasingObserver;
+
+static void release_when_stop_blocked(void *opaque, const I2CWireEvent *event)
+{
+    ReleasingObserver *observer = opaque;
+
+    if (observer->from && event->time >= observer->from &&
+        event->scl && !event->sda) {
+        observer->from = 0;
+        observer->releases++;
+        observer->released_at = event->time;
+        g_assert_cmpint(i2c_wire_release_slave(observer->slave), ==, 0);
+    }
+}
+
+/*
+ * A controller may switch its interface off from an observer while the wire
+ * is publishing. The lines then settle at the same instant once the
+ * publication finishes, so the blocked STOP still forms.
+ */
+static void test_release_slave_from_observer(Fixture *f, gconstpointer unused)
+{
+    TestSlave *a = (TestSlave *)f->a;
+    ReleasingObserver observer = { .slave = f->a };
+    const I2CWireEvent *last;
+
+    g_assert_cmpint(i2c_wire_set_observer(f->bus, 1,
+                                          release_when_stop_blocked,
+                                          &observer), ==, 0);
+    a->value = 0x21;
+    begin_bytes(f);
+    g_assert_true(write_byte(f, 0x41, 0x41, true));
+    g_assert_cmphex(read_byte(f, true, true), ==, 0x21);
+    stop_bytes(f);
+    g_assert_true(i2c_bus_busy(f->bus));
+    g_assert_false(i2c_wire_sda(f->bus));
+
+    /*
+     * A blocked STOP publishes nothing, so let the slave stretch the clock
+     * once: SCL rising again is the event the observer acts on.
+     */
+    g_assert_cmpint(i2c_wire_hold(f->a, virtual_time + 1, true), ==, 0);
+    advance_to(virtual_time + 1);
+    g_assert_false(i2c_wire_scl(f->bus));
+    g_assert_cmpint(i2c_wire_hold(f->a, virtual_time + 1, false), ==, 0);
+    observer.from = virtual_time + 1;
+    advance_to(virtual_time + 1);
+    g_assert_cmpuint(observer.releases, ==, 1);
+    last = &g_array_index(f->events, I2CWireEvent, f->events->len - 1);
+    g_assert_true(last->scl && last->sda);
+    g_assert_cmpint(last->time, ==, observer.released_at);
+    g_assert_false(i2c_bus_busy(f->bus));
+    g_assert_cmphex(i2c_wire_contenders(f->bus), ==, 0);
+}
+
 static void test_address_read_service_holds_preparation(Fixture *f,
                                                         gconstpointer unused)
 {
@@ -1834,6 +1923,10 @@ int main(int argc, char **argv)
                setup, test_restart_nack, teardown);
     g_test_add("/i2c-wire/read-ack-arbitration", Fixture, NULL,
                setup, test_read_ack_arbitration, teardown);
+    g_test_add("/i2c-wire/release-slave-completes-stop", Fixture, NULL,
+               setup, test_release_slave_completes_stop, teardown);
+    g_test_add("/i2c-wire/release-slave-from-observer", Fixture, NULL,
+               setup, test_release_slave_from_observer, teardown);
     g_test_add("/i2c-wire/address-read-service-holds-preparation", Fixture,
                NULL, setup, test_address_read_service_holds_preparation,
                teardown);

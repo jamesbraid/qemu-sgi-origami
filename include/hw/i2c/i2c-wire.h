@@ -203,6 +203,18 @@ int i2c_wire_hold(I2CSlave *slave, int64_t at, bool hold);
 int i2c_wire_hold_after(I2CSlave *slave, int64_t delay_ns, bool hold);
 int i2c_wire_reset_master(I2CBus *bus, uint32_t master);
 /*
+ * A slave whose interface is switched off stops driving the bus: its clock
+ * hold goes, it leaves the transfer it was selected for, and a bit or
+ * acknowledgement it was putting on SDA is released. The lines are resolved
+ * at the present instant, so a master already waiting with SCL and SDA
+ * released sees the STOP it asked for. The slave's own state is its
+ * caller's; it gets no further event for that transfer. An observer may
+ * call this while the wire is publishing; the lines then settle at the same
+ * instant once publication ends. A slave's own I2C callbacks must not call
+ * it, because the slave leaves the selected list at once.
+ */
+int i2c_wire_release_slave(I2CSlave *slave);
+/*
  * Stop a driving master's clock generator while it goes on holding SCL low,
  * for a controller that waits between bytes. Staging its clock again resumes
  * from the high phase. One observer per participant may be attached; it sees
