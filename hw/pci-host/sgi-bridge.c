@@ -67,6 +67,9 @@
 #define NIC_PAGES               2
 #define NIC_ROM_SIZE            (NIC_PAGE_SIZE * NIC_PAGES)
 
+/* Kept equal so a shared caller's buffer size matches this file's own. */
+QEMU_BUILD_BUG_ON(NIC_ROM_SIZE != SGI_BRIDGE_ONEWIRE_RECORD_SIZE);
+
 /* Guests match on the family code; the serial is the machine's. */
 #define NIC_ROM_FAMILY          0x0b
 #define NIC_ROM_SERIAL_DEFAULT  0x060504030201ULL
@@ -1052,8 +1055,8 @@ static void sgi_bridge_onewire_build_rom(uint8_t rom[NIC_ROM_SIZE],
     sgi_bridge_onewire_seal_pages(rom);
 }
 
-static void sgi_bridge_onewire_build_record(uint8_t rom[NIC_ROM_SIZE],
-                                            const SGIBridgeBoardRecord *record)
+void sgi_bridge_onewire_build_record(uint8_t rom[NIC_ROM_SIZE],
+                                     const SGIBridgeBoardRecord *record)
 {
     memset(rom, ' ', NIC_ROM_SIZE);
     rom[0] = NIC_RECORD_FORMAT;

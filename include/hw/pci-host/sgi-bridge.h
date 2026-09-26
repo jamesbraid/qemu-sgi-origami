@@ -50,6 +50,24 @@ typedef struct SGIBridgeBoardRecord {
     const char *name;
 } SGIBridgeBoardRecord;
 
+/* Two 32-byte pages: sgi_bridge_onewire_build_record()'s own record size. */
+#define SGI_BRIDGE_ONEWIRE_RECORD_SIZE 64
+
+/*
+ * Build one record's bytes the fixed-offset way, CRC-16 framing included,
+ * so a board with its own one-wire bus can carry the same record layout
+ * without a second copy of it -- hw/misc/sgi-kona.c's InfiniteReality
+ * geometry and Ktown records reuse this rather than inventing their own.
+ * `record`'s fields must already satisfy sgi_bridge_board_part_error()'s
+ * twelve-character part shape and this layout's field widths (barcode ten
+ * characters, revision four, name fourteen); this function does not
+ * validate them itself, matching the one call site in sgi-bridge.c, which
+ * checks first.
+ */
+void sgi_bridge_onewire_build_record(
+    uint8_t rom[SGI_BRIDGE_ONEWIRE_RECORD_SIZE],
+    const SGIBridgeBoardRecord *record);
+
 /*
  * Aim a slot's window the way a guest write to BRIDGE_DEVICE(n) would --
  * for the machine's firmware emulation to arm the console slot before any
