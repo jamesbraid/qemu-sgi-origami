@@ -640,9 +640,9 @@ static void mgras_draw_glyph_row(SGIMgrasState *s)
  * capture (tests/data/mgras/char-modes.replay):
  * skip = (row * 4 * ceil(width / 4)) % 8. It is not read from hardware
  * state. Painted bytes are always CI8 CMAP indices regardless of
- * PP1FILLMODE: this path (and mgras_draw_byte_row_pairs()) carries its own
- * 8-bit index data rather than a register-selected colour, so there is
- * no RGB form to select between.
+ * PP1FILLMODE: this path carries its own 8-bit index data rather than a
+ * register-selected colour, and no capture shows it under RGB, so there
+ * is no RGB form to select between. mgras_draw_byte_row_pairs() differs.
  */
 static void mgras_draw_byte_row_bytes(SGIMgrasState *s, int x0, int x1,
                                    int y0, int y1, uint32_t mask, uint8_t op)
@@ -679,18 +679,29 @@ static void mgras_draw_byte_row_bytes(SGIMgrasState *s, int x0, int x1,
 
 /*
  * The chooser icons' own packing (register 0x159 == 0x0080): each CHAR_L
- * execute delivers two indexed pixels rather than eight. Pixel 0 is
- * CHAR_H bits 7:0, pixel 1 is CHAR_L bits 7:0; a live capture's other
- * bytes did not reliably replicate that value, so only bits 7:0 are read
- * (tests/data/mgras/root-icon.replay). ceil(width / 2) executes cover a
- * row, no skip, and the row advances after the last unit.
+ * execute delivers two pixels rather than eight, pixel 0 from CHAR_H and
+ * pixel 1 from CHAR_L. Under CI8 (PP1FILLMODE bit 13 clear) each is a CMAP
+ * index in bits 7:0; a live capture's other bytes did not reliably
+ * replicate that value, so only bits 7:0 are read
+ * (tests/data/mgras/root-icon.replay). Under RGB (bit 13 set) each register
+ * carries a whole 0x00RRGGBB pixel: the IRIX 6.5.30 greeter seeds its list
+ * background this way with PP1FILLMODE 0xc006204 and CHAR_H/CHAR_L
+ * 0x00c0c0c0/0x00c1c1c1, a grey dither, and then replicates it with
+ * 4-byte-per-pixel DMA copies that must read those 24 bits back. In the
+ * greeter and desktop captures every pair-packed transfer runs under RGB;
+ * the CI8 form rests on the fixture above alone. The pixels carry the
+ * same format tag as every other PP1FILLMODE-driven paint. ceil(width / 2)
+ * executes cover a row, no skip, and the row advances after the last unit.
  */
 static void mgras_draw_byte_row_pairs(SGIMgrasState *s, int x0, int x1,
                                    int y0, int y1, uint32_t mask, uint8_t op)
 {
-    uint8_t pixels[2] = {
-        (uint8_t)s->rss[MGRAS_RSS_CHAR_H],
-        (uint8_t)s->rss[MGRAS_RSS_CHAR_L],
+    uint8_t format = mgras_pixel_format(s);
+    uint32_t pixel_mask = format == SGI_MGRAS_PIXEL_FORMAT_CI8 ? 0xff :
+                                                               0x00ffffff;
+    uint32_t pixels[2] = {
+        s->rss[MGRAS_RSS_CHAR_H] & pixel_mask,
+        s->rss[MGRAS_RSS_CHAR_L] & pixel_mask,
     };
     int width = x1 - x0 + 1;
     int row = s->glyph_row;
@@ -705,7 +716,7 @@ static void mgras_draw_byte_row_pairs(SGIMgrasState *s, int x0, int x1,
                 continue;
             }
             mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x0 + col, pixels[i], op,
-                         mask, SGI_MGRAS_PIXEL_FORMAT_CI8);
+                         mask, format);
         }
     }
     s->glyph_unit++;
