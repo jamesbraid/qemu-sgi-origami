@@ -219,12 +219,19 @@ struct SGIKonaState {
     uint32_t bitmap_payload_expected;
 
     /*
-     * Host scanout: native storage, converted only on damage, matching
-     * hw/misc/sgi-mgras.c's own con/display_buffer/dirty precedent.
-     * Derived from the framebuffer above and not migrated.
+     * Host scanout: native storage, converted only on damage. Unlike
+     * hw/misc/sgi-mgras.c's own con/display_buffer/dirty precedent,
+     * KONA's display surface is created directly over this array (see
+     * sgi_kona_display_ensure_surface()), so framebuffer is itself the
+     * canonical guest-visible pixel state, not a derived buffer -- it is
+     * migrated (fixed-length, like mgras's own front/back planes), and
+     * framebuffer_count exists solely to carry that fixed length through
+     * VMSTATE_VARRAY_UINT32(). con is host-only and never migrated:
+     * finish_realize() recreates it, and post_load rebuilds its surface.
      */
     QemuConsole *con;
     uint32_t *framebuffer;
+    uint32_t framebuffer_count;
     bool framebuffer_dirty;
 
     /*
