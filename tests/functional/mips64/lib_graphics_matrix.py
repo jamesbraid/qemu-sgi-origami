@@ -117,8 +117,8 @@ class Scenario:
     getty that prints it and xdm's own X server are two independent
     processes racing out of the same multiuser boot, not synchronized by
     anything visible on the console, so this text match is a necessary
-    but not sufficient readiness signal: test_graphics_matrix.py's own
-    _poll_screendump_until_settled() absorbs the remaining gap by
+    but not sufficient readiness signal: lib_screen's
+    poll_screendump_until_checks_pass() absorbs the remaining gap by
     polling the screendump itself, rather than this field promising a
     stronger guarantee than a console-text match can actually make.
     `input_steps` is a lib_input.run_script() step list (empty for a
@@ -136,8 +136,7 @@ class Scenario:
 # were measured live against this fork's own tip while building this
 # test (a2546528e2 and successors): booting IRIX 6.5.30 with
 # `-device psitech-rad4,addr=5` (the vendor-documented slot), waiting for
-# "... console login:" on the plain text console, then polling the
-# screendump (test_graphics_matrix.py's _poll_screendump_until_settled())
+# "... console login:" on the plain text console, then polling the screendump
 # until xdm's own, independently-timed redraw catches up, shows a
 # screendump with the rendered login screen; the plain gray area of that
 # dialog (below the four user-face icons, above the login-name field)

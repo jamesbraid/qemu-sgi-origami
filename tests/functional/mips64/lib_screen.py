@@ -151,11 +151,8 @@ def region_average(width, data, rect):
     fail with a clear reason, not silently average a truncated or wrong
     slice.
 
-    Public (not just RegionColorCheck.evaluate()'s own helper): a caller
-    polling a region across several screendumps for its expected color
-    before evaluate_screendump() ever runs -- test_graphics_matrix.py's
-    own settle poll -- needs the same average, not a second
-    implementation of it.
+    Shared by RegionColorCheck and callers that need the same average
+    outside a screen check.
     """
     x, y, rw, rh = rect
     _validate_region(width, data, rect)
@@ -336,9 +333,7 @@ def poll_screendump_until_checks_pass(test, vm, screendump_path, checks,
     graphical screen underneath it are two independent, unsynchronized
     events; a screendump taken right after the console match can still
     show the root window's unpainted stipple pattern, not yet the
-    rendered dialog. test_graphics_matrix.py's own settle poll exists for
-    exactly this race and documents the same live measurements this
-    shape is built from: the unpainted stipple pattern is itself static,
+    rendered dialog. The unpainted stipple pattern is itself static,
     so two consecutive equal screendumps cannot distinguish "hasn't
     redrawn yet" from "already redrawn" -- only actually reaching the
     caller's own expected state proves the redraw happened.
@@ -350,29 +345,34 @@ def poll_screendump_until_checks_pass(test, vm, screendump_path, checks,
     once a screendump is already known-settled.
 
     Returns the passing messages once every check passes, logging the
-    observed settle time via test.log.info. Raises ScreenCheckError,
+    observed settle time via test.log.info. The timeout limits when the
+    last poll starts; a screendump may finish after it. Raises ScreenCheckError,
     naming the last observed per-check messages and the elapsed time, if
     the checks never all pass before the timeout.
     """
-    attempts = max(1, int(timeout_seconds / interval_seconds))
-    started = time.time()
+    started = time.monotonic()
+    deadline = started + timeout_seconds
     passed = False
     messages = []
-    for attempt in range(1, attempts + 1):
+    attempt = 0
+    while True:
+        attempt += 1
         vm.cmd('screendump', filename=str(screendump_path))
         passed, messages = evaluate_screendump(screendump_path, checks)
-        elapsed = time.time() - started
+        elapsed = time.monotonic() - started
         if passed:
             test.log.info(
                 'screendump checks settled after %.2fs (%d screendump(s)): '
                 '%s', elapsed, attempt, '; '.join(messages))
             return messages
-        if attempt < attempts:
-            time.sleep(interval_seconds)
-    elapsed = time.time() - started
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(interval_seconds, remaining))
+    elapsed = time.monotonic() - started
     raise ScreenCheckError(
         f'screendump checks never all passed within {timeout_seconds}s '
-        f'({elapsed:.2f}s elapsed, {attempts} screendump(s)); last result: '
+        f'({elapsed:.2f}s elapsed, {attempt} screendump(s)); last result: '
         + '; '.join(messages))
 
 
