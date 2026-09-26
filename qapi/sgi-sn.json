@@ -425,11 +425,14 @@
 # @gigachannel: the Origin 200 GIGAchannel expansion cabinet's own
 #     Bridge, with four empty PCI slots
 #
+# @menet: the Origin 2000/Onyx2 MENET XIO card, four IOC3s giving four
+#     Fast Ethernet ports and six serial ports
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelIoBoardPreset',
   'data': ['ip29-io', 'ip29-io-crosstown', 'io6', 'io6g', 'io8', 'io9',
-           'pci-shoehorn', 'pci-carrier', 'gigachannel'] }
+           'pci-shoehorn', 'pci-carrier', 'gigachannel', 'menet'] }
 
 ##
 # @SGIModelIoBoardCarrier:

@@ -6,8 +6,11 @@
  * the "menet" preset of sgi-xio-baseio, built from the existing Bridge and
  * IOC3 models.
  *
- * A `-device sgi-xio-baseio,preset=menet` board attaches through
- * crossbow0's spare fabric widget 11, as the PCI shoehorn's own test does.
+ * Two placements run the same checks. A `-device sgi-xio-baseio,
+ * preset=menet` board attaches through crossbow0's spare fabric widget 11,
+ * as the PCI shoehorn's own test does. The origin2000-menet topology fits
+ * the board in XIO slot IO5, crossbow0 widget 14, as a startup-attached
+ * board.
  *
  * The contract, from real IRIX inventories and IRIX 6.5.30's own MENET
  * setup routine:
@@ -30,6 +33,8 @@
 
 /* crossbow0's spare fabric widget for a `-device` XIO board. */
 #define DEVICE_WIDGET       11
+/* Origin 2000 IO5 (origin2000-module.yaml): crossbow0 widget 14. */
+#define PLACED_WIDGET       14
 
 #define MENET_IOC3S         4
 
@@ -79,8 +84,14 @@ typedef struct {
     "module=99,slot=" G_STRINGIFY(DEVICE_WIDGET) \
     ",fabric=/machine/crossbow0-spare-fabric[0],fabric-widget-shift=48"
 
+#define PLACED_ARGS \
+    "-M origin2000,topology=origin2000-menet -display none"
+
 static const MenetCase device_case = {
     DEVICE_ARGS, DEVICE_WIDGET, "/machine/module99/slot11/baseio",
+};
+static const MenetCase placed_case = {
+    PLACED_ARGS, PLACED_WIDGET, "/machine/module0/slot14/baseio",
 };
 
 static void ioc3_map(QTestState *qts, const MenetCase *c, unsigned int d)
@@ -220,6 +231,20 @@ static void test_superio_reaches_hub(const void *data)
     qtest_quit(qts);
 }
 
+/* The catalogue-placed board's widget is alive from reset. */
+static void test_placed_widget_is_alive_at_startup(const void *data)
+{
+    QTestState *qts = qtest_init(PLACED_ARGS);
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{'execute': 'qom-get', 'arguments': {'path': '/machine/crossbow0',"
+        "'property': 'startup-links-alive'}}");
+
+    g_assert_false(qdict_haskey(response, "error"));
+    g_assert_cmphex(qdict_get_int(response, "return"), ==,
+                    0x8700 | (1u << PLACED_WIDGET));
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -231,6 +256,14 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/menet/onewire-serials-distinct", &device_case,
                         test_onewire_serials_distinct);
     qtest_add_data_func("sn0/menet/superio-reaches-hub", &device_case,
+                        test_superio_reaches_hub);
+    qtest_add_data_func("sn0/menet/placed/widget-alive-at-startup", NULL,
+                        test_placed_widget_is_alive_at_startup);
+    qtest_add_data_func("sn0/menet/placed/ioc3s-enumerate", &placed_case,
+                        test_ioc3s_enumerate);
+    qtest_add_data_func("sn0/menet/placed/populations", &placed_case,
+                        test_populations);
+    qtest_add_data_func("sn0/menet/placed/superio-reaches-hub", &placed_case,
                         test_superio_reaches_hub);
     return g_test_run();
 }
