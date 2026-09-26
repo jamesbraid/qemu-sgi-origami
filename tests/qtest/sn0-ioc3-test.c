@@ -5240,6 +5240,10 @@ static const BoardRecordRefusal board_record_refusals[] = {
     { "sgi-ioc3,addr=3,subsystem-id=0xffff,board-part=030-1155-002,"
       "board-barcode=OCADDUO001,board-revision=D",
       "the IOC3 board name is required and must fit its field" },
+    { "sgi-ioc3,addr=3,subsystem-id=0xffff,board-part=030-1155-002,"
+      "board-barcode=OCADDUO001,board-revision=D,board-name=PCI_ENET,"
+      "board-onewire-serial=0x1000000000000",
+      "the IOC3 board record serial 0x1000000000000 does not fit in 48 bits" },
 };
 
 static void test_board_record_refuses_a_bad_record(const void *data)

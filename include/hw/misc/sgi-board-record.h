@@ -39,6 +39,8 @@ typedef struct SGIBoardRecord {
  * Refuse a record the layout rules forbid: a missing or over-long field, a
  * ':' or ';' or unprintable byte, or a part that is not twelve digits and
  * dashes. `owner` names the device in the message, e.g. "IOC3".
+ * Exported for a model that stores a record some other way than through
+ * sgi_board_record_attach(), such as the Bridge's own record part.
  */
 bool sgi_board_record_check(const SGIBoardRecord *record, const char *owner,
                             Error **errp);
