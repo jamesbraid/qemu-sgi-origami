@@ -2,8 +2,8 @@
 /*
  * Data only: no functions, MemoryRegion or reset phase. The generic
  * command-port framer consumes the roles and selector tables declared here.
- * At this revision, the identity-only device has no FIFO, mailbox or
- * interrupt. All three port MMIO placements remain deferred.
+ * At this revision, the device maps textport at +0xc10000 with mailbox and
+ * interrupt cause. FIFO and doorbell MMIO placement remains unknown.
  *
  * The kernel FIFO has candidate offsets +0x7c and +0x80007c. The IO6
  * firmware's one-time low-window +0x7c write is a separate operation. FIFO
