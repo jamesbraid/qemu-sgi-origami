@@ -3275,6 +3275,68 @@ static void test_ecc_check_many(void)
 }
 
 /*
+ * A write that lifts one doubleword's mark frees its slot for the next
+ * doubleword marked, and the marks a migration carries are still found on
+ * the destination: a read of a marked doubleword or line there is checked,
+ * a write there lifts the mark, and the doubleword whose mark was lifted
+ * before the migration stays clean.
+ */
+static void test_ecc_marks_reused_and_migrated(void)
+{
+    const uint64_t line = 0x4000;
+    GError *error = NULL;
+    g_autofree char *directory = g_dir_make_tmp("sn1-md-marks-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = start("");
+    to = start("-incoming defer");
+    qtest_writeq(from, MD(0x8), memory_bank_config(0, 1));
+    qtest_writeq(from, MD(DIRECTORY_CONFIG), 1);
+
+    qtest_writeb(from, ECC_BYTE(0x100 / 8), ecc_column[5]);
+    qtest_writeb(from, ECC_BYTE(0x200 / 8), ecc_column[6]);
+    qtest_writeq(from, MEMORY(0x100), 0);
+    qtest_writeb(from, ECC_BYTE(0x300 / 8), ecc_column[7]);
+    g_assert_cmphex(qtest_readq(from, MEMORY(0x100)), ==, 0);
+    g_assert_cmphex(qtest_readq(from, MD(MEMORY_ERROR)), ==, 0);
+
+    qtest_writeq(from, MD(DIRECTORY_CONFIG), 3);
+    qtest_writeq(from, DIRECTORY(line / 128 * 0x10),
+                 UINT64_C(0x0000001f00000000));
+    qtest_writeq(from, MD(DIRECTORY_CONFIG), 1);
+
+    migrate_pair(from, to, uri);
+
+    g_assert_cmphex(qtest_readq(to, MEMORY(0x100)), ==, 0);
+    g_assert_cmphex(qtest_readq(to, MD(MEMORY_ERROR)), ==, 0);
+    g_assert_cmphex(qtest_readq(to, MEMORY(0x200)), ==, UINT64_C(1) << 6);
+    g_assert_cmphex(qtest_readq(to, MD(MEMORY_ERROR_CLEAR)), ==,
+                    MEMORY_ERROR_READ_CE_VALID |
+                    MEMORY_ERROR_SYNDROME(ecc_column[6]) | 0x200);
+    qtest_writeq(to, MEMORY(0x300), 0x5);
+    g_assert_cmphex(qtest_readq(to, MEMORY(0x300)), ==, 0x5);
+    g_assert_cmphex(qtest_readq(to, MD(MEMORY_ERROR)), ==, 0);
+    g_assert_cmphex(qtest_readb(to, ECC_BYTE(0x300 / 8)), ==, ecc_of(0x5));
+
+    qtest_readq(to, MEMORY(line));
+    g_assert_cmphex(qtest_readq(to, DIRECTORY(line / 128 * 0x10)), ==,
+                    UINT64_C(0x0000001f00000001));
+    g_assert_cmphex(qtest_readq(to, MD(DIRECTORY_ERROR_CLEAR)), ==,
+                    DIRECTORY_ERROR_CE_VALID | DIRECTORY_ERROR_SYNDROME(0x1f) |
+                    DIRECTORY_ERROR_ADDRESS(line / 128 * 0x10));
+
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(directory), ==, 0);
+}
+
+/*
  * The Origin 300's directory diagnostic injects at the word for physical
  * 0x506000 through the machine's directory carrier and expects the
  * corrected word and the error record through the local window.
@@ -3549,6 +3611,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-md/directory-rewritten-by-data-write",
                    test_directory_rewritten_by_data_write);
     qtest_add_func("sn1/bedrock-md/ecc-check-many", test_ecc_check_many);
+    qtest_add_func("sn1/bedrock-md/ecc-marks-reused-and-migrated",
+                   test_ecc_marks_reused_and_migrated);
     qtest_add_func("sn1/bedrock-md/origin300-directory-ecc-check",
                    test_origin300_directory_ecc_check);
     qtest_add_func("sn1/bedrock-md/ecc-check-on-read",

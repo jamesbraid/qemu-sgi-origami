@@ -770,16 +770,36 @@ static void md_directory_error_latch(SGIBedrockMDState *s, int kind,
     }
 }
 
+/*
+ * Every write to node memory through the memory unit, a fetch-and-op among
+ * them, asks whether it covers a marked line, so the lookup goes through a
+ * table keyed by line rather than a scan of all the slots: nmem's
+ * fetch-and-op test otherwise spends most of its time in the scan.
+ */
 static SGIBedrockMDDirectoryInjection *
 md_directory_injection_find(SGIBedrockMDState *s, uint32_t index)
 {
-    for (unsigned i = 0; i < SGI_BEDROCK_MD_DIRECTORY_INJECTIONS; i++) {
-        if (s->directory_injection[i].active &&
-            s->directory_injection[i].index == index) {
-            return &s->directory_injection[i];
-        }
+    return g_hash_table_lookup(s->directory_injection_by_index, &index);
+}
+
+static void md_directory_injection_activate(
+    SGIBedrockMDState *s, SGIBedrockMDDirectoryInjection *injection,
+    uint32_t index)
+{
+    injection->active = true;
+    injection->index = index;
+    g_hash_table_insert(s->directory_injection_by_index, &injection->index,
+                        injection);
+}
+
+static void md_directory_injection_deactivate(
+    SGIBedrockMDState *s, SGIBedrockMDDirectoryInjection *injection)
+{
+    if (injection->active) {
+        g_hash_table_remove(s->directory_injection_by_index,
+                            &injection->index);
+        injection->active = false;
     }
-    return NULL;
 }
 
 /*
@@ -845,7 +865,7 @@ static void md_directory_injection_clear(SGIBedrockMDState *s,
 
     if (injection) {
         md_directory_injection_unplace(injection);
-        injection->active = false;
+        md_directory_injection_deactivate(s, injection);
     }
 }
 
@@ -853,7 +873,7 @@ static void md_directory_injections_clear(SGIBedrockMDState *s)
 {
     for (unsigned i = 0; i < SGI_BEDROCK_MD_DIRECTORY_INJECTIONS; i++) {
         md_directory_injection_unplace(&s->directory_injection[i]);
-        s->directory_injection[i].active = false;
+        md_directory_injection_deactivate(s, &s->directory_injection[i]);
     }
 }
 
@@ -870,8 +890,7 @@ static void md_directory_injection_add(SGIBedrockMDState *s, uint32_t index,
     for (unsigned i = 0; i < SGI_BEDROCK_MD_DIRECTORY_INJECTIONS; i++) {
         injection = &s->directory_injection[i];
         if (!injection->active) {
-            injection->active = true;
-            injection->index = index;
+            md_directory_injection_activate(s, injection, index);
             injection->offset = offset;
             md_directory_injection_place(s, injection);
             return;
@@ -1115,15 +1134,29 @@ static void md_memory_error_latch(SGIBedrockMDState *s, int kind,
     }
 }
 
+/* Keyed by doubleword for the same reason as the directory's marked lines. */
 static SGIBedrockMDECCInjection *md_ecc_injection_find(SGIBedrockMDState *s,
                                                        uint64_t raw)
 {
-    for (unsigned i = 0; i < SGI_BEDROCK_MD_ECC_INJECTIONS; i++) {
-        if (s->ecc_injection[i].active && s->ecc_injection[i].raw == raw) {
-            return &s->ecc_injection[i];
-        }
+    return g_hash_table_lookup(s->ecc_injection_by_raw, &raw);
+}
+
+static void md_ecc_injection_activate(SGIBedrockMDState *s,
+                                      SGIBedrockMDECCInjection *injection,
+                                      uint64_t raw)
+{
+    injection->active = true;
+    injection->raw = raw;
+    g_hash_table_insert(s->ecc_injection_by_raw, &injection->raw, injection);
+}
+
+static void md_ecc_injection_deactivate(SGIBedrockMDState *s,
+                                        SGIBedrockMDECCInjection *injection)
+{
+    if (injection->active) {
+        g_hash_table_remove(s->ecc_injection_by_raw, &injection->raw);
+        injection->active = false;
     }
-    return NULL;
 }
 
 static void md_ecc_injection_unplace(SGIBedrockMDECCInjection *injection)
@@ -1162,7 +1195,7 @@ static void md_ecc_injection_clear(SGIBedrockMDState *s, uint64_t raw)
 
     if (injection) {
         md_ecc_injection_unplace(injection);
-        injection->active = false;
+        md_ecc_injection_deactivate(s, injection);
     }
 }
 
@@ -1170,7 +1203,7 @@ static void md_ecc_injections_clear(SGIBedrockMDState *s)
 {
     for (unsigned i = 0; i < SGI_BEDROCK_MD_ECC_INJECTIONS; i++) {
         md_ecc_injection_unplace(&s->ecc_injection[i]);
-        s->ecc_injection[i].active = false;
+        md_ecc_injection_deactivate(s, &s->ecc_injection[i]);
     }
 }
 
@@ -1184,8 +1217,7 @@ static void md_ecc_injection_add(SGIBedrockMDState *s, uint64_t raw)
     for (unsigned i = 0; i < SGI_BEDROCK_MD_ECC_INJECTIONS; i++) {
         injection = &s->ecc_injection[i];
         if (!injection->active) {
-            injection->active = true;
-            injection->raw = raw;
+            md_ecc_injection_activate(s, injection, raw);
             md_ecc_injection_place(s, injection);
             return;
         }
@@ -1734,7 +1766,7 @@ static void md_selftest_fill(SGIBedrockMDState *s, uint64_t base,
             injection->raw - base / 8 < size / 8) {
             s->ecc[injection->raw] = 0;
             md_ecc_injection_unplace(injection);
-            injection->active = false;
+            md_ecc_injection_deactivate(s, injection);
         }
     }
     /* A data write rewrites the entry of every marked line it covers. */
@@ -2296,9 +2328,34 @@ static int md_post_load(void *opaque, int version_id)
 {
     SGIBedrockMDState *s = opaque;
 
+    /*
+     * The lookup tables are derived from the slots, which the stream set.
+     * Empty them first so a rejected stream leaves no key pointing at a
+     * slot the stream rewrote.
+     */
+    g_hash_table_remove_all(s->ecc_injection_by_raw);
+    g_hash_table_remove_all(s->directory_injection_by_index);
     if (s->directory_compat_count >
         SGI_BEDROCK_MD_DIRECTORY_COMPAT_ENTRIES) {
         return -EINVAL;
+    }
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_ECC_INJECTIONS; i++) {
+        SGIBedrockMDECCInjection *injection = &s->ecc_injection[i];
+
+        if (injection->active &&
+            !g_hash_table_insert(s->ecc_injection_by_raw, &injection->raw,
+                                 injection)) {
+            return -EINVAL;
+        }
+    }
+    for (unsigned i = 0; i < SGI_BEDROCK_MD_DIRECTORY_INJECTIONS; i++) {
+        SGIBedrockMDDirectoryInjection *line = &s->directory_injection[i];
+
+        if (line->active &&
+            !g_hash_table_insert(s->directory_injection_by_index,
+                                 &line->index, line)) {
+            return -EINVAL;
+        }
     }
     md_update_memory_aliases(s);
     return 0;
@@ -2380,6 +2437,9 @@ static void md_init(Object *obj)
 
     s->selftest_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                      md_selftest_complete, s);
+    s->ecc_injection_by_raw = g_hash_table_new(g_int64_hash, g_int64_equal);
+    s->directory_injection_by_index = g_hash_table_new(g_int_hash,
+                                                       g_int_equal);
     memory_region_init_io(&s->mmio, obj, &md_ops, s, TYPE_SGI_BEDROCK_MD,
                           SGI_BEDROCK_MD_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
@@ -2575,6 +2635,8 @@ static void md_finalize(Object *obj)
     SGIBedrockMDState *s = SGI_BEDROCK_MD(obj);
 
     timer_free(s->selftest_timer);
+    g_hash_table_destroy(s->ecc_injection_by_raw);
+    g_hash_table_destroy(s->directory_injection_by_index);
     if (s->node_as_initialized) {
         address_space_destroy(&s->node_as);
     }
