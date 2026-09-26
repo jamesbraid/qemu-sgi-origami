@@ -1447,6 +1447,7 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     SysBusDevice *bedrock;
     unsigned int cpu;
     uint32_t slot_order;
+    uint32_t grant = 0;
     size_t i;
 
     node->l1 = qdev_new(TYPE_SGI_L1);
@@ -1515,24 +1516,15 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
     }
     qdev_prop_set_uint32(node->bedrock, "processor-slot-order", slot_order);
     /*
-     * Every fitted slot comes out of reset with its bus grant. This is a
-     * model approximation; the silicon's reset value is unknown. What the
-     * stock PROM does with these registers is measured: on its boot path it
-     * only ever clears one, for a partner that fails its early liveness
-     * check, and never sets one (only an operator's enable command in its
-     * monitor does), so a fitted processor it counts must already be granted.
-     * The store loop once read as the boot master granting interface 0 writes
-     * the Hub-special register window, not these registers, so without this
-     * the BaseIO PROM finds only the processors on interface 1.
+     * Give every fitted slot an initial bus grant. Origin 300 PROM runs
+     * support this model approximation; neither it nor Fuel has a known
+     * silicon cold-reset value for CPU-enable. Guest writes may change it,
+     * and the register survives soft reset. See the Bedrock PI contract.
      */
-    if (node->nr_cpus > 1) {
-        uint32_t grant = 0;
-
-        for (cpu = 0; cpu < node->nr_cpus; cpu++) {
-            grant |= 1U << sn1_cpu_slot(node->model_node, cpu);
-        }
-        qdev_prop_set_uint32(node->bedrock, "cpu-enable-initial-mask", grant);
+    for (cpu = 0; cpu < node->nr_cpus; cpu++) {
+        grant |= 1U << sn1_cpu_slot(node->model_node, cpu);
     }
+    qdev_prop_set_uint32(node->bedrock, "cpu-enable-initial-mask", grant);
     qdev_prop_set_uint8(node->bedrock, "revision", SN1_BEDROCK_REVISION);
     qdev_prop_set_uint8(node->bedrock, "local-region",
                         SN1_BEDROCK_LOCAL_REGION);
