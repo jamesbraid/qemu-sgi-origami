@@ -177,7 +177,10 @@ static void sgi_kona_draw_point(SGIKonaState *s, int32_t x, int32_t y)
 static void sgi_kona_bitmap_reset(SGIKonaState *s)
 {
     s->bitmap_state = SGI_KONA_BITMAP_IDLE;
+    memset(s->bitmap_header, 0, sizeof(s->bitmap_header));
     s->bitmap_header_have = 0;
+    s->bitmap_width = 0;
+    s->bitmap_height = 0;
     g_free(s->bitmap_payload);
     s->bitmap_payload = NULL;
     s->bitmap_payload_have = 0;
@@ -668,13 +671,19 @@ static void sgi_kona_instance_finalize(Object *obj)
 }
 
 /*
- * The plain stored fields a guest write can change: widget_control through
- * SGI_KONA_WIDGET_CONTROL, onewire_reg through one bit slot's worth of
- * SGI_KONA_ONEWIRE transaction state. manufacturer/part/revision/
- * probe_value are qdev properties fixed at construction, not guest state,
- * so reset leaves them alone -- matching how sgi-bridge.c's own
- * sgi_bridge_reset_core() recomputes its identification register from
- * properties rather than clearing them.
+ * Every guest-writable field this widget carries returns to its
+ * post-realize value: widget_control and onewire_reg (the original,
+ * identity-only register window), plus increment 2's own register
+ * window, mailbox queue, textport command port and framebuffer.
+ * manufacturer/part/revision/probe_value are qdev properties fixed at
+ * construction, not guest state, so reset leaves them alone -- matching
+ * how sgi-bridge.c's own sgi_bridge_reset_core() recomputes its
+ * identification register from properties rather than clearing them.
+ *
+ * test_pixel_x/test_pixel_y are excluded: per their own header comment,
+ * they are host-only qtest introspection coordinates, not guest state,
+ * so a guest-triggered reset has no more claim on them than it does on
+ * any other out-of-band debug property.
  */
 static void sgi_kona_reset_hold(Object *obj, ResetType type)
 {
@@ -682,6 +691,43 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
 
     s->widget_control = 0;
     s->onewire_reg = 0;
+
+    /* Increment 2: register-window plain storage and the mailbox queue. */
+    s->low_window_write = 0;
+    s->reset_arg = 0;
+    s->int_cause = 0;
+    memset(s->mailbox_queue, 0, sizeof(s->mailbox_queue));
+    s->mailbox_len = 0;
+    s->mailbox_pos = 0;
+    s->reset_strobe = 0;
+    s->eeprom_enable = 0;
+    s->eeprom_addr = 0;
+
+    /*
+     * The textport command port's own reset entry point, rather than
+     * poking its fields directly: it re-runs sgi_command_port_init()
+     * with the same ops/opaque/port_id/selectors this device passed at
+     * finish_realize(), so identity is preserved and only the framing
+     * state (kick, framing, selector, argc_expected/have, args[])
+     * clears. Post-realize, the textport immediately expects a fresh
+     * sync word, so that flag is set again rather than cleared.
+     */
+    sgi_command_port_reset(&s->textport);
+    s->textport_expect_sync = true;
+    s->draw_color = 0;
+    sgi_kona_bitmap_reset(s);
+
+    /*
+     * The framebuffer returns to its post-realize all-zero contents.
+     * Setting the dirty flag (rather than leaving it at its own
+     * post-realize value of false) forces the next gfx_update() to
+     * repaint the console: unlike a fresh realize, a mid-run reset can
+     * follow guest draws the console has already rendered, and those
+     * stale pixels must not survive on screen after the clear below.
+     */
+    memset(s->framebuffer, 0,
+          SGI_KONA_FB_WIDTH * SGI_KONA_FB_HEIGHT * sizeof(uint32_t));
+    s->framebuffer_dirty = true;
 }
 
 static const Property sgi_kona_properties[] = {
