@@ -14,6 +14,7 @@ a real temporary PPM.
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from lib_screen import (ColorVarietyCheck, DarkPixelFractionCheck,
                         LitPixelFractionCheck, NotAllBlackCheck,
@@ -368,6 +369,27 @@ class PollScreendumpUntilChecksPassTest(unittest.TestCase):
             interval_seconds=0.01, timeout_seconds=0.05)
 
         self.assertEqual(len(messages), 1)
+
+    def test_uses_elapsed_deadline_instead_of_dump_count(self):
+        width = height = 2
+        black = solid_frame(width, height, (0, 0, 0))
+        lit = solid_frame(width, height, (200, 200, 200))
+        vm = _FakeVm([(width, height, black)] * 3 +
+                     [(width, height, lit)])
+        now = [0.0]
+
+        def advance(seconds):
+            now[0] += seconds
+
+        with patch('lib_screen.time.monotonic', side_effect=lambda: now[0]), \
+             patch('lib_screen.time.sleep', side_effect=advance):
+            messages = poll_screendump_until_checks_pass(
+                _FakeTest(), vm, self.tmp_path / 'poll.ppm',
+                [NotAllBlackCheck()], interval_seconds=1.0,
+                timeout_seconds=3.5)
+
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(now[0], 3.0)
 
     def test_raises_if_the_checks_never_all_pass(self):
         width = height = 2
