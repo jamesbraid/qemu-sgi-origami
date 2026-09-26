@@ -89,12 +89,10 @@ write 4 0x070d18 0x11223300
 write 1 0x071c88 0x14
 write 4 0x071e00 0x000000a0
 
-# --- only a fill with a zero colour mask and COLORMASKMSBS set tags WID,
-# and only PP1FILLMODE's class-11 "WID/DID planes" value applies the tag ---
+# --- only a fill with a zero colour mask and COLORMASKMSBS set tags WID ---
 write 8 0x120400 0x0019630400000000
 write 8 0x120400 0x00196204000000f0
 write 8 0x120400 0x00196d0400050000
-write 8 0x120400 0x001961040013f500
 write 8 0x120400 0x0019100400100000
 write 8 0x120400 0x00184604000a000a
 write 8 0x120400 0x001c4704000d000d

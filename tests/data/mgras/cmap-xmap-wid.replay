@@ -5,8 +5,7 @@
 #    bits 15:8, and the data port advances one entry per write
 #  - the two masks are a pair, COLORMASKLSBSA over the colour and
 #    COLORMASKMSBS over the WID: a rectangle fill with a nonzero
-#    COLORMASKMSBS AND a PP1FILLMODE naming the WID/DID planes visual
-#    class (11 or 13) writes DRBPOINTERS bits 23:16 into the WID plane,
+#    COLORMASKMSBS writes DRBPOINTERS bits 23:16 into the WID plane,
 #    whether or not it also writes colour, and nothing else touches it
 #  - scanout resolves every pixel through
 #    cmap[(xmap_mode[wid] >> 5 & 0x1f) * 256 + (native & 0xff)], with entry
