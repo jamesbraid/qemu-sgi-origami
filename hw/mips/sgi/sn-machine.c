@@ -2958,6 +2958,15 @@ static void sgi_machine_set_baseio_preset(Object *obj, const char *value,
 {
     SGIMachineState *s = SGI_MACHINE(obj);
 
+    /*
+     * Only the two BaseIO cards may take IO1. sgi-xio-baseio builds other
+     * presets too (the MENET), and would put one in place of the BaseIO.
+     */
+    if (!g_str_equal(value, "io6") && !g_str_equal(value, "io6g")) {
+        error_setg(errp, "baseio-preset '%s' is not a BaseIO card; expected "
+                   "io6 or io6g", value);
+        return;
+    }
     g_free(s->baseio_preset);
     s->baseio_preset = g_strdup(value);
 }

@@ -250,6 +250,20 @@ static void assert_qemu_rejects(const char *const args[], const char *message)
 }
 
 /*
+ * The machine's baseio-preset names the card in IO1, which only a BaseIO
+ * may be: a MENET there would replace the module's BaseIO.
+ */
+static void test_menet_is_not_a_baseio_preset(const void *data)
+{
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin2000,baseio-preset=menet",
+        "-accel", "qtest", "-display", "none", NULL
+    };
+
+    assert_qemu_rejects(args, "baseio-preset 'menet' is not a BaseIO card");
+}
+
+/*
  * The MENET's chips have no console, record or MediaIO port and no clock,
  * so an id for one of those is refused rather than dropped.
  */
@@ -334,6 +348,8 @@ int main(int argc, char **argv)
                         test_onewire_serials_distinct);
     qtest_add_data_func("sn0/menet/superio-reaches-hub", &device_case,
                         test_superio_reaches_hub);
+    qtest_add_data_func("sn0/menet/not-a-baseio-preset", NULL,
+                        test_menet_is_not_a_baseio_preset);
     qtest_add_data_func("sn0/menet/refuses-backends-it-cannot-take", NULL,
                         test_menet_refuses_backends_it_cannot_take);
     qtest_add_data_func("sn0/menet/io6-refuses-mediaio-ports", NULL,
