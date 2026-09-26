@@ -121,7 +121,9 @@ def _drive_to_shell(con, budget):
     to the menu, which carries its configuration and diagnostics
     summary."""
     deadline = time.monotonic() + budget
-    left = lambda cap: max(1.0, min(cap, deadline - time.monotonic()))
+
+    def left(cap):
+        return max(1.0, min(cap, deadline - time.monotonic()))
 
     menu = con.expect(rb"Option\?", left(budget), what="the maintenance menu")
     prom = _text(con.buf[:menu.start()])
