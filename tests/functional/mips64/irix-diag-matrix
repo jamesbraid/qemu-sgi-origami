@@ -1,0 +1,26 @@
+# The IRIX online-diagnostic matrix: one row per machine flavour we model an
+# IOC3 on, one column per check. A cell is `run` or a reason key from
+# lib_irix_diag.REASONS saying why the flavour cannot run the check.
+# lib_irix_diag.FLAVOURS holds each row's launch and device names;
+# test_irix_diag.py and test_irix_diag_<flavour>.py boot each row once.
+#
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# The four-node Origin 2000's plain BaseIO (io6) is the IO1 board of the
+# PCI shoehorn and PCI carrier rows, so it has no row of its own. The
+# Cad Duo on those two has no serial ports and no real-time interrupt,
+# so their serial and olrti checks cover the BaseIO's IOC3 alone.
+#
+# Red on sgi-origami as of 2026-09-26, each a model problem with its own
+# issue on jamesb/qemu: timer on every row (#863); reboot on origin300
+# (#875), and its ethernet ping intermittently (#868); keyboard on
+# origin2000_pci_carrier (#874); and the four-node rows' PROM power-on
+# intermittently (#872).
+#
+# id | cpus | mem | prom | inventory | ethernet | serial | mediaio | rad1 | keyboard | scsi_card | olrti | olenet | oldisk | olmem | oltape | olcdrom | timer | reboot | persistence | parallel
+origin200 | 2 | 128 | run | run | run | run | no-mediaio | no-mediaio | run | no-scsi-card | run | no-olenet | run | run | run | run | run | run | run | parallel-own-history
+origin200_dual | 4 | 128 | run | run | run | run | no-mediaio | no-mediaio | run | no-scsi-card | run | no-olenet | run | run | run | run | run | run | run | parallel-own-history
+origin2000_one_node | 2 | 256 | run | run | run | run | run | run | run | no-scsi-card | run | no-olenet | run | run | run | run | run | run | run | run
+origin2000_pci_shoehorn | 8 | 256 | run | run | run | run | no-mediaio | no-mediaio | run | no-scsi-card | run | no-olenet | run | run | run | run | run | run | run | no-parallel
+origin2000_pci_carrier | 8 | 256 | run | run | run | run | no-mediaio | no-mediaio | run | run | run | no-olenet | run | run | run | run | run | run | run | no-parallel
+origin300 | 2 | 512 | run | run | run | run | no-mediaio | no-mediaio | no-keyboard | no-scsi-card | run | run | run | run | run | run | run | run | run | no-parallel-connector
