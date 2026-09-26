@@ -338,6 +338,7 @@ config SGI_KONA
     select SGI_XIO_BOARD
     select ONEWIRE
     select SGI_BRIDGE
+    select SGI_KONA_PORTS
 
 config SGI_BRIDGE_DMA_TEST
     bool
@@ -411,9 +412,9 @@ config SGI_COMMAND_PORT_TEST
     select SGI_COMMAND_PORT
 
 # InfiniteReality/KONA's own port roles and selector tables: data only,
-# no device or MemoryRegion of its own. sgi-kona (increment 1,
-# identity only) does not select this yet; a future FIFO/textport/
-# doorbell increment will.
+# no device or MemoryRegion of its own. sgi-kona increment 2 selects
+# this to wire SGI_KONA_PORT_TEXTPORT into its own command port; the
+# FIFO and doorbell tables remain unplaced by any device.
 config SGI_KONA_PORTS
     bool
     select SGI_COMMAND_PORT
