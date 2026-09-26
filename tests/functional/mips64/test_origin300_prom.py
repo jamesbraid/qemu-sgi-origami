@@ -28,24 +28,16 @@ test_origin300_prom_four_cpus repeats the same check at -smp 4, the
 population the origin300 catalogue's supported_cpu_populations gained
 beside [2] (docs/machines/layers/products/origin300.yaml). Measured
 directly (2026-09-18, this branch): the same first line appears within
-about a second, every time, whether or not a writable pflash backs the
-boot flash. A writable-pflash run that continues past that line into
-the PROM's own diagnostics is not exercised here: it surfaces a
-register-reset-value miscompare in the XBridge/IOC3 self-test
-(bridge_sanity, io_config_space) and, separately, an unreliable "Hub
-chip failed interrupt test" outcome whose failure shape changes between
-otherwise-identical runs -- a timing-sensitive four-processor
-rendezvous question of its own, tracked apart from this smoke check
-(see the known two-processor MTTCG rendezvous issue this shares a
-family with), not a defect this test's narrow first-line bar claims to
-rule out.
+about a second with or without writable pflash. The menu case below
+uses writable pflash and checks diagnostics separately.
 
-test_two_cpus_reach_the_menu_with_all_diags_passed and its four-CPU
-twin go past that first line, through a writable boot flash and real
+test_four_cpus_reach_the_menu_with_all_diags_passed goes past that
+first line, through a writable boot flash and real
 chassis/board/SPD identity records (lib_origin300.py, ported from
 tools/origami_lib/prom.py and tools/origami_lib/io8_eeprom.py's own
 seeding), to the stock PROM's "ALL DIAGS PASSED" and System Maintenance
-Menu -- the path the installed IRIX disk boots through.
+Menu. test_irix_origin300_installed_boot.py checks that same outcome
+for two CPUs while continuing through an installed IRIX boot.
 """
 
 import os
@@ -110,10 +102,6 @@ class Origin300Prom(QemuSystemTest):
         wait_for_console_pattern(self, 'ALL DIAGS PASSED')
         wait_for_console_pattern(self, 'System Maintenance Menu')
         self.vm.shutdown()
-
-    @skipIfMissingEnv('ORIGAMI_ASSETS')
-    def test_two_cpus_reach_the_menu_with_all_diags_passed(self):
-        self.boot_to_menu(2)
 
     @skipIfMissingEnv('ORIGAMI_ASSETS')
     def test_four_cpus_reach_the_menu_with_all_diags_passed(self):

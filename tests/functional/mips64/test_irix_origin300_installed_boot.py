@@ -5,7 +5,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Check the installed IP35 guest beyond the stock PROM menu.
 
-The two-processor Origin 300 PROM test stops at the maintenance menu.
 The captured installed-disk run in the Origami checkout
 (docs/boot-logs/irix.origin300-2cpu-no-scache-sbe.
 2026-09-24T23:08:06-07:00) reaches the IRIX console login. This test
@@ -76,6 +75,8 @@ class IrixOrigin300InstalledBoot(QemuSystemTest):
             self.vm.shutdown(hard=self.vm.exitcode() is not None)
         self.assertIn('ALL DIAGS PASSED', transcript,
                       f'PROM diagnostics did not pass: {log_path}')
+        self.assertIn('System Maintenance Menu', transcript,
+                      f'PROM did not reach the maintenance menu: {log_path}')
         self.assertIn('run-level 2', transcript,
                       f'who -r did not report run level 2: {log_path}')
         self.assertRegex(transcript, UNAME_RE,

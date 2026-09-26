@@ -25,15 +25,15 @@ test_mips64_timeouts = {
   # ten running out that budget in sequence and still reporting which one
   # did, rather than the whole script being killed with nothing to read.
   'sn_reset' : 900,
-  # Four methods in this one script now: the original two first-line-only
-  # smoke boots (about a second each) plus two real boots through a
+  # Three methods in this script: the original two first-line-only
+  # smoke boots (about a second each) plus a four-CPU boot through a
   # writable boot flash and the chassis/board/SPD identity records
   # (lib_origin300.py) to the stock PROM's own "ALL DIAGS PASSED" and
-  # System Maintenance Menu -- the path the installed IRIX disk boots
-  # through. Measured end to end against an already-built binary
-  # (2026-09-22): all four methods together in 72s; the four-CPU menu
-  # boot passed three runs in a row with no failure. 240 keeps well over
-  # three times the measured total for a contended host.
+  # System Maintenance Menu. The installed IRIX test checks the same
+  # outcome for two CPUs. Before that test absorbed the two-CPU menu
+  # boot, all four methods took 72s (2026-09-22); the four-CPU menu
+  # boot passed three runs in a row. Keep 240s until the shorter script
+  # is measured in CI.
   'origin300_prom' : 240,
   # One stock-PROM boot of the two-chassis pair to the menu: 364 s measured
   # against the debug build at host load 60 (test_origin300_two_chassis_
