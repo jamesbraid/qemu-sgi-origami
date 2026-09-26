@@ -961,6 +961,28 @@ static void mgras_apply_window_origin(SGIMgrasState *s, int *x, int *y)
 }
 
 /*
+ * The driver never writes an oy past SGI_MGRAS_HEIGHT - 1 (see the reset
+ * value above), but nothing here enforces that: OpenBSD's impactreg.h packs
+ * XYWIN as IMPACTSR_YXCOORDS(x, y) == (y << 16) | x with no documented width
+ * narrower than the 16-bit field already masked above, so a guest is free to
+ * point the register anywhere in that range. An oy past 1023 drives
+ * mgras_apply_window_origin()'s y term negative, and a plain
+ * "x >= SGI_MGRAS_WIDTH || y >= SGI_MGRAS_HEIGHT" rejection only ever
+ * checks an upper bound: it has no "x < 0 || y < 0" term, so a negative x
+ * or y sails through both sides of the OR. mgras_put_pixel()'s idx
+ * parameter is unsigned, so a negative y * SGI_MGRAS_WIDTH + x then wraps
+ * into a multi-gigabyte forward offset into s->front. Casting each
+ * coordinate to unsigned before comparing rejects negative and over-large
+ * values in the same check, without changing anything for an in-range
+ * point.
+ */
+static bool mgras_xy_on_screen(int x, int y)
+{
+    return (unsigned int)x < SGI_MGRAS_WIDTH &&
+           (unsigned int)y < SGI_MGRAS_HEIGHT;
+}
+
+/*
  * RE_POINT paints at its own command value, not at BLOCKXYSTARTI: nothing
  * in the retained Toolchest capture writes BLOCKXYSTARTI before an
  * RE_POINT execute, and every one of its 12 point executes there instead
@@ -987,7 +1009,7 @@ static void mgras_draw_point(SGIMgrasState *s)
     int x = (xy0 >> 16) & 0xffff, y = xy0 & 0xffff;
 
     mgras_apply_window_origin(s, &x, &y);
-    if (x >= SGI_MGRAS_WIDTH || y >= SGI_MGRAS_HEIGHT) {
+    if (!mgras_xy_on_screen(x, y)) {
         return;
     }
     mgras_put_pixel(s, y * SGI_MGRAS_WIDTH + x, color, op, mask, format);
@@ -1043,7 +1065,7 @@ static void mgras_draw_line(SGIMgrasState *s)
     for (;;) {
         int e2;
 
-        if (x0 < SGI_MGRAS_WIDTH && y0 < SGI_MGRAS_HEIGHT) {
+        if (mgras_xy_on_screen(x0, y0)) {
             mgras_put_pixel(s, y0 * SGI_MGRAS_WIDTH + x0, color, op, mask,
                         format);
             if (overlay) {

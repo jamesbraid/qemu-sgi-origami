@@ -4563,6 +4563,86 @@ static void test_re_line_execute_ignores_zero_x_field_xywin(void)
 }
 
 
+/*
+ * Nothing masks XYWIN's y field to SGI_MGRAS_HEIGHT - 1 the way the driver
+ * always writes it: a guest value past 1023 drives
+ * mgras_apply_window_origin()'s "(SGI_MGRAS_HEIGHT - 1) - oy" term
+ * negative. Before the fix, RE_POINT's own "x >= SGI_MGRAS_WIDTH || y >=
+ * SGI_MGRAS_HEIGHT" rejection let that through -- both sides of the OR are
+ * false for a negative int compared against an unsigned width -- and
+ * mgras_put_pixel() took the resulting negative index in a parameter
+ * declared unsigned, turning it into a multi-gigabyte forward offset into
+ * s->front. This asserts the point is rejected instead: no crash, no
+ * sticky error, and the screen unchanged.
+ */
+static void test_re_point_execute_rejects_out_of_range_xywin_origin(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+
+    /* RGB format: RE_POINT reads PACKEDCOLOR only under this format. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                               (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00abcdef));
+    /*
+     * y field (5000) is far past the 1023 the driver ever writes; x field
+     * nonzero (1) is what gates mgras_apply_window_origin()'s add.
+     */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_XYWIN, (5000u << 16) | 1u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_POINT, (0u << 16) | 0u));
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    g_assert_cmphex(mgras_test_pixel(qts, 0, 0), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 1, 0), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * The same out-of-range XYWIN origin reaches RE_LINE through
+ * mgras_apply_window_origin(), applied to both endpoints, and the line
+ * loop's own "x0 < SGI_MGRAS_WIDTH && y0 < SGI_MGRAS_HEIGHT" plot check has
+ * the identical gap. The first RE_POINT here keeps XYWIN at its x-field-0
+ * reset value so it safely latches the pen position before the bad XYWIN
+ * below is installed, isolating RE_LINE's own check from RE_POINT's.
+ */
+static void test_re_line_execute_rejects_out_of_range_xywin_origin(void)
+{
+    mgras_reset();
+
+    mgras_enter_context(qts);
+
+    /* RGB format: RE_LINE/RE_POINT read PACKEDCOLOR only under this format. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE,
+                               (MGRAS_LOGIC_OP_COPY << 26) | 0x2000));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PACKEDCOLOR, 0x00112233));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_POINT, (0u << 16) | 0u));
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 0, 0), ==, 0x00112233);
+
+    /*
+     * y field (5000) is far past the 1023 the driver ever writes; x field
+     * nonzero (1) is what gates mgras_apply_window_origin()'s add.
+     */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_XYWIN, (5000u << 16) | 1u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_RE_LINE, (5u << 16) | 5u));
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_STATUS) & 0x80000000, ==, 0);
+
+    g_assert_cmphex(mgras_test_pixel(qts, 5, 5), ==, 0);
+    g_assert_cmphex(mgras_test_pixel(qts, 6, 5), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+
 static void test_re_char_h_execute(void)
 {
     mgras_reset();
@@ -5392,6 +5472,12 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "re-line-execute-ignores-zero-x-field-xywin",
                    test_re_line_execute_ignores_zero_x_field_xywin);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "re-point-execute-rejects-out-of-range-xywin-origin",
+                   test_re_point_execute_rejects_out_of_range_xywin_origin);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "re-line-execute-rejects-out-of-range-xywin-origin",
+                   test_re_line_execute_rejects_out_of_range_xywin_origin);
     qtest_add_func("sn0/origin2000/mgras/re-char-h-execute",
                    test_re_char_h_execute);
     qtest_add_func("sn0/origin2000/mgras/fifo-re-blockcopy-unsupported",
