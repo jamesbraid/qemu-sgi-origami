@@ -3,10 +3,10 @@
 # reduced from the desktop session of trace irix-20260922T133830-79813f:
 #  - a CMAP selector carries the map in bits 4:0 and the first entry in
 #    bits 15:8, and the data port advances one entry per write
-#  - the two masks are a pair, COLORMASKLSBSA over the colour and
-#    COLORMASKMSBS over the WID: a rectangle fill with a nonzero
-#    COLORMASKMSBS writes DRBPOINTERS bits 23:16 into the WID plane,
-#    whether or not it also writes colour, and nothing else touches it
+#  - each pixel's WID comes from the VC3 main display-ID table (register
+#    4), not from any drawing: the whole-screen fill with a zero colour
+#    mask, COLORMASKMSBS 0xf0 and DRBPOINTERS 0x101c0 clears the overlay
+#    and writes no WID
 #  - scanout resolves every pixel through
 #    cmap[(xmap_mode[wid] >> 5 & 0x1f) * 256 + (native & 0xff)], with entry
 #    bits 31:24, 23:16 and 15:8 as red, green and blue
@@ -113,7 +113,82 @@ read 4 0x120400 0x0000f400
 # --- display enable ---
 write 4 0x072038 0x1e000400
 
-# --- WID plane: (0,0)-(63,63) gets WID 1 (zero colour mask, MSBS 0xf0, DRBPOINTERS 0x0101c0) ---
+# --- VC3 main display-ID table: WID 1 over (0,0)-(63,63), WID 0 elsewhere ---
+write 4 0x072038 0x04050000
+write 4 0x072038 0x07200000
+write 2 0x072190 0x0001
+write 2 0x072190 0x0800
+write 2 0x072190 0xffe0
+write 4 0x072038 0x07050000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+write 2 0x072190 0x2000
+wid 10 10 1
+wid 64 10 0
+wid 10 64 0
+
+# --- the start-up form (zero colour mask, MSBS 0xf0, DRBPOINTERS 0x0101c0) writes no WID ---
 write 8 0x120400 0x0019630400000000
 write 8 0x120400 0x00196204000000f0
 write 8 0x120400 0x00196404ffffffff
@@ -124,6 +199,7 @@ write 8 0x120400 0x0019400400000011
 write 8 0x120400 0x0018460400000000
 write 8 0x120400 0x001c4704003f003f
 wid 10 10 1
+wid 64 10 0
 pixels 8 8 8 8 0x0
 
 # --- BLOCKXYENDI fill of the Toolchest kind: PACKEDCOLOR 0, BKGRD_RG 0x10, mask 0xff, DRBPOINTERS 0x090240 ---
@@ -161,7 +237,7 @@ display-pixel 28 10 0x00ff0000
 # --- glyph row: a set bit paints CI8 ink from RED>>12 (unwritten here, so
 # index 0/black) through WID 1; a clear bit leaves the pixel untouched
 # rather than painting a BKGRD_RG background, so it still reads back the
-# WID-1/index-0 state the earlier zero-colour-mask tag left there ---
+# index-0 state the earlier zero-colour-mask fill left there ---
 write 8 0x120400 0x0019100410400008
 write 8 0x120400 0x0019400400000010
 write 8 0x120400 0x0018460400200008
@@ -174,7 +250,7 @@ wid 36 8 1
 display-pixel 32 8 0x0
 display-pixel 36 8 0x0
 
-# --- a paint outside the WID-1 region resolves through entry 0 (reset 0x7a4 -> map 29, zero here) ---
+# --- a paint outside the WID-1 rows resolves through entry 0 (reset 0x7a4 -> map 29, zero here) ---
 write 8 0x120400 0x0019100400100000
 write 8 0x120400 0x0019760400000010
 write 8 0x120400 0x0018460400640064

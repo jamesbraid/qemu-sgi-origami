@@ -114,7 +114,17 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 
 #define SGI_MGRAS_VC3_ARG 0x070d88
 
-#define SGI_MGRAS_RE_ARG 0x071e80
+/*
+ * XMAP overlay mode, one entry per WID, selected by the same index byte at
+ * 0x071c88 as the main mode. The stock X server writes 0xc1, 0xc9, 0xd1,
+ * 0xd9, 0x1f1 and 0x1f9 for WIDs 0-5 and 0 for the rest. Inferred from
+ * captured desktop sessions: bit 0 enables the overlay for that WID and
+ * bits 7:3 select its colour map -- WID 1's 0xc9 names map 25, the map the
+ * server loads with the popup-menu palette (entry 1 grey 0xc1c1c1, entry 2
+ * black) that menu fills and text on the overlay visual draw with. Bit 8
+ * (set for WIDs 4 and 5 only) is unexplained.
+ */
+#define SGI_MGRAS_XMAP_OVERLAY_MODE 0x071e80
 
 /*
  * Established (docs/datasheets/mgras-hq4.md, "Swap scheduling"):
@@ -246,7 +256,6 @@ struct SGIMgrasState {
     uint32_t dma_desc_30000[1];
     uint32_t bringup_arg_3;
     uint32_t vc3_arg;
-    uint32_t re_arg;
     uint32_t hq_status_extra;
     uint32_t hq_vector_dest_upper;
     uint32_t hq_vector_dest_lower;
@@ -278,8 +287,6 @@ struct SGIMgrasState {
     uint32_t *back;
     uint32_t front_count;
     uint32_t back_count;
-    /* Per-pixel visual tag. Only a plane fill writes it. */
-    uint8_t *wid;
     /*
      * Per-pixel colour-format tag, one of the SGI_MGRAS_PIXEL_FORMAT_*
      * values above: CI8 selects the indexed plane (front holds an 8-bit
@@ -291,6 +298,8 @@ struct SGIMgrasState {
      * docs/datasheets/mgras-raster-display.md.
      */
     uint8_t *format;
+    /* Per-pixel overlay index. 0 is transparent and shows the main planes. */
+    uint8_t *overlay;
     uint32_t hq[5120];
     uint32_t *ge[2];
     uint32_t ge_write_ptr[2];
@@ -344,6 +353,7 @@ struct SGIMgrasState {
     uint8_t xmap_index;
     uint32_t xmap_mode[SGI_MGRAS_XMAP_ENTRIES];
     uint32_t xmap_buf_select[SGI_MGRAS_XMAP_ENTRIES];
+    uint32_t xmap_overlay_mode[SGI_MGRAS_XMAP_ENTRIES];
     uint16_t vc3_reg[32];
     uint8_t vc3_index;
     uint16_t vc3_ram_addr;
