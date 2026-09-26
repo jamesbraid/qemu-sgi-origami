@@ -184,12 +184,11 @@ static void ii_bte_interrupt(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
  * interrupt-address register names.
  *
  * The interrupt lands in the node's own register window, which reaches this
- * I/O interface again.  A launch that finishes synchronously -- a
- * bounds-checked failure, or a zero-latency engine -- runs ii_bte_signal from
- * inside the launching MMIO write, and a self-directed completion writes back
- * into this device; either way QEMU's re-entrancy guard would drop the write.
- * Deliver the interrupt from a bottom half that runs once the launching access
- * has returned.  The notification-line write targets ordinary memory and stays
+ * I/O interface again.  Every launch finishes inside the launching MMIO write
+ * (ii_bte_run), and a self-directed completion writes back into this device;
+ * either way QEMU's re-entrancy guard would drop the write.  Deliver the
+ * interrupt from a bottom half that runs once the launching access has
+ * returned.  The notification-line write targets ordinary memory and stays
  * synchronous.
  */
 static void ii_bte_signal(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
@@ -217,40 +216,48 @@ static void ii_bte_signal_bh(void *opaque)
     ii_bte_interrupt(bte->io, bte);
 }
 
-static void ii_bte_complete(void *opaque)
+/*
+ * A started engine moves its whole transfer, one 128-byte line at a time,
+ * before the write that starts it returns.
+ *
+ * On hardware an engine runs alongside the processor that started it, and two
+ * engines started back to back run side by side; neither gets far ahead of
+ * the other.  The PROM's hub BTE check depends on that: it starts both
+ * engines on equal copies, waits for engine 0's completion interrupt alone,
+ * then compares both copies.  An engine paced by a timer instead runs on the
+ * host's clock, in the main loop, and the processor can fall arbitrarily far
+ * behind it: the store that starts engine 1 has landed milliseconds after
+ * engine 0 started, and the check then compared engine 1's copy before it
+ * was done.  Finishing the data inside the starting access puts every
+ * engine's data ahead of anything a processor can observe.
+ */
+static void ii_bte_run(SGIBedrockIOState *s, SGIBedrockIOBTE *bte)
 {
-    SGIBedrockIOBTE *bte = opaque;
-    SGIBedrockIOState *s = bte->io;
     uint8_t buffer[128] = { 0 };
-    MemTxResult result = MEMTX_OK;
+    uint64_t remaining = bte->status & II_BTE_LENGTH_MASK;
 
-    if (!(bte->control & 1)) {
-        result = dma_memory_read(s->dma_as, bte->source, buffer, sizeof(buffer),
-                                 MEMTXATTRS_UNSPECIFIED);
-    }
-    if (result == MEMTX_OK) {
-        result = dma_memory_write(s->dma_as, bte->destination, buffer,
-                                  sizeof(buffer),
-                                  MEMTXATTRS_UNSPECIFIED);
-    }
-    if (result != MEMTX_OK) {
-        bte->status = (bte->status & II_BTE_LENGTH_MASK) | II_BTE_ERROR;
-    } else {
-        uint64_t remaining = bte->status & II_BTE_LENGTH_MASK;
+    while (remaining) {
+        MemTxResult result = MEMTX_OK;
 
-        if (remaining) {
-            remaining--;
-            bte->source = (bte->source + 128) & II_BTE_ADDR_MASK;
-            bte->destination = (bte->destination + 128) & II_BTE_ADDR_MASK;
+        if (!(bte->control & 1)) {
+            result = dma_memory_read(s->dma_as, bte->source, buffer,
+                                     sizeof(buffer), MEMTXATTRS_UNSPECIFIED);
         }
-        bte->status = remaining | (remaining ? II_BTE_BUSY : 0);
-        if (remaining) {
-            timer_mod_ns(bte->timer,
-                         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1);
+        if (result == MEMTX_OK) {
+            result = dma_memory_write(s->dma_as, bte->destination, buffer,
+                                      sizeof(buffer), MEMTXATTRS_UNSPECIFIED);
+        }
+        if (result != MEMTX_OK) {
+            /* The failed line and those after it are still owed. */
+            bte->status = remaining | II_BTE_ERROR;
+            ii_bte_signal(s, bte);
             return;
         }
+        remaining--;
+        bte->source = (bte->source + 128) & II_BTE_ADDR_MASK;
+        bte->destination = (bte->destination + 128) & II_BTE_ADDR_MASK;
     }
-    bte->active = false;
+    bte->status = 0;
     ii_bte_signal(s, bte);
 }
 
@@ -274,8 +281,11 @@ static uint64_t ii_read(void *opaque, hwaddr offset, unsigned size)
         case 8: return bte->source;
         case 0x10: return bte->destination;
         case 0x18:
-            timer_del(bte->timer);
-            bte->active = false;
+            /*
+             * Reading control terminates a transfer in progress.  None
+             * outlives its starting write here, so this only drops the busy
+             * bit of an engine armed but never started.
+             */
             bte->status &= ~II_BTE_BUSY;
             return bte->control;
         case 0x20: return bte->notification;
@@ -341,11 +351,6 @@ static void ii_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
     }
     bte = ii_bte(s, &offset);
     if (bte) {
-        if (bte->active) {
-            qemu_log_mask(LOG_GUEST_ERROR,
-                          "sgi-bedrock-io: BTE write while active\n");
-            return;
-        }
         switch (offset) {
         case 0:
             bte->status = value & (II_BTE_LENGTH_MASK | II_BTE_BUSY);
@@ -386,8 +391,7 @@ static void ii_write(void *opaque, hwaddr offset, uint64_t value, unsigned size)
                     return;
                 }
             }
-            bte->active = true;
-            timer_mod_ns(bte->timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1);
+            ii_bte_run(s, bte);
             return;
         case 0x20:
             bte->notification = value & II_BTE_ADDR_MASK;
@@ -829,7 +833,6 @@ static void ii_reset_enter(Object *obj, ResetType type)
     memset(s->request_buffer, 0, sizeof(s->request_buffer));
     memset(s->retained, 0, sizeof(s->retained));
     for (unsigned i = 0; i < 2; i++) {
-        timer_del(s->bte[i].timer);
         qemu_bh_cancel(s->bte[i].signal_bh);
         s->bte[i].status = 0;
         s->bte[i].source = 0;
@@ -837,13 +840,12 @@ static void ii_reset_enter(Object *obj, ResetType type)
         s->bte[i].control = 0;
         s->bte[i].notification = 0;
         s->bte[i].interrupt = 0;
-        s->bte[i].active = false;
         s->bte[i].signal_pending = false;
     }
 }
 
 static const VMStateDescription vmstate_ii_bte = {
-    .name = "sgi-bedrock-io/bte", .version_id = 2, .minimum_version_id = 2,
+    .name = "sgi-bedrock-io/bte", .version_id = 3, .minimum_version_id = 3,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(status, SGIBedrockIOBTE),
         VMSTATE_UINT64(source, SGIBedrockIOBTE),
@@ -851,9 +853,8 @@ static const VMStateDescription vmstate_ii_bte = {
         VMSTATE_UINT64(control, SGIBedrockIOBTE),
         VMSTATE_UINT64(notification, SGIBedrockIOBTE),
         VMSTATE_UINT64(interrupt, SGIBedrockIOBTE),
-        VMSTATE_BOOL(active, SGIBedrockIOBTE),
         VMSTATE_BOOL(signal_pending, SGIBedrockIOBTE),
-        VMSTATE_TIMER_PTR(timer, SGIBedrockIOBTE), VMSTATE_END_OF_LIST()
+        VMSTATE_END_OF_LIST()
     },
 };
 
@@ -871,7 +872,7 @@ static int ii_post_load(void *opaque, int version_id)
 }
 
 static const VMStateDescription vmstate_ii = {
-    .name = TYPE_SGI_BEDROCK_IO, .version_id = 2, .minimum_version_id = 2,
+    .name = TYPE_SGI_BEDROCK_IO, .version_id = 3, .minimum_version_id = 3,
     .post_load = ii_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT64(widget_control, SGIBedrockIOState),
@@ -923,8 +924,6 @@ static void ii_init(Object *obj)
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->inbound);
     for (unsigned i = 0; i < 2; i++) {
         s->bte[i].io = s;
-        s->bte[i].timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, ii_bte_complete,
-                                      &s->bte[i]);
         s->bte[i].signal_bh = qemu_bh_new_guarded(ii_bte_signal_bh, &s->bte[i],
                                       &DEVICE(obj)->mem_reentrancy_guard);
     }
@@ -934,8 +933,6 @@ static void ii_finalize(Object *obj)
 {
     SGIBedrockIOState *s = SGI_BEDROCK_IO(obj);
 
-    timer_free(s->bte[0].timer);
-    timer_free(s->bte[1].timer);
     qemu_bh_delete(s->bte[0].signal_bh);
     qemu_bh_delete(s->bte[1].signal_bh);
     if (s->linked_dma_as_initialized) {

@@ -3,7 +3,6 @@
 #define HW_MISC_SGI_BEDROCK_IO_H
 
 #include "hw/core/sysbus.h"
-#include "qemu/timer.h"
 
 #define TYPE_SGI_BEDROCK_IO "sgi-bedrock-io"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockIOState, SGI_BEDROCK_IO)
@@ -21,9 +20,7 @@ typedef struct SGIBedrockIOBTE {
     uint64_t control;
     uint64_t notification;
     uint64_t interrupt;
-    bool active;
     bool signal_pending;
-    QEMUTimer *timer;
     QEMUBH *signal_bh;
 } SGIBedrockIOBTE;
 
