@@ -93,6 +93,8 @@ foreach speed : ['quick', 'thorough']
       test_suites = suites
       if testname == 'mips64-openbsd_install'
         test_suites = suites + ['func-install']
+      elif testname == 'mips64-irix_diag'
+        test_suites = suites + ['func-diag']
       elif testname in ['mips64-openbsd_login',
                        'mips64-openbsd_net_transfer',
                        'mips64-xframe_pci']
