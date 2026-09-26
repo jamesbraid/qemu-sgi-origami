@@ -67,6 +67,22 @@
 #define MGRAS_RSS_RE_LINE 0x041
 #define MGRAS_RSS_IR_ALIAS 0x045
 
+/*
+ * XYWIN carries a per-window screen origin: mgrasLineSS writes it before
+ * RE_POINT/RE_LINE, but mgrasPolyFillRectSolid never writes it before
+ * BLOCKXYSTARTI/BLOCKXYENDI (both confirmed by the sites each function's
+ * disassembly touches). OpenBSD's impact(4) driver
+ * (sys/arch/sgi/dev/impactreg.h) names this register IMPACTSR_CMD_XYWIN
+ * and comments it "YX coords", built through an IMPACTSR_YXCOORDS(x, y)
+ * macro expanding to (y << 16) | x -- the low/high 16-bit split below is
+ * that public macro, not a capture-only guess. What the driver does not
+ * state is the y field's sense (whether it counts from the window's top
+ * or bottom); see mgras_apply_window_origin() for how a retained greeter
+ * capture and the driver's own reset value settle that. See
+ * mgras_draw_point() and mgras_draw_line() for how the origin applies.
+ */
+#define MGRAS_RSS_XYWIN 0x115
+
 
 /*
  * Register 0x05f: function unknown. The DDX writes it 32 times with
@@ -823,6 +839,71 @@ static void mgras_draw_pio_pixel_pair(SGIMgrasState *s)
 
 
 /*
+ * XYWIN's x field (low 16 bits) gates whether its (x, y) is a live window
+ * origin to add to a point/line's own coordinate. A retained greeter
+ * capture's RE_LINE executes split cleanly on this: 1,456 of 1,953 carry
+ * XYWIN == 0x03ff0000 (x field 0) and already paint the icon-panel
+ * outlines at their correct absolute position -- one 500-line run of
+ * these (register 0x14f == 0x11) draws its box at x:459-519, y:700-765,
+ * and adding XYWIN's y field to it would push it off-window. The other
+ * eight observed XYWIN values all carry a nonzero x field, and adding
+ * both fields lands each of those clusters inside a distinct,
+ * non-overlapping icon-sized box. Gating on x != 0 is an inference from
+ * that split, not a confirmed hardware or driver condition: disassembly
+ * of mgrasLineSS finds two distinct sites that write XYWIN ahead of
+ * RE_POINT/RE_LINE, one that structurally always stores x == 0 and one
+ * that can store a genuine nonzero x, but which guest-side condition
+ * chooses between them was not traced to a confirmed branch predicate.
+ * mgrasPolyFillRectSolid never writes XYWIN at all, which is why
+ * BLOCKXYSTARTI/BLOCKXYENDI fills need no such adjustment.
+ *
+ * The y field is packed top-down (0 at the bottom, SGI_MGRAS_HEIGHT - 1
+ * at the top of the window), the opposite sense from the framebuffer's
+ * own top-down row order: adding it to a line/point's raw y unmodified
+ * put the greeter's icon line art roughly 800 pixels too far down, past
+ * the bottom of the window it was meant to land in. Flipping the field
+ * with SGI_MGRAS_HEIGHT - 1 - oy before adding lines it up with the
+ * measured on-screen geometry: XYWIN 0x03390146 (the capture's largest
+ * cluster, 379 RE_LINE executes, raw y in [16, 113]) lands at
+ * [214, 311], matching the EZsetup icon's own measured rect (y 214-312,
+ * see test_mgras_greeter.py) almost exactly, and the panel-outline
+ * cluster (XYWIN 0x033c0143, raw y in [0, 476]) lands at [195, 671]
+ * against the panel's own measured 201-666 -- the same few-pixel margin
+ * that test's docstring attributes to the drawn border sitting just
+ * outside the fill's own measured, inset bounding box. A bounded,
+ * truncated replay of the same capture through this corrected formula
+ * (up to and including both clusters) reproduces the greeter's icon row
+ * -- labelled root/EZsetup/demos icons sitting together at the expected
+ * position -- rather than the pre-fix ghost cluster near the origin or
+ * the pre-fix placement roughly 800 pixels further down.
+ *
+ * The flip's magnitude (SGI_MGRAS_HEIGHT - 1, not some other constant)
+ * is not capture-only: OpenBSD's impact(4) driver initializes XYWIN
+ * exactly once, to IMPACTSR_YXCOORDS(0, 0x3ff) -- x field 0, y field
+ * 0x3ff (1023, SGI_MGRAS_HEIGHT - 1) -- and 1,456 of the capture's 1,953
+ * RE_LINE executes carry that same reset value, 0x03ff0000, while
+ * drawing at their own already-correct absolute position (see the x != 0
+ * gate above). That reset value is exactly the flip's fixed point --
+ * SGI_MGRAS_HEIGHT - 1 - 0x3ff == 0 -- which is why leaving x's own gate
+ * on ox != 0 already excludes it: at oy == 0x3ff the corrected y term is
+ * a no-op even if it were applied unconditionally. The driver never
+ * exercises a nonzero-x window itself, so it settles the fixed point and
+ * the field split, not the general in-window transform; the transform
+ * for a genuine nonzero window remains grounded in the capture alone.
+ */
+static void mgras_apply_window_origin(SGIMgrasState *s, int *x, int *y)
+{
+    uint32_t xywin = s->rss[MGRAS_RSS_XYWIN];
+    int ox = xywin & 0xffff;
+    int oy = (xywin >> 16) & 0xffff;
+
+    if (ox != 0) {
+        *x += ox;
+        *y += (SGI_MGRAS_HEIGHT - 1) - oy;
+    }
+}
+
+/*
  * RE_POINT paints at its own command value, not at BLOCKXYSTARTI: nothing
  * in the retained Toolchest capture writes BLOCKXYSTARTI before an
  * RE_POINT execute, and every one of its 12 point executes there instead
@@ -831,7 +912,11 @@ static void mgras_draw_pio_pixel_pair(SGIMgrasState *s)
  * rss[MGRAS_RSS_RE_POINT] like any other register (see
  * mgras_raster_rss_write()). That latched value also
  * serves as RE_LINE's start point below: RE_POINT is a moveto that leaves
- * a pen position for a following RE_LINE to draw from.
+ * a pen position for a following RE_LINE to draw from. The window origin
+ * in XYWIN (see mgras_apply_window_origin()) applies before the bounds
+ * check; the Toolchest capture's XYWIN stays at its x-field-0 reset value
+ * throughout, so this is unexercised there and rests on the greeter
+ * evidence instead.
  */
 static void mgras_draw_point(SGIMgrasState *s)
 {
@@ -844,6 +929,7 @@ static void mgras_draw_point(SGIMgrasState *s)
     uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
     int x = (xy0 >> 16) & 0xffff, y = xy0 & 0xffff;
 
+    mgras_apply_window_origin(s, &x, &y);
     if (x >= SGI_MGRAS_WIDTH || y >= SGI_MGRAS_HEIGHT) {
         return;
     }
@@ -862,8 +948,13 @@ static void mgras_draw_point(SGIMgrasState *s)
  * outside the recording window). BLOCKXYSTARTI/BLOCKXYENDI instead sit
  * frozen on a stale, unrelated rectangle across thousands of consecutive
  * point/line draws there. Advancing rss[MGRAS_RSS_RE_POINT] to this line's
- * end point chains a run of RE_LINEs into a polyline the same way the
- * capture chains them.
+ * raw (unshifted) end point chains a run of RE_LINEs into a polyline the
+ * same way the capture chains them; each chained execute reapplies
+ * mgras_apply_window_origin() to that raw value itself, so a steady XYWIN
+ * across the chain shifts every leg by the same amount. The Toolchest
+ * capture's XYWIN stays at its x-field-0 reset value throughout, so the
+ * origin shift below is unexercised there and rests on the greeter
+ * evidence in mgras_apply_window_origin() instead.
  */
 static void mgras_draw_line(SGIMgrasState *s)
 {
@@ -877,11 +968,15 @@ static void mgras_draw_line(SGIMgrasState *s)
     uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
     int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
     int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
-    int dx = (x1 > x0) ? (x1 - x0) : (x0 - x1);
-    int dy = (y1 > y0) ? (y1 - y0) : (y0 - y1);
-    int sx = (x0 < x1) ? 1 : -1;
-    int sy = (y0 < y1) ? 1 : -1;
-    int err = dx - dy;
+    int dx, dy, sx, sy, err;
+
+    mgras_apply_window_origin(s, &x0, &y0);
+    mgras_apply_window_origin(s, &x1, &y1);
+    dx = (x1 > x0) ? (x1 - x0) : (x0 - x1);
+    dy = (y1 > y0) ? (y1 - y0) : (y0 - y1);
+    sx = (x0 < x1) ? 1 : -1;
+    sy = (y0 < y1) ? 1 : -1;
+    err = dx - dy;
 
     for (;;) {
         int e2;
