@@ -75,15 +75,15 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from lib_irix_diag import (CHECKS, FLAVOURS, MANIFEST, REASONS,
-                           ClockReading, clock_error, device_numbers,
+from lib_irix_diag import (FLAVOURS, MANIFEST, CheckFailed, ClockReading,
+                           OutOfTime, clock_error, device_numbers,
                            diag_problems, guest_date, launch_args,
                            link_targets, od_bytes, parse_row,
                            command_output, drive_to_shell,
-                           processor_count, prom_facts,
+                           processor_count, prom_facts, run_checks,
                            wav_nonzero_samples)
 from lib_matrix import MatrixError, matrix_rows
-from lib_net import GuestFault, HarnessError, IrixConsole
+from lib_net import HarnessError, IrixConsole
 from lib_prom import FORK_ROOT, require_assets, run_record
 
 try:
@@ -93,11 +93,11 @@ except (ImportError, RuntimeError):
     QemuSystemTest = None
 
 
-# The timeouts below are the slowest this matrix's runs measured on
-# 2026-09-26, debug_tcg build/ binaries under MTTCG beside a dozen other
-# emulators, times about two to four. Those runs include builds with the missed
-# Compare matches of jamesb/qemu#863, which slowed disk and CD-ROM I/O
-# several-fold; the slowest figures are theirs.
+# Each wait below is capped twice: by its own limit, about two to four
+# times the slowest this matrix measured on 2026-09-26 (debug_tcg build/,
+# MTTCG), and by what is left of the row's budget in irix-diag-matrix.
+# The slowest figures come from builds with the missed Compare matches of
+# jamesb/qemu#866, which slowed disk and CD-ROM I/O several-fold.
 
 # PROM power-on, kernel and init to a root shell: 1075s at most (the
 # four-node shoehorn, 391s PROM and 685s IRIX), 125 to 400s on the Origin
@@ -107,9 +107,8 @@ BOOT_BUDGET_SECONDS = 1500
 # Ordinary shell commands: hinv, netstat and the like took 22s at most.
 STEP_TIMEOUT_SECONDS = 120
 
-# Each diagnostic's own budget, against the slowest measured: olrti 27s,
-# olenet 15s, oldisk 497s (one that did not finish in 600s was on the
-# four-node carrier under #863), olmem 1246s, oltape 12s, olcdrom 329s.
+# Each diagnostic's own limit, against the slowest measured: olrti 27s,
+# olenet 15s, oldisk 894s, olmem 1246s, oltape 12s, olcdrom 329s.
 DIAG_TIMEOUT_SECONDS = {
     'olrti': 120,
     'olenet': 120,
@@ -170,10 +169,6 @@ TYPED_BYTES = ['1c', 'f0', '1c', '32', 'f0', '32']
 MEDIUM_REL = os.path.join('assets', 'irix', '6.5.30', 'olcdrom-medium.raw')
 MEDIUM_SHA256 = \
     'ba0a1466d7125cd350ee4f047677d7a3d9f8a8ed8b13469c92042cfa0bd07829'
-
-
-class CheckFailed(Exception):
-    """A check's own assertion did not hold."""
 
 
 class _Console(IrixConsole):
@@ -265,8 +260,8 @@ if QemuSystemTest is not None:
             self.addCleanup(con.close)
             phases = []
             try:
-                prom = drive_to_shell(con, BOOT_BUDGET_SECONDS, phases,
-                                      menu=not relaunch)
+                prom = drive_to_shell(con, self._left(BOOT_BUDGET_SECONDS),
+                                      phases, menu=not relaunch)
             finally:
                 for phase, seconds in phases:
                     self._phase(f'{name}: {phase}', seconds)
@@ -279,50 +274,50 @@ if QemuSystemTest is not None:
         # -- the run -----------------------------------------------------
 
         def _run_row(self, row_id):
+            started = time.monotonic()
             lineno, line = _manifest_line(row_id)
             try:
                 self.row = parse_row(MANIFEST, lineno, line)
             except MatrixError as exc:
                 self.fail(str(exc))
+            # Every wait below is cut to what is left before this, so a
+            # slow run still writes its summary before meson's timeout.
+            self.deadline = started + self.row.budget
             self.flavour = FLAVOURS[self.row.id]
             self.phases, self.results = [], {}
             self._prepare(self.flavour)
 
-            started = time.monotonic()
             try:
                 self.first = self._launch(self.row.id)
-            except HarnessError as exc:
-                self.fail(f'{self.row.id}: first boot: {exc} -- console '
-                          f'log: {self.log_file(self.row.id + "-console.log")}')
-            self.here = self.first
-
-            fault = None
-            for check in CHECKS:
-                if not self.row.runs(check):
-                    self.results[check] = ('n/a', self.row.reason(check), 0)
-                    continue
-                if fault is not None:
-                    self.results[check] = ('not run', fault, 0)
-                    continue
-                t0 = time.monotonic()
-                try:
-                    getattr(self, f'_check_{check}')()
-                    status, detail = 'pass', ''
-                except (CheckFailed, HarnessError) as exc:
-                    status, detail = 'fail', str(exc)
-                    if isinstance(exc, GuestFault):
-                        fault = f'the guest faulted during {check}'
-                    # A failed reboot leaves no shell to resynchronise;
-                    # the persistence check stops QEMU regardless.
-                    elif isinstance(exc, HarnessError) and \
-                            check != 'reboot' and not self._resync(check):
-                        fault = (f'the shell stopped answering after '
-                                 f'{check} timed out')
-                seconds = round(time.monotonic() - t0, 1)
-                self.results[check] = (status, detail, seconds)
-                self._phase(f'check {check} ({status})', seconds)
+                self.here = self.first
+                self.results = run_checks(self.row, self._run_check,
+                                          self._resync)
+            except (HarnessError, OutOfTime) as exc:
+                console = self.log_file(self.row.id + '-console.log')
+                self.results = {check: ('not run', f'the first boot: {exc} '
+                                        f'-- console log: {console}', 0)
+                                for check in self.row.cells}
             self._phase('whole run', round(time.monotonic() - started, 1))
             self._report()
+
+        def _run_check(self, check):
+            began = time.monotonic()
+            status = 'fail'
+            try:
+                getattr(self, f'_check_{check}')()
+                status = 'pass'
+            finally:
+                self._phase(f'check {check} ({status})',
+                            round(time.monotonic() - began, 1))
+
+        def _left(self, cap):
+            """cap, or what is left of the row's budget if that is less.
+            Raises OutOfTime once nothing is left."""
+            left = self.deadline - time.monotonic()
+            if left < 1:
+                raise OutOfTime(f'{self.row.id} spent its {self.row.budget}s '
+                                'budget')
+            return min(cap, left)
 
         def _resync(self, check):
             """After a timed-out command, interrupt it and see whether the
@@ -331,8 +326,8 @@ if QemuSystemTest is not None:
             self.here.con.sock.sendall(b'\x03\n')
             try:
                 self.here.con.run('true', self._tag(f'resync-{check}'),
-                                  RESYNC_TIMEOUT_SECONDS)
-            except HarnessError:
+                                  self._left(RESYNC_TIMEOUT_SECONDS))
+            except (HarnessError, OutOfTime):
                 return False
             return True
 
@@ -373,13 +368,14 @@ if QemuSystemTest is not None:
             self.tags += 1
             return f'{tag}-{self.tags}'
 
-        def _out(self, cmd, tag, timeout=None):
-            return self.here.output(cmd, self._tag(tag), timeout)[0]
+        def _out(self, cmd, tag, timeout=STEP_TIMEOUT_SECONDS):
+            return self.here.output(cmd, self._tag(tag),
+                                    self._left(timeout))[0]
 
-        def _run(self, cmd, tag, timeout=None):
-            self._expect(
-                self.here.con.run(cmd, self._tag(tag), timeout) == 0,
-                f'{cmd!r} failed')
+        def _run(self, cmd, tag, timeout=STEP_TIMEOUT_SECONDS):
+            self._expect(self.here.con.run(cmd, self._tag(tag),
+                                           self._left(timeout)) == 0,
+                         f'{cmd!r} failed')
 
         # -- the checks, in CHECKS order ----------------------------------
 
@@ -450,7 +446,7 @@ if QemuSystemTest is not None:
 
         def _check_rad1(self):
             self._run(f'/usr/sbin/sfplay {CONFIDENCE_TONE}', 'sfplay',
-                      timeout=SFPLAY_TIMEOUT_SECONDS)
+                      SFPLAY_TIMEOUT_SECONDS)
             with open(self.paths['wav'], 'rb') as wav:
                 samples = wav_nonzero_samples(wav.read())
             self.log.info('RAD1 playback: %d nonzero samples', samples)
@@ -523,7 +519,8 @@ if QemuSystemTest is not None:
 
         def _diag(self, name, cmd):
             output, status = self.here.output(
-                cmd, self._tag(name), timeout=DIAG_TIMEOUT_SECONDS[name])
+                cmd, self._tag(name),
+                timeout=self._left(DIAG_TIMEOUT_SECONDS[name]))
             problems = diag_problems(name, output)
             self._expect(not problems,
                          f'{name} exited {status}: ' + '; '.join(problems))
@@ -611,7 +608,8 @@ if QemuSystemTest is not None:
             # resets through the kernel's own reboot path, the part this
             # checks, without reboot's two minutes of rc scripts.
             con.send('/sbin/uadmin 2 1')
-            con.expect(self.flavour.prom_banner, REBOOT_TIMEOUT_SECONDS,
+            con.expect(self.flavour.prom_banner,
+                       self._left(REBOOT_TIMEOUT_SECONDS),
                        what='the PROM banner after reboot', start=start)
             self._phase('reboot to the PROM banner',
                         round(time.monotonic() - t0, 1))
@@ -622,6 +620,7 @@ if QemuSystemTest is not None:
             if self.clock_before is None:
                 raise CheckFailed('the first boot set nothing to read back')
             self.first.vm.shutdown()
+            self._left(STOPPED_SECONDS)
             time.sleep(STOPPED_SECONDS)
             self.here = self._launch(f'{self.row.id}-relaunch',
                                      relaunch=True)

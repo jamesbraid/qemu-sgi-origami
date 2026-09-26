@@ -77,20 +77,32 @@ test_mips64_timeouts = {
   # BOOT_TIMEOUT_SECONDS in test_irix_miniroot.py keeps a 60s margin under
   # this.
   'irix_miniroot' : 900,
-  # One target per irix-diag-matrix flavour (test_irix_diag.py and the
-  # test_irix_diag_<flavour>.py beside it), so the flavours run side by
-  # side: one boot each for SGI's online diagnostics and the IOC3 port
-  # checks, an IRIX reboot, and a relaunch after a 25s stop. Each timeout
-  # is about twice the slowest whole run measured on 2026-09-26 (debug_tcg
-  # build/, beside a dozen other emulators): 1545s, 896s, 2210s, 3032s,
-  # 1934s and 2608s in this order. All stay under nightly.yml's 9000s job
-  # limit, so a hang is reported per test.
-  'irix_diag' : 3600,
-  'irix_diag_origin200' : 2400,
-  'irix_diag_origin2000_one_node' : 4800,
-  'irix_diag_origin2000_pci_shoehorn' : 6000,
-  'irix_diag_origin2000_pci_carrier' : 6000,
-  'irix_diag_origin300' : 5400,
+  # One target per irix-diag-matrix row (test_irix_diag.py and the
+  # test_irix_diag_<flavour>.py beside it), each selectable on its own so a
+  # nightly job can run one or two rows. The runner cancels a job at 60
+  # minutes; a job that takes about 9 minutes to provision and stays under
+  # 50 leaves about 2460s, so no row's timeout is above 2400s. Each
+  # timeout is the row's budget in irix-diag-matrix plus 120s for its
+  # summary and the machines' shutdown. Every wait inside a row (boots,
+  # shell steps, diagnostics, reboot, stop) is cut to what is left of that
+  # budget, so a slow run marks its remaining checks not run and still
+  # writes <row>-summary.json before meson's timeout: budget 1500 + 120 =
+  # 1620 for origin200 and 2280 + 120 = 2400 for the rest. The slowest
+  # whole runs measured on 2026-09-26, with matrix code not yet committed
+  # (see the commit that sets these), were 896s (origin200), 1755s
+  # (two-chassis), 2382s (one-node), 3032s (shoehorn, before its reboot
+  # and relaunch were dropped), 1934s (carrier) and 2608s (origin300);
+  # the one-node maximum came from a build carrying jamesb/qemu#866's
+  # missed Compare matches, which slowed oldisk up to ninefold, and
+  # origin300's included a 300s wait on its stalled reboot (#875), now
+  # 180s. A row over its budget while #866 stands is cut short, with its
+  # summary.
+  'irix_diag' : 2400,
+  'irix_diag_origin200' : 1620,
+  'irix_diag_origin2000_one_node' : 2400,
+  'irix_diag_origin2000_pci_shoehorn' : 2400,
+  'irix_diag_origin2000_pci_carrier' : 2400,
+  'irix_diag_origin300' : 2400,
   # Boot the plain installed IRIX disk (265s to root login when last
   # measured; root.qcow2 is the base root-diags.qcow2 is built from) and
   # require who -r/uname -aR to show run level 2 under the

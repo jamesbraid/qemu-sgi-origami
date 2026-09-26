@@ -21,26 +21,28 @@ from dataclasses import replace
 from pathlib import Path
 
 import lib_irix_diag as lib
-from lib_irix_diag import (CHECKS, FLAVOURS, MANIFEST, REASONS, RUN,
-                           ClockReading, clock_error, command_output,
-                           device_numbers, diag_problems, drive_to_shell,
-                           guest_date, launch_args, link_targets, od_bytes,
-                           parse_manifest, parse_row, processor_count,
-                           prom_facts, text, wav_nonzero_samples)
+from lib_irix_diag import (CHECKS, FLAVOURS, REASONS, RUN, CheckFailed,
+                           ClockReading, NoConsole, OutOfTime, clock_error,
+                           command_output, device_numbers, diag_problems,
+                           drive_to_shell, guest_date, launch_args,
+                           link_targets, od_bytes, parse_manifest, parse_row,
+                           processor_count, prom_facts, run_checks, text,
+                           wav_nonzero_samples)
 from lib_matrix import MatrixError
-from lib_net import Console, HarnessError
+from lib_net import Console, GuestFault, HarnessError
 
 
 HERE = Path(__file__).parent
 
 
-def _line(row_id='origin200', cpus='2', mem='128', **cells):
+def _line(row_id='origin200', cpus='2', mem='128', budget='1500', **cells):
     values = {check: RUN for check in CHECKS}
     values.update(mediaio='no-mediaio', rad1='no-mediaio',
                   scsi_card='no-scsi-card', olenet='no-olenet',
                   parallel='parallel-own-history')
     values.update(cells)
-    return ' | '.join([row_id, cpus, mem] + [values[c] for c in CHECKS])
+    return ' | '.join([row_id, cpus, mem, budget] +
+                      [values[c] for c in CHECKS])
 
 
 class ManifestTests(unittest.TestCase):
@@ -64,9 +66,23 @@ class ManifestTests(unittest.TestCase):
             self.assertRegex(meson, rf"(?m)^\s*'{target}'\s*:\s*\d+,")
             self.assertRegex(meson, rf"(?m)^\s*'{target}',\s*$")
 
+    def test_each_timeout_holds_its_rows_budget_and_fits_a_job(self):
+        meson = (HERE / 'meson.build').read_text(encoding='utf-8')
+        budgets = {r.id: r.budget for r in parse_manifest()}
+        for path in HERE.glob('test_irix_diag*.py'):
+            target = path.stem[len('test_'):]
+            timeout = int(re.search(rf"(?m)^\s*'{target}'\s*:\s*(\d+),",
+                                    meson).group(1))
+            for row in re.findall(r"register_irix_diag_row\(\w+, '(\w+)'\)",
+                                  path.read_text(encoding='utf-8')):
+                with self.subTest(row=row):
+                    self.assertGreaterEqual(timeout, budgets[row] + 120)
+                    self.assertLessEqual(timeout, 2400)
+
     def test_a_row_parses_into_cells(self):
         row = parse_row('m', 1, _line())
-        self.assertEqual((row.id, row.cpus, row.mem), ('origin200', 2, 128))
+        self.assertEqual((row.id, row.cpus, row.mem, row.budget),
+                         ('origin200', 2, 128, 1500))
         self.assertTrue(row.runs('olmem'))
         self.assertFalse(row.runs('mediaio'))
         self.assertEqual(row.reason('mediaio'), REASONS['no-mediaio'])
@@ -83,6 +99,10 @@ class ManifestTests(unittest.TestCase):
     def test_an_unknown_flavour_is_refused(self):
         with self.assertRaisesRegex(MatrixError, 'no flavour'):
             parse_row('m', 1, _line(row_id='origin9000'))
+
+    def test_a_missing_budget_is_refused(self):
+        with self.assertRaisesRegex(MatrixError, 'budget is not an integer'):
+            parse_row('m', 1, _line(budget='soon'))
 
     def test_a_bad_count_is_refused(self):
         with self.assertRaisesRegex(MatrixError, 'cpus is not an integer'):
@@ -113,6 +133,60 @@ class ManifestTests(unittest.TestCase):
             manifest.flush()
             with self.assertRaisesRegex(MatrixError, r':4: duplicate id'):
                 parse_manifest(manifest.name)
+
+
+class RunChecksTests(unittest.TestCase):
+
+    ROW = parse_row('m', 1, _line())
+
+    def _run(self, failures, resync=True):
+        ran = []
+
+        def run_one(check):
+            ran.append(check)
+            if check in failures:
+                raise failures[check]
+
+        results = run_checks(self.ROW, run_one, lambda check: resync)
+        return ran, results
+
+    def test_every_check_runs_after_an_ordinary_failure(self):
+        ran, results = self._run({'serial': CheckFailed('no line')})
+        self.assertEqual(results['serial'][:2], ('fail', 'no line'))
+        self.assertIn('persistence', ran)
+        self.assertEqual(results['mediaio'][0], 'n/a')
+
+    def test_a_guest_fault_stops_the_row(self):
+        ran, results = self._run({'olmem': GuestFault('panic')})
+        self.assertNotIn('oltape', ran)
+        self.assertEqual(results['oltape'],
+                         ('not run', 'the guest faulted during olmem', 0))
+
+    def test_a_timeout_stops_the_row_only_if_the_shell_stays_busy(self):
+        ran, _results = self._run({'oldisk': HarnessError('timed out')})
+        self.assertIn('olmem', ran)
+        ran, results = self._run({'oldisk': HarnessError('timed out')},
+                                 resync=False)
+        self.assertNotIn('olmem', ran)
+        self.assertIn('stopped answering', results['olmem'][1])
+
+    def test_a_spent_budget_stops_the_row(self):
+        ran, results = self._run({'olmem': OutOfTime('spent')})
+        self.assertNotIn('oltape', ran)
+        self.assertIn('budget ran out during olmem', results['oltape'][1])
+
+    def test_a_failed_relaunch_is_recorded_and_ends_the_row(self):
+        row = parse_row('m', 1, _line(row_id='origin2000_one_node',
+                                      mediaio=RUN, rad1=RUN, parallel=RUN))
+
+        def run_one(check):
+            if check == 'persistence':
+                raise NoConsole('the relaunch timed out')
+
+        results = run_checks(row, run_one, lambda check: self.fail(check))
+        self.assertEqual(results['persistence'][:2],
+                         ('fail', 'the relaunch timed out'))
+        self.assertEqual(results['parallel'][0], 'not run')
 
 
 # Output shaped like the diagnostics' own, from the captures cited in the

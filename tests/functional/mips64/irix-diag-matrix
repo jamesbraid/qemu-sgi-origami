@@ -12,15 +12,19 @@
 # so their serial and olrti checks cover the BaseIO's IOC3 alone.
 #
 # Red on sgi-origami as of 2026-09-26, each a model problem with its own
-# issue on jamesb/qemu: timer on every row (#863); reboot on origin300
+# issue on jamesb/qemu: timer on every row (#866); reboot on origin300
 # (#875), and its ethernet ping intermittently (#868); keyboard on
 # origin2000_pci_carrier (#874); and the four-node rows' PROM power-on
 # intermittently (#872).
 #
-# id | cpus | mem | prom | inventory | ethernet | serial | mediaio | rad1 | keyboard | scsi_card | olrti | olenet | oldisk | olmem | oltape | olcdrom | timer | reboot | persistence | parallel
-origin200 | 2 | 128 | run | run | run | run | no-mediaio | no-mediaio | run | no-scsi-card | run | no-olenet | run | run | run | run | run | run | run | parallel-own-history
-origin200_dual | 4 | 128 | run | run | run | run | no-mediaio | no-mediaio | run | no-scsi-card | run | no-olenet | run | run | run | run | run | run | run | parallel-own-history
-origin2000_one_node | 2 | 256 | run | run | run | run | run | run | run | no-scsi-card | run | no-olenet | run | run | run | run | run | run | run | run
-origin2000_pci_shoehorn | 8 | 256 | run | run | run | run | no-mediaio | no-mediaio | run | no-scsi-card | run | no-olenet | run | run | run | run | run | run | run | no-parallel
-origin2000_pci_carrier | 8 | 256 | run | run | run | run | no-mediaio | no-mediaio | run | run | run | no-olenet | run | run | run | run | run | run | run | no-parallel
-origin300 | 2 | 512 | run | run | run | run | no-mediaio | no-mediaio | no-keyboard | no-scsi-card | run | run | run | run | run | run | run | run | run | no-parallel-connector
+# budget is the seconds the whole row may take, test start to report;
+# every wait is cut to what is left of it. meson.build gives each row's
+# target 120s more, for its summary and the machines' shutdown.
+#
+# id | cpus | mem | budget | prom | inventory | ethernet | serial | mediaio | rad1 | keyboard | scsi_card | olrti | olenet | oldisk | olmem | oltape | olcdrom | timer | reboot | persistence | parallel
+origin200 | 2 | 128 | 1500 | run | run | run | run | no-mediaio | no-mediaio | run | no-scsi-card | run | no-olenet | run | run | run | run | run | run | run | parallel-own-history
+origin200_dual | 4 | 128 | 2280 | run | run | run | run | no-mediaio | no-mediaio | run | no-scsi-card | run | no-olenet | run | run | run | run | run | run | run | parallel-own-history
+origin2000_one_node | 2 | 256 | 2280 | run | run | run | run | run | run | run | no-scsi-card | run | no-olenet | run | run | run | run | run | run | run | run
+origin2000_pci_shoehorn | 8 | 256 | 2280 | run | run | run | run | no-mediaio | no-mediaio | run | no-scsi-card | run | no-olenet | run | run | run | run | run | four-node-relaunch | four-node-relaunch | no-parallel
+origin2000_pci_carrier | 8 | 256 | 2280 | run | run | run | run | no-mediaio | no-mediaio | run | run | run | no-olenet | run | run | run | run | run | four-node-relaunch | four-node-relaunch | no-parallel
+origin300 | 2 | 512 | 2280 | run | run | run | run | no-mediaio | no-mediaio | no-keyboard | no-scsi-card | run | run | run | run | run | run | run | run | run | no-parallel-connector
