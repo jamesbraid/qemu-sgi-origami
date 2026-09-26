@@ -18,11 +18,14 @@
 #include "sgi-test.h"
 
 #define SMALL_WINDOW_SIZE UINT64_C(0x1000000)
-#define SMALL_WINDOW(widget) (SPACE_XTALK + (uint64_t)(widget) * SMALL_WINDOW_SIZE)
+#define SMALL_WINDOW(widget) \
+    (SPACE_XTALK + (uint64_t)(widget) * SMALL_WINDOW_SIZE)
 
-/* sn-builder-test.c's own SPARE_WIDGET: KONA's board->cpu_face is a plain
+/*
+ * sn-builder-test.c's own SPARE_WIDGET: KONA's board->cpu_face is a plain
  * MemoryRegion with no Bridge-style packet-address skew, so unlike that
- * file's SPARE_IN_REG() this adds no +REG_DATA. */
+ * file's SPARE_IN_REG() this adds no +REG_DATA.
+ */
 #define KONA_WIDGET 11
 #define KONA_BASE   SMALL_WINDOW(KONA_WIDGET)
 #define KONA_REG(offset) (KONA_BASE + (offset))
@@ -116,10 +119,12 @@ static uint8_t kona_read_byte(void)
     return byte;
 }
 
-/* CRC-8, poly 0x8c: matches onewire_crc8() (hw/1wire/crc.c). Reimplemented
+/*
+ * CRC-8, poly 0x8c: matches onewire_crc8() (hw/1wire/crc.c). Reimplemented
  * locally because a qtest binary cannot link the device model's own
  * internal symbols, exactly as sn1-xbridge-test.c's nic_crc8()
- * does for the same reason. */
+ * does for the same reason.
+ */
 static uint8_t kona_crc8(uint8_t crc, const uint8_t *buf, size_t len)
 {
     size_t i;
@@ -151,20 +156,24 @@ static uint16_t kona_crc16(uint16_t crc, const uint8_t *buf, size_t len)
     }
     return crc;
 }
-/* The Dallas/Maxim inverted-CRC-16 check residue: re-running the same
+/*
+ * The Dallas/Maxim inverted-CRC-16 check residue: re-running the same
  * generator over data with its own complemented CRC appended always lands
  * here, the same identity sn1-xbridge-test.c's NIC_CRC_RESIDUE
- * checks for the Bridge NIC's unrelated page framing. */
+ * checks for the Bridge NIC's unrelated page framing.
+ */
 #define KONA_CRC16_RESIDUE 0xb001
 
 #define KONA_ONEWIRE_FAMILY 0x09
 #define KONA_GEOMETRY_SERIAL UINT64_C(0x000000000001)
 #define KONA_KTOWN_SERIAL    UINT64_C(0x000000000002)
 
-/* The 64-bit ROM code a Match ROM selects: family, then serial LSB first,
+/*
+ * The 64-bit ROM code a Match ROM selects: family, then serial LSB first,
  * then a CRC-8 over those seven bytes -- onewire_slave_set_identity()'s
  * own layout (hw/1wire/core.c), built here byte by byte so nothing depends
- * on host endianness. */
+ * on host endianness.
+ */
 static void kona_build_identity(uint8_t identity[8], uint8_t family,
                                 uint64_t serial)
 {
@@ -434,7 +443,8 @@ int main(int argc, char **argv)
                    test_widget_control_is_plain_storage);
     qtest_add_func("sn0/origin2000/kona/probe-reads-documented-reset-state",
                    test_probe_reads_documented_reset_state);
-    qtest_add_func("sn0/origin2000/kona/unknown-offset-reads-zero-and-accepts-writes",
+    qtest_add_func("sn0/origin2000/kona/"
+                   "unknown-offset-reads-zero-and-accepts-writes",
                    test_unknown_offset_reads_zero_and_accepts_writes);
     qtest_add_func("sn0/origin2000/kona/onewire-geometry-identity",
                    test_onewire_geometry_identity);
