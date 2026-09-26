@@ -3058,6 +3058,45 @@ static void test_io6g_ps2(void)
 }
 
 /*
+ * The board IOC3's own combined interrupt reaches the Bridge on input 4
+ * (BASEIO_IOC3_IRQ_PIN). io6g is the only preset whose board chip carries
+ * a keyboard, so it is the only board on which a keyboard reply can drive
+ * that wire from the SuperIO side; the pin-6 tests below assert input 4
+ * stays clear while the MediaIO chip fires, and this is the positive
+ * counterpart: device 2's latched keyboard source raises input 4 alone and
+ * leaves the MediaIO chip's input 6 clear.
+ */
+static void test_io6g_board_keyboard_reaches_bridge_pin_4(void)
+{
+    QTestState *qts = start_module_io6g();
+
+    program_module(qts);
+    program_baseio_ioc3(qts);
+
+    g_assert_cmphex(baseio_window_read(qts, BRIDGE_INT_STATUS) &
+                    (BRIDGE_PIN_BOARD_IOC3 | BRIDGE_PIN_MIO_IOC3), ==, 0);
+
+    baseio_window_write(qts, IOC3_WINDOW + INT_ENABLE_SET, INT_KEYBOARD);
+    g_assert_cmphex(baseio_window_read(qts, BRIDGE_INT_STATUS) &
+                    BRIDGE_PIN_BOARD_IOC3, ==, 0);
+
+    baseio_window_write(qts, IOC3_WINDOW + KBC_KBD_TRANSMIT, 0xff);
+    g_assert_cmphex(baseio_window_read(qts, IOC3_WINDOW + INT_STATUS) &
+                    INT_KEYBOARD, ==, INT_KEYBOARD);
+    g_assert_cmphex(baseio_window_read(qts, BRIDGE_INT_STATUS) &
+                    BRIDGE_PIN_BOARD_IOC3, ==, BRIDGE_PIN_BOARD_IOC3);
+    g_assert_cmphex(baseio_window_read(qts, BRIDGE_INT_STATUS) &
+                    BRIDGE_PIN_MIO_IOC3, ==, 0);
+
+    /* Latched: only an acknowledging write to the source clears the pin. */
+    baseio_window_write(qts, IOC3_WINDOW + INT_STATUS, INT_KEYBOARD);
+    g_assert_cmphex(baseio_window_read(qts, IOC3_WINDOW + INT_STATUS) &
+                    INT_KEYBOARD, ==, 0);
+    g_assert_cmphex(baseio_window_read(qts, BRIDGE_INT_STATUS) &
+                    BRIDGE_PIN_BOARD_IOC3, ==, 0);
+}
+
+/*
  * The MediaIO IOC3's own combined interrupt reaches the Bridge on input 6
  * (BASEIO_G_MIO_IOC3_IRQ_PIN), separate from device 2's board IOC3 on
  * input 4 -- the same latched keyboard/mouse source
@@ -3518,6 +3557,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/baseio/io6g-rad1-ust-counter",
                    test_io6g_rad1_ust_counter);
     qtest_add_func("sn0/baseio/io6g-ps2", test_io6g_ps2);
+    qtest_add_func("sn0/baseio/io6g-board-keyboard-reaches-bridge-pin-4",
+                   test_io6g_board_keyboard_reaches_bridge_pin_4);
     qtest_add_func("sn0/baseio/io6g-mio-keyboard-reaches-bridge-pin-6",
                    test_io6g_mio_keyboard_reaches_bridge_pin_6);
     qtest_add_func("sn0/baseio/io6g-mio-keyboard-backlog-reaches-bridge-pin-6",
