@@ -471,19 +471,26 @@ if QemuSystemTest is not None:
                 self._type_on(kbd, index)
 
         def _type_on(self, kbd, index):
-            """Prove kbd's input device is its card's PS/2 keyboard, then
-            type on it through QEMU and read the scan codes back."""
+            """Prove kbd's input devices are its card's PS/2 keyboard and
+            mouse, then type on the keyboard through QEMU and read the scan
+            codes back."""
             links = link_targets(self._out(f'ls -l {kbd.dev_dir}',
                                            f'devinput{index}'))
-            self._expect(links.get('keyboard') == f'{kbd.hw_dir}/keyboard',
-                         f'{kbd.dev_dir}/keyboard is not {kbd.hw_dir}')
             devices = device_numbers(self._out(
-                f'ls -l {kbd.hw_dir}/keyboard {kbd.card}/pckb',
-                f'hwinput{index}'))
-            card = [n for p, n in devices.items() if p.endswith('/pckb')]
-            self._expect(card, f'no pckb under {kbd.card}')
-            self._expect(devices.get(f'{kbd.hw_dir}/keyboard') == card[0],
-                         f'{kbd.hw_dir}/keyboard is not {kbd.card}/pckb')
+                f'ls -l {kbd.hw_dir}/keyboard {kbd.hw_dir}/mouse '
+                f'{kbd.card}/pckb {kbd.card}/pcms', f'hwinput{index}'))
+            # The input device IRIX names for the card must be the card's
+            # own PS/2 ports: same device numbers as its pckb and pcms.
+            for alias, leaf in (('keyboard', 'pckb'), ('mouse', 'pcms')):
+                self._expect(links.get(alias) == f'{kbd.hw_dir}/{alias}',
+                             f'{kbd.dev_dir}/{alias} is not '
+                             f'{kbd.hw_dir}/{alias}')
+                card = [n for p, n in devices.items()
+                        if p.endswith(f'/{leaf}')]
+                self._expect(card, f'no {leaf} under {kbd.card}')
+                self._expect(devices.get(f'{kbd.hw_dir}/{alias}') == card[0],
+                             f'{kbd.hw_dir}/{alias} is not '
+                             f'{kbd.card}/{leaf}')
             # Open the keyboard for a read of exactly the expected byte
             # count before any key is sent, so no byte can arrive while
             # nothing has the device open.
