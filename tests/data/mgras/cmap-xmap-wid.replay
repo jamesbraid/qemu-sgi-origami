@@ -5,13 +5,15 @@
 #    bits 15:8, and the data port advances one entry per write
 #  - the two masks are a pair, COLORMASKLSBSA over the colour and
 #    COLORMASKMSBS over the WID: a rectangle fill with a nonzero
-#    COLORMASKMSBS writes DRBPOINTERS bits 23:16 into the WID plane,
+#    COLORMASKMSBS AND a PP1FILLMODE naming the WID/DID planes visual
+#    class (11 or 13) writes DRBPOINTERS bits 23:16 into the WID plane,
 #    whether or not it also writes colour, and nothing else touches it
 #  - scanout resolves every pixel through
 #    cmap[(xmap_mode[wid] >> 5 & 0x1f) * 256 + (native & 0xff)], with entry
 #    bits 31:24, 23:16 and 15:8 as red, green and blue
-#  - a rectangle fill with FILLMODE bit 20 or 22 set takes BKGRD_RG; the
-#    guest always sets one of them and leaves PACKEDCOLOR zero
+#  - a rectangle fill with FILLMODE bit 20 set and bit 22 clear takes
+#    FILLCOLOR_R (CI8) or FILLCOLOR_R/G/B (RGB); a BLOCKXYENDI execute
+#    triggers the fill, a direct-command IR_ALIAS execute paints nothing
 
 # --- palette: map 17 entries 0,1 then 16,17 through the start-entry selector ---
 write 2 0x070c30 0x0011
@@ -133,7 +135,7 @@ write 8 0x120400 0x00196d0400090240
 write 8 0x120400 0x001961040c004504
 write 8 0x120400 0x0019100400100000
 write 8 0x120400 0x00185b0400000000
-write 8 0x120400 0x0019400400000010
+write 8 0x120400 0x0019760400000010
 write 8 0x120400 0x0019410400000ff0
 write 8 0x120400 0x0018460400080008
 write 8 0x120400 0x001c4704000f000f
@@ -141,43 +143,43 @@ pixels 8 8 8 8 0x10
 wid 10 10 1
 display-pixel 10 10 0x00c1c1c1
 
-# --- IR_ALIAS fill of the backdrop kind: index 17 ---
-write 8 0x120400 0x0019100411400000
-write 8 0x120400 0x0019400400000011
+# --- BLOCKXYENDI fill of the backdrop kind: index 17 ---
+write 8 0x120400 0x0019100400100000
+write 8 0x120400 0x0019760400000011
 write 8 0x120400 0x0018460400100008
-write 8 0x120400 0x001847040017000f
-write 8 0x120400 0x001c450400000018
+write 8 0x120400 0x001c47040017000f
 pixels 16 8 8 8 0x11
 wid 20 10 1
 display-pixel 20 10 0x00808080
 
-# --- IR_ALIAS fill of index 1: the IRIS red entry must display red ---
-write 8 0x120400 0x0019400400000001
+# --- BLOCKXYENDI fill of index 1: the IRIS red entry must display red ---
+write 8 0x120400 0x0019760400000001
 write 8 0x120400 0x0018460400180008
-write 8 0x120400 0x00184704001f000f
-write 8 0x120400 0x001c450400000018
+write 8 0x120400 0x001c4704001f000f
 pixels 24 8 8 8 0x1
 display-pixel 28 10 0x00ff0000
 
-# --- glyph row: set bits ink PACKEDCOLOR 0, clear bits BKGRD_RG 0x10, both through WID 1 ---
+# --- glyph row: a set bit paints CI8 ink from RED>>12 (unwritten here, so
+# index 0/black) through WID 1; a clear bit leaves the pixel untouched
+# rather than painting a BKGRD_RG background, so it still reads back the
+# WID-1/index-0 state the earlier zero-colour-mask tag left there ---
 write 8 0x120400 0x0019100410400008
 write 8 0x120400 0x0019400400000010
 write 8 0x120400 0x0018460400200008
 write 8 0x120400 0x0018470400270008
 write 8 0x120400 0x001c7004f0000000
 pixel 32 8 0x0
-pixel 36 8 0x10
+pixel 36 8 0x0
 wid 32 8 1
 wid 36 8 1
 display-pixel 32 8 0x0
-display-pixel 36 8 0x00c1c1c1
+display-pixel 36 8 0x0
 
 # --- a paint outside the WID-1 region resolves through entry 0 (reset 0x7a4 -> map 29, zero here) ---
-write 8 0x120400 0x0019100411400000
-write 8 0x120400 0x0019400400000010
+write 8 0x120400 0x0019100400100000
+write 8 0x120400 0x0019760400000010
 write 8 0x120400 0x0018460400640064
-write 8 0x120400 0x0018470400670067
-write 8 0x120400 0x001c450400000018
+write 8 0x120400 0x001c470400670067
 pixels 100 100 4 4 0x10
 wid 100 100 0
 display-pixel 100 100 0x0
