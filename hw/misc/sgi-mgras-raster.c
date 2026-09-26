@@ -35,9 +35,9 @@
  * payload_bytes/4 consecutive words are stored there as they arrive,
  * mirroring mgras_dma_map_token's framing on the kernel mapping port. Writing
  * 0x20000 register 11 (the kick) starts a transfer: bit 3 of the low byte
- * selects direction (0 = draw a host image into the framebuffer, the path
- * implemented here; 1 = read the framebuffer back to host memory, an
- * unimplemented follow-up).
+ * selects direction (0 = draw a host image into the framebuffer; 1 = read
+ * the framebuffer back to host memory). Both directions are implemented,
+ * in mgras_raster_dma_draw_image() and mgras_raster_dma_read_image().
  */
 #define MGRAS_CMD_HDR_CLASS_DESC_20000 0x0008
 #define MGRAS_CMD_HDR_CLASS_DESC_28000 0x000a
