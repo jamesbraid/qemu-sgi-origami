@@ -575,8 +575,11 @@ if QemuSystemTest is not None:
             # Count wrap late: a Compare match the CPU model missed (see
             # docs/known-issues.md in the project checkout). A stall of the
             # emulator itself prints "Probably caused by splhi" instead.
-            misses = len(re.findall(rb'Probable lost interrupt!',
-                                    self.first.con.buf))
+            launches = [self.first] + ([self.here] if self.here not in
+                                       (None, self.first) else [])
+            misses = sum(len(re.findall(rb'Probable lost interrupt!',
+                                        launch.con.buf))
+                         for launch in launches)
             self._expect(misses == 0,
                          f'IRIX reported {misses} lost scheduler clock '
                          'interrupts')
