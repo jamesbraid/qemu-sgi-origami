@@ -5220,6 +5220,40 @@ static void test_population_rejects_an_unknown_timekeeper(const void *data)
     assert_qemu_rejects(args, "IOC3 timekeeper kind 3 is unsupported");
 }
 
+/*
+ * A board record the layout rules forbid is refused at realize
+ * (docs/datasheets/bridge.md, "The record layout, and every constraint on
+ * building it"; the IOC3 stores the same layout for an add-in card).
+ */
+typedef struct BoardRecordRefusal {
+    const char *device;
+    const char *message;
+} BoardRecordRefusal;
+
+static const BoardRecordRefusal board_record_refusals[] = {
+    { "sgi-ioc3,addr=3,subsystem-id=0xffff,board-part=030-1155-002,"
+      "board-barcode=OCADDUO001,board-revision=D,board-name=PCI;ENET",
+      "the IOC3 board name must be printable, without ':' or ';'" },
+    { "sgi-ioc3,addr=3,subsystem-id=0xffff,board-part=030-1155-0A2,"
+      "board-barcode=OCADDUO001,board-revision=D,board-name=PCI_ENET",
+      "the IOC3 board part must be 12 digits and dashes" },
+    { "sgi-ioc3,addr=3,subsystem-id=0xffff,board-part=030-1155-002,"
+      "board-barcode=OCADDUO001,board-revision=D",
+      "the IOC3 board name is required and must fit its field" },
+};
+
+static void test_board_record_refuses_a_bad_record(const void *data)
+{
+    const BoardRecordRefusal *r = data;
+    const char *args[] = {
+        qtest_qemu_binary(NULL), "-M", "origin200", "-display", "none",
+        "-device", r->device,
+        "-qtest", "stdio", "-accel", "qtest", NULL
+    };
+
+    assert_qemu_rejects(args, r->message);
+}
+
 static void test_auto_population_rejects_a_timekeeper_override(
     const void *data)
 {
@@ -5445,6 +5479,13 @@ int main(int argc, char **argv)
                         test_population_rejects_unknown_bits);
     qtest_add_data_func("sn0/ioc3/population-rejects-unknown-timekeeper", NULL,
                         test_population_rejects_an_unknown_timekeeper);
+    for (i = 0; i < G_N_ELEMENTS(board_record_refusals); i++) {
+        g_autofree char *path =
+            g_strdup_printf("sn0/ioc3/board-record-refused/%u", i);
+
+        qtest_add_data_func(path, &board_record_refusals[i],
+                            test_board_record_refuses_a_bad_record);
+    }
     qtest_add_data_func("sn0/ioc3/auto-population-rejects-timekeeper-override",
                         NULL,
                         test_auto_population_rejects_a_timekeeper_override);

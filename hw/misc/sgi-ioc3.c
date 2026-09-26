@@ -5,6 +5,9 @@
  * One PCI device, one BAR: two 16550s and their DMA engines, the ethernet
  * block and its buffer RAM, PS/2, a one-wire ethernet-address part, and
  * the byte bus's timekeeper. See docs/specs/sgi-ioc3.rst.
+ *
+ * An add-in card can also keep its board-identity record on the MicroLAN,
+ * beside the station-address part; the "board-*" properties fit it.
  */
 
 #include "qemu/osdep.h"
@@ -14,6 +17,7 @@
 #include "qapi/error.h"
 #include "hw/1wire/crc.h"
 #include "hw/1wire/ds2502.h"
+#include "hw/misc/sgi-board-record.h"
 #include "hw/misc/sgi-ioc3.h"
 #include "hw/misc/sgi-onewire-slot.h"
 #include "hw/core/qdev-properties.h"
@@ -141,14 +145,14 @@ static void sgi_ioc3_onewire_slot(SGIIOC3State *s, uint32_t val)
     bool level;
 
     if (!(s->pin_control & SGI_IOC3_PIN_MICROLAN_ENABLE) ||
-        !s->board->onewire_identity) {
+        (!s->board->onewire_identity && !s->board_part)) {
         /*
          * Two ways to an empty bus. Pin-control bit 21 routes the engine onto
          * its pin, and with the bit clear the bus is disconnected; and a
-         * board with no ethernet carries no station-address part, that part
-         * being wired up with the ethernet rather than on its own. Either
-         * way no part answers: the wire reads high and the slot advances no
-         * conversation.
+         * board with no ethernet and no board record carries no part, the
+         * station-address part being wired up with the ethernet rather than
+         * on its own. Either way no part answers: the wire reads high and
+         * the slot advances no conversation.
          */
         level = true;
     } else {
@@ -1624,6 +1628,27 @@ static void sgi_ioc3_realize(PCIDevice *dev, Error **errp)
         }
     }
 
+    if (s->board_part || s->board_barcode || s->board_revision ||
+        s->board_name) {
+        const SGIBoardRecord record = {
+            .barcode = s->board_barcode,
+            .part = s->board_part,
+            .revision = s->board_revision,
+            .name = s->board_name,
+        };
+
+        /*
+         * The board's own record, a second part on the same bus: a guest's
+         * one-wire search finds both and tells them apart by family.
+         */
+        if (!sgi_board_record_attach(OBJECT(dev), "onewire-board-part",
+                                     s->onewire_bus, &record,
+                                     s->board_onewire_serial, "IOC3",
+                                     errp)) {
+            return;
+        }
+    }
+
     /* On the chip's own bus, so a reset of the IOC3 reaches it. */
     if (s->board->kbc) {
         if (!qdev_realize(DEVICE(&s->kbc_dev), BUS(&s->ioc3_bus), errp)) {
@@ -2004,6 +2029,12 @@ static const Property sgi_ioc3_properties[] = {
                       SGI_IOC3_TIMEKEEPER_NONE),
     DEFINE_PROP_CHR("record-a", SGIIOC3State, serial_record[0]),
     DEFINE_PROP_CHR("record-b", SGIIOC3State, serial_record[1]),
+    DEFINE_PROP_STRING("board-part", SGIIOC3State, board_part),
+    DEFINE_PROP_STRING("board-barcode", SGIIOC3State, board_barcode),
+    DEFINE_PROP_STRING("board-revision", SGIIOC3State, board_revision),
+    DEFINE_PROP_STRING("board-name", SGIIOC3State, board_name),
+    DEFINE_PROP_UINT64("board-onewire-serial", SGIIOC3State,
+                       board_onewire_serial, SGI_IOC3_BOARD_ONEWIRE_SERIAL),
 };
 
 /*

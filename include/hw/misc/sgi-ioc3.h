@@ -72,6 +72,18 @@ struct SGIIOC3BusState {
  */
 #define SGI_IOC3_SUBSYS_CAD_DUO_PCI_CARD_UNCAPTURED 0xFFFF
 
+/*
+ * The Cad Duo's own board record, on a DS2505-class part beside the
+ * station-address part (docs/datasheets/sgi-cad-duo-pci-card.md,
+ * "Board-identity record on the IOC3 one-wire bus"). Part, revision and
+ * name are what a real card's inventory line prints; the barcode is a
+ * placeholder, since a real one names one physical unit.
+ */
+#define SGI_IOC3_CAD_DUO_BOARD_PART     "030-1155-002"
+#define SGI_IOC3_CAD_DUO_BOARD_REVISION "D"
+#define SGI_IOC3_CAD_DUO_BOARD_NAME     "PCI_ENET"
+#define SGI_IOC3_CAD_DUO_BOARD_BARCODE  "OCADDUO001"
+
 #define SGI_IOC3_SUBSYSTEM_ID   SGI_IOC3_SUBSYS_IP29_SYSBOARD
 
 #define SGI_IOC3_BAR_SIZE       (1 * MiB)
@@ -143,6 +155,13 @@ struct SGIIOC3BusState {
 #define SGI_IOC3_ONEWIRE_SERIAL  0x5e7000000001ULL
 
 #define SGI_IOC3_ONEWIRE_SERIAL_MASK 0xffffffffffffULL
+
+/*
+ * The board-record part's ROM serial when nothing sets
+ * "board-onewire-serial": a placeholder in the descending-byte idiom the
+ * other modelled board parts use. No real value is captured.
+ */
+#define SGI_IOC3_BOARD_ONEWIRE_SERIAL 0x0f0e0d0c0b0aULL
 
 /* Bit 21 routes the MicroLAN engine onto pin 8; drivers set it first. */
 #define SGI_IOC3_PIN_CONTROL_SET 0x34
@@ -450,6 +469,17 @@ struct SGIIOC3State {
      * that fits an identity part and nothing at all on one that does not.
      */
     OneWireBus *onewire_bus;
+
+    /*
+     * Properties: the board's own identity record, for a board that keeps
+     * it on this bus rather than on its Bridge's (an add-in card such as
+     * the Cad Duo). Unset, the bus carries no record part.
+     */
+    char *board_part;
+    char *board_barcode;
+    char *board_revision;
+    char *board_name;
+    uint64_t board_onewire_serial;
 
     SGIIOC3EthState eth;
 

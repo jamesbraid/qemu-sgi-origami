@@ -285,6 +285,10 @@ config SGI_O2000_MODULE_MGMT
     select PCF8584
     select SGI_ELSC
 
+config SGI_BOARD_RECORD
+    bool
+    select ONEWIRE
+
 config SGI_IOC3
     bool
     default y if SGI_DEVICES
@@ -293,6 +297,7 @@ config SGI_IOC3
     select M48T35
     select ONEWIRE
     select SERIAL
+    select SGI_BOARD_RECORD
     select SGI_IOC3_ETH
     select SGI_IOC3_KBC
     select SGI_IOC3_PARALLEL
