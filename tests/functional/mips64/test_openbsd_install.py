@@ -427,11 +427,14 @@ def _drive_install(sock, log_path, timeout, vm=None):
     rules = [(label, re.compile(pattern), answer) for label, pattern, answer in RULES]
     netboot_rules = [(re.compile(pattern), answer) for pattern, answer in NETBOOT_STEPS]
     sock.settimeout(1.0)
-    deadline = time.monotonic() + timeout
+    started = time.monotonic()
+    deadline = started + timeout
+    next_report = started + 60
+    guest_bytes = 0
     transcript = ""
     window = ""
     tail = ""
-    last_byte_time = time.monotonic()
+    last_byte_time = started
     last_send = 0.0
     netboot_step = 0
     location_of_sets_seen = 0
@@ -451,6 +454,7 @@ def _drive_install(sock, log_path, timeout, vm=None):
                 if not chunk:
                     break
                 text = chunk.decode("utf-8", errors="replace")
+                guest_bytes += len(chunk)
                 transcript += text
                 log.write(text)
                 log.flush()
@@ -465,6 +469,12 @@ def _drive_install(sock, log_path, timeout, vm=None):
                     break
 
             now = time.monotonic()
+            if now >= next_report:
+                print('openbsd_install: elapsed=%ds guest_bytes=%d idle=%ds '
+                      'netboot_step=%d' %
+                      (int(now - started), guest_bytes,
+                       int(now - last_byte_time), netboot_step), flush=True)
+                next_report = now + 60
             if now - last_send < SEND_DEBOUNCE:
                 continue
 
