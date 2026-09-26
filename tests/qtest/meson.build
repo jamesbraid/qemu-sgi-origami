@@ -107,8 +107,12 @@ slow_qtests = {
   'sn1-bedrock-flash-test': 180,
   # The register cases share one machine now; what is left is the eight
   # migration cases, which start seventeen processes between them because a
-  # destination cannot share its source's. Measured 108.45s.
-  'sn0-origin2000-mgras-test': 330,
+  # destination cannot share its source's. Measured 108.45s at the time.
+  # The suite has grown past that: 3 runs measured 313.35s-321.17s, already
+  # within the old 330s budget's margin of a timeout kill. Budget three
+  # times the highest of those three runs, the way the rest of this table
+  # does.
+  'sn0-origin2000-mgras-test': 970,
   # Two machines, one per BaseIO preset, serve the whole file, but each is a
   # four-node module with eight processors and 256 MB and the timekeeper
   # repair-store loop resets one of them once per processor. It has grown
