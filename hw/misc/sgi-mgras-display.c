@@ -29,10 +29,7 @@
  * or Toolchest menu on its overlay visual, and loads that ID's overlay
  * colour map just before; it rebuilds register 4's table with ID 9,
  * whose main mode is an RGB mode, over its RGB windows and ID 1 (the
- * root window's map) everywhere else. A zero frame-table entry names an
- * untagged row: the whole row reads WID 0, not a run list at SRAM address
- * zero, since a guest write there (or the register's own reset value of
- * zero for a row it never tagged) must not be mistaken for a pointer.
+ * root window's map) everywhere else.
  */
 #define MGRAS_VC3_MAIN_DID_ENTRY 0x04
 #define MGRAS_VC3_OVERLAY_DID_ENTRY 0x05
@@ -80,17 +77,9 @@ static void mgras_did_line(SGIMgrasState *s, unsigned int entry_reg,
 {
     const uint16_t mask = SGI_MGRAS_VC3_SRAM_WORDS - 1;
     uint16_t ptr = s->vc3_sram[(s->vc3_reg[entry_reg] + y) & mask];
-    uint16_t run;
-    uint8_t current;
+    uint16_t run = s->vc3_sram[ptr & mask];
+    uint8_t current = run & MGRAS_DID_MASK;
     unsigned int steps = 0;
-
-    if (!ptr) {
-        /* An untagged row: WID 0 throughout, not a run list at SRAM 0. */
-        memset(did, 0, SGI_MGRAS_WIDTH);
-        return;
-    }
-    run = s->vc3_sram[ptr & mask];
-    current = run & MGRAS_DID_MASK;
 
     run = s->vc3_sram[++ptr & mask];
     for (unsigned int x = 0; x < SGI_MGRAS_WIDTH; x++) {
