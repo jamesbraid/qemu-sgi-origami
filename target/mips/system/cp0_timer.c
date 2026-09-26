@@ -127,30 +127,9 @@ uint32_t cpu_mips_get_count(CPUMIPSState *env)
 }
 
 /*
- * A write that leaves Count exactly at Compare. The manual (14.8) makes the
- * comparison continuous - "Whenever their values equal, the interrupt bit
- * IP[7] in the Cause register is set" - so equality standing at the moment
- * of the write raises the interrupt at once. Only equality: a Compare value
- * already behind Count at the moment of the write is not a standing match
- * and waits for the counter to wrap around to it, same as every other CPU
- * model here and the same rule this project's Hub real-time comparator
- * follows (docs/datasheets/hub-processor-interface.md). The expiry path
- * must not come here: at expiry the registers are also equal, but that
- * match has just been delivered, and cpu_mips_timer_update()'s zero-interval
- * clamp correctly defers the next one a full wrap - which is also the
- * deadline both write paths have already programmed for the match after
- * this one.
- *
- * A prior revision also matched a Compare write up to half the counter
- * space behind Count, to close an IRIX 6.5.30 lost-interrupt symptom (QEMU
- * issue 626 has the evidence). That reading contradicted the manual's plain
- * equality rule and this project's own R14000 datasheet. It also falls
- * inside OpenBSD's own disarming write: OpenBSD's mips64 clock code disarms
- * the timer with a deliberately behind write, one tick behind Count
- * (sys/arch/mips64/mips64/clock.c, cp0_startclock), which the window's match
- * condition would reassert as IP7 immediately instead of leaving quiet -
- * a mechanism read from the window's own match condition and the published
- * OpenBSD source, not confirmed here by a recorded OpenBSD boot.
+ * The R10000 Count/Compare comparison is continuous (R10000 manual 14.8).
+ * In this model, a write leaving them equal raises IP7 immediately. Timer
+ * expiry has already delivered its match and uses the scheduled wrap instead.
  */
 static bool cpu_mips_write_matches(CPUMIPSState *env, uint32_t count,
                                    uint32_t compare)
