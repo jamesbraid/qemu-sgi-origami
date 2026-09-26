@@ -1,0 +1,114 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# A host-to-screen DMA draw of a two-pixel row, translated from
+# sn0-origin2000-mgras-test.c's test_dma_image_transfer_paints_from_host_memory
+# register sequence (widget 9, one page-list entry, an 8-byte source row).
+# The two 'dma' lines below are exactly the sgi_mgras_dma_chunk trace events
+# that same sequence produces under
+# test_dma_image_transfer_traces_source_chunks: the page-list entry
+# mgras_raster_dma_load_page_list() fetches, and the row's eight source bytes
+# mgras_raster_dma_draw_image() pulls one at a time and coalesces into one
+# chunk. Both addresses are the plain node address (node 0, so bare byte
+# offsets 0x2018 and 0x7000) the model resolves before
+# sgi_mgras_xio_compose() shifts widget 9 into the high bits -- not that
+# composed fabric address, which only routes the read through
+# s->fabric_as and is not otherwise backed by memory a replay's
+# qtest_memwrite can reach.
+#
+# The command-channel handshake below (read/write 0x008000 through the 63
+# 0x120400 context words) is copied verbatim from tests/data/mgras/fill.replay:
+# REG_CONTEXT_COMMAND ignores paint commands until a context has been entered,
+# and a synthetic fixture built straight from a qtest register sequence (as
+# opposed to a real capture, which already contains the guest's own context
+# entry somewhere earlier in the session) has to supply it explicitly.
+dma 0x2018 8 0000000000000007
+dma 0x7000 8 0011223300445566
+read 4 0x008000 0x0
+write 4 0x011000 0x0
+write 4 0x130500 0x000004fc
+read 4 0x011020 0x00080000
+write 4 0x011028 0x00080000
+read 4 0x011020 0x0
+write 4 0x120400 0
+write 4 0x120400 1
+write 4 0x120400 2
+write 4 0x120400 3
+write 4 0x120400 4
+write 4 0x120400 5
+write 4 0x120400 6
+write 4 0x120400 7
+write 4 0x120400 8
+write 4 0x120400 9
+write 4 0x120400 10
+write 4 0x120400 11
+write 4 0x120400 12
+write 4 0x120400 13
+write 4 0x120400 14
+write 4 0x120400 15
+write 4 0x120400 16
+write 4 0x120400 17
+write 4 0x120400 18
+write 4 0x120400 19
+write 4 0x120400 20
+write 4 0x120400 21
+write 4 0x120400 22
+write 4 0x120400 23
+write 4 0x120400 24
+write 4 0x120400 25
+write 4 0x120400 26
+write 4 0x120400 27
+write 4 0x120400 28
+write 4 0x120400 29
+write 4 0x120400 30
+write 4 0x120400 31
+write 4 0x120400 32
+write 4 0x120400 33
+write 4 0x120400 34
+write 4 0x120400 35
+write 4 0x120400 36
+write 4 0x120400 37
+write 4 0x120400 38
+write 4 0x120400 39
+write 4 0x120400 40
+write 4 0x120400 41
+write 4 0x120400 42
+write 4 0x120400 43
+write 4 0x120400 44
+write 4 0x120400 45
+write 4 0x120400 46
+write 4 0x120400 47
+write 4 0x120400 48
+write 4 0x120400 49
+write 4 0x120400 50
+write 4 0x120400 51
+write 4 0x120400 52
+write 4 0x120400 53
+write 4 0x120400 54
+write 4 0x120400 55
+write 4 0x120400 56
+write 4 0x120400 57
+write 4 0x120400 58
+write 4 0x120400 59
+write 4 0x120400 60
+write 4 0x120400 61
+write 4 0x120400 62
+read 4 0x011020 0x10000000
+write 4 0x011028 0x10000000
+write 8 0x120400 0x19620400000000
+write 8 0x120400 0x19630400ffffff
+write 8 0x120400 0x1961040c000000
+write 8 0x120400 0x18460400320032
+write 8 0x120400 0x1c470400330032
+write 4 0x130400 0x00482008
+write 8 0x130400 0x0000000000002018
+write 8 0x130400 0x0048300400000001
+write 8 0x130400 0x00484b0400090000
+read 4 0x020010 0x00000000 0x00010000
+write 8 0x120400 0x0008040400000008
+write 8 0x120400 0x0008050400000000
+write 8 0x120400 0x0008060400000000
+write 8 0x120400 0x0008070400000001
+write 8 0x120400 0x0008080400000008
+write 8 0x120400 0x00080b0400000000
+read 4 0x020010 0x00010000 0x00010000
+pixel 50 50 0x00332211
+pixel 51 50 0x00665544
