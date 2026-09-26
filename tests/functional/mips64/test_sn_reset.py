@@ -818,7 +818,7 @@ class SN1L1Reset(_ResetCycleMixin, QemuSystemTest):
 
         self.vm.set_machine(MACHINES['origin300'])
         self.vm.add_args(
-            *accelerator, '-smp', '2', '-m', '512M', '-bios', str(prom),
+            *accelerator, '-S', '-smp', '2', '-m', '512M', '-bios', str(prom),
             '-device',
             f'loader,file={slice_a},force-raw=on,addr={SLICE_A_LOAD:#x}',
             '-device', f'loader,addr={SLICE_A_PC:#x},cpu-num=0',
@@ -838,6 +838,7 @@ class SN1L1Reset(_ResetCycleMixin, QemuSystemTest):
             '-d', 'exec,trace:memory_region_ops_write,trace:cpu_reset',
             '-D', log)
         self.vm.launch()
+        self.vm.qmp('cont')
         self.wait_for_both_slices()
         # The log is flushed when the emulator exits, so read it after.
         self.vm.shutdown()
