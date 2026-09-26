@@ -280,7 +280,7 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     }
     if (size == 1 && addr != SGI_MGRAS_I2C_SCRATCH && addr != 0x071208 &&
         addr != 0x071c88 && addr != 0x071308 && addr != SGI_MGRAS_I2C_STROBE &&
-        addr != 0x071708) {
+        addr != 0x071708 && addr != SGI_MGRAS_BOARD_INVENTORY) {
         mgras_error(s, addr, size, "unsupported byte read");
         return 0;
     }
@@ -304,8 +304,15 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
     case SGI_MGRAS_RESET_ARG: return s->reset_arg;
     /* Fixed functional-approximation population value. */
     case SGI_MGRAS_RESET_CONTROL: return 0x0f000000;
-    /* Fixed functional-approximation inventory value. */
-    case SGI_MGRAS_BOARD_INVENTORY: return 0x21000000;
+    /*
+     * Fixed functional-approximation inventory value, preserved across
+     * supported access widths. On this big-endian bus a byte read returns
+     * the word's most significant byte, 0x21; bits 1:0 of that byte are
+     * the geometry-engine count Linux reads
+     * (docs/designs/2026-09-24-mgras-family-architecture.md).
+     */
+    case SGI_MGRAS_BOARD_INVENTORY:
+        return size == 1 ? 0x21 : 0x21000000;
     /* Unresolved revision fields use zero as a functional approximation. */
     case 0x071708:
     case 0x028000:

@@ -3473,6 +3473,8 @@ static void test_board_inventory_registers(void)
     mgras_reset();
 
     g_assert_cmphex(qtest_readl(qts, REG_BOARD_INVENTORY), ==, 0x21000000);
+    g_assert_cmphex(qtest_readb(qts, REG_BOARD_INVENTORY), ==, 0x21);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
     g_assert_cmphex(qtest_readl(qts, REG_RESET_CONTROL), ==, 0x0f000000);
     qtest_writel(qts, REG_RESET_CONTROL, 0xe8000000);
     g_assert_cmphex(qtest_readl(qts, REG_RESET_CONTROL), ==, 0x0f000000);
