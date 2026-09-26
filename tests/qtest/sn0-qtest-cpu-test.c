@@ -851,7 +851,7 @@ static void r12000_build_probe(UserCode *p, bool wide_block)
 {
     uint32_t upper = wide_block ? 0xa00f : 0xa007;
     uint16_t lower = 0xff81;
-    unsigned int loop;
+    unsigned int loop, pending, retry;
 
     user_li(p, 26, 0xa0000000 | R12000_MAILBOX);
     r12000_emit_reg(p, 8, 15, 0);
@@ -863,6 +863,10 @@ static void r12000_build_probe(UserCode *p, bool wide_block)
     user_emit(p, 0);
     user_emit(p, 0x44480000); /* cfc1 t0, fcr0 */
     user_i(p, 43, 26, 8, 8);
+    user_mfc0(p, 8, 12);
+    user_li(p, 10, ~4u);
+    user_emit(p, (8 << 21) | (10 << 16) | (8 << 11) | 0x24);
+    user_mtc0(p, 8, 12);
 
     /* Use the upper half of the diagnostic table, beyond R10000's 512. */
     user_li(p, 8, (1536 << 3) | (2 << 14) | 1);
@@ -889,11 +893,22 @@ static void r12000_build_probe(UserCode *p, bool wide_block)
     user_i(p, 9, 9, 9, 64);
     user_i(p, 47, 9, 0x07, 0);
     r12000_emit_reg(p, 8, 28, 20);
-    /* Keep an enabled, stopped counter's bit 31 high across migration. */
-    user_li(p, 8, 0x80000011);
+    user_mfc0(p, 8, CP0_COUNT);
+    user_i(p, 9, 8, 8, (uint16_t)-1);
+    user_mtc0(p, 8, CP0_COMPARE);
+    user_li(p, 8, 0x7ff00000);
     r12000_mtc0_sel(p, 8, 25, 1);
-    user_li(p, 8, 0x30); /* event 1, interrupt enabled */
+    user_li(p, 8, 0x12); /* cycles, interrupt enabled, kernel mode */
     r12000_mtc0_sel(p, 8, 25, 0);
+    pending = p->pos;
+    user_mfc0(p, 8, CP0_CAUSE);
+    for (unsigned int i = 0; i < 4; i++) {
+        user_emit(p, 0);
+    }
+    user_i(p, 12, 8, 10, CAUSE_IP7);
+    retry = user_branch(p, 4, 10, 0);
+    user_patch(p, retry, pending);
+    user_emit(p, 0);
     user_mfc0(p, 8, 16);
     user_i(p, 14, 8, 8, 1); /* change the Config K0 bit before cold reset */
     user_mtc0(p, 8, 16);
@@ -916,6 +931,10 @@ static void r12000_build_probe(UserCode *p, bool wide_block)
     user_i(p, 43, 26, 8, 52);
     r12000_emit_reg_sel(p, 8, 25, 1, 56);
     r12000_emit_reg(p, 8, 13, 60);
+    r12000_emit_reg_sel(p, 8, 25, 0, 64);
+    user_li(p, 8, 0x02); /* stop the counter's contribution to IP7 */
+    r12000_mtc0_sel(p, 8, 25, 0);
+    r12000_emit_reg(p, 8, 13, 68);
     user_i(p, 9, 0, 8, 1);
     user_i(p, 43, 26, 8, 40);
     user_park(p);
@@ -930,7 +949,7 @@ static void r12000_run_profile(const char *profile, bool wide_block,
 {
     g_autofree UserCode *image = g_new0(UserCode, 1);
     g_autofree char *path = NULL;
-    uint8_t mailbox[64] = { 0 };
+    uint8_t mailbox[72] = { 0 };
     QTestState *qts;
     int64_t deadline;
     int fd;
@@ -1053,6 +1072,102 @@ static void test_r12000_performance_ip7(void)
     qtest_quit(qts);
 }
 
+static void test_r12000_performance_selectors(void)
+{
+    g_autofree UserCode *image = g_new0(UserCode, 1);
+    g_autofree char *path = NULL;
+    uint8_t mailbox[36] = { 0 };
+    QTestState *qts;
+    int fd;
+
+    user_li(image, 26, 0xa0000000 | R12000_MAILBOX);
+    /* The first CP0 write at reset entry needs instruction spacing. */
+    for (unsigned int i = 0; i < 8; i++) {
+        user_emit(image, 0);
+    }
+    for (unsigned int sel = 0; sel < 8; sel++) {
+        uint32_t value = sel & 1 ? 0x12340000u | sel :
+                                   ((sel / 2 + 1) << 5);
+
+        user_li(image, 8, value);
+        r12000_mtc0_sel(image, 8, 25, sel);
+        r12000_emit_reg_sel(image, 8, 25, sel, sel * 4);
+    }
+    user_i(image, 9, 0, 8, 1);
+    user_i(image, 43, 26, 8, 32);
+    user_park(image);
+    fd = g_file_open_tmp("r12000-selectors-XXXXXX", &path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image->bytes, sizeof(image->bytes)), ==,
+                    sizeof(image->bytes));
+    close(fd);
+    qts = qtest_initf("-M malta -m 64M -nic none -vga none -cpu %s "
+                      "-bios %s -accel tcg -S", R12000_CPU_1, path);
+    unlink(path);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    r12000_wait_mailbox(qts, 32);
+    qtest_memread(qts, R12000_MAILBOX, mailbox, sizeof(mailbox));
+    for (unsigned int sel = 0; sel < 8; sel++) {
+        uint32_t expected = sel & 1 ? 0x12340000u | sel :
+                                      ((sel / 2 + 1) << 5);
+
+        g_assert_cmphex((uint32_t)ldl_be_p(mailbox + sel * 4), ==, expected);
+    }
+    qtest_quit(qts);
+}
+
+static void test_r12000_count_compare_ip7(void)
+{
+    g_autofree UserCode *image = g_new0(UserCode, 1);
+    g_autofree char *path = NULL;
+    uint8_t mailbox[20] = { 0 };
+    QTestState *qts;
+    unsigned int wait, retry;
+    int fd;
+
+    user_li(image, 26, 0xa0000000 | R12000_MAILBOX);
+    r12000_mtc0_sel(image, 0, 25, 0);
+    r12000_mtc0_sel(image, 0, 25, 1);
+    user_mfc0(image, 8, CP0_COUNT);
+    user_i(image, 9, 8, 8, 0x4000);
+    user_mtc0(image, 8, CP0_COMPARE);
+    wait = image->pos;
+    user_mfc0(image, 8, CP0_CAUSE);
+    for (unsigned int i = 0; i < 4; i++) {
+        user_emit(image, 0);
+    }
+    user_i(image, 12, 8, 9, CAUSE_IP7);
+    retry = user_branch(image, 4, 9, 0);
+    user_patch(image, retry, wait);
+    user_emit(image, 0);
+    r12000_emit_reg(image, 8, CP0_CAUSE, 0);
+    r12000_emit_reg_sel(image, 8, 25, 0, 4);
+    r12000_emit_reg_sel(image, 8, 25, 1, 8);
+    user_mfc0(image, 8, CP0_COUNT);
+    user_i(image, 9, 8, 8, (uint16_t)-1);
+    user_mtc0(image, 8, CP0_COMPARE);
+    r12000_emit_reg(image, 8, CP0_CAUSE, 12);
+    user_i(image, 9, 0, 8, 1);
+    user_i(image, 43, 26, 8, 16);
+    user_park(image);
+    fd = g_file_open_tmp("r12000-compare-XXXXXX", &path, NULL);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(write(fd, image->bytes, sizeof(image->bytes)), ==,
+                    sizeof(image->bytes));
+    close(fd);
+    qts = qtest_initf("-M malta -m 64M -nic none -vga none -cpu %s "
+                      "-bios %s -accel tcg -S", R12000_CPU_1, path);
+    unlink(path);
+    qtest_qmp_assert_success(qts, "{ 'execute': 'cont' }");
+    r12000_wait_mailbox(qts, 16);
+    qtest_memread(qts, R12000_MAILBOX, mailbox, sizeof(mailbox));
+    g_assert_cmphex(ldl_be_p(mailbox) & CAUSE_IP7, ==, CAUSE_IP7);
+    g_assert_cmphex(ldl_be_p(mailbox + 4), ==, 0);
+    g_assert_cmphex(ldl_be_p(mailbox + 8), ==, 0);
+    g_assert_cmphex(ldl_be_p(mailbox + 12) & CAUSE_IP7, ==, 0);
+    qtest_quit(qts);
+}
+
 static void test_r12000_requires_profile(void)
 {
     const char *const args[] = { qtest_qemu_binary(NULL), "-M", "malta",
@@ -1159,9 +1274,13 @@ static void r12000_migrate_profile(const char *profile, bool wide_block)
     qtest_memread(to, R12000_MAILBOX + 52, value, sizeof(value));
     g_assert_cmphex(ldl_be_p(value), ==, wide_block ? 0x7654 : 0x4567);
     qtest_memread(to, R12000_MAILBOX + 56, value, sizeof(value));
-    g_assert_cmphex((uint32_t)ldl_be_p(value), ==, 0x80000011u);
+    g_assert_cmphex(ldl_be_p(value) & 0x80000000u, ==, 0x80000000u);
     qtest_memread(to, R12000_MAILBOX + 60, value, sizeof(value));
     g_assert_cmphex(ldl_be_p(value) & CAUSE_IP7, ==, CAUSE_IP7);
+    qtest_memread(to, R12000_MAILBOX + 64, value, sizeof(value));
+    g_assert_cmphex(ldl_be_p(value), ==, 0x12);
+    qtest_memread(to, R12000_MAILBOX + 68, value, sizeof(value));
+    g_assert_cmphex(ldl_be_p(value) & CAUSE_IP7, ==, 0);
     qtest_quit(from);
     qtest_quit(to);
     unlink(image);
@@ -1243,6 +1362,10 @@ int main(int argc, char **argv)
         qtest_add_func("/r12000/profile-16-words", test_r12000_profile_16);
         qtest_add_func("/r12000/profile-32-words", test_r12000_profile_32);
         qtest_add_func("/r12000/performance-ip7", test_r12000_performance_ip7);
+        qtest_add_func("/r12000/performance-selectors",
+                       test_r12000_performance_selectors);
+        qtest_add_func("/r12000/count-compare-ip7",
+                       test_r12000_count_compare_ip7);
         qtest_add_func("/r12000/migrate-16-words", test_r12000_migrate_16);
         qtest_add_func("/r12000/migrate-32-words", test_r12000_migrate_32);
         qtest_add_func("/r12000/migrate-incompatible-block",
