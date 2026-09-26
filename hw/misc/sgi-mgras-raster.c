@@ -165,6 +165,32 @@
 #define MGRAS_DRBPOINTERS_OVERLAY 0x000101c0
 #define MGRAS_COLORMASKMSBS_OVERLAY 0x70
 
+/*
+ * Stippled lines. The IRIX 6.5.30 server draws stippled spans and
+ * polygons as one-row RE_LINEs with FILLMODE 0x20 or 0x60 and a 32-bit
+ * pattern in register 0x15a, rewritten before each row. FILLMODE 0x60 also
+ * loads BKGRD_RG/BKGRD_BA and 0x20 does not. The greeter's text cursor is
+ * 0x20 with pattern 0x30c30c30: a 2-pixel I-beam stem with the field
+ * colour showing on either side. Its icon bodies are 0x60 with PACKEDCOLOR
+ * 0xaaaaaa, BKGRD white and patterns 0xaaaaaaaa and 0x55555555: a 170/255
+ * checkerboard, which is what the RAD4 reference frame shows. So a set
+ * pattern bit paints the line colour, a clear bit paints the background
+ * under 0x40 and nothing under 0x20 alone.
+ *
+ * The pattern starts at the line's first pixel, bit 31 first. The server
+ * aligns it itself: each of the greeter's 798 opaque stippled spans
+ * carries 0xaaaaaaaa when its start x + y is even and 0x55555555 when it
+ * is odd, which keeps the checkerboard fixed to the screen only if the
+ * pattern restarts at each span. Every stippled line in the captures is
+ * horizontal and preceded by its own RE_POINT and pattern, so stepping
+ * one bit per drawn pixel along a diagonal or vertical line, and
+ * restarting at an RE_LINE chained from the previous one, are untested
+ * assumptions.
+ */
+#define MGRAS_RSS_LINE_STIPPLE 0x15a
+#define MGRAS_FILLMODE_STIPPLE 0x00000020
+#define MGRAS_FILLMODE_STIPPLE_OPAQUE 0x00000040
+
 typedef enum SGIMgrasRasterSubmissionForm {
     SGI_MGRAS_RASTER_DIRECT,
     SGI_MGRAS_RASTER_FIFO,
@@ -1038,6 +1064,23 @@ static void mgras_draw_point(SGIMgrasState *s)
  * origin shift below is unexercised there and rests on the greeter
  * evidence in mgras_apply_window_origin() instead.
  */
+/*
+ * An opaque stipple's background. The server loads BKGRD_RG with the bare
+ * index under CI8, and under RGB with red in bits 11:4 and green in bits
+ * 23:16, blue going to BKGRD_BA bits 11:4: the same 8-bit-in-12-bit
+ * channel packing as FILLCOLOR_R/G/B.
+ */
+static uint32_t mgras_stipple_background(SGIMgrasState *s, uint8_t format)
+{
+    uint32_t rg = s->rss[MGRAS_RSS_BKGRD_RG];
+
+    if (format == SGI_MGRAS_PIXEL_FORMAT_CI8) {
+        return rg & 0xff;
+    }
+    return (((rg >> 4) & 0xff) << 16) | (((rg >> 16) & 0xff) << 8) |
+           ((s->rss[MGRAS_RSS_BKGRD_BA] >> 4) & 0xff);
+}
+
 static void mgras_draw_line(SGIMgrasState *s)
 {
     uint32_t xy0 = s->rss[MGRAS_RSS_RE_POINT];
@@ -1046,11 +1089,17 @@ static void mgras_draw_line(SGIMgrasState *s)
     uint32_t color = format == SGI_MGRAS_PIXEL_FORMAT_CI8 ?
         (s->rss[MGRAS_RSS_RED] >> 12) & 0xff :
         s->rss[MGRAS_RSS_PACKEDCOLOR] & 0x00ffffff;
+    uint32_t fillmode = s->rss[MGRAS_RSS_FILLMODE];
+    bool stipple = fillmode & MGRAS_FILLMODE_STIPPLE;
+    bool opaque = fillmode & MGRAS_FILLMODE_STIPPLE_OPAQUE;
+    uint32_t pattern = s->rss[MGRAS_RSS_LINE_STIPPLE];
+    uint32_t background = mgras_stipple_background(s, format);
     uint32_t mask = s->rss[MGRAS_RSS_COLORMASKLSBSA];
     uint8_t op = s->rss[MGRAS_RSS_PP1FILLMODE] >> 26;
     int x0 = (xy0 >> 16) & 0xffff, y0 = xy0 & 0xffff;
     int x1 = (xy1 >> 16) & 0xffff, y1 = xy1 & 0xffff;
     int dx, dy, sx, sy, err;
+    unsigned int step = 0;
     bool overlay;
 
     mgras_apply_window_origin(s, &x0, &y0);
@@ -1066,16 +1115,28 @@ static void mgras_draw_line(SGIMgrasState *s)
         int e2;
 
         if (mgras_xy_on_screen(x0, y0)) {
-            mgras_put_pixel(s, y0 * SGI_MGRAS_WIDTH + x0, color, op, mask,
-                        format);
-            if (overlay) {
-                mgras_put_overlay(s, y0 * SGI_MGRAS_WIDTH + x0,
-                                  mgras_overlay_ink(s), op);
+            bool set = !stipple || ((pattern >> (31 - (step & 31))) & 1);
+
+            if (set) {
+                mgras_put_pixel(s, y0 * SGI_MGRAS_WIDTH + x0, color, op, mask,
+                            format);
+                if (overlay) {
+                    mgras_put_overlay(s, y0 * SGI_MGRAS_WIDTH + x0,
+                                      mgras_overlay_ink(s), op);
+                }
+            } else if (opaque) {
+                /*
+                 * No capture draws a stippled line into the overlay, so
+                 * only the main planes take the background.
+                 */
+                mgras_put_pixel(s, y0 * SGI_MGRAS_WIDTH + x0, background, op,
+                            mask, format);
             }
         }
         if (x0 == x1 && y0 == y1) {
             break;
         }
+        step++;
         e2 = 2 * err;
         if (e2 > -dy) {
             err -= dy;
