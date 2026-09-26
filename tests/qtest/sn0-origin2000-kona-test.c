@@ -62,7 +62,7 @@ static void kona_reset(void)
 
 /*
  * The one-wire register's bit slot, matching Bridge's own NIC widths
- * (sn1-xbridge-onewire-test.c's nic_slot()) -- KONA's pulse/sample shifts
+ * (sn1-xbridge-test.c's nic_slot()) -- KONA's pulse/sample shifts
  * are the same the Bridge register uses.
  */
 #define KONA_ONEWIRE_LEVEL (1u << 0)
@@ -114,7 +114,7 @@ static uint8_t kona_read_byte(void)
 
 /* CRC-8, poly 0x8c: matches onewire_crc8() (hw/1wire/crc.c). Reimplemented
  * locally because a qtest binary cannot link the device model's own
- * internal symbols, exactly as sn1-xbridge-onewire-test.c's nic_crc8()
+ * internal symbols, exactly as sn1-xbridge-test.c's nic_crc8()
  * does for the same reason. */
 static uint8_t kona_crc8(uint8_t crc, const uint8_t *buf, size_t len)
 {
@@ -130,8 +130,10 @@ static uint8_t kona_crc8(uint8_t crc, const uint8_t *buf, size_t len)
     return crc;
 }
 
-/* CRC-16, poly 0xa001: matches onewire_crc16() (hw/1wire/crc.c) and
- * sn1-xbridge-onewire-test.c's own nic_crc(). */
+/*
+ * CRC-16, poly 0xa001: matches onewire_crc16() (hw/1wire/crc.c) and
+ * sn1-xbridge-test.c's own nic_crc16().
+ */
 static uint16_t kona_crc16(uint16_t crc, const uint8_t *buf, size_t len)
 {
     size_t i;
@@ -147,7 +149,7 @@ static uint16_t kona_crc16(uint16_t crc, const uint8_t *buf, size_t len)
 }
 /* The Dallas/Maxim inverted-CRC-16 check residue: re-running the same
  * generator over data with its own complemented CRC appended always lands
- * here, the same identity sn1-xbridge-onewire-test.c's NIC_CRC_RESIDUE
+ * here, the same identity sn1-xbridge-test.c's NIC_CRC_RESIDUE
  * checks for the Bridge NIC's unrelated page framing. */
 #define KONA_CRC16_RESIDUE 0xb001
 
@@ -195,7 +197,7 @@ static void kona_match_rom(const uint8_t identity[8])
  * Read Memory (F0h) from address 0: a 3-byte header (command, TA1, TA2)
  * answered by an echoed CRC-8, then the flat 128-byte image, then one
  * closing CRC-8 over all of it -- hw/1wire/ds2502.c's own protocol.
- * sn1-xbridge-onewire-test.c's "0xa5 read memory" exchange belongs to a
+ * sn1-xbridge-test.c's "0xa5 read memory" exchange belongs to a
  * different, unidentified one-wire part its own fixture instantiates and
  * does not apply to a DS2502.
  */
@@ -215,74 +217,91 @@ static void kona_read_memory(uint8_t out[DS2502_DATA_SIZE])
     g_assert_cmphex(kona_read_byte(), ==, kona_crc8(0, out, DS2502_DATA_SIZE));
 }
 
-/* sn1-xbridge-onewire-test.c's page_field(), unchanged: find "name" within
- * the first `len` bytes and copy everything up to the next ';' delimiter,
- * exactly, never collecting the delimiter itself. */
-static bool page_field(const uint8_t *page, unsigned int len,
-                       const char *name, char *out)
-{
-    unsigned int pos = 0, n = strlen(name);
-
-    while (pos < len) {
-        unsigned int i;
-
-        if (pos + n <= len && memcmp(&page[pos], name, n) == 0) {
-            unsigned int j = 0;
-
-            for (i = pos + n; i < len && page[i] != ';'; i++) {
-                out[j++] = page[i];
-            }
-            out[j] = 0;
-            return true;
-        }
-        for (i = pos; i < len && page[i] != ';'; i++) {
-            /* skip to the next delimiter */
-        }
-        if (i >= len) {
-            return false;
-        }
-        pos = i + 1;
-    }
-    return false;
-}
-
-#define KONA_ONEWIRE_PAGE_SIZE 32
-#define KONA_ONEWIRE_CONTENT_PER_PAGE 30
-#define KONA_ONEWIRE_PAGES 4
-#define KONA_ONEWIRE_CONTENT_SIZE \
-    (KONA_ONEWIRE_CONTENT_PER_PAGE * KONA_ONEWIRE_PAGES)
+#define KONA_RECORD_PAGE 32
+#define KONA_RECORD_SIZE 64
 
 /*
- * Check each page's CRC-16 framing residue, then strip its trailing two
- * CRC bytes and concatenate what is left into one contiguous logical
- * buffer -- hw/misc/sgi-kona.c's sgi_kona_onewire_build_rom() is what wove
- * the two together. A named field (e.g. "Variety:GEOM;" in the geometry
- * record) can straddle a page's 30-byte content boundary, so field
- * verification has to run over this reconstructed buffer, not per page.
+ * Field offsets matching hw/pci-host/sgi-bridge.c's own fixed-offset
+ * board-identity record (docs/datasheets/bridge.md, "The record layout,
+ * and every constraint on building it") -- sgi_kona_onewire_attach_part()
+ * (hw/misc/sgi-kona.c) shares that file's
+ * sgi_bridge_onewire_build_record() rather than building its own record.
+ * A discriminating test does not call the code it is checking, so this
+ * constructs the expected bytes independently, the same way
+ * sn0-bridge-identity-test.c's own records are hardcoded rather than
+ * generated: from the field layout, not from sgi-kona.c or sgi-bridge.c.
  */
-static void kona_strip_pages(const uint8_t wire[DS2502_DATA_SIZE],
-                             uint8_t content[KONA_ONEWIRE_CONTENT_SIZE])
+#define KONA_RECORD_FORMAT        0x01
+#define KONA_RECORD_BARCODE       1
+#define KONA_RECORD_PART_BASE     21
+#define KONA_RECORD_PART_BASE_LEN 9
+#define KONA_RECORD_PART_DASH     35
+#define KONA_RECORD_PART_DASH_LEN 3
+#define KONA_RECORD_REVISION      38
+#define KONA_RECORD_FLAGS         42
+#define KONA_RECORD_FLAGS_LEN     6
+#define KONA_RECORD_NAME          48
+
+/*
+ * Seal both pages the way sgi_bridge_onewire_seal_pages() does: each
+ * page's last two bytes hold its own first thirty bytes' CRC-16,
+ * inverted, so a reader running the same generator over a page and its
+ * stored check lands on the fixed residue KONA_CRC16_RESIDUE names.
+ */
+static void kona_seal_record_pages(uint8_t rom[KONA_RECORD_SIZE])
 {
     unsigned int page;
 
-    for (page = 0; page < KONA_ONEWIRE_PAGES; page++) {
-        const uint8_t *at = &wire[page * KONA_ONEWIRE_PAGE_SIZE];
+    for (page = 0; page < KONA_RECORD_SIZE / KONA_RECORD_PAGE; page++) {
+        uint8_t *at = &rom[page * KONA_RECORD_PAGE];
+        uint16_t crc = ~kona_crc16(0, at, KONA_RECORD_PAGE - 2);
 
-        g_assert_cmphex(kona_crc16(0, at, KONA_ONEWIRE_PAGE_SIZE), ==,
-                        KONA_CRC16_RESIDUE);
-        memcpy(&content[page * KONA_ONEWIRE_CONTENT_PER_PAGE], at,
-              KONA_ONEWIRE_CONTENT_PER_PAGE);
+        at[KONA_RECORD_PAGE - 2] = crc & 0xff;
+        at[KONA_RECORD_PAGE - 1] = crc >> 8;
     }
 }
 
-static void kona_assert_field(const uint8_t *content, const char *name,
-                              const char *expected)
+/*
+ * Build one record's bytes the fixed-offset way: unset bytes are spaces,
+ * as sgi_bridge_onewire_build_record() leaves them, and the flags region
+ * is always 0xff -- this model stores no group/capability/variety fields
+ * of its own. `part` must be the full twelve-character part number; this
+ * splits it around page 0's check value the same way production code
+ * does, at nine characters then three.
+ */
+static void kona_build_expected_record(uint8_t rom[KONA_RECORD_SIZE],
+                                       const char *barcode, const char *part,
+                                       const char *revision, const char *name)
 {
-    char value[64];
+    memset(rom, ' ', KONA_RECORD_SIZE);
+    rom[0] = KONA_RECORD_FORMAT;
+    memcpy(&rom[KONA_RECORD_BARCODE], barcode, strlen(barcode));
+    memcpy(&rom[KONA_RECORD_PART_BASE], part, KONA_RECORD_PART_BASE_LEN);
+    memcpy(&rom[KONA_RECORD_PART_DASH], part + KONA_RECORD_PART_BASE_LEN,
+          KONA_RECORD_PART_DASH_LEN);
+    memcpy(&rom[KONA_RECORD_REVISION], revision, strlen(revision));
+    memset(&rom[KONA_RECORD_FLAGS], 0xff, KONA_RECORD_FLAGS_LEN);
+    memcpy(&rom[KONA_RECORD_NAME], name, strlen(name));
+    kona_seal_record_pages(rom);
+}
 
-    g_assert_true(page_field(content, KONA_ONEWIRE_CONTENT_SIZE, name,
-                             value));
-    g_assert_cmpstr(value, ==, expected);
+/*
+ * Each stored page leaves the residue a real one-wire reader's CRC-16
+ * requires, matching sn0-bridge-identity-test.c's own
+ * check_record_pages_leave_the_residue(): the check covers the field
+ * bytes, so this is independent of comparing against the expected buffer
+ * kona_build_expected_record() returns, and catches a record whose fields
+ * and stored check disagree even if both happened to match by mistake.
+ */
+static void kona_check_record_residue(const uint8_t *record)
+{
+    unsigned int page;
+
+    for (page = 0; page < KONA_RECORD_SIZE / KONA_RECORD_PAGE; page++) {
+        g_assert_cmphex(kona_crc16(0, &record[page * KONA_RECORD_PAGE],
+                                   KONA_RECORD_PAGE),
+                        ==, KONA_CRC16_RESIDUE);
+    }
 }
 
 static void test_identity_and_aperture(void)
@@ -326,48 +345,52 @@ static void test_unknown_offset_reads_zero_and_accepts_writes(void)
     g_assert_cmphex(qtest_readl(qts, REG_WIDGET_CONTROL), ==, control_before);
 }
 
+/*
+ * The DS2502 the guest reads back holds exactly the fixed-offset record
+ * production code builds, its own two pages leaving the CRC-16 residue,
+ * and the remaining 64 bytes of its 128-byte address space unprogrammed
+ * (ds2502_set_image() leaves whatever a 64-byte image does not cover at
+ * ds2502_instance_init()'s own 0xff default).
+ */
+static void kona_assert_onewire_identity(const char *barcode,
+                                         const char *part,
+                                         const char *revision,
+                                         const char *name)
+{
+    uint8_t wire[DS2502_DATA_SIZE];
+    uint8_t expected[KONA_RECORD_SIZE];
+    unsigned int i;
+
+    kona_read_memory(wire);
+
+    kona_build_expected_record(expected, barcode, part, revision, name);
+    g_assert_cmpmem(wire, KONA_RECORD_SIZE, expected, KONA_RECORD_SIZE);
+    kona_check_record_residue(wire);
+    for (i = KONA_RECORD_SIZE; i < DS2502_DATA_SIZE; i++) {
+        g_assert_cmphex(wire[i], ==, 0xff);
+    }
+}
+
 static void test_onewire_geometry_identity(void)
 {
     uint8_t identity[8];
-    uint8_t wire[DS2502_DATA_SIZE];
-    uint8_t content[KONA_ONEWIRE_CONTENT_SIZE];
 
     kona_reset();
     kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_GEOMETRY_SERIAL);
     kona_match_rom(identity);
-    kona_read_memory(wire);
-    kona_strip_pages(wire, content);
-
-    kona_assert_field(content, "Name:", "GEOM-BD");
-    kona_assert_field(content, "Serial:", "00000001");
-    kona_assert_field(content, "Revision:", "01");
-    kona_assert_field(content, "Group:", "GFX");
-    kona_assert_field(content, "Capability:", "0000");
-    kona_assert_field(content, "Variety:", "GEOM");
-    kona_assert_field(content, "Laser:", "NONE");
-    kona_assert_field(content, "Part:", "030-1398-001");
+    kona_assert_onewire_identity("00000001", "030-1398-001", "01",
+                                 "GEOM-BD");
 }
 
 static void test_onewire_ktown_identity(void)
 {
     uint8_t identity[8];
-    uint8_t wire[DS2502_DATA_SIZE];
-    uint8_t content[KONA_ONEWIRE_CONTENT_SIZE];
 
     kona_reset();
     kona_build_identity(identity, KONA_ONEWIRE_FAMILY, KONA_KTOWN_SERIAL);
     kona_match_rom(identity);
-    kona_read_memory(wire);
-    kona_strip_pages(wire, content);
-
-    kona_assert_field(content, "Name:", "KTOWN-BD");
-    kona_assert_field(content, "Serial:", "00000002");
-    kona_assert_field(content, "Revision:", "01");
-    kona_assert_field(content, "Group:", "GFX");
-    kona_assert_field(content, "Capability:", "0000");
-    kona_assert_field(content, "Variety:", "KTWN");
-    kona_assert_field(content, "Laser:", "NONE");
-    kona_assert_field(content, "Part:", "030-1067-001");
+    kona_assert_onewire_identity("00000002", "030-1067-001", "01",
+                                 "KTOWN-BD");
 }
 
 int main(int argc, char **argv)

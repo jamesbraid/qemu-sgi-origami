@@ -15,7 +15,7 @@
  * logged as unimplemented. No FIFO, mailbox or interrupt exists yet.
  *
  * Both one-wire parts this model seeds -- one geometry-board record, one
- * Ktown record -- are synthetic beyond their `Part:` field. No one-wire
+ * Ktown record -- are synthetic beyond their part field. No one-wire
  * capture of a real InfiniteReality pipe has been reviewed; only the
  * board part numbers (030-1398-001, 030-1067-001) come from the reviewed
  * rack capture. See the commit introducing this file and the
@@ -32,12 +32,12 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/units.h"
-#include "hw/1wire/crc.h"
 #include "hw/1wire/ds2502.h"
 #include "hw/mips/sgi/xio-board.h"
 #include "hw/mips/sgi/xtalk-link.h"
 #include "hw/misc/sgi-kona.h"
 #include "hw/misc/sgi-onewire-slot.h"
+#include "hw/pci-host/sgi-bridge.h"
 #include "hw/core/cpu.h"
 #include "hw/core/qdev-properties.h"
 #include "migration/vmstate.h"
@@ -50,76 +50,55 @@
 #define WIDGET_ID_MANUFACTURER_SHIFT 1
 #define WIDGET_ID_ALWAYS_ONE         1
 
-/* The DS2502's real family code (Dallas 1-Wire family list), not synthetic. */
+/*
+ * The DS2502's real family code (Dallas 1-Wire family list), not synthetic.
+ * Bridge's own board-identity parts are the larger DS2505 (2048 bytes), but
+ * no reviewed capture or datasheet says which part a real InfiniteReality
+ * board carries, and the DS2502's 128 bytes hold the shared record with
+ * room to spare, so this model keeps the part it already had rather than
+ * switching for no evidenced reason.
+ */
 #define SGI_KONA_ONEWIRE_FAMILY 0x09
 
 /* Two placeholder identities; no reviewed capture assigns real serials. */
 #define SGI_KONA_GEOMETRY_SERIAL 0x000000000001ULL
 #define SGI_KONA_KTOWN_SERIAL    0x000000000002ULL
 
-#define SGI_KONA_ONEWIRE_PAGE_SIZE 32
-#define SGI_KONA_ONEWIRE_PAGES     4
-#define SGI_KONA_ONEWIRE_ROM_SIZE \
-    (SGI_KONA_ONEWIRE_PAGE_SIZE * SGI_KONA_ONEWIRE_PAGES)
-#define SGI_KONA_ONEWIRE_CONTENT_PER_PAGE \
-    (SGI_KONA_ONEWIRE_PAGE_SIZE - 2)
-
 /*
- * Eight synthetic fields each, ";Field:value;" scanned rather than
- * positional (unlike sgi-bridge.c's own single-field record, nothing here
- * needs a canonical fixed offset). Part: carries the reviewed rack
- * capture's real board part number; every other field -- Name, Serial,
- * Revision, Group, Capability, Variety, Laser -- is a synthetic
- * placeholder pending a real one-wire capture.
+ * Two board-identity records, built through hw/pci-host/sgi-bridge.c's own
+ * shared fixed-offset record layout (docs/datasheets/bridge.md, "The
+ * record layout, and every constraint on building it") rather than a
+ * scanned ";Field:value;" text of this model's own invention. Only
+ * barcode, part, revision and name are stored fields; the record's group,
+ * capability and variety bytes are always 0xff (unprogrammed), and its
+ * "Laser" display field is the part's own one-wire ROM number (the
+ * "serial" property below), not a stored field at all -- so this model
+ * carries none of those as a field of its own. Part carries the reviewed
+ * rack capture's real board part number; barcode, revision and name are
+ * synthetic placeholders pending a real one-wire capture.
  */
-static const char sgi_kona_geometry_record[] =
-    ";Revision:01;Capability:0000;Variety:GEOM;Laser:NONE;"
-    "Part:030-1398-001;Name:GEOM-BD;Serial:00000001;Group:GFX;";
-static const char sgi_kona_ktown_record[] =
-    ";Revision:01;Capability:0000;Variety:KTWN;Laser:NONE;"
-    "Part:030-1067-001;Name:KTOWN-BD;Serial:00000002;Group:GFX;";
-
-/*
- * Pack a "Field:value;" record into a DS2502's four pages, two bytes short
- * per page for a CRC-16 -- content convention, the way sgi-bridge.c's own
- * one-wire board-identity record reserves its last two bytes per page, not
- * device behaviour and not something this model's own reader checks.
- */
-static void sgi_kona_onewire_build_rom(
-    uint8_t rom[SGI_KONA_ONEWIRE_ROM_SIZE], const char *record)
-{
-    size_t len = strlen(record);
-    unsigned int page;
-
-    assert(len <= SGI_KONA_ONEWIRE_CONTENT_PER_PAGE *
-                  SGI_KONA_ONEWIRE_PAGES);
-    memset(rom, 0, SGI_KONA_ONEWIRE_ROM_SIZE);
-
-    for (page = 0; page < SGI_KONA_ONEWIRE_PAGES; page++) {
-        uint8_t *at = &rom[page * SGI_KONA_ONEWIRE_PAGE_SIZE];
-        size_t offset = page * SGI_KONA_ONEWIRE_CONTENT_PER_PAGE;
-        uint16_t crc;
-
-        if (len > offset) {
-            size_t chunk = MIN(len - offset,
-                (size_t)SGI_KONA_ONEWIRE_CONTENT_PER_PAGE);
-            memcpy(at, record + offset, chunk);
-        }
-        crc = ~onewire_crc16(0, at, SGI_KONA_ONEWIRE_CONTENT_PER_PAGE);
-        at[SGI_KONA_ONEWIRE_CONTENT_PER_PAGE] = crc & 0xff;
-        at[SGI_KONA_ONEWIRE_CONTENT_PER_PAGE + 1] = crc >> 8;
-    }
-}
+static const SGIBridgeBoardRecord sgi_kona_geometry_record = {
+    .barcode = "00000001",
+    .part = "030-1398-001",
+    .revision = "01",
+    .name = "GEOM-BD",
+};
+static const SGIBridgeBoardRecord sgi_kona_ktown_record = {
+    .barcode = "00000002",
+    .part = "030-1067-001",
+    .revision = "01",
+    .name = "KTOWN-BD",
+};
 
 /* Realize one DS2502 identity part onto the board's own one-wire bus. */
 static bool sgi_kona_onewire_attach_part(
-    SGIKonaState *s, const char *child_name, const char *record,
-    uint64_t serial, Error **errp)
+    SGIKonaState *s, const char *child_name,
+    const SGIBridgeBoardRecord *record, uint64_t serial, Error **errp)
 {
-    uint8_t rom[SGI_KONA_ONEWIRE_ROM_SIZE];
+    uint8_t rom[SGI_BRIDGE_ONEWIRE_RECORD_SIZE];
     DeviceState *part;
 
-    sgi_kona_onewire_build_rom(rom, record);
+    sgi_bridge_onewire_build_record(rom, record);
     part = qdev_new(TYPE_ONEWIRE_DS2502);
     object_property_add_child(OBJECT(s), child_name, OBJECT(part));
     qdev_prop_set_uint8(part, "family", SGI_KONA_ONEWIRE_FAMILY);
@@ -266,12 +245,12 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
 
     s->onewire_bus = onewire_create_bus(DEVICE(s), "onewire");
     if (!sgi_kona_onewire_attach_part(
-            s, "onewire-geometry", sgi_kona_geometry_record,
+            s, "onewire-geometry", &sgi_kona_geometry_record,
             SGI_KONA_GEOMETRY_SERIAL, errp)) {
         return false;
     }
     return sgi_kona_onewire_attach_part(
-        s, "onewire-ktown", sgi_kona_ktown_record,
+        s, "onewire-ktown", &sgi_kona_ktown_record,
         SGI_KONA_KTOWN_SERIAL, errp);
 }
 
