@@ -1238,6 +1238,127 @@ static void test_dma_image_transfer_paints_from_host_memory(void)
 #undef DMA_XFER_SRC_VA
 
 /*
+ * A replayed session has no guest memory behind it, so sgi_mgras_dma_chunk
+ * is the only way a traced capture can carry what a host-to-screen DMA draw
+ * actually read. Reuse paints-from-host-memory's exact register sequence
+ * (one page-list entry, an 8-byte two-pixel row) under
+ * -trace enable=sgi_mgras_dma_chunk and confirm the trace carries both
+ * reads the model performs: the one page-list entry
+ * mgras_raster_dma_load_page_list() fetches (8 bytes at the list's plain
+ * node address) and the row's eight source bytes
+ * mgras_raster_dma_draw_image() pulls one at a time and coalesces into a
+ * single contiguous chunk. The traced address is the same plain node-offset
+ * address qtest_memwrite() below names, not the fully composed fabric
+ * address sgi_mgras_xio_compose() derives from it (widget 9 shifted into
+ * the high bits) -- because a replay's own memwrite reaches qtest's guest
+ * RAM only at the plain address; the fabric address exists only to route
+ * dma_memory_read() through s->fabric_as and is not otherwise backed by
+ * memory qtest_memwrite() can reach. This needs its own machine rather
+ * than the shared `qts`, since trace enablement is a command-line option a
+ * running QEMU cannot pick up after the fact.
+ */
+#define DMA_CHUNK_NODE       0u
+#define DMA_CHUNK_WIDGET     9u
+#define DMA_CHUNK_LIST_PAGE  0x2000u
+#define DMA_CHUNK_LIST_BASE  (DMA_CHUNK_LIST_PAGE | 0x18u)
+#define DMA_CHUNK_SRC_VA     0x7000u
+
+static uint64_t dma_chunk_node_addr(uint32_t offset)
+{
+    return ((uint64_t)DMA_CHUNK_NODE << 32) | offset;
+}
+
+static void test_dma_image_transfer_traces_source_chunks(void)
+{
+    static const uint8_t list_header[24] = { 0 };
+    static const uint8_t list_entry[8] = { 0, 0, 0, 0, 0, 0, 0, 0x07 };
+    static const uint8_t src_pixels[8] = {
+        0x00, 0x11, 0x22, 0x33, 0x00, 0x44, 0x55, 0x66,
+    };
+    g_autofree char *trace_path = NULL;
+    g_autofree char *args = NULL;
+    g_autofree char *trace_contents = NULL;
+    g_autoptr(GError) error = NULL;
+    QTestState *qts;
+    int fd;
+
+    fd = g_file_open_tmp("dma-chunk-trace-XXXXXX.trace", &trace_path, &error);
+    g_assert_no_error(error);
+    close(fd);
+
+    args = g_strdup_printf(MACHINE_ARGS " -trace enable=sgi_mgras_dma_chunk"
+                          " -D %s", trace_path);
+    qts = qtest_init(args);
+    mgras_enter_context(qts);
+
+    qtest_memwrite(qts, dma_chunk_node_addr(DMA_CHUNK_LIST_PAGE),
+                  list_header, sizeof(list_header));
+    qtest_memwrite(qts, dma_chunk_node_addr(DMA_CHUNK_LIST_BASE), list_entry,
+                  8);
+    qtest_memwrite(qts, dma_chunk_node_addr(DMA_CHUNK_SRC_VA), src_pixels, 8);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND(REG_COLORMASKMSBS, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_LOGIC_OP_COPY << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND(REG_BLOCK_START, (50u << 16) | 50u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                MGRAS_COMMAND_EXEC(REG_BLOCK_END, (51u << 16) | 50u));
+
+    qtest_writel(qts, MGRAS_REG(0x130400), 0x00482008);
+    qtest_writeq(qts, MGRAS_REG(0x130400),
+                dma_chunk_node_addr(DMA_CHUNK_LIST_BASE));
+    qtest_writeq(qts, MGRAS_REG(0x130400),
+                ((uint64_t)0x00483004 << 32) | 1);
+    qtest_writeq(qts, MGRAS_REG(0x130400),
+                ((uint64_t)0x00484b04 << 32) | (DMA_CHUNK_WIDGET << 16));
+
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    0);
+
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080404 << 32) | 8);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080504 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080604 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080704 << 32) | 1);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080804 << 32) | 8);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080b04 << 32) | 0);
+
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE, ==,
+                    MGRAS_HQ_FLAG_FENCE);
+    g_assert_cmphex(mgras_test_pixel(qts, 50, 50), ==, 0x00332211);
+    g_assert_cmphex(mgras_test_pixel(qts, 51, 50), ==, 0x00665544);
+
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(trace_path, &trace_contents, NULL,
+                                      &error));
+    g_assert_no_error(error);
+    /*
+     * addr is the plain node-offset address qtest_memwrite() above named,
+     * not the fully composed fabric address sgi_mgras_xio_compose() derives
+     * from it (widget 9 shifted into the high bits) -- a replay's own
+     * memwrite must target this plain address, since that is the only one
+     * qtest's guest RAM actually backs.
+     */
+    g_assert_nonnull(strstr(trace_contents,
+        "addr 0x2018 len 8 hex 0000000000000007"));
+    g_assert_nonnull(strstr(trace_contents,
+        "addr 0x7000 len 8 hex 0011223300445566"));
+
+    unlink(trace_path);
+}
+
+#undef DMA_CHUNK_NODE
+#undef DMA_CHUNK_WIDGET
+#undef DMA_CHUNK_LIST_PAGE
+#undef DMA_CHUNK_LIST_BASE
+#undef DMA_CHUNK_SRC_VA
+
+/*
  * SRC_OFF_LOW3 and SRC_OFF_ALIGNED are non-overlapping parts of one byte
  * offset (src & 7, src & ~7), not the low/high halves of a 64-bit
  * address: every other DMA image-transfer test in this file leaves
@@ -5743,6 +5864,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/mgras/"
                    "dma-image-transfer-paints-from-host-memory",
                    test_dma_image_transfer_paints_from_host_memory);
+    qtest_add_func("sn0/origin2000/mgras/"
+                   "dma-image-transfer-traces-source-chunks",
+                   test_dma_image_transfer_traces_source_chunks);
     qtest_add_func("sn0/origin2000/mgras/"
                    "dma-image-transfer-kick-byte-selects-slot",
                    test_dma_image_transfer_kick_byte_selects_slot);

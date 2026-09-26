@@ -8,8 +8,10 @@
  */
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/cutils.h"
 #include "hw/misc/sgi-mgras-raster.h"
 #include "system/dma.h"
+#include "trace.h"
 
 
 
@@ -1292,6 +1294,68 @@ static bool mgras_raster_dma_select_slot(SGIMgrasState *s, uint32_t kick_byte,
 #define MGRAS_DMA_PAGE_LIST_PFN_MASK 0xfffffu
 
 /*
+ * A replayed session has no guest RAM behind it, so a traced capture must
+ * carry the bytes a host-to-screen DMA image transfer reads: the page-list
+ * fetch below and the per-byte pixel source in mgras_raster_dma_draw_image().
+ * Bytes are accumulated per contiguous run of plain node addresses (the
+ * address dma_memory_read() resolves before sgi_mgras_xio_compose() shifts
+ * a widget number into it, not the composed fabric address that call
+ * produces) and flushed as one sgi_mgras_dma_chunk event, capped at one
+ * page so a wide row still yields several bounded events rather than one
+ * unbounded one. The node address, not the fabric address, is what a
+ * replay's own qtest_memwrite can actually preload: qtest's guest RAM has
+ * no widget-shifted region behind it. mgras_write() has already incremented
+ * and traced s->trace_sequence for the write that triggered this draw, so
+ * the chunk shares that same write's sequence number (trace_sequence - 1):
+ * Origami's reduction places chunk records immediately before the write
+ * they belong to.
+ */
+#define MGRAS_DMA_CHUNK_MAX_BYTES 4096
+
+typedef struct MgrasDmaChunk {
+    uint64_t addr;
+    uint32_t len;
+    bool active;
+    uint8_t bytes[MGRAS_DMA_CHUNK_MAX_BYTES];
+} MgrasDmaChunk;
+
+static void mgras_raster_dma_chunk_flush(SGIMgrasState *s,
+                                         MgrasDmaChunk *chunk)
+{
+    g_autofree char *hex = NULL;
+
+    if (!chunk->active) {
+        return;
+    }
+    hex = g_malloc(chunk->len * 2 + 1);
+    qemu_hexdump_to_buffer(hex, chunk->len * 2 + 1, chunk->bytes, chunk->len);
+    trace_sgi_mgras_dma_chunk(s->trace_sequence - 1, chunk->addr, chunk->len,
+                              hex);
+    chunk->active = false;
+    chunk->len = 0;
+}
+
+static void mgras_raster_dma_chunk_add(SGIMgrasState *s, MgrasDmaChunk *chunk,
+                                       uint64_t addr, const uint8_t *data,
+                                       size_t len)
+{
+    if (!trace_event_get_state_backends(TRACE_SGI_MGRAS_DMA_CHUNK)) {
+        return;
+    }
+    if (chunk->active && (chunk->addr + chunk->len != addr ||
+                          chunk->len + len > MGRAS_DMA_CHUNK_MAX_BYTES)) {
+        mgras_raster_dma_chunk_flush(s, chunk);
+    }
+    if (!chunk->active) {
+        chunk->addr = addr;
+        chunk->len = 0;
+        chunk->active = true;
+    }
+    memcpy(chunk->bytes + chunk->len, data, len);
+    chunk->len += len;
+}
+
+/*
  * Fetch and byte-swap a slot's whole big-endian page-frame-number list,
  * shared by the draw and read paths. On success, *page_list is a freshly
  * allocated `count`-entry array the caller owns. On any composed fabric
@@ -1306,15 +1370,16 @@ static bool mgras_raster_dma_load_page_list(SGIMgrasState *s,
                                             uint64_t **page_list)
 {
     uint64_t *list = g_new0(uint64_t, count);
+    MgrasDmaChunk chunk = { };
 
     for (uint32_t i = 0; i < count; i++) {
         hwaddr fabric;
+        uint64_t node_addr = ((uint64_t)list_node << 32) | (list_pa + i * 8);
         uint8_t entry[sizeof(uint64_t)];
         MemTxResult result;
 
-        if (!sgi_mgras_xio_compose(s, widget,
-                              ((uint64_t)list_node << 32) | (list_pa + i * 8),
-                              &fabric)) {
+        if (!sgi_mgras_xio_compose(s, widget, node_addr, &fabric)) {
+            mgras_raster_dma_chunk_flush(s, &chunk);
             g_free(list);
             return false;
         }
@@ -1324,11 +1389,20 @@ static bool mgras_raster_dma_load_page_list(SGIMgrasState *s,
             qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA image transfer "
                           "page-list entry %u read at 0x%" PRIx64 " failed "
                           "(result %d)\n", i, (uint64_t)fabric, result);
+            mgras_raster_dma_chunk_flush(s, &chunk);
             g_free(list);
             return false;
         }
+        /*
+         * Recorded at node_addr, not fabric: a replayed session has no
+         * fabric-side device behind it, only qtest's own guest RAM, which
+         * qtest_memwrite reaches at the plain node address, never at the
+         * widget-shifted fabric address sgi_mgras_xio_compose() produces.
+         */
+        mgras_raster_dma_chunk_add(s, &chunk, node_addr, entry, sizeof(entry));
         list[i] = ldq_be_p(entry) & MGRAS_DMA_PAGE_LIST_PFN_MASK;
     }
+    mgras_raster_dma_chunk_flush(s, &chunk);
     *page_list = list;
     return true;
 }
@@ -1368,6 +1442,7 @@ static void mgras_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
     uint32_t mask = s->rss[MGRAS_RSS_COLORMASKLSBSA];
     unsigned int width, bpp;
     uint64_t *page_list;
+    MgrasDmaChunk chunk = { };
 
     if (!mgras_raster_dma_select_slot(s, kick_byte, &slot)) {
         return;
@@ -1435,11 +1510,13 @@ static void mgras_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
                 qemu_log_mask(LOG_UNIMP, "sgi-mgras: DMA image transfer "
                               "source page %" PRIu64 " exceeds mapped "
                               "count %u\n", page_ix, count);
+                mgras_raster_dma_chunk_flush(s, &chunk);
                 continue;
             }
             src_pa = ((uint64_t)list_node << 32) |
                      (page_list[page_ix] << 12) | (va & 0xfff);
             if (!sgi_mgras_xio_compose(s, widget, src_pa, &fabric)) {
+                mgras_raster_dma_chunk_flush(s, &chunk);
                 continue;
             }
             result = dma_memory_read(&s->fabric_as, fabric, &byte,
@@ -1448,9 +1525,15 @@ static void mgras_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
                 qemu_log_mask(LOG_GUEST_ERROR, "sgi-mgras: DMA image "
                               "transfer source read at 0x%" PRIx64 " failed "
                               "(result %d)\n", (uint64_t)fabric, result);
+                mgras_raster_dma_chunk_flush(s, &chunk);
                 g_free(page_list);
                 return;
             }
+            /*
+             * Recorded at src_pa, not fabric: see the matching comment in
+             * mgras_raster_dma_load_page_list().
+             */
+            mgras_raster_dma_chunk_add(s, &chunk, src_pa, &byte, sizeof(byte));
             pixel_bytes[b % bpp] = byte;
             if (b % bpp == bpp - 1) {
                 uint32_t col = b / bpp;
@@ -1482,6 +1565,7 @@ static void mgras_raster_dma_draw_image(SGIMgrasState *s, uint32_t kick_byte)
             }
         }
     }
+    mgras_raster_dma_chunk_flush(s, &chunk);
     g_free(page_list);
     s->dirty = true;
 }
