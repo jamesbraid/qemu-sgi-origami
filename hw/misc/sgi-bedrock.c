@@ -60,14 +60,13 @@ bool sgi_bedrock_hub_registers_permitted(SGIBedrockState *s)
  * this Origin 300 model every populated processor's vCPU runs
  * unconditionally from sn1_machine_reset() regardless of the Bedrock PI's
  * own cpu-enable register (see hw/mips/sgi/sn1.c); Bedrock's cpu-enable
- * GPIO output is not wired to anything in hw/mips/sgi/sn1-node.c, and
- * cpu-enable-initial-mask leaves exactly one physical slot enabled at
- * reset (sn1-node.c: "Initial C grant is a model approximation"). The very
- * race H1 exists to close is between that one initially-enabled processor
- * and a populated sibling whose own cpu-enable bit is still clear at the
- * moment of the race. Gating bedrock_hold_slot_running() on cpu-enable
- * would therefore exclude the sibling from the join and silently disable
- * the hold in exactly the case it is meant to fix. "Present, running" here
+ * GPIO output is not wired to anything in hw/mips/sgi/sn1-node.c. The
+ * node's cpu-enable-initial-mask grants every fitted slot at reset, a
+ * model approximation of a reset value no source gives, and the PROM
+ * clears a partner's bit when that partner fails its early liveness
+ * check. Gating bedrock_hold_slot_running() on cpu-enable would tie the
+ * join to that approximation and to the PROM's own verdict, where the
+ * hold only needs to know which processors are running. "Present, running" here
  * is population (processor-mask) plus real vCPU schedulability (not
  * halted, cpu_can_run()); the PI cpu-enable register plays no part.
  *
@@ -1015,72 +1014,6 @@ static const MemoryRegionOps bedrock_l1_uart_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 8 },
 };
 
-static MemTxResult bedrock_hub_special_read(void *opaque, hwaddr addr,
-                                            uint64_t *value, unsigned size,
-                                            MemTxAttrs attrs)
-{
-    SGIBedrockState *s = opaque;
-    MemoryRegionSection section;
-    MemTxResult result;
-
-    if (!sgi_bedrock_hub_registers_permitted(s)) {
-        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock: hub register read at "
-                      "0x%" HWADDR_PRIx " denied for region %u\n", addr,
-                      (unsigned)s->initiator_region);
-        return MEMTX_DECODE_ERROR;
-    }
-    section = memory_region_find(&s->mmio, addr, size);
-    if (!section.mr || section.mr == &s->mmio ||
-        int128_lt(section.size, int128_make64(size))) {
-        if (section.mr) {
-            memory_region_unref(section.mr);
-        }
-        return MEMTX_DECODE_ERROR;
-    }
-    result = memory_region_dispatch_read(section.mr,
-                                         section.offset_within_region, value,
-                                         size_memop(size) | MO_BE, attrs);
-    memory_region_unref(section.mr);
-    return result;
-}
-
-static MemTxResult bedrock_hub_special_write(void *opaque, hwaddr addr,
-                                             uint64_t value, unsigned size,
-                                             MemTxAttrs attrs)
-{
-    SGIBedrockState *s = opaque;
-    MemoryRegionSection section;
-    MemTxResult result;
-
-    if (!sgi_bedrock_hub_registers_permitted(s)) {
-        qemu_log_mask(LOG_GUEST_ERROR, "sgi-bedrock: hub register write at "
-                      "0x%" HWADDR_PRIx " denied for region %u\n", addr,
-                      (unsigned)s->initiator_region);
-        return MEMTX_DECODE_ERROR;
-    }
-    section = memory_region_find(&s->mmio, addr, size);
-    if (!section.mr || section.mr == &s->mmio ||
-        int128_lt(section.size, int128_make64(size))) {
-        if (section.mr) {
-            memory_region_unref(section.mr);
-        }
-        return MEMTX_DECODE_ERROR;
-    }
-    result = memory_region_dispatch_write(section.mr,
-                                          section.offset_within_region, value,
-                                          size_memop(size) | MO_BE, attrs);
-    memory_region_unref(section.mr);
-    return result;
-}
-
-static const MemoryRegionOps bedrock_hub_special_ops = {
-    .read_with_attrs = bedrock_hub_special_read,
-    .write_with_attrs = bedrock_hub_special_write,
-    .endianness = DEVICE_BIG_ENDIAN,
-    .valid = { .min_access_size = 1, .max_access_size = 8 },
-    .impl = { .min_access_size = 1, .max_access_size = 8 },
-};
-
 static MemTxResult bedrock_io_registers_read(void *opaque, hwaddr addr,
                                              uint64_t *value, unsigned size,
                                              MemTxAttrs attrs)
@@ -1630,12 +1563,6 @@ static void bedrock_init(Object *obj)
     memory_region_add_subregion(&s->hub_window, 0, &s->hub_window_part[0]);
     memory_region_add_subregion(&s->hub_window, BEDROCK_HUB_WINDOW_SPLIT,
                                 &s->hub_window_part[1]);
-    memory_region_init_io(&s->hub_special_registers, obj,
-                          &bedrock_hub_special_ops, s,
-                          TYPE_SGI_BEDROCK "-hub-special-registers",
-                          SGI_BEDROCK_SIZE);
-    /* The checked view forwards into this device's own register tree. */
-    s->hub_special_registers.disable_reentrancy_guard = true;
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->mmio);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj),
                      sysbus_mmio_get_region(SYS_BUS_DEVICE(&s->io), 1));

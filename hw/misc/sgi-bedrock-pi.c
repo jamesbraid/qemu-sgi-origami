@@ -491,15 +491,14 @@ static void pi_write(void *opaque, hwaddr offset, uint64_t value,
         return;
     /*
      * The header ties a store here to a per-processor NMI, but no public
-     * source gives the trigger predicate, and the value the stock PROM writes
-     * is demonstrably non-triggering: it stores 0x100 to both offsets,
-     * fire-and-forget, through the remote register window during per-node
-     * bring-up and never reads them back. A MIPS NMI vectors to the reset
-     * vector, so a store that self-NMI'd the running processor would reset-loop
-     * the single-node PROM, which instead boots. The model therefore delivers
-     * no CPU NMI from an ordinary MMIO store; a modelled NMI reaches the
-     * processor over the s->nmi line from the external L1 controller (its nmi
-     * command). The store is kept observable and otherwise inert.
+     * source gives the trigger predicate. The stock PROM's stores of 0x100
+     * at these offsets, once read as NMI stores, go to the Hub-special
+     * remote register window, whose low block does not reach this register
+     * file (docs/datasheets/ip35-address-map.md); no known guest writes
+     * here. The model therefore delivers no CPU NMI from an ordinary MMIO
+     * store; a modelled NMI reaches the processor over the s->nmi line from
+     * the external L1 controller (its nmi command). The store is kept
+     * observable and otherwise inert.
      */
     case PI_NMI_A:
     case PI_NMI_B:

@@ -42,7 +42,6 @@ struct SGIBedrockState {
      */
     MemoryRegion hub_window;
     MemoryRegion hub_window_part[2];
-    MemoryRegion hub_special_registers;
     MemoryRegion remote_registers;
     /*
      * The L1 UART's own eight registers, zero-based and sized to exactly
