@@ -463,6 +463,7 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
     }
     if ((addr == 0x071c88 && size != 1) ||
         (addr == SGI_MGRAS_XMAP_MAIN_MODE && size != 4) ||
+        (addr == SGI_MGRAS_XMAP_BUF_SELECT && size != 4) ||
         (addr == 0x070c30 && size != 2) ||
         (addr == 0x070d18 && size != 4)) {
         mgras_error(s, addr, size, "unsupported register write width");
@@ -516,6 +517,10 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
     case SGI_MGRAS_XMAP_MAIN_MODE:
         s->xmap_mode[s->xmap_index] = value;
         s->dirty = true;
+        return;
+    /* Swap-mask storage; see the header comment above the definition. */
+    case SGI_MGRAS_XMAP_BUF_SELECT:
+        s->xmap_buf_select[s->xmap_index] = value;
         return;
     case SGI_MGRAS_RESET_CONTROL: s->reset_control = value; return;
     case SGI_MGRAS_I2C_SCRATCH: s->i2c_scratch = value; return;
@@ -785,6 +790,7 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     s->dirty = true;
     for (int i = 0; i < SGI_MGRAS_XMAP_ENTRIES; i++) {
         s->xmap_mode[i] = 0x7a4;
+        s->xmap_buf_select[i] = 0;
     }
     s->xmap_index = 0;
     s->cmap_selector = 0;
@@ -947,7 +953,7 @@ static bool mgras_ge_lengths_valid(void *opaque, int version_id)
  * changes.
  */
 static const VMStateDescription vmstate_sgi_mgras = {
-    .name = TYPE_SGI_MGRAS, .version_id = 10, .minimum_version_id = 9,
+    .name = TYPE_SGI_MGRAS, .version_id = 11, .minimum_version_id = 11,
     .post_load = mgras_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32(front_count, SGIMgrasState),
@@ -1070,6 +1076,8 @@ static const VMStateDescription vmstate_sgi_mgras = {
                              SGI_MGRAS_VC3_SRAM_WORDS),
         VMSTATE_UINT8(xmap_index, SGIMgrasState),
         VMSTATE_UINT32_ARRAY(xmap_mode, SGIMgrasState,
+                             SGI_MGRAS_XMAP_ENTRIES),
+        VMSTATE_UINT32_ARRAY(xmap_buf_select, SGIMgrasState,
                              SGI_MGRAS_XMAP_ENTRIES),
         VMSTATE_TIMER_PTR_V(retrace_timer, SGIMgrasState, 2),
         VMSTATE_END_OF_LIST()
